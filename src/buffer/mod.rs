@@ -12,6 +12,7 @@
 mod line_index;
 
 use crate::storage::{StringStorage, TextStorage};
+use crate::transaction::{ChangeSet, Delta, Transaction};
 use crate::{
     BufferConfig, BufferVersion, ByteOffset, CoordinateError, EditError, EngineError, EngineResult,
     Line, Position, TextRange,
@@ -90,6 +91,61 @@ impl Buffer {
 
     pub fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset> {
         self.line_index.position_to_byte(self.text(), position)
+    }
+
+    /// 提交并应用事务
+    ///
+    /// 成功将返回增量事件 Delta 和位置映射器 ChangeSet
+    pub fn apply_transaction(&mut self, tx: Transaction) -> EngineResult<(Delta, ChangeSet)> {
+        let (base_version, tx_edits) = tx.into_parts();
+
+        if base_version != self.version {
+            return Err(crate::TransactionError::VersionMismatch {
+                expected: self.version,
+                actual: base_version,
+            }
+            .into());
+        }
+
+        let edits = tx_edits.as_slice().to_vec();
+
+        // 1. 预检查：所有 edit 必须在当前旧文本坐标系中合法。
+        for edit in &edits {
+            self.validate_range(edit.range)?;
+            self.validate_edit_boundary(edit.range.start())?;
+            self.validate_edit_boundary(edit.range.end())?;
+        }
+
+        let old_version = self.version;
+
+        // 2. 在 clone 上应用，确保未来 storage.replace 失败时不污染当前 Buffer。
+        let mut new_storage = self.storage.clone();
+
+        let mut reverse_edits = edits.clone();
+        reverse_edits.reverse();
+
+        for edit in reverse_edits {
+            new_storage.replace(edit.range, &edit.replacement)?;
+        }
+
+        // 3. 全部成功后再一次性提交 storage / line_index / version。
+        let new_line_index = LineIndex::build(new_storage.text());
+
+        self.storage = new_storage;
+        self.line_index = new_line_index;
+        self.bump_version()?;
+
+        let new_version = self.version;
+
+        let changeset = ChangeSet::from_edit_list(&tx_edits);
+
+        let delta = Delta {
+            old_version,
+            new_version,
+            edits: tx_edits,
+        };
+
+        Ok((delta, changeset))
     }
 
     pub fn insert(&mut self, offset: ByteOffset, text: &str) -> EngineResult<()> {

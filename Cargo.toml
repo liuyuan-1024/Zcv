@@ -14,3 +14,6 @@ gpui = "0.2.2"
 [[example]]
 name = "gpui_m1_testbed"
 path = "examples/gpui_m1_testbed.rs"
+[[example]]
+name = "gpui_m2_testbed"
+path = "examples/gpui_m2_testbed.rs"

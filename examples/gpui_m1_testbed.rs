@@ -1,13 +1,28 @@
 use gpui::{
-    App, Application, Bounds, Context, FocusHandle, IntoElement, KeyBinding, KeyDownEvent, Render,
-    Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb,
+    App, Application, Bounds, Context, Div, FocusHandle, IntoElement, KeyBinding, KeyDownEvent,
+    Render, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb,
 };
 
 use zom_engine::{
     Buffer, BufferConfig, ByteOffset, EngineResult, Line, LogicalColumn, Position, TextRange,
 };
 
-actions!(m1_testbed, [Backspace, Enter, Left, Right]);
+actions!(
+    m1_testbed,
+    [
+        Backspace,
+        DeleteForward,
+        Enter,
+        Left,
+        Right,
+        Home,
+        End,
+        Save,
+        Reset
+    ]
+);
+
+const INITIAL_TEXT: &str = "🚀 Zom Engine M1 GPUI Testbed\n\n可以输入、回车、退格、Delete、左右移动光标。\nHome / End 可跳到当前行首尾。\nCmd-S 标记 saved，Cmd-R 重置文本。\n当前只是 Buffer 体验，不包含 Undo/Redo/Selection。\n";
 
 pub struct M1Testbed {
     buffer: Buffer,
@@ -18,9 +33,7 @@ pub struct M1Testbed {
 
 impl M1Testbed {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let text = "🚀 Zom Engine M1 GPUI Testbed\n\n可以输入、回车、退格、左右移动光标。\n当前只是 Buffer 体验，不包含 Undo/Redo/Selection。\n".to_string();
-
-        let buffer = Buffer::from_text(text, BufferConfig::default())
+        let buffer = Buffer::from_text(INITIAL_TEXT.to_string(), BufferConfig::default())
             .expect("initial buffer should be valid");
 
         Self {
@@ -29,6 +42,25 @@ impl M1Testbed {
             focus_handle: cx.focus_handle(),
             last_error: None,
         }
+    }
+
+    fn reset(&mut self, cx: &mut Context<Self>) {
+        match Buffer::from_text(INITIAL_TEXT.to_string(), BufferConfig::default()) {
+            Ok(buffer) => {
+                self.buffer = buffer;
+                self.cursor = ByteOffset::ZERO;
+                self.last_error = None;
+            }
+            Err(err) => self.last_error = Some(err.to_string()),
+        }
+
+        cx.notify();
+    }
+
+    fn mark_saved(&mut self, cx: &mut Context<Self>) {
+        self.buffer.mark_saved();
+        self.last_error = None;
+        cx.notify();
     }
 
     fn apply(&mut self, result: EngineResult<()>, cx: &mut Context<Self>) {
@@ -51,7 +83,7 @@ impl M1Testbed {
     }
 
     fn backspace(&mut self, cx: &mut Context<Self>) {
-        let Some(prev) = previous_char_boundary(self.buffer.text(), self.cursor) else {
+        let Some(prev) = previous_edit_boundary(self.buffer.text(), self.cursor) else {
             return;
         };
 
@@ -67,18 +99,75 @@ impl M1Testbed {
         self.apply(result, cx);
     }
 
+    fn delete_forward(&mut self, cx: &mut Context<Self>) {
+        let Some(next) = next_edit_boundary(self.buffer.text(), self.cursor) else {
+            return;
+        };
+
+        let range = TextRange::new(self.cursor, next)
+            .expect("next cursor boundary should form a valid range");
+
+        let result = self.buffer.delete(range);
+        self.apply(result, cx);
+    }
+
     fn move_left(&mut self, cx: &mut Context<Self>) {
-        if let Some(prev) = previous_char_boundary(self.buffer.text(), self.cursor) {
+        if let Some(prev) = previous_edit_boundary(self.buffer.text(), self.cursor) {
             self.cursor = prev;
+            self.last_error = None;
             cx.notify();
         }
     }
 
     fn move_right(&mut self, cx: &mut Context<Self>) {
-        if let Some(next) = next_char_boundary(self.buffer.text(), self.cursor) {
+        if let Some(next) = next_edit_boundary(self.buffer.text(), self.cursor) {
             self.cursor = next;
+            self.last_error = None;
             cx.notify();
         }
+    }
+
+    fn move_to_line_start(&mut self, cx: &mut Context<Self>) {
+        let line = self.cursor_position().line();
+
+        match self.buffer.line_start(line) {
+            Ok(offset) => {
+                self.cursor = offset;
+                self.last_error = None;
+            }
+            Err(err) => self.last_error = Some(err.to_string()),
+        }
+
+        cx.notify();
+    }
+
+    fn move_to_line_end(&mut self, cx: &mut Context<Self>) {
+        let line = self.cursor_position().line();
+
+        match self.line_content_end(line) {
+            Ok(offset) => {
+                self.cursor = offset;
+                self.last_error = None;
+            }
+            Err(err) => self.last_error = Some(err.to_string()),
+        }
+
+        cx.notify();
+    }
+
+    fn line_content_end(&self, line: Line) -> EngineResult<ByteOffset> {
+        let line_start = self.buffer.line_start(line)?.get();
+        let next_line_start = if line.get() + 1 < self.buffer.line_count() {
+            self.buffer.line_start(Line::new(line.get() + 1))?.get()
+        } else {
+            self.buffer.len_bytes().get()
+        };
+
+        Ok(ByteOffset::new(line_content_end(
+            self.buffer.text(),
+            line_start,
+            next_line_start,
+        )))
     }
 
     fn cursor_position(&self) -> Position {
@@ -123,6 +212,9 @@ impl Render for M1Testbed {
             .on_action(cx.listener(|this, _: &Backspace, _window, cx| {
                 this.backspace(cx);
             }))
+            .on_action(cx.listener(|this, _: &DeleteForward, _window, cx| {
+                this.delete_forward(cx);
+            }))
             .on_action(cx.listener(|this, _: &Enter, _window, cx| {
                 this.insert_text("\n", cx);
             }))
@@ -132,6 +224,18 @@ impl Render for M1Testbed {
             .on_action(cx.listener(|this, _: &Right, _window, cx| {
                 this.move_right(cx);
             }))
+            .on_action(cx.listener(|this, _: &Home, _window, cx| {
+                this.move_to_line_start(cx);
+            }))
+            .on_action(cx.listener(|this, _: &End, _window, cx| {
+                this.move_to_line_end(cx);
+            }))
+            .on_action(cx.listener(|this, _: &Save, _window, cx| {
+                this.mark_saved(cx);
+            }))
+            .on_action(cx.listener(|this, _: &Reset, _window, cx| {
+                this.reset(cx);
+            }))
             .child(
                 div()
                     .border_b_1()
@@ -139,14 +243,22 @@ impl Render for M1Testbed {
                     .pb_4()
                     .mb_4()
                     .child(format!(
-                        "Zom Engine M1 | byte={} | line={} col={} | lines={} | version={} | dirty={}",
+                        "Zom Engine M1 | byte={} / {} | line={} col={} | lines={} | version={} saved={} | dirty={}",
                         cursor.get(),
+                        self.buffer.len_bytes().get(),
                         position.line().get(),
                         position.column().get(),
                         self.buffer.line_count(),
                         self.buffer.version().get(),
+                        self.buffer.saved_version().get(),
                         self.buffer.is_dirty(),
                     )),
+            )
+            .child(
+                div()
+                    .mb_4()
+                    .text_color(rgb(0xA1A1AA))
+                    .child("输入字符 / Space / Tab / Enter；Backspace / Delete；← →；Home / End；Cmd-S 保存；Cmd-R 重置"),
             )
             .when_some(self.last_error.clone(), |el, error| {
                 el.child(
@@ -167,9 +279,14 @@ impl Render for M1Testbed {
     }
 }
 
-fn render_lines_with_cursor(text: &str, cursor: ByteOffset) -> Vec<impl IntoElement> {
+fn render_lines_with_cursor(text: &str, cursor: ByteOffset) -> Vec<Div> {
     let mut rows = Vec::new();
     let cursor_byte = cursor.get();
+
+    if text.is_empty() {
+        rows.push(cursor_row());
+        return rows;
+    }
 
     let mut line_start = 0;
 
@@ -178,12 +295,10 @@ fn render_lines_with_cursor(text: &str, cursor: ByteOffset) -> Vec<impl IntoElem
         let display_line = line_with_newline
             .trim_end_matches('\n')
             .trim_end_matches('\r');
+        let display_end = line_start + display_line.len();
 
-        if cursor_byte >= line_start && cursor_byte <= line_end {
-            let cursor_in_line = cursor_byte
-                .saturating_sub(line_start)
-                .min(display_line.len());
-
+        if cursor_byte >= line_start && cursor_byte <= display_end {
+            let cursor_in_line = cursor_byte.saturating_sub(line_start);
             let before = &display_line[..cursor_in_line];
             let after = &display_line[cursor_in_line..];
 
@@ -193,7 +308,7 @@ fn render_lines_with_cursor(text: &str, cursor: ByteOffset) -> Vec<impl IntoElem
                     .flex_row()
                     .min_h(px(28.0))
                     .child(before.to_string())
-                    .child(div().w(px(2.0)).h(px(22.0)).bg(rgb(0x3B82F6)))
+                    .child(cursor_element())
                     .child(after.to_string()),
             );
         } else {
@@ -203,53 +318,97 @@ fn render_lines_with_cursor(text: &str, cursor: ByteOffset) -> Vec<impl IntoElem
         line_start = line_end;
     }
 
-    if text.is_empty() || text.ends_with('\n') {
-        rows.push(
-            div()
-                .flex()
-                .flex_row()
-                .min_h(px(28.0))
-                .child(div().w(px(2.0)).h(px(22.0)).bg(rgb(0x3B82F6))),
-        );
+    if text.ends_with('\n') {
+        if cursor_byte == text.len() {
+            rows.push(cursor_row());
+        } else {
+            rows.push(div().min_h(px(28.0)).child(""));
+        }
     }
 
     rows
 }
 
-fn previous_char_boundary(text: &str, cursor: ByteOffset) -> Option<ByteOffset> {
-    let current = cursor.get();
-
-    if current == 0 {
-        return None;
-    }
-
-    text[..current]
-        .char_indices()
-        .last()
-        .map(|(idx, _)| ByteOffset::new(idx))
+fn cursor_row() -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .min_h(px(28.0))
+        .child(cursor_element())
 }
 
-fn next_char_boundary(text: &str, cursor: ByteOffset) -> Option<ByteOffset> {
-    let current = cursor.get();
+fn cursor_element() -> Div {
+    div().w(px(2.0)).h(px(22.0)).bg(rgb(0x3B82F6))
+}
 
-    if current >= text.len() {
+fn previous_edit_boundary(text: &str, cursor: ByteOffset) -> Option<ByteOffset> {
+    let mut current = cursor.get();
+
+    if current == 0 || current > text.len() || !text.is_char_boundary(current) {
         return None;
     }
 
-    text[current..]
-        .char_indices()
-        .nth(1)
-        .map(|(idx, _)| ByteOffset::new(current + idx))
-        .or_else(|| Some(ByteOffset::new(text.len())))
+    loop {
+        let prev = text[..current].char_indices().last()?.0;
+
+        if !is_crlf_middle(text, prev) {
+            return Some(ByteOffset::new(prev));
+        }
+
+        current = prev;
+    }
+}
+
+fn next_edit_boundary(text: &str, cursor: ByteOffset) -> Option<ByteOffset> {
+    let current = cursor.get();
+
+    if current >= text.len() || !text.is_char_boundary(current) {
+        return None;
+    }
+
+    for (relative, _) in text[current..].char_indices().skip(1) {
+        let next = current + relative;
+
+        if !is_crlf_middle(text, next) {
+            return Some(ByteOffset::new(next));
+        }
+    }
+
+    Some(ByteOffset::new(text.len()))
+}
+
+fn line_content_end(text: &str, line_start: usize, next_line_start: usize) -> usize {
+    let bytes = text.as_bytes();
+
+    if next_line_start > line_start && bytes[next_line_start - 1] == b'\n' {
+        if next_line_start >= line_start + 2 && bytes[next_line_start - 2] == b'\r' {
+            next_line_start - 2
+        } else {
+            next_line_start - 1
+        }
+    } else {
+        next_line_start
+    }
+}
+
+fn is_crlf_middle(text: &str, offset: usize) -> bool {
+    let bytes = text.as_bytes();
+
+    offset > 0 && offset < bytes.len() && bytes[offset - 1] == b'\r' && bytes[offset] == b'\n'
 }
 
 fn main() {
     Application::new().run(|cx: &mut App| {
         cx.bind_keys([
             KeyBinding::new("backspace", Backspace, None),
+            KeyBinding::new("delete", DeleteForward, None),
             KeyBinding::new("enter", Enter, None),
             KeyBinding::new("left", Left, None),
             KeyBinding::new("right", Right, None),
+            KeyBinding::new("home", Home, None),
+            KeyBinding::new("end", End, None),
+            KeyBinding::new("cmd-s", Save, None),
+            KeyBinding::new("cmd-r", Reset, None),
         ]);
 
         let bounds = Bounds::centered(None, gpui::size(px(900.0), px(640.0)), cx);

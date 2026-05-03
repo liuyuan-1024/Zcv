@@ -1,9 +1,9 @@
 use std::num::NonZeroUsize;
 
 use zom_engine::{
-    BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, DisplayColumn,
+    BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, DisplayColumn, EditError,
     EngineError, Line, LineEndingConfig, LogicalColumn, Position, PositionEncodingConfig,
-    TabConfig, TextRange, TransactionId, Utf16Offset,
+    StorageError, TabConfig, TextRange, TransactionError, TransactionId, Utf16Offset,
 };
 
 #[test]
@@ -37,11 +37,28 @@ fn coordinate_newtypes_are_zero_indexed() {
 }
 
 #[test]
+fn coordinate_newtypes_can_be_ordered_and_compared() {
+    assert!(ByteOffset::new(1) < ByteOffset::new(2));
+    assert!(CharOffset::new(1) < CharOffset::new(2));
+    assert!(Utf16Offset::new(1) < Utf16Offset::new(2));
+
+    assert!(Line::new(1) < Line::new(2));
+    assert!(LogicalColumn::new(1) < LogicalColumn::new(2));
+    assert!(DisplayColumn::new(1) < DisplayColumn::new(2));
+}
+
+#[test]
 fn position_is_a_zero_indexed_logical_text_position() {
     let position = Position::new(Line::new(2), LogicalColumn::new(4));
 
-    assert_eq!(position.line, Line::new(2));
-    assert_eq!(position.column, LogicalColumn::new(4));
+    assert_eq!(position.line(), Line::new(2));
+    assert_eq!(position.column(), LogicalColumn::new(4));
+}
+
+#[test]
+fn position_zero_is_line_zero_column_zero() {
+    assert_eq!(Position::ZERO.line(), Line::ZERO);
+    assert_eq!(Position::ZERO.column(), LogicalColumn::ZERO);
 }
 
 #[test]
@@ -78,13 +95,12 @@ fn text_range_rejects_reversed_offsets() {
 }
 
 #[test]
-fn text_range_new_unchecked_constructs_range() {
-    let range = TextRange::new_unchecked(ByteOffset::new(1), ByteOffset::new(3));
+fn text_range_constructor_is_the_only_public_range_constructor() {
+    let ok = TextRange::new(ByteOffset::new(1), ByteOffset::new(1));
+    let err = TextRange::new(ByteOffset::new(2), ByteOffset::new(1));
 
-    assert_eq!(range.start(), ByteOffset::new(1));
-    assert_eq!(range.end(), ByteOffset::new(3));
-    assert_eq!(range.len(), 2);
-    assert!(!range.is_empty());
+    assert!(ok.is_ok());
+    assert!(matches!(err, Err(CoordinateError::InvalidRange { .. })));
 }
 
 #[test]
@@ -95,15 +111,32 @@ fn byte_offset_checked_arithmetic_does_not_panic() {
 }
 
 #[test]
-fn buffer_version_can_advance() {
+fn byte_offset_checked_arithmetic_reports_overflow() {
+    assert_eq!(ByteOffset::new(usize::MAX).checked_add(1), None);
+}
+
+#[test]
+fn buffer_version_starts_at_initial_and_can_advance() {
+    assert_eq!(BufferVersion::default(), BufferVersion::INITIAL);
     assert_eq!(BufferVersion::INITIAL.get(), 0);
     assert_eq!(BufferVersion::INITIAL.next(), Some(BufferVersion::new(1)));
 }
 
 #[test]
-fn transaction_id_can_advance() {
+fn buffer_version_reports_overflow() {
+    assert_eq!(BufferVersion::new(u64::MAX).next(), None);
+}
+
+#[test]
+fn transaction_id_starts_at_initial_and_can_advance() {
+    assert_eq!(TransactionId::default(), TransactionId::INITIAL);
     assert_eq!(TransactionId::INITIAL.get(), 0);
     assert_eq!(TransactionId::INITIAL.next(), Some(TransactionId::new(1)));
+}
+
+#[test]
+fn transaction_id_reports_overflow() {
+    assert_eq!(TransactionId::new(u64::MAX).next(), None);
 }
 
 #[test]
@@ -119,6 +152,7 @@ fn default_buffer_config_is_reasonable_for_m0() {
 
     assert!(config.large_file.threshold_bytes > 0);
     assert!(config.large_file.long_line_threshold_bytes > 0);
+    assert!(config.large_file.max_undo_history > 0);
 }
 
 #[test]
@@ -135,6 +169,18 @@ fn tab_config_requires_non_zero_widths_at_type_level() {
 }
 
 #[test]
+fn config_enums_are_public_strategy_values() {
+    let _ = LineEndingConfig::Lf;
+    let _ = LineEndingConfig::Crlf;
+    let _ = LineEndingConfig::Preserve;
+    let _ = LineEndingConfig::Native;
+
+    let _ = PositionEncodingConfig::Utf8;
+    let _ = PositionEncodingConfig::Utf16;
+    let _ = PositionEncodingConfig::Utf32;
+}
+
+#[test]
 fn coordinate_error_can_be_lifted_to_engine_error() {
     let error = CoordinateError::InvalidRange {
         start: ByteOffset::new(3),
@@ -144,4 +190,35 @@ fn coordinate_error_can_be_lifted_to_engine_error() {
     let engine_error: EngineError = error.into();
 
     assert!(matches!(engine_error, EngineError::Coordinate(_)));
+}
+
+#[test]
+fn edit_error_can_be_lifted_to_engine_error() {
+    let range = TextRange::new(ByteOffset::new(0), ByteOffset::new(1)).unwrap();
+    let error = EditError::RangeOutOfBounds { range };
+
+    let engine_error: EngineError = error.into();
+
+    assert!(matches!(engine_error, EngineError::Edit(_)));
+}
+
+#[test]
+fn transaction_error_can_be_lifted_to_engine_error() {
+    let error = TransactionError::VersionMismatch {
+        expected: BufferVersion::new(2),
+        actual: BufferVersion::new(1),
+    };
+
+    let engine_error: EngineError = error.into();
+
+    assert!(matches!(engine_error, EngineError::Transaction(_)));
+}
+
+#[test]
+fn storage_error_can_be_lifted_to_engine_error() {
+    let error = StorageError::ReadOnly;
+
+    let engine_error: EngineError = error.into();
+
+    assert!(matches!(engine_error, EngineError::Storage(_)));
 }

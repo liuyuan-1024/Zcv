@@ -171,14 +171,6 @@ impl TextRange {
         Ok(Self { start, end })
     }
 
-    /// 创建文本区间，不进行运行时错误返回。
-    ///
-    /// 仅用于调用方已经通过其它方式证明 `start <= end` 的内部路径。
-    pub fn new_unchecked(start: ByteOffset, end: ByteOffset) -> Self {
-        debug_assert!(start <= end, "TextRange 必须满足 start <= end");
-        Self { start, end }
-    }
-
     pub const fn start(self) -> ByteOffset {
         self.start
     }

@@ -8,3 +8,9 @@ description = "一个纯粹的、与用户界面无关的文本编辑引擎"
 thiserror = "2.0.18"
 
 [dev-dependencies]
+# 仅在测试和 examples 沙盒中使用 GPUI
+gpui = "0.2.2"
+
+[[example]]
+name = "gpui_m1_testbed"
+path = "examples/gpui_m1_testbed.rs"

@@ -1,7 +1,7 @@
 use crate::types::{BufferVersion, ByteOffset, Line, TextRange, TransactionId};
 use thiserror::Error;
 
-/// 坐标转换、边界校验或越界相关的错误。
+/// 坐标转换、边界校验或越界相关的错误（坐标不合法）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoordinateError {
     #[error("字节偏移量越界: {0:?}")]
@@ -20,7 +20,7 @@ pub enum CoordinateError {
     InvalidGraphemeBoundary(ByteOffset),
 }
 
-/// 文本变异与编辑相关的错误。
+/// 文本变异与编辑相关的错误（编辑请求不合法）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum EditError {
     #[error("检测到重叠编辑: 之前 {previous:?}, 当前 {current:?}")]
@@ -39,7 +39,7 @@ pub enum EditError {
     PayloadTooLarge { size: usize, limit: usize },
 }
 
-/// 事务提交与管理相关的错误。
+/// 事务提交与管理相关的错误（事务提交不合法）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TransactionError {
     #[error("事务 {0:?} 无效或已损坏")]
@@ -55,7 +55,7 @@ pub enum TransactionError {
     },
 }
 
-/// 底层存储相关的错误。
+/// 底层存储相关的错误（存储后端做不了）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum StorageError {
     #[error("无法为大文件分配内存")]
@@ -82,6 +82,9 @@ pub enum EngineError {
 
     #[error(transparent)]
     Storage(#[from] StorageError),
+
+    #[error("BufferVersion 溢出")]
+    VersionOverflow,
 }
 
 /// 编辑引擎统一 Result 类型。

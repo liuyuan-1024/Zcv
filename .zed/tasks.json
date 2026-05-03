@@ -1,0 +1,11 @@
+[
+  {
+    "label": "肉眼体验编辑引擎-m1",
+    "command": "cargo",
+    "args": ["run", "--example gpui_m1_testbed"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+]

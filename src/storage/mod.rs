@@ -9,7 +9,9 @@ pub(crate) use ropey_storage::{RopeySnapshot, RopeyStorage};
 
 use std::borrow::Cow;
 
-use crate::{CharOffset, EngineResult, Line, Position, TextRange};
+use crate::{
+    ByteOffset, CharOffset, EngineResult, Line, LineEndingStyle, Position, TextRange, Utf16Position,
+};
 
 /// 只读文本视图。
 ///
@@ -45,6 +47,40 @@ pub(crate) trait TextRead {
 
     /// line / logical column -> CharOffset。
     fn position_to_char(&self, position: Position) -> EngineResult<CharOffset>;
+
+    /// UTF-8 byte offset -> CharOffset。
+    fn byte_to_char(&self, offset: ByteOffset) -> EngineResult<CharOffset>;
+
+    /// CharOffset -> UTF-8 byte offset。
+    fn char_to_byte(&self, offset: CharOffset) -> EngineResult<ByteOffset>;
+
+    /// CharOffset -> UTF-16 行列位置。
+    fn char_to_utf16_position(&self, offset: CharOffset) -> EngineResult<Utf16Position>;
+
+    /// UTF-16 行列位置 -> CharOffset。
+    fn utf16_position_to_char(&self, position: Utf16Position) -> EngineResult<CharOffset>;
+
+    /// UTF-8 byte offset -> UTF-16 行列位置。
+    fn byte_to_utf16_position(&self, offset: ByteOffset) -> EngineResult<Utf16Position> {
+        self.char_to_utf16_position(self.byte_to_char(offset)?)
+    }
+
+    /// UTF-16 行列位置 -> UTF-8 byte offset。
+    fn utf16_position_to_byte(&self, position: Utf16Position) -> EngineResult<ByteOffset> {
+        self.char_to_byte(self.utf16_position_to_char(position)?)
+    }
+
+    /// 判断 CharOffset 是否处在合法 grapheme cluster 边界。
+    fn is_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<bool>;
+
+    /// 返回小于当前 offset 的最近 grapheme cluster 边界；开头处返回 0。
+    fn previous_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset>;
+
+    /// 返回大于当前 offset 的最近 grapheme cluster 边界；结尾处返回 len_chars。
+    fn next_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset>;
+
+    /// 检测文本中实际出现的换行风格。
+    fn line_ending_style(&self) -> LineEndingStyle;
 
     /// 读取指定字符。越界返回 None。
     fn char_at(&self, offset: CharOffset) -> Option<char>;

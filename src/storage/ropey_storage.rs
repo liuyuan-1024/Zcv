@@ -1,10 +1,12 @@
 use std::borrow::Cow;
 
 use ropey::Rope;
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::{TextRead, TextStorage};
 use crate::{
-    CharOffset, CoordinateError, EditError, EngineResult, Line, LogicalColumn, Position, TextRange,
+    ByteOffset, CharOffset, CoordinateError, EditError, EngineResult, Line, LineEndingStyle,
+    LogicalColumn, Position, TextRange, Utf16Offset, Utf16Position,
 };
 
 /// M4 默认高性能文本后端。
@@ -115,6 +117,38 @@ impl TextRead for RopeyStorage {
         Err(CoordinateError::OutOfBounds(CharOffset::new(line_content_end)).into())
     }
 
+    fn byte_to_char(&self, offset: ByteOffset) -> EngineResult<CharOffset> {
+        byte_to_char_in_text(&self.rope.to_string(), offset)
+    }
+
+    fn char_to_byte(&self, offset: CharOffset) -> EngineResult<ByteOffset> {
+        char_to_byte_in_text(&self.rope.to_string(), offset)
+    }
+
+    fn char_to_utf16_position(&self, offset: CharOffset) -> EngineResult<Utf16Position> {
+        char_to_utf16_position_in_rope(&self.rope, offset)
+    }
+
+    fn utf16_position_to_char(&self, position: Utf16Position) -> EngineResult<CharOffset> {
+        utf16_position_to_char_in_rope(&self.rope, position)
+    }
+
+    fn is_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<bool> {
+        is_grapheme_boundary_in_text(&self.rope.to_string(), offset)
+    }
+
+    fn previous_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+        previous_grapheme_boundary_in_text(&self.rope.to_string(), offset)
+    }
+
+    fn next_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+        next_grapheme_boundary_in_text(&self.rope.to_string(), offset)
+    }
+
+    fn line_ending_style(&self) -> LineEndingStyle {
+        detect_line_ending_style(&self.rope.to_string())
+    }
+
     fn char_at(&self, offset: CharOffset) -> Option<char> {
         char_at(&self.rope, offset.get())
     }
@@ -210,8 +244,217 @@ impl TextRead for RopeySnapshot {
         .position_to_char(position)
     }
 
+    fn byte_to_char(&self, offset: ByteOffset) -> EngineResult<CharOffset> {
+        byte_to_char_in_text(&self.rope.to_string(), offset)
+    }
+
+    fn char_to_byte(&self, offset: CharOffset) -> EngineResult<ByteOffset> {
+        char_to_byte_in_text(&self.rope.to_string(), offset)
+    }
+
+    fn char_to_utf16_position(&self, offset: CharOffset) -> EngineResult<Utf16Position> {
+        char_to_utf16_position_in_rope(&self.rope, offset)
+    }
+
+    fn utf16_position_to_char(&self, position: Utf16Position) -> EngineResult<CharOffset> {
+        utf16_position_to_char_in_rope(&self.rope, position)
+    }
+
+    fn is_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<bool> {
+        is_grapheme_boundary_in_text(&self.rope.to_string(), offset)
+    }
+
+    fn previous_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+        previous_grapheme_boundary_in_text(&self.rope.to_string(), offset)
+    }
+
+    fn next_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+        next_grapheme_boundary_in_text(&self.rope.to_string(), offset)
+    }
+
+    fn line_ending_style(&self) -> LineEndingStyle {
+        detect_line_ending_style(&self.rope.to_string())
+    }
+
     fn char_at(&self, offset: CharOffset) -> Option<char> {
         char_at(&self.rope, offset.get())
+    }
+}
+
+fn char_to_utf16_position_in_rope(rope: &Rope, offset: CharOffset) -> EngineResult<Utf16Position> {
+    let offset_value = offset.get();
+
+    if offset_value > rope.len_chars() {
+        return Err(CoordinateError::OutOfBounds(offset).into());
+    }
+
+    if is_crlf_middle(rope, offset_value) {
+        return Err(CoordinateError::OutOfBounds(offset).into());
+    }
+
+    let line_idx = rope.char_to_line(offset_value);
+    let line_start = rope.line_to_char(line_idx);
+    let utf16_units = rope
+        .slice(line_start..offset_value)
+        .to_string()
+        .encode_utf16()
+        .count();
+
+    Ok(Utf16Position::new(
+        Line::new(line_idx),
+        Utf16Offset::new(utf16_units),
+    ))
+}
+
+fn utf16_position_to_char_in_rope(
+    rope: &Rope,
+    position: Utf16Position,
+) -> EngineResult<CharOffset> {
+    let line = position.line();
+
+    if line.get() >= rope.len_lines() {
+        return Err(CoordinateError::LineOutOfBounds(line).into());
+    }
+
+    let line_start = rope.line_to_char(line.get());
+    let next_line_start = if line.get() + 1 < rope.len_lines() {
+        rope.line_to_char(line.get() + 1)
+    } else {
+        rope.len_chars()
+    };
+    let line_content_end = line_content_end(rope, next_line_start);
+    let line_text = rope.slice(line_start..line_content_end).to_string();
+    let target = position.character().get();
+
+    let mut utf16_units = 0usize;
+    let mut char_count = 0usize;
+
+    if target == 0 {
+        return Ok(CharOffset::new(line_start));
+    }
+
+    for ch in line_text.chars() {
+        let next_utf16_units = utf16_units + ch.len_utf16();
+        let next_char_count = char_count + 1;
+
+        if target == next_utf16_units {
+            return Ok(CharOffset::new(line_start + next_char_count));
+        }
+
+        if target < next_utf16_units {
+            return Err(CoordinateError::InvalidUtf16Boundary(position).into());
+        }
+
+        utf16_units = next_utf16_units;
+        char_count = next_char_count;
+    }
+
+    if target == utf16_units {
+        return Ok(CharOffset::new(line_start + char_count));
+    }
+
+    Err(CoordinateError::Utf16PositionOutOfBounds(position).into())
+}
+
+fn char_to_byte_in_text(text: &str, offset: CharOffset) -> EngineResult<ByteOffset> {
+    let char_offset = offset.get();
+    let len_chars = text.chars().count();
+
+    if char_offset > len_chars {
+        return Err(CoordinateError::OutOfBounds(offset).into());
+    }
+
+    if char_offset == len_chars {
+        return Ok(ByteOffset::new(text.len()));
+    }
+
+    text.char_indices()
+        .nth(char_offset)
+        .map(|(byte_idx, _)| ByteOffset::new(byte_idx))
+        .ok_or_else(|| CoordinateError::OutOfBounds(offset).into())
+}
+
+fn byte_to_char_in_text(text: &str, offset: ByteOffset) -> EngineResult<CharOffset> {
+    let byte_offset = offset.get();
+
+    if byte_offset > text.len() {
+        return Err(CoordinateError::ByteOutOfBounds(offset).into());
+    }
+
+    if !text.is_char_boundary(byte_offset) {
+        return Err(CoordinateError::InvalidByteBoundary(offset).into());
+    }
+
+    Ok(CharOffset::new(text[..byte_offset].chars().count()))
+}
+
+fn is_grapheme_boundary_in_text(text: &str, offset: CharOffset) -> EngineResult<bool> {
+    let byte_offset = char_to_byte_in_text(text, offset)?.get();
+
+    if byte_offset == 0 || byte_offset == text.len() {
+        return Ok(true);
+    }
+
+    Ok(UnicodeSegmentation::grapheme_indices(text, true)
+        .any(|(boundary, _)| boundary == byte_offset))
+}
+
+fn previous_grapheme_boundary_in_text(text: &str, offset: CharOffset) -> EngineResult<CharOffset> {
+    let byte_offset = char_to_byte_in_text(text, offset)?.get();
+    let mut previous = 0usize;
+
+    for (boundary, _) in UnicodeSegmentation::grapheme_indices(text, true) {
+        if boundary >= byte_offset {
+            break;
+        }
+        previous = boundary;
+    }
+
+    byte_to_char_in_text(text, ByteOffset::new(previous))
+}
+
+fn next_grapheme_boundary_in_text(text: &str, offset: CharOffset) -> EngineResult<CharOffset> {
+    let byte_offset = char_to_byte_in_text(text, offset)?.get();
+
+    for (boundary, _) in UnicodeSegmentation::grapheme_indices(text, true) {
+        if boundary > byte_offset {
+            return byte_to_char_in_text(text, ByteOffset::new(boundary));
+        }
+    }
+
+    byte_to_char_in_text(text, ByteOffset::new(text.len()))
+}
+
+fn detect_line_ending_style(text: &str) -> LineEndingStyle {
+    let bytes = text.as_bytes();
+    let mut has_lf = false;
+    let mut has_crlf = false;
+    let mut has_lone_cr = false;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' if i + 1 < bytes.len() && bytes[i + 1] == b'\n' => {
+                has_crlf = true;
+                i += 2;
+            }
+            b'\r' => {
+                has_lone_cr = true;
+                i += 1;
+            }
+            b'\n' => {
+                has_lf = true;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+
+    match (has_lf, has_crlf, has_lone_cr) {
+        (false, false, false) => LineEndingStyle::None,
+        (true, false, false) => LineEndingStyle::Lf,
+        (false, true, false) => LineEndingStyle::Crlf,
+        _ => LineEndingStyle::Mixed,
     }
 }
 

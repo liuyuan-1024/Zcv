@@ -4,12 +4,17 @@
 //! - 默认文本后端切换为 RopeyStorage
 //! - Buffer / Transaction / ChangeSet / History 继续使用 CharOffset
 //! - Snapshot 基于 ropey clone，避免每次快照复制全文
+//!
+//! M5A 目标：
+//! - 暴露 IDE 必需坐标转换：ByteOffset / CharOffset / UTF-16 Position
+//! - 暴露 grapheme cluster 边界查询与安全光标移动辅助
+//! - 暴露文件换行风格识别
 
 use std::borrow::Cow;
 
 use crate::{
-    BufferConfig, BufferVersion, CharOffset, CoordinateError, EditError, EngineError, EngineResult,
-    Line, Position, SelectionSnapshot, TextRange,
+    BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, EditError, EngineError,
+    EngineResult, Line, LineEndingStyle, Position, SelectionSnapshot, TextRange, Utf16Position,
     storage::{RopeySnapshot, RopeyStorage, TextRead, TextStorage},
     transaction::{
         ChangeSet, Delta, Edit, EditList, Transaction, TransactionMergePolicy, TransactionMetadata,
@@ -62,6 +67,54 @@ impl Snapshot {
 
     pub fn position_to_char(&self, position: Position) -> EngineResult<CharOffset> {
         self.storage.position_to_char(position)
+    }
+
+    pub fn byte_to_char(&self, offset: ByteOffset) -> EngineResult<CharOffset> {
+        self.storage.byte_to_char(offset)
+    }
+
+    pub fn char_to_byte(&self, offset: CharOffset) -> EngineResult<ByteOffset> {
+        self.storage.char_to_byte(offset)
+    }
+
+    pub fn char_to_utf16_position(&self, offset: CharOffset) -> EngineResult<Utf16Position> {
+        self.storage.char_to_utf16_position(offset)
+    }
+
+    pub fn utf16_position_to_char(&self, position: Utf16Position) -> EngineResult<CharOffset> {
+        self.storage.utf16_position_to_char(position)
+    }
+
+    pub fn byte_to_utf16_position(&self, offset: ByteOffset) -> EngineResult<Utf16Position> {
+        self.storage.byte_to_utf16_position(offset)
+    }
+
+    pub fn utf16_position_to_byte(&self, position: Utf16Position) -> EngineResult<ByteOffset> {
+        self.storage.utf16_position_to_byte(position)
+    }
+
+    pub fn is_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<bool> {
+        self.storage.is_grapheme_boundary(offset)
+    }
+
+    pub fn validate_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<()> {
+        if self.storage.is_grapheme_boundary(offset)? {
+            Ok(())
+        } else {
+            Err(CoordinateError::InvalidGraphemeBoundary(offset).into())
+        }
+    }
+
+    pub fn previous_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+        self.storage.previous_grapheme_boundary(offset)
+    }
+
+    pub fn next_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+        self.storage.next_grapheme_boundary(offset)
+    }
+
+    pub fn line_ending_style(&self) -> LineEndingStyle {
+        self.storage.line_ending_style()
     }
 
     pub fn is_stale_for(&self, buffer: &Buffer) -> bool {
@@ -232,6 +285,54 @@ impl Buffer {
 
     pub fn position_to_char(&self, position: Position) -> EngineResult<CharOffset> {
         self.storage.position_to_char(position)
+    }
+
+    pub fn byte_to_char(&self, offset: ByteOffset) -> EngineResult<CharOffset> {
+        self.storage.byte_to_char(offset)
+    }
+
+    pub fn char_to_byte(&self, offset: CharOffset) -> EngineResult<ByteOffset> {
+        self.storage.char_to_byte(offset)
+    }
+
+    pub fn char_to_utf16_position(&self, offset: CharOffset) -> EngineResult<Utf16Position> {
+        self.storage.char_to_utf16_position(offset)
+    }
+
+    pub fn utf16_position_to_char(&self, position: Utf16Position) -> EngineResult<CharOffset> {
+        self.storage.utf16_position_to_char(position)
+    }
+
+    pub fn byte_to_utf16_position(&self, offset: ByteOffset) -> EngineResult<Utf16Position> {
+        self.storage.byte_to_utf16_position(offset)
+    }
+
+    pub fn utf16_position_to_byte(&self, position: Utf16Position) -> EngineResult<ByteOffset> {
+        self.storage.utf16_position_to_byte(position)
+    }
+
+    pub fn is_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<bool> {
+        self.storage.is_grapheme_boundary(offset)
+    }
+
+    pub fn validate_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<()> {
+        if self.storage.is_grapheme_boundary(offset)? {
+            Ok(())
+        } else {
+            Err(CoordinateError::InvalidGraphemeBoundary(offset).into())
+        }
+    }
+
+    pub fn previous_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+        self.storage.previous_grapheme_boundary(offset)
+    }
+
+    pub fn next_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+        self.storage.next_grapheme_boundary(offset)
+    }
+
+    pub fn line_ending_style(&self) -> LineEndingStyle {
+        self.storage.line_ending_style()
     }
 
     /// 创建绑定当前版本的不可变快照。
@@ -516,7 +617,7 @@ impl Buffer {
         Ok(())
     }
 
-    /// 校验编辑边界是否合法，超出文本范围或落在 CRLF 中间返回错误。
+    /// 校验编辑边界是否合法，超出文本范围或落在 CRLF 中间时返回错误。
     fn validate_edit_boundary(&self, offset: CharOffset) -> EngineResult<()> {
         let value = offset.get();
         let len_chars = self.len_chars().get();

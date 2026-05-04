@@ -7314,6 +7314,7 @@ dependencies = [
  "gpui",
  "ropey",
  "thiserror 2.0.18",
+ "unicode-segmentation",
 ]
 
 [[package]]

@@ -1,12 +1,26 @@
 use thiserror::Error;
 
-use crate::types::{BufferVersion, CharOffset, Line, TextRange, TransactionId};
+use crate::types::{
+    BufferVersion, ByteOffset, CharOffset, Line, TextRange, TransactionId, Utf16Position,
+};
 
 /// 坐标转换、边界校验或越界相关的错误（坐标不合法）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoordinateError {
     #[error("字符偏移量越界: {0:?}")]
     OutOfBounds(CharOffset),
+
+    #[error("字节偏移量越界: {0:?}")]
+    ByteOutOfBounds(ByteOffset),
+
+    #[error("字节偏移量不在 UTF-8 字符边界: {0:?}")]
+    InvalidByteBoundary(ByteOffset),
+
+    #[error("UTF-16 位置越界: {0:?}")]
+    Utf16PositionOutOfBounds(Utf16Position),
+
+    #[error("UTF-16 位置落在代理对中间: {0:?}")]
+    InvalidUtf16Boundary(Utf16Position),
 
     #[error("行索引越界: {0:?}")]
     LineOutOfBounds(Line),

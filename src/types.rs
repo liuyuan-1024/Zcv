@@ -76,6 +76,49 @@ impl Utf16Offset {
     }
 }
 
+/// UTF-16 行列位置。
+///
+/// 主要用于 LSP 等使用 UTF-16 code unit 作为行内坐标的外部协议。
+/// `line` 仍然是 0-indexed 逻辑行号，`character` 是该行内 UTF-16 code unit 偏移。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Utf16Position {
+    pub line: Line,
+    pub character: Utf16Offset,
+}
+
+impl Utf16Position {
+    pub const ZERO: Self = Self {
+        line: Line::ZERO,
+        character: Utf16Offset::ZERO,
+    };
+
+    pub const fn new(line: Line, character: Utf16Offset) -> Self {
+        Self { line, character }
+    }
+
+    pub const fn line(self) -> Line {
+        self.line
+    }
+
+    pub const fn character(self) -> Utf16Offset {
+        self.character
+    }
+}
+
+/// 文件中检测到的换行风格。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum LineEndingStyle {
+    /// 文本中没有出现换行符。
+    #[default]
+    None,
+    /// 只检测到 LF (`\n`)。
+    Lf,
+    /// 只检测到 CRLF (`\r\n`)。
+    Crlf,
+    /// 同时出现多种换行风格，或出现孤立 CR。
+    Mixed,
+}
+
 // ==========================================
 // 2. 行列逻辑坐标体系 (2D Coordinates)
 // ==========================================

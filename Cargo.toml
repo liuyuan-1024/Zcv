@@ -7,6 +7,7 @@ description = "一个纯粹的、与用户界面无关的文本编辑引擎"
 [dependencies]
 ropey = "1.6.1"
 thiserror = "2.0.18"
+unicode-segmentation = "1.13.2"
 
 [dev-dependencies]
 criterion = "0.8.2"
@@ -25,6 +26,9 @@ path = "examples/gpui_m3_testbed.rs"
 [[example]]
 name = "gpui_m4_testbed"
 path = "examples/gpui_m4_testbed.rs"
+[[example]]
+name = "gpui_m5a_testbed"
+path = "examples/gpui_m5a_testbed.rs"
 
 [[bench]]
 name = "m4_storage"

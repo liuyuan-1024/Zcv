@@ -9,12 +9,18 @@
 //! - 暴露 IDE 必需坐标转换：ByteOffset / CharOffset / UTF-16 Position
 //! - 暴露 grapheme cluster 边界查询与安全光标移动辅助
 //! - 暴露文件换行风格识别
+//!
+//! M5B 目标：
+//! - 暴露 Tab Stop / DisplayWidthPolicy 驱动的视觉列数学
+//! - 支持 logical column -> display column
+//! - 支持 display column -> 最近合法 logical column / CharOffset
 
 use std::borrow::Cow;
 
 use crate::{
-    BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, EditError, EngineError,
-    EngineResult, Line, LineEndingStyle, Position, SelectionSnapshot, TextRange, Utf16Position,
+    BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, DisplayColumn,
+    DisplayColumnAffinity, EditError, EngineError, EngineResult, Line, LineEndingStyle,
+    LogicalColumn, Position, SelectionSnapshot, TextRange, Utf16Position,
     storage::{RopeySnapshot, RopeyStorage, TextRead, TextStorage},
     transaction::{
         ChangeSet, Delta, Edit, EditList, Transaction, TransactionMergePolicy, TransactionMetadata,
@@ -26,11 +32,16 @@ use crate::{
 pub struct Snapshot {
     storage: RopeySnapshot,
     version: BufferVersion,
+    config: BufferConfig,
 }
 
 impl Snapshot {
-    fn new(storage: RopeySnapshot, version: BufferVersion) -> Self {
-        Self { storage, version }
+    fn new(storage: RopeySnapshot, version: BufferVersion, config: BufferConfig) -> Self {
+        Self {
+            storage,
+            version,
+            config,
+        }
     }
 
     pub fn text(&self) -> Cow<'_, str> {
@@ -39,6 +50,10 @@ impl Snapshot {
 
     pub fn version(&self) -> BufferVersion {
         self.version
+    }
+
+    pub fn config(&self) -> &BufferConfig {
+        &self.config
     }
 
     pub fn len_chars(&self) -> CharOffset {
@@ -115,6 +130,64 @@ impl Snapshot {
 
     pub fn line_ending_style(&self) -> LineEndingStyle {
         self.storage.line_ending_style()
+    }
+
+    pub fn next_tab_stop(&self, display_column: DisplayColumn) -> DisplayColumn {
+        next_tab_stop(display_column, self.config.tab.tab_width())
+    }
+
+    pub fn char_to_display_column(&self, offset: CharOffset) -> EngineResult<DisplayColumn> {
+        char_to_display_column_in_text(&self.storage, &self.config, offset)
+    }
+
+    pub fn logical_to_display_column(
+        &self,
+        line: Line,
+        column: LogicalColumn,
+    ) -> EngineResult<DisplayColumn> {
+        logical_to_display_column_in_text(&self.storage, &self.config, line, column)
+    }
+
+    pub fn display_to_logical_column(
+        &self,
+        line: Line,
+        column: DisplayColumn,
+    ) -> EngineResult<LogicalColumn> {
+        display_to_logical_column_in_text(
+            &self.storage,
+            &self.config,
+            line,
+            column,
+            self.config.display_width.affinity,
+        )
+    }
+
+    pub fn display_to_logical_column_with_affinity(
+        &self,
+        line: Line,
+        column: DisplayColumn,
+        affinity: DisplayColumnAffinity,
+    ) -> EngineResult<LogicalColumn> {
+        display_to_logical_column_in_text(&self.storage, &self.config, line, column, affinity)
+    }
+
+    pub fn display_column_to_char(
+        &self,
+        line: Line,
+        column: DisplayColumn,
+    ) -> EngineResult<CharOffset> {
+        let logical = self.display_to_logical_column(line, column)?;
+        self.storage.position_to_char(Position::new(line, logical))
+    }
+
+    pub fn display_column_to_char_with_affinity(
+        &self,
+        line: Line,
+        column: DisplayColumn,
+        affinity: DisplayColumnAffinity,
+    ) -> EngineResult<CharOffset> {
+        let logical = self.display_to_logical_column_with_affinity(line, column, affinity)?;
+        self.storage.position_to_char(Position::new(line, logical))
     }
 
     pub fn is_stale_for(&self, buffer: &Buffer) -> bool {
@@ -335,9 +408,67 @@ impl Buffer {
         self.storage.line_ending_style()
     }
 
+    pub fn next_tab_stop(&self, display_column: DisplayColumn) -> DisplayColumn {
+        next_tab_stop(display_column, self.config.tab.tab_width())
+    }
+
+    pub fn char_to_display_column(&self, offset: CharOffset) -> EngineResult<DisplayColumn> {
+        char_to_display_column_in_text(&self.storage, &self.config, offset)
+    }
+
+    pub fn logical_to_display_column(
+        &self,
+        line: Line,
+        column: LogicalColumn,
+    ) -> EngineResult<DisplayColumn> {
+        logical_to_display_column_in_text(&self.storage, &self.config, line, column)
+    }
+
+    pub fn display_to_logical_column(
+        &self,
+        line: Line,
+        column: DisplayColumn,
+    ) -> EngineResult<LogicalColumn> {
+        display_to_logical_column_in_text(
+            &self.storage,
+            &self.config,
+            line,
+            column,
+            self.config.display_width.affinity,
+        )
+    }
+
+    pub fn display_to_logical_column_with_affinity(
+        &self,
+        line: Line,
+        column: DisplayColumn,
+        affinity: DisplayColumnAffinity,
+    ) -> EngineResult<LogicalColumn> {
+        display_to_logical_column_in_text(&self.storage, &self.config, line, column, affinity)
+    }
+
+    pub fn display_column_to_char(
+        &self,
+        line: Line,
+        column: DisplayColumn,
+    ) -> EngineResult<CharOffset> {
+        let logical = self.display_to_logical_column(line, column)?;
+        self.storage.position_to_char(Position::new(line, logical))
+    }
+
+    pub fn display_column_to_char_with_affinity(
+        &self,
+        line: Line,
+        column: DisplayColumn,
+        affinity: DisplayColumnAffinity,
+    ) -> EngineResult<CharOffset> {
+        let logical = self.display_to_logical_column_with_affinity(line, column, affinity)?;
+        self.storage.position_to_char(Position::new(line, logical))
+    }
+
     /// 创建绑定当前版本的不可变快照。
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot::new(self.storage.snapshot(), self.version)
+        Snapshot::new(self.storage.snapshot(), self.version, self.config.clone())
     }
 
     /// 判断给定版本是否已经相对当前 Buffer 过期。
@@ -642,6 +773,136 @@ impl Buffer {
         self.version = self.version.next().ok_or(EngineError::VersionOverflow)?;
         Ok(())
     }
+}
+
+fn char_to_display_column_in_text<T: TextRead>(
+    storage: &T,
+    config: &BufferConfig,
+    offset: CharOffset,
+) -> EngineResult<DisplayColumn> {
+    let position = storage.char_to_position(offset)?;
+    logical_to_display_column_in_text(storage, config, position.line(), position.column())
+}
+
+fn logical_to_display_column_in_text<T: TextRead>(
+    storage: &T,
+    config: &BufferConfig,
+    line: Line,
+    column: LogicalColumn,
+) -> EngineResult<DisplayColumn> {
+    let line_start = storage.line_start(line)?;
+    let offset = storage.position_to_char(Position::new(line, column))?;
+    let range = TextRange::new(line_start, offset)?;
+    let text = storage.slice_text(range)?;
+
+    Ok(DisplayColumn::new(display_width_of_text(
+        text.as_ref(),
+        config,
+    )))
+}
+
+fn display_to_logical_column_in_text<T: TextRead>(
+    storage: &T,
+    config: &BufferConfig,
+    line: Line,
+    column: DisplayColumn,
+    affinity: DisplayColumnAffinity,
+) -> EngineResult<LogicalColumn> {
+    let line_start = storage.line_start(line)?;
+    let line_end = line_content_end_for_storage(storage, line)?;
+    let range = TextRange::new(line_start, line_end)?;
+    let text = storage.slice_text(range)?;
+    let target = column.get();
+    let mut current_display = 0usize;
+    let mut current_logical = 0usize;
+
+    if target == 0 {
+        return Ok(LogicalColumn::ZERO);
+    }
+
+    for ch in text.chars() {
+        let next_display = advance_display_column(current_display, ch, config);
+        let next_logical = current_logical + 1;
+
+        if target == current_display {
+            return Ok(LogicalColumn::new(current_logical));
+        }
+
+        if target == next_display {
+            return Ok(LogicalColumn::new(next_logical));
+        }
+
+        if target > current_display && target < next_display {
+            return Ok(LogicalColumn::new(match affinity {
+                DisplayColumnAffinity::Previous => current_logical,
+                DisplayColumnAffinity::Next => next_logical,
+                DisplayColumnAffinity::Nearest => {
+                    let distance_to_previous = target - current_display;
+                    let distance_to_next = next_display - target;
+
+                    if distance_to_previous <= distance_to_next {
+                        current_logical
+                    } else {
+                        next_logical
+                    }
+                }
+            }));
+        }
+
+        current_display = next_display;
+        current_logical = next_logical;
+    }
+
+    Ok(LogicalColumn::new(current_logical))
+}
+
+fn line_content_end_for_storage<T: TextRead>(storage: &T, line: Line) -> EngineResult<CharOffset> {
+    let line_start = storage.line_start(line)?.get();
+    let mut next_line_start = if line.get() + 1 < storage.line_count() {
+        storage.line_start(Line::new(line.get() + 1))?.get()
+    } else {
+        storage.len_chars().get()
+    };
+
+    if next_line_start > line_start
+        && storage.char_at(CharOffset::new(next_line_start - 1)) == Some('\n')
+    {
+        next_line_start -= 1;
+
+        if next_line_start > line_start
+            && storage.char_at(CharOffset::new(next_line_start - 1)) == Some('\r')
+        {
+            next_line_start -= 1;
+        }
+    }
+
+    Ok(CharOffset::new(next_line_start))
+}
+
+fn display_width_of_text(text: &str, config: &BufferConfig) -> usize {
+    text.chars().fold(0usize, |display_column, ch| {
+        advance_display_column(display_column, ch, config)
+    })
+}
+
+fn advance_display_column(display_column: usize, ch: char, config: &BufferConfig) -> usize {
+    if ch == '\t' {
+        next_tab_stop(DisplayColumn::new(display_column), config.tab.tab_width()).get()
+    } else {
+        display_column + config.display_width.char_width(ch)
+    }
+}
+
+fn next_tab_stop(display_column: DisplayColumn, tab_width: usize) -> DisplayColumn {
+    let current = display_column.get();
+    let remainder = current % tab_width;
+    let delta = if remainder == 0 {
+        tab_width
+    } else {
+        tab_width - remainder
+    };
+
+    DisplayColumn::new(current + delta)
 }
 
 fn slice_chars(text: &str, range: TextRange) -> EngineResult<&str> {

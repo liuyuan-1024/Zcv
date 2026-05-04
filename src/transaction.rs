@@ -1,6 +1,8 @@
-use crate::EngineResult;
-use crate::errors::{CoordinateError, EditError, TransactionError};
-use crate::types::{BufferVersion, ByteOffset, TextRange};
+use crate::{
+    EngineResult,
+    errors::{CoordinateError, EditError, TransactionError},
+    types::{BufferVersion, ByteOffset, SelectionSnapshot, TextRange},
+};
 
 /// 描述单次文本修改。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -79,11 +81,87 @@ impl EditList {
     }
 }
 
+/// 事务来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TransactionSource {
+    Keyboard,
+    Paste,
+    Delete,
+    Mouse,
+    #[default]
+    Command,
+    Formatter,
+    External,
+    Macro,
+    Undo,
+    Redo,
+}
+
+/// M3 基础历史合并策略。
+///
+/// 完整 Smart Debounce 可以在 UI / Command 层基于时间窗口决定是否选择
+/// `MergeWithPrevious`，引擎层只负责确定性地执行合并。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TransactionMergePolicy {
+    /// 明确形成一个独立 Undo 步骤。
+    #[default]
+    Never,
+    /// 与前一个历史节点合并为一个 Undo 步骤。
+    MergeWithPrevious,
+}
+
+/// 事务元数据。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TransactionMetadata {
+    pub source: TransactionSource,
+    pub merge_policy: TransactionMergePolicy,
+    pub record_history: bool,
+    pub description: Option<String>,
+}
+
+impl TransactionMetadata {
+    pub fn new(source: TransactionSource) -> Self {
+        Self {
+            source,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_merge_policy(mut self, merge_policy: TransactionMergePolicy) -> Self {
+        self.merge_policy = merge_policy;
+        self
+    }
+
+    pub fn without_history(mut self) -> Self {
+        self.record_history = false;
+        self
+    }
+
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+}
+
+impl Default for TransactionMetadata {
+    fn default() -> Self {
+        Self {
+            source: TransactionSource::Command,
+            merge_policy: TransactionMergePolicy::Never,
+            record_history: true,
+            description: None,
+        }
+    }
+}
+
 /// 批量编辑事务。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
     base_version: BufferVersion,
     edits: EditList,
+    metadata: TransactionMetadata,
+    before_selection: Option<SelectionSnapshot>,
+    after_selection: Option<SelectionSnapshot>,
 }
 
 impl Transaction {
@@ -95,12 +173,30 @@ impl Transaction {
         Ok(Self {
             base_version,
             edits,
+            metadata: TransactionMetadata::default(),
+            before_selection: None,
+            after_selection: None,
         })
     }
 
     pub fn from_edits(base_version: BufferVersion, edits: Vec<Edit>) -> EngineResult<Self> {
         let edits = EditList::new(edits)?;
         Ok(Self::new(base_version, edits)?)
+    }
+
+    pub fn with_metadata(mut self, metadata: TransactionMetadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
+    pub fn with_selection(
+        mut self,
+        before_selection: Option<SelectionSnapshot>,
+        after_selection: Option<SelectionSnapshot>,
+    ) -> Self {
+        self.before_selection = before_selection;
+        self.after_selection = after_selection;
+        self
     }
 
     pub fn base_version(&self) -> BufferVersion {
@@ -111,8 +207,34 @@ impl Transaction {
         &self.edits
     }
 
-    pub fn into_parts(self) -> (BufferVersion, EditList) {
-        (self.base_version, self.edits)
+    pub fn metadata(&self) -> &TransactionMetadata {
+        &self.metadata
+    }
+
+    pub fn before_selection(&self) -> Option<&SelectionSnapshot> {
+        self.before_selection.as_ref()
+    }
+
+    pub fn after_selection(&self) -> Option<&SelectionSnapshot> {
+        self.after_selection.as_ref()
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        BufferVersion,
+        EditList,
+        TransactionMetadata,
+        Option<SelectionSnapshot>,
+        Option<SelectionSnapshot>,
+    ) {
+        (
+            self.base_version,
+            self.edits,
+            self.metadata,
+            self.before_selection,
+            self.after_selection,
+        )
     }
 }
 

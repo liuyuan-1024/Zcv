@@ -1,3 +1,5 @@
+use crate::CoordinateError;
+
 // ==========================================
 // 1. 基础坐标体系 (1D Offsets)
 // ==========================================
@@ -163,9 +165,9 @@ impl TextRange {
     /// 创建文本区间。
     ///
     /// 该构造函数会校验 `start <= end`，避免在公共 API 边界 panic。
-    pub fn new(start: ByteOffset, end: ByteOffset) -> Result<Self, crate::errors::CoordinateError> {
+    pub fn new(start: ByteOffset, end: ByteOffset) -> Result<Self, CoordinateError> {
         if start > end {
-            return Err(crate::errors::CoordinateError::InvalidRange { start, end });
+            return Err(CoordinateError::InvalidRange { start, end });
         }
 
         Ok(Self { start, end })
@@ -185,6 +187,39 @@ impl TextRange {
 
     pub fn is_empty(self) -> bool {
         self.start == self.end
+    }
+}
+
+/// M3 历史系统用于恢复选区状态的轻量快照。
+///
+/// 这不是完整 Selection / Multi Cursor 模型；完整选区数学留到后续阶段。
+/// M3 只要求 Undo / Redo 能恢复提交事务前后的 selection 状态。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct SelectionSnapshot {
+    ranges: Vec<TextRange>,
+}
+
+impl SelectionSnapshot {
+    pub fn new(ranges: Vec<TextRange>) -> Self {
+        Self { ranges }
+    }
+
+    pub fn single(range: TextRange) -> Self {
+        Self {
+            ranges: vec![range],
+        }
+    }
+
+    pub fn caret(offset: ByteOffset) -> Result<Self, CoordinateError> {
+        Ok(Self::single(TextRange::new(offset, offset)?))
+    }
+
+    pub fn ranges(&self) -> &[TextRange] {
+        &self.ranges
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
     }
 }
 

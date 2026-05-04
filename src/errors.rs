@@ -1,5 +1,6 @@
-use crate::types::{BufferVersion, ByteOffset, Line, TextRange, TransactionId};
 use thiserror::Error;
+
+use crate::types::{BufferVersion, ByteOffset, Line, TextRange, TransactionId};
 
 /// 坐标转换、边界校验或越界相关的错误（坐标不合法）。
 #[derive(Debug, Error, PartialEq, Eq)]

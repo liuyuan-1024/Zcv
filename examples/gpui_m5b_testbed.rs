@@ -37,22 +37,36 @@ actions!(
 );
 
 const INITIAL_TEXT: &str = concat!(
-    "🚀 Zom Engine M5B GPUI Testbed\n",
-    "\n",
-    "[A] 这是锚点A，[B] 这是锚点B。\n",
-    "可以输入、回车、退格、Delete、左右移动光标。\n",
-    "Home / End 可跳到当前行首尾。\n",
-    "Cmd-S 标记 saved，Cmd-R 重置文本。\n",
-    "Cmd-B 触发批量事务修改，连续字符输入会合并成一个 Undo 步骤，Cmd-M 触发一次 merge-with-previous 事务。\n",
-    "Cmd-Z / Ctrl-Z 撤销，Cmd-Shift-Z / Ctrl-Y 重做。\n",
-    "Cmd-K 捕获当前 Snapshot，并观察后续编辑后 snapshot 是否 stale。\n",
-    "Cmd-L 在当前光标插入一段中等长度的单行文本，用于 smoke test RopeyStorage 的局部插入与 metrics 更新。\n",
-    "Cmd-U 插入 Unicode / Grapheme / CRLF 探针文本。
-Cmd-T 插入 tab / CJK / emoji 视觉列探针。\n",
-    "M5B 额外显示 logical/display column、Tab Stop、DisplayWidthPolicy，并保留 M5A 的 IDE 坐标面板。\n",
-    "M5B 仍然保持 grapheme-safe 光标移动，并增加 Cmd-T 插入 tab/CJK/emoji 视觉列探针。\n",
-    "这是一行 CRLF 探针，会让 line_ending 进入 Mixed。\r\n",
-    "所有写入都走 Transaction；黄色区间是 changed_ranges，A/B 会跟随 ChangeSet 映射。\n",
+    "🚀 Zom Engine M5B 中文测试台
+",
+    "
+",
+    "[A] 这是锚点A，[B] 这是锚点B。
+",
+    "可以输入、回车、退格、Delete、左右移动光标。
+",
+    "Home / End 可跳到当前行首尾。
+",
+    "Cmd-S 标记已保存，Cmd-R 重置文本。
+",
+    "Cmd-B 触发批量事务修改，连续字符输入会合并成一个撤销步骤，Cmd-M 触发一次合并到上一步的事务。
+",
+    "Cmd-Z / Ctrl-Z 撤销，Cmd-Shift-Z / Ctrl-Y 重做。
+",
+    "Cmd-K 捕获当前快照，并观察后续编辑后快照是否过期。
+",
+    "Cmd-L 在当前光标插入一段中等长度的单行文本，用于快速验证 RopeyStorage 的局部插入与指标更新。
+",
+    "Cmd-U 插入 Unicode / 字素 / CRLF 探针文本；Cmd-T 插入 Tab / CJK / emoji 视觉列探针。
+",
+    "M5B 额外显示逻辑列、视觉列、Tab Stop、显示宽度策略，并保留 M5A 的 IDE 坐标面板。
+",
+    "M5B 仍然保持字素安全光标移动，并增加 Cmd-T 插入 Tab/CJK/emoji 视觉列探针。
+",
+    "这是一行 CRLF 探针，会让换行风格进入混合状态。
+",
+    "所有写入都走事务；黄色区间是变更范围，A/B 会跟随 ChangeSet 映射。
+",
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +138,7 @@ impl M5BTestbed {
         self.anchor_b = anchor_b;
         self.last_changed_ranges.clear();
         self.last_delta = None;
-        self.last_history_event = Some("reset".to_string());
+        self.last_history_event = Some("重置".to_string());
         self.pinned_snapshot = None;
         self.merge_group = None;
         self.last_error = None;
@@ -134,7 +148,7 @@ impl M5BTestbed {
 
     fn mark_saved(&mut self, cx: &mut Context<Self>) {
         self.buffer.mark_saved();
-        self.last_history_event = Some("mark saved".to_string());
+        self.last_history_event = Some("标记已保存".to_string());
         self.merge_group = None;
         self.last_error = None;
         cx.notify();
@@ -142,7 +156,7 @@ impl M5BTestbed {
 
     fn capture_snapshot(&mut self, cx: &mut Context<Self>) {
         self.pinned_snapshot = Some(self.buffer.snapshot());
-        self.last_history_event = Some("capture snapshot".to_string());
+        self.last_history_event = Some("捕获快照".to_string());
         self.merge_group = None;
         self.last_error = None;
         cx.notify();
@@ -219,7 +233,7 @@ impl M5BTestbed {
                     self.cursor = mapped_cursor;
                 }
 
-                self.last_history_event = Some("apply transaction".to_string());
+                self.last_history_event = Some("应用事务".to_string());
                 true
             }
             Err(err) => {
@@ -237,7 +251,7 @@ impl M5BTestbed {
             Ok(edit) => {
                 let metadata = self
                     .metadata_for_group(MergeGroup::Typing, TransactionSource::Keyboard)
-                    .with_description(format!("insert {text:?}"));
+                    .with_description(format!("插入 {text:?}"));
 
                 if self.submit_edits(vec![edit], metadata, cx) {
                     self.merge_group = Some(MergeGroup::Typing);
@@ -298,7 +312,7 @@ impl M5BTestbed {
             Ok(range) => {
                 let metadata = self
                     .metadata_for_group(group, TransactionSource::Delete)
-                    .with_description("delete");
+                    .with_description("删除");
 
                 if self.submit_edits(vec![Edit::delete(range)], metadata, cx) {
                     self.merge_group = Some(group);
@@ -326,13 +340,13 @@ impl M5BTestbed {
         self.merge_group = None;
         self.submit_edits(
             vec![marker, sparkle],
-            TransactionMetadata::new(TransactionSource::Command).with_description("batch edit"),
+            TransactionMetadata::new(TransactionSource::Command).with_description("批量事务"),
             cx,
         );
     }
 
     fn insert_long_line(&mut self, cx: &mut Context<Self>) {
-        let payload = format!("[M5A ropey long-line smoke] {}\n", "中🙂Ropey".repeat(128));
+        let payload = format!("[M5B Ropey 长行探针] {}\n", "中🙂Ropey".repeat(128));
 
         match Edit::insert(self.cursor, payload) {
             Ok(edit) => {
@@ -340,7 +354,7 @@ impl M5BTestbed {
                 self.submit_edits(
                     vec![edit],
                     TransactionMetadata::new(TransactionSource::Command)
-                        .with_description("m5a insert long line"),
+                        .with_description("M5B 插入长行探针"),
                     cx,
                 );
             }
@@ -353,7 +367,7 @@ impl M5BTestbed {
     }
 
     fn insert_unicode_probe(&mut self, cx: &mut Context<Self>) {
-        let payload = "[M5A unicode probe] 👨‍👩‍👧‍👦 e\u{301} café 中🙂 CRLF follows\r\n[M5A CRLF probe]\r\n";
+        let payload = "[M5A Unicode 探针] 👨‍👩‍👧‍👦 e\u{301} café 中🙂 后面是 CRLF\r\n[M5A CRLF 探针]\r\n";
 
         match Edit::insert(self.cursor, payload.to_string()) {
             Ok(edit) => {
@@ -361,7 +375,7 @@ impl M5BTestbed {
                 self.submit_edits(
                     vec![edit],
                     TransactionMetadata::new(TransactionSource::Command)
-                        .with_description("m5a insert unicode probe"),
+                        .with_description("M5A 插入 Unicode 探针"),
                     cx,
                 );
             }
@@ -374,7 +388,7 @@ impl M5BTestbed {
     }
 
     fn insert_display_probe(&mut self, cx: &mut Context<Self>) {
-        let payload = "[M5B display probe]\ncol: 0123456789012345\ntab: a\tb\t中😀e\u{301}x\n";
+        let payload = "[M5B 视觉列探针]\n列: 0123456789012345\nTab: a\tb\t中😀e\u{301}x\n";
 
         match Edit::insert(self.cursor, payload.to_string()) {
             Ok(edit) => {
@@ -382,7 +396,7 @@ impl M5BTestbed {
                 self.submit_edits(
                     vec![edit],
                     TransactionMetadata::new(TransactionSource::Command)
-                        .with_description("m5b insert display probe"),
+                        .with_description("M5B 插入视觉列探针"),
                     cx,
                 );
             }
@@ -402,7 +416,7 @@ impl M5BTestbed {
                     vec![edit],
                     TransactionMetadata::new(TransactionSource::Keyboard)
                         .with_merge_policy(TransactionMergePolicy::MergeWithPrevious)
-                        .with_description("merge demo"),
+                        .with_description("合并演示"),
                     cx,
                 );
             }
@@ -430,13 +444,13 @@ impl M5BTestbed {
     fn undo(&mut self, cx: &mut Context<Self>) {
         self.merge_group = None;
         let result = self.buffer.undo();
-        self.apply_history_result(result, "undo", cx);
+        self.apply_history_result(result, "撤销", cx);
     }
 
     fn redo(&mut self, cx: &mut Context<Self>) {
         self.merge_group = None;
         let result = self.buffer.redo();
-        self.apply_history_result(result, "redo", cx);
+        self.apply_history_result(result, "重做", cx);
     }
 
     fn apply_history_result(
@@ -469,7 +483,7 @@ impl M5BTestbed {
             }
             Ok(None) => {
                 self.last_error = None;
-                self.last_history_event = Some(format!("{label}: empty history"));
+                self.last_history_event = Some(format!("{label}: 历史为空"));
             }
             Err(err) => {
                 self.last_error = Some(err.to_string());
@@ -607,17 +621,17 @@ impl M5BTestbed {
     fn coordinate_summary_label(&self) -> String {
         match self.current_coordinate_probe() {
             Ok(probe) => format!(
-                "byte={} utf16=({}, {}) display_col={} next_tab={} grapheme={} prev_g={} next_g={}",
+                "坐标：字节={} UTF-16=({}, {}) 视觉列={} 下个Tab={} 字素边界={} 前一字素={} 后一字素={}",
                 probe.byte_offset.get(),
                 probe.utf16_position.line().get(),
                 probe.utf16_position.character().get(),
                 probe.display_column.get(),
                 probe.next_tab_stop.get(),
-                probe.grapheme_boundary,
+                bool_label(probe.grapheme_boundary),
                 probe.previous_grapheme.get(),
                 probe.next_grapheme.get(),
             ),
-            Err(err) => format!("coordinate_error={err}"),
+            Err(err) => format!("坐标错误：{err}"),
         }
     }
 
@@ -647,38 +661,38 @@ impl Render for M5BTestbed {
         let history = self.buffer.history_status();
         let delta_label = self
             .last_delta
-            .map(|(old, new, edits)| format!("delta={}→{} edits={}", old.get(), new.get(), edits))
-            .unwrap_or_else(|| "delta=<none>".to_string());
+            .map(|(old, new, edits)| format!("增量=v{}→v{} 编辑数={}", old.get(), new.get(), edits))
+            .unwrap_or_else(|| "增量=无".to_string());
         let history_label = format!(
-            "undo={} redo={} can_undo={} can_redo={} last={}",
+            "撤销栈={} 重做栈={} 可撤销={} 可重做={} 上次事件={}",
             history.undo_depth,
             history.redo_depth,
-            self.buffer.can_undo(),
-            self.buffer.can_redo(),
-            self.last_history_event.as_deref().unwrap_or("<none>"),
+            bool_label(self.buffer.can_undo()),
+            bool_label(self.buffer.can_redo()),
+            self.last_history_event.as_deref().unwrap_or("无"),
         );
         let snapshot_label = self
             .pinned_snapshot
             .as_ref()
             .map(|snapshot| {
                 format!(
-                    "snapshot=v{} chars={} bytes={} utf16={} lines={} stale={}",
+                    "快照=v{} 字符={} 字节={} UTF-16={} 行数={} 状态={}",
                     snapshot.version().get(),
                     snapshot.len_chars().get(),
                     snapshot.len_bytes(),
                     snapshot.len_utf16_cu(),
                     snapshot.line_count(),
-                    self.buffer.is_snapshot_stale(snapshot),
+                    snapshot_state_label(self.buffer.is_snapshot_stale(snapshot)),
                 )
             })
-            .unwrap_or_else(|| "snapshot=<none>".to_string());
+            .unwrap_or_else(|| "快照=无".to_string());
         let storage_label = format!(
-            "backend=RopeyStorage chars={} bytes={} utf16={} lines={} line_ending={:?}",
+            "存储=RopeyStorage 字符={} 字节={} UTF-16={} 行数={} 换行风格={}",
             self.buffer.len_chars().get(),
             self.buffer.len_bytes(),
             self.buffer.len_utf16_cu(),
             self.buffer.line_count(),
-            self.buffer.line_ending_style(),
+            line_ending_label(self.buffer.line_ending_style()),
         );
         let coordinate_label = self.coordinate_summary_label();
 
@@ -747,14 +761,14 @@ impl Render for M5BTestbed {
                     .pb_4()
                     .mb_4()
                     .child(format!(
-                        "Zom Engine M5B | char={} / {} | line={} col={} | version={} saved={} | dirty={} | A={} | B={} | changed_ranges={} | {} | {} | {} | {} | {}",
+                        "Zom Engine M5B | 光标={} / 总字符={} | 行={} 列={} | 当前版本=v{} 保存点=v{} | 修改状态={} | 锚点A={} | 锚点B={} | 变更范围={} | {} | {} | {} | {} | {}",
                         cursor.get(),
                         self.buffer.len_chars().get(),
                         position.line().get(),
                         position.column().get(),
                         self.buffer.version().get(),
                         self.buffer.saved_version().get(),
-                        self.buffer.is_dirty(),
+                        dirty_label(self.buffer.is_dirty()),
                         self.anchor_a.get(),
                         self.anchor_b.get(),
                         self.last_changed_ranges.len(),
@@ -769,14 +783,14 @@ impl Render for M5BTestbed {
                 div()
                     .mb_4()
                     .text_color(rgb(0xA1A1AA))
-                    .child("输入字符 / Space / Tab / Enter；连续输入会合并为一个 Undo；Backspace / Delete；← →；Home / End；Cmd-S 保存；Cmd-R 重置；Cmd-B 批量事务；Cmd-M 合并事务；Cmd-Z/Ctrl-Z 撤销；Cmd-Shift-Z/Ctrl-Y 重做；Cmd-K 捕获 Snapshot；Cmd-L 插入长行 smoke；Cmd-U 插入 Unicode/CRLF 探针；Cmd-T 插入视觉列探针；←/→/Backspace/Delete 使用 grapheme-safe boundary"),
+                    .child("输入字符 / 空格 / Tab / 回车；连续输入会合并为一个撤销步骤；退格 / Delete；← →；Home / End；Cmd-S 保存；Cmd-R 重置；Cmd-B 批量事务；Cmd-M 合并事务；Cmd-Z/Ctrl-Z 撤销；Cmd-Shift-Z/Ctrl-Y 重做；Cmd-K 捕获快照；Cmd-L 插入长行探针；Cmd-U 插入 Unicode/CRLF 探针；Cmd-T 插入视觉列探针；←/→/退格/Delete 使用字素安全边界"),
             )
             .when_some(self.last_error.clone(), |el, error| {
                 el.child(
                     div()
                         .mb_4()
                         .text_color(rgb(0xFCA5A5))
-                        .child(format!("error: {error}")),
+                        .child(format!("错误：{error}")),
                 )
             })
             .child(render_coordinate_panel(self))
@@ -801,14 +815,14 @@ fn render_coordinate_panel(testbed: &M5BTestbed) -> Div {
     let rows: Vec<String> = match testbed.current_coordinate_probe() {
         Ok(probe) => vec![
             format!(
-                "cursor CharOffset={} | ByteOffset={} | UTF-16 Position=({}, {})",
+                "光标坐标：CharOffset={} | ByteOffset={} | UTF-16 位置=({}, {})",
                 probe.char_offset.get(),
                 probe.byte_offset.get(),
                 probe.utf16_position.line().get(),
                 probe.utf16_position.character().get(),
             ),
             format!(
-                "roundtrip byte->char={} | utf16->char={} | utf16->byte={} | byte->utf16=({}, {})",
+                "往返转换：字节→字符={} | UTF-16→字符={} | UTF-16→字节={} | 字节→UTF-16=({}, {})",
                 probe.char_from_byte.get(),
                 probe.char_from_utf16.get(),
                 probe.byte_from_utf16.get(),
@@ -816,28 +830,28 @@ fn render_coordinate_panel(testbed: &M5BTestbed) -> Div {
                 probe.utf16_from_byte.character().get(),
             ),
             format!(
-                "display column={} | next tab stop={} | tab width={} | policy={:?}",
+                "视觉列：当前={} | 下一个 Tab Stop={} | Tab 宽度={} | 显示策略={}",
                 probe.display_column.get(),
                 probe.next_tab_stop.get(),
                 testbed.buffer.config().tab.tab_width(),
-                testbed.buffer.config().display_width,
+                display_width_policy_label(&testbed.buffer.config().display_width),
             ),
             format!(
-                "display->logical default={} prev={} next={} | display->char={}",
+                "视觉列→逻辑列：默认={} 向前吸附={} 向后吸附={} | 视觉列→字符={}",
                 probe.logical_from_display.get(),
                 probe.logical_from_display_previous.get(),
                 probe.logical_from_display_next.get(),
                 probe.char_from_display.get(),
             ),
             format!(
-                "grapheme boundary={} | previous={} | next={} | line ending={:?}",
-                probe.grapheme_boundary,
+                "字素边界={} | 前一字素={} | 后一字素={} | 换行风格={}",
+                bool_label(probe.grapheme_boundary),
                 probe.previous_grapheme.get(),
                 probe.next_grapheme.get(),
-                testbed.buffer.line_ending_style(),
+                line_ending_label(testbed.buffer.line_ending_style()),
             ),
         ],
-        Err(err) => vec![format!("coordinate probe error: {err}")],
+        Err(err) => vec![format!("坐标探针错误：{err}")],
     };
 
     let row_elements: Vec<gpui::AnyElement> = rows
@@ -855,7 +869,7 @@ fn render_coordinate_panel(testbed: &M5BTestbed) -> Div {
             div()
                 .mb_2()
                 .text_color(rgb(0xBFDBFE))
-                .child("M5B coordinate / display probe"),
+                .child("M5B 坐标 / 视觉列探针"),
         )
         .children(row_elements)
 }
@@ -994,6 +1008,43 @@ fn cursor_row() -> Div {
         .flex_row()
         .min_h(px(28.0))
         .child(cursor_element())
+}
+
+#[allow(dead_code)]
+fn dirty_label(is_dirty: bool) -> &'static str {
+    if is_dirty { "已修改" } else { "干净" }
+}
+
+#[allow(dead_code)]
+fn bool_label(value: bool) -> &'static str {
+    if value { "是" } else { "否" }
+}
+
+#[allow(dead_code)]
+fn snapshot_state_label(is_stale: bool) -> &'static str {
+    if is_stale { "已过期" } else { "有效" }
+}
+
+#[allow(dead_code)]
+fn line_ending_label<T: core::fmt::Debug>(style: T) -> String {
+    match format!("{style:?}").as_str() {
+        "None" => "未检测".to_string(),
+        "Lf" | "LF" => "LF".to_string(),
+        "Crlf" | "CRLF" => "CRLF".to_string(),
+        "Mixed" => "混合".to_string(),
+        other => other.to_string(),
+    }
+}
+
+#[allow(dead_code)]
+fn display_width_policy_label<T: core::fmt::Debug>(policy: T) -> String {
+    format!("{policy:?}")
+        .replace("DisplayWidthPolicy", "显示宽度策略")
+        .replace("cjk_width", "CJK宽度")
+        .replace("emoji_width", "emoji宽度")
+        .replace("ambiguous_width", "模糊宽度")
+        .replace("control_width", "控制字符宽度")
+        .replace("combining_mark_width", "组合标记宽度")
 }
 
 fn cursor_element() -> Div {

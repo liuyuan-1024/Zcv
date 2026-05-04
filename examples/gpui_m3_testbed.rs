@@ -32,7 +32,17 @@ actions!(
     ]
 );
 
-const INITIAL_TEXT: &str = "🚀 Zom Engine M3 GPUI Testbed\n\n[A] 这是锚点A，[B] 这是锚点B。\n可以输入、回车、退格、Delete、左右移动光标。\nHome / End 可跳到当前行首尾。\nCmd-S 标记 saved，Cmd-R 重置文本。\nCmd-B 触发批量事务修改，连续字符输入会合并成一个 Undo 步骤，Cmd-M 触发一次 merge-with-previous 事务。\nCmd-Z / Ctrl-Z 撤销，Cmd-Shift-Z / Ctrl-Y 重做。\nCmd-K 捕获当前 Snapshot，并观察后续编辑后 snapshot 是否 stale。\n所有写入都走 Transaction；黄色区间是 changed_ranges，A/B 会跟随 ChangeSet 映射。\n";
+const INITIAL_TEXT: &str = "🚀 Zom Engine M3 中文测试台
+
+[A] 这是锚点A，[B] 这是锚点B。
+可以输入、回车、退格、Delete、左右移动光标。
+Home / End 可跳到当前行首尾。
+Cmd-S 标记已保存，Cmd-R 重置文本。
+Cmd-B 触发批量事务修改，连续字符输入会合并成一个撤销步骤，Cmd-M 触发一次合并到上一步的事务。
+Cmd-Z / Ctrl-Z 撤销，Cmd-Shift-Z / Ctrl-Y 重做。
+Cmd-K 捕获当前快照，并观察后续编辑后快照是否过期。
+所有写入都走事务；黄色区间是变更范围，A/B 会跟随 ChangeSet 映射。
+";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MergeGroup {
@@ -83,7 +93,7 @@ impl M3Testbed {
         self.anchor_b = anchor_b;
         self.last_changed_ranges.clear();
         self.last_delta = None;
-        self.last_history_event = Some("reset".to_string());
+        self.last_history_event = Some("重置".to_string());
         self.pinned_snapshot = None;
         self.merge_group = None;
         self.last_error = None;
@@ -93,7 +103,7 @@ impl M3Testbed {
 
     fn mark_saved(&mut self, cx: &mut Context<Self>) {
         self.buffer.mark_saved();
-        self.last_history_event = Some("mark saved".to_string());
+        self.last_history_event = Some("标记已保存".to_string());
         self.merge_group = None;
         self.last_error = None;
         cx.notify();
@@ -101,7 +111,7 @@ impl M3Testbed {
 
     fn capture_snapshot(&mut self, cx: &mut Context<Self>) {
         self.pinned_snapshot = Some(self.buffer.snapshot());
-        self.last_history_event = Some("capture snapshot".to_string());
+        self.last_history_event = Some("捕获快照".to_string());
         self.merge_group = None;
         self.last_error = None;
         cx.notify();
@@ -178,7 +188,7 @@ impl M3Testbed {
                     self.cursor = mapped_cursor;
                 }
 
-                self.last_history_event = Some("apply transaction".to_string());
+                self.last_history_event = Some("应用事务".to_string());
                 true
             }
             Err(err) => {
@@ -196,7 +206,7 @@ impl M3Testbed {
             Ok(edit) => {
                 let metadata = self
                     .metadata_for_group(MergeGroup::Typing, TransactionSource::Keyboard)
-                    .with_description(format!("insert {text:?}"));
+                    .with_description(format!("插入 {text:?}"));
 
                 if self.submit_edits(vec![edit], metadata, cx) {
                     self.merge_group = Some(MergeGroup::Typing);
@@ -239,7 +249,7 @@ impl M3Testbed {
             Ok(range) => {
                 let metadata = self
                     .metadata_for_group(group, TransactionSource::Delete)
-                    .with_description("delete");
+                    .with_description("删除");
 
                 if self.submit_edits(vec![Edit::delete(range)], metadata, cx) {
                     self.merge_group = Some(group);
@@ -267,7 +277,7 @@ impl M3Testbed {
         self.merge_group = None;
         self.submit_edits(
             vec![marker, sparkle],
-            TransactionMetadata::new(TransactionSource::Command).with_description("batch edit"),
+            TransactionMetadata::new(TransactionSource::Command).with_description("批量事务"),
             cx,
         );
     }
@@ -280,7 +290,7 @@ impl M3Testbed {
                     vec![edit],
                     TransactionMetadata::new(TransactionSource::Keyboard)
                         .with_merge_policy(TransactionMergePolicy::MergeWithPrevious)
-                        .with_description("merge demo"),
+                        .with_description("合并演示"),
                     cx,
                 );
             }
@@ -308,13 +318,13 @@ impl M3Testbed {
     fn undo(&mut self, cx: &mut Context<Self>) {
         self.merge_group = None;
         let result = self.buffer.undo();
-        self.apply_history_result(result, "undo", cx);
+        self.apply_history_result(result, "撤销", cx);
     }
 
     fn redo(&mut self, cx: &mut Context<Self>) {
         self.merge_group = None;
         let result = self.buffer.redo();
-        self.apply_history_result(result, "redo", cx);
+        self.apply_history_result(result, "重做", cx);
     }
 
     fn apply_history_result(
@@ -347,7 +357,7 @@ impl M3Testbed {
             }
             Ok(None) => {
                 self.last_error = None;
-                self.last_history_event = Some(format!("{label}: empty history"));
+                self.last_history_event = Some(format!("{label}: 历史为空"));
             }
             Err(err) => {
                 self.last_error = Some(err.to_string());
@@ -450,29 +460,29 @@ impl Render for M3Testbed {
         let history = self.buffer.history_status();
         let delta_label = self
             .last_delta
-            .map(|(old, new, edits)| format!("delta={}→{} edits={}", old.get(), new.get(), edits))
-            .unwrap_or_else(|| "delta=<none>".to_string());
+            .map(|(old, new, edits)| format!("增量=v{}→v{} 编辑数={}", old.get(), new.get(), edits))
+            .unwrap_or_else(|| "增量=无".to_string());
         let history_label = format!(
-            "undo={} redo={} can_undo={} can_redo={} last={}",
+            "撤销栈={} 重做栈={} 可撤销={} 可重做={} 上次事件={}",
             history.undo_depth,
             history.redo_depth,
-            self.buffer.can_undo(),
-            self.buffer.can_redo(),
-            self.last_history_event.as_deref().unwrap_or("<none>"),
+            bool_label(self.buffer.can_undo()),
+            bool_label(self.buffer.can_redo()),
+            self.last_history_event.as_deref().unwrap_or("无"),
         );
         let snapshot_label = self
             .pinned_snapshot
             .as_ref()
             .map(|snapshot| {
                 format!(
-                    "snapshot=v{} len={} lines={} stale={}",
+                    "快照=v{} 字符={} 行数={} 状态={}",
                     snapshot.version().get(),
                     snapshot.len_chars().get(),
                     snapshot.line_count(),
-                    self.buffer.is_snapshot_stale(snapshot),
+                    snapshot_state_label(self.buffer.is_snapshot_stale(snapshot)),
                 )
             })
-            .unwrap_or_else(|| "snapshot=<none>".to_string());
+            .unwrap_or_else(|| "快照=无".to_string());
 
         div()
             .size_full()
@@ -530,7 +540,7 @@ impl Render for M3Testbed {
                     .pb_4()
                     .mb_4()
                     .child(format!(
-                        "Zom Engine M3 | char={} / {} | line={} col={} | lines={} | version={} saved={} | dirty={} | A={} | B={} | changed_ranges={} | {} | {} | {}",
+                        "Zom Engine M3 | 光标={} / 总字符={} | 行={} 列={} | 总行数={} | 当前版本=v{} 保存点=v{} | 修改状态={} | 锚点A={} | 锚点B={} | 变更范围={} | {} | {} | {}",
                         cursor.get(),
                         self.buffer.len_chars().get(),
                         position.line().get(),
@@ -538,7 +548,7 @@ impl Render for M3Testbed {
                         self.buffer.line_count(),
                         self.buffer.version().get(),
                         self.buffer.saved_version().get(),
-                        self.buffer.is_dirty(),
+                        dirty_label(self.buffer.is_dirty()),
                         self.anchor_a.get(),
                         self.anchor_b.get(),
                         self.last_changed_ranges.len(),
@@ -551,14 +561,14 @@ impl Render for M3Testbed {
                 div()
                     .mb_4()
                     .text_color(rgb(0xA1A1AA))
-                    .child("输入字符 / Space / Tab / Enter；连续输入会合并为一个 Undo；Backspace / Delete；← →；Home / End；Cmd-S 保存；Cmd-R 重置；Cmd-B 批量事务；Cmd-M 合并事务；Cmd-Z/Ctrl-Z 撤销；Cmd-Shift-Z/Ctrl-Y 重做；Cmd-K 捕获 Snapshot"),
+                    .child("输入字符 / 空格 / Tab / 回车；连续输入会合并为一个撤销步骤；退格 / Delete；← →；Home / End；Cmd-S 保存；Cmd-R 重置；Cmd-B 批量事务；Cmd-M 合并事务；Cmd-Z/Ctrl-Z 撤销；Cmd-Shift-Z/Ctrl-Y 重做；Cmd-K 捕获快照"),
             )
             .when_some(self.last_error.clone(), |el, error| {
                 el.child(
                     div()
                         .mb_4()
                         .text_color(rgb(0xFCA5A5))
-                        .child(format!("error: {error}")),
+                        .child(format!("错误：{error}")),
                 )
             })
             .child(
@@ -707,6 +717,43 @@ fn cursor_row() -> Div {
         .flex_row()
         .min_h(px(28.0))
         .child(cursor_element())
+}
+
+#[allow(dead_code)]
+fn dirty_label(is_dirty: bool) -> &'static str {
+    if is_dirty { "已修改" } else { "干净" }
+}
+
+#[allow(dead_code)]
+fn bool_label(value: bool) -> &'static str {
+    if value { "是" } else { "否" }
+}
+
+#[allow(dead_code)]
+fn snapshot_state_label(is_stale: bool) -> &'static str {
+    if is_stale { "已过期" } else { "有效" }
+}
+
+#[allow(dead_code)]
+fn line_ending_label<T: core::fmt::Debug>(style: T) -> String {
+    match format!("{style:?}").as_str() {
+        "None" => "未检测".to_string(),
+        "Lf" | "LF" => "LF".to_string(),
+        "Crlf" | "CRLF" => "CRLF".to_string(),
+        "Mixed" => "混合".to_string(),
+        other => other.to_string(),
+    }
+}
+
+#[allow(dead_code)]
+fn display_width_policy_label<T: core::fmt::Debug>(policy: T) -> String {
+    format!("{policy:?}")
+        .replace("DisplayWidthPolicy", "显示宽度策略")
+        .replace("cjk_width", "CJK宽度")
+        .replace("emoji_width", "emoji宽度")
+        .replace("ambiguous_width", "模糊宽度")
+        .replace("control_width", "控制字符宽度")
+        .replace("combining_mark_width", "组合标记宽度")
 }
 
 fn cursor_element() -> Div {

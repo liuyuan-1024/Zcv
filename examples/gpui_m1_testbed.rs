@@ -22,7 +22,13 @@ actions!(
     ]
 );
 
-const INITIAL_TEXT: &str = "🚀 Zom Engine M1 GPUI Testbed\n\n可以输入、回车、退格、Delete、左右移动光标。\nHome / End 可跳到当前行首尾。\nCmd-S 标记 saved，Cmd-R 重置文本。\n当前只是 Buffer 体验，不包含 Undo/Redo/Selection。\n";
+const INITIAL_TEXT: &str = "🚀 Zom Engine M1 中文测试台
+
+可以输入、回车、退格、Delete、左右移动光标。
+Home / End 可跳到当前行首尾。
+Cmd-S 标记已保存，Cmd-R 重置文本。
+当前只是 Buffer 体验，不包含撤销/重做/选区。
+";
 
 pub struct M1Testbed {
     buffer: Buffer,
@@ -243,7 +249,7 @@ impl Render for M1Testbed {
                     .pb_4()
                     .mb_4()
                     .child(format!(
-                        "Zom Engine M1 | char={} / {} | line={} col={} | lines={} | version={} saved={} | dirty={}",
+                        "Zom Engine M1 | 光标={} / 总字符={} | 行={} 列={} | 总行数={} | 当前版本=v{} 保存点=v{} | 修改状态={}",
                         cursor.get(),
                         self.buffer.len_chars().get(),
                         position.line().get(),
@@ -251,21 +257,21 @@ impl Render for M1Testbed {
                         self.buffer.line_count(),
                         self.buffer.version().get(),
                         self.buffer.saved_version().get(),
-                        self.buffer.is_dirty(),
+                        dirty_label(self.buffer.is_dirty()),
                     )),
             )
             .child(
                 div()
                     .mb_4()
                     .text_color(rgb(0xA1A1AA))
-                    .child("输入字符 / Space / Tab / Enter；Backspace / Delete；← →；Home / End；Cmd-S 保存；Cmd-R 重置"),
+                    .child("输入字符 / 空格 / Tab / 回车；退格 / Delete；← →；Home / End；Cmd-S 保存；Cmd-R 重置"),
             )
             .when_some(self.last_error.clone(), |el, error| {
                 el.child(
                     div()
                         .mb_4()
                         .text_color(rgb(0xFCA5A5))
-                        .child(format!("error: {error}")),
+                        .child(format!("错误：{error}")),
                 )
             })
             .child(
@@ -341,6 +347,43 @@ fn cursor_row() -> Div {
         .flex_row()
         .min_h(px(28.0))
         .child(cursor_element())
+}
+
+#[allow(dead_code)]
+fn dirty_label(is_dirty: bool) -> &'static str {
+    if is_dirty { "已修改" } else { "干净" }
+}
+
+#[allow(dead_code)]
+fn bool_label(value: bool) -> &'static str {
+    if value { "是" } else { "否" }
+}
+
+#[allow(dead_code)]
+fn snapshot_state_label(is_stale: bool) -> &'static str {
+    if is_stale { "已过期" } else { "有效" }
+}
+
+#[allow(dead_code)]
+fn line_ending_label<T: core::fmt::Debug>(style: T) -> String {
+    match format!("{style:?}").as_str() {
+        "None" => "未检测".to_string(),
+        "Lf" | "LF" => "LF".to_string(),
+        "Crlf" | "CRLF" => "CRLF".to_string(),
+        "Mixed" => "混合".to_string(),
+        other => other.to_string(),
+    }
+}
+
+#[allow(dead_code)]
+fn display_width_policy_label<T: core::fmt::Debug>(policy: T) -> String {
+    format!("{policy:?}")
+        .replace("DisplayWidthPolicy", "显示宽度策略")
+        .replace("cjk_width", "CJK宽度")
+        .replace("emoji_width", "emoji宽度")
+        .replace("ambiguous_width", "模糊宽度")
+        .replace("control_width", "控制字符宽度")
+        .replace("combining_mark_width", "组合标记宽度")
 }
 
 fn cursor_element() -> Div {

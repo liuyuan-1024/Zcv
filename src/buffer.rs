@@ -20,16 +20,17 @@
 //! - Transaction / History 直接恢复 SelectionSet
 //! - 支持多光标插入、删除、替换
 //! - M6B 支持 Word / Identifier / Subword / Symbol 移动语义
+//! - M6C 支持 IME composition start / update / commit / cancel
 
 use std::borrow::Cow;
 
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
-    BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, DisplayColumn,
-    DisplayColumnAffinity, EditError, EngineError, EngineResult, Line, LineEndingStyle,
-    LogicalColumn, MovementDirection, MovementUnit, Position, Selection, SelectionSet, TextRange,
-    Utf16Position, WordBoundaryPolicy,
+    BufferConfig, BufferVersion, ByteOffset, CharOffset, CompositionSelection, CompositionState,
+    CoordinateError, DisplayColumn, DisplayColumnAffinity, EditError, EngineError, EngineResult,
+    Line, LineEndingStyle, LogicalColumn, MovementDirection, MovementUnit, Position, Selection,
+    SelectionSet, TextRange, Utf16Position, WordBoundaryPolicy,
     storage::{RopeySnapshot, RopeyStorage, TextRead, TextStorage},
     transaction::{
         ChangeSet, Delta, Edit, EditList, Transaction, TransactionMergePolicy, TransactionMetadata,
@@ -293,6 +294,7 @@ pub struct Buffer {
     undo_stack: Vec<HistoryEntry>,
     redo_stack: Vec<HistoryEntry>,
     selection: SelectionSet,
+    composition: Option<CompositionState>,
 }
 
 impl Buffer {
@@ -311,6 +313,7 @@ impl Buffer {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             selection: SelectionSet::default(),
+            composition: None,
         })
     }
 
@@ -619,7 +622,179 @@ impl Buffer {
         selection.map_through_changeset(changeset)
     }
 
-    /// 在每个 selection 处插入文本；非空 selection 会被替换。
+    /// M6C：返回当前 IME 组合输入状态。
+    pub fn composition(&self) -> Option<&CompositionState> {
+        self.composition.as_ref()
+    }
+
+    pub fn is_composing(&self) -> bool {
+        self.composition.is_some()
+    }
+
+    /// M6C：开始 IME 组合输入。
+    ///
+    /// 多光标 / 多选区下，M6C 先采用保守降级策略：只保留 primary selection 作为
+    /// 组合输入目标，避免一个系统 IME composition 同时驱动多个插入点。
+    pub fn start_composition(&mut self) -> EngineResult<CompositionState> {
+        if let Some(composition) = self.composition.clone() {
+            return Ok(composition);
+        }
+
+        let original_selection = self.selection.clone();
+        self.validate_selection_set(&original_selection)?;
+
+        let primary = *original_selection.primary();
+        let range = primary.range();
+        let state = CompositionState::new(
+            self.text().into_owned(),
+            original_selection,
+            self.is_dirty(),
+            range,
+        );
+
+        // IME composition 只跟随 primary selection。这里直接同步 Buffer selection，
+        // 让 UI 能观察到多光标降级后的真实编辑目标。
+        self.selection = SelectionSet::new(vec![primary]);
+        self.composition = Some(state.clone());
+
+        Ok(state)
+    }
+
+    /// M6C：更新预编辑文本。
+    ///
+    /// update 会把 preedit 文本写入 Buffer 以便 UI 读取统一文本流，但事务不进入
+    /// Undo 历史。commit 时会从 composition start 前的原始文本到最终提交文本生成
+    /// 一个合理的单步 Undo 历史。
+    pub fn update_composition(
+        &mut self,
+        preedit_text: &str,
+        selection: Option<CompositionSelection>,
+    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        if self.composition.is_none() {
+            self.start_composition()?;
+        }
+
+        let state = self
+            .composition
+            .as_ref()
+            .expect("composition must exist after start_composition")
+            .clone();
+
+        self.validate_range(state.range)?;
+
+        let preedit_len = preedit_text.chars().count();
+        let relative_selection =
+            selection.unwrap_or_else(|| CompositionSelection::caret(CharOffset::new(preedit_len)));
+        validate_composition_relative_selection(preedit_text, relative_selection)?;
+
+        let range_start = state.range.start();
+        let absolute_selection = absolute_composition_selection(range_start, relative_selection)?;
+        let after_selection = SelectionSet::new(vec![absolute_selection]);
+
+        let result = self.replace_single_range_with_metadata(
+            state.range,
+            preedit_text,
+            after_selection,
+            TransactionMetadata::new(TransactionSource::Composition)
+                .without_history()
+                .with_description("composition update"),
+        )?;
+
+        let mut state = self
+            .composition
+            .take()
+            .expect("composition must still exist while update_composition runs");
+        let range_end = CharOffset::new(range_start.get() + preedit_len);
+        state.range = TextRange::new(range_start, range_end)?;
+        state.preedit_text = preedit_text.to_string();
+        state.selection = absolute_selection;
+        self.composition = Some(state);
+
+        Ok(result)
+    }
+
+    /// M6C：提交当前组合输入。
+    ///
+    /// 如果不存在 active composition，则退化为一次普通的 composition 来源插入 / 替换。
+    pub fn commit_composition(
+        &mut self,
+        commit_text: &str,
+    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        let Some(state) = self.composition.take() else {
+            let selections = self.selection.clone();
+            return self.replace_selection_ranges_with_metadata(
+                selections,
+                commit_text,
+                TransactionMetadata::new(TransactionSource::Composition)
+                    .with_description("composition commit"),
+            );
+        };
+
+        self.validate_range(state.range)?;
+
+        let range_start = state.range.start();
+        let final_head = CharOffset::new(range_start.get() + commit_text.chars().count());
+        let after_selection = SelectionSet::caret(final_head);
+
+        let result = self.replace_single_range_with_metadata(
+            state.range,
+            commit_text,
+            after_selection.clone(),
+            TransactionMetadata::new(TransactionSource::Composition)
+                .without_history()
+                .with_description("composition commit text"),
+        )?;
+
+        let after_text = self.text().into_owned();
+
+        if after_text == state.original_text {
+            self.set_selection(after_selection)?;
+            if !state.original_was_dirty {
+                self.saved_version = self.version;
+            }
+            return Ok(result);
+        }
+
+        let entry = HistoryEntry::from_snapshots(
+            state.original_text,
+            after_text,
+            state.original_selection,
+            after_selection,
+            Some("composition commit".to_string()),
+        )?;
+        let metadata = TransactionMetadata::new(TransactionSource::Composition)
+            .with_description("composition commit");
+        self.push_history(entry, &metadata)?;
+
+        Ok(result)
+    }
+
+    /// M6C：取消当前组合输入，恢复到 composition start 前的文本和选区。
+    pub fn cancel_composition(&mut self) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        let Some(state) = self.composition.take() else {
+            return Ok(None);
+        };
+
+        let full_range = TextRange::new(CharOffset::ZERO, self.len_chars())?;
+        let after_selection = state.original_selection.clone();
+
+        let result = self.replace_single_range_with_metadata(
+            full_range,
+            &state.original_text,
+            after_selection,
+            TransactionMetadata::new(TransactionSource::Composition)
+                .without_history()
+                .with_description("composition cancel"),
+        )?;
+
+        if !state.original_was_dirty {
+            self.saved_version = self.version;
+        }
+
+        Ok(result)
+    }
+
+    /// 在每个 selection 处插入文本；非空 selection 会被替换.
     pub fn insert_at_selections(
         &mut self,
         selections: SelectionSet,
@@ -749,6 +924,10 @@ impl Buffer {
     ///
     /// 成功将返回增量事件 Delta 和位置映射器 ChangeSet，并记录 Undo 历史。
     pub fn apply_transaction(&mut self, tx: Transaction) -> EngineResult<(Delta, ChangeSet)> {
+        if tx.metadata().source != TransactionSource::Composition {
+            self.cancel_composition_before_text_edit()?;
+        }
+
         let (base_version, tx_edits, metadata, tx_before_selection, tx_after_selection) =
             tx.into_parts();
 
@@ -800,6 +979,8 @@ impl Buffer {
     ///
     /// 没有可撤销历史时返回 `Ok(None)`，避免把空历史当作错误。
     pub fn undo(&mut self) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.cancel_composition_before_text_edit()?;
+
         let Some(entry) = self.undo_stack.pop() else {
             return Ok(None);
         };
@@ -816,6 +997,8 @@ impl Buffer {
     ///
     /// 没有可重做历史时返回 `Ok(None)`。
     pub fn redo(&mut self) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.cancel_composition_before_text_edit()?;
+
         let Some(entry) = self.redo_stack.pop() else {
             return Ok(None);
         };
@@ -841,6 +1024,7 @@ impl Buffer {
     ///
     /// M3 起该便利 API 也会走 Transaction，从而进入 Undo 历史。
     pub fn replace(&mut self, range: TextRange, replacement: &str) -> EngineResult<()> {
+        self.cancel_composition_before_text_edit()?;
         self.validate_range(range)?;
         self.validate_edit_boundary(range.start())?;
         self.validate_edit_boundary(range.end())?;
@@ -865,6 +1049,10 @@ impl Buffer {
         replacement: &str,
         metadata: TransactionMetadata,
     ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        if metadata.source != TransactionSource::Composition {
+            self.cancel_composition_before_text_edit()?;
+        }
+
         let selections = selections.normalized();
         self.validate_selection_set(&selections)?;
 
@@ -907,6 +1095,40 @@ impl Buffer {
             .with_selection(Some(before_selection), Some(after_selection));
 
         self.apply_transaction(tx).map(Some)
+    }
+
+    fn replace_single_range_with_metadata(
+        &mut self,
+        range: TextRange,
+        replacement: &str,
+        after_selection: SelectionSet,
+        metadata: TransactionMetadata,
+    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.validate_range(range)?;
+        self.validate_edit_boundary(range.start())?;
+        self.validate_edit_boundary(range.end())?;
+
+        if self.slice_text(range)?.as_ref() == replacement {
+            self.selection = after_selection;
+            return Ok(None);
+        }
+
+        let tx = Transaction::from_edits(
+            self.version,
+            vec![Edit::replace(range, replacement.to_string())],
+        )?
+        .with_metadata(metadata)
+        .with_selection(Some(self.selection.clone()), Some(after_selection));
+
+        self.apply_transaction(tx).map(Some)
+    }
+
+    fn cancel_composition_before_text_edit(&mut self) -> EngineResult<()> {
+        if self.composition.is_some() {
+            self.cancel_composition()?;
+        }
+
+        Ok(())
     }
 
     fn push_history(
@@ -1240,6 +1462,52 @@ fn is_crlf_middle<T: TextRead>(storage: &T, offset: CharOffset) -> bool {
         && value < storage.len_chars().get()
         && storage.char_at(CharOffset::new(value - 1)) == Some('\r')
         && storage.char_at(offset) == Some('\n')
+}
+
+fn validate_composition_relative_selection(
+    preedit_text: &str,
+    selection: CompositionSelection,
+) -> EngineResult<()> {
+    let preedit_len = preedit_text.chars().count();
+
+    for offset in [selection.anchor(), selection.head()] {
+        if offset.get() > preedit_len {
+            return Err(CoordinateError::OutOfBounds(offset).into());
+        }
+
+        if !is_grapheme_boundary_in_str(preedit_text, offset)? {
+            return Err(CoordinateError::InvalidGraphemeBoundary(offset).into());
+        }
+    }
+
+    Ok(())
+}
+
+fn absolute_composition_selection(
+    range_start: CharOffset,
+    selection: CompositionSelection,
+) -> EngineResult<Selection> {
+    Ok(Selection::new(
+        CharOffset::new(range_start.get() + selection.anchor().get()),
+        CharOffset::new(range_start.get() + selection.head().get()),
+    ))
+}
+
+fn is_grapheme_boundary_in_str(text: &str, offset: CharOffset) -> EngineResult<bool> {
+    let len_chars = text.chars().count();
+
+    if offset.get() > len_chars {
+        return Err(CoordinateError::OutOfBounds(offset).into());
+    }
+
+    if offset.get() == 0 || offset.get() == len_chars {
+        return Ok(true);
+    }
+
+    let byte_offset = char_to_byte_index(text, offset)?;
+    Ok(text
+        .grapheme_indices(true)
+        .any(|(byte_index, _)| byte_index == byte_offset))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -86,6 +86,7 @@ impl EditList {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TransactionSource {
     Keyboard,
+    Composition,
     Paste,
     Delete,
     Mouse,

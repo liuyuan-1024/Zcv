@@ -70,18 +70,24 @@ zom-engine/
 │   ├── buffer/
 │   │   ├── mod.rs
 │   │   └── line_index.rs
-│   └── storage/
+│   ├── storage/
+│   │   ├── mod.rs
+│   │   └── ropey_storage.rs
+│   └── tests/        # 可选内部测试区；M4 可用于 storage differential testing
 │       ├── mod.rs
-│       └── string_storage.rs
+│       └── storage_consistency.rs
 │
 ├── tests/
 │   ├── m0_domain_model.rs
 │   ├── m1_buffer.rs
-│   └── m2_transaction.rs
+│   ├── m2_transaction.rs
+│   ├── m3_history.rs
+│   └── m4_storage.rs
 │
 ├── examples/
 │   ├── gpui_m1_testbed.rs
-│   └── gpui_m2_testbed.rs
+│   ├── gpui_m2_testbed.rs
+│   └── gpui_m3_testbed.rs
 │
 └── benches/          # 后期加入
 ```
@@ -186,7 +192,8 @@ M(n) testbed = M(n-1) testbed 的完整体验 + 当前阶段新增能力的可�
 M1 testbed = Buffer + 基础输入 + 删除 + 光标移动 + Home/End + Save/Reset + 状态栏
 M2 testbed = M1 完整体验 + Transaction / Delta / ChangeSet 可视化
 M3 testbed = M2 完整体验 + Undo / Redo / History 状态可视化
-M4 testbed = M3 完整体验 + Selection / Multi Cursor 可视化
+M4 testbed = M3 完整体验 + 高性能存储指标 / Snapshot / Storage 行为可视化
+M6 testbed = M4/M5 完整体验 + Selection / Multi Cursor 可视化
 ```
 
 每次修改 `examples/gpui_mN_testbed.rs` 前，必须检查：
@@ -364,6 +371,127 @@ M2 testbed 必须继承 M1 testbed 的全部体验，然后新增：
 
 ---
 
+### 5.4 M3：Undo / Redo 与基础 Snapshot
+
+M3 关注历史系统与不可变快照。
+
+包括：
+
+```text
+Undo
+Redo
+历史栈
+Redo stack 清理
+Transaction merge
+SelectionSnapshot 恢复
+Snapshot
+Snapshot 绑定 BufferVersion
+Snapshot 跨线程读取
+is_version_stale / is_snapshot_stale
+```
+
+M3 测试放在：
+
+```text
+tests/m3_history.rs
+examples/gpui_m3_testbed.rs
+```
+
+M3 的原则：
+
+```text
+Undo / Redo 必须恢复文本。
+Undo / Redo 必须恢复当前阶段已有的 selection snapshot。
+Snapshot 是后台读取和版本过期判断的基础。
+M3 先验证历史语义，不在这一阶段追求高性能存储。
+```
+
+---
+
+### 5.5 M3.5：核心编辑坐标迁移到 CharOffset
+
+M3.5 关注把核心编辑坐标彻底迁移为 `CharOffset`。
+
+包括：
+
+```text
+TextRange 基于 CharOffset
+SelectionSnapshot 基于 CharOffset
+Buffer insert / delete / replace 使用 CharOffset / TextRange
+Edit / EditList / Transaction 使用 CharOffset / TextRange
+Delta / ChangeSet / changed_ranges 使用 CharOffset / TextRange
+Undo / Redo inverse edits 使用 CharOffset / TextRange
+LineIndex 记录 char line starts
+删除旧 byte-based 编辑 API，不做兼容层
+```
+
+M3.5 的原则：
+
+```text
+核心编辑 API 不再接受 ByteOffset。
+ByteOffset 只用于文件字节、编码边界、外部协议适配和显式坐标转换。
+不要恢复旧 byte-based 编辑 API。
+不要为了兼容保留两套编辑模型。
+```
+
+---
+
+### 5.6 M4：高性能文本存储替换
+
+M4 关注把生产文本存储替换为 `RopeyStorage`。
+
+包括：
+
+```text
+引入 ropey 依赖
+实现 RopeyStorage
+Buffer 默认使用 RopeyStorage
+TextStorage 抽象摆脱全文连续 &str 假设
+支持基于 CharOffset / TextRange 的局部插入、删除、替换
+支持 bytes / chars / UTF-16 code units / lines 等 metrics
+Snapshot 升级为基于 ropey clone 的低成本快照
+不把 ropey::Rope 暴露为 public API
+```
+
+M4 测试放在：
+
+```text
+tests/m4_storage.rs
+src/tests/storage_consistency.rs
+```
+
+M4 的生产代码边界：
+
+```text
+src/storage/ 只保留生产存储实现，例如 RopeyStorage。
+M4 之后不要继续在 src/storage/ 中保留 StringStorage。
+StringStorage 只作为测试 reference model 存在。
+如果需要 StringStorage 参考模型，应在 src/tests/storage_consistency.rs 或测试 helper 中定义测试专用 StringStorageRef。
+```
+
+M4 differential testing 契约：
+
+```text
+同一组编辑同时应用到 RopeyStorage 和 StringStorageRef。
+最终文本必须一致。
+行数必须一致。
+char offset <-> line/column 转换必须一致。
+按 char range slice 的结果必须一致。
+失败时优先相信 StringStorageRef 的语义结果，再定位 RopeyStorage 的实现偏差。
+```
+
+M4 不应该做：
+
+```text
+不自研 Rope / Piece Table / Piece Tree。
+不把 ropey::Rope 泄漏到 public API。
+不把 StringStorage 继续作为生产后端。
+不在 M4 顺手实现 Selection / Multi Cursor。
+不为了 ropey 改变核心编辑坐标，核心仍然是 CharOffset。
+```
+
+---
+
 ## 6. `src/tests/` 使用边界
 
 默认不要创建 `src/tests/`。
@@ -388,6 +516,7 @@ Anchor / TrackedRange stickiness 规则
 Transaction normalize 后的内部排序与不重叠保证
 Storage trait 多实现一致性
 Snapshot 与 buffer revision 对应关系
+M4 RopeyStorage 与测试 reference model 的 differential consistency
 ```
 
 不适合 `src/tests/`：
@@ -445,7 +574,10 @@ fn map(pos: usize)
 正确性 > 可测试性 > API 清晰度 > 性能
 ```
 
-高性能 Rope / PieceTree 不要过早引入。先让 `StringStorage` 成为可靠参考模型。
+M4 之前不要过早引入高性能 Rope / PieceTree，先让简单字符串模型成为可靠参考语义。
+
+M4 之后的边界是：生产代码使用 `RopeyStorage`，测试代码保留字符串 reference model。
+不要把 `StringStorage` 继续放在 `src/storage/` 生产核心模块中。
 
 ### 7.4 错误要显式
 
@@ -494,8 +626,12 @@ cargo test
 cargo test --test m0_domain_model
 cargo test --test m1_buffer
 cargo test --test m2_transaction
+cargo test --test m3_history
+cargo test --test m4_storage
+cargo test --lib storage_consistency
 cargo run --example gpui_m1_testbed
 cargo run --example gpui_m2_testbed
+cargo run --example gpui_m3_testbed
 ```
 
 如果当前环境不能运行命令，AI 必须明确说明“未实际运行”。
@@ -621,6 +757,42 @@ tx.base_version == buffer.version()
 
 每个阶段都应该继承上一阶段的体感能力。
 
+### 12.4 M4 StringStorage 只作为测试 reference model
+
+M4 之后，`StringStorage` 不应继续作为生产 storage 模块存在。
+
+正确边界：
+
+```text
+src/storage/ropey_storage.rs              生产存储实现
+src/tests/storage_consistency.rs          内部一致性 / differential testing
+src/tests/... 或 tests helper             测试专用 StringStorageRef
+```
+
+禁止做法：
+
+```text
+src/storage/string_storage.rs             不要在 M4 后继续保留
+pub(crate) use string_storage::StringStorage
+Buffer 默认使用 StringStorage
+为了测试把 StringStorage 暴露到生产模块边界
+```
+
+允许做法：
+
+```text
+在 src/tests/storage_consistency.rs 中定义 StringStorageRef。
+在测试 helper 中定义字符串参考模型。
+让 StringStorageRef 实现与 RopeyStorage 相同的内部 trait，用于 differential testing。
+```
+
+原则：
+
+```text
+reference model 是测试基础设施，不是引擎核心能力。
+M4 的生产核心只有 RopeyStorage 和 TextStorage 抽象。
+```
+
 ---
 
 ## 13. 最终原则
@@ -632,6 +804,9 @@ UI examples/
 只有重要内部不变量才 src/tests/
 
 M(n) testbed = M(n-1) testbed 的完整体验 + 当前阶段新增能力。
+
+M4 生产存储使用 RopeyStorage。
+M4 StringStorage 只能作为测试 reference model，不放进 src/storage/ 生产核心模块。
 
 不要为了测试污染 public API。
 不要为了展示新阶段能力丢掉旧阶段体验。

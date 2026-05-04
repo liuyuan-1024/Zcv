@@ -83,7 +83,7 @@ impl M1Testbed {
     }
 
     fn backspace(&mut self, cx: &mut Context<Self>) {
-        let Some(prev) = previous_edit_boundary(self.buffer.text(), self.cursor) else {
+        let Some(prev) = previous_edit_boundary(self.buffer.text().as_ref(), self.cursor) else {
             return;
         };
 
@@ -100,7 +100,7 @@ impl M1Testbed {
     }
 
     fn delete_forward(&mut self, cx: &mut Context<Self>) {
-        let Some(next) = next_edit_boundary(self.buffer.text(), self.cursor) else {
+        let Some(next) = next_edit_boundary(self.buffer.text().as_ref(), self.cursor) else {
             return;
         };
 
@@ -112,7 +112,7 @@ impl M1Testbed {
     }
 
     fn move_left(&mut self, cx: &mut Context<Self>) {
-        if let Some(prev) = previous_edit_boundary(self.buffer.text(), self.cursor) {
+        if let Some(prev) = previous_edit_boundary(self.buffer.text().as_ref(), self.cursor) {
             self.cursor = prev;
             self.last_error = None;
             cx.notify();
@@ -120,7 +120,7 @@ impl M1Testbed {
     }
 
     fn move_right(&mut self, cx: &mut Context<Self>) {
-        if let Some(next) = next_edit_boundary(self.buffer.text(), self.cursor) {
+        if let Some(next) = next_edit_boundary(self.buffer.text().as_ref(), self.cursor) {
             self.cursor = next;
             self.last_error = None;
             cx.notify();
@@ -164,7 +164,7 @@ impl M1Testbed {
         };
 
         Ok(CharOffset::new(line_content_end(
-            self.buffer.text(),
+            self.buffer.text().as_ref(),
             line_start,
             next_line_start,
         )))
@@ -274,7 +274,7 @@ impl Render for M1Testbed {
                     .font_family(".AppleSystemUIFont")
                     .text_xl()
                     .line_height(px(28.0))
-                    .children(render_lines_with_cursor(self.buffer.text(), cursor)),
+                    .children(render_lines_with_cursor(self.buffer.text().as_ref(), cursor)),
             )
     }
 }

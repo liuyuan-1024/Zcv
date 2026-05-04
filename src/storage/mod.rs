@@ -1,20 +1,65 @@
 //! 文本存储抽象。
 //!
 //! M3.5 起，TextStorage 的编辑入口使用 CharOffset / TextRange(char range)，
-//! 为 M4 接入 ropey 做准备。
+//! M4 起默认后端切换为 RopeyStorage，并且 TextStorage 不再假设全文可作为连续 &str 借出。
 
-mod string_storage;
+mod ropey_storage;
 
-pub(crate) use string_storage::StringStorage;
+pub(crate) use ropey_storage::{RopeySnapshot, RopeyStorage};
 
-use crate::{CharOffset, EngineResult, TextRange};
+use std::borrow::Cow;
 
-pub(crate) trait TextStorage {
-    fn text(&self) -> &str;
+use crate::{CharOffset, EngineResult, Line, Position, TextRange};
 
-    fn len_chars(&self) -> CharOffset {
-        CharOffset::new(self.text().chars().count())
-    }
+/// 只读文本视图。
+///
+/// 关键点：M4 后这里不能再返回裸 `&str` 作为核心抽象，
+/// 因为 Rope 的全文通常不是一段连续内存。
+pub(crate) trait TextRead {
+    /// 返回全文。
+    ///
+    /// `RopeyStorage` 会按需拼接为 owned String；测试参考模型可在测试模块内自行借用返回。
+    /// 热路径应优先使用 `slice_text` / metrics / line API，而不是全文读取。
+    fn text(&self) -> Cow<'_, str>;
+
+    /// 返回指定字符区间的文本。
+    fn slice_text(&self, range: TextRange) -> EngineResult<Cow<'_, str>>;
+
+    /// 总 UTF-8 字节数。
+    fn len_bytes(&self) -> usize;
+
+    /// 总 Unicode scalar 数，这是核心编辑坐标单位。
+    fn len_chars(&self) -> CharOffset;
+
+    /// 总 UTF-16 code unit 数，为后续 LSP 坐标适配准备。
+    fn len_utf16_cu(&self) -> usize;
+
+    /// 总行数。空文档也视为 1 行。
+    fn line_count(&self) -> usize;
+
+    /// 指定行的起始 CharOffset。
+    fn line_start(&self, line: Line) -> EngineResult<CharOffset>;
+
+    /// CharOffset -> line / logical column。
+    fn char_to_position(&self, offset: CharOffset) -> EngineResult<Position>;
+
+    /// line / logical column -> CharOffset。
+    fn position_to_char(&self, position: Position) -> EngineResult<CharOffset>;
+
+    /// 读取指定字符。越界返回 None。
+    fn char_at(&self, offset: CharOffset) -> Option<char>;
+}
+
+/// 可跨线程读取的不可变文本快照。
+pub(crate) trait TextSnapshot: TextRead + Clone + Send + Sync + 'static {}
+
+impl<T> TextSnapshot for T where T: TextRead + Clone + Send + Sync + 'static {}
+
+/// 可变文本存储后端。
+pub(crate) trait TextStorage: TextRead + Clone {
+    type Snapshot: TextSnapshot;
+
+    fn snapshot(&self) -> Self::Snapshot;
 
     fn replace(&mut self, range: TextRange, replacement: &str) -> EngineResult<()>;
 }

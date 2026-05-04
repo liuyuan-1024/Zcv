@@ -5,9 +5,11 @@ edition = "2024"
 description = "一个纯粹的、与用户界面无关的文本编辑引擎"
 
 [dependencies]
+ropey = "1.6.1"
 thiserror = "2.0.18"
 
 [dev-dependencies]
+criterion = "0.8.2"
 # 仅在测试和 examples 沙盒中使用 GPUI
 gpui = "0.2.2"
 
@@ -20,3 +22,10 @@ path = "examples/gpui_m2_testbed.rs"
 [[example]]
 name = "gpui_m3_testbed"
 path = "examples/gpui_m3_testbed.rs"
+[[example]]
+name = "gpui_m4_testbed"
+path = "examples/gpui_m4_testbed.rs"
+
+[[bench]]
+name = "m4_storage"
+harness = false

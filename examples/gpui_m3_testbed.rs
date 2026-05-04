@@ -211,7 +211,7 @@ impl M3Testbed {
     }
 
     fn backspace(&mut self, cx: &mut Context<Self>) {
-        let Some(prev) = previous_edit_boundary(self.buffer.text(), self.cursor) else {
+        let Some(prev) = previous_edit_boundary(self.buffer.text().as_ref(), self.cursor) else {
             self.merge_group = None;
             return;
         };
@@ -220,7 +220,7 @@ impl M3Testbed {
     }
 
     fn delete_forward(&mut self, cx: &mut Context<Self>) {
-        let Some(next) = next_edit_boundary(self.buffer.text(), self.cursor) else {
+        let Some(next) = next_edit_boundary(self.buffer.text().as_ref(), self.cursor) else {
             self.merge_group = None;
             return;
         };
@@ -359,7 +359,7 @@ impl M3Testbed {
 
     fn move_left(&mut self, cx: &mut Context<Self>) {
         self.merge_group = None;
-        if let Some(prev) = previous_edit_boundary(self.buffer.text(), self.cursor) {
+        if let Some(prev) = previous_edit_boundary(self.buffer.text().as_ref(), self.cursor) {
             self.cursor = prev;
             self.sync_engine_selection_to_cursor();
             self.last_error = None;
@@ -369,7 +369,7 @@ impl M3Testbed {
 
     fn move_right(&mut self, cx: &mut Context<Self>) {
         self.merge_group = None;
-        if let Some(next) = next_edit_boundary(self.buffer.text(), self.cursor) {
+        if let Some(next) = next_edit_boundary(self.buffer.text().as_ref(), self.cursor) {
             self.cursor = next;
             self.sync_engine_selection_to_cursor();
             self.last_error = None;
@@ -418,7 +418,7 @@ impl M3Testbed {
         };
 
         Ok(CharOffset::new(line_content_end(
-            self.buffer.text(),
+            self.buffer.text().as_ref(),
             line_start,
             next_line_start,
         )))
@@ -568,7 +568,7 @@ impl Render for M3Testbed {
                     .text_xl()
                     .line_height(px(28.0))
                     .children(render_lines_with_markers(
-                        self.buffer.text(),
+                        self.buffer.text().as_ref(),
                         cursor,
                         self.anchor_a,
                         self.anchor_b,

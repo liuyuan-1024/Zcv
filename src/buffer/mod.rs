@@ -1,49 +1,35 @@
 //! 最小可编辑 Buffer。
 //!
-//! M3.5 目标：
-//! - 内部编辑坐标全面迁移到 CharOffset
-//! - TextRange 改为 CharOffset 区间
-//! - Buffer / Transaction / ChangeSet / History 均使用字符坐标
-//! - ByteOffset 不再参与编辑 API，为 M4 接入 ropey 做准备
+//! M4 目标：
+//! - 默认文本后端切换为 RopeyStorage
+//! - Buffer / Transaction / ChangeSet / History 继续使用 CharOffset
+//! - Snapshot 基于 ropey clone，避免每次快照复制全文
 
-mod line_index;
-
-use std::sync::Arc;
+use std::borrow::Cow;
 
 use crate::{
     BufferConfig, BufferVersion, CharOffset, CoordinateError, EditError, EngineError, EngineResult,
     Line, Position, SelectionSnapshot, TextRange,
-    storage::{StringStorage, TextStorage},
+    storage::{RopeySnapshot, RopeyStorage, TextRead, TextStorage},
     transaction::{
         ChangeSet, Delta, Edit, EditList, Transaction, TransactionMergePolicy, TransactionMetadata,
     },
 };
 
-use line_index::LineIndex;
-
 /// 不可变文本快照。
-///
-/// M3 先基于 `Arc<str>` 验证快照语义。M4 替换为 ropey 后，
-/// 可以把内部实现替换为 O(1) 共享 Rope snapshot。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Snapshot {
-    text: Arc<str>,
+    storage: RopeySnapshot,
     version: BufferVersion,
-    line_index: LineIndex,
 }
 
 impl Snapshot {
-    fn new(text: Arc<str>, version: BufferVersion) -> Self {
-        let line_index = LineIndex::build(&text);
-        Self {
-            text,
-            version,
-            line_index,
-        }
+    fn new(storage: RopeySnapshot, version: BufferVersion) -> Self {
+        Self { storage, version }
     }
 
-    pub fn text(&self) -> &str {
-        self.text.as_ref()
+    pub fn text(&self) -> Cow<'_, str> {
+        self.storage.text()
     }
 
     pub fn version(&self) -> BufferVersion {
@@ -51,29 +37,45 @@ impl Snapshot {
     }
 
     pub fn len_chars(&self) -> CharOffset {
-        CharOffset::new(self.text.chars().count())
+        self.storage.len_chars()
+    }
+
+    pub fn len_bytes(&self) -> usize {
+        self.storage.len_bytes()
+    }
+
+    pub fn len_utf16_cu(&self) -> usize {
+        self.storage.len_utf16_cu()
     }
 
     pub fn line_count(&self) -> usize {
-        self.line_index.line_count()
+        self.storage.line_count()
     }
 
     pub fn line_start(&self, line: Line) -> EngineResult<CharOffset> {
-        self.line_index.line_start(line)
+        self.storage.line_start(line)
     }
 
     pub fn char_to_position(&self, offset: CharOffset) -> EngineResult<Position> {
-        self.line_index.char_to_position(self.text(), offset)
+        self.storage.char_to_position(offset)
     }
 
     pub fn position_to_char(&self, position: Position) -> EngineResult<CharOffset> {
-        self.line_index.position_to_char(self.text(), position)
+        self.storage.position_to_char(position)
     }
 
     pub fn is_stale_for(&self, buffer: &Buffer) -> bool {
         self.version != buffer.version()
     }
 }
+
+impl PartialEq for Snapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version && self.text() == other.text()
+    }
+}
+
+impl Eq for Snapshot {}
 
 /// M3 历史状态摘要。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,10 +151,9 @@ impl HistoryEntry {
 #[derive(Debug, Clone)]
 pub struct Buffer {
     config: BufferConfig,
-    storage: StringStorage,
+    storage: RopeyStorage,
     version: BufferVersion,
     saved_version: BufferVersion,
-    line_index: LineIndex,
     undo_stack: Vec<HistoryEntry>,
     redo_stack: Vec<HistoryEntry>,
     selection: Option<SelectionSnapshot>,
@@ -166,14 +167,11 @@ impl Buffer {
 
     /// 从已有文本创建 Buffer。
     pub fn from_text(text: String, config: BufferConfig) -> EngineResult<Self> {
-        let line_index = LineIndex::build(&text);
-
         Ok(Self {
             config,
-            storage: StringStorage::new(text),
+            storage: RopeyStorage::new(text),
             version: BufferVersion::INITIAL,
             saved_version: BufferVersion::INITIAL,
-            line_index,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             selection: None,
@@ -184,12 +182,24 @@ impl Buffer {
         &self.config
     }
 
-    pub fn text(&self) -> &str {
+    /// 返回全文。
+    ///
+    /// M4 后该方法返回 Cow，而不是 `&str`，避免 public API 继续承诺全文连续内存。
+    /// 热路径请优先用 Snapshot / slice / line API。
+    pub fn text(&self) -> Cow<'_, str> {
         self.storage.text()
     }
 
     pub fn len_chars(&self) -> CharOffset {
         self.storage.len_chars()
+    }
+
+    pub fn len_bytes(&self) -> usize {
+        self.storage.len_bytes()
+    }
+
+    pub fn len_utf16_cu(&self) -> usize {
+        self.storage.len_utf16_cu()
     }
 
     pub fn version(&self) -> BufferVersion {
@@ -209,24 +219,24 @@ impl Buffer {
     }
 
     pub fn line_count(&self) -> usize {
-        self.line_index.line_count()
+        self.storage.line_count()
     }
 
     pub fn line_start(&self, line: Line) -> EngineResult<CharOffset> {
-        self.line_index.line_start(line)
+        self.storage.line_start(line)
     }
 
     pub fn char_to_position(&self, offset: CharOffset) -> EngineResult<Position> {
-        self.line_index.char_to_position(self.text(), offset)
+        self.storage.char_to_position(offset)
     }
 
     pub fn position_to_char(&self, position: Position) -> EngineResult<CharOffset> {
-        self.line_index.position_to_char(self.text(), position)
+        self.storage.position_to_char(position)
     }
 
     /// 创建绑定当前版本的不可变快照。
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot::new(Arc::from(self.text()), self.version)
+        Snapshot::new(self.storage.snapshot(), self.version)
     }
 
     /// 判断给定版本是否已经相对当前 Buffer 过期。
@@ -280,7 +290,7 @@ impl Buffer {
 
         self.validate_edit_list(&tx_edits)?;
 
-        let before_text = self.text().to_string();
+        let before_text = self.text().into_owned();
         let before_selection = tx_before_selection.or_else(|| self.selection.clone());
         let undo_edits = Self::build_inverse_edit_list(&before_text, &tx_edits)?;
         let redo_edits = tx_edits.clone();
@@ -292,7 +302,7 @@ impl Buffer {
         }
 
         let after_selection = self.selection.clone();
-        let after_text = self.text().to_string();
+        let after_text = self.text().into_owned();
 
         if metadata.record_history {
             let entry = HistoryEntry::new(
@@ -365,7 +375,7 @@ impl Buffer {
         self.validate_edit_boundary(range.end())?;
 
         // no-op 不递增版本，也不污染 dirty / history。
-        if self.slice_text(range)? == replacement {
+        if self.slice_text(range)?.as_ref() == replacement {
             return Ok(());
         }
 
@@ -470,11 +480,8 @@ impl Buffer {
             new_storage.replace(edit.range, &edit.replacement)?;
         }
 
-        // 3. 全部成功后再一次性提交 storage / line_index / version。
-        let new_line_index = LineIndex::build(new_storage.text());
-
+        // 3. 全部成功后再一次性提交 storage / version。
         self.storage = new_storage;
-        self.line_index = new_line_index;
         self.bump_version()?;
 
         let new_version = self.version;
@@ -502,7 +509,7 @@ impl Buffer {
 
     /// 校验范围是否合法，超出文本字符长度返回错误。
     fn validate_range(&self, range: TextRange) -> EngineResult<()> {
-        if range.end().get() > self.text().chars().count() {
+        if range.end() > self.len_chars() {
             return Err(EditError::RangeOutOfBounds { range }.into());
         }
 
@@ -512,22 +519,21 @@ impl Buffer {
     /// 校验编辑边界是否合法，超出文本范围或落在 CRLF 中间返回错误。
     fn validate_edit_boundary(&self, offset: CharOffset) -> EngineResult<()> {
         let value = offset.get();
-        let text = self.text();
-        let len_chars = text.chars().count();
+        let len_chars = self.len_chars().get();
 
         if value > len_chars {
             return Err(CoordinateError::OutOfBounds(offset).into());
         }
 
-        if is_crlf_middle(text, value) {
+        if is_crlf_middle(&self.storage, offset) {
             return Err(EditError::InvalidBoundary { offset }.into());
         }
 
         Ok(())
     }
 
-    fn slice_text(&self, range: TextRange) -> EngineResult<&str> {
-        slice_chars(self.text(), range)
+    fn slice_text(&self, range: TextRange) -> EngineResult<Cow<'_, str>> {
+        self.storage.slice_text(range)
     }
 
     /// 递增版本号，溢出时返回错误。
@@ -562,13 +568,11 @@ fn char_to_byte_index(text: &str, offset: CharOffset) -> EngineResult<usize> {
         .ok_or_else(|| CoordinateError::OutOfBounds(offset).into())
 }
 
-fn is_crlf_middle(text: &str, offset: usize) -> bool {
-    offset > 0
-        && offset < text.chars().count()
-        && char_at(text, offset - 1) == Some('\r')
-        && char_at(text, offset) == Some('\n')
-}
+fn is_crlf_middle<T: TextRead>(storage: &T, offset: CharOffset) -> bool {
+    let value = offset.get();
 
-fn char_at(text: &str, char_offset: usize) -> Option<char> {
-    text.chars().nth(char_offset)
+    value > 0
+        && value < storage.len_chars().get()
+        && storage.char_at(CharOffset::new(value - 1)) == Some('\r')
+        && storage.char_at(offset) == Some('\n')
 }

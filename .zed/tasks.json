@@ -1,5 +1,14 @@
 [
   {
+    "label": "rope对比String的基线测试",
+    "command": "cargo",
+    "args": ["bench", "--bench m4_storage"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+  {
     "label": "肉眼体验编辑引擎-m1",
     "command": "cargo",
     "args": ["run", "--example gpui_m1_testbed"],
@@ -21,6 +30,15 @@
     "label": "肉眼体验编辑引擎-m3",
     "command": "cargo",
     "args": ["run", "--example gpui_m3_testbed"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+  {
+    "label": "肉眼体验编辑引擎-m4",
+    "command": "cargo",
+    "args": ["run", "--example gpui_m4_testbed"],
     "cwd": "$ZED_WORKTREE_ROOT",
     "save": "all",
     "reveal": "always",

@@ -6,8 +6,8 @@ use gpui::{
 use zom_engine::{
     Buffer, BufferConfig, BufferVersion, ByteOffset, CharOffset, DisplayColumn,
     DisplayColumnAffinity, Edit, EditList, EngineResult, Line, LogicalColumn, Position,
-    SelectionSet, Snapshot, TextRange, Transaction, Utf16Position,
-    TransactionMergePolicy, TransactionMetadata, TransactionSource,
+    SelectionSet, Snapshot, TextRange, Transaction, TransactionMergePolicy, TransactionMetadata,
+    TransactionSource, Utf16Position,
 };
 
 // M5B testbed：必须是 M5A testbed 的 superset。

@@ -183,8 +183,7 @@ impl Buffer {
 
             let new_start = (old_start as isize + diff).max(0) as usize;
             let new_end = new_start + edit.replacement.chars().count();
-            let new_range =
-                TextRange::new(CharOffset::new(new_start), CharOffset::new(new_end))?;
+            let new_range = TextRange::new(CharOffset::new(new_start), CharOffset::new(new_end))?;
 
             inverse.push(Edit::replace(new_range, deleted_text));
 

@@ -138,7 +138,12 @@ fn move_selections_supports_multi_cursor_heads() {
     let selections = SelectionSet::new(vec![Selection::caret(c(0)), Selection::caret(c(8))]);
 
     let moved = buffer
-        .move_selections(selections, MovementDirection::Next, MovementUnit::Word, false)
+        .move_selections(
+            selections,
+            MovementDirection::Next,
+            MovementUnit::Word,
+            false,
+        )
         .unwrap();
 
     assert_eq!(

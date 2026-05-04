@@ -1,6 +1,5 @@
 use crate::{
-    BufferVersion, CharOffset, EngineError, EngineResult, Selection, SelectionSet,
-    TextRange,
+    BufferVersion, CharOffset, EngineError, EngineResult, Selection, SelectionSet, TextRange,
     storage::TextStorage,
     transaction::{
         ChangeSet, Delta, Edit, EditList, Transaction, TransactionMetadata, TransactionSource,
@@ -133,7 +132,8 @@ impl Buffer {
         self.replace_selection_ranges_with_metadata(
             selections,
             "",
-            TransactionMetadata::new(TransactionSource::Delete).with_description("delete selections"),
+            TransactionMetadata::new(TransactionSource::Delete)
+                .with_description("delete selections"),
         )
     }
 

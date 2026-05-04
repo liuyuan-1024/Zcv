@@ -24,7 +24,11 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub(crate) fn new(storage: RopeySnapshot, version: BufferVersion, config: BufferConfig) -> Self {
+    pub(crate) fn new(
+        storage: RopeySnapshot,
+        version: BufferVersion,
+        config: BufferConfig,
+    ) -> Self {
         Self {
             storage,
             version,

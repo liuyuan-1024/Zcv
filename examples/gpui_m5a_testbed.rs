@@ -4,9 +4,9 @@ use gpui::{
 };
 
 use zom_engine::{
-    Buffer, BufferConfig, BufferVersion, ByteOffset, CharOffset, Edit, EditList, EngineResult, Line,
-    LogicalColumn, Position, SelectionSet, Snapshot, TextRange, Transaction, Utf16Position,
-    TransactionMergePolicy, TransactionMetadata, TransactionSource,
+    Buffer, BufferConfig, BufferVersion, ByteOffset, CharOffset, Edit, EditList, EngineResult,
+    Line, LogicalColumn, Position, SelectionSet, Snapshot, TextRange, Transaction,
+    TransactionMergePolicy, TransactionMetadata, TransactionSource, Utf16Position,
 };
 
 // M5A testbed：必须是 M4 testbed 的 superset。
@@ -760,12 +760,7 @@ fn render_coordinate_panel(testbed: &M5ATestbed) -> Div {
         .border_b_1()
         .border_color(rgb(0x3F3F46))
         .bg(rgb(0x27272A))
-        .child(
-            div()
-                .mb_2()
-                .text_color(rgb(0xBFDBFE))
-                .child("M5A 坐标探针"),
-        )
+        .child(div().mb_2().text_color(rgb(0xBFDBFE)).child("M5A 坐标探针"))
         .children(row_elements)
 }
 

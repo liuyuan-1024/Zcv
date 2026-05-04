@@ -25,8 +25,8 @@ mod edit;
 mod history;
 mod movement;
 mod selection_ops;
-mod versioning;
 mod validation;
+mod versioning;
 
 pub use history::HistoryStatus;
 

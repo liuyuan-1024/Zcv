@@ -5,9 +5,9 @@ use gpui::{
 
 use zom_engine::{
     Buffer, BufferConfig, BufferVersion, ByteOffset, CharOffset, DisplayColumn,
-    DisplayColumnAffinity, Edit, EditList, EngineResult, Line, LogicalColumn, Position,
-    Selection, SelectionSet, Snapshot, TextRange, Transaction, Utf16Position,
-    TransactionMergePolicy, TransactionMetadata, TransactionSource,
+    DisplayColumnAffinity, Edit, EditList, EngineResult, Line, LogicalColumn, Position, Selection,
+    SelectionSet, Snapshot, TextRange, Transaction, TransactionMergePolicy, TransactionMetadata,
+    TransactionSource, Utf16Position,
 };
 
 // M6 testbed：必须是 M5B testbed 的 superset。
@@ -590,8 +590,12 @@ impl M6Testbed {
         for selection in current.as_slice() {
             let next = if extend {
                 match direction {
-                    HorizontalDirection::Left => self.buffer.previous_grapheme_boundary(selection.head()),
-                    HorizontalDirection::Right => self.buffer.next_grapheme_boundary(selection.head()),
+                    HorizontalDirection::Left => {
+                        self.buffer.previous_grapheme_boundary(selection.head())
+                    }
+                    HorizontalDirection::Right => {
+                        self.buffer.next_grapheme_boundary(selection.head())
+                    }
                 }
                 .map(|head| selection.with_head(head))
             } else if !selection.is_caret() {
@@ -633,7 +637,12 @@ impl M6Testbed {
         self.move_selections_to_line_edge(false, LineEdge::End, cx);
     }
 
-    fn move_selections_to_line_edge(&mut self, extend: bool, edge: LineEdge, cx: &mut Context<Self>) {
+    fn move_selections_to_line_edge(
+        &mut self,
+        extend: bool,
+        edge: LineEdge,
+        cx: &mut Context<Self>,
+    ) {
         self.merge_group = None;
         let current = self.buffer.selection().clone();
         let primary_index = current.primary_index();
@@ -671,7 +680,10 @@ impl M6Testbed {
     fn select_all(&mut self, cx: &mut Context<Self>) {
         self.merge_group = None;
         self.set_selection(
-            SelectionSet::new(vec![Selection::new(CharOffset::ZERO, self.buffer.len_chars())]),
+            SelectionSet::new(vec![Selection::new(
+                CharOffset::ZERO,
+                self.buffer.len_chars(),
+            )]),
             cx,
         );
         self.last_history_event = Some("全选".to_string());
@@ -832,7 +844,11 @@ impl M6Testbed {
                     format!(
                         "{}{}{}",
                         selection.start().get(),
-                        if selection.is_reversed() { "←" } else { "→" },
+                        if selection.is_reversed() {
+                            "←"
+                        } else {
+                            "→"
+                        },
                         selection.end().get(),
                     )
                 }
@@ -860,7 +876,6 @@ impl M6Testbed {
     fn cursor_from_engine_selection(&self) -> CharOffset {
         self.buffer.selection().primary().head()
     }
-
 }
 
 impl Render for M6Testbed {

@@ -6,11 +6,7 @@ use crate::{
     transaction::{ChangeSet, Delta, TransactionMetadata, TransactionSource},
 };
 
-use super::{
-    Buffer,
-    coordinates::char_to_byte_index,
-    history::HistoryEntry,
-};
+use super::{Buffer, coordinates::char_to_byte_index, history::HistoryEntry};
 
 impl Buffer {
     /// M6C：返回当前 IME 组合输入状态。

@@ -2,8 +2,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     CharOffset, CoordinateError, EditError, EngineResult, MovementDirection, MovementUnit,
-    Selection, SelectionSet, WordBoundaryPolicy,
-    storage::TextRead,
+    Selection, SelectionSet, WordBoundaryPolicy, storage::TextRead,
 };
 
 use super::{Buffer, coordinates::is_crlf_middle};

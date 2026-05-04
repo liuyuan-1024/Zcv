@@ -1,24 +1,21 @@
 use thiserror::Error;
 
-use crate::types::{BufferVersion, ByteOffset, Line, TextRange, TransactionId};
+use crate::types::{BufferVersion, CharOffset, Line, TextRange, TransactionId};
 
 /// 坐标转换、边界校验或越界相关的错误（坐标不合法）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoordinateError {
-    #[error("字节偏移量越界: {0:?}")]
-    OutOfBounds(ByteOffset),
+    #[error("字符偏移量越界: {0:?}")]
+    OutOfBounds(CharOffset),
 
     #[error("行索引越界: {0:?}")]
     LineOutOfBounds(Line),
 
     #[error("非法文本区间: start {start:?} 大于 end {end:?}")]
-    InvalidRange { start: ByteOffset, end: ByteOffset },
+    InvalidRange { start: CharOffset, end: CharOffset },
 
-    #[error("字节偏移量处的 UTF-8 边界无效: {0:?}")]
-    InvalidUtf8Boundary(ByteOffset),
-
-    #[error("字节偏移处的字素边界无效: {0:?}")]
-    InvalidGraphemeBoundary(ByteOffset),
+    #[error("字符偏移处的字素边界无效: {0:?}")]
+    InvalidGraphemeBoundary(CharOffset),
 }
 
 /// 文本变异与编辑相关的错误（编辑请求不合法）。
@@ -34,7 +31,7 @@ pub enum EditError {
     RangeOutOfBounds { range: TextRange },
 
     #[error("编辑区间落在非法文本边界: {offset:?}")]
-    InvalidBoundary { offset: ByteOffset },
+    InvalidBoundary { offset: CharOffset },
 
     #[error("编辑有效载荷超过最大允许大小: 当前大小 {size}, 限制 {limit}")]
     PayloadTooLarge { size: usize, limit: usize },

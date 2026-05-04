@@ -1,7 +1,7 @@
 use super::TextStorage;
-use crate::{EngineResult, TextRange};
+use crate::{CharOffset, CoordinateError, EngineResult, TextRange};
 
-/// M1 参考文本后端。
+/// M1/M3.5 参考文本后端。
 ///
 /// 这是语义验证用后端，不是最终高性能后端。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -21,12 +21,29 @@ impl TextStorage for StringStorage {
     }
 
     fn replace(&mut self, range: TextRange, replacement: &str) -> EngineResult<()> {
-        let start = range.start().get();
-        let end = range.end().get();
+        let start = char_to_byte_index(&self.text, range.start())?;
+        let end = char_to_byte_index(&self.text, range.end())?;
 
-        // 公共 Buffer API 会先校验 range、UTF-8 边界与 CRLF 边界。
         self.text.replace_range(start..end, replacement);
 
         Ok(())
     }
+}
+
+fn char_to_byte_index(text: &str, offset: CharOffset) -> EngineResult<usize> {
+    let char_offset = offset.get();
+    let len_chars = text.chars().count();
+
+    if char_offset > len_chars {
+        return Err(CoordinateError::OutOfBounds(offset).into());
+    }
+
+    if char_offset == len_chars {
+        return Ok(text.len());
+    }
+
+    text.char_indices()
+        .nth(char_offset)
+        .map(|(byte_idx, _)| byte_idx)
+        .ok_or_else(|| CoordinateError::OutOfBounds(offset).into())
 }

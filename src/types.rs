@@ -6,7 +6,8 @@ use crate::CoordinateError;
 
 /// 字节偏移量。
 ///
-/// 这是 UTF-8 文本存储结构中的绝对物理坐标。
+/// 这是 UTF-8 文本存储结构中的物理坐标。M3.5 起，编辑 API 不再使用
+/// ByteOffset；它保留给文件字节、编码边界和后续外部协议适配层。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct ByteOffset(usize);
 
@@ -32,7 +33,8 @@ impl ByteOffset {
 
 /// 字符偏移量。
 ///
-/// 按 Unicode Scalar Value 计数，不等同于字节偏移量，也不等同于 UTF-16 code unit 偏移量。
+/// 按 Unicode Scalar Value 计数，不等同于字节偏移量，也不等同于 UTF-16
+/// code unit 偏移量。M3.5 起，这是编辑引擎内部和 public 编辑 API 的主坐标。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct CharOffset(usize);
 
@@ -45,6 +47,14 @@ impl CharOffset {
 
     pub const fn get(self) -> usize {
         self.0
+    }
+
+    pub fn checked_add(self, rhs: usize) -> Option<Self> {
+        self.0.checked_add(rhs).map(Self)
+    }
+
+    pub fn checked_sub(self, rhs: usize) -> Option<Self> {
+        self.0.checked_sub(rhs).map(Self)
     }
 }
 
@@ -88,7 +98,7 @@ impl Line {
 
 /// 逻辑列号，0-indexed。
 ///
-/// 表示不考虑 Tab 展开和字符显示宽度的文本列。
+/// M3.5 起，逻辑列按 Unicode Scalar Value 计数，与 CharOffset 的行内单位一致。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct LogicalColumn(usize);
 
@@ -154,18 +164,19 @@ impl Position {
 
 /// 文本区间。
 ///
-/// 由字节边界构成，满足 `start <= end`。
+/// M3.5 起，TextRange 由 CharOffset 构成，满足 `start <= end`。
+/// 这意味着 TextRange 是编辑语义区间，不再是 UTF-8 字节区间。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextRange {
-    start: ByteOffset,
-    end: ByteOffset,
+    start: CharOffset,
+    end: CharOffset,
 }
 
 impl TextRange {
     /// 创建文本区间。
     ///
     /// 该构造函数会校验 `start <= end`，避免在公共 API 边界 panic。
-    pub fn new(start: ByteOffset, end: ByteOffset) -> Result<Self, CoordinateError> {
+    pub fn new(start: CharOffset, end: CharOffset) -> Result<Self, CoordinateError> {
         if start > end {
             return Err(CoordinateError::InvalidRange { start, end });
         }
@@ -173,11 +184,11 @@ impl TextRange {
         Ok(Self { start, end })
     }
 
-    pub const fn start(self) -> ByteOffset {
+    pub const fn start(self) -> CharOffset {
         self.start
     }
 
-    pub const fn end(self) -> ByteOffset {
+    pub const fn end(self) -> CharOffset {
         self.end
     }
 
@@ -210,7 +221,7 @@ impl SelectionSnapshot {
         }
     }
 
-    pub fn caret(offset: ByteOffset) -> Result<Self, CoordinateError> {
+    pub fn caret(offset: CharOffset) -> Result<Self, CoordinateError> {
         Ok(Self::single(TextRange::new(offset, offset)?))
     }
 

@@ -7,14 +7,14 @@ fn buffer(text: &str) -> Buffer {
 }
 
 fn range(start: usize, end: usize) -> TextRange {
-    TextRange::new(ByteOffset::new(start), ByteOffset::new(end)).unwrap()
+    TextRange::new(CharOffset::new(start), CharOffset::new(end)).unwrap()
 }
 
 #[test]
 fn single_step_undo_and_redo_restore_text() {
     let mut buffer = buffer("hello");
 
-    buffer.insert(ByteOffset::new(5), " world").unwrap();
+    buffer.insert(CharOffset::new(5), " world").unwrap();
 
     assert_eq!(buffer.text(), "hello world");
     assert_eq!(buffer.history_status().undo_depth, 1);
@@ -40,9 +40,9 @@ fn single_step_undo_and_redo_restore_text() {
 fn multiple_undo_and_redo_steps_are_lifo() {
     let mut buffer = buffer("");
 
-    buffer.insert(ByteOffset::new(0), "a").unwrap();
-    buffer.insert(ByteOffset::new(1), "b").unwrap();
-    buffer.insert(ByteOffset::new(2), "c").unwrap();
+    buffer.insert(CharOffset::new(0), "a").unwrap();
+    buffer.insert(CharOffset::new(1), "b").unwrap();
+    buffer.insert(CharOffset::new(2), "c").unwrap();
 
     assert_eq!(buffer.text(), "abc");
     assert_eq!(buffer.history_status().undo_depth, 3);
@@ -61,15 +61,29 @@ fn multiple_undo_and_redo_steps_are_lifo() {
 }
 
 #[test]
+fn undo_and_redo_use_char_offsets_for_multibyte_text() {
+    let mut buffer = buffer("你a");
+
+    buffer.insert(CharOffset::new(1), "好").unwrap();
+    assert_eq!(buffer.text(), "你好a");
+
+    buffer.undo().unwrap();
+    assert_eq!(buffer.text(), "你a");
+
+    buffer.redo().unwrap();
+    assert_eq!(buffer.text(), "你好a");
+}
+
+#[test]
 fn new_edit_after_undo_clears_redo_stack() {
     let mut buffer = buffer("abc");
 
-    buffer.insert(ByteOffset::new(3), "d").unwrap();
+    buffer.insert(CharOffset::new(3), "d").unwrap();
     buffer.undo().unwrap();
     assert_eq!(buffer.text(), "abc");
     assert!(buffer.can_redo());
 
-    buffer.insert(ByteOffset::new(3), "!").unwrap();
+    buffer.insert(CharOffset::new(3), "!").unwrap();
 
     assert_eq!(buffer.text(), "abc!");
     assert!(!buffer.can_redo());
@@ -101,14 +115,14 @@ fn undo_redo_restore_batch_transaction() {
 #[test]
 fn undo_redo_restore_selection_snapshots() {
     let mut buffer = buffer("hello");
-    let before = SelectionSnapshot::caret(ByteOffset::new(1)).unwrap();
-    let after = SelectionSnapshot::caret(ByteOffset::new(4)).unwrap();
+    let before = SelectionSnapshot::caret(CharOffset::new(1)).unwrap();
+    let after = SelectionSnapshot::caret(CharOffset::new(4)).unwrap();
 
     buffer.set_selection_snapshot(Some(before.clone()));
 
     let tx = Transaction::from_edits(
         buffer.version(),
-        vec![Edit::insert(ByteOffset::new(5), "!".to_string()).unwrap()],
+        vec![Edit::insert(CharOffset::new(5), "!".to_string()).unwrap()],
     )
     .unwrap()
     .with_selection(Some(before.clone()), Some(after.clone()));
@@ -131,14 +145,14 @@ fn merge_with_previous_creates_single_undo_boundary() {
 
     let first = Transaction::from_edits(
         buffer.version(),
-        vec![Edit::insert(ByteOffset::new(0), "a".to_string()).unwrap()],
+        vec![Edit::insert(CharOffset::new(0), "a".to_string()).unwrap()],
     )
     .unwrap();
     buffer.apply_transaction(first).unwrap();
 
     let second = Transaction::from_edits(
         buffer.version(),
-        vec![Edit::insert(ByteOffset::new(1), "b".to_string()).unwrap()],
+        vec![Edit::insert(CharOffset::new(1), "b".to_string()).unwrap()],
     )
     .unwrap()
     .with_metadata(
@@ -168,6 +182,7 @@ fn snapshot_is_immutable_versioned_and_send_sync() {
 
     assert_eq!(snapshot.text(), "line1\nline2");
     assert_eq!(snapshot.version(), BufferVersion::INITIAL);
+    assert_eq!(snapshot.len_chars(), CharOffset::new(11));
     assert_eq!(snapshot.line_count(), 2);
     assert!(!snapshot.is_stale_for(&buffer));
     assert!(!buffer.is_snapshot_stale(&snapshot));
@@ -190,7 +205,7 @@ fn snapshot_is_immutable_versioned_and_send_sync() {
         (BufferVersion::INITIAL, "line1\nline2".to_string(), 2)
     );
 
-    buffer.insert(ByteOffset::new(0), "> ").unwrap();
+    buffer.insert(CharOffset::new(0), "> ").unwrap();
 
     assert_eq!(snapshot.text(), "line1\nline2");
     assert!(snapshot.is_stale_for(&buffer));

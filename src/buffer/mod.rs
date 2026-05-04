@@ -1,26 +1,17 @@
 //! 最小可编辑 Buffer。
 //!
-//! M1 目标：
-//! - Buffer 创建与读取
-//! - insert / delete / replace
-//! - TextRange 校验
-//! - 基础 LineIndex
-//! - ByteOffset <-> Position
-//! - BufferVersion 递增
-//! - dirty state
-//!
-//! M3 增量目标：
-//! - Undo / Redo
-//! - inverse transaction
-//! - 基础 Snapshot
-//! - 版本化后台结果过期判断
+//! M3.5 目标：
+//! - 内部编辑坐标全面迁移到 CharOffset
+//! - TextRange 改为 CharOffset 区间
+//! - Buffer / Transaction / ChangeSet / History 均使用字符坐标
+//! - ByteOffset 不再参与编辑 API，为 M4 接入 ropey 做准备
 
 mod line_index;
 
 use std::sync::Arc;
 
 use crate::{
-    BufferConfig, BufferVersion, ByteOffset, CoordinateError, EditError, EngineError, EngineResult,
+    BufferConfig, BufferVersion, CharOffset, CoordinateError, EditError, EngineError, EngineResult,
     Line, Position, SelectionSnapshot, TextRange,
     storage::{StringStorage, TextStorage},
     transaction::{
@@ -32,8 +23,8 @@ use line_index::LineIndex;
 
 /// 不可变文本快照。
 ///
-/// M3 先基于 `Arc<str>` 验证快照语义。M4 替换高性能存储后，
-/// 可以把内部实现替换为 Rope / PieceTree 的 O(1) 共享快照。
+/// M3 先基于 `Arc<str>` 验证快照语义。M4 替换为 ropey 后，
+/// 可以把内部实现替换为 O(1) 共享 Rope snapshot。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     text: Arc<str>,
@@ -59,24 +50,24 @@ impl Snapshot {
         self.version
     }
 
-    pub fn len_bytes(&self) -> ByteOffset {
-        ByteOffset::new(self.text.len())
+    pub fn len_chars(&self) -> CharOffset {
+        CharOffset::new(self.text.chars().count())
     }
 
     pub fn line_count(&self) -> usize {
         self.line_index.line_count()
     }
 
-    pub fn line_start(&self, line: Line) -> EngineResult<ByteOffset> {
+    pub fn line_start(&self, line: Line) -> EngineResult<CharOffset> {
         self.line_index.line_start(line)
     }
 
-    pub fn byte_to_position(&self, offset: ByteOffset) -> EngineResult<Position> {
-        self.line_index.byte_to_position(self.text(), offset)
+    pub fn char_to_position(&self, offset: CharOffset) -> EngineResult<Position> {
+        self.line_index.char_to_position(self.text(), offset)
     }
 
-    pub fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset> {
-        self.line_index.position_to_byte(self.text(), position)
+    pub fn position_to_char(&self, position: Position) -> EngineResult<CharOffset> {
+        self.line_index.position_to_char(self.text(), position)
     }
 
     pub fn is_stale_for(&self, buffer: &Buffer) -> bool {
@@ -130,8 +121,14 @@ impl HistoryEntry {
         after_selection: Option<SelectionSnapshot>,
         description: Option<String>,
     ) -> EngineResult<Self> {
-        let before_range = TextRange::new(ByteOffset::ZERO, ByteOffset::new(before_text.len()))?;
-        let after_range = TextRange::new(ByteOffset::ZERO, ByteOffset::new(after_text.len()))?;
+        let before_range = TextRange::new(
+            CharOffset::ZERO,
+            CharOffset::new(before_text.chars().count()),
+        )?;
+        let after_range = TextRange::new(
+            CharOffset::ZERO,
+            CharOffset::new(after_text.chars().count()),
+        )?;
 
         let redo_edits = EditList::new(vec![Edit::replace(before_range, after_text.clone())])?;
         let undo_edits = EditList::new(vec![Edit::replace(after_range, before_text.clone())])?;
@@ -191,8 +188,8 @@ impl Buffer {
         self.storage.text()
     }
 
-    pub fn len_bytes(&self) -> ByteOffset {
-        self.storage.len_bytes()
+    pub fn len_chars(&self) -> CharOffset {
+        self.storage.len_chars()
     }
 
     pub fn version(&self) -> BufferVersion {
@@ -215,16 +212,16 @@ impl Buffer {
         self.line_index.line_count()
     }
 
-    pub fn line_start(&self, line: Line) -> EngineResult<ByteOffset> {
+    pub fn line_start(&self, line: Line) -> EngineResult<CharOffset> {
         self.line_index.line_start(line)
     }
 
-    pub fn byte_to_position(&self, offset: ByteOffset) -> EngineResult<Position> {
-        self.line_index.byte_to_position(self.text(), offset)
+    pub fn char_to_position(&self, offset: CharOffset) -> EngineResult<Position> {
+        self.line_index.char_to_position(self.text(), offset)
     }
 
-    pub fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset> {
-        self.line_index.position_to_byte(self.text(), position)
+    pub fn position_to_char(&self, position: Position) -> EngineResult<CharOffset> {
+        self.line_index.position_to_char(self.text(), position)
     }
 
     /// 创建绑定当前版本的不可变快照。
@@ -281,8 +278,6 @@ impl Buffer {
             .into());
         }
 
-        // M3: inverse transaction 必须在“已验证的 edit list”上构造。
-        // 否则非法 range / 非 UTF-8 边界会在字符串切片时 panic，破坏 M2 的事务原子性契约。
         self.validate_edit_list(&tx_edits)?;
 
         let before_text = self.text().to_string();
@@ -352,7 +347,7 @@ impl Buffer {
         Ok(Some(result))
     }
 
-    pub fn insert(&mut self, offset: ByteOffset, text: &str) -> EngineResult<()> {
+    pub fn insert(&mut self, offset: CharOffset, text: &str) -> EngineResult<()> {
         let range = TextRange::new(offset, offset)?;
         self.replace(range, text)
     }
@@ -361,7 +356,7 @@ impl Buffer {
         self.replace(range, "")
     }
 
-    /// 替换指定范围的文本，支持插入和删除。
+    /// 替换指定字符范围的文本，支持插入和删除。
     ///
     /// M3 起该便利 API 也会走 Transaction，从而进入 Undo 历史。
     pub fn replace(&mut self, range: TextRange, replacement: &str) -> EngineResult<()> {
@@ -369,11 +364,8 @@ impl Buffer {
         self.validate_edit_boundary(range.start())?;
         self.validate_edit_boundary(range.end())?;
 
-        let start = range.start().get();
-        let end = range.end().get();
-
         // no-op 不递增版本，也不污染 dirty / history。
-        if &self.text()[start..end] == replacement {
+        if self.slice_text(range)? == replacement {
             return Ok(());
         }
 
@@ -435,15 +427,15 @@ impl Buffer {
         for edit in edits.as_slice() {
             let old_start = edit.range.start().get();
             let old_end = edit.range.end().get();
-            let deleted_text = old_text[old_start..old_end].to_string();
+            let deleted_text = slice_chars(old_text, edit.range)?.to_string();
 
             let new_start = (old_start as isize + diff).max(0) as usize;
-            let new_end = new_start + edit.replacement.len();
-            let new_range = TextRange::new(ByteOffset::new(new_start), ByteOffset::new(new_end))?;
+            let new_end = new_start + edit.replacement.chars().count();
+            let new_range = TextRange::new(CharOffset::new(new_start), CharOffset::new(new_end))?;
 
             inverse.push(Edit::replace(new_range, deleted_text));
 
-            diff += edit.replacement.len() as isize - (old_end - old_start) as isize;
+            diff += edit.replacement.chars().count() as isize - (old_end - old_start) as isize;
         }
 
         Ok(EditList::new(inverse)?)
@@ -462,7 +454,7 @@ impl Buffer {
             .into());
         }
 
-        // 1. 预检查：所有 edit 必须在当前旧文本坐标系中合法。
+        // 1. 预检查：所有 edit 必须在当前旧文本字符坐标系中合法。
         self.validate_edit_list(&tx_edits)?;
 
         let edits = tx_edits.as_slice().to_vec();
@@ -508,26 +500,23 @@ impl Buffer {
         Ok(())
     }
 
-    /// 校验范围是否合法，超出文本范围返回错误。
+    /// 校验范围是否合法，超出文本字符长度返回错误。
     fn validate_range(&self, range: TextRange) -> EngineResult<()> {
-        if range.end().get() > self.text().len() {
+        if range.end().get() > self.text().chars().count() {
             return Err(EditError::RangeOutOfBounds { range }.into());
         }
 
         Ok(())
     }
 
-    /// 校验编辑边界是否合法，超出文本范围或非 UTF-8 边界返回错误。
-    fn validate_edit_boundary(&self, offset: ByteOffset) -> EngineResult<()> {
+    /// 校验编辑边界是否合法，超出文本范围或落在 CRLF 中间返回错误。
+    fn validate_edit_boundary(&self, offset: CharOffset) -> EngineResult<()> {
         let value = offset.get();
         let text = self.text();
+        let len_chars = text.chars().count();
 
-        if value > text.len() {
+        if value > len_chars {
             return Err(CoordinateError::OutOfBounds(offset).into());
-        }
-
-        if !text.is_char_boundary(value) {
-            return Err(CoordinateError::InvalidUtf8Boundary(offset).into());
         }
 
         if is_crlf_middle(text, value) {
@@ -537,6 +526,10 @@ impl Buffer {
         Ok(())
     }
 
+    fn slice_text(&self, range: TextRange) -> EngineResult<&str> {
+        slice_chars(self.text(), range)
+    }
+
     /// 递增版本号，溢出时返回错误。
     fn bump_version(&mut self) -> EngineResult<()> {
         self.version = self.version.next().ok_or(EngineError::VersionOverflow)?;
@@ -544,8 +537,38 @@ impl Buffer {
     }
 }
 
-fn is_crlf_middle(text: &str, offset: usize) -> bool {
-    let bytes = text.as_bytes();
+fn slice_chars(text: &str, range: TextRange) -> EngineResult<&str> {
+    let start = char_to_byte_index(text, range.start())?;
+    let end = char_to_byte_index(text, range.end())?;
 
-    offset > 0 && offset < bytes.len() && bytes[offset - 1] == b'\r' && bytes[offset] == b'\n'
+    Ok(&text[start..end])
+}
+
+fn char_to_byte_index(text: &str, offset: CharOffset) -> EngineResult<usize> {
+    let char_offset = offset.get();
+    let len_chars = text.chars().count();
+
+    if char_offset > len_chars {
+        return Err(CoordinateError::OutOfBounds(offset).into());
+    }
+
+    if char_offset == len_chars {
+        return Ok(text.len());
+    }
+
+    text.char_indices()
+        .nth(char_offset)
+        .map(|(byte_idx, _)| byte_idx)
+        .ok_or_else(|| CoordinateError::OutOfBounds(offset).into())
+}
+
+fn is_crlf_middle(text: &str, offset: usize) -> bool {
+    offset > 0
+        && offset < text.chars().count()
+        && char_at(text, offset - 1) == Some('\r')
+        && char_at(text, offset) == Some('\n')
+}
+
+fn char_at(text: &str, char_offset: usize) -> Option<char> {
+    text.chars().nth(char_offset)
 }

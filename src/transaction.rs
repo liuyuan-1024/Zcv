@@ -1,7 +1,7 @@
 use crate::{
     EngineResult,
     errors::{CoordinateError, EditError, TransactionError},
-    types::{BufferVersion, ByteOffset, SelectionSnapshot, TextRange},
+    types::{BufferVersion, CharOffset, SelectionSnapshot, TextRange},
 };
 
 /// 描述单次文本修改。
@@ -16,7 +16,7 @@ impl Edit {
         Self { range, replacement }
     }
 
-    pub fn insert(offset: ByteOffset, text: String) -> Result<Self, CoordinateError> {
+    pub fn insert(offset: CharOffset, text: String) -> Result<Self, CoordinateError> {
         Ok(Self {
             range: TextRange::new(offset, offset)?,
             replacement: text,
@@ -246,7 +246,7 @@ pub struct Delta {
     pub edits: EditList,
 }
 
-/// 位置映射器：支持 old position -> new position。
+/// 位置映射器：支持 old char position -> new char position。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeSet {
     edits: Vec<Edit>,
@@ -260,27 +260,27 @@ impl ChangeSet {
         }
     }
 
-    pub fn map_position(&self, pos: ByteOffset) -> ByteOffset {
+    pub fn map_position(&self, pos: CharOffset) -> CharOffset {
         let mut diff = 0isize;
         let pos_val = pos.get() as isize;
 
         for edit in &self.edits {
             let start = edit.range.start().get() as isize;
             let end = edit.range.end().get() as isize;
-            let replacement_len = edit.replacement.len() as isize;
+            let replacement_len = edit.replacement.chars().count() as isize;
 
             if pos_val < start {
                 break;
             }
 
             if pos_val < end {
-                return ByteOffset::new((start + diff).max(0) as usize);
+                return CharOffset::new((start + diff).max(0) as usize);
             }
 
             diff += replacement_len - (end - start);
         }
 
-        ByteOffset::new((pos_val + diff).max(0) as usize)
+        CharOffset::new((pos_val + diff).max(0) as usize)
     }
 
     /// 将旧文本范围映射到新文本范围。
@@ -305,13 +305,13 @@ impl ChangeSet {
         for edit in &self.edits {
             let old_start = edit.range.start().get() as isize;
             let old_end = edit.range.end().get() as isize;
-            let replacement_len = edit.replacement.len() as isize;
+            let replacement_len = edit.replacement.chars().count() as isize;
 
             let new_start = (old_start + diff).max(0) as usize;
-            let new_end = new_start + edit.replacement.len();
+            let new_end = new_start + replacement_len as usize;
 
             ranges.push(
-                TextRange::new(ByteOffset::new(new_start), ByteOffset::new(new_end))
+                TextRange::new(CharOffset::new(new_start), CharOffset::new(new_end))
                     .expect("ChangeSet 生成的范围必须满足起始位置 <= 结束位置"),
             );
 

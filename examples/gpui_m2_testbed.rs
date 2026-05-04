@@ -4,7 +4,7 @@ use gpui::{
 };
 
 use zom_engine::{
-    Buffer, BufferConfig, BufferVersion, ByteOffset, Edit, EditList, EngineResult, Line,
+    Buffer, BufferConfig, BufferVersion, CharOffset, Edit, EditList, EngineResult, Line,
     LogicalColumn, Position, TextRange, Transaction,
 };
 
@@ -31,9 +31,9 @@ const INITIAL_TEXT: &str = "🚀 Zom Engine M2 GPUI Testbed\n\n[A] 这是锚点A
 
 pub struct M2Testbed {
     buffer: Buffer,
-    cursor: ByteOffset,
-    anchor_a: ByteOffset,
-    anchor_b: ByteOffset,
+    cursor: CharOffset,
+    anchor_a: CharOffset,
+    anchor_b: CharOffset,
     last_changed_ranges: Vec<TextRange>,
     last_delta: Option<(BufferVersion, BufferVersion, usize)>,
     focus_handle: FocusHandle,
@@ -46,7 +46,7 @@ impl M2Testbed {
 
         Self {
             buffer,
-            cursor: ByteOffset::ZERO,
+            cursor: CharOffset::ZERO,
             anchor_a,
             anchor_b,
             last_changed_ranges: Vec::new(),
@@ -60,7 +60,7 @@ impl M2Testbed {
         let (buffer, anchor_a, anchor_b) = initial_buffer_and_anchors();
 
         self.buffer = buffer;
-        self.cursor = ByteOffset::ZERO;
+        self.cursor = CharOffset::ZERO;
         self.anchor_a = anchor_a;
         self.anchor_b = anchor_b;
         self.last_changed_ranges.clear();
@@ -148,7 +148,7 @@ impl M2Testbed {
         self.delete_range(self.cursor, next, cx);
     }
 
-    fn delete_range(&mut self, start: ByteOffset, end: ByteOffset, cx: &mut Context<Self>) {
+    fn delete_range(&mut self, start: CharOffset, end: CharOffset, cx: &mut Context<Self>) {
         match TextRange::new(start, end) {
             Ok(range) => self.submit_edits(vec![Edit::delete(range)], cx),
             Err(err) => {
@@ -159,11 +159,11 @@ impl M2Testbed {
     }
 
     fn batch_edit(&mut self, cx: &mut Context<Self>) {
-        let marker = Edit::insert(ByteOffset::ZERO, "[批量标记] ".to_string()).unwrap();
+        let marker = Edit::insert(CharOffset::ZERO, "[批量标记] ".to_string()).unwrap();
 
         // 避免在 cursor=0 时制造两个同 offset 的插入，让 testbed 的视觉结果更可预期。
-        let sparkle_offset = if self.cursor == ByteOffset::ZERO {
-            self.buffer.len_bytes()
+        let sparkle_offset = if self.cursor == CharOffset::ZERO {
+            self.buffer.len_chars()
         } else {
             self.cursor
         };
@@ -216,15 +216,15 @@ impl M2Testbed {
         cx.notify();
     }
 
-    fn line_content_end(&self, line: Line) -> EngineResult<ByteOffset> {
+    fn line_content_end(&self, line: Line) -> EngineResult<CharOffset> {
         let line_start = self.buffer.line_start(line)?.get();
         let next_line_start = if line.get() + 1 < self.buffer.line_count() {
             self.buffer.line_start(Line::new(line.get() + 1))?.get()
         } else {
-            self.buffer.len_bytes().get()
+            self.buffer.len_chars().get()
         };
 
-        Ok(ByteOffset::new(line_content_end(
+        Ok(CharOffset::new(line_content_end(
             self.buffer.text(),
             line_start,
             next_line_start,
@@ -233,7 +233,7 @@ impl M2Testbed {
 
     fn cursor_position(&self) -> Position {
         self.buffer
-            .byte_to_position(self.cursor)
+            .char_to_position(self.cursor)
             .unwrap_or_else(|_| Position::new(Line::ZERO, LogicalColumn::ZERO))
     }
 }
@@ -297,9 +297,9 @@ impl Render for M2Testbed {
                     .pb_4()
                     .mb_4()
                     .child(format!(
-                        "Zom Engine M2 | byte={} / {} | line={} col={} | lines={} | version={} saved={} | dirty={} | A={} | B={} | changed_ranges={} | {}",
+                        "Zom Engine M2 | char={} / {} | line={} col={} | lines={} | version={} saved={} | dirty={} | A={} | B={} | changed_ranges={} | {}",
                         cursor.get(),
-                        self.buffer.len_bytes().get(),
+                        self.buffer.len_chars().get(),
                         position.line().get(),
                         position.column().get(),
                         self.buffer.line_count(),
@@ -343,27 +343,33 @@ impl Render for M2Testbed {
     }
 }
 
-fn initial_buffer_and_anchors() -> (Buffer, ByteOffset, ByteOffset) {
+fn initial_buffer_and_anchors() -> (Buffer, CharOffset, CharOffset) {
     let text = INITIAL_TEXT.to_string();
-    let anchor_a = ByteOffset::new(text.find("[A]").expect("fixture should contain [A]"));
-    let anchor_b = ByteOffset::new(text.find("[B]").expect("fixture should contain [B]"));
+    let anchor_a =
+        byte_to_char_offset(&text, text.find("[A]").expect("fixture should contain [A]"));
+    let anchor_b =
+        byte_to_char_offset(&text, text.find("[B]").expect("fixture should contain [B]"));
     let buffer =
         Buffer::from_text(text, BufferConfig::default()).expect("initial buffer should be valid");
 
     (buffer, anchor_a, anchor_b)
 }
 
+fn byte_to_char_offset(text: &str, byte_offset: usize) -> CharOffset {
+    CharOffset::new(text[..byte_offset].chars().count())
+}
+
 fn render_lines_with_markers(
     text: &str,
-    cursor: ByteOffset,
-    anchor_a: ByteOffset,
-    anchor_b: ByteOffset,
+    cursor: CharOffset,
+    anchor_a: CharOffset,
+    anchor_b: CharOffset,
     changed_ranges: &[TextRange],
 ) -> Vec<Div> {
     let mut rows = Vec::new();
-    let cursor_byte = cursor.get();
-    let a_byte = anchor_a.get();
-    let b_byte = anchor_b.get();
+    let cursor_char = cursor.get();
+    let a_char = anchor_a.get();
+    let b_char = anchor_b.get();
 
     if text.is_empty() {
         rows.push(cursor_row());
@@ -373,7 +379,7 @@ fn render_lines_with_markers(
     let mut line_start = 0;
 
     for line_with_newline in text.split_inclusive('\n') {
-        let line_end = line_start + line_with_newline.len();
+        let line_end = line_start + line_with_newline.chars().count();
         let display_line = line_with_newline
             .trim_end_matches('\n')
             .trim_end_matches('\r');
@@ -382,9 +388,9 @@ fn render_lines_with_markers(
         let mut char_offset = line_start;
 
         for c in display_line.chars() {
-            let next_offset = char_offset + c.len_utf8();
+            let next_offset = char_offset + 1;
 
-            if char_offset == cursor_byte {
+            if char_offset == cursor_char {
                 row_children.push(cursor_element().into_any());
             }
 
@@ -406,9 +412,9 @@ fn render_lines_with_markers(
 
             if is_highlighted {
                 char_div = char_div.bg(rgb(0x854D0E)).text_color(rgb(0xFEF08A));
-            } else if char_offset == a_byte {
+            } else if char_offset == a_char {
                 char_div = char_div.bg(rgb(0x991B1B)).text_color(rgb(0xFECACA));
-            } else if char_offset == b_byte {
+            } else if char_offset == b_char {
                 char_div = char_div.bg(rgb(0x166534)).text_color(rgb(0xBBF7D0));
             }
 
@@ -420,7 +426,7 @@ fn render_lines_with_markers(
             char_offset = next_offset;
         }
 
-        if char_offset == cursor_byte {
+        if char_offset == cursor_char {
             row_children.push(cursor_element().into_any());
         }
 
@@ -447,7 +453,7 @@ fn render_lines_with_markers(
     }
 
     if text.ends_with('\n') {
-        if cursor_byte == text.len() {
+        if cursor_char == text.chars().count() {
             rows.push(cursor_row());
         } else {
             rows.push(div().min_h(px(28.0)).child(""));
@@ -469,47 +475,53 @@ fn cursor_element() -> Div {
     div().w(px(2.0)).h(px(22.0)).bg(rgb(0x3B82F6))
 }
 
-fn previous_edit_boundary(text: &str, cursor: ByteOffset) -> Option<ByteOffset> {
+fn previous_edit_boundary(text: &str, cursor: CharOffset) -> Option<CharOffset> {
     let mut current = cursor.get();
+    let len_chars = text.chars().count();
 
-    if current == 0 || current > text.len() || !text.is_char_boundary(current) {
+    if current == 0 || current > len_chars {
         return None;
     }
 
     loop {
-        let prev = text[..current].char_indices().last()?.0;
+        let prev = current.checked_sub(1)?;
 
         if !is_crlf_middle(text, prev) {
-            return Some(ByteOffset::new(prev));
+            return Some(CharOffset::new(prev));
         }
 
         current = prev;
     }
 }
 
-fn next_edit_boundary(text: &str, cursor: ByteOffset) -> Option<ByteOffset> {
-    let current = cursor.get();
+fn next_edit_boundary(text: &str, cursor: CharOffset) -> Option<CharOffset> {
+    let len_chars = text.chars().count();
+    let mut current = cursor.get();
 
-    if current >= text.len() || !text.is_char_boundary(current) {
+    if current >= len_chars {
         return None;
     }
 
-    for (relative, _) in text[current..].char_indices().skip(1) {
-        let next = current + relative;
+    loop {
+        let next = current + 1;
+
+        if next > len_chars {
+            return None;
+        }
 
         if !is_crlf_middle(text, next) {
-            return Some(ByteOffset::new(next));
+            return Some(CharOffset::new(next));
         }
-    }
 
-    Some(ByteOffset::new(text.len()))
+        current = next;
+    }
 }
 
 fn line_content_end(text: &str, line_start: usize, next_line_start: usize) -> usize {
-    let bytes = text.as_bytes();
+    let chars: Vec<char> = text.chars().collect();
 
-    if next_line_start > line_start && bytes[next_line_start - 1] == b'\n' {
-        if next_line_start >= line_start + 2 && bytes[next_line_start - 2] == b'\r' {
+    if next_line_start > line_start && chars.get(next_line_start - 1) == Some(&'\n') {
+        if next_line_start >= line_start + 2 && chars.get(next_line_start - 2) == Some(&'\r') {
             next_line_start - 2
         } else {
             next_line_start - 1
@@ -520,9 +532,12 @@ fn line_content_end(text: &str, line_start: usize, next_line_start: usize) -> us
 }
 
 fn is_crlf_middle(text: &str, offset: usize) -> bool {
-    let bytes = text.as_bytes();
+    let chars: Vec<char> = text.chars().collect();
 
-    offset > 0 && offset < bytes.len() && bytes[offset - 1] == b'\r' && bytes[offset] == b'\n'
+    offset > 0
+        && offset < chars.len()
+        && chars.get(offset - 1) == Some(&'\r')
+        && chars.get(offset) == Some(&'\n')
 }
 
 fn main() {

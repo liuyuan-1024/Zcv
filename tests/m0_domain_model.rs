@@ -17,7 +17,7 @@ fn root_public_api_can_be_imported() {
     let _ = DisplayColumn::new(0);
 
     let _ = Position::new(Line::new(0), LogicalColumn::new(0));
-    let _ = TextRange::new(ByteOffset::new(0), ByteOffset::new(0)).unwrap();
+    let _ = TextRange::new(CharOffset::new(0), CharOffset::new(0)).unwrap();
 
     let _ = BufferVersion::INITIAL;
     let _ = TransactionId::INITIAL;
@@ -62,42 +62,42 @@ fn position_zero_is_line_zero_column_zero() {
 }
 
 #[test]
-fn text_range_accepts_ordered_offsets() {
-    let range = TextRange::new(ByteOffset::new(1), ByteOffset::new(3)).unwrap();
+fn text_range_accepts_ordered_char_offsets() {
+    let range = TextRange::new(CharOffset::new(1), CharOffset::new(3)).unwrap();
 
-    assert_eq!(range.start(), ByteOffset::new(1));
-    assert_eq!(range.end(), ByteOffset::new(3));
+    assert_eq!(range.start(), CharOffset::new(1));
+    assert_eq!(range.end(), CharOffset::new(3));
     assert_eq!(range.len(), 2);
     assert!(!range.is_empty());
 }
 
 #[test]
-fn text_range_accepts_empty_range() {
-    let range = TextRange::new(ByteOffset::new(2), ByteOffset::new(2)).unwrap();
+fn text_range_accepts_empty_char_range() {
+    let range = TextRange::new(CharOffset::new(2), CharOffset::new(2)).unwrap();
 
-    assert_eq!(range.start(), ByteOffset::new(2));
-    assert_eq!(range.end(), ByteOffset::new(2));
+    assert_eq!(range.start(), CharOffset::new(2));
+    assert_eq!(range.end(), CharOffset::new(2));
     assert_eq!(range.len(), 0);
     assert!(range.is_empty());
 }
 
 #[test]
-fn text_range_rejects_reversed_offsets() {
-    let err = TextRange::new(ByteOffset::new(3), ByteOffset::new(1)).unwrap_err();
+fn text_range_rejects_reversed_char_offsets() {
+    let err = TextRange::new(CharOffset::new(3), CharOffset::new(1)).unwrap_err();
 
     assert_eq!(
         err,
         CoordinateError::InvalidRange {
-            start: ByteOffset::new(3),
-            end: ByteOffset::new(1),
+            start: CharOffset::new(3),
+            end: CharOffset::new(1),
         }
     );
 }
 
 #[test]
 fn text_range_constructor_is_the_only_public_range_constructor() {
-    let ok = TextRange::new(ByteOffset::new(1), ByteOffset::new(1));
-    let err = TextRange::new(ByteOffset::new(2), ByteOffset::new(1));
+    let ok = TextRange::new(CharOffset::new(1), CharOffset::new(1));
+    let err = TextRange::new(CharOffset::new(2), CharOffset::new(1));
 
     assert!(ok.is_ok());
     assert!(matches!(err, Err(CoordinateError::InvalidRange { .. })));
@@ -113,6 +113,18 @@ fn byte_offset_checked_arithmetic_does_not_panic() {
 #[test]
 fn byte_offset_checked_arithmetic_reports_overflow() {
     assert_eq!(ByteOffset::new(usize::MAX).checked_add(1), None);
+}
+
+#[test]
+fn char_offset_checked_arithmetic_does_not_panic() {
+    assert_eq!(CharOffset::new(3).checked_add(2), Some(CharOffset::new(5)));
+    assert_eq!(CharOffset::new(3).checked_sub(2), Some(CharOffset::new(1)));
+    assert_eq!(CharOffset::new(0).checked_sub(1), None);
+}
+
+#[test]
+fn char_offset_checked_arithmetic_reports_overflow() {
+    assert_eq!(CharOffset::new(usize::MAX).checked_add(1), None);
 }
 
 #[test]
@@ -183,8 +195,8 @@ fn config_enums_are_public_strategy_values() {
 #[test]
 fn coordinate_error_can_be_lifted_to_engine_error() {
     let error = CoordinateError::InvalidRange {
-        start: ByteOffset::new(3),
-        end: ByteOffset::new(1),
+        start: CharOffset::new(3),
+        end: CharOffset::new(1),
     };
 
     let engine_error: EngineError = error.into();
@@ -194,7 +206,7 @@ fn coordinate_error_can_be_lifted_to_engine_error() {
 
 #[test]
 fn edit_error_can_be_lifted_to_engine_error() {
-    let range = TextRange::new(ByteOffset::new(0), ByteOffset::new(1)).unwrap();
+    let range = TextRange::new(CharOffset::new(0), CharOffset::new(1)).unwrap();
     let error = EditError::RangeOutOfBounds { range };
 
     let engine_error: EngineError = error.into();

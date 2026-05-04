@@ -1,7 +1,8 @@
 use crate::{
     EngineResult,
     errors::{CoordinateError, EditError, TransactionError},
-    types::{BufferVersion, CharOffset, SelectionSnapshot, TextRange},
+    selection::SelectionSet,
+    types::{BufferVersion, CharOffset, TextRange},
 };
 
 /// 描述单次文本修改。
@@ -160,8 +161,8 @@ pub struct Transaction {
     base_version: BufferVersion,
     edits: EditList,
     metadata: TransactionMetadata,
-    before_selection: Option<SelectionSnapshot>,
-    after_selection: Option<SelectionSnapshot>,
+    before_selection: Option<SelectionSet>,
+    after_selection: Option<SelectionSet>,
 }
 
 impl Transaction {
@@ -191,8 +192,8 @@ impl Transaction {
 
     pub fn with_selection(
         mut self,
-        before_selection: Option<SelectionSnapshot>,
-        after_selection: Option<SelectionSnapshot>,
+        before_selection: Option<SelectionSet>,
+        after_selection: Option<SelectionSet>,
     ) -> Self {
         self.before_selection = before_selection;
         self.after_selection = after_selection;
@@ -211,11 +212,11 @@ impl Transaction {
         &self.metadata
     }
 
-    pub fn before_selection(&self) -> Option<&SelectionSnapshot> {
+    pub fn before_selection(&self) -> Option<&SelectionSet> {
         self.before_selection.as_ref()
     }
 
-    pub fn after_selection(&self) -> Option<&SelectionSnapshot> {
+    pub fn after_selection(&self) -> Option<&SelectionSet> {
         self.after_selection.as_ref()
     }
 
@@ -225,8 +226,8 @@ impl Transaction {
         BufferVersion,
         EditList,
         TransactionMetadata,
-        Option<SelectionSnapshot>,
-        Option<SelectionSnapshot>,
+        Option<SelectionSet>,
+        Option<SelectionSet>,
     ) {
         (
             self.base_version,

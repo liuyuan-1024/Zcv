@@ -6,7 +6,7 @@ use gpui::{
 use zom_engine::{
     Buffer, BufferConfig, BufferVersion, ByteOffset, CharOffset, DisplayColumn,
     DisplayColumnAffinity, Edit, EditList, EngineResult, Line, LogicalColumn, Position,
-    SelectionSnapshot, Snapshot, TextRange, Transaction, Utf16Position,
+    SelectionSet, Snapshot, TextRange, Transaction, Utf16Position,
     TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 
@@ -176,25 +176,10 @@ impl M5BTestbed {
                 return false;
             }
         };
-
-        let before_selection = match SelectionSnapshot::caret(self.cursor) {
-            Ok(selection) => selection,
-            Err(err) => {
-                self.last_error = Some(err.to_string());
-                cx.notify();
-                return false;
-            }
-        };
+        let before_selection = SelectionSet::caret(self.cursor);
 
         let after_cursor = map_position_after_edits(self.cursor, edit_list.as_slice());
-        let after_selection = match SelectionSnapshot::caret(after_cursor) {
-            Ok(selection) => selection,
-            Err(err) => {
-                self.last_error = Some(err.to_string());
-                cx.notify();
-                return false;
-            }
-        };
+        let after_selection = SelectionSet::caret(after_cursor);
 
         let tx = match Transaction::new(self.buffer.version(), edit_list) {
             Ok(tx) => tx
@@ -642,15 +627,13 @@ impl M5BTestbed {
     }
 
     fn sync_engine_selection_to_cursor(&mut self) {
-        if let Ok(selection) = SelectionSnapshot::caret(self.cursor) {
-            self.buffer.set_selection_snapshot(Some(selection));
+        if let Err(err) = self.buffer.set_selection(SelectionSet::caret(self.cursor)) {
+            self.last_error = Some(err.to_string());
         }
     }
 
     fn cursor_from_engine_selection(&self) -> Option<CharOffset> {
-        self.buffer
-            .selection_snapshot()
-            .and_then(|selection| selection.ranges().first().map(|range| range.end()))
+        Some(self.buffer.selection().primary().head())
     }
 }
 
@@ -882,9 +865,9 @@ fn initial_buffer_and_anchors() -> (Buffer, CharOffset, CharOffset) {
         byte_to_char_offset(&text, text.find("[B]").expect("fixture should contain [B]"));
     let mut buffer =
         Buffer::from_text(text, BufferConfig::default()).expect("initial buffer should be valid");
-    buffer.set_selection_snapshot(Some(
-        SelectionSnapshot::caret(CharOffset::ZERO).expect("zero caret should be valid"),
-    ));
+    buffer
+        .set_selection(SelectionSet::caret(CharOffset::ZERO))
+        .expect("zero caret should be valid");
 
     (buffer, anchor_a, anchor_b)
 }

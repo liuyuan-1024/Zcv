@@ -8,11 +8,13 @@ pub(crate) mod storage;
 pub mod buffer;
 pub mod config;
 pub mod errors;
+pub mod selection;
 pub mod transaction;
 pub mod types;
 
 pub use buffer::*;
 pub use config::*;
 pub use errors::*;
+pub use selection::*;
 pub use transaction::*;
 pub use types::*;

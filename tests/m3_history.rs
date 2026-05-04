@@ -113,12 +113,12 @@ fn undo_redo_restore_batch_transaction() {
 }
 
 #[test]
-fn undo_redo_restore_selection_snapshots() {
+fn undo_redo_restore_selection_sets() {
     let mut buffer = buffer("hello");
-    let before = SelectionSnapshot::caret(CharOffset::new(1)).unwrap();
-    let after = SelectionSnapshot::caret(CharOffset::new(4)).unwrap();
+    let before = SelectionSet::caret(CharOffset::new(1));
+    let after = SelectionSet::caret(CharOffset::new(4));
 
-    buffer.set_selection_snapshot(Some(before.clone()));
+    buffer.set_selection(before.clone()).unwrap();
 
     let tx = Transaction::from_edits(
         buffer.version(),
@@ -128,17 +128,16 @@ fn undo_redo_restore_selection_snapshots() {
     .with_selection(Some(before.clone()), Some(after.clone()));
 
     buffer.apply_transaction(tx).unwrap();
-    assert_eq!(buffer.selection_snapshot(), Some(&after));
+    assert_eq!(buffer.selection(), &after);
 
     buffer.undo().unwrap();
-    assert_eq!(buffer.text(), "hello");
-    assert_eq!(buffer.selection_snapshot(), Some(&before));
+    assert_eq!(buffer.text().as_ref(), "hello");
+    assert_eq!(buffer.selection(), &before);
 
     buffer.redo().unwrap();
-    assert_eq!(buffer.text(), "hello!");
-    assert_eq!(buffer.selection_snapshot(), Some(&after));
+    assert_eq!(buffer.text().as_ref(), "hello!");
+    assert_eq!(buffer.selection(), &after);
 }
-
 #[test]
 fn merge_with_previous_creates_single_undo_boundary() {
     let mut buffer = buffer("");

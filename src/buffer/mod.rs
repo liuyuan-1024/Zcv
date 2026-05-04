@@ -14,16 +14,22 @@
 //! - 暴露 Tab Stop / DisplayWidthPolicy 驱动的视觉列数学
 //! - 支持 logical column -> display column
 //! - 支持 display column -> 最近合法 logical column / CharOffset
+//!
+//! M6 目标：
+//! - Buffer 直接持有 SelectionSet，不再以 SelectionSnapshot 作为主模型
+//! - Transaction / History 直接恢复 SelectionSet
+//! - 支持多光标插入、删除、替换
 
 use std::borrow::Cow;
 
 use crate::{
     BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, DisplayColumn,
     DisplayColumnAffinity, EditError, EngineError, EngineResult, Line, LineEndingStyle,
-    LogicalColumn, Position, SelectionSnapshot, TextRange, Utf16Position,
+    LogicalColumn, Position, Selection, SelectionSet, TextRange, Utf16Position,
     storage::{RopeySnapshot, RopeyStorage, TextRead, TextStorage},
     transaction::{
         ChangeSet, Delta, Edit, EditList, Transaction, TransactionMergePolicy, TransactionMetadata,
+        TransactionSource,
     },
 };
 
@@ -216,8 +222,8 @@ struct HistoryEntry {
     after_text: String,
     undo_edits: EditList,
     redo_edits: EditList,
-    before_selection: Option<SelectionSnapshot>,
-    after_selection: Option<SelectionSnapshot>,
+    before_selection: SelectionSet,
+    after_selection: SelectionSet,
     description: Option<String>,
 }
 
@@ -227,8 +233,8 @@ impl HistoryEntry {
         after_text: String,
         undo_edits: EditList,
         redo_edits: EditList,
-        before_selection: Option<SelectionSnapshot>,
-        after_selection: Option<SelectionSnapshot>,
+        before_selection: SelectionSet,
+        after_selection: SelectionSet,
         description: Option<String>,
     ) -> Self {
         Self {
@@ -245,8 +251,8 @@ impl HistoryEntry {
     fn from_snapshots(
         before_text: String,
         after_text: String,
-        before_selection: Option<SelectionSnapshot>,
-        after_selection: Option<SelectionSnapshot>,
+        before_selection: SelectionSet,
+        after_selection: SelectionSet,
         description: Option<String>,
     ) -> EngineResult<Self> {
         let before_range = TextRange::new(
@@ -282,7 +288,7 @@ pub struct Buffer {
     saved_version: BufferVersion,
     undo_stack: Vec<HistoryEntry>,
     redo_stack: Vec<HistoryEntry>,
-    selection: Option<SelectionSnapshot>,
+    selection: SelectionSet,
 }
 
 impl Buffer {
@@ -300,7 +306,7 @@ impl Buffer {
             saved_version: BufferVersion::INITIAL,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-            selection: None,
+            selection: SelectionSet::default(),
         })
     }
 
@@ -480,14 +486,133 @@ impl Buffer {
         snapshot.version() != self.version
     }
 
-    /// M3 只提供用于历史恢复的轻量 selection 状态。
-    /// 完整 Selection / Multi Cursor 模型留到后续阶段。
-    pub fn selection_snapshot(&self) -> Option<&SelectionSnapshot> {
-        self.selection.as_ref()
+    pub fn selection(&self) -> &SelectionSet {
+        &self.selection
     }
 
-    pub fn set_selection_snapshot(&mut self, selection: Option<SelectionSnapshot>) {
+    pub fn set_selection(&mut self, selection: SelectionSet) -> EngineResult<()> {
+        self.validate_selection_set(&selection)?;
         self.selection = selection;
+        Ok(())
+    }
+
+    pub fn selection_after_edit(
+        &self,
+        selection: &SelectionSet,
+        changeset: &ChangeSet,
+    ) -> SelectionSet {
+        selection.map_through_changeset(changeset)
+    }
+
+    /// 在每个 selection 处插入文本；非空 selection 会被替换。
+    pub fn insert_at_selections(
+        &mut self,
+        selections: SelectionSet,
+        text: &str,
+    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.replace_selection_ranges_with_metadata(
+            selections,
+            text,
+            TransactionMetadata::new(TransactionSource::Keyboard)
+                .with_description("insert at selections"),
+        )
+    }
+
+    /// 用同一段文本替换每个 selection。
+    pub fn replace_selections(
+        &mut self,
+        selections: SelectionSet,
+        replacement: &str,
+    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.replace_selection_ranges_with_metadata(
+            selections,
+            replacement,
+            TransactionMetadata::new(TransactionSource::Command)
+                .with_description("replace selections"),
+        )
+    }
+
+    /// 删除所有非空 selection range；caret 本身不会删除任何字符。
+    pub fn delete_selection_ranges(
+        &mut self,
+        selections: SelectionSet,
+    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.replace_selection_ranges_with_metadata(
+            selections,
+            "",
+            TransactionMetadata::new(TransactionSource::Delete)
+                .with_description("delete selections"),
+        )
+    }
+
+    /// 对每个 caret 执行 grapheme-safe Backspace；非空 selection 直接删除 selection range。
+    pub fn delete_backward_at_selections(
+        &mut self,
+        selections: SelectionSet,
+    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.validate_selection_set(&selections)?;
+
+        let mut delete_targets = Vec::new();
+
+        for selection in selections.as_slice() {
+            if selection.is_caret() {
+                let end = selection.head();
+                let start = self.previous_grapheme_boundary(end)?;
+
+                if start != end {
+                    delete_targets.push(Selection::new(start, end));
+                }
+            } else {
+                delete_targets.push(*selection);
+            }
+        }
+
+        if delete_targets.is_empty() {
+            self.set_selection(selections)?;
+            return Ok(None);
+        }
+
+        self.replace_selection_ranges_with_metadata(
+            SelectionSet::new(delete_targets),
+            "",
+            TransactionMetadata::new(TransactionSource::Delete)
+                .with_description("delete backward at selections"),
+        )
+    }
+
+    /// 对每个 caret 执行 grapheme-safe Delete；非空 selection 直接删除 selection range。
+    pub fn delete_forward_at_selections(
+        &mut self,
+        selections: SelectionSet,
+    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.validate_selection_set(&selections)?;
+
+        let mut delete_targets = Vec::new();
+
+        for selection in selections.as_slice() {
+            if selection.is_caret() {
+                let start = selection.head();
+                let end = self.next_grapheme_boundary(start)?;
+
+                if start != end {
+                    delete_targets.push(Selection::new(start, end));
+                }
+            } else {
+                delete_targets.push(*selection);
+            }
+        }
+
+        if delete_targets.is_empty() {
+            self.set_selection(selections)?;
+            return Ok(None);
+        }
+
+        self.replace_selection_ranges_with_metadata(
+            SelectionSet::new(delete_targets),
+            "",
+            TransactionMetadata::new(TransactionSource::Delete)
+                .with_description("delete forward at selections"),
+        )
     }
 
     pub fn can_undo(&self) -> bool {
@@ -523,17 +648,16 @@ impl Buffer {
         self.validate_edit_list(&tx_edits)?;
 
         let before_text = self.text().into_owned();
-        let before_selection = tx_before_selection.or_else(|| self.selection.clone());
+        let before_selection = tx_before_selection.unwrap_or_else(|| self.selection.clone());
         let undo_edits = Self::build_inverse_edit_list(&before_text, &tx_edits)?;
         let redo_edits = tx_edits.clone();
 
         let (delta, changeset) = self.apply_edit_list(base_version, tx_edits)?;
 
-        if let Some(selection) = tx_after_selection {
-            self.selection = Some(selection);
-        }
+        let after_selection = tx_after_selection
+            .unwrap_or_else(|| before_selection.map_through_changeset(&changeset));
+        self.selection = after_selection.clone();
 
-        let after_selection = self.selection.clone();
         let after_text = self.text().into_owned();
 
         if metadata.record_history {
@@ -618,6 +742,56 @@ impl Buffer {
 
         self.apply_transaction(tx)?;
         Ok(())
+    }
+
+    fn replace_selection_ranges_with_metadata(
+        &mut self,
+        selections: SelectionSet,
+        replacement: &str,
+        metadata: TransactionMetadata,
+    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        let selections = selections.normalized();
+        self.validate_selection_set(&selections)?;
+
+        let before_selection = selections.clone();
+        let replacement_len = replacement.chars().count();
+        let replacement = replacement.to_string();
+
+        let mut edits = Vec::new();
+        let mut after_selections = Vec::with_capacity(selections.len());
+        let mut diff = 0isize;
+
+        for selection in selections.as_slice() {
+            let range = selection.range();
+            let old_start = range.start().get() as isize;
+            let old_end = range.end().get() as isize;
+            let new_start = (old_start + diff).max(0) as usize;
+            let new_head = CharOffset::new(new_start + replacement_len);
+
+            let is_empty_noop = range.is_empty() && replacement.is_empty();
+            let is_same_text_noop =
+                !range.is_empty() && self.slice_text(range)?.as_ref() == replacement.as_str();
+
+            if !is_empty_noop && !is_same_text_noop {
+                edits.push(Edit::replace(range, replacement.clone()));
+                diff += replacement_len as isize - (old_end - old_start);
+            }
+
+            after_selections.push(Selection::caret(new_head));
+        }
+
+        let after_selection = SelectionSet::new(after_selections);
+
+        if edits.is_empty() {
+            self.selection = after_selection;
+            return Ok(None);
+        }
+
+        let tx = Transaction::from_edits(self.version, edits)?
+            .with_metadata(metadata)
+            .with_selection(Some(before_selection), Some(after_selection));
+
+        self.apply_transaction(tx).map(Some)
     }
 
     fn push_history(
@@ -737,6 +911,20 @@ impl Buffer {
         }
 
         Ok(())
+    }
+
+    fn validate_selection_set(&self, selections: &SelectionSet) -> EngineResult<()> {
+        for selection in selections.as_slice() {
+            self.validate_selection_boundary(selection.anchor())?;
+            self.validate_selection_boundary(selection.head())?;
+        }
+
+        Ok(())
+    }
+
+    fn validate_selection_boundary(&self, offset: CharOffset) -> EngineResult<()> {
+        self.validate_edit_boundary(offset)?;
+        self.validate_grapheme_boundary(offset)
     }
 
     /// 校验范围是否合法，超出文本字符长度返回错误。

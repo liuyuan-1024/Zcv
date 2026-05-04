@@ -4,52 +4,76 @@ use gpui::{
 };
 
 use zom_engine::{
-    Buffer, BufferConfig, BufferVersion, ByteOffset, CharOffset, Edit, EditList, EngineResult, Line,
-    LogicalColumn, Position, SelectionSet, Snapshot, TextRange, Transaction, Utf16Position,
+    Buffer, BufferConfig, BufferVersion, ByteOffset, CharOffset, DisplayColumn,
+    DisplayColumnAffinity, Edit, EditList, EngineResult, Line, LogicalColumn, Position,
+    Selection, SelectionSet, Snapshot, TextRange, Transaction, Utf16Position,
     TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 
-// M5A testbed：必须是 M4 testbed 的 superset。
-// 保留 M4 的输入 / Delete / Home / End / Save / Reset / 批量事务 / Delta / ChangeSet / Undo / Redo / Snapshot / Rope metrics 可视化能力，
-// 再叠加 IDE 必需坐标：ByteOffset <-> CharOffset、UTF-16 Position、byte <-> UTF-16、grapheme boundary、grapheme-safe 光标移动与换行风格识别。
+// M6 testbed：必须是 M5B testbed 的 superset。
+// 保留 M5B 的输入 / Delete / Home / End / Save / Reset / 批量事务 / Delta / ChangeSet / Undo / Redo / Snapshot / Rope metrics / IDE 坐标 / 视觉列能力，
+// 再叠加 M6 SelectionSet：anchor/head、范围选区、多光标、选区替换、Undo/Redo 恢复选区。
 actions!(
-    m5a_testbed,
+    m6_testbed,
     [
         Backspace,
         DeleteForward,
         Enter,
         Left,
         Right,
+        SelectLeft,
+        SelectRight,
         Home,
         End,
         Save,
         Reset,
+        SelectAll,
+        ClearSelection,
+        MultiCursorDemo,
+        MultiSelectionDemo,
+        ReplaceSelectionsProbe,
         BatchEdit,
         Undo,
         Redo,
         MergeDemo,
         CaptureSnapshot,
         InsertLongLine,
-        InsertUnicodeProbe
+        InsertUnicodeProbe,
+        InsertDisplayProbe
     ]
 );
 
 const INITIAL_TEXT: &str = concat!(
-    "🚀 Zom Engine M5A 中文测试台\n",
-    "\n",
-    "[A] 这是锚点A，[B] 这是锚点B。\n",
-    "可以输入、回车、退格、Delete、左右移动光标。\n",
-    "Home / End 可跳到当前行首尾。\n",
-    "Cmd-S 标记已保存，Cmd-R 重置文本。\n",
-    "Cmd-B 触发批量事务修改，连续字符输入会合并成一个撤销步骤，Cmd-M 触发一次合并到上一步的事务。\n",
-    "Cmd-Z / Ctrl-Z 撤销，Cmd-Shift-Z / Ctrl-Y 重做。\n",
-    "Cmd-K 捕获当前快照，并观察后续编辑后快照是否过期。\n",
-    "Cmd-L 在当前光标插入一段中等长度的单行文本，用于快速验证 RopeyStorage 的局部插入与指标更新。\n",
-    "Cmd-U 插入 Unicode / 字素 / CRLF 探针文本。\n",
-    "M5A 额外显示 CharOffset、ByteOffset、UTF-16 位置、byte↔UTF-16 往返转换、字素边界和文件换行风格。\n",
-    "M5A 左右移动与退格/Delete 使用字素安全边界，避免切开 ZWJ emoji 与组合字符。\n",
-    "这是一行 CRLF 探针，会让换行风格进入混合状态。\r\n",
-    "所有写入都走事务；黄色区间是变更范围，A/B 会跟随 ChangeSet 映射。\n",
+    "🚀 Zom Engine M6 中文测试台
+",
+    "
+",
+    "[A] 这是锚点A，[B] 这是锚点B。
+",
+    "可以输入、回车、退格、Delete、左右移动光标。
+",
+    "Home / End 可跳到当前行首尾。
+",
+    "Cmd-S 标记已保存，Cmd-R 重置文本。
+",
+    "Cmd-B 触发批量事务修改，连续字符输入会合并成一个撤销步骤，Cmd-M 触发一次合并到上一步的事务。
+",
+    "Cmd-Z / Ctrl-Z 撤销，Cmd-Shift-Z / Ctrl-Y 重做。
+",
+    "Cmd-K 捕获当前快照，并观察后续编辑后快照是否过期。
+",
+    "Cmd-L 在当前光标插入一段中等长度的单行文本，用于快速验证 RopeyStorage 的局部插入与指标更新。
+",
+    "Cmd-U 插入 Unicode / 字素 / CRLF 探针文本；Cmd-T 插入 Tab / CJK / emoji 视觉列探针。
+",
+    "M6 额外显示 SelectionSet、primary selection、anchor/head、多光标和选区范围，并保留 M5B 的 IDE 坐标 / 视觉列面板。
+",
+    "M6 仍然保持字素安全光标移动，并支持 Shift-Left/Right 扩展选区，Cmd-A 全选，Esc 清除为单光标。
+",
+    "这是一行 CRLF 探针，会让换行风格进入混合状态。
+",
+    "所有写入都走事务；黄色区间是变更范围，紫色是 selection，蓝色竖线是 caret，A/B 会跟随 ChangeSet 映射。
+",
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +81,18 @@ enum MergeGroup {
     Typing,
     Backspace,
     DeleteForward,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HorizontalDirection {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineEdge {
+    Start,
+    End,
 }
 
 #[derive(Debug, Clone)]
@@ -68,12 +104,18 @@ struct CoordinateProbe {
     char_from_utf16: CharOffset,
     byte_from_utf16: ByteOffset,
     utf16_from_byte: Utf16Position,
+    display_column: DisplayColumn,
+    next_tab_stop: DisplayColumn,
+    logical_from_display: LogicalColumn,
+    logical_from_display_previous: LogicalColumn,
+    logical_from_display_next: LogicalColumn,
+    char_from_display: CharOffset,
     grapheme_boundary: bool,
     previous_grapheme: CharOffset,
     next_grapheme: CharOffset,
 }
 
-pub struct M5ATestbed {
+pub struct M6Testbed {
     buffer: Buffer,
     cursor: CharOffset,
     anchor_a: CharOffset,
@@ -87,7 +129,7 @@ pub struct M5ATestbed {
     last_error: Option<String>,
 }
 
-impl M5ATestbed {
+impl M6Testbed {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let (buffer, anchor_a, anchor_b) = initial_buffer_and_anchors();
 
@@ -153,16 +195,78 @@ impl M5ATestbed {
                 return false;
             }
         };
-        let before_selection = SelectionSet::caret(self.cursor);
 
-        let after_cursor = map_position_after_edits(self.cursor, edit_list.as_slice());
-        let after_selection = SelectionSet::caret(after_cursor);
+        let before_selection = self.buffer.selection().clone();
 
         let tx = match Transaction::new(self.buffer.version(), edit_list) {
             Ok(tx) => tx
                 .with_metadata(metadata)
-                .with_selection(Some(before_selection), Some(after_selection)),
+                .with_selection(Some(before_selection), None),
             Err(err) => {
+                self.last_error = Some(err.to_string());
+                cx.notify();
+                return false;
+            }
+        };
+
+        self.apply_transaction(tx, cx)
+    }
+
+    fn submit_selection_replacement(
+        &mut self,
+        selections: SelectionSet,
+        replacement: &str,
+        metadata: TransactionMetadata,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let selections = selections.normalized();
+        if let Err(err) = self.buffer.set_selection(selections.clone()) {
+            self.merge_group = None;
+            self.last_error = Some(err.to_string());
+            cx.notify();
+            return false;
+        }
+
+        let replacement_len = replacement.chars().count();
+        let replacement = replacement.to_string();
+        let mut edits = Vec::new();
+        let mut after_selections = Vec::with_capacity(selections.len());
+        let mut diff = 0isize;
+
+        for selection in selections.as_slice() {
+            let range = selection.range();
+            let old_start = range.start().get() as isize;
+            let old_end = range.end().get() as isize;
+            let new_start = (old_start + diff).max(0) as usize;
+            let new_head = CharOffset::new(new_start + replacement_len);
+
+            if !(range.is_empty() && replacement.is_empty()) {
+                edits.push(Edit::replace(range, replacement.clone()));
+                diff += replacement_len as isize - (old_end - old_start);
+            }
+
+            after_selections.push(Selection::caret(new_head));
+        }
+
+        let after_selection = SelectionSet::new(after_selections);
+
+        if edits.is_empty() {
+            if let Err(err) = self.buffer.set_selection(after_selection) {
+                self.last_error = Some(err.to_string());
+            } else {
+                self.cursor = self.cursor_from_engine_selection();
+                self.last_error = None;
+            }
+            cx.notify();
+            return false;
+        }
+
+        let tx = match Transaction::from_edits(self.buffer.version(), edits) {
+            Ok(tx) => tx
+                .with_metadata(metadata)
+                .with_selection(Some(selections), Some(after_selection)),
+            Err(err) => {
+                self.merge_group = None;
                 self.last_error = Some(err.to_string());
                 cx.notify();
                 return false;
@@ -182,18 +286,12 @@ impl M5ATestbed {
                     delta.edits.as_slice().len(),
                 ));
 
-                // M2 核心体感：游标和锚点都通过 ChangeSet 跟随文本变化。
-                // M5A 继承 M4：如果事务携带了 selection snapshot，则优先用历史系统里的 caret 恢复光标。
-                let mapped_cursor = changeset.map_position(self.cursor);
+                // M2 核心体感：锚点通过 ChangeSet 跟随文本变化。
+                // M6 起，光标来源以 Buffer 内部 SelectionSet 为准。
                 self.anchor_a = changeset.map_position(self.anchor_a);
                 self.anchor_b = changeset.map_position(self.anchor_b);
                 self.last_changed_ranges = changeset.changed_ranges();
-
-                if let Some(cursor) = self.cursor_from_engine_selection() {
-                    self.cursor = cursor;
-                } else {
-                    self.cursor = mapped_cursor;
-                }
+                self.cursor = self.cursor_from_engine_selection();
 
                 self.last_history_event = Some("应用事务".to_string());
                 true
@@ -209,28 +307,25 @@ impl M5ATestbed {
     }
 
     fn insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        match Edit::insert(self.cursor, text.to_string()) {
-            Ok(edit) => {
-                let metadata = self
-                    .metadata_for_group(MergeGroup::Typing, TransactionSource::Keyboard)
-                    .with_description(format!("插入 {text:?}"));
+        let metadata = self
+            .metadata_for_group(MergeGroup::Typing, TransactionSource::Keyboard)
+            .with_description(format!("插入 {text:?}"));
 
-                if self.submit_edits(vec![edit], metadata, cx) {
-                    self.merge_group = Some(MergeGroup::Typing);
-                }
-            }
-            Err(err) => {
-                self.merge_group = None;
-                self.last_error = Some(err.to_string());
-                cx.notify();
-            }
+        if self.submit_selection_replacement(self.buffer.selection().clone(), text, metadata, cx) {
+            self.merge_group = Some(MergeGroup::Typing);
         }
     }
 
     fn backspace(&mut self, cx: &mut Context<Self>) {
-        match self.buffer.previous_grapheme_boundary(self.cursor) {
-            Ok(prev) if prev < self.cursor => {
-                self.delete_range_with_group(prev, self.cursor, MergeGroup::Backspace, cx);
+        match self.delete_targets_for_backspace() {
+            Ok(targets) if !targets.is_empty() => {
+                let metadata = self
+                    .metadata_for_group(MergeGroup::Backspace, TransactionSource::Delete)
+                    .with_description("多光标 Backspace");
+
+                if self.submit_selection_replacement(SelectionSet::new(targets), "", metadata, cx) {
+                    self.merge_group = Some(MergeGroup::Backspace);
+                }
             }
             Ok(_) => {
                 self.merge_group = None;
@@ -246,9 +341,15 @@ impl M5ATestbed {
     }
 
     fn delete_forward(&mut self, cx: &mut Context<Self>) {
-        match self.buffer.next_grapheme_boundary(self.cursor) {
-            Ok(next) if next > self.cursor => {
-                self.delete_range_with_group(self.cursor, next, MergeGroup::DeleteForward, cx);
+        match self.delete_targets_for_delete_forward() {
+            Ok(targets) if !targets.is_empty() => {
+                let metadata = self
+                    .metadata_for_group(MergeGroup::DeleteForward, TransactionSource::Delete)
+                    .with_description("多光标 Delete");
+
+                if self.submit_selection_replacement(SelectionSet::new(targets), "", metadata, cx) {
+                    self.merge_group = Some(MergeGroup::DeleteForward);
+                }
             }
             Ok(_) => {
                 self.merge_group = None;
@@ -263,29 +364,40 @@ impl M5ATestbed {
         }
     }
 
-    fn delete_range_with_group(
-        &mut self,
-        start: CharOffset,
-        end: CharOffset,
-        group: MergeGroup,
-        cx: &mut Context<Self>,
-    ) {
-        match TextRange::new(start, end) {
-            Ok(range) => {
-                let metadata = self
-                    .metadata_for_group(group, TransactionSource::Delete)
-                    .with_description("删除");
+    fn delete_targets_for_backspace(&self) -> EngineResult<Vec<Selection>> {
+        let mut targets = Vec::new();
 
-                if self.submit_edits(vec![Edit::delete(range)], metadata, cx) {
-                    self.merge_group = Some(group);
+        for selection in self.buffer.selection().as_slice() {
+            if selection.is_caret() {
+                let end = selection.head();
+                let start = self.buffer.previous_grapheme_boundary(end)?;
+                if start != end {
+                    targets.push(Selection::new(start, end));
                 }
-            }
-            Err(err) => {
-                self.merge_group = None;
-                self.last_error = Some(err.to_string());
-                cx.notify();
+            } else {
+                targets.push(*selection);
             }
         }
+
+        Ok(targets)
+    }
+
+    fn delete_targets_for_delete_forward(&self) -> EngineResult<Vec<Selection>> {
+        let mut targets = Vec::new();
+
+        for selection in self.buffer.selection().as_slice() {
+            if selection.is_caret() {
+                let start = selection.head();
+                let end = self.buffer.next_grapheme_boundary(start)?;
+                if start != end {
+                    targets.push(Selection::new(start, end));
+                }
+            } else {
+                targets.push(*selection);
+            }
+        }
+
+        Ok(targets)
     }
 
     fn batch_edit(&mut self, cx: &mut Context<Self>) {
@@ -308,7 +420,7 @@ impl M5ATestbed {
     }
 
     fn insert_long_line(&mut self, cx: &mut Context<Self>) {
-        let payload = format!("[M5A Ropey 长行探针] {}\n", "中🙂Ropey".repeat(128));
+        let payload = format!("[M5B Ropey 长行探针] {}\n", "中🙂Ropey".repeat(128));
 
         match Edit::insert(self.cursor, payload) {
             Ok(edit) => {
@@ -316,7 +428,7 @@ impl M5ATestbed {
                 self.submit_edits(
                     vec![edit],
                     TransactionMetadata::new(TransactionSource::Command)
-                        .with_description("M5A 插入长行探针"),
+                        .with_description("M5B 插入长行探针"),
                     cx,
                 );
             }
@@ -338,6 +450,27 @@ impl M5ATestbed {
                     vec![edit],
                     TransactionMetadata::new(TransactionSource::Command)
                         .with_description("M5A 插入 Unicode 探针"),
+                    cx,
+                );
+            }
+            Err(err) => {
+                self.merge_group = None;
+                self.last_error = Some(err.to_string());
+                cx.notify();
+            }
+        }
+    }
+
+    fn insert_display_probe(&mut self, cx: &mut Context<Self>) {
+        let payload = "[M5B 视觉列探针]\n列: 0123456789012345\nTab: a\tb\t中😀e\u{301}x\n";
+
+        match Edit::insert(self.cursor, payload.to_string()) {
+            Ok(edit) => {
+                self.merge_group = None;
+                self.submit_edits(
+                    vec![edit],
+                    TransactionMetadata::new(TransactionSource::Command)
+                        .with_description("M5B 插入视觉列探针"),
                     cx,
                 );
             }
@@ -409,17 +542,10 @@ impl M5ATestbed {
                     delta.edits.as_slice().len(),
                 ));
 
-                let mapped_cursor = changeset.map_position(self.cursor);
                 self.anchor_a = changeset.map_position(self.anchor_a);
                 self.anchor_b = changeset.map_position(self.anchor_b);
                 self.last_changed_ranges = changeset.changed_ranges();
-
-                if let Some(cursor) = self.cursor_from_engine_selection() {
-                    self.cursor = cursor;
-                } else {
-                    self.cursor = mapped_cursor;
-                }
-
+                self.cursor = self.cursor_from_engine_selection();
                 self.last_history_event = Some(label.to_string());
             }
             Ok(None) => {
@@ -435,62 +561,179 @@ impl M5ATestbed {
     }
 
     fn move_left(&mut self, cx: &mut Context<Self>) {
-        self.merge_group = None;
-        match self.buffer.previous_grapheme_boundary(self.cursor) {
-            Ok(prev) if prev < self.cursor => {
-                self.cursor = prev;
-                self.sync_engine_selection_to_cursor();
-                self.last_error = None;
-            }
-            Ok(_) => self.last_error = None,
-            Err(err) => self.last_error = Some(err.to_string()),
-        }
-        cx.notify();
+        self.move_selections_horizontally(false, HorizontalDirection::Left, cx);
     }
 
     fn move_right(&mut self, cx: &mut Context<Self>) {
+        self.move_selections_horizontally(false, HorizontalDirection::Right, cx);
+    }
+
+    fn select_left(&mut self, cx: &mut Context<Self>) {
+        self.move_selections_horizontally(true, HorizontalDirection::Left, cx);
+    }
+
+    fn select_right(&mut self, cx: &mut Context<Self>) {
+        self.move_selections_horizontally(true, HorizontalDirection::Right, cx);
+    }
+
+    fn move_selections_horizontally(
+        &mut self,
+        extend: bool,
+        direction: HorizontalDirection,
+        cx: &mut Context<Self>,
+    ) {
         self.merge_group = None;
-        match self.buffer.next_grapheme_boundary(self.cursor) {
-            Ok(next) if next > self.cursor => {
-                self.cursor = next;
-                self.sync_engine_selection_to_cursor();
-                self.last_error = None;
+        let current = self.buffer.selection().clone();
+        let primary_index = current.primary_index();
+        let mut moved = Vec::with_capacity(current.len());
+
+        for selection in current.as_slice() {
+            let next = if extend {
+                match direction {
+                    HorizontalDirection::Left => self.buffer.previous_grapheme_boundary(selection.head()),
+                    HorizontalDirection::Right => self.buffer.next_grapheme_boundary(selection.head()),
+                }
+                .map(|head| selection.with_head(head))
+            } else if !selection.is_caret() {
+                Ok(match direction {
+                    HorizontalDirection::Left => selection.collapse_to_start(),
+                    HorizontalDirection::Right => selection.collapse_to_end(),
+                })
+            } else {
+                match direction {
+                    HorizontalDirection::Left => self
+                        .buffer
+                        .previous_grapheme_boundary(selection.head())
+                        .map(Selection::caret),
+                    HorizontalDirection::Right => self
+                        .buffer
+                        .next_grapheme_boundary(selection.head())
+                        .map(Selection::caret),
+                }
+            };
+
+            match next {
+                Ok(selection) => moved.push(selection),
+                Err(err) => {
+                    self.last_error = Some(err.to_string());
+                    cx.notify();
+                    return;
+                }
             }
-            Ok(_) => self.last_error = None,
-            Err(err) => self.last_error = Some(err.to_string()),
         }
-        cx.notify();
+
+        self.set_selection(SelectionSet::new_with_primary(moved, primary_index), cx);
     }
 
     fn move_to_line_start(&mut self, cx: &mut Context<Self>) {
-        self.merge_group = None;
-        let line = self.cursor_position().line();
-
-        match self.buffer.line_start(line) {
-            Ok(offset) => {
-                self.cursor = offset;
-                self.sync_engine_selection_to_cursor();
-                self.last_error = None;
-            }
-            Err(err) => self.last_error = Some(err.to_string()),
-        }
-
-        cx.notify();
+        self.move_selections_to_line_edge(false, LineEdge::Start, cx);
     }
 
     fn move_to_line_end(&mut self, cx: &mut Context<Self>) {
-        self.merge_group = None;
-        let line = self.cursor_position().line();
+        self.move_selections_to_line_edge(false, LineEdge::End, cx);
+    }
 
-        match self.line_content_end(line) {
-            Ok(offset) => {
-                self.cursor = offset;
-                self.sync_engine_selection_to_cursor();
+    fn move_selections_to_line_edge(&mut self, extend: bool, edge: LineEdge, cx: &mut Context<Self>) {
+        self.merge_group = None;
+        let current = self.buffer.selection().clone();
+        let primary_index = current.primary_index();
+        let mut moved = Vec::with_capacity(current.len());
+
+        for selection in current.as_slice() {
+            let line = match self.buffer.char_to_position(selection.head()) {
+                Ok(position) => position.line(),
+                Err(err) => {
+                    self.last_error = Some(err.to_string());
+                    cx.notify();
+                    return;
+                }
+            };
+
+            let target = match edge {
+                LineEdge::Start => self.buffer.line_start(line),
+                LineEdge::End => self.line_content_end(line),
+            };
+
+            match target {
+                Ok(offset) if extend => moved.push(selection.with_head(offset)),
+                Ok(offset) => moved.push(Selection::caret(offset)),
+                Err(err) => {
+                    self.last_error = Some(err.to_string());
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+
+        self.set_selection(SelectionSet::new_with_primary(moved, primary_index), cx);
+    }
+
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        self.merge_group = None;
+        self.set_selection(
+            SelectionSet::new(vec![Selection::new(CharOffset::ZERO, self.buffer.len_chars())]),
+            cx,
+        );
+        self.last_history_event = Some("全选".to_string());
+    }
+
+    fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        self.merge_group = None;
+        self.set_selection(SelectionSet::caret(self.cursor), cx);
+        self.last_history_event = Some("清除为单光标".to_string());
+    }
+
+    fn multi_cursor_demo(&mut self, cx: &mut Context<Self>) {
+        self.merge_group = None;
+        self.set_selection(
+            SelectionSet::new(vec![
+                Selection::caret(self.cursor),
+                Selection::caret(self.anchor_a),
+                Selection::caret(self.anchor_b),
+            ]),
+            cx,
+        );
+        self.last_history_event = Some("生成多光标：当前光标 + A + B".to_string());
+    }
+
+    fn multi_selection_demo(&mut self, cx: &mut Context<Self>) {
+        self.merge_group = None;
+        let a_end = self
+            .anchor_a
+            .checked_add(3)
+            .unwrap_or(self.buffer.len_chars())
+            .min(self.buffer.len_chars());
+        let b_end = self
+            .anchor_b
+            .checked_add(3)
+            .unwrap_or(self.buffer.len_chars())
+            .min(self.buffer.len_chars());
+
+        self.set_selection(
+            SelectionSet::new(vec![
+                Selection::new(self.anchor_a, a_end),
+                Selection::new(self.anchor_b, b_end),
+            ]),
+            cx,
+        );
+        self.last_history_event = Some("选择 A/B 标记".to_string());
+    }
+
+    fn replace_selections_probe(&mut self, cx: &mut Context<Self>) {
+        self.merge_group = None;
+        let metadata = TransactionMetadata::new(TransactionSource::Command)
+            .with_description("用 ★ 替换所有 selection");
+        self.submit_selection_replacement(self.buffer.selection().clone(), "★", metadata, cx);
+    }
+
+    fn set_selection(&mut self, selection: SelectionSet, cx: &mut Context<Self>) {
+        match self.buffer.set_selection(selection) {
+            Ok(()) => {
+                self.cursor = self.cursor_from_engine_selection();
                 self.last_error = None;
             }
             Err(err) => self.last_error = Some(err.to_string()),
         }
-
         cx.notify();
     }
 
@@ -516,6 +759,25 @@ impl M5ATestbed {
         let char_from_utf16 = self.buffer.utf16_position_to_char(utf16_position)?;
         let byte_from_utf16 = self.buffer.utf16_position_to_byte(utf16_position)?;
         let utf16_from_byte = self.buffer.byte_to_utf16_position(byte_offset)?;
+        let position = self.cursor_position();
+        let display_column = self.buffer.char_to_display_column(self.cursor)?;
+        let next_tab_stop = self.buffer.next_tab_stop(display_column);
+        let logical_from_display = self
+            .buffer
+            .display_to_logical_column(position.line(), display_column)?;
+        let logical_from_display_previous = self.buffer.display_to_logical_column_with_affinity(
+            position.line(),
+            display_column,
+            DisplayColumnAffinity::Previous,
+        )?;
+        let logical_from_display_next = self.buffer.display_to_logical_column_with_affinity(
+            position.line(),
+            display_column,
+            DisplayColumnAffinity::Next,
+        )?;
+        let char_from_display = self
+            .buffer
+            .display_column_to_char(position.line(), display_column)?;
         let grapheme_boundary = self.buffer.is_grapheme_boundary(self.cursor)?;
         let previous_grapheme = self.buffer.previous_grapheme_boundary(self.cursor)?;
         let next_grapheme = self.buffer.next_grapheme_boundary(self.cursor)?;
@@ -528,6 +790,12 @@ impl M5ATestbed {
             char_from_utf16,
             byte_from_utf16,
             utf16_from_byte,
+            display_column,
+            next_tab_stop,
+            logical_from_display,
+            logical_from_display_previous,
+            logical_from_display_next,
+            char_from_display,
             grapheme_boundary,
             previous_grapheme,
             next_grapheme,
@@ -537,10 +805,12 @@ impl M5ATestbed {
     fn coordinate_summary_label(&self) -> String {
         match self.current_coordinate_probe() {
             Ok(probe) => format!(
-                "坐标：字节={} UTF-16=({}, {}) 字素边界={} 前一字素={} 后一字素={}",
+                "坐标：字节={} UTF-16=({}, {}) 视觉列={} 下个Tab={} 字素边界={} 前一字素={} 后一字素={}",
                 probe.byte_offset.get(),
                 probe.utf16_position.line().get(),
                 probe.utf16_position.character().get(),
+                probe.display_column.get(),
+                probe.next_tab_stop.get(),
                 bool_label(probe.grapheme_boundary),
                 probe.previous_grapheme.get(),
                 probe.next_grapheme.get(),
@@ -549,24 +819,51 @@ impl M5ATestbed {
         }
     }
 
+    fn selection_summary_label(&self) -> String {
+        let selection = self.buffer.selection();
+        let primary = selection.primary();
+        let ranges = selection
+            .as_slice()
+            .iter()
+            .map(|selection| {
+                if selection.is_caret() {
+                    format!("{}", selection.head().get())
+                } else {
+                    format!(
+                        "{}{}{}",
+                        selection.start().get(),
+                        if selection.is_reversed() { "←" } else { "→" },
+                        selection.end().get(),
+                    )
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        format!(
+            "SelectionSet 数量={} primary={} anchor={} head={} reversed={} ranges=[{}]",
+            selection.len(),
+            selection.primary_index(),
+            primary.anchor().get(),
+            primary.head().get(),
+            bool_label(primary.is_reversed()),
+            ranges,
+        )
+    }
+
     fn cursor_position(&self) -> Position {
         self.buffer
             .char_to_position(self.cursor)
             .unwrap_or_else(|_| Position::new(Line::ZERO, LogicalColumn::ZERO))
     }
 
-    fn sync_engine_selection_to_cursor(&mut self) {
-        if let Err(err) = self.buffer.set_selection(SelectionSet::caret(self.cursor)) {
-            self.last_error = Some(err.to_string());
-        }
+    fn cursor_from_engine_selection(&self) -> CharOffset {
+        self.buffer.selection().primary().head()
     }
 
-    fn cursor_from_engine_selection(&self) -> Option<CharOffset> {
-        Some(self.buffer.selection().primary().head())
-    }
 }
 
-impl Render for M5ATestbed {
+impl Render for M6Testbed {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let cursor = self.cursor;
         let position = self.cursor_position();
@@ -607,6 +904,7 @@ impl Render for M5ATestbed {
             line_ending_label(self.buffer.line_ending_style()),
         );
         let coordinate_label = self.coordinate_summary_label();
+        let selection_label = self.selection_summary_label();
 
         div()
             .size_full()
@@ -642,6 +940,8 @@ impl Render for M5ATestbed {
             .on_action(cx.listener(|this, _: &Enter, _window, cx| this.insert_text("\n", cx)))
             .on_action(cx.listener(|this, _: &Left, _window, cx| this.move_left(cx)))
             .on_action(cx.listener(|this, _: &Right, _window, cx| this.move_right(cx)))
+            .on_action(cx.listener(|this, _: &SelectLeft, _window, cx| this.select_left(cx)))
+            .on_action(cx.listener(|this, _: &SelectRight, _window, cx| this.select_right(cx)))
             .on_action(cx.listener(|this, _: &Home, _window, cx| {
                 this.move_to_line_start(cx)
             }))
@@ -650,6 +950,17 @@ impl Render for M5ATestbed {
             }))
             .on_action(cx.listener(|this, _: &Save, _window, cx| this.mark_saved(cx)))
             .on_action(cx.listener(|this, _: &Reset, _window, cx| this.reset(cx)))
+            .on_action(cx.listener(|this, _: &SelectAll, _window, cx| this.select_all(cx)))
+            .on_action(cx.listener(|this, _: &ClearSelection, _window, cx| this.clear_selection(cx)))
+            .on_action(cx.listener(|this, _: &MultiCursorDemo, _window, cx| {
+                this.multi_cursor_demo(cx)
+            }))
+            .on_action(cx.listener(|this, _: &MultiSelectionDemo, _window, cx| {
+                this.multi_selection_demo(cx)
+            }))
+            .on_action(cx.listener(|this, _: &ReplaceSelectionsProbe, _window, cx| {
+                this.replace_selections_probe(cx)
+            }))
             .on_action(cx.listener(|this, _: &BatchEdit, _window, cx| this.batch_edit(cx)))
             .on_action(cx.listener(|this, _: &Undo, _window, cx| this.undo(cx)))
             .on_action(cx.listener(|this, _: &Redo, _window, cx| this.redo(cx)))
@@ -663,6 +974,9 @@ impl Render for M5ATestbed {
             .on_action(cx.listener(|this, _: &InsertUnicodeProbe, _window, cx| {
                 this.insert_unicode_probe(cx)
             }))
+            .on_action(cx.listener(|this, _: &InsertDisplayProbe, _window, cx| {
+                this.insert_display_probe(cx)
+            }))
             .child(
                 div()
                     .border_b_1()
@@ -670,7 +984,7 @@ impl Render for M5ATestbed {
                     .pb_4()
                     .mb_4()
                     .child(format!(
-                        "Zom Engine M5A | 光标={} / 总字符={} | 行={} 列={} | 当前版本=v{} 保存点=v{} | 修改状态={} | 锚点A={} | 锚点B={} | 变更范围={} | {} | {} | {} | {} | {}",
+                        "Zom Engine M6 | 光标={} / 总字符={} | 行={} 列={} | 当前版本=v{} 保存点=v{} | 修改状态={} | 锚点A={} | 锚点B={} | 变更范围={} | {} | {} | {} | {} | {} | {}",
                         cursor.get(),
                         self.buffer.len_chars().get(),
                         position.line().get(),
@@ -686,13 +1000,14 @@ impl Render for M5ATestbed {
                         snapshot_label,
                         storage_label,
                         coordinate_label,
+                        selection_label,
                     )),
             )
             .child(
                 div()
                     .mb_4()
                     .text_color(rgb(0xA1A1AA))
-                    .child("输入字符 / 空格 / Tab / 回车；连续输入会合并为一个撤销步骤；退格 / Delete；← →；Home / End；Cmd-S 保存；Cmd-R 重置；Cmd-B 批量事务；Cmd-M 合并事务；Cmd-Z/Ctrl-Z 撤销；Cmd-Shift-Z/Ctrl-Y 重做；Cmd-K 捕获快照；Cmd-L 插入长行探针；Cmd-U 插入 Unicode/CRLF 探针；←/→/退格/Delete 使用字素安全边界"),
+                    .child("输入字符 / 空格 / Tab / 回车；输入会替换当前所有 selection；退格 / Delete 支持多光标；← → 移动，Shift-←/→ 扩展选区；Home / End；Cmd-A 全选；Esc 清除为单光标；Cmd-J 生成多光标；Cmd-Shift-J 选择 A/B 标记；Cmd-E 用 ★ 替换所有 selection；Cmd-S 保存；Cmd-R 重置；Cmd-B 批量事务；Cmd-M 合并事务；Cmd-Z/Ctrl-Z 撤销；Cmd-Shift-Z/Ctrl-Y 重做；Cmd-K 捕获快照；Cmd-L 长行；Cmd-U Unicode/CRLF；Cmd-T 视觉列探针"),
             )
             .when_some(self.last_error.clone(), |el, error| {
                 el.child(
@@ -711,6 +1026,7 @@ impl Render for M5ATestbed {
                     .line_height(px(28.0))
                     .children(render_lines_with_markers(
                         self.buffer.text().as_ref(),
+                        self.buffer.selection().as_slice(),
                         cursor,
                         self.anchor_a,
                         self.anchor_b,
@@ -720,7 +1036,7 @@ impl Render for M5ATestbed {
     }
 }
 
-fn render_coordinate_panel(testbed: &M5ATestbed) -> Div {
+fn render_coordinate_panel(testbed: &M6Testbed) -> Div {
     let rows: Vec<String> = match testbed.current_coordinate_probe() {
         Ok(probe) => vec![
             format!(
@@ -737,6 +1053,20 @@ fn render_coordinate_panel(testbed: &M5ATestbed) -> Div {
                 probe.byte_from_utf16.get(),
                 probe.utf16_from_byte.line().get(),
                 probe.utf16_from_byte.character().get(),
+            ),
+            format!(
+                "视觉列：当前={} | 下一个 Tab Stop={} | Tab 宽度={} | 显示策略={}",
+                probe.display_column.get(),
+                probe.next_tab_stop.get(),
+                testbed.buffer.config().tab.tab_width(),
+                display_width_policy_label(&testbed.buffer.config().display_width),
+            ),
+            format!(
+                "视觉列→逻辑列：默认={} 向前吸附={} 向后吸附={} | 视觉列→字符={}",
+                probe.logical_from_display.get(),
+                probe.logical_from_display_previous.get(),
+                probe.logical_from_display_next.get(),
+                probe.char_from_display.get(),
             ),
             format!(
                 "字素边界={} | 前一字素={} | 后一字素={} | 换行风格={}",
@@ -764,7 +1094,7 @@ fn render_coordinate_panel(testbed: &M5ATestbed) -> Div {
             div()
                 .mb_2()
                 .text_color(rgb(0xBFDBFE))
-                .child("M5A 坐标探针"),
+                .child("M6 坐标 / 视觉列 / Selection 探针"),
         )
         .children(row_elements)
 }
@@ -790,6 +1120,7 @@ fn byte_to_char_offset(text: &str, byte_offset: usize) -> CharOffset {
 
 fn render_lines_with_markers(
     text: &str,
+    selections: &[Selection],
     cursor: CharOffset,
     anchor_a: CharOffset,
     anchor_b: CharOffset,
@@ -819,12 +1150,13 @@ fn render_lines_with_markers(
         for c in display_line.chars() {
             let next_offset = char_offset + 1;
 
-            if char_offset == cursor_char {
+            if has_caret_at(selections, char_offset) {
                 row_children.push(cursor_element().into_any());
             }
 
             let mut is_highlighted = false;
             let mut is_deletion_scar = false;
+            let is_selected = is_selected_char(selections, char_offset);
 
             for range in changed_ranges {
                 let start = range.start().get();
@@ -837,10 +1169,17 @@ fn render_lines_with_markers(
                 }
             }
 
-            let mut char_div = div().child(c.to_string());
+            let visible = match c {
+                '\t' => "⇥".to_string(),
+                ' ' => "·".to_string(),
+                _ => c.to_string(),
+            };
+            let mut char_div = div().child(visible);
 
             if is_highlighted {
                 char_div = char_div.bg(rgb(0x854D0E)).text_color(rgb(0xFEF08A));
+            } else if is_selected {
+                char_div = char_div.bg(rgb(0x4C1D95)).text_color(rgb(0xDDD6FE));
             } else if char_offset == a_char {
                 char_div = char_div.bg(rgb(0x991B1B)).text_color(rgb(0xFECACA));
             } else if char_offset == b_char {
@@ -855,7 +1194,7 @@ fn render_lines_with_markers(
             char_offset = next_offset;
         }
 
-        if char_offset == cursor_char {
+        if has_caret_at(selections, char_offset) {
             row_children.push(cursor_element().into_any());
         }
 
@@ -890,6 +1229,20 @@ fn render_lines_with_markers(
     }
 
     rows
+}
+
+fn has_caret_at(selections: &[Selection], char_offset: usize) -> bool {
+    selections
+        .iter()
+        .any(|selection| selection.is_caret() && selection.head().get() == char_offset)
+}
+
+fn is_selected_char(selections: &[Selection], char_offset: usize) -> bool {
+    selections.iter().any(|selection| {
+        !selection.is_caret()
+            && char_offset >= selection.start().get()
+            && char_offset < selection.end().get()
+    })
 }
 
 fn cursor_row() -> Div {
@@ -941,6 +1294,7 @@ fn cursor_element() -> Div {
     div().w(px(2.0)).h(px(22.0)).bg(rgb(0x3B82F6))
 }
 
+#[allow(dead_code)]
 fn map_position_after_edits(pos: CharOffset, edits: &[Edit]) -> CharOffset {
     let mut diff = 0isize;
     let pos_val = pos.get() as isize;
@@ -986,15 +1340,23 @@ fn main() {
             KeyBinding::new("enter", Enter, None),
             KeyBinding::new("left", Left, None),
             KeyBinding::new("right", Right, None),
+            KeyBinding::new("shift-left", SelectLeft, None),
+            KeyBinding::new("shift-right", SelectRight, None),
             KeyBinding::new("home", Home, None),
             KeyBinding::new("end", End, None),
             KeyBinding::new("cmd-s", Save, None),
             KeyBinding::new("cmd-r", Reset, None),
+            KeyBinding::new("cmd-a", SelectAll, None),
+            KeyBinding::new("escape", ClearSelection, None),
+            KeyBinding::new("cmd-j", MultiCursorDemo, None),
+            KeyBinding::new("cmd-shift-j", MultiSelectionDemo, None),
+            KeyBinding::new("cmd-e", ReplaceSelectionsProbe, None),
             KeyBinding::new("cmd-b", BatchEdit, None),
             KeyBinding::new("cmd-m", MergeDemo, None),
             KeyBinding::new("cmd-k", CaptureSnapshot, None),
             KeyBinding::new("cmd-l", InsertLongLine, None),
             KeyBinding::new("cmd-u", InsertUnicodeProbe, None),
+            KeyBinding::new("cmd-t", InsertDisplayProbe, None),
             KeyBinding::new("cmd-z", Undo, None),
             KeyBinding::new("ctrl-z", Undo, None),
             KeyBinding::new("cmd-shift-z", Redo, None),
@@ -1008,7 +1370,7 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |_window, cx| cx.new(|cx| M5ATestbed::new(cx)),
+            |_window, cx| cx.new(|cx| M6Testbed::new(cx)),
         )
         .unwrap();
 

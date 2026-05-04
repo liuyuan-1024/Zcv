@@ -67,9 +67,17 @@ zom-engine/
 │   ├── config.rs
 │   ├── errors.rs
 │   ├── transaction.rs
+│   ├── snapshot.rs             # public Snapshot 类型与只读查询
 │   ├── buffer/
-│   │   ├── mod.rs
-│   │   └── line_index.rs
+│   │   ├── mod.rs              # Buffer 状态聚合与 public 入口
+│   │   ├── versioning.rs       # BufferVersion、Snapshot 创建与过期判断
+│   │   ├── coordinates.rs      # 坐标转换 / Grapheme / CRLF / DisplayColumn 数学
+│   │   ├── selection_ops.rs    # SelectionSet 状态管理
+│   │   ├── movement.rs         # M6B Word / Identifier / Subword / Symbol 移动
+│   │   ├── composition.rs      # M6C IME composition 生命周期
+│   │   ├── edit.rs             # Transaction 应用与文本变异
+│   │   ├── history.rs          # Undo / Redo 与历史合并
+│   │   └── validation.rs       # Buffer 级边界校验
 │   ├── storage/
 │   │   ├── mod.rs
 │   │   └── ropey_storage.rs
@@ -791,6 +799,34 @@ Buffer 默认使用 StringStorage
 ```text
 reference model 是测试基础设施，不是引擎核心能力。
 M4 的生产核心只有 RopeyStorage 和 TextStorage 抽象。
+```
+
+### 12.5 Buffer 模块拆分
+
+M6C 之后，`src/buffer/mod.rs` 不应继续承载所有 Buffer 职责。
+
+推荐边界：
+
+```text
+src/buffer/mod.rs              Buffer 状态聚合、模块组织、基础构造与简单访问器
+src/snapshot.rs                public Snapshot 类型与只读查询
+src/buffer/versioning.rs       BufferVersion、低成本 Snapshot 创建与过期判断
+src/buffer/coordinates.rs      坐标转换、grapheme、CRLF、DisplayColumn 数学
+src/buffer/selection_ops.rs    SelectionSet 状态管理
+src/buffer/movement.rs         M6B Word / Identifier / Subword / Symbol 移动
+src/buffer/composition.rs      M6C IME composition 生命周期
+src/buffer/edit.rs             Transaction 应用、文本变异、多光标编辑
+src/buffer/history.rs          Undo / Redo、HistoryEntry、历史合并
+src/buffer/validation.rs       Buffer 级边界校验
+```
+
+原则：
+
+```text
+保持 public API 稳定。
+按能力域拆实现，不按测试阶段无限扩大 mod.rs。
+跨子模块 helper 优先使用 pub(super)，不要提升为 public API。
+重构后必须继续通过现有 m0-m6c 集成测试。
 ```
 
 ---

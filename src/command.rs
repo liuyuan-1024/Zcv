@@ -8,7 +8,9 @@
 
 use std::time::SystemTime;
 
-use crate::{BufferVersion, Selection, SelectionSet, TransactionId};
+use crate::{
+    BufferVersion, MovementDirection, MovementUnit, Selection, SelectionSet, TransactionId,
+};
 
 /// 统一编辑动作枚举。
 ///
@@ -103,6 +105,31 @@ pub enum Command {
 }
 
 impl Command {
+    pub fn from_unit_movement(
+        direction: MovementDirection,
+        unit: MovementUnit,
+        extend: bool,
+    ) -> Self {
+        match (unit, direction) {
+            (MovementUnit::Grapheme, MovementDirection::Previous) => Self::MoveLeft { extend },
+            (MovementUnit::Grapheme, MovementDirection::Next) => Self::MoveRight { extend },
+            (MovementUnit::Word, MovementDirection::Previous) => Self::MoveWordLeft { extend },
+            (MovementUnit::Word, MovementDirection::Next) => Self::MoveWordRight { extend },
+            (MovementUnit::Identifier, MovementDirection::Previous) => {
+                Self::MoveIdentifierLeft { extend }
+            }
+            (MovementUnit::Identifier, MovementDirection::Next) => {
+                Self::MoveIdentifierRight { extend }
+            }
+            (MovementUnit::Subword, MovementDirection::Previous) => {
+                Self::MoveSubwordLeft { extend }
+            }
+            (MovementUnit::Subword, MovementDirection::Next) => Self::MoveSubwordRight { extend },
+            (MovementUnit::Symbol, MovementDirection::Previous) => Self::MoveSymbolLeft { extend },
+            (MovementUnit::Symbol, MovementDirection::Next) => Self::MoveSymbolRight { extend },
+        }
+    }
+
     pub fn insert_text(text: impl Into<String>) -> Self {
         Self::InsertText(text.into())
     }
@@ -117,6 +144,114 @@ impl Command {
 
     pub fn composition_commit(commit_text: impl Into<String>) -> Self {
         Self::CompositionCommit(commit_text.into())
+    }
+
+    pub(crate) fn as_unit_movement(&self) -> Option<(MovementDirection, MovementUnit, bool)> {
+        let movement = match self {
+            Self::MoveLeft { extend } => {
+                (MovementDirection::Previous, MovementUnit::Grapheme, *extend)
+            }
+            Self::MoveRight { extend } => {
+                (MovementDirection::Next, MovementUnit::Grapheme, *extend)
+            }
+            Self::MoveWordLeft { extend } => {
+                (MovementDirection::Previous, MovementUnit::Word, *extend)
+            }
+            Self::MoveWordRight { extend } => {
+                (MovementDirection::Next, MovementUnit::Word, *extend)
+            }
+            Self::MoveIdentifierLeft { extend } => (
+                MovementDirection::Previous,
+                MovementUnit::Identifier,
+                *extend,
+            ),
+            Self::MoveIdentifierRight { extend } => {
+                (MovementDirection::Next, MovementUnit::Identifier, *extend)
+            }
+            Self::MoveSubwordLeft { extend } => {
+                (MovementDirection::Previous, MovementUnit::Subword, *extend)
+            }
+            Self::MoveSubwordRight { extend } => {
+                (MovementDirection::Next, MovementUnit::Subword, *extend)
+            }
+            Self::MoveSymbolLeft { extend } => {
+                (MovementDirection::Previous, MovementUnit::Symbol, *extend)
+            }
+            Self::MoveSymbolRight { extend } => {
+                (MovementDirection::Next, MovementUnit::Symbol, *extend)
+            }
+            _ => return None,
+        };
+        Some(movement)
+    }
+
+    pub(crate) fn as_vertical_movement(&self) -> Option<(MovementDirection, bool)> {
+        match self {
+            Self::MoveUp { extend } => Some((MovementDirection::Previous, *extend)),
+            Self::MoveDown { extend } => Some((MovementDirection::Next, *extend)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_line_edge_movement(&self) -> Option<(bool, bool)> {
+        match self {
+            Self::MoveLineStart { extend } => Some((true, *extend)),
+            Self::MoveLineEnd { extend } => Some((false, *extend)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn is_repeatable(&self) -> bool {
+        matches!(
+            self,
+            Self::InsertText(_)
+                | Self::ReplaceSelections(_)
+                | Self::DeleteBackward
+                | Self::DeleteForward
+                | Self::DeleteWordBackward
+                | Self::DeleteWordForward
+                | Self::DeleteSubwordBackward
+                | Self::DeleteSubwordForward
+                | Self::MoveLeft { .. }
+                | Self::MoveRight { .. }
+                | Self::MoveUp { .. }
+                | Self::MoveDown { .. }
+                | Self::MoveLineStart { .. }
+                | Self::MoveLineEnd { .. }
+                | Self::MoveWordLeft { .. }
+                | Self::MoveWordRight { .. }
+                | Self::MoveIdentifierLeft { .. }
+                | Self::MoveIdentifierRight { .. }
+                | Self::MoveSubwordLeft { .. }
+                | Self::MoveSubwordRight { .. }
+                | Self::MoveSymbolLeft { .. }
+                | Self::MoveSymbolRight { .. }
+                | Self::Undo
+                | Self::Redo
+        )
+    }
+
+    pub(crate) fn is_delete_command(&self) -> bool {
+        matches!(
+            self,
+            Self::DeleteSelection
+                | Self::DeleteBackward
+                | Self::DeleteForward
+                | Self::DeleteWordBackward
+                | Self::DeleteWordForward
+                | Self::DeleteSubwordBackward
+                | Self::DeleteSubwordForward
+        )
+    }
+
+    pub(crate) fn is_composition_command(&self) -> bool {
+        matches!(
+            self,
+            Self::CompositionStart
+                | Self::CompositionUpdate(_)
+                | Self::CompositionCommit(_)
+                | Self::CompositionCancel
+        )
     }
 
     /// 返回稳定、短文本的命令描述，供 Undo / Redo 列表、状态栏与 testbed 展示使用。

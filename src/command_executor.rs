@@ -47,6 +47,26 @@ impl Buffer {
         command: &Command,
         context: &CommandContext,
     ) -> EngineResult<()> {
+        if let Some((direction, unit, extend)) = command.as_unit_movement() {
+            self.move_current_selection(direction, unit, extend)?;
+            return Ok(());
+        }
+
+        if let Some((direction, extend)) = command.as_vertical_movement() {
+            self.move_current_selection_vertically(direction, extend)?;
+            return Ok(());
+        }
+
+        if let Some((is_start, extend)) = command.as_line_edge_movement() {
+            let edge = if is_start {
+                LineEdge::Start
+            } else {
+                LineEdge::End
+            };
+            self.move_current_selection_to_line_edge(edge, extend)?;
+            return Ok(());
+        }
+
         match command {
             Command::InsertText(text) | Command::ReplaceSelections(text) => {
                 let selections = self.selection().clone();
@@ -106,84 +126,6 @@ impl Buffer {
                     transaction_metadata_for(context, command),
                 )?;
             }
-            Command::MoveLeft { extend } => {
-                self.move_current_selection(
-                    MovementDirection::Previous,
-                    MovementUnit::Grapheme,
-                    *extend,
-                )?;
-            }
-            Command::MoveRight { extend } => {
-                self.move_current_selection(
-                    MovementDirection::Next,
-                    MovementUnit::Grapheme,
-                    *extend,
-                )?;
-            }
-            Command::MoveUp { extend } => {
-                self.move_current_selection_vertically(MovementDirection::Previous, *extend)?;
-            }
-            Command::MoveDown { extend } => {
-                self.move_current_selection_vertically(MovementDirection::Next, *extend)?;
-            }
-            Command::MoveLineStart { extend } => {
-                self.move_current_selection_to_line_edge(LineEdge::Start, *extend)?;
-            }
-            Command::MoveLineEnd { extend } => {
-                self.move_current_selection_to_line_edge(LineEdge::End, *extend)?;
-            }
-            Command::MoveWordLeft { extend } => {
-                self.move_current_selection(
-                    MovementDirection::Previous,
-                    MovementUnit::Word,
-                    *extend,
-                )?;
-            }
-            Command::MoveWordRight { extend } => {
-                self.move_current_selection(MovementDirection::Next, MovementUnit::Word, *extend)?;
-            }
-            Command::MoveIdentifierLeft { extend } => {
-                self.move_current_selection(
-                    MovementDirection::Previous,
-                    MovementUnit::Identifier,
-                    *extend,
-                )?;
-            }
-            Command::MoveIdentifierRight { extend } => {
-                self.move_current_selection(
-                    MovementDirection::Next,
-                    MovementUnit::Identifier,
-                    *extend,
-                )?;
-            }
-            Command::MoveSubwordLeft { extend } => {
-                self.move_current_selection(
-                    MovementDirection::Previous,
-                    MovementUnit::Subword,
-                    *extend,
-                )?;
-            }
-            Command::MoveSubwordRight { extend } => {
-                self.move_current_selection(
-                    MovementDirection::Next,
-                    MovementUnit::Subword,
-                    *extend,
-                )?;
-            }
-            Command::MoveSymbolLeft { extend } => {
-                self.move_current_selection(
-                    MovementDirection::Previous,
-                    MovementUnit::Symbol,
-                    *extend,
-                )?;
-            }
-            Command::MoveSymbolRight { extend } => {
-                self.move_current_selection(
-                    MovementDirection::Next,
-                    MovementUnit::Symbol,
-                    *extend,
-                )?;
-            }
             Command::SelectAll => {
                 self.set_selection(SelectionSet::new(vec![Selection::new(
                     CharOffset::ZERO,
@@ -220,6 +162,22 @@ impl Buffer {
             }
             Command::CompositionCancel => {
                 self.cancel_composition()?;
+            }
+            Command::MoveLeft { .. }
+            | Command::MoveRight { .. }
+            | Command::MoveUp { .. }
+            | Command::MoveDown { .. }
+            | Command::MoveLineStart { .. }
+            | Command::MoveLineEnd { .. }
+            | Command::MoveWordLeft { .. }
+            | Command::MoveWordRight { .. }
+            | Command::MoveIdentifierLeft { .. }
+            | Command::MoveIdentifierRight { .. }
+            | Command::MoveSubwordLeft { .. }
+            | Command::MoveSubwordRight { .. }
+            | Command::MoveSymbolLeft { .. }
+            | Command::MoveSymbolRight { .. } => {
+                unreachable!("movement commands are handled before match");
             }
         }
 
@@ -337,41 +295,11 @@ impl Buffer {
 }
 
 fn repeat_count_for(command: &Command, context: &CommandContext) -> u32 {
-    if is_repeatable(command) {
+    if command.is_repeatable() {
         context.repeat_count()
     } else {
         1
     }
-}
-
-fn is_repeatable(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::InsertText(_)
-            | Command::ReplaceSelections(_)
-            | Command::DeleteBackward
-            | Command::DeleteForward
-            | Command::DeleteWordBackward
-            | Command::DeleteWordForward
-            | Command::DeleteSubwordBackward
-            | Command::DeleteSubwordForward
-            | Command::MoveLeft { .. }
-            | Command::MoveRight { .. }
-            | Command::MoveUp { .. }
-            | Command::MoveDown { .. }
-            | Command::MoveLineStart { .. }
-            | Command::MoveLineEnd { .. }
-            | Command::MoveWordLeft { .. }
-            | Command::MoveWordRight { .. }
-            | Command::MoveIdentifierLeft { .. }
-            | Command::MoveIdentifierRight { .. }
-            | Command::MoveSubwordLeft { .. }
-            | Command::MoveSubwordRight { .. }
-            | Command::MoveSymbolLeft { .. }
-            | Command::MoveSymbolRight { .. }
-            | Command::Undo
-            | Command::Redo
-    )
 }
 
 fn transaction_metadata_for(context: &CommandContext, command: &Command) -> TransactionMetadata {
@@ -383,17 +311,8 @@ fn transaction_source_for(source: CommandSource, command: &Command) -> Transacti
     match command {
         Command::Undo => TransactionSource::Undo,
         Command::Redo => TransactionSource::Redo,
-        Command::CompositionStart
-        | Command::CompositionUpdate(_)
-        | Command::CompositionCommit(_)
-        | Command::CompositionCancel => TransactionSource::Composition,
-        Command::DeleteSelection
-        | Command::DeleteBackward
-        | Command::DeleteForward
-        | Command::DeleteWordBackward
-        | Command::DeleteWordForward
-        | Command::DeleteSubwordBackward
-        | Command::DeleteSubwordForward => TransactionSource::Delete,
+        _ if command.is_composition_command() => TransactionSource::Composition,
+        _ if command.is_delete_command() => TransactionSource::Delete,
         _ => command_source_to_transaction_source(source),
     }
 }

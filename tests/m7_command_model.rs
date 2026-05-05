@@ -66,6 +66,26 @@ fn command_enum_supports_movement_commands_with_extend_flag() {
 }
 
 #[test]
+fn command_can_be_built_from_unit_movement_mapping() {
+    assert_eq!(
+        Command::from_unit_movement(MovementDirection::Previous, MovementUnit::Grapheme, false),
+        Command::MoveLeft { extend: false }
+    );
+    assert_eq!(
+        Command::from_unit_movement(MovementDirection::Next, MovementUnit::Word, true),
+        Command::MoveWordRight { extend: true }
+    );
+    assert_eq!(
+        Command::from_unit_movement(MovementDirection::Previous, MovementUnit::Identifier, true),
+        Command::MoveIdentifierLeft { extend: true }
+    );
+    assert_eq!(
+        Command::from_unit_movement(MovementDirection::Next, MovementUnit::Symbol, false),
+        Command::MoveSymbolRight { extend: false }
+    );
+}
+
+#[test]
 fn command_enum_supports_selection_commands() {
     let selections = SelectionSet::new(vec![
         Selection::caret(CharOffset::new(1)),

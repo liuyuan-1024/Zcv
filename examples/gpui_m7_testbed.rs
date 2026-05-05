@@ -212,28 +212,7 @@ impl M7Testbed {
     }
 
     fn movement_command(direction: MovementDirection, unit: MovementUnit, extend: bool) -> Command {
-        match (unit, direction) {
-            (MovementUnit::Grapheme, MovementDirection::Previous) => Command::MoveLeft { extend },
-            (MovementUnit::Grapheme, MovementDirection::Next) => Command::MoveRight { extend },
-            (MovementUnit::Word, MovementDirection::Previous) => Command::MoveWordLeft { extend },
-            (MovementUnit::Word, MovementDirection::Next) => Command::MoveWordRight { extend },
-            (MovementUnit::Identifier, MovementDirection::Previous) => {
-                Command::MoveIdentifierLeft { extend }
-            }
-            (MovementUnit::Identifier, MovementDirection::Next) => {
-                Command::MoveIdentifierRight { extend }
-            }
-            (MovementUnit::Subword, MovementDirection::Previous) => {
-                Command::MoveSubwordLeft { extend }
-            }
-            (MovementUnit::Subword, MovementDirection::Next) => {
-                Command::MoveSubwordRight { extend }
-            }
-            (MovementUnit::Symbol, MovementDirection::Previous) => {
-                Command::MoveSymbolLeft { extend }
-            }
-            (MovementUnit::Symbol, MovementDirection::Next) => Command::MoveSymbolRight { extend },
-        }
+        Command::from_unit_movement(direction, unit, extend)
     }
 
     fn insert_text(&mut self, text: &str, cx: &mut Context<Self>) {

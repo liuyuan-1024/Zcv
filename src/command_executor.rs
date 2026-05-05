@@ -142,6 +142,20 @@ impl Buffer {
             Command::MoveWordRight { extend } => {
                 self.move_current_selection(MovementDirection::Next, MovementUnit::Word, *extend)?;
             }
+            Command::MoveIdentifierLeft { extend } => {
+                self.move_current_selection(
+                    MovementDirection::Previous,
+                    MovementUnit::Identifier,
+                    *extend,
+                )?;
+            }
+            Command::MoveIdentifierRight { extend } => {
+                self.move_current_selection(
+                    MovementDirection::Next,
+                    MovementUnit::Identifier,
+                    *extend,
+                )?;
+            }
             Command::MoveSubwordLeft { extend } => {
                 self.move_current_selection(
                     MovementDirection::Previous,
@@ -349,6 +363,8 @@ fn is_repeatable(command: &Command) -> bool {
             | Command::MoveLineEnd { .. }
             | Command::MoveWordLeft { .. }
             | Command::MoveWordRight { .. }
+            | Command::MoveIdentifierLeft { .. }
+            | Command::MoveIdentifierRight { .. }
             | Command::MoveSubwordLeft { .. }
             | Command::MoveSubwordRight { .. }
             | Command::MoveSymbolLeft { .. }

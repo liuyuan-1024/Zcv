@@ -36,6 +36,7 @@ examples/
 - gpui_m6a_testbed.rs
 - gpui_m6b_testbed.rs
 - gpui_m6c_testbed.rs
+- gpui_m7_testbed.rs
 ```
 
 ## 常用验证命令（快照）

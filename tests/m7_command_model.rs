@@ -41,6 +41,8 @@ fn command_enum_supports_movement_commands_with_extend_flag() {
         Command::MoveLineEnd { extend: false },
         Command::MoveWordLeft { extend: true },
         Command::MoveWordRight { extend: false },
+        Command::MoveIdentifierLeft { extend: true },
+        Command::MoveIdentifierRight { extend: false },
         Command::MoveSubwordLeft { extend: true },
         Command::MoveSubwordRight { extend: false },
         Command::MoveSymbolLeft { extend: true },
@@ -55,6 +57,10 @@ fn command_enum_supports_movement_commands_with_extend_flag() {
     ));
     assert!(matches!(
         commands[10],
+        Command::MoveSubwordLeft { extend: true }
+    ));
+    assert!(matches!(
+        commands[12],
         Command::MoveSymbolLeft { extend: true }
     ));
 }
@@ -147,6 +153,10 @@ fn command_description_is_stable_and_short() {
     assert_eq!(
         (Command::MoveWordRight { extend: true }).description(),
         "extend word right"
+    );
+    assert_eq!(
+        (Command::MoveIdentifierLeft { extend: false }).description(),
+        "move identifier left"
     );
     assert_eq!((Command::SelectAll).description(), "select all");
     assert_eq!((Command::Redo).description(), "redo");
@@ -437,7 +447,7 @@ fn m7d_delete_backward_and_forward_are_equivalent_to_existing_multi_cursor_delet
 }
 
 #[test]
-fn m7d_word_subword_and_symbol_movement_commands_reuse_m6b_movement_policy() {
+fn m7d_word_identifier_subword_and_symbol_movement_commands_reuse_m6b_movement_policy() {
     let cases = [
         (
             Command::MoveWordRight { extend: false },
@@ -452,6 +462,20 @@ fn m7d_word_subword_and_symbol_movement_commands_reuse_m6b_movement_policy() {
             MovementUnit::Word,
             true,
             CharOffset::new(9),
+        ),
+        (
+            Command::MoveIdentifierRight { extend: false },
+            MovementDirection::Next,
+            MovementUnit::Identifier,
+            false,
+            CharOffset::new(0),
+        ),
+        (
+            Command::MoveIdentifierLeft { extend: true },
+            MovementDirection::Previous,
+            MovementUnit::Identifier,
+            true,
+            CharOffset::new(12),
         ),
         (
             Command::MoveSubwordRight { extend: false },

@@ -59,11 +59,17 @@ pub enum Command {
         extend: bool,
     },
 
-    // ---- word / subword / symbol 移动 ----
+    // ---- word / identifier / subword / symbol 移动 ----
     MoveWordLeft {
         extend: bool,
     },
     MoveWordRight {
+        extend: bool,
+    },
+    MoveIdentifierLeft {
+        extend: bool,
+    },
+    MoveIdentifierRight {
         extend: bool,
     },
     MoveSubwordLeft {
@@ -144,6 +150,10 @@ impl Command {
             Self::MoveWordLeft { extend: true } => "extend word left",
             Self::MoveWordRight { extend: false } => "move word right",
             Self::MoveWordRight { extend: true } => "extend word right",
+            Self::MoveIdentifierLeft { extend: false } => "move identifier left",
+            Self::MoveIdentifierLeft { extend: true } => "extend identifier left",
+            Self::MoveIdentifierRight { extend: false } => "move identifier right",
+            Self::MoveIdentifierRight { extend: true } => "extend identifier right",
             Self::MoveSubwordLeft { extend: false } => "move subword left",
             Self::MoveSubwordLeft { extend: true } => "extend subword left",
             Self::MoveSubwordRight { extend: false } => "move subword right",

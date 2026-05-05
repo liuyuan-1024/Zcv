@@ -1,16 +1,14 @@
 //! M7A～M7D：编辑命令数据模型、命令上下文与执行结果。
 //!
 //! `Command` 是键盘、鼠标、菜单、命令面板、GPUI testbed 与未来宏录制的统一
-//! 动作描述入口。M7A 定义命令枚举；M7B 补充命令来源、repeat、timestamp 与
-//! Transaction metadata 映射；M7C/M7D 的执行器位于 `src/command_executor.rs`，负责把命令
+//! 动作描述入口。M7A 定义命令枚举；M7B 补充命令来源、repeat 与 timestamp；
+//! M7C/M7D 的执行器位于 `src/command_executor.rs`，负责把命令
 //! 统一编排到 Buffer 的 Transaction、SelectionSet、History 与 Composition 管线。
 //! 可回放序列化能力留给 M17。
 
 use std::time::SystemTime;
 
-use crate::{
-    BufferVersion, Selection, SelectionSet, TransactionId, TransactionMetadata, TransactionSource,
-};
+use crate::{BufferVersion, Selection, SelectionSet, TransactionId};
 
 /// 统一编辑动作枚举。
 ///
@@ -166,36 +164,12 @@ impl Command {
             Self::CompositionCancel => "composition cancel",
         }
     }
-
-    /// 根据命令类型和来源，给未来文本事务选择合适的 `TransactionSource`。
-    ///
-    /// 纯移动命令在 M7C 中不会产生文本事务；这个方法仍然保持确定性，方便 testbed
-    /// 统一展示“如果该命令产生事务，将使用什么来源”。
-    pub fn transaction_source(&self, source: CommandSource) -> TransactionSource {
-        match self {
-            Self::Undo => TransactionSource::Undo,
-            Self::Redo => TransactionSource::Redo,
-            Self::CompositionStart
-            | Self::CompositionUpdate(_)
-            | Self::CompositionCommit(_)
-            | Self::CompositionCancel => TransactionSource::Composition,
-            Self::DeleteSelection
-            | Self::DeleteBackward
-            | Self::DeleteForward
-            | Self::DeleteWordBackward
-            | Self::DeleteWordForward
-            | Self::DeleteSubwordBackward
-            | Self::DeleteSubwordForward => TransactionSource::Delete,
-            _ => source.into(),
-        }
-    }
 }
 
 /// 命令来源。
 ///
-/// `CommandSource` 描述“命令从哪里进入引擎”。它不同于 `TransactionSource`：
-/// 前者是输入来源，后者是事务语义标签。M7B 提供二者的显式映射，M7C 执行命令时
-/// 可以用该映射生成 `TransactionMetadata`。
+/// `CommandSource` 描述“命令从哪里进入引擎”。它只表达输入来源；
+/// Command -> Transaction metadata 的映射属于 `src/command_executor.rs` 的适配层职责。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum CommandSource {
     #[default]
@@ -207,20 +181,6 @@ pub enum CommandSource {
     Ime,
     Macro,
     External,
-}
-
-impl From<CommandSource> for TransactionSource {
-    fn from(source: CommandSource) -> Self {
-        match source {
-            CommandSource::Keyboard => Self::Keyboard,
-            CommandSource::Mouse => Self::Mouse,
-            CommandSource::Paste => Self::Paste,
-            CommandSource::CommandPalette | CommandSource::Menu => Self::Command,
-            CommandSource::Ime => Self::Composition,
-            CommandSource::Macro => Self::Macro,
-            CommandSource::External => Self::External,
-        }
-    }
 }
 
 /// 命令 repeat 次数。
@@ -327,15 +287,6 @@ impl CommandContext {
     pub fn timestamp(&self) -> Option<SystemTime> {
         self.timestamp
     }
-
-    /// 为未来的文本事务生成基础 metadata。
-    ///
-    /// 这里不提交事务，也不决定 Undo merge；只把 M7B 的来源模型映射为现有
-    /// `TransactionMetadata`，并填入稳定命令描述。
-    pub fn transaction_metadata_for(&self, command: &Command) -> TransactionMetadata {
-        TransactionMetadata::new(command.transaction_source(self.source))
-            .with_description(command.description())
-    }
 }
 
 impl Default for CommandContext {
@@ -356,13 +307,13 @@ impl Default for CommandContext {
 /// DeltaEvent / 事务事件总线对接点。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CommandOutcome {
-    pub old_version: BufferVersion,
-    pub new_version: BufferVersion,
-    pub transaction_id: Option<TransactionId>,
-    pub text_changed: bool,
-    pub selection_changed: bool,
-    pub composition_changed: bool,
-    pub description: String,
+    old_version: BufferVersion,
+    new_version: BufferVersion,
+    transaction_id: Option<TransactionId>,
+    text_changed: bool,
+    selection_changed: bool,
+    composition_changed: bool,
+    description: String,
 }
 
 impl CommandOutcome {

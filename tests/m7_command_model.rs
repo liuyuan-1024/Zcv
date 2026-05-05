@@ -96,39 +96,22 @@ fn command_enum_supports_history_and_composition_commands() {
 }
 
 #[test]
-fn command_source_maps_to_transaction_source() {
-    assert_eq!(
-        TransactionSource::from(CommandSource::Keyboard),
-        TransactionSource::Keyboard
-    );
-    assert_eq!(
-        TransactionSource::from(CommandSource::Mouse),
-        TransactionSource::Mouse
-    );
-    assert_eq!(
-        TransactionSource::from(CommandSource::Paste),
-        TransactionSource::Paste
-    );
-    assert_eq!(
-        TransactionSource::from(CommandSource::CommandPalette),
-        TransactionSource::Command
-    );
-    assert_eq!(
-        TransactionSource::from(CommandSource::Menu),
-        TransactionSource::Command
-    );
-    assert_eq!(
-        TransactionSource::from(CommandSource::Ime),
-        TransactionSource::Composition
-    );
-    assert_eq!(
-        TransactionSource::from(CommandSource::Macro),
-        TransactionSource::Macro
-    );
-    assert_eq!(
-        TransactionSource::from(CommandSource::External),
-        TransactionSource::External
-    );
+fn command_sources_are_data_model_only() {
+    let sources = [
+        CommandSource::Keyboard,
+        CommandSource::Mouse,
+        CommandSource::Paste,
+        CommandSource::CommandPalette,
+        CommandSource::Menu,
+        CommandSource::Ime,
+        CommandSource::Macro,
+        CommandSource::External,
+    ];
+
+    for source in sources {
+        let context = CommandContext::new(source);
+        assert_eq!(context.source(), source);
+    }
 }
 
 #[test]
@@ -153,38 +136,6 @@ fn command_context_supports_source_repeat_and_timestamp() {
     assert_eq!(context.repeat_count(), 3);
     assert_eq!(context.timestamp(), Some(timestamp));
     assert_eq!(CommandRepeat::new(0), None);
-}
-
-#[test]
-fn command_context_builds_transaction_metadata_for_command() {
-    let context = CommandContext::paste();
-    let metadata = context.transaction_metadata_for(&Command::insert_text("hello"));
-
-    assert_eq!(metadata.source, TransactionSource::Paste);
-    assert_eq!(metadata.description.as_deref(), Some("insert text"));
-    assert!(metadata.record_history);
-}
-
-#[test]
-fn command_specific_metadata_overrides_generic_source_when_needed() {
-    let keyboard = CommandContext::keyboard();
-    let delete_metadata = keyboard.transaction_metadata_for(&Command::DeleteBackward);
-    let undo_metadata = keyboard.transaction_metadata_for(&Command::Undo);
-    let composition_metadata =
-        CommandContext::ime().transaction_metadata_for(&Command::composition_commit("你"));
-
-    assert_eq!(delete_metadata.source, TransactionSource::Delete);
-    assert_eq!(
-        delete_metadata.description.as_deref(),
-        Some("delete backward")
-    );
-    assert_eq!(undo_metadata.source, TransactionSource::Undo);
-    assert_eq!(undo_metadata.description.as_deref(), Some("undo"));
-    assert_eq!(composition_metadata.source, TransactionSource::Composition);
-    assert_eq!(
-        composition_metadata.description.as_deref(),
-        Some("composition commit")
-    );
 }
 
 #[test]
@@ -218,13 +169,13 @@ fn execute_insert_text_command_creates_transaction_and_outcome() {
 
     assert_eq!(buffer.text().as_ref(), "hello!");
     assert_eq!(buffer.selection().primary().head(), CharOffset::new(6));
-    assert_eq!(outcome.old_version, BufferVersion::INITIAL);
-    assert_eq!(outcome.new_version, buffer.version());
-    assert_eq!(outcome.transaction_id, None);
-    assert!(outcome.text_changed);
-    assert!(outcome.selection_changed);
-    assert!(!outcome.composition_changed);
-    assert_eq!(outcome.description, "insert text");
+    assert_eq!(outcome.old_version(), BufferVersion::INITIAL);
+    assert_eq!(outcome.new_version(), buffer.version());
+    assert_eq!(outcome.transaction_id(), None);
+    assert!(outcome.text_changed());
+    assert!(outcome.selection_changed());
+    assert!(!outcome.composition_changed());
+    assert_eq!(outcome.description(), "insert text");
     assert!(buffer.can_undo());
 }
 
@@ -247,8 +198,8 @@ fn execute_movement_command_updates_selection_without_text_transaction() {
     assert_eq!(buffer.version(), version);
     assert_eq!(buffer.selection().primary().anchor(), CharOffset::new(1));
     assert_eq!(buffer.selection().primary().head(), CharOffset::new(2));
-    assert!(!outcome.text_changed);
-    assert!(outcome.selection_changed);
+    assert!(!outcome.text_changed());
+    assert!(outcome.selection_changed());
     assert!(!buffer.can_undo());
 }
 
@@ -296,8 +247,8 @@ fn execute_delete_word_command_uses_existing_movement_boundaries() {
         .expect("delete word backward");
 
     assert_eq!(buffer.text().as_ref(), "hello ");
-    assert!(outcome.text_changed);
-    assert_eq!(outcome.description, "delete word backward");
+    assert!(outcome.text_changed());
+    assert_eq!(outcome.description(), "delete word backward");
 }
 
 #[test]
@@ -311,8 +262,8 @@ fn execute_selection_commands_only_change_selection() {
         buffer.selection().primary().range(),
         TextRange::new(CharOffset::ZERO, CharOffset::new(3)).unwrap()
     );
-    assert!(!select_all.text_changed);
-    assert!(select_all.selection_changed);
+    assert!(!select_all.text_changed());
+    assert!(select_all.selection_changed());
 
     let clear = buffer
         .execute_command(Command::ClearSelections, CommandContext::keyboard())
@@ -321,8 +272,8 @@ fn execute_selection_commands_only_change_selection() {
         buffer.selection().primary(),
         &Selection::caret(CharOffset::new(3))
     );
-    assert!(!clear.text_changed);
-    assert!(clear.selection_changed);
+    assert!(!clear.text_changed());
+    assert!(clear.selection_changed());
 }
 
 #[test]
@@ -340,14 +291,14 @@ fn execute_undo_redo_commands_use_history_system() {
         .execute_command(Command::Undo, CommandContext::keyboard())
         .expect("undo");
     assert_eq!(buffer.text().as_ref(), "a");
-    assert!(undo.text_changed);
+    assert!(undo.text_changed());
     assert_eq!(buffer.selection().primary().head(), CharOffset::new(1));
 
     let redo = buffer
         .execute_command(Command::Redo, CommandContext::keyboard())
         .expect("redo");
     assert_eq!(buffer.text().as_ref(), "ab");
-    assert!(redo.text_changed);
+    assert!(redo.text_changed());
     assert_eq!(buffer.selection().primary().head(), CharOffset::new(2));
 }
 
@@ -359,16 +310,16 @@ fn execute_ime_commands_reuse_composition_pipeline() {
         .execute_command(Command::CompositionStart, CommandContext::ime())
         .expect("composition start");
     assert!(buffer.is_composing());
-    assert!(!start.text_changed);
-    assert!(start.composition_changed);
+    assert!(!start.text_changed());
+    assert!(start.composition_changed());
 
     let update = buffer
         .execute_command(Command::composition_update("ni"), CommandContext::ime())
         .expect("composition update");
     assert_eq!(buffer.text().as_ref(), "ni");
     assert!(buffer.is_composing());
-    assert!(update.text_changed);
-    assert!(update.composition_changed);
+    assert!(update.text_changed());
+    assert!(update.composition_changed());
     assert!(!buffer.can_undo());
 
     let commit = buffer
@@ -376,8 +327,8 @@ fn execute_ime_commands_reuse_composition_pipeline() {
         .expect("composition commit");
     assert_eq!(buffer.text().as_ref(), "你");
     assert!(!buffer.is_composing());
-    assert!(commit.text_changed);
-    assert!(commit.composition_changed);
+    assert!(commit.text_changed());
+    assert!(commit.composition_changed());
     assert!(buffer.can_undo());
 
     buffer
@@ -660,4 +611,61 @@ fn m7d_command_executor_does_not_bypass_transaction_selection_or_composition_pip
         .execute_command(Command::Undo, CommandContext::keyboard())
         .expect("undo composition commit");
     assert!(!buffer.is_composing());
+}
+
+#[test]
+fn repeat_count_repeats_repeatable_text_and_movement_commands() {
+    let mut text_buffer = test_buffer("");
+    text_buffer
+        .execute_command(
+            Command::insert_text("x"),
+            CommandContext::keyboard()
+                .with_repeat_count(3)
+                .expect("repeat count"),
+        )
+        .expect("repeat insert");
+    assert_eq!(text_buffer.text().as_ref(), "xxx");
+
+    let mut move_buffer = test_buffer("abcd");
+    move_buffer
+        .execute_command(
+            Command::MoveRight { extend: false },
+            CommandContext::keyboard()
+                .with_repeat_count(3)
+                .expect("repeat count"),
+        )
+        .expect("repeat move");
+    assert_eq!(
+        move_buffer.selection().primary(),
+        &Selection::caret(CharOffset::new(3))
+    );
+}
+
+#[test]
+fn repeat_count_is_ignored_for_absolute_selection_and_composition_commands() {
+    let mut buffer = test_buffer("abcd");
+    buffer
+        .set_selection(SelectionSet::caret(CharOffset::new(1)))
+        .expect("selection");
+
+    buffer
+        .execute_command(
+            Command::AddSelection(Selection::caret(CharOffset::new(3))),
+            CommandContext::keyboard()
+                .with_repeat_count(3)
+                .expect("repeat count"),
+        )
+        .expect("add selection once");
+    assert_eq!(buffer.selection().len(), 2);
+
+    let mut ime_buffer = test_buffer("");
+    ime_buffer
+        .execute_command(
+            Command::CompositionStart,
+            CommandContext::ime()
+                .with_repeat_count(3)
+                .expect("repeat count"),
+        )
+        .expect("composition start once");
+    assert!(ime_buffer.is_composing());
 }

@@ -4,9 +4,9 @@
 //! 子模块不依赖 Command，从物理结构上保持“分层但不倒置”。
 
 use crate::{
-    CharOffset, Command, CommandContext, CommandOutcome, EngineResult, Line, LogicalColumn,
-    MovementDirection, MovementUnit, Position, Selection, SelectionSet, TransactionMetadata,
-    buffer::Buffer,
+    CharOffset, Command, CommandContext, CommandOutcome, CommandSource, EngineResult, Line,
+    LogicalColumn, MovementDirection, MovementUnit, Position, Selection, SelectionSet,
+    TransactionMetadata, TransactionSource, buffer::Buffer,
 };
 
 impl Buffer {
@@ -24,7 +24,7 @@ impl Buffer {
         let old_composition = self.composition().cloned();
         let description = command.description();
 
-        for _ in 0..context.repeat_count() {
+        for _ in 0..repeat_count_for(&command, &context) {
             self.execute_command_once(&command, &context)?;
         }
 
@@ -53,7 +53,7 @@ impl Buffer {
                 self.replace_selection_ranges_with_metadata(
                     selections,
                     text,
-                    context.transaction_metadata_for(command),
+                    transaction_metadata_for(context, command),
                 )?;
             }
             Command::DeleteSelection => {
@@ -61,49 +61,49 @@ impl Buffer {
                 self.replace_selection_ranges_with_metadata(
                     selections,
                     "",
-                    context.transaction_metadata_for(command),
+                    transaction_metadata_for(context, command),
                 )?;
             }
             Command::DeleteBackward => {
                 self.delete_by_movement(
                     MovementDirection::Previous,
                     MovementUnit::Grapheme,
-                    context.transaction_metadata_for(command),
+                    transaction_metadata_for(context, command),
                 )?;
             }
             Command::DeleteForward => {
                 self.delete_by_movement(
                     MovementDirection::Next,
                     MovementUnit::Grapheme,
-                    context.transaction_metadata_for(command),
+                    transaction_metadata_for(context, command),
                 )?;
             }
             Command::DeleteWordBackward => {
                 self.delete_by_movement(
                     MovementDirection::Previous,
                     MovementUnit::Word,
-                    context.transaction_metadata_for(command),
+                    transaction_metadata_for(context, command),
                 )?;
             }
             Command::DeleteWordForward => {
                 self.delete_by_movement(
                     MovementDirection::Next,
                     MovementUnit::Word,
-                    context.transaction_metadata_for(command),
+                    transaction_metadata_for(context, command),
                 )?;
             }
             Command::DeleteSubwordBackward => {
                 self.delete_by_movement(
                     MovementDirection::Previous,
                     MovementUnit::Subword,
-                    context.transaction_metadata_for(command),
+                    transaction_metadata_for(context, command),
                 )?;
             }
             Command::DeleteSubwordForward => {
                 self.delete_by_movement(
                     MovementDirection::Next,
                     MovementUnit::Subword,
-                    context.transaction_metadata_for(command),
+                    transaction_metadata_for(context, command),
                 )?;
             }
             Command::MoveLeft { extend } => {
@@ -219,35 +219,7 @@ impl Buffer {
         metadata: TransactionMetadata,
     ) -> EngineResult<()> {
         let selections = self.selection().clone();
-        let mut delete_targets = Vec::new();
-
-        for selection in selections.as_slice() {
-            if selection.is_caret() {
-                let head = selection.head();
-                let boundary = self.movement_boundary(head, direction, unit)?;
-                let range_selection = match direction {
-                    MovementDirection::Previous => Selection::new(boundary, head),
-                    MovementDirection::Next => Selection::new(head, boundary),
-                };
-
-                if !range_selection.range().is_empty() {
-                    delete_targets.push(range_selection);
-                }
-            } else {
-                delete_targets.push(*selection);
-            }
-        }
-
-        if delete_targets.is_empty() {
-            self.set_selection(selections)?;
-            return Ok(());
-        }
-
-        self.replace_selection_ranges_with_metadata(
-            SelectionSet::new(delete_targets),
-            "",
-            metadata,
-        )?;
+        self.delete_by_movement_at_selections(selections, direction, unit, metadata)?;
         Ok(())
     }
 
@@ -347,6 +319,78 @@ impl Buffer {
 
         let next_line_start = self.line_start(Line::new(next_line))?;
         self.previous_grapheme_boundary(next_line_start)
+    }
+}
+
+fn repeat_count_for(command: &Command, context: &CommandContext) -> u32 {
+    if is_repeatable(command) {
+        context.repeat_count()
+    } else {
+        1
+    }
+}
+
+fn is_repeatable(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::InsertText(_)
+            | Command::ReplaceSelections(_)
+            | Command::DeleteBackward
+            | Command::DeleteForward
+            | Command::DeleteWordBackward
+            | Command::DeleteWordForward
+            | Command::DeleteSubwordBackward
+            | Command::DeleteSubwordForward
+            | Command::MoveLeft { .. }
+            | Command::MoveRight { .. }
+            | Command::MoveUp { .. }
+            | Command::MoveDown { .. }
+            | Command::MoveLineStart { .. }
+            | Command::MoveLineEnd { .. }
+            | Command::MoveWordLeft { .. }
+            | Command::MoveWordRight { .. }
+            | Command::MoveSubwordLeft { .. }
+            | Command::MoveSubwordRight { .. }
+            | Command::MoveSymbolLeft { .. }
+            | Command::MoveSymbolRight { .. }
+            | Command::Undo
+            | Command::Redo
+    )
+}
+
+fn transaction_metadata_for(context: &CommandContext, command: &Command) -> TransactionMetadata {
+    TransactionMetadata::new(transaction_source_for(context.source(), command))
+        .with_description(command.description())
+}
+
+fn transaction_source_for(source: CommandSource, command: &Command) -> TransactionSource {
+    match command {
+        Command::Undo => TransactionSource::Undo,
+        Command::Redo => TransactionSource::Redo,
+        Command::CompositionStart
+        | Command::CompositionUpdate(_)
+        | Command::CompositionCommit(_)
+        | Command::CompositionCancel => TransactionSource::Composition,
+        Command::DeleteSelection
+        | Command::DeleteBackward
+        | Command::DeleteForward
+        | Command::DeleteWordBackward
+        | Command::DeleteWordForward
+        | Command::DeleteSubwordBackward
+        | Command::DeleteSubwordForward => TransactionSource::Delete,
+        _ => command_source_to_transaction_source(source),
+    }
+}
+
+fn command_source_to_transaction_source(source: CommandSource) -> TransactionSource {
+    match source {
+        CommandSource::Keyboard => TransactionSource::Keyboard,
+        CommandSource::Mouse => TransactionSource::Mouse,
+        CommandSource::Paste => TransactionSource::Paste,
+        CommandSource::CommandPalette | CommandSource::Menu => TransactionSource::Command,
+        CommandSource::Ime => TransactionSource::Composition,
+        CommandSource::Macro => TransactionSource::Macro,
+        CommandSource::External => TransactionSource::External,
     }
 }
 

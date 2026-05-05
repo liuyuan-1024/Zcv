@@ -1,5 +1,6 @@
 use crate::{
-    BufferVersion, CharOffset, EngineError, EngineResult, Selection, SelectionSet, TextRange,
+    BufferVersion, CharOffset, EngineError, EngineResult, MovementDirection, MovementUnit,
+    Selection, SelectionSet, TextRange,
     storage::TextStorage,
     transaction::{
         ChangeSet, Delta, Edit, EditList, Transaction, TransactionMetadata, TransactionSource,
@@ -142,31 +143,10 @@ impl Buffer {
         &mut self,
         selections: SelectionSet,
     ) -> EngineResult<Option<(Delta, ChangeSet)>> {
-        self.validate_selection_set(&selections)?;
-
-        let mut delete_targets = Vec::new();
-
-        for selection in selections.as_slice() {
-            if selection.is_caret() {
-                let end = selection.head();
-                let start = self.previous_grapheme_boundary(end)?;
-
-                if start != end {
-                    delete_targets.push(Selection::new(start, end));
-                }
-            } else {
-                delete_targets.push(*selection);
-            }
-        }
-
-        if delete_targets.is_empty() {
-            self.set_selection(selections)?;
-            return Ok(None);
-        }
-
-        self.replace_selection_ranges_with_metadata(
-            SelectionSet::new(delete_targets),
-            "",
+        self.delete_by_movement_at_selections(
+            selections,
+            MovementDirection::Previous,
+            MovementUnit::Grapheme,
             TransactionMetadata::new(TransactionSource::Delete)
                 .with_description("delete backward at selections"),
         )
@@ -177,17 +157,37 @@ impl Buffer {
         &mut self,
         selections: SelectionSet,
     ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.delete_by_movement_at_selections(
+            selections,
+            MovementDirection::Next,
+            MovementUnit::Grapheme,
+            TransactionMetadata::new(TransactionSource::Delete)
+                .with_description("delete forward at selections"),
+        )
+    }
+
+    pub(crate) fn delete_by_movement_at_selections(
+        &mut self,
+        selections: SelectionSet,
+        direction: MovementDirection,
+        unit: MovementUnit,
+        metadata: TransactionMetadata,
+    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
         self.validate_selection_set(&selections)?;
 
         let mut delete_targets = Vec::new();
 
         for selection in selections.as_slice() {
             if selection.is_caret() {
-                let start = selection.head();
-                let end = self.next_grapheme_boundary(start)?;
+                let head = selection.head();
+                let boundary = self.movement_boundary(head, direction, unit)?;
+                let range_selection = match direction {
+                    MovementDirection::Previous => Selection::new(boundary, head),
+                    MovementDirection::Next => Selection::new(head, boundary),
+                };
 
-                if start != end {
-                    delete_targets.push(Selection::new(start, end));
+                if !range_selection.range().is_empty() {
+                    delete_targets.push(range_selection);
                 }
             } else {
                 delete_targets.push(*selection);
@@ -199,12 +199,7 @@ impl Buffer {
             return Ok(None);
         }
 
-        self.replace_selection_ranges_with_metadata(
-            SelectionSet::new(delete_targets),
-            "",
-            TransactionMetadata::new(TransactionSource::Delete)
-                .with_description("delete forward at selections"),
-        )
+        self.replace_selection_ranges_with_metadata(SelectionSet::new(delete_targets), "", metadata)
     }
 
     pub(crate) fn replace_selection_ranges_with_metadata(

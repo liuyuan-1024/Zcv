@@ -183,7 +183,7 @@ fn snapshot_is_immutable_versioned_and_send_sync() {
     assert_eq!(snapshot.version(), BufferVersion::INITIAL);
     assert_eq!(snapshot.len_chars(), CharOffset::new(11));
     assert_eq!(snapshot.line_count(), 2);
-    assert!(!snapshot.is_stale_for(&buffer));
+    assert!(!snapshot.is_stale_for_version(buffer.version()));
     assert!(!buffer.is_snapshot_stale(&snapshot));
 
     let joined = thread::spawn({
@@ -207,7 +207,7 @@ fn snapshot_is_immutable_versioned_and_send_sync() {
     buffer.insert(CharOffset::new(0), "> ").unwrap();
 
     assert_eq!(snapshot.text(), "line1\nline2");
-    assert!(snapshot.is_stale_for(&buffer));
+    assert!(snapshot.is_stale_for_version(buffer.version()));
     assert!(buffer.is_version_stale(snapshot.version()));
 }
 

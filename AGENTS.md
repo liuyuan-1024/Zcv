@@ -15,6 +15,7 @@ AGENTS.md
 README.md
 编辑引擎能力.md
 编辑引擎测试策略.md
+docs/STATUS.md（如果存在）
 ```
 
 如果当前环境不能读取文件，AI 应该先提醒用户提供相关文件内容，而不是凭空假设项目规范。
@@ -57,57 +58,25 @@ LSP
 
 ## 2. 当前目录语义
 
-当前项目大致结构：
+本项目文档采用“稳定层 + 易变层”：
 
 ```text
-zom-engine/
-├── src/
-│   ├── lib.rs
-│   ├── types.rs
-│   ├── config.rs
-│   ├── errors.rs
-│   ├── transaction.rs
-│   ├── snapshot.rs             # public Snapshot 类型与只读查询
-│   ├── buffer/
-│   │   ├── mod.rs              # Buffer 状态聚合与 public 入口
-│   │   ├── versioning.rs       # BufferVersion、Snapshot 创建与过期判断
-│   │   ├── coordinates.rs      # 坐标转换 / Grapheme / CRLF / DisplayColumn 数学
-│   │   ├── selection_ops.rs    # SelectionSet 状态管理
-│   │   ├── movement.rs         # M6B Word / Identifier / Subword / Symbol 移动
-│   │   ├── composition.rs      # M6C IME composition 生命周期
-│   │   ├── edit.rs             # Transaction 应用与文本变异
-│   │   ├── history.rs          # Undo / Redo 与历史合并
-│   │   └── validation.rs       # Buffer 级边界校验
-│   ├── storage/
-│   │   ├── mod.rs
-│   │   └── ropey_storage.rs
-│   └── tests/        # 可选内部测试区；M4 可用于 storage differential testing
-│       ├── mod.rs
-│       └── storage_consistency.rs
-│
-├── tests/
-│   ├── m0_domain_model.rs
-│   ├── m1_buffer.rs
-│   ├── m2_transaction.rs
-│   ├── m3_history.rs
-│   └── m4_storage.rs
-│
-├── examples/
-│   ├── gpui_m1_testbed.rs
-│   ├── gpui_m2_testbed.rs
-│   └── gpui_m3_testbed.rs
-│
-└── benches/          # 后期加入
+稳定层（本文件维护）：
+只定义目录职责和依赖边界，不维护逐文件清单。
+
+易变层（docs/STATUS.md 维护）：
+当前阶段文件列表、具体测试清单、阶段进展快照。
 ```
 
-目录含义：
+稳定职责边界：
 
 ```text
-src/        编辑引擎实现
-tests/      给 cargo test / CI 跑的机器契约测试
-examples/   给开发者把玩、Dogfooding、肉眼排查问题的 GPUI testbed
+src/        编辑引擎实现（按能力域拆模块）
+tests/      机器契约测试（CI 主体）
+examples/   交互式 testbed（人类体感）
 benches/    性能基准测试
-src/tests/  可选内部测试区；默认不要创建，除非 public API 无法覆盖重要 pub(crate) 不变量
+src/tests/  可选内部测试区，仅测试 public API 无法覆盖的重要内部不变量
+docs/       文档与状态快照（STATUS.md）
 ```
 
 ---
@@ -631,15 +600,9 @@ AI 修改代码前应先做：
 ```text
 cargo fmt
 cargo test
-cargo test --test m0_domain_model
-cargo test --test m1_buffer
-cargo test --test m2_transaction
-cargo test --test m3_history
-cargo test --test m4_storage
-cargo test --lib storage_consistency
-cargo run --example gpui_m1_testbed
-cargo run --example gpui_m2_testbed
-cargo run --example gpui_m3_testbed
+
+# 可选：按改动范围跑定向测试/示例
+# 具体清单见 docs/STATUS.md
 ```
 
 如果当前环境不能运行命令，AI 必须明确说明“未实际运行”。
@@ -686,13 +649,22 @@ UI 进 examples/
 常见场景：
 
 ```text
-新增阶段能力 -> 更新 README.md / 编辑引擎能力.md
+新增阶段能力 -> 先更新 docs/STATUS.md；若能力边界变化再更新 README.md / 编辑引擎能力.md
 修改测试目录职责 -> 更新 编辑引擎测试策略.md
 新增 AI 协作规范 -> 更新 AGENTS.md
 修改 public API 契约 -> 更新对应测试和文档
 ```
 
-不要只改代码，不改测试和文档。
+低维护规则（必须遵守）：
+
+```text
+1. 非原则性变化（文件名调整、目录移动、阶段文件增减）默认不改主文档。
+2. 主文档只维护稳定规则与边界，不维护易变清单。
+3. 易变信息统一写入 docs/STATUS.md。
+4. 只有“职责边界 / public API 契约 / 测试哲学”变化才更新主文档。
+```
+
+不要只改代码，不改必要文档；也不要为非原则性变化频繁改主文档。
 
 ---
 
@@ -810,13 +782,15 @@ M6C 之后，`src/buffer/mod.rs` 不应继续承载所有 Buffer 职责。
 ```text
 src/buffer/mod.rs              Buffer 状态聚合、模块组织、基础构造与简单访问器
 src/snapshot.rs                public Snapshot 类型与只读查询
+src/coordinates_core.rs        Buffer / Snapshot 共享坐标数学核心
 src/buffer/versioning.rs       BufferVersion、低成本 Snapshot 创建与过期判断
 src/buffer/coordinates.rs      坐标转换、grapheme、CRLF、DisplayColumn 数学
 src/buffer/selection_ops.rs    SelectionSet 状态管理
 src/buffer/movement.rs         M6B Word / Identifier / Subword / Symbol 移动
-src/buffer/composition.rs      M6C IME composition 生命周期
-src/buffer/edit.rs             Transaction 应用、文本变异、多光标编辑
-src/buffer/history.rs          Undo / Redo、HistoryEntry、历史合并
+src/buffer/composition/        M6C IME composition（state / validation / workflow）
+src/buffer/edit_ops/           Transaction 外围的文本变异与多光标编辑入口
+src/buffer/history/            Undo / Redo、HistoryEntry、历史合并
+src/buffer/transaction_pipeline/ 事务准备、提交、selection 映射、history 收尾
 src/buffer/validation.rs       Buffer 级边界校验
 ```
 
@@ -826,7 +800,7 @@ src/buffer/validation.rs       Buffer 级边界校验
 保持 public API 稳定。
 按能力域拆实现，不按测试阶段无限扩大 mod.rs。
 跨子模块 helper 优先使用 pub(super)，不要提升为 public API。
-重构后必须继续通过现有 m0-m6c 集成测试。
+重构后必须继续通过现有 m0-m7 集成测试。
 ```
 
 ### 12.6 Command 分层但不倒置

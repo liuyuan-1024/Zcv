@@ -6,8 +6,9 @@
 //! - `selection_ops`：SelectionSet 状态管理
 //! - `movement`：M6B Word / Identifier / Subword / Symbol 移动
 //! - `composition`：M6C IME composition 生命周期
-//! - `edit`：文本变异、Transaction 应用、多光标编辑
+//! - `edit_ops`：文本变异、多光标编辑入口
 //! - `history`：Undo / Redo 与历史合并
+//! - `transaction_pipeline`：事务准备、提交、selection 映射、history 收尾
 //! - `validation`：Buffer 级边界校验
 //!
 //! 这样 `Buffer` 的 public API 保持稳定，但实现不再集中在一个超大文件里。
@@ -21,10 +22,11 @@ use crate::{
 
 mod composition;
 pub(crate) mod coordinates;
-mod edit;
+mod edit_ops;
 mod history;
 mod movement;
 mod selection_ops;
+mod transaction_pipeline;
 mod validation;
 mod versioning;
 
@@ -37,8 +39,7 @@ pub struct Buffer {
     storage: RopeyStorage,
     version: BufferVersion,
     saved_version: BufferVersion,
-    undo_stack: Vec<history::HistoryEntry>,
-    redo_stack: Vec<history::HistoryEntry>,
+    history: history::HistoryState,
     selection: SelectionSet,
     composition: Option<CompositionState>,
 }
@@ -56,8 +57,7 @@ impl Buffer {
             storage: RopeyStorage::new(text),
             version: BufferVersion::INITIAL,
             saved_version: BufferVersion::INITIAL,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
+            history: history::HistoryState::new(),
             selection: SelectionSet::default(),
             composition: None,
         })

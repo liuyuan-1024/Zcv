@@ -4,15 +4,11 @@ use crate::{
     BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, DisplayColumn,
     DisplayColumnAffinity, EngineResult, Line, LineEndingStyle, LogicalColumn, Position,
     Utf16Position,
-    storage::{RopeySnapshot, TextRead},
-};
-
-use crate::buffer::{
-    Buffer,
-    coordinates::{
+    coordinates_core::{
         char_to_display_column_in_text, display_to_logical_column_in_text,
         logical_to_display_column_in_text, next_tab_stop,
     },
+    storage::{RopeySnapshot, TextRead},
 };
 
 /// 不可变文本快照。
@@ -182,8 +178,8 @@ impl Snapshot {
         self.storage.position_to_char(Position::new(line, logical))
     }
 
-    pub fn is_stale_for(&self, buffer: &Buffer) -> bool {
-        self.version != buffer.version()
+    pub fn is_stale_for_version(&self, version: BufferVersion) -> bool {
+        self.version != version
     }
 }
 

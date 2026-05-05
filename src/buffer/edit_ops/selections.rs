@@ -1,102 +1,11 @@
 use crate::{
-    BufferVersion, CharOffset, EngineError, EngineResult, MovementDirection, MovementUnit,
-    Selection, SelectionSet, TextRange,
-    storage::TextStorage,
-    transaction::{
-        ChangeSet, Delta, Edit, EditList, Transaction, TransactionMetadata, TransactionSource,
-    },
+    CharOffset, EngineResult, MovementDirection, MovementUnit, Selection, SelectionSet, TextRange,
+    transaction::{ChangeSet, Delta, Edit, Transaction, TransactionMetadata, TransactionSource},
 };
 
-use super::{Buffer, history::HistoryEntry};
+use crate::buffer::Buffer;
 
 impl Buffer {
-    /// 提交并应用事务。
-    ///
-    /// 成功将返回增量事件 Delta 和位置映射器 ChangeSet，并记录 Undo 历史。
-    pub fn apply_transaction(&mut self, tx: Transaction) -> EngineResult<(Delta, ChangeSet)> {
-        if tx.metadata().source != TransactionSource::Composition {
-            self.cancel_composition_before_text_edit()?;
-        }
-
-        let (base_version, tx_edits, metadata, tx_before_selection, tx_after_selection) =
-            tx.into_parts();
-
-        if base_version != self.version {
-            return Err(crate::TransactionError::VersionMismatch {
-                expected: self.version,
-                actual: base_version,
-            }
-            .into());
-        }
-
-        self.validate_edit_list(&tx_edits)?;
-
-        let before_text = self.text().into_owned();
-        let before_selection = tx_before_selection.unwrap_or_else(|| self.selection.clone());
-        let undo_edits = Self::build_inverse_edit_list(&before_text, &tx_edits)?;
-        let redo_edits = tx_edits.clone();
-
-        let (delta, changeset) = self.apply_edit_list(base_version, tx_edits)?;
-
-        let after_selection = tx_after_selection
-            .unwrap_or_else(|| before_selection.map_through_changeset(&changeset));
-        self.selection = after_selection.clone();
-
-        let after_text = self.text().into_owned();
-
-        if metadata.record_history {
-            let entry = HistoryEntry::new(
-                before_text,
-                after_text,
-                undo_edits,
-                redo_edits,
-                before_selection,
-                after_selection,
-                metadata.description.clone(),
-            );
-
-            self.push_history(entry, &metadata)?;
-        } else {
-            // 任何新的文本变异都会让已有 redo 分支失效；Undo / Redo 自身走
-            // apply_edit_list，不会触发这里。
-            self.redo_stack.clear();
-        }
-
-        Ok((delta, changeset))
-    }
-
-    pub fn insert(&mut self, offset: CharOffset, text: &str) -> EngineResult<()> {
-        let range = TextRange::new(offset, offset)?;
-        self.replace(range, text)
-    }
-
-    pub fn delete(&mut self, range: TextRange) -> EngineResult<()> {
-        self.replace(range, "")
-    }
-
-    /// 替换指定字符范围的文本，支持插入和删除。
-    ///
-    /// M3 起该便利 API 也会走 Transaction，从而进入 Undo 历史。
-    pub fn replace(&mut self, range: TextRange, replacement: &str) -> EngineResult<()> {
-        self.cancel_composition_before_text_edit()?;
-        self.validate_range(range)?;
-        self.validate_edit_boundary(range.start())?;
-        self.validate_edit_boundary(range.end())?;
-
-        // no-op 不递增版本，也不污染 dirty / history。
-        if self.slice_text(range)?.as_ref() == replacement {
-            return Ok(());
-        }
-
-        let tx = Transaction::from_edits(
-            self.version,
-            vec![Edit::replace(range, replacement.to_string())],
-        )?;
-
-        self.apply_transaction(tx)?;
-        Ok(())
-    }
-
     /// 在每个 selection 处插入文本；非空 selection 会被替换。
     pub fn insert_at_selections(
         &mut self,
@@ -256,7 +165,7 @@ impl Buffer {
         self.apply_transaction(tx).map(Some)
     }
 
-    pub(super) fn replace_single_range_with_metadata(
+    pub(in crate::buffer) fn replace_single_range_with_metadata(
         &mut self,
         range: TextRange,
         replacement: &str,
@@ -280,57 +189,5 @@ impl Buffer {
         .with_selection(Some(self.selection.clone()), Some(after_selection));
 
         self.apply_transaction(tx).map(Some)
-    }
-
-    pub(super) fn apply_edit_list(
-        &mut self,
-        base_version: BufferVersion,
-        tx_edits: EditList,
-    ) -> EngineResult<(Delta, ChangeSet)> {
-        if base_version != self.version {
-            return Err(crate::TransactionError::VersionMismatch {
-                expected: self.version,
-                actual: base_version,
-            }
-            .into());
-        }
-
-        // 1. 预检查：所有 edit 必须在当前旧文本字符坐标系中合法。
-        self.validate_edit_list(&tx_edits)?;
-
-        let edits = tx_edits.as_slice().to_vec();
-        let old_version = self.version;
-
-        // 2. 在 clone 上应用，确保未来 storage.replace 失败时不污染当前 Buffer。
-        let mut new_storage = self.storage.clone();
-
-        let mut reverse_edits = edits;
-        reverse_edits.reverse();
-
-        for edit in reverse_edits {
-            new_storage.replace(edit.range, &edit.replacement)?;
-        }
-
-        // 3. 全部成功后再一次性提交 storage / version。
-        self.storage = new_storage;
-        self.bump_version()?;
-
-        let new_version = self.version;
-
-        let changeset = ChangeSet::from_edit_list(&tx_edits);
-
-        let delta = Delta {
-            old_version,
-            new_version,
-            edits: tx_edits,
-        };
-
-        Ok((delta, changeset))
-    }
-
-    /// 递增版本号，溢出时返回错误。
-    fn bump_version(&mut self) -> EngineResult<()> {
-        self.version = self.version.next().ok_or(EngineError::VersionOverflow)?;
-        Ok(())
     }
 }

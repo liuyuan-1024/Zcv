@@ -38,7 +38,7 @@ fn m4_snapshot_is_versioned_and_immutable() -> EngineResult<()> {
 
     assert_eq!(snapshot.text().as_ref(), "one\ntwo");
     assert_eq!(buffer.text().as_ref(), "one\nTWO");
-    assert!(snapshot.is_stale_for(&buffer));
+    assert!(snapshot.is_stale_for_version(buffer.version()));
     assert!(buffer.is_snapshot_stale(&snapshot));
 
     Ok(())

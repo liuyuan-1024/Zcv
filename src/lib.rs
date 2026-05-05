@@ -3,6 +3,7 @@
 //! 不直接负责 UI 渲染、LSP 协议、语法树生成或项目级索引。
 //! 仅专注于文本存储、坐标模型、事务变异、历史系统以及外部系统所需的底层文本协作接口。
 
+mod coordinates_core;
 pub(crate) mod storage;
 
 pub mod buffer;
@@ -15,11 +16,25 @@ pub mod snapshot;
 pub mod transaction;
 pub mod types;
 
-pub use buffer::*;
-pub use command::*;
-pub use config::*;
-pub use errors::*;
-pub use selection::*;
-pub use snapshot::*;
-pub use transaction::*;
-pub use types::*;
+pub use buffer::{Buffer, HistoryStatus};
+pub use command::{Command, CommandContext, CommandOutcome, CommandRepeat, CommandSource};
+pub use config::{
+    BufferConfig, DisplayColumnAffinity, DisplayWidthPolicy, LargeFilePolicy, LineEndingConfig,
+    PositionEncodingConfig, TabConfig, WordBoundaryPolicy,
+};
+pub use errors::{
+    CoordinateError, EditError, EngineError, EngineResult, StorageError, TransactionError,
+};
+pub use selection::{
+    Affinity, CompositionSelection, CompositionState, Cursor, MovementDirection, MovementUnit,
+    Selection, SelectionMergePolicy, SelectionSet,
+};
+pub use snapshot::Snapshot;
+pub use transaction::{
+    ChangeSet, Delta, Edit, EditList, Transaction, TransactionMergePolicy, TransactionMetadata,
+    TransactionSource,
+};
+pub use types::{
+    BufferVersion, ByteOffset, CharOffset, DisplayColumn, Line, LineEndingStyle, LogicalColumn,
+    Position, TextRange, TransactionId, Utf16Offset, Utf16Position,
+};

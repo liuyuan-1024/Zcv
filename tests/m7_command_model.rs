@@ -49,8 +49,14 @@ fn command_enum_supports_movement_commands_with_extend_flag() {
 
     assert!(matches!(commands[0], Command::MoveLeft { extend: false }));
     assert!(matches!(commands[1], Command::MoveRight { extend: true }));
-    assert!(matches!(commands[4], Command::MoveLineStart { extend: true }));
-    assert!(matches!(commands[10], Command::MoveSymbolLeft { extend: true }));
+    assert!(matches!(
+        commands[4],
+        Command::MoveLineStart { extend: true }
+    ));
+    assert!(matches!(
+        commands[10],
+        Command::MoveSymbolLeft { extend: true }
+    ));
 }
 
 #[test]
@@ -64,7 +70,10 @@ fn command_enum_supports_selection_commands() {
     assert_eq!(set, Command::SetSelections(selections));
 
     let add = Command::AddSelection(Selection::caret(CharOffset::new(8)));
-    assert_eq!(add, Command::AddSelection(Selection::caret(CharOffset::new(8))));
+    assert_eq!(
+        add,
+        Command::AddSelection(Selection::caret(CharOffset::new(8)))
+    );
 
     assert_eq!(Command::SelectAll, Command::SelectAll);
     assert_eq!(Command::ClearSelections, Command::ClearSelections);
@@ -161,11 +170,14 @@ fn command_specific_metadata_overrides_generic_source_when_needed() {
     let keyboard = CommandContext::keyboard();
     let delete_metadata = keyboard.transaction_metadata_for(&Command::DeleteBackward);
     let undo_metadata = keyboard.transaction_metadata_for(&Command::Undo);
-    let composition_metadata = CommandContext::ime()
-        .transaction_metadata_for(&Command::composition_commit("你"));
+    let composition_metadata =
+        CommandContext::ime().transaction_metadata_for(&Command::composition_commit("你"));
 
     assert_eq!(delete_metadata.source, TransactionSource::Delete);
-    assert_eq!(delete_metadata.description.as_deref(), Some("delete backward"));
+    assert_eq!(
+        delete_metadata.description.as_deref(),
+        Some("delete backward")
+    );
     assert_eq!(undo_metadata.source, TransactionSource::Undo);
     assert_eq!(undo_metadata.description.as_deref(), Some("undo"));
     assert_eq!(composition_metadata.source, TransactionSource::Composition);
@@ -177,11 +189,199 @@ fn command_specific_metadata_overrides_generic_source_when_needed() {
 
 #[test]
 fn command_description_is_stable_and_short() {
-    assert_eq!(Command::insert_text("very long text").description(), "insert text");
+    assert_eq!(
+        Command::insert_text("very long text").description(),
+        "insert text"
+    );
     assert_eq!(
         (Command::MoveWordRight { extend: true }).description(),
         "extend word right"
     );
     assert_eq!((Command::SelectAll).description(), "select all");
     assert_eq!((Command::Redo).description(), "redo");
+}
+
+fn test_buffer(text: &str) -> Buffer {
+    Buffer::from_text(text.to_string(), BufferConfig::default()).expect("buffer")
+}
+
+#[test]
+fn execute_insert_text_command_creates_transaction_and_outcome() {
+    let mut buffer = test_buffer("hello");
+    buffer
+        .set_selection(SelectionSet::caret(CharOffset::new(5)))
+        .expect("selection");
+
+    let outcome = buffer
+        .execute_command(Command::insert_text("!"), CommandContext::paste())
+        .expect("execute insert text");
+
+    assert_eq!(buffer.text().as_ref(), "hello!");
+    assert_eq!(buffer.selection().primary().head(), CharOffset::new(6));
+    assert_eq!(outcome.old_version, BufferVersion::INITIAL);
+    assert_eq!(outcome.new_version, buffer.version());
+    assert_eq!(outcome.transaction_id, None);
+    assert!(outcome.text_changed);
+    assert!(outcome.selection_changed);
+    assert!(!outcome.composition_changed);
+    assert_eq!(outcome.description, "insert text");
+    assert!(buffer.can_undo());
+}
+
+#[test]
+fn execute_movement_command_updates_selection_without_text_transaction() {
+    let mut buffer = test_buffer("abc");
+    buffer
+        .set_selection(SelectionSet::caret(CharOffset::new(1)))
+        .expect("selection");
+    let version = buffer.version();
+
+    let outcome = buffer
+        .execute_command(
+            Command::MoveRight { extend: true },
+            CommandContext::keyboard(),
+        )
+        .expect("execute move");
+
+    assert_eq!(buffer.text().as_ref(), "abc");
+    assert_eq!(buffer.version(), version);
+    assert_eq!(buffer.selection().primary().anchor(), CharOffset::new(1));
+    assert_eq!(buffer.selection().primary().head(), CharOffset::new(2));
+    assert!(!outcome.text_changed);
+    assert!(outcome.selection_changed);
+    assert!(!buffer.can_undo());
+}
+
+#[test]
+fn execute_line_movement_commands_use_logical_line_boundaries() {
+    let mut buffer = test_buffer("ab\ncdef\ng");
+    buffer
+        .set_selection(SelectionSet::caret(CharOffset::new(5)))
+        .expect("selection");
+
+    buffer
+        .execute_command(
+            Command::MoveLineStart { extend: false },
+            CommandContext::keyboard(),
+        )
+        .expect("line start");
+    assert_eq!(buffer.selection().primary().head(), CharOffset::new(3));
+
+    buffer
+        .execute_command(
+            Command::MoveLineEnd { extend: false },
+            CommandContext::keyboard(),
+        )
+        .expect("line end");
+    assert_eq!(buffer.selection().primary().head(), CharOffset::new(7));
+
+    buffer
+        .execute_command(
+            Command::MoveDown { extend: false },
+            CommandContext::keyboard(),
+        )
+        .expect("move down clamps to short line");
+    assert_eq!(buffer.selection().primary().head(), CharOffset::new(9));
+}
+
+#[test]
+fn execute_delete_word_command_uses_existing_movement_boundaries() {
+    let mut buffer = test_buffer("hello world");
+    buffer
+        .set_selection(SelectionSet::caret(CharOffset::new(11)))
+        .expect("selection");
+
+    let outcome = buffer
+        .execute_command(Command::DeleteWordBackward, CommandContext::keyboard())
+        .expect("delete word backward");
+
+    assert_eq!(buffer.text().as_ref(), "hello ");
+    assert!(outcome.text_changed);
+    assert_eq!(outcome.description, "delete word backward");
+}
+
+#[test]
+fn execute_selection_commands_only_change_selection() {
+    let mut buffer = test_buffer("abc");
+
+    let select_all = buffer
+        .execute_command(Command::SelectAll, CommandContext::command_palette())
+        .expect("select all");
+    assert_eq!(
+        buffer.selection().primary().range(),
+        TextRange::new(CharOffset::ZERO, CharOffset::new(3)).unwrap()
+    );
+    assert!(!select_all.text_changed);
+    assert!(select_all.selection_changed);
+
+    let clear = buffer
+        .execute_command(Command::ClearSelections, CommandContext::keyboard())
+        .expect("clear selections");
+    assert_eq!(
+        buffer.selection().primary(),
+        &Selection::caret(CharOffset::new(3))
+    );
+    assert!(!clear.text_changed);
+    assert!(clear.selection_changed);
+}
+
+#[test]
+fn execute_undo_redo_commands_use_history_system() {
+    let mut buffer = test_buffer("a");
+    buffer
+        .set_selection(SelectionSet::caret(CharOffset::new(1)))
+        .expect("selection");
+    buffer
+        .execute_command(Command::insert_text("b"), CommandContext::keyboard())
+        .expect("insert");
+    assert_eq!(buffer.text().as_ref(), "ab");
+
+    let undo = buffer
+        .execute_command(Command::Undo, CommandContext::keyboard())
+        .expect("undo");
+    assert_eq!(buffer.text().as_ref(), "a");
+    assert!(undo.text_changed);
+    assert_eq!(buffer.selection().primary().head(), CharOffset::new(1));
+
+    let redo = buffer
+        .execute_command(Command::Redo, CommandContext::keyboard())
+        .expect("redo");
+    assert_eq!(buffer.text().as_ref(), "ab");
+    assert!(redo.text_changed);
+    assert_eq!(buffer.selection().primary().head(), CharOffset::new(2));
+}
+
+#[test]
+fn execute_ime_commands_reuse_composition_pipeline() {
+    let mut buffer = test_buffer("");
+
+    let start = buffer
+        .execute_command(Command::CompositionStart, CommandContext::ime())
+        .expect("composition start");
+    assert!(buffer.is_composing());
+    assert!(!start.text_changed);
+    assert!(start.composition_changed);
+
+    let update = buffer
+        .execute_command(Command::composition_update("ni"), CommandContext::ime())
+        .expect("composition update");
+    assert_eq!(buffer.text().as_ref(), "ni");
+    assert!(buffer.is_composing());
+    assert!(update.text_changed);
+    assert!(update.composition_changed);
+    assert!(!buffer.can_undo());
+
+    let commit = buffer
+        .execute_command(Command::composition_commit("你"), CommandContext::ime())
+        .expect("composition commit");
+    assert_eq!(buffer.text().as_ref(), "你");
+    assert!(!buffer.is_composing());
+    assert!(commit.text_changed);
+    assert!(commit.composition_changed);
+    assert!(buffer.can_undo());
+
+    buffer
+        .execute_command(Command::Undo, CommandContext::keyboard())
+        .expect("undo committed composition");
+    assert_eq!(buffer.text().as_ref(), "");
 }

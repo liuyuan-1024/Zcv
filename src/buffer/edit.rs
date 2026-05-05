@@ -207,7 +207,7 @@ impl Buffer {
         )
     }
 
-    pub(super) fn replace_selection_ranges_with_metadata(
+    pub(crate) fn replace_selection_ranges_with_metadata(
         &mut self,
         selections: SelectionSet,
         replacement: &str,

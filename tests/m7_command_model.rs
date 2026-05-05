@@ -385,3 +385,279 @@ fn execute_ime_commands_reuse_composition_pipeline() {
         .expect("undo committed composition");
     assert_eq!(buffer.text().as_ref(), "");
 }
+
+#[test]
+fn m7d_insert_text_command_is_equivalent_to_existing_multi_cursor_insert() {
+    let selections = SelectionSet::new(vec![
+        Selection::caret(CharOffset::new(1)),
+        Selection::caret(CharOffset::new(3)),
+        Selection::new(CharOffset::new(5), CharOffset::new(6)),
+    ]);
+
+    let mut command_buffer = test_buffer("abcdef");
+    command_buffer
+        .set_selection(selections.clone())
+        .expect("selection");
+    command_buffer
+        .execute_command(Command::insert_text("X"), CommandContext::keyboard())
+        .expect("command insert");
+
+    let mut direct_buffer = test_buffer("abcdef");
+    direct_buffer
+        .insert_at_selections(selections, "X")
+        .expect("direct insert");
+
+    assert_eq!(command_buffer.text(), direct_buffer.text());
+    assert_eq!(command_buffer.selection(), direct_buffer.selection());
+    assert!(command_buffer.can_undo());
+}
+
+#[test]
+fn m7d_replace_selections_command_is_equivalent_to_existing_multi_selection_replace() {
+    let selections = SelectionSet::new(vec![
+        Selection::new(CharOffset::new(0), CharOffset::new(2)),
+        Selection::new(CharOffset::new(4), CharOffset::new(6)),
+    ]);
+
+    let mut command_buffer = test_buffer("abcdef");
+    command_buffer
+        .set_selection(selections.clone())
+        .expect("selection");
+    command_buffer
+        .execute_command(
+            Command::replace_selections("Z"),
+            CommandContext::command_palette(),
+        )
+        .expect("command replace");
+
+    let mut direct_buffer = test_buffer("abcdef");
+    direct_buffer
+        .replace_selections(selections, "Z")
+        .expect("direct replace");
+
+    assert_eq!(command_buffer.text(), direct_buffer.text());
+    assert_eq!(command_buffer.selection(), direct_buffer.selection());
+    assert!(command_buffer.can_undo());
+}
+
+#[test]
+fn m7d_delete_backward_and_forward_are_equivalent_to_existing_multi_cursor_delete() {
+    let backward_selections = SelectionSet::new(vec![
+        Selection::caret(CharOffset::new(2)),
+        Selection::new(CharOffset::new(4), CharOffset::new(6)),
+    ]);
+
+    let mut command_backward = test_buffer("abcdef");
+    command_backward
+        .set_selection(backward_selections.clone())
+        .expect("selection");
+    command_backward
+        .execute_command(Command::DeleteBackward, CommandContext::keyboard())
+        .expect("command delete backward");
+
+    let mut direct_backward = test_buffer("abcdef");
+    direct_backward
+        .delete_backward_at_selections(backward_selections)
+        .expect("direct delete backward");
+
+    assert_eq!(command_backward.text(), direct_backward.text());
+    assert_eq!(command_backward.selection(), direct_backward.selection());
+
+    let forward_selections = SelectionSet::new(vec![
+        Selection::caret(CharOffset::new(1)),
+        Selection::new(CharOffset::new(4), CharOffset::new(6)),
+    ]);
+
+    let mut command_forward = test_buffer("abcdef");
+    command_forward
+        .set_selection(forward_selections.clone())
+        .expect("selection");
+    command_forward
+        .execute_command(Command::DeleteForward, CommandContext::keyboard())
+        .expect("command delete forward");
+
+    let mut direct_forward = test_buffer("abcdef");
+    direct_forward
+        .delete_forward_at_selections(forward_selections)
+        .expect("direct delete forward");
+
+    assert_eq!(command_forward.text(), direct_forward.text());
+    assert_eq!(command_forward.selection(), direct_forward.selection());
+}
+
+#[test]
+fn m7d_word_subword_and_symbol_movement_commands_reuse_m6b_movement_policy() {
+    let cases = [
+        (
+            Command::MoveWordRight { extend: false },
+            MovementDirection::Next,
+            MovementUnit::Word,
+            false,
+            CharOffset::new(0),
+        ),
+        (
+            Command::MoveWordLeft { extend: true },
+            MovementDirection::Previous,
+            MovementUnit::Word,
+            true,
+            CharOffset::new(9),
+        ),
+        (
+            Command::MoveSubwordRight { extend: false },
+            MovementDirection::Next,
+            MovementUnit::Subword,
+            false,
+            CharOffset::new(0),
+        ),
+        (
+            Command::MoveSubwordLeft { extend: true },
+            MovementDirection::Previous,
+            MovementUnit::Subword,
+            true,
+            CharOffset::new(7),
+        ),
+        (
+            Command::MoveSymbolRight { extend: false },
+            MovementDirection::Next,
+            MovementUnit::Symbol,
+            false,
+            CharOffset::new(8),
+        ),
+        (
+            Command::MoveSymbolLeft { extend: true },
+            MovementDirection::Previous,
+            MovementUnit::Symbol,
+            true,
+            CharOffset::new(10),
+        ),
+    ];
+
+    for (command, direction, unit, extend, start) in cases {
+        let text = "fooBar + baz_qux";
+        let mut command_buffer = test_buffer(text);
+        command_buffer
+            .set_selection(SelectionSet::caret(start))
+            .expect("selection");
+        let command_version = command_buffer.version();
+        command_buffer
+            .execute_command(command, CommandContext::keyboard())
+            .expect("command movement");
+
+        let mut direct_buffer = test_buffer(text);
+        direct_buffer
+            .set_selection(SelectionSet::caret(start))
+            .expect("selection");
+        let direct_version = direct_buffer.version();
+        direct_buffer
+            .move_current_selection(direction, unit, extend)
+            .expect("direct movement");
+
+        assert_eq!(command_buffer.selection(), direct_buffer.selection());
+        assert_eq!(command_buffer.version(), command_version);
+        assert_eq!(direct_buffer.version(), direct_version);
+        assert!(!command_buffer.can_undo());
+    }
+}
+
+#[test]
+fn m7d_composition_commands_reuse_m6c_composition_pipeline() {
+    let mut command_buffer = test_buffer("");
+    command_buffer
+        .execute_command(Command::CompositionStart, CommandContext::ime())
+        .expect("command composition start");
+    command_buffer
+        .execute_command(Command::composition_update("ni"), CommandContext::ime())
+        .expect("command composition update");
+    command_buffer
+        .execute_command(Command::composition_commit("你"), CommandContext::ime())
+        .expect("command composition commit");
+
+    let mut direct_buffer = test_buffer("");
+    direct_buffer
+        .start_composition()
+        .expect("direct composition start");
+    direct_buffer
+        .update_composition("ni", None)
+        .expect("direct composition update");
+    direct_buffer
+        .commit_composition("你")
+        .expect("direct composition commit");
+
+    assert_eq!(command_buffer.text(), direct_buffer.text());
+    assert_eq!(command_buffer.selection(), direct_buffer.selection());
+    assert_eq!(command_buffer.is_composing(), direct_buffer.is_composing());
+    assert_eq!(command_buffer.can_undo(), direct_buffer.can_undo());
+}
+
+#[test]
+fn m7d_undo_redo_commands_restore_text_and_selection_set() {
+    let before = SelectionSet::new(vec![
+        Selection::caret(CharOffset::new(1)),
+        Selection::caret(CharOffset::new(3)),
+    ]);
+
+    let mut buffer = test_buffer("abcd");
+    buffer.set_selection(before.clone()).expect("selection");
+    buffer
+        .execute_command(Command::insert_text("X"), CommandContext::keyboard())
+        .expect("insert");
+    let after_insert_text = buffer.text().into_owned();
+    let after_insert_selection = buffer.selection().clone();
+
+    buffer
+        .execute_command(Command::Undo, CommandContext::keyboard())
+        .expect("undo");
+    assert_eq!(buffer.text().as_ref(), "abcd");
+    assert_eq!(buffer.selection(), &before);
+
+    buffer
+        .execute_command(Command::Redo, CommandContext::keyboard())
+        .expect("redo");
+    assert_eq!(buffer.text().as_ref(), after_insert_text.as_str());
+    assert_eq!(buffer.selection(), &after_insert_selection);
+}
+
+#[test]
+fn m7d_command_executor_does_not_bypass_transaction_selection_or_composition_pipelines() {
+    let mut buffer = test_buffer("abc");
+    buffer
+        .set_selection(SelectionSet::caret(CharOffset::new(1)))
+        .expect("selection");
+
+    let original_version = buffer.version();
+    let insert = buffer
+        .execute_command(Command::insert_text("X"), CommandContext::keyboard())
+        .expect("insert");
+    assert!(insert.text_changed());
+    assert!(buffer.version() != original_version);
+    assert!(buffer.can_undo());
+
+    let version_after_insert = buffer.version();
+    let move_outcome = buffer
+        .execute_command(
+            Command::MoveRight { extend: true },
+            CommandContext::keyboard(),
+        )
+        .expect("move");
+    assert!(!move_outcome.text_changed());
+    assert!(move_outcome.selection_changed());
+    assert_eq!(buffer.version(), version_after_insert);
+
+    let composition_update = buffer
+        .execute_command(Command::composition_update("ni"), CommandContext::ime())
+        .expect("composition update");
+    assert!(composition_update.text_changed());
+    assert!(buffer.is_composing());
+    assert!(buffer.can_undo());
+
+    let composition_commit = buffer
+        .execute_command(Command::composition_commit("你"), CommandContext::ime())
+        .expect("composition commit");
+    assert!(composition_commit.text_changed());
+    assert!(!buffer.is_composing());
+
+    buffer
+        .execute_command(Command::Undo, CommandContext::keyboard())
+        .expect("undo composition commit");
+    assert!(!buffer.is_composing());
+}

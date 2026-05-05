@@ -7,6 +7,7 @@ pub(crate) mod storage;
 
 pub mod buffer;
 pub mod command;
+mod command_executor;
 pub mod config;
 pub mod errors;
 pub mod selection;

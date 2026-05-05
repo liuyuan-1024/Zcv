@@ -829,6 +829,42 @@ src/buffer/validation.rs       Buffer 级边界校验
 重构后必须继续通过现有 m0-m6c 集成测试。
 ```
 
+### 12.6 Command 分层但不倒置
+
+M7 之后，Command 是用户编辑语义的统一入口，但不是底层文本数学的根模块。
+
+推荐边界：
+
+```text
+src/command.rs              Command / CommandContext / CommandOutcome 数据模型
+src/command_executor.rs     Command -> Buffer 的 crate 内部适配层
+src/buffer/*.rs             Buffer 状态与底层编辑能力，不依赖 Command
+```
+
+依赖方向必须保持：
+
+```text
+UI / GPUI / 快捷键 / 菜单 / 命令面板
+        ↓
+Command / CommandContext
+        ↓
+CommandExecutor
+        ↓
+Buffer public / pub(crate) 能力
+        ↓
+Transaction / SelectionSet / Movement / Composition / History
+```
+
+原则：
+
+```text
+CommandExecutor 可以依赖 Buffer。
+buffer/ 子模块不要依赖 Command。
+transaction.rs、selection.rs、storage/*、coordinates.rs、snapshot.rs 不要依赖 Command。
+Command 表达用户意图，Transaction 表达文本变异提交单位。
+外部 formatter / LSP apply edit 可以继续直接构造 Transaction，不必伪装成 Command。
+```
+
 ---
 
 ## 13. 最终原则

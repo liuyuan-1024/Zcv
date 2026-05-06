@@ -13,10 +13,15 @@
 //!
 //! 这样 `Buffer` 的 public API 保持稳定，但实现不再集中在一个超大文件里。
 
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use crate::{
-    BufferConfig, BufferVersion, CompositionState, EngineResult, SelectionSet,
+    BufferConfig, BufferId, BufferKind, BufferState, BufferVersion, CompositionState, EngineResult,
+    SelectionSet,
     storage::{RopeyStorage, TextRead},
 };
 
@@ -32,9 +37,14 @@ mod versioning;
 
 pub use history::HistoryStatus;
 
+static NEXT_BUFFER_ID: AtomicU64 = AtomicU64::new(1);
+
 /// 最小可编辑 Buffer。
 #[derive(Debug, Clone)]
 pub struct Buffer {
+    id: BufferId,
+    kind: BufferKind,
+    read_only: bool,
     config: BufferConfig,
     storage: RopeyStorage,
     version: BufferVersion,
@@ -52,7 +62,19 @@ impl Buffer {
 
     /// 从已有文本创建 Buffer。
     pub fn from_text(text: String, config: BufferConfig) -> EngineResult<Self> {
+        Self::from_kind_text(BufferKind::Untitled, text, config)
+    }
+
+    /// 从已有文本创建带明确生命周期类型的 Buffer。
+    pub fn from_kind_text(
+        kind: BufferKind,
+        text: String,
+        config: BufferConfig,
+    ) -> EngineResult<Self> {
         Ok(Self {
+            id: next_buffer_id(),
+            kind,
+            read_only: false,
             config,
             storage: RopeyStorage::new(text),
             version: BufferVersion::INITIAL,
@@ -61,6 +83,80 @@ impl Buffer {
             selection: SelectionSet::default(),
             composition: None,
         })
+    }
+
+    /// 从文件文本创建 Buffer。文件读取、编码探测和保存输出由宿主或后续阶段负责。
+    pub fn from_file_text(
+        path: impl Into<std::path::PathBuf>,
+        text: String,
+        config: BufferConfig,
+    ) -> EngineResult<Self> {
+        Self::from_kind_text(BufferKind::file(path), text, config)
+    }
+
+    /// 从 URI 绑定文本创建 Buffer。URI 只作为身份信息保存，不触发任何 I/O。
+    pub fn from_uri_text(
+        uri: impl Into<String>,
+        text: String,
+        config: BufferConfig,
+    ) -> EngineResult<Self> {
+        Self::from_kind_text(BufferKind::uri(uri), text, config)
+    }
+
+    /// 创建临时草稿 Buffer。
+    pub fn scratch(text: String, config: BufferConfig) -> EngineResult<Self> {
+        Self::from_kind_text(BufferKind::Scratch, text, config)
+    }
+
+    pub fn id(&self) -> BufferId {
+        self.id
+    }
+
+    pub fn kind(&self) -> &BufferKind {
+        &self.kind
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.kind.path()
+    }
+
+    pub fn uri(&self) -> Option<&str> {
+        self.kind.uri_str()
+    }
+
+    pub fn is_temporary(&self) -> bool {
+        self.kind.is_temporary()
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    pub fn into_read_only(mut self) -> Self {
+        self.read_only = true;
+        self
+    }
+
+    pub fn state(&self) -> BufferState {
+        if self.read_only {
+            BufferState::ReadOnly
+        } else if self.is_dirty() {
+            BufferState::Dirty
+        } else {
+            BufferState::Clean
+        }
+    }
+
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.is_dirty()
+    }
+
+    pub fn can_close_without_prompt(&self) -> bool {
+        !self.has_unsaved_changes()
     }
 
     pub fn config(&self) -> &BufferConfig {
@@ -102,4 +198,8 @@ impl Buffer {
     pub fn mark_saved(&mut self) {
         self.saved_version = self.version;
     }
+}
+
+fn next_buffer_id() -> BufferId {
+    BufferId::new(NEXT_BUFFER_ID.fetch_add(1, Ordering::Relaxed))
 }

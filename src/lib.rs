@@ -32,6 +32,6 @@ pub use transaction::{
     TransactionSource,
 };
 pub use types::{
-    BufferVersion, ByteOffset, CharOffset, DisplayColumn, Line, LineEndingStyle, LogicalColumn,
-    Position, TextRange, TransactionId, Utf16Offset, Utf16Position,
+    BufferId, BufferKind, BufferState, BufferVersion, ByteOffset, CharOffset, DisplayColumn, Line,
+    LineEndingStyle, LogicalColumn, Position, TextRange, TransactionId, Utf16Offset, Utf16Position,
 };

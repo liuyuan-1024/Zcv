@@ -2,6 +2,8 @@
 //!
 //! 本文件是 public API 的语义地基，只表达类型不变量和轻量运算，不绑定 Buffer、存储或历史实现。
 
+use std::path::{Path, PathBuf};
+
 use crate::CoordinateError;
 
 // ==========================================
@@ -252,6 +254,31 @@ impl TextRange {
 // 4. 版本与事务追踪
 // ==========================================
 
+/// Buffer 身份。
+///
+/// M7A 起，Buffer 不再只是文本容器，也需要能被宿主作为文档对象追踪。
+/// `BufferId` 只表达引擎内身份，不等同于文件路径、URI 或外部项目索引 ID。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BufferId(u64);
+
+impl BufferId {
+    pub const INITIAL: Self = Self(0);
+
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl Default for BufferId {
+    fn default() -> Self {
+        Self::INITIAL
+    }
+}
+
 /// Buffer 的单调递增版本号。
 ///
 /// 每次事务成功提交后递增。
@@ -302,4 +329,64 @@ impl TransactionId {
     pub fn next(self) -> Option<Self> {
         self.0.checked_add(1).map(Self)
     }
+}
+
+/// Buffer 的来源 / 生命周期类型。
+///
+/// M7A 只记录身份边界：文件、URI、未命名文档与临时草稿。文件加载、编码探测、
+/// reload 和保存输出属于 M7C/M7D，不在这里承诺。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BufferKind {
+    File { path: PathBuf },
+    Uri { uri: String },
+    Untitled,
+    Scratch,
+}
+
+impl BufferKind {
+    pub fn file(path: impl Into<PathBuf>) -> Self {
+        Self::File { path: path.into() }
+    }
+
+    pub fn uri(uri: impl Into<String>) -> Self {
+        Self::Uri { uri: uri.into() }
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Self::File { path } => Some(path.as_path()),
+            Self::Uri { .. } | Self::Untitled | Self::Scratch => None,
+        }
+    }
+
+    pub fn uri_str(&self) -> Option<&str> {
+        match self {
+            Self::Uri { uri } => Some(uri.as_str()),
+            Self::File { .. } | Self::Untitled | Self::Scratch => None,
+        }
+    }
+
+    pub fn is_temporary(&self) -> bool {
+        matches!(self, Self::Untitled | Self::Scratch)
+    }
+}
+
+impl Default for BufferKind {
+    fn default() -> Self {
+        Self::Untitled
+    }
+}
+
+/// Buffer 当前对宿主可见的生命周期状态。
+///
+/// M7A 先提供 Clean / Dirty / ReadOnly 的真实状态判断；Loading、Reloading、
+/// Conflict 是后续文件边界与 reload 流程的公共状态词汇。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BufferState {
+    Clean,
+    Dirty,
+    ReadOnly,
+    Loading,
+    Reloading,
+    Conflict,
 }

@@ -86,6 +86,7 @@ impl Buffer {
         unit: MovementUnit,
         metadata: TransactionMetadata,
     ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.ensure_writable()?;
         self.validate_selection_set(&selections)?;
 
         let mut delete_targets = Vec::new();
@@ -121,6 +122,8 @@ impl Buffer {
         replacement: &str,
         metadata: TransactionMetadata,
     ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.ensure_writable()?;
+
         if metadata.source != TransactionSource::Composition {
             self.cancel_composition_before_text_edit()?;
         }
@@ -176,6 +179,7 @@ impl Buffer {
         after_selection: SelectionSet,
         metadata: TransactionMetadata,
     ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.ensure_writable()?;
         self.validate_range(range)?;
         self.validate_edit_boundary(range.start())?;
         self.validate_edit_boundary(range.end())?;

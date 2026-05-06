@@ -27,6 +27,7 @@ impl Buffer {
     ///
     /// 没有可撤销历史时返回 `Ok(None)`，避免把空历史当作错误。
     pub fn undo(&mut self) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.ensure_writable()?;
         self.cancel_composition_before_text_edit()?;
 
         let Some(entry) = self.history.pop_undo() else {
@@ -49,6 +50,7 @@ impl Buffer {
     ///
     /// 没有可重做历史时返回 `Ok(None)`。
     pub fn redo(&mut self) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        self.ensure_writable()?;
         self.cancel_composition_before_text_edit()?;
 
         let Some(entry) = self.history.pop_redo() else {

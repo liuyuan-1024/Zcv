@@ -4,7 +4,13 @@
 
 ## 更新时间
 
-- 2026-05-05
+- 2026-05-06
+
+## 当前阶段快照
+
+- M7A Buffer 身份与状态已完成。
+- 已新增 `BufferId` / `BufferKind` / `BufferState` public API。
+- Buffer 现在可表达 Untitled / File / URI / Scratch 来源，并支持只读防线与关闭前 dirty 查询。
 
 ## 当前测试文件（快照）
 
@@ -20,7 +26,7 @@ tests/
 - m6a_selection.rs
 - m6b_word_movement.rs
 - m6c_composition.rs
-- m7_command_model.rs
+- m7_buffer_lifecycle.rs
 ```
 
 ## 当前示例文件（快照）
@@ -36,7 +42,6 @@ examples/
 - gpui_m6a_testbed.rs
 - gpui_m6b_testbed.rs
 - gpui_m6c_testbed.rs
-- gpui_m7_testbed.rs
 ```
 
 ## 常用验证命令（快照）

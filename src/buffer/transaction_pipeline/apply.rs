@@ -17,6 +17,7 @@ impl Buffer {
     ///
     /// 成功将返回增量事件 Delta 和位置映射器 ChangeSet，并记录 Undo 历史。
     pub fn apply_transaction(&mut self, tx: Transaction) -> EngineResult<(Delta, ChangeSet)> {
+        self.ensure_writable()?;
         let prepared = self.prepare_transaction(tx)?;
         let (delta, changeset) = self.commit_prepared_transaction(&prepared)?;
         let after_selection = self.resolve_after_selection(
@@ -123,6 +124,8 @@ impl Buffer {
         base_version: BufferVersion,
         tx_edits: EditList,
     ) -> EngineResult<(Delta, ChangeSet)> {
+        self.ensure_writable()?;
+
         if base_version != self.version {
             return Err(crate::TransactionError::VersionMismatch {
                 expected: self.version,

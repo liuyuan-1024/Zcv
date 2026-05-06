@@ -31,6 +31,8 @@ impl Buffer {
     /// 多光标 / 多选区下，M6C 先采用保守降级策略：只保留 primary selection 作为
     /// 组合输入目标，避免一个系统 IME composition 同时驱动多个插入点。
     pub fn start_composition(&mut self) -> EngineResult<CompositionState> {
+        self.ensure_writable()?;
+
         if let Some(composition) = self.composition.clone() {
             return Ok(composition);
         }

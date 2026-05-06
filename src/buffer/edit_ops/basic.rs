@@ -23,6 +23,7 @@ impl Buffer {
     ///
     /// M3 起该便利 API 也会走 Transaction，从而进入 Undo 历史。
     pub fn replace(&mut self, range: TextRange, replacement: &str) -> EngineResult<()> {
+        self.ensure_writable()?;
         self.cancel_composition_before_text_edit()?;
         self.validate_range(range)?;
         self.validate_edit_boundary(range.start())?;

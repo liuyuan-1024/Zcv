@@ -3,13 +3,21 @@
 //! 本文件只做防线判断并返回明确错误，不修正调用方输入，也不直接改变 Buffer 状态。
 
 use crate::{
-    CharOffset, CoordinateError, EditError, EngineResult, SelectionSet, TextRange,
+    CharOffset, CoordinateError, EditError, EngineResult, SelectionSet, StorageError, TextRange,
     transaction::EditList,
 };
 
 use super::{Buffer, coordinates::is_crlf_middle};
 
 impl Buffer {
+    pub(super) fn ensure_writable(&self) -> EngineResult<()> {
+        if self.is_read_only() {
+            return Err(StorageError::ReadOnly.into());
+        }
+
+        Ok(())
+    }
+
     pub(super) fn validate_edit_list(&self, edits: &EditList) -> EngineResult<()> {
         for edit in edits.as_slice() {
             self.validate_range(edit.range)?;

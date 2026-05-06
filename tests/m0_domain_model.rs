@@ -5,9 +5,10 @@
 use std::num::NonZeroUsize;
 
 use zom_engine::{
-    BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, DisplayColumn, EditError,
-    EngineError, Line, LineEndingConfig, LogicalColumn, Position, PositionEncodingConfig,
-    StorageError, TabConfig, TextRange, TransactionError, TransactionId, Utf16Offset,
+    BufferConfig, BufferId, BufferKind, BufferState, BufferVersion, ByteOffset, CharOffset,
+    CoordinateError, DisplayColumn, EditError, EngineError, Line, LineEndingConfig, LogicalColumn,
+    Position, PositionEncodingConfig, StorageError, TabConfig, TextRange, TransactionError,
+    TransactionId, Utf16Offset,
 };
 
 #[test]
@@ -24,6 +25,9 @@ fn root_public_api_can_be_imported() {
     let _ = TextRange::new(CharOffset::new(0), CharOffset::new(0)).unwrap();
 
     let _ = BufferVersion::INITIAL;
+    let _ = BufferId::INITIAL;
+    let _ = BufferKind::Untitled;
+    let _ = BufferState::Clean;
     let _ = TransactionId::INITIAL;
 
     let _ = BufferConfig::default();

@@ -53,6 +53,7 @@ cargo test --test m5b_coordinates
 cargo test --test m6a_selection
 cargo test --test m6b_word_movement
 cargo test --test m6c_composition
+cargo test --test m7_buffer_lifecycle
 cargo test --lib storage_consistency
 ```
 

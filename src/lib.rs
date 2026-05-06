@@ -25,10 +25,10 @@ pub use errors::{
     CoordinateError, EditError, EngineError, EngineResult, StorageError, TransactionError,
 };
 pub use loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
-pub use position_map::{MappingResult, PositionMap};
+pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
 pub use selection::{
-    Affinity, CompositionSelection, CompositionState, Cursor, MovementDirection, MovementUnit,
-    Selection, SelectionMergePolicy, SelectionSet,
+    CompositionSelection, CompositionState, Cursor, MovementDirection, MovementUnit, Selection,
+    SelectionMergePolicy, SelectionSet,
 };
 pub use snapshot::Snapshot;
 pub use transaction::{

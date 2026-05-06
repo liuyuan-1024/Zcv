@@ -25,18 +25,6 @@ impl Cursor {
     }
 }
 
-/// 光标 / Anchor 的吸附方向。
-///
-/// 当前 M6 先保留类型，完整 Anchor / TrackedRange stickiness 后续 M7 再接入。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum Affinity {
-    /// 同点插入时偏向插入内容之前。
-    Before,
-    /// 同点插入时偏向插入内容之后。
-    #[default]
-    After,
-}
-
 /// M6B 文本移动方向。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MovementDirection {

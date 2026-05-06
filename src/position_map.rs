@@ -8,6 +8,40 @@ use crate::{
     types::{CharOffset, TextRange},
 };
 
+/// 同点插入时旧位置吸附到插入文本前还是插入文本后。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Affinity {
+    /// 吸附到插入文本之前。
+    Before,
+    /// 吸附到插入文本之后。
+    #[default]
+    After,
+}
+
+/// 反向映射遇到歧义时选择偏左还是偏右的旧文本落点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Bias {
+    /// 选择歧义区域左侧 / 起点。
+    #[default]
+    Left,
+    /// 选择歧义区域右侧 / 终点。
+    Right,
+}
+
+/// 旧区间边界遇到同点插入时的扩张策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Stickiness {
+    /// 区间边界吸附在插入文本之前。
+    BeforeInsertion,
+    /// 区间边界吸附在插入文本之后。
+    AfterInsertion,
+    /// 两侧边界都向外扩张，纳入边界处插入的新文本。
+    Expand,
+    /// 两侧边界都向内收缩，不纳入边界处插入的新文本。
+    #[default]
+    Never,
+}
+
 /// 坐标或区间映射结果。
 ///
 /// payload 是按当前方向得到的最佳落点；调用方可以根据 variant 决定是继续使用、
@@ -70,6 +104,15 @@ impl PositionMap {
 
     /// old char position -> new char position。
     pub fn map_old_position(&self, pos: CharOffset) -> MappingResult<CharOffset> {
+        self.map_old_position_with_affinity(pos, Affinity::default())
+    }
+
+    /// old char position -> new char position，显式指定同点插入吸附方向。
+    pub fn map_old_position_with_affinity(
+        &self,
+        pos: CharOffset,
+        affinity: Affinity,
+    ) -> MappingResult<CharOffset> {
         let mut diff = 0isize;
         let pos_val = pos.get() as isize;
 
@@ -84,7 +127,12 @@ impl PositionMap {
 
             if old_start == old_end {
                 if pos_val == old_start {
-                    return MappingResult::Mapped(offset(old_start + diff + replacement_len));
+                    let mapped = match affinity {
+                        Affinity::Before => old_start + diff,
+                        Affinity::After => old_start + diff + replacement_len,
+                    };
+
+                    return MappingResult::Mapped(offset(mapped));
                 }
             } else if pos_val < old_end {
                 return MappingResult::Deleted(offset(old_start + diff));
@@ -98,6 +146,15 @@ impl PositionMap {
 
     /// new char position -> old char position。
     pub fn map_new_position(&self, pos: CharOffset) -> MappingResult<CharOffset> {
+        self.map_new_position_with_bias(pos, Bias::default())
+    }
+
+    /// new char position -> old char position，显式指定歧义区域偏向。
+    pub fn map_new_position_with_bias(
+        &self,
+        pos: CharOffset,
+        bias: Bias,
+    ) -> MappingResult<CharOffset> {
         let mut diff = 0isize;
         let pos_val = pos.get() as isize;
 
@@ -115,10 +172,10 @@ impl PositionMap {
 
             if replacement_len == 0 {
                 if old_len > 0 && pos_val == new_start {
-                    return MappingResult::Ambiguous(offset(old_start));
+                    return MappingResult::Ambiguous(biased_offset(old_start, old_end, bias));
                 }
             } else if pos_val < new_end {
-                return MappingResult::Ambiguous(offset(old_start));
+                return MappingResult::Ambiguous(biased_offset(old_start, old_end, bias));
             }
 
             diff += replacement_len - old_len;
@@ -129,8 +186,27 @@ impl PositionMap {
 
     /// old char range -> new char range。
     pub fn map_old_range(&self, range: TextRange) -> MappingResult<TextRange> {
-        let new_start = self.map_old_position(range.start()).value();
-        let new_end = self.map_old_position(range.end()).value();
+        self.map_old_range_with_stickiness(range, Stickiness::default())
+    }
+
+    /// old char range -> new char range，显式指定边界处插入文本的吸附 / 扩张策略。
+    pub fn map_old_range_with_stickiness(
+        &self,
+        range: TextRange,
+        stickiness: Stickiness,
+    ) -> MappingResult<TextRange> {
+        let new_start = self
+            .map_old_position_with_affinity(
+                range.start(),
+                boundary_affinity(stickiness, BoundarySide::Start),
+            )
+            .value();
+        let new_end = self
+            .map_old_position_with_affinity(
+                range.end(),
+                boundary_affinity(stickiness, BoundarySide::End),
+            )
+            .value();
         let mapped = text_range(new_start, new_end);
 
         if !range.is_empty() && mapped.is_empty() {
@@ -251,8 +327,36 @@ fn offset(value: isize) -> CharOffset {
     CharOffset::new(value.max(0) as usize)
 }
 
+fn biased_offset(start: isize, end: isize, bias: Bias) -> CharOffset {
+    match bias {
+        Bias::Left => offset(start),
+        Bias::Right => offset(end),
+    }
+}
+
 fn text_range(start: CharOffset, end: CharOffset) -> TextRange {
     TextRange::new(start, end).expect("PositionMap 生成的 range 必须满足 start <= end")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundarySide {
+    Start,
+    End,
+}
+
+fn boundary_affinity(stickiness: Stickiness, side: BoundarySide) -> Affinity {
+    match stickiness {
+        Stickiness::BeforeInsertion => Affinity::Before,
+        Stickiness::AfterInsertion => Affinity::After,
+        Stickiness::Expand => match side {
+            BoundarySide::Start => Affinity::Before,
+            BoundarySide::End => Affinity::After,
+        },
+        Stickiness::Never => match side {
+            BoundarySide::Start => Affinity::After,
+            BoundarySide::End => Affinity::Before,
+        },
+    }
 }
 
 fn ranges_overlap(

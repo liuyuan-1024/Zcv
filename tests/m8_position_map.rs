@@ -3,7 +3,8 @@
 //! 本文件只验证 M8A PositionMap，不测试 DeltaEvent 队列、anchor stickiness 或 UI testbed。
 
 use zom_engine::{
-    Buffer, BufferConfig, CharOffset, Edit, MappingResult, PositionMap, TextRange, Transaction,
+    Affinity, Bias, Buffer, BufferConfig, CharOffset, Edit, MappingResult, PositionMap, Stickiness,
+    TextRange, Transaction,
 };
 
 fn buffer(text: &str) -> Buffer {
@@ -53,6 +54,42 @@ fn position_map_maps_new_positions_back_to_old_positions_with_ambiguity() {
 }
 
 #[test]
+fn affinity_controls_old_position_at_insert_boundary() {
+    let mut buffer = buffer("ab");
+    let map = apply(
+        &mut buffer,
+        vec![Edit::insert(c(1), "XYZ".to_string()).unwrap()],
+    );
+
+    assert_eq!(
+        map.map_old_position_with_affinity(c(1), Affinity::Before),
+        MappingResult::Mapped(c(1))
+    );
+    assert_eq!(
+        map.map_old_position_with_affinity(c(1), Affinity::After),
+        MappingResult::Mapped(c(4))
+    );
+}
+
+#[test]
+fn bias_controls_new_position_inside_replacement_ambiguity() {
+    let mut buffer = buffer("abcdef");
+    let map = apply(
+        &mut buffer,
+        vec![Edit::replace(range(1, 3), "XYZ".to_string())],
+    );
+
+    assert_eq!(
+        map.map_new_position_with_bias(c(2), Bias::Left),
+        MappingResult::Ambiguous(c(1))
+    );
+    assert_eq!(
+        map.map_new_position_with_bias(c(2), Bias::Right),
+        MappingResult::Ambiguous(c(3))
+    );
+}
+
+#[test]
 fn old_range_fully_deleted_maps_to_collapsed_range() {
     let mut buffer = buffer("12345");
     let map = apply(&mut buffer, vec![Edit::delete(range(2, 4))]);
@@ -79,6 +116,57 @@ fn new_ranges_touching_deleted_boundary_do_not_all_become_ambiguous() {
     assert_eq!(
         map.map_new_range(range(2, 2)),
         MappingResult::Ambiguous(range(2, 2))
+    );
+}
+
+#[test]
+fn stickiness_controls_range_growth_at_insert_boundaries() {
+    let mut buffer = buffer("abcd");
+    let map = apply(
+        &mut buffer,
+        vec![
+            Edit::insert(c(1), "X".to_string()).unwrap(),
+            Edit::insert(c(3), "Y".to_string()).unwrap(),
+        ],
+    );
+
+    assert_eq!(
+        map.map_old_range_with_stickiness(range(1, 3), Stickiness::Never),
+        MappingResult::Mapped(range(2, 4))
+    );
+    assert_eq!(
+        map.map_old_range_with_stickiness(range(1, 3), Stickiness::Expand),
+        MappingResult::Mapped(range(1, 5))
+    );
+    assert_eq!(
+        map.map_old_range_with_stickiness(range(1, 3), Stickiness::BeforeInsertion),
+        MappingResult::Mapped(range(1, 4))
+    );
+    assert_eq!(
+        map.map_old_range_with_stickiness(range(1, 3), Stickiness::AfterInsertion),
+        MappingResult::Mapped(range(2, 5))
+    );
+}
+
+#[test]
+fn stickiness_can_expand_empty_range_to_inserted_text() {
+    let mut buffer = buffer("ab");
+    let map = apply(
+        &mut buffer,
+        vec![Edit::insert(c(1), "XYZ".to_string()).unwrap()],
+    );
+
+    assert_eq!(
+        map.map_old_range_with_stickiness(range(1, 1), Stickiness::Expand),
+        MappingResult::Mapped(range(1, 4))
+    );
+    assert_eq!(
+        map.map_old_range_with_stickiness(range(1, 1), Stickiness::BeforeInsertion),
+        MappingResult::Mapped(range(1, 1))
+    );
+    assert_eq!(
+        map.map_old_range_with_stickiness(range(1, 1), Stickiness::AfterInsertion),
+        MappingResult::Mapped(range(4, 4))
     );
 }
 

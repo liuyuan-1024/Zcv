@@ -112,3 +112,89 @@ fn loaded_text_records_line_ending_style_and_final_newline_state() {
     );
     assert!(!none.loaded_text_info().unwrap().has_final_newline);
 }
+
+#[test]
+fn reload_from_text_rebuilds_text_state_and_resets_edit_history() {
+    let mut buffer = load(b"old", BufferConfig::default());
+    buffer.insert(CharOffset::new(3), "!").unwrap();
+    buffer
+        .set_selection(SelectionSet::caret(CharOffset::new(4)))
+        .unwrap();
+
+    assert!(buffer.is_dirty());
+    assert!(buffer.can_undo());
+
+    let before_reload_version = buffer.version();
+    buffer.reload_from_text("new\n".to_string()).unwrap();
+
+    assert_eq!(buffer.text().as_ref(), "new\n");
+    assert!(buffer.version() > before_reload_version);
+    assert!(!buffer.is_dirty());
+    assert_eq!(buffer.saved_version(), buffer.version());
+    assert_eq!(
+        buffer.last_synced_external_version(),
+        Some(buffer.version())
+    );
+    assert!(!buffer.can_undo());
+    assert!(!buffer.can_redo());
+    assert_eq!(buffer.selection(), &SelectionSet::default());
+    assert!(buffer.loaded_text_info().is_none());
+}
+
+#[test]
+fn reload_from_snapshot_uses_snapshot_text_without_changing_buffer_identity() {
+    let source = Buffer::from_text("snapshot text".to_string(), BufferConfig::default()).unwrap();
+    let snapshot = source.snapshot();
+    let mut target = load(b"target", BufferConfig::default());
+    let target_id = target.id();
+    let target_kind = target.kind().clone();
+
+    target.reload_from_snapshot(&snapshot).unwrap();
+
+    assert_eq!(target.text().as_ref(), "snapshot text");
+    assert_eq!(target.id(), target_id);
+    assert_eq!(target.kind(), &target_kind);
+    assert!(!target.is_dirty());
+}
+
+#[test]
+fn to_save_text_checks_version_before_returning_text() {
+    let mut buffer = load(b"hello", BufferConfig::default());
+    let stale = buffer.version();
+    buffer.insert(CharOffset::new(5), "!").unwrap();
+
+    let err = buffer.to_save_text(stale).unwrap_err();
+    assert!(matches!(
+        err,
+        EngineError::Transaction(TransactionError::VersionMismatch {
+            expected,
+            actual,
+        }) if expected == buffer.version() && actual == stale
+    ));
+}
+
+#[test]
+fn to_save_text_preserves_or_normalizes_line_endings_from_config() {
+    let preserve = load(b"a\nb\r\nc\rd", BufferConfig::default());
+    assert_eq!(
+        preserve.to_save_text(preserve.version()).unwrap(),
+        "a\nb\r\nc\rd"
+    );
+
+    let lf_config = BufferConfig {
+        line_ending: LineEndingConfig::Lf,
+        ..BufferConfig::default()
+    };
+    let lf = load(b"a\nb\r\nc\rd", lf_config);
+    assert_eq!(lf.to_save_text(lf.version()).unwrap(), "a\nb\nc\nd");
+
+    let crlf_config = BufferConfig {
+        line_ending: LineEndingConfig::Crlf,
+        ..BufferConfig::default()
+    };
+    let crlf = load(b"a\nb\r\nc\rd", crlf_config);
+    assert_eq!(
+        crlf.to_save_text(crlf.version()).unwrap(),
+        "a\r\nb\r\nc\r\nd"
+    );
+}

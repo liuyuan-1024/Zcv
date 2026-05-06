@@ -57,6 +57,11 @@ impl HistoryState {
         self.redo_stack.clear();
     }
 
+    pub(in crate::buffer) fn clear(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+
     pub(in crate::buffer) fn redo_is_empty(&self) -> bool {
         self.redo_stack.is_empty()
     }

@@ -16,6 +16,8 @@
 - dirty state 表示当前文本内容是否相对保存点有未保存变更；`saved_version` 仅记录最后保存时的版本。
 - M7C 文件文本进入 Buffer 已完成。
 - 已新增 `Buffer::from_loaded_text(...)`、`LoadedTextInfo`、UTF-8 BOM / 非法 UTF-8 加载策略与换行元信息。
+- M7D reload 与保存边界已完成。
+- 已新增 `reload_from_text(...)` / `reload_from_snapshot(...)` / `to_save_text(...)`，reload 会重建文本状态并清空编辑历史。
 
 ## 当前测试文件（快照）
 

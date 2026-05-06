@@ -3,7 +3,7 @@
 //! 本文件守住失败原子性和版本推进边界；EditList 归一化、存储实现和 public 便利编辑入口不在这里定义。
 
 use crate::{
-    BufferVersion, EngineError, EngineResult, SelectionSet,
+    BufferVersion, EngineResult, SelectionSet,
     storage::TextStorage,
     transaction::{ChangeSet, Delta, EditList, Transaction, TransactionSource},
 };
@@ -165,11 +165,5 @@ impl Buffer {
         };
 
         Ok((delta, changeset))
-    }
-
-    /// 递增版本号，溢出时返回错误。
-    fn bump_version(&mut self) -> EngineResult<()> {
-        self.version = self.version.next().ok_or(EngineError::VersionOverflow)?;
-        Ok(())
     }
 }

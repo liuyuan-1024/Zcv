@@ -31,6 +31,7 @@ mod edit_ops;
 mod history;
 mod loading;
 mod movement;
+mod reload;
 mod selection_ops;
 mod transaction_pipeline;
 mod validation;

@@ -3,7 +3,7 @@
 //! 本文件负责历史栈出入栈和重放入口，不定义 HistoryEntry 的存储形态，也不参与普通事务准备。
 
 use crate::{
-    CharOffset, EngineResult,
+    CharOffset, EngineResult, TransactionSource,
     buffer::Buffer,
     transaction::{ChangeSet, Delta, Edit, EditList, TransactionMergePolicy, TransactionMetadata},
 };
@@ -36,7 +36,11 @@ impl Buffer {
 
         let mut result = None;
         for tx_edits in &entry.undo_batches {
-            result = Some(self.apply_edit_list(self.version, tx_edits.clone())?);
+            result = Some(self.apply_edit_list(
+                self.version,
+                tx_edits.clone(),
+                TransactionSource::Undo,
+            )?);
         }
 
         let result = result.expect("history entry must contain at least one undo batch");
@@ -59,7 +63,11 @@ impl Buffer {
 
         let mut result = None;
         for tx_edits in &entry.redo_batches {
-            result = Some(self.apply_edit_list(self.version, tx_edits.clone())?);
+            result = Some(self.apply_edit_list(
+                self.version,
+                tx_edits.clone(),
+                TransactionSource::Redo,
+            )?);
         }
 
         let result = result.expect("history entry must contain at least one redo batch");

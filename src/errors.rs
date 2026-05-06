@@ -107,6 +107,9 @@ pub enum EngineError {
 
     #[error("BufferVersion 溢出")]
     VersionOverflow,
+
+    #[error("TransactionId 溢出")]
+    TransactionIdOverflow,
 }
 
 /// 编辑引擎统一 Result 类型。

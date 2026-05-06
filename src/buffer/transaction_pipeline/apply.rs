@@ -5,7 +5,7 @@
 use crate::{
     BufferVersion, EngineResult, PositionMap, SelectionSet,
     storage::TextStorage,
-    transaction::{ChangeSet, Delta, EditList, Transaction, TransactionSource},
+    transaction::{ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionSource},
 };
 
 use crate::buffer::{Buffer, history::HistoryEntry};
@@ -83,7 +83,11 @@ impl Buffer {
         &mut self,
         prepared: &PreparedTransaction,
     ) -> EngineResult<(Delta, ChangeSet)> {
-        self.apply_edit_list(prepared.base_version, prepared.edits.clone())
+        self.apply_edit_list(
+            prepared.base_version,
+            prepared.edits.clone(),
+            prepared.metadata.source,
+        )
     }
 
     fn resolve_after_selection(
@@ -124,6 +128,7 @@ impl Buffer {
         &mut self,
         base_version: BufferVersion,
         tx_edits: EditList,
+        source: TransactionSource,
     ) -> EngineResult<(Delta, ChangeSet)> {
         self.ensure_writable()?;
 
@@ -137,6 +142,7 @@ impl Buffer {
 
         // 1. 预检查：所有 edit 必须在当前旧文本字符坐标系中合法。
         self.validate_edit_list(&tx_edits)?;
+        let transaction_id = self.reserve_transaction_id()?;
 
         let edits = tx_edits.as_slice().to_vec();
         let old_version = self.version;
@@ -158,12 +164,23 @@ impl Buffer {
         let new_version = self.version;
 
         let changeset = ChangeSet::from_edit_list(&tx_edits);
+        let position_map = changeset.position_map();
 
         let delta = Delta {
             old_version,
             new_version,
             edits: tx_edits,
         };
+
+        self.push_delta_event(DeltaEvent {
+            transaction_id,
+            old_version,
+            new_version,
+            source,
+            delta: delta.clone(),
+            changeset: changeset.clone(),
+            position_map,
+        });
 
         Ok((delta, changeset))
     }

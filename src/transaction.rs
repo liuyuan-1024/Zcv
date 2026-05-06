@@ -7,7 +7,7 @@ use crate::{
     errors::{CoordinateError, EditError, TransactionError},
     position_map::PositionMap,
     selection::SelectionSet,
-    types::{BufferVersion, CharOffset, TextRange},
+    types::{BufferVersion, CharOffset, TextRange, TransactionId},
 };
 
 /// 描述单次文本修改。
@@ -253,9 +253,25 @@ pub struct Delta {
     pub edits: EditList,
 }
 
+/// 文本变更事件。
+///
+/// `DeltaEvent` 是一次成功文本提交后的可消费事实，供后续 Anchor、
+/// TrackedRange、metadata layer、外部分析结果等统一感知版本推进和位置映射。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeltaEvent {
+    pub transaction_id: TransactionId,
+    pub old_version: BufferVersion,
+    pub new_version: BufferVersion,
+    pub source: TransactionSource,
+    pub delta: Delta,
+    pub changeset: ChangeSet,
+    pub position_map: PositionMap,
+}
+
 /// 事务变更集合。
 ///
 /// `ChangeSet` 记录一次事务提交的已验证编辑，用于计算 changed ranges，并可产出
+/// `PositionMap`。具体位置映射 API 统一由 `PositionMap` 承担。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeSet {
     edits: Vec<Edit>,

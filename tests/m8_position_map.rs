@@ -1,10 +1,11 @@
-//! M8 机器契约：锁定 PositionMap 的强类型 old/new 坐标映射与 ChangeSet 互操作。
+//! M8 机器契约：锁定 PositionMap、吸附策略和 DeltaEvent 队列。
 //!
-//! 本文件只验证 M8A PositionMap，不测试 DeltaEvent 队列、anchor stickiness 或 UI testbed。
+//! 本文件只验证 M8A～M8C public API，不测试 Anchor / TrackedRange 生命周期或 UI testbed。
 
 use zom_engine::{
     Affinity, Bias, Buffer, BufferConfig, CharOffset, Edit, MappingResult, PositionMap, Stickiness,
-    TextRange, Transaction,
+    TextRange, Transaction, TransactionError, TransactionId, TransactionMetadata,
+    TransactionSource,
 };
 
 fn buffer(text: &str) -> Buffer {
@@ -218,4 +219,96 @@ fn changeset_and_position_map_interoperate_without_changing_legacy_mapping() {
     assert_eq!(map.len(), 1);
     assert_eq!(map.map_old_position(c(1)), MappingResult::Deleted(c(1)));
     assert_eq!(map.map_old_position(c(3)), MappingResult::Mapped(c(4)));
+}
+
+#[test]
+fn successful_transaction_enqueues_delta_event() {
+    let mut buffer = buffer("hello");
+    assert!(buffer.last_delta_event().is_none());
+    assert!(buffer.take_pending_events().is_empty());
+
+    let tx = Transaction::from_edits(
+        buffer.version(),
+        vec![Edit::insert(c(5), " world".to_string()).unwrap()],
+    )
+    .unwrap()
+    .with_metadata(TransactionMetadata::new(TransactionSource::Paste));
+
+    let (delta, changeset) = buffer.apply_transaction(tx).unwrap();
+
+    let last_event = buffer.last_delta_event().unwrap().clone();
+    assert_eq!(last_event.transaction_id, TransactionId::INITIAL);
+    assert_eq!(last_event.old_version, delta.old_version);
+    assert_eq!(last_event.new_version, delta.new_version);
+    assert_eq!(last_event.source, TransactionSource::Paste);
+    assert_eq!(last_event.delta, delta);
+    assert_eq!(last_event.changeset, changeset);
+    assert_eq!(
+        last_event.position_map.map_old_position(c(5)).value(),
+        c(11)
+    );
+
+    let events = buffer.take_pending_events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0], last_event);
+    assert!(buffer.take_pending_events().is_empty());
+    assert_eq!(buffer.last_delta_event(), Some(&events[0]));
+}
+
+#[test]
+fn failed_transaction_does_not_enqueue_delta_event() {
+    let mut buffer = buffer("hello");
+
+    let stale_tx = Transaction::from_edits(
+        buffer.version(),
+        vec![Edit::insert(c(5), "!".to_string()).unwrap()],
+    )
+    .unwrap();
+    buffer.insert(c(5), "?").unwrap();
+    buffer.take_pending_events();
+
+    let err = buffer.apply_transaction(stale_tx).unwrap_err();
+
+    assert!(matches!(
+        err,
+        zom_engine::EngineError::Transaction(TransactionError::VersionMismatch { .. })
+    ));
+    assert!(buffer.take_pending_events().is_empty());
+}
+
+#[test]
+fn delta_events_preserve_transaction_and_version_order() {
+    let mut buffer = buffer("ab");
+
+    buffer.insert(c(1), "X").unwrap();
+    buffer.insert(c(2), "Y").unwrap();
+
+    let events = buffer.take_pending_events();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].transaction_id, TransactionId::INITIAL);
+    assert_eq!(events[1].transaction_id, TransactionId::new(1));
+    assert_eq!(events[0].new_version, events[1].old_version);
+    assert!(events[0].new_version < events[1].new_version);
+}
+
+#[test]
+fn undo_and_redo_enqueue_delta_events_with_history_sources() {
+    let mut buffer = buffer("ab");
+    buffer.insert(c(2), "c").unwrap();
+    buffer.take_pending_events();
+
+    buffer.undo().unwrap().unwrap();
+    let undo_events = buffer.take_pending_events();
+    assert_eq!(undo_events.len(), 1);
+    assert_eq!(undo_events[0].source, TransactionSource::Undo);
+    assert_eq!(undo_events[0].delta.old_version, undo_events[0].old_version);
+    assert_eq!(undo_events[0].delta.new_version, undo_events[0].new_version);
+    assert_eq!(buffer.text(), "ab");
+
+    buffer.redo().unwrap().unwrap();
+    let redo_events = buffer.take_pending_events();
+    assert_eq!(redo_events.len(), 1);
+    assert_eq!(redo_events[0].source, TransactionSource::Redo);
+    assert_eq!(redo_events[0].old_version, undo_events[0].new_version);
+    assert_eq!(buffer.text(), "abc");
 }

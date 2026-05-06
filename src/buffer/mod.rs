@@ -21,13 +21,15 @@ use std::{
 
 use crate::{
     BufferConfig, BufferId, BufferKind, BufferState, BufferVersion, CompositionState, EngineResult,
-    LoadedTextInfo, SelectionSet,
+    LoadedTextInfo, SelectionSet, TransactionId,
     storage::{RopeyStorage, TextRead},
+    transaction::DeltaEvent,
 };
 
 mod composition;
 pub(crate) mod coordinates;
 mod edit_ops;
+mod events;
 mod history;
 mod loading;
 mod movement;
@@ -55,6 +57,9 @@ pub struct Buffer {
     saved_text: String,
     last_synced_external_version: Option<BufferVersion>,
     loaded_text_info: Option<LoadedTextInfo>,
+    next_transaction_id: TransactionId,
+    pending_delta_events: Vec<DeltaEvent>,
+    last_delta_event: Option<DeltaEvent>,
     history: history::HistoryState,
     selection: SelectionSet,
     composition: Option<CompositionState>,
@@ -91,6 +96,9 @@ impl Buffer {
             saved_text,
             last_synced_external_version: None,
             loaded_text_info: None,
+            next_transaction_id: TransactionId::INITIAL,
+            pending_delta_events: Vec::new(),
+            last_delta_event: None,
             history: history::HistoryState::new(),
             selection: SelectionSet::default(),
             composition: None,

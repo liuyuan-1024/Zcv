@@ -23,6 +23,8 @@
 - `ChangeSet` 不再保留 `map_position(...)` / `map_range(...)` 兼容映射入口，位置映射统一由 `PositionMap` 表达。
 - M8B Affinity / Bias / Stickiness 基础语义已完成。
 - 已新增同点插入吸附、反向歧义偏向和区间边界 stickiness 策略，服务后续 Anchor / TrackedRange / Selection 映射。
+- M8C DeltaEvent 与事件队列已完成。
+- 已新增 `DeltaEvent` public API、`buffer.take_pending_events()` 与 `buffer.last_delta_event()`；成功事务、Undo / Redo 会按版本顺序入队，失败事务不产生事件。
 
 ## 当前测试文件（快照）
 

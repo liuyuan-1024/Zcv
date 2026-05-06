@@ -27,6 +27,7 @@
 - `src/buffer/transaction_pipeline/`：事务准备/提交/映射/历史收尾
 - `src/buffer/edit_ops/`：文本变异与多选区编辑入口
 - `src/buffer/history/`：Undo/Redo 历史状态与条目
+- `src/buffer/events.rs`：DeltaEvent 队列与最近事件快照
 - `src/buffer/composition/`：IME composition 状态/校验/流程
 - `src/buffer/mod.rs`：BufferId / BufferKind / BufferState 与保存点状态
 - `src/position_map.rs`：PositionMap 强类型、前后版本坐标映射结果与吸附策略

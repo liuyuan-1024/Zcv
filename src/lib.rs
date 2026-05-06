@@ -32,8 +32,8 @@ pub use selection::{
 };
 pub use snapshot::Snapshot;
 pub use transaction::{
-    ChangeSet, Delta, Edit, EditList, Transaction, TransactionMergePolicy, TransactionMetadata,
-    TransactionSource,
+    ChangeSet, Delta, DeltaEvent, Edit, EditList, Transaction, TransactionMergePolicy,
+    TransactionMetadata, TransactionSource,
 };
 pub use types::{
     BufferId, BufferKind, BufferState, BufferVersion, ByteOffset, CharOffset, DisplayColumn, Line,

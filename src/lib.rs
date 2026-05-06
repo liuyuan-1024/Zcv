@@ -6,6 +6,7 @@
 mod coordinates_core;
 pub(crate) mod storage;
 
+pub mod anchor;
 pub mod buffer;
 pub mod config;
 pub mod errors;
@@ -16,13 +17,15 @@ pub mod snapshot;
 pub mod transaction;
 pub mod types;
 
+pub use anchor::{Anchor, AnchorDeletedPolicy, AnchorUpdate, Mark};
 pub use buffer::{Buffer, HistoryStatus};
 pub use config::{
     BufferConfig, DisplayColumnAffinity, DisplayWidthPolicy, EncodingConfig, LargeFilePolicy,
     LineEndingConfig, PositionEncodingConfig, TabConfig, WordBoundaryPolicy,
 };
 pub use errors::{
-    CoordinateError, EditError, EngineError, EngineResult, StorageError, TransactionError,
+    AnchorError, CoordinateError, EditError, EngineError, EngineResult, StorageError,
+    TransactionError,
 };
 pub use loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};

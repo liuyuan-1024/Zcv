@@ -71,6 +71,16 @@ pub enum TransactionError {
     },
 }
 
+/// Anchor / Mark 版本推进相关错误。
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum AnchorError {
+    #[error("Anchor 版本不匹配: 预期版本 {expected:?}，实际版本 {actual:?}")]
+    VersionMismatch {
+        expected: BufferVersion,
+        actual: BufferVersion,
+    },
+}
+
 /// 底层存储相关的错误（存储后端做不了）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum StorageError {
@@ -101,6 +111,9 @@ pub enum EngineError {
 
     #[error(transparent)]
     Transaction(#[from] TransactionError),
+
+    #[error(transparent)]
+    Anchor(#[from] AnchorError),
 
     #[error(transparent)]
     Storage(#[from] StorageError),

@@ -4,11 +4,14 @@
 
 use std::num::NonZeroUsize;
 
+use crate::{BomPolicy, InvalidUtf8Policy};
+
 /// Buffer 级别的综合配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BufferConfig {
     pub tab: TabConfig,
     pub line_ending: LineEndingConfig,
+    pub encoding: EncodingConfig,
     pub position_encoding: PositionEncodingConfig,
     pub large_file: LargeFilePolicy,
     pub display_width: DisplayWidthPolicy,
@@ -20,10 +23,33 @@ impl Default for BufferConfig {
         Self {
             tab: TabConfig::default(),
             line_ending: LineEndingConfig::Preserve,
+            encoding: EncodingConfig::default(),
             position_encoding: PositionEncodingConfig::Utf8,
             large_file: LargeFilePolicy::default(),
             display_width: DisplayWidthPolicy::default(),
             word_boundary: WordBoundaryPolicy::default(),
+        }
+    }
+}
+
+/// 外部文本进入 Buffer 时的编码与恢复策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EncodingConfig {
+    pub bom: BomPolicy,
+    pub invalid_utf8: InvalidUtf8Policy,
+}
+
+impl EncodingConfig {
+    pub const fn new(bom: BomPolicy, invalid_utf8: InvalidUtf8Policy) -> Self {
+        Self { bom, invalid_utf8 }
+    }
+}
+
+impl Default for EncodingConfig {
+    fn default() -> Self {
+        Self {
+            bom: BomPolicy::Strip,
+            invalid_utf8: InvalidUtf8Policy::Reject,
         }
     }
 }

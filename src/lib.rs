@@ -9,6 +9,7 @@ pub(crate) mod storage;
 pub mod buffer;
 pub mod config;
 pub mod errors;
+pub mod loading;
 pub mod selection;
 pub mod snapshot;
 pub mod transaction;
@@ -16,12 +17,13 @@ pub mod types;
 
 pub use buffer::{Buffer, HistoryStatus};
 pub use config::{
-    BufferConfig, DisplayColumnAffinity, DisplayWidthPolicy, LargeFilePolicy, LineEndingConfig,
-    PositionEncodingConfig, TabConfig, WordBoundaryPolicy,
+    BufferConfig, DisplayColumnAffinity, DisplayWidthPolicy, EncodingConfig, LargeFilePolicy,
+    LineEndingConfig, PositionEncodingConfig, TabConfig, WordBoundaryPolicy,
 };
 pub use errors::{
     CoordinateError, EditError, EngineError, EngineResult, StorageError, TransactionError,
 };
+pub use loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
 pub use selection::{
     Affinity, CompositionSelection, CompositionState, Cursor, MovementDirection, MovementUnit,
     Selection, SelectionMergePolicy, SelectionSet,

@@ -21,7 +21,7 @@ use std::{
 
 use crate::{
     BufferConfig, BufferId, BufferKind, BufferState, BufferVersion, CompositionState, EngineResult,
-    SelectionSet,
+    LoadedTextInfo, SelectionSet,
     storage::{RopeyStorage, TextRead},
 };
 
@@ -29,6 +29,7 @@ mod composition;
 pub(crate) mod coordinates;
 mod edit_ops;
 mod history;
+mod loading;
 mod movement;
 mod selection_ops;
 mod transaction_pipeline;
@@ -52,6 +53,7 @@ pub struct Buffer {
     last_saved_version: BufferVersion,
     saved_text: String,
     last_synced_external_version: Option<BufferVersion>,
+    loaded_text_info: Option<LoadedTextInfo>,
     history: history::HistoryState,
     selection: SelectionSet,
     composition: Option<CompositionState>,
@@ -87,6 +89,7 @@ impl Buffer {
             last_saved_version: BufferVersion::INITIAL,
             saved_text,
             last_synced_external_version: None,
+            loaded_text_info: None,
             history: history::HistoryState::new(),
             selection: SelectionSet::default(),
             composition: None,
@@ -223,6 +226,10 @@ impl Buffer {
 
     pub fn is_synced_with_external(&self) -> bool {
         self.last_synced_external_version == Some(self.version)
+    }
+
+    pub fn loaded_text_info(&self) -> Option<&LoadedTextInfo> {
+        self.loaded_text_info.as_ref()
     }
 }
 

@@ -80,6 +80,12 @@ pub enum StorageError {
     #[error("只读模式下不支持此操作")]
     ReadOnly,
 
+    #[error("输入不是合法 UTF-8: valid_up_to {valid_up_to}, error_len {error_len:?}")]
+    InvalidUtf8 {
+        valid_up_to: usize,
+        error_len: Option<usize>,
+    },
+
     #[error("存储后端不支持该操作: {0}")]
     UnsupportedOperation(&'static str),
 }

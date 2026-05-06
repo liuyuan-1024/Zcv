@@ -5,10 +5,10 @@
 use std::num::NonZeroUsize;
 
 use zom_engine::{
-    BufferConfig, BufferId, BufferKind, BufferState, BufferVersion, ByteOffset, CharOffset,
-    CoordinateError, DisplayColumn, EditError, EngineError, Line, LineEndingConfig, LogicalColumn,
-    Position, PositionEncodingConfig, StorageError, TabConfig, TextRange, TransactionError,
-    TransactionId, Utf16Offset,
+    BomPolicy, BufferConfig, BufferId, BufferKind, BufferState, BufferVersion, ByteOffset,
+    CharOffset, CoordinateError, DisplayColumn, EditError, EncodingConfig, EngineError,
+    InvalidUtf8Policy, Line, LineEndingConfig, LogicalColumn, Position, PositionEncodingConfig,
+    StorageError, TabConfig, TextEncoding, TextRange, TransactionError, TransactionId, Utf16Offset,
 };
 
 #[test]
@@ -29,6 +29,9 @@ fn root_public_api_can_be_imported() {
     let _ = BufferKind::Untitled;
     let _ = BufferState::Clean;
     let _ = TransactionId::INITIAL;
+    let _ = TextEncoding::Utf8;
+    let _ = BomPolicy::Strip;
+    let _ = InvalidUtf8Policy::Reject;
 
     let _ = BufferConfig::default();
 }
@@ -164,6 +167,7 @@ fn default_buffer_config_is_reasonable_for_m0() {
     let config = BufferConfig::default();
 
     assert_eq!(config.line_ending, LineEndingConfig::Preserve);
+    assert_eq!(config.encoding, EncodingConfig::default());
     assert_eq!(config.position_encoding, PositionEncodingConfig::Utf8);
 
     assert_eq!(config.tab.tab_width(), 4);
@@ -198,6 +202,12 @@ fn config_enums_are_public_strategy_values() {
     let _ = PositionEncodingConfig::Utf8;
     let _ = PositionEncodingConfig::Utf16;
     let _ = PositionEncodingConfig::Utf32;
+
+    let _ = BomPolicy::Strip;
+    let _ = BomPolicy::Preserve;
+
+    let _ = InvalidUtf8Policy::Reject;
+    let _ = InvalidUtf8Policy::Replace;
 }
 
 #[test]

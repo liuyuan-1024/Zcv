@@ -14,6 +14,8 @@
 - M7B 保存点与 dirty state 已完成。
 - 已新增 `last_saved_version` / `last_synced_external_version` 查询，以及 `mark_synced_external()`。
 - dirty state 表示当前文本内容是否相对保存点有未保存变更；`saved_version` 仅记录最后保存时的版本。
+- M7C 文件文本进入 Buffer 已完成。
+- 已新增 `Buffer::from_loaded_text(...)`、`LoadedTextInfo`、UTF-8 BOM / 非法 UTF-8 加载策略与换行元信息。
 
 ## 当前测试文件（快照）
 
@@ -30,6 +32,7 @@ tests/
 - m6b_word_movement.rs
 - m6c_composition.rs
 - m7_buffer_lifecycle.rs
+- m7_file_boundary.rs
 ```
 
 ## 当前示例文件（快照）

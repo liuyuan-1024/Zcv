@@ -1,10 +1,11 @@
-//! 事务模型：定义 Edit、EditList、Transaction、Delta 与 ChangeSet 这条文本变异和位置映射主链路。
+//! 事务模型：定义 Edit、EditList、Transaction、Delta 与 ChangeSet 这条文本变异主链路。
 //!
 //! 本文件负责 public 事务语义、版本绑定和变更映射，不直接访问 Buffer 存储，也不处理 UI 命令概念。
 
 use crate::{
     EngineResult,
     errors::{CoordinateError, EditError, TransactionError},
+    position_map::PositionMap,
     selection::SelectionSet,
     types::{BufferVersion, CharOffset, TextRange},
 };
@@ -252,7 +253,9 @@ pub struct Delta {
     pub edits: EditList,
 }
 
-/// 位置映射器：支持 old char position -> new char position。
+/// 事务变更集合。
+///
+/// `ChangeSet` 记录一次事务提交的已验证编辑，用于计算 changed ranges，并可产出
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeSet {
     edits: Vec<Edit>,
@@ -266,37 +269,12 @@ impl ChangeSet {
         }
     }
 
-    pub fn map_position(&self, pos: CharOffset) -> CharOffset {
-        let mut diff = 0isize;
-        let pos_val = pos.get() as isize;
-
-        for edit in &self.edits {
-            let start = edit.range.start().get() as isize;
-            let end = edit.range.end().get() as isize;
-            let replacement_len = edit.replacement.chars().count() as isize;
-
-            if pos_val < start {
-                break;
-            }
-
-            if pos_val < end {
-                return CharOffset::new((start + diff).max(0) as usize);
-            }
-
-            diff += replacement_len - (end - start);
-        }
-
-        CharOffset::new((pos_val + diff).max(0) as usize)
+    pub(crate) fn edits(&self) -> &[Edit] {
+        &self.edits
     }
 
-    /// 将旧文本范围映射到新文本范围。
-    ///
-    /// 删除区间内的范围会塌缩成空 range。
-    pub fn map_range(&self, range: TextRange) -> Result<TextRange, CoordinateError> {
-        let new_start = self.map_position(range.start());
-        let new_end = self.map_position(range.end());
-
-        TextRange::new(new_start, new_end)
+    pub fn position_map(&self) -> PositionMap {
+        PositionMap::from_edits(self.edits.clone())
     }
 
     /// 获取本次事务应用后，在新文本中发生改变的范围列表。

@@ -3,7 +3,7 @@
 //! M6 起，`SelectionSet` 是编辑引擎里的主选区模型；不再把 M3 的
 //! `SelectionSnapshot` 作为兼容层继续传播。
 
-use crate::{ChangeSet, CharOffset, TextRange};
+use crate::{CharOffset, PositionMap, TextRange};
 
 /// 单个插入光标。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -219,10 +219,10 @@ impl Selection {
         }
     }
 
-    pub fn map_through_changeset(self, changeset: &ChangeSet) -> Self {
+    pub fn map_through_position_map(self, position_map: &PositionMap) -> Self {
         Self {
-            anchor: changeset.map_position(self.anchor),
-            head: changeset.map_position(self.head),
+            anchor: position_map.map_old_position(self.anchor).value(),
+            head: position_map.map_old_position(self.head).value(),
         }
     }
 }
@@ -314,12 +314,12 @@ impl SelectionSet {
         Self::new_with_primary(self.selections.clone(), self.primary_index)
     }
 
-    pub fn map_through_changeset(&self, changeset: &ChangeSet) -> Self {
+    pub fn map_through_position_map(&self, position_map: &PositionMap) -> Self {
         Self::new_with_primary(
             self.selections
                 .iter()
                 .copied()
-                .map(|selection| selection.map_through_changeset(changeset))
+                .map(|selection| selection.map_through_position_map(position_map))
                 .collect(),
             self.primary_index,
         )

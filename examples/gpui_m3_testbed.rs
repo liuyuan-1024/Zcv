@@ -45,7 +45,7 @@ Cmd-S 标记已保存，Cmd-R 重置文本。
 Cmd-B 触发批量事务修改，连续字符输入会合并成一个撤销步骤，Cmd-M 触发一次合并到上一步的事务。
 Cmd-Z / Ctrl-Z 撤销，Cmd-Shift-Z / Ctrl-Y 重做。
 Cmd-K 捕获当前快照，并观察后续编辑后快照是否过期。
-所有写入都走事务；黄色区间是变更范围，A/B 会跟随 ChangeSet 映射。
+所有写入都走事务；黄色区间是变更范围，A/B 会通过 PositionMap 跟随文本变化。
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,11 +164,20 @@ impl M3Testbed {
                     delta.edits.as_slice().len(),
                 ));
 
-                // M2 核心体感：游标和锚点都通过 ChangeSet 跟随文本变化。
+                // M2 核心体感：游标和锚点都通过 PositionMap 跟随文本变化。
                 // M3 增量：如果事务携带了 selection snapshot，则优先用历史系统里的 caret 恢复光标。
-                let mapped_cursor = changeset.map_position(self.cursor);
-                self.anchor_a = changeset.map_position(self.anchor_a);
-                self.anchor_b = changeset.map_position(self.anchor_b);
+                let mapped_cursor = changeset
+                    .position_map()
+                    .map_old_position(self.cursor)
+                    .value();
+                self.anchor_a = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_a)
+                    .value();
+                self.anchor_b = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_b)
+                    .value();
                 self.last_changed_ranges = changeset.changed_ranges();
 
                 if let Some(cursor) = self.cursor_from_engine_selection() {
@@ -331,9 +340,18 @@ impl M3Testbed {
                     delta.edits.as_slice().len(),
                 ));
 
-                let mapped_cursor = changeset.map_position(self.cursor);
-                self.anchor_a = changeset.map_position(self.anchor_a);
-                self.anchor_b = changeset.map_position(self.anchor_b);
+                let mapped_cursor = changeset
+                    .position_map()
+                    .map_old_position(self.cursor)
+                    .value();
+                self.anchor_a = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_a)
+                    .value();
+                self.anchor_b = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_b)
+                    .value();
                 self.last_changed_ranges = changeset.changed_ranges();
 
                 if let Some(cursor) = self.cursor_from_engine_selection() {

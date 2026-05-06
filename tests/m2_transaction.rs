@@ -3,7 +3,7 @@
 //! 这组测试属于 `tests/` 机器契约测试：
 //! - 只通过 public API 使用 `zom-engine`
 //! - 不依赖 GPUI / 窗口系统
-//! - 锁定 M2 阶段的事务语义、版本契约、失败原子性与 ChangeSet 映射
+//! - 锁定 M2 阶段的事务语义、版本契约、失败原子性与 PositionMap 生成
 //! - M3.5 起，Transaction / Edit / ChangeSet 均使用 CharOffset 坐标
 
 use zom_engine::buffer::Buffer;
@@ -118,8 +118,9 @@ fn transaction_applies_multiple_edits_in_old_char_coordinate_space() {
     assert_eq!(delta.edits.as_slice().len(), 2);
 
     // 旧文本末尾 11 被映射到新文本末尾 11。
+    let position_map = changeset.position_map();
     assert_eq!(
-        changeset.map_position(CharOffset::new(11)),
+        position_map.map_old_position(CharOffset::new(11)).value(),
         CharOffset::new(11)
     );
 }
@@ -198,41 +199,42 @@ fn failed_transaction_on_crlf_middle_boundary_is_atomic() {
 }
 
 #[test]
-fn changeset_maps_positions_after_delete() {
+fn changeset_produces_position_map_after_delete() {
     let mut buffer = buffer("12345");
 
     let tx = tx_for(&buffer, vec![Edit::delete(range(2, 4))]);
     let (_, changeset) = buffer.apply_transaction(tx).unwrap();
+    let position_map = changeset.position_map();
 
     assert_eq!(buffer.text(), "125");
     assert_eq!(
-        changeset.map_position(CharOffset::new(0)),
+        position_map.map_old_position(CharOffset::new(0)).value(),
         CharOffset::new(0)
     );
     assert_eq!(
-        changeset.map_position(CharOffset::new(1)),
+        position_map.map_old_position(CharOffset::new(1)).value(),
         CharOffset::new(1)
     );
     assert_eq!(
-        changeset.map_position(CharOffset::new(2)),
+        position_map.map_old_position(CharOffset::new(2)).value(),
         CharOffset::new(2)
     );
     assert_eq!(
-        changeset.map_position(CharOffset::new(3)),
+        position_map.map_old_position(CharOffset::new(3)).value(),
         CharOffset::new(2)
     );
     assert_eq!(
-        changeset.map_position(CharOffset::new(4)),
+        position_map.map_old_position(CharOffset::new(4)).value(),
         CharOffset::new(2)
     );
     assert_eq!(
-        changeset.map_position(CharOffset::new(5)),
+        position_map.map_old_position(CharOffset::new(5)).value(),
         CharOffset::new(3)
     );
 }
 
 #[test]
-fn changeset_maps_positions_after_insert() {
+fn changeset_produces_position_map_after_insert() {
     let mut buffer = buffer("ab");
 
     let tx = tx_for(
@@ -240,30 +242,31 @@ fn changeset_maps_positions_after_insert() {
         vec![Edit::insert(CharOffset::new(1), "XYZ".to_string()).unwrap()],
     );
     let (_, changeset) = buffer.apply_transaction(tx).unwrap();
+    let position_map = changeset.position_map();
 
     assert_eq!(buffer.text(), "aXYZb");
     assert_eq!(
-        changeset.map_position(CharOffset::new(0)),
+        position_map.map_old_position(CharOffset::new(0)).value(),
         CharOffset::new(0)
     );
     assert_eq!(
-        changeset.map_position(CharOffset::new(1)),
+        position_map.map_old_position(CharOffset::new(1)).value(),
         CharOffset::new(4)
     );
     assert_eq!(
-        changeset.map_position(CharOffset::new(2)),
+        position_map.map_old_position(CharOffset::new(2)).value(),
         CharOffset::new(5)
     );
 }
 
 #[test]
-fn changeset_maps_range_without_unchecked_constructor() {
+fn changeset_position_map_maps_range_without_unchecked_constructor() {
     let mut buffer = buffer("abcdef");
 
     let tx = tx_for(&buffer, vec![Edit::replace(range(1, 3), "XYZ".to_string())]);
     let (_, changeset) = buffer.apply_transaction(tx).unwrap();
 
-    let mapped = changeset.map_range(range(0, 6)).unwrap();
+    let mapped = changeset.position_map().map_old_range(range(0, 6)).value();
 
     assert_eq!(buffer.text(), "aXYZdef");
     assert_eq!(mapped, range(0, 7));

@@ -48,7 +48,7 @@ Cmd-Z / Ctrl-Z 撤销，Cmd-Shift-Z / Ctrl-Y 重做。
 Cmd-K 捕获当前快照，并观察后续编辑后快照是否过期。
 Cmd-L 在当前光标插入一段中等长度的单行文本，用于快速验证 RopeyStorage 的局部插入与指标更新。
 M4 生产后端是 RopeyStorage；字符串参考模型只应存在于测试文件中。
-所有写入都走事务；黄色区间是变更范围，A/B 会跟随 ChangeSet 映射。
+所有写入都走事务；黄色区间是变更范围，A/B 会通过 PositionMap 跟随文本变化。
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,11 +167,20 @@ impl M4Testbed {
                     delta.edits.as_slice().len(),
                 ));
 
-                // M2 核心体感：游标和锚点都通过 ChangeSet 跟随文本变化。
+                // M2 核心体感：游标和锚点都通过 PositionMap 跟随文本变化。
                 // M4 继承 M3：如果事务携带了 selection snapshot，则优先用历史系统里的 caret 恢复光标。
-                let mapped_cursor = changeset.map_position(self.cursor);
-                self.anchor_a = changeset.map_position(self.anchor_a);
-                self.anchor_b = changeset.map_position(self.anchor_b);
+                let mapped_cursor = changeset
+                    .position_map()
+                    .map_old_position(self.cursor)
+                    .value();
+                self.anchor_a = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_a)
+                    .value();
+                self.anchor_b = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_b)
+                    .value();
                 self.last_changed_ranges = changeset.changed_ranges();
 
                 if let Some(cursor) = self.cursor_from_engine_selection() {
@@ -355,9 +364,18 @@ impl M4Testbed {
                     delta.edits.as_slice().len(),
                 ));
 
-                let mapped_cursor = changeset.map_position(self.cursor);
-                self.anchor_a = changeset.map_position(self.anchor_a);
-                self.anchor_b = changeset.map_position(self.anchor_b);
+                let mapped_cursor = changeset
+                    .position_map()
+                    .map_old_position(self.cursor)
+                    .value();
+                self.anchor_a = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_a)
+                    .value();
+                self.anchor_b = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_b)
+                    .value();
                 self.last_changed_ranges = changeset.changed_ranges();
 
                 if let Some(cursor) = self.cursor_from_engine_selection() {

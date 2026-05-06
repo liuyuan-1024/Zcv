@@ -10,6 +10,7 @@ pub mod buffer;
 pub mod config;
 pub mod errors;
 pub mod loading;
+pub mod position_map;
 pub mod selection;
 pub mod snapshot;
 pub mod transaction;
@@ -24,6 +25,7 @@ pub use errors::{
     CoordinateError, EditError, EngineError, EngineResult, StorageError, TransactionError,
 };
 pub use loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
+pub use position_map::{MappingResult, PositionMap};
 pub use selection::{
     Affinity, CompositionSelection, CompositionState, Cursor, MovementDirection, MovementUnit,
     Selection, SelectionMergePolicy, SelectionSet,

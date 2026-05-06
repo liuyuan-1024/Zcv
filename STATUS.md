@@ -18,6 +18,9 @@
 - 已新增 `Buffer::from_loaded_text(...)`、`LoadedTextInfo`、UTF-8 BOM / 非法 UTF-8 加载策略与换行元信息。
 - M7D reload 与保存边界已完成。
 - 已新增 `reload_from_text(...)` / `reload_from_snapshot(...)` / `to_save_text(...)`，reload 会重建文本状态并清空编辑历史。
+- M8A PositionMap 强类型已完成。
+- 已新增 `PositionMap` / `MappingResult` public API，并支持 old/new char position 与 range 双向映射、删除 / 塌缩 / 歧义结果，以及与 `ChangeSet` 互操作。
+- `ChangeSet` 不再保留 `map_position(...)` / `map_range(...)` 兼容映射入口，位置映射统一由 `PositionMap` 表达。
 
 ## 当前测试文件（快照）
 
@@ -31,6 +34,7 @@ tests/
 - m5_coordinates.rs
 - m6_selection.rs
 - m7_buffer_lifecycle.rs
+- m8_position_map.rs
 ```
 
 ## 当前示例文件（快照）

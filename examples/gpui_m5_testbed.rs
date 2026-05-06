@@ -69,7 +69,7 @@ const INITIAL_TEXT: &str = concat!(
 ",
     "这是一行 CRLF 探针，会让换行风格进入混合状态。
 ",
-    "所有写入都走事务；黄色区间是变更范围，A/B 会跟随 ChangeSet 映射。
+    "所有写入都走事务；黄色区间是变更范围，A/B 会通过 PositionMap 跟随文本变化。
 ",
 );
 
@@ -209,11 +209,20 @@ impl M5Testbed {
                     delta.edits.as_slice().len(),
                 ));
 
-                // M2 核心体感：游标和锚点都通过 ChangeSet 跟随文本变化。
+                // M2 核心体感：游标和锚点都通过 PositionMap 跟随文本变化。
                 // M5 继承 M4：如果事务携带了 selection snapshot，则优先用历史系统里的 caret 恢复光标。
-                let mapped_cursor = changeset.map_position(self.cursor);
-                self.anchor_a = changeset.map_position(self.anchor_a);
-                self.anchor_b = changeset.map_position(self.anchor_b);
+                let mapped_cursor = changeset
+                    .position_map()
+                    .map_old_position(self.cursor)
+                    .value();
+                self.anchor_a = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_a)
+                    .value();
+                self.anchor_b = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_b)
+                    .value();
                 self.last_changed_ranges = changeset.changed_ranges();
 
                 if let Some(cursor) = self.cursor_from_engine_selection() {
@@ -457,9 +466,18 @@ impl M5Testbed {
                     delta.edits.as_slice().len(),
                 ));
 
-                let mapped_cursor = changeset.map_position(self.cursor);
-                self.anchor_a = changeset.map_position(self.anchor_a);
-                self.anchor_b = changeset.map_position(self.anchor_b);
+                let mapped_cursor = changeset
+                    .position_map()
+                    .map_old_position(self.cursor)
+                    .value();
+                self.anchor_a = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_a)
+                    .value();
+                self.anchor_b = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_b)
+                    .value();
                 self.last_changed_ranges = changeset.changed_ranges();
 
                 if let Some(cursor) = self.cursor_from_engine_selection() {

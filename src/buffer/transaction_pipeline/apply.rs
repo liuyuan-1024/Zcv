@@ -3,7 +3,7 @@
 //! 本文件守住失败原子性和版本推进边界；EditList 归一化、存储实现和 public 便利编辑入口不在这里定义。
 
 use crate::{
-    BufferVersion, EngineResult, SelectionSet,
+    BufferVersion, EngineResult, PositionMap, SelectionSet,
     storage::TextStorage,
     transaction::{ChangeSet, Delta, EditList, Transaction, TransactionSource},
 };
@@ -15,15 +15,16 @@ use super::prepared::PreparedTransaction;
 impl Buffer {
     /// 提交并应用事务。
     ///
-    /// 成功将返回增量事件 Delta 和位置映射器 ChangeSet，并记录 Undo 历史。
+    /// 成功将返回增量 Delta 和事务变更集合 ChangeSet，并记录 Undo 历史。
     pub fn apply_transaction(&mut self, tx: Transaction) -> EngineResult<(Delta, ChangeSet)> {
         self.ensure_writable()?;
         let prepared = self.prepare_transaction(tx)?;
         let (delta, changeset) = self.commit_prepared_transaction(&prepared)?;
+        let position_map = changeset.position_map();
         let after_selection = self.resolve_after_selection(
             &prepared.before_selection,
             prepared.explicit_after_selection.as_ref(),
-            &changeset,
+            &position_map,
         );
         self.selection = after_selection.clone();
         self.finish_transaction(prepared, after_selection)?;
@@ -89,11 +90,11 @@ impl Buffer {
         &self,
         before_selection: &SelectionSet,
         explicit_after_selection: Option<&SelectionSet>,
-        changeset: &ChangeSet,
+        position_map: &PositionMap,
     ) -> SelectionSet {
         explicit_after_selection
             .cloned()
-            .unwrap_or_else(|| before_selection.map_through_changeset(changeset))
+            .unwrap_or_else(|| before_selection.map_through_position_map(position_map))
     }
 
     fn finish_transaction(

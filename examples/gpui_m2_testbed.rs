@@ -38,7 +38,7 @@ const INITIAL_TEXT: &str = "🚀 Zom Engine M2 中文测试台
 Home / End 可跳到当前行首尾。
 Cmd-S 标记已保存，Cmd-R 重置文本。
 Cmd-B 触发批量事务修改。
-所有写入都走事务；黄色区间是变更范围，A/B 会跟随 ChangeSet 映射。
+所有写入都走事务；黄色区间是变更范围，A/B 会通过 PositionMap 跟随文本变化。
 ";
 
 pub struct M2Testbed {
@@ -120,10 +120,19 @@ impl M2Testbed {
                     delta.edits.as_slice().len(),
                 ));
 
-                // M2 核心体感：游标和锚点都通过 ChangeSet 跟随文本变化。
-                self.cursor = changeset.map_position(self.cursor);
-                self.anchor_a = changeset.map_position(self.anchor_a);
-                self.anchor_b = changeset.map_position(self.anchor_b);
+                // M2 核心体感：游标和锚点都通过 PositionMap 跟随文本变化。
+                self.cursor = changeset
+                    .position_map()
+                    .map_old_position(self.cursor)
+                    .value();
+                self.anchor_a = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_a)
+                    .value();
+                self.anchor_b = changeset
+                    .position_map()
+                    .map_old_position(self.anchor_b)
+                    .value();
                 self.last_changed_ranges = changeset.changed_ranges();
             }
             Err(err) => {

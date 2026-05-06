@@ -10,6 +10,11 @@ use crate::{
 use super::{Buffer, coordinates::is_crlf_middle};
 
 impl Buffer {
+    pub(in crate::buffer) fn mark_clean_internal(&mut self) {
+        self.saved_version = self.version();
+        self.saved_text = self.text().into_owned();
+    }
+
     pub(super) fn ensure_writable(&self) -> EngineResult<()> {
         if self.is_read_only() {
             return Err(StorageError::ReadOnly.into());

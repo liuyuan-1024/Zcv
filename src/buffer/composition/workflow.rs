@@ -145,7 +145,7 @@ impl Buffer {
         if after_text == state.original_text {
             self.set_selection(after_selection)?;
             if !state.original_was_dirty {
-                self.saved_version = self.version;
+                self.mark_clean_internal();
             }
             return Ok(result);
         }
@@ -183,7 +183,7 @@ impl Buffer {
         )?;
 
         if !state.original_was_dirty {
-            self.saved_version = self.version;
+            self.mark_clean_internal();
         }
 
         Ok(result)

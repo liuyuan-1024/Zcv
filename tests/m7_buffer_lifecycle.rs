@@ -1,4 +1,4 @@
-//! M7A 机器契约：锁定 Buffer 身份、来源类型、状态推导、只读防线和关闭前 dirty 查询。
+//! M7 机器契约：锁定 Buffer 身份、来源类型、状态推导、只读防线和保存点 / dirty 查询。
 //!
 //! 本文件只验证生命周期 public API，不测试文件加载、编码探测、reload 或保存输出。
 
@@ -66,6 +66,8 @@ fn state_and_close_prompt_follow_dirty_and_saved_versions() {
     let mut buffer = buffer("hello");
 
     assert_eq!(buffer.state(), BufferState::Clean);
+    assert_eq!(buffer.saved_version(), BufferVersion::INITIAL);
+    assert_eq!(buffer.last_saved_version(), BufferVersion::INITIAL);
     assert!(buffer.can_close_without_prompt());
 
     buffer.insert(CharOffset::new(5), "!").unwrap();
@@ -77,8 +79,72 @@ fn state_and_close_prompt_follow_dirty_and_saved_versions() {
     buffer.mark_saved();
 
     assert_eq!(buffer.state(), BufferState::Clean);
+    assert_eq!(buffer.saved_version(), buffer.version());
+    assert_eq!(buffer.last_saved_version(), buffer.version());
     assert!(!buffer.has_unsaved_changes());
     assert!(buffer.can_close_without_prompt());
+}
+
+#[test]
+fn undo_and_redo_recompute_dirty_state_from_saved_text() {
+    let mut buffer = buffer("hello");
+
+    buffer.insert(CharOffset::new(5), "!").unwrap();
+    buffer.mark_saved();
+    let saved_version = buffer.saved_version();
+
+    buffer.insert(CharOffset::new(6), "?").unwrap();
+    assert_eq!(buffer.text().as_ref(), "hello!?");
+    assert!(buffer.is_dirty());
+    assert_eq!(buffer.state(), BufferState::Dirty);
+
+    buffer
+        .undo()
+        .unwrap()
+        .expect("undo should restore saved text");
+    assert_eq!(buffer.text().as_ref(), "hello!");
+    assert!(buffer.version() > saved_version);
+    assert!(!buffer.is_dirty());
+    assert_eq!(buffer.state(), BufferState::Clean);
+
+    buffer
+        .redo()
+        .unwrap()
+        .expect("redo should reapply dirty edit");
+    assert_eq!(buffer.text().as_ref(), "hello!?");
+    assert!(buffer.is_dirty());
+    assert_eq!(buffer.saved_version(), saved_version);
+}
+
+#[test]
+fn external_sync_version_is_tracked_separately_from_save_point() {
+    let mut buffer = buffer("hello");
+
+    assert_eq!(buffer.last_synced_external_version(), None);
+    assert!(!buffer.is_synced_with_external());
+
+    buffer.mark_synced_external();
+    assert_eq!(
+        buffer.last_synced_external_version(),
+        Some(BufferVersion::INITIAL)
+    );
+    assert!(buffer.is_synced_with_external());
+
+    buffer.insert(CharOffset::new(5), "!").unwrap();
+    assert_eq!(
+        buffer.last_synced_external_version(),
+        Some(BufferVersion::INITIAL)
+    );
+    assert!(!buffer.is_synced_with_external());
+    assert!(buffer.is_dirty());
+
+    buffer.mark_synced_external();
+    assert_eq!(
+        buffer.last_synced_external_version(),
+        Some(buffer.version())
+    );
+    assert!(buffer.is_synced_with_external());
+    assert!(buffer.is_dirty());
 }
 
 #[test]

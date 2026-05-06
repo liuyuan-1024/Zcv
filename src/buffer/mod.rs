@@ -49,6 +49,9 @@ pub struct Buffer {
     storage: RopeyStorage,
     version: BufferVersion,
     saved_version: BufferVersion,
+    last_saved_version: BufferVersion,
+    saved_text: String,
+    last_synced_external_version: Option<BufferVersion>,
     history: history::HistoryState,
     selection: SelectionSet,
     composition: Option<CompositionState>,
@@ -71,6 +74,8 @@ impl Buffer {
         text: String,
         config: BufferConfig,
     ) -> EngineResult<Self> {
+        let saved_text = text.clone();
+
         Ok(Self {
             id: next_buffer_id(),
             kind,
@@ -79,6 +84,9 @@ impl Buffer {
             storage: RopeyStorage::new(text),
             version: BufferVersion::INITIAL,
             saved_version: BufferVersion::INITIAL,
+            last_saved_version: BufferVersion::INITIAL,
+            saved_text,
+            last_synced_external_version: None,
             history: history::HistoryState::new(),
             selection: SelectionSet::default(),
             composition: None,
@@ -191,12 +199,30 @@ impl Buffer {
         self.saved_version
     }
 
+    pub fn last_saved_version(&self) -> BufferVersion {
+        self.last_saved_version
+    }
+
+    pub fn last_synced_external_version(&self) -> Option<BufferVersion> {
+        self.last_synced_external_version
+    }
+
     pub fn is_dirty(&self) -> bool {
-        self.version != self.saved_version
+        self.text().as_ref() != self.saved_text
     }
 
     pub fn mark_saved(&mut self) {
         self.saved_version = self.version;
+        self.last_saved_version = self.version;
+        self.saved_text = self.text().into_owned();
+    }
+
+    pub fn mark_synced_external(&mut self) {
+        self.last_synced_external_version = Some(self.version);
+    }
+
+    pub fn is_synced_with_external(&self) -> bool {
+        self.last_synced_external_version == Some(self.version)
     }
 }
 

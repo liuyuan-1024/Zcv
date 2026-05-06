@@ -11,6 +11,9 @@
 - M7A Buffer 身份与状态已完成。
 - 已新增 `BufferId` / `BufferKind` / `BufferState` public API。
 - Buffer 现在可表达 Untitled / File / URI / Scratch 来源，并支持只读防线与关闭前 dirty 查询。
+- M7B 保存点与 dirty state 已完成。
+- 已新增 `last_saved_version` / `last_synced_external_version` 查询，以及 `mark_synced_external()`。
+- dirty state 表示当前文本内容是否相对保存点有未保存变更；`saved_version` 仅记录最后保存时的版本。
 
 ## 当前测试文件（快照）
 

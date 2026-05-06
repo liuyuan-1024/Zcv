@@ -478,6 +478,7 @@ fn mark_saved_clears_dirty_state() {
     buffer.mark_saved();
     assert!(!buffer.is_dirty());
     assert_eq!(buffer.saved_version(), buffer.version());
+    assert_eq!(buffer.last_saved_version(), buffer.version());
 }
 
 #[test]

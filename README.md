@@ -28,6 +28,7 @@
 - `src/buffer/edit_ops/`：文本变异与多选区编辑入口
 - `src/buffer/history/`：Undo/Redo 历史状态与条目
 - `src/buffer/composition/`：IME composition 状态/校验/流程
+- `src/buffer/mod.rs`：BufferId / BufferKind / BufferState 与保存点状态
 - `src/coordinates_core.rs`：Buffer/Snapshot 共享坐标数学
 - `src/storage/ropey_storage.rs`：生产文本存储实现
 

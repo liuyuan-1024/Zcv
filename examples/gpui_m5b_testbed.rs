@@ -1,3 +1,7 @@
+//! M5B GPUI testbed：在 M5A 坐标能力上展示 DisplayColumn、tab 展开和字符宽度策略。
+//!
+//! 本文件验证视觉列语义能否被 UI 面板和光标移动清晰观察，不负责真实渲染器的像素测量或字体排版。
+
 use gpui::{
     App, Application, Bounds, Context, Div, FocusHandle, IntoElement, KeyBinding, KeyDownEvent,
     Render, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb,

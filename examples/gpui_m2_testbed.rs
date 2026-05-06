@@ -1,3 +1,7 @@
+//! M2 GPUI testbed：在完整继承 M1 手感的基础上展示 Transaction、Delta 与 ChangeSet。
+//!
+//! 本文件只验证事务架构接入 UI 后的体感和可观察性，不把编辑排序、原子性或映射正确性寄托在 example 上。
+
 use gpui::{
     App, Application, Bounds, Context, Div, FocusHandle, IntoElement, KeyBinding, KeyDownEvent,
     Render, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb,

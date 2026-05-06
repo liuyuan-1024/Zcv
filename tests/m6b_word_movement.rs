@@ -1,3 +1,7 @@
+//! M6B 机器契约：锁定 grapheme、word、identifier、subword 与 symbol 的文本移动语义。
+//!
+//! 本文件只验证引擎层边界查找和 selection 移动，不绑定宿主快捷键或命令层策略。
+
 use zom_engine::{
     Buffer, BufferConfig, CharOffset, MovementDirection, MovementUnit, Selection, SelectionSet,
 };

@@ -1,3 +1,7 @@
+//! Selection 编辑入口：把多光标、多选区插入、替换和删除归一化为单个事务。
+//!
+//! 本文件负责 selection 语义到 EditList 的映射，不实现底层提交原子性，也不绕过 Buffer 边界校验。
+
 use crate::{
     CharOffset, EngineResult, MovementDirection, MovementUnit, Selection, SelectionSet, TextRange,
     transaction::{ChangeSet, Delta, Edit, Transaction, TransactionMetadata, TransactionSource},

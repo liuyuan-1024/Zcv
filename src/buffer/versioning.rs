@@ -1,3 +1,7 @@
+//! Buffer 版本与快照入口：创建绑定当前版本的不可变 Snapshot，并判断外部版本是否过期。
+//!
+//! 本文件只连接 BufferVersion 与存储快照，不参与事务提交、保存点策略或后台任务调度。
+
 use crate::{BufferVersion, Snapshot, storage::TextStorage};
 
 use super::Buffer;

@@ -1,3 +1,7 @@
+//! Composition 校验：约束 preedit 内相对选区必须落在有效 char 范围和 grapheme 边界上。
+//!
+//! 本文件只表达组合态内部边界规则，不读取 Buffer 状态，也不负责提交、取消或恢复 selection。
+
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{CharOffset, CompositionSelection, CoordinateError, EngineResult};

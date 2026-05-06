@@ -1,3 +1,7 @@
+//! M4 GPUI testbed：在 M3 历史体验之上展示 RopeyStorage、快照和存储指标。
+//!
+//! 本文件用于观察生产存储后端接入后的 UI 手感与指标变化，不承担 Rope 语义差分或性能结论的最终判定。
+
 use gpui::{
     App, Application, Bounds, Context, Div, FocusHandle, IntoElement, KeyBinding, KeyDownEvent,
     Render, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb,

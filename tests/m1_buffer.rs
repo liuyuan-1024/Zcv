@@ -1,3 +1,7 @@
+//! M1 机器契约：锁定最小 Buffer 的创建、编辑、LineIndex、dirty/version 和文本边界行为。
+//!
+//! 本文件只通过 public API 验证单 Buffer 语义，不测试事务历史、selection 主链路或 UI 事件。
+
 use zom_engine::{
     Buffer, BufferConfig, CharOffset, CoordinateError, EditError, EngineError, Line, LogicalColumn,
     Position, TextRange,

@@ -1,3 +1,7 @@
+//! 事务模型：定义 Edit、EditList、Transaction、Delta 与 ChangeSet 这条文本变异和位置映射主链路。
+//!
+//! 本文件负责 public 事务语义、版本绑定和变更映射，不直接访问 Buffer 存储，也不处理 UI 命令概念。
+
 use crate::{
     EngineResult,
     errors::{CoordinateError, EditError, TransactionError},

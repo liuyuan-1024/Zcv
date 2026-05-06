@@ -1,3 +1,7 @@
+//! M0 机器契约：锁定基础领域类型、配置对象和错误枚举的 public API 语义。
+//!
+//! 本文件只测试类型边界和不变量，不涉及 Buffer 编辑、事务、历史或 GPUI 体感。
+
 use std::num::NonZeroUsize;
 
 use zom_engine::{

@@ -1,3 +1,7 @@
+//! M3 GPUI testbed：在 M2 事务体验之上展示 Undo / Redo、历史合并与 Snapshot 状态。
+//!
+//! 本文件面向人工 dogfooding，职责是确认历史系统接入后的交互连续性；机器契约由 `tests/m3_history.rs` 覆盖。
+
 use gpui::{
     App, Application, Bounds, Context, Div, FocusHandle, IntoElement, KeyBinding, KeyDownEvent,
     Render, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb,

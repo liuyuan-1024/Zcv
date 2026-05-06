@@ -1,3 +1,7 @@
+//! 文本移动语义：实现 grapheme、word、identifier、subword、symbol 等纯文本边界查找。
+//!
+//! 本文件只移动 selection/head 并尊重 BufferConfig 策略，不绑定快捷键，也不承担 UI 渲染或命令层语义。
+
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{

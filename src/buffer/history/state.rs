@@ -1,3 +1,7 @@
+//! HistoryState 栈管理：维护线性 undo/redo 栈及其摘要状态。
+//!
+//! 本文件只管理历史容器的局部不变量，不读取 Buffer 文本，也不生成 inverse edits。
+
 use super::HistoryEntry;
 
 /// M3 历史状态摘要。

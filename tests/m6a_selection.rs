@@ -1,3 +1,7 @@
+//! M6A 机器契约：锁定 Cursor、Selection、SelectionSet、多光标编辑和历史 selection 恢复。
+//!
+//! 本文件验证 selection 主模型的 public 行为，不测试 word movement、IME composition 或 UI 手感。
+
 use zom_engine::*;
 
 fn buffer(text: &str) -> Buffer {

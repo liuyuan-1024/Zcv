@@ -1,3 +1,7 @@
+//! M6A GPUI testbed：在 M5B 体验之上展示 SelectionSet、多光标和多选区编辑。
+//!
+//! 本文件守住递进式 testbed 的体感继承，同时验证 selection 主链路接入 UI；归一化和历史恢复契约由测试覆盖。
+
 use gpui::{
     App, Application, Bounds, Context, Div, FocusHandle, IntoElement, KeyBinding, KeyDownEvent,
     Render, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb,

@@ -1,3 +1,7 @@
+//! M6C 机器契约：锁定 IME composition 的 start/update/commit/cancel、preedit 和 selection 恢复语义。
+//!
+//! 本文件只验证引擎状态机对外行为，不测试真实系统 IME 事件或 GPUI 输入法桥接。
+
 use zom_engine::{Buffer, BufferConfig, CharOffset, CompositionSelection, Selection, SelectionSet};
 
 fn buffer(text: &str) -> Buffer {

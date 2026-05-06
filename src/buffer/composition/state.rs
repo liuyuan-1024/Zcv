@@ -1,3 +1,7 @@
+//! Composition 状态数学：负责 preedit 相对选区、绝对选区和组合范围之间的纯坐标转换。
+//!
+//! 本文件不提交文本、不操作历史，也不决定 IME 生命周期；这些流程边界留给 `workflow`。
+
 use crate::{CharOffset, CompositionSelection, EngineResult, Selection, TextRange};
 
 pub(in crate::buffer) fn resolve_relative_selection(

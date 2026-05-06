@@ -1,3 +1,7 @@
+//! M5B 机器契约：锁定 DisplayColumn、tab 展开、字符宽度策略和视觉列吸附行为。
+//!
+//! 本文件只验证纯文本列宽数学，不承担真实字体测量、像素布局或 GPUI 光标绘制。
+
 use std::num::NonZeroUsize;
 
 use zom_engine::*;

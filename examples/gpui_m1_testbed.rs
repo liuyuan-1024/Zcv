@@ -1,3 +1,7 @@
+//! M1 GPUI testbed：最小 Buffer 编辑体验的人工验证入口。
+//!
+//! 本文件验证输入、删除、光标移动、保存点和状态栏能否顺畅桥接到引擎；算法正确性仍由 `tests/m1_buffer.rs` 锁定。
+
 use gpui::{
     App, Application, Bounds, Context, Div, FocusHandle, IntoElement, KeyBinding, KeyDownEvent,
     Render, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb,

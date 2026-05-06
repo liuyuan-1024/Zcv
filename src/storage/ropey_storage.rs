@@ -1,3 +1,7 @@
+//! RopeyStorage 生产后端：把 `ropey` 的高性能文本结构封装成引擎内部 TextRead/TextStorage 能力。
+//!
+//! 本文件负责存储级指标、切片、坐标转换、grapheme 和换行检测；不把 `ropey::Rope` 泄漏到 public API。
+
 use std::borrow::Cow;
 
 use ropey::Rope;

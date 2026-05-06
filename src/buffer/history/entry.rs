@@ -1,3 +1,7 @@
+//! HistoryEntry 数据边界：描述一次可撤销历史节点所需的 undo/redo 批次与前后 selection。
+//!
+//! 本文件只保存可重放事实和最小构造逻辑，不管理栈顺序、redo 清理或事务来源策略。
+
 use crate::{
     CharOffset, EngineResult, SelectionSet, TextRange,
     transaction::{Edit, EditList},

@@ -1,3 +1,7 @@
+//! Buffer selection 状态入口：读取、设置和通过 ChangeSet 映射当前 SelectionSet。
+//!
+//! 本文件只维护 selection 与 Buffer 边界校验的关系，不生成文本编辑，也不定义 selection 归一化算法本身。
+
 use crate::{ChangeSet, EngineResult, SelectionSet};
 
 use super::Buffer;

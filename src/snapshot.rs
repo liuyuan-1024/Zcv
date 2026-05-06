@@ -1,3 +1,7 @@
+//! Snapshot public API：提供绑定 BufferVersion 的不可变只读文本视图和坐标查询能力。
+//!
+//! 本文件保证后台读取可脱离可变 Buffer；它不提交编辑、不维护历史，也不暴露 Ropey 内部类型。
+
 use std::borrow::Cow;
 
 use crate::{

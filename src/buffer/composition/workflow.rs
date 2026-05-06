@@ -1,3 +1,7 @@
+//! Composition 工作流：把 IME start/update/commit/cancel 映射为 Buffer 文本、selection 与 history 变化。
+//!
+//! 本文件是组合输入唯一的状态机入口；底层坐标换算和相对选区校验分别委托给 `state` 与 `validation`。
+
 use crate::{
     CharOffset, CompositionState, EngineResult, SelectionSet, TextRange,
     transaction::{ChangeSet, Delta, TransactionMetadata, TransactionSource},

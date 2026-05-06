@@ -1,3 +1,7 @@
+//! History public API：把 Undo / Redo 能力暴露为 Buffer 方法，并维护 selection 恢复语义。
+//!
+//! 本文件负责历史栈出入栈和重放入口，不定义 HistoryEntry 的存储形态，也不参与普通事务准备。
+
 use crate::{
     CharOffset, EngineResult,
     buffer::Buffer,

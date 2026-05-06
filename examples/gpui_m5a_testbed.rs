@@ -1,3 +1,7 @@
+//! M5A GPUI testbed：在 M4 能力上展示 IDE 坐标转换、UTF-16、grapheme 与换行边界。
+//!
+//! 本文件关注坐标能力接入编辑体验后的可观察性；边界数学的稳定契约放在 `tests/m5a_coordinates.rs`。
+
 use gpui::{
     App, Application, Bounds, Context, Div, FocusHandle, IntoElement, KeyBinding, KeyDownEvent,
     Render, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb,

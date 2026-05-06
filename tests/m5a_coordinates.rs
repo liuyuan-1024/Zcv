@@ -1,3 +1,7 @@
+//! M5A 机器契约：锁定 byte、char、UTF-16、grapheme 和换行风格之间的 IDE 坐标转换。
+//!
+//! 本文件验证坐标数学的 public 行为，不测试视觉列宽策略，也不进入 UI 渲染层。
+
 use zom_engine::*;
 
 fn buffer(text: &str) -> Buffer {

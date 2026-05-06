@@ -1,3 +1,7 @@
+//! M3 机器契约：锁定 Undo / Redo、历史合并、selection 恢复和不可变 Snapshot 的基础语义。
+//!
+//! 本文件验证历史系统对外行为，不依赖内部栈结构，也不承担 GPUI testbed 的交互体感验证。
+
 use std::thread;
 
 use zom_engine::*;

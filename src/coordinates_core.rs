@@ -1,3 +1,7 @@
+//! 共享坐标数学核心：为 Buffer 与 Snapshot 提供基于 TextRead 的行内逻辑列、视觉列和 tab 宽度计算。
+//!
+//! 本文件保持无状态、无存储后端偏好，只依赖只读文本能力与 BufferConfig，不处理文本变异。
+
 use crate::{
     BufferConfig, CharOffset, DisplayColumn, DisplayColumnAffinity, EngineResult, Line,
     LogicalColumn, Position, TextRange, storage::TextRead,

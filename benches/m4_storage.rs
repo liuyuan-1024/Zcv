@@ -1,3 +1,7 @@
+//! M4 存储性能基准：比较 Ropey-backed Buffer 与字符串参考模型在快照、局部编辑和行指标上的成本。
+//!
+//! 本文件只服务性能观察和回归定位，不定义 public API 契约，也不替代 `tests/m4_storage.rs` 的语义正确性测试。
+
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use zom_engine::*;

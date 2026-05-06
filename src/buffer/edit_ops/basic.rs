@@ -1,3 +1,7 @@
+//! 基础编辑入口：为 Buffer 提供 insert/delete/replace 这组三个单范围便利 API。
+//!
+//! 本文件只把简单编辑统一转换成 Transaction 并进入历史链路；批量 selection 编辑和事务提交细节由相邻子系统承担。
+
 use crate::{
     CharOffset, EngineResult, TextRange,
     transaction::{Edit, Transaction},

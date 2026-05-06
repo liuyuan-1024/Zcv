@@ -1,3 +1,7 @@
+//! PreparedTransaction：事务提交前已经验证并补齐的内部工作包。
+//!
+//! 本文件只承载管线阶段之间传递的事实，不暴露 public API，也不执行任何文本变异。
+
 use crate::{
     BufferVersion, SelectionSet,
     transaction::{EditList, TransactionMetadata},

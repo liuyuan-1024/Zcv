@@ -1,3 +1,7 @@
+//! Buffer 校验边界：集中约束 range、selection、edit list、grapheme 与 CRLF 中点等编辑合法性。
+//!
+//! 本文件只做防线判断并返回明确错误，不修正调用方输入，也不直接改变 Buffer 状态。
+
 use crate::{
     CharOffset, CoordinateError, EditError, EngineResult, SelectionSet, TextRange,
     transaction::EditList,

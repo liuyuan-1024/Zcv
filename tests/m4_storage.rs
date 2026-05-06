@@ -1,3 +1,7 @@
+//! M4 机器契约：锁定 RopeyStorage 接入后 Buffer 与 Snapshot 仍保持既有 public 编辑语义。
+//!
+//! 本文件关注生产存储后端的正确性边界，不做性能基准，也不暴露 ropey 作为 public API。
+
 use zom_engine::*;
 
 #[test]

@@ -1,3 +1,7 @@
+//! 事务应用管线：从 Transaction 校验、准备、提交到 selection 映射和 history 收尾的一站式执行路径。
+//!
+//! 本文件守住失败原子性和版本推进边界；EditList 归一化、存储实现和 public 便利编辑入口不在这里定义。
+
 use crate::{
     BufferVersion, EngineError, EngineResult, SelectionSet,
     storage::TextStorage,

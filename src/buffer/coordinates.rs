@@ -1,3 +1,7 @@
+//! Buffer 坐标门面：把存储层 char/byte/UTF-16/line 转换能力扩展为编辑器需要的边界与视觉列 API。
+//!
+//! 本文件绑定 BufferConfig 并处理 CRLF、grapheme、DisplayColumn 等策略，不直接修改文本或历史。
+
 use std::borrow::Cow;
 
 use crate::{

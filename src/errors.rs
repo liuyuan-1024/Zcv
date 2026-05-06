@@ -79,6 +79,12 @@ pub enum AnchorError {
         expected: BufferVersion,
         actual: BufferVersion,
     },
+
+    #[error("TrackedRange 两端的 Anchor 版本不一致: start {start:?}, end {end:?}")]
+    RangeVersionMismatch {
+        start: BufferVersion,
+        end: BufferVersion,
+    },
 }
 
 /// 底层存储相关的错误（存储后端做不了）。

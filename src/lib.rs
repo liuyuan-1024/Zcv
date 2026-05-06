@@ -14,6 +14,7 @@ pub mod loading;
 pub mod position_map;
 pub mod selection;
 pub mod snapshot;
+pub mod tracked_range;
 pub mod transaction;
 pub mod types;
 
@@ -34,6 +35,10 @@ pub use selection::{
     SelectionMergePolicy, SelectionSet,
 };
 pub use snapshot::Snapshot;
+pub use tracked_range::{
+    FoldedRange, TrackedRange, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy,
+    TrackedRangeUpdate, TrackedRangeUpdatePolicy,
+};
 pub use transaction::{
     ChangeSet, Delta, DeltaEvent, Edit, EditList, Transaction, TransactionMergePolicy,
     TransactionMetadata, TransactionSource,

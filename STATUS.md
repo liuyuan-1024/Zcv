@@ -28,13 +28,9 @@ tests/
 - m2_transaction.rs
 - m3_history.rs
 - m4_storage.rs
-- m5a_coordinates.rs
-- m5b_coordinates.rs
-- m6a_selection.rs
-- m6b_word_movement.rs
-- m6c_composition.rs
+- m5_coordinates.rs
+- m6_selection.rs
 - m7_buffer_lifecycle.rs
-- m7_file_boundary.rs
 ```
 
 ## 当前示例文件（快照）
@@ -45,11 +41,8 @@ examples/
 - gpui_m2_testbed.rs
 - gpui_m3_testbed.rs
 - gpui_m4_testbed.rs
-- gpui_m5a_testbed.rs
-- gpui_m5b_testbed.rs
-- gpui_m6a_testbed.rs
-- gpui_m6b_testbed.rs
-- gpui_m6c_testbed.rs
+- gpui_m5_testbed.rs
+- gpui_m6_testbed.rs
 - gpui_m7_testbed.rs
 ```
 

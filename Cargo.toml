@@ -27,20 +27,11 @@ path = "examples/gpui_m3_testbed.rs"
 name = "gpui_m4_testbed"
 path = "examples/gpui_m4_testbed.rs"
 [[example]]
-name = "gpui_m5a_testbed"
-path = "examples/gpui_m5a_testbed.rs"
+name = "gpui_m5_testbed"
+path = "examples/gpui_m5_testbed.rs"
 [[example]]
-name = "gpui_m5b_testbed"
-path = "examples/gpui_m5b_testbed.rs"
-[[example]]
-name = "gpui_m6a_testbed"
-path = "examples/gpui_m6a_testbed.rs"
-[[example]]
-name = "gpui_m6b_testbed"
-path = "examples/gpui_m6b_testbed.rs"
-[[example]]
-name = "gpui_m6c_testbed"
-path = "examples/gpui_m6c_testbed.rs"
+name = "gpui_m6_testbed"
+path = "examples/gpui_m6_testbed.rs"
 [[example]]
 name = "gpui_m7_testbed"
 path = "examples/gpui_m7_testbed.rs"

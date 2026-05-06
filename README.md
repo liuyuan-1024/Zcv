@@ -49,14 +49,12 @@ cargo test --test m1_buffer
 cargo test --test m2_transaction
 cargo test --test m3_history
 cargo test --test m4_storage
-cargo test --test m5a_coordinates
-cargo test --test m5b_coordinates
-cargo test --test m6a_selection
-cargo test --test m6b_word_movement
-cargo test --test m6c_composition
+cargo test --test m5_coordinates
+cargo test --test m6_selection
 cargo test --test m7_buffer_lifecycle
-cargo test --test m7_file_boundary
 cargo test --lib storage_consistency
+cargo run --example gpui_m5_testbed
+cargo run --example gpui_m6_testbed
 cargo run --example gpui_m7_testbed
 ```
 

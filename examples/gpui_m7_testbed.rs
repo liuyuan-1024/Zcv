@@ -1,7 +1,7 @@
-//! M7 GPUI testbed：Buffer 生命周期、文件边界与 M6C 既有编辑体验。
+//! M7 GPUI testbed：Buffer 生命周期、文件边界与 M6 既有编辑体验。
 //!
-//! 这个 example 是“人类体感 / UI 桥接”验证入口，不替代 `tests/m7_buffer_lifecycle.rs`
-//! 与 `tests/m7_file_boundary.rs`。它继承 M6C 的输入、移动、多光标、Undo / Redo 与
+//! 这个 example 是“人类体感 / UI 桥接”验证入口，不替代 `tests/m7_buffer_lifecycle.rs`。
+//! 它继承 M6 的输入、移动、多光标、Undo / Redo 与
 //! composition 手感，并叠加 BufferId / BufferState / dirty / read_only / reload / save 边界可视化。
 
 use gpui::{
@@ -82,7 +82,7 @@ const SAMPLE_TEXT: &str = "M7 Buffer lifecycle / file boundary 体验台\n\n\
 日文输入区域：|\n\
 韩文输入区域：|\n\
 \n\
-继承 M6B Word movement：parseHTTPResponse user_id snake_case a+b == c && value != null\n\
+继承 M6 Word movement：parseHTTPResponse user_id snake_case a+b == c && value != null\n\
 \n\
 M7 状态观察：BufferId / BufferState / dirty / saved_version / read_only / loaded text info。\n\
 试试 composition 快捷键、只读切换、reload 和保存输出预览。";
@@ -610,7 +610,7 @@ impl M7Testbed {
     fn help_lines(&self) -> Vec<&'static str> {
         vec![
             "输入：直接输入普通字符；Space / Tab / Enter；Backspace / Delete",
-            "继承 M6B 移动：←/→，Alt Word，Ctrl Identifier，Cmd Subword，Cmd-Alt Symbol；加 Shift 扩展 selection",
+            "继承 M6 移动：←/→，Alt Word，Ctrl Identifier，Cmd Subword，Cmd-Alt Symbol；加 Shift 扩展 selection",
             "当前 unit：Cmd-1 Grapheme，Cmd-2 Word，Cmd-3 Identifier，Cmd-4 Subword，Cmd-5 Symbol；Ctrl-Alt-←/→ 使用当前 unit",
             "M7 composition：Cmd-I start，Cmd-K update raw 'n'，Cmd-L update '你'，Cmd-Y update '你好'",
             "更多 preedit 示例：Cmd-J 'にほん'，Cmd-O '한글'，Cmd-U '输入法' 并设置 composition 内部 selection",

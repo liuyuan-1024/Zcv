@@ -1,4 +1,4 @@
-//! M5B GPUI testbed：在 M5A 坐标能力上展示 DisplayColumn、tab 展开和字符宽度策略。
+//! M5 GPUI testbed：IDE 坐标、DisplayColumn、tab 展开和字符宽度策略。
 //!
 //! 本文件验证视觉列语义能否被 UI 面板和光标移动清晰观察，不负责真实渲染器的像素测量或字体排版。
 
@@ -14,11 +14,11 @@ use zom_engine::{
     TransactionSource, Utf16Position,
 };
 
-// M5B testbed：必须是 M5A testbed 的 superset。
-// 保留 M5A 的输入 / Delete / Home / End / Save / Reset / 批量事务 / Delta / ChangeSet / Undo / Redo / Snapshot / Rope metrics / IDE 坐标可视化能力，
+// M5 testbed：必须是 M4 testbed 的 superset。
+// 保留 M4 的输入 / Delete / Home / End / Save / Reset / 批量事务 / Delta / ChangeSet / Undo / Redo / Snapshot / Rope metrics，
 // 再叠加视觉列数学：Tab Stop、DisplayWidthPolicy、logical column -> display column、display column -> logical column。
 actions!(
-    m5b_testbed,
+    m5_testbed,
     [
         Backspace,
         DeleteForward,
@@ -41,7 +41,7 @@ actions!(
 );
 
 const INITIAL_TEXT: &str = concat!(
-    "🚀 Zom Engine M5B 中文测试台
+    "🚀 Zom Engine M5 中文测试台
 ",
     "
 ",
@@ -63,9 +63,9 @@ const INITIAL_TEXT: &str = concat!(
 ",
     "Cmd-U 插入 Unicode / 字素 / CRLF 探针文本；Cmd-T 插入 Tab / CJK / emoji 视觉列探针。
 ",
-    "M5B 额外显示逻辑列、视觉列、Tab Stop、显示宽度策略，并保留 M5A 的 IDE 坐标面板。
+    "M5 额外显示逻辑列、视觉列、Tab Stop、显示宽度策略，并保留 M5 的 IDE 坐标面板。
 ",
-    "M5B 仍然保持字素安全光标移动，并增加 Cmd-T 插入 Tab/CJK/emoji 视觉列探针。
+    "M5 仍然保持字素安全光标移动，并增加 Cmd-T 插入 Tab/CJK/emoji 视觉列探针。
 ",
     "这是一行 CRLF 探针，会让换行风格进入混合状态。
 ",
@@ -100,7 +100,7 @@ struct CoordinateProbe {
     next_grapheme: CharOffset,
 }
 
-pub struct M5BTestbed {
+pub struct M5Testbed {
     buffer: Buffer,
     cursor: CharOffset,
     anchor_a: CharOffset,
@@ -114,7 +114,7 @@ pub struct M5BTestbed {
     last_error: Option<String>,
 }
 
-impl M5BTestbed {
+impl M5Testbed {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let (buffer, anchor_a, anchor_b) = initial_buffer_and_anchors();
 
@@ -210,7 +210,7 @@ impl M5BTestbed {
                 ));
 
                 // M2 核心体感：游标和锚点都通过 ChangeSet 跟随文本变化。
-                // M5A 继承 M4：如果事务携带了 selection snapshot，则优先用历史系统里的 caret 恢复光标。
+                // M5 继承 M4：如果事务携带了 selection snapshot，则优先用历史系统里的 caret 恢复光标。
                 let mapped_cursor = changeset.map_position(self.cursor);
                 self.anchor_a = changeset.map_position(self.anchor_a);
                 self.anchor_b = changeset.map_position(self.anchor_b);
@@ -335,7 +335,7 @@ impl M5BTestbed {
     }
 
     fn insert_long_line(&mut self, cx: &mut Context<Self>) {
-        let payload = format!("[M5B Ropey 长行探针] {}\n", "中🙂Ropey".repeat(128));
+        let payload = format!("[M5 Ropey 长行探针] {}\n", "中🙂Ropey".repeat(128));
 
         match Edit::insert(self.cursor, payload) {
             Ok(edit) => {
@@ -343,7 +343,7 @@ impl M5BTestbed {
                 self.submit_edits(
                     vec![edit],
                     TransactionMetadata::new(TransactionSource::Command)
-                        .with_description("M5B 插入长行探针"),
+                        .with_description("M5 插入长行探针"),
                     cx,
                 );
             }
@@ -356,7 +356,7 @@ impl M5BTestbed {
     }
 
     fn insert_unicode_probe(&mut self, cx: &mut Context<Self>) {
-        let payload = "[M5A Unicode 探针] 👨‍👩‍👧‍👦 e\u{301} café 中🙂 后面是 CRLF\r\n[M5A CRLF 探针]\r\n";
+        let payload = "[M5 Unicode 探针] 👨‍👩‍👧‍👦 e\u{301} café 中🙂 后面是 CRLF\r\n[M5 CRLF 探针]\r\n";
 
         match Edit::insert(self.cursor, payload.to_string()) {
             Ok(edit) => {
@@ -364,7 +364,7 @@ impl M5BTestbed {
                 self.submit_edits(
                     vec![edit],
                     TransactionMetadata::new(TransactionSource::Command)
-                        .with_description("M5A 插入 Unicode 探针"),
+                        .with_description("M5 插入 Unicode 探针"),
                     cx,
                 );
             }
@@ -377,7 +377,7 @@ impl M5BTestbed {
     }
 
     fn insert_display_probe(&mut self, cx: &mut Context<Self>) {
-        let payload = "[M5B 视觉列探针]\n列: 0123456789012345\nTab: a\tb\t中😀e\u{301}x\n";
+        let payload = "[M5 视觉列探针]\n列: 0123456789012345\nTab: a\tb\t中😀e\u{301}x\n";
 
         match Edit::insert(self.cursor, payload.to_string()) {
             Ok(edit) => {
@@ -385,7 +385,7 @@ impl M5BTestbed {
                 self.submit_edits(
                     vec![edit],
                     TransactionMetadata::new(TransactionSource::Command)
-                        .with_description("M5B 插入视觉列探针"),
+                        .with_description("M5 插入视觉列探针"),
                     cx,
                 );
             }
@@ -641,7 +641,7 @@ impl M5BTestbed {
     }
 }
 
-impl Render for M5BTestbed {
+impl Render for M5Testbed {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let cursor = self.cursor;
         let position = self.cursor_position();
@@ -748,7 +748,7 @@ impl Render for M5BTestbed {
                     .pb_4()
                     .mb_4()
                     .child(format!(
-                        "Zom Engine M5B | 光标={} / 总字符={} | 行={} 列={} | 当前版本=v{} 保存点=v{} | 修改状态={} | 锚点A={} | 锚点B={} | 变更范围={} | {} | {} | {} | {} | {}",
+                        "Zom Engine M5 | 光标={} / 总字符={} | 行={} 列={} | 当前版本=v{} 保存点=v{} | 修改状态={} | 锚点A={} | 锚点B={} | 变更范围={} | {} | {} | {} | {} | {}",
                         cursor.get(),
                         self.buffer.len_chars().get(),
                         position.line().get(),
@@ -798,7 +798,7 @@ impl Render for M5BTestbed {
     }
 }
 
-fn render_coordinate_panel(testbed: &M5BTestbed) -> Div {
+fn render_coordinate_panel(testbed: &M5Testbed) -> Div {
     let rows: Vec<String> = match testbed.current_coordinate_probe() {
         Ok(probe) => vec![
             format!(
@@ -856,7 +856,7 @@ fn render_coordinate_panel(testbed: &M5BTestbed) -> Div {
             div()
                 .mb_2()
                 .text_color(rgb(0xBFDBFE))
-                .child("M5B 坐标 / 视觉列探针"),
+                .child("M5 坐标 / 视觉列探针"),
         )
         .children(row_elements)
 }
@@ -1106,7 +1106,7 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |_window, cx| cx.new(|cx| M5BTestbed::new(cx)),
+            |_window, cx| cx.new(|cx| M5Testbed::new(cx)),
         )
         .unwrap();
 

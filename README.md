@@ -57,6 +57,7 @@ cargo test --test m6c_composition
 cargo test --test m7_buffer_lifecycle
 cargo test --test m7_file_boundary
 cargo test --lib storage_consistency
+cargo run --example gpui_m7_testbed
 ```
 
 ## 相关文档

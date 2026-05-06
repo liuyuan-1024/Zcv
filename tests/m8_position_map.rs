@@ -205,7 +205,7 @@ fn old_range_expands_across_insertions_without_becoming_deleted() {
 }
 
 #[test]
-fn changeset_and_position_map_interoperate_without_changing_legacy_mapping() {
+fn changeset_and_position_map_interoperate_without_changeset_mapping_api() {
     let mut buffer = buffer("abcdef");
     let tx = Transaction::from_edits(
         buffer.version(),
@@ -251,6 +251,7 @@ fn successful_transaction_enqueues_delta_event() {
     let events = buffer.take_pending_events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0], last_event);
+    assert_eq!(buffer.pending_delta_event_count(), 0);
     assert!(buffer.take_pending_events().is_empty());
     assert_eq!(buffer.last_delta_event(), Some(&events[0]));
 }
@@ -283,6 +284,7 @@ fn delta_events_preserve_transaction_and_version_order() {
     buffer.insert(c(1), "X").unwrap();
     buffer.insert(c(2), "Y").unwrap();
 
+    assert_eq!(buffer.pending_delta_event_count(), 2);
     let events = buffer.take_pending_events();
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].transaction_id, TransactionId::INITIAL);

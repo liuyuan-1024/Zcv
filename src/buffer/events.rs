@@ -7,6 +7,10 @@ use crate::{DeltaEvent, EngineError, EngineResult, TransactionId};
 use super::Buffer;
 
 impl Buffer {
+    pub fn pending_delta_event_count(&self) -> usize {
+        self.pending_delta_events.len()
+    }
+
     pub fn take_pending_events(&mut self) -> Vec<DeltaEvent> {
         std::mem::take(&mut self.pending_delta_events)
     }

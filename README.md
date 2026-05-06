@@ -59,6 +59,7 @@ cargo test --lib storage_consistency
 cargo run --example gpui_m5_testbed
 cargo run --example gpui_m6_testbed
 cargo run --example gpui_m7_testbed
+cargo run --example gpui_m8_testbed
 ```
 
 ## 相关文档

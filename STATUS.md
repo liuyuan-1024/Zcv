@@ -25,6 +25,8 @@
 - 已新增同点插入吸附、反向歧义偏向和区间边界 stickiness 策略，服务后续 Anchor / TrackedRange / Selection 映射。
 - M8C DeltaEvent 与事件队列已完成。
 - 已新增 `DeltaEvent` public API、`buffer.take_pending_events()` 与 `buffer.last_delta_event()`；成功事务、Undo / Redo 会按版本顺序入队，失败事务不产生事件。
+- M8 测试与 testbed 已完成。
+- M8 机器契约合并在 `tests/m8_position_map.rs`；GPUI 体验台新增 `examples/gpui_m8_testbed.rs`，继承 M7 体感并显示最近 `DeltaEvent`、pending 队列、changed ranges 与 `PositionMap` 探针结果。
 
 ## 当前测试文件（快照）
 
@@ -52,6 +54,7 @@ examples/
 - gpui_m5_testbed.rs
 - gpui_m6_testbed.rs
 - gpui_m7_testbed.rs
+- gpui_m8_testbed.rs
 ```
 
 ## 常用验证命令（快照）
@@ -66,4 +69,5 @@ cargo test
 ```bash
 cargo test --test <target>
 cargo run --example <target>
+cargo run --example gpui_m8_testbed
 ```

@@ -800,12 +800,13 @@ src/buffer/validation.rs       Buffer 级边界校验
 保持 public API 稳定。
 按能力域拆实现，不按测试阶段无限扩大 mod.rs。
 跨子模块 helper 优先使用 pub(super)，不要提升为 public API。
-重构后必须继续通过现有 m0-m7 集成测试。
+重构后必须继续通过现有 m0-m6 集成测试。
 ```
 
-### 12.6 Command 分层但不倒置
+### 12.6 Command 后置阶段（M16 及以后）
 
-M7 之后，Command 是用户编辑语义的统一入口，但不是底层文本数学的根模块。
+当前阶段（M0-M15）不引入 `Command` 层。`Command` 属于宿主输入语义适配，
+在编辑引擎内核稳定后再后置到 M16 及以后实现。
 
 推荐边界：
 
@@ -835,6 +836,9 @@ Transaction / SelectionSet / Movement / Composition / History
 CommandExecutor 可以依赖 Buffer。
 buffer/ 子模块不要依赖 Command。
 transaction.rs、selection.rs、storage/*、coordinates.rs、snapshot.rs 不要依赖 Command。
+不只禁止编译依赖倒置，也禁止语义倒置：底层模块不得以 Command 术语命名状态、策略和不变量。
+历史合并、事务策略等底层语义必须使用中性领域语言（如 History / Transaction），不能由 Command 概念反向塑形。
+如果同一逻辑仅由 Command 触发，也要把状态归属在底层领域模块（history/transaction），Command 只做映射，不持有底层事实。
 Command 表达用户意图，Transaction 表达文本变异提交单位。
 外部 formatter / LSP apply edit 可以继续直接构造 Transaction，不必伪装成 Command。
 ```

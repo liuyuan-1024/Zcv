@@ -6,8 +6,8 @@
 
 use gpui::{
     App, Application, Bounds, Context, FocusHandle, Focusable, IntoElement, KeyBinding,
-    KeyDownEvent, Render, Window, WindowBounds, WindowOptions, actions, black, div, prelude::*, px,
-    rgb, size, white,
+    KeyDownEvent, Render, StatefulInteractiveElement, Window, WindowBounds, WindowOptions, actions,
+    black, div, prelude::*, px, rgb, size, white,
 };
 use zom_engine::{
     Buffer, BufferConfig, CharOffset, CompositionSelection, DisplayColumn, EngineResult,
@@ -916,6 +916,7 @@ impl Render for M6cTestbed {
         let help_lines = self.help_lines();
 
         div()
+            .id("m6c-scroll-root")
             .key_context("M6cTestbed")
             .track_focus(&self.focus_handle(cx))
             .on_key_down(cx.listener(Self::on_key_down))
@@ -972,6 +973,8 @@ impl Render for M6cTestbed {
             .on_action(cx.listener(Self::direct_commit_chinese_sample_action))
             .on_action(cx.listener(Self::cancel_composition_action))
             .size_full()
+            .overflow_y_scroll()
+            .scrollbar_width(px(10.0))
             .flex()
             .flex_col()
             .gap_3()

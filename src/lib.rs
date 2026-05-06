@@ -7,8 +7,6 @@ mod coordinates_core;
 pub(crate) mod storage;
 
 pub mod buffer;
-pub mod command;
-mod command_executor;
 pub mod config;
 pub mod errors;
 pub mod selection;
@@ -17,7 +15,6 @@ pub mod transaction;
 pub mod types;
 
 pub use buffer::{Buffer, HistoryStatus};
-pub use command::{Command, CommandContext, CommandOutcome, CommandRepeat, CommandSource};
 pub use config::{
     BufferConfig, DisplayColumnAffinity, DisplayWidthPolicy, LargeFilePolicy, LineEndingConfig,
     PositionEncodingConfig, TabConfig, WordBoundaryPolicy,

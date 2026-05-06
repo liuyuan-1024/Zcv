@@ -12,7 +12,6 @@
 - Undo/Redo 历史
 - 坐标系统（byte/char/utf16/grapheme/display）
 - Snapshot 与版本过期判断
-- Command 数据模型与执行适配
 
 不负责：
 
@@ -54,7 +53,6 @@ cargo test --test m5b_coordinates
 cargo test --test m6a_selection
 cargo test --test m6b_word_movement
 cargo test --test m6c_composition
-cargo test --test m7_command_model
 cargo test --lib storage_consistency
 ```
 

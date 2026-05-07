@@ -1,6 +1,6 @@
 //! 文本切片 public 类型与边界数学。
 //!
-//! M11A 只提供只读文本读取接口，不表达 viewport、折叠投影或渲染坐标。
+//! M11 只提供只读文本读取接口，不表达折叠投影或渲染坐标。
 
 use std::{borrow::Cow, fmt};
 
@@ -8,6 +8,49 @@ use crate::{
     ByteOffset, CharOffset, CoordinateError, EngineResult, Line, LineRange, TextRange,
     storage::TextRead,
 };
+
+/// 逻辑行视口。
+///
+/// `Viewport` 只表达按逻辑行读取的文本窗口，不包含像素滚动、字体测量或折叠投影。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Viewport {
+    start_line: Line,
+    line_count: usize,
+    max_line_chars: Option<usize>,
+}
+
+impl Viewport {
+    pub const fn new(start_line: Line, line_count: usize) -> Self {
+        Self {
+            start_line,
+            line_count,
+            max_line_chars: None,
+        }
+    }
+
+    /// 设置单行最大读取 char 数，用于避免 viewport 读取被超长行拖成整行读取。
+    pub const fn with_max_line_chars(mut self, max_line_chars: usize) -> Self {
+        self.max_line_chars = Some(max_line_chars);
+        self
+    }
+
+    pub const fn without_line_limit(mut self) -> Self {
+        self.max_line_chars = None;
+        self
+    }
+
+    pub const fn start_line(self) -> Line {
+        self.start_line
+    }
+
+    pub const fn line_count(self) -> usize {
+        self.line_count
+    }
+
+    pub const fn max_line_chars(self) -> Option<usize> {
+        self.max_line_chars
+    }
+}
 
 /// 只读文本切片。
 ///
@@ -123,6 +166,132 @@ impl fmt::Display for LineSlice<'_> {
     }
 }
 
+/// viewport 中的一条可见逻辑行。
+///
+/// `full_range` 是整行范围，包含行尾换行符；`visible_range` 是实际返回的可见文本范围，
+/// 会去掉行尾换行符，并按 `Viewport::max_line_chars` 截断。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleLine<'a> {
+    line: Line,
+    full_range: TextRange,
+    visible_text: TextSlice<'a>,
+    is_truncated: bool,
+}
+
+impl<'a> VisibleLine<'a> {
+    pub(crate) fn new(
+        line: Line,
+        full_range: TextRange,
+        visible_text: TextSlice<'a>,
+        is_truncated: bool,
+    ) -> Self {
+        Self {
+            line,
+            full_range,
+            visible_text,
+            is_truncated,
+        }
+    }
+
+    pub fn line(&self) -> Line {
+        self.line
+    }
+
+    pub fn full_range(&self) -> TextRange {
+        self.full_range
+    }
+
+    pub fn visible_range(&self) -> TextRange {
+        self.visible_text.range()
+    }
+
+    pub fn text_slice(&self) -> &TextSlice<'a> {
+        &self.visible_text
+    }
+
+    pub fn into_text_slice(self) -> TextSlice<'a> {
+        self.visible_text
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.visible_text.as_str()
+    }
+
+    pub fn visible_len_chars(&self) -> usize {
+        self.visible_text.len_chars()
+    }
+
+    pub fn visible_len_bytes(&self) -> usize {
+        self.visible_text.len_bytes()
+    }
+
+    pub fn full_len_chars(&self) -> usize {
+        self.full_range.len()
+    }
+
+    pub fn is_truncated(&self) -> bool {
+        self.is_truncated
+    }
+}
+
+impl AsRef<str> for VisibleLine<'_> {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for VisibleLine<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// 一次 viewport 读取结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewportSlice<'a> {
+    viewport: Viewport,
+    line_range: LineRange,
+    lines: Vec<VisibleLine<'a>>,
+}
+
+impl<'a> ViewportSlice<'a> {
+    pub(crate) fn new(
+        viewport: Viewport,
+        line_range: LineRange,
+        lines: Vec<VisibleLine<'a>>,
+    ) -> Self {
+        Self {
+            viewport,
+            line_range,
+            lines,
+        }
+    }
+
+    pub fn viewport(&self) -> Viewport {
+        self.viewport
+    }
+
+    pub fn line_range(&self) -> LineRange {
+        self.line_range
+    }
+
+    pub fn lines(&self) -> &[VisibleLine<'a>] {
+        &self.lines
+    }
+
+    pub fn into_lines(self) -> Vec<VisibleLine<'a>> {
+        self.lines
+    }
+
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+}
+
 pub(crate) fn text_range_for_byte_range<T: TextRead>(
     text: &T,
     start: ByteOffset,
@@ -172,4 +341,81 @@ fn char_offset_for_line_boundary<T: TextRead>(text: &T, line: Line) -> EngineRes
     }
 
     text.line_start(line)
+}
+
+pub(crate) fn viewport_slice_for_text<T: TextRead>(
+    text: &T,
+    viewport: Viewport,
+) -> EngineResult<ViewportSlice<'_>> {
+    let line_range = line_range_for_viewport(text, viewport)?;
+    let mut lines = Vec::with_capacity(line_range.len());
+
+    for line_value in line_range.start().get()..line_range.end().get() {
+        let line = Line::new(line_value);
+        let full_range = text_range_for_line(text, line)?;
+        let visible_range = visible_range_for_line(text, full_range, viewport)?;
+        let is_truncated = visible_range.end() < line_content_end(text, full_range.end())?;
+        let visible_text = TextSlice::new(visible_range, text.slice_text(visible_range)?);
+
+        lines.push(VisibleLine::new(
+            line,
+            full_range,
+            visible_text,
+            is_truncated,
+        ));
+    }
+
+    Ok(ViewportSlice::new(viewport, line_range, lines))
+}
+
+fn line_range_for_viewport<T: TextRead>(text: &T, viewport: Viewport) -> EngineResult<LineRange> {
+    let start = viewport.start_line();
+    let line_count = text.line_count();
+
+    if start.get() > line_count {
+        return Err(CoordinateError::LineOutOfBounds(start).into());
+    }
+
+    let end = start
+        .get()
+        .saturating_add(viewport.line_count())
+        .min(line_count);
+    Ok(LineRange::new(start, Line::new(end))?)
+}
+
+fn visible_range_for_line<T: TextRead>(
+    text: &T,
+    full_range: TextRange,
+    viewport: Viewport,
+) -> EngineResult<TextRange> {
+    let content_end = line_content_end(text, full_range.end())?;
+    let end = match viewport.max_line_chars() {
+        Some(max_line_chars) => CharOffset::new(
+            full_range.start().get()
+                + max_line_chars.min(content_end.get() - full_range.start().get()),
+        ),
+        None => content_end,
+    };
+
+    Ok(TextRange::new(full_range.start(), end)?)
+}
+
+fn line_content_end<T: TextRead>(text: &T, end: CharOffset) -> EngineResult<CharOffset> {
+    let end_value = end.get();
+
+    if end_value == 0 {
+        return Ok(end);
+    }
+
+    if text.char_at(CharOffset::new(end_value - 1)) != Some('\n') {
+        return Ok(end);
+    }
+
+    let without_lf = end_value - 1;
+
+    if without_lf > 0 && text.char_at(CharOffset::new(without_lf - 1)) == Some('\r') {
+        Ok(CharOffset::new(without_lf - 1))
+    } else {
+        Ok(CharOffset::new(without_lf))
+    }
 }

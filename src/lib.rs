@@ -36,7 +36,7 @@ pub use selection::{
     CompositionSelection, CompositionState, Cursor, MovementDirection, MovementUnit, Selection,
     SelectionMergePolicy, SelectionSet,
 };
-pub use slicing::{LineSlice, TextSlice};
+pub use slicing::{LineSlice, TextSlice, Viewport, ViewportSlice, VisibleLine};
 pub use snapshot::Snapshot;
 pub use text_loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
 pub use tracking::{

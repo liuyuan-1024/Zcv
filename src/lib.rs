@@ -3,23 +3,20 @@
 //! 不直接负责 UI 渲染、LSP 协议、语法树生成或项目级索引。
 //! 仅专注于文本存储、坐标模型、事务变异、历史系统以及外部系统所需的底层文本协作接口。
 
-mod coordinates_core;
-pub(crate) mod storage;
+mod buffer;
+mod config;
+mod coordinates;
+mod errors;
+mod metadata;
+mod position_map;
+mod selection;
+mod snapshot;
+mod storage;
+mod text_loading;
+mod tracking;
+mod transaction;
+mod types;
 
-pub mod anchor;
-pub mod buffer;
-pub mod config;
-pub mod errors;
-pub mod loading;
-pub mod metadata;
-pub mod position_map;
-pub mod selection;
-pub mod snapshot;
-pub mod tracked_range;
-pub mod transaction;
-pub mod types;
-
-pub use anchor::{Anchor, AnchorDeletedPolicy, AnchorUpdate, Mark};
 pub use buffer::{Buffer, HistoryStatus};
 pub use config::{
     BufferConfig, DisplayColumnAffinity, DisplayWidthPolicy, EncodingConfig, LargeFilePolicy,
@@ -29,7 +26,6 @@ pub use errors::{
     AnchorError, CoordinateError, EditError, EngineError, EngineResult, MetadataError,
     StorageError, TransactionError,
 };
-pub use loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
 pub use metadata::{
     MetadataLayer, MetadataLayerKind, MetadataLayers, MetadataLineWindow, MetadataRange,
     MetadataRangeId, MetadataRangeSpec, MetadataRangeUpdate,
@@ -40,9 +36,10 @@ pub use selection::{
     SelectionMergePolicy, SelectionSet,
 };
 pub use snapshot::Snapshot;
-pub use tracked_range::{
-    TrackedRange, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdate,
-    TrackedRangeUpdatePolicy,
+pub use text_loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
+pub use tracking::{
+    Anchor, AnchorDeletedPolicy, AnchorUpdate, Mark, TrackedRange, TrackedRangeCollapsePolicy,
+    TrackedRangeInvalidationPolicy, TrackedRangeUpdate, TrackedRangeUpdatePolicy,
 };
 pub use transaction::{
     ChangeSet, Delta, DeltaEvent, Edit, EditList, Transaction, TransactionMergePolicy,

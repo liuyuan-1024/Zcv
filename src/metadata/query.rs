@@ -1,0 +1,50 @@
+//! Metadata 查询数学：把 TextRange、LineRange 和 offset 查询统一为半开区间相交判断。
+//!
+//! 本文件只包含无状态 helper，避免 MetadataLayer 与 MetadataLayers 重复实现查询边界。
+
+use crate::{
+    buffer::Buffer,
+    errors::CoordinateError,
+    types::{CharOffset, Line, LineRange, TextRange},
+};
+
+pub(super) fn ranges_intersect(left: TextRange, right: TextRange) -> bool {
+    match (left.is_empty(), right.is_empty()) {
+        (true, true) => left.start() == right.start(),
+        (true, false) => right.start() <= left.start() && left.start() < right.end(),
+        (false, true) => left.start() <= right.start() && right.start() < left.end(),
+        (false, false) => left.start() < right.end() && right.start() < left.end(),
+    }
+}
+
+pub(super) fn range_contains_offset(range: TextRange, offset: CharOffset) -> bool {
+    if range.is_empty() {
+        return range.start() == offset;
+    }
+
+    range.start() <= offset && offset < range.end()
+}
+
+pub(super) fn text_range_for_line_range(
+    buffer: &Buffer,
+    line_range: LineRange,
+) -> crate::EngineResult<TextRange> {
+    let start = char_offset_for_line_boundary(buffer, line_range.start())?;
+    let end = char_offset_for_line_boundary(buffer, line_range.end())?;
+    Ok(TextRange::new(start, end)?)
+}
+
+fn char_offset_for_line_boundary(buffer: &Buffer, line: Line) -> crate::EngineResult<CharOffset> {
+    let line_value = line.get();
+    let line_count = buffer.line_count();
+
+    if line_value > line_count {
+        return Err(CoordinateError::LineOutOfBounds(line).into());
+    }
+
+    if line_value == line_count {
+        return Ok(buffer.len_chars());
+    }
+
+    buffer.line_start(line)
+}

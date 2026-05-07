@@ -6,11 +6,10 @@
 //! - 锁定 M2 阶段的事务语义、版本契约、失败原子性与 PositionMap 生成
 //! - M3.5 起，Transaction / Edit / ChangeSet 均使用 CharOffset 坐标
 
-use zom_engine::buffer::Buffer;
-use zom_engine::config::BufferConfig;
-use zom_engine::errors::{CoordinateError, EditError, EngineError, TransactionError};
-use zom_engine::transaction::{Edit, EditList, Transaction};
-use zom_engine::types::{BufferVersion, CharOffset, Line, TextRange};
+use zom_engine::{
+    Buffer, BufferConfig, BufferVersion, CharOffset, CoordinateError, Edit, EditError, EditList,
+    EngineError, Line, TextRange, Transaction, TransactionError,
+};
 
 fn buffer(text: &str) -> Buffer {
     Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()

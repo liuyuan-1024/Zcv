@@ -5,121 +5,16 @@
 
 use crate::{
     EngineResult,
-    anchor::Anchor,
     errors::AnchorError,
     position_map::{Affinity, MappingResult, PositionMap, Stickiness},
     transaction::DeltaEvent,
     types::{BufferVersion, TextRange},
 };
 
-/// TrackedRange 遇到删除内容时是否失效。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum TrackedRangeInvalidationPolicy {
-    /// 永不因删除自动失效，只保留映射后的范围。
-    #[default]
-    Never,
-    /// 原范围完全塌缩时失效。
-    WhenFullyDeleted,
-    /// 只要原范围被删除内容触碰就失效。
-    WhenTouchedByDeletion,
-}
-
-/// TrackedRange 映射成空区间时的处理策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum TrackedRangeCollapsePolicy {
-    /// 保留空区间。
-    #[default]
-    Keep,
-    /// 空区间直接失效。
-    Invalidate,
-}
-
-/// TrackedRange 通过一次变更时的策略组合。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct TrackedRangeUpdatePolicy {
-    invalidation: TrackedRangeInvalidationPolicy,
-    collapse: TrackedRangeCollapsePolicy,
-}
-
-impl TrackedRangeUpdatePolicy {
-    pub fn new(
-        invalidation: TrackedRangeInvalidationPolicy,
-        collapse: TrackedRangeCollapsePolicy,
-    ) -> Self {
-        Self {
-            invalidation,
-            collapse,
-        }
-    }
-
-    pub fn invalidate_when_fully_deleted() -> Self {
-        Self::new(
-            TrackedRangeInvalidationPolicy::WhenFullyDeleted,
-            TrackedRangeCollapsePolicy::Keep,
-        )
-    }
-
-    pub fn invalidate_when_touched_by_deletion() -> Self {
-        Self::new(
-            TrackedRangeInvalidationPolicy::WhenTouchedByDeletion,
-            TrackedRangeCollapsePolicy::Keep,
-        )
-    }
-
-    pub fn invalidate_when_collapsed() -> Self {
-        Self::new(
-            TrackedRangeInvalidationPolicy::Never,
-            TrackedRangeCollapsePolicy::Invalidate,
-        )
-    }
-
-    pub fn invalidation(self) -> TrackedRangeInvalidationPolicy {
-        self.invalidation
-    }
-
-    pub fn collapse(self) -> TrackedRangeCollapsePolicy {
-        self.collapse
-    }
-}
-
-/// TrackedRange 映射后的高层结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TrackedRangeUpdate {
-    /// 范围无删除触碰地映射到新版本。
-    Mapped(TrackedRange),
-    /// 范围被删除内容触碰，但仍保留映射后的范围。
-    Deleted(TrackedRange),
-    /// 非空范围塌缩为空范围，但仍保留。
-    Collapsed(TrackedRange),
-    /// 按策略失效；保留映射后的最后合法 range 供调用方做 UI 或日志处理。
-    Invalidated {
-        range: TextRange,
-        version: BufferVersion,
-    },
-}
-
-impl TrackedRangeUpdate {
-    pub fn tracked_range(self) -> Option<TrackedRange> {
-        match self {
-            Self::Mapped(range) | Self::Deleted(range) | Self::Collapsed(range) => Some(range),
-            Self::Invalidated { .. } => None,
-        }
-    }
-
-    pub fn range(self) -> TextRange {
-        match self {
-            Self::Mapped(range) | Self::Deleted(range) | Self::Collapsed(range) => range.range(),
-            Self::Invalidated { range, .. } => range,
-        }
-    }
-
-    pub fn version(self) -> BufferVersion {
-        match self {
-            Self::Mapped(range) | Self::Deleted(range) | Self::Collapsed(range) => range.version(),
-            Self::Invalidated { version, .. } => version,
-        }
-    }
-}
+use super::{
+    Anchor, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdate,
+    TrackedRangeUpdatePolicy,
+};
 
 /// 可跟随文本变化的区间。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

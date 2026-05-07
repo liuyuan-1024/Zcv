@@ -22,20 +22,26 @@
 
 ## 当前代码分层
 
-- `src/lib.rs`：对外稳定门面导出
+- `src/lib.rs`：对外稳定门面导出；外部使用者优先从 crate root 导入 public API
 - `src/buffer/mod.rs`：Buffer 状态聚合与 public 入口
 - `src/buffer/transaction_pipeline/`：事务准备/提交/映射/历史收尾
 - `src/buffer/edit_ops/`：文本变异与多选区编辑入口
 - `src/buffer/history/`：Undo/Redo 历史状态与条目
+- `src/buffer/lifecycle.rs`：Buffer 身份、只读状态、保存点与 dirty 判断
 - `src/buffer/events.rs`：DeltaEvent 队列与最近事件快照
 - `src/buffer/composition/`：IME composition 状态/校验/流程
-- `src/buffer/mod.rs`：BufferId / BufferKind / BufferState 与保存点状态
+- `src/types/`：offset、position、range、version、Buffer identity 与换行风格强类型
+- `src/config/`：Buffer、encoding、display、word、line ending 与大文件策略
+- `src/text_loading/`：外部 bytes 进入 Buffer 时的编码策略与加载元信息
+- `src/transaction/`：Edit、EditList、Transaction record、metadata、Delta 与 ChangeSet
 - `src/position_map.rs`：PositionMap 强类型、前后版本坐标映射结果与吸附策略
-- `src/anchor.rs`：Anchor / Mark 版本绑定与位置跟随数学
-- `src/tracked_range.rs`：TrackedRange 区间跟随、塌缩与失效策略
-- `src/metadata.rs`：MetadataRange / MetadataLayer 外部区间承载与版本推进
-- `src/coordinates_core.rs`：Buffer/Snapshot 共享坐标数学
-- `src/storage/ropey_storage.rs`：生产文本存储实现
+- `src/tracking/`：Anchor / Mark、TrackedRange、跟随策略与更新结果
+- `src/metadata/`：MetadataRange / MetadataLayer 外部区间承载与版本推进
+- `src/coordinates/`：Buffer/Snapshot 共享坐标数学
+- `src/selection/`：Cursor、Selection、SelectionSet、movement 与 composition selection 类型
+- `src/storage/`：TextStorage trait、文本指纹与 RopeyStorage 生产实现
+
+目录模块是实现分层，不作为长期 public import path 承诺；稳定外部 API 由 `src/lib.rs` 统一 re-export。
 
 ## 测试与验证目录职责
 

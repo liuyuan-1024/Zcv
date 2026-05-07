@@ -5,7 +5,7 @@
 
 use crate::{
     selection::{Selection, SelectionSet},
-    tracked_range::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
+    tracking::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
     transaction::{ChangeSet, Edit, EditList},
     types::{BufferVersion, CharOffset, TextRange},
 };

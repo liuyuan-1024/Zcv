@@ -8,7 +8,7 @@ use crate::{
     BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, DisplayColumn,
     DisplayColumnAffinity, EngineResult, Line, LineEndingStyle, LogicalColumn, Position,
     Utf16Position,
-    coordinates_core::{
+    coordinates::core::{
         char_to_display_column_in_text, display_to_logical_column_in_text,
         logical_to_display_column_in_text, next_tab_stop,
     },

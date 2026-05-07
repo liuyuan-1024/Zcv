@@ -7,7 +7,9 @@ use super::HistoryEntry;
 /// M3 历史状态摘要。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HistoryStatus {
+    /// 当前可 undo 的历史节点数量，不展开合并节点内部包含的批量编辑数。
     pub undo_depth: usize,
+    /// 当前可 redo 的历史节点数量；任何新编辑成功提交后都会被清空。
     pub redo_depth: usize,
 }
 

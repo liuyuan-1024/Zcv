@@ -10,54 +10,7 @@ use crate::{
     types::{BufferVersion, CharOffset},
 };
 
-/// Anchor 落在被删除旧内容中时的处理策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum AnchorDeletedPolicy {
-    /// 保留 Anchor，并把它折叠到删除后的最近合法位置。
-    #[default]
-    Collapse,
-    /// 不再保留 Anchor，只返回折叠后的轻量 Mark 供调用方决定后续处理。
-    Invalidate,
-}
-
-/// Anchor 通过一次文本变更后的更新结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AnchorUpdate {
-    /// Anchor 正常映射到新版本。
-    Mapped(Anchor),
-    /// Anchor 原位置落在被删除内容中，已按策略折叠到新版本合法位置。
-    Deleted(Anchor),
-    /// Anchor 原位置落在被删除内容中，并按策略失效。
-    Invalidated {
-        /// 删除后折叠出的轻量位置标记。
-        mark: Mark,
-        /// 失效事实对应的新 Buffer 版本。
-        version: BufferVersion,
-    },
-}
-
-impl AnchorUpdate {
-    pub fn anchor(self) -> Option<Anchor> {
-        match self {
-            Self::Mapped(anchor) | Self::Deleted(anchor) => Some(anchor),
-            Self::Invalidated { .. } => None,
-        }
-    }
-
-    pub fn mark(self) -> Mark {
-        match self {
-            Self::Mapped(anchor) | Self::Deleted(anchor) => anchor.to_mark(),
-            Self::Invalidated { mark, .. } => mark,
-        }
-    }
-
-    pub fn version(self) -> BufferVersion {
-        match self {
-            Self::Mapped(anchor) | Self::Deleted(anchor) => anchor.version(),
-            Self::Invalidated { version, .. } => version,
-        }
-    }
-}
+use super::{AnchorDeletedPolicy, AnchorUpdate};
 
 /// 不绑定 BufferVersion 的轻量位置标记。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

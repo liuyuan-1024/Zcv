@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use ropey::Rope;
 use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 
-use super::{TextRead, TextStorage};
+use super::{TextFingerprint, TextRead, TextStorage};
 use crate::{
     ByteOffset, CharOffset, CoordinateError, EditError, EngineResult, Line, LineEndingStyle,
     LogicalColumn, Position, TextRange, Utf16Offset, Utf16Position,
@@ -26,6 +26,14 @@ impl RopeyStorage {
         Self {
             rope: Rope::from_str(&text),
         }
+    }
+
+    pub(crate) fn fingerprint(&self) -> TextFingerprint {
+        fingerprint_rope(&self.rope)
+    }
+
+    pub(crate) fn has_same_text(&self, snapshot: &RopeySnapshot) -> bool {
+        ropes_have_same_text(&self.rope, &snapshot.rope)
     }
 
     fn validate_range(&self, range: TextRange) -> EngineResult<()> {
@@ -191,6 +199,12 @@ impl TextStorage for RopeyStorage {
 #[derive(Debug, Clone)]
 pub(crate) struct RopeySnapshot {
     rope: Rope,
+}
+
+impl RopeySnapshot {
+    pub(crate) fn fingerprint(&self) -> TextFingerprint {
+        fingerprint_rope(&self.rope)
+    }
 }
 
 impl TextRead for RopeySnapshot {
@@ -589,4 +603,26 @@ fn char_at(rope: &Rope, char_offset: usize) -> Option<char> {
     }
 
     Some(rope.char(char_offset))
+}
+
+fn fingerprint_rope(rope: &Rope) -> TextFingerprint {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET;
+
+    for chunk in rope.chunks() {
+        for byte in chunk.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+
+    TextFingerprint::new(rope.len_bytes(), CharOffset::new(rope.len_chars()), hash)
+}
+
+fn ropes_have_same_text(left: &Rope, right: &Rope) -> bool {
+    left.len_bytes() == right.len_bytes()
+        && left.len_chars() == right.len_chars()
+        && left.chars().eq(right.chars())
 }

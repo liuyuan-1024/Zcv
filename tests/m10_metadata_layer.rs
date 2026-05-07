@@ -1,14 +1,14 @@
 //! M10 机器契约：锁定 MetadataRange 与 MetadataLayer 的外部区间承载语义。
 //!
 //! M10A 验证泛型 metadata、版本绑定、范围跟随和失效策略；
-//! M10B 验证 TextRange / LineRange / viewport 查询、按 layer 查询、批量替换和过期丢弃。
+//! M10B 验证 TextRange / LineRange / line window 查询、按 layer 查询、批量替换和过期丢弃。
 //! 两者都不引入 diagnostics / highlight / breakpoint 的业务生成逻辑。
 
 use zom_engine::{
     Buffer, BufferConfig, BufferVersion, CharOffset, CoordinateError, Edit, EngineError, Line,
-    LineRange, MetadataError, MetadataLayer, MetadataLayerKind, MetadataLayers, MetadataRange,
-    MetadataRangeId, MetadataRangeSpec, MetadataRangeUpdate, MetadataViewport, Stickiness,
-    TextRange, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdate,
+    LineRange, MetadataError, MetadataLayer, MetadataLayerKind, MetadataLayers, MetadataLineWindow,
+    MetadataRange, MetadataRangeId, MetadataRangeSpec, MetadataRangeUpdate, Stickiness, TextRange,
+    TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdate,
     TrackedRangeUpdatePolicy, Transaction,
 };
 
@@ -284,7 +284,7 @@ fn line_range_is_a_public_half_open_query_range() {
 }
 
 #[test]
-fn metadata_layer_can_query_by_line_range_and_viewport() {
+fn metadata_layer_can_query_by_line_range_and_line_window() {
     let buffer = buffer("aa\nbb\ncc");
     let mut layer = MetadataLayer::with_kind(MetadataLayerKind::SyntaxHighlight, buffer.version());
     let line0 = layer.insert(range(0, 2), "line0").unwrap();
@@ -298,9 +298,9 @@ fn metadata_layer_can_query_by_line_range_and_viewport() {
         .into_iter()
         .map(|range| range.id())
         .collect::<Vec<_>>();
-    let viewport = MetadataViewport::from_lines(Line::new(0), Line::new(2)).unwrap();
+    let window = MetadataLineWindow::from_lines(Line::new(0), Line::new(2)).unwrap();
     let visible = layer
-        .ranges_in_viewport(&buffer, viewport)
+        .ranges_in_line_window(&buffer, window)
         .unwrap()
         .into_iter()
         .map(|range| range.id())
@@ -341,10 +341,10 @@ fn metadata_layers_support_layer_kind_queries() {
         .map(|range| range.id())
         .collect::<Vec<_>>();
     let bookmark_ranges = layers
-        .ranges_for_kind_in_viewport(
+        .ranges_for_kind_in_line_window(
             &MetadataLayerKind::Bookmark,
             &buffer,
-            MetadataViewport::new(line_range(0, 1)),
+            MetadataLineWindow::new(line_range(0, 1)),
         )
         .unwrap()
         .into_iter()

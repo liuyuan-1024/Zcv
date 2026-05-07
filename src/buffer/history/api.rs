@@ -82,7 +82,7 @@ impl Buffer {
         entry: HistoryEntry,
         metadata: &TransactionMetadata,
     ) -> EngineResult<()> {
-        if metadata.merge_policy == TransactionMergePolicy::MergeWithPrevious
+        if metadata.merge_policy() == TransactionMergePolicy::MergeWithPrevious
             && self.history.redo_is_empty()
         {
             if let Some(previous) = self.history.pop_undo() {

@@ -88,25 +88,37 @@ impl EditList {
 }
 
 /// 事务来源。
+///
+/// 这里记录“哪类编辑入口产生了事务”，供历史合并、事件观察和调试使用；
+/// 它不是 Command 层，也不表达快捷键、菜单项或宏录制语义。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TransactionSource {
-    Keyboard,
-    Composition,
-    Paste,
-    Delete,
-    Mouse,
+    /// 引擎调用方直接构造事务提交，没有用户交互语义。
     #[default]
-    Command,
+    Programmatic,
+    /// 鼠标驱动的编辑入口，例如拖放文本；不表示 selection movement 本身。
+    Mouse,
+    /// 普通键盘输入产生的文本变更，例如字符输入或 Enter。
+    Keyboard,
+    /// IME / composition preedit 或 commit 产生的文本变更。
+    Composition,
+    /// 粘贴入口产生的文本变更；宿主可据此选择不同的历史合并策略。
+    Paste,
+    /// 删除类编辑入口产生的文本变更。
+    Delete,
+    /// 格式化器或代码整理工具产生的批量文本变更。
     Formatter,
+    /// 外部系统同步进来的文本变更，例如文件 watcher 或协作层适配。
     External,
-    Macro,
+    /// 历史系统回放 undo 产生的反向事务。
     Undo,
+    /// 历史系统回放 redo 产生的正向事务。
     Redo,
 }
 
 /// M3 基础历史合并策略。
 ///
-/// 完整 Smart Debounce 可以在 UI / Command 层基于时间窗口决定是否选择
+/// 完整 Smart Debounce 可以在宿主输入层基于时间窗口决定是否选择
 /// `MergeWithPrevious`，引擎层只负责确定性地执行合并。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TransactionMergePolicy {
@@ -120,10 +132,10 @@ pub enum TransactionMergePolicy {
 /// 事务元数据。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TransactionMetadata {
-    pub source: TransactionSource,
-    pub merge_policy: TransactionMergePolicy,
-    pub record_history: bool,
-    pub description: Option<String>,
+    source: TransactionSource,
+    merge_policy: TransactionMergePolicy,
+    record_history: bool,
+    description: Option<String>,
 }
 
 impl TransactionMetadata {
@@ -148,12 +160,28 @@ impl TransactionMetadata {
         self.description = Some(description.into());
         self
     }
+
+    pub fn source(&self) -> TransactionSource {
+        self.source
+    }
+
+    pub fn merge_policy(&self) -> TransactionMergePolicy {
+        self.merge_policy
+    }
+
+    pub fn record_history(&self) -> bool {
+        self.record_history
+    }
+
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
 }
 
 impl Default for TransactionMetadata {
     fn default() -> Self {
         Self {
-            source: TransactionSource::Command,
+            source: TransactionSource::Programmatic,
             merge_policy: TransactionMergePolicy::Never,
             record_history: true,
             description: None,

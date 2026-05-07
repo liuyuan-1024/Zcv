@@ -13,7 +13,7 @@ use gpui::{
 use zom_engine::{
     Affinity, Buffer, BufferConfig, BufferKind, CharOffset, CompositionSelection, DisplayColumn,
     EngineResult, Line, LineRange, MappingResult, MetadataLayer, MetadataLayerKind, MetadataLayers,
-    MetadataRangeSpec, MetadataRangeUpdate, MetadataViewport, MovementDirection, MovementUnit,
+    MetadataLineWindow, MetadataRangeSpec, MetadataRangeUpdate, MovementDirection, MovementUnit,
     Position, Selection, SelectionSet, Stickiness, TextRange, TrackedRange, TrackedRangeUpdate,
     TrackedRangeUpdatePolicy,
 };
@@ -82,7 +82,7 @@ actions!(
         ClearTrackedRanges,
         DemoMetadataLayers,
         QueryMetadataAtCursor,
-        QueryMetadataViewport,
+        QueryMetadataLineWindow,
         ReplaceSearchMetadata,
         DiscardStaleMetadata,
         ClearMetadataLayers,
@@ -714,13 +714,13 @@ impl M10Testbed {
         );
     }
 
-    fn query_metadata_viewport(&mut self, cx: &mut Context<Self>) {
+    fn query_metadata_line_window(&mut self, cx: &mut Context<Self>) {
         let head = self.buffer.selection().primary().head();
         let position = self.buffer.char_to_position(head).unwrap_or(Position::ZERO);
         let start = position.line();
         let end = Line::new((start.get() + 3).min(self.buffer.line_count()));
-        let viewport = MetadataViewport::new(
-            LineRange::new(start, end).expect("viewport line range must be ordered"),
+        let window = MetadataLineWindow::new(
+            LineRange::new(start, end).expect("metadata line window must be ordered"),
         );
 
         let hits = self
@@ -728,7 +728,7 @@ impl M10Testbed {
             .iter()
             .flat_map(|layer| {
                 layer
-                    .ranges_in_viewport(&self.buffer, viewport)
+                    .ranges_in_line_window(&self.buffer, window)
                     .unwrap_or_default()
                     .into_iter()
                     .map(move |range| format_metadata_hit(layer.kind(), range.metadata()))
@@ -736,7 +736,7 @@ impl M10Testbed {
             .collect::<Vec<_>>();
 
         self.last_metadata_update = format!(
-            "viewport lines {}..{} 命中 {} 个：{}",
+            "line window {}..{} 命中 {} 个：{}",
             start.get(),
             end.get(),
             hits.len(),
@@ -1178,7 +1178,7 @@ impl M10Testbed {
             "生命周期：Cmd-B 切换只读，Cmd-E 模拟外部 reload，Cmd-Shift-S 预览 to_save_text 输出",
             "M10 事件：状态栏显示最近 DeltaEvent / PositionMap；Cmd-Shift-E 清空 pending DeltaEvent 队列",
             "M10 tracked range：Cmd-T 从 primary selection 创建；Cmd-Shift-T 创建 demo ranges；Cmd-Alt-T 清空；输入 / 删除 / Undo / Redo 后观察移动、收缩、失效",
-            "M10 metadata：Cmd-G 创建 demo layers；Cmd-Shift-G 查询 cursor；Cmd-Alt-G 查询当前 3 行 viewport；Cmd-Shift-M 用 selection/当前行替换 SearchMatch；Cmd-Alt-M 丢弃 stale；Cmd-Alt-Shift-M 清空",
+            "M10 metadata：Cmd-G 创建 demo layers；Cmd-Shift-G 查询 cursor；Cmd-Alt-G 查询当前 3 行 line window；Cmd-Shift-M 用 selection/当前行替换 SearchMatch；Cmd-Alt-M 丢弃 stale；Cmd-Alt-Shift-M 清空",
             "历史 / 生命周期：Cmd-Z undo，Cmd-Shift-Z redo，Cmd-S 标记保存点，Cmd-R 重置，Esc 收起到 primary，Cmd-Q 退出",
         ]
     }
@@ -1636,13 +1636,13 @@ impl M10Testbed {
         self.query_metadata_at_cursor(cx);
     }
 
-    fn query_metadata_viewport_action(
+    fn query_metadata_line_window_action(
         &mut self,
-        _: &QueryMetadataViewport,
+        _: &QueryMetadataLineWindow,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.query_metadata_viewport(cx);
+        self.query_metadata_line_window(cx);
     }
 
     fn replace_search_metadata_action(
@@ -1757,7 +1757,7 @@ impl Render for M10Testbed {
             .on_action(cx.listener(Self::clear_tracked_ranges_action))
             .on_action(cx.listener(Self::demo_metadata_layers_action))
             .on_action(cx.listener(Self::query_metadata_at_cursor_action))
-            .on_action(cx.listener(Self::query_metadata_viewport_action))
+            .on_action(cx.listener(Self::query_metadata_line_window_action))
             .on_action(cx.listener(Self::replace_search_metadata_action))
             .on_action(cx.listener(Self::discard_stale_metadata_action))
             .on_action(cx.listener(Self::clear_metadata_layers_action))
@@ -2108,7 +2108,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-t", ClearTrackedRanges, None),
         KeyBinding::new("cmd-g", DemoMetadataLayers, None),
         KeyBinding::new("cmd-shift-g", QueryMetadataAtCursor, None),
-        KeyBinding::new("cmd-alt-g", QueryMetadataViewport, None),
+        KeyBinding::new("cmd-alt-g", QueryMetadataLineWindow, None),
         KeyBinding::new("cmd-shift-m", ReplaceSearchMetadata, None),
         KeyBinding::new("cmd-alt-m", DiscardStaleMetadata, None),
         KeyBinding::new("cmd-alt-shift-m", ClearMetadataLayers, None),

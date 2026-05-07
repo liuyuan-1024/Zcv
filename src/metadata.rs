@@ -37,14 +37,23 @@ impl MetadataRangeId {
 /// 这些类别只用于分层和查询，不代表引擎会生成对应业务含义。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MetadataLayerKind {
+    /// 搜索结果区间；引擎只保存范围，不计算匹配文本或搜索状态。
     SearchMatch,
+    /// 诊断区间；严重级别、来源和 message 应放在 metadata payload 中。
     Diagnostics,
+    /// 语法高亮区间；token kind 或主题信息不进入引擎核心类型。
     SyntaxHighlight,
+    /// 语义 token 区间；与 SyntaxHighlight 分开，便于宿主按来源替换。
     SemanticToken,
+    /// 断点标记区间；启用状态和调试器信息属于宿主 payload。
     Breakpoint,
+    /// 书签或用户标记区间；引擎不区分命名书签、匿名书签或颜色。
     Bookmark,
+    /// Inlay hint 绑定范围；提示文本和位置偏好由 metadata payload 表达。
     InlayHint,
+    /// CodeLens 绑定范围；命令、标题和可用性不进入 M10 引擎契约。
     CodeLens,
+    /// 宿主自定义 layer，字符串只作为类别键，不携带 schema 或渲染语义。
     Custom(String),
 }
 
@@ -60,25 +69,25 @@ impl Default for MetadataLayerKind {
     }
 }
 
-/// Metadata viewport 查询窗口。
+/// Metadata 可见行查询窗口。
 ///
-/// M10B 只表达可见逻辑行范围，不涉及 UI 渲染、像素滚动或折叠投影坐标。
+/// M10B 只表达一段逻辑行范围，不涉及 M11 Viewport、UI 渲染、像素滚动或折叠投影坐标。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MetadataViewport {
-    visible_lines: LineRange,
+pub struct MetadataLineWindow {
+    lines: LineRange,
 }
 
-impl MetadataViewport {
-    pub fn new(visible_lines: LineRange) -> Self {
-        Self { visible_lines }
+impl MetadataLineWindow {
+    pub fn new(lines: LineRange) -> Self {
+        Self { lines }
     }
 
     pub fn from_lines(start: Line, end: Line) -> Result<Self, CoordinateError> {
         Ok(Self::new(LineRange::new(start, end)?))
     }
 
-    pub fn visible_lines(self) -> LineRange {
-        self.visible_lines
+    pub fn lines(self) -> LineRange {
+        self.lines
     }
 }
 
@@ -232,21 +241,25 @@ impl<T> MetadataRange<T> {
 /// 单条 metadata range 通过一次 DeltaEvent 后的更新事实。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MetadataRangeUpdate {
+    /// 区间无删除触碰地推进到新版本，metadata range 可以原样保留。
     Mapped {
         id: MetadataRangeId,
         range: TextRange,
         version: BufferVersion,
     },
+    /// 原区间被删除内容触碰，但按策略仍保留折算后的区间。
     Deleted {
         id: MetadataRangeId,
         range: TextRange,
         version: BufferVersion,
     },
+    /// 原非空区间映射后成为空区间，并且当前策略允许继续保留。
     Collapsed {
         id: MetadataRangeId,
         range: TextRange,
         version: BufferVersion,
     },
+    /// 当前 update policy 判定 range 不应继续存在，返回最后合法位置供宿主清理或展示。
     Invalidated {
         id: MetadataRangeId,
         range: TextRange,
@@ -505,12 +518,12 @@ impl<T> MetadataLayer<T> {
         Ok(self.ranges_intersecting(query).collect())
     }
 
-    pub fn ranges_in_viewport(
+    pub fn ranges_in_line_window(
         &self,
         buffer: &Buffer,
-        viewport: MetadataViewport,
+        window: MetadataLineWindow,
     ) -> crate::EngineResult<Vec<&MetadataRange<T>>> {
-        self.ranges_in_line_range(buffer, viewport.visible_lines())
+        self.ranges_in_line_range(buffer, window.lines())
     }
 
     pub fn update_through_delta_event(
@@ -677,13 +690,13 @@ impl<T> MetadataLayers<T> {
         Ok(self.ranges_for_kind_intersecting(kind, query).collect())
     }
 
-    pub fn ranges_for_kind_in_viewport(
+    pub fn ranges_for_kind_in_line_window(
         &self,
         kind: &MetadataLayerKind,
         buffer: &Buffer,
-        viewport: MetadataViewport,
+        window: MetadataLineWindow,
     ) -> crate::EngineResult<Vec<&MetadataRange<T>>> {
-        self.ranges_for_kind_in_line_range(kind, buffer, viewport.visible_lines())
+        self.ranges_for_kind_in_line_range(kind, buffer, window.lines())
     }
 
     pub fn discard_stale(&mut self, current_version: BufferVersion) -> Vec<MetadataLayer<T>> {

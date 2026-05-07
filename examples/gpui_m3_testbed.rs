@@ -275,7 +275,7 @@ impl M3Testbed {
         self.merge_group = None;
         self.submit_edits(
             vec![marker, sparkle],
-            TransactionMetadata::new(TransactionSource::Command).with_description("批量事务"),
+            TransactionMetadata::new(TransactionSource::Programmatic).with_description("批量事务"),
             cx,
         );
     }

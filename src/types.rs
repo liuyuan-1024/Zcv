@@ -373,9 +373,13 @@ impl TransactionId {
 /// reload 和保存输出属于 M7C/M7D，不在这里承诺。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BufferKind {
+    /// 绑定本地文件路径的 Buffer；路径只是身份来源，不表示内容已经和磁盘一致。
     File { path: PathBuf },
+    /// 绑定非文件 URI 的 Buffer，保留给远程文档或虚拟资源适配。
     Uri { uri: String },
+    /// 尚未命名的新文档，通常可以被保存为文件。
     Untitled,
+    /// 临时草稿或工具输出，不默认承诺可保存路径。
     Scratch,
 }
 
@@ -415,14 +419,14 @@ impl Default for BufferKind {
 
 /// Buffer 当前对宿主可见的生命周期状态。
 ///
-/// M7A 先提供 Clean / Dirty / ReadOnly 的真实状态判断；Loading、Reloading、
-/// Conflict 是后续文件边界与 reload 流程的公共状态词汇。
+/// M7A 只暴露已经由 Buffer 状态机真实承载的状态；Loading / Reloading /
+/// Conflict 等后续状态等对应生命周期语义实现后再进入 public API。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BufferState {
+    /// 当前文本与最近保存基线一致，且 Buffer 允许正常编辑。
     Clean,
+    /// 当前文本相对最近保存基线已有变更。
     Dirty,
+    /// 当前文本不可通过普通编辑入口修改；dirty 与否不由该状态表达。
     ReadOnly,
-    Loading,
-    Reloading,
-    Conflict,
 }

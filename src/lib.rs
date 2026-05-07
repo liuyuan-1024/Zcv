@@ -31,8 +31,8 @@ pub use errors::{
 };
 pub use loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
 pub use metadata::{
-    MetadataLayer, MetadataLayerKind, MetadataLayers, MetadataRange, MetadataRangeId,
-    MetadataRangeSpec, MetadataRangeUpdate, MetadataViewport,
+    MetadataLayer, MetadataLayerKind, MetadataLayers, MetadataLineWindow, MetadataRange,
+    MetadataRangeId, MetadataRangeSpec, MetadataRangeUpdate,
 };
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
 pub use selection::{
@@ -41,8 +41,8 @@ pub use selection::{
 };
 pub use snapshot::Snapshot;
 pub use tracked_range::{
-    FoldedRange, TrackedRange, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy,
-    TrackedRangeUpdate, TrackedRangeUpdatePolicy,
+    TrackedRange, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdate,
+    TrackedRangeUpdatePolicy,
 };
 pub use transaction::{
     ChangeSet, Delta, DeltaEvent, Edit, EditList, Transaction, TransactionMergePolicy,

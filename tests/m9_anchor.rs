@@ -214,7 +214,7 @@ mod m9b_tracked_range {
 
     use zom_engine::{
         Affinity, Anchor, AnchorError, Buffer, BufferConfig, BufferVersion, CharOffset, Edit,
-        EngineError, FoldedRange, MappingResult, Stickiness, TextRange, TrackedRange,
+        EngineError, MappingResult, Stickiness, TextRange, TrackedRange,
         TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdate,
         TrackedRangeUpdatePolicy, Transaction,
     };
@@ -463,21 +463,6 @@ mod m9b_tracked_range {
             }
         );
         assert_eq!(ranges, before_failed_update);
-    }
-
-    #[test]
-    fn folded_range_reuses_tracked_range_following_math() {
-        let mut buffer = buffer("abcdef");
-        let mut folded: FoldedRange = tracked(buffer.version(), 1, 5, Stickiness::Expand);
-        let event = apply(
-            &mut buffer,
-            vec![Edit::insert(c(1), "X".to_string()).unwrap()],
-        );
-
-        folded.update_through_delta_event(&event).unwrap();
-
-        assert_eq!(folded.range(), range(1, 6));
-        assert_eq!(folded.version(), buffer.version());
     }
 }
 

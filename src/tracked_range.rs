@@ -129,9 +129,6 @@ pub struct TrackedRange {
     stickiness: Stickiness,
 }
 
-/// FoldedRange 当前复用 TrackedRange 的跟随数学；fold projection 自身属于后续阶段。
-pub type FoldedRange = TrackedRange;
-
 impl TrackedRange {
     pub fn new(start: Anchor, end: Anchor, stickiness: Stickiness) -> EngineResult<Self> {
         if start.version() != end.version() {
@@ -351,9 +348,14 @@ fn should_invalidate(
             && mapped.value().is_empty())
 }
 
+/// 当前正在把 TrackedRange stickiness 翻译成 Anchor affinity 的端点。
+///
+/// 这是内部计算辅助类型，不是投影、fold 或 viewport 边界概念。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoundarySide {
+    /// TrackedRange 起点 Anchor。
     Start,
+    /// TrackedRange 终点 Anchor。
     End,
 }
 

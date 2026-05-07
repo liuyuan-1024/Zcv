@@ -408,7 +408,7 @@ mod m6a_selection_set {
             vec![Edit::insert(CharOffset::new(3), "!".to_string()).unwrap()],
         )
         .unwrap()
-        .with_metadata(TransactionMetadata::new(TransactionSource::Command).without_history())
+        .with_metadata(TransactionMetadata::new(TransactionSource::Programmatic).without_history())
         .with_selection(Some(before), Some(after.clone()));
 
         buffer.apply_transaction(tx).unwrap();

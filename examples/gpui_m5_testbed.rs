@@ -338,7 +338,7 @@ impl M5Testbed {
         self.merge_group = None;
         self.submit_edits(
             vec![marker, sparkle],
-            TransactionMetadata::new(TransactionSource::Command).with_description("批量事务"),
+            TransactionMetadata::new(TransactionSource::Programmatic).with_description("批量事务"),
             cx,
         );
     }
@@ -351,7 +351,7 @@ impl M5Testbed {
                 self.merge_group = None;
                 self.submit_edits(
                     vec![edit],
-                    TransactionMetadata::new(TransactionSource::Command)
+                    TransactionMetadata::new(TransactionSource::Programmatic)
                         .with_description("M5 插入长行探针"),
                     cx,
                 );
@@ -372,7 +372,7 @@ impl M5Testbed {
                 self.merge_group = None;
                 self.submit_edits(
                     vec![edit],
-                    TransactionMetadata::new(TransactionSource::Command)
+                    TransactionMetadata::new(TransactionSource::Programmatic)
                         .with_description("M5 插入 Unicode 探针"),
                     cx,
                 );
@@ -393,7 +393,7 @@ impl M5Testbed {
                 self.merge_group = None;
                 self.submit_edits(
                     vec![edit],
-                    TransactionMetadata::new(TransactionSource::Command)
+                    TransactionMetadata::new(TransactionSource::Programmatic)
                         .with_description("M5 插入视觉列探针"),
                     cx,
                 );

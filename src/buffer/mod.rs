@@ -22,7 +22,7 @@ use std::{
 use crate::{
     BufferConfig, BufferId, BufferKind, BufferState, BufferVersion, CompositionState, EngineResult,
     LoadedTextInfo, SelectionSet, TransactionId,
-    storage::{RopeyStorage, TextRead},
+    storage::{RopeySnapshot, RopeyStorage, TextFingerprint, TextRead, TextStorage},
     transaction::DeltaEvent,
 };
 
@@ -54,7 +54,8 @@ pub struct Buffer {
     version: BufferVersion,
     saved_version: BufferVersion,
     last_saved_version: BufferVersion,
-    saved_text: String,
+    saved_snapshot: RopeySnapshot,
+    saved_fingerprint: TextFingerprint,
     last_synced_external_version: Option<BufferVersion>,
     loaded_text_info: Option<LoadedTextInfo>,
     next_transaction_id: TransactionId,
@@ -82,18 +83,21 @@ impl Buffer {
         text: String,
         config: BufferConfig,
     ) -> EngineResult<Self> {
-        let saved_text = text.clone();
+        let storage = RopeyStorage::new(text);
+        let saved_snapshot = storage.snapshot();
+        let saved_fingerprint = saved_snapshot.fingerprint();
 
         Ok(Self {
             id: next_buffer_id(),
             kind,
             read_only: false,
             config,
-            storage: RopeyStorage::new(text),
+            storage,
             version: BufferVersion::INITIAL,
             saved_version: BufferVersion::INITIAL,
             last_saved_version: BufferVersion::INITIAL,
-            saved_text,
+            saved_snapshot,
+            saved_fingerprint,
             last_synced_external_version: None,
             loaded_text_info: None,
             next_transaction_id: TransactionId::INITIAL,
@@ -220,13 +224,24 @@ impl Buffer {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.text().as_ref() != self.saved_text
+        if self.version == self.saved_version {
+            return false;
+        }
+
+        let current_fingerprint = self.storage.fingerprint();
+
+        if current_fingerprint != self.saved_fingerprint {
+            return true;
+        }
+
+        !self.storage.has_same_text(&self.saved_snapshot)
     }
 
     pub fn mark_saved(&mut self) {
         self.saved_version = self.version;
         self.last_saved_version = self.version;
-        self.saved_text = self.text().into_owned();
+        self.saved_snapshot = self.storage.snapshot();
+        self.saved_fingerprint = self.saved_snapshot.fingerprint();
     }
 
     pub fn mark_synced_external(&mut self) {

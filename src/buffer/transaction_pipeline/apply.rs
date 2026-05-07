@@ -33,7 +33,7 @@ impl Buffer {
     }
 
     fn prepare_transaction(&mut self, tx: Transaction) -> EngineResult<PreparedTransaction> {
-        self.cancel_composition_for_transaction(tx.metadata().source)?;
+        self.cancel_composition_for_transaction(tx.metadata().source())?;
 
         let (base_version, edits, metadata, before_selection, explicit_after_selection) =
             tx.into_parts();
@@ -86,7 +86,7 @@ impl Buffer {
         self.apply_edit_list(
             prepared.base_version,
             prepared.edits.clone(),
-            prepared.metadata.source,
+            prepared.metadata.source(),
         )
     }
 
@@ -106,13 +106,13 @@ impl Buffer {
         prepared: PreparedTransaction,
         after_selection: SelectionSet,
     ) -> EngineResult<()> {
-        if prepared.metadata.record_history {
+        if prepared.metadata.record_history() {
             let entry = HistoryEntry::new(
                 prepared.undo_edits,
                 prepared.redo_edits,
                 prepared.before_selection,
                 after_selection,
-                prepared.metadata.description.clone(),
+                prepared.metadata.description().map(str::to_string),
             );
             self.push_history(entry, &prepared.metadata)?;
             return Ok(());

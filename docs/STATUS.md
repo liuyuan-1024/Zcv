@@ -18,8 +18,8 @@
 
 ## M10 文件
 
-- `src/metadata.rs`：MetadataRange / MetadataLayer / MetadataLayers、LayerKind、range id、版本绑定、范围追踪、失效移除、LineRange / viewport 查询、按 layer 查询、批量替换与过期丢弃
-- `tests/m10_metadata_layer.rs`：M10A-M10B 机器契约测试，覆盖泛型 payload、多 layer、DeltaEvent 跟随、失效策略、基础查询、LineRange / viewport 查询、按 layer 查询、批量替换与过期丢弃
+- `src/metadata.rs`：MetadataRange / MetadataLayer / MetadataLayers、LayerKind、range id、版本绑定、范围追踪、失效移除、LineRange / line window 查询、按 layer 查询、批量替换与过期丢弃
+- `tests/m10_metadata_layer.rs`：M10A-M10B 机器契约测试，覆盖泛型 payload、多 layer、DeltaEvent 跟随、失效策略、基础查询、LineRange / line window 查询、按 layer 查询、批量替换与过期丢弃
 - `examples/gpui_m10_testbed.rs`：继承 M9 体感，并叠加 search / diagnostics / bookmark 模拟 metadata layer 创建、跟随、查询、替换、过期丢弃与文本标记观察
 - `src/lib.rs`：M10 public API 导出
 - `src/errors.rs`：MetadataError 与 EngineError 接入

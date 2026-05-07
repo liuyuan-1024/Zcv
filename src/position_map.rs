@@ -396,9 +396,14 @@ fn text_range(start: CharOffset, end: CharOffset) -> TextRange {
     TextRange::new(start, end).expect("PositionMap 生成的 range 必须满足 start <= end")
 }
 
+/// 当前正在计算 stickiness 的区间端点。
+///
+/// 同一个 `Stickiness` 在起点和终点上的 affinity 往往相反，因此内部映射必须显式区分端点。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoundarySide {
+    /// 区间左边界 / start offset。
     Start,
+    /// 区间右边界 / end offset。
     End,
 }
 

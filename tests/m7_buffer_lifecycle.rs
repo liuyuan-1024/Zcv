@@ -92,7 +92,7 @@ mod m7a_m7b_buffer_lifecycle {
     }
 
     #[test]
-    fn undo_and_redo_recompute_dirty_state_from_saved_text() {
+    fn undo_and_redo_recompute_dirty_state_from_saved_baseline() {
         let mut buffer = buffer("hello");
 
         buffer.insert(CharOffset::new(5), "!").unwrap();

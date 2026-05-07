@@ -33,7 +33,7 @@ impl Buffer {
         self.replace_selection_ranges_with_metadata(
             selections,
             replacement,
-            TransactionMetadata::new(TransactionSource::Command)
+            TransactionMetadata::new(TransactionSource::Programmatic)
                 .with_description("replace selections"),
         )
     }
@@ -124,7 +124,7 @@ impl Buffer {
     ) -> EngineResult<Option<(Delta, ChangeSet)>> {
         self.ensure_writable()?;
 
-        if metadata.source != TransactionSource::Composition {
+        if metadata.source() != TransactionSource::Composition {
             self.cancel_composition_before_text_edit()?;
         }
 

@@ -4,7 +4,7 @@
 
 use crate::{
     CharOffset, CoordinateError, EditError, EngineResult, SelectionSet, StorageError, TextRange,
-    transaction::EditList,
+    storage::TextStorage, transaction::EditList,
 };
 
 use super::{Buffer, coordinates::is_crlf_middle};
@@ -12,7 +12,8 @@ use super::{Buffer, coordinates::is_crlf_middle};
 impl Buffer {
     pub(in crate::buffer) fn mark_clean_internal(&mut self) {
         self.saved_version = self.version();
-        self.saved_text = self.text().into_owned();
+        self.saved_snapshot = self.storage.snapshot();
+        self.saved_fingerprint = self.saved_snapshot.fingerprint();
     }
 
     pub(super) fn ensure_writable(&self) -> EngineResult<()> {

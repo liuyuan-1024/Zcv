@@ -41,6 +41,9 @@ path = "examples/gpui_m8_testbed.rs"
 [[example]]
 name = "gpui_m9_testbed"
 path = "examples/gpui_m9_testbed.rs"
+[[example]]
+name = "gpui_m10_testbed"
+path = "examples/gpui_m10_testbed.rs"
 
 [[bench]]
 name = "m4_storage"

@@ -64,6 +64,8 @@ cargo run --example gpui_m5_testbed
 cargo run --example gpui_m6_testbed
 cargo run --example gpui_m7_testbed
 cargo run --example gpui_m8_testbed
+cargo run --example gpui_m9_testbed
+cargo run --example gpui_m10_testbed
 ```
 
 ## 相关文档

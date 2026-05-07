@@ -1,14 +1,15 @@
-//! M10A MetadataLayer：把外部 metadata 绑定到可跟随文本变化的区间上。
+//! M10 MetadataLayer：把外部 metadata 绑定到可跟随文本变化的区间上。
 //!
 //! 本模块不定义 diagnostics、高亮、断点等业务 payload，只负责承载泛型
 //! metadata、绑定 BufferVersion、复用 TrackedRange 的范围追踪语义，并提供基础查询。
 
 use crate::{
-    errors::{AnchorError, MetadataError},
+    buffer::Buffer,
+    errors::{AnchorError, CoordinateError, MetadataError},
     position_map::Stickiness,
     tracked_range::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
     transaction::DeltaEvent,
-    types::{BufferVersion, CharOffset, TextRange},
+    types::{BufferVersion, CharOffset, Line, LineRange, TextRange},
 };
 
 /// MetadataRange 在单个 MetadataLayer 内的稳定身份。
@@ -56,6 +57,83 @@ impl MetadataLayerKind {
 impl Default for MetadataLayerKind {
     fn default() -> Self {
         Self::Custom(String::new())
+    }
+}
+
+/// Metadata viewport 查询窗口。
+///
+/// M10B 只表达可见逻辑行范围，不涉及 UI 渲染、像素滚动或折叠投影坐标。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MetadataViewport {
+    visible_lines: LineRange,
+}
+
+impl MetadataViewport {
+    pub fn new(visible_lines: LineRange) -> Self {
+        Self { visible_lines }
+    }
+
+    pub fn from_lines(start: Line, end: Line) -> Result<Self, CoordinateError> {
+        Ok(Self::new(LineRange::new(start, end)?))
+    }
+
+    pub fn visible_lines(self) -> LineRange {
+        self.visible_lines
+    }
+}
+
+/// 批量替换 metadata layer 时使用的输入项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetadataRangeSpec<T> {
+    range: TextRange,
+    stickiness: Stickiness,
+    update_policy: TrackedRangeUpdatePolicy,
+    metadata: T,
+}
+
+impl<T> MetadataRangeSpec<T> {
+    pub fn new(range: TextRange, metadata: T) -> Self {
+        Self {
+            range,
+            stickiness: Stickiness::default(),
+            update_policy: TrackedRangeUpdatePolicy::default(),
+            metadata,
+        }
+    }
+
+    pub fn with_stickiness(mut self, stickiness: Stickiness) -> Self {
+        self.stickiness = stickiness;
+        self
+    }
+
+    pub fn with_update_policy(mut self, update_policy: TrackedRangeUpdatePolicy) -> Self {
+        self.update_policy = update_policy;
+        self
+    }
+
+    pub fn range(&self) -> TextRange {
+        self.range
+    }
+
+    pub fn stickiness(&self) -> Stickiness {
+        self.stickiness
+    }
+
+    pub fn update_policy(&self) -> TrackedRangeUpdatePolicy {
+        self.update_policy
+    }
+
+    pub fn metadata(&self) -> &T {
+        &self.metadata
+    }
+
+    fn into_parts(self) -> (TextRange, Stickiness, TrackedRangeUpdatePolicy, T) {
+        (
+            self.range,
+            self.stickiness,
+            self.update_policy,
+            self.metadata,
+        )
     }
 }
 
@@ -359,6 +437,53 @@ impl<T> MetadataLayer<T> {
         self.ranges.clear();
     }
 
+    pub fn replace_all(
+        &mut self,
+        version: BufferVersion,
+        ranges: impl IntoIterator<Item = (TextRange, T)>,
+    ) -> Result<Vec<MetadataRangeId>, MetadataError> {
+        self.replace_all_with_options(
+            version,
+            ranges
+                .into_iter()
+                .map(|(range, metadata)| MetadataRangeSpec::new(range, metadata)),
+        )
+    }
+
+    pub fn replace_all_with_options(
+        &mut self,
+        version: BufferVersion,
+        ranges: impl IntoIterator<Item = MetadataRangeSpec<T>>,
+    ) -> Result<Vec<MetadataRangeId>, MetadataError> {
+        let mut next_id = MetadataRangeId::INITIAL;
+        let mut ids = Vec::new();
+        let mut new_ranges = Vec::new();
+
+        for spec in ranges {
+            let id = next_id;
+            next_id = next_id.next().ok_or(MetadataError::IdOverflow)?;
+            let (range, stickiness, update_policy, metadata) = spec.into_parts();
+            ids.push(id);
+            new_ranges.push(MetadataRange::with_policy(
+                id,
+                version,
+                range,
+                stickiness,
+                update_policy,
+                metadata,
+            ));
+        }
+
+        self.version = version;
+        self.next_id = next_id;
+        self.ranges = new_ranges;
+        Ok(ids)
+    }
+
+    pub fn is_stale(&self, current_version: BufferVersion) -> bool {
+        self.version != current_version
+    }
+
     pub fn ranges_intersecting(&self, query: TextRange) -> impl Iterator<Item = &MetadataRange<T>> {
         self.ranges
             .iter()
@@ -369,6 +494,23 @@ impl<T> MetadataLayer<T> {
         self.ranges
             .iter()
             .filter(move |metadata_range| range_contains_offset(metadata_range.range(), offset))
+    }
+
+    pub fn ranges_in_line_range(
+        &self,
+        buffer: &Buffer,
+        query: LineRange,
+    ) -> crate::EngineResult<Vec<&MetadataRange<T>>> {
+        let query = text_range_for_line_range(buffer, query)?;
+        Ok(self.ranges_intersecting(query).collect())
+    }
+
+    pub fn ranges_in_viewport(
+        &self,
+        buffer: &Buffer,
+        viewport: MetadataViewport,
+    ) -> crate::EngineResult<Vec<&MetadataRange<T>>> {
+        self.ranges_in_line_range(buffer, viewport.visible_lines())
     }
 
     pub fn update_through_delta_event(
@@ -416,6 +558,150 @@ impl<T> MetadataLayer<T> {
     }
 }
 
+/// 多个 metadata layers 的轻量集合，供宿主按 layer kind 查询、替换和丢弃过期结果。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MetadataLayers<T> {
+    layers: Vec<MetadataLayer<T>>,
+}
+
+impl<T> MetadataLayers<T> {
+    pub fn new() -> Self {
+        Self { layers: Vec::new() }
+    }
+
+    pub fn from_layers(layers: impl IntoIterator<Item = MetadataLayer<T>>) -> Self {
+        Self {
+            layers: layers.into_iter().collect(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.layers.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.layers.is_empty()
+    }
+
+    pub fn as_slice(&self) -> &[MetadataLayer<T>] {
+        &self.layers
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &MetadataLayer<T>> {
+        self.layers.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut MetadataLayer<T>> {
+        self.layers.iter_mut()
+    }
+
+    pub fn push(&mut self, layer: MetadataLayer<T>) {
+        self.layers.push(layer);
+    }
+
+    pub fn layer(&self, kind: &MetadataLayerKind) -> Option<&MetadataLayer<T>> {
+        self.layers.iter().find(|layer| layer.kind() == kind)
+    }
+
+    pub fn layer_mut(&mut self, kind: &MetadataLayerKind) -> Option<&mut MetadataLayer<T>> {
+        self.layers.iter_mut().find(|layer| layer.kind() == kind)
+    }
+
+    pub fn layers_of_kind(
+        &self,
+        kind: &MetadataLayerKind,
+    ) -> impl Iterator<Item = &MetadataLayer<T>> {
+        self.layers.iter().filter(move |layer| layer.kind() == kind)
+    }
+
+    pub fn replace_layer(&mut self, layer: MetadataLayer<T>) -> Option<MetadataLayer<T>> {
+        if let Some(index) = self
+            .layers
+            .iter()
+            .position(|existing| existing.kind() == layer.kind())
+        {
+            return Some(std::mem::replace(&mut self.layers[index], layer));
+        }
+
+        self.layers.push(layer);
+        None
+    }
+
+    pub fn replace_layer_ranges(
+        &mut self,
+        kind: MetadataLayerKind,
+        version: BufferVersion,
+        ranges: impl IntoIterator<Item = (TextRange, T)>,
+    ) -> Result<Vec<MetadataRangeId>, MetadataError> {
+        self.replace_layer_ranges_with_options(
+            kind,
+            version,
+            ranges
+                .into_iter()
+                .map(|(range, metadata)| MetadataRangeSpec::new(range, metadata)),
+        )
+    }
+
+    pub fn replace_layer_ranges_with_options(
+        &mut self,
+        kind: MetadataLayerKind,
+        version: BufferVersion,
+        ranges: impl IntoIterator<Item = MetadataRangeSpec<T>>,
+    ) -> Result<Vec<MetadataRangeId>, MetadataError> {
+        if let Some(index) = self.layers.iter().position(|layer| layer.kind() == &kind) {
+            return self.layers[index].replace_all_with_options(version, ranges);
+        }
+
+        let mut layer = MetadataLayer::with_kind(kind, version);
+        let ids = layer.replace_all_with_options(version, ranges)?;
+        self.layers.push(layer);
+        Ok(ids)
+    }
+
+    pub fn ranges_for_kind_intersecting(
+        &self,
+        kind: &MetadataLayerKind,
+        query: TextRange,
+    ) -> impl Iterator<Item = &MetadataRange<T>> {
+        self.layers_of_kind(kind)
+            .flat_map(move |layer| layer.ranges_intersecting(query))
+    }
+
+    pub fn ranges_for_kind_in_line_range(
+        &self,
+        kind: &MetadataLayerKind,
+        buffer: &Buffer,
+        query: LineRange,
+    ) -> crate::EngineResult<Vec<&MetadataRange<T>>> {
+        let query = text_range_for_line_range(buffer, query)?;
+        Ok(self.ranges_for_kind_intersecting(kind, query).collect())
+    }
+
+    pub fn ranges_for_kind_in_viewport(
+        &self,
+        kind: &MetadataLayerKind,
+        buffer: &Buffer,
+        viewport: MetadataViewport,
+    ) -> crate::EngineResult<Vec<&MetadataRange<T>>> {
+        self.ranges_for_kind_in_line_range(kind, buffer, viewport.visible_lines())
+    }
+
+    pub fn discard_stale(&mut self, current_version: BufferVersion) -> Vec<MetadataLayer<T>> {
+        let mut stale = Vec::new();
+        let mut index = 0;
+
+        while index < self.layers.len() {
+            if self.layers[index].is_stale(current_version) {
+                stale.push(self.layers.remove(index));
+            } else {
+                index += 1;
+            }
+        }
+
+        stale
+    }
+}
+
 fn ranges_intersect(left: TextRange, right: TextRange) -> bool {
     match (left.is_empty(), right.is_empty()) {
         (true, true) => left.start() == right.start(),
@@ -431,4 +717,28 @@ fn range_contains_offset(range: TextRange, offset: CharOffset) -> bool {
     }
 
     range.start() <= offset && offset < range.end()
+}
+
+fn text_range_for_line_range(
+    buffer: &Buffer,
+    line_range: LineRange,
+) -> crate::EngineResult<TextRange> {
+    let start = char_offset_for_line_boundary(buffer, line_range.start())?;
+    let end = char_offset_for_line_boundary(buffer, line_range.end())?;
+    Ok(TextRange::new(start, end)?)
+}
+
+fn char_offset_for_line_boundary(buffer: &Buffer, line: Line) -> crate::EngineResult<CharOffset> {
+    let line_value = line.get();
+    let line_count = buffer.line_count();
+
+    if line_value > line_count {
+        return Err(CoordinateError::LineOutOfBounds(line).into());
+    }
+
+    if line_value == line_count {
+        return Ok(buffer.len_chars());
+    }
+
+    buffer.line_start(line)
 }

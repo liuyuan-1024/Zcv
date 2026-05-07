@@ -32,6 +32,9 @@ pub enum CoordinateError {
     #[error("非法文本区间: start {start:?} 大于 end {end:?}")]
     InvalidRange { start: CharOffset, end: CharOffset },
 
+    #[error("非法行区间: start {start:?} 大于 end {end:?}")]
+    InvalidLineRange { start: Line, end: Line },
+
     #[error("字符偏移处的字素边界无效: {0:?}")]
     InvalidGraphemeBoundary(CharOffset),
 }

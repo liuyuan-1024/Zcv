@@ -1,12 +1,14 @@
 //! M10 机器契约：锁定 MetadataRange 与 MetadataLayer 的外部区间承载语义。
 //!
-//! M10A 只验证泛型 metadata、版本绑定、范围跟随、失效策略和基础查询；
-//! 不引入 diagnostics / highlight / breakpoint 的业务生成逻辑。
+//! M10A 验证泛型 metadata、版本绑定、范围跟随和失效策略；
+//! M10B 验证 TextRange / LineRange / viewport 查询、按 layer 查询、批量替换和过期丢弃。
+//! 两者都不引入 diagnostics / highlight / breakpoint 的业务生成逻辑。
 
 use zom_engine::{
-    Buffer, BufferConfig, BufferVersion, CharOffset, Edit, MetadataError, MetadataLayer,
-    MetadataLayerKind, MetadataRange, MetadataRangeId, MetadataRangeUpdate, Stickiness, TextRange,
-    TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdate,
+    Buffer, BufferConfig, BufferVersion, CharOffset, CoordinateError, Edit, EngineError, Line,
+    LineRange, MetadataError, MetadataLayer, MetadataLayerKind, MetadataLayers, MetadataRange,
+    MetadataRangeId, MetadataRangeSpec, MetadataRangeUpdate, MetadataViewport, Stickiness,
+    TextRange, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdate,
     TrackedRangeUpdatePolicy, Transaction,
 };
 
@@ -20,6 +22,10 @@ fn c(value: usize) -> CharOffset {
 
 fn range(start: usize, end: usize) -> TextRange {
     TextRange::new(c(start), c(end)).unwrap()
+}
+
+fn line_range(start: usize, end: usize) -> LineRange {
+    LineRange::new(Line::new(start), Line::new(end)).unwrap()
 }
 
 fn apply(buffer: &mut Buffer, edits: Vec<Edit>) -> zom_engine::DeltaEvent {
@@ -258,4 +264,177 @@ fn metadata_range_can_preview_its_update_without_mutating_payload() {
     );
     assert_eq!(metadata_range.metadata(), &"external-result");
     assert_eq!(metadata_range.range(), range(1, 5));
+}
+
+#[test]
+fn line_range_is_a_public_half_open_query_range() {
+    let lines = LineRange::new(Line::new(1), Line::new(3)).unwrap();
+
+    assert_eq!(lines.start(), Line::new(1));
+    assert_eq!(lines.end(), Line::new(3));
+    assert_eq!(lines.len(), 2);
+    assert!(!lines.is_empty());
+    assert_eq!(
+        LineRange::new(Line::new(3), Line::new(1)),
+        Err(CoordinateError::InvalidLineRange {
+            start: Line::new(3),
+            end: Line::new(1),
+        })
+    );
+}
+
+#[test]
+fn metadata_layer_can_query_by_line_range_and_viewport() {
+    let buffer = buffer("aa\nbb\ncc");
+    let mut layer = MetadataLayer::with_kind(MetadataLayerKind::SyntaxHighlight, buffer.version());
+    let line0 = layer.insert(range(0, 2), "line0").unwrap();
+    let line1 = layer.insert(range(3, 5), "line1").unwrap();
+    let line2 = layer.insert(range(6, 8), "line2").unwrap();
+    let spanning = layer.insert(range(2, 7), "spanning").unwrap();
+
+    let lower_lines = layer
+        .ranges_in_line_range(&buffer, line_range(1, 3))
+        .unwrap()
+        .into_iter()
+        .map(|range| range.id())
+        .collect::<Vec<_>>();
+    let viewport = MetadataViewport::from_lines(Line::new(0), Line::new(2)).unwrap();
+    let visible = layer
+        .ranges_in_viewport(&buffer, viewport)
+        .unwrap()
+        .into_iter()
+        .map(|range| range.id())
+        .collect::<Vec<_>>();
+
+    assert_eq!(lower_lines, vec![line1, line2, spanning]);
+    assert_eq!(visible, vec![line0, line1, spanning]);
+}
+
+#[test]
+fn line_range_query_validates_against_buffer_line_boundaries() {
+    let buffer = buffer("aa\nbb");
+    let mut layer = MetadataLayer::new(buffer.version());
+    layer.insert(range(0, 2), "line0").unwrap();
+
+    let err = layer
+        .ranges_in_line_range(&buffer, line_range(0, 3))
+        .unwrap_err();
+
+    assert_eq!(
+        err,
+        EngineError::Coordinate(CoordinateError::LineOutOfBounds(Line::new(3)))
+    );
+}
+
+#[test]
+fn metadata_layers_support_layer_kind_queries() {
+    let buffer = buffer("abcdef");
+    let mut diagnostics =
+        MetadataLayer::with_kind(MetadataLayerKind::Diagnostics, buffer.version());
+    let diagnostic_id = diagnostics.insert(range(1, 4), "diagnostic").unwrap();
+    let mut bookmarks = MetadataLayer::with_kind(MetadataLayerKind::Bookmark, buffer.version());
+    bookmarks.insert(range(4, 4), "bookmark").unwrap();
+
+    let layers = MetadataLayers::from_layers([diagnostics, bookmarks]);
+    let diagnostic_ranges = layers
+        .ranges_for_kind_intersecting(&MetadataLayerKind::Diagnostics, range(2, 5))
+        .map(|range| range.id())
+        .collect::<Vec<_>>();
+    let bookmark_ranges = layers
+        .ranges_for_kind_in_viewport(
+            &MetadataLayerKind::Bookmark,
+            &buffer,
+            MetadataViewport::new(line_range(0, 1)),
+        )
+        .unwrap()
+        .into_iter()
+        .map(|range| range.id())
+        .collect::<Vec<_>>();
+
+    assert_eq!(layers.len(), 2);
+    assert_eq!(
+        layers.layer(&MetadataLayerKind::Diagnostics).unwrap().len(),
+        1
+    );
+    assert_eq!(diagnostic_ranges, vec![diagnostic_id]);
+    assert_eq!(bookmark_ranges, vec![MetadataRangeId::INITIAL]);
+}
+
+#[test]
+fn metadata_layer_can_replace_all_ranges_in_one_batch() {
+    let mut layer =
+        MetadataLayer::with_kind(MetadataLayerKind::SearchMatch, BufferVersion::INITIAL)
+            .with_default_stickiness(Stickiness::Expand);
+    let old_id = layer.insert(range(0, 1), "old").unwrap();
+
+    let ids = layer
+        .replace_all_with_options(
+            BufferVersion::new(7),
+            [
+                MetadataRangeSpec::new(range(2, 4), "first").with_stickiness(Stickiness::Never),
+                MetadataRangeSpec::new(range(5, 5), "second")
+                    .with_stickiness(Stickiness::Expand)
+                    .with_update_policy(TrackedRangeUpdatePolicy::invalidate_when_collapsed()),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(old_id, MetadataRangeId::INITIAL);
+    assert_eq!(ids, vec![MetadataRangeId::INITIAL, MetadataRangeId::new(1)]);
+    assert_eq!(layer.version(), BufferVersion::new(7));
+    assert_eq!(layer.len(), 2);
+    assert_eq!(layer.get(old_id).unwrap().metadata(), &"first");
+    assert_eq!(
+        layer.get(MetadataRangeId::new(1)).unwrap().stickiness(),
+        Stickiness::Expand
+    );
+}
+
+#[test]
+fn metadata_layers_can_replace_a_layer_by_kind() {
+    let mut layers = MetadataLayers::new();
+    layers
+        .replace_layer_ranges(
+            MetadataLayerKind::Diagnostics,
+            BufferVersion::INITIAL,
+            [(range(0, 1), "old")],
+        )
+        .unwrap();
+
+    let ids = layers
+        .replace_layer_ranges(
+            MetadataLayerKind::Diagnostics,
+            BufferVersion::new(2),
+            [(range(2, 5), "new-a"), (range(5, 5), "new-b")],
+        )
+        .unwrap();
+
+    let diagnostics = layers.layer(&MetadataLayerKind::Diagnostics).unwrap();
+    assert_eq!(layers.len(), 1);
+    assert_eq!(ids, vec![MetadataRangeId::INITIAL, MetadataRangeId::new(1)]);
+    assert_eq!(diagnostics.version(), BufferVersion::new(2));
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|range| *range.metadata())
+            .collect::<Vec<_>>(),
+        vec!["new-a", "new-b"]
+    );
+}
+
+#[test]
+fn metadata_layers_can_discard_stale_layers() {
+    let current_version = BufferVersion::new(3);
+    let fresh = MetadataLayer::<&str>::with_kind(MetadataLayerKind::SearchMatch, current_version);
+    let stale =
+        MetadataLayer::<&str>::with_kind(MetadataLayerKind::Diagnostics, BufferVersion::new(2));
+    let mut layers = MetadataLayers::from_layers([fresh, stale]);
+
+    let removed = layers.discard_stale(current_version);
+
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].kind(), &MetadataLayerKind::Diagnostics);
+    assert_eq!(layers.len(), 1);
+    assert!(layers.layer(&MetadataLayerKind::SearchMatch).is_some());
+    assert!(layers.layer(&MetadataLayerKind::Diagnostics).is_none());
 }

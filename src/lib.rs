@@ -31,7 +31,8 @@ pub use errors::{
 };
 pub use loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
 pub use metadata::{
-    MetadataLayer, MetadataLayerKind, MetadataRange, MetadataRangeId, MetadataRangeUpdate,
+    MetadataLayer, MetadataLayerKind, MetadataLayers, MetadataRange, MetadataRangeId,
+    MetadataRangeSpec, MetadataRangeUpdate, MetadataViewport,
 };
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
 pub use selection::{
@@ -49,5 +50,6 @@ pub use transaction::{
 };
 pub use types::{
     BufferId, BufferKind, BufferState, BufferVersion, ByteOffset, CharOffset, DisplayColumn, Line,
-    LineEndingStyle, LogicalColumn, Position, TextRange, TransactionId, Utf16Offset, Utf16Position,
+    LineEndingStyle, LineRange, LogicalColumn, Position, TextRange, TransactionId, Utf16Offset,
+    Utf16Position,
 };

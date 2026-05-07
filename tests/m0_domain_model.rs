@@ -7,8 +7,9 @@ use std::num::NonZeroUsize;
 use zom_engine::{
     BomPolicy, BufferConfig, BufferId, BufferKind, BufferState, BufferVersion, ByteOffset,
     CharOffset, CoordinateError, DisplayColumn, EditError, EncodingConfig, EngineError,
-    InvalidUtf8Policy, Line, LineEndingConfig, LogicalColumn, Position, PositionEncodingConfig,
-    StorageError, TabConfig, TextEncoding, TextRange, TransactionError, TransactionId, Utf16Offset,
+    InvalidUtf8Policy, Line, LineEndingConfig, LineRange, LogicalColumn, Position,
+    PositionEncodingConfig, StorageError, TabConfig, TextEncoding, TextRange, TransactionError,
+    TransactionId, Utf16Offset,
 };
 
 #[test]
@@ -23,6 +24,7 @@ fn root_public_api_can_be_imported() {
 
     let _ = Position::new(Line::new(0), LogicalColumn::new(0));
     let _ = TextRange::new(CharOffset::new(0), CharOffset::new(0)).unwrap();
+    let _ = LineRange::new(Line::new(0), Line::new(0)).unwrap();
 
     let _ = BufferVersion::INITIAL;
     let _ = BufferId::INITIAL;
@@ -112,6 +114,39 @@ fn text_range_constructor_is_the_only_public_range_constructor() {
 
     assert!(ok.is_ok());
     assert!(matches!(err, Err(CoordinateError::InvalidRange { .. })));
+}
+
+#[test]
+fn line_range_accepts_ordered_half_open_lines() {
+    let range = LineRange::new(Line::new(1), Line::new(3)).unwrap();
+
+    assert_eq!(range.start(), Line::new(1));
+    assert_eq!(range.end(), Line::new(3));
+    assert_eq!(range.len(), 2);
+    assert!(!range.is_empty());
+}
+
+#[test]
+fn line_range_accepts_empty_line_range() {
+    let range = LineRange::new(Line::new(2), Line::new(2)).unwrap();
+
+    assert_eq!(range.start(), Line::new(2));
+    assert_eq!(range.end(), Line::new(2));
+    assert_eq!(range.len(), 0);
+    assert!(range.is_empty());
+}
+
+#[test]
+fn line_range_rejects_reversed_lines() {
+    let err = LineRange::new(Line::new(3), Line::new(1)).unwrap_err();
+
+    assert_eq!(
+        err,
+        CoordinateError::InvalidLineRange {
+            start: Line::new(3),
+            end: Line::new(1),
+        }
+    );
 }
 
 #[test]

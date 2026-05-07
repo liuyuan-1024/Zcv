@@ -3,8 +3,8 @@
 ## 当前阶段
 
 - 当前推进：M10 MetadataLayer 与外部区间承载
-- 已完成：M0-M8 机器契约基线；M9A Anchor / Mark；M9B TrackedRange；M9C Selection 与外部 range 映射；M9 GPUI testbed；M10A MetadataRange / MetadataLayer
-- 未完成：M10B Metadata 查询深化；M10 GPUI testbed
+- 已完成：M0-M8 机器契约基线；M9A Anchor / Mark；M9B TrackedRange；M9C Selection 与外部 range 映射；M9 GPUI testbed；M10A MetadataRange / MetadataLayer；M10B Metadata 查询
+- 未完成：M10 GPUI testbed
 
 ## M9 文件
 
@@ -18,10 +18,11 @@
 
 ## M10 文件
 
-- `src/metadata.rs`：MetadataRange / MetadataLayer、LayerKind、range id、版本绑定、范围追踪、失效移除与基础查询
-- `tests/m10_metadata_layer.rs`：M10A 机器契约测试，覆盖泛型 payload、多 layer、DeltaEvent 跟随、失效策略与基础查询
+- `src/metadata.rs`：MetadataRange / MetadataLayer / MetadataLayers、LayerKind、range id、版本绑定、范围追踪、失效移除、LineRange / viewport 查询、按 layer 查询、批量替换与过期丢弃
+- `tests/m10_metadata_layer.rs`：M10A-M10B 机器契约测试，覆盖泛型 payload、多 layer、DeltaEvent 跟随、失效策略、基础查询、LineRange / viewport 查询、按 layer 查询、批量替换与过期丢弃
 - `src/lib.rs`：M10 public API 导出
 - `src/errors.rs`：MetadataError 与 EngineError 接入
+- `src/types.rs`：LineRange 强类型
 
 ## 建议验证命令
 

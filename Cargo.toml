@@ -14,6 +14,10 @@ criterion = "0.8.2"
 # 仅在测试和 examples 沙盒中使用 GPUI
 gpui = "0.2.2"
 
+[[bench]]
+name = "m4_storage"
+harness = false
+
 [[example]]
 name = "gpui_m1_testbed"
 path = "examples/gpui_m1_testbed.rs"
@@ -44,7 +48,6 @@ path = "examples/gpui_m9_testbed.rs"
 [[example]]
 name = "gpui_m10_testbed"
 path = "examples/gpui_m10_testbed.rs"
-
-[[bench]]
-name = "m4_storage"
-harness = false
+[[example]]
+name = "gpui_m11_testbed"
+path = "examples/gpui_m11_testbed.rs"

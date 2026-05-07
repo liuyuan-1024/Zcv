@@ -1,23 +1,25 @@
-//! M9 GPUI testbed：TrackedRange、PositionMap、DeltaEvent 与 M8 既有编辑体验。
+//! M11 GPUI testbed：Viewport Slicing、MetadataLayer、TrackedRange、PositionMap、DeltaEvent 与 M10 既有编辑体验。
 //!
-//! 这个 example 是“人类体感 / UI 桥接”验证入口，不替代 `tests/m9_anchor.rs`。
-//! 它继承 M8 的输入、移动、多光标、Undo / Redo、composition、reload、保存边界、
-//! DeltaEvent 与 PositionMap 体感，并叠加 TrackedRange 创建、跟随、收缩与失效观察。
+//! 这个 example 是“人类体感 / UI 桥接”验证入口，不替代 `tests/m11_viewport_slicing.rs`。
+//! 它继承 M10 的输入、移动、多光标、Undo / Redo、composition、reload、保存边界、
+//! DeltaEvent、PositionMap、TrackedRange 与 MetadataLayer 体感，并叠加 Viewport 可见行、
+//! 长行截断、大文本滚动和 Snapshot 只读切片观察。
 
 use gpui::{
-    App, Application, Bounds, Context, FocusHandle, Focusable, IntoElement, KeyBinding,
-    KeyDownEvent, Render, StatefulInteractiveElement, Window, WindowBounds, WindowOptions, actions,
-    black, div, prelude::*, px, rgb, size, white,
+    actions, black, div, prelude::*, px, rgb, size, white, App, Application, Bounds, Context,
+    FocusHandle, Focusable, IntoElement, KeyBinding, KeyDownEvent, Render,
+    StatefulInteractiveElement, Window, WindowBounds, WindowOptions,
 };
 use zom_engine::{
     Affinity, Buffer, BufferConfig, BufferKind, CharOffset, CompositionSelection, DisplayColumn,
-    EngineResult, MappingResult, MovementDirection, MovementUnit, Position, Selection,
-    SelectionSet, Stickiness, TextRange, TrackedRange, TrackedRangeUpdate,
-    TrackedRangeUpdatePolicy,
+    EngineResult, Line, LineRange, MappingResult, MetadataLayer, MetadataLayerKind, MetadataLayers,
+    MetadataLineWindow, MetadataRangeSpec, MetadataRangeUpdate, MovementDirection, MovementUnit,
+    Position, Selection, SelectionSet, Stickiness, TextRange, TrackedRange, TrackedRangeUpdate,
+    TrackedRangeUpdatePolicy, Viewport,
 };
 
 actions!(
-    m9_testbed,
+    m11_testbed,
     [
         MoveLeft,
         MoveRight,
@@ -78,22 +80,37 @@ actions!(
         CreateTrackedRange,
         DemoTrackedRanges,
         ClearTrackedRanges,
+        DemoMetadataLayers,
+        QueryMetadataAtCursor,
+        QueryMetadataLineWindow,
+        ReplaceSearchMetadata,
+        DiscardStaleMetadata,
+        ClearMetadataLayers,
+        ViewportFromCursor,
+        ViewportUp,
+        ViewportDown,
+        ViewportGrow,
+        ViewportShrink,
+        ToggleViewportLineLimit,
+        LoadLargeViewportSample,
+        SnapshotViewportPreview,
         Quit,
     ]
 );
 
-const SAMPLE_TEXT: &str = "M9 PositionMap / DeltaEvent 体验台\n\n\
+const SAMPLE_TEXT: &str = "M11 Viewport Slicing / MetadataLayer / PositionMap / DeltaEvent 体验台\n\n\
 英文区域：hello world\n\
 中文输入区域：|\n\
 日文输入区域：|\n\
 韩文输入区域：|\n\
+长行区域：0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ--这一行用于验证 viewport 的 max_line_chars 截断策略。\n\
 \n\
 继承 M6 Word movement：parseHTTPResponse user_id snake_case a+b == c && value != null\n\
 \n\
-M9 状态观察：BufferId / BufferState / DeltaEvent / PositionMap / TrackedRange。\n\
-试试输入、删除、替换、Undo/Redo、composition、reload，并观察 tracked range 移动、收缩与失效。";
+M11 状态观察：BufferId / BufferState / DeltaEvent / PositionMap / TrackedRange / MetadataLayer / ViewportSlice。\n\
+试试输入、删除、替换、Undo/Redo、composition、reload，并观察 tracked range、metadata range 与 viewport 可见行读取。";
 
-const RELOAD_TEXT: &str = "M9 reload 后的新外部文本\n\n\
+const RELOAD_TEXT: &str = "M11 reload 后的新外部文本\n\n\
 reload 会重建文本存储、清空 undo/redo history、selection 回到开头，并把当前文本设为 clean。\n\
 你仍然可以继续输入、移动、多光标、composition、保存或再次 reload。\n";
 
@@ -107,6 +124,8 @@ enum LastOperationKind {
     Lifecycle,
     Events,
     Tracked,
+    Metadata,
+    Viewport,
     Error,
 }
 
@@ -121,12 +140,26 @@ impl LastOperationKind {
             Self::Lifecycle => "生命周期",
             Self::Events => "事件",
             Self::Tracked => "范围追踪",
+            Self::Metadata => "元数据",
+            Self::Viewport => "视口读取",
             Self::Error => "错误",
         }
     }
 }
 
-struct M9Testbed {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DemoMetadata {
+    label: &'static str,
+    detail: &'static str,
+}
+
+impl DemoMetadata {
+    fn new(label: &'static str, detail: &'static str) -> Self {
+        Self { label, detail }
+    }
+}
+
+struct M11Testbed {
     buffer: Buffer,
     focus_handle: FocusHandle,
     active_unit: MovementUnit,
@@ -136,11 +169,17 @@ struct M9Testbed {
     last_preedit: String,
     tracked_ranges: Vec<TrackedRange>,
     last_tracked_update: String,
+    metadata_layers: MetadataLayers<DemoMetadata>,
+    last_metadata_update: String,
+    viewport_start_line: Line,
+    viewport_line_count: usize,
+    viewport_max_line_chars: Option<usize>,
+    last_viewport_update: String,
 }
 
-impl M9Testbed {
+impl M11Testbed {
     fn new(cx: &mut Context<Self>) -> Self {
-        let mut buffer = initial_buffer().expect("M9 testbed sample text should be valid");
+        let mut buffer = initial_buffer().expect("M11 testbed sample text should be valid");
         buffer.mark_saved();
 
         let mut this = Self {
@@ -148,11 +187,17 @@ impl M9Testbed {
             focus_handle: cx.focus_handle(),
             active_unit: MovementUnit::Word,
             last_operation: LastOperationKind::Info,
-            message: "M9 已就绪：PositionMap / DeltaEvent / pending events".to_string(),
+            message: "M11 已就绪：PositionMap / DeltaEvent / pending events".to_string(),
             saved_label: "初始版本已保存".to_string(),
             last_preedit: String::new(),
             tracked_ranges: Vec::new(),
             last_tracked_update: "尚未创建 tracked range".to_string(),
+            metadata_layers: MetadataLayers::new(),
+            last_metadata_update: "尚未创建 metadata layer".to_string(),
+            viewport_start_line: Line::ZERO,
+            viewport_line_count: 6,
+            viewport_max_line_chars: Some(48),
+            last_viewport_update: "Viewport 从第 0 行开始，窗口 6 行，长行限制 48 字符".to_string(),
         };
         this.place_initial_cursor();
         this
@@ -200,6 +245,9 @@ impl M9Testbed {
     fn append_range_sync_summary(&mut self, mut message: String) -> String {
         if let Some(tracked_update) = self.sync_tracked_ranges_from_last_event() {
             message = format!("{message}；{tracked_update}");
+        }
+        if let Some(metadata_update) = self.sync_metadata_layers_from_last_event() {
+            message = format!("{message}；{metadata_update}");
         }
         message
     }
@@ -296,6 +344,13 @@ impl M9Testbed {
                 self.last_preedit.clear();
                 self.tracked_ranges.clear();
                 self.last_tracked_update = "重置后已清空 tracked ranges".to_string();
+                self.metadata_layers = MetadataLayers::new();
+                self.last_metadata_update = "重置后已清空 metadata layers".to_string();
+                self.viewport_start_line = Line::ZERO;
+                self.viewport_line_count = 6;
+                self.viewport_max_line_chars = Some(48);
+                self.last_viewport_update =
+                    "重置后 viewport 回到第 0 行，窗口 6 行，长行限制 48 字符".to_string();
                 self.place_initial_cursor();
                 self.set_message(LastOperationKind::Info, "已重置示例文本", cx);
             }
@@ -477,6 +532,10 @@ impl M9Testbed {
             self.last_preedit.clear();
             self.tracked_ranges.clear();
             self.last_tracked_update = "reload 后已清空 tracked ranges".to_string();
+            self.metadata_layers = MetadataLayers::new();
+            self.last_metadata_update = "reload 后已清空 metadata layers".to_string();
+            self.viewport_start_line = Line::ZERO;
+            self.last_viewport_update = "reload 后 viewport 回到第 0 行".to_string();
         }
     }
 
@@ -585,6 +644,348 @@ impl M9Testbed {
         );
     }
 
+    fn create_demo_metadata_layers(&mut self, cx: &mut Context<Self>) {
+        let text = self.buffer.text();
+        let text = text.as_ref();
+        let version = self.buffer.version();
+
+        let mut search = MetadataLayer::with_kind(MetadataLayerKind::SearchMatch, version)
+            .with_default_stickiness(Stickiness::Expand);
+        for needle in ["hello", "输入区域", "MetadataLayer"] {
+            if let Some(range) = find_text_range(text, needle) {
+                let _ = search.insert(range, DemoMetadata::new("search", needle));
+            }
+        }
+
+        let mut diagnostics = MetadataLayer::with_kind(MetadataLayerKind::Diagnostics, version)
+            .with_default_stickiness(Stickiness::Never);
+        if let Some(range) = find_text_range(text, "a+b == c") {
+            let _ = diagnostics.insert_with_options(
+                range,
+                Stickiness::Never,
+                TrackedRangeUpdatePolicy::invalidate_when_touched_by_deletion(),
+                DemoMetadata::new("diagnostic", "模拟 warning：表达式需要检查"),
+            );
+        }
+        if let Some(range) = find_text_range(text, "value != null") {
+            let _ = diagnostics.insert_with_options(
+                range,
+                Stickiness::Never,
+                TrackedRangeUpdatePolicy::invalidate_when_touched_by_deletion(),
+                DemoMetadata::new("diagnostic", "模拟 info：空值判断"),
+            );
+        }
+
+        let mut bookmarks = MetadataLayer::with_kind(MetadataLayerKind::Bookmark, version)
+            .with_default_stickiness(Stickiness::Expand);
+        for needle in ["中文输入区域", "韩文输入区域"] {
+            if let Some(offset) = find_char_offset(text, needle) {
+                let range = TextRange::new(offset, offset)
+                    .expect("empty metadata range from same offset should be valid");
+                let _ = bookmarks.insert(range, DemoMetadata::new("bookmark", needle));
+            }
+        }
+
+        self.metadata_layers = MetadataLayers::from_layers([search, diagnostics, bookmarks]);
+        self.last_metadata_update = format!(
+            "已创建 demo metadata layers：{}",
+            self.metadata_layer_counts()
+        );
+        self.set_message(
+            LastOperationKind::Metadata,
+            self.last_metadata_update.clone(),
+            cx,
+        );
+    }
+
+    fn query_metadata_at_cursor(&mut self, cx: &mut Context<Self>) {
+        let head = self.buffer.selection().primary().head();
+        let hits = self
+            .metadata_layers
+            .iter()
+            .flat_map(|layer| {
+                layer
+                    .ranges_containing(head)
+                    .map(move |range| format_metadata_hit(layer.kind(), range.metadata()))
+            })
+            .collect::<Vec<_>>();
+
+        self.last_metadata_update = if hits.is_empty() {
+            format!("cursor {} 没有命中 metadata", head.get())
+        } else {
+            format!("cursor {} 命中：{}", head.get(), hits.join(" | "))
+        };
+        self.set_message(
+            LastOperationKind::Metadata,
+            self.last_metadata_update.clone(),
+            cx,
+        );
+    }
+
+    fn query_metadata_line_window(&mut self, cx: &mut Context<Self>) {
+        let head = self.buffer.selection().primary().head();
+        let position = self.buffer.char_to_position(head).unwrap_or(Position::ZERO);
+        let start = position.line();
+        let end = Line::new((start.get() + 3).min(self.buffer.line_count()));
+        let window = MetadataLineWindow::new(
+            LineRange::new(start, end).expect("metadata line window must be ordered"),
+        );
+
+        let hits = self
+            .metadata_layers
+            .iter()
+            .flat_map(|layer| {
+                layer
+                    .ranges_in_line_window(&self.buffer, window)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(move |range| format_metadata_hit(layer.kind(), range.metadata()))
+            })
+            .collect::<Vec<_>>();
+
+        self.last_metadata_update = format!(
+            "line window {}..{} 命中 {} 个：{}",
+            start.get(),
+            end.get(),
+            hits.len(),
+            if hits.is_empty() {
+                "none".to_string()
+            } else {
+                hits.join(" | ")
+            }
+        );
+        self.set_message(
+            LastOperationKind::Metadata,
+            self.last_metadata_update.clone(),
+            cx,
+        );
+    }
+
+    fn replace_search_metadata_from_selection(&mut self, cx: &mut Context<Self>) {
+        let selection = *self.buffer.selection().primary();
+        let range = if selection.is_caret() {
+            match line_text_range(&self.buffer, selection.head()) {
+                Ok(range) => range,
+                Err(error) => {
+                    self.set_message(LastOperationKind::Error, format!("{error:?}"), cx);
+                    return;
+                }
+            }
+        } else {
+            selection.range()
+        };
+
+        let ids = self.metadata_layers.replace_layer_ranges_with_options(
+            MetadataLayerKind::SearchMatch,
+            self.buffer.version(),
+            [
+                MetadataRangeSpec::new(range, DemoMetadata::new("search", "selection/line"))
+                    .with_stickiness(Stickiness::Expand),
+            ],
+        );
+
+        match ids {
+            Ok(ids) => {
+                self.last_metadata_update = format!(
+                    "已批量替换 SearchMatch layer：{} 个 range，目标 {}..{}",
+                    ids.len(),
+                    range.start().get(),
+                    range.end().get(),
+                );
+                self.set_message(
+                    LastOperationKind::Metadata,
+                    self.last_metadata_update.clone(),
+                    cx,
+                );
+            }
+            Err(error) => self.set_message(LastOperationKind::Error, format!("{error:?}"), cx),
+        }
+    }
+
+    fn discard_stale_metadata_layers(&mut self, cx: &mut Context<Self>) {
+        let removed = self.metadata_layers.discard_stale(self.buffer.version());
+        self.last_metadata_update = format!(
+            "丢弃 stale metadata layers：{} 个；剩余 {}",
+            removed.len(),
+            self.metadata_layers.len()
+        );
+        self.set_message(
+            LastOperationKind::Metadata,
+            self.last_metadata_update.clone(),
+            cx,
+        );
+    }
+
+    fn clear_metadata_layers(&mut self, cx: &mut Context<Self>) {
+        let count = self.metadata_layers.len();
+        self.metadata_layers = MetadataLayers::new();
+        self.last_metadata_update = format!("已清空 {count} 个 metadata layer");
+        self.set_message(
+            LastOperationKind::Metadata,
+            self.last_metadata_update.clone(),
+            cx,
+        );
+    }
+
+    fn current_viewport(&self) -> Viewport {
+        let viewport = Viewport::new(self.viewport_start_line, self.viewport_line_count);
+        match self.viewport_max_line_chars {
+            Some(limit) => viewport.with_max_line_chars(limit),
+            None => viewport,
+        }
+    }
+
+    fn viewport_from_cursor(&mut self, cx: &mut Context<Self>) {
+        match self
+            .buffer
+            .char_to_position(self.buffer.selection().primary().head())
+        {
+            Ok(position) => {
+                self.viewport_start_line = position.line();
+                self.update_viewport_message("已跳转 viewport 到主光标所在行", cx);
+            }
+            Err(error) => self.set_message(LastOperationKind::Error, format!("{error:?}"), cx),
+        }
+    }
+
+    fn scroll_viewport(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let max_start = self.buffer.line_count();
+        let next = if delta.is_negative() {
+            self.viewport_start_line
+                .get()
+                .saturating_sub(delta.unsigned_abs())
+        } else {
+            self.viewport_start_line
+                .get()
+                .saturating_add(delta as usize)
+                .min(max_start)
+        };
+
+        self.viewport_start_line = Line::new(next);
+        self.update_viewport_message("已滚动 viewport", cx);
+    }
+
+    fn grow_viewport(&mut self, cx: &mut Context<Self>) {
+        self.viewport_line_count = (self.viewport_line_count + 1).min(24);
+        self.update_viewport_message("已增加 viewport 行数", cx);
+    }
+
+    fn shrink_viewport(&mut self, cx: &mut Context<Self>) {
+        self.viewport_line_count = self.viewport_line_count.saturating_sub(1).max(1);
+        self.update_viewport_message("已减少 viewport 行数", cx);
+    }
+
+    fn toggle_viewport_line_limit(&mut self, cx: &mut Context<Self>) {
+        self.viewport_max_line_chars = match self.viewport_max_line_chars {
+            Some(_) => None,
+            None => Some(48),
+        };
+        self.update_viewport_message("已切换长行读取限制", cx);
+    }
+
+    fn load_large_viewport_sample(&mut self, cx: &mut Context<Self>) {
+        let mut lines = Vec::with_capacity(1_204);
+        lines.push(
+            "M11 大文本 viewport 样本：用于滚动、跳转行、长行截断和只读 slice 体感验证".to_string(),
+        );
+        lines.push(
+            "提示：Cmd-Alt-V 跳转到光标行，Cmd-Alt-↑/↓ 滚动，Cmd-Alt-L 切换长行限制".to_string(),
+        );
+        lines.push(format!("超长行：{}", "0123456789abcdef".repeat(40)));
+        for line in 0..1_200 {
+            lines.push(format!(
+                "line-{line:04} | viewport slicing keeps reading logical visible lines"
+            ));
+        }
+
+        let result = self.buffer.reload_from_text(lines.join("\n"));
+        if self
+            .handle_result(
+                result,
+                LastOperationKind::Viewport,
+                "已加载 M11 大文本 viewport 样本",
+                cx,
+            )
+            .is_some()
+        {
+            self.saved_label = format!(
+                "large viewport sample clean v{}",
+                self.buffer.version().get()
+            );
+            self.last_preedit.clear();
+            self.tracked_ranges.clear();
+            self.last_tracked_update = "加载大文本后已清空 tracked ranges".to_string();
+            self.metadata_layers = MetadataLayers::new();
+            self.last_metadata_update = "加载大文本后已清空 metadata layers".to_string();
+            self.viewport_start_line = Line::ZERO;
+            self.viewport_line_count = 10;
+            self.viewport_max_line_chars = Some(64);
+            self.last_viewport_update =
+                "大文本样本已就绪：viewport 0..10，长行限制 64 字符".to_string();
+        }
+    }
+
+    fn snapshot_viewport_preview(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self.buffer.snapshot();
+        match snapshot.slice_viewport(self.current_viewport()) {
+            Ok(slice) => {
+                let preview = slice
+                    .lines()
+                    .iter()
+                    .map(|line| {
+                        format!(
+                            "{}:{}{}",
+                            line.line().get(),
+                            line.as_str().replace('\t', "⇥"),
+                            if line.is_truncated() { "…" } else { "" }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                self.last_viewport_update = format!(
+                    "Snapshot v{} / Buffer v{} / stale={} / viewport {}..{}：{}",
+                    snapshot.version().get(),
+                    self.buffer.version().get(),
+                    self.buffer.is_snapshot_stale(&snapshot),
+                    slice.line_range().start().get(),
+                    slice.line_range().end().get(),
+                    preview
+                );
+                self.set_message(
+                    LastOperationKind::Viewport,
+                    self.last_viewport_update.clone(),
+                    cx,
+                );
+            }
+            Err(error) => self.set_message(LastOperationKind::Error, format!("{error:?}"), cx),
+        }
+    }
+
+    fn update_viewport_message(&mut self, prefix: &'static str, cx: &mut Context<Self>) {
+        match self.buffer.slice_viewport(self.current_viewport()) {
+            Ok(slice) => {
+                let truncated = slice
+                    .lines()
+                    .iter()
+                    .filter(|line| line.is_truncated())
+                    .count();
+                self.last_viewport_update = format!(
+                    "{prefix}：Viewport {}..{} | visible lines={} | max_line_chars={} | truncated={truncated}",
+                    slice.line_range().start().get(),
+                    slice.line_range().end().get(),
+                    slice.lines().len(),
+                    self.viewport_limit_label(),
+                );
+                self.set_message(
+                    LastOperationKind::Viewport,
+                    self.last_viewport_update.clone(),
+                    cx,
+                );
+            }
+            Err(error) => self.set_message(LastOperationKind::Error, format!("{error:?}"), cx),
+        }
+    }
+
     fn sync_tracked_ranges_from_last_event(&mut self) -> Option<String> {
         if self.tracked_ranges.is_empty() {
             return None;
@@ -615,6 +1016,45 @@ impl M9Testbed {
         let invalidated = before - self.tracked_ranges.len();
         let summary = format_tracked_updates(&updates, invalidated);
         self.last_tracked_update = summary.clone();
+        Some(summary)
+    }
+
+    fn sync_metadata_layers_from_last_event(&mut self) -> Option<String> {
+        if self.metadata_layers.is_empty() {
+            return None;
+        }
+
+        let event = self.buffer.last_delta_event()?.clone();
+        if event.new_version != self.buffer.version() {
+            return None;
+        }
+
+        let mut updated_layers = 0usize;
+        let mut update_count = 0usize;
+        let mut invalidated = 0usize;
+
+        for layer in self.metadata_layers.iter_mut() {
+            if layer.version() != event.old_version {
+                continue;
+            }
+
+            let updates = layer.update_through_delta_event(&event).ok()?;
+            updated_layers += 1;
+            update_count += updates.len();
+            invalidated += updates
+                .iter()
+                .filter(|update| matches!(update, MetadataRangeUpdate::Invalidated { .. }))
+                .count();
+        }
+
+        if updated_layers == 0 {
+            return None;
+        }
+
+        let summary = format!(
+            "MetadataLayer 更新：layers={updated_layers} ranges={update_count} invalidated={invalidated}"
+        );
+        self.last_metadata_update = summary.clone();
         Some(summary)
     }
 
@@ -824,25 +1264,146 @@ impl M9Testbed {
         )
     }
 
+    fn metadata_layer_counts(&self) -> String {
+        if self.metadata_layers.is_empty() {
+            return "none".to_string();
+        }
+
+        self.metadata_layers
+            .iter()
+            .map(|layer| format!("{}={}", metadata_kind_label(layer.kind()), layer.len()))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+
+    fn metadata_status(&self) -> String {
+        let head = self.buffer.selection().primary().head();
+        let cursor_hits = self
+            .metadata_layers
+            .iter()
+            .flat_map(|layer| {
+                layer
+                    .ranges_containing(head)
+                    .map(move |range| format_metadata_hit(layer.kind(), range.metadata()))
+            })
+            .collect::<Vec<_>>();
+
+        format!(
+            "MetadataLayer：layers={} | ranges={} | cursor hits={} | 最近：{}",
+            self.metadata_layers.len(),
+            self.metadata_layer_counts(),
+            if cursor_hits.is_empty() {
+                "none".to_string()
+            } else {
+                cursor_hits.join(" | ")
+            },
+            self.last_metadata_update,
+        )
+    }
+
+    fn viewport_limit_label(&self) -> String {
+        self.viewport_max_line_chars
+            .map(|limit| format!("{limit} chars"))
+            .unwrap_or_else(|| "off".to_string())
+    }
+
+    fn viewport_status(&self) -> String {
+        match self.buffer.slice_viewport(self.current_viewport()) {
+            Ok(slice) => {
+                let truncated = slice
+                    .lines()
+                    .iter()
+                    .filter(|line| line.is_truncated())
+                    .count();
+                format!(
+                    "ViewportSlice：start={} | requested={} lines | actual={}..{} | max_line_chars={} | visible={} | truncated={} | last={}",
+                    self.viewport_start_line.get(),
+                    self.viewport_line_count,
+                    slice.line_range().start().get(),
+                    slice.line_range().end().get(),
+                    self.viewport_limit_label(),
+                    slice.lines().len(),
+                    truncated,
+                    self.last_viewport_update,
+                )
+            }
+            Err(error) => format!("Viewport：读取失败 {error:?}"),
+        }
+    }
+
+    fn viewport_preview_lines(&self) -> Vec<String> {
+        match self.buffer.slice_viewport(self.current_viewport()) {
+            Ok(slice) => {
+                if slice.is_empty() {
+                    return vec!["Viewport 当前为空窗口".to_string()];
+                }
+
+                let mut lines = vec![
+                    "line  | full range | visible range | chars | bytes | cut | text".to_string(),
+                    "------+------------+---------------+-------+-------+-----+----------------"
+                        .to_string(),
+                ];
+                lines.extend(slice.lines().iter().map(|line| {
+                    format!(
+                        "{:>5} | {:>4}..{:<4} | {:>5}..{:<5} | {:>5} | {:>5} | {:>3} | {}",
+                        line.line().get(),
+                        line.full_range().start().get(),
+                        line.full_range().end().get(),
+                        line.visible_range().start().get(),
+                        line.visible_range().end().get(),
+                        line.visible_len_chars(),
+                        line.visible_len_bytes(),
+                        if line.is_truncated() { "yes" } else { "no" },
+                        render_preview_text(line.as_str()),
+                    )
+                }));
+                lines
+            }
+            Err(error) => vec![format!("Viewport 读取失败：{error:?}")],
+        }
+    }
+
     fn status_lines(&self) -> Vec<String> {
         let history = self.buffer.history_status();
+        let snapshot = self.buffer.snapshot();
+        let viewport = self
+            .buffer
+            .slice_viewport(self.current_viewport())
+            .map(|slice| {
+                format!(
+                    "Viewport {}..{} / {} visible / {} truncated",
+                    slice.line_range().start().get(),
+                    slice.line_range().end().get(),
+                    slice.lines().len(),
+                    slice
+                        .lines()
+                        .iter()
+                        .filter(|line| line.is_truncated())
+                        .count(),
+                )
+            })
+            .unwrap_or_else(|error| format!("Viewport error: {error:?}"));
         vec![
             format!(
-                "M9 范围追踪体验台｜{}｜版本 v{}｜{}｜{} 行｜{} 字符｜{} 字节",
+                "M11 Viewport Testbed | {} | Buffer v{} | {} | {} lines | {} chars | {} bytes",
                 self.last_operation.label(),
                 self.buffer.version().get(),
-                self.saved_label,
+                dirty_state_label(self.buffer.is_dirty()),
                 self.buffer.line_count(),
                 self.buffer.len_chars().get(),
                 self.buffer.len_bytes(),
             ),
             format!(
-                "选区：{} 个，主选区 #{}｜撤销栈 {}，重做栈 {}",
+                "Selection {} ranges / primary #{} | Undo {} / Redo {} | Snapshot v{} stale={} | {}",
                 self.buffer.selection().len(),
                 self.buffer.selection().primary_index(),
                 history.undo_depth,
                 history.redo_depth,
+                snapshot.version().get(),
+                self.buffer.is_snapshot_stale(&snapshot),
+                self.saved_label,
             ),
+            viewport,
             format!("最近操作：{}", self.message),
         ]
     }
@@ -857,22 +1418,18 @@ impl M9Testbed {
             self.delta_event_status(),
             self.position_map_status(),
             self.tracked_range_status(),
+            self.metadata_status(),
+            self.viewport_status(),
         ]
     }
 
     fn help_lines(&self) -> Vec<&'static str> {
         vec![
-            "输入：直接输入文字；Space / Tab / Enter；Backspace / Delete。空格、Tab、CR 会显示为 ·、⇥、␍",
-            "移动：←/→ 按字素移动；Alt 按单词，Ctrl 按标识符，Cmd 按子词，Cmd-Alt 按符号；加 Shift 扩展选区",
-            "移动粒度：Cmd-1 字素，Cmd-2 单词，Cmd-3 标识符，Cmd-4 子词，Cmd-5 符号；Ctrl-Alt-←/→ 使用当前粒度",
-            "组合输入：Cmd-I 开始，Cmd-K 预编辑 'n'，Cmd-L 预编辑 '你'，Cmd-Y 预编辑 '你好'",
-            "更多预编辑示例：Cmd-J 'にほん'，Cmd-O '한글'，Cmd-U '输入法'，并设置组合输入内部选区",
-            "提交 / 取消：Cmd-Enter 提交当前预编辑，Cmd-Shift-Enter 提交 '你好'，Cmd-P 直接提交中文样例，Cmd-X 取消",
-            "多光标与 IME：Cmd-M 创建多光标；开始组合输入时会降级到主选区，避免多个预编辑状态打架",
-            "生命周期：Cmd-B 切换只读，Cmd-E 模拟外部重新加载，Cmd-Shift-S 预览保存文本",
-            "事件观察：下方详情显示最近 DeltaEvent / PositionMap；Cmd-Shift-E 清空待消费事件队列",
-            "范围追踪：Cmd-T 从主选区创建；Cmd-Shift-T 创建样例范围；Cmd-Alt-T 清空；编辑后观察移动、收缩与失效",
-            "历史与通用操作：Cmd-Z 撤销，Cmd-Shift-Z 重做，Cmd-S 标记保存点，Cmd-R 重置，Esc 收起到主选区，Cmd-Q 退出",
+            "Edit：直接输入；Space / Tab / Enter；Backspace / Delete；Cmd-Z / Cmd-Shift-Z；Cmd-S 保存点；Cmd-R 重置",
+            "Move：←/→ 字素；Alt 单词；Ctrl 标识符；Cmd 子词；Cmd-Alt 符号；Shift 扩展 selection",
+            "Composition：Cmd-I start；Cmd-K/L/Y/J/O/U 更新 preedit；Cmd-Enter commit；Cmd-X cancel",
+            "Ranges：Cmd-T tracked range；Cmd-Shift-T demo ranges；Cmd-G metadata layers；Cmd-Alt-G line window query",
+            "Viewport：Cmd-Alt-V 跳到光标行；Cmd-Alt-↑/↓ 滚动；Cmd-Alt-= / Cmd-Alt-- 调整行数；Cmd-Alt-L max_line_chars；Cmd-Alt-B large sample；Cmd-Alt-P Snapshot",
         ]
     }
 
@@ -1315,29 +1872,142 @@ impl M9Testbed {
     ) {
         self.clear_tracked_ranges(cx);
     }
+
+    fn demo_metadata_layers_action(
+        &mut self,
+        _: &DemoMetadataLayers,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.create_demo_metadata_layers(cx);
+    }
+
+    fn query_metadata_at_cursor_action(
+        &mut self,
+        _: &QueryMetadataAtCursor,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.query_metadata_at_cursor(cx);
+    }
+
+    fn query_metadata_line_window_action(
+        &mut self,
+        _: &QueryMetadataLineWindow,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.query_metadata_line_window(cx);
+    }
+
+    fn replace_search_metadata_action(
+        &mut self,
+        _: &ReplaceSearchMetadata,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.replace_search_metadata_from_selection(cx);
+    }
+
+    fn discard_stale_metadata_action(
+        &mut self,
+        _: &DiscardStaleMetadata,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.discard_stale_metadata_layers(cx);
+    }
+
+    fn clear_metadata_layers_action(
+        &mut self,
+        _: &ClearMetadataLayers,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_metadata_layers(cx);
+    }
+
+    fn viewport_from_cursor_action(
+        &mut self,
+        _: &ViewportFromCursor,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.viewport_from_cursor(cx);
+    }
+
+    fn viewport_up_action(&mut self, _: &ViewportUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.scroll_viewport(-(self.viewport_line_count as isize), cx);
+    }
+
+    fn viewport_down_action(&mut self, _: &ViewportDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.scroll_viewport(self.viewport_line_count as isize, cx);
+    }
+
+    fn viewport_grow_action(&mut self, _: &ViewportGrow, _: &mut Window, cx: &mut Context<Self>) {
+        self.grow_viewport(cx);
+    }
+
+    fn viewport_shrink_action(
+        &mut self,
+        _: &ViewportShrink,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.shrink_viewport(cx);
+    }
+
+    fn toggle_viewport_line_limit_action(
+        &mut self,
+        _: &ToggleViewportLineLimit,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_viewport_line_limit(cx);
+    }
+
+    fn load_large_viewport_sample_action(
+        &mut self,
+        _: &LoadLargeViewportSample,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.load_large_viewport_sample(cx);
+    }
+
+    fn snapshot_viewport_preview_action(
+        &mut self,
+        _: &SnapshotViewportPreview,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.snapshot_viewport_preview(cx);
+    }
 }
 
-impl Focusable for M9Testbed {
+impl Focusable for M11Testbed {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl Render for M9Testbed {
+impl Render for M11Testbed {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let decorated_text = decorate_text(
             self.buffer.text().as_ref(),
             self.buffer.selection(),
             self.buffer.composition(),
             &self.tracked_ranges,
+            &self.metadata_layers,
         );
         let status_lines = self.status_lines();
         let detail_lines = self.detail_lines();
+        let viewport_lines = self.viewport_preview_lines();
         let help_lines = self.help_lines();
 
         div()
             .id("m9-scroll-root")
-            .key_context("M9Testbed")
+            .key_context("M11Testbed")
             .track_focus(&self.focus_handle(cx))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_action(cx.listener(Self::move_left))
@@ -1399,13 +2069,27 @@ impl Render for M9Testbed {
             .on_action(cx.listener(Self::create_tracked_range_action))
             .on_action(cx.listener(Self::demo_tracked_ranges_action))
             .on_action(cx.listener(Self::clear_tracked_ranges_action))
+            .on_action(cx.listener(Self::demo_metadata_layers_action))
+            .on_action(cx.listener(Self::query_metadata_at_cursor_action))
+            .on_action(cx.listener(Self::query_metadata_line_window_action))
+            .on_action(cx.listener(Self::replace_search_metadata_action))
+            .on_action(cx.listener(Self::discard_stale_metadata_action))
+            .on_action(cx.listener(Self::clear_metadata_layers_action))
+            .on_action(cx.listener(Self::viewport_from_cursor_action))
+            .on_action(cx.listener(Self::viewport_up_action))
+            .on_action(cx.listener(Self::viewport_down_action))
+            .on_action(cx.listener(Self::viewport_grow_action))
+            .on_action(cx.listener(Self::viewport_shrink_action))
+            .on_action(cx.listener(Self::toggle_viewport_line_limit_action))
+            .on_action(cx.listener(Self::load_large_viewport_sample_action))
+            .on_action(cx.listener(Self::snapshot_viewport_preview_action))
             .size_full()
             .overflow_y_scroll()
             .scrollbar_width(px(10.0))
             .flex()
             .flex_col()
             .gap_3()
-            .bg(rgb(0x1f2328))
+            .bg(rgb(0x111827))
             .text_color(white())
             .p(px(16.0))
             .child(
@@ -1414,62 +2098,116 @@ impl Render for M9Testbed {
                     .flex_col()
                     .gap_2()
                     .border_1()
-                    .border_color(rgb(0x6e7681))
-                    .bg(rgb(0x0d1117))
+                    .border_color(rgb(0x374151))
+                    .bg(rgb(0x0f172a))
                     .p(px(12.0))
-                    .child("状态")
+                    .text_size(px(14.0))
+                    .line_height(px(22.0))
+                    .child("状态 / Status")
                     .children(status_lines.into_iter()),
             )
             .child(
                 div()
                     .flex()
                     .flex_col()
+                    .gap_1()
                     .border_1()
-                    .border_color(black())
-                    .bg(white())
-                    .text_color(black())
+                    .border_color(rgb(0x2563eb))
+                    .bg(rgb(0x172554))
                     .p(px(12.0))
-                    .text_size(px(18.0))
-                    .line_height(px(28.0))
-                    .child(decorated_text),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .border_1()
-                    .border_color(rgb(0x6e7681))
-                    .bg(rgb(0x0d1117))
-                    .p(px(12.0))
-                    .text_size(px(14.0))
-                    .line_height(px(22.0))
-                    .child("观察详情")
-                    .children(detail_lines.into_iter()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .border_1()
-                    .border_color(rgb(0x6e7681))
-                    .bg(rgb(0x161b22))
-                    .p(px(12.0))
-                    .text_size(px(14.0))
-                    .line_height(px(22.0))
-                    .child("快捷键速查")
+                    .text_size(px(13.0))
+                    .line_height(px(20.0))
+                    .child("快捷键 / Command Cheatsheet")
                     .children(help_lines.into_iter()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child("Editable Buffer")
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .border_1()
+                                    .border_color(rgb(0xd1d5db))
+                                    .bg(white())
+                                    .text_color(black())
+                                    .p(px(12.0))
+                                    .text_size(px(18.0))
+                                    .line_height(px(28.0))
+                                    .child(decorated_text),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child("ViewportSlice")
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .border_1()
+                                    .border_color(rgb(0x2563eb))
+                                    .bg(rgb(0x0b1220))
+                                    .p(px(12.0))
+                                    .text_size(px(13.0))
+                                    .line_height(px(20.0))
+                                    .font_family("Menlo")
+                                    .children(viewport_lines.into_iter()),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .border_1()
+                    .border_color(rgb(0x374151))
+                    .bg(rgb(0x0f172a))
+                    .p(px(12.0))
+                    .text_size(px(14.0))
+                    .line_height(px(22.0))
+                    .child("Debug Signals")
+                    .children(detail_lines.into_iter()),
             )
     }
 }
 
 fn bool_label(value: bool) -> &'static str {
-    if value { "是" } else { "否" }
+    if value {
+        "是"
+    } else {
+        "否"
+    }
 }
 
 fn dirty_label(is_dirty: bool) -> &'static str {
-    if is_dirty { "已修改" } else { "干净" }
+    if is_dirty {
+        "已修改"
+    } else {
+        "干净"
+    }
+}
+
+fn dirty_state_label(is_dirty: bool) -> &'static str {
+    if is_dirty {
+        "Dirty"
+    } else {
+        "Clean"
+    }
 }
 
 fn unit_label(unit: MovementUnit) -> &'static str {
@@ -1491,7 +2229,7 @@ fn direction_label(direction: MovementDirection) -> &'static str {
 
 fn initial_buffer() -> EngineResult<Buffer> {
     Buffer::from_loaded_text(
-        BufferKind::file("/tmp/zom-engine-m9-testbed.txt"),
+        BufferKind::file("/tmp/zom-engine-m11-testbed.txt"),
         SAMPLE_TEXT.as_bytes(),
         BufferConfig::default(),
     )
@@ -1504,6 +2242,54 @@ fn buffer_kind_label(kind: &BufferKind) -> String {
         BufferKind::Untitled => "未命名".to_string(),
         BufferKind::Scratch => "临时缓冲区".to_string(),
     }
+}
+
+fn metadata_kind_label(kind: &MetadataLayerKind) -> String {
+    match kind {
+        MetadataLayerKind::SearchMatch => "搜索匹配".to_string(),
+        MetadataLayerKind::Diagnostics => "诊断".to_string(),
+        MetadataLayerKind::SyntaxHighlight => "语法高亮".to_string(),
+        MetadataLayerKind::SemanticToken => "语义令牌".to_string(),
+        MetadataLayerKind::Breakpoint => "断点".to_string(),
+        MetadataLayerKind::Bookmark => "书签".to_string(),
+        MetadataLayerKind::InlayHint => "内联提示".to_string(),
+        MetadataLayerKind::CodeLens => "CodeLens".to_string(),
+        MetadataLayerKind::Custom(name) => format!("Custom({name})"),
+    }
+}
+
+fn format_metadata_hit(kind: &MetadataLayerKind, metadata: &DemoMetadata) -> String {
+    format!(
+        "{}:{}:{}",
+        metadata_kind_label(kind),
+        metadata.label,
+        metadata.detail
+    )
+}
+
+fn render_preview_text(text: &str) -> String {
+    let rendered = text
+        .replace('\r', "␍")
+        .replace('\n', "⏎")
+        .replace('\t', "⇥");
+
+    if rendered.is_empty() {
+        "∅".to_string()
+    } else {
+        rendered
+    }
+}
+
+fn line_text_range(buffer: &Buffer, offset: CharOffset) -> EngineResult<TextRange> {
+    let position = buffer.char_to_position(offset)?;
+    let start = buffer.line_start(position.line())?;
+    let next_line = Line::new(position.line().get() + 1);
+    let end = if next_line.get() >= buffer.line_count() {
+        buffer.len_chars()
+    } else {
+        buffer.line_start(next_line)?
+    };
+    Ok(TextRange::new(start, end)?)
 }
 
 fn find_char_offset(text: &str, needle: &str) -> Option<CharOffset> {
@@ -1576,6 +2362,7 @@ fn decorate_text(
     selections: &SelectionSet,
     composition: Option<&zom_engine::CompositionState>,
     tracked_ranges: &[TrackedRange],
+    metadata_layers: &MetadataLayers<DemoMetadata>,
 ) -> String {
     let len = text.chars().count();
     let mut carets = vec![0usize; len + 1];
@@ -1586,6 +2373,9 @@ fn decorate_text(
     let mut tracked_marks = vec![0usize; len + 1];
     let mut tracked_opens = vec![0usize; len + 1];
     let mut tracked_closes = vec![0usize; len + 1];
+    let mut metadata_marks = vec![0usize; len + 1];
+    let mut metadata_opens = vec![0usize; len + 1];
+    let mut metadata_closes = vec![0usize; len + 1];
 
     for selection in selections.as_slice() {
         if selection.is_caret() {
@@ -1611,11 +2401,26 @@ fn decorate_text(
         }
     }
 
+    for layer in metadata_layers.iter() {
+        for metadata_range in layer.iter() {
+            let range = metadata_range.range();
+            if range.is_empty() {
+                metadata_marks[range.start().get().min(len)] += 1;
+            } else {
+                metadata_opens[range.start().get().min(len)] += 1;
+                metadata_closes[range.end().get().min(len)] += 1;
+            }
+        }
+    }
+
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
-    out.push_str("图例：┃ caret，⟦selection⟧ range，〖composition preedit〗 range，‹tracked› range，◆ tracked caret。所有 offset 都是 CharOffset；空格=·，Tab=⇥，CR=␍。\n\n");
+    out.push_str("图例：┃ caret，⟦selection⟧ range，〖composition preedit〗 range，‹tracked› range，◆ tracked caret，〔metadata〕 range，◇ metadata caret。所有 offset 都是 CharOffset；空格=·，Tab=⇥，CR=␍。\n\n");
 
     for index in 0..=len {
+        for _ in 0..metadata_closes[index] {
+            out.push('〕');
+        }
         for _ in 0..tracked_closes[index] {
             out.push('›');
         }
@@ -1634,6 +2439,9 @@ fn decorate_text(
         for _ in 0..tracked_opens[index] {
             out.push('‹');
         }
+        for _ in 0..metadata_opens[index] {
+            out.push('〔');
+        }
         if carets[index] == 1 {
             out.push('┃');
         } else if carets[index] > 1 {
@@ -1643,6 +2451,11 @@ fn decorate_text(
             out.push('◆');
         } else if tracked_marks[index] > 1 {
             out.push_str(&format!("◆×{}", tracked_marks[index]));
+        }
+        if metadata_marks[index] == 1 {
+            out.push('◇');
+        } else if metadata_marks[index] > 1 {
+            out.push_str(&format!("◇×{}", metadata_marks[index]));
         }
 
         if index < len {
@@ -1715,6 +2528,20 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-t", CreateTrackedRange, None),
         KeyBinding::new("cmd-shift-t", DemoTrackedRanges, None),
         KeyBinding::new("cmd-alt-t", ClearTrackedRanges, None),
+        KeyBinding::new("cmd-g", DemoMetadataLayers, None),
+        KeyBinding::new("cmd-shift-g", QueryMetadataAtCursor, None),
+        KeyBinding::new("cmd-alt-g", QueryMetadataLineWindow, None),
+        KeyBinding::new("cmd-shift-m", ReplaceSearchMetadata, None),
+        KeyBinding::new("cmd-alt-m", DiscardStaleMetadata, None),
+        KeyBinding::new("cmd-alt-shift-m", ClearMetadataLayers, None),
+        KeyBinding::new("cmd-alt-v", ViewportFromCursor, None),
+        KeyBinding::new("cmd-alt-up", ViewportUp, None),
+        KeyBinding::new("cmd-alt-down", ViewportDown, None),
+        KeyBinding::new("cmd-alt-=", ViewportGrow, None),
+        KeyBinding::new("cmd-alt--", ViewportShrink, None),
+        KeyBinding::new("cmd-alt-l", ToggleViewportLineLimit, None),
+        KeyBinding::new("cmd-alt-b", LoadLargeViewportSample, None),
+        KeyBinding::new("cmd-alt-p", SnapshotViewportPreview, None),
         KeyBinding::new("cmd-q", Quit, None),
     ]);
 }
@@ -1731,15 +2558,15 @@ fn main() {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     ..Default::default()
                 },
-                |_, cx| cx.new(M9Testbed::new),
+                |_, cx| cx.new(M11Testbed::new),
             )
-            .expect("open M9 testbed window");
+            .expect("open M11 testbed window");
 
         window
             .update(cx, |view, window, cx| {
                 window.focus(&view.focus_handle(cx));
                 cx.activate(true);
             })
-            .expect("focus M9 testbed window");
+            .expect("focus M11 testbed window");
     });
 }

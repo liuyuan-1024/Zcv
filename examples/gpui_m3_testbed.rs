@@ -511,7 +511,7 @@ impl Render for M3Testbed {
                 if key == "space" {
                     this.insert_text(" ", cx);
                 } else if key == "tab" {
-                    this.insert_text("    ", cx);
+                    this.insert_text("\t", cx);
                 } else if key.chars().count() == 1 {
                     this.insert_text(key, cx);
                 }
@@ -544,30 +544,28 @@ impl Render for M3Testbed {
                     .border_color(rgb(0x3F3F46))
                     .pb_4()
                     .mb_4()
+                    .child("M3 历史与快照观察台")
                     .child(format!(
-                        "Zom Engine M3 | 光标={} / 总字符={} | 行={} 列={} | 总行数={} | 当前版本=v{} 保存点=v{} | 修改状态={} | 锚点A={} | 锚点B={} | 变更范围={} | {} | {} | {}",
+                        "位置：字符 {} / {}，第 {} 行，第 {} 列；版本 v{}，保存点 v{}，{}",
                         cursor.get(),
                         self.buffer.len_chars().get(),
                         position.line().get(),
                         position.column().get(),
-                        self.buffer.line_count(),
                         self.buffer.version().get(),
                         self.buffer.saved_version().get(),
                         dirty_label(self.buffer.is_dirty()),
+                    ))
+                    .child(format!(
+                        "事务：{}；变更范围 {} 个；锚点 A={}，B={}",
+                        delta_label,
+                        self.last_changed_ranges.len(),
                         self.anchor_a.get(),
                         self.anchor_b.get(),
-                        self.last_changed_ranges.len(),
-                        delta_label,
-                        history_label,
-                        snapshot_label,
-                    )),
+                    ))
+                    .child(history_label)
+                    .child(snapshot_label),
             )
-            .child(
-                div()
-                    .mb_4()
-                    .text_color(rgb(0xA1A1AA))
-                    .child("输入字符 / 空格 / Tab / 回车；连续输入会合并为一个撤销步骤；退格 / Delete；← →；Home / End；Cmd-S 保存；Cmd-R 重置；Cmd-B 批量事务；Cmd-M 合并事务；Cmd-Z/Ctrl-Z 撤销；Cmd-Shift-Z/Ctrl-Y 重做；Cmd-K 捕获快照"),
-            )
+            
             .when_some(self.last_error.clone(), |el, error| {
                 el.child(
                     div()
@@ -589,6 +587,17 @@ impl Render for M3Testbed {
                         self.anchor_b,
                         &self.last_changed_ranges,
                     )),
+            )
+
+            .child(
+                div()
+                    .mt_4()
+                    .border_1()
+                    .border_color(rgb(0x3F3F46))
+                    .pt_4()
+                    .text_color(rgb(0xA1A1AA))
+                    .child("快捷键与观察目标")
+                    .child("怎么试：连续输入会合成一个撤销步骤；Cmd-Z/Ctrl-Z 撤销，Cmd-Shift-Z/Ctrl-Y 重做；Cmd-K 钉住快照，再继续编辑观察快照是否过期。"),
             )
     }
 }
@@ -661,7 +670,7 @@ fn render_lines_with_markers(
                 }
             }
 
-            let mut char_div = div().child(c.to_string());
+            let mut char_div = div().child(visible_char(c));
 
             if is_highlighted {
                 char_div = char_div.bg(rgb(0x854D0E)).text_color(rgb(0xFEF08A));
@@ -759,6 +768,15 @@ fn display_width_policy_label<T: core::fmt::Debug>(policy: T) -> String {
         .replace("ambiguous_width", "模糊宽度")
         .replace("control_width", "控制字符宽度")
         .replace("combining_mark_width", "组合标记宽度")
+}
+
+fn visible_char(c: char) -> String {
+    match c {
+        '\t' => "⇥".to_string(),
+        ' ' => "·".to_string(),
+        '\r' => "␍".to_string(),
+        _ => c.to_string(),
+    }
 }
 
 fn cursor_element() -> Div {

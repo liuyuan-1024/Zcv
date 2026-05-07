@@ -112,7 +112,7 @@ impl LastOperationKind {
             Self::Edit => "编辑",
             Self::Move => "移动",
             Self::History => "历史",
-            Self::Composition => "composition",
+            Self::Composition => "组合输入",
             Self::Lifecycle => "生命周期",
             Self::Events => "事件",
             Self::Error => "错误",
@@ -528,7 +528,7 @@ impl M8Testbed {
         let next_text = slice_chars(text, head, next).replace('\n', "⏎");
 
         format!(
-            "当前 unit={} | 前一段 {}..{} = {:?} | 后一段 {}..{} = {:?}",
+            "移动预览：按「{}」移动｜左侧 {}..{} = {:?}｜右侧 {}..{} = {:?}",
             unit_label(self.active_unit),
             previous.get(),
             head.get(),
@@ -542,7 +542,7 @@ impl M8Testbed {
     fn composition_status(&self) -> String {
         match self.buffer.composition() {
             Some(state) => format!(
-                "Composition：active | preedit={:?} | range={}..{} | composition selection={}..{} | 原始 selection 数量={}",
+                "组合输入：进行中｜预编辑={:?}｜范围 {}..{}｜组合选区 {}..{}｜原始选区 {} 个",
                 state.preedit_text(),
                 state.range().start().get(),
                 state.range().end().get(),
@@ -550,7 +550,7 @@ impl M8Testbed {
                 state.selection().head().get(),
                 state.original_selection().len(),
             ),
-            None => "Composition：inactive".to_string(),
+            None => "组合输入：未开始".to_string(),
         }
     }
 
@@ -559,15 +559,15 @@ impl M8Testbed {
             .buffer
             .last_synced_external_version()
             .map(|version| version.get().to_string())
-            .unwrap_or_else(|| "none".to_string());
+            .unwrap_or_else(|| "未同步".to_string());
         format!(
-            "Buffer：id={} | kind={} | state={:?} | read_only={} | dirty={} | 可直接关闭={} | saved_version={} | last_saved_version={} | external_sync={}",
+            "缓冲区：id={}｜{}｜状态={:?}｜只读={}｜{}｜可直接关闭={}｜保存点 v{}｜最近保存 v{}｜外部同步={}",
             self.buffer.id().get(),
             buffer_kind_label(self.buffer.kind()),
             self.buffer.state(),
-            self.buffer.is_read_only(),
-            self.buffer.is_dirty(),
-            self.buffer.can_close_without_prompt(),
+            bool_label(self.buffer.is_read_only()),
+            dirty_label(self.buffer.is_dirty()),
+            bool_label(self.buffer.can_close_without_prompt()),
             self.buffer.saved_version().get(),
             self.buffer.last_saved_version().get(),
             sync,
@@ -579,7 +579,7 @@ impl M8Testbed {
             .loaded_text_info()
             .map(|info| {
                 format!(
-                    "LoadedText：encoding={:?} | BOM={:?}/{} | invalid UTF-8={:?}/{} | line ending={:?} | final newline={}",
+                    "加载信息：编码={:?}｜BOM={:?}/{}｜非法 UTF-8={:?}/{}｜换行={:?}｜末尾换行={}",
                     info.encoding,
                     info.bom_policy,
                     info.had_bom,
@@ -590,7 +590,7 @@ impl M8Testbed {
                 )
             })
             .unwrap_or_else(|| {
-                "LoadedText：none（当前文本不是 from_loaded_text 创建，或已 reload）".to_string()
+                "加载信息：无（当前文本不是从外部字节加载，或已经重新加载）".to_string()
             })
     }
 
@@ -652,7 +652,7 @@ impl M8Testbed {
         let history = self.buffer.history_status();
         vec![
             format!(
-                "M8 GPUI testbed | {} | v{} | 保存点={} | 行数={} chars={} bytes={}",
+                "M8 事件与位置映射体验台｜{}｜版本 v{}｜{}｜{} 行｜{} 字符｜{} 字节",
                 self.last_operation.label(),
                 self.buffer.version().get(),
                 self.saved_label,
@@ -661,12 +661,18 @@ impl M8Testbed {
                 self.buffer.len_bytes(),
             ),
             format!(
-                "selection 数量={} primary={} | undo={} redo={}",
+                "选区：{} 个，主选区 #{}｜撤销栈 {}，重做栈 {}",
                 self.buffer.selection().len(),
                 self.buffer.selection().primary_index(),
                 history.undo_depth,
                 history.redo_depth,
             ),
+            format!("最近操作：{}", self.message),
+        ]
+    }
+
+    fn detail_lines(&self) -> Vec<String> {
+        vec![
             self.buffer_lifecycle_status(),
             self.loaded_text_status(),
             self.primary_status(),
@@ -674,26 +680,30 @@ impl M8Testbed {
             self.composition_status(),
             self.delta_event_status(),
             self.position_map_status(),
-            format!("最近操作：{}", self.message),
         ]
     }
 
     fn help_lines(&self) -> Vec<&'static str> {
         vec![
-            "输入：直接输入普通字符；Space / Tab / Enter；Backspace / Delete",
-            "继承 M6 移动：←/→，Alt Word，Ctrl Identifier，Cmd Subword，Cmd-Alt Symbol；加 Shift 扩展 selection",
-            "当前 unit：Cmd-1 Grapheme，Cmd-2 Word，Cmd-3 Identifier，Cmd-4 Subword，Cmd-5 Symbol；Ctrl-Alt-←/→ 使用当前 unit",
-            "composition：Cmd-I start，Cmd-K update raw 'n'，Cmd-L update '你'，Cmd-Y update '你好'",
-            "更多 preedit 示例：Cmd-J 'にほん'，Cmd-O '한글'，Cmd-U '输入法' 并设置 composition 内部 selection",
-            "Commit / cancel：Cmd-Enter commit 当前 preedit，Cmd-Shift-Enter commit '你好'，Cmd-P 无 active composition 时直接 commit，Cmd-X cancel",
-            "Multi-cursor IME 策略：Cmd-M 创建多个 cursor；Cmd-I start composition 后降级到 primary selection",
-            "生命周期：Cmd-B 切换只读，Cmd-E 模拟外部 reload，Cmd-Shift-S 预览 to_save_text 输出",
+            "输入：直接输入文字；Space / Tab / Enter；Backspace / Delete。空格、Tab、CR 会显示为 ·、⇥、␍",
+            "移动：←/→ 按字素移动；Alt 按单词，Ctrl 按标识符，Cmd 按子词，Cmd-Alt 按符号；加 Shift 扩展选区",
+            "移动粒度：Cmd-1 字素，Cmd-2 单词，Cmd-3 标识符，Cmd-4 子词，Cmd-5 符号；Ctrl-Alt-←/→ 使用当前粒度",
+            "组合输入：Cmd-I 开始，Cmd-K 预编辑 'n'，Cmd-L 预编辑 '你'，Cmd-Y 预编辑 '你好'",
+            "更多预编辑示例：Cmd-J 'にほん'，Cmd-O '한글'，Cmd-U '输入法'，并设置组合输入内部选区",
+            "提交 / 取消：Cmd-Enter 提交当前预编辑，Cmd-Shift-Enter 提交 '你好'，Cmd-P 直接提交中文样例，Cmd-X 取消",
+            "多光标与 IME：Cmd-M 创建多光标；开始组合输入时会降级到主选区，避免多个预编辑状态打架",
+            "生命周期：Cmd-B 切换只读，Cmd-E 模拟外部重新加载，Cmd-Shift-S 预览保存文本",
             "M8 事件：状态栏显示最近 DeltaEvent / PositionMap；Cmd-Shift-E 清空 pending DeltaEvent 队列",
-            "历史 / 生命周期：Cmd-Z undo，Cmd-Shift-Z redo，Cmd-S 标记保存点，Cmd-R 重置，Esc 收起到 primary，Cmd-Q 退出",
+            "历史与通用操作：Cmd-Z 撤销，Cmd-Shift-Z 重做，Cmd-S 标记保存点，Cmd-R 重置，Esc 收起到主选区，Cmd-Q 退出",
         ]
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let modifiers = &event.keystroke.modifiers;
+        if modifiers.platform || modifiers.control || modifiers.alt {
+            return;
+        }
+
         let Some(key_char) = event.keystroke.key_char.as_ref() else {
             return;
         };
@@ -1116,6 +1126,7 @@ impl Render for M8Testbed {
             self.buffer.composition(),
         );
         let status_lines = self.status_lines();
+        let detail_lines = self.detail_lines();
         let help_lines = self.help_lines();
 
         div()
@@ -1197,20 +1208,8 @@ impl Render for M8Testbed {
                     .border_color(rgb(0x6e7681))
                     .bg(rgb(0x0d1117))
                     .p(px(12.0))
+                    .child("状态")
                     .children(status_lines.into_iter()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .border_1()
-                    .border_color(rgb(0x6e7681))
-                    .bg(rgb(0x161b22))
-                    .p(px(12.0))
-                    .text_size(px(14.0))
-                    .line_height(px(22.0))
-                    .children(help_lines.into_iter()),
             )
             .child(
                 div()
@@ -1225,16 +1224,52 @@ impl Render for M8Testbed {
                     .line_height(px(28.0))
                     .child(decorated_text),
             )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .border_1()
+                    .border_color(rgb(0x6e7681))
+                    .bg(rgb(0x0d1117))
+                    .p(px(12.0))
+                    .text_size(px(14.0))
+                    .line_height(px(22.0))
+                    .child("观察详情")
+                    .children(detail_lines.into_iter()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .border_1()
+                    .border_color(rgb(0x6e7681))
+                    .bg(rgb(0x161b22))
+                    .p(px(12.0))
+                    .text_size(px(14.0))
+                    .line_height(px(22.0))
+                    .child("快捷键速查")
+                    .children(help_lines.into_iter()),
+            )
     }
+}
+
+fn bool_label(value: bool) -> &'static str {
+    if value { "是" } else { "否" }
+}
+
+fn dirty_label(is_dirty: bool) -> &'static str {
+    if is_dirty { "已修改" } else { "干净" }
 }
 
 fn unit_label(unit: MovementUnit) -> &'static str {
     match unit {
-        MovementUnit::Grapheme => "Grapheme",
-        MovementUnit::Word => "Word",
-        MovementUnit::Identifier => "Identifier",
-        MovementUnit::Subword => "Subword",
-        MovementUnit::Symbol => "Symbol",
+        MovementUnit::Grapheme => "字素",
+        MovementUnit::Word => "单词",
+        MovementUnit::Identifier => "标识符",
+        MovementUnit::Subword => "子词",
+        MovementUnit::Symbol => "符号",
     }
 }
 
@@ -1255,10 +1290,10 @@ fn initial_buffer() -> EngineResult<Buffer> {
 
 fn buffer_kind_label(kind: &BufferKind) -> String {
     match kind {
-        BufferKind::File { path } => format!("file({})", path.display()),
-        BufferKind::Uri { uri } => format!("uri({uri})"),
-        BufferKind::Untitled => "untitled".to_string(),
-        BufferKind::Scratch => "scratch".to_string(),
+        BufferKind::File { path } => format!("文件({})", path.display()),
+        BufferKind::Uri { uri } => format!("URI({uri})"),
+        BufferKind::Untitled => "未命名".to_string(),
+        BufferKind::Scratch => "临时缓冲区".to_string(),
     }
 }
 
@@ -1294,6 +1329,15 @@ fn format_offset_mapping(result: MappingResult<CharOffset>) -> String {
     }
 }
 
+fn push_visible_char(out: &mut String, c: char) {
+    match c {
+        '\t' => out.push('⇥'),
+        ' ' => out.push('·'),
+        '\r' => out.push('␍'),
+        _ => out.push(c),
+    }
+}
+
 fn decorate_text(
     text: &str,
     selections: &SelectionSet,
@@ -1322,7 +1366,7 @@ fn decorate_text(
 
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
-    out.push_str("图例：┃ caret，⟦selection⟧ range，〖composition preedit〗 range。所有 offset 都是 CharOffset。\n\n");
+    out.push_str("图例：┃ caret，⟦selection⟧ range，〖composition preedit〗 range。所有 offset 都是 CharOffset；空格=·，Tab=⇥，CR=␍。\n\n");
 
     for index in 0..=len {
         for _ in 0..closes[index] {
@@ -1344,7 +1388,7 @@ fn decorate_text(
         }
 
         if index < len {
-            out.push(chars[index]);
+            push_visible_char(&mut out, chars[index]);
         }
     }
 

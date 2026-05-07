@@ -214,7 +214,7 @@ impl Render for M1Testbed {
                 if key == "space" {
                     this.insert_text(" ", cx);
                 } else if key == "tab" {
-                    this.insert_text("    ", cx);
+                    this.insert_text("\t", cx);
                 } else if key.chars().count() == 1 {
                     this.insert_text(key, cx);
                 }
@@ -252,24 +252,23 @@ impl Render for M1Testbed {
                     .border_color(rgb(0x3F3F46))
                     .pb_4()
                     .mb_4()
+                    .child("M1 基础编辑体验台")
                     .child(format!(
-                        "Zom Engine M1 | 光标={} / 总字符={} | 行={} 列={} | 总行数={} | 当前版本=v{} 保存点=v{} | 修改状态={}",
+                        "位置：字符 {} / {}，第 {} 行，第 {} 列",
                         cursor.get(),
                         self.buffer.len_chars().get(),
                         position.line().get(),
                         position.column().get(),
+                    ))
+                    .child(format!(
+                        "文档：{} 行，版本 v{}，保存点 v{}，{}",
                         self.buffer.line_count(),
                         self.buffer.version().get(),
                         self.buffer.saved_version().get(),
                         dirty_label(self.buffer.is_dirty()),
                     )),
             )
-            .child(
-                div()
-                    .mb_4()
-                    .text_color(rgb(0xA1A1AA))
-                    .child("输入字符 / 空格 / Tab / 回车；退格 / Delete；← →；Home / End；Cmd-S 保存；Cmd-R 重置"),
-            )
+            
             .when_some(self.last_error.clone(), |el, error| {
                 el.child(
                     div()
@@ -285,6 +284,17 @@ impl Render for M1Testbed {
                     .text_xl()
                     .line_height(px(28.0))
                     .children(render_lines_with_cursor(self.buffer.text().as_ref(), cursor)),
+            )
+
+            .child(
+                div()
+                    .mt_4()
+                    .border_1()
+                    .border_color(rgb(0x3F3F46))
+                    .pt_4()
+                    .text_color(rgb(0xA1A1AA))
+                    .child("快捷键与观察目标")
+                    .child("怎么试：直接输入文字；Tab 会插入真实制表符；Enter 换行；Backspace/Delete 删除；Home/End 跳到行首行尾；Cmd-S 标记保存点，Cmd-R 恢复示例文本。空格、Tab、CR 会显示为 ·、⇥、␍。"),
             )
     }
 }
@@ -315,7 +325,7 @@ fn render_lines_with_cursor(text: &str, cursor: CharOffset) -> Vec<Div> {
                 row_children.push(cursor_element().into_any());
             }
 
-            row_children.push(div().child(c.to_string()).into_any());
+            row_children.push(div().child(visible_char(c)).into_any());
             char_offset += 1;
         }
 
@@ -388,6 +398,15 @@ fn display_width_policy_label<T: core::fmt::Debug>(policy: T) -> String {
         .replace("ambiguous_width", "模糊宽度")
         .replace("control_width", "控制字符宽度")
         .replace("combining_mark_width", "组合标记宽度")
+}
+
+fn visible_char(c: char) -> String {
+    match c {
+        '\t' => "⇥".to_string(),
+        ' ' => "·".to_string(),
+        '\r' => "␍".to_string(),
+        _ => c.to_string(),
+    }
 }
 
 fn cursor_element() -> Div {

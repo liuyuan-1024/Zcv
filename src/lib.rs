@@ -11,6 +11,7 @@ pub mod buffer;
 pub mod config;
 pub mod errors;
 pub mod loading;
+pub mod metadata;
 pub mod position_map;
 pub mod selection;
 pub mod snapshot;
@@ -25,10 +26,13 @@ pub use config::{
     LineEndingConfig, PositionEncodingConfig, TabConfig, WordBoundaryPolicy,
 };
 pub use errors::{
-    AnchorError, CoordinateError, EditError, EngineError, EngineResult, StorageError,
-    TransactionError,
+    AnchorError, CoordinateError, EditError, EngineError, EngineResult, MetadataError,
+    StorageError, TransactionError,
 };
 pub use loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
+pub use metadata::{
+    MetadataLayer, MetadataLayerKind, MetadataRange, MetadataRangeId, MetadataRangeUpdate,
+};
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
 pub use selection::{
     CompositionSelection, CompositionState, Cursor, MovementDirection, MovementUnit, Selection,

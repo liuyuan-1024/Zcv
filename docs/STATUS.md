@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M9 Anchor、Mark 与 TrackedRange 收口
-- 已完成：M0-M8 机器契约基线；M9A Anchor / Mark；M9B TrackedRange；M9C Selection 与外部 range 映射；M9 GPUI testbed
-- 未完成：M10 MetadataLayer 与外部区间承载
+- 当前推进：M10 MetadataLayer 与外部区间承载
+- 已完成：M0-M8 机器契约基线；M9A Anchor / Mark；M9B TrackedRange；M9C Selection 与外部 range 映射；M9 GPUI testbed；M10A MetadataRange / MetadataLayer
+- 未完成：M10B Metadata 查询深化；M10 GPUI testbed
 
 ## M9 文件
 
@@ -16,10 +16,18 @@
 - `src/errors.rs`：AnchorError 与 EngineError 接入
 - `src/position_map.rs`：Selection / SelectionSet / TrackedRange 映射门面
 
+## M10 文件
+
+- `src/metadata.rs`：MetadataRange / MetadataLayer、LayerKind、range id、版本绑定、范围追踪、失效移除与基础查询
+- `tests/m10_metadata_layer.rs`：M10A 机器契约测试，覆盖泛型 payload、多 layer、DeltaEvent 跟随、失效策略与基础查询
+- `src/lib.rs`：M10 public API 导出
+- `src/errors.rs`：MetadataError 与 EngineError 接入
+
 ## 建议验证命令
 
 ```bash
 cargo fmt
+cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m9_testbed
 cargo run --example gpui_m9_testbed

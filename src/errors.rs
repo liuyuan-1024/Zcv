@@ -87,6 +87,19 @@ pub enum AnchorError {
     },
 }
 
+/// MetadataLayer 承载与版本推进相关错误。
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum MetadataError {
+    #[error("MetadataLayer range id 溢出")]
+    IdOverflow,
+
+    #[error("MetadataLayer 版本不匹配: 预期版本 {expected:?}，实际版本 {actual:?}")]
+    VersionMismatch {
+        expected: BufferVersion,
+        actual: BufferVersion,
+    },
+}
+
 /// 底层存储相关的错误（存储后端做不了）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum StorageError {
@@ -120,6 +133,9 @@ pub enum EngineError {
 
     #[error(transparent)]
     Anchor(#[from] AnchorError),
+
+    #[error(transparent)]
+    Metadata(#[from] MetadataError),
 
     #[error(transparent)]
     Storage(#[from] StorageError),

@@ -33,6 +33,7 @@
 - `src/position_map.rs`：PositionMap 强类型、前后版本坐标映射结果与吸附策略
 - `src/anchor.rs`：Anchor / Mark 版本绑定与位置跟随数学
 - `src/tracked_range.rs`：TrackedRange 区间跟随、塌缩与失效策略
+- `src/metadata.rs`：MetadataRange / MetadataLayer 外部区间承载与版本推进
 - `src/coordinates_core.rs`：Buffer/Snapshot 共享坐标数学
 - `src/storage/ropey_storage.rs`：生产文本存储实现
 
@@ -58,6 +59,7 @@ cargo test --test m6_selection
 cargo test --test m7_buffer_lifecycle
 cargo test --test m8_position_map
 cargo test --test m9_anchor
+cargo test --test m10_metadata_layer
 cargo run --example gpui_m5_testbed
 cargo run --example gpui_m6_testbed
 cargo run --example gpui_m7_testbed

@@ -58,7 +58,6 @@ cargo test --test m6_selection
 cargo test --test m7_buffer_lifecycle
 cargo test --test m8_position_map
 cargo test --test m9_anchor
-cargo test --lib storage_consistency
 cargo run --example gpui_m5_testbed
 cargo run --example gpui_m6_testbed
 cargo run --example gpui_m7_testbed

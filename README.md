@@ -58,7 +58,6 @@ cargo test --test m6_selection
 cargo test --test m7_buffer_lifecycle
 cargo test --test m8_position_map
 cargo test --test m9_anchor
-cargo test --test m9_tracked_range
 cargo test --lib storage_consistency
 cargo run --example gpui_m5_testbed
 cargo run --example gpui_m6_testbed
@@ -69,11 +68,11 @@ cargo run --example gpui_m8_testbed
 ## 相关文档
 
 - `AGENTS.md`：协作规则与阶段边界
-- `编辑引擎能力.md`：能力清单与里程碑
-- `编辑引擎测试策略.md`：测试哲学与测试放置策略
+- `docs/编辑引擎能力.md`：能力清单与里程碑
+- `docs/编辑引擎测试策略.md`：测试哲学与测试放置策略
 - `docs/STATUS.md`：当前阶段快照（易变信息：文件清单、进度、命令）
 
 ## 文档维护约定
 
-- 主文档（`AGENTS.md`、`编辑引擎能力.md`、`编辑引擎测试策略.md`）只维护稳定规则与边界。
+- 主文档（`AGENTS.md`、`docs/编辑引擎能力.md`、`docs/编辑引擎测试策略.md`）只维护稳定规则与边界。
 - 易变信息统一维护在 `docs/STATUS.md`。

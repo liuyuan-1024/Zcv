@@ -13,8 +13,8 @@
 ```text
 AGENTS.md
 README.md
-编辑引擎能力.md
-编辑引擎测试策略.md
+docs/编辑引擎能力.md
+docs/编辑引擎测试策略.md
 docs/STATUS.md（如果存在）
 ```
 
@@ -649,8 +649,8 @@ UI 进 examples/
 常见场景：
 
 ```text
-新增阶段能力 -> 先更新 docs/STATUS.md；若能力边界变化再更新 README.md / 编辑引擎能力.md
-修改测试目录职责 -> 更新 编辑引擎测试策略.md
+新增阶段能力 -> 先更新 docs/STATUS.md；若能力边界变化再更新 README.md / docs/编辑引擎能力.md
+修改测试目录职责 -> 更新 docs/编辑引擎测试策略.md
 新增 AI 协作规范 -> 更新 AGENTS.md
 修改 public API 契约 -> 更新对应测试和文档
 ```

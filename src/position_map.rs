@@ -4,8 +4,10 @@
 //! 不负责 Buffer 提交、事件分发、anchor 生命周期或 UI 选择策略。
 
 use crate::{
+    selection::{Selection, SelectionSet},
+    tracked_range::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
     transaction::{ChangeSet, Edit, EditList},
-    types::{CharOffset, TextRange},
+    types::{BufferVersion, CharOffset, TextRange},
 };
 
 /// 同点插入时旧位置吸附到插入文本前还是插入文本后。
@@ -238,6 +240,62 @@ impl PositionMap {
         }
 
         MappingResult::Mapped(mapped)
+    }
+
+    /// old Selection -> new Selection。
+    pub fn map_selection(&self, selection: Selection) -> Selection {
+        selection.map_through_position_map(self)
+    }
+
+    /// old SelectionSet -> new SelectionSet。
+    pub fn map_selection_set(&self, selection_set: &SelectionSet) -> SelectionSet {
+        selection_set.map_through_position_map(self)
+    }
+
+    /// old TrackedRange -> new TrackedRange。
+    pub fn map_tracked_range(
+        &self,
+        tracked_range: TrackedRange,
+        new_version: BufferVersion,
+    ) -> MappingResult<TrackedRange> {
+        tracked_range.map_through_position_map(new_version, self)
+    }
+
+    /// old TrackedRange -> new TrackedRange，并应用删除 / 塌缩失效策略。
+    pub fn map_tracked_range_with_policy(
+        &self,
+        tracked_range: TrackedRange,
+        new_version: BufferVersion,
+        policy: TrackedRangeUpdatePolicy,
+    ) -> TrackedRangeUpdate {
+        tracked_range.map_through_position_map_with_policy(new_version, self, policy)
+    }
+
+    /// 批量映射 TrackedRange。PositionMap 本身不绑定版本，调用方显式传入目标版本。
+    pub fn map_tracked_ranges(
+        &self,
+        tracked_ranges: impl IntoIterator<Item = TrackedRange>,
+        new_version: BufferVersion,
+    ) -> Vec<MappingResult<TrackedRange>> {
+        tracked_ranges
+            .into_iter()
+            .map(|tracked_range| self.map_tracked_range(tracked_range, new_version))
+            .collect()
+    }
+
+    /// 批量映射 TrackedRange，并应用同一删除 / 塌缩失效策略。
+    pub fn map_tracked_ranges_with_policy(
+        &self,
+        tracked_ranges: impl IntoIterator<Item = TrackedRange>,
+        new_version: BufferVersion,
+        policy: TrackedRangeUpdatePolicy,
+    ) -> Vec<TrackedRangeUpdate> {
+        tracked_ranges
+            .into_iter()
+            .map(|tracked_range| {
+                self.map_tracked_range_with_policy(tracked_range, new_version, policy)
+            })
+            .collect()
     }
 
     fn map_new_position_for_range_boundary(

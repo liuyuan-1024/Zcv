@@ -2,11 +2,9 @@
 //!
 //! 本文件绑定 BufferConfig 并处理 CRLF、grapheme、DisplayColumn 等策略，不直接修改文本或历史。
 
-use std::borrow::Cow;
-
 use crate::{
     ByteOffset, CharOffset, CoordinateError, DisplayColumn, DisplayColumnAffinity, EngineResult,
-    Line, LineEndingStyle, LogicalColumn, Position, TextRange, Utf16Position,
+    Line, LineEndingStyle, LogicalColumn, Position, Utf16Position,
     coordinates::core::{
         char_to_display_column_in_text, display_to_logical_column_in_text,
         logical_to_display_column_in_text, next_tab_stop,
@@ -137,10 +135,6 @@ impl Buffer {
     ) -> EngineResult<CharOffset> {
         let logical = self.display_to_logical_column_with_affinity(line, column, affinity)?;
         self.storage.position_to_char(Position::new(line, logical))
-    }
-
-    pub(super) fn slice_text(&self, range: TextRange) -> EngineResult<Cow<'_, str>> {
-        self.storage.slice_text(range)
     }
 }
 

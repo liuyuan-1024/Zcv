@@ -30,6 +30,7 @@ mod loading;
 mod movement;
 mod reload;
 mod selection_ops;
+mod slicing;
 mod transaction_pipeline;
 mod validation;
 mod versioning;

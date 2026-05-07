@@ -23,6 +23,10 @@ pub enum CoordinateError {
     #[error("字节偏移量不在 UTF-8 字符边界: {0:?}")]
     InvalidByteBoundary(ByteOffset),
 
+    /// 调用方传入了反向字节区间；byte range 只用于外部协议 / 文件适配读取边界。
+    #[error("非法字节区间: start {start:?} 大于 end {end:?}")]
+    InvalidByteRange { start: ByteOffset, end: ByteOffset },
+
     /// UTF-16 行列位置超出当前文本的行数或行内 code unit 范围。
     #[error("UTF-16 位置越界: {0:?}")]
     Utf16PositionOutOfBounds(Utf16Position),

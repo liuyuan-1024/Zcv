@@ -6,12 +6,13 @@ use std::borrow::Cow;
 
 use crate::{
     BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, DisplayColumn,
-    DisplayColumnAffinity, EngineResult, Line, LineEndingStyle, LogicalColumn, Position,
-    Utf16Position,
+    DisplayColumnAffinity, EngineResult, Line, LineEndingStyle, LineRange, LineSlice,
+    LogicalColumn, Position, TextRange, TextSlice, Utf16Position,
     coordinates::core::{
         char_to_display_column_in_text, display_to_logical_column_in_text,
         logical_to_display_column_in_text, next_tab_stop,
     },
+    slicing::{text_range_for_byte_range, text_range_for_line, text_range_for_line_range},
     storage::{RopeySnapshot, TextRead},
 };
 
@@ -66,6 +67,33 @@ impl Snapshot {
 
     pub fn line_start(&self, line: Line) -> EngineResult<CharOffset> {
         self.storage.line_start(line)
+    }
+
+    /// 按 char range 读取快照文本。
+    pub fn slice_text(&self, range: TextRange) -> EngineResult<TextSlice<'_>> {
+        Ok(TextSlice::new(range, self.storage.slice_text(range)?))
+    }
+
+    /// 按 UTF-8 byte range 读取快照文本，主要用于文件 / 外部协议适配边界。
+    pub fn slice_byte_range(
+        &self,
+        start: ByteOffset,
+        end: ByteOffset,
+    ) -> EngineResult<TextSlice<'_>> {
+        let range = text_range_for_byte_range(&self.storage, start, end)?;
+        self.slice_text(range)
+    }
+
+    /// 读取快照中的单个逻辑行；如果该行有换行符，返回文本会保留换行符。
+    pub fn slice_line(&self, line: Line) -> EngineResult<LineSlice<'_>> {
+        let range = text_range_for_line(&self.storage, line)?;
+        Ok(LineSlice::new(line, self.slice_text(range)?))
+    }
+
+    /// 按半开逻辑行区间读取快照文本。
+    pub fn slice_line_range(&self, line_range: LineRange) -> EngineResult<TextSlice<'_>> {
+        let range = text_range_for_line_range(&self.storage, line_range)?;
+        self.slice_text(range)
     }
 
     pub fn char_to_position(&self, offset: CharOffset) -> EngineResult<Position> {

@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M10 MetadataLayer 与外部区间承载
-- 已完成：M0-M8 机器契约基线；M9A Anchor / Mark；M9B TrackedRange；M9C Selection 与外部 range 映射；M9 GPUI testbed；M10A MetadataRange / MetadataLayer；M10B Metadata 查询；M10 GPUI testbed
-- 未完成：M11 Viewport 与文本读取接口
+- 当前推进：M11 Viewport Slicing 与读取接口
+- 已完成：M0-M8 机器契约基线；M9A Anchor / Mark；M9B TrackedRange；M9C Selection 与外部 range 映射；M9 GPUI testbed；M10A MetadataRange / MetadataLayer；M10B Metadata 查询；M10 GPUI testbed；M11A LineRange 与文本切片
+- 未完成：M11B Viewport 读取；M11 GPUI testbed
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 
 ## M9 文件
@@ -38,10 +38,20 @@
 - `src/errors.rs`：MetadataError 与 EngineError 接入
 - `src/types/ranges.rs`：LineRange 强类型
 
+## M11 文件
+
+- `src/slicing.rs`：TextSlice / LineSlice public 只读切片类型、byte range / line range 到 TextRange 的边界数学
+- `src/buffer/slicing.rs`：Buffer 上的 char range、byte range、单行与 LineRange 读取入口
+- `src/snapshot.rs`：Snapshot 上与 Buffer 同形的只读切片读取入口
+- `tests/m11_viewport_slicing.rs`：M11A 机器契约测试，覆盖 TextSlice、LineSlice、按 char / byte / line range 读取、错误边界和 Snapshot 版本只读语义
+- `src/lib.rs`：M11A public API 导出
+- `src/errors.rs`：InvalidByteRange 接入 CoordinateError
+
 ## 建议验证命令
 
 ```bash
 cargo fmt
+cargo test --test m11_viewport_slicing
 cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m10_testbed

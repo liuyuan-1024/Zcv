@@ -10,6 +10,7 @@ mod errors;
 mod metadata;
 mod position_map;
 mod selection;
+mod slicing;
 mod snapshot;
 mod storage;
 mod text_loading;
@@ -35,6 +36,7 @@ pub use selection::{
     CompositionSelection, CompositionState, Cursor, MovementDirection, MovementUnit, Selection,
     SelectionMergePolicy, SelectionSet,
 };
+pub use slicing::{LineSlice, TextSlice};
 pub use snapshot::Snapshot;
 pub use text_loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
 pub use tracking::{

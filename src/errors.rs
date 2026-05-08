@@ -133,6 +133,17 @@ pub enum SearchError {
     /// 空 query 没有稳定的匹配语义，调用方应在 UI / 宿主层决定如何展示空搜索。
     #[error("搜索 query 不能为空")]
     EmptyQuery,
+
+    /// 搜索结果必须基于 Buffer 当前版本，过期结果不能继续用于替换。
+    #[error("搜索结果版本不匹配: 预期版本 {expected:?}，实际版本 {actual:?}")]
+    VersionMismatch {
+        expected: BufferVersion,
+        actual: BufferVersion,
+    },
+
+    /// 调用方请求替换不存在的搜索匹配序号。
+    #[error("搜索匹配不存在: ordinal {ordinal}")]
+    MatchNotFound { ordinal: usize },
 }
 
 /// 底层存储相关的错误（存储后端做不了）。

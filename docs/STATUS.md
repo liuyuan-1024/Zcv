@@ -3,8 +3,8 @@
 ## 当前阶段
 
 - 当前推进：M12 当前 Buffer 内搜索与替换
-- 已完成：M0-M8 机器契约基线；M9A Anchor / Mark；M9B TrackedRange；M9C Selection 与外部 range 映射；M9 GPUI testbed；M10A MetadataRange / MetadataLayer；M10B Metadata 查询；M10 GPUI testbed；M11A LineRange 与文本切片；M11B Viewport 读取；M11 GPUI testbed；M12A 普通搜索
-- 未完成：M12B 替换；M12C 正则搜索；M12 GPUI testbed
+- 已完成：M0-M8 机器契约基线；M9A Anchor / Mark；M9B TrackedRange；M9C Selection 与外部 range 映射；M9 GPUI testbed；M10A MetadataRange / MetadataLayer；M10B Metadata 查询；M10 GPUI testbed；M11A LineRange 与文本切片；M11B Viewport 读取；M11 GPUI testbed；M12A 普通搜索；M12B 替换
+- 未完成：M12C 正则搜索；M12 GPUI testbed
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 
 ## M9 文件
@@ -51,11 +51,12 @@
 ## M12 文件
 
 - `src/search.rs`：SearchOptions / SearchResult / SearchMatch / SearchMatchMetadata，以及普通字符串搜索核心实现
-- `src/buffer/search.rs`：Buffer 当前版本搜索入口
+- `src/buffer/search.rs`：Buffer 当前版本搜索入口、搜索结果单次替换与 replace all 事务入口
 - `src/snapshot.rs`：Snapshot 版本绑定搜索入口
 - `tests/m12_search.rs`：M12A 机器契约测试，覆盖普通搜索、大小写敏感 / 不敏感、whole word、多行、范围限定、Snapshot 搜索、SearchResult 版本绑定、MetadataLayer 挂载和 range tracking
+- `tests/m12_replace.rs`：M12B 机器契约测试，覆盖搜索结果 replace、replace all 原子事务、Undo / Redo、SelectionSet 恢复、DeltaEvent、过期结果拒绝和 no-op 边界
 - `src/lib.rs`：M12A public API 导出
-- `src/errors.rs`：SearchError 接入 EngineError
+- `src/errors.rs`：SearchError 接入 EngineError，覆盖空 query、过期结果和缺失 match
 
 ## 建议验证命令
 
@@ -63,6 +64,7 @@
 cargo fmt
 cargo test --test m11_viewport_slicing
 cargo test --test m12_search
+cargo test --test m12_replace
 cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m10_testbed

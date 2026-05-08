@@ -154,6 +154,10 @@ impl SearchResult {
         &self.matches
     }
 
+    pub fn match_at(&self, ordinal: usize) -> Option<SearchMatch> {
+        self.matches.get(ordinal).copied()
+    }
+
     pub fn ranges(&self) -> impl Iterator<Item = TextRange> + '_ {
         self.matches.iter().map(|search_match| search_match.range())
     }

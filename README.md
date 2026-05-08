@@ -68,6 +68,7 @@ cargo test --test m9_anchor
 cargo test --test m10_metadata_layer
 cargo test --test m11_viewport_slicing
 cargo test --test m12_search
+cargo test --test m12_replace
 cargo run --example gpui_m5_testbed
 cargo run --example gpui_m6_testbed
 cargo run --example gpui_m7_testbed

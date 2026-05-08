@@ -2,6 +2,10 @@
 
 `zom-engine` 是一个独立的 Rust 文本编辑引擎 crate，面向 IDE/编辑器底层能力。
 
+## 底线规范
+
+`zom-engine` 只做纯文本编辑引擎能力。后续阶段规划、实现和测试都必须先判断能力是否属于 engine core；不属于文本存储、编辑、坐标、事务、历史、快照、区间追踪、投影映射、读取切片、文件文本边界、错误防御或性能验证的内容，不进入本 crate 的 milestone。
+
 ## 项目边界
 
 负责：
@@ -17,7 +21,11 @@
 
 - UI 渲染与窗口系统
 - LSP 协议与语法树实现
+- diagnostics / semantic tokens / inlay hints / code lens 等业务结果生成
 - 项目级索引/文件树/插件系统
+- 快捷键、菜单、命令面板、Command 语义层
+- 宏录制、用户操作回放
+- 后台任务调度器、取消令牌、线程池
 - 实时多人协作
 
 ## 当前代码分层
@@ -46,7 +54,7 @@
 ## 测试与验证目录职责
 
 - `tests/`：机器契约测试（CI 主体）
-- `examples/`：GPUI 交互式 testbed（人类体感验证）
+- `examples/`：可选 GPUI 交互式 testbed（人类体感验证，不作为 M13 之后阶段验收底线）
 - `benches/`：性能基准测试
 - `src/tests/`：仅在 public API 无法覆盖关键内部不变量时使用
 
@@ -91,3 +99,4 @@ cargo run --example gpui_m12_testbed
 
 - 主文档（`AGENTS.md`、`docs/编辑引擎能力.md`、`docs/编辑引擎测试策略.md`）只维护稳定规则与边界。
 - 易变信息统一维护在 `docs/STATUS.md`。
+- M13 之后的路线以 engine-only 为底线；非编辑引擎核心能力直接从 milestone 中移除，而不是标成“后续阶段”。

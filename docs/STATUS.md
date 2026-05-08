@@ -4,7 +4,8 @@
 
 - 当前推进：M12 当前 Buffer 内搜索与替换
 - 已完成：M0-M8 机器契约基线；M9A Anchor / Mark；M9B TrackedRange；M9C Selection 与外部 range 映射；M9 GPUI testbed；M10A MetadataRange / MetadataLayer；M10B Metadata 查询；M10 GPUI testbed；M11A LineRange 与文本切片；M11B Viewport 读取；M11 GPUI testbed；M12A 普通搜索；M12B 替换；M12C 正则搜索 / 替换；M12 GPUI testbed
-- 未完成：M15 搜索任务取消 / 异步调度
+- 未完成：M13 Fold Model 与 Projection Coordinate 及后续 engine-only 阶段
+- 路线收口：M13 之后所有阶段按纯编辑引擎标准取舍；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不再进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 
 ## M9 文件

@@ -132,6 +132,15 @@ AI 在本仓库中的默认工作闭环是：
 
 `zom-engine` 是一个独立的 Rust 编辑引擎 crate。
 
+本仓库的底线规范是：
+
+```text
+只开发纯文本编辑引擎能力。
+不属于文本存储、文本编辑、坐标模型、事务、历史、快照、区间追踪、
+投影映射、读取切片、文件文本边界、错误防御或性能验证的能力，
+不进入 zom-engine milestone。
+```
+
 它的核心职责是：
 
 ```text
@@ -156,6 +165,11 @@ LSP
 文件树
 插件系统
 完整 IDE 产品形态
+快捷键 / 菜单 / 命令面板
+Command 语义层
+宏录制 / 用户操作回放
+后台任务调度器 / 取消令牌 / 线程池
+diagnostics / semantic tokens / inlay hints / code lens 等业务结果生成
 ```
 
 后续 `zom ide` 可以依赖 `zom-engine`，但 `zom-engine` 本身必须保持为独立、可测试、低耦合的编辑引擎底座。
@@ -179,7 +193,7 @@ LSP
 ```text
 src/        编辑引擎实现（按能力域拆模块）
 tests/      机器契约测试（CI 主体）
-examples/   交互式 testbed（人类体感）
+examples/   可选交互式 testbed（人类体感，M13 之后不作为阶段验收底线）
 benches/    性能基准测试
 src/tests/  可选内部测试区，仅测试 public API 无法覆盖的重要内部不变量
 docs/       文档与状态快照（STATUS.md）
@@ -253,7 +267,8 @@ cargo run --example xxx
 这是硬规则：
 
 ```text
-M(n) testbed 不能丢 M(n-1) 已经具备的手感能力，只能继承并扩展。
+新增或修改 M(n) testbed 时，不能丢 M(n-1) 已经具备的手感能力，只能继承并扩展。
+M13 之后默认不为每个 engine milestone 新增 GPUI testbed。
 ```
 
 也就是说：
@@ -719,7 +734,7 @@ EditList: edit 排序、不重叠、非空约束明确
 Transaction: base_version 绑定明确
 ChangeSet / Delta: 只能由已验证编辑构造
 Snapshot: 绑定 BufferVersion，不能伪造过期状态
-CommandOutcome: 如果未来引入，字段不应随意 public 暴露
+TransactionRecord / VersionedResult: 版本绑定明确，不能伪造可回放或未过期状态
 ```
 
 默认原则：
@@ -765,8 +780,8 @@ AI 审查编辑引擎代码时，必须特别关注：
 4. selection after edit 是否由统一映射策略维护。
 5. undo / redo 是否同时恢复文本和 SelectionSet。
 6. composition 是否复用已有编辑管线，而不是绕过事务。
-7. movement 是否复用 M6B 策略，而不是在 UI 或 command 层重复实现。
-8. history merge 是否属于历史系统，不应该被 Command 概念反向塑形。
+7. movement 是否复用 M6B 策略，而不是在 UI / examples 层重复实现。
+8. history merge 是否属于历史系统，不应该被宿主输入语义反向塑形。
 9. snapshot 是否是只读低成本视图，不应该暴露可变底层。
 10. testbed 是否只验证体感，不替代机器契约测试。
 ```
@@ -778,7 +793,6 @@ AI 审查编辑引擎代码时，必须特别关注：
 ```text
 DeleteBackward / DeleteForward 重新实现 M6 删除逻辑。
 ReplaceSelections 重新实现多选区替换逻辑。
-CommandExecutor 重新实现 Buffer 已有编辑能力。
 GPUI testbed 重新实现底层 movement / selection 算法。
 Composition commit 绕过 Transaction 或 History。
 Undo / Redo 单独维护一套 selection 恢复逻辑。
@@ -1183,7 +1197,7 @@ tx.base_version == buffer.version()
 
 `examples/gpui_mN_testbed.rs` 是递进式实验台，不是互相独立的小 demo。
 
-每个阶段都应该继承上一阶段的体感能力。
+新增或修改 testbed 时，必须继承上一阶段的体感能力。M13 之后默认不要求每个 engine milestone 都新增 GPUI testbed。
 
 ### 12.4 M4 StringStorage 只作为测试 reference model
 
@@ -1251,72 +1265,39 @@ src/buffer/validation.rs       Buffer 级边界校验
 重构后必须继续通过现有 m0-m6 集成测试。
 ```
 
-### 12.6 Command 后置阶段（M16 及以后）
+### 12.6 M13 之后的 engine-only 路线
 
-当前阶段（M0-M15）不引入 `Command` 层。`Command` 属于宿主输入语义适配，
-在编辑引擎内核稳定后再后置到 M16 及以后实现。
+M13 之后的所有阶段必须按纯编辑引擎标准取舍。
 
-推荐边界：
-
-```text
-src/command.rs              Command / CommandContext / CommandOutcome 数据模型
-src/command_executor.rs     Command -> Buffer 的 crate 内部适配层
-src/buffer/*.rs             Buffer 状态与底层编辑能力，不依赖 Command
-```
-
-依赖方向必须保持：
+保留范围：
 
 ```text
-UI / GPUI / 快捷键 / 菜单 / 命令面板
-        ↓
-Command / CommandContext
-        ↓
-CommandExecutor
-        ↓
-Buffer public / pub(crate) 能力
-        ↓
-Transaction / SelectionSet / Movement / Composition / History
+Fold / Projection 坐标数学
+Snapshot / Delta / VersionedResult 等版本协作原语
+单写多读的引擎对象边界
+事务记录、事务回放与历史系统
+大文件策略、资源预算、错误防御
+property / fuzz / benchmark / 观测指标
 ```
 
-原则：
+移出本 crate milestone 的范围：
 
 ```text
-CommandExecutor 可以依赖 Buffer。
-buffer/ 子模块不要依赖 Command。
-transaction.rs、selection.rs、storage/*、coordinates.rs、snapshot.rs 不要依赖 Command。
-不只禁止编译依赖倒置，也禁止语义倒置：底层模块不得以 Command 术语命名状态、策略和不变量。
-历史合并、事务策略等底层语义必须使用中性领域语言（如 History / Transaction），不能由 Command 概念反向塑形。
-如果同一逻辑仅由 Command 触发，也要把状态归属在底层领域模块（history/transaction），Command 只做映射，不持有底层事实。
-Command 表达用户意图，Transaction 表达文本变异提交单位。
-外部 formatter / LSP apply edit 可以继续直接构造 Transaction，不必伪装成 Command。
+LSP / Tree-sitter provider
+diagnostics / semantic tokens / inlay hints / code lens 专用 adapter
+Command / CommandContext / CommandExecutor
+快捷键、菜单、命令面板、用户意图层
+Macro Recording / 用户操作回放
+后台任务调度器、CancellationToken、线程池、优先级调度
+正式 UI 渲染、fold placeholder 样式、像素 viewport
 ```
 
-### 12.7 Command 阶段专项验收规则
+如果某项能力只是“宿主可能用得到”，但本身不维护编辑引擎不变量，
+默认不进入 `zom-engine`。引擎只提供足够通用的底层事实，例如
+`Snapshot`、`DeltaEvent`、`PositionMap`、`TrackedRange`、`MetadataLayer`、
+`Projection`、`VersionedResult<T>` 等。
 
-虽然当前阶段（M0-M15）不引入 `Command` 层，但后续进入 Command 阶段时必须检查：
-
-```text
-1. Command 是否只是用户意图的数据模型。
-2. Command 是否不持有底层编辑事实。
-3. CommandOutcome 是否封装不变量，字段不应随意 public。
-4. InsertText 是否复用现有多光标插入。
-5. DeleteBackward / DeleteForward 是否复用现有多光标删除。
-6. ReplaceSelections 是否复用现有多选区替换。
-7. word / subword / symbol movement 是否复用 M6B 策略。
-8. Composition 命令是否复用 M6C composition 管线。
-9. Undo / Redo 是否复用历史系统，并恢复文本与 SelectionSet。
-10. repeat count 是否被明确限制适用范围，而不是盲目作用于所有命令。
-```
-
-Command 阶段的核心原则：
-
-```text
-Command 只做意图表达。
-CommandExecutor 只做意图到已有底层能力的映射。
-Buffer / Transaction / Selection / Movement / Composition / History 才持有编辑语义事实。
-```
-
-### 12.8 审查结论分级
+### 12.7 审查结论分级
 
 AI 对问题分级时应使用以下标准：
 
@@ -1341,13 +1322,14 @@ AI 的默认身份是：带设计文档约束的 Rust 编辑引擎审查型实�
 AI 可以生产代码，但必须边生产边审查架构质量。
 AI 生成的代码应尽量达到“用户后续很少需要再做架构审查”的质量。
 对于文本编辑引擎，架构质量、职责边界和不变量保护比短期功能完成更重要。
+纯编辑引擎开发是本仓库底线；非 engine core 能力不后置、不预留 milestone，直接移出本 crate 范围。
 
 默认 tests/
-UI examples/
+可选 UI examples/
 性能 benches/
 只有重要内部不变量才 src/tests/
 
-M(n) testbed = M(n-1) testbed 的完整体验 + 当前阶段新增能力。
+新增或修改 M(n) testbed 时，必须继承 M(n-1) testbed 的完整体验，再叠加当前阶段新增能力。
 
 M4 生产存储使用 RopeyStorage。
 M4 StringStorage 只能作为测试 reference model，不放进 src/storage/ 生产核心模块。

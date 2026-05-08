@@ -268,7 +268,7 @@ impl Render for M1Testbed {
                         dirty_label(self.buffer.is_dirty()),
                     )),
             )
-            
+
             .when_some(self.last_error.clone(), |el, error| {
                 el.child(
                     div()

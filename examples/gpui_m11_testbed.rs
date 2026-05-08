@@ -6,9 +6,9 @@
 //! 长行截断、大文本滚动和 Snapshot 只读切片观察。
 
 use gpui::{
-    actions, black, div, prelude::*, px, rgb, size, white, App, Application, Bounds, Context,
-    FocusHandle, Focusable, IntoElement, KeyBinding, KeyDownEvent, Render,
-    StatefulInteractiveElement, Window, WindowBounds, WindowOptions,
+    App, Application, Bounds, Context, FocusHandle, Focusable, IntoElement, KeyBinding,
+    KeyDownEvent, Render, StatefulInteractiveElement, Window, WindowBounds, WindowOptions, actions,
+    black, div, prelude::*, px, rgb, size, white,
 };
 use zom_engine::{
     Affinity, Buffer, BufferConfig, BufferKind, CharOffset, CompositionSelection, DisplayColumn,
@@ -2187,27 +2187,15 @@ impl Render for M11Testbed {
 }
 
 fn bool_label(value: bool) -> &'static str {
-    if value {
-        "是"
-    } else {
-        "否"
-    }
+    if value { "是" } else { "否" }
 }
 
 fn dirty_label(is_dirty: bool) -> &'static str {
-    if is_dirty {
-        "已修改"
-    } else {
-        "干净"
-    }
+    if is_dirty { "已修改" } else { "干净" }
 }
 
 fn dirty_state_label(is_dirty: bool) -> &'static str {
-    if is_dirty {
-        "Dirty"
-    } else {
-        "Clean"
-    }
+    if is_dirty { "Dirty" } else { "Clean" }
 }
 
 fn unit_label(unit: MovementUnit) -> &'static str {

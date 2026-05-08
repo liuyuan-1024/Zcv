@@ -602,7 +602,7 @@ impl Render for M4Testbed {
                     .child(snapshot_label)
                     .child(storage_label),
             )
-            
+
             .when_some(self.last_error.clone(), |el, error| {
                 el.child(
                     div()

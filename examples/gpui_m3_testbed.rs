@@ -565,7 +565,7 @@ impl Render for M3Testbed {
                     .child(history_label)
                     .child(snapshot_label),
             )
-            
+
             .when_some(self.last_error.clone(), |el, error| {
                 el.child(
                     div()

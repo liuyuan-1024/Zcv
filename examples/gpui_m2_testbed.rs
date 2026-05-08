@@ -340,7 +340,7 @@ impl Render for M2Testbed {
                         self.last_changed_ranges.len(),
                     )),
             )
-            
+
             .when_some(self.last_error.clone(), |el, error| {
                 el.child(
                     div()

@@ -788,7 +788,7 @@ impl Render for M5Testbed {
                     .child(storage_label)
                     .child(coordinate_label),
             )
-            
+
             .when_some(self.last_error.clone(), |el, error| {
                 el.child(
                     div()

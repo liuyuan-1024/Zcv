@@ -127,6 +127,14 @@ pub enum MetadataError {
     },
 }
 
+/// 当前 Buffer 内搜索相关错误。
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum SearchError {
+    /// 空 query 没有稳定的匹配语义，调用方应在 UI / 宿主层决定如何展示空搜索。
+    #[error("搜索 query 不能为空")]
+    EmptyQuery,
+}
+
 /// 底层存储相关的错误（存储后端做不了）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum StorageError {
@@ -172,6 +180,10 @@ pub enum EngineError {
     /// MetadataLayer 与 Buffer 版本或 range 身份管理不一致。
     #[error(transparent)]
     Metadata(#[from] MetadataError),
+
+    /// 当前 Buffer 内搜索请求不合法。
+    #[error(transparent)]
+    Search(#[from] SearchError),
 
     /// 底层文本存储或加载边界失败。
     #[error(transparent)]

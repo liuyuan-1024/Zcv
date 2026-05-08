@@ -9,6 +9,7 @@ mod coordinates;
 mod errors;
 mod metadata;
 mod position_map;
+mod search;
 mod selection;
 mod slicing;
 mod snapshot;
@@ -24,7 +25,7 @@ pub use config::{
     LineEndingConfig, PositionEncodingConfig, TabConfig, WordBoundaryPolicy,
 };
 pub use errors::{
-    AnchorError, CoordinateError, EditError, EngineError, EngineResult, MetadataError,
+    AnchorError, CoordinateError, EditError, EngineError, EngineResult, MetadataError, SearchError,
     StorageError, TransactionError,
 };
 pub use metadata::{
@@ -32,6 +33,7 @@ pub use metadata::{
     MetadataRangeId, MetadataRangeSpec, MetadataRangeUpdate,
 };
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
+pub use search::{SearchMatch, SearchMatchMetadata, SearchOptions, SearchResult};
 pub use selection::{
     CompositionSelection, CompositionState, Cursor, MovementDirection, MovementUnit, Selection,
     SelectionMergePolicy, SelectionSet,

@@ -7,7 +7,8 @@ use std::borrow::Cow;
 use crate::{
     BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, DisplayColumn,
     DisplayColumnAffinity, EngineResult, Line, LineEndingStyle, LineRange, LineSlice,
-    LogicalColumn, Position, TextRange, TextSlice, Utf16Position, Viewport, ViewportSlice,
+    LogicalColumn, Position, SearchOptions, SearchResult, TextRange, TextSlice, Utf16Position,
+    Viewport, ViewportSlice,
     coordinates::core::{
         char_to_display_column_in_text, display_to_logical_column_in_text,
         logical_to_display_column_in_text, next_tab_stop,
@@ -220,6 +221,16 @@ impl Snapshot {
 
     pub fn is_stale_for_version(&self, version: BufferVersion) -> bool {
         self.version != version
+    }
+
+    /// 在该不可变快照中执行普通字符串搜索，结果绑定快照版本。
+    pub fn search(&self, query: &str, options: SearchOptions) -> EngineResult<SearchResult> {
+        crate::search::search_in_text(&self.storage, self.version, &self.config, query, options)
+    }
+
+    /// 使用默认选项执行大小写敏感的全文普通字符串搜索。
+    pub fn search_literal(&self, query: &str) -> EngineResult<SearchResult> {
+        self.search(query, SearchOptions::default())
     }
 }
 

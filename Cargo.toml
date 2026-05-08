@@ -52,3 +52,6 @@ path = "examples/gpui_m10_testbed.rs"
 [[example]]
 name = "gpui_m11_testbed"
 path = "examples/gpui_m11_testbed.rs"
+[[example]]
+name = "gpui_m12_testbed"
+path = "examples/gpui_m12_testbed.rs"

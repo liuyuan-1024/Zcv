@@ -144,6 +144,10 @@ pub enum SearchError {
     /// 调用方请求替换不存在的搜索匹配序号。
     #[error("搜索匹配不存在: ordinal {ordinal}")]
     MatchNotFound { ordinal: usize },
+
+    /// 正则表达式无法编译。
+    #[error("非法正则表达式: pattern {pattern:?}, message {message}")]
+    InvalidRegex { pattern: String, message: String },
 }
 
 /// 底层存储相关的错误（存储后端做不了）。

@@ -5,6 +5,7 @@ edition = "2024"
 description = "一个纯粹的、与用户界面无关的文本编辑引擎"
 
 [dependencies]
+regex = "1.12.3"
 ropey = "1.6.1"
 thiserror = "2.0.18"
 unicode-segmentation = "1.13.2"

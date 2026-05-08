@@ -7312,6 +7312,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "gpui",
+ "regex",
  "ropey",
  "thiserror 2.0.18",
  "unicode-segmentation",

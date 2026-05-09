@@ -37,8 +37,9 @@ pub use metadata::{
 };
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
 pub use projection::{
-    FoldPlaceholder, LogicalProjection, ProjectedLine, ProjectedLineIndex, ProjectedLineKind,
-    Projection, TextLine,
+    FoldPlaceholder, LogicalPoint, LogicalPointProjection, LogicalProjection, LogicalRange,
+    ProjectedLine, ProjectedLineIndex, ProjectedLineKind, ProjectedPoint, ProjectedPointMapping,
+    ProjectedRange, Projection, TextLine,
 };
 pub use search::{
     RegexSearchOptions, RegexSearchResult, SearchMatch, SearchMatchMetadata, SearchOptions,

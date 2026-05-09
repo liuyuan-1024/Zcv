@@ -8,8 +8,12 @@
 
 mod index;
 mod line;
+mod point;
 mod projection;
+mod range;
 
 pub use index::ProjectedLineIndex;
 pub use line::{FoldPlaceholder, LogicalProjection, ProjectedLine, ProjectedLineKind, TextLine};
+pub use point::{LogicalPoint, LogicalPointProjection, ProjectedPoint, ProjectedPointMapping};
 pub use projection::Projection;
+pub use range::{LogicalRange, ProjectedRange};

@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M13 Fold Model 与 Projection Coordinate（M13A、M13B 已完成，进入 M13C）
-- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；GPUI testbed 覆盖至 M12
-- 未完成：M13C Projection Point/Range Mapping / M13D Viewport Projection 及后续 engine-only 阶段
+- 当前推进：M13 Fold Model 与 Projection Coordinate（M13A、M13B、M13C 已完成，进入 M13D）
+- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；GPUI testbed 覆盖至 M12
+- 未完成：M13D Viewport Projection 及后续 engine-only 阶段
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 - engine-only 词汇表收敛（破坏性变更）：
@@ -88,6 +88,15 @@
 - `src/lib.rs`：M13B public API 导出（Projection / ProjectedLine / ProjectedLineIndex / ProjectedLineKind / TextLine / FoldPlaceholder / LogicalProjection / ProjectionError）
 - `tests/m13_projection_line_map.rs`：14 个机器契约测试，覆盖空 fold 1:1 映射、单 fold placeholder 注入、双向 logical↔projected 映射、hidden 行 -> anchor 回溯、placeholder -> anchor 回溯、嵌套 fold 合并为单 placeholder、非嵌套 fold 各自独立 placeholder、intra-line fold 不产 placeholder、版本不匹配原子拒绝、projection 不可变性、line 越界返回 CoordinateError、错误经 EngineError 透传
 
+## M13C 文件
+
+- `src/projection/`：在 M13B 行级映射上叠加 point / range 双向映射
+  - `point.rs`：LogicalPoint / ProjectedPoint 强类型 (line, column) point；LogicalPointProjection（Visible / Hidden）+ ProjectedPointMapping（Text / Placeholder）映射结果 enum，把 fold anchor / hidden_lines 等事实直接暴露
+  - `range.rs`：LogicalRange / ProjectedRange 半开范围，构造器拒绝反向区间
+  - `projection.rs`：扩展 logical_to_projected_point、projected_to_logical_point、logical_to_projected_range_segments（按 row kind 切换分段，跨 fold 自动展开端点）、projected_to_logical_range（placeholder 端点折叠到 anchor 或 hidden 区结束）、project_text_range（基于 Snapshot 把 Selection::range() 投影成段，多 selection 由 caller 循环调用）；新增 verify_snapshot_version 保证版本绑定
+- `src/lib.rs`：M13C public API 导出（LogicalPoint / LogicalPointProjection / LogicalRange / ProjectedPoint / ProjectedPointMapping / ProjectedRange）
+- `tests/m13_projection_range_map.rs`：17 个机器契约测试，覆盖 LogicalRange / ProjectedRange 反向构造拒绝、可见点直投、hidden 点回溯到 anchor、Text 投影点直回、Placeholder 投影点回到 anchor + 隐藏行区间、空范围零段、无 fold 单段、跨 fold 三段（text / placeholder / text）、起点在 fold 内收缩到 anchor、终点在 fold 内延伸过 placeholder、projected→logical placeholder 端点收敛、selection 单段 + 多选区分别投影、snapshot 版本不匹配 selection 投影原子拒绝、越界 logical point 返回 CoordinateError
+
 ## 建议验证命令
 
 ```bash
@@ -98,6 +107,7 @@ cargo test --test m12_replace
 cargo test --test m12_regex
 cargo test --test m13_fold_set
 cargo test --test m13_projection_line_map
+cargo test --test m13_projection_range_map
 cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m10_testbed

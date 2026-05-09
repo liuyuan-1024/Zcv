@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M13 Fold Model 与 Projection Coordinate
-- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；GPUI testbed 覆盖至 M12
-- 未完成：M13 Fold Model 与 Projection Coordinate 及后续 engine-only 阶段
+- 当前推进：M13 Fold Model 与 Projection Coordinate（M13A 已完成，进入 M13B）
+- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；GPUI testbed 覆盖至 M12
+- 未完成：M13B Projection Line Map / M13C Projection Point/Range Mapping / M13D Viewport Projection 及后续 engine-only 阶段
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 - engine-only 词汇表收敛（破坏性变更）：
@@ -65,6 +65,18 @@
 - `src/lib.rs`：M12A public API 导出
 - `src/errors.rs`：SearchError 接入 EngineError，覆盖空 query、过期结果、缺失 match 和非法正则
 
+## M13A 文件
+
+- `src/fold/`：FoldRange / FoldSet / HiddenRange 折叠模型，复用 TrackedRange 跟随策略
+  - `id.rs`：FoldRangeId 单 FoldSet 内单调递增身份
+  - `range.rs`：单条 FoldRange，绑定 BufferVersion + TrackedRange + 默认 invalidate_when_fully_deleted 策略
+  - `update.rs`：FoldRangeUpdate（Mapped / Deleted / Collapsed / Invalidated）
+  - `hidden.rs`：HiddenRange 半开行区间
+  - `set.rs`：FoldSet 维护版本绑定、id 单调、嵌套合法、部分重叠拒绝、normalize、line-based fold、unfold/unfold_at/unfold_all、toggle、is_line_hidden、derive_hidden_ranges、update_through_delta_event
+- `src/errors.rs`：FoldError（IdOverflow / VersionMismatch / OverlapWithoutNesting / EmptyRange）接入 EngineError
+- `src/lib.rs`：M13A public API 导出（FoldRange / FoldRangeId / FoldRangeUpdate / FoldSet / FoldToggleOutcome / HiddenRange / FoldError）
+- `tests/m13_fold_set.rs`：22 个机器契约测试，覆盖 fold/unfold/toggle/unfold all、嵌套合法、部分重叠拒绝、line-based fold、line hidden 查询、HiddenRange 合并、编辑后 fold 跟随、保留/塌缩/失效策略、版本不匹配原子拒绝
+
 ## 建议验证命令
 
 ```bash
@@ -73,6 +85,7 @@ cargo test --test m11_viewport_slicing
 cargo test --test m12_search
 cargo test --test m12_replace
 cargo test --test m12_regex
+cargo test --test m13_fold_set
 cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m10_testbed

@@ -127,6 +127,32 @@ pub enum MetadataError {
     },
 }
 
+/// FoldSet 折叠集合相关错误。
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum FoldError {
+    /// FoldSet 内 fold range id 计数器耗尽；调用方应重建 FoldSet。
+    #[error("FoldSet fold range id 溢出")]
+    IdOverflow,
+
+    /// FoldSet 只能应用同一 base_version 的 DeltaEvent，过期结果应由宿主丢弃。
+    #[error("FoldSet 版本不匹配: 预期版本 {expected:?}，实际版本 {actual:?}")]
+    VersionMismatch {
+        expected: BufferVersion,
+        actual: BufferVersion,
+    },
+
+    /// 候选 fold 与已有 fold 部分重叠（既非互不相交，也非完全嵌套）；引擎拒绝该状态。
+    #[error("折叠区间与已有折叠部分重叠: 已有 {existing:?}, 候选 {candidate:?}")]
+    OverlapWithoutNesting {
+        existing: TextRange,
+        candidate: TextRange,
+    },
+
+    /// fold 的 char range 必须是非空区间（start < end）。
+    #[error("折叠区间不能为空: {range:?}")]
+    EmptyRange { range: TextRange },
+}
+
 /// 当前 Buffer 内搜索相关错误。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SearchError {
@@ -195,6 +221,10 @@ pub enum EngineError {
     /// MetadataLayer 与 Buffer 版本或 range 身份管理不一致。
     #[error(transparent)]
     Metadata(#[from] MetadataError),
+
+    /// FoldSet 折叠集合的版本、嵌套或边界不变量被破坏。
+    #[error(transparent)]
+    Fold(#[from] FoldError),
 
     /// 当前 Buffer 内搜索请求不合法。
     #[error(transparent)]

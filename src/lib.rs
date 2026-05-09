@@ -7,6 +7,7 @@ mod buffer;
 mod config;
 mod coordinates;
 mod errors;
+mod fold;
 mod metadata;
 mod position_map;
 mod search;
@@ -25,9 +26,10 @@ pub use config::{
     LineEndingConfig, PositionEncodingConfig, TabConfig, WordBoundaryPolicy,
 };
 pub use errors::{
-    AnchorError, CoordinateError, EditError, EngineError, EngineResult, MetadataError, SearchError,
-    StorageError, TransactionError,
+    AnchorError, CoordinateError, EditError, EngineError, EngineResult, FoldError, MetadataError,
+    SearchError, StorageError, TransactionError,
 };
+pub use fold::{FoldRange, FoldRangeId, FoldRangeUpdate, FoldSet, FoldToggleOutcome, HiddenRange};
 pub use metadata::{
     MetadataLayer, MetadataLayerKind, MetadataLayers, MetadataLineWindow, MetadataRange,
     MetadataRangeId, MetadataRangeSpec, MetadataRangeUpdate,

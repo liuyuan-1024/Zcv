@@ -631,8 +631,9 @@ impl M10Testbed {
             }
         }
 
-        let mut diagnostics = MetadataLayer::with_kind(MetadataLayerKind::Diagnostics, version)
-            .with_default_stickiness(Stickiness::Never);
+        let mut diagnostics =
+            MetadataLayer::with_kind(MetadataLayerKind::custom("diagnostics"), version)
+                .with_default_stickiness(Stickiness::Never);
         if let Some(range) = find_text_range(text, "a+b == c") {
             let _ = diagnostics.insert_with_options(
                 range,
@@ -650,8 +651,9 @@ impl M10Testbed {
             );
         }
 
-        let mut bookmarks = MetadataLayer::with_kind(MetadataLayerKind::Bookmark, version)
-            .with_default_stickiness(Stickiness::Expand);
+        let mut bookmarks =
+            MetadataLayer::with_kind(MetadataLayerKind::custom("bookmark"), version)
+                .with_default_stickiness(Stickiness::Expand);
         for needle in ["中文输入区域", "韩文输入区域"] {
             if let Some(offset) = find_char_offset(text, needle) {
                 let range = TextRange::new(offset, offset)
@@ -1864,14 +1866,16 @@ fn buffer_kind_label(kind: &BufferKind) -> String {
 fn metadata_kind_label(kind: &MetadataLayerKind) -> String {
     match kind {
         MetadataLayerKind::SearchMatch => "搜索匹配".to_string(),
-        MetadataLayerKind::Diagnostics => "诊断".to_string(),
-        MetadataLayerKind::SyntaxHighlight => "语法高亮".to_string(),
-        MetadataLayerKind::SemanticToken => "语义令牌".to_string(),
-        MetadataLayerKind::Breakpoint => "断点".to_string(),
-        MetadataLayerKind::Bookmark => "书签".to_string(),
-        MetadataLayerKind::InlayHint => "内联提示".to_string(),
-        MetadataLayerKind::CodeLens => "CodeLens".to_string(),
-        MetadataLayerKind::Custom(name) => format!("Custom({name})"),
+        MetadataLayerKind::Custom(name) => match name.as_str() {
+            "diagnostics" => "诊断".to_string(),
+            "syntax-highlight" => "语法高亮".to_string(),
+            "semantic-token" => "语义令牌".to_string(),
+            "breakpoint" => "断点".to_string(),
+            "bookmark" => "书签".to_string(),
+            "inlay-hint" => "内联提示".to_string(),
+            "code-lens" => "CodeLens".to_string(),
+            other => format!("Custom({other})"),
+        },
     }
 }
 

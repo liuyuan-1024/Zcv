@@ -19,8 +19,8 @@ impl Buffer {
         self.replace_selection_ranges_with_metadata(
             selections,
             text,
-            TransactionMetadata::new(TransactionSource::Keyboard)
-                .with_description("insert at selections"),
+            TransactionMetadata::new(TransactionSource::Programmatic)
+                .with_description("在选定位置插入"),
         )
     }
 
@@ -34,7 +34,7 @@ impl Buffer {
             selections,
             replacement,
             TransactionMetadata::new(TransactionSource::Programmatic)
-                .with_description("replace selections"),
+                .with_description("替换所选内容"),
         )
     }
 
@@ -46,8 +46,8 @@ impl Buffer {
         self.replace_selection_ranges_with_metadata(
             selections,
             "",
-            TransactionMetadata::new(TransactionSource::Delete)
-                .with_description("delete selections"),
+            TransactionMetadata::new(TransactionSource::Programmatic)
+                .with_description("删除所选内容"),
         )
     }
 
@@ -60,8 +60,8 @@ impl Buffer {
             selections,
             MovementDirection::Previous,
             MovementUnit::Grapheme,
-            TransactionMetadata::new(TransactionSource::Delete)
-                .with_description("delete backward at selections"),
+            TransactionMetadata::new(TransactionSource::Programmatic)
+                .with_description("向后删除选定内容"),
         )
     }
 
@@ -74,8 +74,8 @@ impl Buffer {
             selections,
             MovementDirection::Next,
             MovementUnit::Grapheme,
-            TransactionMetadata::new(TransactionSource::Delete)
-                .with_description("delete forward at selections"),
+            TransactionMetadata::new(TransactionSource::Programmatic)
+                .with_description("向前删除所选内容"),
         )
     }
 

@@ -7,6 +7,10 @@
 - 未完成：M13 Fold Model 与 Projection Coordinate 及后续 engine-only 阶段
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
+- engine-only 词汇表收敛（破坏性变更）：
+  - `TransactionSource` 仅保留引擎内部分支用变体 `{ Programmatic, Composition, Undo, Redo }`；`Mouse / Keyboard / Paste / Delete / Formatter / External` 等宿主输入分类已移除，宿主自行维护并通过 `TransactionMetadata::description` 透传。
+  - `MetadataLayerKind` 仅保留 `{ SearchMatch, Custom(String) }`；`Diagnostics / SyntaxHighlight / SemanticToken / Breakpoint / Bookmark / InlayHint / CodeLens` 等业务类别均迁移为 `Custom("diagnostics")` 等宿主自定义键。
+  - `Buffer::insert_at_selections / replace_selections / delete_*_at_selections` 默认 `TransactionMetadata` 改为 `TransactionSource::Programmatic`，引擎不再替宿主猜测输入设备。
 
 ## M9 文件
 

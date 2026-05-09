@@ -232,7 +232,7 @@ fn successful_transaction_enqueues_delta_event() {
         vec![Edit::insert(c(5), " world".to_string()).unwrap()],
     )
     .unwrap()
-    .with_metadata(TransactionMetadata::new(TransactionSource::Paste));
+    .with_metadata(TransactionMetadata::new(TransactionSource::Programmatic));
 
     let (delta, changeset) = buffer.apply_transaction(tx).unwrap();
 
@@ -240,7 +240,7 @@ fn successful_transaction_enqueues_delta_event() {
     assert_eq!(last_event.transaction_id, TransactionId::INITIAL);
     assert_eq!(last_event.old_version, delta.old_version);
     assert_eq!(last_event.new_version, delta.new_version);
-    assert_eq!(last_event.source, TransactionSource::Paste);
+    assert_eq!(last_event.source, TransactionSource::Programmatic);
     assert_eq!(last_event.delta, delta);
     assert_eq!(last_event.changeset, changeset);
     assert_eq!(

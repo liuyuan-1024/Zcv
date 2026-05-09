@@ -1,30 +1,20 @@
-//! TransactionSource：记录事务来自哪类底层编辑入口。
+//! TransactionSource：标记事务由哪类引擎内部入口产生。
 //!
-//! 它服务历史合并和事件观察，不引入 Command、快捷键或宏录制层概念。
+//! 仅保留引擎内部需要据此分支的来源；宿主输入分类（键盘 / 鼠标 / 粘贴 / 格式化器 / 文件 watcher 等）属于宿主词汇表，不进入 engine 核心枚举。宿主如需追加来源标识，应在自己的类型中维护，并通过 `TransactionMetadata::description` 透传。
 
-/// 事务来源。
+/// 事务来源（engine 内部分支用）。
 ///
-/// 这里记录“哪类编辑入口产生了事务”，供历史合并、事件观察和调试使用；
-/// 它不是 Command 层，也不表达快捷键、菜单项或宏录制语义。
+/// 引擎只对以下来源做条件分支：
+/// - `Composition` 触发 IME 状态边界；
+/// - `Undo` / `Redo` 标记历史回放，避免被当成新一轮编辑触发 redo 清理；
+/// - `Programmatic` 是默认值，引擎不对其附加任何用户交互假设。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TransactionSource {
-    /// 引擎调用方直接构造事务提交，没有用户交互语义。
+    /// 引擎调用方直接构造事务提交，不附加任何宿主输入语义。
     #[default]
     Programmatic,
-    /// 鼠标驱动的编辑入口，例如拖放文本；不表示 selection movement 本身。
-    Mouse,
-    /// 普通键盘输入产生的文本变更，例如字符输入或 Enter。
-    Keyboard,
     /// IME / composition preedit 或 commit 产生的文本变更。
     Composition,
-    /// 粘贴入口产生的文本变更；宿主可据此选择不同的历史合并策略。
-    Paste,
-    /// 删除类编辑入口产生的文本变更。
-    Delete,
-    /// 格式化器或代码整理工具产生的批量文本变更。
-    Formatter,
-    /// 外部系统同步进来的文本变更，例如文件 watcher 或协作层适配。
-    External,
     /// 历史系统回放 undo 产生的反向事务。
     Undo,
     /// 历史系统回放 redo 产生的正向事务。

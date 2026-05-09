@@ -159,7 +159,7 @@ fn merge_with_previous_creates_single_undo_boundary() {
     )
     .unwrap()
     .with_metadata(
-        TransactionMetadata::new(TransactionSource::Keyboard)
+        TransactionMetadata::new(TransactionSource::Programmatic)
             .with_merge_policy(TransactionMergePolicy::MergeWithPrevious),
     );
     buffer.apply_transaction(second).unwrap();

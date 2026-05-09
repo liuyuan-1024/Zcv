@@ -457,7 +457,7 @@ mod m6a_selection_set {
         )
         .unwrap()
         .with_metadata(
-            TransactionMetadata::new(TransactionSource::Keyboard)
+            TransactionMetadata::new(TransactionSource::Programmatic)
                 .with_merge_policy(TransactionMergePolicy::MergeWithPrevious),
         )
         .with_selection(Some(middle), Some(after.clone()));

@@ -131,7 +131,8 @@ fn metadata_layer_updates_ranges_through_delta_event() {
 #[test]
 fn metadata_layer_drops_invalidated_ranges_and_reports_last_mapped_range() {
     let mut buffer = buffer("abcdef");
-    let mut layer = MetadataLayer::with_kind(MetadataLayerKind::Diagnostics, buffer.version());
+    let mut layer =
+        MetadataLayer::with_kind(MetadataLayerKind::custom("diagnostics"), buffer.version());
     let policy = TrackedRangeUpdatePolicy::new(
         TrackedRangeInvalidationPolicy::WhenTouchedByDeletion,
         TrackedRangeCollapsePolicy::Keep,
@@ -190,9 +191,10 @@ fn metadata_layer_rejects_unrelated_delta_event_without_partial_mutation() {
 fn multiple_metadata_layers_can_follow_the_same_delta_independently() {
     let mut buffer = buffer("abcdef");
     let mut diagnostics =
-        MetadataLayer::with_kind(MetadataLayerKind::Diagnostics, buffer.version());
-    let mut bookmarks = MetadataLayer::with_kind(MetadataLayerKind::Bookmark, buffer.version())
-        .with_default_stickiness(Stickiness::Expand);
+        MetadataLayer::with_kind(MetadataLayerKind::custom("diagnostics"), buffer.version());
+    let mut bookmarks =
+        MetadataLayer::with_kind(MetadataLayerKind::custom("bookmark"), buffer.version())
+            .with_default_stickiness(Stickiness::Expand);
     let diagnostic_id = diagnostics.insert(range(1, 3), "diagnostic").unwrap();
     let bookmark_id = bookmarks.insert(range(3, 3), "bookmark").unwrap();
 
@@ -206,8 +208,11 @@ fn multiple_metadata_layers_can_follow_the_same_delta_independently() {
 
     assert_eq!(diagnostics.get(diagnostic_id).unwrap().range(), range(1, 3));
     assert_eq!(bookmarks.get(bookmark_id).unwrap().range(), range(3, 6));
-    assert_eq!(diagnostics.kind(), &MetadataLayerKind::Diagnostics);
-    assert_eq!(bookmarks.kind(), &MetadataLayerKind::Bookmark);
+    assert_eq!(
+        diagnostics.kind(),
+        &MetadataLayerKind::custom("diagnostics")
+    );
+    assert_eq!(bookmarks.kind(), &MetadataLayerKind::custom("bookmark"));
 }
 
 #[test]
@@ -286,7 +291,10 @@ fn line_range_is_a_public_half_open_query_range() {
 #[test]
 fn metadata_layer_can_query_by_line_range_and_line_window() {
     let buffer = buffer("aa\nbb\ncc");
-    let mut layer = MetadataLayer::with_kind(MetadataLayerKind::SyntaxHighlight, buffer.version());
+    let mut layer = MetadataLayer::with_kind(
+        MetadataLayerKind::custom("syntax-highlight"),
+        buffer.version(),
+    );
     let line0 = layer.insert(range(0, 2), "line0").unwrap();
     let line1 = layer.insert(range(3, 5), "line1").unwrap();
     let line2 = layer.insert(range(6, 8), "line2").unwrap();
@@ -330,19 +338,20 @@ fn line_range_query_validates_against_buffer_line_boundaries() {
 fn metadata_layers_support_layer_kind_queries() {
     let buffer = buffer("abcdef");
     let mut diagnostics =
-        MetadataLayer::with_kind(MetadataLayerKind::Diagnostics, buffer.version());
+        MetadataLayer::with_kind(MetadataLayerKind::custom("diagnostics"), buffer.version());
     let diagnostic_id = diagnostics.insert(range(1, 4), "diagnostic").unwrap();
-    let mut bookmarks = MetadataLayer::with_kind(MetadataLayerKind::Bookmark, buffer.version());
+    let mut bookmarks =
+        MetadataLayer::with_kind(MetadataLayerKind::custom("bookmark"), buffer.version());
     bookmarks.insert(range(4, 4), "bookmark").unwrap();
 
     let layers = MetadataLayers::from_layers([diagnostics, bookmarks]);
     let diagnostic_ranges = layers
-        .ranges_for_kind_intersecting(&MetadataLayerKind::Diagnostics, range(2, 5))
+        .ranges_for_kind_intersecting(&MetadataLayerKind::custom("diagnostics"), range(2, 5))
         .map(|range| range.id())
         .collect::<Vec<_>>();
     let bookmark_ranges = layers
         .ranges_for_kind_in_line_window(
-            &MetadataLayerKind::Bookmark,
+            &MetadataLayerKind::custom("bookmark"),
             &buffer,
             MetadataLineWindow::new(line_range(0, 1)),
         )
@@ -353,7 +362,10 @@ fn metadata_layers_support_layer_kind_queries() {
 
     assert_eq!(layers.len(), 2);
     assert_eq!(
-        layers.layer(&MetadataLayerKind::Diagnostics).unwrap().len(),
+        layers
+            .layer(&MetadataLayerKind::custom("diagnostics"))
+            .unwrap()
+            .len(),
         1
     );
     assert_eq!(diagnostic_ranges, vec![diagnostic_id]);
@@ -395,7 +407,7 @@ fn metadata_layers_can_replace_a_layer_by_kind() {
     let mut layers = MetadataLayers::new();
     layers
         .replace_layer_ranges(
-            MetadataLayerKind::Diagnostics,
+            MetadataLayerKind::custom("diagnostics"),
             BufferVersion::INITIAL,
             [(range(0, 1), "old")],
         )
@@ -403,13 +415,15 @@ fn metadata_layers_can_replace_a_layer_by_kind() {
 
     let ids = layers
         .replace_layer_ranges(
-            MetadataLayerKind::Diagnostics,
+            MetadataLayerKind::custom("diagnostics"),
             BufferVersion::new(2),
             [(range(2, 5), "new-a"), (range(5, 5), "new-b")],
         )
         .unwrap();
 
-    let diagnostics = layers.layer(&MetadataLayerKind::Diagnostics).unwrap();
+    let diagnostics = layers
+        .layer(&MetadataLayerKind::custom("diagnostics"))
+        .unwrap();
     assert_eq!(layers.len(), 1);
     assert_eq!(ids, vec![MetadataRangeId::INITIAL, MetadataRangeId::new(1)]);
     assert_eq!(diagnostics.version(), BufferVersion::new(2));
@@ -426,15 +440,21 @@ fn metadata_layers_can_replace_a_layer_by_kind() {
 fn metadata_layers_can_discard_stale_layers() {
     let current_version = BufferVersion::new(3);
     let fresh = MetadataLayer::<&str>::with_kind(MetadataLayerKind::SearchMatch, current_version);
-    let stale =
-        MetadataLayer::<&str>::with_kind(MetadataLayerKind::Diagnostics, BufferVersion::new(2));
+    let stale = MetadataLayer::<&str>::with_kind(
+        MetadataLayerKind::custom("diagnostics"),
+        BufferVersion::new(2),
+    );
     let mut layers = MetadataLayers::from_layers([fresh, stale]);
 
     let removed = layers.discard_stale(current_version);
 
     assert_eq!(removed.len(), 1);
-    assert_eq!(removed[0].kind(), &MetadataLayerKind::Diagnostics);
+    assert_eq!(removed[0].kind(), &MetadataLayerKind::custom("diagnostics"));
     assert_eq!(layers.len(), 1);
     assert!(layers.layer(&MetadataLayerKind::SearchMatch).is_some());
-    assert!(layers.layer(&MetadataLayerKind::Diagnostics).is_none());
+    assert!(
+        layers
+            .layer(&MetadataLayerKind::custom("diagnostics"))
+            .is_none()
+    );
 }

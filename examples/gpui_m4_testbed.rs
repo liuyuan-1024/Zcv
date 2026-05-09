@@ -206,7 +206,7 @@ impl M4Testbed {
         match Edit::insert(self.cursor, text.to_string()) {
             Ok(edit) => {
                 let metadata = self
-                    .metadata_for_group(MergeGroup::Typing, TransactionSource::Keyboard)
+                    .metadata_for_group(MergeGroup::Typing, TransactionSource::Programmatic)
                     .with_description(format!("插入 {text:?}"));
 
                 if self.submit_edits(vec![edit], metadata, cx) {
@@ -249,7 +249,7 @@ impl M4Testbed {
         match TextRange::new(start, end) {
             Ok(range) => {
                 let metadata = self
-                    .metadata_for_group(group, TransactionSource::Delete)
+                    .metadata_for_group(group, TransactionSource::Programmatic)
                     .with_description("删除");
 
                 if self.submit_edits(vec![Edit::delete(range)], metadata, cx) {
@@ -310,7 +310,7 @@ impl M4Testbed {
                 self.merge_group = None;
                 self.submit_edits(
                     vec![edit],
-                    TransactionMetadata::new(TransactionSource::Keyboard)
+                    TransactionMetadata::new(TransactionSource::Programmatic)
                         .with_merge_policy(TransactionMergePolicy::MergeWithPrevious)
                         .with_description("合并演示"),
                     cx,

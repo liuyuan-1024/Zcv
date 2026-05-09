@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M13 Fold Model 与 Projection Coordinate（M13A 已完成，进入 M13B）
-- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；GPUI testbed 覆盖至 M12
-- 未完成：M13B Projection Line Map / M13C Projection Point/Range Mapping / M13D Viewport Projection 及后续 engine-only 阶段
+- 当前推进：M13 Fold Model 与 Projection Coordinate（M13A、M13B 已完成，进入 M13C）
+- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；GPUI testbed 覆盖至 M12
+- 未完成：M13C Projection Point/Range Mapping / M13D Viewport Projection 及后续 engine-only 阶段
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 - engine-only 词汇表收敛（破坏性变更）：
@@ -73,9 +73,20 @@
   - `update.rs`：FoldRangeUpdate（Mapped / Deleted / Collapsed / Invalidated）
   - `hidden.rs`：HiddenRange 半开行区间
   - `set.rs`：FoldSet 维护版本绑定、id 单调、嵌套合法、部分重叠拒绝、normalize、line-based fold、unfold/unfold_at/unfold_all、toggle、is_line_hidden、derive_hidden_ranges、update_through_delta_event
+  - `geometry.rs`：M13A/B 共用的 LineGeometry trait + fold_line_span/line_boundary_offset/char_range_for_line_range helper（同时支持 Buffer 与 Snapshot）
 - `src/errors.rs`：FoldError（IdOverflow / VersionMismatch / OverlapWithoutNesting / EmptyRange）接入 EngineError
 - `src/lib.rs`：M13A public API 导出（FoldRange / FoldRangeId / FoldRangeUpdate / FoldSet / FoldToggleOutcome / HiddenRange / FoldError）
 - `tests/m13_fold_set.rs`：22 个机器契约测试，覆盖 fold/unfold/toggle/unfold all、嵌套合法、部分重叠拒绝、line-based fold、line hidden 查询、HiddenRange 合并、编辑后 fold 跟随、保留/塌缩/失效策略、版本不匹配原子拒绝
+
+## M13B 文件
+
+- `src/projection/`：基于 Snapshot + FoldSet 的不可变行级折叠投影
+  - `index.rs`：ProjectedLineIndex 投影行强类型索引
+  - `line.rs`：TextLine / FoldPlaceholder / ProjectedLine / ProjectedLineKind / LogicalProjection（Visible / Hidden）
+  - `projection.rs`：Projection 主体，承担 build(snapshot, folds)、line_count / logical_line_count、logical_to_projected、projected_line / projected_line_kind / iter、is_logical_line_hidden、fold_anchor_for_logical_line、fold_anchor_for_projected_line、is_stale_for_version；嵌套与重叠 fold 在投影空间合并为单条 placeholder
+- `src/errors.rs`：ProjectionError::VersionMismatch 接入 EngineError
+- `src/lib.rs`：M13B public API 导出（Projection / ProjectedLine / ProjectedLineIndex / ProjectedLineKind / TextLine / FoldPlaceholder / LogicalProjection / ProjectionError）
+- `tests/m13_projection_line_map.rs`：14 个机器契约测试，覆盖空 fold 1:1 映射、单 fold placeholder 注入、双向 logical↔projected 映射、hidden 行 -> anchor 回溯、placeholder -> anchor 回溯、嵌套 fold 合并为单 placeholder、非嵌套 fold 各自独立 placeholder、intra-line fold 不产 placeholder、版本不匹配原子拒绝、projection 不可变性、line 越界返回 CoordinateError、错误经 EngineError 透传
 
 ## 建议验证命令
 
@@ -86,6 +97,7 @@ cargo test --test m12_search
 cargo test --test m12_replace
 cargo test --test m12_regex
 cargo test --test m13_fold_set
+cargo test --test m13_projection_line_map
 cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m10_testbed

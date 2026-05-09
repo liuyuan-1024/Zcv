@@ -16,7 +16,11 @@ use crate::{
     types::{BufferVersion, CharOffset, Line, LineRange, TextRange},
 };
 
-use super::{FoldRange, FoldRangeId, FoldRangeUpdate, HiddenRange, range::default_update_policy};
+use super::{
+    FoldRange, FoldRangeId, FoldRangeUpdate, HiddenRange,
+    geometry::{char_range_for_line_range, fold_line_span, next_line},
+    range::default_update_policy,
+};
 
 /// 一次 toggle 操作的结果：判定是新增了 fold 还是移除了已有 fold。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -315,51 +319,4 @@ fn range_contains_offset(range: TextRange, offset: CharOffset) -> bool {
         return false;
     }
     range.start() <= offset && offset < range.end()
-}
-
-fn char_range_for_line_range(buffer: &Buffer, line_range: LineRange) -> EngineResult<TextRange> {
-    let start = line_boundary_offset(buffer, line_range.start())?;
-    let end = line_boundary_offset(buffer, line_range.end())?;
-    Ok(TextRange::new(start, end)?)
-}
-
-fn line_boundary_offset(buffer: &Buffer, line: Line) -> EngineResult<CharOffset> {
-    let line_value = line.get();
-    let line_count = buffer.line_count();
-
-    if line_value > line_count {
-        return Err(crate::CoordinateError::LineOutOfBounds(line).into());
-    }
-
-    if line_value == line_count {
-        return Ok(buffer.len_chars());
-    }
-
-    buffer.line_start(line)
-}
-
-/// 计算 fold range 在当前 Buffer 上覆盖的逻辑行区间 `[start_line, end_line]`（闭闭）。
-///
-/// 若 fold 的 end offset 恰好落在某行起点（即未消耗该行的任何字符），则该行不算入 fold 跨度。
-fn fold_line_span(buffer: &Buffer, range: TextRange) -> EngineResult<(Line, Line)> {
-    let start_line = buffer.char_to_position(range.start())?.line();
-    let end_line = if range.is_empty() {
-        start_line
-    } else {
-        let end_position = buffer.char_to_position(range.end())?;
-        if end_position.column().get() == 0 && end_position.line() > start_line {
-            previous_line(end_position.line())
-        } else {
-            end_position.line()
-        }
-    };
-    Ok((start_line, end_line))
-}
-
-fn next_line(line: Line) -> Line {
-    Line::new(line.get().saturating_add(1))
-}
-
-fn previous_line(line: Line) -> Line {
-    Line::new(line.get().saturating_sub(1))
 }

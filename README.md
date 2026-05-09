@@ -79,6 +79,7 @@ cargo test --test m12_search
 cargo test --test m12_replace
 cargo test --test m12_regex
 cargo test --test m13_fold_set
+cargo test --test m13_projection_line_map
 cargo run --example gpui_m5_testbed
 cargo run --example gpui_m6_testbed
 cargo run --example gpui_m7_testbed

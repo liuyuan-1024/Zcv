@@ -10,6 +10,7 @@ mod errors;
 mod fold;
 mod metadata;
 mod position_map;
+mod projection;
 mod search;
 mod selection;
 mod slicing;
@@ -27,7 +28,7 @@ pub use config::{
 };
 pub use errors::{
     AnchorError, CoordinateError, EditError, EngineError, EngineResult, FoldError, MetadataError,
-    SearchError, StorageError, TransactionError,
+    ProjectionError, SearchError, StorageError, TransactionError,
 };
 pub use fold::{FoldRange, FoldRangeId, FoldRangeUpdate, FoldSet, FoldToggleOutcome, HiddenRange};
 pub use metadata::{
@@ -35,6 +36,10 @@ pub use metadata::{
     MetadataRangeId, MetadataRangeSpec, MetadataRangeUpdate,
 };
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
+pub use projection::{
+    FoldPlaceholder, LogicalProjection, ProjectedLine, ProjectedLineIndex, ProjectedLineKind,
+    Projection, TextLine,
+};
 pub use search::{
     RegexSearchOptions, RegexSearchResult, SearchMatch, SearchMatchMetadata, SearchOptions,
     SearchResult,

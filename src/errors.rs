@@ -153,6 +153,19 @@ pub enum FoldError {
     EmptyRange { range: TextRange },
 }
 
+/// Projection 构建与查询相关错误。
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ProjectionError {
+    /// Projection 必须基于版本一致的 Snapshot 与 FoldSet 构建。
+    #[error(
+        "Projection 版本不匹配: snapshot 版本 {snapshot_version:?}, fold 版本 {fold_version:?}"
+    )]
+    VersionMismatch {
+        snapshot_version: BufferVersion,
+        fold_version: BufferVersion,
+    },
+}
+
 /// 当前 Buffer 内搜索相关错误。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SearchError {
@@ -225,6 +238,10 @@ pub enum EngineError {
     /// FoldSet 折叠集合的版本、嵌套或边界不变量被破坏。
     #[error(transparent)]
     Fold(#[from] FoldError),
+
+    /// Projection 构建或查询的版本绑定不一致。
+    #[error(transparent)]
+    Projection(#[from] ProjectionError),
 
     /// 当前 Buffer 内搜索请求不合法。
     #[error(transparent)]

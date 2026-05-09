@@ -58,7 +58,7 @@ impl CharOffset {
 
 /// UTF-16 偏移量。
 ///
-/// 主要用于 LSP 等外部协议交互。
+/// 用于外部协议交互（例如 LSP）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Utf16Offset(usize);
 

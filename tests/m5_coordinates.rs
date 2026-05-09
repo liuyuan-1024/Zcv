@@ -1,9 +1,9 @@
-//! M5 机器契约：聚合 IDE 坐标转换、DisplayColumn、tab 展开和视觉列吸附行为。
+//! M5 机器契约：聚合外部协议坐标转换、DisplayColumn、tab 展开和视觉列吸附行为。
 //!
 //! 小阶段测试保留在本文件的子模块中，避免一个大阶段拆出多个 cargo test 入口。
 
 mod m5a_coordinate_conversions {
-    //! M5A 机器契约：锁定 byte、char、UTF-16、grapheme 和换行风格之间的 IDE 坐标转换。
+    //! M5A 机器契约：锁定 byte、char、UTF-16、grapheme 和换行风格之间的外部协议坐标转换。
     //!
     //! 本文件验证坐标数学的 public 行为，不测试视觉列宽策略，也不进入 UI 渲染层。
 

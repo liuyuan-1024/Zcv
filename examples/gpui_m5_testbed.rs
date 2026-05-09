@@ -1,4 +1,4 @@
-//! M5 GPUI testbed：IDE 坐标、DisplayColumn、tab 展开和字符宽度策略。
+//! M5 GPUI testbed：外部协议坐标、DisplayColumn、tab 展开和字符宽度策略。
 //!
 //! 本文件验证视觉列语义能否被 UI 面板和光标移动清晰观察，不负责真实渲染器的像素测量或字体排版。
 
@@ -63,7 +63,7 @@ const INITIAL_TEXT: &str = concat!(
 ",
     "Cmd-U 插入 Unicode / 字素 / CRLF 探针文本；Cmd-T 插入 Tab / CJK / emoji 视觉列探针。
 ",
-    "M5 额外显示逻辑列、视觉列、Tab Stop、显示宽度策略，并保留 M5 的 IDE 坐标面板。
+    "M5 额外显示逻辑列、视觉列、Tab Stop、显示宽度策略，并保留 M5 的外部协议坐标面板。
 ",
     "M5 仍然保持字素安全光标移动，并增加 Cmd-T 插入 Tab/CJK/emoji 视觉列探针。
 ",

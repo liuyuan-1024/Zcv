@@ -86,7 +86,7 @@ impl Position {
 
 /// UTF-16 行列位置。
 ///
-/// 主要用于 LSP 等使用 UTF-16 code unit 作为行内坐标的外部协议。
+/// 用于使用 UTF-16 code unit 作为行内坐标的外部协议（例如 LSP）。
 /// `line` 仍然是 0-indexed 逻辑行号，`character` 是该行内 UTF-16 code unit 偏移。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Utf16Position {

@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M13 Fold Model 与 Projection Coordinate（M13A、M13B、M13C 已完成，进入 M13D）
-- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；GPUI testbed 覆盖至 M12
-- 未完成：M13D Viewport Projection 及后续 engine-only 阶段
+- 当前推进：M13 Fold Model 与 Projection Coordinate 全部完成；下阶段进入 M14 Versioned Result 与 External Range Primitives
+- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；M13D ProjectedViewport / ProjectedViewportSlice 折叠后视口切片；GPUI testbed 覆盖至 M12
+- 未完成：M14 Versioned Result 与 External Range Primitives 及后续 engine-only 阶段
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 - engine-only 词汇表收敛（破坏性变更）：
@@ -97,6 +97,13 @@
 - `src/lib.rs`：M13C public API 导出（LogicalPoint / LogicalPointProjection / LogicalRange / ProjectedPoint / ProjectedPointMapping / ProjectedRange）
 - `tests/m13_projection_range_map.rs`：17 个机器契约测试，覆盖 LogicalRange / ProjectedRange 反向构造拒绝、可见点直投、hidden 点回溯到 anchor、Text 投影点直回、Placeholder 投影点回到 anchor + 隐藏行区间、空范围零段、无 fold 单段、跨 fold 三段（text / placeholder / text）、起点在 fold 内收缩到 anchor、终点在 fold 内延伸过 placeholder、projected→logical placeholder 端点收敛、selection 单段 + 多选区分别投影、snapshot 版本不匹配 selection 投影原子拒绝、越界 logical point 返回 CoordinateError
 
+## M13D 文件
+
+- `src/projection/viewport.rs`：ProjectedViewport / ProjectedViewportSlice / ProjectedViewportRow / ProjectedViewportRowKind / ProjectedLineRange，承载折叠后视口的描述与切片结果；text 行返回 VisibleLine，placeholder 行返回 FoldPlaceholder
+- `src/projection/projection.rs`：扩展 slice_viewport(snapshot, viewport) 入口，自动 clamp 末尾、汇总 logical_line_spans 与 placeholders；新增内部 build_visible_line helper（从 Snapshot 公共 API 派生 VisibleLine，包含 max_line_chars 截断与 CRLF/LF 行尾识别）
+- `src/lib.rs`：M13D public API 导出（ProjectedViewport / ProjectedViewportSlice / ProjectedViewportRow / ProjectedViewportRowKind / ProjectedLineRange）
+- `tests/m13_projected_viewport.rs`：8 个机器契约测试，覆盖纯文本视口、含 placeholder 视口、line_count clamp、起点超界返回 CoordinateError、max_line_chars 截断、整投影空间逻辑行 spans 合并、snapshot 版本不匹配原子拒绝、Text/Placeholder kind 解构
+
 ## 建议验证命令
 
 ```bash
@@ -108,6 +115,7 @@ cargo test --test m12_regex
 cargo test --test m13_fold_set
 cargo test --test m13_projection_line_map
 cargo test --test m13_projection_range_map
+cargo test --test m13_projected_viewport
 cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m10_testbed

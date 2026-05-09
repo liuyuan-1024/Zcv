@@ -11,9 +11,14 @@ mod line;
 mod point;
 mod projection;
 mod range;
+mod viewport;
 
 pub use index::ProjectedLineIndex;
 pub use line::{FoldPlaceholder, LogicalProjection, ProjectedLine, ProjectedLineKind, TextLine};
 pub use point::{LogicalPoint, LogicalPointProjection, ProjectedPoint, ProjectedPointMapping};
 pub use projection::Projection;
 pub use range::{LogicalRange, ProjectedRange};
+pub use viewport::{
+    ProjectedLineRange, ProjectedViewport, ProjectedViewportRow, ProjectedViewportRowKind,
+    ProjectedViewportSlice,
+};

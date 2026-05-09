@@ -8,17 +8,19 @@
 //! 占位符样式、像素绘制和 viewport 切片不在本类型承诺范围内。
 
 use crate::{
-    EngineResult, FoldSet,
+    CharOffset, EngineResult, FoldSet,
     errors::ProjectionError,
     fold::geometry::{fold_line_span, next_line, previous_line},
+    slicing::{TextSlice, VisibleLine},
     snapshot::Snapshot,
-    types::{BufferVersion, Line, LineRange},
+    types::{BufferVersion, Line, LineRange, TextRange},
 };
 
 use super::{
     FoldPlaceholder, LogicalPoint, LogicalPointProjection, LogicalProjection, LogicalRange,
-    ProjectedLine, ProjectedLineIndex, ProjectedLineKind, ProjectedPoint, ProjectedPointMapping,
-    ProjectedRange, TextLine,
+    ProjectedLine, ProjectedLineIndex, ProjectedLineKind, ProjectedLineRange, ProjectedPoint,
+    ProjectedPointMapping, ProjectedRange, ProjectedViewport, ProjectedViewportRow,
+    ProjectedViewportRowKind, ProjectedViewportSlice, TextLine, viewport::build_logical_spans,
 };
 
 /// 不可变投影行映射快照。
@@ -355,6 +357,122 @@ impl Projection {
         }
         Ok(())
     }
+
+    /// 折叠后视口切片：把 `ProjectedViewport` 翻译成投影行序列 + 命中逻辑行 spans + placeholder 列表。
+    ///
+    /// `snapshot` 必须与本 Projection 同版本；版本不一致返回 `ProjectionError::VersionMismatch`。
+    /// `viewport.line_count` 会被自动 clamp 到投影空间总行数；超出尾部的部分被截断而不报错，
+    /// 与 M11 `Snapshot::slice_viewport` 行为一致。
+    pub fn slice_viewport<'a>(
+        &self,
+        snapshot: &'a Snapshot,
+        viewport: ProjectedViewport,
+    ) -> EngineResult<ProjectedViewportSlice<'a>> {
+        self.verify_snapshot_version(snapshot)?;
+
+        let total = self.line_count();
+        let start = viewport.start_line().get();
+        if start > total {
+            return Err(crate::CoordinateError::LineOutOfBounds(Line::new(start)).into());
+        }
+        let end = start.saturating_add(viewport.line_count()).min(total);
+        let projected_line_range =
+            ProjectedLineRange::new(ProjectedLineIndex::new(start), ProjectedLineIndex::new(end));
+
+        let mut rows: Vec<ProjectedViewportRow<'a>> = Vec::with_capacity(end - start);
+        let mut placeholders: Vec<FoldPlaceholder> = Vec::new();
+
+        for row_value in start..end {
+            let index = ProjectedLineIndex::new(row_value);
+            let kind = self
+                .projected_line_kind(index)
+                .expect("clamped row in projection range");
+            match kind {
+                ProjectedLineKind::Text(text_line) => {
+                    let visible = build_visible_line(
+                        snapshot,
+                        text_line.logical_line(),
+                        viewport.max_line_chars(),
+                    )?;
+                    rows.push(ProjectedViewportRow::new(
+                        index,
+                        ProjectedViewportRowKind::Text {
+                            logical_line: text_line.logical_line(),
+                            visible,
+                        },
+                    ));
+                }
+                ProjectedLineKind::Placeholder(placeholder) => {
+                    placeholders.push(placeholder);
+                    rows.push(ProjectedViewportRow::new(
+                        index,
+                        ProjectedViewportRowKind::Placeholder(placeholder),
+                    ));
+                }
+            }
+        }
+
+        let logical_line_spans = build_logical_spans(&rows)?;
+
+        Ok(ProjectedViewportSlice::new(
+            viewport,
+            projected_line_range,
+            rows,
+            logical_line_spans,
+            placeholders,
+        ))
+    }
+}
+
+fn build_visible_line<'a>(
+    snapshot: &'a Snapshot,
+    logical_line: Line,
+    max_line_chars: Option<usize>,
+) -> EngineResult<VisibleLine<'a>> {
+    let line_count = snapshot.line_count();
+    let line_value = logical_line.get();
+    if line_value >= line_count {
+        return Err(crate::CoordinateError::LineOutOfBounds(logical_line).into());
+    }
+
+    let line_start = snapshot.line_start(logical_line)?;
+    let next_start = if line_value + 1 == line_count {
+        snapshot.len_chars()
+    } else {
+        snapshot.line_start(Line::new(line_value + 1))?
+    };
+    let full_range = TextRange::new(line_start, next_start)?;
+
+    let line_slice = snapshot.slice_line(logical_line)?;
+    let line_text = line_slice.as_str();
+    let newline_chars = if line_text.ends_with("\r\n") {
+        2
+    } else if line_text.ends_with('\n') || line_text.ends_with('\r') {
+        1
+    } else {
+        0
+    };
+    let content_chars = line_text.chars().count() - newline_chars;
+    let content_end = CharOffset::new(line_start.get() + content_chars);
+
+    let visible_chars = match max_line_chars {
+        Some(max) => max.min(content_chars),
+        None => content_chars,
+    };
+    let visible_end = CharOffset::new(line_start.get() + visible_chars);
+    let visible_range = TextRange::new(line_start, visible_end)?;
+    let is_truncated = visible_end < content_end;
+
+    let visible_text = TextSlice::new(
+        visible_range,
+        snapshot.slice_text(visible_range)?.into_text(),
+    );
+    Ok(VisibleLine::new(
+        logical_line,
+        full_range,
+        visible_text,
+        is_truncated,
+    ))
 }
 
 #[derive(Debug, Clone, Copy)]

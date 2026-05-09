@@ -164,7 +164,7 @@ LSP
 项目索引
 文件树
 插件系统
-完整 IDE 产品形态
+完整宿主产品形态
 快捷键 / 菜单 / 命令面板
 Command 语义层
 宏录制 / 用户操作回放
@@ -172,7 +172,7 @@ Command 语义层
 diagnostics / semantic tokens / inlay hints / code lens 等业务结果生成
 ```
 
-后续 `zom ide` 可以依赖 `zom-engine`，但 `zom-engine` 本身必须保持为独立、可测试、低耦合的编辑引擎底座。
+下游编辑器宿主可以依赖 `zom-engine`，但 `zom-engine` 本身必须保持为独立、可测试、低耦合的编辑引擎底座。
 
 ---
 
@@ -359,7 +359,7 @@ TextRange 必须通过安全构造器维护 start <= end 不变量。
 
 ### 5.2 M1：Buffer
 
-M1 关注最小可用 Buffer。
+M1 是最小可编辑 Buffer。所有编辑 API 以 `CharOffset` / `TextRange` 表达。
 
 包括：
 
@@ -388,7 +388,7 @@ examples/gpui_m1_testbed.rs
 M1 的原则：
 
 ```text
-StringStorage 是语义验证后端，不是最终高性能后端。
+StringStorage 仅作为语义参考后端。
 LineIndex 可以全量重建，先保证语义正确。
 M1 不做 Undo / Redo。
 M1 不做 Transaction。
@@ -415,7 +415,7 @@ CRLF 边界跳过
 
 ### 5.3 M2：Transaction
 
-M2 关注事务边界。
+M2 是事务边界。所有文本变异通过 `Transaction` 提交，输出 `Delta` 与 `ChangeSet`。
 
 包括：
 
@@ -471,7 +471,7 @@ M2 testbed 必须继承 M1 testbed 的全部体验，然后新增：
 
 ### 5.4 M3：Undo / Redo 与基础 Snapshot
 
-M3 关注历史系统与不可变快照。
+M3 是历史系统与不可变快照的底座。
 
 包括：
 
@@ -499,44 +499,16 @@ M3 的原则：
 
 ```text
 Undo / Redo 必须恢复文本。
-Undo / Redo 必须恢复当前阶段已有的 selection snapshot。
+Undo / Redo 必须恢复 SelectionSet。
 Snapshot 是后台读取和版本过期判断的基础。
-M3 先验证历史语义，不在这一阶段追求高性能存储。
+任务调度不是 engine 职责。
 ```
 
 ---
 
-### 5.5 M3.5：核心编辑坐标迁移到 CharOffset
+### 5.5 M4：高性能文本存储
 
-M3.5 关注把核心编辑坐标彻底迁移为 `CharOffset`。
-
-包括：
-
-```text
-TextRange 基于 CharOffset
-SelectionSnapshot 基于 CharOffset
-Buffer insert / delete / replace 使用 CharOffset / TextRange
-Edit / EditList / Transaction 使用 CharOffset / TextRange
-Delta / ChangeSet / changed_ranges 使用 CharOffset / TextRange
-Undo / Redo inverse edits 使用 CharOffset / TextRange
-LineIndex 记录 char line starts
-删除旧 byte-based 编辑 API，不做兼容层
-```
-
-M3.5 的原则：
-
-```text
-核心编辑 API 不再接受 ByteOffset。
-ByteOffset 只用于文件字节、编码边界、外部协议适配和显式坐标转换。
-不要恢复旧 byte-based 编辑 API。
-不要为了兼容保留两套编辑模型。
-```
-
----
-
-### 5.6 M4：高性能文本存储替换
-
-M4 关注把生产文本存储替换为 `RopeyStorage`。
+M4 生产存储基于 `RopeyStorage`；`StringStorage` 仅作为测试 reference model。
 
 包括：
 
@@ -1265,9 +1237,9 @@ src/buffer/validation.rs       Buffer 级边界校验
 重构后必须继续通过现有 m0-m6 集成测试。
 ```
 
-### 12.6 M13 之后的 engine-only 路线
+### 12.6 engine-only 路线
 
-M13 之后的所有阶段必须按纯编辑引擎标准取舍。
+全部阶段必须按纯编辑引擎标准取舍。
 
 保留范围：
 

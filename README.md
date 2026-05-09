@@ -1,6 +1,6 @@
 # zom-engine
 
-`zom-engine` 是一个独立的 Rust 文本编辑引擎 crate，面向 IDE/编辑器底层能力。
+`zom-engine` 是一个独立的 Rust 文本编辑引擎 crate，为编辑器宿主提供底层文本编辑能力。
 
 ## 底线规范
 
@@ -15,7 +15,7 @@
 - 事务与变更映射
 - Undo/Redo 历史
 - 坐标系统（byte/char/utf16/grapheme/display）
-- Snapshot 与版本过期判断
+- Snapshot 与版本绑定
 
 不负责：
 
@@ -99,4 +99,4 @@ cargo run --example gpui_m12_testbed
 
 - 主文档（`AGENTS.md`、`docs/编辑引擎能力.md`、`docs/编辑引擎测试策略.md`）只维护稳定规则与边界。
 - 易变信息统一维护在 `docs/STATUS.md`。
-- M13 之后的路线以 engine-only 为底线；非编辑引擎核心能力直接从 milestone 中移除，而不是标成“后续阶段”。
+- 全部阶段以 engine-only 为底线；非编辑引擎核心能力直接从 milestone 中移除，而不是标成”后续阶段”。

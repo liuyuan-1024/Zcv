@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-- 当前推进：M13 Fold Model 与 Projection Coordinate 全部完成；下阶段进入 M14 Versioned Result 与 External Range Primitives
+- 当前推进：M13 Fold Model 与 Projection Coordinate 全部完成（含可选 GPUI testbed）；下阶段进入 M14 Versioned Result 与 External Range Primitives
 - 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；M13D ProjectedViewport / ProjectedViewportSlice 折叠后视口切片；GPUI testbed 覆盖至 M12
 - 未完成：M14 Versioned Result 与 External Range Primitives 及后续 engine-only 阶段
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
@@ -103,6 +103,15 @@
 - `src/projection/projection.rs`：扩展 slice_viewport(snapshot, viewport) 入口，自动 clamp 末尾、汇总 logical_line_spans 与 placeholders；新增内部 build_visible_line helper（从 Snapshot 公共 API 派生 VisibleLine，包含 max_line_chars 截断与 CRLF/LF 行尾识别）
 - `src/lib.rs`：M13D public API 导出（ProjectedViewport / ProjectedViewportSlice / ProjectedViewportRow / ProjectedViewportRowKind / ProjectedLineRange）
 - `tests/m13_projected_viewport.rs`：8 个机器契约测试，覆盖纯文本视口、含 placeholder 视口、line_count clamp、起点超界返回 CoordinateError、max_line_chars 截断、整投影空间逻辑行 spans 合并、snapshot 版本不匹配原子拒绝、Text/Placeholder kind 解构
+
+## M13 GPUI testbed（可选）
+
+- `examples/gpui_m13_testbed.rs`：聚焦 M13 fold/projection 公共 API 的最小体感台。
+  - 不继承 M11/M12 全套体感（搜索 / 替换 / 多光标 / 组合输入 / Undo/Redo / 保存边界等请使用对应阶段 testbed）；
+  - 体感能力：方向键移动 + Shift 扩展选区、Home/End、Enter / Backspace / Delete / 普通输入、Cmd-F 折叠当前行选区、Cmd-T 在光标处切换 fold（命中已有 fold 即展开，否则单行折叠当前行）、Cmd-U 全部展开、Cmd-R 重置、Cmd-Q 退出；
+  - 视图：左侧 ProjectedViewport 切片（按 placeholder 形态展示折叠后视口，含逻辑行号 + 截断标记），右侧调试面板（FoldSet / HiddenRange / Projection 概览 / 可见与隐藏逻辑行摘要）；
+  - 状态栏：char offset、Buffer 长度、逻辑 (line, col)、对应投影点（可见 proj 行 / 隐藏 anchor 回溯）、Buffer version、逻辑/投影行数、FoldSet 长度、selection 起止 char offset；
+  - 编辑后 FoldSet 通过 `update_through_delta_event` 跟随 DeltaEvent 平移；FoldSet 错误 / Projection 构建错误 / 越界等均落到状态栏。
 
 ## 建议验证命令
 

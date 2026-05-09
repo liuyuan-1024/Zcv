@@ -116,4 +116,13 @@
     "reveal": "always",
     "hide": "never",
   },
+  {
+    "label": "肉眼体验编辑引擎-m13",
+    "command": "cargo",
+    "args": ["run", "--example gpui_m13_testbed"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
 ]

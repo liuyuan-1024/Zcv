@@ -61,6 +61,27 @@ impl HistoryEntry {
         ))
     }
 
+    /// `HistoryEntry` 在历史预算中的字节占用估算。
+    ///
+    /// 度量 = `undo_batches` 与 `redo_batches` 中所有 `Edit::replacement` 的 UTF-8
+    /// 字节和；selection / description / TextRange / EditList 容器本身不计入。
+    /// 这反映了 Undo 复原所需字符串的实际开销，是引擎能稳定承诺的最小事实。
+    pub(in crate::buffer) fn byte_size(&self) -> usize {
+        let undo: usize = self
+            .undo_batches
+            .iter()
+            .flat_map(|list| list.as_slice())
+            .map(|edit| edit.replacement.len())
+            .sum();
+        let redo: usize = self
+            .redo_batches
+            .iter()
+            .flat_map(|list| list.as_slice())
+            .map(|edit| edit.replacement.len())
+            .sum();
+        undo + redo
+    }
+
     pub(in crate::buffer) fn merge(previous: Self, next: Self) -> Self {
         let mut undo_batches = next.undo_batches;
         undo_batches.extend(previous.undo_batches);

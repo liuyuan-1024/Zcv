@@ -25,7 +25,8 @@ mod versioned;
 pub use buffer::{Buffer, HistoryNodeId, HistoryNodeView, HistoryStatus};
 pub use config::{
     BufferConfig, DisplayColumnAffinity, DisplayWidthPolicy, EncodingConfig, LargeFilePolicy,
-    LineEndingConfig, PositionEncodingConfig, TabConfig, WordBoundaryPolicy,
+    LargeTransactionPolicy, LineEndingConfig, PositionEncodingConfig, TabConfig,
+    WordBoundaryPolicy,
 };
 pub use errors::{
     AnchorError, CoordinateError, EditError, EngineError, EngineResult, FoldError, MetadataError,

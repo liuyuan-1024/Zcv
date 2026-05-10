@@ -26,6 +26,8 @@ pub(in crate::buffer) struct HistoryNode {
     pub(super) parent: Option<HistoryNodeId>,
     pub(super) children: Vec<HistoryNodeId>,
     pub(super) entry: HistoryEntry,
+    /// 缓存的 `entry.byte_size()`；构造时与 entry 替换 / 合并后必须同步刷新。
+    pub(super) entry_bytes: usize,
 }
 
 impl HistoryNode {
@@ -35,12 +37,19 @@ impl HistoryNode {
         parent: Option<HistoryNodeId>,
         entry: HistoryEntry,
     ) -> Self {
+        let entry_bytes = entry.byte_size();
         Self {
             id,
             sequence_number,
             parent,
             children: Vec::new(),
             entry,
+            entry_bytes,
         }
+    }
+
+    pub(super) fn replace_entry(&mut self, entry: HistoryEntry) {
+        self.entry_bytes = entry.byte_size();
+        self.entry = entry;
     }
 }

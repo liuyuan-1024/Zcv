@@ -3,8 +3,8 @@
 //! 本文件守住失败原子性和版本推进边界；EditList 归一化、存储实现和 public 便利编辑入口不在这里定义。
 
 use crate::{
-    BufferVersion, EngineResult, PositionMap, SelectionSet,
-    errors::TransactionError,
+    BufferVersion, EngineResult, LargeTransactionPolicy, PositionMap, SelectionSet,
+    errors::{EditError, TransactionError},
     storage::TextStorage,
     transaction::{
         ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionRecord, TransactionSource,
@@ -14,6 +14,18 @@ use crate::{
 use crate::buffer::{Buffer, history::HistoryEntry};
 
 use super::prepared::PreparedTransaction;
+
+/// 单个 `EditList` 内所有 `Edit::replacement` 的 UTF-8 字节和。
+///
+/// 度量口径与 `HistoryEntry::byte_size` 对齐，避免事务 prepare 阶段的预算检查
+/// 与最终 `HistoryEntry` 的字节统计漂移。
+pub(in crate::buffer) fn edit_list_replacement_bytes(edits: &EditList) -> usize {
+    edits
+        .as_slice()
+        .iter()
+        .map(|edit| edit.replacement.len())
+        .sum()
+}
 
 impl Buffer {
     /// 提交并应用事务。
@@ -57,7 +69,8 @@ impl Buffer {
         tx: Transaction,
     ) -> EngineResult<(TransactionRecord, Delta, ChangeSet)> {
         self.ensure_writable()?;
-        let prepared = self.prepare_transaction(tx)?;
+        let mut prepared = self.prepare_transaction(tx)?;
+        self.apply_large_transaction_policy(&mut prepared)?;
         let edits_for_record = prepared.edits.clone();
         let undo_edits_for_record = prepared.undo_edits.clone();
         let before_selection_for_record = prepared.before_selection.clone();
@@ -180,6 +193,40 @@ impl Buffer {
         // 整体丢弃以避免后续 redo 走到不一致状态；undo 路径保持不变。
         self.drop_unrecorded_redo_branches();
         Ok(())
+    }
+
+    /// 在 prepare 之后、commit 之前，按 `LargeFilePolicy` 处理超大事务。
+    ///
+    /// `Reject`：原子拒绝事务，文本 / 版本 / 历史完全不变。
+    /// `SkipHistory`：把 metadata 的 `record_history` 关掉，复用既有
+    /// `finish_transaction` 中 `record_history=false` 路径，文本前进但不入历史
+    /// 且丢弃当前节点子树。
+    fn apply_large_transaction_policy(
+        &self,
+        prepared: &mut PreparedTransaction,
+    ) -> EngineResult<()> {
+        let threshold = self.config.large_file.large_transaction_threshold_bytes;
+        if threshold == 0 {
+            return Ok(());
+        }
+
+        let entry_bytes = edit_list_replacement_bytes(&prepared.edits)
+            + edit_list_replacement_bytes(&prepared.undo_edits);
+        if entry_bytes <= threshold {
+            return Ok(());
+        }
+
+        match self.config.large_file.large_transaction_policy {
+            LargeTransactionPolicy::Reject => Err(EditError::PayloadTooLarge {
+                size: entry_bytes,
+                limit: threshold,
+            }
+            .into()),
+            LargeTransactionPolicy::SkipHistory => {
+                prepared.metadata = prepared.metadata.clone().without_history();
+                Ok(())
+            }
+        }
     }
 
     pub(in crate::buffer) fn apply_edit_list(

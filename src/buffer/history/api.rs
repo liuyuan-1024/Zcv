@@ -3,7 +3,7 @@
 //! 本文件负责历史图的 cursor 移动、分支查询与重放，不定义 HistoryEntry 的存储形态。
 
 use crate::{
-    CharOffset, EngineError, EngineResult, SelectionSet, TransactionSource,
+    CharOffset, EngineError, EngineResult, LargeFilePolicy, SelectionSet, TransactionSource,
     buffer::Buffer,
     transaction::{ChangeSet, Delta, Edit, EditList, TransactionMergePolicy, TransactionMetadata},
 };
@@ -177,9 +177,19 @@ impl Buffer {
         self.history.drop_children_of_current();
     }
 
-    fn truncate_undo_history_to_budget(&mut self) {
+    /// 替换 `LargeFilePolicy` 并立即按新预算截断历史；不影响当前文本、版本或 selection。
+    ///
+    /// 调用时机典型场景：宿主在加载完文件 / 检测到大文件后需要把 Undo 预算调小，
+    /// 引擎按新预算从最老的非 current 叶子开始丢弃节点，直到 ≤ 预算或没有可丢叶子。
+    pub fn set_large_file_policy(&mut self, policy: LargeFilePolicy) {
+        self.config.large_file = policy;
+        self.truncate_undo_history_to_budget();
+    }
+
+    pub(in crate::buffer) fn truncate_undo_history_to_budget(&mut self) {
+        let policy = &self.config.large_file;
         self.history
-            .truncate_to_max_nodes(self.config.large_file.max_undo_history);
+            .truncate_to_budget(policy.max_undo_history, policy.max_undo_history_bytes);
     }
 
     pub(in crate::buffer) fn build_inverse_edit_list(

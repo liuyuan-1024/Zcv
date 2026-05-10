@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M17A History Branches 完成（线性 undo/redo 栈重构为 history tree，支持撤销后本地分支与显式分支切换）；下一步进入 M17B History Budget
-- 已完成：M0–M12 机器契约基线；M13 折叠 + 投影；M14 Versioned Result / Range Set / 外部 UTF-16 边界；M15 Local Read / Write Boundary；M16 Transaction Record 与 Replay；M17A `HistoryNodeId` 单调身份 + `HistoryNode` parent/children 树 + `HistoryNodeView` 只读视图 + `current_history_node` / `parent_history_node` / `redo_branches` / `redo_to_branch` / `EngineError::InvalidHistoryBranch` 公共 API；线性 `undo` / `redo` 兼容；GPUI testbed 覆盖至 M12
-- 未完成：M17B History Budget 及后续 engine-only 阶段
+- 当前推进：M17B History Budget 完成（双预算截断、超大事务策略、运行时调整 LargeFilePolicy、HistoryStatus 暴露 node_count / memory_bytes）；下一步进入 M18 Large File Policy 与 Defensive Runtime
+- 已完成：M0–M12 机器契约基线；M13 折叠 + 投影；M14 Versioned Result / Range Set / 外部 UTF-16 边界；M15 Local Read / Write Boundary；M16 Transaction Record 与 Replay；M17A `HistoryNodeId` 单调身份 + `HistoryNode` parent/children 树 + `HistoryNodeView` 只读视图 + `current_history_node` / `parent_history_node` / `redo_branches` / `redo_to_branch` / `EngineError::InvalidHistoryBranch` 公共 API；线性 `undo` / `redo` 兼容；GPUI testbed 覆盖至 M12；M17B `LargeFilePolicy` 字节预算 + `LargeTransactionPolicy` + `Buffer::set_large_file_policy` + `HistoryStatus.node_count` / `memory_bytes`
+- 未完成：M18 及后续 engine-only 阶段
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 - engine-only 词汇表收敛（破坏性变更）：
@@ -161,6 +161,18 @@
 - `tests/m16_transaction_record.rs`：9 个机器契约测试，覆盖版本 / forward & inverse edits / before & after selection（含显式 after 与 PositionMap 默认平移）/ metadata 透传与 merge boundary 派生 / `record_history=false` 不入历史 / `transaction_id` 与 `last_delta_event` 对齐 / `to_transaction()` 完整重建 / record 是值快照不跟随 Buffer 推进 / 版本不匹配不产生 record
 - `tests/m16_transaction_replay.rs`：6 个机器契约测试，覆盖跨 Buffer 回放后状态等价、回放生成等价 DeltaEvent（除独立递增的 transaction_id）、版本不匹配原子拒绝且不动 Buffer / 不入事件队列、回放在更短 buffer 上触发 `EditError::RangeOutOfBounds`（不绕过边界校验）、独立 buffer 重放达到原 apply 完终态、回放后的事务进入历史栈支持后续 undo
 
+## M17B 文件
+
+- `src/config/large_file.rs`：`LargeFilePolicy` 增 `max_undo_history_bytes` / `large_transaction_threshold_bytes` / `large_transaction_policy` 字段；新增 `LargeTransactionPolicy { SkipHistory, Reject }`；默认值 `max_undo_history=1000` / `max_undo_history_bytes=64 MiB` / `large_transaction_threshold_bytes=16 MiB` / `large_transaction_policy=SkipHistory`
+- `src/config/mod.rs` / `src/lib.rs`：导出 `LargeTransactionPolicy`
+- `src/buffer/history/entry.rs`：新增 `HistoryEntry::byte_size()`，按 `undo_batches` + `redo_batches` 中所有 `Edit::replacement` 的 UTF-8 字节和度量；selection / description / TextRange 容器不计入
+- `src/buffer/history/node.rs`：`HistoryNode` 新增 `entry_bytes` 缓存字段 + `replace_entry` helper；`MergeWithPrevious` 后通过 `replace_entry` 重新计算 byte_size
+- `src/buffer/history/state.rs`：`truncate_to_max_nodes` 替换为 `truncate_to_budget(max_nodes, max_bytes)`；新增 `node_count` / `total_bytes` / `find_oldest_disposable` + `splice_out_and_remove` + 模块级 `splice_children` helper（按 sequence_number 丢弃最老的非 current 节点，子节点 splice 到原父位置保持兄弟顺序，current 永不丢弃）；`HistoryStatus` 增 `node_count` / `memory_bytes` 字段
+- `src/buffer/history/api.rs`：新增 `Buffer::set_large_file_policy(policy)` public API（替换 policy 后立即按新预算截断）；`truncate_undo_history_to_budget` 改用双预算调用
+- `src/buffer/transaction_pipeline/apply.rs`：在 `prepare_transaction` 之后、`commit_prepared_transaction` 之前插入 `apply_large_transaction_policy`；`Reject` 策略原子拒绝并返回 `EditError::PayloadTooLarge { size, limit }`，`SkipHistory` 把 metadata 的 `record_history` 切到 false 复用既有路径；新增模块级 `edit_list_replacement_bytes` helper 与 `HistoryEntry::byte_size` 同口径
+- `tests/m0_domain_model.rs`：扩展默认值断言覆盖新字段
+- `tests/m17_history_budget.rs`：15 个机器契约测试，覆盖默认预算、字节预算驱动的最老节点丢弃、current 仅存时不被丢弃、节点数 + 字节双预算、`LargeTransactionPolicy::Reject` 原子拒绝、`SkipHistory` 提交文本但不入历史、`set_large_file_policy` 即时截断、`max_undo_history=0` 清空、`MergeWithPrevious` 字节累加、`HistoryStatus` 字段同步、阈值 0 关闭超大事务策略、SkipHistory 路径作废 redo 分支、deletion 通过 inverse_edits.replacement 占用字节
+
 ## M17A 文件
 
 - `src/buffer/history/node.rs`：`HistoryNodeId`（u64 包装的稳定身份，跨 Buffer 寿命单调递增）+ `HistoryNode { id, sequence_number, parent, children, entry: HistoryEntry }`
@@ -198,6 +210,7 @@ cargo test --test m15_local_read_write_boundary
 cargo test --test m16_transaction_record
 cargo test --test m16_transaction_replay
 cargo test --test m17_advanced_history
+cargo test --test m17_history_budget
 cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m10_testbed

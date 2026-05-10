@@ -210,6 +210,12 @@ fn default_buffer_config_is_reasonable_for_m0() {
     assert!(config.tab.insert_spaces);
 
     assert!(config.large_file.max_undo_history > 0);
+    assert!(config.large_file.max_undo_history_bytes > 0);
+    assert!(config.large_file.large_transaction_threshold_bytes > 0);
+    assert_eq!(
+        config.large_file.large_transaction_policy,
+        zom_engine::LargeTransactionPolicy::SkipHistory,
+    );
 }
 
 #[test]

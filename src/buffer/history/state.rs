@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use super::{HistoryEntry, HistoryNode, HistoryNodeId};
 
 /// 历史摘要：与线性历史一致的 undo / redo 深度语义；`current_node` 暴露当前历史
-/// 节点身份，便于宿主在分支查询时定位。
+/// 节点身份；`node_count` / `memory_bytes` 暴露当前历史预算占用，便于宿主观测。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HistoryStatus {
     /// 当前节点到根的祖先数量；线性场景下与原 `undo_stack.len()` 一致。
@@ -17,6 +17,10 @@ pub struct HistoryStatus {
     pub redo_depth: usize,
     /// 当前所在历史节点身份；`None` 表示位于历史树根（空 Buffer 或全部 undo 后的状态）。
     pub current_node: Option<HistoryNodeId>,
+    /// 历史图当前持有的节点总数（含所有分支）。
+    pub node_count: usize,
+    /// 历史图按 `HistoryEntry::byte_size` 累加的字节占用估算。
+    pub memory_bytes: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -49,11 +53,21 @@ impl HistoryState {
         self.children_of_current().last().is_some()
     }
 
+    pub(in crate::buffer) fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub(in crate::buffer) fn total_bytes(&self) -> usize {
+        self.nodes.values().map(|node| node.entry_bytes).sum()
+    }
+
     pub(in crate::buffer) fn status(&self) -> HistoryStatus {
         HistoryStatus {
             undo_depth: self.undo_depth(),
             redo_depth: self.redo_depth(),
             current_node: self.current,
+            node_count: self.node_count(),
+            memory_bytes: self.total_bytes(),
         }
     }
 
@@ -115,7 +129,7 @@ impl HistoryState {
             return false;
         }
         let merged = HistoryEntry::merge(current_node.entry.clone(), entry);
-        current_node.entry = merged;
+        current_node.replace_entry(merged);
         true
     }
 
@@ -179,40 +193,63 @@ impl HistoryState {
         self.current = None;
     }
 
-    /// 按节点总数预算截断；优先丢弃序号最小的非 current 叶节点。
-    pub(in crate::buffer) fn truncate_to_max_nodes(&mut self, max: usize) {
-        if max == 0 {
+    /// 双预算截断：节点数上限 + 历史字节上限。
+    ///
+    /// - `max_nodes == 0` 直接清空整个历史图。
+    /// - `max_bytes == 0` 表示不限制字节预算，仅按节点计数截断。
+    /// - 截断按 sequence_number 从最老的非 current 节点开始丢弃；被丢弃节点的
+    ///   子节点被 splice 到原父节点（或 roots）的同一位置，保持图连通。
+    /// - current 节点永远保留：即使仅存它一个时仍超字节预算也不丢（防止丢失编辑
+    ///   位置事实，调用方应通过 `set_large_file_policy` 选择更宽预算）。
+    pub(in crate::buffer) fn truncate_to_budget(&mut self, max_nodes: usize, max_bytes: usize) {
+        if max_nodes == 0 {
             self.clear();
             return;
         }
 
-        while self.nodes.len() > max {
-            let Some(victim) = self.find_oldest_disposable_leaf() else {
+        loop {
+            let over_count = self.nodes.len() > max_nodes;
+            let over_bytes = max_bytes != 0 && self.total_bytes() > max_bytes;
+            if !over_count && !over_bytes {
+                break;
+            }
+            let Some(victim) = self.find_oldest_disposable() else {
                 break;
             };
-            self.detach_and_remove(victim);
+            self.splice_out_and_remove(victim);
         }
     }
 
-    fn find_oldest_disposable_leaf(&self) -> Option<HistoryNodeId> {
+    fn find_oldest_disposable(&self) -> Option<HistoryNodeId> {
         self.nodes
             .values()
-            .filter(|node| node.children.is_empty() && Some(node.id) != self.current)
+            .filter(|node| Some(node.id) != self.current)
             .min_by_key(|node| node.sequence_number)
             .map(|node| node.id)
     }
 
-    fn detach_and_remove(&mut self, id: HistoryNodeId) {
+    /// 把 `id` 从图中移除，并把它的子节点 splice 到 `id` 原父节点（或 roots）的
+    /// 同一位置，保留兄弟节点的相对顺序。
+    fn splice_out_and_remove(&mut self, id: HistoryNodeId) {
         let Some(node) = self.nodes.remove(&id) else {
             return;
         };
-        match node.parent {
+        let children = node.children;
+        let parent = node.parent;
+
+        for child_id in &children {
+            if let Some(child) = self.nodes.get_mut(child_id) {
+                child.parent = parent;
+            }
+        }
+
+        match parent {
             Some(parent_id) => {
                 if let Some(parent_node) = self.nodes.get_mut(&parent_id) {
-                    parent_node.children.retain(|child| *child != id);
+                    splice_children(&mut parent_node.children, id, &children);
                 }
             }
-            None => self.roots.retain(|root| *root != id),
+            None => splice_children(&mut self.roots, id, &children),
         }
     }
 
@@ -247,4 +284,17 @@ impl HistoryState {
         }
         depth
     }
+}
+
+/// 把 `list` 中的 `victim` 替换为 `replacements`，保留 `victim` 原位置以维持兄弟顺序。
+/// 若 `victim` 不在 `list`（理论上不应发生），保持 `list` 不变。
+fn splice_children(
+    list: &mut Vec<HistoryNodeId>,
+    victim: HistoryNodeId,
+    replacements: &[HistoryNodeId],
+) {
+    let Some(pos) = list.iter().position(|id| *id == victim) else {
+        return;
+    };
+    list.splice(pos..=pos, replacements.iter().copied());
 }

@@ -10,6 +10,7 @@ mod edit_list;
 mod metadata;
 mod record;
 mod source;
+mod transaction_record;
 
 pub use changeset::ChangeSet;
 pub use delta::{Delta, DeltaEvent};
@@ -18,3 +19,4 @@ pub use edit_list::EditList;
 pub use metadata::{TransactionMergePolicy, TransactionMetadata};
 pub use record::Transaction;
 pub use source::TransactionSource;
+pub use transaction_record::TransactionRecord;

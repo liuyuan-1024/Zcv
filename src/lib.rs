@@ -60,7 +60,7 @@ pub use tracking::{
 };
 pub use transaction::{
     ChangeSet, Delta, DeltaEvent, Edit, EditList, Transaction, TransactionMergePolicy,
-    TransactionMetadata, TransactionSource,
+    TransactionMetadata, TransactionRecord, TransactionSource,
 };
 pub use types::{
     BufferId, BufferKind, BufferState, BufferVersion, ByteOffset, CharOffset, DisplayColumn, Line,

@@ -4,8 +4,11 @@
 
 use crate::{
     BufferVersion, EngineResult, PositionMap, SelectionSet,
+    errors::TransactionError,
     storage::TextStorage,
-    transaction::{ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionSource},
+    transaction::{
+        ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionRecord, TransactionSource,
+    },
 };
 
 use crate::buffer::{Buffer, history::HistoryEntry};
@@ -17,8 +20,49 @@ impl Buffer {
     ///
     /// 成功将返回增量 Delta 和事务变更集合 ChangeSet，并记录 Undo 历史。
     pub fn apply_transaction(&mut self, tx: Transaction) -> EngineResult<(Delta, ChangeSet)> {
+        let (_, delta, changeset) = self.apply_transaction_inner(tx)?;
+        Ok((delta, changeset))
+    }
+
+    /// 提交并应用事务，返回完整的可回放事实 `TransactionRecord`。
+    pub fn apply_transaction_recorded(
+        &mut self,
+        tx: Transaction,
+    ) -> EngineResult<TransactionRecord> {
+        let (record, _, _) = self.apply_transaction_inner(tx)?;
+        Ok(record)
+    }
+
+    /// 在当前 Buffer 上回放一条 `TransactionRecord`，必须 `record.old_version == self.version`。
+    ///
+    /// 回放走标准 `apply_transaction` 管线，不绕过任何边界校验；返回新生成的
+    /// `TransactionRecord`（`transaction_id` 由当前 Buffer 重新分配）。
+    pub fn replay_transaction_record(
+        &mut self,
+        record: &TransactionRecord,
+    ) -> EngineResult<TransactionRecord> {
+        if record.old_version() != self.version {
+            return Err(TransactionError::VersionMismatch {
+                expected: self.version,
+                actual: record.old_version(),
+            }
+            .into());
+        }
+
+        self.apply_transaction_recorded(record.to_transaction())
+    }
+
+    fn apply_transaction_inner(
+        &mut self,
+        tx: Transaction,
+    ) -> EngineResult<(TransactionRecord, Delta, ChangeSet)> {
         self.ensure_writable()?;
         let prepared = self.prepare_transaction(tx)?;
+        let edits_for_record = prepared.edits.clone();
+        let undo_edits_for_record = prepared.undo_edits.clone();
+        let before_selection_for_record = prepared.before_selection.clone();
+        let metadata_for_record = prepared.metadata.clone();
+
         let (delta, changeset) = self.commit_prepared_transaction(&prepared)?;
         let position_map = changeset.position_map();
         let after_selection = self.resolve_after_selection(
@@ -26,10 +70,24 @@ impl Buffer {
             prepared.explicit_after_selection.as_ref(),
             &position_map,
         );
+        let after_selection_for_record = after_selection.clone();
         self.selection = after_selection.clone();
         self.finish_transaction(prepared, after_selection)?;
 
-        Ok((delta, changeset))
+        let event = self
+            .last_delta_event()
+            .expect("apply_transaction 提交成功后必然有 DeltaEvent");
+        let record = TransactionRecord::new(
+            event.transaction_id,
+            delta.old_version,
+            delta.new_version,
+            edits_for_record,
+            undo_edits_for_record,
+            before_selection_for_record,
+            after_selection_for_record,
+            metadata_for_record,
+        );
+        Ok((record, delta, changeset))
     }
 
     fn prepare_transaction(&mut self, tx: Transaction) -> EngineResult<PreparedTransaction> {

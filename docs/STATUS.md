@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M15 Local Read / Write Boundary 完成（Buffer 单入口写线性化、Snapshot 跨线程只读、DeltaEvent 顺序消费与漏读检测）；下一步进入 M16 Transaction Record 与 Replay
-- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；M13D ProjectedViewport / ProjectedViewportSlice 折叠后视口切片；M14A `VersionedResult<T>` 泛型版本化结果与 PositionMap remap；M14B `VersionedRangeSet<T>` 泛型 (TrackedRange, payload) 集合 + DeltaEvent 推进 + TextRange / LineRange / line window 查询 + `MetadataLayer<T>` 双向互转；M14C VersionedResult / VersionedRangeSet 的 snapshot-bound payload 转换、UTF-16 import / export helper、`DeltaEvent::changed_ranges_result()` 把 changed ranges 暴露为版本化只读结果；M15A Buffer 单入口写 + 顺序 DeltaEvent + 版本冲突原子拒绝；M15B Snapshot Send+Sync 跨线程只读 + 版本绑定查询结果；M15C `pending_delta_events()` peek + `take_pending_events()` 顺序排空 + 订阅者按版本链检测漏读；GPUI testbed 覆盖至 M12
-- 未完成：M16 Transaction Record 与 Replay 及后续 engine-only 阶段
+- 当前推进：M16 Transaction Record 与 Replay 完成（`TransactionRecord` 录制 + `Buffer::apply_transaction_recorded` / `replay_transaction_record` 等价回放）；下一步进入 M17 Advanced History
+- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；M13D ProjectedViewport / ProjectedViewportSlice 折叠后视口切片；M14A `VersionedResult<T>` 泛型版本化结果与 PositionMap remap；M14B `VersionedRangeSet<T>` 泛型 (TrackedRange, payload) 集合 + DeltaEvent 推进 + TextRange / LineRange / line window 查询 + `MetadataLayer<T>` 双向互转；M14C VersionedResult / VersionedRangeSet 的 snapshot-bound payload 转换、UTF-16 import / export helper、`DeltaEvent::changed_ranges_result()` 把 changed ranges 暴露为版本化只读结果；M15A Buffer 单入口写 + 顺序 DeltaEvent + 版本冲突原子拒绝；M15B Snapshot Send+Sync 跨线程只读 + 版本绑定查询结果；M15C `pending_delta_events()` peek + `take_pending_events()` 顺序排空 + 订阅者按版本链检测漏读；M16A `TransactionRecord` 完整事实快照（transaction_id / old & new version / edits & inverse edits / before & after selection / metadata / merge boundary 派生）；M16B `replay_transaction_record` 标准管线回放，跨 Buffer 等价 DeltaEvent，版本不匹配 / 边界越界原子拒绝；GPUI testbed 覆盖至 M12
+- 未完成：M17 Advanced History 及后续 engine-only 阶段
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 - engine-only 词汇表收敛（破坏性变更）：
@@ -147,6 +147,20 @@
   - `m15b_snapshot_reader`：编译期断言 `Snapshot: Send + Sync`；旧 snapshot 在后续提交后仍只读且文本/版本不变；snapshot 跨 `std::thread::spawn` 移动后做 `text()` / `search` 查询；snapshot 派生的搜索结果绑定 `snapshot.version()`，宿主可用 `is_stale(buffer.version())` 判断
   - `m15c_delta_consumer`：`last_delta_event` 跟随最近提交；`pending_delta_events()` peek 不消费；`take_pending_events()` 按提交顺序排空且后续提交继续累积；订阅者基于 `last_seen` + `event.old_version` 检测漏读；延迟订阅者用 snapshot 保留旧版本事实，配合 DeltaEvent 拼接 old/new 版本
 
+## M16 文件
+
+- `src/transaction/transaction_record.rs`：`TransactionRecord` 值类型——录制一次成功事务后所有可回放事实
+  - 字段：`transaction_id` / `old_version` / `new_version` / `edits` / `inverse_edits` / `before_selection` / `after_selection` / `metadata`
+  - 派生：`records_history()`（来自 metadata）、`is_merge_boundary()`（`metadata.merge_policy() != MergeWithPrevious`）
+  - 重建：`to_transaction()` 重建可提交的 `Transaction`（使用 `old_version` 作为 base_version、显式装载 before / after selection 与 metadata）
+- `src/transaction/mod.rs`：导出 `TransactionRecord`
+- `src/buffer/transaction_pipeline/apply.rs`：把原 `apply_transaction` 的实现下沉到私有 `apply_transaction_inner` 中，`apply_transaction` / `apply_transaction_recorded` 共用同一管线、不引入二级路径
+  - `apply_transaction_recorded(tx) -> EngineResult<TransactionRecord>`：成功提交并返回完整事实快照
+  - `replay_transaction_record(record) -> EngineResult<TransactionRecord>`：版本守卫（`record.old_version == self.version` 否则 `TransactionError::VersionMismatch` 原子拒绝），通过 `record.to_transaction()` 走标准 `apply_transaction_recorded`，不绕过任何边界校验
+- `src/lib.rs`：导出 `TransactionRecord`
+- `tests/m16_transaction_record.rs`：9 个机器契约测试，覆盖版本 / forward & inverse edits / before & after selection（含显式 after 与 PositionMap 默认平移）/ metadata 透传与 merge boundary 派生 / `record_history=false` 不入历史 / `transaction_id` 与 `last_delta_event` 对齐 / `to_transaction()` 完整重建 / record 是值快照不跟随 Buffer 推进 / 版本不匹配不产生 record
+- `tests/m16_transaction_replay.rs`：6 个机器契约测试，覆盖跨 Buffer 回放后状态等价、回放生成等价 DeltaEvent（除独立递增的 transaction_id）、版本不匹配原子拒绝且不动 Buffer / 不入事件队列、回放在更短 buffer 上触发 `EditError::RangeOutOfBounds`（不绕过边界校验）、独立 buffer 重放达到原 apply 完终态、回放后的事务进入历史栈支持后续 undo
+
 ## M13 GPUI testbed（可选）
 
 - `examples/gpui_m13_testbed.rs`：聚焦 M13 fold/projection 公共 API 的最小体感台。
@@ -171,6 +185,8 @@ cargo test --test m13_projected_viewport
 cargo test --test m14_versioned_result
 cargo test --test m14_versioned_range_set
 cargo test --test m15_local_read_write_boundary
+cargo test --test m16_transaction_record
+cargo test --test m16_transaction_replay
 cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m10_testbed

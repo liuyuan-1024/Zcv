@@ -12,11 +12,22 @@ unicode-segmentation = "1.13.2"
 
 [dev-dependencies]
 criterion = "0.8.2"
+proptest = "1.5.0"
 # 仅在测试和 examples 沙盒中使用 GPUI
 gpui = "0.2.2"
 
 [[bench]]
 name = "m4_storage"
+harness = false
+
+[[bench]]
+name = "m19_core_editing"
+harness = false
+[[bench]]
+name = "m19_viewport_projection"
+harness = false
+[[bench]]
+name = "m19_search_replace"
 harness = false
 
 [[example]]

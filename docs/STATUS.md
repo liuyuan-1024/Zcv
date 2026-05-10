@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M18 Large File Policy 与 Defensive Runtime 完成（大文件 / 超长行阈值事实暴露 + `auto_read_only_on_large_file` 加载与 reload 联动 + `Buffer::is_large_file` / `has_long_line` / `longest_line_chars` 查询入口 + 大文件路径错误可诊断回归）；下一步进入 M19 Verification / Benchmark / Fuzz
-- 已完成：M0–M12 机器契约基线；M13 折叠 + 投影；M14 Versioned Result / Range Set / 外部 UTF-16 边界；M15 Local Read / Write Boundary；M16 Transaction Record 与 Replay；M17A `HistoryNodeId` 单调身份 + `HistoryNode` parent/children 树 + `HistoryNodeView` 只读视图 + `current_history_node` / `parent_history_node` / `redo_branches` / `redo_to_branch` / `EngineError::InvalidHistoryBranch` 公共 API；线性 `undo` / `redo` 兼容；GPUI testbed 覆盖至 M12；M17B `LargeFilePolicy` 字节预算 + `LargeTransactionPolicy` + `Buffer::set_large_file_policy` + `HistoryStatus.node_count` / `memory_bytes`；M18 `LargeFilePolicy` 大文件 / 超长行阈值 + `auto_read_only_on_large_file` + `LoadedTextInfo` 字节 / 最长行 / is_large / has_long_line + `Buffer::is_large_file` / `has_long_line` / `longest_line_chars`
-- 未完成：M19 及后续 engine-only 阶段
+- 当前推进：M19 Verification / Benchmark / Observability 完成（proptest 6 项 property 回归 + 三个 criterion 基准文件 + `Buffer::approximate_memory_bytes` 观测入口）；引擎 milestone 主线 M0–M19 收口
+- 已完成：M0–M12 机器契约基线；M13 折叠 + 投影；M14 Versioned Result / Range Set / 外部 UTF-16 边界；M15 Local Read / Write Boundary；M16 Transaction Record 与 Replay；M17A `HistoryNodeId` 单调身份 + `HistoryNode` parent/children 树 + `HistoryNodeView` 只读视图 + `current_history_node` / `parent_history_node` / `redo_branches` / `redo_to_branch` / `EngineError::InvalidHistoryBranch` 公共 API；线性 `undo` / `redo` 兼容；GPUI testbed 覆盖至 M12；M17B `LargeFilePolicy` 字节预算 + `LargeTransactionPolicy` + `Buffer::set_large_file_policy` + `HistoryStatus.node_count` / `memory_bytes`；M18 `LargeFilePolicy` 大文件 / 超长行阈值 + `auto_read_only_on_large_file` + `LoadedTextInfo` 字节 / 最长行 / is_large / has_long_line + `Buffer::is_large_file` / `has_long_line` / `longest_line_chars`；M19 `proptest` property 测试 + `criterion` 基准（核心编辑 / viewport projection / search replace）+ `Buffer::approximate_memory_bytes`
+- 未完成：引擎主线 milestone 已全部收口；后续工作集中在 fuzz/observability/性能调优等增量任务，按需启动
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 - engine-only 词汇表收敛（破坏性变更）：
@@ -161,6 +161,15 @@
 - `tests/m16_transaction_record.rs`：9 个机器契约测试，覆盖版本 / forward & inverse edits / before & after selection（含显式 after 与 PositionMap 默认平移）/ metadata 透传与 merge boundary 派生 / `record_history=false` 不入历史 / `transaction_id` 与 `last_delta_event` 对齐 / `to_transaction()` 完整重建 / record 是值快照不跟随 Buffer 推进 / 版本不匹配不产生 record
 - `tests/m16_transaction_replay.rs`：6 个机器契约测试，覆盖跨 Buffer 回放后状态等价、回放生成等价 DeltaEvent（除独立递增的 transaction_id）、版本不匹配原子拒绝且不动 Buffer / 不入事件队列、回放在更短 buffer 上触发 `EditError::RangeOutOfBounds`（不绕过边界校验）、独立 buffer 重放达到原 apply 完终态、回放后的事务进入历史栈支持后续 undo
 
+## M19 文件
+
+- `Cargo.toml`：新增 dev-dependency `proptest = "1.5.0"`；注册 `[[bench]] m19_core_editing` / `m19_viewport_projection` / `m19_search_replace`
+- `src/buffer/lifecycle.rs`：新增 `Buffer::approximate_memory_bytes()` 内存粗估入口（文本字节 + 历史 `memory_bytes` + selection / pending DeltaEvent 队列固定大小估算；不承诺等同 RSS / `ropey` 内部节点精确字节）
+- `tests/m19_property_regressions.rs`：6 个 proptest 测试，覆盖：随机编辑序列与 String 参考模型差分一致、`undo_roundtrip_restores_initial_text`、`undo_then_redo_returns_to_final_state`、`SelectionSet::new` 排序与不重叠不变量、多光标 caret insert 长度可预测、Snapshot 在后续编辑下不可变；每个 property 默认 64 cases，shrinking 自动收敛最小复现
+- `benches/m19_core_editing.rs`：7 组 criterion 基准，覆盖单次插入（多行 / 超长单行）/ 删除 / 替换 / 64 个编辑批量事务 / Undo+Redo 循环 / 多光标 50 caret 插入 / 坐标转换（line_start / position_to_char）/ 50k 行 snapshot clone
+- `benches/m19_viewport_projection.rs`：6 组 criterion 基准，覆盖 50k 行 viewport slicing、超长行 viewport 截断、20k 行 projection 构建（无 fold / 200 fold）、50 个 logical→projected point 查询、含 fold 的 projected viewport 切片
+- `benches/m19_search_replace.rs`：6 组 criterion 基准，覆盖 literal 搜索（默认 / case-insensitive / whole-word）、regex 搜索（带 capture）/ replace_all literal+regex、100w chars 长行 literal 搜索
+
 ## M18 文件
 
 - `src/config/large_file.rs`：`LargeFilePolicy` 增 `large_file_threshold_bytes` / `long_line_threshold_chars` / `auto_read_only_on_large_file` 三字段（默认 5 MiB / 10000 chars / false）+ `is_large_byte_size(byte_size)` / `is_long_line(chars)` helper（阈值=0 视为不限）
@@ -225,6 +234,8 @@ cargo test --test m17_advanced_history
 cargo test --test m17_history_budget
 cargo test --test m18_large_file_policy
 cargo test --test m18_defensive_runtime
+cargo test --test m19_property_regressions
+cargo bench --no-run
 cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m10_testbed

@@ -12,9 +12,10 @@ use crate::{
         query::{range_contains_offset, ranges_intersect, text_range_for_line_range},
     },
     position_map::Stickiness,
+    snapshot::Snapshot,
     tracking::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
     transaction::DeltaEvent,
-    types::{BufferVersion, CharOffset, LineRange, TextRange},
+    types::{BufferVersion, CharOffset, LineRange, TextRange, Utf16Position},
 };
 
 /// 单条 entry：把 payload 绑定到一个可跟随的 `TrackedRange`。
@@ -122,6 +123,19 @@ impl<T> VersionedRangeSpec<T> {
 
     pub fn payload(&self) -> &T {
         &self.payload
+    }
+
+    /// 用 UTF-16 行列边界构造 spec，便于从外部协议（LSP 等）批量导入。
+    ///
+    /// `start` / `end` 必须落在 `snapshot` 的合法 UTF-16 边界内，且 `start <= end`。
+    pub fn try_from_utf16(
+        snapshot: &Snapshot,
+        start: Utf16Position,
+        end: Utf16Position,
+        payload: T,
+    ) -> EngineResult<Self> {
+        let range = utf16_range_to_text_range(snapshot, start, end)?;
+        Ok(Self::new(range, payload))
     }
 
     fn into_parts(self) -> (TextRange, Stickiness, TrackedRangeUpdatePolicy, T) {
@@ -354,6 +368,111 @@ impl<T> VersionedRangeSet<T> {
         self.entries_in_line_range(buffer, window.lines())
     }
 
+    /// 在与 set 同版本的 `Snapshot` 上转换每条 entry 的 payload，常用于 UTF-16 边界 import / export。
+    ///
+    /// `snapshot.version()` 必须等于当前 `version()`；闭包接收 (payload, current_text_range, snapshot)，
+    /// 不允许移动或拆解 entry 的 tracked range / stickiness / update policy。
+    pub fn try_map_payloads_at_snapshot<U, F>(
+        self,
+        snapshot: &Snapshot,
+        mut f: F,
+    ) -> EngineResult<VersionedRangeSet<U>>
+    where
+        F: FnMut(T, TextRange, &Snapshot) -> EngineResult<U>,
+    {
+        if snapshot.version() != self.version {
+            return Err(VersionedResultError::VersionMismatch {
+                expected: self.version,
+                actual: snapshot.version(),
+            }
+            .into());
+        }
+
+        let mut new_entries = Vec::with_capacity(self.entries.len());
+        for entry in self.entries.into_iter() {
+            let (tracked_range, update_policy, payload) = entry.into_parts();
+            let range = tracked_range.range();
+            let new_payload = f(payload, range, snapshot)?;
+            new_entries.push(VersionedRangeEntry::new(
+                tracked_range,
+                update_policy,
+                new_payload,
+            ));
+        }
+
+        Ok(VersionedRangeSet {
+            version: self.version,
+            default_stickiness: self.default_stickiness,
+            default_update_policy: self.default_update_policy,
+            entries: new_entries,
+        })
+    }
+
+    /// 把每条 entry 的范围导出为 UTF-16 行列对，便于喂给外部协议（LSP 等）。
+    ///
+    /// 返回 `(start, end, &payload)` 顺序与 `as_slice()` 一致。
+    pub fn try_export_entries_to_utf16<'a>(
+        &'a self,
+        snapshot: &Snapshot,
+    ) -> EngineResult<Vec<(Utf16Position, Utf16Position, &'a T)>> {
+        if snapshot.version() != self.version {
+            return Err(VersionedResultError::VersionMismatch {
+                expected: self.version,
+                actual: snapshot.version(),
+            }
+            .into());
+        }
+
+        let mut exported = Vec::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            let range = entry.range();
+            let start = snapshot.char_to_utf16_position(range.start())?;
+            let end = snapshot.char_to_utf16_position(range.end())?;
+            exported.push((start, end, entry.payload()));
+        }
+        Ok(exported)
+    }
+
+    /// 用 UTF-16 行列边界追加单条 entry，便于从外部协议（LSP 等）逐条导入。
+    pub fn try_insert_utf16_range(
+        &mut self,
+        snapshot: &Snapshot,
+        start: Utf16Position,
+        end: Utf16Position,
+        payload: T,
+    ) -> EngineResult<usize> {
+        self.try_insert_utf16_range_with_options(
+            snapshot,
+            start,
+            end,
+            self.default_stickiness,
+            self.default_update_policy,
+            payload,
+        )
+    }
+
+    /// 用 UTF-16 行列边界追加单条 entry 并显式指定 stickiness / update policy。
+    pub fn try_insert_utf16_range_with_options(
+        &mut self,
+        snapshot: &Snapshot,
+        start: Utf16Position,
+        end: Utf16Position,
+        stickiness: Stickiness,
+        update_policy: TrackedRangeUpdatePolicy,
+        payload: T,
+    ) -> EngineResult<usize> {
+        if snapshot.version() != self.version {
+            return Err(VersionedResultError::VersionMismatch {
+                expected: self.version,
+                actual: snapshot.version(),
+            }
+            .into());
+        }
+
+        let range = utf16_range_to_text_range(snapshot, start, end)?;
+        Ok(self.insert_with_options(range, stickiness, update_policy, payload))
+    }
+
     /// 把 set 转换为指定 kind 的 `MetadataLayer<T>`，沿用版本、默认策略和每条 entry 的策略。
     pub fn into_metadata_layer(self, kind: MetadataLayerKind) -> MetadataLayer<T> {
         let version = self.version;
@@ -396,4 +515,14 @@ impl<T> From<MetadataLayer<T>> for VersionedRangeSet<T> {
             entries,
         }
     }
+}
+
+fn utf16_range_to_text_range(
+    snapshot: &Snapshot,
+    start: Utf16Position,
+    end: Utf16Position,
+) -> EngineResult<TextRange> {
+    let start_offset = snapshot.utf16_position_to_char(start)?;
+    let end_offset = snapshot.utf16_position_to_char(end)?;
+    Ok(TextRange::new(start_offset, end_offset)?)
 }

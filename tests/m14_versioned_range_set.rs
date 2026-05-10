@@ -1,12 +1,13 @@
-//! M14B 机器契约：锁定 `VersionedRangeSet<T>` 的版本绑定、DeltaEvent 推进、
-//! 删除策略、TextRange / LineRange / line window 查询，以及与 `MetadataLayer<T>` 的互转。
+//! M14B / M14C 机器契约：锁定 `VersionedRangeSet<T>` 的版本绑定、DeltaEvent 推进、
+//! 删除策略、TextRange / LineRange / line window 查询、与 `MetadataLayer<T>` 的互转，
+//! 以及 snapshot-bound payload 转换与 UTF-16 边界 import / export。
 
 use zom_engine::{
     Buffer, BufferConfig, BufferVersion, CharOffset, CoordinateError, DeltaEvent, Edit,
     EngineError, Line, LineRange, MetadataLayer, MetadataLayerKind, MetadataLineWindow, Stickiness,
     TextRange, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdate,
-    TrackedRangeUpdatePolicy, Transaction, VersionedRangeSet, VersionedRangeSpec,
-    VersionedResultError,
+    TrackedRangeUpdatePolicy, Transaction, Utf16Offset, Utf16Position, VersionedRangeSet,
+    VersionedRangeSpec, VersionedResultError,
 };
 
 fn buffer(text: &str) -> Buffer {
@@ -424,4 +425,208 @@ fn metadata_layer_round_trip_through_versioned_range_set_preserves_followability
     assert_eq!(round_tripped.as_slice()[0].range(), range(1, 8));
     // marker: Stickiness::Never 的空 range，被插入推到 8。
     assert_eq!(round_tripped.as_slice()[1].range(), range(8, 8));
+}
+
+// ---- M14C：snapshot-bound 转换 与 UTF-16 边界 import / export ----
+
+fn utf16(line: usize, character: usize) -> Utf16Position {
+    Utf16Position::new(Line::new(line), Utf16Offset::new(character))
+}
+
+#[test]
+fn try_map_payloads_at_snapshot_converts_each_entry_when_versions_match() {
+    let buffer = buffer("abcdef");
+    let snapshot = buffer.snapshot();
+    let mut set = VersionedRangeSet::new(snapshot.version());
+    set.insert(range(1, 3), "first");
+    set.insert(range(4, 5), "second");
+
+    let mapped = set
+        .try_map_payloads_at_snapshot(&snapshot, |payload, range, _snap| {
+            Ok::<_, EngineError>(format!(
+                "{}@{}..{}",
+                payload,
+                range.start().get(),
+                range.end().get()
+            ))
+        })
+        .unwrap();
+
+    assert_eq!(mapped.version(), snapshot.version());
+    assert_eq!(
+        mapped.entry(0).unwrap().payload(),
+        &"first@1..3".to_string()
+    );
+    assert_eq!(mapped.entry(0).unwrap().range(), range(1, 3));
+    assert_eq!(
+        mapped.entry(1).unwrap().payload(),
+        &"second@4..5".to_string()
+    );
+}
+
+#[test]
+fn try_map_payloads_at_snapshot_rejects_mismatched_snapshot_version() {
+    let mut buffer = buffer("abc");
+    let stale_snapshot = buffer.snapshot();
+    apply(
+        &mut buffer,
+        vec![Edit::insert(c(1), "X".to_string()).unwrap()],
+    );
+    let mut set = VersionedRangeSet::new(buffer.version());
+    set.insert(range(0, 1), "stale");
+
+    let outcome = set.try_map_payloads_at_snapshot(&stale_snapshot, |payload, _range, _snap| {
+        Ok::<_, EngineError>(payload)
+    });
+
+    assert!(matches!(
+        outcome,
+        Err(EngineError::Versioned(
+            VersionedResultError::VersionMismatch { .. }
+        ))
+    ));
+}
+
+#[test]
+fn try_export_entries_to_utf16_emits_lsp_friendly_positions() {
+    // "héllo\nworld" — é 是 BMP，单 code unit；测试 line 1 的字符索引。
+    let buffer = buffer("héllo\nworld");
+    let snapshot = buffer.snapshot();
+    let mut set = VersionedRangeSet::new(snapshot.version());
+    set.insert(range(0, 5), "line0");
+    set.insert(range(6, 11), "line1");
+
+    let exported = set.try_export_entries_to_utf16(&snapshot).unwrap();
+
+    assert_eq!(
+        exported,
+        vec![
+            (utf16(0, 0), utf16(0, 5), &"line0"),
+            (utf16(1, 0), utf16(1, 5), &"line1"),
+        ]
+    );
+}
+
+#[test]
+fn try_export_entries_to_utf16_rejects_mismatched_snapshot_version() {
+    let mut buffer = buffer("abc");
+    let stale_snapshot = buffer.snapshot();
+    apply(
+        &mut buffer,
+        vec![Edit::insert(c(1), "X".to_string()).unwrap()],
+    );
+    let mut set = VersionedRangeSet::new(buffer.version());
+    set.insert(range(0, 1), "x");
+
+    let err = set
+        .try_export_entries_to_utf16(&stale_snapshot)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        EngineError::Versioned(VersionedResultError::VersionMismatch { .. })
+    ));
+}
+
+#[test]
+fn try_insert_utf16_range_imports_lsp_style_boundaries() {
+    let buffer = buffer("héllo\nworld");
+    let snapshot = buffer.snapshot();
+    let mut set =
+        VersionedRangeSet::new(snapshot.version()).with_default_stickiness(Stickiness::Expand);
+
+    let index = set
+        .try_insert_utf16_range(&snapshot, utf16(1, 0), utf16(1, 5), "line1")
+        .unwrap();
+
+    assert_eq!(index, 0);
+    let entry = set.entry(0).unwrap();
+    assert_eq!(entry.range(), range(6, 11));
+    assert_eq!(entry.stickiness(), Stickiness::Expand);
+    assert_eq!(entry.payload(), &"line1");
+}
+
+#[test]
+fn try_insert_utf16_range_with_options_overrides_per_entry_policy() {
+    let buffer = buffer("héllo");
+    let snapshot = buffer.snapshot();
+    let mut set = VersionedRangeSet::new(snapshot.version());
+
+    let index = set
+        .try_insert_utf16_range_with_options(
+            &snapshot,
+            utf16(0, 1),
+            utf16(0, 4),
+            Stickiness::Never,
+            TrackedRangeUpdatePolicy::invalidate_when_touched_by_deletion(),
+            "marker",
+        )
+        .unwrap();
+
+    let entry = set.entry(index).unwrap();
+    assert_eq!(entry.range(), range(1, 4));
+    assert_eq!(entry.stickiness(), Stickiness::Never);
+    assert_eq!(
+        entry.update_policy(),
+        TrackedRangeUpdatePolicy::invalidate_when_touched_by_deletion()
+    );
+}
+
+#[test]
+fn try_insert_utf16_range_rejects_mismatched_snapshot_version() {
+    let mut buffer = buffer("abc");
+    let stale_snapshot = buffer.snapshot();
+    apply(
+        &mut buffer,
+        vec![Edit::insert(c(1), "X".to_string()).unwrap()],
+    );
+    let mut set = VersionedRangeSet::new(buffer.version());
+
+    let err = set
+        .try_insert_utf16_range(&stale_snapshot, utf16(0, 0), utf16(0, 1), "x")
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        EngineError::Versioned(VersionedResultError::VersionMismatch { .. })
+    ));
+    assert!(set.is_empty(), "版本不匹配时不应改动 set");
+}
+
+#[test]
+fn versioned_range_spec_try_from_utf16_supports_batch_replace() {
+    let buffer = buffer("héllo\nworld");
+    let snapshot = buffer.snapshot();
+    let mut set = VersionedRangeSet::new(BufferVersion::INITIAL);
+
+    let specs = vec![
+        VersionedRangeSpec::try_from_utf16(&snapshot, utf16(0, 0), utf16(0, 5), "line0").unwrap(),
+        VersionedRangeSpec::try_from_utf16(&snapshot, utf16(1, 0), utf16(1, 5), "line1")
+            .unwrap()
+            .with_stickiness(Stickiness::Never)
+            .with_update_policy(TrackedRangeUpdatePolicy::invalidate_when_touched_by_deletion()),
+    ];
+    set.replace_all_with_options(snapshot.version(), specs);
+
+    assert_eq!(set.version(), snapshot.version());
+    assert_eq!(set.entry(0).unwrap().range(), range(0, 5));
+    assert_eq!(set.entry(1).unwrap().range(), range(6, 11));
+    assert_eq!(set.entry(1).unwrap().stickiness(), Stickiness::Never);
+    assert_eq!(
+        set.entry(1).unwrap().update_policy(),
+        TrackedRangeUpdatePolicy::invalidate_when_touched_by_deletion()
+    );
+}
+
+#[test]
+fn versioned_range_spec_try_from_utf16_rejects_inverted_range() {
+    let buffer = buffer("héllo");
+    let snapshot = buffer.snapshot();
+
+    let err =
+        VersionedRangeSpec::try_from_utf16(&snapshot, utf16(0, 4), utf16(0, 1), "bad").unwrap_err();
+
+    assert!(matches!(
+        err,
+        EngineError::Coordinate(CoordinateError::InvalidRange { .. })
+    ));
 }

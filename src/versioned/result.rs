@@ -4,8 +4,8 @@
 //! 不携带任何业务 payload 语义，具体的 remap 行为由调用方在闭包里完成。
 
 use crate::{
-    EngineResult, errors::VersionedResultError, position_map::PositionMap, transaction::DeltaEvent,
-    types::BufferVersion,
+    EngineResult, errors::VersionedResultError, position_map::PositionMap, snapshot::Snapshot,
+    transaction::DeltaEvent, types::BufferVersion,
 };
 
 /// 与 `BufferVersion` 绑定的泛型结果载体。
@@ -105,5 +105,28 @@ impl<T> VersionedResult<T> {
     {
         let new_value = remap(self.value, position_map)?;
         Ok(VersionedResult::new(new_version, new_value))
+    }
+
+    /// 在与本结果同版本的 `Snapshot` 上转换 payload；常用于 UTF-16 边界 import / export。
+    ///
+    /// `snapshot.version()` 必须等于当前 `version()`，否则原子拒绝、不调用闭包。
+    pub fn try_map_at_snapshot<U, F>(
+        self,
+        snapshot: &Snapshot,
+        f: F,
+    ) -> EngineResult<VersionedResult<U>>
+    where
+        F: FnOnce(T, &Snapshot) -> EngineResult<U>,
+    {
+        if snapshot.version() != self.version {
+            return Err(VersionedResultError::VersionMismatch {
+                expected: self.version,
+                actual: snapshot.version(),
+            }
+            .into());
+        }
+
+        let new_value = f(self.value, snapshot)?;
+        Ok(VersionedResult::new(self.version, new_value))
     }
 }

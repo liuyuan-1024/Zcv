@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M14A `VersionedResult<T>` 与 M14B `VersionedRangeSet<T>` 完成；下一步进入 M14C UTF-16 边界 helper
-- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；M13D ProjectedViewport / ProjectedViewportSlice 折叠后视口切片；M14A `VersionedResult<T>` 泛型版本化结果与 PositionMap remap；M14B `VersionedRangeSet<T>` 泛型 (TrackedRange, payload) 集合 + DeltaEvent 推进 + TextRange / LineRange / line window 查询 + `MetadataLayer<T>` 双向互转；GPUI testbed 覆盖至 M12
-- 未完成：M14C UTF-16 边界 helper 及后续 engine-only 阶段
+- 当前推进：M14 全部子阶段完成（M14A `VersionedResult<T>` / M14B `VersionedRangeSet<T>` / M14C UTF-16 边界 helper 与 changed ranges 只读结果）；下一步进入 M15 Local Read / Write Boundary
+- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；M13D ProjectedViewport / ProjectedViewportSlice 折叠后视口切片；M14A `VersionedResult<T>` 泛型版本化结果与 PositionMap remap；M14B `VersionedRangeSet<T>` 泛型 (TrackedRange, payload) 集合 + DeltaEvent 推进 + TextRange / LineRange / line window 查询 + `MetadataLayer<T>` 双向互转；M14C VersionedResult / VersionedRangeSet 的 snapshot-bound payload 转换、UTF-16 import / export helper、`DeltaEvent::changed_ranges_result()` 把 changed ranges 暴露为版本化只读结果；GPUI testbed 覆盖至 M12
+- 未完成：M15 Local Read / Write Boundary 及后续 engine-only 阶段
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 - engine-only 词汇表收敛（破坏性变更）：
@@ -126,6 +126,18 @@
 - `src/metadata/mod.rs`：将 `query` 提升为 `pub(crate)`，让 `versioned` 复用 `ranges_intersect` / `range_contains_offset` / `text_range_for_line_range` 边界数学
 - `src/lib.rs`：M14B public API 导出（`VersionedRangeSet` / `VersionedRangeEntry` / `VersionedRangeSpec`）
 - `tests/m14_versioned_range_set.rs`：15 个机器契约测试，覆盖空 set 与版本绑定、insert / insert_with_stickiness / insert_with_options 默认与每条策略、remove / clear / replace_all / replace_all_with_options 推进 version、`update_through_delta_event` 普通跟随、删除策略下 Invalidated entry 自动出栈、版本不匹配原子拒绝、`entries_intersecting` / `entries_containing` / `entries_in_line_range` / `entries_in_line_window` 查询与越界错误、`MetadataLayer<T>` -> `VersionedRangeSet<T>` 丢 kind / id 保 payload 与策略、`VersionedRangeSet<T>` -> `MetadataLayer<T>` 重新分配 ID 并保留 kind / 默认策略、Layer↔Set 往返后 entry 仍可在 DeltaEvent 上正确跟随
+
+## M14C 文件
+
+- `src/versioned/result.rs`：`VersionedResult::try_map_at_snapshot(snapshot, f)` —— `snapshot.version()` 必须等于结果版本，否则 `EngineError::Versioned(VersionMismatch)` 原子拒绝；闭包接收 `(payload, &Snapshot)` 并返回 `EngineResult<U>`，常用于 `Position` ↔ UTF-16 / `CharOffset` ↔ UTF-16 / changed ranges → UTF-16 边界等转换。
+- `src/versioned/range_set.rs`：
+  - `try_map_payloads_at_snapshot(snapshot, f)` —— per-entry payload 转换，闭包签名 `(payload, TextRange, &Snapshot) -> EngineResult<U>`；保留每条 entry 的 tracked range / stickiness / update policy；版本不匹配原子拒绝。
+  - `try_export_entries_to_utf16(&self, snapshot)` —— 按 `as_slice()` 顺序导出 `(Utf16Position, Utf16Position, &T)`；版本不匹配 / 边界越界透传 `EngineError`。
+  - `try_insert_utf16_range` / `try_insert_utf16_range_with_options` —— 用 UTF-16 行列边界追加单条 entry；版本不匹配 / 反向区间 / 越界透传 `EngineError`，失败时不改动 set。
+  - `VersionedRangeSpec::try_from_utf16(snapshot, start, end, payload)` —— 配合 `replace_all_with_options` 批量从 UTF-16 边界导入。
+- `src/transaction/delta.rs`：`DeltaEvent::changed_ranges_result()` —— 把 `ChangeSet::changed_ranges()` 包成 `VersionedResult<Vec<TextRange>>` 并绑定 `new_version`，便于宿主复用 M14A / M14C 链路（`try_map_at_snapshot` 等）做 UTF-16 export 或推进版本时直接 `is_stale` 判断。
+- `tests/m14_versioned_result.rs`：新增 5 个测试覆盖 `try_map_at_snapshot` 成功 / 版本不匹配 / 闭包错误透传，`changed_ranges_result` 绑定 `new_version` 与到 UTF-16 export 的端到端链路（合计 17 个测试）。
+- `tests/m14_versioned_range_set.rs`：新增 9 个测试覆盖 `try_map_payloads_at_snapshot` 成功 / 版本不匹配，`try_export_entries_to_utf16` LSP 友好行列输出 / 版本不匹配，`try_insert_utf16_range` 与 `try_insert_utf16_range_with_options` 默认 / 自定义策略 / 版本不匹配且不改动 set，`VersionedRangeSpec::try_from_utf16` 批量替换与反向区间拒绝（合计 24 个测试）。
 
 ## M13 GPUI testbed（可选）
 

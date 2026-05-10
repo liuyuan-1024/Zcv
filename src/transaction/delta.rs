@@ -4,7 +4,8 @@
 
 use crate::{
     position_map::PositionMap,
-    types::{BufferVersion, TransactionId},
+    types::{BufferVersion, TextRange, TransactionId},
+    versioned::VersionedResult,
 };
 
 use super::{ChangeSet, EditList, TransactionSource};
@@ -40,4 +41,11 @@ pub struct DeltaEvent {
     pub changeset: ChangeSet,
     /// old -> new / new -> old 坐标映射器，供 Anchor、TrackedRange 和宿主复用。
     pub position_map: PositionMap,
+}
+
+impl DeltaEvent {
+    /// 在新版本上的 changed ranges 只读结果，已绑定 `new_version` 供宿主版本对齐。
+    pub fn changed_ranges_result(&self) -> VersionedResult<Vec<TextRange>> {
+        VersionedResult::new(self.new_version, self.changeset.changed_ranges())
+    }
 }

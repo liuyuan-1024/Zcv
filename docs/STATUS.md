@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M14 全部子阶段完成（M14A `VersionedResult<T>` / M14B `VersionedRangeSet<T>` / M14C UTF-16 边界 helper 与 changed ranges 只读结果）；下一步进入 M15 Local Read / Write Boundary
-- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；M13D ProjectedViewport / ProjectedViewportSlice 折叠后视口切片；M14A `VersionedResult<T>` 泛型版本化结果与 PositionMap remap；M14B `VersionedRangeSet<T>` 泛型 (TrackedRange, payload) 集合 + DeltaEvent 推进 + TextRange / LineRange / line window 查询 + `MetadataLayer<T>` 双向互转；M14C VersionedResult / VersionedRangeSet 的 snapshot-bound payload 转换、UTF-16 import / export helper、`DeltaEvent::changed_ranges_result()` 把 changed ranges 暴露为版本化只读结果；GPUI testbed 覆盖至 M12
-- 未完成：M15 Local Read / Write Boundary 及后续 engine-only 阶段
+- 当前推进：M15 Local Read / Write Boundary 完成（Buffer 单入口写线性化、Snapshot 跨线程只读、DeltaEvent 顺序消费与漏读检测）；下一步进入 M16 Transaction Record 与 Replay
+- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；M13D ProjectedViewport / ProjectedViewportSlice 折叠后视口切片；M14A `VersionedResult<T>` 泛型版本化结果与 PositionMap remap；M14B `VersionedRangeSet<T>` 泛型 (TrackedRange, payload) 集合 + DeltaEvent 推进 + TextRange / LineRange / line window 查询 + `MetadataLayer<T>` 双向互转；M14C VersionedResult / VersionedRangeSet 的 snapshot-bound payload 转换、UTF-16 import / export helper、`DeltaEvent::changed_ranges_result()` 把 changed ranges 暴露为版本化只读结果；M15A Buffer 单入口写 + 顺序 DeltaEvent + 版本冲突原子拒绝；M15B Snapshot Send+Sync 跨线程只读 + 版本绑定查询结果；M15C `pending_delta_events()` peek + `take_pending_events()` 顺序排空 + 订阅者按版本链检测漏读；GPUI testbed 覆盖至 M12
+- 未完成：M16 Transaction Record 与 Replay 及后续 engine-only 阶段
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 - engine-only 词汇表收敛（破坏性变更）：
@@ -139,6 +139,14 @@
 - `tests/m14_versioned_result.rs`：新增 5 个测试覆盖 `try_map_at_snapshot` 成功 / 版本不匹配 / 闭包错误透传，`changed_ranges_result` 绑定 `new_version` 与到 UTF-16 export 的端到端链路（合计 17 个测试）。
 - `tests/m14_versioned_range_set.rs`：新增 9 个测试覆盖 `try_map_payloads_at_snapshot` 成功 / 版本不匹配，`try_export_entries_to_utf16` LSP 友好行列输出 / 版本不匹配，`try_insert_utf16_range` 与 `try_insert_utf16_range_with_options` 默认 / 自定义策略 / 版本不匹配且不改动 set，`VersionedRangeSpec::try_from_utf16` 批量替换与反向区间拒绝（合计 24 个测试）。
 
+## M15 文件
+
+- `src/buffer/events.rs`：新增 `Buffer::pending_delta_events() -> &[DeltaEvent]` —— 不消费地查看 pending 队列，配合既有 `pending_delta_event_count` / `take_pending_events` / `last_delta_event` 让本地订阅者按版本链检测漏读
+- `tests/m15_local_read_write_boundary.rs`：14 个机器契约测试，按 M15A / M15B / M15C 三个子模块聚合
+  - `m15a_single_writer`：写入入口必须 `&mut`（编译期）；成功提交推进版本并入 DeltaEvent；版本不匹配原子拒绝且不留 DeltaEvent / 不动文本；连续提交形成连续版本链；EditList 重叠在 `Transaction::from_edits` 阶段就拒绝，不影响 Buffer
+  - `m15b_snapshot_reader`：编译期断言 `Snapshot: Send + Sync`；旧 snapshot 在后续提交后仍只读且文本/版本不变；snapshot 跨 `std::thread::spawn` 移动后做 `text()` / `search` 查询；snapshot 派生的搜索结果绑定 `snapshot.version()`，宿主可用 `is_stale(buffer.version())` 判断
+  - `m15c_delta_consumer`：`last_delta_event` 跟随最近提交；`pending_delta_events()` peek 不消费；`take_pending_events()` 按提交顺序排空且后续提交继续累积；订阅者基于 `last_seen` + `event.old_version` 检测漏读；延迟订阅者用 snapshot 保留旧版本事实，配合 DeltaEvent 拼接 old/new 版本
+
 ## M13 GPUI testbed（可选）
 
 - `examples/gpui_m13_testbed.rs`：聚焦 M13 fold/projection 公共 API 的最小体感台。
@@ -162,6 +170,7 @@ cargo test --test m13_projection_range_map
 cargo test --test m13_projected_viewport
 cargo test --test m14_versioned_result
 cargo test --test m14_versioned_range_set
+cargo test --test m15_local_read_write_boundary
 cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m10_testbed

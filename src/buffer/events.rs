@@ -11,6 +11,11 @@ impl Buffer {
         self.pending_delta_events.len()
     }
 
+    /// 不消费地查看 pending 队列；事件按提交顺序排列，可用于消费者按版本检测漏读。
+    pub fn pending_delta_events(&self) -> &[DeltaEvent] {
+        &self.pending_delta_events
+    }
+
     pub fn take_pending_events(&mut self) -> Vec<DeltaEvent> {
         std::mem::take(&mut self.pending_delta_events)
     }

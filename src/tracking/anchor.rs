@@ -1,7 +1,7 @@
-//! M9A Anchor / Mark：可跟随文本变更的位置标记。
+//! Anchor / Mark：可跟随文本变更的位置标记。
 //!
 //! Anchor 是绑定 `BufferVersion` 的稳定位置；Mark 是不绑定版本的轻量位置标记。
-//! 两者都通过 M8 的 `PositionMap` 更新，不持有 Buffer，也不参与事务提交。
+//! 两者都通过 `PositionMap` 更新，不持有 Buffer，也不参与事务提交。
 
 use crate::{
     errors::AnchorError,

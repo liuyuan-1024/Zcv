@@ -1,11 +1,11 @@
 //! 一维偏移强类型：区分 UTF-8 byte、Unicode scalar 和 UTF-16 code unit 坐标。
 //!
-//! M3.5 后核心编辑 API 使用 CharOffset，其他偏移保留给编码和协议边界。
+//! 编辑 API 一律使用 `CharOffset`；`ByteOffset` / `Utf16Offset` 保留给编码和外部协议边界。
 
 /// 字节偏移量。
 ///
-/// 这是 UTF-8 文本存储结构中的物理坐标。M3.5 起，编辑 API 不再使用
-/// ByteOffset；它保留给文件字节、编码边界和后续外部协议适配层。
+/// UTF-8 文本存储中的物理坐标，仅用于文件字节、编码探测和外部协议适配。
+/// 编辑入口不接受 `ByteOffset`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct ByteOffset(usize);
 
@@ -32,7 +32,7 @@ impl ByteOffset {
 /// 字符偏移量。
 ///
 /// 按 Unicode Scalar Value 计数，不等同于字节偏移量，也不等同于 UTF-16
-/// code unit 偏移量。M3.5 起，这是编辑引擎内部和 public 编辑 API 的主坐标。
+/// code unit 偏移量；引擎内部与 public 编辑 API 一律以 `CharOffset` 为主坐标。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct CharOffset(usize);
 

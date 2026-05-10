@@ -5,7 +5,7 @@
 //! - 任意两个 fold 之间必须满足「互不相交」或「严格嵌套」，禁止部分重叠；
 //! - 当通过 `DeltaEvent` 推进版本时，每条 fold 按其 `TrackedRangeUpdatePolicy` 决定保留 / 塌缩 / 失效。
 //!
-//! 折叠占位符样式、投影坐标和 viewport 切片属于 M13B 起，不在本文件承诺。
+//! 折叠占位符样式、投影坐标和 viewport 切片由 `projection` 模块承载，不在本文件承诺。
 
 use crate::{
     EngineResult,
@@ -192,7 +192,7 @@ impl FoldSet {
     /// 查询某条逻辑行是否被任意 fold 隐藏。
     ///
     /// 一条 fold 跨越逻辑行 `[a, b]` 时，隐藏 `(a, b]`（即 `a + 1` 到 `b` 闭区间）。
-    /// 单行 fold 不贡献隐藏行（占位符语义留给 M13B）。
+    /// 单行 fold 不贡献隐藏行（占位符语义在 `projection` 模块）。
     pub fn is_line_hidden(&self, buffer: &Buffer, line: Line) -> EngineResult<bool> {
         for fold in &self.ranges {
             let (start_line, end_line) = fold_line_span(buffer, fold.range())?;

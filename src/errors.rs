@@ -56,7 +56,7 @@ pub enum CoordinateError {
 /// 文本变异与编辑相关的错误（编辑请求不合法）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum EditError {
-    /// 同一事务内两个编辑范围相交；M2 要求 EditList 在提交前完成排序和重叠拒绝。
+    /// 同一事务内两个编辑范围相交；EditList 必须在提交前完成排序和重叠拒绝。
     #[error("检测到重叠编辑: 之前 {previous:?}, 当前 {current:?}")]
     OverlappingEdits {
         previous: TextRange,

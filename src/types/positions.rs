@@ -22,7 +22,7 @@ impl Line {
 
 /// 逻辑列号，0-indexed。
 ///
-/// M3.5 起，逻辑列按 Unicode Scalar Value 计数，与 CharOffset 的行内单位一致。
+/// 按 Unicode Scalar Value 计数，与 CharOffset 的行内单位一致。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct LogicalColumn(usize);
 

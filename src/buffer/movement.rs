@@ -12,7 +12,7 @@ use crate::{
 use super::{Buffer, coordinates::is_crlf_middle};
 
 impl Buffer {
-    /// M6B：按给定移动粒度寻找前一个边界。
+    /// 按给定移动粒度寻找前一个边界。
     pub fn previous_movement_boundary(
         &self,
         offset: CharOffset,
@@ -21,7 +21,7 @@ impl Buffer {
         self.movement_boundary(offset, MovementDirection::Previous, unit)
     }
 
-    /// M6B：按给定移动粒度寻找后一个边界。
+    /// 按给定移动粒度寻找后一个边界。
     pub fn next_movement_boundary(
         &self,
         offset: CharOffset,
@@ -30,7 +30,7 @@ impl Buffer {
         self.movement_boundary(offset, MovementDirection::Next, unit)
     }
 
-    /// M6B：统一移动边界入口。
+    /// 统一移动边界入口。
     pub fn movement_boundary(
         &self,
         offset: CharOffset,
@@ -78,7 +78,7 @@ impl Buffer {
         self.next_movement_boundary(offset, MovementUnit::Symbol)
     }
 
-    /// M6B：移动一组选区的 head。
+    /// 移动一组选区的 head。
     ///
     /// `extend = false` 时移动后塌缩为 caret；`extend = true` 时保留 anchor，扩展/收缩选区。
     /// 该 API 只更新 selection，不提交文本事务，因此不污染 Undo 历史。
@@ -112,7 +112,7 @@ impl Buffer {
         Ok(moved)
     }
 
-    /// M6B：移动当前 Buffer selection 的便捷入口。
+    /// 移动当前 Buffer selection 的便捷入口。
     pub fn move_current_selection(
         &mut self,
         direction: MovementDirection,

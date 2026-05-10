@@ -141,7 +141,7 @@ impl Buffer {
 
     /// 返回全文。
     ///
-    /// M4 后该方法返回 Cow，而不是 `&str`，避免 public API 继续承诺全文连续内存。
+    /// 返回 Cow 而不是 `&str`，public API 不承诺全文连续内存。
     /// 热路径请优先用 Snapshot / slice / line API。
     pub fn text(&self) -> Cow<'_, str> {
         self.storage.text()

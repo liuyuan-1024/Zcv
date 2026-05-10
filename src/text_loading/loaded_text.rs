@@ -7,7 +7,7 @@ use crate::{BomPolicy, InvalidUtf8Policy, LineEndingStyle, TextEncoding};
 /// 一次外部文本加载留下的元信息。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LoadedTextInfo {
-    /// 原始 bytes 被接受为哪种编码；当前 M7C 只承诺 UTF-8。
+    /// 原始 bytes 被接受为哪种编码；当前只承诺 UTF-8。
     pub encoding: TextEncoding,
     /// BOM 进入 Buffer 文本时采用的策略。
     pub bom_policy: BomPolicy,

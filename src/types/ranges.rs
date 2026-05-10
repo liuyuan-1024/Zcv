@@ -8,8 +8,7 @@ use super::{CharOffset, Line};
 
 /// 文本区间。
 ///
-/// M3.5 起，TextRange 由 CharOffset 构成，满足 `start <= end`。
-/// 这意味着 TextRange 是编辑语义区间，不再是 UTF-8 字节区间。
+/// 由 CharOffset 构成，满足 `start <= end`，表达编辑语义区间，不是 UTF-8 字节区间。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextRange {
     start: CharOffset,

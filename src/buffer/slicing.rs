@@ -1,6 +1,6 @@
 //! Buffer 文本切片读取入口。
 //!
-//! M11 只提供 Buffer 当前版本上的只读读取能力，不参与编辑、历史或折叠投影。
+//! 只提供 Buffer 当前版本上的只读读取能力，不参与编辑、历史或折叠投影。
 
 use crate::{
     ByteOffset, EngineResult, Line, LineRange, LineSlice, TextRange, TextSlice, Viewport,

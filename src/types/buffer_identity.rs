@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 /// Buffer 的来源 / 生命周期类型。
 ///
-/// M7A 只记录身份边界：文件、URI、未命名文档与临时草稿。文件加载、编码探测、
-/// reload 和保存输出属于 M7C/M7D，不在这里承诺。
+/// 只记录身份边界：文件、URI、未命名文档与临时草稿；不承诺文件加载、编码探测、
+/// reload 或保存输出。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BufferKind {
     /// 绑定本地文件路径的 Buffer；路径只是身份来源，不表示内容已经和磁盘一致。
@@ -56,8 +56,8 @@ impl Default for BufferKind {
 
 /// Buffer 当前对宿主可见的生命周期状态。
 ///
-/// M7A 只暴露已经由 Buffer 状态机真实承载的状态；Loading / Reloading /
-/// Conflict 等后续状态等对应生命周期语义实现后再进入 public API。
+/// 只暴露由 Buffer 状态机真实承载的状态；Loading / Reloading / Conflict 等
+/// 待对应生命周期语义实现后再进入 public API。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BufferState {
     /// 当前文本与最近保存基线一致，且 Buffer 允许正常编辑。

@@ -1,6 +1,6 @@
 //! 文件文本加载入口：把外部 UTF-8 bytes 解码为 Buffer 文本并记录加载元信息。
 //!
-//! 本文件只负责 M7C 的文本进入边界；reload、保存输出、编码转换和文件监听属于后续阶段或宿主层。
+//! 本文件只负责文本的进入边界；reload、保存输出、编码转换和文件监听属于宿主层。
 
 use crate::{
     BomPolicy, BufferConfig, BufferKind, EngineResult, InvalidUtf8Policy, LineEndingStyle,

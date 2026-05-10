@@ -1,4 +1,4 @@
-//! M14A `VersionedResult<T>`：把任意 payload 与 `BufferVersion` 绑定的通用载体。
+//! `VersionedResult<T>`：把任意 payload 与 `BufferVersion` 绑定的通用载体。
 //!
 //! 本模块只表达版本绑定、过期判断、过期丢弃和通过 `PositionMap` 尝试 remap 的边界；
 //! 不携带任何业务 payload 语义，具体的 remap 行为由调用方在闭包里完成。

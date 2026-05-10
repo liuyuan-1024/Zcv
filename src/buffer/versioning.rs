@@ -9,8 +9,8 @@ use super::Buffer;
 impl Buffer {
     /// 创建绑定当前版本的不可变快照。
     ///
-    /// M4 后，底层直接通过 `RopeyStorage::snapshot()` 获取基于 `ropey::Rope::clone()`
-    /// 的低成本快照；这里仅负责把快照与 BufferVersion / BufferConfig 绑定成 public Snapshot。
+    /// 底层通过 `RopeyStorage::snapshot()` 获取基于 `ropey::Rope::clone()` 的低成本快照；
+    /// 这里仅负责把快照与 BufferVersion / BufferConfig 绑定成 public Snapshot。
     pub fn snapshot(&self) -> Snapshot {
         Snapshot::new(self.storage.snapshot(), self.version, self.config.clone())
     }

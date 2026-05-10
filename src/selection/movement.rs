@@ -2,7 +2,7 @@
 //!
 //! 这里是 public 策略枚举，不实现移动算法；具体边界搜索在 Buffer movement 能力域。
 
-/// M6B 文本移动方向。
+/// 文本移动方向。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MovementDirection {
     /// 向前 / 向左移动。
@@ -11,10 +11,10 @@ pub enum MovementDirection {
     Next,
 }
 
-/// M6B 文本移动粒度。
+/// 文本移动粒度。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MovementUnit {
-    /// 用户感知字符，复用 M5A grapheme boundary。
+    /// 用户感知字符，复用 grapheme boundary。
     Grapheme,
     /// Unicode 自然语言 word，基于 `unicode-segmentation`。
     Word,

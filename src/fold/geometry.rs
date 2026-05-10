@@ -1,6 +1,6 @@
 //! Fold / Projection 共用的最小行几何抽象。
 //!
-//! 同时给 `Buffer` 和 `Snapshot` 实现，让 fold 集合（M13A）和投影构建（M13B 起）能共享
+//! 同时给 `Buffer` 和 `Snapshot` 实现，让 fold 集合与投影构建共享
 //! 「fold range -> 行号区间」的纯几何计算，避免重复实现。
 //!
 //! 本 trait 仅在 crate 内可见，不进入 public API；两侧都已经在 public API 上暴露了同样的

@@ -4,8 +4,7 @@
 
 /// Buffer 身份。
 ///
-/// M7A 起，Buffer 不再只是文本容器，也需要能被宿主作为文档对象追踪。
-/// `BufferId` 只表达引擎内身份，不等同于文件路径、URI 或外部项目索引 ID。
+/// 引擎内的文档对象标识，不等同于文件路径、URI 或外部项目索引 ID。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BufferId(u64);
 

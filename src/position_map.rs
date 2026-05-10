@@ -6,7 +6,7 @@
 use crate::{
     selection::{Selection, SelectionSet},
     tracking::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
-    transaction::{ChangeSet, Edit, EditList},
+    transaction::{ChangeSet, Edit},
     types::{BufferVersion, CharOffset, TextRange},
 };
 
@@ -82,12 +82,6 @@ pub struct PositionMap {
 }
 
 impl PositionMap {
-    pub fn from_edit_list(edits: &EditList) -> Self {
-        Self {
-            edits: edits.as_slice().to_vec(),
-        }
-    }
-
     pub(crate) fn from_edits(edits: Vec<Edit>) -> Self {
         Self { edits }
     }

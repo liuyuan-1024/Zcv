@@ -1,4 +1,4 @@
-//! M9B TrackedRange：由两个 Anchor 表达的可跟随文本变化区间。
+//! TrackedRange：由两个 Anchor 表达的可跟随文本变化区间。
 //!
 //! TrackedRange 只表达区间数学和版本推进策略，不承载 diagnostics、fold、
 //! 搜索结果等业务含义。

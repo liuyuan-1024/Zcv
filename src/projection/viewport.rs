@@ -1,4 +1,4 @@
-//! M13D ProjectedViewport：基于 Projection 的折叠后视口切片。
+//! ProjectedViewport：基于 Projection 的折叠后视口切片。
 //!
 //! `ProjectedViewport` 与 `Viewport` 形态一致，只是 `start_line` 是 `ProjectedLineIndex`，
 //! 表达折叠后视口中第一条投影行的位置。`ProjectedViewportSlice` 把切片结果分解为：

@@ -1,6 +1,6 @@
-//! Metadata 行窗口：M10B 用于按逻辑行范围查询 metadata 的窄类型。
+//! Metadata 行窗口：按逻辑行范围查询 metadata 的窄类型。
 //!
-//! 它刻意不叫 Viewport，也不表达 M11 的滚动、投影、折叠或像素可见区。
+//! 它刻意不叫 Viewport，也不表达 viewport 的滚动、投影、折叠或像素可见区。
 
 use crate::{
     errors::CoordinateError,
@@ -9,7 +9,7 @@ use crate::{
 
 /// Metadata 可见行查询窗口。
 ///
-/// M10B 只表达一段逻辑行范围，不涉及 M11 Viewport、UI 渲染、像素滚动或折叠投影坐标。
+/// 只表达一段逻辑行范围，不涉及 Viewport、UI 渲染、像素滚动或折叠投影坐标。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MetadataLineWindow {
     lines: LineRange,

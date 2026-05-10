@@ -1,6 +1,6 @@
 //! SelectionSet：多光标/多选区的归一化集合。
 //!
-//! 本文件维护排序、合并和 primary selection 归属，是 M6 后 Buffer 的主选区模型。
+//! 本文件维护排序、合并和 primary selection 归属，是 Buffer 唯一的选区模型。
 
 use crate::{CharOffset, PositionMap, TextRange};
 

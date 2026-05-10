@@ -1,6 +1,7 @@
-//! Transaction record：绑定 base_version、EditList、metadata 和 selection 快照的提交请求。
+//! `Transaction`：绑定 base_version、EditList、metadata 和 selection 的提交请求。
 //!
 //! 这里不应用编辑；Buffer 的 transaction_pipeline 负责版本检查、原子提交和事件生成。
+//! 提交后的事实快照见 `transaction_record::TransactionRecord`。
 
 use crate::{
     EngineResult, errors::TransactionError, selection::SelectionSet, types::BufferVersion,

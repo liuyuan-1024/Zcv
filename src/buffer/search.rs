@@ -1,4 +1,4 @@
-//! Buffer 搜索与替换入口：把 M12 literal search / replace 绑定到当前 BufferVersion。
+//! Buffer 搜索与替换入口：把 literal search / replace 绑定到当前 BufferVersion。
 
 use crate::{
     ChangeSet, Delta, Edit, EngineResult, RegexSearchOptions, RegexSearchResult, SearchError,

@@ -4,19 +4,19 @@
 //! 也不处理 UI 命令概念。
 
 mod changeset;
+mod core;
 mod delta;
 mod edit;
 mod edit_list;
 mod metadata;
-mod record;
 mod source;
 mod transaction_record;
 
 pub use changeset::ChangeSet;
+pub use core::Transaction;
 pub use delta::{Delta, DeltaEvent};
 pub use edit::Edit;
 pub use edit_list::EditList;
 pub use metadata::{TransactionMergePolicy, TransactionMetadata};
-pub use record::Transaction;
 pub use source::TransactionSource;
 pub use transaction_record::TransactionRecord;

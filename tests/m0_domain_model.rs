@@ -209,8 +209,6 @@ fn default_buffer_config_is_reasonable_for_m0() {
     assert_eq!(config.tab.indent_width(), 4);
     assert!(config.tab.insert_spaces);
 
-    assert!(config.large_file.threshold_bytes > 0);
-    assert!(config.large_file.long_line_threshold_bytes > 0);
     assert!(config.large_file.max_undo_history > 0);
 }
 

@@ -6,7 +6,7 @@ use crate::{CharOffset, TextRange};
 
 use super::{Selection, SelectionSet};
 
-/// M6C 组合输入中的相对选区。
+/// 组合输入中的相对选区。
 ///
 /// `anchor` / `head` 是相对于当前 preedit 文本开头的 `CharOffset`，
 /// 不是整个 Buffer 的绝对坐标。`Buffer::update_composition` 会把它映射为
@@ -38,7 +38,7 @@ impl CompositionSelection {
     }
 }
 
-/// M6C 当前组合输入状态。
+/// 当前组合输入状态。
 ///
 /// `range` 是当前 preedit 文本在 Buffer 中的绝对范围；`selection` 是当前组合态
 /// 选区在 Buffer 中的绝对位置。`original_*` 字段用于 cancel / commit 时恢复

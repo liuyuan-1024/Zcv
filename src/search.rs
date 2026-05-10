@@ -1,4 +1,4 @@
-//! M12 搜索：当前 Buffer / Snapshot 内的 literal search 与 regex search 契约。
+//! 当前 Buffer / Snapshot 内的 literal search 与 regex search 契约。
 //!
 //! 本模块只实现单 Buffer 文本搜索结果模型、纯字符串匹配和正则匹配；不做跨文件索引，
 //! 也不承担 UI 高亮语义。

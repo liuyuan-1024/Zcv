@@ -1,7 +1,7 @@
 //! 文本存储抽象。
 //!
-//! M3.5 起，TextStorage 的编辑入口使用 CharOffset / TextRange(char range)，
-//! M4 起默认后端切换为 RopeyStorage，并且 TextStorage 不再假设全文可作为连续 &str 借出。
+//! `TextStorage` 的编辑入口以 `CharOffset` / `TextRange(char range)` 为唯一坐标，
+//! 不假设全文可借出为单段 `&str`；默认后端是 `RopeyStorage`。
 
 mod fingerprint;
 mod ropey;

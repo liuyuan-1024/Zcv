@@ -1,17 +1,15 @@
 //! 可编辑 Buffer 的 public 入口与状态聚合。
 //!
-//! `buffer` 模块按能力域拆分：
+//! `buffer` 模块按能力域拆分，`Buffer` 的 public API 不依赖这些目录路径：
 //! - `versioning`：BufferVersion、低成本 Snapshot 创建与过期判断
 //! - `coordinates`：坐标转换、grapheme、CRLF、DisplayColumn 数学
 //! - `selection_ops`：SelectionSet 状态管理
-//! - `movement`：M6B Word / Identifier / Subword / Symbol 移动
-//! - `composition`：M6C IME composition 生命周期
+//! - `movement`：Word / Identifier / Subword / Symbol 移动
+//! - `composition`：IME composition 生命周期
 //! - `edit_ops`：文本变异、多光标编辑入口
-//! - `history`：Undo / Redo 与历史合并
+//! - `history`：Undo / Redo、历史合并与本地分支
 //! - `transaction_pipeline`：事务准备、提交、selection 映射、history 收尾
 //! - `validation`：Buffer 级边界校验
-//!
-//! 这样 `Buffer` 的 public API 保持稳定，但实现不再集中在一个超大文件里。
 
 use crate::{
     BufferConfig, BufferId, BufferKind, BufferVersion, CompositionState, LoadedTextInfo,

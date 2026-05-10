@@ -4,8 +4,8 @@
 //! - 每条投影行要么是某条可见逻辑行（`TextLine`），要么是合并后的折叠占位符（`FoldPlaceholder`）。
 //! - 每条逻辑行要么可见（指向自己的投影行），要么被某段 fold 隐藏（指向 fold anchor 的投影行）。
 //!
-//! 多条互相嵌套或邻接的 fold 在投影空间里只产出一条占位符（与 M13A 的 HiddenRange 合并语义保持一致）。
-//! 占位符样式、像素绘制和 viewport 切片不在本类型承诺范围内。
+//! 多条互相嵌套或邻接的 fold 在投影空间里只产出一条占位符（与 `HiddenRange` 合并语义保持一致）。
+//! 占位符样式与像素绘制不在本类型承诺范围内。
 
 use crate::{
     CharOffset, EngineResult, FoldSet,
@@ -362,7 +362,7 @@ impl Projection {
     ///
     /// `snapshot` 必须与本 Projection 同版本；版本不一致返回 `ProjectionError::VersionMismatch`。
     /// `viewport.line_count` 会被自动 clamp 到投影空间总行数；超出尾部的部分被截断而不报错，
-    /// 与 M11 `Snapshot::slice_viewport` 行为一致。
+    /// 与 `Snapshot::slice_viewport` 行为一致。
     pub fn slice_viewport<'a>(
         &self,
         snapshot: &'a Snapshot,

@@ -19,9 +19,3 @@ impl MetadataLayerKind {
         Self::Custom(name.into())
     }
 }
-
-impl Default for MetadataLayerKind {
-    fn default() -> Self {
-        Self::Custom(String::new())
-    }
-}

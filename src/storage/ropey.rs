@@ -13,7 +13,7 @@ use crate::{
     LogicalColumn, Position, TextRange, Utf16Offset, Utf16Position,
 };
 
-/// M4 默认高性能文本后端。
+/// 默认高性能文本后端。
 ///
 /// 不把 `ropey::Rope` 暴露到 public API；外部仍然只看到 Buffer / Snapshot / CharOffset。
 #[derive(Debug, Clone)]
@@ -195,7 +195,7 @@ impl TextStorage for RopeyStorage {
 
 /// Ropey-backed 不可变快照。
 ///
-/// `Rope::clone()` 是共享底层数据的低成本 clone，因此 Snapshot 不再需要复制整篇文本。
+/// 通过 `Rope::clone()` 共享底层数据，构造成本与文本长度无关。
 #[derive(Debug, Clone)]
 pub(crate) struct RopeySnapshot {
     rope: Rope,

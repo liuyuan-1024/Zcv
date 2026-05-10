@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use super::{HistoryEntry, HistoryNode, HistoryNodeId};
 
-/// M3 / M17 历史摘要：保留与线性历史一致的 undo / redo 深度语义，
-/// `current_node` 暴露当前历史节点身份，便于宿主在分支查询时定位。
+/// 历史摘要：与线性历史一致的 undo / redo 深度语义；`current_node` 暴露当前历史
+/// 节点身份，便于宿主在分支查询时定位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HistoryStatus {
     /// 当前节点到根的祖先数量；线性场景下与原 `undo_stack.len()` 一致。

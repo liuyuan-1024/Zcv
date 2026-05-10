@@ -2,7 +2,7 @@
 //!
 //! 本文件只定义策略词汇；实际 bytes 解码在 Buffer 加载流程中完成。
 
-/// 当前 M7C 支持的原始文本编码。
+/// 当前支持的原始文本编码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TextEncoding {
     /// 当前唯一承诺的加载编码；其他编码应在进入 Buffer 前由宿主转成 UTF-8。

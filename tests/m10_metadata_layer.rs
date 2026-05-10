@@ -170,7 +170,8 @@ fn metadata_layer_drops_invalidated_ranges_and_reports_last_mapped_range() {
 #[test]
 fn metadata_layer_rejects_unrelated_delta_event_without_partial_mutation() {
     let mut buffer = buffer("abcdef");
-    let mut layer = MetadataLayer::new(BufferVersion::new(99));
+    let mut layer =
+        MetadataLayer::with_kind(MetadataLayerKind::custom("test"), BufferVersion::new(99));
     let id = layer.insert(range(1, 3), "stale").unwrap();
 
     let event = apply(&mut buffer, vec![Edit::delete(range(1, 2))]);
@@ -217,7 +218,8 @@ fn multiple_metadata_layers_can_follow_the_same_delta_independently() {
 
 #[test]
 fn metadata_layer_can_query_by_text_range_and_offset() {
-    let mut layer = MetadataLayer::new(BufferVersion::INITIAL);
+    let mut layer =
+        MetadataLayer::with_kind(MetadataLayerKind::custom("test"), BufferVersion::INITIAL);
     let left = layer.insert(range(0, 2), "left").unwrap();
     let marker = layer
         .insert_with_stickiness(range(3, 3), Stickiness::Expand, "marker")
@@ -321,7 +323,7 @@ fn metadata_layer_can_query_by_line_range_and_line_window() {
 #[test]
 fn line_range_query_validates_against_buffer_line_boundaries() {
     let buffer = buffer("aa\nbb");
-    let mut layer = MetadataLayer::new(buffer.version());
+    let mut layer = MetadataLayer::with_kind(MetadataLayerKind::custom("test"), buffer.version());
     layer.insert(range(0, 2), "line0").unwrap();
 
     let err = layer

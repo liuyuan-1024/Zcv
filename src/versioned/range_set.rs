@@ -1,4 +1,4 @@
-//! M14B `VersionedRangeSet<T>`：泛型 payload + `TrackedRange` 的版本化集合。
+//! `VersionedRangeSet<T>`：泛型 payload + `TrackedRange` 的版本化集合。
 //!
 //! 与 `MetadataLayer<T>` 的差异：不携带 `MetadataLayerKind`，不为 entry 分配稳定 ID；
 //! 主要面向不需要 layer 业务身份的宿主分析产物（解析树节点、外部 range 标注等）。

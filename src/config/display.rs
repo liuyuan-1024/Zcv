@@ -16,7 +16,7 @@ pub enum DisplayColumnAffinity {
 
 /// 基础字符显示宽度策略。
 ///
-/// M5B 只负责纯文本层面的列宽数学，不负责真实像素测量、字体 shaping、ligature 或渲染器布局。
+/// 只负责纯文本层面的列宽数学，不负责真实像素测量、字体 shaping、ligature 或渲染器布局。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DisplayWidthPolicy {
     /// display column -> logical column 的默认吸附策略。

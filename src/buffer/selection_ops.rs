@@ -2,7 +2,7 @@
 //!
 //! 本文件只维护 selection 与 Buffer 边界校验的关系，不生成文本编辑，也不定义 selection 归一化算法本身。
 
-use crate::{EngineResult, PositionMap, SelectionSet};
+use crate::{EngineResult, SelectionSet};
 
 use super::Buffer;
 
@@ -15,13 +15,5 @@ impl Buffer {
         self.validate_selection_set(&selection)?;
         self.selection = selection;
         Ok(())
-    }
-
-    pub fn selection_after_edit(
-        &self,
-        selection: &SelectionSet,
-        position_map: &PositionMap,
-    ) -> SelectionSet {
-        selection.map_through_position_map(position_map)
     }
 }

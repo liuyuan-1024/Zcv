@@ -29,10 +29,6 @@ pub struct MetadataLayer<T> {
 }
 
 impl<T> MetadataLayer<T> {
-    pub fn new(version: BufferVersion) -> Self {
-        Self::with_kind(MetadataLayerKind::default(), version)
-    }
-
     pub fn with_kind(kind: MetadataLayerKind, version: BufferVersion) -> Self {
         Self {
             kind,

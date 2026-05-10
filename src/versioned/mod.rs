@@ -1,7 +1,8 @@
-//! M14 Versioned Result 与 External Range Primitives 公共载体。
+//! Versioned Result 与 External Range Primitives 公共载体。
 //!
-//! 当前实现 M14A 的 `VersionedResult<T>` 与 M14B 的 `VersionedRangeSet<T>`；
-//! M14C UTF-16 边界 helper 留待后续扩展。
+//! `VersionedResult<T>` 把任意 payload 与 BufferVersion 绑定；`VersionedRangeSet<T>`
+//! 是不带 layer kind / 稳定 ID 的轻量泛型 (TrackedRange, payload) 集合。两者都提供
+//! snapshot-bound payload 转换与 UTF-16 边界 helper。
 
 mod range_set;
 mod result;

@@ -4,10 +4,10 @@
 
 use super::TransactionSource;
 
-/// M3 基础历史合并策略。
+/// 历史合并策略。
 ///
-/// 完整 Smart Debounce 可以在宿主输入层基于时间窗口决定是否选择
-/// `MergeWithPrevious`，引擎层只负责确定性地执行合并。
+/// 完整 Smart Debounce 由宿主输入层基于时间窗口决定是否选择 `MergeWithPrevious`，
+/// 引擎层只负责确定性地执行合并。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TransactionMergePolicy {
     /// 明确形成一个独立 Undo 步骤。

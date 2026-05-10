@@ -1,16 +1,15 @@
-//! M6 光标、选区与多光标模型。
+//! 光标、选区与多光标模型。
 //!
-//! M6 起，`SelectionSet` 是编辑引擎里的主选区模型；不再把 M3 的
-//! `SelectionSnapshot` 作为兼容层继续传播。
+//! `SelectionSet` 是编辑引擎里唯一的选区模型，承载多光标、IME composition 与移动语义。
 
 mod composition;
+mod core;
 mod cursor;
 mod movement;
-mod selection;
 mod selection_set;
 
 pub use composition::{CompositionSelection, CompositionState};
+pub use core::Selection;
 pub use cursor::Cursor;
 pub use movement::{MovementDirection, MovementUnit};
-pub use selection::Selection;
 pub use selection_set::{SelectionMergePolicy, SelectionSet};

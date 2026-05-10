@@ -17,7 +17,7 @@ use super::{
 };
 
 impl Buffer {
-    /// M6C：返回当前 IME 组合输入状态。
+    /// 返回当前 IME 组合输入状态。
     pub fn composition(&self) -> Option<&CompositionState> {
         self.composition.as_ref()
     }
@@ -26,10 +26,10 @@ impl Buffer {
         self.composition.is_some()
     }
 
-    /// M6C：开始 IME 组合输入。
+    /// 开始 IME 组合输入。
     ///
-    /// 多光标 / 多选区下，M6C 先采用保守降级策略：只保留 primary selection 作为
-    /// 组合输入目标，避免一个系统 IME composition 同时驱动多个插入点。
+    /// 多光标 / 多选区下采用保守降级策略：只保留 primary selection 作为组合输入目标，
+    /// 避免一个系统 IME composition 同时驱动多个插入点。
     pub fn start_composition(&mut self) -> EngineResult<CompositionState> {
         self.ensure_writable()?;
 
@@ -57,7 +57,7 @@ impl Buffer {
         Ok(state)
     }
 
-    /// M6C：更新预编辑文本。
+    /// 更新预编辑文本。
     ///
     /// update 会把 preedit 文本写入 Buffer 以便 UI 读取统一文本流，但事务不进入
     /// Undo 历史。commit 时会从 composition start 前的原始文本到最终提交文本生成
@@ -108,7 +108,7 @@ impl Buffer {
         Ok(result)
     }
 
-    /// M6C：提交当前组合输入。
+    /// 提交当前组合输入。
     ///
     /// 如果不存在 active composition，则退化为一次普通的 composition 来源插入 / 替换。
     pub fn commit_composition(
@@ -164,7 +164,7 @@ impl Buffer {
         Ok(result)
     }
 
-    /// M6C：取消当前组合输入，恢复到 composition start 前的文本和选区。
+    /// 取消当前组合输入，恢复到 composition start 前的文本和选区。
     pub fn cancel_composition(&mut self) -> EngineResult<Option<(Delta, ChangeSet)>> {
         let Some(state) = self.composition.take() else {
             return Ok(None);

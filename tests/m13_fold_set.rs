@@ -11,9 +11,9 @@
 
 use zom_engine::{
     Buffer, BufferConfig, BufferVersion, CharOffset, Edit, EngineError, FoldError, FoldRange,
-    FoldRangeId, FoldRangeUpdate, FoldSet, FoldToggleOutcome, HiddenRange, Line, LineRange,
-    TextRange, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy,
-    TrackedRangeUpdatePolicy, Transaction,
+    FoldRangeUpdate, FoldSet, FoldToggleOutcome, HiddenRange, Line, LineRange, TextRange,
+    TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdatePolicy,
+    Transaction,
 };
 
 fn buffer(text: &str) -> Buffer {
@@ -44,9 +44,11 @@ fn apply(buffer: &mut Buffer, edits: Vec<Edit>) -> zom_engine::DeltaEvent {
 
 #[test]
 fn fold_range_binds_to_buffer_version_and_keeps_range() {
-    let fold = FoldRange::new(FoldRangeId::INITIAL, BufferVersion::INITIAL, range(2, 5));
+    let mut set = FoldSet::new(BufferVersion::INITIAL);
+    let id = set.fold(range(2, 5)).unwrap();
+    let fold = set.iter().find(|fold| fold.id() == id).unwrap();
 
-    assert_eq!(fold.id(), FoldRangeId::INITIAL);
+    assert_eq!(fold.id(), id);
     assert_eq!(fold.version(), BufferVersion::INITIAL);
     assert_eq!(fold.range(), range(2, 5));
     assert_eq!(

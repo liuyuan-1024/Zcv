@@ -200,18 +200,18 @@ impl Buffer {
         let mut diff = 0isize;
 
         for edit in edits.as_slice() {
-            let old_start = edit.range.start().get();
-            let old_end = edit.range.end().get();
-            let deleted_text = self.slice_text(edit.range)?.to_string();
+            let old_start = edit.range().start().get();
+            let old_end = edit.range().end().get();
+            let deleted_text = self.slice_text(edit.range())?.to_string();
 
             let new_start = (old_start as isize + diff).max(0) as usize;
-            let new_end = new_start + edit.replacement.chars().count();
+            let new_end = new_start + edit.replacement().chars().count();
             let new_range =
                 crate::TextRange::new(CharOffset::new(new_start), CharOffset::new(new_end))?;
 
             inverse.push(Edit::replace(new_range, deleted_text));
 
-            diff += edit.replacement.chars().count() as isize - (old_end - old_start) as isize;
+            diff += edit.replacement().chars().count() as isize - (old_end - old_start) as isize;
         }
 
         Ok(EditList::new(inverse)?)

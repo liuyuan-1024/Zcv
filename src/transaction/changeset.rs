@@ -44,9 +44,9 @@ impl ChangeSet {
         let mut diff = 0isize;
 
         for edit in &self.edits {
-            let old_start = edit.range.start().get() as isize;
-            let old_end = edit.range.end().get() as isize;
-            let replacement_len = edit.replacement.chars().count() as isize;
+            let old_start = edit.range().start().get() as isize;
+            let old_end = edit.range().end().get() as isize;
+            let replacement_len = edit.replacement().chars().count() as isize;
 
             let new_start = (old_start + diff).max(0) as usize;
             let new_end = new_start + replacement_len as usize;

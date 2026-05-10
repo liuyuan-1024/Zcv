@@ -18,16 +18,16 @@ impl EditList {
     /// 注意：这里允许空列表，因为“空事务”属于 Transaction 语义，
     /// 由 Transaction::new 拒绝。
     pub fn new(mut edits: Vec<Edit>) -> Result<Self, EditError> {
-        edits.sort_by_key(|edit| edit.range.start());
+        edits.sort_by_key(|edit| edit.range().start());
 
         for i in 1..edits.len() {
             let previous = &edits[i - 1];
             let current = &edits[i];
 
-            if previous.range.end() > current.range.start() {
+            if previous.range().end() > current.range().start() {
                 return Err(EditError::OverlappingEdits {
-                    previous: previous.range,
-                    current: current.range,
+                    previous: previous.range(),
+                    current: current.range(),
                 });
             }
         }

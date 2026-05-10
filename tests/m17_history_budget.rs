@@ -424,7 +424,7 @@ fn merge_with_previous_byte_budget_can_evict_after_growth() {
 
 #[test]
 fn replace_edit_byte_size_includes_inverse_replacement() {
-    // 一次 replace：edit.replacement 为空（pure delete）也会因 inverse_edits 占用字节。
+    // 一次 replace：edit.replacement() 为空（pure delete）也会因 inverse_edits 占用字节。
     let mut buffer = Buffer::from_text("hello".into(), BufferConfig::default()).unwrap();
     let pre_status = buffer.history_status();
     assert_eq!(pre_status.memory_bytes, 0);

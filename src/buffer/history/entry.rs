@@ -71,13 +71,13 @@ impl HistoryEntry {
             .undo_batches
             .iter()
             .flat_map(|list| list.as_slice())
-            .map(|edit| edit.replacement.len())
+            .map(|edit| edit.replacement().len())
             .sum();
         let redo: usize = self
             .redo_batches
             .iter()
             .flat_map(|list| list.as_slice())
-            .map(|edit| edit.replacement.len())
+            .map(|edit| edit.replacement().len())
             .sum();
         undo + redo
     }

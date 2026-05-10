@@ -22,11 +22,7 @@ pub struct FoldRange {
 }
 
 impl FoldRange {
-    pub fn new(id: FoldRangeId, version: BufferVersion, range: TextRange) -> Self {
-        Self::with_policy(id, version, range, default_update_policy())
-    }
-
-    pub fn with_policy(
+    pub(crate) fn with_policy(
         id: FoldRangeId,
         version: BufferVersion,
         range: TextRange,

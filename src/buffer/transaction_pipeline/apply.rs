@@ -23,7 +23,7 @@ pub(in crate::buffer) fn edit_list_replacement_bytes(edits: &EditList) -> usize 
     edits
         .as_slice()
         .iter()
-        .map(|edit| edit.replacement.len())
+        .map(|edit| edit.replacement().len())
         .sum()
 }
 
@@ -259,7 +259,7 @@ impl Buffer {
         reverse_edits.reverse();
 
         for edit in reverse_edits {
-            new_storage.replace(edit.range, &edit.replacement)?;
+            new_storage.replace(edit.range(), edit.replacement())?;
         }
 
         // 3. 全部成功后再一次性提交 storage / version。

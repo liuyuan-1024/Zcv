@@ -22,24 +22,7 @@ pub struct MetadataRange<T> {
 }
 
 impl<T> MetadataRange<T> {
-    pub fn new(
-        id: MetadataRangeId,
-        version: BufferVersion,
-        range: TextRange,
-        stickiness: Stickiness,
-        metadata: T,
-    ) -> Self {
-        Self::with_policy(
-            id,
-            version,
-            range,
-            stickiness,
-            TrackedRangeUpdatePolicy::default(),
-            metadata,
-        )
-    }
-
-    pub fn with_policy(
+    pub(crate) fn with_policy(
         id: MetadataRangeId,
         version: BufferVersion,
         range: TextRange,

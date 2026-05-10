@@ -40,14 +40,14 @@ fn record_captures_versions_edits_and_inverse_edits() {
 
     let forward = record.edits().as_slice();
     assert_eq!(forward.len(), 1);
-    assert_eq!(forward[0].range, range(2, 2));
-    assert_eq!(forward[0].replacement, "XY");
+    assert_eq!(forward[0].range(), range(2, 2));
+    assert_eq!(forward[0].replacement(), "XY");
 
     let inverse = record.inverse_edits().as_slice();
     assert_eq!(inverse.len(), 1);
     // 在新文本上 [2, 4) 对应插入的 "XY"，inverse 把它替换回空字符串。
-    assert_eq!(inverse[0].range, range(2, 4));
-    assert_eq!(inverse[0].replacement, "");
+    assert_eq!(inverse[0].range(), range(2, 4));
+    assert_eq!(inverse[0].replacement(), "");
 }
 
 #[test]

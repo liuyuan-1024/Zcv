@@ -26,9 +26,9 @@ impl Buffer {
 
     pub(super) fn validate_edit_list(&self, edits: &EditList) -> EngineResult<()> {
         for edit in edits.as_slice() {
-            self.validate_range(edit.range)?;
-            self.validate_edit_boundary(edit.range.start())?;
-            self.validate_edit_boundary(edit.range.end())?;
+            self.validate_range(edit.range())?;
+            self.validate_edit_boundary(edit.range().start())?;
+            self.validate_edit_boundary(edit.range().end())?;
         }
 
         Ok(())

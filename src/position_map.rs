@@ -113,8 +113,8 @@ impl PositionMap {
         let pos_val = pos.get() as isize;
 
         for edit in &self.edits {
-            let old_start = edit.range.start().get() as isize;
-            let old_end = edit.range.end().get() as isize;
+            let old_start = edit.range().start().get() as isize;
+            let old_end = edit.range().end().get() as isize;
             let replacement_len = replacement_len(edit);
 
             if pos_val < old_start {
@@ -155,8 +155,8 @@ impl PositionMap {
         let pos_val = pos.get() as isize;
 
         for edit in &self.edits {
-            let old_start = edit.range.start().get() as isize;
-            let old_end = edit.range.end().get() as isize;
+            let old_start = edit.range().start().get() as isize;
+            let old_end = edit.range().end().get() as isize;
             let old_len = old_end - old_start;
             let replacement_len = replacement_len(edit);
             let new_start = old_start + diff;
@@ -301,8 +301,8 @@ impl PositionMap {
         let pos_val = pos.get() as isize;
 
         for edit in &self.edits {
-            let old_start = edit.range.start().get() as isize;
-            let old_end = edit.range.end().get() as isize;
+            let old_start = edit.range().start().get() as isize;
+            let old_end = edit.range().end().get() as isize;
             let old_len = old_end - old_start;
             let replacement_len = replacement_len(edit);
             let new_start = old_start + diff;
@@ -332,8 +332,8 @@ impl PositionMap {
 
     fn old_range_intersects_deleted_content(&self, range: TextRange) -> bool {
         self.edits.iter().any(|edit| {
-            let old_start = edit.range.start();
-            let old_end = edit.range.end();
+            let old_start = edit.range().start();
+            let old_end = edit.range().end();
 
             old_start < old_end && ranges_overlap(range.start(), range.end(), old_start, old_end)
         })
@@ -343,8 +343,8 @@ impl PositionMap {
         let mut diff = 0isize;
 
         for edit in &self.edits {
-            let old_start = edit.range.start().get() as isize;
-            let old_end = edit.range.end().get() as isize;
+            let old_start = edit.range().start().get() as isize;
+            let old_end = edit.range().end().get() as isize;
             let old_len = old_end - old_start;
             let replacement_len = replacement_len(edit);
             let new_start = offset(old_start + diff);
@@ -372,7 +372,7 @@ impl PositionMap {
 }
 
 fn replacement_len(edit: &Edit) -> isize {
-    edit.replacement.chars().count() as isize
+    edit.replacement().chars().count() as isize
 }
 
 fn offset(value: isize) -> CharOffset {

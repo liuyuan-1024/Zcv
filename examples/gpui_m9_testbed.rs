@@ -762,7 +762,7 @@ impl M9Testbed {
             .edits
             .as_slice()
             .first()
-            .map(|edit| edit.range.start())
+            .map(|edit| edit.range().start())
             .unwrap_or(CharOffset::ZERO);
         let primary_new = self.buffer.selection().primary().head();
         let before = event

@@ -36,8 +36,8 @@ fn edit_list_sorts_edits_by_start_char_offset() {
     let edits = EditList::new(vec![later, earlier]).unwrap();
 
     assert_eq!(edits.as_slice().len(), 2);
-    assert_eq!(edits.as_slice()[0].range.start(), CharOffset::new(0));
-    assert_eq!(edits.as_slice()[1].range.start(), CharOffset::new(5));
+    assert_eq!(edits.as_slice()[0].range().start(), CharOffset::new(0));
+    assert_eq!(edits.as_slice()[1].range().start(), CharOffset::new(5));
 }
 
 #[test]
@@ -58,8 +58,8 @@ fn edit_list_allows_adjacent_edits() {
     let edits = EditList::new(vec![second, first]).unwrap();
 
     assert_eq!(edits.as_slice().len(), 2);
-    assert_eq!(edits.as_slice()[0].range, range(0, 2));
-    assert_eq!(edits.as_slice()[1].range, range(2, 4));
+    assert_eq!(edits.as_slice()[0].range(), range(0, 2));
+    assert_eq!(edits.as_slice()[1].range(), range(2, 4));
 }
 
 #[test]

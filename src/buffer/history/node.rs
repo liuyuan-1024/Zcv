@@ -10,7 +10,7 @@ use super::HistoryEntry;
 pub struct HistoryNodeId(u64);
 
 impl HistoryNodeId {
-    pub const fn new(value: u64) -> Self {
+    pub(crate) const fn new(value: u64) -> Self {
         Self(value)
     }
 

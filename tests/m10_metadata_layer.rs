@@ -7,9 +7,8 @@
 use zom_engine::{
     Buffer, BufferConfig, BufferVersion, CharOffset, CoordinateError, Edit, EngineError, Line,
     LineRange, MetadataError, MetadataLayer, MetadataLayerKind, MetadataLayers, MetadataLineWindow,
-    MetadataRange, MetadataRangeId, MetadataRangeSpec, MetadataRangeUpdate, Stickiness, TextRange,
-    TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdate,
-    TrackedRangeUpdatePolicy, Transaction,
+    MetadataRangeSpec, MetadataRangeUpdate, Stickiness, TextRange, TrackedRangeCollapsePolicy,
+    TrackedRangeInvalidationPolicy, TrackedRangeUpdate, TrackedRangeUpdatePolicy, Transaction,
 };
 
 fn buffer(text: &str) -> Buffer {
@@ -42,18 +41,23 @@ struct ExternalPayload {
 
 #[test]
 fn metadata_range_binds_generic_payload_to_versioned_tracked_range() {
-    let metadata_range = MetadataRange::new(
-        MetadataRangeId::new(7),
+    let mut layer = MetadataLayer::with_kind(
+        MetadataLayerKind::custom("external"),
         BufferVersion::INITIAL,
-        range(1, 4),
-        Stickiness::Expand,
-        ExternalPayload {
-            source: "external",
-            code: 42,
-        },
     );
+    let id = layer
+        .insert_with_stickiness(
+            range(1, 4),
+            Stickiness::Expand,
+            ExternalPayload {
+                source: "external",
+                code: 42,
+            },
+        )
+        .unwrap();
 
-    assert_eq!(metadata_range.id(), MetadataRangeId::new(7));
+    let metadata_range = layer.get(id).unwrap();
+    assert_eq!(metadata_range.id(), id);
     assert_eq!(metadata_range.version(), BufferVersion::INITIAL);
     assert_eq!(metadata_range.range(), range(1, 4));
     assert_eq!(metadata_range.stickiness(), Stickiness::Expand);
@@ -84,8 +88,9 @@ fn metadata_layer_inserts_ranges_with_stable_ids_and_layer_kind() {
         &MetadataLayerKind::custom("diagnostics-from-host")
     );
     assert_eq!(layer.version(), BufferVersion::INITIAL);
-    assert_eq!(first, MetadataRangeId::INITIAL);
-    assert_eq!(second, MetadataRangeId::new(1));
+    assert_eq!(first.get(), 0);
+    assert_eq!(second.get(), 1);
+    assert_ne!(first, second);
     assert_eq!(layer.len(), 2);
     assert_eq!(layer.get(first).unwrap().metadata(), &"warning");
     assert_eq!(layer.get(second).unwrap().stickiness(), Stickiness::Expand);
@@ -252,14 +257,18 @@ fn metadata_layer_can_query_by_text_range_and_offset() {
 #[test]
 fn metadata_range_can_preview_its_update_without_mutating_payload() {
     let mut buffer = buffer("abcdef");
-    let metadata_range = MetadataRange::with_policy(
-        MetadataRangeId::new(3),
-        buffer.version(),
-        range(1, 5),
-        Stickiness::Never,
-        TrackedRangeUpdatePolicy::invalidate_when_touched_by_deletion(),
-        "external-result",
-    );
+    let mut layer =
+        MetadataLayer::with_kind(MetadataLayerKind::custom("external"), buffer.version());
+    let id = layer
+        .insert_with_options(
+            range(1, 5),
+            Stickiness::Never,
+            TrackedRangeUpdatePolicy::invalidate_when_touched_by_deletion(),
+            "external-result",
+        )
+        .unwrap();
+    let metadata_range = layer.get(id).unwrap();
+
     let event = apply(&mut buffer, vec![Edit::delete(range(2, 4))]);
 
     assert_eq!(
@@ -344,7 +353,7 @@ fn metadata_layers_support_layer_kind_queries() {
     let diagnostic_id = diagnostics.insert(range(1, 4), "diagnostic").unwrap();
     let mut bookmarks =
         MetadataLayer::with_kind(MetadataLayerKind::custom("bookmark"), buffer.version());
-    bookmarks.insert(range(4, 4), "bookmark").unwrap();
+    let bookmark_id = bookmarks.insert(range(4, 4), "bookmark").unwrap();
 
     let layers = MetadataLayers::from_layers([diagnostics, bookmarks]);
     let diagnostic_ranges = layers
@@ -371,7 +380,7 @@ fn metadata_layers_support_layer_kind_queries() {
         1
     );
     assert_eq!(diagnostic_ranges, vec![diagnostic_id]);
-    assert_eq!(bookmark_ranges, vec![MetadataRangeId::INITIAL]);
+    assert_eq!(bookmark_ranges, vec![bookmark_id]);
 }
 
 #[test]
@@ -393,15 +402,15 @@ fn metadata_layer_can_replace_all_ranges_in_one_batch() {
         )
         .unwrap();
 
-    assert_eq!(old_id, MetadataRangeId::INITIAL);
-    assert_eq!(ids, vec![MetadataRangeId::INITIAL, MetadataRangeId::new(1)]);
+    assert_eq!(old_id.get(), 0);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids[0].get(), 0);
+    assert_eq!(ids[1].get(), 1);
+    assert_eq!(ids[0], old_id);
     assert_eq!(layer.version(), BufferVersion::new(7));
     assert_eq!(layer.len(), 2);
     assert_eq!(layer.get(old_id).unwrap().metadata(), &"first");
-    assert_eq!(
-        layer.get(MetadataRangeId::new(1)).unwrap().stickiness(),
-        Stickiness::Expand
-    );
+    assert_eq!(layer.get(ids[1]).unwrap().stickiness(), Stickiness::Expand);
 }
 
 #[test]
@@ -427,7 +436,9 @@ fn metadata_layers_can_replace_a_layer_by_kind() {
         .layer(&MetadataLayerKind::custom("diagnostics"))
         .unwrap();
     assert_eq!(layers.len(), 1);
-    assert_eq!(ids, vec![MetadataRangeId::INITIAL, MetadataRangeId::new(1)]);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids[0].get(), 0);
+    assert_eq!(ids[1].get(), 1);
     assert_eq!(diagnostics.version(), BufferVersion::new(2));
     assert_eq!(
         diagnostics

@@ -825,9 +825,9 @@ fn map_position_after_edits(pos: CharOffset, edits: &[Edit]) -> CharOffset {
     let pos_val = pos.get() as isize;
 
     for edit in edits {
-        let start = edit.range.start().get() as isize;
-        let end = edit.range.end().get() as isize;
-        let replacement_len = edit.replacement.chars().count() as isize;
+        let start = edit.range().start().get() as isize;
+        let end = edit.range().end().get() as isize;
+        let replacement_len = edit.replacement().chars().count() as isize;
 
         if pos_val < start {
             break;

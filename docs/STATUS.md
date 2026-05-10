@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M14A `VersionedResult<T>` 完成；下一步进入 M14B Versioned Range Set
-- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；M13D ProjectedViewport / ProjectedViewportSlice 折叠后视口切片；M14A `VersionedResult<T>` 泛型版本化结果与 PositionMap remap；GPUI testbed 覆盖至 M12
-- 未完成：M14B Versioned Range Set、M14C UTF-16 边界 helper 及后续 engine-only 阶段
+- 当前推进：M14A `VersionedResult<T>` 与 M14B `VersionedRangeSet<T>` 完成；下一步进入 M14C UTF-16 边界 helper
+- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；M13D ProjectedViewport / ProjectedViewportSlice 折叠后视口切片；M14A `VersionedResult<T>` 泛型版本化结果与 PositionMap remap；M14B `VersionedRangeSet<T>` 泛型 (TrackedRange, payload) 集合 + DeltaEvent 推进 + TextRange / LineRange / line window 查询 + `MetadataLayer<T>` 双向互转；GPUI testbed 覆盖至 M12
+- 未完成：M14C UTF-16 边界 helper 及后续 engine-only 阶段
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 - engine-only 词汇表收敛（破坏性变更）：
@@ -107,11 +107,25 @@
 ## M14A 文件
 
 - `src/versioned/`：泛型版本化结果载体
-  - `mod.rs`：M14 versioned 模块入口；当前只导出 `VersionedResult`，给后续 M14B/C 留位
+  - `mod.rs`：M14 versioned 模块入口；当前导出 `VersionedResult` / `VersionedRangeSet` / `VersionedRangeEntry` / `VersionedRangeSpec`，给后续 M14C 留位
   - `result.rs`：`VersionedResult<T>` 结构体；承担版本绑定 (`new` / `version` / `value` / `into_value` / `into_parts`)、payload 变换 (`map`)、过期判断 (`is_stale`)、过期丢弃 helper (`discard_if_stale`)、通过 `DeltaEvent` 的 remap (`try_remap`，校验 `event.old_version`) 与显式 `PositionMap` + 新版本的低层 remap (`try_remap_with`)
 - `src/errors.rs`：新增 `VersionedResultError`（`VersionMismatch` / `RemapFailed { reason }`）并接入 `EngineError::Versioned`
 - `src/lib.rs`：M14A public API 导出（`VersionedResult` / `VersionedResultError`）
 - `tests/m14_versioned_result.rs`：12 个机器契约测试，覆盖版本绑定、`is_stale` 边界、过期丢弃 helper、`map` 不动版本、`try_remap` 在 `event.old_version` 不匹配时原子拒绝且不调用闭包、成功路径推进到 `event.new_version`、`RemapFailed` 透传、`CharOffset` payload 通过 `PositionMap::map_old_position` 推进、`TextRange` payload 通过 `map_old_range_with_stickiness` 推进、`try_remap_with` 跳过版本核对的成功 / 失败两条路径
+
+## M14B 文件
+
+- `src/versioned/range_set.rs`：`VersionedRangeSet<T>` / `VersionedRangeEntry<T>` / `VersionedRangeSpec<T>`；不携带 `MetadataLayerKind` 与稳定 ID 的轻量泛型 (TrackedRange, payload) 集合
+  - 集合：`new(version)` / `with_default_stickiness` / `with_default_update_policy` / `version` / `is_stale` / `len` / `is_empty` / `default_stickiness` / `default_update_policy` / `as_slice` / `iter` / `entry` / `entry_mut`
+  - 写入：`insert` / `insert_with_stickiness` / `insert_with_options`（返回追加索引）/ `remove` / `clear` / `replace_all` / `replace_all_with_options`
+  - 跟随：`update_through_delta_event(event) -> Result<Vec<TrackedRangeUpdate>, VersionedResultError>`，按 entry 原顺序返回更新事实，按 update policy 删除失效 entry，版本不匹配原子拒绝
+  - 查询：`entries_intersecting(TextRange)` / `entries_containing(CharOffset)` / `entries_in_line_range(buffer, LineRange)` / `entries_in_line_window(buffer, MetadataLineWindow)`
+  - 互转：`From<MetadataLayer<T>> for VersionedRangeSet<T>`（丢弃 kind 与 id，保留 version / 默认策略 / 每 entry 的 tracked_range 与 update_policy）+ `into_metadata_layer(kind: MetadataLayerKind) -> MetadataLayer<T>`（沿用 version / 默认策略 / 每 entry 的 stickiness 与 update_policy，重新分配 `MetadataRangeId::INITIAL+0..`）
+- `src/metadata/range.rs`：新增 `MetadataRange::into_parts(self) -> (MetadataRangeId, TrackedRange, TrackedRangeUpdatePolicy, T)`，供互转消费
+- `src/metadata/layer.rs`：新增 `MetadataLayer::into_parts(self) -> (kind, version, default_stickiness, default_update_policy, ranges)`，供互转消费
+- `src/metadata/mod.rs`：将 `query` 提升为 `pub(crate)`，让 `versioned` 复用 `ranges_intersect` / `range_contains_offset` / `text_range_for_line_range` 边界数学
+- `src/lib.rs`：M14B public API 导出（`VersionedRangeSet` / `VersionedRangeEntry` / `VersionedRangeSpec`）
+- `tests/m14_versioned_range_set.rs`：15 个机器契约测试，覆盖空 set 与版本绑定、insert / insert_with_stickiness / insert_with_options 默认与每条策略、remove / clear / replace_all / replace_all_with_options 推进 version、`update_through_delta_event` 普通跟随、删除策略下 Invalidated entry 自动出栈、版本不匹配原子拒绝、`entries_intersecting` / `entries_containing` / `entries_in_line_range` / `entries_in_line_window` 查询与越界错误、`MetadataLayer<T>` -> `VersionedRangeSet<T>` 丢 kind / id 保 payload 与策略、`VersionedRangeSet<T>` -> `MetadataLayer<T>` 重新分配 ID 并保留 kind / 默认策略、Layer↔Set 往返后 entry 仍可在 DeltaEvent 上正确跟随
 
 ## M13 GPUI testbed（可选）
 
@@ -135,6 +149,7 @@ cargo test --test m13_projection_line_map
 cargo test --test m13_projection_range_map
 cargo test --test m13_projected_viewport
 cargo test --test m14_versioned_result
+cargo test --test m14_versioned_range_set
 cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m10_testbed

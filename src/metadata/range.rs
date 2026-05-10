@@ -91,6 +91,15 @@ impl<T> MetadataRange<T> {
         self.metadata
     }
 
+    pub fn into_parts(self) -> (MetadataRangeId, TrackedRange, TrackedRangeUpdatePolicy, T) {
+        (
+            self.id,
+            self.tracked_range,
+            self.update_policy,
+            self.metadata,
+        )
+    }
+
     pub fn map_through_delta_event(
         &self,
         event: &DeltaEvent,

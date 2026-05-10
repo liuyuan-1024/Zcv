@@ -8,7 +8,7 @@ mod kind;
 mod layer;
 mod layers;
 mod line_window;
-mod query;
+pub(crate) mod query;
 mod range;
 mod range_spec;
 mod update;

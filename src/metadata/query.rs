@@ -8,7 +8,7 @@ use crate::{
     types::{CharOffset, Line, LineRange, TextRange},
 };
 
-pub(super) fn ranges_intersect(left: TextRange, right: TextRange) -> bool {
+pub(crate) fn ranges_intersect(left: TextRange, right: TextRange) -> bool {
     match (left.is_empty(), right.is_empty()) {
         (true, true) => left.start() == right.start(),
         (true, false) => right.start() <= left.start() && left.start() < right.end(),
@@ -17,7 +17,7 @@ pub(super) fn ranges_intersect(left: TextRange, right: TextRange) -> bool {
     }
 }
 
-pub(super) fn range_contains_offset(range: TextRange, offset: CharOffset) -> bool {
+pub(crate) fn range_contains_offset(range: TextRange, offset: CharOffset) -> bool {
     if range.is_empty() {
         return range.start() == offset;
     }
@@ -25,7 +25,7 @@ pub(super) fn range_contains_offset(range: TextRange, offset: CharOffset) -> boo
     range.start() <= offset && offset < range.end()
 }
 
-pub(super) fn text_range_for_line_range(
+pub(crate) fn text_range_for_line_range(
     buffer: &Buffer,
     line_range: LineRange,
 ) -> crate::EngineResult<TextRange> {

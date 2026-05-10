@@ -82,6 +82,25 @@ impl<T> MetadataLayer<T> {
         &self.ranges
     }
 
+    /// 拆解为 `(kind, version, default_stickiness, default_update_policy, ranges)`。
+    pub fn into_parts(
+        self,
+    ) -> (
+        MetadataLayerKind,
+        BufferVersion,
+        Stickiness,
+        TrackedRangeUpdatePolicy,
+        Vec<MetadataRange<T>>,
+    ) {
+        (
+            self.kind,
+            self.version,
+            self.default_stickiness,
+            self.default_update_policy,
+            self.ranges,
+        )
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &MetadataRange<T>> {
         self.ranges.iter()
     }

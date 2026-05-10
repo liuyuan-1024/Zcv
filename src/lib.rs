@@ -67,4 +67,4 @@ pub use types::{
     LineEndingStyle, LineRange, LogicalColumn, Position, TextRange, TransactionId, Utf16Offset,
     Utf16Position,
 };
-pub use versioned::VersionedResult;
+pub use versioned::{VersionedRangeEntry, VersionedRangeSet, VersionedRangeSpec, VersionedResult};

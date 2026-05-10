@@ -3,8 +3,8 @@
 //! 本文件只负责文本的进入边界；reload、保存输出、编码转换和文件监听属于宿主层。
 
 use crate::{
-    BomPolicy, BufferConfig, BufferKind, EngineResult, InvalidUtf8Policy, LargeFilePolicy,
-    LineEndingStyle, LoadedTextInfo, StorageError, TextEncoding,
+    BomPolicy, BufferConfig, BufferKind, ByteOffset, EngineResult, InvalidUtf8Policy,
+    LargeFilePolicy, LineEndingStyle, LoadedTextInfo, StorageError, TextEncoding,
 };
 
 use super::Buffer;
@@ -65,7 +65,7 @@ fn decode_loaded_text(
         had_invalid_utf8,
         detect_line_ending_style(&text),
         has_final_newline(&text),
-        loaded_byte_size,
+        ByteOffset::new(loaded_byte_size),
         large_file_policy.is_large_byte_size(loaded_byte_size),
         longest_line_chars,
         large_file_policy.is_long_line(longest_line_chars),

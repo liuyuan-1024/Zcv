@@ -4,9 +4,16 @@
 //! 搜索任务取消和真正异步调度留到 M15。
 
 use zom_engine::{
-    Buffer, BufferConfig, BufferVersion, CharOffset, Edit, EngineError, RegexSearchOptions,
-    RegexSearchResult, SearchError, TextRange,
+    Buffer, BufferConfig, BufferVersion, CharOffset, DeltaEvent, Edit, EngineError,
+    RegexSearchOptions, RegexSearchResult, SearchError, TextRange, Transaction,
+    VersionedResultError,
 };
+
+fn apply(buffer: &mut Buffer, edits: Vec<Edit>) -> DeltaEvent {
+    let tx = Transaction::from_edits(buffer.version(), edits).unwrap();
+    buffer.apply_transaction(tx).unwrap();
+    buffer.last_delta_event().unwrap().clone()
+}
 
 fn buffer(text: &str) -> Buffer {
     Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
@@ -218,4 +225,78 @@ fn regex_replace_all_handles_empty_matches_without_looping() {
         .expect("expected boundary insertions");
 
     assert_eq!(buffer.text(), "|a|b|");
+}
+
+#[test]
+fn regex_result_try_remap_advances_matches_through_insertion() {
+    let mut buffer = buffer("id:1 id:22 id:333");
+    let result = buffer
+        .search_regex(r"id:\d+", RegexSearchOptions::default())
+        .unwrap();
+    assert_eq!(result.len(), 3);
+
+    let event = apply(
+        &mut buffer,
+        vec![Edit::insert(c(0), "tags ".to_string()).unwrap()],
+    );
+    let remapped = result.try_remap(&event).unwrap();
+
+    assert_eq!(remapped.version(), buffer.version());
+    assert_eq!(remapped.pattern(), r"id:\d+");
+    assert_eq!(
+        remapped.ranges().collect::<Vec<_>>(),
+        vec![range(5, 9), range(10, 15), range(16, 22)]
+    );
+    let matches = remapped.matches();
+    assert_eq!(matches[0].ordinal(), 0);
+    assert_eq!(matches[2].ordinal(), 2);
+}
+
+#[test]
+fn regex_result_try_remap_drops_match_destroyed_by_deletion_and_renumbers_ordinals() {
+    let mut buffer = buffer("id:1 id:22 id:333");
+    let result = buffer
+        .search_regex(r"id:\d+", RegexSearchOptions::default())
+        .unwrap();
+    assert_eq!(result.len(), 3);
+
+    // 删除中间一条 "id:22"，使其在 PositionMap 上落到 Deleted；
+    // 第一条不动，第三条按删除后的字符数前移。
+    let event = apply(&mut buffer, vec![Edit::delete(range(5, 10))]);
+    let remapped = result.try_remap(&event).unwrap();
+
+    assert_eq!(remapped.version(), buffer.version());
+    assert_eq!(remapped.len(), 2);
+    let matches = remapped.matches();
+    assert_eq!(matches[0].ordinal(), 0);
+    assert_eq!(matches[0].range(), range(0, 4));
+    assert_eq!(matches[1].ordinal(), 1); // 重排后从 0..1 连续
+    // 第三条 "id:333" 原本在 [11, 17)，删除 5 字符后平移到 [6, 12)。
+    assert_eq!(matches[1].range(), range(6, 12));
+}
+
+#[test]
+fn regex_result_try_remap_rejects_unrelated_event_atomically() {
+    let mut snapshot_buffer = buffer("id:1");
+    let stale_result = snapshot_buffer
+        .search_regex(r"id:\d+", RegexSearchOptions::default())
+        .unwrap();
+
+    apply(
+        &mut snapshot_buffer,
+        vec![Edit::insert(c(0), "x".to_string()).unwrap()],
+    );
+    let event = apply(
+        &mut snapshot_buffer,
+        vec![Edit::insert(c(0), "y".to_string()).unwrap()],
+    );
+
+    let original = stale_result.clone();
+    let err = stale_result.try_remap(&event).unwrap_err();
+    assert!(matches!(
+        err,
+        EngineError::Versioned(VersionedResultError::VersionMismatch { .. })
+    ));
+    assert_eq!(original.version(), BufferVersion::INITIAL);
+    assert_eq!(original.ranges().collect::<Vec<_>>(), vec![range(0, 4)]);
 }

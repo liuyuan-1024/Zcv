@@ -3,7 +3,8 @@
 //! 在 `from_loaded_text` / `reload_from_text` / `from_kind_text` 路径上的应用。
 
 use zom_engine::{
-    Buffer, BufferConfig, BufferKind, LargeFilePolicy, LargeTransactionPolicy, LineEndingStyle,
+    Buffer, BufferConfig, BufferKind, ByteOffset, LargeFilePolicy, LargeTransactionPolicy,
+    LineEndingStyle,
 };
 
 fn policy_with_thresholds(
@@ -108,7 +109,7 @@ fn from_loaded_text_records_byte_size_and_longest_line_chars() {
     let info = buffer
         .loaded_text_info()
         .expect("from_loaded_text 必须填充 info");
-    assert_eq!(info.loaded_byte_size, bytes.len());
+    assert_eq!(info.loaded_byte_size, ByteOffset::new(bytes.len()));
     assert!(!info.is_large);
     assert_eq!(info.longest_line_chars, 7);
     assert!(!info.has_long_line);
@@ -123,7 +124,7 @@ fn from_loaded_text_marks_is_large_when_above_threshold() {
 
     let info = buffer.loaded_text_info().unwrap();
     assert!(info.is_large);
-    assert_eq!(info.loaded_byte_size, 200);
+    assert_eq!(info.loaded_byte_size, ByteOffset::new(200));
 }
 
 #[test]

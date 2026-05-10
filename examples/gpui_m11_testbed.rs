@@ -1393,7 +1393,7 @@ impl M11Testbed {
                 dirty_state_label(self.buffer.is_dirty()),
                 self.buffer.line_count(),
                 self.buffer.len_chars().get(),
-                self.buffer.len_bytes(),
+                self.buffer.len_bytes().get(),
             ),
             format!(
                 "Selection {} ranges / primary #{} | Undo {} / Redo {} | Snapshot v{} stale={} | {}",

@@ -684,8 +684,8 @@ impl Render for M5Testbed {
                     "快照=v{} 字符={} 字节={} UTF-16={} 行数={} 状态={}",
                     snapshot.version().get(),
                     snapshot.len_chars().get(),
-                    snapshot.len_bytes(),
-                    snapshot.len_utf16_cu(),
+                    snapshot.len_bytes().get(),
+                    snapshot.len_utf16_cu().get(),
                     snapshot.line_count(),
                     snapshot_state_label(self.buffer.is_snapshot_stale(snapshot)),
                 )
@@ -694,8 +694,8 @@ impl Render for M5Testbed {
         let storage_label = format!(
             "存储=RopeyStorage 字符={} 字节={} UTF-16={} 行数={} 换行风格={}",
             self.buffer.len_chars().get(),
-            self.buffer.len_bytes(),
-            self.buffer.len_utf16_cu(),
+            self.buffer.len_bytes().get(),
+            self.buffer.len_utf16_cu().get(),
             self.buffer.line_count(),
             line_ending_label(self.buffer.line_ending_style()),
         );

@@ -5,8 +5,9 @@
 
 use crate::{
     BufferConfig, BufferVersion, CharOffset, CoordinateError, EngineResult, MetadataLayer,
-    MetadataLayerKind, MetadataRangeSpec, SearchError, Stickiness, TextRange, storage::TextRead,
-    tracking::TrackedRangeUpdatePolicy,
+    MetadataLayerKind, MetadataRangeSpec, SearchError, Stickiness, TextRange, VersionedResult,
+    position_map::MappingResult, storage::TextRead, tracking::TrackedRangeUpdatePolicy,
+    transaction::DeltaEvent,
 };
 use regex::{Regex, RegexBuilder};
 
@@ -209,12 +210,14 @@ impl SearchMatchMetadata {
 }
 
 /// 一次搜索结果，绑定被搜索文本的 `BufferVersion`。
+///
+/// 版本绑定与过期判断由内部 `VersionedResult<Vec<SearchMatch>>` 承担；本类型本身只保留
+/// query / options 等业务输入，避免与 `VersionedResult` 重复维护版本守卫语义。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchResult {
-    version: BufferVersion,
+    matches: VersionedResult<Vec<SearchMatch>>,
     query: String,
     options: SearchOptions,
-    matches: Vec<SearchMatch>,
 }
 
 impl SearchResult {
@@ -225,15 +228,14 @@ impl SearchResult {
         matches: Vec<SearchMatch>,
     ) -> Self {
         Self {
-            version,
+            matches: VersionedResult::new(version, matches),
             query,
             options,
-            matches,
         }
     }
 
     pub fn version(&self) -> BufferVersion {
-        self.version
+        self.matches.version()
     }
 
     pub fn query(&self) -> &str {
@@ -245,53 +247,78 @@ impl SearchResult {
     }
 
     pub fn matches(&self) -> &[SearchMatch] {
-        &self.matches
+        self.matches.value()
     }
 
     pub fn match_at(&self, ordinal: usize) -> Option<SearchMatch> {
-        self.matches.get(ordinal).copied()
+        self.matches.value().get(ordinal).copied()
     }
 
     pub fn ranges(&self) -> impl Iterator<Item = TextRange> + '_ {
-        self.matches.iter().map(|search_match| search_match.range())
+        self.matches
+            .value()
+            .iter()
+            .map(|search_match| search_match.range())
     }
 
     pub fn len(&self) -> usize {
-        self.matches.len()
+        self.matches.value().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.matches.is_empty()
+        self.matches.value().is_empty()
     }
 
     pub fn is_stale(&self, current_version: BufferVersion) -> bool {
-        self.version != current_version
+        self.matches.is_stale(current_version)
+    }
+
+    /// 已过期时丢弃，未过期时保留。
+    pub fn discard_if_stale(self, current_version: BufferVersion) -> Option<Self> {
+        if self.is_stale(current_version) {
+            None
+        } else {
+            Some(self)
+        }
+    }
+
+    /// 通过一次 `DeltaEvent` 把搜索结果推进到新版本。
+    ///
+    /// `event.old_version` 必须与当前结果版本一致，否则原子拒绝；
+    /// 命中映射 `Mapped` 的匹配按新坐标保留并连续重排 ordinal，
+    /// `Deleted` / `Collapsed` 的匹配（被删除或塌缩为零宽）整条丢弃。
+    /// query / options 由调用方自行决定是否需要在新版本上重新搜索。
+    pub fn try_remap(self, event: &DeltaEvent) -> EngineResult<Self> {
+        let Self {
+            matches,
+            query,
+            options,
+        } = self;
+        let matches = matches.try_remap(event, |old_matches, position_map| {
+            Ok(remap_search_matches(old_matches, position_map))
+        })?;
+        Ok(Self {
+            matches,
+            query,
+            options,
+        })
     }
 
     /// 把搜索结果转换为可跟随文本变化的 SearchMatch metadata layer。
     pub fn to_metadata_layer(&self) -> EngineResult<MetadataLayer<SearchMatchMetadata>> {
-        let ranges = self.matches.iter().map(|search_match| {
-            MetadataRangeSpec::new(
-                search_match.range(),
-                SearchMatchMetadata::new(search_match.ordinal(), self.query.clone()),
-            )
-            .with_stickiness(Stickiness::Never)
-            .with_update_policy(TrackedRangeUpdatePolicy::invalidate_when_touched_by_deletion())
-        });
-
-        let mut layer = MetadataLayer::with_kind(MetadataLayerKind::SearchMatch, self.version);
-        layer.replace_all_with_options(self.version, ranges)?;
-        Ok(layer)
+        build_search_match_metadata_layer(self.matches.version(), self.matches.value(), &self.query)
     }
 }
 
 /// 一次正则搜索结果，绑定被搜索文本的 `BufferVersion`。
+///
+/// 版本绑定与过期判断由内部 `VersionedResult<Vec<SearchMatch>>` 承担；本类型本身只保留
+/// pattern / options 等业务输入，避免与 `VersionedResult` 重复维护版本守卫语义。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegexSearchResult {
-    version: BufferVersion,
+    matches: VersionedResult<Vec<SearchMatch>>,
     pattern: String,
     options: RegexSearchOptions,
-    matches: Vec<SearchMatch>,
 }
 
 impl RegexSearchResult {
@@ -302,15 +329,14 @@ impl RegexSearchResult {
         matches: Vec<SearchMatch>,
     ) -> Self {
         Self {
-            version,
+            matches: VersionedResult::new(version, matches),
             pattern,
             options,
-            matches,
         }
     }
 
     pub fn version(&self) -> BufferVersion {
-        self.version
+        self.matches.version()
     }
 
     pub fn pattern(&self) -> &str {
@@ -322,44 +348,110 @@ impl RegexSearchResult {
     }
 
     pub fn matches(&self) -> &[SearchMatch] {
-        &self.matches
+        self.matches.value()
     }
 
     pub fn match_at(&self, ordinal: usize) -> Option<SearchMatch> {
-        self.matches.get(ordinal).copied()
+        self.matches.value().get(ordinal).copied()
     }
 
     pub fn ranges(&self) -> impl Iterator<Item = TextRange> + '_ {
-        self.matches.iter().map(|search_match| search_match.range())
+        self.matches
+            .value()
+            .iter()
+            .map(|search_match| search_match.range())
     }
 
     pub fn len(&self) -> usize {
-        self.matches.len()
+        self.matches.value().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.matches.is_empty()
+        self.matches.value().is_empty()
     }
 
     pub fn is_stale(&self, current_version: BufferVersion) -> bool {
-        self.version != current_version
+        self.matches.is_stale(current_version)
+    }
+
+    /// 已过期时丢弃，未过期时保留。
+    pub fn discard_if_stale(self, current_version: BufferVersion) -> Option<Self> {
+        if self.is_stale(current_version) {
+            None
+        } else {
+            Some(self)
+        }
+    }
+
+    /// 通过一次 `DeltaEvent` 把正则搜索结果推进到新版本。
+    ///
+    /// `event.old_version` 必须与当前结果版本一致，否则原子拒绝；
+    /// 命中映射 `Mapped` 的匹配按新坐标保留并连续重排 ordinal，
+    /// `Deleted` / `Collapsed` 的匹配整条丢弃。pattern / options 由调用方
+    /// 自行决定是否需要在新版本上重新搜索；regex 替换 / capture 展开必须基于
+    /// 同版本上的新结果，不应基于 remap 后的结果。
+    pub fn try_remap(self, event: &DeltaEvent) -> EngineResult<Self> {
+        let Self {
+            matches,
+            pattern,
+            options,
+        } = self;
+        let matches = matches.try_remap(event, |old_matches, position_map| {
+            Ok(remap_search_matches(old_matches, position_map))
+        })?;
+        Ok(Self {
+            matches,
+            pattern,
+            options,
+        })
     }
 
     /// 把正则搜索结果转换为可跟随文本变化的 SearchMatch metadata layer。
     pub fn to_metadata_layer(&self) -> EngineResult<MetadataLayer<SearchMatchMetadata>> {
-        let ranges = self.matches.iter().map(|search_match| {
-            MetadataRangeSpec::new(
-                search_match.range(),
-                SearchMatchMetadata::new(search_match.ordinal(), self.pattern.clone()),
-            )
-            .with_stickiness(Stickiness::Never)
-            .with_update_policy(TrackedRangeUpdatePolicy::invalidate_when_touched_by_deletion())
-        });
-
-        let mut layer = MetadataLayer::with_kind(MetadataLayerKind::SearchMatch, self.version);
-        layer.replace_all_with_options(self.version, ranges)?;
-        Ok(layer)
+        build_search_match_metadata_layer(
+            self.matches.version(),
+            self.matches.value(),
+            &self.pattern,
+        )
     }
+}
+
+/// 把搜索匹配按 `PositionMap::map_old_range_with_stickiness(Stickiness::Never)`
+/// 推进到新坐标；只保留 `Mapped` 的匹配，`Deleted` / `Collapsed` / `Ambiguous`
+/// 一律丢弃。保留下来的匹配按出现顺序连续重排 ordinal 从 0 开始，与原始
+/// 搜索结果构造时的 ordinal 约定保持一致。
+fn remap_search_matches(
+    matches: Vec<SearchMatch>,
+    position_map: &crate::position_map::PositionMap,
+) -> Vec<SearchMatch> {
+    let mut remapped = Vec::with_capacity(matches.len());
+    for search_match in matches {
+        if let MappingResult::Mapped(new_range) =
+            position_map.map_old_range_with_stickiness(search_match.range(), Stickiness::Never)
+        {
+            remapped.push(SearchMatch::new(remapped.len(), new_range));
+        }
+    }
+    remapped
+}
+
+fn build_search_match_metadata_layer(
+    version: BufferVersion,
+    matches: &[SearchMatch],
+    query: &str,
+) -> EngineResult<MetadataLayer<SearchMatchMetadata>> {
+    let ranges = matches.iter().map(|search_match| {
+        MetadataRangeSpec::new(
+            search_match.range(),
+            SearchMatchMetadata::new(search_match.ordinal(), query.to_string()),
+        )
+        .with_stickiness(Stickiness::Never)
+        .with_update_policy(TrackedRangeUpdatePolicy::invalidate_when_touched_by_deletion())
+    });
+
+    let mut layer = MetadataLayer::with_kind(MetadataLayerKind::SearchMatch, version);
+    layer.replace_all_with_options(version, ranges)?;
+    Ok(layer)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

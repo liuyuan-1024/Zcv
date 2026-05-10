@@ -6,7 +6,7 @@
 use zom_engine::{
     Buffer, BufferConfig, BufferVersion, CharOffset, CoordinateError, Edit, EngineError,
     MetadataLayerKind, SearchError, SearchMatch, SearchMatchMetadata, SearchOptions, SearchResult,
-    TextRange, Transaction,
+    TextRange, Transaction, VersionedResultError,
 };
 
 fn buffer(text: &str) -> Buffer {
@@ -181,4 +181,93 @@ fn search_result_metadata_invalidates_match_when_deletion_touches_it() {
         zom_engine::MetadataRangeUpdate::Invalidated { .. }
     ));
     assert!(layer.is_empty());
+}
+
+#[test]
+fn search_result_try_remap_advances_matches_through_insertion() {
+    let mut buffer = buffer("find me and find me");
+    let result = buffer.search_literal("find").unwrap();
+    assert_eq!(
+        result.ranges().collect::<Vec<_>>(),
+        vec![range(0, 4), range(12, 16)]
+    );
+
+    let event = apply(
+        &mut buffer,
+        vec![Edit::insert(c(0), "please ".to_string()).unwrap()],
+    );
+    let remapped = result.try_remap(&event).unwrap();
+
+    assert_eq!(remapped.version(), buffer.version());
+    assert!(!remapped.is_stale(buffer.version()));
+    assert_eq!(remapped.query(), "find");
+    assert_eq!(
+        remapped.ranges().collect::<Vec<_>>(),
+        vec![range(7, 11), range(19, 23)]
+    );
+    let matches = remapped.matches();
+    assert_eq!(matches[0].ordinal(), 0);
+    assert_eq!(matches[1].ordinal(), 1);
+}
+
+#[test]
+fn search_result_try_remap_drops_match_destroyed_by_deletion_and_renumbers_ordinals() {
+    let mut buffer = buffer("find me and find me");
+    let result = buffer.search_literal("find").unwrap();
+    assert_eq!(result.len(), 2);
+
+    // 删除第一处 "find" 的中间两个字符 -> 第一条命中映射为 Deleted，整条丢弃；
+    // 第二条仍是 Mapped，按删除后的 char offset 平移。
+    let event = apply(&mut buffer, vec![Edit::delete(range(1, 3))]);
+    let remapped = result.try_remap(&event).unwrap();
+
+    assert_eq!(remapped.version(), buffer.version());
+    assert_eq!(remapped.len(), 1);
+    let only_match = remapped.matches()[0];
+    assert_eq!(only_match.ordinal(), 0); // 重排后从 0 开始
+    assert_eq!(only_match.range(), range(10, 14));
+    assert_eq!(remapped.match_at(0), Some(only_match));
+    assert_eq!(remapped.match_at(1), None);
+}
+
+#[test]
+fn search_result_try_remap_rejects_unrelated_event_atomically() {
+    let mut snapshot_buffer = buffer("find me");
+    let stale_result = snapshot_buffer.search_literal("find").unwrap();
+
+    // 让 stale_result 与 snapshot_buffer 的版本拉开
+    apply(
+        &mut snapshot_buffer,
+        vec![Edit::insert(c(0), "x".to_string()).unwrap()],
+    );
+
+    // 再做一次提交，event.old_version != stale_result.version()
+    let event = apply(
+        &mut snapshot_buffer,
+        vec![Edit::insert(c(0), "y".to_string()).unwrap()],
+    );
+
+    // 保留一份 clone 用于失败后断言原值不动
+    let original = stale_result.clone();
+    let err = stale_result.try_remap(&event).unwrap_err();
+    assert!(matches!(
+        err,
+        EngineError::Versioned(VersionedResultError::VersionMismatch { .. })
+    ));
+    assert_eq!(original.version(), BufferVersion::INITIAL);
+    assert_eq!(original.ranges().collect::<Vec<_>>(), vec![range(0, 4)]);
+}
+
+#[test]
+fn search_result_discard_if_stale_returns_none_only_on_stale_version() {
+    let mut buffer = buffer("hello");
+    let fresh = buffer.search_literal("hello").unwrap();
+    let v0 = buffer.version();
+    assert!(fresh.clone().discard_if_stale(v0).is_some());
+
+    apply(
+        &mut buffer,
+        vec![Edit::insert(c(0), "x".to_string()).unwrap()],
+    );
+    assert!(fresh.discard_if_stale(buffer.version()).is_none());
 }

@@ -5,7 +5,8 @@
 use std::borrow::Cow;
 
 use crate::{
-    ByteOffset, CharOffset, EngineResult, Line, LineEndingStyle, Position, TextRange, Utf16Position,
+    ByteOffset, CharOffset, EngineResult, Line, LineEndingStyle, Position, TextRange, Utf16Offset,
+    Utf16Position,
 };
 
 /// 只读文本视图。
@@ -21,14 +22,14 @@ pub(crate) trait TextRead {
     /// 返回指定字符区间的文本。
     fn slice_text(&self, range: TextRange) -> EngineResult<Cow<'_, str>>;
 
-    /// 总 UTF-8 字节数。
-    fn len_bytes(&self) -> usize;
+    /// 总 UTF-8 字节长度，等价于文本末端的 `ByteOffset`。
+    fn len_bytes(&self) -> ByteOffset;
 
-    /// 总 Unicode scalar 数，这是核心编辑坐标单位。
+    /// 总 Unicode scalar 数，等价于文本末端的 `CharOffset`，是核心编辑坐标单位。
     fn len_chars(&self) -> CharOffset;
 
-    /// 总 UTF-16 code unit 数，为后续 LSP 坐标适配准备。
-    fn len_utf16_cu(&self) -> usize;
+    /// 总 UTF-16 code unit 数，等价于文本末端的 `Utf16Offset`，用于 LSP 坐标适配。
+    fn len_utf16_cu(&self) -> Utf16Offset;
 
     /// 总行数。空文档也视为 1 行。
     fn line_count(&self) -> usize;

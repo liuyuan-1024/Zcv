@@ -591,7 +591,7 @@ impl M7Testbed {
                 self.saved_label,
                 self.buffer.line_count(),
                 self.buffer.len_chars().get(),
-                self.buffer.len_bytes(),
+                self.buffer.len_bytes().get(),
             ),
             format!(
                 "选区：{} 个，主选区 #{}｜撤销栈 {}，重做栈 {}",

@@ -9,8 +9,8 @@ use std::{
 };
 
 use crate::{
-    BufferConfig, BufferId, BufferKind, BufferState, BufferVersion, EngineResult, LoadedTextInfo,
-    SelectionSet, TransactionId,
+    BufferConfig, BufferId, BufferKind, BufferState, BufferVersion, ByteOffset, EngineResult,
+    LoadedTextInfo, SelectionSet, TransactionId, Utf16Offset,
     storage::{RopeyStorage, TextRead, TextStorage},
 };
 
@@ -162,11 +162,14 @@ impl Buffer {
         self.storage.len_chars()
     }
 
-    pub fn len_bytes(&self) -> usize {
+    /// 文本 UTF-8 字节末端位置；等价于全文末尾的 `ByteOffset`。
+    pub fn len_bytes(&self) -> ByteOffset {
         self.storage.len_bytes()
     }
 
-    pub fn len_utf16_cu(&self) -> usize {
+    /// 文本 UTF-16 code unit 末端位置；等价于全文末尾的 `Utf16Offset`，
+    /// 用于与 LSP / 外部协议的坐标边界对齐。
+    pub fn len_utf16_cu(&self) -> Utf16Offset {
         self.storage.len_utf16_cu()
     }
 
@@ -178,7 +181,7 @@ impl Buffer {
     pub fn is_large_file(&self) -> bool {
         self.config
             .large_file
-            .is_large_byte_size(self.storage.len_bytes())
+            .is_large_byte_size(self.storage.len_bytes().get())
     }
 
     /// 当前 Buffer 是否含有按 `LargeFilePolicy::long_line_threshold_chars`
@@ -208,8 +211,10 @@ impl Buffer {
     ///
     /// 仅作为粗估指标，用于宿主侧的内存观测与回归监控；不承诺等同于操作系统
     /// 实际驻留集 (RSS) 或 `ropey` 内部节点 / 缓存的精确字节数。
+    /// 这是宿主进程内存占用，与文本 `ByteOffset` 不是同一坐标系，故返回
+    /// raw `usize`。
     pub fn approximate_memory_bytes(&self) -> usize {
-        let text_bytes = self.storage.len_bytes();
+        let text_bytes = self.storage.len_bytes().get();
         let history_bytes = self.history.status().memory_bytes;
         let selection_bytes =
             self.selection.as_slice().len() * std::mem::size_of::<crate::Selection>();

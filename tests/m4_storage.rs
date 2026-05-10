@@ -143,16 +143,16 @@ impl StringReference {
         Ok(())
     }
 
-    fn len_bytes(&self) -> usize {
-        self.text.len()
+    fn len_bytes(&self) -> ByteOffset {
+        ByteOffset::new(self.text.len())
     }
 
     fn len_chars(&self) -> CharOffset {
         CharOffset::new(self.text.chars().count())
     }
 
-    fn len_utf16_cu(&self) -> usize {
-        self.text.encode_utf16().count()
+    fn len_utf16_cu(&self) -> Utf16Offset {
+        Utf16Offset::new(self.text.encode_utf16().count())
     }
 
     fn line_count(&self) -> usize {

@@ -13,6 +13,16 @@ use crate::{
     LogicalColumn, Position, TextRange, Utf16Offset, Utf16Position,
 };
 
+#[inline]
+fn rope_len_bytes(rope: &Rope) -> ByteOffset {
+    ByteOffset::new(rope.len_bytes())
+}
+
+#[inline]
+fn rope_len_utf16_cu(rope: &Rope) -> Utf16Offset {
+    Utf16Offset::new(rope.len_utf16_cu())
+}
+
 /// 默认高性能文本后端。
 ///
 /// 不把 `ropey::Rope` 暴露到 public API；外部仍然只看到 Buffer / Snapshot / CharOffset。
@@ -59,16 +69,16 @@ impl TextRead for RopeyStorage {
         ))
     }
 
-    fn len_bytes(&self) -> usize {
-        self.rope.len_bytes()
+    fn len_bytes(&self) -> ByteOffset {
+        rope_len_bytes(&self.rope)
     }
 
     fn len_chars(&self) -> CharOffset {
         CharOffset::new(self.rope.len_chars())
     }
 
-    fn len_utf16_cu(&self) -> usize {
-        self.rope.len_utf16_cu()
+    fn len_utf16_cu(&self) -> Utf16Offset {
+        rope_len_utf16_cu(&self.rope)
     }
 
     fn line_count(&self) -> usize {
@@ -224,16 +234,16 @@ impl TextRead for RopeySnapshot {
         ))
     }
 
-    fn len_bytes(&self) -> usize {
-        self.rope.len_bytes()
+    fn len_bytes(&self) -> ByteOffset {
+        rope_len_bytes(&self.rope)
     }
 
     fn len_chars(&self) -> CharOffset {
         CharOffset::new(self.rope.len_chars())
     }
 
-    fn len_utf16_cu(&self) -> usize {
-        self.rope.len_utf16_cu()
+    fn len_utf16_cu(&self) -> Utf16Offset {
+        rope_len_utf16_cu(&self.rope)
     }
 
     fn line_count(&self) -> usize {
@@ -618,7 +628,11 @@ fn fingerprint_rope(rope: &Rope) -> TextFingerprint {
         }
     }
 
-    TextFingerprint::new(rope.len_bytes(), CharOffset::new(rope.len_chars()), hash)
+    TextFingerprint::new(
+        ByteOffset::new(rope.len_bytes()),
+        CharOffset::new(rope.len_chars()),
+        hash,
+    )
 }
 
 fn ropes_have_same_text(left: &Rope, right: &Rope) -> bool {

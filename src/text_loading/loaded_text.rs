@@ -2,7 +2,7 @@
 //!
 //! 这些字段用于保存、reload 和宿主提示，不等同于 Buffer 的当前 dirty 状态。
 
-use crate::{BomPolicy, InvalidUtf8Policy, LineEndingStyle, TextEncoding};
+use crate::{BomPolicy, ByteOffset, InvalidUtf8Policy, LineEndingStyle, TextEncoding};
 
 /// 一次外部文本加载留下的元信息。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -21,8 +21,9 @@ pub struct LoadedTextInfo {
     pub line_ending_style: LineEndingStyle,
     /// 原始文本是否以换行结束，供保存和宿主体感保持使用。
     pub has_final_newline: bool,
-    /// 加载后进入 Buffer 的 UTF-8 文本字节数（已应用 BOM 策略后的有效字节）。
-    pub loaded_byte_size: usize,
+    /// 加载后进入 Buffer 的 UTF-8 文本字节末端位置（已应用 BOM 策略后的有效字节）；
+    /// 等价于加载文本末尾的 `ByteOffset`。
+    pub loaded_byte_size: ByteOffset,
     /// 按 `LargeFilePolicy::large_file_threshold_bytes` 判定是否为大文件的快照值。
     pub is_large: bool,
     /// 加载文本中最长一行的字符数（不含行尾换行符）。
@@ -41,7 +42,7 @@ impl LoadedTextInfo {
         had_invalid_utf8: bool,
         line_ending_style: LineEndingStyle,
         has_final_newline: bool,
-        loaded_byte_size: usize,
+        loaded_byte_size: ByteOffset,
         is_large: bool,
         longest_line_chars: usize,
         has_long_line: bool,

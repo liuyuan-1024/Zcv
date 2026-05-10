@@ -8,7 +8,7 @@ use crate::{
     BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, DisplayColumn,
     DisplayColumnAffinity, EngineResult, Line, LineEndingStyle, LineRange, LineSlice,
     LogicalColumn, Position, RegexSearchOptions, RegexSearchResult, SearchOptions, SearchResult,
-    TextRange, TextSlice, Utf16Position, Viewport, ViewportSlice,
+    TextRange, TextSlice, Utf16Offset, Utf16Position, Viewport, ViewportSlice,
     coordinates::core::{
         char_to_display_column_in_text, display_to_logical_column_in_text,
         logical_to_display_column_in_text, next_tab_stop,
@@ -57,11 +57,14 @@ impl Snapshot {
         self.storage.len_chars()
     }
 
-    pub fn len_bytes(&self) -> usize {
+    /// 文本 UTF-8 字节末端位置；等价于全文末尾的 `ByteOffset`。
+    pub fn len_bytes(&self) -> ByteOffset {
         self.storage.len_bytes()
     }
 
-    pub fn len_utf16_cu(&self) -> usize {
+    /// 文本 UTF-16 code unit 末端位置；等价于全文末尾的 `Utf16Offset`，
+    /// 用于与 LSP / 外部协议的坐标边界对齐。
+    pub fn len_utf16_cu(&self) -> Utf16Offset {
         self.storage.len_utf16_cu()
     }
 

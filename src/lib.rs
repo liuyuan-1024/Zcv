@@ -20,6 +20,7 @@ mod text_loading;
 mod tracking;
 mod transaction;
 mod types;
+mod versioned;
 
 pub use buffer::{Buffer, HistoryStatus};
 pub use config::{
@@ -28,7 +29,7 @@ pub use config::{
 };
 pub use errors::{
     AnchorError, CoordinateError, EditError, EngineError, EngineResult, FoldError, MetadataError,
-    ProjectionError, SearchError, StorageError, TransactionError,
+    ProjectionError, SearchError, StorageError, TransactionError, VersionedResultError,
 };
 pub use fold::{FoldRange, FoldRangeId, FoldRangeUpdate, FoldSet, FoldToggleOutcome, HiddenRange};
 pub use metadata::{
@@ -66,3 +67,4 @@ pub use types::{
     LineEndingStyle, LineRange, LogicalColumn, Position, TextRange, TransactionId, Utf16Offset,
     Utf16Position,
 };
+pub use versioned::VersionedResult;

@@ -166,6 +166,21 @@ pub enum ProjectionError {
     },
 }
 
+/// VersionedResult 版本绑定与 remap 相关错误。
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum VersionedResultError {
+    /// 调用方传入的 DeltaEvent.old_version 与 VersionedResult 当前绑定版本不一致。
+    #[error("VersionedResult 版本不匹配: 预期版本 {expected:?}，实际版本 {actual:?}")]
+    VersionMismatch {
+        expected: BufferVersion,
+        actual: BufferVersion,
+    },
+
+    /// remap 闭包判定 payload 无法在新版本上保持语义；reason 由调用方填写。
+    #[error("VersionedResult remap 失败: {reason}")]
+    RemapFailed { reason: String },
+}
+
 /// 当前 Buffer 内搜索相关错误。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SearchError {
@@ -246,6 +261,10 @@ pub enum EngineError {
     /// 当前 Buffer 内搜索请求不合法。
     #[error(transparent)]
     Search(#[from] SearchError),
+
+    /// VersionedResult 版本绑定或 remap 失败。
+    #[error(transparent)]
+    Versioned(#[from] VersionedResultError),
 
     /// 底层文本存储或加载边界失败。
     #[error(transparent)]

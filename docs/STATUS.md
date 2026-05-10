@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M13 Fold Model 与 Projection Coordinate 全部完成（含可选 GPUI testbed）；下阶段进入 M14 Versioned Result 与 External Range Primitives
-- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；M13D ProjectedViewport / ProjectedViewportSlice 折叠后视口切片；GPUI testbed 覆盖至 M12
-- 未完成：M14 Versioned Result 与 External Range Primitives 及后续 engine-only 阶段
+- 当前推进：M14A `VersionedResult<T>` 完成；下一步进入 M14B Versioned Range Set
+- 已完成：M0–M12 机器契约基线（含 M9 Anchor / Mark / TrackedRange / Selection 映射、M10 MetadataLayer 与查询、M11 LineRange 切片与 Viewport、M12 普通 / 正则搜索与替换）；M13A FoldRange / FoldSet / HiddenRange 折叠模型；M13B Projection / ProjectedLine / TextLine / FoldPlaceholder 行级折叠投影；M13C LogicalPoint / ProjectedPoint / LogicalRange / ProjectedRange 双向 point/range 映射 + selection 穿越 fold；M13D ProjectedViewport / ProjectedViewportSlice 折叠后视口切片；M14A `VersionedResult<T>` 泛型版本化结果与 PositionMap remap；GPUI testbed 覆盖至 M12
+- 未完成：M14B Versioned Range Set、M14C UTF-16 边界 helper 及后续 engine-only 阶段
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 - engine-only 词汇表收敛（破坏性变更）：
@@ -104,6 +104,15 @@
 - `src/lib.rs`：M13D public API 导出（ProjectedViewport / ProjectedViewportSlice / ProjectedViewportRow / ProjectedViewportRowKind / ProjectedLineRange）
 - `tests/m13_projected_viewport.rs`：8 个机器契约测试，覆盖纯文本视口、含 placeholder 视口、line_count clamp、起点超界返回 CoordinateError、max_line_chars 截断、整投影空间逻辑行 spans 合并、snapshot 版本不匹配原子拒绝、Text/Placeholder kind 解构
 
+## M14A 文件
+
+- `src/versioned/`：泛型版本化结果载体
+  - `mod.rs`：M14 versioned 模块入口；当前只导出 `VersionedResult`，给后续 M14B/C 留位
+  - `result.rs`：`VersionedResult<T>` 结构体；承担版本绑定 (`new` / `version` / `value` / `into_value` / `into_parts`)、payload 变换 (`map`)、过期判断 (`is_stale`)、过期丢弃 helper (`discard_if_stale`)、通过 `DeltaEvent` 的 remap (`try_remap`，校验 `event.old_version`) 与显式 `PositionMap` + 新版本的低层 remap (`try_remap_with`)
+- `src/errors.rs`：新增 `VersionedResultError`（`VersionMismatch` / `RemapFailed { reason }`）并接入 `EngineError::Versioned`
+- `src/lib.rs`：M14A public API 导出（`VersionedResult` / `VersionedResultError`）
+- `tests/m14_versioned_result.rs`：12 个机器契约测试，覆盖版本绑定、`is_stale` 边界、过期丢弃 helper、`map` 不动版本、`try_remap` 在 `event.old_version` 不匹配时原子拒绝且不调用闭包、成功路径推进到 `event.new_version`、`RemapFailed` 透传、`CharOffset` payload 通过 `PositionMap::map_old_position` 推进、`TextRange` payload 通过 `map_old_range_with_stickiness` 推进、`try_remap_with` 跳过版本核对的成功 / 失败两条路径
+
 ## M13 GPUI testbed（可选）
 
 - `examples/gpui_m13_testbed.rs`：聚焦 M13 fold/projection 公共 API 的最小体感台。
@@ -125,6 +134,7 @@ cargo test --test m13_fold_set
 cargo test --test m13_projection_line_map
 cargo test --test m13_projection_range_map
 cargo test --test m13_projected_viewport
+cargo test --test m14_versioned_result
 cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m10_testbed

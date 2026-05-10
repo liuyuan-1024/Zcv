@@ -4,8 +4,9 @@
 
 use thiserror::Error;
 
-use crate::types::{
-    BufferVersion, ByteOffset, CharOffset, Line, TextRange, TransactionId, Utf16Position,
+use crate::{
+    buffer::HistoryNodeId,
+    types::{BufferVersion, ByteOffset, CharOffset, Line, TextRange, TransactionId, Utf16Position},
 };
 
 /// 坐标转换、边界校验或越界相关的错误（坐标不合法）。
@@ -269,6 +270,10 @@ pub enum EngineError {
     /// 底层文本存储或加载边界失败。
     #[error(transparent)]
     Storage(#[from] StorageError),
+
+    /// `redo_to_branch` 收到的节点不是当前节点的子节点，无法作为 redo 目标。
+    #[error("非法历史分支节点: {0:?}")]
+    InvalidHistoryBranch(HistoryNodeId),
 
     /// BufferVersion 递增越过 u64 上限；调用方应创建新 Buffer 生命周期。
     #[error("BufferVersion 溢出")]

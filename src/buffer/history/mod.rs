@@ -8,9 +8,13 @@
 
 mod api;
 mod entry;
+mod node;
 mod state;
 
+pub use api::HistoryNodeView;
+pub use node::HistoryNodeId;
 pub use state::HistoryStatus;
 
 pub(in crate::buffer) use entry::HistoryEntry;
+pub(in crate::buffer) use node::HistoryNode;
 pub(in crate::buffer) use state::HistoryState;

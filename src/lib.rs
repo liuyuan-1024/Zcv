@@ -22,7 +22,7 @@ mod transaction;
 mod types;
 mod versioned;
 
-pub use buffer::{Buffer, HistoryStatus};
+pub use buffer::{Buffer, HistoryNodeId, HistoryNodeView, HistoryStatus};
 pub use config::{
     BufferConfig, DisplayColumnAffinity, DisplayWidthPolicy, EncodingConfig, LargeFilePolicy,
     LineEndingConfig, PositionEncodingConfig, TabConfig, WordBoundaryPolicy,

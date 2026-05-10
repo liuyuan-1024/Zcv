@@ -176,9 +176,9 @@ impl Buffer {
             return Ok(());
         }
 
-        // 任何新的文本变异都会让已有 redo 分支失效；Undo / Redo 自身走
-        // apply_edit_list，不会触发这里。
-        self.history.clear_redo();
+        // record_history=false 提交后，当前节点下的 redo 分支已经基于过期文本，
+        // 整体丢弃以避免后续 redo 走到不一致状态；undo 路径保持不变。
+        self.drop_unrecorded_redo_branches();
         Ok(())
     }
 

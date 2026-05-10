@@ -36,7 +36,7 @@ mod transaction_pipeline;
 mod validation;
 mod versioning;
 
-pub use history::HistoryStatus;
+pub use history::{HistoryNodeId, HistoryNodeView, HistoryStatus};
 
 /// 最小可编辑 Buffer。
 #[derive(Debug, Clone)]

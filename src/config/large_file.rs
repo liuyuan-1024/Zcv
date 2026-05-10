@@ -19,6 +19,21 @@ pub struct LargeFilePolicy {
     pub large_transaction_threshold_bytes: usize,
     /// 超过 `large_transaction_threshold_bytes` 时的处理策略。
     pub large_transaction_policy: LargeTransactionPolicy,
+    /// 文本字节数大于此阈值的 Buffer 视为大文件；`0` 表示不限。
+    ///
+    /// 引擎本身不拒绝大文件加载，只把判断结果暴露给 `Buffer::is_large_file()` /
+    /// `LoadedTextInfo::is_large`，并按 `auto_read_only_on_large_file` 决定是否
+    /// 在加载 / reload 时切到只读。
+    pub large_file_threshold_bytes: usize,
+    /// 任意单行字符数超此阈值的 Buffer 视为含超长行；`0` 表示不限。
+    ///
+    /// 引擎不拒绝超长行，只通过 `Buffer::has_long_line()` /
+    /// `LoadedTextInfo::has_long_line` 暴露事实，宿主自行决定是否禁用 high-cost
+    /// 能力（如行级 fold、UI 视觉列重排等）。
+    pub long_line_threshold_chars: usize,
+    /// 超过 `large_file_threshold_bytes` 的 Buffer 在加载 / reload 时是否自动
+    /// 切到只读。默认 `false`：仅暴露事实，行为由宿主控制。
+    pub auto_read_only_on_large_file: bool,
 }
 
 /// 单事务字节超过 `large_transaction_threshold_bytes` 时的处理策略。
@@ -40,6 +55,21 @@ impl Default for LargeFilePolicy {
             max_undo_history_bytes: 64 * 1024 * 1024,
             large_transaction_threshold_bytes: 16 * 1024 * 1024,
             large_transaction_policy: LargeTransactionPolicy::SkipHistory,
+            large_file_threshold_bytes: 5 * 1024 * 1024,
+            long_line_threshold_chars: 10_000,
+            auto_read_only_on_large_file: false,
         }
+    }
+}
+
+impl LargeFilePolicy {
+    /// 判断 `byte_size` 是否被视为大文件；`large_file_threshold_bytes == 0` 表示不限。
+    pub fn is_large_byte_size(&self, byte_size: usize) -> bool {
+        self.large_file_threshold_bytes != 0 && byte_size > self.large_file_threshold_bytes
+    }
+
+    /// 判断 `chars` 是否被视为超长行；`long_line_threshold_chars == 0` 表示不限。
+    pub fn is_long_line(&self, chars: usize) -> bool {
+        self.long_line_threshold_chars != 0 && chars > self.long_line_threshold_chars
     }
 }

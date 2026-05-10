@@ -23,6 +23,7 @@ impl Buffer {
         self.loaded_text_info = None;
         self.mark_clean_internal();
         self.mark_synced_external();
+        self.apply_large_file_auto_read_only();
         Ok(())
     }
 

@@ -24,6 +24,7 @@ fn small_budget_config(
         max_undo_history_bytes,
         large_transaction_threshold_bytes: threshold,
         large_transaction_policy: policy,
+        ..LargeFilePolicy::default()
     };
     config
 }
@@ -148,6 +149,7 @@ fn count_and_byte_budget_apply_simultaneously() {
         max_undo_history_bytes: 1,
         large_transaction_threshold_bytes: 0,
         large_transaction_policy: LargeTransactionPolicy::SkipHistory,
+        ..LargeFilePolicy::default()
     });
 
     let status = buffer.history_status();
@@ -241,6 +243,7 @@ fn set_large_file_policy_triggers_immediate_truncation() {
         max_undo_history_bytes: 0,
         large_transaction_threshold_bytes: 0,
         large_transaction_policy: LargeTransactionPolicy::SkipHistory,
+        ..LargeFilePolicy::default()
     });
 
     let status = buffer.history_status();
@@ -263,6 +266,7 @@ fn set_large_file_policy_zero_max_clears_history() {
         max_undo_history_bytes: 0,
         large_transaction_threshold_bytes: 0,
         large_transaction_policy: LargeTransactionPolicy::SkipHistory,
+        ..LargeFilePolicy::default()
     });
 
     let status = buffer.history_status();
@@ -384,6 +388,7 @@ fn byte_budget_truncation_preserves_current_chain_text() {
         max_undo_history_bytes: 4,
         large_transaction_threshold_bytes: 0,
         large_transaction_policy: LargeTransactionPolicy::SkipHistory,
+        ..LargeFilePolicy::default()
     });
 
     assert_eq!(buffer.current_history_node(), current_after_undo);
@@ -411,6 +416,7 @@ fn merge_with_previous_byte_budget_can_evict_after_growth() {
         max_undo_history_bytes: merged_bytes / 2,
         large_transaction_threshold_bytes: 0,
         large_transaction_policy: LargeTransactionPolicy::SkipHistory,
+        ..LargeFilePolicy::default()
     });
     assert_eq!(buffer.history_status().node_count, 1);
     assert!(buffer.current_history_node().is_some());

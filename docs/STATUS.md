@@ -2,9 +2,9 @@
 
 ## 当前阶段
 
-- 当前推进：M17B History Budget 完成（双预算截断、超大事务策略、运行时调整 LargeFilePolicy、HistoryStatus 暴露 node_count / memory_bytes）；下一步进入 M18 Large File Policy 与 Defensive Runtime
-- 已完成：M0–M12 机器契约基线；M13 折叠 + 投影；M14 Versioned Result / Range Set / 外部 UTF-16 边界；M15 Local Read / Write Boundary；M16 Transaction Record 与 Replay；M17A `HistoryNodeId` 单调身份 + `HistoryNode` parent/children 树 + `HistoryNodeView` 只读视图 + `current_history_node` / `parent_history_node` / `redo_branches` / `redo_to_branch` / `EngineError::InvalidHistoryBranch` 公共 API；线性 `undo` / `redo` 兼容；GPUI testbed 覆盖至 M12；M17B `LargeFilePolicy` 字节预算 + `LargeTransactionPolicy` + `Buffer::set_large_file_policy` + `HistoryStatus.node_count` / `memory_bytes`
-- 未完成：M18 及后续 engine-only 阶段
+- 当前推进：M18 Large File Policy 与 Defensive Runtime 完成（大文件 / 超长行阈值事实暴露 + `auto_read_only_on_large_file` 加载与 reload 联动 + `Buffer::is_large_file` / `has_long_line` / `longest_line_chars` 查询入口 + 大文件路径错误可诊断回归）；下一步进入 M19 Verification / Benchmark / Fuzz
+- 已完成：M0–M12 机器契约基线；M13 折叠 + 投影；M14 Versioned Result / Range Set / 外部 UTF-16 边界；M15 Local Read / Write Boundary；M16 Transaction Record 与 Replay；M17A `HistoryNodeId` 单调身份 + `HistoryNode` parent/children 树 + `HistoryNodeView` 只读视图 + `current_history_node` / `parent_history_node` / `redo_branches` / `redo_to_branch` / `EngineError::InvalidHistoryBranch` 公共 API；线性 `undo` / `redo` 兼容；GPUI testbed 覆盖至 M12；M17B `LargeFilePolicy` 字节预算 + `LargeTransactionPolicy` + `Buffer::set_large_file_policy` + `HistoryStatus.node_count` / `memory_bytes`；M18 `LargeFilePolicy` 大文件 / 超长行阈值 + `auto_read_only_on_large_file` + `LoadedTextInfo` 字节 / 最长行 / is_large / has_long_line + `Buffer::is_large_file` / `has_long_line` / `longest_line_chars`
+- 未完成：M19 及后续 engine-only 阶段
 - 路线收口：**全部阶段按纯编辑引擎标准取舍**；Command / Macro Recording / LSP 或 Tree-sitter provider / diagnostics 专用 adapter / 后台任务调度器 / 正式 UI 绘制不进入 `zom-engine` milestone。
 - 结构调整：`src/types/`、`src/config/`、`src/text_loading/`、`src/storage/`、`src/coordinates/`、`src/selection/`、`src/tracking/`、`src/transaction/`、`src/metadata/` 已按稳定能力域目录化拆分。对外 public API 收敛到 crate root re-export，目录模块作为实现分层，不承诺外部稳定 import path。
 - engine-only 词汇表收敛（破坏性变更）：
@@ -161,6 +161,18 @@
 - `tests/m16_transaction_record.rs`：9 个机器契约测试，覆盖版本 / forward & inverse edits / before & after selection（含显式 after 与 PositionMap 默认平移）/ metadata 透传与 merge boundary 派生 / `record_history=false` 不入历史 / `transaction_id` 与 `last_delta_event` 对齐 / `to_transaction()` 完整重建 / record 是值快照不跟随 Buffer 推进 / 版本不匹配不产生 record
 - `tests/m16_transaction_replay.rs`：6 个机器契约测试，覆盖跨 Buffer 回放后状态等价、回放生成等价 DeltaEvent（除独立递增的 transaction_id）、版本不匹配原子拒绝且不动 Buffer / 不入事件队列、回放在更短 buffer 上触发 `EditError::RangeOutOfBounds`（不绕过边界校验）、独立 buffer 重放达到原 apply 完终态、回放后的事务进入历史栈支持后续 undo
 
+## M18 文件
+
+- `src/config/large_file.rs`：`LargeFilePolicy` 增 `large_file_threshold_bytes` / `long_line_threshold_chars` / `auto_read_only_on_large_file` 三字段（默认 5 MiB / 10000 chars / false）+ `is_large_byte_size(byte_size)` / `is_long_line(chars)` helper（阈值=0 视为不限）
+- `src/text_loading/loaded_text.rs`：`LoadedTextInfo` 增 `loaded_byte_size` / `is_large` / `longest_line_chars` / `has_long_line` 加载快照字段
+- `src/buffer/loading.rs`：`from_loaded_text` 在解码后计算 `loaded_byte_size` + `longest_line_chars_in(text)`，并按 policy 填充 `is_large` / `has_long_line`；`longest_line_chars_in` 作为 `pub(crate)` helper 复用
+- `src/buffer/lifecycle.rs`：新增 `Buffer::is_large_file()` / `has_long_line()` / `longest_line_chars()` 公共查询；新增 `apply_large_file_auto_read_only` 模块内 helper 在 `from_kind_text` 末尾调用，根据 policy + 当前 storage 长度决定是否切只读
+- `src/buffer/reload.rs`：`reload_from_text` 末尾调用 `apply_large_file_auto_read_only`，让 reload 大文本同样获得自动只读语义；既有只读状态不会因 reload 小文本被取消（引擎只单向加固）
+- `tests/m0_domain_model.rs`：扩展默认值断言覆盖三个新字段
+- `tests/m17_history_budget.rs`：`LargeFilePolicy` 显式构造改用 `..LargeFilePolicy::default()` 兼容新字段
+- `tests/m18_large_file_policy.rs`：17 个机器契约测试，覆盖默认阈值 / `is_large_byte_size` / `is_long_line` helper、`Buffer::is_large_file` / `has_long_line` / `longest_line_chars`（含 CRLF / Unicode / 空文本 / 纯换行）、`from_loaded_text` 填充 byte_size / longest_line_chars / is_large / has_long_line、`auto_read_only_on_large_file` 在 `from_loaded_text` / `from_kind_text` / reload 路径上的触发与不触发、reload 小文本不取消既有只读、阈值=0 关闭事实与 auto-read-only
+- `tests/m18_defensive_runtime.rs`：10 个机器契约测试，覆盖 auto-read-only Buffer 写入返回 `StorageError::ReadOnly`、宿主可 `set_read_only(false)` 解除、`LargeTransactionPolicy::Reject` / `SkipHistory` 在大粘贴上的行为差异、版本不匹配原子拒绝、大文件越界编辑返回 `EditError::RangeOutOfBounds`、大文件 snapshot 上的 search 稳定性、极小预算 + SkipHistory + 重新截断不 panic、阈值=0 时 auto=true 不触发、`EngineError::VersionOverflow` 可诊断
+
 ## M17B 文件
 
 - `src/config/large_file.rs`：`LargeFilePolicy` 增 `max_undo_history_bytes` / `large_transaction_threshold_bytes` / `large_transaction_policy` 字段；新增 `LargeTransactionPolicy { SkipHistory, Reject }`；默认值 `max_undo_history=1000` / `max_undo_history_bytes=64 MiB` / `large_transaction_threshold_bytes=16 MiB` / `large_transaction_policy=SkipHistory`
@@ -211,6 +223,8 @@ cargo test --test m16_transaction_record
 cargo test --test m16_transaction_replay
 cargo test --test m17_advanced_history
 cargo test --test m17_history_budget
+cargo test --test m18_large_file_policy
+cargo test --test m18_defensive_runtime
 cargo test --test m10_metadata_layer
 cargo test --test m9_anchor
 cargo check --example gpui_m10_testbed

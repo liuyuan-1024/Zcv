@@ -216,6 +216,9 @@ fn default_buffer_config_is_reasonable_for_m0() {
         config.large_file.large_transaction_policy,
         zom_engine::LargeTransactionPolicy::SkipHistory,
     );
+    assert!(config.large_file.large_file_threshold_bytes > 0);
+    assert!(config.large_file.long_line_threshold_chars > 0);
+    assert!(!config.large_file.auto_read_only_on_large_file);
 }
 
 #[test]

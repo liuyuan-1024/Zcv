@@ -39,7 +39,7 @@ impl Buffer {
         let saved_snapshot = storage.snapshot();
         let saved_fingerprint = saved_snapshot.fingerprint();
 
-        Ok(Self {
+        let mut buffer = Self {
             id: next_buffer_id(),
             kind,
             read_only: false,
@@ -58,7 +58,18 @@ impl Buffer {
             history: history::HistoryState::new(),
             selection: SelectionSet::default(),
             composition: None,
-        })
+        };
+        buffer.apply_large_file_auto_read_only();
+        Ok(buffer)
+    }
+
+    /// 加载 / reload 后按 `LargeFilePolicy::auto_read_only_on_large_file`
+    /// 决定是否切到只读；只在大文件触发时把 `read_only` 置为 `true`，
+    /// 不会主动取消既有的只读状态。
+    pub(in crate::buffer) fn apply_large_file_auto_read_only(&mut self) {
+        if self.config.large_file.auto_read_only_on_large_file && self.is_large_file() {
+            self.read_only = true;
+        }
     }
 
     /// 从文件文本创建 Buffer。文件读取、编码探测和保存输出由宿主或后续阶段负责。
@@ -157,6 +168,35 @@ impl Buffer {
 
     pub fn len_utf16_cu(&self) -> usize {
         self.storage.len_utf16_cu()
+    }
+
+    /// 当前 Buffer 文本字节数是否被 `LargeFilePolicy::large_file_threshold_bytes`
+    /// 视为大文件。
+    ///
+    /// 这是基于当前 storage 的实时判断，不等同于 `LoadedTextInfo::is_large`
+    /// （后者是加载时刻快照）。`large_file_threshold_bytes == 0` 时永远返回 `false`。
+    pub fn is_large_file(&self) -> bool {
+        self.config
+            .large_file
+            .is_large_byte_size(self.storage.len_bytes())
+    }
+
+    /// 当前 Buffer 是否含有按 `LargeFilePolicy::long_line_threshold_chars`
+    /// 视为超长的行。
+    ///
+    /// O(N) 扫描；调用方应自行决定调用频率。`long_line_threshold_chars == 0`
+    /// 时永远返回 `false`。
+    pub fn has_long_line(&self) -> bool {
+        self.config
+            .large_file
+            .is_long_line(self.longest_line_chars())
+    }
+
+    /// 当前 Buffer 中最长一行的字符数（不含行尾换行符）。
+    ///
+    /// 通过遍历当前文本计算，不缓存；O(N) 扫描。
+    pub fn longest_line_chars(&self) -> usize {
+        super::loading::longest_line_chars_in(self.text().as_ref())
     }
 
     pub fn version(&self) -> BufferVersion {

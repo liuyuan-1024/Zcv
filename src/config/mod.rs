@@ -15,3 +15,6 @@ pub use encoding::EncodingConfig;
 pub use large_file::{LargeFilePolicy, LargeTransactionPolicy};
 pub use line_endings::{LineEndingConfig, PositionEncodingConfig};
 pub use word::WordBoundaryPolicy;
+
+// crate 内 unicode 工具的唯一真理：合并 movement 与 display 重复的 combining-mark 表。
+pub(crate) use display::is_combining_mark;

@@ -2,6 +2,8 @@
 //!
 //! 本文件负责历史图的 cursor 移动、分支查询与重放，不定义 HistoryEntry 的存储形态。
 
+use std::sync::Arc;
+
 use crate::{
     EngineError, EngineResult, LargeFilePolicy, SelectionSet, TransactionSource,
     buffer::Buffer,
@@ -26,7 +28,8 @@ pub struct HistoryNodeView {
     /// 离开节点后的选区。
     pub after_selection: SelectionSet,
     /// 节点描述（来自 `TransactionMetadata::description`）。
-    pub description: Option<String>,
+    /// `Arc<str>` 让 host 端 clone 这个 view 时仍是 O(1) 引用计数。
+    pub description: Option<Arc<str>>,
 }
 
 impl Buffer {
@@ -90,10 +93,10 @@ impl Buffer {
         };
 
         let mut result = None;
-        for tx_edits in &undo_target.undo_batches {
+        for tx_edits in undo_target.undo_batches.iter() {
             result = Some(self.apply_edit_list(
                 self.version,
-                tx_edits.clone(),
+                tx_edits.clone(), // EditList::clone 是 O(1) Arc 递增
                 TransactionSource::Undo,
             )?);
         }
@@ -141,7 +144,7 @@ impl Buffer {
         };
 
         let mut result = None;
-        for tx_edits in &target.redo_batches {
+        for tx_edits in target.redo_batches.iter() {
             result = Some(self.apply_edit_list(
                 self.version,
                 tx_edits.clone(),
@@ -223,11 +226,12 @@ impl Buffer {
 }
 
 struct UndoTarget {
-    undo_batches: Vec<EditList>,
+    /// `Arc::clone` 是 O(1)；批次本身复用历史节点拥有的存储。
+    undo_batches: Arc<[EditList]>,
     before_selection: SelectionSet,
 }
 
 struct RedoTarget {
-    redo_batches: Vec<EditList>,
+    redo_batches: Arc<[EditList]>,
     after_selection: SelectionSet,
 }

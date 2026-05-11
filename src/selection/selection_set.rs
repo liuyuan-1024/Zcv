@@ -1,6 +1,10 @@
 //! SelectionSet：多光标/多选区的归一化集合。
 //!
 //! 本文件维护排序、合并和 primary selection 归属，是 Buffer 唯一的选区模型。
+//!
+//! **Zero-copy 纪律**：内部存储为 `Arc<[Selection]>`，`Clone` 是 O(1) 引用计数递增。
+
+use std::sync::Arc;
 
 use crate::{ByteOffset, PositionMap, TextRange};
 
@@ -17,9 +21,12 @@ pub enum SelectionMergePolicy {
 }
 
 /// 归一化后的多选区 / 多光标集合。
+///
+/// 内部 `Arc<[Selection]>`：`Clone` 是 O(1)，事务热路径（`before_selection.clone()` /
+/// `selection.clone()` 反复传递）零深拷贝。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SelectionSet {
-    selections: Vec<Selection>,
+    selections: Arc<[Selection]>,
     primary_index: usize,
 }
 
@@ -47,7 +54,7 @@ impl SelectionSet {
 
     pub fn caret(offset: ByteOffset) -> Self {
         Self {
-            selections: vec![Selection::caret(offset)],
+            selections: Arc::from(vec![Selection::caret(offset)]),
             primary_index: 0,
         }
     }
@@ -90,7 +97,9 @@ impl SelectionSet {
     }
 
     pub fn normalized(&self) -> Self {
-        Self::new_with_primary(self.selections.clone(), self.primary_index)
+        // 归一化是纯函数；如果当前已经归一化，复制 Arc 即可（外部观察一致）。
+        // 这里仍走 new_with_primary 以保证语义不变；其内部会做排序 / 合并。
+        Self::new_with_primary(self.selections.iter().copied().collect(), self.primary_index)
     }
 
     pub fn map_through_position_map(&self, position_map: &PositionMap) -> Self {
@@ -104,8 +113,9 @@ impl SelectionSet {
         )
     }
 
+    /// 物化为 `Vec<Selection>`。需要拥有 owned 数据时使用；命名让分配语义显眼。
     pub fn into_vec(self) -> Vec<Selection> {
-        self.selections
+        self.selections.iter().copied().collect()
     }
 }
 
@@ -165,7 +175,7 @@ fn normalize_selections(
         });
 
     SelectionSet {
-        selections: merged,
+        selections: Arc::from(merged),
         primary_index,
     }
 }

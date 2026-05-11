@@ -1,6 +1,13 @@
 //! HistoryEntry 数据边界：描述一次可撤销历史节点所需的 undo/redo 批次与前后 selection。
 //!
 //! 本文件只保存可重放事实和最小构造逻辑，不管理栈顺序、redo 清理或事务来源策略。
+//!
+//! **Zero-copy 纪律**：
+//! - `undo_batches` / `redo_batches` 用 `Arc<[EditList]>`，每个 `EditList` 内部又是 `Arc<[Edit]>`
+//! - `description` 用 `Option<Arc<str>>`
+//! - `HistoryEntry::clone()` 全程 O(1) 引用计数递增，`undo()` / `redo()` / `merge_into_current` 不再深拷贝
+
+use std::sync::Arc;
 
 use crate::{
     ByteOffset, EngineResult, SelectionSet, TextRange,
@@ -9,11 +16,11 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::buffer) struct HistoryEntry {
-    pub(in crate::buffer) undo_batches: Vec<EditList>,
-    pub(in crate::buffer) redo_batches: Vec<EditList>,
+    pub(in crate::buffer) undo_batches: Arc<[EditList]>,
+    pub(in crate::buffer) redo_batches: Arc<[EditList]>,
     pub(in crate::buffer) before_selection: SelectionSet,
     pub(in crate::buffer) after_selection: SelectionSet,
-    pub(in crate::buffer) description: Option<String>,
+    pub(in crate::buffer) description: Option<Arc<str>>,
 }
 
 impl HistoryEntry {
@@ -25,11 +32,11 @@ impl HistoryEntry {
         description: Option<String>,
     ) -> Self {
         Self {
-            undo_batches: vec![undo_edits],
-            redo_batches: vec![redo_edits],
+            undo_batches: Arc::from(vec![undo_edits]),
+            redo_batches: Arc::from(vec![redo_edits]),
             before_selection,
             after_selection,
-            description,
+            description: description.map(Arc::from),
         }
     }
 
@@ -40,14 +47,8 @@ impl HistoryEntry {
         after_selection: SelectionSet,
         description: Option<String>,
     ) -> EngineResult<Self> {
-        let before_range = TextRange::new(
-            ByteOffset::ZERO,
-            ByteOffset::new(before_text.len()),
-        )?;
-        let after_range = TextRange::new(
-            ByteOffset::ZERO,
-            ByteOffset::new(after_text.len()),
-        )?;
+        let before_range = TextRange::new(ByteOffset::ZERO, ByteOffset::new(before_text.len()))?;
+        let after_range = TextRange::new(ByteOffset::ZERO, ByteOffset::new(after_text.len()))?;
 
         let redo_edits = EditList::new(vec![Edit::replace(before_range, after_text.clone())])?;
         let undo_edits = EditList::new(vec![Edit::replace(after_range, before_text.clone())])?;
@@ -83,17 +84,23 @@ impl HistoryEntry {
     }
 
     pub(in crate::buffer) fn merge(previous: Self, next: Self) -> Self {
-        let mut undo_batches = next.undo_batches;
-        undo_batches.extend(previous.undo_batches);
+        // 合并需要新分配 Arc<[T]>：先拼到 Vec 再 Arc::from。
+        // Arc 本身的 clone 是 O(1)；EditList 的 clone 也是 O(1)（其内部 Arc<[Edit]>）。
+        let mut undo_batches: Vec<EditList> =
+            Vec::with_capacity(next.undo_batches.len() + previous.undo_batches.len());
+        undo_batches.extend(next.undo_batches.iter().cloned());
+        undo_batches.extend(previous.undo_batches.iter().cloned());
 
-        let mut redo_batches = previous.redo_batches;
-        redo_batches.extend(next.redo_batches);
+        let mut redo_batches: Vec<EditList> =
+            Vec::with_capacity(previous.redo_batches.len() + next.redo_batches.len());
+        redo_batches.extend(previous.redo_batches.iter().cloned());
+        redo_batches.extend(next.redo_batches.iter().cloned());
 
         let description = next.description.or(previous.description);
 
         Self {
-            undo_batches,
-            redo_batches,
+            undo_batches: Arc::from(undo_batches),
+            redo_batches: Arc::from(redo_batches),
             before_selection: previous.before_selection,
             after_selection: next.after_selection,
             description,

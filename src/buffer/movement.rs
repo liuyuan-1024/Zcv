@@ -274,77 +274,110 @@ fn unicode_word_spans(text: &str) -> Vec<MovementTokenSpan> {
 }
 
 fn identifier_spans(text: &str, policy: WordBoundaryPolicy) -> Vec<MovementTokenSpan> {
-    contiguous_spans_by_char(text, |ch| policy.is_identifier_continue(ch))
+    contiguous_spans_by_grapheme(text, |ch| policy.is_identifier_continue(ch))
 }
 
 fn symbol_spans(text: &str, policy: WordBoundaryPolicy) -> Vec<MovementTokenSpan> {
-    contiguous_spans_by_char(text, |ch| policy.is_symbol_char(ch))
+    contiguous_spans_by_grapheme(text, |ch| policy.is_symbol_char(ch))
 }
 
-fn contiguous_spans_by_char(
+/// 按 grapheme cluster 切分 token，predicate 只针对每个 cluster 的**首字符**。
+///
+/// 这样合成字符（`é`）、ZWJ emoji 序列、国旗 emoji 等多 codepoint cluster 不会在
+/// cluster 中间被切开。返回的 span 边界仍按 char 计数（与 `LogicalColumn` / `CharOffset` 对齐）。
+fn contiguous_spans_by_grapheme(
     text: &str,
     mut predicate: impl FnMut(char) -> bool,
 ) -> Vec<MovementTokenSpan> {
     let mut spans = Vec::new();
-    let mut current_start = None;
+    let mut current_start: Option<usize> = None;
+    let mut char_idx = 0usize;
 
-    for (idx, ch) in text.chars().enumerate() {
-        if predicate(ch) {
-            current_start.get_or_insert(idx);
+    for grapheme in text.graphemes(true) {
+        let first = grapheme.chars().next().expect("grapheme cluster 非空");
+        let cluster_len = grapheme.chars().count();
+
+        if predicate(first) {
+            current_start.get_or_insert(char_idx);
         } else if let Some(start) = current_start.take() {
-            spans.push(MovementTokenSpan::new(start, idx));
+            spans.push(MovementTokenSpan::new(start, char_idx));
         }
+
+        char_idx += cluster_len;
     }
 
     if let Some(start) = current_start {
-        spans.push(MovementTokenSpan::new(start, text.chars().count()));
+        spans.push(MovementTokenSpan::new(start, char_idx));
     }
 
     spans
 }
 
 fn subword_spans(text: &str) -> Vec<MovementTokenSpan> {
-    let chars = text.chars().collect::<Vec<_>>();
-    let mut spans = Vec::new();
-    let mut current_start = None;
+    // 收集每个 grapheme 的「首字符 + 起始 char 偏移 + cluster 长度」。
+    // subword 分割逻辑只关注 cluster 之间的边界，cluster 内的组合标记 / ZWJ / RI 都不参与。
+    let clusters: Vec<(usize, char, usize)> = {
+        let mut out = Vec::new();
+        let mut char_idx = 0usize;
+        for grapheme in text.graphemes(true) {
+            let first = grapheme.chars().next().expect("grapheme cluster 非空");
+            let len = grapheme.chars().count();
+            out.push((char_idx, first, len));
+            char_idx += len;
+        }
+        out
+    };
 
-    for idx in 0..chars.len() {
-        let ch = chars[idx];
+    let mut spans = Vec::new();
+    let mut current_start: Option<usize> = None;
+
+    for i in 0..clusters.len() {
+        let (start_idx, ch, len) = clusters[i];
 
         if !is_subword_body_char(ch) {
             if let Some(start) = current_start.take() {
-                spans.push(MovementTokenSpan::new(start, idx));
+                spans.push(MovementTokenSpan::new(start, start_idx));
             }
             continue;
         }
 
         match current_start {
-            None => current_start = Some(idx),
+            None => current_start = Some(start_idx),
             Some(start) => {
-                let previous = chars[idx - 1];
-                let next = chars.get(idx + 1).copied();
+                let previous = clusters[i - 1].1;
+                let next = clusters.get(i + 1).map(|(_, c, _)| *c);
 
                 if should_start_new_subword(previous, ch, next) {
-                    spans.push(MovementTokenSpan::new(start, idx));
-                    current_start = Some(idx);
+                    spans.push(MovementTokenSpan::new(start, start_idx));
+                    current_start = Some(start_idx);
                 }
             }
         }
+
+        let _ = len; // cluster 长度已经在累加 start_idx 时使用
     }
 
     if let Some(start) = current_start {
-        spans.push(MovementTokenSpan::new(start, chars.len()));
+        let end_chars = clusters
+            .last()
+            .map(|(idx, _, len)| idx + len)
+            .unwrap_or(0);
+        spans.push(MovementTokenSpan::new(start, end_chars));
     }
 
     spans
 }
 
 fn is_subword_body_char(ch: char) -> bool {
-    ch.is_alphanumeric() || is_combining_mark_for_movement(ch)
+    // grapheme cluster 的首字符；其后的组合标记由 grapheme cluster 自动收纳。
+    // 这里只判断"是否是单词体字符"。
+    ch.is_alphanumeric() || crate::config::is_combining_mark(ch)
 }
 
 fn should_start_new_subword(previous: char, current: char, next: Option<char>) -> bool {
-    if is_combining_mark_for_movement(current) || is_combining_mark_for_movement(previous) {
+    // 组合标记不应触发 camelCase / 数字-字母切分（grapheme cluster 内部不会传到这里，
+    // 但跨 cluster 边界若任一端是组合标记，仍应抑制切分）。
+    if crate::config::is_combining_mark(current) || crate::config::is_combining_mark(previous) {
         return false;
     }
 
@@ -354,15 +387,4 @@ fn should_start_new_subword(previous: char, current: char, next: Option<char>) -
         || (previous.is_uppercase()
             && current.is_uppercase()
             && next.is_some_and(char::is_lowercase))
-}
-
-fn is_combining_mark_for_movement(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x0300..=0x036F
-            | 0x1AB0..=0x1AFF
-            | 0x1DC0..=0x1DFF
-            | 0x20D0..=0x20FF
-            | 0xFE20..=0xFE2F
-    )
 }

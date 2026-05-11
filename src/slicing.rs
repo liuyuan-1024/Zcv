@@ -5,7 +5,7 @@
 use std::{borrow::Cow, fmt};
 
 use crate::{
-    ByteOffset, CharOffset, CoordinateError, EngineResult, Line, LineRange, TextRange,
+    ByteOffset, CoordinateError, EngineResult, Line, LineRange, TextRange,
     storage::TextRead,
 };
 

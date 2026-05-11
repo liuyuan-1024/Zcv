@@ -8,7 +8,7 @@
 //! 占位符样式与像素绘制不在本类型承诺范围内。
 
 use crate::{
-    CharOffset, EngineResult, FoldSet,
+    EngineResult, FoldSet,
     errors::ProjectionError,
     fold::geometry::{fold_line_span, next_line, previous_line},
     slicing::{TextSlice, VisibleLine},

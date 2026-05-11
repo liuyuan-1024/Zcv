@@ -19,6 +19,39 @@ fn rope_len_bytes(rope: &Rope) -> ByteOffset {
     ByteOffset::new(rope.len_bytes())
 }
 
+/// 全文 Cow：单块时零拷贝，多块时才物化为 `String`。
+#[inline]
+fn rope_text_cow(rope: &Rope) -> Cow<'_, str> {
+    match rope.slice(..).as_str() {
+        Some(s) => Cow::Borrowed(s),
+        None => Cow::Owned(rope.to_string()),
+    }
+}
+
+/// 字节区间 Cow：单块时零拷贝，多块时才物化。调用方需保证区间已被校验。
+#[inline]
+fn rope_byte_range_cow(rope: &Rope, range: TextRange) -> Cow<'_, str> {
+    let slice = rope.byte_slice(range.start().get()..range.end().get());
+    match slice.as_str() {
+        Some(s) => Cow::Borrowed(s),
+        None => Cow::Owned(slice.to_string()),
+    }
+}
+
+/// 共享字节区间校验（用于 Snapshot 实现，避免重复实现 validate_byte_range）。
+fn validate_byte_range_in_rope(rope: &Rope, range: TextRange) -> EngineResult<()> {
+    if range.end().get() > rope.len_bytes() {
+        return Err(EditError::RangeOutOfBounds { range }.into());
+    }
+    if !is_utf8_char_boundary_in_rope(rope, range.start().get()) {
+        return Err(CoordinateError::InvalidByteBoundary(range.start()).into());
+    }
+    if !is_utf8_char_boundary_in_rope(rope, range.end().get()) {
+        return Err(CoordinateError::InvalidByteBoundary(range.end()).into());
+    }
+    Ok(())
+}
+
 #[inline]
 fn rope_len_utf16_cu(rope: &Rope) -> Utf16Offset {
     Utf16Offset::new(rope.len_utf16_cu())
@@ -69,16 +102,24 @@ impl RopeyStorage {
 
 impl TextRead for RopeyStorage {
     fn text(&self) -> Cow<'_, str> {
-        Cow::Owned(self.rope.to_string())
+        rope_text_cow(&self.rope)
     }
 
     fn slice_text(&self, range: TextRange) -> EngineResult<Cow<'_, str>> {
         self.validate_byte_range(range)?;
-        let start_char = self.rope.byte_to_char(range.start().get());
-        let end_char = self.rope.byte_to_char(range.end().get());
-        Ok(Cow::Owned(
-            self.rope.slice(start_char..end_char).to_string(),
-        ))
+        Ok(rope_byte_range_cow(&self.rope, range))
+    }
+
+    fn chunks(&self, range: TextRange) -> EngineResult<impl Iterator<Item = &str> + '_> {
+        self.validate_byte_range(range)?;
+        Ok(self
+            .rope
+            .byte_slice(range.start().get()..range.end().get())
+            .chunks())
+    }
+
+    fn all_chunks(&self) -> impl Iterator<Item = &str> + '_ {
+        self.rope.chunks()
     }
 
     fn len_bytes(&self) -> ByteOffset {
@@ -209,26 +250,24 @@ impl RopeySnapshot {
 
 impl TextRead for RopeySnapshot {
     fn text(&self) -> Cow<'_, str> {
-        Cow::Owned(self.rope.to_string())
+        rope_text_cow(&self.rope)
     }
 
     fn slice_text(&self, range: TextRange) -> EngineResult<Cow<'_, str>> {
-        if range.end().get() > self.rope.len_bytes() {
-            return Err(EditError::RangeOutOfBounds { range }.into());
-        }
-        if !is_utf8_char_boundary_in_rope(&self.rope, range.start().get()) {
-            return Err(CoordinateError::InvalidByteBoundary(range.start()).into());
-        }
-        if !is_utf8_char_boundary_in_rope(&self.rope, range.end().get()) {
-            return Err(CoordinateError::InvalidByteBoundary(range.end()).into());
-        }
+        validate_byte_range_in_rope(&self.rope, range)?;
+        Ok(rope_byte_range_cow(&self.rope, range))
+    }
 
-        let start_char = self.rope.byte_to_char(range.start().get());
-        let end_char = self.rope.byte_to_char(range.end().get());
+    fn chunks(&self, range: TextRange) -> EngineResult<impl Iterator<Item = &str> + '_> {
+        validate_byte_range_in_rope(&self.rope, range)?;
+        Ok(self
+            .rope
+            .byte_slice(range.start().get()..range.end().get())
+            .chunks())
+    }
 
-        Ok(Cow::Owned(
-            self.rope.slice(start_char..end_char).to_string(),
-        ))
+    fn all_chunks(&self) -> impl Iterator<Item = &str> + '_ {
+        self.rope.chunks()
     }
 
     fn len_bytes(&self) -> ByteOffset {

@@ -152,8 +152,24 @@ impl Buffer {
             let new_head = ByteOffset::new(new_start + replacement_len);
 
             let is_empty_noop = range.is_empty() && replacement.is_empty();
-            let is_same_text_noop =
-                !range.is_empty() && self.slice_text(range)?.as_ref() == replacement.as_str();
+            // 流式比较，零拷贝
+            let is_same_text_noop = if range.is_empty() {
+                false
+            } else if range.len() != replacement.len() {
+                false
+            } else {
+                let mut consumed = 0usize;
+                let mut equal = true;
+                for chunk in self.storage.chunks(range)? {
+                    let end = consumed + chunk.len();
+                    if &replacement.as_bytes()[consumed..end] != chunk.as_bytes() {
+                        equal = false;
+                        break;
+                    }
+                    consumed = end;
+                }
+                equal && consumed == replacement.len()
+            };
 
             if !is_empty_noop && !is_same_text_noop {
                 edits.push(Edit::replace(range, replacement.clone()));

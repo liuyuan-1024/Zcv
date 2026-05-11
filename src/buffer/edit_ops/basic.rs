@@ -4,6 +4,7 @@
 
 use crate::{
     ByteOffset, EngineResult, TextRange,
+    storage::TextRead,
     transaction::{Edit, Transaction},
 };
 
@@ -29,8 +30,8 @@ impl Buffer {
         self.validate_edit_boundary(range.start())?;
         self.validate_edit_boundary(range.end())?;
 
-        // no-op 不递增版本，也不污染 dirty / history。
-        if self.slice_text(range)?.as_ref() == replacement {
+        // no-op 不递增版本，也不污染 dirty / history。流式比较，零拷贝。
+        if range_equals_str(&self.storage, range, replacement)? {
             return Ok(());
         }
 
@@ -42,4 +43,24 @@ impl Buffer {
         self.apply_transaction(tx)?;
         Ok(())
     }
+}
+
+/// 流式比较一段字节区间与给定字符串是否字节相等；**永不分配**。
+fn range_equals_str<T: TextRead>(
+    storage: &T,
+    range: TextRange,
+    expected: &str,
+) -> EngineResult<bool> {
+    if range.len() != expected.len() {
+        return Ok(false);
+    }
+    let mut consumed = 0usize;
+    for chunk in storage.chunks(range)? {
+        let end = consumed + chunk.len();
+        if &expected.as_bytes()[consumed..end] != chunk.as_bytes() {
+            return Ok(false);
+        }
+        consumed = end;
+    }
+    Ok(consumed == expected.len())
 }

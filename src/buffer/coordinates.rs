@@ -170,24 +170,6 @@ impl Buffer {
     }
 }
 
-pub(super) fn char_to_byte_index(text: &str, offset: CharOffset) -> EngineResult<usize> {
-    let char_offset = offset.get();
-    let len_chars = text.chars().count();
-
-    if char_offset > len_chars {
-        return Err(CoordinateError::CharOutOfBounds(offset).into());
-    }
-
-    if char_offset == len_chars {
-        return Ok(text.len());
-    }
-
-    text.char_indices()
-        .nth(char_offset)
-        .map(|(byte_idx, _)| byte_idx)
-        .ok_or_else(|| CoordinateError::CharOutOfBounds(offset).into())
-}
-
 pub(super) fn is_crlf_middle<T: TextRead>(storage: &T, offset: CharOffset) -> bool {
     let value = offset.get();
 

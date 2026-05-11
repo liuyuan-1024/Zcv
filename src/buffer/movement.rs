@@ -5,7 +5,7 @@
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
-    ByteOffset, CharOffset, CoordinateError, EditError, EngineResult, MovementDirection,
+    CharOffset, CoordinateError, EditError, EngineResult, MovementDirection,
     MovementUnit, Selection, SelectionSet, WordBoundaryPolicy, storage::TextRead,
 };
 

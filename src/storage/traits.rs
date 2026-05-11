@@ -13,12 +13,40 @@ use crate::{
 /// 只读文本视图。
 ///
 /// 不返回裸 `&str` 作为核心抽象——Rope 的全文通常不是一段连续内存。
+///
+/// **Zero-copy 纪律**：
+/// - `chunks(range)` / `all_chunks()` 是**首选 API**，永不分配。
+/// - `slice_text` / `text` 在单块场景返回 `Cow::Borrowed`（零拷贝），多块时
+///   才物化为 `Cow::Owned`。
+/// - `slice_to_string` 明确分配语义，命名让代价显眼。
 pub(crate) trait TextRead {
-    /// 返回全文。热路径应优先使用 `slice_text` / metrics / line API，而不是全文读取。
+    /// 返回全文。**单块快路径返回 `Cow::Borrowed`，零拷贝**；
+    /// 跨多个 chunk 时才退化为 `Cow::Owned`。热路径应改用 `all_chunks`。
     fn text(&self) -> Cow<'_, str>;
 
-    /// 返回指定字节区间的文本。区间端点必须落在 UTF-8 字符边界。
+    /// 返回指定字节区间的文本。**单块快路径返回 `Cow::Borrowed`，零拷贝**；
+    /// 跨多个 chunk 时退化为 `Cow::Owned`。热路径应改用 `chunks(range)`。
+    /// 区间端点必须落在 UTF-8 字符边界。
     fn slice_text(&self, range: TextRange) -> EngineResult<Cow<'_, str>>;
+
+    /// 按字节区间流式访问文本块；**永不分配**。
+    /// 区间端点必须落在 UTF-8 字符边界。这是 zero-copy 计算的首选 API。
+    fn chunks(&self, range: TextRange) -> EngineResult<impl Iterator<Item = &str> + '_>;
+
+    /// 按全文流式访问文本块；**永不分配**。
+    #[allow(dead_code)]
+    fn all_chunks(&self) -> impl Iterator<Item = &str> + '_;
+
+    /// 物化字节区间为完整 `String`。命名让分配代价显眼。
+    /// 调用方应在确认必须连续字符串时才使用。
+    #[allow(dead_code)]
+    fn slice_to_string(&self, range: TextRange) -> EngineResult<String> {
+        let mut out = String::with_capacity(range.len());
+        for chunk in self.chunks(range)? {
+            out.push_str(chunk);
+        }
+        Ok(out)
+    }
 
     // ============== 核心 byte 接口（深核必须使用） ==============
 

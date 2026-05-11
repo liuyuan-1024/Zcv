@@ -9,7 +9,7 @@ mod positions;
 mod ranges;
 mod versions;
 
-pub use buffer_identity::{BufferKind, BufferState};
+pub use buffer_identity::{BufferOrigin, BufferState, OriginKind};
 pub use line_endings::LineEndingStyle;
 pub use offsets::{ByteOffset, CharOffset, Utf16Offset};
 pub use positions::{DisplayColumn, Line, LogicalColumn, Position, Utf16Position};

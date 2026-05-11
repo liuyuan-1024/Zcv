@@ -3,7 +3,7 @@
 //! 本文件只负责文本的进入边界；reload、保存输出、编码转换和文件监听属于宿主层。
 
 use crate::{
-    BomPolicy, BufferConfig, BufferKind, ByteOffset, EngineResult, InvalidUtf8Policy,
+    BomPolicy, BufferConfig, BufferOrigin, ByteOffset, EngineResult, InvalidUtf8Policy,
     LargeFilePolicy, LineEndingStyle, LoadedTextInfo, StorageError, TextEncoding,
 };
 
@@ -16,13 +16,13 @@ impl Buffer {
     ///
     /// 这里不做文件 I/O；宿主负责读取 bytes，engine 只负责把 bytes 变成可编辑文本。
     pub fn from_loaded_text(
-        kind: BufferKind,
+        origin: BufferOrigin,
         bytes: impl AsRef<[u8]>,
         config: BufferConfig,
     ) -> EngineResult<Self> {
         let large_file_policy = config.large_file.clone();
         let (text, info) = decode_loaded_text(bytes.as_ref(), &config, &large_file_policy)?;
-        let mut buffer = Self::from_kind_text(kind, text, config)?;
+        let mut buffer = Self::with_origin(origin, text, config)?;
         buffer.loaded_text_info = Some(info);
         buffer.mark_synced_external();
         Ok(buffer)

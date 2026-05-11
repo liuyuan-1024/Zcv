@@ -12,7 +12,7 @@
 //! - `validation`：Buffer 级边界校验
 
 use crate::{
-    BufferConfig, BufferId, BufferKind, BufferVersion, CompositionState, LoadedTextInfo,
+    BufferConfig, BufferId, BufferOrigin, BufferVersion, CompositionState, LoadedTextInfo,
     SelectionSet, TransactionId,
     storage::{RopeySnapshot, RopeyStorage, TextFingerprint},
     transaction::DeltaEvent,
@@ -40,7 +40,7 @@ pub use history::{HistoryNodeId, HistoryNodeView, HistoryStatus};
 #[derive(Debug, Clone)]
 pub struct Buffer {
     id: BufferId,
-    kind: BufferKind,
+    origin: BufferOrigin,
     read_only: bool,
     config: BufferConfig,
     storage: RopeyStorage,

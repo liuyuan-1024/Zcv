@@ -4,12 +4,14 @@
 
 use std::{
     borrow::Cow,
-    path::Path,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use crate::{
-    BufferConfig, BufferId, BufferKind, BufferState, BufferVersion, ByteOffset, EngineResult,
+    BufferConfig, BufferId, BufferOrigin, BufferState, BufferVersion, ByteOffset, EngineResult,
     LoadedTextInfo, SelectionSet, TransactionId, Utf16Offset,
     storage::{RopeyStorage, TextRead, TextStorage},
 };
@@ -19,19 +21,22 @@ use super::{Buffer, history};
 static NEXT_BUFFER_ID: AtomicU64 = AtomicU64::new(1);
 
 impl Buffer {
-    /// 创建空 Buffer。
+    /// 创建空 Buffer（匿名来源）。
     pub fn new(config: BufferConfig) -> EngineResult<Self> {
         Self::from_text(String::new(), config)
     }
 
-    /// 从已有文本创建 Buffer。
+    /// 从已有文本创建匿名来源 Buffer。
     pub fn from_text(text: String, config: BufferConfig) -> EngineResult<Self> {
-        Self::from_kind_text(BufferKind::Untitled, text, config)
+        Self::with_origin(BufferOrigin::anonymous(), text, config)
     }
 
-    /// 从已有文本创建带明确生命周期类型的 Buffer。
-    pub fn from_kind_text(
-        kind: BufferKind,
+    /// 从已有文本与指定来源创建 Buffer。
+    ///
+    /// `origin` 由宿主自由解释（可以是文件路径、URL、UUID 等任意不透明句柄）；
+    /// 引擎只用它做相等性 / 哈希 / 展示，**不**做任何 I/O 或路径解析。
+    pub fn with_origin(
+        origin: BufferOrigin,
         text: String,
         config: BufferConfig,
     ) -> EngineResult<Self> {
@@ -41,7 +46,7 @@ impl Buffer {
 
         let mut buffer = Self {
             id: next_buffer_id(),
-            kind,
+            origin,
             read_only: false,
             config,
             storage,
@@ -72,47 +77,35 @@ impl Buffer {
         }
     }
 
-    /// 从文件文本创建 Buffer。文件读取、编码探测和保存输出由宿主或后续阶段负责。
-    pub fn from_file_text(
-        path: impl Into<std::path::PathBuf>,
+    /// 用外部资源句柄（宿主自定义的不透明字符串）创建 Buffer。
+    ///
+    /// 这是 `Buffer::with_origin(BufferOrigin::external(handle), text, config)` 的便利包装。
+    /// 引擎不解析 handle 内容、不做 I/O。
+    pub fn with_external(
+        handle: impl Into<Arc<str>>,
         text: String,
         config: BufferConfig,
     ) -> EngineResult<Self> {
-        Self::from_kind_text(BufferKind::file(path), text, config)
+        Self::with_origin(BufferOrigin::external(handle), text, config)
     }
 
-    /// 从 URI 绑定文本创建 Buffer。URI 只作为身份信息保存，不触发任何 I/O。
-    pub fn from_uri_text(
-        uri: impl Into<String>,
-        text: String,
-        config: BufferConfig,
-    ) -> EngineResult<Self> {
-        Self::from_kind_text(BufferKind::uri(uri), text, config)
-    }
-
-    /// 创建临时草稿 Buffer。
+    /// 创建匿名 / 临时草稿 Buffer。语义等同 `from_text`，保留独立入口便于宿主语义清晰。
     pub fn scratch(text: String, config: BufferConfig) -> EngineResult<Self> {
-        Self::from_kind_text(BufferKind::Scratch, text, config)
+        Self::with_origin(BufferOrigin::anonymous(), text, config)
     }
 
     pub fn id(&self) -> BufferId {
         self.id
     }
 
-    pub fn kind(&self) -> &BufferKind {
-        &self.kind
+    /// Buffer 来源句柄（宿主自解释，引擎不解析）。
+    pub fn origin(&self) -> &BufferOrigin {
+        &self.origin
     }
 
-    pub fn path(&self) -> Option<&Path> {
-        self.kind.path()
-    }
-
-    pub fn uri(&self) -> Option<&str> {
-        self.kind.uri_str()
-    }
-
-    pub fn is_temporary(&self) -> bool {
-        self.kind.is_temporary()
+    /// 是否为匿名 / 临时来源（无 host 持久化句柄）。
+    pub fn is_anonymous(&self) -> bool {
+        self.origin.is_anonymous()
     }
 
     pub fn is_read_only(&self) -> bool {

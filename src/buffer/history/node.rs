@@ -6,7 +6,10 @@
 use super::HistoryEntry;
 
 /// 单个 Buffer 内 history node 的稳定身份；跨节点单调递增，永不回收。
+///
+/// FFI 友好：`#[repr(transparent)]` 让宿主跨 FFI 直接当 `uint64_t` 使用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
 pub struct HistoryNodeId(u64);
 
 impl HistoryNodeId {

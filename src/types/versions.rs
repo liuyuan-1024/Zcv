@@ -1,11 +1,15 @@
 //! 版本与 ID 强类型：隔离 Buffer 身份、Buffer 版本和事务身份。
 //!
 //! 这些值只表达单调编号，不承载文件路径、时间戳或外部项目 ID。
+//!
+//! **FFI 友好**：所有 ID 类型都是 `#[repr(transparent)]` 的 `u64` 新类型；
+//! 宿主可以跨 FFI 直接当 `uint64_t` 传递，零桥接代码。
 
 /// Buffer 身份。
 ///
 /// 引擎内的文档对象标识，不等同于文件路径、URI 或外部项目索引 ID。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
 pub struct BufferId(u64);
 
 impl BufferId {
@@ -30,6 +34,7 @@ impl Default for BufferId {
 ///
 /// 每次事务成功提交后递增。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
 pub struct BufferVersion(u64);
 
 impl BufferVersion {
@@ -59,6 +64,7 @@ impl Default for BufferVersion {
 ///
 /// 用于标识一次事务提交，通常单调递增。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
 pub struct TransactionId(u64);
 
 impl TransactionId {

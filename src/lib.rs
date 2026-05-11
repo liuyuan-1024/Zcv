@@ -64,8 +64,8 @@ pub use transaction::{
     TransactionMetadata, TransactionRecord, TransactionSource,
 };
 pub use types::{
-    BufferId, BufferKind, BufferState, BufferVersion, ByteOffset, CharOffset, DisplayColumn, Line,
-    LineEndingStyle, LineRange, LogicalColumn, Position, TextRange, TransactionId, Utf16Offset,
-    Utf16Position,
+    BufferId, BufferOrigin, BufferState, BufferVersion, ByteOffset, CharOffset, DisplayColumn,
+    Line, LineEndingStyle, LineRange, LogicalColumn, OriginKind, Position, TextRange,
+    TransactionId, Utf16Offset, Utf16Position,
 };
 pub use versioned::{VersionedRangeEntry, VersionedRangeSet, VersionedRangeSpec, VersionedResult};

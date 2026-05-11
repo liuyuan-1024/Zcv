@@ -2,8 +2,14 @@
 //!
 //! 本文件保持无状态、无存储后端偏好，只依赖只读文本能力与 BufferConfig，不处理文本变异。
 //!
-//! **Zero-copy 纪律**：所有列宽计算消费 `TextRead::chunks(range)` 流式迭代器；
-//! 不再走 `slice_text → String` 的全量物化路径。
+//! **Grapheme 正确性纪律**：所有"按可见单位前进"的列宽计算按 **grapheme cluster** 走，
+//! 不按 char (Unicode scalar) 走。
+//! - 合成字符 `é = e + U+0301` 视为 1 个 grapheme、宽度 1
+//! - emoji ZWJ 序列 `👨‍👩‍👧` 视为 1 个 grapheme、宽度 2（首字符宽度）
+//! - 国旗 emoji `🇨🇳` 视为 1 个 grapheme、宽度 2
+//! - `LogicalColumn` 仍按 char 数推进（与 ropey 的 `len_chars` 对齐），仅 `DisplayColumn` 按 grapheme 计算
+
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     BufferConfig, CharOffset, DisplayColumn, DisplayColumnAffinity, EngineResult, Line,
@@ -29,15 +35,11 @@ pub(crate) fn logical_to_display_column_in_text<T: TextRead>(
     let offset = storage.position_to_byte(Position::new(line, column))?;
     let range = TextRange::new(line_start, offset)?;
 
-    // 流式消费 chunks，避免 slice_text 全量物化
-    let mut display_column = 0usize;
-    for chunk in storage.chunks(range)? {
-        for ch in chunk.chars() {
-            display_column = advance_display_column(display_column, ch, config);
-        }
-    }
+    // slice_text 在单块 rope 时返回 Cow::Borrowed（零拷贝），多块时才物化。
+    // grapheme cluster 边界要求一段连续文本，无法纯 chunk-streaming。
+    let text = storage.slice_text(range)?;
 
-    Ok(DisplayColumn::new(display_column))
+    Ok(DisplayColumn::new(display_width_of_text(text.as_ref(), config)))
 }
 
 pub(crate) fn display_to_logical_column_in_text<T: TextRead>(
@@ -51,47 +53,47 @@ pub(crate) fn display_to_logical_column_in_text<T: TextRead>(
     let line_end = line_content_end_for_storage(storage, line)?;
     let range = TextRange::new(line_start, line_end)?;
     let target = column.get();
-    let mut current_display = 0usize;
-    let mut current_logical = 0usize;
 
     if target == 0 {
         return Ok(LogicalColumn::ZERO);
     }
 
-    // 流式消费 chunks
-    for chunk in storage.chunks(range)? {
-        for ch in chunk.chars() {
-            let next_display = advance_display_column(current_display, ch, config);
-            let next_logical = current_logical + 1;
+    let text = storage.slice_text(range)?;
+    let mut current_display = 0usize;
+    let mut current_logical = 0usize;
 
-            if target == current_display {
-                return Ok(LogicalColumn::new(current_logical));
-            }
+    // 按 grapheme cluster 推进 display；logical 按 char 数累加
+    for grapheme in text.as_ref().graphemes(true) {
+        let next_display = advance_display_column_for_grapheme(current_display, grapheme, config);
+        let next_logical = current_logical + grapheme.chars().count();
 
-            if target == next_display {
-                return Ok(LogicalColumn::new(next_logical));
-            }
-
-            if target > current_display && target < next_display {
-                return Ok(LogicalColumn::new(match affinity {
-                    DisplayColumnAffinity::Previous => current_logical,
-                    DisplayColumnAffinity::Next => next_logical,
-                    DisplayColumnAffinity::Nearest => {
-                        let distance_to_previous = target - current_display;
-                        let distance_to_next = next_display - target;
-
-                        if distance_to_previous <= distance_to_next {
-                            current_logical
-                        } else {
-                            next_logical
-                        }
-                    }
-                }));
-            }
-
-            current_display = next_display;
-            current_logical = next_logical;
+        if target == current_display {
+            return Ok(LogicalColumn::new(current_logical));
         }
+
+        if target == next_display {
+            return Ok(LogicalColumn::new(next_logical));
+        }
+
+        if target > current_display && target < next_display {
+            return Ok(LogicalColumn::new(match affinity {
+                DisplayColumnAffinity::Previous => current_logical,
+                DisplayColumnAffinity::Next => next_logical,
+                DisplayColumnAffinity::Nearest => {
+                    let distance_to_previous = target - current_display;
+                    let distance_to_next = next_display - target;
+
+                    if distance_to_previous <= distance_to_next {
+                        current_logical
+                    } else {
+                        next_logical
+                    }
+                }
+            }));
+        }
+
+        current_display = next_display;
+        current_logical = next_logical;
     }
 
     Ok(LogicalColumn::new(current_logical))
@@ -136,10 +138,34 @@ fn line_content_end_for_storage<T: TextRead>(
     Ok(crate::ByteOffset::new(next_line_start))
 }
 
-fn advance_display_column(display_column: usize, ch: char, config: &BufferConfig) -> usize {
-    if ch == '\t' {
-        next_tab_stop(DisplayColumn::new(display_column), config.tab.tab_width()).get()
-    } else {
-        display_column + config.display_width.char_width(ch)
+/// 按 grapheme cluster 计算文本的显示宽度。
+///
+/// 与按 char 累加相比，**合成字符、ZWJ emoji 序列、国旗 emoji** 等多 codepoint 的字素簇
+/// 按一个可见单位计算宽度，避免「光标停在 emoji 中间」「合成字符占两列」之类的经典 bug。
+fn display_width_of_text(text: &str, config: &BufferConfig) -> usize {
+    text.graphemes(true).fold(0usize, |display_column, grapheme| {
+        advance_display_column_for_grapheme(display_column, grapheme, config)
+    })
+}
+
+/// 推进一个 grapheme cluster 的显示列。
+///
+/// - 制表符按 tab stop 推进
+/// - 其他 grapheme：宽度 = **首字符宽度**；同 grapheme 内后续 codepoint
+///   （组合标记 / ZWJ / 第二个 RI 等）按 0 宽度处理
+fn advance_display_column_for_grapheme(
+    display_column: usize,
+    grapheme: &str,
+    config: &BufferConfig,
+) -> usize {
+    if grapheme == "\t" {
+        return next_tab_stop(DisplayColumn::new(display_column), config.tab.tab_width()).get();
     }
+
+    let Some(first_char) = grapheme.chars().next() else {
+        return display_column;
+    };
+
+    // grapheme 的宽度由首字符决定；组合标记 / ZWJ / RI 在同一 cluster 内贡献 0
+    display_column + config.display_width.char_width(first_char)
 }

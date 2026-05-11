@@ -7,7 +7,7 @@ use crate::{
     errors::AnchorError,
     position_map::{Affinity, MappingResult, PositionMap},
     transaction::DeltaEvent,
-    types::{BufferVersion, CharOffset},
+    types::{BufferVersion, ByteOffset},
 };
 
 use super::{AnchorDeletedPolicy, AnchorUpdate};
@@ -15,12 +15,12 @@ use super::{AnchorDeletedPolicy, AnchorUpdate};
 /// 不绑定 BufferVersion 的轻量位置标记。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Mark {
-    offset: CharOffset,
+    offset: ByteOffset,
     affinity: Affinity,
 }
 
 impl Mark {
-    pub fn new(offset: CharOffset) -> Self {
+    pub fn new(offset: ByteOffset) -> Self {
         Self {
             offset,
             affinity: Affinity::default(),
@@ -32,7 +32,7 @@ impl Mark {
         self
     }
 
-    pub fn offset(self) -> CharOffset {
+    pub fn offset(self) -> ByteOffset {
         self.offset
     }
 
@@ -50,7 +50,7 @@ impl Mark {
 
 impl Default for Mark {
     fn default() -> Self {
-        Self::new(CharOffset::ZERO)
+        Self::new(ByteOffset::ZERO)
     }
 }
 
@@ -58,12 +58,12 @@ impl Default for Mark {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Anchor {
     version: BufferVersion,
-    offset: CharOffset,
+    offset: ByteOffset,
     affinity: Affinity,
 }
 
 impl Anchor {
-    pub fn new(version: BufferVersion, offset: CharOffset) -> Self {
+    pub fn new(version: BufferVersion, offset: ByteOffset) -> Self {
         Self {
             version,
             offset,
@@ -80,7 +80,7 @@ impl Anchor {
         self.version
     }
 
-    pub fn offset(self) -> CharOffset {
+    pub fn offset(self) -> ByteOffset {
         self.offset
     }
 
@@ -197,11 +197,11 @@ impl Anchor {
 
 impl Default for Anchor {
     fn default() -> Self {
-        Self::new(BufferVersion::INITIAL, CharOffset::ZERO)
+        Self::new(BufferVersion::INITIAL, ByteOffset::ZERO)
     }
 }
 
-fn map_mark_result(result: MappingResult<CharOffset>, affinity: Affinity) -> MappingResult<Mark> {
+fn map_mark_result(result: MappingResult<ByteOffset>, affinity: Affinity) -> MappingResult<Mark> {
     match result {
         MappingResult::Mapped(offset) => {
             MappingResult::Mapped(Mark::new(offset).with_affinity(affinity))
@@ -219,7 +219,7 @@ fn map_mark_result(result: MappingResult<CharOffset>, affinity: Affinity) -> Map
 }
 
 fn map_anchor_result(
-    result: MappingResult<CharOffset>,
+    result: MappingResult<ByteOffset>,
     version: BufferVersion,
     affinity: Affinity,
 ) -> MappingResult<Anchor> {

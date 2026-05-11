@@ -10,8 +10,8 @@ fn buffer(text: &str) -> Buffer {
     Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
 }
 
-fn c(value: usize) -> CharOffset {
-    CharOffset::new(value)
+fn c(value: usize) -> ByteOffset {
+    ByteOffset::new(value)
 }
 
 fn range(start: usize, end: usize) -> TextRange {

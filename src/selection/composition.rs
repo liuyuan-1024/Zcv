@@ -2,38 +2,38 @@
 //!
 //! 组合输入的提交、取消和校验流程在 `buffer/composition/`，这里不直接修改文本。
 
-use crate::{CharOffset, TextRange};
+use crate::{ByteOffset, TextRange};
 
 use super::{Selection, SelectionSet};
 
 /// 组合输入中的相对选区。
 ///
-/// `anchor` / `head` 是相对于当前 preedit 文本开头的 `CharOffset`，
+/// `anchor` / `head` 是相对于当前 preedit 文本开头的 `ByteOffset`，
 /// 不是整个 Buffer 的绝对坐标。`Buffer::update_composition` 会把它映射为
 /// 当前文档中的绝对 `Selection`，并验证它没有落在 grapheme 中间。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct CompositionSelection {
-    anchor: CharOffset,
-    head: CharOffset,
+    anchor: ByteOffset,
+    head: ByteOffset,
 }
 
 impl CompositionSelection {
-    pub const fn new(anchor: CharOffset, head: CharOffset) -> Self {
+    pub const fn new(anchor: ByteOffset, head: ByteOffset) -> Self {
         Self { anchor, head }
     }
 
-    pub const fn caret(offset: CharOffset) -> Self {
+    pub const fn caret(offset: ByteOffset) -> Self {
         Self {
             anchor: offset,
             head: offset,
         }
     }
 
-    pub const fn anchor(self) -> CharOffset {
+    pub const fn anchor(self) -> ByteOffset {
         self.anchor
     }
 
-    pub const fn head(self) -> CharOffset {
+    pub const fn head(self) -> ByteOffset {
         self.head
     }
 }

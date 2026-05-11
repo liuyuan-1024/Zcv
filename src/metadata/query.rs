@@ -5,7 +5,7 @@
 use crate::{
     buffer::Buffer,
     errors::CoordinateError,
-    types::{CharOffset, Line, LineRange, TextRange},
+    types::{ByteOffset, Line, LineRange, TextRange},
 };
 
 pub(crate) fn ranges_intersect(left: TextRange, right: TextRange) -> bool {
@@ -17,7 +17,7 @@ pub(crate) fn ranges_intersect(left: TextRange, right: TextRange) -> bool {
     }
 }
 
-pub(crate) fn range_contains_offset(range: TextRange, offset: CharOffset) -> bool {
+pub(crate) fn range_contains_offset(range: TextRange, offset: ByteOffset) -> bool {
     if range.is_empty() {
         return range.start() == offset;
     }
@@ -29,12 +29,12 @@ pub(crate) fn text_range_for_line_range(
     buffer: &Buffer,
     line_range: LineRange,
 ) -> crate::EngineResult<TextRange> {
-    let start = char_offset_for_line_boundary(buffer, line_range.start())?;
-    let end = char_offset_for_line_boundary(buffer, line_range.end())?;
+    let start = byte_offset_for_line_boundary(buffer, line_range.start())?;
+    let end = byte_offset_for_line_boundary(buffer, line_range.end())?;
     Ok(TextRange::new(start, end)?)
 }
 
-fn char_offset_for_line_boundary(buffer: &Buffer, line: Line) -> crate::EngineResult<CharOffset> {
+fn byte_offset_for_line_boundary(buffer: &Buffer, line: Line) -> crate::EngineResult<ByteOffset> {
     let line_value = line.get();
     let line_count = buffer.line_count();
 
@@ -43,8 +43,8 @@ fn char_offset_for_line_boundary(buffer: &Buffer, line: Line) -> crate::EngineRe
     }
 
     if line_value == line_count {
-        return Ok(buffer.len_chars());
+        return Ok(buffer.len_bytes());
     }
 
-    buffer.line_start(line)
+    buffer.line_start_byte(line)
 }

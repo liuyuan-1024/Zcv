@@ -72,8 +72,23 @@ impl Snapshot {
         self.storage.line_count()
     }
 
-    pub fn line_start(&self, line: Line) -> EngineResult<CharOffset> {
+    /// 指定行的起始 ByteOffset（深核接口）。
+    pub fn line_start_byte(&self, line: Line) -> EngineResult<ByteOffset> {
         self.storage.line_start(line)
+    }
+
+    /// 指定行的起始 CharOffset（边界投影）。
+    pub fn line_start(&self, line: Line) -> EngineResult<CharOffset> {
+        let byte = self.storage.line_start(line)?;
+        self.storage.byte_to_char(byte)
+    }
+
+    pub fn byte_to_position(&self, offset: ByteOffset) -> EngineResult<Position> {
+        self.storage.byte_to_position(offset)
+    }
+
+    pub fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset> {
+        self.storage.position_to_byte(position)
     }
 
     /// 按 char range 读取快照文本。
@@ -141,22 +156,35 @@ impl Snapshot {
     }
 
     pub fn is_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<bool> {
+        self.storage.is_grapheme_boundary_char(offset)
+    }
+
+    pub fn is_grapheme_boundary_byte(&self, offset: ByteOffset) -> EngineResult<bool> {
         self.storage.is_grapheme_boundary(offset)
     }
 
     pub fn validate_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<()> {
-        if self.storage.is_grapheme_boundary(offset)? {
+        if self.storage.is_grapheme_boundary_char(offset)? {
             Ok(())
         } else {
-            Err(CoordinateError::InvalidGraphemeBoundary(offset).into())
+            let byte = self.storage.char_to_byte(offset)?;
+            Err(CoordinateError::InvalidGraphemeBoundary(byte).into())
         }
     }
 
     pub fn previous_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
-        self.storage.previous_grapheme_boundary(offset)
+        self.storage.previous_grapheme_boundary_char(offset)
     }
 
     pub fn next_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+        self.storage.next_grapheme_boundary_char(offset)
+    }
+
+    pub fn previous_grapheme_boundary_byte(&self, offset: ByteOffset) -> EngineResult<ByteOffset> {
+        self.storage.previous_grapheme_boundary(offset)
+    }
+
+    pub fn next_grapheme_boundary_byte(&self, offset: ByteOffset) -> EngineResult<ByteOffset> {
         self.storage.next_grapheme_boundary(offset)
     }
 

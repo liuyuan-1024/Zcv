@@ -29,8 +29,8 @@ fn small_budget_config(
     config
 }
 
-fn c(value: usize) -> CharOffset {
-    CharOffset::new(value)
+fn c(value: usize) -> ByteOffset {
+    ByteOffset::new(value)
 }
 
 fn commit_insert(buffer: &mut Buffer, offset: usize, text: &str) {

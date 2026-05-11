@@ -2,7 +2,7 @@
 //!
 //! 本文件维护排序、合并和 primary selection 归属，是 Buffer 唯一的选区模型。
 
-use crate::{CharOffset, PositionMap, TextRange};
+use crate::{ByteOffset, PositionMap, TextRange};
 
 use super::Selection;
 
@@ -45,7 +45,7 @@ impl SelectionSet {
         normalize_selections(selections, primary_index, policy)
     }
 
-    pub fn caret(offset: CharOffset) -> Self {
+    pub fn caret(offset: ByteOffset) -> Self {
         Self {
             selections: vec![Selection::caret(offset)],
             primary_index: 0,
@@ -111,7 +111,7 @@ impl SelectionSet {
 
 impl Default for SelectionSet {
     fn default() -> Self {
-        Self::caret(CharOffset::ZERO)
+        Self::caret(ByteOffset::ZERO)
     }
 }
 
@@ -121,7 +121,7 @@ fn normalize_selections(
     policy: SelectionMergePolicy,
 ) -> SelectionSet {
     if selections.is_empty() {
-        return SelectionSet::caret(CharOffset::ZERO);
+        return SelectionSet::caret(ByteOffset::ZERO);
     }
 
     let original_primary_index = primary_index.min(selections.len() - 1);
@@ -185,6 +185,6 @@ fn should_merge(current: Selection, next: Selection, policy: SelectionMergePolic
     false
 }
 
-fn contains_offset(selection: Selection, offset: CharOffset) -> bool {
+fn contains_offset(selection: Selection, offset: ByteOffset) -> bool {
     selection.start() <= offset && offset <= selection.end()
 }

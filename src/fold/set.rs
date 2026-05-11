@@ -13,7 +13,7 @@ use crate::{
     errors::FoldError,
     tracking::TrackedRangeUpdatePolicy,
     transaction::DeltaEvent,
-    types::{BufferVersion, CharOffset, Line, LineRange, TextRange},
+    types::{BufferVersion, ByteOffset, Line, LineRange, TextRange},
 };
 
 use super::{
@@ -142,7 +142,7 @@ impl FoldSet {
     /// 移除「包含给定 offset 的最内层 fold」。
     ///
     /// 优先选择 range 长度最小的命中 fold；若无 fold 命中则返回 None。
-    pub fn unfold_at(&mut self, offset: CharOffset) -> Option<FoldRange> {
+    pub fn unfold_at(&mut self, offset: ByteOffset) -> Option<FoldRange> {
         let candidate = self
             .ranges
             .iter()
@@ -314,7 +314,7 @@ fn ranges_disjoint_or_nested(left: TextRange, right: TextRange) -> bool {
     false
 }
 
-fn range_contains_offset(range: TextRange, offset: CharOffset) -> bool {
+fn range_contains_offset(range: TextRange, offset: ByteOffset) -> bool {
     if range.is_empty() {
         return false;
     }

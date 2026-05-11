@@ -1,13 +1,13 @@
 //! PositionMap 强类型：把一次文本变更固化为可复用的前后版本坐标映射契约。
 //!
-//! 本文件只表达 char offset / text range 在旧文本与新文本之间的映射关系，
+//! 本文件只表达 byte offset / text range 在旧文本与新文本之间的映射关系，
 //! 不负责 Buffer 提交、事件分发、anchor 生命周期或 UI 选择策略。
 
 use crate::{
     selection::{Selection, SelectionSet},
     tracking::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
     transaction::{ChangeSet, Edit},
-    types::{BufferVersion, CharOffset, TextRange},
+    types::{BufferVersion, ByteOffset, TextRange},
 };
 
 /// 同点插入时旧位置吸附到插入文本前还是插入文本后。
@@ -75,7 +75,7 @@ impl<T: Copy> MappingResult<T> {
     }
 }
 
-/// 旧文本与新文本之间的 char 坐标映射器。
+/// 旧文本与新文本之间的 byte 坐标映射器。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PositionMap {
     edits: Vec<Edit>,
@@ -98,17 +98,17 @@ impl PositionMap {
         self.edits.is_empty()
     }
 
-    /// old char position -> new char position。
-    pub fn map_old_position(&self, pos: CharOffset) -> MappingResult<CharOffset> {
+    /// old byte position -> new byte position。
+    pub fn map_old_position(&self, pos: ByteOffset) -> MappingResult<ByteOffset> {
         self.map_old_position_with_affinity(pos, Affinity::default())
     }
 
-    /// old char position -> new char position，显式指定同点插入吸附方向。
+    /// old byte position -> new byte position，显式指定同点插入吸附方向。
     pub fn map_old_position_with_affinity(
         &self,
-        pos: CharOffset,
+        pos: ByteOffset,
         affinity: Affinity,
-    ) -> MappingResult<CharOffset> {
+    ) -> MappingResult<ByteOffset> {
         let mut diff = 0isize;
         let pos_val = pos.get() as isize;
 
@@ -140,17 +140,17 @@ impl PositionMap {
         MappingResult::Mapped(offset(pos_val + diff))
     }
 
-    /// new char position -> old char position。
-    pub fn map_new_position(&self, pos: CharOffset) -> MappingResult<CharOffset> {
+    /// new byte position -> old byte position。
+    pub fn map_new_position(&self, pos: ByteOffset) -> MappingResult<ByteOffset> {
         self.map_new_position_with_bias(pos, Bias::default())
     }
 
-    /// new char position -> old char position，显式指定歧义区域偏向。
+    /// new byte position -> old byte position，显式指定歧义区域偏向。
     pub fn map_new_position_with_bias(
         &self,
-        pos: CharOffset,
+        pos: ByteOffset,
         bias: Bias,
-    ) -> MappingResult<CharOffset> {
+    ) -> MappingResult<ByteOffset> {
         let mut diff = 0isize;
         let pos_val = pos.get() as isize;
 
@@ -180,12 +180,12 @@ impl PositionMap {
         MappingResult::Mapped(offset(pos_val - diff))
     }
 
-    /// old char range -> new char range。
+    /// old byte range -> new byte range。
     pub fn map_old_range(&self, range: TextRange) -> MappingResult<TextRange> {
         self.map_old_range_with_stickiness(range, Stickiness::default())
     }
 
-    /// old char range -> new char range，显式指定边界处插入文本的吸附 / 扩张策略。
+    /// old byte range -> new byte range，显式指定边界处插入文本的吸附 / 扩张策略。
     pub fn map_old_range_with_stickiness(
         &self,
         range: TextRange,
@@ -216,7 +216,7 @@ impl PositionMap {
         MappingResult::Mapped(mapped)
     }
 
-    /// new char range -> old char range。
+    /// new byte range -> old byte range。
     pub fn map_new_range(&self, range: TextRange) -> MappingResult<TextRange> {
         let (old_start, old_end) = if range.is_empty() {
             let position = self.map_new_position(range.start()).value();
@@ -294,9 +294,9 @@ impl PositionMap {
 
     fn map_new_position_for_range_boundary(
         &self,
-        pos: CharOffset,
+        pos: ByteOffset,
         use_after_deleted_content: bool,
-    ) -> CharOffset {
+    ) -> ByteOffset {
         let mut diff = 0isize;
         let pos_val = pos.get() as isize;
 
@@ -372,21 +372,21 @@ impl PositionMap {
 }
 
 fn replacement_len(edit: &Edit) -> isize {
-    edit.replacement().chars().count() as isize
+    edit.replacement().len() as isize
 }
 
-fn offset(value: isize) -> CharOffset {
-    CharOffset::new(value.max(0) as usize)
+fn offset(value: isize) -> ByteOffset {
+    ByteOffset::new(value.max(0) as usize)
 }
 
-fn biased_offset(start: isize, end: isize, bias: Bias) -> CharOffset {
+fn biased_offset(start: isize, end: isize, bias: Bias) -> ByteOffset {
     match bias {
         Bias::Left => offset(start),
         Bias::Right => offset(end),
     }
 }
 
-fn text_range(start: CharOffset, end: CharOffset) -> TextRange {
+fn text_range(start: ByteOffset, end: ByteOffset) -> TextRange {
     TextRange::new(start, end).expect("PositionMap 生成的 range 必须满足 start <= end")
 }
 
@@ -417,15 +417,15 @@ fn boundary_affinity(stickiness: Stickiness, side: BoundarySide) -> Affinity {
 }
 
 fn ranges_overlap(
-    first_start: CharOffset,
-    first_end: CharOffset,
-    second_start: CharOffset,
-    second_end: CharOffset,
+    first_start: ByteOffset,
+    first_end: ByteOffset,
+    second_start: ByteOffset,
+    second_end: ByteOffset,
 ) -> bool {
     first_start < second_end && second_start < first_end
 }
 
-fn range_touches_span(range: TextRange, span_start: CharOffset, span_end: CharOffset) -> bool {
+fn range_touches_span(range: TextRange, span_start: ByteOffset, span_end: ByteOffset) -> bool {
     if range.is_empty() {
         span_start <= range.start() && range.start() < span_end
     } else {

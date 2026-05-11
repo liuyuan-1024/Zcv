@@ -8,7 +8,7 @@ use crate::{
     position_map::Stickiness,
     tracking::TrackedRangeUpdatePolicy,
     transaction::DeltaEvent,
-    types::{BufferVersion, CharOffset, LineRange, TextRange},
+    types::{BufferVersion, ByteOffset, LineRange, TextRange},
 };
 
 use super::{
@@ -212,7 +212,7 @@ impl<T> MetadataLayer<T> {
             .filter(move |metadata_range| ranges_intersect(metadata_range.range(), query))
     }
 
-    pub fn ranges_containing(&self, offset: CharOffset) -> impl Iterator<Item = &MetadataRange<T>> {
+    pub fn ranges_containing(&self, offset: ByteOffset) -> impl Iterator<Item = &MetadataRange<T>> {
         self.ranges
             .iter()
             .filter(move |metadata_range| range_contains_offset(metadata_range.range(), offset))

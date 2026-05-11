@@ -1,6 +1,7 @@
 //! RopeyStorage 生产后端：把 `ropey` 的高性能文本结构封装成引擎内部 TextRead/TextStorage 能力。
 //!
-//! 本文件负责存储级指标、切片、坐标转换、grapheme 和换行检测；不把 `ropey::Rope` 泄漏到 public API。
+//! **坐标系唯一真理**：本文件实现的 trait 以 `ByteOffset` 为深核位置类型；
+//! 内部桥接 ropey 的 char-based API，对外只暴露 byte 接口（保留 char 作为边界投影）。
 
 use std::borrow::Cow;
 
@@ -25,7 +26,7 @@ fn rope_len_utf16_cu(rope: &Rope) -> Utf16Offset {
 
 /// 默认高性能文本后端。
 ///
-/// 不把 `ropey::Rope` 暴露到 public API；外部仍然只看到 Buffer / Snapshot / CharOffset。
+/// 不把 `ropey::Rope` 暴露到 public API；外部仍然只看到 Buffer / Snapshot / ByteOffset。
 #[derive(Debug, Clone)]
 pub(crate) struct RopeyStorage {
     rope: Rope,
@@ -46,9 +47,20 @@ impl RopeyStorage {
         ropes_have_same_text(&self.rope, &snapshot.rope)
     }
 
-    fn validate_range(&self, range: TextRange) -> EngineResult<()> {
-        if range.end().get() > self.rope.len_chars() {
+    /// 校验字节区间：长度不越界 + 端点都落在 UTF-8 字符边界 + 不切 CRLF 中间。
+    fn validate_byte_range(&self, range: TextRange) -> EngineResult<()> {
+        let len_bytes = self.rope.len_bytes();
+
+        if range.end().get() > len_bytes {
             return Err(EditError::RangeOutOfBounds { range }.into());
+        }
+
+        if !is_utf8_char_boundary_in_rope(&self.rope, range.start().get()) {
+            return Err(CoordinateError::InvalidByteBoundary(range.start()).into());
+        }
+
+        if !is_utf8_char_boundary_in_rope(&self.rope, range.end().get()) {
+            return Err(CoordinateError::InvalidByteBoundary(range.end()).into());
         }
 
         Ok(())
@@ -61,11 +73,11 @@ impl TextRead for RopeyStorage {
     }
 
     fn slice_text(&self, range: TextRange) -> EngineResult<Cow<'_, str>> {
-        self.validate_range(range)?;
+        self.validate_byte_range(range)?;
+        let start_char = self.rope.byte_to_char(range.start().get());
+        let end_char = self.rope.byte_to_char(range.end().get());
         Ok(Cow::Owned(
-            self.rope
-                .slice(range.start().get()..range.end().get())
-                .to_string(),
+            self.rope.slice(start_char..end_char).to_string(),
         ))
     }
 
@@ -85,58 +97,36 @@ impl TextRead for RopeyStorage {
         self.rope.len_lines()
     }
 
-    fn line_start(&self, line: Line) -> EngineResult<CharOffset> {
+    fn line_start(&self, line: Line) -> EngineResult<ByteOffset> {
         if line.get() >= self.rope.len_lines() {
             return Err(CoordinateError::LineOutOfBounds(line).into());
         }
 
-        Ok(CharOffset::new(self.rope.line_to_char(line.get())))
+        Ok(ByteOffset::new(self.rope.line_to_byte(line.get())))
+    }
+
+    fn byte_to_position(&self, offset: ByteOffset) -> EngineResult<Position> {
+        byte_to_position_in_rope(&self.rope, offset)
+    }
+
+    fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset> {
+        position_to_byte_in_rope(&self.rope, position)
     }
 
     fn char_to_position(&self, offset: CharOffset) -> EngineResult<Position> {
-        let offset_value = offset.get();
-
-        if offset_value > self.rope.len_chars() {
-            return Err(CoordinateError::OutOfBounds(offset).into());
-        }
-
-        if is_crlf_middle(&self.rope, offset_value) {
-            return Err(CoordinateError::OutOfBounds(offset).into());
-        }
-
-        let line_idx = self.rope.char_to_line(offset_value);
-        let line_start = self.rope.line_to_char(line_idx);
-        let column = offset_value - line_start;
-
-        Ok(Position::new(
-            Line::new(line_idx),
-            LogicalColumn::new(column),
-        ))
+        char_to_position_in_rope(&self.rope, offset)
     }
 
     fn position_to_char(&self, position: Position) -> EngineResult<CharOffset> {
-        let line = position.line();
-        let column = position.column().get();
+        position_to_char_in_rope(&self.rope, position)
+    }
 
-        if line.get() >= self.rope.len_lines() {
-            return Err(CoordinateError::LineOutOfBounds(line).into());
-        }
+    fn char_at(&self, offset: CharOffset) -> Option<char> {
+        char_at(&self.rope, offset.get())
+    }
 
-        let line_start = self.rope.line_to_char(line.get());
-        let next_line_start = if line.get() + 1 < self.rope.len_lines() {
-            self.rope.line_to_char(line.get() + 1)
-        } else {
-            self.rope.len_chars()
-        };
-
-        let line_content_end = line_content_end(&self.rope, next_line_start);
-        let line_len = line_content_end - line_start;
-
-        if column <= line_len {
-            return Ok(CharOffset::new(line_start + column));
-        }
-
-        Err(CoordinateError::OutOfBounds(CharOffset::new(line_content_end)).into())
+    fn char_at_byte(&self, offset: ByteOffset) -> Option<char> {
+        char_at_byte(&self.rope, offset.get())
     }
 
     fn byte_to_char(&self, offset: ByteOffset) -> EngineResult<CharOffset> {
@@ -147,32 +137,30 @@ impl TextRead for RopeyStorage {
         char_to_byte_in_rope(&self.rope, offset)
     }
 
-    fn char_to_utf16_position(&self, offset: CharOffset) -> EngineResult<Utf16Position> {
-        char_to_utf16_position_in_rope(&self.rope, offset)
+    fn byte_to_utf16_position(&self, offset: ByteOffset) -> EngineResult<Utf16Position> {
+        let char_offset = byte_to_char_in_rope(&self.rope, offset)?;
+        char_to_utf16_position_in_rope(&self.rope, char_offset)
     }
 
-    fn utf16_position_to_char(&self, position: Utf16Position) -> EngineResult<CharOffset> {
-        utf16_position_to_char_in_rope(&self.rope, position)
+    fn utf16_position_to_byte(&self, position: Utf16Position) -> EngineResult<ByteOffset> {
+        let char_offset = utf16_position_to_char_in_rope(&self.rope, position)?;
+        char_to_byte_in_rope(&self.rope, char_offset)
     }
 
-    fn is_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<bool> {
+    fn is_grapheme_boundary(&self, offset: ByteOffset) -> EngineResult<bool> {
         is_grapheme_boundary_in_rope(&self.rope, offset)
     }
 
-    fn previous_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+    fn previous_grapheme_boundary(&self, offset: ByteOffset) -> EngineResult<ByteOffset> {
         previous_grapheme_boundary_in_rope(&self.rope, offset)
     }
 
-    fn next_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+    fn next_grapheme_boundary(&self, offset: ByteOffset) -> EngineResult<ByteOffset> {
         next_grapheme_boundary_in_rope(&self.rope, offset)
     }
 
     fn line_ending_style(&self) -> LineEndingStyle {
         detect_line_ending_style_in_rope(&self.rope)
-    }
-
-    fn char_at(&self, offset: CharOffset) -> Option<char> {
-        char_at(&self.rope, offset.get())
     }
 }
 
@@ -186,17 +174,19 @@ impl TextStorage for RopeyStorage {
     }
 
     fn replace(&mut self, range: TextRange, replacement: &str) -> EngineResult<()> {
-        self.validate_range(range)?;
+        self.validate_byte_range(range)?;
 
-        let start = range.start().get();
-        let end = range.end().get();
+        let start_byte = range.start().get();
+        let end_byte = range.end().get();
+        let start_char = self.rope.byte_to_char(start_byte);
+        let end_char = self.rope.byte_to_char(end_byte);
 
-        if start != end {
-            self.rope.remove(start..end);
+        if start_char != end_char {
+            self.rope.remove(start_char..end_char);
         }
 
         if !replacement.is_empty() {
-            self.rope.insert(start, replacement);
+            self.rope.insert(start_char, replacement);
         }
 
         Ok(())
@@ -223,14 +213,21 @@ impl TextRead for RopeySnapshot {
     }
 
     fn slice_text(&self, range: TextRange) -> EngineResult<Cow<'_, str>> {
-        if range.end().get() > self.rope.len_chars() {
+        if range.end().get() > self.rope.len_bytes() {
             return Err(EditError::RangeOutOfBounds { range }.into());
         }
+        if !is_utf8_char_boundary_in_rope(&self.rope, range.start().get()) {
+            return Err(CoordinateError::InvalidByteBoundary(range.start()).into());
+        }
+        if !is_utf8_char_boundary_in_rope(&self.rope, range.end().get()) {
+            return Err(CoordinateError::InvalidByteBoundary(range.end()).into());
+        }
+
+        let start_char = self.rope.byte_to_char(range.start().get());
+        let end_char = self.rope.byte_to_char(range.end().get());
 
         Ok(Cow::Owned(
-            self.rope
-                .slice(range.start().get()..range.end().get())
-                .to_string(),
+            self.rope.slice(start_char..end_char).to_string(),
         ))
     }
 
@@ -250,26 +247,36 @@ impl TextRead for RopeySnapshot {
         self.rope.len_lines()
     }
 
-    fn line_start(&self, line: Line) -> EngineResult<CharOffset> {
+    fn line_start(&self, line: Line) -> EngineResult<ByteOffset> {
         if line.get() >= self.rope.len_lines() {
             return Err(CoordinateError::LineOutOfBounds(line).into());
         }
 
-        Ok(CharOffset::new(self.rope.line_to_char(line.get())))
+        Ok(ByteOffset::new(self.rope.line_to_byte(line.get())))
+    }
+
+    fn byte_to_position(&self, offset: ByteOffset) -> EngineResult<Position> {
+        byte_to_position_in_rope(&self.rope, offset)
+    }
+
+    fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset> {
+        position_to_byte_in_rope(&self.rope, position)
     }
 
     fn char_to_position(&self, offset: CharOffset) -> EngineResult<Position> {
-        RopeyStorage {
-            rope: self.rope.clone(),
-        }
-        .char_to_position(offset)
+        char_to_position_in_rope(&self.rope, offset)
     }
 
     fn position_to_char(&self, position: Position) -> EngineResult<CharOffset> {
-        RopeyStorage {
-            rope: self.rope.clone(),
-        }
-        .position_to_char(position)
+        position_to_char_in_rope(&self.rope, position)
+    }
+
+    fn char_at(&self, offset: CharOffset) -> Option<char> {
+        char_at(&self.rope, offset.get())
+    }
+
+    fn char_at_byte(&self, offset: ByteOffset) -> Option<char> {
+        char_at_byte(&self.rope, offset.get())
     }
 
     fn byte_to_char(&self, offset: ByteOffset) -> EngineResult<CharOffset> {
@@ -280,44 +287,128 @@ impl TextRead for RopeySnapshot {
         char_to_byte_in_rope(&self.rope, offset)
     }
 
-    fn char_to_utf16_position(&self, offset: CharOffset) -> EngineResult<Utf16Position> {
-        char_to_utf16_position_in_rope(&self.rope, offset)
+    fn byte_to_utf16_position(&self, offset: ByteOffset) -> EngineResult<Utf16Position> {
+        let char_offset = byte_to_char_in_rope(&self.rope, offset)?;
+        char_to_utf16_position_in_rope(&self.rope, char_offset)
     }
 
-    fn utf16_position_to_char(&self, position: Utf16Position) -> EngineResult<CharOffset> {
-        utf16_position_to_char_in_rope(&self.rope, position)
+    fn utf16_position_to_byte(&self, position: Utf16Position) -> EngineResult<ByteOffset> {
+        let char_offset = utf16_position_to_char_in_rope(&self.rope, position)?;
+        char_to_byte_in_rope(&self.rope, char_offset)
     }
 
-    fn is_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<bool> {
+    fn is_grapheme_boundary(&self, offset: ByteOffset) -> EngineResult<bool> {
         is_grapheme_boundary_in_rope(&self.rope, offset)
     }
 
-    fn previous_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+    fn previous_grapheme_boundary(&self, offset: ByteOffset) -> EngineResult<ByteOffset> {
         previous_grapheme_boundary_in_rope(&self.rope, offset)
     }
 
-    fn next_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+    fn next_grapheme_boundary(&self, offset: ByteOffset) -> EngineResult<ByteOffset> {
         next_grapheme_boundary_in_rope(&self.rope, offset)
     }
 
     fn line_ending_style(&self) -> LineEndingStyle {
         detect_line_ending_style_in_rope(&self.rope)
     }
-
-    fn char_at(&self, offset: CharOffset) -> Option<char> {
-        char_at(&self.rope, offset.get())
-    }
 }
+
+// ============================================================
+// 核心 byte-native helper：byte_to_position / position_to_byte
+// ============================================================
+
+fn byte_to_position_in_rope(rope: &Rope, offset: ByteOffset) -> EngineResult<Position> {
+    let byte_offset = offset.get();
+    if byte_offset > rope.len_bytes() {
+        return Err(CoordinateError::OutOfBounds(offset).into());
+    }
+    if !is_utf8_char_boundary_in_rope(rope, byte_offset) {
+        return Err(CoordinateError::InvalidByteBoundary(offset).into());
+    }
+    let char_offset = rope.byte_to_char(byte_offset);
+
+    if is_crlf_middle(rope, char_offset) {
+        return Err(CoordinateError::OutOfBounds(offset).into());
+    }
+
+    let line_idx = rope.char_to_line(char_offset);
+    let line_char_start = rope.line_to_char(line_idx);
+    let column = char_offset - line_char_start;
+
+    Ok(Position::new(
+        Line::new(line_idx),
+        LogicalColumn::new(column),
+    ))
+}
+
+fn position_to_byte_in_rope(rope: &Rope, position: Position) -> EngineResult<ByteOffset> {
+    let char_offset = position_to_char_in_rope(rope, position)?;
+    Ok(ByteOffset::new(rope.char_to_byte(char_offset.get())))
+}
+
+// ============================================================
+// 边界投影 helper：char_to_position / position_to_char
+// ============================================================
+
+fn char_to_position_in_rope(rope: &Rope, offset: CharOffset) -> EngineResult<Position> {
+    let offset_value = offset.get();
+    if offset_value > rope.len_chars() {
+        return Err(CoordinateError::CharOutOfBounds(offset).into());
+    }
+
+    if is_crlf_middle(rope, offset_value) {
+        return Err(CoordinateError::CharOutOfBounds(offset).into());
+    }
+
+    let line_idx = rope.char_to_line(offset_value);
+    let line_start = rope.line_to_char(line_idx);
+    let column = offset_value - line_start;
+
+    Ok(Position::new(
+        Line::new(line_idx),
+        LogicalColumn::new(column),
+    ))
+}
+
+fn position_to_char_in_rope(rope: &Rope, position: Position) -> EngineResult<CharOffset> {
+    let line = position.line();
+    let column = position.column().get();
+
+    if line.get() >= rope.len_lines() {
+        return Err(CoordinateError::LineOutOfBounds(line).into());
+    }
+
+    let line_start = rope.line_to_char(line.get());
+    let next_line_start = if line.get() + 1 < rope.len_lines() {
+        rope.line_to_char(line.get() + 1)
+    } else {
+        rope.len_chars()
+    };
+
+    let line_content_end = line_content_end(rope, next_line_start);
+    let line_len = line_content_end - line_start;
+
+    if column <= line_len {
+        return Ok(CharOffset::new(line_start + column));
+    }
+
+    Err(CoordinateError::CharOutOfBounds(CharOffset::new(line_content_end)).into())
+}
+
+// ============================================================
+// UTF-8 / UTF-16 / Char 投影
+// ============================================================
 
 fn char_to_utf16_position_in_rope(rope: &Rope, offset: CharOffset) -> EngineResult<Utf16Position> {
     let offset_value = offset.get();
 
     if offset_value > rope.len_chars() {
-        return Err(CoordinateError::OutOfBounds(offset).into());
+        return Err(CoordinateError::CharOutOfBounds(offset).into());
     }
 
     if is_crlf_middle(rope, offset_value) {
-        return Err(CoordinateError::OutOfBounds(offset).into());
+        return Err(CoordinateError::CharOutOfBounds(offset).into());
     }
 
     let line_idx = rope.char_to_line(offset_value);
@@ -386,7 +477,7 @@ fn utf16_position_to_char_in_rope(
 fn char_to_byte_in_rope(rope: &Rope, offset: CharOffset) -> EngineResult<ByteOffset> {
     let char_offset = offset.get();
     if char_offset > rope.len_chars() {
-        return Err(CoordinateError::OutOfBounds(offset).into());
+        return Err(CoordinateError::CharOutOfBounds(offset).into());
     }
 
     Ok(ByteOffset::new(rope.char_to_byte(char_offset)))
@@ -396,7 +487,7 @@ fn byte_to_char_in_rope(rope: &Rope, offset: ByteOffset) -> EngineResult<CharOff
     let byte_offset = offset.get();
 
     if byte_offset > rope.len_bytes() {
-        return Err(CoordinateError::ByteOutOfBounds(offset).into());
+        return Err(CoordinateError::OutOfBounds(offset).into());
     }
 
     if !is_utf8_char_boundary_in_rope(rope, byte_offset) {
@@ -407,6 +498,12 @@ fn byte_to_char_in_rope(rope: &Rope, offset: ByteOffset) -> EngineResult<CharOff
 }
 
 fn is_utf8_char_boundary_in_rope(rope: &Rope, byte_offset: usize) -> bool {
+    if byte_offset == 0 {
+        return true;
+    }
+    if byte_offset > rope.len_bytes() {
+        return false;
+    }
     if byte_offset == rope.len_bytes() {
         return true;
     }
@@ -415,10 +512,27 @@ fn is_utf8_char_boundary_in_rope(rope: &Rope, byte_offset: usize) -> bool {
     chunk.is_char_boundary(byte_offset - chunk_start)
 }
 
-fn is_grapheme_boundary_in_rope(rope: &Rope, offset: CharOffset) -> EngineResult<bool> {
-    let byte_offset = char_to_byte_in_rope(rope, offset)?.get();
+// ============================================================
+// Grapheme cluster 边界（byte-native）
+// ============================================================
+
+fn is_grapheme_boundary_in_rope(rope: &Rope, offset: ByteOffset) -> EngineResult<bool> {
+    let byte_offset = offset.get();
+    if byte_offset > rope.len_bytes() {
+        return Err(CoordinateError::OutOfBounds(offset).into());
+    }
+    if !is_utf8_char_boundary_in_rope(rope, byte_offset) {
+        return Err(CoordinateError::InvalidByteBoundary(offset).into());
+    }
+
     let mut cursor = GraphemeCursor::new(byte_offset, rope.len_bytes(), true);
-    let (mut chunk, mut chunk_start, _, _) = rope.chunk_at_byte(byte_offset);
+    let (mut chunk, mut chunk_start, _, _) = if byte_offset < rope.len_bytes() {
+        rope.chunk_at_byte(byte_offset)
+    } else if byte_offset == 0 {
+        ("", 0, 0, 0)
+    } else {
+        rope.chunk_at_byte(byte_offset.saturating_sub(1))
+    };
 
     loop {
         match cursor.is_boundary(chunk, chunk_start) {
@@ -454,15 +568,28 @@ fn is_grapheme_boundary_in_rope(rope: &Rope, offset: CharOffset) -> EngineResult
     }
 }
 
-fn previous_grapheme_boundary_in_rope(rope: &Rope, offset: CharOffset) -> EngineResult<CharOffset> {
-    let byte_offset = char_to_byte_in_rope(rope, offset)?.get();
+fn previous_grapheme_boundary_in_rope(rope: &Rope, offset: ByteOffset) -> EngineResult<ByteOffset> {
+    let byte_offset = offset.get();
+    if byte_offset > rope.len_bytes() {
+        return Err(CoordinateError::OutOfBounds(offset).into());
+    }
+    if !is_utf8_char_boundary_in_rope(rope, byte_offset) {
+        return Err(CoordinateError::InvalidByteBoundary(offset).into());
+    }
+
     let mut cursor = GraphemeCursor::new(byte_offset, rope.len_bytes(), true);
-    let (mut chunk, mut chunk_start, _, _) = rope.chunk_at_byte(byte_offset);
+    let (mut chunk, mut chunk_start, _, _) = if byte_offset < rope.len_bytes() {
+        rope.chunk_at_byte(byte_offset)
+    } else if byte_offset == 0 {
+        ("", 0, 0, 0)
+    } else {
+        rope.chunk_at_byte(byte_offset.saturating_sub(1))
+    };
 
     loop {
         match cursor.prev_boundary(chunk, chunk_start) {
-            Ok(Some(boundary)) => return Ok(CharOffset::new(rope.byte_to_char(boundary))),
-            Ok(None) => return Ok(CharOffset::ZERO),
+            Ok(Some(boundary)) => return Ok(ByteOffset::new(boundary)),
+            Ok(None) => return Ok(ByteOffset::ZERO),
             Err(GraphemeIncomplete::PreContext(context_offset)) => {
                 let context_index = context_offset.saturating_sub(1);
                 let (context_chunk, context_start, _, _) = rope.chunk_at_byte(context_index);
@@ -470,7 +597,7 @@ fn previous_grapheme_boundary_in_rope(rope: &Rope, offset: CharOffset) -> Engine
             }
             Err(GraphemeIncomplete::PrevChunk) => {
                 if chunk_start == 0 {
-                    return Ok(CharOffset::ZERO);
+                    return Ok(ByteOffset::ZERO);
                 }
 
                 let (prev_chunk, prev_start, _, _) = rope.chunk_at_byte(chunk_start - 1);
@@ -480,7 +607,7 @@ fn previous_grapheme_boundary_in_rope(rope: &Rope, offset: CharOffset) -> Engine
             Err(GraphemeIncomplete::NextChunk) => {
                 let next_start = chunk_start + chunk.len();
                 if next_start >= rope.len_bytes() {
-                    return Ok(CharOffset::new(rope.len_chars()));
+                    return Ok(ByteOffset::new(rope.len_bytes()));
                 }
 
                 let (next_chunk, next_chunk_start, _, _) = rope.chunk_at_byte(next_start);
@@ -494,15 +621,28 @@ fn previous_grapheme_boundary_in_rope(rope: &Rope, offset: CharOffset) -> Engine
     }
 }
 
-fn next_grapheme_boundary_in_rope(rope: &Rope, offset: CharOffset) -> EngineResult<CharOffset> {
-    let byte_offset = char_to_byte_in_rope(rope, offset)?.get();
+fn next_grapheme_boundary_in_rope(rope: &Rope, offset: ByteOffset) -> EngineResult<ByteOffset> {
+    let byte_offset = offset.get();
+    if byte_offset > rope.len_bytes() {
+        return Err(CoordinateError::OutOfBounds(offset).into());
+    }
+    if !is_utf8_char_boundary_in_rope(rope, byte_offset) {
+        return Err(CoordinateError::InvalidByteBoundary(offset).into());
+    }
+
     let mut cursor = GraphemeCursor::new(byte_offset, rope.len_bytes(), true);
-    let (mut chunk, mut chunk_start, _, _) = rope.chunk_at_byte(byte_offset);
+    let (mut chunk, mut chunk_start, _, _) = if byte_offset < rope.len_bytes() {
+        rope.chunk_at_byte(byte_offset)
+    } else if byte_offset == 0 {
+        ("", 0, 0, 0)
+    } else {
+        rope.chunk_at_byte(byte_offset.saturating_sub(1))
+    };
 
     loop {
         match cursor.next_boundary(chunk, chunk_start) {
-            Ok(Some(boundary)) => return Ok(CharOffset::new(rope.byte_to_char(boundary))),
-            Ok(None) => return Ok(CharOffset::new(rope.len_chars())),
+            Ok(Some(boundary)) => return Ok(ByteOffset::new(boundary)),
+            Ok(None) => return Ok(ByteOffset::new(rope.len_bytes())),
             Err(GraphemeIncomplete::PreContext(context_offset)) => {
                 let context_index = context_offset.saturating_sub(1);
                 let (context_chunk, context_start, _, _) = rope.chunk_at_byte(context_index);
@@ -510,7 +650,7 @@ fn next_grapheme_boundary_in_rope(rope: &Rope, offset: CharOffset) -> EngineResu
             }
             Err(GraphemeIncomplete::PrevChunk) => {
                 if chunk_start == 0 {
-                    return Ok(CharOffset::ZERO);
+                    return Ok(ByteOffset::ZERO);
                 }
 
                 let (prev_chunk, prev_start, _, _) = rope.chunk_at_byte(chunk_start - 1);
@@ -520,7 +660,7 @@ fn next_grapheme_boundary_in_rope(rope: &Rope, offset: CharOffset) -> EngineResu
             Err(GraphemeIncomplete::NextChunk) => {
                 let next_start = chunk_start + chunk.len();
                 if next_start >= rope.len_bytes() {
-                    return Ok(CharOffset::new(rope.len_chars()));
+                    return Ok(ByteOffset::new(rope.len_bytes()));
                 }
 
                 let (next_chunk, next_chunk_start, _, _) = rope.chunk_at_byte(next_start);
@@ -600,11 +740,11 @@ fn line_content_end(rope: &Rope, next_line_start: usize) -> usize {
     }
 }
 
-fn is_crlf_middle(rope: &Rope, offset: usize) -> bool {
-    offset > 0
-        && offset < rope.len_chars()
-        && char_at(rope, offset - 1) == Some('\r')
-        && char_at(rope, offset) == Some('\n')
+fn is_crlf_middle(rope: &Rope, char_offset: usize) -> bool {
+    char_offset > 0
+        && char_offset < rope.len_chars()
+        && char_at(rope, char_offset - 1) == Some('\r')
+        && char_at(rope, char_offset) == Some('\n')
 }
 
 fn char_at(rope: &Rope, char_offset: usize) -> Option<char> {
@@ -613,6 +753,17 @@ fn char_at(rope: &Rope, char_offset: usize) -> Option<char> {
     }
 
     Some(rope.char(char_offset))
+}
+
+fn char_at_byte(rope: &Rope, byte_offset: usize) -> Option<char> {
+    if byte_offset >= rope.len_bytes() {
+        return None;
+    }
+    if !is_utf8_char_boundary_in_rope(rope, byte_offset) {
+        return None;
+    }
+    let char_offset = rope.byte_to_char(byte_offset);
+    char_at(rope, char_offset)
 }
 
 fn fingerprint_rope(rope: &Rope) -> TextFingerprint {

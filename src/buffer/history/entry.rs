@@ -3,7 +3,7 @@
 //! 本文件只保存可重放事实和最小构造逻辑，不管理栈顺序、redo 清理或事务来源策略。
 
 use crate::{
-    CharOffset, EngineResult, SelectionSet, TextRange,
+    ByteOffset, EngineResult, SelectionSet, TextRange,
     transaction::{Edit, EditList},
 };
 
@@ -41,12 +41,12 @@ impl HistoryEntry {
         description: Option<String>,
     ) -> EngineResult<Self> {
         let before_range = TextRange::new(
-            CharOffset::ZERO,
-            CharOffset::new(before_text.chars().count()),
+            ByteOffset::ZERO,
+            ByteOffset::new(before_text.len()),
         )?;
         let after_range = TextRange::new(
-            CharOffset::ZERO,
-            CharOffset::new(after_text.chars().count()),
+            ByteOffset::ZERO,
+            ByteOffset::new(after_text.len()),
         )?;
 
         let redo_edits = EditList::new(vec![Edit::replace(before_range, after_text.clone())])?;

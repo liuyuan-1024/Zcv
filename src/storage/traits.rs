@@ -1,6 +1,7 @@
 //! 存储 trait 边界：定义 Buffer/Snapshot 需要的只读与可变文本能力。
 //!
-//! Trait 使用 CharOffset/TextRange 作为编辑坐标，不暴露 ropey 或连续字符串假设。
+//! **坐标系唯一真理**：trait 内部以 `ByteOffset` / 字节区间 `TextRange` 为核心；
+//! `CharOffset` / `Utf16Position` 是边界投影方法，仅用于公共 API / 外部协议转换。
 
 use std::borrow::Cow;
 
@@ -13,72 +14,107 @@ use crate::{
 ///
 /// 不返回裸 `&str` 作为核心抽象——Rope 的全文通常不是一段连续内存。
 pub(crate) trait TextRead {
-    /// 返回全文。
-    ///
-    /// `RopeyStorage` 会按需拼接为 owned String；测试参考模型可在测试模块内自行借用返回。
-    /// 热路径应优先使用 `slice_text` / metrics / line API，而不是全文读取。
+    /// 返回全文。热路径应优先使用 `slice_text` / metrics / line API，而不是全文读取。
     fn text(&self) -> Cow<'_, str>;
 
-    /// 返回指定字符区间的文本。
+    /// 返回指定字节区间的文本。区间端点必须落在 UTF-8 字符边界。
     fn slice_text(&self, range: TextRange) -> EngineResult<Cow<'_, str>>;
+
+    // ============== 核心 byte 接口（深核必须使用） ==============
 
     /// 总 UTF-8 字节长度，等价于文本末端的 `ByteOffset`。
     fn len_bytes(&self) -> ByteOffset;
 
-    /// 总 Unicode scalar 数，等价于文本末端的 `CharOffset`，是核心编辑坐标单位。
-    fn len_chars(&self) -> CharOffset;
-
-    /// 总 UTF-16 code unit 数，等价于文本末端的 `Utf16Offset`，用于 LSP 坐标适配。
-    fn len_utf16_cu(&self) -> Utf16Offset;
-
     /// 总行数。空文档也视为 1 行。
     fn line_count(&self) -> usize;
 
-    /// 指定行的起始 CharOffset。
-    fn line_start(&self, line: Line) -> EngineResult<CharOffset>;
+    /// 指定行的起始 ByteOffset。
+    fn line_start(&self, line: Line) -> EngineResult<ByteOffset>;
 
-    /// CharOffset -> line / logical column。
-    fn char_to_position(&self, offset: CharOffset) -> EngineResult<Position>;
+    /// ByteOffset -> line / logical column。
+    /// 端点必须是合法字符边界，否则返回 `CoordinateError::InvalidByteBoundary`。
+    fn byte_to_position(&self, offset: ByteOffset) -> EngineResult<Position>;
 
-    /// line / logical column -> CharOffset。
-    fn position_to_char(&self, position: Position) -> EngineResult<CharOffset>;
+    /// line / logical column -> ByteOffset。
+    fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset>;
 
-    /// UTF-8 byte offset -> CharOffset。
-    fn byte_to_char(&self, offset: ByteOffset) -> EngineResult<CharOffset>;
-
-    /// CharOffset -> UTF-8 byte offset。
-    fn char_to_byte(&self, offset: CharOffset) -> EngineResult<ByteOffset>;
-
-    /// CharOffset -> UTF-16 行列位置。
-    fn char_to_utf16_position(&self, offset: CharOffset) -> EngineResult<Utf16Position>;
-
-    /// UTF-16 行列位置 -> CharOffset。
-    fn utf16_position_to_char(&self, position: Utf16Position) -> EngineResult<CharOffset>;
-
-    /// UTF-8 byte offset -> UTF-16 行列位置。
-    fn byte_to_utf16_position(&self, offset: ByteOffset) -> EngineResult<Utf16Position> {
-        self.char_to_utf16_position(self.byte_to_char(offset)?)
-    }
-
-    /// UTF-16 行列位置 -> UTF-8 byte offset。
-    fn utf16_position_to_byte(&self, position: Utf16Position) -> EngineResult<ByteOffset> {
-        self.char_to_byte(self.utf16_position_to_char(position)?)
-    }
-
-    /// 判断 CharOffset 是否处在合法 grapheme cluster 边界。
-    fn is_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<bool>;
+    /// 判断 ByteOffset 是否处在合法 grapheme cluster 边界。
+    fn is_grapheme_boundary(&self, offset: ByteOffset) -> EngineResult<bool>;
 
     /// 返回小于当前 offset 的最近 grapheme cluster 边界；开头处返回 0。
-    fn previous_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset>;
+    fn previous_grapheme_boundary(&self, offset: ByteOffset) -> EngineResult<ByteOffset>;
 
-    /// 返回大于当前 offset 的最近 grapheme cluster 边界；结尾处返回 len_chars。
-    fn next_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset>;
+    /// 返回大于当前 offset 的最近 grapheme cluster 边界；结尾处返回 len_bytes。
+    fn next_grapheme_boundary(&self, offset: ByteOffset) -> EngineResult<ByteOffset>;
+
+    /// 读取指定 byte offset 处的 Unicode scalar。
+    /// `offset` 必须是字符边界；越界或不在边界则返回 `None`。
+    fn char_at_byte(&self, offset: ByteOffset) -> Option<char>;
+
+    // ============== 边界投影 / 外部协议适配 ==============
+
+    /// 边界投影：CharOffset -> line / logical column。仅公共 API / 外部协议使用。
+    fn char_to_position(&self, offset: CharOffset) -> EngineResult<Position>;
+
+    /// 边界投影：line / logical column -> CharOffset。仅公共 API / 外部协议使用。
+    fn position_to_char(&self, position: Position) -> EngineResult<CharOffset>;
+
+    /// 边界投影：CharOffset -> UTF-16 行列。仅 LSP 等外部协议。
+    fn char_to_utf16_position(&self, offset: CharOffset) -> EngineResult<Utf16Position> {
+        self.byte_to_utf16_position(self.char_to_byte(offset)?)
+    }
+
+    /// 边界投影：UTF-16 行列 -> CharOffset。仅 LSP 等外部协议。
+    fn utf16_position_to_char(&self, position: Utf16Position) -> EngineResult<CharOffset> {
+        self.byte_to_char(self.utf16_position_to_byte(position)?)
+    }
+
+    /// 边界投影：判断 CharOffset 是否处在合法 grapheme cluster 边界。
+    fn is_grapheme_boundary_char(&self, offset: CharOffset) -> EngineResult<bool> {
+        let byte = self.char_to_byte(offset)?;
+        self.is_grapheme_boundary(byte)
+    }
+
+    /// 边界投影：返回小于当前 CharOffset 的最近 grapheme 边界。
+    fn previous_grapheme_boundary_char(
+        &self,
+        offset: CharOffset,
+    ) -> EngineResult<CharOffset> {
+        let byte = self.char_to_byte(offset)?;
+        let prev_byte = self.previous_grapheme_boundary(byte)?;
+        self.byte_to_char(prev_byte)
+    }
+
+    /// 边界投影：返回大于当前 CharOffset 的最近 grapheme 边界。
+    fn next_grapheme_boundary_char(&self, offset: CharOffset) -> EngineResult<CharOffset> {
+        let byte = self.char_to_byte(offset)?;
+        let next_byte = self.next_grapheme_boundary(byte)?;
+        self.byte_to_char(next_byte)
+    }
+
+    /// 边界投影：读取指定 char offset 的 Unicode scalar。
+    fn char_at(&self, offset: CharOffset) -> Option<char>;
+
+    /// 总 Unicode scalar 数。仅用于公共 API / 外部协议。
+    fn len_chars(&self) -> CharOffset;
+
+    /// 总 UTF-16 code unit 数。仅用于 LSP 等外部协议适配。
+    fn len_utf16_cu(&self) -> Utf16Offset;
+
+    /// 边界投影：CharOffset -> ByteOffset。
+    fn char_to_byte(&self, offset: CharOffset) -> EngineResult<ByteOffset>;
+
+    /// 边界投影：ByteOffset -> CharOffset。
+    fn byte_to_char(&self, offset: ByteOffset) -> EngineResult<CharOffset>;
+
+    /// 边界投影：ByteOffset -> UTF-16 行列。
+    fn byte_to_utf16_position(&self, offset: ByteOffset) -> EngineResult<Utf16Position>;
+
+    /// 边界投影：UTF-16 行列 -> ByteOffset。
+    fn utf16_position_to_byte(&self, position: Utf16Position) -> EngineResult<ByteOffset>;
 
     /// 检测文本中实际出现的换行风格。
     fn line_ending_style(&self) -> LineEndingStyle;
-
-    /// 读取指定字符。越界返回 None。
-    fn char_at(&self, offset: CharOffset) -> Option<char>;
 }
 
 /// 可跨线程读取的不可变文本快照。
@@ -92,5 +128,6 @@ pub(crate) trait TextStorage: TextRead + Clone {
 
     fn snapshot(&self) -> Self::Snapshot;
 
+    /// 替换字节区间。`range` 端点必须落在 UTF-8 字符边界。
     fn replace(&mut self, range: TextRange, replacement: &str) -> EngineResult<()>;
 }

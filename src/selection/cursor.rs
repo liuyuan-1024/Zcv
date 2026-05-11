@@ -2,22 +2,22 @@
 //!
 //! Cursor 不单独承担多光标归一化；集合语义统一由 SelectionSet 处理。
 
-use crate::CharOffset;
+use crate::ByteOffset;
 
 use super::Selection;
 
 /// 单个插入光标。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Cursor {
-    offset: CharOffset,
+    offset: ByteOffset,
 }
 
 impl Cursor {
-    pub const fn new(offset: CharOffset) -> Self {
+    pub const fn new(offset: ByteOffset) -> Self {
         Self { offset }
     }
 
-    pub const fn offset(self) -> CharOffset {
+    pub const fn offset(self) -> ByteOffset {
         self.offset
     }
 

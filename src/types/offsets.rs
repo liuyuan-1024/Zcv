@@ -1,12 +1,17 @@
-//! 一维偏移强类型：区分 UTF-8 byte、Unicode scalar 和 UTF-16 code unit 坐标。
+//! 一维偏移强类型：区分 UTF-8 byte（引擎核心）、Unicode scalar 和 UTF-16 code unit 坐标。
 //!
-//! 编辑 API 一律使用 `CharOffset`；`ByteOffset` / `Utf16Offset` 保留给编码和外部协议边界。
+//! **坐标系唯一真理**：引擎内部以 `ByteOffset(usize)` 为核心位置；
+//! `CharOffset` / `Utf16Offset` 仅作为边界处的"投影"类型暴露给外部协议。
 
-/// 字节偏移量。
+/// 字节偏移量 —— 引擎核心位置类型。
 ///
-/// UTF-8 文本存储中的物理坐标，仅用于文件字节、编码探测和外部协议适配。
-/// 编辑入口不接受 `ByteOffset`。
+/// UTF-8 文本存储中的物理坐标。**引擎内部所有 Edit / TextRange / PositionMap /
+/// ChangeSet / Storage / Anchor 都以 `ByteOffset` 为单一真理**。
+/// `CharOffset` / `Line` / `LogicalColumn` / `Utf16Offset` 是边界投影类型。
+///
+/// FFI 友好：`#[repr(transparent)]` 让宿主跨语言直接当 `uint64_t`/`size_t` 使用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
 pub struct ByteOffset(usize);
 
 impl ByteOffset {
@@ -27,13 +32,29 @@ impl ByteOffset {
     pub fn checked_sub(self, rhs: usize) -> Option<Self> {
         self.0.checked_sub(rhs).map(Self)
     }
+
+    pub fn saturating_add(self, rhs: usize) -> Self {
+        Self(self.0.saturating_add(rhs))
+    }
+
+    pub fn saturating_sub(self, rhs: usize) -> Self {
+        Self(self.0.saturating_sub(rhs))
+    }
 }
 
-/// 字符偏移量。
+impl core::fmt::Display for ByteOffset {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// 字符偏移量 —— 边界投影类型。
 ///
-/// 按 Unicode Scalar Value 计数，不等同于字节偏移量，也不等同于 UTF-16
-/// code unit 偏移量；引擎内部与 public 编辑 API 一律以 `CharOffset` 为主坐标。
+/// 按 Unicode Scalar Value 计数。**仅在公共 API 边界**（如 LSP、外部协议、UI）
+/// 使用；引擎内部不以 `CharOffset` 为位置坐标，必须经存储后端的字节↔字符
+/// 投影函数转换。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
 pub struct CharOffset(usize);
 
 impl CharOffset {
@@ -56,10 +77,17 @@ impl CharOffset {
     }
 }
 
-/// UTF-16 偏移量。
+impl core::fmt::Display for CharOffset {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// UTF-16 偏移量 —— 边界投影类型。
 ///
-/// 用于外部协议交互（例如 LSP）。
+/// 用于外部协议交互（例如 LSP）。引擎内部不以 `Utf16Offset` 为位置坐标。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
 pub struct Utf16Offset(usize);
 
 impl Utf16Offset {
@@ -71,5 +99,11 @@ impl Utf16Offset {
 
     pub const fn get(self) -> usize {
         self.0
+    }
+}
+
+impl core::fmt::Display for Utf16Offset {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }

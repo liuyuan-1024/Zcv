@@ -3,7 +3,7 @@
 //! 本文件是组合输入唯一的状态机入口；底层坐标换算和相对选区校验分别委托给 `state` 与 `validation`。
 
 use crate::{
-    CharOffset, CompositionState, EngineResult, SelectionSet, TextRange,
+    ByteOffset, CompositionState, EngineResult, SelectionSet, TextRange,
     transaction::{ChangeSet, Delta, TransactionMetadata, TransactionSource},
 };
 
@@ -79,7 +79,8 @@ impl Buffer {
 
         self.validate_range(state.range)?;
 
-        let preedit_len = preedit_text.chars().count();
+        // preedit_text 与 selection 都是 byte 偏移
+        let preedit_len = preedit_text.len();
         let relative_selection = resolve_relative_selection(selection, preedit_len);
         validate_composition_relative_selection(preedit_text, relative_selection)?;
 
@@ -128,7 +129,7 @@ impl Buffer {
         self.validate_range(state.range)?;
 
         let range_start = state.range.start();
-        let final_head = CharOffset::new(range_start.get() + commit_text.chars().count());
+        let final_head = ByteOffset::new(range_start.get() + commit_text.len());
         let after_selection = SelectionSet::caret(final_head);
 
         let result = self.replace_single_range_with_metadata(
@@ -170,7 +171,7 @@ impl Buffer {
             return Ok(None);
         };
 
-        let full_range = TextRange::new(CharOffset::ZERO, self.len_chars())?;
+        let full_range = TextRange::new(ByteOffset::ZERO, self.len_bytes())?;
         let after_selection = state.original_selection.clone();
 
         let result = self.replace_single_range_with_metadata(

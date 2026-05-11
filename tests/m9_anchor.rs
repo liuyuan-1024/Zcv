@@ -14,8 +14,8 @@ mod m9a_anchor_mark {
         Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
     }
 
-    fn c(value: usize) -> CharOffset {
-        CharOffset::new(value)
+    fn c(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
     }
 
     fn range(start: usize, end: usize) -> TextRange {
@@ -223,8 +223,8 @@ mod m9b_tracked_range {
         Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
     }
 
-    fn c(value: usize) -> CharOffset {
-        CharOffset::new(value)
+    fn c(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
     }
 
     fn range(start: usize, end: usize) -> TextRange {
@@ -479,8 +479,8 @@ mod m9c_selection_external_range {
         Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
     }
 
-    fn c(value: usize) -> CharOffset {
-        CharOffset::new(value)
+    fn c(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
     }
 
     fn range(start: usize, end: usize) -> TextRange {

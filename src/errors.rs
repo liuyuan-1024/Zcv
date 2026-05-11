@@ -10,29 +10,28 @@ use crate::{
 };
 
 /// 坐标转换、边界校验或越界相关的错误（坐标不合法）。
+///
+/// **坐标系唯一真理**：引擎内部所有越界错误以 `ByteOffset` 描述；`CharOffset`
+/// 相关变体仅用于边界投影路径（如 UTF-16 协议适配、外部坐标转换入口）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoordinateError {
-    /// CharOffset 超过当前文本长度，或不能作为当前查询入口的合法 char 坐标。
-    #[error("字符偏移量越界: {0:?}")]
-    OutOfBounds(CharOffset),
+    /// ByteOffset 越界：超过当前 UTF-8 文本字节长度。
+    #[error("字节偏移量越界: {0}")]
+    OutOfBounds(ByteOffset),
 
-    /// ByteOffset 超过 UTF-8 存储字节长度；通常只应出现在编码/外部协议适配边界。
-    #[error("字节偏移量越界: {0:?}")]
-    ByteOutOfBounds(ByteOffset),
-
-    /// ByteOffset 落在 UTF-8 多字节序列中间，不能安全转换为 CharOffset。
-    #[error("字节偏移量不在 UTF-8 字符边界: {0:?}")]
+    /// ByteOffset 落在 UTF-8 多字节序列中间，不构成合法字符边界。
+    #[error("字节偏移量不在 UTF-8 字符边界: {0}")]
     InvalidByteBoundary(ByteOffset),
 
-    /// 调用方传入了反向字节区间；byte range 只用于外部协议 / 文件适配读取边界。
-    #[error("非法字节区间: start {start:?} 大于 end {end:?}")]
-    InvalidByteRange { start: ByteOffset, end: ByteOffset },
+    /// 边界投影路径上的 `CharOffset` 越界。仅外部坐标转换入口使用。
+    #[error("字符偏移量越界: {0}")]
+    CharOutOfBounds(CharOffset),
 
     /// UTF-16 行列位置超出当前文本的行数或行内 code unit 范围。
     #[error("UTF-16 位置越界: {0:?}")]
     Utf16PositionOutOfBounds(Utf16Position),
 
-    /// UTF-16 位置切进 surrogate pair 中间，不能表示为引擎的 char 坐标。
+    /// UTF-16 位置切进 surrogate pair 中间，不能表示为引擎的 byte 坐标。
     #[error("UTF-16 位置落在代理对中间: {0:?}")]
     InvalidUtf16Boundary(Utf16Position),
 
@@ -41,16 +40,16 @@ pub enum CoordinateError {
     LineOutOfBounds(Line),
 
     /// 调用方传入了反向 TextRange；TextRange public 构造器必须拒绝该状态。
-    #[error("非法文本区间: start {start:?} 大于 end {end:?}")]
-    InvalidRange { start: CharOffset, end: CharOffset },
+    #[error("非法文本区间: start {start} 大于 end {end}")]
+    InvalidRange { start: ByteOffset, end: ByteOffset },
 
     /// 调用方传入了反向 LineRange；行窗口查询必须保持 `[start, end)` 不变量。
     #[error("非法行区间: start {start:?} 大于 end {end:?}")]
     InvalidLineRange { start: Line, end: Line },
 
-    /// CharOffset 是合法字符边界，但不是合法 grapheme 边界，不能用于用户感知移动/切分。
-    #[error("字符偏移处的字素边界无效: {0:?}")]
-    InvalidGraphemeBoundary(CharOffset),
+    /// ByteOffset 是合法字符边界，但不是合法 grapheme 边界，不能用于用户感知移动/切分。
+    #[error("字节偏移处的字素边界无效: {0}")]
+    InvalidGraphemeBoundary(ByteOffset),
 }
 
 /// 文本变异与编辑相关的错误（编辑请求不合法）。
@@ -67,9 +66,10 @@ pub enum EditError {
     #[error("编辑区间越界: {range:?}")]
     RangeOutOfBounds { range: TextRange },
 
-    /// 编辑端点不是当前阶段要求的文本边界，例如落在 grapheme 中间的组合输入范围。
-    #[error("编辑区间落在非法文本边界: {offset:?}")]
-    InvalidBoundary { offset: CharOffset },
+    /// 编辑端点不是当前阶段要求的文本边界，例如落在 UTF-8 多字节序列或
+    /// grapheme 中间的组合输入范围。
+    #[error("编辑区间落在非法文本边界: {offset}")]
+    InvalidBoundary { offset: ByteOffset },
 
     /// 单次编辑携带的 replacement 太大，应由调用方分块或在更高层拒绝操作。
     #[error("编辑有效载荷超过最大允许大小: 当前大小 {size}, 限制 {limit}")]
@@ -282,6 +282,23 @@ pub enum EngineError {
     /// TransactionId 递增越过 u64 上限；历史系统不能继续生成唯一事务事实。
     #[error("TransactionId 溢出")]
     TransactionIdOverflow,
+
+    /// HistoryNodeId 计数器耗尽；历史系统不能再分配唯一节点身份。
+    #[error("HistoryNodeId 溢出")]
+    HistoryIdExhausted,
+
+    /// 输入法 / Composition 调用方违反了 start → update* → commit/cancel 的状态机协议。
+    #[error("Composition 状态机协议违反: {detail}")]
+    CompositionInvalidSequence { detail: &'static str },
+
+    /// 引擎内部不变量被违反；这是 bug，不是可恢复的外部错误。
+    /// 用 `location` 定位代码点，`detail` 携带最少诊断信息，便于宿主上报。
+    /// FFI 层应把此类错误映射为"引擎内部错误"码，并提示用户上报。
+    #[error("引擎内部不变量违反: {location}: {detail}")]
+    EngineBug {
+        location: &'static str,
+        detail: String,
+    },
 }
 
 /// 编辑引擎统一 Result 类型。

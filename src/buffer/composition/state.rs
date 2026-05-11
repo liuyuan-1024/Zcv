@@ -2,29 +2,29 @@
 //!
 //! 本文件不提交文本、不操作历史，也不决定 IME 生命周期；这些流程边界留给 `workflow`。
 
-use crate::{CharOffset, CompositionSelection, EngineResult, Selection, TextRange};
+use crate::{ByteOffset, CompositionSelection, EngineResult, Selection, TextRange};
 
 pub(in crate::buffer) fn resolve_relative_selection(
     selection: Option<CompositionSelection>,
     preedit_len: usize,
 ) -> CompositionSelection {
-    selection.unwrap_or_else(|| CompositionSelection::caret(CharOffset::new(preedit_len)))
+    selection.unwrap_or_else(|| CompositionSelection::caret(ByteOffset::new(preedit_len)))
 }
 
 pub(in crate::buffer) fn absolute_composition_selection(
-    range_start: CharOffset,
+    range_start: ByteOffset,
     selection: CompositionSelection,
 ) -> EngineResult<Selection> {
     Ok(Selection::new(
-        CharOffset::new(range_start.get() + selection.anchor().get()),
-        CharOffset::new(range_start.get() + selection.head().get()),
+        ByteOffset::new(range_start.get() + selection.anchor().get()),
+        ByteOffset::new(range_start.get() + selection.head().get()),
     ))
 }
 
 pub(in crate::buffer) fn composition_range_after_preedit(
-    range_start: CharOffset,
+    range_start: ByteOffset,
     preedit_len: usize,
 ) -> EngineResult<TextRange> {
-    let range_end = CharOffset::new(range_start.get() + preedit_len);
+    let range_end = ByteOffset::new(range_start.get() + preedit_len);
     Ok(TextRange::new(range_start, range_end)?)
 }

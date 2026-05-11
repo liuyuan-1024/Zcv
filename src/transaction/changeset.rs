@@ -4,7 +4,7 @@
 
 use crate::{
     position_map::PositionMap,
-    types::{CharOffset, TextRange},
+    types::{ByteOffset, TextRange},
 };
 
 use super::{Edit, EditList};
@@ -46,13 +46,14 @@ impl ChangeSet {
         for edit in &self.edits {
             let old_start = edit.range().start().get() as isize;
             let old_end = edit.range().end().get() as isize;
-            let replacement_len = edit.replacement().chars().count() as isize;
+            // 替换文本 byte 长度，避免 chars().count() 的 O(N) 扫描
+            let replacement_len = edit.replacement().len() as isize;
 
             let new_start = (old_start + diff).max(0) as usize;
             let new_end = new_start + replacement_len as usize;
 
             ranges.push(
-                TextRange::new(CharOffset::new(new_start), CharOffset::new(new_end))
+                TextRange::new(ByteOffset::new(new_start), ByteOffset::new(new_end))
                     .expect("ChangeSet 生成的范围必须满足起始位置 <= 结束位置"),
             );
 

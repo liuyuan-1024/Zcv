@@ -4,7 +4,7 @@
 //! 也不承担 UI 高亮语义。
 
 use crate::{
-    BufferConfig, BufferVersion, CharOffset, CoordinateError, EngineResult, MetadataLayer,
+    BufferConfig, BufferVersion, ByteOffset, CoordinateError, EngineResult, MetadataLayer,
     MetadataLayerKind, MetadataRangeSpec, SearchError, Stickiness, TextRange, VersionedResult,
     position_map::MappingResult, storage::TextRead, tracking::TrackedRangeUpdatePolicy,
     transaction::DeltaEvent,
@@ -457,7 +457,8 @@ fn build_search_match_metadata_layer(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FoldedText {
     text: String,
-    byte_boundaries_to_char_offsets: Vec<(usize, usize)>,
+    /// (folded_byte_boundary, original_byte_boundary) 对照表。
+    folded_byte_to_original_byte: Vec<(usize, usize)>,
 }
 
 pub(crate) fn search_in_text<T: TextRead>(
@@ -473,7 +474,7 @@ pub(crate) fn search_in_text<T: TextRead>(
 
     let search_range = options
         .range()
-        .unwrap_or_else(|| text_range(CharOffset::ZERO, storage.len_chars()));
+        .unwrap_or_else(|| text_range(ByteOffset::ZERO, storage.len_bytes()));
 
     validate_search_range(storage, search_range)?;
 
@@ -516,7 +517,7 @@ pub(crate) fn search_regex_in_text<T: TextRead>(
     let regex = build_regex(pattern, options)?;
     let search_range = options
         .range()
-        .unwrap_or_else(|| text_range(CharOffset::ZERO, storage.len_chars()));
+        .unwrap_or_else(|| text_range(ByteOffset::ZERO, storage.len_bytes()));
 
     validate_search_range(storage, search_range)?;
 
@@ -526,11 +527,12 @@ pub(crate) fn search_regex_in_text<T: TextRead>(
         .find_iter(haystack.as_ref())
         .enumerate()
         .map(|(ordinal, regex_match)| {
-            let start = base_offset + char_count_until(haystack.as_ref(), regex_match.start());
-            let end = base_offset + char_count_until(haystack.as_ref(), regex_match.end());
+            // regex 是 byte-native：直接拼上 base_offset
+            let start = base_offset + regex_match.start();
+            let end = base_offset + regex_match.end();
             SearchMatch::new(
                 ordinal,
-                text_range(CharOffset::new(start), CharOffset::new(end)),
+                text_range(ByteOffset::new(start), ByteOffset::new(end)),
             )
         })
         .collect();
@@ -552,7 +554,7 @@ pub(crate) fn regex_replacements_in_text<T: TextRead>(
     let search_range = result
         .options()
         .range()
-        .unwrap_or_else(|| text_range(CharOffset::ZERO, storage.len_chars()));
+        .unwrap_or_else(|| text_range(ByteOffset::ZERO, storage.len_bytes()));
 
     validate_search_range(storage, search_range)?;
 
@@ -564,12 +566,12 @@ pub(crate) fn regex_replacements_in_text<T: TextRead>(
         let Some(regex_match) = captures.get(0) else {
             continue;
         };
-        let start = base_offset + char_count_until(haystack.as_ref(), regex_match.start());
-        let end = base_offset + char_count_until(haystack.as_ref(), regex_match.end());
+        let start = base_offset + regex_match.start();
+        let end = base_offset + regex_match.end();
         let mut expanded = String::new();
         captures.expand(replacement, &mut expanded);
         replacements.push((
-            text_range(CharOffset::new(start), CharOffset::new(end)),
+            text_range(ByteOffset::new(start), ByteOffset::new(end)),
             expanded,
         ));
     }
@@ -606,7 +608,7 @@ fn build_regex(pattern: &str, options: RegexSearchOptions) -> EngineResult<Regex
 }
 
 fn validate_search_range<T: TextRead>(storage: &T, range: TextRange) -> EngineResult<()> {
-    if range.end() > storage.len_chars() {
+    if range.end() > storage.len_bytes() {
         return Err(CoordinateError::OutOfBounds(range.end()).into());
     }
 
@@ -630,9 +632,11 @@ fn find_case_sensitive_matches<T: TextRead>(
         };
         let byte_start = search_from + relative_byte_start;
         let byte_end = byte_start + query.len();
-        let start = base_offset + char_count_until(haystack, byte_start);
-        let end = base_offset + char_count_until(haystack, byte_end);
-        let range = text_range(CharOffset::new(start), CharOffset::new(end));
+        // ByteOffset 直接相加，无需 char_count_until 的 O(N) 扫描
+        let range = text_range(
+            ByteOffset::new(base_offset + byte_start),
+            ByteOffset::new(base_offset + byte_end),
+        );
 
         if accepts_match(storage, config, range, options)? {
             matches.push(SearchMatch::new(matches.len(), range));
@@ -653,7 +657,7 @@ fn find_case_insensitive_matches<T: TextRead>(
     query: &str,
     options: SearchOptions,
 ) -> EngineResult<Vec<SearchMatch>> {
-    let folded_haystack = fold_text_with_char_boundaries(haystack);
+    let folded_haystack = fold_text_with_byte_boundaries(haystack);
     let folded_query = query.to_lowercase();
     let mut matches = Vec::new();
     let mut search_from = 0usize;
@@ -666,18 +670,19 @@ fn find_case_insensitive_matches<T: TextRead>(
         let byte_start = search_from + relative_byte_start;
         let byte_end = byte_start + folded_query.len();
 
-        let Some(relative_start) = folded_haystack.char_offset_for_byte_boundary(byte_start) else {
+        // 把折叠文本中的 byte 边界映射回原文 byte 偏移
+        let Some(orig_start) = folded_haystack.original_byte_for_folded(byte_start) else {
             search_from = next_char_boundary(&folded_haystack.text, byte_start);
             continue;
         };
-        let Some(relative_end) = folded_haystack.char_offset_for_byte_boundary(byte_end) else {
+        let Some(orig_end) = folded_haystack.original_byte_for_folded(byte_end) else {
             search_from = next_char_boundary(&folded_haystack.text, byte_start);
             continue;
         };
 
         let range = text_range(
-            CharOffset::new(base_offset + relative_start),
-            CharOffset::new(base_offset + relative_end),
+            ByteOffset::new(base_offset + orig_start),
+            ByteOffset::new(base_offset + orig_end),
         );
 
         if accepts_match(storage, config, range, options)? {
@@ -701,14 +706,14 @@ fn accepts_match<T: TextRead>(
         return Ok(true);
     }
 
-    let before = range.start().checked_sub(1).and_then(|offset| {
-        if range.start() == CharOffset::ZERO {
-            None
-        } else {
-            storage.char_at(offset)
-        }
-    });
-    let after = storage.char_at(range.end());
+    let before = if range.start() == ByteOffset::ZERO {
+        None
+    } else {
+        // 找前一个 grapheme/字符起点，安全读取
+        let prev = storage.previous_grapheme_boundary(range.start())?;
+        storage.char_at_byte(prev)
+    };
+    let after = storage.char_at_byte(range.end());
 
     Ok(
         !before.is_some_and(|ch| config.word_boundary.is_identifier_continue(ch))
@@ -716,32 +721,34 @@ fn accepts_match<T: TextRead>(
     )
 }
 
-fn fold_text_with_char_boundaries(text: &str) -> FoldedText {
+fn fold_text_with_byte_boundaries(text: &str) -> FoldedText {
     let mut folded = String::new();
     let mut boundaries = vec![(0usize, 0usize)];
 
-    for (char_offset, ch) in text.chars().enumerate() {
+    // 按字符迭代，记录每个字符在原文与折叠文本中的 byte 边界对应关系
+    for (orig_byte, ch) in text.char_indices() {
+        let _ = orig_byte; // 起点已经记录
+        let folded_before = folded.len();
         folded.extend(ch.to_lowercase());
-        boundaries.push((folded.len(), char_offset + 1));
+        let folded_after = folded.len();
+        let orig_after = orig_byte + ch.len_utf8();
+        let _ = folded_before;
+        boundaries.push((folded_after, orig_after));
     }
 
     FoldedText {
         text: folded,
-        byte_boundaries_to_char_offsets: boundaries,
+        folded_byte_to_original_byte: boundaries,
     }
 }
 
 impl FoldedText {
-    fn char_offset_for_byte_boundary(&self, byte: usize) -> Option<usize> {
-        self.byte_boundaries_to_char_offsets
-            .binary_search_by_key(&byte, |(boundary, _)| *boundary)
+    fn original_byte_for_folded(&self, folded_byte: usize) -> Option<usize> {
+        self.folded_byte_to_original_byte
+            .binary_search_by_key(&folded_byte, |(b, _)| *b)
             .ok()
-            .map(|index| self.byte_boundaries_to_char_offsets[index].1)
+            .map(|index| self.folded_byte_to_original_byte[index].1)
     }
-}
-
-fn char_count_until(text: &str, byte: usize) -> usize {
-    text[..byte].chars().count()
 }
 
 fn next_char_boundary(text: &str, byte: usize) -> usize {
@@ -756,6 +763,6 @@ fn next_char_boundary(text: &str, byte: usize) -> usize {
     next
 }
 
-fn text_range(start: CharOffset, end: CharOffset) -> TextRange {
+fn text_range(start: ByteOffset, end: ByteOffset) -> TextRange {
     TextRange::new(start, end).expect("internal invariant: search start <= end")
 }

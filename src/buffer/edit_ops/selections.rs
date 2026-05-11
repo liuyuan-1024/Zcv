@@ -3,7 +3,8 @@
 //! 本文件负责 selection 语义到 EditList 的映射，不实现底层提交原子性，也不绕过 Buffer 边界校验。
 
 use crate::{
-    CharOffset, EngineResult, MovementDirection, MovementUnit, Selection, SelectionSet, TextRange,
+    ByteOffset, EngineResult, MovementDirection, MovementUnit, Selection, SelectionSet, TextRange,
+    storage::TextRead,
     transaction::{ChangeSet, Delta, Edit, Transaction, TransactionMetadata, TransactionSource},
 };
 
@@ -94,7 +95,10 @@ impl Buffer {
         for selection in selections.as_slice() {
             if selection.is_caret() {
                 let head = selection.head();
-                let boundary = self.movement_boundary(head, direction, unit)?;
+                // head 是 ByteOffset，movement_boundary 仍按 char 计算，跨边界转换。
+                let head_char = self.storage.byte_to_char(head)?;
+                let boundary_char = self.movement_boundary(head_char, direction, unit)?;
+                let boundary = self.storage.char_to_byte(boundary_char)?;
                 let range_selection = match direction {
                     MovementDirection::Previous => Selection::new(boundary, head),
                     MovementDirection::Next => Selection::new(head, boundary),
@@ -132,7 +136,8 @@ impl Buffer {
         self.validate_selection_set(&selections)?;
 
         let before_selection = selections.clone();
-        let replacement_len = replacement.chars().count();
+        // ByteOffset 深核：用 byte 长度
+        let replacement_len = replacement.len();
         let replacement = replacement.to_string();
 
         let mut edits = Vec::new();
@@ -144,7 +149,7 @@ impl Buffer {
             let old_start = range.start().get() as isize;
             let old_end = range.end().get() as isize;
             let new_start = (old_start + diff).max(0) as usize;
-            let new_head = CharOffset::new(new_start + replacement_len);
+            let new_head = ByteOffset::new(new_start + replacement_len);
 
             let is_empty_noop = range.is_empty() && replacement.is_empty();
             let is_same_text_noop =

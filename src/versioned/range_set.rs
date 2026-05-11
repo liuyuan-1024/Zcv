@@ -15,7 +15,7 @@ use crate::{
     snapshot::Snapshot,
     tracking::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
     transaction::DeltaEvent,
-    types::{BufferVersion, CharOffset, LineRange, TextRange, Utf16Position},
+    types::{BufferVersion, ByteOffset, LineRange, TextRange, Utf16Position},
 };
 
 /// 单条 entry：把 payload 绑定到一个可跟随的 `TrackedRange`。
@@ -344,7 +344,7 @@ impl<T> VersionedRangeSet<T> {
 
     pub fn entries_containing(
         &self,
-        offset: CharOffset,
+        offset: ByteOffset,
     ) -> impl Iterator<Item = &VersionedRangeEntry<T>> {
         self.entries
             .iter()
@@ -426,8 +426,9 @@ impl<T> VersionedRangeSet<T> {
         let mut exported = Vec::with_capacity(self.entries.len());
         for entry in &self.entries {
             let range = entry.range();
-            let start = snapshot.char_to_utf16_position(range.start())?;
-            let end = snapshot.char_to_utf16_position(range.end())?;
+            // 边界投影：byte -> utf16
+            let start = snapshot.byte_to_utf16_position(range.start())?;
+            let end = snapshot.byte_to_utf16_position(range.end())?;
             exported.push((start, end, entry.payload()));
         }
         Ok(exported)
@@ -522,7 +523,8 @@ fn utf16_range_to_text_range(
     start: Utf16Position,
     end: Utf16Position,
 ) -> EngineResult<TextRange> {
-    let start_offset = snapshot.utf16_position_to_char(start)?;
-    let end_offset = snapshot.utf16_position_to_char(end)?;
+    // 边界投影：utf16 -> byte（深核区间类型）
+    let start_offset = snapshot.utf16_position_to_byte(start)?;
+    let end_offset = snapshot.utf16_position_to_byte(end)?;
     Ok(TextRange::new(start_offset, end_offset)?)
 }

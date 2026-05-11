@@ -3,11 +3,12 @@
 //! 本文件只做防线判断并返回明确错误，不修正调用方输入，也不直接改变 Buffer 状态。
 
 use crate::{
-    CharOffset, CoordinateError, EditError, EngineResult, SelectionSet, StorageError, TextRange,
-    storage::TextStorage, transaction::EditList,
+    ByteOffset, CoordinateError, EditError, EngineResult, SelectionSet, StorageError, TextRange,
+    storage::{TextRead, TextStorage},
+    transaction::EditList,
 };
 
-use super::{Buffer, coordinates::is_crlf_middle};
+use super::Buffer;
 
 impl Buffer {
     pub(in crate::buffer) fn mark_clean_internal(&mut self) {
@@ -43,31 +44,49 @@ impl Buffer {
         Ok(())
     }
 
-    pub(super) fn validate_selection_boundary(&self, offset: CharOffset) -> EngineResult<()> {
+    pub(super) fn validate_selection_boundary(&self, offset: ByteOffset) -> EngineResult<()> {
         self.validate_edit_boundary(offset)?;
-        self.validate_grapheme_boundary(offset)
-    }
-
-    /// 校验范围是否合法，超出文本字符长度返回错误。
-    pub(super) fn validate_range(&self, range: TextRange) -> EngineResult<()> {
-        if range.end() > self.len_chars() {
-            return Err(EditError::RangeOutOfBounds { range }.into());
+        if !self.storage.is_grapheme_boundary(offset)? {
+            return Err(CoordinateError::InvalidGraphemeBoundary(offset).into());
         }
-
         Ok(())
     }
 
-    /// 校验编辑边界是否合法，超出文本范围或落在 CRLF 中间时返回错误。
-    pub(super) fn validate_edit_boundary(&self, offset: CharOffset) -> EngineResult<()> {
-        let value = offset.get();
-        let len_chars = self.len_chars().get();
+    /// 校验范围是否合法（字节区间），端点必须落在 UTF-8 字符边界。
+    pub(super) fn validate_range(&self, range: TextRange) -> EngineResult<()> {
+        let len_bytes = self.storage.len_bytes();
+        if range.end() > len_bytes {
+            return Err(EditError::RangeOutOfBounds { range }.into());
+        }
+        if !self.storage.is_grapheme_boundary(range.start()).is_ok() {
+            // 不构成字符边界即视为越界
+            return Err(EditError::RangeOutOfBounds { range }.into());
+        }
+        Ok(())
+    }
 
-        if value > len_chars {
+    /// 校验编辑边界（字节偏移）是否合法：不越界、不落在 CRLF 中间、是 UTF-8 字符边界。
+    pub(super) fn validate_edit_boundary(&self, offset: ByteOffset) -> EngineResult<()> {
+        let value = offset.get();
+        let len_bytes = self.storage.len_bytes().get();
+
+        if value > len_bytes {
             return Err(CoordinateError::OutOfBounds(offset).into());
         }
 
-        if is_crlf_middle(&self.storage, offset) {
-            return Err(EditError::InvalidBoundary { offset }.into());
+        // 校验是否落在 UTF-8 字符边界
+        // is_grapheme_boundary 内部已经包含字符边界检查
+        if value < len_bytes && self.storage.byte_to_char(offset).is_err() {
+            return Err(CoordinateError::InvalidByteBoundary(offset).into());
+        }
+
+        // 校验是否落在 CRLF 中间
+        if value > 0 && value < len_bytes {
+            let prev = self.storage.char_at_byte(ByteOffset::new(value - 1));
+            let curr = self.storage.char_at_byte(offset);
+            if prev == Some('\r') && curr == Some('\n') {
+                return Err(EditError::InvalidBoundary { offset }.into());
+            }
         }
 
         Ok(())

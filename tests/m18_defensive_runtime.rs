@@ -7,8 +7,8 @@ use zom_engine::{
     LargeTransactionPolicy, StorageError, TextRange, Transaction, TransactionError,
 };
 
-fn c(value: usize) -> CharOffset {
-    CharOffset::new(value)
+fn c(value: usize) -> ByteOffset {
+    ByteOffset::new(value)
 }
 
 fn policy(

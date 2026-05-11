@@ -3,7 +3,7 @@
 //! 本文件负责历史图的 cursor 移动、分支查询与重放，不定义 HistoryEntry 的存储形态。
 
 use crate::{
-    CharOffset, EngineError, EngineResult, LargeFilePolicy, SelectionSet, TransactionSource,
+    EngineError, EngineResult, LargeFilePolicy, SelectionSet, TransactionSource,
     buffer::Buffer,
     transaction::{ChangeSet, Delta, Edit, EditList, TransactionMergePolicy, TransactionMetadata},
 };
@@ -205,13 +205,17 @@ impl Buffer {
             let deleted_text = self.slice_text(edit.range())?.to_string();
 
             let new_start = (old_start as isize + diff).max(0) as usize;
-            let new_end = new_start + edit.replacement().chars().count();
-            let new_range =
-                crate::TextRange::new(CharOffset::new(new_start), CharOffset::new(new_end))?;
+            // ByteOffset 深核：用 byte 长度（无需 chars().count() 的 O(N) 扫描）
+            let replacement_bytes = edit.replacement().len();
+            let new_end = new_start + replacement_bytes;
+            let new_range = crate::TextRange::new(
+                crate::ByteOffset::new(new_start),
+                crate::ByteOffset::new(new_end),
+            )?;
 
             inverse.push(Edit::replace(new_range, deleted_text));
 
-            diff += edit.replacement().chars().count() as isize - (old_end - old_start) as isize;
+            diff += replacement_bytes as isize - (old_end - old_start) as isize;
         }
 
         Ok(EditList::new(inverse)?)

@@ -16,8 +16,8 @@ mod m15a_single_writer {
         Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
     }
 
-    fn c(value: usize) -> CharOffset {
-        CharOffset::new(value)
+    fn c(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
     }
 
     fn range(start: usize, end: usize) -> TextRange {
@@ -143,8 +143,8 @@ mod m15b_snapshot_reader {
         Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
     }
 
-    fn c(value: usize) -> CharOffset {
-        CharOffset::new(value)
+    fn c(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
     }
 
     /// 编译期断言：Snapshot 必须 `Send + Sync`，否则不能跨线程下发只读查询。
@@ -229,8 +229,8 @@ mod m15c_delta_consumer {
         Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
     }
 
-    fn c(value: usize) -> CharOffset {
-        CharOffset::new(value)
+    fn c(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
     }
 
     fn commit_insert(buffer: &mut Buffer, offset: usize, text: &str) {

@@ -338,8 +338,8 @@ impl Projection {
         range: crate::types::TextRange,
     ) -> EngineResult<Vec<ProjectedRange>> {
         self.verify_snapshot_version(snapshot)?;
-        let start_position = snapshot.char_to_position(range.start())?;
-        let end_position = snapshot.char_to_position(range.end())?;
+        let start_position = snapshot.byte_to_position(range.start())?;
+        let end_position = snapshot.byte_to_position(range.end())?;
         let logical_range = LogicalRange::new(
             LogicalPoint::from(start_position),
             LogicalPoint::from(end_position),
@@ -435,31 +435,33 @@ fn build_visible_line<'a>(
         return Err(crate::CoordinateError::LineOutOfBounds(logical_line).into());
     }
 
-    let line_start = snapshot.line_start(logical_line)?;
+    // 深核：ByteOffset
+    let line_start = snapshot.line_start_byte(logical_line)?;
     let next_start = if line_value + 1 == line_count {
-        snapshot.len_chars()
+        snapshot.len_bytes()
     } else {
-        snapshot.line_start(Line::new(line_value + 1))?
+        snapshot.line_start_byte(Line::new(line_value + 1))?
     };
     let full_range = TextRange::new(line_start, next_start)?;
 
     let line_slice = snapshot.slice_line(logical_line)?;
     let line_text = line_slice.as_str();
-    let newline_chars = if line_text.ends_with("\r\n") {
+    let newline_bytes = if line_text.ends_with("\r\n") {
         2
     } else if line_text.ends_with('\n') || line_text.ends_with('\r') {
         1
     } else {
         0
     };
-    let content_chars = line_text.chars().count() - newline_chars;
-    let content_end = CharOffset::new(line_start.get() + content_chars);
+    let content_bytes = line_text.len() - newline_bytes;
+    let content_end = crate::ByteOffset::new(line_start.get() + content_bytes);
 
-    let visible_chars = match max_line_chars {
-        Some(max) => max.min(content_chars),
-        None => content_chars,
+    // max_line_chars 当前按 byte 解释（投影截断阈值）；后续 Phase 3 可换 grapheme 长度
+    let visible_bytes = match max_line_chars {
+        Some(max) => max.min(content_bytes),
+        None => content_bytes,
     };
-    let visible_end = CharOffset::new(line_start.get() + visible_chars);
+    let visible_end = crate::ByteOffset::new(line_start.get() + visible_bytes);
     let visible_range = TextRange::new(line_start, visible_end)?;
     let is_truncated = visible_end < content_end;
 

@@ -7,7 +7,7 @@
 
 use crate::{
     errors::CoordinateError,
-    types::{CharOffset, TextRange},
+    types::{ByteOffset, TextRange},
 };
 
 /// 描述单次文本修改。
@@ -22,7 +22,7 @@ impl Edit {
         Self { range, replacement }
     }
 
-    pub fn insert(offset: CharOffset, text: String) -> Result<Self, CoordinateError> {
+    pub fn insert(offset: ByteOffset, text: String) -> Result<Self, CoordinateError> {
         Ok(Self {
             range: TextRange::new(offset, offset)?,
             replacement: text,

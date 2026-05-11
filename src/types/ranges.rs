@@ -1,25 +1,30 @@
 //! 范围强类型：维护 TextRange 与 LineRange 的半开区间不变量。
 //!
-//! 构造器负责拒绝反向范围，避免恢复 public unchecked range 构造器。
+//! **坐标系唯一真理**：`TextRange` 由 `ByteOffset` 构成，是引擎核心区间类型；
+//! `LineRange` 仍然按逻辑行号表达，但它是边界投影（只在边界 / 公共 API 出现）。
 
 use crate::CoordinateError;
 
-use super::{CharOffset, Line};
+use super::{ByteOffset, Line};
 
-/// 文本区间。
+/// 文本区间 —— 引擎核心区间类型。
 ///
-/// 由 CharOffset 构成，满足 `start <= end`，表达编辑语义区间，不是 UTF-8 字节区间。
+/// 由 `ByteOffset` 构成，满足 `start <= end`，表达 UTF-8 字节区间。
+/// 引擎内部所有 Edit / ChangeSet / PositionMap / Anchor 区间都使用本类型。
+///
+/// 注意：调用方有责任保证 `start` / `end` 都落在 UTF-8 字符边界上；
+/// 存储后端在 `validate` 阶段会拒绝落在多字节序列中间的区间。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextRange {
-    start: CharOffset,
-    end: CharOffset,
+    start: ByteOffset,
+    end: ByteOffset,
 }
 
 impl TextRange {
     /// 创建文本区间。
     ///
-    /// 该构造函数会校验 `start <= end`，避免在公共 API 边界 panic。
-    pub fn new(start: CharOffset, end: CharOffset) -> Result<Self, CoordinateError> {
+    /// 校验 `start <= end`，避免在公共 API 边界 panic。
+    pub fn new(start: ByteOffset, end: ByteOffset) -> Result<Self, CoordinateError> {
         if start > end {
             return Err(CoordinateError::InvalidRange { start, end });
         }
@@ -27,14 +32,15 @@ impl TextRange {
         Ok(Self { start, end })
     }
 
-    pub const fn start(self) -> CharOffset {
+    pub const fn start(self) -> ByteOffset {
         self.start
     }
 
-    pub const fn end(self) -> CharOffset {
+    pub const fn end(self) -> ByteOffset {
         self.end
     }
 
+    /// 字节长度。
     pub fn len(self) -> usize {
         self.end.get() - self.start.get()
     }
@@ -42,12 +48,22 @@ impl TextRange {
     pub fn is_empty(self) -> bool {
         self.start == self.end
     }
+
+    /// 与另一区间是否有重叠（半开区间相交）。
+    pub fn overlaps(self, other: TextRange) -> bool {
+        self.start < other.end && other.start < self.end
+    }
+
+    /// `point` 是否落在 `[start, end)` 内。
+    pub fn contains(self, point: ByteOffset) -> bool {
+        self.start <= point && point < self.end
+    }
 }
 
-/// 行区间。
+/// 行区间 —— 边界投影类型。
 ///
-/// `LineRange` 使用半开区间 `[start, end)` 表达一组逻辑行，满足 `start <= end`。
-/// 它只表达行号范围本身，是否落在具体 Buffer 内由查询入口校验。
+/// `LineRange` 使用半开区间 `[start, end)` 表达一组逻辑行；满足 `start <= end`。
+/// 仅在公共 API 边界、视图 / 投影层使用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LineRange {
     start: Line,

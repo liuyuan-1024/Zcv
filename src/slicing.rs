@@ -293,18 +293,16 @@ impl<'a> ViewportSlice<'a> {
 }
 
 pub(crate) fn text_range_for_byte_range<T: TextRead>(
-    text: &T,
+    _text: &T,
     start: ByteOffset,
     end: ByteOffset,
 ) -> EngineResult<TextRange> {
     if start > end {
-        return Err(CoordinateError::InvalidByteRange { start, end }.into());
+        return Err(CoordinateError::InvalidRange { start, end }.into());
     }
 
-    Ok(TextRange::new(
-        text.byte_to_char(start)?,
-        text.byte_to_char(end)?,
-    )?)
+    // TextRange 内核就是字节区间；端点是否落在字符边界由 Storage 在 slice/replace 时校验。
+    Ok(TextRange::new(start, end)?)
 }
 
 pub(crate) fn text_range_for_line<T: TextRead>(text: &T, line: Line) -> EngineResult<TextRange> {
@@ -314,7 +312,7 @@ pub(crate) fn text_range_for_line<T: TextRead>(text: &T, line: Line) -> EngineRe
         .checked_add(1)
         .map(Line::new)
         .ok_or(CoordinateError::LineOutOfBounds(line))?;
-    let end = char_offset_for_line_boundary(text, next_line)?;
+    let end = byte_offset_for_line_boundary(text, next_line)?;
 
     Ok(TextRange::new(start, end)?)
 }
@@ -323,12 +321,12 @@ pub(crate) fn text_range_for_line_range<T: TextRead>(
     text: &T,
     line_range: LineRange,
 ) -> EngineResult<TextRange> {
-    let start = char_offset_for_line_boundary(text, line_range.start())?;
-    let end = char_offset_for_line_boundary(text, line_range.end())?;
+    let start = byte_offset_for_line_boundary(text, line_range.start())?;
+    let end = byte_offset_for_line_boundary(text, line_range.end())?;
     Ok(TextRange::new(start, end)?)
 }
 
-fn char_offset_for_line_boundary<T: TextRead>(text: &T, line: Line) -> EngineResult<CharOffset> {
+fn byte_offset_for_line_boundary<T: TextRead>(text: &T, line: Line) -> EngineResult<ByteOffset> {
     let line_value = line.get();
     let line_count = text.line_count();
 
@@ -337,7 +335,7 @@ fn char_offset_for_line_boundary<T: TextRead>(text: &T, line: Line) -> EngineRes
     }
 
     if line_value == line_count {
-        return Ok(text.len_chars());
+        return Ok(text.len_bytes());
     }
 
     text.line_start(line)
@@ -390,9 +388,9 @@ fn visible_range_for_line<T: TextRead>(
 ) -> EngineResult<TextRange> {
     let content_end = line_content_end(text, full_range.end())?;
     let end = match viewport.max_line_chars() {
-        Some(max_line_chars) => CharOffset::new(
+        Some(max_line_bytes) => ByteOffset::new(
             full_range.start().get()
-                + max_line_chars.min(content_end.get() - full_range.start().get()),
+                + max_line_bytes.min(content_end.get() - full_range.start().get()),
         ),
         None => content_end,
     };
@@ -400,22 +398,23 @@ fn visible_range_for_line<T: TextRead>(
     Ok(TextRange::new(full_range.start(), end)?)
 }
 
-fn line_content_end<T: TextRead>(text: &T, end: CharOffset) -> EngineResult<CharOffset> {
+fn line_content_end<T: TextRead>(text: &T, end: ByteOffset) -> EngineResult<ByteOffset> {
     let end_value = end.get();
 
     if end_value == 0 {
         return Ok(end);
     }
 
-    if text.char_at(CharOffset::new(end_value - 1)) != Some('\n') {
+    // 用 byte 接口判断结尾的 \n / \r\n。
+    if text.char_at_byte(ByteOffset::new(end_value - 1)) != Some('\n') {
         return Ok(end);
     }
 
     let without_lf = end_value - 1;
 
-    if without_lf > 0 && text.char_at(CharOffset::new(without_lf - 1)) == Some('\r') {
-        Ok(CharOffset::new(without_lf - 1))
+    if without_lf > 0 && text.char_at_byte(ByteOffset::new(without_lf - 1)) == Some('\r') {
+        Ok(ByteOffset::new(without_lf - 1))
     } else {
-        Ok(CharOffset::new(without_lf))
+        Ok(ByteOffset::new(without_lf))
     }
 }

@@ -1,4 +1,4 @@
-//! Buffer 坐标门面：把存储层 char/byte/UTF-16/line 转换能力扩展为编辑器需要的边界与视觉列 API。
+//! Buffer 坐标门面：把存储层 byte 深核接口投影为编辑器需要的边界（char / UTF-16 / line / DisplayColumn）API。
 //!
 //! 本文件绑定 BufferConfig 并处理 CRLF、grapheme、DisplayColumn 等策略，不直接修改文本或历史。
 
@@ -19,8 +19,39 @@ impl Buffer {
         self.storage.line_count()
     }
 
-    pub fn line_start(&self, line: Line) -> EngineResult<CharOffset> {
+    // ============== 深核：byte 接口 ==============
+
+    /// 指定行的起始 ByteOffset（深核接口）。
+    pub fn line_start_byte(&self, line: Line) -> EngineResult<ByteOffset> {
         self.storage.line_start(line)
+    }
+
+    pub fn byte_to_position(&self, offset: ByteOffset) -> EngineResult<Position> {
+        self.storage.byte_to_position(offset)
+    }
+
+    pub fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset> {
+        self.storage.position_to_byte(position)
+    }
+
+    pub fn is_grapheme_boundary_byte(&self, offset: ByteOffset) -> EngineResult<bool> {
+        self.storage.is_grapheme_boundary(offset)
+    }
+
+    pub fn previous_grapheme_boundary_byte(&self, offset: ByteOffset) -> EngineResult<ByteOffset> {
+        self.storage.previous_grapheme_boundary(offset)
+    }
+
+    pub fn next_grapheme_boundary_byte(&self, offset: ByteOffset) -> EngineResult<ByteOffset> {
+        self.storage.next_grapheme_boundary(offset)
+    }
+
+    // ============== 边界投影：CharOffset / Line/Column / UTF-16 ==============
+
+    /// 指定行的起始 CharOffset（边界投影）。
+    pub fn line_start(&self, line: Line) -> EngineResult<CharOffset> {
+        let byte = self.storage.line_start(line)?;
+        self.storage.byte_to_char(byte)
     }
 
     pub fn char_to_position(&self, offset: CharOffset) -> EngineResult<Position> {
@@ -56,23 +87,24 @@ impl Buffer {
     }
 
     pub fn is_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<bool> {
-        self.storage.is_grapheme_boundary(offset)
+        self.storage.is_grapheme_boundary_char(offset)
     }
 
     pub fn validate_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<()> {
-        if self.storage.is_grapheme_boundary(offset)? {
+        if self.storage.is_grapheme_boundary_char(offset)? {
             Ok(())
         } else {
-            Err(CoordinateError::InvalidGraphemeBoundary(offset).into())
+            let byte = self.storage.char_to_byte(offset)?;
+            Err(CoordinateError::InvalidGraphemeBoundary(byte).into())
         }
     }
 
     pub fn previous_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
-        self.storage.previous_grapheme_boundary(offset)
+        self.storage.previous_grapheme_boundary_char(offset)
     }
 
     pub fn next_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
-        self.storage.next_grapheme_boundary(offset)
+        self.storage.next_grapheme_boundary_char(offset)
     }
 
     pub fn line_ending_style(&self) -> LineEndingStyle {
@@ -143,7 +175,7 @@ pub(super) fn char_to_byte_index(text: &str, offset: CharOffset) -> EngineResult
     let len_chars = text.chars().count();
 
     if char_offset > len_chars {
-        return Err(CoordinateError::OutOfBounds(offset).into());
+        return Err(CoordinateError::CharOutOfBounds(offset).into());
     }
 
     if char_offset == len_chars {
@@ -153,7 +185,7 @@ pub(super) fn char_to_byte_index(text: &str, offset: CharOffset) -> EngineResult
     text.char_indices()
         .nth(char_offset)
         .map(|(byte_idx, _)| byte_idx)
-        .ok_or_else(|| CoordinateError::OutOfBounds(offset).into())
+        .ok_or_else(|| CoordinateError::CharOutOfBounds(offset).into())
 }
 
 pub(super) fn is_crlf_middle<T: TextRead>(storage: &T, offset: CharOffset) -> bool {

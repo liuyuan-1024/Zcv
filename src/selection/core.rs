@@ -2,7 +2,7 @@
 //!
 //! 本文件只维护单个 selection 的方向、范围和映射；排序、合并和 primary 归属在 SelectionSet。
 
-use crate::{CharOffset, PositionMap, TextRange};
+use crate::{ByteOffset, PositionMap, TextRange};
 
 use super::Cursor;
 
@@ -11,27 +11,27 @@ use super::Cursor;
 /// `anchor` 是固定端，`head` 是活动端。两者相等时表示 caret。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Selection {
-    anchor: CharOffset,
-    head: CharOffset,
+    anchor: ByteOffset,
+    head: ByteOffset,
 }
 
 impl Selection {
-    pub const fn new(anchor: CharOffset, head: CharOffset) -> Self {
+    pub const fn new(anchor: ByteOffset, head: ByteOffset) -> Self {
         Self { anchor, head }
     }
 
-    pub const fn caret(offset: CharOffset) -> Self {
+    pub const fn caret(offset: ByteOffset) -> Self {
         Self {
             anchor: offset,
             head: offset,
         }
     }
 
-    pub const fn anchor(self) -> CharOffset {
+    pub const fn anchor(self) -> ByteOffset {
         self.anchor
     }
 
-    pub const fn head(self) -> CharOffset {
+    pub const fn head(self) -> ByteOffset {
         self.head
     }
 
@@ -51,11 +51,11 @@ impl Selection {
         self.anchor > self.head
     }
 
-    pub fn start(self) -> CharOffset {
+    pub fn start(self) -> ByteOffset {
         self.anchor.min(self.head)
     }
 
-    pub fn end(self) -> CharOffset {
+    pub fn end(self) -> ByteOffset {
         self.anchor.max(self.head)
     }
 
@@ -72,7 +72,7 @@ impl Selection {
         Self::caret(self.end())
     }
 
-    pub fn with_head(self, head: CharOffset) -> Self {
+    pub fn with_head(self, head: ByteOffset) -> Self {
         Self {
             anchor: self.anchor,
             head,

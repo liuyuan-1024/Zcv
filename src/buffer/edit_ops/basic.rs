@@ -3,14 +3,14 @@
 //! 本文件只把简单编辑统一转换成 Transaction 并进入历史链路；批量 selection 编辑和事务提交细节由相邻子系统承担。
 
 use crate::{
-    CharOffset, EngineResult, TextRange,
+    ByteOffset, EngineResult, TextRange,
     transaction::{Edit, Transaction},
 };
 
 use crate::buffer::Buffer;
 
 impl Buffer {
-    pub fn insert(&mut self, offset: CharOffset, text: &str) -> EngineResult<()> {
+    pub fn insert(&mut self, offset: ByteOffset, text: &str) -> EngineResult<()> {
         let range = TextRange::new(offset, offset)?;
         self.replace(range, text)
     }

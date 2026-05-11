@@ -5,8 +5,8 @@
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
-    CharOffset, CoordinateError, EditError, EngineResult, MovementDirection, MovementUnit,
-    Selection, SelectionSet, WordBoundaryPolicy, storage::TextRead,
+    ByteOffset, CharOffset, CoordinateError, EditError, EngineResult, MovementDirection,
+    MovementUnit, Selection, SelectionSet, WordBoundaryPolicy, storage::TextRead,
 };
 
 use super::{Buffer, coordinates::is_crlf_middle};
@@ -97,7 +97,11 @@ impl Buffer {
             .iter()
             .copied()
             .map(|selection| {
-                let new_head = self.movement_boundary(selection.head(), direction, unit)?;
+                // Selection.head 是 ByteOffset 深核坐标；token-span 算法当前仍在 char 空间，
+                // 因此在边界转 char、计算后再换回 byte。
+                let head_char = self.storage.byte_to_char(selection.head())?;
+                let new_head_char = self.movement_boundary(head_char, direction, unit)?;
+                let new_head = self.storage.char_to_byte(new_head_char)?;
 
                 Ok(if extend {
                     selection.with_head(new_head)
@@ -150,8 +154,8 @@ fn movement_boundary_in_text<T: TextRead>(
 
     match unit {
         MovementUnit::Grapheme => match direction {
-            MovementDirection::Previous => storage.previous_grapheme_boundary(offset),
-            MovementDirection::Next => storage.next_grapheme_boundary(offset),
+            MovementDirection::Previous => storage.previous_grapheme_boundary_char(offset),
+            MovementDirection::Next => storage.next_grapheme_boundary_char(offset),
         },
         MovementUnit::Word => {
             let text = storage.text();
@@ -198,15 +202,17 @@ fn movement_boundary_in_text<T: TextRead>(
 
 fn validate_movement_offset<T: TextRead>(storage: &T, offset: CharOffset) -> EngineResult<()> {
     if offset > storage.len_chars() {
-        return Err(CoordinateError::OutOfBounds(offset).into());
+        return Err(CoordinateError::CharOutOfBounds(offset).into());
     }
 
     if is_crlf_middle(storage, offset) {
-        return Err(EditError::InvalidBoundary { offset }.into());
+        let byte = storage.char_to_byte(offset)?;
+        return Err(EditError::InvalidBoundary { offset: byte }.into());
     }
 
-    if !storage.is_grapheme_boundary(offset)? {
-        return Err(CoordinateError::InvalidGraphemeBoundary(offset).into());
+    if !storage.is_grapheme_boundary_char(offset)? {
+        let byte = storage.char_to_byte(offset)?;
+        return Err(CoordinateError::InvalidGraphemeBoundary(byte).into());
     }
 
     Ok(())

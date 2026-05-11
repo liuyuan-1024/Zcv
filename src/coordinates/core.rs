@@ -23,7 +23,7 @@ pub(crate) fn logical_to_display_column_in_text<T: TextRead>(
     column: LogicalColumn,
 ) -> EngineResult<DisplayColumn> {
     let line_start = storage.line_start(line)?;
-    let offset = storage.position_to_char(Position::new(line, column))?;
+    let offset = storage.position_to_byte(Position::new(line, column))?;
     let range = TextRange::new(line_start, offset)?;
     let text = storage.slice_text(range)?;
 
@@ -100,27 +100,31 @@ pub(crate) fn next_tab_stop(display_column: DisplayColumn, tab_width: usize) -> 
     DisplayColumn::new(current + delta)
 }
 
-fn line_content_end_for_storage<T: TextRead>(storage: &T, line: Line) -> EngineResult<CharOffset> {
+fn line_content_end_for_storage<T: TextRead>(
+    storage: &T,
+    line: Line,
+) -> EngineResult<crate::ByteOffset> {
     let line_start = storage.line_start(line)?.get();
     let mut next_line_start = if line.get() + 1 < storage.line_count() {
         storage.line_start(Line::new(line.get() + 1))?.get()
     } else {
-        storage.len_chars().get()
+        storage.len_bytes().get()
     };
 
+    // 用 byte 接口检测 \n / \r\n
     if next_line_start > line_start
-        && storage.char_at(CharOffset::new(next_line_start - 1)) == Some('\n')
+        && storage.char_at_byte(crate::ByteOffset::new(next_line_start - 1)) == Some('\n')
     {
         next_line_start -= 1;
 
         if next_line_start > line_start
-            && storage.char_at(CharOffset::new(next_line_start - 1)) == Some('\r')
+            && storage.char_at_byte(crate::ByteOffset::new(next_line_start - 1)) == Some('\r')
         {
             next_line_start -= 1;
         }
     }
 
-    Ok(CharOffset::new(next_line_start))
+    Ok(crate::ByteOffset::new(next_line_start))
 }
 
 fn display_width_of_text(text: &str, config: &BufferConfig) -> usize {

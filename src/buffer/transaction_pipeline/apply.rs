@@ -3,7 +3,7 @@
 //! 本文件守住失败原子性和版本推进边界；EditList 归一化、存储实现和 public 便利编辑入口不在这里定义。
 
 use crate::{
-    BufferVersion, EngineResult, LargeTransactionPolicy, PositionMap, SelectionSet,
+    BufferVersion, EngineError, EngineResult, LargeTransactionPolicy, PositionMap, SelectionSet,
     errors::{EditError, TransactionError},
     storage::TextStorage,
     transaction::{
@@ -71,35 +71,45 @@ impl Buffer {
         self.ensure_writable()?;
         let mut prepared = self.prepare_transaction(tx)?;
         self.apply_large_transaction_policy(&mut prepared)?;
-        let edits_for_record = prepared.edits.clone();
-        let undo_edits_for_record = prepared.undo_edits.clone();
-        let before_selection_for_record = prepared.before_selection.clone();
-        let metadata_for_record = prepared.metadata.clone();
 
-        let (delta, changeset) = self.commit_prepared_transaction(&prepared)?;
+        // Phase 4 引入 Arc<[T]>：以下所有 clone 都是 O(1) 引用计数递增，无堆分配。
+        // 仍然显式列出便于读者理解所有权流动；编译器不会自动 elide 这些 Arc::clone。
+        let (delta, changeset) =
+            self.apply_edit_list(prepared.base_version, prepared.edits.clone(), prepared.metadata.source())?;
+
         let position_map = changeset.position_map();
         let after_selection = self.resolve_after_selection(
             &prepared.before_selection,
             prepared.explicit_after_selection.as_ref(),
             &position_map,
         );
-        let after_selection_for_record = after_selection.clone();
+
+        // 取得事务 id（一定存在，由 apply_edit_list 写入）。
+        // 用 EngineBug 而不是 expect 保证不向外 panic。
+        let transaction_id = self
+            .last_delta_event()
+            .map(|event| event.transaction_id)
+            .ok_or_else(|| EngineError::EngineBug {
+                location: "apply_transaction_inner",
+                detail: "apply_edit_list succeeded but no DeltaEvent was emitted".to_string(),
+            })?;
+
+        // 构造 TransactionRecord：所有字段都是 Arc-backed 或 Copy，clone 是 O(1)。
+        let record = TransactionRecord::new(
+            transaction_id,
+            delta.old_version,
+            delta.new_version,
+            prepared.edits.clone(),
+            prepared.undo_edits.clone(),
+            prepared.before_selection.clone(),
+            after_selection.clone(),
+            prepared.metadata.clone(),
+        );
+
+        // 推进 Buffer 选区状态；after_selection 在这里 move 进 Buffer。
         self.selection = after_selection.clone();
         self.finish_transaction(prepared, after_selection)?;
 
-        let event = self
-            .last_delta_event()
-            .expect("apply_transaction 提交成功后必然有 DeltaEvent");
-        let record = TransactionRecord::new(
-            event.transaction_id,
-            delta.old_version,
-            delta.new_version,
-            edits_for_record,
-            undo_edits_for_record,
-            before_selection_for_record,
-            after_selection_for_record,
-            metadata_for_record,
-        );
         Ok((record, delta, changeset))
     }
 
@@ -150,17 +160,6 @@ impl Buffer {
         Ok(())
     }
 
-    fn commit_prepared_transaction(
-        &mut self,
-        prepared: &PreparedTransaction,
-    ) -> EngineResult<(Delta, ChangeSet)> {
-        self.apply_edit_list(
-            prepared.base_version,
-            prepared.edits.clone(),
-            prepared.metadata.source(),
-        )
-    }
-
     fn resolve_after_selection(
         &self,
         before_selection: &SelectionSet,
@@ -178,12 +177,14 @@ impl Buffer {
         after_selection: SelectionSet,
     ) -> EngineResult<()> {
         if prepared.metadata.record_history() {
+            // Arc::clone：description 字符串只在历史节点持有一份共享
+            let description = prepared.metadata.description_arc().cloned();
             let entry = HistoryEntry::new(
                 prepared.undo_edits,
                 prepared.redo_edits,
                 prepared.before_selection,
                 after_selection,
-                prepared.metadata.description().map(str::to_string),
+                description,
             );
             self.push_history(entry, &prepared.metadata)?;
             return Ok(());
@@ -229,44 +230,54 @@ impl Buffer {
         }
     }
 
+    /// 把已校验的 `EditList` 落地到 Buffer。
+    ///
+    /// **半提交修复**：在文本变异**之前**完成所有可失败步骤（version 检查、validate、
+    /// id 预约、`version.next()` 算溢出）。从文本变异起的每一步都必须是不可失败的；
+    /// `storage.replace` 在 prepare 校验后失败属于引擎不变量违反，作为 `EngineError::EngineBug`
+    /// 暴露而不是静默回滚。这消除了"先 swap storage 再 bump_version" 的半提交窗口。
+    ///
+    /// **去 storage clone**：不再 `self.storage.clone()` —— Phase 1 的 `validate_edit_list`
+    /// + 倒序应用已经保证文本变异不会语义性失败；rollback-by-clone 既不必要也不便宜。
     pub(in crate::buffer) fn apply_edit_list(
         &mut self,
         base_version: BufferVersion,
         tx_edits: EditList,
         source: TransactionSource,
     ) -> EngineResult<(Delta, ChangeSet)> {
+        // ===== Fallible 段：在任何文本变异前完成全部可失败检查 =====
         self.ensure_writable()?;
 
         if base_version != self.version {
-            return Err(crate::TransactionError::VersionMismatch {
+            return Err(TransactionError::VersionMismatch {
                 expected: self.version,
                 actual: base_version,
             }
             .into());
         }
 
-        // 1. 预检查：所有 edit 必须在当前旧文本字符坐标系中合法。
         self.validate_edit_list(&tx_edits)?;
         let transaction_id = self.reserve_transaction_id()?;
-
-        let edits = tx_edits.as_slice().to_vec();
         let old_version = self.version;
+        let new_version = old_version.next().ok_or(EngineError::VersionOverflow)?;
 
-        // 2. 在 clone 上应用，确保未来 storage.replace 失败时不污染当前 Buffer。
-        let mut new_storage = self.storage.clone();
-
-        let mut reverse_edits = edits;
-        reverse_edits.reverse();
-
-        for edit in reverse_edits {
-            new_storage.replace(edit.range(), edit.replacement())?;
+        // ===== Infallible 段：从这里起文本变异不允许失败 =====
+        // 倒序应用：所有 edit 都是基于旧文本坐标的；后向前应用保证前面的 edit 偏移不漂移。
+        // EditList::new 保证 edits 互不重叠并已按 start 升序排列。
+        for edit in tx_edits.as_slice().iter().rev() {
+            self.storage
+                .replace(edit.range(), edit.replacement())
+                .map_err(|err| EngineError::EngineBug {
+                    location: "apply_edit_list",
+                    detail: format!(
+                        "validated edit failed at range {:?}: {err:?}",
+                        edit.range()
+                    ),
+                })?;
         }
 
-        // 3. 全部成功后再一次性提交 storage / version。
-        self.storage = new_storage;
-        self.bump_version()?;
-
-        let new_version = self.version;
+        // 文本变异已完成且必然成功；现在原子推进 version。
+        self.version = new_version;
 
         let changeset = ChangeSet::from_edit_list(&tx_edits);
         let position_map = changeset.position_map();
@@ -277,6 +288,7 @@ impl Buffer {
             edits: tx_edits,
         };
 
+        // Arc-backed clone：O(1) 引用计数递增
         self.push_delta_event(DeltaEvent {
             transaction_id,
             old_version,

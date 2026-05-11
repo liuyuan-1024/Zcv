@@ -195,30 +195,37 @@ impl Buffer {
             .truncate_to_budget(policy.max_undo_history, policy.max_undo_history_bytes);
     }
 
+    /// 构造 `edits` 的逆操作 `EditList`，用于 Undo 回放。
+    ///
+    /// **复用 `PositionMap`**：旧文本坐标 → 新文本坐标的映射委托给同一份算法，
+    /// 不再手搓 `(old_start as isize + diff).max(0) as usize` 的脆弱 diff 算术。
+    /// 字节长度直接来自 `Edit::replacement().len()`，O(1)；旧文本切片走
+    /// `storage.slice_text`（单块时 `Cow::Borrowed` 零拷贝）。
     pub(in crate::buffer) fn build_inverse_edit_list(
         &self,
         edits: &EditList,
     ) -> EngineResult<EditList> {
+        let position_map =
+            crate::position_map::PositionMap::from_edits(edits.as_slice().to_vec());
+
         let mut inverse = Vec::with_capacity(edits.len());
-        let mut diff = 0isize;
 
         for edit in edits.as_slice() {
-            let old_start = edit.range().start().get();
-            let old_end = edit.range().end().get();
+            // 取出删除掉的旧文本（用作 Undo 时的回填内容）
             let deleted_text = self.slice_text(edit.range())?.to_string();
 
-            let new_start = (old_start as isize + diff).max(0) as usize;
-            // ByteOffset 深核：用 byte 长度（无需 chars().count() 的 O(N) 扫描）
+            // 旧位置 → 新位置（与 ChangeSet::changed_ranges 用同一算法）
+            let new_start = position_map.map_old_position(edit.range().start()).value();
             let replacement_bytes = edit.replacement().len();
-            let new_end = new_start + replacement_bytes;
-            let new_range = crate::TextRange::new(
-                crate::ByteOffset::new(new_start),
-                crate::ByteOffset::new(new_end),
-            )?;
+            let new_end = new_start
+                .checked_add(replacement_bytes)
+                .ok_or_else(|| EngineError::EngineBug {
+                    location: "build_inverse_edit_list",
+                    detail: "byte offset overflow during inverse range".to_string(),
+                })?;
 
+            let new_range = crate::TextRange::new(new_start, new_end)?;
             inverse.push(Edit::replace(new_range, deleted_text));
-
-            diff += replacement_bytes as isize - (old_end - old_start) as isize;
         }
 
         Ok(EditList::new(inverse)?)

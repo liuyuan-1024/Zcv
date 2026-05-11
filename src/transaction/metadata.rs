@@ -1,6 +1,10 @@
 //! TransactionMetadata：事务来源、历史合并和描述信息的受控组合。
 //!
 //! 字段保持私有，避免调用方自由拼装后续历史系统无法维护的不变量。
+//!
+//! **Zero-copy 纪律**：`description` 用 `Arc<str>`，事务热路径反复传递元数据时只递增引用计数。
+
+use std::sync::Arc;
 
 use super::TransactionSource;
 
@@ -23,7 +27,7 @@ pub struct TransactionMetadata {
     source: TransactionSource,
     merge_policy: TransactionMergePolicy,
     record_history: bool,
-    description: Option<String>,
+    description: Option<Arc<str>>,
 }
 
 impl TransactionMetadata {
@@ -44,9 +48,14 @@ impl TransactionMetadata {
         self
     }
 
-    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+    pub fn with_description(mut self, description: impl Into<Arc<str>>) -> Self {
         self.description = Some(description.into());
         self
+    }
+
+    /// 返回 `Arc<str>` 引用以便复用同一份共享字符串。
+    pub fn description_arc(&self) -> Option<&Arc<str>> {
+        self.description.as_ref()
     }
 
     pub fn source(&self) -> TransactionSource {

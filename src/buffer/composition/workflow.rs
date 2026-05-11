@@ -156,7 +156,7 @@ impl Buffer {
             after_text,
             state.original_selection,
             after_selection,
-            Some("composition commit".to_string()),
+            Some(std::sync::Arc::from("composition commit")),
         )?;
         let metadata = TransactionMetadata::new(TransactionSource::Composition)
             .with_description("composition commit");

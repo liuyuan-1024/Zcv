@@ -29,14 +29,14 @@ impl HistoryEntry {
         redo_edits: EditList,
         before_selection: SelectionSet,
         after_selection: SelectionSet,
-        description: Option<String>,
+        description: Option<Arc<str>>,
     ) -> Self {
         Self {
             undo_batches: Arc::from(vec![undo_edits]),
             redo_batches: Arc::from(vec![redo_edits]),
             before_selection,
             after_selection,
-            description: description.map(Arc::from),
+            description,
         }
     }
 
@@ -45,7 +45,7 @@ impl HistoryEntry {
         after_text: String,
         before_selection: SelectionSet,
         after_selection: SelectionSet,
-        description: Option<String>,
+        description: Option<Arc<str>>,
     ) -> EngineResult<Self> {
         let before_range = TextRange::new(ByteOffset::ZERO, ByteOffset::new(before_text.len()))?;
         let after_range = TextRange::new(ByteOffset::ZERO, ByteOffset::new(after_text.len()))?;

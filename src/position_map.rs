@@ -109,35 +109,48 @@ impl PositionMap {
         pos: ByteOffset,
         affinity: Affinity,
     ) -> MappingResult<ByteOffset> {
-        let mut diff = 0isize;
-        let pos_val = pos.get() as isize;
+        let mut shift = OffsetShift::ZERO;
 
         for edit in &self.edits {
-            let old_start = edit.range().start().get() as isize;
-            let old_end = edit.range().end().get() as isize;
-            let replacement_len = replacement_len(edit);
+            let range = edit.range();
+            let old_start = range.start();
+            let old_end = range.end();
+            let replacement_len = edit.replacement().len();
+            let new_start = shift
+                .apply_old_to_new(old_start)
+                .expect("internal invariant: old start maps without byte offset overflow");
 
-            if pos_val < old_start {
+            if pos < old_start {
                 break;
             }
 
             if old_start == old_end {
-                if pos_val == old_start {
+                if pos == old_start {
                     let mapped = match affinity {
-                        Affinity::Before => old_start + diff,
-                        Affinity::After => old_start + diff + replacement_len,
+                        Affinity::Before => new_start,
+                        Affinity::After => checked_add_offset(
+                            new_start,
+                            replacement_len,
+                            "map_old_position_with_affinity",
+                        ),
                     };
 
-                    return MappingResult::Mapped(offset(mapped));
+                    return MappingResult::Mapped(mapped);
                 }
-            } else if pos_val < old_end {
-                return MappingResult::Deleted(offset(old_start + diff));
+            } else if pos < old_end {
+                return MappingResult::Deleted(new_start);
             }
 
-            diff += replacement_len - (old_end - old_start);
+            shift = shift
+                .after_edit(range.len(), replacement_len)
+                .expect("internal invariant: accumulated edit shift does not overflow");
         }
 
-        MappingResult::Mapped(offset(pos_val + diff))
+        MappingResult::Mapped(
+            shift
+                .apply_old_to_new(pos)
+                .expect("internal invariant: old position maps without byte offset overflow"),
+        )
     }
 
     /// new byte position -> old byte position。
@@ -151,33 +164,42 @@ impl PositionMap {
         pos: ByteOffset,
         bias: Bias,
     ) -> MappingResult<ByteOffset> {
-        let mut diff = 0isize;
-        let pos_val = pos.get() as isize;
+        let mut shift = OffsetShift::ZERO;
 
         for edit in &self.edits {
-            let old_start = edit.range().start().get() as isize;
-            let old_end = edit.range().end().get() as isize;
-            let old_len = old_end - old_start;
-            let replacement_len = replacement_len(edit);
-            let new_start = old_start + diff;
-            let new_end = new_start + replacement_len;
+            let range = edit.range();
+            let old_start = range.start();
+            let old_end = range.end();
+            let old_len = range.len();
+            let replacement_len = edit.replacement().len();
+            let new_start = shift
+                .apply_old_to_new(old_start)
+                .expect("internal invariant: old start maps without byte offset overflow");
+            let new_end =
+                checked_add_offset(new_start, replacement_len, "map_new_position_with_bias");
 
-            if pos_val < new_start {
+            if pos < new_start {
                 break;
             }
 
             if replacement_len == 0 {
-                if old_len > 0 && pos_val == new_start {
+                if old_len > 0 && pos == new_start {
                     return MappingResult::Ambiguous(biased_offset(old_start, old_end, bias));
                 }
-            } else if pos_val < new_end {
+            } else if pos < new_end {
                 return MappingResult::Ambiguous(biased_offset(old_start, old_end, bias));
             }
 
-            diff += replacement_len - old_len;
+            shift = shift
+                .after_edit(old_len, replacement_len)
+                .expect("internal invariant: accumulated edit shift does not overflow");
         }
 
-        MappingResult::Mapped(offset(pos_val - diff))
+        MappingResult::Mapped(
+            shift
+                .apply_new_to_old(pos)
+                .expect("internal invariant: new position maps without byte offset overflow"),
+        )
     }
 
     /// old byte range -> new byte range。
@@ -297,37 +319,47 @@ impl PositionMap {
         pos: ByteOffset,
         use_after_deleted_content: bool,
     ) -> ByteOffset {
-        let mut diff = 0isize;
-        let pos_val = pos.get() as isize;
+        let mut shift = OffsetShift::ZERO;
 
         for edit in &self.edits {
-            let old_start = edit.range().start().get() as isize;
-            let old_end = edit.range().end().get() as isize;
-            let old_len = old_end - old_start;
-            let replacement_len = replacement_len(edit);
-            let new_start = old_start + diff;
-            let new_end = new_start + replacement_len;
+            let range = edit.range();
+            let old_start = range.start();
+            let old_end = range.end();
+            let old_len = range.len();
+            let replacement_len = edit.replacement().len();
+            let new_start = shift
+                .apply_old_to_new(old_start)
+                .expect("internal invariant: old start maps without byte offset overflow");
+            let new_end = checked_add_offset(
+                new_start,
+                replacement_len,
+                "map_new_position_for_range_boundary",
+            );
 
-            if pos_val < new_start {
+            if pos < new_start {
                 break;
             }
 
             if replacement_len == 0 {
-                if old_len > 0 && pos_val == new_start {
+                if old_len > 0 && pos == new_start {
                     return if use_after_deleted_content {
-                        offset(old_end)
+                        old_end
                     } else {
-                        offset(old_start)
+                        old_start
                     };
                 }
-            } else if pos_val < new_end {
-                return offset(old_start);
+            } else if pos < new_end {
+                return old_start;
             }
 
-            diff += replacement_len - old_len;
+            shift = shift
+                .after_edit(old_len, replacement_len)
+                .expect("internal invariant: accumulated edit shift does not overflow");
         }
 
-        offset(pos_val - diff)
+        shift
+            .apply_new_to_old(pos)
+            .expect("internal invariant: new range boundary maps without byte offset overflow")
     }
 
     fn old_range_intersects_deleted_content(&self, range: TextRange) -> bool {
@@ -340,15 +372,20 @@ impl PositionMap {
     }
 
     fn new_range_touches_ambiguous_content(&self, range: TextRange) -> bool {
-        let mut diff = 0isize;
+        let mut shift = OffsetShift::ZERO;
 
         for edit in &self.edits {
-            let old_start = edit.range().start().get() as isize;
-            let old_end = edit.range().end().get() as isize;
-            let old_len = old_end - old_start;
-            let replacement_len = replacement_len(edit);
-            let new_start = offset(old_start + diff);
-            let new_end = offset(old_start + diff + replacement_len);
+            let edit_range = edit.range();
+            let old_len = edit_range.len();
+            let replacement_len = edit.replacement().len();
+            let new_start = shift
+                .apply_old_to_new(edit_range.start())
+                .expect("internal invariant: old start maps without byte offset overflow");
+            let new_end = checked_add_offset(
+                new_start,
+                replacement_len,
+                "new_range_touches_ambiguous_content",
+            );
 
             if replacement_len == 0 {
                 let touches_deleted_point = if range.is_empty() {
@@ -364,25 +401,65 @@ impl PositionMap {
                 return true;
             }
 
-            diff += replacement_len - old_len;
+            shift = shift
+                .after_edit(old_len, replacement_len)
+                .expect("internal invariant: accumulated edit shift does not overflow");
         }
 
         false
     }
 }
 
-fn replacement_len(edit: &Edit) -> isize {
-    edit.replacement().len() as isize
+/// 已应用编辑造成的 byte 坐标位移。
+///
+/// `removed_bytes` 与 `inserted_bytes` 分开记录，避免把 `usize` 坐标压进
+/// `isize`，也避免删除多于插入时出现负数位移再被 clamp 掩盖。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OffsetShift {
+    removed_bytes: usize,
+    inserted_bytes: usize,
 }
 
-fn offset(value: isize) -> ByteOffset {
-    ByteOffset::new(value.max(0) as usize)
+impl OffsetShift {
+    pub(crate) const ZERO: Self = Self {
+        removed_bytes: 0,
+        inserted_bytes: 0,
+    };
+
+    pub(crate) fn apply_old_to_new(self, old_offset: ByteOffset) -> Option<ByteOffset> {
+        old_offset
+            .get()
+            .checked_sub(self.removed_bytes)?
+            .checked_add(self.inserted_bytes)
+            .map(ByteOffset::new)
+    }
+
+    pub(crate) fn apply_new_to_old(self, new_offset: ByteOffset) -> Option<ByteOffset> {
+        new_offset
+            .get()
+            .checked_sub(self.inserted_bytes)?
+            .checked_add(self.removed_bytes)
+            .map(ByteOffset::new)
+    }
+
+    pub(crate) fn after_edit(self, old_len: usize, replacement_len: usize) -> Option<Self> {
+        Some(Self {
+            removed_bytes: self.removed_bytes.checked_add(old_len)?,
+            inserted_bytes: self.inserted_bytes.checked_add(replacement_len)?,
+        })
+    }
 }
 
-fn biased_offset(start: isize, end: isize, bias: Bias) -> ByteOffset {
+fn checked_add_offset(offset: ByteOffset, rhs: usize, location: &'static str) -> ByteOffset {
+    offset.checked_add(rhs).unwrap_or_else(|| {
+        panic!("internal invariant: byte offset overflow while mapping in {location}")
+    })
+}
+
+fn biased_offset(start: ByteOffset, end: ByteOffset, bias: Bias) -> ByteOffset {
     match bias {
-        Bias::Left => offset(start),
-        Bias::Right => offset(end),
+        Bias::Left => start,
+        Bias::Right => end,
     }
 }
 

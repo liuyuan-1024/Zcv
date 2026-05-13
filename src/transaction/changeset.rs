@@ -3,8 +3,8 @@
 //! 它只能从 EditList 构造，不负责排序、重叠检测或 Buffer 版本推进。
 
 use crate::{
-    position_map::PositionMap,
-    types::{ByteOffset, TextRange},
+    position_map::{OffsetShift, PositionMap},
+    types::TextRange,
 };
 
 use super::{Edit, EditList};
@@ -41,23 +41,27 @@ impl ChangeSet {
         }
 
         let mut ranges = Vec::new();
-        let mut diff = 0isize;
+        let mut shift = OffsetShift::ZERO;
 
         for edit in &self.edits {
-            let old_start = edit.range().start().get() as isize;
-            let old_end = edit.range().end().get() as isize;
-            // 替换文本 byte 长度，避免 chars().count() 的 O(N) 扫描
-            let replacement_len = edit.replacement().len() as isize;
+            let range = edit.range();
+            let replacement_len = edit.replacement().len();
 
-            let new_start = (old_start + diff).max(0) as usize;
-            let new_end = new_start + replacement_len as usize;
+            let new_start = shift.apply_old_to_new(range.start()).expect(
+                "internal invariant: changed range start maps without byte offset overflow",
+            );
+            let new_end = new_start
+                .checked_add(replacement_len)
+                .expect("internal invariant: changed range end maps without byte offset overflow");
 
             ranges.push(
-                TextRange::new(ByteOffset::new(new_start), ByteOffset::new(new_end))
+                TextRange::new(new_start, new_end)
                     .expect("ChangeSet 生成的范围必须满足起始位置 <= 结束位置"),
             );
 
-            diff += replacement_len - (old_end - old_start);
+            shift = shift
+                .after_edit(range.len(), replacement_len)
+                .expect("internal invariant: accumulated changed range shift does not overflow");
         }
 
         Self::merge_ranges(ranges)

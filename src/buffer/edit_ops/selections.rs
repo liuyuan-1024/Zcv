@@ -3,7 +3,8 @@
 //! 本文件负责 selection 语义到 EditList 的映射，不实现底层提交原子性，也不绕过 Buffer 边界校验。
 
 use crate::{
-    ByteOffset, EngineResult, MovementDirection, MovementUnit, Selection, SelectionSet, TextRange,
+    EngineError, EngineResult, MovementDirection, MovementUnit, Selection, SelectionSet, TextRange,
+    position_map::OffsetShift,
     storage::TextRead,
     transaction::{ChangeSet, Delta, Edit, Transaction, TransactionMetadata, TransactionSource},
 };
@@ -142,14 +143,16 @@ impl Buffer {
 
         let mut edits = Vec::new();
         let mut after_selections = Vec::with_capacity(selections.len());
-        let mut diff = 0isize;
+        let mut shift = OffsetShift::ZERO;
 
         for selection in selections.as_slice() {
             let range = selection.range();
-            let old_start = range.start().get() as isize;
-            let old_end = range.end().get() as isize;
-            let new_start = (old_start + diff).max(0) as usize;
-            let new_head = ByteOffset::new(new_start + replacement_len);
+            let new_start = shift
+                .apply_old_to_new(range.start())
+                .ok_or_else(|| offset_arithmetic_bug("replace_selection_ranges_with_metadata"))?;
+            let new_head = new_start
+                .checked_add(replacement_len)
+                .ok_or_else(|| offset_arithmetic_bug("replace_selection_ranges_with_metadata"))?;
 
             let is_empty_noop = range.is_empty() && replacement.is_empty();
             // 流式比较，零拷贝
@@ -173,7 +176,11 @@ impl Buffer {
 
             if !is_empty_noop && !is_same_text_noop {
                 edits.push(Edit::replace(range, replacement.clone()));
-                diff += replacement_len as isize - (old_end - old_start);
+                shift = shift
+                    .after_edit(range.len(), replacement_len)
+                    .ok_or_else(|| {
+                        offset_arithmetic_bug("replace_selection_ranges_with_metadata")
+                    })?;
             }
 
             after_selections.push(Selection::caret(new_head));
@@ -218,5 +225,12 @@ impl Buffer {
         .with_selection(Some(self.selection.clone()), Some(after_selection));
 
         self.apply_transaction(tx).map(Some)
+    }
+}
+
+fn offset_arithmetic_bug(location: &'static str) -> EngineError {
+    EngineError::EngineBug {
+        location,
+        detail: "byte offset overflow while mapping selection edits".to_string(),
     }
 }

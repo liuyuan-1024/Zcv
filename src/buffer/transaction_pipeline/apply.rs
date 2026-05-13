@@ -74,8 +74,11 @@ impl Buffer {
 
         // Phase 4 引入 Arc<[T]>：以下所有 clone 都是 O(1) 引用计数递增，无堆分配。
         // 仍然显式列出便于读者理解所有权流动；编译器不会自动 elide 这些 Arc::clone。
-        let (delta, changeset) =
-            self.apply_edit_list(prepared.base_version, prepared.edits.clone(), prepared.metadata.source())?;
+        let (delta, changeset) = self.apply_edit_list(
+            prepared.base_version,
+            prepared.edits.clone(),
+            prepared.metadata.source(),
+        )?;
 
         let position_map = changeset.position_map();
         let after_selection = self.resolve_after_selection(
@@ -269,10 +272,7 @@ impl Buffer {
                 .replace(edit.range(), edit.replacement())
                 .map_err(|err| EngineError::EngineBug {
                     location: "apply_edit_list",
-                    detail: format!(
-                        "validated edit failed at range {:?}: {err:?}",
-                        edit.range()
-                    ),
+                    detail: format!("validated edit failed at range {:?}: {err:?}", edit.range()),
                 })?;
         }
 

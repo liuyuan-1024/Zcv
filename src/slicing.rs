@@ -5,8 +5,7 @@
 use std::{borrow::Cow, fmt};
 
 use crate::{
-    ByteOffset, CoordinateError, EngineResult, Line, LineRange, TextRange,
-    storage::TextRead,
+    ByteOffset, CoordinateError, EngineResult, Line, LineRange, TextRange, storage::TextRead,
 };
 
 /// 逻辑行视口。
@@ -105,7 +104,7 @@ impl fmt::Display for TextSlice<'_> {
 
 /// 单行只读文本切片。
 ///
-/// `range` 是该逻辑行在全文中的精确 char range；如果该行以换行符结束，切片会保留换行符。
+/// `range` 是该逻辑行在全文中的精确 byte range；如果该行以换行符结束，切片会保留换行符。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineSlice<'a> {
     line: Line,

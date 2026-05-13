@@ -15,7 +15,7 @@ use crate::{
 use super::Buffer;
 
 impl Buffer {
-    /// 按 char range 读取文本。
+    /// 按 byte range 读取文本。
     pub fn slice_text(&self, range: TextRange) -> EngineResult<TextSlice<'_>> {
         Ok(TextSlice::new(range, self.storage.slice_text(range)?))
     }

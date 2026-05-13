@@ -91,7 +91,7 @@ impl Snapshot {
         self.storage.position_to_byte(position)
     }
 
-    /// 按 char range 读取快照文本。
+    /// 按 byte range 读取快照文本。
     pub fn slice_text(&self, range: TextRange) -> EngineResult<TextSlice<'_>> {
         Ok(TextSlice::new(range, self.storage.slice_text(range)?))
     }

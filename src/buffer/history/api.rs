@@ -205,8 +205,7 @@ impl Buffer {
         &self,
         edits: &EditList,
     ) -> EngineResult<EditList> {
-        let position_map =
-            crate::position_map::PositionMap::from_edits(edits.as_slice().to_vec());
+        let position_map = crate::position_map::PositionMap::from_edits(edits.as_slice().to_vec());
 
         let mut inverse = Vec::with_capacity(edits.len());
 
@@ -217,12 +216,13 @@ impl Buffer {
             // 旧位置 → 新位置（与 ChangeSet::changed_ranges 用同一算法）
             let new_start = position_map.map_old_position(edit.range().start()).value();
             let replacement_bytes = edit.replacement().len();
-            let new_end = new_start
-                .checked_add(replacement_bytes)
-                .ok_or_else(|| EngineError::EngineBug {
-                    location: "build_inverse_edit_list",
-                    detail: "byte offset overflow during inverse range".to_string(),
-                })?;
+            let new_end =
+                new_start
+                    .checked_add(replacement_bytes)
+                    .ok_or_else(|| EngineError::EngineBug {
+                        location: "build_inverse_edit_list",
+                        detail: "byte offset overflow during inverse range".to_string(),
+                    })?;
 
             let new_range = crate::TextRange::new(new_start, new_end)?;
             inverse.push(Edit::replace(new_range, deleted_text));

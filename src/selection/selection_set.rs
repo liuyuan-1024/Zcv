@@ -99,7 +99,10 @@ impl SelectionSet {
     pub fn normalized(&self) -> Self {
         // 归一化是纯函数；如果当前已经归一化，复制 Arc 即可（外部观察一致）。
         // 这里仍走 new_with_primary 以保证语义不变；其内部会做排序 / 合并。
-        Self::new_with_primary(self.selections.iter().copied().collect(), self.primary_index)
+        Self::new_with_primary(
+            self.selections.iter().copied().collect(),
+            self.primary_index,
+        )
     }
 
     pub fn map_through_position_map(&self, position_map: &PositionMap) -> Self {

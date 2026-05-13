@@ -11,7 +11,7 @@
 负责：
 
 - 文本存储（RopeyStorage）
-- 文本编辑（CharOffset/TextRange）
+- 文本编辑（ByteOffset/TextRange）
 - 事务与变更映射
 - Undo/Redo 历史
 - 坐标系统（byte/char/utf16/grapheme/display）
@@ -57,41 +57,6 @@
 - `examples/`：可选 GPUI 交互式 testbed（人类体感验证，不作为 M13 之后阶段验收底线）
 - `benches/`：性能基准测试
 - `src/tests/`：仅在 public API 无法覆盖关键内部不变量时使用
-
-## 常用命令
-
-```bash
-cargo fmt
-cargo test
-cargo test --test m0_domain_model
-cargo test --test m1_buffer
-cargo test --test m2_transaction
-cargo test --test m3_history
-cargo test --test m4_storage
-cargo test --test m5_coordinates
-cargo test --test m6_selection
-cargo test --test m7_buffer_lifecycle
-cargo test --test m8_position_map
-cargo test --test m9_anchor
-cargo test --test m10_metadata_layer
-cargo test --test m11_viewport_slicing
-cargo test --test m12_search
-cargo test --test m12_replace
-cargo test --test m12_regex
-cargo test --test m13_fold_set
-cargo test --test m13_projection_line_map
-cargo test --test m13_projection_range_map
-cargo test --test m13_projected_viewport
-cargo run --example gpui_m5_testbed
-cargo run --example gpui_m6_testbed
-cargo run --example gpui_m7_testbed
-cargo run --example gpui_m8_testbed
-cargo run --example gpui_m9_testbed
-cargo run --example gpui_m10_testbed
-cargo run --example gpui_m11_testbed
-cargo run --example gpui_m12_testbed
-cargo run --example gpui_m13_testbed
-```
 
 ## 相关文档
 

@@ -83,7 +83,7 @@ impl FoldSet {
         self.ranges.iter().find(|fold| fold.id() == id)
     }
 
-    /// 折叠任意合法 char range；若已存在精确相同的 range 则返回该 fold 的 id（幂等）。
+    /// 折叠任意合法 byte range；若已存在精确相同的 range 则返回该 fold 的 id（幂等）。
     pub fn fold(&mut self, range: TextRange) -> Result<FoldRangeId, FoldError> {
         self.fold_with_policy(range, self.default_update_policy)
     }
@@ -113,7 +113,7 @@ impl FoldSet {
         Ok(id)
     }
 
-    /// 按 line range 折叠：line range 转换为对应 char range 后走通用 fold 入口。
+    /// 按 line range 折叠：line range 转换为对应 byte range 后走通用 fold 入口。
     pub fn fold_lines(
         &mut self,
         buffer: &Buffer,

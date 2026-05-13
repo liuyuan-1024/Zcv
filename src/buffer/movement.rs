@@ -5,8 +5,8 @@
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
-    CharOffset, CoordinateError, EditError, EngineResult, MovementDirection,
-    MovementUnit, Selection, SelectionSet, WordBoundaryPolicy, storage::TextRead,
+    CharOffset, CoordinateError, EditError, EngineResult, MovementDirection, MovementUnit,
+    Selection, SelectionSet, WordBoundaryPolicy, storage::TextRead,
 };
 
 use super::{Buffer, coordinates::is_crlf_middle};
@@ -358,10 +358,7 @@ fn subword_spans(text: &str) -> Vec<MovementTokenSpan> {
     }
 
     if let Some(start) = current_start {
-        let end_chars = clusters
-            .last()
-            .map(|(idx, _, len)| idx + len)
-            .unwrap_or(0);
+        let end_chars = clusters.last().map(|(idx, _, len)| idx + len).unwrap_or(0);
         spans.push(MovementTokenSpan::new(start, end_chars));
     }
 

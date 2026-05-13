@@ -149,7 +149,7 @@ pub enum FoldError {
         candidate: TextRange,
     },
 
-    /// fold 的 char range 必须是非空区间（start < end）。
+    /// fold 的 byte range 必须是非空区间（start < end）。
     #[error("折叠区间不能为空: {range:?}")]
     EmptyRange { range: TextRange },
 }

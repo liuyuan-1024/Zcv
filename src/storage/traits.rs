@@ -104,10 +104,7 @@ pub(crate) trait TextRead {
     }
 
     /// 边界投影：返回小于当前 CharOffset 的最近 grapheme 边界。
-    fn previous_grapheme_boundary_char(
-        &self,
-        offset: CharOffset,
-    ) -> EngineResult<CharOffset> {
+    fn previous_grapheme_boundary_char(&self, offset: CharOffset) -> EngineResult<CharOffset> {
         let byte = self.char_to_byte(offset)?;
         let prev_byte = self.previous_grapheme_boundary(byte)?;
         self.byte_to_char(prev_byte)

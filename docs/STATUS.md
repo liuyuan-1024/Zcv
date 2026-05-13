@@ -46,7 +46,7 @@
 ## M11 文件
 
 - `src/slicing.rs`：TextSlice / LineSlice / Viewport / ViewportSlice / VisibleLine public 只读切片类型、byte range / line range / viewport 到 TextRange 的边界数学
-- `src/buffer/slicing.rs`：Buffer 上的 char range、byte range、单行、LineRange 与 Viewport 读取入口
+- `src/buffer/slicing.rs`：Buffer 上的 byte range、char range 派生视图、单行、LineRange 与 Viewport 读取入口
 - `src/snapshot.rs`：Snapshot 上与 Buffer 同形的只读切片和 viewport 读取入口
 - `tests/m11_viewport_slicing.rs`：M11A-M11B 机器契约测试，覆盖 TextSlice、LineSlice、按 char / byte / line range 读取、Viewport 可见行、visible line metadata、超长行截断策略、大 line window 读取、错误边界和 Snapshot 版本只读语义
 - `examples/gpui_m11_testbed.rs`：继承 M10 体感，并叠加 ViewportSlice 可见行面板、跳转光标行、滚动 viewport、行数调整、长行截断切换、大文本样本和 Snapshot viewport 预览
@@ -119,7 +119,7 @@
   - 集合：`new(version)` / `with_default_stickiness` / `with_default_update_policy` / `version` / `is_stale` / `len` / `is_empty` / `default_stickiness` / `default_update_policy` / `as_slice` / `iter` / `entry` / `entry_mut`
   - 写入：`insert` / `insert_with_stickiness` / `insert_with_options`（返回追加索引）/ `remove` / `clear` / `replace_all` / `replace_all_with_options`
   - 跟随：`update_through_delta_event(event) -> Result<Vec<TrackedRangeUpdate>, VersionedResultError>`，按 entry 原顺序返回更新事实，按 update policy 删除失效 entry，版本不匹配原子拒绝
-  - 查询：`entries_intersecting(TextRange)` / `entries_containing(CharOffset)` / `entries_in_line_range(buffer, LineRange)` / `entries_in_line_window(buffer, MetadataLineWindow)`
+  - 查询：`entries_intersecting(TextRange)` / `entries_containing(ByteOffset)` / `entries_in_line_range(buffer, LineRange)` / `entries_in_line_window(buffer, MetadataLineWindow)`
   - 互转：`From<MetadataLayer<T>> for VersionedRangeSet<T>`（丢弃 kind 与 id，保留 version / 默认策略 / 每 entry 的 tracked_range 与 update_policy）+ `into_metadata_layer(kind: MetadataLayerKind) -> MetadataLayer<T>`（沿用 version / 默认策略 / 每 entry 的 stickiness 与 update_policy，重新分配 `MetadataRangeId::INITIAL+0..`）
 - `src/metadata/range.rs`：新增 `MetadataRange::into_parts(self) -> (MetadataRangeId, TrackedRange, TrackedRangeUpdatePolicy, T)`，供互转消费
 - `src/metadata/layer.rs`：新增 `MetadataLayer::into_parts(self) -> (kind, version, default_stickiness, default_update_policy, ranges)`，供互转消费

@@ -486,7 +486,12 @@ pub(crate) fn search_in_text<T: TextRead>(
         find_case_insensitive_matches_streaming(storage, config, search_range, query, options)?
     };
 
-    Ok(SearchResult::new(version, query.to_string(), options, matches))
+    Ok(SearchResult::new(
+        version,
+        query.to_string(),
+        options,
+        matches,
+    ))
 }
 
 pub(crate) fn search_regex_in_text<T: TextRead>(

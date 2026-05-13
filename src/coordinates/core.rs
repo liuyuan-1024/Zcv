@@ -39,7 +39,10 @@ pub(crate) fn logical_to_display_column_in_text<T: TextRead>(
     // grapheme cluster 边界要求一段连续文本，无法纯 chunk-streaming。
     let text = storage.slice_text(range)?;
 
-    Ok(DisplayColumn::new(display_width_of_text(text.as_ref(), config)))
+    Ok(DisplayColumn::new(display_width_of_text(
+        text.as_ref(),
+        config,
+    )))
 }
 
 pub(crate) fn display_to_logical_column_in_text<T: TextRead>(
@@ -143,9 +146,10 @@ fn line_content_end_for_storage<T: TextRead>(
 /// 与按 char 累加相比，**合成字符、ZWJ emoji 序列、国旗 emoji** 等多 codepoint 的字素簇
 /// 按一个可见单位计算宽度，避免「光标停在 emoji 中间」「合成字符占两列」之类的经典 bug。
 fn display_width_of_text(text: &str, config: &BufferConfig) -> usize {
-    text.graphemes(true).fold(0usize, |display_column, grapheme| {
-        advance_display_column_for_grapheme(display_column, grapheme, config)
-    })
+    text.graphemes(true)
+        .fold(0usize, |display_column, grapheme| {
+            advance_display_column_for_grapheme(display_column, grapheme, config)
+        })
 }
 
 /// 推进一个 grapheme cluster 的显示列。

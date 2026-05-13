@@ -94,11 +94,12 @@ impl Buffer {
 
         let mut result = None;
         for tx_edits in undo_target.undo_batches.iter() {
-            result = Some(self.apply_edit_list(
+            let (_, delta, changeset) = self.apply_edit_list(
                 self.version,
                 tx_edits.clone(), // EditList::clone 是 O(1) Arc 递增
                 TransactionSource::Undo,
-            )?);
+            )?;
+            result = Some((delta, changeset));
         }
 
         let result = result.expect("history node must contain at least one undo batch");
@@ -145,11 +146,9 @@ impl Buffer {
 
         let mut result = None;
         for tx_edits in target.redo_batches.iter() {
-            result = Some(self.apply_edit_list(
-                self.version,
-                tx_edits.clone(),
-                TransactionSource::Redo,
-            )?);
+            let (_, delta, changeset) =
+                self.apply_edit_list(self.version, tx_edits.clone(), TransactionSource::Redo)?;
+            result = Some((delta, changeset));
         }
 
         let result = result.expect("history node must contain at least one redo batch");

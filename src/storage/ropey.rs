@@ -65,6 +65,16 @@ pub(crate) struct RopeyStorage {
     rope: Rope,
 }
 
+/// `RopeyStorage` 已完成预检的替换坐标。
+///
+/// 这里保存 ropey 原生 char range，使事务提交阶段不再做任何可失败的
+/// byte 边界校验或 byte→char 坐标换算。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RopeyPreparedReplace {
+    start_char: usize,
+    end_char: usize,
+}
+
 impl RopeyStorage {
     pub(crate) fn new(text: String) -> Self {
         Self {
@@ -207,6 +217,7 @@ impl TextRead for RopeyStorage {
 
 impl TextStorage for RopeyStorage {
     type Snapshot = RopeySnapshot;
+    type PreparedReplace = RopeyPreparedReplace;
 
     fn snapshot(&self) -> Self::Snapshot {
         RopeySnapshot {
@@ -214,23 +225,29 @@ impl TextStorage for RopeyStorage {
         }
     }
 
-    fn replace(&mut self, range: TextRange, replacement: &str) -> EngineResult<()> {
+    fn prepare_replace(
+        &self,
+        range: TextRange,
+        _replacement: &str,
+    ) -> EngineResult<Self::PreparedReplace> {
         self.validate_byte_range(range)?;
 
         let start_byte = range.start().get();
         let end_byte = range.end().get();
-        let start_char = self.rope.byte_to_char(start_byte);
-        let end_char = self.rope.byte_to_char(end_byte);
+        Ok(RopeyPreparedReplace {
+            start_char: self.rope.byte_to_char(start_byte),
+            end_char: self.rope.byte_to_char(end_byte),
+        })
+    }
 
-        if start_char != end_char {
-            self.rope.remove(start_char..end_char);
+    fn replace_prepared(&mut self, prepared: Self::PreparedReplace, replacement: &str) {
+        if prepared.start_char != prepared.end_char {
+            self.rope.remove(prepared.start_char..prepared.end_char);
         }
 
         if !replacement.is_empty() {
-            self.rope.insert(start_char, replacement);
+            self.rope.insert(prepared.start_char, replacement);
         }
-
-        Ok(())
     }
 }
 

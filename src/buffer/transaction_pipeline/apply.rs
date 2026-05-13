@@ -4,7 +4,7 @@
 
 use crate::{
     BufferVersion, EngineError, EngineResult, LargeTransactionPolicy, PositionMap, SelectionSet,
-    errors::{EditError, TransactionError},
+    errors::{EditError, StorageError, TransactionError},
     storage::TextStorage,
     transaction::{
         ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionRecord, TransactionSource,
@@ -74,7 +74,7 @@ impl Buffer {
 
         // Phase 4 引入 Arc<[T]>：以下所有 clone 都是 O(1) 引用计数递增，无堆分配。
         // 仍然显式列出便于读者理解所有权流动；编译器不会自动 elide 这些 Arc::clone。
-        let (delta, changeset) = self.apply_edit_list(
+        let (transaction_id, delta, changeset) = self.apply_edit_list(
             prepared.base_version,
             prepared.edits.clone(),
             prepared.metadata.source(),
@@ -86,16 +86,6 @@ impl Buffer {
             prepared.explicit_after_selection.as_ref(),
             &position_map,
         );
-
-        // 取得事务 id（一定存在，由 apply_edit_list 写入）。
-        // 用 EngineBug 而不是 expect 保证不向外 panic。
-        let transaction_id = self
-            .last_delta_event()
-            .map(|event| event.transaction_id())
-            .ok_or_else(|| EngineError::EngineBug {
-                location: "apply_transaction_inner",
-                detail: "apply_edit_list succeeded but no DeltaEvent was emitted".to_string(),
-            })?;
 
         // 构造 TransactionRecord：所有字段都是 Arc-backed 或 Copy，clone 是 O(1)。
         let record = TransactionRecord::new(
@@ -235,20 +225,22 @@ impl Buffer {
 
     /// 把已校验的 `EditList` 落地到 Buffer。
     ///
-    /// **半提交修复**：在文本变异**之前**完成所有可失败步骤（version 检查、validate、
-    /// id 预约、`version.next()` 算溢出）。从文本变异起的每一步都必须是不可失败的；
-    /// `storage.replace` 在 prepare 校验后失败属于引擎不变量违反，作为 `EngineError::EngineBug`
-    /// 暴露而不是静默回滚。这消除了"先 swap storage 再 bump_version" 的半提交窗口。
+    /// **半提交修复**：在 Buffer 本体变异**之前**完成所有可失败步骤（version 检查、
+    /// validate、事务 id 溢出检查、`version.next()` 算溢出、prepared replace 容量预约、
+    /// 后端边界预检与坐标换算、事件队列容量预约、Delta/ChangeSet 构造）。
+    /// 文本内容先在 cloned storage 上完整构造；真正提交时只做 move assignment、
+    /// 标量状态推进和已预留 Vec slot 写入，事务管线不再允许
+    /// "Buffer 文本已经改了一半才返回 Result" 的状态机形态。
     ///
-    /// **去 storage clone**：不再 `self.storage.clone()` —— Phase 1 的 `validate_edit_list`
-    /// + 倒序应用已经保证文本变异不会语义性失败；rollback-by-clone 既不必要也不便宜。
+    /// `RopeyStorage::clone()` 是低成本共享底层结构；这里把它作为两阶段提交的
+    /// prepared storage，而不是失败后的回滚补丁。
     pub(in crate::buffer) fn apply_edit_list(
         &mut self,
         base_version: BufferVersion,
         tx_edits: EditList,
         source: TransactionSource,
-    ) -> EngineResult<(Delta, ChangeSet)> {
-        // ===== Fallible 段：在任何文本变异前完成全部可失败检查 =====
+    ) -> EngineResult<(crate::TransactionId, Delta, ChangeSet)> {
+        // ===== Fallible 段：在 Buffer 本体变异前完成全部可失败检查 =====
         self.ensure_writable()?;
 
         if base_version != self.version {
@@ -260,39 +252,59 @@ impl Buffer {
         }
 
         self.validate_edit_list(&tx_edits)?;
-        let transaction_id = self.reserve_transaction_id()?;
+        let (transaction_id, next_transaction_id) = self.prepare_transaction_id()?;
         let old_version = self.version;
         let new_version = old_version.next().ok_or(EngineError::VersionOverflow)?;
+        let prepared_replaces = self.prepare_storage_replaces(&tx_edits)?;
+        self.reserve_delta_event_slot()?;
 
-        // ===== Infallible 段：从这里起文本变异不允许失败 =====
-        // 倒序应用：所有 edit 都是基于旧文本坐标的；后向前应用保证前面的 edit 偏移不漂移。
-        // EditList::new 保证 edits 互不重叠并已按 start 升序排列。
-        for edit in tx_edits.as_slice().iter().rev() {
-            self.storage
-                .replace(edit.range(), edit.replacement())
-                .map_err(|err| EngineError::EngineBug {
-                    location: "apply_edit_list",
-                    detail: format!("validated edit failed at range {:?}: {err:?}", edit.range()),
-                })?;
+        let mut next_storage = self.storage.clone();
+        for (edit, prepared_replace) in tx_edits
+            .as_slice()
+            .iter()
+            .rev()
+            .zip(prepared_replaces.into_iter().rev())
+        {
+            next_storage.replace_prepared(prepared_replace, edit.replacement());
         }
-
-        // 文本变异已完成且必然成功；现在原子推进 version。
-        self.version = new_version;
 
         let changeset = ChangeSet::from_edit_list(&tx_edits);
         let position_map = changeset.position_map();
-
         let delta = Delta::new(old_version, new_version, tx_edits);
-
-        // Arc-backed clone：O(1) 引用计数递增
-        self.push_delta_event(DeltaEvent::new(
+        let pending_event = DeltaEvent::new(
             transaction_id,
             source,
             delta.clone(),
             changeset.clone(),
             position_map,
-        ));
+        );
+        let last_event = pending_event.clone();
 
-        Ok((delta, changeset))
+        // ===== Infallible 段：从这里起 Buffer 本体变异不允许失败 =====
+        // 文本已经在 clone storage 上完整构造；真正提交只做 move assignment 与已预留队列写入。
+        self.storage = next_storage;
+        self.version = new_version;
+        self.commit_delta_event(next_transaction_id, last_event, pending_event);
+
+        Ok((transaction_id, delta, changeset))
+    }
+
+    fn prepare_storage_replaces(
+        &self,
+        tx_edits: &EditList,
+    ) -> EngineResult<Vec<<crate::storage::RopeyStorage as TextStorage>::PreparedReplace>> {
+        let mut prepared_replaces = Vec::new();
+        prepared_replaces
+            .try_reserve(tx_edits.len())
+            .map_err(|_| StorageError::OutOfMemory)?;
+
+        for edit in tx_edits.as_slice() {
+            prepared_replaces.push(
+                self.storage
+                    .prepare_replace(edit.range(), edit.replacement())?,
+            );
+        }
+
+        Ok(prepared_replaces)
     }
 }

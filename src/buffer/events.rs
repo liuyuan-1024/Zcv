@@ -2,7 +2,7 @@
 //!
 //! 本文件只管理事件入队、最后事件快照和队列清空；事件生成事实来自事务提交管线。
 
-use crate::{DeltaEvent, EngineError, EngineResult, TransactionId};
+use crate::{DeltaEvent, EngineError, EngineResult, StorageError, TransactionId};
 
 use super::Buffer;
 
@@ -24,17 +24,31 @@ impl Buffer {
         self.last_delta_event.as_ref()
     }
 
-    pub(in crate::buffer) fn reserve_transaction_id(&mut self) -> EngineResult<TransactionId> {
+    pub(in crate::buffer) fn prepare_transaction_id(
+        &self,
+    ) -> EngineResult<(TransactionId, TransactionId)> {
         let transaction_id = self.next_transaction_id;
-        self.next_transaction_id = self
-            .next_transaction_id
+        let next_transaction_id = transaction_id
             .next()
             .ok_or(EngineError::TransactionIdOverflow)?;
-        Ok(transaction_id)
+        Ok((transaction_id, next_transaction_id))
     }
 
-    pub(in crate::buffer) fn push_delta_event(&mut self, event: DeltaEvent) {
-        self.last_delta_event = Some(event.clone());
-        self.pending_delta_events.push(event);
+    pub(in crate::buffer) fn reserve_delta_event_slot(&mut self) -> EngineResult<()> {
+        self.pending_delta_events
+            .try_reserve(1)
+            .map_err(|_| StorageError::OutOfMemory)?;
+        Ok(())
+    }
+
+    pub(in crate::buffer) fn commit_delta_event(
+        &mut self,
+        next_transaction_id: TransactionId,
+        last_event: DeltaEvent,
+        pending_event: DeltaEvent,
+    ) {
+        self.next_transaction_id = next_transaction_id;
+        self.last_delta_event = Some(last_event);
+        self.pending_delta_events.push(pending_event);
     }
 }

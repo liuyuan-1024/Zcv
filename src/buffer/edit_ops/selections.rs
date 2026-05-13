@@ -5,10 +5,10 @@
 use std::sync::Arc;
 
 use crate::{
+    EngineError, EngineResult, MovementDirection, MovementUnit, Selection, SelectionSet, TextRange,
     position_map::OffsetShift,
     storage::TextRead,
     transaction::{ChangeSet, Delta, Edit, Transaction, TransactionMetadata, TransactionSource},
-    EngineError, EngineResult, MovementDirection, MovementUnit, Selection, SelectionSet, TextRange,
 };
 
 use crate::buffer::Buffer;

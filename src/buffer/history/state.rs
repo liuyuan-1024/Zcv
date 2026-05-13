@@ -4,6 +4,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::{EngineError, EngineResult};
+
 use super::{HistoryEntry, HistoryNode, HistoryNodeId};
 
 /// 历史摘要：与线性历史一致的 undo / redo 深度语义；`current_node` 暴露当前历史
@@ -91,14 +93,25 @@ impl HistoryState {
     }
 
     /// 把 `entry` 作为当前节点的新子节点入图，并把 current 移到新节点。
-    pub(in crate::buffer) fn push_child(&mut self, entry: HistoryEntry) -> HistoryNodeId {
+    pub(in crate::buffer) fn push_child(
+        &mut self,
+        entry: HistoryEntry,
+    ) -> EngineResult<HistoryNodeId> {
         let id = HistoryNodeId::new(self.next_id);
-        self.next_id = self.next_id.checked_add(1).expect("HistoryNodeId 溢出");
-        let sequence = self.next_sequence;
-        self.next_sequence = self
-            .next_sequence
+        let next_id = self
+            .next_id
             .checked_add(1)
-            .expect("history sequence 溢出");
+            .ok_or(EngineError::HistoryIdExhausted)?;
+        let sequence = self.next_sequence;
+        let next_sequence =
+            self.next_sequence
+                .checked_add(1)
+                .ok_or_else(|| EngineError::EngineBug {
+                    location: "HistoryState::push_child",
+                    detail: "history sequence overflow".to_string(),
+                })?;
+        self.next_id = next_id;
+        self.next_sequence = next_sequence;
 
         let parent = self.current;
         let node = HistoryNode::new(id, sequence, parent, entry);
@@ -114,7 +127,7 @@ impl HistoryState {
         }
 
         self.current = Some(id);
-        id
+        Ok(id)
     }
 
     /// 把 `entry` 的批次合并到当前节点（用于 `MergeWithPrevious`），仅在当前节点没有子节点时允许。

@@ -83,14 +83,33 @@ impl Buffer {
         self.cancel_composition_before_text_edit()?;
 
         let undo_target = {
-            let Some(node) = self.history.step_undo() else {
+            let Some(node_id) = self.history.current() else {
                 return Ok(None);
             };
+            let node = self
+                .history
+                .node(node_id)
+                .ok_or_else(|| EngineError::EngineBug {
+                    location: "Buffer::undo",
+                    detail: format!("current history node {:?} is missing", node_id),
+                })?;
+            if node.entry.undo_batches.is_empty() {
+                return Err(EngineError::EngineBug {
+                    location: "Buffer::undo",
+                    detail: format!("history node {:?} has no undo batches", node_id),
+                });
+            }
             UndoTarget {
                 undo_batches: node.entry.undo_batches.clone(),
                 before_selection: node.entry.before_selection.clone(),
             }
         };
+        self.history
+            .step_undo()
+            .ok_or_else(|| EngineError::EngineBug {
+                location: "Buffer::undo",
+                detail: "validated current history node could not be stepped".to_string(),
+            })?;
 
         let mut result = None;
         for tx_edits in undo_target.undo_batches.iter() {
@@ -102,7 +121,10 @@ impl Buffer {
             result = Some((delta, changeset));
         }
 
-        let result = result.expect("history node must contain at least one undo batch");
+        let result = result.ok_or_else(|| EngineError::EngineBug {
+            location: "Buffer::undo",
+            detail: "validated undo batches produced no replay result".to_string(),
+        })?;
         self.selection = undo_target.before_selection;
 
         Ok(Some(result))
@@ -136,13 +158,31 @@ impl Buffer {
         let target = {
             let node = self
                 .history
-                .step_redo_into(node_id)
-                .expect("redo_into_branch 必须传入 children_of_current() 之一");
+                .node(node_id)
+                .ok_or_else(|| EngineError::EngineBug {
+                    location: "Buffer::redo_into_branch",
+                    detail: format!("redo target {:?} is missing", node_id),
+                })?;
+            if node.entry.redo_batches.is_empty() {
+                return Err(EngineError::EngineBug {
+                    location: "Buffer::redo_into_branch",
+                    detail: format!("history node {:?} has no redo batches", node_id),
+                });
+            }
             RedoTarget {
                 redo_batches: node.entry.redo_batches.clone(),
                 after_selection: node.entry.after_selection.clone(),
             }
         };
+        self.history
+            .step_redo_into(node_id)
+            .ok_or_else(|| EngineError::EngineBug {
+                location: "Buffer::redo_into_branch",
+                detail: format!(
+                    "validated redo target {:?} is not a child of current history node",
+                    node_id
+                ),
+            })?;
 
         let mut result = None;
         for tx_edits in target.redo_batches.iter() {
@@ -151,7 +191,10 @@ impl Buffer {
             result = Some((delta, changeset));
         }
 
-        let result = result.expect("history node must contain at least one redo batch");
+        let result = result.ok_or_else(|| EngineError::EngineBug {
+            location: "Buffer::redo_into_branch",
+            detail: "validated redo batches produced no replay result".to_string(),
+        })?;
         self.selection = target.after_selection;
         Ok(result)
     }
@@ -168,7 +211,7 @@ impl Buffer {
             return Ok(());
         }
 
-        self.history.push_child(entry);
+        self.history.push_child(entry)?;
         self.truncate_undo_history_to_budget();
         Ok(())
     }

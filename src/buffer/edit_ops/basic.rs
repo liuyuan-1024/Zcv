@@ -3,9 +3,9 @@
 //! 本文件只把简单编辑统一转换成 Transaction 并进入历史链路；批量 selection 编辑和事务提交细节由相邻子系统承担。
 
 use crate::{
+    ByteOffset, EngineResult, TextRange,
     storage::TextRead,
     transaction::{Edit, Transaction},
-    ByteOffset, EngineResult, TextRange,
 };
 
 use crate::buffer::Buffer;

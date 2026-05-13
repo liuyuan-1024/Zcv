@@ -3,8 +3,9 @@
 //! 它只能从 EditList 构造，不负责排序、重叠检测或 Buffer 版本推进。
 
 use crate::{
+    EngineError, EngineResult,
     position_map::{OffsetShift, PositionMap},
-    types::TextRange,
+    types::{ByteOffset, TextRange},
 };
 
 use super::{Edit, EditList};
@@ -35,9 +36,9 @@ impl ChangeSet {
     }
 
     /// 获取本次事务应用后，在新文本中发生改变的范围列表。
-    pub fn changed_ranges(&self) -> Vec<TextRange> {
+    pub fn changed_ranges(&self) -> EngineResult<Vec<TextRange>> {
         if self.edits.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let mut ranges = Vec::new();
@@ -47,38 +48,49 @@ impl ChangeSet {
             let range = edit.range();
             let replacement_len = edit.replacement().len();
 
-            let new_start = shift.apply_old_to_new(range.start()).expect(
-                "internal invariant: changed range start maps without byte offset overflow",
-            );
-            let new_end = new_start
-                .checked_add(replacement_len)
-                .expect("internal invariant: changed range end maps without byte offset overflow");
+            let new_start =
+                shift
+                    .apply_old_to_new(range.start())
+                    .ok_or_else(|| EngineError::EngineBug {
+                        location: "ChangeSet::changed_ranges",
+                        detail: "changed range start overflowed byte offset mapping".to_string(),
+                    })?;
+            let new_end =
+                new_start
+                    .checked_add(replacement_len)
+                    .ok_or_else(|| EngineError::EngineBug {
+                        location: "ChangeSet::changed_ranges",
+                        detail: "changed range end overflowed byte offset mapping".to_string(),
+                    })?;
 
-            ranges.push(
-                TextRange::new(new_start, new_end)
-                    .expect("ChangeSet 生成的范围必须满足起始位置 <= 结束位置"),
-            );
+            ranges.push(text_range(new_start, new_end, "ChangeSet::changed_ranges")?);
 
             shift = shift
                 .after_edit(range.len(), replacement_len)
-                .expect("internal invariant: accumulated changed range shift does not overflow");
+                .ok_or_else(|| EngineError::EngineBug {
+                    location: "ChangeSet::changed_ranges",
+                    detail: "accumulated changed range shift overflowed".to_string(),
+                })?;
         }
 
         Self::merge_ranges(ranges)
     }
 
-    fn merge_ranges(ranges: Vec<TextRange>) -> Vec<TextRange> {
+    fn merge_ranges(ranges: Vec<TextRange>) -> EngineResult<Vec<TextRange>> {
         let mut merged = Vec::with_capacity(ranges.len());
         let mut iter = ranges.into_iter();
 
         let Some(mut current) = iter.next() else {
-            return merged;
+            return Ok(merged);
         };
 
         for next in iter {
             if current.end() >= next.start() {
-                current = TextRange::new(current.start(), current.end().max(next.end()))
-                    .expect("合并范围必须满足起始位置 <= 结束位置");
+                current = text_range(
+                    current.start(),
+                    current.end().max(next.end()),
+                    "ChangeSet::merge_ranges",
+                )?;
             } else {
                 merged.push(current);
                 current = next;
@@ -86,6 +98,17 @@ impl ChangeSet {
         }
 
         merged.push(current);
-        merged
+        Ok(merged)
     }
+}
+
+fn text_range(
+    start: ByteOffset,
+    end: ByteOffset,
+    location: &'static str,
+) -> EngineResult<TextRange> {
+    TextRange::new(start, end).map_err(|_| EngineError::EngineBug {
+        location,
+        detail: format!("invalid generated range: start {start}, end {end}"),
+    })
 }

@@ -9,7 +9,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::errors::EditError;
 
-use super::{edit::empty_replacement, Edit};
+use super::{Edit, edit::empty_replacement};
 
 /// 归一化且验证后的编辑列表。
 ///

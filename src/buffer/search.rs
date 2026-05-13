@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use crate::{
+    ChangeSet, Delta, Edit, EngineResult, RegexSearchOptions, RegexSearchResult, SearchError,
+    SearchOptions, SearchResult, TextRange, Transaction, TransactionMetadata, TransactionSource,
     search::{
         regex_replacement_for_match, regex_replacements_in_text, search_in_text,
         search_regex_in_text,
     },
-    ChangeSet, Delta, Edit, EngineResult, RegexSearchOptions, RegexSearchResult, SearchError,
-    SearchOptions, SearchResult, TextRange, Transaction, TransactionMetadata, TransactionSource,
 };
 
 use super::Buffer;
@@ -98,7 +98,7 @@ impl Buffer {
         replacement: &str,
     ) -> EngineResult<Option<(Delta, ChangeSet)>> {
         self.ensure_regex_search_result_current(result)?;
-        self.replace_search_edits(
+        self.replace_search_edits_fallible(
             regex_replacements_in_text(&self.storage, result, replacement)?,
             "replace all regex matches",
         )
@@ -151,12 +151,24 @@ impl Buffer {
     where
         R: Into<Arc<str>>,
     {
+        self.replace_search_edits_fallible(edits.into_iter().map(Ok), description)
+    }
+
+    fn replace_search_edits_fallible<R>(
+        &mut self,
+        edits: impl IntoIterator<Item = EngineResult<(TextRange, R)>>,
+        description: &'static str,
+    ) -> EngineResult<Option<(Delta, ChangeSet)>>
+    where
+        R: Into<Arc<str>>,
+    {
         self.ensure_writable()?;
         self.cancel_composition_before_text_edit()?;
 
         let mut tx_edits = Vec::new();
 
-        for (range, replacement) in edits {
+        for edit in edits {
+            let (range, replacement) = edit?;
             let replacement: Arc<str> = replacement.into();
             self.validate_range(range)?;
             self.validate_edit_boundary(range.start())?;

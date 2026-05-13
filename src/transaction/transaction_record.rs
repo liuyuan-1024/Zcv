@@ -5,6 +5,7 @@
 //! 不绕过任何边界校验。
 
 use crate::{
+    EngineResult,
     selection::SelectionSet,
     types::{BufferVersion, TransactionId},
 };
@@ -93,13 +94,12 @@ impl TransactionRecord {
     }
 
     /// 重建可回放的 `Transaction`。回放后 `Buffer` 将从 `old_version` 推进到 `new_version`。
-    pub fn to_transaction(&self) -> Transaction {
-        Transaction::new(self.old_version, self.edits.clone())
-            .expect("TransactionRecord 已经过事务管线，重建必然合法")
+    pub fn to_transaction(&self) -> EngineResult<Transaction> {
+        Ok(Transaction::new(self.old_version, self.edits.clone())?
             .with_metadata(self.metadata.clone())
             .with_selection(
                 Some(self.before_selection.clone()),
                 Some(self.after_selection.clone()),
-            )
+            ))
     }
 }

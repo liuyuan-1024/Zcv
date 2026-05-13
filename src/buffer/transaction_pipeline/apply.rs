@@ -61,7 +61,7 @@ impl Buffer {
             .into());
         }
 
-        self.apply_transaction_recorded(record.to_transaction())
+        self.apply_transaction_recorded(record.to_transaction()?)
     }
 
     fn apply_transaction_inner(

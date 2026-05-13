@@ -11,6 +11,8 @@ use crate::{
 };
 use regex::{Regex, RegexBuilder};
 
+const DEFAULT_REGEX_HAYSTACK_BYTE_LIMIT: usize = 8 * 1024 * 1024;
+
 /// 普通字符串搜索选项。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchOptions {
@@ -80,6 +82,7 @@ pub struct RegexSearchOptions {
     dot_matches_new_line: bool,
     size_limit: usize,
     dfa_size_limit: usize,
+    haystack_byte_limit: usize,
 }
 
 impl RegexSearchOptions {
@@ -91,6 +94,7 @@ impl RegexSearchOptions {
             dot_matches_new_line: false,
             size_limit: 10 * 1024 * 1024,
             dfa_size_limit: 2 * 1024 * 1024,
+            haystack_byte_limit: DEFAULT_REGEX_HAYSTACK_BYTE_LIMIT,
         }
     }
 
@@ -133,6 +137,15 @@ impl RegexSearchOptions {
         self
     }
 
+    /// 设置 regex 搜索允许连续物化的最大 haystack 字节数。
+    ///
+    /// 当前 regex crate API 仍要求一段连续 haystack；这里把这条高成本路径显式预算化。
+    /// `0` 表示调用方明确接受无限制物化。
+    pub const fn with_haystack_byte_limit(mut self, haystack_byte_limit: usize) -> Self {
+        self.haystack_byte_limit = haystack_byte_limit;
+        self
+    }
+
     pub const fn range(self) -> Option<TextRange> {
         self.range
     }
@@ -155,6 +168,10 @@ impl RegexSearchOptions {
 
     pub const fn dfa_size_limit(self) -> usize {
         self.dfa_size_limit
+    }
+
+    pub const fn haystack_byte_limit(self) -> usize {
+        self.haystack_byte_limit
     }
 }
 
@@ -469,18 +486,7 @@ pub(crate) fn search_in_text<T: TextRead>(
     validate_search_range(storage, search_range)?;
 
     let matches = if options.is_case_sensitive() {
-        // 字面量大小写敏感：仍需要一段连续 haystack 喂给 str::find；
-        // `slice_text` 单块时是 `Cow::Borrowed` 零拷贝（Phase 2）。
-        let base_offset = search_range.start().get();
-        let haystack = storage.slice_text(search_range)?;
-        find_case_sensitive_matches(
-            storage,
-            config,
-            haystack.as_ref(),
-            base_offset,
-            query,
-            options,
-        )?
+        find_case_sensitive_matches_streaming(storage, config, search_range, query, options)?
     } else {
         // 大小写不敏感：流式 chunks 扫描 + 滑动折叠窗口，**不物化整个 haystack**。
         find_case_insensitive_matches_streaming(storage, config, search_range, query, options)?
@@ -505,7 +511,7 @@ pub(crate) fn search_regex_in_text<T: TextRead>(
     validate_search_range(storage, search_range)?;
 
     let base_offset = search_range.start().get();
-    let haystack = storage.slice_text(search_range)?;
+    let haystack = regex_haystack(storage, search_range, options)?;
     let mut matches = Vec::new();
     for (ordinal, regex_match) in regex.find_iter(haystack.as_ref()).enumerate() {
         // regex 是 byte-native：直接拼上 base_offset
@@ -525,34 +531,26 @@ pub(crate) fn search_regex_in_text<T: TextRead>(
     ))
 }
 
-pub(crate) fn regex_replacements_in_text<T: TextRead>(
+pub(crate) fn regex_replacements_in_text<'a, T: TextRead>(
     storage: &T,
     result: &RegexSearchResult,
-    replacement: &str,
-) -> EngineResult<Vec<(TextRange, String)>> {
+    replacement: &'a str,
+) -> EngineResult<RegexReplacementIter<'a>> {
     let regex = build_regex(result.pattern(), result.options())?;
     let search_range = resolve_search_range(storage, result.options().range())?;
     validate_search_range(storage, search_range)?;
 
     let base_offset = search_range.start().get();
-    let haystack = storage.slice_text(search_range)?;
-    let mut replacements = Vec::new();
+    let haystack = regex_haystack_owned(storage, search_range, result.options())?;
 
-    for captures in regex.captures_iter(haystack.as_ref()) {
-        let Some(regex_match) = captures.get(0) else {
-            continue;
-        };
-        let start = base_offset + regex_match.start();
-        let end = base_offset + regex_match.end();
-        let mut expanded = String::new();
-        captures.expand(replacement, &mut expanded);
-        replacements.push((
-            text_range(ByteOffset::new(start), ByteOffset::new(end))?,
-            expanded,
-        ));
-    }
-
-    Ok(replacements)
+    Ok(RegexReplacementIter {
+        regex,
+        haystack,
+        base_offset,
+        replacement,
+        next_start: 0,
+        done: false,
+    })
 }
 
 pub(crate) fn regex_replacement_for_match<T: TextRead>(
@@ -561,9 +559,58 @@ pub(crate) fn regex_replacement_for_match<T: TextRead>(
     ordinal: usize,
     replacement: &str,
 ) -> EngineResult<Option<(TextRange, String)>> {
-    Ok(regex_replacements_in_text(storage, result, replacement)?
-        .into_iter()
-        .nth(ordinal))
+    for (index, regex_replacement) in
+        regex_replacements_in_text(storage, result, replacement)?.enumerate()
+    {
+        let replacement = regex_replacement?;
+        if index == ordinal {
+            return Ok(Some(replacement));
+        }
+    }
+
+    Ok(None)
+}
+
+pub(crate) struct RegexReplacementIter<'a> {
+    regex: Regex,
+    haystack: String,
+    base_offset: usize,
+    replacement: &'a str,
+    next_start: usize,
+    done: bool,
+}
+
+impl Iterator for RegexReplacementIter<'_> {
+    type Item = EngineResult<(TextRange, String)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done || self.next_start > self.haystack.len() {
+            return None;
+        }
+
+        let captures = self.regex.captures_at(&self.haystack, self.next_start)?;
+        let Some(regex_match) = captures.get(0) else {
+            self.done = true;
+            return None;
+        };
+
+        let start = regex_match.start();
+        let end = regex_match.end();
+        self.next_start = next_regex_search_start(&self.haystack, start, end);
+        if self.next_start > self.haystack.len() {
+            self.done = true;
+        }
+
+        let mut expanded = String::new();
+        captures.expand(self.replacement, &mut expanded);
+        Some(
+            text_range(
+                ByteOffset::new(self.base_offset + start),
+                ByteOffset::new(self.base_offset + end),
+            )
+            .map(|range| (range, expanded)),
+        )
+    }
 }
 
 /// 统一解析 `SearchOptions::range()`：未指定时默认全文。
@@ -594,6 +641,40 @@ fn build_regex(pattern: &str, options: RegexSearchOptions) -> EngineResult<Regex
         })
 }
 
+fn regex_haystack<'a, T: TextRead>(
+    storage: &'a T,
+    search_range: TextRange,
+    options: RegexSearchOptions,
+) -> EngineResult<std::borrow::Cow<'a, str>> {
+    validate_regex_haystack_budget(search_range, options)?;
+    storage.slice_text(search_range)
+}
+
+fn regex_haystack_owned<T: TextRead>(
+    storage: &T,
+    search_range: TextRange,
+    options: RegexSearchOptions,
+) -> EngineResult<String> {
+    validate_regex_haystack_budget(search_range, options)?;
+    storage.slice_to_string(search_range)
+}
+
+fn validate_regex_haystack_budget(
+    search_range: TextRange,
+    options: RegexSearchOptions,
+) -> EngineResult<()> {
+    let limit = options.haystack_byte_limit();
+    if limit != 0 && search_range.len() > limit {
+        return Err(SearchError::RangeTooLarge {
+            range_bytes: search_range.len(),
+            limit,
+        }
+        .into());
+    }
+
+    Ok(())
+}
+
 fn validate_search_range<T: TextRead>(storage: &T, range: TextRange) -> EngineResult<()> {
     if range.end() > storage.len_bytes() {
         return Err(CoordinateError::OutOfBounds(range.end()).into());
@@ -602,38 +683,61 @@ fn validate_search_range<T: TextRead>(storage: &T, range: TextRange) -> EngineRe
     Ok(())
 }
 
-fn find_case_sensitive_matches<T: TextRead>(
+fn find_case_sensitive_matches_streaming<T: TextRead>(
     storage: &T,
     config: &BufferConfig,
-    haystack: &str,
-    base_offset: usize,
+    search_range: TextRange,
     query: &str,
     options: SearchOptions,
 ) -> EngineResult<Vec<SearchMatch>> {
     let mut matches = Vec::new();
-    let mut search_from = 0usize;
+    let mut carry = String::new();
+    let mut scratch = String::new();
+    let mut chunk_start = search_range.start().get();
+    let mut next_allowed_start = chunk_start;
+    let carry_limit = query.len().saturating_sub(1);
 
-    while search_from <= haystack.len() {
-        let Some(relative_byte_start) = haystack[search_from..].find(query) else {
-            break;
-        };
-        let byte_start = search_from + relative_byte_start;
-        let byte_end = byte_start + query.len();
-        let range = text_range(
-            ByteOffset::new(base_offset + byte_start),
-            ByteOffset::new(base_offset + byte_end),
-        )?;
-
-        if accepts_match(storage, config, range, options)? {
-            matches.push(SearchMatch::new(matches.len(), range));
-            search_from = byte_end;
+    for chunk in storage.chunks(search_range)? {
+        let (scan_base, scan) = if carry.is_empty() {
+            (chunk_start, chunk)
         } else {
-            search_from = byte_start + 1;
-            // 推进到下一个 UTF-8 字符边界
-            while search_from < haystack.len() && !haystack.is_char_boundary(search_from) {
-                search_from += 1;
+            scratch.clear();
+            scratch.push_str(&carry);
+            scratch.push_str(chunk);
+            (chunk_start - carry.len(), scratch.as_str())
+        };
+
+        let mut search_from = 0usize;
+        while search_from <= scan.len() {
+            let Some(relative_byte_start) = scan[search_from..].find(query) else {
+                break;
+            };
+            let byte_start = search_from + relative_byte_start;
+            let byte_end = byte_start + query.len();
+            let absolute_start = scan_base + byte_start;
+            let absolute_end = scan_base + byte_end;
+
+            if absolute_end <= chunk_start || absolute_start < next_allowed_start {
+                search_from = next_char_boundary_after(scan, byte_start);
+                continue;
+            }
+
+            let range = text_range(
+                ByteOffset::new(absolute_start),
+                ByteOffset::new(absolute_end),
+            )?;
+
+            if accepts_match(storage, config, range, options)? {
+                matches.push(SearchMatch::new(matches.len(), range));
+                next_allowed_start = absolute_end;
+                search_from = byte_end;
+            } else {
+                search_from = next_char_boundary_after(scan, byte_start);
             }
         }
+
+        carry_suffix(&mut carry, scan, carry_limit);
+        chunk_start += chunk.len();
     }
 
     Ok(matches)
@@ -758,4 +862,37 @@ fn text_range(start: ByteOffset, end: ByteOffset) -> EngineResult<TextRange> {
         location: "search::text_range",
         detail: format!("start ({:?}) > end ({:?})", start, end),
     })
+}
+
+fn carry_suffix(carry: &mut String, text: &str, max_bytes: usize) {
+    carry.clear();
+    if max_bytes == 0 || text.is_empty() {
+        return;
+    }
+
+    let mut start = text.len().saturating_sub(max_bytes);
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    carry.push_str(&text[start..]);
+}
+
+fn next_char_boundary_after(text: &str, offset: usize) -> usize {
+    let mut next = offset.saturating_add(1);
+    while next < text.len() && !text.is_char_boundary(next) {
+        next += 1;
+    }
+    next
+}
+
+fn next_regex_search_start(haystack: &str, start: usize, end: usize) -> usize {
+    if end > start {
+        return end;
+    }
+
+    if end == haystack.len() {
+        return haystack.len() + 1;
+    }
+
+    next_char_boundary_after(haystack, end)
 }

@@ -256,7 +256,12 @@ impl Buffer {
             let deleted_text = self.slice_text(edit.range())?.to_string();
 
             // 旧位置 → 新位置（与 ChangeSet::changed_ranges 用同一算法）
-            let new_start = position_map.map_old_position(edit.range().start()).value();
+            let new_start = position_map
+                .map_old_position_with_affinity(
+                    edit.range().start(),
+                    crate::position_map::Affinity::Before,
+                )
+                .value();
             let replacement_bytes = edit.replacement().len();
             let new_end =
                 new_start

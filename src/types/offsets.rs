@@ -9,9 +9,7 @@
 /// ChangeSet / Storage / Anchor 都以 `ByteOffset` 为单一真理**。
 /// `CharOffset` / `Line` / `LogicalColumn` / `Utf16Offset` 是边界投影类型。
 ///
-/// FFI 友好：`#[repr(transparent)]` 让宿主跨语言直接当 `uint64_t`/`size_t` 使用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[repr(transparent)]
 pub struct ByteOffset(usize);
 
 impl ByteOffset {
@@ -54,7 +52,6 @@ impl core::fmt::Display for ByteOffset {
 /// 使用；引擎内部不以 `CharOffset` 为位置坐标，必须经存储后端的字节↔字符
 /// 投影函数转换。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[repr(transparent)]
 pub struct CharOffset(usize);
 
 impl CharOffset {
@@ -87,7 +84,6 @@ impl core::fmt::Display for CharOffset {
 ///
 /// 用于外部协议交互（例如 LSP）。引擎内部不以 `Utf16Offset` 为位置坐标。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[repr(transparent)]
 pub struct Utf16Offset(usize);
 
 impl Utf16Offset {

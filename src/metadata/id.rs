@@ -5,10 +5,7 @@
 //! 并通过 `get()` 读取数值用于日志或调试。
 
 /// MetadataRange 在单个 MetadataLayer 内的稳定身份。
-///
-/// FFI 友好：`#[repr(transparent)]` 让宿主跨 FFI 直接当 `uint64_t` 使用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
 pub struct MetadataRangeId(u64);
 
 impl MetadataRangeId {

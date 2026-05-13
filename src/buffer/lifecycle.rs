@@ -4,10 +4,7 @@
 
 use std::{
     borrow::Cow,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use crate::{
@@ -82,7 +79,7 @@ impl Buffer {
     /// 这是 `Buffer::with_origin(BufferOrigin::external(handle), text, config)` 的便利包装。
     /// 引擎不解析 handle 内容、不做 I/O。
     pub fn with_external(
-        handle: impl Into<Arc<str>>,
+        handle: impl Into<String>,
         text: String,
         config: BufferConfig,
     ) -> EngineResult<Self> {

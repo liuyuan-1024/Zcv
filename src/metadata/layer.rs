@@ -239,9 +239,9 @@ impl<T> MetadataLayer<T> {
         &mut self,
         event: &DeltaEvent,
     ) -> Result<Vec<MetadataRangeUpdate>, MetadataError> {
-        if self.version != event.old_version {
+        if self.version != event.old_version() {
             return Err(MetadataError::VersionMismatch {
-                expected: event.old_version,
+                expected: event.old_version(),
                 actual: self.version,
             });
         }
@@ -254,8 +254,8 @@ impl<T> MetadataLayer<T> {
             let tracked_update = metadata_range
                 .tracked_range()
                 .map_through_position_map_with_policy(
-                    event.new_version,
-                    &event.position_map,
+                    event.new_version(),
+                    event.position_map(),
                     metadata_range.update_policy(),
                 );
             let update = MetadataRangeUpdate::from_tracked(id, tracked_update);
@@ -269,7 +269,7 @@ impl<T> MetadataLayer<T> {
         }
 
         self.ranges = retained;
-        self.version = event.new_version;
+        self.version = event.new_version();
         Ok(updates)
     }
 

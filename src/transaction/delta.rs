@@ -14,11 +14,37 @@ use super::{ChangeSet, EditList, TransactionSource};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delta {
     /// 事务应用前的 BufferVersion。
-    pub old_version: BufferVersion,
+    old_version: BufferVersion,
     /// 事务成功应用后的 BufferVersion。
-    pub new_version: BufferVersion,
+    new_version: BufferVersion,
     /// 已排序、已验证的编辑列表，坐标仍以旧文本为基准。
-    pub edits: EditList,
+    edits: EditList,
+}
+
+impl Delta {
+    pub(crate) fn new(
+        old_version: BufferVersion,
+        new_version: BufferVersion,
+        edits: EditList,
+    ) -> Self {
+        Self {
+            old_version,
+            new_version,
+            edits,
+        }
+    }
+
+    pub fn old_version(&self) -> BufferVersion {
+        self.old_version
+    }
+
+    pub fn new_version(&self) -> BufferVersion {
+        self.new_version
+    }
+
+    pub fn edits(&self) -> &EditList {
+        &self.edits
+    }
 }
 
 /// 文本变更事件。
@@ -28,22 +54,68 @@ pub struct Delta {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeltaEvent {
     /// 本次成功提交分配到的事务身份。
-    pub transaction_id: TransactionId,
+    transaction_id: TransactionId,
     /// 事件对应的旧 BufferVersion。
-    pub old_version: BufferVersion,
+    old_version: BufferVersion,
     /// 事件对应的新 BufferVersion。
-    pub new_version: BufferVersion,
+    new_version: BufferVersion,
     /// 事务来源，用于历史观察和外部同步，不表达 Command 层语义。
-    pub source: TransactionSource,
+    source: TransactionSource,
     /// 文本增量事实。
-    pub delta: Delta,
+    delta: Delta,
     /// 可查询 changed ranges 的已验证变更集合。
-    pub changeset: ChangeSet,
+    changeset: ChangeSet,
     /// old -> new / new -> old 坐标映射器，供 Anchor、TrackedRange 和宿主复用。
-    pub position_map: PositionMap,
+    position_map: PositionMap,
 }
 
 impl DeltaEvent {
+    pub(crate) fn new(
+        transaction_id: TransactionId,
+        source: TransactionSource,
+        delta: Delta,
+        changeset: ChangeSet,
+        position_map: PositionMap,
+    ) -> Self {
+        Self {
+            transaction_id,
+            old_version: delta.old_version(),
+            new_version: delta.new_version(),
+            source,
+            delta,
+            changeset,
+            position_map,
+        }
+    }
+
+    pub fn transaction_id(&self) -> TransactionId {
+        self.transaction_id
+    }
+
+    pub fn old_version(&self) -> BufferVersion {
+        self.old_version
+    }
+
+    pub fn new_version(&self) -> BufferVersion {
+        self.new_version
+    }
+
+    pub fn source(&self) -> TransactionSource {
+        self.source
+    }
+
+    pub fn delta(&self) -> &Delta {
+        &self.delta
+    }
+
+    pub fn changeset(&self) -> &ChangeSet {
+        &self.changeset
+    }
+
+    pub fn position_map(&self) -> &PositionMap {
+        &self.position_map
+    }
+
     /// 在新版本上的 changed ranges 只读结果，已绑定 `new_version` 供宿主版本对齐。
     pub fn changed_ranges_result(&self) -> VersionedResult<Vec<TextRange>> {
         VersionedResult::new(self.new_version, self.changeset.changed_ranges())

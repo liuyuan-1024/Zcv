@@ -91,7 +91,7 @@ impl Buffer {
         // 用 EngineBug 而不是 expect 保证不向外 panic。
         let transaction_id = self
             .last_delta_event()
-            .map(|event| event.transaction_id)
+            .map(|event| event.transaction_id())
             .ok_or_else(|| EngineError::EngineBug {
                 location: "apply_transaction_inner",
                 detail: "apply_edit_list succeeded but no DeltaEvent was emitted".to_string(),
@@ -100,8 +100,8 @@ impl Buffer {
         // 构造 TransactionRecord：所有字段都是 Arc-backed 或 Copy，clone 是 O(1)。
         let record = TransactionRecord::new(
             transaction_id,
-            delta.old_version,
-            delta.new_version,
+            delta.old_version(),
+            delta.new_version(),
             prepared.edits.clone(),
             prepared.undo_edits.clone(),
             prepared.before_selection.clone(),
@@ -282,22 +282,16 @@ impl Buffer {
         let changeset = ChangeSet::from_edit_list(&tx_edits);
         let position_map = changeset.position_map();
 
-        let delta = Delta {
-            old_version,
-            new_version,
-            edits: tx_edits,
-        };
+        let delta = Delta::new(old_version, new_version, tx_edits);
 
         // Arc-backed clone：O(1) 引用计数递增
-        self.push_delta_event(DeltaEvent {
+        self.push_delta_event(DeltaEvent::new(
             transaction_id,
-            old_version,
-            new_version,
             source,
-            delta: delta.clone(),
-            changeset: changeset.clone(),
+            delta.clone(),
+            changeset.clone(),
             position_map,
-        });
+        ));
 
         Ok((delta, changeset))
     }

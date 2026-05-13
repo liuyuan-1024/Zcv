@@ -109,7 +109,7 @@ impl Anchor {
         event: &DeltaEvent,
     ) -> Result<MappingResult<Self>, AnchorError> {
         self.verify_event_version(event)?;
-        Ok(self.map_through_position_map(event.new_version, &event.position_map))
+        Ok(self.map_through_position_map(event.new_version(), event.position_map()))
     }
 
     pub fn map_through_delta_event_with_deleted_policy(
@@ -119,8 +119,8 @@ impl Anchor {
     ) -> Result<AnchorUpdate, AnchorError> {
         self.verify_event_version(event)?;
         Ok(self.map_through_position_map_with_deleted_policy(
-            event.new_version,
-            &event.position_map,
+            event.new_version(),
+            event.position_map(),
             deleted_policy,
         ))
     }
@@ -164,7 +164,7 @@ impl Anchor {
 
         let mut updates = Vec::with_capacity(anchors.len());
         for anchor in anchors {
-            let mapped = anchor.map_through_position_map(event.new_version, &event.position_map);
+            let mapped = anchor.map_through_position_map(event.new_version(), event.position_map());
             *anchor = mapped.value();
             updates.push(mapped);
         }
@@ -184,9 +184,9 @@ impl Anchor {
     }
 
     fn verify_event_version(self, event: &DeltaEvent) -> Result<(), AnchorError> {
-        if self.version != event.old_version {
+        if self.version != event.old_version() {
             return Err(AnchorError::VersionMismatch {
-                expected: event.old_version,
+                expected: event.old_version(),
                 actual: self.version,
             });
         }

@@ -284,7 +284,7 @@ impl SearchResult {
 
     /// 通过一次 `DeltaEvent` 把搜索结果推进到新版本。
     ///
-    /// `event.old_version` 必须与当前结果版本一致，否则原子拒绝；
+    /// `event.old_version()` 必须与当前结果版本一致，否则原子拒绝；
     /// 命中映射 `Mapped` 的匹配按新坐标保留并连续重排 ordinal，
     /// `Deleted` / `Collapsed` 的匹配（被删除或塌缩为零宽）整条丢弃。
     /// query / options 由调用方自行决定是否需要在新版本上重新搜索。
@@ -385,7 +385,7 @@ impl RegexSearchResult {
 
     /// 通过一次 `DeltaEvent` 把正则搜索结果推进到新版本。
     ///
-    /// `event.old_version` 必须与当前结果版本一致，否则原子拒绝；
+    /// `event.old_version()` 必须与当前结果版本一致，否则原子拒绝；
     /// 命中映射 `Mapped` 的匹配按新坐标保留并连续重排 ordinal，
     /// `Deleted` / `Collapsed` 的匹配整条丢弃。pattern / options 由调用方
     /// 自行决定是否需要在新版本上重新搜索；regex 替换 / capture 展开必须基于

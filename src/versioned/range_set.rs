@@ -303,9 +303,9 @@ impl<T> VersionedRangeSet<T> {
         &mut self,
         event: &DeltaEvent,
     ) -> Result<Vec<TrackedRangeUpdate>, VersionedResultError> {
-        if self.version != event.old_version {
+        if self.version != event.old_version() {
             return Err(VersionedResultError::VersionMismatch {
-                expected: event.old_version,
+                expected: event.old_version(),
                 actual: self.version,
             });
         }
@@ -315,8 +315,8 @@ impl<T> VersionedRangeSet<T> {
 
         for mut entry in self.entries.drain(..) {
             let tracked_update = entry.tracked_range.map_through_position_map_with_policy(
-                event.new_version,
-                &event.position_map,
+                event.new_version(),
+                event.position_map(),
                 entry.update_policy,
             );
 
@@ -329,7 +329,7 @@ impl<T> VersionedRangeSet<T> {
         }
 
         self.entries = retained;
-        self.version = event.new_version;
+        self.version = event.new_version();
         Ok(updates)
     }
 

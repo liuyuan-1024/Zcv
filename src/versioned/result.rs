@@ -73,22 +73,22 @@ impl<T> VersionedResult<T> {
 
     /// 通过一次 `DeltaEvent` 把 payload 推进到新版本。
     ///
-    /// `event.old_version` 必须与当前结果版本一致，否则原子拒绝、不调用 `remap`。
+    /// `event.old_version()` 必须与当前结果版本一致，否则原子拒绝、不调用 `remap`。
     /// 闭包接收 payload by value 与 `&PositionMap`，返回新 payload 或失败原因。
     pub fn try_remap<F>(self, event: &DeltaEvent, remap: F) -> EngineResult<VersionedResult<T>>
     where
         F: FnOnce(T, &PositionMap) -> Result<T, VersionedResultError>,
     {
-        if event.old_version != self.version {
+        if event.old_version() != self.version {
             return Err(VersionedResultError::VersionMismatch {
                 expected: self.version,
-                actual: event.old_version,
+                actual: event.old_version(),
             }
             .into());
         }
 
-        let new_value = remap(self.value, &event.position_map)?;
-        Ok(VersionedResult::new(event.new_version, new_value))
+        let new_value = remap(self.value, event.position_map())?;
+        Ok(VersionedResult::new(event.new_version(), new_value))
     }
 
     /// 显式给定 `PositionMap` 与目标版本的低层 remap 入口。

@@ -170,7 +170,7 @@ pub enum ProjectionError {
 /// VersionedResult 版本绑定与 remap 相关错误。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VersionedResultError {
-    /// 调用方传入的 DeltaEvent.old_version 与 VersionedResult 当前绑定版本不一致。
+    /// 调用方传入的 DeltaEvent::old_version() 与 VersionedResult 当前绑定版本不一致。
     #[error("VersionedResult 版本不匹配: 预期版本 {expected:?}，实际版本 {actual:?}")]
     VersionMismatch {
         expected: BufferVersion,

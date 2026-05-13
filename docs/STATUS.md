@@ -108,10 +108,10 @@
 
 - `src/versioned/`：泛型版本化结果载体
   - `mod.rs`：M14 versioned 模块入口；当前导出 `VersionedResult` / `VersionedRangeSet` / `VersionedRangeEntry` / `VersionedRangeSpec`，给后续 M14C 留位
-  - `result.rs`：`VersionedResult<T>` 结构体；承担版本绑定 (`new` / `version` / `value` / `into_value` / `into_parts`)、payload 变换 (`map`)、过期判断 (`is_stale`)、过期丢弃 helper (`discard_if_stale`)、通过 `DeltaEvent` 的 remap (`try_remap`，校验 `event.old_version`) 与显式 `PositionMap` + 新版本的低层 remap (`try_remap_with`)
+  - `result.rs`：`VersionedResult<T>` 结构体；承担版本绑定 (`new` / `version` / `value` / `into_value` / `into_parts`)、payload 变换 (`map`)、过期判断 (`is_stale`)、过期丢弃 helper (`discard_if_stale`)、通过 `DeltaEvent` 的 remap (`try_remap`，校验 `event.old_version()`) 与显式 `PositionMap` + 新版本的低层 remap (`try_remap_with`)
 - `src/errors.rs`：新增 `VersionedResultError`（`VersionMismatch` / `RemapFailed { reason }`）并接入 `EngineError::Versioned`
 - `src/lib.rs`：M14A public API 导出（`VersionedResult` / `VersionedResultError`）
-- `tests/m14_versioned_result.rs`：12 个机器契约测试，覆盖版本绑定、`is_stale` 边界、过期丢弃 helper、`map` 不动版本、`try_remap` 在 `event.old_version` 不匹配时原子拒绝且不调用闭包、成功路径推进到 `event.new_version`、`RemapFailed` 透传、`CharOffset` payload 通过 `PositionMap::map_old_position` 推进、`TextRange` payload 通过 `map_old_range_with_stickiness` 推进、`try_remap_with` 跳过版本核对的成功 / 失败两条路径
+- `tests/m14_versioned_result.rs`：12 个机器契约测试，覆盖版本绑定、`is_stale` 边界、过期丢弃 helper、`map` 不动版本、`try_remap` 在 `event.old_version()` 不匹配时原子拒绝且不调用闭包、成功路径推进到 `event.new_version()`、`RemapFailed` 透传、`CharOffset` payload 通过 `PositionMap::map_old_position` 推进、`TextRange` payload 通过 `map_old_range_with_stickiness` 推进、`try_remap_with` 跳过版本核对的成功 / 失败两条路径
 
 ## M14B 文件
 
@@ -145,7 +145,7 @@
 - `tests/m15_local_read_write_boundary.rs`：14 个机器契约测试，按 M15A / M15B / M15C 三个子模块聚合
   - `m15a_single_writer`：写入入口必须 `&mut`（编译期）；成功提交推进版本并入 DeltaEvent；版本不匹配原子拒绝且不留 DeltaEvent / 不动文本；连续提交形成连续版本链；EditList 重叠在 `Transaction::from_edits` 阶段就拒绝，不影响 Buffer
   - `m15b_snapshot_reader`：编译期断言 `Snapshot: Send + Sync`；旧 snapshot 在后续提交后仍只读且文本/版本不变；snapshot 跨 `std::thread::spawn` 移动后做 `text()` / `search` 查询；snapshot 派生的搜索结果绑定 `snapshot.version()`，宿主可用 `is_stale(buffer.version())` 判断
-  - `m15c_delta_consumer`：`last_delta_event` 跟随最近提交；`pending_delta_events()` peek 不消费；`take_pending_events()` 按提交顺序排空且后续提交继续累积；订阅者基于 `last_seen` + `event.old_version` 检测漏读；延迟订阅者用 snapshot 保留旧版本事实，配合 DeltaEvent 拼接 old/new 版本
+  - `m15c_delta_consumer`：`last_delta_event` 跟随最近提交；`pending_delta_events()` peek 不消费；`take_pending_events()` 按提交顺序排空且后续提交继续累积；订阅者基于 `last_seen` + `event.old_version()` 检测漏读；延迟订阅者用 snapshot 保留旧版本事实，配合 DeltaEvent 拼接 old/new 版本
 
 ## M16 文件
 

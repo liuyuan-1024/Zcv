@@ -89,7 +89,7 @@ impl TrackedRange {
         event: &DeltaEvent,
     ) -> Result<MappingResult<Self>, AnchorError> {
         self.verify_event_version(event)?;
-        Ok(self.map_through_position_map(event.new_version, &event.position_map))
+        Ok(self.map_through_position_map(event.new_version(), event.position_map()))
     }
 
     pub fn map_through_delta_event_with_policy(
@@ -99,8 +99,8 @@ impl TrackedRange {
     ) -> Result<TrackedRangeUpdate, AnchorError> {
         self.verify_event_version(event)?;
         Ok(self.map_through_position_map_with_policy(
-            event.new_version,
-            &event.position_map,
+            event.new_version(),
+            event.position_map(),
             policy,
         ))
     }
@@ -134,7 +134,7 @@ impl TrackedRange {
 
         let mut updates = Vec::with_capacity(ranges.len());
         for range in ranges {
-            let mapped = range.map_through_position_map(event.new_version, &event.position_map);
+            let mapped = range.map_through_position_map(event.new_version(), event.position_map());
             *range = mapped.value();
             updates.push(mapped);
         }
@@ -176,9 +176,9 @@ impl TrackedRange {
     }
 
     fn verify_event_version(self, event: &DeltaEvent) -> Result<(), AnchorError> {
-        if self.version() != event.old_version {
+        if self.version() != event.old_version() {
             return Err(AnchorError::VersionMismatch {
-                expected: event.old_version,
+                expected: event.old_version(),
                 actual: self.version(),
             });
         }

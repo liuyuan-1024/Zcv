@@ -238,9 +238,9 @@ impl FoldSet {
         &mut self,
         event: &DeltaEvent,
     ) -> Result<Vec<FoldRangeUpdate>, FoldError> {
-        if self.version != event.old_version {
+        if self.version != event.old_version() {
             return Err(FoldError::VersionMismatch {
-                expected: event.old_version,
+                expected: event.old_version(),
                 actual: self.version,
             });
         }
@@ -251,8 +251,8 @@ impl FoldSet {
         for mut fold in self.ranges.drain(..) {
             let id = fold.id();
             let tracked_update = fold.tracked_range().map_through_position_map_with_policy(
-                event.new_version,
-                &event.position_map,
+                event.new_version(),
+                event.position_map(),
                 fold.update_policy(),
             );
             let update = FoldRangeUpdate::from_tracked(id, tracked_update);
@@ -266,7 +266,7 @@ impl FoldSet {
         }
 
         self.ranges = retained;
-        self.version = event.new_version;
+        self.version = event.new_version();
         self.normalize();
         Ok(updates)
     }

@@ -91,12 +91,12 @@ impl Buffer {
                 .node(node_id)
                 .ok_or_else(|| EngineError::EngineBug {
                     location: "Buffer::undo",
-                    detail: format!("current history node {:?} is missing", node_id),
+                    detail: format!("当前历史节点 {:?} 缺失", node_id),
                 })?;
             if node.entry.undo_batches.is_empty() {
                 return Err(EngineError::EngineBug {
                     location: "Buffer::undo",
-                    detail: format!("history node {:?} has no undo batches", node_id),
+                    detail: format!("历史节点 {:?} 没有 undo 批次", node_id),
                 });
             }
             UndoTarget {
@@ -108,7 +108,7 @@ impl Buffer {
             .step_undo()
             .ok_or_else(|| EngineError::EngineBug {
                 location: "Buffer::undo",
-                detail: "validated current history node could not be stepped".to_string(),
+                detail: "已验证的当前历史节点无法执行 undo 步进".to_string(),
             })?;
 
         let mut result = None;
@@ -123,7 +123,7 @@ impl Buffer {
 
         let result = result.ok_or_else(|| EngineError::EngineBug {
             location: "Buffer::undo",
-            detail: "validated undo batches produced no replay result".to_string(),
+            detail: "已验证的 undo 批次没有产生回放结果".to_string(),
         })?;
         self.selection = undo_target.before_selection;
 
@@ -161,12 +161,12 @@ impl Buffer {
                 .node(node_id)
                 .ok_or_else(|| EngineError::EngineBug {
                     location: "Buffer::redo_into_branch",
-                    detail: format!("redo target {:?} is missing", node_id),
+                    detail: format!("redo 目标节点 {:?} 缺失", node_id),
                 })?;
             if node.entry.redo_batches.is_empty() {
                 return Err(EngineError::EngineBug {
                     location: "Buffer::redo_into_branch",
-                    detail: format!("history node {:?} has no redo batches", node_id),
+                    detail: format!("历史节点 {:?} 没有 redo 批次", node_id),
                 });
             }
             RedoTarget {
@@ -179,7 +179,7 @@ impl Buffer {
             .ok_or_else(|| EngineError::EngineBug {
                 location: "Buffer::redo_into_branch",
                 detail: format!(
-                    "validated redo target {:?} is not a child of current history node",
+                    "已验证的 redo 目标节点 {:?} 不是当前历史节点的子节点",
                     node_id
                 ),
             })?;
@@ -193,7 +193,7 @@ impl Buffer {
 
         let result = result.ok_or_else(|| EngineError::EngineBug {
             location: "Buffer::redo_into_branch",
-            detail: "validated redo batches produced no replay result".to_string(),
+            detail: "已验证的 redo 批次没有产生回放结果".to_string(),
         })?;
         self.selection = target.after_selection;
         Ok(result)
@@ -263,7 +263,7 @@ impl Buffer {
                     .checked_add(replacement_bytes)
                     .ok_or_else(|| EngineError::EngineBug {
                         location: "build_inverse_edit_list",
-                        detail: "byte offset overflow during inverse range".to_string(),
+                        detail: "构造反向区间时字节偏移溢出".to_string(),
                     })?;
 
             let new_range = crate::TextRange::new(new_start, new_end)?;

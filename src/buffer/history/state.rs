@@ -108,7 +108,7 @@ impl HistoryState {
                 .checked_add(1)
                 .ok_or_else(|| EngineError::EngineBug {
                     location: "HistoryState::push_child",
-                    detail: "history sequence overflow".to_string(),
+                    detail: "历史节点序号溢出".to_string(),
                 })?;
         self.next_id = next_id;
         self.next_sequence = next_sequence;

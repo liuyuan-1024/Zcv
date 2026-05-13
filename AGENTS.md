@@ -12,7 +12,6 @@ README.md
 docs/编辑引擎能力.md
 docs/编辑引擎测试策略.md
 docs/STATUS.md（如果存在）
-docs/ARCHITECTURE.md（如果存在）
 ```
 
 不能读取时要说明缺失内容，不要凭空假设。
@@ -150,6 +149,7 @@ Public API：
 避免在可恢复路径使用 unwrap / expect / panic。
 内部 expect 必须说明已由什么不变量保证。
 错误类型应区分坐标、编辑、事务、存储、历史等失败来源。
+面向用户、日志或诊断输出的可读提示使用中文；Rust 符号路径、类型名、字段名、协议名等定位信息可保留英文。
 ```
 
 实现方式：
@@ -208,7 +208,7 @@ M13 之后默认不为每个 engine milestone 新增 GPUI testbed。
 内部确实需要构造已证明合法的 range 时，优先：
 
 ```rust
-TextRange::new(start, end).expect("internal invariant: start <= end")
+TextRange::new(start, end).expect("内部不变量: start <= end")
 ```
 
 ## 8. 测试策略

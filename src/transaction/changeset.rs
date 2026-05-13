@@ -53,14 +53,14 @@ impl ChangeSet {
                     .apply_old_to_new(range.start())
                     .ok_or_else(|| EngineError::EngineBug {
                         location: "ChangeSet::changed_ranges",
-                        detail: "changed range start overflowed byte offset mapping".to_string(),
+                        detail: "changed range 起点在字节偏移映射时溢出".to_string(),
                     })?;
             let new_end =
                 new_start
                     .checked_add(replacement_len)
                     .ok_or_else(|| EngineError::EngineBug {
                         location: "ChangeSet::changed_ranges",
-                        detail: "changed range end overflowed byte offset mapping".to_string(),
+                        detail: "changed range 终点在字节偏移映射时溢出".to_string(),
                     })?;
 
             ranges.push(text_range(new_start, new_end, "ChangeSet::changed_ranges")?);
@@ -69,7 +69,7 @@ impl ChangeSet {
                 .after_edit(range.len(), replacement_len)
                 .ok_or_else(|| EngineError::EngineBug {
                     location: "ChangeSet::changed_ranges",
-                    detail: "accumulated changed range shift overflowed".to_string(),
+                    detail: "累计 changed range 位移溢出".to_string(),
                 })?;
         }
 
@@ -109,6 +109,6 @@ fn text_range(
 ) -> EngineResult<TextRange> {
     TextRange::new(start, end).map_err(|_| EngineError::EngineBug {
         location,
-        detail: format!("invalid generated range: start {start}, end {end}"),
+        detail: format!("生成了非法区间: start {start}, end {end}"),
     })
 }

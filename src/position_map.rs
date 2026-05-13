@@ -118,7 +118,7 @@ impl PositionMap {
             let replacement_len = edit.replacement().len();
             let new_start = shift
                 .apply_old_to_new(old_start)
-                .expect("internal invariant: old start maps without byte offset overflow");
+                .expect("内部不变量: old start 映射不会发生字节偏移溢出");
 
             if pos < old_start {
                 break;
@@ -143,13 +143,13 @@ impl PositionMap {
 
             shift = shift
                 .after_edit(range.len(), replacement_len)
-                .expect("internal invariant: accumulated edit shift does not overflow");
+                .expect("内部不变量: 累计编辑位移不会溢出");
         }
 
         MappingResult::Mapped(
             shift
                 .apply_old_to_new(pos)
-                .expect("internal invariant: old position maps without byte offset overflow"),
+                .expect("内部不变量: old position 映射不会发生字节偏移溢出"),
         )
     }
 
@@ -174,7 +174,7 @@ impl PositionMap {
             let replacement_len = edit.replacement().len();
             let new_start = shift
                 .apply_old_to_new(old_start)
-                .expect("internal invariant: old start maps without byte offset overflow");
+                .expect("内部不变量: old start 映射不会发生字节偏移溢出");
             let new_end =
                 checked_add_offset(new_start, replacement_len, "map_new_position_with_bias");
 
@@ -192,13 +192,13 @@ impl PositionMap {
 
             shift = shift
                 .after_edit(old_len, replacement_len)
-                .expect("internal invariant: accumulated edit shift does not overflow");
+                .expect("内部不变量: 累计编辑位移不会溢出");
         }
 
         MappingResult::Mapped(
             shift
                 .apply_new_to_old(pos)
-                .expect("internal invariant: new position maps without byte offset overflow"),
+                .expect("内部不变量: new position 映射不会发生字节偏移溢出"),
         )
     }
 
@@ -329,7 +329,7 @@ impl PositionMap {
             let replacement_len = edit.replacement().len();
             let new_start = shift
                 .apply_old_to_new(old_start)
-                .expect("internal invariant: old start maps without byte offset overflow");
+                .expect("内部不变量: old start 映射不会发生字节偏移溢出");
             let new_end = checked_add_offset(
                 new_start,
                 replacement_len,
@@ -354,12 +354,12 @@ impl PositionMap {
 
             shift = shift
                 .after_edit(old_len, replacement_len)
-                .expect("internal invariant: accumulated edit shift does not overflow");
+                .expect("内部不变量: 累计编辑位移不会溢出");
         }
 
         shift
             .apply_new_to_old(pos)
-            .expect("internal invariant: new range boundary maps without byte offset overflow")
+            .expect("内部不变量: new range 边界映射不会发生字节偏移溢出")
     }
 
     fn old_range_intersects_deleted_content(&self, range: TextRange) -> bool {
@@ -380,7 +380,7 @@ impl PositionMap {
             let replacement_len = edit.replacement().len();
             let new_start = shift
                 .apply_old_to_new(edit_range.start())
-                .expect("internal invariant: old start maps without byte offset overflow");
+                .expect("内部不变量: old start 映射不会发生字节偏移溢出");
             let new_end = checked_add_offset(
                 new_start,
                 replacement_len,
@@ -403,7 +403,7 @@ impl PositionMap {
 
             shift = shift
                 .after_edit(old_len, replacement_len)
-                .expect("internal invariant: accumulated edit shift does not overflow");
+                .expect("内部不变量: 累计编辑位移不会溢出");
         }
 
         false
@@ -451,9 +451,9 @@ impl OffsetShift {
 }
 
 fn checked_add_offset(offset: ByteOffset, rhs: usize, location: &'static str) -> ByteOffset {
-    offset.checked_add(rhs).unwrap_or_else(|| {
-        panic!("internal invariant: byte offset overflow while mapping in {location}")
-    })
+    offset
+        .checked_add(rhs)
+        .unwrap_or_else(|| panic!("内部不变量: 在 {location} 映射时发生字节偏移溢出"))
 }
 
 fn biased_offset(start: ByteOffset, end: ByteOffset, bias: Bias) -> ByteOffset {

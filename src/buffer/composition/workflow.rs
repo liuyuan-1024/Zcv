@@ -74,7 +74,7 @@ impl Buffer {
         let state = self
             .composition
             .as_ref()
-            .expect("composition must exist after start_composition")
+            .expect("内部不变量: start_composition 后 composition 必须存在")
             .clone();
 
         self.validate_range(state.range)?;
@@ -94,13 +94,13 @@ impl Buffer {
             after_selection,
             TransactionMetadata::new(TransactionSource::Composition)
                 .without_history()
-                .with_description("composition update"),
+                .with_description("组合输入更新"),
         )?;
 
         let mut state = self
             .composition
             .take()
-            .expect("composition must still exist while update_composition runs");
+            .expect("内部不变量: update_composition 执行期间 composition 必须仍然存在");
         state.range = composition_range_after_preedit(range_start, preedit_len)?;
         state.preedit_text = preedit_text.to_string();
         state.selection = absolute_selection;
@@ -122,7 +122,7 @@ impl Buffer {
                 selections,
                 commit_text,
                 TransactionMetadata::new(TransactionSource::Composition)
-                    .with_description("composition commit"),
+                    .with_description("组合输入提交"),
             );
         };
 
@@ -138,7 +138,7 @@ impl Buffer {
             after_selection.clone(),
             TransactionMetadata::new(TransactionSource::Composition)
                 .without_history()
-                .with_description("composition commit text"),
+                .with_description("组合输入提交文本"),
         )?;
 
         let after_text = self.text().into_owned();
@@ -156,10 +156,10 @@ impl Buffer {
             after_text,
             state.original_selection,
             after_selection,
-            Some(std::sync::Arc::from("composition commit")),
+            Some(std::sync::Arc::from("组合输入提交")),
         )?;
         let metadata = TransactionMetadata::new(TransactionSource::Composition)
-            .with_description("composition commit");
+            .with_description("组合输入提交");
         self.push_history(entry, &metadata)?;
 
         Ok(result)
@@ -180,7 +180,7 @@ impl Buffer {
             after_selection,
             TransactionMetadata::new(TransactionSource::Composition)
                 .without_history()
-                .with_description("composition cancel"),
+                .with_description("组合输入取消"),
         )?;
 
         if !state.original_was_dirty {

@@ -48,7 +48,7 @@ impl Buffer {
             .match_at(ordinal)
             .ok_or(SearchError::MatchNotFound { ordinal })?;
 
-        self.replace_search_ranges([search_match.range()], replacement, "replace search match")
+        self.replace_search_ranges([search_match.range()], replacement, "替换搜索匹配")
     }
 
     /// 将一次搜索结果中的所有匹配作为单个原子 Transaction 替换。
@@ -67,7 +67,7 @@ impl Buffer {
                 .iter()
                 .map(|search_match| search_match.range()),
             replacement,
-            "replace all search matches",
+            "替换全部搜索匹配",
         )
     }
 
@@ -86,7 +86,7 @@ impl Buffer {
             return Err(SearchError::MatchNotFound { ordinal }.into());
         };
 
-        self.replace_search_edits([(range, replacement)], "replace regex match")
+        self.replace_search_edits([(range, replacement)], "替换正则匹配")
     }
 
     /// 将一次正则搜索结果中的所有匹配作为单个原子 Transaction 替换。
@@ -100,7 +100,7 @@ impl Buffer {
         self.ensure_regex_search_result_current(result)?;
         self.replace_search_edits_fallible(
             regex_replacements_in_text(&self.storage, result, replacement)?,
-            "replace all regex matches",
+            "替换全部正则匹配",
         )
     }
 

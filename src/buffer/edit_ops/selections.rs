@@ -233,6 +233,6 @@ impl Buffer {
 fn offset_arithmetic_bug(location: &'static str) -> EngineError {
     EngineError::EngineBug {
         location,
-        detail: "byte offset overflow while mapping selection edits".to_string(),
+        detail: "映射 selection 编辑时字节偏移溢出".to_string(),
     }
 }

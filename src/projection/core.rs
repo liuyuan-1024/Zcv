@@ -385,7 +385,7 @@ impl Projection {
             let index = ProjectedLineIndex::new(row_value);
             let kind = self
                 .projected_line_kind(index)
-                .expect("clamped row in projection range");
+                .expect("内部不变量: clamp 后的 row 必须位于 projection 范围内");
             match kind {
                 ProjectedLineKind::Text(text_line) => {
                     let visible = snapshot

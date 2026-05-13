@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> AI 工具参与 `zom-engine` 前先读本文档。本文只写稳定规则；阶段进度、文件清单、建议命令看 `docs/STATUS.md`。
+> AI 工具参与 `zom-engine` 前先读本文档。本文只写稳定规则；当前状态、结构概览、建议命令看 `docs/STATUS.md`。
 
 ## 0. 必读上下文
 
@@ -85,7 +85,7 @@ diagnostics / semantic tokens / inlay hints / code lens 生成。
 
 ## 3. 阶段与范围
 
-当前阶段、完成度、测试清单和建议命令以 `docs/STATUS.md` 为准。
+当前阶段状态、结构概览和建议命令以 `docs/STATUS.md` 为准。
 
 稳定规则：
 
@@ -259,7 +259,7 @@ cargo test
 ## 11. 文档维护
 
 ```text
-阶段进度、当前文件列表、具体测试清单 -> docs/STATUS.md
+阶段状态、结构概览、建议命令 -> docs/STATUS.md
 能力边界变化 -> docs/编辑引擎能力.md
 测试目录职责变化 -> docs/编辑引擎测试策略.md
 AI 协作规范变化 -> AGENTS.md

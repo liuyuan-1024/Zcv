@@ -1,12 +1,14 @@
 //! Buffer 搜索与替换入口：把 literal search / replace 绑定到当前 BufferVersion。
 
+use std::sync::Arc;
+
 use crate::{
-    ChangeSet, Delta, Edit, EngineResult, RegexSearchOptions, RegexSearchResult, SearchError,
-    SearchOptions, SearchResult, TextRange, Transaction, TransactionMetadata, TransactionSource,
     search::{
         regex_replacement_for_match, regex_replacements_in_text, search_in_text,
         search_regex_in_text,
     },
+    ChangeSet, Delta, Edit, EngineResult, RegexSearchOptions, RegexSearchResult, SearchError,
+    SearchOptions, SearchResult, TextRange, Transaction, TransactionMetadata, TransactionSource,
 };
 
 use super::Buffer;
@@ -132,30 +134,35 @@ impl Buffer {
         replacement: &str,
         description: &'static str,
     ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        let replacement: Arc<str> = Arc::from(replacement);
         self.replace_search_edits(
             ranges
                 .into_iter()
-                .map(|range| (range, replacement.to_string())),
+                .map(|range| (range, Arc::clone(&replacement))),
             description,
         )
     }
 
-    fn replace_search_edits(
+    fn replace_search_edits<R>(
         &mut self,
-        edits: impl IntoIterator<Item = (TextRange, String)>,
+        edits: impl IntoIterator<Item = (TextRange, R)>,
         description: &'static str,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    ) -> EngineResult<Option<(Delta, ChangeSet)>>
+    where
+        R: Into<Arc<str>>,
+    {
         self.ensure_writable()?;
         self.cancel_composition_before_text_edit()?;
 
         let mut tx_edits = Vec::new();
 
         for (range, replacement) in edits {
+            let replacement: Arc<str> = replacement.into();
             self.validate_range(range)?;
             self.validate_edit_boundary(range.start())?;
             self.validate_edit_boundary(range.end())?;
 
-            if self.slice_text(range)?.as_ref() != replacement.as_str() {
+            if self.slice_text(range)?.as_ref() != replacement.as_ref() {
                 tx_edits.push(Edit::replace(range, replacement));
             }
         }

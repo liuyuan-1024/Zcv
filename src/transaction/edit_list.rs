@@ -2,18 +2,20 @@
 //!
 //! 它保证编辑互不重叠，但允许空列表；空事务由 Transaction 层拒绝。
 //!
-//! **Zero-copy 纪律**：内部存储为 `Arc<[Edit]>`，`Clone` 是 O(1) 引用计数递增。
+//! **Zero-copy 纪律**：内部存储为 `Arc<[Edit]>`，`Clone` 是 O(1) 引用计数递增；
+//! 单个事务内相同 replacement 会归一到同一份 `Arc<str>`。
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::errors::EditError;
 
-use super::Edit;
+use super::{edit::empty_replacement, Edit};
 
 /// 归一化且验证后的编辑列表。
 ///
-/// 内部以 `Arc<[Edit]>` 存储；`Clone` / `apply_edit_list` 拷贝传递只递增引用计数，
-/// 不复制底层数据，事务热路径再无 `Vec::clone` 开销。
+/// 内部以 `Arc<[Edit]>` 存储；`Clone` / `apply_edit_list` 拷贝传递只递增引用计数。
+/// 每个 `Edit` 的 replacement 也是 `Arc<str>`；`EditList::new` 会把同一事务内
+/// 内容相同的 replacement 归一，避免多光标同文本编辑重复持有堆文本。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditList {
     edits: Arc<[Edit]>,
@@ -39,6 +41,8 @@ impl EditList {
             }
         }
 
+        share_repeated_replacements(&mut edits);
+
         Ok(Self {
             edits: Arc::from(edits),
         })
@@ -56,11 +60,35 @@ impl EditList {
         &self.edits
     }
 
-    /// 物化为 `Vec<Edit>`。如果当前 `Arc` 唯一持有则零拷贝转移，否则克隆。
-    /// 命名让分配语义显眼；事务热路径应使用 `as_slice` / iter。
+    /// 物化为 `Vec<Edit>`。命名让分配语义显眼；事务热路径应使用 `as_slice` / iter。
     pub fn into_inner(self) -> Vec<Edit> {
-        // Arc<[T]> 无法直接 try_unwrap；只能逐元素拷贝（每个 Edit 内部 String 仍按需 Clone）。
+        // Arc<[T]> 无法直接 try_unwrap；只能逐元素拷贝（每个 Edit 内部 payload 仍是 Arc clone）。
         // 大多数路径已不再调用 into_inner，残留路径接受这次一次性分配。
         self.edits.iter().cloned().collect()
+    }
+}
+
+fn share_repeated_replacements(edits: &mut [Edit]) {
+    if edits.len() <= 1 {
+        return;
+    }
+
+    let mut interned: HashMap<Arc<str>, ()> = HashMap::with_capacity(edits.len());
+
+    for edit in edits {
+        if edit.replacement().is_empty() {
+            edit.share_replacement_with(empty_replacement());
+            continue;
+        }
+
+        let shared = interned
+            .get_key_value(edit.replacement())
+            .map(|(replacement, ())| Arc::clone(replacement));
+
+        if let Some(shared) = shared {
+            edit.share_replacement_with(shared);
+        } else {
+            interned.insert(Arc::clone(edit.replacement_arc()), ());
+        }
     }
 }

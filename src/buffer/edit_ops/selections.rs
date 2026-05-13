@@ -2,11 +2,13 @@
 //!
 //! 本文件负责 selection 语义到 EditList 的映射，不实现底层提交原子性，也不绕过 Buffer 边界校验。
 
+use std::sync::Arc;
+
 use crate::{
-    EngineError, EngineResult, MovementDirection, MovementUnit, Selection, SelectionSet, TextRange,
     position_map::OffsetShift,
     storage::TextRead,
     transaction::{ChangeSet, Delta, Edit, Transaction, TransactionMetadata, TransactionSource},
+    EngineError, EngineResult, MovementDirection, MovementUnit, Selection, SelectionSet, TextRange,
 };
 
 use crate::buffer::Buffer;
@@ -139,7 +141,7 @@ impl Buffer {
         let before_selection = selections.clone();
         // ByteOffset 深核：用 byte 长度
         let replacement_len = replacement.len();
-        let replacement = replacement.to_string();
+        let replacement: Arc<str> = Arc::from(replacement);
 
         let mut edits = Vec::new();
         let mut after_selections = Vec::with_capacity(selections.len());
@@ -175,7 +177,7 @@ impl Buffer {
             };
 
             if !is_empty_noop && !is_same_text_noop {
-                edits.push(Edit::replace(range, replacement.clone()));
+                edits.push(Edit::replace(range, Arc::clone(&replacement)));
                 shift = shift
                     .after_edit(range.len(), replacement_len)
                     .ok_or_else(|| {
@@ -219,7 +221,7 @@ impl Buffer {
 
         let tx = Transaction::from_edits(
             self.version,
-            vec![Edit::replace(range, replacement.to_string())],
+            vec![Edit::replace(range, Arc::<str>::from(replacement))],
         )?
         .with_metadata(metadata)
         .with_selection(Some(self.selection.clone()), Some(after_selection));

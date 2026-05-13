@@ -56,7 +56,7 @@ docs/STATUS.md（如果存在）
 
 ```text
 文本存储、文本编辑、坐标模型、事务系统、变更映射、历史系统、快照、
-区间追踪、投影映射、读取切片、文件文本边界、错误防御、性能验证、
+区间追踪、投影映射、读取切片、文件文本边界、错误防御、
 底层能力接口。
 ```
 
@@ -105,7 +105,6 @@ diagnostics / semantic tokens / inlay hints / code lens 生成。
 src/        编辑引擎实现，按稳定能力域拆模块
 tests/      机器契约测试，CI 主体
 examples/   可选交互式 testbed，体感和接入验证
-benches/    性能基准
 src/tests/  可选内部测试，只测 public API 难覆盖的重要内部不变量
 docs/       文档与状态快照
 ```
@@ -218,7 +217,6 @@ TextRange::new(start, end).expect("内部不变量: start <= end")
 ```text
 默认 tests/
 UI / GPUI / 人类体感 / API 接入手感 -> examples/
-性能回归 -> benches/
 public API 无法覆盖的重要内部不变量 -> src/tests/
 ```
 
@@ -233,7 +231,7 @@ cargo fmt
 cargo test
 ```
 
-定向测试、example check、benchmark 命令以 `docs/STATUS.md` 为准。没有实际运行命令时，必须明确说明。
+定向测试和 example check 命令以 `docs/STATUS.md` 为准。没有实际运行命令时，必须明确说明。
 
 ## 9. 工作模式
 

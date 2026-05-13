@@ -2,7 +2,7 @@
 name = "zom-engine"
 version = "0.1.0"
 edition = "2024"
-description = "纯粹的文本编辑引擎底座"
+description = "工业级纯粹文本编辑引擎底座"
 
 [dependencies]
 regex = "1.12.3"
@@ -11,61 +11,5 @@ thiserror = "2.0.18"
 unicode-segmentation = "1.13.2"
 
 [dev-dependencies]
-criterion = "0.8.2"
-proptest = "1.5.0"
-# 仅在测试和 examples 沙盒中使用 GPUI
 gpui = "0.2.2"
-
-[[bench]]
-name = "m4_storage"
-harness = false
-
-[[bench]]
-name = "m19_core_editing"
-harness = false
-[[bench]]
-name = "m19_viewport_projection"
-harness = false
-[[bench]]
-name = "m19_search_replace"
-harness = false
-
-[[example]]
-name = "gpui_m1_testbed"
-path = "examples/gpui_m1_testbed.rs"
-[[example]]
-name = "gpui_m2_testbed"
-path = "examples/gpui_m2_testbed.rs"
-[[example]]
-name = "gpui_m3_testbed"
-path = "examples/gpui_m3_testbed.rs"
-[[example]]
-name = "gpui_m4_testbed"
-path = "examples/gpui_m4_testbed.rs"
-[[example]]
-name = "gpui_m5_testbed"
-path = "examples/gpui_m5_testbed.rs"
-[[example]]
-name = "gpui_m6_testbed"
-path = "examples/gpui_m6_testbed.rs"
-[[example]]
-name = "gpui_m7_testbed"
-path = "examples/gpui_m7_testbed.rs"
-[[example]]
-name = "gpui_m8_testbed"
-path = "examples/gpui_m8_testbed.rs"
-[[example]]
-name = "gpui_m9_testbed"
-path = "examples/gpui_m9_testbed.rs"
-[[example]]
-name = "gpui_m10_testbed"
-path = "examples/gpui_m10_testbed.rs"
-[[example]]
-name = "gpui_m11_testbed"
-path = "examples/gpui_m11_testbed.rs"
-[[example]]
-name = "gpui_m12_testbed"
-path = "examples/gpui_m12_testbed.rs"
-[[example]]
-name = "gpui_m13_testbed"
-path = "examples/gpui_m13_testbed.rs"
+proptest = "1.5.0"

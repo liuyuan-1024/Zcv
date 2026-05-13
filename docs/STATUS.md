@@ -3,7 +3,7 @@
 ## 总览
 
 - 主线状态：M0-M19 编辑引擎主线已收口。
-- 当前方向：后续工作以增量修复、性能调优、fuzz / property 扩展、可观测性改进和 API 语义收敛为主。
+- 当前方向：后续工作以增量修复、fuzz / property 扩展、可观测性改进和 API 语义收敛为主。
 - 边界原则：继续保持工业级、纯粹编辑引擎底座；不把宿主层能力塞回 engine core。
 
 ## 已收口的大能力
@@ -17,7 +17,7 @@
 - Fold、Projection、ProjectedViewport 和读取切片。
 - 单 Buffer literal / regex 搜索与 replace all。
 - 文件文本加载、reload、保存文本边界、大文件和超大事务防御。
-- property 回归、criterion benchmark 和粗粒度内存观测入口。
+- property 回归和粗粒度内存观测入口。
 
 ## 明确不进入主线
 
@@ -36,7 +36,6 @@
 src/       编辑引擎实现
 tests/     机器契约测试
 examples/  可选交互式 testbed
-benches/   性能基准
 docs/      项目文档
 ```
 
@@ -61,12 +60,6 @@ projection/   Fold、投影坐标和 viewport
 ```bash
 cargo fmt
 cargo test
-```
-
-触及 benchmark、性能路径或大文件策略时，再运行：
-
-```bash
-cargo bench --no-run
 ```
 
 需要定向排查时，按触及能力选择对应 `tests/` 文件运行；不再在本文维护逐文件命令清单。

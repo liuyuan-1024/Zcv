@@ -4,7 +4,7 @@
 
 ## 定位
 
-`zom-engine` 只做编辑引擎底座：文本存储、编辑、坐标、事务、历史、快照、区间追踪、投影、读取切片、文件文本边界、错误防御和性能验证。
+`zom-engine` 只做编辑引擎底座：文本存储、编辑、坐标、事务、历史、快照、区间追踪、投影、读取切片、文件文本边界和错误防御。
 
 它不做 UI 渲染、LSP / Tree-sitter provider、diagnostics 生成、项目索引、命令系统、宏录制、后台任务调度或实时多人协作。
 
@@ -20,7 +20,7 @@
 - Fold / Projection / Viewport slicing。
 - 单 Buffer 搜索、替换和 replace all。
 - 文件加载、保存文本边界、大文件策略和防御式错误处理。
-- 机器契约测试、property 回归和 benchmark 验证。
+- 机器契约测试和 property 回归。
 
 ## 目录概览
 
@@ -28,7 +28,6 @@
 src/       编辑引擎实现
 tests/     public API 机器契约测试
 examples/  可选交互式 testbed
-benches/   性能基准
 docs/      能力边界、测试策略和当前状态
 ```
 

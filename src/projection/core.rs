@@ -11,9 +11,8 @@ use crate::{
     EngineResult, FoldSet,
     errors::ProjectionError,
     fold::geometry::{fold_line_span, next_line, previous_line},
-    slicing::{TextSlice, VisibleLine},
     snapshot::Snapshot,
-    types::{BufferVersion, Line, LineRange, TextRange},
+    types::{BufferVersion, Line, LineRange},
 };
 
 use super::{
@@ -389,11 +388,8 @@ impl Projection {
                 .expect("clamped row in projection range");
             match kind {
                 ProjectedLineKind::Text(text_line) => {
-                    let visible = build_visible_line(
-                        snapshot,
-                        text_line.logical_line(),
-                        viewport.max_line_chars(),
-                    )?;
+                    let visible = snapshot
+                        .visible_line(text_line.logical_line(), viewport.max_line_chars())?;
                     rows.push(ProjectedViewportRow::new(
                         index,
                         ProjectedViewportRowKind::Text {
@@ -422,59 +418,6 @@ impl Projection {
             placeholders,
         ))
     }
-}
-
-fn build_visible_line<'a>(
-    snapshot: &'a Snapshot,
-    logical_line: Line,
-    max_line_chars: Option<usize>,
-) -> EngineResult<VisibleLine<'a>> {
-    let line_count = snapshot.line_count();
-    let line_value = logical_line.get();
-    if line_value >= line_count {
-        return Err(crate::CoordinateError::LineOutOfBounds(logical_line).into());
-    }
-
-    // 深核：ByteOffset
-    let line_start = snapshot.line_start_byte(logical_line)?;
-    let next_start = if line_value + 1 == line_count {
-        snapshot.len_bytes()
-    } else {
-        snapshot.line_start_byte(Line::new(line_value + 1))?
-    };
-    let full_range = TextRange::new(line_start, next_start)?;
-
-    let line_slice = snapshot.slice_line(logical_line)?;
-    let line_text = line_slice.as_str();
-    let newline_bytes = if line_text.ends_with("\r\n") {
-        2
-    } else if line_text.ends_with('\n') || line_text.ends_with('\r') {
-        1
-    } else {
-        0
-    };
-    let content_bytes = line_text.len() - newline_bytes;
-    let content_end = crate::ByteOffset::new(line_start.get() + content_bytes);
-
-    // max_line_chars 当前按 byte 解释（投影截断阈值）；后续 Phase 3 可换 grapheme 长度
-    let visible_bytes = match max_line_chars {
-        Some(max) => max.min(content_bytes),
-        None => content_bytes,
-    };
-    let visible_end = crate::ByteOffset::new(line_start.get() + visible_bytes);
-    let visible_range = TextRange::new(line_start, visible_end)?;
-    let is_truncated = visible_end < content_end;
-
-    let visible_text = TextSlice::new(
-        visible_range,
-        snapshot.slice_text(visible_range)?.into_text(),
-    );
-    Ok(VisibleLine::new(
-        logical_line,
-        full_range,
-        visible_text,
-        is_truncated,
-    ))
 }
 
 #[derive(Debug, Clone, Copy)]

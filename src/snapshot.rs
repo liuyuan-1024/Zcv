@@ -8,14 +8,14 @@ use crate::{
     BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, DisplayColumn,
     DisplayColumnAffinity, EngineResult, Line, LineEndingStyle, LineRange, LineSlice,
     LogicalColumn, Position, RegexSearchOptions, RegexSearchResult, SearchOptions, SearchResult,
-    TextRange, TextSlice, Utf16Offset, Utf16Position, Viewport, ViewportSlice,
+    TextRange, TextSlice, Utf16Offset, Utf16Position, Viewport, ViewportSlice, VisibleLine,
     coordinates::core::{
         char_to_display_column_in_text, display_to_logical_column_in_text,
         logical_to_display_column_in_text, next_tab_stop,
     },
     slicing::{
         text_range_for_byte_range, text_range_for_line, text_range_for_line_range,
-        viewport_slice_for_text,
+        viewport_slice_for_text, visible_line_for_text,
     },
     storage::{RopeySnapshot, TextRead},
 };
@@ -121,6 +121,14 @@ impl Snapshot {
     /// 按逻辑行 viewport 读取快照中的可见行。
     pub fn slice_viewport(&self, viewport: Viewport) -> EngineResult<ViewportSlice<'_>> {
         viewport_slice_for_text(&self.storage, viewport)
+    }
+
+    pub(crate) fn visible_line(
+        &self,
+        line: Line,
+        max_line_chars: Option<usize>,
+    ) -> EngineResult<VisibleLine<'_>> {
+        visible_line_for_text(&self.storage, line, max_line_chars)
     }
 
     pub fn char_to_position(&self, offset: CharOffset) -> EngineResult<Position> {

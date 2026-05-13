@@ -2,8 +2,6 @@
 //!
 //! 本文件只移动 selection/head 并尊重 BufferConfig 策略，不绑定快捷键，也不承担 UI 渲染或命令层语义。
 
-use unicode_segmentation::UnicodeSegmentation;
-
 use crate::{
     CharOffset, CoordinateError, EditError, EngineResult, MovementDirection, MovementUnit,
     Selection, SelectionSet, WordBoundaryPolicy, storage::TextRead,
@@ -97,8 +95,7 @@ impl Buffer {
             .iter()
             .copied()
             .map(|selection| {
-                // Selection.head 是 ByteOffset 深核坐标；token-span 算法当前仍在 char 空间，
-                // 因此在边界转 char、计算后再换回 byte。
+                // Selection.head 是 ByteOffset 深核坐标；movement 边界按 grapheme/char 投影扫描。
                 let head_char = self.storage.byte_to_char(selection.head())?;
                 let new_head_char = self.movement_boundary(head_char, direction, unit)?;
                 let new_head = self.storage.char_to_byte(new_head_char)?;
@@ -129,18 +126,10 @@ impl Buffer {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MovementTokenSpan {
+struct MovementGrapheme {
     start: CharOffset,
     end: CharOffset,
-}
-
-impl MovementTokenSpan {
-    fn new(start: usize, end: usize) -> Self {
-        Self {
-            start: CharOffset::new(start),
-            end: CharOffset::new(end),
-        }
-    }
+    first: char,
 }
 
 fn movement_boundary_in_text<T: TextRead>(
@@ -158,44 +147,16 @@ fn movement_boundary_in_text<T: TextRead>(
             MovementDirection::Next => storage.next_grapheme_boundary_char(offset),
         },
         MovementUnit::Word => {
-            let text = storage.text();
-            let spans = unicode_word_spans(text.as_ref());
-            Ok(boundary_from_token_spans(
-                &spans,
-                offset,
-                direction,
-                storage.len_chars(),
-            ))
+            contiguous_grapheme_boundary(storage, offset, direction, is_word_char)
         }
         MovementUnit::Identifier => {
-            let text = storage.text();
-            let spans = identifier_spans(text.as_ref(), policy);
-            Ok(boundary_from_token_spans(
-                &spans,
-                offset,
-                direction,
-                storage.len_chars(),
-            ))
+            contiguous_grapheme_boundary(storage, offset, direction, |ch| {
+                policy.is_identifier_continue(ch)
+            })
         }
-        MovementUnit::Subword => {
-            let text = storage.text();
-            let spans = subword_spans(text.as_ref());
-            Ok(boundary_from_token_spans(
-                &spans,
-                offset,
-                direction,
-                storage.len_chars(),
-            ))
-        }
+        MovementUnit::Subword => subword_boundary(storage, offset, direction),
         MovementUnit::Symbol => {
-            let text = storage.text();
-            let spans = symbol_spans(text.as_ref(), policy);
-            Ok(boundary_from_token_spans(
-                &spans,
-                offset,
-                direction,
-                storage.len_chars(),
-            ))
+            contiguous_grapheme_boundary(storage, offset, direction, |ch| policy.is_symbol_char(ch))
         }
     }
 }
@@ -218,151 +179,210 @@ fn validate_movement_offset<T: TextRead>(storage: &T, offset: CharOffset) -> Eng
     Ok(())
 }
 
-fn boundary_from_token_spans(
-    spans: &[MovementTokenSpan],
+fn contiguous_grapheme_boundary<T: TextRead>(
+    storage: &T,
     offset: CharOffset,
     direction: MovementDirection,
-    text_len: CharOffset,
-) -> CharOffset {
+    mut is_body: impl FnMut(char) -> bool,
+) -> EngineResult<CharOffset> {
     match direction {
-        MovementDirection::Next => spans
-            .iter()
-            .find_map(|span| {
-                if offset < span.start {
-                    Some(span.start)
-                } else if offset < span.end {
-                    Some(span.end)
-                } else {
-                    None
+        MovementDirection::Next => {
+            let mut cursor = offset;
+            let mut skipped_separator = false;
+
+            while let Some(grapheme) = grapheme_at(storage, cursor)? {
+                if is_body(grapheme.first) {
+                    if skipped_separator {
+                        return Ok(grapheme.start);
+                    }
+                    return scan_contiguous_end(storage, grapheme, &mut is_body);
                 }
-            })
-            .unwrap_or(text_len),
-        MovementDirection::Previous => spans
-            .iter()
-            .rev()
-            .find_map(|span| {
-                if offset > span.end {
-                    Some(span.end)
-                } else if offset > span.start {
-                    Some(span.start)
-                } else {
-                    None
+
+                skipped_separator = true;
+                cursor = grapheme.end;
+            }
+
+            Ok(storage.len_chars())
+        }
+        MovementDirection::Previous => {
+            let mut cursor = offset;
+            let mut skipped_separator = false;
+
+            while let Some(grapheme) = grapheme_before(storage, cursor)? {
+                if is_body(grapheme.first) {
+                    if skipped_separator {
+                        return Ok(grapheme.end);
+                    }
+                    return scan_contiguous_start(storage, grapheme, &mut is_body);
                 }
-            })
-            .unwrap_or(CharOffset::ZERO),
-    }
-}
 
-fn unicode_word_spans(text: &str) -> Vec<MovementTokenSpan> {
-    let mut spans: Vec<MovementTokenSpan> = Vec::new();
-
-    for (byte_start, word) in text.unicode_word_indices() {
-        let start = text[..byte_start].chars().count();
-        let end = start + word.chars().count();
-
-        if let Some(previous) = spans.last_mut() {
-            if previous.end.get() == start {
-                previous.end = CharOffset::new(end);
-                continue;
+                skipped_separator = true;
+                cursor = grapheme.start;
             }
+
+            Ok(CharOffset::ZERO)
         }
-
-        spans.push(MovementTokenSpan::new(start, end));
     }
-
-    spans
 }
 
-fn identifier_spans(text: &str, policy: WordBoundaryPolicy) -> Vec<MovementTokenSpan> {
-    contiguous_spans_by_grapheme(text, |ch| policy.is_identifier_continue(ch))
-}
-
-fn symbol_spans(text: &str, policy: WordBoundaryPolicy) -> Vec<MovementTokenSpan> {
-    contiguous_spans_by_grapheme(text, |ch| policy.is_symbol_char(ch))
-}
-
-/// 按 grapheme cluster 切分 token，predicate 只针对每个 cluster 的**首字符**。
-///
-/// 这样合成字符（`é`）、ZWJ emoji 序列、国旗 emoji 等多 codepoint cluster 不会在
-/// cluster 中间被切开。返回的 span 边界仍按 char 计数（与 `LogicalColumn` / `CharOffset` 对齐）。
-fn contiguous_spans_by_grapheme(
-    text: &str,
-    mut predicate: impl FnMut(char) -> bool,
-) -> Vec<MovementTokenSpan> {
-    let mut spans = Vec::new();
-    let mut current_start: Option<usize> = None;
-    let mut char_idx = 0usize;
-
-    for grapheme in text.graphemes(true) {
-        let first = grapheme.chars().next().expect("grapheme cluster 非空");
-        let cluster_len = grapheme.chars().count();
-
-        if predicate(first) {
-            current_start.get_or_insert(char_idx);
-        } else if let Some(start) = current_start.take() {
-            spans.push(MovementTokenSpan::new(start, char_idx));
+fn scan_contiguous_end<T: TextRead>(
+    storage: &T,
+    mut current: MovementGrapheme,
+    is_body: &mut impl FnMut(char) -> bool,
+) -> EngineResult<CharOffset> {
+    loop {
+        match grapheme_at(storage, current.end)? {
+            Some(next) if is_body(next.first) => current = next,
+            _ => return Ok(current.end),
         }
-
-        char_idx += cluster_len;
     }
-
-    if let Some(start) = current_start {
-        spans.push(MovementTokenSpan::new(start, char_idx));
-    }
-
-    spans
 }
 
-fn subword_spans(text: &str) -> Vec<MovementTokenSpan> {
-    // 收集每个 grapheme 的「首字符 + 起始 char 偏移 + cluster 长度」。
-    // subword 分割逻辑只关注 cluster 之间的边界，cluster 内的组合标记 / ZWJ / RI 都不参与。
-    let clusters: Vec<(usize, char, usize)> = {
-        let mut out = Vec::new();
-        let mut char_idx = 0usize;
-        for grapheme in text.graphemes(true) {
-            let first = grapheme.chars().next().expect("grapheme cluster 非空");
-            let len = grapheme.chars().count();
-            out.push((char_idx, first, len));
-            char_idx += len;
+fn scan_contiguous_start<T: TextRead>(
+    storage: &T,
+    mut current: MovementGrapheme,
+    is_body: &mut impl FnMut(char) -> bool,
+) -> EngineResult<CharOffset> {
+    loop {
+        match grapheme_before(storage, current.start)? {
+            Some(previous) if is_body(previous.first) => current = previous,
+            _ => return Ok(current.start),
         }
-        out
-    };
+    }
+}
 
-    let mut spans = Vec::new();
-    let mut current_start: Option<usize> = None;
+fn subword_boundary<T: TextRead>(
+    storage: &T,
+    offset: CharOffset,
+    direction: MovementDirection,
+) -> EngineResult<CharOffset> {
+    match direction {
+        MovementDirection::Next => next_subword_boundary(storage, offset),
+        MovementDirection::Previous => previous_subword_boundary(storage, offset),
+    }
+}
 
-    for i in 0..clusters.len() {
-        let (start_idx, ch, len) = clusters[i];
+fn next_subword_boundary<T: TextRead>(storage: &T, offset: CharOffset) -> EngineResult<CharOffset> {
+    let mut cursor = offset;
 
-        if !is_subword_body_char(ch) {
-            if let Some(start) = current_start.take() {
-                spans.push(MovementTokenSpan::new(start, start_idx));
-            }
+    while let Some(grapheme) = grapheme_at(storage, cursor)? {
+        if !is_subword_body_char(grapheme.first) {
+            cursor = grapheme.end;
             continue;
         }
 
-        match current_start {
-            None => current_start = Some(start_idx),
-            Some(start) => {
-                let previous = clusters[i - 1].1;
-                let next = clusters.get(i + 1).map(|(_, c, _)| *c);
-
-                if should_start_new_subword(previous, ch, next) {
-                    spans.push(MovementTokenSpan::new(start, start_idx));
-                    current_start = Some(start_idx);
-                }
-            }
+        if grapheme.start > offset {
+            return Ok(grapheme.start);
         }
 
-        let _ = len; // cluster 长度已经在累加 start_idx 时使用
+        return scan_subword_end(storage, grapheme);
     }
 
-    if let Some(start) = current_start {
-        let end_chars = clusters.last().map(|(idx, _, len)| idx + len).unwrap_or(0);
-        spans.push(MovementTokenSpan::new(start, end_chars));
+    Ok(storage.len_chars())
+}
+
+fn previous_subword_boundary<T: TextRead>(
+    storage: &T,
+    offset: CharOffset,
+) -> EngineResult<CharOffset> {
+    let mut cursor = offset;
+    let mut skipped_separator = false;
+
+    while let Some(grapheme) = grapheme_before(storage, cursor)? {
+        if !is_subword_body_char(grapheme.first) {
+            skipped_separator = true;
+            cursor = grapheme.start;
+            continue;
+        }
+
+        if skipped_separator {
+            return Ok(grapheme.end);
+        }
+
+        return scan_subword_start(storage, grapheme);
     }
 
-    spans
+    Ok(CharOffset::ZERO)
+}
+
+fn scan_subword_end<T: TextRead>(
+    storage: &T,
+    mut current: MovementGrapheme,
+) -> EngineResult<CharOffset> {
+    loop {
+        let Some(next) = grapheme_at(storage, current.end)? else {
+            return Ok(current.end);
+        };
+
+        if !is_subword_body_char(next.first) {
+            return Ok(current.end);
+        }
+
+        let after_next = grapheme_at(storage, next.end)?.map(|grapheme| grapheme.first);
+        if should_start_new_subword(current.first, next.first, after_next) {
+            return Ok(next.start);
+        }
+
+        current = next;
+    }
+}
+
+fn scan_subword_start<T: TextRead>(
+    storage: &T,
+    mut current: MovementGrapheme,
+) -> EngineResult<CharOffset> {
+    loop {
+        let Some(previous) = grapheme_before(storage, current.start)? else {
+            return Ok(current.start);
+        };
+
+        if !is_subword_body_char(previous.first) {
+            return Ok(current.start);
+        }
+
+        let next = grapheme_at(storage, current.end)?.map(|grapheme| grapheme.first);
+        if should_start_new_subword(previous.first, current.first, next) {
+            return Ok(current.start);
+        }
+
+        current = previous;
+    }
+}
+
+fn grapheme_at<T: TextRead>(
+    storage: &T,
+    start: CharOffset,
+) -> EngineResult<Option<MovementGrapheme>> {
+    if start >= storage.len_chars() {
+        return Ok(None);
+    }
+
+    let end = storage.next_grapheme_boundary_char(start)?;
+    let Some(first) = storage.char_at(start) else {
+        return Err(CoordinateError::CharOutOfBounds(start).into());
+    };
+
+    Ok(Some(MovementGrapheme { start, end, first }))
+}
+
+fn grapheme_before<T: TextRead>(
+    storage: &T,
+    end: CharOffset,
+) -> EngineResult<Option<MovementGrapheme>> {
+    if end == CharOffset::ZERO {
+        return Ok(None);
+    }
+
+    let start = storage.previous_grapheme_boundary_char(end)?;
+    let Some(first) = storage.char_at(start) else {
+        return Err(CoordinateError::CharOutOfBounds(start).into());
+    };
+
+    Ok(Some(MovementGrapheme { start, end, first }))
+}
+
+fn is_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || crate::config::is_combining_mark(ch)
 }
 
 fn is_subword_body_char(ch: char) -> bool {

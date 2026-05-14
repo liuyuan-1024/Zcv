@@ -7,6 +7,7 @@
 开发、重构、测试生成或代码审查前，先读：
 
 ```text
+../AGENTS.md
 AGENTS.md
 README.md
 docs/编辑引擎能力.md
@@ -20,12 +21,13 @@ docs/STATUS.md（如果存在）
 
 ```text
 1. 用户本轮明确要求
-2. AGENTS.md 长期规则
-3. docs/STATUS.md 当前阶段状态
-4. docs/编辑引擎能力.md 能力规划
-5. docs/编辑引擎测试策略.md 测试边界
-6. README.md 项目说明
-7. 当前源码实现
+2. ../AGENTS.md workspace 全局规则
+3. AGENTS.md zom-engine 长期规则
+4. docs/STATUS.md 当前阶段状态
+5. docs/编辑引擎能力.md 能力规划
+6. docs/编辑引擎测试策略.md 测试边界
+7. README.md 项目说明
+8. 当前源码实现
 ```
 
 发现文档、代码、用户要求冲突时，必须指出冲突。

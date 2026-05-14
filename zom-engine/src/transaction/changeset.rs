@@ -109,6 +109,6 @@ fn text_range(
 ) -> EngineResult<TextRange> {
     TextRange::new(start, end).map_err(|_| EngineError::EngineBug {
         location,
-        detail: format!("生成了非法区间: start {start}, end {end}"),
+        detail: format!("生成了非法区间：start {start}，end {end}"),
     })
 }

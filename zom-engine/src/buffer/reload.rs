@@ -87,7 +87,7 @@ fn normalize_line_endings_to(text: &str, target: &str) -> String {
                 let ch = text[index..]
                     .chars()
                     .next()
-                    .expect("内部不变量: index 必须位于合法字符边界");
+                    .expect("内部不变量：index 必须位于合法字符边界");
                 output.push(ch);
                 index += ch.len_utf8();
             }

@@ -61,7 +61,7 @@ impl Selection {
 
     pub fn range(self) -> TextRange {
         TextRange::new(self.start(), self.end())
-            .expect("Selection start/end 由 min/max 生成，必须满足 start <= end")
+            .expect("Selection 的 start 和 end 由 min/max 生成，必须满足 start <= end")
     }
 
     pub fn collapse_to_start(self) -> Self {

@@ -91,12 +91,12 @@ impl Buffer {
                 .node(node_id)
                 .ok_or_else(|| EngineError::EngineBug {
                     location: "Buffer::undo",
-                    detail: format!("当前历史节点 {:?} 缺失", node_id),
+                    detail: format!("当前历史节点 {node_id:?} 缺失"),
                 })?;
             if node.entry.undo_batches.is_empty() {
                 return Err(EngineError::EngineBug {
                     location: "Buffer::undo",
-                    detail: format!("历史节点 {:?} 没有 undo 批次", node_id),
+                    detail: format!("历史节点 {node_id:?} 没有 undo 批次"),
                 });
             }
             UndoTarget {
@@ -161,12 +161,12 @@ impl Buffer {
                 .node(node_id)
                 .ok_or_else(|| EngineError::EngineBug {
                     location: "Buffer::redo_into_branch",
-                    detail: format!("redo 目标节点 {:?} 缺失", node_id),
+                    detail: format!("redo 目标节点 {node_id:?} 缺失"),
                 })?;
             if node.entry.redo_batches.is_empty() {
                 return Err(EngineError::EngineBug {
                     location: "Buffer::redo_into_branch",
-                    detail: format!("历史节点 {:?} 没有 redo 批次", node_id),
+                    detail: format!("历史节点 {node_id:?} 没有 redo 批次"),
                 });
             }
             RedoTarget {
@@ -178,10 +178,7 @@ impl Buffer {
             .step_redo_into(node_id)
             .ok_or_else(|| EngineError::EngineBug {
                 location: "Buffer::redo_into_branch",
-                detail: format!(
-                    "已验证的 redo 目标节点 {:?} 不是当前历史节点的子节点",
-                    node_id
-                ),
+                detail: format!("已验证的 redo 目标节点 {node_id:?} 不是当前历史节点的子节点"),
             })?;
 
         let mut result = None;

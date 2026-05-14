@@ -454,7 +454,7 @@ fn byte_offset_after_chars<T: TextRead>(
             .char_indices()
             .nth(remaining)
             .map(|(byte, _)| byte)
-            .expect("内部不变量: remaining 小于 chunk 字符数时必定存在后续字符边界");
+            .expect("内部不变量：remaining 小于 chunk 字符数时必定存在后续字符边界");
         return Ok(ByteOffset::new(cursor + local_byte));
     }
 

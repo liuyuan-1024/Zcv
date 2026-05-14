@@ -16,39 +16,39 @@ use crate::{
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoordinateError {
     /// ByteOffset 越界：超过当前 UTF-8 文本字节长度。
-    #[error("字节偏移量越界: {0}")]
+    #[error("字节偏移量越界：{0}")]
     OutOfBounds(ByteOffset),
 
     /// ByteOffset 落在 UTF-8 多字节序列中间，不构成合法字符边界。
-    #[error("字节偏移量不在 UTF-8 字符边界: {0}")]
+    #[error("字节偏移量不在 UTF-8 字符边界：{0}")]
     InvalidByteBoundary(ByteOffset),
 
     /// 边界投影路径上的 `CharOffset` 越界。仅外部坐标转换入口使用。
-    #[error("字符偏移量越界: {0}")]
+    #[error("字符偏移量越界：{0}")]
     CharOutOfBounds(CharOffset),
 
     /// UTF-16 行列位置超出当前文本的行数或行内 code unit 范围。
-    #[error("UTF-16 位置越界: {0:?}")]
+    #[error("UTF-16 位置越界：{0:?}")]
     Utf16PositionOutOfBounds(Utf16Position),
 
     /// UTF-16 位置切进 surrogate pair 中间，不能表示为引擎的 byte 坐标。
-    #[error("UTF-16 位置落在代理对中间: {0:?}")]
+    #[error("UTF-16 位置落在代理对中间：{0:?}")]
     InvalidUtf16Boundary(Utf16Position),
 
     /// 逻辑行号不存在；是否允许等于 line_count 由具体 API 的半开边界语义决定。
-    #[error("行索引越界: {0:?}")]
+    #[error("行索引越界：{0:?}")]
     LineOutOfBounds(Line),
 
     /// 调用方传入了反向 TextRange；TextRange public 构造器必须拒绝该状态。
-    #[error("非法文本区间: start {start} 大于 end {end}")]
+    #[error("非法文本区间：start {start} 大于 end {end}")]
     InvalidRange { start: ByteOffset, end: ByteOffset },
 
     /// 调用方传入了反向 LineRange；行窗口查询必须保持 `[start, end)` 不变量。
-    #[error("非法行区间: start {start:?} 大于 end {end:?}")]
+    #[error("非法行区间：start {start:?} 大于 end {end:?}")]
     InvalidLineRange { start: Line, end: Line },
 
     /// ByteOffset 是合法字符边界，但不是合法 grapheme 边界，不能用于用户感知移动/切分。
-    #[error("字节偏移处的字素边界无效: {0}")]
+    #[error("字节偏移处的字素边界无效：{0}")]
     InvalidGraphemeBoundary(ByteOffset),
 }
 
@@ -56,23 +56,23 @@ pub enum CoordinateError {
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum EditError {
     /// 同一事务内两个编辑范围相交；EditList 必须在提交前完成排序和重叠拒绝。
-    #[error("检测到重叠编辑: 之前 {previous:?}, 当前 {current:?}")]
+    #[error("检测到重叠编辑：之前 {previous:?}，当前 {current:?}")]
     OverlappingEdits {
         previous: TextRange,
         current: TextRange,
     },
 
     /// 编辑范围满足 TextRange 自身不变量，但超出当前 Buffer 文本长度。
-    #[error("编辑区间越界: {range:?}")]
+    #[error("编辑区间越界：{range:?}")]
     RangeOutOfBounds { range: TextRange },
 
     /// 编辑端点不是当前阶段要求的文本边界，例如落在 UTF-8 多字节序列或
     /// grapheme 中间的组合输入范围。
-    #[error("编辑区间落在非法文本边界: {offset}")]
+    #[error("编辑区间落在非法文本边界：{offset}")]
     InvalidBoundary { offset: ByteOffset },
 
     /// 单次编辑携带的 replacement 太大，应由调用方分块或在更高层拒绝操作。
-    #[error("编辑有效载荷超过最大允许大小: 当前大小 {size}, 限制 {limit}")]
+    #[error("编辑有效载荷超过最大允许大小：当前大小 {size}，限制 {limit}")]
     PayloadTooLarge { size: usize, limit: usize },
 }
 
@@ -88,7 +88,7 @@ pub enum TransactionError {
     EmptyTransaction,
 
     /// Transaction 绑定的 base_version 与 Buffer 当前版本不同，提交必须原子拒绝。
-    #[error("版本不匹配: 预期版本 {expected:?}，实际版本 {actual:?}")]
+    #[error("版本不匹配：预期版本 {expected:?}，实际版本 {actual:?}")]
     VersionMismatch {
         expected: BufferVersion,
         actual: BufferVersion,
@@ -99,14 +99,14 @@ pub enum TransactionError {
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AnchorError {
     /// Anchor / Mark 只能通过连续 DeltaEvent 推进，不能跳过或重复应用版本。
-    #[error("Anchor 版本不匹配: 预期版本 {expected:?}，实际版本 {actual:?}")]
+    #[error("Anchor 版本不匹配：预期版本 {expected:?}，实际版本 {actual:?}")]
     VersionMismatch {
         expected: BufferVersion,
         actual: BufferVersion,
     },
 
     /// TrackedRange 的两个端点必须来自同一旧版本，否则无法定义一次一致的范围映射。
-    #[error("TrackedRange 两端的 Anchor 版本不一致: start {start:?}, end {end:?}")]
+    #[error("TrackedRange 两端的 Anchor 版本不一致：start {start:?}，end {end:?}")]
     RangeVersionMismatch {
         start: BufferVersion,
         end: BufferVersion,
@@ -121,7 +121,7 @@ pub enum MetadataError {
     IdOverflow,
 
     /// MetadataLayer 只能应用同一 base_version 的 DeltaEvent，过期结果应由宿主替换或丢弃。
-    #[error("MetadataLayer 版本不匹配: 预期版本 {expected:?}，实际版本 {actual:?}")]
+    #[error("MetadataLayer 版本不匹配：预期版本 {expected:?}，实际版本 {actual:?}")]
     VersionMismatch {
         expected: BufferVersion,
         actual: BufferVersion,
@@ -136,21 +136,21 @@ pub enum FoldError {
     IdOverflow,
 
     /// FoldSet 只能应用同一 base_version 的 DeltaEvent，过期结果应由宿主丢弃。
-    #[error("FoldSet 版本不匹配: 预期版本 {expected:?}，实际版本 {actual:?}")]
+    #[error("FoldSet 版本不匹配：预期版本 {expected:?}，实际版本 {actual:?}")]
     VersionMismatch {
         expected: BufferVersion,
         actual: BufferVersion,
     },
 
     /// 候选 fold 与已有 fold 部分重叠（既非互不相交，也非完全嵌套）；引擎拒绝该状态。
-    #[error("折叠区间与已有折叠部分重叠: 已有 {existing:?}, 候选 {candidate:?}")]
+    #[error("折叠区间与已有折叠部分重叠：已有 {existing:?}，候选 {candidate:?}")]
     OverlapWithoutNesting {
         existing: TextRange,
         candidate: TextRange,
     },
 
     /// fold 的 byte range 必须是非空区间（start < end）。
-    #[error("折叠区间不能为空: {range:?}")]
+    #[error("折叠区间不能为空：{range:?}")]
     EmptyRange { range: TextRange },
 }
 
@@ -159,7 +159,7 @@ pub enum FoldError {
 pub enum ProjectionError {
     /// Projection 必须基于版本一致的 Snapshot 与 FoldSet 构建。
     #[error(
-        "Projection 版本不匹配: snapshot 版本 {snapshot_version:?}, fold 版本 {fold_version:?}"
+        "Projection 版本不匹配：snapshot 版本 {snapshot_version:?}，fold 版本 {fold_version:?}"
     )]
     VersionMismatch {
         snapshot_version: BufferVersion,
@@ -171,14 +171,14 @@ pub enum ProjectionError {
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VersionedResultError {
     /// 调用方传入的 DeltaEvent::old_version() 与 VersionedResult 当前绑定版本不一致。
-    #[error("VersionedResult 版本不匹配: 预期版本 {expected:?}，实际版本 {actual:?}")]
+    #[error("VersionedResult 版本不匹配：预期版本 {expected:?}，实际版本 {actual:?}")]
     VersionMismatch {
         expected: BufferVersion,
         actual: BufferVersion,
     },
 
     /// remap 闭包判定 payload 无法在新版本上保持语义；reason 由调用方填写。
-    #[error("VersionedResult remap 失败: {reason}")]
+    #[error("VersionedResult remap 失败：{reason}")]
     RemapFailed { reason: String },
 }
 
@@ -190,22 +190,22 @@ pub enum SearchError {
     EmptyQuery,
 
     /// 搜索结果必须基于 Buffer 当前版本，过期结果不能继续用于替换。
-    #[error("搜索结果版本不匹配: 预期版本 {expected:?}，实际版本 {actual:?}")]
+    #[error("搜索结果版本不匹配：预期版本 {expected:?}，实际版本 {actual:?}")]
     VersionMismatch {
         expected: BufferVersion,
         actual: BufferVersion,
     },
 
     /// 调用方请求替换不存在的搜索匹配序号。
-    #[error("搜索匹配不存在: ordinal {ordinal}")]
+    #[error("搜索匹配不存在：ordinal {ordinal}")]
     MatchNotFound { ordinal: usize },
 
     /// 正则表达式无法编译。
-    #[error("非法正则表达式: pattern {pattern:?}, message {message}")]
+    #[error("非法正则表达式：pattern {pattern:?}，message {message}")]
     InvalidRegex { pattern: String, message: String },
 
     /// 正则搜索当前仍需要连续 haystack；超过预算时显式拒绝，避免大文件隐式物化。
-    #[error("正则搜索范围过大: range_bytes {range_bytes}, limit {limit}")]
+    #[error("正则搜索范围过大：range_bytes {range_bytes}，limit {limit}")]
     RangeTooLarge { range_bytes: usize, limit: usize },
 }
 
@@ -221,14 +221,14 @@ pub enum StorageError {
     ReadOnly,
 
     /// 外部 bytes 不能按当前 UTF-8 策略进入 Buffer，字段语义与 `std::str::Utf8Error` 对齐。
-    #[error("输入不是合法 UTF-8: valid_up_to {valid_up_to}, error_len {error_len:?}")]
+    #[error("输入不是合法 UTF-8：valid_up_to {valid_up_to}，error_len {error_len:?}")]
     InvalidUtf8 {
         valid_up_to: usize,
         error_len: Option<usize>,
     },
 
     /// 调用了该存储后端当前明确不承诺的能力，用于保护 trait 演进期的边界。
-    #[error("存储后端不支持该操作: {0}")]
+    #[error("存储后端不支持该操作：{0}")]
     UnsupportedOperation(&'static str),
 }
 
@@ -276,7 +276,7 @@ pub enum EngineError {
     Storage(#[from] StorageError),
 
     /// `redo_to_branch` 收到的节点不是当前节点的子节点，无法作为 redo 目标。
-    #[error("非法历史分支节点: {0:?}")]
+    #[error("非法历史分支节点：{0:?}")]
     InvalidHistoryBranch(HistoryNodeId),
 
     /// BufferVersion 递增越过 u64 上限；调用方应创建新 Buffer 生命周期。
@@ -292,12 +292,12 @@ pub enum EngineError {
     HistoryIdExhausted,
 
     /// 输入法 / Composition 调用方违反了 start → update* → commit/cancel 的状态机协议。
-    #[error("Composition 状态机协议违反: {detail}")]
+    #[error("Composition 状态机协议违反：{detail}")]
     CompositionInvalidSequence { detail: &'static str },
 
     /// 引擎内部不变量被违反；这是 bug，不是可恢复的外部错误。
     /// 用 `location` 定位代码点，`detail` 携带最少诊断信息，便于宿主上报。
-    #[error("引擎内部不变量违反: {location}: {detail}")]
+    #[error("引擎内部不变量违反：{location}：{detail}")]
     EngineBug {
         location: &'static str,
         detail: String,

@@ -74,7 +74,7 @@ impl Buffer {
         let state = self
             .composition
             .as_ref()
-            .expect("内部不变量: start_composition 后 composition 必须存在")
+            .expect("内部不变量：start_composition 后 composition 必须存在")
             .clone();
 
         self.validate_range(state.range)?;
@@ -100,7 +100,7 @@ impl Buffer {
         let mut state = self
             .composition
             .take()
-            .expect("内部不变量: update_composition 执行期间 composition 必须仍然存在");
+            .expect("内部不变量：update_composition 执行期间 composition 必须仍然存在");
         state.range = composition_range_after_preedit(range_start, preedit_len)?;
         state.preedit_text = preedit_text.to_string();
         state.selection = absolute_selection;

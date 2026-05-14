@@ -1,0 +1,15 @@
+[package]
+name = "zom-engine"
+version = "0.1.0"
+edition = "2024"
+description = "工业级纯粹文本编辑引擎底座"
+
+[dependencies]
+regex = "1.12.3"
+ropey = "1.6.1"
+thiserror = "2.0.18"
+unicode-segmentation = "1.13.2"
+
+[dev-dependencies]
+gpui = "0.2.2"
+proptest = "1.5.0"

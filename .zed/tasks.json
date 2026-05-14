@@ -1,0 +1,11 @@
+[
+  {
+    "label": "任务标签",
+    "command": "cargo",
+    "args": ["run", "参数"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+]

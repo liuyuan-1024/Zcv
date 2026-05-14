@@ -1,0 +1,9 @@
+[package]
+name = "zom-desktop"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+zom-ai.workspace = true
+zom-command.workspace = true
+zom-workspace.workspace = true

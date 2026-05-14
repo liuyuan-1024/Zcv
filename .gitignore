@@ -1,0 +1,61 @@
+# ==========================================
+# Cargo 构建产物与配置
+# ==========================================
+
+# 由 Cargo 生成
+# 包含所有编译后的中间文件、依赖缓存和最终可执行文件（占用空间极大，必须忽略）
+/target/
+**/target/
+.DS_Store
+
+# Cargo.lock 的处理规则：
+# - 如果你的项目是可执行程序 (Binary) 或工作空间 (Workspace)，请将下面的注释删掉（也就是不要忽略它）。
+# - 如果你的项目是纯代码库 (Library)，请保留下面的忽略规则。
+# 更多信息请参考：https://doc.rust-lang.org/cargo/guide/cargo-toml-vs-cargo-lock.html
+# Cargo.lock
+
+# ==========================================
+# 临时文件与备份
+# ==========================================
+
+# 这些是 rustfmt (代码格式化工具) 或 cargo fix 自动生成的备份文件
+**/*.rs.bk
+
+# Rustc 在 Windows MSVC 环境下构建时生成的调试信息文件
+*.pdb
+
+# ==========================================
+# 编辑器与 IDE 缓存
+# ==========================================
+
+# VS Code 编辑器
+.vscode/*
+# 取消忽略以下配置文件，以便团队共享工作区设置（如果不需要共享，可以把感叹号去掉）
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# IntelliJ / RustRover (JetBrains IDE)
+.idea/
+*.iml
+
+# Vim / Emacs 临时文件
+*.swp
+*.swo
+*~
+
+# ==========================================
+# 操作系统特定的缓存文件
+# ==========================================
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+.claude/
+.codex/
+.deepseek/

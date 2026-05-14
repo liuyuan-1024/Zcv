@@ -2,5 +2,9 @@
 name = "zom-command"
 version = "0.1.0"
 edition.workspace = true
+description = "命令系统层：CommandId、参数模型、keymap 与统一派发入口"
 
 [dependencies]
+zom-engine.workspace = true
+zom-workspace.workspace = true
+zom-view.workspace = true

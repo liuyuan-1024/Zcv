@@ -2,5 +2,7 @@
 name = "zom-ai"
 version = "0.1.0"
 edition.workspace = true
+description = "AI 抽象层：provider、请求/提案模型与 proposal 到 transaction 转换"
 
 [dependencies]
+zom-engine.workspace = true

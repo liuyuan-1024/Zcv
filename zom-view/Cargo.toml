@@ -1,0 +1,9 @@
+[package]
+name = "zom-view"
+version = "0.1.0"
+edition.workspace = true
+description = "编辑面状态层：view/pane、滚动、本视图 selection 与 fold"
+
+[dependencies]
+zom-engine.workspace = true
+zom-workspace.workspace = true

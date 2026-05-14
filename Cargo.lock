@@ -7202,10 +7202,18 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 [[package]]
 name = "zom-ai"
 version = "0.1.0"
+dependencies = [
+ "zom-engine",
+]
 
 [[package]]
 name = "zom-command"
 version = "0.1.0"
+dependencies = [
+ "zom-engine",
+ "zom-view",
+ "zom-workspace",
+]
 
 [[package]]
 name = "zom-desktop"
@@ -7213,6 +7221,8 @@ version = "0.1.0"
 dependencies = [
  "zom-ai",
  "zom-command",
+ "zom-engine",
+ "zom-view",
  "zom-workspace",
 ]
 
@@ -7226,6 +7236,14 @@ dependencies = [
  "ropey",
  "thiserror 2.0.18",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "zom-view"
+version = "0.1.0"
+dependencies = [
+ "zom-engine",
+ "zom-workspace",
 ]
 
 [[package]]

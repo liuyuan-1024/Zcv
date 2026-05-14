@@ -1,9 +1,10 @@
 [workspace]
 members = [
     "zom-engine",
+    "zom-workspace",
+    "zom-view",
     "zom-command",
     "zom-ai",
-    "zom-workspace",
     "zom-desktop",
 ]
 resolver = "3"
@@ -14,5 +15,6 @@ edition = "2024"
 [workspace.dependencies]
 zom-engine = { path = "zom-engine" }
 zom-workspace = { path = "zom-workspace" }
+zom-view = { path = "zom-view" }
 zom-command = { path = "zom-command" }
 zom-ai = { path = "zom-ai" }

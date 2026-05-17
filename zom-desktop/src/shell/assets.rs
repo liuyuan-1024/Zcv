@@ -20,6 +20,9 @@ macro_rules! asset {
 
 const ASSETS: &[(&str, &[u8])] = &[
     asset!("icons/top_bar/settings.svg"),
+    asset!("icons/top_bar/window_controls/close.svg"),
+    asset!("icons/top_bar/window_controls/minimize.svg"),
+    asset!("icons/top_bar/window_controls/maximize.svg"),
     asset!("icons/bottom_bar/file_tree.svg"),
     asset!("icons/bottom_bar/version_control.svg"),
     asset!("icons/bottom_bar/outline.svg"),

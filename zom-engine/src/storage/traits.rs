@@ -34,12 +34,10 @@ pub(crate) trait TextRead {
     fn chunks(&self, range: TextRange) -> EngineResult<impl Iterator<Item = &str> + '_>;
 
     /// 按全文流式访问文本块；**永不分配**。
-    #[allow(dead_code)]
     fn all_chunks(&self) -> impl Iterator<Item = &str> + '_;
 
     /// 物化字节区间为完整 `String`。命名让分配代价显眼。
     /// 调用方应在确认必须连续字符串时才使用。
-    #[allow(dead_code)]
     fn slice_to_string(&self, range: TextRange) -> EngineResult<String> {
         let mut out = String::with_capacity(range.len());
         for chunk in self.chunks(range)? {

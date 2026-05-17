@@ -7219,7 +7219,11 @@ dependencies = [
 name = "zom-desktop"
 version = "0.1.0"
 dependencies = [
+ "cocoa 0.26.0",
  "gpui",
+ "raw-window-handle",
+ "resvg",
+ "windows 0.57.0",
 ]
 
 [[package]]

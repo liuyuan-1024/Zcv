@@ -25,9 +25,12 @@ use assets::EmbeddedAssets;
 use components::regions::workbench_frame;
 use layout::WorkbenchState;
 use panel_host::PanelHost;
+use platform::app_icon;
 
 /// 启动桌面应用：装配 GPUI、加载资源、打开首个窗口。
 pub fn run(app: App) {
+    app_icon::prepare_development_app_icon();
+
     Application::new()
         .with_assets(EmbeddedAssets)
         .run(move |cx: &mut GpuiApp| {
@@ -46,6 +49,7 @@ pub fn run(app: App) {
                             traffic_light_position: Some(point(px(-100.0), px(-100.0))),
                         }),
                         kind: WindowKind::Normal,
+                        app_id: Some(app_icon::APP_ID.to_string()),
                         ..Default::default()
                     },
                     |_, cx| cx.new(|_| ShellView::new(app)),
@@ -57,6 +61,10 @@ pub fn run(app: App) {
                     cx.activate(true);
                 })
                 .expect("GPUI 主窗口应能激活");
+
+            window
+                .update(cx, |_, window, _| app_icon::apply_window_icon(window))
+                .expect("GPUI 主窗口应能设置开发态图标");
         });
 }
 

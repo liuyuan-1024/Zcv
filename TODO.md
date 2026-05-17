@@ -205,11 +205,12 @@ Engine 已提供：
 
 目标：`zom-desktop` 能跑通最小编辑体验。
 
-- [x] `app` 启动时创建 workspace、活动 buffer 和活动 view。
-- [x] `shell` 接入 GPUI 与 async 运行时依赖,显示当前 view 文本。
-- [x] 输入解码:OS 按键 → 归一化 `KeyChord` → keymap 解析 → 命令队列 → 执行器。
-- [x] 支持删除、移动光标、撤销、重做。
-- [x] 保持 `shell` 只做事件转换和显示，不复制编辑语义。
+- [x] 接入 GPUI 外壳、embedded assets、TopBar / Body / BottomBar 基础布局和 panel 骨架。
+- [ ] `app` 启动时创建 workspace、活动 buffer 和活动 view。
+- [ ] 显示当前 view 文本。
+- [ ] 输入解码:OS 按键 → 归一化 `KeyChord` → keymap 解析 → 命令队列 → 执行器。
+- [ ] 支持删除、移动光标、撤销、重做。
+- [ ] 保持 `shell` 只做事件转换和显示，不复制编辑语义。
 
 ### P3：搜索、替换、折叠与 viewport
 
@@ -236,5 +237,5 @@ Engine 已提供：
 
 1. 先做 P0，让 `zom-workspace` 具备稳定 buffer / 文件生命周期。
 2. 再做 P1，让所有编辑入口通过 `zom-command` 统一进入 engine。
-3. 随后做 P2，用 `zom-desktop` 验证最小可用编辑闭环。
-4. 搜索、折叠、AI 都建立在前三步的稳定边界之上。
+3. 继续做 P2，用 `zom-desktop` 验证最小可用编辑闭环。
+4. 搜索、折叠、AI 都建立在 P0-P2 的稳定边界之上。

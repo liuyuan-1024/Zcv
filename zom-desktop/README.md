@@ -33,14 +33,15 @@ zom-desktop → zom-engine / zom-workspace / zom-view / zom-command / zom-ai
 
 依赖全部 5 个宿主 crate，含直接依赖 `zom-engine`（渲染要用 `Snapshot` / `ViewportSlice`）。
 
-`gpui` 与 async 运行时依赖在 `shell` / `app` 落地实现时接入，骨架阶段不预拉。
+`gpui` 已在 `shell` 落地，用于窗口启动、资源加载和基础外壳渲染。async 运行时仍遵循桌面端设计手册约定，后续直接使用 GPUI 执行器，不预拉独立 runtime。
 
 ## 结构概览
 
 ```text
-src/main.rs    二进制入口，声明 shell / app 模块
-src/shell/     GPUI 外壳（占位）
-src/app/       组合根与编排，App
+src/main.rs       二进制入口，声明 shell / app 模块
+src/app/          组合根与窗口级布局状态
+src/shell/        GPUI 外壳、资源、平台适配、布局类型和视觉组件
+src/shell/theme/  第一版视觉 token
 ```
 
 ## 相关文档
@@ -50,4 +51,4 @@ src/app/       组合根与编排，App
 
 ## 状态
 
-骨架阶段：`shell` / `app` 模块结构已定，`App` 组合根雏形已铺。事件循环、GPUI 接入、async 运行时接入留待 `TODO.md` P2。
+P2 进行中：GPUI 外壳、embedded assets、基础布局、panel 骨架和自绘窗口控制已落地；workspace / view / command / keymap 的最小编辑闭环仍按 `TODO.md` P2 继续推进。

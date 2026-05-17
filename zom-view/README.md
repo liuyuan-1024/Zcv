@@ -47,4 +47,4 @@ src/lib.rs    View / ViewSet / ViewId / ViewportState
 
 ## 状态
 
-骨架阶段：类型形状已定，viewport 数学、光标移动接入、fold / projection 接入留待 `TODO.md` P2 / P3。
+骨架阶段：`View` / `ViewSet` 已持有 buffer 引用、活动 view、`SelectionSet`、`FoldSet` 与 `ViewportState`；selection movement 已可由 `zom-command` 经活动 view 接入，viewport slice 与 fold / projection 的宿主侧接入留待 `TODO.md` P3。

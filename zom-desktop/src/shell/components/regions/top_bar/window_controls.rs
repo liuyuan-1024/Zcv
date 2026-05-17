@@ -98,7 +98,7 @@ fn control_pip(
 fn pip_symbol(path: &'static str) -> Svg {
     svg()
         .path(path)
-        .size(icon::i12())
+        .size(icon::i10())
         .text_color(color::gray::g00())
         .opacity(0.0)
         .group_hover(PIP_GROUP, |style| style.opacity(1.0))

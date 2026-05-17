@@ -146,6 +146,9 @@ pub mod radius {
 
 pub mod icon {
     use super::*;
+    pub fn i10() -> Pixels {
+        px(10.0)
+    }
     pub fn i12() -> Pixels {
         px(12.0)
     }

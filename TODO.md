@@ -183,33 +183,33 @@ Engine 已提供：
 
 目标：让 `zom-workspace` 成为 engine 的稳定宿主外壳。
 
-- [ ] 明确 `Workspace` 的活动 buffer 模型。
-- [ ] 增加 `open_file` / `save_file` / `save_as` / `close_buffer`。
-- [ ] 暴露 buffer dirty / path / readonly 等状态查询。
-- [ ] 补充 workspace 生命周期测试。
-- [ ] 根目录运行 `cargo fmt` 和 `cargo test --workspace`。
+- [x] 明确 `Workspace` 的活动 buffer 模型。
+- [x] 增加 `open_file` / `save_file` / `save_as` / `close_buffer`。
+- [x] 暴露 buffer dirty / path / readonly 等状态查询。
+- [x] 补充 workspace 生命周期测试。
+- [x] 根目录运行 `cargo fmt` 和 `cargo test --workspace`。（`cargo fmt` 已完成；`cargo test --workspace` 已完成。）
 
 ### P1：Command 到编辑事务闭环
 
 目标：所有基础编辑都通过 command 进入 engine。
 
-- [ ] 落地 `CommandArgs` 表示与 `TryFrom<CommandArgs>` 解析约定。
-- [ ] 落地 `CommandExecutor::run` 排空队列逻辑。
-- [ ] 在 `register_builtin_editor_commands` 中接入插入、删除、替换选区、全选。
-- [ ] 接入 undo / redo(handler 调 `buffer.undo()` / `buffer.redo()`)。
-- [ ] 接入基础 selection movement(改活动 view 的 `SelectionSet`)。
-- [ ] 落地 `Keymap` 前缀 trie 解析与 `KeymapResolution`。
-- [ ] 补充 command 契约测试。
+- [x] 落地 `CommandArgs` 表示与 `TryFrom<CommandArgs>` 解析约定。
+- [x] 落地 `CommandExecutor::run` 排空队列逻辑。
+- [x] 在 `register_builtin_editor_commands` 中接入插入、删除、替换选区、全选。
+- [x] 接入 undo / redo(handler 调 `buffer.undo()` / `buffer.redo()`)。
+- [x] 接入基础 selection movement(改活动 view 的 `SelectionSet`)。
+- [x] 落地 `Keymap` 前缀 trie 解析与 `KeymapResolution`。
+- [x] 补充 command 契约测试。
 
 ### P2：Desktop 最小可用编辑循环
 
 目标：`zom-desktop` 能跑通最小编辑体验。
 
-- [ ] `app` 启动时创建 workspace、活动 buffer 和活动 view。
-- [ ] `shell` 接入 GPUI 与 async 运行时依赖,显示当前 view 文本。
-- [ ] 输入解码:OS 按键 → 归一化 `KeyChord` → keymap 解析 → 命令队列 → 执行器。
-- [ ] 支持删除、移动光标、撤销、重做。
-- [ ] 保持 `shell` 只做事件转换和显示，不复制编辑语义。
+- [x] `app` 启动时创建 workspace、活动 buffer 和活动 view。
+- [x] `shell` 接入 GPUI 与 async 运行时依赖,显示当前 view 文本。
+- [x] 输入解码:OS 按键 → 归一化 `KeyChord` → keymap 解析 → 命令队列 → 执行器。
+- [x] 支持删除、移动光标、撤销、重做。
+- [x] 保持 `shell` 只做事件转换和显示，不复制编辑语义。
 
 ### P3：搜索、替换、折叠与 viewport
 

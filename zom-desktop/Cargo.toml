@@ -5,8 +5,4 @@ edition.workspace = true
 description = "桌面入口层：组合 engine、workspace、view、command 与 AI 服务"
 
 [dependencies]
-zom-engine.workspace = true
-zom-workspace.workspace = true
-zom-view.workspace = true
-zom-command.workspace = true
-zom-ai.workspace = true
+gpui = "0.2.2"

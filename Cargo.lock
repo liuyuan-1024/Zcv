@@ -7219,11 +7219,7 @@ dependencies = [
 name = "zom-desktop"
 version = "0.1.0"
 dependencies = [
- "zom-ai",
- "zom-command",
- "zom-engine",
- "zom-view",
- "zom-workspace",
+ "gpui",
 ]
 
 [[package]]

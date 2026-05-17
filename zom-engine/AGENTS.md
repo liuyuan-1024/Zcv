@@ -10,8 +10,8 @@
 ../AGENTS.md
 AGENTS.md
 README.md
-docs/编辑引擎能力.md
-docs/编辑引擎测试策略.md
+docs/引擎能力.md
+docs/引擎测试策略.md
 docs/STATUS.md（如果存在）
 ```
 
@@ -24,8 +24,8 @@ docs/STATUS.md（如果存在）
 2. ../AGENTS.md workspace 全局规则
 3. AGENTS.md zom-engine 长期规则
 4. docs/STATUS.md 当前阶段状态
-5. docs/编辑引擎能力.md 能力规划
-6. docs/编辑引擎测试策略.md 测试边界
+5. docs/引擎能力.md 能力规划
+6. docs/引擎测试策略.md 测试边界
 7. README.md 项目说明
 8. 当前源码实现
 ```
@@ -260,8 +260,8 @@ cargo test
 
 ```text
 阶段状态、结构概览、建议命令 -> docs/STATUS.md
-能力边界变化 -> docs/编辑引擎能力.md
-测试目录职责变化 -> docs/编辑引擎测试策略.md
+能力边界变化 -> docs/引擎能力.md
+测试目录职责变化 -> docs/引擎测试策略.md
 AI 协作规范变化 -> AGENTS.md
 项目概览变化 -> README.md
 public API 契约变化 -> 对应测试和必要文档同步更新

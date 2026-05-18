@@ -13,7 +13,7 @@
 ## 核心能力
 
 - **类型擦除的开放注册表**：`CommandRegistry` 存 `CommandId -> (元数据, handler)`，支持 handler 外部注册。不用闭合 enum，让内建 / AI / 插件命令同形。
-- **具体的 `CommandContext`**：持有 `&mut Workspace` / `&mut ViewSet` / `&mut CommandQueue`，暴露整个 workspace 与 view-set。扩展域不在 context 里。
+- **具体的 `CommandContext`**：持有 `&mut Workspace` / `&mut ViewSet` / `&mut CommandQueue` / `&mut EffectQueue`，暴露整个 workspace 与 view-set。扩展域不在 context 里；需要宿主接力的动作通过 `HostEffect` 发出。
 - **命令队列组合**：`CommandQueue` 让 handler 入队子命令，执行器排空，不重入。宏 = 录队列，AI agent = 灌队列。
 - **执行器不管历史**：`editor.undo` 是一条命令，其 handler 调 `buffer.undo()`；历史由 `zom-engine` 的事务系统记录。
 - **键位模型**：`KeyChord` / `KeySequence`（多段 leader key）/ `Keymap`（前缀 trie + when 谓词）/ `KeymapResolution`。键盘解码（OS 事件 → 归一化 `KeyChord`）在 `zom-desktop`，本 crate 只吃归一化结果。
@@ -35,16 +35,25 @@ zom-command → zom-view
 src/lib.rs    CommandId / CommandArgs / Command / CommandRegistry / CommandHandler
               CommandContext / CommandQueue / CommandExecutor / CommandOutcome
               KeyChord / KeySequence / KeyBinding / Keymap / KeymapResolution
-              register_builtin_editor_commands / CommandError
+              CommandBuilder / CommandError
+src/effects.rs
+              HostEffect / EffectQueue
+src/keymap_format.rs
+              chord → 平台快捷键文案投影
+src/commands/
+              editor / workspace / window / panels / diagnostics / settings catalog
+tests/        command 契约测试
 ```
 
-骨架阶段为单文件 `lib.rs`。
+核心机制在 `src/lib.rs`；具体命令按 catalog 放在 `src/commands/`，handler、typed args、typed builder 与默认键位同处声明。
 
 ## 相关文档
 
+- [`docs/命令与快捷键系统设计.md`](docs/命令与快捷键系统设计.md)：**完整设计文档** —— 模块边界、数据模型、catalog 模式、HostEffect 解耦、键位约定、加新命令的步骤、反例清单。先看这一份。
+- [`docs/命令清单.md`](docs/命令清单.md)：当前已注册命令、HostEffect 变体、backlog。随命令增删滚动更新。
 - `../AGENTS.md`：workspace 全局协作规则。
 - `../TODO.md`：宿主层开发规划，本 crate 对应能力域 3 / 5 / 8（编辑事务、movement 命令、搜索替换命令），阶段 P1。
 
 ## 状态
 
-骨架阶段：类型形状与 public API 签名已定，前缀 trie 解析、执行器排空、内建命令实现留待 `TODO.md` P1。
+P1 已完成：`CommandArgs` 通过 `TryFrom<CommandArgs>` 解析到具体命令参数，`CommandExecutor::run` 排空队列，内建编辑命令已接入插入、删除、替换选区、全选、undo/redo 与基础 selection movement，`Keymap` 已使用前缀 trie 解析，并补充了 command 契约测试。

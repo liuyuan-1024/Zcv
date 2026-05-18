@@ -12,4 +12,5 @@
 //!   - `window`：窗口控制（最小化 / 放大 / 关闭）（14.6）
 
 pub(crate) mod app_icon;
+pub(crate) mod project;
 pub(crate) mod window;

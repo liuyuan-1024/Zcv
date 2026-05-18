@@ -35,6 +35,8 @@ pub enum HostEffect {
     // ===== Workspace / Project =====
     /// 顶栏"切换项目"入口；宿主弹出最近项目悬浮面板。
     ShowProjectPicker,
+    /// 从本机选择一个文件夹作为当前项目根目录。
+    OpenLocalProject,
 
     // ===== Overlay =====
     /// 打开语言服务器悬浮层。

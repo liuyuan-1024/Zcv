@@ -16,6 +16,7 @@ pub const SAVE: &str = "editor.save";
 ///
 /// 注：模块名保留 `workspace` 作为内部代号；面向用户文案统一用"项目"。
 pub const SHOW_PROJECTS_PICKER: &str = "workspace.show_projects_picker";
+pub const OPEN_LOCAL_PROJECT: &str = "workspace.open_local_project";
 
 /// 用于命令面板 / 菜单等以编程方式触发保存。键盘绑 `mod-s` 走 keymap 直派发，
 /// 不经此 builder。
@@ -23,6 +24,13 @@ pub const SHOW_PROJECTS_PICKER: &str = "workspace.show_projects_picker";
 pub fn save() -> Invocation {
     (
         CommandId::new(SAVE).expect("内建命令 ID 必须非空"),
+        CommandArgs::new(),
+    )
+}
+
+pub fn open_local_project() -> Invocation {
+    (
+        CommandId::new(OPEN_LOCAL_PROJECT).expect("内建命令 ID 必须非空"),
         CommandArgs::new(),
     )
 }
@@ -52,6 +60,13 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             emit(HostEffect::ShowProjectPicker),
         )
         .key("mod-o");
+
+    registry.install(
+        keymap,
+        OPEN_LOCAL_PROJECT,
+        "打开本地项目",
+        emit(HostEffect::OpenLocalProject),
+    );
 }
 
 /// 与 `window.rs::emit` 同形态；catalog 里"按一个键就推一个 effect"的样板。

@@ -9,6 +9,8 @@ mod command;
 mod default_layout;
 mod ime;
 
+use std::path::{Path, PathBuf};
+
 use crate::shell::model::{BottomBarState, DockState, EditorState, WorkbenchState};
 
 use zom_command::commands::{
@@ -30,6 +32,7 @@ pub struct App {
     queue: CommandQueue,
     workspace: Workspace,
     views: ViewSet,
+    project_root: Option<PathBuf>,
 }
 
 impl App {
@@ -47,17 +50,7 @@ impl App {
         window_commands::install(&mut registry, &mut keymap);
         panel_commands::install(&mut registry, &mut keymap);
 
-        let mut workspace = Workspace::new();
-        let buffer_id = workspace
-            .open_text(None, "")
-            .expect("默认空白 buffer 必须能创建");
-        let base_version = workspace
-            .buffer(buffer_id)
-            .expect("刚创建的 buffer 必须存在")
-            .buffer()
-            .version();
-        let mut views = ViewSet::new();
-        views.open_view(buffer_id, base_version);
+        let (workspace, views) = empty_workspace();
 
         Self {
             left_dock: default_layout::default_left_dock(),
@@ -70,7 +63,15 @@ impl App {
             queue: CommandQueue::new(),
             workspace,
             views,
+            project_root: None,
         }
+    }
+
+    pub(crate) fn open_local_project(&mut self, root: PathBuf) {
+        self.project_root = Some(root);
+        let (workspace, views) = empty_workspace();
+        self.workspace = workspace;
+        self.views = views;
     }
 
     /// 把当前 App 状态投影为 shell 渲染所需的 `WorkbenchState`。
@@ -79,12 +80,21 @@ impl App {
     /// 改为返回轻量引用 / 句柄包，避免每帧 clone。
     pub(crate) fn workbench_state(&self) -> WorkbenchState {
         WorkbenchState {
+            project_title: self.project_title(),
             left_dock: self.left_dock.clone(),
             right_dock: self.right_dock.clone(),
             bottom_dock: self.bottom_dock.clone(),
             bottom_bar: self.bottom_bar.clone(),
             editor: self.editor_state(),
         }
+    }
+
+    fn project_title(&self) -> String {
+        self.project_root
+            .as_deref()
+            .and_then(project_name)
+            .unwrap_or("打开项目")
+            .to_string()
     }
 
     fn editor_state(&self) -> EditorState {
@@ -112,6 +122,27 @@ impl App {
             dirty: buffer.is_dirty(),
         }
     }
+}
+
+fn empty_workspace() -> (Workspace, ViewSet) {
+    let mut workspace = Workspace::new();
+    let buffer_id = workspace
+        .open_text(None, "")
+        .expect("默认空白 buffer 必须能创建");
+    let base_version = workspace
+        .buffer(buffer_id)
+        .expect("刚创建的 buffer 必须存在")
+        .buffer()
+        .version();
+    let mut views = ViewSet::new();
+    views.open_view(buffer_id, base_version);
+    (workspace, views)
+}
+
+fn project_name(path: &Path) -> Option<&str> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
 }
 
 impl Default for App {

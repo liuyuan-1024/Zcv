@@ -10,6 +10,7 @@
 use gpui::{AnyElement, Div, Entity, Window, div, prelude::*};
 
 use crate::shell::element_ids;
+use crate::shell::model::WorkbenchState;
 use crate::shell::overlay::{AnchorRegistry, track_anchor};
 use crate::shell::primitives::{BarEdge, BarRegionAlign, Glyph, align_bar_region, bar_frame};
 use crate::shell::{ShortcutLookup, WindowControlsHandlers};
@@ -19,7 +20,6 @@ use window_controls::render_window_controls;
 
 use zom_command::commands::{settings, workspace as workspace_commands};
 
-const WORKSPACE_LABEL: &str = "zom";
 const WORKSPACE_TOOLTIP: &str = "切换项目";
 const WORKSPACE_COMMAND: &str = workspace_commands::SHOW_PROJECTS_PICKER;
 
@@ -29,6 +29,7 @@ const SETTINGS_TOOLTIP: &str = "设置";
 const SETTINGS_COMMAND: &str = settings::OPEN;
 
 pub(crate) fn render(
+    state: &WorkbenchState,
     window: &Window,
     window_controls: WindowControlsHandlers,
     shortcuts: &ShortcutLookup,
@@ -45,6 +46,7 @@ pub(crate) fn render(
                 shortcuts,
                 anchor_registry,
                 workspace_active,
+                &state.project_title,
             ),
             BarRegionAlign::Leading,
         ))
@@ -65,10 +67,11 @@ fn leading_slots(
     shortcuts: &ShortcutLookup,
     anchor_registry: Entity<AnchorRegistry>,
     workspace_active: bool,
+    project_title: &str,
 ) -> Vec<AnyElement> {
     let workspace = Glyph::text(
         element_ids::TOP_BAR_WORKSPACE,
-        WORKSPACE_LABEL,
+        project_title,
         WORKSPACE_TOOLTIP,
     )
     .command(WORKSPACE_COMMAND)

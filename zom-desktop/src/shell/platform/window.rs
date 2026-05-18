@@ -19,6 +19,7 @@ pub(crate) enum WindowAction {
     ToggleMaximize,
     OpenOverlay(OverlayKind),
     DismissOverlay,
+    OpenLocalProject,
 }
 
 pub(crate) fn apply(action: WindowAction, window: &Window, cx: &App) {
@@ -26,13 +27,15 @@ pub(crate) fn apply(action: WindowAction, window: &Window, cx: &App) {
         WindowAction::Quit => quit(cx),
         WindowAction::Minimize => minimize(window),
         WindowAction::ToggleMaximize => toggle_maximize(window),
-        overlay_action @ (WindowAction::OpenOverlay(_) | WindowAction::DismissOverlay) => {
-            // 这两类动作必须由 `ShellView::apply_window_actions` 上游消化，因为
-            // 它们要更新 `Entity<OverlayManager>`，platform 层拿不到。走到这里
-            // 说明派发链路写漏了 —— debug 编译期就让它炸出来。
+        overlay_action @ (WindowAction::OpenOverlay(_)
+        | WindowAction::DismissOverlay
+        | WindowAction::OpenLocalProject) => {
+            // 这些动作必须由 `ShellView::apply_window_actions` 上游消化，
+            // 因为它们要更新 overlay / app 状态，platform 层拿不到。
+            // 走到这里说明派发链路写漏了 —— debug 编译期就让它炸出来。
             debug_assert!(
                 false,
-                "overlay 类 WindowAction {overlay_action:?} 不该到达 platform 层"
+                "窗口状态类 WindowAction {overlay_action:?} 不该到达 platform 层"
             );
         }
     }

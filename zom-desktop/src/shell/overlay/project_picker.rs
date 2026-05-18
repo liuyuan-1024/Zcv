@@ -5,9 +5,10 @@
 
 use gpui::{Div, div, prelude::*, px};
 
+use crate::shell::ActionRequest;
 use crate::shell::theme::{color, radius, space, typography};
 
-pub(crate) fn render() -> Div {
+pub(crate) fn render(open_local_project: ActionRequest) -> Div {
     div()
         .w(px(320.0))
         .p(space::s12())
@@ -30,12 +31,15 @@ pub(crate) fn render() -> Div {
         )
         .child(
             div()
+                .id("project-picker.open-local-project")
                 .mt(space::s12())
                 .p(space::s8())
                 .rounded(radius::r4())
                 .bg(color::gray::g20())
                 .text_size(typography::body())
                 .text_color(color::gray::g90())
+                .cursor_pointer()
+                .on_click(move |_, window, cx| open_local_project(window, cx))
                 .child("打开本地文件夹"),
         )
 }

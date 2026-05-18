@@ -58,6 +58,7 @@ pub(crate) fn render(
         .bg(color::gray::g05())
         .text_color(color::gray::g90())
         .child(top_bar::render(
+            state,
             window,
             window_controls,
             &shortcut_lookup,

@@ -8,6 +8,7 @@ use crate::app::App;
 use crate::shell::model::PanelId;
 use crate::shell::overlay::OverlayKind;
 use crate::shell::platform::window::WindowAction;
+use std::path::PathBuf;
 use zom_command::commands::{
     editor, language_server as language_server_commands, workspace as workspace_commands,
 };
@@ -168,6 +169,38 @@ fn project_picker_command_should_emit_open_overlay_window_action() {
         outcome.actions,
         vec![WindowAction::OpenOverlay(OverlayKind::ProjectPicker)]
     );
+}
+
+#[test]
+fn open_local_project_command_should_emit_window_action() {
+    let mut app = App::new();
+
+    let actions = app
+        .dispatch(workspace_commands::open_local_project())
+        .unwrap();
+
+    assert_eq!(actions, vec![WindowAction::OpenLocalProject]);
+}
+
+#[test]
+fn project_title_should_prompt_when_no_project_is_open() {
+    let app = App::new();
+
+    assert_eq!(app.workbench_state().project_title, "打开项目");
+}
+
+#[test]
+fn open_local_project_should_update_project_title_and_reset_workspace() {
+    let mut app = App::new();
+    app.ime_replace_text(None, "临时内容").unwrap();
+
+    app.open_local_project(PathBuf::from("/tmp/zom-local-project"));
+
+    let state = app.workbench_state();
+    assert_eq!(state.project_title, "zom-local-project");
+    assert_eq!(state.editor.title, "未命名");
+    assert!(state.editor.text.is_empty());
+    assert!(!state.editor.dirty);
 }
 
 #[test]

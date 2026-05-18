@@ -154,6 +154,7 @@ impl DockState {
 /// 窗口级 workbench 的全部布局状态（手册 13.2 表："每窗口独立"列）。
 #[derive(Clone, Debug)]
 pub(crate) struct WorkbenchState {
+    pub(crate) project_title: String,
     pub(crate) left_dock: DockState,
     pub(crate) right_dock: DockState,
     pub(crate) bottom_dock: DockState,

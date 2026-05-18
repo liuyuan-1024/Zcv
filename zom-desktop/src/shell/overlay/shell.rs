@@ -12,11 +12,13 @@ use super::{
     ActiveOverlay, AnchorRegistry, OverlayAnchor, OverlayKind, OverlayManager, language_servers,
     project_picker,
 };
+use crate::shell::ActionRequest;
 use crate::shell::theme::space;
 
 pub(crate) struct OverlayShell {
     manager: Entity<OverlayManager>,
     anchors: Entity<AnchorRegistry>,
+    open_local_project: ActionRequest,
     _manager_observer: Subscription,
     _anchor_observer: Subscription,
 }
@@ -25,6 +27,7 @@ impl OverlayShell {
     pub(crate) fn new(
         manager: Entity<OverlayManager>,
         anchors: Entity<AnchorRegistry>,
+        open_local_project: ActionRequest,
         cx: &mut Context<Self>,
     ) -> Self {
         let manager_observer = cx.observe(&manager, |_, _, cx| cx.notify());
@@ -32,6 +35,7 @@ impl OverlayShell {
         Self {
             manager,
             anchors,
+            open_local_project,
             _manager_observer: manager_observer,
             _anchor_observer: anchor_observer,
         }
@@ -50,18 +54,21 @@ impl Render for OverlayShell {
             .anchors
             .read_with(cx, |anchors, _| anchors.resolve(active.anchor()));
 
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .child(deferred(render_active(active, anchor_bounds)).priority(30))
+        div().absolute().top_0().left_0().size_full().child(
+            deferred(render_active(
+                active,
+                anchor_bounds,
+                self.open_local_project.clone(),
+            ))
+            .priority(30),
+        )
     }
 }
 
 fn render_active(
     active: ActiveOverlay,
     anchor_bounds: Option<gpui::Bounds<gpui::Pixels>>,
+    open_local_project: ActionRequest,
 ) -> impl IntoElement {
     let kind = active.kind();
     anchored()
@@ -69,12 +76,12 @@ fn render_active(
         .position(anchor_position(kind, active.anchor(), anchor_bounds))
         .offset(anchor_offset(kind))
         .snap_to_window_with_margin(space::s8())
-        .child(render_kind(kind))
+        .child(render_kind(kind, open_local_project))
 }
 
-fn render_kind(kind: OverlayKind) -> AnyElement {
+fn render_kind(kind: OverlayKind, open_local_project: ActionRequest) -> AnyElement {
     match kind {
-        OverlayKind::ProjectPicker => project_picker::render().into_any_element(),
+        OverlayKind::ProjectPicker => project_picker::render(open_local_project).into_any_element(),
         OverlayKind::LanguageServers => language_servers::render().into_any_element(),
     }
 }

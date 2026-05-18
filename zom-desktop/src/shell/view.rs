@@ -17,6 +17,7 @@ use super::element_ids;
 use super::model::WorkbenchState;
 use super::overlay::{AnchorRegistry, OverlayAnchor, OverlayKind, OverlayManager, OverlayShell};
 use super::panels::PanelHost;
+use super::platform::project as platform_project;
 use super::platform::window as platform_window;
 use super::platform::window::WindowAction;
 use super::workbench;
@@ -34,18 +35,32 @@ pub(crate) struct ShellView {
 
 impl ShellView {
     pub(super) fn new(app: App, cx: &mut Context<Self>) -> Self {
+        let app = Rc::new(RefCell::new(app));
         let overlay_manager = cx.new(|_| OverlayManager::new());
         let anchor_registry = cx.new(|_| AnchorRegistry::new());
-        let overlay_shell =
-            cx.new(|cx| OverlayShell::new(overlay_manager.clone(), anchor_registry.clone(), cx));
+        let editor_focus = cx.focus_handle();
+        let open_local_project = bind_action_request(
+            Rc::clone(&app),
+            overlay_manager.clone(),
+            editor_focus.clone(),
+            zom_command::commands::workspace::open_local_project(),
+        );
+        let overlay_shell = cx.new(|cx| {
+            OverlayShell::new(
+                overlay_manager.clone(),
+                anchor_registry.clone(),
+                open_local_project,
+                cx,
+            )
+        });
 
         Self {
-            app: Rc::new(RefCell::new(app)),
+            app,
             panel_host: PanelHost::new(),
             overlay_manager,
             anchor_registry,
             overlay_shell,
-            editor_focus: cx.focus_handle(),
+            editor_focus,
         }
     }
 
@@ -59,19 +74,12 @@ impl ShellView {
 
     /// 把一个 [`Invocation`] 绑成 [`ActionRequest`]：点击时派发并应用窗口动作。
     fn bind_action(&self, invocation: Invocation) -> ActionRequest {
-        let app = Rc::clone(&self.app);
-        let overlays = self.overlay_manager.clone();
-        let editor_focus_fallback = self.editor_focus.clone();
-        Rc::new(move |window, cx| {
-            let actions = match app.borrow_mut().dispatch(invocation.clone()) {
-                Ok(actions) => actions,
-                Err(error) => {
-                    eprintln!("命令执行失败：{error}");
-                    return;
-                }
-            };
-            apply_window_actions(actions, &overlays, &editor_focus_fallback, window, cx);
-        })
+        bind_action_request(
+            Rc::clone(&self.app),
+            self.overlay_manager.clone(),
+            self.editor_focus.clone(),
+            invocation,
+        )
     }
 
     fn window_controls_handlers(&self) -> WindowControlsHandlers {
@@ -97,6 +105,7 @@ impl ShellView {
 
             apply_window_actions(
                 outcome.actions,
+                &app,
                 &overlays,
                 &editor_focus_fallback,
                 window,
@@ -161,8 +170,27 @@ fn dismiss_overlay(overlays: &Entity<OverlayManager>, window: &mut Window, cx: &
     window.refresh();
 }
 
+fn bind_action_request(
+    app: Rc<RefCell<App>>,
+    overlays: Entity<OverlayManager>,
+    editor_focus_fallback: FocusHandle,
+    invocation: Invocation,
+) -> ActionRequest {
+    Rc::new(move |window, cx| {
+        let actions = match app.borrow_mut().dispatch(invocation.clone()) {
+            Ok(actions) => actions,
+            Err(error) => {
+                eprintln!("命令执行失败：{error}");
+                return;
+            }
+        };
+        apply_window_actions(actions, &app, &overlays, &editor_focus_fallback, window, cx);
+    })
+}
+
 fn apply_window_actions(
     actions: Vec<WindowAction>,
+    app: &Rc<RefCell<App>>,
     overlays: &Entity<OverlayManager>,
     editor_focus_fallback: &FocusHandle,
     window: &mut Window,
@@ -186,9 +214,35 @@ fn apply_window_actions(
             WindowAction::DismissOverlay => {
                 dismiss_overlay(overlays, window, cx);
             }
+            WindowAction::OpenLocalProject => {
+                open_local_project(Rc::clone(app), overlays, window, cx);
+            }
             other => platform_window::apply(other, window, cx),
         }
     }
+}
+
+fn open_local_project(
+    app: Rc<RefCell<App>>,
+    overlays: &Entity<OverlayManager>,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    dismiss_overlay(overlays, window, cx);
+    let selection = platform_project::prompt_for_local_project(cx);
+    window
+        .spawn(cx, async move |cx| {
+            let Some(project_root) = selection.await else {
+                return;
+            };
+            if let Err(error) = cx.update(|window, _| {
+                app.borrow_mut().open_local_project(project_root);
+                window.refresh();
+            }) {
+                eprintln!("打开本地项目失败：{error}");
+            }
+        })
+        .detach();
 }
 
 fn anchor_for_overlay(kind: OverlayKind) -> OverlayAnchor {

@@ -18,9 +18,10 @@
 //!   [30] BubbleShell
 //! 后两层骨架阶段为空 portal，不参与 layout。
 
-use gpui::{Div, FocusHandle, Window, div, prelude::*};
+use gpui::{Div, Entity, FocusHandle, Window, div, prelude::*};
 
 use crate::shell::model::WorkbenchState;
+use crate::shell::overlay::{AnchorRegistry, OverlayShell};
 use crate::shell::panels::PanelHost;
 use crate::shell::theme::{color, radius};
 use crate::shell::{InputHandlerHook, KeyRequest, ShortcutLookup, WindowControlsHandlers};
@@ -36,6 +37,9 @@ pub(crate) fn render(
     host: &PanelHost,
     window: &Window,
     window_controls: WindowControlsHandlers,
+    overlay_shell: Entity<OverlayShell>,
+    anchor_registry: Entity<AnchorRegistry>,
+    workspace_active: bool,
     key_request: KeyRequest,
     shortcut_lookup: ShortcutLookup,
     input_handler_hook: InputHandlerHook,
@@ -52,7 +56,13 @@ pub(crate) fn render(
         .border_color(color::gray::g40())
         .bg(color::gray::g05())
         .text_color(color::gray::g90())
-        .child(top_bar::render(window, window_controls, &shortcut_lookup))
+        .child(top_bar::render(
+            window,
+            window_controls,
+            &shortcut_lookup,
+            anchor_registry,
+            workspace_active,
+        ))
         .child(render_body(
             state,
             host,
@@ -61,7 +71,7 @@ pub(crate) fn render(
             editor_focus,
         ))
         .child(bottom_bar::render(state, &shortcut_lookup))
-        .child(overlays::overlay_layer::render())
+        .child(overlay_shell)
         .child(overlays::bubble_layer::render())
 }
 

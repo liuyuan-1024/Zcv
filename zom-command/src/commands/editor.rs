@@ -283,14 +283,12 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     registry
         .install(keymap, REDO, "重做", Box::new(run_redo))
         .key("mod-shift-z");
-    registry
-        .install(
-            keymap,
-            IME_CANCEL,
-            "取消输入法组合",
-            Box::new(run_ime_cancel),
-        )
-        .key("escape");
+    registry.install(
+        keymap,
+        IME_CANCEL,
+        "取消输入法组合",
+        Box::new(run_ime_cancel),
+    );
 
     // 光标 / 选区的全部 移动 / 扩展 变体共用一条命令，按预设 args 区分。
     use MovementDirection::*;
@@ -306,14 +304,26 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_with("down", move_args(Next, Motion::LineStep, false))
         // pageup / pagedown：lines 暂用固定 20 作 fallback；
         // TODO: view 层 ViewportState 加 visible_lines 字段后，由 handler 从当前 view 注入真实值。
-        .key_with("pageup", move_args(Previous, Motion::PageStep { lines: 20 }, false))
-        .key_with("pagedown", move_args(Next, Motion::PageStep { lines: 20 }, false))
+        .key_with(
+            "pageup",
+            move_args(Previous, Motion::PageStep { lines: 20 }, false),
+        )
+        .key_with(
+            "pagedown",
+            move_args(Next, Motion::PageStep { lines: 20 }, false),
+        )
         .key_with("left", move_args(Previous, Grapheme, false))
         .key_with("right", move_args(Next, Grapheme, false))
         .key_with("shift-up", move_args(Previous, Motion::LineStep, true))
         .key_with("shift-down", move_args(Next, Motion::LineStep, true))
-        .key_with("shift-pageup", move_args(Previous, Motion::PageStep { lines: 20 }, true))
-        .key_with("shift-pagedown", move_args(Next, Motion::PageStep { lines: 20 }, true))
+        .key_with(
+            "shift-pageup",
+            move_args(Previous, Motion::PageStep { lines: 20 }, true),
+        )
+        .key_with(
+            "shift-pagedown",
+            move_args(Next, Motion::PageStep { lines: 20 }, true),
+        )
         .key_with("shift-left", move_args(Previous, Grapheme, true))
         .key_with("shift-right", move_args(Next, Grapheme, true))
         .key_with("alt-left", move_args(Previous, Word, false))
@@ -326,11 +336,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_with("shift-end", move_args(Next, LineEdge, true));
 }
 
-fn move_args(
-    direction: MovementDirection,
-    motion: impl Into<Motion>,
-    extend: bool,
-) -> CommandArgs {
+fn move_args(direction: MovementDirection, motion: impl Into<Motion>, extend: bool) -> CommandArgs {
     MoveSelectionArgs {
         direction,
         motion: motion.into(),

@@ -5,16 +5,17 @@
 //! 放在这里可以无头测试，与其它 `editor.*` 命令同口径。
 
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    Invocation, Keymap, NoArgs,
+    CommandArgs, CommandContext, CommandError, CommandHandler, CommandId, CommandOutcome,
+    CommandRegistry, HostEffect, Invocation, Keymap, NoArgs,
 };
 use zom_workspace::BufferId;
 
 pub const SAVE: &str = "editor.save";
 
-/// 打开工作区选择器（切换工作区入口）。**尚未实现** —— 命令未注册，
-/// 占住 id 给 top_bar workspace 标签引用，避免裸字符串。
-pub const SHOW_PICKER: &str = "workspace.show_picker";
+/// 打开项目选择器（顶栏"切换项目"入口）。
+///
+/// 注：模块名保留 `workspace` 作为内部代号；面向用户文案统一用"项目"。
+pub const SHOW_PROJECTS_PICKER: &str = "workspace.show_projects_picker";
 
 /// 用于命令面板 / 菜单等以编程方式触发保存。键盘绑 `mod-s` 走 keymap 直派发，
 /// 不经此 builder。
@@ -42,6 +43,24 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             }),
         )
         .key("mod-s");
+
+    registry
+        .install(
+            keymap,
+            SHOW_PROJECTS_PICKER,
+            "切换项目",
+            emit(HostEffect::ShowProjectPicker),
+        )
+        .key("mod-o");
+}
+
+/// 与 `window.rs::emit` 同形态；catalog 里"按一个键就推一个 effect"的样板。
+fn emit(effect: HostEffect) -> CommandHandler {
+    Box::new(move |ctx, args| {
+        NoArgs::try_from(args)?;
+        ctx.effects.push(effect.clone());
+        Ok(CommandOutcome::default())
+    })
 }
 
 fn active_view_buffer_id(ctx: &CommandContext<'_>) -> Result<BufferId, CommandError> {

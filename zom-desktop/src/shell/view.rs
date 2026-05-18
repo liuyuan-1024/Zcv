@@ -5,17 +5,20 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::{
-    Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, IntoElement,
-    Pixels, Point, Render, UTF16Selection, Window,
+    AppContext, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
+    IntoElement, Pixels, Point, Render, UTF16Selection, Window,
 };
 use zom_command::Invocation;
 use zom_command::commands::window as window_commands;
 
 use crate::app::App;
 
+use super::element_ids;
 use super::model::WorkbenchState;
+use super::overlay::{AnchorRegistry, OverlayAnchor, OverlayKind, OverlayManager, OverlayShell};
 use super::panels::PanelHost;
 use super::platform::window as platform_window;
+use super::platform::window::WindowAction;
 use super::workbench;
 use super::{ActionRequest, InputHandlerHook, KeyRequest, ShortcutLookup, WindowControlsHandlers};
 
@@ -23,14 +26,25 @@ use super::{ActionRequest, InputHandlerHook, KeyRequest, ShortcutLookup, WindowC
 pub(crate) struct ShellView {
     app: Rc<RefCell<App>>,
     panel_host: PanelHost,
+    overlay_manager: Entity<OverlayManager>,
+    anchor_registry: Entity<AnchorRegistry>,
+    overlay_shell: Entity<OverlayShell>,
     editor_focus: FocusHandle,
 }
 
 impl ShellView {
     pub(super) fn new(app: App, cx: &mut Context<Self>) -> Self {
+        let overlay_manager = cx.new(|_| OverlayManager::new());
+        let anchor_registry = cx.new(|_| AnchorRegistry::new());
+        let overlay_shell =
+            cx.new(|cx| OverlayShell::new(overlay_manager.clone(), anchor_registry.clone(), cx));
+
         Self {
             app: Rc::new(RefCell::new(app)),
             panel_host: PanelHost::new(),
+            overlay_manager,
+            anchor_registry,
+            overlay_shell,
             editor_focus: cx.focus_handle(),
         }
     }
@@ -46,6 +60,8 @@ impl ShellView {
     /// 把一个 [`Invocation`] 绑成 [`ActionRequest`]：点击时派发并应用窗口动作。
     fn bind_action(&self, invocation: Invocation) -> ActionRequest {
         let app = Rc::clone(&self.app);
+        let overlays = self.overlay_manager.clone();
+        let editor_focus_fallback = self.editor_focus.clone();
         Rc::new(move |window, cx| {
             let actions = match app.borrow_mut().dispatch(invocation.clone()) {
                 Ok(actions) => actions,
@@ -54,9 +70,7 @@ impl ShellView {
                     return;
                 }
             };
-            for action in actions {
-                platform_window::apply(action, window, cx);
-            }
+            apply_window_actions(actions, &overlays, &editor_focus_fallback, window, cx);
         })
     }
 
@@ -70,6 +84,8 @@ impl ShellView {
 
     fn key_request(&self) -> KeyRequest {
         let app = Rc::clone(&self.app);
+        let overlays = self.overlay_manager.clone();
+        let editor_focus_fallback = self.editor_focus.clone();
         Rc::new(move |chord, window, cx| {
             let outcome = match app.borrow_mut().dispatch_key_input(chord) {
                 Ok(outcome) => outcome,
@@ -79,9 +95,13 @@ impl ShellView {
                 }
             };
 
-            for action in outcome.actions {
-                platform_window::apply(action, window, cx);
-            }
+            apply_window_actions(
+                outcome.actions,
+                &overlays,
+                &editor_focus_fallback,
+                window,
+                cx,
+            );
             if outcome.consumed {
                 window.refresh();
             }
@@ -110,16 +130,66 @@ impl Render for ShellView {
         let key_request = self.key_request();
         let shortcut_lookup = self.shortcut_lookup();
         let input_handler_hook = self.input_handler_hook(cx.entity());
+        let workspace_active = self.overlay_manager.read_with(cx, |manager, _| {
+            manager.is_active(OverlayKind::ProjectPicker)
+        });
         workbench::render(
             &state,
             &self.panel_host,
             window,
             window_controls,
+            self.overlay_shell.clone(),
+            self.anchor_registry.clone(),
+            workspace_active,
             key_request,
             shortcut_lookup,
             input_handler_hook,
             self.editor_focus.clone(),
         )
+    }
+}
+
+fn dismiss_overlay(overlays: &Entity<OverlayManager>, window: &mut Window, cx: &mut gpui::App) {
+    let Some(focus_to_restore) = overlays.update(cx, |overlays, cx| overlays.dismiss(cx)) else {
+        return;
+    };
+    window.focus(&focus_to_restore);
+    window.refresh();
+}
+
+fn apply_window_actions(
+    actions: Vec<WindowAction>,
+    overlays: &Entity<OverlayManager>,
+    editor_focus_fallback: &FocusHandle,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    for action in actions {
+        match action {
+            WindowAction::OpenOverlay(kind) => {
+                let anchor = anchor_for_overlay(kind);
+                // 手册 21.7：关闭时焦点回到"先前 focus 目标"——open 这一帧 window
+                // 里实际聚焦的元素。查不到（窗口刚启动等）退回 editor 焦点，避免
+                // 关闭后焦点悬空。
+                let focus_to_restore = window
+                    .focused(cx)
+                    .unwrap_or_else(|| editor_focus_fallback.clone());
+                overlays.update(cx, |overlays, cx| {
+                    overlays.open(kind, anchor, focus_to_restore, cx);
+                });
+                window.refresh();
+            }
+            WindowAction::DismissOverlay => {
+                dismiss_overlay(overlays, window, cx);
+            }
+            other => platform_window::apply(other, window, cx),
+        }
+    }
+}
+
+fn anchor_for_overlay(kind: OverlayKind) -> OverlayAnchor {
+    match kind {
+        OverlayKind::ProjectPicker => OverlayAnchor::Element(element_ids::TOP_BAR_WORKSPACE.into()),
     }
 }
 

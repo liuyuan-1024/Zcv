@@ -31,6 +31,14 @@ pub enum HostEffect {
     /// `"terminal"`），由宿主的 `PanelId::from_str` 解析。zom-command
     /// 不 import 宿主枚举，靠字符串桥接。
     TogglePanel(String),
+
+    // ===== Workspace / Project =====
+    /// 顶栏"切换项目"入口；宿主弹出最近项目悬浮面板。
+    ShowProjectPicker,
+
+    // ===== Overlay =====
+    /// 关闭当前悬浮层。
+    DismissOverlay,
 }
 
 /// `CommandContext` 内的 effect 缓冲。

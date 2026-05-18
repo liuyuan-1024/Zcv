@@ -382,11 +382,8 @@ fn editor_default_keymap_should_include_line_and_page_movement() {
     let mut keymap = Keymap::new();
     editor::install(&mut registry, &mut keymap);
 
-    let (_, home_args) = editor::move_selection(
-        MovementDirection::Previous,
-        MovementUnit::LineEdge,
-        false,
-    );
+    let (_, home_args) =
+        editor::move_selection(MovementDirection::Previous, MovementUnit::LineEdge, false);
     assert_eq!(
         keymap.resolve(&[key("home")], &[]),
         KeymapResolution::Matched {
@@ -405,8 +402,7 @@ fn editor_default_keymap_should_include_line_and_page_movement() {
         }
     );
 
-    let (_, up_args) =
-        editor::move_selection(MovementDirection::Previous, Motion::LineStep, false);
+    let (_, up_args) = editor::move_selection(MovementDirection::Previous, Motion::LineStep, false);
     assert_eq!(
         keymap.resolve(&[key("up")], &[]),
         KeymapResolution::Matched {

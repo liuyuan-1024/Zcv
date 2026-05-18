@@ -9,8 +9,10 @@
 
 mod assets;
 mod boot;
+mod element_ids;
 mod keyboard;
 pub(crate) mod model;
+pub(crate) mod overlay;
 pub(crate) mod panels;
 pub(crate) mod platform;
 pub(crate) mod primitives;

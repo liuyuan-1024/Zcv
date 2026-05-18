@@ -2,6 +2,7 @@
 
 use crate::app::App;
 use crate::shell::model::{DockState, PanelId};
+use crate::shell::overlay::OverlayKind;
 use crate::shell::platform::window::WindowAction;
 
 use zom_command::{
@@ -118,6 +119,12 @@ impl App {
                     return;
                 };
                 self.toggle_panel(panel);
+            }
+            HostEffect::ShowProjectPicker => {
+                window_actions.push(WindowAction::OpenOverlay(OverlayKind::ProjectPicker));
+            }
+            HostEffect::DismissOverlay => {
+                window_actions.push(WindowAction::DismissOverlay);
             }
         }
     }

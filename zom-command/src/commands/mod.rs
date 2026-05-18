@@ -13,6 +13,7 @@
 
 pub mod diagnostics;
 pub mod editor;
+pub mod overlay;
 pub mod panels;
 pub mod settings;
 pub mod window;

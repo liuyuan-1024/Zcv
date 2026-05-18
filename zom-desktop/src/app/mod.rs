@@ -1,17 +1,14 @@
 //! app —— 组合根（手册 2 / 13）。
 //!
-//! P2 最小编辑闭环已接入：组合根持有窗口级布局状态、`CommandRegistry`、
-//! `Keymap`、`Workspace` 与 `ViewSet`，并把输入统一收敛到 command 管线。
+//! P2 最小编辑闭环已接入：组合根持有 `CommandRegistry`、`Keymap`、
+//! `Workspace` 与 `ViewSet`，并把输入统一收敛到 command 管线。
 //!
 //! 依赖方向（手册 2.4）：`app` 可以 import `shell`；`shell` 不可反向 import `app`。
 
 mod command;
-mod default_layout;
 mod ime;
 
 use std::path::{Path, PathBuf};
-
-use crate::shell::model::{BottomBarState, DockState, EditorState, WorkbenchState};
 
 use zom_command::commands::{
     editor, language_server as language_server_commands, overlay as overlay_commands,
@@ -21,11 +18,16 @@ use zom_command::{CommandExecutor, CommandQueue, CommandRegistry, Keymap};
 use zom_view::ViewSet;
 use zom_workspace::Workspace;
 
+/// 主编辑区当前可显示的活动 buffer 摘要。
+#[derive(Clone, Debug, Default)]
+pub(crate) struct EditorState {
+    pub(crate) title: String,
+    pub(crate) text: String,
+    pub(crate) cursor_byte: usize,
+    pub(crate) dirty: bool,
+}
+
 pub struct App {
-    left_dock: DockState,
-    right_dock: DockState,
-    bottom_dock: DockState,
-    bottom_bar: BottomBarState,
     registry: CommandRegistry,
     keymap: Keymap,
     executor: CommandExecutor,
@@ -53,10 +55,6 @@ impl App {
         let (workspace, views) = empty_workspace();
 
         Self {
-            left_dock: default_layout::default_left_dock(),
-            right_dock: default_layout::default_right_dock(),
-            bottom_dock: default_layout::default_bottom_dock(),
-            bottom_bar: BottomBarState::default(),
             registry,
             keymap,
             executor: CommandExecutor::new(),
@@ -74,22 +72,7 @@ impl App {
         self.views = views;
     }
 
-    /// 把当前 App 状态投影为 shell 渲染所需的 `WorkbenchState`。
-    ///
-    /// 骨架阶段直接克隆；将来 dock 状态升级为 `Entity<DockState>` 后，本方法
-    /// 改为返回轻量引用 / 句柄包，避免每帧 clone。
-    pub(crate) fn workbench_state(&self) -> WorkbenchState {
-        WorkbenchState {
-            project_title: self.project_title(),
-            left_dock: self.left_dock.clone(),
-            right_dock: self.right_dock.clone(),
-            bottom_dock: self.bottom_dock.clone(),
-            bottom_bar: self.bottom_bar.clone(),
-            editor: self.editor_state(),
-        }
-    }
-
-    fn project_title(&self) -> String {
+    pub(crate) fn project_title(&self) -> String {
         self.project_root
             .as_deref()
             .and_then(project_name)
@@ -97,7 +80,7 @@ impl App {
             .to_string()
     }
 
-    fn editor_state(&self) -> EditorState {
+    pub(crate) fn editor_state(&self) -> EditorState {
         let Some(view) = self.views.active_view() else {
             return EditorState::default();
         };

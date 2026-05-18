@@ -1,6 +1,6 @@
 //! 每窗口 overlay 状态管理。
 //!
-//! `OverlayManager` 本身不决定 anchor；shell 收到 `WindowAction::OpenOverlay`
+//! `OverlayManager` 本身不决定 anchor；shell 收到 overlay 类 `HostEffect`
 //! 后按 kind 选择 anchor，再写入本 Entity。
 //!
 //! 状态变更后由 Manager 自己 `cx.notify()`，调用方无需重复触发；这样契约

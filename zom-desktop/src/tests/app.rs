@@ -1,14 +1,13 @@
 //! `App` 派发管线的 headless 单元测试。
 //!
 //! 这一层不接触 GPUI ——只覆盖 keymap 解析、命令派发、IME 流，以及
-//! HostEffect → `WindowAction` 翻译。需要 GPUI 句柄（Entity / Window / 焦点
-//! 等）的链路在 `shell::view` 那一层做手工 / 集成测试，不进本文件。
+//! 命令产出的 HostEffect。需要 GPUI 句柄（Entity / Window / 焦点等）的链路
+//! 在 `shell::view` 那一层做手工 / 集成测试，不进本文件。
 
 use crate::app::App;
-use crate::shell::model::PanelId;
-use crate::shell::overlay::OverlayKind;
-use crate::shell::platform::window::WindowAction;
+use crate::shell::features::PanelId;
 use std::path::PathBuf;
+use zom_command::HostEffect;
 use zom_command::commands::{
     editor, language_server as language_server_commands, workspace as workspace_commands,
 };
@@ -21,7 +20,7 @@ fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
     app.ime_replace_text(None, "h").unwrap();
     app.ime_replace_text(None, "i").unwrap();
 
-    let state = app.workbench_state().editor;
+    let state = app.editor_state();
     assert_eq!(state.text, "hi");
     assert_eq!(state.cursor_byte, 2);
     assert!(state.dirty);
@@ -34,7 +33,7 @@ fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
             .consumed
     );
 
-    let state = app.workbench_state().editor;
+    let state = app.editor_state();
     assert_eq!(state.text, "i");
     assert_eq!(state.cursor_byte, 0);
 
@@ -44,7 +43,7 @@ fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
     // 没绑定的字符必须返回未消费，让 IME 路径接管。
     assert!(!app.dispatch_key_input("a".to_string()).unwrap().consumed);
 
-    let state = app.workbench_state().editor;
+    let state = app.editor_state();
     assert_eq!(state.text, "hi");
     assert_eq!(state.cursor_byte, 1);
 }
@@ -59,17 +58,17 @@ fn ime_preedit_update_and_commit_should_flow_through_engine() {
     // 模拟输入法 preedit：先 mark "ni"，再 mark "你"，最后 commit "你"。
     app.ime_replace_and_mark_text(None, "ni", Some(2..2))
         .unwrap();
-    let state = app.workbench_state().editor;
+    let state = app.editor_state();
     assert_eq!(state.text, "xni");
     assert!(app.ime_marked_range_utf16().is_some());
 
     app.ime_replace_and_mark_text(None, "你", Some(1..1))
         .unwrap();
-    let state = app.workbench_state().editor;
+    let state = app.editor_state();
     assert_eq!(state.text, "x你");
 
     app.ime_replace_text(None, "你").unwrap();
-    let state = app.workbench_state().editor;
+    let state = app.editor_state();
     assert_eq!(state.text, "x你");
     assert!(app.ime_marked_range_utf16().is_none());
     // commit 之后 cursor 落在 "你" 之后，对应 4 个 UTF-8 字节 + 1 (x)。
@@ -96,38 +95,25 @@ fn tab_and_enter_should_dispatch_editor_commands() {
             .consumed
     );
 
-    let state = app.workbench_state().editor;
+    let state = app.editor_state();
     assert_eq!(state.text, "    \n\n");
     assert_eq!(state.cursor_byte, 6);
     assert!(state.dirty);
 }
 
 #[test]
-fn panel_toggle_command_should_drive_dock_visibility_through_binding() {
+fn panel_toggle_command_should_emit_host_effect() {
     let mut app = App::new();
-    let initial = app.workbench_state().left_dock;
-    let initial_visible = initial.is_visible();
-    let file_tree_active = initial.active_panel() == Some(PanelId::FileTree);
 
     // 命中 mod-shift-e → editor 区按下时应被 keymap 消费。
     let outcome = app
         .dispatch_key_input("mod-shift-e".to_string())
         .expect("派发成功");
     assert!(outcome.consumed);
-
-    // 初始状态如果文件树已经是 active 且 dock 可见 → 折叠；否则展开 + 切到文件树。
-    let after_first = app.workbench_state().left_dock;
-    if initial_visible && file_tree_active {
-        assert!(after_first.collapsed);
-    } else {
-        assert!(!after_first.collapsed);
-        assert_eq!(after_first.active_panel(), Some(PanelId::FileTree));
-    }
-
-    // 再来一次：应该回到与上一步相反的状态。
-    let before = after_first.collapsed;
-    app.dispatch_key_input("mod-shift-e".to_string()).unwrap();
-    assert_ne!(app.workbench_state().left_dock.collapsed, before);
+    assert_eq!(
+        outcome.effects,
+        vec![HostEffect::TogglePanel("file_tree".to_string())]
+    );
 }
 
 #[test]
@@ -165,10 +151,7 @@ fn project_picker_command_should_emit_open_overlay_window_action() {
     let outcome = app.dispatch_key_input("mod-o".to_string()).unwrap();
 
     assert!(outcome.consumed);
-    assert_eq!(
-        outcome.actions,
-        vec![WindowAction::OpenOverlay(OverlayKind::ProjectPicker)]
-    );
+    assert_eq!(outcome.effects, vec![HostEffect::ShowProjectPicker]);
 }
 
 #[test]
@@ -179,14 +162,14 @@ fn open_local_project_command_should_emit_window_action() {
         .dispatch(workspace_commands::open_local_project())
         .unwrap();
 
-    assert_eq!(actions, vec![WindowAction::OpenLocalProject]);
+    assert_eq!(actions, vec![HostEffect::OpenLocalProject]);
 }
 
 #[test]
 fn project_title_should_prompt_when_no_project_is_open() {
     let app = App::new();
 
-    assert_eq!(app.workbench_state().project_title, "打开项目");
+    assert_eq!(app.project_title(), "打开项目");
 }
 
 #[test]
@@ -196,11 +179,11 @@ fn open_local_project_should_update_project_title_and_reset_workspace() {
 
     app.open_local_project(PathBuf::from("/tmp/zom-local-project"));
 
-    let state = app.workbench_state();
-    assert_eq!(state.project_title, "zom-local-project");
-    assert_eq!(state.editor.title, "未命名");
-    assert!(state.editor.text.is_empty());
-    assert!(!state.editor.dirty);
+    let state = app.editor_state();
+    assert_eq!(app.project_title(), "zom-local-project");
+    assert_eq!(state.title, "未命名");
+    assert!(state.text.is_empty());
+    assert!(!state.dirty);
 }
 
 #[test]
@@ -211,10 +194,7 @@ fn language_server_status_command_should_emit_open_overlay_window_action() {
         .dispatch(language_server_commands::open_status())
         .unwrap();
 
-    assert_eq!(
-        actions,
-        vec![WindowAction::OpenOverlay(OverlayKind::LanguageServers)]
-    );
+    assert_eq!(actions, vec![HostEffect::ShowLanguageServers]);
 }
 
 #[test]
@@ -224,5 +204,5 @@ fn escape_should_dispatch_overlay_dismiss_command() {
     let outcome = app.dispatch_key_input("escape".to_string()).unwrap();
 
     assert!(outcome.consumed);
-    assert_eq!(outcome.actions, vec![WindowAction::DismissOverlay]);
+    assert_eq!(outcome.effects, vec![HostEffect::DismissOverlay]);
 }

@@ -7,8 +7,8 @@ use gpui::{
 
 use crate::app::App;
 
-use super::assets::EmbeddedAssets;
 use super::platform::app_icon;
+use super::shared::assets::EmbeddedAssets;
 use super::view::ShellView;
 
 /// 启动桌面应用：装配 GPUI、加载资源、打开首个窗口。
@@ -18,7 +18,7 @@ pub fn run(app: App) {
     Application::new()
         .with_assets(EmbeddedAssets)
         .run(move |cx: &mut GpuiApp| {
-            let bounds = Bounds::centered(None, size(px(960.0), px(640.0)), cx);
+            let bounds = Bounds::centered(None, size(px(900.0), px(850.0)), cx);
 
             let window = cx
                 .open_window(

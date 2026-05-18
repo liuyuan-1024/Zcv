@@ -9,38 +9,6 @@
 
 use gpui::{App, Window};
 
-use crate::shell::overlay::OverlayKind;
-
-/// 窗口命令执行后由 shell 应用到当前 GPUI 窗口的动作。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum WindowAction {
-    Quit,
-    Minimize,
-    ToggleMaximize,
-    OpenOverlay(OverlayKind),
-    DismissOverlay,
-    OpenLocalProject,
-}
-
-pub(crate) fn apply(action: WindowAction, window: &Window, cx: &App) {
-    match action {
-        WindowAction::Quit => quit(cx),
-        WindowAction::Minimize => minimize(window),
-        WindowAction::ToggleMaximize => toggle_maximize(window),
-        overlay_action @ (WindowAction::OpenOverlay(_)
-        | WindowAction::DismissOverlay
-        | WindowAction::OpenLocalProject) => {
-            // 这些动作必须由 `ShellView::apply_window_actions` 上游消化，
-            // 因为它们要更新 overlay / app 状态，platform 层拿不到。
-            // 走到这里说明派发链路写漏了 —— debug 编译期就让它炸出来。
-            debug_assert!(
-                false,
-                "窗口状态类 WindowAction {overlay_action:?} 不该到达 platform 层"
-            );
-        }
-    }
-}
-
 /// 退出整个应用——× 圆点对应的动作。
 ///
 /// 注意：第一版直接走 gpui 的 `quit`；二期接入退出协议（手册 25.x）

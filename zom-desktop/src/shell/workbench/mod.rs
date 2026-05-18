@@ -20,17 +20,16 @@
 
 use gpui::{Div, Entity, FocusHandle, Window, div, prelude::*};
 
-use crate::shell::model::WorkbenchState;
+use crate::shell::features::PanelHost;
 use crate::shell::overlay::{AnchorRegistry, OverlayShell};
-use crate::shell::panels::PanelHost;
-use crate::shell::theme::{color, radius};
+use crate::shell::shared::theme::{color, radius};
 use crate::shell::{InputHandlerHook, KeyRequest, ShortcutLookup, WindowControlsHandlers};
 
-mod body;
-mod bottom_bar;
-mod dock;
-mod overlays;
-mod top_bar;
+pub(crate) mod controller;
+mod regions;
+pub(crate) mod state;
+
+use state::WorkbenchState;
 
 pub(crate) fn render(
     state: &WorkbenchState,
@@ -57,7 +56,7 @@ pub(crate) fn render(
         .border_color(color::gray::g40())
         .bg(color::gray::g05())
         .text_color(color::gray::g90())
-        .child(top_bar::render(
+        .child(regions::top_bar::render(
             state,
             window,
             window_controls,
@@ -72,14 +71,14 @@ pub(crate) fn render(
             input_handler_hook,
             editor_focus,
         ))
-        .child(bottom_bar::render(
+        .child(regions::bottom_bar::render(
             state,
             &shortcut_lookup,
             anchor_registry,
             language_server_active,
         ))
         .child(overlay_shell)
-        .child(overlays::bubble_layer::render())
+        .child(regions::overlay_layer::bubble_layer::render())
 }
 
 fn render_body(
@@ -92,9 +91,9 @@ fn render_body(
     let mut row = div().flex_1().flex().flex_row().w_full().overflow_hidden();
 
     if state.left_dock.is_visible() {
-        row = row.child(dock::left::render(&state.left_dock, host));
+        row = row.child(regions::left_dock::render(&state.left_dock, host));
     }
-    row = row.child(body::render(
+    row = row.child(regions::editor_area::render(
         &state.bottom_dock,
         &state.editor,
         host,
@@ -103,7 +102,7 @@ fn render_body(
         editor_focus,
     ));
     if state.right_dock.is_visible() {
-        row = row.child(dock::right::render(&state.right_dock, host));
+        row = row.child(regions::right_dock::render(&state.right_dock, host));
     }
 
     row

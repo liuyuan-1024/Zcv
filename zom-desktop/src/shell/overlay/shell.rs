@@ -8,12 +8,10 @@ use gpui::{
     point, prelude::*, px,
 };
 
-use super::{
-    ActiveOverlay, AnchorRegistry, OverlayAnchor, OverlayKind, OverlayManager, language_servers,
-    project_picker,
-};
+use super::{ActiveOverlay, AnchorRegistry, OverlayAnchor, OverlayKind, OverlayManager};
 use crate::shell::ActionRequest;
-use crate::shell::theme::space;
+use crate::shell::features::{language_servers, project_picker};
+use crate::shell::shared::theme::space;
 
 pub(crate) struct OverlayShell {
     manager: Entity<OverlayManager>,

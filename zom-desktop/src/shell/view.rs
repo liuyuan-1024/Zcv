@@ -8,24 +8,26 @@ use gpui::{
     AppContext, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
     IntoElement, Pixels, Point, Render, UTF16Selection, Window,
 };
+use zom_command::HostEffect;
 use zom_command::Invocation;
 use zom_command::commands::window as window_commands;
 
 use crate::app::App;
 
-use super::element_ids;
-use super::model::WorkbenchState;
+use super::features::{PanelHost, PanelId};
 use super::overlay::{AnchorRegistry, OverlayAnchor, OverlayKind, OverlayManager, OverlayShell};
-use super::panels::PanelHost;
 use super::platform::project as platform_project;
 use super::platform::window as platform_window;
-use super::platform::window::WindowAction;
+use super::shared::element_ids;
 use super::workbench;
+use super::workbench::controller::WorkbenchController;
+use super::workbench::state::WorkbenchState;
 use super::{ActionRequest, InputHandlerHook, KeyRequest, ShortcutLookup, WindowControlsHandlers};
 
 /// shell 端的根 View：拥有 App 状态与每窗口的 `PanelHost`。
 pub(crate) struct ShellView {
     app: Rc<RefCell<App>>,
+    workbench: Rc<RefCell<WorkbenchController>>,
     panel_host: PanelHost,
     overlay_manager: Entity<OverlayManager>,
     anchor_registry: Entity<AnchorRegistry>,
@@ -36,11 +38,13 @@ pub(crate) struct ShellView {
 impl ShellView {
     pub(super) fn new(app: App, cx: &mut Context<Self>) -> Self {
         let app = Rc::new(RefCell::new(app));
+        let workbench = Rc::new(RefCell::new(WorkbenchController::new()));
         let overlay_manager = cx.new(|_| OverlayManager::new());
         let anchor_registry = cx.new(|_| AnchorRegistry::new());
         let editor_focus = cx.focus_handle();
         let open_local_project = bind_action_request(
             Rc::clone(&app),
+            Rc::clone(&workbench),
             overlay_manager.clone(),
             editor_focus.clone(),
             zom_command::commands::workspace::open_local_project(),
@@ -56,6 +60,7 @@ impl ShellView {
 
         Self {
             app,
+            workbench,
             panel_host: PanelHost::new(),
             overlay_manager,
             anchor_registry,
@@ -69,13 +74,17 @@ impl ShellView {
     }
 
     fn workbench_state(&self) -> WorkbenchState {
-        self.app.borrow().workbench_state()
+        let app = self.app.borrow();
+        self.workbench
+            .borrow()
+            .state(app.project_title(), app.editor_state())
     }
 
     /// 把一个 [`Invocation`] 绑成 [`ActionRequest`]：点击时派发并应用窗口动作。
     fn bind_action(&self, invocation: Invocation) -> ActionRequest {
         bind_action_request(
             Rc::clone(&self.app),
+            Rc::clone(&self.workbench),
             self.overlay_manager.clone(),
             self.editor_focus.clone(),
             invocation,
@@ -92,6 +101,7 @@ impl ShellView {
 
     fn key_request(&self) -> KeyRequest {
         let app = Rc::clone(&self.app);
+        let workbench = Rc::clone(&self.workbench);
         let overlays = self.overlay_manager.clone();
         let editor_focus_fallback = self.editor_focus.clone();
         Rc::new(move |chord, window, cx| {
@@ -103,9 +113,10 @@ impl ShellView {
                 }
             };
 
-            apply_window_actions(
-                outcome.actions,
+            apply_host_effects(
+                outcome.effects,
                 &app,
+                &workbench,
                 &overlays,
                 &editor_focus_fallback,
                 window,
@@ -172,54 +183,97 @@ fn dismiss_overlay(overlays: &Entity<OverlayManager>, window: &mut Window, cx: &
 
 fn bind_action_request(
     app: Rc<RefCell<App>>,
+    workbench: Rc<RefCell<WorkbenchController>>,
     overlays: Entity<OverlayManager>,
     editor_focus_fallback: FocusHandle,
     invocation: Invocation,
 ) -> ActionRequest {
     Rc::new(move |window, cx| {
-        let actions = match app.borrow_mut().dispatch(invocation.clone()) {
-            Ok(actions) => actions,
+        let effects = match app.borrow_mut().dispatch(invocation.clone()) {
+            Ok(effects) => effects,
             Err(error) => {
                 eprintln!("命令执行失败：{error}");
                 return;
             }
         };
-        apply_window_actions(actions, &app, &overlays, &editor_focus_fallback, window, cx);
+        apply_host_effects(
+            effects,
+            &app,
+            &workbench,
+            &overlays,
+            &editor_focus_fallback,
+            window,
+            cx,
+        );
     })
 }
 
-fn apply_window_actions(
-    actions: Vec<WindowAction>,
+fn apply_host_effects(
+    effects: Vec<HostEffect>,
     app: &Rc<RefCell<App>>,
+    workbench: &Rc<RefCell<WorkbenchController>>,
     overlays: &Entity<OverlayManager>,
     editor_focus_fallback: &FocusHandle,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    for action in actions {
-        match action {
-            WindowAction::OpenOverlay(kind) => {
-                let anchor = anchor_for_overlay(kind);
-                // 手册 21.7：关闭时焦点回到"先前 focus 目标"——open 这一帧 window
-                // 里实际聚焦的元素。查不到（窗口刚启动等）退回 editor 焦点，避免
-                // 关闭后焦点悬空。
-                let focus_to_restore = window
-                    .focused(cx)
-                    .unwrap_or_else(|| editor_focus_fallback.clone());
-                overlays.update(cx, |overlays, cx| {
-                    overlays.open(kind, anchor, focus_to_restore, cx);
-                });
+    for effect in effects {
+        match effect {
+            HostEffect::Quit => platform_window::quit(cx),
+            HostEffect::Minimize => platform_window::minimize(window),
+            HostEffect::ToggleMaximize => platform_window::toggle_maximize(window),
+            HostEffect::TogglePanel(panel_str_id) => {
+                let Some(panel) = PanelId::from_command_str_id(&panel_str_id) else {
+                    eprintln!("HostEffect::TogglePanel 收到未知 panel id：{panel_str_id}");
+                    continue;
+                };
+                workbench.borrow_mut().toggle_panel(panel);
                 window.refresh();
             }
-            WindowAction::DismissOverlay => {
-                dismiss_overlay(overlays, window, cx);
+            HostEffect::ShowProjectPicker => {
+                open_overlay(
+                    OverlayKind::ProjectPicker,
+                    overlays,
+                    editor_focus_fallback,
+                    window,
+                    cx,
+                );
             }
-            WindowAction::OpenLocalProject => {
+            HostEffect::OpenLocalProject => {
                 open_local_project(Rc::clone(app), overlays, window, cx);
             }
-            other => platform_window::apply(other, window, cx),
+            HostEffect::ShowLanguageServers => {
+                open_overlay(
+                    OverlayKind::LanguageServers,
+                    overlays,
+                    editor_focus_fallback,
+                    window,
+                    cx,
+                );
+            }
+            HostEffect::DismissOverlay => dismiss_overlay(overlays, window, cx),
         }
     }
+}
+
+fn open_overlay(
+    kind: OverlayKind,
+    overlays: &Entity<OverlayManager>,
+    editor_focus_fallback: &FocusHandle,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    let anchor = anchor_for_overlay(kind);
+    // 手册 21.7：关闭时焦点回到"先前 focus 目标"——open 这一帧 window
+    // 里实际聚焦的元素。查不到（窗口刚启动等）退回 editor 焦点，避免
+    // 关闭后焦点悬空。
+    let focus_to_restore = window
+        .focused(cx)
+        .unwrap_or_else(|| editor_focus_fallback.clone());
+    overlays.update(cx, |overlays, cx| {
+        overlays.open(kind, anchor, focus_to_restore, cx);
+    });
+    window.refresh();
 }
 
 fn open_local_project(

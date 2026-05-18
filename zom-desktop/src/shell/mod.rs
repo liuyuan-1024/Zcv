@@ -7,16 +7,11 @@
 //!
 //! `shell` 不依赖 `app`；本模块只暴露 `run(App)`，由 `main.rs` 调用。
 
-mod assets;
 mod boot;
-mod element_ids;
-mod keyboard;
-pub(crate) mod model;
+pub(crate) mod features;
 pub(crate) mod overlay;
-pub(crate) mod panels;
 pub(crate) mod platform;
-pub(crate) mod primitives;
-pub(crate) mod theme;
+pub(crate) mod shared;
 mod view;
 pub(crate) mod workbench;
 
@@ -25,7 +20,7 @@ use std::rc::Rc;
 use gpui::{App as GpuiApp, Bounds, Pixels, Window};
 
 pub use boot::run;
-pub(crate) use keyboard::normalized_chord;
+pub(crate) use shared::keyboard::normalized_chord;
 
 /// 一个已经绑好命令的点击回调 —— shell 子组件不接触 [`Invocation`]，也无需
 /// 反向 import `app::*`，触发时直接 `on_click(...)` 即可。

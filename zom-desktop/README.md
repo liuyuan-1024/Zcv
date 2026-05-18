@@ -39,20 +39,24 @@ zom-desktop → zom-engine / zom-workspace / zom-view / zom-command
 
 ```text
 src/main.rs         二进制入口，声明 shell / app 模块
-src/app/mod.rs      App 状态、启动装配、WorkbenchState 投影
-src/app/command.rs  命令派发、keymap 解析与 HostEffect 翻译
+src/app/mod.rs      App 状态、启动装配、编辑器状态投影
+src/app/command.rs  命令派发、keymap 解析与 HostEffect 收集
 src/app/ime.rs      IME 桥接与 UTF-16 / byte 坐标换算
 src/shell/mod.rs    shell 门面与共享回调类型
 src/shell/boot.rs   GPUI 应用启动与首窗口装配
 src/shell/view.rs   ShellView、渲染根与 EntityInputHandler
-src/shell/keyboard.rs
+src/shell/shared/keyboard.rs
                     OS 按键 → 归一化 KeyChord 字符串
-src/shell/model/    ShellState / WorkbenchState / DockState / PanelId
-src/shell/primitives/
-                    L2 视觉原语
-src/shell/panels/    L3 业务 panel 与 PanelHost
-src/shell/workbench/ L4 窗口外壳区域
-src/shell/theme/    第一版视觉 token
+src/shell/shared/   资源、element id、主题 token 与 L2 视觉原语
+src/shell/features/ L3 功能切片：业务 panel、功能 overlay、PanelId 与 PanelHost
+src/shell/workbench/controller.rs
+                    WorkbenchController，持有每窗口 dock / panel UI 状态
+src/shell/workbench/state.rs
+                    WorkbenchState / DockState 等窗口布局状态
+src/shell/workbench/regions/{left,bottom,right}_dock.rs
+                    各 dock 自己声明固定承载的 panel
+src/shell/workbench/regions/
+                    L4 窗口外壳区域
 ```
 
 ## 相关文档

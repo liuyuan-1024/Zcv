@@ -1,17 +1,14 @@
 //! Overlay 类型骨架（手册 21、布局模型 7）。
 //!
 //! Manager 作为 GPUI `Entity<OverlayManager>` 挂在 `ShellView` 上，命令系统
-//! 只通过 `WindowAction::OpenOverlay(kind)` 请求打开某类 overlay；anchor 由
-//! shell 按 kind 自行决定，不进入 `HostEffect`。
+//! 只通过 `HostEffect` 请求打开某类 overlay；anchor 由 shell 按 kind 自行决定。
 //!
 //! 闭合枚举：新增 overlay 形态 = 在这里加变体 + 各处 match 编译报缺。
 
 use gpui::ElementId;
 
 mod anchor;
-mod language_servers;
 mod manager;
-mod project_picker;
 mod shell;
 pub(crate) use anchor::{AnchorRegistry, track_anchor};
 pub(crate) use manager::{ActiveOverlay, OverlayManager};

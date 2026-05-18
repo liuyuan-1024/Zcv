@@ -329,7 +329,12 @@ fn line_step_should_move_caret_to_same_display_column_on_target_line() {
     let mut buffer = buffer("abcdef\nghijkl");
     // caret 在 line 0 col 3（"abc|def"）。
     let after = buffer
-        .move_selections(set_caret(3), MovementDirection::Next, Motion::LineStep, false)
+        .move_selections(
+            set_caret(3),
+            MovementDirection::Next,
+            Motion::LineStep,
+            false,
+        )
         .unwrap();
     // 下移：落到 line 1 col 3（"ghi|jkl" = byte 7 + 3 = byte 10）。
     assert_eq!(after.primary().head(), b(10));
@@ -346,7 +351,12 @@ fn line_step_should_clamp_to_line_end_on_shorter_target_line() {
     let mut buffer = buffer("abcdef\nxy");
     // caret 在 line 0 col 5（"abcde|f"）。
     let after = buffer
-        .move_selections(set_caret(5), MovementDirection::Next, Motion::LineStep, false)
+        .move_selections(
+            set_caret(5),
+            MovementDirection::Next,
+            Motion::LineStep,
+            false,
+        )
         .unwrap();
     // line 1 只有 2 列，应当 clamp 到行尾（byte 7 + 2 = byte 9）。
     assert_eq!(after.primary().head(), b(9));
@@ -356,7 +366,12 @@ fn line_step_should_clamp_to_line_end_on_shorter_target_line() {
 fn line_step_at_first_line_previous_should_land_at_document_start() {
     let mut buffer = buffer("abc\ndef");
     let after = buffer
-        .move_selections(set_caret(2), MovementDirection::Previous, Motion::LineStep, false)
+        .move_selections(
+            set_caret(2),
+            MovementDirection::Previous,
+            Motion::LineStep,
+            false,
+        )
         .unwrap();
     assert_eq!(after.primary().head(), b(0));
 }
@@ -366,7 +381,12 @@ fn line_step_at_last_line_next_should_land_at_document_end() {
     let mut buffer = buffer("abc\ndef");
     // caret 在 line 1 col 1。
     let after = buffer
-        .move_selections(set_caret(5), MovementDirection::Next, Motion::LineStep, false)
+        .move_selections(
+            set_caret(5),
+            MovementDirection::Next,
+            Motion::LineStep,
+            false,
+        )
         .unwrap();
     // 末行再下：跳到文档末尾。
     assert_eq!(after.primary().head(), buffer.len_bytes());

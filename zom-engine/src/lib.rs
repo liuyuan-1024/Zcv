@@ -49,8 +49,8 @@ pub use search::{
     SearchResult,
 };
 pub use selection::{
-    CompositionSelection, CompositionState, Cursor, Motion, MovementDirection, MovementUnit, Selection,
-    SelectionMergePolicy, SelectionSet,
+    CompositionSelection, CompositionState, Cursor, Motion, MovementDirection, MovementUnit,
+    Selection, SelectionMergePolicy, SelectionSet,
 };
 pub use slicing::{LineSlice, TextSlice, Viewport, ViewportSlice, VisibleLine};
 pub use snapshot::Snapshot;

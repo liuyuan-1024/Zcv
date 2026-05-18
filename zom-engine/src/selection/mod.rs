@@ -11,5 +11,5 @@ mod selection_set;
 pub use composition::{CompositionSelection, CompositionState};
 pub use core::Selection;
 pub use cursor::Cursor;
-pub use movement::{MovementDirection, MovementUnit};
+pub use movement::{Motion, MovementDirection, MovementUnit};
 pub use selection_set::{SelectionMergePolicy, SelectionSet};

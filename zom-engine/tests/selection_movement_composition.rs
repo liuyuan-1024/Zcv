@@ -226,3 +226,249 @@ fn composition_relative_selection_inside_grapheme_cluster_should_be_rejected_ato
     assert!(buffer.is_composing());
     assert_eq!(buffer.text().as_ref(), "ab");
 }
+
+// ====================================================================
+// Tab / Shift-Tab：标准 IDE 语义
+// ====================================================================
+
+fn buffer_with_tab(text: &str, indent_width: usize, insert_spaces: bool) -> Buffer {
+    use std::num::NonZeroUsize;
+    let mut config = BufferConfig::default();
+    let nz = NonZeroUsize::new(indent_width).unwrap();
+    config.tab = TabConfig::new(nz, nz, insert_spaces);
+    Buffer::from_text(text.to_string(), config).unwrap()
+}
+
+#[test]
+fn indent_at_caret_should_insert_soft_tab_aligned_to_next_indent_stop() {
+    let mut buffer = buffer("abc");
+    // caret 在 col 2 → 软 tab = 4 − 2%4 = 2 个空格，对齐到 col 4。
+    buffer.indent_at_selections(set_caret(2)).unwrap();
+    assert_eq!(buffer.text().as_ref(), "ab  c");
+    assert_eq!(buffer.selection().primary().head(), b(4));
+}
+
+#[test]
+fn indent_at_caret_on_first_column_should_insert_full_indent_width() {
+    let mut buffer = buffer("abc");
+    // caret 在 col 0 → 软 tab = 4 个空格。
+    buffer.indent_at_selections(set_caret(0)).unwrap();
+    assert_eq!(buffer.text().as_ref(), "    abc");
+    assert_eq!(buffer.selection().primary().head(), b(4));
+}
+
+#[test]
+fn indent_at_caret_after_existing_tab_should_account_for_display_column() {
+    // 已有 "\t" 展开占 col 0..4，caret 在 col 4 → 软 tab = 4 个空格。
+    let mut buffer = buffer("\tabc");
+    buffer.indent_at_selections(set_caret(1)).unwrap();
+    assert_eq!(buffer.text().as_ref(), "\t    abc");
+    assert_eq!(buffer.selection().primary().head(), b(5));
+}
+
+#[test]
+fn indent_with_multiple_carets_should_apply_per_caret_soft_tabs() {
+    // 两个 caret 各自按所在 display column 计算软 tab。
+    let mut buffer = buffer("abc\ndefg");
+    let set = SelectionSet::new(vec![caret(1), caret(6)]);
+    // caret 1 col 1 → 3 空格；caret 2 col 2 → 2 空格。
+    buffer.indent_at_selections(set).unwrap();
+    assert_eq!(buffer.text().as_ref(), "a   bc\nde  fg");
+}
+
+#[test]
+fn indent_with_non_empty_selection_should_indent_lines_without_replacing_content() {
+    // 单行非空选区：Tab 不该替换选中内容，而是按行块缩进。
+    let mut buffer = buffer("abc");
+    let set = SelectionSet::new(vec![selection(1, 2)]);
+    buffer.indent_at_selections(set).unwrap();
+    assert_eq!(buffer.text().as_ref(), "    abc");
+}
+
+#[test]
+fn indent_with_multi_line_selection_should_indent_each_touched_line_once() {
+    let mut buffer = buffer("ab\ncd\nef");
+    // 跨 line 0..line 1 的选区：缩进 line 0 与 line 1，line 2 不动。
+    let set = SelectionSet::new(vec![selection(0, 4)]);
+    buffer.indent_at_selections(set).unwrap();
+    assert_eq!(buffer.text().as_ref(), "    ab\n    cd\nef");
+}
+
+#[test]
+fn indent_with_insert_spaces_false_should_insert_literal_tab_character() {
+    let mut buffer = buffer_with_tab("ab", 4, false);
+    buffer.indent_at_selections(set_caret(1)).unwrap();
+    assert_eq!(buffer.text().as_ref(), "a\tb");
+    assert_eq!(buffer.selection().primary().head(), b(2));
+}
+
+#[test]
+fn outdent_should_remove_leading_indent_regardless_of_selection_shape() {
+    // caret 行：删除前导 4 空格。
+    let mut buf = buffer("    abc");
+    buf.outdent_at_selections(set_caret(5)).unwrap();
+    assert_eq!(buf.text().as_ref(), "abc");
+
+    // 行首是真 tab：只删 tab。
+    let mut buf = buffer("\tabc");
+    buf.outdent_at_selections(set_caret(2)).unwrap();
+    assert_eq!(buf.text().as_ref(), "abc");
+
+    // 行首空白不足 indent_width：尽量删。
+    let mut buf = buffer("  abc");
+    buf.outdent_at_selections(set_caret(3)).unwrap();
+    assert_eq!(buf.text().as_ref(), "abc");
+}
+
+// ====================================================================
+// LineStep（上 / 下移动一行）
+// ====================================================================
+
+#[test]
+fn line_step_should_move_caret_to_same_display_column_on_target_line() {
+    let mut buffer = buffer("abcdef\nghijkl");
+    // caret 在 line 0 col 3（"abc|def"）。
+    let after = buffer
+        .move_selections(set_caret(3), MovementDirection::Next, Motion::LineStep, false)
+        .unwrap();
+    // 下移：落到 line 1 col 3（"ghi|jkl" = byte 7 + 3 = byte 10）。
+    assert_eq!(after.primary().head(), b(10));
+
+    // 再上移回 line 0 col 3。
+    let after = buffer
+        .move_selections(after, MovementDirection::Previous, Motion::LineStep, false)
+        .unwrap();
+    assert_eq!(after.primary().head(), b(3));
+}
+
+#[test]
+fn line_step_should_clamp_to_line_end_on_shorter_target_line() {
+    let mut buffer = buffer("abcdef\nxy");
+    // caret 在 line 0 col 5（"abcde|f"）。
+    let after = buffer
+        .move_selections(set_caret(5), MovementDirection::Next, Motion::LineStep, false)
+        .unwrap();
+    // line 1 只有 2 列，应当 clamp 到行尾（byte 7 + 2 = byte 9）。
+    assert_eq!(after.primary().head(), b(9));
+}
+
+#[test]
+fn line_step_at_first_line_previous_should_land_at_document_start() {
+    let mut buffer = buffer("abc\ndef");
+    let after = buffer
+        .move_selections(set_caret(2), MovementDirection::Previous, Motion::LineStep, false)
+        .unwrap();
+    assert_eq!(after.primary().head(), b(0));
+}
+
+#[test]
+fn line_step_at_last_line_next_should_land_at_document_end() {
+    let mut buffer = buffer("abc\ndef");
+    // caret 在 line 1 col 1。
+    let after = buffer
+        .move_selections(set_caret(5), MovementDirection::Next, Motion::LineStep, false)
+        .unwrap();
+    // 末行再下：跳到文档末尾。
+    assert_eq!(after.primary().head(), buffer.len_bytes());
+}
+
+#[test]
+fn line_step_should_preserve_anchor_when_extending_selection() {
+    let mut buffer = buffer("abcdef\nghijkl");
+    // 选区 anchor=byte 1, head=byte 3（已选 "bc"）。
+    let initial = SelectionSet::new(vec![selection(1, 3)]);
+    let after = buffer
+        .move_selections(initial, MovementDirection::Next, Motion::LineStep, true)
+        .unwrap();
+    // 扩展：anchor 保留 1，head 下移到 line 1 col 3 = byte 10。
+    let primary = *after.primary();
+    assert_eq!(primary.anchor(), b(1));
+    assert_eq!(primary.head(), b(10));
+}
+
+// ====================================================================
+// PageStep（按 N 行翻页）
+// ====================================================================
+
+#[test]
+fn page_step_should_jump_n_lines_keeping_display_column() {
+    // 5 行，每行 6 列。
+    let mut buffer = buffer("aaaaaa\nbbbbbb\ncccccc\ndddddd\neeeeee");
+    // caret 在 line 0 col 3，PageDown 跳 2 行：line 2 col 3。
+    let after = buffer
+        .move_selections(
+            set_caret(3),
+            MovementDirection::Next,
+            Motion::PageStep { lines: 2 },
+            false,
+        )
+        .unwrap();
+    // line 2 起始 byte = 14；col 3 → byte 17。
+    assert_eq!(after.primary().head(), b(17));
+
+    // 反向跳 1 行：回到 line 1 col 3 = byte 10。
+    let after = buffer
+        .move_selections(
+            after,
+            MovementDirection::Previous,
+            Motion::PageStep { lines: 1 },
+            false,
+        )
+        .unwrap();
+    assert_eq!(after.primary().head(), b(10));
+}
+
+#[test]
+fn page_step_should_clamp_to_last_line_when_lines_exceeds_remaining() {
+    let mut buffer = buffer("aa\nbb\ncc");
+    // caret 在 line 0，PageDown 跳 10 行：超出末行 → 落在末行同列（line 2 col 1）。
+    let after = buffer
+        .move_selections(
+            set_caret(1),
+            MovementDirection::Next,
+            Motion::PageStep { lines: 10 },
+            false,
+        )
+        .unwrap();
+    // line 2 起始 byte = 6；col 1 → byte 7。
+    assert_eq!(after.primary().head(), b(7));
+}
+
+#[test]
+fn page_step_at_last_line_next_should_land_at_document_end() {
+    let mut buffer = buffer("aa\nbb\ncc");
+    // caret 在 line 2，PageDown：已在末行 → 文档末尾。
+    let after = buffer
+        .move_selections(
+            set_caret(6),
+            MovementDirection::Next,
+            Motion::PageStep { lines: 5 },
+            false,
+        )
+        .unwrap();
+    assert_eq!(after.primary().head(), buffer.len_bytes());
+}
+
+#[test]
+fn page_step_at_first_line_previous_should_land_at_document_start() {
+    let mut buffer = buffer("aa\nbb\ncc");
+    // caret 在 line 0 col 1，PageUp：已在首行 → 文档开头。
+    let after = buffer
+        .move_selections(
+            set_caret(1),
+            MovementDirection::Previous,
+            Motion::PageStep { lines: 5 },
+            false,
+        )
+        .unwrap();
+    assert_eq!(after.primary().head(), b(0));
+}
+
+#[test]
+fn outdent_should_be_noop_when_no_leading_whitespace() {
+    let mut buffer = buffer("abc");
+    let result = buffer.outdent_at_selections(set_caret(1)).unwrap();
+    // 无任何前导空白：不产生事务。
+    assert!(result.is_none());
+    assert_eq!(buffer.text().as_ref(), "abc");
+}

@@ -13,7 +13,7 @@
 //! app.dispatch(invocation);
 //! ```
 
-use zom_engine::{ByteOffset, MovementDirection, MovementUnit, Selection, SelectionSet};
+use zom_engine::{ByteOffset, Motion, MovementDirection, MovementUnit, Selection, SelectionSet};
 
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
@@ -28,6 +28,9 @@ use zom_workspace::BufferId;
 
 pub const INSERT_TEXT: &str = "editor.insert_text";
 pub const REPLACE_SELECTION: &str = "editor.replace_selection";
+pub const INSERT_NEWLINE: &str = "editor.insert_newline";
+pub const INDENT: &str = "editor.indent";
+pub const OUTDENT: &str = "editor.outdent";
 pub const DELETE_BACKWARD: &str = "editor.delete_backward";
 pub const DELETE_FORWARD: &str = "editor.delete_forward";
 pub const SELECT_ALL: &str = "editor.select_all";
@@ -115,26 +118,31 @@ impl TryFrom<CommandArgs> for ImeCommitArgs {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MoveSelectionArgs {
     pub direction: MovementDirection,
-    pub unit: MovementUnit,
+    pub motion: Motion,
     pub extend: bool,
 }
 
 impl From<MoveSelectionArgs> for CommandArgs {
     fn from(args: MoveSelectionArgs) -> Self {
-        CommandArgs::new()
+        let mut out = CommandArgs::new()
             .with("direction", direction_to_str(args.direction))
-            .with("unit", unit_to_str(args.unit))
-            .with("extend", if args.extend { "true" } else { "false" })
+            .with("motion", motion_to_str(args.motion))
+            .with("extend", if args.extend { "true" } else { "false" });
+        if let Motion::PageStep { lines } = args.motion {
+            out = out.with("lines", lines.to_string());
+        }
+        out
     }
 }
 
 impl TryFrom<CommandArgs> for MoveSelectionArgs {
     type Error = CommandError;
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["direction", "unit", "extend"])?;
+        reject_unknown_args(&args, &["direction", "motion", "extend", "lines"])?;
+        let motion_kind = required_arg(&args, "motion")?;
         Ok(Self {
             direction: parse_direction(&required_arg(&args, "direction")?)?,
-            unit: parse_unit(&required_arg(&args, "unit")?)?,
+            motion: parse_motion(&motion_kind, &args)?,
             extend: parse_optional_bool(args.get("extend"))?,
         })
     }
@@ -156,6 +164,18 @@ pub fn replace_selection(text: impl Into<String>) -> Invocation {
         cid(REPLACE_SELECTION),
         ReplaceSelectionArgs { text: text.into() }.into(),
     )
+}
+
+pub fn insert_newline() -> Invocation {
+    (cid(INSERT_NEWLINE), CommandArgs::new())
+}
+
+pub fn indent() -> Invocation {
+    (cid(INDENT), CommandArgs::new())
+}
+
+pub fn outdent() -> Invocation {
+    (cid(OUTDENT), CommandArgs::new())
 }
 
 pub fn delete_backward() -> Invocation {
@@ -180,12 +200,12 @@ pub fn redo() -> Invocation {
 
 pub fn move_selection(
     direction: MovementDirection,
-    unit: MovementUnit,
+    motion: impl Into<Motion>,
     extend: bool,
 ) -> Invocation {
     let args = MoveSelectionArgs {
         direction,
-        unit,
+        motion: motion.into(),
         extend,
     };
     (cid(MOVE_SELECTION), args.into())
@@ -223,6 +243,21 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         Box::new(run_ime_commit),
     );
 
+    registry
+        .install(
+            keymap,
+            INSERT_NEWLINE,
+            "插入换行",
+            Box::new(run_insert_newline),
+        )
+        .key("enter")
+        .key("return");
+    registry
+        .install(keymap, INDENT, "增加缩进", Box::new(run_indent))
+        .key("tab");
+    registry
+        .install(keymap, OUTDENT, "减少缩进", Box::new(run_outdent))
+        .key("shift-tab");
     registry
         .install(
             keymap,
@@ -267,20 +302,38 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "移动选区",
             Box::new(run_move_selection),
         )
+        .key_with("up", move_args(Previous, Motion::LineStep, false))
+        .key_with("down", move_args(Next, Motion::LineStep, false))
+        // pageup / pagedown：lines 暂用固定 20 作 fallback；
+        // TODO: view 层 ViewportState 加 visible_lines 字段后，由 handler 从当前 view 注入真实值。
+        .key_with("pageup", move_args(Previous, Motion::PageStep { lines: 20 }, false))
+        .key_with("pagedown", move_args(Next, Motion::PageStep { lines: 20 }, false))
         .key_with("left", move_args(Previous, Grapheme, false))
         .key_with("right", move_args(Next, Grapheme, false))
+        .key_with("shift-up", move_args(Previous, Motion::LineStep, true))
+        .key_with("shift-down", move_args(Next, Motion::LineStep, true))
+        .key_with("shift-pageup", move_args(Previous, Motion::PageStep { lines: 20 }, true))
+        .key_with("shift-pagedown", move_args(Next, Motion::PageStep { lines: 20 }, true))
         .key_with("shift-left", move_args(Previous, Grapheme, true))
         .key_with("shift-right", move_args(Next, Grapheme, true))
         .key_with("alt-left", move_args(Previous, Word, false))
         .key_with("alt-right", move_args(Next, Word, false))
-        .key_with("shift-alt-left", move_args(Previous, Word, true))
-        .key_with("shift-alt-right", move_args(Next, Word, true));
+        .key_with("alt-shift-left", move_args(Previous, Word, true))
+        .key_with("alt-shift-right", move_args(Next, Word, true))
+        .key_with("home", move_args(Previous, LineEdge, false))
+        .key_with("end", move_args(Next, LineEdge, false))
+        .key_with("shift-home", move_args(Previous, LineEdge, true))
+        .key_with("shift-end", move_args(Next, LineEdge, true));
 }
 
-fn move_args(direction: MovementDirection, unit: MovementUnit, extend: bool) -> CommandArgs {
+fn move_args(
+    direction: MovementDirection,
+    motion: impl Into<Motion>,
+    extend: bool,
+) -> CommandArgs {
     MoveSelectionArgs {
         direction,
-        unit,
+        motion: motion.into(),
         extend,
     }
     .into()
@@ -297,13 +350,17 @@ fn direction_to_str(direction: MovementDirection) -> &'static str {
     }
 }
 
-fn unit_to_str(unit: MovementUnit) -> &'static str {
-    match unit {
-        MovementUnit::Grapheme => "grapheme",
-        MovementUnit::Word => "word",
-        MovementUnit::Identifier => "identifier",
-        MovementUnit::Subword => "subword",
-        MovementUnit::Symbol => "symbol",
+fn motion_to_str(motion: Motion) -> &'static str {
+    match motion {
+        Motion::ByUnit(MovementUnit::Grapheme) => "grapheme",
+        Motion::ByUnit(MovementUnit::Word) => "word",
+        Motion::ByUnit(MovementUnit::Identifier) => "identifier",
+        Motion::ByUnit(MovementUnit::Subword) => "subword",
+        Motion::ByUnit(MovementUnit::Symbol) => "symbol",
+        Motion::ByUnit(MovementUnit::LineEdge) => "line-edge",
+        Motion::LineStep => "line-step",
+        // PageStep 的 lines 通过 args.lines 另行携带，motion 字段仍是扁平字符串。
+        Motion::PageStep { .. } => "page-step",
     }
 }
 
@@ -315,14 +372,28 @@ fn parse_direction(value: &str) -> Result<MovementDirection, CommandError> {
     }
 }
 
-fn parse_unit(value: &str) -> Result<MovementUnit, CommandError> {
+fn parse_motion(value: &str, args: &CommandArgs) -> Result<Motion, CommandError> {
     match value {
-        "grapheme" | "character" | "char" => Ok(MovementUnit::Grapheme),
-        "word" => Ok(MovementUnit::Word),
-        "identifier" => Ok(MovementUnit::Identifier),
-        "subword" => Ok(MovementUnit::Subword),
-        "symbol" => Ok(MovementUnit::Symbol),
-        other => Err(CommandError::InvalidArgs(format!("未知移动粒度：{other}"))),
+        "grapheme" | "character" | "char" => Ok(Motion::ByUnit(MovementUnit::Grapheme)),
+        "word" => Ok(Motion::ByUnit(MovementUnit::Word)),
+        "identifier" => Ok(Motion::ByUnit(MovementUnit::Identifier)),
+        "subword" => Ok(Motion::ByUnit(MovementUnit::Subword)),
+        "symbol" => Ok(Motion::ByUnit(MovementUnit::Symbol)),
+        "line-edge" => Ok(Motion::ByUnit(MovementUnit::LineEdge)),
+        "line-step" => Ok(Motion::LineStep),
+        "page-step" => {
+            let raw = args.get("lines").ok_or_else(|| {
+                CommandError::InvalidArgs("page-step 需要 lines 参数".to_string())
+            })?;
+            let lines: u32 = raw
+                .parse()
+                .map_err(|_| CommandError::InvalidArgs(format!("无效 lines：{raw}")))?;
+            if lines == 0 {
+                return Err(CommandError::InvalidArgs("lines 必须 > 0".to_string()));
+            }
+            Ok(Motion::PageStep { lines })
+        }
+        other => Err(CommandError::InvalidArgs(format!("未知光标运动：{other}"))),
     }
 }
 
@@ -359,6 +430,60 @@ fn run_replace_selection(
         let buffer = buffer_mut(context, buffer_id)?;
         buffer
             .replace_selections(selections, &args.text)
+            .map_err(command_execution_failed)?;
+        buffer.selection().clone()
+    };
+    set_active_view_selection(context, after)?;
+    Ok(CommandOutcome::default())
+}
+
+fn run_insert_newline(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    let buffer_id = active_buffer_id(context)?;
+    let selections = active_selection(context)?;
+    let after = {
+        let buffer = buffer_mut(context, buffer_id)?;
+        buffer
+            .insert_at_selections(selections, "\n")
+            .map_err(command_execution_failed)?;
+        buffer.selection().clone()
+    };
+    set_active_view_selection(context, after)?;
+    Ok(CommandOutcome::default())
+}
+
+fn run_indent(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    let buffer_id = active_buffer_id(context)?;
+    let selections = active_selection(context)?;
+    let after = {
+        let buffer = buffer_mut(context, buffer_id)?;
+        buffer
+            .indent_at_selections(selections)
+            .map_err(command_execution_failed)?;
+        buffer.selection().clone()
+    };
+    set_active_view_selection(context, after)?;
+    Ok(CommandOutcome::default())
+}
+
+fn run_outdent(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    let buffer_id = active_buffer_id(context)?;
+    let selections = active_selection(context)?;
+    let after = {
+        let buffer = buffer_mut(context, buffer_id)?;
+        buffer
+            .outdent_at_selections(selections)
             .map_err(command_execution_failed)?;
         buffer.selection().clone()
     };
@@ -461,7 +586,7 @@ fn run_move_selection(
     let moved = {
         let buffer = buffer_mut(context, buffer_id)?;
         buffer
-            .move_selections(selections, args.direction, args.unit, args.extend)
+            .move_selections(selections, args.direction, args.motion, args.extend)
             .map_err(command_execution_failed)?
     };
     set_active_view_selection(context, moved)?;

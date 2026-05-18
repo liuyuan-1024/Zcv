@@ -8,7 +8,7 @@ use zom_command::{
     Command, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId, CommandQueue,
     CommandRegistry, EffectQueue, KeyBinding, KeyChord, Keymap, KeymapResolution, NoArgs,
 };
-use zom_engine::{ByteOffset, MovementDirection, MovementUnit, Selection, SelectionSet};
+use zom_engine::{ByteOffset, Motion, MovementDirection, MovementUnit, Selection, SelectionSet};
 use zom_view::ViewSet;
 use zom_workspace::{BufferId, Workspace};
 
@@ -81,16 +81,53 @@ fn command_args_should_parse_through_try_from_contract() {
         MoveSelectionArgs::try_from(
             CommandArgs::new()
                 .with("direction", "right")
-                .with("unit", "word")
+                .with("motion", "line-edge")
                 .with("extend", "true")
         )
         .unwrap(),
         MoveSelectionArgs {
             direction: MovementDirection::Next,
-            unit: MovementUnit::Word,
+            motion: Motion::ByUnit(MovementUnit::LineEdge),
             extend: true,
         }
     );
+
+    // page-step 携带 lines。
+    assert_eq!(
+        MoveSelectionArgs::try_from(
+            CommandArgs::new()
+                .with("direction", "next")
+                .with("motion", "page-step")
+                .with("lines", "30")
+        )
+        .unwrap(),
+        MoveSelectionArgs {
+            direction: MovementDirection::Next,
+            motion: Motion::PageStep { lines: 30 },
+            extend: false,
+        }
+    );
+
+    // page-step 缺 lines → 报错。
+    assert!(matches!(
+        MoveSelectionArgs::try_from(
+            CommandArgs::new()
+                .with("direction", "next")
+                .with("motion", "page-step")
+        ),
+        Err(CommandError::InvalidArgs(_))
+    ));
+
+    // 序列化 round-trip：PageStep 自带 lines。
+    let original = MoveSelectionArgs {
+        direction: MovementDirection::Previous,
+        motion: Motion::PageStep { lines: 25 },
+        extend: true,
+    };
+    let serialized: CommandArgs = original.into();
+    assert_eq!(serialized.get("motion"), Some("page-step"));
+    assert_eq!(serialized.get("lines"), Some("25"));
+    assert_eq!(MoveSelectionArgs::try_from(serialized).unwrap(), original);
 
     assert!(NoArgs::try_from(CommandArgs::new()).is_ok());
     assert!(matches!(
@@ -202,6 +239,41 @@ fn builtin_editor_commands_should_edit_active_view_buffer_and_sync_selection() {
 }
 
 #[test]
+fn newline_indent_and_outdent_commands_should_edit_active_view_buffer() {
+    let (mut workspace, mut views, buffer_id) = setup("a");
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::INSERT_NEWLINE, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(text(&workspace, buffer_id), "\na");
+
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::INDENT, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(text(&workspace, buffer_id), "\n    a");
+
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::OUTDENT, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(text(&workspace, buffer_id), "\na");
+}
+
+#[test]
 fn select_all_undo_and_redo_should_roundtrip_text_and_view_selection() {
     let (mut workspace, mut views, buffer_id) = setup("abc");
     let mut registry = CommandRegistry::new();
@@ -301,6 +373,106 @@ fn movement_commands_should_update_active_view_selection() {
     assert_eq!(
         views.active_view().unwrap().selection().primary().head(),
         byte(5)
+    );
+}
+
+#[test]
+fn editor_default_keymap_should_include_line_and_page_movement() {
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    let (_, home_args) = editor::move_selection(
+        MovementDirection::Previous,
+        MovementUnit::LineEdge,
+        false,
+    );
+    assert_eq!(
+        keymap.resolve(&[key("home")], &[]),
+        KeymapResolution::Matched {
+            command: command_id(editor::MOVE_SELECTION),
+            args: home_args,
+        }
+    );
+
+    let (_, shift_end_args) =
+        editor::move_selection(MovementDirection::Next, MovementUnit::LineEdge, true);
+    assert_eq!(
+        keymap.resolve(&[key("shift-end")], &[]),
+        KeymapResolution::Matched {
+            command: command_id(editor::MOVE_SELECTION),
+            args: shift_end_args,
+        }
+    );
+
+    let (_, up_args) =
+        editor::move_selection(MovementDirection::Previous, Motion::LineStep, false);
+    assert_eq!(
+        keymap.resolve(&[key("up")], &[]),
+        KeymapResolution::Matched {
+            command: command_id(editor::MOVE_SELECTION),
+            args: up_args,
+        }
+    );
+
+    let (_, shift_down_args) =
+        editor::move_selection(MovementDirection::Next, Motion::LineStep, true);
+    assert_eq!(
+        keymap.resolve(&[key("shift-down")], &[]),
+        KeymapResolution::Matched {
+            command: command_id(editor::MOVE_SELECTION),
+            args: shift_down_args,
+        }
+    );
+
+    // PageStep：默认 lines=20，序列化时一并写入 args。
+    let (_, pagedown_args) = editor::move_selection(
+        MovementDirection::Next,
+        Motion::PageStep { lines: 20 },
+        false,
+    );
+    assert_eq!(
+        keymap.resolve(&[key("pagedown")], &[]),
+        KeymapResolution::Matched {
+            command: command_id(editor::MOVE_SELECTION),
+            args: pagedown_args,
+        }
+    );
+}
+
+#[test]
+fn editor_default_keymap_should_include_newline_indent_and_outdent() {
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    assert_eq!(
+        keymap.resolve(&[key("enter")], &[]),
+        KeymapResolution::Matched {
+            command: command_id(editor::INSERT_NEWLINE),
+            args: CommandArgs::new(),
+        }
+    );
+    assert_eq!(
+        keymap.resolve(&[key("return")], &[]),
+        KeymapResolution::Matched {
+            command: command_id(editor::INSERT_NEWLINE),
+            args: CommandArgs::new(),
+        }
+    );
+    assert_eq!(
+        keymap.resolve(&[key("tab")], &[]),
+        KeymapResolution::Matched {
+            command: command_id(editor::INDENT),
+            args: CommandArgs::new(),
+        }
+    );
+    assert_eq!(
+        keymap.resolve(&[key("shift-tab")], &[]),
+        KeymapResolution::Matched {
+            command: command_id(editor::OUTDENT),
+            args: CommandArgs::new(),
+        }
     );
 }
 

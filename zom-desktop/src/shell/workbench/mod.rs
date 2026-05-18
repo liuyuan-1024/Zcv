@@ -40,6 +40,7 @@ pub(crate) fn render(
     overlay_shell: Entity<OverlayShell>,
     anchor_registry: Entity<AnchorRegistry>,
     workspace_active: bool,
+    language_server_active: bool,
     key_request: KeyRequest,
     shortcut_lookup: ShortcutLookup,
     input_handler_hook: InputHandlerHook,
@@ -60,7 +61,7 @@ pub(crate) fn render(
             window,
             window_controls,
             &shortcut_lookup,
-            anchor_registry,
+            anchor_registry.clone(),
             workspace_active,
         ))
         .child(render_body(
@@ -70,7 +71,12 @@ pub(crate) fn render(
             input_handler_hook,
             editor_focus,
         ))
-        .child(bottom_bar::render(state, &shortcut_lookup))
+        .child(bottom_bar::render(
+            state,
+            &shortcut_lookup,
+            anchor_registry,
+            language_server_active,
+        ))
         .child(overlay_shell)
         .child(overlays::bubble_layer::render())
 }

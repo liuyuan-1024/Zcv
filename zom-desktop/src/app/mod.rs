@@ -12,8 +12,8 @@ mod ime;
 use crate::shell::model::{BottomBarState, DockState, EditorState, WorkbenchState};
 
 use zom_command::commands::{
-    editor, overlay as overlay_commands, panels as panel_commands, window as window_commands,
-    workspace as workspace_commands,
+    editor, language_server as language_server_commands, overlay as overlay_commands,
+    panels as panel_commands, window as window_commands, workspace as workspace_commands,
 };
 use zom_command::{CommandExecutor, CommandQueue, CommandRegistry, Keymap};
 use zom_view::ViewSet;
@@ -42,6 +42,7 @@ impl App {
         // HostEffect 反馈到 `apply_host_effect`。
         editor::install(&mut registry, &mut keymap);
         overlay_commands::install(&mut registry, &mut keymap);
+        language_server_commands::install(&mut registry, &mut keymap);
         workspace_commands::install(&mut registry, &mut keymap);
         window_commands::install(&mut registry, &mut keymap);
         panel_commands::install(&mut registry, &mut keymap);

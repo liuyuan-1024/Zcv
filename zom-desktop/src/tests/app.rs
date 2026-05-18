@@ -8,7 +8,9 @@ use crate::app::App;
 use crate::shell::model::PanelId;
 use crate::shell::overlay::OverlayKind;
 use crate::shell::platform::window::WindowAction;
-use zom_command::commands::{editor, workspace as workspace_commands};
+use zom_command::commands::{
+    editor, language_server as language_server_commands, workspace as workspace_commands,
+};
 
 #[test]
 fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
@@ -165,6 +167,20 @@ fn project_picker_command_should_emit_open_overlay_window_action() {
     assert_eq!(
         outcome.actions,
         vec![WindowAction::OpenOverlay(OverlayKind::ProjectPicker)]
+    );
+}
+
+#[test]
+fn language_server_status_command_should_emit_open_overlay_window_action() {
+    let mut app = App::new();
+
+    let actions = app
+        .dispatch(language_server_commands::open_status())
+        .unwrap();
+
+    assert_eq!(
+        actions,
+        vec![WindowAction::OpenOverlay(OverlayKind::LanguageServers)]
     );
 }
 

@@ -9,6 +9,7 @@
 use gpui::ElementId;
 
 mod anchor;
+mod language_servers;
 mod manager;
 mod project_picker;
 mod shell;
@@ -28,6 +29,8 @@ pub(crate) use shell::OverlayShell;
 pub(crate) enum OverlayKind {
     /// 顶栏"切换项目"入口的悬浮面板：最近项目列表 + 打开本地文件夹。
     ProjectPicker,
+    /// 底栏"语言服务器"的悬浮面板。
+    LanguageServers,
 }
 
 /// Overlay 的定位锚点（布局模型 7.x 列了 5 种）。第一版只用 `Element`。

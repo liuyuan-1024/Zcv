@@ -133,6 +133,9 @@ impl Render for ShellView {
         let workspace_active = self.overlay_manager.read_with(cx, |manager, _| {
             manager.is_active(OverlayKind::ProjectPicker)
         });
+        let language_server_active = self.overlay_manager.read_with(cx, |manager, _| {
+            manager.is_active(OverlayKind::LanguageServers)
+        });
         workbench::render(
             &state,
             &self.panel_host,
@@ -141,6 +144,7 @@ impl Render for ShellView {
             self.overlay_shell.clone(),
             self.anchor_registry.clone(),
             workspace_active,
+            language_server_active,
             key_request,
             shortcut_lookup,
             input_handler_hook,
@@ -190,6 +194,9 @@ fn apply_window_actions(
 fn anchor_for_overlay(kind: OverlayKind) -> OverlayAnchor {
     match kind {
         OverlayKind::ProjectPicker => OverlayAnchor::Element(element_ids::TOP_BAR_WORKSPACE.into()),
+        OverlayKind::LanguageServers => {
+            OverlayAnchor::Element(element_ids::BOTTOM_BAR_LANGUAGE_SERVER.into())
+        }
     }
 }
 

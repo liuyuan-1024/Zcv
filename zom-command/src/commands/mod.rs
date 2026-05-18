@@ -13,6 +13,7 @@
 
 pub mod diagnostics;
 pub mod editor;
+pub mod language_server;
 pub mod overlay;
 pub mod panels;
 pub mod settings;

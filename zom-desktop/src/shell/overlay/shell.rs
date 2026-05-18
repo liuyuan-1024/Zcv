@@ -9,7 +9,8 @@ use gpui::{
 };
 
 use super::{
-    ActiveOverlay, AnchorRegistry, OverlayAnchor, OverlayKind, OverlayManager, project_picker,
+    ActiveOverlay, AnchorRegistry, OverlayAnchor, OverlayKind, OverlayManager, language_servers,
+    project_picker,
 };
 use crate::shell::theme::space;
 
@@ -62,31 +63,54 @@ fn render_active(
     active: ActiveOverlay,
     anchor_bounds: Option<gpui::Bounds<gpui::Pixels>>,
 ) -> impl IntoElement {
+    let kind = active.kind();
     anchored()
-        .anchor(Corner::TopLeft)
-        .position(anchor_position(active.anchor(), anchor_bounds))
-        .offset(point(px(0.0), space::s8()))
+        .anchor(anchor_corner(kind))
+        .position(anchor_position(kind, active.anchor(), anchor_bounds))
+        .offset(anchor_offset(kind))
         .snap_to_window_with_margin(space::s8())
-        .child(render_kind(active.kind()))
+        .child(render_kind(kind))
 }
 
 fn render_kind(kind: OverlayKind) -> AnyElement {
     match kind {
         OverlayKind::ProjectPicker => project_picker::render().into_any_element(),
+        OverlayKind::LanguageServers => language_servers::render().into_any_element(),
+    }
+}
+
+fn anchor_corner(kind: OverlayKind) -> Corner {
+    match kind {
+        OverlayKind::ProjectPicker => Corner::TopLeft,
+        OverlayKind::LanguageServers => Corner::BottomLeft,
+    }
+}
+
+fn anchor_offset(kind: OverlayKind) -> gpui::Point<gpui::Pixels> {
+    match kind {
+        OverlayKind::ProjectPicker => point(px(0.0), space::s8()),
+        OverlayKind::LanguageServers => point(px(0.0), -space::s8()),
     }
 }
 
 fn anchor_position(
+    kind: OverlayKind,
     anchor: &OverlayAnchor,
     anchor_bounds: Option<gpui::Bounds<gpui::Pixels>>,
 ) -> gpui::Point<gpui::Pixels> {
     if let Some(bounds) = anchor_bounds {
-        return bounds.bottom_left();
+        return match kind {
+            OverlayKind::ProjectPicker => bounds.bottom_left(),
+            OverlayKind::LanguageServers => bounds.origin,
+        };
     }
 
     match anchor {
-        // anchor provider 首帧尚未 prepaint 或临时缺席时，退回 top bar leading
-        // 区域的保守位置；下一帧 registry 更新后会自动重绘到真实锚点。
-        OverlayAnchor::Element(_) => point(px(48.0), px(28.0)),
+        // anchor provider 首帧尚未 prepaint 或临时缺席时，退回对应 bar 区域的
+        // 保守位置；下一帧 registry 更新后会自动重绘到真实锚点。
+        OverlayAnchor::Element(_) => match kind {
+            OverlayKind::ProjectPicker => point(px(48.0), px(28.0)),
+            OverlayKind::LanguageServers => point(px(48.0), px(540.0)),
+        },
     }
 }

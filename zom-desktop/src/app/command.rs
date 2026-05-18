@@ -123,6 +123,9 @@ impl App {
             HostEffect::ShowProjectPicker => {
                 window_actions.push(WindowAction::OpenOverlay(OverlayKind::ProjectPicker));
             }
+            HostEffect::ShowLanguageServers => {
+                window_actions.push(WindowAction::OpenOverlay(OverlayKind::LanguageServers));
+            }
             HostEffect::DismissOverlay => {
                 window_actions.push(WindowAction::DismissOverlay);
             }

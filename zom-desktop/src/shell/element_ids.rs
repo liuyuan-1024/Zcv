@@ -4,3 +4,4 @@
 //! anchor resolver 再用同一份 id 选择锚点。
 
 pub(crate) const TOP_BAR_WORKSPACE: &str = "top-bar.workspace";
+pub(crate) const BOTTOM_BAR_LANGUAGE_SERVER: &str = "bottom-bar.language_server";

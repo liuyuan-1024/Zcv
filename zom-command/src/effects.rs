@@ -37,6 +37,8 @@ pub enum HostEffect {
     ShowProjectPicker,
 
     // ===== Overlay =====
+    /// 打开语言服务器悬浮层。
+    ShowLanguageServers,
     /// 关闭当前悬浮层。
     DismissOverlay,
 }

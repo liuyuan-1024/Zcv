@@ -6,12 +6,14 @@
 //! 面板切换 slot 是 `panel.toggle.<id>` 命令的视图——BottomBar 不知道
 //! panel 是什么，只 emit CommandId（骨架阶段尚未接入，先只显示状态）。
 
-use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
+use gpui::{AnyElement, Div, Entity, IntoElement, div, prelude::*};
 
-use zom_command::commands::diagnostics;
+use zom_command::commands::{diagnostics, language_server as language_server_commands};
 
 use crate::shell::ShortcutLookup;
+use crate::shell::element_ids;
 use crate::shell::model::{DockAreaId, DockState, PanelId, WorkbenchState};
+use crate::shell::overlay::{AnchorRegistry, track_anchor};
 use crate::shell::primitives::{
     BarEdge, BarRegionAlign, Glyph, align_bar_region, bar_divider, bar_frame,
 };
@@ -63,14 +65,18 @@ const TRAILING_PANEL_GROUP_RIGHT: &[PanelSlot] = &[PanelSlot {
 const DIAGNOSTICS_ID: &str = "bottom-bar.diagnostics";
 const DIAGNOSTICS_ICON: &str = "icons/bottom_bar/diagnostics.svg";
 const DIAGNOSTICS_COMMAND: &str = diagnostics::SHOW_PROBLEMS;
-const LSP_ID: &str = "bottom-bar.language_server";
 const LSP_ICON: &str = "icons/bottom_bar/language_server.svg";
-const LSP_COMMAND: &str = diagnostics::OPEN_LSP_STATUS;
+const LSP_COMMAND: &str = language_server_commands::OPEN_STATUS;
 
-pub(crate) fn render(state: &WorkbenchState, shortcuts: &ShortcutLookup) -> Div {
+pub(crate) fn render(
+    state: &WorkbenchState,
+    shortcuts: &ShortcutLookup,
+    anchor_registry: Entity<AnchorRegistry>,
+    language_server_active: bool,
+) -> Div {
     bar_frame(BarEdge::Bottom)
         .child(region(
-            leading_slots(state, shortcuts),
+            leading_slots(state, shortcuts, anchor_registry, language_server_active),
             BarRegionAlign::Leading,
         ))
         .child(region(
@@ -85,12 +91,22 @@ fn region(items: Vec<AnyElement>, align: BarRegionAlign) -> Div {
     align_bar_region(inner, align)
 }
 
-fn leading_slots(state: &WorkbenchState, shortcuts: &ShortcutLookup) -> Vec<AnyElement> {
+fn leading_slots(
+    state: &WorkbenchState,
+    shortcuts: &ShortcutLookup,
+    anchor_registry: Entity<AnchorRegistry>,
+    language_server_active: bool,
+) -> Vec<AnyElement> {
     let toggles = panel_slot_group(LEADING_PANEL_GROUP, state, shortcuts);
-    // Group 2：语言服务 / 诊断。第一版暂不绑 Dock；纯状态指示，但仍可关联命令
+    // Group 2：语言服务器 / 诊断。第一版暂不绑 Dock；纯状态指示，但仍可关联命令
     // 入口（"打开 LSP 状态" / "查看问题面板"）。
     let status = vec![
-        lsp_slot(state.bottom_bar.lsp_connected, shortcuts),
+        lsp_slot(
+            state.bottom_bar.lsp_connected,
+            language_server_active,
+            shortcuts,
+            anchor_registry,
+        ),
         diagnostics_slot(state.bottom_bar.diagnostics_count, shortcuts),
     ];
     join_groups(vec![toggles, status])
@@ -150,11 +166,27 @@ fn panel_glyph_id(panel: PanelId) -> gpui::SharedString {
     format!("bottom-bar.{}", panel.command_str_id()).into()
 }
 
-fn lsp_slot(connected: bool, shortcuts: &ShortcutLookup) -> AnyElement {
-    Glyph::icon(LSP_ID, LSP_ICON, "语言服务")
-        .command(LSP_COMMAND)
-        .active(connected)
-        .render(shortcuts)
+fn lsp_slot(
+    connected: bool,
+    overlay_active: bool,
+    shortcuts: &ShortcutLookup,
+    anchor_registry: Entity<AnchorRegistry>,
+) -> AnyElement {
+    let glyph = Glyph::icon(
+        element_ids::BOTTOM_BAR_LANGUAGE_SERVER,
+        LSP_ICON,
+        "语言服务器",
+    )
+    .command(LSP_COMMAND)
+    .active(connected || overlay_active)
+    .render(shortcuts);
+
+    track_anchor(
+        element_ids::BOTTOM_BAR_LANGUAGE_SERVER,
+        anchor_registry,
+        glyph,
+    )
+    .into_any_element()
 }
 
 fn diagnostics_slot(count: u32, shortcuts: &ShortcutLookup) -> AnyElement {

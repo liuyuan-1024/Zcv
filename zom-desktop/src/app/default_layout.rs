@@ -9,11 +9,10 @@
 
 use gpui::px;
 
-use crate::shell::layout::{DockAreaId, DockState, PanelId, PanelStack};
+use crate::shell::model::{DockState, PanelId, PanelStack};
 
 pub(super) fn default_left_dock() -> DockState {
     DockState {
-        area: DockAreaId::Left,
         collapsed: false,
         size: px(240.0),
         stack: PanelStack::new(
@@ -30,7 +29,6 @@ pub(super) fn default_left_dock() -> DockState {
 
 pub(super) fn default_right_dock() -> DockState {
     DockState {
-        area: DockAreaId::Right,
         collapsed: false,
         size: px(240.0),
         stack: PanelStack::new(
@@ -42,7 +40,6 @@ pub(super) fn default_right_dock() -> DockState {
 
 pub(super) fn default_bottom_dock() -> DockState {
     DockState {
-        area: DockAreaId::Bottom,
         collapsed: false,
         size: px(200.0),
         stack: PanelStack::new(

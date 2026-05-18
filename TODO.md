@@ -8,15 +8,15 @@
 
 - `zom-engine` 继续保持纯粹底层编辑引擎定位，不塞入 UI、命令语义、项目管理、AI provider 或跨文件业务。
 - crate 之间只通过 public API 连接，不跨 crate 依赖私有实现、源码路径或测试细节。
-- 6 个 crate 的职责:
+- 6 个 crate 的职责：
   - `zom-engine` —— 文本编辑底座(冻结)。
-  - `zom-workspace` —— 文档/模型层:buffer 与文件生命周期(「有什么」)。
-  - `zom-view` —— 编辑面状态层:view/pane、滚动、本视图 selection 与 fold(「我怎么看它」)。
-  - `zom-command` —— 命令派发脊柱 + 键位模型;「所有操作均是命令」。
-  - `zom-ai` —— AI 抽象:provider trait + request/proposal + proposal→transaction 转换。
-  - `zom-desktop` —— GPUI 外壳 + 组合根;内部 `shell` / `app` 分模块。
-- 依赖图(无环):`zom-ai` 只依赖 `zom-engine` 且保持零网络依赖;`zom-ai` 与 `zom-command` **无依赖边**,在 `zom-desktop` 组合根相遇;`zom-command` 依赖 `workspace`/`view`/`engine` 但不依赖 `ai`。
-- 命令参数采用方案 A:唯一派发路径 `(CommandId, CommandArgs)`,每条命令在自己模块里 `TryFrom<CommandArgs>` 解析。
+  - `zom-workspace` —— 文档/模型层：buffer 与文件生命周期（「有什么」）。
+  - `zom-view` —— 编辑面状态层：view/pane、滚动、本视图 selection 与 fold（「我怎么看它」）。
+  - `zom-command` —— 命令派发脊柱 + 键位模型；「所有操作均是命令」。
+  - `zom-ai` —— AI 抽象：provider trait + request/proposal + proposal→transaction 转换。
+  - `zom-desktop` —— GPUI 外壳 + 组合根；内部 `shell` / `app` 分模块。
+- 依赖图（无环）：`zom-ai` 只依赖 `zom-engine` 且保持零网络依赖；`zom-ai` 与 `zom-command` **无依赖边**，P4 接入时在 `zom-desktop` 组合根相遇；`zom-command` 依赖 `workspace`/`view`/`engine` 但不依赖 `ai`。
+- 命令参数采用方案 A：唯一派发路径 `(CommandId, CommandArgs)`，每条命令在自己模块里 `TryFrom<CommandArgs>` 解析。
 - 新增 public API 前先明确长期语义、调用方影响、错误边界和测试覆盖。
 - 修改 Rust 代码后默认在根目录运行 `cargo fmt` 和 `cargo test --workspace`；如果只运行定向检查，需要在回复中说明范围。
 
@@ -62,16 +62,18 @@ Engine 已提供：
 
 宿主侧规划：
 
-- `CommandContext` 是具体结构体，持有 `&mut Workspace` 与 `&mut ViewSet`(全部 buffer 与 view，含活动指向)+ `&mut CommandQueue`。
+- `CommandContext` 是具体结构体，持有 `&mut Workspace` 与 `&mut ViewSet`（全部 buffer 与 view，含活动指向）+ `&mut CommandQueue` / `&mut EffectQueue`。
 - 增加基础编辑命令：
   - `editor.insert_text`
+  - `editor.insert_newline`
+  - `editor.indent` / `editor.outdent`
   - `editor.delete_backward`
   - `editor.delete_forward`
   - `editor.replace_selection`
   - `editor.select_all`
 - 命令层只表达用户操作意图，不重复实现 engine 编辑算法。
 - 所有文本变异最终归一到 `Buffer` / `Transaction` 管线。
-- 命令组合走 `CommandQueue`,不重入;执行器不自管历史,`editor.undo` 的 handler 直接调 `buffer.undo()`。
+- 命令组合走 `CommandQueue`，不重入；执行器不自管历史，`editor.undo` 的 handler 直接调 `buffer.undo()`。
 
 ### 4. 历史、快照与版本
 
@@ -92,7 +94,7 @@ Engine 已提供：
 
 Engine 已提供：
 
-- `SelectionSet`、多光标、word / subword / symbol movement。
+- `SelectionSet`、多光标、word / subword / symbol / line boundary / page movement。
 - selection after edit。
 - IME composition 的底层状态和提交流程。
 
@@ -100,12 +102,12 @@ Engine 已提供：
 
 - 在 `zom-command` 中增加 movement 命令：
   - 字符级左右移动。
-  - 行内首尾移动。
+  - 行内首尾移动与 PageUp / PageDown。
   - word / subword / symbol 移动。
   - 扩展选区移动。
-- 活动 view 的 `SelectionSet` 实例由 `zom-view` 持有,movement 命令经 `CommandContext` 改它。
-- `zom-desktop` 接收键盘、鼠标或 IME 事件后转换为 command，不直接修改 Buffer;OS 按键 → 归一化 `KeyChord` 的解码在 `zom-desktop`。
-- IME 先完成最小闭环：start / update / commit / cancel;start / commit 走命令,update 走直接通道喂活动 view 的 `CompositionState`。
+- 活动 view 的 `SelectionSet` 实例由 `zom-view` 持有，movement 命令经 `CommandContext` 改它。
+- `zom-desktop` 接收键盘、鼠标或 IME 事件后转换为 command，不直接修改 Buffer；OS 按键 → 归一化 `KeyChord` 的解码在 `zom-desktop`。
+- IME 先完成最小闭环：start / update / commit / cancel；start / commit 走命令，update 走直接通道喂活动 view 的 `CompositionState`。
 
 ### 6. 区间追踪与外部结果承载
 
@@ -117,7 +119,7 @@ Engine 已提供：
 
 宿主侧规划：
 
-- `zom-ai` 的 `ProposedEdit` 已用 engine `TextRange`,`AiRequest` / `AiProposal` 已携带 `BufferVersion`(骨架已定型)。
+- `zom-ai` 当前仍是早期骨架；P4 需要把 `ProposedEdit` 从裸 byte range 收口到 engine `TextRange`，并让 `AiRequest` / `AiProposal` 携带 `BufferVersion`。
 - AI 编辑流程：
   - 从当前 buffer 获取 `Snapshot`。
   - 构造带版本的 `AiRequest`。
@@ -137,8 +139,8 @@ Engine 已提供：
 
 宿主侧规划：
 
-- 第一阶段只接 `ViewportSlice`，保证能显示当前 buffer 文本;视图侧的 `ViewportState` 在 `zom-view`。
-- 第二阶段接 `FoldSet` / `Projection`，支持折叠后的可见文本和坐标映射;`FoldSet` 实例由 `zom-view` 按视图持有(同一 buffer 的两个分屏可有不同折叠)。
+- 第一阶段只接 `ViewportSlice`，保证能显示当前 buffer 文本；视图侧的 `ViewportState` 在 `zom-view`。
+- 第二阶段接 `FoldSet` / `Projection`，支持折叠后的可见文本和坐标映射；`FoldSet` 实例由 `zom-view` 按视图持有（同一 buffer 的两个分屏可有不同折叠）。
 - 折叠按钮、占位符样式、像素布局和绘制策略只放在 `zom-desktop`。
 
 ### 8. 单 Buffer 搜索与替换
@@ -195,7 +197,7 @@ Engine 已提供：
 
 - [x] 落地 `CommandArgs` 表示与 `TryFrom<CommandArgs>` 解析约定。
 - [x] 落地 `CommandExecutor::run` 排空队列逻辑。
-- [x] 在 `register_builtin_editor_commands` 中接入插入、删除、替换选区、全选。
+- [x] 在 `zom-command::commands::editor` catalog 中接入插入、删除、替换选区、全选。
 - [x] 接入 undo / redo(handler 调 `buffer.undo()` / `buffer.redo()`)。
 - [x] 接入基础 selection movement(改活动 view 的 `SelectionSet`)。
 - [x] 落地 `Keymap` 前缀 trie 解析与 `KeymapResolution`。
@@ -206,11 +208,12 @@ Engine 已提供：
 目标：`zom-desktop` 能跑通最小编辑体验。
 
 - [x] 接入 GPUI 外壳、embedded assets、TopBar / Body / BottomBar 基础布局和 panel 骨架。
-- [ ] `app` 启动时创建 workspace、活动 buffer 和活动 view。
-- [ ] 显示当前 view 文本。
-- [ ] 输入解码:OS 按键 → 归一化 `KeyChord` → keymap 解析 → 命令队列 → 执行器。
-- [ ] 支持删除、移动光标、撤销、重做。
-- [ ] 保持 `shell` 只做事件转换和显示，不复制编辑语义。
+- [x] `app` 启动时创建 workspace、活动 buffer 和活动 view。
+- [x] 显示当前 view 文本。
+- [x] 输入解码：OS 按键 → 归一化 `KeyChord` → keymap 解析 → 命令队列 → 执行器。
+- [x] 支持删除、移动光标、撤销、重做。
+- [x] 接入 IME 最小文本输入路径：commit 走命令，preedit update 走直接通道。
+- [x] 保持 `shell` 只做事件转换和显示，不复制编辑语义。
 
 ### P3：搜索、替换、折叠与 viewport
 
@@ -235,7 +238,7 @@ Engine 已提供：
 
 ## 近期优先级
 
-1. 先做 P0，让 `zom-workspace` 具备稳定 buffer / 文件生命周期。
-2. 再做 P1，让所有编辑入口通过 `zom-command` 统一进入 engine。
-3. 继续做 P2，用 `zom-desktop` 验证最小可用编辑闭环。
-4. 搜索、折叠、AI 都建立在 P0-P2 的稳定边界之上。
+1. P3 优先接入当前 buffer find / replace。
+2. 接入 viewport slice，避免 `zom-desktop` 长期直接展示整份文本。
+3. 接入 fold / projection 的最小可用路径，并补充对应宿主侧测试。
+4. P4 再收口 AI 提案模型、版本绑定和 proposal→transaction 转换。

@@ -9,6 +9,7 @@
 ```text
 zom-engine      核心文本编辑引擎
 zom-workspace   工作区、文件、buffer 编排
+zom-view        编辑面状态：view、滚动、selection、fold
 zom-command     命令系统
 zom-ai          AI 抽象与集成
 zom-desktop     桌面入口，组合其他 crate

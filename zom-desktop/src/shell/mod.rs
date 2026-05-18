@@ -8,88 +8,42 @@
 //! `shell` 不依赖 `app`；本模块只暴露 `run(App)`，由 `main.rs` 调用。
 
 mod assets;
-pub(crate) mod components;
-pub(crate) mod layout;
-pub(crate) mod panel_host;
-mod platform;
+mod boot;
+mod keyboard;
+pub(crate) mod model;
+pub(crate) mod panels;
+pub(crate) mod platform;
+pub(crate) mod primitives;
 pub(crate) mod theme;
+mod view;
+pub(crate) mod workbench;
 
-use gpui::{
-    App as GpuiApp, AppContext, Application, Bounds, Context, IntoElement, Render, TitlebarOptions,
-    Window, WindowBounds, WindowKind, WindowOptions, point, px, size,
-};
+use std::rc::Rc;
 
-use crate::app::App;
+use gpui::{App as GpuiApp, Bounds, Pixels, Window};
 
-use assets::EmbeddedAssets;
-use components::regions::workbench_frame;
-use layout::WorkbenchState;
-use panel_host::PanelHost;
-use platform::app_icon;
+pub use boot::run;
+pub(crate) use keyboard::normalized_chord;
 
-/// 启动桌面应用：装配 GPUI、加载资源、打开首个窗口。
-pub fn run(app: App) {
-    app_icon::prepare_development_app_icon();
+/// 一个已经绑好命令的点击回调 —— shell 子组件不接触 [`Invocation`]，也无需
+/// 反向 import `app::*`，触发时直接 `on_click(...)` 即可。
+pub(crate) type ActionRequest = Rc<dyn Fn(&mut Window, &mut GpuiApp)>;
 
-    Application::new()
-        .with_assets(EmbeddedAssets)
-        .run(move |cx: &mut GpuiApp| {
-            let bounds = Bounds::centered(None, size(px(960.0), px(640.0)), cx);
-
-            let window = cx
-                .open_window(
-                    WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(bounds)),
-                        titlebar: Some(TitlebarOptions {
-                            title: Some("zom".into()),
-                            // 自绘窗控圆点（手册 14.6）：让 OS 标题栏透明，并把
-                            // 系统自带的圆点挪到屏外，由 `top_bar::window_controls`
-                            // 自绘控制按钮
-                            appears_transparent: true,
-                            traffic_light_position: Some(point(px(-100.0), px(-100.0))),
-                        }),
-                        kind: WindowKind::Normal,
-                        app_id: Some(app_icon::APP_ID.to_string()),
-                        ..Default::default()
-                    },
-                    |_, cx| cx.new(|_| ShellView::new(app)),
-                )
-                .expect("GPUI 主窗口应能创建");
-
-            window
-                .update(cx, |_, _, cx| {
-                    cx.activate(true);
-                })
-                .expect("GPUI 主窗口应能激活");
-
-            window
-                .update(cx, |_, window, _| app_icon::apply_window_icon(window))
-                .expect("GPUI 主窗口应能设置开发态图标");
-        });
+/// 顶 bar 的三个圆点共享一份回调包。新加按钮就在这里加字段。
+pub(crate) struct WindowControlsHandlers {
+    pub(crate) quit: ActionRequest,
+    pub(crate) minimize: ActionRequest,
+    pub(crate) toggle_maximize: ActionRequest,
 }
 
-/// shell 端的根 View：拥有 App 状态与每窗口的 `PanelHost`。
-struct ShellView {
-    app: App,
-    panel_host: PanelHost,
-}
-
-impl ShellView {
-    fn new(app: App) -> Self {
-        Self {
-            app,
-            panel_host: PanelHost::new(),
-        }
-    }
-
-    fn workbench_state(&self) -> WorkbenchState {
-        self.app.workbench_state()
-    }
-}
-
-impl Render for ShellView {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.workbench_state();
-        workbench_frame::render(&state, &self.panel_host, window)
-    }
-}
+/// 返回 `true` 表示按键被 keymap 消费（或在等待多段 leader key），调用方应当
+/// `stop_propagation`；返回 `false` 表示没有匹配，必须放行给系统输入法。
+pub(crate) type KeyRequest = Rc<dyn Fn(String, &mut Window, &mut GpuiApp) -> bool>;
+/// 反查某条命令的快捷键文案。`None` 表示命令未绑定，UI 应当不显示快捷键
+/// 而非显示空字符串占位。Glyph / 菜单 / 命令面板共用同一份单一真理源。
+pub(crate) type ShortcutLookup = Rc<dyn Fn(&str) -> Option<String>>;
+/// 在 paint 阶段把活动编辑区的 `Entity<ShellView>` 注册为系统输入法的接收端。
+///
+/// 由 `ShellView::render` 构造，editor_grid 在 `canvas` paint 回调里调用 ——
+/// editor_grid 不持有 `Entity<ShellView>`，只透过这个 hook 接 IME。
+pub(crate) type InputHandlerHook = Rc<dyn Fn(Bounds<Pixels>, &mut Window, &mut GpuiApp)>;

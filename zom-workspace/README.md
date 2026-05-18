@@ -18,8 +18,13 @@
 - `WorkspaceBuffer` —— 一个被持有的 buffer，连同它的文件边界状态。
 - `BufferId` —— workspace 自己的 buffer 标识（与 `zom_engine::BufferId` 区分）。
 - `BufferOrigin` —— buffer 来源：绑定文件或未命名 scratch。
+- `WorkspaceError` / `WorkspaceResult` —— workspace 文件生命周期错误边界。
 
 文件生命周期 API：`open_file` / `open_text` / `save_file` / `save_as` / `close_buffer`。
+
+活动 buffer 模型：打开新 buffer 后自动成为活动项；关闭非活动 buffer 不改变活动项；关闭活动 buffer 后切换到仍打开 buffer 中最近分配的一个；关闭最后一个 buffer 后活动项为空。
+
+状态查询 API：`active_buffer_id` / `set_active_buffer` / `active_buffer` / `buffer_path` / `is_buffer_dirty` / `is_buffer_read_only`。
 
 ## 依赖
 
@@ -35,7 +40,7 @@ zom-workspace → zom-engine
 src/lib.rs    Workspace / WorkspaceBuffer / BufferId / BufferOrigin
 ```
 
-骨架阶段为单文件 `lib.rs`；后续按能力域增长时再分模块。
+当前保持单文件 `lib.rs`；后续按能力域增长时再分模块。
 
 ## 相关文档
 
@@ -44,4 +49,4 @@ src/lib.rs    Workspace / WorkspaceBuffer / BufferId / BufferOrigin
 
 ## 状态
 
-骨架阶段：类型形状与 public API 签名已定，文件 IO、保存点、dirty / 只读状态查询等具体实现留待 `TODO.md` P0。
+P0 已完成：`zom-workspace` 已落地活动 buffer、文件打开/保存/另存/关闭、dirty/path/readonly 状态查询和生命周期测试。

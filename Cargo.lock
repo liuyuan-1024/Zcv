@@ -7224,6 +7224,10 @@ dependencies = [
  "raw-window-handle",
  "resvg",
  "windows 0.57.0",
+ "zom-command",
+ "zom-engine",
+ "zom-view",
+ "zom-workspace",
 ]
 
 [[package]]

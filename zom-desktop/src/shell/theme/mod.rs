@@ -6,11 +6,6 @@
 //!
 //! 尺寸、字号、圆角、icon 不参与主题切换（手册 5.1 / 6.x）。
 //!
-//! Token 表是「设计契约」——即便当前未被消费也保留，骨架阶段统一抑制
-//! dead_code 警告。
-
-#![allow(dead_code)]
-
 use gpui::{Pixels, Rgba, px, rgb};
 
 pub mod color {

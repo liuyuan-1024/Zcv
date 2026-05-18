@@ -9,6 +9,22 @@
 
 use gpui::{App, Window};
 
+/// 窗口命令执行后由 shell 应用到当前 GPUI 窗口的动作。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WindowAction {
+    Quit,
+    Minimize,
+    ToggleMaximize,
+}
+
+pub(crate) fn apply(action: WindowAction, window: &Window, cx: &App) {
+    match action {
+        WindowAction::Quit => quit(cx),
+        WindowAction::Minimize => minimize(window),
+        WindowAction::ToggleMaximize => toggle_maximize(window),
+    }
+}
+
 /// 退出整个应用——× 圆点对应的动作。
 ///
 /// 注意：第一版直接走 gpui 的 `quit`；二期接入退出协议（手册 25.x）

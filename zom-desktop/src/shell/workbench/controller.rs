@@ -3,18 +3,21 @@
 //! `app` 只产生命令层的 HostEffect；dock 展开、折叠、active panel 等窗口
 //! 显示状态在这里解释和更新。
 
+use super::dock_resize::{DockResize, DockResizeBounds, DockResizeEvent};
+use super::regions::{bottom_dock, left_dock, right_dock};
+use super::state::{
+    BottomBarState, DockAreaId, DockState, EditorState, PanelStack, WorkbenchState,
+};
 use crate::shell::features::PanelId;
 
-use super::regions::{bottom_dock, left_dock, right_dock};
-use super::state::{BottomBarState, DockState, EditorState, PanelStack, WorkbenchState};
-
-use gpui::px;
+use gpui::{Pixels, px};
 
 pub(crate) struct WorkbenchController {
     left_dock: DockState,
     right_dock: DockState,
     bottom_dock: DockState,
     bottom_bar: BottomBarState,
+    dock_resize: DockResize,
 }
 
 impl WorkbenchController {
@@ -36,6 +39,7 @@ impl WorkbenchController {
                 stack: PanelStack::new(bottom_dock::PANELS.to_vec(), None),
             },
             bottom_bar: BottomBarState::default(),
+            dock_resize: DockResize::default(),
         };
         controller.toggle_panel(PanelId::FileTree);
         controller
@@ -64,6 +68,24 @@ impl WorkbenchController {
         }
     }
 
+    pub(crate) fn handle_dock_resize(&mut self, event: DockResizeEvent, bounds: DockResizeBounds) {
+        let start_size = match event {
+            DockResizeEvent::Start { area, .. } => Some(self.dock_state(area).size),
+            DockResizeEvent::Drag { .. } | DockResizeEvent::End => None,
+        };
+        if let Some(update) = self.dock_resize.handle(event, start_size, bounds) {
+            self.set_dock_size(update.area, update.size);
+        }
+    }
+
+    fn set_dock_size(&mut self, area: DockAreaId, size: Pixels) {
+        match area {
+            DockAreaId::Left => self.left_dock.size = size,
+            DockAreaId::Right => self.right_dock.size = size,
+            DockAreaId::Bottom => self.bottom_dock.size = size,
+        }
+    }
+
     fn dock_hosting_mut(&mut self, panel: PanelId) -> Option<&mut DockState> {
         for dock in [
             &mut self.left_dock,
@@ -75,6 +97,14 @@ impl WorkbenchController {
             }
         }
         None
+    }
+
+    fn dock_state(&self, area: DockAreaId) -> &DockState {
+        match area {
+            DockAreaId::Left => &self.left_dock,
+            DockAreaId::Right => &self.right_dock,
+            DockAreaId::Bottom => &self.bottom_dock,
+        }
     }
 }
 

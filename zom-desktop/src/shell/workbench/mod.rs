@@ -18,6 +18,9 @@
 //!   [30] BubbleShell
 //! 后两层骨架阶段为空 portal，不参与 layout。
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gpui::{Div, Entity, FocusHandle, Window, div, prelude::*};
 
 use crate::shell::features::PanelHost;
@@ -26,14 +29,18 @@ use crate::shell::shared::theme::{color, radius};
 use crate::shell::{InputHandlerHook, KeyRequest, ShortcutLookup, WindowControlsHandlers};
 
 pub(crate) mod controller;
+pub(crate) mod dock_resize;
 mod regions;
 pub(crate) mod state;
 
+use self::controller::WorkbenchController;
+use self::dock_resize::{DockResizeBounds, DockResizeEvent, DockResizeRequest};
 use state::WorkbenchState;
 
 pub(crate) fn render(
     state: &WorkbenchState,
     host: &PanelHost,
+    workbench: Rc<RefCell<WorkbenchController>>,
     window: &Window,
     window_controls: WindowControlsHandlers,
     overlay_shell: Entity<OverlayShell>,
@@ -45,6 +52,7 @@ pub(crate) fn render(
     input_handler_hook: InputHandlerHook,
     editor_focus: FocusHandle,
 ) -> Div {
+    let dock_resize = dock_resize_request(Rc::clone(&workbench));
     div()
         .relative()
         .flex()
@@ -67,6 +75,7 @@ pub(crate) fn render(
         .child(render_body(
             state,
             host,
+            dock_resize,
             key_request,
             input_handler_hook,
             editor_focus,
@@ -84,6 +93,7 @@ pub(crate) fn render(
 fn render_body(
     state: &WorkbenchState,
     host: &PanelHost,
+    dock_resize: DockResizeRequest,
     key_request: KeyRequest,
     input_handler_hook: InputHandlerHook,
     editor_focus: FocusHandle,
@@ -91,7 +101,11 @@ fn render_body(
     let mut row = div().flex_1().flex().flex_row().w_full().overflow_hidden();
 
     if state.left_dock.is_visible() {
-        row = row.child(regions::left_dock::render(&state.left_dock, host));
+        row = row.child(regions::left_dock::render(
+            &state.left_dock,
+            host,
+            Rc::clone(&dock_resize),
+        ));
     }
     row = row.child(regions::editor_area::render(
         &state.bottom_dock,
@@ -100,10 +114,27 @@ fn render_body(
         key_request,
         input_handler_hook,
         editor_focus,
+        Rc::clone(&dock_resize),
     ));
     if state.right_dock.is_visible() {
-        row = row.child(regions::right_dock::render(&state.right_dock, host));
+        row = row.child(regions::right_dock::render(
+            &state.right_dock,
+            host,
+            Rc::clone(&dock_resize),
+        ));
     }
 
     row
+}
+
+fn dock_resize_request(workbench: Rc<RefCell<WorkbenchController>>) -> DockResizeRequest {
+    Rc::new(move |event, window, _cx| {
+        let viewport_size = window.viewport_size();
+        let bounds = DockResizeBounds::from_viewport(viewport_size.width);
+        let dragging = matches!(event, DockResizeEvent::Drag { .. });
+        workbench.borrow_mut().handle_dock_resize(event, bounds);
+        if dragging {
+            window.refresh();
+        }
+    })
 }

@@ -159,6 +159,7 @@ impl Render for ShellView {
         workbench::render(
             &state,
             &self.panel_host,
+            Rc::clone(&self.workbench),
             window,
             window_controls,
             self.overlay_shell.clone(),

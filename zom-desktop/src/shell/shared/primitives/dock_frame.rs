@@ -20,8 +20,10 @@ pub(crate) enum DockEdge {
 /// 渲染共享的 Dock 外壳。内部由调用方填充 panel 标题 + panel body。
 pub(crate) fn dock_frame(edge: DockEdge) -> Div {
     let frame = div()
+        .relative()
         .flex()
         .flex_col()
+        .flex_shrink_0()
         .h_full()
         .bg(color::gray::g05())
         .text_color(color::gray::g75())

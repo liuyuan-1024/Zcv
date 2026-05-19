@@ -5,7 +5,7 @@
 
 use gpui::{Div, FocusHandle, MouseButton, canvas, div, prelude::*};
 
-use crate::shell::shared::theme::{color, space, typography};
+use crate::shell::shared::theme::{self, color, space, typography};
 use crate::shell::workbench::state::EditorState;
 use crate::shell::{InputHandlerHook, KeyRequest, normalized_chord};
 
@@ -22,9 +22,9 @@ pub(crate) fn render(
         .flex_1()
         .flex()
         .flex_col()
+        .overflow_hidden()
         .bg(color::gray::g05())
         .text_color(color::gray::g90())
-        .p(space::s12())
         .track_focus(&editor_focus)
         .tab_index(0)
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -45,7 +45,6 @@ pub(crate) fn render(
                 .flex_row()
                 .items_center()
                 .justify_between()
-                .pb(space::s8())
                 .text_size(typography::caption())
                 .text_color(color::gray::g60())
                 .child(editor_title(state))
@@ -71,9 +70,7 @@ fn editor_surface(state: &EditorState, input_handler_hook: InputHandlerHook) -> 
     div()
         .flex_1()
         .overflow_hidden()
-        .border_1()
-        .border_color(color::gray::g40())
-        .rounded(crate::shell::shared::theme::radius::r4())
+        .rounded(theme::radius::r4())
         .bg(color::gray::g00())
         .p(space::s12())
         .font_family(".ZedMono")

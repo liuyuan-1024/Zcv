@@ -5,7 +5,9 @@
 
 use gpui::{Div, FocusHandle, div, prelude::*};
 
+use super::bottom_dock;
 use crate::shell::features::PanelHost;
+use crate::shell::workbench::dock_resize::DockResizeRequest;
 use crate::shell::workbench::state::{DockState, EditorState};
 use crate::shell::{InputHandlerHook, KeyRequest};
 
@@ -18,8 +20,9 @@ pub(crate) fn render(
     key_request: KeyRequest,
     input_handler_hook: InputHandlerHook,
     editor_focus: FocusHandle,
+    resize: DockResizeRequest,
 ) -> Div {
-    let mut column = div().flex_1().flex().flex_col().h_full();
+    let mut column = div().flex_1().flex().flex_col().h_full().overflow_hidden();
     column = column.child(editor_grid::render(
         editor_state,
         key_request,
@@ -27,7 +30,7 @@ pub(crate) fn render(
         editor_focus,
     ));
     if bottom_dock_state.is_visible() {
-        column = column.child(super::bottom_dock::render(bottom_dock_state, host));
+        column = column.child(bottom_dock::render(bottom_dock_state, host, resize));
     }
     column
 }

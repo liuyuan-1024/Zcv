@@ -6,13 +6,14 @@ use gpui::{Div, div, prelude::*};
 
 use crate::shell::features::{PanelHost, PanelId};
 use crate::shell::shared::theme::{color, space, typography};
-use crate::shell::workbench::state::DockState;
+use crate::shell::workbench::dock_resize::{self, DockResizeRequest};
+use crate::shell::workbench::state::{DockAreaId, DockState};
 
 use crate::shell::shared::primitives::{DockEdge, dock_frame};
 
 pub(in crate::shell::workbench) const PANELS: &[PanelId] = &[PanelId::Terminal, PanelId::Debug];
 
-pub(crate) fn render(state: &DockState, host: &PanelHost) -> Div {
+pub(crate) fn render(state: &DockState, host: &PanelHost, resize: DockResizeRequest) -> Div {
     let body = match state.active_panel() {
         Some(id) => host.render(id),
         None => empty_body().into_any_element(),
@@ -23,6 +24,7 @@ pub(crate) fn render(state: &DockState, host: &PanelHost) -> Div {
         .gap(space::s8())
         .child(header(state))
         .child(div().flex_1().child(body))
+        .child(dock_resize::render_handle(DockAreaId::Bottom, resize))
 }
 
 fn header(state: &DockState) -> Div {

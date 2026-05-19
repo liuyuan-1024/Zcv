@@ -6,11 +6,14 @@
 
 use crate::app::App;
 use crate::shell::features::PanelId;
+use crate::shell::features::file_tree::FileTreeActivation;
+use std::fs::{File, create_dir_all};
 use std::path::PathBuf;
 use zom_command::HostEffect;
 use zom_command::commands::{
     editor, language_server as language_server_commands, workspace as workspace_commands,
 };
+use zom_workspace::EntryKind;
 
 #[test]
 fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
@@ -205,4 +208,131 @@ fn escape_should_dispatch_overlay_dismiss_command() {
 
     assert!(outcome.consumed);
     assert_eq!(outcome.effects, vec![HostEffect::DismissOverlay]);
+}
+
+fn project_fixture(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("zom-file-tree-app-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    create_dir_all(dir.join("src/inner")).unwrap();
+    File::create(dir.join("README.md")).unwrap();
+    File::create(dir.join("src/lib.rs")).unwrap();
+    File::create(dir.join("src/inner/mod.rs")).unwrap();
+    dir
+}
+
+#[test]
+fn file_tree_move_selection_should_walk_visible_rows_in_order() {
+    let mut app = App::new();
+    app.open_local_project(project_fixture("move"));
+
+    assert!(app.file_tree_state().selected.is_none());
+
+    // rows: [root, src, README.md]
+    app.file_tree_move_selection(1);
+    let state = app.file_tree_state();
+    assert_eq!(state.selected.as_ref(), Some(&state.rows[0].path));
+
+    app.file_tree_move_selection(1);
+    let state = app.file_tree_state();
+    assert_eq!(state.selected.as_ref(), Some(&state.rows[1].path));
+
+    app.file_tree_move_selection(1);
+    let state = app.file_tree_state();
+    assert_eq!(state.selected.as_ref(), Some(&state.rows[2].path));
+
+    // 已在末位时再 down 不会越界。
+    app.file_tree_move_selection(1);
+    let state = app.file_tree_state();
+    assert_eq!(state.selected.as_ref(), Some(&state.rows[2].path));
+}
+
+#[test]
+fn file_tree_focus_initialization_should_select_first_visible_row() {
+    let mut app = App::new();
+    app.open_local_project(project_fixture("focus-init"));
+
+    app.file_tree_ensure_selection_initialized();
+
+    let state = app.file_tree_state();
+    assert_eq!(state.selected.as_ref(), Some(&state.rows[0].path));
+}
+
+#[test]
+fn file_tree_expand_then_collapse_should_round_trip_via_selection_keys() {
+    let mut app = App::new();
+    let root = project_fixture("expand");
+    app.open_local_project(root.clone());
+
+    // 初始 rows: [root, src, README.md]，根默认展开。
+    let state = app.file_tree_state();
+    assert_eq!(state.rows.len(), 3);
+
+    // 选到 src（root → src）。
+    app.file_tree_move_selection(1);
+    app.file_tree_move_selection(1);
+    assert_eq!(
+        app.file_tree_state().selected.as_deref(),
+        Some(root.join("src").as_path())
+    );
+
+    app.file_tree_expand_or_into();
+    let state = app.file_tree_state();
+    // 展开 src 后 rows: [root, src, inner, lib.rs, README.md]
+    assert_eq!(state.rows.len(), 5);
+    assert!(
+        state
+            .rows
+            .iter()
+            .find(|r| r.path == root.join("src"))
+            .map(|r| r.expanded)
+            .unwrap_or(false)
+    );
+
+    app.file_tree_collapse_or_parent();
+    assert_eq!(app.file_tree_state().rows.len(), 3);
+}
+
+#[test]
+fn file_tree_activate_on_file_should_open_buffer_and_report_opened() {
+    let mut app = App::new();
+    let root = project_fixture("activate");
+    app.open_local_project(root.clone());
+
+    // rows: [root, src, README.md] —— 走到 README.md。
+    app.file_tree_move_selection(1); // root
+    app.file_tree_move_selection(1); // src
+    app.file_tree_move_selection(1); // README.md
+    let selected = app.file_tree_state().selected.clone();
+    assert_eq!(selected.as_deref(), Some(root.join("README.md").as_path()));
+
+    let action = app.file_tree_activate();
+    assert_eq!(action, FileTreeActivation::OpenedFile);
+
+    let state = app.file_tree_state();
+    assert_eq!(
+        state.active.as_deref(),
+        Some(root.join("README.md").as_path())
+    );
+}
+
+#[test]
+fn file_tree_activate_on_directory_should_toggle_expanded() {
+    let mut app = App::new();
+    let root = project_fixture("activate-dir");
+    app.open_local_project(root.clone());
+
+    // rows: [root, src, README.md] —— 选到 src。
+    app.file_tree_move_selection(1); // root
+    app.file_tree_move_selection(1); // src
+    let action = app.file_tree_activate();
+    assert_eq!(action, FileTreeActivation::ToggledDir);
+
+    let state = app.file_tree_state();
+    let src_row = state
+        .rows
+        .iter()
+        .find(|r| r.path == root.join("src"))
+        .unwrap();
+    assert!(matches!(src_row.kind, EntryKind::Directory));
+    assert!(src_row.expanded);
 }

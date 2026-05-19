@@ -8,10 +8,6 @@ use crate::shell::shared::primitives::panel_placeholder;
 
 pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/keyboard_shortcuts.svg";
 
-pub(crate) fn panel_title() -> &'static str {
-    "快捷键"
-}
-
 pub(crate) fn render() -> Div {
-    panel_placeholder(panel_title(), "快捷键占位中")
+    panel_placeholder("快捷键占位中")
 }

@@ -18,22 +18,6 @@ pub(crate) enum PanelId {
 }
 
 impl PanelId {
-    pub(crate) fn title(self) -> &'static str {
-        use super::{
-            debug, file_tree, keyboard_shortcuts, outline, project_search, terminal,
-            version_control,
-        };
-        match self {
-            PanelId::FileTree => file_tree::panel_title(),
-            PanelId::VersionControl => version_control::panel_title(),
-            PanelId::Outline => outline::panel_title(),
-            PanelId::ProjectSearch => project_search::panel_title(),
-            PanelId::Terminal => terminal::panel_title(),
-            PanelId::Debug => debug::panel_title(),
-            PanelId::KeyboardShortcuts => keyboard_shortcuts::panel_title(),
-        }
-    }
-
     /// 该 panel 在 bar 上代表的图标资源路径（embedded assets 里的相对路径）。
     /// 真理源是各 panel 模块的 `PANEL_ICON` 常量。
     pub(crate) fn icon_path(self) -> &'static str {

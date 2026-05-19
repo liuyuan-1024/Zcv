@@ -4,39 +4,32 @@
 
 use gpui::{Div, div, prelude::*};
 
-use crate::shell::features::{PanelHost, PanelId};
+use crate::shell::features::PanelId;
 use crate::shell::shared::theme::{color, space, typography};
 use crate::shell::workbench::dock_resize::{self, DockResizeRequest};
 use crate::shell::workbench::state::{DockAreaId, DockState};
+use crate::shell::workbench::{PanelContext, PanelHost};
 
 use crate::shell::shared::primitives::{DockEdge, dock_frame};
 
 pub(in crate::shell::workbench) const PANELS: &[PanelId] = &[PanelId::KeyboardShortcuts];
 
-pub(crate) fn render(state: &DockState, host: &PanelHost, resize: DockResizeRequest) -> Div {
+pub(crate) fn render(
+    state: &DockState,
+    host: &PanelHost,
+    ctx: PanelContext<'_>,
+    resize: DockResizeRequest,
+) -> Div {
     let body = match state.active_panel() {
-        Some(id) => host.render(id),
+        Some(id) => host.render(id, ctx),
         None => empty_body().into_any_element(),
     };
 
     dock_frame(DockEdge::Right)
         .w(state.size)
         .gap(space::s8())
-        .child(header(state))
         .child(div().flex_1().child(body))
         .child(dock_resize::render_handle(DockAreaId::Right, resize))
-}
-
-fn header(state: &DockState) -> Div {
-    let title = state
-        .active_panel()
-        .map(|panel| panel.title())
-        .unwrap_or("");
-
-    div()
-        .text_size(typography::caption())
-        .text_color(color::gray::g60())
-        .child(title)
 }
 
 fn empty_body() -> Div {

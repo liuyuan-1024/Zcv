@@ -4,6 +4,7 @@
 
 pub(crate) mod assets;
 pub(crate) mod element_ids;
+pub(crate) mod interaction;
 pub(crate) mod keyboard;
 pub(crate) mod primitives;
 pub(crate) mod theme;

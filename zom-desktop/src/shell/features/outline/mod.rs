@@ -8,10 +8,6 @@ use crate::shell::shared::primitives::panel_placeholder;
 
 pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/outline.svg";
 
-pub(crate) fn panel_title() -> &'static str {
-    "大纲"
-}
-
 pub(crate) fn render() -> Div {
-    panel_placeholder(panel_title(), "大纲占位中")
+    panel_placeholder("大纲占位中")
 }

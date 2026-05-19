@@ -9,6 +9,7 @@ use super::state::{
     BottomBarState, DockAreaId, DockState, EditorState, PanelStack, WorkbenchState,
 };
 use crate::shell::features::PanelId;
+use crate::shell::features::file_tree::FileTreeState;
 
 use gpui::{Pixels, px};
 
@@ -22,7 +23,7 @@ pub(crate) struct WorkbenchController {
 
 impl WorkbenchController {
     pub(crate) fn new() -> Self {
-        let mut controller = Self {
+        Self {
             left_dock: DockState {
                 collapsed: true,
                 size: px(240.0),
@@ -40,19 +41,25 @@ impl WorkbenchController {
             },
             bottom_bar: BottomBarState::default(),
             dock_resize: DockResize::default(),
-        };
-        controller.toggle_panel(PanelId::FileTree);
-        controller
+        }
     }
 
-    pub(crate) fn state(&self, project_title: String, editor: EditorState) -> WorkbenchState {
+    pub(crate) fn state(
+        &self,
+        project_title: String,
+        has_project: bool,
+        editor: EditorState,
+        file_tree: FileTreeState,
+    ) -> WorkbenchState {
         WorkbenchState {
             project_title,
+            has_project,
             left_dock: self.left_dock.clone(),
             right_dock: self.right_dock.clone(),
             bottom_dock: self.bottom_dock.clone(),
             bottom_bar: self.bottom_bar.clone(),
             editor,
+            file_tree,
         }
     }
 
@@ -66,6 +73,16 @@ impl WorkbenchController {
             dock.collapsed = false;
             dock.stack.active = Some(panel);
         }
+    }
+
+    /// 该 panel 是否当前可见且为其 dock 的 active 项。Shell 用它决定切焦点。
+    pub(crate) fn is_panel_active(&self, panel: PanelId) -> bool {
+        for dock in [&self.left_dock, &self.right_dock, &self.bottom_dock] {
+            if dock.stack.contains(panel) {
+                return dock.is_visible() && dock.active_panel() == Some(panel);
+            }
+        }
+        false
     }
 
     pub(crate) fn handle_dock_resize(&mut self, event: DockResizeEvent, bounds: DockResizeBounds) {

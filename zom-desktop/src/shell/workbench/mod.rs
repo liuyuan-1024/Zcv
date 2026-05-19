@@ -23,18 +23,21 @@ use std::rc::Rc;
 
 use gpui::{Div, Entity, FocusHandle, Window, div, prelude::*};
 
-use crate::shell::features::PanelHost;
-use crate::shell::overlay::{AnchorRegistry, OverlayShell};
+use crate::shell::features::file_tree::FileTreePanel;
 use crate::shell::shared::theme::{color, radius};
 use crate::shell::{InputHandlerHook, KeyRequest, ShortcutLookup, WindowControlsHandlers};
 
 pub(crate) mod controller;
 pub(crate) mod dock_resize;
+pub(crate) mod overlay;
+mod panel_host;
 mod regions;
 pub(crate) mod state;
 
 use self::controller::WorkbenchController;
 use self::dock_resize::{DockResizeBounds, DockResizeEvent, DockResizeRequest};
+use self::overlay::{AnchorRegistry, OverlayShell};
+pub(crate) use self::panel_host::{PanelContext, PanelHost};
 use state::WorkbenchState;
 
 pub(crate) fn render(
@@ -51,6 +54,7 @@ pub(crate) fn render(
     shortcut_lookup: ShortcutLookup,
     input_handler_hook: InputHandlerHook,
     editor_focus: FocusHandle,
+    file_tree: FileTreePanel<'_>,
 ) -> Div {
     let dock_resize = dock_resize_request(Rc::clone(&workbench));
     div()
@@ -79,6 +83,7 @@ pub(crate) fn render(
             key_request,
             input_handler_hook,
             editor_focus,
+            file_tree,
         ))
         .child(regions::bottom_bar::render(
             state,
@@ -97,13 +102,19 @@ fn render_body(
     key_request: KeyRequest,
     input_handler_hook: InputHandlerHook,
     editor_focus: FocusHandle,
+    file_tree: FileTreePanel<'_>,
 ) -> Div {
+    let panel_ctx = PanelContext {
+        has_project: state.has_project,
+        file_tree,
+    };
     let mut row = div().flex_1().flex().flex_row().w_full().overflow_hidden();
 
     if state.left_dock.is_visible() {
         row = row.child(regions::left_dock::render(
             &state.left_dock,
             host,
+            panel_ctx,
             Rc::clone(&dock_resize),
         ));
     }
@@ -111,6 +122,7 @@ fn render_body(
         &state.bottom_dock,
         &state.editor,
         host,
+        panel_ctx,
         key_request,
         input_handler_hook,
         editor_focus,
@@ -120,6 +132,7 @@ fn render_body(
         row = row.child(regions::right_dock::render(
             &state.right_dock,
             host,
+            panel_ctx,
             Rc::clone(&dock_resize),
         ));
     }

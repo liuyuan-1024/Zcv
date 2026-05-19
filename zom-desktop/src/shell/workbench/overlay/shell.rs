@@ -1,7 +1,4 @@
 //! OverlayShell —— 可交互悬浮层 portal（布局模型 7 / 手册 21）。
-//!
-//! 本模块只负责“把 active overlay 投影到 portal”。具体 overlay 的视觉组件
-//! 留在各自模块内，避免 shell 入口累积业务 UI。
 
 use gpui::{
     AnyElement, Context, Corner, Entity, Render, Subscription, Window, anchored, deferred, div,

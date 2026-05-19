@@ -11,6 +11,10 @@
 //! 活动项；关闭非活动 buffer 不影响当前活动项；关闭活动 buffer 后切到仍打开
 //! buffer 中最近分配的一个；关闭最后一个 buffer 后活动项为空。
 
+mod project_tree;
+
+pub use project_tree::{EntryKind, ProjectTree, TreeEntry, TreeRow};
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;

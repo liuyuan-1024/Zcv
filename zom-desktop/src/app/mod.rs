@@ -18,6 +18,8 @@ use zom_command::{CommandExecutor, CommandQueue, CommandRegistry, Keymap};
 use zom_view::ViewSet;
 use zom_workspace::Workspace;
 
+use crate::shell::features::file_tree::{FileTreeActivation, FileTreeModel, FileTreeState};
+
 /// 主编辑区当前可显示的活动 buffer 摘要。
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EditorState {
@@ -35,6 +37,7 @@ pub struct App {
     workspace: Workspace,
     views: ViewSet,
     project_root: Option<PathBuf>,
+    file_tree: FileTreeModel,
 }
 
 impl App {
@@ -62,10 +65,12 @@ impl App {
             workspace,
             views,
             project_root: None,
+            file_tree: FileTreeModel::default(),
         }
     }
 
     pub(crate) fn open_local_project(&mut self, root: PathBuf) {
+        self.file_tree.open_project(root.clone());
         self.project_root = Some(root);
         let (workspace, views) = empty_workspace();
         self.workspace = workspace;
@@ -78,6 +83,35 @@ impl App {
             .and_then(project_name)
             .unwrap_or("打开项目")
             .to_string()
+    }
+
+    pub(crate) fn has_project(&self) -> bool {
+        self.project_root.is_some()
+    }
+
+    pub(crate) fn file_tree_state(&self) -> FileTreeState {
+        self.file_tree.state(&self.workspace)
+    }
+
+    pub(crate) fn file_tree_ensure_selection_initialized(&mut self) {
+        self.file_tree.ensure_selection_initialized();
+    }
+
+    pub(crate) fn file_tree_move_selection(&mut self, delta: isize) {
+        self.file_tree.move_selection(delta);
+    }
+
+    pub(crate) fn file_tree_collapse_or_parent(&mut self) {
+        self.file_tree.collapse_or_parent();
+    }
+
+    pub(crate) fn file_tree_expand_or_into(&mut self) {
+        self.file_tree.expand_or_into();
+    }
+
+    pub(crate) fn file_tree_activate(&mut self) -> FileTreeActivation {
+        self.file_tree
+            .activate_selected(&mut self.workspace, &mut self.views)
     }
 
     pub(crate) fn editor_state(&self) -> EditorState {

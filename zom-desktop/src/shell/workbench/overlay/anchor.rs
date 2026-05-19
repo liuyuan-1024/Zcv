@@ -1,8 +1,4 @@
 //! Overlay anchor bounds registry。
-//!
-//! GPUI 目前没有给 shell 暴露“按 ElementId 查询 bounds”的直接 API，所以由
-//! anchor provider 在 prepaint 阶段登记自己的窗口坐标，OverlayShell 再按
-//! `OverlayAnchor` 解析到具体位置。
 
 use std::collections::HashMap;
 

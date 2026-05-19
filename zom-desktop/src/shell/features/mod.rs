@@ -7,7 +7,6 @@
 
 pub(crate) mod debug;
 pub(crate) mod file_tree;
-mod host;
 pub(crate) mod keyboard_shortcuts;
 pub(crate) mod language_servers;
 pub(crate) mod outline;
@@ -17,5 +16,4 @@ pub(crate) mod project_search;
 pub(crate) mod terminal;
 pub(crate) mod version_control;
 
-pub(crate) use host::PanelHost;
 pub(crate) use panel::PanelId;

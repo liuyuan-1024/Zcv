@@ -41,6 +41,9 @@ const ASSETS: &[(&str, &[u8])] = &[
     asset!("icons/primitives/signal_low.svg"),
     asset!("icons/primitives/signal_medium.svg"),
     asset!("icons/primitives/signal_high.svg"),
+    asset!("icons/features/file_tree/folder.svg"),
+    asset!("icons/features/file_tree/folder_open.svg"),
+    asset!("icons/features/file_tree/file.svg"),
 ];
 
 impl AssetSource for EmbeddedAssets {

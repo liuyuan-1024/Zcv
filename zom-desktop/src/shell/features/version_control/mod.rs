@@ -8,10 +8,6 @@ use crate::shell::shared::primitives::panel_placeholder;
 
 pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/version_control.svg";
 
-pub(crate) fn panel_title() -> &'static str {
-    "版本管理"
-}
-
 pub(crate) fn render() -> Div {
-    panel_placeholder(panel_title(), "版本管理占位中")
+    panel_placeholder("版本管理占位中")
 }

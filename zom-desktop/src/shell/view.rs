@@ -14,13 +14,17 @@ use zom_command::commands::window as window_commands;
 
 use crate::app::App;
 
-use super::features::{PanelHost, PanelId};
-use super::overlay::{AnchorRegistry, OverlayAnchor, OverlayKind, OverlayManager, OverlayShell};
+use super::features::PanelId;
+use super::features::file_tree::FileTreeRuntime;
 use super::platform::project as platform_project;
 use super::platform::window as platform_window;
 use super::shared::element_ids;
 use super::workbench;
+use super::workbench::PanelHost;
 use super::workbench::controller::WorkbenchController;
+use super::workbench::overlay::{
+    AnchorRegistry, OverlayAnchor, OverlayKind, OverlayManager, OverlayShell,
+};
 use super::workbench::state::WorkbenchState;
 use super::{ActionRequest, InputHandlerHook, KeyRequest, ShortcutLookup, WindowControlsHandlers};
 
@@ -33,6 +37,7 @@ pub(crate) struct ShellView {
     anchor_registry: Entity<AnchorRegistry>,
     overlay_shell: Entity<OverlayShell>,
     editor_focus: FocusHandle,
+    file_tree: FileTreeRuntime,
 }
 
 impl ShellView {
@@ -42,11 +47,13 @@ impl ShellView {
         let overlay_manager = cx.new(|_| OverlayManager::new());
         let anchor_registry = cx.new(|_| AnchorRegistry::new());
         let editor_focus = cx.focus_handle();
+        let file_tree = FileTreeRuntime::new(cx);
         let open_local_project = bind_action_request(
             Rc::clone(&app),
             Rc::clone(&workbench),
             overlay_manager.clone(),
             editor_focus.clone(),
+            file_tree.clone(),
             zom_command::commands::workspace::open_local_project(),
         );
         let overlay_shell = cx.new(|cx| {
@@ -66,6 +73,7 @@ impl ShellView {
             anchor_registry,
             overlay_shell,
             editor_focus,
+            file_tree,
         }
     }
 
@@ -73,11 +81,24 @@ impl ShellView {
         self.editor_focus.clone()
     }
 
+    /// 注册 shell feature 需要挂到窗口上的监听器。
+    pub(super) fn install_feature_listeners(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.file_tree
+            .install_listeners(Rc::clone(&self.app), window, cx);
+    }
+
     fn workbench_state(&self) -> WorkbenchState {
         let app = self.app.borrow();
-        self.workbench
-            .borrow()
-            .state(app.project_title(), app.editor_state())
+        self.workbench.borrow().state(
+            app.project_title(),
+            app.has_project(),
+            app.editor_state(),
+            app.file_tree_state(),
+        )
     }
 
     /// 把一个 [`Invocation`] 绑成 [`ActionRequest`]：点击时派发并应用窗口动作。
@@ -87,6 +108,7 @@ impl ShellView {
             Rc::clone(&self.workbench),
             self.overlay_manager.clone(),
             self.editor_focus.clone(),
+            self.file_tree.clone(),
             invocation,
         )
     }
@@ -104,6 +126,7 @@ impl ShellView {
         let workbench = Rc::clone(&self.workbench);
         let overlays = self.overlay_manager.clone();
         let editor_focus_fallback = self.editor_focus.clone();
+        let file_tree = self.file_tree.clone();
         Rc::new(move |chord, window, cx| {
             let outcome = match app.borrow_mut().dispatch_key_input(chord) {
                 Ok(outcome) => outcome,
@@ -119,6 +142,7 @@ impl ShellView {
                 &workbench,
                 &overlays,
                 &editor_focus_fallback,
+                &file_tree,
                 window,
                 cx,
             );
@@ -148,6 +172,14 @@ impl Render for ShellView {
         let state = self.workbench_state();
         let window_controls = self.window_controls_handlers();
         let key_request = self.key_request();
+        let file_tree_key_request = self.file_tree.key_request(
+            Rc::clone(&self.app),
+            self.editor_focus.clone(),
+            self.key_request(),
+        );
+        let file_tree_panel =
+            self.file_tree
+                .panel(&state.file_tree, &file_tree_key_request, window);
         let shortcut_lookup = self.shortcut_lookup();
         let input_handler_hook = self.input_handler_hook(cx.entity());
         let workspace_active = self.overlay_manager.read_with(cx, |manager, _| {
@@ -170,6 +202,7 @@ impl Render for ShellView {
             shortcut_lookup,
             input_handler_hook,
             self.editor_focus.clone(),
+            file_tree_panel,
         )
     }
 }
@@ -187,6 +220,7 @@ fn bind_action_request(
     workbench: Rc<RefCell<WorkbenchController>>,
     overlays: Entity<OverlayManager>,
     editor_focus_fallback: FocusHandle,
+    file_tree: FileTreeRuntime,
     invocation: Invocation,
 ) -> ActionRequest {
     Rc::new(move |window, cx| {
@@ -203,6 +237,7 @@ fn bind_action_request(
             &workbench,
             &overlays,
             &editor_focus_fallback,
+            &file_tree,
             window,
             cx,
         );
@@ -215,6 +250,7 @@ fn apply_host_effects(
     workbench: &Rc<RefCell<WorkbenchController>>,
     overlays: &Entity<OverlayManager>,
     editor_focus_fallback: &FocusHandle,
+    file_tree: &FileTreeRuntime,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -228,8 +264,12 @@ fn apply_host_effects(
                     eprintln!("HostEffect::TogglePanel 收到未知 panel id：{panel_str_id}");
                     continue;
                 };
-                workbench.borrow_mut().toggle_panel(panel);
-                window.refresh();
+                if panel == PanelId::FileTree {
+                    file_tree.handle_toggle_request(workbench, editor_focus_fallback, window);
+                } else {
+                    workbench.borrow_mut().toggle_panel(panel);
+                    window.refresh();
+                }
             }
             HostEffect::ShowProjectPicker => {
                 open_overlay(
@@ -241,7 +281,14 @@ fn apply_host_effects(
                 );
             }
             HostEffect::OpenLocalProject => {
-                open_local_project(Rc::clone(app), overlays, window, cx);
+                open_local_project(
+                    Rc::clone(app),
+                    Rc::clone(workbench),
+                    overlays,
+                    file_tree.clone(),
+                    window,
+                    cx,
+                );
             }
             HostEffect::ShowLanguageServers => {
                 open_overlay(
@@ -279,7 +326,9 @@ fn open_overlay(
 
 fn open_local_project(
     app: Rc<RefCell<App>>,
+    workbench: Rc<RefCell<WorkbenchController>>,
     overlays: &Entity<OverlayManager>,
+    file_tree: FileTreeRuntime,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -292,6 +341,7 @@ fn open_local_project(
             };
             if let Err(error) = cx.update(|window, _| {
                 app.borrow_mut().open_local_project(project_root);
+                file_tree.reveal_after_project_open(&app, &workbench, window);
                 window.refresh();
             }) {
                 eprintln!("打开本地项目失败：{error}");

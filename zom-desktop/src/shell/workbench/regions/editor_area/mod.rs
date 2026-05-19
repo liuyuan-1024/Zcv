@@ -6,9 +6,9 @@
 use gpui::{Div, FocusHandle, div, prelude::*};
 
 use super::bottom_dock;
-use crate::shell::features::PanelHost;
 use crate::shell::workbench::dock_resize::DockResizeRequest;
 use crate::shell::workbench::state::{DockState, EditorState};
+use crate::shell::workbench::{PanelContext, PanelHost};
 use crate::shell::{InputHandlerHook, KeyRequest};
 
 mod editor_grid;
@@ -17,6 +17,7 @@ pub(crate) fn render(
     bottom_dock_state: &DockState,
     editor_state: &EditorState,
     host: &PanelHost,
+    panel_ctx: PanelContext<'_>,
     key_request: KeyRequest,
     input_handler_hook: InputHandlerHook,
     editor_focus: FocusHandle,
@@ -30,7 +31,12 @@ pub(crate) fn render(
         editor_focus,
     ));
     if bottom_dock_state.is_visible() {
-        column = column.child(bottom_dock::render(bottom_dock_state, host, resize));
+        column = column.child(bottom_dock::render(
+            bottom_dock_state,
+            host,
+            panel_ctx,
+            resize,
+        ));
     }
     column
 }

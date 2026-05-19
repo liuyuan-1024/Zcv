@@ -12,11 +12,11 @@ use zom_command::commands::{diagnostics, language_server as language_server_comm
 
 use crate::shell::ShortcutLookup;
 use crate::shell::features::PanelId;
-use crate::shell::overlay::{AnchorRegistry, track_anchor};
 use crate::shell::shared::element_ids;
 use crate::shell::shared::primitives::{
     BarEdge, BarRegionAlign, Glyph, align_bar_region, bar_divider, bar_frame,
 };
+use crate::shell::workbench::overlay::{AnchorRegistry, track_anchor};
 use crate::shell::workbench::state::{DockAreaId, DockState, WorkbenchState};
 
 use super::{bottom_dock, left_dock, right_dock};
@@ -114,16 +114,33 @@ fn dock_state_for(area: DockAreaId, state: &WorkbenchState) -> &DockState {
 fn panel_slot(panel: PanelId, dock_state: &DockState, shortcuts: &ShortcutLookup) -> AnyElement {
     let active = dock_state.is_visible() && dock_state.active_panel() == Some(panel);
 
-    Glyph::icon(panel_glyph_id(panel), panel.icon_path(), panel.title())
-        .command(panel.toggle_command_id())
-        .active(active)
-        .render(shortcuts)
+    Glyph::icon(
+        panel_glyph_id(panel),
+        panel.icon_path(),
+        panel_tooltip(panel),
+    )
+    .command(panel.toggle_command_id())
+    .active(active)
+    .render(shortcuts)
 }
 
 /// bottom bar 内 panel 入口 glyph 的 element id —— GPUI 用它跟踪 element
 /// 身份，与命令 id 无关；从 PanelId 派生避免散落字符串。
 fn panel_glyph_id(panel: PanelId) -> gpui::SharedString {
     format!("bottom-bar.{}", panel.command_str_id()).into()
+}
+
+/// Panel 图标的 tooltip 文案。只有 BottomBar 用，所以集中在这里、不外抽。
+fn panel_tooltip(panel: PanelId) -> &'static str {
+    match panel {
+        PanelId::FileTree => "文件树",
+        PanelId::VersionControl => "版本管理",
+        PanelId::Outline => "大纲",
+        PanelId::ProjectSearch => "项目搜索",
+        PanelId::Terminal => "终端",
+        PanelId::Debug => "调试",
+        PanelId::KeyboardShortcuts => "快捷键",
+    }
 }
 
 fn lsp_slot(

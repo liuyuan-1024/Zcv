@@ -6,6 +6,7 @@ use gpui::Pixels;
 
 pub(crate) use crate::app::EditorState;
 use crate::shell::features::PanelId;
+use crate::shell::features::file_tree::FileTreeState;
 
 /// 三种停靠区域（布局模型 5）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,11 +63,13 @@ impl DockState {
 #[derive(Clone, Debug)]
 pub(crate) struct WorkbenchState {
     pub(crate) project_title: String,
+    pub(crate) has_project: bool,
     pub(crate) left_dock: DockState,
     pub(crate) right_dock: DockState,
     pub(crate) bottom_dock: DockState,
     pub(crate) bottom_bar: BottomBarState,
     pub(crate) editor: EditorState,
+    pub(crate) file_tree: FileTreeState,
 }
 
 /// 第一版 BottomBar 渲染所需的少量动态状态（手册 17 错误呈现 / 20.8）。

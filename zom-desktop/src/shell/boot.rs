@@ -44,6 +44,7 @@ pub fn run(app: App) {
                 .update(cx, |shell_view, window, cx| {
                     cx.activate(true);
                     window.focus(&shell_view.editor_focus());
+                    shell_view.install_feature_listeners(window, cx);
                 })
                 .expect("GPUI 主窗口应能激活");
 

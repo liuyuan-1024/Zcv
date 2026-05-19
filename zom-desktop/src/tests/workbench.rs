@@ -1,6 +1,7 @@
 //! Workbench 窗口 UI 状态测试。
 
 use crate::shell::features::PanelId;
+use crate::shell::features::file_tree::FileTreeState;
 use crate::shell::shared::theme;
 use crate::shell::workbench::controller::WorkbenchController;
 use crate::shell::workbench::dock_resize::{DockResizeBounds, DockResizeEvent};
@@ -10,31 +11,39 @@ use gpui::{Pixels, point, px};
 #[test]
 fn panel_toggle_should_drive_dock_visibility_in_shell_controller() {
     let mut workbench = WorkbenchController::new();
-    let initial = workbench.state("打开项目".to_string(), EditorState::default());
-    assert!(initial.left_dock.is_visible());
-    assert_eq!(initial.left_dock.active_panel(), Some(PanelId::FileTree));
+    let initial = workbench.state(
+        "打开项目".to_string(),
+        false,
+        EditorState::default(),
+        FileTreeState::default(),
+    );
+    assert!(!initial.left_dock.is_visible());
+    assert_eq!(initial.left_dock.active_panel(), None);
     assert!(!initial.right_dock.is_visible());
     assert!(!initial.bottom_dock.is_visible());
 
-    let initial_visible = initial.left_dock.is_visible();
-    let file_tree_active = initial.left_dock.active_panel() == Some(PanelId::FileTree);
-
     workbench.toggle_panel(PanelId::FileTree);
-    let after_first = workbench.state("打开项目".to_string(), EditorState::default());
+    let after_first = workbench.state(
+        "打开项目".to_string(),
+        false,
+        EditorState::default(),
+        FileTreeState::default(),
+    );
 
-    if initial_visible && file_tree_active {
-        assert!(after_first.left_dock.collapsed);
-    } else {
-        assert!(!after_first.left_dock.collapsed);
-        assert_eq!(
-            after_first.left_dock.active_panel(),
-            Some(PanelId::FileTree)
-        );
-    }
+    assert!(after_first.left_dock.is_visible());
+    assert_eq!(
+        after_first.left_dock.active_panel(),
+        Some(PanelId::FileTree)
+    );
 
     let before = after_first.left_dock.collapsed;
     workbench.toggle_panel(PanelId::FileTree);
-    let after_second = workbench.state("打开项目".to_string(), EditorState::default());
+    let after_second = workbench.state(
+        "打开项目".to_string(),
+        false,
+        EditorState::default(),
+        FileTreeState::default(),
+    );
     assert_ne!(after_second.left_dock.collapsed, before);
 }
 
@@ -55,7 +64,12 @@ fn dock_resize_should_be_clamped_to_app_width() {
         },
         resize_bounds(px(640.0)),
     );
-    let state = workbench.state("打开项目".to_string(), EditorState::default());
+    let state = workbench.state(
+        "打开项目".to_string(),
+        false,
+        EditorState::default(),
+        FileTreeState::default(),
+    );
     assert_eq!(state.left_dock.size, px(640.0) - theme::space::s12());
 
     workbench.handle_dock_resize(
@@ -64,7 +78,12 @@ fn dock_resize_should_be_clamped_to_app_width() {
         },
         resize_bounds(px(640.0)),
     );
-    let state = workbench.state("打开项目".to_string(), EditorState::default());
+    let state = workbench.state(
+        "打开项目".to_string(),
+        false,
+        EditorState::default(),
+        FileTreeState::default(),
+    );
     assert_eq!(state.left_dock.size, theme::space::s12());
 }
 
@@ -85,7 +104,12 @@ fn dock_resize_drag_should_follow_edge_direction() {
         },
         resize_bounds(px(800.0)),
     );
-    let state = workbench.state("打开项目".to_string(), EditorState::default());
+    let state = workbench.state(
+        "打开项目".to_string(),
+        false,
+        EditorState::default(),
+        FileTreeState::default(),
+    );
     assert_eq!(state.left_dock.size, px(280.0));
 
     workbench.handle_dock_resize(
@@ -101,7 +125,12 @@ fn dock_resize_drag_should_follow_edge_direction() {
         },
         resize_bounds(px(800.0)),
     );
-    let state = workbench.state("打开项目".to_string(), EditorState::default());
+    let state = workbench.state(
+        "打开项目".to_string(),
+        false,
+        EditorState::default(),
+        FileTreeState::default(),
+    );
     assert_eq!(state.right_dock.size, px(200.0));
 
     workbench.handle_dock_resize(
@@ -117,7 +146,12 @@ fn dock_resize_drag_should_follow_edge_direction() {
         },
         resize_bounds(px(800.0)),
     );
-    let state = workbench.state("打开项目".to_string(), EditorState::default());
+    let state = workbench.state(
+        "打开项目".to_string(),
+        false,
+        EditorState::default(),
+        FileTreeState::default(),
+    );
     assert_eq!(state.bottom_dock.size, px(240.0));
 }
 
@@ -140,7 +174,12 @@ fn bottom_dock_resize_should_be_clamped_to_body_height() {
         bounds,
     );
 
-    let state = workbench.state("打开项目".to_string(), EditorState::default());
+    let state = workbench.state(
+        "打开项目".to_string(),
+        false,
+        EditorState::default(),
+        FileTreeState::default(),
+    );
     assert_eq!(
         state.bottom_dock.size,
         px(600.0) - px(24.0) - px(24.0) - theme::space::s12()

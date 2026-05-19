@@ -1,10 +1,4 @@
 //! 每窗口 overlay 状态管理。
-//!
-//! `OverlayManager` 本身不决定 anchor；shell 收到 overlay 类 `HostEffect`
-//! 后按 kind 选择 anchor，再写入本 Entity。
-//!
-//! 状态变更后由 Manager 自己 `cx.notify()`，调用方无需重复触发；这样契约
-//! 集中在一处，OverlayShell 的 observe 不会因为漏 notify 而失刷。
 
 use gpui::{Context, FocusHandle};
 
@@ -64,8 +58,7 @@ impl OverlayManager {
         cx.notify();
     }
 
-    /// 关闭当前 overlay。返回打开时记录的焦点句柄供调用方恢复焦点；本来就
-    /// 无 active 时返回 `None`，且不会触发 notify（避免空转重绘）。
+    /// 关闭当前 overlay。返回打开时记录的焦点句柄供调用方恢复焦点。
     pub(crate) fn dismiss(&mut self, cx: &mut Context<Self>) -> Option<FocusHandle> {
         let focus = self.active.take().map(|active| active.focus_to_restore);
         if focus.is_some() {

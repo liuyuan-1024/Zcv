@@ -9,11 +9,11 @@
 
 use gpui::{AnyElement, Div, Entity, Window, div, prelude::*};
 
-use crate::shell::overlay::{AnchorRegistry, track_anchor};
 use crate::shell::shared::element_ids;
 use crate::shell::shared::primitives::{
     BarEdge, BarRegionAlign, Glyph, align_bar_region, bar_frame,
 };
+use crate::shell::workbench::overlay::{AnchorRegistry, track_anchor};
 use crate::shell::workbench::state::WorkbenchState;
 use crate::shell::{ShortcutLookup, WindowControlsHandlers};
 

@@ -8,10 +8,6 @@ use crate::shell::shared::primitives::panel_placeholder;
 
 pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/project_search.svg";
 
-pub(crate) fn panel_title() -> &'static str {
-    "项目搜索"
-}
-
 pub(crate) fn render() -> Div {
-    panel_placeholder(panel_title(), "项目搜索占位中")
+    panel_placeholder("项目搜索占位中")
 }

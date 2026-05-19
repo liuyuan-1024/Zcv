@@ -60,6 +60,14 @@ pub mod color {
         }
     }
 
+    /// 焦点边界高亮。用于键盘焦点、选中项边框等需要明确定位当前位置的区域。
+    pub mod focus {
+        use super::*;
+        pub fn border() -> Rgba {
+            rgb(0x5aa8ff)
+        }
+    }
+
     /// 圆点控制按钮（control pip）的本地色（手册 3.4 —— 拒绝主题改写）。
     /// 视觉灵感来自 macOS 三色窗控，但仅作为我们外壳的设计选型，不携带
     /// 平台语义；实际平台动作由 `shell::platform::window` 决定。

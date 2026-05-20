@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use zom_view::ViewSet;
-use zom_workspace::{EntryKind, ProjectTree, Workspace};
+use zom_workspace::{BufferId, EntryKind, ProjectTree, Workspace};
 
 use super::{FileTreeActivation, FileTreeRow, FileTreeState};
 
@@ -192,8 +192,9 @@ fn open_file(workspace: &mut Workspace, views: &mut ViewSet, path: PathBuf) -> F
             None
         }
     });
-    if let Some(id) = existing {
-        let _ = workspace.set_active_buffer(id);
+    if let Some(buffer_id) = existing {
+        let _ = workspace.set_active_buffer(buffer_id);
+        focus_buffer_view(workspace, views, buffer_id);
         return FileTreeActivation::OpenedFile;
     }
 
@@ -204,13 +205,32 @@ fn open_file(workspace: &mut Workspace, views: &mut ViewSet, path: PathBuf) -> F
             return FileTreeActivation::Nothing;
         }
     };
-    let version = workspace
-        .buffer(buffer_id)
-        .expect("刚打开的 buffer 必然存在")
-        .buffer()
-        .version();
-    views.open_view(buffer_id, version);
+    focus_buffer_view(workspace, views, buffer_id);
     FileTreeActivation::OpenedFile
+}
+
+/// 确保 `buffer_id` 有对应视图，并把它切成活动视图。
+///
+/// `ViewSet::open_view` 只在当前无活动视图时才自动激活，而 app 启动即带一个
+/// 空 buffer 视图，所以打开新文件后必须显式 `set_active`，否则编辑区仍显示旧
+/// buffer。已存在视图时复用，不重复建。
+fn focus_buffer_view(workspace: &Workspace, views: &mut ViewSet, buffer_id: BufferId) {
+    let existing_view =
+        views
+            .views()
+            .find_map(|(id, view)| if view.buffer() == buffer_id { Some(id) } else { None });
+    let view_id = match existing_view {
+        Some(id) => id,
+        None => {
+            let version = workspace
+                .buffer(buffer_id)
+                .expect("刚打开的 buffer 必然存在")
+                .buffer()
+                .version();
+            views.open_view(buffer_id, version)
+        }
+    };
+    views.set_active(view_id);
 }
 
 /// 从一棵 [`ProjectTree`] 里抓出一行的 `(kind, expanded, depth)`，规避借用

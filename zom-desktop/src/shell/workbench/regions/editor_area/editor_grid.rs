@@ -40,15 +40,24 @@ pub(crate) fn render(
             }
         })
         .child(
+            // 标题栏与 top bar Glyph 同基线：body 字号、标题 g75。
+            // 状态（byte N）是次级信息，沿用 g60。
             div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .justify_between()
-                .text_size(typography::caption())
-                .text_color(color::gray::g60())
-                .child(editor_title(state))
-                .child(editor_status(state)),
+                .text_size(typography::body())
+                .child(
+                    div()
+                        .text_color(color::gray::g75())
+                        .child(editor_title(state)),
+                )
+                .child(
+                    div()
+                        .text_color(color::gray::g60())
+                        .child(editor_status(state)),
+                ),
         )
         .child(editor_surface(state, input_handler_hook))
 }
@@ -92,16 +101,18 @@ fn editor_surface(state: &EditorState, input_handler_hook: InputHandlerHook) -> 
                 .flex_row()
                 .gap(space::s12())
                 .child(
+                    // 行号为次级信息，与标题栏状态同用 g60。
                     div()
                         .w(space::s24())
-                        .text_color(color::gray::g40())
+                        .text_color(color::gray::g60())
                         .child((index + 1).to_string()),
                 )
                 .child(
+                    // 代码正文与 top bar 文本同基线 g75。
                     div()
                         .flex_1()
                         .whitespace_nowrap()
-                        .text_color(color::gray::g90())
+                        .text_color(color::gray::g75())
                         .child(line),
                 )
         }))

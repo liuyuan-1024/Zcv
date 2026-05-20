@@ -72,7 +72,7 @@ fn empty_message(hint: &'static str) -> Div {
             .items_center()
             .justify_center()
             .text_size(typography::body())
-            .text_color(color::gray::g60())
+            .text_color(color::gray::g75())
             .child(hint),
     )
 }
@@ -101,10 +101,11 @@ fn render_row(row: &FileTreeRow, state: &FileTreeState, is_focused: bool) -> Div
     } else {
         gpui::rgba(0)
     };
+    // 与 top bar Glyph 同基线：常态 g75，活动项 g95。
     let text_color = if is_active {
         color::gray::g95()
     } else {
-        color::gray::g90()
+        color::gray::g75()
     };
 
     div()

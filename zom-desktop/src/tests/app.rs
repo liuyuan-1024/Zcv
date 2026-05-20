@@ -15,9 +15,24 @@ use zom_command::commands::{
 };
 use zom_workspace::EntryKind;
 
+/// 构造一个已打开项目并激活了一个空文件的 `App`。
+///
+/// 不再有默认空白 buffer，编辑管线测试必须先真实打开一个文件才有活动 buffer。
+/// 复用 `project_fixture`：rows 为 `[root, src, README.md]`，走到 README.md
+/// 并 activate。
+fn app_with_open_file(name: &str) -> App {
+    let mut app = App::new();
+    app.open_local_project(project_fixture(name));
+    app.file_tree_move_selection(1); // root
+    app.file_tree_move_selection(1); // src
+    app.file_tree_move_selection(1); // README.md
+    assert_eq!(app.file_tree_activate(), FileTreeActivation::OpenedFile);
+    app
+}
+
 #[test]
 fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
-    let mut app = App::new();
+    let mut app = app_with_open_file("ime-key");
 
     // 普通文本输入走 IME 通道（系统输入法或键盘的 NSTextInputClient 提交）。
     app.ime_replace_text(None, "h").unwrap();
@@ -53,7 +68,7 @@ fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
 
 #[test]
 fn ime_preedit_update_and_commit_should_flow_through_engine() {
-    let mut app = App::new();
+    let mut app = app_with_open_file("ime-preedit");
 
     // 先输入一个英文字符，确认 IME commit 走单独路径。
     app.ime_replace_text(None, "x").unwrap();
@@ -84,7 +99,7 @@ fn ime_preedit_update_and_commit_should_flow_through_engine() {
 
 #[test]
 fn tab_and_enter_should_dispatch_editor_commands() {
-    let mut app = App::new();
+    let mut app = app_with_open_file("tab-enter");
 
     assert!(app.dispatch_key_input("tab".to_string()).unwrap().consumed);
     assert!(
@@ -177,14 +192,16 @@ fn project_title_should_prompt_when_no_project_is_open() {
 
 #[test]
 fn open_local_project_should_update_project_title_and_reset_workspace() {
-    let mut app = App::new();
+    let mut app = app_with_open_file("reset");
     app.ime_replace_text(None, "临时内容").unwrap();
+    assert!(!app.editor_state().text.is_empty());
 
     app.open_local_project(PathBuf::from("/tmp/zom-local-project"));
 
-    let state = app.editor_state();
     assert_eq!(app.project_title(), "zom-local-project");
-    assert_eq!(state.title, "未命名");
+    // 重开项目后工作区清空：没有默认 buffer，也没有活动视图。
+    let state = app.editor_state();
+    assert!(state.title.is_empty());
     assert!(state.text.is_empty());
     assert!(!state.dirty);
 }

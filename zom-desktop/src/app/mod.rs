@@ -141,19 +141,13 @@ impl App {
     }
 }
 
+/// 空工作区：不预建任何 buffer/view。
+///
+/// 早期版本会默认开一个空白 scratch buffer，但它对用户没有意义、还会让编辑区
+/// 显示一个不存在的"文件"，误导用户。现在编辑区在无活动视图时走
+/// `EditorState::default()`，文件从文件树打开后才有内容。
 fn empty_workspace() -> (Workspace, ViewSet) {
-    let mut workspace = Workspace::new();
-    let buffer_id = workspace
-        .open_text(None, "")
-        .expect("默认空白 buffer 必须能创建");
-    let base_version = workspace
-        .buffer(buffer_id)
-        .expect("刚创建的 buffer 必须存在")
-        .buffer()
-        .version();
-    let mut views = ViewSet::new();
-    views.open_view(buffer_id, base_version);
-    (workspace, views)
+    (Workspace::new(), ViewSet::new())
 }
 
 fn project_name(path: &Path) -> Option<&str> {

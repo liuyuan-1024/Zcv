@@ -18,14 +18,14 @@ pub(crate) fn render(open_local_project: ActionRequest) -> Div {
         .bg(color::gray::g10())
         .child(
             div()
-                .text_size(typography::title())
+                .text_size(typography::ui())
                 .text_color(color::gray::g95())
                 .child("切换项目"),
         )
         .child(
             div()
                 .mt(space::s8())
-                .text_size(typography::caption())
+                .text_size(typography::ui())
                 .text_color(color::gray::g60())
                 .child("最近项目与打开本地文件夹入口占位中"),
         )
@@ -36,7 +36,7 @@ pub(crate) fn render(open_local_project: ActionRequest) -> Div {
                 .p(space::s8())
                 .rounded(radius::r4())
                 .bg(color::gray::g20())
-                .text_size(typography::body())
+                .text_size(typography::ui())
                 .text_color(color::gray::g90())
                 .cursor_pointer()
                 .on_click(move |_, window, cx| open_local_project(window, cx))

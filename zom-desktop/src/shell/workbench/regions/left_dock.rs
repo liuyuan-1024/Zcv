@@ -44,6 +44,6 @@ fn empty_body() -> Div {
         .items_center()
         .justify_center()
         .size_full()
-        .text_size(typography::caption())
+        .text_size(typography::ui())
         .text_color(color::gray::g60())
 }

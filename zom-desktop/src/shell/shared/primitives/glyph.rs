@@ -13,7 +13,7 @@ use gpui::{
 };
 
 use crate::shell::ShortcutLookup;
-use crate::shell::shared::theme::{color, icon, radius, space, typography};
+use crate::shell::shared::theme::{color, radius, space, typography};
 
 #[derive(Clone)]
 enum GlyphContent {
@@ -34,7 +34,7 @@ pub(crate) struct Glyph {
     tooltip: String,
     command_id: Option<&'static str>,
     active: bool,
-    /// 图标尺寸；只作用于 Icon / IconText 内容，默认 `icon::i16()`。
+    /// 图标尺寸；只作用于 Icon / IconText 内容，默认 `typography::ui_line()`。
     icon_size: Pixels,
 }
 
@@ -78,7 +78,7 @@ impl Glyph {
             tooltip: tooltip.into(),
             command_id: None,
             active: false,
-            icon_size: icon::i16(),
+            icon_size: typography::ui_line(),
         }
     }
 
@@ -93,7 +93,7 @@ impl Glyph {
         self
     }
 
-    /// 覆盖图标尺寸（默认 `icon::i16()`）；对 Text 内容无效。
+    /// 覆盖图标尺寸（默认 `typography::ui_line()`）；对 Text 内容无效。
     pub(crate) fn icon_size(mut self, size: Pixels) -> Self {
         self.icon_size = size;
         self
@@ -117,7 +117,7 @@ impl Glyph {
         match self.content {
             GlyphContent::Text(text) => div()
                 .id(id)
-                .text_size(typography::body())
+                .text_size(typography::ui())
                 .text_color(color_value)
                 .cursor_pointer()
                 .tooltip(build_tooltip)
@@ -143,7 +143,7 @@ impl Glyph {
                 .child(svg_icon(path, color_value, icon_size))
                 .child(
                     div()
-                        .text_size(typography::body())
+                        .text_size(typography::ui())
                         .text_color(color_value)
                         .child(text),
                 )
@@ -183,7 +183,7 @@ impl Render for GlyphTooltip {
             .rounded(radius::r4())
             .child(
                 div()
-                    .text_size(typography::caption())
+                    .text_size(typography::ui())
                     .text_color(color::gray::g95())
                     .child(self.label.clone()),
             );
@@ -191,7 +191,7 @@ impl Render for GlyphTooltip {
         if let Some(shortcut) = &self.shortcut {
             row = row.child(
                 div()
-                    .text_size(typography::caption())
+                    .text_size(typography::ui())
                     .text_color(color::gray::g60())
                     .child(shortcut.clone()),
             );

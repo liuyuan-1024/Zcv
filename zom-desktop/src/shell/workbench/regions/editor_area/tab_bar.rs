@@ -13,7 +13,7 @@ use zom_command::commands::editor;
 
 use crate::shell::ShortcutLookup;
 use crate::shell::shared::primitives::Glyph;
-use crate::shell::shared::theme::{color, icon, radius, space, typography};
+use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::state::{EditorState, EditorTab};
 
 /// 标签关闭标记的图标。
@@ -68,8 +68,8 @@ fn render_tab(tab: &EditorTab, shortcuts: &ShortcutLookup) -> Stateful<gpui::Div
         .gap(space::s4())
         .p(space::s4())
         .bg(bg)
-        .text_size(typography::body())
-        .line_height(typography::body_line_tight())
+        .text_size(typography::ui())
+        .line_height(typography::ui_line())
         .text_color(text)
         // 修改标志放文字左侧；标志槽常驻，dirty 切换时文字不跳。
         .child(dirty_marker(tab.dirty, text))
@@ -93,7 +93,7 @@ fn close_glyph(
     )
     .command(editor::CLOSE_TAB)
     .active(tab.is_active)
-    .icon_size(icon::i16())
+    .icon_size(typography::ui_line())
     .render(shortcuts);
 
     div()
@@ -109,13 +109,13 @@ fn close_glyph(
 /// 一个小圆点、否则透明——固定占位避免 dirty 切换时文字跳动。
 /// 纯视觉标记，固定尺寸是 MEMORY 约定里的例外。
 fn dirty_marker(dirty: bool, color: Rgba) -> gpui::Div {
-    let mut dot = div().size(space::s8());
+    let mut dot = div().size(space::s6());
     if dirty {
         dot = dot.rounded(radius::full()).bg(color);
     }
     div()
         .flex_shrink_0()
-        .size(icon::i16())
+        .size(typography::ui_line())
         .flex()
         .items_center()
         .justify_center()

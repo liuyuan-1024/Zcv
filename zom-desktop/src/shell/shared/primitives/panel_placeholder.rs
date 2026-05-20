@@ -15,7 +15,7 @@ pub(crate) fn panel_placeholder(hint: &'static str) -> Div {
             .flex()
             .items_center()
             .justify_center()
-            .text_size(typography::body())
+            .text_size(typography::ui())
             .text_color(color::gray::g60())
             .child(hint),
     )

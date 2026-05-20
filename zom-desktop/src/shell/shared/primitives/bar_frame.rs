@@ -31,7 +31,7 @@ pub(crate) fn bar_frame(edge: BarEdge) -> Div {
         .gap(space::s8())
         .bg(color::gray::g10())
         .text_color(color::gray::g75())
-        .text_size(typography::body());
+        .text_size(typography::ui());
 
     match edge {
         BarEdge::Top => frame.border_b_1().border_color(color::gray::g40()),

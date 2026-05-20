@@ -52,7 +52,7 @@ fn editor_surface(state: &EditorState, input_handler_hook: InputHandlerHook) -> 
         .p(space::s12())
         .font_family(".ZedMono")
         .line_height(typography::editor_line())
-        .text_size(typography::editor_body())
+        .text_size(typography::editor())
         // editor 渲染区每帧重新注册一次系统输入法接收端：bounds 给候选窗定位用。
         // handle_input 必须在 paint 阶段调用，所以放进 canvas 的第二个回调而非 prepaint。
         .child(

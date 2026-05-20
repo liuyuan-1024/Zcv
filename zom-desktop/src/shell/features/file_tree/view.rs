@@ -12,7 +12,7 @@ use std::rc::Rc;
 use gpui::{AnyElement, Div, IntoElement, Svg, div, prelude::*, svg};
 
 use crate::shell::normalized_chord;
-use crate::shell::shared::theme::{color, icon, radius, space, typography};
+use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::PanelContext;
 use zom_workspace::EntryKind;
 
@@ -71,7 +71,7 @@ fn empty_message(hint: &'static str) -> Div {
             .flex()
             .items_center()
             .justify_center()
-            .text_size(typography::body())
+            .text_size(typography::ui())
             .text_color(color::gray::g75())
             .child(hint),
     )
@@ -120,7 +120,7 @@ fn render_row(row: &FileTreeRow, state: &FileTreeState, is_focused: bool) -> Div
         .border_color(border_color)
         .bg(bg_color)
         .pl(indent_unit() * (row.depth as f32) + space::s4())
-        .text_size(typography::body())
+        .text_size(typography::ui())
         .text_color(text_color)
         .child(icon_cell(row, is_active))
         .child(
@@ -135,7 +135,7 @@ fn render_row(row: &FileTreeRow, state: &FileTreeState, is_focused: bool) -> Div
 fn icon_cell(row: &FileTreeRow, is_active: bool) -> Div {
     div()
         .flex_shrink_0()
-        .size(icon::i16())
+        .size(typography::ui_line())
         .child(entry_icon(row, is_active))
 }
 
@@ -150,5 +150,5 @@ fn entry_icon(row: &FileTreeRow, is_active: bool) -> Svg {
     } else {
         color::gray::g75()
     };
-    svg().path(path).size(icon::i16()).text_color(tint)
+    svg().path(path).size(typography::ui_line()).text_color(tint)
 }

@@ -134,52 +134,27 @@ pub mod radius {
     }
 }
 
-pub mod icon {
-    use super::*;
-    pub fn i10() -> Pixels {
-        px(10.0)
-    }
-    pub fn i12() -> Pixels {
-        px(12.0)
-    }
-    pub fn i14() -> Pixels {
-        px(14.0)
-    }
-    pub fn i16() -> Pixels {
-        px(16.0)
-    }
-    pub fn i20() -> Pixels {
-        px(20.0)
-    }
-}
-
 /// 字号 + 行高（手册 6.3 / 6.4）。骨架阶段固定默认值；将来从 `cx.fonts()` 取。
+///
+/// 只有两套字号：`ui()` 给全部 UI chrome，`editor()` 给编辑区代码正文。
+/// UI 层级靠颜色 / 字重区分，不靠字号。
 pub mod typography {
     use super::*;
-    pub fn caption() -> Pixels {
-        px(12.0)
-    }
-    pub fn body() -> Pixels {
+    /// UI 文字字号：文件树、顶栏、Dock、标签、浮层、tooltip 等全部 chrome。
+    pub fn ui() -> Pixels {
         px(13.0)
     }
-    pub fn title() -> Pixels {
-        px(14.0)
-    }
-    pub fn large() -> Pixels {
+    /// UI 行的标准尺寸：既是文字行高，也是 UI 图标尺寸 —— 二者同一个值，
+    /// 让「图标 + 文字」一行等高、`items_center` 后盒子对齐。改 UI 行尺寸
+    pub fn ui_line() -> Pixels {
         px(16.0)
     }
-    pub fn body_line() -> Pixels {
-        px(20.0)
-    }
-    /// body 文字的紧凑行高。用于标签等需要图标与文字精确对齐、又不想让
-    /// 默认行高把行撑得过高的紧凑行。
-    pub fn body_line_tight() -> Pixels {
+    /// 编辑区代码字号。后续做成用户可调。
+    pub fn editor() -> Pixels {
         px(16.0)
     }
-    pub fn editor_body() -> Pixels {
-        px(14.0)
-    }
+    /// 编辑区行高（约 1.5×，照顾代码可读性）。
     pub fn editor_line() -> Pixels {
-        px(20.0)
+        px(24.0)
     }
 }

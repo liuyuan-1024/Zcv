@@ -10,10 +10,10 @@
 //!   × 退出整个应用，− 最小化窗口，+ 切换最大化。
 //! - 窗口失活时圆点统一变灰，但仍可点击（与 macOS 行为一致）。
 
-use gpui::{Div, Rgba, Stateful, Svg, div, prelude::*, rgb, svg};
+use gpui::{Div, Pixels, Rgba, Stateful, Svg, div, prelude::*, px, rgb, svg};
 
 use crate::shell::WindowControlsHandlers;
-use crate::shell::shared::theme::{color, icon, radius, space};
+use crate::shell::shared::theme::{color, radius, space};
 
 /// 三个圆点的身份。
 ///
@@ -48,6 +48,11 @@ const PIP_GROUP: &str = "top-bar.window-controls";
 const CLOSE_SYMBOL: &str = "icons/top_bar/window_controls/close.svg";
 const MINIMIZE_SYMBOL: &str = "icons/top_bar/window_controls/minimize.svg";
 const MAXIMIZE_SYMBOL: &str = "icons/top_bar/window_controls/maximize.svg";
+
+/// 圆点直径。圆点是窗控的本地几何尺寸，不是「UI 图标」，故不走 `theme::icon`。
+const PIP_SIZE: Pixels = px(12.0);
+/// 圆点内符号尺寸，略小于直径留呼吸感。
+const PIP_SYMBOL_SIZE: Pixels = px(10.0);
 
 pub(crate) fn render_window_controls(
     is_window_active: bool,
@@ -103,8 +108,7 @@ fn control_pip(
 
     div()
         .id(id)
-        .w(icon::i12())
-        .h(icon::i12())
+        .size(PIP_SIZE)
         .rounded(radius::full())
         .bg(fill)
         .border_1()
@@ -122,7 +126,7 @@ fn control_pip(
 fn pip_symbol(path: &'static str) -> Svg {
     svg()
         .path(path)
-        .size(icon::i10())
+        .size(PIP_SYMBOL_SIZE)
         .text_color(color::gray::g00())
         .opacity(0.0)
         .group_hover(PIP_GROUP, |style| style.opacity(1.0))

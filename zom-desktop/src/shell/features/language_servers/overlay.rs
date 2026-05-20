@@ -17,14 +17,14 @@ pub(crate) fn render() -> Div {
         .bg(color::gray::g10())
         .child(
             div()
-                .text_size(typography::title())
+                .text_size(typography::ui())
                 .text_color(color::gray::g95())
                 .child("语言服务器"),
         )
         .child(
             div()
                 .mt(space::s8())
-                .text_size(typography::caption())
+                .text_size(typography::ui())
                 .text_color(color::gray::g60())
                 .child("当前文件暂无已连接的语言服务器"),
         )
@@ -34,7 +34,7 @@ pub(crate) fn render() -> Div {
                 .p(space::s8())
                 .rounded(radius::r4())
                 .bg(color::gray::g20())
-                .text_size(typography::body())
+                .text_size(typography::ui())
                 .text_color(color::gray::g90())
                 .child("等待语言服务器接入"),
         )

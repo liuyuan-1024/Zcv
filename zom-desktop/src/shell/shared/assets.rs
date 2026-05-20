@@ -44,6 +44,7 @@ const ASSETS: &[(&str, &[u8])] = &[
     asset!("icons/features/file_tree/folder.svg"),
     asset!("icons/features/file_tree/folder_open.svg"),
     asset!("icons/features/file_tree/file.svg"),
+    asset!("icons/features/tab/close.svg"),
 ];
 
 impl AssetSource for EmbeddedAssets {

@@ -215,10 +215,13 @@ fn open_file(workspace: &mut Workspace, views: &mut ViewSet, path: PathBuf) -> F
 /// 空 buffer 视图，所以打开新文件后必须显式 `set_active`，否则编辑区仍显示旧
 /// buffer。已存在视图时复用，不重复建。
 fn focus_buffer_view(workspace: &Workspace, views: &mut ViewSet, buffer_id: BufferId) {
-    let existing_view =
-        views
-            .views()
-            .find_map(|(id, view)| if view.buffer() == buffer_id { Some(id) } else { None });
+    let existing_view = views.views().find_map(|(id, view)| {
+        if view.buffer() == buffer_id {
+            Some(id)
+        } else {
+            None
+        }
+    });
     let view_id = match existing_view {
         Some(id) => id,
         None => {

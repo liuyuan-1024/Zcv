@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use gpui::{
     AppContext, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
-    IntoElement, Pixels, Point, Render, UTF16Selection, Window,
+    IntoElement, Pixels, Point, Render, ScrollHandle, UTF16Selection, Window,
 };
 use zom_command::HostEffect;
 use zom_command::Invocation;
@@ -38,6 +38,8 @@ pub(crate) struct ShellView {
     overlay_shell: Entity<OverlayShell>,
     editor_focus: FocusHandle,
     file_tree: FileTreeRuntime,
+    /// 编辑区标签栏的滚动状态。跨帧保留，否则每帧重建会丢失滚动位置。
+    editor_tab_scroll: ScrollHandle,
 }
 
 impl ShellView {
@@ -74,6 +76,7 @@ impl ShellView {
             overlay_shell,
             editor_focus,
             file_tree,
+            editor_tab_scroll: ScrollHandle::new(),
         }
     }
 
@@ -203,6 +206,7 @@ impl Render for ShellView {
             input_handler_hook,
             self.editor_focus.clone(),
             file_tree_panel,
+            self.editor_tab_scroll.clone(),
         )
     }
 }

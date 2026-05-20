@@ -20,6 +20,7 @@ use crate::{
     Invocation, Keymap, NoArgs, command_execution_failed, parse_optional_bool, reject_unknown_args,
     required_arg, set_active_view_selection,
 };
+use zom_view::ViewId;
 use zom_workspace::BufferId;
 
 // ==================================================
@@ -39,6 +40,8 @@ pub const REDO: &str = "editor.redo";
 pub const MOVE_SELECTION: &str = "editor.move_selection";
 pub const IME_COMMIT: &str = "editor.ime_commit";
 pub const IME_CANCEL: &str = "editor.ime_cancel";
+pub const SELECT_TAB: &str = "editor.select_tab";
+pub const CLOSE_TAB: &str = "editor.close_tab";
 
 // ==================================================
 // Typed builders 工具
@@ -148,6 +151,46 @@ impl TryFrom<CommandArgs> for MoveSelectionArgs {
     }
 }
 
+/// `editor.select_tab` 的目标标签（一个 tab ↔ 一个 View）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectTabTarget {
+    /// 下一个标签；越过末尾回到第一个。
+    Next,
+    /// 上一个标签；越过开头回到最后一个。
+    Previous,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SelectTabArgs {
+    pub target: SelectTabTarget,
+}
+
+impl From<SelectTabArgs> for CommandArgs {
+    fn from(args: SelectTabArgs) -> Self {
+        let target = match args.target {
+            SelectTabTarget::Next => "next".to_string(),
+            SelectTabTarget::Previous => "previous".to_string(),
+        };
+        CommandArgs::new().with("target", target)
+    }
+}
+
+impl TryFrom<CommandArgs> for SelectTabArgs {
+    type Error = CommandError;
+    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
+        reject_unknown_args(&args, &["target"])?;
+        let raw = required_arg(&args, "target")?;
+        let target = match raw.as_str() {
+            "next" => SelectTabTarget::Next,
+            "previous" => SelectTabTarget::Previous,
+            other => {
+                return Err(CommandError::InvalidArgs(format!("未知标签目标：{other}")));
+            }
+        };
+        Ok(Self { target })
+    }
+}
+
 // ==================================================
 // Typed builders —— 调用方一律走这里，不再手拼字符串
 // ==================================================
@@ -217,6 +260,14 @@ pub fn ime_commit(text: impl Into<String>) -> Invocation {
 
 pub fn ime_cancel() -> Invocation {
     (cid(IME_CANCEL), CommandArgs::new())
+}
+
+pub fn select_tab(target: SelectTabTarget) -> Invocation {
+    (cid(SELECT_TAB), SelectTabArgs { target }.into())
+}
+
+pub fn close_tab() -> Invocation {
+    (cid(CLOSE_TAB), CommandArgs::new())
 }
 
 // ==================================================
@@ -334,6 +385,21 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_with("end", move_args(Next, LineEdge, false))
         .key_with("shift-home", move_args(Previous, LineEdge, true))
         .key_with("shift-end", move_args(Next, LineEdge, true));
+
+    // 标签切换 / 关闭：键盘驱动，不接鼠标。
+    // 下/上一个用 mod-l/h；mod-w 关当前。
+    registry
+        .install(keymap, SELECT_TAB, "切换标签", Box::new(run_select_tab))
+        .key_with("mod-l", select_tab_args(SelectTabTarget::Next))
+        .key_with("mod-h", select_tab_args(SelectTabTarget::Previous));
+
+    registry
+        .install(keymap, CLOSE_TAB, "关闭标签", Box::new(run_close_tab))
+        .key("mod-w");
+}
+
+fn select_tab_args(target: SelectTabTarget) -> CommandArgs {
+    SelectTabArgs { target }.into()
 }
 
 fn move_args(direction: MovementDirection, motion: impl Into<Motion>, extend: bool) -> CommandArgs {
@@ -631,6 +697,61 @@ fn run_ime_cancel(
     };
     set_active_view_selection(context, after)?;
     Ok(CommandOutcome::default())
+}
+
+fn run_select_tab(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    let args = SelectTabArgs::try_from(args)?;
+    // tab 顺序即 ViewSet 的视图顺序（= 打开顺序）。
+    let ids: Vec<ViewId> = context.views.views().map(|(id, _)| id).collect();
+    if ids.is_empty() {
+        return Ok(CommandOutcome::default());
+    }
+    let current = context
+        .views
+        .active()
+        .and_then(|active| ids.iter().position(|id| *id == active));
+    let target = match args.target {
+        SelectTabTarget::Next => match current {
+            Some(index) => (index + 1) % ids.len(),
+            None => 0,
+        },
+        SelectTabTarget::Previous => match current {
+            Some(index) => (index + ids.len() - 1) % ids.len(),
+            None => 0,
+        },
+    };
+    // target 已对标签数取模，必落在范围内；get 仅作防御。
+    if let Some(id) = ids.get(target) {
+        context.views.set_active(*id);
+        sync_active_buffer(context);
+    }
+    Ok(CommandOutcome::default())
+}
+
+fn run_close_tab(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    let Some(active) = context.views.active() else {
+        return Ok(CommandOutcome::default());
+    };
+    // 只关视图，不关 buffer：dirty 内容仍留在 workspace，不丢数据。
+    // 孤立 buffer 的回收留待后续（确认弹窗 / 引用计数）。
+    context.views.close_view(active);
+    sync_active_buffer(context);
+    Ok(CommandOutcome::default())
+}
+
+/// 把 workspace 的活动 buffer 同步到当前活动视图——让文件树「活动文件」
+/// 高亮跟随标签切换 / 关闭。无活动视图时（标签全关）保持原值不动。
+fn sync_active_buffer(context: &mut CommandContext<'_>) {
+    if let Some(buffer_id) = context.views.active_view().map(|view| view.buffer()) {
+        let _ = context.workspace.set_active_buffer(buffer_id);
+    }
 }
 
 // ==================================================

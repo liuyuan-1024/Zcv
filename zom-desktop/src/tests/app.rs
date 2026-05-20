@@ -4,7 +4,7 @@
 //! 命令产出的 HostEffect。需要 GPUI 句柄（Entity / Window / 焦点等）的链路
 //! 在 `shell::view` 那一层做手工 / 集成测试，不进本文件。
 
-use crate::app::App;
+use crate::app::{App, EditorState, EditorTab};
 use crate::shell::features::PanelId;
 use crate::shell::features::file_tree::FileTreeActivation;
 use std::fs::{File, create_dir_all};
@@ -14,6 +14,15 @@ use zom_command::commands::{
     editor, language_server as language_server_commands, workspace as workspace_commands,
 };
 use zom_workspace::EntryKind;
+
+/// 取当前活动标签——断言「编辑区正在显示哪个文件」用。
+fn active_tab(state: &EditorState) -> &EditorTab {
+    state
+        .tabs
+        .iter()
+        .find(|tab| tab.is_active)
+        .expect("应有活动标签")
+}
 
 /// 构造一个已打开项目并激活了一个空文件的 `App`。
 ///
@@ -41,7 +50,7 @@ fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
     let state = app.editor_state();
     assert_eq!(state.text, "hi");
     assert_eq!(state.cursor_byte, 2);
-    assert!(state.dirty);
+    assert!(active_tab(&state).dirty);
 
     // 非文本按键仍走 keymap → 命令。
     assert!(app.dispatch_key_input("left".to_string()).unwrap().consumed);
@@ -116,7 +125,7 @@ fn tab_and_enter_should_dispatch_editor_commands() {
     let state = app.editor_state();
     assert_eq!(state.text, "    \n\n");
     assert_eq!(state.cursor_byte, 6);
-    assert!(state.dirty);
+    assert!(active_tab(&state).dirty);
 }
 
 #[test]
@@ -199,11 +208,10 @@ fn open_local_project_should_update_project_title_and_reset_workspace() {
     app.open_local_project(PathBuf::from("/tmp/zom-local-project"));
 
     assert_eq!(app.project_title(), "zom-local-project");
-    // 重开项目后工作区清空：没有默认 buffer，也没有活动视图。
+    // 重开项目后工作区清空：没有默认 buffer / 视图，也就没有任何标签。
     let state = app.editor_state();
-    assert!(state.title.is_empty());
+    assert!(state.tabs.is_empty());
     assert!(state.text.is_empty());
-    assert!(!state.dirty);
 }
 
 #[test]
@@ -352,4 +360,43 @@ fn file_tree_activate_on_directory_should_toggle_expanded() {
         .unwrap();
     assert!(matches!(src_row.kind, EntryKind::Directory));
     assert!(src_row.expanded);
+}
+
+#[test]
+fn tab_commands_should_switch_and_close_active_view() {
+    let mut app = App::new();
+    app.open_local_project(project_fixture("tabs"));
+
+    // 打开 README.md：rows = [root, src, README.md]。
+    app.file_tree_move_selection(1); // root
+    app.file_tree_move_selection(1); // src
+    app.file_tree_move_selection(1); // README.md
+    assert_eq!(app.file_tree_activate(), FileTreeActivation::OpenedFile);
+
+    // 展开 src 并打开 src/lib.rs：
+    // 展开后 rows = [root, src, inner, lib.rs, README.md]。
+    app.file_tree_move_selection(-1); // 回到 src
+    app.file_tree_expand_or_into(); // 展开 src
+    app.file_tree_move_selection(1); // inner
+    app.file_tree_move_selection(1); // lib.rs
+    assert_eq!(app.file_tree_activate(), FileTreeActivation::OpenedFile);
+
+    // 两个标签：README.md 先开、lib.rs 后开且为活动标签。
+    let state = app.editor_state();
+    assert_eq!(state.tabs.len(), 2);
+    assert_eq!(active_tab(&state).title, "lib.rs");
+    assert!(state.tabs[1].is_active);
+
+    // 切到上一个标签 → README.md。
+    app.dispatch(editor::select_tab(editor::SelectTabTarget::Previous))
+        .unwrap();
+    let state = app.editor_state();
+    assert_eq!(active_tab(&state).title, "README.md");
+    assert!(state.tabs[0].is_active);
+
+    // 关闭当前标签 → 只剩 lib.rs。
+    app.dispatch(editor::close_tab()).unwrap();
+    let state = app.editor_state();
+    assert_eq!(state.tabs.len(), 1);
+    assert_eq!(active_tab(&state).title, "lib.rs");
 }

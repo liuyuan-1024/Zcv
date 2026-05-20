@@ -15,18 +15,28 @@ use zom_command::commands::{
     panels as panel_commands, window as window_commands, workspace as workspace_commands,
 };
 use zom_command::{CommandExecutor, CommandQueue, CommandRegistry, Keymap};
-use zom_view::ViewSet;
-use zom_workspace::Workspace;
+use zom_view::{ViewId, ViewSet};
+use zom_workspace::{Workspace, WorkspaceBuffer};
 
 use crate::shell::features::file_tree::{FileTreeActivation, FileTreeModel, FileTreeState};
 
-/// 主编辑区当前可显示的活动 buffer 摘要。
+/// 主编辑区渲染快照：标签列表 + 当前活动 buffer 的正文。
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EditorState {
-    pub(crate) title: String,
+    pub(crate) tabs: Vec<EditorTab>,
     pub(crate) text: String,
     pub(crate) cursor_byte: usize,
+}
+
+/// 编辑区一个标签的渲染摘要。
+#[derive(Clone, Debug)]
+pub(crate) struct EditorTab {
+    /// 对应的 View；后续切换 / 关闭命令用它定位。
+    pub(crate) id: ViewId,
+    /// 标签显示名（文件名，无路径的 scratch 显示「未命名」）。
+    pub(crate) title: String,
     pub(crate) dirty: bool,
+    pub(crate) is_active: bool,
 }
 
 pub struct App {
@@ -115,30 +125,55 @@ impl App {
     }
 
     pub(crate) fn editor_state(&self) -> EditorState {
+        let tabs = self.editor_tabs();
+
         let Some(view) = self.views.active_view() else {
-            return EditorState::default();
+            return EditorState {
+                tabs,
+                ..EditorState::default()
+            };
         };
-
-        let buffer_id = view.buffer();
-        let Some(buffer) = self.workspace.buffer(buffer_id) else {
-            return EditorState::default();
+        let Some(buffer) = self.workspace.buffer(view.buffer()) else {
+            return EditorState {
+                tabs,
+                ..EditorState::default()
+            };
         };
-
-        let title = buffer
-            .path()
-            .and_then(|path| path.file_name())
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "未命名".to_string());
-        let text = buffer.buffer().text().into_owned();
-        let cursor_byte = view.selection().primary().head().get();
 
         EditorState {
-            title,
-            text,
-            cursor_byte,
-            dirty: buffer.is_dirty(),
+            tabs,
+            text: buffer.buffer().text().into_owned(),
+            cursor_byte: view.selection().primary().head().get(),
         }
     }
+
+    /// 把 `ViewSet` 里的每个视图映射成一个标签摘要，顺序即打开顺序。
+    fn editor_tabs(&self) -> Vec<EditorTab> {
+        let active = self.views.active();
+        self.views
+            .views()
+            .map(|(id, view)| {
+                let buffer = self.workspace.buffer(view.buffer());
+                EditorTab {
+                    id,
+                    title: buffer
+                        .map(buffer_title)
+                        .unwrap_or_else(|| "未命名".to_string()),
+                    dirty: buffer.map(WorkspaceBuffer::is_dirty).unwrap_or(false),
+                    is_active: Some(id) == active,
+                }
+            })
+            .collect()
+    }
+}
+
+/// 取 buffer 的标签显示名：有路径用文件名，无路径（scratch）显示「未命名」。
+fn buffer_title(buffer: &WorkspaceBuffer) -> String {
+    buffer
+        .path()
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "未命名".to_string())
 }
 
 /// 空工作区：不预建任何 buffer/view。

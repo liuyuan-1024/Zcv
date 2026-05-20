@@ -39,39 +39,7 @@ pub(crate) fn render(
                 cx.stop_propagation();
             }
         })
-        .child(
-            // 标题栏与 top bar Glyph 同基线：body 字号、标题 g75。
-            // 状态（byte N）是次级信息，沿用 g60。
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .text_size(typography::body())
-                .child(
-                    div()
-                        .text_color(color::gray::g75())
-                        .child(editor_title(state)),
-                )
-                .child(
-                    div()
-                        .text_color(color::gray::g60())
-                        .child(editor_status(state)),
-                ),
-        )
         .child(editor_surface(state, input_handler_hook))
-}
-
-fn editor_title(state: &EditorState) -> String {
-    if state.dirty {
-        format!("{} *", state.title)
-    } else {
-        state.title.clone()
-    }
-}
-
-fn editor_status(state: &EditorState) -> String {
-    format!("byte {}", state.cursor_byte)
 }
 
 fn editor_surface(state: &EditorState, input_handler_hook: InputHandlerHook) -> Div {

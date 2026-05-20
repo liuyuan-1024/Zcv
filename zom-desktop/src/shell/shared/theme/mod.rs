@@ -171,6 +171,11 @@ pub mod typography {
     pub fn body_line() -> Pixels {
         px(20.0)
     }
+    /// body 文字的紧凑行高。用于标签等需要图标与文字精确对齐、又不想让
+    /// 默认行高把行撑得过高的紧凑行。
+    pub fn body_line_tight() -> Pixels {
+        px(16.0)
+    }
     pub fn editor_body() -> Pixels {
         px(14.0)
     }

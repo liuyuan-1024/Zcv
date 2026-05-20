@@ -8,7 +8,7 @@
 //! 「可指向」的手型光标作为入口暗示。
 
 use gpui::{
-    AnyElement, AnyView, App, Context, ElementId, IntoElement, Render, Svg, Window, div,
+    AnyElement, AnyView, App, Context, ElementId, IntoElement, Pixels, Render, Svg, Window, div,
     prelude::*, svg,
 };
 
@@ -34,6 +34,8 @@ pub(crate) struct Glyph {
     tooltip: String,
     command_id: Option<&'static str>,
     active: bool,
+    /// 图标尺寸；只作用于 Icon / IconText 内容，默认 `icon::i16()`。
+    icon_size: Pixels,
 }
 
 impl Glyph {
@@ -76,6 +78,7 @@ impl Glyph {
             tooltip: tooltip.into(),
             command_id: None,
             active: false,
+            icon_size: icon::i16(),
         }
     }
 
@@ -90,6 +93,12 @@ impl Glyph {
         self
     }
 
+    /// 覆盖图标尺寸（默认 `icon::i16()`）；对 Text 内容无效。
+    pub(crate) fn icon_size(mut self, size: Pixels) -> Self {
+        self.icon_size = size;
+        self
+    }
+
     pub(crate) fn render(self, shortcuts: &ShortcutLookup) -> AnyElement {
         let color_value = if self.active {
             color::gray::g95()
@@ -97,6 +106,7 @@ impl Glyph {
             color::gray::g75()
         };
         let id = self.id.clone();
+        let icon_size = self.icon_size;
         let tooltip = self.tooltip.clone();
         let shortcut = self.command_id.and_then(|cmd| shortcuts(cmd));
 
@@ -120,7 +130,7 @@ impl Glyph {
                 .justify_center()
                 .cursor_pointer()
                 .tooltip(build_tooltip)
-                .child(svg_icon(path, color_value))
+                .child(svg_icon(path, color_value, icon_size))
                 .into_any_element(),
             GlyphContent::IconText { icon: path, text } => div()
                 .id(id)
@@ -130,7 +140,7 @@ impl Glyph {
                 .gap(space::s4())
                 .cursor_pointer()
                 .tooltip(build_tooltip)
-                .child(svg_icon(path, color_value))
+                .child(svg_icon(path, color_value, icon_size))
                 .child(
                     div()
                         .text_size(typography::body())
@@ -142,8 +152,8 @@ impl Glyph {
     }
 }
 
-fn svg_icon(path: &'static str, color: gpui::Rgba) -> Svg {
-    svg().path(path).size(icon::i16()).text_color(color)
+fn svg_icon(path: &'static str, color: gpui::Rgba, size: Pixels) -> Svg {
+    svg().path(path).size(size).text_color(color)
 }
 
 /// 构造 Glyph 共用的 tooltip 视图（布局模型 3.2：标题 + 可选快捷键）。

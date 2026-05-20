@@ -21,7 +21,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{Div, Entity, FocusHandle, Window, div, prelude::*};
+use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
 
 use crate::shell::features::file_tree::FileTreePanel;
 use crate::shell::shared::theme::{color, radius};
@@ -55,6 +55,7 @@ pub(crate) fn render(
     input_handler_hook: InputHandlerHook,
     editor_focus: FocusHandle,
     file_tree: FileTreePanel<'_>,
+    editor_tab_scroll: ScrollHandle,
 ) -> Div {
     let dock_resize = dock_resize_request(Rc::clone(&workbench));
     div()
@@ -84,6 +85,8 @@ pub(crate) fn render(
             input_handler_hook,
             editor_focus,
             file_tree,
+            editor_tab_scroll,
+            shortcut_lookup.clone(),
         ))
         .child(regions::bottom_bar::render(
             state,
@@ -103,6 +106,8 @@ fn render_body(
     input_handler_hook: InputHandlerHook,
     editor_focus: FocusHandle,
     file_tree: FileTreePanel<'_>,
+    editor_tab_scroll: ScrollHandle,
+    shortcut_lookup: ShortcutLookup,
 ) -> Div {
     let panel_ctx = PanelContext {
         has_project: state.has_project,
@@ -127,6 +132,8 @@ fn render_body(
         input_handler_hook,
         editor_focus,
         Rc::clone(&dock_resize),
+        editor_tab_scroll,
+        shortcut_lookup,
     ));
     if state.right_dock.is_visible() {
         row = row.child(regions::right_dock::render(

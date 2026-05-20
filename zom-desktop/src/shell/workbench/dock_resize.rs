@@ -5,7 +5,9 @@
 
 use std::rc::Rc;
 
-use gpui::{AnyElement, App, EmptyView, MouseButton, Pixels, Point, Window, div, prelude::*, px};
+use gpui::{
+    AnyElement, App, EmptyView, MouseButton, Pixels, Point, Window, deferred, div, prelude::*, px,
+};
 
 use crate::shell::shared::theme;
 
@@ -205,7 +207,11 @@ pub(crate) fn render_handle(area: DockAreaId, resize: DockResizeRequest) -> AnyE
             .cursor_row_resize(),
     };
 
-    handle.into_any_element()
+    // handle 用 `right/left/top` 负偏移横跨 dock 边界，会伸进相邻 region。
+    // 相邻 region 若在本 dock 之后绘制（如 LeftDock 旁的 EditorArea），会盖住
+    // 重叠条并截走 mouse_down，导致拖拽失效。deferred 把 handle 抬到顶层绘制，
+    // 保证三个 dock 的 handle 都能稳定接收事件。
+    deferred(handle).into_any_element()
 }
 
 fn handle_id(area: DockAreaId) -> &'static str {

@@ -10,10 +10,37 @@
 //!   × 退出整个应用，− 最小化窗口，+ 切换最大化。
 //! - 窗口失活时圆点统一变灰，但仍可点击（与 macOS 行为一致）。
 
-use gpui::{Div, Rgba, Stateful, Svg, div, prelude::*, svg};
+use gpui::{Div, Rgba, Stateful, Svg, div, prelude::*, rgb, svg};
 
 use crate::shell::WindowControlsHandlers;
 use crate::shell::shared::theme::{color, icon, radius, space};
+
+/// 三个圆点的身份。
+///
+/// 配色（填充 + 描边）随枚举走：灵感来自 macOS 三色窗控，但只是本组件的设计
+/// 选型——不携带平台语义、也拒绝主题改写（手册 3.4），因此不进 `theme`。
+#[derive(Clone, Copy)]
+enum Pip {
+    Close,
+    Minimize,
+    Maximize,
+}
+
+impl Pip {
+    /// 窗口活跃时该圆点的配色 `(填充, 描边)`。
+    fn active_palette(self) -> (Rgba, Rgba) {
+        match self {
+            Pip::Close => (rgb(0xff5f57), rgb(0xe0443e)),
+            Pip::Minimize => (rgb(0xffbd2e), rgb(0xde9f18)),
+            Pip::Maximize => (rgb(0x28c840), rgb(0x1aab29)),
+        }
+    }
+}
+
+/// 窗口失活时三个圆点统一变灰，共用这组 `(填充, 描边)`。
+fn inactive_palette() -> (Rgba, Rgba) {
+    (rgb(0x6f7378), rgb(0x5c6066))
+}
 
 /// 三个圆点共享的 group 名：用 `group_hover` 让任一悬停都点亮全部符号。
 const PIP_GROUP: &str = "top-bar.window-controls";
@@ -39,20 +66,13 @@ pub(crate) fn render_window_controls(
         .items_center()
         .gap(space::s8())
         .child(
-            control_pip(
-                "top-bar.close",
-                color::control_pip::close_fill(),
-                color::control_pip::close_border(),
-                is_window_active,
-                CLOSE_SYMBOL,
-            )
-            .on_click(move |_, window, cx| quit(window, cx)),
+            control_pip("top-bar.close", Pip::Close, is_window_active, CLOSE_SYMBOL)
+                .on_click(move |_, window, cx| quit(window, cx)),
         )
         .child(
             control_pip(
                 "top-bar.minimize",
-                color::control_pip::minimize_fill(),
-                color::control_pip::minimize_border(),
+                Pip::Minimize,
                 is_window_active,
                 MINIMIZE_SYMBOL,
             )
@@ -61,8 +81,7 @@ pub(crate) fn render_window_controls(
         .child(
             control_pip(
                 "top-bar.maximize",
-                color::control_pip::maximize_fill(),
-                color::control_pip::maximize_border(),
+                Pip::Maximize,
                 is_window_active,
                 MAXIMIZE_SYMBOL,
             )
@@ -72,18 +91,14 @@ pub(crate) fn render_window_controls(
 
 fn control_pip(
     id: &'static str,
-    fill: Rgba,
-    border: Rgba,
+    pip: Pip,
     active: bool,
     symbol_path: &'static str,
 ) -> Stateful<Div> {
     let (fill, border) = if active {
-        (fill, border)
+        pip.active_palette()
     } else {
-        (
-            color::control_pip::inactive_fill(),
-            color::control_pip::inactive_border(),
-        )
+        inactive_palette()
     };
 
     div()

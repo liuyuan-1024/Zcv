@@ -11,33 +11,51 @@ use gpui::{Pixels, Rgba, px, rgb};
 pub mod color {
     use super::*;
 
-    /// 灰度梯度（手册 4.x、布局模型 2 视觉哲学）。
+    /// 灰度梯度
+    ///
+    /// 从 `g00`（最深）到 `g95`（最浅）：低段是背景面，中段是边框/高亮，
+    /// 高段是文本/图标。每个常量的注释标注它「一般用在哪些元素」，新增用色
+    /// 时请按语义复用，不要凭明度临时挑一个。
     pub mod gray {
         use super::*;
+        /// 最深背景。用于编辑区正文底面；也作圆点窗控内符号的反差深色。
         pub fn g00() -> Rgba {
             rgb(0x0d0f12)
         }
+        /// 基础背景面。工作台根、Dock 容器、编辑区外层的底色。
         pub fn g05() -> Rgba {
             rgb(0x13161b)
         }
+        /// 抬升背景面。浮层（项目选择器 / 语言服务器）、TopBar/BottomBar、
+        /// tooltip 等「浮在基础面之上」的容器底色。
         pub fn g10() -> Rgba {
             rgb(0x1b1f26)
         }
+        /// 行级背景高亮。选中 / 活动行的填充（文件树活动行、浮层选中项）。
         pub fn g20() -> Rgba {
             rgb(0x252a33)
         }
+        /// 分隔与边框。窗口外框、Dock/Bar 分隔线、浮层与 tooltip 边框、
+        /// dock resize 拖拽手柄。
         pub fn g40() -> Rgba {
             rgb(0x3a4050)
         }
+        /// 次级 / 弱化文本。占位提示、编辑区状态与行号、tooltip 快捷键、
+        /// Dock 空态文案。
         pub fn g60() -> Rgba {
             rgb(0x6e7689)
         }
+        /// 常态正文文本与图标。Bar/Glyph 常态、Dock 文本、文件树行与图标、
+        /// 编辑区代码正文与标题——UI 的默认前景色。
         pub fn g75() -> Rgba {
             rgb(0xa8b0c0)
         }
+        /// 较强正文。浮层正文、工作台根默认文本——比 g75 更突出但非强调态。
         pub fn g90() -> Rgba {
             rgb(0xe2e6ee)
         }
+        /// 最强 / 活动态文本。浮层标题、文件树活动行与图标、Glyph 活动态、
+        /// tooltip 标题——需要最高对比的强调文字。
         pub fn g95() -> Rgba {
             rgb(0xf2f4f8)
         }
@@ -68,36 +86,6 @@ pub mod color {
         }
     }
 
-    /// 圆点控制按钮（control pip）的本地色（手册 3.4 —— 拒绝主题改写）。
-    /// 视觉灵感来自 macOS 三色窗控，但仅作为我们外壳的设计选型，不携带
-    /// 平台语义；实际平台动作由 `shell::platform::window` 决定。
-    pub mod control_pip {
-        use super::*;
-        pub fn close_fill() -> Rgba {
-            rgb(0xff5f57)
-        }
-        pub fn close_border() -> Rgba {
-            rgb(0xe0443e)
-        }
-        pub fn minimize_fill() -> Rgba {
-            rgb(0xffbd2e)
-        }
-        pub fn minimize_border() -> Rgba {
-            rgb(0xde9f18)
-        }
-        pub fn maximize_fill() -> Rgba {
-            rgb(0x28c840)
-        }
-        pub fn maximize_border() -> Rgba {
-            rgb(0x1aab29)
-        }
-        pub fn inactive_fill() -> Rgba {
-            rgb(0x6f7378)
-        }
-        pub fn inactive_border() -> Rgba {
-            rgb(0x5c6066)
-        }
-    }
 }
 
 /// 距离类节拍尺（手册 6.1 / 6.2）。

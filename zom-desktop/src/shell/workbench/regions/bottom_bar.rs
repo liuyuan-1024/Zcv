@@ -17,7 +17,7 @@ use crate::shell::shared::primitives::{
     BarEdge, BarRegionAlign, Glyph, align_bar_region, bar_divider, bar_frame,
 };
 use crate::shell::workbench::overlay::{AnchorRegistry, track_anchor};
-use crate::shell::workbench::state::{DockAreaId, DockState, WorkbenchState};
+use crate::shell::workbench::state::{DockAreaId, DockState, EditorState, WorkbenchState};
 
 use super::{bottom_dock, left_dock, right_dock};
 
@@ -26,6 +26,8 @@ const DIAGNOSTICS_ICON: &str = "icons/bottom_bar/diagnostics.svg";
 const DIAGNOSTICS_COMMAND: &str = diagnostics::SHOW_PROBLEMS;
 const LSP_ICON: &str = "icons/bottom_bar/language_server.svg";
 const LSP_COMMAND: &str = language_server_commands::OPEN_STATUS;
+const CURSOR_POSITION_ID: &str = "bottom-bar.cursor-position";
+const LANGUAGE_ID: &str = "bottom-bar.language";
 
 pub(crate) fn render(
     state: &WorkbenchState,
@@ -72,9 +74,76 @@ fn leading_slots(
 }
 
 fn trailing_slots(state: &WorkbenchState, shortcuts: &ShortcutLookup) -> Vec<AnyElement> {
+    let editor = editor_status_slots(&state.editor, shortcuts);
     let bottom = panel_slot_group(DockAreaId::Bottom, bottom_dock::PANELS, state, shortcuts);
     let right = panel_slot_group(DockAreaId::Right, right_dock::PANELS, state, shortcuts);
-    join_groups(vec![bottom, right])
+    join_groups(vec![editor, bottom, right])
+}
+
+/// 活动文件状态组：光标行列 + 语言类型。没有打开文件时返回空组。
+fn editor_status_slots(editor: &EditorState, shortcuts: &ShortcutLookup) -> Vec<AnyElement> {
+    let Some(active) = editor.tabs.iter().find(|tab| tab.is_active) else {
+        return Vec::new();
+    };
+    let (line, column) = cursor_line_column(&editor.text, editor.cursor_byte);
+    vec![
+        Glyph::text(
+            CURSOR_POSITION_ID,
+            format!("{line}:{column}"),
+            "光标位置（行:列）",
+        )
+        .render(shortcuts),
+        Glyph::text(LANGUAGE_ID, language_label(&active.title), "文件语言").render(shortcuts),
+    ]
+}
+
+/// 把字节光标位置换算成 1 基的行 / 列（列按字符计）。
+fn cursor_line_column(text: &str, cursor_byte: usize) -> (usize, usize) {
+    let cursor_byte = cursor_byte.min(text.len());
+    let before = text.get(..cursor_byte).unwrap_or("");
+    let line = before.bytes().filter(|b| *b == b'\n').count() + 1;
+    let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let column = before[line_start..].chars().count() + 1;
+    (line, column)
+}
+
+/// 由文件名后缀推断语言显示名；未知后缀回退为大写后缀，无后缀为「纯文本」。
+fn language_label(title: &str) -> String {
+    match std::path::Path::new(title)
+        .extension()
+        .and_then(|ext| ext.to_str())
+    {
+        Some("rs") => "Rust".to_string(),
+        Some("toml") | Some("lock") => "TOML".to_string(),
+        Some("md") | Some("markdown") => "Markdown".to_string(),
+        Some("json") => "JSON".to_string(),
+        Some("js") | Some("mjs") | Some("cjs") => "JavaScript".to_string(),
+        Some("ts") => "TypeScript".to_string(),
+        Some("jsx") => "JSX".to_string(),
+        Some("tsx") => "TSX".to_string(),
+        Some("html") | Some("htm") => "HTML".to_string(),
+        Some("css") => "CSS".to_string(),
+        Some("scss") | Some("sass") => "Sass".to_string(),
+        Some("yaml") | Some("yml") => "YAML".to_string(),
+        Some("xml") => "XML".to_string(),
+        Some("py") => "Python".to_string(),
+        Some("go") => "Go".to_string(),
+        Some("c") | Some("h") => "C".to_string(),
+        Some("cpp") | Some("cc") | Some("cxx") | Some("hpp") => "C++".to_string(),
+        Some("java") => "Java".to_string(),
+        Some("kt") | Some("kts") => "Kotlin".to_string(),
+        Some("swift") => "Swift".to_string(),
+        Some("rb") => "Ruby".to_string(),
+        Some("php") => "PHP".to_string(),
+        Some("sh") | Some("bash") | Some("zsh") => "Shell".to_string(),
+        Some("sql") => "SQL".to_string(),
+        Some("ini") | Some("conf") | Some("cfg") => "INI".to_string(),
+        Some("txt") | Some("text") => "Text".to_string(),
+        Some("csv") => "CSV".to_string(),
+        Some("svg") => "SVG".to_string(),
+        Some(other) => other.to_uppercase(),
+        None => "Unknown".to_string(),
+    }
 }
 
 /// 把多个组拼起来，组与组之间插入一条 `bar_divider`。空组直接跳过。

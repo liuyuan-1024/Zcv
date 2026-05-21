@@ -94,6 +94,19 @@ impl ShellView {
             .install_listeners(Rc::clone(&self.app), window, cx);
     }
 
+    /// 打开指定路径的本地项目（不弹选择器）。开发阶段默认项目经由此入口，
+    /// 与选择器流程汇聚到同一个 [`apply_project_open`]。
+    #[cfg(debug_assertions)]
+    pub(super) fn open_project(&self, project_root: std::path::PathBuf, window: &mut Window) {
+        apply_project_open(
+            &self.app,
+            &self.workbench,
+            &self.file_tree,
+            project_root,
+            window,
+        );
+    }
+
     fn workbench_state(&self) -> WorkbenchState {
         let app = self.app.borrow();
         self.workbench.borrow().state(
@@ -344,14 +357,26 @@ fn open_local_project(
                 return;
             };
             if let Err(error) = cx.update(|window, _| {
-                app.borrow_mut().open_local_project(project_root);
-                file_tree.reveal_after_project_open(&app, &workbench, window);
-                window.refresh();
+                apply_project_open(&app, &workbench, &file_tree, project_root, window);
             }) {
                 eprintln!("打开本地项目失败：{error}");
             }
         })
         .detach();
+}
+
+/// 打开本地项目的统一落点：更新 `App` 状态、展开并聚焦文件树、刷新窗口。
+/// 选择器流程与开发阶段默认项目都经由此函数，保证两条路径行为一致。
+fn apply_project_open(
+    app: &Rc<RefCell<App>>,
+    workbench: &Rc<RefCell<WorkbenchController>>,
+    file_tree: &FileTreeRuntime,
+    project_root: std::path::PathBuf,
+    window: &mut Window,
+) {
+    app.borrow_mut().open_local_project(project_root);
+    file_tree.reveal_after_project_open(app, workbench, window);
+    window.refresh();
 }
 
 fn anchor_for_overlay(kind: OverlayKind) -> OverlayAnchor {

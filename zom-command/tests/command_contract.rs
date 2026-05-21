@@ -48,6 +48,7 @@ fn run(
     let mut context = CommandContext {
         workspace,
         views,
+        focused_field: None,
         queue: &mut queue,
         effects: &mut effects,
     };

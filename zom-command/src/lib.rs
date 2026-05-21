@@ -265,8 +265,50 @@ impl<'a> CommandBuilder<'a> {
 pub struct CommandContext<'a> {
     pub workspace: &'a mut Workspace,
     pub views: &'a mut ViewSet,
+    /// 聚焦的输入框编辑目标。`Some` 时编辑命令作用于它而非主编辑区
+    /// —— 由宿主（组合根）在派发前按 GPUI 焦点决定。
+    pub focused_field: Option<EditTarget<'a>>,
     pub queue: &'a mut CommandQueue,
     pub effects: &'a mut EffectQueue,
+}
+
+/// 一次编辑命令作用的目标：文本缓冲 + 选区。
+///
+/// 把编辑命令与「buffer / selection 存放在哪」解耦 —— 主编辑区是 workspace
+/// buffer + view selection，输入框是各自私有的 buffer + selection。
+/// 编辑 handler 只认这个目标，不再直接穿 `workspace` / `views` 结构。
+pub struct EditTarget<'a> {
+    pub buffer: &'a mut zom_engine::Buffer,
+    pub selection: &'a mut zom_engine::SelectionSet,
+}
+
+impl<'a> CommandContext<'a> {
+    /// 解析当前编辑命令的作用目标：有聚焦输入框则作用于它，否则主编辑区
+    /// 的活动视图。
+    pub fn edit_target(&mut self) -> Result<EditTarget<'_>, CommandError> {
+        if let Some(field) = &mut self.focused_field {
+            return Ok(EditTarget {
+                buffer: &mut *field.buffer,
+                selection: &mut *field.selection,
+            });
+        }
+        let buffer_id = self
+            .views
+            .active_view()
+            .map(|view| view.buffer())
+            .ok_or(CommandError::NoActiveView)?;
+        let buffer = self
+            .workspace
+            .buffer_mut(buffer_id)
+            .ok_or(CommandError::BufferNotFound(buffer_id))?
+            .buffer_mut();
+        let selection = self
+            .views
+            .active_view_mut()
+            .ok_or(CommandError::NoActiveView)?
+            .selection_mut();
+        Ok(EditTarget { buffer, selection })
+    }
 }
 
 /// 命令执行的产出，用于告知外壳后续动作（重绘、焦点变化等）。
@@ -526,18 +568,6 @@ pub(crate) fn parse_optional_bool(value: Option<&str>) -> Result<bool, CommandEr
         Some("false" | "0" | "no" | "off") => Ok(false),
         Some(other) => Err(CommandError::InvalidArgs(format!("布尔参数非法：{other}"))),
     }
-}
-
-pub(crate) fn set_active_view_selection(
-    context: &mut CommandContext<'_>,
-    selection: zom_engine::SelectionSet,
-) -> Result<(), CommandError> {
-    let view = context
-        .views
-        .active_view_mut()
-        .ok_or(CommandError::NoActiveView)?;
-    *view.selection_mut() = selection;
-    Ok(())
 }
 
 pub(crate) fn command_execution_failed(error: EngineError) -> CommandError {

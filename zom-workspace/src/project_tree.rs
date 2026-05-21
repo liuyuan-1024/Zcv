@@ -103,6 +103,29 @@ impl ProjectTree {
         }
     }
 
+    /// 在 `parent` 目录下创建一个文件 / 子目录，并刷新该目录的子项缓存，使
+    /// `visible_rows` 立即反映新条目。返回新条目的完整路径。
+    ///
+    /// 同名条目已存在时返回 [`io::ErrorKind::AlreadyExists`]，不会覆盖。
+    pub fn create_entry(
+        &mut self,
+        parent: &Path,
+        name: &str,
+        kind: EntryKind,
+    ) -> io::Result<PathBuf> {
+        let path = parent.join(name);
+        match kind {
+            EntryKind::File => {
+                fs::File::create_new(&path)?;
+            }
+            EntryKind::Directory => fs::create_dir(&path)?,
+        }
+        // 丢弃父目录缓存并重读，让新条目按既有排序规则进入 visible_rows。
+        self.children.remove(parent);
+        self.load_dir(parent)?;
+        Ok(path)
+    }
+
     /// 自根向下做 DFS，按目录优先 + 字母序产出可见行。
     ///
     /// 注意：返回值借用 `&self`，调用 `expand`/`collapse` 前必须先把它丢弃。
@@ -246,6 +269,35 @@ mod tests {
         // 折叠根目录后只剩根这一行。
         tree.collapse(&root);
         assert_eq!(tree.visible_rows().len(), 1);
+    }
+
+    #[test]
+    fn create_entry_should_write_to_disk_and_refresh_rows() {
+        let root = tmp_root("create");
+        let mut tree = ProjectTree::new(root.clone()).unwrap();
+
+        let file = tree.create_entry(&root, "new.txt", EntryKind::File).unwrap();
+        assert!(file.is_file());
+        let dir = tree
+            .create_entry(&root, "newdir", EntryKind::Directory)
+            .unwrap();
+        assert!(dir.is_dir());
+
+        let names: Vec<_> = tree
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.name.to_string())
+            .collect();
+        assert!(names.contains(&"new.txt".to_string()));
+        assert!(names.contains(&"newdir".to_string()));
+
+        // 重复创建不覆盖，报 AlreadyExists。
+        assert_eq!(
+            tree.create_entry(&root, "new.txt", EntryKind::File)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
     }
 
     #[test]

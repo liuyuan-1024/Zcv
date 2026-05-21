@@ -5,6 +5,7 @@
 //! 在 `shell::view` 那一层做手工 / 集成测试，不进本文件。
 
 use crate::app::{App, EditorState, EditorTab};
+use crate::shell::editor::EditorLineMode;
 use crate::shell::features::PanelId;
 use crate::shell::features::file_tree::FileTreeActivation;
 use std::fs::{File, create_dir_all};
@@ -360,6 +361,58 @@ fn file_tree_activate_on_directory_should_toggle_expanded() {
         .unwrap();
     assert!(matches!(src_row.kind, EntryKind::Directory));
     assert!(src_row.expanded);
+}
+
+#[test]
+fn file_tree_pending_editor_should_consume_only_editing_keys() {
+    let mut app = App::new();
+    app.open_local_project(project_fixture("pending-editor"));
+    app.file_tree_begin_new_entry(EntryKind::File);
+
+    app.ime_replace_text(None, "alpha").unwrap();
+    let outcome = app
+        .dispatch_embedded_editor_key_input(
+            "mod-shift-e".to_string(),
+            EditorLineMode::single_line(),
+        )
+        .unwrap();
+    assert!(!outcome.handled);
+
+    let outcome = app
+        .dispatch_embedded_editor_key_input("mod-a".to_string(), EditorLineMode::single_line())
+        .unwrap();
+    assert!(outcome.handled);
+
+    app.ime_replace_text(None, "beta").unwrap();
+    let state = app.file_tree_state();
+    let pending = state.pending.expect("新建输入框仍在编辑态");
+    assert_eq!(pending.editor.text, "beta");
+
+    let outcome = app
+        .dispatch_embedded_editor_key_input("enter".to_string(), EditorLineMode::single_line())
+        .unwrap();
+    assert!(!outcome.handled);
+}
+
+#[test]
+fn file_tree_pending_editor_should_keep_enter_inside_active_composition() {
+    let mut app = App::new();
+    app.open_local_project(project_fixture("pending-ime"));
+    app.file_tree_begin_new_entry(EntryKind::File);
+
+    app.ime_replace_and_mark_text(None, "ni", Some(2..2))
+        .unwrap();
+    assert!(app.ime_marked_range_utf16().is_some());
+
+    let outcome = app
+        .dispatch_embedded_editor_key_input("enter".to_string(), EditorLineMode::single_line())
+        .unwrap();
+    assert!(outcome.handled);
+
+    let state = app.file_tree_state();
+    let pending = state.pending.expect("Enter 只提交 composition，不确认新建");
+    assert_eq!(pending.editor.text, "ni");
+    assert!(app.ime_marked_range_utf16().is_none());
 }
 
 #[test]

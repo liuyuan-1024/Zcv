@@ -11,12 +11,13 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, Div, IntoElement, Svg, div, prelude::*, svg};
 
-use crate::shell::normalized_chord;
+use crate::shell::InputHandlerHook;
+use crate::shell::editor;
 use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::PanelContext;
 use zom_workspace::EntryKind;
 
-use super::{FileTreeRow, FileTreeState};
+use super::{FileTreeRow, FileTreeState, PendingNewEntry};
 
 const FOLDER_ICON: &str = "icons/features/file_tree/folder.svg";
 const FOLDER_OPEN_ICON: &str = "icons/features/file_tree/folder_open.svg";
@@ -36,7 +37,7 @@ pub(super) fn render(ctx: PanelContext<'_>) -> Div {
     } else if panel.state.rows.is_empty() {
         empty_message("项目目录为空").into_any_element()
     } else {
-        render_list(panel.state, panel.is_focused).into_any_element()
+        render_list(panel.state, panel.is_focused, panel.input_handler_hook).into_any_element()
     };
 
     div()
@@ -44,24 +45,64 @@ pub(super) fn render(ctx: PanelContext<'_>) -> Div {
         .track_focus(panel.focus)
         .tab_index(0)
         .on_key_down(move |event, window, cx| {
-            let chord = normalized_chord(&event.keystroke);
-            if key_request(chord, window, cx) {
+            if key_request(&event.keystroke, window, cx) {
                 cx.stop_propagation();
             }
         })
         .child(body)
 }
 
-fn render_list(state: &FileTreeState, is_focused: bool) -> impl IntoElement + use<> {
-    let list = div()
+fn render_list(
+    state: &FileTreeState,
+    is_focused: bool,
+    input_handler_hook: &InputHandlerHook,
+) -> impl IntoElement + use<> {
+    let mut list = div()
         .id("file-tree-list")
         .flex()
         .flex_col()
         .size_full()
         .overflow_y_scroll();
-    state.rows.iter().fold(list, |list, row| {
-        list.child(render_row(row, state, is_focused))
-    })
+    for row in &state.rows {
+        list = list.child(render_row(row, state, is_focused));
+        // 新建条目的输入行紧跟在其父目录行之后。
+        if let Some(pending) = &state.pending {
+            if pending.parent == row.path {
+                list = list.child(render_input_row(pending, input_handler_hook));
+            }
+        }
+    }
+    list
+}
+
+/// 新建态的内联输入行：父目录行下方，带文件/目录图标、已键入名称与光标。
+fn render_input_row(pending: &PendingNewEntry, input_handler_hook: &InputHandlerHook) -> Div {
+    let icon = match pending.kind {
+        EntryKind::Directory => FOLDER_OPEN_ICON,
+        EntryKind::File => FILE_ICON,
+    };
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(space::s4())
+        .overflow_hidden()
+        .px(space::s4())
+        .rounded(radius::r2())
+        .border_1()
+        .border_color(color::focus::border())
+        .pl(indent_unit() * (pending.depth as f32) + space::s4())
+        .text_size(typography::ui())
+        .text_color(color::gray::g95())
+        .child(
+            div().flex_shrink_0().size(typography::ui_line()).child(
+                svg()
+                    .path(icon)
+                    .size(typography::ui_line())
+                    .text_color(color::gray::g95()),
+            ),
+        )
+        .child(editor::render_inline(&pending.editor, input_handler_hook))
 }
 
 fn empty_message(hint: &'static str) -> Div {
@@ -150,5 +191,8 @@ fn entry_icon(row: &FileTreeRow, is_active: bool) -> Svg {
     } else {
         color::gray::g75()
     };
-    svg().path(path).size(typography::ui_line()).text_color(tint)
+    svg()
+        .path(path)
+        .size(typography::ui_line())
+        .text_color(tint)
 }

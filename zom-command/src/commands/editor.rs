@@ -18,10 +18,9 @@ use zom_engine::{ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
     Invocation, Keymap, NoArgs, command_execution_failed, parse_optional_bool, reject_unknown_args,
-    required_arg, set_active_view_selection,
+    required_arg,
 };
 use zom_view::ViewId;
-use zom_workspace::BufferId;
 
 // ==================================================
 // 命令 id —— 单一真理源
@@ -478,16 +477,13 @@ fn run_insert_text(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = InsertTextArgs::try_from(args)?;
-    let buffer_id = active_buffer_id(context)?;
-    let selections = active_selection(context)?;
-    let after = {
-        let buffer = buffer_mut(context, buffer_id)?;
-        buffer
-            .insert_at_selections(selections, &args.text)
-            .map_err(command_execution_failed)?;
-        buffer.selection().clone()
-    };
-    set_active_view_selection(context, after)?;
+    let target = context.edit_target()?;
+    let selections = target.selection.clone();
+    target
+        .buffer
+        .insert_at_selections(selections, &args.text)
+        .map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
 }
 
@@ -496,16 +492,13 @@ fn run_replace_selection(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = ReplaceSelectionArgs::try_from(args)?;
-    let buffer_id = active_buffer_id(context)?;
-    let selections = active_selection(context)?;
-    let after = {
-        let buffer = buffer_mut(context, buffer_id)?;
-        buffer
-            .replace_selections(selections, &args.text)
-            .map_err(command_execution_failed)?;
-        buffer.selection().clone()
-    };
-    set_active_view_selection(context, after)?;
+    let target = context.edit_target()?;
+    let selections = target.selection.clone();
+    target
+        .buffer
+        .replace_selections(selections, &args.text)
+        .map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
 }
 
@@ -514,16 +507,13 @@ fn run_insert_newline(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let buffer_id = active_buffer_id(context)?;
-    let selections = active_selection(context)?;
-    let after = {
-        let buffer = buffer_mut(context, buffer_id)?;
-        buffer
-            .insert_at_selections(selections, "\n")
-            .map_err(command_execution_failed)?;
-        buffer.selection().clone()
-    };
-    set_active_view_selection(context, after)?;
+    let target = context.edit_target()?;
+    let selections = target.selection.clone();
+    target
+        .buffer
+        .insert_at_selections(selections, "\n")
+        .map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
 }
 
@@ -532,16 +522,13 @@ fn run_indent(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let buffer_id = active_buffer_id(context)?;
-    let selections = active_selection(context)?;
-    let after = {
-        let buffer = buffer_mut(context, buffer_id)?;
-        buffer
-            .indent_at_selections(selections)
-            .map_err(command_execution_failed)?;
-        buffer.selection().clone()
-    };
-    set_active_view_selection(context, after)?;
+    let target = context.edit_target()?;
+    let selections = target.selection.clone();
+    target
+        .buffer
+        .indent_at_selections(selections)
+        .map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
 }
 
@@ -550,16 +537,13 @@ fn run_outdent(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let buffer_id = active_buffer_id(context)?;
-    let selections = active_selection(context)?;
-    let after = {
-        let buffer = buffer_mut(context, buffer_id)?;
-        buffer
-            .outdent_at_selections(selections)
-            .map_err(command_execution_failed)?;
-        buffer.selection().clone()
-    };
-    set_active_view_selection(context, after)?;
+    let target = context.edit_target()?;
+    let selections = target.selection.clone();
+    target
+        .buffer
+        .outdent_at_selections(selections)
+        .map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
 }
 
@@ -568,16 +552,13 @@ fn run_delete_backward(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let buffer_id = active_buffer_id(context)?;
-    let selections = active_selection(context)?;
-    let after = {
-        let buffer = buffer_mut(context, buffer_id)?;
-        buffer
-            .delete_backward_at_selections(selections)
-            .map_err(command_execution_failed)?;
-        buffer.selection().clone()
-    };
-    set_active_view_selection(context, after)?;
+    let target = context.edit_target()?;
+    let selections = target.selection.clone();
+    target
+        .buffer
+        .delete_backward_at_selections(selections)
+        .map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
 }
 
@@ -586,16 +567,13 @@ fn run_delete_forward(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let buffer_id = active_buffer_id(context)?;
-    let selections = active_selection(context)?;
-    let after = {
-        let buffer = buffer_mut(context, buffer_id)?;
-        buffer
-            .delete_forward_at_selections(selections)
-            .map_err(command_execution_failed)?;
-        buffer.selection().clone()
-    };
-    set_active_view_selection(context, after)?;
+    let target = context.edit_target()?;
+    let selections = target.selection.clone();
+    target
+        .buffer
+        .delete_forward_at_selections(selections)
+        .map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
 }
 
@@ -604,17 +582,14 @@ fn run_select_all(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let buffer_id = active_buffer_id(context)?;
-    let selection = {
-        let buffer = buffer_mut(context, buffer_id)?;
-        let selection =
-            SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, buffer.len_bytes())]);
-        buffer
-            .set_selection(selection.clone())
-            .map_err(command_execution_failed)?;
-        selection
-    };
-    set_active_view_selection(context, selection)?;
+    let target = context.edit_target()?;
+    let selection =
+        SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, target.buffer.len_bytes())]);
+    target
+        .buffer
+        .set_selection(selection.clone())
+        .map_err(command_execution_failed)?;
+    *target.selection = selection;
     Ok(CommandOutcome::default())
 }
 
@@ -623,13 +598,9 @@ fn run_undo(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let buffer_id = active_buffer_id(context)?;
-    let after = {
-        let buffer = buffer_mut(context, buffer_id)?;
-        buffer.undo().map_err(command_execution_failed)?;
-        buffer.selection().clone()
-    };
-    set_active_view_selection(context, after)?;
+    let target = context.edit_target()?;
+    target.buffer.undo().map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
 }
 
@@ -638,13 +609,9 @@ fn run_redo(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let buffer_id = active_buffer_id(context)?;
-    let after = {
-        let buffer = buffer_mut(context, buffer_id)?;
-        buffer.redo().map_err(command_execution_failed)?;
-        buffer.selection().clone()
-    };
-    set_active_view_selection(context, after)?;
+    let target = context.edit_target()?;
+    target.buffer.redo().map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
 }
 
@@ -653,15 +620,13 @@ fn run_move_selection(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = MoveSelectionArgs::try_from(args)?;
-    let buffer_id = active_buffer_id(context)?;
-    let selections = active_selection(context)?;
-    let moved = {
-        let buffer = buffer_mut(context, buffer_id)?;
-        buffer
-            .move_selections(selections, args.direction, args.motion, args.extend)
-            .map_err(command_execution_failed)?
-    };
-    set_active_view_selection(context, moved)?;
+    let target = context.edit_target()?;
+    let selections = target.selection.clone();
+    let moved = target
+        .buffer
+        .move_selections(selections, args.direction, args.motion, args.extend)
+        .map_err(command_execution_failed)?;
+    *target.selection = moved;
     Ok(CommandOutcome::default())
 }
 
@@ -670,15 +635,12 @@ fn run_ime_commit(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = ImeCommitArgs::try_from(args)?;
-    let buffer_id = active_buffer_id(context)?;
-    let after = {
-        let buffer = buffer_mut(context, buffer_id)?;
-        buffer
-            .commit_composition(&args.text)
-            .map_err(command_execution_failed)?;
-        buffer.selection().clone()
-    };
-    set_active_view_selection(context, after)?;
+    let target = context.edit_target()?;
+    target
+        .buffer
+        .commit_composition(&args.text)
+        .map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
 }
 
@@ -687,15 +649,12 @@ fn run_ime_cancel(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let buffer_id = active_buffer_id(context)?;
-    let after = {
-        let buffer = buffer_mut(context, buffer_id)?;
-        buffer
-            .cancel_composition()
-            .map_err(command_execution_failed)?;
-        buffer.selection().clone()
-    };
-    set_active_view_selection(context, after)?;
+    let target = context.edit_target()?;
+    target
+        .buffer
+        .cancel_composition()
+        .map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
 }
 
@@ -752,35 +711,4 @@ fn sync_active_buffer(context: &mut CommandContext<'_>) {
     if let Some(buffer_id) = context.views.active_view().map(|view| view.buffer()) {
         let _ = context.workspace.set_active_buffer(buffer_id);
     }
-}
-
-// ==================================================
-// Context helpers
-// ==================================================
-
-fn active_buffer_id(context: &CommandContext<'_>) -> Result<BufferId, CommandError> {
-    context
-        .views
-        .active_view()
-        .map(|view| view.buffer())
-        .ok_or(CommandError::NoActiveView)
-}
-
-fn active_selection(context: &CommandContext<'_>) -> Result<SelectionSet, CommandError> {
-    context
-        .views
-        .active_view()
-        .map(|view| view.selection().clone())
-        .ok_or(CommandError::NoActiveView)
-}
-
-fn buffer_mut<'a>(
-    context: &'a mut CommandContext<'_>,
-    buffer_id: BufferId,
-) -> Result<&'a mut zom_engine::Buffer, CommandError> {
-    Ok(context
-        .workspace
-        .buffer_mut(buffer_id)
-        .ok_or(CommandError::BufferNotFound(buffer_id))?
-        .buffer_mut())
 }

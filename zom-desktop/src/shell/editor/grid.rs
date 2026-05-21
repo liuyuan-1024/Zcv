@@ -1,7 +1,7 @@
-//! EditorGrid —— 主编辑区 L4 Region（布局模型 4.6 / 手册 19 / 20.9）。
+//! 主编辑器网格：多行正文、光标显示、键盘与输入宿主注册。
 //!
-//! 不走 Panel 模型。第一版先渲染单 view，让键盘输入通过 command
-//! 管线进入 engine；split tree 与 tab group 后续按 19 章展开。
+//! 数据仍来自 workspace buffer + active view 的快照；本模块只拥有编辑器表面
+//! 的交互和绘制。文件生命周期、标签、dirty 等仍留给 workspace / workbench。
 
 use gpui::{Div, FocusHandle, MouseButton, canvas, div, prelude::*};
 
@@ -9,7 +9,7 @@ use crate::shell::shared::theme::{self, color, space, typography};
 use crate::shell::workbench::state::EditorState;
 use crate::shell::{InputHandlerHook, KeyRequest, normalized_chord};
 
-pub(crate) fn render(
+pub(crate) fn render_grid(
     state: &EditorState,
     key_request: KeyRequest,
     input_handler_hook: InputHandlerHook,

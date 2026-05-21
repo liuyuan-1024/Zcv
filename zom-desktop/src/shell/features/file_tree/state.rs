@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use crate::shell::editor::EditorSnapshot;
 use zom_workspace::EntryKind;
 
 /// 文件树面板的渲染快照（owned）。
@@ -18,6 +19,20 @@ pub(crate) struct FileTreeState {
     pub(crate) selected: Option<PathBuf>,
     /// 当前活动 buffer 对应的文件路径，用于做“活动文件高亮”。
     pub(crate) active: Option<PathBuf>,
+    /// 正在键入名称的「新建文件 / 目录」。`None` 表示不处于新建态。
+    pub(crate) pending: Option<PendingNewEntry>,
+}
+
+/// 一个正在输入名称的新建条目（owned 快照）。
+#[derive(Clone, Debug)]
+pub(crate) struct PendingNewEntry {
+    /// 新条目将创建在该目录下。
+    pub(crate) parent: PathBuf,
+    pub(crate) kind: EntryKind,
+    /// 文件名输入编辑器的渲染快照。
+    pub(crate) editor: EditorSnapshot,
+    /// 输入行的缩进深度（父目录 depth + 1）。
+    pub(crate) depth: usize,
 }
 
 #[derive(Clone, Debug)]

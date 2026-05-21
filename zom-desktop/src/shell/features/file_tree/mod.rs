@@ -7,8 +7,9 @@
 
 use std::rc::Rc;
 
-use gpui::{App as GpuiApp, Div, FocusHandle, Window};
+use gpui::{App as GpuiApp, Div, FocusHandle, Keystroke, Window};
 
+use crate::shell::InputHandlerHook;
 use crate::shell::workbench::PanelContext;
 
 mod focus;
@@ -22,12 +23,13 @@ pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/file_tree.svg";
 
 pub(crate) use model::FileTreeModel;
 pub(crate) use runtime::FileTreeRuntime;
-pub(crate) use state::{FileTreeActivation, FileTreeRow, FileTreeState};
+pub(crate) use state::{FileTreeActivation, FileTreeRow, FileTreeState, PendingNewEntry};
 
 /// 文件树面板内部按键处理回调。
 ///
-/// 入参是标准化后的 chord 字符串；返回 `true` 表示已消费该按键。
-pub(crate) type FileTreeKeyRequest = Rc<dyn Fn(String, &mut Window, &mut GpuiApp) -> bool>;
+/// 入参是原始 [`Keystroke`]（新建条目输入态需要 `key_char`）；返回 `true`
+/// 表示已消费该按键。
+pub(crate) type FileTreeKeyRequest = Rc<dyn Fn(&Keystroke, &mut Window, &mut GpuiApp) -> bool>;
 
 /// 文件树面板渲染所需的所有"非状态"依赖（焦点、按键回调）。
 ///
@@ -38,6 +40,7 @@ pub(crate) struct FileTreePanel<'a> {
     pub(crate) state: &'a FileTreeState,
     pub(crate) focus: &'a FocusHandle,
     pub(crate) key_request: &'a FileTreeKeyRequest,
+    pub(crate) input_handler_hook: &'a InputHandlerHook,
     /// 当前焦点是否在文件树容器上；决定选中边框是否可见。
     pub(crate) is_focused: bool,
 }

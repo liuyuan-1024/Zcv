@@ -6,11 +6,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{Context, FocusHandle, Window};
+use gpui::{Context, ElementInputHandler, Entity, FocusHandle, Window};
 
 use crate::app::App;
-use crate::shell::KeyRequest;
+use crate::shell::editor::EditorInput;
 use crate::shell::workbench::controller::WorkbenchController;
+use crate::shell::{InputHandlerHook, KeyRequest};
 
 use super::{FileTreeKeyRequest, FileTreePanel, FileTreeState};
 
@@ -39,14 +40,23 @@ impl FileTreeRuntime {
         &'a self,
         state: &'a FileTreeState,
         key_request: &'a FileTreeKeyRequest,
+        input_handler_hook: &'a InputHandlerHook,
         window: &Window,
     ) -> FileTreePanel<'a> {
         FileTreePanel {
             state,
             focus: &self.focus,
             key_request,
+            input_handler_hook,
             is_focused: self.focus.is_focused(window),
         }
+    }
+
+    pub(crate) fn input_handler_hook(&self, input: Entity<EditorInput>) -> InputHandlerHook {
+        let focus = self.focus.clone();
+        Rc::new(move |bounds, window, cx| {
+            window.handle_input(&focus, ElementInputHandler::new(bounds, input.clone()), cx);
+        })
     }
 
     pub(crate) fn key_request(

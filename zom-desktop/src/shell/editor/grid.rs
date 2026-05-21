@@ -18,6 +18,14 @@ pub(crate) fn render_grid(
     let focus_for_click = editor_focus.clone();
     let key_handler = key_request;
 
+    // 无活动文件时给一句提示，而不是渲染一个空编辑区 —— 与文件树未打开
+    // 项目时的占位口径一致。焦点宿主（track_focus + on_key_down）两态都挂。
+    let body = if state.tabs.is_empty() {
+        empty_message("尚未打开文件")
+    } else {
+        editor_surface(state, input_handler_hook)
+    };
+
     div()
         .flex_1()
         .flex()
@@ -39,7 +47,19 @@ pub(crate) fn render_grid(
                 cx.stop_propagation();
             }
         })
-        .child(editor_surface(state, input_handler_hook))
+        .child(body)
+}
+
+/// 无活动文件时的占位提示，居中铺满编辑区。
+fn empty_message(hint: &'static str) -> Div {
+    div()
+        .flex_1()
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(typography::ui())
+        .text_color(color::gray::g75())
+        .child(hint)
 }
 
 fn editor_surface(state: &EditorState, input_handler_hook: InputHandlerHook) -> Div {

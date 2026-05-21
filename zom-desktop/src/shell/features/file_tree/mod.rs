@@ -1,19 +1,16 @@
 //! FileTree —— L3 panel：项目目录树。
 //!
 //! 数据来源 [`zom_workspace::ProjectTree`]，App 把它转成 owned 的
-//! [`FileTreeState`] 快照传进来。本面板自己接收
-//! 焦点并处理 ↑/↓/←/→/Enter/Esc；不命中的键交给 panel-context 携带的全局
-//! `KeyRequest` 走 keymap 管线。
+//! [`FileTreeState`] 快照传进来。面板把焦点态的按键交给宿主统一的
+//! `KeyRequest`（`KeySurface::FileTree`），由 keymap 在 `FileTree` 上下文里
+//! 解析 —— 面板自己不持有任何「按键 → 动作」的映射。
 
-use std::rc::Rc;
+use gpui::{Div, FocusHandle};
 
-use gpui::{App as GpuiApp, Div, FocusHandle, Keystroke, Window};
-
-use crate::shell::InputHandlerHook;
 use crate::shell::workbench::PanelContext;
+use crate::shell::{InputHandlerHook, KeyRequest};
 
 mod focus;
-mod keyboard;
 mod model;
 mod runtime;
 mod state;
@@ -25,12 +22,6 @@ pub(crate) use model::FileTreeModel;
 pub(crate) use runtime::FileTreeRuntime;
 pub(crate) use state::{FileTreeActivation, FileTreeRow, FileTreeState, PendingNewEntry};
 
-/// 文件树面板内部按键处理回调。
-///
-/// 入参是原始 [`Keystroke`]（新建条目输入态需要 `key_char`）；返回 `true`
-/// 表示已消费该按键。
-pub(crate) type FileTreeKeyRequest = Rc<dyn Fn(&Keystroke, &mut Window, &mut GpuiApp) -> bool>;
-
 /// 文件树面板渲染所需的所有"非状态"依赖（焦点、按键回调）。
 ///
 /// 与 [`FileTreeState`] 区分：后者是 App 端的渲染快照，可序列化；本结构是
@@ -39,7 +30,7 @@ pub(crate) type FileTreeKeyRequest = Rc<dyn Fn(&Keystroke, &mut Window, &mut Gpu
 pub(crate) struct FileTreePanel<'a> {
     pub(crate) state: &'a FileTreeState,
     pub(crate) focus: &'a FocusHandle,
-    pub(crate) key_request: &'a FileTreeKeyRequest,
+    pub(crate) key_request: &'a KeyRequest,
     pub(crate) input_handler_hook: &'a InputHandlerHook,
     /// 当前焦点是否在文件树容器上；决定选中边框是否可见。
     pub(crate) is_focused: bool,

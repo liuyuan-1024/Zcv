@@ -4,8 +4,7 @@
 //! 命令产出的 HostEffect。需要 GPUI 句柄（Entity / Window / 焦点等）的链路
 //! 在 `shell::view` 那一层做手工 / 集成测试，不进本文件。
 
-use crate::app::{App, EditorState, EditorTab};
-use crate::shell::editor::EditorLineMode;
+use crate::app::{App, EditorState, EditorTab, KeySurface};
 use crate::shell::features::PanelId;
 use crate::shell::features::file_tree::FileTreeActivation;
 use std::fs::{File, create_dir_all};
@@ -54,9 +53,9 @@ fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
     assert!(active_tab(&state).dirty);
 
     // 非文本按键仍走 keymap → 命令。
-    assert!(app.dispatch_key_input("left".to_string()).unwrap().consumed);
+    assert!(app.dispatch_key("left".to_string(), KeySurface::Editor).unwrap().consumed);
     assert!(
-        app.dispatch_key_input("backspace".to_string())
+        app.dispatch_key("backspace".to_string(), KeySurface::Editor)
             .unwrap()
             .consumed
     );
@@ -65,11 +64,11 @@ fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
     assert_eq!(state.text, "i");
     assert_eq!(state.cursor_byte, 0);
 
-    let outcome = app.dispatch_key_input("mod-z".to_string()).unwrap();
+    let outcome = app.dispatch_key("mod-z".to_string(), KeySurface::Editor).unwrap();
     assert!(outcome.consumed);
 
     // 没绑定的字符必须返回未消费，让 IME 路径接管。
-    assert!(!app.dispatch_key_input("a".to_string()).unwrap().consumed);
+    assert!(!app.dispatch_key("a".to_string(), KeySurface::Editor).unwrap().consumed);
 
     let state = app.editor_state();
     assert_eq!(state.text, "hi");
@@ -111,14 +110,14 @@ fn ime_preedit_update_and_commit_should_flow_through_engine() {
 fn tab_and_enter_should_dispatch_editor_commands() {
     let mut app = app_with_open_file("tab-enter");
 
-    assert!(app.dispatch_key_input("tab".to_string()).unwrap().consumed);
+    assert!(app.dispatch_key("tab".to_string(), KeySurface::Editor).unwrap().consumed);
     assert!(
-        app.dispatch_key_input("enter".to_string())
+        app.dispatch_key("enter".to_string(), KeySurface::Editor)
             .unwrap()
             .consumed
     );
     assert!(
-        app.dispatch_key_input("return".to_string())
+        app.dispatch_key("return".to_string(), KeySurface::Editor)
             .unwrap()
             .consumed
     );
@@ -135,7 +134,7 @@ fn panel_toggle_command_should_emit_host_effect() {
 
     // 命中 mod-shift-e → editor 区按下时应被 keymap 消费。
     let outcome = app
-        .dispatch_key_input("mod-shift-e".to_string())
+        .dispatch_key("mod-shift-e".to_string(), KeySurface::Editor)
         .expect("派发成功");
     assert!(outcome.consumed);
     assert_eq!(
@@ -151,7 +150,7 @@ fn shortcut_for_should_return_formatted_keymap_binding() {
     // 已绑定的命令：返回格式化后的快捷键。
     let undo = app.shortcut_for(editor::UNDO).expect("undo 必有快捷键");
     let save = app
-        .shortcut_for(workspace_commands::SAVE)
+        .shortcut_for(editor::SAVE)
         .expect("save 必有快捷键");
     let file_tree = app
         .shortcut_for(PanelId::FileTree.toggle_command_id())
@@ -176,7 +175,7 @@ fn shortcut_for_should_return_formatted_keymap_binding() {
 fn project_picker_command_should_emit_open_overlay_window_action() {
     let mut app = App::new();
 
-    let outcome = app.dispatch_key_input("mod-o".to_string()).unwrap();
+    let outcome = app.dispatch_key("mod-o".to_string(), KeySurface::Editor).unwrap();
 
     assert!(outcome.consumed);
     assert_eq!(outcome.effects, vec![HostEffect::ShowProjectPicker]);
@@ -230,7 +229,7 @@ fn language_server_status_command_should_emit_open_overlay_window_action() {
 fn escape_should_dispatch_overlay_dismiss_command() {
     let mut app = App::new();
 
-    let outcome = app.dispatch_key_input("escape".to_string()).unwrap();
+    let outcome = app.dispatch_key("escape".to_string(), KeySurface::Editor).unwrap();
 
     assert!(outcome.consumed);
     assert_eq!(outcome.effects, vec![HostEffect::DismissOverlay]);
@@ -364,38 +363,44 @@ fn file_tree_activate_on_directory_should_toggle_expanded() {
 }
 
 #[test]
-fn file_tree_pending_editor_should_consume_only_editing_keys() {
+fn file_tree_pending_editor_keys_route_through_keymap_by_context() {
     let mut app = App::new();
     app.open_local_project(project_fixture("pending-editor"));
     app.file_tree_begin_new_entry(EntryKind::File);
 
     app.ime_replace_text(None, "alpha").unwrap();
-    let outcome = app
-        .dispatch_embedded_editor_key_input(
-            "mod-shift-e".to_string(),
-            EditorLineMode::single_line(),
-        )
-        .unwrap();
-    assert!(!outcome.handled);
 
+    // 全局快捷键不被单行新建输入框吞掉：在 Global 上下文照常解析成 panel 命令。
     let outcome = app
-        .dispatch_embedded_editor_key_input("mod-a".to_string(), EditorLineMode::single_line())
+        .dispatch_key("mod-shift-e".to_string(), KeySurface::FileTree)
         .unwrap();
-    assert!(outcome.handled);
+    assert!(outcome.consumed);
+    assert_eq!(
+        outcome.effects,
+        vec![HostEffect::TogglePanel("file_tree".to_string())]
+    );
+
+    // 编辑键在 text_edit 上下文命中，作用到新建输入框（focused_field 路由）。
+    let outcome = app
+        .dispatch_key("mod-a".to_string(), KeySurface::FileTree)
+        .unwrap();
+    assert!(outcome.consumed);
+    assert!(outcome.effects.is_empty());
 
     app.ime_replace_text(None, "beta").unwrap();
-    let state = app.file_tree_state();
-    let pending = state.pending.expect("新建输入框仍在编辑态");
+    let pending = app.file_tree_state().pending.expect("新建输入框仍在编辑态");
     assert_eq!(pending.editor.text, "beta");
 
+    // Enter：单行编辑器不接受换行 → text_edit 落空 → 命中 FileTree 的提交命令。
     let outcome = app
-        .dispatch_embedded_editor_key_input("enter".to_string(), EditorLineMode::single_line())
+        .dispatch_key("enter".to_string(), KeySurface::FileTree)
         .unwrap();
-    assert!(!outcome.handled);
+    assert!(outcome.consumed);
+    assert_eq!(outcome.effects, vec![HostEffect::FileTreeCommitNewEntry]);
 }
 
 #[test]
-fn file_tree_pending_editor_should_keep_enter_inside_active_composition() {
+fn file_tree_pending_editor_does_not_intercept_keys_while_composing() {
     let mut app = App::new();
     app.open_local_project(project_fixture("pending-ime"));
     app.file_tree_begin_new_entry(EntryKind::File);
@@ -404,15 +409,44 @@ fn file_tree_pending_editor_should_keep_enter_inside_active_composition() {
         .unwrap();
     assert!(app.ime_marked_range_utf16().is_some());
 
+    // 组合态下 dispatch_key 一律不消费、不拦截：Enter / Esc 等都透传给系统
+    // 输入法，由它驱动候选的提交 / 取消。宿主在这里抢键会让 IME 会话脱节。
     let outcome = app
-        .dispatch_embedded_editor_key_input("enter".to_string(), EditorLineMode::single_line())
+        .dispatch_key("enter".to_string(), KeySurface::FileTree)
         .unwrap();
-    assert!(outcome.handled);
+    assert!(!outcome.consumed);
+    assert!(outcome.effects.is_empty());
 
-    let state = app.file_tree_state();
-    let pending = state.pending.expect("Enter 只提交 composition，不确认新建");
-    assert_eq!(pending.editor.text, "ni");
-    assert!(app.ime_marked_range_utf16().is_none());
+    // 这次 Enter 没动到任何状态：组合还在，文件树新建也还在。
+    assert!(app.ime_marked_range_utf16().is_some());
+    assert!(app.file_tree_state().pending.is_some());
+}
+
+#[test]
+fn file_tree_pending_editor_escape_exits_right_after_ime_preedit_cleared() {
+    let mut app = App::new();
+    app.open_local_project(project_fixture("pending-ime-esc"));
+    app.file_tree_begin_new_entry(EntryKind::File);
+
+    // 输入中文候选。
+    app.ime_replace_and_mark_text(None, "ni", Some(2..2))
+        .unwrap();
+    assert!(app.ime_marked_range_utf16().is_some());
+
+    // 系统输入法取消候选 = 把 marked text 置空。composition 必须彻底结束，
+    // 不留空壳 —— 否则 marked_text_range 仍报 Some，系统 IME 会吞掉后续按键。
+    app.ime_replace_and_mark_text(None, "", None).unwrap();
+    assert!(
+        app.ime_marked_range_utf16().is_none(),
+        "preedit 清空后 composition 必须彻底结束，不能留空壳"
+    );
+
+    // 紧接着一次 Esc 就该真正退出新建。
+    let outcome = app
+        .dispatch_key("escape".to_string(), KeySurface::FileTree)
+        .unwrap();
+    assert!(outcome.consumed);
+    assert_eq!(outcome.effects, vec![HostEffect::FileTreeCancelNewEntry]);
 }
 
 #[test]

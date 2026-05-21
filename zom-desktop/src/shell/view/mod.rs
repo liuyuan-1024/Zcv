@@ -13,7 +13,7 @@ use gpui::{
 use zom_command::Invocation;
 use zom_command::commands::window as window_commands;
 
-use crate::app::App;
+use crate::app::{App, KeySurface};
 
 use super::editor::EditorInput;
 use super::features::file_tree::FileTreeRuntime;
@@ -135,14 +135,14 @@ impl ShellView {
         }
     }
 
-    fn key_request(&self) -> KeyRequest {
+    fn key_request(&self, surface: KeySurface) -> KeyRequest {
         let app = Rc::clone(&self.app);
         let workbench = Rc::clone(&self.workbench);
         let overlays = self.overlay_manager.clone();
         let editor_focus_fallback = self.editor_focus.clone();
         let file_tree = self.file_tree.clone();
         Rc::new(move |chord, window, cx| {
-            let outcome = match app.borrow_mut().dispatch_key_input(chord) {
+            let outcome = match app.borrow_mut().dispatch_key(chord, surface) {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     eprintln!("命令执行失败：{error}");
@@ -186,12 +186,8 @@ impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.workbench_state();
         let window_controls = self.window_controls_handlers();
-        let key_request = self.key_request();
-        let file_tree_key_request = self.file_tree.key_request(
-            Rc::clone(&self.app),
-            self.editor_focus.clone(),
-            self.key_request(),
-        );
+        let key_request = self.key_request(KeySurface::Editor);
+        let file_tree_key_request = self.key_request(KeySurface::FileTree);
         let file_tree_input_handler_hook =
             self.file_tree.input_handler_hook(self.editor_input.clone());
         let file_tree_panel = self.file_tree.panel(

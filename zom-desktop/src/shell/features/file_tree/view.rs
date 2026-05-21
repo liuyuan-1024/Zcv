@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, Div, IntoElement, Svg, div, prelude::*, svg};
 
-use crate::shell::InputHandlerHook;
 use crate::shell::editor;
+use crate::shell::{InputHandlerHook, normalized_chord};
 use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::PanelContext;
 use zom_workspace::EntryKind;
@@ -45,7 +45,7 @@ pub(super) fn render(ctx: PanelContext<'_>) -> Div {
         .track_focus(panel.focus)
         .tab_index(0)
         .on_key_down(move |event, window, cx| {
-            if key_request(&event.keystroke, window, cx) {
+            if key_request(normalized_chord(&event.keystroke), window, cx) {
                 cx.stop_propagation();
             }
         })

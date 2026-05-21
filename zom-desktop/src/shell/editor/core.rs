@@ -40,11 +40,6 @@ impl Editor {
         self.selection.primary().head().get()
     }
 
-    /// 当前是否存在输入法 composition。
-    pub(crate) fn is_composing(&self) -> bool {
-        self.buffer.is_composing()
-    }
-
     pub(crate) fn snapshot(&self) -> EditorSnapshot {
         EditorSnapshot {
             text: self.text(),

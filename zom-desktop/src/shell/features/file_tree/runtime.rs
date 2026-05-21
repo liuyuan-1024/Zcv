@@ -13,7 +13,7 @@ use crate::shell::editor::EditorInput;
 use crate::shell::workbench::controller::WorkbenchController;
 use crate::shell::{InputHandlerHook, KeyRequest};
 
-use super::{FileTreeKeyRequest, FileTreePanel, FileTreeState};
+use super::{FileTreePanel, FileTreeState};
 
 #[derive(Clone)]
 pub(crate) struct FileTreeRuntime {
@@ -39,7 +39,7 @@ impl FileTreeRuntime {
     pub(crate) fn panel<'a>(
         &'a self,
         state: &'a FileTreeState,
-        key_request: &'a FileTreeKeyRequest,
+        key_request: &'a KeyRequest,
         input_handler_hook: &'a InputHandlerHook,
         window: &Window,
     ) -> FileTreePanel<'a> {
@@ -59,14 +59,6 @@ impl FileTreeRuntime {
         })
     }
 
-    pub(crate) fn key_request(
-        &self,
-        app: Rc<RefCell<App>>,
-        editor_focus: FocusHandle,
-        fallback: KeyRequest,
-    ) -> FileTreeKeyRequest {
-        super::keyboard::key_request(app, editor_focus, fallback)
-    }
 
     pub(crate) fn handle_toggle_request(
         &self,

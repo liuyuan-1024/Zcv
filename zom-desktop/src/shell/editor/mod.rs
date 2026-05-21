@@ -13,11 +13,9 @@ mod grid;
 mod ime;
 mod inline;
 mod input;
-mod key;
 
 pub(crate) use core::{Editor, EditorSnapshot};
 pub(crate) use grid::render_grid;
 pub(crate) use ime::{ImeQueryTarget, ImeTarget};
 pub(crate) use inline::render_inline;
 pub(crate) use input::EditorInput;
-pub(crate) use key::{EditorKeyOutcome, EditorLineMode, is_editing_command};

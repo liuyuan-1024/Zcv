@@ -9,7 +9,7 @@ use zom_command::{HostEffect, Invocation};
 use crate::app::App;
 use crate::shell::ActionRequest;
 use crate::shell::features::PanelId;
-use crate::shell::features::file_tree::FileTreeRuntime;
+use crate::shell::features::file_tree::{FileTreeActivation, FileTreeRuntime};
 use crate::shell::platform::window as platform_window;
 use crate::shell::shared::element_ids;
 use crate::shell::workbench::controller::WorkbenchController;
@@ -102,6 +102,32 @@ pub(super) fn apply_host_effects(
                 );
             }
             HostEffect::DismissOverlay => dismiss_overlay(overlays, window, cx),
+
+            HostEffect::FileTreeMoveSelection(delta) => {
+                app.borrow_mut().file_tree_move_selection(delta);
+            }
+            HostEffect::FileTreeCollapseOrParent => {
+                app.borrow_mut().file_tree_collapse_or_parent();
+            }
+            HostEffect::FileTreeExpandOrInto => {
+                app.borrow_mut().file_tree_expand_or_into();
+            }
+            HostEffect::FileTreeActivate => {
+                let activation = app.borrow_mut().file_tree_activate();
+                if matches!(activation, FileTreeActivation::OpenedFile) {
+                    window.focus(editor_focus_fallback);
+                }
+            }
+            HostEffect::FileTreeFocusEditor => window.focus(editor_focus_fallback),
+            HostEffect::FileTreeBeginNewEntry(kind) => {
+                app.borrow_mut().file_tree_begin_new_entry(kind);
+            }
+            HostEffect::FileTreeCommitNewEntry => {
+                app.borrow_mut().file_tree_commit_new_entry();
+            }
+            HostEffect::FileTreeCancelNewEntry => {
+                app.borrow_mut().file_tree_cancel_new_entry();
+            }
         }
     }
 }

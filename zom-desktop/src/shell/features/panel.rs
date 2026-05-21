@@ -37,10 +37,10 @@ impl PanelId {
     }
 
     /// 切换本 panel 显隐的完整命令 id。常量本体在
-    /// [`zom_command::commands::panels`]，这里只做枚举 → 常量 的映射，
+    /// [`zom_command::commands::panel`]，这里只做枚举 → 常量 的映射，
     /// 供 bar glyph 等 UI 标注。
     pub(crate) fn toggle_command_id(self) -> &'static str {
-        use zom_command::commands::panels as panel_cmds;
+        use zom_command::commands::panel as panel_cmds;
         match self {
             PanelId::FileTree => panel_cmds::TOGGLE_FILE_TREE,
             PanelId::VersionControl => panel_cmds::TOGGLE_VERSION_CONTROL,

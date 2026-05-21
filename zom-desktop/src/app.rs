@@ -10,19 +10,19 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use zom_command::commands::{
-    editor, language_server as language_server_commands, overlay as overlay_commands,
-    panels as panel_commands, window as window_commands, workspace as workspace_commands,
+    editor, file_tree as file_tree_commands, language_server as language_server_commands,
+    overlay as overlay_commands, panel as panel_commands, window as window_commands,
+    workspace as workspace_commands,
 };
 use zom_command::{
     CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId, CommandQueue,
-    CommandRegistry, EffectQueue, HostEffect, Invocation, KeyChord, Keymap, KeymapResolution,
+    CommandRegistry, EffectQueue, FileTreeKeyMode, HostEffect, Invocation, KeyChord, KeyContext,
+    Keymap, KeymapResolution,
 };
 use zom_view::{ViewId, ViewSet};
 use zom_workspace::{EntryKind, Workspace, WorkspaceBuffer};
 
-use crate::shell::editor::{
-    EditorKeyOutcome, EditorLineMode, ImeQueryTarget, ImeTarget, is_editing_command,
-};
+use crate::shell::editor::{ImeQueryTarget, ImeTarget};
 use crate::shell::features::file_tree::{FileTreeActivation, FileTreeModel, FileTreeState};
 
 /// 主编辑区渲染快照：标签列表 + 当前活动 buffer 的正文。
@@ -51,6 +51,16 @@ pub(crate) struct KeyDispatchOutcome {
     pub(crate) effects: Vec<HostEffect>,
 }
 
+/// 一次按键来自哪个交互面。组合根据此 + 运行态算出 keymap 上下文栈，
+/// 命令与快捷键的定义本身全在 zom-command。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum KeySurface {
+    /// 主编辑区。
+    Editor,
+    /// 文件树面板（含新建条目输入态）。
+    FileTree,
+}
+
 pub struct App {
     registry: CommandRegistry,
     keymap: Keymap,
@@ -67,10 +77,9 @@ impl App {
         let mut registry = CommandRegistry::new();
         let mut keymap = Keymap::new();
 
-        // 全部命令 + 默认键位都集中在 zom-command::commands 里声明，组合根只
-        // 选要装哪些 catalog。handler 看不到的宿主侧资源（窗口、Dock）走
-        // HostEffect 反馈到 shell。
+        // 组合根只选要装哪些 catalog。handler 看不到的宿主侧资源（窗口、Dock）走 HostEffect 反馈到 shell。
         editor::install(&mut registry, &mut keymap);
+        file_tree_commands::install(&mut registry, &mut keymap);
         overlay_commands::install(&mut registry, &mut keymap);
         language_server_commands::install(&mut registry, &mut keymap);
         workspace_commands::install(&mut registry, &mut keymap);
@@ -140,10 +149,6 @@ impl App {
         self.file_tree.begin_new_entry(kind);
     }
 
-    pub(crate) fn file_tree_pending_active(&self) -> bool {
-        self.file_tree.pending_active()
-    }
-
     pub(crate) fn file_tree_cancel_new_entry(&mut self) {
         self.file_tree.cancel_new_entry();
     }
@@ -208,14 +213,30 @@ impl App {
 
     /// 处理一次归一化按键。
     ///
+    /// 宿主只传「按键来自哪个交互面」，由组合根按当前焦点 / 运行态算出
+    /// `KeyContext` 栈交给 keymap 解析 —— 命令与快捷键的定义全在 zom-command，
+    /// 宿主不持有任何 chord → 动作 的映射表。
+    ///
     /// 文本输入不在这里 fallback：交给 GPUI 的 `EntityInputHandler` 路径，由
     /// 系统输入法或 NSTextInputClient 把文本喂给 `App::ime_*`。
-    pub(crate) fn dispatch_key_input(
+    pub(crate) fn dispatch_key(
         &mut self,
         chord: String,
+        surface: KeySurface,
     ) -> Result<KeyDispatchOutcome, CommandError> {
+        // 组合态下宿主完全让位给系统输入法：不解析、不消费、不 stop_propagation。
+        // 一旦拦下某个键（如 Esc → ime_cancel），系统 IME 会话就和我们脱节，
+        // 它会再吞掉一个后续按键 —— 表现为「取消候选后要多按一次 Esc 才退出
+        // 新建」。组合的更新 / 提交 / 取消都由 IME 回调（`ime_*`）驱动。
+        if self.is_composing() {
+            return Ok(KeyDispatchOutcome {
+                consumed: false,
+                effects: Vec::new(),
+            });
+        }
         let chord = KeyChord::new(chord)?;
-        match self.keymap.resolve(&[chord], &[]) {
+        let contexts = self.key_contexts(surface);
+        match self.keymap.resolve(&[chord], &contexts) {
             KeymapResolution::Matched { command, args } => {
                 let effects = self.dispatch_command_id(command, args)?;
                 Ok(KeyDispatchOutcome {
@@ -234,55 +255,42 @@ impl App {
         }
     }
 
-    /// 处理嵌入编辑器的按键。
+    /// 把「当前焦点面 + 运行态」映射成 keymap 解析用的 `KeyContext` 优先级栈。
     ///
-    /// 这里故意只消费“文本编辑相关”的命令：移动 / 选择 / 删除 / undo /
-    /// redo / IME 等。未命中的按键，以及命中但不属于编辑行为的快捷键，
-    /// 都交回父组件处理。
-    pub(crate) fn dispatch_embedded_editor_key_input(
-        &mut self,
-        chord: String,
-        mode: EditorLineMode,
-    ) -> Result<EditorKeyOutcome, CommandError> {
-        if !self.file_tree.pending_active() {
-            return Ok(EditorKeyOutcome::bubble());
-        }
-
-        if self.embedded_editor_is_composing() {
-            return self.dispatch_composition_key(chord.as_str());
-        }
-
-        let chord = KeyChord::new(chord)?;
-        match self.keymap.resolve(&[chord], &[]) {
-            KeymapResolution::Matched { command, args } if is_editing_command(&command, mode) => {
-                let effects = self.dispatch_command_id(command, args)?;
-                Ok(EditorKeyOutcome::handled(effects))
+    /// 这是宿主该做的事 —— 告诉 zom-command「现在处于什么上下文」；至于哪个
+    /// chord 对应哪条命令，仍由各 catalog 注册进 keymap 的绑定决定。
+    ///
+    /// `composing` 恒为 `false`：`dispatch_key` 在组合态直接让位给系统输入法，
+    /// 根本不会走到这里。组合上下文（`KeyContext::text_edit` 的第二参）保留
+    /// 在签名里，待将来真有「宿主侧处理组合键」的需求再启用。
+    fn key_contexts(&self, surface: KeySurface) -> Vec<KeyContext> {
+        match surface {
+            KeySurface::Editor => {
+                vec![KeyContext::text_edit(true, false), KeyContext::global()]
             }
-            KeymapResolution::Pending
-            | KeymapResolution::Matched { .. }
-            | KeymapResolution::NoMatch => Ok(EditorKeyOutcome::bubble()),
+            KeySurface::FileTree if self.file_tree.pending_active() => vec![
+                // 新建条目输入态：单行编辑器先吃编辑键，未命中再落到文件树的
+                // 确认 / 取消，最后才是全局快捷键。
+                KeyContext::text_edit(false, false),
+                KeyContext::file_tree(FileTreeKeyMode::PendingName),
+                KeyContext::global(),
+            ],
+            KeySurface::FileTree => vec![
+                KeyContext::file_tree(FileTreeKeyMode::Navigate),
+                KeyContext::global(),
+            ],
         }
     }
 
-    fn embedded_editor_is_composing(&self) -> bool {
-        self.file_tree
-            .pending_editor()
-            .map(|editor| editor.is_composing())
-            .unwrap_or(false)
-    }
-
-    fn dispatch_composition_key(&mut self, chord: &str) -> Result<EditorKeyOutcome, CommandError> {
-        match chord {
-            "escape" => {
-                let effects = self.dispatch(editor::ime_cancel())?;
-                Ok(EditorKeyOutcome::handled(effects))
-            }
-            "enter" | "return" => {
-                self.ime_unmark()?;
-                Ok(EditorKeyOutcome::handled(Vec::new()))
-            }
-            _ => Ok(EditorKeyOutcome::handled(Vec::new())),
-        }
+    /// 当前聚焦的编辑目标是否处于「有 preedit 的」输入法组合态。
+    ///
+    /// 空 preedit 不算 —— 系统输入法取消候选后会把 preedit 清空、但 composition
+    /// 壳可能仍在。若空壳也算组合态，`dispatch_key` 会一直让位、keymap 再也
+    /// 不接管，后续 Esc 永远到不了 `cancel_new_entry`。
+    fn is_composing(&self) -> bool {
+        self.focused_ime_query_target()
+            .and_then(|target| target.preedit_text())
+            .is_some_and(|preedit| !preedit.is_empty())
     }
 
     /// 查询某条命令的快捷键文案 —— 给 Glyph / 命令面板 / 菜单用。

@@ -9,7 +9,7 @@ use crate::shell::workbench::state::{DockAreaId, EditorState};
 use gpui::{Pixels, point, px};
 
 #[test]
-fn panel_toggle_should_drive_dock_visibility_in_shell_controller() {
+fn show_and_hide_panel_should_drive_dock_visibility() {
     let mut workbench = WorkbenchController::new();
     let initial = workbench.state(
         "打开项目".to_string(),
@@ -22,37 +22,32 @@ fn panel_toggle_should_drive_dock_visibility_in_shell_controller() {
     assert!(!initial.right_dock.is_visible());
     assert!(!initial.bottom_dock.is_visible());
 
-    workbench.toggle_panel(PanelId::FileTree);
-    let after_first = workbench.state(
+    workbench.show_panel(PanelId::FileTree);
+    let after_show = workbench.state(
         "打开项目".to_string(),
         false,
         EditorState::default(),
         FileTreeState::default(),
     );
+    assert!(after_show.left_dock.is_visible());
+    assert_eq!(after_show.left_dock.active_panel(), Some(PanelId::FileTree));
 
-    assert!(after_first.left_dock.is_visible());
-    assert_eq!(
-        after_first.left_dock.active_panel(),
-        Some(PanelId::FileTree)
-    );
-
-    let before = after_first.left_dock.collapsed;
-    workbench.toggle_panel(PanelId::FileTree);
-    let after_second = workbench.state(
+    workbench.hide_panel(PanelId::FileTree);
+    let after_hide = workbench.state(
         "打开项目".to_string(),
         false,
         EditorState::default(),
         FileTreeState::default(),
     );
-    assert_ne!(after_second.left_dock.collapsed, before);
+    assert!(!after_hide.left_dock.is_visible());
 }
 
 #[test]
-fn panel_toggle_should_switch_active_panel_without_collapsing_dock() {
+fn show_panel_should_switch_active_panel_without_collapsing_dock() {
     let mut workbench = WorkbenchController::new();
 
-    workbench.toggle_panel(PanelId::FileTree);
-    workbench.toggle_panel(PanelId::VersionControl);
+    workbench.show_panel(PanelId::FileTree);
+    workbench.show_panel(PanelId::VersionControl);
 
     let state = workbench.state(
         "打开项目".to_string(),

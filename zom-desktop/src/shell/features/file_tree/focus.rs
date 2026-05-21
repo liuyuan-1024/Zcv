@@ -36,8 +36,6 @@ pub(crate) fn reveal_and_focus(
     file_tree_focus: &FocusHandle,
     window: &mut Window,
 ) {
-    if !workbench.borrow().is_panel_active(PanelId::FileTree) {
-        workbench.borrow_mut().toggle_panel(PanelId::FileTree);
-    }
+    workbench.borrow_mut().show_panel(PanelId::FileTree);
     focus_panel_handle(file_tree_focus.clone(), window, true);
 }

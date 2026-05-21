@@ -1,6 +1,7 @@
 //! shell 根视图。
 
 mod actions;
+mod focus;
 mod project;
 
 use std::cell::RefCell;

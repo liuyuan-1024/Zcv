@@ -63,15 +63,22 @@ impl WorkbenchController {
         }
     }
 
-    pub(crate) fn toggle_panel(&mut self, panel: PanelId) {
+    /// 显示并激活该 panel：展开它所在 dock 并切到它。已显示则幂等。
+    pub(crate) fn show_panel(&mut self, panel: PanelId) {
         let Some(dock) = self.dock_hosting_mut(panel) else {
             return;
         };
-        if dock.stack.active() == Some(panel) && !dock.collapsed {
+        dock.collapsed = false;
+        dock.stack.active = Some(panel);
+    }
+
+    /// 收起该 panel：仅当它正是其 dock 的 active 项时折叠该 dock。
+    pub(crate) fn hide_panel(&mut self, panel: PanelId) {
+        let Some(dock) = self.dock_hosting_mut(panel) else {
+            return;
+        };
+        if dock.stack.active() == Some(panel) {
             dock.collapsed = true;
-        } else {
-            dock.collapsed = false;
-            dock.stack.active = Some(panel);
         }
     }
 

@@ -9,12 +9,13 @@ use zom_command::{HostEffect, Invocation};
 use crate::app::App;
 use crate::shell::ActionRequest;
 use crate::shell::features::file_tree::{FileTreeActivation, FileTreeRuntime};
-use crate::shell::features::{PanelId, PanelRuntimes, focus_panel_handle};
+use crate::shell::features::{PanelId, PanelRuntimes};
 use crate::shell::platform::window as platform_window;
 use crate::shell::workbench::controller::WorkbenchController;
 use crate::shell::workbench::element_ids;
 use crate::shell::workbench::overlays::{OverlayAnchor, OverlayKind, OverlayManager};
 
+use super::focus::{FocusRouter, FocusTarget};
 use super::project;
 
 pub(super) fn bind_action_request(
@@ -59,6 +60,7 @@ pub(super) fn apply_host_effects(
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
+    let focus = FocusRouter::new(panel_runtimes, file_tree, editor_focus_fallback);
     for effect in effects {
         match effect {
             HostEffect::Quit => platform_window::quit(cx),
@@ -69,11 +71,15 @@ pub(super) fn apply_host_effects(
                     eprintln!("HostEffect::TogglePanel 收到未知 panel id：{panel_str_id}");
                     continue;
                 };
-                workbench.borrow_mut().toggle_panel(panel);
-                if workbench.borrow().is_panel_active(panel) {
-                    focus_visible_panel(panel, panel_runtimes, file_tree, window);
+                let visible = workbench.borrow().is_panel_active(panel);
+                if visible && focus.is_at(FocusTarget::Panel(panel), window) {
+                    // 已显示且焦点就在它身上 —— 收起，焦点回编辑区。
+                    workbench.borrow_mut().hide_panel(panel);
+                    focus.move_to(FocusTarget::Editor, window);
                 } else {
-                    window.focus(editor_focus_fallback);
+                    // 未显示，或虽显示但焦点不在它身上 —— 显示并把焦点交给它。
+                    workbench.borrow_mut().show_panel(panel);
+                    focus.move_to(FocusTarget::Panel(panel), window);
                 }
                 window.refresh();
             }
@@ -119,10 +125,10 @@ pub(super) fn apply_host_effects(
             HostEffect::FileTreeActivate => {
                 let activation = app.borrow_mut().file_tree_activate();
                 if matches!(activation, FileTreeActivation::OpenedFile) {
-                    window.focus(editor_focus_fallback);
+                    focus.move_to(FocusTarget::Editor, window);
                 }
             }
-            HostEffect::FileTreeFocusEditor => window.focus(editor_focus_fallback),
+            HostEffect::FileTreeFocusEditor => focus.move_to(FocusTarget::Editor, window),
             HostEffect::FileTreeBeginNewEntry(kind) => {
                 app.borrow_mut().file_tree_begin_new_entry(kind);
             }
@@ -134,22 +140,6 @@ pub(super) fn apply_host_effects(
             }
         }
     }
-}
-
-fn focus_visible_panel(
-    panel: PanelId,
-    panel_runtimes: &PanelRuntimes,
-    file_tree: &FileTreeRuntime,
-    window: &mut Window,
-) {
-    let focus = if panel == PanelId::FileTree {
-        file_tree.focus_handle()
-    } else if let Some(focus) = panel_runtimes.focus_handle(panel) {
-        focus
-    } else {
-        return;
-    };
-    focus_panel_handle(focus, window, true);
 }
 
 pub(super) fn dismiss_overlay(

@@ -276,7 +276,9 @@ mod tests {
         let root = tmp_root("create");
         let mut tree = ProjectTree::new(root.clone()).unwrap();
 
-        let file = tree.create_entry(&root, "new.txt", EntryKind::File).unwrap();
+        let file = tree
+            .create_entry(&root, "new.txt", EntryKind::File)
+            .unwrap();
         assert!(file.is_file());
         let dir = tree
             .create_entry(&root, "newdir", EntryKind::Directory)

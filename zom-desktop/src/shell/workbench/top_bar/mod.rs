@@ -9,15 +9,15 @@
 
 use gpui::{AnyElement, Div, Entity, Window, div, prelude::*};
 
-use crate::shell::shared::element_ids;
-use crate::shell::shared::primitives::{
-    BarEdge, BarRegionAlign, Glyph, align_bar_region, bar_frame,
-};
-use crate::shell::workbench::overlay::{AnchorRegistry, track_anchor};
+use crate::shell::ShortcutLookup;
+use crate::shell::workbench::element_ids;
+use crate::shell::workbench::overlays::{AnchorRegistry, track_anchor};
 use crate::shell::workbench::state::WorkbenchState;
-use crate::shell::{ShortcutLookup, WindowControlsHandlers};
+
+use super::bars::{BarEdge, BarRegionAlign, Glyph, align_bar_region, bar_frame};
 
 mod window_controls;
+pub(crate) use window_controls::WindowControlsHandlers;
 use window_controls::render_window_controls;
 
 use zom_command::commands::{settings, workspace as workspace_commands};

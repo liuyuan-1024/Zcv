@@ -3,8 +3,8 @@
 //! `app` 只产生命令层的 HostEffect；dock 展开、折叠、active panel 等窗口
 //! 显示状态在这里解释和更新。
 
-use super::dock_resize::{DockResize, DockResizeBounds, DockResizeEvent};
-use super::regions::{bottom_dock, left_dock, right_dock};
+use super::docks::resize::{DockResize, DockResizeBounds, DockResizeEvent};
+use super::docks::{bottom, left, right};
 use super::state::{
     BottomBarState, DockAreaId, DockState, EditorState, PanelStack, WorkbenchState,
 };
@@ -27,17 +27,17 @@ impl WorkbenchController {
             left_dock: DockState {
                 collapsed: true,
                 size: px(240.0),
-                stack: PanelStack::new(left_dock::PANELS.to_vec(), None),
+                stack: PanelStack::new(left::PANELS.to_vec(), None),
             },
             right_dock: DockState {
                 collapsed: true,
                 size: px(240.0),
-                stack: PanelStack::new(right_dock::PANELS.to_vec(), None),
+                stack: PanelStack::new(right::PANELS.to_vec(), None),
             },
             bottom_dock: DockState {
                 collapsed: true,
                 size: px(200.0),
-                stack: PanelStack::new(bottom_dock::PANELS.to_vec(), None),
+                stack: PanelStack::new(bottom::PANELS.to_vec(), None),
             },
             bottom_bar: BottomBarState::default(),
             dock_resize: DockResize::default(),

@@ -7,13 +7,6 @@ use gpui::{App as GpuiApp, Bounds, Pixels, Window};
 /// 一个已经绑好命令的点击回调。UI 子组件不接触命令对象，触发时直接调用。
 pub(crate) type ActionRequest = Rc<dyn Fn(&mut Window, &mut GpuiApp)>;
 
-/// 顶 bar 的三个圆点共享一份回调包。新加按钮就在这里加字段。
-pub(crate) struct WindowControlsHandlers {
-    pub(crate) quit: ActionRequest,
-    pub(crate) minimize: ActionRequest,
-    pub(crate) toggle_maximize: ActionRequest,
-}
-
 /// 返回 `true` 表示按键被 keymap 消费，调用方应当停止传播；返回 `false`
 /// 表示没有匹配，必须放行给系统输入法。
 pub(crate) type KeyRequest = Rc<dyn Fn(String, &mut Window, &mut GpuiApp) -> bool>;

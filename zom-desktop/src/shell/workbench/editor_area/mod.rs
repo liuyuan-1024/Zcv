@@ -5,9 +5,9 @@
 
 use gpui::{Div, FocusHandle, ScrollHandle, div, prelude::*};
 
-use super::bottom_dock;
 use crate::shell::editor;
-use crate::shell::workbench::dock_resize::DockResizeRequest;
+use crate::shell::workbench::docks::bottom;
+use crate::shell::workbench::docks::resize::DockResizeRequest;
 use crate::shell::workbench::state::{DockState, EditorState};
 use crate::shell::workbench::{PanelContext, PanelHost};
 use crate::shell::{InputHandlerHook, KeyRequest, ShortcutLookup};
@@ -38,12 +38,7 @@ pub(crate) fn render(
         editor_focus,
     ));
     if bottom_dock_state.is_visible() {
-        column = column.child(bottom_dock::render(
-            bottom_dock_state,
-            host,
-            panel_ctx,
-            resize,
-        ));
+        column = column.child(bottom::render(bottom_dock_state, host, panel_ctx, resize));
     }
     column
 }

@@ -16,13 +16,14 @@ use zom_command::commands::window as window_commands;
 use crate::app::{App, KeySurface};
 
 use super::editor::EditorInput;
+use super::features::PanelRuntimes;
 use super::features::file_tree::FileTreeRuntime;
 use super::workbench;
-use super::workbench::PanelHost;
 use super::workbench::controller::WorkbenchController;
-use super::workbench::overlay::{AnchorRegistry, OverlayKind, OverlayManager, OverlayShell};
+use super::workbench::overlays::{AnchorRegistry, OverlayKind, OverlayManager, OverlayShell};
 use super::workbench::state::WorkbenchState;
-use super::{ActionRequest, InputHandlerHook, KeyRequest, ShortcutLookup, WindowControlsHandlers};
+use super::workbench::{PanelHost, WindowControlsHandlers};
+use super::{ActionRequest, InputHandlerHook, KeyRequest, ShortcutLookup};
 
 /// shell 端的根 View：拥有 App 状态与每窗口的 `PanelHost`。
 pub(crate) struct ShellView {
@@ -34,6 +35,7 @@ pub(crate) struct ShellView {
     overlay_shell: Entity<OverlayShell>,
     editor_input: Entity<EditorInput>,
     editor_focus: FocusHandle,
+    panel_runtimes: PanelRuntimes,
     file_tree: FileTreeRuntime,
     /// 编辑区标签栏的滚动状态。跨帧保留，否则每帧重建会丢失滚动位置。
     editor_tab_scroll: ScrollHandle,
@@ -47,12 +49,14 @@ impl ShellView {
         let anchor_registry = cx.new(|_| AnchorRegistry::new());
         let editor_focus = cx.focus_handle();
         let editor_input = cx.new(|_| EditorInput::new(Rc::clone(&app)));
+        let panel_runtimes = PanelRuntimes::new(cx);
         let file_tree = FileTreeRuntime::new(cx);
         let open_local_project = actions::bind_action_request(
             Rc::clone(&app),
             Rc::clone(&workbench),
             overlay_manager.clone(),
             editor_focus.clone(),
+            panel_runtimes.clone(),
             file_tree.clone(),
             zom_command::commands::workspace::open_local_project(),
         );
@@ -74,6 +78,7 @@ impl ShellView {
             overlay_shell,
             editor_input,
             editor_focus,
+            panel_runtimes,
             file_tree,
             editor_tab_scroll: ScrollHandle::new(),
         }
@@ -122,6 +127,7 @@ impl ShellView {
             Rc::clone(&self.workbench),
             self.overlay_manager.clone(),
             self.editor_focus.clone(),
+            self.panel_runtimes.clone(),
             self.file_tree.clone(),
             invocation,
         )
@@ -140,6 +146,7 @@ impl ShellView {
         let workbench = Rc::clone(&self.workbench);
         let overlays = self.overlay_manager.clone();
         let editor_focus_fallback = self.editor_focus.clone();
+        let panel_runtimes = self.panel_runtimes.clone();
         let file_tree = self.file_tree.clone();
         Rc::new(move |chord, window, cx| {
             let outcome = match app.borrow_mut().dispatch_key(chord, surface) {
@@ -156,6 +163,7 @@ impl ShellView {
                 &workbench,
                 &overlays,
                 &editor_focus_fallback,
+                &panel_runtimes,
                 &file_tree,
                 window,
                 cx,
@@ -187,6 +195,7 @@ impl Render for ShellView {
         let state = self.workbench_state();
         let window_controls = self.window_controls_handlers();
         let key_request = self.key_request(KeySurface::Editor);
+        let panel_key_request = self.key_request(KeySurface::Panel);
         let file_tree_key_request = self.key_request(KeySurface::FileTree);
         let file_tree_input_handler_hook =
             self.file_tree.input_handler_hook(self.editor_input.clone());
@@ -215,9 +224,11 @@ impl Render for ShellView {
             workspace_active,
             language_server_active,
             key_request,
+            panel_key_request,
             shortcut_lookup,
             input_handler_hook,
             self.editor_focus.clone(),
+            self.panel_runtimes.clone(),
             file_tree_panel,
             self.editor_tab_scroll.clone(),
         )

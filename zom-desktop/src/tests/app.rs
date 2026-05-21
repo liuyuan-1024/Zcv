@@ -53,7 +53,11 @@ fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
     assert!(active_tab(&state).dirty);
 
     // 非文本按键仍走 keymap → 命令。
-    assert!(app.dispatch_key("left".to_string(), KeySurface::Editor).unwrap().consumed);
+    assert!(
+        app.dispatch_key("left".to_string(), KeySurface::Editor)
+            .unwrap()
+            .consumed
+    );
     assert!(
         app.dispatch_key("backspace".to_string(), KeySurface::Editor)
             .unwrap()
@@ -64,11 +68,17 @@ fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
     assert_eq!(state.text, "i");
     assert_eq!(state.cursor_byte, 0);
 
-    let outcome = app.dispatch_key("mod-z".to_string(), KeySurface::Editor).unwrap();
+    let outcome = app
+        .dispatch_key("mod-z".to_string(), KeySurface::Editor)
+        .unwrap();
     assert!(outcome.consumed);
 
     // 没绑定的字符必须返回未消费，让 IME 路径接管。
-    assert!(!app.dispatch_key("a".to_string(), KeySurface::Editor).unwrap().consumed);
+    assert!(
+        !app.dispatch_key("a".to_string(), KeySurface::Editor)
+            .unwrap()
+            .consumed
+    );
 
     let state = app.editor_state();
     assert_eq!(state.text, "hi");
@@ -110,7 +120,11 @@ fn ime_preedit_update_and_commit_should_flow_through_engine() {
 fn tab_and_enter_should_dispatch_editor_commands() {
     let mut app = app_with_open_file("tab-enter");
 
-    assert!(app.dispatch_key("tab".to_string(), KeySurface::Editor).unwrap().consumed);
+    assert!(
+        app.dispatch_key("tab".to_string(), KeySurface::Editor)
+            .unwrap()
+            .consumed
+    );
     assert!(
         app.dispatch_key("enter".to_string(), KeySurface::Editor)
             .unwrap()
@@ -144,14 +158,32 @@ fn panel_toggle_command_should_emit_host_effect() {
 }
 
 #[test]
+fn panel_key_surface_should_keep_global_shortcuts_without_text_edit_context() {
+    let mut app = App::new();
+
+    let outcome = app
+        .dispatch_key("mod-shift-e".to_string(), KeySurface::Panel)
+        .expect("派发成功");
+    assert!(outcome.consumed);
+    assert_eq!(
+        outcome.effects,
+        vec![HostEffect::TogglePanel("file_tree".to_string())]
+    );
+
+    let outcome = app
+        .dispatch_key("mod-a".to_string(), KeySurface::Panel)
+        .expect("派发成功");
+    assert!(!outcome.consumed);
+    assert!(outcome.effects.is_empty());
+}
+
+#[test]
 fn shortcut_for_should_return_formatted_keymap_binding() {
     let app = App::new();
 
     // 已绑定的命令：返回格式化后的快捷键。
     let undo = app.shortcut_for(editor::UNDO).expect("undo 必有快捷键");
-    let save = app
-        .shortcut_for(editor::SAVE)
-        .expect("save 必有快捷键");
+    let save = app.shortcut_for(editor::SAVE).expect("save 必有快捷键");
     let file_tree = app
         .shortcut_for(PanelId::FileTree.toggle_command_id())
         .expect("file_tree 切换必有快捷键");
@@ -175,7 +207,9 @@ fn shortcut_for_should_return_formatted_keymap_binding() {
 fn project_picker_command_should_emit_open_overlay_window_action() {
     let mut app = App::new();
 
-    let outcome = app.dispatch_key("mod-o".to_string(), KeySurface::Editor).unwrap();
+    let outcome = app
+        .dispatch_key("mod-o".to_string(), KeySurface::Editor)
+        .unwrap();
 
     assert!(outcome.consumed);
     assert_eq!(outcome.effects, vec![HostEffect::ShowProjectPicker]);
@@ -229,7 +263,9 @@ fn language_server_status_command_should_emit_open_overlay_window_action() {
 fn escape_should_dispatch_overlay_dismiss_command() {
     let mut app = App::new();
 
-    let outcome = app.dispatch_key("escape".to_string(), KeySurface::Editor).unwrap();
+    let outcome = app
+        .dispatch_key("escape".to_string(), KeySurface::Editor)
+        .unwrap();
 
     assert!(outcome.consumed);
     assert_eq!(outcome.effects, vec![HostEffect::DismissOverlay]);

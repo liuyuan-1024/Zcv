@@ -8,12 +8,12 @@ use zom_command::{HostEffect, Invocation};
 
 use crate::app::App;
 use crate::shell::ActionRequest;
-use crate::shell::features::PanelId;
 use crate::shell::features::file_tree::{FileTreeActivation, FileTreeRuntime};
+use crate::shell::features::{PanelId, PanelRuntimes, focus_panel_handle};
 use crate::shell::platform::window as platform_window;
-use crate::shell::shared::element_ids;
 use crate::shell::workbench::controller::WorkbenchController;
-use crate::shell::workbench::overlay::{OverlayAnchor, OverlayKind, OverlayManager};
+use crate::shell::workbench::element_ids;
+use crate::shell::workbench::overlays::{OverlayAnchor, OverlayKind, OverlayManager};
 
 use super::project;
 
@@ -22,6 +22,7 @@ pub(super) fn bind_action_request(
     workbench: Rc<RefCell<WorkbenchController>>,
     overlays: Entity<OverlayManager>,
     editor_focus_fallback: FocusHandle,
+    panel_runtimes: PanelRuntimes,
     file_tree: FileTreeRuntime,
     invocation: Invocation,
 ) -> ActionRequest {
@@ -39,6 +40,7 @@ pub(super) fn bind_action_request(
             &workbench,
             &overlays,
             &editor_focus_fallback,
+            &panel_runtimes,
             &file_tree,
             window,
             cx,
@@ -52,6 +54,7 @@ pub(super) fn apply_host_effects(
     workbench: &Rc<RefCell<WorkbenchController>>,
     overlays: &Entity<OverlayManager>,
     editor_focus_fallback: &FocusHandle,
+    panel_runtimes: &PanelRuntimes,
     file_tree: &FileTreeRuntime,
     window: &mut Window,
     cx: &mut gpui::App,
@@ -66,12 +69,13 @@ pub(super) fn apply_host_effects(
                     eprintln!("HostEffect::TogglePanel 收到未知 panel id：{panel_str_id}");
                     continue;
                 };
-                if panel == PanelId::FileTree {
-                    file_tree.handle_toggle_request(workbench, editor_focus_fallback, window);
+                workbench.borrow_mut().toggle_panel(panel);
+                if workbench.borrow().is_panel_active(panel) {
+                    focus_visible_panel(panel, panel_runtimes, file_tree, window);
                 } else {
-                    workbench.borrow_mut().toggle_panel(panel);
-                    window.refresh();
+                    window.focus(editor_focus_fallback);
                 }
+                window.refresh();
             }
             HostEffect::ShowProjectPicker => {
                 open_overlay(
@@ -130,6 +134,22 @@ pub(super) fn apply_host_effects(
             }
         }
     }
+}
+
+fn focus_visible_panel(
+    panel: PanelId,
+    panel_runtimes: &PanelRuntimes,
+    file_tree: &FileTreeRuntime,
+    window: &mut Window,
+) {
+    let focus = if panel == PanelId::FileTree {
+        file_tree.focus_handle()
+    } else if let Some(focus) = panel_runtimes.focus_handle(panel) {
+        focus
+    } else {
+        return;
+    };
+    focus_panel_handle(focus, window, true);
 }
 
 pub(super) fn dismiss_overlay(

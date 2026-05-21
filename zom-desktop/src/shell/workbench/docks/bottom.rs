@@ -6,11 +6,11 @@ use gpui::{Div, div, prelude::*};
 
 use crate::shell::features::PanelId;
 use crate::shell::shared::theme::{color, space, typography};
-use crate::shell::workbench::dock_resize::{self, DockResizeRequest};
 use crate::shell::workbench::state::{DockAreaId, DockState};
 use crate::shell::workbench::{PanelContext, PanelHost};
 
-use crate::shell::shared::primitives::{DockEdge, dock_frame};
+use super::resize::{self, DockResizeRequest};
+use super::{DockEdge, dock_frame};
 
 pub(in crate::shell::workbench) const PANELS: &[PanelId] = &[PanelId::Terminal, PanelId::Debug];
 
@@ -29,7 +29,7 @@ pub(crate) fn render(
         .h(state.size)
         .gap(space::s8())
         .child(div().flex_1().child(body))
-        .child(dock_resize::render_handle(DockAreaId::Bottom, resize))
+        .child(resize::render_handle(DockAreaId::Bottom, resize))
 }
 
 fn empty_body() -> Div {

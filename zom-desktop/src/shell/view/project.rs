@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::shell::features::file_tree::FileTreeRuntime;
 use crate::shell::platform::project as platform_project;
 use crate::shell::workbench::controller::WorkbenchController;
-use crate::shell::workbench::overlay::OverlayManager;
+use crate::shell::workbench::overlays::OverlayManager;
 
 use super::actions;
 

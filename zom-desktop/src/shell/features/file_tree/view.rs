@@ -12,9 +12,9 @@ use std::rc::Rc;
 use gpui::{AnyElement, Div, IntoElement, Svg, div, prelude::*, svg};
 
 use crate::shell::editor;
-use crate::shell::{InputHandlerHook, normalized_chord};
 use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::PanelContext;
+use crate::shell::{InputHandlerHook, normalized_chord};
 use zom_workspace::EntryKind;
 
 use super::{FileTreeRow, FileTreeState, PendingNewEntry};

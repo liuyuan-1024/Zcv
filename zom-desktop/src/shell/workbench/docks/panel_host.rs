@@ -5,11 +5,9 @@
 
 use gpui::{AnyElement, IntoElement};
 
+use crate::shell::KeyRequest;
 use crate::shell::features::file_tree::FileTreePanel;
-use crate::shell::features::{
-    PanelId, debug, file_tree, keyboard_shortcuts, outline, project_search, terminal,
-    version_control,
-};
+use crate::shell::features::{PanelId, PanelRuntimes, file_tree};
 
 /// Dock 调用 `PanelHost` 时透传给具体 panel 的运行态视图。
 ///
@@ -19,6 +17,8 @@ use crate::shell::features::{
 pub(crate) struct PanelContext<'a> {
     pub(crate) has_project: bool,
     pub(crate) file_tree: FileTreePanel<'a>,
+    pub(crate) panel_runtimes: &'a PanelRuntimes,
+    pub(crate) panel_key_request: &'a KeyRequest,
 }
 
 pub(crate) struct PanelHost;
@@ -31,12 +31,10 @@ impl PanelHost {
     pub(crate) fn render(&self, id: PanelId, ctx: PanelContext<'_>) -> AnyElement {
         match id {
             PanelId::FileTree => file_tree::render(ctx).into_any_element(),
-            PanelId::VersionControl => version_control::render().into_any_element(),
-            PanelId::Outline => outline::render().into_any_element(),
-            PanelId::ProjectSearch => project_search::render().into_any_element(),
-            PanelId::Terminal => terminal::render().into_any_element(),
-            PanelId::Debug => debug::render().into_any_element(),
-            PanelId::KeyboardShortcuts => keyboard_shortcuts::render().into_any_element(),
+            _ => ctx
+                .panel_runtimes
+                .render(id, ctx.panel_key_request)
+                .unwrap_or_else(|| gpui::div().into_any_element()),
         }
     }
 }

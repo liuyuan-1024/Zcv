@@ -12,14 +12,12 @@ use zom_command::commands::{diagnostics, language_server as language_server_comm
 
 use crate::shell::ShortcutLookup;
 use crate::shell::features::PanelId;
-use crate::shell::shared::element_ids;
-use crate::shell::shared::primitives::{
-    BarEdge, BarRegionAlign, Glyph, align_bar_region, bar_divider, bar_frame,
-};
-use crate::shell::workbench::overlay::{AnchorRegistry, track_anchor};
+use crate::shell::workbench::docks::{bottom, left, right};
+use crate::shell::workbench::element_ids;
+use crate::shell::workbench::overlays::{AnchorRegistry, track_anchor};
 use crate::shell::workbench::state::{DockAreaId, DockState, EditorState, WorkbenchState};
 
-use super::{bottom_dock, left_dock, right_dock};
+use super::bars::{BarEdge, BarRegionAlign, Glyph, align_bar_region, bar_divider, bar_frame};
 
 const DIAGNOSTICS_ID: &str = "bottom-bar.diagnostics";
 const DIAGNOSTICS_ICON: &str = "icons/bottom_bar/diagnostics.svg";
@@ -58,7 +56,7 @@ fn leading_slots(
     anchor_registry: Entity<AnchorRegistry>,
     language_server_active: bool,
 ) -> Vec<AnyElement> {
-    let toggles = panel_slot_group(DockAreaId::Left, left_dock::PANELS, state, shortcuts);
+    let toggles = panel_slot_group(DockAreaId::Left, left::PANELS, state, shortcuts);
     // Group 2：语言服务器 / 诊断。第一版暂不绑 Dock；纯状态指示，但仍可关联命令
     // 入口（"打开 LSP 状态" / "查看问题面板"）。
     let status = vec![
@@ -75,8 +73,8 @@ fn leading_slots(
 
 fn trailing_slots(state: &WorkbenchState, shortcuts: &ShortcutLookup) -> Vec<AnyElement> {
     let editor = editor_status_slots(&state.editor, shortcuts);
-    let bottom = panel_slot_group(DockAreaId::Bottom, bottom_dock::PANELS, state, shortcuts);
-    let right = panel_slot_group(DockAreaId::Right, right_dock::PANELS, state, shortcuts);
+    let bottom = panel_slot_group(DockAreaId::Bottom, bottom::PANELS, state, shortcuts);
+    let right = panel_slot_group(DockAreaId::Right, right::PANELS, state, shortcuts);
     join_groups(vec![editor, bottom, right])
 }
 

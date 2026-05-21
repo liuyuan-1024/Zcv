@@ -3,11 +3,13 @@
 //! Manager 作为 GPUI `Entity<OverlayManager>` 挂在 `ShellView` 上，命令系统
 //! 只通过 `HostEffect` 请求打开某类 overlay；anchor 由 shell 按 kind 自行决定。
 
-use gpui::ElementId;
-
 mod anchor;
+pub(crate) mod bubble_layer;
 mod manager;
 mod shell;
+
+use gpui::ElementId;
+
 pub(crate) use anchor::{AnchorRegistry, track_anchor};
 pub(crate) use manager::{ActiveOverlay, OverlayManager};
 pub(crate) use shell::OverlayShell;

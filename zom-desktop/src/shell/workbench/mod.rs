@@ -23,21 +23,26 @@ use std::rc::Rc;
 
 use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
 
+use crate::shell::features::PanelRuntimes;
 use crate::shell::features::file_tree::FileTreePanel;
 use crate::shell::shared::theme::{color, radius};
-use crate::shell::{InputHandlerHook, KeyRequest, ShortcutLookup, WindowControlsHandlers};
+use crate::shell::{InputHandlerHook, KeyRequest, ShortcutLookup};
 
+mod bars;
+mod bottom_bar;
 pub(crate) mod controller;
-pub(crate) mod dock_resize;
-pub(crate) mod overlay;
-mod panel_host;
-mod regions;
+pub(crate) mod docks;
+mod editor_area;
+pub(crate) mod element_ids;
+pub(crate) mod overlays;
 pub(crate) mod state;
+mod top_bar;
 
 use self::controller::WorkbenchController;
-use self::dock_resize::{DockResizeBounds, DockResizeEvent, DockResizeRequest};
-use self::overlay::{AnchorRegistry, OverlayShell};
-pub(crate) use self::panel_host::{PanelContext, PanelHost};
+use self::docks::resize::{DockResizeBounds, DockResizeEvent, DockResizeRequest};
+pub(crate) use self::docks::{PanelContext, PanelHost};
+use self::overlays::{AnchorRegistry, OverlayShell};
+pub(crate) use self::top_bar::WindowControlsHandlers;
 use state::WorkbenchState;
 
 pub(crate) fn render(
@@ -51,9 +56,11 @@ pub(crate) fn render(
     workspace_active: bool,
     language_server_active: bool,
     key_request: KeyRequest,
+    panel_key_request: KeyRequest,
     shortcut_lookup: ShortcutLookup,
     input_handler_hook: InputHandlerHook,
     editor_focus: FocusHandle,
+    panel_runtimes: PanelRuntimes,
     file_tree: FileTreePanel<'_>,
     editor_tab_scroll: ScrollHandle,
 ) -> Div {
@@ -69,7 +76,7 @@ pub(crate) fn render(
         .border_color(color::gray::g40())
         .bg(color::gray::g05())
         .text_color(color::gray::g90())
-        .child(regions::top_bar::render(
+        .child(top_bar::render(
             state,
             window,
             window_controls,
@@ -82,20 +89,22 @@ pub(crate) fn render(
             host,
             dock_resize,
             key_request,
+            panel_key_request,
             input_handler_hook,
             editor_focus,
+            panel_runtimes,
             file_tree,
             editor_tab_scroll,
             shortcut_lookup.clone(),
         ))
-        .child(regions::bottom_bar::render(
+        .child(bottom_bar::render(
             state,
             &shortcut_lookup,
             anchor_registry,
             language_server_active,
         ))
         .child(overlay_shell)
-        .child(regions::overlay_layer::bubble_layer::render())
+        .child(overlays::bubble_layer::render())
 }
 
 fn render_body(
@@ -103,8 +112,10 @@ fn render_body(
     host: &PanelHost,
     dock_resize: DockResizeRequest,
     key_request: KeyRequest,
+    panel_key_request: KeyRequest,
     input_handler_hook: InputHandlerHook,
     editor_focus: FocusHandle,
+    panel_runtimes: PanelRuntimes,
     file_tree: FileTreePanel<'_>,
     editor_tab_scroll: ScrollHandle,
     shortcut_lookup: ShortcutLookup,
@@ -112,18 +123,20 @@ fn render_body(
     let panel_ctx = PanelContext {
         has_project: state.has_project,
         file_tree,
+        panel_runtimes: &panel_runtimes,
+        panel_key_request: &panel_key_request,
     };
     let mut row = div().flex_1().flex().flex_row().w_full().overflow_hidden();
 
     if state.left_dock.is_visible() {
-        row = row.child(regions::left_dock::render(
+        row = row.child(docks::left::render(
             &state.left_dock,
             host,
             panel_ctx,
             Rc::clone(&dock_resize),
         ));
     }
-    row = row.child(regions::editor_area::render(
+    row = row.child(editor_area::render(
         &state.bottom_dock,
         &state.editor,
         host,
@@ -136,7 +149,7 @@ fn render_body(
         shortcut_lookup,
     ));
     if state.right_dock.is_visible() {
-        row = row.child(regions::right_dock::render(
+        row = row.child(docks::right::render(
             &state.right_dock,
             host,
             panel_ctx,

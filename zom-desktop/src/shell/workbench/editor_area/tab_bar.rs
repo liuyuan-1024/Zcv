@@ -12,8 +12,8 @@ use gpui::{AnyElement, Rgba, ScrollHandle, SharedString, Stateful, div, prelude:
 use zom_command::commands::editor;
 
 use crate::shell::ShortcutLookup;
-use crate::shell::shared::primitives::Glyph;
 use crate::shell::shared::theme::{color, radius, space, typography};
+use crate::shell::workbench::bars::Glyph;
 use crate::shell::workbench::state::{EditorState, EditorTab};
 
 /// 标签关闭标记的图标。

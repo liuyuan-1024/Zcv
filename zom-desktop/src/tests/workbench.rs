@@ -4,7 +4,7 @@ use crate::shell::features::PanelId;
 use crate::shell::features::file_tree::FileTreeState;
 use crate::shell::shared::theme;
 use crate::shell::workbench::controller::WorkbenchController;
-use crate::shell::workbench::dock_resize::{DockResizeBounds, DockResizeEvent};
+use crate::shell::workbench::docks::resize::{DockResizeBounds, DockResizeEvent};
 use crate::shell::workbench::state::{DockAreaId, EditorState};
 use gpui::{Pixels, point, px};
 
@@ -45,6 +45,27 @@ fn panel_toggle_should_drive_dock_visibility_in_shell_controller() {
         FileTreeState::default(),
     );
     assert_ne!(after_second.left_dock.collapsed, before);
+}
+
+#[test]
+fn panel_toggle_should_switch_active_panel_without_collapsing_dock() {
+    let mut workbench = WorkbenchController::new();
+
+    workbench.toggle_panel(PanelId::FileTree);
+    workbench.toggle_panel(PanelId::VersionControl);
+
+    let state = workbench.state(
+        "打开项目".to_string(),
+        false,
+        EditorState::default(),
+        FileTreeState::default(),
+    );
+    assert!(state.left_dock.is_visible());
+    assert_eq!(
+        state.left_dock.active_panel(),
+        Some(PanelId::VersionControl)
+    );
+    assert!(!workbench.is_panel_active(PanelId::FileTree));
 }
 
 #[test]

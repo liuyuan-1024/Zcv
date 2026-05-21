@@ -1,7 +1,7 @@
 //! Dock resize 交互。
 //!
 //! 本模块定义 Workbench 内部 resize 事件、回调类型，并集中处理拖拽过程中的
-//! 尺寸计算。region 只负责发事件，controller 只负责读写对应 Dock 状态。
+//! 尺寸计算。具体 dock 只负责发事件，controller 只负责读写对应 Dock 状态。
 
 use std::rc::Rc;
 
@@ -11,7 +11,7 @@ use gpui::{
 
 use crate::shell::shared::theme;
 
-use super::state::DockAreaId;
+use super::super::state::DockAreaId;
 
 const HANDLE_SIZE: Pixels = px(6.0);
 const HANDLE_OVERLAP: Pixels = px(-3.0);

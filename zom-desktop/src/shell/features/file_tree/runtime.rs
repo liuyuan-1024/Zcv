@@ -59,14 +59,8 @@ impl FileTreeRuntime {
         })
     }
 
-
-    pub(crate) fn handle_toggle_request(
-        &self,
-        workbench: &Rc<RefCell<WorkbenchController>>,
-        editor_focus_fallback: &FocusHandle,
-        window: &mut Window,
-    ) {
-        super::focus::handle_toggle_request(workbench, editor_focus_fallback, &self.focus, window);
+    pub(crate) fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
     }
 
     pub(crate) fn reveal_after_project_open(

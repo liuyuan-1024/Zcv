@@ -57,6 +57,8 @@ pub(crate) struct KeyDispatchOutcome {
 pub(crate) enum KeySurface {
     /// 主编辑区。
     Editor,
+    /// 普通面板。暂未接入专属键位时，只响应全局快捷键。
+    Panel,
     /// 文件树面板（含新建条目输入态）。
     FileTree,
 }
@@ -268,6 +270,7 @@ impl App {
             KeySurface::Editor => {
                 vec![KeyContext::text_edit(true, false), KeyContext::global()]
             }
+            KeySurface::Panel => vec![KeyContext::global()],
             KeySurface::FileTree if self.file_tree.pending_active() => vec![
                 // 新建条目输入态：单行编辑器先吃编辑键，未命中再落到文件树的
                 // 确认 / 取消，最后才是全局快捷键。

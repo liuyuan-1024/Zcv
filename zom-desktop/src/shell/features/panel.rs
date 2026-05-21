@@ -1,7 +1,15 @@
-//! Panel 功能身份与元数据映射。
+//! Panel 功能身份、元数据与共享运行态小件。
 //!
 //! 这里维护 desktop 第一版固定 panel 列表。具体 UI 仍在各功能目录内，`PanelId`
-//! 只负责把命令、布局与功能模块连接起来。
+//! 负责把命令、布局与功能模块连接起来；占位渲染和通用焦点宿主留在 panel
+//! 层内部，供仍处在骨架阶段的 panel 复用。
+
+use std::rc::Rc;
+
+use gpui::{AnyElement, Div, FocusHandle, Window, div, prelude::*};
+
+use crate::shell::shared::theme::{color, typography};
+use crate::shell::{KeyRequest, normalized_chord};
 
 /// 桌面端第一版固定的 panel 列表（手册 20.10）。
 ///
@@ -84,4 +92,46 @@ impl PanelId {
         PanelId::Debug,
         PanelId::KeyboardShortcuts,
     ];
+}
+
+pub(super) fn render_focus_host(
+    focus: &FocusHandle,
+    key_request: &KeyRequest,
+    body: AnyElement,
+) -> Div {
+    let key_request = Rc::clone(key_request);
+
+    div()
+        .size_full()
+        .track_focus(focus)
+        .tab_index(0)
+        .on_key_down(move |event, window, cx| {
+            if key_request(normalized_chord(&event.keystroke), window, cx) {
+                cx.stop_propagation();
+            }
+        })
+        .child(body)
+}
+
+/// 第一版骨架阶段的 panel 占位体。真实 panel 接入自己的 UI 后不再使用它。
+pub(super) fn placeholder(hint: &'static str) -> Div {
+    div().flex().flex_col().size_full().child(
+        div()
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(typography::ui())
+            .text_color(color::gray::g60())
+            .child(hint),
+    )
+}
+
+pub(crate) fn focus_panel_handle(focus: FocusHandle, window: &mut Window, on_next_frame: bool) {
+    window.focus(&focus);
+    if on_next_frame {
+        window.on_next_frame(move |window, _| {
+            window.focus(&focus);
+        });
+    }
 }

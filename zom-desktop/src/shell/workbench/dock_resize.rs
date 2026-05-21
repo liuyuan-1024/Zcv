@@ -34,12 +34,14 @@ pub(in crate::shell::workbench) type DockResizeRequest =
 #[derive(Clone, Copy)]
 pub(crate) struct DockResizeBounds {
     pub(crate) width: Pixels,
+    pub(crate) body_height: Pixels,
 }
 
 impl DockResizeBounds {
-    pub(crate) fn from_viewport(viewport_width: Pixels) -> Self {
+    pub(crate) fn from_viewport(viewport_width: Pixels, viewport_height: Pixels) -> Self {
         Self {
             width: viewport_width,
+            body_height: body_height_from_viewport(viewport_height),
         }
     }
 }
@@ -105,14 +107,14 @@ impl DockResize {
     ) -> Option<DockResizeUpdate> {
         let drag = self.active_drag?;
         let delta = position - drag.start_position;
-        let size = match drag.area {
-            DockAreaId::Left => drag.start_size + delta.x,
-            DockAreaId::Right => drag.start_size - delta.x,
-            DockAreaId::Bottom => drag.start_size - delta.y,
+        let (size, max_size) = match drag.area {
+            DockAreaId::Left => (drag.start_size + delta.x, bounds.width),
+            DockAreaId::Right => (drag.start_size - delta.x, bounds.width),
+            DockAreaId::Bottom => (drag.start_size - delta.y, bounds.body_height),
         };
         Some(DockResizeUpdate {
             area: drag.area,
-            size: clamp_size(size, bounds),
+            size: clamp_size(size, max_size),
         })
     }
 
@@ -121,15 +123,20 @@ impl DockResize {
     }
 }
 
-fn clamp_size(size: Pixels, bounds: DockResizeBounds) -> Pixels {
+fn clamp_size(size: Pixels, max_extent: Pixels) -> Pixels {
     let min_size = theme::space::s12();
-    let max_size = bounds.width - theme::space::s12();
+    let max_size = max_extent - theme::space::s12();
     let max_size = if max_size < min_size {
         min_size
     } else {
         max_size
     };
     size.clamp(min_size, max_size)
+}
+
+fn body_height_from_viewport(viewport_height: Pixels) -> Pixels {
+    let bar_height = theme::typography::ui_line() + theme::space::s4() + theme::space::s4();
+    viewport_height - bar_height - bar_height
 }
 
 pub(crate) fn render_handle(area: DockAreaId, resize: DockResizeRequest) -> AnyElement {

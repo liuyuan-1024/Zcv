@@ -158,7 +158,7 @@ fn dock_resize_drag_should_follow_edge_direction() {
 #[test]
 fn bottom_dock_resize_should_be_clamped_to_body_height() {
     let mut workbench = WorkbenchController::new();
-    let bounds = DockResizeBounds::from_viewport(px(800.0));
+    let bounds = resize_bounds(px(800.0));
 
     workbench.handle_dock_resize(
         DockResizeEvent::Start {
@@ -187,7 +187,5 @@ fn bottom_dock_resize_should_be_clamped_to_body_height() {
 }
 
 fn resize_bounds(viewport_width: Pixels) -> DockResizeBounds {
-    DockResizeBounds {
-        width: viewport_width,
-    }
+    DockResizeBounds::from_viewport(viewport_width, px(600.0))
 }

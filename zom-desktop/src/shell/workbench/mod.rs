@@ -150,7 +150,7 @@ fn render_body(
 fn dock_resize_request(workbench: Rc<RefCell<WorkbenchController>>) -> DockResizeRequest {
     Rc::new(move |event, window, _cx| {
         let viewport_size = window.viewport_size();
-        let bounds = DockResizeBounds::from_viewport(viewport_size.width);
+        let bounds = DockResizeBounds::from_viewport(viewport_size.width, viewport_size.height);
         let dragging = matches!(event, DockResizeEvent::Drag { .. });
         workbench.borrow_mut().handle_dock_resize(event, bounds);
         if dragging {

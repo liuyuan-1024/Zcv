@@ -5,10 +5,10 @@
 use gpui::{Context, Div, FocusHandle, IntoElement};
 
 use crate::shell::KeyRequest;
-
-use super::panel;
+use crate::shell::workbench::docks::{placeholder, render_focus_host};
 
 pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/project_search.svg";
+pub(crate) const PANEL_TITLE: &str = "项目搜索";
 
 #[derive(Clone)]
 pub(crate) struct ProjectSearchRuntime {
@@ -27,10 +27,10 @@ impl ProjectSearchRuntime {
     }
 
     pub(crate) fn render(&self, key_request: &KeyRequest) -> Div {
-        panel::render_focus_host(
+        render_focus_host(
             &self.focus,
             key_request,
-            panel::placeholder("项目搜索占位中").into_any_element(),
+            placeholder("项目搜索占位中").into_any_element(),
         )
     }
 }

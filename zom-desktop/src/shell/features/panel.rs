@@ -1,15 +1,10 @@
-//! Panel 功能身份、元数据与共享运行态小件。
+//! Panel 功能身份与元数据。
 //!
 //! 这里维护 desktop 第一版固定 panel 列表。具体 UI 仍在各功能目录内，`PanelId`
-//! 负责把命令、布局与功能模块连接起来；占位渲染和通用焦点宿主留在 panel
-//! 层内部，供仍处在骨架阶段的 panel 复用。
+//! 负责把命令、布局与功能模块连接起来。承载小件（焦点宿主、骨架占位）属于
+//! workbench 的 panel 框架，见 `workbench::docks`。
 
-use std::rc::Rc;
-
-use gpui::{AnyElement, Div, FocusHandle, Window, div, prelude::*};
-
-use crate::shell::shared::theme::{color, typography};
-use crate::shell::{KeyRequest, normalized_chord};
+use gpui::{FocusHandle, Window};
 
 /// 桌面端第一版固定的 panel 列表（手册 20.10）。
 ///
@@ -41,6 +36,24 @@ impl PanelId {
             PanelId::Terminal => terminal::PANEL_ICON,
             PanelId::Debug => debug::PANEL_ICON,
             PanelId::KeyboardShortcuts => keyboard_shortcuts::PANEL_ICON,
+        }
+    }
+
+    /// 该 panel 的显示名（bar tooltip / 菜单文案）。真理源是各 panel 模块的
+    /// `PANEL_TITLE` 常量 —— 名字属于功能本身，不由承载它的 bar 重新描述。
+    pub(crate) fn title(self) -> &'static str {
+        use super::{
+            debug, file_tree, keyboard_shortcuts, outline, project_search, terminal,
+            version_control,
+        };
+        match self {
+            PanelId::FileTree => file_tree::PANEL_TITLE,
+            PanelId::VersionControl => version_control::PANEL_TITLE,
+            PanelId::Outline => outline::PANEL_TITLE,
+            PanelId::ProjectSearch => project_search::PANEL_TITLE,
+            PanelId::Terminal => terminal::PANEL_TITLE,
+            PanelId::Debug => debug::PANEL_TITLE,
+            PanelId::KeyboardShortcuts => keyboard_shortcuts::PANEL_TITLE,
         }
     }
 
@@ -92,39 +105,6 @@ impl PanelId {
         PanelId::Debug,
         PanelId::KeyboardShortcuts,
     ];
-}
-
-pub(super) fn render_focus_host(
-    focus: &FocusHandle,
-    key_request: &KeyRequest,
-    body: AnyElement,
-) -> Div {
-    let key_request = Rc::clone(key_request);
-
-    div()
-        .size_full()
-        .track_focus(focus)
-        .tab_index(0)
-        .on_key_down(move |event, window, cx| {
-            if key_request(normalized_chord(&event.keystroke), window, cx) {
-                cx.stop_propagation();
-            }
-        })
-        .child(body)
-}
-
-/// 第一版骨架阶段的 panel 占位体。真实 panel 接入自己的 UI 后不再使用它。
-pub(super) fn placeholder(hint: &'static str) -> Div {
-    div().flex().flex_col().size_full().child(
-        div()
-            .flex_1()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_size(typography::ui())
-            .text_color(color::gray::g60())
-            .child(hint),
-    )
 }
 
 pub(crate) fn focus_panel_handle(focus: FocusHandle, window: &mut Window, on_next_frame: bool) {

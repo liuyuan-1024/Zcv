@@ -5,10 +5,10 @@
 use gpui::{Context, Div, FocusHandle, IntoElement};
 
 use crate::shell::KeyRequest;
-
-use super::panel;
+use crate::shell::workbench::docks::{placeholder, render_focus_host};
 
 pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/terminal.svg";
+pub(crate) const PANEL_TITLE: &str = "终端";
 
 #[derive(Clone)]
 pub(crate) struct TerminalRuntime {
@@ -27,10 +27,10 @@ impl TerminalRuntime {
     }
 
     pub(crate) fn render(&self, key_request: &KeyRequest) -> Div {
-        panel::render_focus_host(
+        render_focus_host(
             &self.focus,
             key_request,
-            panel::placeholder("终端占位中").into_any_element(),
+            placeholder("终端占位中").into_any_element(),
         )
     }
 }

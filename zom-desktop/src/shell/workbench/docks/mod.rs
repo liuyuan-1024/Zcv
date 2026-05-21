@@ -11,4 +11,4 @@ pub(crate) mod right;
 
 use frame::{DockEdge, dock_frame};
 
-pub(crate) use panel_host::{PanelContext, PanelHost};
+pub(crate) use panel_host::{PanelContext, PanelHost, placeholder, render_focus_host};

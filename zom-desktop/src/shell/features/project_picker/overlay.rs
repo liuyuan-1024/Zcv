@@ -20,7 +20,7 @@ pub(crate) fn render(open_local_project: ActionRequest) -> Div {
             div()
                 .text_size(typography::ui())
                 .text_color(color::gray::g95())
-                .child("切换项目"),
+                .child(super::FEATURE_TITLE),
         )
         .child(
             div()

@@ -10,6 +10,7 @@ use gpui::{AnyElement, Context, FocusHandle, IntoElement};
 use crate::shell::KeyRequest;
 
 pub(crate) mod debug;
+pub(crate) mod diagnostics;
 pub(crate) mod file_tree;
 pub(crate) mod keyboard_shortcuts;
 pub(crate) mod language_servers;
@@ -17,6 +18,7 @@ pub(crate) mod outline;
 mod panel;
 pub(crate) mod project_picker;
 pub(crate) mod project_search;
+pub(crate) mod settings;
 pub(crate) mod terminal;
 pub(crate) mod version_control;
 

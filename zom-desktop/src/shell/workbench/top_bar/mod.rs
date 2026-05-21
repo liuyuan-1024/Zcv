@@ -10,6 +10,7 @@
 use gpui::{AnyElement, Div, Entity, Window, div, prelude::*};
 
 use crate::shell::ShortcutLookup;
+use crate::shell::features::{project_picker, settings};
 use crate::shell::workbench::element_ids;
 use crate::shell::workbench::overlays::{AnchorRegistry, track_anchor};
 use crate::shell::workbench::state::WorkbenchState;
@@ -20,15 +21,12 @@ mod window_controls;
 pub(crate) use window_controls::WindowControlsHandlers;
 use window_controls::render_window_controls;
 
-use zom_command::commands::{settings, workspace as workspace_commands};
+use zom_command::commands::{settings as settings_commands, workspace as workspace_commands};
 
-const WORKSPACE_TOOLTIP: &str = "切换项目";
 const WORKSPACE_COMMAND: &str = workspace_commands::SHOW_PROJECTS_PICKER;
 
 const SETTINGS_ID: &str = "top-bar.settings";
-const SETTINGS_ICON: &str = "icons/top_bar/settings.svg";
-const SETTINGS_TOOLTIP: &str = "设置";
-const SETTINGS_COMMAND: &str = settings::OPEN;
+const SETTINGS_COMMAND: &str = settings_commands::OPEN;
 
 pub(crate) fn render(
     state: &WorkbenchState,
@@ -74,7 +72,7 @@ fn leading_slots(
     let workspace = Glyph::text(
         element_ids::TOP_BAR_WORKSPACE,
         project_title,
-        WORKSPACE_TOOLTIP,
+        project_picker::FEATURE_TITLE,
     )
     .command(WORKSPACE_COMMAND)
     .active(workspace_active)
@@ -88,7 +86,7 @@ fn leading_slots(
 
 fn trailing_slots(shortcuts: &ShortcutLookup) -> Vec<AnyElement> {
     vec![
-        Glyph::icon(SETTINGS_ID, SETTINGS_ICON, SETTINGS_TOOLTIP)
+        Glyph::icon(SETTINGS_ID, settings::BAR_ICON, settings::FEATURE_TITLE)
             .command(SETTINGS_COMMAND)
             .render(shortcuts),
     ]

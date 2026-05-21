@@ -19,7 +19,7 @@ pub(crate) fn render() -> Div {
             div()
                 .text_size(typography::ui())
                 .text_color(color::gray::g95())
-                .child("语言服务器"),
+                .child(super::FEATURE_TITLE),
         )
         .child(
             div()

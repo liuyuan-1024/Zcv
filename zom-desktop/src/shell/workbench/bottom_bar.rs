@@ -8,10 +8,12 @@
 
 use gpui::{AnyElement, Div, Entity, IntoElement, div, prelude::*};
 
-use zom_command::commands::{diagnostics, language_server as language_server_commands};
+use zom_command::commands::{
+    diagnostics as diagnostic_commands, language_server as language_server_commands,
+};
 
 use crate::shell::ShortcutLookup;
-use crate::shell::features::PanelId;
+use crate::shell::features::{PanelId, diagnostics, language_servers};
 use crate::shell::workbench::docks::{bottom, left, right};
 use crate::shell::workbench::element_ids;
 use crate::shell::workbench::overlays::{AnchorRegistry, track_anchor};
@@ -20,9 +22,7 @@ use crate::shell::workbench::state::{DockAreaId, DockState, EditorState, Workben
 use super::bars::{BarEdge, BarRegionAlign, Glyph, align_bar_region, bar_divider, bar_frame};
 
 const DIAGNOSTICS_ID: &str = "bottom-bar.diagnostics";
-const DIAGNOSTICS_ICON: &str = "icons/bottom_bar/diagnostics.svg";
-const DIAGNOSTICS_COMMAND: &str = diagnostics::SHOW_PROBLEMS;
-const LSP_ICON: &str = "icons/bottom_bar/language_server.svg";
+const DIAGNOSTICS_COMMAND: &str = diagnostic_commands::SHOW_PROBLEMS;
 const LSP_COMMAND: &str = language_server_commands::OPEN_STATUS;
 const CURSOR_POSITION_ID: &str = "bottom-bar.cursor-position";
 const LANGUAGE_ID: &str = "bottom-bar.language";
@@ -91,7 +91,7 @@ fn editor_status_slots(editor: &EditorState, shortcuts: &ShortcutLookup) -> Vec<
             "光标位置（行:列）",
         )
         .render(shortcuts),
-        Glyph::text(LANGUAGE_ID, language_label(&active.title), "文件语言").render(shortcuts),
+        Glyph::text(LANGUAGE_ID, active.language.clone(), "文件语言").render(shortcuts),
     ]
 }
 
@@ -103,45 +103,6 @@ fn cursor_line_column(text: &str, cursor_byte: usize) -> (usize, usize) {
     let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
     let column = before[line_start..].chars().count() + 1;
     (line, column)
-}
-
-/// 由文件名后缀推断语言显示名；未知后缀回退为大写后缀，无后缀为「纯文本」。
-fn language_label(title: &str) -> String {
-    match std::path::Path::new(title)
-        .extension()
-        .and_then(|ext| ext.to_str())
-    {
-        Some("rs") => "Rust".to_string(),
-        Some("toml") | Some("lock") => "TOML".to_string(),
-        Some("md") | Some("markdown") => "Markdown".to_string(),
-        Some("json") => "JSON".to_string(),
-        Some("js") | Some("mjs") | Some("cjs") => "JavaScript".to_string(),
-        Some("ts") => "TypeScript".to_string(),
-        Some("jsx") => "JSX".to_string(),
-        Some("tsx") => "TSX".to_string(),
-        Some("html") | Some("htm") => "HTML".to_string(),
-        Some("css") => "CSS".to_string(),
-        Some("scss") | Some("sass") => "Sass".to_string(),
-        Some("yaml") | Some("yml") => "YAML".to_string(),
-        Some("xml") => "XML".to_string(),
-        Some("py") => "Python".to_string(),
-        Some("go") => "Go".to_string(),
-        Some("c") | Some("h") => "C".to_string(),
-        Some("cpp") | Some("cc") | Some("cxx") | Some("hpp") => "C++".to_string(),
-        Some("java") => "Java".to_string(),
-        Some("kt") | Some("kts") => "Kotlin".to_string(),
-        Some("swift") => "Swift".to_string(),
-        Some("rb") => "Ruby".to_string(),
-        Some("php") => "PHP".to_string(),
-        Some("sh") | Some("bash") | Some("zsh") => "Shell".to_string(),
-        Some("sql") => "SQL".to_string(),
-        Some("ini") | Some("conf") | Some("cfg") => "INI".to_string(),
-        Some("txt") | Some("text") => "Text".to_string(),
-        Some("csv") => "CSV".to_string(),
-        Some("svg") => "SVG".to_string(),
-        Some(other) => other.to_uppercase(),
-        None => "Unknown".to_string(),
-    }
 }
 
 /// 把多个组拼起来，组与组之间插入一条 `bar_divider`。空组直接跳过。
@@ -181,12 +142,8 @@ fn dock_state_for(area: DockAreaId, state: &WorkbenchState) -> &DockState {
 fn panel_slot(panel: PanelId, dock_state: &DockState, shortcuts: &ShortcutLookup) -> AnyElement {
     let active = dock_state.is_visible() && dock_state.active_panel() == Some(panel);
 
-    Glyph::icon(
-        panel_glyph_id(panel),
-        panel.icon_path(),
-        panel_tooltip(panel),
-    )
-    .command(panel.toggle_command_id())
+    Glyph::icon(panel_glyph_id(panel), panel.icon_path(), panel.title())
+        .command(panel.toggle_command_id())
     .active(active)
     .render(shortcuts)
 }
@@ -197,19 +154,6 @@ fn panel_glyph_id(panel: PanelId) -> gpui::SharedString {
     format!("bottom-bar.{}", panel.command_str_id()).into()
 }
 
-/// Panel 图标的 tooltip 文案。只有 BottomBar 用，所以集中在这里、不外抽。
-fn panel_tooltip(panel: PanelId) -> &'static str {
-    match panel {
-        PanelId::FileTree => "文件树",
-        PanelId::VersionControl => "版本管理",
-        PanelId::Outline => "大纲",
-        PanelId::ProjectSearch => "项目搜索",
-        PanelId::Terminal => "终端",
-        PanelId::Debug => "调试",
-        PanelId::KeyboardShortcuts => "快捷键",
-    }
-}
-
 fn lsp_slot(
     connected: bool,
     overlay_active: bool,
@@ -218,8 +162,8 @@ fn lsp_slot(
 ) -> AnyElement {
     let glyph = Glyph::icon(
         element_ids::BOTTOM_BAR_LANGUAGE_SERVER,
-        LSP_ICON,
-        "语言服务器",
+        language_servers::BAR_ICON,
+        language_servers::FEATURE_TITLE,
     )
     .command(LSP_COMMAND)
     .active(connected || overlay_active)
@@ -234,7 +178,12 @@ fn lsp_slot(
 }
 
 fn diagnostics_slot(count: u32, shortcuts: &ShortcutLookup) -> AnyElement {
-    Glyph::icon_text(DIAGNOSTICS_ID, DIAGNOSTICS_ICON, count.to_string(), "诊断")
-        .command(DIAGNOSTICS_COMMAND)
+    Glyph::icon_text(
+        DIAGNOSTICS_ID,
+        diagnostics::BAR_ICON,
+        count.to_string(),
+        diagnostics::FEATURE_TITLE,
+    )
+    .command(DIAGNOSTICS_COMMAND)
         .render(shortcuts)
 }

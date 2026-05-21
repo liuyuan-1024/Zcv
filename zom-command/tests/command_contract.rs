@@ -1,16 +1,18 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use zom_command::commands::editor::{
-    self, InsertTextArgs, MoveSelectionArgs, ReplaceSelectionArgs,
+use zom_command::commands::{
+    editor::{self, InsertTextArgs, MoveSelectionArgs, ReplaceSelectionArgs},
+    file_tree,
 };
 use zom_command::{
     Command, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId, CommandQueue,
-    CommandRegistry, EffectQueue, KeyBinding, KeyChord, Keymap, KeymapResolution, NoArgs,
+    CommandRegistry, EffectQueue, FileTreeKeyMode, HostEffect, KeyBinding, KeyBindingContext,
+    KeyChord, KeyContext, Keymap, KeymapResolution, NoArgs,
 };
 use zom_engine::{ByteOffset, Motion, MovementDirection, MovementUnit, Selection, SelectionSet};
 use zom_view::ViewSet;
-use zom_workspace::{BufferId, Workspace};
+use zom_workspace::{BufferId, EntryKind, Workspace};
 
 fn command_id(value: &str) -> CommandId {
     CommandId::new(value).unwrap()
@@ -18,6 +20,26 @@ fn command_id(value: &str) -> CommandId {
 
 fn key(value: &str) -> KeyChord {
     KeyChord::new(value).unwrap()
+}
+
+fn global_context() -> [KeyContext; 1] {
+    [KeyContext::global()]
+}
+
+fn text_edit_context() -> [KeyContext; 1] {
+    [KeyContext::text_edit(false, false)]
+}
+
+fn multiline_text_edit_context() -> [KeyContext; 1] {
+    [KeyContext::text_edit(true, false)]
+}
+
+fn composing_text_edit_context() -> [KeyContext; 1] {
+    [KeyContext::text_edit(false, true)]
+}
+
+fn file_tree_context(mode: FileTreeKeyMode) -> [KeyContext; 1] {
+    [KeyContext::file_tree(mode)]
 }
 
 fn byte(value: usize) -> ByteOffset {
@@ -53,6 +75,29 @@ fn run(
         effects: &mut effects,
     };
     CommandExecutor::new().run(registry, &mut context)
+}
+
+fn run_and_collect_effects(
+    registry: &CommandRegistry,
+    workspace: &mut Workspace,
+    views: &mut ViewSet,
+    calls: Vec<(&str, CommandArgs)>,
+) -> Result<Vec<HostEffect>, CommandError> {
+    let mut queue = CommandQueue::new();
+    for (id, args) in calls {
+        queue.dispatch(command_id(id), args);
+    }
+
+    let mut effects = EffectQueue::new();
+    let mut context = CommandContext {
+        workspace,
+        views,
+        focused_field: None,
+        queue: &mut queue,
+        effects: &mut effects,
+    };
+    CommandExecutor::new().run(registry, &mut context)?;
+    Ok(effects.drain())
 }
 
 fn text(workspace: &Workspace, buffer_id: BufferId) -> String {
@@ -382,11 +427,12 @@ fn editor_default_keymap_should_include_line_and_page_movement() {
     let mut registry = CommandRegistry::new();
     let mut keymap = Keymap::new();
     editor::install(&mut registry, &mut keymap);
+    let text_edit = text_edit_context();
 
     let (_, home_args) =
         editor::move_selection(MovementDirection::Previous, MovementUnit::LineEdge, false);
     assert_eq!(
-        keymap.resolve(&[key("home")], &[]),
+        keymap.resolve(&[key("home")], &text_edit),
         KeymapResolution::Matched {
             command: command_id(editor::MOVE_SELECTION),
             args: home_args,
@@ -396,7 +442,7 @@ fn editor_default_keymap_should_include_line_and_page_movement() {
     let (_, shift_end_args) =
         editor::move_selection(MovementDirection::Next, MovementUnit::LineEdge, true);
     assert_eq!(
-        keymap.resolve(&[key("shift-end")], &[]),
+        keymap.resolve(&[key("shift-end")], &text_edit),
         KeymapResolution::Matched {
             command: command_id(editor::MOVE_SELECTION),
             args: shift_end_args,
@@ -405,7 +451,7 @@ fn editor_default_keymap_should_include_line_and_page_movement() {
 
     let (_, up_args) = editor::move_selection(MovementDirection::Previous, Motion::LineStep, false);
     assert_eq!(
-        keymap.resolve(&[key("up")], &[]),
+        keymap.resolve(&[key("up")], &text_edit),
         KeymapResolution::Matched {
             command: command_id(editor::MOVE_SELECTION),
             args: up_args,
@@ -415,7 +461,7 @@ fn editor_default_keymap_should_include_line_and_page_movement() {
     let (_, shift_down_args) =
         editor::move_selection(MovementDirection::Next, Motion::LineStep, true);
     assert_eq!(
-        keymap.resolve(&[key("shift-down")], &[]),
+        keymap.resolve(&[key("shift-down")], &text_edit),
         KeymapResolution::Matched {
             command: command_id(editor::MOVE_SELECTION),
             args: shift_down_args,
@@ -429,7 +475,7 @@ fn editor_default_keymap_should_include_line_and_page_movement() {
         false,
     );
     assert_eq!(
-        keymap.resolve(&[key("pagedown")], &[]),
+        keymap.resolve(&[key("pagedown")], &text_edit),
         KeymapResolution::Matched {
             command: command_id(editor::MOVE_SELECTION),
             args: pagedown_args,
@@ -442,30 +488,44 @@ fn editor_default_keymap_should_include_newline_indent_and_outdent() {
     let mut registry = CommandRegistry::new();
     let mut keymap = Keymap::new();
     editor::install(&mut registry, &mut keymap);
+    let text_edit = text_edit_context();
+    let multiline = multiline_text_edit_context();
+    let composing = composing_text_edit_context();
 
     assert_eq!(
-        keymap.resolve(&[key("enter")], &[]),
+        keymap.resolve(&[key("enter")], &multiline),
         KeymapResolution::Matched {
             command: command_id(editor::INSERT_NEWLINE),
             args: CommandArgs::new(),
         }
     );
     assert_eq!(
-        keymap.resolve(&[key("return")], &[]),
+        keymap.resolve(&[key("return")], &multiline),
         KeymapResolution::Matched {
             command: command_id(editor::INSERT_NEWLINE),
             args: CommandArgs::new(),
         }
     );
     assert_eq!(
-        keymap.resolve(&[key("tab")], &[]),
+        keymap.resolve(&[key("enter")], &text_edit),
+        KeymapResolution::NoMatch
+    );
+    assert_eq!(
+        keymap.resolve(&[key("enter")], &composing),
+        KeymapResolution::Matched {
+            command: command_id(editor::IME_CONFIRM),
+            args: CommandArgs::new(),
+        }
+    );
+    assert_eq!(
+        keymap.resolve(&[key("tab")], &text_edit),
         KeymapResolution::Matched {
             command: command_id(editor::INDENT),
             args: CommandArgs::new(),
         }
     );
     assert_eq!(
-        keymap.resolve(&[key("shift-tab")], &[]),
+        keymap.resolve(&[key("shift-tab")], &text_edit),
         KeymapResolution::Matched {
             command: command_id(editor::OUTDENT),
             args: CommandArgs::new(),
@@ -474,34 +534,135 @@ fn editor_default_keymap_should_include_newline_indent_and_outdent() {
 }
 
 #[test]
-fn keymap_should_resolve_prefixes_matches_contexts_and_overrides() {
+fn file_tree_keymap_should_share_chords_with_editor_by_context() {
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+    file_tree::install(&mut registry, &mut keymap);
+
+    let text_edit = text_edit_context();
+    let file_tree_navigate = file_tree_context(FileTreeKeyMode::Navigate);
+    let pending_name = [
+        KeyContext::text_edit(false, false),
+        KeyContext::file_tree(FileTreeKeyMode::PendingName),
+        KeyContext::global(),
+    ];
+    let composing_pending_name = [
+        KeyContext::text_edit(false, true),
+        KeyContext::file_tree(FileTreeKeyMode::PendingName),
+        KeyContext::global(),
+    ];
+
+    let (_, editor_up_args) =
+        editor::move_selection(MovementDirection::Previous, Motion::LineStep, false);
+    assert_eq!(
+        keymap.resolve(&[key("up")], &text_edit),
+        KeymapResolution::Matched {
+            command: command_id(editor::MOVE_SELECTION),
+            args: editor_up_args,
+        }
+    );
+    assert_eq!(
+        keymap.resolve(&[key("up")], &file_tree_navigate),
+        KeymapResolution::Matched {
+            command: command_id(file_tree::MOVE_SELECTION),
+            args: file_tree::MoveSelectionArgs { delta: -1 }.into(),
+        }
+    );
+    assert_eq!(
+        keymap.resolve(&[key("enter")], &pending_name),
+        KeymapResolution::Matched {
+            command: command_id(file_tree::COMMIT_NEW_ENTRY),
+            args: CommandArgs::new(),
+        }
+    );
+    assert_eq!(
+        keymap.resolve(&[key("enter")], &composing_pending_name),
+        KeymapResolution::Matched {
+            command: command_id(editor::IME_CONFIRM),
+            args: CommandArgs::new(),
+        }
+    );
+}
+
+#[test]
+fn file_tree_commands_should_emit_host_effects() {
+    let (mut workspace, mut views, _) = setup("");
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    file_tree::install(&mut registry, &mut keymap);
+
+    let effects = run_and_collect_effects(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![
+            (
+                file_tree::MOVE_SELECTION,
+                file_tree::MoveSelectionArgs { delta: 1 }.into(),
+            ),
+            (
+                file_tree::BEGIN_NEW_ENTRY,
+                file_tree::BeginNewEntryArgs {
+                    kind: EntryKind::Directory,
+                }
+                .into(),
+            ),
+            (file_tree::CANCEL_NEW_ENTRY, CommandArgs::new()),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        effects,
+        vec![
+            HostEffect::FileTreeMoveSelection(1),
+            HostEffect::FileTreeBeginNewEntry(EntryKind::Directory),
+            HostEffect::FileTreeCancelNewEntry,
+        ]
+    );
+}
+
+#[test]
+fn keymap_should_resolve_prefixes_and_prioritized_contexts() {
     let mut keymap = Keymap::new();
     keymap.bind(KeyBinding {
         sequence: vec![key("ctrl+x"), key("s")],
         command: command_id("file.save"),
         args: CommandArgs::new(),
-        when: Some("editor".to_string()),
+        context: KeyBindingContext::text_edit(),
     });
     keymap.bind(KeyBinding {
         sequence: vec![key("ctrl+x"), key("c")],
         command: command_id("editor.copy"),
         args: CommandArgs::new().with("kind", "copy"),
-        when: None,
+        context: KeyBindingContext::global(),
     });
     keymap.bind(KeyBinding {
         sequence: vec![key("ctrl+x"), key("c")],
         command: command_id("editor.cancel"),
         args: CommandArgs::new().with("kind", "cancel"),
-        when: None,
+        context: KeyBindingContext::file_tree(FileTreeKeyMode::Navigate),
     });
+    assert!(matches!(
+        keymap.try_bind(KeyBinding {
+            sequence: vec![key("ctrl+x"), key("c")],
+            command: command_id("editor.duplicate_copy"),
+            args: CommandArgs::new(),
+            context: KeyBindingContext::global(),
+        }),
+        Err(CommandError::DuplicateKeyBinding { .. })
+    ));
 
-    let editor_contexts = vec!["editor".to_string()];
+    let editor_contexts = text_edit_context();
+    let global_contexts = global_context();
+    let file_tree_contexts = file_tree_context(FileTreeKeyMode::Navigate);
     assert_eq!(
         keymap.resolve(&[key("ctrl+x")], &editor_contexts),
         KeymapResolution::Pending
     );
     assert_eq!(
-        keymap.resolve(&[key("ctrl+x"), key("s")], &[]),
+        keymap.resolve(&[key("ctrl+x"), key("s")], &global_contexts),
         KeymapResolution::NoMatch
     );
     assert_eq!(
@@ -512,7 +673,14 @@ fn keymap_should_resolve_prefixes_matches_contexts_and_overrides() {
         }
     );
     assert_eq!(
-        keymap.resolve(&[key("ctrl+x"), key("c")], &[]),
+        keymap.resolve(&[key("ctrl+x"), key("c")], &global_contexts),
+        KeymapResolution::Matched {
+            command: command_id("editor.copy"),
+            args: CommandArgs::new().with("kind", "copy"),
+        }
+    );
+    assert_eq!(
+        keymap.resolve(&[key("ctrl+x"), key("c")], &file_tree_contexts),
         KeymapResolution::Matched {
             command: command_id("editor.cancel"),
             args: CommandArgs::new().with("kind", "cancel"),
@@ -521,5 +689,40 @@ fn keymap_should_resolve_prefixes_matches_contexts_and_overrides() {
     assert_eq!(
         keymap.resolve(&[key("ctrl+z")], &editor_contexts),
         KeymapResolution::NoMatch
+    );
+}
+
+#[test]
+fn keymap_should_reject_overlapping_but_allow_disjoint_text_edit_contexts() {
+    let mut keymap = Keymap::new();
+    keymap.bind(KeyBinding {
+        sequence: vec![key("enter")],
+        command: command_id("editor.a"),
+        args: CommandArgs::new(),
+        context: KeyBindingContext::text_edit(),
+    });
+
+    // text_edit 与 text_edit_multiline 的 composition 都是 Inactive（后者只多了
+    // requires_newline 过滤），同一序列会被同一运行时上下文同时命中——重叠即冲突。
+    assert!(matches!(
+        keymap.try_bind(KeyBinding {
+            sequence: vec![key("enter")],
+            command: command_id("editor.b"),
+            args: CommandArgs::new(),
+            context: KeyBindingContext::text_edit_multiline(),
+        }),
+        Err(CommandError::DuplicateKeyBinding { .. })
+    ));
+
+    // composition 互斥（Inactive vs Active）——上下文不重叠，同一序列可并存。
+    assert!(
+        keymap
+            .try_bind(KeyBinding {
+                sequence: vec![key("enter")],
+                command: command_id("editor.c"),
+                args: CommandArgs::new(),
+                context: KeyBindingContext::text_edit_composition(),
+            })
+            .is_ok()
     );
 }

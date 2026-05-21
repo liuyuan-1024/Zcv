@@ -1,4 +1,4 @@
-//! `app.quit` / `window.minimize` / `window.toggle_maximize` 命令目录。
+//! `window.*` 命令目录 —— 退出 / 最小化 / 最大化。
 //!
 //! handler 不直接操作窗口 —— 接触 GPUI 会让 zom-command 反向依赖平台层。
 //! 取而代之，emit [`HostEffect`]，宿主翻译成具体 API 调用。
@@ -7,7 +7,7 @@ use crate::{
     CommandArgs, CommandId, CommandOutcome, CommandRegistry, HostEffect, Invocation, Keymap, NoArgs,
 };
 
-pub const QUIT: &str = "app.quit";
+pub const QUIT: &str = "window.quit";
 pub const MINIMIZE: &str = "window.minimize";
 pub const TOGGLE_MAXIMIZE: &str = "window.toggle_maximize";
 

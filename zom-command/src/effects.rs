@@ -13,6 +13,8 @@
 //! 全部直接操作 `CommandContext { workspace, views, queue }`，无需经过
 //! HostEffect —— 这些资源本来就在 zom-command 看得到。
 
+use zom_workspace::EntryKind;
+
 /// 命令处理器请求宿主执行的副作用。**按域分组**，加新变体时贴在对应组下。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HostEffect {
@@ -43,6 +45,24 @@ pub enum HostEffect {
     ShowLanguageServers,
     /// 关闭当前悬浮层。
     DismissOverlay,
+
+    // ===== File tree =====
+    /// 移动文件树选中行。
+    FileTreeMoveSelection(isize),
+    /// 折叠当前目录或跳到父目录。
+    FileTreeCollapseOrParent,
+    /// 展开当前目录或进入子项。
+    FileTreeExpandOrInto,
+    /// 激活当前文件树条目。
+    FileTreeActivate,
+    /// 把焦点交回主编辑区。
+    FileTreeFocusEditor,
+    /// 开始新建文件 / 目录。
+    FileTreeBeginNewEntry(EntryKind),
+    /// 提交正在输入的新建条目。
+    FileTreeCommitNewEntry,
+    /// 取消正在输入的新建条目。
+    FileTreeCancelNewEntry,
 }
 
 /// `CommandContext` 内的 effect 缓冲。

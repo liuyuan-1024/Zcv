@@ -17,8 +17,8 @@ use zom_engine::{ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
 
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    Invocation, Keymap, NoArgs, command_execution_failed, parse_optional_bool, reject_unknown_args,
-    required_arg,
+    Invocation, KeyBindingContext, Keymap, NoArgs, active_view_buffer_id, command_execution_failed,
+    parse_optional_bool, reject_unknown_args, required_arg,
 };
 use zom_view::ViewId;
 
@@ -39,8 +39,56 @@ pub const REDO: &str = "editor.redo";
 pub const MOVE_SELECTION: &str = "editor.move_selection";
 pub const IME_COMMIT: &str = "editor.ime_commit";
 pub const IME_CANCEL: &str = "editor.ime_cancel";
+pub const IME_CONFIRM: &str = "editor.ime_confirm";
 pub const SELECT_TAB: &str = "editor.select_tab";
 pub const CLOSE_TAB: &str = "editor.close_tab";
+pub const SAVE: &str = "editor.save";
+
+/// 文本编辑器当前能力。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TextEditKeyContext {
+    pub accepts_newline: bool,
+    pub composing: bool,
+}
+
+/// 文本编辑命令的键位适用条件。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TextEditBindingContext {
+    pub requires_newline: bool,
+    pub composition: CompositionBinding,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompositionBinding {
+    Any,
+    Active,
+    Inactive,
+}
+
+impl CompositionBinding {
+    /// 两个组合态约束能否被同一运行时态同时满足。`Active` 与 `Inactive`
+    /// 互斥；含 `Any` 的组合都有交集。
+    pub(crate) fn overlaps(self, other: Self) -> bool {
+        !matches!(
+            (self, other),
+            (Self::Active, Self::Inactive) | (Self::Inactive, Self::Active)
+        )
+    }
+}
+
+pub(crate) fn text_edit_context_matches(
+    binding: TextEditBindingContext,
+    active: TextEditKeyContext,
+) -> bool {
+    if binding.requires_newline && !active.accepts_newline {
+        return false;
+    }
+    match binding.composition {
+        CompositionBinding::Any => true,
+        CompositionBinding::Active => active.composing,
+        CompositionBinding::Inactive => !active.composing,
+    }
+}
 
 // ==================================================
 // Typed builders 工具
@@ -261,12 +309,21 @@ pub fn ime_cancel() -> Invocation {
     (cid(IME_CANCEL), CommandArgs::new())
 }
 
+pub fn ime_confirm() -> Invocation {
+    (cid(IME_CONFIRM), CommandArgs::new())
+}
+
 pub fn select_tab(target: SelectTabTarget) -> Invocation {
     (cid(SELECT_TAB), SelectTabArgs { target }.into())
 }
 
 pub fn close_tab() -> Invocation {
     (cid(CLOSE_TAB), CommandArgs::new())
+}
+
+/// 用于命令面板 / 菜单等以编程方式触发保存。键盘绑 `mod-s` 走 keymap 直派发。
+pub fn save() -> Invocation {
+    (cid(SAVE), CommandArgs::new())
 }
 
 // ==================================================
@@ -278,6 +335,10 @@ pub fn close_tab() -> Invocation {
 /// 默认键位采用逻辑修饰键（`mod / alt / shift`），平台投影在 UI 层完成；
 /// 见 `zom-desktop/src/shell/keymap_format.rs`。
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
+    let text_edit = KeyBindingContext::text_edit();
+    let text_edit_multiline = KeyBindingContext::text_edit_multiline();
+    let text_edit_composition = KeyBindingContext::text_edit_composition();
+
     // 没有默认键位的命令（文本输入走 IME；命令面板 / AI 直接调用）只 install 不 .key。
     registry.install(keymap, INSERT_TEXT, "插入文本", Box::new(run_insert_text));
     registry.install(
@@ -300,14 +361,14 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "插入换行",
             Box::new(run_insert_newline),
         )
-        .key("enter")
-        .key("return");
+        .key_in("enter", text_edit_multiline)
+        .key_in("return", text_edit_multiline);
     registry
         .install(keymap, INDENT, "增加缩进", Box::new(run_indent))
-        .key("tab");
+        .key_in("tab", text_edit);
     registry
         .install(keymap, OUTDENT, "减少缩进", Box::new(run_outdent))
-        .key("shift-tab");
+        .key_in("shift-tab", text_edit);
     registry
         .install(
             keymap,
@@ -315,7 +376,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "向后删除",
             Box::new(run_delete_backward),
         )
-        .key("backspace");
+        .key_in("backspace", text_edit);
     registry
         .install(
             keymap,
@@ -323,22 +384,33 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "向前删除",
             Box::new(run_delete_forward),
         )
-        .key("delete");
+        .key_in("delete", text_edit);
     registry
         .install(keymap, SELECT_ALL, "全选", Box::new(run_select_all))
-        .key("mod-a");
+        .key_in("mod-a", text_edit);
     registry
         .install(keymap, UNDO, "撤销", Box::new(run_undo))
-        .key("mod-z");
+        .key_in("mod-z", text_edit);
     registry
         .install(keymap, REDO, "重做", Box::new(run_redo))
-        .key("mod-shift-z");
-    registry.install(
-        keymap,
-        IME_CANCEL,
-        "取消输入法组合",
-        Box::new(run_ime_cancel),
-    );
+        .key_in("mod-shift-z", text_edit);
+    registry
+        .install(
+            keymap,
+            IME_CANCEL,
+            "取消输入法组合",
+            Box::new(run_ime_cancel),
+        )
+        .key_in("escape", text_edit_composition);
+    registry
+        .install(
+            keymap,
+            IME_CONFIRM,
+            "确认输入法组合",
+            Box::new(run_ime_confirm),
+        )
+        .key_in("enter", text_edit_composition)
+        .key_in("return", text_edit_composition);
 
     // 光标 / 选区的全部 移动 / 扩展 变体共用一条命令，按预设 args 区分。
     use MovementDirection::*;
@@ -350,51 +422,75 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "移动选区",
             Box::new(run_move_selection),
         )
-        .key_with("up", move_args(Previous, Motion::LineStep, false))
-        .key_with("down", move_args(Next, Motion::LineStep, false))
+        .key_with_in(
+            "up",
+            move_args(Previous, Motion::LineStep, false),
+            text_edit,
+        )
+        .key_with_in("down", move_args(Next, Motion::LineStep, false), text_edit)
         // pageup / pagedown：lines 暂用固定 20 作 fallback；
         // TODO: view 层 ViewportState 加 visible_lines 字段后，由 handler 从当前 view 注入真实值。
-        .key_with(
+        .key_with_in(
             "pageup",
             move_args(Previous, Motion::PageStep { lines: 20 }, false),
+            text_edit,
         )
-        .key_with(
+        .key_with_in(
             "pagedown",
             move_args(Next, Motion::PageStep { lines: 20 }, false),
+            text_edit,
         )
-        .key_with("left", move_args(Previous, Grapheme, false))
-        .key_with("right", move_args(Next, Grapheme, false))
-        .key_with("shift-up", move_args(Previous, Motion::LineStep, true))
-        .key_with("shift-down", move_args(Next, Motion::LineStep, true))
-        .key_with(
+        .key_with_in("left", move_args(Previous, Grapheme, false), text_edit)
+        .key_with_in("right", move_args(Next, Grapheme, false), text_edit)
+        .key_with_in(
+            "shift-up",
+            move_args(Previous, Motion::LineStep, true),
+            text_edit,
+        )
+        .key_with_in(
+            "shift-down",
+            move_args(Next, Motion::LineStep, true),
+            text_edit,
+        )
+        .key_with_in(
             "shift-pageup",
             move_args(Previous, Motion::PageStep { lines: 20 }, true),
+            text_edit,
         )
-        .key_with(
+        .key_with_in(
             "shift-pagedown",
             move_args(Next, Motion::PageStep { lines: 20 }, true),
+            text_edit,
         )
-        .key_with("shift-left", move_args(Previous, Grapheme, true))
-        .key_with("shift-right", move_args(Next, Grapheme, true))
-        .key_with("alt-left", move_args(Previous, Word, false))
-        .key_with("alt-right", move_args(Next, Word, false))
-        .key_with("alt-shift-left", move_args(Previous, Word, true))
-        .key_with("alt-shift-right", move_args(Next, Word, true))
-        .key_with("home", move_args(Previous, LineEdge, false))
-        .key_with("end", move_args(Next, LineEdge, false))
-        .key_with("shift-home", move_args(Previous, LineEdge, true))
-        .key_with("shift-end", move_args(Next, LineEdge, true));
+        .key_with_in("shift-left", move_args(Previous, Grapheme, true), text_edit)
+        .key_with_in("shift-right", move_args(Next, Grapheme, true), text_edit)
+        .key_with_in("alt-left", move_args(Previous, Word, false), text_edit)
+        .key_with_in("alt-right", move_args(Next, Word, false), text_edit)
+        .key_with_in("alt-shift-left", move_args(Previous, Word, true), text_edit)
+        .key_with_in("alt-shift-right", move_args(Next, Word, true), text_edit)
+        .key_with_in("home", move_args(Previous, LineEdge, false), text_edit)
+        .key_with_in("end", move_args(Next, LineEdge, false), text_edit)
+        .key_with_in("shift-home", move_args(Previous, LineEdge, true), text_edit)
+        .key_with_in("shift-end", move_args(Next, LineEdge, true), text_edit);
 
     // 标签切换 / 关闭：键盘驱动，不接鼠标。
     // 下/上一个用 mod-l/h；mod-w 关当前。
     registry
         .install(keymap, SELECT_TAB, "切换标签", Box::new(run_select_tab))
-        .key_with("mod-l", select_tab_args(SelectTabTarget::Next))
-        .key_with("mod-h", select_tab_args(SelectTabTarget::Previous));
+        .key_with_in("mod-l", select_tab_args(SelectTabTarget::Next), text_edit)
+        .key_with_in(
+            "mod-h",
+            select_tab_args(SelectTabTarget::Previous),
+            text_edit,
+        );
 
     registry
         .install(keymap, CLOSE_TAB, "关闭标签", Box::new(run_close_tab))
-        .key("mod-w");
+        .key_in("mod-w", text_edit);
+
+    registry
+        .install(keymap, SAVE, "保存", Box::new(run_save))
+        .key_in("mod-s", text_edit);
 }
 
 fn select_tab_args(target: SelectTabTarget) -> CommandArgs {
@@ -583,8 +679,10 @@ fn run_select_all(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     let target = context.edit_target()?;
-    let selection =
-        SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, target.buffer.len_bytes())]);
+    let selection = SelectionSet::new(vec![Selection::new(
+        ByteOffset::ZERO,
+        target.buffer.len_bytes(),
+    )]);
     target
         .buffer
         .set_selection(selection.clone())
@@ -658,6 +756,27 @@ fn run_ime_cancel(
     Ok(CommandOutcome::default())
 }
 
+fn run_ime_confirm(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    let target = context.edit_target()?;
+    let Some(preedit) = target
+        .buffer
+        .composition()
+        .map(|state| state.preedit_text().to_string())
+    else {
+        return Ok(CommandOutcome::default());
+    };
+    target
+        .buffer
+        .commit_composition(&preedit)
+        .map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
+    Ok(CommandOutcome::default())
+}
+
 fn run_select_tab(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
@@ -702,6 +821,19 @@ fn run_close_tab(
     // 孤立 buffer 的回收留待后续（确认弹窗 / 引用计数）。
     context.views.close_view(active);
     sync_active_buffer(context);
+    Ok(CommandOutcome::default())
+}
+
+fn run_save(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    let buffer_id = active_view_buffer_id(context)?;
+    context
+        .workspace
+        .save_file(buffer_id)
+        .map_err(|error| CommandError::ExecutionFailed(error.to_string()))?;
     Ok(CommandOutcome::default())
 }
 

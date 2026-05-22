@@ -41,6 +41,7 @@ impl FileTreeRuntime {
         state: &'a FileTreeState,
         key_request: &'a KeyRequest,
         input_handler_hook: &'a InputHandlerHook,
+        caret_visible: bool,
         window: &Window,
     ) -> FileTreePanel<'a> {
         FileTreePanel {
@@ -49,6 +50,7 @@ impl FileTreeRuntime {
             key_request,
             input_handler_hook,
             is_focused: self.focus.is_focused(window),
+            caret_visible,
         }
     }
 

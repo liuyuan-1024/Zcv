@@ -16,7 +16,7 @@ use zom_command::commands::window as window_commands;
 
 use crate::app::{App, KeySurface};
 
-use super::editor::EditorInput;
+use super::editor::{CARET_BLINK_INTERVAL, CaretBlink, EditorInput};
 use super::features::PanelRuntimes;
 use super::features::file_tree::FileTreeRuntime;
 use super::workbench;
@@ -40,6 +40,8 @@ pub(crate) struct ShellView {
     file_tree: FileTreeRuntime,
     /// 编辑区标签栏的滚动状态。跨帧保留，否则每帧重建会丢失滚动位置。
     editor_tab_scroll: ScrollHandle,
+    /// 主编辑区光标闪烁状态，由本视图的定时链驱动。
+    caret: CaretBlink,
 }
 
 impl ShellView {
@@ -82,7 +84,24 @@ impl ShellView {
             panel_runtimes,
             file_tree,
             editor_tab_scroll: ScrollHandle::new(),
+            caret: CaretBlink::new(),
         }
+    }
+
+    /// 调度一次光标闪烁定时翻转。每次翻转后自行续链；`epoch` 不符（光标
+    /// 移动触发过 [`CaretBlink::restart`]）时旧链自然终止。
+    fn schedule_caret_blink(&self, epoch: usize, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(CARET_BLINK_INTERVAL).await;
+            this.update(cx, |this, cx| {
+                if this.caret.tick(epoch) {
+                    cx.notify();
+                    this.schedule_caret_blink(epoch, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(super) fn editor_focus(&self) -> FocusHandle {
@@ -193,7 +212,20 @@ impl ShellView {
 
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.workbench_state();
+        let mut state = self.workbench_state();
+        // 光标一移动就重置闪烁为实心，让用户立刻定位到光标；同时重排定时链。
+        // 活动编辑器可能是主编辑区，也可能是文件树正在输入名称的内联编辑器。
+        let active_cursor = state
+            .file_tree
+            .pending
+            .as_ref()
+            .map(|pending| pending.editor.cursor_byte)
+            .unwrap_or(state.editor.cursor_byte);
+        if self.caret.cursor_moved(active_cursor) {
+            let epoch = self.caret.restart();
+            self.schedule_caret_blink(epoch, cx);
+        }
+        state.editor.caret_visible = self.caret.visible();
         let window_controls = self.window_controls_handlers();
         let key_request = self.key_request(KeySurface::Editor);
         let panel_key_request = self.key_request(KeySurface::Panel);
@@ -204,6 +236,7 @@ impl Render for ShellView {
             &state.file_tree,
             &file_tree_key_request,
             &file_tree_input_handler_hook,
+            self.caret.visible(),
             window,
         );
         let shortcut_lookup = self.shortcut_lookup();

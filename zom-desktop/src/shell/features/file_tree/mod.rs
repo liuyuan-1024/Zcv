@@ -35,6 +35,8 @@ pub(crate) struct FileTreePanel<'a> {
     pub(crate) input_handler_hook: &'a InputHandlerHook,
     /// 当前焦点是否在文件树容器上；决定选中边框是否可见。
     pub(crate) is_focused: bool,
+    /// 光标当前是否可见（闪烁状态，由根视图注入）。新建条目内联编辑器用。
+    pub(crate) caret_visible: bool,
 }
 
 pub(crate) fn render(ctx: PanelContext<'_>) -> Div {

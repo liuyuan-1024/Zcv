@@ -5,13 +5,13 @@
 
 use gpui::{Div, FocusHandle, ScrollHandle, div, prelude::*};
 
-use crate::shell::editor;
 use crate::shell::workbench::docks::bottom;
 use crate::shell::workbench::docks::resize::DockResizeRequest;
 use crate::shell::workbench::state::{DockState, EditorState};
 use crate::shell::workbench::{PanelContext, PanelHost};
 use crate::shell::{InputHandlerHook, KeyRequest, ShortcutLookup};
 
+mod editor_pane;
 mod tab_bar;
 
 pub(crate) fn render(
@@ -31,7 +31,7 @@ pub(crate) fn render(
     if !editor_state.tabs.is_empty() {
         column = column.child(tab_bar::render(editor_state, tab_scroll, &shortcut_lookup));
     }
-    column = column.child(editor::render_grid(
+    column = column.child(editor_pane::render(
         editor_state,
         key_request,
         input_handler_hook,

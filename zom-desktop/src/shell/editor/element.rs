@@ -1,63 +1,102 @@
-//! 编辑器渲染图元：文本与光标分层绘制（借鉴 Zed 的 `EditorElement`）。
+//! 可嵌入编辑器渲染图元 —— 唯一的编辑器实现（借鉴 Zed 的 `EditorElement`）。
 //!
-//! 每帧把各行 shape 成 [`ShapedLine`]，文本与光标坐标取自同一份 shaped
-//! 结果：文本只随 buffer 内容变化，光标移动只改一个填充矩形的位置 —— 二者
-//! 不再相互触发重排，这正是「移动光标不闪烁」的根因。旧实现把 `|` 直接插进
-//! 文本字符串，每次移动光标都改变整行内容、强制重新 shape，故而闪烁。
+//! 单行与多行不是两种编辑器，而是同一个编辑器的两个 [`EditorKind`]：行号列、
+//! 纵向滚动、高度模式全部由「行数」派生，调用方只选 kind，配不出
+//! 「带行号的单行」这种无意义组合。
+//!
+//! 文本与光标分层绘制：每帧把各行 shape 成 [`ShapedLine`]，文本只随内容变化，
+//! 光标只是一个独立填充矩形 —— 移动光标不触发文本重排，这是「不闪烁」的根因。
+//!
+//! 滚动：维护一个跨帧滚动偏移（存于 GPUI 元素状态），每帧做 autoscroll 让
+//! 光标保持在视口内，正文据此整体平移。
 
 use std::panic::Location;
 
 use gpui::{
-    App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement,
-    LayoutId, Pixels, ShapedLine, SharedString, Style, TextRun, Window, fill, point, px, relative,
-    size,
+    App, Bounds, ContentMask, Element, ElementId, GlobalElementId, Hsla, InspectorElementId,
+    IntoElement, LayoutId, Pixels, Point, ShapedLine, SharedString, Style, TextRun, Window, fill,
+    point, px, relative, size,
 };
 
 use crate::shell::InputHandlerHook;
+use crate::shell::shared::theme::color;
 
-/// 行号列宽（24）+ 与正文的间距（12）；与旧 div 布局口径一致。
+/// 行号列宽（24）+ 与正文的间距（12）。
 const GUTTER_WIDTH: f32 = 36.0;
-/// 光标竖条宽度，与内联编辑器旧 caret 一致。
+/// 光标竖条宽度。
 const CARET_WIDTH: f32 = 1.0;
+
+/// 光标竖条颜色 —— 编辑器自持的视觉角色，不随嵌入处而变。
+fn caret_color() -> Hsla {
+    color::focus::border().into()
+}
+
+/// 行号文字颜色 —— 次级信息。
+fn gutter_color() -> Hsla {
+    color::gray::g60().into()
+}
+
+/// 编辑器的唯一区分轴：行数上限。其余差异（行号、纵向滚动、高度）皆由它派生。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditorKind {
+    /// 单行：无行号、高度恰为一行、不发生纵向滚动。
+    SingleLine,
+    /// 多行：带行号、撑满容器、可纵向滚动。
+    MultiLine,
+}
 
 /// 一个独立文本编辑单元的渲染图元。
 ///
-/// 文本样式（字体 / 字号 / 行高 / 前景色）从父级 div 继承，调用方只需额外
-/// 给出光标色与可选的行号列。
+/// 文本样式（字体 / 字号 / 行高 / 前景色）从父级 div 继承 —— 嵌入处决定，
+/// 编辑器一律「继承」。光标色、行号色是编辑器自持的视觉角色。
 pub(crate) struct EditorElement {
+    kind: EditorKind,
     text: SharedString,
     cursor_byte: usize,
     input_handler_hook: InputHandlerHook,
-    caret_color: Hsla,
-    /// `Some(色)` 渲染左侧行号列；`None` 表示无行号（内联编辑器）。
-    gutter_color: Option<Hsla>,
+    /// 光标当前是否可见（闪烁状态，由调用方注入）。
+    caret_visible: bool,
+    /// 跨帧滚动偏移的状态键。每个编辑器实例都应给一个稳定 id。
+    element_id: Option<ElementId>,
 }
 
 impl EditorElement {
     pub(crate) fn new(
+        kind: EditorKind,
         text: impl Into<SharedString>,
         cursor_byte: usize,
         input_handler_hook: InputHandlerHook,
     ) -> Self {
         Self {
+            kind,
             text: text.into(),
             cursor_byte,
             input_handler_hook,
-            caret_color: Hsla::default(),
-            gutter_color: None,
+            caret_visible: true,
+            element_id: None,
         }
     }
 
-    /// 设置光标竖条颜色。
-    pub(crate) fn caret_color(mut self, color: impl Into<Hsla>) -> Self {
-        self.caret_color = color.into();
+    /// 设置光标可见性（闪烁灭相时为 `false`，不绘制光标）。
+    pub(crate) fn caret_visible(mut self, visible: bool) -> Self {
+        self.caret_visible = visible;
         self
     }
 
-    /// 启用左侧行号列，并指定行号文字颜色。
-    pub(crate) fn with_gutter(mut self, color: impl Into<Hsla>) -> Self {
-        self.gutter_color = Some(color.into());
+    /// 赋予稳定的元素 id —— 据此跨帧保留滚动偏移。
+    pub(crate) fn element_id(mut self, id: impl Into<ElementId>) -> Self {
+        self.element_id = Some(id.into());
         self
+    }
+
+    /// 是否渲染行号列：仅多行编辑器。
+    fn has_gutter(&self) -> bool {
+        matches!(self.kind, EditorKind::MultiLine)
+    }
+
+    /// 是否撑满父容器：多行编辑器撑满并内部滚动，单行编辑器高度即一行。
+    fn fills_viewport(&self) -> bool {
+        matches!(self.kind, EditorKind::MultiLine)
     }
 }
 
@@ -75,9 +114,28 @@ pub(crate) struct EditorPrepaint {
     gutter: Vec<ShapedLine>,
     line_height: Pixels,
     /// 正文起点相对 `bounds.origin.x` 的偏移（有行号列时为 [`GUTTER_WIDTH`]）。
-    text_x: Pixels,
+    gutter_offset: Pixels,
     /// 光标位置：(视觉行号, 行内像素 x)。
     caret: (usize, Pixels),
+    /// 当前滚动偏移；正文与光标按它整体平移。
+    scroll: Point<Pixels>,
+}
+
+/// 跨帧保留的滚动偏移，存于 GPUI 元素状态。
+#[derive(Default)]
+struct EditorScroll {
+    offset: Point<Pixels>,
+}
+
+/// 把 `value` 夹在 `[lo, hi]`（`Pixels` 无 `clamp`，本地实现）。
+fn clamp_px(value: Pixels, lo: Pixels, hi: Pixels) -> Pixels {
+    if value < lo {
+        lo
+    } else if value > hi {
+        hi
+    } else {
+        value
+    }
 }
 
 impl IntoElement for EditorElement {
@@ -93,7 +151,7 @@ impl Element for EditorElement {
     type PrepaintState = EditorPrepaint;
 
     fn id(&self) -> Option<ElementId> {
-        None
+        self.element_id.clone()
     }
 
     fn source_location(&self) -> Option<&'static Location<'static>> {
@@ -111,13 +169,16 @@ impl Element for EditorElement {
         let rem_size = window.rem_size();
         let line_height = text_style.line_height_in_pixels(rem_size);
         let font_size = text_style.font_size.to_pixels(rem_size);
-        // 行数靠 '\n' 切分；空文本也算一行（光标停在空行）。
-        let line_count = self.text.split('\n').count().max(1);
 
         let mut style = Style::default();
-        // 宽度撑满父级；高度按内容行数定 —— 父级负责裁剪溢出。
         style.size.width = relative(1.).into();
-        style.size.height = (line_height * line_count as f32).into();
+        if self.fills_viewport() {
+            // 多行编辑器：撑满视口，内容溢出靠内部滚动偏移消化。
+            style.size.height = relative(1.).into();
+        } else {
+            // 单行编辑器：高度恰为一行。
+            style.size.height = line_height.into();
+        }
         let layout_id = window.request_layout(style, [], cx);
 
         (
@@ -131,16 +192,18 @@ impl Element for EditorElement {
 
     fn prepaint(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         layout: &mut EditorLayout,
         window: &mut Window,
         _cx: &mut App,
     ) -> EditorPrepaint {
         let text_style = window.text_style();
         let font_size = layout.font_size;
+        let line_height = layout.line_height;
         let cursor_byte = self.cursor_byte.min(self.text.len());
+        let has_gutter = self.has_gutter();
 
         let mut lines = Vec::new();
         let mut gutter = Vec::new();
@@ -167,12 +230,12 @@ impl Element for EditorElement {
             }
             lines.push(shaped);
 
-            if let Some(gutter_color) = self.gutter_color {
+            if has_gutter {
                 let label = (index + 1).to_string();
                 let run = TextRun {
                     len: label.len(),
                     font: text_style.font(),
-                    color: gutter_color,
+                    color: gutter_color(),
                     background_color: None,
                     underline: None,
                     strikethrough: None,
@@ -188,18 +251,73 @@ impl Element for EditorElement {
             offset = line_end + 1;
         }
 
-        let text_x = if self.gutter_color.is_some() {
+        let gutter_offset = if has_gutter {
             px(GUTTER_WIDTH)
         } else {
             px(0.)
         };
 
+        // autoscroll：让光标保持在视口内。需要稳定 element id 来跨帧存偏移。
+        let scroll = match id {
+            Some(global_id) => {
+                let content_height = line_height * lines.len().max(1) as f32;
+                let content_width = lines
+                    .iter()
+                    .fold(px(0.), |max, line| if line.width > max { line.width } else { max });
+                let viewport_h = bounds.size.height;
+                let viewport_w = clamp_px(
+                    bounds.size.width - gutter_offset,
+                    px(0.),
+                    bounds.size.width,
+                );
+                window.with_element_state::<EditorScroll, _>(global_id, |state, _window| {
+                    let mut state = state.unwrap_or_default();
+                    let mut off = state.offset;
+
+                    // 纵向：光标所在行需完整可见。
+                    let caret_top = line_height * caret.0 as f32;
+                    let caret_bottom = caret_top + line_height;
+                    if caret_top < off.y {
+                        off.y = caret_top;
+                    } else if caret_bottom > off.y + viewport_h {
+                        off.y = caret_bottom - viewport_h;
+                    }
+                    off.y = clamp_px(off.y, px(0.), clamp_px(
+                        content_height - viewport_h,
+                        px(0.),
+                        content_height,
+                    ));
+
+                    // 横向：光标列需可见。行尾光标位于最后一个字形「之后」，
+                    // 故可滚动宽度要在最宽行的基础上额外留出一个光标宽度 ——
+                    // 否则滚到行尾时光标正好压在正文区裁剪边界上、被切掉。
+                    let scrollable_w = content_width + px(CARET_WIDTH);
+                    let caret_right = caret.1 + px(CARET_WIDTH);
+                    if caret.1 < off.x {
+                        off.x = caret.1;
+                    } else if caret_right > off.x + viewport_w {
+                        off.x = caret_right - viewport_w;
+                    }
+                    off.x = clamp_px(off.x, px(0.), clamp_px(
+                        scrollable_w - viewport_w,
+                        px(0.),
+                        scrollable_w,
+                    ));
+
+                    state.offset = off;
+                    (off, state)
+                })
+            }
+            None => Point::default(),
+        };
+
         EditorPrepaint {
             lines,
             gutter,
-            line_height: layout.line_height,
-            text_x,
+            line_height,
+            gutter_offset,
             caret,
+            scroll,
         }
     }
 
@@ -214,26 +332,51 @@ impl Element for EditorElement {
         cx: &mut App,
     ) {
         let line_height = prepaint.line_height;
-        let text_x = bounds.origin.x + prepaint.text_x;
+        let scroll = prepaint.scroll;
+        // 纵向滚动作用于所有内容（行号随正文一起上下移）。
+        let top = bounds.origin.y - scroll.y;
+        // 横向滚动只作用于正文与光标；行号列固定不动。
+        let text_left = bounds.origin.x + prepaint.gutter_offset - scroll.x;
 
-        for (index, shaped) in prepaint.lines.iter().enumerate() {
-            let y = bounds.origin.y + line_height * index as f32;
-            if let Some(gutter_line) = prepaint.gutter.get(index) {
-                let _ = gutter_line.paint(point(bounds.origin.x, y), line_height, window, cx);
-            }
-            let _ = shaped.paint(point(text_x, y), line_height, window, cx);
-        }
-
-        // 光标是独立绘制层：一个填充矩形叠在文本之上，移动它不触碰任何字形。
-        let (caret_line, caret_x) = prepaint.caret;
-        let caret_bounds = Bounds {
-            origin: point(
-                text_x + caret_x,
-                bounds.origin.y + line_height * caret_line as f32,
+        // 正文与光标裁剪到「正文区」：横向滚动时不溢出到行号列。
+        let text_area = Bounds {
+            origin: point(bounds.origin.x + prepaint.gutter_offset, bounds.origin.y),
+            size: size(
+                clamp_px(
+                    bounds.size.width - prepaint.gutter_offset,
+                    px(0.),
+                    bounds.size.width,
+                ),
+                bounds.size.height,
             ),
-            size: size(px(CARET_WIDTH), line_height),
         };
-        window.paint_quad(fill(caret_bounds, self.caret_color));
+        let caret_visible = self.caret_visible;
+        let (caret_line, caret_x) = prepaint.caret;
+
+        window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {
+            for (index, shaped) in prepaint.lines.iter().enumerate() {
+                let y = top + line_height * index as f32;
+                let _ = shaped.paint(point(text_left, y), line_height, window, cx);
+            }
+
+            // 光标是独立绘制层：一个填充矩形叠在文本之上，移动它不触碰任何字形。
+            if caret_visible {
+                let caret_bounds = Bounds {
+                    origin: point(
+                        text_left + caret_x,
+                        top + line_height * caret_line as f32,
+                    ),
+                    size: size(px(CARET_WIDTH), line_height),
+                };
+                window.paint_quad(fill(caret_bounds, caret_color()));
+            }
+        });
+
+        // 行号列：只随正文纵向滚动，横向固定在 bounds 左缘。
+        for (index, gutter_line) in prepaint.gutter.iter().enumerate() {
+            let y = top + line_height * index as f32;
+            let _ = gutter_line.paint(point(bounds.origin.x, y), line_height, window, cx);
+        }
 
         // 在 paint 阶段把编辑器输入宿主注册为系统输入法接收端；bounds 供候选窗定位。
         (self.input_handler_hook)(bounds, window, cx);

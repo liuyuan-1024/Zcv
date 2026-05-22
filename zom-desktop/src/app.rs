@@ -31,6 +31,8 @@ pub(crate) struct EditorState {
     pub(crate) tabs: Vec<EditorTab>,
     pub(crate) text: String,
     pub(crate) cursor_byte: usize,
+    /// 光标当前是否可见。闪烁是 shell 层职责，由根视图注入；`App` 恒留默认值。
+    pub(crate) caret_visible: bool,
 }
 
 /// 编辑区一个标签的渲染摘要。
@@ -181,6 +183,8 @@ impl App {
             tabs,
             text: buffer.buffer().text().into_owned(),
             cursor_byte: view.selection().primary().head().get(),
+            // 闪烁由 shell 层注入，App 不参与。
+            caret_visible: false,
         }
     }
 

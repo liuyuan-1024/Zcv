@@ -1,48 +1,32 @@
-//! 内联编辑器渲染与输入宿主注册。
+//! 内联编辑器渲染：单行文本 + 光标 + 系统输入法接收端。
+//!
+//! 与主编辑网格共用 [`EditorElement`]：文本与光标分层绘制，移动光标不重排
+//! 文字。业务图标、缩进、边框由消费方决定。
 
-use gpui::{Div, canvas, div, prelude::*, px};
+use gpui::{Div, div, prelude::*};
 
+use super::core::EditorSnapshot;
+use super::element::EditorElement;
 use crate::shell::InputHandlerHook;
 use crate::shell::shared::theme::{color, typography};
 
-use super::core::EditorSnapshot;
-
-/// 渲染单行内联编辑器：文本 + 光标 + 系统输入法接收端。
-/// 业务图标、缩进、边框由消费方决定。
+/// 渲染单行内联编辑器。文本字体 / 字号 / 颜色从父级继承，行高对齐 UI 行尺寸。
 pub(crate) fn render_inline(
     snapshot: &EditorSnapshot,
     input_handler_hook: &InputHandlerHook,
 ) -> Div {
-    let cursor_byte = snapshot.cursor_byte.min(snapshot.text.len());
-    let before = snapshot.text.get(..cursor_byte).unwrap_or("");
-    let after = snapshot
-        .text
-        .get(cursor_byte..)
-        .unwrap_or(snapshot.text.as_str());
     div()
         .flex_1()
         .flex()
-        .flex_row()
         .items_center()
-        .relative()
         .overflow_hidden()
+        .line_height(typography::ui_line())
         .child(
-            canvas(|bounds, _, _| bounds, {
-                let input_handler_hook = input_handler_hook.clone();
-                move |_, bounds, window, cx| input_handler_hook(bounds, window, cx)
-            })
-            .size_full()
-            .absolute(),
+            EditorElement::new(
+                snapshot.text.clone(),
+                snapshot.cursor_byte,
+                input_handler_hook.clone(),
+            )
+            .caret_color(color::focus::border()),
         )
-        .child(div().child(before.to_string()))
-        .child(caret())
-        .child(div().child(after.to_string()))
-}
-
-fn caret() -> Div {
-    div()
-        .flex_shrink_0()
-        .w(px(1.0))
-        .h(typography::ui_line())
-        .bg(color::focus::border())
 }

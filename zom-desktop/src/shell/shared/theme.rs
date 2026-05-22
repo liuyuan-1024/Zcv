@@ -108,9 +108,6 @@ pub mod space {
     pub fn s16() -> Pixels {
         px(16.0)
     }
-    pub fn s24() -> Pixels {
-        px(24.0)
-    }
 }
 
 pub mod radius {

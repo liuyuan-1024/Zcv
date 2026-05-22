@@ -3,8 +3,9 @@
 //! 数据仍来自 workspace buffer + active view 的快照；本模块只拥有编辑器表面
 //! 的交互和绘制。文件生命周期、标签、dirty 等仍留给 workspace / workbench。
 
-use gpui::{Div, FocusHandle, MouseButton, canvas, div, prelude::*};
+use gpui::{Div, FocusHandle, MouseButton, div, prelude::*};
 
+use super::element::EditorElement;
 use crate::shell::shared::theme::{self, color, space, typography};
 use crate::shell::workbench::state::EditorState;
 use crate::shell::{InputHandlerHook, KeyRequest, normalized_chord};
@@ -63,7 +64,8 @@ fn empty_message(hint: &'static str) -> Div {
 }
 
 fn editor_surface(state: &EditorState, input_handler_hook: InputHandlerHook) -> Div {
-    let lines = visual_lines(&state.text, state.cursor_byte);
+    // 文本样式（mono 字体 / 字号 / 行高 / 正文色）在此设定，由 EditorElement
+    // 继承；行号 g60、正文 g75 与旧布局一致。文本与光标分层绘制见 EditorElement。
     div()
         .flex_1()
         .overflow_hidden()
@@ -73,60 +75,10 @@ fn editor_surface(state: &EditorState, input_handler_hook: InputHandlerHook) -> 
         .font_family(".ZedMono")
         .line_height(typography::editor_line())
         .text_size(typography::editor())
-        // editor 渲染区每帧重新注册一次系统输入法接收端：bounds 给候选窗定位用。
-        // handle_input 必须在 paint 阶段调用，所以放进 canvas 的第二个回调而非 prepaint。
+        .text_color(color::gray::g75())
         .child(
-            canvas(
-                |bounds, _, _| bounds,
-                move |_, bounds, window, cx| input_handler_hook(bounds, window, cx),
-            )
-            .size_full()
-            .absolute(),
+            EditorElement::new(state.text.clone(), state.cursor_byte, input_handler_hook)
+                .with_gutter(color::gray::g60())
+                .caret_color(color::focus::border()),
         )
-        .children(lines.into_iter().enumerate().map(|(index, line)| {
-            div()
-                .flex()
-                .flex_row()
-                .gap(space::s12())
-                .child(
-                    // 行号为次级信息，与标题栏状态同用 g60。
-                    div()
-                        .w(space::s24())
-                        .text_color(color::gray::g60())
-                        .child((index + 1).to_string()),
-                )
-                .child(
-                    // 代码正文与 top bar 文本同基线 g75。
-                    div()
-                        .flex_1()
-                        .whitespace_nowrap()
-                        .text_color(color::gray::g75())
-                        .child(line),
-                )
-        }))
-}
-
-fn visual_lines(text: &str, cursor_byte: usize) -> Vec<String> {
-    if text.is_empty() {
-        return vec!["|".to_string()];
-    }
-
-    let cursor_byte = cursor_byte.min(text.len());
-    let mut lines = Vec::new();
-    let mut line_start = 0;
-
-    for (line_index, raw_line) in text.split('\n').enumerate() {
-        let line_end = line_start + raw_line.len();
-        let mut line = raw_line.to_string();
-        if cursor_byte >= line_start && cursor_byte <= line_end {
-            let column = cursor_byte - line_start;
-            line.insert(column, '|');
-        } else if line_index == 0 && cursor_byte == 0 {
-            line.insert(0, '|');
-        }
-        lines.push(line);
-        line_start = line_end + 1;
-    }
-
-    lines
 }

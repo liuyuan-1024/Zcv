@@ -9,6 +9,7 @@
 //! 属于 `zom-workspace`。IME 与编辑强绑定，故放在这里作为 Editor 能力。
 
 mod core;
+mod element;
 mod grid;
 mod ime;
 mod inline;

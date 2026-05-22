@@ -78,13 +78,16 @@ impl FileTreeModel {
                 depth,
             }
         });
-        let pending_delete = self.pending_delete.as_ref().map(|(path, kind)| PendingDelete {
-            name: path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            kind: *kind,
-        });
+        let pending_delete = self
+            .pending_delete
+            .as_ref()
+            .map(|(path, kind)| PendingDelete {
+                name: path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                kind: *kind,
+            });
         FileTreeState {
             rows,
             selected: self.selected.clone(),

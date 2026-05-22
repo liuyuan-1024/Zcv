@@ -240,36 +240,30 @@ impl Element for EditorElement {
                     underline: None,
                     strikethrough: None,
                 };
-                gutter.push(window.text_system().shape_line(
-                    label.into(),
-                    font_size,
-                    &[run],
-                    None,
-                ));
+                gutter.push(
+                    window
+                        .text_system()
+                        .shape_line(label.into(), font_size, &[run], None),
+                );
             }
 
             offset = line_end + 1;
         }
 
-        let gutter_offset = if has_gutter {
-            px(GUTTER_WIDTH)
-        } else {
-            px(0.)
-        };
+        let gutter_offset = if has_gutter { px(GUTTER_WIDTH) } else { px(0.) };
 
         // autoscroll：让光标保持在视口内。需要稳定 element id 来跨帧存偏移。
         let scroll = match id {
             Some(global_id) => {
                 let content_height = line_height * lines.len().max(1) as f32;
-                let content_width = lines
-                    .iter()
-                    .fold(px(0.), |max, line| if line.width > max { line.width } else { max });
+                let content_width =
+                    lines.iter().fold(
+                        px(0.),
+                        |max, line| if line.width > max { line.width } else { max },
+                    );
                 let viewport_h = bounds.size.height;
-                let viewport_w = clamp_px(
-                    bounds.size.width - gutter_offset,
-                    px(0.),
-                    bounds.size.width,
-                );
+                let viewport_w =
+                    clamp_px(bounds.size.width - gutter_offset, px(0.), bounds.size.width);
                 window.with_element_state::<EditorScroll, _>(global_id, |state, _window| {
                     let mut state = state.unwrap_or_default();
                     let mut off = state.offset;
@@ -282,11 +276,11 @@ impl Element for EditorElement {
                     } else if caret_bottom > off.y + viewport_h {
                         off.y = caret_bottom - viewport_h;
                     }
-                    off.y = clamp_px(off.y, px(0.), clamp_px(
-                        content_height - viewport_h,
+                    off.y = clamp_px(
+                        off.y,
                         px(0.),
-                        content_height,
-                    ));
+                        clamp_px(content_height - viewport_h, px(0.), content_height),
+                    );
 
                     // 横向：光标列需可见。行尾光标位于最后一个字形「之后」，
                     // 故可滚动宽度要在最宽行的基础上额外留出一个光标宽度 ——
@@ -298,11 +292,11 @@ impl Element for EditorElement {
                     } else if caret_right > off.x + viewport_w {
                         off.x = caret_right - viewport_w;
                     }
-                    off.x = clamp_px(off.x, px(0.), clamp_px(
-                        scrollable_w - viewport_w,
+                    off.x = clamp_px(
+                        off.x,
                         px(0.),
-                        scrollable_w,
-                    ));
+                        clamp_px(scrollable_w - viewport_w, px(0.), scrollable_w),
+                    );
 
                     state.offset = off;
                     (off, state)
@@ -362,10 +356,7 @@ impl Element for EditorElement {
             // 光标是独立绘制层：一个填充矩形叠在文本之上，移动它不触碰任何字形。
             if caret_visible {
                 let caret_bounds = Bounds {
-                    origin: point(
-                        text_left + caret_x,
-                        top + line_height * caret_line as f32,
-                    ),
+                    origin: point(text_left + caret_x, top + line_height * caret_line as f32),
                     size: size(px(CARET_WIDTH), line_height),
                 };
                 window.paint_quad(fill(caret_bounds, caret_color()));

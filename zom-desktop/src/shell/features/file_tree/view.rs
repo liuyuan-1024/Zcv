@@ -75,8 +75,7 @@ fn render_list(
         // 新建条目的输入行紧跟在其父目录行之后。
         if let Some(pending) = &state.pending {
             if pending.parent == row.path {
-                list =
-                    list.child(render_input_row(pending, input_handler_hook, caret_visible));
+                list = list.child(render_input_row(pending, input_handler_hook, caret_visible));
             }
         }
     }

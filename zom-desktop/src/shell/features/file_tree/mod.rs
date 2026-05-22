@@ -5,11 +5,12 @@
 //! `KeyRequest`（`KeySurface::FileTree`），由 keymap 在 `FileTree` 上下文里
 //! 解析 —— 面板自己不持有任何「按键 → 动作」的映射。
 
-use gpui::{Div, FocusHandle};
+use gpui::{AnyElement, Div, FocusHandle};
 
 use crate::shell::workbench::PanelContext;
-use crate::shell::{InputHandlerHook, KeyRequest};
+use crate::shell::{ActionRequest, InputHandlerHook, KeyRequest};
 
+mod confirm_delete;
 mod focus;
 mod model;
 mod runtime;
@@ -21,7 +22,28 @@ pub(crate) const PANEL_TITLE: &str = "文件树";
 
 pub(crate) use model::FileTreeModel;
 pub(crate) use runtime::FileTreeRuntime;
-pub(crate) use state::{FileTreeActivation, FileTreeRow, FileTreeState, PendingNewEntry};
+pub(crate) use state::{
+    FileTreeActivation, FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry,
+};
+
+/// 删除确认弹窗的两个动作回调。由根视图绑定命令后注入。
+pub(crate) struct ConfirmDeleteHandlers {
+    pub(crate) confirm: ActionRequest,
+    pub(crate) cancel: ActionRequest,
+}
+
+/// 处于删除确认态时渲染居中模态弹窗；否则返回 `None`。
+///
+/// 弹窗是顶层模态层，由 workbench 挂在所有面板之上。
+pub(crate) fn render_confirm_delete(
+    state: &FileTreeState,
+    handlers: &ConfirmDeleteHandlers,
+) -> Option<AnyElement> {
+    state
+        .pending_delete
+        .as_ref()
+        .map(|pending| confirm_delete::render(&pending.name, pending.kind, handlers))
+}
 
 /// 文件树面板渲染所需的所有"非状态"依赖（焦点、按键回调）。
 ///

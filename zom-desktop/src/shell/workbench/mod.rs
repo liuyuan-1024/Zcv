@@ -24,7 +24,7 @@ use std::rc::Rc;
 use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
 
 use crate::shell::features::PanelRuntimes;
-use crate::shell::features::file_tree::FileTreePanel;
+use crate::shell::features::file_tree::{self, ConfirmDeleteHandlers, FileTreePanel};
 use crate::shell::shared::theme::{color, radius};
 use crate::shell::{InputHandlerHook, KeyRequest, ShortcutLookup};
 
@@ -63,6 +63,7 @@ pub(crate) fn render(
     panel_runtimes: PanelRuntimes,
     file_tree: FileTreePanel<'_>,
     editor_tab_scroll: ScrollHandle,
+    confirm_delete: ConfirmDeleteHandlers,
 ) -> Div {
     let dock_resize = dock_resize_request(Rc::clone(&workbench));
     div()
@@ -105,6 +106,11 @@ pub(crate) fn render(
         ))
         .child(overlay_shell)
         .child(overlays::bubble_layer::render())
+        // 删除确认模态层：处于删除确认态时压在所有面板与 overlay 之上。
+        .children(file_tree::render_confirm_delete(
+            &state.file_tree,
+            &confirm_delete,
+        ))
 }
 
 fn render_body(

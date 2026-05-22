@@ -126,6 +126,19 @@ impl ProjectTree {
         Ok(path)
     }
 
+    /// 把 `path` 移入系统回收站，并刷新其父目录缓存，使 `visible_rows` 立即不再含该条目。
+    ///
+    /// 用「移入回收站」而非永久删除：可在系统层面恢复，降低误删代价。
+    /// 文件与目录皆可：目录连同其全部内容一并移入回收站。
+    pub fn delete_entry(&mut self, path: &Path) -> io::Result<()> {
+        trash::delete(path).map_err(io::Error::other)?;
+        if let Some(parent) = path.parent() {
+            self.children.remove(parent);
+            self.load_dir(parent)?;
+        }
+        Ok(())
+    }
+
     /// 自根向下做 DFS，按目录优先 + 字母序产出可见行。
     ///
     /// 注意：返回值借用 `&self`，调用 `expand`/`collapse` 前必须先把它丢弃。

@@ -63,6 +63,12 @@ pub enum HostEffect {
     FileTreeCommitNewEntry,
     /// 取消正在输入的新建条目。
     FileTreeCancelNewEntry,
+    /// 请求删除当前选中条目：打开确认弹窗。
+    FileTreeRequestDelete,
+    /// 确认删除：把待删条目移入回收站。
+    FileTreeConfirmDelete,
+    /// 取消删除：关闭确认弹窗。
+    FileTreeCancelDelete,
 }
 
 /// `CommandContext` 内的 effect 缓冲。

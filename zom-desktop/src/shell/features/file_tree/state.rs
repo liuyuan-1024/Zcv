@@ -21,6 +21,8 @@ pub(crate) struct FileTreeState {
     pub(crate) active: Option<PathBuf>,
     /// 正在键入名称的「新建文件 / 目录」。`None` 表示不处于新建态。
     pub(crate) pending: Option<PendingNewEntry>,
+    /// 正在等待确认的「删除文件」。`None` 表示无删除确认弹窗。
+    pub(crate) pending_delete: Option<PendingDelete>,
 }
 
 /// 一个正在输入名称的新建条目（owned 快照）。
@@ -33,6 +35,15 @@ pub(crate) struct PendingNewEntry {
     pub(crate) editor: EditorSnapshot,
     /// 输入行的缩进深度（父目录 depth + 1）。
     pub(crate) depth: usize,
+}
+
+/// 一个正在等待删除确认的条目（owned 快照）。
+#[derive(Clone, Debug)]
+pub(crate) struct PendingDelete {
+    /// 待删条目的显示名，确认弹窗用。
+    pub(crate) name: String,
+    /// 待删条目类型，决定确认弹窗措辞（目录会连同内容删除）。
+    pub(crate) kind: EntryKind,
 }
 
 #[derive(Clone, Debug)]

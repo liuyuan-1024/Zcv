@@ -12,13 +12,13 @@ use gpui::{
     ScrollHandle, Window,
 };
 use zom_command::Invocation;
-use zom_command::commands::window as window_commands;
+use zom_command::commands::{file_tree as file_tree_commands, window as window_commands};
 
 use crate::app::{App, KeySurface};
 
 use super::editor::{CARET_BLINK_INTERVAL, CaretBlink, EditorInput};
 use super::features::PanelRuntimes;
-use super::features::file_tree::FileTreeRuntime;
+use super::features::file_tree::{ConfirmDeleteHandlers, FileTreeRuntime};
 use super::workbench;
 use super::workbench::controller::WorkbenchController;
 use super::workbench::overlays::{AnchorRegistry, OverlayKind, OverlayManager, OverlayShell};
@@ -247,6 +247,10 @@ impl Render for ShellView {
         let language_server_active = self.overlay_manager.read_with(cx, |manager, _| {
             manager.is_active(OverlayKind::LanguageServers)
         });
+        let confirm_delete = ConfirmDeleteHandlers {
+            confirm: self.bind_action(file_tree_commands::confirm_delete()),
+            cancel: self.bind_action(file_tree_commands::cancel_delete()),
+        };
         workbench::render(
             &state,
             &self.panel_host,
@@ -265,6 +269,7 @@ impl Render for ShellView {
             self.panel_runtimes.clone(),
             file_tree_panel,
             self.editor_tab_scroll.clone(),
+            confirm_delete,
         )
     }
 }

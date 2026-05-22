@@ -19,6 +19,9 @@ pub const FOCUS_EDITOR: &str = "file_tree.focus_editor";
 pub const BEGIN_NEW_ENTRY: &str = "file_tree.begin_new_entry";
 pub const COMMIT_NEW_ENTRY: &str = "file_tree.commit_new_entry";
 pub const CANCEL_NEW_ENTRY: &str = "file_tree.cancel_new_entry";
+pub const REQUEST_DELETE: &str = "file_tree.request_delete";
+pub const CONFIRM_DELETE: &str = "file_tree.confirm_delete";
+pub const CANCEL_DELETE: &str = "file_tree.cancel_delete";
 
 /// 文件树当前键盘模式。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,6 +33,8 @@ pub struct FileTreeKeyContext {
 pub enum FileTreeKeyMode {
     Navigate,
     PendingName,
+    /// 删除确认弹窗打开中：只响应确认 / 取消。
+    PendingDelete,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,9 +120,22 @@ pub fn cancel_new_entry() -> Invocation {
     (cid(CANCEL_NEW_ENTRY), CommandArgs::new())
 }
 
+pub fn request_delete() -> Invocation {
+    (cid(REQUEST_DELETE), CommandArgs::new())
+}
+
+pub fn confirm_delete() -> Invocation {
+    (cid(CONFIRM_DELETE), CommandArgs::new())
+}
+
+pub fn cancel_delete() -> Invocation {
+    (cid(CANCEL_DELETE), CommandArgs::new())
+}
+
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     let navigate = KeyBindingContext::file_tree(FileTreeKeyMode::Navigate);
     let pending_name = KeyBindingContext::file_tree(FileTreeKeyMode::PendingName);
+    let pending_delete = KeyBindingContext::file_tree(FileTreeKeyMode::PendingDelete);
 
     registry
         .install(
@@ -191,6 +209,34 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_cancel_new_entry),
         )
         .key_in("escape", pending_name);
+
+    registry
+        .install(
+            keymap,
+            REQUEST_DELETE,
+            "删除文件树选中条目",
+            Box::new(run_request_delete),
+        )
+        .key_in("mod-delete", navigate)
+        .key_in("mod-backspace", navigate);
+
+    registry
+        .install(
+            keymap,
+            CONFIRM_DELETE,
+            "确认删除文件树条目",
+            Box::new(run_confirm_delete),
+        )
+        .key_in("enter", pending_delete);
+
+    registry
+        .install(
+            keymap,
+            CANCEL_DELETE,
+            "取消删除文件树条目",
+            Box::new(run_cancel_delete),
+        )
+        .key_in("escape", pending_delete);
 }
 
 fn run_move_selection(
@@ -266,6 +312,33 @@ fn run_cancel_new_entry(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.effects.push(HostEffect::FileTreeCancelNewEntry);
+    Ok(CommandOutcome::default())
+}
+
+fn run_request_delete(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.effects.push(HostEffect::FileTreeRequestDelete);
+    Ok(CommandOutcome::default())
+}
+
+fn run_confirm_delete(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.effects.push(HostEffect::FileTreeConfirmDelete);
+    Ok(CommandOutcome::default())
+}
+
+fn run_cancel_delete(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.effects.push(HostEffect::FileTreeCancelDelete);
     Ok(CommandOutcome::default())
 }
 

@@ -159,8 +159,24 @@ impl App {
         self.file_tree.cancel_new_entry();
     }
 
-    pub(crate) fn file_tree_commit_new_entry(&mut self) {
-        self.file_tree.commit_new_entry();
+    /// 提交新建条目。新建文件会被立即打开，返回的 [`FileTreeActivation`] 让
+    /// shell 据此把焦点切到编辑器。
+    pub(crate) fn file_tree_commit_new_entry(&mut self) -> FileTreeActivation {
+        self.file_tree
+            .commit_new_entry(&mut self.workspace, &mut self.views)
+    }
+
+    pub(crate) fn file_tree_request_delete(&mut self) {
+        self.file_tree.request_delete();
+    }
+
+    pub(crate) fn file_tree_confirm_delete(&mut self) {
+        self.file_tree
+            .confirm_delete(&mut self.workspace, &mut self.views);
+    }
+
+    pub(crate) fn file_tree_cancel_delete(&mut self) {
+        self.file_tree.cancel_delete();
     }
 
     pub(crate) fn editor_state(&self) -> EditorState {
@@ -279,6 +295,11 @@ impl App {
                 vec![KeyContext::text_edit(true, false), KeyContext::global()]
             }
             KeySurface::Panel => vec![KeyContext::global()],
+            KeySurface::FileTree if self.file_tree.pending_delete_active() => vec![
+                // 删除确认弹窗打开中：只解析确认 / 取消，导航键全部冻结。
+                KeyContext::file_tree(FileTreeKeyMode::PendingDelete),
+                KeyContext::global(),
+            ],
             KeySurface::FileTree if self.file_tree.pending_active() => vec![
                 // 新建条目输入态：单行编辑器先吃编辑键，未命中再落到文件树的
                 // 确认 / 取消，最后才是全局快捷键。

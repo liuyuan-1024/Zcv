@@ -5,12 +5,12 @@
 use std::path::{Path, PathBuf};
 
 use zom_command::EditTarget;
-use zom_view::ViewSet;
+use zom_view::{ViewId, ViewSet};
 use zom_workspace::{BufferId, EntryKind, ProjectTree, Workspace};
 
 use crate::shell::editor::Editor;
 
-use super::{FileTreeActivation, FileTreeRow, FileTreeState, PendingNewEntry};
+use super::{FileTreeActivation, FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry};
 
 #[derive(Default)]
 pub(crate) struct FileTreeModel {
@@ -18,6 +18,8 @@ pub(crate) struct FileTreeModel {
     selected: Option<PathBuf>,
     /// 正在键入名称的新建条目；`None` 表示不处于新建态。
     pending: Option<PendingEntry>,
+    /// 正在等待确认的待删条目（路径 + 类型）；`None` 表示无删除确认弹窗。
+    pending_delete: Option<(PathBuf, EntryKind)>,
 }
 
 /// 新建态的内部数据；缩进深度在 `state()` 快照时再算，故此处不存。
@@ -40,6 +42,7 @@ impl FileTreeModel {
         };
         self.selected = None;
         self.pending = None;
+        self.pending_delete = None;
     }
 
     pub(crate) fn state(&self, workspace: &Workspace) -> FileTreeState {
@@ -75,11 +78,19 @@ impl FileTreeModel {
                 depth,
             }
         });
+        let pending_delete = self.pending_delete.as_ref().map(|(path, kind)| PendingDelete {
+            name: path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            kind: *kind,
+        });
         FileTreeState {
             rows,
             selected: self.selected.clone(),
             active,
             pending,
+            pending_delete,
         }
     }
 
@@ -138,29 +149,40 @@ impl FileTreeModel {
 
     /// 提交新建：名称为空则等同取消；名称含路径分隔符或创建失败时保留
     /// 输入态，供用户改名重试。
-    pub(crate) fn commit_new_entry(&mut self) {
+    ///
+    /// 新建文件成功后立即打开它（返回 [`FileTreeActivation::OpenedFile`]，
+    /// 由调用方把焦点切到编辑器）；新建目录无可打开内容，留在文件树。
+    pub(crate) fn commit_new_entry(
+        &mut self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+    ) -> FileTreeActivation {
         let Some(pending) = self.pending.as_ref() else {
-            return;
+            return FileTreeActivation::Nothing;
         };
         let text = pending.editor.text();
         let name = text.trim();
         if name.is_empty() {
             self.pending = None;
-            return;
+            return FileTreeActivation::Nothing;
         }
         if name.contains('/') || name.contains('\\') {
             eprintln!("新建条目名不能含路径分隔符：{name}");
-            return;
+            return FileTreeActivation::Nothing;
         }
         let (parent, kind, name) = (pending.parent.clone(), pending.kind, name.to_string());
         let Some(tree) = self.project_tree.as_mut() else {
             self.pending = None;
-            return;
+            return FileTreeActivation::Nothing;
         };
         match tree.create_entry(&parent, &name, kind) {
             Ok(path) => {
-                self.selected = Some(path);
+                self.selected = Some(path.clone());
                 self.pending = None;
+                match kind {
+                    EntryKind::File => open_file(workspace, views, path),
+                    EntryKind::Directory => FileTreeActivation::Nothing,
+                }
             }
             Err(error) => {
                 let label = match kind {
@@ -168,8 +190,56 @@ impl FileTreeModel {
                     EntryKind::File => "文件",
                 };
                 eprintln!("新建{label}失败：{}：{error}", parent.join(&name).display());
+                FileTreeActivation::Nothing
             }
         }
+    }
+
+    pub(crate) fn pending_delete_active(&self) -> bool {
+        self.pending_delete.is_some()
+    }
+
+    /// 请求删除选中条目：文件或目录皆可，进入删除确认态。项目根代表项目
+    /// 本身、不可删；空选中忽略。
+    pub(crate) fn request_delete(&mut self) {
+        let Some(selected) = self.selected.clone() else {
+            return;
+        };
+        let Some(tree) = self.project_tree.as_ref() else {
+            return;
+        };
+        if selected == tree.root() {
+            return;
+        }
+        if let Some((kind, _, _)) = snapshot_row(tree, &selected) {
+            self.pending_delete = Some((selected, kind));
+        }
+    }
+
+    /// 确认删除：把待删条目移入回收站，选中跳到其父目录，并关闭受影响的
+    /// 编辑器视图 —— 删文件关闭该文件，删目录关闭其下全部文件。失败时记录
+    /// 日志，确认态一并关闭，由用户决定是否重试。
+    pub(crate) fn confirm_delete(&mut self, workspace: &mut Workspace, views: &mut ViewSet) {
+        let Some((path, _kind)) = self.pending_delete.take() else {
+            return;
+        };
+        let Some(tree) = self.project_tree.as_mut() else {
+            return;
+        };
+        match tree.delete_entry(&path) {
+            Ok(()) => {
+                // 选中不能再指向已删除的行，落到父目录。
+                self.selected = path.parent().map(Path::to_path_buf);
+                close_buffers_under(workspace, views, &path);
+            }
+            Err(error) => {
+                eprintln!("删除失败：{}：{error}", path.display());
+            }
+        }
+    }
+
+    pub(crate) fn cancel_delete(&mut self) {
+        self.pending_delete = None;
     }
 
     /// 焦点进入文件树时调用：若尚未选中任何行，默认落到第一行，让边框
@@ -353,6 +423,37 @@ fn focus_buffer_view(workspace: &Workspace, views: &mut ViewSet, buffer_id: Buff
         }
     };
     views.set_active(view_id);
+}
+
+/// 关闭路径落在 `deleted` 之下（含 `deleted` 自身）的全部 buffer 及其视图 ——
+/// 删文件即关该文件，删目录即关其下所有已打开文件。
+///
+/// 文件已不在磁盘上，buffer 一并关闭（不像关标签那样保留）：再留着只是
+/// 指向已删文件的孤儿。关完后把 workspace 活动 buffer 对齐到剩余活动视图，
+/// 让文件树「活动文件」高亮跟随。
+fn close_buffers_under(workspace: &mut Workspace, views: &mut ViewSet, deleted: &Path) {
+    let victims: Vec<BufferId> = workspace
+        .buffers()
+        .filter_map(|(id, buffer)| {
+            buffer
+                .path()
+                .filter(|path| path.starts_with(deleted))
+                .map(|_| id)
+        })
+        .collect();
+    for buffer_id in victims {
+        let view_ids: Vec<ViewId> = views
+            .views()
+            .filter_map(|(view_id, view)| (view.buffer() == buffer_id).then_some(view_id))
+            .collect();
+        for view_id in view_ids {
+            views.close_view(view_id);
+        }
+        let _ = workspace.close_buffer(buffer_id);
+    }
+    if let Some(buffer_id) = views.active_view().map(|view| view.buffer()) {
+        let _ = workspace.set_active_buffer(buffer_id);
+    }
 }
 
 /// 从一棵 [`ProjectTree`] 里抓出一行的 `(kind, expanded, depth)`，规避借用

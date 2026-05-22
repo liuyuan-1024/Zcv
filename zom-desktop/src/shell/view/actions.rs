@@ -46,6 +46,9 @@ pub(super) fn bind_action_request(
             window,
             cx,
         );
+        // 命令可能改了渲染可见的模型状态（如关闭删除确认弹窗）；与 key_request
+        // 的按键路径对称，点击路径在此统一刷新。
+        window.refresh();
     })
 }
 
@@ -133,10 +136,23 @@ pub(super) fn apply_host_effects(
                 app.borrow_mut().file_tree_begin_new_entry(kind);
             }
             HostEffect::FileTreeCommitNewEntry => {
-                app.borrow_mut().file_tree_commit_new_entry();
+                // 新建文件会被打开，焦点随之切到编辑器；新建目录留在文件树。
+                let activation = app.borrow_mut().file_tree_commit_new_entry();
+                if matches!(activation, FileTreeActivation::OpenedFile) {
+                    focus.move_to(FocusTarget::Editor, window);
+                }
             }
             HostEffect::FileTreeCancelNewEntry => {
                 app.borrow_mut().file_tree_cancel_new_entry();
+            }
+            HostEffect::FileTreeRequestDelete => {
+                app.borrow_mut().file_tree_request_delete();
+            }
+            HostEffect::FileTreeConfirmDelete => {
+                app.borrow_mut().file_tree_confirm_delete();
+            }
+            HostEffect::FileTreeCancelDelete => {
+                app.borrow_mut().file_tree_cancel_delete();
             }
         }
     }

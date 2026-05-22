@@ -42,7 +42,7 @@ src/lib.rs    View / ViewSet / ViewId / ViewportState
 
 ## 相关文档
 
-- `../AGENTS.md`：workspace 全局协作规则。
+- `../agents/global.md`、`../agents/project.md`：workspace 全局规则与项目规则。
 - `../TODO.md`：宿主层开发规划，本 crate 对应能力域 2 / 5 / 7（坐标读取、选区、折叠投影），阶段 P2 / P3。
 
 ## 状态

@@ -51,7 +51,7 @@ tests/        command 契约测试
 
 - [`docs/命令与快捷键系统设计.md`](docs/命令与快捷键系统设计.md)：**完整设计文档** —— 模块边界、数据模型、catalog 模式、HostEffect 解耦、键位约定、加新命令的步骤、反例清单。先看这一份。
 - [`docs/命令清单.md`](docs/命令清单.md)：当前已注册命令、HostEffect 变体、backlog。随命令增删滚动更新。
-- `../AGENTS.md`：workspace 全局协作规则。
+- `../agents/global.md`、`../agents/project.md`：workspace 全局规则与项目规则。
 - `../TODO.md`：宿主层开发规划，本 crate 对应能力域 3 / 5 / 8（编辑事务、movement 命令、搜索替换命令），阶段 P1。
 
 ## 状态

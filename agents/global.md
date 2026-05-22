@@ -1,23 +1,8 @@
-# AGENTS.md
+# global.md
 
-> AI 工具参与 `zom` workspace 前先读本文档。子 crate 可以有自己的 `AGENTS.md`，但不得放宽本文的全局规则。
+> 本文记录全局 agent 工作约定、验证命令和代码风格。项目独有结构与边界见 `project.md`。
 
-## 1. 项目结构
-
-`zom` 是 Cargo workspace 根项目，用于统一管理多个相互黑盒隔离的 crate：
-
-```text
-zom-engine      核心文本编辑引擎
-zom-workspace   工作区、文件、buffer 编排
-zom-view        编辑面状态：view、滚动、selection、fold
-zom-command     命令系统
-zom-ai          AI 抽象与集成
-zom-desktop     桌面入口，组合其他 crate
-```
-
-crate 之间只能通过 public API 连接。不要跨 crate 依赖私有实现、源码路径或测试专用细节。
-
-## 2. 语言规范
+## 1. 语言规范
 
 中文是本项目协作中的第一语言。
 
@@ -52,7 +37,7 @@ crate / package / binary 名称
 
 不要为了中文化而强行翻译代码符号、公共 API 名称或外部协议术语。
 
-## 3. Git 规范
+## 2. Git 规范
 
 提交信息使用中文，保持简洁、具体、可检索。
 
@@ -73,13 +58,9 @@ wip
 调整
 ```
 
-## 4. 工作区规则
+## 3. 验证命令
 
-根目录只保留一个 Git 仓库和一个 workspace 级 `Cargo.lock`。
-
-不要在子 crate 中重新初始化 Git 仓库。需要保留外部历史时，使用 subtree 或其他明确的历史迁移方式。
-
-通常在根目录验证：
+通常在仓库根目录验证：
 
 ```bash
 cargo fmt
@@ -88,7 +69,7 @@ cargo test --workspace
 
 如果只运行了定向检查，回复时必须明确说明范围。
 
-## 5. 模块组织规范
+## 4. 模块组织规范
 
 代码组织遵循 **高内聚、低耦合**。这是结构性规则，AI 在新增 / 重构代码时必须主动遵守。
 
@@ -116,7 +97,7 @@ top_bar 不直接 import bottom_bar，反之亦然。
 
 命名跟随位置语义：在 `shell/` 模块下，文件和类型不再带 `shell_` / `Shell` 前缀，避免冗余（例如 `glyph.rs` 中的 `Glyph` 而不是 `ShellGlyph`）。
 
-## 6. Warning 规范
+## 5. Warning 规范
 
 不要用 `#[allow(...)]`、`#![allow(...)]` 或类似方式隐藏 warning。
 

@@ -37,7 +37,7 @@ src/lib.rs    AiRequest / AiProposal / ProposedEdit / ProposedRange
 
 ## 相关文档
 
-- `../AGENTS.md`：workspace 全局协作规则。
+- `../agents/global.md`、`../agents/project.md`：workspace 全局规则与项目规则。
 - `../TODO.md`：宿主层开发规划，本 crate 对应能力域 6（区间追踪与外部结果承载），阶段 P4。
 
 ## 状态

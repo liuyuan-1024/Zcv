@@ -118,9 +118,6 @@ pub mod radius {
     pub fn r4() -> Pixels {
         px(4.0)
     }
-    pub fn r6() -> Pixels {
-        px(6.0)
-    }
     /// 圆点（control pip 等）专用，组件本地常量复用此 token。
     pub fn full() -> Pixels {
         px(999.0)

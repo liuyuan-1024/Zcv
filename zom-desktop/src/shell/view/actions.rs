@@ -10,6 +10,7 @@ use zom_command::{HostEffect, Invocation};
 use crate::app::{App, KeySurface};
 use crate::shell::ActionRequest;
 use crate::shell::features::file_tree::{FileTreeActivation, FileTreeRuntime};
+use crate::shell::features::language_servers::LanguageServersRuntime;
 use crate::shell::features::project_picker::ProjectPickerRuntime;
 use crate::shell::features::{PanelId, PanelRuntimes, language_servers, project_picker};
 use crate::shell::platform::window as platform_window;
@@ -27,6 +28,7 @@ pub(super) fn bind_action_request(
     panel_runtimes: PanelRuntimes,
     file_tree: FileTreeRuntime,
     project_picker_runtime: ProjectPickerRuntime,
+    language_servers_runtime: LanguageServersRuntime,
     invocation: Invocation,
 ) -> ActionRequest {
     Rc::new(move |window, cx| {
@@ -46,6 +48,7 @@ pub(super) fn bind_action_request(
             &panel_runtimes,
             &file_tree,
             &project_picker_runtime,
+            &language_servers_runtime,
             window,
             cx,
         );
@@ -64,6 +67,7 @@ pub(super) fn apply_host_effects(
     panel_runtimes: &PanelRuntimes,
     file_tree: &FileTreeRuntime,
     project_picker_runtime: &ProjectPickerRuntime,
+    language_servers_runtime: &LanguageServersRuntime,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -100,6 +104,7 @@ pub(super) fn apply_host_effects(
                     panel_runtimes,
                     file_tree,
                     project_picker_runtime,
+                    language_servers_runtime,
                     window,
                     cx,
                 );
@@ -124,6 +129,7 @@ pub(super) fn apply_host_effects(
                     panel_runtimes,
                     file_tree,
                     project_picker_runtime,
+                    language_servers_runtime,
                     window,
                     cx,
                 );
@@ -207,7 +213,7 @@ pub(super) fn apply_host_effects(
             }
             HostEffect::ShowLanguageServers => {
                 open_surface(
-                    language_servers::request(),
+                    language_servers::request(language_servers_runtime.clone()),
                     surfaces,
                     editor_focus_fallback,
                     window,
@@ -285,6 +291,7 @@ fn show_project_picker(
     panel_runtimes: &PanelRuntimes,
     file_tree: &FileTreeRuntime,
     project_picker_runtime: &ProjectPickerRuntime,
+    language_servers_runtime: &LanguageServersRuntime,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -297,6 +304,7 @@ fn show_project_picker(
     let key_panel_runtimes = panel_runtimes.clone();
     let key_file_tree = file_tree.clone();
     let key_project_picker = project_picker_runtime.clone();
+    let key_language_servers = language_servers_runtime.clone();
     let key_request = Rc::new(
         move |chord: String, window: &mut Window, cx: &mut gpui::App| {
             let outcome = match key_app
@@ -319,6 +327,7 @@ fn show_project_picker(
                 &key_panel_runtimes,
                 &key_file_tree,
                 &key_project_picker,
+                &key_language_servers,
                 window,
                 cx,
             );
@@ -335,6 +344,7 @@ fn show_project_picker(
     let query_text_panel_runtimes = panel_runtimes.clone();
     let query_text_file_tree = file_tree.clone();
     let query_text_project_picker = project_picker_runtime.clone();
+    let query_text_language_servers = language_servers_runtime.clone();
     let query_text_request = Rc::new(
         move |text: String, window: &mut Window, cx: &mut gpui::App| {
             let effects = match query_text_app
@@ -356,6 +366,7 @@ fn show_project_picker(
                 &query_text_panel_runtimes,
                 &query_text_file_tree,
                 &query_text_project_picker,
+                &query_text_language_servers,
                 window,
                 cx,
             );

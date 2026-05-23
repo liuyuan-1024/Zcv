@@ -19,6 +19,7 @@ use crate::app::{App, KeySurface};
 use super::editor::{CARET_BLINK_INTERVAL, CaretBlink, EditorInput};
 use super::features::PanelRuntimes;
 use super::features::file_tree::{ConfirmDeleteHandlers, FileTreeRuntime};
+use super::features::language_servers;
 use super::features::project_picker::ProjectPickerRuntime;
 use super::surfaces::{SurfaceAnchorRegistry, SurfaceId, SurfaceManager, SurfaceShell};
 use super::workbench;
@@ -39,6 +40,7 @@ pub(crate) struct ShellView {
     panel_runtimes: PanelRuntimes,
     file_tree: FileTreeRuntime,
     project_picker: ProjectPickerRuntime,
+    language_servers: language_servers::LanguageServersRuntime,
     /// 编辑区标签栏的滚动状态。跨帧保留，否则每帧重建会丢失滚动位置。
     editor_tab_scroll: ScrollHandle,
     /// 主编辑区光标闪烁状态，由本视图的定时链驱动。
@@ -56,6 +58,7 @@ impl ShellView {
         let panel_runtimes = PanelRuntimes::new(cx);
         let file_tree = FileTreeRuntime::new(cx);
         let project_picker = ProjectPickerRuntime::new(cx);
+        let language_servers = language_servers::LanguageServersRuntime::new(cx);
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));
 
         Self {
@@ -69,6 +72,7 @@ impl ShellView {
             panel_runtimes,
             file_tree,
             project_picker,
+            language_servers,
             editor_tab_scroll: ScrollHandle::new(),
             caret: CaretBlink::new(),
         }
@@ -102,6 +106,10 @@ impl ShellView {
     ) {
         self.file_tree
             .install_listeners(Rc::clone(&self.app), window, cx);
+        self.project_picker
+            .install_listeners(self.surface_manager.clone(), window, cx);
+        self.language_servers
+            .install_listeners(self.surface_manager.clone(), window, cx);
     }
 
     /// 打开指定路径的本地项目（不弹选择器）。开发阶段默认项目经由统一项目流程。
@@ -136,6 +144,7 @@ impl ShellView {
             self.panel_runtimes.clone(),
             self.file_tree.clone(),
             self.project_picker.clone(),
+            self.language_servers.clone(),
             invocation,
         )
     }
@@ -156,6 +165,7 @@ impl ShellView {
         let panel_runtimes = self.panel_runtimes.clone();
         let file_tree = self.file_tree.clone();
         let project_picker = self.project_picker.clone();
+        let language_servers = self.language_servers.clone();
         Rc::new(move |chord, window, cx| {
             let outcome = match app.borrow_mut().dispatch_key(chord, surface) {
                 Ok(outcome) => outcome,
@@ -174,6 +184,7 @@ impl ShellView {
                 &panel_runtimes,
                 &file_tree,
                 &project_picker,
+                &language_servers,
                 window,
                 cx,
             );

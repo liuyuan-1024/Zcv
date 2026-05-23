@@ -9,13 +9,15 @@ mod source_actions;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{Corner, Div, FocusHandle, Keystroke, div, point, prelude::*, px};
+use gpui::{
+    Context, Corner, Div, Entity, FocusHandle, Keystroke, Window, div, point, prelude::*, px,
+};
 
 use crate::app::RecentProject;
 use crate::shell::normalized_chord;
 use crate::shell::shared::theme::{color, radius, space};
 use crate::shell::surfaces::{
-    SurfaceAnchor, SurfaceId, SurfaceInvokerPoint, SurfacePlacement, SurfaceRequest,
+    SurfaceAnchor, SurfaceId, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
 };
 
 use super::ProjectPickerActions;
@@ -79,6 +81,24 @@ impl ProjectPickerRuntime {
         filtered_projects(projects, &state.query)
             .get(state.selected)
             .map(|project| project.id.clone())
+    }
+
+    pub(crate) fn install_listeners<T: 'static>(
+        &self,
+        surfaces: Entity<SurfaceManager>,
+        window: &mut Window,
+        cx: &mut Context<T>,
+    ) {
+        let focus = self.focus.clone();
+        cx.on_blur(&focus, window, move |_, _, cx| {
+            surfaces.update(cx, |surfaces, cx| {
+                if surfaces.is_active(SurfaceId::ProjectPicker) {
+                    surfaces.dismiss(cx);
+                }
+            });
+            cx.notify();
+        })
+        .detach();
     }
 
     pub(crate) fn move_selection(&self, delta: isize, projects: &[RecentProject]) {

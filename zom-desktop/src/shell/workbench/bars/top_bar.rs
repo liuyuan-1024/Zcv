@@ -2,28 +2,21 @@
 //!
 //! 第一版固定槽：
 //! - leading：窗口控制圆点 + 项目入口
-//! - center：（暂空，将来承载命令面板入口或运行中任务摘要）
 //! - trailing：设置入口
 //!
 //! 与 BottomBar 共用 `bar_frame`，确保对称（布局模型 4.1）。
 
-use gpui::{AnyElement, Div, Entity, Window, div, prelude::*};
+use gpui::{AnyElement, Div, Window, div, prelude::*};
 
 use crate::shell::ShortcutLookup;
 use crate::shell::features::{project_picker, settings};
-use crate::shell::workbench::element_ids;
-use crate::shell::workbench::overlays::{AnchorRegistry, track_anchor};
+use crate::shell::shared::Glyph;
 use crate::shell::workbench::state::WorkbenchState;
 
-use super::bars::{BarEdge, BarRegionAlign, Glyph, align_bar_region, bar_frame};
+use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_frame};
+use super::window_controls::{WindowControlsHandlers, render_window_controls};
 
-mod window_controls;
-pub(crate) use window_controls::WindowControlsHandlers;
-use window_controls::render_window_controls;
-
-use zom_command::commands::{settings as settings_commands, workspace as workspace_commands};
-
-const WORKSPACE_COMMAND: &str = workspace_commands::SHOW_PROJECTS_PICKER;
+use zom_command::commands::settings as settings_commands;
 
 const SETTINGS_ID: &str = "top-bar.settings";
 const SETTINGS_COMMAND: &str = settings_commands::OPEN;
@@ -33,7 +26,6 @@ pub(crate) fn render(
     window: &Window,
     window_controls: WindowControlsHandlers,
     shortcuts: &ShortcutLookup,
-    anchor_registry: Entity<AnchorRegistry>,
     workspace_active: bool,
 ) -> Div {
     let is_window_active = window.is_window_active();
@@ -44,7 +36,6 @@ pub(crate) fn render(
                 is_window_active,
                 window_controls,
                 shortcuts,
-                anchor_registry,
                 workspace_active,
                 &state.project_title,
             ),
@@ -65,29 +56,21 @@ fn leading_slots(
     is_window_active: bool,
     window_controls: WindowControlsHandlers,
     shortcuts: &ShortcutLookup,
-    anchor_registry: Entity<AnchorRegistry>,
     workspace_active: bool,
     project_title: &str,
 ) -> Vec<AnyElement> {
-    let workspace = Glyph::text(
-        element_ids::TOP_BAR_WORKSPACE,
-        project_title,
-        project_picker::FEATURE_TITLE,
-    )
-    .command(WORKSPACE_COMMAND)
-    .active(workspace_active)
-    .render(shortcuts);
+    let workspace = project_picker::entry(project_title, workspace_active, shortcuts);
 
     vec![
         render_window_controls(is_window_active, window_controls).into_any_element(),
-        track_anchor(element_ids::TOP_BAR_WORKSPACE, anchor_registry, workspace).into_any_element(),
+        workspace,
     ]
 }
 
 fn trailing_slots(shortcuts: &ShortcutLookup) -> Vec<AnyElement> {
     vec![
         Glyph::icon(SETTINGS_ID, settings::BAR_ICON, settings::FEATURE_TITLE)
-            .command(SETTINGS_COMMAND)
-            .render(shortcuts),
+            .hint(shortcuts(SETTINGS_COMMAND))
+            .render(),
     ]
 }

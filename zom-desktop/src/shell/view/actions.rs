@@ -4,16 +4,16 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
+use zom_command::commands::workspace as workspace_commands;
 use zom_command::{HostEffect, Invocation};
 
 use crate::app::App;
 use crate::shell::ActionRequest;
 use crate::shell::features::file_tree::{FileTreeActivation, FileTreeRuntime};
-use crate::shell::features::{PanelId, PanelRuntimes};
+use crate::shell::features::{PanelId, PanelRuntimes, language_servers, project_picker};
 use crate::shell::platform::window as platform_window;
+use crate::shell::surfaces::{SurfaceManager, SurfaceRequest};
 use crate::shell::workbench::controller::WorkbenchController;
-use crate::shell::workbench::element_ids;
-use crate::shell::workbench::overlays::{OverlayAnchor, OverlayKind, OverlayManager};
 
 use super::focus::{FocusRouter, FocusTarget};
 use super::project;
@@ -21,7 +21,7 @@ use super::project;
 pub(super) fn bind_action_request(
     app: Rc<RefCell<App>>,
     workbench: Rc<RefCell<WorkbenchController>>,
-    overlays: Entity<OverlayManager>,
+    surfaces: Entity<SurfaceManager>,
     editor_focus_fallback: FocusHandle,
     panel_runtimes: PanelRuntimes,
     file_tree: FileTreeRuntime,
@@ -39,7 +39,7 @@ pub(super) fn bind_action_request(
             effects,
             &app,
             &workbench,
-            &overlays,
+            &surfaces,
             &editor_focus_fallback,
             &panel_runtimes,
             &file_tree,
@@ -56,7 +56,7 @@ pub(super) fn apply_host_effects(
     effects: Vec<HostEffect>,
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
-    overlays: &Entity<OverlayManager>,
+    surfaces: &Entity<SurfaceManager>,
     editor_focus_fallback: &FocusHandle,
     panel_runtimes: &PanelRuntimes,
     file_tree: &FileTreeRuntime,
@@ -87,9 +87,18 @@ pub(super) fn apply_host_effects(
                 window.refresh();
             }
             HostEffect::ShowProjectPicker => {
-                open_overlay(
-                    OverlayKind::ProjectPicker,
-                    overlays,
+                let open_local_project = bind_action_request(
+                    Rc::clone(app),
+                    Rc::clone(workbench),
+                    surfaces.clone(),
+                    editor_focus_fallback.clone(),
+                    panel_runtimes.clone(),
+                    file_tree.clone(),
+                    workspace_commands::open_local_project(),
+                );
+                open_surface(
+                    project_picker::request(open_local_project),
+                    surfaces,
                     editor_focus_fallback,
                     window,
                     cx,
@@ -99,22 +108,22 @@ pub(super) fn apply_host_effects(
                 project::open_local_project(
                     Rc::clone(app),
                     Rc::clone(workbench),
-                    overlays,
+                    surfaces,
                     file_tree.clone(),
                     window,
                     cx,
                 );
             }
             HostEffect::ShowLanguageServers => {
-                open_overlay(
-                    OverlayKind::LanguageServers,
-                    overlays,
+                open_surface(
+                    language_servers::request(),
+                    surfaces,
                     editor_focus_fallback,
                     window,
                     cx,
                 );
             }
-            HostEffect::DismissOverlay => dismiss_overlay(overlays, window, cx),
+            HostEffect::DismissSurface => dismiss_surface(surfaces, window, cx),
 
             HostEffect::FileTreeMoveSelection(delta) => {
                 app.borrow_mut().file_tree_move_selection(delta);
@@ -158,43 +167,33 @@ pub(super) fn apply_host_effects(
     }
 }
 
-pub(super) fn dismiss_overlay(
-    overlays: &Entity<OverlayManager>,
+pub(super) fn dismiss_surface(
+    surfaces: &Entity<SurfaceManager>,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    let Some(focus_to_restore) = overlays.update(cx, |overlays, cx| overlays.dismiss(cx)) else {
+    let Some(focus_to_restore) = surfaces.update(cx, |surfaces, cx| surfaces.dismiss(cx)) else {
         return;
     };
     window.focus(&focus_to_restore);
     window.refresh();
 }
 
-fn open_overlay(
-    kind: OverlayKind,
-    overlays: &Entity<OverlayManager>,
+fn open_surface(
+    request: SurfaceRequest,
+    surfaces: &Entity<SurfaceManager>,
     editor_focus_fallback: &FocusHandle,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    let anchor = anchor_for_overlay(kind);
     // 手册 21.7：关闭时焦点回到"先前 focus 目标"——open 这一帧 window
     // 里实际聚焦的元素。查不到（窗口刚启动等）退回 editor 焦点，避免
     // 关闭后焦点悬空。
     let focus_to_restore = window
         .focused(cx)
         .unwrap_or_else(|| editor_focus_fallback.clone());
-    overlays.update(cx, |overlays, cx| {
-        overlays.open(kind, anchor, focus_to_restore, cx);
+    surfaces.update(cx, |surfaces, cx| {
+        surfaces.open(request, focus_to_restore, cx);
     });
     window.refresh();
-}
-
-fn anchor_for_overlay(kind: OverlayKind) -> OverlayAnchor {
-    match kind {
-        OverlayKind::ProjectPicker => OverlayAnchor::Element(element_ids::TOP_BAR_WORKSPACE.into()),
-        OverlayKind::LanguageServers => {
-            OverlayAnchor::Element(element_ids::BOTTOM_BAR_LANGUAGE_SERVER.into())
-        }
-    }
 }

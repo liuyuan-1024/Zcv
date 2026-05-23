@@ -1,13 +1,13 @@
-//! `overlay.*` 命令目录。
+//! `surface.*` 命令目录。
 //!
-//! handler 只 emit [`HostEffect`]，具体关闭哪个悬浮层由宿主自己的
-//! `OverlayManager` 决定；命令系统不持有 shell 状态。
+//! handler 只 emit [`HostEffect`]，具体关闭哪个浮面由宿主自己的
+//! `SurfaceManager` 决定；命令系统不持有 shell 状态。
 
 use crate::{
     CommandArgs, CommandId, CommandOutcome, CommandRegistry, HostEffect, Invocation, Keymap, NoArgs,
 };
 
-pub const DISMISS: &str = "overlay.dismiss";
+pub const DISMISS: &str = "surface.dismiss";
 
 pub fn dismiss() -> Invocation {
     (cid(DISMISS), CommandArgs::new())
@@ -18,10 +18,10 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .install(
             keymap,
             DISMISS,
-            "关闭悬浮层",
+            "关闭浮面",
             Box::new(|ctx, args| {
                 NoArgs::try_from(args)?;
-                ctx.effects.push(HostEffect::DismissOverlay);
+                ctx.effects.push(HostEffect::DismissSurface);
                 Ok(CommandOutcome::default())
             }),
         )

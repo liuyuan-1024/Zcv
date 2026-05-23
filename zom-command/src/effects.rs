@@ -35,16 +35,16 @@ pub enum HostEffect {
     TogglePanel(String),
 
     // ===== Workspace / Project =====
-    /// 顶栏"切换项目"入口；宿主弹出最近项目悬浮面板。
+    /// 顶栏"切换项目"入口；宿主弹出最近项目。
     ShowProjectPicker,
     /// 从本机选择一个文件夹作为当前项目根目录。
     OpenLocalProject,
 
-    // ===== Overlay =====
-    /// 打开语言服务器悬浮层。
+    // ===== Surface =====
+    /// 打开语言服务器。
     ShowLanguageServers,
-    /// 关闭当前悬浮层。
-    DismissOverlay,
+    /// 关闭当前浮面。
+    DismissSurface,
 
     // ===== File tree =====
     /// 移动文件树选中行。

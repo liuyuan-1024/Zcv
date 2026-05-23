@@ -4,8 +4,8 @@
 //! 另一处的两个视角。本模块把 actions 层的焦点移动收敛到唯一出口：workbench
 //! 焦点目标的解析与 `window.focus` 调用都在这里。
 //!
-//! 不含 overlay：overlay 打开时捕获、关闭时归还的那枚 handle 由 overlay 流程
-//! （`OverlayManager` / `dismiss_overlay`）自己保管，是另一处自洽的焦点中枢。
+//! 不含 surface：surface 打开时捕获、关闭时归还的那枚 handle 由 surface 流程
+//! （`SurfaceManager` / `dismiss_surface`）自己保管，是另一处自洽的焦点中枢。
 
 use gpui::{FocusHandle, Window};
 

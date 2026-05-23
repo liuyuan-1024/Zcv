@@ -204,7 +204,7 @@ fn shortcut_for_should_return_formatted_keymap_binding() {
 }
 
 #[test]
-fn project_picker_command_should_emit_open_overlay_window_action() {
+fn project_picker_command_should_emit_open_surface_window_action() {
     let mut app = App::new();
 
     let outcome = app
@@ -249,7 +249,7 @@ fn open_local_project_should_update_project_title_and_reset_workspace() {
 }
 
 #[test]
-fn language_server_status_command_should_emit_open_overlay_window_action() {
+fn language_server_status_command_should_emit_open_surface_window_action() {
     let mut app = App::new();
 
     let actions = app
@@ -260,7 +260,7 @@ fn language_server_status_command_should_emit_open_overlay_window_action() {
 }
 
 #[test]
-fn escape_should_dispatch_overlay_dismiss_command() {
+fn escape_should_dispatch_surface_dismiss_command() {
     let mut app = App::new();
 
     let outcome = app
@@ -268,7 +268,7 @@ fn escape_should_dispatch_overlay_dismiss_command() {
         .unwrap();
 
     assert!(outcome.consumed);
-    assert_eq!(outcome.effects, vec![HostEffect::DismissOverlay]);
+    assert_eq!(outcome.effects, vec![HostEffect::DismissSurface]);
 }
 
 fn project_fixture(name: &str) -> PathBuf {

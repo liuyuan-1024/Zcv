@@ -12,8 +12,8 @@ use gpui::{AnyElement, Rgba, ScrollHandle, SharedString, Stateful, div, prelude:
 use zom_command::commands::editor;
 
 use crate::shell::ShortcutLookup;
+use crate::shell::shared::Glyph;
 use crate::shell::shared::theme::{color, radius, space, typography};
-use crate::shell::workbench::bars::Glyph;
 use crate::shell::workbench::state::{EditorState, EditorTab};
 
 /// 标签关闭标记的图标。
@@ -91,10 +91,10 @@ fn close_glyph(
         CLOSE_ICON,
         "关闭",
     )
-    .command(editor::CLOSE_TAB)
+    .hint(shortcuts(editor::CLOSE_TAB))
     .active(tab.is_active)
     .icon_size(typography::ui_line())
-    .render(shortcuts);
+    .render();
 
     div()
         .opacity(0.0)

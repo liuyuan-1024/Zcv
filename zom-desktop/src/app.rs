@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use zom_command::commands::{
     editor, file_tree as file_tree_commands, language_server as language_server_commands,
-    overlay as overlay_commands, panel as panel_commands, window as window_commands,
+    panel as panel_commands, surface as surface_commands, window as window_commands,
     workspace as workspace_commands,
 };
 use zom_command::{
@@ -86,7 +86,7 @@ impl App {
         // 组合根只选要装哪些 catalog。handler 看不到的宿主侧资源（窗口、Dock）走 HostEffect 反馈到 shell。
         editor::install(&mut registry, &mut keymap);
         file_tree_commands::install(&mut registry, &mut keymap);
-        overlay_commands::install(&mut registry, &mut keymap);
+        surface_commands::install(&mut registry, &mut keymap);
         language_server_commands::install(&mut registry, &mut keymap);
         workspace_commands::install(&mut registry, &mut keymap);
         window_commands::install(&mut registry, &mut keymap);

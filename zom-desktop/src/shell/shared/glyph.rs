@@ -1,18 +1,14 @@
-//! `ShellGlyph` —— shell bar 内的基础视觉标记（布局模型 3.2）。
+//! `Glyph` —— shell 内复用的基础视觉标记。
 //!
-//! 它可以承载文字、图标、图标 + 文字或纯视觉内容，统一携带 tooltip 数据
-//! 并在悬停时由 gpui 的 tooltip 通道呈现。
-//!
-//! `ShellGlyph` 不表达可点击语义：shell bar 内的标记更像键盘驱动工作流里
-//! 的状态与入口提示；实际动作由 keymap / 命令系统承载。鼠标悬停只展示
-//! 「可指向」的手型光标作为入口暗示。
+//! 它可以承载文字、图标、图标 + 文字，统一携带 tooltip 数据并在悬停时由
+//! GPUI 的 tooltip 通道呈现。`Glyph` 只表达视觉，不知道命令系统、bar、
+//! surface 或 invoker。
 
 use gpui::{
     AnyElement, AnyView, App, Context, ElementId, IntoElement, Pixels, Render, Svg, Window, div,
     prelude::*, svg,
 };
 
-use crate::shell::ShortcutLookup;
 use crate::shell::shared::theme::{color, radius, space, typography};
 
 #[derive(Clone)]
@@ -22,17 +18,12 @@ enum GlyphContent {
     IconText { icon: &'static str, text: String },
 }
 
-/// 一个 shell bar 内的视觉标记。
-///
-/// 接入命令系统：`command_id` 标注本 glyph 所代表的命令；`render` 时通过
-/// `ShortcutLookup` 反查 keymap，把快捷键文案填进 tooltip。
-/// 没有命令的 glyph（纯状态指示，比如 LSP / 诊断计数）保留 `command_id = None`。
-/// 不可点击 —— 触发动作的唯一入口仍是键盘 / 命令面板（布局模型 3.2）。
+/// 一个基础视觉标记。
 pub(crate) struct Glyph {
     id: ElementId,
     content: GlyphContent,
     tooltip: String,
-    command_id: Option<&'static str>,
+    hint: Option<String>,
     active: bool,
     /// 图标尺寸；只作用于 Icon / IconText 内容，默认 `typography::ui_line()`。
     icon_size: Pixels,
@@ -76,15 +67,15 @@ impl Glyph {
             id: id.into(),
             content,
             tooltip: tooltip.into(),
-            command_id: None,
+            hint: None,
             active: false,
             icon_size: typography::ui_line(),
         }
     }
 
-    /// 标注本 glyph 代表的命令 id。tooltip 会自动反查 keymap 展示快捷键。
-    pub(crate) fn command(mut self, command_id: &'static str) -> Self {
-        self.command_id = Some(command_id);
+    /// 设置 tooltip 右侧的辅助文本，例如快捷键。
+    pub(crate) fn hint(mut self, hint: impl Into<Option<String>>) -> Self {
+        self.hint = hint.into();
         self
     }
 
@@ -99,7 +90,7 @@ impl Glyph {
         self
     }
 
-    pub(crate) fn render(self, shortcuts: &ShortcutLookup) -> AnyElement {
+    pub(crate) fn render(self) -> AnyElement {
         let color_value = if self.active {
             color::gray::g95()
         } else {
@@ -108,10 +99,10 @@ impl Glyph {
         let id = self.id.clone();
         let icon_size = self.icon_size;
         let tooltip = self.tooltip.clone();
-        let shortcut = self.command_id.and_then(|cmd| shortcuts(cmd));
+        let hint = self.hint.clone();
 
         let build_tooltip = move |_window: &mut Window, cx: &mut App| -> AnyView {
-            tooltip_view(cx, tooltip.clone(), shortcut.clone())
+            tooltip_view(cx, tooltip.clone(), hint.clone())
         };
 
         match self.content {
@@ -156,15 +147,15 @@ fn svg_icon(path: &'static str, color: gpui::Rgba, size: Pixels) -> Svg {
     svg().path(path).size(size).text_color(color)
 }
 
-/// 构造 Glyph 共用的 tooltip 视图（布局模型 3.2：标题 + 可选快捷键）。
-fn tooltip_view(cx: &mut App, label: String, shortcut: Option<String>) -> AnyView {
-    cx.new(|_| GlyphTooltip { label, shortcut }).into()
+/// 构造 Glyph 共用的 tooltip 视图。
+fn tooltip_view(cx: &mut App, label: String, hint: Option<String>) -> AnyView {
+    cx.new(|_| GlyphTooltip { label, hint }).into()
 }
 
 /// Glyph 悬停时呈现的小视图。
 struct GlyphTooltip {
     label: String,
-    shortcut: Option<String>,
+    hint: Option<String>,
 }
 
 impl Render for GlyphTooltip {
@@ -188,12 +179,12 @@ impl Render for GlyphTooltip {
                     .child(self.label.clone()),
             );
 
-        if let Some(shortcut) = &self.shortcut {
+        if let Some(hint) = &self.hint {
             row = row.child(
                 div()
                     .text_size(typography::ui())
                     .text_color(color::gray::g60())
-                    .child(shortcut.clone()),
+                    .child(hint.clone()),
             );
         }
 

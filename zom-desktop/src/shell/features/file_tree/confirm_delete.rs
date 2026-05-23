@@ -11,7 +11,7 @@ use crate::shell::ActionRequest;
 use crate::shell::shared::theme::{color, radius, space, typography};
 
 /// 渲染居中删除确认弹窗。`deferred` + 高优先级让它压在所有面板与锚定
-/// overlay（priority 30）之上。
+/// surface（priority 30）之上。
 pub(super) fn render(name: &str, kind: EntryKind, handlers: &ConfirmDeleteHandlers) -> AnyElement {
     let cancel_on_scrim = handlers.cancel.clone();
     deferred(

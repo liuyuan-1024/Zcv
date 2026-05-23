@@ -8,8 +8,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    AppContext, Context, ElementInputHandler, Entity, FocusHandle, IntoElement, Render,
-    ScrollHandle, Window,
+    AppContext, BorrowAppContext, Context, ElementInputHandler, Entity, FocusHandle, IntoElement,
+    Render, ScrollHandle, Window,
 };
 use zom_command::Invocation;
 use zom_command::commands::{file_tree as file_tree_commands, window as window_commands};
@@ -19,9 +19,9 @@ use crate::app::{App, KeySurface};
 use super::editor::{CARET_BLINK_INTERVAL, CaretBlink, EditorInput};
 use super::features::PanelRuntimes;
 use super::features::file_tree::{ConfirmDeleteHandlers, FileTreeRuntime};
+use super::surfaces::{SurfaceAnchorRegistry, SurfaceId, SurfaceManager, SurfaceShell};
 use super::workbench;
 use super::workbench::controller::WorkbenchController;
-use super::workbench::overlays::{AnchorRegistry, OverlayKind, OverlayManager, OverlayShell};
 use super::workbench::state::WorkbenchState;
 use super::workbench::{PanelHost, WindowControlsHandlers};
 use super::{ActionRequest, InputHandlerHook, KeyRequest, ShortcutLookup};
@@ -31,9 +31,8 @@ pub(crate) struct ShellView {
     app: Rc<RefCell<App>>,
     workbench: Rc<RefCell<WorkbenchController>>,
     panel_host: PanelHost,
-    overlay_manager: Entity<OverlayManager>,
-    anchor_registry: Entity<AnchorRegistry>,
-    overlay_shell: Entity<OverlayShell>,
+    surface_manager: Entity<SurfaceManager>,
+    surface_shell: Entity<SurfaceShell>,
     editor_input: Entity<EditorInput>,
     editor_focus: FocusHandle,
     panel_runtimes: PanelRuntimes,
@@ -48,37 +47,20 @@ impl ShellView {
     pub(super) fn new(app: App, cx: &mut Context<Self>) -> Self {
         let app = Rc::new(RefCell::new(app));
         let workbench = Rc::new(RefCell::new(WorkbenchController::new()));
-        let overlay_manager = cx.new(|_| OverlayManager::new());
-        let anchor_registry = cx.new(|_| AnchorRegistry::new());
+        cx.update_default_global::<SurfaceAnchorRegistry, _>(|_, _| ());
+        let surface_manager = cx.new(|_| SurfaceManager::new());
         let editor_focus = cx.focus_handle();
         let editor_input = cx.new(|_| EditorInput::new(Rc::clone(&app)));
         let panel_runtimes = PanelRuntimes::new(cx);
         let file_tree = FileTreeRuntime::new(cx);
-        let open_local_project = actions::bind_action_request(
-            Rc::clone(&app),
-            Rc::clone(&workbench),
-            overlay_manager.clone(),
-            editor_focus.clone(),
-            panel_runtimes.clone(),
-            file_tree.clone(),
-            zom_command::commands::workspace::open_local_project(),
-        );
-        let overlay_shell = cx.new(|cx| {
-            OverlayShell::new(
-                overlay_manager.clone(),
-                anchor_registry.clone(),
-                open_local_project,
-                cx,
-            )
-        });
+        let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));
 
         Self {
             app,
             workbench,
             panel_host: PanelHost::new(),
-            overlay_manager,
-            anchor_registry,
-            overlay_shell,
+            surface_manager,
+            surface_shell,
             editor_input,
             editor_focus,
             panel_runtimes,
@@ -145,7 +127,7 @@ impl ShellView {
         actions::bind_action_request(
             Rc::clone(&self.app),
             Rc::clone(&self.workbench),
-            self.overlay_manager.clone(),
+            self.surface_manager.clone(),
             self.editor_focus.clone(),
             self.panel_runtimes.clone(),
             self.file_tree.clone(),
@@ -164,7 +146,7 @@ impl ShellView {
     fn key_request(&self, surface: KeySurface) -> KeyRequest {
         let app = Rc::clone(&self.app);
         let workbench = Rc::clone(&self.workbench);
-        let overlays = self.overlay_manager.clone();
+        let surfaces = self.surface_manager.clone();
         let editor_focus_fallback = self.editor_focus.clone();
         let panel_runtimes = self.panel_runtimes.clone();
         let file_tree = self.file_tree.clone();
@@ -181,7 +163,7 @@ impl ShellView {
                 outcome.effects,
                 &app,
                 &workbench,
-                &overlays,
+                &surfaces,
                 &editor_focus_fallback,
                 &panel_runtimes,
                 &file_tree,
@@ -241,11 +223,11 @@ impl Render for ShellView {
         );
         let shortcut_lookup = self.shortcut_lookup();
         let input_handler_hook = self.input_handler_hook();
-        let workspace_active = self.overlay_manager.read_with(cx, |manager, _| {
-            manager.is_active(OverlayKind::ProjectPicker)
-        });
-        let language_server_active = self.overlay_manager.read_with(cx, |manager, _| {
-            manager.is_active(OverlayKind::LanguageServers)
+        let workspace_active = self
+            .surface_manager
+            .read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker));
+        let language_server_active = self.surface_manager.read_with(cx, |manager, _| {
+            manager.is_active(SurfaceId::LanguageServers)
         });
         let confirm_delete = ConfirmDeleteHandlers {
             confirm: self.bind_action(file_tree_commands::confirm_delete()),
@@ -257,8 +239,7 @@ impl Render for ShellView {
             Rc::clone(&self.workbench),
             window,
             window_controls,
-            self.overlay_shell.clone(),
-            self.anchor_registry.clone(),
+            self.surface_shell.clone(),
             workspace_active,
             language_server_active,
             key_request,

@@ -14,7 +14,7 @@
 //!
 //! 渲染层次（手册 21.2）：
 //!   [10] WorkbenchFrame
-//!   [20] OverlayShell
+//!   [20] SurfaceShell
 //!   [30] BubbleShell
 //! 后两层骨架阶段为空 portal，不参与 layout。
 
@@ -29,20 +29,17 @@ use crate::shell::shared::theme::{color, radius};
 use crate::shell::{InputHandlerHook, KeyRequest, ShortcutLookup};
 
 mod bars;
-mod bottom_bar;
 pub(crate) mod controller;
 pub(crate) mod docks;
 mod editor_area;
-pub(crate) mod element_ids;
-pub(crate) mod overlays;
 pub(crate) mod state;
-mod top_bar;
 
+pub(crate) use self::bars::WindowControlsHandlers;
+use self::bars::{render_bottom_bar, render_top_bar};
 use self::controller::WorkbenchController;
 use self::docks::resize::{DockResizeBounds, DockResizeEvent, DockResizeRequest};
 pub(crate) use self::docks::{PanelContext, PanelHost};
-use self::overlays::{AnchorRegistry, OverlayShell};
-pub(crate) use self::top_bar::WindowControlsHandlers;
+use crate::shell::surfaces::SurfaceShell;
 use state::WorkbenchState;
 
 pub(crate) fn render(
@@ -51,8 +48,7 @@ pub(crate) fn render(
     workbench: Rc<RefCell<WorkbenchController>>,
     window: &Window,
     window_controls: WindowControlsHandlers,
-    overlay_shell: Entity<OverlayShell>,
-    anchor_registry: Entity<AnchorRegistry>,
+    surface_shell: Entity<SurfaceShell>,
     workspace_active: bool,
     language_server_active: bool,
     key_request: KeyRequest,
@@ -77,12 +73,11 @@ pub(crate) fn render(
         .border_color(color::gray::g40())
         .bg(color::gray::g05())
         .text_color(color::gray::g90())
-        .child(top_bar::render(
+        .child(render_top_bar(
             state,
             window,
             window_controls,
             &shortcut_lookup,
-            anchor_registry.clone(),
             workspace_active,
         ))
         .child(render_body(
@@ -98,15 +93,14 @@ pub(crate) fn render(
             editor_tab_scroll,
             shortcut_lookup.clone(),
         ))
-        .child(bottom_bar::render(
+        .child(render_bottom_bar(
             state,
             &shortcut_lookup,
-            anchor_registry,
             language_server_active,
         ))
-        .child(overlay_shell)
-        .child(overlays::bubble_layer::render())
-        // 删除确认模态层：处于删除确认态时压在所有面板与 overlay 之上。
+        .child(surface_shell)
+        .child(crate::shell::bubble::render())
+        // 删除确认模态层：处于删除确认态时压在所有面板与 surface 之上。
         .children(file_tree::render_confirm_delete(
             &state.file_tree,
             &confirm_delete,

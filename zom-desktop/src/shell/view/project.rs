@@ -8,20 +8,20 @@ use gpui::{Entity, Window};
 use crate::app::App;
 use crate::shell::features::file_tree::FileTreeRuntime;
 use crate::shell::platform::project as platform_project;
+use crate::shell::surfaces::SurfaceManager;
 use crate::shell::workbench::controller::WorkbenchController;
-use crate::shell::workbench::overlays::OverlayManager;
 
 use super::actions;
 
 pub(super) fn open_local_project(
     app: Rc<RefCell<App>>,
     workbench: Rc<RefCell<WorkbenchController>>,
-    overlays: &Entity<OverlayManager>,
+    surfaces: &Entity<SurfaceManager>,
     file_tree: FileTreeRuntime,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    actions::dismiss_overlay(overlays, window, cx);
+    actions::dismiss_surface(surfaces, window, cx);
     let selection = platform_project::prompt_for_local_project(cx);
     window
         .spawn(cx, async move |cx| {

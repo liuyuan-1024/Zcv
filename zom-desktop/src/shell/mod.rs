@@ -9,10 +9,12 @@
 //! 的 shared 原语和 feature API 协作。
 
 mod boot;
+pub(crate) mod bubble;
 pub(crate) mod editor;
 pub(crate) mod features;
 pub(crate) mod platform;
 pub(crate) mod shared;
+pub(crate) mod surfaces;
 mod view;
 pub(crate) mod workbench;
 

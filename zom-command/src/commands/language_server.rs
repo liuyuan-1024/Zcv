@@ -18,7 +18,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .install(
             keymap,
             OPEN_STATUS,
-            "打开语言服务器状态悬浮层",
+            "打开语言服务器状态",
             Box::new(|ctx, args| {
                 NoArgs::try_from(args)?;
                 ctx.effects.push(HostEffect::ShowLanguageServers);

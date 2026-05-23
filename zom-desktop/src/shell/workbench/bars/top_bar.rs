@@ -8,10 +8,10 @@
 
 use gpui::{AnyElement, Div, Window, div, prelude::*};
 
-use crate::shell::ShortcutLookup;
 use crate::shell::features::{project_picker, settings};
 use crate::shell::shared::Glyph;
 use crate::shell::workbench::state::WorkbenchState;
+use crate::shell::{CommandTitleLookup, ShortcutLookup};
 
 use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_frame};
 use super::window_controls::{WindowControlsHandlers, render_window_controls};
@@ -26,6 +26,7 @@ pub(crate) fn render(
     window: &Window,
     window_controls: WindowControlsHandlers,
     shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
     workspace_active: bool,
 ) -> Div {
     let is_window_active = window.is_window_active();
@@ -36,13 +37,17 @@ pub(crate) fn render(
                 is_window_active,
                 window_controls,
                 shortcuts,
+                titles,
                 workspace_active,
                 &state.project_title,
             ),
             BarRegionAlign::Leading,
         ))
         .child(region(Vec::new(), BarRegionAlign::Center))
-        .child(region(trailing_slots(shortcuts), BarRegionAlign::Trailing))
+        .child(region(
+            trailing_slots(shortcuts, titles),
+            BarRegionAlign::Trailing,
+        ))
 }
 
 fn region(items: Vec<AnyElement>, align: BarRegionAlign) -> Div {
@@ -56,10 +61,11 @@ fn leading_slots(
     is_window_active: bool,
     window_controls: WindowControlsHandlers,
     shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
     workspace_active: bool,
     project_title: &str,
 ) -> Vec<AnyElement> {
-    let workspace = project_picker::entry(project_title, workspace_active, shortcuts);
+    let workspace = project_picker::entry(project_title, workspace_active, shortcuts, titles);
 
     vec![
         render_window_controls(is_window_active, window_controls).into_any_element(),
@@ -67,9 +73,10 @@ fn leading_slots(
     ]
 }
 
-fn trailing_slots(shortcuts: &ShortcutLookup) -> Vec<AnyElement> {
+fn trailing_slots(shortcuts: &ShortcutLookup, titles: &CommandTitleLookup) -> Vec<AnyElement> {
+    let settings_title = titles(SETTINGS_COMMAND).unwrap_or_else(|| SETTINGS_COMMAND.to_string());
     vec![
-        Glyph::icon(SETTINGS_ID, settings::BAR_ICON, settings::FEATURE_TITLE)
+        Glyph::icon(SETTINGS_ID, settings::BAR_ICON, settings_title)
             .hint(shortcuts(SETTINGS_COMMAND))
             .render(),
     ]

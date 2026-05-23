@@ -5,12 +5,12 @@
 
 use std::rc::Rc;
 
-use gpui::{AnyElement, Div, FocusHandle, div, prelude::*};
+use gpui::{AnyElement, Div, FocusHandle, SharedString, div, prelude::*};
 
 use crate::shell::features::file_tree::FileTreePanel;
 use crate::shell::features::{PanelId, PanelRuntimes, file_tree};
 use crate::shell::shared::theme::{color, typography};
-use crate::shell::{KeyRequest, normalized_chord};
+use crate::shell::{CommandTitleLookup, KeyRequest, normalized_chord};
 
 /// Dock 调用 `PanelHost` 时透传给具体 panel 的运行态视图。
 ///
@@ -22,6 +22,7 @@ pub(crate) struct PanelContext<'a> {
     pub(crate) file_tree: FileTreePanel<'a>,
     pub(crate) panel_runtimes: &'a PanelRuntimes,
     pub(crate) panel_key_request: &'a KeyRequest,
+    pub(crate) command_title_lookup: &'a CommandTitleLookup,
 }
 
 pub(crate) struct PanelHost;
@@ -36,7 +37,7 @@ impl PanelHost {
             PanelId::FileTree => file_tree::render(ctx).into_any_element(),
             _ => ctx
                 .panel_runtimes
-                .render(id, ctx.panel_key_request)
+                .render(id, ctx.panel_key_request, ctx.command_title_lookup)
                 .unwrap_or_else(|| gpui::div().into_any_element()),
         }
     }
@@ -70,7 +71,7 @@ pub(crate) fn render_focus_host(
 }
 
 /// 第一版骨架阶段的 panel 占位体。真实 panel 接入自己的 UI 后不再使用它。
-pub(crate) fn placeholder(hint: &'static str) -> Div {
+pub(crate) fn placeholder(hint: impl Into<SharedString>) -> Div {
     div().flex().flex_col().size_full().child(
         div()
             .flex_1()
@@ -79,6 +80,6 @@ pub(crate) fn placeholder(hint: &'static str) -> Div {
             .justify_center()
             .text_size(typography::ui())
             .text_color(color::gray::g60())
-            .child(hint),
+            .child(hint.into()),
     )
 }

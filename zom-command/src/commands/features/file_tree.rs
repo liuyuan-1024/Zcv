@@ -11,6 +11,7 @@ use crate::{
     HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, reject_unknown_args, required_arg,
 };
 
+pub const TOGGLE_PANEL: &str = "panel.toggle.file_tree";
 pub const MOVE_SELECTION: &str = "file_tree.move_selection";
 pub const COLLAPSE_OR_PARENT: &str = "file_tree.collapse_or_parent";
 pub const EXPAND_OR_INTO: &str = "file_tree.expand_or_into";
@@ -88,6 +89,10 @@ impl TryFrom<CommandArgs> for BeginNewEntryArgs {
     }
 }
 
+pub fn toggle_panel() -> Invocation {
+    super::panel_toggle_invocation(TOGGLE_PANEL)
+}
+
 pub fn move_selection(delta: isize) -> Invocation {
     (cid(MOVE_SELECTION), MoveSelectionArgs { delta }.into())
 }
@@ -133,6 +138,15 @@ pub fn cancel_delete() -> Invocation {
 }
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
+    super::register_panel_toggle(
+        registry,
+        keymap,
+        TOGGLE_PANEL,
+        "file_tree",
+        "文件树",
+        "mod-shift-e",
+    );
+
     let navigate = KeyBindingContext::file_tree(FileTreeKeyMode::Navigate);
     let pending_name = KeyBindingContext::file_tree(FileTreeKeyMode::PendingName);
     let pending_delete = KeyBindingContext::file_tree(FileTreeKeyMode::PendingDelete);

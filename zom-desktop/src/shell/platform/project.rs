@@ -5,30 +5,29 @@
 
 use std::path::PathBuf;
 
-use gpui::{App, PathPromptOptions, SharedString};
+use gpui::{App, PathPromptOptions};
 
 pub(crate) fn prompt_for_local_project(
     cx: &mut App,
 ) -> impl std::future::Future<Output = Option<PathBuf>> + use<> {
-    prompt_for_directory(cx, "打开本地项目", "打开本地项目")
+    prompt_for_directory(cx, "打开本地项目")
 }
 
 pub(crate) fn prompt_for_clone_parent(
     cx: &mut App,
 ) -> impl std::future::Future<Output = Option<PathBuf>> + use<> {
-    prompt_for_directory(cx, "选择 Git 克隆位置", "选择克隆位置")
+    prompt_for_directory(cx, "选择克隆位置")
 }
 
 fn prompt_for_directory(
     cx: &mut App,
-    prompt: &'static str,
     error_context: &'static str,
 ) -> impl std::future::Future<Output = Option<PathBuf>> + use<> {
     let receiver = cx.prompt_for_paths(PathPromptOptions {
         files: false,
         directories: true,
         multiple: false,
-        prompt: Some(SharedString::from(prompt)),
+        prompt: None,
     });
 
     async move {

@@ -7,7 +7,7 @@
 
 use gpui::{AnyElement, Context, FocusHandle, IntoElement};
 
-use crate::shell::KeyRequest;
+use crate::shell::{CommandTitleLookup, KeyRequest};
 
 pub(crate) mod debug;
 pub(crate) mod diagnostics;
@@ -58,21 +58,30 @@ impl PanelRuntimes {
         }
     }
 
-    pub(crate) fn render(&self, panel: PanelId, key_request: &KeyRequest) -> Option<AnyElement> {
+    pub(crate) fn render(
+        &self,
+        panel: PanelId,
+        key_request: &KeyRequest,
+        titles: &CommandTitleLookup,
+    ) -> Option<AnyElement> {
         match panel {
             PanelId::FileTree => None,
-            PanelId::VersionControl => {
-                Some(self.version_control.render(key_request).into_any_element())
-            }
-            PanelId::Outline => Some(self.outline.render(key_request).into_any_element()),
-            PanelId::ProjectSearch => {
-                Some(self.project_search.render(key_request).into_any_element())
-            }
-            PanelId::Terminal => Some(self.terminal.render(key_request).into_any_element()),
-            PanelId::Debug => Some(self.debug.render(key_request).into_any_element()),
+            PanelId::VersionControl => Some(
+                self.version_control
+                    .render(key_request, titles)
+                    .into_any_element(),
+            ),
+            PanelId::Outline => Some(self.outline.render(key_request, titles).into_any_element()),
+            PanelId::ProjectSearch => Some(
+                self.project_search
+                    .render(key_request, titles)
+                    .into_any_element(),
+            ),
+            PanelId::Terminal => Some(self.terminal.render(key_request, titles).into_any_element()),
+            PanelId::Debug => Some(self.debug.render(key_request, titles).into_any_element()),
             PanelId::KeyboardShortcuts => Some(
                 self.keyboard_shortcuts
-                    .render(key_request)
+                    .render(key_request, titles)
                     .into_any_element(),
             ),
         }

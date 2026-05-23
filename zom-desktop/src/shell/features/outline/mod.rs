@@ -3,12 +3,14 @@
 //! 第一版骨架：渲染「占位中」灰字；LSP 接入后填充符号大纲。
 
 use gpui::{Context, Div, FocusHandle, IntoElement};
+use zom_command::commands::outline;
 
-use crate::shell::KeyRequest;
 use crate::shell::workbench::docks::{placeholder, render_focus_host};
+use crate::shell::{CommandTitleLookup, KeyRequest};
 
 pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/outline.svg";
-pub(crate) const PANEL_TITLE: &str = "大纲";
+
+const COMMAND: &str = outline::TOGGLE_PANEL;
 
 #[derive(Clone)]
 pub(crate) struct OutlineRuntime {
@@ -26,11 +28,12 @@ impl OutlineRuntime {
         self.focus.clone()
     }
 
-    pub(crate) fn render(&self, key_request: &KeyRequest) -> Div {
+    pub(crate) fn render(&self, key_request: &KeyRequest, titles: &CommandTitleLookup) -> Div {
+        let title = titles(COMMAND).unwrap_or_else(|| COMMAND.to_string());
         render_focus_host(
             &self.focus,
             key_request,
-            placeholder("大纲占位中").into_any_element(),
+            placeholder(format!("{title}占位中")).into_any_element(),
         )
     }
 }

@@ -2,8 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use zom_command::commands::{
+    debug, diagnostics,
     editor::{self, InsertTextArgs, MoveSelectionArgs, ReplaceSelectionArgs},
-    file_tree,
+    file_tree, keyboard_shortcuts, outline, project_search, settings, terminal, version_control,
 };
 use zom_command::{
     Command, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId, CommandQueue,
@@ -107,6 +108,42 @@ fn text(workspace: &Workspace, buffer_id: BufferId) -> String {
         .buffer()
         .text()
         .into_owned()
+}
+
+#[test]
+fn install_all_should_register_every_builtin_command_catalog() {
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    zom_command::commands::install_all(&mut registry, &mut keymap);
+
+    let registered_titles = [
+        (settings::OPEN, "设置"),
+        (diagnostics::SHOW_PROBLEMS, "诊断"),
+        (file_tree::TOGGLE_PANEL, "文件树"),
+        (version_control::TOGGLE_PANEL, "版本管理"),
+        (outline::TOGGLE_PANEL, "大纲"),
+        (project_search::TOGGLE_PANEL, "项目搜索"),
+        (terminal::TOGGLE_PANEL, "终端"),
+        (debug::TOGGLE_PANEL, "调试"),
+        (keyboard_shortcuts::TOGGLE_PANEL, "快捷键"),
+    ];
+
+    for (id, title) in registered_titles {
+        let id = command_id(id);
+        let command = registry.command(&id).expect("命令必须注册");
+        assert_eq!(command.title, title);
+    }
+
+    assert!(
+        keymap
+            .format_shortcut_for(&command_id(settings::OPEN))
+            .is_some()
+    );
+    assert!(
+        keymap
+            .format_shortcut_for(&command_id(file_tree::TOGGLE_PANEL))
+            .is_some()
+    );
 }
 
 #[test]

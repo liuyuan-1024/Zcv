@@ -26,7 +26,7 @@ use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
 use crate::shell::features::PanelRuntimes;
 use crate::shell::features::file_tree::{self, ConfirmDeleteHandlers, FileTreePanel};
 use crate::shell::shared::theme::{color, radius};
-use crate::shell::{InputHandlerHook, KeyRequest, ShortcutLookup};
+use crate::shell::{CommandTitleLookup, InputHandlerHook, KeyRequest, ShortcutLookup};
 
 mod bars;
 pub(crate) mod controller;
@@ -54,6 +54,7 @@ pub(crate) fn render(
     key_request: KeyRequest,
     panel_key_request: KeyRequest,
     shortcut_lookup: ShortcutLookup,
+    command_title_lookup: CommandTitleLookup,
     input_handler_hook: InputHandlerHook,
     editor_focus: FocusHandle,
     panel_runtimes: PanelRuntimes,
@@ -78,6 +79,7 @@ pub(crate) fn render(
             window,
             window_controls,
             &shortcut_lookup,
+            &command_title_lookup,
             workspace_active,
         ))
         .child(render_body(
@@ -92,10 +94,12 @@ pub(crate) fn render(
             file_tree,
             editor_tab_scroll,
             shortcut_lookup.clone(),
+            command_title_lookup.clone(),
         ))
         .child(render_bottom_bar(
             state,
             &shortcut_lookup,
+            &command_title_lookup,
             language_server_active,
         ))
         .child(surface_shell)
@@ -119,12 +123,14 @@ fn render_body(
     file_tree: FileTreePanel<'_>,
     editor_tab_scroll: ScrollHandle,
     shortcut_lookup: ShortcutLookup,
+    command_title_lookup: CommandTitleLookup,
 ) -> Div {
     let panel_ctx = PanelContext {
         has_project: state.has_project,
         file_tree,
         panel_runtimes: &panel_runtimes,
         panel_key_request: &panel_key_request,
+        command_title_lookup: &command_title_lookup,
     };
     let mut row = div().flex_1().flex().flex_row().w_full().overflow_hidden();
 
@@ -147,6 +153,7 @@ fn render_body(
         Rc::clone(&dock_resize),
         editor_tab_scroll,
         shortcut_lookup,
+        Rc::clone(&command_title_lookup),
     ));
     if state.right_dock.is_visible() {
         row = row.child(docks::right::render(

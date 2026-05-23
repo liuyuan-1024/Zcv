@@ -11,7 +11,7 @@ use std::fs::{File, create_dir_all};
 use std::path::PathBuf;
 use zom_command::HostEffect;
 use zom_command::commands::{
-    editor, language_server as language_server_commands, workspace as workspace_commands,
+    diagnostics, editor, language_servers, project_picker as project_picker_commands, settings,
 };
 use zom_workspace::EntryKind;
 
@@ -193,14 +193,38 @@ fn shortcut_for_should_return_formatted_keymap_binding() {
     assert!(!save.is_empty());
     assert!(!file_tree.is_empty());
 
-    // 未注册 / 未绑定的命令：返回 None。
-    // settings.open 命令 id 已在 zom-command 占位（commands::settings），
-    // 但 catalog 还没 install handler / 绑键，所以反查应当 None。
-    assert!(
-        app.shortcut_for(zom_command::commands::settings::OPEN)
-            .is_none()
-    );
+    let settings = app
+        .shortcut_for(settings::OPEN)
+        .expect("settings.open 必有快捷键");
+    assert!(!settings.is_empty());
+
+    // 未注册的命令：返回 None。
     assert!(app.shortcut_for("不存在的命令").is_none());
+}
+
+#[test]
+fn command_title_for_should_read_registered_command_metadata() {
+    let app = App::new();
+
+    assert_eq!(
+        app.command_title_for(project_picker_commands::SHOW_PROJECTS_PICKER)
+            .as_deref(),
+        Some("切换项目")
+    );
+    assert_eq!(
+        app.command_title_for(PanelId::FileTree.toggle_command_id())
+            .as_deref(),
+        Some("文件树")
+    );
+
+    assert_eq!(
+        app.command_title_for(settings::OPEN).as_deref(),
+        Some("设置")
+    );
+    assert_eq!(
+        app.command_title_for(diagnostics::SHOW_PROBLEMS).as_deref(),
+        Some("诊断")
+    );
 }
 
 #[test]
@@ -220,7 +244,7 @@ fn open_local_project_command_should_emit_window_action() {
     let mut app = App::new();
 
     let actions = app
-        .dispatch(workspace_commands::open_local_project())
+        .dispatch(project_picker_commands::open_local_project())
         .unwrap();
 
     assert_eq!(actions, vec![HostEffect::OpenLocalProject]);
@@ -231,23 +255,25 @@ fn project_action_commands_should_have_shortcuts_and_emit_effects() {
     let mut app = App::new();
 
     assert!(
-        app.shortcut_for(workspace_commands::OPEN_LOCAL_PROJECT)
+        app.shortcut_for(project_picker_commands::OPEN_LOCAL_PROJECT)
             .is_some()
     );
     assert!(
-        app.shortcut_for(workspace_commands::START_GIT_CLONE)
+        app.shortcut_for(project_picker_commands::START_GIT_CLONE)
             .is_some()
     );
     assert!(
-        app.shortcut_for(workspace_commands::REMOVE_RECENT_PROJECT)
+        app.shortcut_for(project_picker_commands::REMOVE_RECENT_PROJECT)
             .is_some()
     );
 
-    let actions = app.dispatch(workspace_commands::start_git_clone()).unwrap();
+    let actions = app
+        .dispatch(project_picker_commands::start_git_clone())
+        .unwrap();
     assert_eq!(actions, vec![HostEffect::StartGitClone]);
 
     let actions = app
-        .dispatch(workspace_commands::remove_recent_project())
+        .dispatch(project_picker_commands::remove_recent_project())
         .unwrap();
     assert_eq!(actions, vec![HostEffect::RemoveSelectedRecentProject]);
 }
@@ -339,11 +365,20 @@ fn recent_projects_should_persist_to_file() {
 fn language_server_status_command_should_emit_open_surface_window_action() {
     let mut app = App::new();
 
-    let actions = app
-        .dispatch(language_server_commands::open_status())
-        .unwrap();
+    let actions = app.dispatch(language_servers::open_status()).unwrap();
 
     assert_eq!(actions, vec![HostEffect::ShowLanguageServers]);
+}
+
+#[test]
+fn settings_and_diagnostics_commands_should_be_registered() {
+    let mut app = App::new();
+
+    let actions = app.dispatch(settings::open()).unwrap();
+    assert_eq!(actions, vec![HostEffect::ShowSettings]);
+
+    let actions = app.dispatch(diagnostics::show_problems()).unwrap();
+    assert_eq!(actions, vec![HostEffect::ShowDiagnostics]);
 }
 
 #[test]

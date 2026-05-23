@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Corner, Div, FocusHandle, Keystroke, div, point, prelude::*, px};
-use zom_command::commands::workspace as workspace_commands;
+use zom_command::commands::project_picker as project_picker_commands;
 
 use crate::app::RecentProject;
 use crate::shell::normalized_chord;
@@ -339,6 +339,7 @@ fn project_row(
 }
 
 fn project_actions(index: usize, actions: &ProjectPickerActions) -> Div {
+    let remove_command = project_picker_commands::REMOVE_RECENT_PROJECT;
     div()
         .flex_shrink_0()
         .flex()
@@ -349,11 +350,9 @@ fn project_actions(index: usize, actions: &ProjectPickerActions) -> Div {
             Glyph::icon(
                 ("project-picker.remove-recent", index),
                 REMOVE_ICON,
-                "移除最近项目记录",
+                command_title(actions, remove_command),
             )
-            .hint((actions.shortcut_lookup)(
-                workspace_commands::REMOVE_RECENT_PROJECT,
-            ))
+            .hint((actions.shortcut_lookup)(remove_command))
             .render(),
         )
 }
@@ -398,19 +397,23 @@ fn action_section(mode: PickerMode, actions: &ProjectPickerActions) -> Div {
         .flex_col()
         .gap(space::s4())
         .child(action_row(
-            "从本地路径导入",
+            command_title(actions, project_picker_commands::OPEN_LOCAL_PROJECT),
             command_shortcut(
                 actions,
-                workspace_commands::OPEN_LOCAL_PROJECT,
+                project_picker_commands::OPEN_LOCAL_PROJECT,
                 "Cmd/Ctrl+L",
             ),
         ))
         .child(action_row(
-            "从 Git 地址克隆",
+            command_title(actions, project_picker_commands::START_GIT_CLONE),
             if mode == PickerMode::CloneGit {
                 "Enter".to_string()
             } else {
-                command_shortcut(actions, workspace_commands::START_GIT_CLONE, "Cmd/Ctrl+G")
+                command_shortcut(
+                    actions,
+                    project_picker_commands::START_GIT_CLONE,
+                    "Cmd/Ctrl+G",
+                )
             },
         ))
 }
@@ -423,7 +426,11 @@ fn command_shortcut(
     (actions.shortcut_lookup)(command_id).unwrap_or_else(|| fallback.to_string())
 }
 
-fn action_row(label: &'static str, hint: String) -> Div {
+fn command_title(actions: &ProjectPickerActions, command_id: &'static str) -> String {
+    (actions.command_title_lookup)(command_id).unwrap_or_else(|| command_id.to_string())
+}
+
+fn action_row(label: String, hint: String) -> Div {
     div()
         .h(px(28.0))
         .flex()

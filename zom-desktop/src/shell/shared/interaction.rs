@@ -14,5 +14,8 @@ pub(crate) type KeyRequest = Rc<dyn Fn(String, &mut Window, &mut GpuiApp) -> boo
 /// 反查某条命令的快捷键文案。`None` 表示命令未绑定，UI 不显示快捷键占位。
 pub(crate) type ShortcutLookup = Rc<dyn Fn(&str) -> Option<String>>;
 
+/// 反查某条命令的显示标题。占位命令尚未注册时由调用方提供领域内 fallback。
+pub(crate) type CommandTitleLookup = Rc<dyn Fn(&str) -> Option<String>>;
+
 /// 在 paint 阶段把活动编辑区的编辑器输入宿主注册为系统输入法接收端。
 pub(crate) type InputHandlerHook = Rc<dyn Fn(Bounds<Pixels>, &mut Window, &mut GpuiApp)>;

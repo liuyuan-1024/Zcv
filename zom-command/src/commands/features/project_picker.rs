@@ -13,25 +13,20 @@ pub const OPEN_LOCAL_PROJECT: &str = "workspace.open_local_project";
 pub const START_GIT_CLONE: &str = "workspace.start_git_clone";
 pub const REMOVE_RECENT_PROJECT: &str = "workspace.remove_recent_project";
 
+pub fn show_projects_picker() -> Invocation {
+    (cid(SHOW_PROJECTS_PICKER), CommandArgs::new())
+}
+
 pub fn open_local_project() -> Invocation {
-    (
-        CommandId::new(OPEN_LOCAL_PROJECT).expect("内建命令 ID 必须非空"),
-        CommandArgs::new(),
-    )
+    (cid(OPEN_LOCAL_PROJECT), CommandArgs::new())
 }
 
 pub fn start_git_clone() -> Invocation {
-    (
-        CommandId::new(START_GIT_CLONE).expect("内建命令 ID 必须非空"),
-        CommandArgs::new(),
-    )
+    (cid(START_GIT_CLONE), CommandArgs::new())
 }
 
 pub fn remove_recent_project() -> Invocation {
-    (
-        CommandId::new(REMOVE_RECENT_PROJECT).expect("内建命令 ID 必须非空"),
-        CommandArgs::new(),
-    )
+    (cid(REMOVE_RECENT_PROJECT), CommandArgs::new())
 }
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
@@ -57,7 +52,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .install(
             keymap,
             START_GIT_CLONE,
-            "从 Git 地址克隆",
+            "从 Git 地址导入",
             emit(HostEffect::StartGitClone),
         )
         .key("mod-g");
@@ -66,7 +61,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .install(
             keymap,
             REMOVE_RECENT_PROJECT,
-            "移除最近项目记录",
+            "移除最近项目",
             emit(HostEffect::RemoveSelectedRecentProject),
         )
         .key("mod-backspace");
@@ -79,4 +74,8 @@ fn emit(effect: HostEffect) -> CommandHandler {
         ctx.effects.push(effect.clone());
         Ok(CommandOutcome::default())
     })
+}
+
+fn cid(id: &'static str) -> CommandId {
+    CommandId::new(id).expect("内建命令 ID 必须非空")
 }

@@ -33,10 +33,10 @@ pub const INDENT: &str = "editor.indent";
 pub const OUTDENT: &str = "editor.outdent";
 pub const DELETE_BACKWARD: &str = "editor.delete_backward";
 pub const DELETE_FORWARD: &str = "editor.delete_forward";
+pub const MOVE_SELECTION: &str = "editor.move_selection";
 pub const SELECT_ALL: &str = "editor.select_all";
 pub const UNDO: &str = "editor.undo";
 pub const REDO: &str = "editor.redo";
-pub const MOVE_SELECTION: &str = "editor.move_selection";
 pub const IME_COMMIT: &str = "editor.ime_commit";
 pub const IME_CANCEL: &str = "editor.ime_cancel";
 pub const IME_CONFIRM: &str = "editor.ime_confirm";
@@ -276,18 +276,6 @@ pub fn delete_forward() -> Invocation {
     (cid(DELETE_FORWARD), CommandArgs::new())
 }
 
-pub fn select_all() -> Invocation {
-    (cid(SELECT_ALL), CommandArgs::new())
-}
-
-pub fn undo() -> Invocation {
-    (cid(UNDO), CommandArgs::new())
-}
-
-pub fn redo() -> Invocation {
-    (cid(REDO), CommandArgs::new())
-}
-
 pub fn move_selection(
     direction: MovementDirection,
     motion: impl Into<Motion>,
@@ -299,6 +287,18 @@ pub fn move_selection(
         extend,
     };
     (cid(MOVE_SELECTION), args.into())
+}
+
+pub fn select_all() -> Invocation {
+    (cid(SELECT_ALL), CommandArgs::new())
+}
+
+pub fn undo() -> Invocation {
+    (cid(UNDO), CommandArgs::new())
+}
+
+pub fn redo() -> Invocation {
+    (cid(REDO), CommandArgs::new())
 }
 
 pub fn ime_commit(text: impl Into<String>) -> Invocation {
@@ -339,19 +339,13 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     let text_edit_multiline = KeyBindingContext::text_edit_multiline();
     let text_edit_composition = KeyBindingContext::text_edit_composition();
 
-    // 没有默认键位的命令（文本输入走 IME；命令面板 / AI 直接调用）只 install 不 .key。
+    // 没有默认键位的文本输入命令（文本输入走 IME；命令面板 / AI 直接调用）只 install 不 .key。
     registry.install(keymap, INSERT_TEXT, "插入文本", Box::new(run_insert_text));
     registry.install(
         keymap,
         REPLACE_SELECTION,
         "替换选区",
         Box::new(run_replace_selection),
-    );
-    registry.install(
-        keymap,
-        IME_COMMIT,
-        "提交输入法组合",
-        Box::new(run_ime_commit),
     );
 
     registry
@@ -385,33 +379,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_delete_forward),
         )
         .key_in("delete", text_edit);
-    registry
-        .install(keymap, SELECT_ALL, "全选", Box::new(run_select_all))
-        .key_in("mod-a", text_edit);
-    registry
-        .install(keymap, UNDO, "撤销", Box::new(run_undo))
-        .key_in("mod-z", text_edit);
-    registry
-        .install(keymap, REDO, "重做", Box::new(run_redo))
-        .key_in("mod-shift-z", text_edit);
-    registry
-        .install(
-            keymap,
-            IME_CANCEL,
-            "取消输入法组合",
-            Box::new(run_ime_cancel),
-        )
-        .key_in("escape", text_edit_composition);
-    registry
-        .install(
-            keymap,
-            IME_CONFIRM,
-            "确认输入法组合",
-            Box::new(run_ime_confirm),
-        )
-        .key_in("enter", text_edit_composition)
-        .key_in("return", text_edit_composition);
-
     // 光标 / 选区的全部 移动 / 扩展 变体共用一条命令，按预设 args 区分。
     use MovementDirection::*;
     use MovementUnit::*;
@@ -473,6 +440,39 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_with_in("shift-home", move_args(Previous, LineEdge, true), text_edit)
         .key_with_in("shift-end", move_args(Next, LineEdge, true), text_edit);
 
+    registry
+        .install(keymap, SELECT_ALL, "全选", Box::new(run_select_all))
+        .key_in("mod-a", text_edit);
+    registry
+        .install(keymap, UNDO, "撤销", Box::new(run_undo))
+        .key_in("mod-z", text_edit);
+    registry
+        .install(keymap, REDO, "重做", Box::new(run_redo))
+        .key_in("mod-shift-z", text_edit);
+    registry.install(
+        keymap,
+        IME_COMMIT,
+        "提交输入法组合",
+        Box::new(run_ime_commit),
+    );
+    registry
+        .install(
+            keymap,
+            IME_CANCEL,
+            "取消输入法组合",
+            Box::new(run_ime_cancel),
+        )
+        .key_in("escape", text_edit_composition);
+    registry
+        .install(
+            keymap,
+            IME_CONFIRM,
+            "确认输入法组合",
+            Box::new(run_ime_confirm),
+        )
+        .key_in("enter", text_edit_composition)
+        .key_in("return", text_edit_composition);
+
     // 标签切换 / 关闭：键盘驱动，不接鼠标。
     // 下/上一个用 mod-l/h；mod-w 关当前。
     registry
@@ -493,10 +493,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_in("mod-s", text_edit);
 }
 
-fn select_tab_args(target: SelectTabTarget) -> CommandArgs {
-    SelectTabArgs { target }.into()
-}
-
 fn move_args(direction: MovementDirection, motion: impl Into<Motion>, extend: bool) -> CommandArgs {
     MoveSelectionArgs {
         direction,
@@ -504,6 +500,10 @@ fn move_args(direction: MovementDirection, motion: impl Into<Motion>, extend: bo
         extend,
     }
     .into()
+}
+
+fn select_tab_args(target: SelectTabTarget) -> CommandArgs {
+    SelectTabArgs { target }.into()
 }
 
 // ==================================================

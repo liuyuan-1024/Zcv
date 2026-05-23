@@ -9,7 +9,7 @@ use crate::shell::workbench::docks::bottom;
 use crate::shell::workbench::docks::resize::DockResizeRequest;
 use crate::shell::workbench::state::{DockState, EditorState};
 use crate::shell::workbench::{PanelContext, PanelHost};
-use crate::shell::{InputHandlerHook, KeyRequest, ShortcutLookup};
+use crate::shell::{CommandTitleLookup, InputHandlerHook, KeyRequest, ShortcutLookup};
 
 mod editor_pane;
 mod tab_bar;
@@ -25,11 +25,17 @@ pub(crate) fn render(
     resize: DockResizeRequest,
     tab_scroll: ScrollHandle,
     shortcut_lookup: ShortcutLookup,
+    command_title_lookup: CommandTitleLookup,
 ) -> Div {
     let mut column = div().flex_1().flex().flex_col().h_full().overflow_hidden();
     // 有打开的文件才显示标签栏；空态不挂这条 sliver。
     if !editor_state.tabs.is_empty() {
-        column = column.child(tab_bar::render(editor_state, tab_scroll, &shortcut_lookup));
+        column = column.child(tab_bar::render(
+            editor_state,
+            tab_scroll,
+            &shortcut_lookup,
+            &command_title_lookup,
+        ));
     }
     column = column.child(editor_pane::render(
         editor_state,

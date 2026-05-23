@@ -1,31 +1,31 @@
-//! `language_server.*` 命令目录。
+//! `settings.*` 命令目录。
 //!
-//! 语言服务器域只表达"当前项目打开了哪些语言服务器、状态如何"；诊断
-//! 问题列表留在 `diagnostics.*` 域。
+//! 设置界面暂未实现；命令先完整注册，宿主收到 effect 后决定展示占位或忽略。
 
 use crate::{
     CommandArgs, CommandId, CommandOutcome, CommandRegistry, HostEffect, Invocation, Keymap, NoArgs,
 };
 
-pub const OPEN_STATUS: &str = "language_server.open_status";
+/// 打开设置面板。
+pub const OPEN: &str = "settings.open";
 
-pub fn open_status() -> Invocation {
-    (cid(OPEN_STATUS), CommandArgs::new())
+pub fn open() -> Invocation {
+    (cid(OPEN), CommandArgs::new())
 }
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     registry
         .install(
             keymap,
-            OPEN_STATUS,
-            "打开语言服务器状态",
+            OPEN,
+            "设置",
             Box::new(|ctx, args| {
                 NoArgs::try_from(args)?;
-                ctx.effects.push(HostEffect::ShowLanguageServers);
+                ctx.effects.push(HostEffect::ShowSettings);
                 Ok(CommandOutcome::default())
             }),
         )
-        .key("mod-shift-l");
+        .key("mod-,");
 }
 
 fn cid(id: &'static str) -> CommandId {

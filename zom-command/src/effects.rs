@@ -47,6 +47,10 @@ pub enum HostEffect {
     // ===== Surface =====
     /// 打开语言服务器。
     ShowLanguageServers,
+    /// 打开设置界面。
+    ShowSettings,
+    /// 打开诊断问题列表。
+    ShowDiagnostics,
     /// 关闭当前浮面。
     DismissSurface,
 

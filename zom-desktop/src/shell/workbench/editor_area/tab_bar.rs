@@ -11,10 +11,10 @@
 use gpui::{AnyElement, Rgba, ScrollHandle, SharedString, Stateful, div, prelude::*};
 use zom_command::commands::editor;
 
-use crate::shell::ShortcutLookup;
 use crate::shell::shared::Glyph;
 use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::state::{EditorState, EditorTab};
+use crate::shell::{CommandTitleLookup, ShortcutLookup};
 
 /// 标签关闭标记的图标。
 const CLOSE_ICON: &str = "icons/features/tab/close.svg";
@@ -23,6 +23,7 @@ pub(crate) fn render(
     state: &EditorState,
     scroll: ScrollHandle,
     shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
 ) -> Stateful<gpui::Div> {
     // 把活动标签滚进可视区——scroll_to_item 记下目标，实际滚动在 prepaint 完成。
     if let Some(active) = state.tabs.iter().position(|tab| tab.is_active) {
@@ -41,12 +42,16 @@ pub(crate) fn render(
         .overflow_x_scroll();
 
     for tab in &state.tabs {
-        bar = bar.child(render_tab(tab, shortcuts));
+        bar = bar.child(render_tab(tab, shortcuts, titles));
     }
     bar
 }
 
-fn render_tab(tab: &EditorTab, shortcuts: &ShortcutLookup) -> Stateful<gpui::Div> {
+fn render_tab(
+    tab: &EditorTab,
+    shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
+) -> Stateful<gpui::Div> {
     // 配色复用统一灰度：活动标签 g95 + g20 背景高亮，其余 g75 透明底。
     let (bg, text) = if tab.is_active {
         (color::gray::g20(), color::gray::g95())
@@ -74,7 +79,7 @@ fn render_tab(tab: &EditorTab, shortcuts: &ShortcutLookup) -> Stateful<gpui::Div
         // 修改标志放文字左侧；标志槽常驻，dirty 切换时文字不跳。
         .child(dirty_marker(tab.dirty, text))
         .child(div().whitespace_nowrap().child(tab.title.clone()))
-        .child(close_glyph(tab, shortcuts, hover_group))
+        .child(close_glyph(tab, shortcuts, titles, hover_group))
 }
 
 /// 标签右侧的关闭标记：纯视觉 `Glyph` + tooltip（含 mod-w 快捷键）。
@@ -84,12 +89,14 @@ fn render_tab(tab: &EditorTab, shortcuts: &ShortcutLookup) -> Stateful<gpui::Div
 fn close_glyph(
     tab: &EditorTab,
     shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
     hover_group: SharedString,
 ) -> AnyElement {
+    let close_title = titles(editor::CLOSE_TAB).unwrap_or_else(|| editor::CLOSE_TAB.to_string());
     let glyph = Glyph::icon(
         ("editor-tab-close", tab.id.as_u64() as usize),
         CLOSE_ICON,
-        "关闭",
+        close_title,
     )
     .hint(shortcuts(editor::CLOSE_TAB))
     .active(tab.is_active)

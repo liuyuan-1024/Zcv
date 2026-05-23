@@ -38,13 +38,6 @@ fn render() -> Div {
         .child(
             div()
                 .text_size(typography::ui())
-                .text_color(color::gray::g95())
-                .child(super::FEATURE_TITLE),
-        )
-        .child(
-            div()
-                .mt(space::s8())
-                .text_size(typography::ui())
                 .text_color(color::gray::g60())
                 .child("当前文件暂无已连接的语言服务器"),
         )

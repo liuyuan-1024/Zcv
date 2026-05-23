@@ -39,37 +39,22 @@ impl PanelId {
         }
     }
 
-    /// 该 panel 的显示名（bar tooltip / 菜单文案）。真理源是各 panel 模块的
-    /// `PANEL_TITLE` 常量 —— 名字属于功能本身，不由承载它的 bar 重新描述。
-    pub(crate) fn title(self) -> &'static str {
-        use super::{
+    /// 切换本 panel 显隐的完整命令 id。常量本体在各自
+    /// `zom_command::commands::<feature>` 模块，这里只做枚举 → 常量 的映射，
+    /// 供 bar glyph 等 UI 标注。
+    pub(crate) fn toggle_command_id(self) -> &'static str {
+        use zom_command::commands::{
             debug, file_tree, keyboard_shortcuts, outline, project_search, terminal,
             version_control,
         };
         match self {
-            PanelId::FileTree => file_tree::PANEL_TITLE,
-            PanelId::VersionControl => version_control::PANEL_TITLE,
-            PanelId::Outline => outline::PANEL_TITLE,
-            PanelId::ProjectSearch => project_search::PANEL_TITLE,
-            PanelId::Terminal => terminal::PANEL_TITLE,
-            PanelId::Debug => debug::PANEL_TITLE,
-            PanelId::KeyboardShortcuts => keyboard_shortcuts::PANEL_TITLE,
-        }
-    }
-
-    /// 切换本 panel 显隐的完整命令 id。常量本体在
-    /// [`zom_command::commands::panel`]，这里只做枚举 → 常量 的映射，
-    /// 供 bar glyph 等 UI 标注。
-    pub(crate) fn toggle_command_id(self) -> &'static str {
-        use zom_command::commands::panel as panel_cmds;
-        match self {
-            PanelId::FileTree => panel_cmds::TOGGLE_FILE_TREE,
-            PanelId::VersionControl => panel_cmds::TOGGLE_VERSION_CONTROL,
-            PanelId::Outline => panel_cmds::TOGGLE_OUTLINE,
-            PanelId::ProjectSearch => panel_cmds::TOGGLE_PROJECT_SEARCH,
-            PanelId::Terminal => panel_cmds::TOGGLE_TERMINAL,
-            PanelId::Debug => panel_cmds::TOGGLE_DEBUG,
-            PanelId::KeyboardShortcuts => panel_cmds::TOGGLE_KEYBOARD_SHORTCUTS,
+            PanelId::FileTree => file_tree::TOGGLE_PANEL,
+            PanelId::VersionControl => version_control::TOGGLE_PANEL,
+            PanelId::Outline => outline::TOGGLE_PANEL,
+            PanelId::ProjectSearch => project_search::TOGGLE_PANEL,
+            PanelId::Terminal => terminal::TOGGLE_PANEL,
+            PanelId::Debug => debug::TOGGLE_PANEL,
+            PanelId::KeyboardShortcuts => keyboard_shortcuts::TOGGLE_PANEL,
         }
     }
 

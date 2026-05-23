@@ -151,6 +151,12 @@ pub(super) fn apply_host_effects(
                     cx,
                 );
             }
+            HostEffect::ShowSettings => {
+                eprintln!("设置界面尚未实现");
+            }
+            HostEffect::ShowDiagnostics => {
+                eprintln!("诊断面板尚未实现");
+            }
             HostEffect::DismissSurface => dismiss_surface(surfaces, window, cx),
 
             HostEffect::FileTreeMoveSelection(delta) => {
@@ -296,12 +302,16 @@ fn show_project_picker(
     let shortcut_app = Rc::clone(app);
     let shortcut_lookup =
         Rc::new(move |command_id: &str| shortcut_app.borrow().shortcut_for(command_id));
+    let title_app = Rc::clone(app);
+    let command_title_lookup =
+        Rc::new(move |command_id: &str| title_app.borrow().command_title_for(command_id));
     let actions = project_picker::ProjectPickerActions {
         projects,
         open_project,
         clone_git_project,
         key_request,
         shortcut_lookup,
+        command_title_lookup,
     };
     open_surface(
         project_picker::request(project_picker_runtime.clone(), actions, initial_mode),

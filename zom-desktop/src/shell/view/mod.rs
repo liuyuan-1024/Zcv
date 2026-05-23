@@ -25,7 +25,7 @@ use super::workbench;
 use super::workbench::controller::WorkbenchController;
 use super::workbench::state::WorkbenchState;
 use super::workbench::{PanelHost, WindowControlsHandlers};
-use super::{ActionRequest, InputHandlerHook, KeyRequest, ShortcutLookup};
+use super::{ActionRequest, CommandTitleLookup, InputHandlerHook, KeyRequest, ShortcutLookup};
 
 /// shell 端的根 View：拥有 App 状态与每窗口的 `PanelHost`。
 pub(crate) struct ShellView {
@@ -189,6 +189,11 @@ impl ShellView {
         Rc::new(move |command_id| app.borrow().shortcut_for(command_id))
     }
 
+    fn command_title_lookup(&self) -> CommandTitleLookup {
+        let app = Rc::clone(&self.app);
+        Rc::new(move |command_id| app.borrow().command_title_for(command_id))
+    }
+
     /// 构造编辑器输入接入 hook：editor_grid 在 paint 阶段拿到 bounds 后调用。
     fn input_handler_hook(&self) -> InputHandlerHook {
         let focus = self.editor_focus.clone();
@@ -229,6 +234,7 @@ impl Render for ShellView {
             window,
         );
         let shortcut_lookup = self.shortcut_lookup();
+        let command_title_lookup = self.command_title_lookup();
         let input_handler_hook = self.input_handler_hook();
         let workspace_active = self
             .surface_manager
@@ -252,6 +258,7 @@ impl Render for ShellView {
             key_request,
             panel_key_request,
             shortcut_lookup,
+            command_title_lookup,
             input_handler_hook,
             self.editor_focus.clone(),
             self.panel_runtimes.clone(),

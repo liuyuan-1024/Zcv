@@ -10,11 +10,11 @@ use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
 
 use zom_command::commands::diagnostics as diagnostic_commands;
 
-use crate::shell::ShortcutLookup;
 use crate::shell::features::{PanelId, diagnostics, language_servers};
 use crate::shell::shared::Glyph;
 use crate::shell::workbench::docks::{bottom, left, right};
 use crate::shell::workbench::state::{DockAreaId, DockState, EditorState, WorkbenchState};
+use crate::shell::{CommandTitleLookup, ShortcutLookup};
 
 use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_divider, bar_frame};
 
@@ -26,15 +26,16 @@ const LANGUAGE_ID: &str = "bottom-bar.language";
 pub(crate) fn render(
     state: &WorkbenchState,
     shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
     language_server_active: bool,
 ) -> Div {
     bar_frame(BarEdge::Bottom)
         .child(region(
-            leading_slots(state, shortcuts, language_server_active),
+            leading_slots(state, shortcuts, titles, language_server_active),
             BarRegionAlign::Leading,
         ))
         .child(region(
-            trailing_slots(state, shortcuts),
+            trailing_slots(state, shortcuts, titles),
             BarRegionAlign::Trailing,
         ))
 }
@@ -48,9 +49,10 @@ fn region(items: Vec<AnyElement>, align: BarRegionAlign) -> Div {
 fn leading_slots(
     state: &WorkbenchState,
     shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
     language_server_active: bool,
 ) -> Vec<AnyElement> {
-    let toggles = panel_slot_group(DockAreaId::Left, left::PANELS, state, shortcuts);
+    let toggles = panel_slot_group(DockAreaId::Left, left::PANELS, state, shortcuts, titles);
     // Group 2：语言服务器 / 诊断。第一版暂不绑 Dock；纯状态指示，但仍可关联命令
     // 入口（"打开 LSP 状态" / "查看问题面板"）。
     let status = vec![
@@ -58,16 +60,21 @@ fn leading_slots(
             state.bottom_bar.lsp_connected,
             language_server_active,
             shortcuts,
+            titles,
         ),
-        diagnostics_slot(state.bottom_bar.diagnostics_count, shortcuts),
+        diagnostics_slot(state.bottom_bar.diagnostics_count, shortcuts, titles),
     ];
     join_groups(vec![toggles, status])
 }
 
-fn trailing_slots(state: &WorkbenchState, shortcuts: &ShortcutLookup) -> Vec<AnyElement> {
+fn trailing_slots(
+    state: &WorkbenchState,
+    shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
+) -> Vec<AnyElement> {
     let editor = editor_status_slots(&state.editor);
-    let bottom = panel_slot_group(DockAreaId::Bottom, bottom::PANELS, state, shortcuts);
-    let right = panel_slot_group(DockAreaId::Right, right::PANELS, state, shortcuts);
+    let bottom = panel_slot_group(DockAreaId::Bottom, bottom::PANELS, state, shortcuts, titles);
+    let right = panel_slot_group(DockAreaId::Right, right::PANELS, state, shortcuts, titles);
     join_groups(vec![editor, bottom, right])
 }
 
@@ -115,11 +122,12 @@ fn panel_slot_group(
     panels: &[PanelId],
     state: &WorkbenchState,
     shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
 ) -> Vec<AnyElement> {
     panels
         .iter()
         .copied()
-        .map(|panel| panel_slot(panel, dock_state_for(area, state), shortcuts))
+        .map(|panel| panel_slot(panel, dock_state_for(area, state), shortcuts, titles))
         .collect()
 }
 
@@ -132,11 +140,18 @@ fn dock_state_for(area: DockAreaId, state: &WorkbenchState) -> &DockState {
 }
 
 /// 高亮规则：本槽对应的 panel 在它所属 Dock 中正激活且 Dock 可见。
-fn panel_slot(panel: PanelId, dock_state: &DockState, shortcuts: &ShortcutLookup) -> AnyElement {
+fn panel_slot(
+    panel: PanelId,
+    dock_state: &DockState,
+    shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
+) -> AnyElement {
     let active = dock_state.is_visible() && dock_state.active_panel() == Some(panel);
+    let command_id = panel.toggle_command_id();
+    let title = titles(command_id).unwrap_or_else(|| command_id.to_string());
 
-    Glyph::icon(panel_glyph_id(panel), panel.icon_path(), panel.title())
-        .hint(shortcuts(panel.toggle_command_id()))
+    Glyph::icon(panel_glyph_id(panel), panel.icon_path(), title)
+        .hint(shortcuts(command_id))
         .active(active)
         .render()
 }
@@ -147,12 +162,17 @@ fn panel_glyph_id(panel: PanelId) -> gpui::SharedString {
     format!("bottom-bar.{}", panel.command_str_id()).into()
 }
 
-fn diagnostics_slot(count: u32, shortcuts: &ShortcutLookup) -> AnyElement {
+fn diagnostics_slot(
+    count: u32,
+    shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
+) -> AnyElement {
+    let title = titles(DIAGNOSTICS_COMMAND).unwrap_or_else(|| DIAGNOSTICS_COMMAND.to_string());
     Glyph::icon_text(
         DIAGNOSTICS_ID,
         diagnostics::BAR_ICON,
         count.to_string(),
-        diagnostics::FEATURE_TITLE,
+        title,
     )
     .hint(shortcuts(DIAGNOSTICS_COMMAND))
     .render()

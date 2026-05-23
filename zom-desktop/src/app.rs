@@ -11,11 +11,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use zom_command::commands::{
-    editor, file_tree as file_tree_commands, language_server as language_server_commands,
-    panel as panel_commands, surface as surface_commands, window as window_commands,
-    workspace as workspace_commands,
-};
+use zom_command::commands::{self, editor};
 use zom_command::{
     CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId, CommandQueue,
     CommandRegistry, EffectQueue, FileTreeKeyMode, HostEffect, Invocation, KeyChord, KeyContext,
@@ -121,14 +117,9 @@ impl App {
         let mut registry = CommandRegistry::new();
         let mut keymap = Keymap::new();
 
-        // 组合根只选要装哪些 catalog。handler 看不到的宿主侧资源（窗口、Dock）走 HostEffect 反馈到 shell。
-        editor::install(&mut registry, &mut keymap);
-        file_tree_commands::install(&mut registry, &mut keymap);
-        surface_commands::install(&mut registry, &mut keymap);
-        language_server_commands::install(&mut registry, &mut keymap);
-        workspace_commands::install(&mut registry, &mut keymap);
-        window_commands::install(&mut registry, &mut keymap);
-        panel_commands::install(&mut registry, &mut keymap);
+        // 组合根只选择安装内建命令集；具体 feature catalog 的完整性由
+        // zom-command 自己维护。宿主侧资源（窗口、Dock）走 HostEffect 反馈到 shell。
+        commands::install_all(&mut registry, &mut keymap);
 
         let (workspace, views) = empty_workspace();
         let recent_projects = path
@@ -391,6 +382,14 @@ impl App {
     pub(crate) fn shortcut_for(&self, command_id: &str) -> Option<String> {
         let command = CommandId::new(command_id).ok()?;
         self.keymap.format_shortcut_for(&command)
+    }
+
+    /// 查询某条命令的显示标题 —— UI 不再为命令入口重复维护文案。
+    pub(crate) fn command_title_for(&self, command_id: &str) -> Option<String> {
+        let command = CommandId::new(command_id).ok()?;
+        self.registry
+            .command(&command)
+            .map(|command| command.title.clone())
     }
 
     fn dispatch_command_id(

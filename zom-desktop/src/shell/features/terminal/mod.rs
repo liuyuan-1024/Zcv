@@ -3,12 +3,14 @@
 //! 第一版骨架：渲染「占位中」灰字。
 
 use gpui::{Context, Div, FocusHandle, IntoElement};
+use zom_command::commands::terminal;
 
-use crate::shell::KeyRequest;
 use crate::shell::workbench::docks::{placeholder, render_focus_host};
+use crate::shell::{CommandTitleLookup, KeyRequest};
 
 pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/terminal.svg";
-pub(crate) const PANEL_TITLE: &str = "终端";
+
+const COMMAND: &str = terminal::TOGGLE_PANEL;
 
 #[derive(Clone)]
 pub(crate) struct TerminalRuntime {
@@ -26,11 +28,12 @@ impl TerminalRuntime {
         self.focus.clone()
     }
 
-    pub(crate) fn render(&self, key_request: &KeyRequest) -> Div {
+    pub(crate) fn render(&self, key_request: &KeyRequest, titles: &CommandTitleLookup) -> Div {
+        let title = titles(COMMAND).unwrap_or_else(|| COMMAND.to_string());
         render_focus_host(
             &self.focus,
             key_request,
-            placeholder("终端占位中").into_any_element(),
+            placeholder(format!("{title}占位中")).into_any_element(),
         )
     }
 }

@@ -18,7 +18,6 @@ mod state;
 mod view;
 
 pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/file_tree.svg";
-pub(crate) const PANEL_TITLE: &str = "文件树";
 
 pub(crate) use model::FileTreeModel;
 pub(crate) use runtime::FileTreeRuntime;

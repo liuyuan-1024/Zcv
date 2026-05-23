@@ -43,6 +43,14 @@ pub enum HostEffect {
     StartGitClone,
     /// 从项目选择器移除当前高亮的最近项目记录。
     RemoveSelectedRecentProject,
+    /// 移动项目选择器的高亮项。
+    ProjectPickerMoveSelection(isize),
+    /// 激活项目选择器当前输入或高亮项。
+    ProjectPickerActivate,
+    /// 删除项目选择器查询文本中的最后一个字符。
+    ProjectPickerDeleteQueryChar,
+    /// 向项目选择器查询文本插入文字。
+    ProjectPickerInsertQueryText(String),
 
     // ===== Surface =====
     /// 打开语言服务器。

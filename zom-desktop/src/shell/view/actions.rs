@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
+use zom_command::commands::project_picker as project_picker_commands;
 use zom_command::{HostEffect, Invocation};
 
 use crate::app::{App, KeySurface};
@@ -142,6 +143,68 @@ pub(super) fn apply_host_effects(
                     window.refresh();
                 }
             }
+            HostEffect::ProjectPickerMoveSelection(delta) => {
+                let picker_active = surfaces
+                    .read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker));
+                if !picker_active {
+                    continue;
+                }
+                let projects = app.borrow().recent_projects();
+                project_picker_runtime.move_selection(delta, &projects);
+                window.refresh();
+            }
+            HostEffect::ProjectPickerActivate => {
+                let picker_active = surfaces
+                    .read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker));
+                if !picker_active {
+                    continue;
+                }
+                let projects = app.borrow().recent_projects();
+                match project_picker_runtime.activation(&projects) {
+                    project_picker::ProjectPickerActivation::None => {}
+                    project_picker::ProjectPickerActivation::Open(project_record) => {
+                        project::open_recent_project(
+                            Rc::clone(app),
+                            Rc::clone(workbench),
+                            surfaces,
+                            file_tree.clone(),
+                            project_record.path,
+                            project_record.repo,
+                            window,
+                            cx,
+                        );
+                    }
+                    project_picker::ProjectPickerActivation::CloneGit(repo) => {
+                        project::clone_git_project(
+                            Rc::clone(app),
+                            Rc::clone(workbench),
+                            surfaces,
+                            file_tree.clone(),
+                            repo,
+                            window,
+                            cx,
+                        );
+                    }
+                }
+            }
+            HostEffect::ProjectPickerDeleteQueryChar => {
+                let picker_active = surfaces
+                    .read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker));
+                if !picker_active {
+                    continue;
+                }
+                project_picker_runtime.delete_query_char();
+                window.refresh();
+            }
+            HostEffect::ProjectPickerInsertQueryText(text) => {
+                let picker_active = surfaces
+                    .read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker));
+                if !picker_active {
+                    continue;
+                }
+                project_picker_runtime.insert_query_text(&text);
+                window.refresh();
+            }
             HostEffect::ShowLanguageServers => {
                 open_surface(
                     language_servers::request(),
@@ -227,43 +290,6 @@ fn show_project_picker(
 ) {
     let project_list_app = Rc::clone(app);
     let projects = Rc::new(move || project_list_app.borrow().recent_projects());
-    let open_project_app = Rc::clone(app);
-    let open_project_workbench = Rc::clone(workbench);
-    let open_project_surfaces = surfaces.clone();
-    let open_project_file_tree = file_tree.clone();
-    let open_project = Rc::new(
-        move |project_record: crate::app::RecentProject,
-              window: &mut Window,
-              cx: &mut gpui::App| {
-            project::open_recent_project(
-                Rc::clone(&open_project_app),
-                Rc::clone(&open_project_workbench),
-                &open_project_surfaces,
-                open_project_file_tree.clone(),
-                project_record.path,
-                project_record.repo,
-                window,
-                cx,
-            );
-        },
-    );
-    let clone_app = Rc::clone(app);
-    let clone_workbench = Rc::clone(workbench);
-    let clone_surfaces = surfaces.clone();
-    let clone_file_tree = file_tree.clone();
-    let clone_git_project = Rc::new(
-        move |repo: String, window: &mut Window, cx: &mut gpui::App| {
-            project::clone_git_project(
-                Rc::clone(&clone_app),
-                Rc::clone(&clone_workbench),
-                &clone_surfaces,
-                clone_file_tree.clone(),
-                repo,
-                window,
-                cx,
-            );
-        },
-    );
     let key_app = Rc::clone(app);
     let key_workbench = Rc::clone(workbench);
     let key_surfaces = surfaces.clone();
@@ -273,7 +299,10 @@ fn show_project_picker(
     let key_project_picker = project_picker_runtime.clone();
     let key_request = Rc::new(
         move |chord: String, window: &mut Window, cx: &mut gpui::App| {
-            let outcome = match key_app.borrow_mut().dispatch_key(chord, KeySurface::Panel) {
+            let outcome = match key_app
+                .borrow_mut()
+                .dispatch_key(chord, KeySurface::ProjectPicker)
+            {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     eprintln!("命令执行失败：{error}");
@@ -299,6 +328,39 @@ fn show_project_picker(
             outcome.consumed
         },
     );
+    let query_text_app = Rc::clone(app);
+    let query_text_workbench = Rc::clone(workbench);
+    let query_text_surfaces = surfaces.clone();
+    let query_text_editor_focus = editor_focus_fallback.clone();
+    let query_text_panel_runtimes = panel_runtimes.clone();
+    let query_text_file_tree = file_tree.clone();
+    let query_text_project_picker = project_picker_runtime.clone();
+    let query_text_request = Rc::new(
+        move |text: String, window: &mut Window, cx: &mut gpui::App| {
+            let effects = match query_text_app
+                .borrow_mut()
+                .dispatch(project_picker_commands::insert_query_text(text))
+            {
+                Ok(effects) => effects,
+                Err(error) => {
+                    eprintln!("命令执行失败：{error}");
+                    return;
+                }
+            };
+            apply_host_effects(
+                effects,
+                &query_text_app,
+                &query_text_workbench,
+                &query_text_surfaces,
+                &query_text_editor_focus,
+                &query_text_panel_runtimes,
+                &query_text_file_tree,
+                &query_text_project_picker,
+                window,
+                cx,
+            );
+        },
+    );
     let shortcut_app = Rc::clone(app);
     let shortcut_lookup =
         Rc::new(move |command_id: &str| shortcut_app.borrow().shortcut_for(command_id));
@@ -307,9 +369,8 @@ fn show_project_picker(
         Rc::new(move |command_id: &str| title_app.borrow().command_title_for(command_id));
     let actions = project_picker::ProjectPickerActions {
         projects,
-        open_project,
-        clone_git_project,
         key_request,
+        query_text_request,
         shortcut_lookup,
         command_title_lookup,
     };

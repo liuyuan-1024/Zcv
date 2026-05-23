@@ -87,6 +87,8 @@ pub(crate) enum KeySurface {
     Panel,
     /// 文件树面板（含新建条目输入态）。
     FileTree,
+    /// 项目选择器浮面。
+    ProjectPicker,
 }
 
 pub struct App {
@@ -348,6 +350,7 @@ impl App {
                 vec![KeyContext::text_edit(true, false), KeyContext::global()]
             }
             KeySurface::Panel => vec![KeyContext::global()],
+            KeySurface::ProjectPicker => vec![KeyContext::project_picker(), KeyContext::global()],
             KeySurface::FileTree if self.file_tree.pending_delete_active() => vec![
                 // 删除确认弹窗打开中：只解析确认 / 取消，导航键全部冻结。
                 KeyContext::file_tree(FileTreeKeyMode::PendingDelete),

@@ -7,6 +7,7 @@ use crate::commands::{
         CompositionBinding, TextEditBindingContext, TextEditKeyContext, text_edit_context_matches,
     },
     file_tree::{FileTreeBindingContext, FileTreeKeyContext, FileTreeKeyMode},
+    project_picker::{ProjectPickerBindingContext, ProjectPickerKeyContext},
 };
 use crate::{CommandArgs, CommandError, CommandId, keymap_format};
 
@@ -40,6 +41,7 @@ pub enum KeyContext {
     Global,
     TextEdit(TextEditKeyContext),
     FileTree(FileTreeKeyContext),
+    ProjectPicker(ProjectPickerKeyContext),
 }
 
 impl KeyContext {
@@ -57,6 +59,10 @@ impl KeyContext {
     pub fn file_tree(mode: FileTreeKeyMode) -> Self {
         Self::FileTree(FileTreeKeyContext { mode })
     }
+
+    pub fn project_picker() -> Self {
+        Self::ProjectPicker(ProjectPickerKeyContext)
+    }
 }
 
 /// 键位绑定适用的结构化上下文。
@@ -65,6 +71,7 @@ pub enum KeyBindingContext {
     Global,
     TextEdit(TextEditBindingContext),
     FileTree(FileTreeBindingContext),
+    ProjectPicker(ProjectPickerBindingContext),
 }
 
 impl KeyBindingContext {
@@ -97,6 +104,10 @@ impl KeyBindingContext {
         Self::FileTree(FileTreeBindingContext { mode })
     }
 
+    pub fn project_picker() -> Self {
+        Self::ProjectPicker(ProjectPickerBindingContext)
+    }
+
     /// 两条绑定的上下文是否可能被同一个运行时 [`KeyContext`] 同时命中。
     ///
     /// 这是「冲突」的真正定义：同一序列下两条绑定一旦重叠，[`Keymap::resolve`]
@@ -110,6 +121,7 @@ impl KeyBindingContext {
             (Self::Global, Self::Global) => true,
             (Self::TextEdit(a), Self::TextEdit(b)) => a.composition.overlaps(b.composition),
             (Self::FileTree(a), Self::FileTree(b)) => a.mode == b.mode,
+            (Self::ProjectPicker(_), Self::ProjectPicker(_)) => true,
             _ => false,
         }
     }
@@ -266,6 +278,7 @@ fn binding_matches_context(binding: &KeyBinding, context: KeyContext) -> bool {
         (KeyBindingContext::FileTree(binding), KeyContext::FileTree(active)) => {
             binding.mode == active.mode
         }
+        (KeyBindingContext::ProjectPicker(_), KeyContext::ProjectPicker(_)) => true,
         _ => false,
     }
 }

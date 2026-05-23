@@ -2,23 +2,23 @@
 //!
 //! 选择器是纯键盘 launcher：搜索、移动、打开、移除和克隆都由键盘驱动。
 
+mod recent_projects;
+mod search_box;
+mod source_actions;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Corner, Div, FocusHandle, Keystroke, div, point, prelude::*, px};
-use zom_command::commands::project_picker as project_picker_commands;
 
 use crate::app::RecentProject;
 use crate::shell::normalized_chord;
-use crate::shell::shared::Glyph;
-use crate::shell::shared::theme::{color, radius, space, typography};
+use crate::shell::shared::theme::{color, radius, space};
 use crate::shell::surfaces::{
     SurfaceAnchor, SurfaceId, SurfaceInvokerPoint, SurfacePlacement, SurfaceRequest,
 };
 
 use super::ProjectPickerActions;
-
-const REMOVE_ICON: &str = "icons/features/tab/close.svg";
 
 #[derive(Clone)]
 pub(crate) struct ProjectPickerRuntime {
@@ -43,6 +43,12 @@ struct ProjectPickerState {
     query: String,
     selected: usize,
     mode: PickerMode,
+}
+
+pub(crate) enum ProjectPickerActivation {
+    None,
+    Open(RecentProject),
+    CloneGit(String),
 }
 
 impl ProjectPickerRuntime {
@@ -74,6 +80,40 @@ impl ProjectPickerRuntime {
             .get(state.selected)
             .map(|project| project.id.clone())
     }
+
+    pub(crate) fn move_selection(&self, delta: isize, projects: &[RecentProject]) {
+        let state = self.state.borrow().clone();
+        if state.mode != PickerMode::Browse {
+            return;
+        }
+        let count = filtered_projects(projects, &state.query).len();
+        self.state.borrow_mut().move_selection(delta, count);
+    }
+
+    pub(crate) fn delete_query_char(&self) {
+        self.state.borrow_mut().query.pop();
+    }
+
+    pub(crate) fn insert_query_text(&self, text: &str) {
+        self.state.borrow_mut().push_text(text);
+    }
+
+    pub(crate) fn activation(&self, projects: &[RecentProject]) -> ProjectPickerActivation {
+        let state = self.state.borrow().clone();
+        if state.mode == PickerMode::CloneGit {
+            let repo = state.query.trim();
+            if repo.is_empty() {
+                return ProjectPickerActivation::None;
+            }
+            return ProjectPickerActivation::CloneGit(repo.to_string());
+        }
+
+        filtered_projects(projects, &state.query)
+            .get(state.selected)
+            .cloned()
+            .map(ProjectPickerActivation::Open)
+            .unwrap_or(ProjectPickerActivation::None)
+    }
 }
 
 pub(crate) fn request(
@@ -103,28 +143,15 @@ fn render(runtime: ProjectPickerRuntime, actions: ProjectPickerActions) -> Div {
     let visible = filtered_projects(&projects, &state.query);
     clamp_selection(&runtime.state, visible.len());
     let state = runtime.state.borrow().clone();
-    let key_runtime = runtime.clone();
     let key_actions = actions.clone();
 
-    let mut list = div().flex().flex_col().gap(space::s4());
-    if state.mode == PickerMode::CloneGit {
-        list = list.child(clone_hint());
-    } else if visible.is_empty() {
-        list = list.child(empty_hint(if state.query.is_empty() {
-            "暂无最近项目"
-        } else {
-            "没有匹配的项目"
-        }));
-    } else {
-        for (index, project) in visible.iter().enumerate() {
-            list = list.child(project_row(
-                project,
-                index,
-                index == state.selected,
-                &actions,
-            ));
-        }
-    }
+    let project_list = recent_projects::render(
+        &visible,
+        state.selected,
+        state.mode,
+        state.query.is_empty(),
+        &actions,
+    );
 
     div()
         .w(px(420.0))
@@ -133,19 +160,21 @@ fn render(runtime: ProjectPickerRuntime, actions: ProjectPickerActions) -> Div {
         .border_1()
         .border_color(color::gray::g40())
         .bg(color::gray::g10())
+        .overflow_hidden()
         .track_focus(&runtime.focus)
         .tab_index(0)
         .on_key_down(move |event, window, cx| {
-            handle_key(&key_runtime, &key_actions, &event.keystroke, window, cx);
+            handle_key(&key_actions, &event.keystroke, window, cx);
             cx.stop_propagation();
         })
-        .child(first_section(input_box(&state)))
-        .child(section(list))
-        .child(section(action_section(state.mode, &actions)))
+        .child(search_box::render(&state))
+        .child(divided_section(project_list))
+        .child(divided_section(source_actions::render(
+            state.mode, &actions,
+        )))
 }
 
 fn handle_key(
-    runtime: &ProjectPickerRuntime,
     actions: &ProjectPickerActions,
     keystroke: &Keystroke,
     window: &mut gpui::Window,
@@ -156,60 +185,9 @@ fn handle_key(
         return;
     }
 
-    match chord.as_str() {
-        "up" => {
-            let count = visible_count(actions, runtime);
-            runtime.state.borrow_mut().move_selection(-1, count);
-            window.refresh();
-        }
-        "down" => {
-            let count = visible_count(actions, runtime);
-            runtime.state.borrow_mut().move_selection(1, count);
-            window.refresh();
-        }
-        "enter" | "return" => {
-            activate_selection(runtime, actions, window, cx);
-        }
-        "backspace" => {
-            runtime.state.borrow_mut().query.pop();
-            window.refresh();
-        }
-        _ => {
-            if let Some(text) = typed_text(keystroke) {
-                runtime.state.borrow_mut().push_text(&text);
-                window.refresh();
-            }
-        }
+    if let Some(text) = typed_text(keystroke) {
+        (actions.query_text_request)(text, window, cx);
     }
-}
-
-fn activate_selection(
-    runtime: &ProjectPickerRuntime,
-    actions: &ProjectPickerActions,
-    window: &mut gpui::Window,
-    cx: &mut gpui::App,
-) {
-    let state = runtime.state.borrow().clone();
-    if state.mode == PickerMode::CloneGit {
-        let repo = state.query.trim();
-        if !repo.is_empty() {
-            (actions.clone_git_project)(repo.to_string(), window, cx);
-        }
-        return;
-    }
-
-    let projects = (actions.projects)();
-    let visible = filtered_projects(&projects, &state.query);
-    let Some(project) = visible.get(state.selected) else {
-        return;
-    };
-    (actions.open_project)(project.clone(), window, cx);
-}
-
-fn visible_count(actions: &ProjectPickerActions, runtime: &ProjectPickerRuntime) -> usize {
-    let projects = (actions.projects)();
-    let state = runtime.state.borrow();
-    filtered_projects(&projects, &state.query).len()
 }
 
 fn typed_text(keystroke: &Keystroke) -> Option<String> {
@@ -257,196 +235,21 @@ fn clamp_selection(state: &Rc<RefCell<ProjectPickerState>>, count: usize) {
     }
 }
 
-fn input_box(state: &ProjectPickerState) -> Div {
-    let placeholder = match state.mode {
-        PickerMode::Browse => "搜索项目名或路径",
-        PickerMode::CloneGit => "输入 Git 仓库地址",
-    };
-    let text = if state.query.is_empty() {
-        placeholder.to_string()
-    } else {
-        state.query.clone()
-    };
-    let text_color = if state.query.is_empty() {
-        color::gray::g60()
-    } else {
-        color::gray::g95()
-    };
-
+fn divided_section(child: Div) -> Div {
     div()
-        .h(px(32.0))
-        .flex()
-        .items_center()
-        .px(space::s8())
-        .rounded(radius::r4())
-        .border_1()
-        .border_color(color::focus::border())
-        .bg(color::gray::g05())
-        .text_size(typography::ui())
-        .text_color(text_color)
-        .overflow_hidden()
-        .child(div().truncate().child(text))
-}
-
-fn project_row(
-    project: &RecentProject,
-    index: usize,
-    selected: bool,
-    actions: &ProjectPickerActions,
-) -> Div {
-    let border = if selected {
-        color::focus::border()
-    } else {
-        gpui::rgba(0)
-    };
-    let bg = if selected {
-        color::gray::g20()
-    } else {
-        gpui::rgba(0)
-    };
-    div()
-        .h(px(44.0))
-        .flex()
-        .items_center()
-        .gap(space::s8())
-        .px(space::s8())
-        .rounded(radius::r4())
-        .border_1()
-        .border_color(border)
-        .bg(bg)
-        .overflow_hidden()
-        .child(
-            div()
-                .flex_1()
-                .overflow_hidden()
-                .child(
-                    div()
-                        .text_size(typography::ui())
-                        .text_color(color::gray::g95())
-                        .truncate()
-                        .child(project.name.clone()),
-                )
-                .child(
-                    div()
-                        .mt(space::s2())
-                        .text_size(typography::ui())
-                        .text_color(color::gray::g60())
-                        .truncate()
-                        .child(project.identifier.clone()),
-                ),
-        )
-        .child(project_actions(index, actions))
-}
-
-fn project_actions(index: usize, actions: &ProjectPickerActions) -> Div {
-    let remove_command = project_picker_commands::REMOVE_RECENT_PROJECT;
-    div()
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .size(typography::ui_line())
-        .child(
-            Glyph::icon(
-                ("project-picker.remove-recent", index),
-                REMOVE_ICON,
-                command_title(actions, remove_command),
-            )
-            .hint((actions.shortcut_lookup)(remove_command))
-            .render(),
-        )
-}
-
-fn empty_hint(message: &'static str) -> Div {
-    div()
-        .h(px(64.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(typography::ui())
-        .text_color(color::gray::g60())
-        .child(message)
-}
-
-fn clone_hint() -> Div {
-    div()
-        .h(px(64.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(typography::ui())
-        .text_color(color::gray::g60())
-        .child("回车后选择克隆位置")
-}
-
-fn section(child: Div) -> Div {
-    div()
-        .py(space::s8())
+        .mt(space::s8())
+        .pt(space::s8())
         .border_t_1()
         .border_color(color::gray::g40())
         .child(child)
 }
 
-fn first_section(child: Div) -> Div {
-    div().pb(space::s8()).child(child)
+pub(super) fn command_shortcut(actions: &ProjectPickerActions, command_id: &'static str) -> String {
+    (actions.shortcut_lookup)(command_id).unwrap_or_default()
 }
 
-fn action_section(mode: PickerMode, actions: &ProjectPickerActions) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(space::s4())
-        .child(action_row(
-            command_title(actions, project_picker_commands::OPEN_LOCAL_PROJECT),
-            command_shortcut(
-                actions,
-                project_picker_commands::OPEN_LOCAL_PROJECT,
-                "Cmd/Ctrl+L",
-            ),
-        ))
-        .child(action_row(
-            command_title(actions, project_picker_commands::START_GIT_CLONE),
-            if mode == PickerMode::CloneGit {
-                "Enter".to_string()
-            } else {
-                command_shortcut(
-                    actions,
-                    project_picker_commands::START_GIT_CLONE,
-                    "Cmd/Ctrl+G",
-                )
-            },
-        ))
-}
-
-fn command_shortcut(
-    actions: &ProjectPickerActions,
-    command_id: &'static str,
-    fallback: &'static str,
-) -> String {
-    (actions.shortcut_lookup)(command_id).unwrap_or_else(|| fallback.to_string())
-}
-
-fn command_title(actions: &ProjectPickerActions, command_id: &'static str) -> String {
+pub(super) fn command_title(actions: &ProjectPickerActions, command_id: &'static str) -> String {
     (actions.command_title_lookup)(command_id).unwrap_or_else(|| command_id.to_string())
-}
-
-fn action_row(label: String, hint: String) -> Div {
-    div()
-        .h(px(28.0))
-        .flex()
-        .items_center()
-        .justify_between()
-        .px(space::s8())
-        .rounded(radius::r4())
-        .text_size(typography::ui())
-        .text_color(color::gray::g75())
-        .child(div().truncate().child(label))
-        .child(
-            div()
-                .flex_shrink_0()
-                .text_color(color::gray::g60())
-                .child(hint),
-        )
 }
 
 impl From<ProjectPickerInitialMode> for PickerMode {

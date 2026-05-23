@@ -267,6 +267,30 @@ fn project_action_commands_should_have_shortcuts_and_emit_effects() {
             .is_some()
     );
 
+    let outcome = app
+        .dispatch_key("down".to_string(), KeySurface::ProjectPicker)
+        .unwrap();
+    assert!(outcome.consumed);
+    assert_eq!(
+        outcome.effects,
+        vec![HostEffect::ProjectPickerMoveSelection(1)]
+    );
+
+    let outcome = app
+        .dispatch_key("backspace".to_string(), KeySurface::ProjectPicker)
+        .unwrap();
+    assert!(outcome.consumed);
+    assert_eq!(
+        outcome.effects,
+        vec![HostEffect::ProjectPickerDeleteQueryChar]
+    );
+
+    let outcome = app
+        .dispatch_key("enter".to_string(), KeySurface::ProjectPicker)
+        .unwrap();
+    assert!(outcome.consumed);
+    assert_eq!(outcome.effects, vec![HostEffect::ProjectPickerActivate]);
+
     let actions = app
         .dispatch(project_picker_commands::start_git_clone())
         .unwrap();

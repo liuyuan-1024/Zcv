@@ -227,6 +227,32 @@ fn open_local_project_command_should_emit_window_action() {
 }
 
 #[test]
+fn project_action_commands_should_have_shortcuts_and_emit_effects() {
+    let mut app = App::new();
+
+    assert!(
+        app.shortcut_for(workspace_commands::OPEN_LOCAL_PROJECT)
+            .is_some()
+    );
+    assert!(
+        app.shortcut_for(workspace_commands::START_GIT_CLONE)
+            .is_some()
+    );
+    assert!(
+        app.shortcut_for(workspace_commands::REMOVE_RECENT_PROJECT)
+            .is_some()
+    );
+
+    let actions = app.dispatch(workspace_commands::start_git_clone()).unwrap();
+    assert_eq!(actions, vec![HostEffect::StartGitClone]);
+
+    let actions = app
+        .dispatch(workspace_commands::remove_recent_project())
+        .unwrap();
+    assert_eq!(actions, vec![HostEffect::RemoveSelectedRecentProject]);
+}
+
+#[test]
 fn project_title_should_prompt_when_no_project_is_open() {
     let app = App::new();
 
@@ -246,6 +272,67 @@ fn open_local_project_should_update_project_title_and_reset_workspace() {
     let state = app.editor_state();
     assert!(state.tabs.is_empty());
     assert!(state.text.is_empty());
+}
+
+#[test]
+fn opening_projects_should_maintain_recent_project_records() {
+    let mut app = App::new();
+    let local = project_fixture("recent-local");
+    let cloned = project_fixture("recent-git");
+
+    app.open_local_project(local.clone());
+    app.open_git_project(
+        cloned.clone(),
+        "https://example.com/org/recent-git.git".to_string(),
+    );
+
+    let recent = app.recent_projects();
+    assert_eq!(recent.len(), 2);
+    assert_eq!(recent[0].path, cloned);
+    assert_eq!(
+        recent[0].identifier,
+        "https://example.com/org/recent-git.git"
+    );
+    assert_eq!(recent[1].path, local);
+
+    let id = recent[0].id.clone();
+    app.remove_recent_project(&id);
+    let recent = app.recent_projects();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].path, local);
+}
+
+#[test]
+fn recent_projects_should_persist_to_file() {
+    let store = std::env::temp_dir().join(format!(
+        "zom-recent-projects-{}-{}.toml",
+        std::process::id(),
+        "persist"
+    ));
+    let _ = std::fs::remove_file(&store);
+    let local = project_fixture("persist-local");
+    let cloned = project_fixture("persist-git");
+
+    {
+        let mut app = App::new_with_recent_projects_path(Some(store.clone()));
+        app.open_local_project(local.clone());
+        app.open_git_project(
+            cloned.clone(),
+            "https://example.com/org/persist-git.git".to_string(),
+        );
+    }
+
+    let app = App::new_with_recent_projects_path(Some(store.clone()));
+    let recent = app.recent_projects();
+    assert_eq!(recent.len(), 2);
+    assert_eq!(recent[0].path, cloned);
+    assert_eq!(
+        recent[0].repo.as_deref(),
+        Some("https://example.com/org/persist-git.git")
+    );
+    assert_eq!(recent[1].path, local);
+
+    let _ = std::fs::remove_file(store);
 }
 
 #[test]

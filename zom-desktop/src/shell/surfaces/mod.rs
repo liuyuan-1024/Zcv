@@ -7,7 +7,7 @@ mod anchor_registry;
 mod manager;
 mod shell;
 
-use gpui::{AnyElement, Corner, ElementId, Pixels, Point};
+use gpui::{AnyElement, Corner, ElementId, FocusHandle, Pixels, Point};
 use std::rc::Rc;
 
 pub(crate) use anchor_registry::{SurfaceAnchorRegistry, track_surface_anchor};
@@ -49,5 +49,6 @@ pub(crate) struct SurfaceRequest {
     pub(crate) id: SurfaceId,
     pub(crate) anchor: SurfaceAnchor,
     pub(crate) placement: SurfacePlacement,
+    pub(crate) focus_on_open: Option<FocusHandle>,
     pub(crate) render: Rc<dyn Fn() -> AnyElement>,
 }

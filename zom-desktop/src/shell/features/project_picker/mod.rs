@@ -2,14 +2,18 @@
 
 mod surface;
 
+use std::rc::Rc;
+
 use gpui::{AnyElement, IntoElement};
 use zom_command::commands::workspace as workspace_commands;
 
+use crate::app::RecentProject;
+use crate::shell::KeyRequest;
 use crate::shell::ShortcutLookup;
 use crate::shell::shared::Glyph;
 use crate::shell::surfaces::track_surface_anchor;
 
-pub(crate) use surface::request;
+pub(crate) use surface::{ProjectPickerInitialMode, ProjectPickerRuntime, request};
 
 /// 功能显示名（顶栏 tooltip 与 surface 标题共用）—— 名字归功能自己持有。
 pub(crate) const FEATURE_TITLE: &str = "切换项目";
@@ -17,6 +21,19 @@ pub(crate) const FEATURE_TITLE: &str = "切换项目";
 pub(crate) const INVOKER_ID: &str = "top-bar.workspace";
 
 const COMMAND: &str = workspace_commands::SHOW_PROJECTS_PICKER;
+
+pub(crate) type ProjectListRequest = Rc<dyn Fn() -> Vec<RecentProject>>;
+pub(crate) type OpenProjectRequest = Rc<dyn Fn(RecentProject, &mut gpui::Window, &mut gpui::App)>;
+pub(crate) type CloneGitRequest = Rc<dyn Fn(String, &mut gpui::Window, &mut gpui::App)>;
+
+#[derive(Clone)]
+pub(crate) struct ProjectPickerActions {
+    pub(crate) projects: ProjectListRequest,
+    pub(crate) open_project: OpenProjectRequest,
+    pub(crate) clone_git_project: CloneGitRequest,
+    pub(crate) key_request: KeyRequest,
+    pub(crate) shortcut_lookup: ShortcutLookup,
+}
 
 pub(crate) fn entry(project_title: &str, active: bool, shortcuts: &ShortcutLookup) -> AnyElement {
     let glyph = Glyph::text(INVOKER_ID, project_title, FEATURE_TITLE)

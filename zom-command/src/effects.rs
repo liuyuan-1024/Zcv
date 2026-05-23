@@ -39,6 +39,10 @@ pub enum HostEffect {
     ShowProjectPicker,
     /// 从本机选择一个文件夹作为当前项目根目录。
     OpenLocalProject,
+    /// 进入 Git 地址克隆流程。
+    StartGitClone,
+    /// 从项目选择器移除当前高亮的最近项目记录。
+    RemoveSelectedRecentProject,
 
     // ===== Surface =====
     /// 打开语言服务器。

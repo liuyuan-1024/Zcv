@@ -7335,6 +7335,8 @@ dependencies = [
  "gpui",
  "raw-window-handle",
  "resvg",
+ "serde",
+ "toml 0.8.23",
  "windows 0.57.0",
  "zom-command",
  "zom-engine",

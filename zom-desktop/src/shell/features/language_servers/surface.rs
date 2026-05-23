@@ -22,6 +22,7 @@ pub(crate) fn request() -> SurfaceRequest {
             offset: point(px(0.0), -space::s8()),
             fallback_position: point(px(48.0), px(540.0)),
         },
+        focus_on_open: None,
         render: Rc::new(|| render().into_any_element()),
     }
 }

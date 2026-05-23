@@ -9,5 +9,5 @@ mod shell;
 mod tests;
 
 fn main() {
-    shell::run(app::App::new());
+    shell::run(app::App::new_persistent());
 }

@@ -10,10 +10,26 @@ use crate::{
 
 pub const SHOW_PROJECTS_PICKER: &str = "workspace.show_projects_picker";
 pub const OPEN_LOCAL_PROJECT: &str = "workspace.open_local_project";
+pub const START_GIT_CLONE: &str = "workspace.start_git_clone";
+pub const REMOVE_RECENT_PROJECT: &str = "workspace.remove_recent_project";
 
 pub fn open_local_project() -> Invocation {
     (
         CommandId::new(OPEN_LOCAL_PROJECT).expect("内建命令 ID 必须非空"),
+        CommandArgs::new(),
+    )
+}
+
+pub fn start_git_clone() -> Invocation {
+    (
+        CommandId::new(START_GIT_CLONE).expect("内建命令 ID 必须非空"),
+        CommandArgs::new(),
+    )
+}
+
+pub fn remove_recent_project() -> Invocation {
+    (
+        CommandId::new(REMOVE_RECENT_PROJECT).expect("内建命令 ID 必须非空"),
         CommandArgs::new(),
     )
 }
@@ -28,12 +44,32 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         )
         .key("mod-o");
 
-    registry.install(
-        keymap,
-        OPEN_LOCAL_PROJECT,
-        "打开本地项目",
-        emit(HostEffect::OpenLocalProject),
-    );
+    registry
+        .install(
+            keymap,
+            OPEN_LOCAL_PROJECT,
+            "从本地路径导入",
+            emit(HostEffect::OpenLocalProject),
+        )
+        .key("mod-l");
+
+    registry
+        .install(
+            keymap,
+            START_GIT_CLONE,
+            "从 Git 地址克隆",
+            emit(HostEffect::StartGitClone),
+        )
+        .key("mod-g");
+
+    registry
+        .install(
+            keymap,
+            REMOVE_RECENT_PROJECT,
+            "移除最近项目记录",
+            emit(HostEffect::RemoveSelectedRecentProject),
+        )
+        .key("mod-backspace");
 }
 
 /// 与 `window.rs::emit` 同形态；catalog 里"按一个键就推一个 effect"的样板。

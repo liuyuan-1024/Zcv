@@ -19,6 +19,7 @@ use crate::app::{App, KeySurface};
 use super::editor::{CARET_BLINK_INTERVAL, CaretBlink, EditorInput};
 use super::features::PanelRuntimes;
 use super::features::file_tree::{ConfirmDeleteHandlers, FileTreeRuntime};
+use super::features::project_picker::ProjectPickerRuntime;
 use super::surfaces::{SurfaceAnchorRegistry, SurfaceId, SurfaceManager, SurfaceShell};
 use super::workbench;
 use super::workbench::controller::WorkbenchController;
@@ -37,6 +38,7 @@ pub(crate) struct ShellView {
     editor_focus: FocusHandle,
     panel_runtimes: PanelRuntimes,
     file_tree: FileTreeRuntime,
+    project_picker: ProjectPickerRuntime,
     /// 编辑区标签栏的滚动状态。跨帧保留，否则每帧重建会丢失滚动位置。
     editor_tab_scroll: ScrollHandle,
     /// 主编辑区光标闪烁状态，由本视图的定时链驱动。
@@ -53,6 +55,7 @@ impl ShellView {
         let editor_input = cx.new(|_| EditorInput::new(Rc::clone(&app)));
         let panel_runtimes = PanelRuntimes::new(cx);
         let file_tree = FileTreeRuntime::new(cx);
+        let project_picker = ProjectPickerRuntime::new(cx);
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));
 
         Self {
@@ -65,6 +68,7 @@ impl ShellView {
             editor_focus,
             panel_runtimes,
             file_tree,
+            project_picker,
             editor_tab_scroll: ScrollHandle::new(),
             caret: CaretBlink::new(),
         }
@@ -131,6 +135,7 @@ impl ShellView {
             self.editor_focus.clone(),
             self.panel_runtimes.clone(),
             self.file_tree.clone(),
+            self.project_picker.clone(),
             invocation,
         )
     }
@@ -150,6 +155,7 @@ impl ShellView {
         let editor_focus_fallback = self.editor_focus.clone();
         let panel_runtimes = self.panel_runtimes.clone();
         let file_tree = self.file_tree.clone();
+        let project_picker = self.project_picker.clone();
         Rc::new(move |chord, window, cx| {
             let outcome = match app.borrow_mut().dispatch_key(chord, surface) {
                 Ok(outcome) => outcome,
@@ -167,6 +173,7 @@ impl ShellView {
                 &editor_focus_fallback,
                 &panel_runtimes,
                 &file_tree,
+                &project_picker,
                 window,
                 cx,
             );

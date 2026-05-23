@@ -4,15 +4,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
-use zom_command::commands::workspace as workspace_commands;
 use zom_command::{HostEffect, Invocation};
 
-use crate::app::App;
+use crate::app::{App, KeySurface};
 use crate::shell::ActionRequest;
 use crate::shell::features::file_tree::{FileTreeActivation, FileTreeRuntime};
+use crate::shell::features::project_picker::ProjectPickerRuntime;
 use crate::shell::features::{PanelId, PanelRuntimes, language_servers, project_picker};
 use crate::shell::platform::window as platform_window;
-use crate::shell::surfaces::{SurfaceManager, SurfaceRequest};
+use crate::shell::surfaces::{SurfaceId, SurfaceManager, SurfaceRequest};
 use crate::shell::workbench::controller::WorkbenchController;
 
 use super::focus::{FocusRouter, FocusTarget};
@@ -25,6 +25,7 @@ pub(super) fn bind_action_request(
     editor_focus_fallback: FocusHandle,
     panel_runtimes: PanelRuntimes,
     file_tree: FileTreeRuntime,
+    project_picker_runtime: ProjectPickerRuntime,
     invocation: Invocation,
 ) -> ActionRequest {
     Rc::new(move |window, cx| {
@@ -43,6 +44,7 @@ pub(super) fn bind_action_request(
             &editor_focus_fallback,
             &panel_runtimes,
             &file_tree,
+            &project_picker_runtime,
             window,
             cx,
         );
@@ -60,6 +62,7 @@ pub(super) fn apply_host_effects(
     editor_focus_fallback: &FocusHandle,
     panel_runtimes: &PanelRuntimes,
     file_tree: &FileTreeRuntime,
+    project_picker_runtime: &ProjectPickerRuntime,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -87,19 +90,15 @@ pub(super) fn apply_host_effects(
                 window.refresh();
             }
             HostEffect::ShowProjectPicker => {
-                let open_local_project = bind_action_request(
-                    Rc::clone(app),
-                    Rc::clone(workbench),
-                    surfaces.clone(),
-                    editor_focus_fallback.clone(),
-                    panel_runtimes.clone(),
-                    file_tree.clone(),
-                    workspace_commands::open_local_project(),
-                );
-                open_surface(
-                    project_picker::request(open_local_project),
+                show_project_picker(
+                    project_picker::ProjectPickerInitialMode::Browse,
+                    app,
+                    workbench,
                     surfaces,
                     editor_focus_fallback,
+                    panel_runtimes,
+                    file_tree,
+                    project_picker_runtime,
                     window,
                     cx,
                 );
@@ -113,6 +112,35 @@ pub(super) fn apply_host_effects(
                     window,
                     cx,
                 );
+            }
+            HostEffect::StartGitClone => {
+                show_project_picker(
+                    project_picker::ProjectPickerInitialMode::CloneGit,
+                    app,
+                    workbench,
+                    surfaces,
+                    editor_focus_fallback,
+                    panel_runtimes,
+                    file_tree,
+                    project_picker_runtime,
+                    window,
+                    cx,
+                );
+            }
+            HostEffect::RemoveSelectedRecentProject => {
+                let picker_active = surfaces
+                    .read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker));
+                if !picker_active {
+                    continue;
+                }
+                let project_id = {
+                    let projects = app.borrow().recent_projects();
+                    project_picker_runtime.selected_project_id(&projects)
+                };
+                if let Some(project_id) = project_id {
+                    app.borrow_mut().remove_recent_project(&project_id);
+                    window.refresh();
+                }
             }
             HostEffect::ShowLanguageServers => {
                 open_surface(
@@ -179,6 +207,111 @@ pub(super) fn dismiss_surface(
     window.refresh();
 }
 
+fn show_project_picker(
+    initial_mode: project_picker::ProjectPickerInitialMode,
+    app: &Rc<RefCell<App>>,
+    workbench: &Rc<RefCell<WorkbenchController>>,
+    surfaces: &Entity<SurfaceManager>,
+    editor_focus_fallback: &FocusHandle,
+    panel_runtimes: &PanelRuntimes,
+    file_tree: &FileTreeRuntime,
+    project_picker_runtime: &ProjectPickerRuntime,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    let project_list_app = Rc::clone(app);
+    let projects = Rc::new(move || project_list_app.borrow().recent_projects());
+    let open_project_app = Rc::clone(app);
+    let open_project_workbench = Rc::clone(workbench);
+    let open_project_surfaces = surfaces.clone();
+    let open_project_file_tree = file_tree.clone();
+    let open_project = Rc::new(
+        move |project_record: crate::app::RecentProject,
+              window: &mut Window,
+              cx: &mut gpui::App| {
+            project::open_recent_project(
+                Rc::clone(&open_project_app),
+                Rc::clone(&open_project_workbench),
+                &open_project_surfaces,
+                open_project_file_tree.clone(),
+                project_record.path,
+                project_record.repo,
+                window,
+                cx,
+            );
+        },
+    );
+    let clone_app = Rc::clone(app);
+    let clone_workbench = Rc::clone(workbench);
+    let clone_surfaces = surfaces.clone();
+    let clone_file_tree = file_tree.clone();
+    let clone_git_project = Rc::new(
+        move |repo: String, window: &mut Window, cx: &mut gpui::App| {
+            project::clone_git_project(
+                Rc::clone(&clone_app),
+                Rc::clone(&clone_workbench),
+                &clone_surfaces,
+                clone_file_tree.clone(),
+                repo,
+                window,
+                cx,
+            );
+        },
+    );
+    let key_app = Rc::clone(app);
+    let key_workbench = Rc::clone(workbench);
+    let key_surfaces = surfaces.clone();
+    let key_editor_focus = editor_focus_fallback.clone();
+    let key_panel_runtimes = panel_runtimes.clone();
+    let key_file_tree = file_tree.clone();
+    let key_project_picker = project_picker_runtime.clone();
+    let key_request = Rc::new(
+        move |chord: String, window: &mut Window, cx: &mut gpui::App| {
+            let outcome = match key_app.borrow_mut().dispatch_key(chord, KeySurface::Panel) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    eprintln!("命令执行失败：{error}");
+                    return false;
+                }
+            };
+
+            apply_host_effects(
+                outcome.effects,
+                &key_app,
+                &key_workbench,
+                &key_surfaces,
+                &key_editor_focus,
+                &key_panel_runtimes,
+                &key_file_tree,
+                &key_project_picker,
+                window,
+                cx,
+            );
+            if outcome.consumed {
+                window.refresh();
+            }
+            outcome.consumed
+        },
+    );
+    let shortcut_app = Rc::clone(app);
+    let shortcut_lookup =
+        Rc::new(move |command_id: &str| shortcut_app.borrow().shortcut_for(command_id));
+    let actions = project_picker::ProjectPickerActions {
+        projects,
+        open_project,
+        clone_git_project,
+        key_request,
+        shortcut_lookup,
+    };
+    open_surface(
+        project_picker::request(project_picker_runtime.clone(), actions, initial_mode),
+        surfaces,
+        editor_focus_fallback,
+        window,
+        cx,
+    );
+}
+
 fn open_surface(
     request: SurfaceRequest,
     surfaces: &Entity<SurfaceManager>,
@@ -192,8 +325,12 @@ fn open_surface(
     let focus_to_restore = window
         .focused(cx)
         .unwrap_or_else(|| editor_focus_fallback.clone());
+    let focus_on_open = request.focus_on_open.clone();
     surfaces.update(cx, |surfaces, cx| {
         surfaces.open(request, focus_to_restore, cx);
     });
+    if let Some(focus) = focus_on_open {
+        window.focus(&focus);
+    }
     window.refresh();
 }

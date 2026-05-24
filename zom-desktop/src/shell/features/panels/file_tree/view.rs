@@ -66,10 +66,10 @@ fn render_list(
     for row in &state.rows {
         list = list.child(render_row(row, state, is_focused));
         // 新建条目的输入行紧跟在其父目录行之后。
-        if let Some(pending) = &state.pending {
-            if pending.parent == row.path {
-                list = list.child(render_input_row(pending, slot));
-            }
+        if let Some(pending) = &state.pending
+            && pending.parent == row.path
+        {
+            list = list.child(render_input_row(pending, slot));
         }
     }
     list

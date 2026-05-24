@@ -184,10 +184,10 @@ impl HistoryState {
         for child in children {
             self.drop_subtree(child);
         }
-        if let Some(id) = self.current {
-            if let Some(node) = self.nodes.get_mut(&id) {
-                node.children.clear();
-            }
+        if let Some(id) = self.current
+            && let Some(node) = self.nodes.get_mut(&id)
+        {
+            node.children.clear();
         }
     }
 

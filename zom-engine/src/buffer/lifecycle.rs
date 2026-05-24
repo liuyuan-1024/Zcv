@@ -206,10 +206,8 @@ impl Buffer {
     pub fn approximate_memory_bytes(&self) -> usize {
         let text_bytes = self.storage.len_bytes().get();
         let history_bytes = self.history.status().memory_bytes;
-        let selection_bytes =
-            self.selection.as_slice().len() * std::mem::size_of::<crate::Selection>();
-        let pending_events =
-            self.pending_delta_events.len() * std::mem::size_of::<crate::transaction::DeltaEvent>();
+        let selection_bytes = std::mem::size_of_val(self.selection.as_slice());
+        let pending_events = std::mem::size_of_val(self.pending_delta_events.as_slice());
         text_bytes
             .saturating_add(history_bytes)
             .saturating_add(selection_bytes)

@@ -183,6 +183,25 @@ fn normalize_selections(
     }
 }
 
+fn should_merge(current: Selection, next: Selection, policy: SelectionMergePolicy) -> bool {
+    if current.end() > next.start() {
+        return true;
+    }
+
+    if current.end() == next.start() {
+        return match policy {
+            SelectionMergePolicy::MergeOverlappingOrAdjacent => true,
+            SelectionMergePolicy::MergeOverlapping => current.is_caret() || next.is_caret(),
+        };
+    }
+
+    false
+}
+
+fn contains_offset(selection: Selection, offset: ByteOffset) -> bool {
+    selection.start() <= offset && offset <= selection.end()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,23 +240,4 @@ mod tests {
         );
         assert_eq!(adjacent.ranges(), vec![range(1, 5)]);
     }
-}
-
-fn should_merge(current: Selection, next: Selection, policy: SelectionMergePolicy) -> bool {
-    if current.end() > next.start() {
-        return true;
-    }
-
-    if current.end() == next.start() {
-        return match policy {
-            SelectionMergePolicy::MergeOverlappingOrAdjacent => true,
-            SelectionMergePolicy::MergeOverlapping => current.is_caret() || next.is_caret(),
-        };
-    }
-
-    false
-}
-
-fn contains_offset(selection: Selection, offset: ByteOffset) -> bool {
-    selection.start() <= offset && offset <= selection.end()
 }

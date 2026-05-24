@@ -38,7 +38,7 @@ impl PanelStack {
 
     /// 该 stack 是否承载某个 panel（用于 BottomBar 决定槽的归属 dock）。
     pub(crate) fn contains(&self, panel: PanelId) -> bool {
-        self.panels.iter().any(|p| *p == panel)
+        self.panels.contains(&panel)
     }
 }
 

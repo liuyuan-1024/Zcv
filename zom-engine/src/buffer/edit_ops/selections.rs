@@ -157,10 +157,10 @@ impl Buffer {
         let mut targets = Vec::new();
         for line in lines {
             let line_start = self.storage.line_start(line)?;
-            if let Some(end) = leading_indent_end(&self.storage, line_start, indent_width)? {
-                if end > line_start {
-                    targets.push(Selection::new(line_start, end));
-                }
+            if let Some(end) = leading_indent_end(&self.storage, line_start, indent_width)?
+                && end > line_start
+            {
+                targets.push(Selection::new(line_start, end));
             }
         }
 
@@ -251,10 +251,9 @@ impl Buffer {
                 .ok_or_else(|| offset_arithmetic_bug("replace_selection_ranges_with_metadata"))?;
 
             let is_empty_noop = range.is_empty() && replacement.is_empty();
-            // 流式比较，零拷贝
-            let is_same_text_noop = if range.is_empty() {
-                false
-            } else if range.len() != replacement.len() {
+            // 流式比较，零拷贝。range 为空或长度不等都视为「不是同文 noop」——
+            // 长度不等无须比内容，空 range 由 is_empty_noop 单独覆盖。
+            let is_same_text_noop = if range.is_empty() || range.len() != replacement.len() {
                 false
             } else {
                 let mut consumed = 0usize;

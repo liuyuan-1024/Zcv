@@ -58,7 +58,7 @@ impl Buffer {
         if range.end() > len_bytes {
             return Err(EditError::RangeOutOfBounds { range }.into());
         }
-        if !self.storage.is_grapheme_boundary(range.start()).is_ok() {
+        if self.storage.is_grapheme_boundary(range.start()).is_err() {
             // 不构成字符边界即视为越界
             return Err(EditError::RangeOutOfBounds { range }.into());
         }

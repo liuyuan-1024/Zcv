@@ -281,11 +281,12 @@ impl FileTreeModel {
             return;
         };
         let snapshot = snapshot_row(tree, &selected);
-        if let Some((kind, expanded, _depth)) = snapshot {
-            if matches!(kind, EntryKind::Directory) && expanded {
-                tree.collapse(&selected);
-                return;
-            }
+        if let Some((kind, expanded, _depth)) = snapshot
+            && matches!(kind, EntryKind::Directory)
+            && expanded
+        {
+            tree.collapse(&selected);
+            return;
         }
         // 不是展开目录：上跳到父行。根目录已经是最顶层，原地不动。
         if selected == tree.root() {

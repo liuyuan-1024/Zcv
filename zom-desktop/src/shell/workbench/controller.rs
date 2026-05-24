@@ -114,16 +114,13 @@ impl WorkbenchController {
     }
 
     fn dock_hosting_mut(&mut self, panel: PanelId) -> Option<&mut DockState> {
-        for dock in [
+        [
             &mut self.left_dock,
             &mut self.right_dock,
             &mut self.bottom_dock,
-        ] {
-            if dock.stack.contains(panel) {
-                return Some(dock);
-            }
-        }
-        None
+        ]
+        .into_iter()
+        .find(|dock| dock.stack.contains(panel))
     }
 
     fn dock_state(&self, area: DockAreaId) -> &DockState {

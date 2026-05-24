@@ -625,11 +625,11 @@ impl App {
                 }
             }
         }
-        if let Some(byte) = active_reveal {
-            if let Some(view) = self.views.active_view_mut() {
-                *view.selection_mut() = SelectionSet::new(vec![Selection::caret(byte)]);
-                view.request_reveal(byte, RevealKind::Match);
-            }
+        if let Some(byte) = active_reveal
+            && let Some(view) = self.views.active_view_mut()
+        {
+            *view.selection_mut() = SelectionSet::new(vec![Selection::caret(byte)]);
+            view.request_reveal(byte, RevealKind::Match);
         }
         self.search_refresh(None);
     }

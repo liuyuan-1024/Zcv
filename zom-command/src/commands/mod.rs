@@ -17,7 +17,7 @@ pub use features::keyboard_shortcuts;
 pub use features::language_servers;
 pub use features::outline;
 pub use features::project_picker;
-pub use features::project_search;
+pub use features::search;
 pub use features::settings;
 pub use features::terminal;
 pub use features::version_control;

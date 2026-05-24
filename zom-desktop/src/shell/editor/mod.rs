@@ -22,7 +22,7 @@ mod routing;
 mod slot;
 
 pub(crate) use blink::{CaretBlink, drive as drive_caret_blink};
-pub(crate) use core::{Editor, EditorSnapshot};
+pub(crate) use core::{Editor, EditorSnapshot, RevealHint};
 pub(crate) use element::EditorKind;
 pub(crate) use ime::{ImeQueryTarget, ImeTarget};
 pub(crate) use input::EditorInput;

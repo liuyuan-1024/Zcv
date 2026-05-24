@@ -57,6 +57,8 @@ pub(crate) fn render(
     shortcut_lookup: ShortcutLookup,
     command_title_lookup: CommandTitleLookup,
     editor_slot: Rc<TextEditorSlot>,
+    search_query_slot: Rc<TextEditorSlot>,
+    search_replacement_slot: Rc<TextEditorSlot>,
     editor_focus: FocusHandle,
     panel_runtimes: PanelRuntimes,
     file_tree: FileTreePanel<'_>,
@@ -91,6 +93,8 @@ pub(crate) fn render(
             key_request,
             panel_key_request,
             editor_slot,
+            search_query_slot,
+            search_replacement_slot,
             editor_focus,
             panel_runtimes,
             file_tree,
@@ -121,6 +125,8 @@ fn render_body(
     key_request: KeyRequest,
     panel_key_request: KeyRequest,
     editor_slot: Rc<TextEditorSlot>,
+    search_query_slot: Rc<TextEditorSlot>,
+    search_replacement_slot: Rc<TextEditorSlot>,
     editor_focus: FocusHandle,
     panel_runtimes: PanelRuntimes,
     file_tree: FileTreePanel<'_>,
@@ -131,8 +137,12 @@ fn render_body(
     let panel_ctx = PanelContext {
         has_project: state.has_project,
         file_tree,
+        search_state: &state.search,
+        search_query_slot: &search_query_slot,
+        search_replacement_slot: &search_replacement_slot,
         panel_runtimes: &panel_runtimes,
         panel_key_request: &panel_key_request,
+        shortcut_lookup: &shortcut_lookup,
         command_title_lookup: &command_title_lookup,
     };
     let mut row = div().flex_1().flex().flex_row().w_full().overflow_hidden();
@@ -155,7 +165,7 @@ fn render_body(
         editor_focus,
         Rc::clone(&dock_resize),
         editor_tab_scroll,
-        shortcut_lookup,
+        shortcut_lookup.clone(),
         Rc::clone(&command_title_lookup),
     ));
     if state.right_dock.is_visible() {

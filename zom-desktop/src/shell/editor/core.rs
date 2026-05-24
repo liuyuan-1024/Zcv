@@ -2,6 +2,7 @@
 
 use zom_command::EditTarget;
 use zom_engine::{Buffer, BufferConfig, SelectionSet};
+use zom_view::RevealKind;
 
 use super::ime::{ImeQueryTarget, ImeTarget};
 
@@ -18,6 +19,18 @@ pub(crate) struct Editor {
 pub(crate) struct EditorSnapshot {
     pub(crate) text: String,
     pub(crate) cursor_byte: usize,
+    /// 外部 reveal 请求在快照里的表示。只在多行主编辑器有意义；
+    /// 嵌入式单行编辑器（搜索框等）始终为 `None`。
+    pub(crate) reveal: Option<RevealHint>,
+}
+
+/// [`zom_view::RevealRequest`] 的渲染端镜像 —— 把 `ByteOffset` 换成 `usize`，
+/// 便于元素侧直接用，不再跨 crate 引 engine 类型。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RevealHint {
+    pub(crate) byte: usize,
+    pub(crate) kind: RevealKind,
+    pub(crate) seq: u64,
 }
 
 impl Editor {
@@ -44,6 +57,7 @@ impl Editor {
         EditorSnapshot {
             text: self.text(),
             cursor_byte: self.cursor_byte(),
+            reveal: None,
         }
     }
 

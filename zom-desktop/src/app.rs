@@ -15,9 +15,13 @@ use zom_command::commands::{self, editor};
 use zom_command::{
     CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId, CommandQueue,
     CommandRegistry, EffectQueue, FileTreeKeyMode, HostEffect, Invocation, KeyChord, KeyContext,
-    Keymap, KeymapResolution,
+    Keymap, KeymapResolution, SearchOption, SearchScope,
 };
-use zom_view::{ViewId, ViewSet};
+use zom_engine::{
+    ByteOffset, RegexSearchOptions as EngineRegexSearchOptions,
+    SearchOptions as EngineSearchOptions, Selection, SelectionSet, TextRange,
+};
+use zom_view::{RevealKind, ViewId, ViewSet};
 use zom_workspace::{EntryKind, Workspace, WorkspaceBuffer};
 
 use crate::shell::editor::{
@@ -25,6 +29,9 @@ use crate::shell::editor::{
     TextTargetId, TextTargetOwner, TextTargetQuery,
 };
 use crate::shell::features::panels::file_tree::{FileTreeActivation, FileTreeModel, FileTreeState};
+use crate::shell::features::panels::search::{
+    SearchModel, SearchPanelOptions, SearchResultItem, SearchState,
+};
 use crate::shell::features::project_picker::{
     ProjectPickerActivation, ProjectPickerMode, ProjectPickerModel, ProjectPickerState,
 };
@@ -114,6 +121,7 @@ pub struct App {
     recent_projects_path: Option<PathBuf>,
     file_tree: FileTreeModel,
     project_picker: ProjectPickerModel,
+    search: SearchModel,
 }
 
 impl App {
@@ -153,6 +161,7 @@ impl App {
             recent_projects_path: path,
             file_tree: FileTreeModel::default(),
             project_picker: ProjectPickerModel::new(),
+            search: SearchModel::new(),
         }
     }
 
@@ -375,6 +384,7 @@ impl App {
         };
         match surface {
             KeySurface::Editor => focused_text_profile(),
+            KeySurface::Panel if self.search.active() => focused_text_profile(),
             KeySurface::Panel => vec![KeyContext::global()],
             KeySurface::ProjectPicker if self.project_picker.active() => focused_text_profile(),
             KeySurface::ProjectPicker => vec![KeyContext::project_picker(), KeyContext::global()],
@@ -407,9 +417,13 @@ impl App {
     /// 包一层方法。
     pub(crate) fn with_router<R>(&self, f: impl FnOnce(EditorRouter<'_>) -> R) -> R {
         let main = MainEditorOwnerRef::new(&self.workspace, &self.views);
+        let search_query = self.search.query_owner();
+        let search_replacement = self.search.replacement_owner();
         let owners: Vec<&dyn TextTargetQuery> = vec![
             &self.project_picker as &dyn TextTargetQuery,
             &self.file_tree as &dyn TextTargetQuery,
+            &search_query as &dyn TextTargetQuery,
+            &search_replacement as &dyn TextTargetQuery,
             &main as &dyn TextTargetQuery,
         ];
         f(EditorRouter::new(owners))
@@ -419,9 +433,11 @@ impl App {
     /// 主编辑区。
     pub(crate) fn with_router_mut<R>(&mut self, f: impl FnOnce(EditorRouterMut<'_>) -> R) -> R {
         let mut main = MainEditorOwner::new(&mut self.workspace, &mut self.views);
+        let mut search = self.search.active_owner();
         let owners: Vec<&mut dyn TextTargetOwner> = vec![
             &mut self.project_picker as &mut dyn TextTargetOwner,
             &mut self.file_tree as &mut dyn TextTargetOwner,
+            &mut search as &mut dyn TextTargetOwner,
             &mut main as &mut dyn TextTargetOwner,
         ];
         f(EditorRouterMut::new(owners))
@@ -441,6 +457,296 @@ impl App {
             .map(|command| command.title.clone())
     }
 
+    pub(crate) fn search_state(&self) -> SearchState {
+        self.search.state()
+    }
+
+    pub(crate) fn search_activate(&mut self, target: TextTargetId) {
+        self.search.activate(target);
+    }
+
+    pub(crate) fn search_deactivate(&mut self, target: TextTargetId) {
+        self.search.deactivate(target);
+    }
+
+    pub(crate) fn search_set_scope(&mut self, scope: SearchScope) {
+        self.search.set_scope(scope);
+        self.search_refresh(None);
+    }
+
+    pub(crate) fn search_toggle_option(&mut self, option: SearchOption) {
+        self.search.toggle_option(option);
+        self.search_refresh(None);
+    }
+
+    pub(crate) fn search_find_next(&mut self) {
+        self.search_refresh(None);
+        let len = self.search.results().len();
+        if len == 0 {
+            return;
+        }
+        let next = self
+            .search
+            .active_result()
+            .map(|index| (index + 1) % len)
+            .unwrap_or(0);
+        self.search_refresh(Some(next));
+        self.search_select_active_result();
+    }
+
+    pub(crate) fn search_find_previous(&mut self) {
+        self.search_refresh(None);
+        let len = self.search.results().len();
+        if len == 0 {
+            return;
+        }
+        let previous = self
+            .search
+            .active_result()
+            .map(|index| if index == 0 { len - 1 } else { index - 1 })
+            .unwrap_or(0);
+        self.search_refresh(Some(previous));
+        self.search_select_active_result();
+    }
+
+    pub(crate) fn search_replace_next(&mut self) {
+        self.search_refresh(None);
+        let Some(active_index) = self.search.active_result() else {
+            return;
+        };
+        let Some(item) = self.search.results().get(active_index).cloned() else {
+            return;
+        };
+        let query = self.search.query_text();
+        let replacement = self.search.replacement_text();
+        let options = self.search.options();
+        let Some(buffer) = self.workspace.buffer_mut(item.buffer_id) else {
+            return;
+        };
+        let result = if options.regex {
+            let pattern = regex_pattern(&query, options.whole_word);
+            buffer
+                .buffer_mut()
+                .search_regex(
+                    &pattern,
+                    EngineRegexSearchOptions::new().with_case_sensitive(options.case_sensitive),
+                )
+                .and_then(|result| {
+                    buffer
+                        .buffer_mut()
+                        .replace_regex_match(&result, item.buffer_ordinal, &replacement)
+                        .map(|_| ())
+                })
+        } else {
+            buffer
+                .buffer_mut()
+                .search(&query, literal_search_options(options))
+                .and_then(|result| {
+                    buffer
+                        .buffer_mut()
+                        .replace_search_match(&result, item.buffer_ordinal, &replacement)
+                        .map(|_| ())
+                })
+        };
+        if let Err(error) = result {
+            self.search
+                .set_results(Vec::new(), None, Some(format!("替换失败：{error}")));
+            return;
+        }
+        self.search_refresh(Some(active_index));
+        self.search_select_active_result();
+    }
+
+    pub(crate) fn search_replace_all(&mut self) {
+        self.search_refresh(None);
+        let query = self.search.query_text();
+        if query.is_empty() {
+            return;
+        }
+        let replacement = self.search.replacement_text();
+        let options = self.search.options();
+        let ids = self.search_target_buffer_ids();
+        let active_buffer_id = self.views.active_view().map(|view| view.buffer());
+        // 替换之后没有「下一个 active match」可言；把光标停在活动 buffer 内
+        // 最后一处替换的末尾，并 reveal 那里 —— 这是替换后唯一有意义的焦点。
+        let mut active_reveal: Option<ByteOffset> = None;
+        for id in ids {
+            let Some(buffer) = self.workspace.buffer_mut(id) else {
+                continue;
+            };
+            let outcome = if options.regex {
+                let pattern = regex_pattern(&query, options.whole_word);
+                buffer
+                    .buffer_mut()
+                    .search_regex(
+                        &pattern,
+                        EngineRegexSearchOptions::new().with_case_sensitive(options.case_sensitive),
+                    )
+                    .and_then(|result| {
+                        buffer
+                            .buffer_mut()
+                            .replace_all_regex_matches(&result, &replacement)
+                    })
+            } else {
+                buffer
+                    .buffer_mut()
+                    .search(&query, literal_search_options(options))
+                    .and_then(|result| {
+                        buffer
+                            .buffer_mut()
+                            .replace_all_search_matches(&result, &replacement)
+                    })
+            };
+            match outcome {
+                Ok(Some((_, changeset))) if Some(id) == active_buffer_id => {
+                    // ChangeSet 已经按 post-replacement 坐标列出每次编辑的落点，
+                    // 直接拿最后一项的 end 即"最后那次替换的末尾"，不必自己算累积偏移。
+                    match changeset.changed_ranges() {
+                        Ok(ranges) => {
+                            if let Some(last) = ranges.last() {
+                                active_reveal = Some(last.end());
+                            }
+                        }
+                        Err(error) => {
+                            self.search.set_results(
+                                Vec::new(),
+                                None,
+                                Some(format!("替换失败：{error}")),
+                            );
+                            return;
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.search
+                        .set_results(Vec::new(), None, Some(format!("替换失败：{error}")));
+                    return;
+                }
+            }
+        }
+        if let Some(byte) = active_reveal {
+            if let Some(view) = self.views.active_view_mut() {
+                *view.selection_mut() = SelectionSet::new(vec![Selection::caret(byte)]);
+                view.request_reveal(byte, RevealKind::Match);
+            }
+        }
+        self.search_refresh(None);
+    }
+
+    fn search_refresh(&mut self, requested_active: Option<usize>) {
+        let query = self.search.query_text();
+        if query.is_empty() {
+            self.search.clear_results();
+            return;
+        }
+
+        let options = self.search.options();
+        let mut results = Vec::new();
+        let mut error = None;
+        for id in self.search_target_buffer_ids() {
+            let Some(buffer) = self.workspace.buffer(id) else {
+                continue;
+            };
+            let text = buffer.buffer().text().into_owned();
+            let ranges = if options.regex {
+                let pattern = regex_pattern(&query, options.whole_word);
+                match buffer.buffer().search_regex(
+                    &pattern,
+                    EngineRegexSearchOptions::new().with_case_sensitive(options.case_sensitive),
+                ) {
+                    Ok(result) => result.ranges().collect::<Vec<_>>(),
+                    Err(search_error) => {
+                        error = Some(format!("搜索失败：{search_error}"));
+                        Vec::new()
+                    }
+                }
+            } else {
+                match buffer
+                    .buffer()
+                    .search(&query, literal_search_options(options))
+                {
+                    Ok(result) => result.ranges().collect::<Vec<_>>(),
+                    Err(search_error) => {
+                        error = Some(format!("搜索失败：{search_error}"));
+                        Vec::new()
+                    }
+                }
+            };
+            if error.is_some() {
+                break;
+            }
+            let title = buffer_title(buffer);
+            for (buffer_ordinal, range) in ranges.into_iter().enumerate() {
+                let (line, column, preview) = search_result_location(&text, range);
+                results.push(SearchResultItem {
+                    buffer_id: id,
+                    title: title.clone(),
+                    range,
+                    buffer_ordinal,
+                    line,
+                    column,
+                    preview,
+                });
+            }
+        }
+
+        let active = requested_active
+            .or_else(|| self.search.active_result())
+            .filter(|index| *index < results.len())
+            .or_else(|| (!results.is_empty()).then_some(0));
+        self.search.set_results(results, active, error);
+    }
+
+    fn search_target_buffer_ids(&self) -> Vec<zom_workspace::BufferId> {
+        match self.search.scope() {
+            SearchScope::CurrentFile => self
+                .views
+                .active_view()
+                .map(|view| vec![view.buffer()])
+                .unwrap_or_default(),
+            SearchScope::Project => self
+                .workspace
+                .buffers()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+        }
+    }
+
+    fn search_select_active_result(&mut self) {
+        let Some(item) = self
+            .search
+            .active_result()
+            .and_then(|index| self.search.results().get(index))
+            .cloned()
+        else {
+            return;
+        };
+        let _ = self.workspace.set_active_buffer(item.buffer_id);
+        let existing_view = self
+            .views
+            .views()
+            .find_map(|(id, view)| (view.buffer() == item.buffer_id).then_some(id));
+        let view_id = match existing_view {
+            Some(id) => id,
+            None => {
+                let Some(buffer) = self.workspace.buffer(item.buffer_id) else {
+                    return;
+                };
+                let version = buffer.buffer().version();
+                self.views.open_view(item.buffer_id, version)
+            }
+        };
+        self.views.set_active(view_id);
+        if let Some(view) = self.views.active_view_mut() {
+            *view.selection_mut() =
+                SelectionSet::new(vec![Selection::new(item.range.start(), item.range.end())]);
+            // 用 `RevealKind::Match` —— 当前 match 已在视区内就不动；
+            // 后续做了 active match 高亮后，这条「视区不跳」就成了自然行为。
+            view.request_reveal(item.range.start(), RevealKind::Match);
+        }
+    }
+
     fn dispatch_command_id(
         &mut self,
         id: CommandId,
@@ -457,6 +763,8 @@ impl App {
             self.project_picker.edit_target()
         } else if self.file_tree.is_active() {
             self.file_tree.edit_target()
+        } else if self.search.active() {
+            self.search.edit_target()
         } else {
             None
         };
@@ -474,7 +782,16 @@ impl App {
         if self.project_picker.active() {
             self.project_picker.reset_selection();
         }
+        self.refresh_search_if_query_changed();
         Ok(host_effects)
+    }
+
+    /// 搜索框文本变了就重跑搜索；IME / 命令路径都汇到这里，避免在每个 owner
+    /// 单独埋钩子。
+    fn refresh_search_if_query_changed(&mut self) {
+        if self.search.query_changed_since_last_sync() {
+            self.search_refresh(None);
+        }
     }
 
     /// 提交系统输入法文本。commit 走命令路径，保证进入 undo 历史。
@@ -505,7 +822,7 @@ impl App {
         new_text: &str,
         new_selected_range_utf16: Option<Range<usize>>,
     ) -> Result<(), CommandError> {
-        self.with_router_mut(|router| {
+        let result = self.with_router_mut(|router| {
             router.with_ime_target(target_id, |mut target| {
                 target.replace_and_mark_text(
                     replacement_range_utf16,
@@ -513,7 +830,10 @@ impl App {
                     new_selected_range_utf16,
                 )
             })
-        })
+        });
+        // preedit 期间也走 live search —— 用户能边输入边看到结果收敛。
+        self.refresh_search_if_query_changed();
+        result
     }
 
     pub(crate) fn ime_unmark_for(&mut self, target_id: TextTargetId) -> Result<(), CommandError> {
@@ -598,6 +918,38 @@ fn language_label(title: &str) -> String {
         Some(other) => other.to_uppercase(),
         None => "Unknown".to_string(),
     }
+}
+
+fn literal_search_options(options: SearchPanelOptions) -> EngineSearchOptions {
+    EngineSearchOptions::new()
+        .with_case_sensitive(options.case_sensitive)
+        .with_whole_word(options.whole_word)
+}
+
+fn regex_pattern(query: &str, whole_word: bool) -> String {
+    if whole_word {
+        format!(r"\b(?:{query})\b")
+    } else {
+        query.to_string()
+    }
+}
+
+fn search_result_location(text: &str, range: TextRange) -> (usize, usize, String) {
+    let start = range.start().get().min(text.len());
+    let before = text.get(..start).unwrap_or("");
+    let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
+    let line_start = before.rfind('\n').map(|index| index + 1).unwrap_or(0);
+    let column = before[line_start..].chars().count() + 1;
+    let line_end = text[start..]
+        .find('\n')
+        .map(|index| start + index)
+        .unwrap_or(text.len());
+    let preview_start = text[..start]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let preview = text[preview_start..line_end].trim().to_string();
+    (line, column, preview)
 }
 
 /// 空工作区：不预建任何 buffer/view。
@@ -717,10 +1069,10 @@ mod tests {
     use crate::shell::features::panels::file_tree::FileTreeActivation;
     use std::fs::{File, create_dir_all};
     use std::path::PathBuf;
-    use zom_command::HostEffect;
     use zom_command::commands::{
         diagnostics, editor, language_servers, project_picker as project_picker_commands, settings,
     };
+    use zom_command::{HostEffect, SearchOption, SearchScope};
     use zom_workspace::EntryKind;
 
     /// 主编辑区文本 / 光标快照——断言"正文里到底是什么"用。
@@ -905,6 +1257,64 @@ mod tests {
             .expect("派发成功");
         assert!(!outcome.consumed);
         assert!(outcome.effects.is_empty());
+    }
+
+    #[test]
+    fn search_field_should_route_text_editing_through_panel_surface() {
+        let mut app = App::new();
+        app.search_activate(TextTargetId::SearchQuery);
+
+        app.ime_replace_text_for(TextTargetId::SearchQuery, None, "needle")
+            .unwrap();
+        assert_eq!(app.search_state().query.text, "needle");
+
+        let outcome = app
+            .dispatch_key("backspace".to_string(), KeySurface::Panel)
+            .expect("派发成功");
+        assert!(outcome.consumed);
+        assert_eq!(app.search_state().query.text, "needl");
+
+        // 下一个匹配现在绑 down 键（替代旧的 enter）；按 enter 在搜索框里
+        // 没有意义，预期不被消费。
+        let outcome = app
+            .dispatch_key("down".to_string(), KeySurface::Panel)
+            .expect("派发成功");
+        assert!(outcome.consumed);
+        assert_eq!(outcome.effects, vec![HostEffect::SearchFindNext]);
+        assert_eq!(app.search_state().query.text, "needl");
+
+        let outcome = app
+            .dispatch_key("tab".to_string(), KeySurface::Panel)
+            .expect("派发成功");
+        assert!(outcome.consumed);
+        assert_eq!(outcome.effects, vec![HostEffect::SearchFocusNextField]);
+        assert_eq!(app.search_state().query.text, "needl");
+
+        let outcome = app
+            .dispatch_key("mod-p".to_string(), KeySurface::Panel)
+            .expect("派发成功");
+        assert!(outcome.consumed);
+        assert_eq!(
+            outcome.effects,
+            vec![HostEffect::SearchSetScope(SearchScope::Project)]
+        );
+
+        app.search_set_scope(SearchScope::Project);
+        assert_eq!(app.search_state().scope, SearchScope::Project);
+
+        let outcome = app
+            .dispatch_key("alt-c".to_string(), KeySurface::Panel)
+            .expect("派发成功");
+        assert!(outcome.consumed);
+        assert_eq!(
+            outcome.effects,
+            vec![HostEffect::SearchToggleOption(SearchOption::CaseSensitive)]
+        );
+
+        app.search_toggle_option(SearchOption::CaseSensitive);
+        assert!(app.search_state().options.case_sensitive);
+        app.search_toggle_option(SearchOption::CaseSensitive);
+        assert!(!app.search_state().options.case_sensitive);
     }
 
     #[test]
@@ -1304,6 +1714,21 @@ mod tests {
             app.file_tree_state().pending.is_some(),
             "新建输入框仍在编辑态"
         );
+        assert_eq!(pending_name_snapshot(&app).text, "beta");
+
+        // Tab / Shift-Tab：单行编辑器不接受缩进 / 反缩进，和 Enter 不接受换行一样。
+        let outcome = app
+            .dispatch_key("tab".to_string(), KeySurface::FileTree)
+            .unwrap();
+        assert!(!outcome.consumed);
+        assert!(outcome.effects.is_empty());
+        assert_eq!(pending_name_snapshot(&app).text, "beta");
+
+        let outcome = app
+            .dispatch_key("shift-tab".to_string(), KeySurface::FileTree)
+            .unwrap();
+        assert!(!outcome.consumed);
+        assert!(outcome.effects.is_empty());
         assert_eq!(pending_name_snapshot(&app).text, "beta");
 
         // Enter：单行编辑器不接受换行 → text_edit 落空 → 命中 FileTree 的提交命令。

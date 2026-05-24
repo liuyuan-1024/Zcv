@@ -42,6 +42,7 @@ pub enum KeyContext {
     TextEdit(TextEditKeyContext),
     FileTree(FileTreeKeyContext),
     ProjectPicker(ProjectPickerKeyContext),
+    SearchPanel,
 }
 
 impl KeyContext {
@@ -63,6 +64,10 @@ impl KeyContext {
     pub fn project_picker() -> Self {
         Self::ProjectPicker(ProjectPickerKeyContext)
     }
+
+    pub fn search_panel() -> Self {
+        Self::SearchPanel
+    }
 }
 
 /// 键位绑定适用的结构化上下文。
@@ -72,6 +77,7 @@ pub enum KeyBindingContext {
     TextEdit(TextEditBindingContext),
     FileTree(FileTreeBindingContext),
     ProjectPicker(ProjectPickerBindingContext),
+    SearchPanel,
 }
 
 impl KeyBindingContext {
@@ -108,6 +114,10 @@ impl KeyBindingContext {
         Self::ProjectPicker(ProjectPickerBindingContext)
     }
 
+    pub fn search_panel() -> Self {
+        Self::SearchPanel
+    }
+
     /// 两条绑定的上下文是否可能被同一个运行时 [`KeyContext`] 同时命中。
     ///
     /// 这是「冲突」的真正定义：同一序列下两条绑定一旦重叠，[`Keymap::resolve`]
@@ -122,6 +132,7 @@ impl KeyBindingContext {
             (Self::TextEdit(a), Self::TextEdit(b)) => a.composition.overlaps(b.composition),
             (Self::FileTree(a), Self::FileTree(b)) => a.mode == b.mode,
             (Self::ProjectPicker(_), Self::ProjectPicker(_)) => true,
+            (Self::SearchPanel, Self::SearchPanel) => true,
             _ => false,
         }
     }
@@ -279,6 +290,7 @@ fn binding_matches_context(binding: &KeyBinding, context: KeyContext) -> bool {
             binding.mode == active.mode
         }
         (KeyBindingContext::ProjectPicker(_), KeyContext::ProjectPicker(_)) => true,
+        (KeyBindingContext::SearchPanel, KeyContext::SearchPanel) => true,
         _ => false,
     }
 }

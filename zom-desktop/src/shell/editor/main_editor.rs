@@ -51,6 +51,11 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
     EditorSnapshot {
         text: buffer.buffer().text().into_owned(),
         cursor_byte: view.selection().primary().head().get(),
+        reveal: view.reveal().map(|req| super::RevealHint {
+            byte: req.byte.get(),
+            kind: req.kind,
+            seq: req.seq,
+        }),
     }
 }
 

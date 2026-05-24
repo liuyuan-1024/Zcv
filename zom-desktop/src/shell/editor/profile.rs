@@ -15,6 +15,8 @@ pub(crate) enum TextInputProfile {
     FileTreePendingName,
     /// 项目选择器查询框：选择器命令优先，其次单行文本编辑，最后全局。
     ProjectPickerQuery,
+    /// 搜索面板输入框：单行文本编辑，未命中后落到全局搜索命令。
+    SearchField,
 }
 
 impl TextInputProfile {
@@ -35,6 +37,11 @@ impl TextInputProfile {
             ],
             Self::ProjectPickerQuery => vec![
                 KeyContext::project_picker(),
+                KeyContext::text_edit(self.accepts_newline(), false),
+                KeyContext::global(),
+            ],
+            Self::SearchField => vec![
+                KeyContext::search_panel(),
                 KeyContext::text_edit(self.accepts_newline(), false),
                 KeyContext::global(),
             ],

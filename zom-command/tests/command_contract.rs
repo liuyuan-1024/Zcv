@@ -4,12 +4,12 @@ use std::rc::Rc;
 use zom_command::commands::{
     debug, diagnostics,
     editor::{self, InsertTextArgs, MoveSelectionArgs, ReplaceSelectionArgs},
-    file_tree, keyboard_shortcuts, outline, project_search, settings, terminal, version_control,
+    file_tree, keyboard_shortcuts, outline, search, settings, terminal, version_control,
 };
 use zom_command::{
     Command, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId, CommandQueue,
     CommandRegistry, EffectQueue, FileTreeKeyMode, HostEffect, KeyBinding, KeyBindingContext,
-    KeyChord, KeyContext, Keymap, KeymapResolution, NoArgs,
+    KeyChord, KeyContext, Keymap, KeymapResolution, NoArgs, SearchOption, SearchScope,
 };
 use zom_engine::{ByteOffset, Motion, MovementDirection, MovementUnit, Selection, SelectionSet};
 use zom_view::ViewSet;
@@ -37,6 +37,10 @@ fn multiline_text_edit_context() -> [KeyContext; 1] {
 
 fn composing_text_edit_context() -> [KeyContext; 1] {
     [KeyContext::text_edit(false, true)]
+}
+
+fn search_panel_context() -> [KeyContext; 1] {
+    [KeyContext::search_panel()]
 }
 
 fn file_tree_context(mode: FileTreeKeyMode) -> [KeyContext; 1] {
@@ -122,7 +126,16 @@ fn install_all_should_register_every_builtin_command_catalog() {
         (file_tree::TOGGLE_PANEL, "文件树"),
         (version_control::TOGGLE_PANEL, "版本管理"),
         (outline::TOGGLE_PANEL, "大纲"),
-        (project_search::TOGGLE_PANEL, "项目搜索"),
+        (search::TOGGLE_PANEL, "搜索"),
+        (search::SCOPE_CURRENT_FILE, "当前文件"),
+        (search::SCOPE_PROJECT, "整个项目"),
+        (search::TOGGLE_CASE_SENSITIVE, "区分大小写"),
+        (search::TOGGLE_WHOLE_WORD, "全词匹配"),
+        (search::TOGGLE_REGEX, "正则表达式"),
+        (search::FIND_PREVIOUS, "上一个"),
+        (search::FIND_NEXT, "下一个"),
+        (search::REPLACE_NEXT, "替换下一个"),
+        (search::REPLACE_ALL, "全部替换"),
         (terminal::TOGGLE_PANEL, "终端"),
         (debug::TOGGLE_PANEL, "调试"),
         (keyboard_shortcuts::TOGGLE_PANEL, "快捷键"),
@@ -143,6 +156,109 @@ fn install_all_should_register_every_builtin_command_catalog() {
         keymap
             .format_shortcut_for(&command_id(file_tree::TOGGLE_PANEL))
             .is_some()
+    );
+    assert!(
+        keymap
+            .format_shortcut_for(&command_id(search::TOGGLE_CASE_SENSITIVE))
+            .is_some()
+    );
+    assert!(
+        keymap
+            .format_shortcut_for(&command_id(search::REPLACE_ALL))
+            .is_some()
+    );
+}
+
+#[test]
+fn search_ui_commands_should_emit_state_effects() {
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    search::install(&mut registry, &mut keymap);
+    let (mut workspace, mut views, _) = setup("");
+
+    let effects = run_and_collect_effects(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![
+            (search::SCOPE_CURRENT_FILE, CommandArgs::new()),
+            (search::SCOPE_PROJECT, CommandArgs::new()),
+            (search::TOGGLE_CASE_SENSITIVE, CommandArgs::new()),
+            (search::TOGGLE_WHOLE_WORD, CommandArgs::new()),
+            (search::TOGGLE_REGEX, CommandArgs::new()),
+            (search::FIND_PREVIOUS, CommandArgs::new()),
+            (search::FIND_NEXT, CommandArgs::new()),
+            (search::REPLACE_NEXT, CommandArgs::new()),
+            (search::REPLACE_ALL, CommandArgs::new()),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        effects,
+        vec![
+            HostEffect::SearchSetScope(SearchScope::CurrentFile),
+            HostEffect::SearchSetScope(SearchScope::Project),
+            HostEffect::SearchToggleOption(SearchOption::CaseSensitive),
+            HostEffect::SearchToggleOption(SearchOption::WholeWord),
+            HostEffect::SearchToggleOption(SearchOption::Regex),
+            HostEffect::SearchFindPrevious,
+            HostEffect::SearchFindNext,
+            HostEffect::SearchReplaceNext,
+            HostEffect::SearchReplaceAll,
+        ]
+    );
+}
+
+#[test]
+fn search_tab_keys_should_resolve_only_in_search_panel_context() {
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    search::install(&mut registry, &mut keymap);
+    let search_panel = search_panel_context();
+    let text_edit = text_edit_context();
+    let global = global_context();
+
+    assert_eq!(
+        keymap.resolve(&[key("tab")], &search_panel),
+        KeymapResolution::Matched {
+            command: command_id(search::FOCUS_NEXT_FIELD),
+            args: CommandArgs::new(),
+        }
+    );
+    assert_eq!(
+        keymap.resolve(&[key("shift-tab")], &search_panel),
+        KeymapResolution::Matched {
+            command: command_id(search::FOCUS_PREVIOUS_FIELD),
+            args: CommandArgs::new(),
+        }
+    );
+    assert_eq!(
+        keymap.resolve(&[key("tab")], &text_edit),
+        KeymapResolution::NoMatch
+    );
+    assert_eq!(
+        keymap.resolve(&[key("tab")], &global),
+        KeymapResolution::NoMatch
+    );
+
+    let (mut workspace, mut views, _) = setup("");
+    let effects = run_and_collect_effects(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![
+            (search::FOCUS_NEXT_FIELD, CommandArgs::new()),
+            (search::FOCUS_PREVIOUS_FIELD, CommandArgs::new()),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        effects,
+        vec![
+            HostEffect::SearchFocusNextField,
+            HostEffect::SearchFocusPreviousField,
+        ]
     );
 }
 
@@ -556,13 +672,21 @@ fn editor_default_keymap_should_include_newline_indent_and_outdent() {
     );
     assert_eq!(
         keymap.resolve(&[key("tab")], &text_edit),
+        KeymapResolution::NoMatch
+    );
+    assert_eq!(
+        keymap.resolve(&[key("shift-tab")], &text_edit),
+        KeymapResolution::NoMatch
+    );
+    assert_eq!(
+        keymap.resolve(&[key("tab")], &multiline),
         KeymapResolution::Matched {
             command: command_id(editor::INDENT),
             args: CommandArgs::new(),
         }
     );
     assert_eq!(
-        keymap.resolve(&[key("shift-tab")], &text_edit),
+        keymap.resolve(&[key("shift-tab")], &multiline),
         KeymapResolution::Matched {
             command: command_id(editor::OUTDENT),
             args: CommandArgs::new(),

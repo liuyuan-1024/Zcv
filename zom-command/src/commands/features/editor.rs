@@ -359,10 +359,10 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_in("return", text_edit_multiline);
     registry
         .install(keymap, INDENT, "增加缩进", Box::new(run_indent))
-        .key_in("tab", text_edit);
+        .key_in("tab", text_edit_multiline);
     registry
         .install(keymap, OUTDENT, "减少缩进", Box::new(run_outdent))
-        .key_in("shift-tab", text_edit);
+        .key_in("shift-tab", text_edit_multiline);
     registry
         .install(
             keymap,

@@ -38,6 +38,8 @@ pub(crate) struct ShellView {
     main_editor_slot: Rc<TextEditorSlot>,
     file_tree_slot: Rc<TextEditorSlot>,
     project_picker_slot: Rc<TextEditorSlot>,
+    search_query_slot: Rc<TextEditorSlot>,
+    search_replacement_slot: Rc<TextEditorSlot>,
     editor_focus: FocusHandle,
     panel_runtimes: PanelRuntimes,
     file_tree: FileTreeRuntime,
@@ -78,6 +80,18 @@ impl ShellView {
             project_picker.focus_handle(),
             cx,
         );
+        let search_query_slot = TextEditorSlot::install(
+            Rc::clone(&app),
+            TextTargetId::SearchQuery,
+            panel_runtimes.search_query_focus_handle(),
+            cx,
+        );
+        let search_replacement_slot = TextEditorSlot::install(
+            Rc::clone(&app),
+            TextTargetId::SearchReplacement,
+            panel_runtimes.search_replacement_focus_handle(),
+            cx,
+        );
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));
 
         Self {
@@ -89,6 +103,8 @@ impl ShellView {
             main_editor_slot,
             file_tree_slot,
             project_picker_slot,
+            search_query_slot,
+            search_replacement_slot,
             editor_focus,
             panel_runtimes,
             file_tree,
@@ -119,6 +135,8 @@ impl ShellView {
         );
         self.language_servers
             .install_listeners(self.surface_manager.clone(), window, cx);
+        self.panel_runtimes
+            .install_listeners(Rc::clone(&self.app), window, cx);
     }
 
     /// 打开指定路径的本地项目（不弹选择器）。开发阶段默认项目经由统一项目流程。
@@ -140,6 +158,7 @@ impl ShellView {
             app.has_project(),
             app.editor_state(),
             app.file_tree_state(),
+            app.search_state(),
         )
     }
 
@@ -271,6 +290,8 @@ impl Render for ShellView {
             shortcut_lookup,
             command_title_lookup,
             Rc::clone(&self.main_editor_slot),
+            Rc::clone(&self.search_query_slot),
+            Rc::clone(&self.search_replacement_slot),
             self.editor_focus.clone(),
             self.panel_runtimes.clone(),
             file_tree_panel,

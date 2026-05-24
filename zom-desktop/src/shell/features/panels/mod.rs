@@ -6,13 +6,14 @@
 
 use gpui::{AnyElement, Context, FocusHandle, IntoElement, Window};
 
-use crate::shell::{CommandTitleLookup, KeyRequest};
+use crate::shell::editor::TextEditorSlot;
+use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 
 pub(crate) mod debug;
 pub(crate) mod file_tree;
 pub(crate) mod keyboard_shortcuts;
 pub(crate) mod outline;
-pub(crate) mod project_search;
+pub(crate) mod search;
 pub(crate) mod terminal;
 pub(crate) mod version_control;
 
@@ -24,7 +25,7 @@ pub(crate) enum PanelId {
     FileTree,
     VersionControl,
     Outline,
-    ProjectSearch,
+    Search,
     Terminal,
     Debug,
     KeyboardShortcuts,
@@ -37,7 +38,7 @@ impl PanelId {
             PanelId::FileTree => "icons/panels/file_tree.svg",
             PanelId::VersionControl => "icons/panels/version_control.svg",
             PanelId::Outline => "icons/panels/outline.svg",
-            PanelId::ProjectSearch => "icons/panels/project_search.svg",
+            PanelId::Search => "icons/panels/search.svg",
             PanelId::Terminal => "icons/panels/terminal.svg",
             PanelId::Debug => "icons/panels/debug.svg",
             PanelId::KeyboardShortcuts => "icons/panels/keyboard_shortcuts.svg",
@@ -49,14 +50,13 @@ impl PanelId {
     /// 供 bar glyph 等 UI 标注。
     pub(crate) fn toggle_command_id(self) -> &'static str {
         use zom_command::commands::{
-            debug, file_tree, keyboard_shortcuts, outline, project_search, terminal,
-            version_control,
+            debug, file_tree, keyboard_shortcuts, outline, search, terminal, version_control,
         };
         match self {
             PanelId::FileTree => file_tree::TOGGLE_PANEL,
             PanelId::VersionControl => version_control::TOGGLE_PANEL,
             PanelId::Outline => outline::TOGGLE_PANEL,
-            PanelId::ProjectSearch => project_search::TOGGLE_PANEL,
+            PanelId::Search => search::TOGGLE_PANEL,
             PanelId::Terminal => terminal::TOGGLE_PANEL,
             PanelId::Debug => debug::TOGGLE_PANEL,
             PanelId::KeyboardShortcuts => keyboard_shortcuts::TOGGLE_PANEL,
@@ -70,7 +70,7 @@ impl PanelId {
             PanelId::FileTree => "file_tree",
             PanelId::VersionControl => "version_control",
             PanelId::Outline => "outline",
-            PanelId::ProjectSearch => "project_search",
+            PanelId::Search => "search",
             PanelId::Terminal => "terminal",
             PanelId::Debug => "debug",
             PanelId::KeyboardShortcuts => "keyboard_shortcuts",
@@ -90,7 +90,7 @@ impl PanelId {
         PanelId::FileTree,
         PanelId::VersionControl,
         PanelId::Outline,
-        PanelId::ProjectSearch,
+        PanelId::Search,
         PanelId::Terminal,
         PanelId::Debug,
         PanelId::KeyboardShortcuts,
@@ -110,7 +110,7 @@ pub(crate) fn focus_panel_handle(focus: FocusHandle, window: &mut Window, on_nex
 pub(crate) struct PanelRuntimes {
     version_control: version_control::VersionControlRuntime,
     outline: outline::OutlineRuntime,
-    project_search: project_search::ProjectSearchRuntime,
+    search: search::SearchRuntime,
     terminal: terminal::TerminalRuntime,
     debug: debug::DebugRuntime,
     keyboard_shortcuts: keyboard_shortcuts::KeyboardShortcutsRuntime,
@@ -121,7 +121,7 @@ impl PanelRuntimes {
         Self {
             version_control: version_control::VersionControlRuntime::new(cx),
             outline: outline::OutlineRuntime::new(cx),
-            project_search: project_search::ProjectSearchRuntime::new(cx),
+            search: search::SearchRuntime::new(cx),
             terminal: terminal::TerminalRuntime::new(cx),
             debug: debug::DebugRuntime::new(cx),
             keyboard_shortcuts: keyboard_shortcuts::KeyboardShortcutsRuntime::new(cx),
@@ -133,7 +133,7 @@ impl PanelRuntimes {
             PanelId::FileTree => None,
             PanelId::VersionControl => Some(self.version_control.focus_handle()),
             PanelId::Outline => Some(self.outline.focus_handle()),
-            PanelId::ProjectSearch => Some(self.project_search.focus_handle()),
+            PanelId::Search => Some(self.search.focus_handle()),
             PanelId::Terminal => Some(self.terminal.focus_handle()),
             PanelId::Debug => Some(self.debug.focus_handle()),
             PanelId::KeyboardShortcuts => Some(self.keyboard_shortcuts.focus_handle()),
@@ -144,6 +144,10 @@ impl PanelRuntimes {
         &self,
         panel: PanelId,
         key_request: &KeyRequest,
+        search_state: &search::SearchState,
+        search_query_slot: &std::rc::Rc<TextEditorSlot>,
+        search_replacement_slot: &std::rc::Rc<TextEditorSlot>,
+        shortcuts: &ShortcutLookup,
         titles: &CommandTitleLookup,
     ) -> Option<AnyElement> {
         match panel {
@@ -154,9 +158,16 @@ impl PanelRuntimes {
                     .into_any_element(),
             ),
             PanelId::Outline => Some(self.outline.render(key_request, titles).into_any_element()),
-            PanelId::ProjectSearch => Some(
-                self.project_search
-                    .render(key_request, titles)
+            PanelId::Search => Some(
+                self.search
+                    .render(
+                        search_state,
+                        key_request,
+                        search_query_slot,
+                        search_replacement_slot,
+                        shortcuts,
+                        titles,
+                    )
                     .into_any_element(),
             ),
             PanelId::Terminal => Some(self.terminal.render(key_request, titles).into_any_element()),
@@ -167,5 +178,22 @@ impl PanelRuntimes {
                     .into_any_element(),
             ),
         }
+    }
+
+    pub(crate) fn search_query_focus_handle(&self) -> FocusHandle {
+        self.search.query_focus_handle()
+    }
+
+    pub(crate) fn search_replacement_focus_handle(&self) -> FocusHandle {
+        self.search.replacement_focus_handle()
+    }
+
+    pub(crate) fn install_listeners<T: 'static>(
+        &self,
+        app: std::rc::Rc<std::cell::RefCell<crate::app::App>>,
+        window: &mut Window,
+        cx: &mut Context<T>,
+    ) {
+        self.search.install_listeners(app, window, cx);
     }
 }

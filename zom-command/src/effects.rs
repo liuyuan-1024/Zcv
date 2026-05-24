@@ -15,6 +15,22 @@
 
 use zom_workspace::EntryKind;
 
+/// 搜索面板的范围选择。当前只驱动 UI 状态，搜索后端接入后再承载实际查询范围。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SearchScope {
+    #[default]
+    CurrentFile,
+    Project,
+}
+
+/// 搜索面板的开关选项。当前只驱动 UI 状态，搜索后端接入后再参与匹配规则。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchOption {
+    CaseSensitive,
+    WholeWord,
+    Regex,
+}
+
 /// 命令处理器请求宿主执行的副作用。**按域分组**，加新变体时贴在对应组下。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HostEffect {
@@ -33,6 +49,26 @@ pub enum HostEffect {
     /// `"terminal"`），由宿主的 `PanelId::from_str` 解析。zom-command
     /// 不 import 宿主枚举，靠字符串桥接。
     TogglePanel(String),
+
+    // ===== Search =====
+    /// 设置搜索范围。
+    SearchSetScope(SearchScope),
+    /// 切换搜索选项。
+    SearchToggleOption(SearchOption),
+    /// 选中上一个搜索结果。
+    SearchFindPrevious,
+    /// 选中下一个搜索结果。
+    SearchFindNext,
+    /// 替换当前搜索结果。
+    SearchReplaceNext,
+    /// 替换全部搜索结果。
+    SearchReplaceAll,
+    /// 把搜索面板焦点移动到下一个输入框。
+    SearchFocusNextField,
+    /// 把搜索面板焦点移动到上一个输入框。
+    SearchFocusPreviousField,
+    /// 把焦点从搜索面板退回当前活动编辑器。
+    SearchFocusEditor,
 
     // ===== Workspace / Project =====
     /// 顶栏"切换项目"入口；宿主弹出最近项目。

@@ -98,6 +98,37 @@ pub(super) fn apply_host_effects(
                 }
                 window.refresh();
             }
+            HostEffect::SearchFocusNextField => {
+                focus_search_field(panel_runtimes, SearchFocusDirection::Next, window);
+            }
+            HostEffect::SearchFocusPreviousField => {
+                focus_search_field(panel_runtimes, SearchFocusDirection::Previous, window);
+            }
+            HostEffect::SearchFocusEditor => focus.move_to(FocusTarget::Editor, window),
+            HostEffect::SearchSetScope(scope) => {
+                app.borrow_mut().search_set_scope(scope);
+                window.refresh();
+            }
+            HostEffect::SearchToggleOption(option) => {
+                app.borrow_mut().search_toggle_option(option);
+                window.refresh();
+            }
+            HostEffect::SearchFindNext => {
+                app.borrow_mut().search_find_next();
+                window.refresh();
+            }
+            HostEffect::SearchFindPrevious => {
+                app.borrow_mut().search_find_previous();
+                window.refresh();
+            }
+            HostEffect::SearchReplaceNext => {
+                app.borrow_mut().search_replace_next();
+                window.refresh();
+            }
+            HostEffect::SearchReplaceAll => {
+                app.borrow_mut().search_replace_all();
+                window.refresh();
+            }
             HostEffect::ShowProjectPicker => {
                 show_project_picker(
                     project_picker::ProjectPickerInitialMode::Browse,
@@ -267,6 +298,30 @@ pub(super) fn apply_host_effects(
             }
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum SearchFocusDirection {
+    Next,
+    Previous,
+}
+
+fn focus_search_field(
+    panel_runtimes: &PanelRuntimes,
+    direction: SearchFocusDirection,
+    window: &mut Window,
+) {
+    let query = panel_runtimes.search_query_focus_handle();
+    let replacement = panel_runtimes.search_replacement_focus_handle();
+    let target = match direction {
+        SearchFocusDirection::Next if query.is_focused(window) => replacement,
+        SearchFocusDirection::Next if replacement.is_focused(window) => query,
+        SearchFocusDirection::Previous if replacement.is_focused(window) => query,
+        SearchFocusDirection::Previous if query.is_focused(window) => replacement,
+        SearchFocusDirection::Next | SearchFocusDirection::Previous => query,
+    };
+    window.focus(&target);
+    window.refresh();
 }
 
 pub(super) fn dismiss_surface(

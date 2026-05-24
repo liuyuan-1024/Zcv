@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use zom_engine::{BufferVersion, FoldSet, SelectionSet};
+use zom_engine::{BufferVersion, ByteOffset, FoldSet, SelectionSet};
 use zom_workspace::BufferId;
 
 /// view 的标识。
@@ -33,6 +33,30 @@ pub struct ViewportState {
     pub top_line: u64,
 }
 
+/// 「请把某个 byte 滚到视区」的意图标签。
+///
+/// 调用方表达「为什么要 reveal」，由渲染端（editor element）翻译成具体
+/// 的滚动策略（位置 / 是否仅在不可见时触发 / 是否伴随高亮等）。这层抽象
+/// 让 zom-view 不沾"上 1/3"这种渲染概念，调整全局风格只动渲染端的 mapping。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RevealKind {
+    /// 搜索 / 迭代型导航。尊重用户当前视区：目标已经可见就不动，不可见才滚（渲染端通常摆到上 1/3）。
+    /// 配合后续高亮 active match 使用 —— 用户能从高亮看到选中变化，视区无需每次跳。
+    Match,
+    /// 主动跳转（goto-definition / goto-line / 跳诊断 等）。
+    /// 用户在另一个控件输入命令后明确要求"把我带到那里"，无论目标是否在视区都给明显的视觉反馈。
+    Jump,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RevealRequest {
+    pub byte: ByteOffset,
+    pub kind: RevealKind,
+    /// 单调递增计数。同一个 byte + 同一个 kind 也能被反复触发：
+    /// 渲染端按seq 判别「是不是新请求」。
+    pub seq: u64,
+}
+
 /// 一个视图：对某个 buffer 的一次观察。
 #[derive(Debug)]
 pub struct View {
@@ -40,6 +64,8 @@ pub struct View {
     selection: SelectionSet,
     folds: FoldSet,
     viewport: ViewportState,
+    reveal: Option<RevealRequest>,
+    reveal_seq: u64,
 }
 
 impl View {
@@ -51,6 +77,8 @@ impl View {
             selection: SelectionSet::default(),
             folds: FoldSet::new(base_version),
             viewport: ViewportState::default(),
+            reveal: None,
+            reveal_seq: 0,
         }
     }
 
@@ -80,6 +108,22 @@ impl View {
 
     pub fn set_viewport(&mut self, viewport: ViewportState) {
         self.viewport = viewport;
+    }
+
+    pub fn reveal(&self) -> Option<RevealRequest> {
+        self.reveal
+    }
+
+    /// 请求把 `byte` 滚到视区。`kind` 标明触发场景；具体怎么滚由渲染端解读。
+    /// 每次调用都推进 seq —— 哪怕同 byte / 同 kind 也算「新一次请求」，
+    /// 让渲染端有依据再触发一次。
+    pub fn request_reveal(&mut self, byte: ByteOffset, kind: RevealKind) {
+        self.reveal_seq = self.reveal_seq.wrapping_add(1);
+        self.reveal = Some(RevealRequest {
+            byte,
+            kind,
+            seq: self.reveal_seq,
+        });
     }
 }
 

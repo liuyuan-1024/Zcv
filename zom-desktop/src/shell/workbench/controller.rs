@@ -10,6 +10,7 @@ use super::state::{
 };
 use crate::shell::features::panels::PanelId;
 use crate::shell::features::panels::file_tree::FileTreeState;
+use crate::shell::features::panels::search::SearchState;
 
 use gpui::{Pixels, px};
 
@@ -50,6 +51,7 @@ impl WorkbenchController {
         has_project: bool,
         editor: EditorState,
         file_tree: FileTreeState,
+        search: SearchState,
     ) -> WorkbenchState {
         WorkbenchState {
             project_title,
@@ -60,6 +62,7 @@ impl WorkbenchController {
             bottom_bar: self.bottom_bar.clone(),
             editor,
             file_tree,
+            search,
         }
     }
 
@@ -158,6 +161,7 @@ mod tests {
             false,
             EditorState::default(),
             FileTreeState::default(),
+            crate::shell::features::panels::search::SearchState::default(),
         );
         assert!(!initial.left_dock.is_visible());
         assert_eq!(initial.left_dock.active_panel(), None);
@@ -170,6 +174,7 @@ mod tests {
             false,
             EditorState::default(),
             FileTreeState::default(),
+            crate::shell::features::panels::search::SearchState::default(),
         );
         assert!(after_show.left_dock.is_visible());
         assert_eq!(after_show.left_dock.active_panel(), Some(PanelId::FileTree));
@@ -180,6 +185,7 @@ mod tests {
             false,
             EditorState::default(),
             FileTreeState::default(),
+            crate::shell::features::panels::search::SearchState::default(),
         );
         assert!(!after_hide.left_dock.is_visible());
     }
@@ -196,6 +202,7 @@ mod tests {
             false,
             EditorState::default(),
             FileTreeState::default(),
+            crate::shell::features::panels::search::SearchState::default(),
         );
         assert!(state.left_dock.is_visible());
         assert_eq!(
@@ -227,6 +234,7 @@ mod tests {
             false,
             EditorState::default(),
             FileTreeState::default(),
+            crate::shell::features::panels::search::SearchState::default(),
         );
         assert_eq!(state.left_dock.size, px(640.0) - theme::space::s12());
 
@@ -241,6 +249,7 @@ mod tests {
             false,
             EditorState::default(),
             FileTreeState::default(),
+            crate::shell::features::panels::search::SearchState::default(),
         );
         assert_eq!(state.left_dock.size, theme::space::s12());
     }
@@ -267,6 +276,7 @@ mod tests {
             false,
             EditorState::default(),
             FileTreeState::default(),
+            crate::shell::features::panels::search::SearchState::default(),
         );
         assert_eq!(state.left_dock.size, px(280.0));
 
@@ -288,6 +298,7 @@ mod tests {
             false,
             EditorState::default(),
             FileTreeState::default(),
+            crate::shell::features::panels::search::SearchState::default(),
         );
         assert_eq!(state.right_dock.size, px(200.0));
 
@@ -309,6 +320,7 @@ mod tests {
             false,
             EditorState::default(),
             FileTreeState::default(),
+            crate::shell::features::panels::search::SearchState::default(),
         );
         assert_eq!(state.bottom_dock.size, px(240.0));
     }
@@ -337,6 +349,7 @@ mod tests {
             false,
             EditorState::default(),
             FileTreeState::default(),
+            crate::shell::features::panels::search::SearchState::default(),
         );
         assert_eq!(
             state.bottom_dock.size,

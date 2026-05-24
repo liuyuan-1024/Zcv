@@ -42,6 +42,10 @@ impl EditorInputHost {
             window.handle_input(&focus, ElementInputHandler::new(bounds, input.clone()), cx);
         })
     }
+
+    fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
+    }
 }
 
 pub(crate) struct EditorEmbed {
@@ -75,10 +79,14 @@ impl IntoElement for EditorEmbed {
             self.kind,
             self.snapshot.text,
             self.snapshot.cursor_byte,
+            self.input.focus_handle(),
             self.input.hook(),
         );
         if let Some(id) = self.element_id {
             element = element.element_id(id);
+        }
+        if let Some(reveal) = self.snapshot.reveal {
+            element = element.reveal(reveal);
         }
         element
     }

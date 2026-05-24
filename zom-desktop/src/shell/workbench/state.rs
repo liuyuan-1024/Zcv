@@ -7,6 +7,7 @@ use gpui::Pixels;
 pub(crate) use crate::app::{EditorState, EditorTab};
 use crate::shell::features::panels::PanelId;
 use crate::shell::features::panels::file_tree::FileTreeState;
+use crate::shell::features::panels::search::SearchState;
 
 /// 三种停靠区域（布局模型 5）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,6 +71,7 @@ pub(crate) struct WorkbenchState {
     pub(crate) bottom_bar: BottomBarState,
     pub(crate) editor: EditorState,
     pub(crate) file_tree: FileTreeState,
+    pub(crate) search: SearchState,
 }
 
 /// 第一版 BottomBar 渲染所需的少量动态状态（手册 17 错误呈现 / 20.8）。

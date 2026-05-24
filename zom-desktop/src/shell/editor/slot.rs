@@ -65,5 +65,7 @@ fn element_id_for(target: TextTargetId) -> &'static str {
         TextTargetId::MainEditor => "zom-editor-main",
         TextTargetId::FileTreePendingName => "zom-editor-file-tree-pending",
         TextTargetId::ProjectPickerQuery => "zom-editor-project-picker-query",
+        TextTargetId::SearchQuery => "zom-editor-search-query",
+        TextTargetId::SearchReplacement => "zom-editor-search-replacement",
     }
 }

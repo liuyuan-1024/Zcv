@@ -17,7 +17,7 @@ pub(in crate::shell::workbench) const PANELS: &[PanelId] = &[
     PanelId::FileTree,
     PanelId::VersionControl,
     PanelId::Outline,
-    PanelId::ProjectSearch,
+    PanelId::Search,
 ];
 
 pub(crate) fn render(

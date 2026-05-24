@@ -41,7 +41,7 @@ pub use commands::editor::{CompositionBinding, TextEditBindingContext, TextEditK
 pub use commands::file_tree::{FileTreeBindingContext, FileTreeKeyContext, FileTreeKeyMode};
 pub use commands::project_picker::{ProjectPickerBindingContext, ProjectPickerKeyContext};
 pub use core::{Command, CommandArgs, CommandId, Invocation, NoArgs};
-pub use effects::{EffectQueue, HostEffect};
+pub use effects::{EffectQueue, HostEffect, SearchOption, SearchScope};
 pub use error::CommandError;
 pub use executor::{CommandContext, CommandExecutor, CommandOutcome, CommandQueue, EditTarget};
 pub use keymap::{

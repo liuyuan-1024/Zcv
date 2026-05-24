@@ -7,10 +7,12 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, Div, FocusHandle, SharedString, div, prelude::*};
 
+use crate::shell::editor::TextEditorSlot;
 use crate::shell::features::panels::file_tree::FileTreePanel;
+use crate::shell::features::panels::search::SearchState;
 use crate::shell::features::panels::{PanelId, PanelRuntimes, file_tree};
 use crate::shell::shared::theme::{color, typography};
-use crate::shell::{CommandTitleLookup, KeyRequest, normalized_chord};
+use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup, normalized_chord};
 
 /// Dock 调用 `PanelHost` 时透传给具体 panel 的运行态视图。
 ///
@@ -20,8 +22,12 @@ use crate::shell::{CommandTitleLookup, KeyRequest, normalized_chord};
 pub(crate) struct PanelContext<'a> {
     pub(crate) has_project: bool,
     pub(crate) file_tree: FileTreePanel<'a>,
+    pub(crate) search_state: &'a SearchState,
+    pub(crate) search_query_slot: &'a Rc<TextEditorSlot>,
+    pub(crate) search_replacement_slot: &'a Rc<TextEditorSlot>,
     pub(crate) panel_runtimes: &'a PanelRuntimes,
     pub(crate) panel_key_request: &'a KeyRequest,
+    pub(crate) shortcut_lookup: &'a ShortcutLookup,
     pub(crate) command_title_lookup: &'a CommandTitleLookup,
 }
 
@@ -37,7 +43,15 @@ impl PanelHost {
             PanelId::FileTree => file_tree::render(ctx).into_any_element(),
             _ => ctx
                 .panel_runtimes
-                .render(id, ctx.panel_key_request, ctx.command_title_lookup)
+                .render(
+                    id,
+                    ctx.panel_key_request,
+                    ctx.search_state,
+                    ctx.search_query_slot,
+                    ctx.search_replacement_slot,
+                    ctx.shortcut_lookup,
+                    ctx.command_title_lookup,
+                )
                 .unwrap_or_else(|| gpui::div().into_any_element()),
         }
     }

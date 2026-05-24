@@ -7,20 +7,32 @@
 //! 文本与光标分层绘制：每帧把各行 shape 成 [`ShapedLine`]，文本只随内容变化，
 //! 光标只是一个独立填充矩形 —— 移动光标不触发文本重排，这是「不闪烁」的根因。
 //!
-//! 滚动：维护一个跨帧滚动偏移（存于 GPUI 元素状态），每帧做 autoscroll 让
-//! 光标保持在视口内，正文据此整体平移。
+//! 滚动有两条独立路径，共存于 [`Self::prepaint`]：
+//!
+//! - **reveal 路径**：响应外部 [`zom_view::RevealRequest`]（搜索 / goto-* 等
+//!   命令调 `view.request_reveal(...)` 投递）。按 [`RevealKind`] 翻译成具体
+//!   摆位策略；每个 seq 只触发一次。
+//! - **edge-scroll 路径**：caret 跟随。永远跑，作为兜底。reveal 摆完位置后，
+//!   edge-scroll 仍会跑，保证 caret 真的可见 —— 哪怕 reveal 把 reveal byte
+//!   摆到上 1/3 但 caret（=match end）跨了多行被推到视区外，edge-scroll
+//!   会把它拉回来。
+//!
+//! 两条路径共用一份跨帧滚动偏移（[`EditorScroll`]），存于 GPUI 元素状态。
 
 use std::panic::Location;
 
 use gpui::{
-    App, Bounds, ContentMask, Element, ElementId, GlobalElementId, Hsla, InspectorElementId,
-    IntoElement, LayoutId, Pixels, Point, ShapedLine, SharedString, Style, TextRun, Window, fill,
-    point, px, relative, size,
+    App, Bounds, ContentMask, Element, ElementId, FocusHandle, GlobalElementId, Hsla,
+    InspectorElementId, IntoElement, LayoutId, Pixels, Point, ShapedLine, SharedString, Style,
+    TextRun, Window, fill, point, px, relative, size,
 };
+
+use zom_view::RevealKind;
 
 use crate::shell::shared::theme::color;
 
 use super::blink::CaretClock;
+use super::core::RevealHint;
 use super::embed::EditorInputHook;
 
 /// 行号列宽（24）+ 与正文的间距（12）。
@@ -58,9 +70,12 @@ pub(crate) struct EditorElement {
     kind: EditorKind,
     text: SharedString,
     cursor_byte: usize,
+    focus: FocusHandle,
     input_handler_hook: EditorInputHook,
     /// 跨帧滚动偏移的状态键。每个编辑器实例都应给一个稳定 id。
     element_id: Option<ElementId>,
+    /// 外部 reveal 请求；按 seq 触发一次 reveal 路径。
+    reveal: Option<RevealHint>,
 }
 
 impl EditorElement {
@@ -68,20 +83,28 @@ impl EditorElement {
         kind: EditorKind,
         text: impl Into<SharedString>,
         cursor_byte: usize,
+        focus: FocusHandle,
         input_handler_hook: EditorInputHook,
     ) -> Self {
         Self {
             kind,
             text: text.into(),
             cursor_byte,
+            focus,
             input_handler_hook,
             element_id: None,
+            reveal: None,
         }
     }
 
     /// 赋予稳定的元素 id —— 据此跨帧保留滚动偏移。
     pub(crate) fn element_id(mut self, id: impl Into<ElementId>) -> Self {
         self.element_id = Some(id.into());
+        self
+    }
+
+    pub(crate) fn reveal(mut self, hint: RevealHint) -> Self {
+        self.reveal = Some(hint);
         self
     }
 
@@ -121,6 +144,9 @@ pub(crate) struct EditorPrepaint {
 #[derive(Default)]
 struct EditorScroll {
     offset: Point<Pixels>,
+    /// 最近一次已处理的 reveal seq。
+    /// `None` 表示没见过任何 reveal。第一次见到任何 seq 都视作新请求。
+    last_applied_reveal_seq: Option<u64>,
 }
 
 /// 把 `value` 夹在 `[lo, hi]`（`Pixels` 无 `clamp`，本地实现）。
@@ -204,6 +230,11 @@ impl Element for EditorElement {
         let mut lines = Vec::new();
         let mut gutter = Vec::new();
         let mut caret = (0usize, px(0.));
+        let reveal_byte = self.reveal.map(|hint| hint.byte.min(self.text.len()));
+        // 同步记 reveal byte 的(行, 行内 x)：reveal 路径要把 X 也照顾到，
+        // 否则 match 在视区左边时 edge-scroll 会把 caret(=match end) 拉到左边缘，
+        // 反而把 match 本体切到视区左侧外。
+        let mut reveal_pos: Option<(usize, Pixels)> = None;
         // 当前行起点在整段文本里的字节偏移。
         let mut offset = 0usize;
 
@@ -223,6 +254,13 @@ impl Element for EditorElement {
             let line_end = offset + raw.len();
             if cursor_byte >= offset && cursor_byte <= line_end {
                 caret = (index, shaped.x_for_index(cursor_byte - offset));
+            }
+            if let Some(rb) = reveal_byte
+                && reveal_pos.is_none()
+                && rb >= offset
+                && rb <= line_end
+            {
+                reveal_pos = Some((index, shaped.x_for_index(rb - offset)));
             }
             lines.push(shaped);
 
@@ -260,11 +298,50 @@ impl Element for EditorElement {
                 let viewport_h = bounds.size.height;
                 let viewport_w =
                     clamp_px(bounds.size.width - gutter_offset, px(0.), bounds.size.width);
+                let reveal = self.reveal;
                 window.with_element_state::<EditorScroll, _>(global_id, |state, _window| {
                     let mut state = state.unwrap_or_default();
                     let mut off = state.offset;
 
-                    // 纵向：光标所在行需完整可见。
+                    // === reveal 路径 ===
+                    // 外部 request_reveal 投递的请求；按 seq 触发一次。
+                    // kind 决定触发条件与摆位 —— 集中在这里翻译，调用方只表达"意图"。
+                    //
+                    // 两个轴独立判断可见性 / 独立摆位：搜索 match 在视区"左边"
+                    // 但同一行内时，只需要滚 X；在不同行但同一列时，只需要滚 Y。
+                    // 一起判断会把"X 已经可见"也当成需要滚，反而抖。
+                    if let Some(req) = reveal
+                        && Some(req.seq) != state.last_applied_reveal_seq
+                    {
+                        if let Some((row, x)) = reveal_pos {
+                            let target_top = line_height * row as f32;
+                            let target_bottom = target_top + line_height;
+                            let visible_y =
+                                target_top >= off.y && target_bottom <= off.y + viewport_h;
+                            let target_right = x + px(CARET_WIDTH);
+                            let visible_x = x >= off.x && target_right <= off.x + viewport_w;
+
+                            // (placement_factor 即"1/3"那个比例；force_scroll 区分
+                            // IfOffscreen / Always 语义)
+                            let (placement_factor, force_scroll) = match req.kind {
+                                RevealKind::Match => (1.0 / 3.0, false),
+                                RevealKind::Jump => (1.0 / 3.0, true),
+                            };
+                            if force_scroll || !visible_y {
+                                off.y = target_top - viewport_h * placement_factor;
+                            }
+                            if force_scroll || !visible_x {
+                                off.x = x - viewport_w * placement_factor;
+                            }
+                        }
+                        // 即使本帧没拿到行号也要登记 seq。
+                        // 不然下一帧文本仍然能命中行时会"补"一次滚动，对用户来说像延迟反应。
+                        state.last_applied_reveal_seq = Some(req.seq);
+                    }
+
+                    // === edge-scroll 路径（兜底）===
+                    // 即便 reveal 把 reveal byte 摆到上 1/3，caret（=match end）
+                    // 在多行 match 时也可能跨到视区外；edge-scroll 把 caret 拉回来，宁可让 reveal byte 飘出视区，也不能让 caret 消失。
                     let caret_top = line_height * caret.0 as f32;
                     let caret_bottom = caret_top + line_height;
                     if caret_top < off.y {
@@ -340,7 +417,7 @@ impl Element for EditorElement {
                 bounds.size.height,
             ),
         };
-        let caret_visible = CaretClock::is_visible(cx);
+        let caret_visible = self.focus.is_focused(window) && CaretClock::is_visible(cx);
         let (caret_line, caret_x) = prepaint.caret;
 
         window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {

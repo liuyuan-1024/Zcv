@@ -14,7 +14,7 @@ pub mod keyboard_shortcuts;
 pub mod language_servers;
 pub mod outline;
 pub mod project_picker;
-pub mod project_search;
+pub mod search;
 pub mod settings;
 pub mod terminal;
 pub mod version_control;
@@ -30,7 +30,7 @@ pub fn install_all(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     file_tree::install(registry, keymap);
     version_control::install(registry, keymap);
     outline::install(registry, keymap);
-    project_search::install(registry, keymap);
+    search::install(registry, keymap);
     terminal::install(registry, keymap);
     debug::install(registry, keymap);
     keyboard_shortcuts::install(registry, keymap);

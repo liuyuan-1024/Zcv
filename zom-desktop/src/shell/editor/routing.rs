@@ -9,4 +9,8 @@ pub(crate) enum TextTargetId {
     FileTreePendingName,
     /// 项目选择器顶部查询输入框。
     ProjectPickerQuery,
+    /// 搜索面板的查找输入框。
+    SearchQuery,
+    /// 搜索面板的替换输入框。
+    SearchReplacement,
 }

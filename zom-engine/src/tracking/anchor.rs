@@ -238,3 +238,81 @@ fn map_anchor_result(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ChangeSet, Delta, Edit, EditList, PositionMap, TextRange, TransactionId, TransactionSource,
+    };
+
+    fn b(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
+    }
+
+    fn range(start: usize, end: usize) -> TextRange {
+        TextRange::new(b(start), b(end)).unwrap()
+    }
+
+    fn event_for_edits(
+        old_version: BufferVersion,
+        new_version: BufferVersion,
+        edits: Vec<Edit>,
+    ) -> DeltaEvent {
+        let edit_list = EditList::new(edits).unwrap();
+        let delta = Delta::new(old_version, new_version, edit_list.clone());
+        let changeset = ChangeSet::from_edit_list(&edit_list);
+        let position_map = PositionMap::from_edits(edit_list.into_inner());
+
+        DeltaEvent::new(
+            TransactionId::INITIAL,
+            TransactionSource::Programmatic,
+            delta,
+            changeset,
+            position_map,
+        )
+    }
+
+    #[test]
+    fn anchor_and_mark_should_map_through_delta_with_affinity_and_deleted_policy() {
+        let insert_event = event_for_edits(
+            BufferVersion::INITIAL,
+            BufferVersion::new(1),
+            vec![Edit::insert(b(2), "XX".to_string()).unwrap()],
+        );
+        let anchor = Anchor::new(BufferVersion::INITIAL, b(2)).with_affinity(Affinity::Before);
+        let mark = Mark::new(b(2)).with_affinity(Affinity::After);
+
+        assert_eq!(
+            anchor
+                .map_through_delta_event(&insert_event)
+                .unwrap()
+                .value()
+                .offset(),
+            b(2)
+        );
+        assert_eq!(
+            mark.map_through_position_map(insert_event.position_map())
+                .value()
+                .offset(),
+            b(4)
+        );
+
+        let delete_event = event_for_edits(
+            BufferVersion::new(1),
+            BufferVersion::new(2),
+            vec![Edit::delete(range(1, 4))],
+        );
+        let deleted = Anchor::new(insert_event.new_version(), b(2));
+        assert!(matches!(
+            deleted
+                .map_through_delta_event_with_deleted_policy(
+                    &delete_event,
+                    AnchorDeletedPolicy::Invalidate
+                )
+                .unwrap(),
+            AnchorUpdate::Invalidated { mark, version }
+                if mark.offset() == b(1) && version == delete_event.new_version()
+        ));
+    }
+}

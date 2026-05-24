@@ -17,31 +17,6 @@ fn tx(buffer: &Buffer, edits: Vec<Edit>) -> Transaction {
 }
 
 #[test]
-fn edit_list_should_sort_adjacent_edits_and_reject_overlap() {
-    let later = Edit::replace(range(4, 5), "Y".to_string());
-    let earlier = Edit::replace(range(0, 1), "X".to_string());
-    let sorted = EditList::new(vec![later, earlier]).unwrap();
-
-    assert_eq!(sorted.as_slice()[0].range(), range(0, 1));
-    assert_eq!(sorted.as_slice()[1].range(), range(4, 5));
-
-    let err = EditList::new(vec![
-        Edit::replace(range(0, 3), "a".to_string()),
-        Edit::replace(range(2, 4), "b".to_string()),
-    ])
-    .unwrap_err();
-    assert!(matches!(err, EditError::OverlappingEdits { .. }));
-}
-
-#[test]
-fn transaction_empty_edit_list_should_be_rejected_before_state_transition() {
-    let err =
-        Transaction::new(BufferVersion::INITIAL, EditList::new(Vec::new()).unwrap()).unwrap_err();
-
-    assert_eq!(err, TransactionError::EmptyTransaction);
-}
-
-#[test]
 fn apply_transaction_should_emit_delta_changeset_position_map_and_pending_event() {
     let mut buffer = buffer("abc def");
     let base = buffer.version();
@@ -122,34 +97,6 @@ fn failed_multi_edit_boundary_should_keep_transaction_atomic() {
     ));
     assert_eq!(buffer.text().as_ref(), text);
     assert_eq!(buffer.version(), version);
-}
-
-#[test]
-fn position_map_should_expose_affinity_bias_stickiness_and_selection_mapping() {
-    let mut buffer = buffer("abcd");
-    let (_, changeset) = buffer
-        .apply_transaction(tx(
-            &buffer,
-            vec![Edit::replace(range(1, 3), "XYZ".to_string())],
-        ))
-        .unwrap();
-    let map = changeset.position_map();
-
-    assert_eq!(map.len(), 1);
-    assert!(matches!(map.map_old_position(b(2)), MappingResult::Deleted(pos) if pos == b(1)));
-    assert!(matches!(
-        map.map_new_position_with_bias(b(2), Bias::Right),
-        MappingResult::Ambiguous(pos) if pos == b(3)
-    ));
-    assert_eq!(
-        map.map_old_range_with_stickiness(range(1, 3), Stickiness::Expand)
-            .value(),
-        range(1, 4)
-    );
-    assert_eq!(
-        Selection::new(b(0), b(4)).map_through_position_map(&map),
-        Selection::new(b(0), b(5))
-    );
 }
 
 #[test]

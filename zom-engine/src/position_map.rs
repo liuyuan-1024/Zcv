@@ -509,3 +509,37 @@ fn range_touches_span(range: TextRange, span_start: ByteOffset, span_end: ByteOf
         ranges_overlap(range.start(), range.end(), span_start, span_end)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn b(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
+    }
+
+    fn range(start: usize, end: usize) -> TextRange {
+        TextRange::new(b(start), b(end)).unwrap()
+    }
+
+    #[test]
+    fn position_map_should_expose_affinity_bias_stickiness_and_selection_mapping() {
+        let map = PositionMap::from_edits(vec![Edit::replace(range(1, 3), "XYZ".to_string())]);
+
+        assert_eq!(map.len(), 1);
+        assert!(matches!(map.map_old_position(b(2)), MappingResult::Deleted(pos) if pos == b(1)));
+        assert!(matches!(
+            map.map_new_position_with_bias(b(2), Bias::Right),
+            MappingResult::Ambiguous(pos) if pos == b(3)
+        ));
+        assert_eq!(
+            map.map_old_range_with_stickiness(range(1, 3), Stickiness::Expand)
+                .value(),
+            range(1, 4)
+        );
+        assert_eq!(
+            Selection::new(b(0), b(4)).map_through_position_map(&map),
+            Selection::new(b(0), b(5))
+        );
+    }
+}

@@ -29,40 +29,6 @@ fn buffer(text: &str) -> Buffer {
 }
 
 #[test]
-fn selection_and_cursor_contract_should_preserve_anchor_head_direction_and_range() {
-    let cursor = Cursor::new(b(3));
-    let reversed = selection(7, 2);
-
-    assert_eq!(cursor.offset(), b(3));
-    assert_eq!(cursor.to_selection(), caret(3));
-    assert_eq!(reversed.anchor(), b(7));
-    assert_eq!(reversed.head(), b(2));
-    assert!(reversed.is_reversed());
-    assert_eq!(reversed.range(), range(2, 7));
-    assert_eq!(reversed.collapse_to_start(), caret(2));
-    assert_eq!(reversed.collapse_to_end(), caret(7));
-}
-
-#[test]
-fn selection_set_normalization_should_sort_merge_duplicates_and_preserve_primary() {
-    let set = SelectionSet::new_with_primary(
-        vec![caret(8), selection(4, 2), caret(1), selection(3, 6)],
-        1,
-    );
-
-    assert_eq!(set.ranges(), vec![range(1, 1), range(2, 6), range(8, 8)]);
-    assert_eq!(set.primary_index(), 1);
-    assert_eq!(set.primary().range(), range(2, 6));
-
-    let adjacent = SelectionSet::new_with_policy(
-        vec![selection(1, 3), selection(3, 5)],
-        0,
-        SelectionMergePolicy::MergeOverlappingOrAdjacent,
-    );
-    assert_eq!(adjacent.ranges(), vec![range(1, 5)]);
-}
-
-#[test]
 fn set_selection_should_reject_out_of_bounds_invalid_utf8_and_grapheme_middle_offsets_atomically() {
     for (text, offset) in [("abc", 4), ("你a", 1), ("ae\u{301}b", 2), ("a\r\nb", 2)] {
         let mut buffer = buffer(text);

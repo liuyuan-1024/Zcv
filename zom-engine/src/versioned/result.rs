@@ -130,3 +130,65 @@ impl<T> VersionedResult<T> {
         Ok(VersionedResult::new(self.version, new_value))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ByteOffset, ChangeSet, Delta, Edit, EditList, EngineError, PositionMap, TextRange,
+        TransactionId, TransactionSource,
+    };
+
+    fn b(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
+    }
+
+    fn range(start: usize, end: usize) -> TextRange {
+        TextRange::new(b(start), b(end)).unwrap()
+    }
+
+    fn event_for_edits(
+        old_version: BufferVersion,
+        new_version: BufferVersion,
+        edits: Vec<Edit>,
+    ) -> DeltaEvent {
+        let edit_list = EditList::new(edits).unwrap();
+        let delta = Delta::new(old_version, new_version, edit_list.clone());
+        let changeset = ChangeSet::from_edit_list(&edit_list);
+        let position_map = PositionMap::from_edits(edit_list.into_inner());
+
+        DeltaEvent::new(
+            TransactionId::INITIAL,
+            TransactionSource::Programmatic,
+            delta,
+            changeset,
+            position_map,
+        )
+    }
+
+    #[test]
+    fn versioned_result_should_reject_stale_delta_and_remap_payload_through_position_map() {
+        let event = event_for_edits(
+            BufferVersion::INITIAL,
+            BufferVersion::new(1),
+            vec![Edit::insert(b(0), "XX".to_string()).unwrap()],
+        );
+        let result = VersionedResult::new(BufferVersion::INITIAL, range(2, 5));
+
+        let remapped = result
+            .try_remap(&event, |range, map| Ok(map.map_old_range(range).value()))
+            .unwrap();
+
+        assert_eq!(remapped.version(), event.new_version());
+        assert_eq!(*remapped.value(), range(4, 7));
+
+        let stale = VersionedResult::new(BufferVersion::new(42), range(0, 1));
+        let err = stale
+            .try_remap(&event, |range, map| Ok(map.map_old_range(range).value()))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            EngineError::Versioned(VersionedResultError::VersionMismatch { .. })
+        ));
+    }
+}

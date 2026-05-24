@@ -221,6 +221,74 @@ fn map_range_result(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AnchorError, ChangeSet, Delta, Edit, EditList, EngineError, PositionMap, TransactionId,
+        TransactionSource,
+    };
+
+    fn b(value: usize) -> crate::ByteOffset {
+        crate::ByteOffset::new(value)
+    }
+
+    fn range(start: usize, end: usize) -> TextRange {
+        TextRange::new(b(start), b(end)).unwrap()
+    }
+
+    fn event_for_edits(
+        old_version: BufferVersion,
+        new_version: BufferVersion,
+        edits: Vec<Edit>,
+    ) -> DeltaEvent {
+        let edit_list = EditList::new(edits).unwrap();
+        let delta = Delta::new(old_version, new_version, edit_list.clone());
+        let changeset = ChangeSet::from_edit_list(&edit_list);
+        let position_map = PositionMap::from_edits(edit_list.into_inner());
+
+        DeltaEvent::new(
+            TransactionId::INITIAL,
+            TransactionSource::Programmatic,
+            delta,
+            changeset,
+            position_map,
+        )
+    }
+
+    #[test]
+    fn tracked_range_should_reject_mismatched_versions_and_invalidate_when_policy_matches_deletion()
+    {
+        let start = Anchor::new(BufferVersion::INITIAL, b(3));
+        let end = Anchor::new(BufferVersion::new(1), b(6));
+        let err = TrackedRange::new(start, end, Stickiness::Never).unwrap_err();
+        assert!(matches!(
+            err,
+            EngineError::Anchor(AnchorError::RangeVersionMismatch { .. })
+        ));
+
+        let tracked =
+            TrackedRange::from_range(BufferVersion::INITIAL, range(1, 4), Stickiness::Never);
+        let event = event_for_edits(
+            BufferVersion::INITIAL,
+            BufferVersion::new(1),
+            vec![Edit::delete(range(1, 4))],
+        );
+        let update = tracked
+            .map_through_delta_event_with_policy(
+                &event,
+                TrackedRangeUpdatePolicy::invalidate_when_fully_deleted(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            update,
+            TrackedRangeUpdate::Invalidated { range, version }
+                if range == TextRange::new(b(1), b(1)).unwrap() && version == event.new_version()
+        ));
+    }
+}
+
 fn should_invalidate(
     mapped: MappingResult<TrackedRange>,
     policy: TrackedRangeUpdatePolicy,

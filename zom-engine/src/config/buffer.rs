@@ -80,3 +80,34 @@ impl Default for TabConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::LargeFilePolicy;
+
+    #[test]
+    fn config_strategy_values_should_expose_stable_defaults_and_boundaries() {
+        let config = BufferConfig::default();
+        let tab = TabConfig::new(
+            NonZeroUsize::new(2).unwrap(),
+            NonZeroUsize::new(4).unwrap(),
+            true,
+        );
+        let large = LargeFilePolicy {
+            large_file_threshold_bytes: 8,
+            long_line_threshold_chars: 3,
+            ..LargeFilePolicy::default()
+        };
+
+        assert_eq!(config.tab.tab_width(), 4);
+        assert_eq!(config.tab.indent_width(), 4);
+        assert_eq!(tab.tab_width(), 2);
+        assert_eq!(tab.indent_width(), 4);
+        assert!(tab.insert_spaces);
+        assert!(large.is_large_byte_size(9));
+        assert!(!large.is_large_byte_size(8));
+        assert!(large.is_long_line(4));
+        assert!(!large.is_long_line(3));
+    }
+}

@@ -306,3 +306,32 @@ pub enum EngineError {
 
 /// 编辑引擎统一 Result 类型。
 pub type EngineResult<T> = Result<T, EngineError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn b(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
+    }
+
+    #[test]
+    fn domain_errors_should_lift_into_engine_error_without_losing_variant() {
+        let coordinate: EngineError = CoordinateError::OutOfBounds(b(99)).into();
+        let edit: EngineError = EditError::PayloadTooLarge { size: 9, limit: 3 }.into();
+        let transaction: EngineError = TransactionError::EmptyTransaction.into();
+
+        assert!(matches!(
+            coordinate,
+            EngineError::Coordinate(CoordinateError::OutOfBounds(offset)) if offset == b(99)
+        ));
+        assert!(matches!(
+            edit,
+            EngineError::Edit(EditError::PayloadTooLarge { size: 9, limit: 3 })
+        ));
+        assert!(matches!(
+            transaction,
+            EngineError::Transaction(TransactionError::EmptyTransaction)
+        ));
+    }
+}

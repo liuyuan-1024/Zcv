@@ -279,3 +279,73 @@ impl<T> MetadataLayer<T> {
         Ok(id)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BufferConfig, Edit, Line, LineRange, Transaction};
+
+    fn b(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
+    }
+
+    fn line(value: usize) -> Line {
+        Line::new(value)
+    }
+
+    fn range(start: usize, end: usize) -> TextRange {
+        TextRange::new(b(start), b(end)).unwrap()
+    }
+
+    fn line_range(start: usize, end: usize) -> LineRange {
+        LineRange::new(line(start), line(end)).unwrap()
+    }
+
+    fn buffer(text: &str) -> Buffer {
+        Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
+    }
+
+    fn event_after(buffer: &mut Buffer, edit: Edit) -> DeltaEvent {
+        buffer
+            .apply_transaction(Transaction::from_edits(buffer.version(), vec![edit]).unwrap())
+            .unwrap();
+        buffer.last_delta_event().unwrap().clone()
+    }
+
+    #[test]
+    fn metadata_layer_should_insert_query_update_and_drop_invalidated_ranges() {
+        let mut buffer = buffer("one\ntwo\nthree");
+        let mut layer =
+            MetadataLayer::with_kind(MetadataLayerKind::custom("notes"), buffer.version())
+                .with_default_update_policy(
+                    TrackedRangeUpdatePolicy::invalidate_when_fully_deleted(),
+                );
+        let first = layer.insert(range(0, 3), "one").unwrap();
+        let second = layer.insert(range(4, 7), "two").unwrap();
+
+        assert_eq!(layer.len(), 2);
+        assert_eq!(layer.get(first).unwrap().metadata(), &"one");
+        assert_eq!(
+            layer
+                .ranges_intersecting(range(2, 5))
+                .map(|entry| *entry.metadata())
+                .collect::<Vec<_>>(),
+            vec!["one", "two"]
+        );
+        assert_eq!(
+            layer
+                .ranges_in_line_range(&buffer, line_range(1, 2))
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let event = event_after(&mut buffer, Edit::delete(range(4, 7)));
+        let updates = layer.update_through_delta_event(&event).unwrap();
+
+        assert_eq!(updates.len(), 2);
+        assert_eq!(layer.version(), event.new_version());
+        assert!(layer.get(second).is_none());
+        assert_eq!(layer.len(), 1);
+    }
+}

@@ -528,3 +528,83 @@ fn utf16_range_to_text_range(
     let end_offset = snapshot.utf16_position_to_byte(end)?;
     Ok(TextRange::new(start_offset, end_offset)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        BufferConfig, Edit, Line, LineRange, Transaction, Utf16Offset, metadata::MetadataLayerKind,
+    };
+
+    fn b(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
+    }
+
+    fn line(value: usize) -> Line {
+        Line::new(value)
+    }
+
+    fn range(start: usize, end: usize) -> TextRange {
+        TextRange::new(b(start), b(end)).unwrap()
+    }
+
+    fn line_range(start: usize, end: usize) -> LineRange {
+        LineRange::new(line(start), line(end)).unwrap()
+    }
+
+    fn buffer(text: &str) -> Buffer {
+        Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
+    }
+
+    fn event_after(buffer: &mut Buffer, edit: Edit) -> DeltaEvent {
+        buffer
+            .apply_transaction(Transaction::from_edits(buffer.version(), vec![edit]).unwrap())
+            .unwrap();
+        buffer.last_delta_event().unwrap().clone()
+    }
+
+    #[test]
+    fn versioned_range_set_should_update_query_export_utf16_and_roundtrip_metadata_layer() {
+        let mut buffer = buffer("a😀b\ncd");
+        let snapshot = buffer.snapshot();
+        let mut set = VersionedRangeSet::new(buffer.version());
+
+        let idx = set
+            .try_insert_utf16_range(
+                &snapshot,
+                Utf16Position::new(line(0), Utf16Offset::new(1)),
+                Utf16Position::new(line(0), Utf16Offset::new(3)),
+                "emoji",
+            )
+            .unwrap();
+        set.insert(range(7, 9), "cd");
+
+        assert_eq!(idx, 0);
+        assert_eq!(set.entries_containing(b(1)).count(), 1);
+        assert_eq!(
+            set.entries_in_line_range(&buffer, line_range(1, 2))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            set.try_export_entries_to_utf16(&snapshot).unwrap()[0],
+            (
+                Utf16Position::new(line(0), Utf16Offset::new(1)),
+                Utf16Position::new(line(0), Utf16Offset::new(3)),
+                &"emoji"
+            )
+        );
+
+        let event = event_after(&mut buffer, Edit::insert(b(0), "Z".to_string()).unwrap());
+        let updates = set.update_through_delta_event(&event).unwrap();
+        assert_eq!(updates.len(), 2);
+        assert_eq!(set.version(), event.new_version());
+        assert_eq!(set.entry(0).unwrap().range(), range(2, 6));
+
+        let layer = set.into_metadata_layer(MetadataLayerKind::custom("roundtrip"));
+        let roundtrip: VersionedRangeSet<&str> = VersionedRangeSet::from(layer);
+        assert_eq!(roundtrip.len(), 2);
+        assert_eq!(roundtrip.entry(0).unwrap().payload(), &"emoji");
+    }
+}

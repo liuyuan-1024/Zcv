@@ -183,6 +183,46 @@ fn normalize_selections(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn b(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
+    }
+
+    fn range(start: usize, end: usize) -> TextRange {
+        TextRange::new(b(start), b(end)).unwrap()
+    }
+
+    fn selection(anchor: usize, head: usize) -> Selection {
+        Selection::new(b(anchor), b(head))
+    }
+
+    fn caret(offset: usize) -> Selection {
+        Selection::caret(b(offset))
+    }
+
+    #[test]
+    fn selection_set_normalization_should_sort_merge_duplicates_and_preserve_primary() {
+        let set = SelectionSet::new_with_primary(
+            vec![caret(8), selection(4, 2), caret(1), selection(3, 6)],
+            1,
+        );
+
+        assert_eq!(set.ranges(), vec![range(1, 1), range(2, 6), range(8, 8)]);
+        assert_eq!(set.primary_index(), 1);
+        assert_eq!(set.primary().range(), range(2, 6));
+
+        let adjacent = SelectionSet::new_with_policy(
+            vec![selection(1, 3), selection(3, 5)],
+            0,
+            SelectionMergePolicy::MergeOverlappingOrAdjacent,
+        );
+        assert_eq!(adjacent.ranges(), vec![range(1, 5)]);
+    }
+}
+
 fn should_merge(current: Selection, next: Selection, policy: SelectionMergePolicy) -> bool {
     if current.end() > next.start() {
         return true;

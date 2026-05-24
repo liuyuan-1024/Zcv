@@ -34,7 +34,7 @@
 
 ```text
 src/       编辑引擎实现
-tests/     机器契约测试
+tests/     crate 级集成测试
 examples/  可选交互式 testbed
 docs/      项目文档
 ```
@@ -62,4 +62,4 @@ cargo fmt
 cargo test
 ```
 
-需要定向排查时，按触及能力选择对应 `tests/` 文件运行；不再在本文维护逐文件命令清单。
+需要定向排查时，按触及能力选择对应测试目标；测试组织遵循 `../../agents/project.md`。不再在本文维护逐文件命令清单。

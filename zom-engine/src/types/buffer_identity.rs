@@ -81,3 +81,21 @@ pub enum BufferState {
     /// 当前文本不可通过普通编辑入口修改；dirty 与否不由该状态表达。
     ReadOnly,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn origin_handle_should_remain_host_opaque() {
+        let anonymous = BufferOrigin::anonymous();
+        let external = BufferOrigin::external("zom://opaque/path");
+
+        assert_eq!(anonymous.kind(), OriginKind::Anonymous);
+        assert_eq!(anonymous.handle(), None);
+        assert!(anonymous.is_anonymous());
+        assert_eq!(external.kind(), OriginKind::External);
+        assert_eq!(external.handle(), Some("zom://opaque/path"));
+        assert!(!external.is_anonymous());
+    }
+}

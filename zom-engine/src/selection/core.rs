@@ -86,3 +86,39 @@ impl Selection {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn b(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
+    }
+
+    fn range(start: usize, end: usize) -> TextRange {
+        TextRange::new(b(start), b(end)).unwrap()
+    }
+
+    fn selection(anchor: usize, head: usize) -> Selection {
+        Selection::new(b(anchor), b(head))
+    }
+
+    fn caret(offset: usize) -> Selection {
+        Selection::caret(b(offset))
+    }
+
+    #[test]
+    fn selection_and_cursor_contract_should_preserve_anchor_head_direction_and_range() {
+        let cursor = Cursor::new(b(3));
+        let reversed = selection(7, 2);
+
+        assert_eq!(cursor.offset(), b(3));
+        assert_eq!(cursor.to_selection(), caret(3));
+        assert_eq!(reversed.anchor(), b(7));
+        assert_eq!(reversed.head(), b(2));
+        assert!(reversed.is_reversed());
+        assert_eq!(reversed.range(), range(2, 7));
+        assert_eq!(reversed.collapse_to_start(), caret(2));
+        assert_eq!(reversed.collapse_to_end(), caret(7));
+    }
+}

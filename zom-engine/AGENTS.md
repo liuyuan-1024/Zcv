@@ -12,7 +12,6 @@
 AGENTS.md
 README.md
 docs/引擎能力.md
-docs/引擎测试策略.md
 docs/STATUS.md（如果存在）
 ```
 
@@ -27,9 +26,8 @@ docs/STATUS.md（如果存在）
 4. AGENTS.md zom-engine 长期规则
 5. docs/STATUS.md 当前阶段状态
 6. docs/引擎能力.md 能力规划
-7. docs/引擎测试策略.md 测试边界
-8. README.md 项目说明
-9. 当前源码实现
+7. README.md 项目说明
+8. 当前源码实现
 ```
 
 发现文档、代码、用户要求冲突时，必须指出冲突。
@@ -107,9 +105,8 @@ diagnostics / semantic tokens / inlay hints / code lens 生成。
 
 ```text
 src/        编辑引擎实现，按稳定能力域拆模块
-tests/      机器契约测试，CI 主体
+tests/      crate 级集成测试
 examples/   可选交互式 testbed，体感和接入验证
-src/tests/  可选内部测试，只测 public API 难覆盖的重要内部不变量
 docs/       文档与状态快照
 ```
 
@@ -214,19 +211,9 @@ M13 之后默认不为每个 engine milestone 新增 GPUI testbed。
 TextRange::new(start, end).expect("内部不变量: start <= end")
 ```
 
-## 8. 测试策略
+## 8. 验证要求
 
-测试放置：
-
-```text
-默认 tests/
-UI / GPUI / 人类体感 / API 接入手感 -> examples/
-public API 无法覆盖的重要内部不变量 -> src/tests/
-```
-
-`tests/` 验证 public API、阶段契约、错误输入和重构回归；不测 GPUI、窗口、鼠标体感、私有实现细节。
-
-新增测试前确认：能否通过 public API 覆盖？是否保护编辑语义，而不是临时实现细节？失败时是否能定位职责边界或不变量破坏？
+测试组织统一遵循 `../agents/project.md` 的 workspace 测试策略；`zom-engine` 不另设 crate 专属测试策略。
 
 修改后通常运行：
 
@@ -263,7 +250,7 @@ cargo test
 ```text
 阶段状态、结构概览、建议命令 -> docs/STATUS.md
 能力边界变化 -> docs/引擎能力.md
-测试目录职责变化 -> docs/引擎测试策略.md
+测试放置策略、测试目录职责变化 -> ../agents/project.md
 AI 协作规范变化 -> AGENTS.md
 项目概览变化 -> README.md
 public API 契约变化 -> 对应测试和必要文档同步更新

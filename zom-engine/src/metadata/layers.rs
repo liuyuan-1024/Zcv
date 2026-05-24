@@ -156,3 +156,64 @@ impl<T> MetadataLayers<T> {
         stale
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BufferConfig, ByteOffset, Line};
+
+    fn b(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
+    }
+
+    fn line(value: usize) -> Line {
+        Line::new(value)
+    }
+
+    fn range(start: usize, end: usize) -> TextRange {
+        TextRange::new(b(start), b(end)).unwrap()
+    }
+
+    fn line_range(start: usize, end: usize) -> LineRange {
+        LineRange::new(line(start), line(end)).unwrap()
+    }
+
+    fn buffer(text: &str) -> Buffer {
+        Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
+    }
+
+    #[test]
+    fn metadata_layers_should_replace_query_by_kind_and_discard_stale_layers() {
+        let buffer = buffer("abc\ndef");
+        let mut layers = MetadataLayers::new();
+        let kind = MetadataLayerKind::custom("analysis");
+
+        layers
+            .replace_layer_ranges(
+                kind.clone(),
+                buffer.version(),
+                vec![(range(0, 3), "alpha"), (range(4, 7), "beta")],
+            )
+            .unwrap();
+
+        assert_eq!(layers.len(), 1);
+        assert_eq!(
+            layers
+                .ranges_for_kind_intersecting(&kind, range(1, 5))
+                .map(|entry| *entry.metadata())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
+        assert_eq!(
+            layers
+                .ranges_for_kind_in_line_range(&kind, &buffer, line_range(1, 2))
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let stale = layers.discard_stale(BufferVersion::new(99));
+        assert_eq!(stale.len(), 1);
+        assert!(layers.is_empty());
+    }
+}

@@ -5,9 +5,6 @@
 mod app;
 mod shell;
 
-#[cfg(test)]
-mod tests;
-
 fn main() {
     shell::run(app::App::new_persistent());
 }

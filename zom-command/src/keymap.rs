@@ -211,7 +211,7 @@ impl Keymap {
 
     /// 反查 + 平台投影：给 UI 一个直接能展示的快捷键串。
     ///
-    /// macOS 输出符号紧排（如 `⇧⌘Z`），其他平台输出文本拼接（如
+    /// macOS 输出带空隙的符号（如 `⇧ ⌘ Z`），其他平台输出文本拼接（如
     /// `Ctrl+Shift+Z`）。映射表见 [`crate::keymap_format`]。
     pub fn format_shortcut_for(&self, command: &CommandId) -> Option<String> {
         self.shortcut_for(command)

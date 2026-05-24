@@ -10,7 +10,8 @@
 //!
 //! [`MODIFIERS`] 还规定了**显示顺序**，保证 `"shift-alt-mod-z"` 和
 //! `"mod-shift-alt-z"` 给出同样的字符串。macOS 按 HIG 顺序 `⌃⌥⇧⌘`；
-//! 其他平台按习惯顺序 `Ctrl+Alt+Shift+...`。
+//! 其他平台按习惯顺序 `Ctrl+Alt+Shift+...`。macOS 符号之间保留空隙，
+//! 避免 tooltip / 菜单里连续符号难以区分。
 //!
 //! 新增 / 调整文案只改本模块。
 
@@ -69,10 +70,10 @@ fn format_key(key: &str) -> String {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    /// 修饰键之间无分隔（macOS HIG 把符号紧排）。
-    pub(super) const MODIFIER_SEPARATOR: &str = "";
-    /// 多段 chord 之间空格分隔（如 `"⌘K ⌘B"`）。
-    pub(super) const CHORD_SEPARATOR: &str = " ";
+    /// 修饰键与主键之间用空格分隔，避免连续符号难以区分。
+    pub(super) const MODIFIER_SEPARATOR: &str = " ";
+    /// 多段 chord 之间用更宽的空隙分隔（如 `"⌘ K  ⌘ B"`）。
+    pub(super) const CHORD_SEPARATOR: &str = "  ";
 
     /// 逻辑修饰键 → 显示符号；**顺序就是显示顺序**（HIG: ⌃⌥⇧⌘）。
     pub(super) const MODIFIERS: &[(&str, &str)] = &[
@@ -149,12 +150,12 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn mac_should_render_hig_modifier_order_without_separators() {
-        assert_eq!(format_chord("mod-z"), "⌘Z");
+    fn mac_should_render_hig_modifier_order_with_symbol_spacing() {
+        assert_eq!(format_chord("mod-z"), "⌘ Z");
         // 任何顺序都按 MODIFIERS 表里的顺序输出。
-        assert_eq!(format_chord("mod-shift-z"), "⇧⌘Z");
-        assert_eq!(format_chord("shift-mod-z"), "⇧⌘Z");
-        assert_eq!(format_chord("shift-alt-left"), "⌥⇧←");
+        assert_eq!(format_chord("mod-shift-z"), "⇧ ⌘ Z");
+        assert_eq!(format_chord("shift-mod-z"), "⇧ ⌘ Z");
+        assert_eq!(format_chord("shift-alt-left"), "⌥ ⇧ ←");
         assert_eq!(format_chord("backspace"), "⌫");
         assert_eq!(format_chord("escape"), "⎋");
         assert_eq!(format_chord("space"), "␣");

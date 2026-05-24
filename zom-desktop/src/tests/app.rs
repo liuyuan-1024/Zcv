@@ -279,11 +279,8 @@ fn project_action_commands_should_have_shortcuts_and_emit_effects() {
     let outcome = app
         .dispatch_key("backspace".to_string(), KeySurface::ProjectPicker)
         .unwrap();
-    assert!(outcome.consumed);
-    assert_eq!(
-        outcome.effects,
-        vec![HostEffect::ProjectPickerDeleteQueryChar]
-    );
+    assert!(!outcome.consumed);
+    assert!(outcome.effects.is_empty());
 
     let outcome = app
         .dispatch_key("enter".to_string(), KeySurface::ProjectPicker)

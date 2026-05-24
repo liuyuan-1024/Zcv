@@ -106,8 +106,12 @@ impl ShellView {
     ) {
         self.file_tree
             .install_listeners(Rc::clone(&self.app), window, cx);
-        self.project_picker
-            .install_listeners(self.surface_manager.clone(), window, cx);
+        self.project_picker.install_listeners(
+            Rc::clone(&self.app),
+            self.surface_manager.clone(),
+            window,
+            cx,
+        );
         self.language_servers
             .install_listeners(self.surface_manager.clone(), window, cx);
     }
@@ -145,6 +149,7 @@ impl ShellView {
             self.file_tree.clone(),
             self.project_picker.clone(),
             self.language_servers.clone(),
+            self.editor_input.clone(),
             invocation,
         )
     }
@@ -166,6 +171,7 @@ impl ShellView {
         let file_tree = self.file_tree.clone();
         let project_picker = self.project_picker.clone();
         let language_servers = self.language_servers.clone();
+        let editor_input = self.editor_input.clone();
         Rc::new(move |chord, window, cx| {
             let outcome = match app.borrow_mut().dispatch_key(chord, surface) {
                 Ok(outcome) => outcome,
@@ -185,6 +191,7 @@ impl ShellView {
                 &file_tree,
                 &project_picker,
                 &language_servers,
+                &editor_input,
                 window,
                 cx,
             );

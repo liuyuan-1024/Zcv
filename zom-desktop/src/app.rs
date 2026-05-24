@@ -22,6 +22,9 @@ use zom_workspace::{EntryKind, Workspace, WorkspaceBuffer};
 
 use crate::shell::editor::{ImeQueryTarget, ImeTarget};
 use crate::shell::features::file_tree::{FileTreeActivation, FileTreeModel, FileTreeState};
+use crate::shell::features::project_picker::{
+    ProjectPickerActivation, ProjectPickerMode, ProjectPickerModel, ProjectPickerState,
+};
 
 /// 主编辑区渲染快照：标签列表 + 当前活动 buffer 的正文。
 #[derive(Clone, Debug, Default)]
@@ -102,6 +105,7 @@ pub struct App {
     recent_projects: Vec<RecentProject>,
     recent_projects_path: Option<PathBuf>,
     file_tree: FileTreeModel,
+    project_picker: ProjectPickerModel,
 }
 
 impl App {
@@ -140,6 +144,7 @@ impl App {
             recent_projects,
             recent_projects_path: path,
             file_tree: FileTreeModel::default(),
+            project_picker: ProjectPickerModel::new(),
         }
     }
 
@@ -178,7 +183,34 @@ impl App {
 
     pub(crate) fn remove_recent_project(&mut self, id: &str) {
         self.recent_projects.retain(|project| project.id != id);
+        self.project_picker.clamp_selection(&self.recent_projects);
         self.persist_recent_projects();
+    }
+
+    pub(crate) fn project_picker_reset(&mut self, mode: ProjectPickerMode) {
+        self.project_picker.reset(mode);
+    }
+
+    pub(crate) fn project_picker_deactivate(&mut self) {
+        self.project_picker.deactivate();
+    }
+
+    pub(crate) fn project_picker_state(&self) -> ProjectPickerState {
+        self.project_picker.state()
+    }
+
+    pub(crate) fn project_picker_selected_project_id(&self) -> Option<String> {
+        self.project_picker
+            .selected_project_id(&self.recent_projects)
+    }
+
+    pub(crate) fn project_picker_move_selection(&mut self, delta: isize) {
+        self.project_picker
+            .move_selection(delta, &self.recent_projects);
+    }
+
+    pub(crate) fn project_picker_activation(&self) -> ProjectPickerActivation {
+        self.project_picker.activation(&self.recent_projects)
     }
 
     pub(crate) fn file_tree_state(&self) -> FileTreeState {
@@ -350,6 +382,11 @@ impl App {
                 vec![KeyContext::text_edit(true, false), KeyContext::global()]
             }
             KeySurface::Panel => vec![KeyContext::global()],
+            KeySurface::ProjectPicker if self.project_picker.active() => vec![
+                KeyContext::project_picker(),
+                KeyContext::text_edit(false, false),
+                KeyContext::global(),
+            ],
             KeySurface::ProjectPicker => vec![KeyContext::project_picker(), KeyContext::global()],
             KeySurface::FileTree if self.file_tree.pending_delete_active() => vec![
                 // 删除确认弹窗打开中：只解析确认 / 取消，导航键全部冻结。
@@ -403,7 +440,10 @@ impl App {
         self.queue.dispatch(id, args);
 
         let mut effects = EffectQueue::new();
-        let focused_field = self.file_tree.pending_edit_target();
+        let focused_field = self
+            .project_picker
+            .query_edit_target()
+            .or_else(|| self.file_tree.pending_edit_target());
         let mut context = CommandContext {
             workspace: &mut self.workspace,
             views: &mut self.views,
@@ -415,6 +455,9 @@ impl App {
 
         let host_effects = effects.drain();
         result?;
+        if self.project_picker.active() {
+            self.project_picker.reset_selection();
+        }
         Ok(host_effects)
     }
 
@@ -429,6 +472,9 @@ impl App {
         })?;
 
         self.dispatch(editor::ime_commit(text))?;
+        if self.project_picker.active() {
+            self.project_picker.reset_selection();
+        }
         Ok(())
     }
 
@@ -445,7 +491,11 @@ impl App {
                 new_text,
                 new_selected_range_utf16,
             )
-        })
+        })?;
+        if self.project_picker.active() {
+            self.project_picker.reset_selection();
+        }
+        Ok(())
     }
 
     pub(crate) fn ime_unmark(&mut self) -> Result<(), CommandError> {
@@ -478,6 +528,9 @@ impl App {
         &mut self,
         f: impl FnOnce(ImeTarget<'_>) -> Result<R, CommandError>,
     ) -> Result<R, CommandError> {
+        if let Some(target) = self.project_picker.query_ime_target() {
+            return f(target);
+        }
         if let Some(pending_editor) = self.file_tree.pending_editor_mut() {
             return f(pending_editor.as_ime_target());
         }
@@ -507,6 +560,9 @@ impl App {
     }
 
     fn focused_ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
+        if let Some(target) = self.project_picker.query_ime_query_target() {
+            return Some(target);
+        }
         if let Some(pending_editor) = self.file_tree.pending_editor() {
             return Some(pending_editor.as_ime_query_target());
         }

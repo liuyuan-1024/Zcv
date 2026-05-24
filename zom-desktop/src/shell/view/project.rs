@@ -23,6 +23,7 @@ pub(super) fn open_local_project(
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
+    app.borrow_mut().project_picker_deactivate();
     actions::dismiss_surface(surfaces, window, cx);
     let selection = platform_project::prompt_for_local_project(cx);
     window
@@ -49,6 +50,7 @@ pub(super) fn open_recent_project(
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
+    app.borrow_mut().project_picker_deactivate();
     actions::dismiss_surface(surfaces, window, cx);
     if let Some(repo) = repo {
         apply_git_project_open(&app, &workbench, &file_tree, project_root, repo, window);
@@ -66,6 +68,7 @@ pub(super) fn clone_git_project(
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
+    app.borrow_mut().project_picker_deactivate();
     actions::dismiss_surface(surfaces, window, cx);
     let selection = platform_project::prompt_for_clone_parent(cx);
     window

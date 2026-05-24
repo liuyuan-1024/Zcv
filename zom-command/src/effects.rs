@@ -47,10 +47,6 @@ pub enum HostEffect {
     ProjectPickerMoveSelection(isize),
     /// 激活项目选择器当前输入或高亮项。
     ProjectPickerActivate,
-    /// 删除项目选择器查询文本中的最后一个字符。
-    ProjectPickerDeleteQueryChar,
-    /// 向项目选择器查询文本插入文字。
-    ProjectPickerInsertQueryText(String),
 
     // ===== Surface =====
     /// 打开语言服务器。

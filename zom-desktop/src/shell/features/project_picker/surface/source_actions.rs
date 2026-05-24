@@ -1,12 +1,11 @@
 use gpui::{Div, div, prelude::*};
 use zom_command::commands::project_picker as project_picker_commands;
-use zom_command::keymap_format;
 
 use crate::shell::shared::theme::{color, space, typography};
 
-use super::{PickerMode, ProjectPickerActions, command_shortcut, command_title};
+use super::{ProjectPickerActions, ProjectPickerMode, command_shortcut, command_title};
 
-pub(super) fn render(mode: PickerMode, actions: &ProjectPickerActions) -> Div {
+pub(super) fn render(mode: ProjectPickerMode, actions: &ProjectPickerActions) -> Div {
     div()
         .flex()
         .flex_col()
@@ -21,9 +20,9 @@ pub(super) fn render(mode: PickerMode, actions: &ProjectPickerActions) -> Div {
         ))
 }
 
-fn git_clone_hint(mode: PickerMode, actions: &ProjectPickerActions) -> String {
-    if mode == PickerMode::CloneGit {
-        keymap_format::format_chord("enter")
+fn git_clone_hint(mode: ProjectPickerMode, actions: &ProjectPickerActions) -> String {
+    if mode == ProjectPickerMode::CloneGit {
+        command_shortcut(actions, project_picker_commands::ACTIVATE)
     } else {
         command_shortcut(actions, project_picker_commands::START_GIT_CLONE)
     }

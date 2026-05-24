@@ -5,19 +5,19 @@ use crate::app::RecentProject;
 use crate::shell::shared::Glyph;
 use crate::shell::shared::theme::{color, radius, space, typography};
 
-use super::{PickerMode, ProjectPickerActions, command_title};
+use super::{ProjectPickerActions, ProjectPickerMode, command_title};
 
 const REMOVE_ICON: &str = "icons/features/tab/close.svg";
 
 pub(super) fn render(
     projects: &[RecentProject],
     selected: usize,
-    mode: PickerMode,
+    mode: ProjectPickerMode,
     query_is_empty: bool,
     actions: &ProjectPickerActions,
 ) -> Div {
     let mut list = div().flex().flex_col().gap(space::s4());
-    if mode == PickerMode::CloneGit {
+    if mode == ProjectPickerMode::CloneGit {
         return list.child(clone_hint());
     }
     if projects.is_empty() {

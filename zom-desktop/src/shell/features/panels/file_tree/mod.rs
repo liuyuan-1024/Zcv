@@ -20,8 +20,6 @@ mod runtime;
 mod state;
 mod view;
 
-pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/file_tree.svg";
-
 pub(crate) use model::FileTreeModel;
 pub(crate) use runtime::FileTreeRuntime;
 pub(crate) use state::{

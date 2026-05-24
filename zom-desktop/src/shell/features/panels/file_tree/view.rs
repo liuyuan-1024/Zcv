@@ -19,9 +19,9 @@ use zom_workspace::EntryKind;
 
 use super::{FileTreeRow, FileTreeState, PendingNewEntry};
 
-const FOLDER_ICON: &str = "icons/features/file_tree/folder.svg";
-const FOLDER_OPEN_ICON: &str = "icons/features/file_tree/folder_open.svg";
-const FILE_ICON: &str = "icons/features/file_tree/file.svg";
+const FOLDER_ICON: &str = "icons/files/folder.svg";
+const FOLDER_OPEN_ICON: &str = "icons/files/folder_open.svg";
+const FILE_ICON: &str = "icons/files/file.svg";
 
 /// 单层缩进对应的像素宽度。
 fn indent_unit() -> gpui::Pixels {

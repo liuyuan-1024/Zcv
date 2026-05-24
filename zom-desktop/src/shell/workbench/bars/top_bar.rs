@@ -9,17 +9,11 @@
 use gpui::{AnyElement, Div, Window, div, prelude::*};
 
 use crate::shell::features::{project_picker, settings};
-use crate::shell::shared::Glyph;
 use crate::shell::workbench::state::WorkbenchState;
 use crate::shell::{CommandTitleLookup, ShortcutLookup};
 
 use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_frame};
 use super::window_controls::{WindowControlsHandlers, render_window_controls};
-
-use zom_command::commands::settings as settings_commands;
-
-const SETTINGS_ID: &str = "top-bar.settings";
-const SETTINGS_COMMAND: &str = settings_commands::OPEN;
 
 pub(crate) fn render(
     state: &WorkbenchState,
@@ -74,10 +68,5 @@ fn leading_slots(
 }
 
 fn trailing_slots(shortcuts: &ShortcutLookup, titles: &CommandTitleLookup) -> Vec<AnyElement> {
-    let settings_title = titles(SETTINGS_COMMAND).unwrap_or_else(|| SETTINGS_COMMAND.to_string());
-    vec![
-        Glyph::icon(SETTINGS_ID, settings::BAR_ICON, settings_title)
-            .hint(shortcuts(SETTINGS_COMMAND))
-            .render(),
-    ]
+    vec![settings::entry(shortcuts, titles)]
 }

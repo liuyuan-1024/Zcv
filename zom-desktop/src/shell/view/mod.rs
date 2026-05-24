@@ -17,9 +17,9 @@ use zom_command::commands::{file_tree as file_tree_commands, window as window_co
 use crate::app::{App, KeySurface};
 
 use super::editor::{CaretBlink, TextEditorSlot, TextTargetId, drive_caret_blink};
-use super::features::PanelRuntimes;
-use super::features::file_tree::{ConfirmDeleteHandlers, FileTreeRuntime};
 use super::features::language_servers;
+use super::features::panels::PanelRuntimes;
+use super::features::panels::file_tree::{ConfirmDeleteHandlers, FileTreeRuntime};
 use super::features::project_picker::ProjectPickerRuntime;
 use super::surfaces::{SurfaceAnchorRegistry, SurfaceId, SurfaceManager, SurfaceShell};
 use super::workbench;

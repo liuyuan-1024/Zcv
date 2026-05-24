@@ -7,8 +7,6 @@ use crate::shell::shared::theme::{color, radius, space, typography};
 
 use super::{ProjectPickerActions, ProjectPickerMode, command_title};
 
-const REMOVE_ICON: &str = "icons/features/tab/close.svg";
-
 pub(super) fn render(
     projects: &[RecentProject],
     selected: usize,
@@ -90,7 +88,7 @@ fn project_actions(index: usize, actions: &ProjectPickerActions) -> Div {
         .child(
             Glyph::icon(
                 ("project-picker.remove-recent", index),
-                REMOVE_ICON,
+                "icons/actions/close.svg",
                 command_title(actions, remove_command),
             )
             .hint((actions.shortcut_lookup)(remove_command))

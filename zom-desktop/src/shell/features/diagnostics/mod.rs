@@ -4,5 +4,27 @@
 //! `zom_command::commands::diagnostics`。问题面板 UI 待后续开发，届时在本目录补
 //! `view.rs` / `state.rs` 等文件。
 
-/// 该功能在底栏的图标。
-pub(crate) const BAR_ICON: &str = "icons/bottom_bar/diagnostics.svg";
+use gpui::AnyElement;
+use zom_command::commands::diagnostics;
+
+use crate::shell::shared::Glyph;
+use crate::shell::{CommandTitleLookup, ShortcutLookup};
+
+const INVOKER_ID: &str = "bottom-bar.diagnostics";
+const COMMAND: &str = diagnostics::SHOW_PROBLEMS;
+
+pub(crate) fn entry(
+    count: u32,
+    shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
+) -> AnyElement {
+    let title = titles(COMMAND).unwrap_or_else(|| COMMAND.to_string());
+    Glyph::icon_text(
+        INVOKER_ID,
+        "icons/status/diagnostics.svg",
+        count.to_string(),
+        title,
+    )
+    .hint(shortcuts(COMMAND))
+    .render()
+}

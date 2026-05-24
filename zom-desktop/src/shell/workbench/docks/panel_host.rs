@@ -7,8 +7,8 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, Div, FocusHandle, SharedString, div, prelude::*};
 
-use crate::shell::features::file_tree::FileTreePanel;
-use crate::shell::features::{PanelId, PanelRuntimes, file_tree};
+use crate::shell::features::panels::file_tree::FileTreePanel;
+use crate::shell::features::panels::{PanelId, PanelRuntimes, file_tree};
 use crate::shell::shared::theme::{color, typography};
 use crate::shell::{CommandTitleLookup, KeyRequest, normalized_chord};
 

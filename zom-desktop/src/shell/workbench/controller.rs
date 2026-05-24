@@ -8,8 +8,8 @@ use super::docks::{bottom, left, right};
 use super::state::{
     BottomBarState, DockAreaId, DockState, EditorState, PanelStack, WorkbenchState,
 };
-use crate::shell::features::PanelId;
-use crate::shell::features::file_tree::FileTreeState;
+use crate::shell::features::panels::PanelId;
+use crate::shell::features::panels::file_tree::FileTreeState;
 
 use gpui::{Pixels, px};
 
@@ -142,8 +142,8 @@ impl Default for WorkbenchController {
 mod tests {
     //! Workbench 窗口 UI 状态测试。
 
-    use crate::shell::features::PanelId;
-    use crate::shell::features::file_tree::FileTreeState;
+    use crate::shell::features::panels::PanelId;
+    use crate::shell::features::panels::file_tree::FileTreeState;
     use crate::shell::shared::theme;
     use crate::shell::workbench::controller::WorkbenchController;
     use crate::shell::workbench::docks::resize::{DockResizeBounds, DockResizeEvent};

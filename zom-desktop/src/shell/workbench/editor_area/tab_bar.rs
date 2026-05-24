@@ -16,9 +16,6 @@ use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::state::{EditorState, EditorTab};
 use crate::shell::{CommandTitleLookup, ShortcutLookup};
 
-/// 标签关闭标记的图标。
-const CLOSE_ICON: &str = "icons/features/tab/close.svg";
-
 pub(crate) fn render(
     state: &EditorState,
     scroll: ScrollHandle,
@@ -95,7 +92,7 @@ fn close_glyph(
     let close_title = titles(editor::CLOSE_TAB).unwrap_or_else(|| editor::CLOSE_TAB.to_string());
     let glyph = Glyph::icon(
         ("editor-tab-close", tab.id.as_u64() as usize),
-        CLOSE_ICON,
+        "icons/actions/close.svg",
         close_title,
     )
     .hint(shortcuts(editor::CLOSE_TAB))

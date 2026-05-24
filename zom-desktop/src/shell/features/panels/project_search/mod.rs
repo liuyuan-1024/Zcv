@@ -1,23 +1,21 @@
-//! KeyboardShortcuts —— L3 panel 组件。
+//! ProjectSearch —— L3 panel 组件。
 //!
-//! 第一版骨架：渲染「占位中」灰字。
+//! 第一版骨架：渲染「占位中」灰字；P3 接入 zom-engine 搜索能力时再补 UI。
 
 use gpui::{Context, Div, FocusHandle, IntoElement};
-use zom_command::commands::keyboard_shortcuts;
+use zom_command::commands::project_search;
 
 use crate::shell::workbench::docks::{placeholder, render_focus_host};
 use crate::shell::{CommandTitleLookup, KeyRequest};
 
-pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/keyboard_shortcuts.svg";
-
-const COMMAND: &str = keyboard_shortcuts::TOGGLE_PANEL;
+const COMMAND: &str = project_search::TOGGLE_PANEL;
 
 #[derive(Clone)]
-pub(crate) struct KeyboardShortcutsRuntime {
+pub(crate) struct ProjectSearchRuntime {
     focus: FocusHandle,
 }
 
-impl KeyboardShortcutsRuntime {
+impl ProjectSearchRuntime {
     pub(crate) fn new<T>(cx: &mut Context<T>) -> Self {
         Self {
             focus: cx.focus_handle(),

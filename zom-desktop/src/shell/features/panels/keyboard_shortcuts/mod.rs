@@ -1,23 +1,21 @@
-//! Debug —— L3 panel 组件。
+//! KeyboardShortcuts —— L3 panel 组件。
 //!
 //! 第一版骨架：渲染「占位中」灰字。
 
 use gpui::{Context, Div, FocusHandle, IntoElement};
-use zom_command::commands::debug;
+use zom_command::commands::keyboard_shortcuts;
 
 use crate::shell::workbench::docks::{placeholder, render_focus_host};
 use crate::shell::{CommandTitleLookup, KeyRequest};
 
-pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/debug.svg";
-
-const COMMAND: &str = debug::TOGGLE_PANEL;
+const COMMAND: &str = keyboard_shortcuts::TOGGLE_PANEL;
 
 #[derive(Clone)]
-pub(crate) struct DebugRuntime {
+pub(crate) struct KeyboardShortcutsRuntime {
     focus: FocusHandle,
 }
 
-impl DebugRuntime {
+impl KeyboardShortcutsRuntime {
     pub(crate) fn new<T>(cx: &mut Context<T>) -> Self {
         Self {
             focus: cx.focus_handle(),

@@ -4,5 +4,18 @@
 //! `zom_command::commands::settings`。设置 UI 待后续开发，届时在本目录补
 //! `view.rs` / `state.rs` 等文件。
 
-/// 该功能在顶栏的图标。
-pub(crate) const BAR_ICON: &str = "icons/top_bar/settings.svg";
+use gpui::AnyElement;
+use zom_command::commands::settings;
+
+use crate::shell::shared::Glyph;
+use crate::shell::{CommandTitleLookup, ShortcutLookup};
+
+const INVOKER_ID: &str = "top-bar.settings";
+const COMMAND: &str = settings::OPEN;
+
+pub(crate) fn entry(shortcuts: &ShortcutLookup, titles: &CommandTitleLookup) -> AnyElement {
+    let title = titles(COMMAND).unwrap_or_else(|| COMMAND.to_string());
+    Glyph::icon(INVOKER_ID, "icons/actions/settings.svg", title)
+        .hint(shortcuts(COMMAND))
+        .render()
+}

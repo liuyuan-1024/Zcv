@@ -1,23 +1,21 @@
-//! VersionControl —— L3 panel 组件。
+//! Terminal —— L3 panel 组件。
 //!
 //! 第一版骨架：渲染「占位中」灰字。
 
 use gpui::{Context, Div, FocusHandle, IntoElement};
-use zom_command::commands::version_control;
+use zom_command::commands::terminal;
 
 use crate::shell::workbench::docks::{placeholder, render_focus_host};
 use crate::shell::{CommandTitleLookup, KeyRequest};
 
-pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/version_control.svg";
-
-const COMMAND: &str = version_control::TOGGLE_PANEL;
+const COMMAND: &str = terminal::TOGGLE_PANEL;
 
 #[derive(Clone)]
-pub(crate) struct VersionControlRuntime {
+pub(crate) struct TerminalRuntime {
     focus: FocusHandle,
 }
 
-impl VersionControlRuntime {
+impl TerminalRuntime {
     pub(crate) fn new<T>(cx: &mut Context<T>) -> Self {
         Self {
             focus: cx.focus_handle(),

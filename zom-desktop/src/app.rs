@@ -24,7 +24,7 @@ use crate::shell::editor::{
     EditorRouter, EditorRouterMut, MainEditorOwner, MainEditorOwnerRef, TextInputProfile,
     TextTargetId, TextTargetOwner, TextTargetQuery,
 };
-use crate::shell::features::file_tree::{FileTreeActivation, FileTreeModel, FileTreeState};
+use crate::shell::features::panels::file_tree::{FileTreeActivation, FileTreeModel, FileTreeState};
 use crate::shell::features::project_picker::{
     ProjectPickerActivation, ProjectPickerMode, ProjectPickerModel, ProjectPickerState,
 };
@@ -713,8 +713,8 @@ mod tests {
 
     use crate::app::{App, EditorState, EditorTab, KeySurface};
     use crate::shell::editor::{EditorSnapshot, TextTargetId};
-    use crate::shell::features::PanelId;
-    use crate::shell::features::file_tree::FileTreeActivation;
+    use crate::shell::features::panels::PanelId;
+    use crate::shell::features::panels::file_tree::FileTreeActivation;
     use std::fs::{File, create_dir_all};
     use std::path::PathBuf;
     use zom_command::HostEffect;

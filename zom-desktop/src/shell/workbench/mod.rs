@@ -24,8 +24,8 @@ use std::rc::Rc;
 use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
 
 use crate::shell::editor::{EditorSnapshot, TextEditorSlot};
-use crate::shell::features::PanelRuntimes;
-use crate::shell::features::file_tree::{self, ConfirmDeleteHandlers, FileTreePanel};
+use crate::shell::features::panels::PanelRuntimes;
+use crate::shell::features::panels::file_tree::{self, ConfirmDeleteHandlers, FileTreePanel};
 use crate::shell::shared::theme::{color, radius};
 use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 

@@ -1,23 +1,21 @@
-//! ProjectSearch —— L3 panel 组件。
+//! Outline —— L3 panel 组件。
 //!
-//! 第一版骨架：渲染「占位中」灰字；P3 接入 zom-engine 搜索能力时再补 UI。
+//! 第一版骨架：渲染「占位中」灰字；LSP 接入后填充符号大纲。
 
 use gpui::{Context, Div, FocusHandle, IntoElement};
-use zom_command::commands::project_search;
+use zom_command::commands::outline;
 
 use crate::shell::workbench::docks::{placeholder, render_focus_host};
 use crate::shell::{CommandTitleLookup, KeyRequest};
 
-pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/project_search.svg";
-
-const COMMAND: &str = project_search::TOGGLE_PANEL;
+const COMMAND: &str = outline::TOGGLE_PANEL;
 
 #[derive(Clone)]
-pub(crate) struct ProjectSearchRuntime {
+pub(crate) struct OutlineRuntime {
     focus: FocusHandle,
 }
 
-impl ProjectSearchRuntime {
+impl OutlineRuntime {
     pub(crate) fn new<T>(cx: &mut Context<T>) -> Self {
         Self {
             focus: cx.focus_handle(),

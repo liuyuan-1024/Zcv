@@ -8,10 +8,9 @@
 
 use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
 
-use zom_command::commands::diagnostics as diagnostic_commands;
-
 use crate::shell::editor::EditorSnapshot;
-use crate::shell::features::{PanelId, diagnostics, language_servers};
+use crate::shell::features::panels::PanelId;
+use crate::shell::features::{diagnostics, language_servers};
 use crate::shell::shared::Glyph;
 use crate::shell::workbench::docks::{bottom, left, right};
 use crate::shell::workbench::state::{DockAreaId, DockState, EditorState, WorkbenchState};
@@ -19,8 +18,6 @@ use crate::shell::{CommandTitleLookup, ShortcutLookup};
 
 use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_divider, bar_frame};
 
-const DIAGNOSTICS_ID: &str = "bottom-bar.diagnostics";
-const DIAGNOSTICS_COMMAND: &str = diagnostic_commands::SHOW_PROBLEMS;
 const CURSOR_POSITION_ID: &str = "bottom-bar.cursor-position";
 const LANGUAGE_ID: &str = "bottom-bar.language";
 
@@ -64,7 +61,7 @@ fn leading_slots(
             shortcuts,
             titles,
         ),
-        diagnostics_slot(state.bottom_bar.diagnostics_count, shortcuts, titles),
+        diagnostics::entry(state.bottom_bar.diagnostics_count, shortcuts, titles),
     ];
     join_groups(vec![toggles, status])
 }
@@ -163,20 +160,4 @@ fn panel_slot(
 /// 身份，与命令 id 无关；从 PanelId 派生避免散落字符串。
 fn panel_glyph_id(panel: PanelId) -> gpui::SharedString {
     format!("bottom-bar.{}", panel.command_str_id()).into()
-}
-
-fn diagnostics_slot(
-    count: u32,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
-) -> AnyElement {
-    let title = titles(DIAGNOSTICS_COMMAND).unwrap_or_else(|| DIAGNOSTICS_COMMAND.to_string());
-    Glyph::icon_text(
-        DIAGNOSTICS_ID,
-        diagnostics::BAR_ICON,
-        count.to_string(),
-        title,
-    )
-    .hint(shortcuts(DIAGNOSTICS_COMMAND))
-    .render()
 }

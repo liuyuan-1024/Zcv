@@ -9,7 +9,7 @@ use std::rc::Rc;
 use gpui::{Context, FocusHandle, Window};
 
 use crate::app::App;
-use crate::shell::features::{PanelId, focus_panel_handle};
+use crate::shell::features::panels::{PanelId, focus_panel_handle};
 use crate::shell::workbench::controller::WorkbenchController;
 
 /// 注册文件树焦点监听：获焦时初始化首个可见行，两端都刷新高亮状态。

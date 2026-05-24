@@ -8,7 +8,7 @@ use std::rc::Rc;
 use gpui::{Entity, Window};
 
 use crate::app::App;
-use crate::shell::features::file_tree::FileTreeRuntime;
+use crate::shell::features::panels::file_tree::FileTreeRuntime;
 use crate::shell::platform::project as platform_project;
 use crate::shell::surfaces::SurfaceManager;
 use crate::shell::workbench::controller::WorkbenchController;

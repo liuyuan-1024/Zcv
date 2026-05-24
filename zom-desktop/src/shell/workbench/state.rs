@@ -5,8 +5,8 @@
 use gpui::Pixels;
 
 pub(crate) use crate::app::{EditorState, EditorTab};
-use crate::shell::features::PanelId;
-use crate::shell::features::file_tree::FileTreeState;
+use crate::shell::features::panels::PanelId;
+use crate::shell::features::panels::file_tree::FileTreeState;
 
 /// 三种停靠区域（布局模型 5）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -9,8 +9,8 @@
 
 use gpui::{FocusHandle, Window};
 
-use crate::shell::features::file_tree::FileTreeRuntime;
-use crate::shell::features::{PanelId, PanelRuntimes, focus_panel_handle};
+use crate::shell::features::panels::file_tree::FileTreeRuntime;
+use crate::shell::features::panels::{PanelId, PanelRuntimes, focus_panel_handle};
 
 /// 焦点可以去的 workbench 目标。
 #[derive(Clone, Copy)]

@@ -1,23 +1,21 @@
-//! Outline —— L3 panel 组件。
+//! VersionControl —— L3 panel 组件。
 //!
-//! 第一版骨架：渲染「占位中」灰字；LSP 接入后填充符号大纲。
+//! 第一版骨架：渲染「占位中」灰字。
 
 use gpui::{Context, Div, FocusHandle, IntoElement};
-use zom_command::commands::outline;
+use zom_command::commands::version_control;
 
 use crate::shell::workbench::docks::{placeholder, render_focus_host};
 use crate::shell::{CommandTitleLookup, KeyRequest};
 
-pub(crate) const PANEL_ICON: &str = "icons/bottom_bar/outline.svg";
-
-const COMMAND: &str = outline::TOGGLE_PANEL;
+const COMMAND: &str = version_control::TOGGLE_PANEL;
 
 #[derive(Clone)]
-pub(crate) struct OutlineRuntime {
+pub(crate) struct VersionControlRuntime {
     focus: FocusHandle,
 }
 
-impl OutlineRuntime {
+impl VersionControlRuntime {
     pub(crate) fn new<T>(cx: &mut Context<T>) -> Self {
         Self {
             focus: cx.focus_handle(),

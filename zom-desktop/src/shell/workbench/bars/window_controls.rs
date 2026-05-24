@@ -52,10 +52,6 @@ fn inactive_palette() -> (Rgba, Rgba) {
 /// 三个圆点共享的 group 名：用 `group_hover` 让任一悬停都点亮全部符号。
 const PIP_GROUP: &str = "top-bar.window-controls";
 
-const CLOSE_SYMBOL: &str = "icons/top_bar/window_controls/close.svg";
-const MINIMIZE_SYMBOL: &str = "icons/top_bar/window_controls/minimize.svg";
-const MAXIMIZE_SYMBOL: &str = "icons/top_bar/window_controls/maximize.svg";
-
 /// 圆点直径。圆点是窗控的本地几何尺寸，不是「UI 图标」，故不走 `theme::icon`。
 const PIP_SIZE: Pixels = px(12.0);
 /// 圆点内符号尺寸，略小于直径留呼吸感。
@@ -78,15 +74,20 @@ pub(crate) fn render_window_controls(
         .items_center()
         .gap(space::s8())
         .child(
-            control_pip("top-bar.close", Pip::Close, is_window_active, CLOSE_SYMBOL)
-                .on_click(move |_, window, cx| quit(window, cx)),
+            control_pip(
+                "top-bar.close",
+                Pip::Close,
+                is_window_active,
+                "icons/window/close.svg",
+            )
+            .on_click(move |_, window, cx| quit(window, cx)),
         )
         .child(
             control_pip(
                 "top-bar.minimize",
                 Pip::Minimize,
                 is_window_active,
-                MINIMIZE_SYMBOL,
+                "icons/window/minimize.svg",
             )
             .on_click(move |_, window, cx| minimize(window, cx)),
         )
@@ -95,7 +96,7 @@ pub(crate) fn render_window_controls(
                 "top-bar.maximize",
                 Pip::Maximize,
                 is_window_active,
-                MAXIMIZE_SYMBOL,
+                "icons/window/maximize.svg",
             )
             .on_click(move |_, window, cx| toggle_maximize(window, cx)),
         )

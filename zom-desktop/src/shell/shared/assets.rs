@@ -19,32 +19,37 @@ macro_rules! asset {
 }
 
 const ASSETS: &[(&str, &[u8])] = &[
-    asset!("icons/top_bar/settings.svg"),
-    asset!("icons/top_bar/window_controls/close.svg"),
-    asset!("icons/top_bar/window_controls/minimize.svg"),
-    asset!("icons/top_bar/window_controls/maximize.svg"),
-    asset!("icons/bottom_bar/file_tree.svg"),
-    asset!("icons/bottom_bar/version_control.svg"),
-    asset!("icons/bottom_bar/outline.svg"),
-    asset!("icons/bottom_bar/project_search.svg"),
-    asset!("icons/bottom_bar/terminal.svg"),
-    asset!("icons/bottom_bar/debug.svg"),
-    asset!("icons/bottom_bar/keyboard_shortcuts.svg"),
-    asset!("icons/bottom_bar/diagnostics.svg"),
-    asset!("icons/bottom_bar/language_server.svg"),
-    asset!("icons/primitives/chevron_right.svg"),
-    asset!("icons/primitives/chevron_left.svg"),
-    asset!("icons/primitives/chevron_up.svg"),
-    asset!("icons/primitives/chevron_down.svg"),
-    asset!("icons/primitives/chevron_down_up.svg"),
-    asset!("icons/primitives/check.svg"),
-    asset!("icons/primitives/signal_low.svg"),
-    asset!("icons/primitives/signal_medium.svg"),
-    asset!("icons/primitives/signal_high.svg"),
-    asset!("icons/features/file_tree/folder.svg"),
-    asset!("icons/features/file_tree/folder_open.svg"),
-    asset!("icons/features/file_tree/file.svg"),
-    asset!("icons/features/tab/close.svg"),
+    asset!("icons/actions/settings.svg"),
+    asset!("icons/actions/close.svg"),
+    asset!("icons/actions/check.svg"),
+    asset!("icons/actions/case_sensitive.svg"),
+    asset!("icons/actions/regex.svg"),
+    asset!("icons/actions/replace_next.svg"),
+    asset!("icons/actions/replace_all.svg"),
+    asset!("icons/actions/whole_word.svg"),
+    asset!("icons/window/close.svg"),
+    asset!("icons/window/minimize.svg"),
+    asset!("icons/window/maximize.svg"),
+    asset!("icons/panels/file_tree.svg"),
+    asset!("icons/panels/version_control.svg"),
+    asset!("icons/panels/outline.svg"),
+    asset!("icons/panels/project_search.svg"),
+    asset!("icons/panels/terminal.svg"),
+    asset!("icons/panels/debug.svg"),
+    asset!("icons/panels/keyboard_shortcuts.svg"),
+    asset!("icons/status/diagnostics.svg"),
+    asset!("icons/status/language_server.svg"),
+    asset!("icons/navigation/chevron_right.svg"),
+    asset!("icons/navigation/chevron_left.svg"),
+    asset!("icons/navigation/chevron_up.svg"),
+    asset!("icons/navigation/chevron_down.svg"),
+    asset!("icons/navigation/chevron_down_up.svg"),
+    asset!("icons/status/signal_low.svg"),
+    asset!("icons/status/signal_medium.svg"),
+    asset!("icons/status/signal_high.svg"),
+    asset!("icons/files/folder.svg"),
+    asset!("icons/files/folder_open.svg"),
+    asset!("icons/files/file.svg"),
 ];
 
 impl AssetSource for EmbeddedAssets {
@@ -60,5 +65,76 @@ impl AssetSource for EmbeddedAssets {
             .iter()
             .filter_map(|(p, _)| p.strip_prefix(prefix).map(|_| SharedString::from(*p)))
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn shell_icon_paths_are_registered_as_embedded_assets() {
+        let shell_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shell");
+        let mut referenced = BTreeSet::new();
+
+        collect_icon_paths(&shell_dir, &mut referenced);
+
+        let missing = referenced
+            .into_iter()
+            .filter(|path| !ASSETS.iter().any(|(asset_path, _)| asset_path == path))
+            .collect::<Vec<_>>();
+
+        assert!(
+            missing.is_empty(),
+            "shell icon paths must be present in EmbeddedAssets: {missing:#?}"
+        );
+    }
+
+    fn collect_icon_paths(dir: &Path, out: &mut BTreeSet<String>) {
+        let entries = fs::read_dir(dir)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", dir.display()));
+
+        for entry in entries {
+            let path = entry
+                .unwrap_or_else(|error| {
+                    panic!("failed to read entry in {}: {error}", dir.display())
+                })
+                .path();
+
+            if path == platform_dir() {
+                continue;
+            }
+
+            if path.is_dir() {
+                collect_icon_paths(&path, out);
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs")
+                && path != current_file()
+            {
+                collect_icon_paths_from_file(&path, out);
+            }
+        }
+    }
+
+    fn current_file() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shell/shared/assets.rs")
+    }
+
+    fn platform_dir() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shell/platform")
+    }
+
+    fn collect_icon_paths_from_file(path: &Path, out: &mut BTreeSet<String>) {
+        let source = fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+
+        for literal in source.split('"').skip(1).step_by(2) {
+            if literal.starts_with("icons/") && literal.ends_with(".svg") {
+                out.insert(literal.to_string());
+            }
+        }
     }
 }

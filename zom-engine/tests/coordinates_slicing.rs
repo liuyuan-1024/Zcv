@@ -100,6 +100,29 @@ fn crlf_middle_should_not_be_valid_line_position_or_edit_boundary() {
 }
 
 #[test]
+fn trailing_empty_line_position_should_project_to_document_end() {
+    let buffer = buffer("aa\n");
+
+    assert_eq!(buffer.line_count(), 2);
+    assert_eq!(
+        buffer.char_to_position(c(3)).unwrap(),
+        Position::new(line(1), col(0))
+    );
+    assert_eq!(
+        buffer
+            .position_to_char(Position::new(line(1), col(0)))
+            .unwrap(),
+        c(3)
+    );
+    assert_eq!(
+        buffer
+            .utf16_position_to_char(Utf16Position::new(line(1), Utf16Offset::new(0)))
+            .unwrap(),
+        c(3)
+    );
+}
+
+#[test]
 fn grapheme_boundary_should_reject_combining_mark_middle_and_map_to_nearest_boundaries() {
     let buffer = buffer("ae\u{301}b");
 

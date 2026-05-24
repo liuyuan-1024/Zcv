@@ -442,7 +442,7 @@ fn position_to_char_in_rope(rope: &Rope, position: Position) -> EngineResult<Cha
         rope.len_chars()
     };
 
-    let line_content_end = line_content_end(rope, next_line_start);
+    let line_content_end = line_content_end(rope, line_start, next_line_start);
     let line_len = line_content_end - line_start;
 
     if column <= line_len {
@@ -497,7 +497,7 @@ fn utf16_position_to_char_in_rope(
     } else {
         rope.len_chars()
     };
-    let line_content_end = line_content_end(rope, next_line_start);
+    let line_content_end = line_content_end(rope, line_start, next_line_start);
     let target = position.character().get();
 
     let mut utf16_units = 0usize;
@@ -774,8 +774,8 @@ fn detect_line_ending_style_in_rope(rope: &Rope) -> LineEndingStyle {
     }
 }
 
-fn line_content_end(rope: &Rope, next_line_start: usize) -> usize {
-    if next_line_start == 0 {
+fn line_content_end(rope: &Rope, line_start: usize, next_line_start: usize) -> usize {
+    if next_line_start <= line_start {
         return next_line_start;
     }
 

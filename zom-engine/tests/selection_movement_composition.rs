@@ -421,6 +421,21 @@ fn page_step_should_clamp_to_last_line_when_lines_exceeds_remaining() {
 }
 
 #[test]
+fn page_step_should_clamp_to_empty_trailing_line_when_file_ends_with_newline() {
+    let mut buffer = buffer("aa\nbb\n");
+    let after = buffer
+        .move_selections(
+            set_caret(1),
+            MovementDirection::Next,
+            Motion::PageStep { lines: 10 },
+            false,
+        )
+        .unwrap();
+
+    assert_eq!(after.primary().head(), buffer.len_bytes());
+}
+
+#[test]
 fn page_step_at_last_line_next_should_land_at_document_end() {
     let mut buffer = buffer("aa\nbb\ncc");
     // caret 在 line 2，PageDown：已在末行 → 文档末尾。

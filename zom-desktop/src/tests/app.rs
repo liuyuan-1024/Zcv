@@ -5,6 +5,7 @@
 //! 在 `shell::view` 那一层做手工 / 集成测试，不进本文件。
 
 use crate::app::{App, EditorState, EditorTab, KeySurface};
+use crate::shell::editor::{EditorSnapshot, TextTargetId};
 use crate::shell::features::PanelId;
 use crate::shell::features::file_tree::FileTreeActivation;
 use std::fs::{File, create_dir_all};
@@ -14,6 +15,22 @@ use zom_command::commands::{
     diagnostics, editor, language_servers, project_picker as project_picker_commands, settings,
 };
 use zom_workspace::EntryKind;
+
+/// 主编辑区文本 / 光标快照——断言"正文里到底是什么"用。
+fn main_snapshot(app: &App) -> EditorSnapshot {
+    app.with_router(|router| router.snapshot_for(TextTargetId::MainEditor))
+}
+
+/// 文件树新建条目输入框的快照——断言用户键入的名称。
+fn pending_name_snapshot(app: &App) -> EditorSnapshot {
+    app.with_router(|router| router.snapshot_for(TextTargetId::FileTreePendingName))
+}
+
+/// 某 target 是否处于"有 preedit"的 IME 组合态。
+fn has_marked_range(app: &App, target: TextTargetId) -> bool {
+    app.with_router(|router| router.marked_range_utf16(target))
+        .is_some()
+}
 
 /// 取当前活动标签——断言「编辑区正在显示哪个文件」用。
 fn active_tab(state: &EditorState) -> &EditorTab {
@@ -44,12 +61,15 @@ fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
     let mut app = app_with_open_file("ime-key");
 
     // 普通文本输入走 IME 通道（系统输入法或键盘的 NSTextInputClient 提交）。
-    app.ime_replace_text(None, "h").unwrap();
-    app.ime_replace_text(None, "i").unwrap();
+    app.ime_replace_text_for(TextTargetId::MainEditor, None, "h")
+        .unwrap();
+    app.ime_replace_text_for(TextTargetId::MainEditor, None, "i")
+        .unwrap();
 
     let state = app.editor_state();
-    assert_eq!(state.text, "hi");
-    assert_eq!(state.cursor_byte, 2);
+    let snap = main_snapshot(&app);
+    assert_eq!(snap.text, "hi");
+    assert_eq!(snap.cursor_byte, 2);
     assert!(active_tab(&state).dirty);
 
     // 非文本按键仍走 keymap → 命令。
@@ -64,9 +84,9 @@ fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
             .consumed
     );
 
-    let state = app.editor_state();
-    assert_eq!(state.text, "i");
-    assert_eq!(state.cursor_byte, 0);
+    let snap = main_snapshot(&app);
+    assert_eq!(snap.text, "i");
+    assert_eq!(snap.cursor_byte, 0);
 
     let outcome = app
         .dispatch_key("mod-z".to_string(), KeySurface::Editor)
@@ -80,9 +100,9 @@ fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
             .consumed
     );
 
-    let state = app.editor_state();
-    assert_eq!(state.text, "hi");
-    assert_eq!(state.cursor_byte, 1);
+    let snap = main_snapshot(&app);
+    assert_eq!(snap.text, "hi");
+    assert_eq!(snap.cursor_byte, 1);
 }
 
 #[test]
@@ -90,29 +110,31 @@ fn ime_preedit_update_and_commit_should_flow_through_engine() {
     let mut app = app_with_open_file("ime-preedit");
 
     // 先输入一个英文字符，确认 IME commit 走单独路径。
-    app.ime_replace_text(None, "x").unwrap();
+    app.ime_replace_text_for(TextTargetId::MainEditor, None, "x")
+        .unwrap();
 
     // 模拟输入法 preedit：先 mark "ni"，再 mark "你"，最后 commit "你"。
-    app.ime_replace_and_mark_text(None, "ni", Some(2..2))
+    app.ime_replace_and_mark_text_for(TextTargetId::MainEditor, None, "ni", Some(2..2))
         .unwrap();
-    let state = app.editor_state();
-    assert_eq!(state.text, "xni");
-    assert!(app.ime_marked_range_utf16().is_some());
+    assert_eq!(main_snapshot(&app).text, "xni");
+    assert!(has_marked_range(&app, TextTargetId::MainEditor));
 
-    app.ime_replace_and_mark_text(None, "你", Some(1..1))
+    app.ime_replace_and_mark_text_for(TextTargetId::MainEditor, None, "你", Some(1..1))
         .unwrap();
-    let state = app.editor_state();
-    assert_eq!(state.text, "x你");
+    assert_eq!(main_snapshot(&app).text, "x你");
 
-    app.ime_replace_text(None, "你").unwrap();
-    let state = app.editor_state();
-    assert_eq!(state.text, "x你");
-    assert!(app.ime_marked_range_utf16().is_none());
+    app.ime_replace_text_for(TextTargetId::MainEditor, None, "你")
+        .unwrap();
+    let snap = main_snapshot(&app);
+    assert_eq!(snap.text, "x你");
+    assert!(!has_marked_range(&app, TextTargetId::MainEditor));
     // commit 之后 cursor 落在 "你" 之后，对应 4 个 UTF-8 字节 + 1 (x)。
-    assert_eq!(state.cursor_byte, 1 + "你".len());
+    assert_eq!(snap.cursor_byte, 1 + "你".len());
 
     // selected_range_utf16 用 UTF-16 计数：x 占 1，你 占 1，总长 2。
-    let (sel, _) = app.ime_selected_range_utf16().unwrap();
+    let (sel, _) = app
+        .ime_selected_range_utf16_for(TextTargetId::MainEditor)
+        .unwrap();
     assert_eq!(sel, 2..2);
 }
 
@@ -137,8 +159,9 @@ fn tab_and_enter_should_dispatch_editor_commands() {
     );
 
     let state = app.editor_state();
-    assert_eq!(state.text, "    \n\n");
-    assert_eq!(state.cursor_byte, 6);
+    let snap = main_snapshot(&app);
+    assert_eq!(snap.text, "    \n\n");
+    assert_eq!(snap.cursor_byte, 6);
     assert!(active_tab(&state).dirty);
 }
 
@@ -309,16 +332,16 @@ fn project_title_should_prompt_when_no_project_is_open() {
 #[test]
 fn open_local_project_should_update_project_title_and_reset_workspace() {
     let mut app = app_with_open_file("reset");
-    app.ime_replace_text(None, "临时内容").unwrap();
-    assert!(!app.editor_state().text.is_empty());
+    app.ime_replace_text_for(TextTargetId::MainEditor, None, "临时内容")
+        .unwrap();
+    assert!(!main_snapshot(&app).text.is_empty());
 
     app.open_local_project(PathBuf::from("/tmp/zom-local-project"));
 
     assert_eq!(app.project_title(), "zom-local-project");
     // 重开项目后工作区清空：没有默认 buffer / 视图，也就没有任何标签。
-    let state = app.editor_state();
-    assert!(state.tabs.is_empty());
-    assert!(state.text.is_empty());
+    assert!(app.editor_state().tabs.is_empty());
+    assert!(main_snapshot(&app).text.is_empty());
 }
 
 #[test]
@@ -547,7 +570,8 @@ fn file_tree_pending_editor_keys_route_through_keymap_by_context() {
     app.open_local_project(project_fixture("pending-editor"));
     app.file_tree_begin_new_entry(EntryKind::File);
 
-    app.ime_replace_text(None, "alpha").unwrap();
+    app.ime_replace_text_for(TextTargetId::FileTreePendingName, None, "alpha")
+        .unwrap();
 
     // 全局快捷键不被单行新建输入框吞掉：在 Global 上下文照常解析成 panel 命令。
     let outcome = app
@@ -566,9 +590,13 @@ fn file_tree_pending_editor_keys_route_through_keymap_by_context() {
     assert!(outcome.consumed);
     assert!(outcome.effects.is_empty());
 
-    app.ime_replace_text(None, "beta").unwrap();
-    let pending = app.file_tree_state().pending.expect("新建输入框仍在编辑态");
-    assert_eq!(pending.editor.text, "beta");
+    app.ime_replace_text_for(TextTargetId::FileTreePendingName, None, "beta")
+        .unwrap();
+    assert!(
+        app.file_tree_state().pending.is_some(),
+        "新建输入框仍在编辑态"
+    );
+    assert_eq!(pending_name_snapshot(&app).text, "beta");
 
     // Enter：单行编辑器不接受换行 → text_edit 落空 → 命中 FileTree 的提交命令。
     let outcome = app
@@ -584,9 +612,9 @@ fn file_tree_pending_editor_does_not_intercept_keys_while_composing() {
     app.open_local_project(project_fixture("pending-ime"));
     app.file_tree_begin_new_entry(EntryKind::File);
 
-    app.ime_replace_and_mark_text(None, "ni", Some(2..2))
+    app.ime_replace_and_mark_text_for(TextTargetId::FileTreePendingName, None, "ni", Some(2..2))
         .unwrap();
-    assert!(app.ime_marked_range_utf16().is_some());
+    assert!(has_marked_range(&app, TextTargetId::FileTreePendingName));
 
     // 组合态下 dispatch_key 一律不消费、不拦截：Enter / Esc 等都透传给系统
     // 输入法，由它驱动候选的提交 / 取消。宿主在这里抢键会让 IME 会话脱节。
@@ -597,7 +625,7 @@ fn file_tree_pending_editor_does_not_intercept_keys_while_composing() {
     assert!(outcome.effects.is_empty());
 
     // 这次 Enter 没动到任何状态：组合还在，文件树新建也还在。
-    assert!(app.ime_marked_range_utf16().is_some());
+    assert!(has_marked_range(&app, TextTargetId::FileTreePendingName));
     assert!(app.file_tree_state().pending.is_some());
 }
 
@@ -608,15 +636,16 @@ fn file_tree_pending_editor_escape_exits_right_after_ime_preedit_cleared() {
     app.file_tree_begin_new_entry(EntryKind::File);
 
     // 输入中文候选。
-    app.ime_replace_and_mark_text(None, "ni", Some(2..2))
+    app.ime_replace_and_mark_text_for(TextTargetId::FileTreePendingName, None, "ni", Some(2..2))
         .unwrap();
-    assert!(app.ime_marked_range_utf16().is_some());
+    assert!(has_marked_range(&app, TextTargetId::FileTreePendingName));
 
     // 系统输入法取消候选 = 把 marked text 置空。composition 必须彻底结束，
     // 不留空壳 —— 否则 marked_text_range 仍报 Some，系统 IME 会吞掉后续按键。
-    app.ime_replace_and_mark_text(None, "", None).unwrap();
+    app.ime_replace_and_mark_text_for(TextTargetId::FileTreePendingName, None, "", None)
+        .unwrap();
     assert!(
-        app.ime_marked_range_utf16().is_none(),
+        !has_marked_range(&app, TextTargetId::FileTreePendingName),
         "preedit 清空后 composition 必须彻底结束，不能留空壳"
     );
 

@@ -18,8 +18,10 @@ use gpui::{
     point, px, relative, size,
 };
 
-use crate::shell::InputHandlerHook;
 use crate::shell::shared::theme::color;
+
+use super::blink::CaretClock;
+use super::embed::EditorInputHook;
 
 /// 行号列宽（24）+ 与正文的间距（12）。
 const GUTTER_WIDTH: f32 = 36.0;
@@ -49,13 +51,14 @@ pub(crate) enum EditorKind {
 ///
 /// 文本样式（字体 / 字号 / 行高 / 前景色）从父级 div 继承 —— 嵌入处决定，
 /// 编辑器一律「继承」。光标色、行号色是编辑器自持的视觉角色。
+///
+/// 光标闪烁可见性不在字段里 —— 每帧 paint 时从 [`CaretClock`] 全局读，整窗
+/// 共享同一相位。
 pub(crate) struct EditorElement {
     kind: EditorKind,
     text: SharedString,
     cursor_byte: usize,
-    input_handler_hook: InputHandlerHook,
-    /// 光标当前是否可见（闪烁状态，由调用方注入）。
-    caret_visible: bool,
+    input_handler_hook: EditorInputHook,
     /// 跨帧滚动偏移的状态键。每个编辑器实例都应给一个稳定 id。
     element_id: Option<ElementId>,
 }
@@ -65,22 +68,15 @@ impl EditorElement {
         kind: EditorKind,
         text: impl Into<SharedString>,
         cursor_byte: usize,
-        input_handler_hook: InputHandlerHook,
+        input_handler_hook: EditorInputHook,
     ) -> Self {
         Self {
             kind,
             text: text.into(),
             cursor_byte,
             input_handler_hook,
-            caret_visible: true,
             element_id: None,
         }
-    }
-
-    /// 设置光标可见性（闪烁灭相时为 `false`，不绘制光标）。
-    pub(crate) fn caret_visible(mut self, visible: bool) -> Self {
-        self.caret_visible = visible;
-        self
     }
 
     /// 赋予稳定的元素 id —— 据此跨帧保留滚动偏移。
@@ -344,7 +340,7 @@ impl Element for EditorElement {
                 bounds.size.height,
             ),
         };
-        let caret_visible = self.caret_visible;
+        let caret_visible = CaretClock::is_visible(cx);
         let (caret_line, caret_x) = prepaint.caret;
 
         window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {

@@ -5,10 +5,13 @@
 //! `KeyRequest`（`KeySurface::FileTree`），由 keymap 在 `FileTree` 上下文里
 //! 解析 —— 面板自己不持有任何「按键 → 动作」的映射。
 
+use std::rc::Rc;
+
 use gpui::{AnyElement, Div, FocusHandle};
 
+use crate::shell::editor::TextEditorSlot;
 use crate::shell::workbench::PanelContext;
-use crate::shell::{ActionRequest, InputHandlerHook, KeyRequest};
+use crate::shell::{ActionRequest, KeyRequest};
 
 mod confirm_delete;
 mod focus;
@@ -53,11 +56,9 @@ pub(crate) struct FileTreePanel<'a> {
     pub(crate) state: &'a FileTreeState,
     pub(crate) focus: &'a FocusHandle,
     pub(crate) key_request: &'a KeyRequest,
-    pub(crate) input_handler_hook: &'a InputHandlerHook,
+    pub(crate) slot: &'a Rc<TextEditorSlot>,
     /// 当前焦点是否在文件树容器上；决定选中边框是否可见。
     pub(crate) is_focused: bool,
-    /// 光标当前是否可见（闪烁状态，由根视图注入）。新建条目内联编辑器用。
-    pub(crate) caret_visible: bool,
 }
 
 pub(crate) fn render(ctx: PanelContext<'_>) -> Div {

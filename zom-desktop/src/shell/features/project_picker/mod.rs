@@ -10,9 +10,9 @@ use zom_command::commands::project_picker as project_picker_commands;
 
 use crate::app::RecentProject;
 use crate::shell::CommandTitleLookup;
-use crate::shell::InputHandlerHook;
 use crate::shell::KeyRequest;
 use crate::shell::ShortcutLookup;
+use crate::shell::editor::TextEditorSlot;
 use crate::shell::shared::Glyph;
 use crate::shell::surfaces::track_surface_anchor;
 
@@ -35,7 +35,7 @@ pub(crate) struct ProjectPickerActions {
     pub(crate) projects: ProjectListRequest,
     pub(crate) state: ProjectPickerStateRequest,
     pub(crate) key_request: KeyRequest,
-    pub(crate) input_handler_hook: InputHandlerHook,
+    pub(crate) slot: Rc<TextEditorSlot>,
     pub(crate) shortcut_lookup: ShortcutLookup,
     pub(crate) command_title_lookup: CommandTitleLookup,
 }

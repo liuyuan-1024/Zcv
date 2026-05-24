@@ -8,15 +8,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    AppContext, BorrowAppContext, Context, ElementInputHandler, Entity, FocusHandle, IntoElement,
-    Render, ScrollHandle, Window,
+    AppContext, BorrowAppContext, Context, Entity, FocusHandle, IntoElement, Render, ScrollHandle,
+    Window,
 };
 use zom_command::Invocation;
 use zom_command::commands::{file_tree as file_tree_commands, window as window_commands};
 
 use crate::app::{App, KeySurface};
 
-use super::editor::{CARET_BLINK_INTERVAL, CaretBlink, EditorInput};
+use super::editor::{CaretBlink, TextEditorSlot, TextTargetId, drive_caret_blink};
 use super::features::PanelRuntimes;
 use super::features::file_tree::{ConfirmDeleteHandlers, FileTreeRuntime};
 use super::features::language_servers;
@@ -26,7 +26,7 @@ use super::workbench;
 use super::workbench::controller::WorkbenchController;
 use super::workbench::state::WorkbenchState;
 use super::workbench::{PanelHost, WindowControlsHandlers};
-use super::{ActionRequest, CommandTitleLookup, InputHandlerHook, KeyRequest, ShortcutLookup};
+use super::{ActionRequest, CommandTitleLookup, KeyRequest, ShortcutLookup};
 
 /// shell 端的根 View：拥有 App 状态与每窗口的 `PanelHost`。
 pub(crate) struct ShellView {
@@ -35,7 +35,9 @@ pub(crate) struct ShellView {
     panel_host: PanelHost,
     surface_manager: Entity<SurfaceManager>,
     surface_shell: Entity<SurfaceShell>,
-    editor_input: Entity<EditorInput>,
+    main_editor_slot: Rc<TextEditorSlot>,
+    file_tree_slot: Rc<TextEditorSlot>,
+    project_picker_slot: Rc<TextEditorSlot>,
     editor_focus: FocusHandle,
     panel_runtimes: PanelRuntimes,
     file_tree: FileTreeRuntime,
@@ -54,11 +56,28 @@ impl ShellView {
         cx.update_default_global::<SurfaceAnchorRegistry, _>(|_, _| ());
         let surface_manager = cx.new(|_| SurfaceManager::new());
         let editor_focus = cx.focus_handle();
-        let editor_input = cx.new(|_| EditorInput::new(Rc::clone(&app)));
         let panel_runtimes = PanelRuntimes::new(cx);
         let file_tree = FileTreeRuntime::new(cx);
         let project_picker = ProjectPickerRuntime::new(cx);
         let language_servers = language_servers::LanguageServersRuntime::new(cx);
+        let main_editor_slot = TextEditorSlot::install(
+            Rc::clone(&app),
+            TextTargetId::MainEditor,
+            editor_focus.clone(),
+            cx,
+        );
+        let file_tree_slot = TextEditorSlot::install(
+            Rc::clone(&app),
+            TextTargetId::FileTreePendingName,
+            file_tree.focus_handle(),
+            cx,
+        );
+        let project_picker_slot = TextEditorSlot::install(
+            Rc::clone(&app),
+            TextTargetId::ProjectPickerQuery,
+            project_picker.focus_handle(),
+            cx,
+        );
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));
 
         Self {
@@ -67,7 +86,9 @@ impl ShellView {
             panel_host: PanelHost::new(),
             surface_manager,
             surface_shell,
-            editor_input,
+            main_editor_slot,
+            file_tree_slot,
+            project_picker_slot,
             editor_focus,
             panel_runtimes,
             file_tree,
@@ -76,22 +97,6 @@ impl ShellView {
             editor_tab_scroll: ScrollHandle::new(),
             caret: CaretBlink::new(),
         }
-    }
-
-    /// 调度一次光标闪烁定时翻转。每次翻转后自行续链；`epoch` 不符（光标
-    /// 移动触发过 [`CaretBlink::restart`]）时旧链自然终止。
-    fn schedule_caret_blink(&self, epoch: usize, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(CARET_BLINK_INTERVAL).await;
-            this.update(cx, |this, cx| {
-                if this.caret.tick(epoch) {
-                    cx.notify();
-                    this.schedule_caret_blink(epoch, cx);
-                }
-            })
-            .ok();
-        })
-        .detach();
     }
 
     pub(super) fn editor_focus(&self) -> FocusHandle {
@@ -149,7 +154,7 @@ impl ShellView {
             self.file_tree.clone(),
             self.project_picker.clone(),
             self.language_servers.clone(),
-            self.editor_input.clone(),
+            Rc::clone(&self.project_picker_slot),
             invocation,
         )
     }
@@ -171,7 +176,7 @@ impl ShellView {
         let file_tree = self.file_tree.clone();
         let project_picker = self.project_picker.clone();
         let language_servers = self.language_servers.clone();
-        let editor_input = self.editor_input.clone();
+        let project_picker_slot = Rc::clone(&self.project_picker_slot);
         Rc::new(move |chord, window, cx| {
             let outcome = match app.borrow_mut().dispatch_key(chord, surface) {
                 Ok(outcome) => outcome,
@@ -191,7 +196,7 @@ impl ShellView {
                 &file_tree,
                 &project_picker,
                 &language_servers,
-                &editor_input,
+                &project_picker_slot,
                 window,
                 cx,
             );
@@ -211,49 +216,33 @@ impl ShellView {
         let app = Rc::clone(&self.app);
         Rc::new(move |command_id| app.borrow().command_title_for(command_id))
     }
-
-    /// 构造编辑器输入接入 hook：editor_grid 在 paint 阶段拿到 bounds 后调用。
-    fn input_handler_hook(&self) -> InputHandlerHook {
-        let focus = self.editor_focus.clone();
-        let input = self.editor_input.clone();
-        Rc::new(move |bounds, window, cx| {
-            window.handle_input(&focus, ElementInputHandler::new(bounds, input.clone()), cx);
-        })
-    }
 }
 
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut state = self.workbench_state();
-        // 光标一移动就重置闪烁为实心，让用户立刻定位到光标；同时重排定时链。
-        // 活动编辑器可能是主编辑区，也可能是文件树正在输入名称的内联编辑器。
-        let active_cursor = state
-            .file_tree
-            .pending
-            .as_ref()
-            .map(|pending| pending.editor.cursor_byte)
-            .unwrap_or(state.editor.cursor_byte);
-        if self.caret.cursor_moved(active_cursor) {
-            let epoch = self.caret.restart();
-            self.schedule_caret_blink(epoch, cx);
-        }
-        state.editor.caret_visible = self.caret.visible();
+        let state = self.workbench_state();
+        // 光标一移动就重置闪烁为实心，让用户立刻定位到光标；定时链与全局
+        // 可见位都由 editor 子系统驱动 —— "活动光标在哪个嵌入点"也由 router
+        // 自答，shell 这里不必区分主编辑区与文件树 pending。
+        let active_cursor = self.app.borrow().with_router(|router| {
+            router
+                .focused_target()
+                .map(|target| router.snapshot_for(target).cursor_byte)
+                .unwrap_or(0)
+        });
+        drive_caret_blink(&mut self.caret, active_cursor, cx, |view| &mut view.caret);
         let window_controls = self.window_controls_handlers();
         let key_request = self.key_request(KeySurface::Editor);
         let panel_key_request = self.key_request(KeySurface::Panel);
         let file_tree_key_request = self.key_request(KeySurface::FileTree);
-        let file_tree_input_handler_hook =
-            self.file_tree.input_handler_hook(self.editor_input.clone());
         let file_tree_panel = self.file_tree.panel(
             &state.file_tree,
             &file_tree_key_request,
-            &file_tree_input_handler_hook,
-            self.caret.visible(),
+            &self.file_tree_slot,
             window,
         );
         let shortcut_lookup = self.shortcut_lookup();
         let command_title_lookup = self.command_title_lookup();
-        let input_handler_hook = self.input_handler_hook();
         let workspace_active = self
             .surface_manager
             .read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker));
@@ -264,6 +253,10 @@ impl Render for ShellView {
             confirm: self.bind_action(file_tree_commands::confirm_delete()),
             cancel: self.bind_action(file_tree_commands::cancel_delete()),
         };
+        let main_editor_snapshot = self
+            .app
+            .borrow()
+            .with_router(|router| router.snapshot_for(TextTargetId::MainEditor));
         workbench::render(
             &state,
             &self.panel_host,
@@ -277,12 +270,13 @@ impl Render for ShellView {
             panel_key_request,
             shortcut_lookup,
             command_title_lookup,
-            input_handler_hook,
+            Rc::clone(&self.main_editor_slot),
             self.editor_focus.clone(),
             self.panel_runtimes.clone(),
             file_tree_panel,
             self.editor_tab_scroll.clone(),
             confirm_delete,
+            main_editor_snapshot,
         )
     }
 }

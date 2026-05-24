@@ -10,13 +10,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    Context, Corner, Div, ElementInputHandler, Entity, FocusHandle, Keystroke, Window, div, point,
-    prelude::*, px,
+    Context, Corner, Div, Entity, FocusHandle, Keystroke, Window, div, point, prelude::*, px,
 };
 
 use crate::app::App;
-use crate::shell::InputHandlerHook;
-use crate::shell::editor::EditorInput;
 use crate::shell::normalized_chord;
 use crate::shell::shared::theme::{color, radius, space};
 use crate::shell::surfaces::{
@@ -63,11 +60,8 @@ impl ProjectPickerRuntime {
         .detach();
     }
 
-    pub(crate) fn input_handler_hook(&self, input: Entity<EditorInput>) -> InputHandlerHook {
-        let focus = self.focus.clone();
-        Rc::new(move |bounds, window, cx| {
-            window.handle_input(&focus, ElementInputHandler::new(bounds, input.clone()), cx);
-        })
+    pub(crate) fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
     }
 }
 
@@ -118,7 +112,7 @@ fn render(runtime: ProjectPickerRuntime, actions: ProjectPickerActions) -> Div {
         .on_key_down(move |event, window, cx| {
             handle_key(&key_actions, &event.keystroke, window, cx);
         })
-        .child(search_box::render(&state, &actions.input_handler_hook))
+        .child(search_box::render(&state, &actions.slot))
         .child(divided_section(project_list))
         .child(divided_section(source_actions::render(
             state.mode, &actions,

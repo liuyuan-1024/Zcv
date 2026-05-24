@@ -1,16 +1,17 @@
+use std::rc::Rc;
+
 use gpui::{Div, div, prelude::*};
 
-use crate::shell::InputHandlerHook;
-use crate::shell::editor::{EditorElement, EditorKind};
+use crate::shell::editor::{EditorKind, TextEditorSlot};
 use crate::shell::shared::theme::{color, typography};
 
 use crate::shell::features::project_picker::{ProjectPickerMode, ProjectPickerState};
 
-pub(super) fn render(state: &ProjectPickerState, input_handler_hook: &InputHandlerHook) -> Div {
-    input_box(state, input_handler_hook.clone())
+pub(super) fn render(state: &ProjectPickerState, slot: &Rc<TextEditorSlot>) -> Div {
+    input_box(state, slot)
 }
 
-fn input_box(state: &ProjectPickerState, input_handler_hook: InputHandlerHook) -> Div {
+fn input_box(state: &ProjectPickerState, slot: &Rc<TextEditorSlot>) -> Div {
     let placeholder = match state.mode {
         ProjectPickerMode::Browse => "搜索项目...",
         ProjectPickerMode::CloneGit => "输入 Git 仓库地址...",
@@ -38,15 +39,7 @@ fn input_box(state: &ProjectPickerState, input_handler_hook: InputHandlerHook) -
         );
     }
 
-    box_ = box_.child(
-        EditorElement::new(
-            EditorKind::SingleLine,
-            state.query.text.clone(),
-            state.query.cursor_byte,
-            input_handler_hook,
-        )
-        .element_id("project-picker-query-editor"),
-    );
+    box_ = box_.child(slot.embed(EditorKind::SingleLine));
 
     box_
 }

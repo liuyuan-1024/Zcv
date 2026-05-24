@@ -20,20 +20,28 @@ use zom_command::{
 use zom_view::{ViewId, ViewSet};
 use zom_workspace::{EntryKind, Workspace, WorkspaceBuffer};
 
-use crate::shell::editor::{ImeQueryTarget, ImeTarget};
+use crate::shell::editor::{
+    EditorRouter, EditorRouterMut, MainEditorOwner, MainEditorOwnerRef, TextInputProfile,
+    TextTargetId, TextTargetOwner, TextTargetQuery,
+};
 use crate::shell::features::file_tree::{FileTreeActivation, FileTreeModel, FileTreeState};
 use crate::shell::features::project_picker::{
     ProjectPickerActivation, ProjectPickerMode, ProjectPickerModel, ProjectPickerState,
 };
 
-/// 主编辑区渲染快照：标签列表 + 当前活动 buffer 的正文。
+/// 主编辑区渲染快照 —— 仅描述工作台关心的标签列表。
+///
+/// 不含正文 / 光标 / 闪烁可见位：
+/// - 正文与光标由 [`TextEditorSlot`] 自己从 [`EditorRouter`] 拉，元素层消费；
+/// - 底栏需要"行:列"显示时另由 shell 端把 [`crate::shell::editor::EditorSnapshot`]
+///   作为渲染参数传入。
+/// - 闪烁经 [`crate::shell::editor::CaretClock`] 全局共享。
+///
+/// [`TextEditorSlot`]: crate::shell::editor::TextEditorSlot
+/// [`EditorRouter`]: crate::shell::editor::EditorRouter
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EditorState {
     pub(crate) tabs: Vec<EditorTab>,
-    pub(crate) text: String,
-    pub(crate) cursor_byte: usize,
-    /// 光标当前是否可见。闪烁是 shell 层职责，由根视图注入；`App` 恒留默认值。
-    pub(crate) caret_visible: bool,
 }
 
 /// 编辑区一个标签的渲染摘要。
@@ -267,27 +275,8 @@ impl App {
     }
 
     pub(crate) fn editor_state(&self) -> EditorState {
-        let tabs = self.editor_tabs();
-
-        let Some(view) = self.views.active_view() else {
-            return EditorState {
-                tabs,
-                ..EditorState::default()
-            };
-        };
-        let Some(buffer) = self.workspace.buffer(view.buffer()) else {
-            return EditorState {
-                tabs,
-                ..EditorState::default()
-            };
-        };
-
         EditorState {
-            tabs,
-            text: buffer.buffer().text().into_owned(),
-            cursor_byte: view.selection().primary().head().get(),
-            // 闪烁由 shell 层注入，App 不参与。
-            caret_visible: false,
+            tabs: self.editor_tabs(),
         }
     }
 
@@ -377,29 +366,24 @@ impl App {
     /// 根本不会走到这里。组合上下文（`KeyContext::text_edit` 的第二参）保留
     /// 在签名里，待将来真有「宿主侧处理组合键」的需求再启用。
     fn key_contexts(&self, surface: KeySurface) -> Vec<KeyContext> {
+        // 文本输入类 surface 的上下文栈，由当前聚焦的 owner.profile() 提供 ——
+        // 嵌入点活跃判定与 profile 选择全在 editor 子系统里。
+        let focused_text_profile = || {
+            self.with_router(|router| router.focused_profile())
+                .unwrap_or(TextInputProfile::MainEditor)
+                .key_contexts()
+        };
         match surface {
-            KeySurface::Editor => {
-                vec![KeyContext::text_edit(true, false), KeyContext::global()]
-            }
+            KeySurface::Editor => focused_text_profile(),
             KeySurface::Panel => vec![KeyContext::global()],
-            KeySurface::ProjectPicker if self.project_picker.active() => vec![
-                KeyContext::project_picker(),
-                KeyContext::text_edit(false, false),
-                KeyContext::global(),
-            ],
+            KeySurface::ProjectPicker if self.project_picker.active() => focused_text_profile(),
             KeySurface::ProjectPicker => vec![KeyContext::project_picker(), KeyContext::global()],
             KeySurface::FileTree if self.file_tree.pending_delete_active() => vec![
                 // 删除确认弹窗打开中：只解析确认 / 取消，导航键全部冻结。
                 KeyContext::file_tree(FileTreeKeyMode::PendingDelete),
                 KeyContext::global(),
             ],
-            KeySurface::FileTree if self.file_tree.pending_active() => vec![
-                // 新建条目输入态：单行编辑器先吃编辑键，未命中再落到文件树的
-                // 确认 / 取消，最后才是全局快捷键。
-                KeyContext::text_edit(false, false),
-                KeyContext::file_tree(FileTreeKeyMode::PendingName),
-                KeyContext::global(),
-            ],
+            KeySurface::FileTree if self.file_tree.pending_active() => focused_text_profile(),
             KeySurface::FileTree => vec![
                 KeyContext::file_tree(FileTreeKeyMode::Navigate),
                 KeyContext::global(),
@@ -413,9 +397,34 @@ impl App {
     /// 壳可能仍在。若空壳也算组合态，`dispatch_key` 会一直让位、keymap 再也
     /// 不接管，后续 Esc 永远到不了 `cancel_new_entry`。
     fn is_composing(&self) -> bool {
-        self.focused_ime_query_target()
-            .and_then(|target| target.preedit_text())
-            .is_some_and(|preedit| !preedit.is_empty())
+        self.with_router(|router| router.is_composing())
+    }
+
+    /// 构造一次只读路由视图。
+    ///
+    /// 这是 editor 子系统访问 App 内部状态的唯一桥：调用方拿到 [`EditorRouter`]
+    /// 后直接做 IME 查询 / focused target / snapshot 等 —— App 不再为每种查询
+    /// 包一层方法。
+    pub(crate) fn with_router<R>(&self, f: impl FnOnce(EditorRouter<'_>) -> R) -> R {
+        let main = MainEditorOwnerRef::new(&self.workspace, &self.views);
+        let owners: Vec<&dyn TextTargetQuery> = vec![
+            &self.project_picker as &dyn TextTargetQuery,
+            &self.file_tree as &dyn TextTargetQuery,
+            &main as &dyn TextTargetQuery,
+        ];
+        f(EditorRouter::new(owners))
+    }
+
+    /// 构造一次可写路由视图。Owner 顺序即优先级：picker → file_tree pending →
+    /// 主编辑区。
+    pub(crate) fn with_router_mut<R>(&mut self, f: impl FnOnce(EditorRouterMut<'_>) -> R) -> R {
+        let mut main = MainEditorOwner::new(&mut self.workspace, &mut self.views);
+        let owners: Vec<&mut dyn TextTargetOwner> = vec![
+            &mut self.project_picker as &mut dyn TextTargetOwner,
+            &mut self.file_tree as &mut dyn TextTargetOwner,
+            &mut main as &mut dyn TextTargetOwner,
+        ];
+        f(EditorRouterMut::new(owners))
     }
 
     /// 查询某条命令的快捷键文案 —— 给 Glyph / 命令面板 / 菜单用。
@@ -440,10 +449,17 @@ impl App {
         self.queue.dispatch(id, args);
 
         let mut effects = EffectQueue::new();
-        let focused_field = self
-            .project_picker
-            .query_edit_target()
-            .or_else(|| self.file_tree.pending_edit_target());
+        // focused_field：当前活跃的内嵌输入框（picker > file_tree pending）。
+        // 主编辑区不在这里走 —— `CommandContext::edit_target` 在 `focused_field`
+        // 为 `None` 时自然 fallback 到 workspace + view，所以这里只问内嵌 owner。
+        // 直接对 self 做分字段借用，避免引入封装方法把借用扩到整个 self。
+        let focused_field = if self.project_picker.is_active() {
+            self.project_picker.edit_target()
+        } else if self.file_tree.is_active() {
+            self.file_tree.edit_target()
+        } else {
+            None
+        };
         let mut context = CommandContext {
             workspace: &mut self.workspace,
             views: &mut self.views,
@@ -462,117 +478,50 @@ impl App {
     }
 
     /// 提交系统输入法文本。commit 走命令路径，保证进入 undo 历史。
-    pub(crate) fn ime_replace_text(
+    ///
+    /// 写入成功后由 router 调 owner 的 `after_text_changed` 钩子 —— picker
+    /// 等需要"文本变了就重置选区"的 owner 自己实现，宿主不必特判。
+    pub(crate) fn ime_replace_text_for(
         &mut self,
+        target_id: TextTargetId,
         replacement_range_utf16: Option<Range<usize>>,
         text: &str,
     ) -> Result<(), CommandError> {
-        self.with_focused_ime_target(|mut target| {
-            target.apply_replacement_range(replacement_range_utf16)
+        self.with_router_mut(|router| {
+            router.with_ime_target(target_id, |mut target| {
+                target.apply_replacement_range(replacement_range_utf16)
+            })
         })?;
 
         self.dispatch(editor::ime_commit(text))?;
-        if self.project_picker.active() {
-            self.project_picker.reset_selection();
-        }
         Ok(())
     }
 
     /// 更新输入法 preedit。update 走直接通道，避免每次按键都过命令队列。
-    pub(crate) fn ime_replace_and_mark_text(
+    pub(crate) fn ime_replace_and_mark_text_for(
         &mut self,
+        target_id: TextTargetId,
         replacement_range_utf16: Option<Range<usize>>,
         new_text: &str,
         new_selected_range_utf16: Option<Range<usize>>,
     ) -> Result<(), CommandError> {
-        self.with_focused_ime_target(|mut target| {
-            target.replace_and_mark_text(
-                replacement_range_utf16,
-                new_text,
-                new_selected_range_utf16,
-            )
-        })?;
-        if self.project_picker.active() {
-            self.project_picker.reset_selection();
-        }
-        Ok(())
+        self.with_router_mut(|router| {
+            router.with_ime_target(target_id, |mut target| {
+                target.replace_and_mark_text(
+                    replacement_range_utf16,
+                    new_text,
+                    new_selected_range_utf16,
+                )
+            })
+        })
     }
 
-    pub(crate) fn ime_unmark(&mut self) -> Result<(), CommandError> {
-        let preedit = self
-            .focused_ime_query_target()
-            .and_then(|target| target.preedit_text());
-        let Some(preedit) = preedit else {
+    pub(crate) fn ime_unmark_for(&mut self, target_id: TextTargetId) -> Result<(), CommandError> {
+        let Some(preedit) = self.with_router(|router| router.preedit_text(target_id)) else {
             return Ok(());
         };
         self.dispatch(editor::ime_commit(preedit))?;
         Ok(())
-    }
-
-    pub(crate) fn ime_marked_range_utf16(&self) -> Option<Range<usize>> {
-        self.focused_ime_query_target()
-            .and_then(|target| target.marked_range_utf16())
-    }
-
-    pub(crate) fn ime_selected_range_utf16(&self) -> Option<(Range<usize>, bool)> {
-        self.focused_ime_query_target()
-            .map(|target| target.selected_range_utf16())
-    }
-
-    pub(crate) fn ime_text_for_range_utf16(&self, range_utf16: Range<usize>) -> Option<String> {
-        self.focused_ime_query_target()
-            .and_then(|target| target.text_for_range_utf16(range_utf16))
-    }
-
-    fn with_focused_ime_target<R>(
-        &mut self,
-        f: impl FnOnce(ImeTarget<'_>) -> Result<R, CommandError>,
-    ) -> Result<R, CommandError> {
-        if let Some(target) = self.project_picker.query_ime_target() {
-            return f(target);
-        }
-        if let Some(pending_editor) = self.file_tree.pending_editor_mut() {
-            return f(pending_editor.as_ime_target());
-        }
-        self.with_active_ime_target(f)
-    }
-
-    fn with_active_ime_target<R>(
-        &mut self,
-        f: impl FnOnce(ImeTarget<'_>) -> Result<R, CommandError>,
-    ) -> Result<R, CommandError> {
-        let buffer_id = self
-            .views
-            .active_view()
-            .map(|view| view.buffer())
-            .ok_or(CommandError::NoActiveView)?;
-        let buffer = self
-            .workspace
-            .buffer_mut(buffer_id)
-            .ok_or(CommandError::BufferNotFound(buffer_id))?
-            .buffer_mut();
-        let selection = self
-            .views
-            .active_view_mut()
-            .ok_or(CommandError::NoActiveView)?
-            .selection_mut();
-        f(ImeTarget::new(buffer, selection))
-    }
-
-    fn focused_ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
-        if let Some(target) = self.project_picker.query_ime_query_target() {
-            return Some(target);
-        }
-        if let Some(pending_editor) = self.file_tree.pending_editor() {
-            return Some(pending_editor.as_ime_query_target());
-        }
-        self.active_ime_query_target()
-    }
-
-    fn active_ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
-        let view = self.views.active_view()?;
-        let buffer = self.workspace.buffer(view.buffer())?.buffer();
-        Some(ImeQueryTarget::new(buffer, view.selection()))
     }
 
     fn remember_project(&mut self, root: PathBuf, repo: Option<String>) {

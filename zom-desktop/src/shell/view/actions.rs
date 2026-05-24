@@ -8,7 +8,7 @@ use zom_command::{HostEffect, Invocation};
 
 use crate::app::{App, KeySurface};
 use crate::shell::ActionRequest;
-use crate::shell::editor::EditorInput;
+use crate::shell::editor::TextEditorSlot;
 use crate::shell::features::file_tree::{FileTreeActivation, FileTreeRuntime};
 use crate::shell::features::language_servers::LanguageServersRuntime;
 use crate::shell::features::project_picker::ProjectPickerRuntime;
@@ -29,7 +29,7 @@ pub(super) fn bind_action_request(
     file_tree: FileTreeRuntime,
     project_picker_runtime: ProjectPickerRuntime,
     language_servers_runtime: LanguageServersRuntime,
-    editor_input: Entity<EditorInput>,
+    project_picker_slot: Rc<TextEditorSlot>,
     invocation: Invocation,
 ) -> ActionRequest {
     Rc::new(move |window, cx| {
@@ -50,7 +50,7 @@ pub(super) fn bind_action_request(
             &file_tree,
             &project_picker_runtime,
             &language_servers_runtime,
-            &editor_input,
+            &project_picker_slot,
             window,
             cx,
         );
@@ -70,7 +70,7 @@ pub(super) fn apply_host_effects(
     file_tree: &FileTreeRuntime,
     project_picker_runtime: &ProjectPickerRuntime,
     language_servers_runtime: &LanguageServersRuntime,
-    editor_input: &Entity<EditorInput>,
+    project_picker_slot: &Rc<TextEditorSlot>,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -108,7 +108,7 @@ pub(super) fn apply_host_effects(
                     file_tree,
                     project_picker_runtime,
                     language_servers_runtime,
-                    editor_input,
+                    project_picker_slot,
                     window,
                     cx,
                 );
@@ -138,7 +138,7 @@ pub(super) fn apply_host_effects(
                     file_tree,
                     project_picker_runtime,
                     language_servers_runtime,
-                    editor_input,
+                    project_picker_slot,
                     window,
                     cx,
                 );
@@ -290,12 +290,11 @@ fn show_project_picker(
     file_tree: &FileTreeRuntime,
     project_picker_runtime: &ProjectPickerRuntime,
     language_servers_runtime: &LanguageServersRuntime,
-    editor_input: &Entity<EditorInput>,
+    project_picker_slot: &Rc<TextEditorSlot>,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
     app.borrow_mut().project_picker_reset(initial_mode.into());
-    let input_handler_hook = project_picker_runtime.input_handler_hook(editor_input.clone());
     let project_list_app = Rc::clone(app);
     let projects = Rc::new(move || project_list_app.borrow().recent_projects());
     let state_app = Rc::clone(app);
@@ -308,7 +307,7 @@ fn show_project_picker(
     let key_file_tree = file_tree.clone();
     let key_project_picker = project_picker_runtime.clone();
     let key_language_servers = language_servers_runtime.clone();
-    let key_editor_input = editor_input.clone();
+    let key_project_picker_slot = Rc::clone(project_picker_slot);
     let key_request = Rc::new(
         move |chord: String, window: &mut Window, cx: &mut gpui::App| {
             let outcome = match key_app
@@ -332,7 +331,7 @@ fn show_project_picker(
                 &key_file_tree,
                 &key_project_picker,
                 &key_language_servers,
-                &key_editor_input,
+                &key_project_picker_slot,
                 window,
                 cx,
             );
@@ -352,7 +351,7 @@ fn show_project_picker(
         projects,
         state,
         key_request,
-        input_handler_hook: input_handler_hook.clone(),
+        slot: Rc::clone(project_picker_slot),
         shortcut_lookup,
         command_title_lookup,
     };

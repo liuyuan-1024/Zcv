@@ -5,7 +5,6 @@
 
 use std::path::PathBuf;
 
-use crate::shell::editor::EditorSnapshot;
 use zom_workspace::EntryKind;
 
 /// 文件树面板的渲染快照（owned）。
@@ -26,13 +25,17 @@ pub(crate) struct FileTreeState {
 }
 
 /// 一个正在输入名称的新建条目（owned 快照）。
+///
+/// 不含编辑器文本 / 光标 —— 输入框的渲染由 [`TextEditorSlot`] 自己向
+/// [`EditorRouter`] 拉快照，state 这里只描述外壳（图标 / 缩进）。
+///
+/// [`TextEditorSlot`]: crate::shell::editor::TextEditorSlot
+/// [`EditorRouter`]: crate::shell::editor::EditorRouter
 #[derive(Clone, Debug)]
 pub(crate) struct PendingNewEntry {
     /// 新条目将创建在该目录下。
     pub(crate) parent: PathBuf,
     pub(crate) kind: EntryKind,
-    /// 文件名输入编辑器的渲染快照。
-    pub(crate) editor: EditorSnapshot,
     /// 输入行的缩进深度（父目录 depth + 1）。
     pub(crate) depth: usize,
 }

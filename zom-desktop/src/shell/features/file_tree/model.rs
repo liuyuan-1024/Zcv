@@ -8,7 +8,10 @@ use zom_command::EditTarget;
 use zom_view::{ViewId, ViewSet};
 use zom_workspace::{BufferId, EntryKind, ProjectTree, Workspace};
 
-use crate::shell::editor::Editor;
+use crate::shell::editor::{
+    Editor, EditorSnapshot, ImeQueryTarget, ImeTarget, TextInputProfile, TextTargetId,
+    TextTargetOwner, TextTargetQuery,
+};
 
 use super::{FileTreeActivation, FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry};
 
@@ -74,7 +77,6 @@ impl FileTreeModel {
             PendingNewEntry {
                 parent: pending.parent.clone(),
                 kind: pending.kind,
-                editor: pending.editor.snapshot(),
                 depth,
             }
         });
@@ -128,22 +130,6 @@ impl FileTreeModel {
 
     pub(crate) fn pending_active(&self) -> bool {
         self.pending.is_some()
-    }
-
-    /// 新建输入框的编辑目标——供组合根把编辑命令路由到它。
-    pub(crate) fn pending_edit_target(&mut self) -> Option<EditTarget<'_>> {
-        self.pending
-            .as_mut()
-            .map(|pending| pending.editor.as_edit_target())
-    }
-
-    /// 新建输入框的 Editor —— 供组合根把 IME 操作路由到它。
-    pub(crate) fn pending_editor(&self) -> Option<&Editor> {
-        self.pending.as_ref().map(|pending| &pending.editor)
-    }
-
-    pub(crate) fn pending_editor_mut(&mut self) -> Option<&mut Editor> {
-        self.pending.as_mut().map(|pending| &mut pending.editor)
     }
 
     pub(crate) fn cancel_new_entry(&mut self) {
@@ -466,4 +452,45 @@ fn snapshot_row(tree: &ProjectTree, path: &Path) -> Option<(EntryKind, bool, usi
         .into_iter()
         .find(|row| row.path == path)
         .map(|row| (row.kind, row.expanded, row.depth))
+}
+
+impl TextTargetQuery for FileTreeModel {
+    fn target_id(&self) -> TextTargetId {
+        TextTargetId::FileTreePendingName
+    }
+
+    fn is_active(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    fn snapshot(&self) -> EditorSnapshot {
+        self.pending
+            .as_ref()
+            .map(|pending| pending.editor.snapshot())
+            .unwrap_or_default()
+    }
+
+    fn profile(&self) -> TextInputProfile {
+        TextInputProfile::FileTreePendingName
+    }
+
+    fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
+        self.pending
+            .as_ref()
+            .map(|pending| pending.editor.as_ime_query_target())
+    }
+}
+
+impl TextTargetOwner for FileTreeModel {
+    fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
+        self.pending
+            .as_mut()
+            .map(|pending| pending.editor.as_ime_target())
+    }
+
+    fn edit_target(&mut self) -> Option<EditTarget<'_>> {
+        self.pending
+            .as_mut()
+            .map(|pending| pending.editor.as_edit_target())
+    }
 }

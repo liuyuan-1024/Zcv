@@ -8,13 +8,16 @@ use gpui::{Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, W
 
 use crate::app::App;
 
+use super::TextTargetId;
+
 pub(crate) struct EditorInput {
     app: Rc<RefCell<App>>,
+    target: TextTargetId,
 }
 
 impl EditorInput {
-    pub(crate) fn new(app: Rc<RefCell<App>>) -> Self {
-        Self { app }
+    pub(crate) fn new(app: Rc<RefCell<App>>, target: TextTargetId) -> Self {
+        Self { app, target }
     }
 }
 
@@ -26,7 +29,9 @@ impl EntityInputHandler for EditorInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        self.app.borrow().ime_text_for_range_utf16(range)
+        self.app
+            .borrow()
+            .with_router(|router| router.text_for_range_utf16(self.target, range))
     }
 
     fn selected_text_range(
@@ -37,7 +42,7 @@ impl EntityInputHandler for EditorInput {
     ) -> Option<UTF16Selection> {
         self.app
             .borrow()
-            .ime_selected_range_utf16()
+            .with_router(|router| router.selected_range_utf16(self.target))
             .map(|(range, reversed)| UTF16Selection { range, reversed })
     }
 
@@ -46,11 +51,13 @@ impl EntityInputHandler for EditorInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        self.app.borrow().ime_marked_range_utf16()
+        self.app
+            .borrow()
+            .with_router(|router| router.marked_range_utf16(self.target))
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(error) = self.app.borrow_mut().ime_unmark() {
+        if let Err(error) = self.app.borrow_mut().ime_unmark_for(self.target) {
             eprintln!("IME unmark 失败：{error}");
         }
         window.refresh();
@@ -64,7 +71,11 @@ impl EntityInputHandler for EditorInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Err(error) = self.app.borrow_mut().ime_replace_text(range, text) {
+        if let Err(error) = self
+            .app
+            .borrow_mut()
+            .ime_replace_text_for(self.target, range, text)
+        {
             eprintln!("IME replace_text 失败：{error}");
         }
         window.refresh();
@@ -79,11 +90,12 @@ impl EntityInputHandler for EditorInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Err(error) =
-            self.app
-                .borrow_mut()
-                .ime_replace_and_mark_text(range, new_text, new_selected_range)
-        {
+        if let Err(error) = self.app.borrow_mut().ime_replace_and_mark_text_for(
+            self.target,
+            range,
+            new_text,
+            new_selected_range,
+        ) {
             eprintln!("IME replace_and_mark_text 失败：{error}");
         }
         window.refresh();

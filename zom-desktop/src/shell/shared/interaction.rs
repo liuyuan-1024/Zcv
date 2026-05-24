@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use gpui::{App as GpuiApp, Bounds, Pixels, Window};
+use gpui::{App as GpuiApp, Window};
 
 /// 一个已经绑好命令的点击回调。UI 子组件不接触命令对象，触发时直接调用。
 pub(crate) type ActionRequest = Rc<dyn Fn(&mut Window, &mut GpuiApp)>;
@@ -16,6 +16,3 @@ pub(crate) type ShortcutLookup = Rc<dyn Fn(&str) -> Option<String>>;
 
 /// 反查某条命令的显示标题。占位命令尚未注册时由调用方提供领域内 fallback。
 pub(crate) type CommandTitleLookup = Rc<dyn Fn(&str) -> Option<String>>;
-
-/// 在 paint 阶段把活动编辑区的编辑器输入宿主注册为系统输入法接收端。
-pub(crate) type InputHandlerHook = Rc<dyn Fn(Bounds<Pixels>, &mut Window, &mut GpuiApp)>;

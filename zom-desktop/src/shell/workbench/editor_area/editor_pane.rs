@@ -1,21 +1,23 @@
-//! 主编辑区面板 —— 围绕 [`EditorElement`] 的工作台外壳。
+//! 主编辑区面板 —— 围绕 [`EditorEmbed`] 的工作台外壳。
 //!
 //! 外壳（键盘焦点宿主、背景 / 圆角 / 内边距、无文件时的空态）属于工作台
 //! 编辑区，不属于编辑器本身：焦点与按键路由随交互面（`KeySurface::Editor`）
 //! 而定，编辑器只是被嵌进来的那个子元素。
 
+use std::rc::Rc;
+
 use gpui::{Div, FocusHandle, MouseButton, div, prelude::*};
 
-use crate::shell::editor::{EditorElement, EditorKind};
+use crate::shell::editor::{EditorKind, TextEditorSlot};
 use crate::shell::shared::theme::{self, color, space, typography};
 use crate::shell::workbench::state::EditorState;
-use crate::shell::{InputHandlerHook, KeyRequest, normalized_chord};
+use crate::shell::{KeyRequest, normalized_chord};
 
 /// 渲染主编辑区面板：焦点宿主 + 编辑器（或无文件空态）。
 pub(super) fn render(
     state: &EditorState,
     key_request: KeyRequest,
-    input_handler_hook: InputHandlerHook,
+    editor_slot: Rc<TextEditorSlot>,
     editor_focus: FocusHandle,
 ) -> Div {
     let focus_for_click = editor_focus.clone();
@@ -25,7 +27,7 @@ pub(super) fn render(
     let body = if state.tabs.is_empty() {
         empty_message("尚未打开文件")
     } else {
-        editor_surface(state, input_handler_hook)
+        editor_surface(&editor_slot)
     };
 
     div()
@@ -64,10 +66,10 @@ fn empty_message(hint: &'static str) -> Div {
         .child(hint)
 }
 
-/// 编辑器嵌入面：设定代码正文的文本样式，子元素是多行 [`EditorElement`]。
-fn editor_surface(state: &EditorState, input_handler_hook: InputHandlerHook) -> Div {
-    // 文本样式（mono 字体 / 字号 / 行高 / 正文色）在此设定，由 EditorElement
-    // 继承。行号色、光标色是编辑器自持的视觉角色，不在此设。
+/// 编辑器嵌入面：设定代码正文的文本样式，子元素是多行嵌入 slot。
+fn editor_surface(slot: &Rc<TextEditorSlot>) -> Div {
+    // 文本样式（mono 字体 / 字号 / 行高 / 正文色）在此设定，由 slot 渲染的
+    // EditorEmbed 继承。行号色、光标色是编辑器自持的视觉角色，不在此设。
     div()
         .flex_1()
         .overflow_hidden()
@@ -78,14 +80,5 @@ fn editor_surface(state: &EditorState, input_handler_hook: InputHandlerHook) -> 
         .line_height(typography::editor_line())
         .text_size(typography::editor())
         .text_color(color::gray::g75())
-        .child(
-            EditorElement::new(
-                EditorKind::MultiLine,
-                state.text.clone(),
-                state.cursor_byte,
-                input_handler_hook,
-            )
-            .caret_visible(state.caret_visible)
-            .element_id("zom-editor-main"),
-        )
+        .child(slot.embed(EditorKind::MultiLine))
 }

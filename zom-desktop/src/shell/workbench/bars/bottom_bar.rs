@@ -10,6 +10,7 @@ use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
 
 use zom_command::commands::diagnostics as diagnostic_commands;
 
+use crate::shell::editor::EditorSnapshot;
 use crate::shell::features::{PanelId, diagnostics, language_servers};
 use crate::shell::shared::Glyph;
 use crate::shell::workbench::docks::{bottom, left, right};
@@ -28,6 +29,7 @@ pub(crate) fn render(
     shortcuts: &ShortcutLookup,
     titles: &CommandTitleLookup,
     language_server_active: bool,
+    main_editor_snapshot: &EditorSnapshot,
 ) -> Div {
     bar_frame(BarEdge::Bottom)
         .child(region(
@@ -35,7 +37,7 @@ pub(crate) fn render(
             BarRegionAlign::Leading,
         ))
         .child(region(
-            trailing_slots(state, shortcuts, titles),
+            trailing_slots(state, shortcuts, titles, main_editor_snapshot),
             BarRegionAlign::Trailing,
         ))
 }
@@ -71,19 +73,20 @@ fn trailing_slots(
     state: &WorkbenchState,
     shortcuts: &ShortcutLookup,
     titles: &CommandTitleLookup,
+    main_editor_snapshot: &EditorSnapshot,
 ) -> Vec<AnyElement> {
-    let editor = editor_status_slots(&state.editor);
+    let editor = editor_status_slots(&state.editor, main_editor_snapshot);
     let bottom = panel_slot_group(DockAreaId::Bottom, bottom::PANELS, state, shortcuts, titles);
     let right = panel_slot_group(DockAreaId::Right, right::PANELS, state, shortcuts, titles);
     join_groups(vec![editor, bottom, right])
 }
 
 /// 活动文件状态组：光标行列 + 语言类型。没有打开文件时返回空组。
-fn editor_status_slots(editor: &EditorState) -> Vec<AnyElement> {
+fn editor_status_slots(editor: &EditorState, snapshot: &EditorSnapshot) -> Vec<AnyElement> {
     let Some(active) = editor.tabs.iter().find(|tab| tab.is_active) else {
         return Vec::new();
     };
-    let (line, column) = cursor_line_column(&editor.text, editor.cursor_byte);
+    let (line, column) = cursor_line_column(&snapshot.text, snapshot.cursor_byte);
     vec![
         Glyph::text(
             CURSOR_POSITION_ID,

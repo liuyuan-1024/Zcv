@@ -23,10 +23,11 @@ use std::rc::Rc;
 
 use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
 
+use crate::shell::editor::{EditorSnapshot, TextEditorSlot};
 use crate::shell::features::PanelRuntimes;
 use crate::shell::features::file_tree::{self, ConfirmDeleteHandlers, FileTreePanel};
 use crate::shell::shared::theme::{color, radius};
-use crate::shell::{CommandTitleLookup, InputHandlerHook, KeyRequest, ShortcutLookup};
+use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 
 mod bars;
 pub(crate) mod controller;
@@ -55,12 +56,13 @@ pub(crate) fn render(
     panel_key_request: KeyRequest,
     shortcut_lookup: ShortcutLookup,
     command_title_lookup: CommandTitleLookup,
-    input_handler_hook: InputHandlerHook,
+    editor_slot: Rc<TextEditorSlot>,
     editor_focus: FocusHandle,
     panel_runtimes: PanelRuntimes,
     file_tree: FileTreePanel<'_>,
     editor_tab_scroll: ScrollHandle,
     confirm_delete: ConfirmDeleteHandlers,
+    main_editor_snapshot: EditorSnapshot,
 ) -> Div {
     let dock_resize = dock_resize_request(Rc::clone(&workbench));
     div()
@@ -88,7 +90,7 @@ pub(crate) fn render(
             dock_resize,
             key_request,
             panel_key_request,
-            input_handler_hook,
+            editor_slot,
             editor_focus,
             panel_runtimes,
             file_tree,
@@ -101,6 +103,7 @@ pub(crate) fn render(
             &shortcut_lookup,
             &command_title_lookup,
             language_server_active,
+            &main_editor_snapshot,
         ))
         .child(surface_shell)
         .child(crate::shell::bubble::render())
@@ -117,7 +120,7 @@ fn render_body(
     dock_resize: DockResizeRequest,
     key_request: KeyRequest,
     panel_key_request: KeyRequest,
-    input_handler_hook: InputHandlerHook,
+    editor_slot: Rc<TextEditorSlot>,
     editor_focus: FocusHandle,
     panel_runtimes: PanelRuntimes,
     file_tree: FileTreePanel<'_>,
@@ -148,7 +151,7 @@ fn render_body(
         host,
         panel_ctx,
         key_request,
-        input_handler_hook,
+        editor_slot,
         editor_focus,
         Rc::clone(&dock_resize),
         editor_tab_scroll,

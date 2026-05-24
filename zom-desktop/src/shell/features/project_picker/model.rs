@@ -1,7 +1,10 @@
 use zom_command::EditTarget;
 
 use crate::app::RecentProject;
-use crate::shell::editor::{Editor, EditorSnapshot, ImeQueryTarget, ImeTarget};
+use crate::shell::editor::{
+    Editor, EditorSnapshot, ImeQueryTarget, ImeTarget, TextInputProfile, TextTargetId,
+    TextTargetOwner, TextTargetQuery,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProjectPickerMode {
@@ -109,18 +112,6 @@ impl ProjectPickerModel {
             .unwrap_or(ProjectPickerActivation::None)
     }
 
-    pub(crate) fn query_edit_target(&mut self) -> Option<EditTarget<'_>> {
-        self.active.then(|| self.query.as_edit_target())
-    }
-
-    pub(crate) fn query_ime_target(&mut self) -> Option<ImeTarget<'_>> {
-        self.active.then(|| self.query.as_ime_target())
-    }
-
-    pub(crate) fn query_ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
-        self.active.then(|| self.query.as_ime_query_target())
-    }
-
     fn move_selection_by(&mut self, delta: isize, count: usize) {
         if count == 0 {
             self.selected = 0;
@@ -134,6 +125,44 @@ impl ProjectPickerModel {
 impl Default for ProjectPickerModel {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl TextTargetQuery for ProjectPickerModel {
+    fn target_id(&self) -> TextTargetId {
+        TextTargetId::ProjectPickerQuery
+    }
+
+    fn is_active(&self) -> bool {
+        self.active
+    }
+
+    fn snapshot(&self) -> EditorSnapshot {
+        self.query.snapshot()
+    }
+
+    fn profile(&self) -> TextInputProfile {
+        TextInputProfile::ProjectPickerQuery
+    }
+
+    fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
+        self.active.then(|| self.query.as_ime_query_target())
+    }
+}
+
+impl TextTargetOwner for ProjectPickerModel {
+    fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
+        self.active.then(|| self.query.as_ime_target())
+    }
+
+    fn edit_target(&mut self) -> Option<EditTarget<'_>> {
+        self.active.then(|| self.query.as_edit_target())
+    }
+
+    /// 查询文本一变就把候选 cursor 跳回第一项 —— 旧的下标可能超出新过滤结果。
+    /// 由 [`super::EditorRouterMut::with_ime_target`] 在 IME 写入成功后调。
+    fn after_text_changed(&mut self) {
+        self.reset_selection();
     }
 }
 

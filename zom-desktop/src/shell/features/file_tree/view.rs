@@ -11,10 +11,10 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, Div, IntoElement, Svg, div, prelude::*, svg};
 
-use crate::shell::editor::{EditorElement, EditorKind};
+use crate::shell::editor::{EditorKind, TextEditorSlot};
+use crate::shell::normalized_chord;
 use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::PanelContext;
-use crate::shell::{InputHandlerHook, normalized_chord};
 use zom_workspace::EntryKind;
 
 use super::{FileTreeRow, FileTreeState, PendingNewEntry};
@@ -37,13 +37,7 @@ pub(super) fn render(ctx: PanelContext<'_>) -> Div {
     } else if panel.state.rows.is_empty() {
         empty_message("项目目录为空").into_any_element()
     } else {
-        render_list(
-            panel.state,
-            panel.is_focused,
-            panel.input_handler_hook,
-            panel.caret_visible,
-        )
-        .into_any_element()
+        render_list(panel.state, panel.is_focused, panel.slot).into_any_element()
     };
 
     div()
@@ -61,8 +55,7 @@ pub(super) fn render(ctx: PanelContext<'_>) -> Div {
 fn render_list(
     state: &FileTreeState,
     is_focused: bool,
-    input_handler_hook: &InputHandlerHook,
-    caret_visible: bool,
+    slot: &Rc<TextEditorSlot>,
 ) -> impl IntoElement + use<> {
     let mut list = div()
         .id("file-tree-list")
@@ -75,7 +68,7 @@ fn render_list(
         // 新建条目的输入行紧跟在其父目录行之后。
         if let Some(pending) = &state.pending {
             if pending.parent == row.path {
-                list = list.child(render_input_row(pending, input_handler_hook, caret_visible));
+                list = list.child(render_input_row(pending, slot));
             }
         }
     }
@@ -84,17 +77,15 @@ fn render_list(
 
 /// 新建态的内联输入行：父目录行下方，带文件/目录图标、已键入名称与光标。
 ///
-/// 名称输入框直接嵌入单行 [`EditorElement`] —— 与主编辑区是同一个编辑器，
-/// 只是 `EditorKind::SingleLine`。本行（边框 / 图标 / 缩进）是它的外壳。
-fn render_input_row(
-    pending: &PendingNewEntry,
-    input_handler_hook: &InputHandlerHook,
-    caret_visible: bool,
-) -> Div {
+/// 名称输入框直接嵌入文件树 pending 名称 [`TextEditorSlot`] —— 与主编辑区
+/// 是同一个编辑器，只是 `EditorKind::SingleLine`。本行（边框 / 图标 / 缩进）
+/// 是它的外壳。
+fn render_input_row(pending: &PendingNewEntry, slot: &Rc<TextEditorSlot>) -> Div {
     let icon = match pending.kind {
         EntryKind::Directory => FOLDER_OPEN_ICON,
         EntryKind::File => FILE_ICON,
     };
+    // 文本与光标位由 slot.embed 内部从 router 拉，pending.editor 这里不再需要。
     div()
         .flex()
         .flex_row()
@@ -123,16 +114,7 @@ fn render_input_row(
                 .items_center()
                 .overflow_hidden()
                 .line_height(typography::ui_line())
-                .child(
-                    EditorElement::new(
-                        EditorKind::SingleLine,
-                        pending.editor.text.clone(),
-                        pending.editor.cursor_byte,
-                        input_handler_hook.clone(),
-                    )
-                    .caret_visible(caret_visible)
-                    .element_id("zom-editor-file-tree-pending"),
-                ),
+                .child(slot.embed(EditorKind::SingleLine)),
         )
 }
 

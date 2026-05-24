@@ -9,7 +9,7 @@
 pub struct MetadataRangeId(u64);
 
 impl MetadataRangeId {
-    pub(crate) const INITIAL: Self = Self(0);
+    pub(super) const INITIAL: Self = Self(0);
 
     pub const fn get(self) -> u64 {
         self.0

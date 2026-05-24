@@ -27,7 +27,7 @@ pub struct VersionedRangeEntry<T> {
 }
 
 impl<T> VersionedRangeEntry<T> {
-    pub(crate) fn new(
+    fn new(
         tracked_range: TrackedRange,
         update_policy: TrackedRangeUpdatePolicy,
         payload: T,

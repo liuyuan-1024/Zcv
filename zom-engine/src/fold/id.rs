@@ -9,7 +9,7 @@
 pub struct FoldRangeId(u64);
 
 impl FoldRangeId {
-    pub(crate) const INITIAL: Self = Self(0);
+    pub(super) const INITIAL: Self = Self(0);
 
     pub const fn get(self) -> u64 {
         self.0

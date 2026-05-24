@@ -19,7 +19,7 @@ use crate::{
 };
 
 mod composition;
-pub(crate) mod coordinates;
+mod coordinates;
 mod edit_ops;
 mod events;
 mod history;

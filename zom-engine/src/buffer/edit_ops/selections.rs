@@ -176,7 +176,7 @@ impl Buffer {
         )
     }
 
-    pub(crate) fn delete_by_movement_at_selections(
+    pub(in crate::buffer) fn delete_by_movement_at_selections(
         &mut self,
         selections: SelectionSet,
         direction: MovementDirection,
@@ -217,7 +217,7 @@ impl Buffer {
         self.replace_selection_ranges_with_metadata(SelectionSet::new(delete_targets), "", metadata)
     }
 
-    pub(crate) fn replace_selection_ranges_with_metadata(
+    pub(in crate::buffer) fn replace_selection_ranges_with_metadata(
         &mut self,
         selections: SelectionSet,
         replacement: &str,
@@ -301,7 +301,7 @@ impl Buffer {
     /// `targets` 必须按 `selection.range().start()` 升序、且范围互不重叠；调用方负责保证。
     /// 与 `replace_selection_ranges_with_metadata` 的区别是这里每条 edit 携带各自的 `replacement`，
     /// 适合"软 Tab 因列位不同长度不一"或"多 caret 各插不同文本"的场景。
-    pub(crate) fn apply_targeted_edits_with_metadata(
+    pub(in crate::buffer) fn apply_targeted_edits_with_metadata(
         &mut self,
         targets: Vec<(Selection, Arc<str>)>,
         before_selection: SelectionSet,

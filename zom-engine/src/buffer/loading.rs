@@ -115,7 +115,7 @@ fn has_final_newline(text: &str) -> bool {
 ///
 /// 空文本返回 `0`；纯换行行（如 `"\n"`）每行字符数为 0；最后一段不带换行的内容
 /// 也算作一行参与比较。
-pub(crate) fn longest_line_chars_in(text: &str) -> usize {
+pub(in crate::buffer) fn longest_line_chars_in(text: &str) -> usize {
     let bytes = text.as_bytes();
     let mut max_chars = 0usize;
     let mut line_start = 0usize;

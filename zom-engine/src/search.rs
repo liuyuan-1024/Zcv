@@ -189,7 +189,7 @@ pub struct SearchMatch {
 }
 
 impl SearchMatch {
-    pub(crate) const fn new(ordinal: usize, range: TextRange) -> Self {
+    const fn new(ordinal: usize, range: TextRange) -> Self {
         Self { ordinal, range }
     }
 
@@ -238,7 +238,7 @@ pub struct SearchResult {
 }
 
 impl SearchResult {
-    pub(crate) fn new(
+    fn new(
         version: BufferVersion,
         query: String,
         options: SearchOptions,
@@ -339,7 +339,7 @@ pub struct RegexSearchResult {
 }
 
 impl RegexSearchResult {
-    pub(crate) fn new(
+    fn new(
         version: BufferVersion,
         pattern: String,
         options: RegexSearchOptions,
@@ -535,7 +535,7 @@ pub(crate) fn regex_replacements_in_text<'a, T: TextRead>(
     storage: &T,
     result: &RegexSearchResult,
     replacement: &'a str,
-) -> EngineResult<RegexReplacementIter<'a>> {
+) -> EngineResult<impl Iterator<Item = EngineResult<(TextRange, String)>> + 'a> {
     let regex = build_regex(result.pattern(), result.options())?;
     let search_range = resolve_search_range(storage, result.options().range())?;
     validate_search_range(storage, search_range)?;
@@ -571,7 +571,7 @@ pub(crate) fn regex_replacement_for_match<T: TextRead>(
     Ok(None)
 }
 
-pub(crate) struct RegexReplacementIter<'a> {
+struct RegexReplacementIter<'a> {
     regex: Regex,
     haystack: String,
     base_offset: usize,

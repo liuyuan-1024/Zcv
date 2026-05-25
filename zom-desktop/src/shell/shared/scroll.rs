@@ -70,6 +70,6 @@ pub(crate) fn scrollbar(handle: &ScrollHandle) -> AnyElement {
         .w(px(4.0))
         .h(thumb_height)
         .rounded(radius::full())
-        .bg(color::gray::g40())
+        .bg(color::gray::s05())
         .into_any_element()
 }

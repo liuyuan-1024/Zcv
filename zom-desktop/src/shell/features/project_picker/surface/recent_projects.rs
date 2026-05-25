@@ -40,19 +40,19 @@ fn project_row(
     actions: &ProjectPickerActions,
 ) -> Div {
     let border = if selected {
-        color::focus::border()
+        color::blue::s07()
     } else {
         gpui::rgba(0)
     };
     let bg = if selected {
-        color::gray::g20()
+        color::gray::s04()
     } else {
         gpui::rgba(0)
     };
     let text_color = if selected {
-        color::gray::g95()
+        color::gray::s09()
     } else {
-        color::gray::g75()
+        color::gray::s09()
     };
     div()
         .flex()
@@ -102,7 +102,7 @@ fn empty_hint(message: &'static str) -> Div {
         .items_center()
         .justify_center()
         .text_size(typography::ui())
-        .text_color(color::gray::g60())
+        .text_color(color::gray::s08())
         .child(message)
 }
 
@@ -112,6 +112,6 @@ fn clone_hint() -> Div {
         .items_center()
         .justify_center()
         .text_size(typography::ui())
-        .text_color(color::gray::g60())
+        .text_color(color::gray::s08())
         .child("回车后选择克隆位置")
 }

@@ -65,14 +65,14 @@ fn render(focus: &FocusHandle) -> Div {
         .p(space::s12())
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::g40())
-        .bg(color::gray::g10())
+        .border_color(color::gray::s05())
+        .bg(color::gray::s03())
         .track_focus(focus)
         .tab_index(0)
         .child(
             div()
                 .text_size(typography::ui())
-                .text_color(color::gray::g60())
+                .text_color(color::gray::s08())
                 .child("当前文件暂无已连接的语言服务器"),
         )
         .child(
@@ -80,9 +80,9 @@ fn render(focus: &FocusHandle) -> Div {
                 .mt(space::s12())
                 .p(space::s8())
                 .rounded(radius::r4())
-                .bg(color::gray::g20())
+                .bg(color::gray::s04())
                 .text_size(typography::ui())
-                .text_color(color::gray::g90())
+                .text_color(color::gray::s09())
                 .child("等待语言服务器接入"),
         )
 }

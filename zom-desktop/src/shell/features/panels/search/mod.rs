@@ -143,9 +143,9 @@ fn search_panel(
         .size_full()
         .flex()
         .flex_col()
-        .bg(color::gray::g05())
+        .bg(color::gray::s02())
         .text_size(typography::ui())
-        .text_color(color::gray::g75())
+        .text_color(color::gray::s09())
         .child(search_controls(
             state,
             key_request,
@@ -174,7 +174,7 @@ fn search_controls(
         .flex_col()
         .gap(space::s8())
         .border_b_1()
-        .border_color(color::gray::g40())
+        .border_color(color::gray::s05())
         .px(space::s4())
         .pt(space::s4())
         .pb(space::s8())
@@ -273,8 +273,8 @@ fn scope_switch(
         .gap(space::s4())
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::g40())
-        .bg(color::gray::g00())
+        .border_color(color::gray::s05())
+        .bg(color::gray::s01())
         .p(space::s4())
         .child(scope_segment(
             "search-scope-current-file",
@@ -301,7 +301,7 @@ fn scope_segment(
 ) -> gpui::AnyElement {
     let title = titles(command_id).unwrap_or_else(|| command_id.to_string());
     let bg = if active {
-        color::gray::g20()
+        color::gray::s04()
     } else {
         gpui::rgba(0)
     };
@@ -414,7 +414,7 @@ fn replace_row(
 fn row_label(label: &'static str) -> Div {
     div()
         .flex_shrink_0()
-        .text_color(color::gray::g60())
+        .text_color(color::gray::s08())
         .child(label)
 }
 
@@ -463,10 +463,10 @@ fn search_input_base(
         .overflow_hidden()
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::g40())
-        .bg(color::gray::g00())
+        .border_color(color::gray::s05())
+        .bg(color::gray::s01())
         .px(space::s4())
-        .text_color(color::gray::g60())
+        .text_color(color::gray::s08())
         .track_focus(focus)
         .tab_index(0)
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -499,14 +499,14 @@ fn search_editor(
         .h(typography::ui_line())
         .flex_1()
         .overflow_hidden()
-        .text_color(color::gray::g90());
+        .text_color(color::gray::s09());
     if show_placeholder {
         editor = editor.child(
             div()
                 .absolute()
                 .top_0()
                 .left_0()
-                .text_color(color::gray::g60())
+                .text_color(color::gray::s08())
                 .child(placeholder),
         );
     }
@@ -531,7 +531,7 @@ fn results_view(state: &SearchState) -> Div {
         .flex()
         .flex_col()
         .overflow_hidden()
-        .text_color(color::gray::g75());
+        .text_color(color::gray::s09());
     for (index, result) in state.results.iter().enumerate() {
         list = list.child(result_row(
             result,
@@ -544,7 +544,7 @@ fn results_view(state: &SearchState) -> Div {
 
 fn result_row(result: &SearchResultItem, active: bool, ordinal: usize) -> Div {
     let bg = if active {
-        color::gray::g20()
+        color::gray::s04()
     } else {
         gpui::rgba(0)
     };
@@ -556,7 +556,7 @@ fn result_row(result: &SearchResultItem, active: bool, ordinal: usize) -> Div {
         .py(space::s6())
         .bg(bg)
         .border_b_1()
-        .border_color(color::gray::g40())
+        .border_color(color::gray::s05())
         .child(
             div()
                 .flex()
@@ -567,21 +567,21 @@ fn result_row(result: &SearchResultItem, active: bool, ordinal: usize) -> Div {
                 .child(
                     div()
                         .text_color(if active {
-                            color::gray::g95()
+                            color::gray::s09()
                         } else {
-                            color::gray::g75()
+                            color::gray::s09()
                         })
                         .child(result.title.clone()),
                 )
                 .child(
                     div()
-                        .text_color(color::gray::g60())
+                        .text_color(color::gray::s08())
                         .child(format!("#{ordinal} {}:{}", result.line, result.column)),
                 ),
         )
         .child(
             div()
-                .text_color(color::gray::g60())
+                .text_color(color::gray::s08())
                 .child(result.preview.clone()),
         )
 }
@@ -594,6 +594,6 @@ fn results_message(message: String) -> Div {
         .items_center()
         .justify_center()
         .gap(space::s4())
-        .text_color(color::gray::g60())
+        .text_color(color::gray::s08())
         .child(div().child(message))
 }

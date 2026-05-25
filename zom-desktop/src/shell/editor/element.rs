@@ -42,12 +42,12 @@ const CARET_WIDTH: f32 = 1.0;
 
 /// 光标竖条颜色 —— 编辑器自持的视觉角色，不随嵌入处而变。
 fn caret_color() -> Hsla {
-    color::focus::border().into()
+    color::blue::s07().into()
 }
 
 /// 行号文字颜色 —— 次级信息。
 fn gutter_color() -> Hsla {
-    color::gray::g60().into()
+    color::gray::s08().into()
 }
 
 /// 编辑器的唯一区分轴：行数上限。其余差异（行号、纵向滚动、高度）皆由它派生。

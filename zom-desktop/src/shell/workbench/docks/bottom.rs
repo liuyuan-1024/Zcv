@@ -39,5 +39,5 @@ fn empty_body() -> Div {
         .justify_center()
         .size_full()
         .text_size(typography::ui())
-        .text_color(color::gray::g60())
+        .text_color(color::gray::s08())
 }

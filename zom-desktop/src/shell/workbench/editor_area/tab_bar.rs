@@ -34,8 +34,8 @@ pub(crate) fn render(
         .flex_row()
         .items_center()
         .w_full()
-        .bg(color::gray::g05())
-        .border_color(color::gray::g40())
+        .bg(color::gray::s02())
+        .border_color(color::gray::s05())
         .overflow_x_scroll();
 
     for tab in &state.tabs {
@@ -51,9 +51,9 @@ fn render_tab(
 ) -> Stateful<gpui::Div> {
     // 配色复用统一灰度：活动标签 g95 + g20 背景高亮，其余 g75 透明底。
     let (bg, text) = if tab.is_active {
-        (color::gray::g20(), color::gray::g95())
+        (color::gray::s04(), color::gray::s09())
     } else {
-        (gpui::rgba(0), color::gray::g75())
+        (gpui::rgba(0), color::gray::s09())
     };
 
     // 每个标签一个唯一 group：让关闭 glyph 只在悬停「本标签」时显现，

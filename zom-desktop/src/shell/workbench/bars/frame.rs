@@ -29,13 +29,13 @@ pub(crate) fn bar_frame(edge: BarEdge) -> Div {
         .px(space::s8())
         .py(space::s4())
         .gap(space::s8())
-        .bg(color::gray::g10())
-        .text_color(color::gray::g75())
+        .bg(color::gray::s03())
+        .text_color(color::gray::s09())
         .text_size(typography::ui());
 
     match edge {
-        BarEdge::Top => frame.border_b_1().border_color(color::gray::g40()),
-        BarEdge::Bottom => frame.border_t_1().border_color(color::gray::g40()),
+        BarEdge::Top => frame.border_b_1().border_color(color::gray::s05()),
+        BarEdge::Bottom => frame.border_t_1().border_color(color::gray::s05()),
     }
 }
 
@@ -62,5 +62,5 @@ pub(crate) fn bar_divider() -> Div {
     div()
         .w(gpui::px(1.0))
         .h(space::s16())
-        .bg(color::gray::g40())
+        .bg(color::gray::s05())
 }

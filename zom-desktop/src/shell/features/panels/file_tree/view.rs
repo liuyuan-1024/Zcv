@@ -146,16 +146,16 @@ fn render_input_row(pending: &PendingNewEntry, slot: &Rc<TextEditorSlot>) -> Div
         .px(space::s4())
         .rounded(radius::r2())
         .border_1()
-        .border_color(color::focus::border())
+        .border_color(color::blue::s07())
         .pl(indent_unit() * (pending.depth as f32) + space::s4())
         .text_size(typography::ui())
-        .text_color(color::gray::g95())
+        .text_color(color::gray::s09())
         .child(
             div().flex_shrink_0().size(typography::ui_line()).child(
                 svg()
                     .path(icon)
                     .size(typography::ui_line())
-                    .text_color(color::gray::g95()),
+                    .text_color(color::gray::s09()),
             ),
         )
         .child(
@@ -177,7 +177,7 @@ fn empty_message(hint: &'static str) -> Div {
             .items_center()
             .justify_center()
             .text_size(typography::ui())
-            .text_color(color::gray::g75())
+            .text_color(color::gray::s09())
             .child(hint),
     )
 }
@@ -194,20 +194,20 @@ fn render_row(
     // 边框始终占 1px，保证选中态切换时行高不抖。失焦时直接染透明，让选中
     // 标记瞬时消失；获焦后再画上。
     let border_color = if is_selected && is_focused {
-        color::focus::border()
+        color::blue::s07()
     } else {
         gpui::rgba(0)
     };
     let bg_color = if is_active {
-        color::gray::g20()
+        color::gray::s04()
     } else {
         gpui::rgba(0)
     };
     // 与 top bar Glyph 同基线：常态 g75，活动项 g95。
     let text_color = if is_active {
-        color::gray::g95()
+        color::gray::s09()
     } else {
-        color::gray::g75()
+        color::gray::s09()
     };
 
     div()
@@ -249,9 +249,9 @@ fn entry_icon(row: &FileTreeRow, is_active: bool) -> Svg {
         EntryKind::File => FILE_ICON,
     };
     let tint = if is_active {
-        color::gray::g95()
+        color::gray::s09()
     } else {
-        color::gray::g75()
+        color::gray::s09()
     };
     svg()
         .path(path)

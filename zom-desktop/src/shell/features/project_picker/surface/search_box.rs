@@ -25,7 +25,7 @@ fn input_box(state: &ProjectPickerState, slot: &Rc<TextEditorSlot>) -> Div {
         .items_center()
         .text_size(typography::editor())
         .line_height(typography::editor_line())
-        .text_color(color::gray::g95())
+        .text_color(color::gray::s09())
         .overflow_hidden();
 
     if state.query.text.is_empty() {
@@ -34,7 +34,7 @@ fn input_box(state: &ProjectPickerState, slot: &Rc<TextEditorSlot>) -> Div {
                 .absolute()
                 .top_0()
                 .left_0()
-                .text_color(color::gray::g60())
+                .text_color(color::gray::s08())
                 .child(placeholder),
         );
     }

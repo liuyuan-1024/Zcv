@@ -51,20 +51,20 @@ fn dialog(name: &str, kind: EntryKind, handlers: &ConfirmDeleteHandlers) -> impl
         .p(space::s16())
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::g40())
-        .bg(color::gray::g10())
+        .border_color(color::gray::s05())
+        .bg(color::gray::s03())
         // 吞掉对话框内的按下，避免冒泡到遮罩误触发取消。
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             div()
                 .text_size(typography::ui())
-                .text_color(color::gray::g95())
+                .text_color(color::gray::s09())
                 .child("移到回收站"),
         )
         .child(
             div()
                 .text_size(typography::ui())
-                .text_color(color::gray::g75())
+                .text_color(color::gray::s09())
                 .child(message),
         )
         .child(
@@ -76,13 +76,13 @@ fn dialog(name: &str, kind: EntryKind, handlers: &ConfirmDeleteHandlers) -> impl
                 .child(button(
                     "confirm-delete.cancel",
                     "取消",
-                    color::gray::g90(),
+                    color::gray::s09(),
                     handlers.cancel.clone(),
                 ))
                 .child(button(
                     "confirm-delete.confirm",
                     "删除",
-                    color::accent::danger(),
+                    color::red::s07(),
                     handlers.confirm.clone(),
                 )),
         )
@@ -99,7 +99,7 @@ fn button(
         .px(space::s12())
         .py(space::s4())
         .rounded(radius::r4())
-        .bg(color::gray::g20())
+        .bg(color::gray::s04())
         .text_size(typography::ui())
         .text_color(text_color)
         .cursor_pointer()

@@ -92,9 +92,9 @@ impl Glyph {
 
     pub(crate) fn render(self) -> AnyElement {
         let color_value = if self.active {
-            color::gray::g95()
+            color::gray::s09()
         } else {
-            color::gray::g75()
+            color::gray::s09()
         };
         let id = self.id.clone();
         let icon_size = self.icon_size;
@@ -168,14 +168,14 @@ impl Render for GlyphTooltip {
             .px(space::s6())
             .pt(space::s4())
             .pb(space::s6())
-            .bg(color::gray::g10())
+            .bg(color::gray::s03())
             .border_1()
-            .border_color(color::gray::g40())
+            .border_color(color::gray::s05())
             .rounded(radius::r4())
             .child(
                 div()
                     .text_size(typography::ui())
-                    .text_color(color::gray::g95())
+                    .text_color(color::gray::s09())
                     .child(self.label.clone()),
             );
 
@@ -183,7 +183,7 @@ impl Render for GlyphTooltip {
             row = row.child(
                 div()
                     .text_size(typography::ui())
-                    .text_color(color::gray::g60())
+                    .text_color(color::gray::s08())
                     .child(hint.clone()),
             );
         }

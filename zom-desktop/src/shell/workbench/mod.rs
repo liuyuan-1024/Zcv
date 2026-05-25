@@ -75,9 +75,9 @@ pub(crate) fn render(
         .overflow_hidden()
         .rounded(radius::window())
         .border_1()
-        .border_color(color::gray::g40())
-        .bg(color::gray::g05())
-        .text_color(color::gray::g90())
+        .border_color(color::gray::s05())
+        .bg(color::gray::s02())
+        .text_color(color::gray::s09())
         .child(render_top_bar(
             state,
             window,

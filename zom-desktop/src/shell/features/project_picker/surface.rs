@@ -104,8 +104,8 @@ fn render(runtime: ProjectPickerRuntime, actions: ProjectPickerActions) -> Div {
         .p(space::s12())
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::g40())
-        .bg(color::gray::g10())
+        .border_color(color::gray::s05())
+        .bg(color::gray::s03())
         .overflow_hidden()
         .track_focus(&runtime.focus)
         .tab_index(0)
@@ -136,7 +136,7 @@ fn divided_section(child: Div) -> Div {
         .mt(space::s8())
         .pt(space::s8())
         .border_t_1()
-        .border_color(color::gray::g40())
+        .border_color(color::gray::s05())
         .child(child)
 }
 

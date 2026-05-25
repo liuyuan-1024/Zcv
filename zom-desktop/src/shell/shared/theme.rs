@@ -24,7 +24,7 @@
 //!
 //! 尺寸、字号、圆角、icon 不参与主题切换（手册 5.1 / 6.x）。
 //!
-use gpui::{Pixels, Rgba, px, rgb};
+use gpui::{Pixels, Rgba, px, rgb, rgba};
 
 // color 是设计系统的"集合定义"：90 个 token 一旦发布就锁定，多数会在调用方
 // 接入前长期 dead_code（手册 §4.7）。模块级 allow，避免给每个函数挂注解。
@@ -85,31 +85,31 @@ pub mod color {
         // 调的，搬到我们更深的底色上 alpha 会被吞掉视觉，所以整条抬。
 
         pub fn a01() -> Rgba {
-            rgb(0xffffff1a)
+            rgba(0xffffff1a)
         }
         pub fn a02() -> Rgba {
-            rgb(0xffffff26)
+            rgba(0xffffff26)
         }
         pub fn a03() -> Rgba {
-            rgb(0xffffff3d)
+            rgba(0xffffff3d)
         }
         pub fn a04() -> Rgba {
-            rgb(0xffffff66)
+            rgba(0xffffff66)
         }
         pub fn a05() -> Rgba {
-            rgb(0xffffff80)
+            rgba(0xffffff80)
         }
         pub fn a06() -> Rgba {
-            rgb(0xffffffb3)
+            rgba(0xffffffb3)
         }
         pub fn a07() -> Rgba {
-            rgb(0xffffffcc)
+            rgba(0xffffffcc)
         }
         pub fn a08() -> Rgba {
-            rgb(0xffffffe6)
+            rgba(0xffffffe6)
         }
         pub fn a09() -> Rgba {
-            rgb(0xfffffff5)
+            rgba(0xfffffff5)
         }
     }
 
@@ -150,34 +150,34 @@ pub mod color {
         // alpha 基底 = s07 `#74ade8`；alpha 阶梯比 Zed 抬一档以补偿我们更深的底色
         // （见 gray.alpha 注释）。a04 用于选区、a05 用于搜索普通命中。
         pub fn a01() -> Rgba {
-            rgb(0x74ade81a)
+            rgba(0x74ade81a)
         }
         pub fn a02() -> Rgba {
-            rgb(0x74ade826)
+            rgba(0x74ade826)
         }
         pub fn a03() -> Rgba {
-            rgb(0x74ade83d)
+            rgba(0x74ade83d)
         }
         /// 04 ui-active —— 选区色块。alpha 抬到 0x66 以在 #0d0f12 底色上保住与
         /// caret (`s07`) 的视觉关联（Zed 原值 0x3d 在我们底色上会被吞掉）。
         pub fn a04() -> Rgba {
-            rgb(0x74ade866)
+            rgba(0x74ade866)
         }
         /// 05 border-subtle —— 搜索普通命中。
         pub fn a05() -> Rgba {
-            rgb(0x74ade880)
+            rgba(0x74ade880)
         }
         pub fn a06() -> Rgba {
-            rgb(0x74ade8b3)
+            rgba(0x74ade8b3)
         }
         pub fn a07() -> Rgba {
-            rgb(0x74ade8cc)
+            rgba(0x74ade8cc)
         }
         pub fn a08() -> Rgba {
-            rgb(0x74ade8e6)
+            rgba(0x74ade8e6)
         }
         pub fn a09() -> Rgba {
-            rgb(0x74ade8f5)
+            rgba(0x74ade8f5)
         }
     }
 
@@ -216,32 +216,32 @@ pub mod color {
         }
 
         pub fn a01() -> Rgba {
-            rgb(0xe8af741a)
+            rgba(0xe8af741a)
         }
         pub fn a02() -> Rgba {
-            rgb(0xe8af7426)
+            rgba(0xe8af7426)
         }
         pub fn a03() -> Rgba {
-            rgb(0xe8af743d)
+            rgba(0xe8af743d)
         }
         pub fn a04() -> Rgba {
-            rgb(0xe8af7466)
+            rgba(0xe8af7466)
         }
         /// 05 border-subtle —— 当前搜索命中（暖橙）。
         pub fn a05() -> Rgba {
-            rgb(0xe8af7480)
+            rgba(0xe8af7480)
         }
         pub fn a06() -> Rgba {
-            rgb(0xe8af74b3)
+            rgba(0xe8af74b3)
         }
         pub fn a07() -> Rgba {
-            rgb(0xe8af74cc)
+            rgba(0xe8af74cc)
         }
         pub fn a08() -> Rgba {
-            rgb(0xe8af74e6)
+            rgba(0xe8af74e6)
         }
         pub fn a09() -> Rgba {
-            rgb(0xe8af74f5)
+            rgba(0xe8af74f5)
         }
     }
 
@@ -279,31 +279,31 @@ pub mod color {
         }
 
         pub fn a01() -> Rgba {
-            rgb(0xff6b6b1a)
+            rgba(0xff6b6b1a)
         }
         pub fn a02() -> Rgba {
-            rgb(0xff6b6b26)
+            rgba(0xff6b6b26)
         }
         pub fn a03() -> Rgba {
-            rgb(0xff6b6b3d)
+            rgba(0xff6b6b3d)
         }
         pub fn a04() -> Rgba {
-            rgb(0xff6b6b66)
+            rgba(0xff6b6b66)
         }
         pub fn a05() -> Rgba {
-            rgb(0xff6b6b80)
+            rgba(0xff6b6b80)
         }
         pub fn a06() -> Rgba {
-            rgb(0xff6b6bb3)
+            rgba(0xff6b6bb3)
         }
         pub fn a07() -> Rgba {
-            rgb(0xff6b6bcc)
+            rgba(0xff6b6bcc)
         }
         pub fn a08() -> Rgba {
-            rgb(0xff6b6be6)
+            rgba(0xff6b6be6)
         }
         pub fn a09() -> Rgba {
-            rgb(0xff6b6bf5)
+            rgba(0xff6b6bf5)
         }
     }
 
@@ -341,31 +341,31 @@ pub mod color {
         }
 
         pub fn a01() -> Rgba {
-            rgb(0x3ddc841a)
+            rgba(0x3ddc841a)
         }
         pub fn a02() -> Rgba {
-            rgb(0x3ddc8426)
+            rgba(0x3ddc8426)
         }
         pub fn a03() -> Rgba {
-            rgb(0x3ddc843d)
+            rgba(0x3ddc843d)
         }
         pub fn a04() -> Rgba {
-            rgb(0x3ddc8466)
+            rgba(0x3ddc8466)
         }
         pub fn a05() -> Rgba {
-            rgb(0x3ddc8480)
+            rgba(0x3ddc8480)
         }
         pub fn a06() -> Rgba {
-            rgb(0x3ddc84b3)
+            rgba(0x3ddc84b3)
         }
         pub fn a07() -> Rgba {
-            rgb(0x3ddc84cc)
+            rgba(0x3ddc84cc)
         }
         pub fn a08() -> Rgba {
-            rgb(0x3ddc84e6)
+            rgba(0x3ddc84e6)
         }
         pub fn a09() -> Rgba {
-            rgb(0x3ddc84f5)
+            rgba(0x3ddc84f5)
         }
     }
 }

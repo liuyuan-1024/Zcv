@@ -43,6 +43,8 @@ pub(super) fn render(ctx: PanelContext<'_>) -> Div {
 
     div()
         .size_full()
+        .text_size(typography::ui())
+        .line_height(typography::ui_line())
         .track_focus(panel.focus)
         .tab_index(0)
         .on_key_down(move |event, window, cx| {
@@ -61,7 +63,13 @@ fn render_list(
 ) -> Div {
     let items = logical_items(state);
     let selected_item = selected_item_index(&items, state);
-    let selected = state.selected.clone();
+    // pending 激活时让"导航焦点"指示器（行的蓝框）让位给输入行的蓝框 ——
+    // 同色规则同时生效会出现两个蓝框；视觉上焦点只能有一个。
+    let selected = if state.pending.is_some() {
+        None
+    } else {
+        state.selected.clone()
+    };
     let active = state.active.clone();
     let slot = Rc::clone(slot);
     if let Some(index) = selected_item.filter(|index| *index < items.len()) {
@@ -141,6 +149,7 @@ fn render_input_row(pending: &PendingNewEntry, slot: &Rc<TextEditorSlot>) -> Div
         .flex()
         .flex_row()
         .items_center()
+        .w_full()
         .gap(space::s4())
         .overflow_hidden()
         .px(space::s4())
@@ -214,6 +223,7 @@ fn render_row(
         .flex()
         .flex_row()
         .items_center()
+        .w_full()
         .gap(space::s4())
         .overflow_hidden()
         .px(space::s4())

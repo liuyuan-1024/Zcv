@@ -14,9 +14,20 @@ use gpui::{
 use crate::app::App;
 
 use super::element::EditorElement;
+use super::input::CaretLayout;
 use super::{EditorInput, EditorKind, EditorSnapshot, TextTargetId};
 
-pub(crate) type EditorInputHook = Rc<dyn Fn(Bounds<Pixels>, &mut Window, &mut GpuiApp)>;
+/// element paint 阶段传给 input hook 的几何信息。
+///
+/// `bounds` 给 `ElementInputHandler` 作为 element_bounds 锚（GPUI 输入路径会
+/// 把它原样喂给 `bounds_for_range`）；`caret_layout` 由 hook 写到 `EditorInput`
+/// 实体，供 IME 候选窗定位。
+pub(crate) struct EditorPaintInfo {
+    pub bounds: Bounds<Pixels>,
+    pub caret_layout: Option<CaretLayout>,
+}
+
+pub(crate) type EditorInputHook = Rc<dyn Fn(EditorPaintInfo, &mut Window, &mut GpuiApp)>;
 
 #[derive(Clone)]
 pub(crate) struct EditorInputHost {
@@ -38,8 +49,16 @@ impl EditorInputHost {
     fn hook(&self) -> EditorInputHook {
         let focus = self.focus.clone();
         let input = self.input.clone();
-        Rc::new(move |bounds, window, cx| {
-            window.handle_input(&focus, ElementInputHandler::new(bounds, input.clone()), cx);
+        Rc::new(move |info: EditorPaintInfo, window, cx| {
+            // 先把 caret 几何写回 input 实体，再 handle_input —— 顺序很重要：
+            // IME 接管输入后立刻可能问 bounds_for_range，那时 caret_layout 必须
+            // 已经是本帧的最新值。
+            input.update(cx, |this, _| this.set_caret_layout(info.caret_layout));
+            window.handle_input(
+                &focus,
+                ElementInputHandler::new(info.bounds, input.clone()),
+                cx,
+            );
         })
     }
 

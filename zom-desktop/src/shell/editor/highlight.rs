@@ -20,6 +20,8 @@ use gpui::{Bounds, Hsla, Pixels, ShapedLine, Window, fill, point, px, size};
 
 use zom_engine::TextRange;
 
+use crate::shell::shared::theme::radius;
+
 /// 单行 byte→x 映射所需的最小信息。由 prepaint 阶段构造、paint 阶段消费。
 ///
 /// `line_start_byte` / `line_len` 与 [`super::element::EditorElement`] 的
@@ -150,6 +152,9 @@ fn paint_one_range(
             origin: point(text_left + x_start, row_top),
             size: size(x_end - x_start, line_height),
         };
-        window.paint_quad(fill(quad, color));
+        // 2px 圆角让色块边角更柔和（与 Zed / VS Code 习惯一致）。跨行选区的
+        // 行间会有 2px 的"凹口"——可忽略级别；后续若要彻底消掉得按"段顶 / 段底
+        // 只圆外侧 corner"的复杂规则，第一版不上。
+        window.paint_quad(fill(quad, color).corner_radii(radius::r2()));
     }
 }

@@ -276,6 +276,19 @@ pub(super) fn apply_host_effects(
             HostEffect::FileTreeFocusEditor => focus.move_to(FocusTarget::Editor, window),
             HostEffect::FileTreeBeginNewEntry => {
                 app.borrow_mut().file_tree_begin_new_entry();
+                // 文件树面板的 focus handle 也是新建输入框的 input handle —— 用同
+                // 一句 move_to 既保证视觉焦点（行的蓝框 + caret 闪烁）出现在
+                // 输入框，也让 IME / 文本命令路由到 FileTreePendingName。
+                //
+                // 不假设触发命令前文件树就在焦点：用户可能从命令面板、菜单或
+                // 编辑器里发起，先 show_panel 把面板顶起，再聚一次焦保险。
+                workbench
+                    .borrow_mut()
+                    .show_panel(crate::shell::features::panels::PanelId::FileTree);
+                focus.move_to(
+                    FocusTarget::Panel(crate::shell::features::panels::PanelId::FileTree),
+                    window,
+                );
             }
             HostEffect::FileTreeCommitNewEntry => {
                 // 新建文件会被打开，焦点随之切到编辑器；新建目录留在文件树。

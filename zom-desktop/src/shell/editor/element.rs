@@ -30,12 +30,13 @@ use gpui::{
 use zom_engine::{SelectionSet, TextRange};
 use zom_view::RevealKind;
 
-use crate::shell::shared::theme::color;
+use crate::shell::shared::theme::{color, radius};
 
 use super::blink::CaretClock;
 use super::core::RevealHint;
-use super::embed::EditorInputHook;
+use super::embed::{EditorInputHook, EditorPaintInfo};
 use super::highlight::{LineMetric, paint_range_backgrounds};
+use super::input::CaretLayout;
 
 /// 行号列宽（24）+ 与正文的间距（12）。
 const GUTTER_WIDTH: f32 = 36.0;
@@ -527,15 +528,15 @@ impl Element for EditorElement {
                     .paint(point(text_left, y), line_height, window, cx);
             }
 
-            // 阶段 5 caret：每个 selection.head 各画一根 1px 竖条，叠在文本与
-            // 选区色块之上；blink 全局共享一只时钟（CaretClock）。
+            // 阶段 5 caret：每个 selection.head 各画一根竖条，
+            // 叠在文本与选区色块之上；blink 全局共享一只时钟（CaretClock）。
             if caret_visible {
                 for (caret_line, caret_x) in &prepaint.carets {
                     let caret_bounds = Bounds {
                         origin: point(text_left + *caret_x, top + line_height * *caret_line as f32),
                         size: size(px(CARET_WIDTH), line_height),
                     };
-                    window.paint_quad(fill(caret_bounds, caret_color()));
+                    window.paint_quad(fill(caret_bounds, caret_color()).corner_radii(radius::r2()));
                 }
             }
         });
@@ -546,7 +547,31 @@ impl Element for EditorElement {
             let _ = gutter_line.paint(point(bounds.origin.x, y), line_height, window, cx);
         }
 
-        // 在 paint 阶段把编辑器输入宿主注册为系统输入法接收端；bounds 供候选窗定位。
-        (self.input_handler_hook)(bounds, window, cx);
+        // 把 primary caret 在 element 内的相对坐标打包给 input hook。系统 IME
+        // 的 `bounds_for_range` 会借此把候选窗放到 caret 正下方；没有 caret 时
+        // 传 None，让 IME 走默认（候选窗会落在窗口角，明显比"贴在编辑区左上
+        // 角"易辨认是哪里有问题）。
+        let caret_layout = (!prepaint.carets.is_empty()).then(|| {
+            let primary_idx = self
+                .selection
+                .primary_index()
+                .min(prepaint.carets.len() - 1);
+            let (caret_line, caret_x) = prepaint.carets[primary_idx];
+            CaretLayout {
+                relative: point(
+                    prepaint.gutter_offset + caret_x - scroll.x,
+                    line_height * caret_line as f32 - scroll.y,
+                ),
+                line_height,
+            }
+        });
+        (self.input_handler_hook)(
+            EditorPaintInfo {
+                bounds,
+                caret_layout,
+            },
+            window,
+            cx,
+        );
     }
 }

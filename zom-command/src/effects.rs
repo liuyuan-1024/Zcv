@@ -13,8 +13,6 @@
 //! 全部直接操作 `CommandContext { workspace, views, queue }`，无需经过
 //! HostEffect —— 这些资源本来就在 zom-command 看得到。
 
-use zom_workspace::EntryKind;
-
 /// 搜索面板的范围选择。当前只驱动 UI 状态，搜索后端接入后再承载实际查询范围。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SearchScope {
@@ -105,8 +103,8 @@ pub enum HostEffect {
     FileTreeActivate,
     /// 把焦点交回主编辑区。
     FileTreeFocusEditor,
-    /// 开始新建文件 / 目录。
-    FileTreeBeginNewEntry(EntryKind),
+    /// 开始新建文件或目录（提交时按输入末尾 `/` 推断类型）。
+    FileTreeBeginNewEntry,
     /// 提交正在输入的新建条目。
     FileTreeCommitNewEntry,
     /// 取消正在输入的新建条目。

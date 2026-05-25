@@ -4,8 +4,6 @@
 //! [`HostEffect`] 完成。这样 `zom-command` 负责命令与快捷键，仍不反向依赖
 //! `zom-desktop` 的面板实现。
 
-use zom_workspace::EntryKind;
-
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
     HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, reject_unknown_args, required_arg,
@@ -67,28 +65,6 @@ impl TryFrom<CommandArgs> for MoveSelectionArgs {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BeginNewEntryArgs {
-    pub kind: EntryKind,
-}
-
-impl From<BeginNewEntryArgs> for CommandArgs {
-    fn from(args: BeginNewEntryArgs) -> Self {
-        CommandArgs::new().with("kind", entry_kind_to_str(args.kind))
-    }
-}
-
-impl TryFrom<CommandArgs> for BeginNewEntryArgs {
-    type Error = CommandError;
-
-    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["kind"])?;
-        Ok(Self {
-            kind: parse_entry_kind(&required_arg(&args, "kind")?)?,
-        })
-    }
-}
-
 pub fn toggle_panel() -> Invocation {
     super::panel_toggle_invocation(TOGGLE_PANEL)
 }
@@ -113,8 +89,8 @@ pub fn focus_editor() -> Invocation {
     (cid(FOCUS_EDITOR), CommandArgs::new())
 }
 
-pub fn begin_new_entry(kind: EntryKind) -> Invocation {
-    (cid(BEGIN_NEW_ENTRY), BeginNewEntryArgs { kind }.into())
+pub fn begin_new_entry() -> Invocation {
+    (cid(BEGIN_NEW_ENTRY), CommandArgs::new())
 }
 
 pub fn commit_new_entry() -> Invocation {
@@ -196,15 +172,10 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .install(
             keymap,
             BEGIN_NEW_ENTRY,
-            "在文件树中新建条目",
+            "在文件树中新建文件或目录",
             Box::new(run_begin_new_entry),
         )
-        .key_with_in("mod-n", begin_new_entry_args(EntryKind::File), navigate)
-        .key_with_in(
-            "mod-shift-n",
-            begin_new_entry_args(EntryKind::Directory),
-            navigate,
-        );
+        .key_in("mod-n", navigate);
 
     registry
         .install(
@@ -304,10 +275,8 @@ fn run_begin_new_entry(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
-    let args = BeginNewEntryArgs::try_from(args)?;
-    context
-        .effects
-        .push(HostEffect::FileTreeBeginNewEntry(args.kind));
+    NoArgs::try_from(args)?;
+    context.effects.push(HostEffect::FileTreeBeginNewEntry);
     Ok(CommandOutcome::default())
 }
 
@@ -358,27 +327,6 @@ fn run_cancel_delete(
 
 fn move_args(delta: isize) -> CommandArgs {
     MoveSelectionArgs { delta }.into()
-}
-
-fn begin_new_entry_args(kind: EntryKind) -> CommandArgs {
-    BeginNewEntryArgs { kind }.into()
-}
-
-fn entry_kind_to_str(kind: EntryKind) -> &'static str {
-    match kind {
-        EntryKind::File => "file",
-        EntryKind::Directory => "directory",
-    }
-}
-
-fn parse_entry_kind(raw: &str) -> Result<EntryKind, CommandError> {
-    match raw {
-        "file" => Ok(EntryKind::File),
-        "directory" => Ok(EntryKind::Directory),
-        other => Err(CommandError::InvalidArgs(format!(
-            "未知文件树条目类型：{other}"
-        ))),
-    }
 }
 
 fn cid(id: &'static str) -> CommandId {

@@ -13,7 +13,7 @@ use zom_command::{
 };
 use zom_engine::{ByteOffset, Motion, MovementDirection, MovementUnit, Selection, SelectionSet};
 use zom_view::ViewSet;
-use zom_workspace::{BufferId, EntryKind, Workspace};
+use zom_workspace::{BufferId, Workspace};
 
 fn command_id(value: &str) -> CommandId {
     CommandId::new(value).unwrap()
@@ -762,13 +762,7 @@ fn file_tree_commands_should_emit_host_effects() {
                 file_tree::MOVE_SELECTION,
                 file_tree::MoveSelectionArgs { delta: 1 }.into(),
             ),
-            (
-                file_tree::BEGIN_NEW_ENTRY,
-                file_tree::BeginNewEntryArgs {
-                    kind: EntryKind::Directory,
-                }
-                .into(),
-            ),
+            (file_tree::BEGIN_NEW_ENTRY, CommandArgs::new()),
             (file_tree::CANCEL_NEW_ENTRY, CommandArgs::new()),
         ],
     )
@@ -778,7 +772,7 @@ fn file_tree_commands_should_emit_host_effects() {
         effects,
         vec![
             HostEffect::FileTreeMoveSelection(1),
-            HostEffect::FileTreeBeginNewEntry(EntryKind::Directory),
+            HostEffect::FileTreeBeginNewEntry,
             HostEffect::FileTreeCancelNewEntry,
         ]
     );

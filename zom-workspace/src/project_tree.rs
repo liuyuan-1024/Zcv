@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// 节点类型。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,8 +103,10 @@ impl ProjectTree {
         }
     }
 
-    /// 在 `parent` 目录下创建一个文件 / 子目录，并刷新该目录的子项缓存，使
+    /// 在 `parent` 目录下创建一个文件 / 子目录，并刷新目录缓存，使
     /// `visible_rows` 立即反映新条目。返回新条目的完整路径。
+    /// `name` 可以是相对路径；创建文件时会按需创建中间目录，创建目录时
+    /// 会创建整段目录路径。
     ///
     /// 同名条目已存在时返回 [`io::ErrorKind::AlreadyExists`]，不会覆盖。
     pub fn create_entry(
@@ -113,16 +115,30 @@ impl ProjectTree {
         name: &str,
         kind: EntryKind,
     ) -> io::Result<PathBuf> {
-        let path = parent.join(name);
+        let relative = validate_relative_entry_path(name)?;
+        let path = parent.join(relative);
         match kind {
             EntryKind::File => {
+                if let Some(target_parent) = path.parent() {
+                    ensure_directory_path_available(parent, target_parent)?;
+                    fs::create_dir_all(target_parent)?;
+                }
                 fs::File::create_new(&path)?;
             }
-            EntryKind::Directory => fs::create_dir(&path)?,
+            EntryKind::Directory => {
+                if path.exists() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!("条目已存在：{}", path.display()),
+                    ));
+                }
+                if let Some(target_parent) = path.parent() {
+                    ensure_directory_path_available(parent, target_parent)?;
+                }
+                fs::create_dir_all(&path)?;
+            }
         }
-        // 丢弃父目录缓存并重读，让新条目按既有排序规则进入 visible_rows。
-        self.children.remove(parent);
-        self.load_dir(parent)?;
+        self.reload_expanded_dirs()?;
         Ok(path)
     }
 
@@ -212,6 +228,71 @@ impl ProjectTree {
         self.children.insert(dir.to_path_buf(), entries);
         Ok(())
     }
+
+    fn reload_expanded_dirs(&mut self) -> io::Result<()> {
+        let mut expanded: Vec<_> = self.expanded.iter().cloned().collect();
+        expanded.sort_by_key(|path| path.components().count());
+        self.children.clear();
+        for dir in expanded {
+            if dir.is_dir() {
+                self.load_dir(&dir)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_relative_entry_path(raw: &str) -> io::Result<PathBuf> {
+    let path = Path::new(raw);
+    let mut relative = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => relative.push(part),
+            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("无效的相对路径：{raw}"),
+                ));
+            }
+        }
+    }
+    if relative.as_os_str().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "入口路径不能为空",
+        ));
+    }
+    Ok(relative)
+}
+
+fn ensure_directory_path_available(root: &Path, target: &Path) -> io::Result<()> {
+    let relative = target.strip_prefix(root).unwrap_or(target);
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => {
+                current.push(part);
+                if current.exists() && !current.is_dir() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotADirectory,
+                        format!(
+                            "路径中的 {} 已是文件，无法作为目录使用",
+                            part.to_string_lossy()
+                        ),
+                    ));
+                }
+            }
+            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("无效的目录路径：{}", target.display()),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -312,6 +393,46 @@ mod tests {
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::AlreadyExists
+        );
+    }
+
+    #[test]
+    fn create_entry_should_create_nested_paths_without_overwriting() {
+        let root = tmp_root("create-nested");
+        let mut tree = ProjectTree::new(root.clone()).unwrap();
+
+        let file = tree
+            .create_entry(&root, "src/components/button.rs", EntryKind::File)
+            .unwrap();
+        assert!(file.is_file());
+        assert!(root.join("src/components").is_dir());
+
+        let dir = tree
+            .create_entry(&root, "src/views/home", EntryKind::Directory)
+            .unwrap();
+        assert!(dir.is_dir());
+
+        assert_eq!(
+            tree.create_entry(&root, "../outside.txt", EntryKind::File)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            tree.create_entry(&root, "src/views/home", EntryKind::Directory)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+
+        File::create(root.join("nihao")).unwrap();
+        let error = tree
+            .create_entry(&root, "nihao/ni/hao/ni", EntryKind::File)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotADirectory);
+        assert_eq!(
+            error.to_string(),
+            "路径中的 nihao 已是文件，无法作为目录使用"
         );
     }
 

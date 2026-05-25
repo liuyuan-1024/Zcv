@@ -30,7 +30,6 @@ pub(crate) struct FileTreeModel {
 /// 名称由一个 [`Editor`] 承载 —— 键入 / 删除 / undo / 选择都复用编辑命令。
 struct PendingEntry {
     parent: PathBuf,
-    kind: EntryKind,
     editor: Editor,
 }
 
@@ -76,7 +75,7 @@ impl FileTreeModel {
                 .unwrap_or(1);
             PendingNewEntry {
                 parent: pending.parent.clone(),
-                kind: pending.kind,
+                kind: infer_entry_kind_from_input(&pending.editor.text()),
                 depth,
             }
         });
@@ -99,10 +98,10 @@ impl FileTreeModel {
         }
     }
 
-    /// 开始新建一个文件 / 目录：确定目标父目录、展开它，并进入输入态。
+    /// 开始新建一个文件或目录：确定目标父目录、展开它，并进入输入态。
     ///
     /// 目标父目录：选中目录则用它本身；选中文件则用其父目录；未选中用根。
-    pub(crate) fn begin_new_entry(&mut self, kind: EntryKind) {
+    pub(crate) fn begin_new_entry(&mut self) {
         let Some(tree) = self.project_tree.as_mut() else {
             return;
         };
@@ -123,7 +122,6 @@ impl FileTreeModel {
         }
         self.pending = Some(PendingEntry {
             parent,
-            kind,
             editor: Editor::new(),
         });
     }
@@ -136,8 +134,8 @@ impl FileTreeModel {
         self.pending = None;
     }
 
-    /// 提交新建：名称为空则等同取消；名称含路径分隔符或创建失败时保留
-    /// 输入态，供用户改名重试。
+    /// 提交新建：名称为空则等同取消；以 `/` 结尾创建目录，否则创建文件。
+    /// 输入中可以包含相对路径，创建时会补齐中间目录；非法路径或创建失败时保留输入态，供用户改名重试。
     ///
     /// 新建文件成功后立即打开它（返回 [`FileTreeActivation::OpenedFile`]，
     /// 由调用方把焦点切到编辑器）；新建目录无可打开内容，留在文件树。
@@ -155,17 +153,18 @@ impl FileTreeModel {
             self.pending = None;
             return FileTreeActivation::Nothing;
         }
-        if name.contains('/') || name.contains('\\') {
-            eprintln!("新建条目名不能含路径分隔符：{name}");
+        let Some((name, kind)) = parse_new_entry_input(name) else {
+            eprintln!("新建条目路径无效：{name}");
             return FileTreeActivation::Nothing;
-        }
-        let (parent, kind, name) = (pending.parent.clone(), pending.kind, name.to_string());
+        };
+        let parent = pending.parent.clone();
         let Some(tree) = self.project_tree.as_mut() else {
             self.pending = None;
             return FileTreeActivation::Nothing;
         };
         match tree.create_entry(&parent, &name, kind) {
             Ok(path) => {
+                expand_parent_chain(tree, &parent, &path);
                 self.selected = Some(path.clone());
                 self.pending = None;
                 match kind {
@@ -215,11 +214,19 @@ impl FileTreeModel {
         let Some(tree) = self.project_tree.as_mut() else {
             return;
         };
+        let deleting_active = workspace
+            .active_buffer()
+            .and_then(|buffer| buffer.path())
+            .is_some_and(|active| active.starts_with(&path));
         match tree.delete_entry(&path) {
             Ok(()) => {
-                // 选中不能再指向已删除的行，落到父目录。
-                self.selected = path.parent().map(Path::to_path_buf);
                 close_buffers_under(workspace, views, &path);
+                if deleting_active {
+                    self.selected = selected_path_after_deleting_active(tree, workspace);
+                } else {
+                    // 选中不能再指向已删除的行，落到父目录。
+                    self.selected = path.parent().map(Path::to_path_buf);
+                }
             }
             Err(error) => {
                 eprintln!("删除失败：{}：{error}", path.display());
@@ -388,6 +395,58 @@ fn open_file(workspace: &mut Workspace, views: &mut ViewSet, path: PathBuf) -> F
     FileTreeActivation::OpenedFile
 }
 
+fn infer_entry_kind_from_input(text: &str) -> EntryKind {
+    match parse_new_entry_input(text.trim()) {
+        Some((_, kind)) => kind,
+        None => EntryKind::File,
+    }
+}
+
+fn parse_new_entry_input(input: &str) -> Option<(String, EntryKind)> {
+    if input.is_empty() || input.contains('\\') {
+        return None;
+    }
+    let kind = if input.ends_with('/') {
+        EntryKind::Directory
+    } else {
+        EntryKind::File
+    };
+    let path = input.trim_end_matches('/');
+    if path.is_empty()
+        || path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return None;
+    }
+    Some((path.to_string(), kind))
+}
+
+fn expand_parent_chain(tree: &mut ProjectTree, base: &Path, path: &Path) {
+    let Some(target_parent) = path.parent() else {
+        return;
+    };
+    let mut dirs = Vec::new();
+    let mut current = Some(target_parent);
+    while let Some(dir) = current {
+        if !dir.starts_with(base) {
+            break;
+        }
+        dirs.push(dir.to_path_buf());
+        if dir == base {
+            break;
+        }
+        current = dir.parent();
+    }
+    dirs.reverse();
+    for dir in dirs {
+        if let Err(error) = tree.expand(&dir) {
+            eprintln!("展开目录失败：{}：{error}", dir.display());
+            break;
+        }
+    }
+}
+
 /// 确保 `buffer_id` 有对应视图，并把它切成活动视图。
 ///
 /// `ViewSet::open_view` 只在当前无活动视图时才自动激活，而 app 启动即带一个
@@ -446,6 +505,23 @@ fn close_buffers_under(workspace: &mut Workspace, views: &mut ViewSet, deleted: 
     }
 }
 
+fn first_visible_path(tree: &ProjectTree) -> Option<PathBuf> {
+    tree.visible_rows()
+        .first()
+        .map(|row| row.path.to_path_buf())
+}
+
+fn selected_path_after_deleting_active(
+    tree: &ProjectTree,
+    workspace: &Workspace,
+) -> Option<PathBuf> {
+    workspace
+        .active_buffer()
+        .and_then(|buffer| buffer.path())
+        .map(Path::to_path_buf)
+        .or_else(|| first_visible_path(tree))
+}
+
 /// 从一棵 [`ProjectTree`] 里抓出一行的 `(kind, expanded, depth)`，规避借用
 /// 重叠：调用方拿到 owned 元组后即可继续对树做可变操作。
 fn snapshot_row(tree: &ProjectTree, path: &Path) -> Option<(EntryKind, bool, usize)> {
@@ -493,5 +569,79 @@ impl TextTargetOwner for FileTreeModel {
         self.pending
             .as_mut()
             .map(|pending| pending.editor.as_edit_target())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{File, create_dir_all};
+
+    fn tmp_root(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("zom-file-tree-model-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn open_view_for(workspace: &Workspace, views: &mut ViewSet, buffer_id: BufferId) -> ViewId {
+        let version = workspace
+            .buffer(buffer_id)
+            .expect("buffer should exist")
+            .buffer()
+            .version();
+        views.open_view(buffer_id, version)
+    }
+
+    #[test]
+    fn deleting_active_file_should_select_next_active_file_path() {
+        let root = tmp_root("delete-active-selects-next");
+        let readme = root.join("README.md");
+        let lib = root.join("src/lib.rs");
+        create_dir_all(root.join("src")).unwrap();
+        File::create(&readme).unwrap();
+        File::create(&lib).unwrap();
+
+        let tree = ProjectTree::new(root).unwrap();
+        let mut workspace = Workspace::new();
+        let readme_id = workspace.open_file(readme.clone()).unwrap();
+        let lib_id = workspace.open_file(lib.clone()).unwrap();
+        let mut views = ViewSet::new();
+        open_view_for(&workspace, &mut views, readme_id);
+        let lib_view = open_view_for(&workspace, &mut views, lib_id);
+        views.set_active(lib_view);
+
+        close_buffers_under(&mut workspace, &mut views, &lib);
+
+        assert_eq!(
+            workspace.active_buffer().and_then(|buffer| buffer.path()),
+            Some(readme.as_path())
+        );
+        assert_eq!(
+            selected_path_after_deleting_active(&tree, &workspace).as_deref(),
+            Some(readme.as_path())
+        );
+    }
+
+    #[test]
+    fn deleting_only_active_file_should_select_first_file_tree_row() {
+        let root = tmp_root("delete-active-selects-root");
+        let readme = root.join("README.md");
+        File::create(&readme).unwrap();
+
+        let tree = ProjectTree::new(root.clone()).unwrap();
+        let mut workspace = Workspace::new();
+        let readme_id = workspace.open_file(readme.clone()).unwrap();
+        let mut views = ViewSet::new();
+        open_view_for(&workspace, &mut views, readme_id);
+
+        close_buffers_under(&mut workspace, &mut views, &readme);
+
+        assert!(workspace.active_buffer().is_none());
+        assert_eq!(
+            selected_path_after_deleting_active(&tree, &workspace).as_deref(),
+            Some(root.as_path())
+        );
     }
 }

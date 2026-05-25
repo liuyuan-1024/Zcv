@@ -274,8 +274,8 @@ pub(super) fn apply_host_effects(
                 }
             }
             HostEffect::FileTreeFocusEditor => focus.move_to(FocusTarget::Editor, window),
-            HostEffect::FileTreeBeginNewEntry(kind) => {
-                app.borrow_mut().file_tree_begin_new_entry(kind);
+            HostEffect::FileTreeBeginNewEntry => {
+                app.borrow_mut().file_tree_begin_new_entry();
             }
             HostEffect::FileTreeCommitNewEntry => {
                 // 新建文件会被打开，焦点随之切到编辑器；新建目录留在文件树。

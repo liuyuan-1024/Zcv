@@ -22,7 +22,7 @@ use zom_engine::{
     SearchOptions as EngineSearchOptions, Selection, SelectionSet, TextRange,
 };
 use zom_view::{RevealKind, ViewId, ViewSet};
-use zom_workspace::{EntryKind, Workspace, WorkspaceBuffer};
+use zom_workspace::{Workspace, WorkspaceBuffer};
 
 use crate::shell::editor::{
     EditorRouter, EditorRouterMut, MainEditorOwner, MainEditorOwnerRef, TextInputProfile,
@@ -255,8 +255,8 @@ impl App {
             .activate_selected(&mut self.workspace, &mut self.views)
     }
 
-    pub(crate) fn file_tree_begin_new_entry(&mut self, kind: EntryKind) {
-        self.file_tree.begin_new_entry(kind);
+    pub(crate) fn file_tree_begin_new_entry(&mut self) {
+        self.file_tree.begin_new_entry();
     }
 
     pub(crate) fn file_tree_cancel_new_entry(&mut self) {
@@ -1686,7 +1686,7 @@ mod tests {
     fn file_tree_pending_editor_keys_route_through_keymap_by_context() {
         let mut app = App::new();
         app.open_local_project(project_fixture("pending-editor"));
-        app.file_tree_begin_new_entry(EntryKind::File);
+        app.file_tree_begin_new_entry();
 
         app.ime_replace_text_for(TextTargetId::FileTreePendingName, None, "alpha")
             .unwrap();
@@ -1743,7 +1743,7 @@ mod tests {
     fn file_tree_pending_editor_does_not_intercept_keys_while_composing() {
         let mut app = App::new();
         app.open_local_project(project_fixture("pending-ime"));
-        app.file_tree_begin_new_entry(EntryKind::File);
+        app.file_tree_begin_new_entry();
 
         app.ime_replace_and_mark_text_for(
             TextTargetId::FileTreePendingName,
@@ -1771,7 +1771,7 @@ mod tests {
     fn file_tree_pending_editor_escape_exits_right_after_ime_preedit_cleared() {
         let mut app = App::new();
         app.open_local_project(project_fixture("pending-ime-esc"));
-        app.file_tree_begin_new_entry(EntryKind::File);
+        app.file_tree_begin_new_entry();
 
         // 输入中文候选。
         app.ime_replace_and_mark_text_for(
@@ -1798,6 +1798,55 @@ mod tests {
             .unwrap();
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::FileTreeCancelNewEntry]);
+    }
+
+    #[test]
+    fn file_tree_new_entry_should_use_yazi_file_path_rules() {
+        let mut app = App::new();
+        let root = project_fixture("new-entry-file-path");
+        app.open_local_project(root.clone());
+
+        app.file_tree_begin_new_entry();
+        app.ime_replace_text_for(
+            TextTargetId::FileTreePendingName,
+            None,
+            "generated/deep/new.txt",
+        )
+        .unwrap();
+
+        assert_eq!(
+            app.file_tree_commit_new_entry(),
+            FileTreeActivation::OpenedFile
+        );
+        assert!(root.join("generated/deep/new.txt").is_file());
+        assert_eq!(
+            app.file_tree_state().active.as_deref(),
+            Some(root.join("generated/deep/new.txt").as_path())
+        );
+        let state = app.editor_state();
+        assert_eq!(active_tab(&state).title, "new.txt");
+    }
+
+    #[test]
+    fn file_tree_new_entry_should_use_yazi_directory_path_rules() {
+        let mut app = App::new();
+        let root = project_fixture("new-entry-dir-path");
+        app.open_local_project(root.clone());
+
+        app.file_tree_begin_new_entry();
+        app.ime_replace_text_for(TextTargetId::FileTreePendingName, None, "generated/deep/")
+            .unwrap();
+
+        assert_eq!(
+            app.file_tree_commit_new_entry(),
+            FileTreeActivation::Nothing
+        );
+        assert!(root.join("generated/deep").is_dir());
+        assert_eq!(
+            app.file_tree_state().selected.as_deref(),
+            Some(root.join("generated/deep").as_path())
+        );
+        assert!(app.editor_state().tabs.is_empty());
     }
 
     #[test]

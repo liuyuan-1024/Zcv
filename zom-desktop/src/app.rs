@@ -6,11 +6,9 @@
 //! 依赖方向（手册 2.4）：`app` 可以 import `shell`；`shell` 不可反向 import `app`。
 //! 本文件只做组合根职责；具体功能尽量回到各自 feature / editor / workbench。
 
-use std::fs;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
 use zom_command::commands::{self, editor};
 use zom_command::{
     CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId, CommandQueue,
@@ -29,6 +27,7 @@ use crate::shell::features::panels::file_tree::{FileTreeActivation, FileTreeMode
 use crate::shell::features::panels::search::{SearchModel, SearchState};
 use crate::shell::features::project_picker::{
     ProjectPickerActivation, ProjectPickerMode, ProjectPickerModel, ProjectPickerState,
+    RecentProject, RecentProjects,
 };
 
 /// 主编辑区渲染快照 —— 仅描述工作台关心的标签列表。
@@ -57,30 +56,6 @@ pub(crate) struct EditorTab {
     pub(crate) language: String,
     pub(crate) dirty: bool,
     pub(crate) is_active: bool,
-}
-
-/// 顶栏项目选择器使用的最近项目摘要。
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RecentProject {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) path: PathBuf,
-    pub(crate) identifier: String,
-    pub(crate) repo: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-struct RecentProjectsFile {
-    schema_version: u32,
-    projects: Vec<RecentProjectRecord>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct RecentProjectRecord {
-    name: String,
-    path: PathBuf,
-    identifier: String,
-    repo: Option<String>,
 }
 
 /// 一次按键派发的结果。`consumed=false` 表示这次按键没有匹配任何 keymap
@@ -112,8 +87,7 @@ pub struct App {
     workspace: Workspace,
     views: ViewSet,
     project_root: Option<PathBuf>,
-    recent_projects: Vec<RecentProject>,
-    recent_projects_path: Option<PathBuf>,
+    recent_projects: RecentProjects,
     file_tree: FileTreeModel,
     project_picker: ProjectPickerModel,
     search: SearchModel,
@@ -127,7 +101,7 @@ impl App {
 
     /// 持久化模式（发行版使用）
     pub fn new_persistent() -> Self {
-        Self::new_with_recent_projects_path(default_recent_projects_path())
+        Self::new_with_recent_projects_path(RecentProjects::default_path())
     }
 
     pub(crate) fn new_with_recent_projects_path(path: Option<PathBuf>) -> Self {
@@ -139,10 +113,6 @@ impl App {
         commands::install_all(&mut registry, &mut keymap);
 
         let (workspace, views) = empty_workspace();
-        let recent_projects = path
-            .as_deref()
-            .map(load_recent_projects)
-            .unwrap_or_default();
 
         Self {
             registry,
@@ -152,8 +122,7 @@ impl App {
             workspace,
             views,
             project_root: None,
-            recent_projects,
-            recent_projects_path: path,
+            recent_projects: RecentProjects::load(path),
             file_tree: FileTreeModel::default(),
             project_picker: ProjectPickerModel::new(),
             search: SearchModel::new(),
@@ -170,7 +139,7 @@ impl App {
 
     fn open_project(&mut self, root: PathBuf, repo: Option<String>) {
         self.file_tree.open_project(root.clone());
-        self.remember_project(root.clone(), repo.clone());
+        self.recent_projects.remember(root.clone(), repo);
         self.project_root = Some(root);
         let (workspace, views) = empty_workspace();
         self.workspace = workspace;
@@ -180,7 +149,8 @@ impl App {
     pub(crate) fn project_title(&self) -> String {
         self.project_root
             .as_deref()
-            .and_then(project_name)
+            .and_then(|path| path.file_name().and_then(|name| name.to_str()))
+            .filter(|name| !name.is_empty())
             .unwrap_or("打开项目")
             .to_string()
     }
@@ -190,13 +160,13 @@ impl App {
     }
 
     pub(crate) fn recent_projects(&self) -> Vec<RecentProject> {
-        self.recent_projects.clone()
+        self.recent_projects.items().to_vec()
     }
 
     pub(crate) fn remove_recent_project(&mut self, id: &str) {
-        self.recent_projects.retain(|project| project.id != id);
-        self.project_picker.clamp_selection(&self.recent_projects);
-        self.persist_recent_projects();
+        self.recent_projects.remove(id);
+        self.project_picker
+            .clamp_selection(self.recent_projects.items());
     }
 
     pub(crate) fn project_picker_reset(&mut self, mode: ProjectPickerMode) {
@@ -213,16 +183,17 @@ impl App {
 
     pub(crate) fn project_picker_selected_project_id(&self) -> Option<String> {
         self.project_picker
-            .selected_project_id(&self.recent_projects)
+            .selected_project_id(self.recent_projects.items())
     }
 
     pub(crate) fn project_picker_move_selection(&mut self, delta: isize) {
         self.project_picker
-            .move_selection(delta, &self.recent_projects);
+            .move_selection(delta, self.recent_projects.items());
     }
 
     pub(crate) fn project_picker_activation(&self) -> ProjectPickerActivation {
-        self.project_picker.activation(&self.recent_projects)
+        self.project_picker
+            .activation(self.recent_projects.items())
     }
 
     pub(crate) fn file_tree_state(&self) -> FileTreeState {
@@ -597,32 +568,6 @@ impl App {
         Ok(())
     }
 
-    fn remember_project(&mut self, root: PathBuf, repo: Option<String>) {
-        let id = project_id(&root);
-        self.recent_projects.retain(|project| project.id != id);
-        self.recent_projects.insert(
-            0,
-            RecentProject {
-                id,
-                name: project_name(&root).unwrap_or("未命名项目").to_string(),
-                identifier: repo
-                    .clone()
-                    .unwrap_or_else(|| root.to_string_lossy().into_owned()),
-                path: root,
-                repo,
-            },
-        );
-        self.persist_recent_projects();
-    }
-
-    fn persist_recent_projects(&self) {
-        let Some(path) = &self.recent_projects_path else {
-            return;
-        };
-        if let Err(error) = save_recent_projects(path, &self.recent_projects) {
-            eprintln!("写入最近项目失败：{error}");
-        }
-    }
 }
 
 /// 取 buffer 的标签显示名：有路径用文件名，无路径（scratch）显示「未命名」。
@@ -680,94 +625,6 @@ fn language_label(title: &str) -> String {
 /// `EditorState::default()`，文件从文件树打开后才有内容。
 fn empty_workspace() -> (Workspace, ViewSet) {
     (Workspace::new(), ViewSet::new())
-}
-
-fn project_name(path: &Path) -> Option<&str> {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-}
-
-fn project_id(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
-fn default_recent_projects_path() -> Option<PathBuf> {
-    Some(home_dir()?.join(".zom/recent_workspaces.toml"))
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
-}
-
-fn load_recent_projects(path: &Path) -> Vec<RecentProject> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-        Err(error) => {
-            eprintln!("读取最近项目失败：{error}");
-            return Vec::new();
-        }
-    };
-    let file = match toml::from_str::<RecentProjectsFile>(&text) {
-        Ok(file) => file,
-        Err(error) => {
-            eprintln!("解析最近项目失败：{error}");
-            return Vec::new();
-        }
-    };
-
-    file.projects
-        .into_iter()
-        .filter(|record| !record.path.as_os_str().is_empty())
-        .map(|record| {
-            let id = project_id(&record.path);
-            RecentProject {
-                id,
-                name: if record.name.is_empty() {
-                    project_name(&record.path)
-                        .unwrap_or("未命名项目")
-                        .to_string()
-                } else {
-                    record.name
-                },
-                identifier: if record.identifier.is_empty() {
-                    record
-                        .repo
-                        .clone()
-                        .unwrap_or_else(|| record.path.to_string_lossy().into_owned())
-                } else {
-                    record.identifier
-                },
-                path: record.path,
-                repo: record.repo,
-            }
-        })
-        .collect()
-}
-
-fn save_recent_projects(path: &Path, projects: &[RecentProject]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("无法创建最近项目目录 {}：{error}", parent.display()))?;
-    }
-
-    let file = RecentProjectsFile {
-        schema_version: 1,
-        projects: projects
-            .iter()
-            .map(|project| RecentProjectRecord {
-                name: project.name.clone(),
-                path: project.path.clone(),
-                identifier: project.identifier.clone(),
-                repo: project.repo.clone(),
-            })
-            .collect(),
-    };
-    let text =
-        toml::to_string_pretty(&file).map_err(|error| format!("无法序列化最近项目：{error}"))?;
-    fs::write(path, text)
-        .map_err(|error| format!("无法写入最近项目文件 {}：{error}", path.display()))
 }
 
 impl Default for App {

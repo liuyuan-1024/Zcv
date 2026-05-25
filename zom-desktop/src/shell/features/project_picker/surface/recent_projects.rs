@@ -1,7 +1,7 @@
 use gpui::{Div, div, prelude::*};
 use zom_command::commands::project_picker as project_picker_commands;
 
-use crate::app::RecentProject;
+use crate::shell::features::project_picker::RecentProject;
 use crate::shell::shared::Glyph;
 use crate::shell::shared::theme::{color, radius, space, typography};
 

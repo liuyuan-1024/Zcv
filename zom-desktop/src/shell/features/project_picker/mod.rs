@@ -1,6 +1,7 @@
 //! 项目切换功能。
 
 mod model;
+mod recent;
 mod surface;
 
 use std::rc::Rc;
@@ -8,7 +9,6 @@ use std::rc::Rc;
 use gpui::{AnyElement, IntoElement};
 use zom_command::commands::project_picker as project_picker_commands;
 
-use crate::app::RecentProject;
 use crate::shell::CommandTitleLookup;
 use crate::shell::KeyRequest;
 use crate::shell::ShortcutLookup;
@@ -20,6 +20,7 @@ pub(crate) use model::{
     ProjectPickerActivation, ProjectPickerMode, ProjectPickerModel, ProjectPickerState,
     filtered_projects,
 };
+pub(crate) use recent::{RecentProject, RecentProjects};
 pub(crate) use surface::{ProjectPickerInitialMode, ProjectPickerRuntime, request};
 
 /// 顶栏项目入口的稳定入口 id。功能 owns 它，承载它的 bar 只负责写入 element。

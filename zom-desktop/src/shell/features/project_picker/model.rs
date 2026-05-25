@@ -1,6 +1,6 @@
 use zom_command::EditTarget;
 
-use crate::app::RecentProject;
+use super::recent::RecentProject;
 use crate::shell::editor::{
     Editor, EditorSnapshot, ImeQueryTarget, ImeTarget, TextInputProfile, TextTargetId,
     TextTargetOwner, TextTargetQuery,

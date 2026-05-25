@@ -48,9 +48,11 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
     let Some(buffer) = workspace.buffer(view.buffer()) else {
         return EditorSnapshot::default();
     };
+    let selection = view.selection().clone();
     EditorSnapshot {
         text: buffer.buffer().text().into_owned(),
-        cursor_byte: view.selection().primary().head().get(),
+        cursor_byte: selection.primary().head().get(),
+        selection,
         reveal: view.reveal().map(|req| super::RevealHint {
             byte: req.byte.get(),
             kind: req.kind,

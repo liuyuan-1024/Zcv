@@ -15,10 +15,17 @@ pub(crate) struct Editor {
 }
 
 /// 编辑器的 owned 渲染快照。
+///
+/// `cursor_byte` 与 `selection` 是平行字段：前者是 primary head 的纯 byte 投影
+/// （供 blink / 状态栏 / 测试这些"只关心活动光标在哪"的下游消费），
+/// 后者是完整 SelectionSet（供 [`super::element::EditorElement`] 渲染多光标 caret + 选区背景）。
+/// 两个字段必须从同一份 SelectionSet 派生、不允许漂移：构造快照的
+/// 唯一入口在 [`Editor::snapshot`] 与 [`super::main_editor`]，那里保证一致。
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EditorSnapshot {
     pub(crate) text: String,
     pub(crate) cursor_byte: usize,
+    pub(crate) selection: SelectionSet,
     /// 外部 reveal 请求在快照里的表示。只在多行主编辑器有意义；
     /// 嵌入式单行编辑器（搜索框等）始终为 `None`。
     pub(crate) reveal: Option<RevealHint>,
@@ -57,6 +64,7 @@ impl Editor {
         EditorSnapshot {
             text: self.text(),
             cursor_byte: self.cursor_byte(),
+            selection: self.selection.clone(),
             reveal: None,
         }
     }

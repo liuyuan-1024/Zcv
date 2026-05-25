@@ -27,6 +27,7 @@ use gpui::{
     TextRun, Window, fill, point, px, relative, size,
 };
 
+use zom_engine::{SelectionSet, TextRange};
 use zom_view::RevealKind;
 
 use crate::shell::shared::theme::color;
@@ -34,11 +35,12 @@ use crate::shell::shared::theme::color;
 use super::blink::CaretClock;
 use super::core::RevealHint;
 use super::embed::EditorInputHook;
+use super::highlight::{LineMetric, paint_range_backgrounds};
 
 /// 行号列宽（24）+ 与正文的间距（12）。
 const GUTTER_WIDTH: f32 = 36.0;
-/// 光标竖条宽度。
-const CARET_WIDTH: f32 = 1.0;
+/// 光标竖条宽度。2px 与 VS Code / Zed 默认一致——1px 在高分屏上偏细。
+const CARET_WIDTH: f32 = 2.0;
 
 /// 光标竖条颜色 —— 编辑器自持的视觉角色，不随嵌入处而变。
 fn caret_color() -> Hsla {
@@ -69,7 +71,10 @@ pub(crate) enum EditorKind {
 pub(crate) struct EditorElement {
     kind: EditorKind,
     text: SharedString,
-    cursor_byte: usize,
+    /// 完整选区集合。每个 selection 的 head 各画一个 caret（阶段 5）；
+    /// 非空 selection 的 range 进阶段 2 范围背景；reveal / edge-scroll 只看
+    /// primary。`SelectionSet::Clone` 是 O(1)（内部 Arc），元素按帧重建。
+    selection: SelectionSet,
     focus: FocusHandle,
     input_handler_hook: EditorInputHook,
     /// 跨帧滚动偏移的状态键。每个编辑器实例都应给一个稳定 id。
@@ -82,14 +87,14 @@ impl EditorElement {
     pub(crate) fn new(
         kind: EditorKind,
         text: impl Into<SharedString>,
-        cursor_byte: usize,
+        selection: SelectionSet,
         focus: FocusHandle,
         input_handler_hook: EditorInputHook,
     ) -> Self {
         Self {
             kind,
             text: text.into(),
-            cursor_byte,
+            selection,
             focus,
             input_handler_hook,
             element_id: None,
@@ -125,17 +130,36 @@ pub(crate) struct EditorLayout {
     font_size: Pixels,
 }
 
+/// 单行的 prepaint 产物 —— shape 结果 + 字节坐标对齐信息。
+///
+/// 字节坐标信息是阶段 2 范围背景的硬性输入（[`LineMetric`]）：哪一段 selection
+/// 跨过哪一行、行内 x_start / x_end 在哪，都依赖 `line_start_byte` / `line_len`
+/// 把整段文本的字节区间投影到每行内。
+pub(crate) struct PrepaintedLine {
+    /// 本行起始字节相对整段 text 的偏移。
+    line_start_byte: usize,
+    /// 本行内容字节长度（不含 `\n`）。
+    line_len: usize,
+    shaped: ShapedLine,
+}
+
 /// `prepaint` 阶段 shape 出的、供 `paint` 直接绘制的结果。
 pub(crate) struct EditorPrepaint {
-    /// 每行正文的 shaped 结果，下标即视觉行号。
-    lines: Vec<ShapedLine>,
+    /// 每行的 shape + 字节坐标信息，下标即视觉行号。
+    lines: Vec<PrepaintedLine>,
     /// 每行行号的 shaped 结果；无行号列时为空。
     gutter: Vec<ShapedLine>,
     line_height: Pixels,
     /// 正文起点相对 `bounds.origin.x` 的偏移（有行号列时为 [`GUTTER_WIDTH`]）。
     gutter_offset: Pixels,
-    /// 光标位置：(视觉行号, 行内像素 x)。
-    caret: (usize, Pixels),
+    /// 所有 selection 的 head 位置 `(视觉行号, 行内像素 x)`，下标与
+    /// `EditorElement::selection.as_slice()` 一一对应。
+    ///
+    /// reveal / edge-scroll 只看 primary（在 prepaint 内部就消化掉了，paint
+    /// 拿到的就是"全部 caret 都要画"的扁平集合）。
+    carets: Vec<(usize, Pixels)>,
+    /// 非空 selection 的字节区间，已按 start 升序、互不重叠（SelectionSet 契约）。
+    selection_ranges: Vec<TextRange>,
     /// 当前滚动偏移；正文与光标按它整体平移。
     scroll: Point<Pixels>,
 }
@@ -224,13 +248,22 @@ impl Element for EditorElement {
         let text_style = window.text_style();
         let font_size = layout.font_size;
         let line_height = layout.line_height;
-        let cursor_byte = self.cursor_byte.min(self.text.len());
+        let text_len = self.text.len();
         let has_gutter = self.has_gutter();
 
+        // SelectionSet 经过引擎归一化，as_slice() 已按 start 排序、互不重叠。
+        // primary 在归一化前后由 primary_index 跟踪 —— 这里 carets 的下标与
+        // as_slice 同步，下文用 primary_index 直接定位 primary caret。
+        let selections = self.selection.as_slice();
+        let primary_index = self
+            .selection
+            .primary_index()
+            .min(selections.len().saturating_sub(1));
+        // 每个 head 的 (视觉行, 行内 x)；用 None 占位，按 line 扫描时填充。
+        let mut carets_pos: Vec<Option<(usize, Pixels)>> = vec![None; selections.len()];
         let mut lines = Vec::new();
         let mut gutter = Vec::new();
-        let mut caret = (0usize, px(0.));
-        let reveal_byte = self.reveal.map(|hint| hint.byte.min(self.text.len()));
+        let reveal_byte = self.reveal.map(|hint| hint.byte.min(text_len));
         // 同步记 reveal byte 的(行, 行内 x)：reveal 路径要把 X 也照顾到，
         // 否则 match 在视区左边时 edge-scroll 会把 caret(=match end) 拉到左边缘，
         // 反而把 match 本体切到视区左侧外。
@@ -252,8 +285,18 @@ impl Element for EditorElement {
                     .shape_line(raw.to_string().into(), font_size, &runs, None);
 
             let line_end = offset + raw.len();
-            if cursor_byte >= offset && cursor_byte <= line_end {
-                caret = (index, shaped.x_for_index(cursor_byte - offset));
+            // 每个 selection.head 落在哪一行就在哪一行算 x。head 出现在行末
+            // (`head == line_end`) 与行首 (`head == offset` for next line) 是
+            // 同一字节位置——head 优先归到「等于行尾」的那一行（与旧 cursor_byte
+            // 行为一致：保留尾随空格后的光标位）。
+            for (i, sel) in selections.iter().enumerate() {
+                if carets_pos[i].is_some() {
+                    continue;
+                }
+                let head = sel.head().get().min(text_len);
+                if head >= offset && head <= line_end {
+                    carets_pos[i] = Some((index, shaped.x_for_index(head - offset)));
+                }
             }
             if let Some(rb) = reveal_byte
                 && reveal_pos.is_none()
@@ -262,7 +305,11 @@ impl Element for EditorElement {
             {
                 reveal_pos = Some((index, shaped.x_for_index(rb - offset)));
             }
-            lines.push(shaped);
+            lines.push(PrepaintedLine {
+                line_start_byte: offset,
+                line_len: raw.len(),
+                shaped,
+            });
 
             if has_gutter {
                 let label = (index + 1).to_string();
@@ -284,17 +331,34 @@ impl Element for EditorElement {
             offset = line_end + 1;
         }
 
+        // 任何 head 没匹配上（极端：选区指向超出当前 text 的字节，stale 快照）
+        // 都退化到文首 caret，避免出现"看不到的 caret"。primary 同样保护。
+        let carets: Vec<(usize, Pixels)> = carets_pos
+            .into_iter()
+            .map(|p| p.unwrap_or((0, px(0.))))
+            .collect();
+        // selection_ranges 只收非空区间；caret-only 的 selection 不画背景。
+        // 顺序与 selections 同步，因此天然保持 start 升序、互不重叠的契约。
+        let selection_ranges: Vec<TextRange> = selections
+            .iter()
+            .filter(|s| !s.is_caret())
+            .map(|s| s.range())
+            .collect();
+        let primary_caret = carets.get(primary_index).copied().unwrap_or((0, px(0.)));
+
         let gutter_offset = if has_gutter { px(GUTTER_WIDTH) } else { px(0.) };
 
         // autoscroll：让光标保持在视口内。需要稳定 element id 来跨帧存偏移。
         let scroll = match id {
             Some(global_id) => {
                 let content_height = line_height * lines.len().max(1) as f32;
-                let content_width =
-                    lines.iter().fold(
-                        px(0.),
-                        |max, line| if line.width > max { line.width } else { max },
-                    );
+                let content_width = lines.iter().fold(px(0.), |max, line| {
+                    if line.shaped.width > max {
+                        line.shaped.width
+                    } else {
+                        max
+                    }
+                });
                 let viewport_h = bounds.size.height;
                 let viewport_w =
                     clamp_px(bounds.size.width - gutter_offset, px(0.), bounds.size.width);
@@ -342,7 +406,10 @@ impl Element for EditorElement {
                     // === edge-scroll 路径（兜底）===
                     // 即便 reveal 把 reveal byte 摆到上 1/3，caret（=match end）
                     // 在多行 match 时也可能跨到视区外；edge-scroll 把 caret 拉回来，宁可让 reveal byte 飘出视区，也不能让 caret 消失。
-                    let caret_top = line_height * caret.0 as f32;
+                    // 多光标场景只让 primary caret 决定滚动 —— 多个 caret 同时驱动
+                    // 滚动会互相拉扯。primary 是用户最近交互的 caret，跟它走最自然。
+                    let (caret_line, caret_x) = primary_caret;
+                    let caret_top = line_height * caret_line as f32;
                     let caret_bottom = caret_top + line_height;
                     if caret_top < off.y {
                         off.y = caret_top;
@@ -359,9 +426,9 @@ impl Element for EditorElement {
                     // 故可滚动宽度要在最宽行的基础上额外留出一个光标宽度 ——
                     // 否则滚到行尾时光标正好压在正文区裁剪边界上、被切掉。
                     let scrollable_w = content_width + px(CARET_WIDTH);
-                    let caret_right = caret.1 + px(CARET_WIDTH);
-                    if caret.1 < off.x {
-                        off.x = caret.1;
+                    let caret_right = caret_x + px(CARET_WIDTH);
+                    if caret_x < off.x {
+                        off.x = caret_x;
                     } else if caret_right > off.x + viewport_w {
                         off.x = caret_right - viewport_w;
                     }
@@ -383,7 +450,8 @@ impl Element for EditorElement {
             gutter,
             line_height,
             gutter_offset,
-            caret,
+            carets,
+            selection_ranges,
             scroll,
         }
     }
@@ -417,22 +485,58 @@ impl Element for EditorElement {
                 bounds.size.height,
             ),
         };
+        // 选区色与焦点态解耦：caret 是否闪烁已足够传达"哪个 view 活动"，
+        // 选区无论焦点都用同一颜色（与 Zed 一致）。FocusHandle 仅决定 caret 可见。
         let caret_visible = self.focus.is_focused(window) && CaretClock::is_visible(cx);
-        let (caret_line, caret_x) = prepaint.caret;
+        // 选区色：blue.a04（手册 §4.2 第 04 档 ui-active 的 alpha 形态）。
+        let selection_color: Hsla = color::blue::a04().into();
+        let selection_quads: Vec<(TextRange, Hsla)> = prepaint
+            .selection_ranges
+            .iter()
+            .map(|range| (*range, selection_color))
+            .collect();
+        // LineMetric 借用 ShapedLine：放在 with_content_mask 闭包外构造，
+        // 让 paint_range_backgrounds 与文本绘制共用一份借用切片。
+        let line_metrics: Vec<LineMetric<'_>> = prepaint
+            .lines
+            .iter()
+            .map(|line| LineMetric {
+                line_start_byte: line.line_start_byte,
+                line_len: line.line_len,
+                shaped: &line.shaped,
+            })
+            .collect();
 
         window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {
-            for (index, shaped) in prepaint.lines.iter().enumerate() {
+            // 阶段 2 范围背景：画在文本之下，半透明色块让 syntax 字色透过来。
+            paint_range_backgrounds(
+                &selection_quads,
+                &line_metrics,
+                text_left,
+                top,
+                line_height,
+                text_area,
+                window,
+            );
+
+            // 阶段 3 文本。
+            for (index, line) in prepaint.lines.iter().enumerate() {
                 let y = top + line_height * index as f32;
-                let _ = shaped.paint(point(text_left, y), line_height, window, cx);
+                let _ = line
+                    .shaped
+                    .paint(point(text_left, y), line_height, window, cx);
             }
 
-            // 光标是独立绘制层：一个填充矩形叠在文本之上，移动它不触碰任何字形。
+            // 阶段 5 caret：每个 selection.head 各画一根 1px 竖条，叠在文本与
+            // 选区色块之上；blink 全局共享一只时钟（CaretClock）。
             if caret_visible {
-                let caret_bounds = Bounds {
-                    origin: point(text_left + caret_x, top + line_height * caret_line as f32),
-                    size: size(px(CARET_WIDTH), line_height),
-                };
-                window.paint_quad(fill(caret_bounds, caret_color()));
+                for (caret_line, caret_x) in &prepaint.carets {
+                    let caret_bounds = Bounds {
+                        origin: point(text_left + *caret_x, top + line_height * *caret_line as f32),
+                        size: size(px(CARET_WIDTH), line_height),
+                    };
+                    window.paint_quad(fill(caret_bounds, caret_color()));
+                }
             }
         });
 

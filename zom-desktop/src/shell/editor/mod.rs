@@ -12,6 +12,7 @@ mod blink;
 mod core;
 mod element;
 mod embed;
+mod highlight;
 mod ime;
 mod input;
 mod main_editor;

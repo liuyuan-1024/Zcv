@@ -78,7 +78,7 @@ impl IntoElement for EditorEmbed {
         let mut element = EditorElement::new(
             self.kind,
             self.snapshot.text,
-            self.snapshot.cursor_byte,
+            self.snapshot.selection,
             self.input.focus_handle(),
             self.input.hook(),
         );

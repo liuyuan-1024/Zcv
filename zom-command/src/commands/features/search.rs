@@ -80,6 +80,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         TOGGLE_PANEL,
         "search",
         "搜索",
+        "打开搜索面板，在当前文件或整个项目中查找文本。",
         "mod-shift-f",
     );
     registry
@@ -89,6 +90,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "当前文件",
             Box::new(run_scope_current_file),
         )
+        .description("将搜索范围切换为当前文件。")
         .key("mod-b");
     registry
         .install(
@@ -97,6 +99,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "整个项目",
             Box::new(run_scope_project),
         )
+        .description("将搜索范围切换为整个项目。")
         .key("mod-p");
     registry
         .install(
@@ -105,6 +108,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "区分大小写",
             Box::new(run_toggle_case_sensitive),
         )
+        .description("搜索时区分字母大小写。")
         .key("alt-c");
     registry
         .install(
@@ -113,6 +117,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "全词匹配",
             Box::new(run_toggle_whole_word),
         )
+        .description("只匹配完整单词。")
         .key("alt-w");
     registry
         .install(
@@ -121,12 +126,15 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "正则表达式",
             Box::new(run_toggle_regex),
         )
+        .description("使用正则表达式进行搜索。")
         .key("alt-r");
     registry
         .install(keymap, FIND_PREVIOUS, "上一个", Box::new(run_find_previous))
+        .description("跳到上一个搜索结果。")
         .key_in("up", search_panel);
     registry
         .install(keymap, FIND_NEXT, "下一个", Box::new(run_find_next))
+        .description("跳到下一个搜索结果。")
         .key_in("down", search_panel);
     registry
         .install(
@@ -135,9 +143,11 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "替换下一个",
             Box::new(run_replace_next),
         )
+        .description("替换当前匹配项并跳到下一个结果。")
         .key("mod-enter");
     registry
         .install(keymap, REPLACE_ALL, "全部替换", Box::new(run_replace_all))
+        .description("替换当前范围内的所有匹配项。")
         .key("mod-shift-enter");
     registry
         .install(
@@ -146,6 +156,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "聚焦下一个搜索输入框",
             Box::new(run_focus_next_field),
         )
+        .description("在搜索输入框之间向后移动焦点。")
         .key_in("tab", search_panel);
     registry
         .install(
@@ -154,6 +165,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "聚焦上一个搜索输入框",
             Box::new(run_focus_previous_field),
         )
+        .description("在搜索输入框之间向前移动焦点。")
         .key_in("shift-tab", search_panel);
     registry
         .install(
@@ -162,6 +174,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "焦点回到当前编辑器",
             Box::new(run_focus_editor),
         )
+        .description("让焦点从搜索面板回到当前编辑器。")
         .key_in("escape", search_panel)
         .key_in("enter", search_panel);
 }

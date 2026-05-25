@@ -15,6 +15,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         TOGGLE_PANEL,
         "keyboard_shortcuts",
         "快捷键",
+        "打开或关闭快捷键面板。",
         "mod-shift-k",
     );
 }

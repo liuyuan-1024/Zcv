@@ -442,12 +442,15 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
 
     registry
         .install(keymap, SELECT_ALL, "全选", Box::new(run_select_all))
+        .description("选中当前编辑器中的全部文本。")
         .key_in("mod-a", text_edit);
     registry
         .install(keymap, UNDO, "撤销", Box::new(run_undo))
+        .description("撤销上一次编辑。")
         .key_in("mod-z", text_edit);
     registry
         .install(keymap, REDO, "重做", Box::new(run_redo))
+        .description("重做上一次被撤销的编辑。")
         .key_in("mod-shift-z", text_edit);
     registry.install(
         keymap,
@@ -477,6 +480,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     // 下/上一个用 mod-l/h；mod-w 关当前。
     registry
         .install(keymap, SELECT_TAB, "切换标签", Box::new(run_select_tab))
+        .description("在编辑器标签之间切换。")
         .key_with_in("mod-l", select_tab_args(SelectTabTarget::Next), text_edit)
         .key_with_in(
             "mod-h",
@@ -486,10 +490,12 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
 
     registry
         .install(keymap, CLOSE_TAB, "关闭标签", Box::new(run_close_tab))
+        .description("关闭当前编辑器标签。")
         .key_in("mod-w", text_edit);
 
     registry
         .install(keymap, SAVE, "保存", Box::new(run_save))
+        .description("保存当前打开的文件。")
         .key_in("mod-s", text_edit);
 }
 

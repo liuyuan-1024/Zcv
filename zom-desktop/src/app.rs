@@ -24,6 +24,7 @@ use zom_engine::{
 use zom_view::{RevealKind, ViewId, ViewSet};
 use zom_workspace::{Workspace, WorkspaceBuffer};
 
+use crate::shell::CommandCatalogItem;
 use crate::shell::editor::{
     EditorRouter, EditorRouterMut, MainEditorOwner, MainEditorOwnerRef, TextInputProfile,
     TextTargetId, TextTargetOwner, TextTargetQuery,
@@ -455,6 +456,18 @@ impl App {
         self.registry
             .command(&command)
             .map(|command| command.title.clone())
+    }
+
+    pub(crate) fn command_catalog_items(&self) -> Vec<CommandCatalogItem> {
+        self.registry
+            .commands()
+            .map(|command| CommandCatalogItem {
+                command_id: command.id.to_string(),
+                title: command.title.clone(),
+                description: command.description.clone(),
+                visible_in_shortcuts: command.visible_in_shortcuts,
+            })
+            .collect()
     }
 
     pub(crate) fn search_state(&self) -> SearchState {

@@ -27,7 +27,7 @@ use crate::shell::editor::{EditorSnapshot, TextEditorSlot};
 use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::{self, ConfirmDeleteHandlers, FileTreePanel};
 use crate::shell::shared::theme::{color, radius};
-use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
+use crate::shell::{CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup};
 
 mod bars;
 pub(crate) mod controller;
@@ -56,6 +56,7 @@ pub(crate) fn render(
     panel_key_request: KeyRequest,
     shortcut_lookup: ShortcutLookup,
     command_title_lookup: CommandTitleLookup,
+    command_catalog_lookup: CommandCatalogLookup,
     editor_slot: Rc<TextEditorSlot>,
     search_query_slot: Rc<TextEditorSlot>,
     search_replacement_slot: Rc<TextEditorSlot>,
@@ -101,6 +102,7 @@ pub(crate) fn render(
             editor_tab_scroll,
             shortcut_lookup.clone(),
             command_title_lookup.clone(),
+            command_catalog_lookup.clone(),
         ))
         .child(render_bottom_bar(
             state,
@@ -133,6 +135,7 @@ fn render_body(
     editor_tab_scroll: ScrollHandle,
     shortcut_lookup: ShortcutLookup,
     command_title_lookup: CommandTitleLookup,
+    command_catalog_lookup: CommandCatalogLookup,
 ) -> Div {
     let panel_ctx = PanelContext {
         has_project: state.has_project,
@@ -144,6 +147,7 @@ fn render_body(
         panel_key_request: &panel_key_request,
         shortcut_lookup: &shortcut_lookup,
         command_title_lookup: &command_title_lookup,
+        command_catalog_lookup: &command_catalog_lookup,
     };
     let mut row = div().flex_1().flex().flex_row().w_full().overflow_hidden();
 

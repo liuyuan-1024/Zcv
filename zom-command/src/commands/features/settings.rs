@@ -25,6 +25,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
                 Ok(CommandOutcome::default())
             }),
         )
+        .description("打开设置。")
         .key("mod-,");
 }
 

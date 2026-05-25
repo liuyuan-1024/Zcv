@@ -15,6 +15,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         TOGGLE_PANEL,
         "version_control",
         "版本管理",
+        "打开或关闭版本管理面板。",
         "mod-shift-g",
     );
 }

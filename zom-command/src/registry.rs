@@ -43,7 +43,7 @@ impl CommandRegistry {
 
     /// 注册一条命令并返回 [`CommandBuilder`] 用于链式绑定默认键位。
     pub fn install<'a>(
-        &mut self,
+        &'a mut self,
         keymap: &'a mut Keymap,
         id: &'static str,
         title: &str,
@@ -52,7 +52,11 @@ impl CommandRegistry {
         let command_id = CommandId::new(id).expect("命令 ID 必须非空");
         self.register(Command::new(command_id.clone(), title), handler)
             .expect("命令 ID 必须唯一");
-        CommandBuilder { keymap, command_id }
+        CommandBuilder {
+            registry: self,
+            keymap,
+            command_id,
+        }
     }
 
     pub fn command(&self, id: &CommandId) -> Option<&Command> {
@@ -73,11 +77,25 @@ impl CommandRegistry {
 /// 命令注册在 `install` 时已经完成；本 builder 只往 `Keymap` 写绑定。
 /// drop 即结束 —— 不需要显式 finish。
 pub struct CommandBuilder<'a> {
+    registry: &'a mut CommandRegistry,
     keymap: &'a mut Keymap,
     command_id: CommandId,
 }
 
 impl<'a> CommandBuilder<'a> {
+    /// 设置命令在快捷键面板列表行展示的一句话解释。
+    pub fn description(self, description: impl Into<String>) -> Self {
+        self.update_command(|command| {
+            command.description = Some(description.into());
+            command.visible_in_shortcuts = true;
+        })
+    }
+
+    /// 明确隐藏不适合直接出现在快捷键面板中的内部命令。
+    pub fn hide_from_shortcuts(self) -> Self {
+        self.update_command(|command| command.visible_in_shortcuts = false)
+    }
+
     /// 绑一条无参快捷键。chord 是源代码常量，空字符串会 panic。
     pub fn key(self, chord: &'static str) -> Self {
         self.key_with(chord, CommandArgs::new())
@@ -108,5 +126,52 @@ impl<'a> CommandBuilder<'a> {
             context,
         });
         self
+    }
+
+    fn update_command(self, f: impl FnOnce(&mut Command)) -> Self {
+        let Some((command, _)) = self.registry.commands.get_mut(&self.command_id) else {
+            return self;
+        };
+        f(command);
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{CommandArgs, CommandContext, CommandOutcome};
+
+    use super::*;
+
+    fn noop_handler(
+        _: &mut CommandContext<'_>,
+        _: CommandArgs,
+    ) -> Result<CommandOutcome, CommandError> {
+        Ok(CommandOutcome::default())
+    }
+
+    #[test]
+    fn builder_should_store_shortcut_panel_metadata() {
+        let mut registry = CommandRegistry::new();
+        let mut keymap = Keymap::new();
+
+        registry
+            .install(&mut keymap, "test.help", "帮助命令", Box::new(noop_handler))
+            .description("打开搜索面板，在当前文件或整个项目中查找文本。")
+            .key("mod-shift-f");
+
+        let command = registry
+            .command(&CommandId::new("test.help").expect("测试命令 ID 必须合法"))
+            .expect("命令必须注册");
+        assert_eq!(
+            command.description.as_deref(),
+            Some("打开搜索面板，在当前文件或整个项目中查找文本。")
+        );
+        assert!(command.visible_in_shortcuts);
+        assert!(
+            keymap
+                .format_shortcut_for(&CommandId::new("test.help").unwrap())
+                .is_some()
+        );
     }
 }

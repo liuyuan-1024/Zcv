@@ -7,7 +7,7 @@
 use gpui::{AnyElement, Context, FocusHandle, IntoElement, Window};
 
 use crate::shell::editor::TextEditorSlot;
-use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
+use crate::shell::{CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup};
 
 pub(crate) mod debug;
 pub(crate) mod file_tree;
@@ -149,6 +149,7 @@ impl PanelRuntimes {
         search_replacement_slot: &std::rc::Rc<TextEditorSlot>,
         shortcuts: &ShortcutLookup,
         titles: &CommandTitleLookup,
+        command_catalog: &CommandCatalogLookup,
     ) -> Option<AnyElement> {
         match panel {
             PanelId::FileTree => None,
@@ -174,7 +175,7 @@ impl PanelRuntimes {
             PanelId::Debug => Some(self.debug.render(key_request, titles).into_any_element()),
             PanelId::KeyboardShortcuts => Some(
                 self.keyboard_shortcuts
-                    .render(key_request, titles)
+                    .render(key_request, shortcuts, command_catalog)
                     .into_any_element(),
             ),
         }

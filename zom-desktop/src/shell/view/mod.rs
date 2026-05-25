@@ -26,7 +26,7 @@ use super::workbench;
 use super::workbench::controller::WorkbenchController;
 use super::workbench::state::WorkbenchState;
 use super::workbench::{PanelHost, WindowControlsHandlers};
-use super::{ActionRequest, CommandTitleLookup, KeyRequest, ShortcutLookup};
+use super::{ActionRequest, CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup};
 
 /// shell 端的根 View：拥有 App 状态与每窗口的 `PanelHost`。
 pub(crate) struct ShellView {
@@ -235,6 +235,11 @@ impl ShellView {
         let app = Rc::clone(&self.app);
         Rc::new(move |command_id| app.borrow().command_title_for(command_id))
     }
+
+    fn command_catalog_lookup(&self) -> CommandCatalogLookup {
+        let app = Rc::clone(&self.app);
+        Rc::new(move || app.borrow().command_catalog_items())
+    }
 }
 
 impl Render for ShellView {
@@ -262,6 +267,7 @@ impl Render for ShellView {
         );
         let shortcut_lookup = self.shortcut_lookup();
         let command_title_lookup = self.command_title_lookup();
+        let command_catalog_lookup = self.command_catalog_lookup();
         let workspace_active = self
             .surface_manager
             .read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker));
@@ -289,6 +295,7 @@ impl Render for ShellView {
             panel_key_request,
             shortcut_lookup,
             command_title_lookup,
+            command_catalog_lookup,
             Rc::clone(&self.main_editor_slot),
             Rc::clone(&self.search_query_slot),
             Rc::clone(&self.search_replacement_slot),

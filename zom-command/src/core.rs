@@ -100,6 +100,8 @@ impl From<NoArgs> for CommandArgs {
 pub struct Command {
     pub id: CommandId,
     pub title: String,
+    pub description: Option<String>,
+    pub visible_in_shortcuts: bool,
 }
 
 impl Command {
@@ -107,6 +109,20 @@ impl Command {
         Self {
             id,
             title: title.into(),
+            description: None,
+            visible_in_shortcuts: false,
         }
+    }
+
+    /// 设置快捷键面板列表行展示的一句话解释，并让命令进入快捷键面板。
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self.visible_in_shortcuts = true;
+        self
+    }
+
+    pub fn hidden_from_shortcuts(mut self) -> Self {
+        self.visible_in_shortcuts = false;
+        self
     }
 }

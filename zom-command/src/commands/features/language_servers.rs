@@ -25,6 +25,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
                 Ok(CommandOutcome::default())
             }),
         )
+        .description("查看当前项目的语言服务器状态。")
         .key("mod-shift-l");
 }
 

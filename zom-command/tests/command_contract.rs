@@ -167,6 +167,45 @@ fn install_all_should_register_every_builtin_command_catalog() {
             .format_shortcut_for(&command_id(search::REPLACE_ALL))
             .is_some()
     );
+
+    let save = registry
+        .command(&command_id(editor::SAVE))
+        .expect("保存命令必须注册");
+    assert_eq!(save.description.as_deref(), Some("保存当前打开的文件。"));
+    assert!(save.visible_in_shortcuts);
+}
+
+#[test]
+fn visible_shortcut_panel_commands_should_have_descriptions_and_shortcuts() {
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    zom_command::commands::install_all(&mut registry, &mut keymap);
+
+    let visible: Vec<_> = registry
+        .commands()
+        .filter(|command| command.visible_in_shortcuts)
+        .collect();
+
+    assert!(
+        visible.len() >= 30,
+        "应有足够多的内建快捷键命令进入快捷键面板"
+    );
+
+    for command in visible {
+        assert!(
+            command
+                .description
+                .as_deref()
+                .is_some_and(|text| !text.is_empty()),
+            "{} 缺少快捷键面板描述",
+            command.id
+        );
+        assert!(
+            keymap.format_shortcut_for(&command.id).is_some(),
+            "{} 标记进入快捷键面板，但没有快捷键",
+            command.id
+        );
+    }
 }
 
 #[test]

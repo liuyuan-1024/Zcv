@@ -7,7 +7,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui::{AnyElement, UniformListScrollHandle, div, prelude::*, px};
+use gpui::{AnyElement, ListState, UniformListScrollHandle, div, prelude::*, px};
 
 use crate::shell::shared::theme::{color, radius};
 
@@ -61,6 +61,32 @@ pub(crate) fn scrollbar(handle: &ScrollHandle) -> AnyElement {
         .max(px(18.0))
         .min(track_height);
     let thumb_top = (scroll_top / max_scroll) * (track_height - thumb_height);
+
+    div()
+        .id("shared-scrollbar")
+        .absolute()
+        .top(thumb_top)
+        .right_0()
+        .w(px(4.0))
+        .h(thumb_height)
+        .rounded(radius::full())
+        .bg(color::gray::s05())
+        .into_any_element()
+}
+
+pub(crate) fn list_scrollbar(state: &ListState) -> AnyElement {
+    let viewport_height = state.viewport_bounds().size.height;
+    let max_scroll = state.max_offset_for_scrollbar().height;
+    if viewport_height <= px(0.) || max_scroll <= px(0.) {
+        return div().id("shared-scrollbar").into_any_element();
+    }
+
+    let content_height = viewport_height + max_scroll;
+    let scroll_top = -state.scroll_px_offset_for_scrollbar().y;
+    let thumb_height = (viewport_height / content_height * viewport_height)
+        .max(px(18.0))
+        .min(viewport_height);
+    let thumb_top = (scroll_top / max_scroll) * (viewport_height - thumb_height);
 
     div()
         .id("shared-scrollbar")

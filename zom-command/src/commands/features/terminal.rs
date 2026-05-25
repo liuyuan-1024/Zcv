@@ -9,5 +9,13 @@ pub fn toggle_panel() -> Invocation {
 }
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
-    super::register_panel_toggle(registry, keymap, TOGGLE_PANEL, "terminal", "终端", "mod-j");
+    super::register_panel_toggle(
+        registry,
+        keymap,
+        TOGGLE_PANEL,
+        "terminal",
+        "终端",
+        "打开或关闭终端面板。",
+        "mod-j",
+    );
 }

@@ -12,7 +12,9 @@ use crate::shell::features::panels::file_tree::FileTreePanel;
 use crate::shell::features::panels::search::SearchState;
 use crate::shell::features::panels::{PanelId, PanelRuntimes, file_tree};
 use crate::shell::shared::theme::{color, typography};
-use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup, normalized_chord};
+use crate::shell::{
+    CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup, normalized_chord,
+};
 
 /// Dock 调用 `PanelHost` 时透传给具体 panel 的运行态视图。
 ///
@@ -29,6 +31,7 @@ pub(crate) struct PanelContext<'a> {
     pub(crate) panel_key_request: &'a KeyRequest,
     pub(crate) shortcut_lookup: &'a ShortcutLookup,
     pub(crate) command_title_lookup: &'a CommandTitleLookup,
+    pub(crate) command_catalog_lookup: &'a CommandCatalogLookup,
 }
 
 pub(crate) struct PanelHost;
@@ -51,6 +54,7 @@ impl PanelHost {
                     ctx.search_replacement_slot,
                     ctx.shortcut_lookup,
                     ctx.command_title_lookup,
+                    ctx.command_catalog_lookup,
                 )
                 .unwrap_or_else(|| gpui::div().into_any_element()),
         }

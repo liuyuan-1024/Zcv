@@ -15,6 +15,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         TOGGLE_PANEL,
         "debug",
         "调试",
+        "打开或关闭调试面板。",
         "mod-shift-d",
     );
 }

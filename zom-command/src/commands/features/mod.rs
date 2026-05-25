@@ -48,6 +48,7 @@ pub(super) fn register_panel_toggle(
     command_id: &'static str,
     panel_str_id: &'static str,
     title: &'static str,
+    description: &'static str,
     default_chord: &'static str,
 ) {
     let panel = panel_str_id.to_string();
@@ -62,6 +63,7 @@ pub(super) fn register_panel_toggle(
                 Ok(CommandOutcome::default())
             }),
         )
+        .description(description)
         .key(default_chord);
 }
 

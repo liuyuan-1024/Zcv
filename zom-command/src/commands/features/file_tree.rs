@@ -120,6 +120,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         TOGGLE_PANEL,
         "file_tree",
         "文件树",
+        "打开或关闭文件树面板。",
         "mod-shift-e",
     );
 
@@ -134,6 +135,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "移动文件树选中项",
             Box::new(run_move_selection),
         )
+        .description("在文件树中向上或向下移动选中项。")
         .key_with_in("up", move_args(-1), navigate)
         .key_with_in("down", move_args(1), navigate);
 
@@ -144,6 +146,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "折叠文件树条目或跳到父目录",
             Box::new(run_collapse_or_parent),
         )
+        .description("折叠当前目录；已折叠时跳到父目录。")
         .key_in("left", navigate);
 
     registry
@@ -153,6 +156,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "展开文件树条目或进入子项",
             Box::new(run_expand_or_into),
         )
+        .description("展开当前目录；已展开时进入子项。")
         .key_in("right", navigate);
 
     registry
@@ -166,15 +170,17 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "文件树焦点回到编辑器",
             Box::new(run_focus_editor),
         )
+        .description("让焦点从文件树回到当前编辑器。")
         .key_in("escape", navigate);
 
     registry
         .install(
             keymap,
             BEGIN_NEW_ENTRY,
-            "在文件树中新建文件或目录",
+            "在文件树中新建条目",
             Box::new(run_begin_new_entry),
         )
+        .description("在当前目录中默认新建文件，在名称后加 / 会被识别为目录（可嵌套新建）。")
         .key_in("mod-n", navigate);
 
     registry
@@ -202,8 +208,9 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "删除文件树选中条目",
             Box::new(run_request_delete),
         )
-        .key_in("mod-delete", navigate)
-        .key_in("mod-backspace", navigate);
+        .description("请求删除文件树中选中的条目。enter 确认删除，esc 取消删除。")
+        .key_in("mod-backspace", navigate)
+        .key_in("mod-delete", navigate);
 
     registry
         .install(

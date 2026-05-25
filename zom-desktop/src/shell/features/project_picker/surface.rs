@@ -101,7 +101,7 @@ fn render(runtime: ProjectPickerRuntime, actions: ProjectPickerActions) -> Div {
 
     div()
         .w(px(420.0))
-        .p(space::s12())
+        .p(space::s8())
         .rounded(radius::r4())
         .border_1()
         .border_color(color::gray::s05())

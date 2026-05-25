@@ -20,11 +20,10 @@ fn input_box(state: &ProjectPickerState, slot: &Rc<TextEditorSlot>) -> Div {
     let mut box_ = div()
         .relative()
         .w_full()
-        .h(typography::editor_line())
         .flex()
         .items_center()
-        .text_size(typography::editor())
-        .line_height(typography::editor_line())
+        .text_size(typography::ui())
+        .line_height(typography::ui_line())
         .text_color(color::gray::s09())
         .overflow_hidden();
 

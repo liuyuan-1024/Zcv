@@ -15,11 +15,14 @@ use crate::shell::workbench::PanelContext;
 use crate::shell::{ActionRequest, KeyRequest};
 
 mod confirm_delete;
+mod effects;
 mod focus;
 mod model;
 mod runtime;
 mod state;
 mod view;
+
+pub(crate) use effects::try_apply_effect;
 
 pub(crate) use model::FileTreeModel;
 pub(crate) use runtime::FileTreeRuntime;

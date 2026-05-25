@@ -1,8 +1,8 @@
 //! shell 根视图。
 
-mod actions;
-mod focus;
-mod project;
+pub(crate) mod actions;
+pub(crate) mod focus;
+pub(crate) mod project;
 
 use std::cell::RefCell;
 use std::rc::Rc;

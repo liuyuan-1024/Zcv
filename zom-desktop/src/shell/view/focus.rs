@@ -14,20 +14,20 @@ use crate::shell::features::panels::{PanelId, PanelRuntimes, focus_panel_handle}
 
 /// 焦点可以去的 workbench 目标。
 #[derive(Clone, Copy)]
-pub(super) enum FocusTarget {
+pub(crate) enum FocusTarget {
     Panel(PanelId),
     Editor,
 }
 
 /// 焦点路由器：持有解析各目标所需的运行态引用，是 actions 层移动焦点的唯一出口。
-pub(super) struct FocusRouter<'a> {
+pub(crate) struct FocusRouter<'a> {
     panel_runtimes: &'a PanelRuntimes,
     file_tree: &'a FileTreeRuntime,
     editor: &'a FocusHandle,
 }
 
 impl<'a> FocusRouter<'a> {
-    pub(super) fn new(
+    pub(crate) fn new(
         panel_runtimes: &'a PanelRuntimes,
         file_tree: &'a FileTreeRuntime,
         editor: &'a FocusHandle,
@@ -40,7 +40,7 @@ impl<'a> FocusRouter<'a> {
     }
 
     /// 把焦点移到目标处。骨架阶段尚无焦点宿主的 panel 静默跳过。
-    pub(super) fn move_to(&self, target: FocusTarget, window: &mut Window) {
+    pub(crate) fn move_to(&self, target: FocusTarget, window: &mut Window) {
         match target {
             FocusTarget::Panel(panel) => {
                 if let Some(focus) = self.panel_focus_handle(panel) {
@@ -53,7 +53,7 @@ impl<'a> FocusRouter<'a> {
     }
 
     /// 焦点当前是否就在目标处。
-    pub(super) fn is_at(&self, target: FocusTarget, window: &Window) -> bool {
+    pub(crate) fn is_at(&self, target: FocusTarget, window: &Window) -> bool {
         self.resolve(target)
             .is_some_and(|focus| focus.is_focused(window))
     }

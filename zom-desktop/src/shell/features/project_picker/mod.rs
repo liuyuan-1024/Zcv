@@ -1,8 +1,11 @@
 //! 项目切换功能。
 
+mod effects;
 mod model;
 mod recent;
 mod surface;
+
+pub(crate) use effects::try_apply_effect;
 
 use std::rc::Rc;
 

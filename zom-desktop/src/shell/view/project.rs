@@ -15,7 +15,7 @@ use crate::shell::workbench::controller::WorkbenchController;
 
 use super::actions;
 
-pub(super) fn open_local_project(
+pub(crate) fn open_local_project(
     app: Rc<RefCell<App>>,
     workbench: Rc<RefCell<WorkbenchController>>,
     surfaces: &Entity<SurfaceManager>,
@@ -40,7 +40,7 @@ pub(super) fn open_local_project(
         .detach();
 }
 
-pub(super) fn open_recent_project(
+pub(crate) fn open_recent_project(
     app: Rc<RefCell<App>>,
     workbench: Rc<RefCell<WorkbenchController>>,
     surfaces: &Entity<SurfaceManager>,
@@ -59,7 +59,7 @@ pub(super) fn open_recent_project(
     }
 }
 
-pub(super) fn clone_git_project(
+pub(crate) fn clone_git_project(
     app: Rc<RefCell<App>>,
     workbench: Rc<RefCell<WorkbenchController>>,
     surfaces: &Entity<SurfaceManager>,
@@ -95,7 +95,7 @@ pub(super) fn clone_git_project(
 
 /// 打开本地项目的统一落点：更新 `App` 状态、展开并聚焦文件树、刷新窗口。
 /// 选择器流程与开发阶段默认项目都经由此函数，保证两条路径行为一致。
-pub(super) fn apply_project_open(
+pub(crate) fn apply_project_open(
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
     file_tree: &FileTreeRuntime,

@@ -1,6 +1,9 @@
 //! 语言服务器状态功能。
 
+mod effects;
 mod surface;
+
+pub(crate) use effects::try_apply_effect;
 
 use gpui::{AnyElement, IntoElement};
 use zom_command::commands::language_servers;

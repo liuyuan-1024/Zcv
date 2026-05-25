@@ -3,8 +3,11 @@
 //! 第一版先提供搜索 / 替换 UI 外壳；P3 后续再把输入、结果与
 //! `zom-engine` 搜索能力接起来。
 
+mod effects;
 mod model;
 mod query;
+
+pub(crate) use effects::try_apply_effect;
 
 use std::cell::RefCell;
 use std::rc::Rc;

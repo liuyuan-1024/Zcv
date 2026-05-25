@@ -5,9 +5,8 @@
 
 use crate::{
     BufferConfig, BufferVersion, ByteOffset, CoordinateError, EngineError, EngineResult,
-    MetadataLayer, MetadataLayerKind, MetadataRangeSpec, SearchError, Stickiness, TextRange,
-    VersionedResult, position_map::MappingResult, storage::TextRead,
-    tracking::TrackedRangeUpdatePolicy, transaction::DeltaEvent,
+    SearchError, Stickiness, TextRange, VersionedResult, position_map::MappingResult,
+    storage::TextRead, transaction::DeltaEvent,
 };
 use regex::{Regex, RegexBuilder};
 
@@ -202,30 +201,6 @@ impl SearchMatch {
     }
 }
 
-/// 挂载到 `MetadataLayerKind::SearchMatch` 时使用的轻量 payload。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SearchMatchMetadata {
-    ordinal: usize,
-    query: String,
-}
-
-impl SearchMatchMetadata {
-    pub fn new(ordinal: usize, query: impl Into<String>) -> Self {
-        Self {
-            ordinal,
-            query: query.into(),
-        }
-    }
-
-    pub fn ordinal(&self) -> usize {
-        self.ordinal
-    }
-
-    pub fn query(&self) -> &str {
-        &self.query
-    }
-}
-
 /// 一次搜索结果，绑定被搜索文本的 `BufferVersion`。
 ///
 /// 版本绑定与过期判断由内部 `VersionedResult<Vec<SearchMatch>>` 承担；本类型本身只保留
@@ -319,11 +294,6 @@ impl SearchResult {
             query,
             options,
         })
-    }
-
-    /// 把搜索结果转换为可跟随文本变化的 SearchMatch metadata layer。
-    pub fn to_metadata_layer(&self) -> EngineResult<MetadataLayer<SearchMatchMetadata>> {
-        build_search_match_metadata_layer(self.matches.version(), self.matches.value(), &self.query)
     }
 }
 
@@ -422,15 +392,6 @@ impl RegexSearchResult {
             options,
         })
     }
-
-    /// 把正则搜索结果转换为可跟随文本变化的 SearchMatch metadata layer。
-    pub fn to_metadata_layer(&self) -> EngineResult<MetadataLayer<SearchMatchMetadata>> {
-        build_search_match_metadata_layer(
-            self.matches.version(),
-            self.matches.value(),
-            &self.pattern,
-        )
-    }
 }
 
 /// 把搜索匹配按 `PositionMap::map_old_range_with_stickiness(Stickiness::Never)`
@@ -450,25 +411,6 @@ fn remap_search_matches(
         }
     }
     remapped
-}
-
-fn build_search_match_metadata_layer(
-    version: BufferVersion,
-    matches: &[SearchMatch],
-    query: &str,
-) -> EngineResult<MetadataLayer<SearchMatchMetadata>> {
-    let ranges = matches.iter().map(|search_match| {
-        MetadataRangeSpec::new(
-            search_match.range(),
-            SearchMatchMetadata::new(search_match.ordinal(), query.to_string()),
-        )
-        .with_stickiness(Stickiness::Never)
-        .with_update_policy(TrackedRangeUpdatePolicy::invalidate_when_touched_by_deletion())
-    });
-
-    let mut layer = MetadataLayer::with_kind(MetadataLayerKind::SearchMatch, version);
-    layer.replace_all_with_options(version, ranges)?;
-    Ok(layer)
 }
 
 pub(crate) fn search_in_text<T: TextRead>(

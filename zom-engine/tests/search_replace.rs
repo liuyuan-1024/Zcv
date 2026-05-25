@@ -70,19 +70,6 @@ fn search_result_should_remap_forward_and_drop_deleted_matches() {
 }
 
 #[test]
-fn search_result_to_metadata_layer_should_bind_ordinals_and_query_payload() {
-    let buffer = buffer("ab ab");
-    let result = buffer.search_literal("ab").unwrap();
-    let layer = result.to_metadata_layer().unwrap();
-
-    assert_eq!(layer.kind(), &MetadataLayerKind::SearchMatch);
-    assert_eq!(layer.version(), buffer.version());
-    assert_eq!(layer.len(), 2);
-    assert_eq!(layer.as_slice()[0].metadata().ordinal(), 0);
-    assert_eq!(layer.as_slice()[0].metadata().query(), "ab");
-}
-
-#[test]
 fn replace_search_match_should_reject_missing_match_and_preserve_state() {
     let mut buffer = buffer("ab ab");
     let result = buffer.search_literal("ab").unwrap();

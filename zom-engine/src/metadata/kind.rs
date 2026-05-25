@@ -4,12 +4,10 @@
 
 /// MetadataLayer 的分类键。
 ///
-/// 引擎只预定义自身会创建的分类（目前仅 `SearchMatch`）；宿主侧业务分类一律使用
-/// `Custom(String)`，引擎不对其附加 schema 或语义。
+/// 引擎当前不预定义任何业务分类；所有 layer 都通过 `Custom(String)` 表达，引擎不对其附加 schema 或语义。
+/// 搜索高亮、语法高亮、诊断、断点等业务分类全部由宿主侧决定。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MetadataLayerKind {
-    /// 引擎搜索结果区间；由 engine 内部 search 模块创建，不计算匹配文本或搜索状态。
-    SearchMatch,
     /// 宿主自定义 layer，字符串只作为类别键，不携带 schema 或渲染语义。
     Custom(String),
 }

@@ -44,10 +44,7 @@ pub use projection::{
     ProjectedPointMapping, ProjectedRange, ProjectedViewport, ProjectedViewportRow,
     ProjectedViewportRowKind, ProjectedViewportSlice, Projection, TextLine,
 };
-pub use search::{
-    RegexSearchOptions, RegexSearchResult, SearchMatch, SearchMatchMetadata, SearchOptions,
-    SearchResult,
-};
+pub use search::{RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchResult};
 pub use selection::{
     CompositionSelection, CompositionState, Cursor, Motion, MovementDirection, MovementUnit,
     Selection, SelectionMergePolicy, SelectionSet,

@@ -96,12 +96,12 @@ impl<'a> CommandBuilder<'a> {
         self.update_command(|command| command.visible_in_shortcuts = false)
     }
 
-    /// 绑一条无参快捷键。chord 是源代码常量，空字符串会 panic。
+    /// 绑一条无参全局快捷键。chord 是源代码常量，空字符串会 panic。
     pub fn key(self, chord: &'static str) -> Self {
         self.key_with(chord, CommandArgs::new())
     }
 
-    /// 绑一条全局快捷键。
+    /// 绑一条有参全局快捷键。
     pub fn key_with(self, chord: &'static str, args: CommandArgs) -> Self {
         self.key_with_in(chord, args, KeyBindingContext::global())
     }

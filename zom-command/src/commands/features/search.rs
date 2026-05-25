@@ -95,7 +95,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_toggle_case_sensitive),
         )
         .description("搜索时区分字母大小写。")
-        .key("alt-c");
+        .key_in("alt-c", search_panel);
     registry
         .install(
             keymap,
@@ -104,7 +104,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_toggle_whole_word),
         )
         .description("只匹配完整单词。")
-        .key("alt-w");
+        .key_in("alt-w", search_panel);
     registry
         .install(
             keymap,
@@ -113,7 +113,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_toggle_regex),
         )
         .description("使用正则表达式进行搜索。")
-        .key("alt-r");
+        .key_in("alt-r", search_panel);
     registry
         .install(keymap, FIND_PREVIOUS, "上一个", Box::new(run_find_previous))
         .description("跳到上一个搜索结果。")
@@ -130,11 +130,11 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_replace_next),
         )
         .description("替换当前匹配项并跳到下一个结果。")
-        .key("mod-enter");
+        .key_in("mod-enter", search_panel);
     registry
         .install(keymap, REPLACE_ALL, "全部替换", Box::new(run_replace_all))
         .description("替换当前范围内的所有匹配项。")
-        .key("mod-shift-enter");
+        .key_in("mod-shift-enter", search_panel);
     registry
         .install(
             keymap,

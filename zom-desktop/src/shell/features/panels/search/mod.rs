@@ -4,6 +4,7 @@
 //! `zom-engine` 搜索能力接起来。
 
 mod model;
+mod query;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -20,9 +21,7 @@ use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::docks::render_focus_host;
 use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 
-pub(crate) use model::{
-    SearchModel, SearchOptions as SearchPanelOptions, SearchResultItem, SearchState,
-};
+pub(crate) use model::{SearchModel, SearchResultItem, SearchState};
 
 const CASE_SENSITIVE_ICON: &str = "icons/actions/case_sensitive.svg";
 const WHOLE_WORD_ICON: &str = "icons/actions/whole_word.svg";

@@ -49,8 +49,8 @@ pub enum HostEffect {
     TogglePanel(String),
 
     // ===== Search =====
-    /// 设置搜索范围。
-    SearchSetScope(SearchScope),
+    /// 打开搜索面板并切换到指定范围；若搜索面板已可见，则只切换范围。
+    SearchActivateScope(SearchScope),
     /// 切换搜索选项。
     SearchToggleOption(SearchOption),
     /// 选中上一个搜索结果。

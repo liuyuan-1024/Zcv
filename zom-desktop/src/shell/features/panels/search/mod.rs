@@ -277,18 +277,18 @@ fn scope_switch(
         .bg(color::gray::s01())
         .p(space::s4())
         .child(scope_segment(
-            "search-scope-current-file",
-            search::SCOPE_CURRENT_FILE,
-            shortcuts,
-            titles,
-            active_scope == SearchScope::CurrentFile,
-        ))
-        .child(scope_segment(
             "search-scope-project",
-            search::SCOPE_PROJECT,
+            search::IN_PROJECT,
             shortcuts,
             titles,
             active_scope == SearchScope::Project,
+        ))
+        .child(scope_segment(
+            "search-scope-current-file",
+            search::IN_BUFFER,
+            shortcuts,
+            titles,
+            active_scope == SearchScope::CurrentFile,
         ))
 }
 
@@ -312,8 +312,7 @@ fn scope_segment(
         .justify_center()
         .rounded(radius::r2())
         .bg(bg)
-        .px(space::s8())
-        .py(space::s4())
+        .p(space::s4())
         .child(
             Glyph::text(id, title.clone(), title)
                 .hint(shortcuts(command_id))

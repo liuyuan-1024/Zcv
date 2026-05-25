@@ -6,8 +6,8 @@ use crate::{
 };
 
 pub const TOGGLE_PANEL: &str = "panel.toggle.search";
-pub const SCOPE_CURRENT_FILE: &str = "search.scope_current_file";
-pub const SCOPE_PROJECT: &str = "search.scope_project";
+pub const IN_BUFFER: &str = "search.in_buffer";
+pub const IN_PROJECT: &str = "search.in_project";
 pub const TOGGLE_CASE_SENSITIVE: &str = "search.toggle_case_sensitive";
 pub const TOGGLE_WHOLE_WORD: &str = "search.toggle_whole_word";
 pub const TOGGLE_REGEX: &str = "search.toggle_regex";
@@ -23,12 +23,12 @@ pub fn toggle_panel() -> Invocation {
     super::panel_toggle_invocation(TOGGLE_PANEL)
 }
 
-pub fn scope_current_file() -> Invocation {
-    no_args(SCOPE_CURRENT_FILE)
+pub fn in_buffer() -> Invocation {
+    no_args(IN_BUFFER)
 }
 
-pub fn scope_project() -> Invocation {
-    no_args(SCOPE_PROJECT)
+pub fn in_project() -> Invocation {
+    no_args(IN_PROJECT)
 }
 
 pub fn toggle_case_sensitive() -> Invocation {
@@ -74,33 +74,19 @@ pub fn focus_editor() -> Invocation {
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     let search_panel = KeyBindingContext::search_panel();
 
-    super::register_panel_toggle(
-        registry,
-        keymap,
-        TOGGLE_PANEL,
-        "search",
-        "搜索",
-        "打开搜索面板，在当前文件或整个项目中查找文本。",
-        "mod-shift-f",
-    );
+    registry.install(keymap, TOGGLE_PANEL, "搜索", Box::new(run_toggle_panel));
     registry
-        .install(
-            keymap,
-            SCOPE_CURRENT_FILE,
-            "当前文件",
-            Box::new(run_scope_current_file),
+        .install(keymap, IN_BUFFER, "文件级搜索", Box::new(run_in_buffer))
+        .description(
+            "在当前 buffer 内搜索；面板隐藏时打开并定位、显示时同范围再按则关闭、异范围则切换。",
         )
-        .description("将搜索范围切换为当前文件。")
-        .key("mod-b");
+        .key("mod-f");
     registry
-        .install(
-            keymap,
-            SCOPE_PROJECT,
-            "整个项目",
-            Box::new(run_scope_project),
+        .install(keymap, IN_PROJECT, "项目级搜索", Box::new(run_in_project))
+        .description(
+            "在整个项目内搜索；面板隐藏时打开并定位、显示时同范围再按则关闭、异范围则切换。",
         )
-        .description("将搜索范围切换为整个项目。")
-        .key("mod-p");
+        .key("mod-shift-f");
     registry
         .install(
             keymap,
@@ -183,23 +169,33 @@ fn no_args(command_id: &'static str) -> Invocation {
     (cid(command_id), CommandArgs::new())
 }
 
-fn run_scope_current_file(
+fn run_toggle_panel(
     ctx: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     ctx.effects
-        .push(HostEffect::SearchSetScope(SearchScope::CurrentFile));
+        .push(HostEffect::TogglePanel("search".to_string()));
     Ok(CommandOutcome::default())
 }
 
-fn run_scope_project(
+fn run_in_buffer(
     ctx: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     ctx.effects
-        .push(HostEffect::SearchSetScope(SearchScope::Project));
+        .push(HostEffect::SearchActivateScope(SearchScope::CurrentFile));
+    Ok(CommandOutcome::default())
+}
+
+fn run_in_project(
+    ctx: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    ctx.effects
+        .push(HostEffect::SearchActivateScope(SearchScope::Project));
     Ok(CommandOutcome::default())
 }
 

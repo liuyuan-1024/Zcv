@@ -1253,6 +1253,29 @@ mod tests {
     }
 
     #[test]
+    fn search_shortcuts_should_open_requested_scope_from_editor() {
+        let mut app = App::new();
+
+        let outcome = app
+            .dispatch_key("mod-f".to_string(), KeySurface::Editor)
+            .expect("派发成功");
+        assert!(outcome.consumed);
+        assert_eq!(
+            outcome.effects,
+            vec![HostEffect::SearchActivateScope(SearchScope::CurrentFile)]
+        );
+
+        let outcome = app
+            .dispatch_key("mod-shift-f".to_string(), KeySurface::Editor)
+            .expect("派发成功");
+        assert!(outcome.consumed);
+        assert_eq!(
+            outcome.effects,
+            vec![HostEffect::SearchActivateScope(SearchScope::Project)]
+        );
+    }
+
+    #[test]
     fn panel_key_surface_should_keep_global_shortcuts_without_text_edit_context() {
         let mut app = App::new();
 
@@ -1304,16 +1327,25 @@ mod tests {
         assert_eq!(app.search_state().query.text, "needl");
 
         let outcome = app
-            .dispatch_key("mod-p".to_string(), KeySurface::Panel)
+            .dispatch_key("mod-shift-f".to_string(), KeySurface::Panel)
             .expect("派发成功");
         assert!(outcome.consumed);
         assert_eq!(
             outcome.effects,
-            vec![HostEffect::SearchSetScope(SearchScope::Project)]
+            vec![HostEffect::SearchActivateScope(SearchScope::Project)]
         );
 
         app.search_set_scope(SearchScope::Project);
         assert_eq!(app.search_state().scope, SearchScope::Project);
+
+        let outcome = app
+            .dispatch_key("mod-f".to_string(), KeySurface::Panel)
+            .expect("派发成功");
+        assert!(outcome.consumed);
+        assert_eq!(
+            outcome.effects,
+            vec![HostEffect::SearchActivateScope(SearchScope::CurrentFile)]
+        );
 
         let outcome = app
             .dispatch_key("alt-c".to_string(), KeySurface::Panel)

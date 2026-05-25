@@ -127,8 +127,8 @@ fn install_all_should_register_every_builtin_command_catalog() {
         (version_control::TOGGLE_PANEL, "版本管理"),
         (outline::TOGGLE_PANEL, "大纲"),
         (search::TOGGLE_PANEL, "搜索"),
-        (search::SCOPE_CURRENT_FILE, "当前文件"),
-        (search::SCOPE_PROJECT, "整个项目"),
+        (search::IN_BUFFER, "search in buffer"),
+        (search::IN_PROJECT, "search in project"),
         (search::TOGGLE_CASE_SENSITIVE, "区分大小写"),
         (search::TOGGLE_WHOLE_WORD, "全词匹配"),
         (search::TOGGLE_REGEX, "正则表达式"),
@@ -220,8 +220,8 @@ fn search_ui_commands_should_emit_state_effects() {
         &mut workspace,
         &mut views,
         vec![
-            (search::SCOPE_CURRENT_FILE, CommandArgs::new()),
-            (search::SCOPE_PROJECT, CommandArgs::new()),
+            (search::IN_BUFFER, CommandArgs::new()),
+            (search::IN_PROJECT, CommandArgs::new()),
             (search::TOGGLE_CASE_SENSITIVE, CommandArgs::new()),
             (search::TOGGLE_WHOLE_WORD, CommandArgs::new()),
             (search::TOGGLE_REGEX, CommandArgs::new()),
@@ -236,8 +236,8 @@ fn search_ui_commands_should_emit_state_effects() {
     assert_eq!(
         effects,
         vec![
-            HostEffect::SearchSetScope(SearchScope::CurrentFile),
-            HostEffect::SearchSetScope(SearchScope::Project),
+            HostEffect::SearchActivateScope(SearchScope::CurrentFile),
+            HostEffect::SearchActivateScope(SearchScope::Project),
             HostEffect::SearchToggleOption(SearchOption::CaseSensitive),
             HostEffect::SearchToggleOption(SearchOption::WholeWord),
             HostEffect::SearchToggleOption(SearchOption::Regex),
@@ -247,6 +247,32 @@ fn search_ui_commands_should_emit_state_effects() {
             HostEffect::SearchReplaceAll,
         ]
     );
+}
+
+#[test]
+fn search_scope_shortcuts_should_open_or_switch_search_scope() {
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    search::install(&mut registry, &mut keymap);
+    let global = global_context();
+    let search_field = [KeyContext::search_panel(), KeyContext::global()];
+
+    for contexts in [&global[..], &search_field[..]] {
+        assert_eq!(
+            keymap.resolve(&[key("mod-f")], contexts),
+            KeymapResolution::Matched {
+                command: command_id(search::IN_BUFFER),
+                args: CommandArgs::new(),
+            }
+        );
+        assert_eq!(
+            keymap.resolve(&[key("mod-shift-f")], contexts),
+            KeymapResolution::Matched {
+                command: command_id(search::IN_PROJECT),
+                args: CommandArgs::new(),
+            }
+        );
+    }
 }
 
 #[test]

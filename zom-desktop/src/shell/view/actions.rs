@@ -98,6 +98,9 @@ pub(super) fn apply_host_effects(
                 }
                 window.refresh();
             }
+            HostEffect::SearchActivateScope(scope) => {
+                activate_search_scope(scope, app, workbench, &focus, window);
+            }
             HostEffect::SearchFocusNextField => {
                 focus_search_field(panel_runtimes, SearchFocusDirection::Next, window);
             }
@@ -105,10 +108,6 @@ pub(super) fn apply_host_effects(
                 focus_search_field(panel_runtimes, SearchFocusDirection::Previous, window);
             }
             HostEffect::SearchFocusEditor => focus.move_to(FocusTarget::Editor, window),
-            HostEffect::SearchSetScope(scope) => {
-                app.borrow_mut().search_set_scope(scope);
-                window.refresh();
-            }
             HostEffect::SearchToggleOption(option) => {
                 app.borrow_mut().search_toggle_option(option);
                 window.refresh();
@@ -311,6 +310,46 @@ pub(super) fn apply_host_effects(
             }
         }
     }
+}
+
+/// `mod-f` / `mod-shift-f` 的三态行为：
+///
+/// | 当前状态 | 请求 scope | 行为 |
+/// |---|---|---|
+/// | 面板隐藏 | 任一 | 显示 + 设 scope + 聚焦输入框 |
+/// | 面板显示，scope 相同 | == 当前 | 隐藏，焦点回编辑器 |
+/// | 面板显示，scope 不同 | != 当前 | 切换 scope，焦点不动 |
+///
+/// 两个快捷键各自带一个固定 scope —— `mod-f` 永远代表"我要文件级"、
+/// `mod-shift-f` 永远代表"我要项目级"；至于是开是关、是切是聚焦，由当前
+/// 状态 + 请求 scope 的差异决定，调用方不需要分支。
+fn activate_search_scope(
+    scope: zom_command::SearchScope,
+    app: &Rc<RefCell<App>>,
+    workbench: &Rc<RefCell<WorkbenchController>>,
+    focus: &FocusRouter<'_>,
+    window: &mut Window,
+) {
+    let panel = PanelId::Search;
+    let visible = workbench.borrow().is_panel_active(panel);
+
+    if !visible {
+        // 隐藏 → 显示 + 设 scope + 聚焦
+        app.borrow_mut().search_set_scope(scope);
+        workbench.borrow_mut().show_panel(panel);
+        focus.move_to(FocusTarget::Panel(panel), window);
+    } else {
+        let current = app.borrow().search_state().scope;
+        if current == scope {
+            // 已显示 + 同 scope → 关
+            workbench.borrow_mut().hide_panel(panel);
+            focus.move_to(FocusTarget::Editor, window);
+        } else {
+            // 已显示 + 切 scope（焦点不动，用户可能正在打字）
+            app.borrow_mut().search_set_scope(scope);
+        }
+    }
+    window.refresh();
 }
 
 #[derive(Clone, Copy)]

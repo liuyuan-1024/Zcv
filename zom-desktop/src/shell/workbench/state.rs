@@ -4,7 +4,7 @@
 
 use gpui::Pixels;
 
-pub(crate) use crate::app::{EditorState, EditorTab};
+pub(crate) use super::editor_area::state::{EditorState, EditorTab, build as build_editor_state};
 use crate::shell::features::panels::PanelId;
 use crate::shell::features::panels::file_tree::FileTreeState;
 use crate::shell::features::panels::search::SearchState;

@@ -15,6 +15,7 @@ use crate::shell::workbench::{PanelContext, PanelHost};
 use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 
 mod editor_pane;
+pub(crate) mod state;
 mod tab_bar;
 
 pub(crate) fn render(

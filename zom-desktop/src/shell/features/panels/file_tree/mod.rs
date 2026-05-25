@@ -10,6 +10,7 @@ use std::rc::Rc;
 use gpui::{AnyElement, Div, FocusHandle};
 
 use crate::shell::editor::TextEditorSlot;
+use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::PanelContext;
 use crate::shell::{ActionRequest, KeyRequest};
 
@@ -55,6 +56,7 @@ pub(crate) struct FileTreePanel<'a> {
     pub(crate) focus: &'a FocusHandle,
     pub(crate) key_request: &'a KeyRequest,
     pub(crate) slot: &'a Rc<TextEditorSlot>,
+    pub(crate) scroll: &'a ScrollHandle,
     /// 当前焦点是否在文件树容器上；决定选中边框是否可见。
     pub(crate) is_focused: bool,
 }

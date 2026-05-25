@@ -11,6 +11,7 @@ use gpui::{Context, FocusHandle, Window};
 use crate::app::App;
 use crate::shell::KeyRequest;
 use crate::shell::editor::TextEditorSlot;
+use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::controller::WorkbenchController;
 
 use super::{FileTreePanel, FileTreeState};
@@ -18,12 +19,14 @@ use super::{FileTreePanel, FileTreeState};
 #[derive(Clone)]
 pub(crate) struct FileTreeRuntime {
     focus: FocusHandle,
+    scroll: ScrollHandle,
 }
 
 impl FileTreeRuntime {
     pub(crate) fn new<T>(cx: &mut Context<T>) -> Self {
         Self {
             focus: cx.focus_handle(),
+            scroll: ScrollHandle::new(),
         }
     }
 
@@ -48,6 +51,7 @@ impl FileTreeRuntime {
             focus: &self.focus,
             key_request,
             slot,
+            scroll: &self.scroll,
             is_focused: self.focus.is_focused(window),
         }
     }

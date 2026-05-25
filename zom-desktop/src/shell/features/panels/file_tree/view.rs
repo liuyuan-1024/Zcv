@@ -9,10 +9,11 @@
 
 use std::rc::Rc;
 
-use gpui::{AnyElement, Div, IntoElement, Svg, div, prelude::*, svg};
+use gpui::{AnyElement, Div, Svg, div, prelude::*, svg, uniform_list};
 
 use crate::shell::editor::{EditorKind, TextEditorSlot};
 use crate::shell::normalized_chord;
+use crate::shell::shared::scroll;
 use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::PanelContext;
 use zom_workspace::EntryKind;
@@ -37,7 +38,7 @@ pub(super) fn render(ctx: PanelContext<'_>) -> Div {
     } else if panel.state.rows.is_empty() {
         empty_message("项目目录为空").into_any_element()
     } else {
-        render_list(panel.state, panel.is_focused, panel.slot).into_any_element()
+        render_list(panel.state, panel.is_focused, panel.slot, panel.scroll).into_any_element()
     };
 
     div()
@@ -56,23 +57,73 @@ fn render_list(
     state: &FileTreeState,
     is_focused: bool,
     slot: &Rc<TextEditorSlot>,
-) -> impl IntoElement + use<> {
-    let mut list = div()
-        .id("file-tree-list")
-        .flex()
-        .flex_col()
+    scroll_handle: &scroll::ScrollHandle,
+) -> Div {
+    let items = logical_items(state);
+    let selected_item = selected_item_index(&items, state);
+    let selected = state.selected.clone();
+    let active = state.active.clone();
+    let slot = Rc::clone(slot);
+    if let Some(index) = selected_item.filter(|index| *index < items.len()) {
+        scroll_handle.reveal_item_if_changed(index);
+    }
+
+    div()
+        .relative()
         .size_full()
-        .overflow_y_scroll();
+        .overflow_hidden()
+        .child(
+            uniform_list("file-tree-list", items.len(), move |range, _, _| {
+                range
+                    .filter_map(|index| items.get(index))
+                    .map(|item| match item {
+                        FileTreeItem::Row(row) => {
+                            render_row(row, selected.as_ref(), active.as_ref(), is_focused)
+                                .into_any_element()
+                        }
+                        FileTreeItem::Pending(pending) => {
+                            render_input_row(pending, &slot).into_any_element()
+                        }
+                    })
+                    .collect()
+            })
+            .size_full()
+            .track_scroll(scroll_handle.inner()),
+        )
+        .child(scroll::scrollbar(scroll_handle))
+}
+
+#[derive(Clone)]
+enum FileTreeItem {
+    Row(FileTreeRow),
+    Pending(PendingNewEntry),
+}
+
+fn logical_items(state: &FileTreeState) -> Vec<FileTreeItem> {
+    let mut items = Vec::new();
     for row in &state.rows {
-        list = list.child(render_row(row, state, is_focused));
+        items.push(FileTreeItem::Row(row.clone()));
         // 新建条目的输入行紧跟在其父目录行之后。
         if let Some(pending) = &state.pending
             && pending.parent == row.path
         {
-            list = list.child(render_input_row(pending, slot));
+            items.push(FileTreeItem::Pending(pending.clone()));
         }
     }
-    list
+    items
+}
+
+fn selected_item_index(items: &[FileTreeItem], state: &FileTreeState) -> Option<usize> {
+    if state.pending.is_some() {
+        return items
+            .iter()
+            .position(|item| matches!(item, FileTreeItem::Pending(_)));
+    }
+    state.selected.as_ref().and_then(|selected| {
+        items
+            .iter()
+            .position(|item| matches!(item, FileTreeItem::Row(row) if &row.path == selected))
+    })
 }
 
 /// 新建态的内联输入行：父目录行下方，带文件/目录图标、已键入名称与光标。
@@ -131,17 +182,14 @@ fn empty_message(hint: &'static str) -> Div {
     )
 }
 
-fn render_row(row: &FileTreeRow, state: &FileTreeState, is_focused: bool) -> Div {
-    let is_selected = state
-        .selected
-        .as_ref()
-        .map(|p| p == &row.path)
-        .unwrap_or(false);
-    let is_active = state
-        .active
-        .as_ref()
-        .map(|p| p == &row.path)
-        .unwrap_or(false);
+fn render_row(
+    row: &FileTreeRow,
+    selected: Option<&std::path::PathBuf>,
+    active: Option<&std::path::PathBuf>,
+    is_focused: bool,
+) -> Div {
+    let is_selected = selected.map(|p| p == &row.path).unwrap_or(false);
+    let is_active = active.map(|p| p == &row.path).unwrap_or(false);
 
     // 边框始终占 1px，保证选中态切换时行高不抖。失焦时直接染透明，让选中
     // 标记瞬时消失；获焦后再画上。
@@ -175,6 +223,7 @@ fn render_row(row: &FileTreeRow, state: &FileTreeState, is_focused: bool) -> Div
         .bg(bg_color)
         .pl(indent_unit() * (row.depth as f32) + space::s4())
         .text_size(typography::ui())
+        .line_height(typography::ui_line())
         .text_color(text_color)
         .child(icon_cell(row, is_active))
         .child(

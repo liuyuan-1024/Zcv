@@ -127,7 +127,8 @@ Engine 已提供：
   - `proposal_to_transaction` 校验版本和 range。
   - 转换为 `Transaction`。
   - 应用或拒绝。
-- 搜索高亮、AI 建议、未来 diagnostics / semantic tokens 都优先用 metadata / versioned range 承载，不在 engine 中膨胀成专用业务 adapter。
+- AI 建议、语法高亮、诊断、inlay hint、gutter 装饰等异步外部结果统一用 `MetadataLayer<T>` 承载（payload 只携带语义键，desktop 侧 theme 解析为颜色/字重/下划线/inline 文本/gutter 图标）；详见《桌面端设计手册》19.4 6 阶段绘制契约与 19.9 扩展点表。
+- 搜索高亮是例外：不走 metadata layer，由宿主侧 `zom-workspace::WorkspaceBuffer.BufferSearch` 直接持有 `SearchResult`（per-buffer 共享，多 view 共用），engine 仅提供纯查询 API。
 
 ### 7. 折叠、投影与读取切片
 
@@ -150,17 +151,18 @@ Engine 已提供：
 - literal / regex 搜索。
 - 结果版本绑定。
 - 单次替换和 replace all 原子事务。
-- 搜索结果转 metadata layer。
+- `SearchResult::try_remap`：编辑后把现存命中按 PositionMap 推进到新版本。
 
 宿主侧规划：
 
+- `zom-workspace::WorkspaceBuffer` 新增 `BufferSearch { query, options, result: SearchResult, current_hit }`；per-buffer 共享，分屏看同一 buffer 时多 view 共用；observe DeltaEvent 触发 `try_remap`。
 - 在 `zom-command` 中增加：
   - `editor.find`
   - `editor.find_next`
   - `editor.find_previous`
   - `editor.replace_current`
   - `editor.replace_all`
-- `zom-workspace` 先只编排当前 buffer 搜索。
+- 重算时机：编辑期间仅 `try_remap` 推进现存命中，不主动发现新命中；query 变化、或 find-next 发现 result 落后于当前 `buffer.version` 时才同步 re-run。
 - 跨文件搜索、任务调度、取消策略和结果面板后续放在 workspace / desktop 层，不进入 engine。
 
 ### 9. 防御、性能与验证
@@ -219,10 +221,12 @@ Engine 已提供：
 
 目标：把 engine 的读取、搜索和投影能力接入宿主体验。
 
-- [ ] 接入当前 buffer find / replace。
-- [ ] 用 metadata 或 versioned result 承载搜索高亮。
-- [ ] 接入 viewport slice。
+- [ ] `zom-workspace` 落地 `WorkspaceBuffer.BufferSearch` 数据模型与生命周期（query / options / SearchResult / current hit；DeltaEvent → `try_remap`；query 变化或落版本时 re-run）。
+- [ ] `zom-command` 接入 `editor.find` / `editor.find_next` / `editor.find_previous` / `editor.replace_current` / `editor.replace_all`，改 `BufferSearch` 状态。
+- [ ] `zom-desktop` 接入 find bar surface 与渲染阶段 2（范围背景）搜索命中绘制；current hit 加强调样式。详见《桌面端设计手册》19.4 / 19.9。
+- [ ] 接入 viewport slice（避免裸取整文件文本）。
 - [ ] 接入 fold / projection 的最小可用路径。
+- [ ] EditorView v1 在渲染管线里留出 6 阶段绘制槽位（第一版只填阶段 1 / 2 selection / 3 / 5 / 6 行号；其它阶段是 no-op，等 P3+ 接入装饰时往对应阶段加 producer，不动渲染骨架）。
 - [ ] 补充搜索与投影接入测试。
 
 ### P4：AI 编辑提案闭环
@@ -238,7 +242,8 @@ Engine 已提供：
 
 ## 近期优先级
 
-1. P3 优先接入当前 buffer find / replace。
-2. 接入 viewport slice，避免 `zom-desktop` 长期直接展示整份文本。
-3. 接入 fold / projection 的最小可用路径，并补充对应宿主侧测试。
-4. P4 再收口 AI 提案模型、版本绑定和 proposal→transaction 转换。
+1. P3 第一步：`zom-workspace::WorkspaceBuffer.BufferSearch` 数据模型与生命周期（不带命令 / UI，先把骨架与 DeltaEvent 推进测试通过）。
+2. P3 第二步：`zom-command` 接入 find / replace 命令；`zom-desktop` 接入 find bar 与阶段 2 高亮。
+3. 接入 viewport slice，避免 `zom-desktop` 长期直接展示整份文本。
+4. 接入 fold / projection 的最小可用路径，并补充对应宿主侧测试。
+5. P4 再收口 AI 提案模型、版本绑定和 proposal→transaction 转换。

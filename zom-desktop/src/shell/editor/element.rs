@@ -24,19 +24,23 @@ use std::panic::Location;
 use gpui::{
     App, Bounds, ContentMask, Element, ElementId, FocusHandle, GlobalElementId, Hsla,
     InspectorElementId, IntoElement, LayoutId, Pixels, Point, ShapedLine, SharedString, Style,
-    TextRun, Window, fill, point, px, relative, size,
+    TextRun, Window, point, px, relative, size,
 };
 
 use zom_engine::{SelectionSet, TextRange};
 use zom_view::RevealKind;
 
-use crate::shell::shared::theme::{color, radius};
+use crate::shell::shared::theme::color;
 
 use super::blink::CaretClock;
 use super::core::RevealHint;
 use super::embed::{EditorInputHook, EditorPaintInfo};
-use super::highlight::{LineMetric, paint_range_backgrounds};
 use super::input::CaretLayout;
+use super::phases::{
+    GlyphOverlay, GutterIconQuad, LineBackgroundQuad, LineMetric, paint_phase_1_line_backgrounds,
+    paint_phase_2_range_backgrounds, paint_phase_3_glyphs, paint_phase_4_glyph_overlays,
+    paint_phase_5_carets_and_composition, paint_phase_6_gutter,
+};
 
 /// 行号列宽（24）+ 与正文的间距（12）。
 const GUTTER_WIDTH: f32 = 36.0;
@@ -144,23 +148,64 @@ pub(crate) struct PrepaintedLine {
     shaped: ShapedLine,
 }
 
+impl PrepaintedLine {
+    /// 暴露给阶段 3 绘制的 shape 结果。其余阶段需要按行 byte→x 映射的，请走
+    /// [`LineMetric`]（在 paint 入口处由 prepaint.lines 构造）。
+    pub(crate) fn shaped(&self) -> &ShapedLine {
+        &self.shaped
+    }
+}
+
 /// `prepaint` 阶段 shape 出的、供 `paint` 直接绘制的结果。
+///
+/// 字段按手册 19.4 的 6 阶段分组：每个阶段消费一个 `Vec<...>` 槽位。v1 不接入
+/// 的槽位（阶段 1 行背景、阶段 4 字符叠加、阶段 5 IME underline、阶段 6 装饰
+/// 图标）固定为空 Vec；接入新装饰来源时只需在 prepaint 出口处往对应 Vec 推
+/// 条目，paint 主干不变。
+///
+/// 颜色解析的位置：所有装饰来源遵循「语义键 + theme 解析」契约，但**解析步骤
+/// 前置到 prepaint**——prepaint 在推条目时就配好 `Hsla`，paint 阶段只看几何
+/// 与颜色，不再 if 路由"这条 range 来自 selection 还是 search"。详见 phases.rs
+/// 模块注释。
 pub(crate) struct EditorPrepaint {
+    // ── 阶段 1：行背景 ─────────────────────────────────────────────────────
+    /// v1 = 空 Vec；P3+ 接 active line / diff hunk 等整段背景。
+    line_backgrounds: Vec<LineBackgroundQuad>,
+
+    // ── 阶段 2：范围背景 ───────────────────────────────────────────────────
+    /// selection / search / AI 区间等半透明色块。v1 仅 selection；同一 Vec 内
+    /// 各 producer 自行保证按 `start` 升序、互不重叠，合并后整体不要求互不
+    /// 重叠（alpha 叠加表达层叠语义）。
+    range_backgrounds: Vec<(TextRange, Hsla)>,
+
+    // ── 阶段 3：字符层 ─────────────────────────────────────────────────────
     /// 每行的 shape + 字节坐标信息，下标即视觉行号。
     lines: Vec<PrepaintedLine>,
-    /// 每行行号的 shaped 结果；无行号列时为空。
-    gutter: Vec<ShapedLine>,
-    line_height: Pixels,
-    /// 正文起点相对 `bounds.origin.x` 的偏移（有行号列时为 [`GUTTER_WIDTH`]）。
-    gutter_offset: Pixels,
+
+    // ── 阶段 4：字符叠加 ───────────────────────────────────────────────────
+    /// v1 = 空 Vec；P3 inlay hint / P4 AI ghost text 接入点。
+    glyph_overlays: Vec<GlyphOverlay>,
+
+    // ── 阶段 5：caret + IME composition underline ─────────────────────────
     /// 所有 selection 的 head 位置 `(视觉行号, 行内像素 x)`，下标与
     /// `EditorElement::selection.as_slice()` 一一对应。
     ///
     /// reveal / edge-scroll 只看 primary（在 prepaint 内部就消化掉了，paint
     /// 拿到的就是"全部 caret 都要画"的扁平集合）。
     carets: Vec<(usize, Pixels)>,
-    /// 非空 selection 的字节区间，已按 start 升序、互不重叠（SelectionSet 契约）。
-    selection_ranges: Vec<TextRange>,
+    /// v1 = 空 Vec；P2 IME marked text 接入点。
+    composition_underlines: Vec<(TextRange, Hsla)>,
+
+    // ── 阶段 6：gutter（行号 + 装饰图标）──────────────────────────────────
+    /// 每行行号的 shaped 结果；无行号列时为空。
+    gutter_line_numbers: Vec<ShapedLine>,
+    /// v1 = 空 Vec；P3+ breakpoint / git diff / 诊断 glyph / bookmark 接入点。
+    gutter_icons: Vec<GutterIconQuad>,
+
+    // ── 共享几何 ───────────────────────────────────────────────────────────
+    line_height: Pixels,
+    /// 正文起点相对 `bounds.origin.x` 的偏移（有行号列时为 [`GUTTER_WIDTH`]）。
+    gutter_offset: Pixels,
     /// 当前滚动偏移；正文与光标按它整体平移。
     scroll: Point<Pixels>,
 }
@@ -263,7 +308,7 @@ impl Element for EditorElement {
         // 每个 head 的 (视觉行, 行内 x)；用 None 占位，按 line 扫描时填充。
         let mut carets_pos: Vec<Option<(usize, Pixels)>> = vec![None; selections.len()];
         let mut lines = Vec::new();
-        let mut gutter = Vec::new();
+        let mut gutter_line_numbers = Vec::new();
         let reveal_byte = self.reveal.map(|hint| hint.byte.min(text_len));
         // 同步记 reveal byte 的(行, 行内 x)：reveal 路径要把 X 也照顾到，
         // 否则 match 在视区左边时 edge-scroll 会把 caret(=match end) 拉到左边缘，
@@ -322,11 +367,12 @@ impl Element for EditorElement {
                     underline: None,
                     strikethrough: None,
                 };
-                gutter.push(
-                    window
-                        .text_system()
-                        .shape_line(label.into(), font_size, &[run], None),
-                );
+                gutter_line_numbers.push(window.text_system().shape_line(
+                    label.into(),
+                    font_size,
+                    &[run],
+                    None,
+                ));
             }
 
             offset = line_end + 1;
@@ -338,12 +384,17 @@ impl Element for EditorElement {
             .into_iter()
             .map(|p| p.unwrap_or((0, px(0.))))
             .collect();
-        // selection_ranges 只收非空区间；caret-only 的 selection 不画背景。
-        // 顺序与 selections 同步，因此天然保持 start 升序、互不重叠的契约。
-        let selection_ranges: Vec<TextRange> = selections
+        // 阶段 2 范围背景：v1 仅 selection 一个 producer。颜色在此处解析（语义键
+        // 「selection」→ 主题色 `blue.a04`，手册 §4.2 第 04 档 ui-active 的 alpha
+        // 形态），paint 阶段直接消费 Hsla。
+        //
+        // 只收非空区间；caret-only 的 selection 不画背景。顺序与 selections 同步，
+        // 因此天然保持 start 升序、互不重叠的契约。
+        let selection_color: Hsla = color::blue::a04().into();
+        let range_backgrounds: Vec<(TextRange, Hsla)> = selections
             .iter()
             .filter(|s| !s.is_caret())
-            .map(|s| s.range())
+            .map(|s| (s.range(), selection_color))
             .collect();
         let primary_caret = carets.get(primary_index).copied().unwrap_or((0, px(0.)));
 
@@ -447,12 +498,21 @@ impl Element for EditorElement {
         };
 
         EditorPrepaint {
+            // v1 空槽位：行背景。
+            line_backgrounds: Vec::new(),
+            // v1 唯一 producer：selection（已在上方解析为 (range, color)）。
+            range_backgrounds,
             lines,
-            gutter,
+            // v1 空槽位：字符叠加（ghost text / inlay hint）。
+            glyph_overlays: Vec::new(),
+            carets,
+            // v1 空槽位：IME composition underline（marked text 待接入）。
+            composition_underlines: Vec::new(),
+            gutter_line_numbers,
+            // v1 空槽位：gutter 装饰图标（breakpoint / git diff / 诊断 / bookmark）。
+            gutter_icons: Vec::new(),
             line_height,
             gutter_offset,
-            carets,
-            selection_ranges,
             scroll,
         }
     }
@@ -486,32 +546,37 @@ impl Element for EditorElement {
                 bounds.size.height,
             ),
         };
-        // 选区色与焦点态解耦：caret 是否闪烁已足够传达"哪个 view 活动"，
-        // 选区无论焦点都用同一颜色（与 Zed 一致）。FocusHandle 仅决定 caret 可见。
+        // caret 可见性与焦点态绑定：FocusHandle 决定本 view 是否"活动"；CaretClock
+        // 决定闪烁相位。范围背景（含 selection）颜色已在 prepaint 解析，paint 不
+        // 再 if 路由 producer 来源。
         let caret_visible = self.focus.is_focused(window) && CaretClock::is_visible(cx);
-        // 选区色：blue.a04（手册 §4.2 第 04 档 ui-active 的 alpha 形态）。
-        let selection_color: Hsla = color::blue::a04().into();
-        let selection_quads: Vec<(TextRange, Hsla)> = prepaint
-            .selection_ranges
-            .iter()
-            .map(|range| (*range, selection_color))
-            .collect();
-        // LineMetric 借用 ShapedLine：放在 with_content_mask 闭包外构造，
-        // 让 paint_range_backgrounds 与文本绘制共用一份借用切片。
+        // LineMetric 借用 ShapedLine：在 with_content_mask 闭包外构造一次，
+        // 让阶段 2 / 4 / 5（IME underline 接入后）共用一份借用切片。
         let line_metrics: Vec<LineMetric<'_>> = prepaint
             .lines
             .iter()
             .map(|line| LineMetric {
                 line_start_byte: line.line_start_byte,
                 line_len: line.line_len,
-                shaped: &line.shaped,
+                shaped: line.shaped(),
             })
             .collect();
 
+        // ── 阶段 1～5：正文区（横向滚动会作用于此区域内的内容）─────────────
         window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {
-            // 阶段 2 范围背景：画在文本之下，半透明色块让 syntax 字色透过来。
-            paint_range_backgrounds(
-                &selection_quads,
+            // 阶段 1：行背景（v1 空 Vec → no-op；P3+ active line / diff hunk）。
+            paint_phase_1_line_backgrounds(
+                &prepaint.line_backgrounds,
+                text_area,
+                text_left,
+                top,
+                line_height,
+                window,
+            );
+
+            // 阶段 2：范围背景（selection / 未来 search / AI 区间）。
+            paint_phase_2_range_backgrounds(
+                &prepaint.range_backgrounds,
                 &line_metrics,
                 text_left,
                 top,
@@ -520,32 +585,49 @@ impl Element for EditorElement {
                 window,
             );
 
-            // 阶段 3 文本。
-            for (index, line) in prepaint.lines.iter().enumerate() {
-                let y = top + line_height * index as f32;
-                let _ = line
-                    .shaped
-                    .paint(point(text_left, y), line_height, window, cx);
-            }
+            // 阶段 3：字符层。
+            paint_phase_3_glyphs(&prepaint.lines, text_left, top, line_height, window, cx);
 
-            // 阶段 5 caret：每个 selection.head 各画一根竖条，
-            // 叠在文本与选区色块之上；blink 全局共享一只时钟（CaretClock）。
-            if caret_visible {
-                for (caret_line, caret_x) in &prepaint.carets {
-                    let caret_bounds = Bounds {
-                        origin: point(text_left + *caret_x, top + line_height * *caret_line as f32),
-                        size: size(px(CARET_WIDTH), line_height),
-                    };
-                    window.paint_quad(fill(caret_bounds, caret_color()).corner_radii(radius::r2()));
-                }
-            }
+            // 阶段 4：字符叠加（v1 空 Vec → no-op；P3 inlay hint / P4 ghost text）。
+            paint_phase_4_glyph_overlays(
+                &prepaint.glyph_overlays,
+                &line_metrics,
+                text_left,
+                top,
+                line_height,
+                window,
+                cx,
+            );
+
+            // 阶段 5：caret + IME composition underline。
+            paint_phase_5_carets_and_composition(
+                &prepaint.carets,
+                caret_visible,
+                px(CARET_WIDTH),
+                caret_color(),
+                &prepaint.composition_underlines,
+                &line_metrics,
+                text_left,
+                top,
+                line_height,
+                text_area,
+                window,
+            );
         });
 
-        // 行号列：只随正文纵向滚动，横向固定在 bounds 左缘。
-        for (index, gutter_line) in prepaint.gutter.iter().enumerate() {
-            let y = top + line_height * index as f32;
-            let _ = gutter_line.paint(point(bounds.origin.x, y), line_height, window, cx);
-        }
+        // ── 阶段 6：gutter 列（横向固定在 bounds 左缘，纵向随正文滚动）─────
+        paint_phase_6_gutter(
+            &prepaint.gutter_line_numbers,
+            &prepaint.gutter_icons,
+            bounds.origin.x,
+            prepaint.gutter_offset,
+            bounds.origin.y,
+            top,
+            bounds.size.height,
+            line_height,
+            window,
+            cx,
+        );
 
         // 把 primary caret 在 element 内的相对坐标打包给 input hook。系统 IME
         // 的 `bounds_for_range` 会借此把候选窗放到 caret 正下方；没有 caret 时

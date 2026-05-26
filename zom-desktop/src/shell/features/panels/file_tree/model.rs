@@ -440,10 +440,7 @@ impl FileTreeModel {
             (new_idx, anchor_idx)
         };
         let items: BTreeSet<PathBuf> = paths[lo..=hi].iter().cloned().collect();
-        self.stroke
-            .as_mut()
-            .expect("上面已确保 stroke 存在")
-            .items = items;
+        self.stroke.as_mut().expect("上面已确保 stroke 存在").items = items;
     }
 
     /// Esc 二段式：已提交选区或当前 stroke 任一非空时，全清并返回 `true`
@@ -1082,7 +1079,10 @@ mod tests {
         assert!(view.contains(&root.join("a.txt")));
         assert!(view.contains(&root.join("b.txt")));
         assert!(!view.contains(&root.join("c.txt")));
-        assert_eq!(model.selected.as_deref(), Some(root.join("b.txt").as_path()));
+        assert_eq!(
+            model.selected.as_deref(),
+            Some(root.join("b.txt").as_path())
+        );
     }
 
     #[test]

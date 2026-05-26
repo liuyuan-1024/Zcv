@@ -163,6 +163,17 @@ impl Snapshot {
         self.storage.utf16_position_to_byte(position)
     }
 
+    /// 全文 flat UTF-16 code unit 偏移：byte → utf16 cu。详见
+    /// [`crate::Buffer::byte_to_utf16_cu`]。
+    pub fn byte_to_utf16_cu(&self, offset: ByteOffset) -> EngineResult<Utf16Offset> {
+        self.storage.byte_to_utf16_cu(offset)
+    }
+
+    /// 全文 flat UTF-16 code unit 偏移：utf16 cu → byte。
+    pub fn utf16_cu_to_byte(&self, offset: Utf16Offset) -> EngineResult<ByteOffset> {
+        self.storage.utf16_cu_to_byte(offset)
+    }
+
     pub fn is_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<bool> {
         self.storage.is_grapheme_boundary_char(offset)
     }

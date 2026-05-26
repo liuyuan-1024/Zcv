@@ -1,9 +1,20 @@
 //! 编辑器 IME 能力：composition、UTF-16 / UTF-8 byte 坐标换算。
+//!
+//! 系统输入法（macOS NSTextInputClient / Win TSF / Linux IBus）以"整文档 flat
+//! UTF-16 offset"做选区，引擎内部用 `ByteOffset`。本模块只负责两套坐标系
+//! **在文档边界上**的换算——所有 byte ↔ utf16-cu 走 engine 的 `byte_to_utf16_cu`
+//! / `utf16_cu_to_byte`（O(log n)），**不再拷贝整 buffer 文本**，10G 文件 IME
+//! 也不会卡顿。
+//!
+//! preedit（IME 候选高亮的小串）仍用本地 helper 线性扫——preedit 永远是
+//! 几字到几十字，再大也只是一个候选词，不存在大文件问题。
 
 use std::ops::Range;
 
 use zom_command::CommandError;
-use zom_engine::{Buffer, ByteOffset, CompositionSelection, EngineError, SelectionSet};
+use zom_engine::{
+    Buffer, ByteOffset, CompositionSelection, EngineError, SelectionSet, Utf16Offset,
+};
 
 /// 可被系统输入法修改的编辑目标。
 pub(crate) struct ImeTarget<'a> {
@@ -72,15 +83,15 @@ impl<'a> ImeTarget<'a> {
     }
 
     fn set_selection_from_utf16(&mut self, range_utf16: Range<usize>) -> Result<(), CommandError> {
-        let text = self.buffer.text();
-        let start = utf16_to_byte_offset(text.as_ref(), range_utf16.start)
-            .ok_or_else(|| CommandError::InvalidArgs("IME range start 越界".into()))?;
-        let end = utf16_to_byte_offset(text.as_ref(), range_utf16.end)
-            .ok_or_else(|| CommandError::InvalidArgs("IME range end 越界".into()))?;
-        let selection = SelectionSet::new(vec![zom_engine::Selection::new(
-            ByteOffset::new(start),
-            ByteOffset::new(end),
-        )]);
+        let start = self
+            .buffer
+            .utf16_cu_to_byte(Utf16Offset::new(range_utf16.start))
+            .map_err(|_| CommandError::InvalidArgs("IME range start 越界".into()))?;
+        let end = self
+            .buffer
+            .utf16_cu_to_byte(Utf16Offset::new(range_utf16.end))
+            .map_err(|_| CommandError::InvalidArgs("IME range end 越界".into()))?;
+        let selection = SelectionSet::new(vec![zom_engine::Selection::new(start, end)]);
         self.buffer
             .set_selection(selection.clone())
             .map_err(map_engine_error)?;
@@ -102,30 +113,45 @@ impl<'a> ImeQueryTarget<'a> {
 
     pub(crate) fn marked_range_utf16(&self) -> Option<Range<usize>> {
         let range = self.buffer.composition()?.range();
-        let text = self.buffer.text();
-        Some(
-            byte_to_utf16_offset(text.as_ref(), range.start().get())
-                ..byte_to_utf16_offset(text.as_ref(), range.end().get()),
-        )
+        let start = self.buffer.byte_to_utf16_cu(range.start()).ok()?;
+        let end = self.buffer.byte_to_utf16_cu(range.end()).ok()?;
+        Some(start.get()..end.get())
     }
 
     pub(crate) fn selected_range_utf16(&self) -> (Range<usize>, bool) {
         let primary = *self.selection.primary();
-        let text = self.buffer.text();
-        let range = byte_to_utf16_offset(text.as_ref(), primary.start().get())
-            ..byte_to_utf16_offset(text.as_ref(), primary.end().get());
-        (range, primary.is_reversed())
+        // 失败回退到 0..0 ——选区端点理应永远在合法字符边界，转换不应失败；
+        // 真的失败时给 IME 一个最保守值，比 panic 强。
+        let start = self
+            .buffer
+            .byte_to_utf16_cu(primary.start())
+            .map(|v| v.get())
+            .unwrap_or(0);
+        let end = self
+            .buffer
+            .byte_to_utf16_cu(primary.end())
+            .map(|v| v.get())
+            .unwrap_or(start);
+        (start..end, primary.is_reversed())
     }
 
     pub(crate) fn text_for_range_utf16(&self, range_utf16: Range<usize>) -> Option<String> {
-        let text = self.buffer.text();
-        let text_str = text.as_ref();
-        let start_byte = utf16_to_byte_offset(text_str, range_utf16.start)?;
-        let end_byte = utf16_to_byte_offset(text_str, range_utf16.end)?;
-        if start_byte > end_byte {
+        if range_utf16.start > range_utf16.end {
             return None;
         }
-        Some(text_str[start_byte..end_byte].to_string())
+        let start_byte = self
+            .buffer
+            .utf16_cu_to_byte(Utf16Offset::new(range_utf16.start))
+            .ok()?;
+        let end_byte = self
+            .buffer
+            .utf16_cu_to_byte(Utf16Offset::new(range_utf16.end))
+            .ok()?;
+        let range = zom_engine::TextRange::new(start_byte, end_byte).ok()?;
+        self.buffer
+            .slice_text(range)
+            .ok()
+            .map(|slice| slice.as_str().to_string())
     }
 }
 
@@ -133,24 +159,13 @@ fn map_engine_error(error: EngineError) -> CommandError {
     CommandError::ExecutionFailed(error.to_string())
 }
 
-/// 把 UTF-8 字节偏移换算成文档级 flat UTF-16 偏移。越界自动饱和到末尾。
-fn byte_to_utf16_offset(text: &str, byte: usize) -> usize {
-    let byte = byte.min(text.len());
-    let mut utf16 = 0usize;
-    for (idx, ch) in text.char_indices() {
-        if idx >= byte {
-            return utf16;
-        }
-        utf16 += ch.len_utf16();
-    }
-    utf16
-}
-
-/// 把文档级 flat UTF-16 偏移换算回 UTF-8 字节偏移。
+/// 把本地小串的 flat UTF-16 偏移换算回 UTF-8 字节偏移。仅供 preedit
+/// （IME 候选串）使用——preedit 永远小，线性扫描可接受；buffer 路径走
+/// engine 的 `utf16_cu_to_byte`，不要拿这个去扫 buffer 全文。
 ///
 /// 落在 surrogate pair 中间视为越界返回 `None`，与 NSTextInputClient 的预期一致：
 /// 调用方不应当在 surrogate pair 内部下手。
-fn utf16_to_byte_offset(text: &str, target: usize) -> Option<usize> {
+fn utf16_to_byte_offset_in_str(text: &str, target: usize) -> Option<usize> {
     if target == 0 {
         return Some(0);
     }
@@ -177,12 +192,31 @@ fn composition_selection_from_utf16(
     preedit: &str,
     range_utf16: Range<usize>,
 ) -> Result<CompositionSelection, CommandError> {
-    let anchor = utf16_to_byte_offset(preedit, range_utf16.start)
+    let anchor = utf16_to_byte_offset_in_str(preedit, range_utf16.start)
         .ok_or_else(|| CommandError::InvalidArgs("IME preedit selection anchor 越界".into()))?;
-    let head = utf16_to_byte_offset(preedit, range_utf16.end)
+    let head = utf16_to_byte_offset_in_str(preedit, range_utf16.end)
         .ok_or_else(|| CommandError::InvalidArgs("IME preedit selection head 越界".into()))?;
     Ok(CompositionSelection::new(
         ByteOffset::new(anchor),
         ByteOffset::new(head),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    //! preedit 本地 helper 的健壮性测试。buffer 路径（byte_to_utf16_cu /
+    //! utf16_cu_to_byte）由 engine 单元测试覆盖。
+
+    use super::*;
+
+    #[test]
+    fn utf16_to_byte_offset_in_str_handles_surrogate_pair() {
+        // "𐐷"在 BMP 外：4 UTF-8 字节，2 UTF-16 code unit。
+        assert_eq!(utf16_to_byte_offset_in_str("𐐷", 0), Some(0));
+        // 落在 surrogate pair 中间 → None。
+        assert_eq!(utf16_to_byte_offset_in_str("𐐷", 1), None);
+        assert_eq!(utf16_to_byte_offset_in_str("𐐷", 2), Some(4));
+        // 越界。
+        assert_eq!(utf16_to_byte_offset_in_str("𐐷", 3), None);
+    }
 }

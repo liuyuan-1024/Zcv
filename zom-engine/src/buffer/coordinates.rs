@@ -4,7 +4,7 @@
 
 use crate::{
     ByteOffset, CharOffset, CoordinateError, DisplayColumn, DisplayColumnAffinity, EngineResult,
-    Line, LineEndingStyle, LogicalColumn, Position, Utf16Position,
+    Line, LineEndingStyle, LogicalColumn, Position, Utf16Offset, Utf16Position,
     coordinates::core::{
         char_to_display_column_in_text, display_to_logical_column_in_text,
         logical_to_display_column_in_text, next_tab_stop,
@@ -84,6 +84,19 @@ impl Buffer {
 
     pub fn utf16_position_to_byte(&self, position: Utf16Position) -> EngineResult<ByteOffset> {
         self.storage.utf16_position_to_byte(position)
+    }
+
+    /// 全文 flat UTF-16 code unit 偏移：byte → utf16 cu。
+    ///
+    /// 给系统 IME（NSTextInputClient / TSF / IBus）的"扁平 UTF-16 offset"语义用，
+    /// 不要走 `byte_to_utf16_position`（那是 LSP 协议的行/列）。
+    pub fn byte_to_utf16_cu(&self, offset: ByteOffset) -> EngineResult<Utf16Offset> {
+        self.storage.byte_to_utf16_cu(offset)
+    }
+
+    /// 全文 flat UTF-16 code unit 偏移：utf16 cu → byte。
+    pub fn utf16_cu_to_byte(&self, offset: Utf16Offset) -> EngineResult<ByteOffset> {
+        self.storage.utf16_cu_to_byte(offset)
     }
 
     pub fn is_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<bool> {

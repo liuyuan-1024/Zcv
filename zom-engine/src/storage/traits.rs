@@ -136,6 +136,20 @@ pub(crate) trait TextRead {
     /// 边界投影：UTF-16 行列 -> ByteOffset。
     fn utf16_position_to_byte(&self, position: Utf16Position) -> EngineResult<ByteOffset>;
 
+    /// 边界投影：ByteOffset -> 全文 flat UTF-16 code unit 偏移。
+    ///
+    /// 与 `byte_to_utf16_position` 的区别：本方法返回从文本起点起的累计 UTF-16
+    /// code unit 数，对应 NSTextInputClient / Win32 TSF 等系统 IME 的「flat
+    /// utf-16 offset」语义。端点必须落在 UTF-8 字符边界，否则返回
+    /// `CoordinateError::InvalidByteBoundary`。
+    fn byte_to_utf16_cu(&self, offset: ByteOffset) -> EngineResult<Utf16Offset>;
+
+    /// 边界投影：全文 flat UTF-16 code unit 偏移 -> ByteOffset。
+    ///
+    /// 端点必须落在 UTF-16 code unit 边界（不能落在 surrogate pair 中间），
+    /// 否则返回 `CoordinateError::InvalidUtf16Boundary`。
+    fn utf16_cu_to_byte(&self, offset: Utf16Offset) -> EngineResult<ByteOffset>;
+
     /// 检测文本中实际出现的换行风格。
     fn line_ending_style(&self) -> LineEndingStyle;
 }

@@ -63,6 +63,52 @@ fn byte_char_position_utf16_roundtrip_should_preserve_explicit_coordinate_domain
 }
 
 #[test]
+fn flat_utf16_cu_should_roundtrip_against_byte_offsets_across_planes_and_newlines() {
+    // 文本内容：
+    //   "a" — 1 字节 / 1 UTF-16 cu
+    //   "你" — 3 字节 / 1 UTF-16 cu
+    //   "\n" — 1 字节 / 1 UTF-16 cu
+    //   "😀" — 4 字节 / 2 UTF-16 cu（BMP 外，surrogate pair）
+    //   "z" — 1 字节 / 1 UTF-16 cu
+    let buffer = buffer("a你\n😀z");
+
+    // 累计 byte → utf16 cu。
+    assert_eq!(buffer.byte_to_utf16_cu(b(0)).unwrap(), Utf16Offset::new(0));
+    assert_eq!(buffer.byte_to_utf16_cu(b(1)).unwrap(), Utf16Offset::new(1)); // 跨过 "a"
+    assert_eq!(buffer.byte_to_utf16_cu(b(4)).unwrap(), Utf16Offset::new(2)); // 跨过 "你"
+    assert_eq!(buffer.byte_to_utf16_cu(b(5)).unwrap(), Utf16Offset::new(3)); // 跨过 "\n"
+    assert_eq!(buffer.byte_to_utf16_cu(b(9)).unwrap(), Utf16Offset::new(5)); // 跨过 "😀"
+    assert_eq!(buffer.byte_to_utf16_cu(b(10)).unwrap(), Utf16Offset::new(6)); // 跨过 "z"
+
+    // 反向回放：每个 utf16 cu 边界回到对应 byte。
+    for (utf16, byte) in [(0, 0), (1, 1), (2, 4), (3, 5), (5, 9), (6, 10)] {
+        assert_eq!(
+            buffer.utf16_cu_to_byte(Utf16Offset::new(utf16)).unwrap(),
+            b(byte)
+        );
+    }
+
+    // 落在 surrogate pair 中间（utf16=4）→ InvalidUtf16Boundary。
+    assert!(matches!(
+        buffer.utf16_cu_to_byte(Utf16Offset::new(4)).unwrap_err(),
+        EngineError::Coordinate(CoordinateError::InvalidUtf16Boundary(_))
+    ));
+
+    // 越界 → Utf16PositionOutOfBounds。
+    assert!(matches!(
+        buffer.utf16_cu_to_byte(Utf16Offset::new(999)).unwrap_err(),
+        EngineError::Coordinate(CoordinateError::Utf16PositionOutOfBounds(_))
+    ));
+}
+
+#[test]
+fn flat_utf16_cu_should_work_on_empty_buffer_and_be_zero_at_origin() {
+    let buffer = buffer("");
+    assert_eq!(buffer.byte_to_utf16_cu(b(0)).unwrap(), Utf16Offset::new(0));
+    assert_eq!(buffer.utf16_cu_to_byte(Utf16Offset::new(0)).unwrap(), b(0));
+}
+
+#[test]
 fn invalid_utf8_byte_boundary_should_be_rejected_by_byte_projection_and_slice() {
     let buffer = buffer("你a");
 

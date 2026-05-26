@@ -198,6 +198,14 @@ impl TextRead for RopeyStorage {
         char_to_byte_in_rope(&self.rope, char_offset)
     }
 
+    fn byte_to_utf16_cu(&self, offset: ByteOffset) -> EngineResult<Utf16Offset> {
+        byte_to_utf16_cu_in_rope(&self.rope, offset)
+    }
+
+    fn utf16_cu_to_byte(&self, offset: Utf16Offset) -> EngineResult<ByteOffset> {
+        utf16_cu_to_byte_in_rope(&self.rope, offset)
+    }
+
     fn is_grapheme_boundary(&self, offset: ByteOffset) -> EngineResult<bool> {
         is_grapheme_boundary_in_rope(&self.rope, offset)
     }
@@ -351,6 +359,14 @@ impl TextRead for RopeySnapshot {
     fn utf16_position_to_byte(&self, position: Utf16Position) -> EngineResult<ByteOffset> {
         let char_offset = utf16_position_to_char_in_rope(&self.rope, position)?;
         char_to_byte_in_rope(&self.rope, char_offset)
+    }
+
+    fn byte_to_utf16_cu(&self, offset: ByteOffset) -> EngineResult<Utf16Offset> {
+        byte_to_utf16_cu_in_rope(&self.rope, offset)
+    }
+
+    fn utf16_cu_to_byte(&self, offset: Utf16Offset) -> EngineResult<ByteOffset> {
+        utf16_cu_to_byte_in_rope(&self.rope, offset)
     }
 
     fn is_grapheme_boundary(&self, offset: ByteOffset) -> EngineResult<bool> {
@@ -528,6 +544,40 @@ fn utf16_position_to_char_in_rope(
     }
 
     Err(CoordinateError::Utf16PositionOutOfBounds(position).into())
+}
+
+/// Byte 偏移 → 全文累计 UTF-16 code unit 数。
+///
+/// O(log n)：先 byte→char（rope 原生），再走 rope 的 `char_to_utf16_cu`
+/// 用内部累计索引一步到位，**不拷贝任何文本**——这是 IME 大文件能跑得动
+/// 的关键路径。
+fn byte_to_utf16_cu_in_rope(rope: &Rope, offset: ByteOffset) -> EngineResult<Utf16Offset> {
+    let char_offset = byte_to_char_in_rope(rope, offset)?;
+    Ok(Utf16Offset::new(rope.char_to_utf16_cu(char_offset.get())))
+}
+
+/// 全文累计 UTF-16 code unit 数 → Byte 偏移。
+///
+/// `offset` 落在 surrogate pair 中间属于非法边界（NSTextInputClient 不应这样
+/// 调，但仍要防御）。`Rope::utf16_cu_to_char` 对 surrogate 中间会"舍入到字符
+/// 起点"，因此我们事后再用 `char_to_utf16_cu` 回算一遍校验：若不相等，说明
+/// 原 offset 落在 surrogate 内部，按非法边界报错。越界返回 OutOfBounds。
+fn utf16_cu_to_byte_in_rope(rope: &Rope, offset: Utf16Offset) -> EngineResult<ByteOffset> {
+    let target = offset.get();
+    if target > rope.len_utf16_cu() {
+        return Err(
+            CoordinateError::Utf16PositionOutOfBounds(Utf16Position::new(Line::ZERO, offset))
+                .into(),
+        );
+    }
+    let char_idx = rope.utf16_cu_to_char(target);
+    let roundtrip = rope.char_to_utf16_cu(char_idx);
+    if roundtrip != target {
+        return Err(
+            CoordinateError::InvalidUtf16Boundary(Utf16Position::new(Line::ZERO, offset)).into(),
+        );
+    }
+    Ok(ByteOffset::new(rope.char_to_byte(char_idx)))
 }
 
 fn char_to_byte_in_rope(rope: &Rope, offset: CharOffset) -> EngineResult<ByteOffset> {

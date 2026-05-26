@@ -15,6 +15,7 @@ use zom_command::Invocation;
 use zom_command::commands::{file_tree as file_tree_commands, window as window_commands};
 
 use crate::app::{App, KeySurface};
+use crate::shell::platform::clipboard::{GpuiClipboard, GpuiClipboardScope};
 
 use super::editor::{CaretBlink, TextEditorSlot, TextTargetId, drive_caret_blink};
 use super::features::language_servers;
@@ -54,6 +55,9 @@ pub(crate) struct ShellView {
 impl ShellView {
     pub(super) fn new(app: App, cx: &mut Context<Self>) -> Self {
         let app = Rc::new(RefCell::new(app));
+        // 让命令派发期间的 copy / cut / paste 走系统剪贴板；headless 单测路径
+        // 不经过 ShellView::new，所以仍是 MockClipboard。
+        app.borrow_mut().set_clipboard(Box::new(GpuiClipboard));
         let workbench = Rc::new(RefCell::new(WorkbenchController::new()));
         cx.update_default_global::<SurfaceAnchorRegistry, _>(|_, _| ());
         let surface_manager = cx.new(|_| SurfaceManager::new());
@@ -197,11 +201,16 @@ impl ShellView {
         let language_servers = self.language_servers.clone();
         let project_picker_slot = Rc::clone(&self.project_picker_slot);
         Rc::new(move |chord, window, cx| {
-            let outcome = match app.borrow_mut().dispatch_key(chord, surface) {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    eprintln!("命令执行失败：{error}");
-                    return false;
+            let outcome = {
+                // scope 内 GpuiClipboard 才能拿到 cx 访问系统剪贴板；scope drop
+                // 后 thread-local 立即恢复，避免悬空。
+                let _clip = GpuiClipboardScope::enter(cx);
+                match app.borrow_mut().dispatch_key(chord, surface) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        eprintln!("命令执行失败：{error}");
+                        return false;
+                    }
                 }
             };
 

@@ -9,6 +9,7 @@ use gpui::{
 };
 
 use crate::app::App;
+use crate::shell::platform::clipboard::GpuiClipboardScope;
 
 use super::TextTargetId;
 
@@ -84,8 +85,13 @@ impl EntityInputHandler for EditorInput {
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(error) = self.app.borrow_mut().ime_unmark_for(self.target) {
-            eprintln!("IME unmark 失败：{error}");
+        {
+            // IME 路径也可能触发命令派发（commit → editor.ime_commit），需为
+            // 期间的剪贴板读写借出 cx。
+            let _clip = GpuiClipboardScope::enter(&*cx);
+            if let Err(error) = self.app.borrow_mut().ime_unmark_for(self.target) {
+                eprintln!("IME unmark 失败：{error}");
+            }
         }
         window.refresh();
         cx.notify();
@@ -98,12 +104,15 @@ impl EntityInputHandler for EditorInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Err(error) = self
-            .app
-            .borrow_mut()
-            .ime_replace_text_for(self.target, range, text)
         {
-            eprintln!("IME replace_text 失败：{error}");
+            let _clip = GpuiClipboardScope::enter(&*cx);
+            if let Err(error) = self
+                .app
+                .borrow_mut()
+                .ime_replace_text_for(self.target, range, text)
+            {
+                eprintln!("IME replace_text 失败：{error}");
+            }
         }
         window.refresh();
         cx.notify();
@@ -117,13 +126,16 @@ impl EntityInputHandler for EditorInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Err(error) = self.app.borrow_mut().ime_replace_and_mark_text_for(
-            self.target,
-            range,
-            new_text,
-            new_selected_range,
-        ) {
-            eprintln!("IME replace_and_mark_text 失败：{error}");
+        {
+            let _clip = GpuiClipboardScope::enter(&*cx);
+            if let Err(error) = self.app.borrow_mut().ime_replace_and_mark_text_for(
+                self.target,
+                range,
+                new_text,
+                new_selected_range,
+            ) {
+                eprintln!("IME replace_and_mark_text 失败：{error}");
+            }
         }
         window.refresh();
         cx.notify();

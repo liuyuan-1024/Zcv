@@ -93,7 +93,9 @@ fn activate_search_scope(
 
     // 已显示：用 query / replacement 两个焦点宿主判定"焦点是否在搜索面板"。
     // 只问 FocusRouter 会漏 replacement —— router 只认面板的主 focus handle。
-    let focus_in_panel = panel_runtimes.search_query_focus_handle().is_focused(window)
+    let focus_in_panel = panel_runtimes
+        .search_query_focus_handle()
+        .is_focused(window)
         || panel_runtimes
             .search_replacement_focus_handle()
             .is_focused(window);
@@ -125,7 +127,11 @@ enum FocusDirection {
     Previous,
 }
 
-fn focus_search_field(panel_runtimes: &PanelRuntimes, direction: FocusDirection, window: &mut Window) {
+fn focus_search_field(
+    panel_runtimes: &PanelRuntimes,
+    direction: FocusDirection,
+    window: &mut Window,
+) {
     let query = panel_runtimes.search_query_focus_handle();
     let replacement = panel_runtimes.search_replacement_focus_handle();
     let target = match direction {

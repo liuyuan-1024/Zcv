@@ -11,9 +11,9 @@ use std::path::PathBuf;
 
 use zom_command::commands::{self, editor};
 use zom_command::{
-    CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId, CommandQueue,
-    CommandRegistry, EffectQueue, FileTreeKeyMode, HostEffect, Invocation, KeyChord, KeyContext,
-    Keymap, KeymapResolution, SearchOption, SearchScope,
+    ClipboardPort, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId,
+    CommandQueue, CommandRegistry, EffectQueue, FileTreeKeyMode, HostEffect, Invocation, KeyChord,
+    KeyContext, Keymap, KeymapResolution, MockClipboard, SearchOption, SearchScope,
 };
 use zom_view::ViewSet;
 use zom_workspace::Workspace;
@@ -64,6 +64,10 @@ pub struct App {
     file_tree: FileTreeModel,
     project_picker: ProjectPickerModel,
     search: SearchModel,
+    /// 剪贴板端口：默认走 [`MockClipboard`]（headless 单测够用且不污染系统剪贴板）。
+    /// shell 启动时通过 [`Self::set_clipboard`] 换成 GPUI 适配器，使主程序与
+    /// 系统剪贴板互通。
+    clipboard: Box<dyn ClipboardPort>,
 }
 
 impl App {
@@ -99,7 +103,14 @@ impl App {
             file_tree: FileTreeModel::default(),
             project_picker: ProjectPickerModel::new(),
             search: SearchModel::new(),
+            clipboard: Box::new(MockClipboard::new()),
         }
+    }
+
+    /// 替换默认剪贴板端口。shell 启动时注入 `GpuiClipboard`，让 copy / cut /
+    /// paste 走系统剪贴板；headless 单测保持默认 [`MockClipboard`]。
+    pub(crate) fn set_clipboard(&mut self, clipboard: Box<dyn ClipboardPort>) {
+        self.clipboard = clipboard;
     }
 
     pub(crate) fn open_local_project(&mut self, root: PathBuf) {
@@ -165,8 +176,7 @@ impl App {
     }
 
     pub(crate) fn project_picker_activation(&self) -> ProjectPickerActivation {
-        self.project_picker
-            .activation(self.recent_projects.items())
+        self.project_picker.activation(self.recent_projects.items())
     }
 
     pub(crate) fn file_tree_state(&self) -> FileTreeState {
@@ -452,6 +462,7 @@ impl App {
             focused_field,
             queue: &mut self.queue,
             effects: &mut effects,
+            clipboard: &mut *self.clipboard,
         };
         let result = self.executor.run(&self.registry, &mut context);
 
@@ -517,7 +528,6 @@ impl App {
         self.dispatch(editor::ime_commit(preedit))?;
         Ok(())
     }
-
 }
 
 /// 空工作区：不预建任何 buffer/view。

@@ -22,6 +22,7 @@ use crate::shell::features::project_picker::{
     self, ProjectPickerActions, ProjectPickerActivation, ProjectPickerInitialMode,
     ProjectPickerRuntime,
 };
+use crate::shell::platform::clipboard::GpuiClipboardScope;
 use crate::shell::surfaces::{SurfaceId, SurfaceManager};
 use crate::shell::view::actions::{apply_host_effects, open_surface};
 use crate::shell::view::project;
@@ -178,14 +179,17 @@ fn show_project_picker(
     let key_project_picker_slot = Rc::clone(project_picker_slot);
     let key_request = Rc::new(
         move |chord: String, window: &mut Window, cx: &mut gpui::App| {
-            let outcome = match key_app
-                .borrow_mut()
-                .dispatch_key(chord, KeySurface::ProjectPicker)
-            {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    eprintln!("命令执行失败：{error}");
-                    return false;
+            let outcome = {
+                let _clip = GpuiClipboardScope::enter(cx);
+                match key_app
+                    .borrow_mut()
+                    .dispatch_key(chord, KeySurface::ProjectPicker)
+                {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        eprintln!("命令执行失败：{error}");
+                        return false;
+                    }
                 }
             };
 

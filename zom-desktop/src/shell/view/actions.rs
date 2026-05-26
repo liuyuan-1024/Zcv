@@ -18,6 +18,7 @@ use crate::shell::features::panels::file_tree::{self, FileTreeRuntime};
 use crate::shell::features::panels::search;
 use crate::shell::features::panels::{PanelId, PanelRuntimes};
 use crate::shell::features::project_picker::{self, ProjectPickerRuntime};
+use crate::shell::platform::clipboard::GpuiClipboardScope;
 use crate::shell::platform::window as platform_window;
 use crate::shell::surfaces::{SurfaceId, SurfaceManager, SurfaceRequest};
 use crate::shell::workbench::controller::WorkbenchController;
@@ -37,11 +38,15 @@ pub(super) fn bind_action_request(
     invocation: Invocation,
 ) -> ActionRequest {
     Rc::new(move |window, cx| {
-        let effects = match app.borrow_mut().dispatch(invocation.clone()) {
-            Ok(effects) => effects,
-            Err(error) => {
-                eprintln!("命令执行失败：{error}");
-                return;
+        let effects = {
+            // 同 key_request：进入命令派发前借出 cx 给 GpuiClipboard。
+            let _clip = GpuiClipboardScope::enter(cx);
+            match app.borrow_mut().dispatch(invocation.clone()) {
+                Ok(effects) => effects,
+                Err(error) => {
+                    eprintln!("命令执行失败：{error}");
+                    return;
+                }
             }
         };
         apply_host_effects(

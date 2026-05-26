@@ -311,7 +311,10 @@ impl SearchModel {
                     }
                 }
             } else {
-                match buffer.buffer().search(&query, literal_search_options(options)) {
+                match buffer
+                    .buffer()
+                    .search(&query, literal_search_options(options))
+                {
                     Ok(result) => result.ranges().collect::<Vec<_>>(),
                     Err(search_error) => {
                         error = Some(format!("搜索失败：{search_error}"));
@@ -477,11 +480,7 @@ impl SearchModel {
                             }
                         }
                         Err(error) => {
-                            self.set_results(
-                                Vec::new(),
-                                None,
-                                Some(format!("替换失败：{error}")),
-                            );
+                            self.set_results(Vec::new(), None, Some(format!("替换失败：{error}")));
                             return;
                         }
                     }

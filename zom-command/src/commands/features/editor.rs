@@ -13,7 +13,12 @@
 //! app.dispatch(invocation);
 //! ```
 
-use zom_engine::{ByteOffset, Motion, MovementDirection, MovementUnit, Selection, SelectionSet};
+use std::collections::BTreeSet;
+
+use zom_engine::{
+    Buffer, ByteOffset, EngineError, Line, Motion, MovementDirection, MovementUnit, Selection,
+    SelectionSet, TextRange,
+};
 
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
@@ -43,6 +48,9 @@ pub const IME_CONFIRM: &str = "editor.ime_confirm";
 pub const SELECT_TAB: &str = "editor.select_tab";
 pub const CLOSE_TAB: &str = "editor.close_tab";
 pub const SAVE: &str = "editor.save";
+pub const COPY: &str = "editor.copy";
+pub const CUT: &str = "editor.cut";
+pub const PASTE: &str = "editor.paste";
 
 /// 文本编辑器当前能力。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -326,6 +334,18 @@ pub fn save() -> Invocation {
     (cid(SAVE), CommandArgs::new())
 }
 
+pub fn copy() -> Invocation {
+    (cid(COPY), CommandArgs::new())
+}
+
+pub fn cut() -> Invocation {
+    (cid(CUT), CommandArgs::new())
+}
+
+pub fn paste() -> Invocation {
+    (cid(PASTE), CommandArgs::new())
+}
+
 // ==================================================
 // 注册与默认键位 —— 同处声明
 // ==================================================
@@ -497,6 +517,19 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .install(keymap, SAVE, "保存", Box::new(run_save))
         .description("保存当前打开的文件。")
         .key_in("mod-s", text_edit);
+
+    registry
+        .install(keymap, COPY, "复制", Box::new(run_copy))
+        .description("复制选区文本；无选区时复制当前行（含换行符）。")
+        .key_in("mod-c", text_edit);
+    registry
+        .install(keymap, CUT, "剪切", Box::new(run_cut))
+        .description("剪切选区文本；无选区时剪切当前行（含换行符）。")
+        .key_in("mod-x", text_edit);
+    registry
+        .install(keymap, PASTE, "粘贴", Box::new(run_paste))
+        .description("将剪贴板内容写入选区。")
+        .key_in("mod-v", text_edit);
 }
 
 fn move_args(direction: MovementDirection, motion: impl Into<Motion>, extend: bool) -> CommandArgs {
@@ -841,6 +874,162 @@ fn run_save(
         .save_file(buffer_id)
         .map_err(|error| CommandError::ExecutionFailed(error.to_string()))?;
     Ok(CommandOutcome::default())
+}
+
+fn run_copy(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    let target = context.edit_target()?;
+    if let Some(text) =
+        collect_clipboard_text(target.buffer, target.selection).map_err(command_execution_failed)?
+    {
+        context.clipboard.write(&text);
+    }
+    Ok(CommandOutcome::default())
+}
+
+fn run_cut(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    // 先取出剪贴板文本 + 删除材料；过程中只借 target，借完即释放，
+    // 之后才碰 `context.clipboard` 写入，避免对 context 的两次可变借用相撞。
+    enum CutPlan {
+        DeleteSelections(SelectionSet),
+        DeleteLineRanges(Vec<TextRange>),
+    }
+    let (text, plan) = {
+        let target = context.edit_target()?;
+        let any_non_empty = target.selection.as_slice().iter().any(|s| !s.is_caret());
+        let Some(text) = collect_clipboard_text(target.buffer, target.selection)
+            .map_err(command_execution_failed)?
+        else {
+            return Ok(CommandOutcome::default());
+        };
+        let plan = if any_non_empty {
+            CutPlan::DeleteSelections(target.selection.clone())
+        } else {
+            CutPlan::DeleteLineRanges(
+                collect_caret_line_ranges(target.buffer, target.selection)
+                    .map_err(command_execution_failed)?,
+            )
+        };
+        (text, plan)
+    };
+
+    context.clipboard.write(&text);
+
+    let target = context.edit_target()?;
+    match plan {
+        CutPlan::DeleteSelections(selections) => {
+            target
+                .buffer
+                .delete_selection_ranges(selections)
+                .map_err(command_execution_failed)?;
+        }
+        CutPlan::DeleteLineRanges(line_ranges) => {
+            if !line_ranges.is_empty() {
+                let line_selections = SelectionSet::from_ranges(line_ranges);
+                target
+                    .buffer
+                    .delete_selection_ranges(line_selections)
+                    .map_err(command_execution_failed)?;
+            }
+        }
+    }
+    *target.selection = target.buffer.selection().clone();
+    Ok(CommandOutcome::default())
+}
+
+fn run_paste(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    let Some(text) = context.clipboard.read() else {
+        return Ok(CommandOutcome::default());
+    };
+    if text.is_empty() {
+        return Ok(CommandOutcome::default());
+    }
+    let target = context.edit_target()?;
+    let selections = target.selection.clone();
+    target
+        .buffer
+        .replace_selections(selections, &text)
+        .map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
+    Ok(CommandOutcome::default())
+}
+
+/// 收集要写入剪贴板的字符串。
+///
+/// 二选一规则：
+/// - 任意非空 selection 存在 → 只取非空段，`\n` 分隔；
+/// - 全部 caret → 每个 caret 取所在行（含 `\n`），按 [`Line`] 去重并按行号顺序，
+///   直接拼接（行文本已自带 `\n`，末行无 `\n` 时不补）。
+///
+/// 没有可复制内容（全 caret 但 buffer 空 / 没有非空选区可取）返回 `None`。
+fn collect_clipboard_text(
+    buffer: &Buffer,
+    selections: &SelectionSet,
+) -> Result<Option<String>, EngineError> {
+    let any_non_empty = selections.as_slice().iter().any(|s| !s.is_caret());
+    if any_non_empty {
+        let mut pieces: Vec<String> = Vec::new();
+        for sel in selections.as_slice() {
+            if sel.is_caret() {
+                continue;
+            }
+            pieces.push(buffer.slice_text(sel.range())?.as_str().to_string());
+        }
+        if pieces.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(pieces.join("\n")))
+    } else {
+        let lines = collect_caret_lines(buffer, selections)?;
+        let mut out = String::new();
+        for line in lines {
+            out.push_str(buffer.slice_line(line)?.as_str());
+        }
+        if out.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(out))
+    }
+}
+
+/// 全 caret 模式下：把每个 caret 解析到所在行号，按 `Line` 去重并升序排列。
+fn collect_caret_lines(
+    buffer: &Buffer,
+    selections: &SelectionSet,
+) -> Result<Vec<Line>, EngineError> {
+    let mut set: BTreeSet<Line> = BTreeSet::new();
+    for sel in selections.as_slice() {
+        if !sel.is_caret() {
+            continue;
+        }
+        let pos = buffer.byte_to_position(sel.start())?;
+        set.insert(pos.line());
+    }
+    Ok(set.into_iter().collect())
+}
+
+/// 全 caret 模式下：行号 → 整行 byte 范围（含 `\n`），供 cut 路径删除。
+fn collect_caret_line_ranges(
+    buffer: &Buffer,
+    selections: &SelectionSet,
+) -> Result<Vec<TextRange>, EngineError> {
+    let lines = collect_caret_lines(buffer, selections)?;
+    let mut ranges = Vec::with_capacity(lines.len());
+    for line in lines {
+        ranges.push(buffer.slice_line(line)?.range());
+    }
+    Ok(ranges)
 }
 
 /// 把 workspace 的活动 buffer 同步到当前活动视图——让文件树「活动文件」

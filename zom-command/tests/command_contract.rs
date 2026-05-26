@@ -8,10 +8,14 @@ use zom_command::commands::{
 };
 use zom_command::{
     Command, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId, CommandQueue,
-    CommandRegistry, EffectQueue, FileTreeKeyMode, HostEffect, KeyBinding, KeyBindingContext,
-    KeyChord, KeyContext, Keymap, KeymapResolution, NoArgs, SearchOption, SearchScope,
+    CommandRegistry, EditTarget, EffectQueue, FileTreeKeyMode, HostEffect, KeyBinding,
+    KeyBindingContext, KeyChord, KeyContext, Keymap, KeymapResolution, MockClipboard, NoArgs,
+    SearchOption, SearchScope,
 };
-use zom_engine::{ByteOffset, Motion, MovementDirection, MovementUnit, Selection, SelectionSet};
+use zom_engine::{
+    Buffer, BufferConfig, ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
+    SelectionSet,
+};
 use zom_view::ViewSet;
 use zom_workspace::{BufferId, Workspace};
 
@@ -72,12 +76,39 @@ fn run(
     }
 
     let mut effects = EffectQueue::new();
+    let mut clipboard = MockClipboard::new();
     let mut context = CommandContext {
         workspace,
         views,
         focused_field: None,
         queue: &mut queue,
         effects: &mut effects,
+        clipboard: &mut clipboard,
+    };
+    CommandExecutor::new().run(registry, &mut context)
+}
+
+/// 与 [`run`] 同形，但接收外部 `MockClipboard` 供测试断言其内容。
+fn run_with_clipboard(
+    registry: &CommandRegistry,
+    workspace: &mut Workspace,
+    views: &mut ViewSet,
+    clipboard: &mut MockClipboard,
+    calls: Vec<(&str, CommandArgs)>,
+) -> Result<(), CommandError> {
+    let mut queue = CommandQueue::new();
+    for (id, args) in calls {
+        queue.dispatch(command_id(id), args);
+    }
+
+    let mut effects = EffectQueue::new();
+    let mut context = CommandContext {
+        workspace,
+        views,
+        focused_field: None,
+        queue: &mut queue,
+        effects: &mut effects,
+        clipboard,
     };
     CommandExecutor::new().run(registry, &mut context)
 }
@@ -94,12 +125,14 @@ fn run_and_collect_effects(
     }
 
     let mut effects = EffectQueue::new();
+    let mut clipboard = MockClipboard::new();
     let mut context = CommandContext {
         workspace,
         views,
         focused_field: None,
         queue: &mut queue,
         effects: &mut effects,
+        clipboard: &mut clipboard,
     };
     CommandExecutor::new().run(registry, &mut context)?;
     Ok(effects.drain())
@@ -127,8 +160,8 @@ fn install_all_should_register_every_builtin_command_catalog() {
         (version_control::TOGGLE_PANEL, "版本管理"),
         (outline::TOGGLE_PANEL, "大纲"),
         (search::TOGGLE_PANEL, "搜索"),
-        (search::IN_BUFFER, "search in buffer"),
-        (search::IN_PROJECT, "search in project"),
+        (search::IN_BUFFER, "文件级搜索"),
+        (search::IN_PROJECT, "项目级搜索"),
         (search::TOGGLE_CASE_SENSITIVE, "区分大小写"),
         (search::TOGGLE_WHOLE_WORD, "全词匹配"),
         (search::TOGGLE_REGEX, "正则表达式"),
@@ -699,6 +732,387 @@ fn editor_default_keymap_should_include_line_and_page_movement() {
             args: pagedown_args,
         }
     );
+}
+
+#[test]
+fn copy_with_non_empty_selection_should_write_selected_text_to_clipboard() {
+    let (mut workspace, mut views, _buffer_id) = setup("hello world");
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    *views.active_view_mut().unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::new(byte(0), byte(5))]);
+
+    let mut clipboard = MockClipboard::new();
+    run_with_clipboard(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut clipboard,
+        vec![(editor::COPY, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(clipboard.contents(), Some("hello"));
+}
+
+#[test]
+fn copy_with_multi_non_empty_selections_should_join_pieces_with_newline() {
+    let (mut workspace, mut views, _buffer_id) = setup("abcdef");
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    *views.active_view_mut().unwrap().selection_mut() = SelectionSet::new(vec![
+        Selection::new(byte(0), byte(2)),
+        Selection::new(byte(3), byte(5)),
+    ]);
+
+    let mut clipboard = MockClipboard::new();
+    run_with_clipboard(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut clipboard,
+        vec![(editor::COPY, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(clipboard.contents(), Some("ab\nde"));
+}
+
+#[test]
+fn copy_with_all_carets_should_take_whole_line_with_trailing_newline() {
+    // 多行文件，caret 落在第二行——复制结果就是"bar\n"（含 \n）。
+    let (mut workspace, mut views, _buffer_id) = setup("foo\nbar\nbaz\n");
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    *views.active_view_mut().unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::caret(byte(5))]); // "foo\nb" 之间
+    let mut clipboard = MockClipboard::new();
+    run_with_clipboard(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut clipboard,
+        vec![(editor::COPY, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(clipboard.contents(), Some("bar\n"));
+}
+
+#[test]
+fn copy_with_multiple_carets_on_same_line_should_dedupe_by_line() {
+    // 同一行两个 caret——按 Line 去重，整行只复制一次。
+    let (mut workspace, mut views, _buffer_id) = setup("abcd\nefgh\n");
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    *views.active_view_mut().unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::caret(byte(0)), Selection::caret(byte(2))]);
+    let mut clipboard = MockClipboard::new();
+    run_with_clipboard(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut clipboard,
+        vec![(editor::COPY, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(clipboard.contents(), Some("abcd\n"));
+}
+
+#[test]
+fn copy_mixed_caret_and_non_empty_should_ignore_carets() {
+    // 二选一：存在非空选区 → 所有 caret 被忽略。
+    let (mut workspace, mut views, _buffer_id) = setup("foo\nbar\n");
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    *views.active_view_mut().unwrap().selection_mut() = SelectionSet::new(vec![
+        Selection::caret(byte(0)),
+        Selection::new(byte(4), byte(7)),
+    ]);
+    let mut clipboard = MockClipboard::new();
+    run_with_clipboard(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut clipboard,
+        vec![(editor::COPY, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(clipboard.contents(), Some("bar"));
+}
+
+#[test]
+fn copy_last_line_without_trailing_newline_should_not_synthesize_newline() {
+    // 末行无 \n —— 剪贴板拿到的就是无换行的纯文本。
+    let (mut workspace, mut views, _buffer_id) = setup("foo\nbar");
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    *views.active_view_mut().unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::caret(byte(6))]);
+    let mut clipboard = MockClipboard::new();
+    run_with_clipboard(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut clipboard,
+        vec![(editor::COPY, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(clipboard.contents(), Some("bar"));
+}
+
+#[test]
+fn cut_with_non_empty_selection_should_write_and_delete() {
+    let (mut workspace, mut views, buffer_id) = setup("hello world");
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    *views.active_view_mut().unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::new(byte(0), byte(6))]);
+    let mut clipboard = MockClipboard::new();
+    run_with_clipboard(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut clipboard,
+        vec![(editor::CUT, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(clipboard.contents(), Some("hello "));
+    assert_eq!(text(&workspace, buffer_id), "world");
+}
+
+#[test]
+fn cut_with_all_carets_should_delete_whole_lines_with_newline() {
+    let (mut workspace, mut views, buffer_id) = setup("foo\nbar\nbaz\n");
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    *views.active_view_mut().unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::caret(byte(5))]); // Line 1 = "bar"
+    let mut clipboard = MockClipboard::new();
+    run_with_clipboard(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut clipboard,
+        vec![(editor::CUT, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(clipboard.contents(), Some("bar\n"));
+    assert_eq!(text(&workspace, buffer_id), "foo\nbaz\n");
+}
+
+#[test]
+fn cut_last_line_without_trailing_newline_should_leave_buffer_empty_when_only_line() {
+    let (mut workspace, mut views, buffer_id) = setup("only");
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    *views.active_view_mut().unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::caret(byte(2))]);
+    let mut clipboard = MockClipboard::new();
+    run_with_clipboard(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut clipboard,
+        vec![(editor::CUT, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(clipboard.contents(), Some("only"));
+    assert_eq!(text(&workspace, buffer_id), "");
+}
+
+#[test]
+fn paste_should_replace_selection_with_clipboard_text_verbatim() {
+    let (mut workspace, mut views, buffer_id) = setup("ab\ncd");
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    *views.active_view_mut().unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::caret(byte(0))]);
+    let mut clipboard = MockClipboard::with_contents("XY\nZ");
+    run_with_clipboard(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut clipboard,
+        vec![(editor::PASTE, CommandArgs::new())],
+    )
+    .unwrap();
+    // 复制到啥粘贴啥 —— 内嵌的 \n 原样换行。
+    assert_eq!(text(&workspace, buffer_id), "XY\nZab\ncd");
+}
+
+#[test]
+fn paste_with_empty_clipboard_should_be_noop() {
+    let (mut workspace, mut views, buffer_id) = setup("hello");
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    let mut clipboard = MockClipboard::new();
+    run_with_clipboard(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut clipboard,
+        vec![(editor::PASTE, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(text(&workspace, buffer_id), "hello");
+}
+
+/// 用单 buffer + 单 selection 模拟"聚焦的内嵌输入框"，跑一条命令并返回剪贴板状态。
+///
+/// 关键点：`focused_field = Some(EditTarget { ... })` 时，handler 走 `focused_field`
+/// 分支，**完全不应触碰** `workspace` / `views` 里的主编辑区。
+fn run_on_focused_field(
+    registry: &CommandRegistry,
+    workspace: &mut Workspace,
+    views: &mut ViewSet,
+    embed_buffer: &mut Buffer,
+    embed_selection: &mut SelectionSet,
+    clipboard: &mut MockClipboard,
+    calls: Vec<(&str, CommandArgs)>,
+) -> Result<(), CommandError> {
+    let mut queue = CommandQueue::new();
+    for (id, args) in calls {
+        queue.dispatch(command_id(id), args);
+    }
+
+    let mut effects = EffectQueue::new();
+    let mut context = CommandContext {
+        workspace,
+        views,
+        focused_field: Some(EditTarget {
+            buffer: embed_buffer,
+            selection: embed_selection,
+        }),
+        queue: &mut queue,
+        effects: &mut effects,
+        clipboard,
+    };
+    CommandExecutor::new().run(registry, &mut context)
+}
+
+#[test]
+fn clipboard_commands_should_target_focused_field_not_main_editor() {
+    // 主编辑区有自己的内容与选区——一旦剪贴板命令"误闯"到主编辑区，这里就会暴露：
+    // 主缓冲会被改、选区会被覆盖、复制的文本会跟它有关。
+    let (mut workspace, mut views, main_buffer_id) = setup("MAIN-EDITOR-TEXT");
+    *views.active_view_mut().unwrap().selection_mut() = SelectionSet::new(vec![Selection::new(
+        byte(0),
+        byte("MAIN-EDITOR-TEXT".len()),
+    )]);
+    let main_before = text(&workspace, main_buffer_id);
+
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    // 内嵌输入框：独立 Buffer + 独立 selection，模拟 picker / search query / file_tree
+    // pending 等任何 `TextTargetOwner` 暴露给 `focused_field` 的形态。
+    let mut embed_buffer = Buffer::scratch("embed".to_string(), BufferConfig::default()).unwrap();
+    let mut embed_selection = SelectionSet::new(vec![Selection::new(byte(0), byte("embed".len()))]);
+
+    // 1) COPY：写入剪贴板的应该是内嵌内容，不是主编辑区内容。
+    let mut clipboard = MockClipboard::new();
+    run_on_focused_field(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut embed_buffer,
+        &mut embed_selection,
+        &mut clipboard,
+        vec![(editor::COPY, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(clipboard.contents(), Some("embed"));
+    assert_eq!(
+        text(&workspace, main_buffer_id),
+        main_before,
+        "COPY 不应改动主编辑区文本"
+    );
+
+    // 2) PASTE：粘贴目标是内嵌 buffer，主编辑区不受影响。
+    let mut clipboard = MockClipboard::with_contents("XYZ");
+    // 折叠到行首，让 PASTE 走插入路径而不是替换路径。
+    embed_selection = SelectionSet::new(vec![Selection::caret(byte(0))]);
+    run_on_focused_field(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut embed_buffer,
+        &mut embed_selection,
+        &mut clipboard,
+        vec![(editor::PASTE, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(embed_buffer.text().into_owned(), "XYZembed");
+    assert_eq!(
+        text(&workspace, main_buffer_id),
+        main_before,
+        "PASTE 不应改动主编辑区文本"
+    );
+
+    // 3) CUT：剪切的也是内嵌内容，主编辑区文本仍维持原貌。
+    let mut clipboard = MockClipboard::new();
+    embed_selection = SelectionSet::new(vec![Selection::new(byte(0), byte("XYZ".len()))]);
+    run_on_focused_field(
+        &registry,
+        &mut workspace,
+        &mut views,
+        &mut embed_buffer,
+        &mut embed_selection,
+        &mut clipboard,
+        vec![(editor::CUT, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(clipboard.contents(), Some("XYZ"));
+    assert_eq!(embed_buffer.text().into_owned(), "embed");
+    assert_eq!(
+        text(&workspace, main_buffer_id),
+        main_before,
+        "CUT 不应改动主编辑区文本"
+    );
+}
+
+#[test]
+fn editor_default_keymap_should_bind_clipboard_commands() {
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+    let text_edit = text_edit_context();
+
+    for (chord, expected) in [
+        ("mod-c", editor::COPY),
+        ("mod-x", editor::CUT),
+        ("mod-v", editor::PASTE),
+    ] {
+        assert_eq!(
+            keymap.resolve(&[key(chord)], &text_edit),
+            KeymapResolution::Matched {
+                command: command_id(expected),
+                args: CommandArgs::new(),
+            },
+            "{chord} 应该绑到 {expected}"
+        );
+    }
 }
 
 #[test]

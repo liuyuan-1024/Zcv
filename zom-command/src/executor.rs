@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use zom_view::ViewSet;
 use zom_workspace::Workspace;
 
+use crate::clipboard::ClipboardPort;
 use crate::{CommandArgs, CommandError, CommandId, CommandRegistry, EffectQueue};
 
 /// 命令执行上下文。
@@ -22,6 +23,10 @@ pub struct CommandContext<'a> {
     pub focused_field: Option<EditTarget<'a>>,
     pub queue: &'a mut CommandQueue,
     pub effects: &'a mut EffectQueue,
+    /// 剪贴板端口：copy / cut / paste handler 读写宿主剪贴板。
+    /// engine 不持有剪贴板状态，宿主在派发前注入实现（GPUI 适配器或
+    /// 测试用 `MockClipboard`）。
+    pub clipboard: &'a mut dyn ClipboardPort,
 }
 
 /// 一次编辑命令作用的目标：文本缓冲 + 选区。

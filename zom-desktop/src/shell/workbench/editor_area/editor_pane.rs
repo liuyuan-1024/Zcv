@@ -76,7 +76,7 @@ fn editor_surface(slot: &Rc<TextEditorSlot>) -> Div {
         .rounded(theme::radius::r4())
         .bg(color::gray::s01())
         .p(space::s12())
-        .font_family(".ZedMono")
+        .font(typography::editor_font())
         .line_height(typography::editor_line())
         .text_size(typography::editor())
         .text_color(color::gray::s09())

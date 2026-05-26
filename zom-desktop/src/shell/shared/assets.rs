@@ -52,6 +52,21 @@ const ASSETS: &[(&str, &[u8])] = &[
     asset!("icons/files/file.svg"),
 ];
 
+macro_rules! font_asset {
+    ($path:literal) => {
+        Cow::Borrowed(include_bytes!(concat!("../../../assets/fonts/", $path)).as_slice())
+    };
+}
+
+pub(crate) fn embedded_fonts() -> Vec<Cow<'static, [u8]>> {
+    vec![
+        font_asset!("Lilex-Regular.ttf"),
+        font_asset!("Lilex-Bold.ttf"),
+        font_asset!("SarasaMonoSC-Regular.ttf"),
+        font_asset!("SarasaMonoSC-Bold.ttf"),
+    ]
+}
+
 impl AssetSource for EmbeddedAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         Ok(ASSETS

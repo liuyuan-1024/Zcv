@@ -8,7 +8,7 @@ use gpui::{
 use crate::app::App;
 
 use super::platform::app_icon;
-use super::shared::assets::EmbeddedAssets;
+use super::shared::assets::{EmbeddedAssets, embedded_fonts};
 use super::view::ShellView;
 
 /// 启动桌面应用：装配 GPUI、加载资源、打开首个窗口。
@@ -18,6 +18,10 @@ pub fn run(app: App) {
     Application::new()
         .with_assets(EmbeddedAssets)
         .run(move |cx: &mut GpuiApp| {
+            cx.text_system()
+                .add_fonts(embedded_fonts())
+                .expect("内置字体应能注册到 GPUI text system");
+
             let bounds = Bounds::centered(None, size(px(900.0), px(850.0)), cx);
 
             let window = cx

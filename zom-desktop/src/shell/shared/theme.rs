@@ -24,7 +24,9 @@
 //!
 //! 尺寸、字号、圆角、icon 不参与主题切换（手册 5.1 / 6.x）。
 //!
-use gpui::{Pixels, Rgba, px, rgb, rgba};
+use std::sync::OnceLock;
+
+use gpui::{Font, FontFallbacks, Pixels, Rgba, font, px, rgb, rgba};
 
 // color 是设计系统的"集合定义"：90 个 token 一旦发布就锁定，多数会在调用方
 // 接入前长期 dead_code（手册 §4.7）。模块级 allow，避免给每个函数挂注解。
@@ -414,6 +416,29 @@ pub mod radius {
 /// UI 层级靠颜色 / 字重区分，不靠字号。
 pub mod typography {
     use super::*;
+    /// 桌面 UI 字体。当前先使用随应用内置的 Lilex + Sarasa Mono SC，
+    /// 以后若加入非等宽 UI 字体，只需要改这里。
+    pub fn ui_font() -> Font {
+        let mut font = font("Lilex");
+        font.fallbacks = Some(cjk_font_fallbacks());
+        font
+    }
+
+    /// 编辑区代码字体。Lilex 与 Sarasa Mono SC 随应用内置注册；
+    /// Lilex 负责拉丁字符，Sarasa Mono SC 负责中文 fallback。
+    pub fn editor_font() -> Font {
+        let mut font = font("Lilex");
+        font.fallbacks = Some(cjk_font_fallbacks());
+        font
+    }
+
+    fn cjk_font_fallbacks() -> FontFallbacks {
+        static FALLBACKS: OnceLock<FontFallbacks> = OnceLock::new();
+        FALLBACKS
+            .get_or_init(|| FontFallbacks::from_fonts(vec!["Sarasa Mono SC".to_string()]))
+            .clone()
+    }
+
     /// UI 文字字号：文件树、顶栏、Dock、标签、浮层、tooltip 等全部 chrome。
     pub fn ui() -> Pixels {
         px(13.0)

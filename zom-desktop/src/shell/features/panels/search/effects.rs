@@ -75,13 +75,13 @@ fn activate_search(
     focus: &FocusRouter<'_>,
     window: &mut Window,
 ) {
-    let _ = app; // 第一版面板状态无需更新；BufferSearch 接入后会读 app 同步命中。
     let panel = PanelId::Search;
     let visible = workbench.borrow().is_panel_active(panel);
 
     if !visible {
         // 隐藏 → 显示 + 聚焦
         workbench.borrow_mut().show_panel(panel);
+        app.borrow_mut().on_search_panel_opened();
         focus.move_to(FocusTarget::Panel(panel), window);
         window.refresh();
         return;
@@ -97,8 +97,10 @@ fn activate_search(
             .is_focused(window);
 
     if focus_in_panel {
-        // 已显示 + 焦点在面板 → 收起，焦点回编辑器
+        // 已显示 + 焦点在面板 → 收起，焦点回编辑器；同时清掉活动 buffer 的
+        // search 高亮，标记 panel 关闭。
         workbench.borrow_mut().hide_panel(panel);
+        app.borrow_mut().on_search_panel_closed();
         focus.move_to(FocusTarget::Editor, window);
     } else {
         // 已显示 + 焦点不在 → 把焦点搬过去

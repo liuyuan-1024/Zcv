@@ -460,6 +460,29 @@ impl App {
         self.search.deactivate(target);
     }
 
+    /// 搜索面板刚被打开（mod-f 从隐藏切到显示）。标记 panel_open，下一次
+    /// `sync_active_buffer_search` 会把当前 query 推进活动 buffer 并 reveal
+    /// 第一项命中——这是用户期待的「打开搜索就看到结果」体验。
+    pub(crate) fn on_search_panel_opened(&mut self) {
+        self.search.set_panel_open(true);
+        self.sync_active_buffer_search();
+    }
+
+    /// 搜索面板被关闭：清掉活动 buffer 的 BufferSearch 高亮，同时把 panel_open
+    /// 设回 false 让后续 dispatch tail 的 sync 跳过——不然下一个编辑器按键
+    /// 会触发同步把高亮复活。
+    ///
+    /// panel 上的 query/replacement 文本本身**不动**：再开面板时仍能看到上次
+    /// 输入，按 Enter 即可重新搜。
+    pub(crate) fn on_search_panel_closed(&mut self) {
+        self.search.set_panel_open(false);
+        if let Some(wb) = self.workspace.active_buffer_mut() {
+            // 把 query 置空 → BufferSearch.slot 被清空 → ranges() 空 →
+            // EditorView 阶段 2 没东西画。下次面板再开会重新 set_query。
+            wb.search_mut().set_query(String::new());
+        }
+    }
+
     pub(crate) fn search_toggle_option(&mut self, option: SearchOption) {
         self.search
             .toggle_option(option, &self.workspace, &self.views);
@@ -524,18 +547,39 @@ impl App {
     ///
     /// 在 `dispatch_command_id`、IME 路径、以及 search_*_option / find_*
     /// 等所有可能改变 panel 状态或前置触发搜索的位置都调一次。
+    ///
+    /// 面板没在屏上时整条早退——避免编辑器普通按键的 dispatch tail 把上一轮
+    /// 搜索的高亮复活（参见 [`Self::on_search_panel_closed`]）。query/options
+    /// 在本次调用中确有变化时，自动把选区+视口 reveal 到第一项命中（VS Code
+    /// 风格：边输入边定位首条）。
     fn sync_active_buffer_search(&mut self) {
+        if !self.search.panel_open() {
+            return;
+        }
         let query = self.search.query_text();
         let options = self.search.buffer_search_options();
         let Some(wb) = self.workspace.active_buffer_mut() else {
             return;
         };
-        wb.search_mut().set_query(query);
-        wb.search_mut().set_options(options);
+        let query_changed = wb.search_mut().set_query(query);
+        let options_changed = wb.search_mut().set_options(options);
         // 先把 buffer 上累积的 DeltaEvent（任何编辑路径都可能产生）喂回 BufferSearch
         // 再 sync：sync 检测版本时优先复用 try_remap 的结果，没有时才重跑。
         let _ = wb.pump_search();
         let _ = wb.sync_search();
+
+        // query / options 这一次真的变了 → 让选区落到新结果集的第一项并
+        // reveal。`normalize_current_hit_after_rerun` 已经把 current_hit 摆
+        // 到 0，所以 current_range 即第一条。
+        //
+        // 没变化时不触发：避免覆盖 find_next / replace 等命令自己刚 advance
+        // 出来的 current hit——它们走 dispatch 尾部时会再次进本函数，但
+        // query/options 不变就不会被反向拉回首条。
+        if query_changed || options_changed {
+            if let Some(range) = wb.search().current_range() {
+                self.move_selection_to_match(range);
+            }
+        }
     }
 
     /// 把活动 view 的 selection 挪到 search 命中的 range，并 reveal。
@@ -963,7 +1007,10 @@ mod tests {
         let view_id = app.views.open_view(active_buffer_id, active_version);
         app.views.set_active(view_id);
 
-        // 用户聚焦搜索框，输入 "foo"
+        // 模拟「mod-f 打开搜索面板 + 聚焦 query」——effects.rs 那条路径在
+        // 集成测试里没有 GPUI 焦点真信号，这里手工触发：先标 panel 打开
+        // （否则 sync gate 会早退），再标 query 字段激活。
+        app.on_search_panel_opened();
         app.search_activate(TextTargetId::SearchQuery);
         app.ime_replace_text_for(TextTargetId::SearchQuery, None, "foo")
             .unwrap();
@@ -973,6 +1020,12 @@ mod tests {
         let hit_count = state.hit_count.expect("type query 后应有命中数");
         assert_eq!(hit_count.total, 3);
         assert_eq!(hit_count.current, 1); // 自动 anchor 到第一条
+
+        // 任务 1：query 写完后自动落到第一项命中（byte 0..3）。
+        let view = app.views.active_view().unwrap();
+        let primary = view.selection().primary().range();
+        assert_eq!(primary.start().get(), 0);
+        assert_eq!(primary.end().get(), 3);
 
         // find_next 把 selection 推进到第二个 match（byte 8..11）
         app.search_find_next();
@@ -993,6 +1046,68 @@ mod tests {
         let view = app.views.active_view().unwrap();
         let primary = view.selection().primary().range();
         assert_eq!(primary.start().get(), 8);
+    }
+
+    /// 任务 2：关闭搜索面板 → 活动 buffer 的高亮立刻消失；后续编辑按键的
+    /// dispatch tail sync 也不能把它复活。重开面板 + 重输入会恢复。
+    #[test]
+    fn closing_search_panel_should_clear_buffer_highlights_and_block_resync() {
+        let mut app = App::new();
+        app.workspace
+            .open_text(None, "foo bar foo".to_string())
+            .unwrap();
+        let active_buffer_id = app.workspace.active_buffer_id().unwrap();
+        let active_version = app
+            .workspace
+            .buffer(active_buffer_id)
+            .unwrap()
+            .buffer()
+            .version();
+        let view_id = app.views.open_view(active_buffer_id, active_version);
+        app.views.set_active(view_id);
+
+        // 打开 + 搜 "foo"，确认高亮命中数。
+        app.on_search_panel_opened();
+        app.search_activate(TextTargetId::SearchQuery);
+        app.ime_replace_text_for(TextTargetId::SearchQuery, None, "foo")
+            .unwrap();
+        assert_eq!(
+            app.workspace
+                .buffer(active_buffer_id)
+                .unwrap()
+                .search()
+                .hit_count(),
+            2
+        );
+
+        // 关闭面板 → BufferSearch 立刻清空。
+        app.on_search_panel_closed();
+        assert_eq!(
+            app.workspace
+                .buffer(active_buffer_id)
+                .unwrap()
+                .search()
+                .hit_count(),
+            0
+        );
+
+        // 关闭后任何 dispatch tail（这里用 IME commit 模拟编辑器按键）都不应
+        // 把高亮复活——sync 在 panel_open=false 时早退。
+        // 让活动 view 接受输入：把焦点从搜索回到主编辑器。
+        app.search_deactivate(TextTargetId::SearchQuery);
+        // editor 按键路径里我们模拟一次普通字符提交（commit "x"）。
+        // 由于此场景在测试里没接 keymap 的真路径，直接调 dispatch 走 ime_commit
+        // 触发 dispatch_command_id 尾部的 sync。
+        let _ = app.ime_replace_text_for(TextTargetId::MainEditor, None, "x");
+        assert_eq!(
+            app.workspace
+                .buffer(active_buffer_id)
+                .unwrap()
+                .search()
+                .hit_count(),
+            0,
+            "关闭后高亮不应被任何后续操作复活"
+        );
     }
 
     #[test]

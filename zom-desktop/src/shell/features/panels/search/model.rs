@@ -50,6 +50,11 @@ pub(crate) struct SearchModel {
     replacement: Editor,
     options: SearchOptions,
     active: Option<TextTargetId>,
+    /// 面板是否可见（mod-f 显示 / 收起的逻辑栅栏，与 `active` 不同：active 表示
+    /// 哪个输入框获得焦点，可能在 query / replacement 之间切换；panel_open 是
+    /// "整个搜索面板还在不在屏上"——关闭后用来扣掉 buffer 高亮、阻止后续
+    /// dispatch tail 的 `sync_active_buffer_search` 把命中复活）。
+    panel_open: bool,
 }
 
 impl SearchModel {
@@ -120,6 +125,16 @@ impl SearchModel {
 
     pub(crate) fn active(&self) -> bool {
         self.active.is_some()
+    }
+
+    /// 整个搜索面板是否在屏上。`activate` / `deactivate` 只标输入框焦点；这条
+    /// 由 effects.rs 在 `show_panel` / `hide_panel` 调用同步。
+    pub(crate) fn set_panel_open(&mut self, open: bool) {
+        self.panel_open = open;
+    }
+
+    pub(crate) fn panel_open(&self) -> bool {
+        self.panel_open
     }
 
     pub(crate) fn edit_target(&mut self) -> Option<EditTarget<'_>> {

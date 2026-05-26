@@ -7,6 +7,7 @@
 //! 在树里——包括"尚未打开项目"占位——否则在打开项目的瞬间 `window.focus`
 //! 找不到挂载点，焦点请求就会丢失。
 
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use gpui::{AnyElement, Div, Svg, div, prelude::*, svg, uniform_list};
@@ -70,6 +71,9 @@ fn render_list(
     } else {
         state.selected.clone()
     };
+    // 选区与"焦点边框"是两套视觉：pending 名称输入时焦点边框让位（见上），
+    // 但已经被用户累加的选区不应该静默丢失，所以这里照实传，不随 pending 收起。
+    let selection = state.selection.clone();
     let active = state.active.clone();
     let slot = Rc::clone(slot);
     if let Some(index) = selected_item.filter(|index| *index < items.len()) {
@@ -85,10 +89,14 @@ fn render_list(
                 range
                     .filter_map(|index| items.get(index))
                     .map(|item| match item {
-                        FileTreeItem::Row(row) => {
-                            render_row(row, selected.as_ref(), active.as_ref(), is_focused)
-                                .into_any_element()
-                        }
+                        FileTreeItem::Row(row) => render_row(
+                            row,
+                            selected.as_ref(),
+                            &selection,
+                            active.as_ref(),
+                            is_focused,
+                        )
+                        .into_any_element(),
                         FileTreeItem::Pending(pending) => {
                             render_input_row(pending, &slot).into_any_element()
                         }
@@ -194,10 +202,12 @@ fn empty_message(hint: &'static str) -> Div {
 fn render_row(
     row: &FileTreeRow,
     selected: Option<&std::path::PathBuf>,
+    selection: &BTreeSet<std::path::PathBuf>,
     active: Option<&std::path::PathBuf>,
     is_focused: bool,
 ) -> Div {
     let is_selected = selected.map(|p| p == &row.path).unwrap_or(false);
+    let is_in_selection = selection.contains(&row.path);
     let is_active = active.map(|p| p == &row.path).unwrap_or(false);
 
     // 边框始终占 1px，保证选中态切换时行高不抖。失焦时直接染透明，让选中
@@ -207,7 +217,11 @@ fn render_row(
     } else {
         gpui::rgba(0)
     };
-    let bg_color = if is_active {
+    // 背景三态：多选选区 > 活动文件 > 透明。选区色用蓝 a04（theme 注释里就是
+    // "选区色块"），与活动文件的灰底视觉上一眼可分。
+    let bg_color = if is_in_selection {
+        color::blue::a04()
+    } else if is_active {
         color::gray::s04()
     } else {
         gpui::rgba(0)

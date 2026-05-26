@@ -11,16 +11,21 @@ use crate::{
 
 pub const TOGGLE_PANEL: &str = "panel.toggle.file_tree";
 pub const MOVE_SELECTION: &str = "file_tree.move_selection";
+pub const EXTEND_SELECTION: &str = "file_tree.extend_selection";
+pub const ESCAPE: &str = "file_tree.escape";
 pub const COLLAPSE_OR_PARENT: &str = "file_tree.collapse_or_parent";
 pub const EXPAND_OR_INTO: &str = "file_tree.expand_or_into";
 pub const ACTIVATE: &str = "file_tree.activate";
-pub const FOCUS_EDITOR: &str = "file_tree.focus_editor";
 pub const BEGIN_NEW_ENTRY: &str = "file_tree.begin_new_entry";
 pub const COMMIT_NEW_ENTRY: &str = "file_tree.commit_new_entry";
 pub const CANCEL_NEW_ENTRY: &str = "file_tree.cancel_new_entry";
 pub const REQUEST_DELETE: &str = "file_tree.request_delete";
 pub const CONFIRM_DELETE: &str = "file_tree.confirm_delete";
 pub const CANCEL_DELETE: &str = "file_tree.cancel_delete";
+
+/// PageUp / PageDown 的固定步长（按可见行数估算）。后续若要按真实视口高度
+/// 计算，再让 panel 把可见行数传到 model；本阶段先用经验值。
+const PAGE_LINES: isize = 20;
 
 /// 文件树当前键盘模式。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,6 +78,14 @@ pub fn move_selection(delta: isize) -> Invocation {
     (cid(MOVE_SELECTION), MoveSelectionArgs { delta }.into())
 }
 
+pub fn extend_selection(delta: isize) -> Invocation {
+    (cid(EXTEND_SELECTION), MoveSelectionArgs { delta }.into())
+}
+
+pub fn escape() -> Invocation {
+    (cid(ESCAPE), CommandArgs::new())
+}
+
 pub fn collapse_or_parent() -> Invocation {
     (cid(COLLAPSE_OR_PARENT), CommandArgs::new())
 }
@@ -83,10 +96,6 @@ pub fn expand_or_into() -> Invocation {
 
 pub fn activate() -> Invocation {
     (cid(ACTIVATE), CommandArgs::new())
-}
-
-pub fn focus_editor() -> Invocation {
-    (cid(FOCUS_EDITOR), CommandArgs::new())
 }
 
 pub fn begin_new_entry() -> Invocation {
@@ -135,9 +144,26 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "移动文件树选中项",
             Box::new(run_move_selection),
         )
-        .description("在文件树中向上或向下移动选中项。")
         .key_with_in("up", move_args(-1), navigate)
-        .key_with_in("down", move_args(1), navigate);
+        .key_with_in("down", move_args(1), navigate)
+        .key_with_in("pageup", move_args(-PAGE_LINES), navigate)
+        .key_with_in("pagedown", move_args(PAGE_LINES), navigate);
+
+    registry
+        .install(
+            keymap,
+            EXTEND_SELECTION,
+            "扩展文件树多选选区",
+            Box::new(run_extend_selection),
+        )
+        .key_with_in("shift-up", move_args(-1), navigate)
+        .key_with_in("shift-down", move_args(1), navigate)
+        .key_with_in("shift-pageup", move_args(-PAGE_LINES), navigate)
+        .key_with_in("shift-pagedown", move_args(PAGE_LINES), navigate);
+
+    registry
+        .install(keymap, ESCAPE, "文件树 Esc", Box::new(run_escape))
+        .key_in("escape", navigate);
 
     registry
         .install(
@@ -146,7 +172,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "折叠文件树条目或跳到父目录",
             Box::new(run_collapse_or_parent),
         )
-        .description("折叠当前目录；已折叠时跳到父目录。")
         .key_in("left", navigate);
 
     registry
@@ -156,22 +181,11 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "展开文件树条目或进入子项",
             Box::new(run_expand_or_into),
         )
-        .description("展开当前目录；已展开时进入子项。")
         .key_in("right", navigate);
 
     registry
         .install(keymap, ACTIVATE, "激活文件树条目", Box::new(run_activate))
         .key_in("enter", navigate);
-
-    registry
-        .install(
-            keymap,
-            FOCUS_EDITOR,
-            "文件树焦点回到编辑器",
-            Box::new(run_focus_editor),
-        )
-        .description("让焦点从文件树回到当前编辑器。")
-        .key_in("escape", navigate);
 
     registry
         .install(
@@ -242,6 +256,26 @@ fn run_move_selection(
     Ok(CommandOutcome::default())
 }
 
+fn run_extend_selection(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    let args = MoveSelectionArgs::try_from(args)?;
+    context
+        .effects
+        .push(HostEffect::FileTreeExtendSelection(args.delta));
+    Ok(CommandOutcome::default())
+}
+
+fn run_escape(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.effects.push(HostEffect::FileTreeEscape);
+    Ok(CommandOutcome::default())
+}
+
 fn run_collapse_or_parent(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
@@ -266,15 +300,6 @@ fn run_activate(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.effects.push(HostEffect::FileTreeActivate);
-    Ok(CommandOutcome::default())
-}
-
-fn run_focus_editor(
-    context: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    context.effects.push(HostEffect::FileTreeFocusEditor);
     Ok(CommandOutcome::default())
 }
 

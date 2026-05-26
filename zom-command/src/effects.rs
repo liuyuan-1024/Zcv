@@ -93,16 +93,20 @@ pub enum HostEffect {
     DismissSurface,
 
     // ===== File tree =====
-    /// 移动文件树选中行。
+    /// 移动文件树选中行（焦点）。绑定 Up/Down 走 ±1，PageUp/PageDown 走更大步长。
     FileTreeMoveSelection(isize),
+    /// 扩展多选选区：当前焦点行加入选区 → 焦点按 delta 移动 → 新焦点行也加入。
+    /// 绑定 Shift+Up/Down / Shift+PageUp/PageDown。
+    FileTreeExtendSelection(isize),
+    /// Esc 二段式：选区非空时清空选区（不离开面板）；否则把焦点交回编辑器。
+    /// 是否消化由 model 决定，宿主据此选择是否再走 focus_editor。
+    FileTreeEscape,
     /// 折叠当前目录或跳到父目录。
     FileTreeCollapseOrParent,
     /// 展开当前目录或进入子项。
     FileTreeExpandOrInto,
     /// 激活当前文件树条目。
     FileTreeActivate,
-    /// 把焦点交回主编辑区。
-    FileTreeFocusEditor,
     /// 开始新建文件或目录（提交时按输入末尾 `/` 推断类型）。
     FileTreeBeginNewEntry,
     /// 提交正在输入的新建条目。

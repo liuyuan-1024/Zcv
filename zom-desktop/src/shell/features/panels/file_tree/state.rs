@@ -3,6 +3,7 @@
 //! 这些类型是文件树 feature 对外暴露的 owned 快照与操作反馈。App 组合根负责
 //! 填充它们，shell 文件树面板负责消费它们。
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use zom_workspace::EntryKind;
@@ -14,8 +15,13 @@ use zom_workspace::EntryKind;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FileTreeState {
     pub(crate) rows: Vec<FileTreeRow>,
-    /// 键盘焦点行（光标）。
+    /// 键盘焦点行（光标）。与 [`selection`](Self::selection) 解耦 —— 焦点是
+    /// 唯一的"光标位置"，选区可以为空、可以有多个成员、也可以与焦点重叠。
     pub(crate) selected: Option<PathBuf>,
+    /// 多选集合：用户主动累加进来的目录 / 文件。后续的复制 / 剪切 / 删除等
+    /// 批量操作以此为目标；为空时操作降级到 [`selected`](Self::selected) 单项。
+    /// 渲染时使用独立背景色，与"活动文件"灰底区分。
+    pub(crate) selection: BTreeSet<PathBuf>,
     /// 当前活动 buffer 对应的文件路径，用于做“活动文件高亮”。
     pub(crate) active: Option<PathBuf>,
     /// 正在键入名称的「新建文件 / 目录」。`None` 表示不处于新建态。

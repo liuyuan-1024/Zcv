@@ -191,6 +191,16 @@ impl App {
         self.file_tree.move_selection(delta);
     }
 
+    pub(crate) fn file_tree_extend_selection(&mut self, delta: isize) {
+        self.file_tree.extend_selection(delta);
+    }
+
+    /// Esc 二段式：选区非空时清空、返回 `true`；否则返回 `false`，由调用方
+    /// 决定后续走向（典型走法是把焦点交回编辑器）。
+    pub(crate) fn file_tree_escape(&mut self) -> bool {
+        self.file_tree.escape()
+    }
+
     pub(crate) fn file_tree_collapse_or_parent(&mut self) {
         self.file_tree.collapse_or_parent();
     }

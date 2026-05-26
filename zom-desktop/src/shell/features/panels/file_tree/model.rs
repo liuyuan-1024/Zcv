@@ -2,6 +2,7 @@
 //!
 //! 负责项目目录树、展开状态、选中行、面板快照构造，以及从文件树激活文件。
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use zom_command::EditTarget;
@@ -19,6 +20,9 @@ use super::{FileTreeActivation, FileTreeRow, FileTreeState, PendingDelete, Pendi
 pub(crate) struct FileTreeModel {
     project_tree: Option<ProjectTree>,
     selected: Option<PathBuf>,
+    /// 多选集合，独立于 `selected` 焦点。Phase 1 仅承载数据 + 视觉，写入
+    /// 入口在后续阶段（Shift+方向键扩选、复制 / 剪切 / 粘贴）补齐。
+    selection: BTreeSet<PathBuf>,
     /// 正在键入名称的新建条目；`None` 表示不处于新建态。
     pending: Option<PendingEntry>,
     /// 正在等待确认的待删条目（路径 + 类型）；`None` 表示无删除确认弹窗。
@@ -43,6 +47,7 @@ impl FileTreeModel {
             }
         };
         self.selected = None;
+        self.selection.clear();
         self.pending = None;
         self.pending_delete = None;
     }
@@ -92,6 +97,7 @@ impl FileTreeModel {
         FileTreeState {
             rows,
             selected: self.selected.clone(),
+            selection: self.selection.clone(),
             active,
             pending,
             pending_delete,
@@ -278,6 +284,55 @@ impl FileTreeModel {
             }
         };
         self.selected = Some(paths[new_index].clone());
+    }
+
+    /// 扩展多选选区。规则三步：
+    /// 1. 当前焦点行加入选区；
+    /// 2. 焦点按 `delta` 移动（边界 clamp）；
+    /// 3. 新焦点行也加入选区。
+    ///
+    /// 这样保证从"空选区 + 任意焦点"起按一次 Shift+↓，两端都进选区；后续连续
+    /// 按相当于一把"刷子"延伸；中途用方向键跳走再 Shift+↓ 即得到非连续累加。
+    /// 不提供"从选区里精确去掉一项"的能力——按设计要求，用 Esc 清空重选。
+    pub(crate) fn extend_selection(&mut self, delta: isize) {
+        let Some(tree) = self.project_tree.as_ref() else {
+            return;
+        };
+        let paths: Vec<PathBuf> = tree
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.path.to_path_buf())
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        let new_index = match self.selected.as_ref() {
+            None => {
+                // 没有焦点：把目的地（首/末）作为唯一加入项；起点不存在，跳过步骤 1。
+                if delta >= 0 { 0 } else { paths.len() - 1 }
+            }
+            Some(current) => {
+                // 步骤 1：起点入选区（即便 current 已不在 paths 里也保留——可能被外部刷新）。
+                self.selection.insert(current.clone());
+                let cur_idx = paths.iter().position(|p| p == current).unwrap_or(0) as isize;
+                (cur_idx + delta).clamp(0, paths.len() as isize - 1) as usize
+            }
+        };
+        // 步骤 2：移动焦点。
+        self.selected = Some(paths[new_index].clone());
+        // 步骤 3：终点入选区。
+        self.selection.insert(paths[new_index].clone());
+    }
+
+    /// Esc 二段式：选区非空时清空选区（返回 `true`，表示已消化）；否则返回
+    /// `false`，让调用方走"焦点回编辑器"的原有路径。
+    pub(crate) fn escape(&mut self) -> bool {
+        if self.selection.is_empty() {
+            false
+        } else {
+            self.selection.clear();
+            true
+        }
     }
 
     pub(crate) fn collapse_or_parent(&mut self) {
@@ -622,6 +677,126 @@ mod tests {
             selected_path_after_deleting_active(&tree, &workspace).as_deref(),
             Some(readme.as_path())
         );
+    }
+
+    /// 构造一棵 root/{a,b,c}.txt 的 model，已展开 root。
+    fn model_with_three_files(name: &str) -> (FileTreeModel, PathBuf) {
+        let root = tmp_root(name);
+        File::create(root.join("a.txt")).unwrap();
+        File::create(root.join("b.txt")).unwrap();
+        File::create(root.join("c.txt")).unwrap();
+        let mut model = FileTreeModel::default();
+        model.open_project(root.clone());
+        (model, root)
+    }
+
+    fn workspace_for_state() -> Workspace {
+        Workspace::new()
+    }
+
+    #[test]
+    fn extend_selection_should_add_both_endpoints_first_call() {
+        let (mut model, root) = model_with_three_files("extend-first-call");
+        // 焦点初始化到第一行（root 自身在 visible_rows 中是第一行）。
+        model.ensure_selection_initialized();
+        assert_eq!(model.selected.as_deref(), Some(root.as_path()));
+
+        // 第一次 Shift+↓：起点（root）与终点（a.txt）都应进选区。
+        model.extend_selection(1);
+        let ws = workspace_for_state();
+        let state = model.state(&ws);
+        assert!(state.selection.contains(&root));
+        assert!(state.selection.contains(&root.join("a.txt")));
+        assert_eq!(
+            state.selected.as_deref(),
+            Some(root.join("a.txt").as_path())
+        );
+    }
+
+    #[test]
+    fn extend_selection_continuous_should_grow_like_brush() {
+        let (mut model, root) = model_with_three_files("extend-continuous");
+        model.ensure_selection_initialized();
+        model.extend_selection(1); // root, a
+        model.extend_selection(1); // + b
+        model.extend_selection(1); // + c
+        let state = model.state(&workspace_for_state());
+        assert_eq!(state.selection.len(), 4);
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            assert!(state.selection.contains(&root.join(name)));
+        }
+        assert!(state.selection.contains(&root));
+        assert_eq!(
+            state.selected.as_deref(),
+            Some(root.join("c.txt").as_path())
+        );
+    }
+
+    #[test]
+    fn plain_move_should_not_touch_selection() {
+        let (mut model, root) = model_with_three_files("plain-move-keeps-selection");
+        model.ensure_selection_initialized();
+        model.extend_selection(1); // 选区 = {root, a}
+        // 普通方向键：焦点继续往下，但选区不变。
+        model.move_selection(1); // 焦点到 b
+        model.move_selection(1); // 焦点到 c
+        let state = model.state(&workspace_for_state());
+        assert_eq!(state.selection.len(), 2);
+        assert!(state.selection.contains(&root));
+        assert!(state.selection.contains(&root.join("a.txt")));
+        assert_eq!(
+            state.selected.as_deref(),
+            Some(root.join("c.txt").as_path())
+        );
+    }
+
+    #[test]
+    fn extend_selection_after_jumping_should_accumulate_noncontiguous() {
+        let (mut model, root) = model_with_three_files("extend-noncontiguous");
+        model.ensure_selection_initialized();
+        // 累加前两行入选区。
+        model.extend_selection(1); // 选区 = {root, a}
+        // 普通方向键跳到 c.txt（中间不留痕迹）。
+        model.move_selection(1); // 焦点 b
+        model.move_selection(1); // 焦点 c
+        // Shift+↑ 在 c 处累加：起点 c 入选区，终点 b 也入选区。
+        model.extend_selection(-1);
+        let state = model.state(&workspace_for_state());
+        assert!(state.selection.contains(&root));
+        assert!(state.selection.contains(&root.join("a.txt")));
+        assert!(state.selection.contains(&root.join("b.txt")));
+        assert!(state.selection.contains(&root.join("c.txt")));
+        assert_eq!(state.selection.len(), 4);
+        // 起点跳跃留下的"中间区"在这棵小树里恰好没空隙；用更大树测才能完美演示
+        // 非连续，这里至少验证 jump 后累加并未"补齐中间所有路径"——root 与 a 是因为
+        // 之前累加过、b/c 是这次累加，不存在"多余的中间填充"逻辑。
+    }
+
+    #[test]
+    fn escape_should_consume_only_when_selection_non_empty() {
+        let (mut model, _root) = model_with_three_files("escape-two-stage");
+        model.ensure_selection_initialized();
+        // 选区空：Esc 不消化。
+        assert!(!model.escape());
+        // 累加后选区非空：Esc 清空并消化。
+        model.extend_selection(1);
+        assert!(!model.selection.is_empty());
+        assert!(model.escape());
+        assert!(model.selection.is_empty());
+        // 再次 Esc：又回到空选区不消化。
+        assert!(!model.escape());
+    }
+
+    #[test]
+    fn open_project_should_clear_selection() {
+        let (mut model, _root) = model_with_three_files("open-clears-selection");
+        model.ensure_selection_initialized();
+        model.extend_selection(1);
+        assert!(!model.selection.is_empty());
+        let other = tmp_root("open-clears-selection-target");
+        File::create(other.join("x.txt")).unwrap();
+        model.open_project(other);
+        assert!(model.selection.is_empty());
     }
 
     #[test]

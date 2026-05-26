@@ -27,6 +27,18 @@ pub(crate) fn try_apply_effect(
         HostEffect::FileTreeMoveSelection(delta) => {
             app.borrow_mut().file_tree_move_selection(*delta);
         }
+        HostEffect::FileTreeExtendSelection(delta) => {
+            app.borrow_mut().file_tree_extend_selection(*delta);
+        }
+        HostEffect::FileTreeEscape => {
+            // 选区有内容时 model 清掉它并消化 Esc；否则按原有 focus_editor 路径
+            // 把焦点交回主编辑区。逻辑写在宿主侧而非 model 是因为 focus 路由
+            // 涉及 window，model 不该感知 UI。
+            let consumed = app.borrow_mut().file_tree_escape();
+            if !consumed {
+                focus.move_to(FocusTarget::Editor, window);
+            }
+        }
         HostEffect::FileTreeCollapseOrParent => {
             app.borrow_mut().file_tree_collapse_or_parent();
         }
@@ -39,7 +51,6 @@ pub(crate) fn try_apply_effect(
                 focus.move_to(FocusTarget::Editor, window);
             }
         }
-        HostEffect::FileTreeFocusEditor => focus.move_to(FocusTarget::Editor, window),
         HostEffect::FileTreeBeginNewEntry => {
             app.borrow_mut().file_tree_begin_new_entry();
             // 文件树面板的 focus handle 也是新建输入框的 input handle —— 用同

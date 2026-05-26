@@ -216,44 +216,43 @@ Engine 已提供：
 - [x] 支持删除、移动光标、撤销、重做。
 - [x] 接入 IME 最小文本输入路径：commit 走命令，preedit update 走直接通道。
 - [x] 保持 `shell` 只做事件转换和显示，不复制编辑语义。
+- [x] 阶段 2 范围背景渲染原语 `paint_range_backgrounds`：接受 `Vec<(TextRange, Hsla)>`，处理跨多行 quad 拆分与 viewport 裁剪。
+- [x] selection 作为阶段 2 第一个消费者接入：含多光标 caret 与跨行 selection 背景。
+- [ ] IME marked text 作为阶段 2 第二个消费者接入。（暂时不做，以待后续）
 
-P2 已知遗留（顺势在 P3 阶段 2 渲染原语里补齐，不单独立期）：
+### P3：搜索、视口与折叠
 
-- [ ] 选区背景渲染：当前 `EditorElement` 只接 `cursor_byte` 画 caret（阶段 5），阶段 2 完全空白；多光标、跨行 selection、IME 选区都没绘制。补齐时 `EditorElement` 改成接 `&SelectionSet` 而非裸 byte。
+目标：在 P2 渲染骨架之上接入 engine 的搜索、视口与投影能力。
 
-### P3：搜索、替换、折叠与 viewport
+**渲染骨架定型**
 
-目标：把 engine 的读取、搜索和投影能力接入宿主体验。
+- [x] EditorView v1 渲染管线 6 阶段绘制槽位定型：阶段 1 / 2 / 3 / 5 / 6 行号有内容，阶段 4 与 6 装饰图标 producer 先 no-op，预留扩展点。
 
-按"选区高亮和搜索高亮共用阶段 2 渲染原语"原则，第一波合并做：先抽渲染原语 + 接 selection（补 P2 遗留），再接 search 数据模型 + 命令 + UI。
+**搜索与替换**
 
-- [ ] 抽 `zom-desktop` 阶段 2 范围背景渲染原语：接受 `Vec<(TextRange, BackgroundSemantic)>`，处理跨多行 quad 拆分、viewport 裁剪、theme 解析。设计上必须能同时承载 selection / search match / current search match / 未来的 AI 区间。
-- [ ] 接 selection 作为第一个消费者：`EditorElement` 改成接 `&SelectionSet`（含多光标），阶段 2 画 selection 背景，阶段 5 仍画 caret。
-- [ ] `zom-workspace` 落地 `WorkspaceBuffer.BufferSearch` 数据模型与生命周期（query / options / SearchResult / current hit；DeltaEvent → `try_remap`；query 变化或落版本时 re-run）。
-- [ ] 接 search 作为第二个消费者：阶段 2 渲染器额外拼上 `buffer.search().result.ranges()`，current hit 加强调样式。
-- [ ] `zom-command` 接入 `editor.find` / `editor.find_next` / `editor.find_previous` / `editor.replace_current` / `editor.replace_all`，改 `BufferSearch` 状态。
-- [ ] `zom-desktop` 接入 find bar surface；详见《桌面端设计手册》19.4 / 19.9。
-- [ ] 接入 viewport slice（避免裸取整文件文本）。
+> 搜索 UI 决策：panel 即输入入口，**不显示结果列表**——所有命中通过 EditorView
+> 阶段 2 在 buffer 内高亮，"3 / 27" 命中数标签放在 panel 的 query 输入行右侧。
+> 不做独立 find bar surface（与 panel 功能重叠）。
+> 跨文件搜索是 workspace 层另一笔账，等开发跨文件搜索算法时单开命令与服务。
+
+- [x] 清理 panel 当前实现：删除 `SearchScope` / `IN_BUFFER` / `IN_PROJECT` / `SearchActivateScope` / 结果列表 (`SearchResultItem` 等) / panel 内置搜索算法（refresh / find_next / replace_*）；新增 `HostEffect::SearchActivate` 与 `search.activate` 命令；panel 退化为输入控制条 + 命中数标签占位。
+- [ ] `zom-workspace` 落地 `WorkspaceBuffer.BufferSearch` 数据模型与生命周期：query / options / SearchResult / current hit；DeltaEvent 触发 `try_remap`；query 变化或落版本时 re-run。
+- [ ] search 作为阶段 2 第二个消费者接入：current hit 用强调样式区分。
+- [ ] `zom-command` 把 `search.find_next` / `search.find_previous` / `search.replace_next` / `search.replace_all` handler 接到 active buffer 的 BufferSearch；panel `hit_count` 从 BufferSearch 读填。
+
+**视口与折叠**
+
+- [ ] 接入 `ViewportSlice`，替换当前直接读取整份文本的实现。
 - [ ] 接入 fold / projection 的最小可用路径。
-- [x] EditorView v1 在渲染管线里留出 6 阶段绘制槽位（第一版填阶段 1 / 2 / 3 / 5 / 6 行号；阶段 4 与 6 的装饰图标是 no-op，等 P3+ 接入时往对应阶段加 producer，不动渲染骨架）。
+
+**测试**
+
 - [ ] 补充搜索与投影接入测试。
-
-### P4：AI 编辑提案闭环
-
-目标：AI 不直接改文本，而是生成可校验、可预览、可应用的事务提案。
-
-- [ ] 为 `AiRequest` 增加 buffer 版本和必要上下文。
-- [ ] 为 `AiProposal` 增加版本绑定和 engine range 表达。
-- [ ] 实现 proposal -> transaction 的校验转换。
-- [ ] 支持 apply / reject。
-- [ ] 版本不匹配时拒绝应用或重新生成。
-- [ ] 补充 AI 提案原子性和错误路径测试。
 
 ## 近期优先级
 
-1. P3 第一步：抽阶段 2 范围背景渲染原语 + 接 selection 消费者（补 P2 遗留的选区背景渲染；`EditorElement` 改成接 `&SelectionSet`；含多光标）。
-2. P3 第二步：`zom-workspace::WorkspaceBuffer.BufferSearch` 数据模型与生命周期（不带命令 / UI，先把骨架与 DeltaEvent 推进测试通过），并接 search 作为阶段 2 第二个消费者。
-3. P3 第三步：`zom-command` 接入 find / replace 命令；`zom-desktop` 接入 find bar surface。
-4. 接入 viewport slice，避免 `zom-desktop` 长期直接展示整份文本。
-5. 接入 fold / projection 的最小可用路径，并补充对应宿主侧测试。
-6. P4 再收口 AI 提案模型、版本绑定和 proposal→transaction 转换。
+1. IME marked text 接成阶段 2 第二个消费者（与 search 二选一作为阶段 2 第二消费者，命名只是顺序差别）。
+2. `zom-workspace::WorkspaceBuffer.BufferSearch` 数据模型与生命周期，并接 search 作为阶段 2 范围背景的下一个消费者接入。
+3. `zom-command` 把 find / replace handler 接到 BufferSearch；panel `hit_count` 接 BufferSearch。
+4. 接入 viewport slice。
+5. 接入 fold / projection 的最小可用路径，并补充宿主侧测试。

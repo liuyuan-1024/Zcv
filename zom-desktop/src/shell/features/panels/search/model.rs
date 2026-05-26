@@ -1,25 +1,35 @@
-use zom_command::{EditTarget, SearchOption, SearchScope};
-use zom_engine::{
-    ByteOffset, RegexSearchOptions as EngineRegexSearchOptions, Selection, SelectionSet, TextRange,
-};
-use zom_view::{RevealKind, ViewSet};
-use zom_workspace::{BufferId, Workspace};
+use zom_command::{EditTarget, SearchOption};
+use zom_view::ViewSet;
+use zom_workspace::Workspace;
 
-use super::query::{buffer_title, literal_search_options, regex_pattern, search_result_location};
 use crate::shell::editor::{
     Editor, EditorSnapshot, ImeQueryTarget, ImeTarget, TextInputProfile, TextTargetId,
     TextTargetOwner, TextTargetQuery,
 };
 
+/// 提供给 panel UI 渲染的快照。
+///
+/// 第一版只有「输入框 + 选项 + 命中计数」，没有结果列表——所有匹配项都通过
+/// EditorView 阶段 2 直接在 buffer 内高亮显示，panel 只是输入控制条。
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SearchState {
     pub(crate) query: EditorSnapshot,
     pub(crate) replacement: EditorSnapshot,
-    pub(crate) scope: SearchScope,
     pub(crate) options: SearchOptions,
-    pub(crate) results: Vec<SearchResultItem>,
-    pub(crate) active_result: Option<usize>,
-    pub(crate) error: Option<String>,
+    /// 当前命中 / 总命中数；`None` 表示尚无命中（query 空或未搜出结果）。
+    ///
+    /// 第一版固定为 `None`——`BufferSearch` 落地前 panel 不主动跑搜索；
+    /// 接入后由 `find_next/previous` 同步推进或重新计算。
+    pub(crate) hit_count: Option<HitCount>,
+}
+
+/// "3 / 27" 标签的数据来源。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct HitCount {
+    /// 当前 hit 在结果集中的序号（1-based）。
+    pub(crate) current: usize,
+    /// 总命中数。
+    pub(crate) total: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -29,29 +39,17 @@ pub(crate) struct SearchOptions {
     pub(crate) regex: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SearchResultItem {
-    pub(crate) buffer_id: BufferId,
-    pub(crate) title: String,
-    pub(crate) range: TextRange,
-    pub(crate) buffer_ordinal: usize,
-    pub(crate) line: usize,
-    pub(crate) column: usize,
-    pub(crate) preview: String,
-}
-
+/// 搜索面板的核心状态。
+///
+/// 第一版面板的算法层是**空的**：搜索 / 替换 / 导航全部委托给底层
+/// `WorkspaceBuffer::BufferSearch`（P3 待落地）。`SearchModel` 只持有
+/// UI 局部状态：两个输入框 + 选项 toggles + 当前活动输入框。
 #[derive(Default)]
 pub(crate) struct SearchModel {
     query: Editor,
     replacement: Editor,
-    scope: SearchScope,
     options: SearchOptions,
-    results: Vec<SearchResultItem>,
-    active_result: Option<usize>,
-    error: Option<String>,
     active: Option<TextTargetId>,
-    /// 上一次 `search_refresh` 看到的 query 文本，给「文本变了再触发」用。
-    last_synced_query: String,
 }
 
 impl SearchModel {
@@ -63,57 +61,31 @@ impl SearchModel {
         SearchState {
             query: self.query.snapshot(),
             replacement: self.replacement.snapshot(),
-            scope: self.scope,
             options: self.options,
-            results: self.results.clone(),
-            active_result: self.active_result,
-            error: self.error.clone(),
+            // 第一版恒为 None；BufferSearch 接入后从 active buffer 读
+            // (current_hit_ordinal, hits.len()) 填进来。
+            hit_count: None,
         }
     }
 
+    /// P3 BufferSearch 调它拿当前 query 文本。第一版 panel 不主动搜索，所以
+    /// 暂时没有内部调用——保留方法面，避免 BufferSearch 接入时改 owner API。
+    #[allow(dead_code)]
     pub(crate) fn query_text(&self) -> String {
         self.query.text()
     }
 
+    /// 同 [`Self::query_text`]：P3 替换接入时使用。
+    #[allow(dead_code)]
     pub(crate) fn replacement_text(&self) -> String {
         self.replacement.text()
-    }
-
-    pub(crate) fn set_results(
-        &mut self,
-        results: Vec<SearchResultItem>,
-        active_result: Option<usize>,
-        error: Option<String>,
-    ) {
-        self.results = results;
-        self.active_result = active_result.filter(|index| *index < self.results.len());
-        self.error = error;
-        self.last_synced_query = self.query.text();
-    }
-
-    pub(crate) fn clear_results(&mut self) {
-        self.results.clear();
-        self.active_result = None;
-        self.error = None;
-        self.last_synced_query = self.query.text();
-    }
-
-    /// 调用方在每次可能改动 query 文本之后调用；返回 true 表示文本与上一次
-    /// 落地的搜索结果不一致，需要重新搜索。
-    pub(crate) fn query_changed_since_last_sync(&self) -> bool {
-        self.query.text() != self.last_synced_query
-    }
-
-    pub(crate) fn set_scope(&mut self, scope: SearchScope, workspace: &Workspace, views: &ViewSet) {
-        self.scope = scope;
-        self.refresh(workspace, views, None);
     }
 
     pub(crate) fn toggle_option(
         &mut self,
         option: SearchOption,
-        workspace: &Workspace,
-        views: &ViewSet,
+        _workspace: &Workspace,
+        _views: &ViewSet,
     ) {
         match option {
             SearchOption::CaseSensitive => {
@@ -122,7 +94,8 @@ impl SearchModel {
             SearchOption::WholeWord => self.options.whole_word = !self.options.whole_word,
             SearchOption::Regex => self.options.regex = !self.options.regex,
         }
-        self.refresh(workspace, views, None);
+        // BufferSearch 接入后：选项变化要触发 active buffer 的 BufferSearch
+        // 同步重跑（与 query 变化同处理）；当前空实现。
     }
 
     pub(crate) fn activate(&mut self, target: TextTargetId) {
@@ -266,280 +239,31 @@ fn is_search_target(target: TextTargetId) -> bool {
     )
 }
 
-/// 搜索 / 替换的核心动作。
-///
-/// 这些方法都吃 `&mut Workspace, &mut ViewSet`（或不可变借用）—— 与
-/// [`FileTreeModel`](super::super::file_tree::FileTreeModel) 的风格一致，宿主只做
-/// 字段级转发，不再在组合根里铺 200+ 行搜索流程。
-///
-/// [`FileTreeModel`]: super::super::file_tree::FileTreeModel
+// =============================================================================
+// 搜索 / 替换导航命令——第一版全部为空实现，等 BufferSearch 落地后接入。
+// =============================================================================
+//
+// 命令骨架（HostEffect + zom-command 注册）保留，因此快捷键与按钮已经能派发；
+// 只是 handler 还没有真正改 buffer 或 selection。BufferSearch 落地时：
+//   1. 这些方法读 active view 的 buffer
+//   2. 调 `buffer.search_mut()` 拿到（或刷新）`BufferSearch`
+//   3. 推进 current hit / 应用替换 / reveal
+//   4. panel 的 `hit_count` 改成从那里读，去掉 `state()` 里的 `None` 占位
+
 impl SearchModel {
-    /// 重新搜索：清空旧结果并以当前 query / options / scope 重跑。
-    ///
-    /// `requested_active` 用来在导航 / 替换之后明确指定停在第几条；为 `None`
-    /// 时尽量保留旧的活动项，落空则回退到第一条。
-    pub(crate) fn refresh(
-        &mut self,
-        workspace: &Workspace,
-        views: &ViewSet,
-        requested_active: Option<usize>,
-    ) {
-        let query = self.query_text();
-        if query.is_empty() {
-            self.clear_results();
-            return;
-        }
-
-        let options = self.options;
-        let mut results = Vec::new();
-        let mut error = None;
-        for id in self.target_buffer_ids(workspace, views) {
-            let Some(buffer) = workspace.buffer(id) else {
-                continue;
-            };
-            let text = buffer.buffer().text().into_owned();
-            let ranges = if options.regex {
-                let pattern = regex_pattern(&query, options.whole_word);
-                match buffer.buffer().search_regex(
-                    &pattern,
-                    EngineRegexSearchOptions::new().with_case_sensitive(options.case_sensitive),
-                ) {
-                    Ok(result) => result.ranges().collect::<Vec<_>>(),
-                    Err(search_error) => {
-                        error = Some(format!("搜索失败：{search_error}"));
-                        Vec::new()
-                    }
-                }
-            } else {
-                match buffer
-                    .buffer()
-                    .search(&query, literal_search_options(options))
-                {
-                    Ok(result) => result.ranges().collect::<Vec<_>>(),
-                    Err(search_error) => {
-                        error = Some(format!("搜索失败：{search_error}"));
-                        Vec::new()
-                    }
-                }
-            };
-            if error.is_some() {
-                break;
-            }
-            let title = buffer_title(buffer);
-            for (buffer_ordinal, range) in ranges.into_iter().enumerate() {
-                let (line, column, preview) = search_result_location(&text, range);
-                results.push(SearchResultItem {
-                    buffer_id: id,
-                    title: title.clone(),
-                    range,
-                    buffer_ordinal,
-                    line,
-                    column,
-                    preview,
-                });
-            }
-        }
-
-        let active = requested_active
-            .or(self.active_result)
-            .filter(|index| *index < results.len())
-            .or_else(|| (!results.is_empty()).then_some(0));
-        self.set_results(results, active, error);
+    pub(crate) fn find_next(&mut self, _workspace: &mut Workspace, _views: &mut ViewSet) {
+        // TODO(P3 BufferSearch): 调 BufferSearch::next + reveal + 更新 selection。
     }
 
-    /// IME / 命令路径调完之后统一调它：query 文本变了才触发一次 refresh。
-    pub(crate) fn refresh_if_query_changed(&mut self, workspace: &Workspace, views: &ViewSet) {
-        if self.query_changed_since_last_sync() {
-            self.refresh(workspace, views, None);
-        }
+    pub(crate) fn find_previous(&mut self, _workspace: &mut Workspace, _views: &mut ViewSet) {
+        // TODO(P3 BufferSearch): 调 BufferSearch::prev + reveal + 更新 selection。
     }
 
-    pub(crate) fn find_next(&mut self, workspace: &mut Workspace, views: &mut ViewSet) {
-        self.refresh(workspace, views, None);
-        let len = self.results.len();
-        if len == 0 {
-            return;
-        }
-        let next = self
-            .active_result
-            .map(|index| (index + 1) % len)
-            .unwrap_or(0);
-        self.refresh(workspace, views, Some(next));
-        self.select_active_result(workspace, views);
+    pub(crate) fn replace_next(&mut self, _workspace: &mut Workspace, _views: &mut ViewSet) {
+        // TODO(P3 BufferSearch): 替换当前 hit 并推进到下一个。
     }
 
-    pub(crate) fn find_previous(&mut self, workspace: &mut Workspace, views: &mut ViewSet) {
-        self.refresh(workspace, views, None);
-        let len = self.results.len();
-        if len == 0 {
-            return;
-        }
-        let previous = self
-            .active_result
-            .map(|index| if index == 0 { len - 1 } else { index - 1 })
-            .unwrap_or(0);
-        self.refresh(workspace, views, Some(previous));
-        self.select_active_result(workspace, views);
-    }
-
-    pub(crate) fn replace_next(&mut self, workspace: &mut Workspace, views: &mut ViewSet) {
-        self.refresh(workspace, views, None);
-        let Some(active_index) = self.active_result else {
-            return;
-        };
-        let Some(item) = self.results.get(active_index).cloned() else {
-            return;
-        };
-        let query = self.query_text();
-        let replacement = self.replacement_text();
-        let options = self.options;
-        let Some(buffer) = workspace.buffer_mut(item.buffer_id) else {
-            return;
-        };
-        let result = if options.regex {
-            let pattern = regex_pattern(&query, options.whole_word);
-            buffer
-                .buffer_mut()
-                .search_regex(
-                    &pattern,
-                    EngineRegexSearchOptions::new().with_case_sensitive(options.case_sensitive),
-                )
-                .and_then(|result| {
-                    buffer
-                        .buffer_mut()
-                        .replace_regex_match(&result, item.buffer_ordinal, &replacement)
-                        .map(|_| ())
-                })
-        } else {
-            buffer
-                .buffer_mut()
-                .search(&query, literal_search_options(options))
-                .and_then(|result| {
-                    buffer
-                        .buffer_mut()
-                        .replace_search_match(&result, item.buffer_ordinal, &replacement)
-                        .map(|_| ())
-                })
-        };
-        if let Err(error) = result {
-            self.set_results(Vec::new(), None, Some(format!("替换失败：{error}")));
-            return;
-        }
-        self.refresh(workspace, views, Some(active_index));
-        self.select_active_result(workspace, views);
-    }
-
-    pub(crate) fn replace_all(&mut self, workspace: &mut Workspace, views: &mut ViewSet) {
-        self.refresh(workspace, views, None);
-        let query = self.query_text();
-        if query.is_empty() {
-            return;
-        }
-        let replacement = self.replacement_text();
-        let options = self.options;
-        let ids = self.target_buffer_ids(workspace, views);
-        let active_buffer_id = views.active_view().map(|view| view.buffer());
-        // 替换之后没有「下一个 active match」可言；把光标停在活动 buffer 内
-        // 最后一处替换的末尾，并 reveal 那里 —— 这是替换后唯一有意义的焦点。
-        let mut active_reveal: Option<ByteOffset> = None;
-        for id in ids {
-            let Some(buffer) = workspace.buffer_mut(id) else {
-                continue;
-            };
-            let outcome = if options.regex {
-                let pattern = regex_pattern(&query, options.whole_word);
-                buffer
-                    .buffer_mut()
-                    .search_regex(
-                        &pattern,
-                        EngineRegexSearchOptions::new().with_case_sensitive(options.case_sensitive),
-                    )
-                    .and_then(|result| {
-                        buffer
-                            .buffer_mut()
-                            .replace_all_regex_matches(&result, &replacement)
-                    })
-            } else {
-                buffer
-                    .buffer_mut()
-                    .search(&query, literal_search_options(options))
-                    .and_then(|result| {
-                        buffer
-                            .buffer_mut()
-                            .replace_all_search_matches(&result, &replacement)
-                    })
-            };
-            match outcome {
-                Ok(Some((_, changeset))) if Some(id) == active_buffer_id => {
-                    // ChangeSet 已经按 post-replacement 坐标列出每次编辑的落点，
-                    // 直接拿最后一项的 end 即"最后那次替换的末尾"，不必自己算累积偏移。
-                    match changeset.changed_ranges() {
-                        Ok(ranges) => {
-                            if let Some(last) = ranges.last() {
-                                active_reveal = Some(last.end());
-                            }
-                        }
-                        Err(error) => {
-                            self.set_results(Vec::new(), None, Some(format!("替换失败：{error}")));
-                            return;
-                        }
-                    }
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    self.set_results(Vec::new(), None, Some(format!("替换失败：{error}")));
-                    return;
-                }
-            }
-        }
-        if let Some(byte) = active_reveal
-            && let Some(view) = views.active_view_mut()
-        {
-            *view.selection_mut() = SelectionSet::new(vec![Selection::caret(byte)]);
-            view.request_reveal(byte, RevealKind::Match);
-        }
-        self.refresh(workspace, views, None);
-    }
-
-    fn target_buffer_ids(&self, workspace: &Workspace, views: &ViewSet) -> Vec<BufferId> {
-        match self.scope {
-            SearchScope::CurrentFile => views
-                .active_view()
-                .map(|view| vec![view.buffer()])
-                .unwrap_or_default(),
-            SearchScope::Project => workspace.buffers().map(|(id, _)| id).collect::<Vec<_>>(),
-        }
-    }
-
-    fn select_active_result(&self, workspace: &mut Workspace, views: &mut ViewSet) {
-        let Some(item) = self
-            .active_result
-            .and_then(|index| self.results.get(index))
-            .cloned()
-        else {
-            return;
-        };
-        let _ = workspace.set_active_buffer(item.buffer_id);
-        let existing_view = views
-            .views()
-            .find_map(|(id, view)| (view.buffer() == item.buffer_id).then_some(id));
-        let view_id = match existing_view {
-            Some(id) => id,
-            None => {
-                let Some(buffer) = workspace.buffer(item.buffer_id) else {
-                    return;
-                };
-                let version = buffer.buffer().version();
-                views.open_view(item.buffer_id, version)
-            }
-        };
-        views.set_active(view_id);
-        if let Some(view) = views.active_view_mut() {
-            *view.selection_mut() =
-                SelectionSet::new(vec![Selection::new(item.range.start(), item.range.end())]);
-            // 用 `RevealKind::Match` —— 当前 match 已在视区内就不动；
-            // 后续做了 active match 高亮后，这条「视区不跳」就成了自然行为。
-            view.request_reveal(item.range.start(), RevealKind::Match);
-        }
+    pub(crate) fn replace_all(&mut self, _workspace: &mut Workspace, _views: &mut ViewSet) {
+        // TODO(P3 BufferSearch): 全量替换 active buffer 内的所有 hit。
     }
 }

@@ -13,14 +13,6 @@
 //! 全部直接操作 `CommandContext { workspace, views, queue }`，无需经过
 //! HostEffect —— 这些资源本来就在 zom-command 看得到。
 
-/// 搜索面板的范围选择。当前只驱动 UI 状态，搜索后端接入后再承载实际查询范围。
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum SearchScope {
-    #[default]
-    CurrentFile,
-    Project,
-}
-
 /// 搜索面板的开关选项。当前只驱动 UI 状态，搜索后端接入后再参与匹配规则。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchOption {
@@ -49,8 +41,16 @@ pub enum HostEffect {
     TogglePanel(String),
 
     // ===== Search =====
-    /// 打开搜索面板并切换到指定范围；若搜索面板已可见，则只切换范围。
-    SearchActivateScope(SearchScope),
+    /// 打开搜索面板并把焦点送到查询输入框。
+    ///
+    /// 行为矩阵（由宿主侧 handler 实现）：
+    /// - 隐藏 → 显示 + 聚焦 query
+    /// - 已显示 + 焦点不在面板 → 把焦点搬到 query
+    /// - 已显示 + 焦点在面板 → 收起，焦点回编辑器
+    ///
+    /// 第一版只有单文件搜索（per-buffer），不带 scope；跨文件搜索后续作为
+    /// 独立 workspace 服务再加，那时会引入各自的命令与 effect，不复用本变体。
+    SearchActivate,
     /// 切换搜索选项。
     SearchToggleOption(SearchOption),
     /// 选中上一个搜索结果。

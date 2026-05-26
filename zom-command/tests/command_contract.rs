@@ -10,7 +10,7 @@ use zom_command::{
     Command, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId, CommandQueue,
     CommandRegistry, EditTarget, EffectQueue, FileTreeKeyMode, HostEffect, KeyBinding,
     KeyBindingContext, KeyChord, KeyContext, Keymap, KeymapResolution, MockClipboard, NoArgs,
-    SearchOption, SearchScope,
+    SearchOption,
 };
 use zom_engine::{
     Buffer, BufferConfig, ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
@@ -160,8 +160,7 @@ fn install_all_should_register_every_builtin_command_catalog() {
         (version_control::TOGGLE_PANEL, "版本管理"),
         (outline::TOGGLE_PANEL, "大纲"),
         (search::TOGGLE_PANEL, "搜索"),
-        (search::IN_BUFFER, "文件级搜索"),
-        (search::IN_PROJECT, "项目级搜索"),
+        (search::ACTIVATE, "搜索"),
         (search::TOGGLE_CASE_SENSITIVE, "区分大小写"),
         (search::TOGGLE_WHOLE_WORD, "全词匹配"),
         (search::TOGGLE_REGEX, "正则表达式"),
@@ -253,8 +252,7 @@ fn search_ui_commands_should_emit_state_effects() {
         &mut workspace,
         &mut views,
         vec![
-            (search::IN_BUFFER, CommandArgs::new()),
-            (search::IN_PROJECT, CommandArgs::new()),
+            (search::ACTIVATE, CommandArgs::new()),
             (search::TOGGLE_CASE_SENSITIVE, CommandArgs::new()),
             (search::TOGGLE_WHOLE_WORD, CommandArgs::new()),
             (search::TOGGLE_REGEX, CommandArgs::new()),
@@ -269,8 +267,7 @@ fn search_ui_commands_should_emit_state_effects() {
     assert_eq!(
         effects,
         vec![
-            HostEffect::SearchActivateScope(SearchScope::CurrentFile),
-            HostEffect::SearchActivateScope(SearchScope::Project),
+            HostEffect::SearchActivate,
             HostEffect::SearchToggleOption(SearchOption::CaseSensitive),
             HostEffect::SearchToggleOption(SearchOption::WholeWord),
             HostEffect::SearchToggleOption(SearchOption::Regex),
@@ -283,25 +280,19 @@ fn search_ui_commands_should_emit_state_effects() {
 }
 
 #[test]
-fn search_scope_shortcuts_should_open_or_switch_search_scope() {
+fn search_activate_shortcut_should_be_global() {
     let mut registry = CommandRegistry::new();
     let mut keymap = Keymap::new();
     search::install(&mut registry, &mut keymap);
     let global = global_context();
     let search_field = [KeyContext::search_panel(), KeyContext::global()];
 
+    // mod-f 同时在编辑器全局与搜索面板内可用：在编辑器里打开面板，在面板里关掉它。
     for contexts in [&global[..], &search_field[..]] {
         assert_eq!(
             keymap.resolve(&[key("mod-f")], contexts),
             KeymapResolution::Matched {
-                command: command_id(search::IN_BUFFER),
-                args: CommandArgs::new(),
-            }
-        );
-        assert_eq!(
-            keymap.resolve(&[key("mod-shift-f")], contexts),
-            KeymapResolution::Matched {
-                command: command_id(search::IN_PROJECT),
+                command: command_id(search::ACTIVATE),
                 args: CommandArgs::new(),
             }
         );

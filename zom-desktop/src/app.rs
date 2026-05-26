@@ -13,7 +13,7 @@ use zom_command::commands::{self, editor};
 use zom_command::{
     ClipboardPort, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId,
     CommandQueue, CommandRegistry, EffectQueue, FileTreeKeyMode, HostEffect, Invocation, KeyChord,
-    KeyContext, Keymap, KeymapResolution, MockClipboard, SearchOption, SearchScope,
+    KeyContext, Keymap, KeymapResolution, MockClipboard, SearchOption,
 };
 use zom_view::ViewSet;
 use zom_workspace::Workspace;
@@ -429,10 +429,6 @@ impl App {
         self.search.deactivate(target);
     }
 
-    pub(crate) fn search_set_scope(&mut self, scope: SearchScope) {
-        self.search.set_scope(scope, &self.workspace, &self.views);
-    }
-
     pub(crate) fn search_toggle_option(&mut self, option: SearchOption) {
         self.search
             .toggle_option(option, &self.workspace, &self.views);
@@ -493,10 +489,9 @@ impl App {
         if self.project_picker.active() {
             self.project_picker.reset_selection();
         }
-        // IME / 命令路径都汇到这里，搜索框文本变了就重跑一次搜索，避免在
-        // 每个 owner 单独埋钩子。
-        self.search
-            .refresh_if_query_changed(&self.workspace, &self.views);
+        // P3 BufferSearch 接入后，query 文本变化触发 active buffer 的 BufferSearch
+        // 重跑——届时由 BufferSearch 订阅 SearchQuery 的 DeltaEvent，不再在
+        // 这里集中拉钩子。第一版 panel 不主动搜索，所以本钩子位为空。
         Ok(host_effects)
     }
 
@@ -537,9 +532,8 @@ impl App {
                 )
             })
         });
-        // preedit 期间也走 live search —— 用户能边输入边看到结果收敛。
-        self.search
-            .refresh_if_query_changed(&self.workspace, &self.views);
+        // P3 BufferSearch 接入后，preedit 期间也要让 BufferSearch 跟随 query
+        // 文本走 live 搜索；当前 panel 不主动搜索，钩子位为空。
         result
     }
 
@@ -585,7 +579,7 @@ mod tests {
     use zom_command::commands::{
         diagnostics, editor, language_servers, project_picker as project_picker_commands, settings,
     };
-    use zom_command::{HostEffect, SearchOption, SearchScope};
+    use zom_command::{HostEffect, SearchOption};
     use zom_workspace::EntryKind;
 
     /// 主编辑区文本 / 光标快照——断言"正文里到底是什么"用。
@@ -753,26 +747,21 @@ mod tests {
     }
 
     #[test]
-    fn search_shortcuts_should_open_requested_scope_from_editor() {
+    fn search_shortcut_should_emit_activate_effect() {
         let mut app = App::new();
 
         let outcome = app
             .dispatch_key("mod-f".to_string(), KeySurface::Editor)
             .expect("派发成功");
         assert!(outcome.consumed);
-        assert_eq!(
-            outcome.effects,
-            vec![HostEffect::SearchActivateScope(SearchScope::CurrentFile)]
-        );
+        assert_eq!(outcome.effects, vec![HostEffect::SearchActivate]);
 
+        // mod-shift-f 在第一版没有绑定（项目级搜索尚未引入）；不被消费。
         let outcome = app
             .dispatch_key("mod-shift-f".to_string(), KeySurface::Editor)
             .expect("派发成功");
-        assert!(outcome.consumed);
-        assert_eq!(
-            outcome.effects,
-            vec![HostEffect::SearchActivateScope(SearchScope::Project)]
-        );
+        assert!(!outcome.consumed);
+        assert!(outcome.effects.is_empty());
     }
 
     #[test]
@@ -826,26 +815,19 @@ mod tests {
         assert_eq!(outcome.effects, vec![HostEffect::SearchFocusNextField]);
         assert_eq!(app.search_state().query.text, "needl");
 
-        let outcome = app
-            .dispatch_key("mod-shift-f".to_string(), KeySurface::Panel)
-            .expect("派发成功");
-        assert!(outcome.consumed);
-        assert_eq!(
-            outcome.effects,
-            vec![HostEffect::SearchActivateScope(SearchScope::Project)]
-        );
-
-        app.search_set_scope(SearchScope::Project);
-        assert_eq!(app.search_state().scope, SearchScope::Project);
-
+        // mod-f 在面板内同样可用：关掉面板。
         let outcome = app
             .dispatch_key("mod-f".to_string(), KeySurface::Panel)
             .expect("派发成功");
         assert!(outcome.consumed);
-        assert_eq!(
-            outcome.effects,
-            vec![HostEffect::SearchActivateScope(SearchScope::CurrentFile)]
-        );
+        assert_eq!(outcome.effects, vec![HostEffect::SearchActivate]);
+
+        // mod-shift-f 第一版未绑定。
+        let outcome = app
+            .dispatch_key("mod-shift-f".to_string(), KeySurface::Panel)
+            .expect("派发成功");
+        assert!(!outcome.consumed);
+        assert!(outcome.effects.is_empty());
 
         let outcome = app
             .dispatch_key("alt-c".to_string(), KeySurface::Panel)

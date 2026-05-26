@@ -2,12 +2,15 @@
 
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SearchOption, SearchScope,
+    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SearchOption,
 };
 
 pub const TOGGLE_PANEL: &str = "panel.toggle.search";
-pub const IN_BUFFER: &str = "search.in_buffer";
-pub const IN_PROJECT: &str = "search.in_project";
+/// 打开搜索面板并聚焦 query 输入框；面板已聚焦则收起。
+///
+/// 第一版只承载单文件搜索（per-buffer），不再分 in_buffer / in_project ——
+/// 跨文件搜索是 workspace 层的另一个东西，后续单开命令。
+pub const ACTIVATE: &str = "search.activate";
 pub const TOGGLE_CASE_SENSITIVE: &str = "search.toggle_case_sensitive";
 pub const TOGGLE_WHOLE_WORD: &str = "search.toggle_whole_word";
 pub const TOGGLE_REGEX: &str = "search.toggle_regex";
@@ -23,12 +26,8 @@ pub fn toggle_panel() -> Invocation {
     super::panel_toggle_invocation(TOGGLE_PANEL)
 }
 
-pub fn in_buffer() -> Invocation {
-    no_args(IN_BUFFER)
-}
-
-pub fn in_project() -> Invocation {
-    no_args(IN_PROJECT)
+pub fn activate() -> Invocation {
+    no_args(ACTIVATE)
 }
 
 pub fn toggle_case_sensitive() -> Invocation {
@@ -76,17 +75,9 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
 
     registry.install(keymap, TOGGLE_PANEL, "搜索", Box::new(run_toggle_panel));
     registry
-        .install(keymap, IN_BUFFER, "文件级搜索", Box::new(run_in_buffer))
-        .description(
-            "在当前 buffer 内搜索；面板隐藏时打开并定位、显示时同范围再按则关闭、异范围则切换。",
-        )
+        .install(keymap, ACTIVATE, "搜索", Box::new(run_activate))
+        .description("打开搜索面板并聚焦 query；已聚焦则收起。第一版只搜当前 buffer。")
         .key("mod-f");
-    registry
-        .install(keymap, IN_PROJECT, "项目级搜索", Box::new(run_in_project))
-        .description(
-            "在整个项目内搜索；面板隐藏时打开并定位、显示时同范围再按则关闭、异范围则切换。",
-        )
-        .key("mod-shift-f");
     registry
         .install(
             keymap,
@@ -179,23 +170,12 @@ fn run_toggle_panel(
     Ok(CommandOutcome::default())
 }
 
-fn run_in_buffer(
+fn run_activate(
     ctx: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    ctx.effects
-        .push(HostEffect::SearchActivateScope(SearchScope::CurrentFile));
-    Ok(CommandOutcome::default())
-}
-
-fn run_in_project(
-    ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    ctx.effects
-        .push(HostEffect::SearchActivateScope(SearchScope::Project));
+    ctx.effects.push(HostEffect::SearchActivate);
     Ok(CommandOutcome::default())
 }
 

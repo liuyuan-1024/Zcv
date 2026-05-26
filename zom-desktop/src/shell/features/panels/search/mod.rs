@@ -1,11 +1,17 @@
 //! Search —— L3 panel 组件。
 //!
-//! 第一版先提供搜索 / 替换 UI 外壳；P3 后续再把输入、结果与
-//! `zom-engine` 搜索能力接起来。
+//! 第一版 panel **只是输入控制条**：query / replacement 输入框 + 选项 toggle +
+//! 上一/下一/替换按钮 + "3 / 27" 命中数标签。
+//!
+//! - 所有命中**直接在编辑器内高亮**（EditorView 阶段 2），panel 不显示结果列表
+//! - 算法层由 `WorkspaceBuffer::BufferSearch` 提供（P3 待落地），panel 不持搜索状态
+//! - 跨文件搜索 / 替换是 workspace 层另一笔账，与本面板无关
+//!
+//! P3 BufferSearch 落地后，本文件只动 [`render_query_row_actions`] 等少量位置去
+//! 接 `hit_count`，不动 UI 结构。
 
 mod effects;
 mod model;
-mod query;
 
 pub(crate) use effects::try_apply_effect;
 
@@ -13,7 +19,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Context, Div, FocusHandle, IntoElement, MouseButton, Window, div, prelude::*, px};
-use zom_command::SearchScope;
 use zom_command::commands::search;
 
 use crate::app::App;
@@ -24,7 +29,7 @@ use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::docks::render_focus_host;
 use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 
-pub(crate) use model::{SearchModel, SearchResultItem, SearchState};
+pub(crate) use model::{HitCount, SearchModel, SearchState};
 
 const CASE_SENSITIVE_ICON: &str = "icons/actions/case_sensitive.svg";
 const WHOLE_WORD_ICON: &str = "icons/actions/whole_word.svg";
@@ -158,7 +163,6 @@ fn search_panel(
             shortcuts,
             titles,
         ))
-        .child(results_view(state))
 }
 
 fn search_controls(
@@ -180,7 +184,6 @@ fn search_controls(
         .px(space::s4())
         .pt(space::s4())
         .pb(space::s8())
-        .child(scope_switch(state.scope, shortcuts, titles))
         .child(search_row(
             "查找",
             "搜索...",
@@ -189,6 +192,7 @@ fn search_controls(
             query_slot,
             state.query.text.is_empty(),
             vec![
+                hit_count_badge(state.hit_count),
                 option_toggle(
                     "search-case-sensitive",
                     CASE_SENSITIVE_ICON,
@@ -263,64 +267,22 @@ fn search_controls(
         ))
 }
 
-fn scope_switch(
-    active_scope: SearchScope,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
-) -> Div {
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(space::s4())
-        .rounded(radius::r4())
-        .border_1()
-        .border_color(color::gray::s05())
-        .bg(color::gray::s01())
-        .p(space::s4())
-        .child(scope_segment(
-            "search-scope-project",
-            search::IN_PROJECT,
-            shortcuts,
-            titles,
-            active_scope == SearchScope::Project,
-        ))
-        .child(scope_segment(
-            "search-scope-current-file",
-            search::IN_BUFFER,
-            shortcuts,
-            titles,
-            active_scope == SearchScope::CurrentFile,
-        ))
-}
-
-fn scope_segment(
-    id: &'static str,
-    command_id: &'static str,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
-    active: bool,
-) -> gpui::AnyElement {
-    let title = titles(command_id).unwrap_or_else(|| command_id.to_string());
-    let bg = if active {
-        color::gray::s04()
-    } else {
-        gpui::rgba(0)
+/// 输入行右侧的 "3 / 27" 命中数小标签。无命中时显示淡灰 "0 / 0"，避免布局抖动。
+///
+/// 第一版 `hit_count` 恒为 `None`（panel 不主动搜索）；P3 BufferSearch 落地后
+/// 由 SearchModel::state() 从 active buffer 的 BufferSearch 读出真实数据。
+fn hit_count_badge(hit_count: Option<HitCount>) -> gpui::AnyElement {
+    let (text, color) = match hit_count {
+        Some(HitCount { total: 0, .. }) | None => ("0 / 0".to_string(), color::gray::s07()),
+        Some(HitCount { current, total }) => (format!("{current} / {total}"), color::gray::s09()),
     };
     div()
-        .flex_1()
         .flex()
         .items_center()
-        .justify_center()
-        .rounded(radius::r2())
-        .bg(bg)
-        .p(space::s4())
-        .child(
-            Glyph::text(id, title.clone(), title)
-                .hint(shortcuts(command_id))
-                .active(active)
-                .render(),
-        )
+        .px(space::s4())
+        .text_color(color)
+        .text_size(typography::ui())
+        .child(text)
         .into_any_element()
 }
 
@@ -512,89 +474,4 @@ fn search_editor(
         );
     }
     editor.child(slot.embed(EditorKind::SingleLine))
-}
-
-fn results_view(state: &SearchState) -> Div {
-    if let Some(error) = &state.error {
-        return results_message(error.clone());
-    }
-
-    if state.query.text.is_empty() {
-        return results_message("输入搜索内容".to_string());
-    }
-
-    if state.results.is_empty() {
-        return results_message("暂无搜索结果".to_string());
-    }
-
-    let mut list = div()
-        .flex_1()
-        .flex()
-        .flex_col()
-        .overflow_hidden()
-        .text_color(color::gray::s09());
-    for (index, result) in state.results.iter().enumerate() {
-        list = list.child(result_row(
-            result,
-            state.active_result == Some(index),
-            index + 1,
-        ));
-    }
-    list
-}
-
-fn result_row(result: &SearchResultItem, active: bool, ordinal: usize) -> Div {
-    let bg = if active {
-        color::gray::s04()
-    } else {
-        gpui::rgba(0)
-    };
-    div()
-        .flex()
-        .flex_col()
-        .gap(space::s4())
-        .px(space::s8())
-        .py(space::s6())
-        .bg(bg)
-        .border_b_1()
-        .border_color(color::gray::s05())
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap(space::s8())
-                .child(
-                    div()
-                        .text_color(if active {
-                            color::gray::s09()
-                        } else {
-                            color::gray::s09()
-                        })
-                        .child(result.title.clone()),
-                )
-                .child(
-                    div()
-                        .text_color(color::gray::s08())
-                        .child(format!("#{ordinal} {}:{}", result.line, result.column)),
-                ),
-        )
-        .child(
-            div()
-                .text_color(color::gray::s08())
-                .child(result.preview.clone()),
-        )
-}
-
-fn results_message(message: String) -> Div {
-    div()
-        .flex_1()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(space::s4())
-        .text_color(color::gray::s08())
-        .child(div().child(message))
 }

@@ -242,6 +242,18 @@ impl App {
         self.file_tree.cancel_delete();
     }
 
+    pub(crate) fn file_tree_copy(&mut self) {
+        self.file_tree.copy_to_clipboard();
+    }
+
+    pub(crate) fn file_tree_cut(&mut self) {
+        self.file_tree.cut_to_clipboard();
+    }
+
+    pub(crate) fn file_tree_paste(&mut self) {
+        self.file_tree.paste_from_clipboard(&mut self.workspace);
+    }
+
     pub(crate) fn editor_state(&self) -> EditorState {
         build_editor_state(&self.workspace, &self.views)
     }

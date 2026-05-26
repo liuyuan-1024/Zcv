@@ -22,6 +22,9 @@ pub const CANCEL_NEW_ENTRY: &str = "file_tree.cancel_new_entry";
 pub const REQUEST_DELETE: &str = "file_tree.request_delete";
 pub const CONFIRM_DELETE: &str = "file_tree.confirm_delete";
 pub const CANCEL_DELETE: &str = "file_tree.cancel_delete";
+pub const COPY: &str = "file_tree.copy";
+pub const CUT: &str = "file_tree.cut";
+pub const PASTE: &str = "file_tree.paste";
 
 /// PageUp / PageDown 的固定步长（按可见行数估算）。后续若要按真实视口高度
 /// 计算，再让 panel 把可见行数传到 model；本阶段先用经验值。
@@ -120,6 +123,18 @@ pub fn confirm_delete() -> Invocation {
 
 pub fn cancel_delete() -> Invocation {
     (cid(CANCEL_DELETE), CommandArgs::new())
+}
+
+pub fn copy() -> Invocation {
+    (cid(COPY), CommandArgs::new())
+}
+
+pub fn cut() -> Invocation {
+    (cid(CUT), CommandArgs::new())
+}
+
+pub fn paste() -> Invocation {
+    (cid(PASTE), CommandArgs::new())
 }
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
@@ -243,6 +258,21 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_cancel_delete),
         )
         .key_in("escape", pending_delete);
+
+    registry
+        .install(keymap, COPY, "复制选中文件", Box::new(run_copy))
+        .description("把选中的文件 / 目录拍进剪贴板（Copy 模式）；空选区时降级到焦点单项。")
+        .key_in("mod-c", navigate);
+
+    registry
+        .install(keymap, CUT, "剪切选中文件", Box::new(run_cut))
+        .description("把选中的文件 / 目录拍进剪贴板（Cut 模式）；粘贴时执行移动。")
+        .key_in("mod-x", navigate);
+
+    registry
+        .install(keymap, PASTE, "粘贴到焦点目录", Box::new(run_paste))
+        .description("把剪贴板内容粘贴到焦点所在目录；冲突自动改名、永不覆盖。")
+        .key_in("mod-v", navigate);
 }
 
 fn run_move_selection(
@@ -354,6 +384,33 @@ fn run_cancel_delete(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.effects.push(HostEffect::FileTreeCancelDelete);
+    Ok(CommandOutcome::default())
+}
+
+fn run_copy(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.effects.push(HostEffect::FileTreeCopy);
+    Ok(CommandOutcome::default())
+}
+
+fn run_cut(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.effects.push(HostEffect::FileTreeCut);
+    Ok(CommandOutcome::default())
+}
+
+fn run_paste(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.effects.push(HostEffect::FileTreePaste);
     Ok(CommandOutcome::default())
 }
 

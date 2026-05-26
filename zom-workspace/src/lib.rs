@@ -118,6 +118,15 @@ impl Workspace {
         self.write_buffer_to_path(id, path, true)
     }
 
+    /// 只改 buffer 的绑定路径，不写盘也不改内容。文件树执行"移动 / 重命名"
+    /// 后，已打开的 buffer 用它跟随到新位置；磁盘上的文件内容就是 buffer 里
+    /// 的内容，无需重读、也无需把 buffer 标记成 dirty。
+    pub fn rebind_buffer_path(&mut self, id: BufferId, path: PathBuf) -> WorkspaceResult<()> {
+        let buffer = self.buffer_mut_or_error(id)?;
+        buffer.origin = BufferOrigin::File(path);
+        Ok(())
+    }
+
     /// 关闭并丢弃 buffer。
     pub fn close_buffer(&mut self, id: BufferId) -> WorkspaceResult<()> {
         if self.buffers.remove(&id).is_none() {

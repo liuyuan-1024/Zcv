@@ -22,6 +22,10 @@ pub(crate) struct FileTreeState {
     /// 批量操作以此为目标；为空时操作降级到 [`selected`](Self::selected) 单项。
     /// 渲染时使用独立背景色，与"活动文件"灰底区分。
     pub(crate) selection: BTreeSet<PathBuf>,
+    /// 处于"剪切待粘贴"状态的路径集合。仅当剪贴板模式为 Cut 时非空——
+    /// 视图据此把这些行做半透明处理，提示用户它们将被移动。Copy 模式不
+    /// 加视觉标记（原地数据没动）。
+    pub(crate) cut_paths: BTreeSet<PathBuf>,
     /// 当前活动 buffer 对应的文件路径，用于做“活动文件高亮”。
     pub(crate) active: Option<PathBuf>,
     /// 正在键入名称的「新建文件 / 目录」。`None` 表示不处于新建态。
@@ -46,13 +50,20 @@ pub(crate) struct PendingNewEntry {
     pub(crate) depth: usize,
 }
 
-/// 一个正在等待删除确认的条目（owned 快照）。
+/// 一个正在等待删除确认的快照，可以是单项也可以是批量。
+///
+/// 单项删（选区为空时走焦点）与批量删（选区非空）共用同一份结构，UI 据
+/// `count` / `has_directory` 切换文案。
 #[derive(Clone, Debug)]
 pub(crate) struct PendingDelete {
-    /// 待删条目的显示名，确认弹窗用。
-    pub(crate) name: String,
-    /// 待删条目类型，决定确认弹窗措辞（目录会连同内容删除）。
-    pub(crate) kind: EntryKind,
+    /// 总条数。`1` 是单删，`>1` 是批量。
+    pub(crate) count: usize,
+    /// 待删集合里第一个条目的显示名——用于"foo 等 N 项"的句式与单删句式。
+    pub(crate) first_name: String,
+    /// 单删时取这一项的类型；多删时取第一项的类型（仅用于单删句式回路）。
+    pub(crate) first_kind: EntryKind,
+    /// 是否含至少一个目录——批量删句式中决定是否强调"及其全部内容"。
+    pub(crate) has_directory: bool,
 }
 
 #[derive(Clone, Debug)]

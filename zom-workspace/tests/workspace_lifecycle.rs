@@ -121,6 +121,34 @@ fn save_as_should_bind_scratch_buffer_to_new_path() {
 }
 
 #[test]
+fn rebind_buffer_path_should_change_origin_without_touching_content_or_dirty_state() {
+    let dir = TempDir::new("rebind");
+    let path = dir.path().join("a.txt");
+    fs::write(&path, "alpha").unwrap();
+
+    let mut workspace = Workspace::new();
+    let id = workspace.open_file(path.clone()).unwrap();
+    assert!(!workspace.is_buffer_dirty(id).unwrap());
+
+    let new_path = dir.path().join("b.txt");
+    workspace.rebind_buffer_path(id, new_path.clone()).unwrap();
+
+    // origin / 路径已改、内容未动、不应被标 dirty。
+    assert_eq!(workspace.buffer_path(id).unwrap(), Some(new_path.as_path()));
+    assert_eq!(
+        workspace.buffer(id).unwrap().origin(),
+        &BufferOrigin::File(new_path.clone())
+    );
+    assert!(!workspace.is_buffer_dirty(id).unwrap());
+
+    // 不存在的 id 应报错。
+    let bogus = workspace.open_text(None, "x").unwrap();
+    workspace.close_buffer(bogus).unwrap();
+    let err = workspace.rebind_buffer_path(bogus, new_path).unwrap_err();
+    assert!(matches!(err, WorkspaceError::BufferNotFound(found) if found == bogus));
+}
+
+#[test]
 fn status_queries_should_report_missing_buffer() {
     let mut workspace = Workspace::new();
     let id = workspace.open_text(None, "alive").unwrap();

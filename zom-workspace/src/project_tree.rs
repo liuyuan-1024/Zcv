@@ -155,6 +155,50 @@ impl ProjectTree {
         Ok(())
     }
 
+    /// 把 `src` 复制到 `dst_parent` 下。新条目的名称默认取 `src` 的文件名；
+    /// 目标目录已有同名时自动追加 ` (n)` 后缀直到找到空位，**永不覆盖**。
+    /// 文件直接 `fs::copy`，目录递归复制。返回最终落点的绝对路径。
+    ///
+    /// 拒绝把 `src` 复制到自身或自己的子目录（会形成无限递归）；找不到 `src`
+    /// 或 `dst_parent` 不是目录时返回相应 IO 错误。
+    ///
+    /// 跨进程粘贴的"来自外部 Finder"也走这条路径——`src` 不必在项目根之内。
+    pub fn copy_entry(&mut self, src: &Path, dst_parent: &Path) -> io::Result<PathBuf> {
+        let final_dst = prepare_paste_destination(src, dst_parent)?;
+        copy_recursive(src, &final_dst)?;
+        self.reload_expanded_dirs()?;
+        Ok(final_dst)
+    }
+
+    /// 把 `src` 移动到 `dst_parent` 下。命名规则与 [`copy_entry`](Self::copy_entry)
+    /// 一致：默认沿用 `src` 文件名、冲突自动改名、永不覆盖。返回新位置。
+    ///
+    /// 同源同父目录的"移动"是无操作（早返），避免触发自动改名得到 `foo (1).txt`
+    /// 这种用户没要的结果。
+    ///
+    /// 实现优先用 `fs::rename`（同盘符瞬时），失败时回退到 `copy_recursive +
+    /// remove_recursive`，覆盖跨文件系统 / 跨盘的情形。回退路径里若 copy 或
+    /// remove 自身也失败，原 rename 错误会被抛出，让调用方至少知道操作未完成。
+    pub fn move_entry(&mut self, src: &Path, dst_parent: &Path) -> io::Result<PathBuf> {
+        if src.parent() == Some(dst_parent) {
+            // 同父目录 + 同名：no-op；不调用 pick_unique_name，避免误改名。
+            return Ok(src.to_path_buf());
+        }
+        let final_dst = prepare_paste_destination(src, dst_parent)?;
+        if let Err(rename_err) = fs::rename(src, &final_dst) {
+            // 跨文件系统等场景：copy 再 remove。两步任一失败，抛出原 rename 错误，
+            // 让调用方据此提示用户而不是看到一个误导性的次生错误。
+            if copy_recursive(src, &final_dst)
+                .and_then(|_| remove_recursive(src))
+                .is_err()
+            {
+                return Err(rename_err);
+            }
+        }
+        self.reload_expanded_dirs()?;
+        Ok(final_dst)
+    }
+
     /// 自根向下做 DFS，按目录优先 + 字母序产出可见行。
     ///
     /// 注意：返回值借用 `&self`，调用 `expand`/`collapse` 前必须先把它丢弃。
@@ -293,6 +337,112 @@ fn ensure_directory_path_available(root: &Path, target: &Path) -> io::Result<()>
         }
     }
     Ok(())
+}
+
+/// 给"粘贴到 `dst_parent`"挑一个最终路径：验完基本边界后，按 `src` 的
+/// 文件名取一个未占用的名字。**不**做任何文件 IO 写入。
+fn prepare_paste_destination(src: &Path, dst_parent: &Path) -> io::Result<PathBuf> {
+    if !src.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("源不存在：{}", src.display()),
+        ));
+    }
+    if !dst_parent.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("目标目录不存在：{}", dst_parent.display()),
+        ));
+    }
+    if !dst_parent.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            format!("目标不是目录：{}", dst_parent.display()),
+        ));
+    }
+    // 把目录粘贴到自身 / 自己内部会形成"自吞"。Path::starts_with 是按组件
+    // 匹配的，所以 /a/b 与 /a/bc 不会误判。
+    if dst_parent == src || dst_parent.starts_with(src) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "不能粘贴到自身或其子目录：src={} dst_parent={}",
+                src.display(),
+                dst_parent.display()
+            ),
+        ));
+    }
+    let desired = src
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "源路径没有文件名"))?;
+    let name = pick_unique_name(dst_parent, &desired);
+    Ok(dst_parent.join(name))
+}
+
+/// 在 `parent` 目录里挑一个未被占用的文件名。无冲突直接返回 `desired`；
+/// 冲突时按 `foo (1).txt`、`foo (2).txt` 顺序探测。万一全占用，兜底返回
+/// 带纳秒时间戳的名字——这条几乎不会触发，但保证函数永远有返回值。
+fn pick_unique_name(parent: &Path, desired: &str) -> String {
+    if !parent.join(desired).exists() {
+        return desired.to_string();
+    }
+    let path = Path::new(desired);
+    // file_stem / extension 是按"最后一个点"切的：foo.tar.gz → stem=foo.tar、
+    // ext=gz。结果是 "foo.tar (1).gz"——和 macOS Finder 行为一致。
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = path.extension().map(|s| s.to_string_lossy().into_owned());
+    for n in 1..=10_000 {
+        let candidate = match &ext {
+            Some(e) => format!("{stem} ({n}).{e}"),
+            None => format!("{stem} ({n})"),
+        };
+        if !parent.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    // 兜底：一万条都占的情况，退化到纳秒时间戳。理论极端，实践中不会撞。
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    match ext {
+        Some(e) => format!("{stem} ({ts}).{e}"),
+        None => format!("{stem} ({ts})"),
+    }
+}
+
+/// 递归复制：文件走 `fs::copy`（跟随 symlink，与 cp / Finder 一致），目录
+/// 走 `create_dir + read_dir` 的递归。失败时已写入的副本不回滚——上层若需
+/// 原子语义，应自行清理。
+fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(src)?;
+    if metadata.file_type().is_dir() {
+        fs::create_dir(dst)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let child_dst = dst.join(entry.file_name());
+            copy_recursive(&entry.path(), &child_dst)?;
+        }
+        Ok(())
+    } else {
+        fs::copy(src, dst).map(|_| ())
+    }
+}
+
+/// 递归删除：目录走 `remove_dir_all`，文件 / 符号链接走 `remove_file`。
+/// 区别于 [`delete_entry`](ProjectTree::delete_entry) —— 这里是真删，不走回收
+/// 站，仅用于 `move_entry` 的 fallback 路径（先 copy 出去再删源）。
+fn remove_recursive(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
 }
 
 #[cfg(test)]
@@ -434,6 +584,157 @@ mod tests {
             error.to_string(),
             "路径中的 nihao 已是文件，无法作为目录使用"
         );
+    }
+
+    #[test]
+    fn copy_entry_should_copy_file_to_target_directory() {
+        let root = tmp_root("copy-file");
+        create_dir_all(root.join("a")).unwrap();
+        create_dir_all(root.join("b")).unwrap();
+        let src = root.join("a/note.txt");
+        std::fs::write(&src, b"hello").unwrap();
+        let mut tree = ProjectTree::new(root.clone()).unwrap();
+        // 让 a / b 都被加载，使复制后的目录刷新能命中。
+        tree.expand(&root.join("a")).unwrap();
+        tree.expand(&root.join("b")).unwrap();
+
+        let dst = tree.copy_entry(&src, &root.join("b")).unwrap();
+        assert_eq!(dst, root.join("b/note.txt"));
+        assert!(src.is_file(), "源文件应保留");
+        assert_eq!(std::fs::read(&dst).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn copy_entry_should_copy_directory_recursively() {
+        let root = tmp_root("copy-dir");
+        create_dir_all(root.join("src/inner")).unwrap();
+        create_dir_all(root.join("dst")).unwrap();
+        std::fs::write(root.join("src/a.txt"), b"a").unwrap();
+        std::fs::write(root.join("src/inner/b.txt"), b"b").unwrap();
+        let mut tree = ProjectTree::new(root.clone()).unwrap();
+
+        let dst = tree
+            .copy_entry(&root.join("src"), &root.join("dst"))
+            .unwrap();
+        assert_eq!(dst, root.join("dst/src"));
+        // 嵌套内容保留。
+        assert_eq!(std::fs::read(dst.join("a.txt")).unwrap(), b"a");
+        assert_eq!(std::fs::read(dst.join("inner/b.txt")).unwrap(), b"b");
+        // 源保留。
+        assert!(root.join("src/a.txt").is_file());
+    }
+
+    #[test]
+    fn copy_entry_should_auto_rename_on_conflict() {
+        let root = tmp_root("copy-rename");
+        std::fs::write(root.join("note.txt"), b"v1").unwrap();
+        let mut tree = ProjectTree::new(root.clone()).unwrap();
+
+        // 同目录复制：会自动改名 "note (1).txt"。
+        let dst1 = tree.copy_entry(&root.join("note.txt"), &root).unwrap();
+        assert_eq!(dst1, root.join("note (1).txt"));
+        assert!(dst1.is_file());
+
+        // 再来一次："note (2).txt"。
+        let dst2 = tree.copy_entry(&root.join("note.txt"), &root).unwrap();
+        assert_eq!(dst2, root.join("note (2).txt"));
+
+        // 无扩展名的情形：".." 之后追加 " (n)"。
+        std::fs::write(root.join("README"), b"r").unwrap();
+        let dst3 = tree.copy_entry(&root.join("README"), &root).unwrap();
+        assert_eq!(dst3, root.join("README (1)"));
+    }
+
+    #[test]
+    fn move_entry_should_relocate_and_refresh_rows() {
+        let root = tmp_root("move-basic");
+        create_dir_all(root.join("a")).unwrap();
+        create_dir_all(root.join("b")).unwrap();
+        std::fs::write(root.join("a/note.txt"), b"hi").unwrap();
+        let mut tree = ProjectTree::new(root.clone()).unwrap();
+        tree.expand(&root.join("a")).unwrap();
+        tree.expand(&root.join("b")).unwrap();
+
+        let dst = tree
+            .move_entry(&root.join("a/note.txt"), &root.join("b"))
+            .unwrap();
+        assert_eq!(dst, root.join("b/note.txt"));
+        assert!(!root.join("a/note.txt").exists());
+        assert!(root.join("b/note.txt").is_file());
+
+        // 刷新后的可见行应包含 b/note.txt。
+        let names: Vec<_> = tree
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.name.to_string())
+            .collect();
+        assert!(names.contains(&"note.txt".to_string()));
+    }
+
+    #[test]
+    fn move_entry_to_same_parent_should_be_noop() {
+        let root = tmp_root("move-noop");
+        std::fs::write(root.join("note.txt"), b"hi").unwrap();
+        let mut tree = ProjectTree::new(root.clone()).unwrap();
+
+        let dst = tree.move_entry(&root.join("note.txt"), &root).unwrap();
+        // 与源同位置；不应触发自动改名得到 "note (1).txt"。
+        assert_eq!(dst, root.join("note.txt"));
+        assert!(root.join("note.txt").is_file());
+        assert!(!root.join("note (1).txt").exists());
+    }
+
+    #[test]
+    fn move_entry_into_self_or_descendant_should_error() {
+        let root = tmp_root("move-into-self");
+        create_dir_all(root.join("dir/inner")).unwrap();
+        let mut tree = ProjectTree::new(root.clone()).unwrap();
+
+        // 移到自身。
+        let err = tree
+            .move_entry(&root.join("dir"), &root.join("dir"))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        // 移到自己的子目录。
+        let err = tree
+            .move_entry(&root.join("dir"), &root.join("dir/inner"))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        // 源目录依然完好。
+        assert!(root.join("dir/inner").is_dir());
+    }
+
+    #[test]
+    fn copy_entry_into_self_or_descendant_should_error() {
+        let root = tmp_root("copy-into-self");
+        create_dir_all(root.join("dir/inner")).unwrap();
+        std::fs::write(root.join("dir/note.txt"), b"hi").unwrap();
+        let mut tree = ProjectTree::new(root.clone()).unwrap();
+
+        let err = tree
+            .copy_entry(&root.join("dir"), &root.join("dir/inner"))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn pick_unique_name_should_handle_dotted_filenames() {
+        // 单测私有函数：foo.tar.gz → 冲突时 "foo.tar (1).gz"。
+        let root = tmp_root("pick-unique");
+        std::fs::write(root.join("foo.tar.gz"), b"x").unwrap();
+        let picked = pick_unique_name(&root, "foo.tar.gz");
+        assert_eq!(picked, "foo.tar (1).gz");
+
+        // 无扩展名。
+        std::fs::write(root.join("Makefile"), b"x").unwrap();
+        let picked = pick_unique_name(&root, "Makefile");
+        assert_eq!(picked, "Makefile (1)");
+
+        // 无冲突原样返回。
+        let picked = pick_unique_name(&root, "fresh.txt");
+        assert_eq!(picked, "fresh.txt");
     }
 
     #[test]

@@ -119,6 +119,13 @@ pub enum HostEffect {
     FileTreeConfirmDelete,
     /// 取消删除：关闭确认弹窗。
     FileTreeCancelDelete,
+    /// 把当前选区（空时降级到焦点）拍进内部剪贴板，模式 Copy。
+    FileTreeCopy,
+    /// 把当前选区（空时降级到焦点）拍进内部剪贴板，模式 Cut。
+    FileTreeCut,
+    /// 把剪贴板内容粘贴到焦点所在目录（焦点是文件则其父，无焦点用项目根）。
+    /// Cut 模式粘贴完清空剪贴板与选区；Copy 模式保留两者以便连续粘到多处。
+    FileTreePaste,
 }
 
 /// `CommandContext` 内的 effect 缓冲。

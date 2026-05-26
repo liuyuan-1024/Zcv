@@ -81,6 +81,15 @@ pub(crate) fn try_apply_effect(
         HostEffect::FileTreeCancelDelete => {
             app.borrow_mut().file_tree_cancel_delete();
         }
+        HostEffect::FileTreeCopy => {
+            app.borrow_mut().file_tree_copy();
+        }
+        HostEffect::FileTreeCut => {
+            app.borrow_mut().file_tree_cut();
+        }
+        HostEffect::FileTreePaste => {
+            app.borrow_mut().file_tree_paste();
+        }
         _ => return false,
     }
     true

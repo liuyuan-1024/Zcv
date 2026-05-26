@@ -46,7 +46,7 @@ pub(crate) fn render_confirm_delete(
     state
         .pending_delete
         .as_ref()
-        .map(|pending| confirm_delete::render(&pending.name, pending.kind, handlers))
+        .map(|pending| confirm_delete::render(pending, handlers))
 }
 
 /// 文件树面板渲染所需的所有"非状态"依赖（焦点、按键回调）。

@@ -74,6 +74,8 @@ fn render_list(
     // 选区与"焦点边框"是两套视觉：pending 名称输入时焦点边框让位（见上），
     // 但已经被用户累加的选区不应该静默丢失，所以这里照实传，不随 pending 收起。
     let selection = state.selection.clone();
+    // 剪切待粘贴的行做半透明提示；仅 Cut 模式下非空（Copy 模式无视觉标记）。
+    let cut_paths = state.cut_paths.clone();
     let active = state.active.clone();
     let slot = Rc::clone(slot);
     if let Some(index) = selected_item.filter(|index| *index < items.len()) {
@@ -93,6 +95,7 @@ fn render_list(
                             row,
                             selected.as_ref(),
                             &selection,
+                            &cut_paths,
                             active.as_ref(),
                             is_focused,
                         )
@@ -203,11 +206,13 @@ fn render_row(
     row: &FileTreeRow,
     selected: Option<&std::path::PathBuf>,
     selection: &BTreeSet<std::path::PathBuf>,
+    cut_paths: &BTreeSet<std::path::PathBuf>,
     active: Option<&std::path::PathBuf>,
     is_focused: bool,
 ) -> Div {
     let is_selected = selected.map(|p| p == &row.path).unwrap_or(false);
     let is_in_selection = selection.contains(&row.path);
+    let is_cut = cut_paths.contains(&row.path);
     let is_active = active.map(|p| p == &row.path).unwrap_or(false);
 
     // 边框始终占 1px，保证选中态切换时行高不抖。失焦时直接染透明，让选中
@@ -233,7 +238,7 @@ fn render_row(
         color::gray::s09()
     };
 
-    div()
+    let mut row_div = div()
         .flex()
         .flex_row()
         .items_center()
@@ -256,7 +261,13 @@ fn render_row(
                 .overflow_hidden()
                 .truncate()
                 .child(row.name.clone()),
-        )
+        );
+    // 剪切待粘贴的行：整行降透明度，向用户提示"它将被移走"。粘贴成功后
+    // model 清空剪贴板、cut_paths 也清空，该效果随之消失。
+    if is_cut {
+        row_div = row_div.opacity(0.5);
+    }
+    row_div
 }
 
 fn icon_cell(row: &FileTreeRow, is_active: bool) -> Div {

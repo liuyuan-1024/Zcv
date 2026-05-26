@@ -6,13 +6,13 @@
 use gpui::{AnyElement, MouseButton, Rgba, black, deferred, div, prelude::*, px};
 use zom_workspace::EntryKind;
 
-use super::ConfirmDeleteHandlers;
+use super::{ConfirmDeleteHandlers, PendingDelete};
 use crate::shell::ActionRequest;
 use crate::shell::shared::theme::{color, radius, space, typography};
 
 /// 渲染居中删除确认弹窗。`deferred` + 高优先级让它压在所有面板与锚定
 /// surface（priority 30）之上。
-pub(super) fn render(name: &str, kind: EntryKind, handlers: &ConfirmDeleteHandlers) -> AnyElement {
+pub(super) fn render(pending: &PendingDelete, handlers: &ConfirmDeleteHandlers) -> AnyElement {
     let cancel_on_scrim = handlers.cancel.clone();
     deferred(
         div()
@@ -29,19 +29,37 @@ pub(super) fn render(name: &str, kind: EntryKind, handlers: &ConfirmDeleteHandle
                 cx.stop_propagation();
                 cancel_on_scrim(window, cx);
             })
-            .child(dialog(name, kind, handlers)),
+            .child(dialog(pending, handlers)),
     )
     .priority(50)
     .into_any_element()
 }
 
-fn dialog(name: &str, kind: EntryKind, handlers: &ConfirmDeleteHandlers) -> impl IntoElement {
-    // 目录会连同其全部内容一并删除，措辞上明确提示。
-    let message = match kind {
-        EntryKind::File => format!("确认把文件「{name}」移到系统回收站？"),
-        EntryKind::Directory => {
-            format!("确认把目录「{name}」及其全部内容移到系统回收站？")
+fn dialog(pending: &PendingDelete, handlers: &ConfirmDeleteHandlers) -> impl IntoElement {
+    // 三种文案：
+    // - 单删文件：明示文件名
+    // - 单删目录：明示并提示"及其全部内容"
+    // - 多删：以首项命名 + "等 N 项"；若集合中含目录，强调"内容也会一并移走"
+    let message = if pending.count == 1 {
+        match pending.first_kind {
+            EntryKind::File => {
+                format!("确认把文件「{}」移到系统回收站？", pending.first_name)
+            }
+            EntryKind::Directory => format!(
+                "确认把目录「{}」及其全部内容移到系统回收站？",
+                pending.first_name
+            ),
         }
+    } else if pending.has_directory {
+        format!(
+            "确认把「{}」等 {} 项（含目录）及其全部内容移到系统回收站？",
+            pending.first_name, pending.count
+        )
+    } else {
+        format!(
+            "确认把「{}」等 {} 项移到系统回收站？",
+            pending.first_name, pending.count
+        )
     };
     div()
         .w(px(360.0))

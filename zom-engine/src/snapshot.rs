@@ -284,8 +284,37 @@ impl Snapshot {
 
 impl PartialEq for Snapshot {
     fn eq(&self, other: &Self) -> bool {
-        self.version == other.version && self.text() == other.text()
+        self.version == other.version
+            && self.storage.len_bytes() == other.storage.len_bytes()
+            && chunks_eq(self.storage.all_chunks(), other.storage.all_chunks())
     }
 }
 
 impl Eq for Snapshot {}
+
+fn chunks_eq<'a, 'b>(
+    mut left: impl Iterator<Item = &'a str>,
+    mut right: impl Iterator<Item = &'b str>,
+) -> bool {
+    let mut l: &str = "";
+    let mut r: &str = "";
+    loop {
+        if l.is_empty() {
+            l = left.next().unwrap_or("");
+        }
+        if r.is_empty() {
+            r = right.next().unwrap_or("");
+        }
+        match (l.is_empty(), r.is_empty()) {
+            (true, true) => return true,
+            (true, false) | (false, true) => return false,
+            (false, false) => {}
+        }
+        let n = l.len().min(r.len());
+        if l.as_bytes()[..n] != r.as_bytes()[..n] {
+            return false;
+        }
+        l = &l[n..];
+        r = &r[n..];
+    }
+}

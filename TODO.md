@@ -236,9 +236,9 @@ Engine 已提供：
 > 跨文件搜索是 workspace 层另一笔账，等开发跨文件搜索算法时单开命令与服务。
 
 - [x] 清理 panel 当前实现：删除 `SearchScope` / `IN_BUFFER` / `IN_PROJECT` / `SearchActivateScope` / 结果列表 (`SearchResultItem` 等) / panel 内置搜索算法（refresh / find_next / replace_*）；新增 `HostEffect::SearchActivate` 与 `search.activate` 命令；panel 退化为输入控制条 + 命中数标签占位。
-- [ ] `zom-workspace` 落地 `WorkspaceBuffer.BufferSearch` 数据模型与生命周期：query / options / SearchResult / current hit；DeltaEvent 触发 `try_remap`；query 变化或落版本时 re-run。
-- [ ] search 作为阶段 2 第二个消费者接入：current hit 用强调样式区分。
-- [ ] `zom-command` 把 `search.find_next` / `search.find_previous` / `search.replace_next` / `search.replace_all` handler 接到 active buffer 的 BufferSearch；panel `hit_count` 从 BufferSearch 读填。
+- [x] `zom-workspace` 落地 `WorkspaceBuffer.BufferSearch` 数据模型与生命周期：query / options / SearchResult / current hit；DeltaEvent 触发 `try_remap`；query 变化或落版本时 re-run。
+- [x] search 作为阶段 2 第二个消费者接入：current hit 用强调样式区分。
+- [x] `zom-command` 把 `search.find_next` / `search.find_previous` / `search.replace_next` / `search.replace_all` handler 接到 active buffer 的 BufferSearch；panel `hit_count` 从 BufferSearch 读填。
 
 **视口与折叠**
 

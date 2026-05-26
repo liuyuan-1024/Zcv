@@ -1,6 +1,6 @@
 use zom_command::{EditTarget, SearchOption};
 use zom_view::ViewSet;
-use zom_workspace::Workspace;
+use zom_workspace::{BufferSearchOptions, Workspace};
 
 use crate::shell::editor::{
     Editor, EditorSnapshot, ImeQueryTarget, ImeTarget, TextInputProfile, TextTargetId,
@@ -68,17 +68,25 @@ impl SearchModel {
         }
     }
 
-    /// P3 BufferSearch 调它拿当前 query 文本。第一版 panel 不主动搜索，所以
-    /// 暂时没有内部调用——保留方法面，避免 BufferSearch 接入时改 owner API。
-    #[allow(dead_code)]
+    /// 当前 query 文本——`App` 在每次命令派发后调它，把文本推进活动 buffer 的
+    /// `BufferSearch`。
     pub(crate) fn query_text(&self) -> String {
         self.query.text()
     }
 
-    /// 同 [`Self::query_text`]：P3 替换接入时使用。
-    #[allow(dead_code)]
+    /// 当前 replacement 文本，给 replace handler 用。
     pub(crate) fn replacement_text(&self) -> String {
         self.replacement.text()
+    }
+
+    /// 转成 zom-workspace 的 `BufferSearchOptions`——一字段映射，分离两边的命名
+    /// 空间。`App` 在 sync 路径上调它把面板状态推到 `BufferSearch`。
+    pub(crate) fn buffer_search_options(&self) -> BufferSearchOptions {
+        BufferSearchOptions {
+            case_sensitive: self.options.case_sensitive,
+            whole_word: self.options.whole_word,
+            regex: self.options.regex,
+        }
     }
 
     pub(crate) fn toggle_option(
@@ -239,31 +247,6 @@ fn is_search_target(target: TextTargetId) -> bool {
     )
 }
 
-// =============================================================================
-// 搜索 / 替换导航命令——第一版全部为空实现，等 BufferSearch 落地后接入。
-// =============================================================================
-//
-// 命令骨架（HostEffect + zom-command 注册）保留，因此快捷键与按钮已经能派发；
-// 只是 handler 还没有真正改 buffer 或 selection。BufferSearch 落地时：
-//   1. 这些方法读 active view 的 buffer
-//   2. 调 `buffer.search_mut()` 拿到（或刷新）`BufferSearch`
-//   3. 推进 current hit / 应用替换 / reveal
-//   4. panel 的 `hit_count` 改成从那里读，去掉 `state()` 里的 `None` 占位
-
-impl SearchModel {
-    pub(crate) fn find_next(&mut self, _workspace: &mut Workspace, _views: &mut ViewSet) {
-        // TODO(P3 BufferSearch): 调 BufferSearch::next + reveal + 更新 selection。
-    }
-
-    pub(crate) fn find_previous(&mut self, _workspace: &mut Workspace, _views: &mut ViewSet) {
-        // TODO(P3 BufferSearch): 调 BufferSearch::prev + reveal + 更新 selection。
-    }
-
-    pub(crate) fn replace_next(&mut self, _workspace: &mut Workspace, _views: &mut ViewSet) {
-        // TODO(P3 BufferSearch): 替换当前 hit 并推进到下一个。
-    }
-
-    pub(crate) fn replace_all(&mut self, _workspace: &mut Workspace, _views: &mut ViewSet) {
-        // TODO(P3 BufferSearch): 全量替换 active buffer 内的所有 hit。
-    }
-}
+// 搜索 / 替换导航命令的算法实现不在 SearchModel 里——它们直接在 `App` 上，
+// 因为需要同时操作 panel 输入（query / replacement / options）+ active buffer
+// 的 BufferSearch + active view 的 selection。SearchModel 只负责输入框状态。

@@ -107,6 +107,8 @@ impl IntoElement for EditorEmbed {
         if let Some(reveal) = self.snapshot.reveal {
             element = element.reveal(reveal);
         }
+        // search overlay：单行嵌入输入框的 snapshot 自带空 Vec / None，不会画。
+        element = element.search_overlay(self.snapshot.search_hits, self.snapshot.search_current);
         element
     }
 }

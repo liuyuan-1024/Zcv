@@ -1,7 +1,7 @@
 //! 可嵌入编辑器本体：buffer、selection 与命令作用目标。
 
 use zom_command::EditTarget;
-use zom_engine::{Buffer, BufferConfig, SelectionSet};
+use zom_engine::{Buffer, BufferConfig, SelectionSet, TextRange};
 use zom_view::RevealKind;
 
 use super::ime::{ImeQueryTarget, ImeTarget};
@@ -29,6 +29,15 @@ pub(crate) struct EditorSnapshot {
     /// 外部 reveal 请求在快照里的表示。只在多行主编辑器有意义；
     /// 嵌入式单行编辑器（搜索框等）始终为 `None`。
     pub(crate) reveal: Option<RevealHint>,
+    /// BufferSearch 当前结果集中所有命中（按 ordinal 升序）。空 Vec 表示无
+    /// 搜索 / 单行嵌入式输入。
+    ///
+    /// 由阶段 2 范围背景的第二个 producer 消费——颜色在 EditorElement::prepaint
+    /// 处按 [`Self::search_current`] 区分 normal / current hit 后烤入 `Hsla`。
+    pub(crate) search_hits: Vec<TextRange>,
+    /// current hit 的 range；与 `search_hits` 中某一项相等（若有）。`None` 表示
+    /// 无 current hit（结果集空 / 用户尚未导航）。
+    pub(crate) search_current: Option<TextRange>,
 }
 
 /// [`zom_view::RevealRequest`] 的渲染端镜像 —— 把 `ByteOffset` 换成 `usize`，
@@ -66,6 +75,9 @@ impl Editor {
             cursor_byte: self.cursor_byte(),
             selection: self.selection.clone(),
             reveal: None,
+            // 嵌入式单行 Editor 不参与 BufferSearch；search overlay 永远为空。
+            search_hits: Vec::new(),
+            search_current: None,
         }
     }
 

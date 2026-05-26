@@ -15,7 +15,8 @@ use zom_command::{
     CommandQueue, CommandRegistry, EffectQueue, FileTreeKeyMode, HostEffect, Invocation, KeyChord,
     KeyContext, Keymap, KeymapResolution, MockClipboard, SearchOption,
 };
-use zom_view::ViewSet;
+use zom_engine::{Selection, SelectionSet, TextRange};
+use zom_view::{RevealKind, ViewSet};
 use zom_workspace::Workspace;
 
 use crate::shell::CommandCatalogItem;
@@ -418,7 +419,20 @@ impl App {
     }
 
     pub(crate) fn search_state(&self) -> SearchState {
-        self.search.state()
+        let mut state = self.search.state();
+        // 把活动 buffer 的 BufferSearch 命中数填进 "3 / 27" 标签。读路径走
+        // `&self`，不在这里跑 sync——sync 在写路径（dispatch_command_id / IME）
+        // 完成；这里读到的就是上次 sync 完的真值。
+        if let Some(wb) = self.workspace.active_buffer() {
+            let bs = wb.search();
+            if let Some(current) = bs.current_hit_ordinal() {
+                state.hit_count = Some(crate::shell::features::panels::search::HitCount {
+                    current,
+                    total: bs.hit_count(),
+                });
+            }
+        }
+        state
     }
 
     pub(crate) fn search_activate(&mut self, target: TextTargetId) {
@@ -432,25 +446,90 @@ impl App {
     pub(crate) fn search_toggle_option(&mut self, option: SearchOption) {
         self.search
             .toggle_option(option, &self.workspace, &self.views);
+        // 选项变化要立刻同步到活动 buffer 的 BufferSearch，否则下一次 find_next
+        // 或渲染会读到不一致的命中（旧选项算出来的）。
+        self.sync_active_buffer_search();
     }
 
     pub(crate) fn search_find_next(&mut self) {
-        self.search.find_next(&mut self.workspace, &mut self.views);
+        self.sync_active_buffer_search();
+        let Some(wb) = self.workspace.active_buffer_mut() else {
+            return;
+        };
+        if let Some(range) = wb.search_mut().advance() {
+            self.move_selection_to_match(range);
+        }
     }
 
     pub(crate) fn search_find_previous(&mut self) {
-        self.search
-            .find_previous(&mut self.workspace, &mut self.views);
+        self.sync_active_buffer_search();
+        let Some(wb) = self.workspace.active_buffer_mut() else {
+            return;
+        };
+        if let Some(range) = wb.search_mut().retreat() {
+            self.move_selection_to_match(range);
+        }
     }
 
     pub(crate) fn search_replace_next(&mut self) {
-        self.search
-            .replace_next(&mut self.workspace, &mut self.views);
+        self.sync_active_buffer_search();
+        let replacement = self.search.replacement_text();
+        let Some(wb) = self.workspace.active_buffer_mut() else {
+            return;
+        };
+        // replace_current_search_match 自动 pump_search → 余下命中 try_remap。
+        // 被替换那条会被 try_remap 丢掉，BufferSearch.current_hit 自然指向其
+        // 替换后位置的下一个命中（or None 如果是最后一条）。
+        let _ = wb.replace_current_search_match(&replacement);
+        // 同步一下：buffer 版本变了，BufferSearch 版本也变了，UI 标签需要刷新
+        // hit_count；后续 advance/render 会自然读最新值。
+        if let Some(range) = wb.search().current_range() {
+            self.move_selection_to_match(range);
+        }
     }
 
     pub(crate) fn search_replace_all(&mut self) {
-        self.search
-            .replace_all(&mut self.workspace, &mut self.views);
+        self.sync_active_buffer_search();
+        let replacement = self.search.replacement_text();
+        let Some(wb) = self.workspace.active_buffer_mut() else {
+            return;
+        };
+        let _ = wb.replace_all_search_matches(&replacement);
+        // 全替换后命中通常全部被 remap 吃掉；若 BufferSearch 内还残留 current_hit
+        // 把光标挪过去，没有就让光标停在原位。
+        if let Some(range) = wb.search().current_range() {
+            self.move_selection_to_match(range);
+        }
+    }
+
+    /// 把 panel 的 query / options 推进**活动 buffer** 的 BufferSearch，并
+    /// `sync` 一次，确保后续 find/replace handler 读到的命中是最新的。
+    ///
+    /// 在 `dispatch_command_id`、IME 路径、以及 search_*_option / find_*
+    /// 等所有可能改变 panel 状态或前置触发搜索的位置都调一次。
+    fn sync_active_buffer_search(&mut self) {
+        let query = self.search.query_text();
+        let options = self.search.buffer_search_options();
+        let Some(wb) = self.workspace.active_buffer_mut() else {
+            return;
+        };
+        wb.search_mut().set_query(query);
+        wb.search_mut().set_options(options);
+        // 先把 buffer 上累积的 DeltaEvent（任何编辑路径都可能产生）喂回 BufferSearch
+        // 再 sync：sync 检测版本时优先复用 try_remap 的结果，没有时才重跑。
+        let _ = wb.pump_search();
+        let _ = wb.sync_search();
+    }
+
+    /// 把活动 view 的 selection 挪到 search 命中的 range，并 reveal。
+    /// find_next / find_previous / replace_* 在拿到新 current range 后调用。
+    fn move_selection_to_match(&mut self, range: TextRange) {
+        let Some(view) = self.views.active_view_mut() else {
+            return;
+        };
+        *view.selection_mut() = SelectionSet::new(vec![Selection::new(range.start(), range.end())]);
+        // `RevealKind::Match`：命中已在视区时不滚动；不在则按 1/3 摆位。
+        view.request_reveal(range.start(), RevealKind::Match);
     }
 
     fn dispatch_command_id(
@@ -489,9 +568,11 @@ impl App {
         if self.project_picker.active() {
             self.project_picker.reset_selection();
         }
-        // P3 BufferSearch 接入后，query 文本变化触发 active buffer 的 BufferSearch
-        // 重跑——届时由 BufferSearch 订阅 SearchQuery 的 DeltaEvent，不再在
-        // 这里集中拉钩子。第一版 panel 不主动搜索，所以本钩子位为空。
+        // 命令派发可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴
+        // 等），也可能编辑了活动 buffer（产生 DeltaEvent 需要 try_remap）。
+        // 统一在派发尾部把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——
+        // 一处做完，渲染 / 后续命令读到的都是新真值。
+        self.sync_active_buffer_search();
         Ok(host_effects)
     }
 
@@ -532,8 +613,9 @@ impl App {
                 )
             })
         });
-        // P3 BufferSearch 接入后，preedit 期间也要让 BufferSearch 跟随 query
-        // 文本走 live 搜索；当前 panel 不主动搜索，钩子位为空。
+        // preedit 期间也走 live search——用户在搜索框中文输入时能边输入边
+        // 看到结果收敛。
+        self.sync_active_buffer_search();
         result
     }
 
@@ -842,6 +924,58 @@ mod tests {
         assert!(app.search_state().options.case_sensitive);
         app.search_toggle_option(SearchOption::CaseSensitive);
         assert!(!app.search_state().options.case_sensitive);
+    }
+
+    /// panel 输入框打字 → 活动 buffer 的 BufferSearch 跟随重跑 → state 的
+    /// hit_count 反映新命中 → find_next 让活动 view 的 selection 跳到命中范围。
+    #[test]
+    fn search_query_input_should_drive_buffer_search_and_navigation() {
+        // 打开真实文件，里面塞几处 "foo"——文件路径走 project_fixture 的 README.md
+        // 也行，但内容固定；这里直接 open_text 一段已知文本更稳。
+        let mut app = App::new();
+        app.workspace
+            .open_text(None, "foo bar foo baz foo".to_string())
+            .unwrap();
+        let active_buffer_id = app.workspace.active_buffer_id().unwrap();
+        let active_version = app
+            .workspace
+            .buffer(active_buffer_id)
+            .unwrap()
+            .buffer()
+            .version();
+        let view_id = app.views.open_view(active_buffer_id, active_version);
+        app.views.set_active(view_id);
+
+        // 用户聚焦搜索框，输入 "foo"
+        app.search_activate(TextTargetId::SearchQuery);
+        app.ime_replace_text_for(TextTargetId::SearchQuery, None, "foo")
+            .unwrap();
+
+        // panel 状态 + BufferSearch 都该看到 3 个命中
+        let state = app.search_state();
+        let hit_count = state.hit_count.expect("type query 后应有命中数");
+        assert_eq!(hit_count.total, 3);
+        assert_eq!(hit_count.current, 1); // 自动 anchor 到第一条
+
+        // find_next 把 selection 推进到第二个 match（byte 8..11）
+        app.search_find_next();
+        let view = app.views.active_view().unwrap();
+        let primary = view.selection().primary().range();
+        assert_eq!(primary.start().get(), 8);
+        assert_eq!(primary.end().get(), 11);
+
+        // 再 find_next → 第三个 match (byte 16..19)
+        app.search_find_next();
+        let view = app.views.active_view().unwrap();
+        let primary = view.selection().primary().range();
+        assert_eq!(primary.start().get(), 16);
+        assert_eq!(primary.end().get(), 19);
+
+        // find_previous 退回第二个
+        app.search_find_previous();
+        let view = app.views.active_view().unwrap();
+        let primary = view.selection().primary().range();
+        assert_eq!(primary.start().get(), 8);
     }
 
     #[test]

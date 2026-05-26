@@ -49,6 +49,11 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
         return EditorSnapshot::default();
     };
     let selection = view.selection().clone();
+    // BufferSearch 由 zom-workspace 维护、per-buffer 共享。这里只读快照；
+    // 重跑 / try_remap 的责任在 panel 输入流 / 编辑流（见 app.rs）。
+    let search = buffer.search();
+    let search_hits: Vec<zom_engine::TextRange> = search.ranges().collect();
+    let search_current = search.current_range();
     EditorSnapshot {
         text: buffer.buffer().text().into_owned(),
         cursor_byte: selection.primary().head().get(),
@@ -58,6 +63,8 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
             kind: req.kind,
             seq: req.seq,
         }),
+        search_hits,
+        search_current,
     }
 }
 

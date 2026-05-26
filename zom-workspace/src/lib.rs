@@ -11,8 +11,10 @@
 //! 活动项；关闭非活动 buffer 不影响当前活动项；关闭活动 buffer 后切到仍打开
 //! buffer 中最近分配的一个；关闭最后一个 buffer 后活动项为空。
 
+mod buffer_search;
 mod project_tree;
 
+pub use buffer_search::{BufferSearch, BufferSearchOptions, CurrentReplaceTarget};
 pub use project_tree::{EntryKind, ProjectTree, TreeEntry, TreeRow};
 
 use std::collections::BTreeMap;
@@ -21,7 +23,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use zom_engine::{Buffer, BufferConfig, BufferOrigin as EngineBufferOrigin, EngineError};
+use zom_engine::{
+    Buffer, BufferConfig, BufferOrigin as EngineBufferOrigin, ChangeSet, Delta, EngineError,
+};
 
 /// workspace 自己的 buffer 标识，与 `zom_engine::BufferId` 区分。
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -77,6 +81,7 @@ impl Workspace {
             WorkspaceBuffer {
                 origin: BufferOrigin::File(path),
                 buffer,
+                search: BufferSearch::new(),
             },
         );
         self.set_active_buffer_unchecked(id);
@@ -97,6 +102,7 @@ impl Workspace {
         let buffer = WorkspaceBuffer {
             origin,
             buffer: Buffer::from_text(text.into(), BufferConfig::default())?,
+            search: BufferSearch::new(),
         };
         self.buffers.insert(id, buffer);
         self.set_active_buffer_unchecked(id);
@@ -230,10 +236,15 @@ impl Workspace {
 }
 
 /// 一个被 workspace 持有的 buffer，连同它的文件边界状态。
+///
+/// 还持有 per-buffer 的 [`BufferSearch`]：分屏看同一 buffer 的多个 view 共享
+/// 这一份搜索状态（query、命中、current hit）。EditorView 阶段 2 与 panel 的
+/// "3 / 27" 标签都从这里读。
 #[derive(Debug)]
 pub struct WorkspaceBuffer {
     origin: BufferOrigin,
     buffer: Buffer,
+    search: BufferSearch,
 }
 
 impl WorkspaceBuffer {
@@ -262,6 +273,100 @@ impl WorkspaceBuffer {
 
     pub fn buffer_mut(&mut self) -> &mut Buffer {
         &mut self.buffer
+    }
+
+    pub fn search(&self) -> &BufferSearch {
+        &self.search
+    }
+
+    pub fn search_mut(&mut self) -> &mut BufferSearch {
+        &mut self.search
+    }
+
+    /// 排空 buffer 自上次调用以来累积的 [`zom_engine::DeltaEvent`]，逐个喂给
+    /// [`BufferSearch`] 走 try_remap。
+    ///
+    /// **调用契约**：buffer 发生编辑（命令派发、IME commit、replace_all 等）
+    /// 后**有且仅有一处**调用本方法。不放在 [`Workspace::buffer_mut`] / `buffer()`
+    /// 之类的访问器里——访问器会被调多次、调到读路径上，重复 drain 会让事件
+    /// 序丢失。第一版预期调用点：`zom-command` 在派发结束后统一调一次活动 buffer
+    /// 的 `pump_search`。
+    pub fn pump_search(&mut self) -> WorkspaceResult<()> {
+        let events = self.buffer.take_pending_events();
+        for event in events {
+            self.search.apply_delta(&event)?;
+        }
+        Ok(())
+    }
+
+    /// 让 BufferSearch 在读取前与当前 buffer 版本对齐。query / options 改了之后
+    /// panel UI 渲染前调一次，确保 hit_count 是最新的。
+    ///
+    /// 等价于 `wb.search_mut().sync(wb.buffer())`，封一层避免借用检查器嫌弃
+    /// 同时分别拿 search_mut 与 buffer。
+    pub fn sync_search(&mut self) -> WorkspaceResult<()> {
+        self.search.sync(&self.buffer)?;
+        Ok(())
+    }
+
+    /// 替换 BufferSearch 当前 current hit 指向的命中。无 current hit 或结果集
+    /// 空时返回 `Ok(None)`。
+    ///
+    /// 落地后**内部**调一次 `pump_search` 把 buffer 新产生的 DeltaEvent 喂回
+    /// BufferSearch；调用方无需自己再 pump。
+    pub fn replace_current_search_match(
+        &mut self,
+        replacement: &str,
+    ) -> WorkspaceResult<Option<(Delta, ChangeSet)>> {
+        // 字段级 split borrow：search 上做不可变 current_for_replace + buffer
+        // 同时可变。两个字段不重叠，borrow 检查器允许。
+        let buffer = &mut self.buffer;
+        let search = &mut self.search;
+        let outcome = {
+            let Some(target) = search.current_for_replace() else {
+                return Ok(None);
+            };
+            if let Some(result) = target.literal() {
+                buffer.replace_search_match(result, target.ordinal(), replacement)?
+            } else if let Some(result) = target.regex() {
+                buffer.replace_regex_match(result, target.ordinal(), replacement)?
+            } else {
+                None
+            }
+        };
+        // Drain pending DeltaEvent 喂回 BufferSearch，让 try_remap 把剩余命中
+        // 推进到新版本。被替换那条会在 try_remap 中作为 Deleted/Collapsed 被
+        // 整条丢掉，current_hit 自然减一或失效。
+        for event in buffer.take_pending_events() {
+            search.apply_delta(&event)?;
+        }
+        Ok(outcome)
+    }
+
+    /// 把 BufferSearch 当前结果集中所有命中作为单个原子事务替换。无结果时返回
+    /// `Ok(None)`。同 [`Self::replace_current_search_match`] 自动 pump 事件。
+    pub fn replace_all_search_matches(
+        &mut self,
+        replacement: &str,
+    ) -> WorkspaceResult<Option<(Delta, ChangeSet)>> {
+        let buffer = &mut self.buffer;
+        let search = &mut self.search;
+        let outcome = {
+            let Some(target) = search.result_for_replace() else {
+                return Ok(None);
+            };
+            if let Some(result) = target.literal() {
+                buffer.replace_all_search_matches(result, replacement)?
+            } else if let Some(result) = target.regex() {
+                buffer.replace_all_regex_matches(result, replacement)?
+            } else {
+                None
+            }
+        };
+        for event in buffer.take_pending_events() {
+            search.apply_delta(&event)?;
+        }
+        Ok(outcome)
     }
 }
 

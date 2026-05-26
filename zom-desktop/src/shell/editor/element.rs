@@ -86,6 +86,12 @@ pub(crate) struct EditorElement {
     element_id: Option<ElementId>,
     /// 外部 reveal 请求；按 seq 触发一次 reveal 路径。
     reveal: Option<RevealHint>,
+    /// 阶段 2 范围背景的第二个 producer：BufferSearch 命中。空 Vec 表示无搜索
+    /// （单行嵌入输入框或无 query 的主编辑器）。
+    search_hits: Vec<TextRange>,
+    /// current hit 的 range——与 `search_hits` 中某一项相等（若有）。prepaint
+    /// 根据它把对应那一项的颜色升级为强调色，其余 hit 用普通色。
+    search_current: Option<TextRange>,
 }
 
 impl EditorElement {
@@ -104,6 +110,8 @@ impl EditorElement {
             input_handler_hook,
             element_id: None,
             reveal: None,
+            search_hits: Vec::new(),
+            search_current: None,
         }
     }
 
@@ -115,6 +123,20 @@ impl EditorElement {
 
     pub(crate) fn reveal(mut self, hint: RevealHint) -> Self {
         self.reveal = Some(hint);
+        self
+    }
+
+    /// 装载本编辑器要在阶段 2 显示的搜索命中。
+    ///
+    /// `hits` 应按 ordinal 升序、互不重叠（BufferSearch 来源天然保证）；`current`
+    /// 若 `Some`，应与 `hits` 中某一项 `==`。空 Vec + `None` 表示不画搜索高亮。
+    pub(crate) fn search_overlay(
+        mut self,
+        hits: Vec<TextRange>,
+        current: Option<TextRange>,
+    ) -> Self {
+        self.search_hits = hits;
+        self.search_current = current;
         self
     }
 
@@ -384,18 +406,33 @@ impl Element for EditorElement {
             .into_iter()
             .map(|p| p.unwrap_or((0, px(0.))))
             .collect();
-        // 阶段 2 范围背景：v1 仅 selection 一个 producer。颜色在此处解析（语义键
-        // 「selection」→ 主题色 `blue.a04`，手册 §4.2 第 04 档 ui-active 的 alpha
-        // 形态），paint 阶段直接消费 Hsla。
+        // 阶段 2 范围背景：颜色在此处按语义键解析为 Hsla，paint 阶段只看几何
+        // 与颜色。两个 producer：
         //
-        // 只收非空区间；caret-only 的 selection 不画背景。顺序与 selections 同步，
-        // 因此天然保持 start 升序、互不重叠的契约。
+        // 1. **search**（BufferSearch 命中）—— 先入栈，作为底层视觉。normal hit
+        //    用 `orange.a03`（淡暖色，与 selection 的 blue 系不冲突）；current
+        //    hit 用 `orange.a05`（手册标注的"当前搜索命中"色，更强）。
+        // 2. **selection** —— 后入栈，作为最上层，保证用户的活动选区始终视觉
+        //    优先（与 search hit 重叠时 selection 颜色在上）。
+        //
+        // 各 producer 内部已按 start 升序、互不重叠；合并后整体不要求互不重叠
+        // ——alpha 叠加表达层叠语义。
+        let search_normal_color: Hsla = color::orange::a03().into();
+        let search_current_color: Hsla = color::orange::a05().into();
         let selection_color: Hsla = color::blue::a04().into();
-        let range_backgrounds: Vec<(TextRange, Hsla)> = selections
-            .iter()
-            .filter(|s| !s.is_caret())
-            .map(|s| (s.range(), selection_color))
-            .collect();
+        let mut range_backgrounds: Vec<(TextRange, Hsla)> =
+            Vec::with_capacity(self.search_hits.len() + selections.len());
+        for hit in &self.search_hits {
+            let color = if Some(*hit) == self.search_current {
+                search_current_color
+            } else {
+                search_normal_color
+            };
+            range_backgrounds.push((*hit, color));
+        }
+        for sel in selections.iter().filter(|s| !s.is_caret()) {
+            range_backgrounds.push((sel.range(), selection_color));
+        }
         let primary_caret = carets.get(primary_index).copied().unwrap_or((0, px(0.)));
 
         let gutter_offset = if has_gutter { px(GUTTER_WIDTH) } else { px(0.) };

@@ -242,7 +242,7 @@ Engine 已提供：
 
 **视口与折叠**
 
-- [ ] 接入 `ViewportSlice`，替换当前直接读取整份文本的实现。
+- [x] 接入 `ViewportSlice`，替换当前直接读取整份文本的实现。
 - [ ] 接入 fold / projection 的最小可用路径。
 
 **测试**

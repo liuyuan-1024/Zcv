@@ -392,6 +392,23 @@ impl App {
         f(EditorRouterMut::new(owners))
     }
 
+    /// 由主编辑区 element prepaint 末尾回写：把它实际测得的视口顶行 +
+    /// 可见行数推到当前活动 view 的 `ViewportState`，下一帧的 snapshot 据此
+    /// 调 `Buffer::slice_viewport`。无活动 view 时静默忽略。
+    pub(crate) fn set_main_viewport(&mut self, top_line: u64, visible_line_count: u64) {
+        let Some(view) = self.views.active_view_mut() else {
+            return;
+        };
+        let current = view.viewport();
+        if current.top_line == top_line && current.visible_line_count == visible_line_count {
+            return;
+        }
+        view.set_viewport(zom_view::ViewportState {
+            top_line,
+            visible_line_count,
+        });
+    }
+
     /// 查询某条命令的快捷键文案 —— 给 Glyph / 命令面板 / 菜单用。
     pub(crate) fn shortcut_for(&self, command_id: &str) -> Option<String> {
         let command = CommandId::new(command_id).ok()?;
@@ -716,7 +733,7 @@ mod tests {
 
         let state = app.editor_state();
         let snap = main_snapshot(&app);
-        assert_eq!(snap.text, "hi");
+        assert_eq!(snap.text(), "hi");
         assert_eq!(snap.cursor_byte, 2);
         assert!(active_tab(&state).dirty);
 
@@ -733,7 +750,7 @@ mod tests {
         );
 
         let snap = main_snapshot(&app);
-        assert_eq!(snap.text, "i");
+        assert_eq!(snap.text(), "i");
         assert_eq!(snap.cursor_byte, 0);
 
         let outcome = app
@@ -749,7 +766,7 @@ mod tests {
         );
 
         let snap = main_snapshot(&app);
-        assert_eq!(snap.text, "hi");
+        assert_eq!(snap.text(), "hi");
         assert_eq!(snap.cursor_byte, 1);
     }
 
@@ -764,17 +781,17 @@ mod tests {
         // 模拟输入法 preedit：先 mark "ni"，再 mark "你"，最后 commit "你"。
         app.ime_replace_and_mark_text_for(TextTargetId::MainEditor, None, "ni", Some(2..2))
             .unwrap();
-        assert_eq!(main_snapshot(&app).text, "xni");
+        assert_eq!(main_snapshot(&app).text(), "xni");
         assert!(has_marked_range(&app, TextTargetId::MainEditor));
 
         app.ime_replace_and_mark_text_for(TextTargetId::MainEditor, None, "你", Some(1..1))
             .unwrap();
-        assert_eq!(main_snapshot(&app).text, "x你");
+        assert_eq!(main_snapshot(&app).text(), "x你");
 
         app.ime_replace_text_for(TextTargetId::MainEditor, None, "你")
             .unwrap();
         let snap = main_snapshot(&app);
-        assert_eq!(snap.text, "x你");
+        assert_eq!(snap.text(), "x你");
         assert!(!has_marked_range(&app, TextTargetId::MainEditor));
         // commit 之后 cursor 落在 "你" 之后，对应 4 个 UTF-8 字节 + 1 (x)。
         assert_eq!(snap.cursor_byte, 1 + "你".len());
@@ -808,7 +825,7 @@ mod tests {
 
         let state = app.editor_state();
         let snap = main_snapshot(&app);
-        assert_eq!(snap.text, "    \n\n");
+        assert_eq!(snap.text(), "    \n\n");
         assert_eq!(snap.cursor_byte, 6);
         assert!(active_tab(&state).dirty);
     }
@@ -873,13 +890,13 @@ mod tests {
 
         app.ime_replace_text_for(TextTargetId::SearchQuery, None, "needle")
             .unwrap();
-        assert_eq!(app.search_state().query.text, "needle");
+        assert_eq!(app.search_state().query.text(), "needle");
 
         let outcome = app
             .dispatch_key("backspace".to_string(), KeySurface::Panel)
             .expect("派发成功");
         assert!(outcome.consumed);
-        assert_eq!(app.search_state().query.text, "needl");
+        assert_eq!(app.search_state().query.text(), "needl");
 
         // 下一个匹配现在绑 down 键（替代旧的 enter）；按 enter 在搜索框里
         // 没有意义，预期不被消费。
@@ -888,14 +905,14 @@ mod tests {
             .expect("派发成功");
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::SearchFindNext]);
-        assert_eq!(app.search_state().query.text, "needl");
+        assert_eq!(app.search_state().query.text(), "needl");
 
         let outcome = app
             .dispatch_key("tab".to_string(), KeySurface::Panel)
             .expect("派发成功");
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::SearchFocusNextField]);
-        assert_eq!(app.search_state().query.text, "needl");
+        assert_eq!(app.search_state().query.text(), "needl");
 
         // mod-f 在面板内同样可用：关掉面板。
         let outcome = app
@@ -1112,14 +1129,14 @@ mod tests {
         let mut app = app_with_open_file("reset");
         app.ime_replace_text_for(TextTargetId::MainEditor, None, "临时内容")
             .unwrap();
-        assert!(!main_snapshot(&app).text.is_empty());
+        assert!(!main_snapshot(&app).text().is_empty());
 
         app.open_local_project(PathBuf::from("/tmp/zom-local-project"));
 
         assert_eq!(app.project_title(), "zom-local-project");
         // 重开项目后工作区清空：没有默认 buffer / 视图，也就没有任何标签。
         assert!(app.editor_state().tabs.is_empty());
-        assert!(main_snapshot(&app).text.is_empty());
+        assert!(main_snapshot(&app).text().is_empty());
     }
 
     #[test]
@@ -1375,7 +1392,7 @@ mod tests {
             app.file_tree_state().pending.is_some(),
             "新建输入框仍在编辑态"
         );
-        assert_eq!(pending_name_snapshot(&app).text, "beta");
+        assert_eq!(pending_name_snapshot(&app).text(), "beta");
 
         // Tab / Shift-Tab：单行编辑器不接受缩进 / 反缩进，和 Enter 不接受换行一样。
         let outcome = app
@@ -1383,14 +1400,14 @@ mod tests {
             .unwrap();
         assert!(!outcome.consumed);
         assert!(outcome.effects.is_empty());
-        assert_eq!(pending_name_snapshot(&app).text, "beta");
+        assert_eq!(pending_name_snapshot(&app).text(), "beta");
 
         let outcome = app
             .dispatch_key("shift-tab".to_string(), KeySurface::FileTree)
             .unwrap();
         assert!(!outcome.consumed);
         assert!(outcome.effects.is_empty());
-        assert_eq!(pending_name_snapshot(&app).text, "beta");
+        assert_eq!(pending_name_snapshot(&app).text(), "beta");
 
         // Enter：单行编辑器不接受换行 → text_edit 落空 → 命中 FileTree 的提交命令。
         let outcome = app

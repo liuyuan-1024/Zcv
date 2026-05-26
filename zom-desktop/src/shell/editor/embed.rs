@@ -29,6 +29,11 @@ pub(crate) struct EditorPaintInfo {
 
 pub(crate) type EditorInputHook = Rc<dyn Fn(EditorPaintInfo, &mut Window, &mut GpuiApp)>;
 
+/// element prepaint 末尾用来把当前视口状态（顶部可见逻辑行 + 可见行数）写回
+/// 关联 view 的钩子。只有主编辑区会装配一个真实实现；单行嵌入式编辑器一律
+/// 不装（snapshot 路径不读视口，没人消费写回值）。
+pub(crate) type EditorViewportSyncHook = Rc<dyn Fn(u64, u64, &mut GpuiApp)>;
+
 #[derive(Clone)]
 pub(crate) struct EditorInputHost {
     focus: FocusHandle,
@@ -72,6 +77,7 @@ pub(crate) struct EditorEmbed {
     snapshot: EditorSnapshot,
     input: EditorInputHost,
     element_id: Option<ElementId>,
+    viewport_sync: Option<EditorViewportSyncHook>,
 }
 
 impl EditorEmbed {
@@ -81,11 +87,18 @@ impl EditorEmbed {
             snapshot,
             input,
             element_id: None,
+            viewport_sync: None,
         }
     }
 
     pub(crate) fn element_id(mut self, id: impl Into<ElementId>) -> Self {
         self.element_id = Some(id.into());
+        self
+    }
+
+    /// 装配视口写回钩子；只主编辑区会调用本方法。
+    pub(crate) fn viewport_sync(mut self, hook: EditorViewportSyncHook) -> Self {
+        self.viewport_sync = Some(hook);
         self
     }
 }
@@ -96,7 +109,10 @@ impl IntoElement for EditorEmbed {
     fn into_element(self) -> Self::Element {
         let mut element = EditorElement::new(
             self.kind,
-            self.snapshot.text,
+            self.snapshot.lines,
+            self.snapshot.total_lines,
+            self.snapshot.viewport_start_line,
+            self.snapshot.cursor_position,
             self.snapshot.selection,
             self.input.focus_handle(),
             self.input.hook(),
@@ -106,6 +122,9 @@ impl IntoElement for EditorEmbed {
         }
         if let Some(reveal) = self.snapshot.reveal {
             element = element.reveal(reveal);
+        }
+        if let Some(hook) = self.viewport_sync {
+            element = element.viewport_sync(hook);
         }
         // search overlay：单行嵌入输入框的 snapshot 自带空 Vec / None，不会画。
         element = element.search_overlay(self.snapshot.search_hits, self.snapshot.search_current);

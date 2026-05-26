@@ -83,7 +83,11 @@ fn editor_status_slots(editor: &EditorState, snapshot: &EditorSnapshot) -> Vec<A
     let Some(active) = editor.tabs.iter().find(|tab| tab.is_active) else {
         return Vec::new();
     };
-    let (line, column) = cursor_line_column(&snapshot.text, snapshot.cursor_byte);
+    // snapshot 已经按 `buffer.byte_to_position` 折好行列（0-based）；这里只换
+    // 算到 1-based。不再扫描 text，长文档也是 O(1)。
+    let (line0, column0) = snapshot.cursor_position;
+    let line = line0 + 1;
+    let column = column0 + 1;
     vec![
         Glyph::text(
             CURSOR_POSITION_ID,
@@ -93,16 +97,6 @@ fn editor_status_slots(editor: &EditorState, snapshot: &EditorSnapshot) -> Vec<A
         .render(),
         Glyph::text(LANGUAGE_ID, active.language.clone(), "文件语言").render(),
     ]
-}
-
-/// 把字节光标位置换算成 1 基的行 / 列（列按字符计）。
-fn cursor_line_column(text: &str, cursor_byte: usize) -> (usize, usize) {
-    let cursor_byte = cursor_byte.min(text.len());
-    let before = text.get(..cursor_byte).unwrap_or("");
-    let line = before.bytes().filter(|b| *b == b'\n').count() + 1;
-    let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let column = before[line_start..].chars().count() + 1;
-    (line, column)
 }
 
 /// 把多个组拼起来，组与组之间插入一条 `bar_divider`。空组直接跳过。

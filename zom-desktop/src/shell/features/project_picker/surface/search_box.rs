@@ -27,7 +27,7 @@ fn input_box(state: &ProjectPickerState, slot: &Rc<TextEditorSlot>) -> Div {
         .text_color(color::gray::s09())
         .overflow_hidden();
 
-    if state.query.text.is_empty() {
+    if state.query.text().is_empty() {
         box_ = box_.child(
             div()
                 .absolute()

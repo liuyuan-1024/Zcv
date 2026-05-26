@@ -20,7 +20,7 @@ use gpui::{Context, ElementId, FocusHandle};
 
 use crate::app::App;
 
-use super::embed::{EditorEmbed, EditorInputHost};
+use super::embed::{EditorEmbed, EditorInputHost, EditorViewportSyncHook};
 use super::{EditorKind, TextTargetId};
 
 pub(crate) struct TextEditorSlot {
@@ -55,7 +55,18 @@ impl TextEditorSlot {
             .app
             .borrow()
             .with_router(|router| router.snapshot_for(self.target_id));
-        EditorEmbed::new(kind, snapshot, self.input.clone()).element_id(self.element_id.clone())
+        let mut embed = EditorEmbed::new(kind, snapshot, self.input.clone())
+            .element_id(self.element_id.clone());
+        // 视口写回钩子：只主编辑区装；其它 target 的 snapshot 路径不读视口。
+        if matches!(self.target_id, TextTargetId::MainEditor) {
+            let app = Rc::clone(&self.app);
+            let hook: EditorViewportSyncHook = Rc::new(move |top_line, visible_line_count, _cx| {
+                app.borrow_mut()
+                    .set_main_viewport(top_line, visible_line_count);
+            });
+            embed = embed.viewport_sync(hook);
+        }
+        embed
     }
 }
 

@@ -13,9 +13,17 @@ use zom_command::EditTarget;
 use zom_view::ViewSet;
 use zom_workspace::Workspace;
 
+use super::core::build_snapshot_view;
 use super::ime::{ImeQueryTarget, ImeTarget};
 use super::owner::{TextTargetOwner, TextTargetQuery};
 use super::{EditorSnapshot, TextInputProfile, TextTargetId};
+
+/// 视口尚未由 element 反算写回时（即 `ViewportState.visible_line_count == 0`，
+/// 例如 app 启动后第一帧 / headless 测试）退而求其次取的可见行数。
+///
+/// 选个比常见屏幕略大的值：4K + 14px 行高 ~ 280 行；200 是兼顾"够大屏首屏看
+/// 全"和"小 buffer 别 over-allocate"的折中。第二帧起会被 element 写回值覆盖。
+const DEFAULT_VISIBLE_LINES: u64 = 200;
 
 /// 写入侧：路由要 `&mut` 时构造它。
 pub(crate) struct MainEditorOwner<'a> {
@@ -54,15 +62,39 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
     let search = buffer.search();
     let search_hits: Vec<zom_engine::TextRange> = search.ranges().collect();
     let search_current = search.current_range();
-    EditorSnapshot {
-        text: buffer.buffer().text().into_owned(),
-        cursor_byte: selection.primary().head().get(),
-        selection,
-        reveal: view.reveal().map(|req| super::RevealHint {
+
+    // 视口边界来自 view —— element 在前一帧 prepaint 末尾按 bounds / line_height
+    // 反算并写回。首帧 / headless 测试场景下 `visible_line_count == 0`，退到
+    // `DEFAULT_VISIBLE_LINES`，保证首屏不会少读行（也不会读整个 10G 文件）。
+    let vp = view.viewport();
+    let visible_lines = if vp.visible_line_count == 0 {
+        DEFAULT_VISIBLE_LINES
+    } else {
+        vp.visible_line_count
+    };
+    let (lines, total_lines, viewport_start_line, cursor_position, cursor_byte) =
+        build_snapshot_view(buffer.buffer(), &selection, vp.top_line, visible_lines);
+
+    // reveal 携带的 byte 要折一次 byte_to_position 出逻辑行——element 看不到
+    // buffer，离开视口的 reveal 目标全靠这条 line 决定怎么滚。失败时丢掉
+    // reveal（视为已过期），不让一个坏 byte 卡住渲染。
+    let reveal = view.reveal().and_then(|req| {
+        let line = buffer.buffer().byte_to_position(req.byte).ok()?;
+        Some(super::RevealHint {
             byte: req.byte.get(),
+            line: line.line().get() as u64,
             kind: req.kind,
             seq: req.seq,
-        }),
+        })
+    });
+    EditorSnapshot {
+        lines,
+        total_lines,
+        viewport_start_line,
+        cursor_byte,
+        cursor_position,
+        selection,
+        reveal,
         search_hits,
         search_current,
     }

@@ -4,8 +4,15 @@
 //! 纵向滚动、高度模式全部由「行数」派生，调用方只选 kind，配不出
 //! 「带行号的单行」这种无意义组合。
 //!
-//! 文本与光标分层绘制：每帧把各行 shape 成 [`ShapedLine`]，文本只随内容变化，
-//! 光标只是一个独立填充矩形 —— 移动光标不触发文本重排，这是「不闪烁」的根因。
+//! 文本与光标分层绘制：每帧把视口内每行 shape 成 [`ShapedLine`]，文本只随
+//! 内容变化，光标只是一个独立填充矩形 —— 移动光标不触发文本重排，这是
+//! 「不闪烁」的根因。
+//!
+//! 视口切片：snapshot 已经按 view 当前 `(top_line, visible_line_count)` 给
+//! 出一段 `SnapshotLine[]`，element 只 shape 这一段；`total_lines` 决定
+//! `content_height`，从而支持 GB 级文件不爆显存。prepaint 末尾根据 bounds /
+//! line_height 反算实际可见行数 + 顶行，回写 view 的 `ViewportState`，下一帧
+//! 的 snapshot 据此切；首帧由 main_editor 的 `DEFAULT_VISIBLE_LINES` 兜底。
 //!
 //! 滚动有两条独立路径，共存于 [`Self::prepaint`]：
 //!
@@ -33,8 +40,8 @@ use zom_view::RevealKind;
 use crate::shell::shared::theme::color;
 
 use super::blink::CaretClock;
-use super::core::RevealHint;
-use super::embed::{EditorInputHook, EditorPaintInfo};
+use super::core::{RevealHint, SnapshotLine};
+use super::embed::{EditorInputHook, EditorPaintInfo, EditorViewportSyncHook};
 use super::input::CaretLayout;
 use super::phases::{
     GlyphOverlay, GutterIconQuad, LineBackgroundQuad, LineMetric, paint_phase_1_line_backgrounds,
@@ -75,7 +82,17 @@ pub(crate) enum EditorKind {
 /// 共享同一相位。
 pub(crate) struct EditorElement {
     kind: EditorKind,
-    text: SharedString,
+    /// 当前视口可见的逻辑行（绝对 line / byte 坐标）。
+    lines: Vec<SnapshotLine>,
+    /// 整 buffer 的逻辑行总数；用于算 `content_height`、scroll clamp 与回写
+    /// 视口边界。
+    total_lines: u64,
+    /// snapshot 切片对应的顶行（0-based 逻辑行号）；首条 `lines[0].line_index`
+    /// 等于该值，但 lines 为空时仍需要它，独立带一份。
+    viewport_start_line: u64,
+    /// primary head 的 (行号, 列号)，0-based，绝对逻辑坐标——edge-scroll y 轴
+    /// 与 caret 视口判定靠它，与 lines 是否覆盖该行无关。
+    cursor_position: (u64, u64),
     /// 完整选区集合。每个 selection 的 head 各画一个 caret（阶段 5）；
     /// 非空 selection 的 range 进阶段 2 范围背景；reveal / edge-scroll 只看
     /// primary。`SelectionSet::Clone` 是 O(1)（内部 Arc），元素按帧重建。
@@ -92,19 +109,28 @@ pub(crate) struct EditorElement {
     /// current hit 的 range——与 `search_hits` 中某一项相等（若有）。prepaint
     /// 根据它把对应那一项的颜色升级为强调色，其余 hit 用普通色。
     search_current: Option<TextRange>,
+    /// prepaint 末尾调用，把当前帧测得的 (top_line, visible_line_count) 写回
+    /// view 的 ViewportState；只主编辑区装。
+    viewport_sync: Option<EditorViewportSyncHook>,
 }
 
 impl EditorElement {
     pub(crate) fn new(
         kind: EditorKind,
-        text: impl Into<SharedString>,
+        lines: Vec<SnapshotLine>,
+        total_lines: u64,
+        viewport_start_line: u64,
+        cursor_position: (u64, u64),
         selection: SelectionSet,
         focus: FocusHandle,
         input_handler_hook: EditorInputHook,
     ) -> Self {
         Self {
             kind,
-            text: text.into(),
+            lines,
+            total_lines,
+            viewport_start_line,
+            cursor_position,
             selection,
             focus,
             input_handler_hook,
@@ -112,6 +138,7 @@ impl EditorElement {
             reveal: None,
             search_hits: Vec::new(),
             search_current: None,
+            viewport_sync: None,
         }
     }
 
@@ -140,6 +167,11 @@ impl EditorElement {
         self
     }
 
+    pub(crate) fn viewport_sync(mut self, hook: EditorViewportSyncHook) -> Self {
+        self.viewport_sync = Some(hook);
+        self
+    }
+
     /// 是否渲染行号列：仅多行编辑器。
     fn has_gutter(&self) -> bool {
         matches!(self.kind, EditorKind::MultiLine)
@@ -162,8 +194,12 @@ pub(crate) struct EditorLayout {
 /// 字节坐标信息是阶段 2 范围背景的硬性输入（[`LineMetric`]）：哪一段 selection
 /// 跨过哪一行、行内 x_start / x_end 在哪，都依赖 `line_start_byte` / `line_len`
 /// 把整段文本的字节区间投影到每行内。
+///
+/// 注意：从视口切片接入起，`line_start_byte` 是该行在整 buffer 中的**绝对**
+/// 字节偏移，而非 element 内某段文本的局部偏移——selection / search 命中的
+/// `TextRange` 也是绝对 byte，二者天然对齐。
 pub(crate) struct PrepaintedLine {
-    /// 本行起始字节相对整段 text 的偏移。
+    /// 本行起始字节在整 buffer 中的绝对偏移。
     line_start_byte: usize,
     /// 本行内容字节长度（不含 `\n`）。
     line_len: usize,
@@ -201,7 +237,7 @@ pub(crate) struct EditorPrepaint {
     range_backgrounds: Vec<(TextRange, Hsla)>,
 
     // ── 阶段 3：字符层 ─────────────────────────────────────────────────────
-    /// 每行的 shape + 字节坐标信息，下标即视觉行号。
+    /// 每行的 shape + 字节坐标信息，下标即视觉行号（= line_index - viewport_start_line）。
     lines: Vec<PrepaintedLine>,
 
     // ── 阶段 4：字符叠加 ───────────────────────────────────────────────────
@@ -209,12 +245,17 @@ pub(crate) struct EditorPrepaint {
     glyph_overlays: Vec<GlyphOverlay>,
 
     // ── 阶段 5：caret + IME composition underline ─────────────────────────
-    /// 所有 selection 的 head 位置 `(视觉行号, 行内像素 x)`，下标与
-    /// `EditorElement::selection.as_slice()` 一一对应。
+    /// 落在视口内的 caret 的 `(视觉行号, 行内像素 x)`。下标与
+    /// `EditorElement::selection.as_slice()` **不再一一对应**——视口外的 caret
+    /// 已被剔除，避免在视区左上角画出"看不到的 caret 残影"。
     ///
     /// reveal / edge-scroll 只看 primary（在 prepaint 内部就消化掉了，paint
     /// 拿到的就是"全部 caret 都要画"的扁平集合）。
     carets: Vec<(usize, Pixels)>,
+    /// primary caret 在 `carets` 中的下标，仅当 primary 在视口内时为 Some。
+    /// 单行嵌入式编辑器永远在视口内——`None` 只可能出现在多行主编辑器，且
+    /// 当 primary head 落在视口外。
+    primary_caret: Option<usize>,
     /// v1 = 空 Vec；P2 IME marked text 接入点。
     composition_underlines: Vec<(TextRange, Hsla)>,
 
@@ -230,6 +271,9 @@ pub(crate) struct EditorPrepaint {
     gutter_offset: Pixels,
     /// 当前滚动偏移；正文与光标按它整体平移。
     scroll: Point<Pixels>,
+    /// `top` 已经吸收了 `viewport_start_line × line_height` 的修正：phases 用
+    /// `top + row_index × line_height` 即可拿到正确像素 y，无需知道视口起点。
+    top_adjusted: Pixels,
 }
 
 /// 跨帧保留的滚动偏移，存于 GPUI 元素状态。
@@ -311,35 +355,41 @@ impl Element for EditorElement {
         bounds: Bounds<Pixels>,
         layout: &mut EditorLayout,
         window: &mut Window,
-        _cx: &mut App,
+        cx: &mut App,
     ) -> EditorPrepaint {
         let text_style = window.text_style();
         let font_size = layout.font_size;
         let line_height = layout.line_height;
-        let text_len = self.text.len();
         let has_gutter = self.has_gutter();
+        let viewport_start_line = self.viewport_start_line;
+        let total_lines = self.total_lines.max(1);
 
         // SelectionSet 经过引擎归一化，as_slice() 已按 start 排序、互不重叠。
-        // primary 在归一化前后由 primary_index 跟踪 —— 这里 carets 的下标与
-        // as_slice 同步，下文用 primary_index 直接定位 primary caret。
+        // primary 在归一化前后由 primary_index 跟踪 —— 这里 carets 的位置由
+        // primary_caret 单独记录，下标与 selection.as_slice 已不再 1:1。
         let selections = self.selection.as_slice();
-        let primary_index = self
+        let primary_sel_index = self
             .selection
             .primary_index()
             .min(selections.len().saturating_sub(1));
-        // 每个 head 的 (视觉行, 行内 x)；用 None 占位，按 line 扫描时填充。
-        let mut carets_pos: Vec<Option<(usize, Pixels)>> = vec![None; selections.len()];
-        let mut lines = Vec::new();
-        let mut gutter_line_numbers = Vec::new();
-        let reveal_byte = self.reveal.map(|hint| hint.byte.min(text_len));
-        // 同步记 reveal byte 的(行, 行内 x)：reveal 路径要把 X 也照顾到，
-        // 否则 match 在视区左边时 edge-scroll 会把 caret(=match end) 拉到左边缘，
-        // 反而把 match 本体切到视区左侧外。
-        let mut reveal_pos: Option<(usize, Pixels)> = None;
-        // 当前行起点在整段文本里的字节偏移。
-        let mut offset = 0usize;
 
-        for (index, raw) in self.text.split('\n').enumerate() {
+        // visible_row -> primary caret 的视口内 (row, x) 占位；None 表示视口外
+        // / 暂未匹配上。primary 的"视口外但要 reveal/edge-scroll"路径走
+        // primary_caret_logical / primary_caret_x 兜底。
+        let mut carets_pos: Vec<Option<(usize, Pixels)>> = vec![None; selections.len()];
+        let mut prepainted_lines: Vec<PrepaintedLine> = Vec::with_capacity(self.lines.len());
+        let mut gutter_line_numbers: Vec<ShapedLine> = Vec::with_capacity(self.lines.len());
+
+        let reveal_byte = self.reveal.map(|hint| hint.byte);
+        let reveal_logical_line = self.reveal.map(|hint| hint.line);
+        // reveal 目标若在视口内，shape 后能算出行内 x（用于 reveal x 轴摆位）。
+        let mut reveal_visible_row_x: Option<(usize, Pixels)> = None;
+
+        for (visual_row, line) in self.lines.iter().enumerate() {
+            let raw = line.text.as_str();
+            let line_start = line.start_byte;
+            let line_end = line_start + raw.len();
+
             // 文本 shape 的输入只有「内容 + 字体」，与光标无关 —— 同一行内容
             // 每帧 shape 命中 GPUI 行布局缓存，光标移动不会触发重排。
             let runs = if raw.is_empty() {
@@ -347,40 +397,42 @@ impl Element for EditorElement {
             } else {
                 vec![text_style.to_run(raw.len())]
             };
-            let shaped =
-                window
-                    .text_system()
-                    .shape_line(raw.to_string().into(), font_size, &runs, None);
+            let shaped = window.text_system().shape_line(
+                SharedString::from(raw.to_string()),
+                font_size,
+                &runs,
+                None,
+            );
 
-            let line_end = offset + raw.len();
-            // 每个 selection.head 落在哪一行就在哪一行算 x。head 出现在行末
-            // (`head == line_end`) 与行首 (`head == offset` for next line) 是
+            // 每个 selection.head 落在视口内时算其行内 x。head 出现在行末
+            // (`head == line_end`) 与行首 (`head == 下一行 line_start`) 是
             // 同一字节位置——head 优先归到「等于行尾」的那一行（与旧 cursor_byte
             // 行为一致：保留尾随空格后的光标位）。
             for (i, sel) in selections.iter().enumerate() {
                 if carets_pos[i].is_some() {
                     continue;
                 }
-                let head = sel.head().get().min(text_len);
-                if head >= offset && head <= line_end {
-                    carets_pos[i] = Some((index, shaped.x_for_index(head - offset)));
+                let head = sel.head().get();
+                if head >= line_start && head <= line_end {
+                    carets_pos[i] = Some((visual_row, shaped.x_for_index(head - line_start)));
                 }
             }
             if let Some(rb) = reveal_byte
-                && reveal_pos.is_none()
-                && rb >= offset
+                && reveal_visible_row_x.is_none()
+                && rb >= line_start
                 && rb <= line_end
             {
-                reveal_pos = Some((index, shaped.x_for_index(rb - offset)));
+                reveal_visible_row_x = Some((visual_row, shaped.x_for_index(rb - line_start)));
             }
-            lines.push(PrepaintedLine {
-                line_start_byte: offset,
+            prepainted_lines.push(PrepaintedLine {
+                line_start_byte: line_start,
                 line_len: raw.len(),
                 shaped,
             });
 
             if has_gutter {
-                let label = (index + 1).to_string();
+                // 行号 1-based，叠加视口起点偏移得到真正的逻辑行号。
+                let label = (line.line_index + 1).to_string();
                 let run = TextRun {
                     len: label.len(),
                     font: text_style.font(),
@@ -396,16 +448,21 @@ impl Element for EditorElement {
                     None,
                 ));
             }
-
-            offset = line_end + 1;
         }
 
-        // 任何 head 没匹配上（极端：选区指向超出当前 text 的字节，stale 快照）
-        // 都退化到文首 caret，避免出现"看不到的 caret"。primary 同样保护。
-        let carets: Vec<(usize, Pixels)> = carets_pos
-            .into_iter()
-            .map(|p| p.unwrap_or((0, px(0.))))
-            .collect();
+        // 视口外的 caret 直接丢掉——避免被 unwrap_or((0, 0)) 摆到视区左上角形成
+        // 残影；多行主编辑区滚到不见 primary 时也只剩边缘指示。
+        let mut carets: Vec<(usize, Pixels)> = Vec::with_capacity(carets_pos.len());
+        let mut primary_caret_in_view: Option<usize> = None;
+        for (i, slot) in carets_pos.into_iter().enumerate() {
+            if let Some(entry) = slot {
+                if i == primary_sel_index {
+                    primary_caret_in_view = Some(carets.len());
+                }
+                carets.push(entry);
+            }
+        }
+
         // 阶段 2 范围背景：颜色在此处按语义键解析为 Hsla，paint 阶段只看几何
         // 与颜色。两个 producer：
         //
@@ -433,15 +490,22 @@ impl Element for EditorElement {
         for sel in selections.iter().filter(|s| !s.is_caret()) {
             range_backgrounds.push((sel.range(), selection_color));
         }
-        let primary_caret = carets.get(primary_index).copied().unwrap_or((0, px(0.)));
 
         let gutter_offset = if has_gutter { px(GUTTER_WIDTH) } else { px(0.) };
 
+        // primary caret 的"逻辑行 / 行内 x"——用于 edge-scroll / reveal。logical
+        // 行号永远可拿（cursor_position 在 snapshot 已经折算好）；x 只有 primary
+        // 真的落在 shape 出来的视口行里才有。
+        let primary_caret_logical_line = self.cursor_position.0;
+        let primary_caret_x = primary_caret_in_view
+            .map(|idx| carets[idx].1)
+            .unwrap_or(px(0.));
+
         // autoscroll：让光标保持在视口内。需要稳定 element id 来跨帧存偏移。
-        let scroll = match id {
+        let (scroll, measured_top_line, measured_visible_lines) = match id {
             Some(global_id) => {
-                let content_height = line_height * lines.len().max(1) as f32;
-                let content_width = lines.iter().fold(px(0.), |max, line| {
+                let content_height = line_height * total_lines as f32;
+                let content_width = prepainted_lines.iter().fold(px(0.), |max, line| {
                     if line.shaped.width > max {
                         line.shaped.width
                     } else {
@@ -452,30 +516,39 @@ impl Element for EditorElement {
                 let viewport_w =
                     clamp_px(bounds.size.width - gutter_offset, px(0.), bounds.size.width);
                 let reveal = self.reveal;
-                window.with_element_state::<EditorScroll, _>(global_id, |state, _window| {
-                    let mut state = state.unwrap_or_default();
-                    let mut off = state.offset;
+                let result =
+                    window.with_element_state::<EditorScroll, _>(global_id, |state, _window| {
+                        let mut state = state.unwrap_or_default();
+                        let mut off = state.offset;
 
-                    // === reveal 路径 ===
-                    // 外部 request_reveal 投递的请求；按 seq 触发一次。
-                    // kind 决定触发条件与摆位 —— 集中在这里翻译，调用方只表达"意图"。
-                    //
-                    // 两个轴独立判断可见性 / 独立摆位：搜索 match 在视区"左边"
-                    // 但同一行内时，只需要滚 X；在不同行但同一列时，只需要滚 Y。
-                    // 一起判断会把"X 已经可见"也当成需要滚，反而抖。
-                    if let Some(req) = reveal
-                        && Some(req.seq) != state.last_applied_reveal_seq
-                    {
-                        if let Some((row, x)) = reveal_pos {
+                        // === reveal 路径 ===
+                        // 外部 request_reveal 投递的请求；按 seq 触发一次。
+                        // kind 决定触发条件与摆位 —— 集中在这里翻译，调用方只
+                        // 表达"意图"。
+                        //
+                        // 两个轴独立判断可见性 / 独立摆位：搜索 match 在视区"左
+                        // 边"但同一行内时，只需要滚 X；在不同行但同一列时，
+                        // 只需要滚 Y。一起判断会把"X 已经可见"也当成需要滚，
+                        // 反而抖。
+                        if let Some(req) = reveal
+                            && Some(req.seq) != state.last_applied_reveal_seq
+                        {
+                            // y 轴用逻辑行号，离视口多远都能滚回来——不必依赖
+                            // reveal byte 是否在 shape 出来的视口行里。
+                            let row = reveal_logical_line.unwrap_or(req.line);
                             let target_top = line_height * row as f32;
                             let target_bottom = target_top + line_height;
                             let visible_y =
                                 target_top >= off.y && target_bottom <= off.y + viewport_h;
-                            let target_right = x + px(CARET_WIDTH);
-                            let visible_x = x >= off.x && target_right <= off.x + viewport_w;
 
-                            // (placement_factor 即"1/3"那个比例；force_scroll 区分
-                            // IfOffscreen / Always 语义)
+                            // x 轴只在 reveal 目标行确实进入视口、shape 出 x 时
+                            // 有意义；否则保留当前 off.x，等到目标行被 y 轴滚
+                            // 进视口的下一帧再校准。
+                            let visible_x_opt = reveal_visible_row_x.map(|(_, x)| {
+                                let target_right = x + px(CARET_WIDTH);
+                                (x, x >= off.x && target_right <= off.x + viewport_w)
+                            });
+
                             let (placement_factor, force_scroll) = match req.kind {
                                 RevealKind::Match => (1.0 / 3.0, false),
                                 RevealKind::Jump => (1.0 / 3.0, true),
@@ -483,66 +556,101 @@ impl Element for EditorElement {
                             if force_scroll || !visible_y {
                                 off.y = target_top - viewport_h * placement_factor;
                             }
-                            if force_scroll || !visible_x {
+                            if let Some((x, visible_x)) = visible_x_opt
+                                && (force_scroll || !visible_x)
+                            {
                                 off.x = x - viewport_w * placement_factor;
                             }
+                            // 即使本帧没拿到行号也要登记 seq——不然下一帧文本
+                            // 仍然能命中行时会"补"一次滚动，对用户来说像延迟反应。
+                            state.last_applied_reveal_seq = Some(req.seq);
                         }
-                        // 即使本帧没拿到行号也要登记 seq。
-                        // 不然下一帧文本仍然能命中行时会"补"一次滚动，对用户来说像延迟反应。
-                        state.last_applied_reveal_seq = Some(req.seq);
-                    }
 
-                    // === edge-scroll 路径（兜底）===
-                    // 即便 reveal 把 reveal byte 摆到上 1/3，caret（=match end）
-                    // 在多行 match 时也可能跨到视区外；edge-scroll 把 caret 拉回来，宁可让 reveal byte 飘出视区，也不能让 caret 消失。
-                    // 多光标场景只让 primary caret 决定滚动 —— 多个 caret 同时驱动
-                    // 滚动会互相拉扯。primary 是用户最近交互的 caret，跟它走最自然。
-                    let (caret_line, caret_x) = primary_caret;
-                    let caret_top = line_height * caret_line as f32;
-                    let caret_bottom = caret_top + line_height;
-                    if caret_top < off.y {
-                        off.y = caret_top;
-                    } else if caret_bottom > off.y + viewport_h {
-                        off.y = caret_bottom - viewport_h;
-                    }
-                    off.y = clamp_px(
-                        off.y,
-                        px(0.),
-                        clamp_px(content_height - viewport_h, px(0.), content_height),
-                    );
+                        // === edge-scroll 路径（兜底）===
+                        // 即便 reveal 把 reveal byte 摆到上 1/3，caret（=match
+                        // end）在多行 match 时也可能跨到视区外；edge-scroll 把
+                        // caret 拉回来，宁可让 reveal byte 飘出视区，也不能让
+                        // caret 消失。多光标场景只让 primary caret 决定滚动
+                        // —— 多个 caret 同时驱动滚动会互相拉扯。primary 是用户
+                        // 最近交互的 caret，跟它走最自然。
+                        let caret_top = line_height * primary_caret_logical_line as f32;
+                        let caret_bottom = caret_top + line_height;
+                        if caret_top < off.y {
+                            off.y = caret_top;
+                        } else if caret_bottom > off.y + viewport_h {
+                            off.y = caret_bottom - viewport_h;
+                        }
+                        off.y = clamp_px(
+                            off.y,
+                            px(0.),
+                            clamp_px(content_height - viewport_h, px(0.), content_height),
+                        );
 
-                    // 横向：光标列需可见。行尾光标位于最后一个字形「之后」，
-                    // 故可滚动宽度要在最宽行的基础上额外留出一个光标宽度 ——
-                    // 否则滚到行尾时光标正好压在正文区裁剪边界上、被切掉。
-                    let scrollable_w = content_width + px(CARET_WIDTH);
-                    let caret_right = caret_x + px(CARET_WIDTH);
-                    if caret_x < off.x {
-                        off.x = caret_x;
-                    } else if caret_right > off.x + viewport_w {
-                        off.x = caret_right - viewport_w;
-                    }
-                    off.x = clamp_px(
-                        off.x,
-                        px(0.),
-                        clamp_px(scrollable_w - viewport_w, px(0.), scrollable_w),
-                    );
+                        // 横向：光标列需可见。行尾光标位于最后一个字形「之
+                        // 后」，故可滚动宽度要在最宽行的基础上额外留出一个光
+                        // 标宽度——否则滚到行尾时光标正好压在正文区裁剪边界
+                        // 上、被切掉。primary caret 在视口外时 x = 0，不主动
+                        // 触发 x 滚动（再下一帧 caret 进视口，shape 出 x 后再
+                        // 校准）。
+                        let scrollable_w = content_width + px(CARET_WIDTH);
+                        if primary_caret_in_view.is_some() {
+                            let caret_right = primary_caret_x + px(CARET_WIDTH);
+                            if primary_caret_x < off.x {
+                                off.x = primary_caret_x;
+                            } else if caret_right > off.x + viewport_w {
+                                off.x = caret_right - viewport_w;
+                            }
+                        }
+                        off.x = clamp_px(
+                            off.x,
+                            px(0.),
+                            clamp_px(scrollable_w - viewport_w, px(0.), scrollable_w),
+                        );
 
-                    state.offset = off;
-                    (off, state)
-                })
+                        state.offset = off;
+
+                        // 反算视口边界：top_line = floor(off.y / line_height)；
+                        // visible_line_count = ceil(viewport_h / line_height)
+                        // ——加一行裕度让"行半被裁"也可以画出来。
+                        let lh: f32 = f32::from(line_height).max(1.0);
+                        let off_y_f: f32 = off.y.into();
+                        let viewport_h_f: f32 = viewport_h.into();
+                        let top_line = (off_y_f / lh).floor().max(0.0) as u64;
+                        let visible = ((viewport_h_f / lh).ceil() as u64).saturating_add(1);
+                        let top_line_clamped = top_line.min(total_lines.saturating_sub(1));
+                        ((off, top_line_clamped, visible), state)
+                    });
+                result
             }
-            None => Point::default(),
+            None => (
+                Point::default(),
+                viewport_start_line,
+                self.lines.len() as u64,
+            ),
         };
+
+        // 调用视口写回钩子，让下一帧的 snapshot 切对 buffer 视口段。一帧的
+        // 旧值不会更糟——snapshot 用的是上一帧反算结果，element 当帧仍按 lines
+        // 渲染；首帧的 200 行兜底已经够覆盖任何屏幕高度。
+        if let Some(sync) = self.viewport_sync.as_ref() {
+            sync(measured_top_line, measured_visible_lines, cx);
+        }
+
+        // top 已吸收 viewport_start_line × line_height 的修正：visual_row 0 在
+        // 物理 y 上对应逻辑行 viewport_start_line，phases 用 row_index 算 y 即
+        // 可，**不需要再知道视口起点**。
+        let top_adjusted = bounds.origin.y - scroll.y + line_height * viewport_start_line as f32;
 
         EditorPrepaint {
             // v1 空槽位：行背景。
             line_backgrounds: Vec::new(),
             // v1 唯一 producer：selection（已在上方解析为 (range, color)）。
             range_backgrounds,
-            lines,
+            lines: prepainted_lines,
             // v1 空槽位：字符叠加（ghost text / inlay hint）。
             glyph_overlays: Vec::new(),
             carets,
+            primary_caret: primary_caret_in_view,
             // v1 空槽位：IME composition underline（marked text 待接入）。
             composition_underlines: Vec::new(),
             gutter_line_numbers,
@@ -551,6 +659,7 @@ impl Element for EditorElement {
             line_height,
             gutter_offset,
             scroll,
+            top_adjusted,
         }
     }
 
@@ -566,8 +675,9 @@ impl Element for EditorElement {
     ) {
         let line_height = prepaint.line_height;
         let scroll = prepaint.scroll;
-        // 纵向滚动作用于所有内容（行号随正文一起上下移）。
-        let top = bounds.origin.y - scroll.y;
+        // 纵向滚动 + 视口顶行修正都已吸收进 prepaint.top_adjusted；这里 phases
+        // 用 row_index × line_height 算 y 即可。
+        let top = prepaint.top_adjusted;
         // 横向滚动只作用于正文与光标；行号列固定不动。
         let text_left = bounds.origin.x + prepaint.gutter_offset - scroll.x;
 
@@ -667,22 +777,21 @@ impl Element for EditorElement {
         );
 
         // 把 primary caret 在 element 内的相对坐标打包给 input hook。系统 IME
-        // 的 `bounds_for_range` 会借此把候选窗放到 caret 正下方；没有 caret 时
-        // 传 None，让 IME 走默认（候选窗会落在窗口角，明显比"贴在编辑区左上
-        // 角"易辨认是哪里有问题）。
-        let caret_layout = (!prepaint.carets.is_empty()).then(|| {
-            let primary_idx = self
-                .selection
-                .primary_index()
-                .min(prepaint.carets.len() - 1);
-            let (caret_line, caret_x) = prepaint.carets[primary_idx];
-            CaretLayout {
+        // 的 `bounds_for_range` 会借此把候选窗放到 caret 正下方；primary 不在
+        // 视口内时传 None，让 IME 走默认（候选窗落在窗口角，明显比"贴在
+        // 编辑区左上角"易辨认是哪里有问题）。
+        let caret_layout = prepaint.primary_caret.and_then(|idx| {
+            let (caret_row, caret_x) = *prepaint.carets.get(idx)?;
+            Some(CaretLayout {
                 relative: point(
                     prepaint.gutter_offset + caret_x - scroll.x,
-                    line_height * caret_line as f32 - scroll.y,
+                    // 阶段 5 caret 画在 `top_adjusted + row × line_height`；
+                    // 这里换回 `bounds.origin.y` 相对坐标即 `top - bounds.y +
+                    // row × line_height`。
+                    prepaint.top_adjusted - bounds.origin.y + line_height * caret_row as f32,
                 ),
                 line_height,
-            }
+            })
         });
         (self.input_handler_hook)(
             EditorPaintInfo {

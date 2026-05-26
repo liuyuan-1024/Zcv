@@ -26,11 +26,19 @@ impl ViewId {
     }
 }
 
-/// 滚动位置 / 可见区域。骨架阶段先留最小形态，P3 接 viewport slice 时展开。
+/// 滚动位置 / 可见区域。
+///
+/// `top_line` 是当前视口顶部可见的逻辑行（0-based）；`visible_line_count` 是
+/// 视口能容纳的整行数。两者一起决定 `Buffer::slice_viewport` 切出哪一段。
+///
+/// 这两个值由渲染端（`zom-desktop` 的 `EditorElement` prepaint）按 bounds /
+/// line_height 反算后写回 View —— 编辑面状态层只持值，不计算像素。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ViewportState {
-    /// 顶部可见的逻辑行。
+    /// 顶部可见的逻辑行（0-based）。
     pub top_line: u64,
+    /// 视口能容纳的整行数；为 0 表示尚未测量。
+    pub visible_line_count: u64,
 }
 
 /// 「请把某个 byte 滚到视区」的意图标签。

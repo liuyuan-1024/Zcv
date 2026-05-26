@@ -190,7 +190,7 @@ fn search_controls(
             query_focus,
             key_request,
             query_slot,
-            state.query.text.is_empty(),
+            state.query.text().is_empty(),
             vec![
                 hit_count_badge(state.hit_count),
                 option_toggle(
@@ -244,7 +244,7 @@ fn search_controls(
             replacement_focus,
             key_request,
             replacement_slot,
-            state.replacement.text.is_empty(),
+            state.replacement.text().is_empty(),
             vec![
                 Glyph::icon(
                     "search-replace-next",

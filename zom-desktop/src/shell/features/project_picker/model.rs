@@ -85,6 +85,10 @@ impl ProjectPickerModel {
         self.selected = 0;
     }
 
+    pub(crate) fn query_text(&self) -> String {
+        self.query.text()
+    }
+
     pub(crate) fn activation(&self, projects: &[RecentProject]) -> ProjectPickerActivation {
         if self.mode == ProjectPickerMode::CloneGit {
             let repo = self.query.text();
@@ -107,8 +111,9 @@ impl ProjectPickerModel {
             self.selected = 0;
             return;
         }
-        let next = self.selected as isize + delta;
-        self.selected = next.clamp(0, count as isize - 1) as usize;
+        // rem_euclid 保证负余数也落回 [0, count)，让 up / down 在头尾循环。
+        let count_i = count as isize;
+        self.selected = (self.selected as isize + delta).rem_euclid(count_i) as usize;
     }
 }
 

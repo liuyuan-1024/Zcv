@@ -15,7 +15,7 @@ use crate::focus::{
     AppFocus, FileTreeFocus, PanelFocus, ProjectPickerFocus, SearchField, SurfaceFocus,
 };
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
-use crate::shell::features::panels::{PanelId, PanelRuntimes, focus_panel_handle};
+use crate::shell::features::panels::{PanelId, PanelRuntimes};
 
 /// `AppFocus <-> FocusHandle` 的 shell-only 投影表。
 #[derive(Clone, Default)]
@@ -49,13 +49,6 @@ impl FocusProjection {
             return;
         };
         window.focus(&handle);
-    }
-
-    pub(crate) fn apply_panel(&self, panel: PanelId, window: &mut Window) {
-        if let Some(handle) = self.handle_for(panel_default_focus(panel)) {
-            // panel 可能刚被 show_panel 显示，本帧尚未布局，下一帧再聚一次。
-            focus_panel_handle(handle, window, true);
-        }
     }
 
     pub(crate) fn is_at(&self, focus: AppFocus, window: &Window) -> bool {

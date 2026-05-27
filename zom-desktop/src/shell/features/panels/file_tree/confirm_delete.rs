@@ -65,8 +65,8 @@ fn dialog(pending: &PendingDelete, handlers: &ConfirmDeleteHandlers) -> impl Int
         .w(px(360.0))
         .flex()
         .flex_col()
-        .gap(space::s12())
-        .p(space::s16())
+        .gap(space::s6())
+        .p(space::s6())
         .rounded(radius::r4())
         .border_1()
         .border_color(color::gray::s05())
@@ -90,7 +90,7 @@ fn dialog(pending: &PendingDelete, handlers: &ConfirmDeleteHandlers) -> impl Int
                 .flex()
                 .flex_row()
                 .justify_end()
-                .gap(space::s8())
+                .gap(space::s6())
                 .child(button(
                     "confirm-delete.cancel",
                     "取消",
@@ -114,8 +114,7 @@ fn button(
 ) -> impl IntoElement {
     div()
         .id(id)
-        .px(space::s12())
-        .py(space::s4())
+        .p(space::s6())
         .rounded(radius::r4())
         .bg(color::gray::s04())
         .text_size(typography::ui())

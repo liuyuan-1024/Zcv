@@ -5,7 +5,7 @@
 
 use gpui::{Div, div, prelude::*};
 
-use crate::shell::shared::theme::{color, space};
+use crate::shell::shared::theme::color;
 
 #[derive(Clone, Copy)]
 pub(crate) enum DockEdge {
@@ -26,8 +26,7 @@ pub(crate) fn dock_frame(edge: DockEdge) -> Div {
         .flex_shrink_0()
         .h_full()
         .bg(color::gray::s02())
-        .text_color(color::gray::s09())
-        .p(space::s4());
+        .text_color(color::gray::s09());
 
     match edge {
         DockEdge::Left => frame.border_r_1().border_color(color::gray::s05()),

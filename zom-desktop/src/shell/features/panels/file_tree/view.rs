@@ -86,6 +86,7 @@ fn render_list(
         .relative()
         .size_full()
         .overflow_hidden()
+        .p(space::s4())
         .child(
             uniform_list("file-tree-list", items.len(), move |range, _, _| {
                 range
@@ -162,7 +163,6 @@ fn render_input_row(pending: &PendingNewEntry, slot: &Rc<TextEditorSlot>) -> Div
         .w_full()
         .gap(space::s4())
         .overflow_hidden()
-        .px(space::s4())
         .rounded(radius::r2())
         .border_1()
         .border_color(color::blue::s07())
@@ -244,7 +244,6 @@ fn render_row(
         .w_full()
         .gap(space::s4())
         .overflow_hidden()
-        .px(space::s4())
         .rounded(radius::r2())
         .border_1()
         .border_color(border_color)

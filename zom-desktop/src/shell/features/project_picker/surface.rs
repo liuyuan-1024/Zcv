@@ -87,7 +87,7 @@ pub(crate) fn request(
         placement: SurfacePlacement {
             invoker_point: SurfaceInvokerPoint::BottomLeft,
             corner: Corner::TopLeft,
-            offset: point(px(0.0), space::s8()),
+            offset: point(px(0.0), space::s4()),
             fallback_position: point(px(48.0), px(28.0)),
         },
         focus_on_open: Some(focus),
@@ -112,7 +112,6 @@ fn render(runtime: ProjectPickerRuntime, actions: ProjectPickerActions) -> Div {
 
     div()
         .w(px(420.0))
-        .p(space::s8())
         .rounded(radius::r4())
         .border_1()
         .border_color(color::gray::s05())
@@ -124,10 +123,8 @@ fn render(runtime: ProjectPickerRuntime, actions: ProjectPickerActions) -> Div {
             handle_key(&key_actions, &event.keystroke, window, cx);
         })
         .child(search_box::render(&state, &actions.slot))
-        .child(divided_section(project_list))
-        .child(divided_section(source_actions::render(
-            state.mode, &actions,
-        )))
+        .child(project_list)
+        .child(source_actions::render(state.mode, &actions))
 }
 
 fn handle_key(
@@ -140,15 +137,6 @@ fn handle_key(
     if (actions.key_request)(chord.clone(), window, cx) {
         cx.stop_propagation();
     }
-}
-
-fn divided_section(child: Div) -> Div {
-    div()
-        .mt(space::s8())
-        .pt(space::s8())
-        .border_t_1()
-        .border_color(color::gray::s05())
-        .child(child)
 }
 
 pub(super) fn command_shortcut(actions: &ProjectPickerActions, command_id: &'static str) -> String {

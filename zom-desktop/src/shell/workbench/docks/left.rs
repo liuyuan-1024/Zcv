@@ -6,7 +6,7 @@
 use gpui::{Div, div, prelude::*};
 
 use crate::shell::features::panels::PanelId;
-use crate::shell::shared::theme::{color, space, typography};
+use crate::shell::shared::theme::{color, typography};
 use crate::shell::workbench::state::{DockAreaId, DockState};
 use crate::shell::workbench::{PanelContext, PanelHost};
 
@@ -33,7 +33,6 @@ pub(crate) fn render(
 
     dock_frame(DockEdge::Left)
         .w(state.size)
-        .gap(space::s8())
         .child(div().flex_1().child(body))
         .child(resize::render_handle(DockAreaId::Left, resize))
 }

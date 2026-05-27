@@ -113,7 +113,7 @@ fn close_glyph(
 /// 一个小圆点、否则透明——固定占位避免 dirty 切换时文字跳动。
 /// 纯视觉标记，固定尺寸是 MEMORY 约定里的例外。
 fn dirty_marker(dirty: bool, color: Rgba) -> gpui::Div {
-    let mut dot = div().size(space::s6());
+    let mut dot = div().size(space::s4());
     if dirty {
         dot = dot.rounded(radius::full()).bg(color);
     }

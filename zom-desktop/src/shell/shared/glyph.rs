@@ -164,7 +164,7 @@ impl Render for GlyphTooltip {
             .flex()
             .flex_row()
             .items_center()
-            .gap(space::s8())
+            .gap(space::s6())
             .px(space::s6())
             .pt(space::s4())
             .pb(space::s6())
@@ -188,6 +188,6 @@ impl Render for GlyphTooltip {
             );
         }
 
-        div().p(space::s8()).child(row)
+        div().p(space::s6()).child(row)
     }
 }

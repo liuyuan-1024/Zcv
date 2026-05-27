@@ -51,7 +51,7 @@ pub(crate) fn request(runtime: LanguageServersRuntime) -> SurfaceRequest {
         placement: SurfacePlacement {
             invoker_point: SurfaceInvokerPoint::TopLeft,
             corner: Corner::BottomLeft,
-            offset: point(px(0.0), -space::s8()),
+            offset: point(px(0.0), -space::s6()),
             fallback_position: point(px(48.0), px(540.0)),
         },
         focus_on_open: Some(focus),
@@ -62,7 +62,7 @@ pub(crate) fn request(runtime: LanguageServersRuntime) -> SurfaceRequest {
 fn render(focus: &FocusHandle) -> Div {
     div()
         .w(px(280.0))
-        .p(space::s12())
+        .p(space::s6())
         .rounded(radius::r4())
         .border_1()
         .border_color(color::gray::s05())
@@ -77,8 +77,6 @@ fn render(focus: &FocusHandle) -> Div {
         )
         .child(
             div()
-                .mt(space::s12())
-                .p(space::s8())
                 .rounded(radius::r4())
                 .bg(color::gray::s04())
                 .text_size(typography::ui())

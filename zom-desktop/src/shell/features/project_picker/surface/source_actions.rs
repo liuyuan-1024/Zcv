@@ -9,7 +9,7 @@ pub(super) fn render(mode: ProjectPickerMode, actions: &ProjectPickerActions) ->
     div()
         .flex()
         .flex_col()
-        .gap(space::s4())
+        .p(space::s6())
         .child(source_action_row(
             command_title(actions, project_picker_commands::OPEN_LOCAL_PROJECT),
             command_shortcut(actions, project_picker_commands::OPEN_LOCAL_PROJECT),

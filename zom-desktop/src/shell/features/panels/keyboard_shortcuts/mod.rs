@@ -121,11 +121,10 @@ fn render_row(row: ShortcutRow) -> Div {
         .flex()
         .flex_col()
         .w_full()
-        .gap(space::s4())
+        .gap(space::s6())
         .border_b_1()
         .border_color(color::gray::s05())
-        .px(space::s8())
-        .py(space::s8())
+        .p(space::s6())
         .child(
             div()
                 .flex()
@@ -133,7 +132,7 @@ fn render_row(row: ShortcutRow) -> Div {
                 .items_center()
                 .justify_between()
                 .w_full()
-                .gap(space::s8())
+                .gap(space::s6())
                 .child(
                     div()
                         .flex_1()

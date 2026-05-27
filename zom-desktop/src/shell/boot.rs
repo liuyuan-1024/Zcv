@@ -22,7 +22,7 @@ pub fn run(app: App) {
                 .add_fonts(embedded_fonts())
                 .expect("内置字体应能注册到 GPUI text system");
 
-            let bounds = Bounds::centered(None, size(px(900.0), px(850.0)), cx);
+            let bounds = Bounds::centered(None, size(px(850.0), px(900.0)), cx);
 
             let window = cx
                 .open_window(

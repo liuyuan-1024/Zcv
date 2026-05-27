@@ -75,7 +75,7 @@ fn editor_surface(slot: &Rc<TextEditorSlot>) -> Div {
         .overflow_hidden()
         .rounded(theme::radius::r4())
         .bg(color::gray::s01())
-        .p(space::s12())
+        .p(space::s6())
         .font(typography::editor_font())
         .line_height(typography::editor_line())
         .text_size(typography::editor())

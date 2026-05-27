@@ -18,7 +18,7 @@ pub(crate) use effects::try_apply_effect;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{Context, Div, FocusHandle, IntoElement, MouseButton, Window, div, prelude::*, px};
+use gpui::{Context, Div, FocusHandle, IntoElement, MouseButton, Window, div, prelude::*};
 use zom_command::commands::search;
 
 use crate::app::App;
@@ -181,45 +181,45 @@ fn search_controls(
     div()
         .flex()
         .flex_col()
-        .gap(space::s8())
+        .gap(space::s6())
         .border_b_1()
         .border_color(color::gray::s05())
-        .px(space::s4())
-        .pt(space::s4())
-        .pb(space::s8())
+        .p(space::s6())
         .child(search_row(
-            "查找",
-            "搜索...",
+            "查找...",
             query_focus,
             key_request,
             query_slot,
             state.query.text().is_empty(),
             vec![
                 hit_count_badge(state.hit_count),
-                option_toggle(
+                Glyph::icon(
                     "search-case-sensitive",
                     CASE_SENSITIVE_ICON,
-                    search::TOGGLE_CASE_SENSITIVE,
-                    state.options.case_sensitive,
-                    shortcuts,
-                    titles,
-                ),
-                option_toggle(
+                    titles(search::TOGGLE_CASE_SENSITIVE)
+                        .unwrap_or_else(|| search::TOGGLE_CASE_SENSITIVE.to_string()),
+                )
+                .hint(shortcuts(search::TOGGLE_CASE_SENSITIVE))
+                .active(state.options.case_sensitive)
+                .render(),
+                Glyph::icon(
                     "search-whole-word",
                     WHOLE_WORD_ICON,
-                    search::TOGGLE_WHOLE_WORD,
-                    state.options.whole_word,
-                    shortcuts,
-                    titles,
-                ),
-                option_toggle(
+                    titles(search::TOGGLE_WHOLE_WORD)
+                        .unwrap_or_else(|| search::TOGGLE_WHOLE_WORD.to_string()),
+                )
+                .hint(shortcuts(search::TOGGLE_WHOLE_WORD))
+                .active(state.options.whole_word)
+                .render(),
+                Glyph::icon(
                     "search-regex",
                     REGEX_ICON,
-                    search::TOGGLE_REGEX,
-                    state.options.regex,
-                    shortcuts,
-                    titles,
-                ),
+                    titles(search::TOGGLE_REGEX)
+                        .unwrap_or_else(|| search::TOGGLE_REGEX.to_string()),
+                )
+                .hint(shortcuts(search::TOGGLE_REGEX))
+                .active(state.options.regex)
+                .render(),
             ],
             vec![
                 Glyph::icon(
@@ -242,8 +242,7 @@ fn search_controls(
             ],
         ))
         .child(replace_row(
-            "替换",
-            "替换..",
+            "替换...",
             replacement_focus,
             key_request,
             replacement_slot,
@@ -276,47 +275,19 @@ fn search_controls(
 /// 由 SearchModel::state() 从 active buffer 的 BufferSearch 读出真实数据。
 fn hit_count_badge(hit_count: Option<HitCount>) -> gpui::AnyElement {
     let (text, color) = match hit_count {
-        Some(HitCount { total: 0, .. }) | None => ("0 / 0".to_string(), color::gray::s07()),
-        Some(HitCount { current, total }) => (format!("{current} / {total}"), color::gray::s09()),
+        Some(HitCount { total: 0, .. }) | None => ("0/0".to_string(), color::gray::s07()),
+        Some(HitCount { current, total }) => (format!("{current}/{total}"), color::gray::s09()),
     };
     div()
         .flex()
         .items_center()
-        .px(space::s4())
         .text_color(color)
         .text_size(typography::ui())
         .child(text)
         .into_any_element()
 }
 
-fn option_toggle(
-    id: &'static str,
-    icon: &'static str,
-    command_id: &'static str,
-    active: bool,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
-) -> gpui::AnyElement {
-    let title = titles(command_id).unwrap_or_else(|| command_id.to_string());
-
-    div()
-        .size(px(24.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(radius::r4())
-        .child(
-            Glyph::icon(id, icon, title)
-                .hint(shortcuts(command_id))
-                .active(active)
-                .icon_size(px(14.0))
-                .render(),
-        )
-        .into_any_element()
-}
-
 fn search_row(
-    label: &'static str,
     placeholder: &'static str,
     focus: &FocusHandle,
     key_request: &KeyRequest,
@@ -325,7 +296,7 @@ fn search_row(
     input_actions: Vec<gpui::AnyElement>,
     actions: Vec<gpui::AnyElement>,
 ) -> Div {
-    let mut action_group = div().flex().flex_row().items_center().gap(space::s4());
+    let mut action_group = div().flex().flex_row().items_center().gap(space::s6());
     for action in actions {
         action_group = action_group.child(action);
     }
@@ -334,9 +305,8 @@ fn search_row(
         .flex()
         .flex_row()
         .items_center()
-        .gap(space::s4())
-        .child(row_label(label))
-        .child(search_input_with_actions(
+        .gap(space::s6())
+        .child(input_box_with_actions(
             placeholder,
             focus,
             key_request,
@@ -348,7 +318,6 @@ fn search_row(
 }
 
 fn replace_row(
-    label: &'static str,
     placeholder: &'static str,
     focus: &FocusHandle,
     key_request: &KeyRequest,
@@ -356,7 +325,7 @@ fn replace_row(
     show_placeholder: bool,
     actions: Vec<gpui::AnyElement>,
 ) -> Div {
-    let mut action_group = div().flex().flex_row().items_center().gap(space::s4());
+    let mut action_group = div().flex().flex_row().items_center().gap(space::s6());
     for action in actions {
         action_group = action_group.child(action);
     }
@@ -365,9 +334,8 @@ fn replace_row(
         .flex()
         .flex_row()
         .items_center()
-        .gap(space::s4())
-        .child(row_label(label))
-        .child(search_input(
+        .gap(space::s6())
+        .child(base_input_box(
             placeholder,
             focus,
             key_request,
@@ -377,24 +345,7 @@ fn replace_row(
         .child(action_group)
 }
 
-fn row_label(label: &'static str) -> Div {
-    div()
-        .flex_shrink_0()
-        .text_color(color::gray::s08())
-        .child(label)
-}
-
-fn search_input(
-    placeholder: &'static str,
-    focus: &FocusHandle,
-    key_request: &KeyRequest,
-    slot: &Rc<TextEditorSlot>,
-    show_placeholder: bool,
-) -> Div {
-    search_input_base(placeholder, focus, key_request, slot, show_placeholder)
-}
-
-fn search_input_with_actions(
+fn input_box_with_actions(
     placeholder: &'static str,
     focus: &FocusHandle,
     key_request: &KeyRequest,
@@ -402,15 +353,15 @@ fn search_input_with_actions(
     show_placeholder: bool,
     actions: Vec<gpui::AnyElement>,
 ) -> Div {
-    let mut action_group = div().flex().flex_row().items_center().gap(space::s4());
+    let mut action_group = div().flex().flex_row().items_center().gap(space::s6());
     for action in actions {
         action_group = action_group.child(action);
     }
 
-    search_input_base(placeholder, focus, key_request, slot, show_placeholder).child(action_group)
+    base_input_box(placeholder, focus, key_request, slot, show_placeholder).child(action_group)
 }
 
-fn search_input_base(
+fn base_input_box(
     placeholder: &'static str,
     focus: &FocusHandle,
     key_request: &KeyRequest,
@@ -420,18 +371,16 @@ fn search_input_base(
     let focus_for_click = focus.clone();
     let key_request = Rc::clone(key_request);
     div()
-        .h(px(28.0))
         .flex_1()
         .flex()
         .items_center()
         .justify_between()
-        .gap(space::s4())
         .overflow_hidden()
-        .rounded(radius::r4())
+        .p(space::s6())
         .border_1()
+        .rounded(radius::r4())
         .border_color(color::gray::s05())
         .bg(color::gray::s01())
-        .px(space::s4())
         .text_color(color::gray::s08())
         .track_focus(focus)
         .tab_index(0)
@@ -451,15 +400,11 @@ fn search_input_base(
                 .flex()
                 .items_center()
                 .overflow_hidden()
-                .child(search_editor(slot, show_placeholder, placeholder)),
+                .child(editor(slot, show_placeholder, placeholder)),
         )
 }
 
-fn search_editor(
-    slot: &Rc<TextEditorSlot>,
-    show_placeholder: bool,
-    placeholder: &'static str,
-) -> Div {
+fn editor(slot: &Rc<TextEditorSlot>, show_placeholder: bool, placeholder: &'static str) -> Div {
     let mut editor = div()
         .relative()
         .h(typography::ui_line())

@@ -14,7 +14,12 @@ pub(super) fn render(
     query_is_empty: bool,
     actions: &ProjectPickerActions,
 ) -> Div {
-    let mut list = div().flex().flex_col().gap(space::s4());
+    let mut list = div()
+        .flex()
+        .flex_col()
+        .p(space::s6())
+        .border_b_1()
+        .border_color(color::gray::s05());
     if mode == ProjectPickerMode::CloneGit {
         return list.child(clone_hint());
     }
@@ -58,8 +63,6 @@ fn project_row(
         .flex()
         .flex_row()
         .items_center()
-        .gap(space::s4())
-        .px(space::s4())
         .rounded(radius::r2())
         .border_1()
         .border_color(border)

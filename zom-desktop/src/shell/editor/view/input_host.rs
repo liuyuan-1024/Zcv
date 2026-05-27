@@ -12,7 +12,6 @@ use gpui::{
 
 use crate::app::App;
 use crate::shell::editor::input::{CaretLayout, EditorInput};
-use crate::shell::editor::target::TextTargetId;
 
 /// element paint 阶段传给 input hook 的几何信息。
 ///
@@ -40,11 +39,10 @@ pub(crate) struct EditorInputHost {
 impl EditorInputHost {
     pub(crate) fn new<T>(
         app: Rc<RefCell<App>>,
-        target: TextTargetId,
         focus: FocusHandle,
         cx: &mut gpui::Context<T>,
     ) -> Self {
-        let input = cx.new(|_| EditorInput::new(app, target));
+        let input = cx.new(|_| EditorInput::new(app));
         Self { focus, input }
     }
 

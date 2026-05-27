@@ -14,6 +14,7 @@ use gpui::{
 };
 
 use crate::app::App;
+use crate::focus::{AppFocus, ProjectPickerFocus};
 use crate::shell::normalized_chord;
 use crate::shell::shared::theme::{color, radius, space};
 use crate::shell::surfaces::{
@@ -48,6 +49,15 @@ impl ProjectPickerRuntime {
         cx: &mut Context<T>,
     ) {
         let focus = self.focus.clone();
+        let focus_on_focus = focus.clone();
+        let app_on_focus = Rc::clone(&app);
+        cx.on_focus(&focus_on_focus, window, move |_, _, cx| {
+            app_on_focus
+                .borrow_mut()
+                .request_focus_from_shell(AppFocus::project_picker(ProjectPickerFocus::Query));
+            cx.notify();
+        })
+        .detach();
         cx.on_blur(&focus, window, move |_, _, cx| {
             surfaces.update(cx, |surfaces, cx| {
                 if surfaces.is_active(SurfaceId::ProjectPicker) {

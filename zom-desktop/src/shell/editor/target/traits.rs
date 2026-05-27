@@ -13,20 +13,14 @@
 
 use zom_command::{EditTarget, KeyContext};
 
+use crate::focus::AppFocus;
 use crate::shell::editor::input::{ImeQueryTarget, ImeTarget};
 use crate::shell::editor::snapshot::EditorSnapshot;
 
-use super::TextTargetId;
-
 /// 只读侧：是哪个 target、当前是否活跃、给路由用的查询能力。
 pub(crate) trait TextTargetQuery {
-    fn target_id(&self) -> TextTargetId;
-
-    /// 当前是否处于"被聚焦、能接收输入"的活跃态。
-    ///
-    /// 优先级由路由按 owner 数组顺序决定 —— 第一个 `true` 的 owner 即为
-    /// 当前焦点目标。主编辑区作为兜底，只要有活动视图就视为活跃。
-    fn is_active(&self) -> bool;
+    /// 这个 owner 是否承载指定的应用语义焦点。
+    fn accepts_focus(&self, focus: AppFocus) -> bool;
 
     fn snapshot(&self) -> EditorSnapshot;
 

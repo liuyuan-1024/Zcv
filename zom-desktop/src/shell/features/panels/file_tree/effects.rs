@@ -10,9 +10,11 @@ use gpui::Window;
 use zom_command::HostEffect;
 
 use crate::app::App;
+use crate::focus::{AppFocus, FileTreeFocus};
 use crate::shell::features::panels::PanelId;
 use crate::shell::features::panels::file_tree::FileTreeActivation;
-use crate::shell::view::focus::{FocusRouter, FocusTarget};
+use crate::shell::view::actions::request_focus;
+use crate::shell::view::focus::FocusProjection;
 use crate::shell::workbench::controller::WorkbenchController;
 
 /// 试着把 effect 当成"文件树相关"处理；返回 `true` 表示已认领。
@@ -20,7 +22,7 @@ pub(crate) fn try_apply_effect(
     effect: &HostEffect,
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
-    focus: &FocusRouter<'_>,
+    focus: &FocusProjection,
     window: &mut Window,
 ) -> bool {
     match effect {
@@ -36,7 +38,7 @@ pub(crate) fn try_apply_effect(
             // 涉及 window，model 不该感知 UI。
             let consumed = app.borrow_mut().file_tree_escape();
             if !consumed {
-                focus.move_to(FocusTarget::Editor, window);
+                request_focus(app, focus, AppFocus::editor(), window);
             }
         }
         HostEffect::FileTreeCollapseOrParent => {
@@ -48,7 +50,7 @@ pub(crate) fn try_apply_effect(
         HostEffect::FileTreeActivate => {
             let activation = app.borrow_mut().file_tree_activate();
             if matches!(activation, FileTreeActivation::OpenedFile) {
-                focus.move_to(FocusTarget::Editor, window);
+                request_focus(app, focus, AppFocus::editor(), window);
             }
         }
         HostEffect::FileTreeBeginNewEntry => {
@@ -60,13 +62,18 @@ pub(crate) fn try_apply_effect(
             // 不假设触发命令前文件树就在焦点：用户可能从命令面板、菜单或
             // 编辑器里发起，先 show_panel 把面板顶起，再聚一次焦保险。
             workbench.borrow_mut().show_panel(PanelId::FileTree);
-            focus.move_to(FocusTarget::Panel(PanelId::FileTree), window);
+            request_focus(
+                app,
+                focus,
+                AppFocus::file_tree(FileTreeFocus::NewEntryName),
+                window,
+            );
         }
         HostEffect::FileTreeCommitNewEntry => {
             // 新建文件会被打开，焦点随之切到编辑器；新建目录留在文件树。
             let activation = app.borrow_mut().file_tree_commit_new_entry();
             if matches!(activation, FileTreeActivation::OpenedFile) {
-                focus.move_to(FocusTarget::Editor, window);
+                request_focus(app, focus, AppFocus::editor(), window);
             }
         }
         HostEffect::FileTreeCancelNewEntry => {

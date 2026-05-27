@@ -10,29 +10,33 @@ use gpui::Window;
 use zom_command::HostEffect;
 
 use crate::app::App;
-use crate::shell::features::panels::{PanelId, PanelRuntimes};
-use crate::shell::view::focus::{FocusRouter, FocusTarget};
+use crate::focus::{AppFocus, PanelFocus, SearchField};
+use crate::shell::features::panels::PanelId;
+use crate::shell::view::actions::request_focus;
+use crate::shell::view::focus::FocusProjection;
 use crate::shell::workbench::controller::WorkbenchController;
 
 pub(crate) fn try_apply_effect(
     effect: &HostEffect,
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
-    panel_runtimes: &PanelRuntimes,
-    focus: &FocusRouter<'_>,
+    _panel_runtimes: &crate::shell::features::panels::PanelRuntimes,
+    focus: &FocusProjection,
     window: &mut Window,
 ) -> bool {
     match effect {
         HostEffect::SearchActivate => {
-            activate_search(app, workbench, panel_runtimes, focus, window);
+            activate_search(app, workbench, focus, window);
         }
         HostEffect::SearchFocusNextField => {
-            focus_search_field(panel_runtimes, FocusDirection::Next, window);
+            focus_search_field(app, focus, FocusDirection::Next, window);
         }
         HostEffect::SearchFocusPreviousField => {
-            focus_search_field(panel_runtimes, FocusDirection::Previous, window);
+            focus_search_field(app, focus, FocusDirection::Previous, window);
         }
-        HostEffect::SearchFocusEditor => focus.move_to(FocusTarget::Editor, window),
+        HostEffect::SearchFocusEditor => {
+            request_focus(app, focus, AppFocus::editor(), window);
+        }
         HostEffect::SearchToggleOption(option) => {
             app.borrow_mut().search_toggle_option(*option);
             window.refresh();
@@ -71,8 +75,7 @@ pub(crate) fn try_apply_effect(
 fn activate_search(
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
-    panel_runtimes: &PanelRuntimes,
-    focus: &FocusRouter<'_>,
+    focus: &FocusProjection,
     window: &mut Window,
 ) {
     let panel = PanelId::Search;
@@ -82,29 +85,23 @@ fn activate_search(
         // 隐藏 → 显示 + 聚焦
         workbench.borrow_mut().show_panel(panel);
         app.borrow_mut().on_search_panel_opened();
-        focus.move_to(FocusTarget::Panel(panel), window);
+        request_focus(app, focus, AppFocus::search(SearchField::Query), window);
         window.refresh();
         return;
     }
 
-    // 已显示：用 query / replacement 两个焦点宿主判定"焦点是否在搜索面板"。
-    // 只问 FocusRouter 会漏 replacement —— router 只认面板的主 focus handle。
-    let focus_in_panel = panel_runtimes
-        .search_query_focus_handle()
-        .is_focused(window)
-        || panel_runtimes
-            .search_replacement_focus_handle()
-            .is_focused(window);
+    // 已显示：query / replacement 任一输入框聚焦都算"焦点在搜索面板"。
+    let focus_in_panel = focus.is_at_panel(panel, window);
 
     if focus_in_panel {
         // 已显示 + 焦点在面板 → 收起，焦点回编辑器；同时清掉活动 buffer 的
         // search 高亮，标记 panel 关闭。
         workbench.borrow_mut().hide_panel(panel);
         app.borrow_mut().on_search_panel_closed();
-        focus.move_to(FocusTarget::Editor, window);
+        request_focus(app, focus, AppFocus::editor(), window);
     } else {
         // 已显示 + 焦点不在 → 把焦点搬过去
-        focus.move_to(FocusTarget::Panel(panel), window);
+        request_focus(app, focus, AppFocus::search(SearchField::Query), window);
     }
     window.refresh();
 }
@@ -116,19 +113,23 @@ enum FocusDirection {
 }
 
 fn focus_search_field(
-    panel_runtimes: &PanelRuntimes,
+    app: &Rc<RefCell<App>>,
+    focus: &FocusProjection,
     direction: FocusDirection,
     window: &mut Window,
 ) {
-    let query = panel_runtimes.search_query_focus_handle();
-    let replacement = panel_runtimes.search_replacement_focus_handle();
-    let target = match direction {
-        FocusDirection::Next if query.is_focused(window) => replacement,
-        FocusDirection::Next if replacement.is_focused(window) => query,
-        FocusDirection::Previous if replacement.is_focused(window) => query,
-        FocusDirection::Previous if query.is_focused(window) => replacement,
-        FocusDirection::Next | FocusDirection::Previous => query,
+    let target = match (direction, app.borrow().focus().current()) {
+        (FocusDirection::Next, AppFocus::Panel(PanelFocus::Search(SearchField::Query))) => {
+            AppFocus::search(SearchField::Replacement)
+        }
+        (
+            FocusDirection::Previous,
+            AppFocus::Panel(PanelFocus::Search(SearchField::Replacement)),
+        ) => AppFocus::search(SearchField::Query),
+        (FocusDirection::Next | FocusDirection::Previous, _) => {
+            AppFocus::search(SearchField::Query)
+        }
     };
-    window.focus(&target);
+    request_focus(app, focus, target, window);
     window.refresh();
 }

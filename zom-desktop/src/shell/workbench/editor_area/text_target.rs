@@ -18,9 +18,10 @@ use zom_command::{EditTarget, KeyContext};
 use zom_view::ViewSet;
 use zom_workspace::Workspace;
 
+use crate::focus::AppFocus;
 use crate::shell::editor::{
-    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, RevealHint, TextTargetId,
-    TextTargetOwner, TextTargetQuery, build_snapshot,
+    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, RevealHint, TextTargetOwner,
+    TextTargetQuery, build_snapshot,
 };
 
 /// 视口尚未由 element 反算写回时（即 `ViewportState.visible_line_count == 0`，
@@ -32,43 +33,25 @@ const DEFAULT_VISIBLE_LINES: u64 = 200;
 
 /// 写入侧：路由要 `&mut` 时构造它。
 pub(crate) struct MainEditorOwner<'a> {
-    target_id: TextTargetId,
     workspace: &'a mut Workspace,
     views: &'a mut ViewSet,
 }
 
 /// 只读侧：路由非可变路径时构造它。
 pub(crate) struct MainEditorOwnerRef<'a> {
-    target_id: TextTargetId,
     workspace: &'a Workspace,
     views: &'a ViewSet,
 }
 
 impl<'a> MainEditorOwner<'a> {
-    pub(crate) fn new(
-        target_id: TextTargetId,
-        workspace: &'a mut Workspace,
-        views: &'a mut ViewSet,
-    ) -> Self {
-        Self {
-            target_id,
-            workspace,
-            views,
-        }
+    pub(crate) fn new(workspace: &'a mut Workspace, views: &'a mut ViewSet) -> Self {
+        Self { workspace, views }
     }
 }
 
 impl<'a> MainEditorOwnerRef<'a> {
-    pub(crate) fn new(
-        target_id: TextTargetId,
-        workspace: &'a Workspace,
-        views: &'a ViewSet,
-    ) -> Self {
-        Self {
-            target_id,
-            workspace,
-            views,
-        }
+    pub(crate) fn new(workspace: &'a Workspace, views: &'a ViewSet) -> Self {
+        Self { workspace, views }
     }
 }
 
@@ -126,12 +109,8 @@ fn ime_query_from_active_view<'a>(
 }
 
 impl<'a> TextTargetQuery for MainEditorOwner<'a> {
-    fn target_id(&self) -> TextTargetId {
-        self.target_id
-    }
-
-    fn is_active(&self) -> bool {
-        self.views.active_view().is_some()
+    fn accepts_focus(&self, focus: AppFocus) -> bool {
+        matches!(focus, AppFocus::Editor(_))
     }
 
     fn snapshot(&self) -> EditorSnapshot {
@@ -171,12 +150,8 @@ impl<'a> TextTargetOwner for MainEditorOwner<'a> {
 }
 
 impl<'a> TextTargetQuery for MainEditorOwnerRef<'a> {
-    fn target_id(&self) -> TextTargetId {
-        self.target_id
-    }
-
-    fn is_active(&self) -> bool {
-        self.views.active_view().is_some()
+    fn accepts_focus(&self, focus: AppFocus) -> bool {
+        matches!(focus, AppFocus::Editor(_))
     }
 
     fn snapshot(&self) -> EditorSnapshot {

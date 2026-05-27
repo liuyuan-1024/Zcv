@@ -1,77 +1,141 @@
-//! ShellView 焦点路由。
+//! Shell 焦点投影。
 //!
-//! 窗口里永远恰好有一个被聚焦的元素 ——「获得 / 失去焦点」只是焦点从一处移到
-//! 另一处的两个视角。本模块把 actions 层的焦点移动收敛到唯一出口：workbench
-//! 焦点目标的解析与 `window.focus` 调用都在这里。
+//! App 持有唯一语义焦点 [`AppFocus`]；GPUI 的 [`FocusHandle`] 只是它在
+//! 窗口系统里的投影。本模块只做两件事：
 //!
-//! 不含 surface：surface 打开时捕获、关闭时归还的那枚 handle 由 surface 流程
-//! （`SurfaceManager` / `dismiss_surface`）自己保管，是另一处自洽的焦点中枢。
+//! - App 请求焦点变化时，把 [`AppFocus`] 投影到对应 [`FocusHandle`]。
+//! - GPUI 当前焦点变化时，把 [`FocusHandle`] 反查成一个粗粒度 [`AppFocus`]，
+//!   再交给 App 根据运行态细化（例如文件树 pending 输入态）。
+//!
+//! 它不决定业务焦点，也不缓存当前焦点。
 
 use gpui::{FocusHandle, Window};
 
+use crate::focus::{
+    AppFocus, FileTreeFocus, PanelFocus, ProjectPickerFocus, SearchField, SurfaceFocus,
+};
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
 use crate::shell::features::panels::{PanelId, PanelRuntimes, focus_panel_handle};
 
-/// 焦点可以去的 workbench 目标。
-#[derive(Clone, Copy)]
-pub(crate) enum FocusTarget {
-    Panel(PanelId),
-    Editor,
+/// `AppFocus <-> FocusHandle` 的 shell-only 投影表。
+#[derive(Clone, Default)]
+pub(crate) struct FocusProjection {
+    entries: Vec<(FocusHandle, AppFocus)>,
 }
 
-/// 焦点路由器：持有解析各目标所需的运行态引用，是 actions 层移动焦点的唯一出口。
-pub(crate) struct FocusRouter<'a> {
-    panel_runtimes: &'a PanelRuntimes,
-    file_tree: &'a FileTreeRuntime,
-    editor: &'a FocusHandle,
+impl FocusProjection {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn register(&mut self, handle: FocusHandle, focus: AppFocus) {
+        self.entries.push((handle, focus));
+    }
+
+    /// 当前 GPUI 焦点投影出的语义焦点。返回值是 shell 能从 handle 看出的
+    /// 粗粒度焦点；App 会在 `request_focus_from_shell` 里按自身运行态细化。
+    pub(crate) fn current_focus(&self, window: &Window) -> AppFocus {
+        self.entries
+            .iter()
+            .find(|(handle, _)| handle.is_focused(window))
+            .map(|(_, focus)| *focus)
+            .unwrap_or(AppFocus::None)
+    }
+
+    /// 把语义焦点投影到 GPUI。某些语义 leaf 共用一个宿主 handle，例如文件树
+    /// Navigate / NewEntryName / ConfirmDelete。
+    pub(crate) fn apply(&self, focus: AppFocus, window: &mut Window) {
+        let Some(handle) = self.handle_for(focus) else {
+            return;
+        };
+        window.focus(&handle);
+    }
+
+    pub(crate) fn apply_panel(&self, panel: PanelId, window: &mut Window) {
+        if let Some(handle) = self.handle_for(panel_default_focus(panel)) {
+            // panel 可能刚被 show_panel 显示，本帧尚未布局，下一帧再聚一次。
+            focus_panel_handle(handle, window, true);
+        }
+    }
+
+    pub(crate) fn is_at(&self, focus: AppFocus, window: &Window) -> bool {
+        self.handle_for(focus)
+            .is_some_and(|handle| handle.is_focused(window))
+    }
+
+    pub(crate) fn is_at_panel(&self, panel: PanelId, window: &Window) -> bool {
+        match panel {
+            PanelId::FileTree => [
+                AppFocus::file_tree(FileTreeFocus::Navigate),
+                AppFocus::file_tree(FileTreeFocus::NewEntryName),
+                AppFocus::file_tree(FileTreeFocus::ConfirmDelete),
+            ]
+            .into_iter()
+            .any(|focus| self.is_at(focus, window)),
+            PanelId::Search => [
+                AppFocus::search(SearchField::Query),
+                AppFocus::search(SearchField::Replacement),
+            ]
+            .into_iter()
+            .any(|focus| self.is_at(focus, window)),
+            other => self.is_at(panel_default_focus(other), window),
+        }
+    }
+
+    fn handle_for(&self, focus: AppFocus) -> Option<FocusHandle> {
+        self.entries
+            .iter()
+            .find(|(_, registered)| registered.same_projection(focus))
+            .map(|(handle, _)| handle.clone())
+    }
 }
 
-impl<'a> FocusRouter<'a> {
-    pub(crate) fn new(
-        panel_runtimes: &'a PanelRuntimes,
-        file_tree: &'a FileTreeRuntime,
-        editor: &'a FocusHandle,
-    ) -> Self {
-        Self {
-            panel_runtimes,
-            file_tree,
-            editor,
+pub(crate) fn panel_default_focus(panel: PanelId) -> AppFocus {
+    match panel {
+        PanelId::FileTree => AppFocus::file_tree(FileTreeFocus::Navigate),
+        PanelId::VersionControl => AppFocus::Panel(PanelFocus::VersionControl),
+        PanelId::Outline => AppFocus::Panel(PanelFocus::Outline),
+        PanelId::Search => AppFocus::search(SearchField::Query),
+        PanelId::Terminal => AppFocus::Panel(PanelFocus::Terminal),
+        PanelId::Debug => AppFocus::Panel(PanelFocus::Debug),
+        PanelId::KeyboardShortcuts => AppFocus::Panel(PanelFocus::KeyboardShortcuts),
+    }
+}
+
+pub(crate) fn projection_from_runtimes(
+    editor: FocusHandle,
+    panel_runtimes: &PanelRuntimes,
+    file_tree: &FileTreeRuntime,
+    project_picker: FocusHandle,
+) -> FocusProjection {
+    let mut projection = FocusProjection::new();
+    projection.register(editor, AppFocus::editor());
+    projection.register(
+        file_tree.focus_handle(),
+        AppFocus::file_tree(FileTreeFocus::Navigate),
+    );
+    projection.register(
+        panel_runtimes.search_query_focus_handle(),
+        AppFocus::search(SearchField::Query),
+    );
+    projection.register(
+        panel_runtimes.search_replacement_focus_handle(),
+        AppFocus::search(SearchField::Replacement),
+    );
+    projection.register(
+        project_picker,
+        AppFocus::Surface(SurfaceFocus::ProjectPicker(ProjectPickerFocus::Query)),
+    );
+    for panel in [
+        PanelId::VersionControl,
+        PanelId::Outline,
+        PanelId::Terminal,
+        PanelId::Debug,
+        PanelId::KeyboardShortcuts,
+    ] {
+        if let Some(handle) = panel_runtimes.focus_handle(panel) {
+            projection.register(handle, panel_default_focus(panel));
         }
     }
-
-    /// 把焦点移到目标处。骨架阶段尚无焦点宿主的 panel 静默跳过。
-    pub(crate) fn move_to(&self, target: FocusTarget, window: &mut Window) {
-        match target {
-            FocusTarget::Panel(panel) => {
-                if let Some(focus) = self.panel_focus_handle(panel) {
-                    // panel 可能刚被 show_panel 显示、本帧尚未布局，下一帧再聚一次。
-                    focus_panel_handle(focus, window, true);
-                }
-            }
-            FocusTarget::Editor => window.focus(self.editor),
-        }
-    }
-
-    /// 焦点当前是否就在目标处。
-    pub(crate) fn is_at(&self, target: FocusTarget, window: &Window) -> bool {
-        self.resolve(target)
-            .is_some_and(|focus| focus.is_focused(window))
-    }
-
-    fn resolve(&self, target: FocusTarget) -> Option<FocusHandle> {
-        match target {
-            FocusTarget::Panel(panel) => self.panel_focus_handle(panel),
-            FocusTarget::Editor => Some(self.editor.clone()),
-        }
-    }
-
-    /// 解析 panel 的焦点宿主 handle：FileTree 的在它 runtime 上，其余在
-    /// `PanelRuntimes` 里；骨架阶段尚无焦点的 panel 返回 None。
-    fn panel_focus_handle(&self, panel: PanelId) -> Option<FocusHandle> {
-        if panel == PanelId::FileTree {
-            Some(self.file_tree.focus_handle())
-        } else {
-            self.panel_runtimes.focus_handle(panel)
-        }
-    }
+    projection
 }

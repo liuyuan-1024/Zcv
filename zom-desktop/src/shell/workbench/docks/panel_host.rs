@@ -28,7 +28,7 @@ pub(crate) struct PanelContext<'a> {
     pub(crate) search_query_slot: &'a Rc<TextEditorSlot>,
     pub(crate) search_replacement_slot: &'a Rc<TextEditorSlot>,
     pub(crate) panel_runtimes: &'a PanelRuntimes,
-    pub(crate) panel_key_request: &'a KeyRequest,
+    pub(crate) key_request: &'a KeyRequest,
     pub(crate) shortcut_lookup: &'a ShortcutLookup,
     pub(crate) command_title_lookup: &'a CommandTitleLookup,
     pub(crate) command_catalog_lookup: &'a CommandCatalogLookup,
@@ -48,7 +48,7 @@ impl PanelHost {
                 .panel_runtimes
                 .render(
                     id,
-                    ctx.panel_key_request,
+                    ctx.key_request,
                     ctx.search_state,
                     ctx.search_query_slot,
                     ctx.search_replacement_slot,

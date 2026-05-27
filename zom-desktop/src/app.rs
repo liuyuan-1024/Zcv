@@ -19,10 +19,11 @@ use zom_engine::{Selection, SelectionSet, TextRange};
 use zom_view::{RevealKind, ViewSet};
 use zom_workspace::Workspace;
 
-use crate::shell::CommandCatalogItem;
-use crate::shell::editor::{
-    EditorRouter, EditorRouterMut, TextTargetId, TextTargetIds, TextTargetOwner, TextTargetQuery,
+use crate::focus::{
+    AppFocus, FileTreeFocus, FocusStore, PanelFocus, ProjectPickerFocus, SurfaceFocus,
 };
+use crate::shell::CommandCatalogItem;
+use crate::shell::editor::{EditorRouter, EditorRouterMut, TextTargetOwner, TextTargetQuery};
 use crate::shell::features::panels::file_tree::{FileTreeActivation, FileTreeModel, FileTreeState};
 use crate::shell::features::panels::search::{SearchModel, SearchState};
 use crate::shell::features::project_picker::{
@@ -39,20 +40,6 @@ pub(crate) struct KeyDispatchOutcome {
     pub(crate) effects: Vec<HostEffect>,
 }
 
-/// 一次按键来自哪个交互面。组合根据此 + 运行态算出 keymap 上下文栈，
-/// 命令与快捷键的定义本身全在 zom-command。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum KeySurface {
-    /// 主编辑区。
-    Editor,
-    /// 普通面板。暂未接入专属键位时，只响应全局快捷键。
-    Panel,
-    /// 文件树面板（含新建条目输入态）。
-    FileTree,
-    /// 项目选择器浮面。
-    ProjectPicker,
-}
-
 pub struct App {
     registry: CommandRegistry,
     keymap: Keymap,
@@ -60,12 +47,9 @@ pub struct App {
     queue: CommandQueue,
     workspace: Workspace,
     views: ViewSet,
+    focus: FocusStore,
     project_root: Option<PathBuf>,
     recent_projects: RecentProjects,
-    /// 所有嵌入式文本目标 id 的注册表 —— 在 [`Self::new_with_recent_projects_path`]
-    /// 启动时一次性 allocate，feature 模型与 ShellView 装配 slot 时都从这里取。
-    /// 编辑器子系统不认识它，只把 id 当不透明值用。
-    text_target_ids: TextTargetIds,
     file_tree: FileTreeModel,
     project_picker: ProjectPickerModel,
     search: SearchModel,
@@ -95,7 +79,6 @@ impl App {
         commands::install_all(&mut registry, &mut keymap);
 
         let (workspace, views) = empty_workspace();
-        let ids = TextTargetIds::allocate();
 
         Self {
             registry,
@@ -104,20 +87,46 @@ impl App {
             queue: CommandQueue::new(),
             workspace,
             views,
+            focus: FocusStore::new(AppFocus::editor()),
             project_root: None,
             recent_projects: RecentProjects::load(path),
-            text_target_ids: ids,
-            file_tree: FileTreeModel::new(ids.file_tree_pending_name),
-            project_picker: ProjectPickerModel::new(ids.project_picker_query),
-            search: SearchModel::new(ids.search_query, ids.search_replacement),
+            file_tree: FileTreeModel::new(),
+            project_picker: ProjectPickerModel::new(),
+            search: SearchModel::new(),
             clipboard: Box::new(MockClipboard::new()),
         }
     }
 
-    /// 嵌入式文本目标 id 注册表 —— ShellView 装配 slot 时取；命令路由 / 测试比对
-    /// focused_field 时也用它。
-    pub(crate) fn text_target_ids(&self) -> TextTargetIds {
-        self.text_target_ids
+    pub(crate) fn focus(&self) -> &FocusStore {
+        &self.focus
+    }
+
+    pub(crate) fn request_focus(&mut self, next: AppFocus) {
+        let next = self.refine_focus(next);
+        self.focus.request(next);
+    }
+
+    pub(crate) fn request_focus_from_shell(&mut self, next: AppFocus) {
+        self.request_focus(next);
+    }
+
+    pub(crate) fn restore_previous_focus(&mut self) -> AppFocus {
+        self.focus.restore_previous()
+    }
+
+    fn refine_focus(&self, focus: AppFocus) -> AppFocus {
+        match focus {
+            AppFocus::Panel(PanelFocus::FileTree(_)) if self.file_tree.pending_delete_active() => {
+                AppFocus::file_tree(FileTreeFocus::ConfirmDelete)
+            }
+            AppFocus::Panel(PanelFocus::FileTree(_)) if self.file_tree.pending_active() => {
+                AppFocus::file_tree(FileTreeFocus::NewEntryName)
+            }
+            AppFocus::Panel(PanelFocus::FileTree(_)) => {
+                AppFocus::file_tree(FileTreeFocus::Navigate)
+            }
+            other => other,
+        }
     }
 
     /// 替换默认剪贴板端口。shell 启动时注入 `GpuiClipboard`，让 copy / cut /
@@ -168,10 +177,16 @@ impl App {
 
     pub(crate) fn project_picker_reset(&mut self, mode: ProjectPickerMode) {
         self.project_picker.reset(mode);
+        self.request_focus(AppFocus::project_picker(ProjectPickerFocus::Query));
     }
 
     pub(crate) fn project_picker_deactivate(&mut self) {
-        self.project_picker.deactivate();
+        if matches!(
+            self.focus.current(),
+            AppFocus::Surface(SurfaceFocus::ProjectPicker(_))
+        ) {
+            self.restore_previous_focus();
+        }
     }
 
     pub(crate) fn project_picker_state(&self) -> ProjectPickerState {
@@ -285,16 +300,14 @@ impl App {
 
     /// 处理一次归一化按键。
     ///
-    /// 宿主只传「按键来自哪个交互面」，由组合根按当前焦点 / 运行态算出
-    /// `KeyContext` 栈交给 keymap 解析 —— 命令与快捷键的定义全在 zom-command，
-    /// 宿主不持有任何 chord → 动作 的映射表。
+    /// 组合根按当前唯一焦点 / 运行态算出 `KeyContext` 栈交给 keymap 解析 ——
+    /// 命令与快捷键的定义全在 zom-command，宿主不持有任何 chord → 动作 的映射表。
     ///
     /// 文本输入不在这里 fallback：交给 GPUI 的 `EntityInputHandler` 路径，由
     /// 系统输入法或 NSTextInputClient 把文本喂给 `App::ime_*`。
     pub(crate) fn dispatch_key(
         &mut self,
         chord: String,
-        surface: KeySurface,
     ) -> Result<KeyDispatchOutcome, CommandError> {
         // 组合态下宿主完全让位给系统输入法：不解析、不消费、不 stop_propagation。
         // 一旦拦下某个键（如 Esc → ime_cancel），系统 IME 会话就和我们脱节，
@@ -307,7 +320,7 @@ impl App {
             });
         }
         let chord = KeyChord::new(chord)?;
-        let contexts = self.key_contexts(surface);
+        let contexts = self.key_contexts();
         match self.keymap.resolve(&[chord], &contexts) {
             KeymapResolution::Matched { command, args } => {
                 let effects = self.dispatch_command_id(command, args)?;
@@ -335,31 +348,36 @@ impl App {
     /// `composing` 恒为 `false`：`dispatch_key` 在组合态直接让位给系统输入法，
     /// 根本不会走到这里。组合上下文（`KeyContext::text_edit` 的第二参）保留
     /// 在签名里，待将来真有「宿主侧处理组合键」的需求再启用。
-    fn key_contexts(&self, surface: KeySurface) -> Vec<KeyContext> {
-        // 文本输入类 surface 的上下文栈，由当前聚焦的 owner 自己提供 ——
-        // 嵌入点活跃判定与栈组合都不再由编辑器子系统集中决定。
-        // 没有焦点 owner 时退回到"纯文本编辑 + 全局"——这只在没有任何活跃 view
-        // 时发生，与主编辑区的栈等价。
-        let focused_text_stack = || {
-            self.with_router(|router| router.focused_key_contexts())
-                .unwrap_or_else(|| vec![KeyContext::text_edit(true, false), KeyContext::global()])
+    fn key_contexts(&self) -> Vec<KeyContext> {
+        // 文本输入类焦点的上下文栈，由 AppFocus 精确查到的 owner 自己提供。
+        let text_stack_for = |focus| {
+            self.with_router(|router| router.key_contexts_for(focus))
+                .unwrap_or_else(|| vec![KeyContext::global()])
         };
-        match surface {
-            KeySurface::Editor => focused_text_stack(),
-            KeySurface::Panel if self.search.active() => focused_text_stack(),
-            KeySurface::Panel => vec![KeyContext::global()],
-            KeySurface::ProjectPicker if self.project_picker.active() => focused_text_stack(),
-            KeySurface::ProjectPicker => vec![KeyContext::project_picker(), KeyContext::global()],
-            KeySurface::FileTree if self.file_tree.pending_delete_active() => vec![
+        let focus = self.focus.current();
+        match focus {
+            AppFocus::None => vec![KeyContext::global()],
+            AppFocus::Editor(_) => text_stack_for(focus),
+            AppFocus::Panel(PanelFocus::Search(_)) => text_stack_for(focus),
+            AppFocus::Surface(SurfaceFocus::ProjectPicker(ProjectPickerFocus::Query)) => {
+                text_stack_for(focus)
+            }
+            AppFocus::Surface(SurfaceFocus::ProjectPicker(_)) => {
+                vec![KeyContext::project_picker(), KeyContext::global()]
+            }
+            AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::ConfirmDelete)) => vec![
                 // 删除确认弹窗打开中：只解析确认 / 取消，导航键全部冻结。
                 KeyContext::file_tree(FileTreeKeyMode::PendingDelete),
                 KeyContext::global(),
             ],
-            KeySurface::FileTree if self.file_tree.pending_active() => focused_text_stack(),
-            KeySurface::FileTree => vec![
+            AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::NewEntryName)) => {
+                text_stack_for(focus)
+            }
+            AppFocus::Panel(PanelFocus::FileTree(_)) => vec![
                 KeyContext::file_tree(FileTreeKeyMode::Navigate),
                 KeyContext::global(),
             ],
+            AppFocus::Panel(_) | AppFocus::Surface(_) => vec![KeyContext::global()],
         }
     }
 
@@ -369,7 +387,8 @@ impl App {
     /// 壳可能仍在。若空壳也算组合态，`dispatch_key` 会一直让位、keymap 再也
     /// 不接管，后续 Esc 永远到不了 `cancel_new_entry`。
     fn is_composing(&self) -> bool {
-        self.with_router(|router| router.is_composing())
+        let focus = self.focus.current();
+        self.with_router(|router| router.is_composing(focus))
     }
 
     /// 构造一次只读路由视图。
@@ -378,11 +397,7 @@ impl App {
     /// 后直接做 IME 查询 / focused target / snapshot 等 —— App 不再为每种查询
     /// 包一层方法。
     pub(crate) fn with_router<R>(&self, f: impl FnOnce(EditorRouter<'_>) -> R) -> R {
-        let main = MainEditorOwnerRef::new(
-            self.text_target_ids.main_editor,
-            &self.workspace,
-            &self.views,
-        );
+        let main = MainEditorOwnerRef::new(&self.workspace, &self.views);
         let search_query = self.search.query_owner();
         let search_replacement = self.search.replacement_owner();
         let owners: Vec<&dyn TextTargetQuery> = vec![
@@ -395,15 +410,16 @@ impl App {
         f(EditorRouter::new(owners))
     }
 
-    /// 构造一次可写路由视图。Owner 顺序即优先级：picker → file_tree pending →
-    /// 主编辑区。
+    /// 构造一次可写路由视图。
+    ///
+    /// Owners 通过 `accepts_focus` 对 [`AppFocus`] 精确匹配，各自覆盖 disjoint 的
+    /// focus 子集，vec 顺序与优先级无关。搜索面板在写路径由单个 `SearchActiveOwner`
+    /// 同时承担 Query / Replacement 两个 field——这是 `&mut self.search` 借用无法
+    /// 拆分导致的，不是优先级问题。
     pub(crate) fn with_router_mut<R>(&mut self, f: impl FnOnce(EditorRouterMut<'_>) -> R) -> R {
-        let mut main = MainEditorOwner::new(
-            self.text_target_ids.main_editor,
-            &mut self.workspace,
-            &mut self.views,
-        );
-        let mut search = self.search.active_owner();
+        let focus = self.focus.current();
+        let mut main = MainEditorOwner::new(&mut self.workspace, &mut self.views);
+        let mut search = self.search.active_owner(focus);
         let owners: Vec<&mut dyn TextTargetOwner> = vec![
             &mut self.project_picker as &mut dyn TextTargetOwner,
             &mut self.file_tree as &mut dyn TextTargetOwner,
@@ -471,14 +487,6 @@ impl App {
             }
         }
         state
-    }
-
-    pub(crate) fn search_activate(&mut self, target: TextTargetId) {
-        self.search.activate(target);
-    }
-
-    pub(crate) fn search_deactivate(&mut self, target: TextTargetId) {
-        self.search.deactivate(target);
     }
 
     /// 搜索面板刚被打开（mod-f 从隐藏切到显示）。标记 panel_open，下一次
@@ -622,18 +630,13 @@ impl App {
         self.queue.dispatch(id, args);
 
         let mut effects = EffectQueue::new();
-        // focused_field：当前活跃的内嵌输入框（picker > file_tree pending）。
-        // 主编辑区不在这里走 —— `CommandContext::edit_target` 在 `focused_field`
-        // 为 `None` 时自然 fallback 到 workspace + view，所以这里只问内嵌 owner。
-        // 直接对 self 做分字段借用，避免引入封装方法把借用扩到整个 self。
-        let focused_field = if self.project_picker.is_active() {
-            self.project_picker.edit_target()
-        } else if self.file_tree.is_active() {
-            self.file_tree.edit_target()
-        } else if self.search.active() {
-            self.search.edit_target()
-        } else {
-            None
+        let focus = self.focus.current();
+
+        let focused_field = match self.focus.current() {
+            AppFocus::Surface(SurfaceFocus::ProjectPicker(_)) => self.project_picker.edit_target(),
+            AppFocus::Panel(PanelFocus::FileTree(_)) => self.file_tree.edit_target(),
+            AppFocus::Panel(PanelFocus::Search(_)) => self.search.edit_target_for_focus(focus),
+            _ => None,
         };
         let mut context = CommandContext {
             workspace: &mut self.workspace,
@@ -647,9 +650,10 @@ impl App {
 
         let host_effects = effects.drain();
         result?;
-        if self.project_picker.active() {
+        if matches!(focus, AppFocus::Surface(SurfaceFocus::ProjectPicker(_))) {
             self.project_picker.reset_selection();
         }
+
         // 命令派发可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴
         // 等），也可能编辑了活动 buffer（产生 DeltaEvent 需要 try_remap）。
         // 统一在派发尾部把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——
@@ -664,12 +668,12 @@ impl App {
     /// 等需要"文本变了就重置选区"的 owner 自己实现，宿主不必特判。
     pub(crate) fn ime_replace_text_for(
         &mut self,
-        target_id: TextTargetId,
+        focus: AppFocus,
         replacement_range_utf16: Option<Range<usize>>,
         text: &str,
     ) -> Result<(), CommandError> {
         self.with_router_mut(|router| {
-            router.with_ime_target(target_id, |mut target| {
+            router.with_ime_target(focus, |mut target| {
                 target.apply_replacement_range(replacement_range_utf16)
             })
         })?;
@@ -681,13 +685,13 @@ impl App {
     /// 更新输入法 preedit。update 走直接通道，避免每次按键都过命令队列。
     pub(crate) fn ime_replace_and_mark_text_for(
         &mut self,
-        target_id: TextTargetId,
+        focus: AppFocus,
         replacement_range_utf16: Option<Range<usize>>,
         new_text: &str,
         new_selected_range_utf16: Option<Range<usize>>,
     ) -> Result<(), CommandError> {
         let result = self.with_router_mut(|router| {
-            router.with_ime_target(target_id, |mut target| {
+            router.with_ime_target(focus, |mut target| {
                 target.replace_and_mark_text(
                     replacement_range_utf16,
                     new_text,
@@ -701,8 +705,8 @@ impl App {
         result
     }
 
-    pub(crate) fn ime_unmark_for(&mut self, target_id: TextTargetId) -> Result<(), CommandError> {
-        let Some(preedit) = self.with_router(|router| router.preedit_text(target_id)) else {
+    pub(crate) fn ime_unmark_for(&mut self, focus: AppFocus) -> Result<(), CommandError> {
+        let Some(preedit) = self.with_router(|router| router.preedit_text(focus)) else {
             return Ok(());
         };
         self.dispatch(editor::ime_commit(preedit))?;
@@ -733,7 +737,8 @@ mod tests {
     //! 命令产出的 HostEffect。需要 GPUI 句柄（Entity / Window / 焦点等）的链路
     //! 在 `shell::view` 那一层做手工 / 集成测试，不进本文件。
 
-    use crate::app::{App, KeySurface};
+    use crate::app::App;
+    use crate::focus::{AppFocus, PanelFocus, ProjectPickerFocus};
     use crate::shell::features::panels::PanelId;
     use crate::shell::features::panels::file_tree::FileTreeActivation;
     use crate::shell::workbench::state::{EditorState, EditorTab};
@@ -773,21 +778,9 @@ mod tests {
     fn tab_and_enter_should_dispatch_editor_commands() {
         let mut app = app_with_open_file("tab-enter");
 
-        assert!(
-            app.dispatch_key("tab".to_string(), KeySurface::Editor)
-                .unwrap()
-                .consumed
-        );
-        assert!(
-            app.dispatch_key("enter".to_string(), KeySurface::Editor)
-                .unwrap()
-                .consumed
-        );
-        assert!(
-            app.dispatch_key("return".to_string(), KeySurface::Editor)
-                .unwrap()
-                .consumed
-        );
+        assert!(app.dispatch_key("tab".to_string()).unwrap().consumed);
+        assert!(app.dispatch_key("enter".to_string()).unwrap().consumed);
+        assert!(app.dispatch_key("return".to_string()).unwrap().consumed);
 
         let state = app.editor_state();
 
@@ -800,7 +793,7 @@ mod tests {
 
         // 命中 mod-shift-e → editor 区按下时应被 keymap 消费。
         let outcome = app
-            .dispatch_key("mod-shift-e".to_string(), KeySurface::Editor)
+            .dispatch_key("mod-shift-e".to_string())
             .expect("派发成功");
         assert!(outcome.consumed);
         assert_eq!(
@@ -813,15 +806,13 @@ mod tests {
     fn search_shortcut_should_emit_activate_effect() {
         let mut app = App::new();
 
-        let outcome = app
-            .dispatch_key("mod-f".to_string(), KeySurface::Editor)
-            .expect("派发成功");
+        let outcome = app.dispatch_key("mod-f".to_string()).expect("派发成功");
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::SearchActivate]);
 
         // mod-shift-f 在第一版没有绑定（项目级搜索尚未引入）；不被消费。
         let outcome = app
-            .dispatch_key("mod-shift-f".to_string(), KeySurface::Editor)
+            .dispatch_key("mod-shift-f".to_string())
             .expect("派发成功");
         assert!(!outcome.consumed);
         assert!(outcome.effects.is_empty());
@@ -830,9 +821,10 @@ mod tests {
     #[test]
     fn panel_key_surface_should_keep_global_shortcuts_without_text_edit_context() {
         let mut app = App::new();
+        app.request_focus(AppFocus::Panel(PanelFocus::Terminal));
 
         let outcome = app
-            .dispatch_key("mod-shift-e".to_string(), KeySurface::Panel)
+            .dispatch_key("mod-shift-e".to_string())
             .expect("派发成功");
         assert!(outcome.consumed);
         assert_eq!(
@@ -840,9 +832,7 @@ mod tests {
             vec![HostEffect::TogglePanel("file_tree".to_string())]
         );
 
-        let outcome = app
-            .dispatch_key("mod-a".to_string(), KeySurface::Panel)
-            .expect("派发成功");
+        let outcome = app.dispatch_key("mod-a".to_string()).expect("派发成功");
         assert!(!outcome.consumed);
         assert!(outcome.effects.is_empty());
     }
@@ -901,9 +891,7 @@ mod tests {
     fn project_picker_command_should_emit_open_surface_window_action() {
         let mut app = App::new();
 
-        let outcome = app
-            .dispatch_key("mod-o".to_string(), KeySurface::Editor)
-            .unwrap();
+        let outcome = app.dispatch_key("mod-o".to_string()).unwrap();
 
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::ShowProjectPicker]);
@@ -912,6 +900,7 @@ mod tests {
     #[test]
     fn open_local_project_command_should_emit_window_action() {
         let mut app = App::new();
+        app.request_focus(AppFocus::project_picker(ProjectPickerFocus::RecentList));
 
         let actions = app
             .dispatch(project_picker_commands::open_local_project())
@@ -937,24 +926,18 @@ mod tests {
                 .is_some()
         );
 
-        let outcome = app
-            .dispatch_key("down".to_string(), KeySurface::ProjectPicker)
-            .unwrap();
+        let outcome = app.dispatch_key("down".to_string()).unwrap();
         assert!(outcome.consumed);
         assert_eq!(
             outcome.effects,
             vec![HostEffect::ProjectPickerMoveSelection(1)]
         );
 
-        let outcome = app
-            .dispatch_key("backspace".to_string(), KeySurface::ProjectPicker)
-            .unwrap();
+        let outcome = app.dispatch_key("backspace".to_string()).unwrap();
         assert!(!outcome.consumed);
         assert!(outcome.effects.is_empty());
 
-        let outcome = app
-            .dispatch_key("enter".to_string(), KeySurface::ProjectPicker)
-            .unwrap();
+        let outcome = app.dispatch_key("enter".to_string()).unwrap();
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::ProjectPickerActivate]);
 
@@ -1061,9 +1044,7 @@ mod tests {
     fn escape_should_dispatch_surface_dismiss_command() {
         let mut app = App::new();
 
-        let outcome = app
-            .dispatch_key("escape".to_string(), KeySurface::Editor)
-            .unwrap();
+        let outcome = app.dispatch_key("escape".to_string()).unwrap();
 
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::DismissSurface]);

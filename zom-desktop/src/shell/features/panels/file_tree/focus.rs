@@ -9,6 +9,7 @@ use std::rc::Rc;
 use gpui::{Context, FocusHandle, Window};
 
 use crate::app::App;
+use crate::focus::{AppFocus, FileTreeFocus};
 use crate::shell::features::panels::{PanelId, focus_panel_handle};
 use crate::shell::workbench::controller::WorkbenchController;
 
@@ -20,6 +21,8 @@ pub(crate) fn install_focus_listeners<T: 'static>(
     cx: &mut Context<T>,
 ) {
     cx.on_focus(focus, window, move |_, _, cx| {
+        app.borrow_mut()
+            .request_focus_from_shell(AppFocus::file_tree(FileTreeFocus::Navigate));
         app.borrow_mut().file_tree_ensure_selection_initialized();
         cx.notify();
     })

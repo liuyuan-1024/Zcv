@@ -53,7 +53,6 @@ pub(crate) fn render(
     workspace_active: bool,
     language_server_active: bool,
     key_request: KeyRequest,
-    panel_key_request: KeyRequest,
     shortcut_lookup: ShortcutLookup,
     command_title_lookup: CommandTitleLookup,
     command_catalog_lookup: CommandCatalogLookup,
@@ -93,7 +92,6 @@ pub(crate) fn render(
             host,
             dock_resize,
             key_request,
-            panel_key_request,
             editor_slot,
             search_query_slot,
             search_replacement_slot,
@@ -126,7 +124,6 @@ fn render_body(
     host: &PanelHost,
     dock_resize: DockResizeRequest,
     key_request: KeyRequest,
-    panel_key_request: KeyRequest,
     editor_slot: Rc<TextEditorSlot>,
     search_query_slot: Rc<TextEditorSlot>,
     search_replacement_slot: Rc<TextEditorSlot>,
@@ -138,6 +135,12 @@ fn render_body(
     command_title_lookup: CommandTitleLookup,
     command_catalog_lookup: CommandCatalogLookup,
 ) -> Div {
+    // 所有面板与编辑区共用同一个 KeyRequest —— 角色由 FocusRegistry 在派发瞬间
+    // 解析，调用侧不再区分 panel / editor / file_tree 三套闭包。
+    //
+    // PanelContext 借用此 clone；编辑区那一支后续 move 走 `key_request` 本体。
+    // 借用与 move 落到不同 Rc 副本上，互不冲突。
+    let key_request_for_panels = Rc::clone(&key_request);
     let panel_ctx = PanelContext {
         has_project: state.has_project,
         file_tree,
@@ -145,7 +148,7 @@ fn render_body(
         search_query_slot: &search_query_slot,
         search_replacement_slot: &search_replacement_slot,
         panel_runtimes: &panel_runtimes,
-        panel_key_request: &panel_key_request,
+        key_request: &key_request_for_panels,
         shortcut_lookup: &shortcut_lookup,
         command_title_lookup: &command_title_lookup,
         command_catalog_lookup: &command_catalog_lookup,

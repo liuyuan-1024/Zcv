@@ -10,15 +10,15 @@ use zom_command::{EditTarget, KeyContext};
 use zom_view::{ViewId, ViewSet};
 use zom_workspace::{BufferId, EntryKind, ProjectTree, Workspace};
 
+use crate::focus::{AppFocus, FileTreeFocus, PanelFocus};
 use crate::shell::editor::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
-    TextTargetId, TextTargetOwner, TextTargetQuery,
+    TextTargetOwner, TextTargetQuery,
 };
 
 use super::{FileTreeActivation, FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry};
 
 pub(crate) struct FileTreeModel {
-    target_id: TextTargetId,
     project_tree: Option<ProjectTree>,
     selected: Option<PathBuf>,
     /// **已提交的选区**——过去 Shift+方向"笔画"沉淀下来的、通过普通方向键
@@ -72,9 +72,8 @@ struct PendingEntry {
 }
 
 impl FileTreeModel {
-    pub(crate) fn new(target_id: TextTargetId) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            target_id,
             project_tree: None,
             selected: None,
             selection: BTreeSet::new(),
@@ -890,12 +889,11 @@ fn rebase_buffers_under(workspace: &mut Workspace, old_prefix: &Path, new_prefix
 }
 
 impl TextTargetQuery for FileTreeModel {
-    fn target_id(&self) -> TextTargetId {
-        self.target_id
-    }
-
-    fn is_active(&self) -> bool {
-        self.pending.is_some()
+    fn accepts_focus(&self, focus: AppFocus) -> bool {
+        matches!(
+            focus,
+            AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::NewEntryName))
+        )
     }
 
     fn snapshot(&self) -> EditorSnapshot {
@@ -941,7 +939,7 @@ impl TextTargetOwner for FileTreeModel {
 #[cfg(test)]
 impl Default for FileTreeModel {
     fn default() -> Self {
-        Self::new(TextTargetId::allocate())
+        Self::new()
     }
 }
 

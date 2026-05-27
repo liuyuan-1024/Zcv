@@ -11,6 +11,7 @@ use gpui::{Entity, FocusHandle, Window};
 use zom_command::{HostEffect, Invocation};
 
 use crate::app::App;
+use crate::focus::AppFocus;
 use crate::shell::ActionRequest;
 use crate::shell::editor::TextEditorSlot;
 use crate::shell::features::language_servers::{self, LanguageServersRuntime};
@@ -23,7 +24,7 @@ use crate::shell::platform::window as platform_window;
 use crate::shell::surfaces::{SurfaceId, SurfaceManager, SurfaceRequest};
 use crate::shell::workbench::controller::WorkbenchController;
 
-use super::focus::{FocusRouter, FocusTarget};
+use super::focus::{FocusProjection, panel_default_focus, projection_from_runtimes};
 
 pub(super) fn bind_action_request(
     app: Rc<RefCell<App>>,
@@ -84,7 +85,12 @@ pub(crate) fn apply_host_effects(
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    let focus = FocusRouter::new(panel_runtimes, file_tree, editor_focus_fallback);
+    let focus = projection_from_runtimes(
+        editor_focus_fallback.clone(),
+        panel_runtimes,
+        file_tree,
+        project_picker_runtime.focus_handle(),
+    );
     for effect in effects {
         // 按 feature 顺序问询：第一个认领的 try_apply 返回 true，跳过余下。
         // 剩下的窗口控制 / 跨 feature 变体由本文件下方的 fallback match 处理。
@@ -132,7 +138,7 @@ fn apply_shell_effect(
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
     surfaces: &Entity<SurfaceManager>,
-    focus: &FocusRouter<'_>,
+    focus: &FocusProjection,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -146,14 +152,14 @@ fn apply_shell_effect(
                 return;
             };
             let visible = workbench.borrow().is_panel_active(panel);
-            if visible && focus.is_at(FocusTarget::Panel(panel), window) {
+            if visible && focus.is_at_panel(panel, window) {
                 // 已显示且焦点就在它身上 —— 收起，焦点回编辑区。
                 workbench.borrow_mut().hide_panel(panel);
-                focus.move_to(FocusTarget::Editor, window);
+                request_focus(app, focus, AppFocus::editor(), window);
             } else {
                 // 未显示，或虽显示但焦点不在它身上 —— 显示并把焦点交给它。
                 workbench.borrow_mut().show_panel(panel);
-                focus.move_to(FocusTarget::Panel(panel), window);
+                request_focus(app, focus, panel_default_focus(panel), window);
             }
             window.refresh();
         }
@@ -173,6 +179,17 @@ fn apply_shell_effect(
             eprintln!("未处理的 HostEffect：{other:?}");
         }
     }
+}
+
+pub(crate) fn request_focus(
+    app: &Rc<RefCell<App>>,
+    projection: &FocusProjection,
+    focus: AppFocus,
+    window: &mut Window,
+) {
+    app.borrow_mut().request_focus(focus);
+    let current = app.borrow().focus().current();
+    projection.apply(current, window);
 }
 
 pub(crate) fn dismiss_surface(

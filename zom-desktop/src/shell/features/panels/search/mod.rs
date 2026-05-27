@@ -22,7 +22,8 @@ use gpui::{Context, Div, FocusHandle, IntoElement, MouseButton, Window, div, pre
 use zom_command::commands::search;
 
 use crate::app::App;
-use crate::shell::editor::{TextEditorSlot, TextTargetId};
+use crate::focus::{AppFocus, SearchField};
+use crate::shell::editor::TextEditorSlot;
 use crate::shell::normalized_chord;
 use crate::shell::shared::glyph::Glyph;
 use crate::shell::shared::theme::{color, radius, space, typography};
@@ -73,13 +74,20 @@ impl SearchRuntime {
         window: &mut Window,
         cx: &mut Context<T>,
     ) {
-        let (query_id, replacement_id) = {
-            let app_ref = app.borrow();
-            let ids = app_ref.text_target_ids();
-            (ids.search_query, ids.search_replacement)
-        };
-        install_field_focus_listener(Rc::clone(&app), &self.query_focus, query_id, window, cx);
-        install_field_focus_listener(app, &self.replacement_focus, replacement_id, window, cx);
+        install_field_focus_listener(
+            Rc::clone(&app),
+            &self.query_focus,
+            SearchField::Query,
+            window,
+            cx,
+        );
+        install_field_focus_listener(
+            app,
+            &self.replacement_focus,
+            SearchField::Replacement,
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn render(
@@ -112,18 +120,19 @@ impl SearchRuntime {
 fn install_field_focus_listener<T: 'static>(
     app: Rc<RefCell<App>>,
     focus: &FocusHandle,
-    target: TextTargetId,
+    field: SearchField,
     window: &mut Window,
     cx: &mut Context<T>,
 ) {
     let app_on_focus = Rc::clone(&app);
     cx.on_focus(focus, window, move |_, _, cx| {
-        app_on_focus.borrow_mut().search_activate(target);
+        app_on_focus
+            .borrow_mut()
+            .request_focus_from_shell(AppFocus::search(field));
         cx.notify();
     })
     .detach();
     cx.on_blur(focus, window, move |_, _, cx| {
-        app.borrow_mut().search_deactivate(target);
         cx.notify();
     })
     .detach();

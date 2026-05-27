@@ -13,7 +13,7 @@ use std::rc::Rc;
 use gpui::{Entity, FocusHandle, Window};
 use zom_command::HostEffect;
 
-use crate::app::{App, KeySurface};
+use crate::app::App;
 use crate::shell::editor::TextEditorSlot;
 use crate::shell::features::language_servers::LanguageServersRuntime;
 use crate::shell::features::panels::PanelRuntimes;
@@ -181,10 +181,7 @@ fn show_project_picker(
         move |chord: String, window: &mut Window, cx: &mut gpui::App| {
             let outcome = {
                 let _clip = GpuiClipboardScope::enter(cx);
-                match key_app
-                    .borrow_mut()
-                    .dispatch_key(chord, KeySurface::ProjectPicker)
-                {
+                match key_app.borrow_mut().dispatch_key(chord) {
                     Ok(outcome) => outcome,
                     Err(error) => {
                         eprintln!("命令执行失败：{error}");

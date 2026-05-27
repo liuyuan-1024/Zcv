@@ -11,8 +11,6 @@ use gpui::{
 use crate::app::App;
 use crate::shell::platform::clipboard::GpuiClipboardScope;
 
-use crate::shell::editor::target::TextTargetId;
-
 /// primary caret 在 element 内的相对位置 + 行高 —— 系统 IME 候选窗定位用。
 ///
 /// 每帧 paint 由 [`crate::shell::editor::view::EditorElement`] 通过 input hook 写入；GPUI
@@ -30,15 +28,13 @@ pub(crate) struct CaretLayout {
 
 pub(crate) struct EditorInput {
     app: Rc<RefCell<App>>,
-    target: TextTargetId,
     caret_layout: Option<CaretLayout>,
 }
 
 impl EditorInput {
-    pub(crate) fn new(app: Rc<RefCell<App>>, target: TextTargetId) -> Self {
+    pub(crate) fn new(app: Rc<RefCell<App>>) -> Self {
         Self {
             app,
-            target,
             caret_layout: None,
         }
     }
@@ -57,9 +53,10 @@ impl EntityInputHandler for EditorInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
+        let focus = self.app.borrow().focus().current();
         self.app
             .borrow()
-            .with_router(|router| router.text_for_range_utf16(self.target, range))
+            .with_router(|router| router.text_for_range_utf16(focus, range))
     }
 
     fn selected_text_range(
@@ -68,9 +65,10 @@ impl EntityInputHandler for EditorInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
+        let focus = self.app.borrow().focus().current();
         self.app
             .borrow()
-            .with_router(|router| router.selected_range_utf16(self.target))
+            .with_router(|router| router.selected_range_utf16(focus))
             .map(|(range, reversed)| UTF16Selection { range, reversed })
     }
 
@@ -79,17 +77,19 @@ impl EntityInputHandler for EditorInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
+        let focus = self.app.borrow().focus().current();
         self.app
             .borrow()
-            .with_router(|router| router.marked_range_utf16(self.target))
+            .with_router(|router| router.marked_range_utf16(focus))
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.app.borrow().focus().current();
         {
             // IME 路径也可能触发命令派发（commit → editor.ime_commit），需为
             // 期间的剪贴板读写借出 cx。
             let _clip = GpuiClipboardScope::enter(&*cx);
-            if let Err(error) = self.app.borrow_mut().ime_unmark_for(self.target) {
+            if let Err(error) = self.app.borrow_mut().ime_unmark_for(focus) {
                 eprintln!("IME unmark 失败：{error}");
             }
         }
@@ -104,12 +104,13 @@ impl EntityInputHandler for EditorInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let focus = self.app.borrow().focus().current();
         {
             let _clip = GpuiClipboardScope::enter(&*cx);
             if let Err(error) = self
                 .app
                 .borrow_mut()
-                .ime_replace_text_for(self.target, range, text)
+                .ime_replace_text_for(focus, range, text)
             {
                 eprintln!("IME replace_text 失败：{error}");
             }
@@ -126,10 +127,11 @@ impl EntityInputHandler for EditorInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let focus = self.app.borrow().focus().current();
         {
             let _clip = GpuiClipboardScope::enter(&*cx);
             if let Err(error) = self.app.borrow_mut().ime_replace_and_mark_text_for(
-                self.target,
+                focus,
                 range,
                 new_text,
                 new_selected_range,

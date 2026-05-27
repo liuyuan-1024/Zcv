@@ -1,9 +1,10 @@
 use zom_command::{EditTarget, KeyContext};
 
 use super::recent::RecentProject;
+use crate::focus::{AppFocus, ProjectPickerFocus, SurfaceFocus};
 use crate::shell::editor::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
-    TextTargetId, TextTargetOwner, TextTargetQuery,
+    TextTargetOwner, TextTargetQuery,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,21 +27,17 @@ pub(crate) enum ProjectPickerActivation {
 }
 
 pub(crate) struct ProjectPickerModel {
-    target_id: TextTargetId,
     query: OwnedEditorTarget,
     selected: usize,
     mode: ProjectPickerMode,
-    active: bool,
 }
 
 impl ProjectPickerModel {
-    pub(crate) fn new(target_id: TextTargetId) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            target_id,
             query: OwnedEditorTarget::new(),
             selected: 0,
             mode: ProjectPickerMode::Browse,
-            active: false,
         }
     }
 
@@ -48,15 +45,6 @@ impl ProjectPickerModel {
         self.query = OwnedEditorTarget::new();
         self.selected = 0;
         self.mode = mode;
-        self.active = true;
-    }
-
-    pub(crate) fn deactivate(&mut self) {
-        self.active = false;
-    }
-
-    pub(crate) fn active(&self) -> bool {
-        self.active
     }
 
     pub(crate) fn state(&self) -> ProjectPickerState {
@@ -125,12 +113,11 @@ impl ProjectPickerModel {
 }
 
 impl TextTargetQuery for ProjectPickerModel {
-    fn target_id(&self) -> TextTargetId {
-        self.target_id
-    }
-
-    fn is_active(&self) -> bool {
-        self.active
+    fn accepts_focus(&self, focus: AppFocus) -> bool {
+        matches!(
+            focus,
+            AppFocus::Surface(SurfaceFocus::ProjectPicker(ProjectPickerFocus::Query))
+        )
     }
 
     fn snapshot(&self) -> EditorSnapshot {
@@ -146,17 +133,17 @@ impl TextTargetQuery for ProjectPickerModel {
     }
 
     fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
-        self.active.then(|| self.query.as_ime_query_target())
+        Some(self.query.as_ime_query_target())
     }
 }
 
 impl TextTargetOwner for ProjectPickerModel {
     fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
-        self.active.then(|| self.query.as_ime_target())
+        Some(self.query.as_ime_target())
     }
 
     fn edit_target(&mut self) -> Option<EditTarget<'_>> {
-        self.active.then(|| self.query.as_edit_target())
+        Some(self.query.as_edit_target())
     }
 
     /// 查询文本一变就把候选 cursor 跳回第一项 —— 旧的下标可能超出新过滤结果。

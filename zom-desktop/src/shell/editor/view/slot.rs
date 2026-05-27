@@ -17,19 +17,20 @@
 //! [`EditorRouter`]: super::EditorRouter
 
 use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use gpui::{Context, ElementId, FocusHandle};
 
 use crate::app::App;
+use crate::focus::AppFocus;
 use crate::shell::editor::kernel::EditorKernel;
-use crate::shell::editor::target::TextTargetId;
 
 use super::element::EditorElement;
 use super::input_host::EditorInputHost;
 
 pub(crate) struct TextEditorSlot {
-    target_id: TextTargetId,
+    focus: AppFocus,
     kernel: EditorKernel,
     input: EditorInputHost,
     app: Rc<RefCell<App>>,
@@ -39,15 +40,20 @@ pub(crate) struct TextEditorSlot {
 impl TextEditorSlot {
     pub(crate) fn install<V: 'static>(
         app: Rc<RefCell<App>>,
-        target_id: TextTargetId,
+        focus: AppFocus,
         kernel: EditorKernel,
-        focus: FocusHandle,
+        focus_handle: FocusHandle,
         cx: &mut Context<V>,
     ) -> Rc<Self> {
-        let input = EditorInputHost::new(Rc::clone(&app), target_id, focus, cx);
-        let element_id = ElementId::from(("zom-editor-slot", target_id.raw()));
+        let input = EditorInputHost::new(Rc::clone(&app), focus_handle, cx);
+
+        // 基于 AppFocus 算出稳定的 ElementId
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        focus.hash(&mut hasher);
+        let element_id = ElementId::from(hasher.finish() as usize);
+
         Rc::new(Self {
-            target_id,
+            focus,
             kernel,
             input,
             app,
@@ -63,7 +69,8 @@ impl TextEditorSlot {
         let snapshot = self
             .app
             .borrow()
-            .with_router(|router| router.snapshot_for(self.target_id));
+            .with_router(|router| router.snapshot_for_focus(self.focus));
+
         self.kernel
             .element(snapshot, self.input.focus_handle(), self.input.hook())
             .element_id(self.element_id.clone())

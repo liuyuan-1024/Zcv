@@ -415,8 +415,8 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             text_edit,
         )
         .key_with_in("down", move_args(Next, Motion::LineStep, false), text_edit)
-        // pageup / pagedown：lines 暂用固定 20 作 fallback；
-        // TODO: view 层 ViewportState 加 visible_lines 字段后，由 handler 从当前 view 注入真实值。
+        // pageup / pagedown：keymap 里写死 20 行作首帧兜底；handler 里若主编辑区
+        // 已测得 visible_line_count（element prepaint 反算写回），按真实值覆盖。
         .key_with_in(
             "pageup",
             move_args(Previous, Motion::PageStep { lines: 20 }, false),
@@ -756,7 +756,19 @@ fn run_move_selection(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
-    let args = MoveSelectionArgs::try_from(args)?;
+    let mut args = MoveSelectionArgs::try_from(args)?;
+    // PageStep 步长按真实视口高度走：element 上一帧 prepaint 已把测得的visible_line_count 写回 ViewportState，从这里读。
+    // focused_field 模式下作用于输入框（通常单行），主编辑区的视口高度对它无意义，保留 keymap 兜底。
+    // visible_line_count == 0（首帧 / headless）也走兜底。
+    if let Motion::PageStep { lines } = &mut args.motion
+        && context.focused_field.is_none()
+        && let Some(view) = context.views.active_view()
+    {
+        let measured = view.viewport().visible_line_count;
+        if measured > 0 {
+            *lines = u32::try_from(measured).unwrap_or(u32::MAX);
+        }
+    }
     let target = context.edit_target()?;
     let selections = target.selection.clone();
     let moved = target

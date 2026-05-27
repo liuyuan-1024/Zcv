@@ -78,7 +78,11 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
     } else {
         vp.visible_line_count
     };
-    let request = EditorSnapshotRequest::viewport(vp.top_line, visible_lines);
+    // 上下各加 visible_lines：让 edge-scroll 把视口推出原范围时（PageDown / 连按方向键）本帧 lines 已经覆盖新可见行，避免 1 帧空窗。
+    // `viewport_start_line` 在快照里反映的是实际切片起点，element 用它算 top_adjusted。
+    let slice_start = vp.top_line.saturating_sub(visible_lines);
+    let slice_len = visible_lines.saturating_mul(3);
+    let request = EditorSnapshotRequest::viewport(slice_start, slice_len);
     let mut snapshot = build_snapshot(buffer.buffer(), &selection, request);
 
     // reveal 携带的 byte 要折一次 byte_to_position 出逻辑行——element 看不到

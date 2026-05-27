@@ -87,7 +87,10 @@ impl App {
             queue: CommandQueue::new(),
             workspace,
             views,
-            focus: FocusStore::new(AppFocus::editor()),
+            // 启动时没有项目、没有 view，shell 显示的是 project picker；
+            // 把初始焦点设成 picker 让 App-only 单测不依赖反向同步也能拿到正确语义。
+            // 生产里 ShellView::render 的反向同步会把这值刷到与GPUI 真实焦点一致。
+            focus: FocusStore::new(AppFocus::project_picker(ProjectPickerFocus::Query)),
             project_root: None,
             recent_projects: RecentProjects::load(path),
             file_tree: FileTreeModel::new(),
@@ -150,6 +153,9 @@ impl App {
         let (workspace, views) = empty_workspace();
         self.workspace = workspace;
         self.views = views;
+        // 项目打开后焦点转入编辑区。生产里 picker 关闭后由 shell 的dismiss + 反向同步刷到这里；
+        // 这里显式写一遍是给 App-only 单测兜底。
+        self.request_focus(AppFocus::editor());
     }
 
     pub(crate) fn project_title(&self) -> String {
@@ -632,6 +638,14 @@ impl App {
         let mut effects = EffectQueue::new();
         let focus = self.focus.current();
 
+        // picker 焦点下，命令执行可能改了 query 文本（DELETE_BACKWARD / 粘贴等
+        // 走 edit_target，绕过 router 的 after_text_changed 钩子）。派发前后
+        // 比一次 query 文本：变了才 reset_selection，否则保留——否则 MOVE_SELECTION
+        // 自己也会被无差别 reset，选中项只能在 0 / 1 之间来回。
+        let picker_query_before =
+            matches!(focus, AppFocus::Surface(SurfaceFocus::ProjectPicker(_)))
+                .then(|| self.project_picker.query_text());
+
         let focused_field = match self.focus.current() {
             AppFocus::Surface(SurfaceFocus::ProjectPicker(_)) => self.project_picker.edit_target(),
             AppFocus::Panel(PanelFocus::FileTree(_)) => self.file_tree.edit_target(),
@@ -650,8 +664,10 @@ impl App {
 
         let host_effects = effects.drain();
         result?;
-        if matches!(focus, AppFocus::Surface(SurfaceFocus::ProjectPicker(_))) {
-            self.project_picker.reset_selection();
+        if let Some(before) = picker_query_before {
+            if self.project_picker.query_text() != before {
+                self.project_picker.reset_selection();
+            }
         }
 
         // 命令派发可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴
@@ -933,9 +949,10 @@ mod tests {
             vec![HostEffect::ProjectPickerMoveSelection(1)]
         );
 
+        // backspace 落到 picker query 的 text_edit 上下文，由 DELETE_BACKWARD
+        // 命令处理（删一个字符），不是 picker 的导航动作，但仍由 keymap 消费。
         let outcome = app.dispatch_key("backspace".to_string()).unwrap();
-        assert!(!outcome.consumed);
-        assert!(outcome.effects.is_empty());
+        assert!(outcome.consumed);
 
         let outcome = app.dispatch_key("enter".to_string()).unwrap();
         assert!(outcome.consumed);

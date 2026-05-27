@@ -17,6 +17,9 @@ use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 mod editor_pane;
 pub(crate) mod state;
 mod tab_bar;
+mod text_target;
+
+pub(crate) use text_target::{MainEditorOwner, MainEditorOwnerRef};
 
 pub(crate) fn render(
     bottom_dock_state: &DockState,

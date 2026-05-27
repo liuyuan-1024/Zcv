@@ -11,11 +11,11 @@ use gpui::{
 use crate::app::App;
 use crate::shell::platform::clipboard::GpuiClipboardScope;
 
-use super::TextTargetId;
+use crate::shell::editor::target::TextTargetId;
 
 /// primary caret 在 element 内的相对位置 + 行高 —— 系统 IME 候选窗定位用。
 ///
-/// 每帧 paint 由 [`super::element::EditorElement`] 通过 input hook 写入；GPUI
+/// 每帧 paint 由 [`crate::shell::editor::view::EditorElement`] 通过 input hook 写入；GPUI
 /// 调 [`EditorInput::bounds_for_range`] 查 caret 屏幕 rect 时读取，加上
 /// `element_bounds.origin` 即转成绝对坐标。
 ///

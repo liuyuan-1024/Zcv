@@ -1,14 +1,17 @@
 //! 嵌入文本编辑器的"插槽"——业务侧持的唯一句柄。
 //!
-//! 三处嵌入点（主编辑区 / 文件树新建条目 / 项目选择器查询框）在 [`ShellView`]
-//! 启动时各装配一个 [`TextEditorSlot`]，业务渲染只用 `slot.embed(kind)` 一行
-//! 拿到 [`EditorEmbed`]：
+//! 每个嵌入点在 [`ShellView`] 启动时各装配一个 [`TextEditorSlot`]，业务渲染
+//! 只用 `slot.embed()` 一行拿到渲染元素：
 //!
 //! - 系统输入法的 [`EditorInputHost`] 注册由 slot 内部完成 —— 调用方不接触；
 //! - 快照（文本 + 光标字节位）由 slot 通过 [`EditorRouter`] 反查 owner 取，
 //!   调用方不再透传 `state.text` / `state.cursor_byte`；
 //! - 跨帧稳定的 element id 由 slot 根据 [`TextTargetId`] 自带，调用方不再起名字；
 //! - 光标闪烁由 [`super::CaretClock`] 全局承载，与 slot 无关。
+//!
+//! slot 不预设"什么场景配什么能力" —— 内核形态（多行 / 单行 + gutter / scroll /
+//! viewport hook）由调用方在 `install` 时通过 [`EditorKernel`] builder 拼好
+//! 直接传入；编辑器子系统对调用方一无所知。
 //!
 //! [`ShellView`]: crate::shell::view::ShellView
 //! [`EditorRouter`]: super::EditorRouter
@@ -19,12 +22,15 @@ use std::rc::Rc;
 use gpui::{Context, ElementId, FocusHandle};
 
 use crate::app::App;
+use crate::shell::editor::kernel::EditorKernel;
+use crate::shell::editor::target::TextTargetId;
 
-use super::embed::{EditorEmbed, EditorInputHost, EditorViewportSyncHook};
-use super::{EditorKind, TextTargetId};
+use super::element::EditorElement;
+use super::input_host::EditorInputHost;
 
 pub(crate) struct TextEditorSlot {
     target_id: TextTargetId,
+    kernel: EditorKernel,
     input: EditorInputHost,
     app: Rc<RefCell<App>>,
     element_id: ElementId,
@@ -34,15 +40,18 @@ impl TextEditorSlot {
     pub(crate) fn install<V: 'static>(
         app: Rc<RefCell<App>>,
         target_id: TextTargetId,
+        kernel: EditorKernel,
         focus: FocusHandle,
         cx: &mut Context<V>,
     ) -> Rc<Self> {
         let input = EditorInputHost::new(Rc::clone(&app), target_id, focus, cx);
+        let element_id = ElementId::from(("zom-editor-slot", target_id.raw()));
         Rc::new(Self {
             target_id,
+            kernel,
             input,
             app,
-            element_id: element_id_for(target_id).into(),
+            element_id,
         })
     }
 
@@ -50,33 +59,13 @@ impl TextEditorSlot {
     ///
     /// 快照在调用瞬间从 App 拉一份 —— 渲染路径是单线程顺序的，此处的 `App`
     /// 借用不会与外层任何活借用冲突。
-    pub(crate) fn embed(&self, kind: EditorKind) -> EditorEmbed {
+    pub(crate) fn embed(&self) -> EditorElement {
         let snapshot = self
             .app
             .borrow()
             .with_router(|router| router.snapshot_for(self.target_id));
-        let mut embed = EditorEmbed::new(kind, snapshot, self.input.clone())
-            .element_id(self.element_id.clone());
-        // 视口写回钩子：只主编辑区装；其它 target 的 snapshot 路径不读视口。
-        if matches!(self.target_id, TextTargetId::MainEditor) {
-            let app = Rc::clone(&self.app);
-            let hook: EditorViewportSyncHook = Rc::new(move |top_line, visible_line_count, _cx| {
-                app.borrow_mut()
-                    .set_main_viewport(top_line, visible_line_count);
-            });
-            embed = embed.viewport_sync(hook);
-        }
-        embed
-    }
-}
-
-/// 嵌入点稳定 element id —— 跨帧保留 [`super::element::EditorElement`] 滚动偏移。
-fn element_id_for(target: TextTargetId) -> &'static str {
-    match target {
-        TextTargetId::MainEditor => "zom-editor-main",
-        TextTargetId::FileTreePendingName => "zom-editor-file-tree-pending",
-        TextTargetId::ProjectPickerQuery => "zom-editor-project-picker-query",
-        TextTargetId::SearchQuery => "zom-editor-search-query",
-        TextTargetId::SearchReplacement => "zom-editor-search-replacement",
+        self.kernel
+            .element(snapshot, self.input.focus_handle(), self.input.hook())
+            .element_id(self.element_id.clone())
     }
 }

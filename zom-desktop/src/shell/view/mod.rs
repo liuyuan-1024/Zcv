@@ -17,7 +17,9 @@ use zom_command::commands::{file_tree as file_tree_commands, window as window_co
 use crate::app::{App, KeySurface};
 use crate::shell::platform::clipboard::{GpuiClipboard, GpuiClipboardScope};
 
-use super::editor::{CaretBlink, TextEditorSlot, TextTargetId, drive_caret_blink};
+use super::editor::{
+    CaretBlink, EditorKernel, EditorViewportSyncHook, TextEditorSlot, drive_caret_blink,
+};
 use super::features::language_servers;
 use super::features::panels::PanelRuntimes;
 use super::features::panels::file_tree::{ConfirmDeleteHandlers, FileTreeRuntime};
@@ -66,33 +68,52 @@ impl ShellView {
         let file_tree = FileTreeRuntime::new(cx);
         let project_picker = ProjectPickerRuntime::new(cx);
         let language_servers = language_servers::LanguageServersRuntime::new(cx);
+        let ids = app.borrow().text_target_ids();
+        // 主编辑区内核：多行 + 行号 + 滚动 + 视口写回。视口钩子在 prepaint
+        // 末尾被调用，把测得的 (top_line, visible_line_count) 推回 view 的
+        // ViewportState，下一帧 snapshot 据此切片。
+        let main_viewport_sync: EditorViewportSyncHook = {
+            let app = Rc::clone(&app);
+            Rc::new(move |top_line, visible_line_count, _cx| {
+                app.borrow_mut()
+                    .set_main_viewport(top_line, visible_line_count);
+            })
+        };
         let main_editor_slot = TextEditorSlot::install(
             Rc::clone(&app),
-            TextTargetId::MainEditor,
+            ids.main_editor,
+            EditorKernel::multi_line()
+                .with_gutter()
+                .with_vertical_scroll()
+                .with_viewport_sync(main_viewport_sync),
             editor_focus.clone(),
             cx,
         );
         let file_tree_slot = TextEditorSlot::install(
             Rc::clone(&app),
-            TextTargetId::FileTreePendingName,
+            ids.file_tree_pending_name,
+            EditorKernel::single_line(),
             file_tree.focus_handle(),
             cx,
         );
         let project_picker_slot = TextEditorSlot::install(
             Rc::clone(&app),
-            TextTargetId::ProjectPickerQuery,
+            ids.project_picker_query,
+            EditorKernel::single_line(),
             project_picker.focus_handle(),
             cx,
         );
         let search_query_slot = TextEditorSlot::install(
             Rc::clone(&app),
-            TextTargetId::SearchQuery,
+            ids.search_query,
+            EditorKernel::single_line(),
             panel_runtimes.search_query_focus_handle(),
             cx,
         );
         let search_replacement_slot = TextEditorSlot::install(
             Rc::clone(&app),
-            TextTargetId::SearchReplacement,
+            ids.search_replacement,
+            EditorKernel::single_line(),
             panel_runtimes.search_replacement_focus_handle(),
             cx,
         );
@@ -287,10 +308,11 @@ impl Render for ShellView {
             confirm: self.bind_action(file_tree_commands::confirm_delete()),
             cancel: self.bind_action(file_tree_commands::cancel_delete()),
         };
-        let main_editor_snapshot = self
-            .app
-            .borrow()
-            .with_router(|router| router.snapshot_for(TextTargetId::MainEditor));
+        let main_editor_snapshot = {
+            let app = self.app.borrow();
+            let id = app.text_target_ids().main_editor;
+            app.with_router(|router| router.snapshot_for(id))
+        };
         workbench::render(
             &state,
             &self.panel_host,

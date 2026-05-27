@@ -1,9 +1,9 @@
-use zom_command::EditTarget;
+use zom_command::{EditTarget, KeyContext};
 
 use super::recent::RecentProject;
 use crate::shell::editor::{
-    Editor, EditorSnapshot, ImeQueryTarget, ImeTarget, TextInputProfile, TextTargetId,
-    TextTargetOwner, TextTargetQuery,
+    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
+    TextTargetId, TextTargetOwner, TextTargetQuery,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,16 +26,18 @@ pub(crate) enum ProjectPickerActivation {
 }
 
 pub(crate) struct ProjectPickerModel {
-    query: Editor,
+    target_id: TextTargetId,
+    query: OwnedEditorTarget,
     selected: usize,
     mode: ProjectPickerMode,
     active: bool,
 }
 
 impl ProjectPickerModel {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(target_id: TextTargetId) -> Self {
         Self {
-            query: Editor::new(),
+            target_id,
+            query: OwnedEditorTarget::new(),
             selected: 0,
             mode: ProjectPickerMode::Browse,
             active: false,
@@ -43,7 +45,7 @@ impl ProjectPickerModel {
     }
 
     pub(crate) fn reset(&mut self, mode: ProjectPickerMode) {
-        self.query = Editor::new();
+        self.query = OwnedEditorTarget::new();
         self.selected = 0;
         self.mode = mode;
         self.active = true;
@@ -59,7 +61,7 @@ impl ProjectPickerModel {
 
     pub(crate) fn state(&self) -> ProjectPickerState {
         ProjectPickerState {
-            query: self.query.snapshot(),
+            query: self.query.snapshot(EditorSnapshotRequest::single_line()),
             selected: self.selected,
             mode: self.mode,
         }
@@ -122,15 +124,9 @@ impl ProjectPickerModel {
     }
 }
 
-impl Default for ProjectPickerModel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl TextTargetQuery for ProjectPickerModel {
     fn target_id(&self) -> TextTargetId {
-        TextTargetId::ProjectPickerQuery
+        self.target_id
     }
 
     fn is_active(&self) -> bool {
@@ -138,11 +134,15 @@ impl TextTargetQuery for ProjectPickerModel {
     }
 
     fn snapshot(&self) -> EditorSnapshot {
-        self.query.snapshot()
+        self.query.snapshot(EditorSnapshotRequest::single_line())
     }
 
-    fn profile(&self) -> TextInputProfile {
-        TextInputProfile::ProjectPickerQuery
+    fn key_contexts(&self) -> Vec<KeyContext> {
+        vec![
+            KeyContext::project_picker(),
+            KeyContext::text_edit(self.accepts_newline(), false),
+            KeyContext::global(),
+        ]
     }
 
     fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {

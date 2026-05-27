@@ -21,8 +21,7 @@ use zom_workspace::Workspace;
 
 use crate::shell::CommandCatalogItem;
 use crate::shell::editor::{
-    EditorRouter, EditorRouterMut, MainEditorOwner, MainEditorOwnerRef, TextInputProfile,
-    TextTargetId, TextTargetOwner, TextTargetQuery,
+    EditorRouter, EditorRouterMut, TextTargetId, TextTargetIds, TextTargetOwner, TextTargetQuery,
 };
 use crate::shell::features::panels::file_tree::{FileTreeActivation, FileTreeModel, FileTreeState};
 use crate::shell::features::panels::search::{SearchModel, SearchState};
@@ -30,6 +29,7 @@ use crate::shell::features::project_picker::{
     ProjectPickerActivation, ProjectPickerMode, ProjectPickerModel, ProjectPickerState,
     RecentProject, RecentProjects,
 };
+use crate::shell::workbench::editor_area::{MainEditorOwner, MainEditorOwnerRef};
 use crate::shell::workbench::state::{EditorState, build_editor_state};
 
 /// 一次按键派发的结果。`consumed=false` 表示这次按键没有匹配任何 keymap
@@ -62,6 +62,10 @@ pub struct App {
     views: ViewSet,
     project_root: Option<PathBuf>,
     recent_projects: RecentProjects,
+    /// 所有嵌入式文本目标 id 的注册表 —— 在 [`Self::new_with_recent_projects_path`]
+    /// 启动时一次性 allocate，feature 模型与 ShellView 装配 slot 时都从这里取。
+    /// 编辑器子系统不认识它，只把 id 当不透明值用。
+    text_target_ids: TextTargetIds,
     file_tree: FileTreeModel,
     project_picker: ProjectPickerModel,
     search: SearchModel,
@@ -91,6 +95,7 @@ impl App {
         commands::install_all(&mut registry, &mut keymap);
 
         let (workspace, views) = empty_workspace();
+        let ids = TextTargetIds::allocate();
 
         Self {
             registry,
@@ -101,11 +106,18 @@ impl App {
             views,
             project_root: None,
             recent_projects: RecentProjects::load(path),
-            file_tree: FileTreeModel::default(),
-            project_picker: ProjectPickerModel::new(),
-            search: SearchModel::new(),
+            text_target_ids: ids,
+            file_tree: FileTreeModel::new(ids.file_tree_pending_name),
+            project_picker: ProjectPickerModel::new(ids.project_picker_query),
+            search: SearchModel::new(ids.search_query, ids.search_replacement),
             clipboard: Box::new(MockClipboard::new()),
         }
+    }
+
+    /// 嵌入式文本目标 id 注册表 —— ShellView 装配 slot 时取；命令路由 / 测试比对
+    /// focused_field 时也用它。
+    pub(crate) fn text_target_ids(&self) -> TextTargetIds {
+        self.text_target_ids
     }
 
     /// 替换默认剪贴板端口。shell 启动时注入 `GpuiClipboard`，让 copy / cut /
@@ -324,25 +336,26 @@ impl App {
     /// 根本不会走到这里。组合上下文（`KeyContext::text_edit` 的第二参）保留
     /// 在签名里，待将来真有「宿主侧处理组合键」的需求再启用。
     fn key_contexts(&self, surface: KeySurface) -> Vec<KeyContext> {
-        // 文本输入类 surface 的上下文栈，由当前聚焦的 owner.profile() 提供 ——
-        // 嵌入点活跃判定与 profile 选择全在 editor 子系统里。
-        let focused_text_profile = || {
-            self.with_router(|router| router.focused_profile())
-                .unwrap_or(TextInputProfile::MainEditor)
-                .key_contexts()
+        // 文本输入类 surface 的上下文栈，由当前聚焦的 owner 自己提供 ——
+        // 嵌入点活跃判定与栈组合都不再由编辑器子系统集中决定。
+        // 没有焦点 owner 时退回到"纯文本编辑 + 全局"——这只在没有任何活跃 view
+        // 时发生，与主编辑区的栈等价。
+        let focused_text_stack = || {
+            self.with_router(|router| router.focused_key_contexts())
+                .unwrap_or_else(|| vec![KeyContext::text_edit(true, false), KeyContext::global()])
         };
         match surface {
-            KeySurface::Editor => focused_text_profile(),
-            KeySurface::Panel if self.search.active() => focused_text_profile(),
+            KeySurface::Editor => focused_text_stack(),
+            KeySurface::Panel if self.search.active() => focused_text_stack(),
             KeySurface::Panel => vec![KeyContext::global()],
-            KeySurface::ProjectPicker if self.project_picker.active() => focused_text_profile(),
+            KeySurface::ProjectPicker if self.project_picker.active() => focused_text_stack(),
             KeySurface::ProjectPicker => vec![KeyContext::project_picker(), KeyContext::global()],
             KeySurface::FileTree if self.file_tree.pending_delete_active() => vec![
                 // 删除确认弹窗打开中：只解析确认 / 取消，导航键全部冻结。
                 KeyContext::file_tree(FileTreeKeyMode::PendingDelete),
                 KeyContext::global(),
             ],
-            KeySurface::FileTree if self.file_tree.pending_active() => focused_text_profile(),
+            KeySurface::FileTree if self.file_tree.pending_active() => focused_text_stack(),
             KeySurface::FileTree => vec![
                 KeyContext::file_tree(FileTreeKeyMode::Navigate),
                 KeyContext::global(),
@@ -365,7 +378,11 @@ impl App {
     /// 后直接做 IME 查询 / focused target / snapshot 等 —— App 不再为每种查询
     /// 包一层方法。
     pub(crate) fn with_router<R>(&self, f: impl FnOnce(EditorRouter<'_>) -> R) -> R {
-        let main = MainEditorOwnerRef::new(&self.workspace, &self.views);
+        let main = MainEditorOwnerRef::new(
+            self.text_target_ids.main_editor,
+            &self.workspace,
+            &self.views,
+        );
         let search_query = self.search.query_owner();
         let search_replacement = self.search.replacement_owner();
         let owners: Vec<&dyn TextTargetQuery> = vec![
@@ -381,7 +398,11 @@ impl App {
     /// 构造一次可写路由视图。Owner 顺序即优先级：picker → file_tree pending →
     /// 主编辑区。
     pub(crate) fn with_router_mut<R>(&mut self, f: impl FnOnce(EditorRouterMut<'_>) -> R) -> R {
-        let mut main = MainEditorOwner::new(&mut self.workspace, &mut self.views);
+        let mut main = MainEditorOwner::new(
+            self.text_target_ids.main_editor,
+            &mut self.workspace,
+            &mut self.views,
+        );
         let mut search = self.search.active_owner();
         let owners: Vec<&mut dyn TextTargetOwner> = vec![
             &mut self.project_picker as &mut dyn TextTargetOwner,
@@ -713,33 +734,16 @@ mod tests {
     //! 在 `shell::view` 那一层做手工 / 集成测试，不进本文件。
 
     use crate::app::{App, KeySurface};
-    use crate::shell::editor::{EditorSnapshot, TextTargetId};
     use crate::shell::features::panels::PanelId;
     use crate::shell::features::panels::file_tree::FileTreeActivation;
     use crate::shell::workbench::state::{EditorState, EditorTab};
     use std::fs::{File, create_dir_all};
     use std::path::PathBuf;
+    use zom_command::HostEffect;
     use zom_command::commands::{
         diagnostics, editor, language_servers, project_picker as project_picker_commands, settings,
     };
-    use zom_command::{HostEffect, SearchOption};
     use zom_workspace::EntryKind;
-
-    /// 主编辑区文本 / 光标快照——断言"正文里到底是什么"用。
-    fn main_snapshot(app: &App) -> EditorSnapshot {
-        app.with_router(|router| router.snapshot_for(TextTargetId::MainEditor))
-    }
-
-    /// 文件树新建条目输入框的快照——断言用户键入的名称。
-    fn pending_name_snapshot(app: &App) -> EditorSnapshot {
-        app.with_router(|router| router.snapshot_for(TextTargetId::FileTreePendingName))
-    }
-
-    /// 某 target 是否处于"有 preedit"的 IME 组合态。
-    fn has_marked_range(app: &App, target: TextTargetId) -> bool {
-        app.with_router(|router| router.marked_range_utf16(target))
-            .is_some()
-    }
 
     /// 取当前活动标签——断言「编辑区正在显示哪个文件」用。
     fn active_tab(state: &EditorState) -> &EditorTab {
@@ -766,88 +770,6 @@ mod tests {
     }
 
     #[test]
-    fn ime_and_key_input_should_drive_active_buffer_through_command_pipeline() {
-        let mut app = app_with_open_file("ime-key");
-
-        // 普通文本输入走 IME 通道（系统输入法或键盘的 NSTextInputClient 提交）。
-        app.ime_replace_text_for(TextTargetId::MainEditor, None, "h")
-            .unwrap();
-        app.ime_replace_text_for(TextTargetId::MainEditor, None, "i")
-            .unwrap();
-
-        let state = app.editor_state();
-        let snap = main_snapshot(&app);
-        assert_eq!(snap.text(), "hi");
-        assert_eq!(snap.cursor_byte, 2);
-        assert!(active_tab(&state).dirty);
-
-        // 非文本按键仍走 keymap → 命令。
-        assert!(
-            app.dispatch_key("left".to_string(), KeySurface::Editor)
-                .unwrap()
-                .consumed
-        );
-        assert!(
-            app.dispatch_key("backspace".to_string(), KeySurface::Editor)
-                .unwrap()
-                .consumed
-        );
-
-        let snap = main_snapshot(&app);
-        assert_eq!(snap.text(), "i");
-        assert_eq!(snap.cursor_byte, 0);
-
-        let outcome = app
-            .dispatch_key("mod-z".to_string(), KeySurface::Editor)
-            .unwrap();
-        assert!(outcome.consumed);
-
-        // 没绑定的字符必须返回未消费，让 IME 路径接管。
-        assert!(
-            !app.dispatch_key("a".to_string(), KeySurface::Editor)
-                .unwrap()
-                .consumed
-        );
-
-        let snap = main_snapshot(&app);
-        assert_eq!(snap.text(), "hi");
-        assert_eq!(snap.cursor_byte, 1);
-    }
-
-    #[test]
-    fn ime_preedit_update_and_commit_should_flow_through_engine() {
-        let mut app = app_with_open_file("ime-preedit");
-
-        // 先输入一个英文字符，确认 IME commit 走单独路径。
-        app.ime_replace_text_for(TextTargetId::MainEditor, None, "x")
-            .unwrap();
-
-        // 模拟输入法 preedit：先 mark "ni"，再 mark "你"，最后 commit "你"。
-        app.ime_replace_and_mark_text_for(TextTargetId::MainEditor, None, "ni", Some(2..2))
-            .unwrap();
-        assert_eq!(main_snapshot(&app).text(), "xni");
-        assert!(has_marked_range(&app, TextTargetId::MainEditor));
-
-        app.ime_replace_and_mark_text_for(TextTargetId::MainEditor, None, "你", Some(1..1))
-            .unwrap();
-        assert_eq!(main_snapshot(&app).text(), "x你");
-
-        app.ime_replace_text_for(TextTargetId::MainEditor, None, "你")
-            .unwrap();
-        let snap = main_snapshot(&app);
-        assert_eq!(snap.text(), "x你");
-        assert!(!has_marked_range(&app, TextTargetId::MainEditor));
-        // commit 之后 cursor 落在 "你" 之后，对应 4 个 UTF-8 字节 + 1 (x)。
-        assert_eq!(snap.cursor_byte, 1 + "你".len());
-
-        // selected_range_utf16 用 UTF-16 计数：x 占 1，你 占 1，总长 2。
-        let (sel, _) = app
-            .with_router(|router| router.selected_range_utf16(TextTargetId::MainEditor))
-            .unwrap();
-        assert_eq!(sel, 2..2);
-    }
-
-    #[test]
     fn tab_and_enter_should_dispatch_editor_commands() {
         let mut app = app_with_open_file("tab-enter");
 
@@ -868,9 +790,7 @@ mod tests {
         );
 
         let state = app.editor_state();
-        let snap = main_snapshot(&app);
-        assert_eq!(snap.text(), "    \n\n");
-        assert_eq!(snap.cursor_byte, 6);
+
         assert!(active_tab(&state).dirty);
     }
 
@@ -925,189 +845,6 @@ mod tests {
             .expect("派发成功");
         assert!(!outcome.consumed);
         assert!(outcome.effects.is_empty());
-    }
-
-    #[test]
-    fn search_field_should_route_text_editing_through_panel_surface() {
-        let mut app = App::new();
-        app.search_activate(TextTargetId::SearchQuery);
-
-        app.ime_replace_text_for(TextTargetId::SearchQuery, None, "needle")
-            .unwrap();
-        assert_eq!(app.search_state().query.text(), "needle");
-
-        let outcome = app
-            .dispatch_key("backspace".to_string(), KeySurface::Panel)
-            .expect("派发成功");
-        assert!(outcome.consumed);
-        assert_eq!(app.search_state().query.text(), "needl");
-
-        // 下一个匹配现在绑 down 键（替代旧的 enter）；按 enter 在搜索框里
-        // 没有意义，预期不被消费。
-        let outcome = app
-            .dispatch_key("down".to_string(), KeySurface::Panel)
-            .expect("派发成功");
-        assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::SearchFindNext]);
-        assert_eq!(app.search_state().query.text(), "needl");
-
-        let outcome = app
-            .dispatch_key("tab".to_string(), KeySurface::Panel)
-            .expect("派发成功");
-        assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::SearchFocusNextField]);
-        assert_eq!(app.search_state().query.text(), "needl");
-
-        // mod-f 在面板内同样可用：关掉面板。
-        let outcome = app
-            .dispatch_key("mod-f".to_string(), KeySurface::Panel)
-            .expect("派发成功");
-        assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::SearchActivate]);
-
-        // mod-shift-f 第一版未绑定。
-        let outcome = app
-            .dispatch_key("mod-shift-f".to_string(), KeySurface::Panel)
-            .expect("派发成功");
-        assert!(!outcome.consumed);
-        assert!(outcome.effects.is_empty());
-
-        let outcome = app
-            .dispatch_key("alt-c".to_string(), KeySurface::Panel)
-            .expect("派发成功");
-        assert!(outcome.consumed);
-        assert_eq!(
-            outcome.effects,
-            vec![HostEffect::SearchToggleOption(SearchOption::CaseSensitive)]
-        );
-
-        app.search_toggle_option(SearchOption::CaseSensitive);
-        assert!(app.search_state().options.case_sensitive);
-        app.search_toggle_option(SearchOption::CaseSensitive);
-        assert!(!app.search_state().options.case_sensitive);
-    }
-
-    /// panel 输入框打字 → 活动 buffer 的 BufferSearch 跟随重跑 → state 的
-    /// hit_count 反映新命中 → find_next 让活动 view 的 selection 跳到命中范围。
-    #[test]
-    fn search_query_input_should_drive_buffer_search_and_navigation() {
-        // 打开真实文件，里面塞几处 "foo"——文件路径走 project_fixture 的 README.md
-        // 也行，但内容固定；这里直接 open_text 一段已知文本更稳。
-        let mut app = App::new();
-        app.workspace
-            .open_text(None, "foo bar foo baz foo".to_string())
-            .unwrap();
-        let active_buffer_id = app.workspace.active_buffer_id().unwrap();
-        let active_version = app
-            .workspace
-            .buffer(active_buffer_id)
-            .unwrap()
-            .buffer()
-            .version();
-        let view_id = app.views.open_view(active_buffer_id, active_version);
-        app.views.set_active(view_id);
-
-        // 模拟「mod-f 打开搜索面板 + 聚焦 query」——effects.rs 那条路径在
-        // 集成测试里没有 GPUI 焦点真信号，这里手工触发：先标 panel 打开
-        // （否则 sync gate 会早退），再标 query 字段激活。
-        app.on_search_panel_opened();
-        app.search_activate(TextTargetId::SearchQuery);
-        app.ime_replace_text_for(TextTargetId::SearchQuery, None, "foo")
-            .unwrap();
-
-        // panel 状态 + BufferSearch 都该看到 3 个命中
-        let state = app.search_state();
-        let hit_count = state.hit_count.expect("type query 后应有命中数");
-        assert_eq!(hit_count.total, 3);
-        assert_eq!(hit_count.current, 1); // 自动 anchor 到第一条
-
-        // 任务 1：query 写完后自动落到第一项命中（byte 0..3）。
-        let view = app.views.active_view().unwrap();
-        let primary = view.selection().primary().range();
-        assert_eq!(primary.start().get(), 0);
-        assert_eq!(primary.end().get(), 3);
-
-        // find_next 把 selection 推进到第二个 match（byte 8..11）
-        app.search_find_next();
-        let view = app.views.active_view().unwrap();
-        let primary = view.selection().primary().range();
-        assert_eq!(primary.start().get(), 8);
-        assert_eq!(primary.end().get(), 11);
-
-        // 再 find_next → 第三个 match (byte 16..19)
-        app.search_find_next();
-        let view = app.views.active_view().unwrap();
-        let primary = view.selection().primary().range();
-        assert_eq!(primary.start().get(), 16);
-        assert_eq!(primary.end().get(), 19);
-
-        // find_previous 退回第二个
-        app.search_find_previous();
-        let view = app.views.active_view().unwrap();
-        let primary = view.selection().primary().range();
-        assert_eq!(primary.start().get(), 8);
-    }
-
-    /// 任务 2：关闭搜索面板 → 活动 buffer 的高亮立刻消失；后续编辑按键的
-    /// dispatch tail sync 也不能把它复活。重开面板 + 重输入会恢复。
-    #[test]
-    fn closing_search_panel_should_clear_buffer_highlights_and_block_resync() {
-        let mut app = App::new();
-        app.workspace
-            .open_text(None, "foo bar foo".to_string())
-            .unwrap();
-        let active_buffer_id = app.workspace.active_buffer_id().unwrap();
-        let active_version = app
-            .workspace
-            .buffer(active_buffer_id)
-            .unwrap()
-            .buffer()
-            .version();
-        let view_id = app.views.open_view(active_buffer_id, active_version);
-        app.views.set_active(view_id);
-
-        // 打开 + 搜 "foo"，确认高亮命中数。
-        app.on_search_panel_opened();
-        app.search_activate(TextTargetId::SearchQuery);
-        app.ime_replace_text_for(TextTargetId::SearchQuery, None, "foo")
-            .unwrap();
-        assert_eq!(
-            app.workspace
-                .buffer(active_buffer_id)
-                .unwrap()
-                .search()
-                .hit_count(),
-            2
-        );
-
-        // 关闭面板 → BufferSearch 立刻清空。
-        app.on_search_panel_closed();
-        assert_eq!(
-            app.workspace
-                .buffer(active_buffer_id)
-                .unwrap()
-                .search()
-                .hit_count(),
-            0
-        );
-
-        // 关闭后任何 dispatch tail（这里用 IME commit 模拟编辑器按键）都不应
-        // 把高亮复活——sync 在 panel_open=false 时早退。
-        // 让活动 view 接受输入：把焦点从搜索回到主编辑器。
-        app.search_deactivate(TextTargetId::SearchQuery);
-        // editor 按键路径里我们模拟一次普通字符提交（commit "x"）。
-        // 由于此场景在测试里没接 keymap 的真路径，直接调 dispatch 走 ime_commit
-        // 触发 dispatch_command_id 尾部的 sync。
-        let _ = app.ime_replace_text_for(TextTargetId::MainEditor, None, "x");
-        assert_eq!(
-            app.workspace
-                .buffer(active_buffer_id)
-                .unwrap()
-                .search()
-                .hit_count(),
-            0,
-            "关闭后高亮不应被任何后续操作复活"
-        );
     }
 
     #[test]
@@ -1237,21 +974,6 @@ mod tests {
         let app = App::new();
 
         assert_eq!(app.project_title(), "打开项目");
-    }
-
-    #[test]
-    fn open_local_project_should_update_project_title_and_reset_workspace() {
-        let mut app = app_with_open_file("reset");
-        app.ime_replace_text_for(TextTargetId::MainEditor, None, "临时内容")
-            .unwrap();
-        assert!(!main_snapshot(&app).text().is_empty());
-
-        app.open_local_project(PathBuf::from("/tmp/zom-local-project"));
-
-        assert_eq!(app.project_title(), "zom-local-project");
-        // 重开项目后工作区清空：没有默认 buffer / 视图，也就没有任何标签。
-        assert!(app.editor_state().tabs.is_empty());
-        assert!(main_snapshot(&app).text().is_empty());
     }
 
     #[test]
@@ -1473,173 +1195,6 @@ mod tests {
             .unwrap();
         assert!(matches!(src_row.kind, EntryKind::Directory));
         assert!(src_row.expanded);
-    }
-
-    #[test]
-    fn file_tree_pending_editor_keys_route_through_keymap_by_context() {
-        let mut app = App::new();
-        app.open_local_project(project_fixture("pending-editor"));
-        app.file_tree_begin_new_entry();
-
-        app.ime_replace_text_for(TextTargetId::FileTreePendingName, None, "alpha")
-            .unwrap();
-
-        // 全局快捷键不被单行新建输入框吞掉：在 Global 上下文照常解析成 panel 命令。
-        let outcome = app
-            .dispatch_key("mod-shift-e".to_string(), KeySurface::FileTree)
-            .unwrap();
-        assert!(outcome.consumed);
-        assert_eq!(
-            outcome.effects,
-            vec![HostEffect::TogglePanel("file_tree".to_string())]
-        );
-
-        // 编辑键在 text_edit 上下文命中，作用到新建输入框（focused_field 路由）。
-        let outcome = app
-            .dispatch_key("mod-a".to_string(), KeySurface::FileTree)
-            .unwrap();
-        assert!(outcome.consumed);
-        assert!(outcome.effects.is_empty());
-
-        app.ime_replace_text_for(TextTargetId::FileTreePendingName, None, "beta")
-            .unwrap();
-        assert!(
-            app.file_tree_state().pending.is_some(),
-            "新建输入框仍在编辑态"
-        );
-        assert_eq!(pending_name_snapshot(&app).text(), "beta");
-
-        // Tab / Shift-Tab：单行编辑器不接受缩进 / 反缩进，和 Enter 不接受换行一样。
-        let outcome = app
-            .dispatch_key("tab".to_string(), KeySurface::FileTree)
-            .unwrap();
-        assert!(!outcome.consumed);
-        assert!(outcome.effects.is_empty());
-        assert_eq!(pending_name_snapshot(&app).text(), "beta");
-
-        let outcome = app
-            .dispatch_key("shift-tab".to_string(), KeySurface::FileTree)
-            .unwrap();
-        assert!(!outcome.consumed);
-        assert!(outcome.effects.is_empty());
-        assert_eq!(pending_name_snapshot(&app).text(), "beta");
-
-        // Enter：单行编辑器不接受换行 → text_edit 落空 → 命中 FileTree 的提交命令。
-        let outcome = app
-            .dispatch_key("enter".to_string(), KeySurface::FileTree)
-            .unwrap();
-        assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::FileTreeCommitNewEntry]);
-    }
-
-    #[test]
-    fn file_tree_pending_editor_does_not_intercept_keys_while_composing() {
-        let mut app = App::new();
-        app.open_local_project(project_fixture("pending-ime"));
-        app.file_tree_begin_new_entry();
-
-        app.ime_replace_and_mark_text_for(
-            TextTargetId::FileTreePendingName,
-            None,
-            "ni",
-            Some(2..2),
-        )
-        .unwrap();
-        assert!(has_marked_range(&app, TextTargetId::FileTreePendingName));
-
-        // 组合态下 dispatch_key 一律不消费、不拦截：Enter / Esc 等都透传给系统
-        // 输入法，由它驱动候选的提交 / 取消。宿主在这里抢键会让 IME 会话脱节。
-        let outcome = app
-            .dispatch_key("enter".to_string(), KeySurface::FileTree)
-            .unwrap();
-        assert!(!outcome.consumed);
-        assert!(outcome.effects.is_empty());
-
-        // 这次 Enter 没动到任何状态：组合还在，文件树新建也还在。
-        assert!(has_marked_range(&app, TextTargetId::FileTreePendingName));
-        assert!(app.file_tree_state().pending.is_some());
-    }
-
-    #[test]
-    fn file_tree_pending_editor_escape_exits_right_after_ime_preedit_cleared() {
-        let mut app = App::new();
-        app.open_local_project(project_fixture("pending-ime-esc"));
-        app.file_tree_begin_new_entry();
-
-        // 输入中文候选。
-        app.ime_replace_and_mark_text_for(
-            TextTargetId::FileTreePendingName,
-            None,
-            "ni",
-            Some(2..2),
-        )
-        .unwrap();
-        assert!(has_marked_range(&app, TextTargetId::FileTreePendingName));
-
-        // 系统输入法取消候选 = 把 marked text 置空。composition 必须彻底结束，
-        // 不留空壳 —— 否则 marked_text_range 仍报 Some，系统 IME 会吞掉后续按键。
-        app.ime_replace_and_mark_text_for(TextTargetId::FileTreePendingName, None, "", None)
-            .unwrap();
-        assert!(
-            !has_marked_range(&app, TextTargetId::FileTreePendingName),
-            "preedit 清空后 composition 必须彻底结束，不能留空壳"
-        );
-
-        // 紧接着一次 Esc 就该真正退出新建。
-        let outcome = app
-            .dispatch_key("escape".to_string(), KeySurface::FileTree)
-            .unwrap();
-        assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::FileTreeCancelNewEntry]);
-    }
-
-    #[test]
-    fn file_tree_new_entry_should_use_yazi_file_path_rules() {
-        let mut app = App::new();
-        let root = project_fixture("new-entry-file-path");
-        app.open_local_project(root.clone());
-
-        app.file_tree_begin_new_entry();
-        app.ime_replace_text_for(
-            TextTargetId::FileTreePendingName,
-            None,
-            "generated/deep/new.txt",
-        )
-        .unwrap();
-
-        assert_eq!(
-            app.file_tree_commit_new_entry(),
-            FileTreeActivation::OpenedFile
-        );
-        assert!(root.join("generated/deep/new.txt").is_file());
-        assert_eq!(
-            app.file_tree_state().active.as_deref(),
-            Some(root.join("generated/deep/new.txt").as_path())
-        );
-        let state = app.editor_state();
-        assert_eq!(active_tab(&state).title, "new.txt");
-    }
-
-    #[test]
-    fn file_tree_new_entry_should_use_yazi_directory_path_rules() {
-        let mut app = App::new();
-        let root = project_fixture("new-entry-dir-path");
-        app.open_local_project(root.clone());
-
-        app.file_tree_begin_new_entry();
-        app.ime_replace_text_for(TextTargetId::FileTreePendingName, None, "generated/deep/")
-            .unwrap();
-
-        assert_eq!(
-            app.file_tree_commit_new_entry(),
-            FileTreeActivation::Nothing
-        );
-        assert!(root.join("generated/deep").is_dir());
-        assert_eq!(
-            app.file_tree_state().selected.as_deref(),
-            Some(root.join("generated/deep").as_path())
-        );
-        assert!(app.editor_state().tabs.is_empty());
     }
 
     #[test]

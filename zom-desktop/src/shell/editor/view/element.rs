@@ -1,8 +1,8 @@
 //! 可嵌入编辑器渲染图元 —— 唯一的编辑器实现（借鉴 Zed 的 `EditorElement`）。
 //!
-//! 单行与多行不是两种编辑器，而是同一个编辑器的两个 [`EditorKind`]：行号列、
-//! 纵向滚动、高度模式全部由「行数」派生，调用方只选 kind，配不出
-//! 「带行号的单行」这种无意义组合。
+//! 单行输入框与主编辑区不是两种编辑器，而是同一个
+//! [`EditorKernel`](crate::shell::editor::EditorKernel) 按能力开关创建出的两个形态；本文件只
+//! 消费内核传下来的能力开关并完成 GPUI 绘制。
 //!
 //! 文本与光标分层绘制：每帧把视口内每行 shape 成 [`ShapedLine`]，文本只随
 //! 内容变化，光标只是一个独立填充矩形 —— 移动光标不触发文本重排，这是
@@ -39,10 +39,12 @@ use zom_view::RevealKind;
 
 use crate::shell::shared::theme::color;
 
+use crate::shell::editor::input::CaretLayout;
+use crate::shell::editor::kernel::EditorKernel;
+use crate::shell::editor::snapshot::{RevealHint, SnapshotLine};
+
 use super::blink::CaretClock;
-use super::core::{RevealHint, SnapshotLine};
-use super::embed::{EditorInputHook, EditorPaintInfo, EditorViewportSyncHook};
-use super::input::CaretLayout;
+use super::input_host::{EditorInputHook, EditorPaintInfo, EditorViewportSyncHook};
 use super::phases::{
     GlyphOverlay, GutterIconQuad, LineBackgroundQuad, LineMetric, paint_phase_1_line_backgrounds,
     paint_phase_2_range_backgrounds, paint_phase_3_glyphs, paint_phase_4_glyph_overlays,
@@ -64,15 +66,6 @@ fn gutter_color() -> Hsla {
     color::gray::s08().into()
 }
 
-/// 编辑器的唯一区分轴：行数上限。其余差异（行号、纵向滚动、高度）皆由它派生。
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EditorKind {
-    /// 单行：无行号、高度恰为一行、不发生纵向滚动。
-    SingleLine,
-    /// 多行：带行号、撑满容器、可纵向滚动。
-    MultiLine,
-}
-
 /// 一个独立文本编辑单元的渲染图元。
 ///
 /// 文本样式（字体 / 字号 / 行高 / 前景色）从父级 div 继承 —— 嵌入处决定，
@@ -81,7 +74,7 @@ pub(crate) enum EditorKind {
 /// 光标闪烁可见性不在字段里 —— 每帧 paint 时从 [`CaretClock`] 全局读，整窗
 /// 共享同一相位。
 pub(crate) struct EditorElement {
-    kind: EditorKind,
+    kernel: EditorKernel,
     /// 当前视口可见的逻辑行（绝对 line / byte 坐标）。
     lines: Vec<SnapshotLine>,
     /// 整 buffer 的逻辑行总数；用于算 `content_height`、scroll clamp 与回写
@@ -116,7 +109,7 @@ pub(crate) struct EditorElement {
 
 impl EditorElement {
     pub(crate) fn new(
-        kind: EditorKind,
+        kernel: EditorKernel,
         lines: Vec<SnapshotLine>,
         total_lines: u64,
         viewport_start_line: u64,
@@ -126,7 +119,7 @@ impl EditorElement {
         input_handler_hook: EditorInputHook,
     ) -> Self {
         Self {
-            kind,
+            kernel,
             lines,
             total_lines,
             viewport_start_line,
@@ -148,8 +141,8 @@ impl EditorElement {
         self
     }
 
-    pub(crate) fn reveal(mut self, hint: RevealHint) -> Self {
-        self.reveal = Some(hint);
+    pub(crate) fn reveal_if_some(mut self, hint: Option<RevealHint>) -> Self {
+        self.reveal = hint;
         self
     }
 
@@ -172,14 +165,14 @@ impl EditorElement {
         self
     }
 
-    /// 是否渲染行号列：仅多行编辑器。
+    /// 是否渲染行号列：由内核能力决定，当前只有主编辑区开启。
     fn has_gutter(&self) -> bool {
-        matches!(self.kind, EditorKind::MultiLine)
+        self.kernel.has_gutter()
     }
 
-    /// 是否撑满父容器：多行编辑器撑满并内部滚动，单行编辑器高度即一行。
+    /// 是否撑满父容器：主编辑区撑满并内部滚动，单行输入框高度即一行。
     fn fills_viewport(&self) -> bool {
-        matches!(self.kind, EditorKind::MultiLine)
+        self.kernel.fills_viewport()
     }
 }
 
@@ -331,10 +324,10 @@ impl Element for EditorElement {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         if self.fills_viewport() {
-            // 多行编辑器：撑满视口，内容溢出靠内部滚动偏移消化。
+            // 主编辑区：撑满视口，内容溢出靠内部滚动偏移消化。
             style.size.height = relative(1.).into();
         } else {
-            // 单行编辑器：高度恰为一行。
+            // 紧凑输入框：高度恰为一行。
             style.size.height = line_height.into();
         }
         let layout_id = window.request_layout(style, [], cx);
@@ -361,6 +354,7 @@ impl Element for EditorElement {
         let font_size = layout.font_size;
         let line_height = layout.line_height;
         let has_gutter = self.has_gutter();
+        let allows_vertical_scroll = self.kernel.allows_vertical_scroll();
         let viewport_start_line = self.viewport_start_line;
         let total_lines = self.total_lines.max(1);
 
@@ -380,8 +374,11 @@ impl Element for EditorElement {
         let mut prepainted_lines: Vec<PrepaintedLine> = Vec::with_capacity(self.lines.len());
         let mut gutter_line_numbers: Vec<ShapedLine> = Vec::with_capacity(self.lines.len());
 
-        let reveal_byte = self.reveal.map(|hint| hint.byte);
-        let reveal_logical_line = self.reveal.map(|hint| hint.line);
+        // reveal 是否生效完全看快照里有没有；调用方不需要 reveal 时
+        // 自然就不会在 owner.snapshot() 里填这个字段。
+        let active_reveal = self.reveal;
+        let reveal_byte = active_reveal.map(|hint| hint.byte);
+        let reveal_logical_line = active_reveal.map(|hint| hint.line);
         // reveal 目标若在视口内，shape 后能算出行内 x（用于 reveal x 轴摆位）。
         let mut reveal_visible_row_x: Option<(usize, Pixels)> = None;
 
@@ -477,6 +474,8 @@ impl Element for EditorElement {
         let search_normal_color: Hsla = color::orange::a03().into();
         let search_current_color: Hsla = color::orange::a05().into();
         let selection_color: Hsla = color::blue::a04().into();
+        // search 覆盖层数据驱动：没填 hits 自然不画 —— 单行 owner（文件树 /
+        // 选择器 / 搜索面板自己的输入框）不会在 snapshot 里塞 hits。
         let mut range_backgrounds: Vec<(TextRange, Hsla)> =
             Vec::with_capacity(self.search_hits.len() + selections.len());
         for hit in &self.search_hits {
@@ -515,7 +514,7 @@ impl Element for EditorElement {
                 let viewport_h = bounds.size.height;
                 let viewport_w =
                     clamp_px(bounds.size.width - gutter_offset, px(0.), bounds.size.width);
-                let reveal = self.reveal;
+                let reveal = active_reveal;
                 let result =
                     window.with_element_state::<EditorScroll, _>(global_id, |state, _window| {
                         let mut state = state.unwrap_or_default();
@@ -573,18 +572,22 @@ impl Element for EditorElement {
                         // caret 消失。多光标场景只让 primary caret 决定滚动
                         // —— 多个 caret 同时驱动滚动会互相拉扯。primary 是用户
                         // 最近交互的 caret，跟它走最自然。
-                        let caret_top = line_height * primary_caret_logical_line as f32;
-                        let caret_bottom = caret_top + line_height;
-                        if caret_top < off.y {
-                            off.y = caret_top;
-                        } else if caret_bottom > off.y + viewport_h {
-                            off.y = caret_bottom - viewport_h;
+                        if allows_vertical_scroll {
+                            let caret_top = line_height * primary_caret_logical_line as f32;
+                            let caret_bottom = caret_top + line_height;
+                            if caret_top < off.y {
+                                off.y = caret_top;
+                            } else if caret_bottom > off.y + viewport_h {
+                                off.y = caret_bottom - viewport_h;
+                            }
+                            off.y = clamp_px(
+                                off.y,
+                                px(0.),
+                                clamp_px(content_height - viewport_h, px(0.), content_height),
+                            );
+                        } else {
+                            off.y = px(0.);
                         }
-                        off.y = clamp_px(
-                            off.y,
-                            px(0.),
-                            clamp_px(content_height - viewport_h, px(0.), content_height),
-                        );
 
                         // 横向：光标列需可见。行尾光标位于最后一个字形「之
                         // 后」，故可滚动宽度要在最宽行的基础上额外留出一个光
@@ -615,9 +618,13 @@ impl Element for EditorElement {
                         let lh: f32 = f32::from(line_height).max(1.0);
                         let off_y_f: f32 = off.y.into();
                         let viewport_h_f: f32 = viewport_h.into();
-                        let top_line = (off_y_f / lh).floor().max(0.0) as u64;
-                        let visible = ((viewport_h_f / lh).ceil() as u64).saturating_add(1);
-                        let top_line_clamped = top_line.min(total_lines.saturating_sub(1));
+                        let (top_line_clamped, visible) = if allows_vertical_scroll {
+                            let top_line = (off_y_f / lh).floor().max(0.0) as u64;
+                            let visible = ((viewport_h_f / lh).ceil() as u64).saturating_add(1);
+                            (top_line.min(total_lines.saturating_sub(1)), visible)
+                        } else {
+                            (0, 1)
+                        };
                         ((off, top_line_clamped, visible), state)
                     });
                 result

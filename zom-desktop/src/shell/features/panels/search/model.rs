@@ -1,10 +1,10 @@
-use zom_command::{EditTarget, SearchOption};
+use zom_command::{EditTarget, KeyContext, SearchOption};
 use zom_view::ViewSet;
 use zom_workspace::{BufferSearchOptions, Workspace};
 
 use crate::shell::editor::{
-    Editor, EditorSnapshot, ImeQueryTarget, ImeTarget, TextInputProfile, TextTargetId,
-    TextTargetOwner, TextTargetQuery,
+    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
+    TextTargetId, TextTargetOwner, TextTargetQuery,
 };
 
 /// 提供给 panel UI 渲染的快照。
@@ -44,10 +44,11 @@ pub(crate) struct SearchOptions {
 /// 第一版面板的算法层是**空的**：搜索 / 替换 / 导航全部委托给底层
 /// `WorkspaceBuffer::BufferSearch`（P3 待落地）。`SearchModel` 只持有
 /// UI 局部状态：两个输入框 + 选项 toggles + 当前活动输入框。
-#[derive(Default)]
 pub(crate) struct SearchModel {
-    query: Editor,
-    replacement: Editor,
+    query_id: TextTargetId,
+    replacement_id: TextTargetId,
+    query: OwnedEditorTarget,
+    replacement: OwnedEditorTarget,
     options: SearchOptions,
     active: Option<TextTargetId>,
     /// 面板是否可见（mod-f 显示 / 收起的逻辑栅栏，与 `active` 不同：active 表示
@@ -58,14 +59,28 @@ pub(crate) struct SearchModel {
 }
 
 impl SearchModel {
-    pub(crate) fn new() -> Self {
-        Self::default()
+    pub(crate) fn new(query_id: TextTargetId, replacement_id: TextTargetId) -> Self {
+        Self {
+            query_id,
+            replacement_id,
+            query: OwnedEditorTarget::new(),
+            replacement: OwnedEditorTarget::new(),
+            options: SearchOptions::default(),
+            active: None,
+            panel_open: false,
+        }
+    }
+
+    fn is_search_target(&self, target: TextTargetId) -> bool {
+        target == self.query_id || target == self.replacement_id
     }
 
     pub(crate) fn state(&self) -> SearchState {
         SearchState {
-            query: self.query.snapshot(),
-            replacement: self.replacement.snapshot(),
+            query: self.query.snapshot(EditorSnapshotRequest::single_line()),
+            replacement: self
+                .replacement
+                .snapshot(EditorSnapshotRequest::single_line()),
             options: self.options,
             // 第一版恒为 None；BufferSearch 接入后从 active buffer 读
             // (current_hit_ordinal, hits.len()) 填进来。
@@ -112,7 +127,7 @@ impl SearchModel {
     }
 
     pub(crate) fn activate(&mut self, target: TextTargetId) {
-        if is_search_target(target) {
+        if self.is_search_target(target) {
             self.active = Some(target);
         }
     }
@@ -138,30 +153,43 @@ impl SearchModel {
     }
 
     pub(crate) fn edit_target(&mut self) -> Option<EditTarget<'_>> {
-        match self.active {
-            Some(TextTargetId::SearchQuery) => Some(self.query.as_edit_target()),
-            Some(TextTargetId::SearchReplacement) => Some(self.replacement.as_edit_target()),
-            _ => None,
+        let active = self.active?;
+        if active == self.query_id {
+            Some(self.query.as_edit_target())
+        } else if active == self.replacement_id {
+            Some(self.replacement.as_edit_target())
+        } else {
+            None
         }
     }
 
     pub(crate) fn query_owner(&self) -> SearchFieldQuery<'_> {
         SearchFieldQuery {
             model: self,
-            target: TextTargetId::SearchQuery,
+            target: self.query_id,
         }
     }
 
     pub(crate) fn replacement_owner(&self) -> SearchFieldQuery<'_> {
         SearchFieldQuery {
             model: self,
-            target: TextTargetId::SearchReplacement,
+            target: self.replacement_id,
         }
     }
 
     pub(crate) fn active_owner(&mut self) -> SearchActiveOwner<'_> {
         SearchActiveOwner { model: self }
     }
+}
+
+/// 搜索面板输入框（query / replacement 通用）的按键解析栈：
+/// 面板命令优先，其次文本编辑，最后全局兜底。
+fn search_field_key_contexts(accepts_newline: bool) -> Vec<KeyContext> {
+    vec![
+        KeyContext::search_panel(),
+        KeyContext::text_edit(accepts_newline, false),
+        KeyContext::global(),
+    ]
 }
 
 pub(crate) struct SearchFieldQuery<'a> {
@@ -186,8 +214,8 @@ impl TextTargetQuery for SearchFieldQuery<'_> {
         self.model.snapshot_for(self.target)
     }
 
-    fn profile(&self) -> TextInputProfile {
-        TextInputProfile::SearchField
+    fn key_contexts(&self) -> Vec<KeyContext> {
+        search_field_key_contexts(self.accepts_newline())
     }
 
     fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
@@ -201,7 +229,10 @@ impl TextTargetQuery for SearchFieldQuery<'_> {
 
 impl TextTargetQuery for SearchActiveOwner<'_> {
     fn target_id(&self) -> TextTargetId {
-        self.model.active.unwrap_or(TextTargetId::SearchQuery)
+        // active 为空时退到 query 字段——只在无任何输入框聚焦的边界态被读到，
+        // 此时整对 owner 都不算 active（is_active() 返回 false），target_id 只作
+        // 调试 / 兜底用。
+        self.model.active.unwrap_or(self.model.query_id)
     }
 
     fn is_active(&self) -> bool {
@@ -212,8 +243,8 @@ impl TextTargetQuery for SearchActiveOwner<'_> {
         self.model.snapshot_for(self.target_id())
     }
 
-    fn profile(&self) -> TextInputProfile {
-        TextInputProfile::SearchField
+    fn key_contexts(&self) -> Vec<KeyContext> {
+        search_field_key_contexts(self.accepts_newline())
     }
 
     fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
@@ -225,10 +256,13 @@ impl TextTargetQuery for SearchActiveOwner<'_> {
 
 impl TextTargetOwner for SearchActiveOwner<'_> {
     fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
-        match self.model.active {
-            Some(TextTargetId::SearchQuery) => Some(self.model.query.as_ime_target()),
-            Some(TextTargetId::SearchReplacement) => Some(self.model.replacement.as_ime_target()),
-            _ => None,
+        let active = self.model.active?;
+        if active == self.model.query_id {
+            Some(self.model.query.as_ime_target())
+        } else if active == self.model.replacement_id {
+            Some(self.model.replacement.as_ime_target())
+        } else {
+            None
         }
     }
 
@@ -239,27 +273,25 @@ impl TextTargetOwner for SearchActiveOwner<'_> {
 
 impl SearchModel {
     fn snapshot_for(&self, target: TextTargetId) -> EditorSnapshot {
-        match target {
-            TextTargetId::SearchQuery => self.query.snapshot(),
-            TextTargetId::SearchReplacement => self.replacement.snapshot(),
-            _ => EditorSnapshot::default(),
+        let request = EditorSnapshotRequest::single_line();
+        if target == self.query_id {
+            self.query.snapshot(request)
+        } else if target == self.replacement_id {
+            self.replacement.snapshot(request)
+        } else {
+            EditorSnapshot::default()
         }
     }
 
     fn ime_query_target_for(&self, target: TextTargetId) -> Option<ImeQueryTarget<'_>> {
-        match target {
-            TextTargetId::SearchQuery => Some(self.query.as_ime_query_target()),
-            TextTargetId::SearchReplacement => Some(self.replacement.as_ime_query_target()),
-            _ => None,
+        if target == self.query_id {
+            Some(self.query.as_ime_query_target())
+        } else if target == self.replacement_id {
+            Some(self.replacement.as_ime_query_target())
+        } else {
+            None
         }
     }
-}
-
-fn is_search_target(target: TextTargetId) -> bool {
-    matches!(
-        target,
-        TextTargetId::SearchQuery | TextTargetId::SearchReplacement
-    )
 }
 
 // 搜索 / 替换导航命令的算法实现不在 SearchModel 里——它们直接在 `App` 上，

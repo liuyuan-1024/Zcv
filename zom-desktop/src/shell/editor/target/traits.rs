@@ -2,7 +2,7 @@
 //!
 //! 主编辑区、文件树新建条目输入框、项目选择器查询框各自的业务模型在 App 端
 //! 持有；本模块给它们一个统一的接口，让 editor 子系统的 [`super::router`]
-//! 能按 [`TextTargetId`] 反查到正确的 IME 目标 / 编辑目标 / 快照 / profile，
+//! 能按 [`TextTargetId`] 反查到正确的 IME 目标 / 编辑目标 / 快照 / 快捷键栈，
 //! 而不必在 App 端为每个嵌入点写散落的 match。
 //!
 //! 拆成两层：
@@ -11,10 +11,12 @@
 //!
 //! 主编辑区的只读 owner（只持 `&workspace + &views`）只能实现 query 层。
 
-use zom_command::EditTarget;
+use zom_command::{EditTarget, KeyContext};
 
-use super::ime::{ImeQueryTarget, ImeTarget};
-use super::{EditorSnapshot, TextInputProfile, TextTargetId};
+use crate::shell::editor::input::{ImeQueryTarget, ImeTarget};
+use crate::shell::editor::snapshot::EditorSnapshot;
+
+use super::TextTargetId;
 
 /// 只读侧：是哪个 target、当前是否活跃、给路由用的查询能力。
 pub(crate) trait TextTargetQuery {
@@ -28,9 +30,18 @@ pub(crate) trait TextTargetQuery {
 
     fn snapshot(&self) -> EditorSnapshot;
 
-    /// 该 owner 的按键上下文 profile。文本输入类 surface 的 `key_contexts`
-    /// 派生于此。
-    fn profile(&self) -> TextInputProfile;
+    /// 该 owner 聚焦时的按键解析上下文栈（优先级从高到低）。
+    ///
+    /// 编辑器子系统不替业务决定怎么叠 —— 每个 owner 自己说"我面板的命令在哪一层、
+    /// 文本编辑在哪一层、全局兜底在哪一层"。
+    fn key_contexts(&self) -> Vec<KeyContext>;
+
+    /// 该 owner 在文本编辑层是否接受换行（影响 `KeyContext::text_edit` 的参数）。
+    ///
+    /// 默认 `false`（单行输入框）；主编辑区这种多行实现 override 成 `true`。
+    fn accepts_newline(&self) -> bool {
+        false
+    }
 
     fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>>;
 }

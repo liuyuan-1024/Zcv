@@ -22,7 +22,7 @@ use gpui::{Context, Div, FocusHandle, IntoElement, MouseButton, Window, div, pre
 use zom_command::commands::search;
 
 use crate::app::App;
-use crate::shell::editor::{EditorKind, TextEditorSlot, TextTargetId};
+use crate::shell::editor::{TextEditorSlot, TextTargetId};
 use crate::shell::normalized_chord;
 use crate::shell::shared::glyph::Glyph;
 use crate::shell::shared::theme::{color, radius, space, typography};
@@ -73,20 +73,13 @@ impl SearchRuntime {
         window: &mut Window,
         cx: &mut Context<T>,
     ) {
-        install_field_focus_listener(
-            Rc::clone(&app),
-            &self.query_focus,
-            TextTargetId::SearchQuery,
-            window,
-            cx,
-        );
-        install_field_focus_listener(
-            app,
-            &self.replacement_focus,
-            TextTargetId::SearchReplacement,
-            window,
-            cx,
-        );
+        let (query_id, replacement_id) = {
+            let app_ref = app.borrow();
+            let ids = app_ref.text_target_ids();
+            (ids.search_query, ids.search_replacement)
+        };
+        install_field_focus_listener(Rc::clone(&app), &self.query_focus, query_id, window, cx);
+        install_field_focus_listener(app, &self.replacement_focus, replacement_id, window, cx);
     }
 
     pub(crate) fn render(
@@ -152,6 +145,7 @@ fn search_panel(
         .flex_col()
         .bg(color::gray::s02())
         .text_size(typography::ui())
+        .line_height(typography::ui_line())
         .text_color(color::gray::s09())
         .child(search_controls(
             state,
@@ -473,5 +467,5 @@ fn search_editor(
                 .child(placeholder),
         );
     }
-    editor.child(slot.embed(EditorKind::SingleLine))
+    editor.child(slot.embed())
 }

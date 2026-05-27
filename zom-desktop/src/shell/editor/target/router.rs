@@ -15,13 +15,14 @@
 
 use std::ops::Range;
 
-use zom_command::CommandError;
+use zom_command::{CommandError, KeyContext};
 
-use super::ime::ImeTarget;
-use super::owner::{TextTargetOwner, TextTargetQuery};
-use super::{EditorSnapshot, TextInputProfile, TextTargetId};
+use crate::shell::editor::input::{ImeQueryTarget, ImeTarget};
+use crate::shell::editor::snapshot::EditorSnapshot;
 
-/// 只读路由：focused_target / focused_profile / is_composing / snapshot / preedit 等。
+use super::{TextTargetId, TextTargetOwner, TextTargetQuery};
+
+/// 只读路由：focused_target / focused_key_contexts / is_composing / snapshot / preedit 等。
 pub(crate) struct EditorRouter<'a> {
     owners: Vec<&'a dyn TextTargetQuery>,
 }
@@ -44,11 +45,14 @@ impl<'a> EditorRouter<'a> {
             .map(|owner| owner.target_id())
     }
 
-    pub(crate) fn focused_profile(&self) -> Option<TextInputProfile> {
+    /// 当前焦点 owner 的按键解析上下文栈（优先级从高到低）。
+    ///
+    /// 路由层不替业务拼栈，只把活跃 owner 给的 `key_contexts()` 透传出来。
+    pub(crate) fn focused_key_contexts(&self) -> Option<Vec<KeyContext>> {
         self.owners
             .iter()
             .find(|owner| owner.is_active())
-            .map(|owner| owner.profile())
+            .map(|owner| owner.key_contexts())
     }
 
     /// 当前活动 target 是否处于"非空 preedit"的输入法组合态。
@@ -99,7 +103,7 @@ impl<'a> EditorRouter<'a> {
     fn with_query<R>(
         &self,
         target: TextTargetId,
-        f: impl FnOnce(&super::ime::ImeQueryTarget<'_>) -> R,
+        f: impl FnOnce(&ImeQueryTarget<'_>) -> R,
     ) -> Option<R> {
         let owner = self
             .owners

@@ -32,7 +32,7 @@ use crate::shell::{CommandCatalogLookup, CommandTitleLookup, KeyRequest, Shortcu
 mod bars;
 pub(crate) mod controller;
 pub(crate) mod docks;
-mod editor_area;
+pub(crate) mod editor_area;
 pub(crate) mod state;
 
 pub(crate) use self::bars::WindowControlsHandlers;

@@ -5,19 +5,20 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use zom_command::EditTarget;
+use zom_command::commands::file_tree::FileTreeKeyMode;
+use zom_command::{EditTarget, KeyContext};
 use zom_view::{ViewId, ViewSet};
 use zom_workspace::{BufferId, EntryKind, ProjectTree, Workspace};
 
 use crate::shell::editor::{
-    Editor, EditorSnapshot, ImeQueryTarget, ImeTarget, TextInputProfile, TextTargetId,
-    TextTargetOwner, TextTargetQuery,
+    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
+    TextTargetId, TextTargetOwner, TextTargetQuery,
 };
 
 use super::{FileTreeActivation, FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry};
 
-#[derive(Default)]
 pub(crate) struct FileTreeModel {
+    target_id: TextTargetId,
     project_tree: Option<ProjectTree>,
     selected: Option<PathBuf>,
     /// **已提交的选区**——过去 Shift+方向"笔画"沉淀下来的、通过普通方向键
@@ -64,13 +65,26 @@ struct FileTreeClipboard {
 
 /// 新建态的内部数据；缩进深度在 `state()` 快照时再算，故此处不存。
 ///
-/// 名称由一个 [`Editor`] 承载 —— 键入 / 删除 / undo / 选择都复用编辑命令。
+/// 名称由一个 [`OwnedEditorTarget`] 承载 —— 键入 / 删除 / undo / 选择都复用编辑命令。
 struct PendingEntry {
     parent: PathBuf,
-    editor: Editor,
+    editor: OwnedEditorTarget,
 }
 
 impl FileTreeModel {
+    pub(crate) fn new(target_id: TextTargetId) -> Self {
+        Self {
+            target_id,
+            project_tree: None,
+            selected: None,
+            selection: BTreeSet::new(),
+            stroke: None,
+            clipboard: None,
+            pending: None,
+            pending_delete: None,
+        }
+    }
+
     pub(crate) fn open_project(&mut self, root: PathBuf) {
         self.project_tree = match ProjectTree::new(root.clone()) {
             Ok(tree) => Some(tree),
@@ -191,7 +205,7 @@ impl FileTreeModel {
         }
         self.pending = Some(PendingEntry {
             parent,
-            editor: Editor::new(),
+            editor: OwnedEditorTarget::new(),
         });
     }
 
@@ -877,7 +891,7 @@ fn rebase_buffers_under(workspace: &mut Workspace, old_prefix: &Path, new_prefix
 
 impl TextTargetQuery for FileTreeModel {
     fn target_id(&self) -> TextTargetId {
-        TextTargetId::FileTreePendingName
+        self.target_id
     }
 
     fn is_active(&self) -> bool {
@@ -887,12 +901,20 @@ impl TextTargetQuery for FileTreeModel {
     fn snapshot(&self) -> EditorSnapshot {
         self.pending
             .as_ref()
-            .map(|pending| pending.editor.snapshot())
+            .map(|pending| {
+                pending
+                    .editor
+                    .snapshot(EditorSnapshotRequest::single_line())
+            })
             .unwrap_or_default()
     }
 
-    fn profile(&self) -> TextInputProfile {
-        TextInputProfile::FileTreePendingName
+    fn key_contexts(&self) -> Vec<KeyContext> {
+        vec![
+            KeyContext::text_edit(self.accepts_newline(), false),
+            KeyContext::file_tree(FileTreeKeyMode::PendingName),
+            KeyContext::global(),
+        ]
     }
 
     fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
@@ -913,6 +935,13 @@ impl TextTargetOwner for FileTreeModel {
         self.pending
             .as_mut()
             .map(|pending| pending.editor.as_edit_target())
+    }
+}
+
+#[cfg(test)]
+impl Default for FileTreeModel {
+    fn default() -> Self {
+        Self::new(TextTargetId::allocate())
     }
 }
 

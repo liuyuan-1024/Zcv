@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, Div, Svg, div, prelude::*, svg, uniform_list};
 
-use crate::shell::editor::{EditorKind, TextEditorSlot};
+use crate::shell::editor::TextEditorSlot;
 use crate::shell::normalized_chord;
 use crate::shell::shared::scroll;
 use crate::shell::shared::theme::{color, radius, space, typography};
@@ -147,9 +147,8 @@ fn selected_item_index(items: &[FileTreeItem], state: &FileTreeState) -> Option<
 
 /// 新建态的内联输入行：父目录行下方，带文件/目录图标、已键入名称与光标。
 ///
-/// 名称输入框直接嵌入文件树 pending 名称 [`TextEditorSlot`] —— 与主编辑区
-/// 是同一个编辑器，只是 `EditorKind::SingleLine`。本行（边框 / 图标 / 缩进）
-/// 是它的外壳。
+/// 名称输入框直接嵌入文件树 pending 名称 [`TextEditorSlot`]。本行（边框 / 图标 /
+/// 缩进）是它的外壳。
 fn render_input_row(pending: &PendingNewEntry, slot: &Rc<TextEditorSlot>) -> Div {
     let icon = match pending.kind {
         EntryKind::Directory => FOLDER_OPEN_ICON,
@@ -185,7 +184,7 @@ fn render_input_row(pending: &PendingNewEntry, slot: &Rc<TextEditorSlot>) -> Div
                 .items_center()
                 .overflow_hidden()
                 .line_height(typography::ui_line())
-                .child(slot.embed(EditorKind::SingleLine)),
+                .child(slot.embed()),
         )
 }
 

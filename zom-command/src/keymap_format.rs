@@ -71,9 +71,9 @@ fn format_key(key: &str) -> String {
 #[cfg(target_os = "macos")]
 mod platform {
     /// 修饰键与主键之间用空格分隔，避免连续符号难以区分。
-    pub(super) const MODIFIER_SEPARATOR: &str = " ";
+    pub(super) const MODIFIER_SEPARATOR: &str = "";
     /// 多段 chord 之间用更宽的空隙分隔（如 `"⌘ K  ⌘ B"`）。
-    pub(super) const CHORD_SEPARATOR: &str = "  ";
+    pub(super) const CHORD_SEPARATOR: &str = " ";
 
     /// 逻辑修饰键 → 显示符号；**顺序就是显示顺序**（HIG: ⌃⌥⇧⌘）。
     pub(super) const MODIFIERS: &[(&str, &str)] = &[

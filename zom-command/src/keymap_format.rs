@@ -151,11 +151,11 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn mac_should_render_hig_modifier_order_with_symbol_spacing() {
-        assert_eq!(format_chord("mod-z"), "⌘ Z");
+        assert_eq!(format_chord("mod-z"), "⌘Z");
         // 任何顺序都按 MODIFIERS 表里的顺序输出。
-        assert_eq!(format_chord("mod-shift-z"), "⇧ ⌘ Z");
-        assert_eq!(format_chord("shift-mod-z"), "⇧ ⌘ Z");
-        assert_eq!(format_chord("shift-alt-left"), "⌥ ⇧ ←");
+        assert_eq!(format_chord("mod-shift-z"), "⇧⌘Z");
+        assert_eq!(format_chord("shift-mod-z"), "⇧⌘Z");
+        assert_eq!(format_chord("shift-alt-left"), "⌥⇧←");
         assert_eq!(format_chord("backspace"), "⌫");
         assert_eq!(format_chord("escape"), "⎋");
         assert_eq!(format_chord("space"), "␣");

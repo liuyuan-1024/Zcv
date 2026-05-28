@@ -710,10 +710,10 @@ fn editor_default_keymap_should_include_line_and_page_movement() {
         }
     );
 
-    // PageStep：默认 lines=20，序列化时一并写入 args。
+    // PageStep：默认 lines=1，序列化时一并写入 args。
     let (_, pagedown_args) = editor::move_selection(
         MovementDirection::Next,
-        Motion::PageStep { lines: 20 },
+        Motion::PageStep { lines: 1 },
         false,
     );
     assert_eq!(

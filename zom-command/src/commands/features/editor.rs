@@ -354,6 +354,9 @@ pub fn paste() -> Invocation {
 ///
 /// 默认键位采用逻辑修饰键（`mod / alt / shift`），平台投影在 UI 层完成；
 /// 见 `zom-desktop/src/shell/keymap_format.rs`。
+
+const PAGE_STEP_LINES: u32 = 1;
+
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     let text_edit = KeyBindingContext::text_edit();
     let text_edit_multiline = KeyBindingContext::text_edit_multiline();
@@ -415,16 +418,28 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             text_edit,
         )
         .key_with_in("down", move_args(Next, Motion::LineStep, false), text_edit)
-        // pageup / pagedown：keymap 里写死 20 行作首帧兜底；handler 里若主编辑区
-        // 已测得 visible_line_count（element prepaint 反算写回），按真实值覆盖。
+        // pageup / pagedown：keymap 里使用 PAGE_STEP_LINES 作为首帧兜底；
+        // handler 里若主编辑区已测得 visible_line_count（element prepaint 反算写回），按真实值覆盖。
         .key_with_in(
             "pageup",
-            move_args(Previous, Motion::PageStep { lines: 20 }, false),
+            move_args(
+                Previous,
+                Motion::PageStep {
+                    lines: PAGE_STEP_LINES,
+                },
+                false,
+            ),
             text_edit,
         )
         .key_with_in(
             "pagedown",
-            move_args(Next, Motion::PageStep { lines: 20 }, false),
+            move_args(
+                Next,
+                Motion::PageStep {
+                    lines: PAGE_STEP_LINES,
+                },
+                false,
+            ),
             text_edit,
         )
         .key_with_in("left", move_args(Previous, Grapheme, false), text_edit)
@@ -441,12 +456,24 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         )
         .key_with_in(
             "shift-pageup",
-            move_args(Previous, Motion::PageStep { lines: 20 }, true),
+            move_args(
+                Previous,
+                Motion::PageStep {
+                    lines: PAGE_STEP_LINES,
+                },
+                true,
+            ),
             text_edit,
         )
         .key_with_in(
             "shift-pagedown",
-            move_args(Next, Motion::PageStep { lines: 20 }, true),
+            move_args(
+                Next,
+                Motion::PageStep {
+                    lines: PAGE_STEP_LINES,
+                },
+                true,
+            ),
             text_edit,
         )
         .key_with_in("shift-left", move_args(Previous, Grapheme, true), text_edit)
@@ -766,7 +793,7 @@ fn run_move_selection(
     {
         let measured = view.viewport().visible_line_count;
         if measured > 0 {
-            *lines = u32::try_from(measured).unwrap_or(u32::MAX);
+            *lines = u32::try_from((measured * 2 / 3).max(1)).unwrap_or(u32::MAX);
         }
     }
     let target = context.edit_target()?;

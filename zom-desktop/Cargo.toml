@@ -4,6 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 description = "桌面入口层：组合 engine、workspace、view、command 与 AI 服务"
 
+[[bin]]
+name = "zom"
+path = "src/main.rs"
+
 [dependencies]
 zom-command.workspace = true
 zom-engine.workspace = true

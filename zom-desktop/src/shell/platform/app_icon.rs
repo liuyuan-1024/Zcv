@@ -164,7 +164,7 @@ mod linux {
         let exec = env::current_exe()
             .ok()
             .and_then(|path| path.into_os_string().into_string().ok())
-            .unwrap_or_else(|| "zom-desktop".to_string());
+            .unwrap_or_else(|| APP_ID.to_string());
         let desktop_file = format!(
             "[Desktop Entry]\nType=Application\nName=zom\nExec={exec}\nIcon=zom\nStartupWMClass=zom\nCategories=Development;TextEditor;\n"
         );

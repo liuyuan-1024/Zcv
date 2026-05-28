@@ -110,7 +110,8 @@ pub(crate) fn try_apply_effect(
             if !picker_active(surfaces, cx) {
                 return true;
             }
-            match app.borrow().project_picker_activation() {
+            let activation = app.borrow().project_picker_activation();
+            match activation {
                 ProjectPickerActivation::None => {}
                 ProjectPickerActivation::Open(project_record) => {
                     app.borrow_mut().project_picker_deactivate();

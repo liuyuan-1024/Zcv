@@ -10,6 +10,7 @@
 //! P3 BufferSearch 落地后，本文件只动 [`render_query_row_actions`] 等少量位置去
 //! 接 `hit_count`，不动 UI 结构。
 
+pub(crate) mod coordinator;
 mod effects;
 mod model;
 

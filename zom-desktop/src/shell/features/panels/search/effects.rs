@@ -38,23 +38,30 @@ pub(crate) fn try_apply_effect(
             request_focus(app, focus, AppFocus::editor(), window);
         }
         HostEffect::SearchToggleOption(option) => {
-            app.borrow_mut().search_toggle_option(*option);
+            let option = *option;
+            app.borrow_mut().with_search_coordinator(|s, w, v| {
+                super::coordinator::toggle_option(s, w, v, option)
+            });
             window.refresh();
         }
         HostEffect::SearchFindNext => {
-            app.borrow_mut().search_find_next();
+            app.borrow_mut()
+                .with_search_coordinator(super::coordinator::find_next);
             window.refresh();
         }
         HostEffect::SearchFindPrevious => {
-            app.borrow_mut().search_find_previous();
+            app.borrow_mut()
+                .with_search_coordinator(super::coordinator::find_previous);
             window.refresh();
         }
         HostEffect::SearchReplaceNext => {
-            app.borrow_mut().search_replace_next();
+            app.borrow_mut()
+                .with_search_coordinator(super::coordinator::replace_next);
             window.refresh();
         }
         HostEffect::SearchReplaceAll => {
-            app.borrow_mut().search_replace_all();
+            app.borrow_mut()
+                .with_search_coordinator(super::coordinator::replace_all);
             window.refresh();
         }
         _ => return false,
@@ -84,7 +91,8 @@ fn activate_search(
     if !visible {
         // 隐藏 → 显示 + 聚焦
         workbench.borrow_mut().show_panel(panel);
-        app.borrow_mut().on_search_panel_opened();
+        app.borrow_mut()
+            .with_search_coordinator(super::coordinator::on_panel_opened);
         request_focus(app, focus, AppFocus::search(SearchField::Query), window);
         window.refresh();
         return;
@@ -97,7 +105,8 @@ fn activate_search(
         // 已显示 + 焦点在面板 → 收起，焦点回编辑器；同时清掉活动 buffer 的
         // search 高亮，标记 panel 关闭。
         workbench.borrow_mut().hide_panel(panel);
-        app.borrow_mut().on_search_panel_closed();
+        app.borrow_mut()
+            .with_search_coordinator(|s, w, _v| super::coordinator::on_panel_closed(s, w));
         request_focus(app, focus, AppFocus::editor(), window);
     } else {
         // 已显示 + 焦点不在 → 把焦点搬过去

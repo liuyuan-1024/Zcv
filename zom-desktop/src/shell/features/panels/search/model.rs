@@ -1,6 +1,5 @@
 use zom_command::{EditTarget, KeyContext, SearchOption};
-use zom_view::ViewSet;
-use zom_workspace::{BufferSearchOptions, Workspace};
+use zom_workspace::BufferSearchOptions;
 
 use crate::focus::{AppFocus, PanelFocus, SearchField};
 use crate::shell::editor::{
@@ -99,12 +98,7 @@ impl SearchModel {
         }
     }
 
-    pub(crate) fn toggle_option(
-        &mut self,
-        option: SearchOption,
-        _workspace: &Workspace,
-        _views: &ViewSet,
-    ) {
+    pub(crate) fn toggle_option(&mut self, option: SearchOption) {
         match option {
             SearchOption::CaseSensitive => {
                 self.options.case_sensitive = !self.options.case_sensitive
@@ -112,8 +106,6 @@ impl SearchModel {
             SearchOption::WholeWord => self.options.whole_word = !self.options.whole_word,
             SearchOption::Regex => self.options.regex = !self.options.regex,
         }
-        // BufferSearch 接入后：选项变化要触发 active buffer 的 BufferSearch
-        // 同步重跑（与 query 变化同处理）；当前空实现。
     }
 
     /// 整个搜索面板是否在屏上。`activate` / `deactivate` 只标输入框焦点；这条
@@ -257,6 +249,6 @@ impl SearchModel {
     }
 }
 
-// 搜索 / 替换导航命令的算法实现不在 SearchModel 里——它们直接在 `App` 上，
-// 因为需要同时操作 panel 输入（query / replacement / options）+ active buffer
-// 的 BufferSearch + active view 的 selection。SearchModel 只负责输入框状态。
+// 搜索 / 替换导航的协调实现不在 SearchModel 里——见 [`super::coordinator`]。
+// 那一层同时操作 panel 输入（query / replacement / options）+ active buffer
+// 的 BufferSearch + active view 的 selection；SearchModel 只负责输入框状态。

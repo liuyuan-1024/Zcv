@@ -700,10 +700,11 @@ impl Element for EditorElement {
                 bounds.size.height,
             ),
         };
-        // caret 可见性与焦点态绑定：FocusHandle 决定本 view 是否"活动"；CaretClock
-        // 决定闪烁相位。范围背景（含 selection）颜色已在 prepaint 解析，paint 不
-        // 再 if 路由 producer 来源。
-        let caret_visible = self.focus.is_focused(window) && CaretClock::is_visible(cx);
+        // caret 可见性与焦点态绑定：FocusHandle 决定本 view 是否"活动"；CaretClock决定闪烁相位；
+        // 窗口失活时整窗不显光标，与系统其它编辑器一致。
+        let caret_visible = self.focus.is_focused(window)
+            && window.is_window_active()
+            && CaretClock::is_visible(cx);
         // LineMetric 借用 ShapedLine：在 with_content_mask 闭包外构造一次，
         // 让阶段 2 / 4 / 5（IME underline 接入后）共用一份借用切片。
         let line_metrics: Vec<LineMetric<'_>> = prepaint

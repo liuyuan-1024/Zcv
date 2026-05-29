@@ -416,18 +416,19 @@ pub mod radius {
 /// UI 层级靠颜色 / 字重区分，不靠字号。
 pub mod typography {
     use super::*;
-    /// 桌面 UI 字体。当前先使用随应用内置的 Lilex + Sarasa Mono SC，
-    /// 以后若加入非等宽 UI 字体，只需要改这里。
+    /// 桌面 UI 字体：JetBrains Mono + Sarasa Mono SC（中文 fallback）。
+    /// 与编辑区共用一种字体——少一份资源注册，UI 与代码视觉一致。
     pub fn ui_font() -> Font {
-        let mut font = font("Lilex");
+        let mut font = font("JetBrains Mono");
         font.fallbacks = Some(cjk_font_fallbacks());
         font
     }
 
-    /// 编辑区代码字体。Lilex 与 Sarasa Mono SC 随应用内置注册；
-    /// Lilex 负责拉丁字符，Sarasa Mono SC 负责中文 fallback。
+    /// 编辑区代码字体：JetBrains Mono + Sarasa Mono SC（中文 fallback）。
+    /// JetBrains 为代码场景做的等宽字体——大 x-height、字符区分度高，
+    /// 长时间盯不累。GSUB 自带 `calt`，但 GPUI 默认不启用编程连字。
     pub fn editor_font() -> Font {
-        let mut font = font("Lilex");
+        let mut font = font("JetBrains Mono");
         font.fallbacks = Some(cjk_font_fallbacks());
         font
     }

@@ -60,8 +60,8 @@ macro_rules! font_asset {
 
 pub(crate) fn embedded_fonts() -> Vec<Cow<'static, [u8]>> {
     vec![
-        font_asset!("Lilex-Regular.ttf"),
-        font_asset!("Lilex-Bold.ttf"),
+        font_asset!("JetBrainsMono-Regular.ttf"),
+        font_asset!("JetBrainsMono-SemiBold.ttf"),
         font_asset!("SarasaMonoSC-Regular.ttf"),
         font_asset!("SarasaMonoSC-Bold.ttf"),
     ]

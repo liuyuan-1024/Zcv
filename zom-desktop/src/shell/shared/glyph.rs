@@ -25,8 +25,9 @@ pub(crate) struct Glyph {
     tooltip: String,
     hint: Option<String>,
     active: bool,
-    /// 图标尺寸；只作用于 Icon / IconText 内容，默认 `typography::ui_line()`。
     icon_size: Pixels,
+    font_size: Pixels,
+    line_height: Pixels,
 }
 
 impl Glyph {
@@ -69,7 +70,9 @@ impl Glyph {
             tooltip: tooltip.into(),
             hint: None,
             active: false,
-            icon_size: typography::ui_line(),
+            icon_size: typography::ui(),
+            font_size: typography::ui(),
+            line_height: typography::ui_line(),
         }
     }
 
@@ -84,20 +87,16 @@ impl Glyph {
         self
     }
 
-    /// 覆盖图标尺寸（默认 `typography::ui_line()`）；对 Text 内容无效。
-    pub(crate) fn icon_size(mut self, size: Pixels) -> Self {
-        self.icon_size = size;
-        self
-    }
-
     pub(crate) fn render(self) -> AnyElement {
         let color_value = if self.active {
-            color::gray::s09()
+            color::blue::s07()
         } else {
             color::gray::s09()
         };
         let id = self.id.clone();
         let icon_size = self.icon_size;
+        let font_size = self.font_size;
+        let line_height = self.line_height;
         let tooltip = self.tooltip.clone();
         let hint = self.hint.clone();
 
@@ -108,7 +107,8 @@ impl Glyph {
         match self.content {
             GlyphContent::Text(text) => div()
                 .id(id)
-                .text_size(typography::ui())
+                .text_size(font_size)
+                .line_height(line_height)
                 .text_color(color_value)
                 .cursor_pointer()
                 .tooltip(build_tooltip)
@@ -134,7 +134,8 @@ impl Glyph {
                 .child(svg_icon(path, color_value, icon_size))
                 .child(
                     div()
-                        .text_size(typography::ui())
+                        .text_size(font_size)
+                        .line_height(line_height)
                         .text_color(color_value)
                         .child(text),
                 )

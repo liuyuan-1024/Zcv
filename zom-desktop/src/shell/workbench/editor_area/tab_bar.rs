@@ -34,8 +34,10 @@ pub(crate) fn render(
         .flex_row()
         .items_center()
         .w_full()
+        .min_h_0()
         .bg(color::gray::s02())
         .border_color(color::gray::s05())
+        .overflow_hidden()
         .overflow_x_scroll();
 
     for tab in &state.tabs {
@@ -97,7 +99,6 @@ fn close_glyph(
     )
     .hint(shortcuts(editor::CLOSE_TAB))
     .active(tab.is_active)
-    .icon_size(typography::ui_line())
     .render();
 
     div()

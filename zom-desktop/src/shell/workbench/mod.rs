@@ -74,8 +74,6 @@ pub(crate) fn render(
         .size_full()
         .overflow_hidden()
         .rounded(radius::window())
-        .border_1()
-        .border_color(color::gray::s05())
         .bg(color::gray::s02())
         .font(typography::ui_font())
         .text_color(color::gray::s09())

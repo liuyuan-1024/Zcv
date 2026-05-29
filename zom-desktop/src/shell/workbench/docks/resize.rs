@@ -39,9 +39,12 @@ pub(crate) struct DockResizeBounds {
 
 impl DockResizeBounds {
     pub(crate) fn from_viewport(viewport_width: Pixels, viewport_height: Pixels) -> Self {
+        // bar_height：UI 行高 + 上下内边距 + 与 body 交界处那根 1px 分隔线
+        let bar_height = theme::typography::ui_line() + theme::space::s4() * 2.0 + px(1.0);
+
         Self {
             width: viewport_width,
-            body_height: body_height_from_viewport(viewport_height),
+            body_height: viewport_height - bar_height * 2.0,
         }
     }
 }
@@ -107,14 +110,14 @@ impl DockResize {
     ) -> Option<DockResizeUpdate> {
         let drag = self.active_drag?;
         let delta = position - drag.start_position;
-        let (size, max_size) = match drag.area {
+        let (size, max_extent) = match drag.area {
             DockAreaId::Left => (drag.start_size + delta.x, bounds.width),
             DockAreaId::Right => (drag.start_size - delta.x, bounds.width),
             DockAreaId::Bottom => (drag.start_size - delta.y, bounds.body_height),
         };
         Some(DockResizeUpdate {
             area: drag.area,
-            size: clamp_size(size, max_size),
+            size: clamp_size(size, max_extent),
         })
     }
 
@@ -123,20 +126,13 @@ impl DockResize {
     }
 }
 
+/// 每个 dock 拖到极限时，对侧保留一段恰好等于该 dock 最小尺寸的空白：
+/// 三个 dock 共用 `s12`，正好是「比拖拽手柄宽一点的最窄可视带」，既挡住
+/// BottomDock 顶死 EditorGrid 上边界，又留出可抓的拖拽区域。
 fn clamp_size(size: Pixels, max_extent: Pixels) -> Pixels {
     let min_size = theme::space::s12();
-    let max_size = max_extent - theme::space::s12();
-    let max_size = if max_size < min_size {
-        min_size
-    } else {
-        max_size
-    };
+    let max_size = (max_extent - min_size).max(min_size);
     size.clamp(min_size, max_size)
-}
-
-fn body_height_from_viewport(viewport_height: Pixels) -> Pixels {
-    let bar_height = theme::typography::ui_line() + theme::space::s4() + theme::space::s4();
-    viewport_height - bar_height - bar_height
 }
 
 pub(crate) fn render_handle(area: DockAreaId, resize: DockResizeRequest) -> AnyElement {

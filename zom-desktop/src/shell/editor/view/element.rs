@@ -464,16 +464,16 @@ impl Element for EditorElement {
         // 与颜色。两个 producer：
         //
         // 1. **search**（BufferSearch 命中）—— 先入栈，作为底层视觉。normal hit
-        //    用 `orange.a03`（淡暖色，与 selection 的 blue 系不冲突）；current
-        //    hit 用 `orange.a05`（手册标注的"当前搜索命中"色，更强）。
-        // 2. **selection** —— 后入栈，作为最上层，保证用户的活动选区始终视觉
-        //    优先（与 search hit 重叠时 selection 颜色在上）。
+        //    用 `blue.a05`（手册标注的"搜索普通命中"）；current hit 用 `yellow.a05`
+        //    （色相切换告诉用户「这是定位光标」）。
+        // 2. **selection** —— 后入栈，复用 normal hit 的 `blue.a05`。同色相 alpha
+        //    叠在 search hit 上自然加深 —— 「选中 + 命中」的双重语义靠叠加表达，
+        //    不再单分一档颜色给选区。
         //
         // 各 producer 内部已按 start 升序、互不重叠；合并后整体不要求互不重叠
         // ——alpha 叠加表达层叠语义。
-        let search_normal_color: Hsla = color::orange::a03().into();
-        let search_current_color: Hsla = color::orange::a05().into();
-        let selection_color: Hsla = color::blue::a04().into();
+        let search_normal_color: Hsla = color::blue::a05().into();
+        let search_current_color: Hsla = color::yellow::a05().into();
         // search 覆盖层数据驱动：没填 hits 自然不画 —— 单行 owner（文件树 /
         // 选择器 / 搜索面板自己的输入框）不会在 snapshot 里塞 hits。
         let mut range_backgrounds: Vec<(TextRange, Hsla)> =
@@ -487,7 +487,7 @@ impl Element for EditorElement {
             range_backgrounds.push((*hit, color));
         }
         for sel in selections.iter().filter(|s| !s.is_caret()) {
-            range_backgrounds.push((sel.range(), selection_color));
+            range_backgrounds.push((sel.range(), search_normal_color));
         }
 
         let gutter_offset = if has_gutter { px(GUTTER_WIDTH) } else { px(0.) };

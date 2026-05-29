@@ -115,8 +115,7 @@ pub mod color {
         }
     }
 
-    /// 蓝色相——焦点、选区、搜索、信息态。s07 取 Zed One Dark `players[0].cursor`
-    /// (`#74ade8`)；alpha 阶梯共用 s07 作为基底。
+    /// 蓝色相——焦点、选区、搜索、信息态。alpha 阶梯共用 s07 作为基底。
     pub mod blue {
         use super::*;
 
@@ -138,7 +137,7 @@ pub mod color {
         pub fn s06() -> Rgba {
             rgb(0x5a8fd6)
         }
-        /// 07 solid —— 实心强调（caret、品牌色填充）。Zed `players[0].cursor`。
+        /// 实心强调（caret、品牌色填充）
         pub fn s07() -> Rgba {
             rgb(0x74ade8)
         }
@@ -161,7 +160,7 @@ pub mod color {
             rgba(0x74ade83d)
         }
         /// 04 ui-active —— 选区色块。alpha 抬到 0x66 以在 #0d0f12 底色上保住与
-        /// caret (`s07`) 的视觉关联（Zed 原值 0x3d 在我们底色上会被吞掉）。
+        /// caret (`s07`) 的视觉关联。
         pub fn a04() -> Rgba {
             rgba(0x74ade866)
         }
@@ -183,133 +182,7 @@ pub mod color {
         }
     }
 
-    /// 橙色相——warning、当前搜索命中。s07 取 Zed `search.active_match_background`
-    /// 的基底色 (`#e8af74`)；alpha 阶梯共用 s07 作为基底。
-    pub mod orange {
-        use super::*;
-
-        pub fn s01() -> Rgba {
-            rgb(0x2d1f10)
-        }
-        pub fn s02() -> Rgba {
-            rgb(0x432e1a)
-        }
-        pub fn s03() -> Rgba {
-            rgb(0x5c3e24)
-        }
-        pub fn s04() -> Rgba {
-            rgb(0x714d2c)
-        }
-        pub fn s05() -> Rgba {
-            rgb(0x8a5d36)
-        }
-        pub fn s06() -> Rgba {
-            rgb(0xb07a4d)
-        }
-        /// 07 solid —— 实心强调（warning 等）。
-        pub fn s07() -> Rgba {
-            rgb(0xe8af74)
-        }
-        pub fn s08() -> Rgba {
-            rgb(0xf0c899)
-        }
-        pub fn s09() -> Rgba {
-            rgb(0xf7dfbf)
-        }
-
-        pub fn a01() -> Rgba {
-            rgba(0xe8af741a)
-        }
-        pub fn a02() -> Rgba {
-            rgba(0xe8af7426)
-        }
-        pub fn a03() -> Rgba {
-            rgba(0xe8af743d)
-        }
-        pub fn a04() -> Rgba {
-            rgba(0xe8af7466)
-        }
-        /// 05 border-subtle —— 当前搜索命中（暖橙）。
-        pub fn a05() -> Rgba {
-            rgba(0xe8af7480)
-        }
-        pub fn a06() -> Rgba {
-            rgba(0xe8af74b3)
-        }
-        pub fn a07() -> Rgba {
-            rgba(0xe8af74cc)
-        }
-        pub fn a08() -> Rgba {
-            rgba(0xe8af74e6)
-        }
-        pub fn a09() -> Rgba {
-            rgba(0xe8af74f5)
-        }
-    }
-
-    /// 红色相——danger、error。s07 取 `#ff6b6b`（沿用旧 `accent::danger`）。
-    pub mod red {
-        use super::*;
-
-        pub fn s01() -> Rgba {
-            rgb(0x2e0e0e)
-        }
-        pub fn s02() -> Rgba {
-            rgb(0x441616)
-        }
-        pub fn s03() -> Rgba {
-            rgb(0x5b2020)
-        }
-        pub fn s04() -> Rgba {
-            rgb(0x732a2a)
-        }
-        pub fn s05() -> Rgba {
-            rgb(0x8b3434)
-        }
-        pub fn s06() -> Rgba {
-            rgb(0xbf4949)
-        }
-        /// 07 solid —— 实心强调（danger / error）。
-        pub fn s07() -> Rgba {
-            rgb(0xff6b6b)
-        }
-        pub fn s08() -> Rgba {
-            rgb(0xff9595)
-        }
-        pub fn s09() -> Rgba {
-            rgb(0xffc2c2)
-        }
-
-        pub fn a01() -> Rgba {
-            rgba(0xff6b6b1a)
-        }
-        pub fn a02() -> Rgba {
-            rgba(0xff6b6b26)
-        }
-        pub fn a03() -> Rgba {
-            rgba(0xff6b6b3d)
-        }
-        pub fn a04() -> Rgba {
-            rgba(0xff6b6b66)
-        }
-        pub fn a05() -> Rgba {
-            rgba(0xff6b6b80)
-        }
-        pub fn a06() -> Rgba {
-            rgba(0xff6b6bb3)
-        }
-        pub fn a07() -> Rgba {
-            rgba(0xff6b6bcc)
-        }
-        pub fn a08() -> Rgba {
-            rgba(0xff6b6be6)
-        }
-        pub fn a09() -> Rgba {
-            rgba(0xff6b6bf5)
-        }
-    }
-
-    /// 绿色相——success、created。s07 取 `#3ddc84`（沿用旧 `accent::success`）。
+    /// 绿色相——success、created。alpha 阶梯共用 s07 作为基底。
     pub mod green {
         use super::*;
 
@@ -368,6 +241,131 @@ pub mod color {
         }
         pub fn a09() -> Rgba {
             rgba(0x3ddc84f5)
+        }
+    }
+
+    /// 黄色相——warning、当前搜索命中。alpha 阶梯共用 s07 作为基底。
+    pub mod yellow {
+        use super::*;
+
+        pub fn s01() -> Rgba {
+            rgb(0x2d2410)
+        }
+        pub fn s02() -> Rgba {
+            rgb(0x43361a)
+        }
+        pub fn s03() -> Rgba {
+            rgb(0x5c4824)
+        }
+        pub fn s04() -> Rgba {
+            rgb(0x715a2c)
+        }
+        pub fn s05() -> Rgba {
+            rgb(0x8a6d36)
+        }
+        pub fn s06() -> Rgba {
+            rgb(0xb0934d)
+        }
+        /// 07 solid —— 实心强调（warning 等）。
+        pub fn s07() -> Rgba {
+            rgb(0xe8cf74)
+        }
+        pub fn s08() -> Rgba {
+            rgb(0xf0dc99)
+        }
+        pub fn s09() -> Rgba {
+            rgb(0xf7ebbf)
+        }
+
+        pub fn a01() -> Rgba {
+            rgba(0xe8cf741a)
+        }
+        pub fn a02() -> Rgba {
+            rgba(0xe8cf7426)
+        }
+        pub fn a03() -> Rgba {
+            rgba(0xe8cf743d)
+        }
+        pub fn a04() -> Rgba {
+            rgba(0xe8cf7466)
+        }
+        /// 05 border-subtle —— 当前搜索命中（暖黄）。
+        pub fn a05() -> Rgba {
+            rgba(0xe8cf7480)
+        }
+        pub fn a06() -> Rgba {
+            rgba(0xe8cf74b3)
+        }
+        pub fn a07() -> Rgba {
+            rgba(0xe8cf74cc)
+        }
+        pub fn a08() -> Rgba {
+            rgba(0xe8cf74e6)
+        }
+        pub fn a09() -> Rgba {
+            rgba(0xe8cf74f5)
+        }
+    }
+
+    /// 红色相——danger、error。alpha 阶梯共用 s07 作为基底。
+    pub mod red {
+        use super::*;
+
+        pub fn s01() -> Rgba {
+            rgb(0x2e0e0e)
+        }
+        pub fn s02() -> Rgba {
+            rgb(0x441616)
+        }
+        pub fn s03() -> Rgba {
+            rgb(0x5b2020)
+        }
+        pub fn s04() -> Rgba {
+            rgb(0x732a2a)
+        }
+        pub fn s05() -> Rgba {
+            rgb(0x8b3434)
+        }
+        pub fn s06() -> Rgba {
+            rgb(0xbf4949)
+        }
+        /// 07 solid —— 实心强调（danger / error）。
+        pub fn s07() -> Rgba {
+            rgb(0xff6b6b)
+        }
+        pub fn s08() -> Rgba {
+            rgb(0xff9595)
+        }
+        pub fn s09() -> Rgba {
+            rgb(0xffc2c2)
+        }
+
+        pub fn a01() -> Rgba {
+            rgba(0xff6b6b1a)
+        }
+        pub fn a02() -> Rgba {
+            rgba(0xff6b6b26)
+        }
+        pub fn a03() -> Rgba {
+            rgba(0xff6b6b3d)
+        }
+        pub fn a04() -> Rgba {
+            rgba(0xff6b6b66)
+        }
+        pub fn a05() -> Rgba {
+            rgba(0xff6b6b80)
+        }
+        pub fn a06() -> Rgba {
+            rgba(0xff6b6bb3)
+        }
+        pub fn a07() -> Rgba {
+            rgba(0xff6b6bcc)
+        }
+        pub fn a08() -> Rgba {
+            rgba(0xff6b6be6)
+        }
+        pub fn a09() -> Rgba {
+            rgba(0xff6b6bf5)
         }
     }
 }

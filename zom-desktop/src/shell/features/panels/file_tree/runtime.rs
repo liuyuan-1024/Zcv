@@ -66,7 +66,9 @@ impl FileTreeRuntime {
         workbench: &Rc<RefCell<WorkbenchController>>,
         window: &mut Window,
     ) {
-        app.borrow_mut().file_tree_ensure_selection_initialized();
+        app.borrow_mut()
+            .file_tree_mut()
+            .ensure_selection_initialized();
         super::focus::reveal_and_focus(workbench, &self.focus, window);
     }
 }

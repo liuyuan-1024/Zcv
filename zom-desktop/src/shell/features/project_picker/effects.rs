@@ -93,7 +93,9 @@ pub(crate) fn try_apply_effect(
             if !picker_active(surfaces, cx) {
                 return true;
             }
-            let project_id = app.borrow().project_picker_selected_project_id();
+            let project_id = app
+                .borrow()
+                .with_project_picker_ref(|picker, recent| picker.selected_project_id(recent));
             if let Some(project_id) = project_id {
                 app.borrow_mut().remove_recent_project(&project_id);
                 window.refresh();
@@ -103,14 +105,18 @@ pub(crate) fn try_apply_effect(
             if !picker_active(surfaces, cx) {
                 return true;
             }
-            app.borrow_mut().project_picker_move_selection(*delta);
+            let delta = *delta;
+            app.borrow_mut()
+                .with_project_picker(|picker, recent| picker.move_selection(delta, recent));
             window.refresh();
         }
         HostEffect::ProjectPickerActivate => {
             if !picker_active(surfaces, cx) {
                 return true;
             }
-            let activation = app.borrow().project_picker_activation();
+            let activation = app
+                .borrow()
+                .with_project_picker_ref(|picker, recent| picker.activation(recent));
             match activation {
                 ProjectPickerActivation::None => {}
                 ProjectPickerActivation::Open(project_record) => {
@@ -168,7 +174,7 @@ fn show_project_picker(
     let project_list_app = Rc::clone(app);
     let projects = Rc::new(move || project_list_app.borrow().recent_projects());
     let state_app = Rc::clone(app);
-    let state = Rc::new(move || state_app.borrow().project_picker_state());
+    let state = Rc::new(move || state_app.borrow().project_picker().state());
     let key_app = Rc::clone(app);
     let key_workbench = Rc::clone(workbench);
     let key_surfaces = surfaces.clone();

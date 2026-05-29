@@ -27,34 +27,36 @@ pub(crate) fn try_apply_effect(
 ) -> bool {
     match effect {
         HostEffect::FileTreeMoveSelection(delta) => {
-            app.borrow_mut().file_tree_move_selection(*delta);
+            app.borrow_mut().file_tree_mut().move_selection(*delta);
         }
         HostEffect::FileTreeExtendSelection(delta) => {
-            app.borrow_mut().file_tree_extend_selection(*delta);
+            app.borrow_mut().file_tree_mut().extend_selection(*delta);
         }
         HostEffect::FileTreeEscape => {
             // 选区有内容时 model 清掉它并消化 Esc；否则按原有 focus_editor 路径
             // 把焦点交回主编辑区。逻辑写在宿主侧而非 model 是因为 focus 路由
             // 涉及 window，model 不该感知 UI。
-            let consumed = app.borrow_mut().file_tree_escape();
+            let consumed = app.borrow_mut().file_tree_mut().escape();
             if !consumed {
                 request_focus(app, focus, AppFocus::editor(), window);
             }
         }
         HostEffect::FileTreeCollapseOrParent => {
-            app.borrow_mut().file_tree_collapse_or_parent();
+            app.borrow_mut().file_tree_mut().collapse_or_parent();
         }
         HostEffect::FileTreeExpandOrInto => {
-            app.borrow_mut().file_tree_expand_or_into();
+            app.borrow_mut().file_tree_mut().expand_or_into();
         }
         HostEffect::FileTreeActivate => {
-            let activation = app.borrow_mut().file_tree_activate();
+            let activation = app
+                .borrow_mut()
+                .with_file_tree(|ft, ws, vs| ft.activate_selected(ws, vs));
             if matches!(activation, FileTreeActivation::OpenedFile) {
                 request_focus(app, focus, AppFocus::editor(), window);
             }
         }
         HostEffect::FileTreeBeginNewEntry => {
-            app.borrow_mut().file_tree_begin_new_entry();
+            app.borrow_mut().file_tree_mut().begin_new_entry();
             // 文件树面板的 focus handle 也是新建输入框的 input handle —— 用同
             // 一句 move_to 既保证视觉焦点（行的蓝框 + caret 闪烁）出现在
             // 输入框，也让 IME / 文本命令路由到 FileTreePendingName。
@@ -71,31 +73,35 @@ pub(crate) fn try_apply_effect(
         }
         HostEffect::FileTreeCommitNewEntry => {
             // 新建文件会被打开，焦点随之切到编辑器；新建目录留在文件树。
-            let activation = app.borrow_mut().file_tree_commit_new_entry();
+            let activation = app
+                .borrow_mut()
+                .with_file_tree(|ft, ws, vs| ft.commit_new_entry(ws, vs));
             if matches!(activation, FileTreeActivation::OpenedFile) {
                 request_focus(app, focus, AppFocus::editor(), window);
             }
         }
         HostEffect::FileTreeCancelNewEntry => {
-            app.borrow_mut().file_tree_cancel_new_entry();
+            app.borrow_mut().file_tree_mut().cancel_new_entry();
         }
         HostEffect::FileTreeRequestDelete => {
-            app.borrow_mut().file_tree_request_delete();
+            app.borrow_mut().file_tree_mut().request_delete();
         }
         HostEffect::FileTreeConfirmDelete => {
-            app.borrow_mut().file_tree_confirm_delete();
+            app.borrow_mut()
+                .with_file_tree(|ft, ws, vs| ft.confirm_delete(ws, vs));
         }
         HostEffect::FileTreeCancelDelete => {
-            app.borrow_mut().file_tree_cancel_delete();
+            app.borrow_mut().file_tree_mut().cancel_delete();
         }
         HostEffect::FileTreeCopy => {
-            app.borrow_mut().file_tree_copy();
+            app.borrow_mut().file_tree_mut().copy_to_clipboard();
         }
         HostEffect::FileTreeCut => {
-            app.borrow_mut().file_tree_cut();
+            app.borrow_mut().file_tree_mut().cut_to_clipboard();
         }
         HostEffect::FileTreePaste => {
-            app.borrow_mut().file_tree_paste();
+            app.borrow_mut()
+                .with_file_tree(|ft, ws, _vs| ft.paste_from_clipboard(ws));
         }
         _ => return false,
     }

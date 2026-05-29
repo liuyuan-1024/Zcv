@@ -23,11 +23,10 @@ use crate::focus::{
 };
 use crate::shell::CommandCatalogItem;
 use crate::shell::editor::{EditorRouter, EditorRouterMut, TextTargetOwner, TextTargetQuery};
-use crate::shell::features::panels::file_tree::{FileTreeActivation, FileTreeModel, FileTreeState};
+use crate::shell::features::panels::file_tree::{FileTreeModel, FileTreeState};
 use crate::shell::features::panels::search::{self as search_panel, SearchModel, SearchState};
 use crate::shell::features::project_picker::{
-    ProjectPickerActivation, ProjectPickerMode, ProjectPickerModel, ProjectPickerState,
-    RecentProject, RecentProjects,
+    ProjectPickerMode, ProjectPickerModel, RecentProject, RecentProjects,
 };
 use crate::shell::workbench::editor_area::{MainEditorOwner, MainEditorOwnerRef};
 use crate::shell::workbench::state::{EditorState, build_editor_state};
@@ -194,97 +193,50 @@ impl App {
         }
     }
 
-    pub(crate) fn project_picker_state(&self) -> ProjectPickerState {
-        self.project_picker.state()
+    /// 项目选择器 model 的只读视图。shell 拿到后直接调
+    /// `.state()` / `.query_text()` 等纯模型查询——这类与 recent_projects
+    /// 无关的方法不必再在 App 上各塞一个 wrapper。
+    pub(crate) fn project_picker(&self) -> &ProjectPickerModel {
+        &self.project_picker
     }
 
-    pub(crate) fn project_picker_selected_project_id(&self) -> Option<String> {
-        self.project_picker
-            .selected_project_id(self.recent_projects.items())
+    /// 把 picker 的可变引用 + 最近项目列表打包递给闭包。
+    /// shell 用它做 `move_selection` 这类"既要改 picker 又要读 recent"的写操作。
+    pub(crate) fn with_project_picker<R>(
+        &mut self,
+        f: impl FnOnce(&mut ProjectPickerModel, &[RecentProject]) -> R,
+    ) -> R {
+        f(&mut self.project_picker, self.recent_projects.items())
     }
 
-    pub(crate) fn project_picker_move_selection(&mut self, delta: isize) {
-        self.project_picker
-            .move_selection(delta, self.recent_projects.items());
+    /// 读路径版本：`selected_project_id` / `activation` 等只读但同样依赖
+    /// recent 列表的查询走这里。
+    pub(crate) fn with_project_picker_ref<R>(
+        &self,
+        f: impl FnOnce(&ProjectPickerModel, &[RecentProject]) -> R,
+    ) -> R {
+        f(&self.project_picker, self.recent_projects.items())
     }
 
-    pub(crate) fn project_picker_activation(&self) -> ProjectPickerActivation {
-        self.project_picker.activation(self.recent_projects.items())
+    /// 可变借用文件树 model——仅限不需要 workspace/views 的纯模型操作
+    /// （`move_selection`、`escape`、`begin_new_entry`...）。需要 workspace/views
+    /// 的写操作走 [`Self::with_file_tree`]。
+    pub(crate) fn file_tree_mut(&mut self) -> &mut FileTreeModel {
+        &mut self.file_tree
+    }
+
+    /// 把文件树 model + workspace + views 三家的可变引用打包递给闭包。
+    /// `activate_selected` / `commit_new_entry` / `confirm_delete` /
+    /// `paste_from_clipboard` 等需要同时改 model 与 workspace/views 的写操作走这里。
+    pub(crate) fn with_file_tree<R>(
+        &mut self,
+        f: impl FnOnce(&mut FileTreeModel, &mut Workspace, &mut ViewSet) -> R,
+    ) -> R {
+        f(&mut self.file_tree, &mut self.workspace, &mut self.views)
     }
 
     pub(crate) fn file_tree_state(&self) -> FileTreeState {
         self.file_tree.state(&self.workspace)
-    }
-
-    pub(crate) fn file_tree_ensure_selection_initialized(&mut self) {
-        self.file_tree.ensure_selection_initialized();
-    }
-
-    pub(crate) fn file_tree_move_selection(&mut self, delta: isize) {
-        self.file_tree.move_selection(delta);
-    }
-
-    pub(crate) fn file_tree_extend_selection(&mut self, delta: isize) {
-        self.file_tree.extend_selection(delta);
-    }
-
-    /// Esc 二段式：选区非空时清空、返回 `true`；否则返回 `false`，由调用方
-    /// 决定后续走向（典型走法是把焦点交回编辑器）。
-    pub(crate) fn file_tree_escape(&mut self) -> bool {
-        self.file_tree.escape()
-    }
-
-    pub(crate) fn file_tree_collapse_or_parent(&mut self) {
-        self.file_tree.collapse_or_parent();
-    }
-
-    pub(crate) fn file_tree_expand_or_into(&mut self) {
-        self.file_tree.expand_or_into();
-    }
-
-    pub(crate) fn file_tree_activate(&mut self) -> FileTreeActivation {
-        self.file_tree
-            .activate_selected(&mut self.workspace, &mut self.views)
-    }
-
-    pub(crate) fn file_tree_begin_new_entry(&mut self) {
-        self.file_tree.begin_new_entry();
-    }
-
-    pub(crate) fn file_tree_cancel_new_entry(&mut self) {
-        self.file_tree.cancel_new_entry();
-    }
-
-    /// 提交新建条目。新建文件会被立即打开，返回的 [`FileTreeActivation`] 让
-    /// shell 据此把焦点切到编辑器。
-    pub(crate) fn file_tree_commit_new_entry(&mut self) -> FileTreeActivation {
-        self.file_tree
-            .commit_new_entry(&mut self.workspace, &mut self.views)
-    }
-
-    pub(crate) fn file_tree_request_delete(&mut self) {
-        self.file_tree.request_delete();
-    }
-
-    pub(crate) fn file_tree_confirm_delete(&mut self) {
-        self.file_tree
-            .confirm_delete(&mut self.workspace, &mut self.views);
-    }
-
-    pub(crate) fn file_tree_cancel_delete(&mut self) {
-        self.file_tree.cancel_delete();
-    }
-
-    pub(crate) fn file_tree_copy(&mut self) {
-        self.file_tree.copy_to_clipboard();
-    }
-
-    pub(crate) fn file_tree_cut(&mut self) {
-        self.file_tree.cut_to_clipboard();
-    }
-
-    pub(crate) fn file_tree_paste(&mut self) {
-        self.file_tree.paste_from_clipboard(&mut self.workspace);
     }
 
     pub(crate) fn editor_state(&self) -> EditorState {
@@ -663,10 +615,13 @@ mod tests {
     fn app_with_open_file(name: &str) -> App {
         let mut app = App::new();
         app.open_local_project(project_fixture(name));
-        app.file_tree_move_selection(1); // root
-        app.file_tree_move_selection(1); // src
-        app.file_tree_move_selection(1); // README.md
-        assert_eq!(app.file_tree_activate(), FileTreeActivation::OpenedFile);
+        app.file_tree_mut().move_selection(1); // root
+        app.file_tree_mut().move_selection(1); // src
+        app.file_tree_mut().move_selection(1); // README.md
+        assert_eq!(
+            app.with_file_tree(|ft, ws, vs| ft.activate_selected(ws, vs)),
+            FileTreeActivation::OpenedFile
+        );
         app
     }
 
@@ -966,20 +921,20 @@ mod tests {
         assert!(app.file_tree_state().selected.is_none());
 
         // rows: [root, src, README.md]
-        app.file_tree_move_selection(1);
+        app.file_tree_mut().move_selection(1);
         let state = app.file_tree_state();
         assert_eq!(state.selected.as_ref(), Some(&state.rows[0].path));
 
-        app.file_tree_move_selection(1);
+        app.file_tree_mut().move_selection(1);
         let state = app.file_tree_state();
         assert_eq!(state.selected.as_ref(), Some(&state.rows[1].path));
 
-        app.file_tree_move_selection(1);
+        app.file_tree_mut().move_selection(1);
         let state = app.file_tree_state();
         assert_eq!(state.selected.as_ref(), Some(&state.rows[2].path));
 
         // 已在末位时再 down 不会越界。
-        app.file_tree_move_selection(1);
+        app.file_tree_mut().move_selection(1);
         let state = app.file_tree_state();
         assert_eq!(state.selected.as_ref(), Some(&state.rows[2].path));
     }
@@ -989,7 +944,7 @@ mod tests {
         let mut app = App::new();
         app.open_local_project(project_fixture("focus-init"));
 
-        app.file_tree_ensure_selection_initialized();
+        app.file_tree_mut().ensure_selection_initialized();
 
         let state = app.file_tree_state();
         assert_eq!(state.selected.as_ref(), Some(&state.rows[0].path));
@@ -1006,14 +961,14 @@ mod tests {
         assert_eq!(state.rows.len(), 3);
 
         // 选到 src（root → src）。
-        app.file_tree_move_selection(1);
-        app.file_tree_move_selection(1);
+        app.file_tree_mut().move_selection(1);
+        app.file_tree_mut().move_selection(1);
         assert_eq!(
             app.file_tree_state().selected.as_deref(),
             Some(root.join("src").as_path())
         );
 
-        app.file_tree_expand_or_into();
+        app.file_tree_mut().expand_or_into();
         let state = app.file_tree_state();
         // 展开 src 后 rows: [root, src, inner, lib.rs, README.md]
         assert_eq!(state.rows.len(), 5);
@@ -1026,7 +981,7 @@ mod tests {
                 .unwrap_or(false)
         );
 
-        app.file_tree_collapse_or_parent();
+        app.file_tree_mut().collapse_or_parent();
         assert_eq!(app.file_tree_state().rows.len(), 3);
     }
 
@@ -1037,13 +992,13 @@ mod tests {
         app.open_local_project(root.clone());
 
         // rows: [root, src, README.md] —— 走到 README.md。
-        app.file_tree_move_selection(1); // root
-        app.file_tree_move_selection(1); // src
-        app.file_tree_move_selection(1); // README.md
+        app.file_tree_mut().move_selection(1); // root
+        app.file_tree_mut().move_selection(1); // src
+        app.file_tree_mut().move_selection(1); // README.md
         let selected = app.file_tree_state().selected.clone();
         assert_eq!(selected.as_deref(), Some(root.join("README.md").as_path()));
 
-        let action = app.file_tree_activate();
+        let action = app.with_file_tree(|ft, ws, vs| ft.activate_selected(ws, vs));
         assert_eq!(action, FileTreeActivation::OpenedFile);
 
         let state = app.file_tree_state();
@@ -1060,9 +1015,9 @@ mod tests {
         app.open_local_project(root.clone());
 
         // rows: [root, src, README.md] —— 选到 src。
-        app.file_tree_move_selection(1); // root
-        app.file_tree_move_selection(1); // src
-        let action = app.file_tree_activate();
+        app.file_tree_mut().move_selection(1); // root
+        app.file_tree_mut().move_selection(1); // src
+        let action = app.with_file_tree(|ft, ws, vs| ft.activate_selected(ws, vs));
         assert_eq!(action, FileTreeActivation::ToggledDir);
 
         let state = app.file_tree_state();
@@ -1081,18 +1036,24 @@ mod tests {
         app.open_local_project(project_fixture("tabs"));
 
         // 打开 README.md：rows = [root, src, README.md]。
-        app.file_tree_move_selection(1); // root
-        app.file_tree_move_selection(1); // src
-        app.file_tree_move_selection(1); // README.md
-        assert_eq!(app.file_tree_activate(), FileTreeActivation::OpenedFile);
+        app.file_tree_mut().move_selection(1); // root
+        app.file_tree_mut().move_selection(1); // src
+        app.file_tree_mut().move_selection(1); // README.md
+        assert_eq!(
+            app.with_file_tree(|ft, ws, vs| ft.activate_selected(ws, vs)),
+            FileTreeActivation::OpenedFile
+        );
 
         // 展开 src 并打开 src/lib.rs：
         // 展开后 rows = [root, src, inner, lib.rs, README.md]。
-        app.file_tree_move_selection(-1); // 回到 src
-        app.file_tree_expand_or_into(); // 展开 src
-        app.file_tree_move_selection(1); // inner
-        app.file_tree_move_selection(1); // lib.rs
-        assert_eq!(app.file_tree_activate(), FileTreeActivation::OpenedFile);
+        app.file_tree_mut().move_selection(-1); // 回到 src
+        app.file_tree_mut().expand_or_into(); // 展开 src
+        app.file_tree_mut().move_selection(1); // inner
+        app.file_tree_mut().move_selection(1); // lib.rs
+        assert_eq!(
+            app.with_file_tree(|ft, ws, vs| ft.activate_selected(ws, vs)),
+            FileTreeActivation::OpenedFile
+        );
 
         // 两个标签：README.md 先开、lib.rs 后开且为活动标签。
         let state = app.editor_state();

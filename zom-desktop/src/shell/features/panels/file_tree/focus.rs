@@ -23,7 +23,9 @@ pub(crate) fn install_focus_listeners<T: 'static>(
     cx.on_focus(focus, window, move |_, _, cx| {
         app.borrow_mut()
             .request_focus_from_shell(AppFocus::file_tree(FileTreeFocus::Navigate));
-        app.borrow_mut().file_tree_ensure_selection_initialized();
+        app.borrow_mut()
+            .file_tree_mut()
+            .ensure_selection_initialized();
         cx.notify();
     })
     .detach();

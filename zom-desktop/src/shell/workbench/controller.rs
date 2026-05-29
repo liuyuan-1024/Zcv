@@ -348,9 +348,12 @@ mod tests {
             FileTreeState::default(),
             crate::shell::features::panels::search::SearchState::default(),
         );
+        // bottom dock 拖到上限时，对侧（编辑区）至少留出 s12 的可视带。
+        // 用 bounds.body_height 取值而非硬编码 bar_height 两倍，让断言独立于
+        // theme::typography::ui_line() 等字号 / 节拍尺的具体大小。
         assert_eq!(
             state.bottom_dock.size,
-            px(600.0) - px(24.0) - px(24.0) - theme::space::s12()
+            bounds.body_height - theme::space::s12()
         );
     }
 

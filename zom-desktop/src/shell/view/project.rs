@@ -32,7 +32,7 @@ pub(crate) fn open_local_project(
                 return;
             };
             if let Err(error) = cx.update(|window, _| {
-                apply_project_open(&app, &workbench, &file_tree, project_root, window);
+                apply_local_project_open(&app, &workbench, &file_tree, project_root, window);
             }) {
                 eprintln!("打开本地项目失败：{error}");
             }
@@ -55,7 +55,7 @@ pub(crate) fn open_recent_project(
     if let Some(repo) = repo {
         apply_git_project_open(&app, &workbench, &file_tree, project_root, repo, window);
     } else {
-        apply_project_open(&app, &workbench, &file_tree, project_root, window);
+        apply_local_project_open(&app, &workbench, &file_tree, project_root, window);
     }
 }
 
@@ -95,13 +95,22 @@ pub(crate) fn clone_git_project(
 
 /// 打开本地项目的统一落点：更新 `App` 状态、展开并聚焦文件树、刷新窗口。
 /// 选择器流程与开发阶段默认项目都经由此函数，保证两条路径行为一致。
-pub(crate) fn apply_project_open(
+pub(crate) fn apply_local_project_open(
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
     file_tree: &FileTreeRuntime,
     project_root: std::path::PathBuf,
     window: &mut Window,
 ) {
+    // 增加路径有效性校验：确保路径存在且为目录
+    if !project_root.is_dir() {
+        eprintln!(
+            "打开本地项目失败：项目目录不存在或无效 {}",
+            project_root.display()
+        );
+        return;
+    }
+
     app.borrow_mut().open_local_project(project_root);
     file_tree.reveal_after_project_open(app, workbench, window);
     window.refresh();
@@ -115,6 +124,15 @@ fn apply_git_project_open(
     repo: String,
     window: &mut Window,
 ) {
+    // 增加路径有效性校验：确保路径存在且为目录
+    if !project_root.is_dir() {
+        eprintln!(
+            "打开 Git 项目失败：项目目录不存在或无效 {}",
+            project_root.display()
+        );
+        return;
+    }
+
     app.borrow_mut().open_git_project(project_root, repo);
     file_tree.reveal_after_project_open(app, workbench, window);
     window.refresh();

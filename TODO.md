@@ -181,6 +181,25 @@ Engine 已提供：
 - `zom-ai` 测试版本不匹配、非法 range、提案应用原子性。
 - `zom-desktop` 先保持轻量 smoke test，避免 UI 测试反向污染 engine API。
 
+### 10. 外部文件系统变更同步
+
+现状：项目树和打开的 buffer 都是首次加载或手动操作时的快照；当外部进程（git checkout、其他编辑器、CLI、脚本等）增删/重命名目录或文件、或改写文件内容时，zom 完全无法感知。
+
+宿主侧规划：
+
+- 引入跨平台文件监听底座（候选：`notify` crate；封装 FSEvents/inotify/ReadDirectoryChangesW）。监听线程归一事件后通过 channel 投递回主线程，主线程统一应用。
+- 监听范围：当前项目根 + 所有打开 buffer 的真实路径（含符号链接解引用后的路径）。
+- 事件语义归一为三类：`PathCreated` / `PathRemoved` / `PathModified`，重命名拆成 remove+create 上报，跨平台差异在归一层吸收。
+- 项目树（`zom-workspace::project_tree`）按事件做增量更新，避免全量重扫；对忽略规则（.git、target、node_modules 等）短路。
+- `WorkspaceBuffer` 对应文件被修改：
+  - 干净 buffer：默认走静默 reload（保留 view selection / scroll，必要时按 `PositionMap` 做最佳努力 remap，失败回退到首行）。
+  - dirty buffer：标记为 "存在外部变更" 状态，等待用户解决（reload 丢本地 / 保留本地覆盖 / 三方合并）。具体 UI 等冲突解决面板再开。
+  - 文件被删除或外移：buffer 标记为 orphan（路径解绑），保留内容与历史，允许 save_as。
+- 写回声抑制：保存时打 `(path, mtime, expected_hash)` 时间戳窗口，监听到的事件落在窗口内且 hash 匹配则忽略，避免自己写自己提醒。
+- 节流与风暴抑制：事件 debounce（建议 50–150ms 合并窗口），大批量变更（git checkout、rebase）触发后只做一次树重算和一轮 buffer 重检。
+- 跨平台差异：macOS FSEvents 是目录级、Linux inotify 是文件级；监听层对外只暴露归一后的事件，调用方不感知差异。
+- 验证：用临时目录起 fixture，跨平台 smoke 测试增删改重命名 4 类事件的归一与去抖；buffer reload 走真实文件读写而不是 mock。
+
 ## 阶段计划
 
 ### P0：Workspace 骨架收口
@@ -249,6 +268,32 @@ Engine 已提供：
 
 - [ ] 补充搜索与投影接入测试。
 
+### 外部文件系统变更同步（独立工作流）
+
+目标：让 zom 能感知外部进程对项目目录与已打开文件的变更，并按策略同步到项目树与 buffer。
+
+不绑定 P 阶段——可与 P3/P4 并行推进；阶段内任务按"先最小可用，再处理冲突 UI"分批。
+
+**最小可用（M1）**
+
+- [ ] 引入 `notify` 依赖，封装 `zom-workspace::fs_watch`：监听线程 + 事件归一（Created/Removed/Modified，重命名拆成 remove+create）+ 主线程 channel。
+- [ ] 项目树监听：根目录变更事件按增量更新 `project_tree` 节点，命中忽略规则的事件短路；事件 debounce 50–150ms 合并窗口。
+- [ ] 打开 buffer 监听：对干净 buffer 收到 Modified 后走静默 reload；buffer 被 Removed 后进入 orphan 状态。
+- [ ] 写回声抑制：保存路径在 `(mtime, hash)` 窗口内的事件忽略。
+- [ ] 集成测试：临时目录 fixture，覆盖增删改重命名 4 类事件的归一与去抖。
+
+**冲突解决（M2）**
+
+- [ ] dirty buffer 外部变更：标记 "存在外部变更"，提供 reload / keep local 两个动作（命令化）。
+- [ ] 冲突解决 UI：`zom-desktop` 加最小提示条 + 命令入口，三方合并暂不做。
+- [ ] orphan buffer 的 save_as 路径与项目树重新绑定流程。
+
+**风险与性能（M3）**
+
+- [ ] 大项目首次启动监听的内存/句柄预算评估。
+- [ ] git checkout / rebase 风暴下的批量去抖回归测试。
+- [ ] 符号链接、外部挂载、网络盘的边界处理与降级策略。
+
 ## 近期优先级
 
 1. IME marked text 接成阶段 2 第二个消费者（与 search 二选一作为阶段 2 第二消费者，命名只是顺序差别）。
@@ -256,3 +301,4 @@ Engine 已提供：
 3. `zom-command` 把 find / replace handler 接到 BufferSearch；panel `hit_count` 接 BufferSearch。
 4. 接入 viewport slice。
 5. 接入 fold / projection 的最小可用路径，并补充宿主侧测试。
+6. 外部文件系统变更同步 M1：`notify` 接入、项目树增量更新、干净 buffer 静默 reload、写回声抑制、归一/去抖集成测试。

@@ -77,14 +77,21 @@ pub(crate) struct EditorElement {
     kernel: EditorKernel,
     /// 当前视口可见的逻辑行（绝对 line / byte 坐标）。
     lines: Vec<SnapshotLine>,
-    /// 整 buffer 的逻辑行总数；用于算 `content_height`、scroll clamp 与回写
-    /// 视口边界。
+    /// 整 buffer 的逻辑行总数；Y 轴 clamp 已搬到 view 的 `settle_viewport_y`，
+    /// 本字段不再在 element 内消费，但保留作为 snapshot 契约的一部分（订阅方
+    /// 如 bottom bar / 缩略图可能用到）。
+    #[allow(dead_code)]
     total_lines: u64,
     /// snapshot 切片对应的顶行（0-based 逻辑行号）；首条 `lines[0].line_index`
     /// 等于该值，但 lines 为空时仍需要它，独立带一份。
     viewport_start_line: u64,
-    /// primary head 的 (行号, 列号)，0-based，绝对逻辑坐标——edge-scroll y 轴
-    /// 与 caret 视口判定靠它，与 lines 是否覆盖该行无关。
+    /// view 落定的视口顶行（0-based）；与 `viewport_start_line` 的区别见
+    /// [`EditorSnapshot::top_line`]。element 用它直接算 `off.y`，不再反算。
+    top_line: u64,
+    /// primary head 的 (行号, 列号)，0-based，绝对逻辑坐标。
+    /// 当前阶段已不在 element 内消费（Y 轴 edge-scroll 移到 view 层），
+    /// 但保留作为 snapshot 契约的一部分，下沉到 bottom bar / 缩略图等订阅方。
+    #[allow(dead_code)]
     cursor_position: (u64, u64),
     /// 完整选区集合。每个 selection 的 head 各画一个 caret（阶段 5）；
     /// 非空 selection 的 range 进阶段 2 范围背景；reveal / edge-scroll 只看
@@ -113,6 +120,7 @@ impl EditorElement {
         lines: Vec<SnapshotLine>,
         total_lines: u64,
         viewport_start_line: u64,
+        top_line: u64,
         cursor_position: (u64, u64),
         selection: SelectionSet,
         focus: FocusHandle,
@@ -123,6 +131,7 @@ impl EditorElement {
             lines,
             total_lines,
             viewport_start_line,
+            top_line,
             cursor_position,
             selection,
             focus,
@@ -269,12 +278,13 @@ pub(crate) struct EditorPrepaint {
     top_adjusted: Pixels,
 }
 
-/// 跨帧保留的滚动偏移，存于 GPUI 元素状态。
+/// 跨帧保留的 X 轴滚动偏移，存于 GPUI 元素状态。
+/// Y 轴 top_line 由 view 层托管（见 `View::settle_viewport_y`），不再走元素状态。
 #[derive(Default)]
 struct EditorScroll {
-    offset: Point<Pixels>,
-    /// 最近一次已处理的 reveal seq。
-    /// `None` 表示没见过任何 reveal。第一次见到任何 seq 都视作新请求。
+    offset_x: Pixels,
+    /// element 侧对 reveal 的 X 轴 dedupe；与 view 的 `last_applied_reveal_seq`
+    /// 各管自己的轴，互不干扰。
     last_applied_reveal_seq: Option<u64>,
 }
 
@@ -356,7 +366,6 @@ impl Element for EditorElement {
         let has_gutter = self.has_gutter();
         let allows_vertical_scroll = self.kernel.allows_vertical_scroll();
         let viewport_start_line = self.viewport_start_line;
-        let total_lines = self.total_lines.max(1);
 
         // SelectionSet 经过引擎归一化，as_slice() 已按 start 排序、互不重叠。
         // primary 在归一化前后由 primary_index 跟踪 —— 这里 carets 的位置由
@@ -378,7 +387,6 @@ impl Element for EditorElement {
         // 自然就不会在 owner.snapshot() 里填这个字段。
         let active_reveal = self.reveal;
         let reveal_byte = active_reveal.map(|hint| hint.byte);
-        let reveal_logical_line = active_reveal.map(|hint| hint.line);
         // reveal 目标若在视口内，shape 后能算出行内 x（用于 reveal x 轴摆位）。
         let mut reveal_visible_row_x: Option<(usize, Pixels)> = None;
 
@@ -492,18 +500,34 @@ impl Element for EditorElement {
 
         let gutter_offset = if has_gutter { px(GUTTER_WIDTH) } else { px(0.) };
 
-        // primary caret 的"逻辑行 / 行内 x"——用于 edge-scroll / reveal。logical
-        // 行号永远可拿（cursor_position 在 snapshot 已经折算好）；x 只有 primary
-        // 真的落在 shape 出来的视口行里才有。
-        let primary_caret_logical_line = self.cursor_position.0;
+        // primary caret 的"行内 x"——X 轴 edge-scroll / reveal 用。x 只有 primary
+        // 真的落在 shape 出来的视口行里才有；行号用于 Y 轴 edge-scroll，已搬到
+        // view 层 `settle_viewport_y` 处理，本处不再需要。
         let primary_caret_x = primary_caret_in_view
             .map(|idx| carets[idx].1)
             .unwrap_or(px(0.));
 
-        // autoscroll：让光标保持在视口内。需要稳定 element id 来跨帧存偏移。
-        let (scroll, measured_top_line, measured_visible_lines) = match id {
+        // === Y 轴：view 已在 settle_viewport_y 里落定好 top_line ===
+        //
+        // 不再在本帧反算 / 写回 top_line：view 是 Y 轴真源。reveal Y 摆位与
+        // edge-scroll 都在 `View::settle_viewport_y` 里跑过了（由 slot::embed 在
+        // snapshot 之前触发）；本帧 self.top_line 就是要画的视口顶行。
+        //
+        // === X 轴：仍是像素级，element 内部 with_element_state 跨帧持 off.x ===
+        //
+        // X 轴依赖字体度量（shape 出来的字形宽度），无法在 view 层（按行号粒度）
+        // 表达；reveal X 摆位与 caret 列 edge-scroll 都留在这里。`off.y` 直接由
+        // self.top_line 推导。
+        let viewport_h = bounds.size.height;
+        let viewport_w = clamp_px(bounds.size.width - gutter_offset, px(0.), bounds.size.width);
+        let derived_off_y = if allows_vertical_scroll {
+            line_height * self.top_line as f32
+        } else {
+            px(0.)
+        };
+
+        let (scroll, measured_visible_lines) = match id {
             Some(global_id) => {
-                let content_height = line_height * total_lines as f32;
                 let content_width = prepainted_lines.iter().fold(px(0.), |max, line| {
                     if line.shaped.width > max {
                         line.shaped.width
@@ -511,136 +535,78 @@ impl Element for EditorElement {
                         max
                     }
                 });
-                let viewport_h = bounds.size.height;
-                let viewport_w =
-                    clamp_px(bounds.size.width - gutter_offset, px(0.), bounds.size.width);
                 let reveal = active_reveal;
                 let result =
                     window.with_element_state::<EditorScroll, _>(global_id, |state, _window| {
                         let mut state = state.unwrap_or_default();
-                        let mut off = state.offset;
+                        let mut off = state.offset_x;
 
-                        // === reveal 路径 ===
-                        // 外部 request_reveal 投递的请求；按 seq 触发一次。
-                        // kind 决定触发条件与摆位 —— 集中在这里翻译，调用方只
-                        // 表达"意图"。
-                        //
-                        // 两个轴独立判断可见性 / 独立摆位：搜索 match 在视区"左
-                        // 边"但同一行内时，只需要滚 X；在不同行但同一列时，
-                        // 只需要滚 Y。一起判断会把"X 已经可见"也当成需要滚，
-                        // 反而抖。
+                        // === X 轴 reveal ===
+                        // 仅处理横向；Y 轴 reveal 由 view.settle_viewport_y 吸收。
+                        // 仍然按 seq 在 element 侧 dedupe —— view 的 reveal 字段
+                        // 不会自动清空，element 自己记 last_applied_reveal_seq 防重。
                         if let Some(req) = reveal
                             && Some(req.seq) != state.last_applied_reveal_seq
                         {
-                            // y 轴用逻辑行号，离视口多远都能滚回来——不必依赖
-                            // reveal byte 是否在 shape 出来的视口行里。
-                            let row = reveal_logical_line.unwrap_or(req.line);
-                            let target_top = line_height * row as f32;
-                            let target_bottom = target_top + line_height;
-                            let visible_y =
-                                target_top >= off.y && target_bottom <= off.y + viewport_h;
-
-                            // x 轴只在 reveal 目标行确实进入视口、shape 出 x 时
-                            // 有意义；否则保留当前 off.x，等到目标行被 y 轴滚
-                            // 进视口的下一帧再校准。
-                            let visible_x_opt = reveal_visible_row_x.map(|(_, x)| {
+                            // reveal 目标行确实在视口里 shape 出了 x 时才能摆位；
+                            // 否则保留当前 off，等下一帧该行进视口再校准。
+                            if let Some((_, x)) = reveal_visible_row_x {
                                 let target_right = x + px(CARET_WIDTH);
-                                (x, x >= off.x && target_right <= off.x + viewport_w)
-                            });
-
-                            let (placement_factor, force_scroll) = match req.kind {
-                                RevealKind::Match => (1.0 / 3.0, false),
-                                RevealKind::Jump => (1.0 / 3.0, true),
-                            };
-                            if force_scroll || !visible_y {
-                                off.y = target_top - viewport_h * placement_factor;
+                                let visible_x = x >= off && target_right <= off + viewport_w;
+                                let (placement_factor, force_scroll) = match req.kind {
+                                    RevealKind::Match => (1.0 / 3.0, false),
+                                    RevealKind::Jump => (1.0 / 3.0, true),
+                                };
+                                if force_scroll || !visible_x {
+                                    off = x - viewport_w * placement_factor;
+                                }
                             }
-                            if let Some((x, visible_x)) = visible_x_opt
-                                && (force_scroll || !visible_x)
-                            {
-                                off.x = x - viewport_w * placement_factor;
-                            }
-                            // 即使本帧没拿到行号也要登记 seq——不然下一帧文本
-                            // 仍然能命中行时会"补"一次滚动，对用户来说像延迟反应。
                             state.last_applied_reveal_seq = Some(req.seq);
                         }
 
-                        // === edge-scroll 路径（兜底）===
-                        // 即便 reveal 把 reveal byte 摆到上 1/3，caret（=match
-                        // end）在多行 match 时也可能跨到视区外；edge-scroll 把
-                        // caret 拉回来，宁可让 reveal byte 飘出视区，也不能让
-                        // caret 消失。多光标场景只让 primary caret 决定滚动
-                        // —— 多个 caret 同时驱动滚动会互相拉扯。primary 是用户
-                        // 最近交互的 caret，跟它走最自然。
-                        if allows_vertical_scroll {
-                            let caret_top = line_height * primary_caret_logical_line as f32;
-                            let caret_bottom = caret_top + line_height;
-                            if caret_top < off.y {
-                                off.y = caret_top;
-                            } else if caret_bottom > off.y + viewport_h {
-                                off.y = caret_bottom - viewport_h;
-                            }
-                            off.y = clamp_px(
-                                off.y,
-                                px(0.),
-                                clamp_px(content_height - viewport_h, px(0.), content_height),
-                            );
-                        } else {
-                            off.y = px(0.);
-                        }
-
-                        // 横向：光标列需可见。行尾光标位于最后一个字形「之
-                        // 后」，故可滚动宽度要在最宽行的基础上额外留出一个光
-                        // 标宽度——否则滚到行尾时光标正好压在正文区裁剪边界
-                        // 上、被切掉。primary caret 在视口外时 x = 0，不主动
-                        // 触发 x 滚动（再下一帧 caret 进视口，shape 出 x 后再
-                        // 校准）。
+                        // === X 轴 edge-scroll ===
+                        // 光标列需可见。行尾光标位于最后一个字形「之后」，可滚动
+                        // 宽度要在最宽行的基础上额外留出一个光标宽度——否则滚到
+                        // 行尾时光标正好压在正文裁剪边界上被切掉。primary caret
+                        // 在视口外时 x = 0，不主动触发 x 滚动（再下一帧 caret 进
+                        // 视口、shape 出 x 后再校准）。
                         let scrollable_w = content_width + px(CARET_WIDTH);
                         if primary_caret_in_view.is_some() {
                             let caret_right = primary_caret_x + px(CARET_WIDTH);
-                            if primary_caret_x < off.x {
-                                off.x = primary_caret_x;
-                            } else if caret_right > off.x + viewport_w {
-                                off.x = caret_right - viewport_w;
+                            if primary_caret_x < off {
+                                off = primary_caret_x;
+                            } else if caret_right > off + viewport_w {
+                                off = caret_right - viewport_w;
                             }
                         }
-                        off.x = clamp_px(
-                            off.x,
+                        off = clamp_px(
+                            off,
                             px(0.),
                             clamp_px(scrollable_w - viewport_w, px(0.), scrollable_w),
                         );
 
-                        state.offset = off;
+                        state.offset_x = off;
 
-                        // 反算视口边界：top_line = floor(off.y / line_height)；
-                        // visible_line_count = ceil(viewport_h / line_height)
-                        // ——加一行裕度让"行半被裁"也可以画出来。
+                        // 测量 visible_line_count：viewport_h / line_height + 1 行裕度。
                         let lh: f32 = f32::from(line_height).max(1.0);
-                        let off_y_f: f32 = off.y.into();
                         let viewport_h_f: f32 = viewport_h.into();
-                        let (top_line_clamped, visible) = if allows_vertical_scroll {
-                            let top_line = (off_y_f / lh).floor().max(0.0) as u64;
-                            let visible = ((viewport_h_f / lh).ceil() as u64).saturating_add(1);
-                            (top_line.min(total_lines.saturating_sub(1)), visible)
+                        let visible = if allows_vertical_scroll {
+                            ((viewport_h_f / lh).ceil() as u64).saturating_add(1)
                         } else {
-                            (0, 1)
+                            1
                         };
-                        ((off, top_line_clamped, visible), state)
+                        ((off, visible), state)
                     });
-                result
+                let (off_x, visible) = result;
+                (Point::new(off_x, derived_off_y), visible)
             }
-            None => (
-                Point::default(),
-                viewport_start_line,
-                self.lines.len() as u64,
-            ),
+            None => (Point::new(px(0.), derived_off_y), self.lines.len() as u64),
         };
 
-        // 调用视口写回钩子，让下一帧的 snapshot 切对 buffer 视口段。一帧的
-        // 旧值不会更糟——snapshot 用的是上一帧反算结果，element 当帧仍按 lines
-        // 渲染；首帧的 200 行兜底已经够覆盖任何屏幕高度。
+        // 把测得的 visible_line_count 推回 view，让下一帧 snapshot 切片用更准的
+        // 行数；top_line 已经由 settle 落定，sync 不再写它。
         if let Some(sync) = self.viewport_sync.as_ref() {
-            sync(measured_top_line, measured_visible_lines, cx);
+            sync(measured_visible_lines, cx);
         }
 
         // top 已吸收 viewport_start_line × line_height 的修正：visual_row 0 在

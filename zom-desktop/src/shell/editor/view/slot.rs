@@ -63,9 +63,17 @@ impl TextEditorSlot {
 
     /// 嵌入：业务渲染唯一对外的工厂。
     ///
-    /// 快照在调用瞬间从 App 拉一份 —— 渲染路径是单线程顺序的，此处的 `App`
-    /// 借用不会与外层任何活借用冲突。
+    /// 渲染路径是单线程顺序的，对 `App` 的两次借用（先 mut settle、再 ref snapshot）
+    /// 不会与外层任何活借用冲突。
+    ///
+    /// 1. **settle**：把视口 Y 轴推进到本帧应切的窗口（吸收 reveal / edge-scroll）。
+    ///    必须先于 `snapshot_for_focus` —— snapshot 切片范围依赖 `view.viewport().top_line`。
+    /// 2. **snapshot**：按已落定的视口拼快照供 element 消费。
     pub(crate) fn embed(&self) -> EditorElement {
+        self.app
+            .borrow_mut()
+            .with_router_mut(|mut router| router.settle_viewport_for_focus(self.focus));
+
         let snapshot = self
             .app
             .borrow()

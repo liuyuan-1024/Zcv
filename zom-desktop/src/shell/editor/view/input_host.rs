@@ -25,10 +25,12 @@ pub(crate) struct EditorPaintInfo {
 
 pub(crate) type EditorInputHook = Rc<dyn Fn(EditorPaintInfo, &mut Window, &mut GpuiApp)>;
 
-/// element prepaint 末尾用来把当前视口状态（顶部可见逻辑行 + 可见行数）写回
-/// 关联 view 的钩子。只有主编辑区会装配一个真实实现；单行嵌入式编辑器同样
-/// 拥有视口模型，但其视口固定为单行，无需跨帧写回。
-pub(crate) type EditorViewportSyncHook = Rc<dyn Fn(u64, u64, &mut GpuiApp)>;
+/// element prepaint 末尾用来把测得的 `visible_line_count` 写回 view 的钩子。
+/// 只有主编辑区装一个真实实现；其它单行嵌入编辑器视口固定为单行，无需写回。
+///
+/// Y 轴的 `top_line` 由 view 在 `settle_viewport_y` 里自己落定，element 不再写回
+/// top_line（避免和 view 的 settle 形成双源）。
+pub(crate) type EditorViewportSyncHook = Rc<dyn Fn(u64, &mut GpuiApp)>;
 
 #[derive(Clone)]
 pub(crate) struct EditorInputHost {

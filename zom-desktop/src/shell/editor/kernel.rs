@@ -98,6 +98,7 @@ impl EditorKernel {
             snapshot.lines,
             snapshot.total_lines,
             snapshot.viewport_start_line,
+            snapshot.top_line,
             snapshot.cursor_position,
             snapshot.selection,
             focus,

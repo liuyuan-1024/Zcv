@@ -27,6 +27,10 @@ pub(crate) struct EditorSnapshot {
     pub(crate) total_lines: u64,
     /// `lines` 的第一条对应的逻辑行号（0-based）；空 lines 时为 0。
     pub(crate) viewport_start_line: u64,
+    /// view 已落定的视口顶行（0-based）；与 `viewport_start_line` 的区别在于
+    /// snapshot 切片范围带有 ±visible_lines 的安全余量，`top_line` 才是用户
+    /// 真正看到的第一行。element 用它直接算 `off.y`，不再反算。
+    pub(crate) top_line: u64,
     /// primary head 的绝对字节位（与 `selection.primary().head()` 等价）。
     pub(crate) cursor_byte: usize,
     /// primary head 的 (行号, 列号)，均 0-based；列按 Unicode scalar value 计。

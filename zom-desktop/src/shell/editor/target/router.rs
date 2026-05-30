@@ -104,6 +104,14 @@ impl<'a> EditorRouterMut<'a> {
         Self { owners }
     }
 
+    /// 在 `snapshot_for_focus` 之前调用：让指定 focus 的 owner 把视口 Y 轴落定。
+    /// 默认实现是 no-op；只有主编辑区 owner override 后真正吸收 reveal / edge-scroll。
+    pub(crate) fn settle_viewport_for_focus(&mut self, focus: AppFocus) {
+        if let Some(owner) = self.owners.iter_mut().find(|o| o.accepts_focus(focus)) {
+            owner.settle_viewport_y();
+        }
+    }
+
     /// 把指定 target 的 IME 写入目标交给闭包；借用在闭包结束后立即释放。
     ///
     /// 闭包成功返回后调一次 owner 的 [`TextTargetOwner::after_text_changed`]

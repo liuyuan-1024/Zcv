@@ -49,4 +49,12 @@ pub(crate) trait TextTargetOwner: TextTargetQuery {
     /// 调一次。默认 no-op；owner 想响应"我的文本变了"时自行 override，
     /// 不必让宿主代为分发（例如项目选择器在查询变化后重置候选选区）。
     fn after_text_changed(&mut self) {}
+
+    /// 视口 Y 轴落定钩子 —— 渲染端在 `snapshot()` 之前调一次。
+    ///
+    /// 主编辑区 owner override 这条：吸收 pending reveal + 跑 edge-scroll，
+    /// 把 `view.viewport.top_line` 推进到本帧 snapshot 应该切的窗口，
+    /// 避免光标远跳后 build_snapshot 还在切旧窗口造成的空白帧。
+    /// 默认 no-op（单行输入框 / 列表面板等无 viewport 语义的 owner）。
+    fn settle_viewport_y(&mut self) {}
 }

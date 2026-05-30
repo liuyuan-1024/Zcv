@@ -48,6 +48,8 @@ pub(crate) fn build_snapshot(
         lines,
         total_lines,
         viewport_start_line,
+        // 通用构造路径默认与 slice 起点一致；上层（主编辑区 text_target）按需覆盖。
+        top_line: viewport_start_line,
         cursor_byte,
         cursor_position,
         selection: selection.clone(),

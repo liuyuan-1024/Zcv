@@ -74,13 +74,13 @@ impl ShellView {
         let language_servers = language_servers::LanguageServersRuntime::new(cx);
 
         // 主编辑区内核：多行 + 行号 + 滚动 + 视口写回。视口钩子在 prepaint
-        // 末尾被调用，把测得的 (top_line, visible_line_count) 推回 view 的
-        // ViewportState，下一帧 snapshot 据此切片。
+        // 末尾把测得的 visible_line_count 推回 view 的 ViewportState；top_line
+        // 由 view 自己在 settle 阶段落定，element 不写它。
         let main_viewport_sync: EditorViewportSyncHook = {
             let app = Rc::clone(&app);
-            Rc::new(move |top_line, visible_line_count, _cx| {
+            Rc::new(move |visible_line_count, _cx| {
                 app.borrow_mut()
-                    .set_main_viewport(top_line, visible_line_count);
+                    .set_main_visible_line_count(visible_line_count);
             })
         };
         let main_editor_slot = TextEditorSlot::install(

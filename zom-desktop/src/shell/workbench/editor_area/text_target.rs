@@ -24,13 +24,6 @@ use crate::shell::editor::{
     TextTargetQuery, build_snapshot,
 };
 
-/// 视口尚未由 element 反算写回时（即 `ViewportState.visible_line_count == 0`，
-/// 例如 app 启动后第一帧 / headless 测试）退而求其次取的可见行数。
-///
-/// 选个比常见屏幕略大的值：4K + 14px 行高 ~ 280 行；200 是兼顾"够大屏首屏看
-/// 全"和"小 buffer 别 over-allocate"的折中。第二帧起会被 element 写回值覆盖。
-const DEFAULT_VISIBLE_LINES: u64 = 200;
-
 /// 写入侧：路由要 `&mut` 时构造它。
 pub(crate) struct MainEditorOwner<'a> {
     workspace: &'a mut Workspace,
@@ -55,6 +48,34 @@ impl<'a> MainEditorOwnerRef<'a> {
     }
 }
 
+/// 在 build_snapshot 之前把 view.viewport.top_line 推进到本帧应该切的窗口。
+///
+/// 主编辑区 owner 在 `TextTargetOwner::settle_viewport_y` 钩子里调本函数；
+/// 在 `slot::embed()` 的渲染入口处由 router 统一触发，保证每帧 snapshot 拿到的视口已经吸收完 pending reveal 与 edge-scroll，
+/// 不再依赖"上一帧 prepaint 测出来的 top_line"——光标远跳就不会产生 1 帧空白。
+fn settle_active_view_y(workspace: &Workspace, views: &mut ViewSet) {
+    let Some(view) = views.active_view_mut() else {
+        return;
+    };
+    let Some(buffer) = workspace.buffer(view.buffer()) else {
+        return;
+    };
+    let total_lines = buffer.buffer().line_count() as u64;
+    let selection_head_line = buffer
+        .buffer()
+        .byte_to_position(view.selection().primary().head())
+        .map(|pos| pos.line().get() as u64)
+        .unwrap_or(0);
+    let reveal_line = view.reveal().and_then(|req| {
+        buffer
+            .buffer()
+            .byte_to_position(req.byte)
+            .ok()
+            .map(|pos| pos.line().get() as u64)
+    });
+    view.settle_viewport_y(total_lines, selection_head_line, reveal_line);
+}
+
 fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSnapshot {
     let Some(view) = views.active_view() else {
         return EditorSnapshot::default();
@@ -69,21 +90,18 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
     let search_hits: Vec<zom_engine::TextRange> = search.ranges().collect();
     let search_current = search.current_range();
 
-    // 视口边界来自 view —— element 在前一帧 prepaint 末尾按 bounds / line_height
-    // 反算并写回。首帧 / headless 测试场景下 `visible_line_count == 0`，退到
-    // `DEFAULT_VISIBLE_LINES`，保证首屏不会少读行（也不会读整个 10G 文件）。
+    // 视口边界来自 view —— `View::new` 用 `DEFAULT_INITIAL_VISIBLE_LINES` 初始化，
+    // element 在 prepaint 末尾按 bounds / line_height 测量后 sync 回写真实值。
     let vp = view.viewport();
-    let visible_lines = if vp.visible_line_count == 0 {
-        DEFAULT_VISIBLE_LINES
-    } else {
-        vp.visible_line_count
-    };
+    let visible_lines = vp.visible_line_count;
     // 上下各加 visible_lines：让 edge-scroll 把视口推出原范围时（PageDown / 连按方向键）本帧 lines 已经覆盖新可见行，避免 1 帧空窗。
     // `viewport_start_line` 在快照里反映的是实际切片起点，element 用它算 top_adjusted。
     let slice_start = vp.top_line.saturating_sub(visible_lines);
     let slice_len = visible_lines.saturating_mul(3);
     let request = EditorSnapshotRequest::viewport(slice_start, slice_len);
     let mut snapshot = build_snapshot(buffer.buffer(), &selection, request);
+    // view 已落定的 top_line（真实视口起点）；与 slice_start 区分开供 element 直接用。
+    snapshot.top_line = vp.top_line;
 
     // reveal 携带的 byte 要折一次 byte_to_position 出逻辑行——element 看不到
     // buffer，离开视口的 reveal 目标全靠这条 line 决定怎么滚。失败时丢掉
@@ -150,6 +168,10 @@ impl<'a> TextTargetOwner for MainEditorOwner<'a> {
         let buffer = self.workspace.buffer_mut(buffer_id)?.buffer_mut();
         let selection = self.views.active_view_mut()?.selection_mut();
         Some(EditTarget { buffer, selection })
+    }
+
+    fn settle_viewport_y(&mut self) {
+        settle_active_view_y(self.workspace, self.views);
     }
 }
 

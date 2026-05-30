@@ -386,19 +386,20 @@ impl App {
         f(EditorRouterMut::new(owners))
     }
 
-    /// 由主编辑区 element prepaint 末尾回写：把它实际测得的视口顶行 +
-    /// 可见行数推到当前活动 view 的 `ViewportState`，下一帧的 snapshot 据此
-    /// 调 `Buffer::slice_viewport`。无活动 view 时静默忽略。
-    pub(crate) fn set_main_viewport(&mut self, top_line: u64, visible_line_count: u64) {
+    /// 由主编辑区 element prepaint 末尾回写：把它实际测得的可见行数写回当前活动
+    /// view，下一帧 `View::settle_viewport_y` 与 snapshot 切片用更准的行数。
+    /// `top_line` 由 view 在 settle 阶段自己落定，element 不再回写它。无活动 view
+    /// 时静默忽略。
+    pub(crate) fn set_main_visible_line_count(&mut self, visible_line_count: u64) {
         let Some(view) = self.views.active_view_mut() else {
             return;
         };
         let current = view.viewport();
-        if current.top_line == top_line && current.visible_line_count == visible_line_count {
+        if current.visible_line_count == visible_line_count {
             return;
         }
         view.set_viewport(zom_view::ViewportState {
-            top_line,
+            top_line: current.top_line,
             visible_line_count,
         });
     }

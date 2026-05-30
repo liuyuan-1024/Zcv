@@ -26,7 +26,7 @@ use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
 use crate::shell::editor::{EditorSnapshot, TextEditorSlot};
 use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::{self, ConfirmDeleteHandlers, FileTreePanel};
-use crate::shell::shared::theme::{color, radius, typography};
+use crate::shell::shared::theme::{color, typography};
 use crate::shell::{CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup};
 
 mod bars;
@@ -73,7 +73,6 @@ pub(crate) fn render(
         .flex_col()
         .size_full()
         .overflow_hidden()
-        .rounded(radius::window())
         .bg(color::gray::s02())
         .font(typography::ui_font())
         .text_color(color::gray::s09())

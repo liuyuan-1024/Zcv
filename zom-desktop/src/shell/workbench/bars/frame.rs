@@ -26,7 +26,7 @@ pub(crate) fn bar_frame(edge: BarEdge) -> Div {
         .flex_row()
         .items_center()
         .w_full()
-        .px(space::s8())
+        .px(space::s6())
         .py(space::s4())
         .gap(space::s8())
         .bg(color::gray::s03())

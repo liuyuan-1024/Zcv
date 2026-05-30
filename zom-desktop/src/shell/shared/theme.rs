@@ -402,10 +402,6 @@ pub mod radius {
     pub fn full() -> Pixels {
         px(999.0)
     }
-    /// 窗口外框圆角（自绘标题栏时与系统视觉协调）。
-    pub fn window() -> Pixels {
-        px(8.0)
-    }
 }
 
 /// 字号 + 行高（手册 6.3 / 6.4）。骨架阶段固定默认值；将来从 `cx.fonts()` 取。

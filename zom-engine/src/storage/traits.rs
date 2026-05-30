@@ -61,6 +61,12 @@ pub(crate) trait TextRead {
     /// 端点必须是合法字符边界，否则返回 `CoordinateError::InvalidByteBoundary`。
     fn byte_to_position(&self, offset: ByteOffset) -> EngineResult<Position>;
 
+    /// ByteOffset -> 仅行号。语义和约束与 `byte_to_position` 相同，只省掉列计算。
+    /// 默认实现走 `byte_to_position`；后端可以 override 提供更快的实现。
+    fn byte_to_line(&self, offset: ByteOffset) -> EngineResult<Line> {
+        Ok(self.byte_to_position(offset)?.line())
+    }
+
     /// line / logical column -> ByteOffset。
     fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset>;
 

@@ -11,5 +11,12 @@ thiserror = "2.0.18"
 unicode-segmentation = "1.13.2"
 
 [dev-dependencies]
-gpui = "0.2.2"
-proptest = "1.5.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "buffer_edits"
+harness = false
+
+[[bench]]
+name = "projection"
+harness = false

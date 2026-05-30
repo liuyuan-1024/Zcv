@@ -165,6 +165,18 @@ pub enum ProjectionError {
         snapshot_version: BufferVersion,
         fold_version: BufferVersion,
     },
+    /// `Projection::apply_delta` 入口的版本闭环失败：调用方必须保证 self、snapshot、folds
+    /// 三者都已对齐到 `event.old_version()`/`event.new_version()`。
+    #[error(
+        "Projection::apply_delta 版本不匹配：projection {projection_version:?}，event old/new {event_old_version:?}/{event_new_version:?}，snapshot {snapshot_version:?}，folds {fold_version:?}"
+    )]
+    ApplyDeltaStale {
+        projection_version: BufferVersion,
+        event_old_version: BufferVersion,
+        event_new_version: BufferVersion,
+        snapshot_version: BufferVersion,
+        fold_version: BufferVersion,
+    },
 }
 
 /// VersionedResult 版本绑定与 remap 相关错误。

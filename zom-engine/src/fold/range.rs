@@ -8,17 +8,22 @@ use crate::{
     position_map::Stickiness,
     tracking::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
     transaction::DeltaEvent,
-    types::{BufferVersion, TextRange},
+    types::{BufferVersion, Line, TextRange},
 };
 
 use super::FoldRangeId;
 
 /// 单条折叠区间与其可跟随文本的内部 TrackedRange。
+///
+/// `line_span` 是与 `tracked_range` 联动的缓存：fold 创建与 delta 应用后由 `FoldSet`
+/// 统一刷新，使 `Projection::build` / 增量分类器在读取时不必再为每条 fold 做 byte→line
+/// 的 O(log N) 转换。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FoldRange {
     id: FoldRangeId,
     tracked_range: TrackedRange,
     update_policy: TrackedRangeUpdatePolicy,
+    line_span: (Line, Line),
 }
 
 impl FoldRange {
@@ -27,11 +32,13 @@ impl FoldRange {
         version: BufferVersion,
         range: TextRange,
         update_policy: TrackedRangeUpdatePolicy,
+        line_span: (Line, Line),
     ) -> Self {
         Self {
             id,
             tracked_range: TrackedRange::from_range(version, range, fold_stickiness()),
             update_policy,
+            line_span,
         }
     }
 
@@ -55,6 +62,20 @@ impl FoldRange {
         self.update_policy
     }
 
+    /// 折叠区间覆盖的逻辑行闭区间 `[start_line, end_line]`，语义与 `fold_line_span` 一致。
+    /// 由 `FoldSet` 在每次 fold 变更 / delta 应用后同步刷新。
+    pub fn line_span(&self) -> (Line, Line) {
+        self.line_span
+    }
+
+    pub fn start_line(&self) -> Line {
+        self.line_span.0
+    }
+
+    pub fn end_line(&self) -> Line {
+        self.line_span.1
+    }
+
     pub fn map_through_delta_event(
         &self,
         event: &DeltaEvent,
@@ -65,6 +86,10 @@ impl FoldRange {
 
     pub(super) fn set_tracked_range(&mut self, tracked_range: TrackedRange) {
         self.tracked_range = tracked_range;
+    }
+
+    pub(super) fn set_line_span(&mut self, line_span: (Line, Line)) {
+        self.line_span = line_span;
     }
 }
 

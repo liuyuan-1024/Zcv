@@ -87,6 +87,11 @@ impl Snapshot {
         self.storage.byte_to_position(offset)
     }
 
+    /// `byte_to_position` 的省列变体；详见 `Buffer::byte_to_line`。
+    pub fn byte_to_line(&self, offset: ByteOffset) -> EngineResult<Line> {
+        self.storage.byte_to_line(offset)
+    }
+
     pub fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset> {
         self.storage.position_to_byte(position)
     }

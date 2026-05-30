@@ -10,8 +10,9 @@
 use crate::{
     EngineResult, FoldSet,
     errors::ProjectionError,
-    fold::geometry::{fold_line_span, next_line, previous_line},
+    fold::geometry::{next_line, previous_line},
     snapshot::Snapshot,
+    transaction::DeltaEvent,
     types::{BufferVersion, Line, LineRange},
 };
 
@@ -32,6 +33,26 @@ pub struct Projection {
     logical_to_projection: Vec<LogicalProjection>,
     /// 文本来源中的逻辑行总数（不受折叠影响）。
     logical_line_count: usize,
+    /// 上次 build 用到的（已排序合并）隐藏行段集合，作为增量分类器的对比基准。
+    /// 不暴露：只参与 `apply_delta` 的「fold 结构是否变化」判定。
+    hidden_spans: Vec<HiddenSpan>,
+}
+
+/// `Projection::apply_delta` 推进结果。语义详见对应方法文档。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyOutcome {
+    /// 编辑既不改变逻辑行数也不改变 fold 结构；`Projection` 仅推进 `version`，
+    /// `rows` 与 `logical_to_projection` 全程未改写。
+    Compatible,
+    /// 局部修补：仅 `[logical_lines]` 范围内的投影行被原地替换，
+    /// 调用方可据此 invalidate 对应的 paint cache。
+    /// **Tier 1 实现暂不会返回该变体**；保留入口以便 Tier 2 接入。
+    LocalPatched {
+        logical_lines: LineRange,
+        projected_lines: ProjectedLineRange,
+    },
+    /// 全量重建：`Projection` 已就地被新版本替换，调用方应假设所有投影行都失效。
+    Rebuilt,
 }
 
 impl Projection {
@@ -48,7 +69,7 @@ impl Projection {
         }
 
         let logical_line_count = snapshot.line_count();
-        let hidden_spans = collect_merged_hidden_spans(snapshot, folds)?;
+        let hidden_spans = collect_merged_hidden_spans(folds);
 
         let mut rows: Vec<ProjectedLineKind> = Vec::new();
         let mut logical_to_projection: Vec<LogicalProjection> =
@@ -101,7 +122,58 @@ impl Projection {
             rows,
             logical_to_projection,
             logical_line_count,
+            hidden_spans,
         })
+    }
+
+    /// 尝试就地推进 Projection 到 `event.new_version()`。
+    ///
+    /// 调用契约：
+    /// - `self.version` 必须等于 `event.old_version()`；
+    /// - `new_snapshot.version()` 与 `new_folds.version()` 必须等于 `event.new_version()`；
+    /// - 三者任一违反契约即返回 `ProjectionError::ApplyDeltaStale`，本方法不会留下半坏态。
+    ///
+    /// Tier 1 分类器：
+    /// - **Compatible**：编辑前后 `snapshot.line_count()` 与 `hidden_spans` 都不变，
+    ///   只推进 `version`，其余字段零改写。
+    /// - **Rebuilt**：其它一切情况都直接走 `Projection::build` 原地替换。
+    ///
+    /// **关键正确性性质**：分类降级到 `Rebuilt` 只是性能损失，不会产生错误投影。
+    /// 故分类器允许任意保守，但绝不能把"实际不兼容"误判为 `Compatible`。
+    pub fn apply_delta(
+        &mut self,
+        new_snapshot: &Snapshot,
+        new_folds: &FoldSet,
+        event: &DeltaEvent,
+    ) -> EngineResult<ApplyOutcome> {
+        if self.version != event.old_version()
+            || new_snapshot.version() != event.new_version()
+            || new_folds.version() != event.new_version()
+        {
+            return Err(ProjectionError::ApplyDeltaStale {
+                projection_version: self.version,
+                event_old_version: event.old_version(),
+                event_new_version: event.new_version(),
+                snapshot_version: new_snapshot.version(),
+                fold_version: new_folds.version(),
+            }
+            .into());
+        }
+
+        let line_count_unchanged = new_snapshot.line_count() == self.logical_line_count;
+        if line_count_unchanged {
+            // O(F)：用 fold.line_span() 缓存重拼，与 self.hidden_spans 字段级对比。
+            let new_spans = collect_merged_hidden_spans(new_folds);
+            if new_spans == self.hidden_spans {
+                self.version = event.new_version();
+                return Ok(ApplyOutcome::Compatible);
+            }
+        }
+
+        // 保守降级：全量重建并原地替换。
+        let rebuilt = Self::build(new_snapshot, new_folds)?;
+        *self = rebuilt;
+        Ok(ApplyOutcome::Rebuilt)
     }
 
     pub fn version(&self) -> BufferVersion {
@@ -420,7 +492,7 @@ impl Projection {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HiddenSpan {
     start: Line,
     end: Line,
@@ -432,25 +504,20 @@ impl HiddenSpan {
     }
 }
 
-fn collect_merged_hidden_spans(
-    snapshot: &Snapshot,
-    folds: &FoldSet,
-) -> EngineResult<Vec<HiddenSpan>> {
-    let mut spans: Vec<HiddenSpan> = Vec::new();
+fn collect_merged_hidden_spans(folds: &FoldSet) -> Vec<HiddenSpan> {
+    // `FoldSet::normalize` 已让 `ranges` 按 `range.start()` 字节升序；字节升序 → 缓存的
+    // `line_span.0` 非降序。直接读 FoldRange 上的 `line_span` 缓存即可，
+    // 省掉对每条 fold 的 byte→line O(log N) 转换；同时边收集边合并。
+    let mut merged: Vec<HiddenSpan> = Vec::with_capacity(folds.len());
     for fold in folds.iter() {
-        let (start_line, end_line) = fold_line_span(snapshot, fold.range())?;
-        if start_line < end_line {
-            spans.push(HiddenSpan {
-                start: next_line(start_line),
-                end: next_line(end_line),
-            });
+        let (start_line, end_line) = fold.line_span();
+        if start_line >= end_line {
+            continue;
         }
-    }
-
-    spans.sort_by_key(|span| span.start);
-
-    let mut merged: Vec<HiddenSpan> = Vec::with_capacity(spans.len());
-    for span in spans {
+        let span = HiddenSpan {
+            start: next_line(start_line),
+            end: next_line(end_line),
+        };
         match merged.last_mut() {
             Some(last) if span.start <= last.end => {
                 if span.end > last.end {
@@ -461,5 +528,5 @@ fn collect_merged_hidden_spans(
         }
     }
 
-    Ok(merged)
+    merged
 }

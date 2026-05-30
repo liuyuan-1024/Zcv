@@ -20,6 +20,11 @@ pub(crate) trait LineGeometry {
     fn line_count(&self) -> usize;
     fn line_start(&self, line: Line) -> EngineResult<ByteOffset>;
     fn byte_to_position(&self, offset: ByteOffset) -> EngineResult<Position>;
+    /// 仅需行号的快路径：省掉列计算的一连串 O(log N)。
+    /// 默认走 `byte_to_position`；后端 override 时直接调底层 `byte_to_line`。
+    fn byte_to_line(&self, offset: ByteOffset) -> EngineResult<Line> {
+        Ok(self.byte_to_position(offset)?.line())
+    }
     fn len_bytes(&self) -> ByteOffset;
 }
 
@@ -34,6 +39,10 @@ impl LineGeometry for Buffer {
 
     fn byte_to_position(&self, offset: ByteOffset) -> EngineResult<Position> {
         Buffer::byte_to_position(self, offset)
+    }
+
+    fn byte_to_line(&self, offset: ByteOffset) -> EngineResult<Line> {
+        Buffer::byte_to_line(self, offset)
     }
 
     fn len_bytes(&self) -> ByteOffset {
@@ -52,6 +61,10 @@ impl LineGeometry for Snapshot {
 
     fn byte_to_position(&self, offset: ByteOffset) -> EngineResult<Position> {
         Snapshot::byte_to_position(self, offset)
+    }
+
+    fn byte_to_line(&self, offset: ByteOffset) -> EngineResult<Line> {
+        Snapshot::byte_to_line(self, offset)
     }
 
     fn len_bytes(&self) -> ByteOffset {
@@ -96,15 +109,17 @@ pub(crate) fn fold_line_span<G: LineGeometry>(
     geom: &G,
     range: TextRange,
 ) -> EngineResult<(Line, Line)> {
-    let start_line = geom.byte_to_position(range.start())?.line();
+    let start_line = geom.byte_to_line(range.start())?;
     let end_line = if range.is_empty() {
         start_line
     } else {
-        let end_position = geom.byte_to_position(range.end())?;
-        if end_position.column().get() == 0 && end_position.line() > start_line {
-            previous_line(end_position.line())
+        let end_byte_line = geom.byte_to_line(range.end())?;
+        // 端点落在某行起点（未消耗该行字符）时，该行不计入 fold 跨度。
+        // 通过比较 `range.end()` 与该行的起始字节判断，省掉一次完整的 `byte_to_position` 列计算。
+        if end_byte_line > start_line && geom.line_start(end_byte_line)? == range.end() {
+            previous_line(end_byte_line)
         } else {
-            end_position.line()
+            end_byte_line
         }
     };
     Ok((start_line, end_line))

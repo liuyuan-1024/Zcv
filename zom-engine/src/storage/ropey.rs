@@ -160,6 +160,10 @@ impl TextRead for RopeyStorage {
         byte_to_position_in_rope(&self.rope, offset)
     }
 
+    fn byte_to_line(&self, offset: ByteOffset) -> EngineResult<Line> {
+        byte_to_line_in_rope(&self.rope, offset)
+    }
+
     fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset> {
         position_to_byte_in_rope(&self.rope, position)
     }
@@ -321,6 +325,10 @@ impl TextRead for RopeySnapshot {
 
     fn byte_to_position(&self, offset: ByteOffset) -> EngineResult<Position> {
         byte_to_position_in_rope(&self.rope, offset)
+    }
+
+    fn byte_to_line(&self, offset: ByteOffset) -> EngineResult<Line> {
+        byte_to_line_in_rope(&self.rope, offset)
     }
 
     fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset> {
@@ -601,6 +609,24 @@ fn byte_to_char_in_rope(rope: &Rope, offset: ByteOffset) -> EngineResult<CharOff
     }
 
     Ok(CharOffset::new(rope.byte_to_char(byte_offset)))
+}
+
+/// `byte_to_position` 的省列变体：单次 `rope.byte_to_line` 调用，省掉
+/// `byte_to_char → is_crlf_middle → char_to_line → line_to_char` 这条链路里
+/// 后三段的额外 O(log N)。CRLF 中点检测在此放宽：调用方场景（fold 几何）只关心
+/// 行号且字节区间已在 fold 创建处校验过；返回的行号以 `\n` 为分界，与外部协议一致。
+fn byte_to_line_in_rope(rope: &Rope, offset: ByteOffset) -> EngineResult<Line> {
+    let byte_offset = offset.get();
+
+    if byte_offset > rope.len_bytes() {
+        return Err(CoordinateError::OutOfBounds(offset).into());
+    }
+
+    if !is_utf8_char_boundary_in_rope(rope, byte_offset) {
+        return Err(CoordinateError::InvalidByteBoundary(offset).into());
+    }
+
+    Ok(Line::new(rope.byte_to_line(byte_offset)))
 }
 
 fn is_utf8_char_boundary_in_rope(rope: &Rope, byte_offset: usize) -> bool {

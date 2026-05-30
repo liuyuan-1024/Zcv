@@ -30,6 +30,12 @@ impl Buffer {
         self.storage.byte_to_position(offset)
     }
 
+    /// `byte_to_position` 的省列变体。`Projection::build` / fold 几何里只关心行号时，
+    /// 走这条路径避免后端额外的 char/column 投影 O(log N)。
+    pub fn byte_to_line(&self, offset: ByteOffset) -> EngineResult<Line> {
+        self.storage.byte_to_line(offset)
+    }
+
     pub fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset> {
         self.storage.position_to_byte(position)
     }

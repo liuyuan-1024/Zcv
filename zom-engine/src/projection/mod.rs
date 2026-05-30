@@ -13,7 +13,7 @@ mod point;
 mod range;
 mod viewport;
 
-pub use core::Projection;
+pub use core::{ApplyOutcome, Projection};
 pub use index::ProjectedLineIndex;
 pub use line::{FoldPlaceholder, LogicalProjection, ProjectedLine, ProjectedLineKind, TextLine};
 pub use point::{LogicalPoint, LogicalPointProjection, ProjectedPoint, ProjectedPointMapping};

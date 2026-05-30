@@ -9,8 +9,8 @@
 
 use crate::{
     EngineResult,
-    buffer::Buffer,
     errors::FoldError,
+    snapshot::Snapshot,
     tracking::TrackedRangeUpdatePolicy,
     transaction::DeltaEvent,
     types::{BufferVersion, ByteOffset, Line, LineRange, TextRange},
@@ -84,17 +84,22 @@ impl FoldSet {
     }
 
     /// 折叠任意合法 byte range；若已存在精确相同的 range 则返回该 fold 的 id（幂等）。
-    pub fn fold(&mut self, range: TextRange) -> Result<FoldRangeId, FoldError> {
-        self.fold_with_policy(range, self.default_update_policy)
+    ///
+    /// `snapshot` 必须与本 FoldSet 同版本：构造时 eager 缓存 fold 的逻辑行跨度，
+    /// 让后续 `Projection::build` / 增量分类器无需再为每条 fold 做 byte→line 转换。
+    pub fn fold(&mut self, snapshot: &Snapshot, range: TextRange) -> EngineResult<FoldRangeId> {
+        self.fold_with_policy(snapshot, range, self.default_update_policy)
     }
 
     pub fn fold_with_policy(
         &mut self,
+        snapshot: &Snapshot,
         range: TextRange,
         update_policy: TrackedRangeUpdatePolicy,
-    ) -> Result<FoldRangeId, FoldError> {
+    ) -> EngineResult<FoldRangeId> {
+        self.ensure_snapshot_version(snapshot)?;
         if range.is_empty() {
-            return Err(FoldError::EmptyRange { range });
+            return Err(FoldError::EmptyRange { range }.into());
         }
 
         if let Some(existing) = self.find_exact(range) {
@@ -102,12 +107,14 @@ impl FoldSet {
         }
 
         self.validate_nesting(range)?;
+        let line_span = fold_line_span(snapshot, range)?;
         let id = self.reserve_id()?;
         self.ranges.push(FoldRange::with_policy(
             id,
             self.version,
             range,
             update_policy,
+            line_span,
         ));
         self.normalize();
         Ok(id)
@@ -116,21 +123,23 @@ impl FoldSet {
     /// 按 line range 折叠：line range 转换为对应 byte range 后走通用 fold 入口。
     pub fn fold_lines(
         &mut self,
-        buffer: &Buffer,
+        snapshot: &Snapshot,
         line_range: LineRange,
     ) -> EngineResult<FoldRangeId> {
-        let range = char_range_for_line_range(buffer, line_range)?;
-        Ok(self.fold(range)?)
+        self.ensure_snapshot_version(snapshot)?;
+        let range = char_range_for_line_range(snapshot, line_range)?;
+        self.fold(snapshot, range)
     }
 
     pub fn fold_lines_with_policy(
         &mut self,
-        buffer: &Buffer,
+        snapshot: &Snapshot,
         line_range: LineRange,
         update_policy: TrackedRangeUpdatePolicy,
     ) -> EngineResult<FoldRangeId> {
-        let range = char_range_for_line_range(buffer, line_range)?;
-        Ok(self.fold_with_policy(range, update_policy)?)
+        self.ensure_snapshot_version(snapshot)?;
+        let range = char_range_for_line_range(snapshot, line_range)?;
+        self.fold_with_policy(snapshot, range, update_policy)
     }
 
     /// 移除指定 id 的 fold。返回被移除的 FoldRange；若 id 不存在则返回 None。
@@ -158,9 +167,14 @@ impl FoldSet {
     }
 
     /// 切换 fold 状态：若精确 range 已存在则移除并返回 `Unfolded(id)`，否则新增并返回 `Folded(id)`。
-    pub fn toggle(&mut self, range: TextRange) -> Result<FoldToggleOutcome, FoldError> {
+    pub fn toggle(
+        &mut self,
+        snapshot: &Snapshot,
+        range: TextRange,
+    ) -> EngineResult<FoldToggleOutcome> {
+        self.ensure_snapshot_version(snapshot)?;
         if range.is_empty() {
-            return Err(FoldError::EmptyRange { range });
+            return Err(FoldError::EmptyRange { range }.into());
         }
 
         if let Some(id) = self.find_exact(range) {
@@ -168,7 +182,7 @@ impl FoldSet {
             return Ok(FoldToggleOutcome::Unfolded(id));
         }
 
-        let id = self.fold(range)?;
+        let id = self.fold(snapshot, range)?;
         Ok(FoldToggleOutcome::Folded(id))
     }
 
@@ -193,29 +207,28 @@ impl FoldSet {
     ///
     /// 一条 fold 跨越逻辑行 `[a, b]` 时，隐藏 `(a, b]`（即 `a + 1` 到 `b` 闭区间）。
     /// 单行 fold 不贡献隐藏行（占位符语义在 `projection` 模块）。
-    pub fn is_line_hidden(&self, buffer: &Buffer, line: Line) -> EngineResult<bool> {
-        for fold in &self.ranges {
-            let (start_line, end_line) = fold_line_span(buffer, fold.range())?;
-            if start_line < line && line <= end_line {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+    /// 直接读 fold 缓存的 `line_span`，调用方不必再传 snapshot。
+    pub fn is_line_hidden(&self, line: Line) -> bool {
+        self.ranges.iter().any(|fold| {
+            let (start_line, end_line) = fold.line_span();
+            start_line < line && line <= end_line
+        })
     }
 
     /// 把当前所有 fold 投影成一组排序、合并后的 `HiddenRange`。
-    pub fn derive_hidden_ranges(&self, buffer: &Buffer) -> EngineResult<Vec<HiddenRange>> {
-        let mut spans: Vec<(Line, Line)> = Vec::new();
+    /// 读 fold 缓存的 `line_span`，与 `Projection::build` 的 `collect_merged_hidden_spans`
+    /// 共享同一份语义。
+    pub fn derive_hidden_ranges(&self) -> EngineResult<Vec<HiddenRange>> {
+        let mut merged: Vec<(Line, Line)> = Vec::with_capacity(self.ranges.len());
+        // `normalize` 已让 `ranges` 按 byte-start 升序，
+        // 字节升序 → 缓存的 start_line 非降序；可以边收集边合并。
         for fold in &self.ranges {
-            let (start_line, end_line) = fold_line_span(buffer, fold.range())?;
-            if start_line < end_line {
-                spans.push((next_line(start_line), next_line(end_line)));
+            let (start_line, end_line) = fold.line_span();
+            if start_line >= end_line {
+                continue;
             }
-        }
-
-        spans.sort_by_key(|&(start, _)| start);
-        let mut merged: Vec<(Line, Line)> = Vec::with_capacity(spans.len());
-        for (start, end) in spans {
+            let start = next_line(start_line);
+            let end = next_line(end_line);
             match merged.last_mut() {
                 Some(last) if start <= last.1 => {
                     if end > last.1 {
@@ -234,15 +247,27 @@ impl FoldSet {
     }
 
     /// 通过一次 DeltaEvent 把所有 fold range 推进到新版本，并返回每条 fold 的 update 事实。
+    ///
+    /// `snapshot` 必须为应用 delta 后的快照（版本等于 `event.new_version()`）：
+    /// 用它重算每条保留下来的 fold 的 `line_span` 缓存，保持「fold 元数据与文本同版本」不变量。
     pub fn update_through_delta_event(
         &mut self,
         event: &DeltaEvent,
-    ) -> Result<Vec<FoldRangeUpdate>, FoldError> {
+        snapshot: &Snapshot,
+    ) -> EngineResult<Vec<FoldRangeUpdate>> {
         if self.version != event.old_version() {
             return Err(FoldError::VersionMismatch {
                 expected: event.old_version(),
                 actual: self.version,
-            });
+            }
+            .into());
+        }
+        if snapshot.version() != event.new_version() {
+            return Err(FoldError::VersionMismatch {
+                expected: event.new_version(),
+                actual: snapshot.version(),
+            }
+            .into());
         }
 
         let mut updates = Vec::with_capacity(self.ranges.len());
@@ -259,6 +284,8 @@ impl FoldSet {
 
             if let Some(tracked_range) = tracked_update.tracked_range() {
                 fold.set_tracked_range(tracked_range);
+                let line_span = fold_line_span(snapshot, tracked_range.range())?;
+                fold.set_line_span(line_span);
                 retained.push(fold);
             }
 
@@ -269,6 +296,17 @@ impl FoldSet {
         self.version = event.new_version();
         self.normalize();
         Ok(updates)
+    }
+
+    fn ensure_snapshot_version(&self, snapshot: &Snapshot) -> EngineResult<()> {
+        if snapshot.version() != self.version {
+            return Err(FoldError::VersionMismatch {
+                expected: self.version,
+                actual: snapshot.version(),
+            }
+            .into());
+        }
+        Ok(())
     }
 
     fn reserve_id(&mut self) -> Result<FoldRangeId, FoldError> {

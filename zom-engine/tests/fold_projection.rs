@@ -30,20 +30,24 @@ fn buffer(text: &str) -> Buffer {
 
 #[test]
 fn fold_set_should_reject_empty_and_partial_overlap_while_allowing_exact_toggle() {
-    let mut folds = FoldSet::new(BufferVersion::INITIAL);
-    let id = folds.fold(range(1, 4)).unwrap();
+    let buffer = buffer("abcdef");
+    let snapshot = buffer.snapshot();
+    let mut folds = FoldSet::new(buffer.version());
+    let id = folds.fold(&snapshot, range(1, 4)).unwrap();
 
-    assert_eq!(folds.fold(range(1, 4)).unwrap(), id);
+    assert_eq!(folds.fold(&snapshot, range(1, 4)).unwrap(), id);
+    let overlap = folds.fold(&snapshot, range(2, 5)).unwrap_err();
     assert!(matches!(
-        folds.fold(range(2, 5)).unwrap_err(),
-        FoldError::OverlapWithoutNesting { .. }
+        overlap,
+        EngineError::Fold(FoldError::OverlapWithoutNesting { .. })
+    ));
+    let empty = folds.fold(&snapshot, range(3, 3)).unwrap_err();
+    assert!(matches!(
+        empty,
+        EngineError::Fold(FoldError::EmptyRange { .. })
     ));
     assert!(matches!(
-        folds.fold(range(3, 3)).unwrap_err(),
-        FoldError::EmptyRange { .. }
-    ));
-    assert!(matches!(
-        folds.toggle(range(1, 4)).unwrap(),
+        folds.toggle(&snapshot, range(1, 4)).unwrap(),
         FoldToggleOutcome::Unfolded(removed) if removed == id
     ));
     assert!(folds.is_empty());
@@ -52,13 +56,14 @@ fn fold_set_should_reject_empty_and_partial_overlap_while_allowing_exact_toggle(
 #[test]
 fn fold_lines_hidden_ranges_should_hide_lines_after_anchor_until_fold_end() {
     let buffer = buffer("a\nb\nc\nd");
+    let snapshot = buffer.snapshot();
     let mut folds = FoldSet::new(buffer.version());
-    let id = folds.fold_lines(&buffer, line_range(1, 3)).unwrap();
-    let hidden = folds.derive_hidden_ranges(&buffer).unwrap();
+    let id = folds.fold_lines(&snapshot, line_range(1, 3)).unwrap();
+    let hidden = folds.derive_hidden_ranges().unwrap();
 
     assert_eq!(folds.get(id).unwrap().range(), range(2, 6));
-    assert!(folds.is_line_hidden(&buffer, line(2)).unwrap());
-    assert!(!folds.is_line_hidden(&buffer, line(1)).unwrap());
+    assert!(folds.is_line_hidden(line(2)));
+    assert!(!folds.is_line_hidden(line(1)));
     assert_eq!(hidden.len(), 1);
     assert_eq!(hidden[0].first_hidden_line(), line(2));
     assert_eq!(hidden[0].end_line_exclusive(), line(3));
@@ -68,19 +73,28 @@ fn fold_lines_hidden_ranges_should_hide_lines_after_anchor_until_fold_end() {
 #[test]
 fn fold_set_update_through_delta_should_advance_version_or_reject_mismatch_atomically() {
     let mut buffer = buffer("abcdef");
+    let snapshot = buffer.snapshot();
     let mut folds = FoldSet::new(buffer.version());
-    folds.fold(range(2, 5)).unwrap();
+    folds.fold(&snapshot, range(2, 5)).unwrap();
 
     buffer.insert(b(0), "X").unwrap();
     let event = buffer.last_delta_event().unwrap().clone();
-    let updates = folds.update_through_delta_event(&event).unwrap();
+    let new_snapshot = buffer.snapshot();
+    let updates = folds
+        .update_through_delta_event(&event, &new_snapshot)
+        .unwrap();
 
     assert_eq!(updates.len(), 1);
     assert_eq!(folds.version(), event.new_version());
     assert_eq!(folds.as_slice()[0].range(), range(3, 6));
 
-    let stale = folds.update_through_delta_event(&event).unwrap_err();
-    assert!(matches!(stale, FoldError::VersionMismatch { .. }));
+    let stale = folds
+        .update_through_delta_event(&event, &new_snapshot)
+        .unwrap_err();
+    assert!(matches!(
+        stale,
+        EngineError::Fold(FoldError::VersionMismatch { .. })
+    ));
 }
 
 #[test]
@@ -103,7 +117,7 @@ fn projection_line_map_should_distinguish_text_rows_hidden_rows_and_placeholder_
     let buffer = buffer("a\nb\nc\nd");
     let snapshot = buffer.snapshot();
     let mut folds = FoldSet::new(snapshot.version());
-    folds.fold_lines(&buffer, line_range(1, 3)).unwrap();
+    folds.fold_lines(&snapshot, line_range(1, 3)).unwrap();
     let projection = Projection::build(&snapshot, &folds).unwrap();
 
     assert_eq!(projection.logical_line_count(), 4);
@@ -136,7 +150,7 @@ fn projection_point_and_range_mapping_should_return_typed_hidden_and_placeholder
     let buffer = buffer("a\nb\nc\nd");
     let snapshot = buffer.snapshot();
     let mut folds = FoldSet::new(snapshot.version());
-    folds.fold_lines(&buffer, line_range(1, 3)).unwrap();
+    folds.fold_lines(&snapshot, line_range(1, 3)).unwrap();
     let projection = Projection::build(&snapshot, &folds).unwrap();
 
     let hidden = projection
@@ -173,7 +187,7 @@ fn projected_viewport_should_emit_text_and_placeholder_rows_with_logical_spans()
     let buffer = buffer("alpha\nbravo\ncharlie\ndelta");
     let snapshot = buffer.snapshot();
     let mut folds = FoldSet::new(snapshot.version());
-    folds.fold_lines(&buffer, line_range(1, 3)).unwrap();
+    folds.fold_lines(&snapshot, line_range(1, 3)).unwrap();
     let projection = Projection::build(&snapshot, &folds).unwrap();
 
     let slice = projection

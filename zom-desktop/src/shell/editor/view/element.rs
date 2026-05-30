@@ -591,7 +591,7 @@ impl Element for EditorElement {
                         let lh: f32 = f32::from(line_height).max(1.0);
                         let viewport_h_f: f32 = viewport_h.into();
                         let visible = if allows_vertical_scroll {
-                            ((viewport_h_f / lh).ceil() as u64).saturating_add(1)
+                            ((viewport_h_f / lh).ceil() as u64)
                         } else {
                             1
                         };

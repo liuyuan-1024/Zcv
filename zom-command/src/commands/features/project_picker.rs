@@ -92,7 +92,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "从本地路径导入",
             emit(HostEffect::OpenLocalProject),
         )
-        .description("从本地文件夹导入并打开项目。")
         .key_in("mod-l", picker);
 
     registry
@@ -102,7 +101,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "从 Git 地址导入",
             emit(HostEffect::StartGitClone),
         )
-        .description("从 Git 地址克隆并打开项目。")
         .key_in("mod-g", picker);
 
     registry
@@ -112,7 +110,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "移除最近项目",
             emit(HostEffect::RemoveSelectedRecentProject),
         )
-        .description("从最近项目列表中移除当前选中项。")
         .key_in("mod-backspace", picker)
         .key_in("mod-delete", picker);
 

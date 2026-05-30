@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+#
+# 打包 macOS .app（可选 .dmg）。仅支持 Apple Silicon。
+# 所有运行时资源都已通过 include_bytes! 编译进二进制，
+# 这里只负责生成 Dock/Finder 显示用的 .icns 并组装 bundle。
+#
+# 用法:
+#   script/bundle-mac           # 输出 .app 和 .dmg
+#   script/bundle-mac --no-dmg  # 只出 .app
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+APP_NAME="Zom"
+BUNDLE_ID="dev.liuyuan.zom"
+BIN_NAME="zom"
+PACKAGE="zom-desktop"
+TARGET="aarch64-apple-darwin"
+ICON_SVG="zom-desktop/assets/icons/app/zom.svg"
+VERSION="$(grep '^version' zom-desktop/Cargo.toml | head -n1 | cut -d'"' -f2)"
+
+MAKE_DMG=1
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-dmg) MAKE_DMG=0; shift ;;
+        -h|--help)
+            sed -n '2,12p' "$0"; exit 0 ;;
+        *) echo "未知参数: $1" >&2; exit 1 ;;
+    esac
+done
+
+if [[ "$(uname -m)" != "arm64" ]]; then
+    echo "本脚本仅支持在 Apple Silicon Mac 上构建（当前: $(uname -m)）" >&2
+    exit 1
+fi
+
+if ! command -v rsvg-convert >/dev/null; then
+    echo "缺少 rsvg-convert（用于把 SVG 转 PNG）" >&2
+    echo "    brew install librsvg" >&2
+    exit 1
+fi
+
+# ---------- 1. 构建 ----------
+echo "==> cargo build --release -p $PACKAGE --target $TARGET"
+cargo build --release -p "$PACKAGE" --target "$TARGET"
+BIN="target/$TARGET/release/$BIN_NAME"
+OUT_DIR="target/$TARGET/release"
+
+if [[ ! -f "$BIN" ]]; then
+    echo "构建产物不存在: $BIN" >&2; exit 1
+fi
+
+# ---------- 2. 组装 .app ----------
+APP="$OUT_DIR/$APP_NAME.app"
+echo "==> 组装 $APP"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+
+cp "$BIN" "$APP/Contents/MacOS/$BIN_NAME"
+chmod +x "$APP/Contents/MacOS/$BIN_NAME"
+
+# ---------- 3. 生成 .icns ----------
+echo "==> 生成 $APP_NAME.icns"
+ICONSET="$OUT_DIR/$APP_NAME.iconset"
+rm -rf "$ICONSET"; mkdir "$ICONSET"
+for size in 16 32 64 128 256 512; do
+    rsvg-convert -w "$size" -h "$size" "$ICON_SVG" \
+        -o "$ICONSET/icon_${size}x${size}.png"
+    d=$((size * 2))
+    rsvg-convert -w "$d" -h "$d" "$ICON_SVG" \
+        -o "$ICONSET/icon_${size}x${size}@2x.png"
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/$BIN_NAME.icns"
+rm -rf "$ICONSET"
+
+# ---------- 4. Info.plist ----------
+cat > "$APP/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>$APP_NAME</string>
+  <key>CFBundleDisplayName</key><string>$APP_NAME</string>
+  <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>$BIN_NAME</string>
+  <key>CFBundleIconFile</key><string>$BIN_NAME</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+</dict></plist>
+EOF
+
+# ---------- 5. Ad-hoc 代码签名 ----------
+# 没有 Apple Developer 证书也至少签一下，arm64 必须签才能跑；
+# 但 Gatekeeper 仍会拦首次启动，朋友需 Finder 右键→打开。
+echo "==> codesign (ad-hoc)"
+codesign --force --deep --sign - "$APP"
+
+# ---------- 6. DMG ----------
+if [[ "$MAKE_DMG" == "1" ]]; then
+    DMG="$OUT_DIR/$APP_NAME-$VERSION.dmg"
+    echo "==> $DMG"
+    rm -f "$DMG"
+    hdiutil create -volname "$APP_NAME" -srcfolder "$APP" \
+        -ov -format UDZO "$DMG" >/dev/null
+fi
+
+echo
+echo "完成:"
+echo "  $APP"
+[[ "$MAKE_DMG" == "1" ]] && echo "  $OUT_DIR/$APP_NAME-$VERSION.dmg"
+echo
+echo "朋友首次打开提示「无法验证开发者」时，请右键→打开。"

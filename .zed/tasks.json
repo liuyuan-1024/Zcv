@@ -1,8 +1,22 @@
 [
   {
-    "label": "任务标签",
-    "command": "cargo",
-    "args": ["run", "参数"],
+    "label": "打包 macos .app（仅mac M芯片系列可用）",
+    "command": "script/bundle-mac",
+    "args": ["--no-dmg"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+  {
+    "label": "打包 windows exe（仅windows可用）",
+    "command": "powershell",
+    "args": [
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "script/bundle-windows.ps1",
+    ],
     "cwd": "$ZED_WORKTREE_ROOT",
     "save": "all",
     "reveal": "always",

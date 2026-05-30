@@ -127,7 +127,7 @@ Engine 已提供：
   - `proposal_to_transaction` 校验版本和 range。
   - 转换为 `Transaction`。
   - 应用或拒绝。
-- AI 建议、语法高亮、诊断、inlay hint、gutter 装饰等异步外部结果统一用 `MetadataLayer<T>` 承载（payload 只携带语义键，desktop 侧 theme 解析为颜色/字重/下划线/inline 文本/gutter 图标）；详见《桌面端设计手册》19.4 6 阶段绘制契约与 19.9 扩展点表。
+- AI 建议、语法高亮、诊断、inlay hint、gutter 装饰等异步外部结果统一用 `MetadataLayer<T>` 承载（payload 只携带语义键，desktop 侧 theme 解析为颜色/字重/下划线/inline 文本/gutter 图标）；详见《桌面端组件实现》§二.5 6 阶段绘制契约与 §二.10 扩展点表，语法高亮的 producer 子系统详见《桌面端语法高亮》。
 - 搜索高亮是例外：不走 metadata layer，由宿主侧 `zom-workspace::WorkspaceBuffer.BufferSearch` 直接持有 `SearchResult`（per-buffer 共享，多 view 共用），engine 仅提供纯查询 API。
 
 ### 7. 折叠、投影与读取切片

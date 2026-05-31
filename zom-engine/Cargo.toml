@@ -5,13 +5,13 @@ edition.workspace = true
 description = "工业级纯粹文本编辑引擎底座"
 
 [dependencies]
-regex = "1.12.3"
-ropey = "1.6.1"
-thiserror = "2.0.18"
-unicode-segmentation = "1.13.2"
+regex.workspace = true
+ropey.workspace = true
+thiserror.workspace = true
+unicode-segmentation.workspace = true
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion.workspace = true
 
 [[bench]]
 name = "buffer_edits"

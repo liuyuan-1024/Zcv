@@ -6,4 +6,7 @@ description = "工作区模型层：文件、buffer 生命周期、路径绑定�
 
 [dependencies]
 zom-engine.workspace = true
-trash = "5"
+trash.workspace = true
+tree-sitter.workspace = true
+tree-sitter-highlight.workspace = true
+tree-sitter-rust.workspace = true

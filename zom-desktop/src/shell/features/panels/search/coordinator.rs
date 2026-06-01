@@ -163,8 +163,7 @@ pub(crate) fn sync_active_buffer_search(
     // query/options 没变但有 JustReady 也 reveal——典型是用户按住快捷键，前一次
     // 仍未落地的结果在本帧补上。
     let should_reveal = matches!(outcome, SearchSyncOutcome::JustReady)
-        || ((query_changed || options_changed)
-            && matches!(outcome, SearchSyncOutcome::JustReady));
+        || ((query_changed || options_changed) && matches!(outcome, SearchSyncOutcome::JustReady));
     if should_reveal {
         if let Some(range) = wb.search().current_range() {
             move_selection_to_match(views, range);

@@ -30,7 +30,8 @@
 
 use zom_engine::{
     Buffer, BufferVersion, DeltaEvent, EngineResult, RegexSearchOptions as EngineRegexOptions,
-    RegexSearchResult, SearchHandle, SearchOptions as EngineLiteralOptions, SearchResult, TextRange,
+    RegexSearchResult, SearchHandle, SearchOptions as EngineLiteralOptions, SearchResult,
+    TextRange,
 };
 
 /// `BufferSearch` 暴露给调用方的可调选项。
@@ -756,9 +757,7 @@ mod tests {
         ));
         assert!(search.is_searching() || search.hit_count() == 2);
 
-        buffer
-            .insert(zom_engine::ByteOffset::new(0), "x ")
-            .unwrap();
+        buffer.insert(zom_engine::ByteOffset::new(0), "x ").unwrap();
         let event = buffer.take_pending_events().pop().unwrap();
         search.apply_delta(&event).unwrap();
         // pending 被取消；slot 可能保留也可能没有（取决于 sync 先后），关键是

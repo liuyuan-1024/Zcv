@@ -61,7 +61,12 @@ tree-sitter-python = "0.25.0"
 
 # ---- 序列化 / 配置 ----
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.140"
 toml = "0.8.23"
+
+# ---- AI 抽象层（zom-ai） ----
+futures-core = "0.3.31"
+async-trait = "0.1.83"
 
 # ---- 桌面 UI ----
 gpui = "0.2.2"

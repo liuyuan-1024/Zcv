@@ -1,46 +1,18 @@
-use std::fmt;
+//! AI 抽象层：chat / agentic 请求的协议层。
+//!
+//! 设计与边界见 `docs/抽象重设计.md`。本 crate 不持有会话状态、不实现具体厂商、
+//! 不知道"编辑"是什么 —— 编辑能力以 tool 形式由上层注册。
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AiRequest {
-    pub instruction: String,
-    pub context: String,
-}
+pub mod error;
+pub mod message;
+pub mod provider;
+pub mod request;
+pub mod stream;
+pub mod tool;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AiProposal {
-    pub summary: String,
-    pub edits: Vec<ProposedEdit>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProposedEdit {
-    pub range: ProposedRange,
-    pub replacement: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProposedRange {
-    pub start_byte: u64,
-    pub end_byte: u64,
-}
-
-pub trait AiProvider {
-    fn propose(&self, request: AiRequest) -> Result<AiProposal, AiError>;
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub enum AiError {
-    ProviderUnavailable,
-    RequestRejected(String),
-}
-
-impl fmt::Display for AiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ProviderUnavailable => f.write_str("AI 服务提供方不可用"),
-            Self::RequestRejected(reason) => write!(f, "AI 请求被拒绝：{reason}"),
-        }
-    }
-}
-
-impl std::error::Error for AiError {}
+pub use error::AiError;
+pub use message::{Content, Message, Role};
+pub use provider::{AiProvider, EventStream};
+pub use request::{ChatRequest, Options};
+pub use stream::{StopReason, StreamEvent, Usage};
+pub use tool::{ToolCall, ToolDef, ToolResult};

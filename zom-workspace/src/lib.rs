@@ -72,7 +72,7 @@ pub enum BufferOrigin {
 ///
 /// 还拥有一根 [`SyntaxWorkerHandle`]——单线程后台 worker，所有缓冲区的
 /// provider 实例与解析 / 查询都在该线程上跑。详见
-/// [改造方案 §4.2](../../zom-workspace/docs/语法高亮异步增量改造.md)。
+/// [改造方案 §3.2](../../zom-workspace/docs/语法高亮异步增量改造.md)。
 #[derive(Debug)]
 pub struct Workspace {
     next_buffer_id: u64,
@@ -119,7 +119,7 @@ impl Workspace {
     /// 把 viewport hint 转发给指定缓冲区的语法 worker——desktop 在滚动或
     /// 编辑改变可见区间时调一次，worker 据此把 `QueryCursor::set_byte_range`
     /// 限制到 viewport ± 缓冲区，每次编辑只产 `ReplaceRange` 局部段
-    /// （[改造方案 §4.6](../docs/语法高亮异步增量改造.md)）。
+    /// （[改造方案 §3.6](../docs/语法高亮异步增量改造.md)）。
     ///
     /// `byte_range` 通常 = 当前 viewport ± N 行（避免 capture 撕裂边界）。
     /// `None` 取消 viewport 限定，回退到全文 `ReplaceAll`。

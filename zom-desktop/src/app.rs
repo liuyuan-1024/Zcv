@@ -481,7 +481,7 @@ impl App {
     ///
     /// 不阻塞——`pump_pending_highlights` 内部只是扫一遍 buffer + 一次空 drain；
     /// worker 没出新产物就无操作。详见
-    /// [改造方案 §4.7](../../zom-workspace/docs/语法高亮异步增量改造.md)。
+    /// [改造方案 §3.7](../../zom-workspace/docs/语法高亮异步增量改造.md)。
     pub fn pump_pending_highlights(&mut self) {
         self.workspace.pump_pending_highlights();
     }
@@ -493,14 +493,11 @@ impl App {
     /// 与 `pump_pending_highlights` 平级：两个独立后台子系统，各自有"主线程收割"
     /// 入口，统一在 [`crate::shell::view::ShellView::render`] 拍点驱动。
     pub fn pump_pending_search(&mut self) {
-        search_panel::coordinator::pump_active_buffer_search(
-            &mut self.workspace,
-            &mut self.views,
-        );
+        search_panel::coordinator::pump_active_buffer_search(&mut self.workspace, &mut self.views);
     }
 
     /// 把活动 view 的可见区间转成 byte range 后推给语法 worker，让 `on_edit`
-    /// 走 viewport-scoped query + `ReplaceRange`（[改造方案 §4.6](
+    /// 走 viewport-scoped query + `ReplaceRange`（[改造方案 §3.6](
     /// ../../zom-workspace/docs/语法高亮异步增量改造.md)）。
     ///
     /// padding ±32 行：tree-sitter `set_byte_range` 只返回起止 byte 都落在范围内

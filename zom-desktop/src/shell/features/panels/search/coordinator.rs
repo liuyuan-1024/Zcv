@@ -16,7 +16,7 @@
 use zom_command::SearchOption;
 use zom_engine::{Selection, SelectionSet, TextRange};
 use zom_view::{RevealKind, ViewSet};
-use zom_workspace::Workspace;
+use zom_workspace::{SearchSyncOutcome, Workspace};
 
 use super::model::{HitCount, SearchModel};
 
@@ -125,9 +125,18 @@ pub(crate) fn replace_all(
 /// 前置位置——一处做完，渲染 / 后续命令读到的都是新真值。
 ///
 /// 面板没在屏上时整条早退——避免编辑器普通按键的 dispatch tail 把上一轮
-/// 搜索的高亮复活（参见 [`on_panel_closed`]）。query/options 在本次调用
-/// 中确有变化时，自动把选区+视口 reveal 到第一项命中（VS Code 风格：边
-/// 输入边定位首条）。
+/// 搜索的高亮复活（参见 [`on_panel_closed`]）。
+///
+/// ## 异步 sync + 延迟 reveal
+///
+/// `sync_search` 现在是非阻塞的：发现 query/options 变了，立刻 spawn 后台搜索，
+/// 但不一定**当帧**就能拿到结果。reveal 触发条件：
+/// - 本帧 `sync_search` 直接返回 `JustReady`（小 buffer / 命中很快算完），OR
+/// - 本次调用确实改了 query/options 且 reveal 不能在 spawn 时立刻发生——交给
+///   下次 `pump_pending_search` 收割时再补 reveal（依赖
+///   [`super::super::super::super::super::app::App::pump_pending_search`]）。
+///
+/// 这里只处理"当帧 JustReady"的情况；延迟 reveal 走 pump 路径。
 pub(crate) fn sync_active_buffer_search(
     search: &mut SearchModel,
     workspace: &mut Workspace,
@@ -143,17 +152,34 @@ pub(crate) fn sync_active_buffer_search(
     };
     let query_changed = wb.search_mut().set_query(query);
     let options_changed = wb.search_mut().set_options(options);
-    // 先把 buffer 上累积的 DeltaEvent（任何编辑路径都可能产生）喂回 BufferSearch 再 sync。
-    // sync 检测版本时优先复用 try_remap 的结果，没有时才重跑。
+    // 先把 buffer 上累积的 DeltaEvent 喂回 BufferSearch 再 sync。
+    // sync 检测版本时优先复用 try_remap 的结果，没有时才 spawn。
     let _ = wb.pump_post_edit();
-    let _ = wb.sync_search();
+    let outcome = wb.sync_search().unwrap_or(SearchSyncOutcome::Idle);
 
-    // query / options 这一次真的变了 → 让选区落到新结果集的第一项并 reveal。
-    // `normalize_current_hit_after_rerun` 已经把 current_hit 摆到 0，所以 current_range 即第一条。
-    //
-    // 没变化时不触发：避免覆盖 find_next / replace 等命令自己刚 advance 出来的 current hit。
-    // 它们走 dispatch 尾部时会再次进本函数，但 query/options 不变就不会被反向拉回首条。
-    if query_changed || options_changed {
+    // 真的拿到了新结果 → reveal 首条命中。两种触发场景：
+    // 1. query/options 刚变，对应 spawn 在本帧立即完成（小 buffer）；
+    // 2. 上次留下的 pending 在本帧收割完。
+    // query/options 没变但有 JustReady 也 reveal——典型是用户按住快捷键，前一次
+    // 仍未落地的结果在本帧补上。
+    let should_reveal = matches!(outcome, SearchSyncOutcome::JustReady)
+        || ((query_changed || options_changed)
+            && matches!(outcome, SearchSyncOutcome::JustReady));
+    if should_reveal {
+        if let Some(range) = wb.search().current_range() {
+            move_selection_to_match(views, range);
+        }
+    }
+}
+
+/// 渲染线程每帧调一次：收割已就绪的后台搜索结果，必要时 reveal 首条命中。
+/// 与 `sync_active_buffer_search` 的区别——本函数**不**主动 spawn，只检查
+/// in-flight pending 是否完成。
+pub(crate) fn pump_active_buffer_search(workspace: &mut Workspace, views: &mut ViewSet) {
+    let Some(wb) = workspace.active_buffer_mut() else {
+        return;
+    };
+    if matches!(wb.pump_pending_search(), SearchSyncOutcome::JustReady) {
         if let Some(range) = wb.search().current_range() {
             move_selection_to_match(views, range);
         }

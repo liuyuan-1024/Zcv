@@ -15,7 +15,9 @@ mod buffer_search;
 mod project_tree;
 pub mod syntax;
 
-pub use buffer_search::{BufferSearch, BufferSearchOptions, CurrentReplaceTarget};
+pub use buffer_search::{
+    BufferSearch, BufferSearchOptions, CurrentReplaceTarget, SearchSyncOutcome,
+};
 pub use project_tree::{EntryKind, ProjectTree, TreeEntry, TreeRow};
 
 use std::collections::BTreeMap;
@@ -493,14 +495,19 @@ impl WorkspaceBuffer {
         }
     }
 
-    /// 让 BufferSearch 在读取前与当前缓冲区版本对齐。query / options 改了之后
-    /// panel UI 渲染前调一次，确保 hit_count 是最新的。
+    /// 推一拍 BufferSearch 状态机：收割已完成的后台搜索，必要时 spawn 新的。
+    /// **非阻塞**——返回值告诉调用方"本帧是否落了新结果"以决定 reveal / repaint。
     ///
     /// 等价于 `wb.search_mut().sync(wb.buffer())`，封一层避免借用检查器嫌弃
     /// 同时分别拿 search_mut 与 buffer。
-    pub fn sync_search(&mut self) -> WorkspaceResult<()> {
-        self.search.sync(&self.buffer)?;
-        Ok(())
+    pub fn sync_search(&mut self) -> WorkspaceResult<SearchSyncOutcome> {
+        Ok(self.search.sync(&self.buffer)?)
+    }
+
+    /// 渲染线程每帧调一次：只收割已就绪的后台搜索结果，不会主动 spawn。
+    /// 没有 in-flight 时无操作（O(1) 检查），不会阻塞。
+    pub fn pump_pending_search(&mut self) -> SearchSyncOutcome {
+        self.search.pump_pending(&self.buffer)
     }
 
     /// 替换 BufferSearch 当前命中指向的命中。无当前命中或结果集

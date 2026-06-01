@@ -1,16 +1,13 @@
 //! 当前 Buffer / Snapshot 内的 literal search 与 regex search 契约。
 //!
-//! 本模块只实现单 Buffer 文本搜索结果模型、纯字符串匹配和正则匹配；不做跨文件索引，
-//! 也不承担 UI 高亮语义。
+//! 本模块只实现单 Buffer 文本搜索结果模型、纯字符串匹配和正则匹配；不做跨文件索引，也不承担 UI 高亮语义。
 
 use crate::{
     BufferConfig, BufferVersion, ByteOffset, CoordinateError, EngineError, EngineResult,
     SearchError, Stickiness, TextRange, VersionedResult, position_map::MappingResult,
-    storage::TextRead, transaction::DeltaEvent,
+    search_async::SearchControl, storage::TextRead, transaction::DeltaEvent,
 };
 use regex::{Regex, RegexBuilder};
-
-const DEFAULT_REGEX_HAYSTACK_BYTE_LIMIT: usize = 8 * 1024 * 1024;
 
 /// 普通字符串搜索选项。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +70,9 @@ impl Default for SearchOptions {
 }
 
 /// 正则搜索选项。
+///
+/// 不再带 haystack 字节预算——搜索已经异步、可取消、有进度上报（见[`crate::SearchHandle`]），调用方靠 cancel 控制大文件搜索的退出，不靠引擎在物化阶段提前拒绝。
+/// 如果担心 regex 自身计算爆掉，仍可通过 `size_limit` / `dfa_size_limit` 控制 regex crate 内部的资源上限。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegexSearchOptions {
     range: Option<TextRange>,
@@ -81,7 +81,6 @@ pub struct RegexSearchOptions {
     dot_matches_new_line: bool,
     size_limit: usize,
     dfa_size_limit: usize,
-    haystack_byte_limit: usize,
 }
 
 impl RegexSearchOptions {
@@ -93,7 +92,6 @@ impl RegexSearchOptions {
             dot_matches_new_line: false,
             size_limit: 10 * 1024 * 1024,
             dfa_size_limit: 2 * 1024 * 1024,
-            haystack_byte_limit: DEFAULT_REGEX_HAYSTACK_BYTE_LIMIT,
         }
     }
 
@@ -136,15 +134,6 @@ impl RegexSearchOptions {
         self
     }
 
-    /// 设置 regex 搜索允许连续物化的最大 haystack 字节数。
-    ///
-    /// 当前 regex crate API 仍要求一段连续 haystack；这里把这条高成本路径显式预算化。
-    /// `0` 表示调用方明确接受无限制物化。
-    pub const fn with_haystack_byte_limit(mut self, haystack_byte_limit: usize) -> Self {
-        self.haystack_byte_limit = haystack_byte_limit;
-        self
-    }
-
     pub const fn range(self) -> Option<TextRange> {
         self.range
     }
@@ -167,10 +156,6 @@ impl RegexSearchOptions {
 
     pub const fn dfa_size_limit(self) -> usize {
         self.dfa_size_limit
-    }
-
-    pub const fn haystack_byte_limit(self) -> usize {
-        self.haystack_byte_limit
     }
 }
 
@@ -413,12 +398,13 @@ fn remap_search_matches(
     remapped
 }
 
-pub(crate) fn search_in_text<T: TextRead>(
+pub(crate) fn search_in_text_with_control<T: TextRead>(
     storage: &T,
     version: BufferVersion,
     config: &BufferConfig,
     query: &str,
     options: SearchOptions,
+    control: &SearchControl,
 ) -> EngineResult<SearchResult> {
     if query.is_empty() {
         return Err(SearchError::EmptyQuery.into());
@@ -428,11 +414,28 @@ pub(crate) fn search_in_text<T: TextRead>(
     validate_search_range(storage, search_range)?;
 
     let matches = if options.is_case_sensitive() {
-        find_case_sensitive_matches_streaming(storage, config, search_range, query, options)?
+        find_case_sensitive_matches_streaming(
+            storage,
+            config,
+            search_range,
+            query,
+            options,
+            control,
+        )?
     } else {
         // 大小写不敏感：流式 chunks 扫描 + 滑动折叠窗口，**不物化整个 haystack**。
-        find_case_insensitive_matches_streaming(storage, config, search_range, query, options)?
+        find_case_insensitive_matches_streaming(
+            storage,
+            config,
+            search_range,
+            query,
+            options,
+            control,
+        )?
     };
+
+    // 算法走完一次完整扫描——把进度补到末端，调用方读到的最后一份 progress 是 100%。
+    control.finish_scan();
 
     Ok(SearchResult::new(
         version,
@@ -442,28 +445,36 @@ pub(crate) fn search_in_text<T: TextRead>(
     ))
 }
 
-pub(crate) fn search_regex_in_text<T: TextRead>(
+pub(crate) fn search_regex_in_text_with_control<T: TextRead>(
     storage: &T,
     version: BufferVersion,
     pattern: &str,
     options: RegexSearchOptions,
+    control: &SearchControl,
 ) -> EngineResult<RegexSearchResult> {
     let regex = build_regex(pattern, options)?;
     let search_range = resolve_search_range(storage, options.range())?;
     validate_search_range(storage, search_range)?;
 
     let base_offset = search_range.start().get();
-    let haystack = regex_haystack(storage, search_range, options)?;
+    let haystack = regex_haystack(storage, search_range)?;
     let mut matches = Vec::new();
     for (ordinal, regex_match) in regex.find_iter(haystack.as_ref()).enumerate() {
+        // 每个命中前检查一次取消位——regex `find_iter` 在内部 DFA 走批量字符时
+        // 不可分割，这里是最细的协作粒度。
+        control.check_cancel()?;
         // regex 是 byte-native：直接拼上 base_offset
         let start = base_offset + regex_match.start();
         let end = base_offset + regex_match.end();
+        // 进度按"已经扫到的 haystack 字节数"上报，单调推进。
+        control.set_scanned(regex_match.end() as u64);
         matches.push(SearchMatch::new(
             ordinal,
             text_range(ByteOffset::new(start), ByteOffset::new(end))?,
         ));
     }
+
+    control.finish_scan();
 
     Ok(RegexSearchResult::new(
         version,
@@ -483,7 +494,7 @@ pub(crate) fn regex_replacements_in_text<'a, T: TextRead>(
     validate_search_range(storage, search_range)?;
 
     let base_offset = search_range.start().get();
-    let haystack = regex_haystack_owned(storage, search_range, result.options())?;
+    let haystack = regex_haystack_owned(storage, search_range)?;
 
     Ok(RegexReplacementIter {
         regex,
@@ -583,38 +594,15 @@ fn build_regex(pattern: &str, options: RegexSearchOptions) -> EngineResult<Regex
         })
 }
 
-fn regex_haystack<'a, T: TextRead>(
-    storage: &'a T,
+fn regex_haystack<T: TextRead>(
+    storage: &T,
     search_range: TextRange,
-    options: RegexSearchOptions,
-) -> EngineResult<std::borrow::Cow<'a, str>> {
-    validate_regex_haystack_budget(search_range, options)?;
+) -> EngineResult<std::borrow::Cow<'_, str>> {
     storage.slice_text(search_range)
 }
 
-fn regex_haystack_owned<T: TextRead>(
-    storage: &T,
-    search_range: TextRange,
-    options: RegexSearchOptions,
-) -> EngineResult<String> {
-    validate_regex_haystack_budget(search_range, options)?;
+fn regex_haystack_owned<T: TextRead>(storage: &T, search_range: TextRange) -> EngineResult<String> {
     storage.slice_to_string(search_range)
-}
-
-fn validate_regex_haystack_budget(
-    search_range: TextRange,
-    options: RegexSearchOptions,
-) -> EngineResult<()> {
-    let limit = options.haystack_byte_limit();
-    if limit != 0 && search_range.len() > limit {
-        return Err(SearchError::RangeTooLarge {
-            range_bytes: search_range.len(),
-            limit,
-        }
-        .into());
-    }
-
-    Ok(())
 }
 
 fn validate_search_range<T: TextRead>(storage: &T, range: TextRange) -> EngineResult<()> {
@@ -631,6 +619,7 @@ fn find_case_sensitive_matches_streaming<T: TextRead>(
     search_range: TextRange,
     query: &str,
     options: SearchOptions,
+    control: &SearchControl,
 ) -> EngineResult<Vec<SearchMatch>> {
     let mut matches = Vec::new();
     let mut carry = String::new();
@@ -640,6 +629,8 @@ fn find_case_sensitive_matches_streaming<T: TextRead>(
     let carry_limit = query.len().saturating_sub(1);
 
     for chunk in storage.chunks(search_range)? {
+        // 每个 chunk 起点检查一次取消——ropey chunk ~ 4 KiB，最坏延迟在毫秒级。
+        control.check_cancel()?;
         let (scan_base, scan) = if carry.is_empty() {
             (chunk_start, chunk)
         } else {
@@ -680,6 +671,7 @@ fn find_case_sensitive_matches_streaming<T: TextRead>(
 
         carry_suffix(&mut carry, scan, carry_limit);
         chunk_start += chunk.len();
+        control.advance_scanned(chunk.len() as u64);
     }
 
     Ok(matches)
@@ -700,6 +692,7 @@ fn find_case_insensitive_matches_streaming<T: TextRead>(
     search_range: TextRange,
     query: &str,
     options: SearchOptions,
+    control: &SearchControl,
 ) -> EngineResult<Vec<SearchMatch>> {
     let folded_query: String = query.chars().flat_map(char::to_lowercase).collect();
     if folded_query.is_empty() {
@@ -720,6 +713,8 @@ fn find_case_insensitive_matches_streaming<T: TextRead>(
     let mut encode_buf = [0u8; 4];
 
     for chunk in storage.chunks(search_range)? {
+        // 与 case-sensitive 路径对称：chunk 起点检查一次取消位。
+        control.check_cancel()?;
         for (offset_in_chunk, ch) in chunk.char_indices() {
             let orig_byte_in_range = bytes_consumed_in_range + offset_in_chunk;
             let orig_byte_end_in_range = orig_byte_in_range + ch.len_utf8();
@@ -761,6 +756,7 @@ fn find_case_insensitive_matches_streaming<T: TextRead>(
             }
         }
         bytes_consumed_in_range += chunk.len();
+        control.advance_scanned(chunk.len() as u64);
     }
 
     Ok(matches)

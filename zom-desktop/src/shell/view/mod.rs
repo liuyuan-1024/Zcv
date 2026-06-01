@@ -302,6 +302,9 @@ impl Render for ShellView {
             // 每帧 prepaint 起手 drain 后台 SyntaxWorker 已就绪的高亮产物到 MetadataLayers。
             // 异步 producer 不会在主线程上跑 parse，只能靠这一拍把已就绪 spans 落地，否则即便 worker 算完也上不了屏。
             app.pump_pending_highlights();
+            // 同样的节奏收割活动 buffer 的后台搜索结果——大文件 search 在后台跑，
+            // 这一拍把已就绪 SearchResult 落到 slot 并 reveal 首条命中。
+            app.pump_pending_search();
             // 紧接着把当前活动 view 的 viewport ± padding 推给 worker，
             // 让下一拍 on_edit 走 viewport-scoped query + ReplaceRange，仅产可见区段 spans。
             // worker 内部去重，无变化时不重 query。

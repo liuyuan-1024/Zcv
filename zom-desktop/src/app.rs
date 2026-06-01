@@ -486,6 +486,19 @@ impl App {
         self.workspace.pump_pending_highlights();
     }
 
+    /// 每帧 prepaint 起手再调一次：收割活动 buffer 的后台 BufferSearch 结果。
+    /// 没有 in-flight 时 O(1) 早退。新结果落地时同时 reveal 首条命中——避免
+    /// 用户输入查询后 UI 不刷新的"看上去卡住"假象。
+    ///
+    /// 与 `pump_pending_highlights` 平级：两个独立后台子系统，各自有"主线程收割"
+    /// 入口，统一在 [`crate::shell::view::ShellView::render`] 拍点驱动。
+    pub fn pump_pending_search(&mut self) {
+        search_panel::coordinator::pump_active_buffer_search(
+            &mut self.workspace,
+            &mut self.views,
+        );
+    }
+
     /// 把活动 view 的可见区间转成 byte range 后推给语法 worker，让 `on_edit`
     /// 走 viewport-scoped query + `ReplaceRange`（[改造方案 §4.6](
     /// ../../zom-workspace/docs/语法高亮异步增量改造.md)）。

@@ -12,6 +12,7 @@ mod metadata;
 mod position_map;
 mod projection;
 mod search;
+mod search_async;
 mod selection;
 mod slicing;
 mod snapshot;
@@ -46,6 +47,7 @@ pub use projection::{
     ProjectedViewportRowKind, ProjectedViewportSlice, Projection, TextLine,
 };
 pub use search::{RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchResult};
+pub use search_async::{SearchHandle, SearchProgress};
 pub use selection::{
     CompositionSelection, CompositionState, Cursor, Motion, MovementDirection, MovementUnit,
     Selection, SelectionMergePolicy, SelectionSet,

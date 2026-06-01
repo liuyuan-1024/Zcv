@@ -4,6 +4,7 @@
 
 mod encoding;
 mod loaded_text;
+pub(crate) mod streaming_decoder;
 
 pub use encoding::{BomPolicy, InvalidUtf8Policy, TextEncoding};
 pub use loaded_text::LoadedTextInfo;

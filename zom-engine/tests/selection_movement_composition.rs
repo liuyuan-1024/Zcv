@@ -24,6 +24,14 @@ fn set_caret(offset: usize) -> SelectionSet {
     SelectionSet::caret(b(offset))
 }
 
+fn buffer_text(buffer: &Buffer) -> String {
+    buffer
+        .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+        .unwrap()
+        .into_text()
+        .into_owned()
+}
+
 fn buffer(text: &str) -> Buffer {
     Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
 }
@@ -46,7 +54,7 @@ fn multi_cursor_insert_replace_delete_should_apply_one_state_transition_per_comm
     buffer
         .insert_at_selections(SelectionSet::new(vec![caret(1), caret(4)]), "X")
         .unwrap();
-    assert_eq!(buffer.text().as_ref(), "aXbcdXef");
+    assert_eq!(buffer_text(&buffer), "aXbcdXef");
     assert_eq!(buffer.history_status().undo_depth, 1);
     assert_eq!(buffer.selection().ranges(), vec![range(2, 2), range(6, 6)]);
 
@@ -56,13 +64,13 @@ fn multi_cursor_insert_replace_delete_should_apply_one_state_transition_per_comm
             "Q",
         )
         .unwrap();
-    assert_eq!(buffer.text().as_ref(), "aQcdQf");
+    assert_eq!(buffer_text(&buffer), "aQcdQf");
     assert_eq!(buffer.selection().ranges(), vec![range(2, 2), range(5, 5)]);
 
     buffer
         .delete_selection_ranges(SelectionSet::new(vec![selection(1, 2), selection(4, 5)]))
         .unwrap();
-    assert_eq!(buffer.text().as_ref(), "acdf");
+    assert_eq!(buffer_text(&buffer), "acdf");
     assert_eq!(buffer.selection().ranges(), vec![range(1, 1), range(3, 3)]);
 }
 
@@ -72,12 +80,12 @@ fn delete_backward_and_forward_at_selections_should_respect_grapheme_clusters() 
     backward
         .delete_backward_at_selections(set_caret(4))
         .unwrap();
-    assert_eq!(backward.text().as_ref(), "ab");
+    assert_eq!(buffer_text(&backward), "ab");
     assert_eq!(backward.selection().ranges(), vec![range(1, 1)]);
 
     let mut forward = buffer("ae\u{301}b");
     forward.delete_forward_at_selections(set_caret(1)).unwrap();
-    assert_eq!(forward.text().as_ref(), "ab");
+    assert_eq!(buffer_text(&forward), "ab");
     assert_eq!(forward.selection().ranges(), vec![range(1, 1)]);
 }
 
@@ -143,18 +151,18 @@ fn composition_update_commit_cancel_should_share_transaction_pipeline_and_histor
 
     buffer.start_composition().unwrap();
     buffer.update_composition("世", None).unwrap();
-    assert_eq!(buffer.text().as_ref(), "hello世");
+    assert_eq!(buffer_text(&buffer), "hello世");
     assert_eq!(buffer.composition().unwrap().range(), range(5, 8));
     assert!(!buffer.can_undo());
 
     buffer.update_composition("世界", None).unwrap();
     buffer.commit_composition("世界").unwrap();
-    assert_eq!(buffer.text().as_ref(), "hello世界");
+    assert_eq!(buffer_text(&buffer), "hello世界");
     assert_eq!(buffer.selection().primary().head(), b(11));
     assert!(buffer.can_undo());
 
     buffer.undo().unwrap().unwrap();
-    assert_eq!(buffer.text().as_ref(), "hello");
+    assert_eq!(buffer_text(&buffer), "hello");
     assert_eq!(buffer.selection().primary().head(), b(5));
 }
 
@@ -169,7 +177,7 @@ fn composition_cancel_should_restore_original_text_selection_and_dirty_flag() {
     let result = buffer.cancel_composition().unwrap();
 
     assert!(result.is_some());
-    assert_eq!(buffer.text().as_ref(), "abc");
+    assert_eq!(buffer_text(&buffer), "abc");
     assert_eq!(buffer.selection().primary().head(), b(1));
     assert!(!buffer.is_dirty());
     assert!(!buffer.is_composing());
@@ -190,7 +198,7 @@ fn composition_relative_selection_inside_grapheme_cluster_should_be_rejected_ato
         EngineError::Coordinate(CoordinateError::InvalidGraphemeBoundary(_))
     ));
     assert!(buffer.is_composing());
-    assert_eq!(buffer.text().as_ref(), "ab");
+    assert_eq!(buffer_text(&buffer), "ab");
 }
 
 // ====================================================================
@@ -210,7 +218,7 @@ fn indent_at_caret_should_insert_soft_tab_aligned_to_next_indent_stop() {
     let mut buffer = buffer("abc");
     // caret 在 col 2 → 软 tab = 4 − 2%4 = 2 个空格，对齐到 col 4。
     buffer.indent_at_selections(set_caret(2)).unwrap();
-    assert_eq!(buffer.text().as_ref(), "ab  c");
+    assert_eq!(buffer_text(&buffer), "ab  c");
     assert_eq!(buffer.selection().primary().head(), b(4));
 }
 
@@ -219,7 +227,7 @@ fn indent_at_caret_on_first_column_should_insert_full_indent_width() {
     let mut buffer = buffer("abc");
     // caret 在 col 0 → 软 tab = 4 个空格。
     buffer.indent_at_selections(set_caret(0)).unwrap();
-    assert_eq!(buffer.text().as_ref(), "    abc");
+    assert_eq!(buffer_text(&buffer), "    abc");
     assert_eq!(buffer.selection().primary().head(), b(4));
 }
 
@@ -228,7 +236,7 @@ fn indent_at_caret_after_existing_tab_should_account_for_display_column() {
     // 已有 "\t" 展开占 col 0..4，caret 在 col 4 → 软 tab = 4 个空格。
     let mut buffer = buffer("\tabc");
     buffer.indent_at_selections(set_caret(1)).unwrap();
-    assert_eq!(buffer.text().as_ref(), "\t    abc");
+    assert_eq!(buffer_text(&buffer), "\t    abc");
     assert_eq!(buffer.selection().primary().head(), b(5));
 }
 
@@ -239,7 +247,7 @@ fn indent_with_multiple_carets_should_apply_per_caret_soft_tabs() {
     let set = SelectionSet::new(vec![caret(1), caret(6)]);
     // caret 1 col 1 → 3 空格；caret 2 col 2 → 2 空格。
     buffer.indent_at_selections(set).unwrap();
-    assert_eq!(buffer.text().as_ref(), "a   bc\nde  fg");
+    assert_eq!(buffer_text(&buffer), "a   bc\nde  fg");
 }
 
 #[test]
@@ -248,7 +256,7 @@ fn indent_with_non_empty_selection_should_indent_lines_without_replacing_content
     let mut buffer = buffer("abc");
     let set = SelectionSet::new(vec![selection(1, 2)]);
     buffer.indent_at_selections(set).unwrap();
-    assert_eq!(buffer.text().as_ref(), "    abc");
+    assert_eq!(buffer_text(&buffer), "    abc");
 }
 
 #[test]
@@ -257,14 +265,14 @@ fn indent_with_multi_line_selection_should_indent_each_touched_line_once() {
     // 跨 line 0..line 1 的选区：缩进 line 0 与 line 1，line 2 不动。
     let set = SelectionSet::new(vec![selection(0, 4)]);
     buffer.indent_at_selections(set).unwrap();
-    assert_eq!(buffer.text().as_ref(), "    ab\n    cd\nef");
+    assert_eq!(buffer_text(&buffer), "    ab\n    cd\nef");
 }
 
 #[test]
 fn indent_with_insert_spaces_false_should_insert_literal_tab_character() {
     let mut buffer = buffer_with_tab("ab", 4, false);
     buffer.indent_at_selections(set_caret(1)).unwrap();
-    assert_eq!(buffer.text().as_ref(), "a\tb");
+    assert_eq!(buffer_text(&buffer), "a\tb");
     assert_eq!(buffer.selection().primary().head(), b(2));
 }
 
@@ -273,17 +281,17 @@ fn outdent_should_remove_leading_indent_regardless_of_selection_shape() {
     // caret 行：删除前导 4 空格。
     let mut buf = buffer("    abc");
     buf.outdent_at_selections(set_caret(5)).unwrap();
-    assert_eq!(buf.text().as_ref(), "abc");
+    assert_eq!(buffer_text(&buf), "abc");
 
     // 行首是真 tab：只删 tab。
     let mut buf = buffer("\tabc");
     buf.outdent_at_selections(set_caret(2)).unwrap();
-    assert_eq!(buf.text().as_ref(), "abc");
+    assert_eq!(buffer_text(&buf), "abc");
 
     // 行首空白不足 indent_width：尽量删。
     let mut buf = buffer("  abc");
     buf.outdent_at_selections(set_caret(3)).unwrap();
-    assert_eq!(buf.text().as_ref(), "abc");
+    assert_eq!(buffer_text(&buf), "abc");
 }
 
 // ====================================================================
@@ -471,5 +479,5 @@ fn outdent_should_be_noop_when_no_leading_whitespace() {
     let result = buffer.outdent_at_selections(set_caret(1)).unwrap();
     // 无任何前导空白：不产生事务。
     assert!(result.is_none());
-    assert_eq!(buffer.text().as_ref(), "abc");
+    assert_eq!(buffer_text(&buffer), "abc");
 }

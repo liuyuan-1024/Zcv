@@ -59,10 +59,9 @@ impl<'a> ImeTarget<'a> {
         self.apply_replacement_range(replacement_range_utf16)?;
 
         // 系统输入法把 marked text 置空 = 放弃组合（如按 Esc 取消候选）。
-        // 必须真正结束 composition，而不是留一个空 preedit 的壳：空壳会让
-        // `marked_text_range` 仍报 `Some`，系统 IME 据此认为组合还在、把后续
-        // 按键继续吞进它那个已经空了的会话 —— 表现为「取消候选后要多按一次
-        // Esc 才退出新建」。
+        // 必须真正结束 composition，而不是留一个空 preedit 的壳。
+        // 空壳会让 `marked_text_range` 仍报 `Some`，系统 IME 据此认为组合还在、把后续按键继续吞进它那个已经空了的会话。
+        // 表现为「取消候选后要多按一次 Esc 才退出新建」。
         if new_text.is_empty() {
             if self.buffer.is_composing() {
                 self.buffer.cancel_composition().map_err(map_engine_error)?;

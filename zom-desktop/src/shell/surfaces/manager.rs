@@ -17,7 +17,7 @@ impl ActiveSurface {
     }
 }
 
-/// 每窗口 surface 管理器。第一版同时最多一个 active surface。
+/// 每窗口 surface 管理器。当前同时最多一个 active surface。
 #[derive(Default)]
 pub(crate) struct SurfaceManager {
     active: Option<ActiveSurface>,

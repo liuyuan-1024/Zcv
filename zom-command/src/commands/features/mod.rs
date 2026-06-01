@@ -21,8 +21,7 @@ pub mod version_control;
 
 /// 安装全部内建命令。
 ///
-/// 组合根只需要选择"是否安装内建命令集"；具体 feature 的注册顺序和完整性
-/// 由 zom-command 自己维护。
+/// 组合根只需要选择"是否安装内建命令集"；具体 feature 的注册顺序和完整性由 zom-command 自己维护。
 pub fn install_all(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     editor::install(registry, keymap);
     project_picker::install(registry, keymap);

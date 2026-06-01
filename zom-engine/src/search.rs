@@ -694,10 +694,6 @@ fn find_case_sensitive_matches_streaming<T: TextRead>(
 /// 3. 每个折叠 byte 同步记录"它来自原文哪个 byte 起点"
 /// 4. 窗口尾巴等于折叠查询时即匹配；非重叠：清空窗口继续
 /// 5. 窗口超过 `q_len * 8` 时批量裁剪到 `q_len * 2`（amortized O(N) total）
-///
-/// 这彻底消除了旧实现 `fold_text_with_byte_boundaries` 的 **O(char_count) 边界表 +
-/// 全文折叠 String** 双重 O(N) 内存占用——对 1GB 文本曾经会塞 ≥ 2-3GB 内存，
-/// 现在内存与 query 长度同阶。
 fn find_case_insensitive_matches_streaming<T: TextRead>(
     storage: &T,
     config: &BufferConfig,

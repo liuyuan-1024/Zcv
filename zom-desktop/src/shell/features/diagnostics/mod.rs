@@ -1,7 +1,7 @@
 //! 诊断功能。
 //!
-//! 第一版只占位：功能图标归本模块所有，命令标题归
-//! `zom_command::commands::diagnostics`。问题面板 UI 待后续开发，届时在本目录补
+//! 当前只提供状态入口：功能图标归本模块所有，命令标题归
+//! `zom_command::commands::diagnostics`。问题面板 UI 接入时在本目录补
 //! `view.rs` / `state.rs` 等文件。
 
 use gpui::AnyElement;

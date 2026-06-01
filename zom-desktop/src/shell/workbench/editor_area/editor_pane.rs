@@ -22,8 +22,8 @@ pub(super) fn render(
 ) -> Div {
     let focus_for_click = editor_focus.clone();
 
-    // 无活动文件时给一句提示，而不是渲染一个空编辑器 —— 与文件树未打开
-    // 项目时的占位口径一致。焦点宿主（track_focus + on_key_down）两态都挂。
+    // 无活动文件时给一句提示，而不是渲染一个空编辑器 —— 与文件树未打开项目时的占位口径一致。
+    // 焦点宿主（track_focus + on_key_down）两态都挂。
     let body = if state.tabs.is_empty() {
         empty_message("尚未打开文件")
     } else {
@@ -44,9 +44,8 @@ pub(super) fn render(
             cx.stop_propagation();
         })
         .on_key_down(move |event, window, cx| {
-            // 只在 keymap 命中 / 等待 leader 续击时拦截事件；NoMatch 必须放行，
-            // 否则 macOS 把 propagate=false 当作"已处理"，NSTextInputClient
-            // 永远拿不到输入，系统输入法直接哑掉。
+            // 只在 keymap 命中 / 等待 leader 续击时拦截事件；NoMatch 必须放行。
+            // 否则 macOS 把 propagate=false 当作"已处理"，NSTextInputClient 永远拿不到输入，系统输入法直接哑掉。
             if key_request(normalized_chord(&event.keystroke), window, cx) {
                 cx.stop_propagation();
             }
@@ -68,8 +67,8 @@ fn empty_message(hint: &'static str) -> Div {
 
 /// 编辑器嵌入面：设定代码正文的文本样式，子元素是主编辑区嵌入 slot。
 fn editor_surface(slot: &Rc<TextEditorSlot>) -> Div {
-    // 文本样式（mono 字体 / 字号 / 行高 / 正文色）在此设定，由 slot 渲染的
-    // 编辑器元素继承。行号色、光标色是编辑器自持的视觉角色，不在此设。
+    // 文本样式（mono 字体 / 字号 / 行高 / 正文色）在此设定，由 slot 渲染的编辑器元素继承。
+    // 行号色、光标色是编辑器自持的视觉角色，不在此设。
     div()
         .flex_1()
         .overflow_hidden()

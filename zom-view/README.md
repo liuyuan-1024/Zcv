@@ -1,27 +1,27 @@
 # zom-view
 
-`zom-view` 是 zom 宿主层的编辑面状态层 crate，持有「我怎么看一个 buffer」的视图状态。
+`zom-view` 是 zom 宿主层的编辑面状态层 crate，持有「我怎么看一个缓冲区（buffer）」的视图状态。
 
 ## 定位
 
-`zom-view` 回答「我怎么看它」：看哪个 buffer、滚到哪、本视图的光标与折叠。
+`zom-view` 回答「我怎么看它」：看哪个缓冲区、滚到哪、本视图的光标与折叠。
 
-它独立于 `zom-workspace`，因为这些状态**会随视图多重**：同一个 buffer 可被多个 view（分屏）观察，每个 view 有独立的光标、折叠和滚动。把它独立成 crate 让 viewport 数学、fold 状态转移、光标移动可以无头测试，不必透过 GPUI 外壳。
+它独立于 `zom-workspace`，因为这些状态会随视图多重：同一个缓冲区可被多个视图（分屏）观察，每个视图有独立的光标、折叠和滚动。把它独立成 crate 让视口数学、折叠状态转移、光标移动可以无头测试，不必透过 GPUI 外壳。
 
-`SelectionSet` / `FoldSet` 的*实例*归 view —— `zom-engine` 只提供类型和移动 / after-edit 算法，实例由宿主按视图持有。
+`SelectionSet` / `FoldSet` 的实例归视图层持有；`zom-engine` 提供类型、光标移动与编辑后状态转移算法。
 
 它不渲染像素（那是 `zom-desktop`），不拥有 `Buffer`（那是 `zom-workspace`）。
 
-判据：同一文件开两个分屏*会*不同的状态归这里（光标、fold、滚动）；属于文件本身的归 `zom-workspace`。
+判据：同一文件开两个分屏会不同的状态归这里（光标、折叠、滚动）；属于文件本身的归 `zom-workspace`。
 
 ## 核心类型
 
-- `View` —— 对某个 buffer 的一次观察：`BufferId` 引用 + `SelectionSet` + `FoldSet` + `ViewportState`。
-- `ViewSet` —— 全部 view 的集合，并记录当前活动 view。
-- `ViewId` —— view 的标识。
+- `View` —— 对某个缓冲区的一次观察：`BufferId` 引用 + `SelectionSet` + `FoldSet` + `ViewportState`。
+- `ViewSet` —— 全部视图的集合，并记录当前活动视图。
+- `ViewId` —— 视图标识。
 - `ViewportState` —— 滚动位置 / 可见区域。
 
-`FoldSet` 必须版本绑定，因此 `View::new` 构造时必须提供被观察 buffer 的 `BufferVersion`。
+`FoldSet` 必须版本绑定，因此 `View::new` 构造时必须提供被观察缓冲区的 `BufferVersion`。
 
 ## 依赖
 
@@ -32,19 +32,19 @@ zom-view → zom-workspace
 
 依赖 `zom-engine`（`SelectionSet` / `FoldSet` / `BufferVersion`）和 `zom-workspace`（`BufferId`）。
 
-## 结构概览
+## 目录概览
 
 ```text
 src/lib.rs    View / ViewSet / ViewId / ViewportState
 ```
 
-骨架阶段为单文件 `lib.rs`。
+目前为单文件 crate，公共 API 集中在 `src/lib.rs`。
 
 ## 相关文档
 
 - `../agents/global.md`、`../agents/project.md`：workspace 全局规则与项目规则。
-- `../TODO.md`：宿主层开发规划，本 crate 对应能力域 2 / 5 / 7（坐标读取、选区、折叠投影），阶段 P2 / P3。
+- `../TODO.md`：宿主层开发规划。
 
-## 状态
+## 文档维护
 
-骨架阶段：`View` / `ViewSet` 已持有 buffer 引用、活动 view、`SelectionSet`、`FoldSet` 与 `ViewportState`；selection movement 已可由 `zom-command` 经活动 view 接入，viewport slice 与 fold / projection 的宿主侧接入留待 `TODO.md` P3。
+本 README 只维护稳定边界、核心类型和依赖关系；阶段计划、任务清单和临时实现细节放入 `../TODO.md`。

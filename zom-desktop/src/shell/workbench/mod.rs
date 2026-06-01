@@ -16,7 +16,7 @@
 //!   [10] WorkbenchFrame
 //!   [20] SurfaceShell
 //!   [30] BubbleShell
-//! 后两层骨架阶段为空 portal，不参与 layout。
+//! 后两层当前为空 portal，不参与 layout。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -132,8 +132,8 @@ fn render_body(
     command_title_lookup: CommandTitleLookup,
     command_catalog_lookup: CommandCatalogLookup,
 ) -> Div {
-    // 所有面板与编辑区共用同一个 KeyRequest —— 角色由 FocusRegistry 在派发瞬间
-    // 解析，调用侧不再区分 panel / editor / file_tree 三套闭包。
+    // 所有面板与编辑区共用同一个 KeyRequest —— 角色由 FocusRegistry 在派发瞬间解析。
+    // 调用侧不再区分 panel / editor / file_tree 三套闭包。
     //
     // PanelContext 借用此 clone；编辑区那一支后续 move 走 `key_request` 本体。
     // 借用与 move 落到不同 Rc 副本上，互不冲突。

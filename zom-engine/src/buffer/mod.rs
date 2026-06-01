@@ -24,7 +24,6 @@ mod edit_ops;
 mod events;
 mod history;
 mod lifecycle;
-mod loading;
 mod movement;
 mod reload;
 mod search;

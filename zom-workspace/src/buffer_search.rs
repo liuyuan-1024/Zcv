@@ -1,25 +1,25 @@
-//! 单 buffer 搜索状态：挂在 `WorkspaceBuffer` 上，per-buffer 共享。
+//! 单缓冲区搜索状态：挂在 `WorkspaceBuffer` 上，按缓冲区共享。
 //!
-//! 设计来自《桌面端设计手册》19.9 与 TODO.md P3 搜索小节。本模块承担：
+//! 本模块承担：
 //!
 //! - 持有当前 query / options / 一次搜索的 `SearchResult` 或 `RegexSearchResult`
-//! - current hit 在结果集中的位置（用户点 next/prev 推进的指针）
+//! - 当前命中在结果集中的位置（用户点 next / prev 推进的指针）
 //! - **编辑期间走 `try_remap` 增量推进**——不主动发现新命中
 //! - query / options 变化、或结果落版本时由调用方调 `sync(buffer)` 同步重跑
 //!
-//! 同一 buffer 的多 view（分屏）共用一份 `BufferSearch`；跨 buffer 搜索是
+//! 同一缓冲区的多视图（分屏）共用一份 `BufferSearch`；跨缓冲区搜索是
 //! 另一层服务（项目级搜索），不在此处。
 //!
 //! ## 增量推进的责任链
 //!
 //! ```text
-//! 用户编辑 buffer
+//! 用户编辑缓冲区
 //!     ↓
 //! Buffer 内累积 DeltaEvent 到 pending_delta_events
 //!     ↓
-//! 调用方（命令派发后 / 编辑器命令落地后）调 WorkspaceBuffer::pump_search()
+//! 调用方（命令派发后 / 编辑器命令落地后）调 WorkspaceBuffer::pump_post_edit()
 //!     ↓
-//! pump_search 取走 pending events 逐个喂给 BufferSearch::apply_delta
+//! pump_post_edit 取走 pending events 逐个喂给 BufferSearch::apply_delta
 //!     ↓
 //! 已存命中按 try_remap 推进到新版本；被删 / 塌缩的整条丢弃
 //! ```
@@ -36,7 +36,7 @@ use zom_engine::{
 /// `BufferSearch` 暴露给调用方的可调选项。
 ///
 /// 与 engine 内部的 `SearchOptions` / `RegexSearchOptions` 区分：本类型是
-/// "用户在 panel 上看到的复选框"的直接映射，包含 regex 开关；engine 那两个类型
+/// 「用户在 panel 上看到的复选框」的直接映射，包含 regex 开关；engine 那两个类型
 /// 各自只承载 literal 或 regex 一种语义，由本模块按 `regex` 字段分发。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BufferSearchOptions {
@@ -47,7 +47,7 @@ pub struct BufferSearchOptions {
 
 /// 一次搜索结果——按是 literal 还是 regex 分两个变体。
 ///
-/// 两边都带 `try_remap` 与 `is_stale`，对外暴露统一的 ranges / hit count 接口。
+/// 两边都带 `try_remap`，对外暴露统一的 ranges / hit count 接口。
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum SearchSlot {
     Literal(SearchResult),
@@ -94,17 +94,17 @@ impl SearchSlot {
     }
 }
 
-/// 单 buffer 的搜索状态。
+/// 单缓冲区的搜索状态。
 ///
 /// 默认构造（`BufferSearch::default()`）是"空白"：query 空、options 全 false、
-/// 无结果、无 current hit。调用方通过 `set_query` / `set_options` 喂入用户输入，
+/// 无结果、无当前命中。调用方通过 `set_query` / `set_options` 喂入用户输入，
 /// 然后调 `sync(buffer)` 在下一个机会运行 engine 搜索。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BufferSearch {
     query: String,
     options: BufferSearchOptions,
     slot: Option<SearchSlot>,
-    /// current hit 在 `slot.matches()` 中的下标（0-based）。`None` 表示空结果集
+    /// 当前命中在 `slot.matches()` 中的下标（0-based）。`None` 表示空结果集
     /// 或还没跑过。导航命令把它推进 / 倒退；replace 后由 `pump_delta` 经过
     /// try_remap 自然减一或失效。
     current_hit: Option<usize>,
@@ -131,13 +131,13 @@ impl BufferSearch {
             return false;
         }
         self.query = query;
-        // query 变化意味着旧结果必然作废；丢掉避免下次 sync 误判 stale 而漏 re-run。
+        // query 变化意味着旧结果必然作废；丢掉避免下次 sync 误判可用而漏重跑。
         self.slot = None;
         self.current_hit = None;
         true
     }
 
-    /// 写入新的 options。同样不立刻跑搜索；任何字段变化都视作"旧结果作废"。
+    /// 写入新的 options。同样不立刻跑搜索；任何字段变化都视作「旧结果作废」。
     pub fn set_options(&mut self, options: BufferSearchOptions) -> bool {
         if self.options == options {
             return false;
@@ -153,13 +153,13 @@ impl BufferSearch {
         self.slot.as_ref().map(|s| s.len()).unwrap_or(0)
     }
 
-    /// current hit 的 1-based 序号；无 current hit 时为 `None`。直接给 panel
-    /// 的 "3 / 27" 标签消费。
+    /// 当前命中的 1-based 序号；无当前命中时为 `None`。直接给 panel
+    /// 的「3 / 27」标签消费。
     pub fn current_hit_ordinal(&self) -> Option<usize> {
         self.current_hit.map(|index| index + 1)
     }
 
-    /// current hit 对应的 TextRange，给 reveal / selection 用。
+    /// 当前命中对应的 TextRange，给 reveal / selection 用。
     pub fn current_range(&self) -> Option<TextRange> {
         let slot = self.slot.as_ref()?;
         let index = self.current_hit?;
@@ -179,13 +179,13 @@ impl BufferSearch {
         }
     }
 
-    /// 让 BufferSearch 与 buffer 当前版本对齐：query 非空且**没有可用结果**时
+    /// 让 BufferSearch 与缓冲区当前版本对齐：query 非空且**没有可用结果**时
     /// 重新调 engine 跑搜索；"可用"指 slot 存在且版本与 buffer 一致。
     ///
     /// 编辑期间的版本推进由 [`Self::apply_delta`] 通过 try_remap 维护；只有
     /// remap 失败（被删 / 塌缩的命中）造成 slot 主动重置、或 query/options 变化
     /// 才走本函数的重跑分支。**`sync` 不主动 drain pending DeltaEvent**——那是
-    /// [`crate::WorkspaceBuffer::pump_search`] 的责任，避免多消费者并行 drain。
+    /// [`crate::WorkspaceBuffer::pump_post_edit`] 的责任，避免多消费者并行 drain。
     pub fn sync(&mut self, buffer: &Buffer) -> EngineResult<()> {
         if self.query.is_empty() {
             // 没有 query 就清空状态——避免 query 从有变无时残留旧结果。
@@ -211,11 +211,11 @@ impl BufferSearch {
     /// 把一条 DeltaEvent 喂进来：现存命中按 try_remap 推进到新版本。
     ///
     /// `event.old_version()` 必须与当前 `slot.version()` 一致——这是
-    /// `WorkspaceBuffer::pump_search` 顺序投递的天然保证。如果 caller 跳跃版本
+    /// `WorkspaceBuffer::pump_post_edit` 顺序投递的天然保证。如果调用方跳跃版本
     /// （例如漏掉中间事件），engine 的 try_remap 会原子拒绝并返回错误，BufferSearch
-    /// 把 slot 丢掉退化为"无结果"，下次 sync 自然重跑。
+    /// 把 slot 丢掉退化为「无结果」，下次 sync 自然重跑。
     ///
-    /// 没有 slot 时 no-op：还没搜索过，不需要 remap。
+    /// 没有 slot 时无操作：还没搜索过，不需要 remap。
     pub fn apply_delta(&mut self, event: &DeltaEvent) -> EngineResult<()> {
         let Some(slot) = self.slot.take() else {
             return Ok(());
@@ -233,7 +233,7 @@ impl BufferSearch {
         Ok(())
     }
 
-    /// 推进 current hit 到下一个命中（环绕）。空结果集 no-op。返回推进后 hit 的
+    /// 推进当前命中到下一个命中（环绕）。空结果集无操作。返回推进后命中的
     /// 范围以便上层做 reveal / selection。
     ///
     /// 调用方在调本方法**之前**应该已经调过 `sync(buffer)`，使结果与 query 一致。
@@ -251,7 +251,7 @@ impl BufferSearch {
         slot.range_at(next)
     }
 
-    /// 倒退 current hit 到上一个命中（环绕）。
+    /// 倒退当前命中到上一个命中（环绕）。
     pub fn retreat(&mut self) -> Option<TextRange> {
         let slot = self.slot.as_ref()?;
         let count = slot.len();
@@ -266,12 +266,12 @@ impl BufferSearch {
         slot.range_at(prev)
     }
 
-    /// 给 replace 命令读：当前 result 与对应 ordinal。返回 `None` 表示"没东西可
-    /// 替换"——空结果集 / 无 current hit。
+    /// 给 replace 命令读：当前 result 与对应 ordinal。返回 `None` 表示「没东西可
+    /// 替换」——空结果集 / 无当前命中。
     ///
-    /// 让 caller 拿着这两个去调 `buffer.replace_search_match` / `replace_regex_match`，
-    /// 替换成功后必须紧跟一次 `WorkspaceBuffer::pump_search` 把新生的 DeltaEvent
-    /// 喂回来。本模块第一版不内嵌 replace handler——边界留给 zom-command。
+    /// 让调用方拿着这两个去调 `buffer.replace_search_match` / `replace_regex_match`，
+    /// 替换成功后必须紧跟一次 `WorkspaceBuffer::pump_post_edit` 把新生的 DeltaEvent 喂回来。
+    /// 本模块不内嵌替换处理器——边界留给 zom-command。
     pub fn current_for_replace(&self) -> Option<CurrentReplaceTarget<'_>> {
         let slot = self.slot.as_ref()?;
         let ordinal = self.current_hit?;
@@ -300,9 +300,9 @@ impl BufferSearch {
         }
     }
 
-    /// 跑完搜索后挑一个合理的 current hit：
+    /// 跑完搜索后挑一个合理的当前命中：
     /// - 旧 current_hit 在新结果集内仍合法 → 保持
-    /// - 否则若结果集非空 → 跳到第 0 项（与 panel "搜索完落到第一条" 习惯一致）
+    /// - 否则若结果集非空 → 跳到第 0 项（与 panel「搜索完落到第一条」习惯一致）
     /// - 空结果集 → `None`
     fn normalize_current_hit_after_rerun(&mut self) {
         let count = self.slot.as_ref().map(|s| s.len()).unwrap_or(0);
@@ -314,7 +314,7 @@ impl BufferSearch {
     }
 
     /// remap 后命中数可能减少（被删的整条丢）；把 current_hit 夹回合法范围。
-    /// 这里**不强制**把 current_hit 推到 0——保留原位置让 "替换当前命中" 之类的
+    /// 这里**不强制**把 current_hit 推到 0——保留原位置让「替换当前命中」之类的
     /// 节奏自然衔接（被替换那条会被 remap 吃掉，下一条自动顶上来到原 index）。
     fn clamp_current_hit_into_slot(&mut self) {
         let count = self.slot.as_ref().map(|s| s.len()).unwrap_or(0);
@@ -326,10 +326,10 @@ impl BufferSearch {
     }
 }
 
-/// 给 zom-command 的 replace handler 用：拿这个去调 buffer 的 replace API。
+/// 给 zom-command 的替换处理器用：拿这个去调 buffer 的 replace API。
 ///
-/// 故意只暴露访问器、不可 Clone——让 caller 在持有 BufferSearch 不可变借用的
-/// 同时无法逃逸；replace 完毕调 `WorkspaceBuffer::pump_search` 是契约。
+/// 故意只暴露访问器、不可 Clone——让调用方在持有 BufferSearch 不可变借用的
+/// 同时无法逃逸；replace 完毕调 `WorkspaceBuffer::pump_post_edit` 是契约。
 pub struct CurrentReplaceTarget<'a> {
     slot: &'a SearchSlot,
     ordinal: usize,
@@ -371,6 +371,8 @@ fn regex_pattern(query: &str, whole_word: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
     use zom_engine::{BufferConfig, BufferOrigin};
 
     fn make_buffer(text: &str) -> Buffer {
@@ -378,9 +380,9 @@ mod tests {
     }
 
     fn make_file_buffer(text: &str) -> Buffer {
-        Buffer::from_loaded_text(
+        Buffer::from_reader(
             BufferOrigin::external("test"),
-            text.as_bytes().to_vec(),
+            Cursor::new(text.as_bytes().to_vec()),
             BufferConfig::default(),
         )
         .unwrap()
@@ -398,7 +400,7 @@ mod tests {
         assert!(search.ranges().next().is_none());
     }
 
-    /// 写入 query 并 sync 后能拿到全部命中；current hit 默认落在第一条。
+    /// 写入 query 并 sync 后能拿到全部命中；当前命中默认落在第一条。
     #[test]
     fn sync_should_run_search_and_anchor_first_hit() {
         let buffer = make_buffer("foo bar foo baz foo");
@@ -478,10 +480,10 @@ mod tests {
         assert_eq!(search.current_hit_ordinal(), Some(2));
         search.advance();
         assert_eq!(search.current_hit_ordinal(), Some(3));
-        search.advance(); // wrap
+        search.advance(); // 向前回卷
         assert_eq!(search.current_hit_ordinal(), Some(1));
 
-        search.retreat(); // wrap backward
+        search.retreat(); // 向后回卷
         assert_eq!(search.current_hit_ordinal(), Some(3));
     }
 

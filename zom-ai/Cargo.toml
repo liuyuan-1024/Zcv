@@ -1,8 +1,8 @@
 [package]
 name = "zom-ai"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
-description = "AI 抽象层：provider、请求/提案模型与 proposal 到 transaction 转换"
+description = "AI 抽象层：请求、提案、编辑范围与服务提供方接口"
 
 [dependencies]
 zom-engine.workspace = true

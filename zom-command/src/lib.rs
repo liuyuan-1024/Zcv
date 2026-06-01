@@ -1,11 +1,9 @@
-//! zom-command —— 命令派发脊柱 + 键位模型
+//! 命令派发脊柱与键位模型。
 //!
-//! 「所有操作均是命令」。键盘、命令面板、AI、菜单都把意图收敛成
-//! `(CommandId, CommandArgs)`，经唯一派发路径进入执行器（参数模型方案 A）。
+//! 「所有操作均是命令」。键盘、命令面板、AI、菜单都把意图收敛成 `(CommandId, CommandArgs)`，经唯一派发路径进入执行器（参数模型方案 A）。
 //!
 //! 依赖 `zom-workspace` / `zom-view` / `zom-engine`（它要编辑的东西），
-//! **不依赖** `zom-ai` 等扩展域 —— 扩展域的命令由 `zom-desktop` 组合根
-//! 注册（handler 闭包捕获扩展服务）。
+//! **不依赖** `zom-ai` 等扩展域 —— 扩展域的命令由 `zom-desktop` 组合根注册（handler 闭包捕获扩展服务）。
 //!
 //! ## 模块划分
 //!
@@ -22,10 +20,9 @@
 //!
 //! 以下模块对外公开：
 //! - [`effects`] / [`keymap_format`]：宿主副作用队列、快捷键平台投影。
-//! - [`commands`]：按域分组的"命令目录"。每个域一个子模块，**同处**声明：
-//!   常量 id、typed args、typed builders、handler、默认键位 —— 域专属的键位
-//!   上下文类型（如 `TextEditKeyContext`、`FileTreeKeyContext`）也内聚在对应
-//!   域模块里。本文件只做模块编排与重导出，不直接持有任何具体定义。
+//! - [`commands`]：按域分组的「命令目录」。每个域一个子模块，**同处**声明：常量 id、typed args、typed builders、handler、默认键位 ——
+//!   域专属的键位上下文类型（如 `TextEditKeyContext`、`FileTreeKeyContext`）也内聚在对应域模块里。
+//!   本文件只做模块编排与重导出，不直接持有任何具体定义。
 
 pub mod commands;
 pub mod effects;

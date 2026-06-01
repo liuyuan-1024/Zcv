@@ -2,6 +2,8 @@
 
 use zom_engine::{Buffer, Line, SelectionSet, Viewport};
 
+use crate::shell::editor::highlight::producers;
+
 use super::{EditorSnapshot, SnapshotLine};
 
 /// 构造编辑器渲染快照时使用的视口请求。
@@ -37,16 +39,16 @@ pub(crate) fn build_snapshot(
     selection: &SelectionSet,
     request: EditorSnapshotRequest,
 ) -> EditorSnapshot {
-    let (lines, total_lines, viewport_start_line, cursor_position, cursor_byte) =
-        build_snapshot_view(
-            buffer,
-            selection,
-            request.top_line,
-            request.visible_line_count,
-        );
+    let (lines, viewport_start_line, cursor_position, cursor_byte) = build_snapshot_view(
+        buffer,
+        selection,
+        request.top_line,
+        request.visible_line_count,
+    );
+    let mut decorations = Vec::new();
+    producers::selection::push(selection, &mut decorations);
     EditorSnapshot {
         lines,
-        total_lines,
         viewport_start_line,
         // 通用构造路径默认与 slice 起点一致；上层（主编辑区 text_target）按需覆盖。
         top_line: viewport_start_line,
@@ -54,8 +56,7 @@ pub(crate) fn build_snapshot(
         cursor_position,
         selection: selection.clone(),
         reveal: None,
-        search_hits: Vec::new(),
-        search_current: None,
+        decorations,
     }
 }
 
@@ -64,7 +65,7 @@ fn build_snapshot_view(
     selection: &SelectionSet,
     viewport_start_line: u64,
     viewport_line_count: u64,
-) -> (Vec<SnapshotLine>, u64, u64, (u64, u64), usize) {
+) -> (Vec<SnapshotLine>, u64, (u64, u64), usize) {
     let total_lines = buffer.line_count() as u64;
     let cursor_byte = selection.primary().head().get();
     let cursor_position = buffer
@@ -73,7 +74,7 @@ fn build_snapshot_view(
         .unwrap_or((0, 0));
 
     if total_lines == 0 || viewport_line_count == 0 {
-        return (Vec::new(), total_lines, 0, cursor_position, cursor_byte);
+        return (Vec::new(), 0, cursor_position, cursor_byte);
     }
 
     let clamped_start = viewport_start_line.min(total_lines.saturating_sub(1));
@@ -93,13 +94,7 @@ fn build_snapshot_view(
             .collect::<Vec<_>>(),
         Err(_) => Vec::new(),
     };
-    (
-        lines,
-        total_lines,
-        clamped_start,
-        cursor_position,
-        cursor_byte,
-    )
+    (lines, clamped_start, cursor_position, cursor_byte)
 }
 
 #[cfg(test)]
@@ -120,7 +115,6 @@ mod tests {
             EditorSnapshotRequest::viewport(1, 1),
         );
 
-        assert_eq!(snapshot.total_lines, 3);
         assert_eq!(snapshot.viewport_start_line, 1);
         assert_eq!(snapshot.lines.len(), 1);
         assert_eq!(snapshot.lines[0].line_index, 1);

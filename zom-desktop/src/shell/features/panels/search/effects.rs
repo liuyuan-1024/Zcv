@@ -77,7 +77,7 @@ pub(crate) fn try_apply_effect(
 /// | 是 | 在 | 隐藏，焦点回编辑器 |
 /// | 是 | 不在 | 把焦点搬到面板 |
 ///
-/// 第一版只有单文件搜索（per-buffer），没有 scope 维度；跨文件搜索后续作为
+/// 当前只有单文件搜索（per-buffer），没有 scope 维度；跨文件搜索作为
 /// 独立 workspace 服务再加，会引入各自的命令与 effect，不复用本路径。
 fn activate_search(
     app: &Rc<RefCell<App>>,
@@ -102,8 +102,8 @@ fn activate_search(
     let focus_in_panel = focus.is_at_panel(panel, window);
 
     if focus_in_panel {
-        // 已显示 + 焦点在面板 → 收起，焦点回编辑器；同时清掉活动 buffer 的
-        // search 高亮，标记 panel 关闭。
+        // 已显示 + 焦点在面板 → 收起，焦点回编辑器。
+        // 同时清掉活动 buffer 的 search 高亮，标记 panel 关闭。
         workbench.borrow_mut().hide_panel(panel);
         app.borrow_mut()
             .with_search_coordinator(|s, w, _v| super::coordinator::on_panel_closed(s, w));

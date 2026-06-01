@@ -9,10 +9,7 @@
 
 use std::sync::Arc;
 
-use crate::{
-    ByteOffset, EngineResult, SelectionSet, TextRange,
-    transaction::{Edit, EditList},
-};
+use crate::{SelectionSet, transaction::EditList};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::buffer) struct HistoryEntry {
@@ -38,28 +35,6 @@ impl HistoryEntry {
             after_selection,
             description,
         }
-    }
-
-    pub(in crate::buffer) fn from_snapshots(
-        before_text: String,
-        after_text: String,
-        before_selection: SelectionSet,
-        after_selection: SelectionSet,
-        description: Option<Arc<str>>,
-    ) -> EngineResult<Self> {
-        let before_range = TextRange::new(ByteOffset::ZERO, ByteOffset::new(before_text.len()))?;
-        let after_range = TextRange::new(ByteOffset::ZERO, ByteOffset::new(after_text.len()))?;
-
-        let redo_edits = EditList::new(vec![Edit::replace(before_range, after_text.clone())])?;
-        let undo_edits = EditList::new(vec![Edit::replace(after_range, before_text.clone())])?;
-
-        Ok(Self::new(
-            undo_edits,
-            redo_edits,
-            before_selection,
-            after_selection,
-            description,
-        ))
     }
 
     /// `HistoryEntry` 在历史预算中的字节占用估算。

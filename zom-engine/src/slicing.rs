@@ -173,7 +173,6 @@ impl fmt::Display for LineSlice<'_> {
 pub struct VisibleLine<'a> {
     line: Line,
     full_range: TextRange,
-    full_len_chars: usize,
     visible_text: TextSlice<'a>,
     is_truncated: bool,
 }
@@ -182,14 +181,12 @@ impl<'a> VisibleLine<'a> {
     pub(crate) fn new(
         line: Line,
         full_range: TextRange,
-        full_len_chars: usize,
         visible_text: TextSlice<'a>,
         is_truncated: bool,
     ) -> Self {
         Self {
             line,
             full_range,
-            full_len_chars,
             visible_text,
             is_truncated,
         }
@@ -225,10 +222,6 @@ impl<'a> VisibleLine<'a> {
 
     pub fn visible_len_bytes(&self) -> usize {
         self.visible_text.len_bytes()
-    }
-
-    pub fn full_len_chars(&self) -> usize {
-        self.full_len_chars
     }
 
     pub fn full_len_bytes(&self) -> usize {
@@ -374,24 +367,14 @@ pub(crate) fn visible_line_for_text<T: TextRead>(
     let full_range = text_range_for_line(text, line)?;
     let visible_range = visible_range_for_line(text, full_range, max_line_chars)?;
     let is_truncated = visible_range.end() < line_content_end(text, full_range)?;
-    let full_len_chars = text_range_len_chars(text, full_range)?;
     let visible_text = TextSlice::new(visible_range, text.slice_text(visible_range)?);
 
     Ok(VisibleLine::new(
         line,
         full_range,
-        full_len_chars,
         visible_text,
         is_truncated,
     ))
-}
-
-fn text_range_len_chars<T: TextRead>(text: &T, range: TextRange) -> EngineResult<usize> {
-    let mut len = 0;
-    for chunk in text.chunks(range)? {
-        len += chunk.chars().count();
-    }
-    Ok(len)
 }
 
 fn line_range_for_viewport<T: TextRead>(text: &T, viewport: Viewport) -> EngineResult<LineRange> {
@@ -440,22 +423,17 @@ fn byte_offset_after_chars<T: TextRead>(
     let mut remaining = max_chars;
 
     for chunk in text.chunks(range)? {
-        let chunk_chars = chunk.chars().count();
-        if remaining >= chunk_chars {
-            cursor += chunk.len();
-            remaining -= chunk_chars;
+        for (byte, _) in chunk.char_indices() {
             if remaining == 0 {
-                return Ok(ByteOffset::new(cursor));
+                return Ok(ByteOffset::new(cursor + byte));
             }
-            continue;
+            remaining -= 1;
         }
 
-        let local_byte = chunk
-            .char_indices()
-            .nth(remaining)
-            .map(|(byte, _)| byte)
-            .expect("内部不变量：remaining 小于 chunk 字符数时必定存在后续字符边界");
-        return Ok(ByteOffset::new(cursor + local_byte));
+        cursor += chunk.len();
+        if remaining == 0 {
+            return Ok(ByteOffset::new(cursor));
+        }
     }
 
     Ok(end)

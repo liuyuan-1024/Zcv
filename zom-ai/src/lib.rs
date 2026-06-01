@@ -37,8 +37,8 @@ pub enum AiError {
 impl fmt::Display for AiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ProviderUnavailable => f.write_str("AI provider 不可用"),
-            Self::RequestRejected(reason) => write!(f, "AI 请求被拒绝: {reason}"),
+            Self::ProviderUnavailable => f.write_str("AI 服务提供方不可用"),
+            Self::RequestRejected(reason) => write!(f, "AI 请求被拒绝：{reason}"),
         }
     }
 }

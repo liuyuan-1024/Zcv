@@ -1,8 +1,8 @@
 //! L1 视觉 token —— 命名常量。
 //!
-//! 颜色按手册 §4 的两轴正交（hue × step）命名；当前骨架未接入 `cx.theme()`，
-//! 函数签名暂时零参，保留同名 / 同形状的升级路径（将来改为 `fn xxx(cx: &App)
-//! -> Rgba`）。
+//! 颜色按手册 §4 的两轴正交（hue × step）命名；当前未接入 `cx.theme()`，
+//! 函数签名暂时零参，保留同名 / 同形状的升级路径
+//! （将来改为 `fn xxx(cx: &App) -> Rgba`）。
 //!
 //! 每个色相提供两条平行阶梯（手册 §4.3）：
 //! - `sNN` solid，不透明 RGB —— 文字、边框、caret、实心填充
@@ -28,8 +28,11 @@ use std::sync::OnceLock;
 
 use gpui::{Font, FontFallbacks, Pixels, Rgba, font, px, rgb, rgba};
 
-// color 是设计系统的"集合定义"：90 个 token 一旦发布就锁定，多数会在调用方
-// 接入前长期 dead_code（手册 §4.7）。模块级 allow，避免给每个函数挂注解。
+pub mod syntax;
+
+// color 是设计系统的"集合定义"：90 个 token 一旦发布就锁定，
+// 多数会在调用方接入前长期 dead_code（手册 §4.7）。
+// 模块级 allow，避免给每个函数挂注解。
 #[allow(dead_code)]
 pub mod color {
     use super::*;
@@ -81,10 +84,6 @@ pub mod color {
         }
 
         // ---- alpha 阶梯（白色基底 + 阶梯化 alpha）----
-        //
-        // 阶梯按"我们的深底色 gray::s01 (#0d0f12)"调过，比 Zed 整体抬一档：
-        // 0x1a 0x26 0x3d 0x66 0x80 0xb3 0xcc 0xe6 0xf5。Zed 的 alpha 是为 Zed 底色
-        // 调的，搬到我们更深的底色上 alpha 会被吞掉视觉，所以整条抬。
 
         pub fn a01() -> Rgba {
             rgba(0xffffff1a)
@@ -148,8 +147,8 @@ pub mod color {
             rgb(0xc8def7)
         }
 
-        // alpha 基底 = s07 `#74ade8`；alpha 阶梯比 Zed 抬一档以补偿我们更深的底色
-        // （见 gray.alpha 注释）。a04 用于选区、a05 用于搜索普通命中。
+        // alpha 基底 = s07 `#74ade8`；alpha 阶梯比 Zed 抬一档以补偿我们更深的底色（见 gray.alpha 注释）。
+        // a04 用于选区、a05 用于搜索普通命中。
         pub fn a01() -> Rgba {
             rgba(0x74ade81a)
         }
@@ -159,8 +158,8 @@ pub mod color {
         pub fn a03() -> Rgba {
             rgba(0x74ade83d)
         }
-        /// 04 ui-active —— 选区色块。alpha 抬到 0x66 以在 #0d0f12 底色上保住与
-        /// caret (`s07`) 的视觉关联。
+        /// 04 ui-active —— 选区色块。
+        /// alpha 抬到 0x66 以在 #0d0f12 底色上保住与 caret (`s07`) 的视觉关联。
         pub fn a04() -> Rgba {
             rgba(0x74ade866)
         }
@@ -404,13 +403,13 @@ pub mod radius {
     }
 }
 
-/// 字号 + 行高（手册 6.3 / 6.4）。骨架阶段固定默认值；将来从 `cx.fonts()` 取。
+/// 字号 + 行高（手册 6.3 / 6.4）。当前固定默认值；将来从 `cx.fonts()` 取。
 ///
 /// 只有两套字号：`ui()` 给全部 UI chrome，`editor()` 给编辑区代码正文。
 /// UI 层级靠颜色 / 字重区分，不靠字号。
 pub mod typography {
     use super::*;
-    /// 桌面 UI 字体：JetBrains Mono + Sarasa Mono SC（中文 fallback）。
+    /// 桌面 UI 字体：JetBrains Mono + Sarasa Mono SC（中文兜底）。
     /// 与编辑区共用一种字体——少一份资源注册，UI 与代码视觉一致。
     pub fn ui_font() -> Font {
         let mut font = font("JetBrains Mono");
@@ -418,7 +417,7 @@ pub mod typography {
         font
     }
 
-    /// 编辑区代码字体：JetBrains Mono + Sarasa Mono SC（中文 fallback）。
+    /// 编辑区代码字体：JetBrains Mono + Sarasa Mono SC（中文兜底）。
     /// JetBrains 为代码场景做的等宽字体——大 x-height、字符区分度高，
     /// 长时间盯不累。GSUB 自带 `calt`，但 GPUI 默认不启用编程连字。
     pub fn editor_font() -> Font {

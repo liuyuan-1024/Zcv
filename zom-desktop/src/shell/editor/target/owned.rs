@@ -1,7 +1,7 @@
 //! 自持文本目标：小输入框自己的 buffer 与 selection。
 
 use zom_command::EditTarget;
-use zom_engine::{Buffer, BufferConfig, SelectionSet};
+use zom_engine::{Buffer, BufferConfig, ByteOffset, SelectionSet};
 
 use crate::shell::editor::input::{ImeQueryTarget, ImeTarget};
 use crate::shell::editor::snapshot::{EditorSnapshot, EditorSnapshotRequest, build_snapshot};
@@ -30,7 +30,11 @@ impl OwnedEditorTarget {
     /// 永远小，整段读取是 O(buffer size)。渲染仍走 [`Self::snapshot`] 的统一
     /// 视口切片入口。
     pub(crate) fn text(&self) -> String {
-        self.buffer.text().into_owned()
+        self.buffer
+            .slice_byte_range(ByteOffset::ZERO, self.buffer.len_bytes())
+            .expect("自持输入框文本范围来自自身长度")
+            .into_text()
+            .into_owned()
     }
 
     pub(crate) fn snapshot(&self, request: EditorSnapshotRequest) -> EditorSnapshot {
@@ -79,7 +83,6 @@ mod tests {
 
         let snapshot = target.snapshot(EditorSnapshotRequest::viewport(1, 1));
 
-        assert_eq!(snapshot.total_lines, 2);
         assert_eq!(snapshot.viewport_start_line, 1);
         assert_eq!(snapshot.lines.len(), 1);
         assert_eq!(snapshot.lines[0].text, "beta");

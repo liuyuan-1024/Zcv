@@ -1,10 +1,13 @@
-//! Reload 与保存边界：替换外部文本基线、清理编辑历史，并输出待保存文本。
+//! Reload 与保存边界：替换外部文本基线、清理编辑历史，并流式输出待保存文本。
 //!
 //! 本文件不做文件 I/O、不监听外部变化，也不决定冲突交互；宿主只把文本或快照交给 engine。
 
+use std::io::{self, Write};
+
 use crate::{
-    BufferVersion, EngineError, EngineResult, LineEndingConfig, SelectionSet, Snapshot,
-    TransactionError, storage::RopeyStorage,
+    BufferSaveError, BufferVersion, ByteOffset, EngineError, EngineResult, LineEndingConfig,
+    SelectionSet, Snapshot, TextRange, TransactionError,
+    storage::{RopeyStorage, TextRead},
 };
 
 use super::Buffer;
@@ -31,26 +34,44 @@ impl Buffer {
     ///
     /// 只读取 Snapshot 的文本内容；Buffer 身份、配置、只读状态和文件绑定保持不变。
     pub fn reload_from_snapshot(&mut self, snapshot: &Snapshot) -> EngineResult<()> {
-        self.reload_from_text(snapshot.text().into_owned())
+        self.reload_from_text(
+            snapshot
+                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())?
+                .into_text()
+                .into_owned(),
+        )
     }
 
-    /// 输出待保存文本，并在输出前检查调用方持有的版本是否仍然新鲜。
+    /// 流式输出待保存文本，并在输出前检查调用方持有的版本是否仍然新鲜。
     ///
     /// 这里不修改 Buffer 状态；宿主完成真实写盘后再调用 `mark_saved()` /
     /// `mark_synced_external()`。
-    pub fn to_save_text(&self, expected_version: BufferVersion) -> EngineResult<String> {
+    pub fn write_to<W: Write>(
+        &self,
+        expected_version: BufferVersion,
+        mut writer: W,
+    ) -> Result<(), BufferSaveError> {
         if expected_version != self.version {
-            return Err(TransactionError::VersionMismatch {
+            return Err(EngineError::from(TransactionError::VersionMismatch {
                 expected: self.version,
                 actual: expected_version,
-            }
+            })
             .into());
         }
 
-        Ok(normalize_line_endings(
-            self.text().as_ref(),
-            self.config.line_ending,
-        ))
+        let range = TextRange::new(ByteOffset::ZERO, self.storage.len_bytes())
+            .map_err(EngineError::from)?;
+        let chunks = self.storage.chunks(range)?;
+        match self.config.line_ending {
+            LineEndingConfig::Preserve => write_preserved_line_endings(&mut writer, chunks)?,
+            LineEndingConfig::Lf => write_normalized_line_endings(&mut writer, chunks, "\n")?,
+            LineEndingConfig::Crlf => write_normalized_line_endings(&mut writer, chunks, "\r\n")?,
+            LineEndingConfig::Native => {
+                write_normalized_line_endings(&mut writer, chunks, native_line_ending())?
+            }
+        }
+        writer.flush()?;
+        Ok(())
     }
 
     pub(in crate::buffer) fn bump_version(&mut self) -> EngineResult<()> {
@@ -59,44 +80,96 @@ impl Buffer {
     }
 }
 
-fn normalize_line_endings(text: &str, config: LineEndingConfig) -> String {
-    match config {
-        LineEndingConfig::Preserve => text.to_string(),
-        LineEndingConfig::Lf => normalize_line_endings_to(text, "\n"),
-        LineEndingConfig::Crlf => normalize_line_endings_to(text, "\r\n"),
-        LineEndingConfig::Native => normalize_line_endings_to(text, native_line_ending()),
+fn write_preserved_line_endings<'a, W, I>(writer: &mut W, chunks: I) -> io::Result<()>
+where
+    W: Write,
+    I: IntoIterator<Item = &'a str>,
+{
+    for chunk in chunks {
+        writer.write_all(chunk.as_bytes())?;
     }
+    Ok(())
 }
 
-fn normalize_line_endings_to(text: &str, target: &str) -> String {
-    let mut output = String::with_capacity(text.len());
-    let bytes = text.as_bytes();
-    let mut index = 0usize;
+fn write_normalized_line_endings<'a, W, I>(
+    writer: &mut W,
+    chunks: I,
+    target: &str,
+) -> io::Result<()>
+where
+    W: Write,
+    I: IntoIterator<Item = &'a str>,
+{
+    let target = target.as_bytes();
+    let mut pending_cr = false;
 
-    while index < bytes.len() {
-        match bytes[index] {
-            b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
-                output.push_str(target);
-                index += 2;
-            }
-            b'\r' | b'\n' => {
-                output.push_str(target);
-                index += 1;
-            }
-            _ => {
-                let ch = text[index..]
-                    .chars()
-                    .next()
-                    .expect("内部不变量：index 必须位于合法字符边界");
-                output.push(ch);
-                index += ch.len_utf8();
+    for chunk in chunks {
+        let bytes = chunk.as_bytes();
+        let mut index = 0usize;
+        let mut segment_start = 0usize;
+
+        if pending_cr {
+            writer.write_all(target)?;
+            pending_cr = false;
+            if bytes.first() == Some(&b'\n') {
+                index = 1;
+                segment_start = 1;
             }
         }
+
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\r' => {
+                    writer.write_all(&bytes[segment_start..index])?;
+                    if bytes.get(index + 1) == Some(&b'\n') {
+                        writer.write_all(target)?;
+                        index += 2;
+                        segment_start = index;
+                    } else if index + 1 == bytes.len() {
+                        pending_cr = true;
+                        index += 1;
+                        segment_start = index;
+                    } else {
+                        writer.write_all(target)?;
+                        index += 1;
+                        segment_start = index;
+                    }
+                }
+                b'\n' => {
+                    writer.write_all(&bytes[segment_start..index])?;
+                    writer.write_all(target)?;
+                    index += 1;
+                    segment_start = index;
+                }
+                _ => {
+                    index += 1;
+                }
+            }
+        }
+
+        writer.write_all(&bytes[segment_start..])?;
     }
 
-    output
+    if pending_cr {
+        writer.write_all(target)?;
+    }
+    Ok(())
 }
 
 fn native_line_ending() -> &'static str {
     if cfg!(windows) { "\r\n" } else { "\n" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_line_endings_should_handle_crlf_split_across_chunks() {
+        let mut out = Vec::new();
+
+        write_normalized_line_endings(&mut out, ["a\r", "\nb\r", "c\n"], "\n").unwrap();
+
+        assert_eq!(String::from_utf8(out).unwrap(), "a\nb\nc\n");
+    }
 }

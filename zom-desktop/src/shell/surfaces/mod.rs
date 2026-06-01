@@ -23,7 +23,7 @@ pub(crate) enum SurfaceId {
     LanguageServers,
 }
 
-/// Surface 的定位依据。第一版只用召唤它的入口元素。
+/// Surface 的定位依据。当前只用召唤它的入口元素。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SurfaceAnchor {
     /// 锚到召唤该 surface 的已渲染 element 矩形上。

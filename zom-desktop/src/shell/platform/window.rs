@@ -11,7 +11,7 @@ use gpui::{App, Window};
 
 /// 退出整个应用——× 圆点对应的动作。
 ///
-/// 注意：第一版直接走 gpui 的 `quit`；二期接入退出协议（手册 25.x）
+/// 注意：当前直接走 gpui 的 `quit`；接入退出协议（手册 25.x）
 /// 后再加确认 / 落盘等步骤。
 pub(crate) fn quit(cx: &App) {
     cx.quit();

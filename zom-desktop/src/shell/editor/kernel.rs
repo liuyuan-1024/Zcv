@@ -96,16 +96,14 @@ impl EditorKernel {
         let mut element = EditorElement::new(
             self.clone(),
             snapshot.lines,
-            snapshot.total_lines,
             snapshot.viewport_start_line,
             snapshot.top_line,
-            snapshot.cursor_position,
             snapshot.selection,
             focus,
             input_handler_hook,
         )
         .reveal_if_some(snapshot.reveal)
-        .search_overlay(snapshot.search_hits, snapshot.search_current);
+        .decorations(snapshot.decorations);
         if let Some(hook) = self.viewport_sync.as_ref() {
             element = element.viewport_sync(Rc::clone(hook));
         }

@@ -165,6 +165,18 @@ Engine 已提供：
 - 重算时机：编辑期间仅 `try_remap` 推进现存命中，不主动发现新命中；query 变化、或 find-next 发现 result 落后于当前 `buffer.version` 时才同步 re-run。
 - 跨文件搜索、任务调度、取消策略和结果面板后续放在 workspace / desktop 层，不进入 engine。
 
+### 8.5 语法高亮异步增量改造
+
+详细方案见 [`zom-workspace/docs/语法高亮异步增量改造.md`](zom-workspace/docs/语法高亮异步增量改造.md)。
+
+- [x] P0：脱 `tree-sitter-highlight`，等价替换为 raw `tree-sitter`（同步、全量）。
+- [x] P1：持久化 Parser + Tree 做增量 reparse；engine 新增 `Snapshot::byte_to_point` / `Snapshot::chunk_at_byte` 与 `ChangeSet::edits()` 公开访问；worker 缓存 `(Tree, Snapshot)`，`on_edit` 走 `tree.edit` + `parse_with_options` 流式 chunks，含「中间事件 no-op」「版本不连续 / parse 失败回退全量」防御。
+- [x] P2：把 provider 推到后台 `SyntaxWorker`（单线程 + mpsc + catch_unwind 兜底 panic）。`BufferSyntaxState` 主线程只持 sink + worker handle；`handle_edit` 克隆 Snapshot + ChangeSet 投 Job。`Workspace::pump_pending_highlights` 由 desktop 每帧 prepaint 调一次 drain 到 layers。**64 MiB 单键主线程 2.7 µs（target ≤5 ms）**。
+- [x] P3：viewport-scoped `QueryCursor::set_byte_range` + `SnapshotTextProvider` + `sink.replace_range`。engine 新增 `MetadataLayer::replace_in_range` / `MetadataLayers::replace_layer_ranges_in_range`，coordinator 把 `ReplaceRange` 接到 layer 局部替换。`HighlightProvider` trait 加 `set_viewport(Option<TextRange>)` default-no-op；HighlightWorker 实现：set_viewport 立即触发一次 viewport-scoped re-query（滚动后新区域 1–2 帧补齐）。**4 MiB e2e 200 → 11 ms（-94%），64 MiB e2e 3.3 s → 246 ms（-92%）**。剩余瓶颈在 attach 冷启动（仍全树）与 QueryCursor 节点遍历开销。
+- [x] P3 后续：desktop 接 `App::pump_active_viewport_hint`（ShellView::render 每帧调一次，活动 view 的 viewport ±32 行 → byte range → `Workspace::set_buffer_viewport_hint`）；HighlightWorker 内部去重，无变化不重 query。
+- [x] P4：`MAX_HIGHLIGHT_BYTES` 4 MiB → **16 MiB**——16 MiB rust 实测 viewport-scoped e2e 63 ms / 主线程 3 µs / cold parse 1.56 s，三条红线全过。64 MiB 一档单键 ~250 ms、cold parse 6.3 s 是 tree-sitter 走树常数代价，不再追；超过 16 MiB 静默落 plain。
+- [ ] 搜索 `DEFAULT_REGEX_HAYSTACK_BYTE_LIMIT` 8 MiB 硬限：单独立项；放开前需先做异步搜索 + 可取消 + 进度上报（否则换"卡死"）。
+
 ### 9. 防御、性能与验证
 
 Engine 已提供：

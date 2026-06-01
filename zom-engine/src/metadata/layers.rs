@@ -113,6 +113,25 @@ impl<T> MetadataLayers<T> {
         Ok(ids)
     }
 
+    /// 局部替换：与 [`MetadataLayer::replace_in_range`] 同语义，但接受 `kind`
+    /// 寻址。若 layer 不存在，先以 `version` 建空 layer 再走局部替换——等价于
+    /// "首份 ReplaceRange 起手铺底"。版本不匹配返回 `VersionMismatch`。
+    pub fn replace_layer_ranges_in_range(
+        &mut self,
+        kind: MetadataLayerKind,
+        version: BufferVersion,
+        byte_range: TextRange,
+        ranges: impl IntoIterator<Item = (TextRange, T)>,
+    ) -> Result<Vec<MetadataRangeId>, MetadataError> {
+        if let Some(index) = self.layers.iter().position(|layer| layer.kind() == &kind) {
+            return self.layers[index].replace_in_range(version, byte_range, ranges);
+        }
+        let mut layer = MetadataLayer::with_kind(kind, version);
+        let ids = layer.replace_in_range(version, byte_range, ranges)?;
+        self.layers.push(layer);
+        Ok(ids)
+    }
+
     pub fn ranges_for_kind_intersecting(
         &self,
         kind: &MetadataLayerKind,
@@ -215,5 +234,68 @@ mod tests {
         let stale = layers.discard_stale(BufferVersion::new(99));
         assert_eq!(stale.len(), 1);
         assert!(layers.is_empty());
+    }
+
+    #[test]
+    fn replace_layer_ranges_in_range_keeps_out_of_range_spans_and_swaps_inside() {
+        let buffer = buffer("abcdefghij");
+        let mut layers = MetadataLayers::new();
+        let kind = MetadataLayerKind::custom("syntax");
+
+        // 起点：四段全文 spans。
+        layers
+            .replace_layer_ranges(
+                kind.clone(),
+                buffer.version(),
+                vec![
+                    (range(0, 2), "a"),
+                    (range(2, 5), "b"),
+                    (range(5, 8), "c"),
+                    (range(8, 10), "d"),
+                ],
+            )
+            .unwrap();
+
+        // 局部替换 byte_range = [2, 8)：b 与 c 的 start 落在其中，应被替换；a 与 d 保留。
+        layers
+            .replace_layer_ranges_in_range(
+                kind.clone(),
+                buffer.version(),
+                range(2, 8),
+                vec![(range(2, 4), "B"), (range(4, 7), "C")],
+            )
+            .unwrap();
+
+        let mut survivors: Vec<&str> = layers
+            .layer(&kind)
+            .unwrap()
+            .as_slice()
+            .iter()
+            .map(|r| *r.metadata())
+            .collect();
+        survivors.sort();
+        assert_eq!(survivors, vec!["B", "C", "a", "d"]);
+    }
+
+    #[test]
+    fn replace_layer_ranges_in_range_rejects_stale_version() {
+        let buffer = buffer("abcd");
+        let mut layers = MetadataLayers::new();
+        let kind = MetadataLayerKind::custom("syntax");
+        layers
+            .replace_layer_ranges(kind.clone(), buffer.version(), vec![(range(0, 4), "a")])
+            .unwrap();
+        let err = layers
+            .replace_layer_ranges_in_range(
+                kind,
+                BufferVersion::new(buffer.version().get() + 1),
+                range(0, 4),
+                vec![(range(0, 4), "b")],
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::errors::MetadataError::VersionMismatch { .. }
+        ));
     }
 }

@@ -1,8 +1,9 @@
 //! 共享滚动条样式。
 //!
-//! 参考 Zed 的边界：具体 panel/runtime 持有滚动状态，滚动由 GPUI 的
-//! list/scroll handle 管理；本模块只读取 handle 并绘制统一样式的滚动条。
-//! 第一版不处理拖拽。
+//! 参考 Zed 的边界：具体 panel/runtime 持有滚动状态，
+//! 滚动由 GPUI 的 list/scroll handle 管理；
+//! 本模块只读取 handle 并绘制统一样式的滚动条。
+//! 当前不处理拖拽。
 
 use std::cell::Cell;
 use std::rc::Rc;

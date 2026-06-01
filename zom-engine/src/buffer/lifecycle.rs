@@ -3,14 +3,15 @@
 //! 本文件只管理 Buffer 作为文档对象的外部可见状态，不执行具体编辑、坐标转换或历史回放。
 
 use std::{
-    borrow::Cow,
+    io,
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use crate::{
-    BufferConfig, BufferId, BufferOrigin, BufferState, BufferVersion, ByteOffset, EngineResult,
-    LoadedTextInfo, SelectionSet, TransactionId, Utf16Offset,
+    BufferConfig, BufferId, BufferLoadError, BufferOrigin, BufferState, BufferVersion, ByteOffset,
+    EngineResult, LoadedTextInfo, SelectionSet, TransactionId, Utf16Offset,
     storage::{RopeyStorage, TextRead, TextStorage},
+    text_loading::streaming_decoder::{StreamDecodeError, decode_stream},
 };
 
 use super::{Buffer, history};
@@ -38,9 +39,48 @@ impl Buffer {
         config: BufferConfig,
     ) -> EngineResult<Self> {
         let storage = RopeyStorage::new(text);
+        Ok(Self::from_parts(origin, storage, config, None))
+    }
+
+    /// 从 `io::Read` 流式加载 Buffer。
+    ///
+    /// 等价于 `with_origin(origin, text, config)` 的语义，但**单次**遍历完成
+    /// UTF-8 校验、BOM 剥离、行尾风格识别、最长行字符数与末尾换行判定，并把
+    /// 字节增量喂给 `ropey::RopeBuilder`——任一时刻内存只持有一份固定大小的
+    /// 读缓冲（64 KiB）加上正在构建的 rope，不再出现 `bytes Vec` + `String`
+    /// + `Rope` 三份全量内存同时活的局面。
+    ///
+    /// 设计动机与基线数据见 [`zom-bench/BASELINE.md`](../../../zom-bench/BASELINE.md)：
+    /// 64 MiB 文本经此路径加载 peak RSS 从 218 MB 降至 ~100 MB 量级。
+    ///
+    /// 失败情形：见 [`BufferLoadError`]。
+    pub fn from_reader<R: io::Read>(
+        origin: BufferOrigin,
+        reader: R,
+        config: BufferConfig,
+    ) -> Result<Self, BufferLoadError> {
+        let result = decode_stream(reader, &config).map_err(|e| match e {
+            StreamDecodeError::Io(io_err) => BufferLoadError::Io(io_err),
+            StreamDecodeError::Engine(engine_err) => BufferLoadError::Engine(engine_err),
+        })?;
+        let storage = RopeyStorage::from_rope(result.rope);
+        let mut buffer = Self::from_parts(origin, storage, config, Some(result.info));
+        buffer.mark_synced_external();
+        Ok(buffer)
+    }
+
+    /// 共享构造路径：from_text / with_origin / from_reader 都走这里。
+    ///
+    /// 抽出来的唯一目的是消除"创建 Buffer 各字段初值"的重复代码——任何关于
+    /// Buffer 字段默认值的演进只需要改一处。
+    fn from_parts(
+        origin: BufferOrigin,
+        storage: RopeyStorage,
+        config: BufferConfig,
+        loaded_text_info: Option<LoadedTextInfo>,
+    ) -> Self {
         let saved_snapshot = storage.snapshot();
         let saved_fingerprint = saved_snapshot.fingerprint();
-
         let mut buffer = Self {
             id: next_buffer_id(),
             origin,
@@ -53,7 +93,7 @@ impl Buffer {
             saved_snapshot,
             saved_fingerprint,
             last_synced_external_version: None,
-            loaded_text_info: None,
+            loaded_text_info,
             next_transaction_id: TransactionId::INITIAL,
             pending_delta_events: Vec::new(),
             last_delta_event: None,
@@ -62,7 +102,7 @@ impl Buffer {
             composition: None,
         };
         buffer.apply_large_file_auto_read_only();
-        Ok(buffer)
+        buffer
     }
 
     /// 加载 / reload 后按 `LargeFilePolicy::auto_read_only_on_large_file`
@@ -140,14 +180,6 @@ impl Buffer {
         &self.config
     }
 
-    /// 返回全文。
-    ///
-    /// 返回 Cow 而不是 `&str`，public API 不承诺全文连续内存。
-    /// 热路径请优先用 Snapshot / slice / line API。
-    pub fn text(&self) -> Cow<'_, str> {
-        self.storage.text()
-    }
-
     pub fn len_chars(&self) -> crate::CharOffset {
         self.storage.len_chars()
     }
@@ -172,24 +204,6 @@ impl Buffer {
         self.config
             .large_file
             .is_large_byte_size(self.storage.len_bytes().get())
-    }
-
-    /// 当前 Buffer 是否含有按 `LargeFilePolicy::long_line_threshold_chars`
-    /// 视为超长的行。
-    ///
-    /// O(N) 扫描；调用方应自行决定调用频率。`long_line_threshold_chars == 0`
-    /// 时永远返回 `false`。
-    pub fn has_long_line(&self) -> bool {
-        self.config
-            .large_file
-            .is_long_line(self.longest_line_chars())
-    }
-
-    /// 当前 Buffer 中最长一行的字符数（不含行尾换行符）。
-    ///
-    /// 通过遍历当前文本计算，不缓存；O(N) 扫描。
-    pub fn longest_line_chars(&self) -> usize {
-        super::loading::longest_line_chars_in(self.text().as_ref())
     }
 
     /// 当前 Buffer 大致内存占用估算（字节）。

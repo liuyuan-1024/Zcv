@@ -19,6 +19,7 @@ use zom_view::ViewSet;
 use zom_workspace::Workspace;
 
 use crate::focus::AppFocus;
+use crate::shell::editor::highlight::producers;
 use crate::shell::editor::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, RevealHint, TextTargetOwner,
     TextTargetQuery, build_snapshot,
@@ -84,11 +85,6 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
         return EditorSnapshot::default();
     };
     let selection = view.selection().clone();
-    // BufferSearch 由 zom-workspace 维护、per-buffer 共享。这里只读快照；
-    // 重跑 / try_remap 的责任在 panel 输入流 / 编辑流（见 app.rs）。
-    let search = buffer.search();
-    let search_hits: Vec<zom_engine::TextRange> = search.ranges().collect();
-    let search_current = search.current_range();
 
     // 视口边界来自 view —— `View::new` 用 `DEFAULT_INITIAL_VISIBLE_LINES` 初始化，
     // element 在 prepaint 末尾按 bounds / line_height 测量后 sync 回写真实值。
@@ -103,9 +99,9 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
     // view 已落定的 top_line（真实视口起点）；与 slice_start 区分开供 element 直接用。
     snapshot.top_line = vp.top_line;
 
-    // reveal 携带的 byte 要折一次 byte_to_position 出逻辑行——element 看不到
-    // buffer，离开视口的 reveal 目标全靠这条 line 决定怎么滚。失败时丢掉
-    // reveal（视为已过期），不让一个坏 byte 卡住渲染。
+    // reveal 携带的 byte 要折一次 byte_to_position 出逻辑行——element 看不到 buffer。
+    // 离开视口的 reveal 目标全靠这条 line 决定怎么滚。
+    // 失败时丢掉 reveal（视为已过期），不让一个坏 byte 卡住渲染。
     let reveal = view.reveal().and_then(|req| {
         let line = buffer.buffer().byte_to_position(req.byte).ok()?;
         Some(RevealHint {
@@ -116,8 +112,11 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
         })
     });
     snapshot.reveal = reveal;
-    snapshot.search_hits = search_hits;
-    snapshot.search_current = search_current;
+    // 主编辑区独有的两个 producer：search 与 syntax。
+    // selection 已在 [`build_snapshot`] 内的 [`producers::selection`] 路径产出，单行输入框也复用那一路径。
+    // 主编辑区不需要再加一遍。
+    producers::search::push(buffer, &mut snapshot.decorations);
+    producers::syntax::push(buffer, &snapshot.lines, &mut snapshot.decorations);
     snapshot
 }
 

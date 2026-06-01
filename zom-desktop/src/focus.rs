@@ -1,10 +1,10 @@
 //! 应用层焦点模型 —— 唯一语义真相源。
 //!
-//! 业务只认 [`AppFocus`]：命令分发、快捷键 context、IME 路由、状态栏显示
-//! 全部从这个值派生，不再各自维护一套 role / target_id / active 优先级。
+//! 业务只认 [`AppFocus`]：命令分发、快捷键 context、IME 路由、状态栏显示全部从这个值派生，
+//! 不再各自维护一套 role / target_id / active 优先级。
 //!
-//! GPUI 的 [`FocusHandle`](gpui::FocusHandle) 是它在窗口系统里的投影，对应桥接层
-//! 在 [`crate::shell::view::focus`]；本模块不依赖 GPUI 类型，全部是纯数据。
+//! GPUI 的 [`FocusHandle`](gpui::FocusHandle) 是它在窗口系统里的投影，对应桥接层在 [`crate::shell::view::focus`]；
+//! 本模块不依赖 GPUI 类型，全部是纯数据。
 
 /// 应用的唯一语义焦点：当前用户操作应该落到哪里。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]

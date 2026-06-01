@@ -2,9 +2,11 @@
 //!
 //! 本文件是组合输入唯一的状态机入口；底层坐标换算和相对选区校验分别委托给 `state` 与 `validation`。
 
+use std::sync::Arc;
+
 use crate::{
-    ByteOffset, CompositionState, EngineResult, SelectionSet, TextRange,
-    transaction::{ChangeSet, Delta, TransactionMetadata, TransactionSource},
+    ByteOffset, CompositionState, EngineResult, SelectionSet,
+    transaction::{ChangeSet, Delta, Edit, EditList, TransactionMetadata, TransactionSource},
 };
 
 use crate::buffer::{Buffer, history::HistoryEntry};
@@ -42,11 +44,12 @@ impl Buffer {
 
         let primary = *original_selection.primary();
         let range = primary.range();
+        let original_replaced_text = self.slice_text(range)?.as_str().to_string();
         let state = CompositionState::new(
-            self.text().into_owned(),
+            range,
+            original_replaced_text,
             original_selection,
             self.is_dirty(),
-            range,
         );
 
         // IME composition 只跟随 primary selection。这里直接同步 Buffer selection，
@@ -141,9 +144,7 @@ impl Buffer {
                 .with_description("组合输入提交文本"),
         )?;
 
-        let after_text = self.text().into_owned();
-
-        if after_text == state.original_text {
+        if commit_text == state.original_replaced_text {
             self.set_selection(after_selection)?;
             if !state.original_was_dirty {
                 self.mark_clean_internal();
@@ -151,13 +152,22 @@ impl Buffer {
             return Ok(result);
         }
 
-        let entry = HistoryEntry::from_snapshots(
-            state.original_text,
-            after_text,
+        let final_range = composition_range_after_preedit(range_start, commit_text.len())?;
+        let redo_edits = EditList::new(vec![Edit::replace(
+            state.original_range,
+            Arc::<str>::from(commit_text),
+        )])?;
+        let undo_edits = EditList::new(vec![Edit::replace(
+            final_range,
+            Arc::<str>::from(state.original_replaced_text),
+        )])?;
+        let entry = HistoryEntry::new(
+            undo_edits,
+            redo_edits,
             state.original_selection,
             after_selection,
             Some(std::sync::Arc::from("组合输入提交")),
-        )?;
+        );
         let metadata = TransactionMetadata::new(TransactionSource::Composition)
             .with_description("组合输入提交");
         self.push_history(entry, &metadata)?;
@@ -171,12 +181,11 @@ impl Buffer {
             return Ok(None);
         };
 
-        let full_range = TextRange::new(ByteOffset::ZERO, self.len_bytes())?;
         let after_selection = state.original_selection.clone();
 
         let result = self.replace_single_range_with_metadata(
-            full_range,
-            &state.original_text,
+            state.range,
+            &state.original_replaced_text,
             after_selection,
             TransactionMetadata::new(TransactionSource::Composition)
                 .without_history()

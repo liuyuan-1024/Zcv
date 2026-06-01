@@ -12,6 +12,14 @@ fn buffer(text: &str) -> Buffer {
     Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
 }
 
+fn buffer_text(buffer: &Buffer) -> String {
+    buffer
+        .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+        .unwrap()
+        .into_text()
+        .into_owned()
+}
+
 #[test]
 fn literal_search_should_return_versioned_byte_ranges_with_case_and_range_options() {
     let buffer = buffer("Alpha alpha ALPHA");
@@ -81,7 +89,7 @@ fn replace_search_match_should_reject_missing_match_and_preserve_state() {
         err,
         EngineError::Search(SearchError::MatchNotFound { ordinal: 9 })
     ));
-    assert_eq!(buffer.text().as_ref(), "ab ab");
+    assert_eq!(buffer_text(&buffer), "ab ab");
     assert_eq!(buffer.version(), version);
 }
 
@@ -94,13 +102,13 @@ fn replace_all_literal_matches_should_apply_single_atomic_transaction_and_restor
     let applied = buffer.replace_all_search_matches(&result, "green").unwrap();
 
     assert!(applied.is_some());
-    assert_eq!(buffer.text().as_ref(), "green blue green");
+    assert_eq!(buffer_text(&buffer), "green blue green");
     assert_eq!(buffer.history_status().undo_depth, 1);
 
     buffer.undo().unwrap().unwrap();
-    assert_eq!(buffer.text().as_ref(), "red blue red");
+    assert_eq!(buffer_text(&buffer), "red blue red");
     buffer.redo().unwrap().unwrap();
-    assert_eq!(buffer.text().as_ref(), "green blue green");
+    assert_eq!(buffer_text(&buffer), "green blue green");
 }
 
 #[test]
@@ -119,7 +127,7 @@ fn stale_search_result_should_not_drive_replacement_after_state_transition() {
         EngineError::Search(SearchError::VersionMismatch { expected, actual })
             if expected == version && actual == result.version()
     ));
-    assert_eq!(buffer.text().as_ref(), "xab ab");
+    assert_eq!(buffer_text(&buffer), "xab ab");
 }
 
 #[test]
@@ -165,12 +173,12 @@ fn regex_replacement_should_expand_captures_for_single_and_all_matches() {
         .search_regex(r"([a-z]+)=(\d+)", RegexSearchOptions::new())
         .unwrap();
     single.replace_regex_match(&result, 1, "$2:$1").unwrap();
-    assert_eq!(single.text().as_ref(), "one=1 22:two");
+    assert_eq!(buffer_text(&single), "one=1 22:two");
 
     let mut all = buffer("one=1 two=22");
     let result = all
         .search_regex(r"([a-z]+)=(\d+)", RegexSearchOptions::new())
         .unwrap();
     all.replace_all_regex_matches(&result, "$1($2)").unwrap();
-    assert_eq!(all.text().as_ref(), "one(1) two(22)");
+    assert_eq!(buffer_text(&all), "one(1) two(22)");
 }

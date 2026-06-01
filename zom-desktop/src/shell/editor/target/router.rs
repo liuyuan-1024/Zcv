@@ -6,8 +6,8 @@
 //! - 可写路径用 [`EditorRouterMut`]，持 `&mut dyn TextTargetOwner` 列表 ——
 //!   做 IME 写入回调；外部通过闭包接收 [`ImeTarget`]，借用在闭包结束后释放。
 //!
-//! 第二阶段起，业务查询按 App 持有的唯一 [`AppFocus`] 精确查 owner；
-//! `target_id` 路径只服务 GPUI IME 回调和旧 slot 身份。
+//! 业务查询按 App 持有的唯一 [`AppFocus`] 精确查 owner；
+//! `target_id` 路径只服务 GPUI IME 回调和既有 slot 身份。
 //!
 //! 写入端的 `edit_target` 由于要把借用透传到 [`zom_command::CommandContext`]
 //! 跨越执行器整个生命周期，不走路由器；App 直接顺序问 owners，路由器只承担
@@ -105,7 +105,7 @@ impl<'a> EditorRouterMut<'a> {
     }
 
     /// 在 `snapshot_for_focus` 之前调用：让指定 focus 的 owner 把视口 Y 轴落定。
-    /// 默认实现是 no-op；只有主编辑区 owner override 后真正吸收 reveal / edge-scroll。
+    /// 默认实现无操作；只有主编辑区 owner override 后真正吸收 reveal / edge-scroll。
     pub(crate) fn settle_viewport_for_focus(&mut self, focus: AppFocus) {
         if let Some(owner) = self.owners.iter_mut().find(|o| o.accepts_focus(focus)) {
             owner.settle_viewport_y();

@@ -1,14 +1,11 @@
 //! Search —— L3 panel 组件。
 //!
-//! 第一版 panel **只是输入控制条**：query / replacement 输入框 + 选项 toggle +
+//! 当前 panel **只是输入控制条**：query / replacement 输入框 + 选项 toggle +
 //! 上一/下一/替换按钮 + "3 / 27" 命中数标签。
 //!
 //! - 所有命中**直接在编辑器内高亮**（EditorView 阶段 2），panel 不显示结果列表
-//! - 算法层由 `WorkspaceBuffer::BufferSearch` 提供（P3 待落地），panel 不持搜索状态
+//! - 算法层由 `WorkspaceBuffer::BufferSearch` 提供，panel 不持搜索状态
 //! - 跨文件搜索 / 替换是 workspace 层另一笔账，与本面板无关
-//!
-//! P3 BufferSearch 落地后，本文件只动 [`render_query_row_actions`] 等少量位置去
-//! 接 `hit_count`，不动 UI 结构。
 
 pub(crate) mod coordinator;
 mod effects;
@@ -191,7 +188,12 @@ fn search_controls(
             query_focus,
             key_request,
             query_slot,
-            state.query.text().is_empty(),
+            state
+                .query
+                .lines
+                .first()
+                .map(|line| line.text.is_empty())
+                .unwrap_or(true),
             vec![
                 hit_count_badge(state.hit_count),
                 Glyph::icon(
@@ -247,7 +249,12 @@ fn search_controls(
             replacement_focus,
             key_request,
             replacement_slot,
-            state.replacement.text().is_empty(),
+            state
+                .replacement
+                .lines
+                .first()
+                .map(|line| line.text.is_empty())
+                .unwrap_or(true),
             vec![
                 Glyph::icon(
                     "search-replace-next",
@@ -272,7 +279,7 @@ fn search_controls(
 
 /// 输入行右侧的 "3 / 27" 命中数小标签。无命中时显示淡灰 "0 / 0"，避免布局抖动。
 ///
-/// 第一版 `hit_count` 恒为 `None`（panel 不主动搜索）；P3 BufferSearch 落地后
+/// `hit_count` 来自活动 buffer 的 `BufferSearch`；panel 自身不主动搜索。
 /// 由 SearchModel::state() 从 active buffer 的 BufferSearch 读出真实数据。
 fn hit_count_badge(hit_count: Option<HitCount>) -> gpui::AnyElement {
     let (text, color) = match hit_count {

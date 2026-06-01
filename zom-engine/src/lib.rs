@@ -29,8 +29,9 @@ pub use config::{
     WordBoundaryPolicy,
 };
 pub use errors::{
-    AnchorError, CoordinateError, EditError, EngineError, EngineResult, FoldError, MetadataError,
-    ProjectionError, SearchError, StorageError, TransactionError, VersionedResultError,
+    AnchorError, BufferLoadError, BufferSaveError, CoordinateError, EditError, EngineError,
+    EngineResult, FoldError, MetadataError, ProjectionError, SearchError, StorageError,
+    TransactionError, VersionedResultError,
 };
 pub use fold::{FoldRange, FoldRangeId, FoldRangeUpdate, FoldSet, FoldToggleOutcome, HiddenRange};
 pub use metadata::{

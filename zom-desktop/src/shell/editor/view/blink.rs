@@ -31,8 +31,7 @@ impl CaretBlink {
         Self {
             visible: true,
             epoch: 0,
-            // usize::MAX：与任何真实光标位都不同，保证首帧触发一次重置 ——
-            // 借此启动定时链。
+            // usize::MAX：与任何真实光标位都不同，保证首帧触发一次重置，借此启动定时链。
             last_cursor: usize::MAX,
         }
     }

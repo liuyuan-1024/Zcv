@@ -9,7 +9,7 @@ use crate::shell::editor::{
 
 /// 提供给 panel UI 渲染的快照。
 ///
-/// 第一版只有「输入框 + 选项 + 命中计数」，没有结果列表——所有匹配项都通过
+/// 当前只有「输入框 + 选项 + 命中计数」，没有结果列表——所有匹配项都通过
 /// EditorView 阶段 2 直接在 buffer 内高亮显示，panel 只是输入控制条。
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SearchState {
@@ -17,16 +17,14 @@ pub(crate) struct SearchState {
     pub(crate) replacement: EditorSnapshot,
     pub(crate) options: SearchOptions,
     /// 当前命中 / 总命中数；`None` 表示尚无命中（query 空或未搜出结果）。
-    ///
-    /// 第一版固定为 `None`——`BufferSearch` 落地前 panel 不主动跑搜索；
-    /// 接入后由 `find_next/previous` 同步推进或重新计算。
+    /// 由活动 buffer 的 `BufferSearch` 同步推进或重新计算。
     pub(crate) hit_count: Option<HitCount>,
 }
 
 /// "3 / 27" 标签的数据来源。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct HitCount {
-    /// 当前 hit 在结果集中的序号（1-based）。
+    /// 当前命中在结果集中的序号（1-based）。
     pub(crate) current: usize,
     /// 总命中数。
     pub(crate) total: usize,
@@ -41,8 +39,8 @@ pub(crate) struct SearchOptions {
 
 /// 搜索面板的核心状态。
 ///
-/// 第一版面板的算法层是**空的**：搜索 / 替换 / 导航全部委托给底层
-/// `WorkspaceBuffer::BufferSearch`（P3 待落地）。`SearchModel` 只持有
+/// 面板的算法层是**空的**：搜索 / 替换 / 导航全部委托给底层
+/// `WorkspaceBuffer::BufferSearch`。`SearchModel` 只持有
 /// UI 局部状态：两个输入框 + 选项 toggles + 当前活动输入框。
 pub(crate) struct SearchModel {
     query: OwnedEditorTarget,
@@ -71,8 +69,7 @@ impl SearchModel {
                 .replacement
                 .snapshot(EditorSnapshotRequest::single_line()),
             options: self.options,
-            // 第一版恒为 None；BufferSearch 接入后从 active buffer 读
-            // (current_hit_ordinal, hits.len()) 填进来。
+            // 渲染层稍后从 active buffer 读 (current_hit_ordinal, hits.len()) 填进来。
             hit_count: None,
         }
     }
@@ -250,5 +247,5 @@ impl SearchModel {
 }
 
 // 搜索 / 替换导航的协调实现不在 SearchModel 里——见 [`super::coordinator`]。
-// 那一层同时操作 panel 输入（query / replacement / options）+ active buffer
-// 的 BufferSearch + active view 的 selection；SearchModel 只负责输入框状态。
+// 那一层同时操作 panel 输入（query / replacement / options）+ active buffer 的 BufferSearch + active view 的 selection。
+// SearchModel 只负责输入框状态。

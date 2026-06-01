@@ -8,8 +8,7 @@ use crate::{
 pub const TOGGLE_PANEL: &str = "panel.toggle.search";
 /// 打开搜索面板并聚焦 query 输入框；面板已聚焦则收起。
 ///
-/// 第一版只承载单文件搜索（per-buffer），不再分 in_buffer / in_project ——
-/// 跨文件搜索是 workspace 层的另一个东西，后续单开命令。
+/// 第一版只承载单文件搜索（per-buffer），不再分 in_buffer / in_project —— 跨文件搜索是 workspace 层的另一个东西，后续单开命令。
 pub const ACTIVATE: &str = "search.activate";
 pub const TOGGLE_CASE_SENSITIVE: &str = "search.toggle_case_sensitive";
 pub const TOGGLE_WHOLE_WORD: &str = "search.toggle_whole_word";

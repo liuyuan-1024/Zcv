@@ -64,8 +64,8 @@ pub(super) fn bind_action_request(
             window,
             cx,
         );
-        // 命令可能改了渲染可见的模型状态（如关闭删除确认弹窗）；与 key_request
-        // 的按键路径对称，点击路径在此统一刷新。
+        // 命令可能改了渲染可见的模型状态（如关闭删除确认弹窗）。
+        // 与 key_request 的按键路径对称，点击路径在此统一刷新。
         window.refresh();
     })
 }
@@ -93,7 +93,7 @@ pub(crate) fn apply_host_effects(
     );
     for effect in effects {
         // 按 feature 顺序问询：第一个认领的 try_apply 返回 true，跳过余下。
-        // 剩下的窗口控制 / 跨 feature 变体由本文件下方的 fallback match 处理。
+        // 剩下的窗口控制 / 跨 feature 变体由本文件下方的兜底 match 处理。
         if file_tree::try_apply_effect(&effect, app, workbench, &focus, window) {
             continue;
         }
@@ -211,9 +211,8 @@ pub(crate) fn open_surface(
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    // 手册 21.7：关闭时焦点回到"先前 focus 目标"——open 这一帧 window
-    // 里实际聚焦的元素。查不到（窗口刚启动等）退回 editor 焦点，避免
-    // 关闭后焦点悬空。
+    // 手册 21.7：关闭时焦点回到"先前 focus 目标"——open 这一帧 window 里实际聚焦的元素。
+    // 查不到（窗口刚启动等）退回 editor 焦点，避免关闭后焦点悬空。
     let focus_to_restore = window
         .focused(cx)
         .unwrap_or_else(|| editor_focus_fallback.clone());

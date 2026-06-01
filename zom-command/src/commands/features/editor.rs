@@ -1,7 +1,6 @@
 //! `editor.*` 命令目录。
 //!
-//! 一站式声明：命令 id 常量 + typed args（双向转换）+ typed builders +
-//! handler + 默认键位。新增 / 修改命令只改本文件。
+//! 一站式声明：命令 id 常量 + typed args（双向转换）+ typed builders + handler + 默认键位。
 //!
 //! 调用约定：
 //! ```ignore
@@ -74,8 +73,8 @@ pub enum CompositionBinding {
 }
 
 impl CompositionBinding {
-    /// 两个组合态约束能否被同一运行时态同时满足。`Active` 与 `Inactive`
-    /// 互斥；含 `Any` 的组合都有交集。
+    /// 两个组合态约束能否被同一运行时态同时满足。
+    /// `Active` 与 `Inactive` 互斥；含 `Any` 的组合都有交集。
     pub(crate) fn overlaps(self, other: Self) -> bool {
         !matches!(
             (self, other),
@@ -784,7 +783,7 @@ fn run_move_selection(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let mut args = MoveSelectionArgs::try_from(args)?;
-    // PageStep 步长按真实视口高度走：element 上一帧 prepaint 已把测得的visible_line_count 写回 ViewportState，从这里读。
+    // PageStep 步长按真实视口高度走：element 上一帧 prepaint 已把测得的 visible_line_count 写回 ViewportState，从这里读。
     // focused_field 模式下作用于输入框（通常单行），主编辑区的视口高度对它无意义，保留 keymap 兜底。
     // visible_line_count == 0（首帧 / headless）也走兜底。
     if let Motion::PageStep { lines } = &mut args.motion
@@ -934,8 +933,7 @@ fn run_cut(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    // 先取出剪贴板文本 + 删除材料；过程中只借 target，借完即释放，
-    // 之后才碰 `context.clipboard` 写入，避免对 context 的两次可变借用相撞。
+    // 先取出剪贴板文本 + 删除材料；过程中只借 target，借完即释放，之后才碰 `context.clipboard` 写入，避免对 context 的两次可变借用相撞。
     enum CutPlan {
         DeleteSelections(SelectionSet),
         DeleteLineRanges(Vec<TextRange>),
@@ -1008,8 +1006,7 @@ fn run_paste(
 ///
 /// 二选一规则：
 /// - 任意非空 selection 存在 → 只取非空段，`\n` 分隔；
-/// - 全部 caret → 每个 caret 取所在行（含 `\n`），按 [`Line`] 去重并按行号顺序，
-///   直接拼接（行文本已自带 `\n`，末行无 `\n` 时不补）。
+/// - 全部 caret → 每个 caret 取所在行（含 `\n`），按 [`Line`] 去重并按行号顺序，直接拼接（行文本已自带 `\n`，末行无 `\n` 时不补）。
 ///
 /// 没有可复制内容（全 caret 但 buffer 空 / 没有非空选区可取）返回 `None`。
 fn collect_clipboard_text(
@@ -1071,8 +1068,8 @@ fn collect_caret_line_ranges(
     Ok(ranges)
 }
 
-/// 把 workspace 的活动 buffer 同步到当前活动视图——让文件树「活动文件」
-/// 高亮跟随标签切换 / 关闭。无活动视图时（标签全关）保持原值不动。
+/// 把 workspace 的活动 buffer 同步到当前活动视图——让文件树「活动文件」高亮跟随标签切换 / 关闭。
+/// 无活动视图时（标签全关）保持原值不动。
 fn sync_active_buffer(context: &mut CommandContext<'_>) {
     if let Some(buffer_id) = context.views.active_view().map(|view| view.buffer()) {
         let _ = context.workspace.set_active_buffer(buffer_id);

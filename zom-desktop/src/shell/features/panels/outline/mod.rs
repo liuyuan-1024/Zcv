@@ -1,6 +1,6 @@
 //! Outline —— L3 panel 组件。
 //!
-//! 第一版骨架：渲染「占位中」灰字；LSP 接入后填充符号大纲。
+//! 当前渲染「占位中」灰字；LSP 接入后填充符号大纲。
 
 use gpui::{Context, Div, FocusHandle, IntoElement};
 use zom_command::commands::outline;

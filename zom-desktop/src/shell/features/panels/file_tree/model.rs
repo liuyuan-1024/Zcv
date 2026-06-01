@@ -318,8 +318,8 @@ impl FileTreeModel {
         let Some(tree) = self.project_tree.as_mut() else {
             return;
         };
-        // 删除前先把下一兄弟候选拍下：取集合首项的下一兄弟，且该兄弟自己不
-        // 在删除集合里（连续选删时，朴素的"下一行"也可能是待删项）。
+        // 删除前先把下一兄弟候选拍下：取集合首项的下一兄弟，且该兄弟自己不在删除集合里。
+        // 连续选删时，朴素的"下一行"也可能是待删项。
         let next_sibling = items.first().and_then(|(first_path, _)| {
             next_sibling_of(tree, first_path, |candidate| {
                 items
@@ -372,8 +372,7 @@ impl FileTreeModel {
             return;
         }
         // 普通方向键打断当前笔画：把 stroke.items 沉淀到 selection，再动焦点。
-        // 这样下一次 Shift+方向 会从新焦点重新起锚，之前的笔画作为已提交选区被
-        // 保留——非连续累加的基础。
+        // 这样下一次 Shift+方向 会从新焦点重新起锚，之前的笔画作为已提交选区被保留——非连续累加的基础。
         self.commit_stroke();
         let new_index = match self.selected.as_ref() {
             None => {
@@ -425,8 +424,7 @@ impl FileTreeModel {
         }
         let cur_focus = self.selected.clone().expect("上面保证非空");
         let cur_idx = paths.iter().position(|p| p == &cur_focus).unwrap_or(0);
-        // 锚点：复用现有 stroke 的 anchor；不存在或失效（树结构变了，锚已不在
-        // 可见行里）则以当前焦点重锚。
+        // 锚点：复用现有 stroke 的 anchor；不存在或失效（树结构变了，锚已不在可见行里）则以当前焦点重锚。
         let anchor_idx = self
             .stroke
             .as_ref()
@@ -538,17 +536,17 @@ impl FileTreeModel {
                 }
             }
         }
-        // 选区只是用来"圈出本次操作对象"，粘完使命已尽——两种模式都清空它
-        // （含未提交的当前笔画），避免源条目仍亮着选区底色误导用户。Copy 模式
-        // 保留 clipboard，让"再粘一次到别处"靠 Cmd+V 单独工作，与选区无关。
+        // 选区只是用来"圈出本次操作对象"，粘完使命已尽——两种模式都清空它（含未提交的当前笔画）。
+        // 避免源条目仍亮着选区底色误导用户。
+        // Copy 模式保留 clipboard，让"再粘一次到别处"靠 Cmd+V 单独工作，与选区无关。
         self.selection.clear();
         self.stroke = None;
         if matches!(clipboard.mode, ClipboardMode::Cut) {
             self.clipboard = None;
         }
-        // 焦点落到"被粘贴处"——target_parent 自身。这样不论新条目在折叠子树
-        // 里还是树顶，焦点永远可见、对用户来说就是"我刚才粘到这儿了"。同时
-        // 顺手展开 target_parent，按 ↓ 一步就能看到新条目；已展开则 no-op。
+        // 焦点落到"被粘贴处"——target_parent 自身。
+        // 这样不论新条目在折叠子树里还是树顶，焦点永远可见、对用户来说就是"我刚才粘到这儿了"。
+        // 同时顺手展开 target_parent，按 ↓ 一步就能看到新条目；已展开则无操作。
         if !new_paths.is_empty() {
             if let Err(error) = tree.expand(&target_parent) {
                 eprintln!("粘贴后展开目录失败：{}：{error}", target_parent.display());
@@ -739,9 +737,8 @@ fn expand_parent_chain(tree: &mut ProjectTree, base: &Path, path: &Path) {
 
 /// 确保 `buffer_id` 有对应视图，并把它切成活动视图。
 ///
-/// `ViewSet::open_view` 只在当前无活动视图时才自动激活，而 app 启动即带一个
-/// 空 buffer 视图，所以打开新文件后必须显式 `set_active`，否则编辑区仍显示旧
-/// buffer。已存在视图时复用，不重复建。
+/// `ViewSet::open_view` 只在当前无活动视图时才自动激活，所以打开新文件后显式
+/// `set_active`，确保编辑区立即显示对应缓冲区。已存在视图时复用，不重复建。
 fn focus_buffer_view(workspace: &Workspace, views: &mut ViewSet, buffer_id: BufferId) {
     let existing_view = views.views().find_map(|(id, view)| {
         if view.buffer() == buffer_id {
@@ -755,7 +752,7 @@ fn focus_buffer_view(workspace: &Workspace, views: &mut ViewSet, buffer_id: Buff
         None => {
             let version = workspace
                 .buffer(buffer_id)
-                .expect("刚打开的 buffer 必然存在")
+                .expect("刚打开的缓冲区必然存在")
                 .buffer()
                 .version();
             views.open_view(buffer_id, version)
@@ -883,7 +880,7 @@ fn rebase_buffers_under(workspace: &mut Workspace, old_prefix: &Path, new_prefix
         .collect();
     for (id, new_path) in updates {
         if let Err(error) = workspace.rebind_buffer_path(id, new_path.clone()) {
-            eprintln!("rebase buffer 路径失败：{}：{error}", new_path.display());
+            eprintln!("重绑定缓冲区路径失败：{}：{error}", new_path.display());
         }
     }
 }
@@ -959,7 +956,7 @@ mod tests {
     fn open_view_for(workspace: &Workspace, views: &mut ViewSet, buffer_id: BufferId) -> ViewId {
         let version = workspace
             .buffer(buffer_id)
-            .expect("buffer should exist")
+            .expect("缓冲区应存在")
             .buffer()
             .version();
         views.open_view(buffer_id, version)
@@ -1083,15 +1080,15 @@ mod tests {
         assert!(state.selection.contains(&root.join("b.txt")));
         assert!(state.selection.contains(&root.join("c.txt")));
         assert_eq!(state.selection.len(), 4);
-        // 起点跳跃留下的"中间区"在这棵小树里恰好没空隙；用更大树测才能完美演示
-        // 非连续，这里至少验证 jump 后累加并未"补齐中间所有路径"——root 与 a 是因为
-        // 之前累加过、b/c 是这次累加，不存在"多余的中间填充"逻辑。
+        // 起点跳跃留下的"中间区"在这棵小树里恰好没空隙，用更大树测才能完美演示非连续。
+        // 这里至少验证 jump 后累加并未"补齐中间所有路径"——root 与 a 是因为之前累加过、b/c 是这次累加。
+        // 不存在"多余的中间填充"逻辑。
     }
 
     #[test]
     fn shift_arrow_reverse_should_shrink_stroke() {
-        // 笔画过头再回来：Shift+↓ ×3 → 笔画覆盖 {root, a, b, c}；接着 Shift+↑
-        // 一次，笔画应缩回 {root, a, b}，焦点 b。
+        // 笔画过头再回来：Shift+↓ ×3 → 笔画覆盖 {root, a, b, c}。
+        // 接着 Shift+↑ 一次，笔画应缩回 {root, a, b}，焦点 b。
         let (mut model, root) = model_with_three_files("stroke-shrink");
         model.ensure_selection_initialized();
         // visible_rows: root, a.txt, b.txt, c.txt
@@ -1114,8 +1111,8 @@ mod tests {
 
     #[test]
     fn plain_arrow_should_commit_stroke_into_selection() {
-        // Shift+↓ ×2 后按普通 ↓：当前笔画沉淀到已提交选区；再次 Shift+方向应从
-        // 新焦点重新起锚，不影响已提交部分。
+        // Shift+↓ ×2 后按普通 ↓：当前笔画沉淀到已提交选区。
+        // 再次 Shift+方向应从新焦点重新起锚，不影响已提交部分。
         let (mut model, root) = model_with_three_files("stroke-commit");
         model.ensure_selection_initialized();
         model.extend_selection(1); // 笔画 = {root, a}
@@ -1279,7 +1276,7 @@ mod tests {
         // 副本落在 sub/a.txt，源 a.txt 保留。
         assert!(root.join("sub/a.txt").is_file());
         assert!(root.join("a.txt").is_file());
-        // Copy 模式：剪贴板保留（支持连续 Cmd+V 粘到别处），但选区清空——
+        // Copy 模式：剪贴板保留（支持连续 Cmd+V 粘到别处），但选区清空。
         // 选区只是"圈出本次操作对象"的临时标记，粘完即清。
         assert!(model.clipboard.is_some());
         assert!(model.selection.is_empty());
@@ -1411,7 +1408,7 @@ mod tests {
         assert_eq!(paths, expected);
         // first_kind/has_directory 由 state() 计算；含 sub（目录）。
         let state = model.state(&Workspace::new());
-        let pending = state.pending_delete.expect("state pending");
+        let pending = state.pending_delete.expect("状态应有待删除项");
         assert_eq!(pending.count, 2);
         assert!(pending.has_directory);
     }
@@ -1426,7 +1423,7 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].0, root.join("a.txt"));
         let state = model.state(&Workspace::new());
-        let pending = state.pending_delete.expect("state pending");
+        let pending = state.pending_delete.expect("状态应有待删除项");
         assert_eq!(pending.count, 1);
         assert!(!pending.has_directory);
     }

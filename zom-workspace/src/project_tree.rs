@@ -5,7 +5,7 @@
 //!
 //! 这是一个面向只读浏览的快照层：`visible_rows` 给 UI 直接消费；`expand`
 //! / `collapse` / `toggle` 由命令侧调用。本层不负责文件内容、git 状态、
-//! watch 失效——这些后续再叠加。
+//! watch 失效——这些由上层服务叠加，本模块只维护目录树快照。
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -162,7 +162,7 @@ impl ProjectTree {
     /// 拒绝把 `src` 复制到自身或自己的子目录（会形成无限递归）；找不到 `src`
     /// 或 `dst_parent` 不是目录时返回相应 IO 错误。
     ///
-    /// 跨进程粘贴的"来自外部 Finder"也走这条路径——`src` 不必在项目根之内。
+    /// 跨进程粘贴的「来自外部 Finder」也走这条路径——`src` 不必在项目根之内。
     pub fn copy_entry(&mut self, src: &Path, dst_parent: &Path) -> io::Result<PathBuf> {
         let final_dst = prepare_paste_destination(src, dst_parent)?;
         copy_recursive(src, &final_dst)?;
@@ -173,7 +173,7 @@ impl ProjectTree {
     /// 把 `src` 移动到 `dst_parent` 下。命名规则与 [`copy_entry`](Self::copy_entry)
     /// 一致：默认沿用 `src` 文件名、冲突自动改名、永不覆盖。返回新位置。
     ///
-    /// 同源同父目录的"移动"是无操作（早返），避免触发自动改名得到 `foo (1).txt`
+    /// 同源同父目录的「移动」是无操作（早返），避免触发自动改名得到 `foo (1).txt`
     /// 这种用户没要的结果。
     ///
     /// 实现优先用 `fs::rename`（同盘符瞬时），失败时回退到 `copy_recursive +
@@ -181,7 +181,7 @@ impl ProjectTree {
     /// remove 自身也失败，原 rename 错误会被抛出，让调用方至少知道操作未完成。
     pub fn move_entry(&mut self, src: &Path, dst_parent: &Path) -> io::Result<PathBuf> {
         if src.parent() == Some(dst_parent) {
-            // 同父目录 + 同名：no-op；不调用 pick_unique_name，避免误改名。
+            // 同父目录 + 同名：无操作；不调用 pick_unique_name，避免误改名。
             return Ok(src.to_path_buf());
         }
         let final_dst = prepare_paste_destination(src, dst_parent)?;
@@ -251,8 +251,8 @@ impl ProjectTree {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let file_type = entry.file_type()?;
-            // symlink 暂按其目标类型对待：is_dir / is_file 会跟随。后续若要
-            // 单独标识 symlink，再扩 EntryKind。
+            // symlink 暂按其目标类型对待：is_dir / is_file 会跟随。
+            // 后续若要单独标识 symlink，再扩 EntryKind。
             let kind = if file_type.is_dir() {
                 EntryKind::Directory
             } else {
@@ -339,7 +339,7 @@ fn ensure_directory_path_available(root: &Path, target: &Path) -> io::Result<()>
     Ok(())
 }
 
-/// 给"粘贴到 `dst_parent`"挑一个最终路径：验完基本边界后，按 `src` 的
+/// 给「粘贴到 `dst_parent`」挑一个最终路径：验完基本边界后，按 `src` 的
 /// 文件名取一个未占用的名字。**不**做任何文件 IO 写入。
 fn prepare_paste_destination(src: &Path, dst_parent: &Path) -> io::Result<PathBuf> {
     if !src.exists() {
@@ -360,8 +360,8 @@ fn prepare_paste_destination(src: &Path, dst_parent: &Path) -> io::Result<PathBu
             format!("目标不是目录：{}", dst_parent.display()),
         ));
     }
-    // 把目录粘贴到自身 / 自己内部会形成"自吞"。Path::starts_with 是按组件
-    // 匹配的，所以 /a/b 与 /a/bc 不会误判。
+    // 把目录粘贴到自身 / 自己内部会形成"自吞"。
+    // Path::starts_with 是按组件匹配的，所以 /a/b 与 /a/bc 不会误判。
     if dst_parent == src || dst_parent.starts_with(src) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -388,7 +388,7 @@ fn pick_unique_name(parent: &Path, desired: &str) -> String {
         return desired.to_string();
     }
     let path = Path::new(desired);
-    // file_stem / extension 是按"最后一个点"切的：foo.tar.gz → stem=foo.tar、
+    // file_stem / extension 是按「最后一个点」切的：foo.tar.gz → stem=foo.tar、
     // ext=gz。结果是 "foo.tar (1).gz"——和 macOS Finder 行为一致。
     let stem = path
         .file_stem()
@@ -435,7 +435,7 @@ fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
 
 /// 递归删除：目录走 `remove_dir_all`，文件 / 符号链接走 `remove_file`。
 /// 区别于 [`delete_entry`](ProjectTree::delete_entry) —— 这里是真删，不走回收
-/// 站，仅用于 `move_entry` 的 fallback 路径（先 copy 出去再删源）。
+/// 站，仅用于 `move_entry` 的跨文件系统路径（先 copy 出去再删源）。
 fn remove_recursive(path: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_dir() {

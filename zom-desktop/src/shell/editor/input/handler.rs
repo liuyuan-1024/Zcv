@@ -86,8 +86,8 @@ impl EntityInputHandler for EditorInput {
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let focus = self.app.borrow().focus().current();
         {
-            // IME 路径也可能触发命令派发（commit → editor.ime_commit），需为
-            // 期间的剪贴板读写借出 cx。
+            // IME 路径也可能触发命令派发（commit → editor.ime_commit）。
+            // 需为期间的剪贴板读写借出 cx。
             let _clip = GpuiClipboardScope::enter(&*cx);
             if let Err(error) = self.app.borrow_mut().ime_unmark_for(focus) {
                 eprintln!("IME unmark 失败：{error}");
@@ -150,9 +150,8 @@ impl EntityInputHandler for EditorInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        // 返回 primary caret 的绝对屏幕 rect —— 系统 IME 据此把候选窗放到 caret
-        // 正下方。无 caret 时返回 None，让系统走默认（落在窗口左上角，明显
-        // 比"贴在编辑区左上角"好辨认是哪里有问题）。
+        // 返回 primary caret 的绝对屏幕 rect —— 系统 IME 据此把候选窗放到 caret 正下方。
+        // 无 caret 时返回 None，让系统走默认（落在窗口左上角，明显比"贴在编辑区左上角"好辨认是哪里有问题）。
         let layout = self.caret_layout?;
         let origin = point(
             element_bounds.origin.x + layout.relative.x,

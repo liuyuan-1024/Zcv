@@ -44,13 +44,6 @@ pub enum ApplyOutcome {
     /// 编辑既不改变逻辑行数也不改变 fold 结构；`Projection` 仅推进 `version`，
     /// `rows` 与 `logical_to_projection` 全程未改写。
     Compatible,
-    /// 局部修补：仅 `[logical_lines]` 范围内的投影行被原地替换，
-    /// 调用方可据此 invalidate 对应的 paint cache。
-    /// **Tier 1 实现暂不会返回该变体**；保留入口以便 Tier 2 接入。
-    LocalPatched {
-        logical_lines: LineRange,
-        projected_lines: ProjectedLineRange,
-    },
     /// 全量重建：`Projection` 已就地被新版本替换，调用方应假设所有投影行都失效。
     Rebuilt,
 }
@@ -133,13 +126,13 @@ impl Projection {
     /// - `new_snapshot.version()` 与 `new_folds.version()` 必须等于 `event.new_version()`；
     /// - 三者任一违反契约即返回 `ProjectionError::ApplyDeltaStale`，本方法不会留下半坏态。
     ///
-    /// Tier 1 分类器：
+    /// 分类策略：
     /// - **Compatible**：编辑前后 `snapshot.line_count()` 与 `hidden_spans` 都不变，
     ///   只推进 `version`，其余字段零改写。
     /// - **Rebuilt**：其它一切情况都直接走 `Projection::build` 原地替换。
     ///
     /// **关键正确性性质**：分类降级到 `Rebuilt` 只是性能损失，不会产生错误投影。
-    /// 故分类器允许任意保守，但绝不能把"实际不兼容"误判为 `Compatible`。
+    /// 故分类器允许任意保守，但绝不能把「实际不兼容」误判为 `Compatible`。
     pub fn apply_delta(
         &mut self,
         new_snapshot: &Snapshot,
@@ -505,9 +498,9 @@ impl HiddenSpan {
 }
 
 fn collect_merged_hidden_spans(folds: &FoldSet) -> Vec<HiddenSpan> {
-    // `FoldSet::normalize` 已让 `ranges` 按 `range.start()` 字节升序；字节升序 → 缓存的
-    // `line_span.0` 非降序。直接读 FoldRange 上的 `line_span` 缓存即可，
-    // 省掉对每条 fold 的 byte→line O(log N) 转换；同时边收集边合并。
+    // `FoldSet::normalize` 已让 `ranges` 按 `range.start()` 字节升序；字节升序 → 缓存的 `line_span.0` 非降序。
+    // 直接读 FoldRange 上的 `line_span` 缓存即可，省掉对每条 fold 的 byte→line O(log N) 转换。
+    // 同时边收集边合并。
     let mut merged: Vec<HiddenSpan> = Vec::with_capacity(folds.len());
     for fold in folds.iter() {
         let (start_line, end_line) = fold.line_span();

@@ -41,11 +41,12 @@ impl CompositionSelection {
 /// 当前组合输入状态。
 ///
 /// `range` 是当前 preedit 文本在 Buffer 中的绝对范围；`selection` 是当前组合态
-/// 选区在 Buffer 中的绝对位置。`original_*` 字段用于 cancel / commit 时恢复
-/// 或生成合理的单步 Undo 历史。
+/// 选区在 Buffer 中的绝对位置。`original_*` 字段只记录组合输入触碰的局部文本，
+/// 用于 cancel / commit 时恢复或生成合理的单步 Undo 历史。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompositionState {
-    pub(crate) original_text: String,
+    pub(crate) original_range: TextRange,
+    pub(crate) original_replaced_text: String,
     pub(crate) original_selection: SelectionSet,
     pub(crate) original_was_dirty: bool,
     pub(crate) range: TextRange,
@@ -55,18 +56,19 @@ pub struct CompositionState {
 
 impl CompositionState {
     pub(crate) fn new(
-        original_text: String,
+        original_range: TextRange,
+        original_replaced_text: String,
         original_selection: SelectionSet,
         original_was_dirty: bool,
-        range: TextRange,
     ) -> Self {
         Self {
-            original_text,
+            original_range,
+            original_replaced_text,
             original_selection,
             original_was_dirty,
-            range,
+            range: original_range,
             preedit_text: String::new(),
-            selection: Selection::caret(range.start()),
+            selection: Selection::caret(original_range.start()),
         }
     }
 

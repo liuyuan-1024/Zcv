@@ -1,7 +1,7 @@
 //! PanelHost —— workbench 的 panel 框架入口。
 //!
 //! 这里负责按 panel id 分派到具体 feature，并提供 panel 通用的承载小件
-//! （焦点宿主、骨架占位）。具体 feature 的状态、绘制与交互仍留在各自目录里。
+//! （焦点宿主、占位面板）。具体 feature 的状态、绘制与交互仍留在各自目录里。
 
 use std::rc::Rc;
 
@@ -88,7 +88,7 @@ pub(crate) fn render_focus_host(
         .child(body)
 }
 
-/// 第一版骨架阶段的 panel 占位体。真实 panel 接入自己的 UI 后不再使用它。
+/// 当前尚未实现完整 UI 的 panel 占位体。真实 panel 接入自己的 UI 后不再使用它。
 pub(crate) fn placeholder(hint: impl Into<SharedString>) -> Div {
     div().flex().flex_col().size_full().child(
         div()

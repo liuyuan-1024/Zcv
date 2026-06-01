@@ -6,13 +6,13 @@
 
 键盘、命令面板、AI、菜单都把意图收敛成 `(CommandId, CommandArgs)`，经唯一派发路径进入执行器。`zom-command` 是这条路径的基础设施。
 
-它是命令的**汇聚点（sink）**，不是被各层 import 的服务：输入源产出意图，由组合根喂给执行器。
+它是命令的汇聚点（sink），不是被各层 import 的服务：输入源产出意图，由组合根喂给执行器。
 
-它依赖「它要编辑的东西」（`workspace` / `view` / `engine`），但**不依赖扩展域**（`ai`，以及将来的 lsp / git）。内建编辑命令是本 crate 存在的理由，co-located 在此、可无头测试；扩展域的命令由 `zom-desktop` 组合根注册 —— handler 闭包捕获扩展服务。
+它依赖「它要编辑的东西」（`workspace` / `view` / `engine`），但不依赖扩展域（`ai`，以及将来的 lsp / git）。内建编辑命令是本 crate 存在的理由，放在这里并保持可无头测试；扩展域的命令由 `zom-desktop` 组合根注册，handler 闭包捕获扩展服务。
 
 ## 核心能力
 
-- **类型擦除的开放注册表**：`CommandRegistry` 存 `CommandId -> (元数据, handler)`，支持 handler 外部注册。不用闭合 enum，让内建 / AI / 插件命令同形。
+- **类型擦除的开放注册表**：`CommandRegistry` 存 `CommandId -> (元数据, handler)`，支持 handler 外部注册。不用闭合枚举，让内建 / AI / 插件命令同形。
 - **具体的 `CommandContext`**：持有 `&mut Workspace` / `&mut ViewSet` / `&mut CommandQueue` / `&mut EffectQueue`，暴露整个 workspace 与 view-set。扩展域不在 context 里；需要宿主接力的动作通过 `HostEffect` 发出。
 - **命令队列组合**：`CommandQueue` 让 handler 入队子命令，执行器排空，不重入。宏 = 录队列，AI agent = 灌队列。
 - **执行器不管历史**：`editor.undo` 是一条命令，其 handler 调 `buffer.undo()`；历史由 `zom-engine` 的事务系统记录。
@@ -29,7 +29,7 @@ zom-command → zom-view
 
 **不依赖 `zom-ai`** —— 与 `zom-ai` 无依赖边，两者在 `zom-desktop` 组合根相遇。
 
-## 结构概览
+## 目录概览
 
 ```text
 src/lib.rs    CommandId / CommandArgs / Command / CommandRegistry / CommandHandler
@@ -49,11 +49,11 @@ tests/        command 契约测试
 
 ## 相关文档
 
-- [`docs/命令与快捷键系统设计.md`](docs/命令与快捷键系统设计.md)：**完整设计文档** —— 模块边界、数据模型、catalog 模式、HostEffect 解耦、键位约定、加新命令的步骤、反例清单。先看这一份。
-- [`docs/命令清单.md`](docs/命令清单.md)：当前已注册命令、HostEffect 变体、backlog。随命令增删滚动更新。
+- [`docs/命令与快捷键.md`](docs/命令与快捷键.md)：完整设计文档 —— 模块边界、数据模型、catalog 模式、HostEffect 解耦、键位约定、加新命令的步骤、反例清单。先看这一份。
+- [`docs/命令清单.md`](docs/命令清单.md)：当前已注册命令、HostEffect 变体、待办清单。随命令增删滚动更新。
 - `../agents/global.md`、`../agents/project.md`：workspace 全局规则与项目规则。
-- `../TODO.md`：宿主层开发规划，本 crate 对应能力域 3 / 5 / 8（编辑事务、movement 命令、搜索替换命令），阶段 P1。
+- `../TODO.md`：宿主层开发规划。
 
-## 状态
+## 文档维护
 
-P1 已完成：`CommandArgs` 通过 `TryFrom<CommandArgs>` 解析到具体命令参数，`CommandExecutor::run` 排空队列，内建编辑命令已接入插入、删除、替换选区、全选、undo/redo 与基础 selection movement，`Keymap` 已使用前缀 trie 解析，并补充了 command 契约测试。
+本 README 只维护稳定边界、核心能力和依赖关系；具体命令清单与阶段计划分别放在 `docs/命令清单.md` 和 `../TODO.md`。

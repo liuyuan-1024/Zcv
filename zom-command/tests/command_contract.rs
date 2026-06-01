@@ -139,11 +139,14 @@ fn run_and_collect_effects(
 }
 
 fn text(workspace: &Workspace, buffer_id: BufferId) -> String {
-    workspace
-        .buffer(buffer_id)
+    buffer_text(workspace.buffer(buffer_id).unwrap().buffer())
+}
+
+fn buffer_text(buffer: &zom_engine::Buffer) -> String {
+    buffer
+        .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
         .unwrap()
-        .buffer()
-        .text()
+        .into_text()
         .into_owned()
 }
 
@@ -970,8 +973,8 @@ fn paste_with_empty_clipboard_should_be_noop() {
 
 /// 用单 buffer + 单 selection 模拟"聚焦的内嵌输入框"，跑一条命令并返回剪贴板状态。
 ///
-/// 关键点：`focused_field = Some(EditTarget { ... })` 时，handler 走 `focused_field`
-/// 分支，**完全不应触碰** `workspace` / `views` 里的主编辑区。
+/// 关键点：当 `focused_field = Some(EditTarget { ... })` 时，handler 走 `focused_field` 分支，
+/// **完全不应触碰** `workspace` / `views` 里的主编辑区。
 fn run_on_focused_field(
     registry: &CommandRegistry,
     workspace: &mut Workspace,
@@ -1016,8 +1019,8 @@ fn clipboard_commands_should_target_focused_field_not_main_editor() {
     let mut keymap = Keymap::new();
     editor::install(&mut registry, &mut keymap);
 
-    // 内嵌输入框：独立 Buffer + 独立 selection，模拟 picker / search query / file_tree
-    // pending 等任何 `TextTargetOwner` 暴露给 `focused_field` 的形态。
+    // 内嵌输入框：独立 Buffer + 独立 selection。
+    // 模拟 picker / search query / file_tree pending 等任何 `TextTargetOwner` 暴露给 `focused_field` 的形态。
     let mut embed_buffer = Buffer::scratch("embed".to_string(), BufferConfig::default()).unwrap();
     let mut embed_selection = SelectionSet::new(vec![Selection::new(byte(0), byte("embed".len()))]);
 
@@ -1054,7 +1057,7 @@ fn clipboard_commands_should_target_focused_field_not_main_editor() {
         vec![(editor::PASTE, CommandArgs::new())],
     )
     .unwrap();
-    assert_eq!(embed_buffer.text().into_owned(), "XYZembed");
+    assert_eq!(buffer_text(&embed_buffer), "XYZembed");
     assert_eq!(
         text(&workspace, main_buffer_id),
         main_before,
@@ -1075,7 +1078,7 @@ fn clipboard_commands_should_target_focused_field_not_main_editor() {
     )
     .unwrap();
     assert_eq!(clipboard.contents(), Some("XYZ"));
-    assert_eq!(embed_buffer.text().into_owned(), "embed");
+    assert_eq!(buffer_text(&embed_buffer), "embed");
     assert_eq!(
         text(&workspace, main_buffer_id),
         main_before,
@@ -1327,8 +1330,8 @@ fn keymap_should_reject_overlapping_but_allow_disjoint_text_edit_contexts() {
         context: KeyBindingContext::text_edit(),
     });
 
-    // text_edit 与 text_edit_multiline 的 composition 都是 Inactive（后者只多了
-    // requires_newline 过滤），同一序列会被同一运行时上下文同时命中——重叠即冲突。
+    // text_edit 与 text_edit_multiline 的 composition 都是 Inactive（后者只多了 requires_newline 过滤），
+    // 同一序列会被同一运行时上下文同时命中——重叠即冲突。
     assert!(matches!(
         keymap.try_bind(KeyBinding {
             sequence: vec![key("enter")],

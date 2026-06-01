@@ -65,8 +65,7 @@ pub(crate) struct FileTreePanel<'a> {
 }
 
 pub(crate) fn render(ctx: PanelContext<'_>) -> Div {
-    // 无论 has_project / 是否有行，都走 view::render —— 它负责挂 track_focus
-    // 与 on_key_down，避免"焦点宿主在某些状态下从树里消失"的坑。占位文本
-    // 由 view 自己挑。
+    // 无论 has_project / 是否有行，都走 view::render —— 它负责挂 track_focus 与 on_key_down，
+    // 避免"焦点宿主在某些状态下从树里消失"的坑。占位文本由 view 自己挑。
     view::render(ctx)
 }

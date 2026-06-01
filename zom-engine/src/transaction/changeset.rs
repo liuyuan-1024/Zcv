@@ -27,7 +27,11 @@ impl ChangeSet {
         }
     }
 
-    pub(crate) fn edits(&self) -> &[Edit] {
+    /// 已排序、不重叠的事务编辑切片，使用**旧文本** ByteOffset 坐标。
+    ///
+    /// 提供给 syntax / tracking 等 producer 自行翻译为外部协议所需的形态（例如 tree-sitter `InputEdit` 需要旧端 + 新端 Point）。
+    /// 每条 `Edit` 暴露的 `range()` / `replacement()` 已是只读访问，外部无法越过 `EditList::new` 的排序与不重叠校验。
+    pub fn edits(&self) -> &[Edit] {
         &self.edits
     }
 

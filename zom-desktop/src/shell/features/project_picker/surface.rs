@@ -98,8 +98,13 @@ pub(crate) fn request(
 fn render(runtime: ProjectPickerRuntime, actions: ProjectPickerActions) -> Div {
     let projects = (actions.projects)();
     let state = (actions.state)();
-    let query_text = state.query.text();
-    let visible = super::filtered_projects(&projects, &query_text);
+    let query_text = state
+        .query
+        .lines
+        .first()
+        .map(|line| line.text.as_str())
+        .unwrap_or("");
+    let visible = super::filtered_projects(&projects, query_text);
     let key_actions = actions.clone();
 
     let project_list = recent_projects::render(

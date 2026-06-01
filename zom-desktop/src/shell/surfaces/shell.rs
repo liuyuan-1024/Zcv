@@ -74,8 +74,8 @@ fn anchor_position(
     }
 
     match &request.anchor {
-        // anchor provider 首帧尚未 prepaint 或临时缺席时，退回对应 bar 区域
-        // 的保守位置；下一帧 registry 更新后会自动重绘到真实入口。
+        // anchor provider 首帧尚未 prepaint 或本帧缺席时，退回对应 bar 区域的保守位置。
+        // 下一帧 registry 更新后会自动重绘到真实入口。
         SurfaceAnchor::Invoker(_) => request.placement.fallback_position,
     }
 }

@@ -1,0 +1,13 @@
+[package]
+name = "zom-bench"
+version = "0.1.0"
+edition.workspace = true
+description = "64 MiB 流畅性目标的基线测量套件：载入、解析、编辑、搜索、视口五场景"
+
+[[bin]]
+name = "zom-bench"
+path = "src/main.rs"
+
+[dependencies]
+zom-engine.workspace = true
+zom-workspace.workspace = true

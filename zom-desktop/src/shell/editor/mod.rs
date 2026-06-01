@@ -9,6 +9,7 @@
 //! 通过 [`zom_command::CommandContext::focused_field`] 路由到聚焦目标，从而
 //! 共享 `zom-command` 的全部编辑能力。
 
+pub(crate) mod highlight;
 mod input;
 mod kernel;
 mod snapshot;

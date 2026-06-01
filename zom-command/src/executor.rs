@@ -40,8 +40,8 @@ pub struct EditTarget<'a> {
 }
 
 impl<'a> CommandContext<'a> {
-    /// 解析当前编辑命令的作用目标：有聚焦输入框则作用于它，否则主编辑区
-    /// 的活动视图。
+    /// 解析当前编辑命令的作用目标：
+    /// 有聚焦输入框则作用于它，否则作用于主编辑区的活动视图。
     pub fn edit_target(&mut self) -> Result<EditTarget<'_>, CommandError> {
         if let Some(field) = &mut self.focused_field {
             return Ok(EditTarget {
@@ -123,8 +123,10 @@ impl CommandExecutor {
     }
 }
 
-/// 取活动视图指向的 buffer id —— `editor.save` 等"作用于活动 buffer"的
-/// 命令共用。需要 buffer + selection 一起编辑的请走 [`CommandContext::edit_target`]。
+/// 取活动视图指向的 buffer id。
+///
+/// `editor.save` 等"作用于活动 buffer"的命令共用。
+/// 需要 buffer + selection 一起编辑的请走 [`CommandContext::edit_target`]。
 pub(crate) fn active_view_buffer_id(
     ctx: &CommandContext<'_>,
 ) -> Result<zom_workspace::BufferId, CommandError> {

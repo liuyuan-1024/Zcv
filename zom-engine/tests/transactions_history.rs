@@ -12,6 +12,14 @@ fn buffer(text: &str) -> Buffer {
     Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
 }
 
+fn buffer_text(buffer: &Buffer) -> String {
+    buffer
+        .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+        .unwrap()
+        .into_text()
+        .into_owned()
+}
+
 fn tx(buffer: &Buffer, edits: Vec<Edit>) -> Transaction {
     Transaction::from_edits(buffer.version(), edits).unwrap()
 }
@@ -31,7 +39,7 @@ fn apply_transaction_should_emit_delta_changeset_position_map_and_pending_event(
     let (delta, changeset) = buffer.apply_transaction(transaction).unwrap();
     let event = buffer.last_delta_event().unwrap();
 
-    assert_eq!(buffer.text().as_ref(), "abc! XYZ");
+    assert_eq!(buffer_text(&buffer), "abc! XYZ");
     assert_eq!(delta.old_version(), base);
     assert_eq!(delta.new_version(), buffer.version());
     assert_eq!(delta.edits().as_slice().len(), 2);
@@ -55,7 +63,7 @@ fn stale_base_version_should_fail_without_mutating_text_version_history_or_event
     let mut buffer = buffer("abc");
     buffer.insert(b(3), "!").unwrap();
     buffer.take_pending_events();
-    let text = buffer.text().to_string();
+    let text = buffer_text(&buffer);
     let version = buffer.version();
     let history = buffer.history_status();
     let stale = Transaction::from_edits(
@@ -70,7 +78,7 @@ fn stale_base_version_should_fail_without_mutating_text_version_history_or_event
         err,
         EngineError::Transaction(TransactionError::VersionMismatch { .. })
     ));
-    assert_eq!(buffer.text().as_ref(), text);
+    assert_eq!(buffer_text(&buffer), text);
     assert_eq!(buffer.version(), version);
     assert_eq!(buffer.history_status().undo_depth, history.undo_depth);
     assert_eq!(buffer.pending_delta_event_count(), 0);
@@ -79,7 +87,7 @@ fn stale_base_version_should_fail_without_mutating_text_version_history_or_event
 #[test]
 fn failed_multi_edit_boundary_should_keep_transaction_atomic() {
     let mut buffer = buffer("a\r\nb");
-    let text = buffer.text().to_string();
+    let text = buffer_text(&buffer);
     let version = buffer.version();
     let transaction = tx(
         &buffer,
@@ -95,7 +103,7 @@ fn failed_multi_edit_boundary_should_keep_transaction_atomic() {
         err,
         EngineError::Edit(EditError::InvalidBoundary { offset }) if offset == b(2)
     ));
-    assert_eq!(buffer.text().as_ref(), text);
+    assert_eq!(buffer_text(&buffer), text);
     assert_eq!(buffer.version(), version);
 }
 
@@ -112,7 +120,7 @@ fn transaction_record_should_replay_only_on_matching_base_version() {
 
     let replay = target.replay_transaction_record(&record).unwrap();
 
-    assert_eq!(target.text().as_ref(), "abc!");
+    assert_eq!(buffer_text(&target), "abc!");
     assert_eq!(replay.old_version(), BufferVersion::INITIAL);
     assert_eq!(replay.new_version(), target.version());
     assert_eq!(replay.edits().as_slice(), record.edits().as_slice());
@@ -134,16 +142,16 @@ fn undo_redo_should_restore_text_selection_and_dirty_state() {
     buffer.mark_saved();
     buffer.insert(b(4), "!").unwrap();
 
-    assert_eq!(buffer.text().as_ref(), "aXbc!");
+    assert_eq!(buffer_text(&buffer), "aXbc!");
     assert!(buffer.is_dirty());
     assert!(buffer.can_undo());
 
     buffer.undo().unwrap().unwrap();
-    assert_eq!(buffer.text().as_ref(), "aXbc");
+    assert_eq!(buffer_text(&buffer), "aXbc");
     assert!(!buffer.is_dirty());
 
     buffer.redo().unwrap().unwrap();
-    assert_eq!(buffer.text().as_ref(), "aXbc!");
+    assert_eq!(buffer_text(&buffer), "aXbc!");
     assert!(buffer.is_dirty());
 }
 
@@ -160,7 +168,7 @@ fn branch_history_should_expose_redo_branches_and_replay_selected_branch() {
     assert_eq!(branches.len(), 2);
 
     buffer.redo_to_branch(branches[0]).unwrap();
-    assert!(matches!(buffer.text().as_ref(), "ab" | "ac"));
+    assert!(matches!(buffer_text(&buffer).as_str(), "ab" | "ac"));
 }
 
 #[test]
@@ -185,7 +193,7 @@ fn large_transaction_reject_policy_should_preserve_history_and_state() {
         err,
         EngineError::Edit(EditError::PayloadTooLarge { size, limit }) if size > limit
     ));
-    assert_eq!(buffer.text().as_ref(), "abc");
+    assert_eq!(buffer_text(&buffer), "abc");
     assert_eq!(buffer.version(), version);
     assert_eq!(buffer.history_status().undo_depth, 0);
 }

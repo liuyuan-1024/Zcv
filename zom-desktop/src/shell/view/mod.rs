@@ -61,8 +61,8 @@ pub(crate) struct ShellView {
 impl ShellView {
     pub(super) fn new(app: App, cx: &mut Context<Self>) -> Self {
         let app = Rc::new(RefCell::new(app));
-        // 让命令派发期间的 copy / cut / paste 走系统剪贴板；headless 单测路径
-        // 不经过 ShellView::new，所以仍是 MockClipboard。
+        // 让命令派发期间的 copy / cut / paste 走系统剪贴板。
+        // headless 单测路径不经过 ShellView::new，所以仍是 MockClipboard。
         app.borrow_mut().set_clipboard(Box::new(GpuiClipboard));
         let workbench = Rc::new(RefCell::new(WorkbenchController::new()));
         cx.update_default_global::<SurfaceAnchorRegistry, _>(|_, _| ());
@@ -73,9 +73,9 @@ impl ShellView {
         let project_picker = ProjectPickerRuntime::new(cx);
         let language_servers = language_servers::LanguageServersRuntime::new(cx);
 
-        // 主编辑区内核：多行 + 行号 + 滚动 + 视口写回。视口钩子在 prepaint
-        // 末尾把测得的 visible_line_count 推回 view 的 ViewportState；top_line
-        // 由 view 自己在 settle 阶段落定，element 不写它。
+        // 主编辑区内核：多行 + 行号 + 滚动 + 视口写回。
+        // 视口钩子在 prepaint 末尾把测得的 visible_line_count 推回 view 的 ViewportState。
+        // top_line 由 view 自己在 settle 阶段落定，element 不写它。
         let main_viewport_sync: EditorViewportSyncHook = {
             let app = Rc::clone(&app);
             Rc::new(move |visible_line_count, _cx| {
@@ -237,8 +237,8 @@ impl ShellView {
         let focus_projection = self.focus_projection.clone();
         Rc::new(move |chord, window, cx| {
             let outcome = {
-                // scope 内 GpuiClipboard 才能拿到 cx 访问系统剪贴板；scope drop
-                // 后 thread-local 立即恢复，避免悬空。
+                // scope 内 GpuiClipboard 才能拿到 cx 访问系统剪贴板。
+                // scope drop 后 thread-local 立即恢复，避免悬空。
                 let _clip = GpuiClipboardScope::enter(cx);
                 let current = focus_projection.current_focus(window);
                 let mut app = app.borrow_mut();
@@ -291,16 +291,26 @@ impl ShellView {
 
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // GPUI → App 单向反向同步：点击 / Tab / 系统焦点变化只动 FocusHandle，
-        // 不经过 App。每帧渲染开头把 projection 当前焦点拉回 FocusStore，本帧的
-        // 状态栏、命令面板可见性、IME 路由读到的就是真值，不会落后一帧。
+        // GPUI → App 单向反向同步：点击 / Tab / 系统焦点变化只动 FocusHandle，不经过 App。
+        // 每帧渲染开头把 projection 当前焦点拉回 FocusStore，
+        // 本帧的状态栏、命令面板可见性、IME 路由读到的就是真值，不会落后一帧。
         // key_request 在派发命令前另有一次同步——两次都幂等，保留作为兜底。
         let projected = self.focus_projection.current_focus(window);
-        self.app.borrow_mut().request_focus_from_shell(projected);
+        {
+            let mut app = self.app.borrow_mut();
+            app.request_focus_from_shell(projected);
+            // 每帧 prepaint 起手 drain 后台 SyntaxWorker 已就绪的高亮产物到 MetadataLayers。
+            // 异步 producer 不会在主线程上跑 parse，只能靠这一拍把已就绪 spans 落地，否则即便 worker 算完也上不了屏。
+            app.pump_pending_highlights();
+            // 紧接着把当前活动 view 的 viewport ± padding 推给 worker，
+            // 让下一拍 on_edit 走 viewport-scoped query + ReplaceRange，仅产可见区段 spans。
+            // worker 内部去重，无变化时不重 query。
+            app.pump_active_viewport_hint();
+        }
 
         let state = self.workbench_state();
 
-        // 光标一移动就重置闪烁为实心，让用户立刻定位到光标；定时链与全局可见位都由 editor 子系统驱动
+        // 光标一移动就重置闪烁为实心，让用户立刻定位到光标；定时链与全局可见位都由 editor 子系统驱动。
         // 现在由全局唯一的 AppFocus 作为真相源，精确向路由查询当前焦点对应的快照。
         let active_cursor = {
             let app = self.app.borrow();
@@ -311,8 +321,8 @@ impl Render for ShellView {
         drive_caret_blink(&mut self.caret, active_cursor, cx, |view| &mut view.caret);
         let window_controls = self.window_controls_handlers();
         let key_request = self.key_request();
-        // file_tree_panel 借用此 clone；下面把 `key_request` 本体 move 给
-        // `workbench::render` —— 借用与移动落到不同的 Rc 副本上，互不冲突。
+        // file_tree_panel 借用此 clone；下面把 `key_request` 本体 move 给 `workbench::render`。
+        // 借用与移动落到不同的 Rc 副本上，互不冲突。
         let key_request_for_panel = Rc::clone(&key_request);
         let file_tree_panel = self.file_tree.panel(
             &state.file_tree,

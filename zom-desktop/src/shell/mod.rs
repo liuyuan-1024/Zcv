@@ -2,7 +2,7 @@
 //!
 //! 职责（手册 1.2、2.4）：
 //! - 视觉层（L1-L4 组件树）
-//! - 平台层占位
+//! - 平台层
 //! - 启动窗口、装配 `WorkbenchFrame`、提供 `EmbeddedAssetSource`
 //!
 //! `shell` 只在启动与根视图装配处接收 `app`；features / workbench 通过明确
@@ -15,6 +15,7 @@ pub(crate) mod features;
 pub(crate) mod platform;
 pub(crate) mod shared;
 pub(crate) mod surfaces;
+pub(crate) mod syntax;
 mod view;
 pub(crate) mod workbench;
 

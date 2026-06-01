@@ -64,7 +64,7 @@ fn render_list(
 ) -> Div {
     let items = logical_items(state);
     let selected_item = selected_item_index(&items, state);
-    // pending 激活时让"导航焦点"指示器（行的蓝框）让位给输入行的蓝框 ——
+    // pending 激活时让"导航焦点"指示器（行的蓝框）让位给输入行的蓝框。
     // 同色规则同时生效会出现两个蓝框；视觉上焦点只能有一个。
     let selected = if state.pending.is_some() {
         None
@@ -214,15 +214,15 @@ fn render_row(
     let is_cut = cut_paths.contains(&row.path);
     let is_active = active.map(|p| p == &row.path).unwrap_or(false);
 
-    // 边框始终占 1px，保证选中态切换时行高不抖。失焦时直接染透明，让选中
-    // 标记瞬时消失；获焦后再画上。
+    // 边框始终占 1px，保证选中态切换时行高不抖。
+    // 失焦时直接染透明，让选中标记瞬时消失；获焦后再画上。
     let border_color = if is_selected && is_focused {
         color::blue::s07()
     } else {
         gpui::rgba(0)
     };
-    // 背景三态：多选选区 > 活动文件 > 透明。选区色用蓝 a04（theme 注释里就是
-    // "选区色块"），与活动文件的灰底视觉上一眼可分。
+    // 背景三态：多选选区 > 活动文件 > 透明。
+    // 选区色用蓝 a04（theme 注释里就是"选区色块"），与活动文件的灰底视觉上一眼可分。
     let bg_color = if is_in_selection {
         color::blue::a04()
     } else if is_active {
@@ -260,8 +260,8 @@ fn render_row(
                 .truncate()
                 .child(row.name.clone()),
         );
-    // 剪切待粘贴的行：整行降透明度，向用户提示"它将被移走"。粘贴成功后
-    // model 清空剪贴板、cut_paths 也清空，该效果随之消失。
+    // 剪切待粘贴的行：整行降透明度，向用户提示"它将被移走"。
+    // 粘贴成功后 model 清空剪贴板、cut_paths 也清空，该效果随之消失。
     if is_cut {
         row_div = row_div.opacity(0.5);
     }

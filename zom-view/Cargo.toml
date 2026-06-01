@@ -2,7 +2,7 @@
 name = "zom-view"
 version = "0.1.0"
 edition.workspace = true
-description = "编辑面状态层：view/pane、滚动、本视图 selection 与 fold"
+description = "编辑面状态层：视图、分屏、滚动、本视图选区与折叠"
 
 [dependencies]
 zom-engine.workspace = true

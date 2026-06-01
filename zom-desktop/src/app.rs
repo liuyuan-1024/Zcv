@@ -1,7 +1,7 @@
 //! app —— 组合根（手册 2 / 13）。
 //!
-//! P2 最小编辑闭环已接入：组合根持有 `CommandRegistry`、`Keymap`、
-//! `Workspace` 与 `ViewSet`，并把输入统一收敛到 command 管线。
+//! 组合根持有 `CommandRegistry`、`Keymap`、`Workspace` 与 `ViewSet`，
+//! 并把输入统一收敛到 command 管线。
 //!
 //! 依赖方向（手册 2.4）：`app` 可以 import `shell`；`shell` 不可反向 import `app`。
 //! 本文件只做组合根职责；具体功能尽量回到各自 feature / editor / workbench。
@@ -31,8 +31,9 @@ use crate::shell::features::project_picker::{
 use crate::shell::workbench::editor_area::{MainEditorOwner, MainEditorOwnerRef};
 use crate::shell::workbench::state::{EditorState, build_editor_state};
 
-/// 一次按键派发的结果。`consumed=false` 表示这次按键没有匹配任何 keymap
-/// 绑定，应当透传给系统输入法；否则会阻塞 IME 的整个文本输入路径。
+/// 一次按键派发的结果。
+/// `consumed=false` 表示这次按键没有匹配任何 keymap 绑定，应当透传给系统输入法；
+/// 否则会阻塞 IME 的整个文本输入路径。
 pub(crate) struct KeyDispatchOutcome {
     pub(crate) consumed: bool,
     pub(crate) effects: Vec<HostEffect>,
@@ -52,8 +53,8 @@ pub struct App {
     project_picker: ProjectPickerModel,
     search: SearchModel,
     /// 剪贴板端口：默认走 [`MockClipboard`]（headless 单测够用且不污染系统剪贴板）。
-    /// shell 启动时通过 [`Self::set_clipboard`] 换成 GPUI 适配器，使主程序与
-    /// 系统剪贴板互通。
+    /// shell 启动时通过 [`Self::set_clipboard`] 换成 GPUI 适配器，
+    /// 使主程序与系统剪贴板互通。
     clipboard: Box<dyn ClipboardPort>,
 }
 
@@ -72,8 +73,9 @@ impl App {
         let mut registry = CommandRegistry::new();
         let mut keymap = Keymap::new();
 
-        // 组合根只选择安装内建命令集；具体 feature catalog 的完整性由
-        // zom-command 自己维护。宿主侧资源（窗口、Dock）走 HostEffect 反馈到 shell。
+        // 组合根只选择安装内建命令集；
+        // 具体 feature catalog 的完整性由 zom-command 自己维护。
+        // 宿主侧资源（窗口、Dock）走 HostEffect 反馈到 shell。
         commands::install_all(&mut registry, &mut keymap);
 
         let (workspace, views) = empty_workspace();
@@ -87,7 +89,7 @@ impl App {
             views,
             // 启动时没有项目、没有 view，shell 显示的是 project picker；
             // 把初始焦点设成 picker 让 App-only 单测不依赖反向同步也能拿到正确语义。
-            // 生产里 ShellView::render 的反向同步会把这值刷到与GPUI 真实焦点一致。
+            // 生产里 ShellView::render 的反向同步会把这值刷到与 GPUI 真实焦点一致。
             focus: FocusStore::new(AppFocus::project_picker(ProjectPickerFocus::Query)),
             project_root: None,
             recent_projects: RecentProjects::load(path),
@@ -130,8 +132,9 @@ impl App {
         }
     }
 
-    /// 替换默认剪贴板端口。shell 启动时注入 `GpuiClipboard`，让 copy / cut /
-    /// paste 走系统剪贴板；headless 单测保持默认 [`MockClipboard`]。
+    /// 替换默认剪贴板端口。
+    /// shell 启动时注入 `GpuiClipboard`，让 copy / cut / paste 走系统剪贴板；
+    /// headless 单测保持默认 [`MockClipboard`]。
     pub(crate) fn set_clipboard(&mut self, clipboard: Box<dyn ClipboardPort>) {
         self.clipboard = clipboard;
     }
@@ -209,8 +212,8 @@ impl App {
         f(&mut self.project_picker, self.recent_projects.items())
     }
 
-    /// 读路径版本：`selected_project_id` / `activation` 等只读但同样依赖
-    /// recent 列表的查询走这里。
+    /// 读路径版本：
+    /// `selected_project_id` / `activation` 等只读但同样依赖 recent 列表的查询走这里。
     pub(crate) fn with_project_picker_ref<R>(
         &self,
         f: impl FnOnce(&ProjectPickerModel, &[RecentProject]) -> R,
@@ -260,16 +263,15 @@ impl App {
     /// 组合根按当前唯一焦点 / 运行态算出 `KeyContext` 栈交给 keymap 解析 ——
     /// 命令与快捷键的定义全在 zom-command，宿主不持有任何 chord → 动作 的映射表。
     ///
-    /// 文本输入不在这里 fallback：交给 GPUI 的 `EntityInputHandler` 路径，由
-    /// 系统输入法或 NSTextInputClient 把文本喂给 `App::ime_*`。
+    /// 文本输入不在这里兜底：交给 GPUI 的 `EntityInputHandler` 路径，
+    /// 由系统输入法或 NSTextInputClient 把文本喂给 `App::ime_*`。
     pub(crate) fn dispatch_key(
         &mut self,
         chord: String,
     ) -> Result<KeyDispatchOutcome, CommandError> {
         // 组合态下宿主完全让位给系统输入法：不解析、不消费、不 stop_propagation。
-        // 一旦拦下某个键（如 Esc → ime_cancel），系统 IME 会话就和我们脱节，
-        // 它会再吞掉一个后续按键 —— 表现为「取消候选后要多按一次 Esc 才退出
-        // 新建」。组合的更新 / 提交 / 取消都由 IME 回调（`ime_*`）驱动。
+        // 一旦拦下某个键（如 Esc → ime_cancel），系统 IME 会话就和我们脱节，它会再吞掉一个后续按键 —— 表现为「取消候选后要多按一次 Esc 才退出新建」。
+        // 组合的更新 / 提交 / 取消都由 IME 回调（`ime_*`）驱动。
         if self.is_composing() {
             return Ok(KeyDispatchOutcome {
                 consumed: false,
@@ -302,9 +304,9 @@ impl App {
     /// 这是宿主该做的事 —— 告诉 zom-command「现在处于什么上下文」；至于哪个
     /// chord 对应哪条命令，仍由各 catalog 注册进 keymap 的绑定决定。
     ///
-    /// `composing` 恒为 `false`：`dispatch_key` 在组合态直接让位给系统输入法，
-    /// 根本不会走到这里。组合上下文（`KeyContext::text_edit` 的第二参）保留
-    /// 在签名里，待将来真有「宿主侧处理组合键」的需求再启用。
+    /// `composing` 恒为 `false`：`dispatch_key` 在组合态直接让位给系统输入法，根本不会走到这里。
+    /// 组合上下文（`KeyContext::text_edit` 的第二参）保留在签名里，
+    /// 待将来真有「宿主侧处理组合键」的需求再启用。
     fn key_contexts(&self) -> Vec<KeyContext> {
         // 文本输入类焦点的上下文栈，由 AppFocus 精确查到的 owner 自己提供。
         let text_stack_for = |focus| {
@@ -431,8 +433,8 @@ impl App {
     }
 
     pub(crate) fn search_state(&self) -> SearchState {
-        // 读路径走 `&self`，不在这里跑 sync——sync 在写路径
-        // （dispatch_command_id / IME）完成；这里读到的就是上次 sync 完的真值。
+        // 读路径走 `&self`，不在这里跑 sync——sync 在写路径（dispatch_command_id / IME）完成。
+        // 这里读到的就是上次 sync 完的真值。
         let mut state = self.search.state();
         state.hit_count = search_panel::coordinator::current_hit_count(&self.workspace);
         state
@@ -461,6 +463,85 @@ impl App {
         );
     }
 
+    /// 排空活动 buffer 自上次 dispatch 以来累积的 `DeltaEvent`，扇出到
+    /// `BufferSearch` 与 syntax provider。**无论搜索面板是否开**都要调——
+    /// 否则编辑后 syntax layer 不重算 / 不 remap，渲染端读到旧版本的 span
+    /// 与新字节叠在一起就是错位的着色。
+    ///
+    /// 在 dispatch_command_id 与 ime preedit update 两个尾部都装一次。
+    /// 多调几次无害——`take_pending_events` 第二次返空。
+    fn pump_active_buffer_post_edit(&mut self) {
+        if let Some(wb) = self.workspace.active_buffer_mut() {
+            let _ = wb.pump_post_edit();
+        }
+    }
+
+    /// 每帧 prepaint 起手由 [`ShellView::render`] 调一次，把后台
+    /// `SyntaxWorker` 已就绪的高亮产物落到各 buffer 的 `MetadataLayers`。
+    ///
+    /// 不阻塞——`pump_pending_highlights` 内部只是扫一遍 buffer + 一次空 drain；
+    /// worker 没出新产物就无操作。详见
+    /// [改造方案 §4.7](../../zom-workspace/docs/语法高亮异步增量改造.md)。
+    pub fn pump_pending_highlights(&mut self) {
+        self.workspace.pump_pending_highlights();
+    }
+
+    /// 把活动 view 的可见区间转成 byte range 后推给语法 worker，让 `on_edit`
+    /// 走 viewport-scoped query + `ReplaceRange`（[改造方案 §4.6](
+    /// ../../zom-workspace/docs/语法高亮异步增量改造.md)）。
+    ///
+    /// padding ±32 行：tree-sitter `set_byte_range` 只返回起止 byte 都落在范围内
+    /// 的匹配——viewport 边缘的多行字符串、宏调用、属性等 capture 若起点恰
+    /// 好被切在外面就会缺色，多吃几十行可视区域以外的查询代价换不撕裂；视觉上
+    /// 1 帧 ~30 行 vs 32 行 padding 几乎一致，但语义安全。
+    ///
+    /// 每帧调一次；HighlightWorker 内部对相同 hint 去重，无变化时不再产物。
+    pub fn pump_active_viewport_hint(&mut self) {
+        let Some(view) = self.views.active_view() else {
+            return;
+        };
+        let buffer_id = view.buffer();
+        let viewport = view.viewport();
+        let Some(wb) = self.workspace.buffer(buffer_id) else {
+            return;
+        };
+        let snapshot = wb.buffer().snapshot();
+        let total_lines = snapshot.line_count();
+        if total_lines == 0 {
+            return;
+        }
+        const PAD_LINES: u64 = 32;
+        let start_line = viewport.top_line.saturating_sub(PAD_LINES);
+        let raw_end = viewport
+            .top_line
+            .saturating_add(viewport.visible_line_count)
+            .saturating_add(PAD_LINES);
+        let end_line = raw_end.min(total_lines as u64);
+        if start_line >= end_line {
+            return;
+        }
+        let Ok(start_byte) = snapshot.line_start_byte(zom_engine::Line::new(start_line as usize))
+        else {
+            return;
+        };
+        let end_byte = if end_line >= total_lines as u64 {
+            snapshot.len_bytes()
+        } else {
+            match snapshot.line_start_byte(zom_engine::Line::new(end_line as usize)) {
+                Ok(b) => b,
+                Err(_) => snapshot.len_bytes(),
+            }
+        };
+        if start_byte >= end_byte {
+            return;
+        }
+        let Ok(range) = zom_engine::TextRange::new(start_byte, end_byte) else {
+            return;
+        };
+        self.workspace
+            .set_buffer_viewport_hint(buffer_id, Some(range));
+    }
+
     fn dispatch_command_id(
         &mut self,
         id: CommandId,
@@ -471,10 +552,10 @@ impl App {
         let mut effects = EffectQueue::new();
         let focus = self.focus.current();
 
-        // picker 焦点下，命令执行可能改了 query 文本（DELETE_BACKWARD / 粘贴等
-        // 走 edit_target，绕过 router 的 after_text_changed 钩子）。派发前后
-        // 比一次 query 文本：变了才 reset_selection，否则保留——否则 MOVE_SELECTION
-        // 自己也会被无差别 reset，选中项只能在 0 / 1 之间来回。
+        // picker 焦点下，命令执行可能改了 query 文本
+        // （DELETE_BACKWARD / 粘贴等走 edit_target，绕过 router 的 after_text_changed 钩子）。
+        // 派发前后比一次 query 文本：变了才 reset_selection，否则保留。
+        // 否则 MOVE_SELECTION 自己也会被无差别 reset，选中项只能在 0 / 1 之间来回。
         let picker_query_before =
             matches!(focus, AppFocus::Surface(SurfaceFocus::ProjectPicker(_)))
                 .then(|| self.project_picker.query_text());
@@ -503,10 +584,12 @@ impl App {
             }
         }
 
-        // 命令派发可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴
-        // 等），也可能编辑了活动 buffer（产生 DeltaEvent 需要 try_remap）。
-        // 统一在派发尾部把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——
-        // 一处做完，渲染 / 后续命令读到的都是新真值。
+        // 命令派发可能编辑了活动 buffer（产生 DeltaEvent），扇出给 BufferSearch 与 syntax provider 是无条件的。
+        // 否则编辑后高亮 / 搜索命中都不跟版本。
+        // 必须先于 `sync_active_buffer_search`：后者依赖搜索状态已被新事件推进。
+        self.pump_active_buffer_post_edit();
+        // 命令派发也可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴等）。
+        // 把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——一处做完，渲染 / 后续命令读到的都是新真值。
         self.sync_active_buffer_search();
         Ok(host_effects)
     }
@@ -548,8 +631,10 @@ impl App {
                 )
             })
         });
-        // preedit 期间也走 live search——用户在搜索框中文输入时能边输入边
-        // 看到结果收敛。
+        // preedit 期间也走 live search——用户在搜索框中文输入时能边输入边看到结果收敛。
+        // 同时把 buffer 上累积的 DeltaEvent 扇出到 syntax provider
+        // （preedit replace 走 composition state，但 replace_and_mark 内部仍可能产生编辑事件）。
+        self.pump_active_buffer_post_edit();
         self.sync_active_buffer_search();
         result
     }
@@ -568,8 +653,14 @@ impl App {
 /// 早期版本会默认开一个空白 scratch buffer，但它对用户没有意义、还会让编辑区
 /// 显示一个不存在的"文件"，误导用户。现在编辑区在无活动视图时走
 /// `EditorState::default()`，文件从文件树打开后才有内容。
+///
+/// 启动期同时把 Tier 1 syntax provider 工厂注入 workspace 的 language_registry——
+/// 否则后续 `open_file` 落 plain。具体注册逻辑见
+/// [`crate::shell::syntax::install_tier1`]。
 fn empty_workspace() -> (Workspace, ViewSet) {
-    (Workspace::new(), ViewSet::new())
+    let mut workspace = Workspace::new();
+    crate::shell::syntax::install_tier1(&mut workspace);
+    (workspace, ViewSet::new())
 }
 
 impl Default for App {
@@ -662,7 +753,7 @@ mod tests {
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::SearchActivate]);
 
-        // mod-shift-f 在第一版没有绑定（项目级搜索尚未引入）；不被消费。
+        // mod-shift-f 当前没有绑定（项目级搜索尚未引入）；不被消费。
         let outcome = app
             .dispatch_key("mod-shift-f".to_string())
             .expect("派发成功");
@@ -785,8 +876,8 @@ mod tests {
             vec![HostEffect::ProjectPickerMoveSelection(1)]
         );
 
-        // backspace 落到 picker query 的 text_edit 上下文，由 DELETE_BACKWARD
-        // 命令处理（删一个字符），不是 picker 的导航动作，但仍由 keymap 消费。
+        // backspace 落到 picker query 的 text_edit 上下文，由 DELETE_BACKWARD 命令处理（删一个字符）。
+        // 不是 picker 的导航动作，但仍由 keymap 消费。
         let outcome = app.dispatch_key("backspace".to_string()).unwrap();
         assert!(outcome.consumed);
 

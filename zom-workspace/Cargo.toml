@@ -2,11 +2,21 @@
 name = "zom-workspace"
 version = "0.1.0"
 edition.workspace = true
-description = "工作区模型层：文件、buffer 生命周期、路径绑定与保存边界"
+description = "工作区模型层：文件、缓冲区生命周期、路径绑定与保存边界"
 
 [dependencies]
 zom-engine.workspace = true
 trash.workspace = true
 tree-sitter.workspace = true
-tree-sitter-highlight.workspace = true
 tree-sitter-rust.workspace = true
+tree-sitter-toml-ng.workspace = true
+tree-sitter-md.workspace = true
+tree-sitter-json.workspace = true
+tree-sitter-yaml.workspace = true
+tree-sitter-bash.workspace = true
+tree-sitter-html.workspace = true
+tree-sitter-css.workspace = true
+tree-sitter-javascript.workspace = true
+tree-sitter-typescript.workspace = true
+tree-sitter-java.workspace = true
+tree-sitter-python.workspace = true

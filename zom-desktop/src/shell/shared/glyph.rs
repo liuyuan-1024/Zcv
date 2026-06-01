@@ -1,8 +1,8 @@
 //! `Glyph` —— shell 内复用的基础视觉标记。
 //!
-//! 它可以承载文字、图标、图标 + 文字，统一携带 tooltip 数据并在悬停时由
-//! GPUI 的 tooltip 通道呈现。`Glyph` 只表达视觉，不知道命令系统、bar、
-//! surface 或 invoker。
+//! 它可以承载文字、图标、图标 + 文字，
+//! 统一携带 tooltip 数据并在悬停时由 GPUI 的 tooltip 通道呈现。
+//! `Glyph` 只表达视觉，不知道命令系统、bar、surface 或 invoker。
 
 use gpui::{
     AnyElement, AnyView, App, Context, ElementId, IntoElement, Pixels, Render, Svg, Window, div,

@@ -52,9 +52,8 @@ impl EditorInputHost {
         let focus = self.focus.clone();
         let input = self.input.clone();
         Rc::new(move |info: EditorPaintInfo, window, cx| {
-            // 先把 caret 几何写回 input 实体，再 handle_input —— 顺序很重要：
-            // IME 接管输入后立刻可能问 bounds_for_range，那时 caret_layout 必须
-            // 已经是本帧的最新值。
+            // 先把 caret 几何写回 input 实体，再 handle_input —— 顺序很重要。
+            // IME 接管输入后立刻可能问 bounds_for_range，那时 caret_layout 必须已经是本帧的最新值。
             input.update(cx, |this, _| this.set_caret_layout(info.caret_layout));
             window.handle_input(
                 &focus,

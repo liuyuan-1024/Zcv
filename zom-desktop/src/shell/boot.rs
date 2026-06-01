@@ -30,9 +30,8 @@ pub fn run(app: App) {
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
                         titlebar: Some(TitlebarOptions {
                             title: Some("zom".into()),
-                            // 自绘窗控圆点（手册 14.6）：让 OS 标题栏透明，并把
-                            // 系统自带的圆点挪到屏外，由 `top_bar::window_controls`
-                            // 自绘控制按钮。
+                            // 自绘窗控圆点（手册 14.6）：让 OS 标题栏透明，并把系统自带的圆点挪到屏外。
+                            // 由 `top_bar::window_controls` 自绘控制按钮。
                             appears_transparent: true,
                             traffic_light_position: Some(point(px(-100.0), px(-100.0))),
                         }),
@@ -50,8 +49,8 @@ pub fn run(app: App) {
                     window.focus(&shell_view.editor_focus());
                     shell_view.install_feature_listeners(window, cx);
 
-                    // 开发阶段：启动即打开固定项目，方便测试。走与选择器
-                    // 完全相同的打开流程；release 构建不编译此分支。
+                    // 开发阶段：启动即打开固定项目，方便测试。
+                    // 走与选择器完全相同的打开流程；release 构建不编译此分支。
                     #[cfg(debug_assertions)]
                     shell_view.open_project(
                         std::path::PathBuf::from("/Users/liuyuan/project/liuyuan/zom"),

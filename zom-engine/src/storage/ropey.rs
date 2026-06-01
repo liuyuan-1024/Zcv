@@ -19,15 +19,6 @@ fn rope_len_bytes(rope: &Rope) -> ByteOffset {
     ByteOffset::new(rope.len_bytes())
 }
 
-/// 全文 Cow：单块时零拷贝，多块时才物化为 `String`。
-#[inline]
-fn rope_text_cow(rope: &Rope) -> Cow<'_, str> {
-    match rope.slice(..).as_str() {
-        Some(s) => Cow::Borrowed(s),
-        None => Cow::Owned(rope.to_string()),
-    }
-}
-
 /// 字节区间 Cow：单块时零拷贝，多块时才物化。调用方需保证区间已被校验。
 #[inline]
 fn rope_byte_range_cow(rope: &Rope, range: TextRange) -> Cow<'_, str> {
@@ -82,6 +73,15 @@ impl RopeyStorage {
         }
     }
 
+    /// 从已构建的 `Rope` 直接接管所有权，避免再做一次全量 `from_str`。
+    ///
+    /// 给流式加载路径（[`crate::Buffer::from_reader`]）走——decoder 已经把
+    /// 字节增量喂进 `RopeBuilder`，`finish()` 返回 `Rope` 后我们只是把它装进
+    /// storage，不再二次拷贝。
+    pub(crate) fn from_rope(rope: Rope) -> Self {
+        Self { rope }
+    }
+
     pub(crate) fn fingerprint(&self) -> TextFingerprint {
         fingerprint_rope(&self.rope)
     }
@@ -111,10 +111,6 @@ impl RopeyStorage {
 }
 
 impl TextRead for RopeyStorage {
-    fn text(&self) -> Cow<'_, str> {
-        rope_text_cow(&self.rope)
-    }
-
     fn slice_text(&self, range: TextRange) -> EngineResult<Cow<'_, str>> {
         self.validate_byte_range(range)?;
         Ok(rope_byte_range_cow(&self.rope, range))
@@ -126,10 +122,6 @@ impl TextRead for RopeyStorage {
             .rope
             .byte_slice(range.start().get()..range.end().get())
             .chunks())
-    }
-
-    fn all_chunks(&self) -> impl Iterator<Item = &str> + '_ {
-        self.rope.chunks()
     }
 
     fn len_bytes(&self) -> ByteOffset {
@@ -275,13 +267,26 @@ impl RopeySnapshot {
     pub(crate) fn fingerprint(&self) -> TextFingerprint {
         fingerprint_rope(&self.rope)
     }
+
+    /// 返回包含给定 byte offset 的 chunk 与该 chunk 在全文里的起点。
+    ///
+    /// `offset` 越界视为指向末端：仍返回最后一段 chunk 与其起点，对应 `Rope::chunk_at_byte` 的语义。
+    /// chunk 边界落在 char boundary，但**不**保证 grapheme boundary——这是 tree-sitter `parse_with_options` 的契约：
+    /// 调用方可以按任意 UTF-8 字节边界续读，parser 自己处理跨 chunk 拼接。
+    pub(crate) fn chunk_at_byte(&self, offset: ByteOffset) -> EngineResult<(&str, ByteOffset)> {
+        let byte_offset = offset.get();
+        if byte_offset > self.rope.len_bytes() {
+            return Err(CoordinateError::OutOfBounds(offset).into());
+        }
+        if !is_utf8_char_boundary_in_rope(&self.rope, byte_offset) {
+            return Err(CoordinateError::InvalidByteBoundary(offset).into());
+        }
+        let (chunk, chunk_start, _, _) = self.rope.chunk_at_byte(byte_offset);
+        Ok((chunk, ByteOffset::new(chunk_start)))
+    }
 }
 
 impl TextRead for RopeySnapshot {
-    fn text(&self) -> Cow<'_, str> {
-        rope_text_cow(&self.rope)
-    }
-
     fn slice_text(&self, range: TextRange) -> EngineResult<Cow<'_, str>> {
         validate_byte_range_in_rope(&self.rope, range)?;
         Ok(rope_byte_range_cow(&self.rope, range))
@@ -293,10 +298,6 @@ impl TextRead for RopeySnapshot {
             .rope
             .byte_slice(range.start().get()..range.end().get())
             .chunks())
-    }
-
-    fn all_chunks(&self) -> impl Iterator<Item = &str> + '_ {
-        self.rope.chunks()
     }
 
     fn len_bytes(&self) -> ByteOffset {

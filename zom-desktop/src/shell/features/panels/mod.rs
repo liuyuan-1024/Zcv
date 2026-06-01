@@ -1,7 +1,7 @@
 //! Panel 功能身份与元数据。
 //!
-//! 这里维护 desktop 第一版固定 panel 列表。具体 UI 仍在各功能目录内，`PanelId`
-//! 负责把命令、布局与功能模块连接起来。承载小件（焦点宿主、骨架占位）属于
+//! 这里维护 desktop 当前固定 panel 列表。具体 UI 仍在各功能目录内，`PanelId`
+//! 负责把命令、布局与功能模块连接起来。承载小件（焦点宿主、占位面板）属于
 //! workbench 的 panel 框架，见 `workbench::docks`。
 
 use gpui::{AnyElement, Context, FocusHandle, IntoElement, Window};
@@ -17,7 +17,7 @@ pub(crate) mod search;
 pub(crate) mod terminal;
 pub(crate) mod version_control;
 
-/// 桌面端第一版固定的 panel 列表（手册 20.10）。
+/// 桌面端当前固定的 panel 列表（手册 20.10）。
 ///
 /// 不抽 `PanelProvider` trait（手册 20.2）；新增 panel 直接在此 enum 加变体。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]

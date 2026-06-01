@@ -1,6 +1,6 @@
 //! Terminal —— L3 panel 组件。
 //!
-//! 第一版骨架：渲染「占位中」灰字。
+//! 当前渲染「占位中」灰字。
 
 use gpui::{Context, Div, FocusHandle, IntoElement};
 use zom_command::commands::terminal;

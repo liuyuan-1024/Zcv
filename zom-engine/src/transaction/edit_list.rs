@@ -63,7 +63,6 @@ impl EditList {
     /// 物化为 `Vec<Edit>`。命名让分配语义显眼；事务热路径应使用 `as_slice` / iter。
     pub fn into_inner(self) -> Vec<Edit> {
         // Arc<[T]> 无法直接 try_unwrap；只能逐元素拷贝（每个 Edit 内部 payload 仍是 Arc clone）。
-        // 大多数路径已不再调用 into_inner，残留路径接受这次一次性分配。
         self.edits.iter().cloned().collect()
     }
 }

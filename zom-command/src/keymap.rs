@@ -34,8 +34,8 @@ impl KeyChord {
 /// 多段按键序列（支持 leader key）。
 pub type KeySequence = Vec<KeyChord>;
 
-/// 运行时按键上下文。调用方按优先级传入多个上下文；例如文件树新建态先
-/// 传 `TextEdit`，未命中后再传 `FileTree(PendingName)` / `Global`。
+/// 运行时按键上下文。调用方按优先级传入多个上下文；
+/// 例如文件树新建态先传 `TextEdit`，未命中后再传 `FileTree(PendingName)` / `Global`。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyContext {
     Global,
@@ -171,8 +171,8 @@ impl Keymap {
     }
 
     /// 绑定一条快捷键。冲突判定按「上下文重叠」而非「上下文相等」——
-    /// 详见 `KeyBindingContext::overlaps`。同一序列在互不重叠的上下文里
-    /// 复用（如 `enter` 同时绑给文件树导航和编辑器换行）不算冲突。
+    /// 详见 `KeyBindingContext::overlaps`。
+    /// 同一序列在互不重叠的上下文里复用（如 `enter` 同时绑给文件树导航和编辑器换行）不算冲突。
     pub fn try_bind(&mut self, binding: KeyBinding) -> Result<(), CommandError> {
         if self.bindings.iter().any(|existing| {
             existing.sequence == binding.sequence && existing.context.overlaps(&binding.context)
@@ -201,9 +201,8 @@ impl Keymap {
 
     /// 反查某条命令对应的快捷键序列（原始 `KeyChord` 序列）。
     ///
-    /// UI 入口（Glyph、菜单、命令面板）通常只需要可显示的字符串 —— 用
-    /// [`Self::format_shortcut_for`] 一步到位。需要做自定义处理（比如
-    /// 折叠多绑定）时再用本方法拿原始序列。
+    /// UI 入口（Glyph、菜单、命令面板）通常只需要可显示的字符串 —— 用 [`Self::format_shortcut_for`] 一步到位。
+    /// 需要做自定义处理（比如折叠多绑定）时再用本方法拿原始序列。
     ///
     /// 同一命令绑了多条时返回第一条；全局绑定优先级高于局部绑定。
     pub fn shortcut_for(&self, command: &CommandId) -> Option<&KeySequence> {

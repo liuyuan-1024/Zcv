@@ -1,10 +1,10 @@
 //! BottomBar —— 窗口级底部外壳（布局模型 4.3）。
 //!
-//! 第一版只用 leading / trailing 两个槽（无 center）。每个槽内按 Dock
+//! 当前只用 leading / trailing 两个槽（无 center）。每个槽内按 Dock
 //! 归属分组，组与组之间用一根 `bar_divider` 视觉隔开。
 //!
 //! 面板切换 slot 是 `panel.toggle.<id>` 命令的视图——BottomBar 不知道
-//! panel 是什么，只 emit CommandId（骨架阶段尚未接入，先只显示状态）。
+//! panel 是什么，只 emit CommandId。
 
 use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
 
@@ -52,8 +52,8 @@ fn leading_slots(
     language_server_active: bool,
 ) -> Vec<AnyElement> {
     let toggles = panel_slot_group(DockAreaId::Left, left::PANELS, state, shortcuts, titles);
-    // Group 2：语言服务器 / 诊断。第一版暂不绑 Dock；纯状态指示，但仍可关联命令
-    // 入口（"打开 LSP 状态" / "查看问题面板"）。
+    // Group 2：语言服务器 / 诊断。当前不绑 Dock；纯状态指示。
+    // 但仍可关联命令入口（"打开 LSP 状态" / "查看问题面板"）。
     let status = vec![
         language_servers::entry(
             state.bottom_bar.lsp_connected,
@@ -83,8 +83,8 @@ fn editor_status_slots(editor: &EditorState, snapshot: &EditorSnapshot) -> Vec<A
     let Some(active) = editor.tabs.iter().find(|tab| tab.is_active) else {
         return Vec::new();
     };
-    // snapshot 已经按 `buffer.byte_to_position` 折好行列（0-based）；这里只换
-    // 算到 1-based。不再扫描 text，长文档也是 O(1)。
+    // snapshot 已经按 `buffer.byte_to_position` 折好行列（0-based）；这里只换算到 1-based。
+    // 不再扫描 text，长文档也是 O(1)。
     let (line0, column0) = snapshot.cursor_position;
     let line = line0 + 1;
     let column = column0 + 1;

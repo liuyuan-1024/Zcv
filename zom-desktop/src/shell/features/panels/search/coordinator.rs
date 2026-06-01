@@ -40,8 +40,8 @@ pub(crate) fn on_panel_opened(
 pub(crate) fn on_panel_closed(search: &mut SearchModel, workspace: &mut Workspace) {
     search.set_panel_open(false);
     if let Some(wb) = workspace.active_buffer_mut() {
-        // 把 query 置空 → BufferSearch.slot 被清空 → ranges() 空 →
-        // EditorView 阶段 2 没东西画。下次面板再开会重新 set_query。
+        // 把 query 置空 → BufferSearch.slot 被清空 → ranges() 空 → EditorView 阶段 2 没东西画。
+        // 下次面板再开会重新 set_query。
         wb.search_mut().set_query(String::new());
     }
 }
@@ -53,8 +53,8 @@ pub(crate) fn toggle_option(
     option: SearchOption,
 ) {
     search.toggle_option(option);
-    // 选项变化要立刻同步到活动 buffer 的 BufferSearch，否则下一次 find_next
-    // 或渲染会读到不一致的命中（旧选项算出来的）。
+    // 选项变化要立刻同步到活动 buffer 的 BufferSearch。
+    // 否则下一次 find_next 或渲染会读到不一致的命中（旧选项算出来的）。
     sync_active_buffer_search(search, workspace, views);
 }
 
@@ -92,9 +92,8 @@ pub(crate) fn replace_next(
     let Some(wb) = workspace.active_buffer_mut() else {
         return;
     };
-    // replace_current_search_match 自动 pump_search → 余下命中 try_remap。
-    // 被替换那条会被 try_remap 丢掉，BufferSearch.current_hit 自然指向其
-    // 替换后位置的下一个命中（or None 如果是最后一条）。
+    // replace_current_search_match 自动 pump_post_edit → 余下命中 try_remap。
+    // 被替换那条会被 try_remap 丢掉，BufferSearch.current_hit 自然指向其替换后位置的下一个命中（or None 如果是最后一条）。
     let _ = wb.replace_current_search_match(&replacement);
     if let Some(range) = wb.search().current_range() {
         move_selection_to_match(views, range);
@@ -112,8 +111,8 @@ pub(crate) fn replace_all(
         return;
     };
     let _ = wb.replace_all_search_matches(&replacement);
-    // 全替换后命中通常全部被 remap 吃掉；若 BufferSearch 内还残留 current_hit
-    // 把光标挪过去，没有就让光标停在原位。
+    // 全替换后命中通常全部被 remap 吃掉。
+    // 若 BufferSearch 内还残留 current_hit 把光标挪过去，没有就让光标停在原位。
     if let Some(range) = wb.search().current_range() {
         move_selection_to_match(views, range);
     }
@@ -144,19 +143,16 @@ pub(crate) fn sync_active_buffer_search(
     };
     let query_changed = wb.search_mut().set_query(query);
     let options_changed = wb.search_mut().set_options(options);
-    // 先把 buffer 上累积的 DeltaEvent（任何编辑路径都可能产生）喂回
-    // BufferSearch 再 sync：sync 检测版本时优先复用 try_remap 的结果，没
-    // 有时才重跑。
-    let _ = wb.pump_search();
+    // 先把 buffer 上累积的 DeltaEvent（任何编辑路径都可能产生）喂回 BufferSearch 再 sync。
+    // sync 检测版本时优先复用 try_remap 的结果，没有时才重跑。
+    let _ = wb.pump_post_edit();
     let _ = wb.sync_search();
 
-    // query / options 这一次真的变了 → 让选区落到新结果集的第一项并
-    // reveal。`normalize_current_hit_after_rerun` 已经把 current_hit 摆
-    // 到 0，所以 current_range 即第一条。
+    // query / options 这一次真的变了 → 让选区落到新结果集的第一项并 reveal。
+    // `normalize_current_hit_after_rerun` 已经把 current_hit 摆到 0，所以 current_range 即第一条。
     //
-    // 没变化时不触发：避免覆盖 find_next / replace 等命令自己刚 advance
-    // 出来的 current hit——它们走 dispatch 尾部时会再次进本函数，但
-    // query/options 不变就不会被反向拉回首条。
+    // 没变化时不触发：避免覆盖 find_next / replace 等命令自己刚 advance 出来的 current hit。
+    // 它们走 dispatch 尾部时会再次进本函数，但 query/options 不变就不会被反向拉回首条。
     if query_changed || options_changed {
         if let Some(range) = wb.search().current_range() {
             move_selection_to_match(views, range);

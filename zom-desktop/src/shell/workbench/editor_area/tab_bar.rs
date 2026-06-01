@@ -1,6 +1,6 @@
-//! EditorTabBar —— 编辑区标签栏（手册 19 tab group 的第一版）。
+//! EditorTabBar —— 编辑区标签栏（手册 19 tab group）。
 //!
-//! 一个 tab ↔ 一个 `View`：把 `ViewSet` 的多视图可视化。本阶段只做 UI——
+//! 一个 tab ↔ 一个 `View`：把 `ViewSet` 的多视图可视化。本模块只做 UI——
 //! 渲染标签、标出活动项与 dirty 态；切换 / 关闭等交互（命令、键位、鼠标）
 //!
 //! 高度不写死：由标签内文字 line_height + 内边距撑开（见 MEMORY 约定）。

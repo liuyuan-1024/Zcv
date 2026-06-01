@@ -202,6 +202,68 @@ impl<T> MetadataLayer<T> {
         Ok(ids)
     }
 
+    /// 局部替换：删除 `byte_range` 内（按 start 落点判定）的现存 ranges，再把
+    /// `new_ranges` 追加进 layer。`byte_range` 外的 ranges 完全保留，版本不动。
+    ///
+    /// 服务于语法高亮的 viewport-scoped ReplaceRange 路径（[改造方案
+    /// §4.6](../../../zom-workspace/docs/语法高亮异步增量改造.md)）：worker 只产
+    /// viewport ± 缓冲区段的 spans，远处旧 spans 保持不变，避免每次编辑都全层
+    /// 重建。
+    ///
+    /// 版本必须与 layer.version 一致；不一致返回 `VersionMismatch`，调用方应在
+    /// drain 前做版本守护。`new_ranges` 不必落在 `byte_range` 内（caller 责任），
+    /// 但落在该范围外的新 range 会与未删除的旧 range 共存，调用方需自行避免重叠
+    /// 语义冲突。
+    pub fn replace_in_range(
+        &mut self,
+        version: BufferVersion,
+        byte_range: TextRange,
+        new_ranges: impl IntoIterator<Item = (TextRange, T)>,
+    ) -> Result<Vec<MetadataRangeId>, MetadataError> {
+        self.replace_in_range_with_options(
+            version,
+            byte_range,
+            new_ranges
+                .into_iter()
+                .map(|(range, metadata)| MetadataRangeSpec::new(range, metadata)),
+        )
+    }
+
+    pub fn replace_in_range_with_options(
+        &mut self,
+        version: BufferVersion,
+        byte_range: TextRange,
+        new_ranges: impl IntoIterator<Item = MetadataRangeSpec<T>>,
+    ) -> Result<Vec<MetadataRangeId>, MetadataError> {
+        if self.version != version {
+            return Err(MetadataError::VersionMismatch {
+                expected: self.version,
+                actual: version,
+            });
+        }
+        let cutoff_start = byte_range.start();
+        let cutoff_end = byte_range.end();
+        self.ranges.retain(|metadata_range| {
+            let start = metadata_range.range().start();
+            !(start >= cutoff_start && start < cutoff_end)
+        });
+        let mut ids = Vec::new();
+        for spec in new_ranges {
+            let id = self.reserve_id()?;
+            let (range, stickiness, update_policy, metadata) = spec.into_parts();
+            self.ranges.push(MetadataRange::with_policy(
+                id,
+                version,
+                range,
+                stickiness,
+                update_policy,
+                metadata,
+            ));
+            ids.push(id);
+        }
+        Ok(ids)
+    }
+
     pub fn is_stale(&self, current_version: BufferVersion) -> bool {
         self.version != current_version
     }

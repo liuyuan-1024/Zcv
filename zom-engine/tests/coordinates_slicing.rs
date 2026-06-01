@@ -28,6 +28,32 @@ fn line_range(start: usize, end: usize) -> LineRange {
     LineRange::new(line(start), line(end)).unwrap()
 }
 
+trait FullText {
+    fn full_text(&self) -> String;
+}
+
+impl FullText for Buffer {
+    fn full_text(&self) -> String {
+        self.slice_byte_range(ByteOffset::ZERO, self.len_bytes())
+            .unwrap()
+            .into_text()
+            .into_owned()
+    }
+}
+
+impl FullText for Snapshot {
+    fn full_text(&self) -> String {
+        self.slice_byte_range(ByteOffset::ZERO, self.len_bytes())
+            .unwrap()
+            .into_text()
+            .into_owned()
+    }
+}
+
+fn buffer_text(text: &impl FullText) -> String {
+    text.full_text()
+}
+
 fn buffer(text: &str) -> Buffer {
     Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
 }
@@ -140,7 +166,7 @@ fn crlf_middle_should_not_be_valid_line_position_or_edit_boundary() {
         byte_err,
         EngineError::Edit(EditError::InvalidBoundary { offset }) if offset == b(2)
     ));
-    assert_eq!(buffer.text().as_ref(), "a\r\nb");
+    assert_eq!(buffer_text(&buffer), "a\r\nb");
     assert_eq!(buffer.line_start(line(1)).unwrap(), c(3));
     assert_eq!(buffer.line_start_byte(line(1)).unwrap(), b(3));
 }
@@ -254,7 +280,7 @@ fn snapshot_coordinate_and_slicing_queries_should_read_old_version_after_state_t
 
     buffer.replace(range(6, 10), "BETA").unwrap();
 
-    assert_eq!(snapshot.text().as_ref(), "alpha\nbeta");
+    assert_eq!(buffer_text(&snapshot), "alpha\nbeta");
     assert_eq!(snapshot.slice_line(line(1)).unwrap().as_str(), "beta");
     assert_eq!(
         snapshot

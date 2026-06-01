@@ -5,8 +5,8 @@
 //! 直接保存 `&gpui::App` 借用。这里用 thread-local 指针做桥梁：每次 GPUI
 //! 回调在调 `App::dispatch_*` 前用 [`GpuiClipboardScope`] 把当前 `cx` 借出
 //! 期间的指针存入 thread-local；派发期间 [`GpuiClipboard::read/write`]
-//! 通过它访问系统剪贴板；scope 析构时恢复外层指针（空指针即"当前不在
-//! GPUI 回调内"，端口读写 no-op）。
+//! 通过它访问系统剪贴板；scope 析构时恢复外层指针（空指针即「当前不在
+//! GPUI 回调内」，端口读写无操作）。
 //!
 //! ## 安全性
 //!
@@ -38,8 +38,8 @@ impl ClipboardPort for GpuiClipboard {
                 // 不在 GPUI 回调内（如 headless 单测兜底）—— 静默丢弃。
                 return;
             }
-            // SAFETY: `GpuiClipboardScope::enter` 设置该指针后只在 scope 存活
-            // 期间生效（scope 持有 `&'a gpui::App` 凭据，析构时恢复外层指针）。
+            // SAFETY: `GpuiClipboardScope::enter` 设置该指针后只在 scope 存活期间生效
+            // （scope 持有 `&'a gpui::App` 凭据，析构时恢复外层指针）。
             // 因此指针非空 ⇒ cx 仍被借出，可安全解引。
             let cx = unsafe { &*ptr };
             cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));

@@ -1,7 +1,7 @@
 //! `workspace.*` 命令目录 —— 项目切换 / 打开。
 //!
-//! handler 只 emit `HostEffect`（宿主弹项目选择器、走打开流程），不直接碰
-//! GPUI / shell。模块名 `workspace` 是内部代号，面向用户文案统一用「项目」。
+//! handler 只 emit `HostEffect`（宿主弹项目选择器、走打开流程），不直接碰 GPUI / shell。
+//! 模块名 `workspace` 是内部代号，面向用户文案统一用「项目」。
 
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandHandler, CommandId, CommandOutcome,
@@ -16,8 +16,7 @@ pub const REMOVE_RECENT_PROJECT: &str = "workspace.remove_recent_project";
 pub const MOVE_SELECTION: &str = "workspace.project_picker.move_selection";
 pub const ACTIVATE: &str = "workspace.project_picker.activate";
 
-/// 项目选择器拥有自己的键盘上下文：Up/Down/Enter 等非文本按键只在选择器
-/// 聚焦时解释，不污染全局快捷键空间。
+/// 项目选择器拥有自己的键盘上下文：Up/Down/Enter 等非文本按键只在选择器聚焦时解释，不污染全局快捷键空间。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProjectPickerKeyContext;
 

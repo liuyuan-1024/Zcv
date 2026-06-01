@@ -18,7 +18,7 @@ pub(crate) enum DockAreaId {
     Bottom,
 }
 
-/// 第一版单栈面板模型（布局模型 5.3 / 手册 20.4）。
+/// 当前单栈面板模型（布局模型 5.3 / 手册 20.4）。
 ///
 /// 同一时间一个 dock 内最多显示 1 个 panel；切换 active 即切换显示。
 #[derive(Clone, Debug)]
@@ -74,7 +74,7 @@ pub(crate) struct WorkbenchState {
     pub(crate) search: SearchState,
 }
 
-/// 第一版 BottomBar 渲染所需的少量动态状态（手册 17 错误呈现 / 20.8）。
+/// BottomBar 渲染所需的少量动态状态（手册 17 错误呈现 / 20.8）。
 #[derive(Clone, Debug, Default)]
 pub(crate) struct BottomBarState {
     pub(crate) diagnostics_count: u32,

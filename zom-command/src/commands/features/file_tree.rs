@@ -1,8 +1,7 @@
 //! `file_tree.*` 命令目录。
 //!
-//! 文件树命令只描述“用户意图”，实际修改 `FileTreeModel` 由宿主解释
-//! [`HostEffect`] 完成。这样 `zom-command` 负责命令与快捷键，仍不反向依赖
-//! `zom-desktop` 的面板实现。
+//! 文件树命令只描述“用户意图”，实际修改 `FileTreeModel` 由宿主解释 [`HostEffect`] 完成。
+//! 这样 `zom-command` 负责命令与快捷键，仍不反向依赖 `zom-desktop` 的面板实现。
 
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
@@ -26,9 +25,9 @@ pub const COPY: &str = "file_tree.copy";
 pub const CUT: &str = "file_tree.cut";
 pub const PASTE: &str = "file_tree.paste";
 
-/// PageUp / PageDown 的固定步长（按可见行数估算）。后续若要按真实视口高度
-/// 计算，再让 panel 把可见行数传到 model；本阶段先用经验值。
-const PAGE_LINES: isize = 20;
+/// PageUp / PageDown 的固定步长（按可见行数估算）。
+/// 后续若要按真实视口高度计算，再让 panel 把可见行数传到 model；本阶段先用经验值。
+const PAGE_LINES: isize = 18;
 
 /// 文件树当前键盘模式。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

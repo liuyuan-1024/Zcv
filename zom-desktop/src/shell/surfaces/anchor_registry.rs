@@ -1,4 +1,4 @@
-//! Surface anchor bounds registry。
+//! Surface 锚点边界注册表。
 
 use std::collections::HashMap;
 

@@ -35,7 +35,16 @@ fn input_box(state: &ProjectPickerState, slot: &Rc<TextEditorSlot>) -> Div {
                 .flex()
                 .items_center()
                 .overflow_hidden()
-                .child(editor(slot, state.query.text().is_empty(), placeholder)),
+                .child(editor(
+                    slot,
+                    state
+                        .query
+                        .lines
+                        .first()
+                        .map(|line| line.text.is_empty())
+                        .unwrap_or(true),
+                    placeholder,
+                )),
         )
 }
 

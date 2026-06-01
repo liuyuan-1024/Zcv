@@ -1,13 +1,11 @@
 //! 命令系统对宿主的请求语言。
 //!
-//! handler 不能直接调 GPUI `Window`、改 shell `DockState` 等宿主侧资源 ——
-//! 那会让 zom-command 反向依赖 UI / 平台层。取而代之，handler **emit 一个
-//! `HostEffect`**，宿主在派发结束后翻译成具体动作。
+//! handler 不能直接调 GPUI `Window`、改 shell `DockState` 等宿主侧资源，那会让 zom-command 反向依赖 UI / 平台层。
+//! 取而代之，handler **emit 一个 `HostEffect`**，宿主在派发结束后翻译成具体动作。
 //!
-//! `HostEffect` 是**闭合枚举**：新增宿主能力 = 必须在此添加变体 + 宿主补
-//! `apply_host_effect` 的 match 分支。这是"全部命令集中在 zom-command"的
-//! 必然代价 —— 但相比"宿主各处自己 register_*_commands"，集中一份 enum
-//! 更可控、可枚举、易测。
+//! `HostEffect` 是**闭合枚举**：新增宿主能力 = 必须在此添加变体，并由宿主补 `apply_host_effect` 的 match 分支。
+//! 这是"全部命令集中在 zom-command"的必然代价。
+//! 但相比"宿主各处自己 register_*_commands"，集中一份 enum 更可控、可枚举、易测。
 //!
 //! 不在这里出现的：**编辑文本**。文本类操作（插入、删除、移动、撤销...）
 //! 全部直接操作 `CommandContext { workspace, views, queue }`，无需经过
@@ -35,9 +33,10 @@ pub enum HostEffect {
     // ===== Dock / Panel =====
     /// 切换某个 panel 的显隐。
     ///
-    /// `panel_id` 是宿主侧 PanelId 的**字符串形式**（如 `"file_tree"` /
-    /// `"terminal"`），由宿主的 `PanelId::from_str` 解析。zom-command
-    /// 不 import 宿主枚举，靠字符串桥接。
+    /// `panel_id` 是宿主侧 PanelId 的**字符串形式**，
+    /// 例如 `"file_tree"` / `"terminal"`。
+    /// 由宿主的 `PanelId::from_str` 解析。
+    /// zom-command 不 import 宿主枚举，靠字符串桥接。
     TogglePanel(String),
 
     // ===== Search =====
@@ -48,8 +47,9 @@ pub enum HostEffect {
     /// - 已显示 + 焦点不在面板 → 把焦点搬到 query
     /// - 已显示 + 焦点在面板 → 收起，焦点回编辑器
     ///
-    /// 第一版只有单文件搜索（per-buffer），不带 scope；跨文件搜索后续作为
-    /// 独立 workspace 服务再加，那时会引入各自的命令与 effect，不复用本变体。
+    /// 第一版只有单文件搜索（per-buffer），不带 scope。
+    /// 跨文件搜索后续作为独立 workspace 服务再加，
+    /// 那时会引入各自的命令与 effect，不复用本变体。
     SearchActivate,
     /// 切换搜索选项。
     SearchToggleOption(SearchOption),
@@ -130,9 +130,8 @@ pub enum HostEffect {
 
 /// `CommandContext` 内的 effect 缓冲。
 ///
-/// handler 调用 `ctx.effects.push(...)` emit；宿主在 `CommandExecutor::run`
-/// 返回后调用 `drain` 把全部 effect 应用出去。**不在 handler 中应用** ——
-/// 那会要求 handler 持 `&mut Host`，破坏命令系统的解耦。
+/// handler 调用 `ctx.effects.push(...)` emit；宿主在 `CommandExecutor::run` 返回后调用 `drain` 把全部 effect 应用出去。
+/// **不在 handler 中应用** —— 那会要求 handler 持 `&mut Host`，破坏命令系统的解耦。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EffectQueue {
     pending: Vec<HostEffect>,

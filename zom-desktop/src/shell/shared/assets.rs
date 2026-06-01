@@ -1,7 +1,7 @@
 //! `EmbeddedAssets` —— GPUI `AssetSource` 的 embedded 实现（手册 22.2 / 22.3）。
 //!
-//! 第一版把全部 svg / 主题文件编译进二进制；用户主题除外（5.2，骨架阶段
-//! 尚未接入）。路径不带 `assets/` 前缀（手册 22.4）。
+//! 当前把全部 svg / 主题文件编译进二进制；用户主题另走设置与主题加载路径。
+//! 路径不带 `assets/` 前缀（手册 22.4）。
 
 use std::borrow::Cow;
 
@@ -105,19 +105,17 @@ mod tests {
 
         assert!(
             missing.is_empty(),
-            "shell icon paths must be present in EmbeddedAssets: {missing:#?}"
+            "shell 引用的图标路径必须存在于 EmbeddedAssets：{missing:#?}"
         );
     }
 
     fn collect_icon_paths(dir: &Path, out: &mut BTreeSet<String>) {
         let entries = fs::read_dir(dir)
-            .unwrap_or_else(|error| panic!("failed to read {}: {error}", dir.display()));
+            .unwrap_or_else(|error| panic!("读取目录失败：{}：{error}", dir.display()));
 
         for entry in entries {
             let path = entry
-                .unwrap_or_else(|error| {
-                    panic!("failed to read entry in {}: {error}", dir.display())
-                })
+                .unwrap_or_else(|error| panic!("读取目录项失败：{}：{error}", dir.display()))
                 .path();
 
             if path == platform_dir() {
@@ -144,7 +142,7 @@ mod tests {
 
     fn collect_icon_paths_from_file(path: &Path, out: &mut BTreeSet<String>) {
         let source = fs::read_to_string(path)
-            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+            .unwrap_or_else(|error| panic!("读取文件失败：{}：{error}", path.display()));
 
         for literal in source.split('"').skip(1).step_by(2) {
             if literal.starts_with("icons/") && literal.ends_with(".svg") {

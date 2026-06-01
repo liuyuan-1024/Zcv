@@ -27,9 +27,8 @@ pub struct LargeFilePolicy {
     pub large_file_threshold_bytes: usize,
     /// 任意单行字符数超此阈值的 Buffer 视为含超长行；`0` 表示不限。
     ///
-    /// 引擎不拒绝超长行，只通过 `Buffer::has_long_line()` /
-    /// `LoadedTextInfo::has_long_line` 暴露事实，宿主自行决定是否禁用 high-cost
-    /// 能力（如行级 fold、UI 视觉列重排等）。
+    /// 引擎不拒绝超长行，只在加载时通过 `LoadedTextInfo::has_long_line` 暴露事实，
+    /// 宿主自行决定是否禁用 high-cost 能力（如行级 fold、UI 视觉列重排等）。
     pub long_line_threshold_chars: usize,
     /// 超过 `large_file_threshold_bytes` 的 Buffer 在加载 / reload 时是否自动
     /// 切到只读。默认 `false`：仅暴露事实，行为由宿主控制。

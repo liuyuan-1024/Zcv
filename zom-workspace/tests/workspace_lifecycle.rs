@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use zom_engine::ByteOffset;
+use zom_engine::{Buffer, ByteOffset};
 use zom_workspace::{BufferOrigin, Workspace, WorkspaceError};
 
 struct TempDir {
@@ -34,6 +34,14 @@ impl Drop for TempDir {
     }
 }
 
+fn buffer_text(buffer: &Buffer) -> String {
+    buffer
+        .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+        .unwrap()
+        .into_text()
+        .into_owned()
+}
+
 #[test]
 fn open_text_should_track_active_buffer_and_close_fallback() {
     let mut workspace = Workspace::new();
@@ -47,7 +55,7 @@ fn open_text_should_track_active_buffer_and_close_fallback() {
     assert_eq!(workspace.active_buffer_id(), Some(third));
     workspace.set_active_buffer(first).unwrap();
     assert_eq!(
-        workspace.active_buffer().unwrap().buffer().text().as_ref(),
+        buffer_text(workspace.active_buffer().unwrap().buffer()),
         "first"
     );
 

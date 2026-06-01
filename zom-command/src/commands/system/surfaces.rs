@@ -1,7 +1,6 @@
 //! `surface.*` 命令目录。
 //!
-//! handler 只 emit [`HostEffect`]，具体关闭哪个浮面由宿主自己的
-//! `SurfaceManager` 决定；命令系统不持有 shell 状态。
+//! handler 只 emit [`HostEffect`]，具体关闭哪个浮面由宿主自己的 `SurfaceManager` 决定；命令系统不持有 shell 状态。
 
 use crate::{
     CommandArgs, CommandId, CommandOutcome, CommandRegistry, HostEffect, Invocation, Keymap, NoArgs,

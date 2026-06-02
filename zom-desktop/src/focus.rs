@@ -40,6 +40,7 @@ pub(crate) enum PanelFocus {
 pub(crate) enum FileTreeFocus {
     Navigate,
     NewEntryName,
+    RenameEntry,
     ConfirmDelete,
 }
 

@@ -82,6 +82,29 @@ pub(crate) fn try_apply_effect(
         HostEffect::FileTreeCancelNewEntry => {
             app.borrow_mut().file_tree_mut().cancel_new_entry();
         }
+        HostEffect::FileTreeBeginRename => {
+            app.borrow_mut().file_tree_mut().begin_rename();
+            // 与新建一样：保险起见 show_panel + 重新聚焦——用户可能从命令面板或菜单触发，此时文件树未必已经持焦。
+            workbench.borrow_mut().show_panel(PanelId::FileTree);
+            request_focus(
+                app,
+                focus,
+                AppFocus::file_tree(FileTreeFocus::RenameEntry),
+                window,
+            );
+        }
+        HostEffect::FileTreeCommitRename => {
+            // 与 CommitNewEntry 同构：文件被打开即把焦点切给编辑器；目录留在文件树。
+            let activation = app
+                .borrow_mut()
+                .with_file_tree(|ft, ws, vs| ft.commit_rename(ws, vs));
+            if matches!(activation, FileTreeActivation::OpenedFile) {
+                request_focus(app, focus, AppFocus::editor(), window);
+            }
+        }
+        HostEffect::FileTreeCancelRename => {
+            app.borrow_mut().file_tree_mut().cancel_rename();
+        }
         HostEffect::FileTreeRequestDelete => {
             app.borrow_mut().file_tree_mut().request_delete();
         }

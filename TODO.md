@@ -1,316 +1,124 @@
 # zom 开发规划
 
-> 本规划以 `zom-engine/docs/引擎能力.md` 的能力域为主轴。`zom-engine` 已作为纯文本编辑引擎底座收口，后续开发重点是把 engine 能力稳定接入 `zom-workspace`、`zom-view`、`zom-command`、`zom-ai` 和 `zom-desktop`，形成可用编辑器骨架。
+> 本规划以 `zom-engine/docs/引擎能力.md` 的能力域为主轴。`zom-engine` 已作为
+> 纯文本编辑引擎底座收口，后续开发重点是把 engine 能力稳定接入 `zom-workspace`、
+> `zom-view`、`zom-command`、`zom-ai` 和 `zom-desktop`，形成可用编辑器骨架。
 >
-> 宿主层的 crate 划分、依赖图与各 crate 核心 public API 形状已在《zom 宿主层架构规划》中锁定，骨架已铺好。本文的能力域与 P0–P4 阶段都建立在那个稳定边界上。
+> 宿主层 crate 划分、依赖图与各 crate 核心 public API 形状已在《zom 宿主层架构
+> 规划》中锁定。本文的能力域与阶段都建立在那个稳定边界上。
 
 ## 总原则
 
-- `zom-engine` 继续保持纯粹底层编辑引擎定位，不塞入 UI、命令语义、项目管理、AI provider 或跨文件业务。
+- `zom-engine` 继续保持纯粹底层编辑引擎定位，不塞入 UI、命令语义、项目管理、
+  AI provider 或跨文件业务。
 - crate 之间只通过 public API 连接，不跨 crate 依赖私有实现、源码路径或测试细节。
 - 6 个 crate 的职责：
-  - `zom-engine` —— 文本编辑底座(冻结)。
-  - `zom-workspace` —— 文档/模型层：buffer 与文件生命周期（「有什么」）。
-  - `zom-view` —— 编辑面状态层：view/pane、滚动、本视图 selection 与 fold（「我怎么看它」）。
-  - `zom-command` —— 命令派发脊柱 + 键位模型；「所有操作均是命令」。
-  - `zom-ai` —— AI 抽象：provider trait + request/proposal + proposal→transaction 转换。
-  - `zom-desktop` —— GPUI 外壳 + 组合根；内部 `shell` / `app` 分模块。
-- 依赖图（无环）：`zom-ai` 只依赖 `zom-engine` 且保持零网络依赖；`zom-ai` 与 `zom-command` **无依赖边**，P4 接入时在 `zom-desktop` 组合根相遇；`zom-command` 依赖 `workspace`/`view`/`engine` 但不依赖 `ai`。
-- 命令参数采用方案 A：唯一派发路径 `(CommandId, CommandArgs)`，每条命令在自己模块里 `TryFrom<CommandArgs>` 解析。
+  - `zom-engine` —— 文本编辑底座（冻结）
+  - `zom-workspace` —— 文档 / 模型层：buffer 与文件生命周期（「有什么」）
+  - `zom-view` —— 编辑面状态层：view / pane、滚动、本视图 selection 与 fold
+  - `zom-command` —— 命令派发脊柱 + 键位模型；「所有操作均是命令」
+  - `zom-ai` —— AI 抽象：provider trait + request / proposal + proposal→transaction
+  - `zom-desktop` —— GPUI 外壳 + 组合根；内部 `shell` / `app` 分模块
+- 依赖图（无环）：`zom-ai` 只依赖 `zom-engine` 且保持零网络依赖；`zom-ai` 与
+  `zom-command` **无依赖边**，在 `zom-desktop` 组合根相遇；`zom-command` 依赖
+  `workspace` / `view` / `engine` 但不依赖 `ai`。
+- 命令参数：唯一派发路径 `(CommandId, CommandArgs)`，每条命令在自己模块里
+  `TryFrom<CommandArgs>` 解析。
 - 新增 public API 前先明确长期语义、调用方影响、错误边界和测试覆盖。
-- 修改 Rust 代码后默认在根目录运行 `cargo fmt` 和 `cargo test --workspace`；如果只运行定向检查，需要在回复中说明范围。
+- 修改 Rust 代码后默认在根目录运行 `cargo fmt` 和 `cargo test --workspace`；
+  只跑定向检查时需在回复中说明范围。
 
-## 能力域规划
+## 已完成
 
-### 1. 文本存储与文件边界
+| 阶段 / 主题 | 收口 |
+|---|---|
+| P0 Workspace 骨架 | `Workspace` / `WorkspaceBuffer` / `BufferId` 生命周期；`open_file` / `save_file` / `save_as` / `close_buffer`；dirty / path / readonly 状态查询 |
+| P1 Command 到编辑事务闭环 | `CommandArgs` / `TryFrom`、`CommandExecutor::run`、editor 命令 catalog（插入 / 删除 / 替换 / 选择 / undo / redo / movement）、`Keymap` 前缀 trie |
+| P2 Desktop 最小编辑循环 | GPUI 外壳 + TopBar / Body / BottomBar；keymap → 命令队列 → 执行器；IME commit + preedit 直通；阶段 2 范围背景渲染原语；selection / 多光标 caret |
+| P3 搜索与视口 | `BufferSearch` 数据模型（per-buffer 共享 + `try_remap`）；search 接入阶段 2 高亮；search 系列 handler；`ViewportSlice` 替换全文读取 |
+| 语法高亮异步增量 | 单全局 `SyntaxWorker` + tree-sitter 增量 reparse + viewport-scoped query + `ReplaceRange` 局部产物 + 每帧 `pump_pending_highlights`。`MAX_HIGHLIGHT_BYTES = 16 MiB`（rust 单键 e2e 63 ms / 主线程 3 µs / cold parse 1.56 s）。详见 [`zom-workspace/docs/语法高亮异步增量改造.md`](zom-workspace/docs/语法高亮异步增量改造.md) |
+| 搜索异步化 | 引擎：`SearchHandle` + 协作式取消 + `SearchProgress`。Workspace：`BufferSearch` 持 pending handle，`sync` 非阻塞，`pump_pending_search` 渲染线程每帧 drain。`DEFAULT_REGEX_HAYSTACK_BYTE_LIMIT` 8 MiB 硬限已删（10 MiB 全文 regex 测试 320 ms） |
 
-Engine 已提供：
+## 进行中 / 未开工
 
-- `Buffer` 创建、加载、reload、保存文本边界。
-- dirty、只读、大文件和超大事务防御。
-- 编码、BOM、换行策略等文件文本进入和离开 Buffer 的底层边界。
+### P3 剩余
 
-宿主侧规划：
-
-- 在 `zom-workspace` 中完善 `Workspace`、`WorkspaceBuffer`、`BufferId` 的生命周期模型。
-- 增加 `open_file`、`open_text`、`save_file`、`save_as`、`close_buffer`。
-- 管理路径、保存点、dirty 状态、只读状态和活动 buffer。
-- 暂不做文件监听、冲突弹窗和保存 UI；这些属于宿主交互层，后续单独规划。
-
-### 2. 坐标与文本读取
-
-Engine 已提供：
-
-- 以 `ByteOffset` / `TextRange` 为核心的强类型坐标。
-- `Position`、`CharOffset`、`Utf16Position`、`DisplayColumn` 等派生坐标转换。
-- line / viewport / visible line 读取切片。
-
-宿主侧规划：
-
-- `zom-view` 保存视图状态:看哪个 buffer、滚动位置、可见范围、本视图的 selection 与 fold 实例。
-- 文本显示通过 `Snapshot`、`ViewportSlice` 或 projection 结果读取。
-- `zom-desktop` 不自行维护核心编辑坐标，不裸用 `usize` 表达编辑语义。
-- 所有坐标转换统一走 engine public API。
-
-### 3. 编辑事务与变更映射
-
-Engine 已提供：
-
-- `Transaction`、`EditList`、`Delta`、`ChangeSet`、`PositionMap`。
-- 事务版本校验和原子提交。
-- selection after edit、changed ranges 和事件记录。
-
-宿主侧规划：
-
-- `CommandContext` 是具体结构体，持有 `&mut Workspace` 与 `&mut ViewSet`（全部 buffer 与 view，含活动指向）+ `&mut CommandQueue` / `&mut EffectQueue`。
-- 增加基础编辑命令：
-  - `editor.insert_text`
-  - `editor.insert_newline`
-  - `editor.indent` / `editor.outdent`
-  - `editor.delete_backward`
-  - `editor.delete_forward`
-  - `editor.replace_selection`
-  - `editor.select_all`
-- 命令层只表达用户操作意图，不重复实现 engine 编辑算法。
-- 所有文本变异最终归一到 `Buffer` / `Transaction` 管线。
-- 命令组合走 `CommandQueue`，不重入；执行器不自管历史，`editor.undo` 的 handler 直接调 `buffer.undo()`。
-
-### 4. 历史、快照与版本
-
-Engine 已提供：
-
-- Undo / Redo、分支历史、历史预算。
-- `TransactionRecord`、回放、`Snapshot`、`BufferVersion`。
-- `VersionedResult` 和过期结果处理。
-
-宿主侧规划：
-
-- 在 `zom-command` 中提供 `editor.undo`、`editor.redo`。
-- 在 `zom-workspace` 中提供活动 buffer 的历史能力转发。
-- AI 提案、搜索结果、未来 diagnostics 等外部结果都必须绑定版本。
-- 版本不匹配时拒绝直接应用，必要时走 remap 或重新生成。
-
-### 5. 光标、选区与组合输入
-
-Engine 已提供：
-
-- `SelectionSet`、多光标、word / subword / symbol / line boundary / page movement。
-- selection after edit。
-- IME composition 的底层状态和提交流程。
-
-宿主侧规划：
-
-- 在 `zom-command` 中增加 movement 命令：
-  - 字符级左右移动。
-  - 行内首尾移动与 PageUp / PageDown。
-  - word / subword / symbol 移动。
-  - 扩展选区移动。
-- 活动 view 的 `SelectionSet` 实例由 `zom-view` 持有，movement 命令经 `CommandContext` 改它。
-- `zom-desktop` 接收键盘、鼠标或 IME 事件后转换为 command，不直接修改 Buffer；OS 按键 → 归一化 `KeyChord` 的解码在 `zom-desktop`。
-- IME 先完成最小闭环：start / update / commit / cancel；start / commit 走命令，update 走直接通道喂活动 view 的 `CompositionState`。
-
-### 6. 区间追踪与外部结果承载
-
-Engine 已提供：
-
-- `Anchor`、`TrackedRange`、`MetadataLayer`、`VersionedRangeSet`。
-- 版本绑定、范围跟随、失效策略和 payload 承载。
-- UTF-16 边界转换能力。
-
-宿主侧规划：
-
-- `zom-ai` 当前仍是早期骨架；P4 需要把 `ProposedEdit` 从裸 byte range 收口到 engine `TextRange`，并让 `AiRequest` / `AiProposal` 携带 `BufferVersion`。
-- AI 编辑流程：
-  - 从当前 buffer 获取 `Snapshot`。
-  - 构造带版本的 `AiRequest`。
-  - `AiProvider::propose`(one-shot async)返回 `AiProposal`。
-  - `proposal_to_transaction` 校验版本和 range。
-  - 转换为 `Transaction`。
-  - 应用或拒绝。
-- AI 建议、语法高亮、诊断、inlay hint、gutter 装饰等异步外部结果统一用 `MetadataLayer<T>` 承载（payload 只携带语义键，desktop 侧 theme 解析为颜色/字重/下划线/inline 文本/gutter 图标）；详见《桌面端组件实现》§二.5 6 阶段绘制契约与 §二.10 扩展点表，语法高亮的 producer 子系统详见《桌面端语法高亮》。
-- 搜索高亮是例外：不走 metadata layer，由宿主侧 `zom-workspace::WorkspaceBuffer.BufferSearch` 直接持有 `SearchResult`（per-buffer 共享，多 view 共用），engine 仅提供纯查询 API。
-
-### 7. 折叠、投影与读取切片
-
-Engine 已提供：
-
-- `FoldSet`、`HiddenRange`、`Projection`、`ProjectedRange`。
-- logical line 与 projected line 映射。
-- projected viewport slicing。
-
-宿主侧规划：
-
-- 第一阶段只接 `ViewportSlice`，保证能显示当前 buffer 文本；视图侧的 `ViewportState` 在 `zom-view`。
-- 第二阶段接 `FoldSet` / `Projection`，支持折叠后的可见文本和坐标映射；`FoldSet` 实例由 `zom-view` 按视图持有（同一 buffer 的两个分屏可有不同折叠）。
-- 折叠按钮、占位符样式、像素布局和绘制策略只放在 `zom-desktop`。
-
-### 8. 单 Buffer 搜索与替换
-
-Engine 已提供：
-
-- literal / regex 搜索。
-- 结果版本绑定。
-- 单次替换和 replace all 原子事务。
-- `SearchResult::try_remap`：编辑后把现存命中按 PositionMap 推进到新版本。
-
-宿主侧规划：
-
-- `zom-workspace::WorkspaceBuffer` 新增 `BufferSearch { query, options, result: SearchResult, current_hit }`；per-buffer 共享，分屏看同一 buffer 时多 view 共用；observe DeltaEvent 触发 `try_remap`。
-- 在 `zom-command` 中增加：
-  - `editor.find`
-  - `editor.find_next`
-  - `editor.find_previous`
-  - `editor.replace_current`
-  - `editor.replace_all`
-- 重算时机：编辑期间仅 `try_remap` 推进现存命中，不主动发现新命中；query 变化、或 find-next 发现 result 落后于当前 `buffer.version` 时才同步 re-run。
-- 跨文件搜索、任务调度、取消策略和结果面板后续放在 workspace / desktop 层，不进入 engine。
-
-### 8.5 语法高亮异步增量改造
-
-详细方案见 [`zom-workspace/docs/语法高亮异步增量改造.md`](zom-workspace/docs/语法高亮异步增量改造.md)。
-
-- [x] P0：脱 `tree-sitter-highlight`，等价替换为 raw `tree-sitter`（同步、全量）。
-- [x] P1：持久化 Parser + Tree 做增量 reparse；engine 新增 `Snapshot::byte_to_point` / `Snapshot::chunk_at_byte` 与 `ChangeSet::edits()` 公开访问；worker 缓存 `(Tree, Snapshot)`，`on_edit` 走 `tree.edit` + `parse_with_options` 流式 chunks，含「中间事件 no-op」「版本不连续 / parse 失败回退全量」防御。
-- [x] P2：把 provider 推到后台 `SyntaxWorker`（单线程 + mpsc + catch_unwind 兜底 panic）。`BufferSyntaxState` 主线程只持 sink + worker handle；`handle_edit` 克隆 Snapshot + ChangeSet 投 Job。`Workspace::pump_pending_highlights` 由 desktop 每帧 prepaint 调一次 drain 到 layers。**64 MiB 单键主线程 2.7 µs（target ≤5 ms）**。
-- [x] P3：viewport-scoped `QueryCursor::set_byte_range` + `SnapshotTextProvider` + `sink.replace_range`。engine 新增 `MetadataLayer::replace_in_range` / `MetadataLayers::replace_layer_ranges_in_range`，coordinator 把 `ReplaceRange` 接到 layer 局部替换。`HighlightProvider` trait 加 `set_viewport(Option<TextRange>)` default-no-op；HighlightWorker 实现：set_viewport 立即触发一次 viewport-scoped re-query（滚动后新区域 1–2 帧补齐）。**4 MiB e2e 200 → 11 ms（-94%），64 MiB e2e 3.3 s → 246 ms（-92%）**。剩余瓶颈在 attach 冷启动（仍全树）与 QueryCursor 节点遍历开销。
-- [x] P3 后续：desktop 接 `App::pump_active_viewport_hint`（ShellView::render 每帧调一次，活动 view 的 viewport ±32 行 → byte range → `Workspace::set_buffer_viewport_hint`）；HighlightWorker 内部去重，无变化不重 query。
-- [x] P4：`MAX_HIGHLIGHT_BYTES` 4 MiB → **16 MiB**——16 MiB rust 实测 viewport-scoped e2e 63 ms / 主线程 3 µs / cold parse 1.56 s，三条红线全过。64 MiB 一档单键 ~250 ms、cold parse 6.3 s 是 tree-sitter 走树常数代价，不再追；超过 16 MiB 静默落 plain。
-- [ ] 搜索 `DEFAULT_REGEX_HAYSTACK_BYTE_LIMIT` 8 MiB 硬限：单独立项；放开前需先做异步搜索 + 可取消 + 进度上报（否则换"卡死"）。
-
-### 9. 防御、性能与验证
-
-Engine 已提供：
-
-- 坐标、编辑、事务、存储、历史等分层错误模型。
-- 大文件策略、历史预算、超大事务防御。
-- property 回归和粗粒度内存观测入口。
-
-宿主侧规划：
-
-- `zom-workspace` 测试 buffer 生命周期、文件保存边界、活动 buffer 切换。
-- `zom-view` 测试 view/pane 多重性、活动 view 切换、viewport / fold 状态(无头可测,不经 GPUI)。
-- `zom-command` 测试命令注册、快捷键绑定、命令执行上下文和错误返回。
-- `zom-ai` 测试版本不匹配、非法 range、提案应用原子性。
-- `zom-desktop` 先保持轻量 smoke test，避免 UI 测试反向污染 engine API。
-
-### 10. 外部文件系统变更同步
-
-现状：项目树和打开的 buffer 都是首次加载或手动操作时的快照；当外部进程（git checkout、其他编辑器、CLI、脚本等）增删/重命名目录或文件、或改写文件内容时，zom 完全无法感知。
-
-宿主侧规划：
-
-- 引入跨平台文件监听底座（候选：`notify` crate；封装 FSEvents/inotify/ReadDirectoryChangesW）。监听线程归一事件后通过 channel 投递回主线程，主线程统一应用。
-- 监听范围：当前项目根 + 所有打开 buffer 的真实路径（含符号链接解引用后的路径）。
-- 事件语义归一为三类：`PathCreated` / `PathRemoved` / `PathModified`，重命名拆成 remove+create 上报，跨平台差异在归一层吸收。
-- 项目树（`zom-workspace::project_tree`）按事件做增量更新，避免全量重扫；对忽略规则（.git、target、node_modules 等）短路。
-- `WorkspaceBuffer` 对应文件被修改：
-  - 干净 buffer：默认走静默 reload（保留 view selection / scroll，必要时按 `PositionMap` 做最佳努力 remap，失败回退到首行）。
-  - dirty buffer：标记为 "存在外部变更" 状态，等待用户解决（reload 丢本地 / 保留本地覆盖 / 三方合并）。具体 UI 等冲突解决面板再开。
-  - 文件被删除或外移：buffer 标记为 orphan（路径解绑），保留内容与历史，允许 save_as。
-- 写回声抑制：保存时打 `(path, mtime, expected_hash)` 时间戳窗口，监听到的事件落在窗口内且 hash 匹配则忽略，避免自己写自己提醒。
-- 节流与风暴抑制：事件 debounce（建议 50–150ms 合并窗口），大批量变更（git checkout、rebase）触发后只做一次树重算和一轮 buffer 重检。
-- 跨平台差异：macOS FSEvents 是目录级、Linux inotify 是文件级；监听层对外只暴露归一后的事件，调用方不感知差异。
-- 验证：用临时目录起 fixture，跨平台 smoke 测试增删改重命名 4 类事件的归一与去抖；buffer reload 走真实文件读写而不是 mock。
-
-## 阶段计划
-
-### P0：Workspace 骨架收口
-
-目标：让 `zom-workspace` 成为 engine 的稳定宿主外壳。
-
-- [x] 明确 `Workspace` 的活动 buffer 模型。
-- [x] 增加 `open_file` / `save_file` / `save_as` / `close_buffer`。
-- [x] 暴露 buffer dirty / path / readonly 等状态查询。
-- [x] 补充 workspace 生命周期测试。
-- [x] 根目录运行 `cargo fmt` 和 `cargo test --workspace`。（`cargo fmt` 已完成；`cargo test --workspace` 已完成。）
-
-### P1：Command 到编辑事务闭环
-
-目标：所有基础编辑都通过 command 进入 engine。
-
-- [x] 落地 `CommandArgs` 表示与 `TryFrom<CommandArgs>` 解析约定。
-- [x] 落地 `CommandExecutor::run` 排空队列逻辑。
-- [x] 在 `zom-command::commands::editor` catalog 中接入插入、删除、替换选区、全选。
-- [x] 接入 undo / redo(handler 调 `buffer.undo()` / `buffer.redo()`)。
-- [x] 接入基础 selection movement(改活动 view 的 `SelectionSet`)。
-- [x] 落地 `Keymap` 前缀 trie 解析与 `KeymapResolution`。
-- [x] 补充 command 契约测试。
-
-### P2：Desktop 最小可用编辑循环
-
-目标：`zom-desktop` 能跑通最小编辑体验。
-
-- [x] 接入 GPUI 外壳、embedded assets、TopBar / Body / BottomBar 基础布局和 panel 骨架。
-- [x] `app` 启动时创建 workspace、活动 buffer 和活动 view。
-- [x] 显示当前 view 文本。
-- [x] 输入解码：OS 按键 → 归一化 `KeyChord` → keymap 解析 → 命令队列 → 执行器。
-- [x] 支持删除、移动光标、撤销、重做。
-- [x] 接入 IME 最小文本输入路径：commit 走命令，preedit update 走直接通道。
-- [x] 保持 `shell` 只做事件转换和显示，不复制编辑语义。
-- [x] 阶段 2 范围背景渲染原语 `paint_range_backgrounds`：接受 `Vec<(TextRange, Hsla)>`，处理跨多行 quad 拆分与 viewport 裁剪。
-- [x] selection 作为阶段 2 第一个消费者接入：含多光标 caret 与跨行 selection 背景。
-- [ ] IME marked text 作为阶段 2 第二个消费者接入。（暂时不做，以待后续）
-
-### P3：搜索、视口与折叠
-
-目标：在 P2 渲染骨架之上接入 engine 的搜索、视口与投影能力。
-
-**渲染骨架定型**
-
-- [x] EditorView v1 渲染管线 6 阶段绘制槽位定型：阶段 1 / 2 / 3 / 5 / 6 行号有内容，阶段 4 与 6 装饰图标 producer 先 no-op，预留扩展点。
-
-**搜索与替换**
-
-> 搜索 UI 决策：panel 即输入入口，**不显示结果列表**——所有命中通过 EditorView
-> 阶段 2 在 buffer 内高亮，"3 / 27" 命中数标签放在 panel 的 query 输入行右侧。
-> 不做独立 find bar surface（与 panel 功能重叠）。
-> 跨文件搜索是 workspace 层另一笔账，等开发跨文件搜索算法时单开命令与服务。
-
-- [x] 清理 panel 当前实现：删除 `SearchScope` / `IN_BUFFER` / `IN_PROJECT` / `SearchActivateScope` / 结果列表 (`SearchResultItem` 等) / panel 内置搜索算法（refresh / find_next / replace_*）；新增 `HostEffect::SearchActivate` 与 `search.activate` 命令；panel 退化为输入控制条 + 命中数标签占位。
-- [x] `zom-workspace` 落地 `WorkspaceBuffer.BufferSearch` 数据模型与生命周期：query / options / SearchResult / current hit；DeltaEvent 触发 `try_remap`；query 变化或落版本时 re-run。
-- [x] search 作为阶段 2 第二个消费者接入：current hit 用强调样式区分。
-- [x] `zom-command` 把 `search.find_next` / `search.find_previous` / `search.replace_next` / `search.replace_all` handler 接到 active buffer 的 BufferSearch；panel `hit_count` 从 BufferSearch 读填。
-
-**视口与折叠**
-
-- [x] 接入 `ViewportSlice`，替换当前直接读取整份文本的实现。
-- [ ] 接入 fold / projection 的最小可用路径。
-
-**测试**
-
+- [ ] 接入 fold / projection 的最小可用路径——`FoldSet` 已挂在 `ViewState` 上，
+  desktop 渲染尚未消费 `Projection`，折叠按钮 / 占位符 / 坐标映射都没接。
 - [ ] 补充搜索与投影接入测试。
+- [ ] IME marked text 作为阶段 2 第二个消费者接入（暂缓，等真有 IME 体验问题再开）。
+
+### P4 AI 提案闭环（草案）
+
+`zom-ai` 当前仅有 lib.rs 骨架。需要：
+
+- `ProposedEdit` 从裸 byte range 收口到 engine `TextRange`；`AiRequest` /
+  `AiProposal` 携带 `BufferVersion`。
+- 流程：取 `Snapshot` → 带版本的 `AiRequest` → `AiProvider::propose` (one-shot
+  async) → `proposal_to_transaction` 校验版本和 range → 应用 / 拒绝。
+- 在 desktop 组合根接入；`zom-ai` 与 `zom-command` 仍保持无直接依赖。
 
 ### 外部文件系统变更同步（独立工作流）
 
-目标：让 zom 能感知外部进程对项目目录与已打开文件的变更，并按策略同步到项目树与 buffer。
+不绑定 P 阶段，可与 P3 / P4 并行。
 
-不绑定 P 阶段——可与 P3/P4 并行推进；阶段内任务按"先最小可用，再处理冲突 UI"分批。
+**M1 最小可用**
 
-**最小可用（M1）**
-
-- [ ] 引入 `notify` 依赖，封装 `zom-workspace::fs_watch`：监听线程 + 事件归一（Created/Removed/Modified，重命名拆成 remove+create）+ 主线程 channel。
-- [ ] 项目树监听：根目录变更事件按增量更新 `project_tree` 节点，命中忽略规则的事件短路；事件 debounce 50–150ms 合并窗口。
-- [ ] 打开 buffer 监听：对干净 buffer 收到 Modified 后走静默 reload；buffer 被 Removed 后进入 orphan 状态。
+- [ ] 引入 `notify` 依赖，封装 `zom-workspace::fs_watch`：监听线程 + 事件归一
+  （Created / Removed / Modified；重命名拆 remove+create）+ 主线程 channel。
+- [ ] 项目树监听：根目录变更按增量更新 `project_tree`，命中忽略规则的事件短路；
+  debounce 50–150ms。
+- [ ] 打开 buffer 监听：干净 buffer 收 Modified 走静默 reload；buffer 被
+  Removed 进入 orphan 状态。
 - [ ] 写回声抑制：保存路径在 `(mtime, hash)` 窗口内的事件忽略。
-- [ ] 集成测试：临时目录 fixture，覆盖增删改重命名 4 类事件的归一与去抖。
+- [ ] 集成测试：临时目录 fixture，覆盖 4 类事件的归一与去抖。
 
-**冲突解决（M2）**
+**M2 冲突解决**
 
-- [ ] dirty buffer 外部变更：标记 "存在外部变更"，提供 reload / keep local 两个动作（命令化）。
-- [ ] 冲突解决 UI：`zom-desktop` 加最小提示条 + 命令入口，三方合并暂不做。
-- [ ] orphan buffer 的 save_as 路径与项目树重新绑定流程。
+- [ ] dirty buffer 外部变更：标 "存在外部变更"，提供 reload / keep local 命令。
+- [ ] 冲突解决 UI：最小提示条 + 命令入口（三方合并暂不做）。
+- [ ] orphan buffer 的 save_as 路径与项目树重新绑定。
 
-**风险与性能（M3）**
+**M3 风险与性能**
 
-- [ ] 大项目首次启动监听的内存/句柄预算评估。
-- [ ] git checkout / rebase 风暴下的批量去抖回归测试。
+- [ ] 大项目首次启动监听的内存 / 句柄预算评估。
+- [ ] git checkout / rebase 风暴的批量去抖回归。
 - [ ] 符号链接、外部挂载、网络盘的边界处理与降级策略。
+
+### 搜索异步化可选 polish
+
+不阻塞主线，性能 / UX 优化项：
+
+- [ ] regex 跨 chunk DFA：用 `regex-automata` 消除连续 haystack 物化，让 100 MiB+
+  文件搜索不再一次性分配。
+- [ ] pending 期 GPUI wake：用定时器 / `cx.spawn` 在 `is_searching()` 期间发
+  `cx.notify()`，让用户不操作也能看到结果自动落地。
+- [ ] `SearchHandle::progress()` 面板可视化进度条。
+
+## 能力域参考
+
+各能力域在引擎层已基本冻结；本节作为"哪条 API 服务哪个用途"的索引，**不再
+重复列已完成清单**。详细完成情况见上方"已完成"表。
+
+| 能力域 | Engine API | 宿主侧消费点 | 状态 |
+|---|---|---|---|
+| 文本存储与文件边界 | `Buffer::from_text` / `Buffer::from_reader` / `Buffer::save_to` | `zom-workspace::Workspace::open_file` 等 | 收口 |
+| 坐标与文本读取 | `ByteOffset` / `TextRange` / `Snapshot::slice_*` / `ViewportSlice` | `zom-view::ViewState`、desktop 渲染 | 收口 |
+| 编辑事务与变更映射 | `Transaction` / `EditList` / `Delta` / `ChangeSet` / `PositionMap` | `editor.*` 命令 | 收口 |
+| 历史、快照与版本 | `Buffer::undo` / `redo` / `Snapshot` / `BufferVersion` / `VersionedResult` | `editor.undo` / `editor.redo`；AI 提案版本校验 | 收口（AI 路径待 P4） |
+| 光标、选区与组合输入 | `SelectionSet` / movement API / `CompositionState` | `editor.*` movement 命令；desktop IME 路径 | 收口（marked text UI 待补） |
+| 区间追踪与外部结果承载 | `Anchor` / `TrackedRange` / `MetadataLayer<T>` / `VersionedRangeSet` | 语法高亮 / 诊断 / inlay hint（统一）；AI 待 P4；**搜索高亮是例外，直接持 `SearchResult`** | 语法已用；其他待生 |
+| 折叠、投影与读取切片 | `FoldSet` / `Projection` / `ProjectedRange` / `ProjectedViewport` | `zom-view::ViewState.folds`；desktop 渲染消费 `Projection` | viewport 已接，fold 待接 |
+| 单 Buffer 搜索与替换 | `Buffer::search` / `search_regex` / `replace_*` / `SearchHandle` / `SearchProgress` | `zom-workspace::BufferSearch` + `editor.find_*` / `search.replace_*` | 收口 |
+| 防御、性能与验证 | 分层错误模型、大文件策略、property 回归 | 各 crate 测试 | 持续 |
+| 外部文件系统变更同步 | 不在 engine | `zom-workspace::fs_watch`（未实现） | 未开工 |
 
 ## 近期优先级
 
-1. IME marked text 接成阶段 2 第二个消费者（与 search 二选一作为阶段 2 第二消费者，命名只是顺序差别）。
-2. `zom-workspace::WorkspaceBuffer.BufferSearch` 数据模型与生命周期，并接 search 作为阶段 2 范围背景的下一个消费者接入。
-3. `zom-command` 把 find / replace handler 接到 BufferSearch；panel `hit_count` 接 BufferSearch。
-4. 接入 viewport slice。
-5. 接入 fold / projection 的最小可用路径，并补充宿主侧测试。
-6. 外部文件系统变更同步 M1：`notify` 接入、项目树增量更新、干净 buffer 静默 reload、写回声抑制、归一/去抖集成测试。
+1. **fold / projection 最小可用路径**——P3 唯一未完成项，desktop 接 `Projection`
+   消费折叠后的可见文本与坐标映射，配上折叠按钮 / 占位符的最小 UI。
+2. **外部文件系统同步 M1**——`notify` 接入、项目树增量、干净 buffer 静默 reload、
+   写回声抑制、集成测试。
+3. **P4 AI 提案闭环草案**——`AiRequest` / `AiProposal` 收口到 engine `TextRange`
+   + `BufferVersion`，跑通"一次性 propose 后转 Transaction 应用"的最短路径。
+4. （可选）搜索异步化的 polish 项——按需打开。

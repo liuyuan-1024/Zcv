@@ -216,9 +216,9 @@ pub enum SearchError {
     #[error("非法正则表达式：pattern {pattern:?}，message {message}")]
     InvalidRegex { pattern: String, message: String },
 
-    /// 正则搜索当前仍需要连续 haystack；超过预算时显式拒绝，避免大文件隐式物化。
-    #[error("正则搜索范围过大：range_bytes {range_bytes}，limit {limit}")]
-    RangeTooLarge { range_bytes: usize, limit: usize },
+    /// 调用方通过 `SearchHandle::cancel` 主动撤销，或 handle 已被 drop。
+    #[error("搜索已取消")]
+    Cancelled,
 }
 
 /// 底层存储相关的错误（存储后端做不了）。

@@ -297,7 +297,10 @@ pub fn measure_search(buffer: &Buffer, pattern: &str, size_mib: usize) -> Measur
     let mut error: Option<String> = None;
     for _ in 0..ITERS {
         let t0 = Instant::now();
-        match buffer.search_regex(pattern, RegexSearchOptions::default()) {
+        match buffer
+            .search_regex(pattern, RegexSearchOptions::default())
+            .join()
+        {
             Ok(result) => {
                 total += t0.elapsed();
                 hits = result.len();

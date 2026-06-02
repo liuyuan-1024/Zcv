@@ -19,7 +19,7 @@ use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::PanelContext;
 use zom_workspace::EntryKind;
 
-use super::{FileTreeRow, FileTreeState, PendingNewEntry};
+use super::{FileTreeRow, FileTreeState, PendingNewEntry, PendingRename};
 
 const FOLDER_ICON: &str = "icons/files/folder.svg";
 const FOLDER_OPEN_ICON: &str = "icons/files/folder_open.svg";
@@ -64,9 +64,9 @@ fn render_list(
 ) -> Div {
     let items = logical_items(state);
     let selected_item = selected_item_index(&items, state);
-    // pending 激活时让"导航焦点"指示器（行的蓝框）让位给输入行的蓝框。
+    // pending / rename 激活时让"导航焦点"指示器（行的蓝框）让位给输入行的蓝框。
     // 同色规则同时生效会出现两个蓝框；视觉上焦点只能有一个。
-    let selected = if state.pending.is_some() {
+    let selected = if state.pending.is_some() || state.pending_rename.is_some() {
         None
     } else {
         state.selected.clone()
@@ -102,7 +102,10 @@ fn render_list(
                         )
                         .into_any_element(),
                         FileTreeItem::Pending(pending) => {
-                            render_input_row(pending, &slot).into_any_element()
+                            render_input_row(pending.kind, pending.depth, &slot).into_any_element()
+                        }
+                        FileTreeItem::Rename(rename) => {
+                            render_input_row(rename.kind, rename.depth, &slot).into_any_element()
                         }
                     })
                     .collect()
@@ -117,11 +120,19 @@ fn render_list(
 enum FileTreeItem {
     Row(FileTreeRow),
     Pending(PendingNewEntry),
+    Rename(PendingRename),
 }
 
 fn logical_items(state: &FileTreeState) -> Vec<FileTreeItem> {
     let mut items = Vec::new();
     for row in &state.rows {
+        // 重命名：把目标行替换成输入行，不再画原名（避免「输入框旁边还有旧名」二义）。
+        if let Some(rename) = &state.pending_rename
+            && rename.path == row.path
+        {
+            items.push(FileTreeItem::Rename(rename.clone()));
+            continue;
+        }
         items.push(FileTreeItem::Row(row.clone()));
         // 新建条目的输入行紧跟在其父目录行之后。
         if let Some(pending) = &state.pending
@@ -134,6 +145,11 @@ fn logical_items(state: &FileTreeState) -> Vec<FileTreeItem> {
 }
 
 fn selected_item_index(items: &[FileTreeItem], state: &FileTreeState) -> Option<usize> {
+    if state.pending_rename.is_some() {
+        return items
+            .iter()
+            .position(|item| matches!(item, FileTreeItem::Rename(_)));
+    }
     if state.pending.is_some() {
         return items
             .iter()
@@ -146,16 +162,13 @@ fn selected_item_index(items: &[FileTreeItem], state: &FileTreeState) -> Option<
     })
 }
 
-/// 新建态的内联输入行：父目录行下方，带文件/目录图标、已键入名称与光标。
-///
-/// 名称输入框直接嵌入文件树 pending 名称 [`TextEditorSlot`]。本行（边框 / 图标 /
-/// 缩进）是它的外壳。
-fn render_input_row(pending: &PendingNewEntry, slot: &Rc<TextEditorSlot>) -> Div {
-    let icon = match pending.kind {
+/// 内联输入行：新建 / 重命名共用。图标按目标类型挑（重命名时取原条目类型），
+/// 文本与光标由 slot.embed 内部从 router 拉。
+fn render_input_row(kind: EntryKind, depth: usize, slot: &Rc<TextEditorSlot>) -> Div {
+    let icon = match kind {
         EntryKind::Directory => FOLDER_OPEN_ICON,
         EntryKind::File => FILE_ICON,
     };
-    // 文本与光标位由 slot.embed 内部从 router 拉，pending.editor 这里不再需要。
     div()
         .flex()
         .flex_row()
@@ -166,7 +179,7 @@ fn render_input_row(pending: &PendingNewEntry, slot: &Rc<TextEditorSlot>) -> Div
         .rounded(radius::r2())
         .border_1()
         .border_color(color::blue::s07())
-        .pl(indent_unit() * (pending.depth as f32) + space::s4())
+        .pl(indent_unit() * (depth as f32) + space::s4())
         .text_size(typography::ui())
         .text_color(color::gray::s09())
         .child(

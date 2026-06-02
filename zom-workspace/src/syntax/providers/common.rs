@@ -349,11 +349,10 @@ fn reset_cursor_range(cursor: &mut QueryCursor) {
 /// 把 `ChangeSet`（旧坐标 edit 列表）翻译为 tree-sitter `InputEdit` 列表。
 ///
 /// 每条 InputEdit 的旧端 Point 用 `old_snapshot.byte_to_point` 解码，新端 Point
-/// 用 `new_snapshot.byte_to_point` 解码——这两侧坐标系不同源（一个是旧文本、
-/// 一个是新文本），不能混用同一份 snapshot；详见改造方案 §4.4。
+/// 用 `new_snapshot.byte_to_point` 解码——这两侧坐标系不同源（一个是旧文本、一个是新文本），不能混用同一份 snapshot；详见改造方案 §3.4。
 ///
-/// 任何一条 edit 解码失败（越界 / 非字符边界）就返回 `None`，由调用方全量
-/// 重解析。Edit 列表已经过 `EditList::new` 排序且不重叠，按顺序逐条 `Tree::edit`
+/// 任何一条 edit 解码失败（越界 / 非字符边界）就返回 `None`，由调用方全量重解析。
+/// Edit 列表已经过 `EditList::new` 排序且不重叠，按顺序逐条 `Tree::edit`
 /// 即可保证 tree-sitter 看到的内部坐标连续推进。
 fn translate_edits(
     change: &ChangeSet,
@@ -468,8 +467,7 @@ impl<'snap> TextProvider<&'snap [u8]> for SnapshotTextProvider<'snap> {
 
 /// 把 `QueryCursor::captures` 的事件流转成非重叠 `(range, name)` span 列表。
 ///
-/// 语义沿用 tree-sitter 官方 highlighter 的事件模型，只去除我们当前不消费的
-/// injections / locals 两条支路：
+/// 语义沿用 tree-sitter 官方 highlighter 的事件模型，只去除我们当前不消费的 injections / locals 两条支路：
 ///
 /// 1. **同 node 覆盖**：`captures` 按 source order 流出；同一 node 上多个 pattern
 ///    依次出现时，**后到的 pattern 胜出**——下游的 `(node, pattern_b)`

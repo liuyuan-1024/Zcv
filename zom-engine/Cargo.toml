@@ -1,6 +1,6 @@
 [package]
 name = "zom-engine"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 description = "工业级纯粹文本编辑引擎底座"
 

@@ -206,7 +206,7 @@ impl<T> MetadataLayer<T> {
     /// `new_ranges` 追加进 layer。`byte_range` 外的 ranges 完全保留，版本不动。
     ///
     /// 服务于语法高亮的 viewport-scoped ReplaceRange 路径（[改造方案
-    /// §4.6](../../../zom-workspace/docs/语法高亮异步增量改造.md)）：worker 只产
+    /// §3.6](../../../zom-workspace/docs/语法高亮异步增量改造.md)）：worker 只产
     /// viewport ± 缓冲区段的 spans，远处旧 spans 保持不变，避免每次编辑都全层
     /// 重建。
     ///

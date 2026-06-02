@@ -1,6 +1,6 @@
 [package]
 name = "zom-view"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 description = "编辑面状态层：视图、分屏、滚动、本视图选区与折叠"
 

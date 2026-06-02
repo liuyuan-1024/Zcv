@@ -1,6 +1,6 @@
 [package]
 name = "zom-command"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 description = "命令系统层：命令标识、参数模型、键位表与统一派发入口"
 

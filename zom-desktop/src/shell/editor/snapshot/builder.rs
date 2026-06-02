@@ -45,10 +45,12 @@ pub(crate) fn build_snapshot(
         request.top_line,
         request.visible_line_count,
     );
+    let total_lines = buffer.line_count() as u64;
     let mut decorations = Vec::new();
     producers::selection::push(selection, &mut decorations);
     EditorSnapshot {
         lines,
+        total_lines,
         viewport_start_line,
         // 通用构造路径默认与 slice 起点一致；上层（主编辑区 text_target）按需覆盖。
         top_line: viewport_start_line,

@@ -113,6 +113,12 @@ pub enum HostEffect {
     FileTreeCommitNewEntry,
     /// 取消正在输入的新建条目。
     FileTreeCancelNewEntry,
+    /// 开始重命名当前选中条目（输入框预填原名并全选）。
+    FileTreeBeginRename,
+    /// 提交正在输入的重命名。
+    FileTreeCommitRename,
+    /// 取消重命名。
+    FileTreeCancelRename,
     /// 请求删除当前选中条目：打开确认弹窗。
     FileTreeRequestDelete,
     /// 确认删除：把待删条目移入回收站。

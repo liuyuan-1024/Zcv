@@ -45,47 +45,6 @@ impl Buffer {
         )
     }
 
-    /// 删除所有非空 selection range；caret 本身不会删除任何字符。
-    pub fn delete_selection_ranges(
-        &mut self,
-        selections: SelectionSet,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
-        self.replace_selection_ranges_with_metadata(
-            selections,
-            "",
-            TransactionMetadata::new(TransactionSource::Programmatic)
-                .with_description("删除所选内容"),
-        )
-    }
-
-    /// 对每个 caret 执行 grapheme-safe Backspace；非空 selection 直接删除 selection range。
-    pub fn delete_backward_at_selections(
-        &mut self,
-        selections: SelectionSet,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
-        self.delete_by_movement_at_selections(
-            selections,
-            MovementDirection::Previous,
-            MovementUnit::Grapheme,
-            TransactionMetadata::new(TransactionSource::Programmatic)
-                .with_description("向后删除选定内容"),
-        )
-    }
-
-    /// 对每个 caret 执行 grapheme-safe Delete；非空 selection 直接删除 selection range。
-    pub fn delete_forward_at_selections(
-        &mut self,
-        selections: SelectionSet,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
-        self.delete_by_movement_at_selections(
-            selections,
-            MovementDirection::Next,
-            MovementUnit::Grapheme,
-            TransactionMetadata::new(TransactionSource::Programmatic)
-                .with_description("向前删除所选内容"),
-        )
-    }
-
     /// Tab 缩进，按"标准 IDE"语义分流：
     ///
     /// - **所有 selection 都是 caret**：在每个 caret 原位插入一个"软 Tab"。
@@ -176,11 +135,46 @@ impl Buffer {
         )
     }
 
-    pub(in crate::buffer) fn delete_by_movement_at_selections(
+    /// 删除的唯一引擎入口。三种语义按 `caret_motion` 分流：
+    ///
+    /// - `caret_motion = Some((dir, unit))`：caret 沿 `dir` 推一个 `unit` 边界，把 `[caret, boundary)` 删掉；
+    /// 非空 selection 整段删（`caret_motion` 无效）。
+    /// - `caret_motion = None`：caret no-op，只删非空 selection。
+    ///
+    /// 事务描述按 `(dir, unit)` 落到 `(direction, unit)` 矩阵；`None` 时写「删除所选内容」。
+    pub fn delete_at_selections(
         &mut self,
         selections: SelectionSet,
-        direction: MovementDirection,
-        unit: MovementUnit,
+        caret_motion: Option<(MovementDirection, MovementUnit)>,
+    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        let description = match caret_motion {
+            None => "删除所选内容",
+            Some((MovementDirection::Previous, MovementUnit::Grapheme)) => "向后删除选定内容",
+            Some((MovementDirection::Next, MovementUnit::Grapheme)) => "向前删除所选内容",
+            Some((MovementDirection::Previous, MovementUnit::Word)) => "向后删除单词",
+            Some((MovementDirection::Next, MovementUnit::Word)) => "向前删除单词",
+            Some((MovementDirection::Previous, MovementUnit::Subword)) => "向后删除子词",
+            Some((MovementDirection::Next, MovementUnit::Subword)) => "向前删除子词",
+            Some((MovementDirection::Previous, MovementUnit::Identifier)) => "向后删除标识符",
+            Some((MovementDirection::Next, MovementUnit::Identifier)) => "向前删除标识符",
+            Some((MovementDirection::Previous, MovementUnit::Symbol)) => "向后删除符号",
+            Some((MovementDirection::Next, MovementUnit::Symbol)) => "向前删除符号",
+            Some((MovementDirection::Previous, MovementUnit::LineEdge)) => "删除到行首",
+            Some((MovementDirection::Next, MovementUnit::LineEdge)) => "删除到行尾",
+        };
+        self.delete_at_selections_with_metadata(
+            selections,
+            caret_motion,
+            TransactionMetadata::new(TransactionSource::Programmatic).with_description(description),
+        )
+    }
+
+    /// 同 [`delete_at_selections`]，但允许调用方自定义事务 metadata——AI 改写 /
+    /// 批量重构等场景想把多次删除归入同一逻辑事务时用得到。
+    pub(in crate::buffer) fn delete_at_selections_with_metadata(
+        &mut self,
+        selections: SelectionSet,
+        caret_motion: Option<(MovementDirection, MovementUnit)>,
         metadata: TransactionMetadata,
     ) -> EngineResult<Option<(Delta, ChangeSet)>> {
         self.ensure_writable()?;
@@ -190,6 +184,10 @@ impl Buffer {
 
         for selection in selections.as_slice() {
             if selection.is_caret() {
+                let Some((direction, unit)) = caret_motion else {
+                    // direction = None → caret no-op，跳过本条 selection。
+                    continue;
+                };
                 let head = selection.head();
                 // head 是 ByteOffset，movement_boundary 仍按 char 计算，跨边界转换。
                 let head_char = self.storage.byte_to_char(head)?;

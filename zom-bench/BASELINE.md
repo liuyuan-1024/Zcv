@@ -1,6 +1,6 @@
-# 64 MiB 流畅性目标 · 性能基线
+# 16 MiB 流畅性目标 · 性能基线
 
-> 本文档是 zom 「64MB 文本 / 高亮 + 编辑流畅」目标的数字起点。
+> 本文档是 zom 「16 MiB 文本 / 高亮 + 编辑流畅」目标的数字起点。
 > 任何针对性能的改动，**必须**先在这一组场景上重跑，把新旧数字一起钉进文档底部的「历史快照」区。
 
 ## 1. 测量方法
@@ -16,21 +16,28 @@
 - **构建**：release。
 - **峰值内存**：bench 不自测；外层用 `/usr/bin/time -l`（macOS）或 `/usr/bin/time -v`（Linux）读 maximum resident set size。
 
-## 2. v0.2.0 基线（rust 语料，2026-06-01 实测）
+## 2. 16 MiB 基线（rust 语料，2026-06-02 实测）
 
-| 场景 | 1 MiB | 4 MiB | 64 MiB | 备注 |
-|---|---:|---:|---:|---|
-| `load` | 4.0 ms | 11.9 ms | **150 ms** | 线性，可接受 |
-| `viewport` | 56 µs | 36 µs | **39 µs** | O(log n)；架构 OK ✅ |
-| `search` | 0.5 ms | 1.8 ms | **被引擎拒绝** | `DEFAULT_REGEX_HAYSTACK_BYTE_LIMIT = 8 MiB` |
-| `parse` | 111 ms | 448 ms | **7.2 s** | tree-sitter 全量、同步 |
-| `edit+highlight` | 113 ms/键 | 457 ms/键 | **7.6 s/键** | 单键阻塞主线程 |
-| **peak RSS (full run)** | — | — | **4.38 GB ≈ 68× 文件** | tree-sitter 树 + 全文 String + Vec\<spans\> 同时活 |
-| **peak RSS (load only)** | — | — | **218 MB ≈ 3.4× 文件** | bytes Vec + decoded String + rope 三份内存 |
+P0–P4 全部落地后的稳态。v0.2.0 起点与各阶段过渡数字见 §6 历史快照。
 
-> 16 MiB 一档与 json / log 语料尚未实测；后续补全后追加到本表下方或单独成表。
+| 场景 | 16 MiB | 红线 | 备注 |
+|---|---:|---:|---|
+| `load` | **41.7 ms** | — | `Buffer::from_reader` 流式：64 KiB 读缓冲 + 单次扫描合并 UTF-8 / 行尾 / 最长行 |
+| `viewport` | **30.8 µs** | ≤ 100 µs ✅ | `snapshot.slice_viewport(60 行 @ 中位行)`；渲染热路径 |
+| `search` | **5.3 ms** | ≤ 200 ms ✅ | regex `\bfn\b|\blet\b|\bimpl\b`；命中 114357 处；8 MiB 硬限已解除 |
+| `parse` | **1.55 s** | ≤ 1.5 s ≈✅ | tree-sitter 冷启动；worker 异步、不阻塞主线程 |
+| `edit+hl 主线程` | **2.9 µs / 键** | ≤ 5 ms ✅ | `insert` + `take_pending` + push channel；与文件大小脱钩（1800× 余量） |
+| `edit+hl viewport e2e` | **54.5 ms / 键** | ≤ 100 ms ✅ | viewport ±8 KiB + worker `wait_for_idle`；`QueryCursor::set_byte_range` + `sink.replace_range` |
+| `edit+hl 全文 e2e` | 776 ms / 键 | — | 全文 query 端到端；保留作旧路径回归观察，非红线 |
 
-## 3. 关键发现（解读，不是承诺）
+> 1 MiB / 4 MiB 一档作秒级回归（`run rust 4`）使用，触发红线告警已足够，不再列入本表。
+> 64 MiB 一档仍可跑作"远端劣化"观察，见 §6；超过 16 MiB 已不在红线管辖。
+> json / log 语料尚未实测。
+
+## 3. 关键发现（v0.2.0 回顾，已被 P0–P4 解决）
+
+> 本节是 v0.2.0 起点时的问题诊断，留作历史参考。三个阻塞点在 §6 历史快照
+> 中的对应行已逐项交代落地路径；当前 16 MiB 稳态参见 §2。
 
 ### 3.1 三个结构性阻塞点（按是否暴露给用户排序）
 

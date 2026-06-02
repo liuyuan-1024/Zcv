@@ -27,7 +27,7 @@ pub(crate) use effects::try_apply_effect;
 pub(crate) use model::FileTreeModel;
 pub(crate) use runtime::FileTreeRuntime;
 pub(crate) use state::{
-    FileTreeActivation, FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry,
+    FileTreeActivation, FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry, PendingRename,
 };
 
 /// 删除确认弹窗的两个动作回调。由根视图绑定命令后注入。

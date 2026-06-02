@@ -122,6 +122,9 @@ impl App {
             AppFocus::Panel(PanelFocus::FileTree(_)) if self.file_tree.pending_delete_active() => {
                 AppFocus::file_tree(FileTreeFocus::ConfirmDelete)
             }
+            AppFocus::Panel(PanelFocus::FileTree(_)) if self.file_tree.pending_rename_active() => {
+                AppFocus::file_tree(FileTreeFocus::RenameEntry)
+            }
             AppFocus::Panel(PanelFocus::FileTree(_)) if self.file_tree.pending_active() => {
                 AppFocus::file_tree(FileTreeFocus::NewEntryName)
             }
@@ -329,9 +332,9 @@ impl App {
                 KeyContext::file_tree(FileTreeKeyMode::PendingDelete),
                 KeyContext::global(),
             ],
-            AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::NewEntryName)) => {
-                text_stack_for(focus)
-            }
+            AppFocus::Panel(PanelFocus::FileTree(
+                FileTreeFocus::NewEntryName | FileTreeFocus::RenameEntry,
+            )) => text_stack_for(focus),
             AppFocus::Panel(PanelFocus::FileTree(_)) => vec![
                 KeyContext::file_tree(FileTreeKeyMode::Navigate),
                 KeyContext::global(),
@@ -481,13 +484,23 @@ impl App {
     ///
     /// 不阻塞——`pump_pending_highlights` 内部只是扫一遍 buffer + 一次空 drain；
     /// worker 没出新产物就无操作。详见
-    /// [改造方案 §4.7](../../zom-workspace/docs/语法高亮异步增量改造.md)。
+    /// [改造方案 §3.7](../../zom-workspace/docs/语法高亮异步增量改造.md)。
     pub fn pump_pending_highlights(&mut self) {
         self.workspace.pump_pending_highlights();
     }
 
+    /// 每帧 prepaint 起手再调一次：收割活动 buffer 的后台 BufferSearch 结果。
+    /// 没有 in-flight 时 O(1) 早退。新结果落地时同时 reveal 首条命中——避免
+    /// 用户输入查询后 UI 不刷新的"看上去卡住"假象。
+    ///
+    /// 与 `pump_pending_highlights` 平级：两个独立后台子系统，各自有"主线程收割"
+    /// 入口，统一在 [`crate::shell::view::ShellView::render`] 拍点驱动。
+    pub fn pump_pending_search(&mut self) {
+        search_panel::coordinator::pump_active_buffer_search(&mut self.workspace, &mut self.views);
+    }
+
     /// 把活动 view 的可见区间转成 byte range 后推给语法 worker，让 `on_edit`
-    /// 走 viewport-scoped query + `ReplaceRange`（[改造方案 §4.6](
+    /// 走 viewport-scoped query + `ReplaceRange`（[改造方案 §3.6](
     /// ../../zom-workspace/docs/语法高亮异步增量改造.md)）。
     ///
     /// padding ±32 行：tree-sitter `set_byte_range` 只返回起止 byte 都落在范围内
@@ -553,7 +566,7 @@ impl App {
         let focus = self.focus.current();
 
         // picker 焦点下，命令执行可能改了 query 文本
-        // （DELETE_BACKWARD / 粘贴等走 edit_target，绕过 router 的 after_text_changed 钩子）。
+        // （DELETE / 粘贴等走 edit_target，绕过 router 的 after_text_changed 钩子）。
         // 派发前后比一次 query 文本：变了才 reset_selection，否则保留。
         // 否则 MOVE_SELECTION 自己也会被无差别 reset，选中项只能在 0 / 1 之间来回。
         let picker_query_before =
@@ -876,7 +889,7 @@ mod tests {
             vec![HostEffect::ProjectPickerMoveSelection(1)]
         );
 
-        // backspace 落到 picker query 的 text_edit 上下文，由 DELETE_BACKWARD 命令处理（删一个字符）。
+        // backspace 落到 picker query 的 text_edit 上下文，由 DELETE 命令处理（删一个字符）。
         // 不是 picker 的导航动作，但仍由 keymap 消费。
         let outcome = app.dispatch_key("backspace".to_string()).unwrap();
         assert!(outcome.consumed);

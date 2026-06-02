@@ -104,7 +104,7 @@ pub trait HighlightProvider: Send + Sync {
     /// 默认实现无操作：LSP / 占位 provider 等不需要 viewport hint 的 producer
     /// 直接忽略即可。tree-sitter 系（[`crate::syntax::providers`]）会把它接到
     /// `QueryCursor::set_byte_range`，让每次编辑只产 viewport ± 缓冲区段的
-    /// `ReplaceRange`（[改造方案 §4.6](
+    /// `ReplaceRange`（[改造方案 §3.6](
     /// ../../docs/语法高亮异步增量改造.md)）。调用方可在 hint 改变时立即触发
     /// 一次"重 query"（不重 parse），把新区域的 spans 1–2 帧内补齐。
     fn set_viewport(&mut self, byte_range: Option<TextRange>) {

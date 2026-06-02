@@ -1,11 +1,11 @@
-//! `zom-bench` —— 64 MiB 目标的基线测量工具。
+//! `zom-bench` —— 16 MiB 目标的基线测量工具。
 //!
 //! 用法（一律 release 跑）：
 //!
 //! ```text
 //! cargo run --release -p zom-bench -- corpus           # 生成 1/4/16/64 MiB 语料到 target/bench-corpus/
 //! cargo run --release -p zom-bench -- run rust         # 跑 rust 全部规模
-//! cargo run --release -p zom-bench -- run rust 64      # 只跑 rust 64 MiB 一档
+//! cargo run --release -p zom-bench -- run rust 16      # 只跑 rust 16 MiB 一档（红线档）
 //! cargo run --release -p zom-bench -- run all          # 三语言全跑
 //! ```
 //!
@@ -84,7 +84,7 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             let lang_arg = args.get(1).map(String::as_str).unwrap_or("rust");
-            let size_arg: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(64);
+            let size_arg: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(16);
             let Some(lang) = Lang::from_arg(lang_arg) else {
                 eprintln!("未知语言：{lang_arg}");
                 return ExitCode::FAILURE;
@@ -244,7 +244,7 @@ fn fmt_dur(d: Duration) -> String {
 }
 
 fn print_usage() {
-    println!("zom-bench —— 64 MiB 基线测量套件");
+    println!("zom-bench —— 16 MiB 基线测量套件");
     println!();
     println!("用法:");
     println!("  zom-bench corpus               生成语料到 target/bench-corpus/");
@@ -255,6 +255,6 @@ fn print_usage() {
     println!("示例:");
     println!("  cargo run --release -p zom-bench -- corpus");
     println!("  cargo run --release -p zom-bench -- run rust");
-    println!("  cargo run --release -p zom-bench -- run rust 64");
+    println!("  cargo run --release -p zom-bench -- run rust 16");
     println!("  cargo run --release -p zom-bench -- run all");
 }

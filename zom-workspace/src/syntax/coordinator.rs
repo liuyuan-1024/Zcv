@@ -1,6 +1,6 @@
 //! BufferSyntaxState：单个缓冲区的语法高亮调度状态（**异步前台句柄**）。
 //!
-//! 设计来自《桌面端语法高亮》§七，并按[改造方案 §4.2 / §4.7](../../docs/语法高亮异步增量改造.md) 收口为异步路径。
+//! 设计来自《桌面端语法高亮》§七，并按[改造方案 §3.2 / §3.7](../../docs/语法高亮异步增量改造.md) 收口为异步路径。
 //!
 //! ## 当前形态
 //!
@@ -183,7 +183,7 @@ impl BufferSyntaxState {
     /// - 遇到一条 `ReplaceAll`：它直接重建整层 spans，之前累积的 `ReplaceAll` 与
     ///   `ReplaceRange` 都被它覆盖——清空累计；
     /// - 累计期遇到 `ReplaceRange`：先 stash，等收集完所有消息后按 FIFO 顺序应用
-    ///   到 `MetadataLayers::replace_layer_ranges_in_range`（[改造方案 §4.6](
+    ///   到 `MetadataLayers::replace_layer_ranges_in_range`（[改造方案 §3.6](
     ///   ../../docs/语法高亮异步增量改造.md)）；
     ///
     /// 每条消息都独立做版本守护（手册 §五）：

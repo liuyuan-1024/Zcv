@@ -35,8 +35,7 @@ pub const REPLACE_SELECTION: &str = "editor.replace_selection";
 pub const INSERT_NEWLINE: &str = "editor.insert_newline";
 pub const INDENT: &str = "editor.indent";
 pub const OUTDENT: &str = "editor.outdent";
-pub const DELETE_BACKWARD: &str = "editor.delete_backward";
-pub const DELETE_FORWARD: &str = "editor.delete_forward";
+pub const DELETE: &str = "editor.delete";
 pub const MOVE_SELECTION: &str = "editor.move_selection";
 pub const SELECT_ALL: &str = "editor.select_all";
 pub const UNDO: &str = "editor.undo";
@@ -172,6 +171,59 @@ impl TryFrom<CommandArgs> for ImeCommitArgs {
     }
 }
 
+/// `editor.delete` 的参数集——与 [`MoveSelectionArgs`] 同构（一条命令 + args 区分）。
+///
+/// 三种语义全在一组 args 里：
+/// - `direction = Some(dir) + unit`：caret 沿 `dir` 删一个 `unit`；非空 selection 整段删。
+/// - `direction = None`：caret 不动（no-op），仅删非空 selection。`unit` 此时无效，
+///   args 里不允许出现 `motion`，否则报 `InvalidArgs`，避免「我提供了 unit 但被忽略」的隐性歧义。
+///
+/// PageStep / LineStep 对删除没有惯例语义，[`parse_unit`] 不接受。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeleteArgs {
+    pub direction: Option<MovementDirection>,
+    pub unit: MovementUnit,
+}
+
+impl From<DeleteArgs> for CommandArgs {
+    fn from(args: DeleteArgs) -> Self {
+        let mut out = CommandArgs::new();
+        if let Some(dir) = args.direction {
+            out = out.with("direction", direction_to_str(dir));
+            // Grapheme 是默认值，省略 motion 让 keymap 文件最短。
+            if args.unit != MovementUnit::Grapheme {
+                out = out.with("motion", unit_to_str(args.unit));
+            }
+        }
+        // direction = None 时 unit 无意义，不序列化。
+        out
+    }
+}
+
+impl TryFrom<CommandArgs> for DeleteArgs {
+    type Error = CommandError;
+    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
+        reject_unknown_args(&args, &["direction", "motion"])?;
+        let direction = match args.get("direction") {
+            None | Some("") => None,
+            Some(value) => Some(parse_direction(value)?),
+        };
+        let unit = match args.get("motion") {
+            None | Some("") => MovementUnit::Grapheme,
+            Some(value) => {
+                if direction.is_none() {
+                    return Err(CommandError::InvalidArgs(
+                        "motion 仅在提供 direction 时有效（无 direction 表示只删非空选区）"
+                            .to_string(),
+                    ));
+                }
+                parse_unit(value)?
+            }
+        };
+        Ok(Self { direction, unit })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MoveSelectionArgs {
     pub direction: MovementDirection,
@@ -275,12 +327,13 @@ pub fn outdent() -> Invocation {
     (cid(OUTDENT), CommandArgs::new())
 }
 
-pub fn delete_backward() -> Invocation {
-    (cid(DELETE_BACKWARD), CommandArgs::new())
-}
-
-pub fn delete_forward() -> Invocation {
-    (cid(DELETE_FORWARD), CommandArgs::new())
+/// 删除的唯一入口。三种语义全靠 [`DeleteArgs`] 区分：
+///
+/// - `DeleteArgs { direction: Some(prev), unit: Grapheme }`：backspace
+/// - `DeleteArgs { direction: Some(next), unit: Word }`：alt-delete
+/// - `DeleteArgs { direction: None, .. }`：caret 不动，只删非空 selection
+pub fn delete(args: DeleteArgs) -> Invocation {
+    (cid(DELETE), args.into())
 }
 
 pub fn move_selection(
@@ -385,22 +438,30 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     registry
         .install(keymap, OUTDENT, "减少缩进", Box::new(run_outdent))
         .key_in("shift-tab", text_edit_multiline);
+    // 删除的所有方向 / 单位变体共用一条命令，按预设 args 区分——与 MOVE_SELECTION 同形。
     registry
-        .install(
-            keymap,
-            DELETE_BACKWARD,
-            "向后删除",
-            Box::new(run_delete_backward),
+        .install(keymap, DELETE, "删除", Box::new(run_delete))
+        .key_with_in(
+            "backspace",
+            delete_args(MovementDirection::Previous, MovementUnit::Grapheme),
+            text_edit,
         )
-        .key_in("backspace", text_edit);
-    registry
-        .install(
-            keymap,
-            DELETE_FORWARD,
-            "向前删除",
-            Box::new(run_delete_forward),
+        .key_with_in(
+            "delete",
+            delete_args(MovementDirection::Next, MovementUnit::Grapheme),
+            text_edit,
         )
-        .key_in("delete", text_edit);
+        // alt-backspace / alt-delete 与 alt-left / alt-right（按词移动）对称：按词删除。
+        .key_with_in(
+            "alt-backspace",
+            delete_args(MovementDirection::Previous, MovementUnit::Word),
+            text_edit,
+        )
+        .key_with_in(
+            "alt-delete",
+            delete_args(MovementDirection::Next, MovementUnit::Word),
+            text_edit,
+        );
     // 光标 / 选区的全部 移动 / 扩展 变体共用一条命令，按预设 args 区分。
     use MovementDirection::*;
     use MovementUnit::*;
@@ -567,6 +628,14 @@ fn move_args(direction: MovementDirection, motion: impl Into<Motion>, extend: bo
     .into()
 }
 
+fn delete_args(direction: MovementDirection, unit: MovementUnit) -> CommandArgs {
+    DeleteArgs {
+        direction: Some(direction),
+        unit,
+    }
+    .into()
+}
+
 fn select_tab_args(target: SelectTabTarget) -> CommandArgs {
     SelectTabArgs { target }.into()
 }
@@ -584,15 +653,38 @@ fn direction_to_str(direction: MovementDirection) -> &'static str {
 
 fn motion_to_str(motion: Motion) -> &'static str {
     match motion {
-        Motion::ByUnit(MovementUnit::Grapheme) => "grapheme",
-        Motion::ByUnit(MovementUnit::Word) => "word",
-        Motion::ByUnit(MovementUnit::Identifier) => "identifier",
-        Motion::ByUnit(MovementUnit::Subword) => "subword",
-        Motion::ByUnit(MovementUnit::Symbol) => "symbol",
-        Motion::ByUnit(MovementUnit::LineEdge) => "line-edge",
+        Motion::ByUnit(unit) => unit_to_str(unit),
         Motion::LineStep => "line-step",
         // PageStep 的 lines 通过 args.lines 另行携带，motion 字段仍是扁平字符串。
         Motion::PageStep { .. } => "page-step",
+    }
+}
+
+/// 把 `MovementUnit` 序列化为 args 字符串——`motion_to_str` 与 `DeleteArgs` 共用。
+fn unit_to_str(unit: MovementUnit) -> &'static str {
+    match unit {
+        MovementUnit::Grapheme => "grapheme",
+        MovementUnit::Word => "word",
+        MovementUnit::Identifier => "identifier",
+        MovementUnit::Subword => "subword",
+        MovementUnit::Symbol => "symbol",
+        MovementUnit::LineEdge => "line-edge",
+    }
+}
+
+/// 反向：仅接受 `MovementUnit` 枚举值，拒绝 `line-step` / `page-step`。
+/// `DeleteArgs` 与 `MoveSelectionArgs` 都用得到——后者再额外扩展到 Motion。
+fn parse_unit(value: &str) -> Result<MovementUnit, CommandError> {
+    match value {
+        "grapheme" | "character" | "char" => Ok(MovementUnit::Grapheme),
+        "word" => Ok(MovementUnit::Word),
+        "identifier" => Ok(MovementUnit::Identifier),
+        "subword" => Ok(MovementUnit::Subword),
+        "symbol" => Ok(MovementUnit::Symbol),
+        "line-edge" => Ok(MovementUnit::LineEdge),
+        other => Err(CommandError::InvalidArgs(format!(
+            "未知删除单位：{other}（删除不接受 line-step / page-step）",
+        ))),
     }
 }
 
@@ -606,12 +698,6 @@ fn parse_direction(value: &str) -> Result<MovementDirection, CommandError> {
 
 fn parse_motion(value: &str, args: &CommandArgs) -> Result<Motion, CommandError> {
     match value {
-        "grapheme" | "character" | "char" => Ok(Motion::ByUnit(MovementUnit::Grapheme)),
-        "word" => Ok(Motion::ByUnit(MovementUnit::Word)),
-        "identifier" => Ok(Motion::ByUnit(MovementUnit::Identifier)),
-        "subword" => Ok(Motion::ByUnit(MovementUnit::Subword)),
-        "symbol" => Ok(Motion::ByUnit(MovementUnit::Symbol)),
-        "line-edge" => Ok(Motion::ByUnit(MovementUnit::LineEdge)),
         "line-step" => Ok(Motion::LineStep),
         "page-step" => {
             let raw = args.get("lines").ok_or_else(|| {
@@ -625,7 +711,10 @@ fn parse_motion(value: &str, args: &CommandArgs) -> Result<Motion, CommandError>
             }
             Ok(Motion::PageStep { lines })
         }
-        other => Err(CommandError::InvalidArgs(format!("未知光标运动：{other}"))),
+        // 其余走 unit；parse_unit 不接受的字符串在那里报错。
+        other => parse_unit(other)
+            .map(Motion::ByUnit)
+            .map_err(|_| CommandError::InvalidArgs(format!("未知光标运动：{other}"))),
     }
 }
 
@@ -708,31 +797,19 @@ fn run_outdent(
     Ok(CommandOutcome::default())
 }
 
-fn run_delete_backward(
+fn run_delete(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
+    let args = DeleteArgs::try_from(args)?;
     let target = context.edit_target()?;
     let selections = target.selection.clone();
+    // caret_motion = Some → caret 沿方向删 unit、非空选区整段删；
+    // caret_motion = None → caret no-op，仅删非空选区。
+    let caret_motion = args.direction.map(|dir| (dir, args.unit));
     target
         .buffer
-        .delete_backward_at_selections(selections)
-        .map_err(command_execution_failed)?;
-    *target.selection = target.buffer.selection().clone();
-    Ok(CommandOutcome::default())
-}
-
-fn run_delete_forward(
-    context: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    let target = context.edit_target()?;
-    let selections = target.selection.clone();
-    target
-        .buffer
-        .delete_forward_at_selections(selections)
+        .delete_at_selections(selections, caret_motion)
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
@@ -960,11 +1037,13 @@ fn run_cut(
     context.clipboard.write(&text);
 
     let target = context.edit_target()?;
+    // cut 两条分支都是「调用方先把要删的 range 算好了」——caret_motion=None
+    // 让引擎跳过 caret 处理，整段删传入的非空 selection 即可。
     match plan {
         CutPlan::DeleteSelections(selections) => {
             target
                 .buffer
-                .delete_selection_ranges(selections)
+                .delete_at_selections(selections, None)
                 .map_err(command_execution_failed)?;
         }
         CutPlan::DeleteLineRanges(line_ranges) => {
@@ -972,7 +1051,7 @@ fn run_cut(
                 let line_selections = SelectionSet::from_ranges(line_ranges);
                 target
                     .buffer
-                    .delete_selection_ranges(line_selections)
+                    .delete_at_selections(line_selections, None)
                     .map_err(command_execution_failed)?;
             }
         }

@@ -1,6 +1,6 @@
 [package]
 name = "zom-desktop"
-version = "0.2.0"
+version.workspace = true
 edition.workspace = true
 description = "桌面入口层：组合 engine、workspace、view、command 与 GPUI 外壳"
 

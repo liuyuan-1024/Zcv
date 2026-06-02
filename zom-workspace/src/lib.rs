@@ -15,7 +15,9 @@ mod buffer_search;
 mod project_tree;
 pub mod syntax;
 
-pub use buffer_search::{BufferSearch, BufferSearchOptions, CurrentReplaceTarget};
+pub use buffer_search::{
+    BufferSearch, BufferSearchOptions, CurrentReplaceTarget, SearchSyncOutcome,
+};
 pub use project_tree::{EntryKind, ProjectTree, TreeEntry, TreeRow};
 
 use std::collections::BTreeMap;
@@ -70,7 +72,7 @@ pub enum BufferOrigin {
 ///
 /// 还拥有一根 [`SyntaxWorkerHandle`]——单线程后台 worker，所有缓冲区的
 /// provider 实例与解析 / 查询都在该线程上跑。详见
-/// [改造方案 §4.2](../../zom-workspace/docs/语法高亮异步增量改造.md)。
+/// [改造方案 §3.2](../../zom-workspace/docs/语法高亮异步增量改造.md)。
 #[derive(Debug)]
 pub struct Workspace {
     next_buffer_id: u64,
@@ -117,7 +119,7 @@ impl Workspace {
     /// 把 viewport hint 转发给指定缓冲区的语法 worker——desktop 在滚动或
     /// 编辑改变可见区间时调一次，worker 据此把 `QueryCursor::set_byte_range`
     /// 限制到 viewport ± 缓冲区，每次编辑只产 `ReplaceRange` 局部段
-    /// （[改造方案 §4.6](../docs/语法高亮异步增量改造.md)）。
+    /// （[改造方案 §3.6](../docs/语法高亮异步增量改造.md)）。
     ///
     /// `byte_range` 通常 = 当前 viewport ± N 行（避免 capture 撕裂边界）。
     /// `None` 取消 viewport 限定，回退到全文 `ReplaceAll`。
@@ -424,6 +426,13 @@ impl WorkspaceBuffer {
         for event in &events {
             self.search.apply_delta(event)?;
         }
+        // 把已有的 syntax 高亮 span 沿编辑平移到新版本。worker 的新产物到达前，
+        // render 用的 layer 是「旧 span × 新 buffer 字节」组合——不平移的话端点
+        // 会落进多字节字符中间，build_text_runs_for_line 切出的 TextRun 把字符
+        // 切两半，gpui shape_line 直接 panic。详见高亮架构手册 §五。
+        for event in &events {
+            self.highlight_layers.update_through_delta_event(event);
+        }
         if let Some(state) = self.syntax.as_mut() {
             for event in &events {
                 state.handle_edit(
@@ -493,14 +502,19 @@ impl WorkspaceBuffer {
         }
     }
 
-    /// 让 BufferSearch 在读取前与当前缓冲区版本对齐。query / options 改了之后
-    /// panel UI 渲染前调一次，确保 hit_count 是最新的。
+    /// 推一拍 BufferSearch 状态机：收割已完成的后台搜索，必要时 spawn 新的。
+    /// **非阻塞**——返回值告诉调用方"本帧是否落了新结果"以决定 reveal / repaint。
     ///
     /// 等价于 `wb.search_mut().sync(wb.buffer())`，封一层避免借用检查器嫌弃
     /// 同时分别拿 search_mut 与 buffer。
-    pub fn sync_search(&mut self) -> WorkspaceResult<()> {
-        self.search.sync(&self.buffer)?;
-        Ok(())
+    pub fn sync_search(&mut self) -> WorkspaceResult<SearchSyncOutcome> {
+        Ok(self.search.sync(&self.buffer)?)
+    }
+
+    /// 渲染线程每帧调一次：只收割已就绪的后台搜索结果，不会主动 spawn。
+    /// 没有 in-flight 时无操作（O(1) 检查），不会阻塞。
+    pub fn pump_pending_search(&mut self) -> SearchSyncOutcome {
+        self.search.pump_pending(&self.buffer)
     }
 
     /// 替换 BufferSearch 当前命中指向的命中。无当前命中或结果集

@@ -68,23 +68,36 @@ fn multi_cursor_insert_replace_delete_should_apply_one_state_transition_per_comm
     assert_eq!(buffer.selection().ranges(), vec![range(2, 2), range(5, 5)]);
 
     buffer
-        .delete_selection_ranges(SelectionSet::new(vec![selection(1, 2), selection(4, 5)]))
+        .delete_at_selections(
+            SelectionSet::new(vec![selection(1, 2), selection(4, 5)]),
+            None,
+        )
         .unwrap();
     assert_eq!(buffer_text(&buffer), "acdf");
     assert_eq!(buffer.selection().ranges(), vec![range(1, 1), range(3, 3)]);
 }
 
 #[test]
-fn delete_backward_and_forward_at_selections_should_respect_grapheme_clusters() {
+fn delete_at_selections_should_respect_grapheme_clusters() {
+    use zom_engine::{MovementDirection, MovementUnit};
+
     let mut backward = buffer("ae\u{301}b");
     backward
-        .delete_backward_at_selections(set_caret(4))
+        .delete_at_selections(
+            set_caret(4),
+            Some((MovementDirection::Previous, MovementUnit::Grapheme)),
+        )
         .unwrap();
     assert_eq!(buffer_text(&backward), "ab");
     assert_eq!(backward.selection().ranges(), vec![range(1, 1)]);
 
     let mut forward = buffer("ae\u{301}b");
-    forward.delete_forward_at_selections(set_caret(1)).unwrap();
+    forward
+        .delete_at_selections(
+            set_caret(1),
+            Some((MovementDirection::Next, MovementUnit::Grapheme)),
+        )
+        .unwrap();
     assert_eq!(buffer_text(&forward), "ab");
     assert_eq!(forward.selection().ranges(), vec![range(1, 1)]);
 }

@@ -514,7 +514,10 @@ fn builtin_editor_commands_should_edit_active_view_buffer_and_sync_selection() {
         &registry,
         &mut workspace,
         &mut views,
-        vec![(editor::DELETE_BACKWARD, CommandArgs::new())],
+        vec![(
+            editor::DELETE,
+            CommandArgs::new().with("direction", "previous"),
+        )],
     )
     .unwrap();
     assert_eq!(text(&workspace, buffer_id), "你bc");
@@ -523,10 +526,188 @@ fn builtin_editor_commands_should_edit_active_view_buffer_and_sync_selection() {
         &registry,
         &mut workspace,
         &mut views,
-        vec![(editor::DELETE_FORWARD, CommandArgs::new())],
+        vec![(editor::DELETE, CommandArgs::new().with("direction", "next"))],
     )
     .unwrap();
     assert_eq!(text(&workspace, buffer_id), "你c");
+}
+
+#[test]
+fn delete_with_word_motion_removes_previous_word() {
+    let (mut workspace, mut views, buffer_id) = setup("hello world");
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+
+    // caret 落到行尾。
+    *views.active_view_mut().unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::caret(byte("hello world".len()))]);
+
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(
+            editor::DELETE,
+            CommandArgs::new()
+                .with("direction", "previous")
+                .with("motion", "word"),
+        )],
+    )
+    .unwrap();
+    assert_eq!(text(&workspace, buffer_id), "hello ");
+    assert_eq!(
+        views.active_view().unwrap().selection().primary().head(),
+        byte("hello ".len()),
+    );
+}
+
+#[test]
+fn delete_with_word_motion_removes_next_word() {
+    let (mut workspace, mut views, buffer_id) = setup("hello world");
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+
+    *views.active_view_mut().unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::caret(ByteOffset::ZERO)]);
+
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(
+            editor::DELETE,
+            CommandArgs::new()
+                .with("direction", "next")
+                .with("motion", "word"),
+        )],
+    )
+    .unwrap();
+    assert_eq!(text(&workspace, buffer_id), " world");
+}
+
+#[test]
+fn delete_with_unknown_motion_should_error() {
+    let (mut workspace, mut views, _buffer_id) = setup("abc");
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+    let err = run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(
+            editor::DELETE,
+            CommandArgs::new()
+                .with("direction", "previous")
+                .with("motion", "line-step"),
+        )],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, CommandError::InvalidArgs(_)),
+        "line-step / page-step 不应被 DeleteArgs 接受，实际：{err:?}",
+    );
+}
+
+#[test]
+fn delete_without_direction_deletes_only_non_empty_selection() {
+    // direction 缺席 = caret 不动、只删非空 selection。
+    let (mut workspace, mut views, buffer_id) = setup("hello world");
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+
+    // 选中 "hello"。
+    *views.active_view_mut().unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, byte("hello".len()))]);
+
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::DELETE, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(text(&workspace, buffer_id), " world");
+    assert_eq!(
+        views.active_view().unwrap().selection().primary().head(),
+        ByteOffset::ZERO,
+    );
+}
+
+#[test]
+fn delete_without_direction_is_noop_on_caret() {
+    // 只有 caret、没有非空选区时 direction=None 等价 no-op，文本与 caret 都不动。
+    let (mut workspace, mut views, buffer_id) = setup("hello world");
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+
+    let caret_at = byte("hello".len());
+    *views.active_view_mut().unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::caret(caret_at)]);
+
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::DELETE, CommandArgs::new())],
+    )
+    .unwrap();
+    assert_eq!(text(&workspace, buffer_id), "hello world");
+    assert_eq!(
+        views.active_view().unwrap().selection().primary().head(),
+        caret_at,
+    );
+}
+
+#[test]
+fn delete_with_motion_but_no_direction_should_error() {
+    // motion 出现但 direction 缺席：歧义（unit 会被忽略），TryFrom 必须报错。
+    let (mut workspace, mut views, _buffer_id) = setup("abc");
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+    let err = run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::DELETE, CommandArgs::new().with("motion", "word"))],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, CommandError::InvalidArgs(_)),
+        "motion 不带 direction 应报 InvalidArgs，实际：{err:?}",
+    );
+}
+
+#[test]
+fn default_keymap_binds_delete_variants() {
+    // 默认 keymap：backspace / delete / alt-backspace / alt-delete 都落到 DELETE，
+    // 用 direction × motion args 区分四种行为。
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+
+    let context = text_edit_context();
+    let cases: &[(&str, &str, Option<&str>)] = &[
+        ("backspace", "previous", None),
+        ("delete", "next", None),
+        ("alt-backspace", "previous", Some("word")),
+        ("alt-delete", "next", Some("word")),
+    ];
+    for (chord, direction, motion) in cases {
+        match keymap.resolve(&[key(chord)], &context) {
+            KeymapResolution::Matched { command, args } => {
+                assert_eq!(command, command_id(editor::DELETE), "{chord}");
+                assert_eq!(args.get("direction"), Some(*direction), "{chord} direction");
+                assert_eq!(args.get("motion"), *motion, "{chord} motion");
+            }
+            other => panic!("{chord} 应命中 DELETE，实际：{other:?}"),
+        }
+    }
 }
 
 #[test]

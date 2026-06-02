@@ -563,7 +563,7 @@ impl App {
         let focus = self.focus.current();
 
         // picker 焦点下，命令执行可能改了 query 文本
-        // （DELETE_BACKWARD / 粘贴等走 edit_target，绕过 router 的 after_text_changed 钩子）。
+        // （DELETE / 粘贴等走 edit_target，绕过 router 的 after_text_changed 钩子）。
         // 派发前后比一次 query 文本：变了才 reset_selection，否则保留。
         // 否则 MOVE_SELECTION 自己也会被无差别 reset，选中项只能在 0 / 1 之间来回。
         let picker_query_before =
@@ -886,7 +886,7 @@ mod tests {
             vec![HostEffect::ProjectPickerMoveSelection(1)]
         );
 
-        // backspace 落到 picker query 的 text_edit 上下文，由 DELETE_BACKWARD 命令处理（删一个字符）。
+        // backspace 落到 picker query 的 text_edit 上下文，由 DELETE 命令处理（删一个字符）。
         // 不是 picker 的导航动作，但仍由 keymap 消费。
         let outcome = app.dispatch_key("backspace".to_string()).unwrap();
         assert!(outcome.consumed);

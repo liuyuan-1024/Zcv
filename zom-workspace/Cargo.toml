@@ -1,6 +1,6 @@
 [package]
 name = "zom-workspace"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 description = "工作区模型层：文件、缓冲区生命周期、路径绑定与保存边界"
 

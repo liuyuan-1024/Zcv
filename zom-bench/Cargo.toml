@@ -1,6 +1,6 @@
 [package]
 name = "zom-bench"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 description = "16 MiB 流畅性目标的基线测量套件：载入、解析、编辑、搜索、视口五场景"
 

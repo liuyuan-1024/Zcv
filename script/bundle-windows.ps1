@@ -21,8 +21,13 @@ $BinName = "zom"
 $Package = "zom-desktop"
 $Target  = "x86_64-pc-windows-msvc"
 
-$Version = (Select-String -Path "zom-desktop/Cargo.toml" -Pattern '^version\s*=\s*"([^"]+)"' |
-    Select-Object -First 1).Matches.Groups[1].Value
+$VersionMatch = Select-String -Path "Cargo.toml" -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+
+if (-not $VersionMatch) {
+    throw "未能从 Cargo.toml 读取版本号，请检查 [workspace.package] version"
+}
+
+$Version = $VersionMatch.Matches.Groups[1].Value
 
 # ---------- 1. 构建 ----------
 Write-Host "==> cargo build --release -p $Package --target $Target"

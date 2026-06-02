@@ -9,9 +9,9 @@
     "hide": "never",
   },
   {
-    "label": "16MB文件性能测试",
-    "command": "/usr/bin/time",
-    "args": ["-l", "./target/release/zom-bench", "run", "rust", "16"],
+    "label": "16MB Rust 文件性能测试",
+    "command": "cargo",
+    "args": ["run", "--release", "-p", "zom-bench", "--", "run", "rust", "16"],
     "cwd": "$ZED_WORKTREE_ROOT",
     "save": "all",
     "reveal": "always",

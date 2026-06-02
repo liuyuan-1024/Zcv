@@ -5,12 +5,13 @@
 use crate::{
     buffer::Buffer,
     errors::MetadataError,
+    transaction::DeltaEvent,
     types::{BufferVersion, LineRange, TextRange},
 };
 
 use super::{
     MetadataLayer, MetadataLayerKind, MetadataLineWindow, MetadataRange, MetadataRangeId,
-    MetadataRangeSpec, query::text_range_for_line_range,
+    MetadataRangeSpec, MetadataRangeUpdate, query::text_range_for_line_range,
 };
 
 /// 多个 metadata layers 的轻量集合，供宿主按 layer kind 查询、替换和丢弃过期结果。
@@ -160,6 +161,30 @@ impl<T> MetadataLayers<T> {
         self.ranges_for_kind_in_line_range(kind, buffer, window.lines())
     }
 
+    /// 把 `event` 应用到所有 `version == event.old_version()` 的 layer，让 layer 内每条 range 沿编辑前后的字节坐标平移。
+    ///
+    /// **为什么是部分应用**：layer 的 version 由 producer 自主推进（worker 的 `ReplaceAll` / `ReplaceRange` 各自标版本）。
+    /// 一次 `pump_post_edit` 喂事件时，刚好与 `event.old_version()` 对齐的 layer 才能推进；
+    /// 其他 layer 要么已经走在前面（worker 已基于新版本算完），要么落在后面（下一轮再追赶）。
+    /// 因此版本错配不算错——静默跳过，与 [`discard_stale`] 风格一致。
+    ///
+    /// 返回每条参与平移的 layer 的更新列表（key 为 kind），便于宿主诊断哪些 layer 实际被推进。
+    pub fn update_through_delta_event(
+        &mut self,
+        event: &DeltaEvent,
+    ) -> Vec<(MetadataLayerKind, Vec<MetadataRangeUpdate>)> {
+        let mut out = Vec::new();
+        for layer in self.layers.iter_mut() {
+            if layer.version() != event.old_version() {
+                continue;
+            }
+            if let Ok(updates) = layer.update_through_delta_event(event) {
+                out.push((layer.kind().clone(), updates));
+            }
+        }
+        out
+    }
+
     pub fn discard_stale(&mut self, current_version: BufferVersion) -> Vec<MetadataLayer<T>> {
         let mut stale = Vec::new();
         let mut index = 0;
@@ -275,6 +300,61 @@ mod tests {
             .collect();
         survivors.sort();
         assert_eq!(survivors, vec!["B", "C", "a", "d"]);
+    }
+
+    #[test]
+    fn update_through_delta_event_shifts_aligned_layer_and_skips_others() {
+        use crate::{Edit, Transaction};
+        // 文件含多字节字符：插一字符后让旧 span 端点原本会落进 char 内部时，
+        // 平移应整体把它跟过插入点。
+        let mut buf = buffer("# zom 文档规范\n");
+        let kind = MetadataLayerKind::custom("syntax");
+        let other_kind = MetadataLayerKind::custom("other");
+
+        let mut layers: MetadataLayers<&'static str> = MetadataLayers::new();
+        // 模拟 syntax worker 在初始版本上落两段 span。
+        layers
+            .replace_layer_ranges(
+                kind.clone(),
+                buf.version(),
+                vec![(range(0, 1), "punct"), (range(2, 18), "heading")],
+            )
+            .unwrap();
+        // 同时挂一个版本「领先」的 layer，验证 update 静默跳过它。
+        layers.push(MetadataLayer::with_kind(
+            other_kind.clone(),
+            BufferVersion::new(buf.version().get() + 10),
+        ));
+
+        // 在 byte 5（`m` 后）插入 'X'，模拟一次按键。
+        let edit = Edit::insert(b(5), "X".to_string()).unwrap();
+        let tx = Transaction::from_edits(buf.version(), vec![edit]).unwrap();
+        buf.apply_transaction(tx).unwrap();
+        let event = buf
+            .pending_delta_events()
+            .last()
+            .expect("应至少一条 DeltaEvent")
+            .clone();
+        let updates = layers.update_through_delta_event(&event);
+        assert_eq!(updates.len(), 1, "只有 syntax layer 版本对齐，应只推进一条");
+        assert_eq!(updates[0].0, kind);
+
+        let layer = layers.layer(&kind).unwrap();
+        assert_eq!(layer.version(), event.new_version());
+
+        let mut ranges: Vec<(usize, usize)> = layer
+            .as_slice()
+            .iter()
+            .map(|r| (r.range().start().get(), r.range().end().get()))
+            .collect();
+        ranges.sort();
+        // 旧 [2, 18) 的 end=18 在插入点 5 之后，整体右移 1 → [2, 19)；
+        // 19 在新文本里是 newline 字节，char-aligned。
+        assert_eq!(ranges, vec![(0, 1), (2, 19)]);
+
+        // 另一 layer 版本超前，静默跳过、未被推进。
+        let other = layers.layer(&other_kind).unwrap();
+        assert_ne!(other.version(), event.new_version());
     }
 
     #[test]

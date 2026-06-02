@@ -426,6 +426,13 @@ impl WorkspaceBuffer {
         for event in &events {
             self.search.apply_delta(event)?;
         }
+        // 把已有的 syntax 高亮 span 沿编辑平移到新版本。worker 的新产物到达前，
+        // render 用的 layer 是「旧 span × 新 buffer 字节」组合——不平移的话端点
+        // 会落进多字节字符中间，build_text_runs_for_line 切出的 TextRun 把字符
+        // 切两半，gpui shape_line 直接 panic。详见高亮架构手册 §五。
+        for event in &events {
+            self.highlight_layers.update_through_delta_event(event);
+        }
         if let Some(state) = self.syntax.as_mut() {
             for event in &events {
                 state.handle_edit(

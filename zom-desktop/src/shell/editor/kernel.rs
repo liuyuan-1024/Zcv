@@ -96,6 +96,7 @@ impl EditorKernel {
         let mut element = EditorElement::new(
             self.clone(),
             snapshot.lines,
+            snapshot.total_lines,
             snapshot.viewport_start_line,
             snapshot.top_line,
             snapshot.selection,

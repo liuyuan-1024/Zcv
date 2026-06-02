@@ -24,6 +24,8 @@ pub(crate) struct SnapshotLine {
 pub(crate) struct EditorSnapshot {
     /// 视口内可见的逻辑行。空表示「buffer 无任何行可读」。
     pub(crate) lines: Vec<SnapshotLine>,
+    /// buffer 总行数。gutter 据此决定行号列宽度，避免滚动时列宽抖动。
+    pub(crate) total_lines: u64,
     /// `lines` 的第一条对应的逻辑行号（0-based）；空 lines 时为 0。
     pub(crate) viewport_start_line: u64,
     /// view 已落定的视口顶行（0-based）；与 `viewport_start_line` 的区别在于

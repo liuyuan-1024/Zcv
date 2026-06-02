@@ -2,6 +2,7 @@
 
 mod blink;
 mod element;
+mod gutter;
 mod input_host;
 mod phases;
 mod slot;

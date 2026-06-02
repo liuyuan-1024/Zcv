@@ -11,7 +11,10 @@
 //! | 3 | 字符层（字色 / 字重 / 下划线 / 波浪线） | 仅字色 |
 //! | 4 | 字符叠加（inline ghost text / inlay hint） | 槽位留空 |
 //! | 5 | caret + IME composition underline | caret，underline 槽位留空 |
-//! | 6 | gutter（行号 + 装饰图标） | 行号，图标槽位留空 |
+//!
+//! 阶段 6（gutter：行号 + 装饰图标）独立到 [`super::gutter`] 模块——它横向
+//! 不随正文滚动，几何与本模块的范围 / 字符 / caret 阶段相互独立，没必要共用
+//! 这里的 `LineMetric` 与 EOL 视觉延伸约定。
 //!
 //! 「槽位留空」= prepaint 给出空 `Vec`，paint 函数照常调用、for 循环零次迭代；
 //! 接入新装饰来源时**不动 paint 主干**，只在 prepaint 入口处往对应 Vec 推条目。
@@ -35,7 +38,7 @@
 //! 因此 [`paint_phase_2_range_backgrounds`] 不做合并后的全局重叠检查；只在
 //! 单 producer 注入时由 producer 自己 `debug_assert!`。
 
-use gpui::{Bounds, ContentMask, Hsla, Pixels, ShapedLine, Window, fill, point, px, size};
+use gpui::{Bounds, Hsla, Pixels, ShapedLine, Window, fill, point, px, size};
 
 use zom_engine::TextRange;
 
@@ -64,20 +67,6 @@ pub(crate) struct LineBackgroundQuad {
 /// 当前为空 Vec；inlay hint、AI ghost text 可在此接入。
 pub(crate) struct GlyphOverlay {
     pub at_byte: usize,
-    pub shaped: ShapedLine,
-}
-
-/// 阶段 6 gutter 装饰图标的一条记录。
-///
-/// `row` 为视觉行号；`shaped` 是图标字形已 shape 的结果——图标走与行号同一条
-/// 字体路径，颜色由 producer 在 shape 时通过 [`gpui::TextRun::color`] 烤进去，
-/// 不再带独立 color 字段。这样避免引入 SVG/raster 资产管线，也保持与
-/// [`GlyphOverlay`] 一致的"shape 内嵌颜色"约定。
-///
-/// 当前为空 Vec；breakpoint、git diff、诊断 glyph、bookmark 等可在此接入，
-/// 由 desktop 侧的 LayerKind 路由表决定哪些 metadata layer 落到本阶段。
-pub(crate) struct GutterIconQuad {
-    pub row: usize,
     pub shaped: ShapedLine,
 }
 
@@ -340,46 +329,4 @@ pub(crate) fn paint_phase_5_carets_and_composition(
     }
 }
 
-// ============================================================================
-// 阶段 6：gutter（行号 + 装饰图标）
-// ============================================================================
-
-/// 阶段 6：gutter 列。横向不随正文滚动，纵向随 `top` 一起平移。
-///
-/// 行号在 `bounds.origin.x` 起绘；图标按 row 索引在同列叠加。两类绘制都在
-/// gutter 区域内，不进入正文 `with_content_mask`——但需要在本函数内自建一个
-/// gutter 区域 mask 防止溢出到正文。
-pub(crate) fn paint_phase_6_gutter(
-    line_numbers: &[ShapedLine],
-    icons: &[GutterIconQuad],
-    gutter_origin_x: Pixels,
-    gutter_width: Pixels,
-    bounds_top: Pixels,
-    top: Pixels,
-    bounds_height: Pixels,
-    line_height: Pixels,
-    window: &mut Window,
-    cx: &mut gpui::App,
-) {
-    let gutter_area = Bounds {
-        origin: point(gutter_origin_x, bounds_top),
-        size: size(gutter_width, bounds_height),
-    };
-    window.with_content_mask(
-        Some(ContentMask {
-            bounds: gutter_area,
-        }),
-        |window| {
-            for (index, line_number) in line_numbers.iter().enumerate() {
-                let y = top + line_height * index as f32;
-                let _ = line_number.paint(point(gutter_origin_x, y), line_height, window, cx);
-            }
-            for icon in icons {
-                let y = top + line_height * icon.row as f32;
-                let _ = icon
-                    .shaped
-                    .paint(point(gutter_origin_x, y), line_height, window, cx);
-            }
-        },
-    );
-}
+// 阶段 6（gutter）独立到 `super::gutter` 模块。

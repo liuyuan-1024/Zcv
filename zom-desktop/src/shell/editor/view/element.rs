@@ -45,26 +45,20 @@ use crate::shell::editor::kernel::EditorKernel;
 use crate::shell::editor::snapshot::{RevealHint, SnapshotLine};
 
 use super::blink::CaretClock;
+use super::gutter;
 use super::input_host::{EditorInputHook, EditorPaintInfo, EditorViewportSyncHook};
 use super::phases::{
-    GlyphOverlay, GutterIconQuad, LineBackgroundQuad, LineMetric, paint_phase_1_line_backgrounds,
+    GlyphOverlay, LineBackgroundQuad, LineMetric, paint_phase_1_line_backgrounds,
     paint_phase_2_range_backgrounds, paint_phase_3_glyphs, paint_phase_4_glyph_overlays,
-    paint_phase_5_carets_and_composition, paint_phase_6_gutter,
+    paint_phase_5_carets_and_composition,
 };
 
-/// 行号列宽（24）+ 与正文的间距（12）。
-const GUTTER_WIDTH: f32 = 36.0;
 /// 光标竖条宽度。2px 与 VS Code / Zed 默认一致——1px 在高分屏上偏细。
 const CARET_WIDTH: f32 = 2.0;
 
 /// 光标竖条颜色 —— 编辑器自持的视觉角色，不随嵌入处而变。
 fn caret_color() -> Hsla {
     color::blue::s07().into()
-}
-
-/// 行号文字颜色 —— 次级信息。
-fn gutter_color() -> Hsla {
-    color::gray::s08().into()
 }
 
 /// 一个独立文本编辑单元的渲染图元。
@@ -78,6 +72,8 @@ pub(crate) struct EditorElement {
     kernel: EditorKernel,
     /// 当前视口可见的逻辑行（绝对 line / byte 坐标）。
     lines: Vec<SnapshotLine>,
+    /// buffer 总行数——gutter 按它算列宽，避免滚动时行号列宽度抖动。
+    total_lines: u64,
     /// snapshot 切片对应的顶行（0-based 逻辑行号）；首条 `lines[0].line_index`
     /// 等于该值，但 lines 为空时仍需要它，独立带一份。
     viewport_start_line: u64,
@@ -112,6 +108,7 @@ impl EditorElement {
     pub(crate) fn new(
         kernel: EditorKernel,
         lines: Vec<SnapshotLine>,
+        total_lines: u64,
         viewport_start_line: u64,
         top_line: u64,
         selection: SelectionSet,
@@ -121,6 +118,7 @@ impl EditorElement {
         Self {
             kernel,
             lines,
+            total_lines,
             viewport_start_line,
             top_line,
             selection,
@@ -247,15 +245,12 @@ pub(crate) struct EditorPrepaint {
     composition_underlines: Vec<(TextRange, Hsla)>,
 
     // ── 阶段 6：gutter（行号 + 装饰图标）──────────────────────────────────
-    /// 每行行号的 shaped 结果；无行号列时为空。
-    gutter_line_numbers: Vec<ShapedLine>,
-    /// 当前为空 Vec；breakpoint / git diff / 诊断 glyph / bookmark 接入点。
-    gutter_icons: Vec<GutterIconQuad>,
+    /// gutter 列的 prepaint 产物——无 gutter 时为 [`gutter::Prepaint::disabled`]。
+    /// 正文水平偏移由 `gutter.offset()` 返回，避免 element 重复持有几何字段。
+    gutter: gutter::Prepaint,
 
     // ── 共享几何 ───────────────────────────────────────────────────────────
     line_height: Pixels,
-    /// 正文起点相对 `bounds.origin.x` 的偏移（有行号列时为 [`GUTTER_WIDTH`]）。
-    gutter_offset: Pixels,
     /// 当前滚动偏移；正文与光标按它整体平移。
     scroll: Point<Pixels>,
     /// `top` 已经吸收了 `viewport_start_line × line_height` 的修正：phases 用
@@ -372,7 +367,6 @@ impl Element for EditorElement {
         // primary 的"视口外但要 reveal/edge-scroll"路径走 primary_caret_logical / primary_caret_x 兜底。
         let mut carets_pos: Vec<Option<(usize, Pixels)>> = vec![None; selections.len()];
         let mut prepainted_lines: Vec<PrepaintedLine> = Vec::with_capacity(self.lines.len());
-        let mut gutter_line_numbers: Vec<ShapedLine> = Vec::with_capacity(self.lines.len());
 
         // reveal 是否生效完全看快照里有没有；调用方不需要 reveal 时自然就不会在 owner.snapshot() 里填这个字段。
         let active_reveal = self.reveal;
@@ -423,26 +417,23 @@ impl Element for EditorElement {
                 line_len: raw.len(),
                 shaped,
             });
-
-            if has_gutter {
-                // 行号 1-based，叠加视口起点偏移得到真正的逻辑行号。
-                let label = (line.line_index + 1).to_string();
-                let run = TextRun {
-                    len: label.len(),
-                    font: text_style.font(),
-                    color: gutter_color(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                gutter_line_numbers.push(window.text_system().shape_line(
-                    label.into(),
-                    font_size,
-                    &[run],
-                    None,
-                ));
-            }
         }
+
+        // gutter（行号 / 装饰图标）独立模块。shape 与文本 shape 是同一字体路径，
+        // 但几何彻底独立于正文（不参与水平滚动），所以单独走一遍迭代。
+        // 列宽由 buffer 总行数（非当前视口最大行号）决定，避免滚动时列宽抖动。
+        let gutter_prepaint = if has_gutter {
+            gutter::prepare(
+                &self.lines,
+                self.total_lines,
+                &text_style,
+                font_size,
+                window,
+            )
+        } else {
+            gutter::Prepaint::disabled()
+        };
+        let gutter_offset = gutter_prepaint.offset();
 
         // 视口外的 caret 直接丢掉，避免被 unwrap_or((0, 0)) 摆到视区左上角形成残影。
         // 多行主编辑区滚到不见 primary 时也只剩边缘指示。
@@ -456,8 +447,6 @@ impl Element for EditorElement {
                 carets.push(entry);
             }
         }
-
-        let gutter_offset = if has_gutter { px(GUTTER_WIDTH) } else { px(0.) };
 
         // primary caret 的"行内 x"——X 轴 edge-scroll / reveal 用。
         // x 只有 primary 真的落在 shape 出来的视口行里才有。
@@ -581,11 +570,8 @@ impl Element for EditorElement {
             primary_caret: primary_caret_in_view,
             // v1 空槽位：IME composition underline（marked text 待接入）。
             composition_underlines: Vec::new(),
-            gutter_line_numbers,
-            // v1 空槽位：gutter 装饰图标（breakpoint / git diff / 诊断 / bookmark）。
-            gutter_icons: Vec::new(),
+            gutter: gutter_prepaint,
             line_height,
-            gutter_offset,
             scroll,
             top_adjusted,
         }
@@ -605,18 +591,15 @@ impl Element for EditorElement {
         let scroll = prepaint.scroll;
         // 纵向滚动 + 视口顶行修正都已吸收进 prepaint.top_adjusted；这里 phases 用 row_index × line_height 算 y 即可。
         let top = prepaint.top_adjusted;
+        let gutter_offset = prepaint.gutter.offset();
         // 横向滚动只作用于正文与光标；行号列固定不动。
-        let text_left = bounds.origin.x + prepaint.gutter_offset - scroll.x;
+        let text_left = bounds.origin.x + gutter_offset - scroll.x;
 
         // 正文与光标裁剪到「正文区」：横向滚动时不溢出到行号列。
         let text_area = Bounds {
-            origin: point(bounds.origin.x + prepaint.gutter_offset, bounds.origin.y),
+            origin: point(bounds.origin.x + gutter_offset, bounds.origin.y),
             size: size(
-                clamp_px(
-                    bounds.size.width - prepaint.gutter_offset,
-                    px(0.),
-                    bounds.size.width,
-                ),
+                clamp_px(bounds.size.width - gutter_offset, px(0.), bounds.size.width),
                 bounds.size.height,
             ),
         };
@@ -691,11 +674,9 @@ impl Element for EditorElement {
         });
 
         // ── 阶段 6：gutter 列（横向固定在 bounds 左缘，纵向随正文滚动）─────
-        paint_phase_6_gutter(
-            &prepaint.gutter_line_numbers,
-            &prepaint.gutter_icons,
+        gutter::paint(
+            &prepaint.gutter,
             bounds.origin.x,
-            prepaint.gutter_offset,
             bounds.origin.y,
             top,
             bounds.size.height,
@@ -711,7 +692,7 @@ impl Element for EditorElement {
             let (caret_row, caret_x) = *prepaint.carets.get(idx)?;
             Some(CaretLayout {
                 relative: point(
-                    prepaint.gutter_offset + caret_x - scroll.x,
+                    gutter_offset + caret_x - scroll.x,
                     // 阶段 5 caret 画在 `top_adjusted + row × line_height`。
                     // 这里换回 `bounds.origin.y` 相对坐标即 `top - bounds.y + row × line_height`。
                     prepaint.top_adjusted - bounds.origin.y + line_height * caret_row as f32,

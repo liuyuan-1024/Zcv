@@ -9,7 +9,7 @@ use std::rc::Rc;
 use gpui::{Div, FocusHandle, MouseButton, div, prelude::*};
 
 use crate::shell::editor::TextEditorSlot;
-use crate::shell::shared::theme::{self, color, space, typography};
+use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::state::EditorState;
 use crate::shell::{KeyRequest, normalized_chord};
 
@@ -72,7 +72,7 @@ fn editor_surface(slot: &Rc<TextEditorSlot>) -> Div {
     div()
         .flex_1()
         .overflow_hidden()
-        .rounded(theme::radius::r4())
+        .rounded(radius::r4())
         .bg(color::gray::s01())
         .p(space::s6())
         .font(typography::editor_font())

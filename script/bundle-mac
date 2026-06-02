@@ -1,46 +1,64 @@
 #!/usr/bin/env bash
 #
-# 打包 macOS .app（可选 .dmg）。仅支持 Apple Silicon。
-# 所有运行时资源都已通过 include_bytes! 编译进二进制，
-# 这里只负责生成 Dock/Finder 显示用的 .icns 并组装 bundle。
+# 打包 macOS .app（可选 .dmg）并生成 GitHub Release 风格 zip。
+# Release 资产命名: zom_0.1.0_darwin_arm64.zip
 #
 # 用法:
-#   script/bundle-mac           # 输出 .app 和 .dmg
-#   script/bundle-mac --no-dmg  # 只出 .app
+#   script/bundle-mac                 # 输出 .app、zip 和 .dmg
+#   script/bundle-mac --no-dmg        # 输出 .app 和 zip
+#   script/bundle-mac --arch arm64    # Apple Silicon
+#   script/bundle-mac --arch amd64    # Intel Mac
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-APP_NAME="Zom"
+APP_NAME="zom"
 BUNDLE_ID="dev.liuyuan.zom"
 BIN_NAME="zom"
 PACKAGE="zom-desktop"
-TARGET="aarch64-apple-darwin"
 ICON_SVG="zom-desktop/assets/icons/app/zom.svg"
-VERSION="$(grep '^version' zom-desktop/Cargo.toml | head -n1 | cut -d'"' -f2)"
+VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)"
 
 MAKE_DMG=1
+ARCH="arm64"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --no-dmg) MAKE_DMG=0; shift ;;
+        --arch)
+            ARCH="$2"; shift 2 ;;
+        --no-dmg)
+            MAKE_DMG=0; shift ;;
         -h|--help)
-            sed -n '2,12p' "$0"; exit 0 ;;
-        *) echo "未知参数: $1" >&2; exit 1 ;;
+            sed -n '2,14p' "$0"; exit 0 ;;
+        *)
+            echo "未知参数: $1" >&2; exit 1 ;;
     esac
 done
 
-if [[ "$(uname -m)" != "arm64" ]]; then
-    echo "本脚本仅支持在 Apple Silicon Mac 上构建（当前: $(uname -m)）" >&2
-    exit 1
-fi
+case "$ARCH" in
+    arm64)
+        TARGET="aarch64-apple-darwin" ;;
+    amd64|x64|x86_64)
+        ARCH="amd64"
+        TARGET="x86_64-apple-darwin" ;;
+    *)
+        echo "未知架构: $ARCH，仅支持 arm64 或 amd64" >&2
+        exit 1 ;;
+esac
+
+OS="darwin"
+DIST_NAME="${APP_NAME}_${VERSION}_${OS}_${ARCH}"
 
 if ! command -v rsvg-convert >/dev/null; then
     echo "缺少 rsvg-convert（用于把 SVG 转 PNG）" >&2
     echo "    brew install librsvg" >&2
     exit 1
+fi
+
+if [[ "$ARCH" == "arm64" && "$(uname -m)" != "arm64" ]]; then
+    echo "正在为 arm64 构建，但当前机器是 $(uname -m)。请确认已安装交叉编译环境。" >&2
 fi
 
 # ---------- 1. 构建 ----------
@@ -101,9 +119,17 @@ EOF
 echo "==> codesign (ad-hoc)"
 codesign --force --deep --sign - "$APP"
 
-# ---------- 6. DMG ----------
+# ---------- 6. GitHub Release zip ----------
+ZIP="$OUT_DIR/$DIST_NAME.zip"
+echo "==> $ZIP"
+rm -f "$ZIP"
+
+# --keepParent 让 zip 解压后包含 zom.app 这个顶层目录；比 zip -r 更适合 .app bundle。
+ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+
+# ---------- 7. DMG ----------
 if [[ "$MAKE_DMG" == "1" ]]; then
-    DMG="$OUT_DIR/$APP_NAME-$VERSION.dmg"
+    DMG="$OUT_DIR/$DIST_NAME.dmg"
     echo "==> $DMG"
     rm -f "$DMG"
     hdiutil create -volname "$APP_NAME" -srcfolder "$APP" \
@@ -113,6 +139,7 @@ fi
 echo
 echo "完成:"
 echo "  $APP"
-[[ "$MAKE_DMG" == "1" ]] && echo "  $OUT_DIR/$APP_NAME-$VERSION.dmg"
+echo "  $ZIP"
+[[ "$MAKE_DMG" == "1" ]] && echo "  $OUT_DIR/$DIST_NAME.dmg"
 echo
 echo "朋友首次打开提示「无法验证开发者」时，请右键→打开。"

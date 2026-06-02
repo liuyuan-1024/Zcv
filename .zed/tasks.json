@@ -36,7 +36,7 @@
     "hide": "never",
   },
   {
-    "label": "打包 macos .app（仅mac M芯片系列可用）",
+    "label": "打包 macOS .app",
     "command": "script/bundle-mac",
     "args": ["--no-dmg"],
     "cwd": "$ZED_WORKTREE_ROOT",
@@ -45,7 +45,7 @@
     "hide": "never",
   },
   {
-    "label": "打包 windows exe（仅windows可用）",
+    "label": "打包 Windows .exe",
     "command": "powershell",
     "args": [
       "-ExecutionPolicy",

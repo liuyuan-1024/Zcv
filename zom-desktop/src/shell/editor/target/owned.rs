@@ -1,7 +1,7 @@
 //! 自持文本目标：小输入框自己的 buffer 与 selection。
 
 use zom_command::EditTarget;
-use zom_engine::{Buffer, BufferConfig, ByteOffset, SelectionSet};
+use zom_engine::{Buffer, BufferConfig, ByteOffset, Selection, SelectionSet};
 
 use crate::shell::editor::input::{ImeQueryTarget, ImeTarget};
 use crate::shell::editor::snapshot::{EditorSnapshot, EditorSnapshotRequest, build_snapshot};
@@ -22,6 +22,19 @@ impl OwnedEditorTarget {
             buffer,
             selection: SelectionSet::default(),
         }
+    }
+
+    /// 预填一段文本并选中全部内容。重命名输入框走这条路径——按下 mod-r 时名称已被全选，用户继续敲键直接覆盖；按 ← / → 可移动光标后微调。
+    pub(crate) fn with_text_all_selected(text: &str) -> Self {
+        let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
+            .expect("自持输入框文本构造不会失败");
+        let len = buffer.len_bytes();
+        let selection = if len == ByteOffset::ZERO {
+            SelectionSet::default()
+        } else {
+            SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, len)])
+        };
+        Self { buffer, selection }
     }
 
     /// 当前完整文本内容（owned 拷贝）。

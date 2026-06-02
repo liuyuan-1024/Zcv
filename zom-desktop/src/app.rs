@@ -122,6 +122,9 @@ impl App {
             AppFocus::Panel(PanelFocus::FileTree(_)) if self.file_tree.pending_delete_active() => {
                 AppFocus::file_tree(FileTreeFocus::ConfirmDelete)
             }
+            AppFocus::Panel(PanelFocus::FileTree(_)) if self.file_tree.pending_rename_active() => {
+                AppFocus::file_tree(FileTreeFocus::RenameEntry)
+            }
             AppFocus::Panel(PanelFocus::FileTree(_)) if self.file_tree.pending_active() => {
                 AppFocus::file_tree(FileTreeFocus::NewEntryName)
             }
@@ -329,9 +332,9 @@ impl App {
                 KeyContext::file_tree(FileTreeKeyMode::PendingDelete),
                 KeyContext::global(),
             ],
-            AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::NewEntryName)) => {
-                text_stack_for(focus)
-            }
+            AppFocus::Panel(PanelFocus::FileTree(
+                FileTreeFocus::NewEntryName | FileTreeFocus::RenameEntry,
+            )) => text_stack_for(focus),
             AppFocus::Panel(PanelFocus::FileTree(_)) => vec![
                 KeyContext::file_tree(FileTreeKeyMode::Navigate),
                 KeyContext::global(),

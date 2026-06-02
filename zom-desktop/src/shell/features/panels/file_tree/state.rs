@@ -30,6 +30,8 @@ pub(crate) struct FileTreeState {
     pub(crate) active: Option<PathBuf>,
     /// 正在键入名称的「新建文件 / 目录」。`None` 表示不处于新建态。
     pub(crate) pending: Option<PendingNewEntry>,
+    /// 正在重命名的条目。`None` 表示不处于重命名态。与 `pending` 互斥。
+    pub(crate) pending_rename: Option<PendingRename>,
     /// 正在等待确认的「删除文件」。`None` 表示无删除确认弹窗。
     pub(crate) pending_delete: Option<PendingDelete>,
 }
@@ -47,6 +49,17 @@ pub(crate) struct PendingNewEntry {
     pub(crate) parent: PathBuf,
     pub(crate) kind: EntryKind,
     /// 输入行的缩进深度（父目录 depth + 1）。
+    pub(crate) depth: usize,
+}
+
+/// 正在重命名某一行的 owned 快照。视图据此把对应行替换成内联输入框，输入框的文本 / 光标由 [`TextEditorSlot`] 自己向 [`EditorRouter`] 拉。
+///
+/// [`TextEditorSlot`]: crate::shell::editor::TextEditorSlot
+/// [`EditorRouter`]: crate::shell::editor::EditorRouter
+#[derive(Clone, Debug)]
+pub(crate) struct PendingRename {
+    pub(crate) path: PathBuf,
+    pub(crate) kind: EntryKind,
     pub(crate) depth: usize,
 }
 

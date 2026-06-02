@@ -199,6 +199,64 @@ impl ProjectTree {
         Ok(final_dst)
     }
 
+    /// 把 `path` 在原父目录内改名为 `new_name`。
+    /// `new_name` 必须是单段名字（不含路径分隔符、不含 `.` / `..`），与原名相同视为无操作。
+    /// 同父目录下已存在同名项时返回 [`io::ErrorKind::AlreadyExists`]——**永不覆盖**，由调用方提示。
+    /// 返回新路径。
+    pub fn rename_entry(&mut self, path: &Path, new_name: &str) -> io::Result<PathBuf> {
+        if path == self.root {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "不能重命名项目根",
+            ));
+        }
+        let trimmed = new_name.trim();
+        if trimmed.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "新名称不能为空",
+            ));
+        }
+        if trimmed.contains('/') || trimmed.contains('\\') || trimmed == "." || trimmed == ".." {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("无效的名称：{trimmed}"),
+            ));
+        }
+        let parent = path.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "条目没有父目录，无法重命名")
+        })?;
+        let dst = parent.join(trimmed);
+        if dst == path {
+            return Ok(path.to_path_buf());
+        }
+        if dst.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("同名条目已存在：{}", dst.display()),
+            ));
+        }
+        fs::rename(path, &dst)?;
+        // expanded 里凡是落在 path 之下（含 path 自身）的目录都要 rebase，
+        // 否则 reload_expanded_dirs 会去读已经不存在的旧路径而把它们悄悄丢掉。
+        let rebased: Vec<(PathBuf, PathBuf)> = self
+            .expanded
+            .iter()
+            .filter_map(|expanded| {
+                expanded
+                    .strip_prefix(path)
+                    .ok()
+                    .map(|rest| (expanded.clone(), dst.join(rest)))
+            })
+            .collect();
+        for (old, new) in rebased {
+            self.expanded.remove(&old);
+            self.expanded.insert(new);
+        }
+        self.reload_expanded_dirs()?;
+        Ok(dst)
+    }
+
     /// 自根向下做 DFS，按目录优先 + 字母序产出可见行。
     ///
     /// 注意：返回值借用 `&self`，调用 `expand`/`collapse` 前必须先把它丢弃。

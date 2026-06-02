@@ -16,7 +16,9 @@ use crate::shell::editor::{
     TextTargetOwner, TextTargetQuery,
 };
 
-use super::{FileTreeActivation, FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry};
+use super::{
+    FileTreeActivation, FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry, PendingRename,
+};
 
 pub(crate) struct FileTreeModel {
     project_tree: Option<ProjectTree>,
@@ -36,6 +38,8 @@ pub(crate) struct FileTreeModel {
     clipboard: Option<FileTreeClipboard>,
     /// 正在键入名称的新建条目；`None` 表示不处于新建态。
     pending: Option<PendingEntry>,
+    /// 正在重命名的条目；与 [`pending`](Self::pending) 互斥（同一时刻只能开一个输入框）。
+    pending_rename: Option<PendingRenameEntry>,
     /// 正在等待确认的待删条目集合（路径 + 类型）。批量删（选区非空）与单删
     /// （焦点回退）共用同一份字段；`None` 表示无删除确认弹窗。
     pending_delete: Option<Vec<(PathBuf, EntryKind)>>,
@@ -71,6 +75,13 @@ struct PendingEntry {
     editor: OwnedEditorTarget,
 }
 
+/// 重命名态的内部数据。`path` 是目标条目（旧路径），输入框由 [`OwnedEditorTarget`]
+/// 承载并在 `begin_rename` 处预填旧名 + 全选。
+struct PendingRenameEntry {
+    path: PathBuf,
+    editor: OwnedEditorTarget,
+}
+
 impl FileTreeModel {
     pub(crate) fn new() -> Self {
         Self {
@@ -80,6 +91,7 @@ impl FileTreeModel {
             stroke: None,
             clipboard: None,
             pending: None,
+            pending_rename: None,
             pending_delete: None,
         }
     }
@@ -97,6 +109,7 @@ impl FileTreeModel {
         self.stroke = None;
         self.clipboard = None;
         self.pending = None;
+        self.pending_rename = None;
         self.pending_delete = None;
     }
 
@@ -148,6 +161,16 @@ impl FileTreeModel {
                 depth,
             }
         });
+        // 重命名快照：从可见行里查目标行的 depth / kind，落不到（被外部移除 / 折叠不可触达）就丢弃，输入态自然降级回 Navigate，下一次按 mod-r 重新起。
+        let pending_rename = self.pending_rename.as_ref().and_then(|pending| {
+            rows.iter()
+                .find(|row| row.path == pending.path)
+                .map(|row| PendingRename {
+                    path: pending.path.clone(),
+                    kind: row.kind,
+                    depth: row.depth,
+                })
+        });
         let pending_delete = self.pending_delete.as_ref().map(|items| {
             let first = items.first();
             PendingDelete {
@@ -176,6 +199,7 @@ impl FileTreeModel {
             cut_paths,
             active,
             pending,
+            pending_rename,
             pending_delete,
         }
     }
@@ -267,6 +291,109 @@ impl FileTreeModel {
 
     pub(crate) fn pending_delete_active(&self) -> bool {
         self.pending_delete.is_some()
+    }
+
+    pub(crate) fn pending_rename_active(&self) -> bool {
+        self.pending_rename.is_some()
+    }
+
+    /// 进入重命名态：以当前焦点行为目标，输入框预填旧名并全选。
+    /// 焦点为空、或正处在新建 / 删除态时静默忽略——避免叠输入框。
+    /// 项目根不可重命名。
+    pub(crate) fn begin_rename(&mut self) {
+        if self.pending.is_some() || self.pending_delete.is_some() {
+            return;
+        }
+        let Some(tree) = self.project_tree.as_ref() else {
+            return;
+        };
+        let Some(path) = self.selected.clone() else {
+            return;
+        };
+        if path == tree.root() {
+            return;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if name.is_empty() {
+            return;
+        }
+        self.pending_rename = Some(PendingRenameEntry {
+            path,
+            editor: OwnedEditorTarget::with_text_all_selected(&name),
+        });
+    }
+
+    pub(crate) fn cancel_rename(&mut self) {
+        self.pending_rename = None;
+    }
+
+    /// 提交重命名：把当前输入框文本作为新名落盘。空名 / 与旧名相同 / 非法 / 冲突时保留输入态，让用户改名重试（除空名外都打印日志）。
+    /// 成功后焦点落到新路径，并对所有「以旧路径为前缀」的 buffer 做 rebase。
+    ///
+    /// 文件改名后顺势打开（buffer 已 rebase 则直接激活、否则新开），返回 [`FileTreeActivation::OpenedFile`] 让宿主把焦点切回编辑器；
+    /// 目录改名没有可打开内容，返回 `Nothing`，焦点留在文件树。
+    pub(crate) fn commit_rename(
+        &mut self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+    ) -> FileTreeActivation {
+        let Some(pending) = self.pending_rename.as_ref() else {
+            return FileTreeActivation::Nothing;
+        };
+        let text = pending.editor.text();
+        let new_name = text.trim();
+        if new_name.is_empty() {
+            return FileTreeActivation::Nothing;
+        }
+        // 与旧名完全相同：等价于取消，避免触发 fs::rename 也无谓写日志。
+        if pending
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n == new_name)
+            .unwrap_or(false)
+        {
+            self.pending_rename = None;
+            return FileTreeActivation::Nothing;
+        }
+        let old_path = pending.path.clone();
+        let Some(tree) = self.project_tree.as_mut() else {
+            self.pending_rename = None;
+            return FileTreeActivation::Nothing;
+        };
+        match tree.rename_entry(&old_path, new_name) {
+            Ok(new_path) => {
+                let is_file = new_path.is_file();
+                // 目录改名顺手展开：子项弹出，让用户看到「这里被改了」，不是只换了一行文字。
+                // 已展开则无操作。展开后把焦点跳到下一行——多半是首个子项——给"光标也动了"的附加信号；
+                // 下一行不存在就退回上一行；都没有就留在新路径自己上。
+                if !is_file && let Err(error) = tree.expand(&new_path) {
+                    eprintln!("重命名后展开目录失败：{}：{error}", new_path.display());
+                }
+                let next_focus = if is_file {
+                    new_path.clone()
+                } else {
+                    neighbor_after(tree, &new_path).unwrap_or_else(|| new_path.clone())
+                };
+                rebase_buffers_under(workspace, &old_path, &new_path);
+                self.selected = Some(next_focus);
+                self.pending_rename = None;
+                // 文件：打开（或激活已 rebase 的 buffer）并把焦点交给编辑器；
+                // 目录：没有可打开内容，留在文件树。
+                if is_file {
+                    open_file(workspace, views, new_path)
+                } else {
+                    FileTreeActivation::Nothing
+                }
+            }
+            Err(error) => {
+                eprintln!("重命名失败：{} → {new_name}：{error}", old_path.display());
+                FileTreeActivation::Nothing
+            }
+        }
     }
 
     /// 请求删除：选区非空时把整个选区拍进 pending_delete；选区为空时降级到
@@ -809,6 +936,19 @@ fn selected_path_after_deleting_active(
         .or_else(|| first_visible_path(tree))
 }
 
+/// 在可见行序列里找 `path` 的"邻居"：优先下一行，无下一行则上一行。
+///
+/// 与 [`next_sibling_of`] 不同——这里不考虑父目录约束，纯按可见行顺序取邻居。
+/// 重命名目录后用它把焦点挪到刚展开的第一个子项（或外层下一项）以给出"动了"的视觉反馈。
+/// `path` 不在可见行里、或可见行只有它一项时返回 `None`。
+fn neighbor_after(tree: &ProjectTree, path: &Path) -> Option<PathBuf> {
+    let rows = tree.visible_rows();
+    let idx = rows.iter().position(|row| row.path == path)?;
+    rows.get(idx + 1)
+        .or_else(|| idx.checked_sub(1).and_then(|prev| rows.get(prev)))
+        .map(|row| row.path.to_path_buf())
+}
+
 /// 在可见行序列里找 `path` 的**下一兄弟**：与 `path` 同父目录、排序在它之后
 /// 的第一项。若 `path` 是一个展开的目录，由于 `find` 是按 `parent ==` 过滤的，
 /// 它的展开后代自然不会被选中——`row.path.parent()` 等于该目录而不是 `path`
@@ -889,11 +1029,17 @@ impl TextTargetQuery for FileTreeModel {
     fn accepts_focus(&self, focus: AppFocus) -> bool {
         matches!(
             focus,
-            AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::NewEntryName))
+            AppFocus::Panel(PanelFocus::FileTree(
+                FileTreeFocus::NewEntryName | FileTreeFocus::RenameEntry
+            ))
         )
     }
 
     fn snapshot(&self) -> EditorSnapshot {
+        // 同一时刻只能有一个内联输入框：重命名优先于新建。
+        if let Some(rename) = self.pending_rename.as_ref() {
+            return rename.editor.snapshot(EditorSnapshotRequest::single_line());
+        }
         self.pending
             .as_ref()
             .map(|pending| {
@@ -905,14 +1051,22 @@ impl TextTargetQuery for FileTreeModel {
     }
 
     fn key_contexts(&self) -> Vec<KeyContext> {
+        let file_tree_mode = if self.pending_rename.is_some() {
+            FileTreeKeyMode::PendingRename
+        } else {
+            FileTreeKeyMode::PendingName
+        };
         vec![
             KeyContext::text_edit(self.accepts_newline(), false),
-            KeyContext::file_tree(FileTreeKeyMode::PendingName),
+            KeyContext::file_tree(file_tree_mode),
             KeyContext::global(),
         ]
     }
 
     fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
+        if let Some(rename) = self.pending_rename.as_ref() {
+            return Some(rename.editor.as_ime_query_target());
+        }
         self.pending
             .as_ref()
             .map(|pending| pending.editor.as_ime_query_target())
@@ -921,12 +1075,18 @@ impl TextTargetQuery for FileTreeModel {
 
 impl TextTargetOwner for FileTreeModel {
     fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
+        if let Some(rename) = self.pending_rename.as_mut() {
+            return Some(rename.editor.as_ime_target());
+        }
         self.pending
             .as_mut()
             .map(|pending| pending.editor.as_ime_target())
     }
 
     fn edit_target(&mut self) -> Option<EditTarget<'_>> {
+        if let Some(rename) = self.pending_rename.as_mut() {
+            return Some(rename.editor.as_edit_target());
+        }
         self.pending
             .as_mut()
             .map(|pending| pending.editor.as_edit_target())
@@ -1564,5 +1724,181 @@ mod tests {
             selected_path_after_deleting_active(&tree, &workspace).as_deref(),
             Some(root.as_path())
         );
+    }
+
+    #[test]
+    fn begin_rename_should_prefill_old_name_and_skip_root() {
+        let (mut model, root) = model_with_three_files("rename-begin");
+        // 焦点在 root：begin_rename 不应建立 pending_rename（项目根不可改名）。
+        model.ensure_selection_initialized();
+        assert_eq!(model.selected.as_deref(), Some(root.as_path()));
+        model.begin_rename();
+        assert!(model.pending_rename.is_none());
+
+        // 焦点在 a.txt：建立 pending_rename，输入框文本 = 旧名。
+        model.move_selection(1);
+        assert_eq!(
+            model.selected.as_deref(),
+            Some(root.join("a.txt").as_path())
+        );
+        model.begin_rename();
+        let pending = model.pending_rename.as_ref().expect("应有 pending_rename");
+        assert_eq!(pending.path, root.join("a.txt"));
+        assert_eq!(pending.editor.text(), "a.txt");
+    }
+
+    #[test]
+    fn commit_rename_should_move_file_and_update_focus_and_rebase_buffer() {
+        let (mut model, root) = model_with_three_files("rename-commit");
+        let mut workspace = Workspace::new();
+        // 先把 a.txt 打开成 buffer，验证 rebase。
+        let a_id = workspace.open_file(root.join("a.txt")).unwrap();
+
+        model.selected = Some(root.join("a.txt"));
+        model.begin_rename();
+        // 模拟用户改名为 "renamed.txt"。
+        {
+            let pending = model.pending_rename.as_mut().unwrap();
+            pending.editor = OwnedEditorTarget::with_text_all_selected("renamed.txt");
+        }
+        let mut views = ViewSet::new();
+        let activation = model.commit_rename(&mut workspace, &mut views);
+
+        // 文件落到新路径、旧路径消失。
+        assert!(root.join("renamed.txt").is_file());
+        assert!(!root.join("a.txt").exists());
+        // 焦点跟随到新路径；pending_rename 清空。
+        assert_eq!(
+            model.selected.as_deref(),
+            Some(root.join("renamed.txt").as_path())
+        );
+        assert!(model.pending_rename.is_none());
+        // buffer 路径已 rebase。
+        assert_eq!(
+            workspace.buffer_path(a_id).unwrap(),
+            Some(root.join("renamed.txt").as_path())
+        );
+        // 文件改名后顺势把焦点切给编辑器：被 rebase 的 buffer 设为活动。
+        assert_eq!(activation, FileTreeActivation::OpenedFile);
+        assert_eq!(
+            workspace.active_buffer().and_then(|b| b.path()),
+            Some(root.join("renamed.txt").as_path())
+        );
+    }
+
+    #[test]
+    fn commit_rename_should_open_renamed_file_without_prior_buffer() {
+        let (mut model, root) = model_with_three_files("rename-commit-open");
+        let mut workspace = Workspace::new();
+        let mut views = ViewSet::new();
+
+        model.selected = Some(root.join("a.txt"));
+        model.begin_rename();
+        {
+            let pending = model.pending_rename.as_mut().unwrap();
+            pending.editor = OwnedEditorTarget::with_text_all_selected("renamed.txt");
+        }
+        let activation = model.commit_rename(&mut workspace, &mut views);
+
+        assert_eq!(activation, FileTreeActivation::OpenedFile);
+        // 文件原本没有 buffer，commit 后应被打开并设为活动。
+        assert_eq!(
+            workspace.active_buffer().and_then(|b| b.path()),
+            Some(root.join("renamed.txt").as_path())
+        );
+    }
+
+    #[test]
+    fn commit_rename_on_directory_should_keep_focus_in_file_tree_and_expand_it() {
+        // root/sub/ → 改名后没有可打开内容，activation = Nothing；目录展开以给出视觉反馈。
+        let (mut model, root) = model_with_two_files_and_subdir("rename-dir");
+        // 在 sub 下放一个子项，确保展开后能观察到 visible_rows 新增一行。
+        File::create(root.join("sub/inner.txt")).unwrap();
+        // 重 open 一次，让新建的子项进入缓存。
+        model.open_project(root.clone());
+        let mut workspace = Workspace::new();
+        let mut views = ViewSet::new();
+
+        model.selected = Some(root.join("sub"));
+        model.begin_rename();
+        {
+            let pending = model.pending_rename.as_mut().unwrap();
+            pending.editor = OwnedEditorTarget::with_text_all_selected("sub2");
+        }
+        let activation = model.commit_rename(&mut workspace, &mut views);
+
+        assert_eq!(activation, FileTreeActivation::Nothing);
+        assert!(root.join("sub2").is_dir());
+        assert!(workspace.active_buffer().is_none());
+        // 目录已展开：可见行里能看到 sub2/inner.txt。
+        let tree = model.project_tree.as_ref().unwrap();
+        assert!(tree.is_expanded(&root.join("sub2")));
+        let names: Vec<_> = tree
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.name.to_string())
+            .collect();
+        assert!(names.contains(&"inner.txt".to_string()));
+        // 焦点跳到下一行——展开后正好是 sub2 的首个子项。
+        assert_eq!(
+            model.selected.as_deref(),
+            Some(root.join("sub2/inner.txt").as_path())
+        );
+    }
+
+    #[test]
+    fn commit_rename_on_empty_directory_should_fallback_focus_to_previous_row() {
+        // root/sub/：只有一个空目录，重命名后展开也无子项；下一行不存在 → 退回上一行 = root。
+        let root = tmp_root("rename-dir-empty-fallback");
+        create_dir_all(root.join("sub")).unwrap();
+        let mut model = FileTreeModel::default();
+        model.open_project(root.clone());
+
+        let mut workspace = Workspace::new();
+        let mut views = ViewSet::new();
+        model.selected = Some(root.join("sub"));
+        model.begin_rename();
+        {
+            let pending = model.pending_rename.as_mut().unwrap();
+            pending.editor = OwnedEditorTarget::with_text_all_selected("renamed");
+        }
+        let activation = model.commit_rename(&mut workspace, &mut views);
+
+        assert_eq!(activation, FileTreeActivation::Nothing);
+        assert!(root.join("renamed").is_dir());
+        // visible_rows = [root, renamed]，renamed 是最后一行 → 焦点退回上一行 root。
+        assert_eq!(model.selected.as_deref(), Some(root.as_path()));
+    }
+
+    #[test]
+    fn commit_rename_should_keep_pending_on_conflict() {
+        let (mut model, root) = model_with_three_files("rename-conflict");
+        let mut workspace = Workspace::new();
+        model.selected = Some(root.join("a.txt"));
+        model.begin_rename();
+        // 改成已存在的 b.txt——磁盘冲突，pending_rename 保留供用户重试。
+        {
+            let pending = model.pending_rename.as_mut().unwrap();
+            pending.editor = OwnedEditorTarget::with_text_all_selected("b.txt");
+        }
+        let mut views = ViewSet::new();
+        let _ = model.commit_rename(&mut workspace, &mut views);
+
+        assert!(root.join("a.txt").is_file());
+        assert!(root.join("b.txt").is_file());
+        assert!(model.pending_rename.is_some());
+    }
+
+    #[test]
+    fn commit_rename_with_unchanged_name_should_drop_pending_quietly() {
+        let (mut model, root) = model_with_three_files("rename-same-name");
+        let mut workspace = Workspace::new();
+        model.selected = Some(root.join("a.txt"));
+        model.begin_rename();
+        // 不动文本（默认就是 a.txt），直接提交——等价于取消。
+        let mut views = ViewSet::new();
+        let _ = model.commit_rename(&mut workspace, &mut views);
+        assert!(root.join("a.txt").is_file());
+        assert!(model.pending_rename.is_none());
     }
 }

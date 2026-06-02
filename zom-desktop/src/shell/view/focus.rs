@@ -61,6 +61,7 @@ impl FocusProjection {
             PanelId::FileTree => [
                 AppFocus::file_tree(FileTreeFocus::Navigate),
                 AppFocus::file_tree(FileTreeFocus::NewEntryName),
+                AppFocus::file_tree(FileTreeFocus::RenameEntry),
                 AppFocus::file_tree(FileTreeFocus::ConfirmDelete),
             ]
             .into_iter()

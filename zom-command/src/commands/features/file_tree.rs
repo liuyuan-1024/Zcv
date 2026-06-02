@@ -18,6 +18,9 @@ pub const ACTIVATE: &str = "file_tree.activate";
 pub const BEGIN_NEW_ENTRY: &str = "file_tree.begin_new_entry";
 pub const COMMIT_NEW_ENTRY: &str = "file_tree.commit_new_entry";
 pub const CANCEL_NEW_ENTRY: &str = "file_tree.cancel_new_entry";
+pub const BEGIN_RENAME: &str = "file_tree.begin_rename";
+pub const COMMIT_RENAME: &str = "file_tree.commit_rename";
+pub const CANCEL_RENAME: &str = "file_tree.cancel_rename";
 pub const REQUEST_DELETE: &str = "file_tree.request_delete";
 pub const CONFIRM_DELETE: &str = "file_tree.confirm_delete";
 pub const CANCEL_DELETE: &str = "file_tree.cancel_delete";
@@ -39,6 +42,8 @@ pub struct FileTreeKeyContext {
 pub enum FileTreeKeyMode {
     Navigate,
     PendingName,
+    /// 重命名输入态：只响应文本编辑 + 确认 / 取消。
+    PendingRename,
     /// 删除确认弹窗打开中：只响应确认 / 取消。
     PendingDelete,
 }
@@ -112,6 +117,18 @@ pub fn cancel_new_entry() -> Invocation {
     (cid(CANCEL_NEW_ENTRY), CommandArgs::new())
 }
 
+pub fn begin_rename() -> Invocation {
+    (cid(BEGIN_RENAME), CommandArgs::new())
+}
+
+pub fn commit_rename() -> Invocation {
+    (cid(COMMIT_RENAME), CommandArgs::new())
+}
+
+pub fn cancel_rename() -> Invocation {
+    (cid(CANCEL_RENAME), CommandArgs::new())
+}
+
 pub fn request_delete() -> Invocation {
     (cid(REQUEST_DELETE), CommandArgs::new())
 }
@@ -149,6 +166,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
 
     let navigate = KeyBindingContext::file_tree(FileTreeKeyMode::Navigate);
     let pending_name = KeyBindingContext::file_tree(FileTreeKeyMode::PendingName);
+    let pending_rename = KeyBindingContext::file_tree(FileTreeKeyMode::PendingRename);
     let pending_delete = KeyBindingContext::file_tree(FileTreeKeyMode::PendingDelete);
 
     registry
@@ -228,6 +246,34 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_cancel_new_entry),
         )
         .key_in("escape", pending_name);
+
+    registry
+        .install(
+            keymap,
+            BEGIN_RENAME,
+            "重命名文件树选中条目",
+            Box::new(run_begin_rename),
+        )
+        .description("把焦点行的名称作为输入框预填，输入新名后 enter 确认、esc 取消。")
+        .key_in("mod-r", navigate);
+
+    registry
+        .install(
+            keymap,
+            COMMIT_RENAME,
+            "提交重命名",
+            Box::new(run_commit_rename),
+        )
+        .key_in("enter", pending_rename);
+
+    registry
+        .install(
+            keymap,
+            CANCEL_RENAME,
+            "取消重命名",
+            Box::new(run_cancel_rename),
+        )
+        .key_in("escape", pending_rename);
 
     registry
         .install(
@@ -356,6 +402,33 @@ fn run_cancel_new_entry(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.effects.push(HostEffect::FileTreeCancelNewEntry);
+    Ok(CommandOutcome::default())
+}
+
+fn run_begin_rename(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.effects.push(HostEffect::FileTreeBeginRename);
+    Ok(CommandOutcome::default())
+}
+
+fn run_commit_rename(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.effects.push(HostEffect::FileTreeCommitRename);
+    Ok(CommandOutcome::default())
+}
+
+fn run_cancel_rename(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.effects.push(HostEffect::FileTreeCancelRename);
     Ok(CommandOutcome::default())
 }
 

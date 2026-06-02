@@ -1,13 +1,21 @@
-﻿# 打包 Windows 分发 zip。仅支持 x86_64。
+﻿# 打包 Windows 分发 zip。
+# Release 资产命名: zom_0.1.0_windows_amd64.zip / zom_0.1.0_windows_arm64.zip
 #
 # 所有资源（含应用图标 SVG）都通过 include_bytes! 编译进 zom.exe，
 # 因此分发包就是单文件可执行 + 一个 zip。
 #
 # 用法:
 #   pwsh script/bundle-windows.ps1
+#   pwsh script/bundle-windows.ps1 -Arch amd64
+#   pwsh script/bundle-windows.ps1 -Arch arm64
 #
 # 注意: 文件开头有 UTF-8 BOM，Windows PowerShell 5.1 才能正确读中文。
 #       编辑保存时请保留 BOM（VSCode/Zed 默认会保留）。
+
+param(
+    [ValidateSet("amd64", "arm64", "x64", "x86_64")]
+    [string]$Arch = "amd64"
+)
 
 $ErrorActionPreference = "Stop"
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -16,13 +24,22 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
 
-$AppName = "Zom"
+$AppName = "zom"
 $BinName = "zom"
 $Package = "zom-desktop"
-$Target  = "x86_64-pc-windows-msvc"
 
-$Version = (Select-String -Path "zom-desktop/Cargo.toml" -Pattern '^version\s*=\s*"([^"]+)"' |
+switch ($Arch) {
+    "amd64"  { $Target = "x86_64-pc-windows-msvc"; $ReleaseArch = "amd64" }
+    "x64"    { $Target = "x86_64-pc-windows-msvc"; $ReleaseArch = "amd64" }
+    "x86_64" { $Target = "x86_64-pc-windows-msvc"; $ReleaseArch = "amd64" }
+    "arm64"  { $Target = "aarch64-pc-windows-msvc"; $ReleaseArch = "arm64" }
+}
+
+$Version = (Select-String -Path "Cargo.toml" -Pattern '^version\s*=\s*"([^"]+)"' |
     Select-Object -First 1).Matches.Groups[1].Value
+
+$OS = "windows"
+$DistName = "${AppName}_${Version}_${OS}_${ReleaseArch}"
 
 # ---------- 1. 构建 ----------
 Write-Host "==> cargo build --release -p $Package --target $Target"
@@ -35,8 +52,8 @@ if (-not (Test-Path $Exe)) {
 }
 
 # ---------- 2. 打 zip ----------
-$Stage = Join-Path $OutDir "$AppName-$Version-win64"
-$Zip   = "$Stage.zip"
+$Stage = Join-Path $OutDir $DistName
+$Zip   = Join-Path $OutDir "$DistName.zip"
 
 if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
 if (Test-Path $Zip)   { Remove-Item -Force $Zip }

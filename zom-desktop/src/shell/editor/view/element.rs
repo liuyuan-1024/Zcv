@@ -14,6 +14,14 @@
 //! line_height 反算实际可见行数 + 顶行，回写 view 的 `ViewportState`，下一帧
 //! 的 snapshot 据此切；首帧由 main_editor 的 `DEFAULT_VISIBLE_LINES` 兜底。
 //!
+//! 软换行：开关由 [`EditorKernel::soft_wrap`] 控制，运行时可切换。开启后每条
+//! 逻辑行可能被拆成多条「视觉行」（sub-row），prepaint 阶段在 shape 完一次
+//! 全行后用 [`compute_wrap_segments`] 按视口宽度算出断点字节列表，再为每
+//! 段 sub-row 重 shape。下游 phases / gutter 一律按视觉行索引消费——只要
+//! `PrepaintedLine` 的 `line_start_byte` / `line_len` 是 sub-row 级别的字节
+//! 边界，原有路径自然兼容。软换行打开时禁用横向滚动，viewport_sync 回写
+//! 的不是视觉行数而是「下一帧切多少条逻辑行就够铺满视口」。
+//!
 //! 滚动有两条独立路径，共存于 [`Self::prepaint`]：
 //!
 //! - **reveal 路径**：响应外部 [`zom_view::RevealRequest`]（搜索 / goto-* 等
@@ -182,7 +190,9 @@ pub(crate) struct EditorLayout {
 ///
 /// 注意：从视口切片接入起，`line_start_byte` 是该行在整 buffer 中的**绝对**
 /// 字节偏移，而非 element 内某段文本的局部偏移——selection / search 命中的
-/// `TextRange` 也是绝对 byte，二者天然对齐。
+/// `TextRange` 也是绝对 byte，二者天然对齐。开启软换行后，本结构表示**视觉
+/// 行**（一条逻辑行可拆成多个 sub-row），`line_start_byte` / `line_len`
+/// 仍指当前 sub-row 在 buffer 中的绝对字节区间。
 pub(crate) struct PrepaintedLine {
     /// 本行起始字节在整 buffer 中的绝对偏移。
     line_start_byte: usize,
@@ -201,10 +211,9 @@ impl PrepaintedLine {
 
 /// `prepaint` 阶段 shape 出的、供 `paint` 直接绘制的结果。
 ///
-/// 字段按手册 19.4 的 6 阶段分组：每个阶段消费一个 `Vec<...>` 槽位。v1 不接入
-/// 的槽位（阶段 1 行背景、阶段 4 字符叠加、阶段 5 IME underline、阶段 6 装饰
-/// 图标）固定为空 Vec；接入新装饰来源时只需在 prepaint 出口处往对应 Vec 推
-/// 条目，paint 主干不变。
+/// 字段按手册 19.4 的 6 阶段分组：每个阶段消费一个 `Vec<...>` 槽位。
+/// v1 不接入的槽位（阶段 1 行背景、阶段 4 字符叠加、阶段 5 IME underline、阶段 6 装饰图标）固定为空 Vec；
+/// 接入新装饰来源时只需在 prepaint 出口处往对应 Vec 推条目，paint 主干不变。
 ///
 /// 颜色解析的位置：所有装饰来源遵循「语义键 + theme 解析」契约，**解析在
 /// [`highlight::compose`] 内一次性完成**；prepaint 拿到的就是 `(range, Hsla)`
@@ -345,6 +354,7 @@ impl Element for EditorElement {
         let line_height = layout.line_height;
         let has_gutter = self.has_gutter();
         let allows_vertical_scroll = self.kernel.allows_vertical_scroll();
+        let soft_wrap = self.kernel.soft_wrap();
         let viewport_start_line = self.viewport_start_line;
 
         // composer 把 Decoration 切分为 (foreground, background) 两条已解析色的列表（手册架构 §五）。
@@ -363,10 +373,27 @@ impl Element for EditorElement {
             .primary_index()
             .min(selections.len().saturating_sub(1));
 
-        // visible_row -> primary caret 的视口内 (row, x) 占位；None 表示视口外 / 暂未匹配上。
-        // primary 的"视口外但要 reveal/edge-scroll"路径走 primary_caret_logical / primary_caret_x 兜底。
+        // 软换行需要在 shape 之前知道正文区宽度（= bounds.width - gutter_offset）。
+        // 这里先预算 gutter 偏移；真正的行号 shape 仍在拿到 sub-row 列表后再做
+        // （measure_offset 与 prepare 走同一 number_width 路径，数值上等价）。
+        let gutter_offset_estimate = if has_gutter {
+            gutter::measure_offset(self.total_lines, &text_style, font_size, window)
+        } else {
+            px(0.)
+        };
+        let text_viewport_w = clamp_px(
+            bounds.size.width - gutter_offset_estimate,
+            px(0.),
+            bounds.size.width,
+        );
+
+        // 视觉行 -> 每个 selection 的 (row, x) 占位；None 表示视口外 / 暂未匹配上。
+        // primary 的"视口外但要 reveal/edge-scroll"路径走 primary_caret_x 兜底。
         let mut carets_pos: Vec<Option<(usize, Pixels)>> = vec![None; selections.len()];
         let mut prepainted_lines: Vec<PrepaintedLine> = Vec::with_capacity(self.lines.len());
+        // 每条视觉行对应的「逻辑行号」：首段填 Some(line_index)，软换行的续段填 None。
+        // 长度与 prepainted_lines 一一对应；不开软换行时全数组都是 Some(...)。
+        let mut gutter_rows: Vec<Option<u64>> = Vec::with_capacity(self.lines.len());
 
         // reveal 是否生效完全看快照里有没有；调用方不需要 reveal 时自然就不会在 owner.snapshot() 里填这个字段。
         let active_reveal = self.reveal;
@@ -374,57 +401,122 @@ impl Element for EditorElement {
         // reveal 目标若在视口内，shape 后能算出行内 x（用于 reveal x 轴摆位）。
         let mut reveal_visible_row_x: Option<(usize, Pixels)> = None;
 
-        for (visual_row, line) in self.lines.iter().enumerate() {
+        // 视口能装下多少视觉像素行——软换行下回写「逻辑行数」的判据。
+        let lh_safe: f32 = f32::from(line_height).max(1.0);
+        let viewport_h_f: f32 = bounds.size.height.into();
+        let visible_pixel_rows = if allows_vertical_scroll {
+            (viewport_h_f / lh_safe).ceil() as usize
+        } else {
+            1
+        };
+        // 累计已铺的视觉行数；首次 ≥ visible_pixel_rows 时停止累加。
+        // 软换行下，该计数就是「下一帧切多少条逻辑行就够铺满视口」的下界。
+        let mut logical_lines_to_cover: u64 = 0;
+        let mut cover_satisfied = false;
+
+        for line in self.lines.iter() {
             let raw = line.text.as_str();
             let line_start = line.start_byte;
             let line_end = line_start + raw.len();
 
-            // 文本 shape 的输入只有「内容 + 字体」，与光标无关。
-            // 同一行内容每帧 shape 命中 GPUI 行布局缓存，光标移动不会触发重排。
+            // 每条逻辑行的 TextRun 切分——sub-row 都要参考、本行只算一次。
             //
             // 阶段 3 字符层：把行内字节区间按 composer 输出的前景 runs 切多段 TextRun。
             // 前景为空 → 兜底单 run（继承 text_style 字色）。
-            let runs =
+            let full_runs =
                 build_text_runs_for_line(raw, line_start, line_end, &highlight_runs, &text_style);
-            let shaped = window.text_system().shape_line(
-                SharedString::from(raw.to_string()),
-                font_size,
-                &runs,
-                None,
-            );
 
-            // 每个 selection.head 落在视口内时算其行内 x。
-            // head 出现在行末 (`head == line_end`) 与行首 (`head == 下一行 line_start`) 是同一字节位置。
-            // head 优先归到「等于行尾」的那一行（与旧 cursor_byte 行为一致：保留尾随空格后的光标位）。
-            for (i, sel) in selections.iter().enumerate() {
-                if carets_pos[i].is_some() {
-                    continue;
+            // 计算 sub-row 字节切分。
+            // soft_wrap 关 → 单段 (0, len)，与旧路径完全等价。
+            // soft_wrap 开 → 先 shape 一次全行用来测断点；shape 结果只用于测量，
+            //   sub-row 再单独 re-shape（GPUI 行布局缓存：同内容 + 同样式不付二次成本）。
+            let segments: Vec<(usize, usize)> = if soft_wrap {
+                let measure_shaped = window.text_system().shape_line(
+                    SharedString::from(raw.to_string()),
+                    font_size,
+                    &full_runs,
+                    None,
+                );
+                compute_wrap_segments(raw, &measure_shaped, text_viewport_w)
+            } else {
+                vec![(0, raw.len())]
+            };
+
+            for (seg_i, &(seg_start, seg_end)) in segments.iter().enumerate() {
+                let abs_start = line_start + seg_start;
+                let abs_end = line_start + seg_end;
+
+                // 单段覆盖全行时复用 full_runs；多段时按 sub-row 切 runs
+                // （build_text_runs_for_line 把 highlight_runs 夹到 sub-row 范围）。
+                let (seg_text, sub_runs) = if seg_start == 0 && seg_end == raw.len() {
+                    (raw, full_runs.clone())
+                } else {
+                    let st = &raw[seg_start..seg_end];
+                    let rs = build_text_runs_for_line(
+                        st,
+                        abs_start,
+                        abs_end,
+                        &highlight_runs,
+                        &text_style,
+                    );
+                    (st, rs)
+                };
+                let shaped = window.text_system().shape_line(
+                    SharedString::from(seg_text.to_string()),
+                    font_size,
+                    &sub_runs,
+                    None,
+                );
+
+                let visual_row = prepainted_lines.len();
+
+                // caret 命中规则与旧路径一致："head ≤ abs_end" 归到当前 sub-row。
+                // 软换行边界 (head == abs_end == 下一 sub-row.abs_start)：当前
+                // sub-row 先把 carets_pos[i] 写满，后续 sub-row 因 is_some() 短路。
+                // caret 显示在 sub-row 末——与「行尾光标」一致。
+                for (i, sel) in selections.iter().enumerate() {
+                    if carets_pos[i].is_some() {
+                        continue;
+                    }
+                    let head = sel.head().get();
+                    if head >= abs_start && head <= abs_end {
+                        carets_pos[i] = Some((visual_row, shaped.x_for_index(head - abs_start)));
+                    }
                 }
-                let head = sel.head().get();
-                if head >= line_start && head <= line_end {
-                    carets_pos[i] = Some((visual_row, shaped.x_for_index(head - line_start)));
+                if let Some(rb) = reveal_byte
+                    && reveal_visible_row_x.is_none()
+                    && rb >= abs_start
+                    && rb <= abs_end
+                {
+                    reveal_visible_row_x = Some((visual_row, shaped.x_for_index(rb - abs_start)));
+                }
+
+                prepainted_lines.push(PrepaintedLine {
+                    line_start_byte: abs_start,
+                    line_len: seg_end - seg_start,
+                    shaped,
+                });
+                gutter_rows.push(if seg_i == 0 {
+                    Some(line.line_index)
+                } else {
+                    None
+                });
+            }
+
+            // 处理完这条逻辑行：若视口尚未铺满，把它计入待覆盖数。
+            if !cover_satisfied {
+                logical_lines_to_cover += 1;
+                if prepainted_lines.len() >= visible_pixel_rows {
+                    cover_satisfied = true;
                 }
             }
-            if let Some(rb) = reveal_byte
-                && reveal_visible_row_x.is_none()
-                && rb >= line_start
-                && rb <= line_end
-            {
-                reveal_visible_row_x = Some((visual_row, shaped.x_for_index(rb - line_start)));
-            }
-            prepainted_lines.push(PrepaintedLine {
-                line_start_byte: line_start,
-                line_len: raw.len(),
-                shaped,
-            });
         }
 
-        // gutter（行号 / 装饰图标）独立模块。shape 与文本 shape 是同一字体路径，
-        // 但几何彻底独立于正文（不参与水平滚动），所以单独走一遍迭代。
-        // 列宽由 buffer 总行数（非当前视口最大行号）决定，避免滚动时列宽抖动。
+        // gutter：按视觉行 shape 行号——续行槽位为 None，paint 时跳过。
+        // 列宽仍由 buffer 总行数决定（避免滚动时列宽抖动）。
         let gutter_prepaint = if has_gutter {
             gutter::prepare(
-                &self.lines,
+                &gutter_rows,
                 self.total_lines,
                 &text_style,
                 font_size,
@@ -465,6 +557,9 @@ impl Element for EditorElement {
         //
         // X 轴依赖字体度量（shape 出来的字形宽度），无法在 view 层（按行号粒度）表达。
         // reveal X 摆位与 caret 列 edge-scroll 都留在这里。`off.y` 直接由 self.top_line 推导。
+        //
+        // 软换行打开时整条横向滚动路径都失效——内容已经按视口宽度断行，
+        // off.x 强制 0、reveal / edge-scroll 直接跳过。
         let viewport_h = bounds.size.height;
         let viewport_w = clamp_px(bounds.size.width - gutter_offset, px(0.), bounds.size.width);
         let derived_off_y = if allows_vertical_scroll {
@@ -486,59 +581,68 @@ impl Element for EditorElement {
                 let result =
                     window.with_element_state::<EditorScroll, _>(global_id, |state, _window| {
                         let mut state = state.unwrap_or_default();
-                        let mut off = state.offset_x;
+                        let mut off = if soft_wrap { px(0.) } else { state.offset_x };
 
-                        // === X 轴 reveal ===
-                        // 仅处理横向；Y 轴 reveal 由 view.settle_viewport_y 吸收。
-                        // 仍然按 seq 在 element 侧 dedupe —— view 的 reveal 字段不会自动清空。
-                        // element 自己记 last_applied_reveal_seq 防重。
-                        if let Some(req) = reveal
-                            && Some(req.seq) != state.last_applied_reveal_seq
-                        {
-                            // reveal 目标行确实在视口里 shape 出了 x 时才能摆位；
-                            // 否则保留当前 off，等下一帧该行进视口再校准。
-                            if let Some((_, x)) = reveal_visible_row_x {
-                                let target_right = x + px(CARET_WIDTH);
-                                let visible_x = x >= off && target_right <= off + viewport_w;
-                                let (placement_factor, force_scroll) = match req.kind {
-                                    RevealKind::Match => (1.0 / 3.0, false),
-                                    RevealKind::Jump => (1.0 / 3.0, true),
-                                };
-                                if force_scroll || !visible_x {
-                                    off = x - viewport_w * placement_factor;
+                        if !soft_wrap {
+                            // === X 轴 reveal ===
+                            // 仅处理横向；Y 轴 reveal 由 view.settle_viewport_y 吸收。
+                            // 仍然按 seq 在 element 侧 dedupe —— view 的 reveal 字段不会自动清空。
+                            // element 自己记 last_applied_reveal_seq 防重。
+                            if let Some(req) = reveal
+                                && Some(req.seq) != state.last_applied_reveal_seq
+                            {
+                                // reveal 目标行确实在视口里 shape 出了 x 时才能摆位；
+                                // 否则保留当前 off，等下一帧该行进视口再校准。
+                                if let Some((_, x)) = reveal_visible_row_x {
+                                    let target_right = x + px(CARET_WIDTH);
+                                    let visible_x = x >= off && target_right <= off + viewport_w;
+                                    let (placement_factor, force_scroll) = match req.kind {
+                                        RevealKind::Match => (1.0 / 3.0, false),
+                                        RevealKind::Jump => (1.0 / 3.0, true),
+                                    };
+                                    if force_scroll || !visible_x {
+                                        off = x - viewport_w * placement_factor;
+                                    }
+                                }
+                                state.last_applied_reveal_seq = Some(req.seq);
+                            }
+
+                            // === X 轴 edge-scroll ===
+                            // 光标列需可见。行尾光标位于最后一个字形「之后」。
+                            // 可滚动宽度要在最宽行的基础上额外留出一个光标宽度，否则滚到行尾时光标正好压在正文裁剪边界上被切掉。
+                            // primary caret 在视口外时 x = 0，不主动触发 x 滚动（再下一帧 caret 进视口、shape 出 x 后再校准）。
+                            let scrollable_w = content_width + px(CARET_WIDTH);
+                            if primary_caret_in_view.is_some() {
+                                let caret_right = primary_caret_x + px(CARET_WIDTH);
+                                if primary_caret_x < off {
+                                    off = primary_caret_x;
+                                } else if caret_right > off + viewport_w {
+                                    off = caret_right - viewport_w;
                                 }
                             }
-                            state.last_applied_reveal_seq = Some(req.seq);
-                        }
-
-                        // === X 轴 edge-scroll ===
-                        // 光标列需可见。行尾光标位于最后一个字形「之后」。
-                        // 可滚动宽度要在最宽行的基础上额外留出一个光标宽度，否则滚到行尾时光标正好压在正文裁剪边界上被切掉。
-                        // primary caret 在视口外时 x = 0，不主动触发 x 滚动（再下一帧 caret 进视口、shape 出 x 后再校准）。
-                        let scrollable_w = content_width + px(CARET_WIDTH);
-                        if primary_caret_in_view.is_some() {
-                            let caret_right = primary_caret_x + px(CARET_WIDTH);
-                            if primary_caret_x < off {
-                                off = primary_caret_x;
-                            } else if caret_right > off + viewport_w {
-                                off = caret_right - viewport_w;
+                            off = clamp_px(
+                                off,
+                                px(0.),
+                                clamp_px(scrollable_w - viewport_w, px(0.), scrollable_w),
+                            );
+                        } else {
+                            // 软换行下：把 reveal seq 视为已消费（避免开关切换瞬间的旧 seq 被
+                            // 重新应用），但 off 保持 0 不动。
+                            if let Some(req) = reveal {
+                                state.last_applied_reveal_seq = Some(req.seq);
                             }
                         }
-                        off = clamp_px(
-                            off,
-                            px(0.),
-                            clamp_px(scrollable_w - viewport_w, px(0.), scrollable_w),
-                        );
 
                         state.offset_x = off;
 
-                        // 测量 visible_line_count：viewport_h / line_height + 1 行裕度。
-                        let lh: f32 = f32::from(line_height).max(1.0);
-                        let viewport_h_f: f32 = viewport_h.into();
-                        let visible = if allows_vertical_scroll {
-                            (viewport_h_f / lh).ceil() as u64
-                        } else {
+                        // 测量 visible_line_count：软换行下回写「逻辑行数」，否则回写视觉行数（= 像素行数）。
+                        // 不开软换行时二者等价；开启后两者不一致，必须用逻辑行数让下一帧切片对齐。
+                        let visible = if !allows_vertical_scroll {
                             1
+                        } else if soft_wrap {
+                            logical_lines_to_cover.max(1)
+                        } else {
+                            visible_pixel_rows as u64
                         };
                         ((off, visible), state)
                     });
@@ -547,6 +651,8 @@ impl Element for EditorElement {
             }
             None => (Point::new(px(0.), derived_off_y), self.lines.len() as u64),
         };
+
+        let _ = viewport_h; // 仅留作上文 viewport_h_f 的语义来源，避免 unused-binding 警告。
 
         // 把测得的 visible_line_count 推回 view，让下一帧 snapshot 切片用更准的行数。
         // top_line 已经由 settle 落定，sync 不再写它。
@@ -564,7 +670,7 @@ impl Element for EditorElement {
             // composer 已按 priority 排好；paint 顺序 = Vec 顺序，低优先级先画。
             range_backgrounds,
             lines: prepainted_lines,
-            // v1 空槽位：字符叠加（ghost text / inlay hint）。
+            // v1 空槽位:字符叠加（ghost text / inlay hint）。
             glyph_overlays: Vec::new(),
             carets,
             primary_caret: primary_caret_in_view,
@@ -782,6 +888,143 @@ fn build_text_runs_for_line(
     }
 
     runs
+}
+
+/// 软换行 MVP 断行算法：
+/// 按字节遍历 `raw`，用全行 [`ShapedLine`] 的 [`ShapedLine::x_for_index`] 取每个字符的累计像素位置；
+/// 当 sub-row 宽度即将超过 `viewport_w` 时，回退到最近的「合法断点」断；找不到就在当前字符位置硬断。
+///
+/// **合法断点**有两种（参考 UAX #14 的实用子集）：
+/// - **空白后**：任何空白字符之后的位置——空白会留在前一 sub-row 末尾。
+/// - **CJK 边界**：CJK 字符与任何字符之间的位置（CJK-CJK / CJK-ASCII / ASCII-CJK）。
+///   CJK 之间没有空白也要能断，否则一长串中文遇到行尾会被整段挤到下一行，
+///   留出大块空白——视觉上「明明右边还有位置为啥换了」的来源。
+///
+/// 返回 sub-row 的字节区间列表 `[(start, end), ...]`，覆盖 `[0, raw.len())`，互不重叠且按顺序排列；
+/// 不开软换行 / 整行能放下 / `viewport_w <= 0` 时直接返回 `[(0, raw.len())]`。
+///
+/// 不变量：
+/// - 单个字符比 `viewport_w` 还宽时，仍把这个字符放入当前 sub-row（避免产生空段死循环）；下一个字符再触发断行。
+/// - 边界（断点字节）总落在 UTF-8 字符边界——本函数只在字符边界处记录断点。
+/// - `raw == ""` 返回 `[(0, 0)]`，与上游 build_text_runs_for_line 的空行约定一致。
+fn compute_wrap_segments(
+    raw: &str,
+    full_shaped: &ShapedLine,
+    viewport_w: Pixels,
+) -> Vec<(usize, usize)> {
+    if raw.is_empty() {
+        return vec![(0, 0)];
+    }
+    if viewport_w <= px(0.) {
+        return vec![(0, raw.len())];
+    }
+    if full_shaped.width <= viewport_w {
+        return vec![(0, raw.len())];
+    }
+
+    let mut segments: Vec<(usize, usize)> = Vec::new();
+    let mut current_start: usize = 0;
+    let mut current_start_x = full_shaped.x_for_index(0);
+    // 最近一个「合法断点」的字节位置——溢出时把它当成 sub-row 切点。
+    // 空白后的合法断点 = 空白字符之后的字节；CJK 边界的合法断点 = 当前字节。
+    let mut last_break: Option<usize> = None;
+    // 前一字符是不是 CJK——用于判定「CJK / 非-CJK」切换处也是断点。
+    let mut prev_was_cjk = false;
+
+    let bytes = raw.as_bytes();
+    let mut byte: usize = 0;
+    while byte < raw.len() {
+        // 推进到下一个 UTF-8 字符边界。
+        let mut next = byte + 1;
+        while next < raw.len() && (bytes[next] & 0xC0) == 0x80 {
+            next += 1;
+        }
+
+        let ch = raw[byte..next].chars().next().unwrap_or(' ');
+        let curr_is_cjk = is_cjk_break_candidate(ch);
+
+        // CJK 边界断点：当前位置（byte）介于「前 CJK / 当前 CJK」之间，
+        // 或「前非-CJK / 当前 CJK」、「前 CJK / 当前非-CJK」之间。
+        // 任一侧是 CJK 就视为可断——位置 = byte（CJK 字符去新 sub-row）。
+        if curr_is_cjk || prev_was_cjk {
+            last_break = Some(byte);
+        }
+
+        let x_next = full_shaped.x_for_index(next);
+        let segment_w = x_next - current_start_x;
+
+        if segment_w > viewport_w && byte > current_start {
+            // 当前 sub-row 加上下一个字符会溢出——需要断。
+            // 优先 last_break；否则在当前位置硬断。
+            let break_at = match last_break {
+                Some(p) if p > current_start && p <= byte => p,
+                _ => byte,
+            };
+            segments.push((current_start, break_at));
+            current_start = break_at;
+            current_start_x = full_shaped.x_for_index(break_at);
+            last_break = None;
+            prev_was_cjk = false;
+            // 不推进 byte——本字符重新进入下一 sub-row。
+            continue;
+        }
+
+        // 空白后的合法断点（位置 = next，空白留在前一 sub-row 末尾）。
+        if ch.is_whitespace() {
+            last_break = Some(next);
+        }
+
+        prev_was_cjk = curr_is_cjk;
+        byte = next;
+    }
+
+    if current_start < raw.len() {
+        segments.push((current_start, raw.len()));
+    }
+    if segments.is_empty() {
+        segments.push((0, raw.len()));
+    }
+    segments
+}
+
+/// 是否是「东亚正文字符」——把它两侧都视为软换行的合法断点。
+///
+/// 覆盖：
+/// - CJK 符号与标点（U+3000-303F）：含全角空格、句号、逗号等。
+///   注意句末连续标点其实有 UAX #14 的「不可前断 / 不可后断」分类，MVP 一并归入可断；
+///   极端情况下会出现「，」开头的续行，可接受。
+/// - 平假名、片假名、CJK 偏旁、康熙部首、注音符号、CJK 基本与扩展 A、CJK 兼容、全角形式。
+/// - 韩文音节（U+AC00-D7A3）。
+/// - 扩展 B/C/D/E/F 落在 SMP，编辑器目前用 UTF-8 字节遍历，照样命中。
+///
+/// 不包含拉丁、阿拉伯数字、ASCII 标点——这些走「空白后」断点路径。
+fn is_cjk_break_candidate(c: char) -> bool {
+    let code = c as u32;
+    matches!(
+        code,
+        0x2E80..=0x2EFF   // CJK 偏旁补充
+        | 0x2F00..=0x2FDF // 康熙部首
+        | 0x3000..=0x303F // CJK 符号与标点
+        | 0x3040..=0x309F // 平假名
+        | 0x30A0..=0x30FF // 片假名
+        | 0x3100..=0x312F // 注音符号
+        | 0x3130..=0x318F // 谚文兼容字母
+        | 0x3190..=0x319F // 汉文训点
+        | 0x31A0..=0x31BF // 注音符号扩展
+        | 0x31C0..=0x31EF // CJK 笔画
+        | 0x31F0..=0x31FF // 片假名拼音扩展
+        | 0x3200..=0x32FF // 带圈 CJK 字母月
+        | 0x3300..=0x33FF // CJK 兼容
+        | 0x3400..=0x4DBF // CJK 扩展 A
+        | 0x4E00..=0x9FFF // CJK 基础
+        | 0xA000..=0xA48F // 彝文
+        | 0xAC00..=0xD7A3 // 谚文音节
+        | 0xF900..=0xFAFF // CJK 兼容表意文字
+        | 0xFE30..=0xFE4F // CJK 兼容形式
+        | 0xFF00..=0xFFEF // 全角 / 半角形式
+        | 0x20000..=0x2EBEF // CJK 扩展 B/C/D/E/F
+        | 0x2F800..=0x2FA1F // CJK 兼容表意文字补充
+    )
 }
 
 #[cfg(test)]

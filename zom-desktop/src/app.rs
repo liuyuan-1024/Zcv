@@ -6,8 +6,10 @@
 //! 依赖方向（手册 2.4）：`app` 可以 import `shell`；`shell` 不可反向 import `app`。
 //! 本文件只做组合根职责；具体功能尽量回到各自 feature / editor / workbench。
 
+use std::cell::Cell;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use zom_command::commands::{self, editor};
 use zom_command::{
@@ -18,6 +20,7 @@ use zom_command::{
 use zom_view::ViewSet;
 use zom_workspace::Workspace;
 
+use crate::config::AppConfig;
 use crate::focus::{
     AppFocus, FileTreeFocus, FocusStore, PanelFocus, ProjectPickerFocus, SurfaceFocus,
 };
@@ -56,20 +59,36 @@ pub struct App {
     /// shell 启动时通过 [`Self::set_clipboard`] 换成 GPUI 适配器，
     /// 使主程序与系统剪贴板互通。
     clipboard: Box<dyn ClipboardPort>,
+    /// 主编辑区 EditorKernel 的 soft_wrap 状态句柄。
+    ///
+    /// ShellView 装配主编辑区时通过 [`Self::bind_main_soft_wrap`] 注入，
+    /// 后续 `HostEffect::EditorToggleSoftWrap` 的处理者直接翻转本字段——
+    /// 它是从 kernel 内部 clone 出来的 `Rc<Cell<bool>>`，写一次所有 clone 都看到，主编辑区下一帧 prepaint 就会走新路径。
+    ///
+    /// 单测构造的 App 没装 ShellView，此处保持 None 也安全（toggle 命令仍能 emit effect，dispatcher 看到 None 直接跳过）。
+    main_soft_wrap: Option<Rc<Cell<bool>>>,
+    /// 全局用户偏好；运行时翻转的开关（如软换行）以此为初值，
+    /// 后续命令路径可调 [`Self::save_config`] 把新值落盘。
+    config: AppConfig,
+    /// 全局配置的落盘路径；`None` 表示内存模式（单测）。
+    config_path: Option<PathBuf>,
 }
 
 impl App {
     /// 内存模式（测试版使用，避免污染真实目录）
     pub fn new() -> Self {
-        Self::new_with_recent_projects_path(None)
+        Self::new_with_paths(None, None)
     }
 
     /// 持久化模式（发行版使用）
     pub fn new_persistent() -> Self {
-        Self::new_with_recent_projects_path(RecentProjects::default_path())
+        Self::new_with_paths(RecentProjects::default_path(), AppConfig::default_path())
     }
 
-    pub(crate) fn new_with_recent_projects_path(path: Option<PathBuf>) -> Self {
+    pub(crate) fn new_with_paths(
+        recent_projects_path: Option<PathBuf>,
+        config_path: Option<PathBuf>,
+    ) -> Self {
         let mut registry = CommandRegistry::new();
         let mut keymap = Keymap::new();
 
@@ -79,6 +98,7 @@ impl App {
         commands::install_all(&mut registry, &mut keymap);
 
         let (workspace, views) = empty_workspace();
+        let config = AppConfig::load(config_path.as_deref());
 
         Self {
             registry,
@@ -92,12 +112,46 @@ impl App {
             // 生产里 ShellView::render 的反向同步会把这值刷到与 GPUI 真实焦点一致。
             focus: FocusStore::new(AppFocus::project_picker(ProjectPickerFocus::Query)),
             project_root: None,
-            recent_projects: RecentProjects::load(path),
+            recent_projects: RecentProjects::load(recent_projects_path),
             file_tree: FileTreeModel::new(),
             project_picker: ProjectPickerModel::new(),
             search: SearchModel::new(),
             clipboard: Box::new(MockClipboard::new()),
+            main_soft_wrap: None,
+            config,
+            config_path,
         }
+    }
+
+    /// 注入主编辑区 kernel 的 soft_wrap 句柄。
+    /// ShellView 装配主编辑区时调用一次；同时把全局配置里的默认值写进
+    /// 该 cell，让首帧 prepaint 就走用户设定的渲染路径。
+    /// 后续 `HostEffect::EditorToggleSoftWrap` 据此翻转 kernel 状态。
+    pub(crate) fn bind_main_soft_wrap(&mut self, handle: Rc<Cell<bool>>) {
+        handle.set(self.config.editor.soft_wrap);
+        self.main_soft_wrap = Some(handle);
+    }
+
+    /// 翻转主编辑区软换行。无主编辑区（单测 / 启动早期）时静默忽略。
+    ///
+    /// 翻转后同步更新 [`AppConfig`] 字段并落盘——「切一次软换行」就是
+    /// 「改一次默认值」。内存模式（`config_path` 为 `None`）仍在内存里翻，
+    /// 只是 save 是 no-op。
+    pub(crate) fn toggle_main_soft_wrap(&mut self) {
+        let Some(cell) = self.main_soft_wrap.as_ref() else {
+            return;
+        };
+        let next = !cell.get();
+        cell.set(next);
+        self.config.editor.soft_wrap = next;
+        self.config.save(self.config_path.as_deref());
+    }
+
+    /// 把当前内存中的偏好写盘；命令路径如需「显式持久化当前会话偏好」
+    /// 可调本入口。toggle_* 类命令已在翻转时各自调过 save，平时无需再喊。
+    #[allow(dead_code)]
+    pub(crate) fn save_config(&self) {
+        self.config.save(self.config_path.as_deref());
     }
 
     pub(crate) fn focus(&self) -> &FocusStore {
@@ -956,7 +1010,7 @@ mod tests {
         let cloned = project_fixture("persist-git");
 
         {
-            let mut app = App::new_with_recent_projects_path(Some(store.clone()));
+            let mut app = App::new_with_paths(Some(store.clone()), None);
             app.open_local_project(local.clone());
             app.open_git_project(
                 cloned.clone(),
@@ -964,7 +1018,7 @@ mod tests {
             );
         }
 
-        let app = App::new_with_recent_projects_path(Some(store.clone()));
+        let app = App::new_with_paths(Some(store.clone()), None);
         let recent = app.recent_projects();
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].path, cloned);

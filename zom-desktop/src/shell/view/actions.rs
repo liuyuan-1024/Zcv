@@ -163,6 +163,10 @@ fn apply_shell_effect(
             }
             window.refresh();
         }
+        HostEffect::EditorToggleSoftWrap => {
+            app.borrow_mut().toggle_main_soft_wrap();
+            window.refresh();
+        }
         HostEffect::DismissSurface => {
             if surfaces.read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker)) {
                 app.borrow_mut().project_picker_deactivate();

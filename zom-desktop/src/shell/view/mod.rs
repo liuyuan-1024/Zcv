@@ -83,13 +83,17 @@ impl ShellView {
                     .set_main_visible_line_count(visible_line_count);
             })
         };
+        let main_editor_kernel = EditorKernel::multi_line()
+            .with_gutter()
+            .with_vertical_scroll()
+            .with_viewport_sync(main_viewport_sync);
+        // 把 soft_wrap 共享句柄注入 App，让 HostEffect::EditorToggleSoftWrap 能翻转它。
+        app.borrow_mut()
+            .bind_main_soft_wrap(main_editor_kernel.soft_wrap_handle());
         let main_editor_slot = TextEditorSlot::install(
             Rc::clone(&app),
             AppFocus::editor(),
-            EditorKernel::multi_line()
-                .with_gutter()
-                .with_vertical_scroll()
-                .with_viewport_sync(main_viewport_sync),
+            main_editor_kernel,
             editor_focus.clone(),
             cx,
         );

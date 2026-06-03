@@ -68,6 +68,14 @@ pub enum HostEffect {
     /// 把焦点从搜索面板退回当前活动编辑器。
     SearchFocusEditor,
 
+    // ===== Editor 视图设置 =====
+    /// 翻转主编辑区的软换行开关。
+    ///
+    /// 这是「视图设置」类副作用：宿主侧维护具体编辑器的渲染开关，
+    /// zom-command 只知道「请求翻转」。具体哪个编辑器（主编辑 / 输入框）
+    /// 适用由宿主自行规定——MVP 只挂主编辑区。
+    EditorToggleSoftWrap,
+
     // ===== Workspace / Project =====
     /// 顶栏"切换项目"入口；宿主弹出最近项目。
     ShowProjectPicker,

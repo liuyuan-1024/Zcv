@@ -3,6 +3,7 @@
 //! `shell` 负责视觉与平台；`app` 负责组合根。本入口只把两者拼起来。
 
 mod app;
+mod config;
 mod focus;
 mod shell;
 

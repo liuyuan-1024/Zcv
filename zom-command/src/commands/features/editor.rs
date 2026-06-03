@@ -21,8 +21,8 @@ use zom_engine::{
 
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    Invocation, KeyBindingContext, Keymap, NoArgs, active_view_buffer_id, command_execution_failed,
-    parse_optional_bool, reject_unknown_args, required_arg,
+    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, active_view_buffer_id,
+    command_execution_failed, parse_optional_bool, reject_unknown_args, required_arg,
 };
 use zom_view::ViewId;
 
@@ -49,6 +49,7 @@ pub const SAVE: &str = "editor.save";
 pub const COPY: &str = "editor.copy";
 pub const CUT: &str = "editor.cut";
 pub const PASTE: &str = "editor.paste";
+pub const TOGGLE_SOFT_WRAP: &str = "editor.toggle_soft_wrap";
 
 /// 文本编辑器当前能力。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -398,6 +399,10 @@ pub fn paste() -> Invocation {
     (cid(PASTE), CommandArgs::new())
 }
 
+pub fn toggle_soft_wrap() -> Invocation {
+    (cid(TOGGLE_SOFT_WRAP), CommandArgs::new())
+}
+
 // ==================================================
 // 注册与默认键位 —— 同处声明
 // ==================================================
@@ -617,6 +622,13 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .install(keymap, PASTE, "粘贴", Box::new(run_paste))
         .description("将剪贴板内容写入选区。")
         .key_in("mod-v", text_edit);
+
+    registry.install(
+        keymap,
+        TOGGLE_SOFT_WRAP,
+        "切换软换行",
+        Box::new(run_toggle_soft_wrap),
+    );
 }
 
 fn move_args(direction: MovementDirection, motion: impl Into<Motion>, extend: bool) -> CommandArgs {
@@ -988,6 +1000,17 @@ fn run_save(
         .workspace
         .save_file(buffer_id)
         .map_err(|error| CommandError::ExecutionFailed(error.to_string()))?;
+    Ok(CommandOutcome::default())
+}
+
+/// 切换软换行：emit 一个 `HostEffect`，宿主侧翻转 EditorKernel 的 soft_wrap 状态。
+/// command 层不持有渲染 kernel，所以走 effect 让 desktop 自己决定具体翻哪个。
+fn run_toggle_soft_wrap(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.effects.push(HostEffect::EditorToggleSoftWrap);
     Ok(CommandOutcome::default())
 }
 

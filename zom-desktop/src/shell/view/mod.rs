@@ -22,10 +22,10 @@ use self::focus::{FocusProjection, projection_from_runtimes};
 use super::editor::{
     CaretBlink, EditorKernel, EditorViewportSyncHook, TextEditorSlot, drive_caret_blink,
 };
-use super::features::language_servers;
 use super::features::panels::PanelRuntimes;
 use super::features::panels::file_tree::{ConfirmDeleteHandlers, FileTreeRuntime};
 use super::features::project_picker::ProjectPickerRuntime;
+use super::features::{language_servers, settings};
 use super::surfaces::{SurfaceAnchorRegistry, SurfaceId, SurfaceManager, SurfaceShell};
 use super::workbench;
 use super::workbench::controller::WorkbenchController;
@@ -42,7 +42,6 @@ pub(crate) struct ShellView {
     surface_shell: Entity<SurfaceShell>,
     main_editor_slot: Rc<TextEditorSlot>,
     file_tree_slot: Rc<TextEditorSlot>,
-    project_picker_slot: Rc<TextEditorSlot>,
     search_query_slot: Rc<TextEditorSlot>,
     search_replacement_slot: Rc<TextEditorSlot>,
     editor_focus: FocusHandle,
@@ -50,6 +49,7 @@ pub(crate) struct ShellView {
     file_tree: FileTreeRuntime,
     project_picker: ProjectPickerRuntime,
     language_servers: language_servers::LanguageServersRuntime,
+    settings: settings::SettingsRuntime,
     /// 编辑区标签栏的滚动状态。跨帧保留，否则每帧重建会丢失滚动位置。
     editor_tab_scroll: ScrollHandle,
     /// 主编辑区光标闪烁状态，由本视图的定时链驱动。
@@ -72,6 +72,7 @@ impl ShellView {
         let file_tree = FileTreeRuntime::new(cx);
         let project_picker = ProjectPickerRuntime::new(cx);
         let language_servers = language_servers::LanguageServersRuntime::new(cx);
+        let settings = settings::SettingsRuntime::new(cx);
 
         // 主编辑区内核：多行 + 行号 + 滚动 + 视口写回。
         // 视口钩子在 prepaint 末尾把测得的 visible_line_count 推回 view 的 ViewportState。
@@ -83,13 +84,13 @@ impl ShellView {
                     .set_main_visible_line_count(visible_line_count);
             })
         };
-        let main_editor_kernel = EditorKernel::multi_line()
+        // 全局软换行 cell 由 App 持有；任何多行内核构造时都从 App 借这份 `Rc`，
+        // 一次 toggle 同帧生效到主编辑区与所有嵌入式编辑器。
+        let soft_wrap = app.borrow().soft_wrap_handle();
+        let main_editor_kernel = EditorKernel::multi_line(soft_wrap.clone())
             .with_gutter()
             .with_vertical_scroll()
             .with_viewport_sync(main_viewport_sync);
-        // 把 soft_wrap 共享句柄注入 App，让 HostEffect::EditorToggleSoftWrap 能翻转它。
-        app.borrow_mut()
-            .bind_main_soft_wrap(main_editor_kernel.soft_wrap_handle());
         let main_editor_slot = TextEditorSlot::install(
             Rc::clone(&app),
             AppFocus::editor(),
@@ -111,6 +112,7 @@ impl ShellView {
             project_picker.focus_handle(),
             cx,
         );
+        project_picker.set_slot(Rc::clone(&project_picker_slot));
         let search_query_slot = TextEditorSlot::install(
             Rc::clone(&app),
             AppFocus::search(SearchField::Query),
@@ -125,6 +127,16 @@ impl ShellView {
             panel_runtimes.search_replacement_focus_handle(),
             cx,
         );
+        let settings_toml_slot = TextEditorSlot::install(
+            Rc::clone(&app),
+            AppFocus::settings(),
+            EditorKernel::multi_line(soft_wrap)
+                .with_gutter()
+                .with_vertical_scroll(),
+            settings.focus_handle(),
+            cx,
+        );
+        settings.set_toml_slot(Rc::clone(&settings_toml_slot));
 
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));
 
@@ -133,6 +145,7 @@ impl ShellView {
             &panel_runtimes,
             &file_tree,
             project_picker.focus_handle(),
+            Some(settings.focus_handle()),
         );
 
         Self {
@@ -143,7 +156,6 @@ impl ShellView {
             surface_shell,
             main_editor_slot,
             file_tree_slot,
-            project_picker_slot,
             search_query_slot,
             search_replacement_slot,
             editor_focus,
@@ -151,6 +163,7 @@ impl ShellView {
             file_tree,
             project_picker,
             language_servers,
+            settings,
             editor_tab_scroll: ScrollHandle::new(),
             caret: CaretBlink::new(),
             focus_projection,
@@ -176,6 +189,8 @@ impl ShellView {
             cx,
         );
         self.language_servers
+            .install_listeners(self.surface_manager.clone(), window, cx);
+        self.settings
             .install_listeners(self.surface_manager.clone(), window, cx);
         self.panel_runtimes
             .install_listeners(Rc::clone(&self.app), window, cx);
@@ -215,7 +230,7 @@ impl ShellView {
             self.file_tree.clone(),
             self.project_picker.clone(),
             self.language_servers.clone(),
-            Rc::clone(&self.project_picker_slot),
+            self.settings.clone(),
             invocation,
         )
     }
@@ -237,7 +252,7 @@ impl ShellView {
         let file_tree = self.file_tree.clone();
         let project_picker = self.project_picker.clone();
         let language_servers = self.language_servers.clone();
-        let project_picker_slot = Rc::clone(&self.project_picker_slot);
+        let settings = self.settings.clone();
         let focus_projection = self.focus_projection.clone();
         Rc::new(move |chord, window, cx| {
             let outcome = {
@@ -256,7 +271,7 @@ impl ShellView {
                 }
             };
 
-            actions::apply_host_effects(
+            actions::apply_host_effects_with_settings(
                 outcome.effects,
                 &app,
                 &workbench,
@@ -266,7 +281,7 @@ impl ShellView {
                 &file_tree,
                 &project_picker,
                 &language_servers,
-                &project_picker_slot,
+                &settings,
                 window,
                 cx,
             );
@@ -290,6 +305,22 @@ impl ShellView {
     fn command_catalog_lookup(&self) -> CommandCatalogLookup {
         let app = Rc::clone(&self.app);
         Rc::new(move || app.borrow().command_catalog_items())
+    }
+
+    fn settings_action_request(&self) -> settings::SettingsActionRequest {
+        let app = Rc::clone(&self.app);
+        Rc::new(move |action, window, _cx| {
+            match action {
+                settings::SettingsAction::OpenToml => app.borrow_mut().open_settings_toml(),
+                settings::SettingsAction::ReturnSettings => {
+                    app.borrow_mut().close_settings_toml();
+                }
+                settings::SettingsAction::Change(change) => {
+                    app.borrow_mut().apply_settings_change(change);
+                }
+            }
+            window.refresh();
+        })
     }
 }
 
@@ -328,6 +359,18 @@ impl Render for ShellView {
         drive_caret_blink(&mut self.caret, active_cursor, cx, |view| &mut view.caret);
         let window_controls = self.window_controls_handlers();
         let key_request = self.key_request();
+        self.settings.set_key_request(Rc::clone(&key_request));
+        self.settings
+            .set_action_request(self.settings_action_request());
+        self.settings.set_state({
+            let app = self.app.borrow();
+            settings::SettingsPanelState::new(
+                app.config_snapshot(),
+                app.config_path(),
+                app.settings_toml_open(),
+            )
+        });
+        self.project_picker.set_key_request(Rc::clone(&key_request));
         // file_tree_panel 借用此 clone；下面把 `key_request` 本体 move 给 `workbench::render`。
         // 借用与移动落到不同的 Rc 副本上，互不冲突。
         let key_request_for_panel = Rc::clone(&key_request);
@@ -346,6 +389,9 @@ impl Render for ShellView {
         let language_server_active = self.surface_manager.read_with(cx, |manager, _| {
             manager.is_active(SurfaceId::LanguageServers)
         });
+        let settings_active = self
+            .surface_manager
+            .read_with(cx, |manager, _| manager.is_active(SurfaceId::Settings));
         let confirm_delete = ConfirmDeleteHandlers {
             confirm: self.bind_action(file_tree_commands::confirm_delete()),
             cancel: self.bind_action(file_tree_commands::cancel_delete()),
@@ -362,6 +408,7 @@ impl Render for ShellView {
             window_controls,
             self.surface_shell.clone(),
             workspace_active,
+            settings_active,
             language_server_active,
             key_request,
             shortcut_lookup,

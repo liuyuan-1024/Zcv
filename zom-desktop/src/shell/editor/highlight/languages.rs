@@ -1,39 +1,23 @@
-//! 语法高亮 Tier 1 装配（手册《桌面端语法高亮》§十.1）。
+//! 编辑器支持的缓冲区的语法提供程序注册。
 //!
-//! 把 Tier 1 provider 工厂注入 [`Workspace::language_registry_mut`]。
-//!
-//! 这一步**只能在 desktop 组合根**做（手册 §六 / §十）：
-//! - `zom-workspace` 提供 trait / Registry / Coordinator 这些**机制**
-//! - desktop 决定**装哪些**Tier 1 grammar
-//!
-//! 后续接 LSP / wasm 时同样走 `register`，本函数不需要为之新增分支。
-//!
-//! ## 当前 Tier 1 清单
-//!
-//! Rust / TOML / Markdown / JSON / YAML / Bash / HTML / CSS / JavaScript /
-//! TypeScript / TSX / Java / Python（共 13 门）。新增语言只需：
-//!
-//! 1. 根 `Cargo.toml` + `zom-workspace/Cargo.toml` 加 grammar crate；
-//! 2. `zom-workspace/src/syntax/providers/<lang>.rs` 写 ~40 行 provider；
-//! 3. `providers/mod.rs` 加一行 `pub mod <lang>;`；
-//! 4. 本函数加一行 `register_lang(...)`。
-//!
-//! ## 失败语义
-//!
-//! provider 的 `new_provider()` 在 config build 失败时自身 panic——失败仅
-//! 发生在 query 语法错误或 ABI 不匹配（静态资源问题，发版前必须被测试覆盖）。
-//! 因此本函数的 factory 闭包不需要也不应当再写 `.expect(...)`：错误信息归
-//! provider 自己（见各 provider 文件内的 expect 文本）。
+//! `zom-workspace` 提供机制（[`SyntaxEngine`] / [`LanguageRegistry`]）；
+//! 桌面 desktop crate 决定**装哪些**捆绑 provider。一个进程**只**有一根
+//! `SyntaxEngine`——boot 期注册一次，主编辑区与所有嵌入式编辑器都共享这
+//! 套语言集。
 
-use zom_workspace::Workspace;
 use zom_workspace::syntax::providers::{
     bash, css, html, java, javascript, json, markdown, python, rust, toml, typescript, yaml,
 };
-use zom_workspace::syntax::{LanguageDetector, LanguageId, LanguageRegistry, ProviderFactory};
+use zom_workspace::syntax::{
+    LanguageDetector, LanguageId, LanguageRegistry, ProviderFactory, SyntaxEngine,
+};
 
-/// 在 app boot 期把所有 Tier 1 provider 注入 workspace 的 registry。
-pub(crate) fn install_tier1(workspace: &mut Workspace) {
-    let registry = workspace.language_registry_mut();
+/// 在 boot 期把所有 Tier 1 provider 注入共享的 [`SyntaxEngine`]。
+///
+/// 调用方必须在 `Rc::new(engine)` **之前**调本函数——一旦引擎被 `Rc` 共享，
+/// 注册表就不再可变（详见 `SyntaxEngine::registry_mut` 的契约）。
+pub(crate) fn install_tier1(engine: &mut SyntaxEngine) {
+    let registry = engine.registry_mut();
     register(
         registry,
         "rust",
@@ -91,7 +75,6 @@ pub(crate) fn install_tier1(workspace: &mut Workspace) {
     register(
         registry,
         "javascript",
-        // .jsx 暂用 javascript grammar；如需 TSX 风格 JSX 高亮，未来可单拆。
         &[LanguageDetector::Extension(&["js", "mjs", "cjs", "jsx"])],
         Box::new(|| Box::new(javascript::new_provider())),
     );
@@ -124,7 +107,6 @@ pub(crate) fn install_tier1(workspace: &mut Workspace) {
     );
 }
 
-/// 把 register 三段式封装一层：调用方只写 (id, detectors, factory)，减少重复噪音。
 fn register(
     registry: &mut LanguageRegistry,
     id: &'static str,

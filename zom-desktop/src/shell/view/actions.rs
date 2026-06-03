@@ -13,12 +13,12 @@ use zom_command::{HostEffect, Invocation};
 use crate::app::App;
 use crate::focus::AppFocus;
 use crate::shell::ActionRequest;
-use crate::shell::editor::TextEditorSlot;
 use crate::shell::features::language_servers::{self, LanguageServersRuntime};
 use crate::shell::features::panels::file_tree::{self, FileTreeRuntime};
 use crate::shell::features::panels::search;
 use crate::shell::features::panels::{PanelId, PanelRuntimes};
 use crate::shell::features::project_picker::{self, ProjectPickerRuntime};
+use crate::shell::features::settings::{self, SettingsRuntime};
 use crate::shell::platform::clipboard::GpuiClipboardScope;
 use crate::shell::platform::window as platform_window;
 use crate::shell::surfaces::{SurfaceId, SurfaceManager, SurfaceRequest};
@@ -35,7 +35,7 @@ pub(super) fn bind_action_request(
     file_tree: FileTreeRuntime,
     project_picker_runtime: ProjectPickerRuntime,
     language_servers_runtime: LanguageServersRuntime,
-    project_picker_slot: Rc<TextEditorSlot>,
+    settings_runtime: SettingsRuntime,
     invocation: Invocation,
 ) -> ActionRequest {
     Rc::new(move |window, cx| {
@@ -50,7 +50,7 @@ pub(super) fn bind_action_request(
                 }
             }
         };
-        apply_host_effects(
+        apply_host_effects_with_settings(
             effects,
             &app,
             &workbench,
@@ -60,7 +60,7 @@ pub(super) fn bind_action_request(
             &file_tree,
             &project_picker_runtime,
             &language_servers_runtime,
-            &project_picker_slot,
+            &settings_runtime,
             window,
             cx,
         );
@@ -81,7 +81,6 @@ pub(crate) fn apply_host_effects(
     file_tree: &FileTreeRuntime,
     project_picker_runtime: &ProjectPickerRuntime,
     language_servers_runtime: &LanguageServersRuntime,
-    project_picker_slot: &Rc<TextEditorSlot>,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -90,6 +89,7 @@ pub(crate) fn apply_host_effects(
         panel_runtimes,
         file_tree,
         project_picker_runtime.focus_handle(),
+        None,
     );
     for effect in effects {
         // 按 feature 顺序问询：第一个认领的 try_apply 返回 true，跳过余下。
@@ -106,11 +106,8 @@ pub(crate) fn apply_host_effects(
             workbench,
             surfaces,
             editor_focus_fallback,
-            panel_runtimes,
             file_tree,
             project_picker_runtime,
-            language_servers_runtime,
-            project_picker_slot,
             window,
             cx,
         ) {
@@ -128,6 +125,49 @@ pub(crate) fn apply_host_effects(
             continue;
         }
         apply_shell_effect(&effect, app, workbench, surfaces, &focus, window, cx);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_host_effects_with_settings(
+    effects: Vec<HostEffect>,
+    app: &Rc<RefCell<App>>,
+    workbench: &Rc<RefCell<WorkbenchController>>,
+    surfaces: &Entity<SurfaceManager>,
+    editor_focus_fallback: &FocusHandle,
+    panel_runtimes: &PanelRuntimes,
+    file_tree: &FileTreeRuntime,
+    project_picker_runtime: &ProjectPickerRuntime,
+    language_servers_runtime: &LanguageServersRuntime,
+    settings_runtime: &SettingsRuntime,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    for effect in effects {
+        if settings::try_apply_effect(
+            &effect,
+            app,
+            surfaces,
+            editor_focus_fallback,
+            settings_runtime,
+            window,
+            cx,
+        ) {
+            continue;
+        }
+        apply_host_effects(
+            vec![effect],
+            app,
+            workbench,
+            surfaces,
+            editor_focus_fallback,
+            panel_runtimes,
+            file_tree,
+            project_picker_runtime,
+            language_servers_runtime,
+            window,
+            cx,
+        );
     }
 }
 
@@ -164,7 +204,7 @@ fn apply_shell_effect(
             window.refresh();
         }
         HostEffect::EditorToggleSoftWrap => {
-            app.borrow_mut().toggle_main_soft_wrap();
+            app.borrow_mut().toggle_soft_wrap();
             window.refresh();
         }
         HostEffect::DismissSurface => {

@@ -4,6 +4,7 @@
 //! 实例在 `providers/` 子模块下。
 
 mod coordinator;
+mod engine;
 mod language;
 mod payload;
 mod provider;
@@ -13,6 +14,7 @@ mod worker;
 pub mod providers;
 
 pub use coordinator::{BufferSyntaxState, MAX_HIGHLIGHT_BYTES};
+pub use engine::SyntaxEngine;
 pub use language::{LanguageDetector, LanguageId, LanguageRegistry, ProviderFactory};
 pub use payload::{HighlightName, HighlightSpan, TokenModifiers, syntax_layer_kind};
 pub use provider::{BufferHandle, HighlightProvider};

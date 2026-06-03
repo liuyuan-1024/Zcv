@@ -51,6 +51,7 @@ pub(crate) fn render(
     window_controls: WindowControlsHandlers,
     surface_shell: Entity<SurfaceShell>,
     workspace_active: bool,
+    settings_active: bool,
     language_server_active: bool,
     key_request: KeyRequest,
     shortcut_lookup: ShortcutLookup,
@@ -83,6 +84,7 @@ pub(crate) fn render(
             &shortcut_lookup,
             &command_title_lookup,
             workspace_active,
+            settings_active,
         ))
         .child(render_body(
             state,

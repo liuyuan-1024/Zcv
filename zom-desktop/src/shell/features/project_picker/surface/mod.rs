@@ -15,17 +15,20 @@ use gpui::{
 
 use crate::app::App;
 use crate::focus::{AppFocus, ProjectPickerFocus};
-use crate::shell::normalized_chord;
+use crate::shell::editor::TextEditorSlot;
 use crate::shell::shared::theme::{color, radius, space};
 use crate::shell::surfaces::{
     SurfaceAnchor, SurfaceId, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
 };
+use crate::shell::{KeyRequest, normalized_chord};
 
 use super::{ProjectPickerActions, ProjectPickerMode};
 
 #[derive(Clone)]
 pub(crate) struct ProjectPickerRuntime {
     focus: FocusHandle,
+    key_request: Rc<RefCell<Option<KeyRequest>>>,
+    slot: Rc<RefCell<Option<Rc<TextEditorSlot>>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,7 +41,21 @@ impl ProjectPickerRuntime {
     pub(crate) fn new<T>(cx: &mut gpui::Context<T>) -> Self {
         Self {
             focus: cx.focus_handle(),
+            key_request: Rc::new(RefCell::new(None)),
+            slot: Rc::new(RefCell::new(None)),
         }
+    }
+
+    pub(crate) fn set_key_request(&self, key_request: KeyRequest) {
+        *self.key_request.borrow_mut() = Some(key_request);
+    }
+
+    pub(crate) fn set_slot(&self, slot: Rc<TextEditorSlot>) {
+        *self.slot.borrow_mut() = Some(slot);
+    }
+
+    pub(crate) fn slot(&self) -> Option<Rc<TextEditorSlot>> {
+        self.slot.borrow().clone()
     }
 
     pub(crate) fn install_listeners<T: 'static>(
@@ -81,6 +98,7 @@ pub(crate) fn request(
     _initial_mode: ProjectPickerInitialMode,
 ) -> SurfaceRequest {
     let focus = runtime.focus.clone();
+    let key_request = Rc::clone(&runtime.key_request);
     SurfaceRequest {
         id: SurfaceId::ProjectPicker,
         anchor: SurfaceAnchor::Invoker(super::INVOKER_ID.into()),
@@ -91,11 +109,17 @@ pub(crate) fn request(
             fallback_position: point(px(48.0), px(28.0)),
         },
         focus_on_open: Some(focus),
-        render: Rc::new(move || render(runtime.clone(), actions.clone()).into_any_element()),
+        render: Rc::new(move || {
+            render(runtime.clone(), actions.clone(), Rc::clone(&key_request)).into_any_element()
+        }),
     }
 }
 
-fn render(runtime: ProjectPickerRuntime, actions: ProjectPickerActions) -> Div {
+fn render(
+    runtime: ProjectPickerRuntime,
+    actions: ProjectPickerActions,
+    key_request: Rc<RefCell<Option<KeyRequest>>>,
+) -> Div {
     let projects = (actions.projects)();
     let state = (actions.state)();
     let query_text = state
@@ -105,7 +129,7 @@ fn render(runtime: ProjectPickerRuntime, actions: ProjectPickerActions) -> Div {
         .map(|line| line.text.as_str())
         .unwrap_or("");
     let visible = super::filtered_projects(&projects, query_text);
-    let key_actions = actions.clone();
+    let key_request_for_handler = Rc::clone(&key_request);
 
     let project_list = recent_projects::render(
         &visible,
@@ -125,7 +149,12 @@ fn render(runtime: ProjectPickerRuntime, actions: ProjectPickerActions) -> Div {
         .track_focus(&runtime.focus)
         .tab_index(0)
         .on_key_down(move |event, window, cx| {
-            handle_key(&key_actions, &event.keystroke, window, cx);
+            handle_key(
+                Rc::clone(&key_request_for_handler),
+                &event.keystroke,
+                window,
+                cx,
+            );
         })
         .child(search_box::render(&state, &actions.slot))
         .child(project_list)
@@ -133,13 +162,16 @@ fn render(runtime: ProjectPickerRuntime, actions: ProjectPickerActions) -> Div {
 }
 
 fn handle_key(
-    actions: &ProjectPickerActions,
+    key_request: Rc<RefCell<Option<KeyRequest>>>,
     keystroke: &Keystroke,
     window: &mut gpui::Window,
     cx: &mut gpui::App,
 ) {
+    let Some(key_request) = key_request.borrow().clone() else {
+        return;
+    };
     let chord = normalized_chord(keystroke);
-    if (actions.key_request)(chord.clone(), window, cx) {
+    if key_request(chord, window, cx) {
         cx.stop_propagation();
     }
 }

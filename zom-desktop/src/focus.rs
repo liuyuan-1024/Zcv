@@ -53,6 +53,7 @@ pub(crate) enum SearchField {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum SurfaceFocus {
     ProjectPicker(ProjectPickerFocus),
+    Settings,
     LanguageServers,
 }
 
@@ -77,6 +78,10 @@ impl AppFocus {
 
     pub(crate) fn project_picker(focus: ProjectPickerFocus) -> Self {
         Self::Surface(SurfaceFocus::ProjectPicker(focus))
+    }
+
+    pub(crate) fn settings() -> Self {
+        Self::Surface(SurfaceFocus::Settings)
     }
 
     /// 是否投影到同一个 GPUI 焦点宿主。编辑器的 view id、文件树内部模式

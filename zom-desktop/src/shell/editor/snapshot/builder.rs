@@ -2,7 +2,7 @@
 
 use zom_engine::{Buffer, Line, SelectionSet, Viewport};
 
-use crate::shell::editor::highlight::producers;
+use crate::shell::editor::highlight;
 
 use super::{EditorSnapshot, SnapshotLine};
 
@@ -47,7 +47,7 @@ pub(crate) fn build_snapshot(
     );
     let total_lines = buffer.line_count() as u64;
     let mut decorations = Vec::new();
-    producers::selection::push(selection, &mut decorations);
+    highlight::push_selection(selection, &mut decorations);
     EditorSnapshot {
         lines,
         total_lines,

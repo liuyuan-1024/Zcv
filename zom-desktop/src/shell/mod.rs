@@ -15,7 +15,6 @@ pub(crate) mod features;
 pub(crate) mod platform;
 pub(crate) mod shared;
 pub(crate) mod surfaces;
-pub(crate) mod syntax;
 mod view;
 pub(crate) mod workbench;
 

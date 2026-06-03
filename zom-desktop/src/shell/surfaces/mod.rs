@@ -19,6 +19,8 @@ pub(crate) use shell::SurfaceShell;
 pub(crate) enum SurfaceId {
     /// 顶栏"切换项目"入口的浮面：最近项目列表 + 打开本地文件夹。
     ProjectPicker,
+    /// 顶栏"设置"入口的浮面。
+    Settings,
     /// 底栏"语言服务器"的浮面。
     LanguageServers,
 }

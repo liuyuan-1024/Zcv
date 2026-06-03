@@ -3,6 +3,7 @@
 //! 负责项目目录树、展开状态、选中行、面板快照构造，以及从文件树激活文件。
 
 use std::collections::BTreeSet;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use zom_command::commands::file_tree::FileTreeKeyMode;
@@ -455,7 +456,7 @@ impl FileTreeModel {
             })
         });
         for (path, _) in &items {
-            match tree.delete_entry(path) {
+            match delete_tree_entry(tree, path) {
                 Ok(()) => close_buffers_under(workspace, views, path),
                 Err(error) => {
                     eprintln!("删除失败：{}：{error}", path.display());
@@ -934,6 +935,16 @@ fn selected_path_after_deleting_active(
         .and_then(|buffer| buffer.path())
         .map(Path::to_path_buf)
         .or_else(|| first_visible_path(tree))
+}
+
+#[cfg(not(test))]
+fn delete_tree_entry(tree: &mut ProjectTree, path: &Path) -> io::Result<()> {
+    tree.delete_entry(path)
+}
+
+#[cfg(test)]
+fn delete_tree_entry(tree: &mut ProjectTree, path: &Path) -> io::Result<()> {
+    tree.delete_entry_permanently(path)
 }
 
 /// 在可见行序列里找 `path` 的"邻居"：优先下一行，无下一行则上一行。

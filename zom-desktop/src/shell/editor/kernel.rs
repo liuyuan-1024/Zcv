@@ -27,8 +27,10 @@ pub(crate) enum EditorLineMode {
 
 /// 可嵌入编辑器内核。
 ///
-/// `soft_wrap` 字段用 `Rc<Cell<bool>>` 共享一个可变位：kernel 多次 clone 后仍指向同一状态，让运行时切换命令（`editor.toggle_soft_wrap`）改一处即可让主编辑区与任何嵌入处同步生效。
-/// 其它能力开关都是不可变 builder 选项，不需要这层 indirection。
+/// `soft_wrap` 是多行可嵌入编辑器的**固有能力**
+/// ——`multi_line` 构造时必须传入由 [`crate::app::App`] 持有的共享 `Rc<Cell<bool>>`，
+/// 所有多行嵌入点因此自动跟随同一份全局状态（设置面板 / 命令 / TOML save 翻一次，主编辑区与所有嵌入式编辑器同帧生效）。
+/// 单行内核没有软换行语义，自带一个永不翻转的私有 cell——`soft_wrap()` 永远返回 `false`。
 #[derive(Clone)]
 pub(crate) struct EditorKernel {
     line_mode: EditorLineMode,
@@ -40,6 +42,7 @@ pub(crate) struct EditorKernel {
 
 impl EditorKernel {
     /// 单行内核起点：行模式固定 SingleLine，其它能力全关。
+    /// 软换行对单行无意义，内部用一个私有 cell 永远保持 `false`。
     pub(crate) fn single_line() -> Self {
         Self {
             line_mode: EditorLineMode::SingleLine,
@@ -52,13 +55,16 @@ impl EditorKernel {
 
     /// 多行内核起点：行模式固定 MultiLine，其它能力全关；通常再链
     /// `.with_gutter().with_vertical_scroll().with_viewport_sync(...)`。
-    pub(crate) fn multi_line() -> Self {
+    ///
+    /// `soft_wrap` 是必填参数——多行嵌入式编辑器必须借用 App 的共享 cell，
+    /// 不允许自家分配独立 cell，否则会跟全局软换行开关脱钩。
+    pub(crate) fn multi_line(soft_wrap: Rc<Cell<bool>>) -> Self {
         Self {
             line_mode: EditorLineMode::MultiLine,
             gutter: false,
             vertical_scroll: false,
             viewport_sync: None,
-            soft_wrap: Rc::new(Cell::new(false)),
+            soft_wrap,
         }
     }
 
@@ -80,14 +86,6 @@ impl EditorKernel {
         self
     }
 
-    /// 开启软换行——按视口宽度把超长逻辑行拆成多条视觉行。
-    /// 单行内核不应调用（无意义，单行只渲染 1 行）。
-    #[allow(dead_code)] // builder 入口；运行时翻转走 [`soft_wrap_handle`]。
-    pub(crate) fn with_soft_wrap(self) -> Self {
-        self.soft_wrap.set(true);
-        self
-    }
-
     pub(crate) fn has_gutter(&self) -> bool {
         self.gutter
     }
@@ -103,24 +101,6 @@ impl EditorKernel {
     /// 当前是否启用软换行；clone 出去的 kernel 共享同一状态。
     pub(crate) fn soft_wrap(&self) -> bool {
         self.soft_wrap.get()
-    }
-
-    /// 运行时翻转软换行；任何 clone 都能改、所有 clone 都可见。
-    /// 测试 / 直接持 kernel 的 caller 用；HostEffect 路径走 [`soft_wrap_handle`]
-    /// 配合 `App::bind_main_soft_wrap`。
-    #[allow(dead_code)]
-    pub(crate) fn set_soft_wrap(&self, on: bool) {
-        self.soft_wrap.set(on);
-    }
-
-    /// 拿到内部 `Rc<Cell<bool>>` 句柄——给宿主侧（[`crate::app::App`]）
-    /// 跨界翻转用。
-    ///
-    /// HostEffect 路径无法直接持有 kernel（kernel 在渲染端），让 App 持
-    /// 一份共享句柄是最薄的桥：toggle 命令打 effect，effect handler 翻这
-    /// 个 cell，下一帧 kernel.soft_wrap() 就读到新值。
-    pub(crate) fn soft_wrap_handle(&self) -> Rc<Cell<bool>> {
-        Rc::clone(&self.soft_wrap)
     }
 
     /// 从快照创建渲染元素。覆盖层（search / reveal）数据原样传给 element，

@@ -4,10 +4,8 @@
 
 use crate::{CommandRegistry, Keymap};
 
-pub mod surfaces;
 pub mod window;
 
 pub fn install_all(registry: &mut CommandRegistry, keymap: &mut Keymap) {
-    surfaces::install(registry, keymap);
     window::install(registry, keymap);
 }

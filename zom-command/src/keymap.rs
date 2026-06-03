@@ -8,6 +8,7 @@ use crate::commands::{
     },
     file_tree::{FileTreeBindingContext, FileTreeKeyContext, FileTreeKeyMode},
     project_picker::{ProjectPickerBindingContext, ProjectPickerKeyContext},
+    settings::{SettingsBindingContext, SettingsKeyContext},
 };
 use crate::{CommandArgs, CommandError, CommandId, keymap_format};
 
@@ -42,6 +43,7 @@ pub enum KeyContext {
     TextEdit(TextEditKeyContext),
     FileTree(FileTreeKeyContext),
     ProjectPicker(ProjectPickerKeyContext),
+    Settings(SettingsKeyContext),
     SearchPanel,
 }
 
@@ -65,6 +67,10 @@ impl KeyContext {
         Self::ProjectPicker(ProjectPickerKeyContext)
     }
 
+    pub fn settings() -> Self {
+        Self::Settings(SettingsKeyContext)
+    }
+
     pub fn search_panel() -> Self {
         Self::SearchPanel
     }
@@ -77,6 +83,7 @@ pub enum KeyBindingContext {
     TextEdit(TextEditBindingContext),
     FileTree(FileTreeBindingContext),
     ProjectPicker(ProjectPickerBindingContext),
+    Settings(SettingsBindingContext),
     SearchPanel,
 }
 
@@ -114,6 +121,10 @@ impl KeyBindingContext {
         Self::ProjectPicker(ProjectPickerBindingContext)
     }
 
+    pub fn settings() -> Self {
+        Self::Settings(SettingsBindingContext)
+    }
+
     pub fn search_panel() -> Self {
         Self::SearchPanel
     }
@@ -132,6 +143,7 @@ impl KeyBindingContext {
             (Self::TextEdit(a), Self::TextEdit(b)) => a.composition.overlaps(b.composition),
             (Self::FileTree(a), Self::FileTree(b)) => a.mode == b.mode,
             (Self::ProjectPicker(_), Self::ProjectPicker(_)) => true,
+            (Self::Settings(_), Self::Settings(_)) => true,
             (Self::SearchPanel, Self::SearchPanel) => true,
             _ => false,
         }
@@ -289,6 +301,7 @@ fn binding_matches_context(binding: &KeyBinding, context: KeyContext) -> bool {
             binding.mode == active.mode
         }
         (KeyBindingContext::ProjectPicker(_), KeyContext::ProjectPicker(_)) => true,
+        (KeyBindingContext::Settings(_), KeyContext::Settings(_)) => true,
         (KeyBindingContext::SearchPanel, KeyContext::SearchPanel) => true,
         _ => false,
     }

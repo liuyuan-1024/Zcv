@@ -1,6 +1,8 @@
 //! SurfaceShell —— 可交互浮面 portal（布局模型 7 / 手册 21）。
 
-use gpui::{Context, Entity, Render, Subscription, Window, anchored, deferred, div, prelude::*};
+use gpui::{
+    Context, Entity, MouseButton, Render, Subscription, Window, anchored, deferred, div, prelude::*,
+};
 
 use super::{
     ActiveSurface, SurfaceAnchor, SurfaceAnchorRegistry, SurfaceInvokerPoint, SurfaceManager,
@@ -54,12 +56,22 @@ fn render_active(
 ) -> impl IntoElement {
     let request = active.request().clone();
     let placement = request.placement.clone();
+    let focus_on_click = request.focus_on_open.clone();
+    let surface = div()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            if let Some(focus) = &focus_on_click {
+                window.focus(focus);
+            }
+            cx.stop_propagation();
+        })
+        .child((request.render)());
+
     anchored()
         .anchor(placement.corner)
         .position(anchor_position(&request, anchor_bounds))
         .offset(placement.offset)
         .snap_to_window_with_margin(space::s8())
-        .child((request.render)())
+        .child(surface)
 }
 
 fn anchor_position(

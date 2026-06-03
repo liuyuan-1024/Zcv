@@ -101,6 +101,7 @@ pub(crate) fn projection_from_runtimes(
     panel_runtimes: &PanelRuntimes,
     file_tree: &FileTreeRuntime,
     project_picker: FocusHandle,
+    settings: Option<FocusHandle>,
 ) -> FocusProjection {
     let mut projection = FocusProjection::new();
     projection.register(editor, AppFocus::editor());
@@ -120,6 +121,9 @@ pub(crate) fn projection_from_runtimes(
         project_picker,
         AppFocus::Surface(SurfaceFocus::ProjectPicker(ProjectPickerFocus::Query)),
     );
+    if let Some(settings) = settings {
+        projection.register(settings, AppFocus::settings());
+    }
     for panel in [
         PanelId::VersionControl,
         PanelId::Outline,

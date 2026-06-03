@@ -19,10 +19,9 @@ use zom_view::ViewSet;
 use zom_workspace::Workspace;
 
 use crate::focus::AppFocus;
-use crate::shell::editor::highlight::producers;
 use crate::shell::editor::{
-    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, RevealHint, TextTargetOwner,
-    TextTargetQuery, build_snapshot,
+    self, EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, RevealHint,
+    TextTargetOwner, TextTargetQuery, build_snapshot,
 };
 
 /// 写入侧：路由要 `&mut` 时构造它。
@@ -112,11 +111,15 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
         })
     });
     snapshot.reveal = reveal;
-    // 主编辑区独有的两个 producer：search 与 syntax。
-    // selection 已在 [`build_snapshot`] 内的 [`producers::selection`] 路径产出，单行输入框也复用那一路径。
+    // 主编辑区额外请求 search 与 workspace syntax。
+    // selection 已在 [`build_snapshot`] 内产出，单行输入框也复用那一路径。
     // 主编辑区不需要再加一遍。
-    producers::search::push(buffer, &mut snapshot.decorations);
-    producers::syntax::push(buffer, &snapshot.lines, &mut snapshot.decorations);
+    editor::highlight::push_workspace_search(buffer, &mut snapshot.decorations);
+    editor::highlight::push_syntax_layers(
+        buffer.highlight_layers(),
+        &snapshot.lines,
+        &mut snapshot.decorations,
+    );
     snapshot
 }
 

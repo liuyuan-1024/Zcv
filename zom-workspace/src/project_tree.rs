@@ -148,6 +148,19 @@ impl ProjectTree {
     /// 文件与目录皆可：目录连同其全部内容一并移入回收站。
     pub fn delete_entry(&mut self, path: &Path) -> io::Result<()> {
         trash::delete(path).map_err(io::Error::other)?;
+        self.reload_parent(path)
+    }
+
+    /// 永久删除 `path`，并刷新其父目录缓存。
+    ///
+    /// 真实用户操作应优先走 [`delete_entry`](Self::delete_entry) 移入系统回收站；
+    /// 这个入口用于不适合依赖系统 Trash/Finder 的测试与内部搬移场景。
+    pub fn delete_entry_permanently(&mut self, path: &Path) -> io::Result<()> {
+        remove_recursive(path)?;
+        self.reload_parent(path)
+    }
+
+    fn reload_parent(&mut self, path: &Path) -> io::Result<()> {
         if let Some(parent) = path.parent() {
             self.children.remove(parent);
             self.load_dir(parent)?;

@@ -59,6 +59,9 @@ impl OwnedEditorTarget {
         EditTarget {
             buffer: &mut self.buffer,
             selection: &mut self.selection,
+            wrap_map: None,
+            visual_caret: None,
+            goal_column: None,
         }
     }
 
@@ -96,7 +99,7 @@ mod tests {
 
         let snapshot = target.snapshot(EditorSnapshotRequest::viewport(1, 1));
 
-        assert_eq!(snapshot.viewport_start_line, 1);
+        assert_eq!(snapshot.top_line, 1);
         assert_eq!(snapshot.lines.len(), 1);
         assert_eq!(snapshot.lines[0].text, "beta");
     }

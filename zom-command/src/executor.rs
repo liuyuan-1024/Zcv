@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use zom_view::ViewSet;
+use zom_view::{ViewSet, VisualPosition, WrapMap};
 use zom_workspace::Workspace;
 
 use crate::clipboard::ClipboardPort;
@@ -37,6 +37,17 @@ pub struct CommandContext<'a> {
 pub struct EditTarget<'a> {
     pub buffer: &'a mut zom_engine::Buffer,
     pub selection: &'a mut zom_engine::SelectionSet,
+    /// 渲染端写入的视觉行模型；整篇同步，与本帧渲染解耦。
+    /// 不软换行时所有行 breaks 为空，行为退化为按逻辑行——调用端不必区分。
+    pub wrap_map: Option<&'a WrapMap>,
+    /// primary caret 的视觉投影。
+    ///
+    /// Selection 只保存 byte；软换行边界处同一个 byte 可能是上一段行尾，也可能是下一段行首。
+    /// 这里记录命令上一次落定的视觉位置；下次垂直移动从这里出发，不再去 WrapMap 重新猜 affinity。
+    /// 横向移动、文本编辑、select-all、undo/redo、IME、cut/paste 等会调用 [`EditTarget::clear_visual_caret`] 清掉。
+    pub visual_caret: Option<&'a mut Option<VisualPosition>>,
+    /// 连续上下移动的 sticky 列；None 表示需要重新取列。
+    pub goal_column: Option<&'a mut Option<u32>>,
 }
 
 impl<'a> CommandContext<'a> {
@@ -47,6 +58,9 @@ impl<'a> CommandContext<'a> {
             return Ok(EditTarget {
                 buffer: &mut *field.buffer,
                 selection: &mut *field.selection,
+                wrap_map: field.wrap_map,
+                visual_caret: field.visual_caret.as_deref_mut(),
+                goal_column: field.goal_column.as_deref_mut(),
             });
         }
         let buffer_id = self
@@ -59,12 +73,32 @@ impl<'a> CommandContext<'a> {
             .buffer_mut(buffer_id)
             .ok_or(CommandError::BufferNotFound(buffer_id))?
             .buffer_mut();
-        let selection = self
+        let view = self
             .views
             .active_view_mut()
-            .ok_or(CommandError::NoActiveView)?
-            .selection_mut();
-        Ok(EditTarget { buffer, selection })
+            .ok_or(CommandError::NoActiveView)?;
+        let (selection, visual_caret, goal_column, wrap_map) = view.vertical_movement_state_mut();
+        Ok(EditTarget {
+            buffer,
+            selection,
+            wrap_map,
+            visual_caret: Some(visual_caret),
+            goal_column: Some(goal_column),
+        })
+    }
+}
+
+impl EditTarget<'_> {
+    /// 清除 primary caret 的视觉投影与 sticky 列。
+    ///
+    /// 横向移动、编辑、select-all、undo/redo、IME、cut/paste 等离开"连续上下移动"语义时调用。
+    pub fn clear_visual_caret(&mut self) {
+        if let Some(caret) = self.visual_caret.as_deref_mut() {
+            *caret = None;
+        }
+        if let Some(goal) = self.goal_column.as_deref_mut() {
+            *goal = None;
+        }
     }
 }
 

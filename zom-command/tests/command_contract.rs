@@ -1177,6 +1177,9 @@ fn run_on_focused_field(
         focused_field: Some(EditTarget {
             buffer: embed_buffer,
             selection: embed_selection,
+            wrap_map: None,
+            visual_caret: None,
+            goal_column: None,
         }),
         queue: &mut queue,
         effects: &mut effects,

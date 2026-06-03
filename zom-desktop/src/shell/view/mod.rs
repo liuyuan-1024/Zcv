@@ -75,16 +75,15 @@ impl ShellView {
         let settings = settings::SettingsRuntime::new(cx);
 
         // 主编辑区内核：多行 + 行号 + 滚动 + 视口写回。
-        // 视口钩子在 prepaint 末尾把测得的 visible_line_count 推回 view 的 ViewportState。
-        // top_line 由 view 自己在 settle 阶段落定，element 不写它。
+        // 视口钩子在 prepaint 末尾把测得的 ViewportState 推回 view。
         let main_viewport_sync: EditorViewportSyncHook = {
             let app = Rc::clone(&app);
-            Rc::new(move |visible_line_count, _cx| {
-                app.borrow_mut()
-                    .set_main_visible_line_count(visible_line_count);
+            Rc::new(move |viewport, wrap_map, _cx| {
+                app.borrow_mut().set_main_viewport(viewport, wrap_map);
             })
         };
-        // 全局软换行 cell 由 App 持有；任何多行内核构造时都从 App 借这份 `Rc`，
+        // 全局软换行 cell 由 App 持有；
+        // 任何多行内核构造时都从 App 借这份 `Rc`，
         // 一次 toggle 同帧生效到主编辑区与所有嵌入式编辑器。
         let soft_wrap = app.borrow().soft_wrap_handle();
         let main_editor_kernel = EditorKernel::multi_line(soft_wrap.clone())

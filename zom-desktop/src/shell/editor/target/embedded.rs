@@ -81,6 +81,9 @@ impl EmbeddedEditorTarget {
         EditTarget {
             buffer: self.document.buffer_mut(),
             selection: &mut self.selection,
+            wrap_map: None,
+            visual_caret: None,
+            goal_column: None,
         }
     }
 

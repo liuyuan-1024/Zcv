@@ -88,15 +88,18 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
     // 视口边界来自 view —— `View::new` 用 `DEFAULT_INITIAL_VISIBLE_LINES` 初始化，
     // element 在 prepaint 末尾按 bounds / line_height 测量后 sync 回写真实值。
     let vp = view.viewport();
-    let visible_lines = vp.visible_line_count;
-    // 上下各加 visible_lines：让 edge-scroll 把视口推出原范围时（PageDown / 连按方向键）本帧 lines 已经覆盖新可见行，避免 1 帧空窗。
-    // `viewport_start_line` 在快照里反映的是实际切片起点，element 用它算 top_adjusted。
+    let visible_lines = vp.visible_logical_lines;
+    // 上下各加 visible_lines：
+    // 让 edge-scroll 把视口推出原范围时（PageDown / 连按方向键）本帧 lines 已经覆盖新可见行，避免 1 帧空窗。
+    // 上方带一屏逻辑行 padding：element 会用真实视觉行索引抵消这段 padding。
     let slice_start = vp.top_line.saturating_sub(visible_lines);
     let slice_len = visible_lines.saturating_mul(3);
     let request = EditorSnapshotRequest::viewport(slice_start, slice_len);
     let mut snapshot = build_snapshot(buffer.buffer(), &selection, request);
     // view 已落定的 top_line（真实视口起点）；与 slice_start 区分开供 element 直接用。
     snapshot.top_line = vp.top_line;
+    snapshot.top_subrow = vp.top_subrow;
+    snapshot.visual_caret = view.visual_caret().copied();
 
     // reveal 携带的 byte 要折一次 byte_to_position 出逻辑行——element 看不到 buffer。
     // 离开视口的 reveal 目标全靠这条 line 决定怎么滚。
@@ -168,8 +171,15 @@ impl<'a> TextTargetOwner for MainEditorOwner<'a> {
     fn edit_target(&mut self) -> Option<EditTarget<'_>> {
         let buffer_id = self.views.active_view()?.buffer();
         let buffer = self.workspace.buffer_mut(buffer_id)?.buffer_mut();
-        let selection = self.views.active_view_mut()?.selection_mut();
-        Some(EditTarget { buffer, selection })
+        let view = self.views.active_view_mut()?;
+        let (selection, visual_caret, goal_column, wrap_map) = view.vertical_movement_state_mut();
+        Some(EditTarget {
+            buffer,
+            selection,
+            wrap_map,
+            visual_caret: Some(visual_caret),
+            goal_column: Some(goal_column),
+        })
     }
 
     fn settle_viewport_y(&mut self) {

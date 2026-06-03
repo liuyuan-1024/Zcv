@@ -79,8 +79,7 @@ impl EditorKernel {
     }
 
     /// 装一个视口写回钩子 —— 调用方拿到 element prepaint 测得的
-    /// `(top_line, visible_line_count)`，自行决定怎么持久化（主编辑区把它写
-    /// 进 `ViewportState`；单行框通常不装）。
+    /// `ViewportState`，自行决定怎么持久化（主编辑区把它写进 view；单行框通常不装）。
     pub(crate) fn with_viewport_sync(mut self, hook: EditorViewportSyncHook) -> Self {
         self.viewport_sync = Some(hook);
         self
@@ -115,9 +114,10 @@ impl EditorKernel {
             self.clone(),
             snapshot.lines,
             snapshot.total_lines,
-            snapshot.viewport_start_line,
             snapshot.top_line,
+            snapshot.top_subrow,
             snapshot.selection,
+            snapshot.visual_caret,
             focus,
             input_handler_hook,
         )

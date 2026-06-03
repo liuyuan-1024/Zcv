@@ -9,25 +9,25 @@ use super::{EditorSnapshot, SnapshotLine};
 /// 构造编辑器渲染快照时使用的视口请求。
 ///
 /// 所有嵌入点都走同一种请求：单行输入框只是 `top_line = 0`、
-/// `visible_line_count = 1`，主编辑区则由 `zom-view::ViewportState` 提供值。
+/// `visible_logical_lines = 1`，主编辑区则由 `zom-view::ViewportState` 提供值。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct EditorSnapshotRequest {
     pub(crate) top_line: u64,
-    pub(crate) visible_line_count: u64,
+    pub(crate) visible_logical_lines: u64,
 }
 
 impl EditorSnapshotRequest {
     pub(crate) fn single_line() -> Self {
         Self {
             top_line: 0,
-            visible_line_count: 1,
+            visible_logical_lines: 1,
         }
     }
 
-    pub(crate) fn viewport(top_line: u64, visible_line_count: u64) -> Self {
+    pub(crate) fn viewport(top_line: u64, visible_logical_lines: u64) -> Self {
         Self {
             top_line,
-            visible_line_count,
+            visible_logical_lines,
         }
     }
 }
@@ -43,7 +43,7 @@ pub(crate) fn build_snapshot(
         buffer,
         selection,
         request.top_line,
-        request.visible_line_count,
+        request.visible_logical_lines,
     );
     let total_lines = buffer.line_count() as u64;
     let mut decorations = Vec::new();
@@ -51,12 +51,13 @@ pub(crate) fn build_snapshot(
     EditorSnapshot {
         lines,
         total_lines,
-        viewport_start_line,
         // 通用构造路径默认与 slice 起点一致；上层（主编辑区 text_target）按需覆盖。
         top_line: viewport_start_line,
+        top_subrow: 0,
         cursor_byte,
         cursor_position,
         selection: selection.clone(),
+        visual_caret: None,
         reveal: None,
         decorations,
     }
@@ -117,7 +118,7 @@ mod tests {
             EditorSnapshotRequest::viewport(1, 1),
         );
 
-        assert_eq!(snapshot.viewport_start_line, 1);
+        assert_eq!(snapshot.top_line, 1);
         assert_eq!(snapshot.lines.len(), 1);
         assert_eq!(snapshot.lines[0].line_index, 1);
         assert_eq!(snapshot.lines[0].text, "beta");

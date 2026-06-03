@@ -498,22 +498,22 @@ impl App {
         f(EditorRouterMut::new(owners))
     }
 
-    /// 由主编辑区 element prepaint 末尾回写：把它实际测得的可见行数写回当前活动
-    /// view，下一帧 `View::settle_viewport_y` 与 snapshot 切片用更准的行数。
-    /// `top_line` 由 view 在 settle 阶段自己落定，element 不再回写它。无活动 view
-    /// 时静默忽略。
-    pub(crate) fn set_main_visible_line_count(&mut self, visible_line_count: u64) {
+    /// 由主编辑区 element prepaint 末尾回写：把它实际测得的视口写回当前活动 view，
+    /// 下一帧 `View::settle_viewport_y` 与 snapshot 切片用更准的行数 / sub-row。
+    /// 无活动 view 时静默忽略。
+    pub(crate) fn set_main_viewport(
+        &mut self,
+        viewport: zom_view::ViewportState,
+        wrap_map: Option<zom_view::WrapMap>,
+    ) {
         let Some(view) = self.views.active_view_mut() else {
             return;
         };
         let current = view.viewport();
-        if current.visible_line_count == visible_line_count {
-            return;
+        if current != viewport {
+            view.set_viewport(viewport);
         }
-        view.set_viewport(zom_view::ViewportState {
-            top_line: current.top_line,
-            visible_line_count,
-        });
+        view.set_wrap_map(wrap_map);
     }
 
     /// 查询某条命令的快捷键文案 —— 给 Glyph / 命令面板 / 菜单用。
@@ -636,7 +636,7 @@ impl App {
         let start_line = viewport.top_line.saturating_sub(PAD_LINES);
         let raw_end = viewport
             .top_line
-            .saturating_add(viewport.visible_line_count)
+            .saturating_add(viewport.visible_logical_lines)
             .saturating_add(PAD_LINES);
         let end_line = raw_end.min(total_lines as u64);
         if start_line >= end_line {

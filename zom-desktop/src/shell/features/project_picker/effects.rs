@@ -13,7 +13,7 @@ use crate::app::App;
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
 use crate::shell::features::project_picker::{
     self, ProjectPickerActions, ProjectPickerActivation, ProjectPickerInitialMode,
-    ProjectPickerRuntime,
+    ProjectPickerMode, ProjectPickerRuntime,
 };
 use crate::shell::project_session;
 use crate::shell::surfaces::{SurfaceId, SurfaceManager};
@@ -55,15 +55,23 @@ pub(crate) fn try_apply_effect(
             );
         }
         HostEffect::StartGitClone => {
-            show_project_picker(
-                ProjectPickerInitialMode::CloneGit,
-                app,
-                surfaces,
-                editor_focus_fallback,
-                project_picker_runtime,
-                window,
-                cx,
-            );
+            if picker_active(surfaces, cx) {
+                // 已在 picker 浮面里切模式：只重置模型 + 刷新视图。
+                // 不再走 open_surface —— 否则 focus_to_restore 会被当前 picker 自己的句柄覆盖，
+                // ESC 关闭后焦点恢复到已卸载的元素，窗口失焦。
+                project_picker_runtime.reset(ProjectPickerMode::CloneGit);
+                window.refresh();
+            } else {
+                show_project_picker(
+                    ProjectPickerInitialMode::CloneGit,
+                    app,
+                    surfaces,
+                    editor_focus_fallback,
+                    project_picker_runtime,
+                    window,
+                    cx,
+                );
+            }
         }
         HostEffect::RemoveSelectedRecentProject => {
             if !picker_active(surfaces, cx) {

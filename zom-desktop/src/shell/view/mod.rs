@@ -78,10 +78,10 @@ impl ShellView {
         app.borrow_mut()
             .install_editor_owner(project_picker.owner_handle());
         let language_servers = language_servers::LanguageServersRuntime::new(cx);
-        // SearchRuntime 自构造 SearchModel；App 只借同一份 handle 给 router /
-        // command dispatch / coordinator 用，不再自己拥有搜索面板状态。
+        // SearchRuntime 自构造 SearchModel；App 只保存窄接口给 router / command dispatch /
+        // sync 生命周期点用，不直接认识搜索面板状态。
         app.borrow_mut()
-            .install_search_model(panel_runtimes.search_model_handle());
+            .install_search_runtime(panel_runtimes.search_runtime_handle());
         // SettingsRuntime 自构造 TOML 编辑器（依赖 SyntaxEngine —— 从 App 借 handle），
         // 然后把 owner handle 注册进 App.editor_targets 让 router 在 IME / 命令派发
         // 路径上找到它。App 不再持任何 settings 字段；SettingsRuntime 是真正且唯一的拥有者。
@@ -230,7 +230,7 @@ impl ShellView {
             app.has_project(),
             app.editor_state(),
             self.file_tree.state(&app),
-            app.search_state(),
+            self.panel_runtimes.search_state(app.workspace()),
         )
     }
 

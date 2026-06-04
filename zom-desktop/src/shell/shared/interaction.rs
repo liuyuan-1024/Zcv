@@ -3,6 +3,7 @@
 use std::rc::Rc;
 
 use gpui::{App as GpuiApp, Window};
+use zom_command::Command;
 
 /// 一个已经绑好命令的点击回调。UI 子组件不接触命令对象，触发时直接调用。
 pub(crate) type ActionRequest = Rc<dyn Fn(&mut Window, &mut GpuiApp)>;
@@ -24,6 +25,17 @@ pub(crate) struct CommandCatalogItem {
     pub(crate) title: String,
     pub(crate) description: Option<String>,
     pub(crate) visible_in_shortcuts: bool,
+}
+
+impl From<&Command> for CommandCatalogItem {
+    fn from(command: &Command) -> Self {
+        Self {
+            command_id: command.id.to_string(),
+            title: command.title.clone(),
+            description: command.description.clone(),
+            visible_in_shortcuts: command.visible_in_shortcuts,
+        }
+    }
 }
 
 /// 读取当前命令系统的可展示元数据；具体过滤和排版由面板自己完成。

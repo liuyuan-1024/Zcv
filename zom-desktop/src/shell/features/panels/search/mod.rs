@@ -17,18 +17,21 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Context, Div, FocusHandle, IntoElement, MouseButton, Window, div, prelude::*};
-use zom_command::commands::search;
+use zom_command::{EditTarget, SearchOption, commands::search};
+use zom_view::ViewSet;
+use zom_workspace::Workspace;
 
 use crate::app::App;
 use crate::focus::{AppFocus, SearchField};
-use crate::shell::editor::TextEditorSlot;
+use crate::shell::editor::{TextEditorSlot, TextTargetOwner, TextTargetQuery};
 use crate::shell::normalized_chord;
 use crate::shell::shared::glyph::Glyph;
 use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::docks::render_focus_host;
 use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 
-pub(crate) use model::{HitCount, SearchModel, SearchState};
+use model::SearchModel;
+pub(crate) use model::{HitCount, SearchState};
 
 const CASE_SENSITIVE_ICON: &str = "icons/actions/case_sensitive.svg";
 const WHOLE_WORD_ICON: &str = "icons/actions/whole_word.svg";
@@ -38,14 +41,114 @@ const FIND_NEXT_ICON: &str = "icons/navigation/chevron_right.svg";
 const REPLACE_NEXT_ICON: &str = "icons/actions/replace_next.svg";
 const REPLACE_ALL_ICON: &str = "icons/actions/replace_all.svg";
 
+/// 搜索面板暴露给宿主的窄接口。
+///
+/// `SearchModel` 的双输入框 owner 拆分、panel 状态同步、命中导航都留在 search
+/// feature 内；App 只在输入派发和 workspace/view 生命周期点调用这里的能力方法。
+#[derive(Clone)]
+pub(crate) struct SearchRuntimeHandle {
+    model: Rc<RefCell<SearchModel>>,
+}
+
+impl SearchRuntimeHandle {
+    fn new(model: Rc<RefCell<SearchModel>>) -> Self {
+        Self { model }
+    }
+
+    pub(crate) fn accepts_focus(&self, focus: AppFocus) -> bool {
+        matches!(focus, AppFocus::Panel(crate::focus::PanelFocus::Search(_)))
+    }
+
+    pub(crate) fn with_query_owners<R>(
+        &self,
+        f: impl FnOnce(&dyn TextTargetQuery, &dyn TextTargetQuery) -> R,
+    ) -> R {
+        let model = self.model.borrow();
+        let query = model.query_owner();
+        let replacement = model.replacement_owner();
+        f(&query, &replacement)
+    }
+
+    pub(crate) fn with_active_owner<R>(
+        &self,
+        focus: AppFocus,
+        f: impl FnOnce(&mut dyn TextTargetOwner) -> R,
+    ) -> R {
+        let mut model = self.model.borrow_mut();
+        let mut owner = model.active_owner(focus);
+        f(&mut owner)
+    }
+
+    pub(crate) fn with_edit_target_for_focus<R>(
+        &self,
+        focus: AppFocus,
+        f: impl FnOnce(Option<EditTarget<'_>>) -> R,
+    ) -> R {
+        let mut model = self.model.borrow_mut();
+        f(model.edit_target_for_focus(focus))
+    }
+
+    pub(crate) fn state(&self, workspace: &Workspace) -> SearchState {
+        let mut state = self.model.borrow().state();
+        state.hit_count = coordinator::current_hit_count(workspace);
+        state
+    }
+
+    pub(crate) fn sync_active_buffer_search(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+        let mut model = self.model.borrow_mut();
+        coordinator::sync_active_buffer_search(&mut model, workspace, views);
+    }
+
+    pub(crate) fn pump_active_buffer_search(workspace: &mut Workspace, views: &mut ViewSet) {
+        coordinator::pump_active_buffer_search(workspace, views);
+    }
+
+    pub(crate) fn on_panel_opened(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+        let mut model = self.model.borrow_mut();
+        coordinator::on_panel_opened(&mut model, workspace, views);
+    }
+
+    pub(crate) fn on_panel_closed(&self, workspace: &mut Workspace) {
+        let mut model = self.model.borrow_mut();
+        coordinator::on_panel_closed(&mut model, workspace);
+    }
+
+    pub(crate) fn toggle_option(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        option: SearchOption,
+    ) {
+        let mut model = self.model.borrow_mut();
+        coordinator::toggle_option(&mut model, workspace, views, option);
+    }
+
+    pub(crate) fn find_next(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+        let mut model = self.model.borrow_mut();
+        coordinator::find_next(&mut model, workspace, views);
+    }
+
+    pub(crate) fn find_previous(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+        let mut model = self.model.borrow_mut();
+        coordinator::find_previous(&mut model, workspace, views);
+    }
+
+    pub(crate) fn replace_next(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+        let mut model = self.model.borrow_mut();
+        coordinator::replace_next(&mut model, workspace, views);
+    }
+
+    pub(crate) fn replace_all(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+        let mut model = self.model.borrow_mut();
+        coordinator::replace_all(&mut model, workspace, views);
+    }
+}
+
 /// 搜索面板的 shell 端 runtime —— 焦点宿主 + `SearchModel` 的真正拥有者。
 ///
-/// `SearchModel` 不再放在 App 字段里：runtime 自构造 + 持 `Rc<RefCell<_>>`，
-/// 通过 [`SearchRuntime::model_handle`] 把同一份 `Rc` 借给 App，
-/// 让 `with_router(_mut)` 在路径上构造短寿命的 `SearchFieldQuery` / `SearchActiveOwner` 包装借出
-/// （model 的输入框是双字段，每个字段的"借出哪一个 OwnedEditorTarget"由焦点决定，无法套到 `EditorTargetRegistry` 的"一个 owner 一个 RefCell"形态里——所以走 handle 借出而非 register）。
-///
-/// 这条路线与 §2 移出 `SettingsTomlEditor` 的注册表路径并行：两条路线都让 shell runtime 成为真正拥有者，App 只持一份共享句柄做路由，不再在 struct 上长 model 字段。
+/// App 只保存 [`SearchRuntimeHandle`]，不直接认识 `SearchModel` 或 coordinator
+/// 函数。这样搜索输入框的 owner 拆分仍能参与全局 editor router，同时业务动作
+/// 留在 search feature 内部。
 #[derive(Clone)]
 pub(crate) struct SearchRuntime {
     focus: FocusHandle,
@@ -64,12 +167,8 @@ impl SearchRuntime {
         }
     }
 
-    /// 把 `SearchModel` 借给 App 路由层用——`Rc` clone 不复制内部 state。
-    /// shell 装配阶段调一次，App 通过 [`install_search_model`] 存进自己的字段。
-    ///
-    /// [`install_search_model`]: crate::app::App::install_search_model
-    pub(crate) fn model_handle(&self) -> Rc<RefCell<SearchModel>> {
-        self.model.clone()
+    pub(crate) fn runtime_handle(&self) -> SearchRuntimeHandle {
+        SearchRuntimeHandle::new(self.model.clone())
     }
 
     pub(crate) fn focus_handle(&self) -> FocusHandle {

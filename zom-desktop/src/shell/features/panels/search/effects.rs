@@ -20,13 +20,13 @@ pub(crate) fn try_apply_effect(
     effect: &HostEffect,
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
-    _panel_runtimes: &crate::shell::features::panels::PanelRuntimes,
+    panel_runtimes: &crate::shell::features::panels::PanelRuntimes,
     focus: &FocusProjection,
     window: &mut Window,
 ) -> bool {
     match effect {
         HostEffect::SearchActivate => {
-            activate_search(app, workbench, focus, window);
+            activate_search(app, workbench, panel_runtimes, focus, window);
         }
         HostEffect::SearchFocusNextField => {
             focus_search_field(app, focus, FocusDirection::Next, window);
@@ -39,29 +39,37 @@ pub(crate) fn try_apply_effect(
         }
         HostEffect::SearchToggleOption(option) => {
             let option = *option;
-            app.borrow_mut().with_search_coordinator(|s, w, v| {
-                super::coordinator::toggle_option(s, w, v, option)
-            });
+            let search = panel_runtimes.search_runtime_handle();
+            app.borrow_mut()
+                .with_workspace_views_mut(|workspace, views| {
+                    search.toggle_option(workspace, views, option)
+                });
             window.refresh();
         }
         HostEffect::SearchFindNext => {
+            let search = panel_runtimes.search_runtime_handle();
             app.borrow_mut()
-                .with_search_coordinator(super::coordinator::find_next);
+                .with_workspace_views_mut(|workspace, views| search.find_next(workspace, views));
             window.refresh();
         }
         HostEffect::SearchFindPrevious => {
+            let search = panel_runtimes.search_runtime_handle();
             app.borrow_mut()
-                .with_search_coordinator(super::coordinator::find_previous);
+                .with_workspace_views_mut(|workspace, views| {
+                    search.find_previous(workspace, views)
+                });
             window.refresh();
         }
         HostEffect::SearchReplaceNext => {
+            let search = panel_runtimes.search_runtime_handle();
             app.borrow_mut()
-                .with_search_coordinator(super::coordinator::replace_next);
+                .with_workspace_views_mut(|workspace, views| search.replace_next(workspace, views));
             window.refresh();
         }
         HostEffect::SearchReplaceAll => {
+            let search = panel_runtimes.search_runtime_handle();
             app.borrow_mut()
-                .with_search_coordinator(super::coordinator::replace_all);
+                .with_workspace_views_mut(|workspace, views| search.replace_all(workspace, views));
             window.refresh();
         }
         _ => return false,
@@ -82,6 +90,7 @@ pub(crate) fn try_apply_effect(
 fn activate_search(
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
+    panel_runtimes: &crate::shell::features::panels::PanelRuntimes,
     focus: &FocusProjection,
     window: &mut Window,
 ) {
@@ -91,8 +100,9 @@ fn activate_search(
     if !visible {
         // 隐藏 → 显示 + 聚焦
         workbench.borrow_mut().show_panel(panel);
+        let search = panel_runtimes.search_runtime_handle();
         app.borrow_mut()
-            .with_search_coordinator(super::coordinator::on_panel_opened);
+            .with_workspace_views_mut(|workspace, views| search.on_panel_opened(workspace, views));
         request_focus(app, focus, AppFocus::search(SearchField::Query), window);
         window.refresh();
         return;
@@ -105,8 +115,9 @@ fn activate_search(
         // 已显示 + 焦点在面板 → 收起，焦点回编辑器。
         // 同时清掉活动 buffer 的 search 高亮，标记 panel 关闭。
         workbench.borrow_mut().hide_panel(panel);
+        let search = panel_runtimes.search_runtime_handle();
         app.borrow_mut()
-            .with_search_coordinator(|s, w, _v| super::coordinator::on_panel_closed(s, w));
+            .with_workspace_views_mut(|workspace, _views| search.on_panel_closed(workspace));
         request_focus(app, focus, AppFocus::editor(), window);
     } else {
         // 已显示 + 焦点不在 → 把焦点搬过去

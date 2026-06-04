@@ -25,13 +25,12 @@ use crate::config::{AppConfig, SettingsChange};
 use crate::focus::{
     AppFocus, FileTreeFocus, FocusStore, PanelFocus, ProjectPickerFocus, SurfaceFocus,
 };
-use crate::shell::CommandCatalogItem;
 use crate::shell::editor::{
     EditorRouter, EditorRouterMut, EditorTargetRegistry, TextTargetOwner, TextTargetQuery,
 };
-use crate::shell::features::panels::search::{self as search_panel, SearchModel, SearchState};
-use crate::shell::workbench::editor_area::{MainEditorOwner, MainEditorOwnerRef};
-use crate::shell::workbench::state::{EditorState, build_editor_state};
+use crate::shell::features::panels::search::SearchRuntimeHandle;
+use crate::shell::workbench::editor_area;
+use crate::shell::workbench::state as workbench_state;
 
 /// 一次按键派发的结果。
 /// `consumed=false` 表示这次按键没有匹配任何 keymap 绑定，应当透传给系统输入法；
@@ -50,21 +49,13 @@ pub struct App {
     views: ViewSet,
     focus: FocusStore,
     project_root: Option<PathBuf>,
-    /// 搜索面板 model 的共享句柄——真正拥有者是 [`SearchRuntime`]，shell 装配
-    /// 时通过 [`Self::install_search_model`] 把同一份 `Rc` 借进来。
-    ///
-    /// 之所以不走 [`EditorTargetRegistry`] 的"一个 owner 一个 `Rc<RefCell<dyn _>>`"：
-    /// `SearchModel` 是双字段（query / replacement），每帧要按当前焦点决定借哪一个 `OwnedEditorTarget`，registry 的统一 `RefMut<dyn TextTargetOwner>` 套不进去。
-    /// 这里保留旧的 `SearchFieldQuery` / `SearchActiveOwner` 短寿命包装，仅把"谁拥有 model"从 App 移到 shell runtime——同样达成了 §2 的「App 不再持有 L3 model 字段」目标。
+    /// 搜索面板 runtime 暴露给宿主的窄接口。
     ///
     /// `None` 表示尚未装配（headless App-only 测试不触及搜索焦点时即此态）；
-    /// 路由 / 派发等触点遇到 `None` 直接早退或跳过推入 owner 列表。
-    ///
-    /// [`SearchRuntime`]: crate::shell::features::panels::search::SearchRuntime
-    search_model: Option<Rc<RefCell<SearchModel>>>,
+    /// 路由 / 派发等触点遇到 `None` 直接早退或跳过 search owner。
+    search_runtime: Option<SearchRuntimeHandle>,
     /// 剪贴板端口：默认走 [`MockClipboard`]（headless 单测够用且不污染系统剪贴板）。
-    /// shell 启动时通过 [`Self::set_clipboard`] 换成 GPUI 适配器，
-    /// 使主程序与系统剪贴板互通。
+    /// shell 启动时通过 [`Self::set_clipboard`] 换成 GPUI 适配器，使主程序与系统剪贴板互通。
     clipboard: Box<dyn ClipboardPort>,
     /// 全局软换行状态——主编辑区与所有多行嵌入式编辑器都借用本 cell。
     ///
@@ -124,7 +115,7 @@ impl App {
             // 生产里 ShellView::render 的反向同步会把这值刷到与 GPUI 真实焦点一致。
             focus: FocusStore::new(AppFocus::project_picker(ProjectPickerFocus::Query)),
             project_root: None,
-            search_model: None,
+            search_runtime: None,
             clipboard: Box::new(MockClipboard::new()),
             soft_wrap,
             config,
@@ -144,12 +135,10 @@ impl App {
         self.editor_targets.register(owner);
     }
 
-    /// 把 [`SearchRuntime`] 持有的 `SearchModel` 句柄借进来。
-    /// shell 装配阶段调一次；之后路由 / 派发 / coordinator 都走这份共享句柄。
-    ///
-    /// [`SearchRuntime`]: crate::shell::features::panels::search::SearchRuntime
-    pub(crate) fn install_search_model(&mut self, model: Rc<RefCell<SearchModel>>) {
-        self.search_model = Some(model);
+    /// 把 search runtime 的宿主接口装进 App。
+    /// shell 装配阶段调一次；之后路由 / 派发 / 同步都通过这层窄接口进入 search feature。
+    pub(crate) fn install_search_runtime(&mut self, runtime: SearchRuntimeHandle) {
+        self.search_runtime = Some(runtime);
     }
 
     /// 把 workspace 当前持有的 `SyntaxEngine` 借给需要它的 shell runtime（首位是 [`SettingsRuntime`]，构造 TOML 编辑器要 engine）。
@@ -299,8 +288,8 @@ impl App {
         f(&mut self.workspace, &mut self.views)
     }
 
-    pub(crate) fn editor_state(&self) -> EditorState {
-        build_editor_state(&self.workspace, &self.views)
+    pub(crate) fn editor_state(&self) -> workbench_state::EditorState {
+        workbench_state::build_editor_state(&self.workspace, &self.views)
     }
 
     /// 派发一次命令调用。
@@ -419,26 +408,28 @@ impl App {
     /// 后直接做 IME 查询 / focused target / snapshot 等 —— App 不再为每种查询
     /// 包一层方法。
     ///
-    /// Owners 顺序：先 App 自己持有的 model（迁出过程中陆续清空）、再注册表里
-    /// 由 shell runtime 注入的 owner、最后兜底主编辑区。`accepts_focus` 对
-    /// `AppFocus` 精确匹配，各 owner 覆盖 disjoint 子集，顺序不影响命中。
+    /// Owners 顺序：先 search runtime 提供的双输入框 owner、再注册表里由 shell
+    /// runtime 注入的 owner、最后兜底主编辑区。`accepts_focus` 对 `AppFocus`
+    /// 精确匹配，各 owner 覆盖 disjoint 子集，顺序不影响命中。
     pub(crate) fn with_router<R>(&self, f: impl FnOnce(EditorRouter<'_>) -> R) -> R {
-        let main = MainEditorOwnerRef::new(&self.workspace, &self.views);
-        // 搜索 model 由 SearchRuntime 拥有，App 持共享 `Rc`：
-        // `borrow()` 拿 Ref 撑住下方 `SearchFieldQuery` 包装的借用。
-        let search_borrow = self.search_model.as_ref().map(|m| m.borrow());
-        let search_query = search_borrow.as_deref().map(|m| m.query_owner());
-        let search_replacement = search_borrow.as_deref().map(|m| m.replacement_owner());
+        let main = editor_area::MainEditorOwnerRef::new(&self.workspace, &self.views);
         // 注册表 owner 的借用 guard 必须比下方 owners 引用活得长。
         let registry_borrows = self.editor_targets.borrow_all();
+
+        if let Some(search) = self.search_runtime.as_ref() {
+            return search.with_query_owners(|query, replacement| {
+                let mut owners: Vec<&dyn TextTargetQuery> = vec![query, replacement];
+                // settings_toml 由 SettingsRuntime 通过 `install_editor_owner` 注册到
+                // registry，不再出现在这条手工列表里。
+                for borrow in registry_borrows.iter() {
+                    owners.push(&**borrow as &dyn TextTargetQuery);
+                }
+                owners.push(&main as &dyn TextTargetQuery);
+                f(EditorRouter::new(owners))
+            });
+        }
+
         let mut owners: Vec<&dyn TextTargetQuery> = Vec::new();
-        // search_model 未装配（如 App-only 单测）时直接跳过，不影响其它 owner。
-        if let Some(q) = search_query.as_ref() {
-            owners.push(q as &dyn TextTargetQuery);
-        }
-        if let Some(r) = search_replacement.as_ref() {
-            owners.push(r as &dyn TextTargetQuery);
-        }
         // settings_toml 由 SettingsRuntime 通过 `install_editor_owner` 注册到
         // registry，不再出现在这条手工列表里。
         for borrow in registry_borrows.iter() {
@@ -451,31 +442,34 @@ impl App {
     /// 构造一次可写路由视图。
     ///
     /// Owners 通过 `accepts_focus` 对 [`AppFocus`] 精确匹配，各自覆盖 disjoint 的
-    /// focus 子集，vec 顺序与优先级无关。搜索面板在写路径由单个 `SearchActiveOwner`
-    /// 同时承担 Query / Replacement 两个 field——这是 `&mut self.search` 借用无法
-    /// 拆分导致的，不是优先级问题。
+    /// focus 子集，vec 顺序与优先级无关。搜索面板在写路径由 search runtime
+    /// 提供单个 active owner，同时承担 Query / Replacement 两个 field。
     pub(crate) fn with_router_mut<R>(&mut self, f: impl FnOnce(EditorRouterMut<'_>) -> R) -> R {
         let focus = self.focus.current();
-        let mut main = MainEditorOwner::new(&mut self.workspace, &mut self.views);
-        // 搜索 model 现归 SearchRuntime 持有：先 `borrow_mut` 拿 `RefMut`，
-        // 再 `active_owner(focus)` 包一层短寿命 owner——两者都活到本闭包结束。
-        let mut search_guard = self.search_model.as_ref().map(|m| m.borrow_mut());
-        let mut search = search_guard.as_deref_mut().map(|m| m.active_owner(focus));
+        let mut main = editor_area::MainEditorOwner::new(&mut self.workspace, &mut self.views);
         // 注册表 owner 的可变借用 guard 必须比下方 owners 引用活得长；每个 RefMut
         // 独立锁住自己那一格 RefCell，互不冲突。
         let mut registry_borrows = self.editor_targets.borrow_all_mut();
-        let mut owners: Vec<&mut dyn TextTargetOwner> = Vec::new();
-        // search_model 未装配（如 App-only 单测）时直接跳过。
-        if let Some(s) = search.as_mut() {
-            owners.push(s as &mut dyn TextTargetOwner);
+        let run = |search_owner: Option<&mut dyn TextTargetOwner>| {
+            let mut owners: Vec<&mut dyn TextTargetOwner> = Vec::new();
+            // search runtime 未装配（如 App-only 单测）时直接跳过。
+            if let Some(owner) = search_owner {
+                owners.push(owner);
+            }
+            // settings_toml 由 SettingsRuntime 通过 `install_editor_owner` 注册到
+            // registry，不再出现在这条手工列表里。
+            for borrow in registry_borrows.iter_mut() {
+                owners.push(&mut **borrow as &mut dyn TextTargetOwner);
+            }
+            owners.push(&mut main as &mut dyn TextTargetOwner);
+            f(EditorRouterMut::new(owners))
+        };
+
+        if let Some(search) = self.search_runtime.as_ref() {
+            return search.with_active_owner(focus, |owner| run(Some(owner)));
         }
-        // settings_toml 由 SettingsRuntime 通过 `install_editor_owner` 注册到
-        // registry，不再出现在这条手工列表里。
-        for borrow in registry_borrows.iter_mut() {
-            owners.push(&mut **borrow as &mut dyn TextTargetOwner);
-        }
-        owners.push(&mut main as &mut dyn TextTargetOwner);
-        f(EditorRouterMut::new(owners))
+
+        run(None)
     }
 
     /// 由主编辑区 element prepaint 末尾回写：把它实际测得的视口写回当前活动 view，
@@ -510,69 +504,18 @@ impl App {
             .map(|command| command.title.clone())
     }
 
-    pub(crate) fn command_catalog_items(&self) -> Vec<CommandCatalogItem> {
-        self.registry
-            .commands()
-            .map(|command| CommandCatalogItem {
-                command_id: command.id.to_string(),
-                title: command.title.clone(),
-                description: command.description.clone(),
-                visible_in_shortcuts: command.visible_in_shortcuts,
-            })
-            .collect()
-    }
-
-    pub(crate) fn search_state(&self) -> SearchState {
-        // 读路径走 `&self`，不在这里跑 sync——sync 在写路径（dispatch_command_id / IME）完成。
-        // 这里读到的就是上次 sync 完的真值。
-        let mut state = self
-            .search_model
-            .as_ref()
-            .map(|m| m.borrow().state())
-            .unwrap_or_default();
-        state.hit_count = search_panel::coordinator::current_hit_count(&self.workspace);
-        state
-    }
-
-    /// 把 panel + 活动 buffer + 活动 view 三家的可变引用打包递给协调器。
-    /// effects.rs 收到 `Search*` HostEffect 后通过它调用
-    /// [`search_panel::coordinator`] 里的具体动作（find_next / replace_all /
-    /// on_panel_opened ...），App 自身不再持有搜索协调逻辑。
-    ///
-    /// model 由 [`SearchRuntime`] 拥有；
-    /// 这里 `Rc::clone` 拿独立句柄断开对  `self.search_model` 的借用，
-    /// 再 `borrow_mut` 与 `&mut self.workspace` / `&mut self.views` 同时存在（三者借用互不相交）。
-    ///
-    /// [`SearchRuntime`]: crate::shell::features::panels::search::SearchRuntime
-    pub(crate) fn with_search_coordinator<R>(
-        &mut self,
-        f: impl FnOnce(&mut SearchModel, &mut Workspace, &mut ViewSet) -> R,
-    ) -> R {
-        let handle = self
-            .search_model
-            .as_ref()
-            .map(Rc::clone)
-            .expect("search model 必须先 install_search_model 才能驱动协调器");
-        let mut model = handle.borrow_mut();
-        f(&mut model, &mut self.workspace, &mut self.views)
+    pub(crate) fn command_catalog_items(&self) -> Vec<crate::shell::CommandCatalogItem> {
+        self.registry.commands().map(Into::into).collect()
     }
 
     /// 命令派发尾部 / IME preedit 更新后必跑一次：把 panel 状态推进活动 buffer
-    /// 的 BufferSearch。算法在
-    /// [`search_panel::coordinator::sync_active_buffer_search`]，这里只是组合
-    /// 根侧的私有触发点。
+    /// 的 BufferSearch。具体同步策略由 search runtime handle 封装。
     ///
-    /// search_model 未装配时整条早退——App-only 单测不触及搜索焦点，不需要 sync 也不该 panic。
+    /// search runtime 未装配时整条早退——App-only 单测不触及搜索焦点，不需要 sync 也不该 panic。
     fn sync_active_buffer_search(&mut self) {
-        let Some(handle) = self.search_model.as_ref().map(Rc::clone) else {
-            return;
-        };
-        let mut model = handle.borrow_mut();
-        search_panel::coordinator::sync_active_buffer_search(
-            &mut model,
-            &mut self.workspace,
-            &mut self.views,
-        );
+        if let Some(search) = self.search_runtime.as_ref() {
+            search.sync_active_buffer_search(&mut self.workspace, &mut self.views);
+        }
     }
 
     /// 排空活动 buffer 自上次 dispatch 以来累积的 `DeltaEvent`，扇出到
@@ -610,7 +553,7 @@ impl App {
     /// 与 `pump_pending_highlights` 平级：两个独立后台子系统，各自有"主线程收割"
     /// 入口，统一在 [`crate::shell::view::ShellView::render`] 拍点驱动。
     pub fn pump_pending_search(&mut self) {
-        search_panel::coordinator::pump_active_buffer_search(&mut self.workspace, &mut self.views);
+        SearchRuntimeHandle::pump_active_buffer_search(&mut self.workspace, &mut self.views);
     }
 
     /// 把活动 view 的可见区间转成 byte range 后推给语法 worker，让 `on_edit`
@@ -681,37 +624,8 @@ impl App {
         // 命令派发期需要给 CommandContext 填 `focused_field`，并在 executor 跑完
         // 之后给 registry owner 调 `after_text_changed`。
         //
-        // 自家字段（search）直接借；其它语义焦点（FileTree / ProjectPicker / Settings 之类）走 editor_targets 注册表
-        // —— 先借出所有 RefMut，找到 accepts_focus 命中的那格，记下索引，跑完 executor 后回该 owner 调 after_text_changed。
-        //
-        // 整段包在内层 block：registry_borrows 出 block 才 drop，RefCell 借用释放，
-        // 外层后续的 `pump_active_buffer_post_edit` / `sync_active_buffer_search`才能拿到 `&mut self`。
-        let host_effects = {
+        let mut run_command = |focused_field: Option<zom_command::EditTarget<'_>>| {
             let mut effects = EffectQueue::new();
-            let mut registry_borrows = self.editor_targets.borrow_all_mut();
-            let mut registry_matched: Option<usize> = None;
-            let mut search_guard = self.search_model.as_ref().map(|m| m.borrow_mut());
-
-            let focused_field = match focus {
-                AppFocus::Panel(PanelFocus::Search(_)) => search_guard
-                    .as_deref_mut()
-                    .and_then(|search| search.edit_target_for_focus(focus)),
-                _ => {
-                    // 在 registry 找第一个声明接管该 focus 的 owner，borrow_mut 拿 edit_target。
-                    // 没有命中（focus 不是文本输入类）返回 None，commands 自己处理。
-                    let mut found = None;
-                    for (idx, borrow) in registry_borrows.iter_mut().enumerate() {
-                        if borrow.accepts_focus(focus) {
-                            if let Some(target) = borrow.edit_target() {
-                                registry_matched = Some(idx);
-                                found = Some(target);
-                            }
-                            break;
-                        }
-                    }
-                    found
-                }
-            };
             let mut context = CommandContext {
                 workspace: &mut self.workspace,
                 views: &mut self.views,
@@ -721,9 +635,40 @@ impl App {
                 clipboard: &mut *self.clipboard,
             };
             let result = self.executor.run(&self.registry, &mut context);
-
             let host_effects = effects.drain();
             result?;
+            Ok(host_effects)
+        };
+
+        // Search 的双输入框 target 由 search runtime handle 封装；其它语义焦点
+        // （FileTree / ProjectPicker / Settings 之类）走 editor_targets 注册表。
+        //
+        // 整段包在内层 block：registry_borrows 出 block 才 drop，RefCell 借用释放，
+        // 外层后续的 `pump_active_buffer_post_edit` / `sync_active_buffer_search`才能拿到 `&mut self`。
+        let host_effects = if let Some(search) = self
+            .search_runtime
+            .as_ref()
+            .filter(|runtime| runtime.accepts_focus(focus))
+        {
+            search.with_edit_target_for_focus(focus, run_command)?
+        } else {
+            let mut registry_borrows = self.editor_targets.borrow_all_mut();
+            let mut registry_matched: Option<usize> = None;
+
+            // 在 registry 找第一个声明接管该 focus 的 owner，borrow_mut 拿 edit_target。
+            // 没有命中（focus 不是文本输入类）返回 None，commands 自己处理。
+            let mut found = None;
+            for (idx, borrow) in registry_borrows.iter_mut().enumerate() {
+                if borrow.accepts_focus(focus) {
+                    if let Some(target) = borrow.edit_target() {
+                        registry_matched = Some(idx);
+                        found = Some(target);
+                    }
+                    break;
+                }
+            }
+
+            let host_effects = run_command(found)?;
             if let Some(idx) = registry_matched {
                 registry_borrows[idx].after_text_changed();
             }

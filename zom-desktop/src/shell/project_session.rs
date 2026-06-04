@@ -1,4 +1,8 @@
-//! 本地项目打开流程。
+//! 项目会话打开流程。
+//!
+//! 本模块是 shell 侧的项目会话边界：负责把“选择/克隆/打开项目”落到
+//! App workspace、文件树、最近项目与窗口焦点上。view 层只触发这里的入口，
+//! 不直接编排项目状态。
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -14,8 +18,6 @@ use crate::shell::platform::project as platform_project;
 use crate::shell::surfaces::SurfaceManager;
 use crate::shell::workbench::controller::WorkbenchController;
 
-use super::actions;
-
 pub(crate) fn open_local_project(
     app: Rc<RefCell<App>>,
     workbench: Rc<RefCell<WorkbenchController>>,
@@ -25,8 +27,7 @@ pub(crate) fn open_local_project(
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    app.borrow_mut().project_picker_deactivate();
-    actions::dismiss_surface(surfaces, window, cx);
+    dismiss_project_picker(&app, surfaces, window, cx);
     let selection = platform_project::prompt_for_local_project(cx);
     window
         .spawn(cx, async move |cx| {
@@ -60,8 +61,7 @@ pub(crate) fn open_recent_project(
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    app.borrow_mut().project_picker_deactivate();
-    actions::dismiss_surface(surfaces, window, cx);
+    dismiss_project_picker(&app, surfaces, window, cx);
     if let Some(repo) = repo {
         apply_git_project_open(
             &app,
@@ -94,8 +94,7 @@ pub(crate) fn clone_git_project(
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    app.borrow_mut().project_picker_deactivate();
-    actions::dismiss_surface(surfaces, window, cx);
+    dismiss_project_picker(&app, surfaces, window, cx);
     let selection = platform_project::prompt_for_clone_parent(cx);
     window
         .spawn(cx, async move |cx| {
@@ -130,17 +129,16 @@ pub(crate) fn clone_git_project(
 /// 打开本地项目的统一落点：更新 `App` 状态、登记到最近项目、展开并聚焦文件树、刷新窗口。
 /// 选择器流程与开发阶段默认项目都经由此函数，保证两条路径行为一致。
 ///
-/// "登记最近"由 shell 侧显式做 —— `App::open_project` 只负责 workspace / view / focus
-/// 这些底层 crate 的状态，"最近项目"是 picker 自家的 UI 数据，归 picker runtime 拥有。
+/// “登记最近”由 shell 侧显式做：`App::open_project` 只负责 workspace / view / focus
+/// 这些底层 crate 的状态；“最近项目”是 picker 自家的 UI 数据，归 picker runtime 拥有。
 pub(crate) fn apply_local_project_open(
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
     file_tree: &FileTreeRuntime,
     project_picker: &ProjectPickerRuntime,
-    project_root: std::path::PathBuf,
+    project_root: PathBuf,
     window: &mut Window,
 ) {
-    // 增加路径有效性校验：确保路径存在且为目录
     if !project_root.is_dir() {
         eprintln!(
             "打开本地项目失败：项目目录不存在或无效 {}",
@@ -165,7 +163,6 @@ fn apply_git_project_open(
     repo: String,
     window: &mut Window,
 ) {
-    // 增加路径有效性校验：确保路径存在且为目录
     if !project_root.is_dir() {
         eprintln!(
             "打开 Git 项目失败：项目目录不存在或无效 {}",
@@ -178,6 +175,20 @@ fn apply_git_project_open(
     app.borrow_mut().open_project(project_root.clone());
     project_picker.remember_project(project_root, Some(repo));
     file_tree.reveal_after_project_open(workbench, window);
+    window.refresh();
+}
+
+fn dismiss_project_picker(
+    app: &Rc<RefCell<App>>,
+    surfaces: &Entity<SurfaceManager>,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    app.borrow_mut().project_picker_deactivate();
+    let Some(focus_to_restore) = surfaces.update(cx, |surfaces, cx| surfaces.dismiss(cx)) else {
+        return;
+    };
+    window.focus(&focus_to_restore);
     window.refresh();
 }
 

@@ -2,7 +2,6 @@
 
 pub(crate) mod actions;
 pub(crate) mod focus;
-pub(crate) mod project;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -214,7 +213,7 @@ impl ShellView {
     /// 打开指定路径的本地项目（不弹选择器）。开发阶段默认项目经由统一项目流程。
     #[cfg(debug_assertions)]
     pub(super) fn open_project(&self, project_root: std::path::PathBuf, window: &mut Window) {
-        project::apply_local_project_open(
+        super::project_session::apply_local_project_open(
             &self.app,
             &self.workbench,
             &self.file_tree,

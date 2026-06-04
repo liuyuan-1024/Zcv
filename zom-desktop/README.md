@@ -41,6 +41,7 @@ src/app.rs                   App 状态、命令派发、keymap 解析、IME 桥
 src/focus.rs                 应用语义焦点模型
 src/shell/boot.rs            GPUI 应用启动与首窗口装配
 src/shell/view/              ShellView、渲染根、焦点投影与 HostEffect 落地
+src/shell/project_session.rs 项目会话打开、克隆、最近项目登记与文件树联动
 src/shell/editor/            嵌入式文本编辑目标、输入、快照与编辑区渲染
 src/shell/features/          L3 功能切片：面板、项目选择器、设置、语言服务器入口
 src/shell/platform/          平台差异收纳层

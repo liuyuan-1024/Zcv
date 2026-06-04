@@ -15,9 +15,9 @@ use crate::shell::features::project_picker::{
     self, ProjectPickerActions, ProjectPickerActivation, ProjectPickerInitialMode,
     ProjectPickerRuntime,
 };
+use crate::shell::project_session;
 use crate::shell::surfaces::{SurfaceId, SurfaceManager};
 use crate::shell::view::actions::open_surface;
-use crate::shell::view::project;
 use crate::shell::workbench::controller::WorkbenchController;
 
 pub(crate) fn try_apply_effect(
@@ -44,10 +44,7 @@ pub(crate) fn try_apply_effect(
             );
         }
         HostEffect::OpenLocalProject => {
-            if surfaces.read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker)) {
-                app.borrow_mut().project_picker_deactivate();
-            }
-            project::open_local_project(
+            project_session::open_local_project(
                 Rc::clone(app),
                 Rc::clone(workbench),
                 surfaces,
@@ -99,8 +96,7 @@ pub(crate) fn try_apply_effect(
             match activation {
                 ProjectPickerActivation::None => {}
                 ProjectPickerActivation::Open(project_record) => {
-                    app.borrow_mut().project_picker_deactivate();
-                    project::open_recent_project(
+                    project_session::open_recent_project(
                         Rc::clone(app),
                         Rc::clone(workbench),
                         surfaces,
@@ -113,8 +109,7 @@ pub(crate) fn try_apply_effect(
                     );
                 }
                 ProjectPickerActivation::CloneGit(repo) => {
-                    app.borrow_mut().project_picker_deactivate();
-                    project::clone_git_project(
+                    project_session::clone_git_project(
                         Rc::clone(app),
                         Rc::clone(workbench),
                         surfaces,

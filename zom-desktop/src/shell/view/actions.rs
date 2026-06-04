@@ -13,6 +13,7 @@ use zom_command::{HostEffect, Invocation};
 use crate::app::App;
 use crate::focus::AppFocus;
 use crate::shell::ActionRequest;
+use crate::shell::bubble::BubbleRuntime;
 use crate::shell::features::language_servers;
 use crate::shell::features::panels::PanelId;
 use crate::shell::features::panels::file_tree;
@@ -31,6 +32,7 @@ pub(super) fn bind_action_request(
     app: Rc<RefCell<App>>,
     workbench: Rc<RefCell<WorkbenchController>>,
     surfaces: Entity<SurfaceManager>,
+    bubbles: Entity<BubbleRuntime>,
     editor_focus_fallback: FocusHandle,
     features: FeatureRegistry,
     invocation: Invocation,
@@ -52,6 +54,7 @@ pub(super) fn bind_action_request(
             &app,
             &workbench,
             &surfaces,
+            &bubbles,
             &editor_focus_fallback,
             &features,
             window,
@@ -68,6 +71,7 @@ pub(super) fn apply_host_effects(
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
     surfaces: &Entity<SurfaceManager>,
+    bubbles: &Entity<BubbleRuntime>,
     editor_focus_fallback: &FocusHandle,
     features: &FeatureRegistry,
     window: &mut Window,
@@ -108,7 +112,9 @@ pub(super) fn apply_host_effects(
         ) {
             continue;
         }
-        apply_shell_effect(&effect, app, workbench, surfaces, &focus, window, cx);
+        apply_shell_effect(
+            &effect, app, workbench, surfaces, bubbles, &focus, window, cx,
+        );
     }
 }
 
@@ -117,6 +123,7 @@ pub(super) fn apply_host_effects_with_settings(
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
     surfaces: &Entity<SurfaceManager>,
+    bubbles: &Entity<BubbleRuntime>,
     editor_focus_fallback: &FocusHandle,
     features: &FeatureRegistry,
     window: &mut Window,
@@ -139,6 +146,7 @@ pub(super) fn apply_host_effects_with_settings(
             app,
             workbench,
             surfaces,
+            bubbles,
             editor_focus_fallback,
             features,
             window,
@@ -154,6 +162,7 @@ fn apply_shell_effect(
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
     surfaces: &Entity<SurfaceManager>,
+    bubbles: &Entity<BubbleRuntime>,
     focus: &FocusProjection,
     window: &mut Window,
     cx: &mut gpui::App,
@@ -162,6 +171,10 @@ fn apply_shell_effect(
         HostEffect::Quit => platform_window::quit(cx),
         HostEffect::Minimize => platform_window::minimize(window),
         HostEffect::ToggleMaximize => platform_window::toggle_maximize(window),
+        HostEffect::ShowBubble(request) => {
+            bubbles.update(cx, |runtime, cx| runtime.push(request.clone(), cx));
+            window.refresh();
+        }
         HostEffect::TogglePanel(panel_str_id) => {
             let Some(panel) = PanelId::from_command_str_id(panel_str_id) else {
                 eprintln!("HostEffect::TogglePanel 收到未知 panel id：{panel_str_id}");

@@ -14,6 +14,7 @@ use gpui::{AppContext, BorrowAppContext, Context, Entity, FocusHandle};
 
 use crate::app::App;
 use crate::focus::{AppFocus, FileTreeFocus, ProjectPickerFocus, SearchField};
+use crate::shell::bubble::{BubbleRuntime, BubbleShell};
 use crate::shell::editor::{EditorKernel, EditorViewportSyncHook, TextEditorSlot};
 use crate::shell::platform::clipboard::GpuiClipboard;
 use crate::shell::surfaces::{SurfaceAnchorRegistry, SurfaceManager, SurfaceShell};
@@ -31,6 +32,8 @@ pub(super) struct ShellRuntime {
     pub(super) features: FeatureRegistry,
     pub(super) surface_manager: Entity<SurfaceManager>,
     pub(super) surface_shell: Entity<SurfaceShell>,
+    pub(super) bubble_runtime: Entity<BubbleRuntime>,
+    pub(super) bubble_shell: Entity<BubbleShell>,
     pub(super) main_editor_slot: Rc<TextEditorSlot>,
     pub(super) file_tree_slot: Rc<TextEditorSlot>,
     pub(super) search_query_slot: Rc<TextEditorSlot>,
@@ -50,6 +53,7 @@ impl ShellRuntime {
         let workbench = Rc::new(RefCell::new(WorkbenchController::new()));
         cx.update_default_global::<SurfaceAnchorRegistry, _>(|_, _| ());
         let surface_manager = cx.new(|_| SurfaceManager::new());
+        let bubble_runtime = cx.new(|_| BubbleRuntime::new());
         let editor_focus = cx.focus_handle();
 
         let features = FeatureRegistry::assemble(&app, cx);
@@ -121,6 +125,7 @@ impl ShellRuntime {
             .set_toml_slot(Rc::clone(&settings_toml_slot));
 
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));
+        let bubble_shell = cx.new(|cx| BubbleShell::new(bubble_runtime.clone(), cx));
 
         let focus_projection = features.focus_projection(editor_focus.clone(), true);
 
@@ -130,6 +135,8 @@ impl ShellRuntime {
             features,
             surface_manager,
             surface_shell,
+            bubble_runtime,
+            bubble_shell,
             main_editor_slot,
             file_tree_slot,
             search_query_slot,

@@ -21,9 +21,10 @@ use zom_engine::{
 use zom_view::ViewId;
 
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, active_view_buffer_id,
-    command_execution_failed, parse_optional_bool, reject_unknown_args, required_arg,
+    BubbleRequest, CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome,
+    CommandRegistry, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
+    active_view_buffer_id, command_execution_failed, parse_optional_bool, reject_unknown_args,
+    required_arg,
 };
 
 #[path = "editor/visual_movement.rs"]
@@ -1005,10 +1006,11 @@ fn run_save(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     let buffer_id = active_view_buffer_id(context)?;
-    context
-        .workspace
-        .save_file(buffer_id)
-        .map_err(|error| CommandError::ExecutionFailed(error.to_string()))?;
+    if let Err(error) = context.workspace.save_file(buffer_id) {
+        context.effects.push(HostEffect::ShowBubble(
+            BubbleRequest::error(format!("保存失败：{error}")).dedupe("editor.save"),
+        ));
+    }
     Ok(CommandOutcome::default())
 }
 

@@ -24,6 +24,7 @@ use std::rc::Rc;
 use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
 
 use crate::editor_state::EditorState;
+use crate::shell::bubble::BubbleShell;
 use crate::shell::editor::{EditorSnapshot, TextEditorSlot};
 use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::{
@@ -63,6 +64,7 @@ pub(crate) fn render(
     window: &Window,
     window_controls: WindowControlsHandlers,
     surface_shell: Entity<SurfaceShell>,
+    bubble_shell: Entity<BubbleShell>,
     workspace_active: bool,
     settings_active: bool,
     language_server_active: bool,
@@ -125,7 +127,7 @@ pub(crate) fn render(
             &main_editor_snapshot,
         ))
         .child(surface_shell)
-        .child(crate::shell::bubble::render())
+        .child(bubble_shell)
         // 删除确认模态层：处于删除确认态时压在所有面板与 surface 之上。
         .children(file_tree::render_confirm_delete(
             features.file_tree,

@@ -19,6 +19,66 @@ pub enum SearchOption {
     Regex,
 }
 
+/// 轻量气泡提示类型。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BubbleKind {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+/// 请求宿主显示一条轻量气泡提示。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BubbleRequest {
+    pub kind: BubbleKind,
+    pub message: String,
+    pub dedupe_key: Option<String>,
+    pub ttl_ms: Option<u64>,
+}
+
+impl BubbleRequest {
+    pub fn info(message: impl Into<String>) -> Self {
+        Self::new(BubbleKind::Info, message)
+    }
+
+    pub fn success(message: impl Into<String>) -> Self {
+        Self::new(BubbleKind::Success, message)
+    }
+
+    pub fn warning(message: impl Into<String>) -> Self {
+        Self::new(BubbleKind::Warning, message)
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Self::new(BubbleKind::Error, message)
+    }
+
+    pub fn new(kind: BubbleKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            dedupe_key: None,
+            ttl_ms: Some(2400),
+        }
+    }
+
+    pub fn dedupe(mut self, key: impl Into<String>) -> Self {
+        self.dedupe_key = Some(key.into());
+        self
+    }
+
+    pub fn ttl_ms(mut self, ttl_ms: u64) -> Self {
+        self.ttl_ms = Some(ttl_ms);
+        self
+    }
+
+    pub fn persistent(mut self) -> Self {
+        self.ttl_ms = None;
+        self
+    }
+}
+
 /// 命令处理器请求宿主执行的副作用。**按域分组**，加新变体时贴在对应组下。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HostEffect {
@@ -29,6 +89,10 @@ pub enum HostEffect {
     Minimize,
     /// 切换当前窗口最大化 / 还原。
     ToggleMaximize,
+
+    // ===== Bubble =====
+    /// 显示一条轻量气泡提示。
+    ShowBubble(BubbleRequest),
 
     // ===== Dock / Panel =====
     /// 切换某个 panel 的显隐。
@@ -166,5 +230,27 @@ impl EffectQueue {
 
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bubble_request_should_be_emit_as_host_effect() {
+        let request = BubbleRequest::success("已保存")
+            .dedupe("editor.save")
+            .ttl_ms(1200);
+
+        assert_eq!(
+            HostEffect::ShowBubble(request.clone()),
+            HostEffect::ShowBubble(BubbleRequest {
+                kind: BubbleKind::Success,
+                message: "已保存".to_string(),
+                dedupe_key: Some("editor.save".to_string()),
+                ttl_ms: Some(1200),
+            })
+        );
     }
 }

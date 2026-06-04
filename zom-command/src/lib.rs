@@ -40,7 +40,7 @@ pub use commands::editor::{CompositionBinding, TextEditBindingContext, TextEditK
 pub use commands::file_tree::{FileTreeBindingContext, FileTreeKeyContext, FileTreeKeyMode};
 pub use commands::project_picker::{ProjectPickerBindingContext, ProjectPickerKeyContext};
 pub use core::{Command, CommandArgs, CommandCatalogItem, CommandId, Invocation, NoArgs};
-pub use effects::{EffectQueue, HostEffect, SearchOption};
+pub use effects::{BubbleKind, BubbleRequest, EffectQueue, HostEffect, SearchOption};
 pub use error::CommandError;
 pub use executor::{CommandContext, CommandExecutor, CommandOutcome, CommandQueue, EditTarget};
 pub use keymap::{

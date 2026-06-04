@@ -92,6 +92,7 @@ impl ShellView {
             Rc::clone(&self.runtime.app),
             Rc::clone(&self.runtime.workbench),
             self.runtime.surface_manager.clone(),
+            self.runtime.bubble_runtime.clone(),
             self.runtime.editor_focus.clone(),
             self.runtime.features.clone(),
             invocation,
@@ -110,6 +111,7 @@ impl ShellView {
         let app = Rc::clone(&self.runtime.app);
         let workbench = Rc::clone(&self.runtime.workbench);
         let surfaces = self.runtime.surface_manager.clone();
+        let bubbles = self.runtime.bubble_runtime.clone();
         let editor_focus_fallback = self.runtime.editor_focus.clone();
         let features = self.runtime.features.clone();
         let focus_projection = self.runtime.focus_projection.clone();
@@ -135,6 +137,7 @@ impl ShellView {
                 &app,
                 &workbench,
                 &surfaces,
+                &bubbles,
                 &editor_focus_fallback,
                 &features,
                 window,
@@ -311,6 +314,7 @@ impl Render for ShellView {
             window,
             window_controls,
             runtime.surface_shell.clone(),
+            runtime.bubble_shell.clone(),
             workspace_active,
             settings_active,
             language_server_active,

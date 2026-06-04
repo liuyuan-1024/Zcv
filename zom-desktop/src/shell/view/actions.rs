@@ -13,29 +13,26 @@ use zom_command::{HostEffect, Invocation};
 use crate::app::App;
 use crate::focus::AppFocus;
 use crate::shell::ActionRequest;
-use crate::shell::features::language_servers::{self, LanguageServersRuntime};
-use crate::shell::features::panels::file_tree::{self, FileTreeRuntime};
+use crate::shell::features::language_servers;
+use crate::shell::features::panels::PanelId;
+use crate::shell::features::panels::file_tree;
 use crate::shell::features::panels::search;
-use crate::shell::features::panels::{PanelId, PanelRuntimes};
-use crate::shell::features::project_picker::{self, ProjectPickerRuntime};
-use crate::shell::features::settings::{self, SettingsRuntime};
+use crate::shell::features::project_picker;
+use crate::shell::features::settings;
 use crate::shell::platform::clipboard::GpuiClipboardScope;
 use crate::shell::platform::window as platform_window;
 use crate::shell::surfaces::{SurfaceId, SurfaceManager, SurfaceRequest};
 use crate::shell::workbench::controller::WorkbenchController;
 
-use super::focus::{FocusProjection, panel_default_focus, projection_from_runtimes};
+use super::features::FeatureRegistry;
+use super::focus::{FocusProjection, panel_default_focus};
 
 pub(super) fn bind_action_request(
     app: Rc<RefCell<App>>,
     workbench: Rc<RefCell<WorkbenchController>>,
     surfaces: Entity<SurfaceManager>,
     editor_focus_fallback: FocusHandle,
-    panel_runtimes: PanelRuntimes,
-    file_tree: FileTreeRuntime,
-    project_picker_runtime: ProjectPickerRuntime,
-    language_servers_runtime: LanguageServersRuntime,
-    settings_runtime: SettingsRuntime,
+    features: FeatureRegistry,
     invocation: Invocation,
 ) -> ActionRequest {
     Rc::new(move |window, cx| {
@@ -56,11 +53,7 @@ pub(super) fn bind_action_request(
             &workbench,
             &surfaces,
             &editor_focus_fallback,
-            &panel_runtimes,
-            &file_tree,
-            &project_picker_runtime,
-            &language_servers_runtime,
-            &settings_runtime,
+            &features,
             window,
             cx,
         );
@@ -70,34 +63,25 @@ pub(super) fn bind_action_request(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_host_effects(
+pub(super) fn apply_host_effects(
     effects: Vec<HostEffect>,
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
     surfaces: &Entity<SurfaceManager>,
     editor_focus_fallback: &FocusHandle,
-    panel_runtimes: &PanelRuntimes,
-    file_tree: &FileTreeRuntime,
-    project_picker_runtime: &ProjectPickerRuntime,
-    language_servers_runtime: &LanguageServersRuntime,
+    features: &FeatureRegistry,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    let focus = projection_from_runtimes(
-        editor_focus_fallback.clone(),
-        panel_runtimes,
-        file_tree,
-        project_picker_runtime.focus_handle(),
-        None,
-    );
+    let focus = features.focus_projection(editor_focus_fallback.clone(), false);
     for effect in effects {
         // 按 feature 顺序问询：第一个认领的 try_apply 返回 true，跳过余下。
         // 剩下的窗口控制 / 跨 feature 变体由本文件下方的兜底 match 处理。
-        if file_tree::try_apply_effect(&effect, app, workbench, file_tree, &focus, window) {
+        if file_tree::try_apply_effect(&effect, app, workbench, &features.file_tree, &focus, window)
+        {
             continue;
         }
-        if search::try_apply_effect(&effect, app, workbench, panel_runtimes, &focus, window) {
+        if search::try_apply_effect(&effect, app, workbench, &features.panels, &focus, window) {
             continue;
         }
         if project_picker::try_apply_effect(
@@ -106,8 +90,8 @@ pub(crate) fn apply_host_effects(
             workbench,
             surfaces,
             editor_focus_fallback,
-            file_tree,
-            project_picker_runtime,
+            &features.file_tree,
+            &features.project_picker,
             window,
             cx,
         ) {
@@ -118,7 +102,7 @@ pub(crate) fn apply_host_effects(
             app,
             surfaces,
             editor_focus_fallback,
-            language_servers_runtime,
+            &features.language_servers,
             window,
             cx,
         ) {
@@ -128,18 +112,13 @@ pub(crate) fn apply_host_effects(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_host_effects_with_settings(
+pub(super) fn apply_host_effects_with_settings(
     effects: Vec<HostEffect>,
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
     surfaces: &Entity<SurfaceManager>,
     editor_focus_fallback: &FocusHandle,
-    panel_runtimes: &PanelRuntimes,
-    file_tree: &FileTreeRuntime,
-    project_picker_runtime: &ProjectPickerRuntime,
-    language_servers_runtime: &LanguageServersRuntime,
-    settings_runtime: &SettingsRuntime,
+    features: &FeatureRegistry,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -149,7 +128,7 @@ pub(crate) fn apply_host_effects_with_settings(
             app,
             surfaces,
             editor_focus_fallback,
-            settings_runtime,
+            &features.settings,
             window,
             cx,
         ) {
@@ -161,10 +140,7 @@ pub(crate) fn apply_host_effects_with_settings(
             workbench,
             surfaces,
             editor_focus_fallback,
-            panel_runtimes,
-            file_tree,
-            project_picker_runtime,
-            language_servers_runtime,
+            features,
             window,
             cx,
         );

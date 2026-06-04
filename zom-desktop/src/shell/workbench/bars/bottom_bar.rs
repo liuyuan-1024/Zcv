@@ -23,6 +23,7 @@ const LANGUAGE_ID: &str = "bottom-bar.language";
 
 pub(crate) fn render(
     state: &WorkbenchState,
+    editor: &EditorState,
     shortcuts: &ShortcutLookup,
     titles: &CommandTitleLookup,
     language_server_active: bool,
@@ -34,7 +35,7 @@ pub(crate) fn render(
             BarRegionAlign::Leading,
         ))
         .child(region(
-            trailing_slots(state, shortcuts, titles, main_editor_snapshot),
+            trailing_slots(state, editor, shortcuts, titles, main_editor_snapshot),
             BarRegionAlign::Trailing,
         ))
 }
@@ -68,11 +69,12 @@ fn leading_slots(
 
 fn trailing_slots(
     state: &WorkbenchState,
+    editor_state: &EditorState,
     shortcuts: &ShortcutLookup,
     titles: &CommandTitleLookup,
     main_editor_snapshot: &EditorSnapshot,
 ) -> Vec<AnyElement> {
-    let editor = editor_status_slots(&state.editor, main_editor_snapshot);
+    let editor = editor_status_slots(editor_state, main_editor_snapshot);
     let bottom = panel_slot_group(DockAreaId::Bottom, bottom::PANELS, state, shortcuts, titles);
     let right = panel_slot_group(DockAreaId::Right, right::PANELS, state, shortcuts, titles);
     join_groups(vec![editor, bottom, right])

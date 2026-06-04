@@ -225,13 +225,9 @@ impl ShellView {
 
     fn workbench_state(&self) -> WorkbenchState {
         let app = self.app.borrow();
-        self.workbench.borrow().state(
-            app.project_title(),
-            app.has_project(),
-            app.editor_state(),
-            self.file_tree.state(&app),
-            self.panel_runtimes.search_state(app.workspace()),
-        )
+        self.workbench
+            .borrow()
+            .state(app.project_title(), app.has_project())
     }
 
     /// 把一个 [`Invocation`] 绑成 [`ActionRequest`]：点击时派发并应用窗口动作。
@@ -388,6 +384,16 @@ impl Render for ShellView {
         self.settings.pump_pending_highlights();
 
         let state = self.workbench_state();
+        // 三个 feature 的视图快照旁路收集，不进 WorkbenchState；workbench::render 只看布局。
+        let editor_state = self.app.borrow().editor_state();
+        let file_tree_state = {
+            let app = self.app.borrow();
+            self.file_tree.state(&app)
+        };
+        let search_state = {
+            let app = self.app.borrow();
+            self.panel_runtimes.search_state(app.workspace())
+        };
 
         // 光标一移动就重置闪烁为实心，让用户立刻定位到光标；定时链与全局可见位都由 editor 子系统驱动。
         // 现在由全局唯一的 AppFocus 作为真相源，精确向路由查询当前焦点对应的快照。
@@ -416,7 +422,7 @@ impl Render for ShellView {
         // 借用与移动落到不同的 Rc 副本上，互不冲突。
         let key_request_for_panel = Rc::clone(&key_request);
         let file_tree_panel = self.file_tree.panel(
-            &state.file_tree,
+            &file_tree_state,
             &key_request_for_panel,
             &self.file_tree_slot,
             window,
@@ -443,6 +449,11 @@ impl Render for ShellView {
         };
         workbench::render(
             &state,
+            workbench::WorkbenchFeatureStates {
+                editor: &editor_state,
+                file_tree: &file_tree_state,
+                search: &search_state,
+            },
             &self.panel_host,
             Rc::clone(&self.workbench),
             window,

@@ -23,7 +23,8 @@ use zom_workspace::syntax::SyntaxEngine;
 use crate::background_pumps::BackgroundPumps;
 use crate::command_runtime::CommandRuntime;
 use crate::config::{AppConfig, SettingsChange};
-use crate::config_runtime::ConfigRuntime;
+use crate::config_applier::ConfigApplier;
+use crate::config_store::ConfigStore;
 use crate::focus::{
     AppFocus, FileTreeFocus, FocusStore, PanelFocus, ProjectPickerFocus, SurfaceFocus,
 };
@@ -46,7 +47,7 @@ pub(crate) struct KeyDispatchOutcome {
 pub struct App {
     command: CommandRuntime,
     session: WorkspaceSession,
-    config: ConfigRuntime,
+    config: ConfigStore,
     background: BackgroundPumps,
     focus: FocusStore,
     project_root: Option<PathBuf>,
@@ -67,7 +68,10 @@ impl App {
     }
 
     pub(crate) fn new_with_paths(config_path: Option<PathBuf>) -> Self {
-        let config = ConfigRuntime::new(config_path);
+        let config = ConfigStore::new(config_path);
+        // boot 期视觉初始化走 Applier 的局部入口；session 还没构造，
+        // 不能用 apply_all。workspace buffer_config 紧接着手动 push 一次。
+        ConfigApplier::apply_visuals(config.config());
         let (_engine, mut workspace, views) = empty_workspace();
         workspace.set_buffer_config(config.buffer_config());
 
@@ -141,7 +145,9 @@ impl App {
     }
 
     pub(crate) fn apply_settings_change(&mut self, change: SettingsChange) {
-        self.config.apply_settings_change(change, &mut self.session);
+        self.config.apply_change(change);
+        ConfigApplier::apply_all(self.config.config(), &mut self.session);
+        self.config.save();
     }
 
     /// 用一份外部传入的 `AppConfig` 替换当前 config，并把变化应用到运行时
@@ -153,7 +159,9 @@ impl App {
     /// [`ShellView`]: crate::shell::view::ShellView
     /// [`SettingsRuntime::close_toml_and_parse`]: crate::shell::features::settings::SettingsRuntime::close_toml_and_parse
     pub(crate) fn replace_config(&mut self, next: AppConfig) {
-        self.config.replace_config(next, &mut self.session);
+        self.config.replace(next);
+        ConfigApplier::apply_all(self.config.config(), &mut self.session);
+        self.config.save();
     }
 
     pub(crate) fn focus(&self) -> &FocusStore {
@@ -603,7 +611,7 @@ mod tests {
     use crate::focus::{AppFocus, PanelFocus, ProjectPickerFocus};
     use crate::shell::editor::TextTargetOwner;
     use crate::shell::features::panels::PanelId;
-    use crate::shell::features::panels::file_tree::{FileTreeActivation, FileTreeOutcome};
+    use crate::shell::features::panels::file_tree::FileTreeActivation;
     use crate::shell::features::project_picker::ProjectPickerModel;
     use crate::shell::features::settings::SettingsTomlEditor;
     use crate::shell::workbench::state::{EditorState, EditorTab};

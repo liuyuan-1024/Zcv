@@ -17,18 +17,24 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Context, Div, FocusHandle, IntoElement, MouseButton, Window, div, prelude::*};
-use zom_command::commands::search;
+use zom_command::{SearchOption, commands::search};
+use zom_view::ViewSet;
+use zom_workspace::Workspace;
 
 use crate::app::App;
 use crate::focus::{AppFocus, SearchField};
+use crate::ports::{FramePump, PostEditObserver};
 use crate::shell::editor::TextEditorSlot;
 use crate::shell::normalized_chord;
 use crate::shell::shared::glyph::Glyph;
 use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::docks::render_focus_host;
 use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
+use crate::text_target::TextTargetOwner;
+use crate::workspace_session::WorkspaceSession;
 
-pub(crate) use model::{HitCount, SearchModel, SearchState};
+use model::SearchModel;
+pub(crate) use model::{HitCount, SearchState};
 
 const CASE_SENSITIVE_ICON: &str = "icons/actions/case_sensitive.svg";
 const WHOLE_WORD_ICON: &str = "icons/actions/whole_word.svg";
@@ -38,11 +44,115 @@ const FIND_NEXT_ICON: &str = "icons/navigation/chevron_right.svg";
 const REPLACE_NEXT_ICON: &str = "icons/actions/replace_next.svg";
 const REPLACE_ALL_ICON: &str = "icons/actions/replace_all.svg";
 
+/// 搜索面板暴露给宿主的窄接口。
+///
+/// `SearchModel` 的双输入框 owner 拆分、panel 状态同步、命中导航都留在 search
+/// feature 内；App 只在输入派发和 workspace/view 生命周期点调用这里的能力方法。
+#[derive(Clone)]
+pub(crate) struct SearchRuntimeHandle {
+    model: Rc<RefCell<SearchModel>>,
+}
+
+impl SearchRuntimeHandle {
+    fn new(model: Rc<RefCell<SearchModel>>) -> Self {
+        Self { model }
+    }
+
+    pub(crate) fn state(&self, workspace: &Workspace) -> SearchState {
+        let mut state = self.model.borrow().state();
+        state.hit_count = coordinator::current_hit_count(workspace);
+        state
+    }
+
+    pub(crate) fn sync_active_buffer_search(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+        let mut model = self.model.borrow_mut();
+        coordinator::sync_active_buffer_search(&mut model, workspace, views);
+    }
+
+    pub(crate) fn pump_active_buffer_search(workspace: &mut Workspace, views: &mut ViewSet) {
+        coordinator::pump_active_buffer_search(workspace, views);
+    }
+
+    pub(crate) fn on_panel_opened(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+        let mut model = self.model.borrow_mut();
+        coordinator::on_panel_opened(&mut model, workspace, views);
+    }
+
+    pub(crate) fn on_panel_closed(&self, workspace: &mut Workspace) {
+        let mut model = self.model.borrow_mut();
+        coordinator::on_panel_closed(&mut model, workspace);
+    }
+
+    pub(crate) fn toggle_option(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        option: SearchOption,
+    ) {
+        let mut model = self.model.borrow_mut();
+        coordinator::toggle_option(&mut model, workspace, views, option);
+    }
+
+    pub(crate) fn find_next(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+        let mut model = self.model.borrow_mut();
+        coordinator::find_next(&mut model, workspace, views);
+    }
+
+    pub(crate) fn find_previous(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+        let mut model = self.model.borrow_mut();
+        coordinator::find_previous(&mut model, workspace, views);
+    }
+
+    pub(crate) fn replace_next(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+        let mut model = self.model.borrow_mut();
+        coordinator::replace_next(&mut model, workspace, views);
+    }
+
+    pub(crate) fn replace_all(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+        let mut model = self.model.borrow_mut();
+        coordinator::replace_all(&mut model, workspace, views);
+    }
+}
+
+/// 把 search 的"编辑后同步"包成通用 [`PostEditObserver`]；
+/// BackgroundPumps 通过 trait 调用，不再 use `SearchRuntimeHandle`。
+pub(crate) struct SearchEditObserver(SearchRuntimeHandle);
+
+impl SearchEditObserver {
+    pub(crate) fn new(handle: SearchRuntimeHandle) -> Self {
+        Self(handle)
+    }
+}
+
+impl PostEditObserver for SearchEditObserver {
+    fn after_text_edit(&self, session: &mut WorkspaceSession) {
+        let (workspace, views) = session.parts_mut();
+        self.0.sync_active_buffer_search(workspace, views);
+    }
+}
+
+/// 把 search 的"每帧收割后台命中"包成通用 [`FramePump`]。
+/// 实现是无状态的——`pump_active_buffer_search` 只读 workspace + views。
+pub(crate) struct SearchFramePump;
+
+impl FramePump for SearchFramePump {
+    fn pump(&self, session: &mut WorkspaceSession) {
+        let (workspace, views) = session.parts_mut();
+        SearchRuntimeHandle::pump_active_buffer_search(workspace, views);
+    }
+}
+
+/// 搜索面板的 shell 端 runtime —— 焦点宿主 + `SearchModel` 的真正拥有者。
+///
+/// App 只保存 [`SearchRuntimeHandle`]，不直接认识 `SearchModel` 或 coordinator
+/// 函数。这样搜索输入框的 owner 拆分仍能参与全局 editor router，同时业务动作
+/// 留在 search feature 内部。
 #[derive(Clone)]
 pub(crate) struct SearchRuntime {
     focus: FocusHandle,
     query_focus: FocusHandle,
     replacement_focus: FocusHandle,
+    model: Rc<RefCell<SearchModel>>,
 }
 
 impl SearchRuntime {
@@ -51,7 +161,19 @@ impl SearchRuntime {
             focus: cx.focus_handle(),
             query_focus: cx.focus_handle(),
             replacement_focus: cx.focus_handle(),
+            model: Rc::new(RefCell::new(SearchModel::new())),
         }
+    }
+
+    pub(crate) fn runtime_handle(&self) -> SearchRuntimeHandle {
+        SearchRuntimeHandle::new(self.model.clone())
+    }
+
+    /// 把 SearchModel 作为 [`TextTargetOwner`] 暴露给 router——按 focus
+    /// 内部分派 query / replacement。注册路径与其它 owner 完全一致，
+    /// TextTargetRuntime 不再为 search 单走特殊分支。
+    pub(crate) fn owner_handle(&self) -> Rc<RefCell<dyn TextTargetOwner>> {
+        self.model.clone()
     }
 
     pub(crate) fn focus_handle(&self) -> FocusHandle {

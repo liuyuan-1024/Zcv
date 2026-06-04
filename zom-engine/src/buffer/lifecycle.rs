@@ -180,6 +180,10 @@ impl Buffer {
         &self.config
     }
 
+    pub fn set_config(&mut self, config: BufferConfig) {
+        self.config = config;
+    }
+
     pub fn len_chars(&self) -> crate::CharOffset {
         self.storage.len_chars()
     }

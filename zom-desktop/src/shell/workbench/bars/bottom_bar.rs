@@ -8,12 +8,13 @@
 
 use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
 
+use crate::editor_state::EditorState;
 use crate::shell::editor::EditorSnapshot;
 use crate::shell::features::panels::PanelId;
 use crate::shell::features::{diagnostics, language_servers};
 use crate::shell::shared::Glyph;
 use crate::shell::workbench::docks::{bottom, left, right};
-use crate::shell::workbench::state::{DockAreaId, DockState, EditorState, WorkbenchState};
+use crate::shell::workbench::state::{DockAreaId, DockState, WorkbenchState};
 use crate::shell::{CommandTitleLookup, ShortcutLookup};
 
 use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_divider, bar_frame};
@@ -23,6 +24,7 @@ const LANGUAGE_ID: &str = "bottom-bar.language";
 
 pub(crate) fn render(
     state: &WorkbenchState,
+    editor: &EditorState,
     shortcuts: &ShortcutLookup,
     titles: &CommandTitleLookup,
     language_server_active: bool,
@@ -34,7 +36,7 @@ pub(crate) fn render(
             BarRegionAlign::Leading,
         ))
         .child(region(
-            trailing_slots(state, shortcuts, titles, main_editor_snapshot),
+            trailing_slots(state, editor, shortcuts, titles, main_editor_snapshot),
             BarRegionAlign::Trailing,
         ))
 }
@@ -68,11 +70,12 @@ fn leading_slots(
 
 fn trailing_slots(
     state: &WorkbenchState,
+    editor_state: &EditorState,
     shortcuts: &ShortcutLookup,
     titles: &CommandTitleLookup,
     main_editor_snapshot: &EditorSnapshot,
 ) -> Vec<AnyElement> {
-    let editor = editor_status_slots(&state.editor, main_editor_snapshot);
+    let editor = editor_status_slots(editor_state, main_editor_snapshot);
     let bottom = panel_slot_group(DockAreaId::Bottom, bottom::PANELS, state, shortcuts, titles);
     let right = panel_slot_group(DockAreaId::Right, right::PANELS, state, shortcuts, titles);
     join_groups(vec![editor, bottom, right])

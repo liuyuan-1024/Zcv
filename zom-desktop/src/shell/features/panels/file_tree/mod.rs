@@ -14,20 +14,27 @@ use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::PanelContext;
 use crate::shell::{ActionRequest, KeyRequest};
 
+mod clipboard;
 mod confirm_delete;
 mod effects;
 mod focus;
+mod fs_ops;
+mod inline_edit;
 mod model;
 mod runtime;
+mod selection;
 mod state;
 mod view;
 
 pub(crate) use effects::try_apply_effect;
+#[cfg(test)]
+pub(crate) use fs_ops::apply_outcome;
 
 pub(crate) use model::FileTreeModel;
 pub(crate) use runtime::FileTreeRuntime;
 pub(crate) use state::{
-    FileTreeActivation, FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry, PendingRename,
+    FileTreeActivation, FileTreeOutcome, FileTreeRow, FileTreeState, PendingDelete,
+    PendingNewEntry, PendingRename,
 };
 
 /// 删除确认弹窗的两个动作回调。由根视图绑定命令后注入。
@@ -58,7 +65,8 @@ pub(crate) struct FileTreePanel<'a> {
     pub(crate) state: &'a FileTreeState,
     pub(crate) focus: &'a FocusHandle,
     pub(crate) key_request: &'a KeyRequest,
-    pub(crate) slot: &'a Rc<TextEditorSlot>,
+    pub(crate) new_entry_slot: &'a Rc<TextEditorSlot>,
+    pub(crate) rename_slot: &'a Rc<TextEditorSlot>,
     pub(crate) scroll: &'a ScrollHandle,
     /// 当前焦点是否在文件树容器上；决定选中边框是否可见。
     pub(crate) is_focused: bool,

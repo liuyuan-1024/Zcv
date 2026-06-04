@@ -1,7 +1,7 @@
 //! 编辑器渲染快照类型。
 
 use zom_engine::SelectionSet;
-use zom_view::RevealKind;
+use zom_view::{RevealKind, VisualPosition};
 
 use crate::shell::editor::highlight::Decoration;
 
@@ -26,21 +26,26 @@ pub(crate) struct EditorSnapshot {
     pub(crate) lines: Vec<SnapshotLine>,
     /// buffer 总行数。gutter 据此决定行号列宽度，避免滚动时列宽抖动。
     pub(crate) total_lines: u64,
-    /// `lines` 的第一条对应的逻辑行号（0-based）；空 lines 时为 0。
-    pub(crate) viewport_start_line: u64,
-    /// view 已落定的视口顶行（0-based）；与 `viewport_start_line` 的区别在于
-    /// snapshot 切片范围带有 ±visible_lines 的安全余量，`top_line` 才是用户
-    /// 真正看到的第一行。element 用它直接算 `off.y`，不再反算。
+    /// view 已落定的视口顶行（0-based）；
+    /// 与 snapshot 切片起点的区别在于：
+    /// snapshot 切片范围带有 ±visible_lines 的安全余量，`top_line` 才是用户真正看到的第一行。
     pub(crate) top_line: u64,
+    /// `top_line` 内的软换行视觉段序号（0-based）。不开软换行时为 0。
+    pub(crate) top_subrow: u64,
     /// primary head 的绝对字节位（与 `selection.primary().head()` 等价）。
     pub(crate) cursor_byte: usize,
     /// primary head 的 (行号, 列号)，均 0-based；列按 Unicode scalar value 计。
     /// 底栏行 / 列展示直接读它，无需扫描文本。
     pub(crate) cursor_position: (u64, u64),
-    /// 完整选区集合。`cursor_byte` 与每个 selection.head 的 caret 几何都从这里
-    /// 派生；非空 selection 的 range 已作为 `Background` Decoration 加进
-    /// [`decorations`]，element 不再二次读 selection 算背景。
+    /// 完整选区集合。
+    /// `cursor_byte` 与每个 selection.head 的 caret 几何都从这里派生；
+    /// 非空 selection 的 range 已作为 `Background` Decoration 加进 [`decorations`]，element 不再二次读 selection 算背景。
     pub(crate) selection: SelectionSet,
+    /// primary caret 的视觉投影。
+    ///
+    /// Selection 只保存 byte；软换行边界处同一个 byte 可能同时是上一视觉行行尾和下一视觉行行首。
+    /// 主编辑区从 View 带入这个 [`VisualPosition`]，element 据此把 primary caret 画回垂直移动命令选择的那条视觉行。
+    pub(crate) visual_caret: Option<VisualPosition>,
     /// 外部 reveal 请求在快照里的表示。是否生效由 `EditorKernel` 决定。
     pub(crate) reveal: Option<RevealHint>,
     /// 上屏装饰集合——syntax / selection / search 等 producer 投递给 composer

@@ -13,6 +13,10 @@ use std::collections::BTreeMap;
 use zom_engine::{BufferVersion, ByteOffset, FoldSet, SelectionSet};
 use zom_workspace::BufferId;
 
+mod wrap;
+
+pub use wrap::{VisualAffinity, VisualPosition, WrapMap, compute_segments};
+
 /// 视图标识。
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ViewId(u64);
@@ -23,7 +27,7 @@ impl ViewId {
     }
 }
 
-/// 视口尚未由渲染端测量过时，`View::new` 给 `visible_line_count` 的初始估值。
+/// 视口尚未由渲染端测量过时，`View::new` 给可见行数的初始估值。
 ///
 /// 取一个接近常见大屏首帧需求、又不会让小缓冲区过度分配的值。
 /// 第一帧渲染元素测出真实值后会同步回写覆盖。
@@ -31,27 +35,34 @@ pub const DEFAULT_INITIAL_VISIBLE_LINES: u64 = 200;
 
 /// 滚动位置 / 可见区域。
 ///
-/// `top_line` 是当前视口顶部可见的逻辑行（0-based）。
-/// `visible_line_count` 是视口能容纳的整行数。
-/// 两者一起决定 `Buffer::slice_viewport` 切出哪一段。
+/// `top_line` 是当前视口顶部可见视觉段所属的逻辑行（0-based）。
+/// `top_subrow` 是该逻辑行内的软换行视觉段序号（0-based）。
+/// 不开软换行时 `top_subrow` 恒为 0。
 ///
 /// `top_line` 的真源是视图自身，由 `settle_viewport_y` 落定。
-/// `visible_line_count` 由渲染端按边界和行高测量后同步回写。
-/// `View::new` 给 `visible_line_count` 非零初值。
+/// `visible_visual_rows` 与 `visible_logical_lines` 由渲染端按边界、
+/// 行高和软换行结果测量后同步回写。
+/// `View::new` 给二者非零初值。
 /// 消费侧不需要再为「还没测过」保留特殊路径。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ViewportState {
-    /// 顶部可见的逻辑行（0-based）。
+    /// 顶部可见视觉段所属的逻辑行（0-based）。
     pub top_line: u64,
-    /// 视口能容纳的整行数。
-    pub visible_line_count: u64,
+    /// 顶部可见视觉段在 `top_line` 内的 sub-row 序号（0-based）。
+    pub top_subrow: u64,
+    /// 视口能容纳的视觉行数。
+    pub visible_visual_rows: u64,
+    /// 下一帧 snapshot 至少需要切出的逻辑行数。
+    pub visible_logical_lines: u64,
 }
 
 impl Default for ViewportState {
     fn default() -> Self {
         Self {
             top_line: 0,
-            visible_line_count: DEFAULT_INITIAL_VISIBLE_LINES,
+            top_subrow: 0,
+            visible_visual_rows: DEFAULT_INITIAL_VISIBLE_LINES,
+            visible_logical_lines: DEFAULT_INITIAL_VISIBLE_LINES,
         }
     }
 }
@@ -82,12 +93,20 @@ pub struct RevealRequest {
 }
 
 /// 一个视图：对某个缓冲区（buffer）的一次观察。
+///
+/// 视觉模型采用 zom-engine 的 [`WrapMap`]：渲染端按字体度量算好行内断点，
+/// 整篇同步落到 `wrap_map`；命令层从 view 取出后在文本域查询，不依赖帧渲染节奏。
+/// `visual_caret` 是 primary caret 的视觉投影，`goal_column` 是连续上下移动的 sticky 列；
+/// 二者一起替代旧的 `VisualCaretState`。
 #[derive(Debug)]
 pub struct View {
     buffer: BufferId,
     selection: SelectionSet,
     folds: FoldSet,
     viewport: ViewportState,
+    visual_caret: Option<VisualPosition>,
+    goal_column: Option<u32>,
+    wrap_map: Option<WrapMap>,
     reveal: Option<RevealRequest>,
     reveal_seq: u64,
     /// 已被 `settle_viewport_y` 消费过的最新显露请求序号。
@@ -116,6 +135,9 @@ impl View {
             selection: SelectionSet::default(),
             folds: FoldSet::new(base_version),
             viewport: ViewportState::default(),
+            visual_caret: None,
+            goal_column: None,
+            wrap_map: None,
             reveal: None,
             reveal_seq: 0,
             last_applied_reveal_seq: None,
@@ -150,6 +172,52 @@ impl View {
         self.viewport = viewport;
     }
 
+    pub fn wrap_map(&self) -> Option<&WrapMap> {
+        self.wrap_map.as_ref()
+    }
+
+    pub fn set_wrap_map(&mut self, map: Option<WrapMap>) {
+        self.wrap_map = map;
+    }
+
+    pub fn visual_caret(&self) -> Option<&VisualPosition> {
+        self.visual_caret.as_ref()
+    }
+
+    pub fn goal_column(&self) -> Option<u32> {
+        self.goal_column
+    }
+
+    /// 命令完成移动后写回 primary caret 的视觉投影。
+    /// `goal_column == None` 表示本次移动不属于"连续上下移动"，下一次垂直移动重新取列。
+    pub fn set_visual_caret(&mut self, caret: Option<VisualPosition>, goal_column: Option<u32>) {
+        self.visual_caret = caret;
+        self.goal_column = goal_column;
+    }
+
+    /// 清除 primary caret 的视觉投影（横向移动 / 编辑 / select-all / undo/redo / IME / cut/paste 都走这条）。
+    pub fn clear_visual_caret(&mut self) {
+        self.visual_caret = None;
+        self.goal_column = None;
+    }
+
+    /// 把垂直移动需要的字段一次性借出（避免 RefCell-style 多次借用）。
+    pub fn vertical_movement_state_mut(
+        &mut self,
+    ) -> (
+        &mut SelectionSet,
+        &mut Option<VisualPosition>,
+        &mut Option<u32>,
+        Option<&WrapMap>,
+    ) {
+        (
+            &mut self.selection,
+            &mut self.visual_caret,
+            &mut self.goal_column,
+            self.wrap_map.as_ref(),
+        )
+    }
+
     pub fn reveal(&self) -> Option<RevealRequest> {
         self.reveal
     }
@@ -177,16 +245,16 @@ impl View {
     ///   `byte_to_position` 失败时传 `None`。
     ///   本次请求视为过期：跳过 Y 摆位，但仍推进 `last_applied_reveal_seq` 防止反复重试。
     ///
-    /// `viewport.visible_line_count` 由 `View::new` 初始化为 `DEFAULT_INITIAL_VISIBLE_LINES`。
+    /// `viewport.visible_logical_lines` 由 `View::new` 初始化为 `DEFAULT_INITIAL_VISIBLE_LINES`。
     /// 渲染端会同步回写真实值。
     /// 本函数内部对其取 `.max(1)` 仅作除零防御，不再有「未测量」特殊路径。
     ///
     /// 算法：
     /// 1. **显露请求路径**：若 `reveal.seq > last_applied_reveal_seq`，先检查 `RevealKind`。
-    ///    `Jump` 强制把 `top_line` 摆到 `reveal_line` 的视区上 1/3。
-    ///    `Match` 仅当目标不在 `[top_line, top_line + visible)` 时摆位。
+    /// `Jump` 强制把 `top_line` 摆到 `reveal_line` 的视区上 1/3。
+    /// `Match` 仅当目标不在 `[top_line, top_line + visible)` 时摆位。
     /// 2. **边缘滚动防御**：检查 `selection_head_line` 是否在 `[top_line, top_line + visible)`。
-    ///    若不在，把 `top_line` 调到刚好包含光标。
+    /// 若不在，把 `top_line` 调到刚好包含光标。
     /// 3. **范围裁剪**：把 `top_line` 夹到 `[0, total_lines - visible]`。
     pub fn settle_viewport_y(
         &mut self,
@@ -194,9 +262,10 @@ impl View {
         selection_head_line: u64,
         reveal_line: Option<u64>,
     ) -> ViewportSettlement {
-        let visible = self.viewport.visible_line_count.max(1);
+        let visible = self.viewport.visible_logical_lines.max(1);
 
         let mut top = self.viewport.top_line;
+        let old_top = top;
 
         // 1. 显露请求路径。
         let mut consumed_reveal = None;
@@ -232,6 +301,9 @@ impl View {
         }
 
         self.viewport.top_line = top;
+        if top != old_top {
+            self.viewport.top_subrow = 0;
+        }
         ViewportSettlement {
             viewport: self.viewport,
             consumed_reveal,
@@ -333,7 +405,9 @@ mod settle_tests {
         let mut v = fresh_view();
         v.set_viewport(ViewportState {
             top_line: top,
-            visible_line_count: visible,
+            top_subrow: 0,
+            visible_visual_rows: visible,
+            visible_logical_lines: visible,
         });
         v
     }
@@ -420,17 +494,21 @@ mod settle_tests {
 
     #[test]
     fn fresh_view_should_carry_default_initial_visible_lines() {
-        // `View::new` 不应再让 `visible_line_count == 0`；下游消费侧不必再做「未测量」特殊路径。
+        // `View::new` 不应再让可见行数为 0；下游消费侧不必再做「未测量」特殊路径。
         let view = fresh_view();
         assert_eq!(
-            view.viewport().visible_line_count,
+            view.viewport().visible_visual_rows,
+            DEFAULT_INITIAL_VISIBLE_LINES
+        );
+        assert_eq!(
+            view.viewport().visible_logical_lines,
             DEFAULT_INITIAL_VISIBLE_LINES
         );
     }
 
     #[test]
     fn settle_should_clamp_visible_zero_to_one_as_division_guard() {
-        // 调用方故意把 `visible_line_count` 设为 0 时，`settle` 不应除以 0；
+        // 调用方故意把 `visible_logical_lines` 设为 0 时，`settle` 不应除以 0；
         // 内部 `.max(1)` 防御会让行为退化为 1 行视口。
         let mut view = with_viewport(0, 0);
         let out = view.settle_viewport_y(1_000, 500, None);

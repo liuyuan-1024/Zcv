@@ -7,19 +7,16 @@ use gpui::{Div, FocusHandle, ScrollHandle, div, prelude::*};
 
 use std::rc::Rc;
 
+use crate::editor_state::EditorState;
 use crate::shell::editor::TextEditorSlot;
 use crate::shell::workbench::docks::bottom;
 use crate::shell::workbench::docks::resize::DockResizeRequest;
-use crate::shell::workbench::state::{DockState, EditorState};
+use crate::shell::workbench::state::DockState;
 use crate::shell::workbench::{PanelContext, PanelHost};
 use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 
 mod editor_pane;
-pub(crate) mod state;
 mod tab_bar;
-mod text_target;
-
-pub(crate) use text_target::{MainEditorOwner, MainEditorOwnerRef};
 
 pub(crate) fn render(
     bottom_dock_state: &DockState,

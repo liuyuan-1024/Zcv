@@ -9,7 +9,8 @@ use gpui::{
 use crate::shell::shared::scroll;
 use crate::shell::shared::theme::{color, space, typography};
 use crate::shell::workbench::docks::render_focus_host;
-use crate::shell::{CommandCatalogItem, CommandCatalogLookup, KeyRequest, ShortcutLookup};
+use crate::shell::{CommandCatalogLookup, KeyRequest, ShortcutLookup};
+use zom_command::CommandCatalogItem;
 
 #[derive(Clone)]
 pub(crate) struct KeyboardShortcutsRuntime {

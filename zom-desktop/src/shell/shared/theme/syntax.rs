@@ -23,14 +23,15 @@
 //! Helix `onedark.toml` 是 MPL-2.0 文件级 copyleft，vendor 一份文件不影响其他代码许可。
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 use gpui::{Hsla, Rgba, rgb, rgba};
 
 use super::color;
+use crate::config::THEME_ONE_DARK;
 
 /// vendor 的默认主题源（启动期 include 进二进制）。
-const DEFAULT_THEME_TOML: &str = include_str!("../../../../assets/themes/onedark.toml");
+const THEME_ONE_DARK_TOML: &str = include_str!("../../../../assets/themes/onedark.toml");
 
 /// 默认前景色——任何 name 都无前缀命中时落到这里。
 pub fn default_fg() -> Hsla {
@@ -55,17 +56,32 @@ pub fn color_for(name: &str) -> Hsla {
     }
 }
 
+pub(crate) fn set_theme(theme: &str) {
+    let source = match theme {
+        THEME_ONE_DARK => THEME_ONE_DARK_TOML,
+        _ => THEME_ONE_DARK_TOML,
+    };
+    let table = parse_helix_theme(source).unwrap_or_default();
+    let lock = ACTIVE_THEME.get_or_init(|| RwLock::new(default_theme_table()));
+    match lock.write() {
+        Ok(mut active) => *active = table,
+        Err(error) => eprintln!("更新语法主题失败：{error}"),
+    }
+}
+
 /// 单条 name 的精确查询（不做前缀回退）。
 fn lookup_in_theme(name: &str) -> Option<Hsla> {
-    theme_table().get(name).copied()
+    let lock = ACTIVE_THEME.get_or_init(|| RwLock::new(default_theme_table()));
+    lock.read().ok().and_then(|theme| theme.get(name).copied())
 }
 
 /// 全进程共享的解析后主题表。
 /// OnceLock 兜底，主题文件解析失败则空表，所有 name 落 default_fg——
 /// 不会因为坏主题文件让 UI 整个不渲染。
-fn theme_table() -> &'static HashMap<&'static str, Hsla> {
-    static TABLE: OnceLock<HashMap<&'static str, Hsla>> = OnceLock::new();
-    TABLE.get_or_init(|| parse_helix_theme(DEFAULT_THEME_TOML).unwrap_or_default())
+static ACTIVE_THEME: OnceLock<RwLock<HashMap<&'static str, Hsla>>> = OnceLock::new();
+
+fn default_theme_table() -> HashMap<&'static str, Hsla> {
+    parse_helix_theme(THEME_ONE_DARK_TOML).unwrap_or_default()
 }
 
 /// 把一份 Helix 风格的 theme.toml 解析成 name → Hsla 表。

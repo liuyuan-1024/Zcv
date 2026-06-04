@@ -7,10 +7,10 @@ use zom_command::commands::{
     file_tree, keyboard_shortcuts, outline, search, settings, terminal, version_control,
 };
 use zom_command::{
-    Command, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId, CommandQueue,
-    CommandRegistry, EditTarget, EffectQueue, FileTreeKeyMode, HostEffect, KeyBinding,
-    KeyBindingContext, KeyChord, KeyContext, Keymap, KeymapResolution, MockClipboard, NoArgs,
-    SearchOption,
+    BubbleKind, Command, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId,
+    CommandQueue, CommandRegistry, EditTarget, EffectQueue, FileTreeKeyMode, HostEffect,
+    KeyBinding, KeyBindingContext, KeyChord, KeyContext, Keymap, KeymapResolution, MockClipboard,
+    NoArgs, SearchOption,
 };
 use zom_engine::{
     Buffer, BufferConfig, ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
@@ -279,6 +279,37 @@ fn search_ui_commands_should_emit_state_effects() {
             HostEffect::SearchReplaceNext,
             HostEffect::SearchReplaceAll,
         ]
+    );
+}
+
+#[test]
+fn save_without_file_path_should_emit_error_bubble() {
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    editor::install(&mut registry, &mut keymap);
+    let (mut workspace, mut views, _) = setup("");
+
+    let effects = run_and_collect_effects(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::SAVE, CommandArgs::new())],
+    )
+    .unwrap();
+
+    assert_eq!(effects.len(), 1);
+    let HostEffect::ShowBubble(request) = &effects[0] else {
+        panic!("保存失败应该显示气泡，实际为 {:?}", effects[0]);
+    };
+    assert_eq!(request.kind, BubbleKind::Error);
+    assert_eq!(request.dedupe_key.as_deref(), Some("editor.save"));
+    assert_eq!(request.ttl_ms, Some(2400));
+    assert!(
+        request
+            .message
+            .starts_with("保存失败：缓冲区未绑定文件路径："),
+        "unexpected save error bubble: {}",
+        request.message
     );
 }
 
@@ -1177,6 +1208,9 @@ fn run_on_focused_field(
         focused_field: Some(EditTarget {
             buffer: embed_buffer,
             selection: embed_selection,
+            wrap_map: None,
+            visual_caret: None,
+            goal_column: None,
         }),
         queue: &mut queue,
         effects: &mut effects,

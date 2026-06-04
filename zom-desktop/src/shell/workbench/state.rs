@@ -1,13 +1,14 @@
 //! Workbench 布局运行态（实现「桌面端布局模型.md」第 5/6 节）。
 //!
-//! 这些类型描述窗口级布局：当前有哪些 panel、各 dock 是否折叠、编辑区摘要等。
+//! 这些类型只描述窗口级布局：当前有哪些 panel、各 dock 是否折叠、bottom bar 状态等。
+//! 各 feature（编辑区 / 文件树 / 搜索）的视图快照不进 [`WorkbenchState`]，由 view 装配层在渲染瞬间各自构造，
+//! 旁路传给 [`PanelContext`] / `editor_area::render` / `bottom_bar::render`。
+//!
+//! [`PanelContext`]: super::PanelContext
 
 use gpui::Pixels;
 
-pub(crate) use super::editor_area::state::{EditorState, EditorTab, build as build_editor_state};
 use crate::shell::features::panels::PanelId;
-use crate::shell::features::panels::file_tree::FileTreeState;
-use crate::shell::features::panels::search::SearchState;
 
 /// 三种停靠区域（布局模型 5）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,7 +61,10 @@ impl DockState {
     }
 }
 
-/// 窗口级 workbench 的全部布局状态（手册 13.2 表："每窗口独立"列）。
+/// 窗口级 workbench 的布局状态（手册 13.2 表："每窗口独立"列）。
+///
+/// 只描述 chrome / dock 视觉：feature panel 的内容由 feature 自己向 view 装配层提供，不进本结构。
+/// Workbench 负责"哪里显示"，feature 负责"显示什么"。
 #[derive(Clone, Debug)]
 pub(crate) struct WorkbenchState {
     pub(crate) project_title: String,
@@ -69,9 +73,6 @@ pub(crate) struct WorkbenchState {
     pub(crate) right_dock: DockState,
     pub(crate) bottom_dock: DockState,
     pub(crate) bottom_bar: BottomBarState,
-    pub(crate) editor: EditorState,
-    pub(crate) file_tree: FileTreeState,
-    pub(crate) search: SearchState,
 }
 
 /// BottomBar 渲染所需的少量动态状态（手册 17 错误呈现 / 20.8）。

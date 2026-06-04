@@ -21,9 +21,6 @@ pub(crate) fn normalized_chord(keystroke: &Keystroke) -> String {
     if modifiers.shift {
         parts.push("shift");
     }
-    if modifiers.platform && !modifiers.secondary() {
-        parts.push("meta");
-    }
     if modifiers.function {
         parts.push("fn");
     }

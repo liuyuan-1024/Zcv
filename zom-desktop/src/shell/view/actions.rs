@@ -13,29 +13,28 @@ use zom_command::{HostEffect, Invocation};
 use crate::app::App;
 use crate::focus::AppFocus;
 use crate::shell::ActionRequest;
-use crate::shell::editor::TextEditorSlot;
-use crate::shell::features::language_servers::{self, LanguageServersRuntime};
-use crate::shell::features::panels::file_tree::{self, FileTreeRuntime};
+use crate::shell::bubble::BubbleRuntime;
+use crate::shell::features::language_servers;
+use crate::shell::features::panels::PanelId;
+use crate::shell::features::panels::file_tree;
 use crate::shell::features::panels::search;
-use crate::shell::features::panels::{PanelId, PanelRuntimes};
-use crate::shell::features::project_picker::{self, ProjectPickerRuntime};
+use crate::shell::features::project_picker;
+use crate::shell::features::settings;
 use crate::shell::platform::clipboard::GpuiClipboardScope;
 use crate::shell::platform::window as platform_window;
 use crate::shell::surfaces::{SurfaceId, SurfaceManager, SurfaceRequest};
 use crate::shell::workbench::controller::WorkbenchController;
 
-use super::focus::{FocusProjection, panel_default_focus, projection_from_runtimes};
+use super::features::FeatureRegistry;
+use super::focus::{FocusProjection, panel_default_focus};
 
 pub(super) fn bind_action_request(
     app: Rc<RefCell<App>>,
     workbench: Rc<RefCell<WorkbenchController>>,
     surfaces: Entity<SurfaceManager>,
+    bubbles: Entity<BubbleRuntime>,
     editor_focus_fallback: FocusHandle,
-    panel_runtimes: PanelRuntimes,
-    file_tree: FileTreeRuntime,
-    project_picker_runtime: ProjectPickerRuntime,
-    language_servers_runtime: LanguageServersRuntime,
-    project_picker_slot: Rc<TextEditorSlot>,
+    features: FeatureRegistry,
     invocation: Invocation,
 ) -> ActionRequest {
     Rc::new(move |window, cx| {
@@ -50,17 +49,14 @@ pub(super) fn bind_action_request(
                 }
             }
         };
-        apply_host_effects(
+        apply_host_effects_with_settings(
             effects,
             &app,
             &workbench,
             &surfaces,
+            &bubbles,
             &editor_focus_fallback,
-            &panel_runtimes,
-            &file_tree,
-            &project_picker_runtime,
-            &language_servers_runtime,
-            &project_picker_slot,
+            &features,
             window,
             cx,
         );
@@ -70,34 +66,26 @@ pub(super) fn bind_action_request(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_host_effects(
+pub(super) fn apply_host_effects(
     effects: Vec<HostEffect>,
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
     surfaces: &Entity<SurfaceManager>,
+    bubbles: &Entity<BubbleRuntime>,
     editor_focus_fallback: &FocusHandle,
-    panel_runtimes: &PanelRuntimes,
-    file_tree: &FileTreeRuntime,
-    project_picker_runtime: &ProjectPickerRuntime,
-    language_servers_runtime: &LanguageServersRuntime,
-    project_picker_slot: &Rc<TextEditorSlot>,
+    features: &FeatureRegistry,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    let focus = projection_from_runtimes(
-        editor_focus_fallback.clone(),
-        panel_runtimes,
-        file_tree,
-        project_picker_runtime.focus_handle(),
-    );
+    let focus = features.focus_projection(editor_focus_fallback.clone());
     for effect in effects {
         // 按 feature 顺序问询：第一个认领的 try_apply 返回 true，跳过余下。
         // 剩下的窗口控制 / 跨 feature 变体由本文件下方的兜底 match 处理。
-        if file_tree::try_apply_effect(&effect, app, workbench, &focus, window) {
+        if file_tree::try_apply_effect(&effect, app, workbench, &features.file_tree, &focus, window)
+        {
             continue;
         }
-        if search::try_apply_effect(&effect, app, workbench, panel_runtimes, &focus, window) {
+        if search::try_apply_effect(&effect, app, workbench, &features.panels, &focus, window) {
             continue;
         }
         if project_picker::try_apply_effect(
@@ -106,11 +94,8 @@ pub(crate) fn apply_host_effects(
             workbench,
             surfaces,
             editor_focus_fallback,
-            panel_runtimes,
-            file_tree,
-            project_picker_runtime,
-            language_servers_runtime,
-            project_picker_slot,
+            &features.file_tree,
+            &features.project_picker,
             window,
             cx,
         ) {
@@ -121,13 +106,52 @@ pub(crate) fn apply_host_effects(
             app,
             surfaces,
             editor_focus_fallback,
-            language_servers_runtime,
+            &features.language_servers,
             window,
             cx,
         ) {
             continue;
         }
-        apply_shell_effect(&effect, app, workbench, surfaces, &focus, window, cx);
+        apply_shell_effect(
+            &effect, app, workbench, surfaces, bubbles, &focus, window, cx,
+        );
+    }
+}
+
+pub(super) fn apply_host_effects_with_settings(
+    effects: Vec<HostEffect>,
+    app: &Rc<RefCell<App>>,
+    workbench: &Rc<RefCell<WorkbenchController>>,
+    surfaces: &Entity<SurfaceManager>,
+    bubbles: &Entity<BubbleRuntime>,
+    editor_focus_fallback: &FocusHandle,
+    features: &FeatureRegistry,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    for effect in effects {
+        if settings::try_apply_effect(
+            &effect,
+            app,
+            surfaces,
+            editor_focus_fallback,
+            &features.settings,
+            window,
+            cx,
+        ) {
+            continue;
+        }
+        apply_host_effects(
+            vec![effect],
+            app,
+            workbench,
+            surfaces,
+            bubbles,
+            editor_focus_fallback,
+            features,
+            window,
+            cx,
+        );
     }
 }
 
@@ -138,6 +162,7 @@ fn apply_shell_effect(
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
     surfaces: &Entity<SurfaceManager>,
+    bubbles: &Entity<BubbleRuntime>,
     focus: &FocusProjection,
     window: &mut Window,
     cx: &mut gpui::App,
@@ -146,6 +171,10 @@ fn apply_shell_effect(
         HostEffect::Quit => platform_window::quit(cx),
         HostEffect::Minimize => platform_window::minimize(window),
         HostEffect::ToggleMaximize => platform_window::toggle_maximize(window),
+        HostEffect::ShowBubble(request) => {
+            bubbles.update(cx, |runtime, cx| runtime.push(request.clone(), cx));
+            window.refresh();
+        }
         HostEffect::TogglePanel(panel_str_id) => {
             let Some(panel) = PanelId::from_command_str_id(panel_str_id) else {
                 eprintln!("HostEffect::TogglePanel 收到未知 panel id：{panel_str_id}");
@@ -161,6 +190,10 @@ fn apply_shell_effect(
                 workbench.borrow_mut().show_panel(panel);
                 request_focus(app, focus, panel_default_focus(panel), window);
             }
+            window.refresh();
+        }
+        HostEffect::EditorToggleSoftWrap => {
+            app.borrow_mut().toggle_soft_wrap();
             window.refresh();
         }
         HostEffect::DismissSurface => {

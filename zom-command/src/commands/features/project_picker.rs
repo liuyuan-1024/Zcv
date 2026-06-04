@@ -15,6 +15,7 @@ pub const START_GIT_CLONE: &str = "workspace.start_git_clone";
 pub const REMOVE_RECENT_PROJECT: &str = "workspace.remove_recent_project";
 pub const MOVE_SELECTION: &str = "workspace.project_picker.move_selection";
 pub const ACTIVATE: &str = "workspace.project_picker.activate";
+pub const DISMISS: &str = "workspace.project_picker.dismiss";
 
 /// 项目选择器拥有自己的键盘上下文：Up/Down/Enter 等非文本按键只在选择器聚焦时解释，不污染全局快捷键空间。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,6 +70,10 @@ pub fn move_selection(delta: isize) -> Invocation {
 
 pub fn activate() -> Invocation {
     (cid(ACTIVATE), CommandArgs::new())
+}
+
+pub fn dismiss() -> Invocation {
+    (cid(DISMISS), CommandArgs::new())
 }
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
@@ -131,6 +136,15 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         )
         .key_in("enter", picker)
         .key_in("return", picker);
+
+    registry
+        .install(
+            keymap,
+            DISMISS,
+            "关闭项目选择器",
+            emit(HostEffect::DismissSurface),
+        )
+        .key_in("escape", picker);
 }
 
 /// 与 `window.rs::emit` 同形态；catalog 里"按一个键就推一个 effect"的样板。

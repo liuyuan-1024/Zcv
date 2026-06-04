@@ -14,16 +14,19 @@
 //! - 手册 §七 说「composer 翻译 syntax 时按 theme(name) 解析为 Decoration」；
 //!   syntax 这一 producer 的产物每个 span 都自带独立的 highlight name，强行映射
 //!   到 [`StyleClass`] 枚举会把 tree-sitter 命名空间提升到本模块。因此 syntax
-//!   在 producer 侧（[`text_target.rs`]）就把 name 解析为 [`Hsla`]，并以
+//!   在本模块的 producer 侧就把 name 解析为 [`Hsla`]，并以
 //!   [`DecorationStyle::Resolved`] 投递；其他 producer 走 [`DecorationStyle::Named`]
 //!   交由 composer 查 theme。
 
 use gpui::Hsla;
-use zom_engine::TextRange;
+use zom_engine::{MetadataLayers, SelectionSet, TextRange};
+use zom_workspace::WorkspaceBuffer;
+use zom_workspace::syntax::HighlightSpan;
 
+use crate::shell::editor::snapshot::SnapshotLine;
 use crate::shell::shared::theme::color;
 
-pub(crate) mod producers;
+mod producers;
 
 /// 一条上屏装饰。
 ///
@@ -86,6 +89,26 @@ pub(crate) mod priority {
     pub(crate) const HOVER: u16 = 600;
     /// AI 提案高亮。
     pub(crate) const AI_PROPOSAL: u16 = 700;
+}
+
+pub(crate) fn push_selection(selection: &SelectionSet, out: &mut Vec<Decoration>) {
+    producers::selection::push(selection, out);
+}
+
+pub(crate) fn push_workspace_search(buffer: &WorkspaceBuffer, out: &mut Vec<Decoration>) {
+    producers::search::push(buffer, out);
+}
+
+/// 把 [`MetadataLayers<HighlightSpan>`] 翻译为前景 [`Decoration`]——
+/// 主编辑区传 [`WorkspaceBuffer::highlight_layers`]，嵌入式编辑器传
+/// [`zom_workspace::SyntaxDocument::highlight_layers`]。一份 producer
+/// 同时承担两种入口。
+pub(crate) fn push_syntax_layers(
+    layers: &MetadataLayers<HighlightSpan>,
+    lines: &[SnapshotLine],
+    out: &mut Vec<Decoration>,
+) {
+    producers::syntax::push(layers, lines, out);
 }
 
 /// composer 产物——已按 [`DecorationKind`] 切分并解析为 [`Hsla`]，可直接喂给

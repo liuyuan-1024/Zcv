@@ -5,12 +5,8 @@
 
 use super::docks::resize::{DockResize, DockResizeBounds, DockResizeEvent};
 use super::docks::{bottom, left, right};
-use super::state::{
-    BottomBarState, DockAreaId, DockState, EditorState, PanelStack, WorkbenchState,
-};
+use super::state::{BottomBarState, DockAreaId, DockState, PanelStack, WorkbenchState};
 use crate::shell::features::panels::PanelId;
-use crate::shell::features::panels::file_tree::FileTreeState;
-use crate::shell::features::panels::search::SearchState;
 
 use gpui::{Pixels, px};
 
@@ -45,14 +41,7 @@ impl WorkbenchController {
         }
     }
 
-    pub(crate) fn state(
-        &self,
-        project_title: String,
-        has_project: bool,
-        editor: EditorState,
-        file_tree: FileTreeState,
-        search: SearchState,
-    ) -> WorkbenchState {
+    pub(crate) fn state(&self, project_title: String, has_project: bool) -> WorkbenchState {
         WorkbenchState {
             project_title,
             has_project,
@@ -60,9 +49,6 @@ impl WorkbenchController {
             right_dock: self.right_dock.clone(),
             bottom_dock: self.bottom_dock.clone(),
             bottom_bar: self.bottom_bar.clone(),
-            editor,
-            file_tree,
-            search,
         }
     }
 
@@ -143,47 +129,28 @@ mod tests {
     //! Workbench 窗口 UI 状态测试。
 
     use crate::shell::features::panels::PanelId;
-    use crate::shell::features::panels::file_tree::FileTreeState;
     use crate::shell::shared::theme;
     use crate::shell::workbench::controller::WorkbenchController;
     use crate::shell::workbench::docks::resize::{DockResizeBounds, DockResizeEvent};
-    use crate::shell::workbench::state::{DockAreaId, EditorState};
+    use crate::shell::workbench::state::DockAreaId;
     use gpui::{Pixels, point, px};
 
     #[test]
     fn show_and_hide_panel_should_drive_dock_visibility() {
         let mut workbench = WorkbenchController::new();
-        let initial = workbench.state(
-            "打开项目".to_string(),
-            false,
-            EditorState::default(),
-            FileTreeState::default(),
-            crate::shell::features::panels::search::SearchState::default(),
-        );
+        let initial = workbench.state("打开项目".to_string(), false);
         assert!(!initial.left_dock.is_visible());
         assert_eq!(initial.left_dock.active_panel(), None);
         assert!(!initial.right_dock.is_visible());
         assert!(!initial.bottom_dock.is_visible());
 
         workbench.show_panel(PanelId::FileTree);
-        let after_show = workbench.state(
-            "打开项目".to_string(),
-            false,
-            EditorState::default(),
-            FileTreeState::default(),
-            crate::shell::features::panels::search::SearchState::default(),
-        );
+        let after_show = workbench.state("打开项目".to_string(), false);
         assert!(after_show.left_dock.is_visible());
         assert_eq!(after_show.left_dock.active_panel(), Some(PanelId::FileTree));
 
         workbench.hide_panel(PanelId::FileTree);
-        let after_hide = workbench.state(
-            "打开项目".to_string(),
-            false,
-            EditorState::default(),
-            FileTreeState::default(),
-            crate::shell::features::panels::search::SearchState::default(),
-        );
+        let after_hide = workbench.state("打开项目".to_string(), false);
         assert!(!after_hide.left_dock.is_visible());
     }
 
@@ -194,13 +161,7 @@ mod tests {
         workbench.show_panel(PanelId::FileTree);
         workbench.show_panel(PanelId::VersionControl);
 
-        let state = workbench.state(
-            "打开项目".to_string(),
-            false,
-            EditorState::default(),
-            FileTreeState::default(),
-            crate::shell::features::panels::search::SearchState::default(),
-        );
+        let state = workbench.state("打开项目".to_string(), false);
         assert!(state.left_dock.is_visible());
         assert_eq!(
             state.left_dock.active_panel(),
@@ -226,13 +187,7 @@ mod tests {
             },
             resize_bounds(px(640.0)),
         );
-        let state = workbench.state(
-            "打开项目".to_string(),
-            false,
-            EditorState::default(),
-            FileTreeState::default(),
-            crate::shell::features::panels::search::SearchState::default(),
-        );
+        let state = workbench.state("打开项目".to_string(), false);
         assert_eq!(state.left_dock.size, px(640.0) - theme::space::s12());
 
         workbench.handle_dock_resize(
@@ -241,13 +196,7 @@ mod tests {
             },
             resize_bounds(px(640.0)),
         );
-        let state = workbench.state(
-            "打开项目".to_string(),
-            false,
-            EditorState::default(),
-            FileTreeState::default(),
-            crate::shell::features::panels::search::SearchState::default(),
-        );
+        let state = workbench.state("打开项目".to_string(), false);
         assert_eq!(state.left_dock.size, theme::space::s12());
     }
 
@@ -268,13 +217,7 @@ mod tests {
             },
             resize_bounds(px(800.0)),
         );
-        let state = workbench.state(
-            "打开项目".to_string(),
-            false,
-            EditorState::default(),
-            FileTreeState::default(),
-            crate::shell::features::panels::search::SearchState::default(),
-        );
+        let state = workbench.state("打开项目".to_string(), false);
         assert_eq!(state.left_dock.size, px(280.0));
 
         workbench.handle_dock_resize(
@@ -290,13 +233,7 @@ mod tests {
             },
             resize_bounds(px(800.0)),
         );
-        let state = workbench.state(
-            "打开项目".to_string(),
-            false,
-            EditorState::default(),
-            FileTreeState::default(),
-            crate::shell::features::panels::search::SearchState::default(),
-        );
+        let state = workbench.state("打开项目".to_string(), false);
         assert_eq!(state.right_dock.size, px(200.0));
 
         workbench.handle_dock_resize(
@@ -312,13 +249,7 @@ mod tests {
             },
             resize_bounds(px(800.0)),
         );
-        let state = workbench.state(
-            "打开项目".to_string(),
-            false,
-            EditorState::default(),
-            FileTreeState::default(),
-            crate::shell::features::panels::search::SearchState::default(),
-        );
+        let state = workbench.state("打开项目".to_string(), false);
         assert_eq!(state.bottom_dock.size, px(240.0));
     }
 
@@ -341,13 +272,7 @@ mod tests {
             bounds,
         );
 
-        let state = workbench.state(
-            "打开项目".to_string(),
-            false,
-            EditorState::default(),
-            FileTreeState::default(),
-            crate::shell::features::panels::search::SearchState::default(),
-        );
+        let state = workbench.state("打开项目".to_string(), false);
         // bottom dock 拖到上限时，对侧（编辑区）至少留出 s12 的可视带。
         // 用 bounds.body_height 取值而非硬编码 bar_height 两倍。
         // 让断言独立于 theme::typography::ui_line() 等字号 / 节拍尺的具体大小。

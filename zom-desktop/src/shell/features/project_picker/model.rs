@@ -1,11 +1,11 @@
 use zom_command::{EditTarget, KeyContext};
 
 use super::recent::RecentProject;
-use crate::focus::{AppFocus, ProjectPickerFocus, SurfaceFocus};
+use crate::focus::AppFocus;
 use crate::shell::editor::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
-    TextTargetOwner, TextTargetQuery,
 };
+use crate::text_target::{TextTargetOwner, TextTargetQuery};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProjectPickerMode {
@@ -85,10 +85,6 @@ impl ProjectPickerModel {
         self.selected = 0;
     }
 
-    pub(crate) fn query_text(&self) -> String {
-        self.query.text()
-    }
-
     pub(crate) fn activation(&self, projects: &[RecentProject]) -> ProjectPickerActivation {
         if self.mode == ProjectPickerMode::CloneGit {
             let repo = self.query.text();
@@ -119,13 +115,10 @@ impl ProjectPickerModel {
 
 impl TextTargetQuery for ProjectPickerModel {
     fn accepts_focus(&self, focus: AppFocus) -> bool {
-        matches!(
-            focus,
-            AppFocus::Surface(SurfaceFocus::ProjectPicker(ProjectPickerFocus::Query))
-        )
+        focus == AppFocus::project_picker()
     }
 
-    fn snapshot(&self) -> EditorSnapshot {
+    fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
         self.query.snapshot(EditorSnapshotRequest::single_line())
     }
 
@@ -137,17 +130,17 @@ impl TextTargetQuery for ProjectPickerModel {
         ]
     }
 
-    fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
+    fn ime_query_target(&self, _focus: AppFocus) -> Option<ImeQueryTarget<'_>> {
         Some(self.query.as_ime_query_target())
     }
 }
 
 impl TextTargetOwner for ProjectPickerModel {
-    fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
+    fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
         Some(self.query.as_ime_target())
     }
 
-    fn edit_target(&mut self) -> Option<EditTarget<'_>> {
+    fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
         Some(self.query.as_edit_target())
     }
 

@@ -18,13 +18,18 @@ use zom_engine::{
     Buffer, ByteOffset, EngineError, Line, Motion, MovementDirection, MovementUnit, Selection,
     SelectionSet, TextRange,
 };
+use zom_view::ViewId;
 
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    Invocation, KeyBindingContext, Keymap, NoArgs, active_view_buffer_id, command_execution_failed,
-    parse_optional_bool, reject_unknown_args, required_arg,
+    BubbleRequest, CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome,
+    CommandRegistry, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
+    active_view_buffer_id, command_execution_failed, parse_optional_bool, reject_unknown_args,
+    required_arg,
 };
-use zom_view::ViewId;
+
+#[path = "editor/visual_movement.rs"]
+mod visual_movement;
+use visual_movement::move_target_selection;
 
 // ==================================================
 // 命令 id —— 单一真理源
@@ -49,6 +54,7 @@ pub const SAVE: &str = "editor.save";
 pub const COPY: &str = "editor.copy";
 pub const CUT: &str = "editor.cut";
 pub const PASTE: &str = "editor.paste";
+pub const TOGGLE_SOFT_WRAP: &str = "editor.toggle_soft_wrap";
 
 /// 文本编辑器当前能力。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -398,6 +404,10 @@ pub fn paste() -> Invocation {
     (cid(PASTE), CommandArgs::new())
 }
 
+pub fn toggle_soft_wrap() -> Invocation {
+    (cid(TOGGLE_SOFT_WRAP), CommandArgs::new())
+}
+
 // ==================================================
 // 注册与默认键位 —— 同处声明
 // ==================================================
@@ -479,7 +489,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         )
         .key_with_in("down", move_args(Next, Motion::LineStep, false), text_edit)
         // pageup / pagedown：keymap 里使用 PAGE_STEP_LINES 作为首帧兜底；
-        // handler 里若主编辑区已测得 visible_line_count（element prepaint 反算写回），按真实值覆盖。
+        // handler 里若主编辑区已测得 visible_visual_rows（element prepaint 反算写回），按真实值覆盖。
         .key_with_in(
             "pageup",
             move_args(
@@ -617,6 +627,13 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .install(keymap, PASTE, "粘贴", Box::new(run_paste))
         .description("将剪贴板内容写入选区。")
         .key_in("mod-v", text_edit);
+
+    registry.install(
+        keymap,
+        TOGGLE_SOFT_WRAP,
+        "切换软换行",
+        Box::new(run_toggle_soft_wrap),
+    );
 }
 
 fn move_args(direction: MovementDirection, motion: impl Into<Motion>, extend: bool) -> CommandArgs {
@@ -727,7 +744,8 @@ fn run_insert_text(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = InsertTextArgs::try_from(args)?;
-    let target = context.edit_target()?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
     let selections = target.selection.clone();
     target
         .buffer
@@ -742,7 +760,8 @@ fn run_replace_selection(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = ReplaceSelectionArgs::try_from(args)?;
-    let target = context.edit_target()?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
     let selections = target.selection.clone();
     target
         .buffer
@@ -787,7 +806,8 @@ fn run_outdent(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let target = context.edit_target()?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
     let selections = target.selection.clone();
     target
         .buffer
@@ -802,7 +822,8 @@ fn run_delete(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = DeleteArgs::try_from(args)?;
-    let target = context.edit_target()?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
     let selections = target.selection.clone();
     // caret_motion = Some → caret 沿方向删 unit、非空选区整段删；
     // caret_motion = None → caret no-op，仅删非空选区。
@@ -820,7 +841,8 @@ fn run_select_all(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let target = context.edit_target()?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
     let selection = SelectionSet::new(vec![Selection::new(
         ByteOffset::ZERO,
         target.buffer.len_bytes(),
@@ -838,7 +860,8 @@ fn run_undo(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let target = context.edit_target()?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
     target.buffer.undo().map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
@@ -849,7 +872,8 @@ fn run_redo(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let target = context.edit_target()?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
     target.buffer.redo().map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
@@ -860,25 +884,21 @@ fn run_move_selection(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let mut args = MoveSelectionArgs::try_from(args)?;
-    // PageStep 步长按真实视口高度走：element 上一帧 prepaint 已把测得的 visible_line_count 写回 ViewportState，从这里读。
+    // PageStep 步长按真实视口高度走：element 上一帧 prepaint 已把测得的 visible_visual_rows 写回 ViewportState，从这里读。
     // focused_field 模式下作用于输入框（通常单行），主编辑区的视口高度对它无意义，保留 keymap 兜底。
-    // visible_line_count == 0（首帧 / headless）也走兜底。
+    // visible_visual_rows == 0（首帧 / headless）也走兜底。
     if let Motion::PageStep { lines } = &mut args.motion
         && context.focused_field.is_none()
         && let Some(view) = context.views.active_view()
     {
-        let measured = view.viewport().visible_line_count;
+        let measured = view.viewport().visible_visual_rows;
         if measured > 0 {
             *lines = u32::try_from((measured * 2 / 3).max(1)).unwrap_or(u32::MAX);
         }
     }
     let target = context.edit_target()?;
     let selections = target.selection.clone();
-    let moved = target
-        .buffer
-        .move_selections(selections, args.direction, args.motion, args.extend)
-        .map_err(command_execution_failed)?;
-    *target.selection = moved;
+    move_target_selection(target, selections, args.direction, args.motion, args.extend)?;
     Ok(CommandOutcome::default())
 }
 
@@ -901,7 +921,8 @@ fn run_ime_cancel(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let target = context.edit_target()?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
     target
         .buffer
         .cancel_composition()
@@ -915,7 +936,8 @@ fn run_ime_confirm(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let target = context.edit_target()?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
     let Some(preedit) = target
         .buffer
         .composition()
@@ -984,10 +1006,25 @@ fn run_save(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     let buffer_id = active_view_buffer_id(context)?;
-    context
-        .workspace
-        .save_file(buffer_id)
-        .map_err(|error| CommandError::ExecutionFailed(error.to_string()))?;
+    if let Err(error) = context.workspace.save_file(buffer_id) {
+        context.effects.push(HostEffect::ShowBubble(
+            BubbleRequest::error(format!("保存失败：{error}")).dedupe("editor.save"),
+        ));
+    }
+    Ok(CommandOutcome::default())
+}
+
+/// 切换软换行：emit 一个 `HostEffect`，宿主侧翻转 EditorKernel 的 soft_wrap 状态。
+/// command 层不持有渲染 kernel，所以走 effect 让 desktop 自己决定具体翻哪个。
+fn run_toggle_soft_wrap(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    if let Some(view) = context.views.active_view_mut() {
+        view.clear_visual_caret();
+    }
+    context.effects.push(HostEffect::EditorToggleSoftWrap);
     Ok(CommandOutcome::default())
 }
 
@@ -1036,7 +1073,8 @@ fn run_cut(
 
     context.clipboard.write(&text);
 
-    let target = context.edit_target()?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
     // cut 两条分支都是「调用方先把要删的 range 算好了」——caret_motion=None
     // 让引擎跳过 caret 处理，整段删传入的非空 selection 即可。
     match plan {
@@ -1071,7 +1109,8 @@ fn run_paste(
     if text.is_empty() {
         return Ok(CommandOutcome::default());
     }
-    let target = context.edit_target()?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
     let selections = target.selection.clone();
     target
         .buffer

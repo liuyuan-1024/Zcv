@@ -12,12 +12,14 @@
 //! 分配的一个；关闭最后一个缓冲区后活动项为空。
 
 mod buffer_search;
+mod document;
 mod project_tree;
 pub mod syntax;
 
 pub use buffer_search::{
     BufferSearch, BufferSearchOptions, CurrentReplaceTarget, SearchSyncOutcome,
 };
+pub use document::SyntaxDocument;
 pub use project_tree::{EntryKind, ProjectTree, TreeEntry, TreeRow};
 
 use std::collections::BTreeMap;
@@ -25,15 +27,14 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use zom_engine::{
     Buffer, BufferConfig, BufferLoadError, BufferOrigin as EngineBufferOrigin, BufferSaveError,
-    ChangeSet, Delta, EngineError, MetadataLayers,
+    ChangeSet, Delta, EngineError, Line, MetadataLayers,
 };
 
-use crate::syntax::{
-    BufferSyntaxState, HighlightSpan, LanguageRegistry, MAX_HIGHLIGHT_BYTES, SyntaxWorkerHandle,
-};
+use crate::syntax::{HighlightSpan, LanguageId, LanguageRegistry, SyntaxEngine};
 
 /// workspace 自己的缓冲区标识，与 `zom_engine::BufferId` 区分。
 ///
@@ -49,7 +50,7 @@ impl BufferId {
     }
 
     /// 测试 / bench 用：从原始 u64 直接构造。生产代码请走
-    /// [`Workspace::allocate_buffer_id`] 路径以保证全局唯一。
+    /// [`crate::syntax::SyntaxEngine::allocate_buffer_id`] 以保证全局唯一。
     pub fn from_raw(raw: u64) -> Self {
         Self(raw)
     }
@@ -66,20 +67,15 @@ pub enum BufferOrigin {
 
 /// 工作区：当前打开的全部缓冲区的拥有者。
 ///
-/// 拥有一个 [`LanguageRegistry`] 单例——所有缓冲区共享同一份语言识别 + provider
-/// 工厂表。组合根（zom-desktop）按 Cargo feature 在启动期 `language_registry_mut`
-/// 上注册 Tier 1 provider；后续接 LSP / wasm 时同样走这个入口（手册 §六 / §十）。
-///
-/// 还拥有一根 [`SyntaxWorkerHandle`]——单线程后台 worker，所有缓冲区的
-/// provider 实例与解析 / 查询都在该线程上跑。详见
-/// [改造方案 §3.2](../../zom-workspace/docs/语法高亮异步增量改造.md)。
+/// 语言注册表、后台 worker 与 buffer id 分配器都收口在共享的 [`SyntaxEngine`] 上（通过 `Rc` 与同进程内的其他容器——例如嵌入式
+/// [`SyntaxDocument`]——共享同一份资源）。组合根在 `Rc::new(SyntaxEngine)`
+/// 之前用 [`SyntaxEngine::registry_mut`] 注一遍内置 provider 工厂；运行期路径只读注册表。
 #[derive(Debug)]
 pub struct Workspace {
-    next_buffer_id: u64,
+    engine: Rc<SyntaxEngine>,
     active_buffer_id: Option<BufferId>,
     buffers: BTreeMap<BufferId, WorkspaceBuffer>,
-    language_registry: LanguageRegistry,
-    syntax_worker: std::sync::Arc<SyntaxWorkerHandle>,
+    buffer_config: BufferConfig,
 }
 
 impl Default for Workspace {
@@ -89,20 +85,39 @@ impl Default for Workspace {
 }
 
 impl Workspace {
+    /// 便捷构造：新建一根独立的 [`SyntaxEngine`]，没有共享需求时使用。
+    /// 单元测试与 file_tree 等只关心 buffer 生命周期的路径走它。
     pub fn new() -> Self {
+        Self::with_engine(Rc::new(SyntaxEngine::new()))
+    }
+
+    /// 与已有 [`SyntaxEngine`] 共享：嵌入式 [`SyntaxDocument`] 与主工作区
+    /// 用这条路径搭在同一根后台 worker 与同一份注册表上。
+    pub fn with_engine(engine: Rc<SyntaxEngine>) -> Self {
         Self {
-            next_buffer_id: 1,
+            engine,
             active_buffer_id: None,
             buffers: BTreeMap::new(),
-            language_registry: LanguageRegistry::new(),
-            syntax_worker: std::sync::Arc::new(SyntaxWorkerHandle::spawn()),
+            buffer_config: BufferConfig::default(),
+        }
+    }
+
+    /// 当前共享的 [`SyntaxEngine`]——嵌入式文档构造时复用同一根 `Rc`。
+    pub fn engine(&self) -> &Rc<SyntaxEngine> {
+        &self.engine
+    }
+
+    pub fn set_buffer_config(&mut self, config: BufferConfig) {
+        self.buffer_config = config.clone();
+        for wb in self.buffers.values_mut() {
+            wb.document.buffer_mut().set_config(config.clone());
         }
     }
 
     /// 后台 SyntaxWorker 句柄（轻量 clone）。测试 / bench 可用
-    /// [`SyntaxWorkerHandle::wait_for_idle`] 等待异步产物。
-    pub fn syntax_worker(&self) -> &std::sync::Arc<SyntaxWorkerHandle> {
-        &self.syntax_worker
+    /// [`crate::syntax::SyntaxWorkerHandle::wait_for_idle`] 等待异步产物。
+    pub fn syntax_worker(&self) -> &std::sync::Arc<crate::syntax::SyntaxWorkerHandle> {
+        self.engine.worker()
     }
 
     /// 每帧 prepaint 起手由 desktop 调一次：扫描所有缓冲区，把 worker 已就绪
@@ -138,12 +153,17 @@ impl Workspace {
 
     /// 语言注册表只读视图。
     pub fn language_registry(&self) -> &LanguageRegistry {
-        &self.language_registry
+        self.engine.registry()
     }
 
-    /// 语言注册表可变视图——组合根在启动期注入 Tier 1 provider 工厂。
+    /// 语言注册表可变视图——组合根在启动期注入内置 provider 工厂。
+    ///
+    /// 只在 `Rc::new(SyntaxEngine)` 之前对其调用：一旦引擎被 `Rc` 共享，
+    /// 调本方法会在运行期 panic（`Rc::get_mut` 在 strong_count > 1 时返回 `None`）。
     pub fn language_registry_mut(&mut self) -> &mut LanguageRegistry {
-        &mut self.language_registry
+        Rc::get_mut(&mut self.engine)
+            .expect("language_registry_mut 需在 SyntaxEngine 被 Rc 共享前调用")
+            .registry_mut()
     }
 
     /// 从磁盘打开文件。
@@ -160,21 +180,15 @@ impl Workspace {
         // decoder 内部的 64 KiB 缓冲不直接撞 syscall 节奏。
         let reader = io::BufReader::with_capacity(64 * 1024, file);
         let origin = EngineBufferOrigin::external(path.to_string_lossy().into_owned());
-        let mut buffer = Buffer::from_reader(origin, reader, BufferConfig::default())
+        let mut buffer = Buffer::from_reader(origin, reader, self.buffer_config.clone())
             .map_err(|e| WorkspaceError::from_load(&path, e))?;
         if metadata.permissions().readonly() {
             buffer.set_read_only(true);
         }
 
-        let id = self.allocate_buffer_id();
-        let mut wb = WorkspaceBuffer {
-            origin: BufferOrigin::File(path),
-            buffer,
-            search: BufferSearch::new(),
-            highlight_layers: MetadataLayers::new(),
-            syntax: None,
-        };
-        wb.attach_syntax(id, &self.language_registry, self.syntax_worker.clone());
+        let origin = BufferOrigin::File(path);
+        let wb = self.wrap_into_workspace_buffer(origin, buffer);
+        let id = wb.document.buffer_id();
         self.buffers.insert(id, wb);
         self.set_active_buffer_unchecked(id);
         Ok(id)
@@ -189,19 +203,13 @@ impl Workspace {
         path: Option<PathBuf>,
         text: impl Into<String>,
     ) -> WorkspaceResult<BufferId> {
-        let id = self.allocate_buffer_id();
         let origin = match path {
             Some(path) => BufferOrigin::File(path),
             None => BufferOrigin::Scratch,
         };
-        let mut wb = WorkspaceBuffer {
-            origin,
-            buffer: Buffer::from_text(text.into(), BufferConfig::default())?,
-            search: BufferSearch::new(),
-            highlight_layers: MetadataLayers::new(),
-            syntax: None,
-        };
-        wb.attach_syntax(id, &self.language_registry, self.syntax_worker.clone());
+        let buffer = Buffer::from_text(text.into(), self.buffer_config.clone())?;
+        let wb = self.wrap_into_workspace_buffer(origin, buffer);
+        let id = wb.document.buffer_id();
         self.buffers.insert(id, wb);
         self.set_active_buffer_unchecked(id);
         Ok(id)
@@ -232,21 +240,16 @@ impl Workspace {
     }
 
     /// 关闭并丢弃缓冲区。
+    ///
+    /// `wb` 在函数返回时 drop，会触发 [`SyntaxDocument::drop`]——
+    /// provider detach + sink close 都在那里完成（手册 §九 不变量）。
     pub fn close_buffer(&mut self, id: BufferId) -> WorkspaceResult<()> {
-        let Some(mut wb) = self.buffers.remove(&id) else {
+        if self.buffers.remove(&id).is_none() {
             return Err(WorkspaceError::BufferNotFound(id));
-        };
-        // detach 在缓冲区 drop 前调，确保 provider 释放底层资源并清空 layer。
-        // 这里 layer 与缓冲区一并 drop，但 detach 内部仍跑一次以触发 provider 的清理钩子。
-        // 手册 §九 不变量：detach 后绝不再有产物。
-        if let Some(state) = wb.syntax.take() {
-            state.detach(&mut wb.highlight_layers);
         }
-
         if self.active_buffer_id == Some(id) {
             self.active_buffer_id = self.buffers.keys().next_back().copied();
         }
-
         Ok(())
     }
 
@@ -294,12 +297,6 @@ impl Workspace {
         Ok(self.buffer_or_error(id)?.is_read_only())
     }
 
-    fn allocate_buffer_id(&mut self) -> BufferId {
-        let id = BufferId(self.next_buffer_id);
-        self.next_buffer_id += 1;
-        id
-    }
-
     fn set_active_buffer_unchecked(&mut self, id: BufferId) {
         self.active_buffer_id = Some(id);
     }
@@ -322,43 +319,78 @@ impl Workspace {
         path: PathBuf,
         rebind: bool,
     ) -> WorkspaceResult<()> {
-        let buffer = self.buffer_mut_or_error(id)?;
-        let version = buffer.buffer.version();
+        let wb = self.buffer_mut_or_error(id)?;
+        let buffer = wb.document.buffer_mut();
+        let version = buffer.version();
         let file = fs::File::create(&path)
             .map_err(|source| WorkspaceError::io(FileAction::Write, &path, source))?;
         let writer = io::BufWriter::with_capacity(64 * 1024, file);
         buffer
-            .buffer
             .write_to(version, writer)
             .map_err(|error| WorkspaceError::from_save(&path, error))?;
 
-        buffer.buffer.mark_saved();
-        buffer.buffer.mark_synced_external();
+        buffer.mark_saved();
+        buffer.mark_synced_external();
         if rebind {
-            buffer.origin = BufferOrigin::File(path);
+            wb.origin = BufferOrigin::File(path);
         }
 
         Ok(())
     }
+
+    /// 把外部已造好的 [`Buffer`] 包成 [`WorkspaceBuffer`]——按 origin + 首行
+    /// 跑一次语言识别，再把 buffer 移交给 [`SyntaxDocument`]。`open_*`
+    /// 路径共用本入口，保证两条路径的语言识别 / attach 行为完全一致。
+    fn wrap_into_workspace_buffer(&self, origin: BufferOrigin, buffer: Buffer) -> WorkspaceBuffer {
+        let language = detect_language_for(self.engine.registry(), &origin, &buffer);
+        let document = SyntaxDocument::from_buffer(self.engine.clone(), buffer, language);
+        WorkspaceBuffer {
+            origin,
+            document,
+            search: BufferSearch::new(),
+        }
+    }
 }
 
-/// 一个被 workspace 持有的缓冲区，连同它的文件边界状态。
+/// `Workspace::open_*` 的语言识别小工厂：从 origin 取 path，从 buffer 取
+/// 首行，喂给注册表。[`WorkspaceBuffer::attach_syntax`] 的等价物——单 buffer
+/// 路径走 [`SyntaxDocument::from_buffer`] 把这套识别 + attach 收口在内部，
+/// 不再让 WorkspaceBuffer 自己挂 provider。
+fn detect_language_for(
+    registry: &LanguageRegistry,
+    origin: &BufferOrigin,
+    buffer: &Buffer,
+) -> LanguageId {
+    let path = match origin {
+        BufferOrigin::File(p) => Some(p.as_path()),
+        BufferOrigin::Scratch => None,
+    };
+    let first_line = buffer
+        .snapshot()
+        .slice_line(Line::new(0))
+        .ok()
+        .map(|s| s.as_str().to_string());
+    registry.detect(path, first_line.as_deref())
+}
+
+/// 一个被 workspace 持有的缓冲区，连同它的「**文件边界 + 搜索维度**」。
 ///
-/// 还持有单缓冲区的 [`BufferSearch`]：分屏看同一缓冲区的多个视图共享
-/// 这一份搜索状态（query、命中、当前命中）。EditorView 阶段 2 与 panel 的
-/// "3 / 27" 标签都从这里读。
+/// 由三块拼成：
+/// - [`SyntaxDocument`]：`Buffer` + 高亮 layer + provider 运行态。这部分跟
+///   嵌入式编辑器**完全共用**实现——「挂语法高亮的 buffer」全工程只有一份
+///   原语，attach / pump / drop 都在 `SyntaxDocument` 上一处实现。
+/// - [`BufferSearch`]：单缓冲区的搜索状态（query、命中、当前命中）。分屏
+///   看同一缓冲区的多个视图共享这一份；EditorView 阶段 2 与 panel 的
+///   「3 / 27」标签都从这里读。
+/// - [`BufferOrigin`]：文件路径 / 草稿来源 / 脏状态边界。
 ///
-/// 同时持有 [`MetadataLayers<HighlightSpan>`] 与可选的 [`BufferSyntaxState`]：
-/// 前者是 syntax 高亮的数据落点（手册 §三 / §十一），后者是 provider 调度运行
-/// 态（手册 §七）。`syntax` 为 `None` 即 plain——detect 出未注册语言、文件
-/// 超阈值、或 `make_provider` 返回 None 时落入此分支。
+/// 没有 `attach_syntax` 之类的成员——provider 在
+/// [`SyntaxDocument::from_buffer`] 构造时就挂好。
 #[derive(Debug)]
 pub struct WorkspaceBuffer {
     origin: BufferOrigin,
-    buffer: Buffer,
+    document: SyntaxDocument,
     search: BufferSearch,
-    highlight_layers: MetadataLayers<HighlightSpan>,
-    syntax: Option<BufferSyntaxState>,
 }
 
 impl WorkspaceBuffer {
@@ -374,19 +406,19 @@ impl WorkspaceBuffer {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.buffer.is_dirty()
+        self.document.buffer().is_dirty()
     }
 
     pub fn is_read_only(&self) -> bool {
-        self.buffer.is_read_only()
+        self.document.buffer().is_read_only()
     }
 
     pub fn buffer(&self) -> &Buffer {
-        &self.buffer
+        self.document.buffer()
     }
 
     pub fn buffer_mut(&mut self) -> &mut Buffer {
-        &mut self.buffer
+        self.document.buffer_mut()
     }
 
     pub fn search(&self) -> &BufferSearch {
@@ -400,13 +432,14 @@ impl WorkspaceBuffer {
     /// 语法高亮 layer 的只读视图。渲染端阶段 3 按 [`syntax::syntax_layer_kind`]
     /// 取本 layer。
     pub fn highlight_layers(&self) -> &MetadataLayers<HighlightSpan> {
-        &self.highlight_layers
+        self.document.highlight_layers()
     }
 
-    /// 当前缓冲区 detect 出的 [`syntax::LanguageId`]。`None` 表示 plain
-    /// （未挂 provider）。
-    pub fn language(&self) -> Option<syntax::LanguageId> {
-        self.syntax.as_ref().map(|s| s.language())
+    /// 当前缓冲区 detect 出的 [`LanguageId`]。`None` 表示 plain
+    /// （未挂 provider——detect 出未注册语言、文件超阈值或注册表无 factory）。
+    pub fn language(&self) -> Option<LanguageId> {
+        let lang = self.document.language();
+        (!lang.is_plain()).then_some(lang)
     }
 
     /// 排空缓冲区自上次调用以来累积的 [`zom_engine::DeltaEvent`]，逐个喂给
@@ -414,107 +447,40 @@ impl WorkspaceBuffer {
     ///
     /// **调用契约**：缓冲区发生编辑（命令派发、IME commit、replace_all 等）
     /// 后**有且仅有一处**调用本方法。不放在 [`Workspace::buffer_mut`] /
-    /// `buffer()` 之类的访问器里——访问器会被调多次、调到读路径上，重复
-    /// drain 会让事件序丢失。当前调用点：`zom-command` 在派发结束后
-    /// 统一调一次活动缓冲区的 `pump_post_edit`。
+    /// `buffer()` 之类的访问器里——访问器会被调多次、调到读路径上，重复 drain 会让事件序丢失。
+    /// 当前调用点：`zom-command` 在派发结束后统一调一次活动缓冲区的 `pump_post_edit`。
     ///
-    /// DeltaEvent 单一消费方契约：本方法负责一次 drain；BufferSearch 与
-    /// 语法高亮 provider 各自从 ChangeSet 引用消费，**不**重新调
-    /// `take_pending_events`。
+    /// DeltaEvent 单一消费方契约：本方法负责一次 drain；BufferSearch 与语法高亮 provider 各自从 ChangeSet 引用消费，**不**重新调`take_pending_events`。
     pub fn pump_post_edit(&mut self) -> WorkspaceResult<()> {
-        let events = self.buffer.take_pending_events();
+        let events = self.document.buffer_mut().take_pending_events();
         for event in &events {
             self.search.apply_delta(event)?;
         }
-        // 把已有的 syntax 高亮 span 沿编辑平移到新版本。worker 的新产物到达前，
-        // render 用的 layer 是「旧 span × 新 buffer 字节」组合——不平移的话端点
-        // 会落进多字节字符中间，build_text_runs_for_line 切出的 TextRun 把字符
-        // 切两半，gpui shape_line 直接 panic。详见高亮架构手册 §五。
-        for event in &events {
-            self.highlight_layers.update_through_delta_event(event);
-        }
-        if let Some(state) = self.syntax.as_mut() {
-            for event in &events {
-                state.handle_edit(
-                    &self.buffer,
-                    event.changeset(),
-                    event.new_version(),
-                    &mut self.highlight_layers,
-                );
-            }
-        }
+        // 同步把高亮 layer 沿编辑平移到新版本（手册 §五）——layer remap + provider 通知都收口在 SyntaxDocument::apply_pending_events 内部。
+        self.document.apply_pending_events(&events);
         Ok(())
     }
 
-    /// 识别当前缓冲区的语言并挂上对应 provider。
-    /// 仅在创建期被 [`Workspace`] 内部调用——open_* 路径里缓冲区刚装好
-    /// 内容，此时绑定语法状态正合适。
-    fn attach_syntax(
-        &mut self,
-        buffer_id: BufferId,
-        registry: &LanguageRegistry,
-        worker: std::sync::Arc<SyntaxWorkerHandle>,
-    ) {
-        debug_assert!(self.syntax.is_none(), "重复 attach_syntax");
-        if self.buffer.snapshot().len_bytes().get() > MAX_HIGHLIGHT_BYTES {
-            return;
-        }
-        let first_line = self
-            .buffer
-            .snapshot()
-            .slice_line(zom_engine::Line::new(0))
-            .ok()
-            .map(|s| s.as_str().to_string());
-        let language = registry.detect(self.path(), first_line.as_deref());
-        if language.is_plain() {
-            return;
-        }
-        let Some(provider) = registry.make_provider(language) else {
-            return;
-        };
-        let state = BufferSyntaxState::attach(
-            buffer_id,
-            language,
-            provider,
-            &self.buffer,
-            &mut self.highlight_layers,
-            worker,
-            // workspace 不持 view，attach 时不知道 viewport——desktop 在首帧
-            // render 时通过 [`crate::Workspace::set_buffer_viewport_hint`] 异步
-            // 建立 hint，由 worker 内部 set_viewport 触发 viewport-scoped re-query。
-            None,
-        );
-        self.syntax = Some(state);
-    }
-
-    /// 把后台 worker 已就绪的高亮产物 drain 到 layers——由
-    /// [`Workspace::pump_pending_highlights`] 每帧驱动。
+    /// 把后台 worker 已就绪的高亮产物 drain 到 layers——由[`Workspace::pump_pending_highlights`] 每帧驱动。
     fn pump_highlights(&mut self) {
-        if let Some(state) = self.syntax.as_ref() {
-            state.drain_into_layers(self.buffer.version(), &mut self.highlight_layers);
-        }
+        self.document.pump_pending_highlights();
     }
 
     /// 把 viewport hint 转发给挂在本缓冲区上的语法 worker。
     pub fn set_viewport_hint(&self, byte_range: Option<zom_engine::TextRange>) {
-        if let Some(state) = self.syntax.as_ref() {
-            state.set_viewport_hint(byte_range);
-        }
+        self.document.set_viewport_hint(byte_range);
     }
 
     /// 推一拍 BufferSearch 状态机：收割已完成的后台搜索，必要时 spawn 新的。
     /// **非阻塞**——返回值告诉调用方"本帧是否落了新结果"以决定 reveal / repaint。
-    ///
-    /// 等价于 `wb.search_mut().sync(wb.buffer())`，封一层避免借用检查器嫌弃
-    /// 同时分别拿 search_mut 与 buffer。
     pub fn sync_search(&mut self) -> WorkspaceResult<SearchSyncOutcome> {
-        Ok(self.search.sync(&self.buffer)?)
+        Ok(self.search.sync(self.document.buffer())?)
     }
 
     /// 渲染线程每帧调一次：只收割已就绪的后台搜索结果，不会主动 spawn。
     /// 没有 in-flight 时无操作（O(1) 检查），不会阻塞。
     pub fn pump_pending_search(&mut self) -> SearchSyncOutcome {
-        self.search.pump_pending(&self.buffer)
+        self.search.pump_pending(self.document.buffer())
     }
 
     /// 替换 BufferSearch 当前命中指向的命中。无当前命中或结果集
@@ -527,9 +493,8 @@ impl WorkspaceBuffer {
         replacement: &str,
     ) -> WorkspaceResult<Option<(Delta, ChangeSet)>> {
         let outcome = {
-            // 字段级拆分借用：search 上做不可变 current_for_replace + buffer 同时可变。
-            // 两个字段不重叠，borrow 检查器允许。
-            let buffer = &mut self.buffer;
+            // 字段级拆分借用：document 与 search 各占独立字段，borrow checker 允许。
+            let buffer = self.document.buffer_mut();
             let search = &mut self.search;
             let Some(target) = search.current_for_replace() else {
                 return Ok(None);
@@ -548,14 +513,14 @@ impl WorkspaceBuffer {
         Ok(outcome)
     }
 
-    /// 把 BufferSearch 当前结果集中所有命中作为单个原子事务替换。无结果时返回
-    /// `Ok(None)`。同 [`Self::replace_current_search_match`] 自动扇出 pump 事件。
+    /// 把 BufferSearch 当前结果集中所有命中作为单个原子事务替换。无结果时返回`Ok(None)`。
+    /// 同 [`Self::replace_current_search_match`] 自动扇出 pump 事件。
     pub fn replace_all_search_matches(
         &mut self,
         replacement: &str,
     ) -> WorkspaceResult<Option<(Delta, ChangeSet)>> {
         let outcome = {
-            let buffer = &mut self.buffer;
+            let buffer = self.document.buffer_mut();
             let search = &mut self.search;
             let Some(target) = search.result_for_replace() else {
                 return Ok(None);
@@ -575,20 +540,11 @@ impl WorkspaceBuffer {
     /// `pump_post_edit` 内部走的扇出 drain，单独抽出来给 replace_* 等
     /// **同方法内**触发新编辑的入口调用。外部入口请用 `pump_post_edit`。
     fn fanout_pending_events(&mut self) -> WorkspaceResult<()> {
-        let events = self.buffer.take_pending_events();
+        let events = self.document.buffer_mut().take_pending_events();
         for event in &events {
             self.search.apply_delta(event)?;
         }
-        if let Some(state) = self.syntax.as_mut() {
-            for event in &events {
-                state.handle_edit(
-                    &self.buffer,
-                    event.changeset(),
-                    event.new_version(),
-                    &mut self.highlight_layers,
-                );
-            }
-        }
+        self.document.apply_pending_events(&events);
         Ok(())
     }
 }

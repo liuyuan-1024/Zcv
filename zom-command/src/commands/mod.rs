@@ -21,7 +21,6 @@ pub use features::search;
 pub use features::settings;
 pub use features::terminal;
 pub use features::version_control;
-pub use system::surfaces;
 pub use system::window;
 
 /// 安装全部内建命令。

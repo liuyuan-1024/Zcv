@@ -13,10 +13,9 @@
 //!
 //! ## 新增 producer 的步骤
 //!
-//! 1. 在本目录加 `<name>.rs`，对外暴露 `pub(crate) fn push(...)`。
+//! 1. 在本目录加 `<name>.rs`，暴露 `pub(super) fn push(...)` 风格的内部入口。
 //! 2. 在 [`super::priority`] 选档位（或新增档位常量）。
-//! 3. 在调用方（[`crate::shell::editor::snapshot::builder`] 或
-//!    [`crate::shell::workbench::editor_area::text_target`]）加一行 `push(...)`。
+//! 3. 在 [`super`] 增加语义 facade，让外部调用方不直接依赖 producer 子模块。
 //! 4. 必要时在 [`super::StyleClass`] 扩枚举并在 [`super::resolve_named`] 配色。
 
 pub(crate) mod search;

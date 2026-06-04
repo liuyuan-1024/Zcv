@@ -11,9 +11,7 @@
 
 use gpui::{FocusHandle, Window};
 
-use crate::focus::{
-    AppFocus, FileTreeFocus, PanelFocus, ProjectPickerFocus, SearchField, SurfaceFocus,
-};
+use crate::focus::{AppFocus, FileTreeFocus, SearchField};
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
 use crate::shell::features::panels::{PanelId, PanelRuntimes};
 
@@ -51,29 +49,10 @@ impl FocusProjection {
         window.focus(&handle);
     }
 
-    pub(crate) fn is_at(&self, focus: AppFocus, window: &Window) -> bool {
-        self.handle_for(focus)
-            .is_some_and(|handle| handle.is_focused(window))
-    }
-
     pub(crate) fn is_at_panel(&self, panel: PanelId, window: &Window) -> bool {
-        match panel {
-            PanelId::FileTree => [
-                AppFocus::file_tree(FileTreeFocus::Navigate),
-                AppFocus::file_tree(FileTreeFocus::NewEntryName),
-                AppFocus::file_tree(FileTreeFocus::RenameEntry),
-                AppFocus::file_tree(FileTreeFocus::ConfirmDelete),
-            ]
-            .into_iter()
-            .any(|focus| self.is_at(focus, window)),
-            PanelId::Search => [
-                AppFocus::search(SearchField::Query),
-                AppFocus::search(SearchField::Replacement),
-            ]
-            .into_iter()
-            .any(|focus| self.is_at(focus, window)),
-            other => self.is_at(panel_default_focus(other), window),
-        }
+        self.entries.iter().any(|(handle, focus)| {
+            matches!(focus, AppFocus::Panel(p) if p.panel == panel) && handle.is_focused(window)
+        })
     }
 
     fn handle_for(&self, focus: AppFocus) -> Option<FocusHandle> {
@@ -87,12 +66,8 @@ impl FocusProjection {
 pub(crate) fn panel_default_focus(panel: PanelId) -> AppFocus {
     match panel {
         PanelId::FileTree => AppFocus::file_tree(FileTreeFocus::Navigate),
-        PanelId::VersionControl => AppFocus::Panel(PanelFocus::VersionControl),
-        PanelId::Outline => AppFocus::Panel(PanelFocus::Outline),
         PanelId::Search => AppFocus::search(SearchField::Query),
-        PanelId::Terminal => AppFocus::Panel(PanelFocus::Terminal),
-        PanelId::Debug => AppFocus::Panel(PanelFocus::Debug),
-        PanelId::KeyboardShortcuts => AppFocus::Panel(PanelFocus::KeyboardShortcuts),
+        other => AppFocus::panel(other),
     }
 }
 
@@ -101,6 +76,8 @@ pub(crate) fn projection_from_runtimes(
     panel_runtimes: &PanelRuntimes,
     file_tree: &FileTreeRuntime,
     project_picker: FocusHandle,
+    settings: Option<FocusHandle>,
+    language_servers: FocusHandle,
 ) -> FocusProjection {
     let mut projection = FocusProjection::new();
     projection.register(editor, AppFocus::editor());
@@ -116,10 +93,11 @@ pub(crate) fn projection_from_runtimes(
         panel_runtimes.search_replacement_focus_handle(),
         AppFocus::search(SearchField::Replacement),
     );
-    projection.register(
-        project_picker,
-        AppFocus::Surface(SurfaceFocus::ProjectPicker(ProjectPickerFocus::Query)),
-    );
+    projection.register(project_picker, AppFocus::project_picker());
+    if let Some(settings) = settings {
+        projection.register(settings, AppFocus::settings());
+    }
+    projection.register(language_servers, AppFocus::language_servers());
     for panel in [
         PanelId::VersionControl,
         PanelId::Outline,

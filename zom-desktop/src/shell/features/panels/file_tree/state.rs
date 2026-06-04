@@ -42,7 +42,7 @@ pub(crate) struct FileTreeState {
 /// [`EditorRouter`] 拉快照，state 这里只描述外壳（图标 / 缩进）。
 ///
 /// [`TextEditorSlot`]: crate::shell::editor::TextEditorSlot
-/// [`EditorRouter`]: crate::shell::editor::EditorRouter
+/// [`EditorRouter`]: crate::text_target::EditorRouter
 #[derive(Clone, Debug)]
 pub(crate) struct PendingNewEntry {
     /// 新条目将创建在该目录下。
@@ -55,7 +55,7 @@ pub(crate) struct PendingNewEntry {
 /// 正在重命名某一行的 owned 快照。视图据此把对应行替换成内联输入框，输入框的文本 / 光标由 [`TextEditorSlot`] 自己向 [`EditorRouter`] 拉。
 ///
 /// [`TextEditorSlot`]: crate::shell::editor::TextEditorSlot
-/// [`EditorRouter`]: crate::shell::editor::EditorRouter
+/// [`EditorRouter`]: crate::text_target::EditorRouter
 #[derive(Clone, Debug)]
 pub(crate) struct PendingRename {
     pub(crate) path: PathBuf,
@@ -97,4 +97,37 @@ pub(crate) enum FileTreeActivation {
     ToggledDir,
     /// 打开了文件，shell 应当把焦点切回 editor。
     OpenedFile,
+}
+
+/// 文件树写操作的领域结果。
+///
+/// 模型本身不持有 [`WorkspaceSession`] —— 文件操作可能伴随 buffer 重绑路径、
+/// 关闭已删文件的 buffer、打开新建/重命名后的文件等编辑会话副作用。模型把
+/// "需要做什么"装进本结构，由 runtime 解释成具体的 session 调用。
+///
+/// [`WorkspaceSession`]: crate::workspace_session::WorkspaceSession
+#[derive(Debug)]
+pub(crate) enum FileTreeOutcome {
+    /// 无副作用（取消、空操作、目录粘贴的 Copy 模式落地等）。
+    Nothing,
+    /// 仅触发了目录展开 / 折叠。
+    ToggledDir,
+    /// 打开（或激活）单个文件。
+    OpenFile(std::path::PathBuf),
+    /// 重命名：把 `old` 下所有 buffer rebase 到 `new`；当 `opens_file` 为 true（即新路径是文件）时还要打开新路径。
+    Rename {
+        old: std::path::PathBuf,
+        new: std::path::PathBuf,
+        opens_file: bool,
+    },
+    /// 粘贴：对每对 `(src, dst)` 做一次 buffer rebase（仅 Cut 模式产生条目，Copy 模式 rebases 为空）。
+    Paste {
+        rebases: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    },
+    /// 批量删除：关闭每个 `paths` 下的 buffer；`picked_sibling` 是模型已计算好的下一焦点行（基于
+    /// tree 内的下一兄弟）。`None` 时由 runtime 在应用完关 buffer 后从 session 的活动 buffer 路径回退。
+    Delete {
+        paths: Vec<std::path::PathBuf>,
+        picked_sibling: Option<std::path::PathBuf>,
+    },
 }

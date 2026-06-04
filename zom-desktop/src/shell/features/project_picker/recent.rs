@@ -176,3 +176,99 @@ fn write_to_file(path: &Path, projects: &[RecentProject]) -> Result<(), String> 
     fs::write(path, text)
         .map_err(|error| format!("无法写入最近项目文件 {}：{error}", path.display()))
 }
+
+#[cfg(test)]
+mod tests {
+    //! RecentProjects 的最近列表语义与磁盘持久化。
+    //!
+    //! 这些用例之前挂在 `App` 的 headless 单测里（迁移前 App 直接持有 RecentProjects）。
+    //! 数据归属下沉到 picker runtime 之后，行为是纯 RecentProjects 的事——直接调
+    //! 公共 API 验证，无需 App / GPUI。
+    use super::*;
+    use std::fs::{File, create_dir_all};
+
+    fn project_fixture(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("zom-recent-projects-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        create_dir_all(dir.join("src")).unwrap();
+        File::create(dir.join("README.md")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn remember_should_dedupe_and_promote_to_front() {
+        let mut recent = RecentProjects::load(None);
+        let local = project_fixture("dedupe-local");
+        let cloned = project_fixture("dedupe-git");
+
+        recent.remember(local.clone(), None);
+        recent.remember(
+            cloned.clone(),
+            Some("https://example.com/org/dedupe-git.git".to_string()),
+        );
+
+        let items = recent.items();
+        assert_eq!(items.len(), 2);
+        // 新条目永远在最前。
+        assert_eq!(items[0].path, cloned);
+        assert_eq!(
+            items[0].identifier,
+            "https://example.com/org/dedupe-git.git"
+        );
+        assert_eq!(items[1].path, local);
+    }
+
+    #[test]
+    fn remove_should_drop_by_id() {
+        let mut recent = RecentProjects::load(None);
+        let local = project_fixture("remove-local");
+        let cloned = project_fixture("remove-git");
+
+        recent.remember(local.clone(), None);
+        recent.remember(
+            cloned.clone(),
+            Some("https://example.com/org/remove-git.git".to_string()),
+        );
+
+        let id = recent.items()[0].id.clone();
+        recent.remove(&id);
+
+        let items = recent.items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].path, local);
+    }
+
+    #[test]
+    fn remember_should_persist_to_file() {
+        let store = std::env::temp_dir().join(format!(
+            "zom-recent-projects-persist-{}.toml",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&store);
+        let local = project_fixture("persist-local");
+        let cloned = project_fixture("persist-git");
+
+        {
+            let mut recent = RecentProjects::load(Some(store.clone()));
+            recent.remember(local.clone(), None);
+            recent.remember(
+                cloned.clone(),
+                Some("https://example.com/org/persist-git.git".to_string()),
+            );
+        }
+
+        // 重新 load 后内容仍在；顺序按"最近 → 最早"。
+        let recent = RecentProjects::load(Some(store.clone()));
+        let items = recent.items();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].path, cloned);
+        assert_eq!(
+            items[0].repo.as_deref(),
+            Some("https://example.com/org/persist-git.git")
+        );
+        assert_eq!(items[1].path, local);
+
+        let _ = std::fs::remove_file(store);
+    }
+}

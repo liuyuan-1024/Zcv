@@ -13,15 +13,14 @@ pub(crate) mod bubble;
 pub(crate) mod editor;
 pub(crate) mod features;
 pub(crate) mod platform;
+pub(crate) mod project_session;
 pub(crate) mod shared;
 pub(crate) mod surfaces;
-pub(crate) mod syntax;
 mod view;
 pub(crate) mod workbench;
 
 pub use boot::run;
 pub(crate) use shared::interaction::{
-    ActionRequest, CommandCatalogItem, CommandCatalogLookup, CommandTitleLookup, KeyRequest,
-    ShortcutLookup,
+    ActionRequest, CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup,
 };
 pub(crate) use shared::keyboard::normalized_chord;

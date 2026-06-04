@@ -9,6 +9,7 @@ use std::rc::Rc;
 use gpui::{
     App as GpuiApp, AppContext, Bounds, ElementInputHandler, Entity, FocusHandle, Pixels, Window,
 };
+use zom_view::{ViewportState, WrapMap};
 
 use crate::app::App;
 use crate::shell::editor::input::{CaretLayout, EditorInput};
@@ -25,12 +26,9 @@ pub(crate) struct EditorPaintInfo {
 
 pub(crate) type EditorInputHook = Rc<dyn Fn(EditorPaintInfo, &mut Window, &mut GpuiApp)>;
 
-/// element prepaint 末尾用来把测得的 `visible_line_count` 写回 view 的钩子。
+/// element prepaint 末尾用来把测得的 viewport 写回 view 的钩子。
 /// 只有主编辑区装一个真实实现；其它单行嵌入编辑器视口固定为单行，无需写回。
-///
-/// Y 轴的 `top_line` 由 view 在 `settle_viewport_y` 里自己落定，element 不再写回
-/// top_line（避免和 view 的 settle 形成双源）。
-pub(crate) type EditorViewportSyncHook = Rc<dyn Fn(u64, &mut GpuiApp)>;
+pub(crate) type EditorViewportSyncHook = Rc<dyn Fn(ViewportState, Option<WrapMap>, &mut GpuiApp)>;
 
 #[derive(Clone)]
 pub(crate) struct EditorInputHost {

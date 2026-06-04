@@ -76,9 +76,7 @@ mod platform {
         ("ctrl", "⌃"),
         ("alt", "⌥"),
         ("shift", "⇧"),
-        // `mod` 在 macOS 上=⌘；`meta` 在 macOS 上也是⌘（其他平台才是 Win/Super）。
         ("mod", "⌘"),
-        ("meta", "⌘"),
         ("fn", "fn"),
     ];
 
@@ -110,11 +108,10 @@ mod platform {
     /// 逻辑修饰键 → 显示文本；顺序：Ctrl → Alt → Shift。
     pub(super) const MODIFIERS: &[(&str, &str)] = &[
         // `mod` 在非 macOS 上等价于物理 Ctrl，统一显示成 "Ctrl"。
-        ("mod", "Ctrl"),
         ("ctrl", "Ctrl"),
         ("alt", "Alt"),
         ("shift", "Shift"),
-        ("meta", "Win"),
+        ("mod", "Ctrl"),
         ("fn", "Fn"),
     ];
 

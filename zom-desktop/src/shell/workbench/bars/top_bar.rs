@@ -22,6 +22,7 @@ pub(crate) fn render(
     shortcuts: &ShortcutLookup,
     titles: &CommandTitleLookup,
     workspace_active: bool,
+    settings_active: bool,
 ) -> Div {
     let is_window_active = window.is_window_active();
 
@@ -39,7 +40,7 @@ pub(crate) fn render(
         ))
         .child(region(Vec::new(), BarRegionAlign::Center))
         .child(region(
-            trailing_slots(shortcuts, titles),
+            trailing_slots(settings_active, shortcuts, titles),
             BarRegionAlign::Trailing,
         ))
 }
@@ -67,6 +68,10 @@ fn leading_slots(
     ]
 }
 
-fn trailing_slots(shortcuts: &ShortcutLookup, titles: &CommandTitleLookup) -> Vec<AnyElement> {
-    vec![settings::entry(shortcuts, titles)]
+fn trailing_slots(
+    settings_active: bool,
+    shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
+) -> Vec<AnyElement> {
+    vec![settings::entry(settings_active, shortcuts, titles)]
 }

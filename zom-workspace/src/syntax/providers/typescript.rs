@@ -5,10 +5,8 @@
 //!
 //! ## TypeScript 与 TSX 的关系
 //!
-//! `tree-sitter-typescript` 这一个 crate 同时导出 `LANGUAGE_TYPESCRIPT`
-//! （`.ts`）与 `LANGUAGE_TSX`（`.tsx`）两个 grammar，并共用同一份
-//! `HIGHLIGHTS_QUERY`。它们对调度层是**两条独立语言**——`LanguageId::new("typescript")`
-//! 与 `LanguageId::new("tsx")`——desktop 在 `install_tier1` 里分别注册扩展名。
+//! `tree-sitter-typescript` 这一个 crate 同时导出 `LANGUAGE_TYPESCRIPT`（`.ts`）与 `LANGUAGE_TSX`（`.tsx`）两个 grammar，并共用同一份 `HIGHLIGHTS_QUERY`。
+//! 它们对调度层是**两条独立语言**——`LanguageId::new("typescript")` 与 `LanguageId::new("tsx")`——内置 provider 安装入口会分别注册扩展名。
 
 use std::sync::{Arc, OnceLock};
 

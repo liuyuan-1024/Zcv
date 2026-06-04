@@ -1,16 +1,11 @@
 # 依赖管理约定
 #
-# 1. **所有第三方 dep（含 dev / 平台特定）在本文件 [workspace.dependencies] 声明**，
-#    含版本与默认 features。子 crate 一律 `dep.workspace = true` 引用——版本与
-#    feature 升级只在本处改一次。
-# 2. 子 crate 需要在 workspace 默认 features 之上**额外加** feature 时，写
-#    `dep = { workspace = true, features = ["extra"] }`；cargo 自动合并。
-# 3. 平台特定 dep 也走 workspace 声明，子 crate 在 `[target.'cfg(...)']`
-#    内仍写 `dep.workspace = true`。
+# 1. **所有第三方 dep（含 dev / 平台特定）在本文件 [workspace.dependencies] 声明**，含版本与默认 features。子 crate 一律 `dep.workspace = true` 引用——版本与feature 升级只在本处改一次。
+# 2. 子 crate 需要在 workspace 默认 features 之上**额外加** feature 时，写 `dep = { workspace = true, features = ["extra"] }`；cargo 自动合并。
+# 3. 平台特定 dep 也走 workspace 声明，子 crate 在 `[target.'cfg(...)']` 内仍写 `dep.workspace = true`。
 # 4. 内部 crate（`zom-*`）按 `path = "..."` 声明，下游同样 `.workspace = true`。
 #
-# 新加 dep 时：先在本文件登记，再到需要的 crate 引用——不在子 crate 直接
-# `dep = "x.y"`。
+# 新加 dep 时：先在本文件登记，再到需要的 crate 引用——不在子 crate 直接 `dep = "x.y"`。
 
 [workspace]
 members = [
@@ -25,7 +20,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.2.7"
+version = "0.3.30"
 edition = "2024"
 
 [workspace.dependencies]

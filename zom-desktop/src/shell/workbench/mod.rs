@@ -23,9 +23,14 @@ use std::rc::Rc;
 
 use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
 
+use crate::editor_state::EditorState;
+use crate::shell::bubble::BubbleShell;
 use crate::shell::editor::{EditorSnapshot, TextEditorSlot};
 use crate::shell::features::panels::PanelRuntimes;
-use crate::shell::features::panels::file_tree::{self, ConfirmDeleteHandlers, FileTreePanel};
+use crate::shell::features::panels::file_tree::{
+    self, ConfirmDeleteHandlers, FileTreePanel, FileTreeState,
+};
+use crate::shell::features::panels::search::SearchState;
 use crate::shell::shared::theme::{color, typography};
 use crate::shell::{CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup};
 
@@ -43,14 +48,25 @@ pub(crate) use self::docks::{PanelContext, PanelHost};
 use crate::shell::surfaces::SurfaceShell;
 use state::WorkbenchState;
 
+/// 渲染期 feature 状态旁路：
+/// workbench 自身只关心布局，三个 feature 视图快照由 view 装配层各自构造后通过本结构传进来。
+pub(crate) struct WorkbenchFeatureStates<'a> {
+    pub(crate) editor: &'a EditorState,
+    pub(crate) file_tree: &'a FileTreeState,
+    pub(crate) search: &'a SearchState,
+}
+
 pub(crate) fn render(
     state: &WorkbenchState,
+    features: WorkbenchFeatureStates<'_>,
     host: &PanelHost,
     workbench: Rc<RefCell<WorkbenchController>>,
     window: &Window,
     window_controls: WindowControlsHandlers,
     surface_shell: Entity<SurfaceShell>,
+    bubble_shell: Entity<BubbleShell>,
     workspace_active: bool,
+    settings_active: bool,
     language_server_active: bool,
     key_request: KeyRequest,
     shortcut_lookup: ShortcutLookup,
@@ -83,9 +99,11 @@ pub(crate) fn render(
             &shortcut_lookup,
             &command_title_lookup,
             workspace_active,
+            settings_active,
         ))
         .child(render_body(
             state,
+            &features,
             host,
             dock_resize,
             key_request,
@@ -102,22 +120,24 @@ pub(crate) fn render(
         ))
         .child(render_bottom_bar(
             state,
+            features.editor,
             &shortcut_lookup,
             &command_title_lookup,
             language_server_active,
             &main_editor_snapshot,
         ))
         .child(surface_shell)
-        .child(crate::shell::bubble::render())
+        .child(bubble_shell)
         // 删除确认模态层：处于删除确认态时压在所有面板与 surface 之上。
         .children(file_tree::render_confirm_delete(
-            &state.file_tree,
+            features.file_tree,
             &confirm_delete,
         ))
 }
 
 fn render_body(
     state: &WorkbenchState,
+    features: &WorkbenchFeatureStates<'_>,
     host: &PanelHost,
     dock_resize: DockResizeRequest,
     key_request: KeyRequest,
@@ -141,7 +161,7 @@ fn render_body(
     let panel_ctx = PanelContext {
         has_project: state.has_project,
         file_tree,
-        search_state: &state.search,
+        search_state: features.search,
         search_query_slot: &search_query_slot,
         search_replacement_slot: &search_replacement_slot,
         panel_runtimes: &panel_runtimes,
@@ -162,7 +182,7 @@ fn render_body(
     }
     row = row.child(editor_area::render(
         &state.bottom_dock,
-        &state.editor,
+        features.editor,
         host,
         panel_ctx,
         key_request,

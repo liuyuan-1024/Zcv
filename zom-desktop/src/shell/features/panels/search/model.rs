@@ -1,11 +1,20 @@
 use zom_command::{EditTarget, KeyContext, SearchOption};
 use zom_workspace::BufferSearchOptions;
 
-use crate::focus::{AppFocus, PanelFocus, SearchField};
+use crate::focus::{AppFocus, SearchField};
 use crate::shell::editor::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
-    TextTargetOwner, TextTargetQuery,
 };
+use crate::text_target::{TextTargetOwner, TextTargetQuery};
+
+/// 从 focus 里抠出当前 search 字段；非 search focus 返回 `None`。
+/// 各 `TextTargetOwner` 方法入口都先走它，避免散写 match。
+fn search_field(focus: AppFocus) -> Option<SearchField> {
+    match focus {
+        AppFocus::Panel(p) => p.as_search(),
+        _ => None,
+    }
+}
 
 /// 提供给 panel UI 渲染的快照。
 ///
@@ -116,38 +125,14 @@ impl SearchModel {
     }
 
     pub(crate) fn edit_target_for_focus(&mut self, focus: AppFocus) -> Option<EditTarget<'_>> {
-        match focus {
-            AppFocus::Panel(PanelFocus::Search(SearchField::Query)) => {
-                Some(self.query.as_edit_target())
-            }
-            AppFocus::Panel(PanelFocus::Search(SearchField::Replacement)) => {
-                Some(self.replacement.as_edit_target())
-            }
-            _ => None,
+        match search_field(focus)? {
+            SearchField::Query => Some(self.query.as_edit_target()),
+            SearchField::Replacement => Some(self.replacement.as_edit_target()),
         }
-    }
-
-    pub(crate) fn query_owner(&self) -> SearchFieldQuery<'_> {
-        SearchFieldQuery {
-            model: self,
-            field: SearchField::Query,
-        }
-    }
-
-    pub(crate) fn replacement_owner(&self) -> SearchFieldQuery<'_> {
-        SearchFieldQuery {
-            model: self,
-            field: SearchField::Replacement,
-        }
-    }
-
-    pub(crate) fn active_owner(&mut self, focus: AppFocus) -> SearchActiveOwner<'_> {
-        SearchActiveOwner { model: self, focus }
     }
 }
 
-/// 搜索面板输入框（query / replacement 通用）的按键解析栈：
-/// 面板命令优先，其次文本编辑，最后全局兜底。
+/// 搜索面板两个输入框共用的按键解析栈：面板命令优先，其次文本编辑，最后全局兜底。
 fn search_field_key_contexts(accepts_newline: bool) -> Vec<KeyContext> {
     vec![
         KeyContext::search_panel(),
@@ -156,76 +141,37 @@ fn search_field_key_contexts(accepts_newline: bool) -> Vec<KeyContext> {
     ]
 }
 
-pub(crate) struct SearchFieldQuery<'a> {
-    model: &'a SearchModel,
-    field: SearchField,
-}
-
-pub(crate) struct SearchActiveOwner<'a> {
-    model: &'a mut SearchModel,
-    focus: AppFocus,
-}
-
-impl TextTargetQuery for SearchFieldQuery<'_> {
+impl TextTargetQuery for SearchModel {
     fn accepts_focus(&self, focus: AppFocus) -> bool {
-        matches!(focus, AppFocus::Panel(PanelFocus::Search(f)) if f == self.field)
+        search_field(focus).is_some()
     }
 
-    fn snapshot(&self) -> EditorSnapshot {
-        self.model.snapshot_for_field(self.field)
+    fn snapshot(&self, focus: AppFocus) -> EditorSnapshot {
+        let Some(field) = search_field(focus) else {
+            return EditorSnapshot::default();
+        };
+        self.snapshot_for_field(field)
     }
 
     fn key_contexts(&self) -> Vec<KeyContext> {
         search_field_key_contexts(self.accepts_newline())
     }
 
-    fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
-        self.model.ime_query_target_for_field(self.field)
+    fn ime_query_target(&self, focus: AppFocus) -> Option<ImeQueryTarget<'_>> {
+        self.ime_query_target_for_field(search_field(focus)?)
     }
 }
 
-impl TextTargetQuery for SearchActiveOwner<'_> {
-    fn accepts_focus(&self, focus: AppFocus) -> bool {
-        matches!(focus, AppFocus::Panel(PanelFocus::Search(_)))
-    }
-
-    fn snapshot(&self) -> EditorSnapshot {
-        let field = match self.focus {
-            AppFocus::Panel(PanelFocus::Search(SearchField::Replacement)) => {
-                SearchField::Replacement
-            }
-            _ => SearchField::Query,
-        };
-        self.model.snapshot_for_field(field)
-    }
-
-    fn key_contexts(&self) -> Vec<KeyContext> {
-        search_field_key_contexts(self.accepts_newline())
-    }
-
-    fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
-        let field = match self.focus {
-            AppFocus::Panel(PanelFocus::Search(SearchField::Replacement)) => {
-                SearchField::Replacement
-            }
-            _ => SearchField::Query,
-        };
-        self.model.ime_query_target_for_field(field)
-    }
-}
-
-impl TextTargetOwner for SearchActiveOwner<'_> {
-    fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
-        match self.focus {
-            AppFocus::Panel(PanelFocus::Search(SearchField::Replacement)) => {
-                Some(self.model.replacement.as_ime_target())
-            }
-            _ => Some(self.model.query.as_ime_target()),
+impl TextTargetOwner for SearchModel {
+    fn ime_target(&mut self, focus: AppFocus) -> Option<ImeTarget<'_>> {
+        match search_field(focus)? {
+            SearchField::Query => Some(self.query.as_ime_target()),
+            SearchField::Replacement => Some(self.replacement.as_ime_target()),
         }
     }
 
-    fn edit_target(&mut self) -> Option<EditTarget<'_>> {
-        self.model.edit_target_for_focus(self.focus)
+    fn edit_target(&mut self, focus: AppFocus) -> Option<EditTarget<'_>> {
+        self.edit_target_for_focus(focus)
     }
 }
 

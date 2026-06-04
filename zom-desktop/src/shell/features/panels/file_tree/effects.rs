@@ -12,7 +12,7 @@ use zom_command::HostEffect;
 use crate::app::App;
 use crate::focus::{AppFocus, FileTreeFocus};
 use crate::shell::features::panels::PanelId;
-use crate::shell::features::panels::file_tree::FileTreeActivation;
+use crate::shell::features::panels::file_tree::{FileTreeActivation, FileTreeRuntime};
 use crate::shell::view::actions::request_focus;
 use crate::shell::view::focus::FocusProjection;
 use crate::shell::workbench::controller::WorkbenchController;
@@ -22,40 +22,42 @@ pub(crate) fn try_apply_effect(
     effect: &HostEffect,
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
+    file_tree: &FileTreeRuntime,
     focus: &FocusProjection,
     window: &mut Window,
 ) -> bool {
     match effect {
         HostEffect::FileTreeMoveSelection(delta) => {
-            app.borrow_mut().file_tree_mut().move_selection(*delta);
+            file_tree.with_model_mut(|ft| ft.move_selection(*delta));
         }
         HostEffect::FileTreeExtendSelection(delta) => {
-            app.borrow_mut().file_tree_mut().extend_selection(*delta);
+            file_tree.with_model_mut(|ft| ft.extend_selection(*delta));
         }
         HostEffect::FileTreeEscape => {
             // 选区有内容时 model 清掉它并消化 Esc；否则按原有 focus_editor 路径把焦点交回主编辑区。
             // 逻辑写在宿主侧而非 model 是因为 focus 路由涉及 window，model 不该感知 UI。
-            let consumed = app.borrow_mut().file_tree_mut().escape();
+            let consumed = file_tree.with_model_mut(|ft| ft.escape());
             if !consumed {
                 request_focus(app, focus, AppFocus::editor(), window);
             }
         }
         HostEffect::FileTreeCollapseOrParent => {
-            app.borrow_mut().file_tree_mut().collapse_or_parent();
+            file_tree.with_model_mut(|ft| ft.collapse_or_parent());
         }
         HostEffect::FileTreeExpandOrInto => {
-            app.borrow_mut().file_tree_mut().expand_or_into();
+            file_tree.with_model_mut(|ft| ft.expand_or_into());
         }
         HostEffect::FileTreeActivate => {
-            let activation = app
-                .borrow_mut()
-                .with_file_tree(|ft, ws, vs| ft.activate_selected(ws, vs));
+            let activation = {
+                let mut app = app.borrow_mut();
+                file_tree.execute(&mut app, |ft| ft.activate_selected())
+            };
             if matches!(activation, FileTreeActivation::OpenedFile) {
                 request_focus(app, focus, AppFocus::editor(), window);
             }
         }
         HostEffect::FileTreeBeginNewEntry => {
-            app.borrow_mut().file_tree_mut().begin_new_entry();
+            file_tree.with_model_mut(|ft| ft.begin_new_entry());
             // 文件树面板的 focus handle 也是新建输入框的 input handle。
             // 用同一句 move_to 既保证视觉焦点（行的蓝框 + caret 闪烁）出现在输入框，
             // 也让 IME / 文本命令路由到 FileTreePendingName。
@@ -72,18 +74,19 @@ pub(crate) fn try_apply_effect(
         }
         HostEffect::FileTreeCommitNewEntry => {
             // 新建文件会被打开，焦点随之切到编辑器；新建目录留在文件树。
-            let activation = app
-                .borrow_mut()
-                .with_file_tree(|ft, ws, vs| ft.commit_new_entry(ws, vs));
+            let activation = {
+                let mut app = app.borrow_mut();
+                file_tree.execute(&mut app, |ft| ft.commit_new_entry())
+            };
             if matches!(activation, FileTreeActivation::OpenedFile) {
                 request_focus(app, focus, AppFocus::editor(), window);
             }
         }
         HostEffect::FileTreeCancelNewEntry => {
-            app.borrow_mut().file_tree_mut().cancel_new_entry();
+            file_tree.with_model_mut(|ft| ft.cancel_new_entry());
         }
         HostEffect::FileTreeBeginRename => {
-            app.borrow_mut().file_tree_mut().begin_rename();
+            file_tree.with_model_mut(|ft| ft.begin_rename());
             // 与新建一样：保险起见 show_panel + 重新聚焦——用户可能从命令面板或菜单触发，此时文件树未必已经持焦。
             workbench.borrow_mut().show_panel(PanelId::FileTree);
             request_focus(
@@ -95,35 +98,54 @@ pub(crate) fn try_apply_effect(
         }
         HostEffect::FileTreeCommitRename => {
             // 与 CommitNewEntry 同构：文件被打开即把焦点切给编辑器；目录留在文件树。
-            let activation = app
-                .borrow_mut()
-                .with_file_tree(|ft, ws, vs| ft.commit_rename(ws, vs));
+            let activation = {
+                let mut app = app.borrow_mut();
+                file_tree.execute(&mut app, |ft| ft.commit_rename())
+            };
             if matches!(activation, FileTreeActivation::OpenedFile) {
                 request_focus(app, focus, AppFocus::editor(), window);
             }
         }
         HostEffect::FileTreeCancelRename => {
-            app.borrow_mut().file_tree_mut().cancel_rename();
+            file_tree.with_model_mut(|ft| ft.cancel_rename());
         }
         HostEffect::FileTreeRequestDelete => {
-            app.borrow_mut().file_tree_mut().request_delete();
+            let has_pending_delete = file_tree.with_model_mut(|ft| {
+                ft.request_delete();
+                ft.pending_delete.is_some()
+            });
+            if has_pending_delete {
+                request_focus(
+                    app,
+                    focus,
+                    AppFocus::file_tree(FileTreeFocus::ConfirmDelete),
+                    window,
+                );
+            }
         }
         HostEffect::FileTreeConfirmDelete => {
-            app.borrow_mut()
-                .with_file_tree(|ft, ws, vs| ft.confirm_delete(ws, vs));
+            let mut app = app.borrow_mut();
+            file_tree.execute(&mut app, |ft| ft.confirm_delete());
+            app.request_focus(AppFocus::file_tree(FileTreeFocus::Navigate));
         }
         HostEffect::FileTreeCancelDelete => {
-            app.borrow_mut().file_tree_mut().cancel_delete();
+            file_tree.with_model_mut(|ft| ft.cancel_delete());
+            request_focus(
+                app,
+                focus,
+                AppFocus::file_tree(FileTreeFocus::Navigate),
+                window,
+            );
         }
         HostEffect::FileTreeCopy => {
-            app.borrow_mut().file_tree_mut().copy_to_clipboard();
+            file_tree.with_model_mut(|ft| ft.copy_to_clipboard());
         }
         HostEffect::FileTreeCut => {
-            app.borrow_mut().file_tree_mut().cut_to_clipboard();
+            file_tree.with_model_mut(|ft| ft.cut_to_clipboard());
         }
         HostEffect::FileTreePaste => {
-            app.borrow_mut()
-                .with_file_tree(|ft, ws, _vs| ft.paste_from_clipboard(ws));
+            let mut app = app.borrow_mut();
+            file_tree.execute(&mut app, |ft| ft.paste_from_clipboard());
         }
         _ => return false,
     }

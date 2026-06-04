@@ -13,9 +13,12 @@ use crate::focus::{AppFocus, FileTreeFocus};
 use crate::shell::features::panels::{PanelId, focus_panel_handle};
 use crate::shell::workbench::controller::WorkbenchController;
 
+use super::FileTreeModel;
+
 /// 注册文件树焦点监听：获焦时初始化首个可见行，两端都刷新高亮状态。
 pub(crate) fn install_focus_listeners<T: 'static>(
     app: Rc<RefCell<App>>,
+    model: Rc<RefCell<FileTreeModel>>,
     focus: &FocusHandle,
     window: &mut Window,
     cx: &mut Context<T>,
@@ -23,9 +26,7 @@ pub(crate) fn install_focus_listeners<T: 'static>(
     cx.on_focus(focus, window, move |_, _, cx| {
         app.borrow_mut()
             .request_focus_from_shell(AppFocus::file_tree(FileTreeFocus::Navigate));
-        app.borrow_mut()
-            .file_tree_mut()
-            .ensure_selection_initialized();
+        model.borrow_mut().ensure_selection_initialized();
         cx.notify();
     })
     .detach();

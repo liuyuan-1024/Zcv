@@ -19,7 +19,6 @@
 
 use gpui::{Bounds, ContentMask, Hsla, Pixels, ShapedLine, TextRun, Window, point, px, size};
 
-use crate::shell::editor::snapshot::SnapshotLine;
 use crate::shell::shared::theme::color;
 
 /// 数字列与正文之间的间距。
@@ -45,9 +44,13 @@ pub(crate) struct IconQuad {
 ///
 /// `enabled=false` 时 [`Self::offset`] 返回 0、[`paint`] 直接 noop——单行
 /// 输入框等无行号编辑器走这个分支。
+///
+/// `line_numbers` 与视觉行一一对应：
+/// - `Some(shaped)`：该视觉行是某条逻辑行的**首段**，画行号；
+/// - `None`：该视觉行是软换行后的**续行**，行号留空（同一逻辑行的下一段）。
 pub(crate) struct Prepaint {
     enabled: bool,
-    line_numbers: Vec<ShapedLine>,
+    line_numbers: Vec<Option<ShapedLine>>,
     icons: Vec<IconQuad>,
     /// 行号数字列宽（不含 [`GAP`]）；由 buffer 总行数与字体度量决定。
     number_width: Pixels,
@@ -74,27 +77,57 @@ impl Prepaint {
     }
 }
 
-/// 按视口行 shape 行号文本，产出可直接绘制的 [`Prepaint`]。
+/// 软换行场景下，按视觉行**预先测量**数字列宽。
 ///
-/// `total_lines` 为 buffer 总行数（**不是**当前视口最大行号），决定数字列
-/// 宽的位数——这是「列宽不随滚动抖动」的关键。`lines` 是 view 切好的视
-/// 口段，内含的 `line_index` 已是绝对逻辑行号。
+/// 仅依赖 buffer 总行数与字体度量，与具体视口切片无关——用来在 prepaint
+/// 早期、还没决定每条逻辑行要拆成多少视觉行时，先算出正文起点的 X 偏移
+/// （= number_width + GAP），以便用「正文区宽度」推断软换行的断行宽度。
+pub(crate) fn measure_offset(
+    total_lines: u64,
+    text_style: &gpui::TextStyle,
+    font_size: Pixels,
+    window: &mut Window,
+) -> Pixels {
+    measure_number_width(total_lines, text_style, font_size, window) + px(GAP)
+}
+
+fn measure_number_width(
+    total_lines: u64,
+    text_style: &gpui::TextStyle,
+    font_size: Pixels,
+    window: &mut Window,
+) -> Pixels {
+    let max_digits = total_lines.max(1).to_string().len();
+    shape_digits(&"0".repeat(max_digits), text_style, font_size, window).width
+}
+
+/// 按视觉行 shape 行号文本，产出可直接绘制的 [`Prepaint`]。
+///
+/// `total_lines` 为 buffer 总行数（**不是**当前视口最大行号），决定数字列宽的位数——这是「列宽不随滚动抖动」的关键。
+///
+/// `line_numbers_per_row` 长度等于视觉行数：
+/// - `Some(line_index)`：该视觉行是某条逻辑行的首段，要画行号；
+/// - `None`：续行（软换行的非首段），行号留空。
+///
+/// 不开软换行时 caller 传 `Some(line_index)` 全数组即可——退化回旧行为。
 pub(crate) fn prepare(
-    lines: &[SnapshotLine],
+    line_numbers_per_row: &[Option<u64>],
     total_lines: u64,
     text_style: &gpui::TextStyle,
     font_size: Pixels,
     window: &mut Window,
 ) -> Prepaint {
-    let max_digits = total_lines.max(1).to_string().len();
-    // 等宽字体下任一数字宽度相同；shape 一段 "0" 取实际像素宽度，自动跟
-    // 字号 / 字体一起变，比硬编码常量鲁棒。
-    let number_width = shape_digits(&"0".repeat(max_digits), text_style, font_size, window).width;
+    let number_width = measure_number_width(total_lines, text_style, font_size, window);
 
-    let mut line_numbers = Vec::with_capacity(lines.len());
-    for line in lines {
-        let label = (line.line_index + 1).to_string();
-        line_numbers.push(shape_digits(&label, text_style, font_size, window));
+    let mut line_numbers = Vec::with_capacity(line_numbers_per_row.len());
+    for entry in line_numbers_per_row {
+        match entry {
+            Some(line_index) => {
+                let label = (line_index + 1).to_string();
+                line_numbers.push(Some(shape_digits(&label, text_style, font_size, window)));
+            }
+            None => line_numbers.push(None),
+        }
     }
     Prepaint {
         enabled: true,
@@ -153,7 +186,11 @@ pub(crate) fn paint(
             bounds: gutter_area,
         }),
         |window| {
-            for (index, line_number) in prepaint.line_numbers.iter().enumerate() {
+            for (index, slot) in prepaint.line_numbers.iter().enumerate() {
+                let Some(line_number) = slot else {
+                    // 续行：留空。
+                    continue;
+                };
                 let y = top + line_height * index as f32;
                 let x = number_right_edge_x - line_number.width;
                 let _ = line_number.paint(point(x, y), line_height, window, cx);

@@ -39,7 +39,14 @@ pub(super) fn render(ctx: PanelContext<'_>) -> Div {
     } else if panel.state.rows.is_empty() {
         empty_message("项目目录为空").into_any_element()
     } else {
-        render_list(panel.state, panel.is_focused, panel.slot, panel.scroll).into_any_element()
+        render_list(
+            panel.state,
+            panel.is_focused,
+            panel.new_entry_slot,
+            panel.rename_slot,
+            panel.scroll,
+        )
+        .into_any_element()
     };
 
     div()
@@ -59,7 +66,8 @@ pub(super) fn render(ctx: PanelContext<'_>) -> Div {
 fn render_list(
     state: &FileTreeState,
     is_focused: bool,
-    slot: &Rc<TextEditorSlot>,
+    new_entry_slot: &Rc<TextEditorSlot>,
+    rename_slot: &Rc<TextEditorSlot>,
     scroll_handle: &scroll::ScrollHandle,
 ) -> Div {
     let items = logical_items(state);
@@ -77,7 +85,8 @@ fn render_list(
     // 剪切待粘贴的行做半透明提示；仅 Cut 模式下非空（Copy 模式无视觉标记）。
     let cut_paths = state.cut_paths.clone();
     let active = state.active.clone();
-    let slot = Rc::clone(slot);
+    let new_entry_slot = Rc::clone(new_entry_slot);
+    let rename_slot = Rc::clone(rename_slot);
     if let Some(index) = selected_item.filter(|index| *index < items.len()) {
         scroll_handle.reveal_item_if_changed(index);
     }
@@ -102,10 +111,12 @@ fn render_list(
                         )
                         .into_any_element(),
                         FileTreeItem::Pending(pending) => {
-                            render_input_row(pending.kind, pending.depth, &slot).into_any_element()
+                            render_input_row(pending.kind, pending.depth, &new_entry_slot)
+                                .into_any_element()
                         }
                         FileTreeItem::Rename(rename) => {
-                            render_input_row(rename.kind, rename.depth, &slot).into_any_element()
+                            render_input_row(rename.kind, rename.depth, &rename_slot)
+                                .into_any_element()
                         }
                     })
                     .collect()

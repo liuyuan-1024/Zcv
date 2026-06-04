@@ -8,9 +8,9 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui::{AnyElement, ListState, UniformListScrollHandle, div, prelude::*, px};
+use gpui::{AnyElement, ListState, Pixels, UniformListScrollHandle, div, prelude::*, px};
 
-use crate::shell::shared::theme::{color, radius};
+use crate::shell::shared::theme::{color, radius, space};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ScrollHandle {
@@ -63,16 +63,7 @@ pub(crate) fn scrollbar(handle: &ScrollHandle) -> AnyElement {
         .min(track_height);
     let thumb_top = (scroll_top / max_scroll) * (track_height - thumb_height);
 
-    div()
-        .id("shared-scrollbar")
-        .absolute()
-        .top(thumb_top)
-        .right_0()
-        .w(px(4.0))
-        .h(thumb_height)
-        .rounded(radius::full())
-        .bg(color::gray::s05())
-        .into_any_element()
+    thumb(thumb_top, thumb_height)
 }
 
 pub(crate) fn list_scrollbar(state: &ListState) -> AnyElement {
@@ -89,13 +80,17 @@ pub(crate) fn list_scrollbar(state: &ListState) -> AnyElement {
         .min(viewport_height);
     let thumb_top = (scroll_top / max_scroll) * (viewport_height - thumb_height);
 
+    thumb(thumb_top, thumb_height)
+}
+
+fn thumb(top: Pixels, height: Pixels) -> AnyElement {
     div()
         .id("shared-scrollbar")
         .absolute()
-        .top(thumb_top)
-        .right_0()
-        .w(px(4.0))
-        .h(thumb_height)
+        .top(top)
+        .right(px(1.0))
+        .w(space::s4())
+        .h(height)
         .rounded(radius::full())
         .bg(color::gray::s05())
         .into_any_element()

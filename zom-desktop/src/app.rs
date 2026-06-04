@@ -29,9 +29,7 @@ use crate::shell::CommandCatalogItem;
 use crate::shell::editor::{EditorRouter, EditorRouterMut, TextTargetOwner, TextTargetQuery};
 use crate::shell::features::panels::file_tree::{FileTreeModel, FileTreeState};
 use crate::shell::features::panels::search::{self as search_panel, SearchModel, SearchState};
-use crate::shell::features::project_picker::{
-    ProjectPickerMode, ProjectPickerModel, RecentProject, RecentProjects,
-};
+use crate::shell::features::project_picker::{ProjectPickerMode, ProjectPickerModel};
 use crate::shell::features::settings::SettingsTomlEditor;
 use crate::shell::workbench::editor_area::{MainEditorOwner, MainEditorOwnerRef};
 use crate::shell::workbench::state::{EditorState, build_editor_state};
@@ -53,7 +51,6 @@ pub struct App {
     views: ViewSet,
     focus: FocusStore,
     project_root: Option<PathBuf>,
-    recent_projects: RecentProjects,
     file_tree: FileTreeModel,
     project_picker: ProjectPickerModel,
     search: SearchModel,
@@ -78,18 +75,15 @@ pub struct App {
 impl App {
     /// 内存模式（测试版使用，避免污染真实目录）
     pub fn new() -> Self {
-        Self::new_with_paths(None, None)
+        Self::new_with_paths(None)
     }
 
     /// 持久化模式（发行版使用）
     pub fn new_persistent() -> Self {
-        Self::new_with_paths(RecentProjects::default_path(), AppConfig::default_path())
+        Self::new_with_paths(AppConfig::default_path())
     }
 
-    pub(crate) fn new_with_paths(
-        recent_projects_path: Option<PathBuf>,
-        config_path: Option<PathBuf>,
-    ) -> Self {
+    pub(crate) fn new_with_paths(config_path: Option<PathBuf>) -> Self {
         let mut registry = CommandRegistry::new();
         let mut keymap = Keymap::new();
 
@@ -116,7 +110,6 @@ impl App {
             // 生产里 ShellView::render 的反向同步会把这值刷到与 GPUI 真实焦点一致。
             focus: FocusStore::new(AppFocus::project_picker(ProjectPickerFocus::Query)),
             project_root: None,
-            recent_projects: RecentProjects::load(recent_projects_path),
             file_tree: FileTreeModel::new(),
             project_picker: ProjectPickerModel::new(),
             search: SearchModel::new(),
@@ -237,17 +230,15 @@ impl App {
         self.clipboard = clipboard;
     }
 
-    pub(crate) fn open_local_project(&mut self, root: PathBuf) {
-        self.open_project(root, None);
-    }
-
-    pub(crate) fn open_git_project(&mut self, root: PathBuf, repo: String) {
-        self.open_project(root, Some(repo));
-    }
-
-    fn open_project(&mut self, root: PathBuf, repo: Option<String>) {
+    /// 把指定 root 切成当前活动项目：重置文件树、重建 workspace / view、聚焦编辑区。
+    ///
+    /// **不**负责把 root 写到"最近项目"列表 —— 那是 picker 自家的 UI 数据，归
+    /// shell 侧的 [`ProjectPickerRuntime`] 拥有；shell 在调用本方法后再调
+    /// `runtime.remember_project(root, repo)` 完成登记，repo 信息也由 shell 持有。
+    ///
+    /// [`ProjectPickerRuntime`]: crate::shell::features::project_picker::ProjectPickerRuntime
+    pub(crate) fn open_project(&mut self, root: PathBuf) {
         self.file_tree.open_project(root.clone());
-        self.recent_projects.remember(root.clone(), repo);
         self.project_root = Some(root);
         // 复用现有 SyntaxEngine——不再新开 worker 线程也不再重注 Tier 1。
         let engine = self.workspace.engine().clone();
@@ -273,16 +264,6 @@ impl App {
         self.project_root.is_some()
     }
 
-    pub(crate) fn recent_projects(&self) -> Vec<RecentProject> {
-        self.recent_projects.items().to_vec()
-    }
-
-    pub(crate) fn remove_recent_project(&mut self, id: &str) {
-        self.recent_projects.remove(id);
-        self.project_picker
-            .clamp_selection(self.recent_projects.items());
-    }
-
     pub(crate) fn project_picker_reset(&mut self, mode: ProjectPickerMode) {
         self.project_picker.reset(mode);
         self.request_focus(AppFocus::project_picker(ProjectPickerFocus::Query));
@@ -298,28 +279,19 @@ impl App {
     }
 
     /// 项目选择器 model 的只读视图。shell 拿到后直接调
-    /// `.state()` / `.query_text()` 等纯模型查询——这类与 recent_projects
-    /// 无关的方法不必再在 App 上各塞一个 wrapper。
+    /// `.state()` / `.query_text()` / `.selected_project_id(&recent)` 等纯模型查询；
+    /// `recent` 列表由调用方从 [`ProjectPickerRuntime`] 取出后传入，App 不再代为
+    /// 持有这份 picker UI 数据。
+    ///
+    /// [`ProjectPickerRuntime`]: crate::shell::features::project_picker::ProjectPickerRuntime
     pub(crate) fn project_picker(&self) -> &ProjectPickerModel {
         &self.project_picker
     }
 
-    /// 把 picker 的可变引用 + 最近项目列表打包递给闭包。
-    /// shell 用它做 `move_selection` 这类"既要改 picker 又要读 recent"的写操作。
-    pub(crate) fn with_project_picker<R>(
-        &mut self,
-        f: impl FnOnce(&mut ProjectPickerModel, &[RecentProject]) -> R,
-    ) -> R {
-        f(&mut self.project_picker, self.recent_projects.items())
-    }
-
-    /// 读路径版本：
-    /// `selected_project_id` / `activation` 等只读但同样依赖 recent 列表的查询走这里。
-    pub(crate) fn with_project_picker_ref<R>(
-        &self,
-        f: impl FnOnce(&ProjectPickerModel, &[RecentProject]) -> R,
-    ) -> R {
-        f(&self.project_picker, self.recent_projects.items())
+    /// 项目选择器 model 的可变引用——`move_selection(delta, &recent)` 等需要
+    /// recent 列表的写操作，调用方先从 runtime 取 recent 再传入。
+    pub(crate) fn project_picker_mut(&mut self) -> &mut ProjectPickerModel {
+        &mut self.project_picker
     }
 
     /// 可变借用文件树 model——仅限不需要 workspace/views 的纯模型操作
@@ -844,7 +816,7 @@ mod tests {
     /// 并 activate。
     fn app_with_open_file(name: &str) -> App {
         let mut app = App::new();
-        app.open_local_project(project_fixture(name));
+        app.open_project(project_fixture(name));
         app.file_tree_mut().move_selection(1); // root
         app.file_tree_mut().move_selection(1); // src
         app.file_tree_mut().move_selection(1); // README.md
@@ -872,7 +844,7 @@ mod tests {
     fn settings_changes_should_update_runtime_config_and_persist() {
         let path = temp_path("settings-change");
         let _ = std::fs::remove_file(&path);
-        let mut app = App::new_with_paths(None, Some(path.clone()));
+        let mut app = App::new_with_paths(Some(path.clone()));
 
         app.apply_settings_change(SettingsChange::AdjustUiFont(1));
         app.apply_settings_change(SettingsChange::AdjustEditorFont(2));
@@ -894,7 +866,7 @@ mod tests {
     fn settings_toml_editor_should_apply_and_persist_on_return() {
         let path = temp_path("settings-toml-editor");
         let _ = std::fs::remove_file(&path);
-        let mut app = App::new_with_paths(None, Some(path.clone()));
+        let mut app = App::new_with_paths(Some(path.clone()));
 
         app.open_settings_toml();
         assert!(app.settings_toml_open());
@@ -949,7 +921,7 @@ tab_size = 8
     fn editor_tab_size_setting_should_reach_open_buffers() {
         let mut app = App::new();
         app.apply_settings_change(SettingsChange::CycleEditorTabSize);
-        app.open_local_project(project_fixture("tab-size-setting"));
+        app.open_project(project_fixture("tab-size-setting"));
         app.file_tree_mut().move_selection(1); // root
         app.file_tree_mut().move_selection(1); // src
         app.file_tree_mut().move_selection(1); // README.md
@@ -1143,66 +1115,8 @@ tab_size = 8
         assert_eq!(app.project_title(), "打开项目");
     }
 
-    #[test]
-    fn opening_projects_should_maintain_recent_project_records() {
-        let mut app = App::new();
-        let local = project_fixture("recent-local");
-        let cloned = project_fixture("recent-git");
-
-        app.open_local_project(local.clone());
-        app.open_git_project(
-            cloned.clone(),
-            "https://example.com/org/recent-git.git".to_string(),
-        );
-
-        let recent = app.recent_projects();
-        assert_eq!(recent.len(), 2);
-        assert_eq!(recent[0].path, cloned);
-        assert_eq!(
-            recent[0].identifier,
-            "https://example.com/org/recent-git.git"
-        );
-        assert_eq!(recent[1].path, local);
-
-        let id = recent[0].id.clone();
-        app.remove_recent_project(&id);
-        let recent = app.recent_projects();
-        assert_eq!(recent.len(), 1);
-        assert_eq!(recent[0].path, local);
-    }
-
-    #[test]
-    fn recent_projects_should_persist_to_file() {
-        let store = std::env::temp_dir().join(format!(
-            "zom-recent-projects-{}-{}.toml",
-            std::process::id(),
-            "persist"
-        ));
-        let _ = std::fs::remove_file(&store);
-        let local = project_fixture("persist-local");
-        let cloned = project_fixture("persist-git");
-
-        {
-            let mut app = App::new_with_paths(Some(store.clone()), None);
-            app.open_local_project(local.clone());
-            app.open_git_project(
-                cloned.clone(),
-                "https://example.com/org/persist-git.git".to_string(),
-            );
-        }
-
-        let app = App::new_with_paths(Some(store.clone()), None);
-        let recent = app.recent_projects();
-        assert_eq!(recent.len(), 2);
-        assert_eq!(recent[0].path, cloned);
-        assert_eq!(
-            recent[0].repo.as_deref(),
-            Some("https://example.com/org/persist-git.git")
-        );
-        assert_eq!(recent[1].path, local);
-
-        let _ = std::fs::remove_file(store);
-    }
+    // RecentProjects 的 remember / remove / 落盘语义现在归 picker runtime 拥有，
+    // 单测落在 `shell::features::project_picker::recent::tests`，App 不再覆盖。
 
     #[test]
     fn language_server_status_command_should_emit_open_surface_window_action() {
@@ -1263,7 +1177,7 @@ tab_size = 8
     #[test]
     fn file_tree_move_selection_should_walk_visible_rows_in_order() {
         let mut app = App::new();
-        app.open_local_project(project_fixture("move"));
+        app.open_project(project_fixture("move"));
 
         assert!(app.file_tree_state().selected.is_none());
 
@@ -1289,7 +1203,7 @@ tab_size = 8
     #[test]
     fn file_tree_focus_initialization_should_select_first_visible_row() {
         let mut app = App::new();
-        app.open_local_project(project_fixture("focus-init"));
+        app.open_project(project_fixture("focus-init"));
 
         app.file_tree_mut().ensure_selection_initialized();
 
@@ -1301,7 +1215,7 @@ tab_size = 8
     fn file_tree_expand_then_collapse_should_round_trip_via_selection_keys() {
         let mut app = App::new();
         let root = project_fixture("expand");
-        app.open_local_project(root.clone());
+        app.open_project(root.clone());
 
         // 初始 rows: [root, src, README.md]，根默认展开。
         let state = app.file_tree_state();
@@ -1336,7 +1250,7 @@ tab_size = 8
     fn file_tree_activate_on_file_should_open_buffer_and_report_opened() {
         let mut app = App::new();
         let root = project_fixture("activate");
-        app.open_local_project(root.clone());
+        app.open_project(root.clone());
 
         // rows: [root, src, README.md] —— 走到 README.md。
         app.file_tree_mut().move_selection(1); // root
@@ -1359,7 +1273,7 @@ tab_size = 8
     fn file_tree_activate_on_directory_should_toggle_expanded() {
         let mut app = App::new();
         let root = project_fixture("activate-dir");
-        app.open_local_project(root.clone());
+        app.open_project(root.clone());
 
         // rows: [root, src, README.md] —— 选到 src。
         app.file_tree_mut().move_selection(1); // root
@@ -1380,7 +1294,7 @@ tab_size = 8
     #[test]
     fn tab_commands_should_switch_and_close_active_view() {
         let mut app = App::new();
-        app.open_local_project(project_fixture("tabs"));
+        app.open_project(project_fixture("tabs"));
 
         // 打开 README.md：rows = [root, src, README.md]。
         app.file_tree_mut().move_selection(1); // root

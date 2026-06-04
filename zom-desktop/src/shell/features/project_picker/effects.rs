@@ -52,6 +52,7 @@ pub(crate) fn try_apply_effect(
                 Rc::clone(workbench),
                 surfaces,
                 file_tree_runtime.clone(),
+                project_picker_runtime.clone(),
                 window,
                 cx,
             );
@@ -71,11 +72,16 @@ pub(crate) fn try_apply_effect(
             if !picker_active(surfaces, cx) {
                 return true;
             }
-            let project_id = app
-                .borrow()
-                .with_project_picker_ref(|picker, recent| picker.selected_project_id(recent));
+            // 先在 runtime 取一份 recent 快照，再短借 app 查选中 id；
+            // 第三次借 app 是为了把 selection clamp 回新长度，不能与查 id 同借用域。
+            let recent = project_picker_runtime.recent_projects();
+            let project_id = app.borrow().project_picker().selected_project_id(&recent);
             if let Some(project_id) = project_id {
-                app.borrow_mut().remove_recent_project(&project_id);
+                project_picker_runtime.remove_recent(&project_id);
+                let recent = project_picker_runtime.recent_projects();
+                app.borrow_mut()
+                    .project_picker_mut()
+                    .clamp_selection(&recent);
                 window.refresh();
             }
         }
@@ -84,17 +90,18 @@ pub(crate) fn try_apply_effect(
                 return true;
             }
             let delta = *delta;
+            let recent = project_picker_runtime.recent_projects();
             app.borrow_mut()
-                .with_project_picker(|picker, recent| picker.move_selection(delta, recent));
+                .project_picker_mut()
+                .move_selection(delta, &recent);
             window.refresh();
         }
         HostEffect::ProjectPickerActivate => {
             if !picker_active(surfaces, cx) {
                 return true;
             }
-            let activation = app
-                .borrow()
-                .with_project_picker_ref(|picker, recent| picker.activation(recent));
+            let recent = project_picker_runtime.recent_projects();
+            let activation = app.borrow().project_picker().activation(&recent);
             match activation {
                 ProjectPickerActivation::None => {}
                 ProjectPickerActivation::Open(project_record) => {
@@ -104,6 +111,7 @@ pub(crate) fn try_apply_effect(
                         Rc::clone(workbench),
                         surfaces,
                         file_tree_runtime.clone(),
+                        project_picker_runtime.clone(),
                         project_record.path,
                         project_record.repo,
                         window,
@@ -117,6 +125,7 @@ pub(crate) fn try_apply_effect(
                         Rc::clone(workbench),
                         surfaces,
                         file_tree_runtime.clone(),
+                        project_picker_runtime.clone(),
                         repo,
                         window,
                         cx,
@@ -147,8 +156,8 @@ fn show_project_picker(
         return;
     };
     app.borrow_mut().project_picker_reset(initial_mode.into());
-    let project_list_app = Rc::clone(app);
-    let projects = Rc::new(move || project_list_app.borrow().recent_projects());
+    let runtime_for_projects = project_picker_runtime.clone();
+    let projects = Rc::new(move || runtime_for_projects.recent_projects());
     let state_app = Rc::clone(app);
     let state = Rc::new(move || state_app.borrow().project_picker().state());
     let shortcut_app = Rc::clone(app);

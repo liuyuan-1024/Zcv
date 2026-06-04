@@ -24,7 +24,7 @@ use super::editor::{
 };
 use super::features::panels::PanelRuntimes;
 use super::features::panels::file_tree::{ConfirmDeleteHandlers, FileTreeRuntime};
-use super::features::project_picker::ProjectPickerRuntime;
+use super::features::project_picker::{ProjectPickerRuntime, RecentProjects};
 use super::features::{language_servers, settings};
 use super::surfaces::{SurfaceAnchorRegistry, SurfaceId, SurfaceManager, SurfaceShell};
 use super::workbench;
@@ -70,7 +70,10 @@ impl ShellView {
         let editor_focus = cx.focus_handle();
         let panel_runtimes = PanelRuntimes::new(cx);
         let file_tree = FileTreeRuntime::new(cx);
-        let project_picker = ProjectPickerRuntime::new(cx);
+        // 生产构造路径：最近项目落盘走 `~/.zom/recent_workspaces.toml`。
+        // ShellView 是组合 GPUI 窗口的唯一落点，直接选定该策略；
+        // 若将来 ShellView 也要单测，再把 path 上抛到构造参数。
+        let project_picker = ProjectPickerRuntime::new(cx, RecentProjects::default_path());
         let language_servers = language_servers::LanguageServersRuntime::new(cx);
         let settings = settings::SettingsRuntime::new(cx);
 
@@ -202,6 +205,7 @@ impl ShellView {
             &self.app,
             &self.workbench,
             &self.file_tree,
+            &self.project_picker,
             project_root,
             window,
         );

@@ -7,6 +7,7 @@ mod search_box;
 mod source_actions;
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
@@ -22,6 +23,7 @@ use crate::shell::surfaces::{
 };
 use crate::shell::{KeyRequest, normalized_chord};
 
+use super::recent::{RecentProject, RecentProjects};
 use super::{ProjectPickerActions, ProjectPickerMode};
 
 #[derive(Clone)]
@@ -29,6 +31,9 @@ pub(crate) struct ProjectPickerRuntime {
     focus: FocusHandle,
     key_request: Rc<RefCell<Option<KeyRequest>>>,
     slot: Rc<RefCell<Option<Rc<TextEditorSlot>>>>,
+    /// 最近项目列表 —— picker 自家的纯 UI 数据，磁盘持久化由 [`RecentProjects`] 内部完成。
+    /// 用 `Rc<RefCell>` 让 runtime 自身 `Clone` 时所有副本共享同一份。
+    recent: Rc<RefCell<RecentProjects>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,12 +43,32 @@ pub(crate) enum ProjectPickerInitialMode {
 }
 
 impl ProjectPickerRuntime {
-    pub(crate) fn new<T>(cx: &mut gpui::Context<T>) -> Self {
+    /// 构造一个 picker runtime；`recent_path` 决定最近项目持久化位置，
+    /// `None` 走纯内存模式（单测 / playground）。
+    pub(crate) fn new<T>(cx: &mut gpui::Context<T>, recent_path: Option<PathBuf>) -> Self {
         Self {
             focus: cx.focus_handle(),
             key_request: Rc::new(RefCell::new(None)),
             slot: Rc::new(RefCell::new(None)),
+            recent: Rc::new(RefCell::new(RecentProjects::load(recent_path))),
         }
+    }
+
+    /// 当前最近项目快照（克隆）。回调里用：调用方不持有 RefCell 借用。
+    pub(crate) fn recent_projects(&self) -> Vec<RecentProject> {
+        self.recent.borrow().items().to_vec()
+    }
+
+    /// 项目打开成功后由 shell 侧调一次，把它记进"最近"。
+    /// 落盘在 [`RecentProjects::remember`] 内完成，调用方无需再 flush。
+    pub(crate) fn remember_project(&self, root: PathBuf, repo: Option<String>) {
+        self.recent.borrow_mut().remember(root, repo);
+    }
+
+    /// 从最近列表移除并把 picker 的当前 selection clamp 回合法区间。
+    /// clamp 需要可变 picker；callee 在外部 borrow_mut。
+    pub(crate) fn remove_recent(&self, id: &str) {
+        self.recent.borrow_mut().remove(id);
     }
 
     pub(crate) fn set_key_request(&self, key_request: KeyRequest) {

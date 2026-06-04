@@ -26,7 +26,9 @@ use crate::focus::{
     AppFocus, FileTreeFocus, FocusStore, PanelFocus, ProjectPickerFocus, SurfaceFocus,
 };
 use crate::shell::CommandCatalogItem;
-use crate::shell::editor::{EditorRouter, EditorRouterMut, TextTargetOwner, TextTargetQuery};
+use crate::shell::editor::{
+    EditorRouter, EditorRouterMut, EditorTargetRegistry, TextTargetOwner, TextTargetQuery,
+};
 use crate::shell::features::panels::file_tree::{FileTreeModel, FileTreeState};
 use crate::shell::features::panels::search::{self as search_panel, SearchModel, SearchState};
 use crate::shell::features::project_picker::{ProjectPickerMode, ProjectPickerModel};
@@ -70,6 +72,13 @@ pub struct App {
     config: AppConfig,
     /// 全局配置的落盘路径；`None` 表示内存模式（单测）。
     config_path: Option<PathBuf>,
+    /// 外部 owner 注册表 —— shell runtime 在 [`ShellView::new`] 调
+    /// [`Self::install_editor_owner`] 把自家 owner 注册进来；`with_router(_mut)`
+    /// 在自家 owner 之外再叠这一批。本字段是 §2 拆分 App 字段的承载点：
+    /// 每个迁出的 model 不再需要在 [`App`] struct 上新增一条字段。
+    ///
+    /// [`ShellView::new`]: crate::shell::view::ShellView
+    editor_targets: EditorTargetRegistry,
 }
 
 impl App {
@@ -118,7 +127,27 @@ impl App {
             soft_wrap,
             config,
             config_path,
+            editor_targets: EditorTargetRegistry::new(),
         }
+    }
+
+    /// 把一个 shell runtime 持有的可嵌入编辑器 owner 注册进路由表。
+    /// 由 [`ShellView::new`] 在装配阶段调；运行期通常不会再注册。
+    ///
+    /// `Rc` 的生命周期归 runtime（真正拥有者）；本结构只持一份共享引用，
+    /// 在路由阶段借出做 query / IME 写入。
+    ///
+    /// 第一个真正调用方在 commit 3（SettingsTomlEditor 迁出到 SettingsRuntime）
+    /// 出现；commit 2 已通过 [`registry_integration`](tests::registry_integration)
+    /// 单测覆盖了"注册即可被 router 接管"的核心契约。
+    ///
+    /// [`ShellView::new`]: crate::shell::view::ShellView
+    #[allow(dead_code)]
+    pub(crate) fn install_editor_owner(
+        &mut self,
+        owner: std::rc::Rc<std::cell::RefCell<dyn TextTargetOwner>>,
+    ) {
+        self.editor_targets.register(owner);
     }
 
     /// 共享的软换行 cell——多行 [`EditorKernel`] 在装配时借这份 `Rc`。
@@ -435,18 +464,27 @@ impl App {
     /// 这是 editor 子系统访问 App 内部状态的唯一桥：调用方拿到 [`EditorRouter`]
     /// 后直接做 IME 查询 / focused target / snapshot 等 —— App 不再为每种查询
     /// 包一层方法。
+    ///
+    /// Owners 顺序：先 App 自己持有的 model（迁出过程中陆续清空）、再注册表里
+    /// 由 shell runtime 注入的 owner、最后兜底主编辑区。`accepts_focus` 对
+    /// `AppFocus` 精确匹配，各 owner 覆盖 disjoint 子集，顺序不影响命中。
     pub(crate) fn with_router<R>(&self, f: impl FnOnce(EditorRouter<'_>) -> R) -> R {
         let main = MainEditorOwnerRef::new(&self.workspace, &self.views);
         let search_query = self.search.query_owner();
         let search_replacement = self.search.replacement_owner();
-        let owners: Vec<&dyn TextTargetQuery> = vec![
+        // 注册表 owner 的借用 guard 必须比下方 owners 引用活得长。
+        let registry_borrows = self.editor_targets.borrow_all();
+        let mut owners: Vec<&dyn TextTargetQuery> = vec![
             &self.project_picker as &dyn TextTargetQuery,
             &self.file_tree as &dyn TextTargetQuery,
             &search_query as &dyn TextTargetQuery,
             &search_replacement as &dyn TextTargetQuery,
             &self.settings_toml as &dyn TextTargetQuery,
-            &main as &dyn TextTargetQuery,
         ];
+        for borrow in registry_borrows.iter() {
+            owners.push(&**borrow as &dyn TextTargetQuery);
+        }
+        owners.push(&main as &dyn TextTargetQuery);
         f(EditorRouter::new(owners))
     }
 
@@ -460,13 +498,19 @@ impl App {
         let focus = self.focus.current();
         let mut main = MainEditorOwner::new(&mut self.workspace, &mut self.views);
         let mut search = self.search.active_owner(focus);
-        let owners: Vec<&mut dyn TextTargetOwner> = vec![
+        // 注册表 owner 的可变借用 guard 必须比下方 owners 引用活得长；每个 RefMut
+        // 独立锁住自己那一格 RefCell，互不冲突。
+        let mut registry_borrows = self.editor_targets.borrow_all_mut();
+        let mut owners: Vec<&mut dyn TextTargetOwner> = vec![
             &mut self.project_picker as &mut dyn TextTargetOwner,
             &mut self.file_tree as &mut dyn TextTargetOwner,
             &mut search as &mut dyn TextTargetOwner,
             &mut self.settings_toml as &mut dyn TextTargetOwner,
-            &mut main as &mut dyn TextTargetOwner,
         ];
+        for borrow in registry_borrows.iter_mut() {
+            owners.push(&mut **borrow as &mut dyn TextTargetOwner);
+        }
+        owners.push(&mut main as &mut dyn TextTargetOwner);
         f(EditorRouterMut::new(owners))
     }
 
@@ -1334,5 +1378,92 @@ tab_size = 8
         let state = app.editor_state();
         assert_eq!(state.tabs.len(), 1);
         assert_eq!(active_tab(&state).title, "lib.rs");
+    }
+
+    /// EditorTargetRegistry 集成契约：runtime 注册进来的 owner 能被 router
+    /// 通过 `accepts_focus` 找到并落到 query / IME 写入路径上。
+    ///
+    /// 该测试是 §2 拆分 App 字段的基础——后续每个 model 迁出时只需把自己
+    /// 注册到 registry，不再在 App struct 上长字段。本用例守住该机制本身。
+    mod registry_integration {
+        use super::*;
+        use crate::shell::editor::{
+            EditorSnapshot, ImeQueryTarget, ImeTarget, TextTargetOwner, TextTargetQuery,
+        };
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use zom_command::{EditTarget, KeyContext};
+
+        /// 自定义 focus 的桩 owner：accepts_focus 只命中 Settings；
+        /// after_text_changed 翻一个 flag 让 router 写路径可观察。
+        struct StubSettingsOwner {
+            flag: std::cell::Cell<bool>,
+        }
+
+        impl StubSettingsOwner {
+            fn new() -> Self {
+                Self {
+                    flag: std::cell::Cell::new(false),
+                }
+            }
+        }
+
+        impl TextTargetQuery for StubSettingsOwner {
+            fn accepts_focus(&self, focus: AppFocus) -> bool {
+                focus == AppFocus::settings()
+            }
+            fn snapshot(&self) -> EditorSnapshot {
+                EditorSnapshot::default()
+            }
+            fn key_contexts(&self) -> Vec<KeyContext> {
+                vec![KeyContext::settings(), KeyContext::global()]
+            }
+            fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
+                None
+            }
+        }
+
+        impl TextTargetOwner for StubSettingsOwner {
+            fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
+                None
+            }
+            fn edit_target(&mut self) -> Option<EditTarget<'_>> {
+                None
+            }
+            fn after_text_changed(&mut self) {
+                self.flag.set(true);
+            }
+        }
+
+        #[test]
+        fn registered_owner_is_reachable_via_router_key_contexts() {
+            let mut app = App::new();
+            let owner = Rc::new(RefCell::new(StubSettingsOwner::new()));
+            let dyn_owner: Rc<RefCell<dyn TextTargetOwner>> = owner.clone();
+            app.install_editor_owner(dyn_owner);
+
+            // router 现在该把 Settings focus 路由到注册进来的 owner，并取它的 key_contexts。
+            let contexts = app.with_router(|router| router.key_contexts_for(AppFocus::settings()));
+            // 当前 App 仍持有 settings_toml model（未迁），accepts_focus 在 toml 未开时返回 false，
+            // 因此 Settings focus 由 stub owner 接管。
+            let contexts = contexts.expect("Settings focus 应被 stub owner 接管");
+            assert!(contexts.iter().any(|c| c == &KeyContext::settings()));
+        }
+
+        #[test]
+        fn registered_owner_does_not_steal_other_focuses() {
+            let mut app = App::new();
+            let owner: Rc<RefCell<dyn TextTargetOwner>> =
+                Rc::new(RefCell::new(StubSettingsOwner::new()));
+            app.install_editor_owner(owner);
+
+            // Editor focus 不在 stub 的 accepts_focus 范围内——应当落到主编辑区 owner，
+            // 主编辑区无活动 view 时仍返回它自己的 key_contexts（accepts_newline=true 的 text_edit 栈）。
+            let contexts = app.with_router(|router| router.key_contexts_for(AppFocus::editor()));
+            assert!(
+                contexts.is_some(),
+                "Editor focus 应仍由主编辑区 owner 接管，不被 stub 抢走"
+            );
+        }
     }
 }

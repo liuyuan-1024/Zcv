@@ -38,11 +38,20 @@ const FIND_NEXT_ICON: &str = "icons/navigation/chevron_right.svg";
 const REPLACE_NEXT_ICON: &str = "icons/actions/replace_next.svg";
 const REPLACE_ALL_ICON: &str = "icons/actions/replace_all.svg";
 
+/// 搜索面板的 shell 端 runtime —— 焦点宿主 + `SearchModel` 的真正拥有者。
+///
+/// `SearchModel` 不再放在 App 字段里：runtime 自构造 + 持 `Rc<RefCell<_>>`，
+/// 通过 [`SearchRuntime::model_handle`] 把同一份 `Rc` 借给 App，
+/// 让 `with_router(_mut)` 在路径上构造短寿命的 `SearchFieldQuery` / `SearchActiveOwner` 包装借出
+/// （model 的输入框是双字段，每个字段的"借出哪一个 OwnedEditorTarget"由焦点决定，无法套到 `EditorTargetRegistry` 的"一个 owner 一个 RefCell"形态里——所以走 handle 借出而非 register）。
+///
+/// 这条路线与 §2 移出 `SettingsTomlEditor` 的注册表路径并行：两条路线都让 shell runtime 成为真正拥有者，App 只持一份共享句柄做路由，不再在 struct 上长 model 字段。
 #[derive(Clone)]
 pub(crate) struct SearchRuntime {
     focus: FocusHandle,
     query_focus: FocusHandle,
     replacement_focus: FocusHandle,
+    model: Rc<RefCell<SearchModel>>,
 }
 
 impl SearchRuntime {
@@ -51,7 +60,16 @@ impl SearchRuntime {
             focus: cx.focus_handle(),
             query_focus: cx.focus_handle(),
             replacement_focus: cx.focus_handle(),
+            model: Rc::new(RefCell::new(SearchModel::new())),
         }
+    }
+
+    /// 把 `SearchModel` 借给 App 路由层用——`Rc` clone 不复制内部 state。
+    /// shell 装配阶段调一次，App 通过 [`install_search_model`] 存进自己的字段。
+    ///
+    /// [`install_search_model`]: crate::app::App::install_search_model
+    pub(crate) fn model_handle(&self) -> Rc<RefCell<SearchModel>> {
+        self.model.clone()
     }
 
     pub(crate) fn focus_handle(&self) -> FocusHandle {

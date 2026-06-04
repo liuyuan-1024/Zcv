@@ -189,6 +189,13 @@ impl PanelRuntimes {
         self.search.replacement_focus_handle()
     }
 
+    /// 取搜索 model 句柄给 App 装进自己的字段做路由——具体语义见[`search::SearchRuntime::model_handle`]。
+    pub(crate) fn search_model_handle(
+        &self,
+    ) -> std::rc::Rc<std::cell::RefCell<search::SearchModel>> {
+        self.search.model_handle()
+    }
+
     pub(crate) fn install_listeners<T: 'static>(
         &self,
         app: std::rc::Rc<std::cell::RefCell<crate::app::App>>,

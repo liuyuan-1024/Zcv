@@ -26,9 +26,7 @@ use zom_workspace::syntax::HighlightSpan;
 use crate::shell::editor::snapshot::SnapshotLine;
 use crate::shell::shared::theme::color;
 
-mod languages;
 mod producers;
-pub(crate) use languages::install_tier1;
 
 /// 一条上屏装饰。
 ///

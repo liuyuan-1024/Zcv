@@ -18,5 +18,6 @@ pub use engine::SyntaxEngine;
 pub use language::{LanguageDetector, LanguageId, LanguageRegistry, ProviderFactory};
 pub use payload::{HighlightName, HighlightSpan, TokenModifiers, syntax_layer_kind};
 pub use provider::{BufferHandle, HighlightProvider};
+pub use providers::install_builtin_providers;
 pub use sink::{HighlightSink, SinkMessage};
 pub use worker::SyntaxWorkerHandle;

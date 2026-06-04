@@ -69,7 +69,7 @@ pub enum BufferOrigin {
 ///
 /// 语言注册表、后台 worker 与 buffer id 分配器都收口在共享的 [`SyntaxEngine`] 上（通过 `Rc` 与同进程内的其他容器——例如嵌入式
 /// [`SyntaxDocument`]——共享同一份资源）。组合根在 `Rc::new(SyntaxEngine)`
-/// 之前用 [`SyntaxEngine::registry_mut`] 注一遍 Tier 1 provider 工厂；运行期路径只读注册表。
+/// 之前用 [`SyntaxEngine::registry_mut`] 注一遍内置 provider 工厂；运行期路径只读注册表。
 #[derive(Debug)]
 pub struct Workspace {
     engine: Rc<SyntaxEngine>,
@@ -156,7 +156,7 @@ impl Workspace {
         self.engine.registry()
     }
 
-    /// 语言注册表可变视图——组合根在启动期注入 Tier 1 provider 工厂。
+    /// 语言注册表可变视图——组合根在启动期注入内置 provider 工厂。
     ///
     /// 只在 `Rc::new(SyntaxEngine)` 之前对其调用：一旦引擎被 `Rc` 共享，
     /// 调本方法会在运行期 panic（`Rc::get_mut` 在 strong_count > 1 时返回 `None`）。

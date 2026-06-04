@@ -28,7 +28,7 @@ use zom_command::{
 };
 use zom_view::ViewSet;
 use zom_workspace::Workspace;
-use zom_workspace::syntax::SyntaxEngine;
+use zom_workspace::syntax::{SyntaxEngine, install_builtin_providers};
 
 use self::command_runtime::CommandRuntime;
 use self::config_applier::ConfigApplier;
@@ -600,13 +600,13 @@ impl App {
 /// 显示一个不存在的"文件"，误导用户。现在编辑区在无活动视图时走
 /// `EditorState::default()`，文件从文件树打开后才有内容。
 ///
-/// 启动期同时把 Tier 1 syntax provider 工厂注入共享 [`SyntaxEngine`]——
+/// 启动期同时把内置 syntax provider 工厂注入共享 [`SyntaxEngine`]——
 /// 否则后续 `open_file` 落 plain。注册需要在 `Rc::new(engine)` 之前完成。
 /// 主工作区与 [`SettingsTomlEditor`] 共享同一根 `Rc`，进程里只有这一份
 /// 语言注册表与一根后台 worker 线程。
 fn empty_workspace() -> (Rc<SyntaxEngine>, Workspace, ViewSet) {
     let mut engine = SyntaxEngine::new();
-    crate::shell::editor::highlight::install_tier1(&mut engine);
+    install_builtin_providers(&mut engine);
     let engine = Rc::new(engine);
     let workspace = Workspace::with_engine(engine.clone());
     (engine, workspace, ViewSet::new())

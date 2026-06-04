@@ -3,7 +3,7 @@
 //! 把原本散在 [`crate::Workspace`] 上的「语言注册表 + 后台 worker + buffer id 分配器」收口成一个值，
 //! 按 [`std::rc::Rc`] 在主工作区与任意数量的嵌入式文档 ([`crate::SyntaxDocument`]) 之间共享：
 //!
-//! - **一次注册，全局可见**：组合根启动时通过 [`Self::registry_mut`] 注一遍 Tier 1 provider 工厂，所有持有同一 `Rc<SyntaxEngine>` 的容器都能 detect。
+//! - **一次注册，全局可见**：组合根启动时通过 [`Self::registry_mut`] 注一遍内置 provider 工厂，所有持有同一 `Rc<SyntaxEngine>` 的容器都能 detect。
 //! - **一根后台线程**：嵌入式编辑器不再各自 `SyntaxWorkerHandle::spawn`，都搭在共享 worker 上。
 //! - **跨容器的稳定 buffer id**：worker 用 [`crate::BufferId`] 做任务寻址；id 由本结构集中分配，主工作区的常规缓冲区与嵌入文档不会撞 id。
 //!
@@ -43,7 +43,7 @@ impl SyntaxEngine {
         &self.registry
     }
 
-    /// 仅启动期可变：组合根在 `Rc::new` 之前注册 Tier 1 provider 工厂。
+    /// 仅启动期可变：组合根在 `Rc::new` 之前注册内置 provider 工厂。
     pub fn registry_mut(&mut self) -> &mut LanguageRegistry {
         &mut self.registry
     }

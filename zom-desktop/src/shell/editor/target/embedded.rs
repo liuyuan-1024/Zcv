@@ -8,7 +8,7 @@
 //!
 //! 共享而非各开一份引擎：进程里**只**有主编辑区在 boot 期实例化的那根
 //! [`SyntaxEngine`]，嵌入点构造时通过 `Rc` 借用。每个嵌入编辑器不再自己
-//! `install_tier1`，也不再各起一根后台线程。
+//! 安装内置 provider，也不再各起一根后台线程。
 
 use std::rc::Rc;
 
@@ -105,15 +105,15 @@ impl EmbeddedEditorTarget {
 mod tests {
     use super::*;
 
-    fn engine_with_tier1() -> Rc<SyntaxEngine> {
+    fn engine_with_builtin_providers() -> Rc<SyntaxEngine> {
         let mut engine = SyntaxEngine::new();
-        highlight::install_tier1(&mut engine);
+        zom_workspace::syntax::install_builtin_providers(&mut engine);
         Rc::new(engine)
     }
 
     #[test]
     fn embedded_target_uses_shared_engine_syntax_provider() {
-        let engine = engine_with_tier1();
+        let engine = engine_with_builtin_providers();
         let mut target = EmbeddedEditorTarget::for_language(engine, LanguageId::new("toml"));
         target.replace_text("[editor]\nsoft_wrap = false\n");
         target.wait_for_syntax_idle();

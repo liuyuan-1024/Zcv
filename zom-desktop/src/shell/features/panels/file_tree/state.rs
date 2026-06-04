@@ -42,7 +42,7 @@ pub(crate) struct FileTreeState {
 /// [`EditorRouter`] 拉快照，state 这里只描述外壳（图标 / 缩进）。
 ///
 /// [`TextEditorSlot`]: crate::shell::editor::TextEditorSlot
-    /// [`EditorRouter`]: crate::text_target::EditorRouter
+/// [`EditorRouter`]: crate::text_target::EditorRouter
 #[derive(Clone, Debug)]
 pub(crate) struct PendingNewEntry {
     /// 新条目将创建在该目录下。

@@ -1,8 +1,8 @@
 //! 配置存储：[`AppConfig`] 的进程内副本、落盘路径、以及它向 editor kernel 投影出去的运行时只读 cell。
 //!
 //! Store 只负责"持有 + 落盘 + 保持 soft_wrap cell 与 config 一致"。
-//! 视觉子系统（typography / syntax）、workspace buffer_config 的应用走 [`ConfigApplier`](crate::config_applier::ConfigApplier)，调用方编排顺序：
-//! `store.mutate -> Applier::apply_all(store.config(), session) -> store.save`。
+//! workspace buffer_config 的应用走 [`ConfigApplier`](super::config_applier::ConfigApplier)，
+//! 视觉字段由 shell 在装配 / settings 变更后投影到主题系统。
 //! Store 不依赖 workspace、不依赖 typography / syntax；测试它的 mutation 不需要 stub 任何全局子系统。
 
 use std::cell::Cell;
@@ -68,10 +68,10 @@ impl ConfigStore {
     }
 
     /// 应用一项 [`SettingsChange`]，保持 soft_wrap cell 与 config 一致。
-    /// 视觉刷新 / workspace 同步 / 落盘由调用方分别接 [`ConfigApplier::apply_all`]
+    /// workspace 同步 / 落盘由调用方分别接 [`ConfigApplier::apply_to_session`]
     /// 与 [`Self::save`]。
     ///
-    /// [`ConfigApplier::apply_all`]: crate::config_applier::ConfigApplier::apply_all
+    /// [`ConfigApplier::apply_to_session`]: super::config_applier::ConfigApplier::apply_to_session
     pub(super) fn apply_change(&mut self, change: SettingsChange) {
         self.config.apply_change(change);
         self.sync_soft_wrap_cell();

@@ -78,9 +78,6 @@ impl App {
 
     pub(crate) fn new_with_paths(config_path: Option<PathBuf>) -> Self {
         let config = ConfigStore::new(config_path);
-        // boot 期视觉初始化走 Applier 的局部入口；session 还没构造，
-        // 不能用 apply_all。workspace buffer_config 紧接着手动 push 一次。
-        ConfigApplier::apply_visuals(config.config());
         let (_engine, mut workspace, views) = empty_workspace();
         workspace.set_buffer_config(config.buffer_config());
 
@@ -162,12 +159,12 @@ impl App {
 
     pub(crate) fn apply_settings_change(&mut self, change: SettingsChange) {
         self.config.apply_change(change);
-        ConfigApplier::apply_all(self.config.config(), &mut self.session);
+        ConfigApplier::apply_to_session(self.config.config(), &mut self.session);
         self.config.save();
     }
 
-    /// 用一份外部传入的 `AppConfig` 替换当前 config，并把变化应用到运行时
-    /// 视觉 / workspace / soft_wrap 上，最后落盘。
+    /// 用一份外部传入的 `AppConfig` 替换当前 config，并把变化应用到 app runtime
+    /// 与 soft_wrap cell 上，最后落盘。视觉字段由 shell 读取 snapshot 后应用。
     ///
     /// settings TOML 视图关闭时由 [`ShellView`] 调：[`SettingsRuntime::close_toml_and_parse`]
     /// 解出新 config 后通过本入口提交，避免 shell 侧自己重做"配置应用 + 落盘"。
@@ -176,7 +173,7 @@ impl App {
     /// [`SettingsRuntime::close_toml_and_parse`]: crate::shell::features::settings::SettingsRuntime::close_toml_and_parse
     pub(crate) fn replace_config(&mut self, next: AppConfig) {
         self.config.replace(next);
-        ConfigApplier::apply_all(self.config.config(), &mut self.session);
+        ConfigApplier::apply_to_session(self.config.config(), &mut self.session);
         self.config.save();
     }
 

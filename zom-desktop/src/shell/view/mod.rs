@@ -1,6 +1,7 @@
 //! shell 根视图。
 
 pub(crate) mod actions;
+mod config_visuals;
 mod features;
 pub(crate) mod focus;
 mod frame_tick;
@@ -187,12 +188,20 @@ impl ShellView {
                     let Some(config) = settings.close_toml_and_parse() else {
                         return;
                     };
-                    let mut app = app.borrow_mut();
-                    app.replace_config(config);
-                    app.request_focus(AppFocus::settings());
+                    {
+                        let mut app = app.borrow_mut();
+                        app.replace_config(config);
+                        app.request_focus(AppFocus::settings());
+                        config_visuals::apply(&app.config_snapshot());
+                    }
                 }
                 settings::SettingsAction::Change(change) => {
-                    app.borrow_mut().apply_settings_change(change);
+                    let config = {
+                        let mut app = app.borrow_mut();
+                        app.apply_settings_change(change);
+                        app.config_snapshot()
+                    };
+                    config_visuals::apply(&config);
                 }
             }
             window.refresh();

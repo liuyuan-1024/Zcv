@@ -74,6 +74,10 @@ impl TextTargetRuntime {
         self.with_router(session, |router| router.key_contexts_for(focus))
     }
 
+    pub(super) fn accepts_focus(&self, session: &WorkspaceSession, focus: AppFocus) -> bool {
+        self.with_router(session, |router| router.accepts_focus(focus))
+    }
+
     pub(super) fn is_composing(&self, session: &WorkspaceSession, focus: AppFocus) -> bool {
         self.with_router(session, |router| router.is_composing(focus))
     }

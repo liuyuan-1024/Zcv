@@ -93,12 +93,15 @@ impl FileTreeModel {
 
 impl TextTargetQuery for FileTreeModel {
     fn accepts_focus(&self, focus: AppFocus) -> bool {
-        matches!(
-            focus,
-            AppFocus::Panel(PanelFocus::FileTree(
-                FileTreeFocus::NewEntryName | FileTreeFocus::RenameEntry
-            ))
-        )
+        match focus {
+            AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::NewEntryName)) => {
+                self.pending.is_some()
+            }
+            AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::RenameEntry)) => {
+                self.pending_rename.is_some()
+            }
+            _ => false,
+        }
     }
 
     fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {

@@ -65,6 +65,10 @@ impl<'a> EditorRouter<'a> {
         Self { owners }
     }
 
+    pub(crate) fn accepts_focus(&self, focus: AppFocus) -> bool {
+        self.owners.iter().any(|owner| owner.accepts_focus(focus))
+    }
+
     pub(crate) fn key_contexts_for(&self, focus: AppFocus) -> Option<Vec<KeyContext>> {
         self.owners
             .iter()

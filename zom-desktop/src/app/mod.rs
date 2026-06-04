@@ -185,6 +185,30 @@ impl App {
     }
 
     fn refine_focus(&self, focus: AppFocus) -> AppFocus {
+        if matches!(
+            focus,
+            AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::Navigate))
+        ) {
+            let current = self.focus.current();
+            if matches!(
+                current,
+                AppFocus::Panel(PanelFocus::FileTree(
+                    FileTreeFocus::NewEntryName | FileTreeFocus::RenameEntry
+                ))
+            ) && self.text_targets.accepts_focus(&self.session, current)
+            {
+                return current;
+            }
+
+            for candidate in [
+                AppFocus::file_tree(FileTreeFocus::RenameEntry),
+                AppFocus::file_tree(FileTreeFocus::NewEntryName),
+            ] {
+                if self.text_targets.accepts_focus(&self.session, candidate) {
+                    return candidate;
+                }
+            }
+        }
         focus
     }
 
@@ -1229,11 +1253,14 @@ tab_size = 8
     /// 注册到 registry，不再在 App struct 上长字段。本用例守住该机制本身。
     mod registry_integration {
         use super::*;
-        use crate::shell::editor::{EditorSnapshot, ImeQueryTarget, ImeTarget};
+        use crate::focus::FileTreeFocus;
+        use crate::shell::editor::{
+            EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
+        };
         use crate::text_target::{TextTargetOwner, TextTargetQuery};
         use std::cell::RefCell;
         use std::rc::Rc;
-        use zom_command::{EditTarget, KeyContext};
+        use zom_command::{EditTarget, FileTreeKeyMode, KeyContext};
 
         /// 自定义 focus 的桩 owner：accepts_focus 只命中 Settings；
         /// after_text_changed 翻一个 flag 让 router 写路径可观察。
@@ -1276,6 +1303,60 @@ tab_size = 8
             }
         }
 
+        struct StubFileTreeNameOwner {
+            active: std::cell::Cell<bool>,
+            target: OwnedEditorTarget,
+        }
+
+        impl StubFileTreeNameOwner {
+            fn new() -> Self {
+                Self {
+                    active: std::cell::Cell::new(false),
+                    target: OwnedEditorTarget::new(),
+                }
+            }
+
+            fn set_active(&self, active: bool) {
+                self.active.set(active);
+            }
+
+            fn text(&self) -> String {
+                self.target.text()
+            }
+        }
+
+        impl TextTargetQuery for StubFileTreeNameOwner {
+            fn accepts_focus(&self, focus: AppFocus) -> bool {
+                self.active.get() && focus == AppFocus::file_tree(FileTreeFocus::NewEntryName)
+            }
+
+            fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
+                self.target.snapshot(EditorSnapshotRequest::single_line())
+            }
+
+            fn key_contexts(&self) -> Vec<KeyContext> {
+                vec![
+                    KeyContext::text_edit(false, false),
+                    KeyContext::file_tree(FileTreeKeyMode::PendingName),
+                    KeyContext::global(),
+                ]
+            }
+
+            fn ime_query_target(&self, _focus: AppFocus) -> Option<ImeQueryTarget<'_>> {
+                Some(self.target.as_ime_query_target())
+            }
+        }
+
+        impl TextTargetOwner for StubFileTreeNameOwner {
+            fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
+                Some(self.target.as_ime_target())
+            }
+
+            fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
+                Some(self.target.as_edit_target())
+            }
+        }
+
         #[test]
         fn registered_owner_is_reachable_via_router_key_contexts() {
             let mut app = App::new();
@@ -1305,6 +1386,30 @@ tab_size = 8
                 contexts.is_some(),
                 "Editor focus 应仍由主编辑区 owner 接管，不被 stub 抢走"
             );
+        }
+
+        #[test]
+        fn file_tree_inline_focus_survives_coarse_shell_projection() {
+            let mut app = App::new();
+            let owner = Rc::new(RefCell::new(StubFileTreeNameOwner::new()));
+            let dyn_owner: Rc<RefCell<dyn TextTargetOwner>> = owner.clone();
+            app.install_editor_owner(dyn_owner);
+
+            owner.borrow().set_active(true);
+            app.request_focus(AppFocus::file_tree(FileTreeFocus::NewEntryName));
+
+            // 文件树导航、内联新建、内联重命名共用同一个 GPUI FocusHandle。
+            // Shell 反向同步只能看出粗粒度 Navigate；App 需要保留仍有效的输入态，
+            // 否则 IME commit 会落回主编辑区并在空工作区报 NoActiveView。
+            app.request_focus_from_shell(AppFocus::file_tree(FileTreeFocus::Navigate));
+            assert_eq!(
+                app.focus().current(),
+                AppFocus::file_tree(FileTreeFocus::NewEntryName)
+            );
+
+            let focus = app.focus().current();
+            app.ime_replace_text_for(focus, None, "zom").unwrap();
+            assert_eq!(owner.borrow().text(), "zom");
         }
     }
 }

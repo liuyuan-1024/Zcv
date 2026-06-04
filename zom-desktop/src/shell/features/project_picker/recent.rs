@@ -188,10 +188,8 @@ mod tests {
     use std::fs::{File, create_dir_all};
 
     fn project_fixture(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "zom-recent-projects-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("zom-recent-projects-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         create_dir_all(dir.join("src")).unwrap();
         File::create(dir.join("README.md")).unwrap();

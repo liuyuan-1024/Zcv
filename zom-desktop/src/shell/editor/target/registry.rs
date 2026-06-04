@@ -149,6 +149,9 @@ mod tests {
             let mut borrows = registry.borrow_all_mut();
             borrows[0].after_text_changed();
         }
-        assert!(owner.borrow().flag, "after_text_changed 应当作用到具体 owner");
+        assert!(
+            owner.borrow().flag,
+            "after_text_changed 应当作用到具体 owner"
+        );
     }
 }

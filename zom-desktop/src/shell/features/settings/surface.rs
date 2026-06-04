@@ -1,7 +1,7 @@
 //! 设置 surface。
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
@@ -11,7 +11,10 @@ use gpui::{
 
 use crate::config::{AppConfig, SettingsChange};
 use crate::shell::KeyRequest;
-use crate::shell::editor::TextEditorSlot;
+use zom_workspace::syntax::SyntaxEngine;
+
+use crate::shell::editor::{TextEditorSlot, TextTargetOwner};
+use crate::shell::features::settings::toml_editor::SettingsTomlEditor;
 use crate::shell::normalized_chord;
 use crate::shell::shared::scroll;
 use crate::shell::shared::theme::{color, radius, space, typography};
@@ -70,10 +73,17 @@ pub(crate) struct SettingsRuntime {
     action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
     state: Rc<RefCell<SettingsPanelState>>,
     toml_slot: Rc<RefCell<Option<Rc<TextEditorSlot>>>>,
+    /// config.toml 视图的可嵌入编辑器。runtime 是唯一拥有者，构造时从 App 借 `SyntaxEngine` handle 自建；
+    /// App 不再持任何 settings 字段。
+    toml_editor: Rc<RefCell<SettingsTomlEditor>>,
 }
 
 impl SettingsRuntime {
-    pub(crate) fn new<T>(cx: &mut Context<T>) -> Self {
+    /// 用 App 借出的 `SyntaxEngine` handle 构造 runtime —— 内部直接 new 一个 `SettingsTomlEditor` 并装进 `Rc<RefCell<_>>`，自身做该 owner 的拥有者。
+    ///
+    /// shell 拿构造好的 runtime 后调 [`toml_owner_handle`](Self::toml_owner_handle) 把 owner 注册进 App 的 router；
+    /// App 在命令派发期通过 registry 借出 owner 走 edit_target / after_text_changed，不再有任何"App 字段"形式的耦合。
+    pub(crate) fn new<T>(engine: Rc<SyntaxEngine>, cx: &mut Context<T>) -> Self {
         Self {
             focus: cx.focus_handle(),
             list_state: ListState::new(SETTINGS_SECTION_COUNT, ListAlignment::Top, px(48.0))
@@ -82,7 +92,39 @@ impl SettingsRuntime {
             action_request: Rc::new(RefCell::new(None)),
             state: Rc::new(RefCell::new(SettingsPanelState::default())),
             toml_slot: Rc::new(RefCell::new(None)),
+            toml_editor: Rc::new(RefCell::new(SettingsTomlEditor::new(engine))),
         }
+    }
+
+    /// 把 TOML 编辑器当作 [`TextTargetOwner`] 暴露给 App 注册进 router。
+    /// 与 runtime 内部共享同一份 `Rc<RefCell<_>>`，两端写入立刻互见。
+    pub(crate) fn toml_owner_handle(&self) -> Rc<RefCell<dyn TextTargetOwner>> {
+        self.toml_editor.clone()
+    }
+
+    /// 从磁盘读 config.toml，读失败兜底用调用方给的 in-memory `AppConfig`
+    /// 序列化文本。把内部状态翻成 "已打开" + caret 在末尾的多行编辑态。
+    pub(crate) fn open_toml_from_disk(&self, path: &Path, fallback: &AppConfig) {
+        self.toml_editor.borrow_mut().open_from_disk(path, fallback);
+    }
+
+    /// 关闭 toml 视图并解析当前文本为 `AppConfig`。解析失败时保持打开态、
+    /// 返回 `None`；caller 据此决定是否替换全局 config。
+    pub(crate) fn close_toml_and_parse(&self) -> Option<AppConfig> {
+        self.toml_editor.borrow_mut().close_and_parse()
+    }
+
+    pub(crate) fn is_toml_open(&self) -> bool {
+        self.toml_editor.borrow().is_open()
+    }
+
+    /// 每帧 prepaint 由 [`ShellView::render`] 调一次，把后台 SyntaxWorker 已就绪的高亮产物落到 toml 文档的 MetadataLayers。
+    ///
+    /// 与 [`crate::app::App::pump_pending_highlights`] 平级 —— 主工作区与嵌入式 toml 编辑器各自独立 drain。
+    ///
+    /// [`ShellView::render`]: crate::shell::view::ShellView
+    pub(crate) fn pump_pending_highlights(&self) {
+        self.toml_editor.borrow_mut().pump_pending_highlights();
     }
 
     pub(crate) fn set_key_request(&self, key_request: KeyRequest) {

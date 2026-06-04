@@ -6,7 +6,7 @@
 //! 依赖方向（手册 2.4）：`app` 可以 import `shell`；`shell` 不可反向 import `app`。
 //! 本文件只做组合根职责；具体功能尽量回到各自 feature / editor / workbench。
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -32,7 +32,6 @@ use crate::shell::editor::{
 use crate::shell::features::panels::file_tree::{FileTreeModel, FileTreeState};
 use crate::shell::features::panels::search::{self as search_panel, SearchModel, SearchState};
 use crate::shell::features::project_picker::{ProjectPickerMode, ProjectPickerModel};
-use crate::shell::features::settings::SettingsTomlEditor;
 use crate::shell::workbench::editor_area::{MainEditorOwner, MainEditorOwnerRef};
 use crate::shell::workbench::state::{EditorState, build_editor_state};
 
@@ -56,7 +55,6 @@ pub struct App {
     file_tree: FileTreeModel,
     project_picker: ProjectPickerModel,
     search: SearchModel,
-    settings_toml: SettingsTomlEditor,
     /// 剪贴板端口：默认走 [`MockClipboard`]（headless 单测够用且不污染系统剪贴板）。
     /// shell 启动时通过 [`Self::set_clipboard`] 换成 GPUI 适配器，
     /// 使主程序与系统剪贴板互通。
@@ -102,7 +100,7 @@ impl App {
         commands::install_all(&mut registry, &mut keymap);
 
         let config = AppConfig::load(config_path.as_deref());
-        let (engine, mut workspace, views) = empty_workspace();
+        let (_engine, mut workspace, views) = empty_workspace();
         workspace.set_buffer_config(config.buffer_config());
         config.apply_runtime_visuals();
         let soft_wrap = Rc::new(Cell::new(config.editor.soft_wrap));
@@ -122,7 +120,6 @@ impl App {
             file_tree: FileTreeModel::new(),
             project_picker: ProjectPickerModel::new(),
             search: SearchModel::new(),
-            settings_toml: SettingsTomlEditor::new(engine),
             clipboard: Box::new(MockClipboard::new()),
             soft_wrap,
             config,
@@ -137,17 +134,19 @@ impl App {
     /// `Rc` 的生命周期归 runtime（真正拥有者）；本结构只持一份共享引用，
     /// 在路由阶段借出做 query / IME 写入。
     ///
-    /// 第一个真正调用方在 commit 3（SettingsTomlEditor 迁出到 SettingsRuntime）
-    /// 出现；commit 2 已通过 [`registry_integration`](tests::registry_integration)
-    /// 单测覆盖了"注册即可被 router 接管"的核心契约。
-    ///
     /// [`ShellView::new`]: crate::shell::view::ShellView
-    #[allow(dead_code)]
-    pub(crate) fn install_editor_owner(
-        &mut self,
-        owner: std::rc::Rc<std::cell::RefCell<dyn TextTargetOwner>>,
-    ) {
+    pub(crate) fn install_editor_owner(&mut self, owner: Rc<RefCell<dyn TextTargetOwner>>) {
         self.editor_targets.register(owner);
+    }
+
+    /// 把 workspace 当前持有的 `SyntaxEngine` 借给需要它的 shell runtime（首位是 [`SettingsRuntime`]，构造 TOML 编辑器要 engine）。
+    ///
+    /// 进程里只有一根 engine，由 [`empty_workspace`] 创建并随 `open_project` 跨 workspace 重建持续复用；
+    /// 返回 `Rc` clone 不复制内部 state。
+    ///
+    /// [`SettingsRuntime`]: crate::shell::features::settings::SettingsRuntime
+    pub(crate) fn syntax_engine_handle(&self) -> Rc<SyntaxEngine> {
+        self.workspace.engine().clone()
     }
 
     /// 共享的软换行 cell——多行 [`EditorKernel`] 在装配时借这份 `Rc`。
@@ -156,9 +155,8 @@ impl App {
         self.soft_wrap.clone()
     }
 
-    /// 翻转全局软换行。同时更新 [`AppConfig`] 字段并落盘——「切一次软换行」
-    /// 就是「改一次默认值」。内存模式（`config_path` 为 `None`）仍在内存里翻，
-    /// 只是 save 是 no-op。
+    /// 翻转全局软换行。同时更新 [`AppConfig`] 字段并落盘——「切一次软换行」就是「改一次默认值」。
+    /// 内存模式（`config_path` 为 `None`）仍在内存里翻，只是 save 是 no-op。
     pub(crate) fn toggle_soft_wrap(&mut self) {
         let next = !self.soft_wrap.get();
         self.soft_wrap.set(next);
@@ -186,28 +184,18 @@ impl App {
         self.save_config();
     }
 
-    pub(crate) fn open_settings_toml(&mut self) {
-        let Some(path) = self.config_path.clone() else {
-            eprintln!("当前为内存配置模式，没有可打开的 config.toml");
-            return;
-        };
-        self.save_config();
-        self.settings_toml.open_from_disk(&path, &self.config);
-        self.request_focus(AppFocus::settings());
-    }
-
-    pub(crate) fn close_settings_toml(&mut self) {
-        let Some(config) = self.settings_toml.close_and_parse() else {
-            return;
-        };
-        self.config = config;
+    /// 用一份外部传入的 `AppConfig` 替换当前 config，并把变化应用到运行时
+    /// 视觉 / workspace / soft_wrap 上，最后落盘。
+    ///
+    /// settings TOML 视图关闭时由 [`ShellView`] 调：[`SettingsRuntime::close_toml_and_parse`]
+    /// 解出新 config 后通过本入口提交，避免 shell 侧自己重做"配置应用 + 落盘"。
+    ///
+    /// [`ShellView`]: crate::shell::view::ShellView
+    /// [`SettingsRuntime::close_toml_and_parse`]: crate::shell::features::settings::SettingsRuntime::close_toml_and_parse
+    pub(crate) fn replace_config(&mut self, next: AppConfig) {
+        self.config = next;
         self.apply_runtime_config();
         self.save_config();
-        self.request_focus(AppFocus::settings());
-    }
-
-    pub(crate) fn settings_toml_open(&self) -> bool {
-        self.settings_toml.is_open()
     }
 
     fn apply_runtime_config(&mut self) {
@@ -410,28 +398,27 @@ impl App {
     /// 组合上下文（`KeyContext::text_edit` 的第二参）保留在签名里，
     /// 待将来真有「宿主侧处理组合键」的需求再启用。
     fn key_contexts(&self) -> Vec<KeyContext> {
-        // 文本输入类焦点的上下文栈，由 AppFocus 精确查到的 owner 自己提供。
-        let text_stack_for = |focus| {
-            self.with_router(|router| router.key_contexts_for(focus))
-                .unwrap_or_else(|| vec![KeyContext::global()])
-        };
         let focus = self.focus.current();
+        // 先问 router —— 文本输入类 owner（主编辑区、文件树新建/重命名、搜索框、
+        // picker 查询框、settings TOML 视图）通过 `accepts_focus` 自报家门，
+        // 由 owner 自己说"我的栈是什么"。owner 不接（focus 不属于它 / settings
+        // TOML 视图未开）才落到下方按焦点类别给的兜底栈。
+        if let Some(stack) = self.with_router(|router| router.key_contexts_for(focus)) {
+            return stack;
+        }
         match focus {
             AppFocus::None => vec![KeyContext::global()],
-            AppFocus::Editor(_) => text_stack_for(focus),
-            AppFocus::Panel(PanelFocus::Search(_)) => text_stack_for(focus),
+            AppFocus::Editor(_) => vec![KeyContext::global()],
+            AppFocus::Panel(PanelFocus::Search(_)) => vec![KeyContext::global()],
             AppFocus::Surface(SurfaceFocus::ProjectPicker(ProjectPickerFocus::Query)) => {
-                text_stack_for(focus)
+                vec![KeyContext::global()]
             }
             AppFocus::Surface(SurfaceFocus::ProjectPicker(_)) => {
                 vec![KeyContext::project_picker(), KeyContext::global()]
             }
+            // settings TOML 未开（accepts_focus 返回 false）→ 落到面板自身的栈。
             AppFocus::Surface(SurfaceFocus::Settings) => {
-                if self.settings_toml.is_open() {
-                    text_stack_for(focus)
-                } else {
-                    vec![KeyContext::settings(), KeyContext::global()]
-                }
+                vec![KeyContext::settings(), KeyContext::global()]
             }
             AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::ConfirmDelete)) => vec![
                 // 删除确认弹窗打开中：只解析确认 / 取消，导航键全部冻结。
@@ -440,7 +427,7 @@ impl App {
             ],
             AppFocus::Panel(PanelFocus::FileTree(
                 FileTreeFocus::NewEntryName | FileTreeFocus::RenameEntry,
-            )) => text_stack_for(focus),
+            )) => vec![KeyContext::global()],
             AppFocus::Panel(PanelFocus::FileTree(_)) => vec![
                 KeyContext::file_tree(FileTreeKeyMode::Navigate),
                 KeyContext::global(),
@@ -479,8 +466,9 @@ impl App {
             &self.file_tree as &dyn TextTargetQuery,
             &search_query as &dyn TextTargetQuery,
             &search_replacement as &dyn TextTargetQuery,
-            &self.settings_toml as &dyn TextTargetQuery,
         ];
+        // settings_toml 由 SettingsRuntime 通过 `install_editor_owner` 注册到
+        // registry，不再出现在这条手工列表里。
         for borrow in registry_borrows.iter() {
             owners.push(&**borrow as &dyn TextTargetQuery);
         }
@@ -505,8 +493,9 @@ impl App {
             &mut self.project_picker as &mut dyn TextTargetOwner,
             &mut self.file_tree as &mut dyn TextTargetOwner,
             &mut search as &mut dyn TextTargetOwner,
-            &mut self.settings_toml as &mut dyn TextTargetOwner,
         ];
+        // settings_toml 由 SettingsRuntime 通过 `install_editor_owner` 注册到
+        // registry，不再出现在这条手工列表里。
         for borrow in registry_borrows.iter_mut() {
             owners.push(&mut **borrow as &mut dyn TextTargetOwner);
         }
@@ -603,15 +592,18 @@ impl App {
     }
 
     /// 每帧 prepaint 起手由 [`ShellView::render`] 调一次，把后台
-    /// `SyntaxWorker` 已就绪的高亮产物落到各 buffer 的 `MetadataLayers`。
+    /// `SyntaxWorker` 已就绪的高亮产物落到 workspace 各 buffer 的 `MetadataLayers`。
     ///
-    /// 主工作区 + 嵌入式编辑器共享同一根后台 worker；本方法对每个文档
-    /// 各 drain 一次自己的 sink。不阻塞——内部全是「拿锁、看空、放锁」级
+    /// 主工作区 + 嵌入式编辑器共享同一根后台 worker；本方法只 drain 主 workspace
+    /// 的 sink。settings 面板的 toml 编辑器在
+    /// [`SettingsRuntime::pump_pending_highlights`] 独立 drain，由 shell 渲染期
+    /// 并排调一次；两边互不重入。不阻塞——内部全是「拿锁、看空、放锁」级
     /// 操作，worker 没出新产物即 O(1) 无操作。详见
     /// [改造方案 §3.7](../../zom-workspace/docs/语法高亮异步增量改造.md)。
+    ///
+    /// [`SettingsRuntime::pump_pending_highlights`]: crate::shell::features::settings::SettingsRuntime::pump_pending_highlights
     pub fn pump_pending_highlights(&mut self) {
         self.workspace.pump_pending_highlights();
-        self.settings_toml.pump_pending_highlights();
     }
 
     /// 每帧 prepaint 起手再调一次：收割活动 buffer 的后台 BufferSearch 结果。
@@ -687,10 +679,7 @@ impl App {
     ) -> Result<Vec<HostEffect>, CommandError> {
         self.queue.dispatch(id, args);
 
-        let mut effects = EffectQueue::new();
         let focus = self.focus.current();
-        let settings_toml_focused =
-            matches!(focus, AppFocus::Surface(SurfaceFocus::Settings)) && self.settings_toml_open();
 
         // picker 焦点下，命令执行可能改了 query 文本
         // （DELETE / 粘贴等走 edit_target，绕过 router 的 after_text_changed 钩子）。
@@ -700,30 +689,61 @@ impl App {
             matches!(focus, AppFocus::Surface(SurfaceFocus::ProjectPicker(_)))
                 .then(|| self.project_picker.query_text());
 
-        let focused_field = match self.focus.current() {
-            AppFocus::Surface(SurfaceFocus::ProjectPicker(_)) => self.project_picker.edit_target(),
-            AppFocus::Surface(SurfaceFocus::Settings) if self.settings_toml.is_open() => {
-                self.settings_toml.edit_target()
-            }
-            AppFocus::Panel(PanelFocus::FileTree(_)) => self.file_tree.edit_target(),
-            AppFocus::Panel(PanelFocus::Search(_)) => self.search.edit_target_for_focus(focus),
-            _ => None,
-        };
-        let mut context = CommandContext {
-            workspace: &mut self.workspace,
-            views: &mut self.views,
-            focused_field,
-            queue: &mut self.queue,
-            effects: &mut effects,
-            clipboard: &mut *self.clipboard,
-        };
-        let result = self.executor.run(&self.registry, &mut context);
+        // 命令派发期需要给 CommandContext 填 `focused_field`，并在 executor 跑完
+        // 之后给 owner 调 `after_text_changed`（picker 走另一条 query diff 路径）。
+        //
+        // 自家字段（picker / file_tree / search）直接借；其它语义焦点（Settings 之类）
+        // 走 editor_targets 注册表 —— 先借出所有 RefMut，找到 accepts_focus 命中的
+        // 那格，记下索引，跑完 executor 后回该 owner 调 after_text_changed。
+        //
+        // 整段包在内层 block：registry_borrows 出 block 才 drop，RefCell 借用释放，
+        // 外层后续的 `pump_active_buffer_post_edit` / `sync_active_buffer_search`
+        // 才能拿到 `&mut self`。
+        let host_effects = {
+            let mut effects = EffectQueue::new();
+            let mut registry_borrows = self.editor_targets.borrow_all_mut();
+            let mut registry_matched: Option<usize> = None;
 
-        let host_effects = effects.drain();
-        result?;
-        if settings_toml_focused {
-            self.settings_toml.after_text_changed();
-        }
+            let focused_field = match focus {
+                AppFocus::Surface(SurfaceFocus::ProjectPicker(_)) => {
+                    self.project_picker.edit_target()
+                }
+                AppFocus::Panel(PanelFocus::FileTree(_)) => self.file_tree.edit_target(),
+                AppFocus::Panel(PanelFocus::Search(_)) => self.search.edit_target_for_focus(focus),
+                _ => {
+                    // 在 registry 找第一个声明接管该 focus 的 owner，borrow_mut 拿 edit_target。
+                    // 没有命中（focus 不是文本输入类）返回 None，commands 自己处理。
+                    let mut found = None;
+                    for (idx, borrow) in registry_borrows.iter_mut().enumerate() {
+                        if borrow.accepts_focus(focus) {
+                            if let Some(target) = borrow.edit_target() {
+                                registry_matched = Some(idx);
+                                found = Some(target);
+                            }
+                            break;
+                        }
+                    }
+                    found
+                }
+            };
+            let mut context = CommandContext {
+                workspace: &mut self.workspace,
+                views: &mut self.views,
+                focused_field,
+                queue: &mut self.queue,
+                effects: &mut effects,
+                clipboard: &mut *self.clipboard,
+            };
+            let result = self.executor.run(&self.registry, &mut context);
+
+            let host_effects = effects.drain();
+            result?;
+            if let Some(idx) = registry_matched {
+                registry_borrows[idx].after_text_changed();
+            }
+            host_effects
+        };
+
         if let Some(before) = picker_query_before {
             if self.project_picker.query_text() != before {
                 self.project_picker.reset_selection();
@@ -829,11 +849,15 @@ mod tests {
     use crate::app::App;
     use crate::config::{SettingsChange, THEME_ONE_DARK};
     use crate::focus::{AppFocus, PanelFocus, ProjectPickerFocus};
+    use crate::shell::editor::TextTargetOwner;
     use crate::shell::features::panels::PanelId;
     use crate::shell::features::panels::file_tree::FileTreeActivation;
+    use crate::shell::features::settings::SettingsTomlEditor;
     use crate::shell::workbench::state::{EditorState, EditorTab};
+    use std::cell::RefCell;
     use std::fs::{File, create_dir_all};
     use std::path::PathBuf;
+    use std::rc::Rc;
     use zom_command::HostEffect;
     use zom_command::commands::{
         diagnostics, editor, language_servers, project_picker as project_picker_commands, settings,
@@ -906,16 +930,42 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    /// 在 headless 测试里模拟 SettingsRuntime 装配过：直接 new 一个编辑器，
+    /// 走 install_editor_owner 进 App 的路由表，返回 handle 给测试驱动 open/close。
+    ///
+    /// 生产路径是 ShellView::new 调 `SettingsRuntime::new(engine, cx)` + register。
+    /// 这里跳过 GPUI 部分，直接复刻"register 一个 owner + 拿 handle 操作"两步。
+    fn install_settings_toml(app: &mut App) -> Rc<RefCell<SettingsTomlEditor>> {
+        let editor = Rc::new(RefCell::new(SettingsTomlEditor::new(
+            app.syntax_engine_handle(),
+        )));
+        app.install_editor_owner(editor.clone() as Rc<RefCell<dyn TextTargetOwner>>);
+        editor
+    }
+
     #[test]
     fn settings_toml_editor_should_apply_and_persist_on_return() {
+        // 验证「编辑器里编辑过的 TOML → 解析回 AppConfig → 替换 App.config →
+        // 落盘 → 重新 load 仍是新值」这条端到端语义。
+        //
+        // open/close 的 lifecycle 编排归 shell（SettingsRuntime + 设置面板 action
+        // handler），App 只暴露原语；测试手动走等价的几步：
+        //   1. open_from_disk —— 把当前内存 config 灌进编辑器
+        //   2. target_mut().replace_text —— 直接改文本
+        //   3. close_and_parse —— 关闭并解析
+        //   4. replace_config —— App 替换全局 config 并落盘
         let path = temp_path("settings-toml-editor");
         let _ = std::fs::remove_file(&path);
         let mut app = App::new_with_paths(Some(path.clone()));
+        let editor = install_settings_toml(&mut app);
 
-        app.open_settings_toml();
-        assert!(app.settings_toml_open());
-        app.settings_toml.target_mut().replace_text(
-            r#"
+        let initial = app.config_snapshot();
+        {
+            let mut e = editor.borrow_mut();
+            e.open_from_disk(&path, &initial);
+            assert!(e.is_open());
+            e.target_mut().replace_text(
+                r#"
 [general]
 theme = "one-dark"
 
@@ -927,11 +977,16 @@ soft_wrap = false
 font_size = 19
 tab_size = 8
 "#,
-        );
-        app.close_settings_toml();
+            );
+        }
+        let parsed = editor
+            .borrow_mut()
+            .close_and_parse()
+            .expect("合法 TOML 应当解析成功");
+        app.replace_config(parsed);
 
         let config = app.config_snapshot();
-        assert!(!app.settings_toml_open());
+        assert!(!editor.borrow().is_open());
         assert_eq!(config.ui.font_size, 15);
         assert!(!config.editor.soft_wrap);
         assert_eq!(config.editor.font_size, 19);
@@ -944,10 +999,15 @@ tab_size = 8
     #[test]
     fn settings_toml_editor_snapshot_should_include_syntax_decorations() {
         let mut app = App::new();
-        app.settings_toml
-            .open_with_text("[editor]\nsoft_wrap = false\nfont_size = 19 # comment\n");
-        app.settings_toml.target_mut().wait_for_syntax_idle();
-        app.pump_pending_highlights();
+        let editor = install_settings_toml(&mut app);
+        {
+            let mut e = editor.borrow_mut();
+            e.open_with_text("[editor]\nsoft_wrap = false\nfont_size = 19 # comment\n");
+            e.target_mut().wait_for_syntax_idle();
+        }
+        // 手动推一次高亮 sink：app.pump 只 drain workspace，settings 编辑器自带
+        // pump（生产里 SettingsRuntime.pump_pending_highlights 调）。
+        editor.borrow_mut().pump_pending_highlights();
         let snapshot = app.with_router(|router| router.snapshot_for_focus(AppFocus::settings()));
 
         assert!(

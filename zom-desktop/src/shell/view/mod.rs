@@ -75,7 +75,12 @@ impl ShellView {
         // 若将来 ShellView 也要单测，再把 path 上抛到构造参数。
         let project_picker = ProjectPickerRuntime::new(cx, RecentProjects::default_path());
         let language_servers = language_servers::LanguageServersRuntime::new(cx);
-        let settings = settings::SettingsRuntime::new(cx);
+        // SettingsRuntime 自构造 TOML 编辑器（依赖 SyntaxEngine —— 从 App 借 handle），
+        // 然后把 owner handle 注册进 App.editor_targets 让 router 在 IME / 命令派发
+        // 路径上找到它。App 不再持任何 settings 字段；SettingsRuntime 是真正且唯一的拥有者。
+        let settings = settings::SettingsRuntime::new(app.borrow().syntax_engine_handle(), cx);
+        app.borrow_mut()
+            .install_editor_owner(settings.toml_owner_handle());
 
         // 主编辑区内核：多行 + 行号 + 滚动 + 视口写回。
         // 视口钩子在 prepaint 末尾把测得的 ViewportState 推回 view。
@@ -312,11 +317,33 @@ impl ShellView {
 
     fn settings_action_request(&self) -> settings::SettingsActionRequest {
         let app = Rc::clone(&self.app);
+        let settings = self.settings.clone();
         Rc::new(move |action, window, _cx| {
             match action {
-                settings::SettingsAction::OpenToml => app.borrow_mut().open_settings_toml(),
+                // OpenToml：App 提供 config 快照 + path，runtime 真正装入编辑器
+                // 状态。无 config_path（内存模式）直接 noop，与历史行为对齐。
+                settings::SettingsAction::OpenToml => {
+                    let (path, config) = {
+                        let a = app.borrow_mut();
+                        let Some(path) = a.config_path() else {
+                            eprintln!("当前为内存配置模式，没有可打开的 config.toml");
+                            return;
+                        };
+                        a.save_config();
+                        (path, a.config_snapshot())
+                    };
+                    settings.open_toml_from_disk(&path, &config);
+                    app.borrow_mut().request_focus(AppFocus::settings());
+                }
+                // ReturnSettings：runtime 关闭并解析；解析成功才用新 config 替换
+                // 全局；失败保持打开态，与旧 close_settings_toml 行为一致。
                 settings::SettingsAction::ReturnSettings => {
-                    app.borrow_mut().close_settings_toml();
+                    let Some(config) = settings.close_toml_and_parse() else {
+                        return;
+                    };
+                    let mut app = app.borrow_mut();
+                    app.replace_config(config);
+                    app.request_focus(AppFocus::settings());
                 }
                 settings::SettingsAction::Change(change) => {
                     app.borrow_mut().apply_settings_change(change);
@@ -348,6 +375,10 @@ impl Render for ShellView {
             // worker 内部去重，无变化时不重 query。
             app.pump_active_viewport_hint();
         }
+        // settings TOML 编辑器的高亮收割与 app.pump_pending_highlights 并排：
+        // 两条独立后台子系统，各自有自己的主线程收割入口。SettingsRuntime
+        // 拥有 toml 编辑器，所以这一拍由 shell 直接喊，不再绕 app。
+        self.settings.pump_pending_highlights();
 
         let state = self.workbench_state();
 
@@ -370,7 +401,7 @@ impl Render for ShellView {
             settings::SettingsPanelState::new(
                 app.config_snapshot(),
                 app.config_path(),
-                app.settings_toml_open(),
+                self.settings.is_toml_open(),
             )
         });
         self.project_picker.set_key_request(Rc::clone(&key_request));

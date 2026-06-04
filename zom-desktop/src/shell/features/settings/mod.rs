@@ -9,6 +9,10 @@ mod surface;
 mod toml_editor;
 
 pub(crate) use effects::try_apply_effect;
+// SettingsTomlEditor 的真正持有者是 SettingsRuntime（见 surface.rs）；
+// 非测试代码不需要拿这个具体类型，re-export 仅服务 App-level headless 测试
+// （`app::tests::install_settings_toml` 复刻"装配一个 owner 注册进路由"的最小工序）。
+#[cfg(test)]
 pub(crate) use toml_editor::SettingsTomlEditor;
 
 use gpui::{AnyElement, IntoElement};

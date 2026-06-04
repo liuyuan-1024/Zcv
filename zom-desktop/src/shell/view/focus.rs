@@ -11,10 +11,9 @@
 
 use gpui::{FocusHandle, Window};
 
-use crate::focus::{AppFocus, FileTreeFocus, SearchField, SurfaceFocus};
+use crate::focus::{AppFocus, FileTreeFocus, SearchField};
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
 use crate::shell::features::panels::{PanelId, PanelRuntimes};
-use crate::shell::surfaces::SurfaceId;
 
 /// `AppFocus <-> FocusHandle` 的 shell-only 投影表。
 #[derive(Clone, Default)]
@@ -98,10 +97,7 @@ pub(crate) fn projection_from_runtimes(
     if let Some(settings) = settings {
         projection.register(settings, AppFocus::settings());
     }
-    projection.register(
-        language_servers,
-        AppFocus::Surface(SurfaceFocus::bare(SurfaceId::LanguageServers)),
-    );
+    projection.register(language_servers, AppFocus::language_servers());
     for panel in [
         PanelId::VersionControl,
         PanelId::Outline,

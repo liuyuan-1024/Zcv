@@ -386,7 +386,9 @@ impl App {
                 // 这里只兜底返回 global。
                 SurfaceId::ProjectPicker => vec![KeyContext::global()],
                 SurfaceId::Settings => vec![KeyContext::settings(), KeyContext::global()],
-                SurfaceId::LanguageServers => vec![KeyContext::global()],
+                SurfaceId::LanguageServers => {
+                    vec![KeyContext::language_servers(), KeyContext::global()]
+                }
             },
         }
     }
@@ -990,6 +992,17 @@ mod tests {
     fn settings_escape_should_dispatch_settings_dismiss_command() {
         let mut app = App::new();
         app.request_focus(AppFocus::settings());
+
+        let outcome = app.dispatch_key("escape".to_string()).unwrap();
+
+        assert!(outcome.consumed);
+        assert_eq!(outcome.effects, vec![HostEffect::DismissSurface]);
+    }
+
+    #[test]
+    fn language_servers_escape_should_dispatch_dismiss_command() {
+        let mut app = App::new();
+        app.request_focus(AppFocus::language_servers());
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
 

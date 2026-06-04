@@ -147,6 +147,10 @@ impl AppFocus {
         Self::Surface(SurfaceFocus::bare(SurfaceId::Settings))
     }
 
+    pub(crate) fn language_servers() -> Self {
+        Self::Surface(SurfaceFocus::bare(SurfaceId::LanguageServers))
+    }
+
     /// 是否投影到同一个 GPUI 焦点宿主。
     /// panel/surface 相同即视为同投影，sub-focus 差异（如文件树内部模式）由 App 自行细化。
     pub(crate) fn same_projection(self, other: Self) -> bool {

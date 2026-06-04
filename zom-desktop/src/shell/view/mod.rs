@@ -246,6 +246,10 @@ impl Render for ShellView {
             .features
             .project_picker
             .set_key_request(Rc::clone(&key_request));
+        runtime
+            .features
+            .language_servers
+            .set_key_request(Rc::clone(&key_request));
         // file_tree_panel 借用此 clone；下面把 `key_request` 本体 move 给 `workbench::render`。
         // 借用与移动落到不同的 Rc 副本上，互不冲突。
         let key_request_for_panel = Rc::clone(&key_request);

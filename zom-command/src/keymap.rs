@@ -7,6 +7,7 @@ use crate::commands::{
         CompositionBinding, TextEditBindingContext, TextEditKeyContext, text_edit_context_matches,
     },
     file_tree::{FileTreeBindingContext, FileTreeKeyContext, FileTreeKeyMode},
+    language_servers::{LanguageServersBindingContext, LanguageServersKeyContext},
     project_picker::{ProjectPickerBindingContext, ProjectPickerKeyContext},
     settings::{SettingsBindingContext, SettingsKeyContext},
 };
@@ -44,6 +45,7 @@ pub enum KeyContext {
     FileTree(FileTreeKeyContext),
     ProjectPicker(ProjectPickerKeyContext),
     Settings(SettingsKeyContext),
+    LanguageServers(LanguageServersKeyContext),
     SearchPanel,
 }
 
@@ -71,6 +73,10 @@ impl KeyContext {
         Self::Settings(SettingsKeyContext)
     }
 
+    pub fn language_servers() -> Self {
+        Self::LanguageServers(LanguageServersKeyContext)
+    }
+
     pub fn search_panel() -> Self {
         Self::SearchPanel
     }
@@ -84,6 +90,7 @@ pub enum KeyBindingContext {
     FileTree(FileTreeBindingContext),
     ProjectPicker(ProjectPickerBindingContext),
     Settings(SettingsBindingContext),
+    LanguageServers(LanguageServersBindingContext),
     SearchPanel,
 }
 
@@ -125,6 +132,10 @@ impl KeyBindingContext {
         Self::Settings(SettingsBindingContext)
     }
 
+    pub fn language_servers() -> Self {
+        Self::LanguageServers(LanguageServersBindingContext)
+    }
+
     pub fn search_panel() -> Self {
         Self::SearchPanel
     }
@@ -144,6 +155,7 @@ impl KeyBindingContext {
             (Self::FileTree(a), Self::FileTree(b)) => a.mode == b.mode,
             (Self::ProjectPicker(_), Self::ProjectPicker(_)) => true,
             (Self::Settings(_), Self::Settings(_)) => true,
+            (Self::LanguageServers(_), Self::LanguageServers(_)) => true,
             (Self::SearchPanel, Self::SearchPanel) => true,
             _ => false,
         }
@@ -302,6 +314,7 @@ fn binding_matches_context(binding: &KeyBinding, context: KeyContext) -> bool {
         }
         (KeyBindingContext::ProjectPicker(_), KeyContext::ProjectPicker(_)) => true,
         (KeyBindingContext::Settings(_), KeyContext::Settings(_)) => true,
+        (KeyBindingContext::LanguageServers(_), KeyContext::LanguageServers(_)) => true,
         (KeyBindingContext::SearchPanel, KeyContext::SearchPanel) => true,
         _ => false,
     }

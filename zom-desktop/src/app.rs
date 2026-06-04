@@ -20,7 +20,7 @@ use zom_view::ViewSet;
 use zom_workspace::Workspace;
 use zom_workspace::syntax::SyntaxEngine;
 
-use crate::background_pumps::BackgroundPumps;
+use crate::background_pumps::{BackgroundPumps, FramePump, PostEditObserver};
 use crate::command_runtime::CommandRuntime;
 use crate::config::{AppConfig, SettingsChange};
 use crate::config_applier::ConfigApplier;
@@ -106,6 +106,19 @@ impl App {
     /// shell 装配阶段调一次；之后路由 / 派发 / 同步都通过这层窄接口进入 search feature。
     pub(crate) fn install_search_runtime(&mut self, runtime: SearchRuntimeHandle) {
         self.text_targets.install_search_runtime(runtime);
+    }
+
+    /// 注册一个编辑后同步观察者。shell 装配阶段调；
+    /// 之后每次活动 buffer 产生编辑事件，
+    /// BackgroundPumps 把 built-in 的 post_edit 跑完后会按注册顺序调每个观察者的 `after_text_edit`。
+    pub(crate) fn install_post_edit_observer(&mut self, observer: Box<dyn PostEditObserver>) {
+        self.background.install_post_edit_observer(observer);
+    }
+
+    /// 注册一个每帧 drain 端口。shell 装配阶段调；
+    /// 运行期由 [`Self::pump_frame_observers`] 按注册顺序调一次。
+    pub(crate) fn install_frame_pump(&mut self, pump: Box<dyn FramePump>) {
+        self.background.install_frame_pump(pump);
     }
 
     /// 把 workspace 当前持有的 `SyntaxEngine` 借给需要它的 shell runtime（首位是 [`SettingsRuntime`]，构造 TOML 编辑器要 engine）。
@@ -468,10 +481,16 @@ impl App {
     /// 没有 in-flight 时 O(1) 早退。新结果落地时同时 reveal 首条命中——避免
     /// 用户输入查询后 UI 不刷新的"看上去卡住"假象。
     ///
-    /// 与 `pump_pending_highlights` 平级：两个独立后台子系统，各自有"主线程收割"
-    /// 入口，统一在 [`crate::shell::view::ShellView::render`] 拍点驱动。
-    pub fn pump_pending_search(&mut self) {
-        self.background.pump_pending_search(&mut self.session);
+    /// 与 `pump_pending_highlights` 平级：跑所有通过 [`install_frame_pump`] 注册的
+    /// [`FramePump`]。原本 search 的"收割后台命中"是这里第一个登记者，
+    /// 后续 feature 想做同节奏的 drain 也走同一注册路径——BackgroundPumps 不认
+    /// 具体 feature。
+    ///
+    /// 统一在 [`crate::shell::view::ShellView::render`] 拍点驱动。
+    ///
+    /// [`install_frame_pump`]: Self::install_frame_pump
+    pub fn pump_frame_observers(&mut self) {
+        self.background.pump_frame_observers(&mut self.session);
     }
 
     /// 把活动 view 的可见区间转成 byte range 后推给语法 worker，让 `on_edit`
@@ -513,8 +532,7 @@ impl App {
         // 命令派发可能编辑了活动 buffer（产生 DeltaEvent），扇出给 BufferSearch 与 syntax provider 是无条件的。
         // 否则编辑后高亮 / 搜索命中都不跟版本。
         // 必须先于 `sync_active_buffer_search`：后者依赖搜索状态已被新事件推进。
-        self.background
-            .after_text_edit(&mut self.session, &self.text_targets);
+        self.background.after_text_edit(&mut self.session);
         // 命令派发也可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴等）。
         // 把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——一处做完，渲染 / 后续命令读到的都是新真值。
         Ok(host_effects)
@@ -560,8 +578,7 @@ impl App {
         // preedit 期间也走 live search——用户在搜索框中文输入时能边输入边看到结果收敛。
         // 同时把 buffer 上累积的 DeltaEvent 扇出到 syntax provider
         // （preedit replace 走 composition state，但 replace_and_mark 内部仍可能产生编辑事件）。
-        self.background
-            .after_text_edit(&mut self.session, &self.text_targets);
+        self.background.after_text_edit(&mut self.session);
         result
     }
 

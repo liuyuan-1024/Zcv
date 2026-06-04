@@ -22,6 +22,7 @@ use zom_view::ViewSet;
 use zom_workspace::Workspace;
 
 use crate::app::App;
+use crate::background_pumps::{FramePump, PostEditObserver};
 use crate::focus::{AppFocus, SearchField};
 use crate::shell::editor::{TextEditorSlot, TextTargetOwner, TextTargetQuery};
 use crate::shell::normalized_chord;
@@ -29,6 +30,7 @@ use crate::shell::shared::glyph::Glyph;
 use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::docks::render_focus_host;
 use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
+use crate::workspace_session::WorkspaceSession;
 
 use model::SearchModel;
 pub(crate) use model::{HitCount, SearchState};
@@ -141,6 +143,34 @@ impl SearchRuntimeHandle {
     pub(crate) fn replace_all(&self, workspace: &mut Workspace, views: &mut ViewSet) {
         let mut model = self.model.borrow_mut();
         coordinator::replace_all(&mut model, workspace, views);
+    }
+}
+
+/// 把 search 的"编辑后同步"包成通用 [`PostEditObserver`]；
+/// BackgroundPumps 通过 trait 调用，不再 use `SearchRuntimeHandle`。
+pub(crate) struct SearchEditObserver(SearchRuntimeHandle);
+
+impl SearchEditObserver {
+    pub(crate) fn new(handle: SearchRuntimeHandle) -> Self {
+        Self(handle)
+    }
+}
+
+impl PostEditObserver for SearchEditObserver {
+    fn after_text_edit(&self, session: &mut WorkspaceSession) {
+        let (workspace, views) = session.parts_mut();
+        self.0.sync_active_buffer_search(workspace, views);
+    }
+}
+
+/// 把 search 的"每帧收割后台命中"包成通用 [`FramePump`]。
+/// 实现是无状态的——`pump_active_buffer_search` 只读 workspace + views。
+pub(crate) struct SearchFramePump;
+
+impl FramePump for SearchFramePump {
+    fn pump(&self, session: &mut WorkspaceSession) {
+        let (workspace, views) = session.parts_mut();
+        SearchRuntimeHandle::pump_active_buffer_search(workspace, views);
     }
 }
 

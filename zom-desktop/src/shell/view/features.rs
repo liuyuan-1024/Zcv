@@ -17,6 +17,7 @@ use crate::app::App;
 use crate::shell::features::language_servers::LanguageServersRuntime;
 use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
+use crate::shell::features::panels::search::{SearchEditObserver, SearchFramePump};
 use crate::shell::features::project_picker::{ProjectPickerRuntime, RecentProjects};
 use crate::shell::features::settings::SettingsRuntime;
 use crate::shell::surfaces::SurfaceManager;
@@ -49,7 +50,12 @@ impl FeatureRegistry {
             app.install_editor_owner(settings.toml_owner_handle());
             // SearchRuntime 自构造 SearchModel；
             // App 只保存窄接口给 router / command dispatch / sync 生命周期点用，不直接认识搜索面板状态。
-            app.install_search_runtime(panels.search_runtime_handle());
+            let search_handle = panels.search_runtime_handle();
+            app.install_search_runtime(search_handle.clone());
+            // 编辑后同步与每帧后台命中收割走通用端口注册——BackgroundPumps
+            // 不认 search feature，由它两个 trait 实现自报家门。
+            app.install_post_edit_observer(Box::new(SearchEditObserver::new(search_handle)));
+            app.install_frame_pump(Box::new(SearchFramePump));
         }
 
         Self {

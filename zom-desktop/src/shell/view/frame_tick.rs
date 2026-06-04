@@ -15,11 +15,11 @@ pub(super) fn advance(app: &mut App, settings: &SettingsRuntime) {
     // 主线程上 drain SyntaxWorker 已就绪的高亮 spans 到 MetadataLayers。
     // 没有这一拍即便 worker 算完也上不了屏。
     app.pump_pending_highlights();
-    // 收割活动 buffer 的后台搜索结果——大文件 search 在后台跑，
-    // 这一拍把已就绪 SearchResult 落到 slot 并 reveal 首条命中。
-    app.pump_pending_search();
-    // 把当前活动 view 的 viewport ± padding 推给 worker，
-    // 让下一拍 on_edit 走 viewport-scoped query + ReplaceRange，仅产可见区段 spans。
+    // 跑所有注册的 FramePump——search 的"收割后台命中"目前是唯一登记者：
+    // 大文件 search 在后台跑，这一拍把已就绪 SearchResult 落到 slot 并 reveal 首条命中。
+    // 其它 feature 同节奏的 drain 走同一端口注册。
+    app.pump_frame_observers();
+    // 把当前活动 view 的 viewport ± padding 推给 worker，让下一拍 on_edit 走 viewport-scoped query + ReplaceRange，仅产可见区段 spans。
     // worker 内部去重，无变化时不重 query。
     app.pump_active_viewport_hint();
     // settings TOML 编辑器自家后台子系统：SettingsRuntime 拥有 toml 编辑器，

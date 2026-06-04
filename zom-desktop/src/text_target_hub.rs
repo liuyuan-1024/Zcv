@@ -104,13 +104,6 @@ impl TextTargetHub {
         self.with_router(session, |router| router.is_composing(focus))
     }
 
-    pub(crate) fn sync_active_buffer_search(&self, session: &mut WorkspaceSession) {
-        if let Some(search) = self.search_runtime.as_ref() {
-            let (workspace, views) = session.parts_mut();
-            search.sync_active_buffer_search(workspace, views);
-        }
-    }
-
     pub(crate) fn with_edit_target_for_focus<R>(
         &mut self,
         focus: AppFocus,

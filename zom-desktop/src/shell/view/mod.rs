@@ -74,6 +74,8 @@ impl ShellView {
         // ShellView 是组合 GPUI 窗口的唯一落点，直接选定该策略；
         // 若将来 ShellView 也要单测，再把 path 上抛到构造参数。
         let project_picker = ProjectPickerRuntime::new(cx, RecentProjects::default_path());
+        app.borrow_mut()
+            .install_editor_owner(project_picker.owner_handle());
         let language_servers = language_servers::LanguageServersRuntime::new(cx);
         // SearchRuntime 自构造 SearchModel；App 只借同一份 handle 给 router /
         // command dispatch / coordinator 用，不再自己拥有搜索面板状态。

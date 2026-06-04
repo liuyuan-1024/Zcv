@@ -85,10 +85,6 @@ impl ProjectPickerModel {
         self.selected = 0;
     }
 
-    pub(crate) fn query_text(&self) -> String {
-        self.query.text()
-    }
-
     pub(crate) fn activation(&self, projects: &[RecentProject]) -> ProjectPickerActivation {
         if self.mode == ProjectPickerMode::CloneGit {
             let repo = self.query.text();

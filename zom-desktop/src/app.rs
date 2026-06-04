@@ -31,7 +31,6 @@ use crate::shell::editor::{
 };
 use crate::shell::features::panels::file_tree::{FileTreeModel, FileTreeState};
 use crate::shell::features::panels::search::{self as search_panel, SearchModel, SearchState};
-use crate::shell::features::project_picker::{ProjectPickerMode, ProjectPickerModel};
 use crate::shell::workbench::editor_area::{MainEditorOwner, MainEditorOwnerRef};
 use crate::shell::workbench::state::{EditorState, build_editor_state};
 
@@ -53,7 +52,6 @@ pub struct App {
     focus: FocusStore,
     project_root: Option<PathBuf>,
     file_tree: FileTreeModel,
-    project_picker: ProjectPickerModel,
     /// 搜索面板 model 的共享句柄——真正拥有者是 [`SearchRuntime`]，shell 装配
     /// 时通过 [`Self::install_search_model`] 把同一份 `Rc` 借进来。
     ///
@@ -129,7 +127,6 @@ impl App {
             focus: FocusStore::new(AppFocus::project_picker(ProjectPickerFocus::Query)),
             project_root: None,
             file_tree: FileTreeModel::new(),
-            project_picker: ProjectPickerModel::new(),
             search_model: None,
             clipboard: Box::new(MockClipboard::new()),
             soft_wrap,
@@ -300,11 +297,6 @@ impl App {
         self.project_root.is_some()
     }
 
-    pub(crate) fn project_picker_reset(&mut self, mode: ProjectPickerMode) {
-        self.project_picker.reset(mode);
-        self.request_focus(AppFocus::project_picker(ProjectPickerFocus::Query));
-    }
-
     pub(crate) fn project_picker_deactivate(&mut self) {
         if matches!(
             self.focus.current(),
@@ -312,22 +304,6 @@ impl App {
         ) {
             self.restore_previous_focus();
         }
-    }
-
-    /// 项目选择器 model 的只读视图。shell 拿到后直接调
-    /// `.state()` / `.query_text()` / `.selected_project_id(&recent)` 等纯模型查询；
-    /// `recent` 列表由调用方从 [`ProjectPickerRuntime`] 取出后传入，App 不再代为
-    /// 持有这份 picker UI 数据。
-    ///
-    /// [`ProjectPickerRuntime`]: crate::shell::features::project_picker::ProjectPickerRuntime
-    pub(crate) fn project_picker(&self) -> &ProjectPickerModel {
-        &self.project_picker
-    }
-
-    /// 项目选择器 model 的可变引用——`move_selection(delta, &recent)` 等需要
-    /// recent 列表的写操作，调用方先从 runtime 取 recent 再传入。
-    pub(crate) fn project_picker_mut(&mut self) -> &mut ProjectPickerModel {
-        &mut self.project_picker
     }
 
     /// 可变借用文件树 model——仅限不需要 workspace/views 的纯模型操作
@@ -483,10 +459,7 @@ impl App {
         let search_replacement = search_borrow.as_deref().map(|m| m.replacement_owner());
         // 注册表 owner 的借用 guard 必须比下方 owners 引用活得长。
         let registry_borrows = self.editor_targets.borrow_all();
-        let mut owners: Vec<&dyn TextTargetQuery> = vec![
-            &self.project_picker as &dyn TextTargetQuery,
-            &self.file_tree as &dyn TextTargetQuery,
-        ];
+        let mut owners: Vec<&dyn TextTargetQuery> = vec![&self.file_tree as &dyn TextTargetQuery];
         // search_model 未装配（如 App-only 单测）时直接跳过，不影响其它 owner。
         if let Some(q) = search_query.as_ref() {
             owners.push(q as &dyn TextTargetQuery);
@@ -519,10 +492,8 @@ impl App {
         // 注册表 owner 的可变借用 guard 必须比下方 owners 引用活得长；每个 RefMut
         // 独立锁住自己那一格 RefCell，互不冲突。
         let mut registry_borrows = self.editor_targets.borrow_all_mut();
-        let mut owners: Vec<&mut dyn TextTargetOwner> = vec![
-            &mut self.project_picker as &mut dyn TextTargetOwner,
-            &mut self.file_tree as &mut dyn TextTargetOwner,
-        ];
+        let mut owners: Vec<&mut dyn TextTargetOwner> =
+            vec![&mut self.file_tree as &mut dyn TextTargetOwner];
         // search_model 未装配（如 App-only 单测）时直接跳过。
         if let Some(s) = search.as_mut() {
             owners.push(s as &mut dyn TextTargetOwner);
@@ -736,18 +707,10 @@ impl App {
 
         let focus = self.focus.current();
 
-        // picker 焦点下，命令执行可能改了 query 文本
-        // （DELETE / 粘贴等走 edit_target，绕过 router 的 after_text_changed 钩子）。
-        // 派发前后比一次 query 文本：变了才 reset_selection，否则保留。
-        // 否则 MOVE_SELECTION 自己也会被无差别 reset，选中项只能在 0 / 1 之间来回。
-        let picker_query_before =
-            matches!(focus, AppFocus::Surface(SurfaceFocus::ProjectPicker(_)))
-                .then(|| self.project_picker.query_text());
-
         // 命令派发期需要给 CommandContext 填 `focused_field`，并在 executor 跑完
-        // 之后给 owner 调 `after_text_changed`（picker 走另一条 query diff 路径）。
+        // 之后给 registry owner 调 `after_text_changed`。
         //
-        // 自家字段（picker / file_tree / search）直接借；其它语义焦点（Settings 之类）
+        // 自家字段（file_tree / search）直接借；其它语义焦点（ProjectPicker / Settings 之类）
         // 走 editor_targets 注册表 —— 先借出所有 RefMut，找到 accepts_focus 命中的
         // 那格，记下索引，跑完 executor 后回该 owner 调 after_text_changed。
         //
@@ -761,9 +724,6 @@ impl App {
             let mut search_guard = self.search_model.as_ref().map(|m| m.borrow_mut());
 
             let focused_field = match focus {
-                AppFocus::Surface(SurfaceFocus::ProjectPicker(_)) => {
-                    self.project_picker.edit_target()
-                }
                 AppFocus::Panel(PanelFocus::FileTree(_)) => self.file_tree.edit_target(),
                 AppFocus::Panel(PanelFocus::Search(_)) => search_guard
                     .as_deref_mut()
@@ -801,12 +761,6 @@ impl App {
             }
             host_effects
         };
-
-        if let Some(before) = picker_query_before {
-            if self.project_picker.query_text() != before {
-                self.project_picker.reset_selection();
-            }
-        }
 
         // 命令派发可能编辑了活动 buffer（产生 DeltaEvent），扇出给 BufferSearch 与 syntax provider 是无条件的。
         // 否则编辑后高亮 / 搜索命中都不跟版本。
@@ -910,6 +864,7 @@ mod tests {
     use crate::shell::editor::TextTargetOwner;
     use crate::shell::features::panels::PanelId;
     use crate::shell::features::panels::file_tree::FileTreeActivation;
+    use crate::shell::features::project_picker::ProjectPickerModel;
     use crate::shell::features::settings::SettingsTomlEditor;
     use crate::shell::workbench::state::{EditorState, EditorTab};
     use std::cell::RefCell;
@@ -951,6 +906,14 @@ mod tests {
             FileTreeActivation::OpenedFile
         );
         app
+    }
+
+    /// 在 headless 测试里模拟 ProjectPickerRuntime 装配过：runtime 现在是
+    /// ProjectPickerModel 的真正拥有者，生产路径由 ShellView::new 注册 owner。
+    fn install_project_picker(app: &mut App) -> Rc<RefCell<ProjectPickerModel>> {
+        let picker = Rc::new(RefCell::new(ProjectPickerModel::new()));
+        app.install_editor_owner(picker.clone() as Rc<RefCell<dyn TextTargetOwner>>);
+        picker
     }
 
     #[test]
@@ -1229,6 +1192,7 @@ tab_size = 8
     #[test]
     fn project_action_commands_should_have_shortcuts_and_emit_effects() {
         let mut app = App::new();
+        let _picker = install_project_picker(&mut app);
 
         assert!(
             app.shortcut_for(project_picker_commands::OPEN_LOCAL_PROJECT)
@@ -1306,6 +1270,7 @@ tab_size = 8
     #[test]
     fn project_picker_escape_should_dispatch_project_picker_dismiss_command() {
         let mut app = App::new();
+        let _picker = install_project_picker(&mut app);
         app.request_focus(AppFocus::project_picker(ProjectPickerFocus::Query));
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();

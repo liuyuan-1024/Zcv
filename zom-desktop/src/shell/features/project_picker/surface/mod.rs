@@ -16,7 +16,7 @@ use gpui::{
 
 use crate::app::App;
 use crate::focus::{AppFocus, ProjectPickerFocus};
-use crate::shell::editor::TextEditorSlot;
+use crate::shell::editor::{TextEditorSlot, TextTargetOwner};
 use crate::shell::shared::theme::{color, radius, space};
 use crate::shell::surfaces::{
     SurfaceAnchor, SurfaceId, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
@@ -24,13 +24,19 @@ use crate::shell::surfaces::{
 use crate::shell::{KeyRequest, normalized_chord};
 
 use super::recent::{RecentProject, RecentProjects};
-use super::{ProjectPickerActions, ProjectPickerMode};
+use super::{
+    ProjectPickerActions, ProjectPickerActivation, ProjectPickerMode, ProjectPickerModel,
+    ProjectPickerState,
+};
 
 #[derive(Clone)]
 pub(crate) struct ProjectPickerRuntime {
     focus: FocusHandle,
     key_request: Rc<RefCell<Option<KeyRequest>>>,
     slot: Rc<RefCell<Option<Rc<TextEditorSlot>>>>,
+    /// 项目选择器 model 的真正拥有者。App 只通过 `owner_handle` 把它接入
+    /// editor router；状态 / selection / activation 由 runtime 薄代理。
+    model: Rc<RefCell<ProjectPickerModel>>,
     /// 最近项目列表 —— picker 自家的纯 UI 数据，磁盘持久化由 [`RecentProjects`] 内部完成。
     /// 用 `Rc<RefCell>` 让 runtime 自身 `Clone` 时所有副本共享同一份。
     recent: Rc<RefCell<RecentProjects>>,
@@ -50,8 +56,38 @@ impl ProjectPickerRuntime {
             focus: cx.focus_handle(),
             key_request: Rc::new(RefCell::new(None)),
             slot: Rc::new(RefCell::new(None)),
+            model: Rc::new(RefCell::new(ProjectPickerModel::new())),
             recent: Rc::new(RefCell::new(RecentProjects::load(recent_path))),
         }
+    }
+
+    /// 把 picker query owner 注册给 App 的路由表；`Rc` clone 不复制内部状态。
+    pub(crate) fn owner_handle(&self) -> Rc<RefCell<dyn TextTargetOwner>> {
+        self.model.clone()
+    }
+
+    pub(crate) fn reset(&self, mode: ProjectPickerMode) {
+        self.model.borrow_mut().reset(mode);
+    }
+
+    pub(crate) fn state(&self) -> ProjectPickerState {
+        self.model.borrow().state()
+    }
+
+    pub(crate) fn selected_project_id(&self, projects: &[RecentProject]) -> Option<String> {
+        self.model.borrow().selected_project_id(projects)
+    }
+
+    pub(crate) fn move_selection(&self, delta: isize, projects: &[RecentProject]) {
+        self.model.borrow_mut().move_selection(delta, projects);
+    }
+
+    pub(crate) fn clamp_selection(&self, projects: &[RecentProject]) {
+        self.model.borrow_mut().clamp_selection(projects);
+    }
+
+    pub(crate) fn activation(&self, projects: &[RecentProject]) -> ProjectPickerActivation {
+        self.model.borrow().activation(projects)
     }
 
     /// 当前最近项目快照（克隆）。回调里用：调用方不持有 RefCell 借用。
@@ -65,8 +101,7 @@ impl ProjectPickerRuntime {
         self.recent.borrow_mut().remember(root, repo);
     }
 
-    /// 从最近列表移除并把 picker 的当前 selection clamp 回合法区间。
-    /// clamp 需要可变 picker；callee 在外部 borrow_mut。
+    /// 从最近列表移除；调用方随后让 picker model clamp 当前 selection。
     pub(crate) fn remove_recent(&self, id: &str) {
         self.recent.borrow_mut().remove(id);
     }

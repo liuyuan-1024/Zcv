@@ -72,16 +72,12 @@ pub(crate) fn try_apply_effect(
             if !picker_active(surfaces, cx) {
                 return true;
             }
-            // 先在 runtime 取一份 recent 快照，再短借 app 查选中 id；
-            // 第三次借 app 是为了把 selection clamp 回新长度，不能与查 id 同借用域。
             let recent = project_picker_runtime.recent_projects();
-            let project_id = app.borrow().project_picker().selected_project_id(&recent);
+            let project_id = project_picker_runtime.selected_project_id(&recent);
             if let Some(project_id) = project_id {
                 project_picker_runtime.remove_recent(&project_id);
                 let recent = project_picker_runtime.recent_projects();
-                app.borrow_mut()
-                    .project_picker_mut()
-                    .clamp_selection(&recent);
+                project_picker_runtime.clamp_selection(&recent);
                 window.refresh();
             }
         }
@@ -91,9 +87,7 @@ pub(crate) fn try_apply_effect(
             }
             let delta = *delta;
             let recent = project_picker_runtime.recent_projects();
-            app.borrow_mut()
-                .project_picker_mut()
-                .move_selection(delta, &recent);
+            project_picker_runtime.move_selection(delta, &recent);
             window.refresh();
         }
         HostEffect::ProjectPickerActivate => {
@@ -101,7 +95,7 @@ pub(crate) fn try_apply_effect(
                 return true;
             }
             let recent = project_picker_runtime.recent_projects();
-            let activation = app.borrow().project_picker().activation(&recent);
+            let activation = project_picker_runtime.activation(&recent);
             match activation {
                 ProjectPickerActivation::None => {}
                 ProjectPickerActivation::Open(project_record) => {
@@ -155,11 +149,15 @@ fn show_project_picker(
         eprintln!("项目选择器未安装 TextEditorSlot");
         return;
     };
-    app.borrow_mut().project_picker_reset(initial_mode.into());
+    project_picker_runtime.reset(initial_mode.into());
+    app.borrow_mut()
+        .request_focus(crate::focus::AppFocus::project_picker(
+            crate::focus::ProjectPickerFocus::Query,
+        ));
     let runtime_for_projects = project_picker_runtime.clone();
     let projects = Rc::new(move || runtime_for_projects.recent_projects());
-    let state_app = Rc::clone(app);
-    let state = Rc::new(move || state_app.borrow().project_picker().state());
+    let state_runtime = project_picker_runtime.clone();
+    let state = Rc::new(move || state_runtime.state());
     let shortcut_app = Rc::clone(app);
     let shortcut_lookup =
         Rc::new(move |command_id: &str| shortcut_app.borrow().shortcut_for(command_id));

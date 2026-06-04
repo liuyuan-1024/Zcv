@@ -1,4 +1,10 @@
 //! 文件树文件系统操作与目录树操作。
+//!
+//! 这些方法只动文件系统、`ProjectTree`、模型自身的选区 / 输入框 / 剪贴板，
+//! 然后返回 [`FileTreeOutcome`] 描述需要在 [`WorkspaceSession`] 上做的副作用。
+//! 由 [`runtime`](super::runtime) 通过 [`apply_outcome`] 桥接到 session。
+//!
+//! [`WorkspaceSession`]: crate::workspace_session::WorkspaceSession
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -7,33 +13,30 @@ use zom_workspace::{EntryKind, ProjectTree, Workspace};
 
 use crate::workspace_session::WorkspaceSession;
 
-use super::FileTreeActivation;
 use super::clipboard::ClipboardMode;
 use super::model::FileTreeModel;
+use super::{FileTreeActivation, FileTreeOutcome};
 
 impl FileTreeModel {
     /// 提交新建：名称为空则等同取消；以 `/` 结尾创建目录，否则创建文件。
-    pub(crate) fn commit_new_entry(
-        &mut self,
-        session: &mut WorkspaceSession,
-    ) -> FileTreeActivation {
+    pub(crate) fn commit_new_entry(&mut self) -> FileTreeOutcome {
         let Some(pending) = self.pending.as_ref() else {
-            return FileTreeActivation::Nothing;
+            return FileTreeOutcome::Nothing;
         };
         let text = pending.editor.text();
         let name = text.trim();
         if name.is_empty() {
             self.pending = None;
-            return FileTreeActivation::Nothing;
+            return FileTreeOutcome::Nothing;
         }
         let Some((name, kind)) = parse_new_entry_input(name) else {
             eprintln!("新建条目路径无效：{name}");
-            return FileTreeActivation::Nothing;
+            return FileTreeOutcome::Nothing;
         };
         let parent = pending.parent.clone();
         let Some(tree) = self.project_tree.as_mut() else {
             self.pending = None;
-            return FileTreeActivation::Nothing;
+            return FileTreeOutcome::Nothing;
         };
         match tree.create_entry(&parent, &name, kind) {
             Ok(path) => {
@@ -41,8 +44,8 @@ impl FileTreeModel {
                 self.selected = Some(path.clone());
                 self.pending = None;
                 match kind {
-                    EntryKind::File => file_activation(session.open_file(path)),
-                    EntryKind::Directory => FileTreeActivation::Nothing,
+                    EntryKind::File => FileTreeOutcome::OpenFile(path),
+                    EntryKind::Directory => FileTreeOutcome::Nothing,
                 }
             }
             Err(error) => {
@@ -51,20 +54,20 @@ impl FileTreeModel {
                     EntryKind::File => "文件",
                 };
                 eprintln!("新建{label}失败：{}：{error}", parent.join(&name).display());
-                FileTreeActivation::Nothing
+                FileTreeOutcome::Nothing
             }
         }
     }
 
     /// 提交重命名：把当前输入框文本作为新名落盘。
-    pub(crate) fn commit_rename(&mut self, session: &mut WorkspaceSession) -> FileTreeActivation {
+    pub(crate) fn commit_rename(&mut self) -> FileTreeOutcome {
         let Some(pending) = self.pending_rename.as_ref() else {
-            return FileTreeActivation::Nothing;
+            return FileTreeOutcome::Nothing;
         };
         let text = pending.editor.text();
         let new_name = text.trim();
         if new_name.is_empty() {
-            return FileTreeActivation::Nothing;
+            return FileTreeOutcome::Nothing;
         }
         if pending
             .path
@@ -74,12 +77,12 @@ impl FileTreeModel {
             .unwrap_or(false)
         {
             self.pending_rename = None;
-            return FileTreeActivation::Nothing;
+            return FileTreeOutcome::Nothing;
         }
         let old_path = pending.path.clone();
         let Some(tree) = self.project_tree.as_mut() else {
             self.pending_rename = None;
-            return FileTreeActivation::Nothing;
+            return FileTreeOutcome::Nothing;
         };
         match tree.rename_entry(&old_path, new_name) {
             Ok(new_path) => {
@@ -92,18 +95,17 @@ impl FileTreeModel {
                 } else {
                     neighbor_after(tree, &new_path).unwrap_or_else(|| new_path.clone())
                 };
-                session.rebase_buffers_under(&old_path, &new_path);
                 self.selected = Some(next_focus);
                 self.pending_rename = None;
-                if is_file {
-                    file_activation(session.open_file(new_path))
-                } else {
-                    FileTreeActivation::Nothing
+                FileTreeOutcome::Rename {
+                    old: old_path,
+                    new: new_path,
+                    opens_file: is_file,
                 }
             }
             Err(error) => {
                 eprintln!("重命名失败：{} → {new_name}：{error}", old_path.display());
-                FileTreeActivation::Nothing
+                FileTreeOutcome::Nothing
             }
         }
     }
@@ -138,13 +140,15 @@ impl FileTreeModel {
         self.pending_delete = Some(items);
     }
 
-    /// 确认删除：把待删集合里的每一项移入回收站、关闭受影响的编辑器视图。
-    pub(crate) fn confirm_delete(&mut self, session: &mut WorkspaceSession) {
+    /// 确认删除：把待删集合里的每一项移入回收站。返回的 outcome 携带需要关闭
+    /// 的 buffer 路径列表与"已确定的下一焦点行"。若 `picked_sibling = None`，
+    /// runtime 在关 buffer 之后用 session 的活动 buffer 路径或首行回退。
+    pub(crate) fn confirm_delete(&mut self) -> FileTreeOutcome {
         let Some(items) = self.pending_delete.take() else {
-            return;
+            return FileTreeOutcome::Nothing;
         };
         let Some(tree) = self.project_tree.as_mut() else {
-            return;
+            return FileTreeOutcome::Nothing;
         };
         let next_sibling = items.first().and_then(|(first_path, _)| {
             next_sibling_of(tree, first_path, |candidate| {
@@ -153,39 +157,45 @@ impl FileTreeModel {
                     .any(|(deleted, _)| deleted.as_path() == candidate)
             })
         });
+        let mut closed = Vec::new();
         for (path, _) in &items {
             match delete_tree_entry(tree, path) {
-                Ok(()) => session.close_buffers_under(path),
+                Ok(()) => closed.push(path.clone()),
                 Err(error) => {
                     eprintln!("删除失败：{}：{error}", path.display());
                 }
             }
         }
-        self.selected =
-            next_sibling.or_else(|| selected_path_after_deleting_active(tree, session.workspace()));
+        self.selected = next_sibling.clone();
         self.selection.clear();
         self.stroke = None;
+        FileTreeOutcome::Delete {
+            paths: closed,
+            picked_sibling: next_sibling,
+        }
     }
 
     pub(crate) fn cancel_delete(&mut self) {
         self.pending_delete = None;
     }
 
-    /// 粘贴：把剪贴板内容应用到“焦点所在目录”。
-    pub(crate) fn paste_from_clipboard(&mut self, session: &mut WorkspaceSession) {
+    /// 粘贴：把剪贴板内容应用到"焦点所在目录"。Cut 模式产生的 `(src, new)` 对会
+    /// 进 outcome 让 runtime 同步 rebuild buffer 路径；Copy 模式 rebases 列表为空。
+    pub(crate) fn paste_from_clipboard(&mut self) -> FileTreeOutcome {
         let Some(clipboard) = self.clipboard.clone() else {
-            return;
+            return FileTreeOutcome::Nothing;
         };
         let target_parent = {
             let Some(tree) = self.project_tree.as_ref() else {
-                return;
+                return FileTreeOutcome::Nothing;
             };
             compute_paste_target(tree, self.selected.as_ref())
         };
         let Some(tree) = self.project_tree.as_mut() else {
-            return;
+            return FileTreeOutcome::Nothing;
         };
         let mut new_paths = Vec::new();
+        let mut rebases: Vec<(PathBuf, PathBuf)> = Vec::new();
         for src in &clipboard.paths {
             let result = match clipboard.mode {
                 ClipboardMode::Copy => tree.copy_entry(src, &target_parent),
@@ -194,7 +204,7 @@ impl FileTreeModel {
             match result {
                 Ok(new_path) => {
                     if matches!(clipboard.mode, ClipboardMode::Cut) && new_path != *src {
-                        session.rebase_buffers_under(src, &new_path);
+                        rebases.push((src.clone(), new_path.clone()));
                     }
                     new_paths.push(new_path);
                 }
@@ -218,6 +228,7 @@ impl FileTreeModel {
             }
             self.selected = Some(target_parent);
         }
+        FileTreeOutcome::Paste { rebases }
     }
 
     pub(crate) fn collapse_or_parent(&mut self) {
@@ -283,27 +294,72 @@ impl FileTreeModel {
         }
     }
 
-    pub(crate) fn activate_selected(
-        &mut self,
-        session: &mut WorkspaceSession,
-    ) -> FileTreeActivation {
+    pub(crate) fn activate_selected(&mut self) -> FileTreeOutcome {
         let Some(selected) = self.selected.clone() else {
-            return FileTreeActivation::Nothing;
+            return FileTreeOutcome::Nothing;
         };
         let Some(tree) = self.project_tree.as_mut() else {
-            return FileTreeActivation::Nothing;
+            return FileTreeOutcome::Nothing;
         };
         let Some((kind, _, _)) = snapshot_row(tree, &selected) else {
-            return FileTreeActivation::Nothing;
+            return FileTreeOutcome::Nothing;
         };
         match kind {
             EntryKind::Directory => {
                 if let Err(error) = tree.toggle(&selected) {
                     eprintln!("切换目录展开失败：{}：{error}", selected.display());
                 }
-                FileTreeActivation::ToggledDir
+                FileTreeOutcome::ToggledDir
             }
-            EntryKind::File => file_activation(session.open_file(selected)),
+            EntryKind::File => FileTreeOutcome::OpenFile(selected),
+        }
+    }
+}
+
+/// 把模型产出的 [`FileTreeOutcome`] 翻成对 [`WorkspaceSession`] 的具体调用，
+/// 并产出 [`FileTreeActivation`] 给焦点路由用。文件树模型本身不持有 session；
+/// runtime 与单测都通过本函数把领域结果落地。
+pub(crate) fn apply_outcome(
+    model: &mut FileTreeModel,
+    outcome: FileTreeOutcome,
+    session: &mut WorkspaceSession,
+) -> FileTreeActivation {
+    match outcome {
+        FileTreeOutcome::Nothing => FileTreeActivation::Nothing,
+        FileTreeOutcome::ToggledDir => FileTreeActivation::ToggledDir,
+        FileTreeOutcome::OpenFile(path) => file_activation(session.open_file(path)),
+        FileTreeOutcome::Rename {
+            old,
+            new,
+            opens_file,
+        } => {
+            session.rebase_buffers_under(&old, &new);
+            if opens_file {
+                file_activation(session.open_file(new))
+            } else {
+                FileTreeActivation::Nothing
+            }
+        }
+        FileTreeOutcome::Paste { rebases } => {
+            for (src, dst) in rebases {
+                session.rebase_buffers_under(&src, &dst);
+            }
+            FileTreeActivation::Nothing
+        }
+        FileTreeOutcome::Delete {
+            paths,
+            picked_sibling,
+        } => {
+            for path in &paths {
+                session.close_buffers_under(path);
+            }
+            if picked_sibling.is_none() {
+                let fallback = model.project_tree.as_ref().and_then(|tree| {
+                    selected_path_after_deleting_active(tree, session.workspace())
+                });
+                model.selected = fallback;
+            }
+            FileTreeActivation::Nothing
         }
     }
 }

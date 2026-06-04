@@ -12,10 +12,10 @@ use crate::shell::KeyRequest;
 use crate::shell::editor::{TextEditorSlot, TextTargetOwner};
 use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::controller::WorkbenchController;
-use crate::workspace_session::WorkspaceSession;
 use gpui::{Context, FocusHandle, Window};
 
-use super::{FileTreeModel, FileTreePanel, FileTreeState};
+use super::fs_ops::apply_outcome;
+use super::{FileTreeActivation, FileTreeModel, FileTreeOutcome, FileTreePanel, FileTreeState};
 
 #[derive(Clone)]
 pub(crate) struct FileTreeRuntime {
@@ -47,13 +47,17 @@ impl FileTreeRuntime {
         f(&mut self.model.borrow_mut())
     }
 
-    pub(crate) fn with_model_and_session<R>(
+    /// 跑一个产出 [`FileTreeOutcome`] 的模型动作，并把 outcome 通过 [`apply_outcome`]
+    /// 翻成 session 调用与 [`FileTreeActivation`]。effects.rs 的所有"模型 + 会话"
+    /// 复合 effect 都走这一条路径，模型本身不再持有 [`WorkspaceSession`]。
+    pub(crate) fn execute(
         &self,
         app: &mut App,
-        f: impl FnOnce(&mut FileTreeModel, &mut WorkspaceSession) -> R,
-    ) -> R {
+        f: impl FnOnce(&mut FileTreeModel) -> FileTreeOutcome,
+    ) -> FileTreeActivation {
         let mut model = self.model.borrow_mut();
-        app.with_workspace_session_mut(|session| f(&mut model, session))
+        let outcome = f(&mut model);
+        app.with_workspace_session_mut(|session| apply_outcome(&mut model, outcome, session))
     }
 
     pub(crate) fn open_project(&self, root: PathBuf) {

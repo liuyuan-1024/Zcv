@@ -50,8 +50,7 @@ pub(crate) fn try_apply_effect(
         HostEffect::FileTreeActivate => {
             let activation = {
                 let mut app = app.borrow_mut();
-                file_tree
-                    .with_model_and_session(&mut app, |ft, session| ft.activate_selected(session))
+                file_tree.execute(&mut app, |ft| ft.activate_selected())
             };
             if matches!(activation, FileTreeActivation::OpenedFile) {
                 request_focus(app, focus, AppFocus::editor(), window);
@@ -77,8 +76,7 @@ pub(crate) fn try_apply_effect(
             // 新建文件会被打开，焦点随之切到编辑器；新建目录留在文件树。
             let activation = {
                 let mut app = app.borrow_mut();
-                file_tree
-                    .with_model_and_session(&mut app, |ft, session| ft.commit_new_entry(session))
+                file_tree.execute(&mut app, |ft| ft.commit_new_entry())
             };
             if matches!(activation, FileTreeActivation::OpenedFile) {
                 request_focus(app, focus, AppFocus::editor(), window);
@@ -102,7 +100,7 @@ pub(crate) fn try_apply_effect(
             // 与 CommitNewEntry 同构：文件被打开即把焦点切给编辑器；目录留在文件树。
             let activation = {
                 let mut app = app.borrow_mut();
-                file_tree.with_model_and_session(&mut app, |ft, session| ft.commit_rename(session))
+                file_tree.execute(&mut app, |ft| ft.commit_rename())
             };
             if matches!(activation, FileTreeActivation::OpenedFile) {
                 request_focus(app, focus, AppFocus::editor(), window);
@@ -116,7 +114,7 @@ pub(crate) fn try_apply_effect(
         }
         HostEffect::FileTreeConfirmDelete => {
             let mut app = app.borrow_mut();
-            file_tree.with_model_and_session(&mut app, |ft, session| ft.confirm_delete(session));
+            file_tree.execute(&mut app, |ft| ft.confirm_delete());
         }
         HostEffect::FileTreeCancelDelete => {
             file_tree.with_model_mut(|ft| ft.cancel_delete());
@@ -129,8 +127,7 @@ pub(crate) fn try_apply_effect(
         }
         HostEffect::FileTreePaste => {
             let mut app = app.borrow_mut();
-            file_tree
-                .with_model_and_session(&mut app, |ft, session| ft.paste_from_clipboard(session));
+            file_tree.execute(&mut app, |ft| ft.paste_from_clipboard());
         }
         _ => return false,
     }

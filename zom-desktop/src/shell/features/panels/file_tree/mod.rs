@@ -27,11 +27,14 @@ mod state;
 mod view;
 
 pub(crate) use effects::try_apply_effect;
+#[cfg(test)]
+pub(crate) use fs_ops::apply_outcome;
 
 pub(crate) use model::FileTreeModel;
 pub(crate) use runtime::FileTreeRuntime;
 pub(crate) use state::{
-    FileTreeActivation, FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry, PendingRename,
+    FileTreeActivation, FileTreeOutcome, FileTreeRow, FileTreeState, PendingDelete,
+    PendingNewEntry, PendingRename,
 };
 
 /// 删除确认弹窗的两个动作回调。由根视图绑定命令后注入。

@@ -253,11 +253,16 @@ impl App {
     }
 
     #[cfg(test)]
-    fn with_file_tree<R>(
+    fn with_file_tree(
         &mut self,
-        f: impl FnOnce(&mut FileTreeModel, &mut WorkspaceSession) -> R,
-    ) -> R {
-        f(&mut self.file_tree, &mut self.session)
+        f: impl FnOnce(&mut FileTreeModel) -> crate::shell::features::panels::file_tree::FileTreeOutcome,
+    ) -> crate::shell::features::panels::file_tree::FileTreeActivation {
+        let outcome = f(&mut self.file_tree);
+        crate::shell::features::panels::file_tree::apply_outcome(
+            &mut self.file_tree,
+            outcome,
+            &mut self.session,
+        )
     }
 
     pub(crate) fn editor_state(&self) -> workbench_state::EditorState {
@@ -598,7 +603,7 @@ mod tests {
     use crate::focus::{AppFocus, PanelFocus, ProjectPickerFocus};
     use crate::shell::editor::TextTargetOwner;
     use crate::shell::features::panels::PanelId;
-    use crate::shell::features::panels::file_tree::FileTreeActivation;
+    use crate::shell::features::panels::file_tree::{FileTreeActivation, FileTreeOutcome};
     use crate::shell::features::project_picker::ProjectPickerModel;
     use crate::shell::features::settings::SettingsTomlEditor;
     use crate::shell::workbench::state::{EditorState, EditorTab};
@@ -637,7 +642,7 @@ mod tests {
         app.file_tree_mut().move_selection(1); // src
         app.file_tree_mut().move_selection(1); // README.md
         assert_eq!(
-            app.with_file_tree(|ft, session| ft.activate_selected(session)),
+            app.with_file_tree(|ft| ft.activate_selected()),
             FileTreeActivation::OpenedFile
         );
         app
@@ -787,7 +792,7 @@ tab_size = 8
         app.file_tree_mut().move_selection(1); // README.md
 
         assert_eq!(
-            app.with_file_tree(|ft, session| ft.activate_selected(session)),
+            app.with_file_tree(|ft| ft.activate_selected()),
             FileTreeActivation::OpenedFile
         );
 
@@ -1121,7 +1126,7 @@ tab_size = 8
         let selected = app.file_tree_state().selected.clone();
         assert_eq!(selected.as_deref(), Some(root.join("README.md").as_path()));
 
-        let action = app.with_file_tree(|ft, session| ft.activate_selected(session));
+        let action = app.with_file_tree(|ft| ft.activate_selected());
         assert_eq!(action, FileTreeActivation::OpenedFile);
 
         let state = app.file_tree_state();
@@ -1140,7 +1145,7 @@ tab_size = 8
         // rows: [root, src, README.md] —— 选到 src。
         app.file_tree_mut().move_selection(1); // root
         app.file_tree_mut().move_selection(1); // src
-        let action = app.with_file_tree(|ft, session| ft.activate_selected(session));
+        let action = app.with_file_tree(|ft| ft.activate_selected());
         assert_eq!(action, FileTreeActivation::ToggledDir);
 
         let state = app.file_tree_state();
@@ -1163,7 +1168,7 @@ tab_size = 8
         app.file_tree_mut().move_selection(1); // src
         app.file_tree_mut().move_selection(1); // README.md
         assert_eq!(
-            app.with_file_tree(|ft, session| ft.activate_selected(session)),
+            app.with_file_tree(|ft| ft.activate_selected()),
             FileTreeActivation::OpenedFile
         );
 
@@ -1174,7 +1179,7 @@ tab_size = 8
         app.file_tree_mut().move_selection(1); // inner
         app.file_tree_mut().move_selection(1); // lib.rs
         assert_eq!(
-            app.with_file_tree(|ft, session| ft.activate_selected(session)),
+            app.with_file_tree(|ft| ft.activate_selected()),
             FileTreeActivation::OpenedFile
         );
 

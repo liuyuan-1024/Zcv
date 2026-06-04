@@ -1,13 +1,10 @@
 //! app —— 组合根（手册 2 / 13）。
 //!
-//! 组合根装配命令、工作区、配置、文本目标与后台拍点 runtime，
-//! 并把输入统一收敛到 command 管线。
+//! 组合根装配命令、工作区、配置、文本目标与后台拍点 runtime，并把输入统一收敛到 command 管线。
 //!
-//! 依赖方向：`shell` 只通过 [`App`] 调组合根；`app` 不 import `shell` 的
-//! feature / workbench / editor 类型。反向接入走顶层共享协议
-//! [`crate::ports`] 与 [`crate::text_target`]。
-//! 本目录内的子模块（command_runtime / config_store / config_applier /
-//! text_target_runtime / pumps）都是 App 的私有协作者，对 shell 完全隔离；
+//! 依赖方向：`shell` 只通过 [`App`] 调组合根；`app` 不 import `shell` 的 feature / workbench / editor 类型。
+//! 反向接入走顶层共享协议 [`crate::ports`] 与 [`crate::text_target`]。
+//! 本目录内的子模块（command_runtime / config_store / config_applier / text_target_runtime / pumps）都是 App 的私有协作者，对 shell 完全隔离；
 //! shell 想"反向接入"App 走的是 [`crate::ports`] 里的 trait。
 
 mod command_runtime;
@@ -36,6 +33,7 @@ use self::config_store::ConfigStore;
 use self::pumps::BackgroundPumps;
 use self::text_target_runtime::TextTargetRuntime;
 use crate::config::{AppConfig, SettingsChange};
+use crate::dispatch::KeyDispatchOutcome;
 use crate::focus::{
     AppFocus, FileTreeFocus, FocusStore, PanelFocus, ProjectPickerFocus, SurfaceFocus,
 };
@@ -44,14 +42,6 @@ use crate::ports::{FramePump, PostEditObserver};
 use crate::shell::features::panels::file_tree::{FileTreeModel, FileTreeState};
 use crate::text_target::{EditorRouter, EditorRouterMut, TextTargetOwner};
 use crate::workspace_session::WorkspaceSession;
-
-/// 一次按键派发的结果。
-/// `consumed=false` 表示这次按键没有匹配任何 keymap 绑定，应当透传给系统输入法；
-/// 否则会阻塞 IME 的整个文本输入路径。
-pub(crate) struct KeyDispatchOutcome {
-    pub(crate) consumed: bool,
-    pub(crate) effects: Vec<HostEffect>,
-}
 
 pub struct App {
     command: CommandRuntime,

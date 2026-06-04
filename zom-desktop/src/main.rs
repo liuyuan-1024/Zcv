@@ -11,6 +11,7 @@
 
 mod app;
 mod config;
+mod dispatch;
 mod editor_state;
 mod focus;
 mod ports;

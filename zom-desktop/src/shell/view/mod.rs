@@ -167,35 +167,12 @@ impl ShellView {
 
     fn settings_action_request(&self) -> settings::SettingsActionRequest {
         let app = Rc::clone(&self.runtime.app);
-        let settings = self.runtime.features.settings.clone();
+        let editor_focus = self.runtime.editor_focus.clone();
         Rc::new(move |action, window, _cx| {
             match action {
-                // OpenToml：App 提供 config 快照 + path，runtime 真正装入编辑器
-                // 状态。无 config_path（内存模式）直接 noop，与历史行为对齐。
                 settings::SettingsAction::OpenToml => {
-                    let (path, config) = {
-                        let a = app.borrow_mut();
-                        let Some(path) = a.config_path() else {
-                            eprintln!("当前为内存配置模式，没有可打开的 config.toml");
-                            return;
-                        };
-                        a.save_config();
-                        (path, a.config_snapshot())
-                    };
-                    settings.open_toml_from_disk(&path, &config);
-                    app.borrow_mut().request_focus(AppFocus::settings());
-                }
-                // ReturnSettings：runtime 关闭并解析；解析成功才用新 config 替换
-                // 全局；失败保持打开态，与旧 close_settings_toml 行为一致。
-                settings::SettingsAction::ReturnSettings => {
-                    let Some(config) = settings.close_toml_and_parse() else {
-                        return;
-                    };
-                    {
-                        let mut app = app.borrow_mut();
-                        app.replace_config(config);
-                        app.request_focus(AppFocus::settings());
-                        config_visuals::apply(&app.config_snapshot());
+                    if app.borrow_mut().open_config_file() {
+                        window.focus(&editor_focus);
                     }
                 }
                 settings::SettingsAction::Change(change) => {
@@ -223,7 +200,7 @@ impl Render for ShellView {
         {
             let mut app = runtime.app.borrow_mut();
             app.request_focus_from_shell(projected);
-            frame_tick::advance(&mut app, &runtime.features.settings);
+            frame_tick::advance(&mut app);
         }
 
         let state = self.workbench_state();
@@ -263,11 +240,7 @@ impl Render for ShellView {
             .set_action_request(self.settings_action_request());
         runtime.features.settings.set_state({
             let app = runtime.app.borrow();
-            settings::SettingsPanelState::new(
-                app.config_snapshot(),
-                app.config_path(),
-                runtime.features.settings.is_toml_open(),
-            )
+            settings::SettingsPanelState::new(app.config_snapshot(), app.config_path())
         });
         runtime
             .features

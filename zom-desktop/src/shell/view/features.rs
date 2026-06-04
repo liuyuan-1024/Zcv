@@ -1,4 +1,4 @@
-//! 把 5 个 shell feature runtime 折叠成单一 registry。
+//! 把 shell feature runtime 折叠成单一 registry。
 //!
 //! ShellView 不再为每个 feature 同时持字段、传参数、抄一遍焦点投影。
 //! 新增 feature 只需在 [`FeatureRegistry`] 添字段并在 [`assemble`] / [`install_listeners`] / [`focus_projection`] 各添一行；
@@ -41,13 +41,12 @@ impl FeatureRegistry {
         let file_tree = FileTreeRuntime::new(cx);
         let project_picker = ProjectPickerRuntime::new(cx, RecentProjects::default_path());
         let language_servers = LanguageServersRuntime::new(cx);
-        let settings = SettingsRuntime::new(app.borrow().syntax_engine_handle(), cx);
+        let settings = SettingsRuntime::new(cx);
 
         {
             let mut app = app.borrow_mut();
             app.install_editor_owner(file_tree.owner_handle());
             app.install_editor_owner(project_picker.owner_handle());
-            app.install_editor_owner(settings.toml_owner_handle());
             // SearchModel 同时承载 query / replacement 两个输入框，按 focus 内部分派；
             // 通过同一个 install_editor_owner 注册进 router，TextTargetRuntime 不为它单走特殊分支。
             app.install_editor_owner(panels.search_owner_handle());
@@ -85,18 +84,13 @@ impl FeatureRegistry {
     }
 
     /// 组合给定 editor focus 与各 feature 的 focus handle 成 `AppFocus <-> FocusHandle` 投影表。
-    /// `include_settings = false` 用于 action 派发路径（不需要 settings 焦点也能解析 TogglePanel）。
-    pub(super) fn focus_projection(
-        &self,
-        editor: FocusHandle,
-        include_settings: bool,
-    ) -> FocusProjection {
+    pub(super) fn focus_projection(&self, editor: FocusHandle) -> FocusProjection {
         projection_from_runtimes(
             editor,
             &self.panels,
             &self.file_tree,
             self.project_picker.focus_handle(),
-            include_settings.then(|| self.settings.focus_handle()),
+            Some(self.settings.focus_handle()),
         )
     }
 }

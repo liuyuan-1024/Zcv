@@ -77,13 +77,6 @@ impl ConfigStore {
         self.sync_soft_wrap_cell();
     }
 
-    /// 整份替换 config，保持 soft_wrap cell 一致。视觉 / workspace / 落盘
-    /// 同 [`apply_change`](Self::apply_change)。
-    pub(super) fn replace(&mut self, next: AppConfig) {
-        self.config = next;
-        self.sync_soft_wrap_cell();
-    }
-
     fn sync_soft_wrap_cell(&self) {
         self.soft_wrap_state.set(self.config.editor.soft_wrap);
     }

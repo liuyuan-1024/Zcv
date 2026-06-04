@@ -77,7 +77,7 @@ pub(super) fn apply_host_effects(
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    let focus = features.focus_projection(editor_focus_fallback.clone(), false);
+    let focus = features.focus_projection(editor_focus_fallback.clone());
     for effect in effects {
         // 按 feature 顺序问询：第一个认领的 try_apply 返回 true，跳过余下。
         // 剩下的窗口控制 / 跨 feature 变体由本文件下方的兜底 match 处理。

@@ -111,16 +111,6 @@ impl App {
         self.background.install_frame_pump(pump);
     }
 
-    /// 把 workspace 当前持有的 `SyntaxEngine` 借给需要它的 shell runtime（首位是 [`SettingsRuntime`]，构造 TOML 编辑器要 engine）。
-    ///
-    /// 进程里只有一根 engine，由 [`empty_workspace`] 创建并随 `open_project` 跨 workspace 重建持续复用；
-    /// 返回 `Rc` clone 不复制内部 state。
-    ///
-    /// [`SettingsRuntime`]: crate::shell::features::settings::SettingsRuntime
-    pub(crate) fn syntax_engine_handle(&self) -> Rc<SyntaxEngine> {
-        self.session.workspace().engine().clone()
-    }
-
     /// 共享的软换行 cell——多行 [`EditorKernel`] 在装配时借这份 `Rc`。
     /// 一次写入对所有持有者立刻可见，下一帧 element 就走新渲染路径。
     pub(crate) fn soft_wrap_handle(&self) -> Rc<Cell<bool>> {
@@ -133,10 +123,19 @@ impl App {
         self.config.toggle_soft_wrap();
     }
 
-    /// 把当前内存中的偏好写盘；命令路径如需「显式持久化当前会话偏好」
-    /// 可调本入口。toggle_* 类命令已在翻转时各自调过 save，平时无需再喊。
-    pub(crate) fn save_config(&self) {
+    /// 把真实的 config.toml 打开到主编辑区。首次打开前先保存当前配置，保证文件存在；
+    /// 后续语言识别、语法高亮、保存都走主工作区的普通文件路径。
+    pub(crate) fn open_config_file(&mut self) -> bool {
+        let Some(path) = self.config.path() else {
+            eprintln!("当前为内存配置模式，没有可打开的 config.toml");
+            return false;
+        };
         self.config.save();
+        if !self.session.open_file(path) {
+            return false;
+        }
+        self.request_focus(AppFocus::editor());
+        true
     }
 
     pub(crate) fn config_snapshot(&self) -> AppConfig {
@@ -149,20 +148,6 @@ impl App {
 
     pub(crate) fn apply_settings_change(&mut self, change: SettingsChange) {
         self.config.apply_change(change);
-        ConfigApplier::apply_to_session(self.config.config(), &mut self.session);
-        self.config.save();
-    }
-
-    /// 用一份外部传入的 `AppConfig` 替换当前 config，并把变化应用到 app runtime
-    /// 与 soft_wrap cell 上，最后落盘。视觉字段由 shell 读取 snapshot 后应用。
-    ///
-    /// settings TOML 视图关闭时由 [`ShellView`] 调：[`SettingsRuntime::close_toml_and_parse`]
-    /// 解出新 config 后通过本入口提交，避免 shell 侧自己重做"配置应用 + 落盘"。
-    ///
-    /// [`ShellView`]: crate::shell::view::ShellView
-    /// [`SettingsRuntime::close_toml_and_parse`]: crate::shell::features::settings::SettingsRuntime::close_toml_and_parse
-    pub(crate) fn replace_config(&mut self, next: AppConfig) {
-        self.config.replace(next);
         ConfigApplier::apply_to_session(self.config.config(), &mut self.session);
         self.config.save();
     }
@@ -366,10 +351,9 @@ impl App {
     /// 待将来真有「宿主侧处理组合键」的需求再启用。
     fn key_contexts(&self) -> Vec<KeyContext> {
         let focus = self.focus.current();
-        // 先问 router —— 文本输入类 owner（主编辑区、文件树新建/重命名、搜索框、
-        // picker 查询框、settings TOML 视图）通过 `accepts_focus` 自报家门，
-        // 由 owner 自己说"我的栈是什么"。owner 不接（focus 不属于它 / settings
-        // TOML 视图未开）才落到下方按焦点类别给的兜底栈。
+        // 先问 router —— 文本输入类 owner（主编辑区、文件树新建/重命名、搜索框、picker 查询框）
+        // 通过 `accepts_focus` 自报家门，由 owner 自己说"我的栈是什么"。
+        // owner 不接才落到下方按焦点类别给的兜底栈。
         if let Some(stack) = self.text_targets.key_contexts_for(&self.session, focus) {
             return stack;
         }
@@ -383,7 +367,6 @@ impl App {
             AppFocus::Surface(SurfaceFocus::ProjectPicker(_)) => {
                 vec![KeyContext::project_picker(), KeyContext::global()]
             }
-            // settings TOML 未开（accepts_focus 返回 false）→ 落到面板自身的栈。
             AppFocus::Surface(SurfaceFocus::Settings) => {
                 vec![KeyContext::settings(), KeyContext::global()]
             }
@@ -469,24 +452,17 @@ impl App {
         self.command.command_catalog_items()
     }
 
-    /// 排空活动 buffer 自上次 dispatch 以来累积的 `DeltaEvent`，扇出到
-    /// `BufferSearch` 与 syntax provider。**无论搜索面板是否开**都要调——
-    /// 否则编辑后 syntax layer 不重算 / 不 remap，渲染端读到旧版本的 span
-    /// 与新字节叠在一起就是错位的着色。
+    /// 排空活动 buffer 自上次 dispatch 以来累积的 `DeltaEvent`，扇出到 `BufferSearch` 与 syntax provider。
+    /// **无论搜索面板是否开**都要调——
+    /// 否则编辑后 syntax layer 不重算 / 不 remap，渲染端读到旧版本的 span 与新字节叠在一起就是错位的着色。
     ///
     /// 在 dispatch_command_id 与 ime preedit update 两个尾部都装一次。
     /// 多调几次无害——`take_pending_events` 第二次返空。
-    /// 每帧 prepaint 起手由 [`ShellView::render`] 调一次，把后台
-    /// `SyntaxWorker` 已就绪的高亮产物落到 workspace 各 buffer 的 `MetadataLayers`。
+    /// 每帧 prepaint 起手由 [`ShellView::render`] 调一次，把后台 `SyntaxWorker` 已就绪的高亮产物落到 workspace 各 buffer 的 `MetadataLayers`。
     ///
-    /// 主工作区 + 嵌入式编辑器共享同一根后台 worker；本方法只 drain 主 workspace
-    /// 的 sink。settings 面板的 toml 编辑器在
-    /// [`SettingsRuntime::pump_pending_highlights`] 独立 drain，由 shell 渲染期
-    /// 并排调一次；两边互不重入。不阻塞——内部全是「拿锁、看空、放锁」级
-    /// 操作，worker 没出新产物即 O(1) 无操作。详见
-    /// [改造方案 §3.7](../../zom-workspace/docs/语法高亮异步增量改造.md)。
-    ///
-    /// [`SettingsRuntime::pump_pending_highlights`]: crate::shell::features::settings::SettingsRuntime::pump_pending_highlights
+    /// 主工作区共享同一根后台 worker；本方法只 drain 主 workspace 的 sink。
+    /// 不阻塞——内部全是「拿锁、看空、放锁」级操作，worker 没出新产物即 O(1) 无操作。
+    /// 详见 [改造方案 §3.7](../../zom-workspace/docs/语法高亮异步增量改造.md)。
     pub fn pump_pending_highlights(&mut self) {
         self.background.pump_pending_highlights(&mut self.session);
     }
@@ -495,10 +471,9 @@ impl App {
     /// 没有 in-flight 时 O(1) 早退。新结果落地时同时 reveal 首条命中——避免
     /// 用户输入查询后 UI 不刷新的"看上去卡住"假象。
     ///
-    /// 与 `pump_pending_highlights` 平级：跑所有通过 [`install_frame_pump`] 注册的
-    /// [`FramePump`]。原本 search 的"收割后台命中"是这里第一个登记者，
-    /// 后续 feature 想做同节奏的 drain 也走同一注册路径——BackgroundPumps 不认
-    /// 具体 feature。
+    /// 与 `pump_pending_highlights` 平级：跑所有通过 [`install_frame_pump`] 注册的[`FramePump`]。
+    /// 原本 search 的"收割后台命中"是这里第一个登记者，
+    /// 后续 feature 想做同节奏的 drain 也走同一注册路径——BackgroundPumps 不认具体 feature。
     ///
     /// 统一在 [`crate::shell::view::ShellView::render`] 拍点驱动。
     ///
@@ -611,10 +586,8 @@ impl App {
 /// 显示一个不存在的"文件"，误导用户。现在编辑区在无活动视图时走
 /// `EditorState::default()`，文件从文件树打开后才有内容。
 ///
-/// 启动期同时把内置 syntax provider 工厂注入共享 [`SyntaxEngine`]——
-/// 否则后续 `open_file` 落 plain。注册需要在 `Rc::new(engine)` 之前完成。
-/// 主工作区与 [`SettingsTomlEditor`] 共享同一根 `Rc`，进程里只有这一份
-/// 语言注册表与一根后台 worker 线程。
+/// 启动期同时把内置 syntax provider 工厂注入共享 [`SyntaxEngine`]
+/// ——否则后续 `open_file` 落 plain。注册需要在 `Rc::new(engine)` 之前完成。
 fn empty_workspace() -> (Rc<SyntaxEngine>, Workspace, ViewSet) {
     let mut engine = SyntaxEngine::new();
     install_builtin_providers(&mut engine);
@@ -644,7 +617,6 @@ mod tests {
     use crate::shell::features::panels::PanelId;
     use crate::shell::features::panels::file_tree::FileTreeActivation;
     use crate::shell::features::project_picker::ProjectPickerModel;
-    use crate::shell::features::settings::SettingsTomlEditor;
     use crate::text_target::TextTargetOwner;
     use std::cell::RefCell;
     use std::fs::{File, create_dir_all};
@@ -734,95 +706,28 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    /// 在 headless 测试里模拟 SettingsRuntime 装配过：直接 new 一个编辑器，
-    /// 走 install_editor_owner 进 App 的路由表，返回 handle 给测试驱动 open/close。
-    ///
-    /// 生产路径是 ShellView::new 调 `SettingsRuntime::new(engine, cx)` + register。
-    /// 这里跳过 GPUI 部分，直接复刻"register 一个 owner + 拿 handle 操作"两步。
-    fn install_settings_toml(app: &mut App) -> Rc<RefCell<SettingsTomlEditor>> {
-        let editor = Rc::new(RefCell::new(SettingsTomlEditor::new(
-            app.syntax_engine_handle(),
-        )));
-        app.install_editor_owner(editor.clone() as Rc<RefCell<dyn TextTargetOwner>>);
-        editor
-    }
-
     #[test]
-    fn settings_toml_editor_should_apply_and_persist_on_return() {
-        // 验证「编辑器里编辑过的 TOML → 解析回 AppConfig → 替换 App.config →
-        // 落盘 → 重新 load 仍是新值」这条端到端语义。
-        //
-        // open/close 的 lifecycle 编排归 shell（SettingsRuntime + 设置面板 action
-        // handler），App 只暴露原语；测试手动走等价的几步：
-        //   1. open_from_disk —— 把当前内存 config 灌进编辑器
-        //   2. target_mut().replace_text —— 直接改文本
-        //   3. close_and_parse —— 关闭并解析
-        //   4. replace_config —— App 替换全局 config 并落盘
-        let path = temp_path("settings-toml-editor");
+    fn open_config_file_should_create_and_focus_main_editor_tab() {
+        let path = temp_path("open-config-file");
         let _ = std::fs::remove_file(&path);
         let mut app = App::new_with_paths(Some(path.clone()));
-        let editor = install_settings_toml(&mut app);
 
-        let initial = app.config_snapshot();
-        {
-            let mut e = editor.borrow_mut();
-            e.open_from_disk(&path, &initial);
-            assert!(e.is_open());
-            e.target_mut().replace_text(
-                r#"
-[general]
-theme = "one-dark"
+        assert!(app.open_config_file());
+        assert!(path.exists());
+        assert_eq!(app.focus().current(), AppFocus::editor());
 
-[ui]
-font_size = 15
-
-[editor]
-soft_wrap = false
-font_size = 19
-tab_size = 8
-"#,
-            );
-        }
-        let parsed = editor
-            .borrow_mut()
-            .close_and_parse()
-            .expect("合法 TOML 应当解析成功");
-        app.replace_config(parsed);
-
-        let config = app.config_snapshot();
-        assert!(!editor.borrow().is_open());
-        assert_eq!(config.ui.font_size, 15);
-        assert!(!config.editor.soft_wrap);
-        assert_eq!(config.editor.font_size, 19);
-        assert_eq!(config.editor.tab_size, 8);
-        assert_eq!(crate::config::AppConfig::load(Some(&path)), config);
+        let state = editor_state(&app);
+        let active = active_tab(&state);
+        assert_eq!(
+            active.title,
+            path.file_name()
+                .expect("临时配置路径应有文件名")
+                .to_string_lossy()
+                .into_owned()
+        );
+        assert_eq!(active.language, "TOML");
 
         let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn settings_toml_editor_snapshot_should_include_syntax_decorations() {
-        let mut app = App::new();
-        let editor = install_settings_toml(&mut app);
-        {
-            let mut e = editor.borrow_mut();
-            e.open_with_text("[editor]\nsoft_wrap = false\nfont_size = 19 # comment\n");
-            e.target_mut().wait_for_syntax_idle();
-        }
-        // 手动推一次高亮 sink：app.pump 只 drain workspace，settings 编辑器自带
-        // pump（生产里 SettingsRuntime.pump_pending_highlights 调）。
-        editor.borrow_mut().pump_pending_highlights();
-        let snapshot = app.with_router(|router| router.snapshot_for_focus(AppFocus::settings()));
-
-        assert!(
-            snapshot.decorations.iter().any(|decoration| {
-                matches!(
-                    decoration.kind,
-                    crate::shell::editor::highlight::DecorationKind::Foreground
-                )
-            }),
-            "settings TOML editor should push syntax foreground decorations"
-        );
     }
 
     #[test]
@@ -1051,10 +956,9 @@ tab_size = 8
     }
 
     #[test]
-    fn project_picker_escape_should_dispatch_project_picker_dismiss_command() {
+    fn settings_escape_should_dispatch_settings_dismiss_command() {
         let mut app = App::new();
-        let _picker = install_project_picker(&mut app);
-        app.request_focus(AppFocus::project_picker(ProjectPickerFocus::Query));
+        app.request_focus(AppFocus::settings());
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
 
@@ -1063,9 +967,10 @@ tab_size = 8
     }
 
     #[test]
-    fn settings_escape_should_dispatch_settings_dismiss_command() {
+    fn project_picker_escape_should_dispatch_project_picker_dismiss_command() {
         let mut app = App::new();
-        app.request_focus(AppFocus::settings());
+        let _picker = install_project_picker(&mut app);
+        app.request_focus(AppFocus::project_picker(ProjectPickerFocus::Query));
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
 
@@ -1262,13 +1167,13 @@ tab_size = 8
         use std::rc::Rc;
         use zom_command::{EditTarget, FileTreeKeyMode, KeyContext};
 
-        /// 自定义 focus 的桩 owner：accepts_focus 只命中 Settings；
+        /// 自定义 focus 的桩 owner：accepts_focus 只命中一个普通 panel；
         /// after_text_changed 翻一个 flag 让 router 写路径可观察。
-        struct StubSettingsOwner {
+        struct StubPanelOwner {
             flag: std::cell::Cell<bool>,
         }
 
-        impl StubSettingsOwner {
+        impl StubPanelOwner {
             fn new() -> Self {
                 Self {
                     flag: std::cell::Cell::new(false),
@@ -1276,9 +1181,9 @@ tab_size = 8
             }
         }
 
-        impl TextTargetQuery for StubSettingsOwner {
+        impl TextTargetQuery for StubPanelOwner {
             fn accepts_focus(&self, focus: AppFocus) -> bool {
-                focus == AppFocus::settings()
+                focus == AppFocus::Panel(PanelFocus::KeyboardShortcuts)
             }
             fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
                 EditorSnapshot::default()
@@ -1291,7 +1196,7 @@ tab_size = 8
             }
         }
 
-        impl TextTargetOwner for StubSettingsOwner {
+        impl TextTargetOwner for StubPanelOwner {
             fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
                 None
             }
@@ -1360,15 +1265,13 @@ tab_size = 8
         #[test]
         fn registered_owner_is_reachable_via_router_key_contexts() {
             let mut app = App::new();
-            let owner = Rc::new(RefCell::new(StubSettingsOwner::new()));
+            let owner = Rc::new(RefCell::new(StubPanelOwner::new()));
             let dyn_owner: Rc<RefCell<dyn TextTargetOwner>> = owner.clone();
             app.install_editor_owner(dyn_owner);
 
-            // router 现在该把 Settings focus 路由到注册进来的 owner，并取它的 key_contexts。
-            let contexts = app.with_router(|router| router.key_contexts_for(AppFocus::settings()));
-            // 当前 App 仍持有 settings_toml model（未迁），accepts_focus 在 toml 未开时返回 false，
-            // 因此 Settings focus 由 stub owner 接管。
-            let contexts = contexts.expect("Settings focus 应被 stub owner 接管");
+            let focus = AppFocus::Panel(PanelFocus::KeyboardShortcuts);
+            let contexts = app.with_router(|router| router.key_contexts_for(focus));
+            let contexts = contexts.expect("focus 应被 stub owner 接管");
             assert!(contexts.iter().any(|c| c == &KeyContext::settings()));
         }
 
@@ -1376,7 +1279,7 @@ tab_size = 8
         fn registered_owner_does_not_steal_other_focuses() {
             let mut app = App::new();
             let owner: Rc<RefCell<dyn TextTargetOwner>> =
-                Rc::new(RefCell::new(StubSettingsOwner::new()));
+                Rc::new(RefCell::new(StubPanelOwner::new()));
             app.install_editor_owner(owner);
 
             // Editor focus 不在 stub 的 accepts_focus 范围内——应当落到主编辑区 owner，

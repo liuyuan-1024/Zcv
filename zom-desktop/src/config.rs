@@ -119,10 +119,6 @@ impl AppConfig {
         }
     }
 
-    pub(crate) fn to_toml_string(&self) -> Result<String, String> {
-        toml::to_string_pretty(self).map_err(|error| format!("无法序列化配置：{error}"))
-    }
-
     pub(crate) fn apply_change(&mut self, change: SettingsChange) {
         match change {
             SettingsChange::AdjustUiFont(delta) => {

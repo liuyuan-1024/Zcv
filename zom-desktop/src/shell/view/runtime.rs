@@ -66,10 +66,10 @@ impl ShellRuntime {
                 app.borrow_mut().set_main_viewport(viewport, wrap_map);
             })
         };
-        // 全局软换行 cell 由 App 持有；任何多行内核构造时都从 App 借这份 `Rc`，
-        // 一次 toggle 同帧生效到主编辑区与所有嵌入式编辑器。
+        // 全局软换行 cell 由 App 持有；
+        // 多行内核构造时从 App 借这份 `Rc`， 一次 toggle 同帧生效到主编辑区。
         let soft_wrap = app.borrow().soft_wrap_handle();
-        let main_editor_kernel = EditorKernel::multi_line(soft_wrap.clone())
+        let main_editor_kernel = EditorKernel::multi_line(soft_wrap)
             .with_gutter()
             .with_vertical_scroll()
             .with_viewport_sync(main_viewport_sync);
@@ -111,23 +111,10 @@ impl ShellRuntime {
             features.panels.search_replacement_focus_handle(),
             cx,
         );
-        let settings_toml_slot = TextEditorSlot::install(
-            Rc::clone(&app),
-            AppFocus::settings(),
-            EditorKernel::multi_line(soft_wrap)
-                .with_gutter()
-                .with_vertical_scroll(),
-            features.settings.focus_handle(),
-            cx,
-        );
-        features
-            .settings
-            .set_toml_slot(Rc::clone(&settings_toml_slot));
-
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));
         let bubble_shell = cx.new(|cx| BubbleShell::new(bubble_runtime.clone(), cx));
 
-        let focus_projection = features.focus_projection(editor_focus.clone(), true);
+        let focus_projection = features.focus_projection(editor_focus.clone());
 
         Self {
             app,

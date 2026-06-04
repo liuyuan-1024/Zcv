@@ -1,4 +1,4 @@
-//! 设置面板 HostEffect 落地。
+//! 设置 HostEffect 落地。
 
 use std::cell::RefCell;
 use std::rc::Rc;

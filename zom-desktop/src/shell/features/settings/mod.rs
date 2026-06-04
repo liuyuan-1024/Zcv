@@ -1,19 +1,12 @@
 //! 设置功能。
 //!
-//! 当前只提供入口：功能图标归本模块所有，命令标题归
-//! `zom_command::commands::settings`。设置 UI 接入时在本目录补
-//! `view.rs` / `state.rs` 等文件。
+//! 设置入口与可视化配置浮面。浮面里的 “打开 TOML” 会把真实 config.toml
+//! 交给主编辑区打开。
 
 mod effects;
 mod surface;
-mod toml_editor;
 
 pub(crate) use effects::try_apply_effect;
-// SettingsTomlEditor 的真正持有者是 SettingsRuntime（见 surface.rs）；
-// 非测试代码不需要拿这个具体类型，re-export 仅服务 App-level headless 测试
-// （`app::tests::install_settings_toml` 复刻"装配一个 owner 注册进路由"的最小工序）。
-#[cfg(test)]
-pub(crate) use toml_editor::SettingsTomlEditor;
 
 use gpui::{AnyElement, IntoElement};
 use zom_command::commands::settings;

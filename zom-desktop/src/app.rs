@@ -1,6 +1,6 @@
 //! app —— 组合根（手册 2 / 13）。
 //!
-//! 组合根持有 `CommandRegistry`、`Keymap`、`Workspace` 与 `ViewSet`，
+//! 组合根装配命令、工作区、配置、文本目标与后台拍点 runtime，
 //! 并把输入统一收敛到 command 管线。
 //!
 //! 依赖方向（手册 2.4）：`app` 可以 import `shell`；`shell` 不可反向 import `app`。
@@ -11,26 +11,29 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use zom_command::commands::{self, editor};
+use zom_command::commands::editor;
 use zom_command::{
-    ClipboardPort, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId,
-    CommandQueue, CommandRegistry, EffectQueue, FileTreeKeyMode, HostEffect, Invocation, KeyChord,
-    KeyContext, Keymap, KeymapResolution, MockClipboard,
+    ClipboardPort, CommandArgs, CommandError, CommandId, FileTreeKeyMode, HostEffect, Invocation,
+    KeyContext, KeymapResolution,
 };
 use zom_view::ViewSet;
 use zom_workspace::Workspace;
 use zom_workspace::syntax::SyntaxEngine;
 
+use crate::background_pumps::BackgroundPumps;
+use crate::command_runtime::CommandRuntime;
 use crate::config::{AppConfig, SettingsChange};
+use crate::config_runtime::ConfigRuntime;
 use crate::focus::{
     AppFocus, FileTreeFocus, FocusStore, PanelFocus, ProjectPickerFocus, SurfaceFocus,
 };
-use crate::shell::editor::{
-    EditorRouter, EditorRouterMut, EditorTargetRegistry, TextTargetOwner, TextTargetQuery,
-};
+use crate::shell::editor::{EditorRouter, EditorRouterMut, TextTargetOwner};
+#[cfg(test)]
+use crate::shell::features::panels::file_tree::{FileTreeModel, FileTreeState};
 use crate::shell::features::panels::search::SearchRuntimeHandle;
-use crate::shell::workbench::editor_area;
 use crate::shell::workbench::state as workbench_state;
+use crate::text_target_hub::TextTargetHub;
+use crate::workspace_session::WorkspaceSession;
 
 /// 一次按键派发的结果。
 /// `consumed=false` 表示这次按键没有匹配任何 keymap 绑定，应当透传给系统输入法；
@@ -41,40 +44,15 @@ pub(crate) struct KeyDispatchOutcome {
 }
 
 pub struct App {
-    registry: CommandRegistry,
-    keymap: Keymap,
-    executor: CommandExecutor,
-    queue: CommandQueue,
-    workspace: Workspace,
-    views: ViewSet,
+    command: CommandRuntime,
+    session: WorkspaceSession,
+    config: ConfigRuntime,
+    background: BackgroundPumps,
     focus: FocusStore,
     project_root: Option<PathBuf>,
-    /// 搜索面板 runtime 暴露给宿主的窄接口。
-    ///
-    /// `None` 表示尚未装配（headless App-only 测试不触及搜索焦点时即此态）；
-    /// 路由 / 派发等触点遇到 `None` 直接早退或跳过 search owner。
-    search_runtime: Option<SearchRuntimeHandle>,
-    /// 剪贴板端口：默认走 [`MockClipboard`]（headless 单测够用且不污染系统剪贴板）。
-    /// shell 启动时通过 [`Self::set_clipboard`] 换成 GPUI 适配器，使主程序与系统剪贴板互通。
-    clipboard: Box<dyn ClipboardPort>,
-    /// 全局软换行状态——主编辑区与所有多行嵌入式编辑器都借用本 cell。
-    ///
-    /// App 是唯一所有者：boot 时按 [`AppConfig::editor::soft_wrap`] 初始化；
-    /// `HostEffect::EditorToggleSoftWrap` 与 settings 面板的写入都翻它一次，
-    /// 下一帧所有持 [`EditorKernel`] clone 的多行 element 都看到新值。
-    soft_wrap: Rc<Cell<bool>>,
-    /// 全局用户偏好；运行时翻转的开关（如软换行）以此为初值，
-    /// 后续命令路径可调 [`Self::save_config`] 把新值落盘。
-    config: AppConfig,
-    /// 全局配置的落盘路径；`None` 表示内存模式（单测）。
-    config_path: Option<PathBuf>,
-    /// 外部 owner 注册表 —— shell runtime 在 [`ShellView::new`] 调
-    /// [`Self::install_editor_owner`] 把自家 owner 注册进来；`with_router(_mut)`
-    /// 在自家 owner 之外再叠这一批。本字段是 §2 拆分 App 字段的承载点：
-    /// 每个迁出的 model 不再需要在 [`App`] struct 上新增一条字段。
-    ///
-    /// [`ShellView::new`]: crate::shell::view::ShellView
-    editor_targets: EditorTargetRegistry,
+    text_targets: TextTargetHub,
+    #[cfg(test)]
+    file_tree: FileTreeModel,
 }
 
 impl App {
@@ -89,38 +67,23 @@ impl App {
     }
 
     pub(crate) fn new_with_paths(config_path: Option<PathBuf>) -> Self {
-        let mut registry = CommandRegistry::new();
-        let mut keymap = Keymap::new();
-
-        // 组合根只选择安装内建命令集；
-        // 具体 feature catalog 的完整性由 zom-command 自己维护。
-        // 宿主侧资源（窗口、Dock）走 HostEffect 反馈到 shell。
-        commands::install_all(&mut registry, &mut keymap);
-
-        let config = AppConfig::load(config_path.as_deref());
+        let config = ConfigRuntime::new(config_path);
         let (_engine, mut workspace, views) = empty_workspace();
         workspace.set_buffer_config(config.buffer_config());
-        config.apply_runtime_visuals();
-        let soft_wrap = Rc::new(Cell::new(config.editor.soft_wrap));
 
         Self {
-            registry,
-            keymap,
-            executor: CommandExecutor::new(),
-            queue: CommandQueue::new(),
-            workspace,
-            views,
+            command: CommandRuntime::new(),
+            session: WorkspaceSession::new(workspace, views),
+            config,
+            background: BackgroundPumps::new(),
             // 启动时没有项目、没有 view，shell 显示的是 project picker；
             // 把初始焦点设成 picker 让 App-only 单测不依赖反向同步也能拿到正确语义。
             // 生产里 ShellView::render 的反向同步会把这值刷到与 GPUI 真实焦点一致。
             focus: FocusStore::new(AppFocus::project_picker(ProjectPickerFocus::Query)),
             project_root: None,
-            search_runtime: None,
-            clipboard: Box::new(MockClipboard::new()),
-            soft_wrap,
-            config,
-            config_path,
-            editor_targets: EditorTargetRegistry::new(),
+            text_targets: TextTargetHub::new(),
+            #[cfg(test)]
+            file_tree: FileTreeModel::new(),
         }
     }
 
@@ -132,13 +95,13 @@ impl App {
     ///
     /// [`ShellView::new`]: crate::shell::view::ShellView
     pub(crate) fn install_editor_owner(&mut self, owner: Rc<RefCell<dyn TextTargetOwner>>) {
-        self.editor_targets.register(owner);
+        self.text_targets.install_editor_owner(owner);
     }
 
     /// 把 search runtime 的宿主接口装进 App。
     /// shell 装配阶段调一次；之后路由 / 派发 / 同步都通过这层窄接口进入 search feature。
     pub(crate) fn install_search_runtime(&mut self, runtime: SearchRuntimeHandle) {
-        self.search_runtime = Some(runtime);
+        self.text_targets.install_search_runtime(runtime);
     }
 
     /// 把 workspace 当前持有的 `SyntaxEngine` 借给需要它的 shell runtime（首位是 [`SettingsRuntime`]，构造 TOML 编辑器要 engine）。
@@ -148,42 +111,37 @@ impl App {
     ///
     /// [`SettingsRuntime`]: crate::shell::features::settings::SettingsRuntime
     pub(crate) fn syntax_engine_handle(&self) -> Rc<SyntaxEngine> {
-        self.workspace.engine().clone()
+        self.session.workspace().engine().clone()
     }
 
     /// 共享的软换行 cell——多行 [`EditorKernel`] 在装配时借这份 `Rc`。
     /// 一次写入对所有持有者立刻可见，下一帧 element 就走新渲染路径。
     pub(crate) fn soft_wrap_handle(&self) -> Rc<Cell<bool>> {
-        self.soft_wrap.clone()
+        self.config.soft_wrap_handle()
     }
 
     /// 翻转全局软换行。同时更新 [`AppConfig`] 字段并落盘——「切一次软换行」就是「改一次默认值」。
     /// 内存模式（`config_path` 为 `None`）仍在内存里翻，只是 save 是 no-op。
     pub(crate) fn toggle_soft_wrap(&mut self) {
-        let next = !self.soft_wrap.get();
-        self.soft_wrap.set(next);
-        self.config.editor.soft_wrap = next;
-        self.save_config();
+        self.config.toggle_soft_wrap();
     }
 
     /// 把当前内存中的偏好写盘；命令路径如需「显式持久化当前会话偏好」
     /// 可调本入口。toggle_* 类命令已在翻转时各自调过 save，平时无需再喊。
     pub(crate) fn save_config(&self) {
-        self.config.save(self.config_path.as_deref());
+        self.config.save();
     }
 
     pub(crate) fn config_snapshot(&self) -> AppConfig {
-        self.config.clone()
+        self.config.snapshot()
     }
 
     pub(crate) fn config_path(&self) -> Option<PathBuf> {
-        self.config_path.clone()
+        self.config.path()
     }
 
     pub(crate) fn apply_settings_change(&mut self, change: SettingsChange) {
-        self.config.apply_change(change);
-        self.apply_runtime_config();
-        self.save_config();
+        self.config.apply_settings_change(change, &mut self.session);
     }
 
     /// 用一份外部传入的 `AppConfig` 替换当前 config，并把变化应用到运行时
@@ -195,16 +153,7 @@ impl App {
     /// [`ShellView`]: crate::shell::view::ShellView
     /// [`SettingsRuntime::close_toml_and_parse`]: crate::shell::features::settings::SettingsRuntime::close_toml_and_parse
     pub(crate) fn replace_config(&mut self, next: AppConfig) {
-        self.config = next;
-        self.apply_runtime_config();
-        self.save_config();
-    }
-
-    fn apply_runtime_config(&mut self) {
-        self.config.apply_runtime_visuals();
-        self.workspace
-            .set_buffer_config(self.config.buffer_config());
-        self.soft_wrap.set(self.config.editor.soft_wrap);
+        self.config.replace_config(next, &mut self.session);
     }
 
     pub(crate) fn focus(&self) -> &FocusStore {
@@ -232,7 +181,7 @@ impl App {
     /// shell 启动时注入 `GpuiClipboard`，让 copy / cut / paste 走系统剪贴板；
     /// headless 单测保持默认 [`MockClipboard`]。
     pub(crate) fn set_clipboard(&mut self, clipboard: Box<dyn ClipboardPort>) {
-        self.clipboard = clipboard;
+        self.command.set_clipboard(clipboard);
     }
 
     /// 把指定 root 切成当前活动项目：重建 workspace / view、聚焦编辑区。
@@ -243,13 +192,10 @@ impl App {
     ///
     /// [`ProjectPickerRuntime`]: crate::shell::features::project_picker::ProjectPickerRuntime
     pub(crate) fn open_project(&mut self, root: PathBuf) {
-        self.project_root = Some(root);
-        // 复用现有 SyntaxEngine——不再新开 worker 线程也不再重注 Tier 1。
-        let engine = self.workspace.engine().clone();
-        let mut workspace = Workspace::with_engine(engine);
-        workspace.set_buffer_config(self.config.buffer_config());
-        self.workspace = workspace;
-        self.views = ViewSet::new();
+        self.project_root = Some(root.clone());
+        self.session.reset_project(self.config.buffer_config());
+        #[cfg(test)]
+        self.file_tree.open_project(root);
         // 项目打开后焦点转入编辑区。生产里 picker 关闭后由 shell 的dismiss + 反向同步刷到这里；
         // 这里显式写一遍是给 App-only 单测兜底。
         self.request_focus(AppFocus::editor());
@@ -278,18 +224,44 @@ impl App {
     }
 
     pub(crate) fn workspace(&self) -> &Workspace {
-        &self.workspace
+        self.session.workspace()
     }
 
     pub(crate) fn with_workspace_views_mut<R>(
         &mut self,
         f: impl FnOnce(&mut Workspace, &mut ViewSet) -> R,
     ) -> R {
-        f(&mut self.workspace, &mut self.views)
+        let (workspace, views) = self.session.parts_mut();
+        f(workspace, views)
+    }
+
+    pub(crate) fn with_workspace_session_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut WorkspaceSession) -> R,
+    ) -> R {
+        f(&mut self.session)
+    }
+
+    #[cfg(test)]
+    fn file_tree_mut(&mut self) -> &mut FileTreeModel {
+        &mut self.file_tree
+    }
+
+    #[cfg(test)]
+    fn file_tree_state(&self) -> FileTreeState {
+        self.file_tree.state(self.session.workspace())
+    }
+
+    #[cfg(test)]
+    fn with_file_tree<R>(
+        &mut self,
+        f: impl FnOnce(&mut FileTreeModel, &mut WorkspaceSession) -> R,
+    ) -> R {
+        f(&mut self.file_tree, &mut self.session)
     }
 
     pub(crate) fn editor_state(&self) -> workbench_state::EditorState {
-        workbench_state::build_editor_state(&self.workspace, &self.views)
+        workbench_state::build_editor_state(self.session.workspace(), self.session.views())
     }
 
     /// 派发一次命令调用。
@@ -324,9 +296,8 @@ impl App {
                 effects: Vec::new(),
             });
         }
-        let chord = KeyChord::new(chord)?;
         let contexts = self.key_contexts();
-        match self.keymap.resolve(&[chord], &contexts) {
+        match self.command.resolve_key(chord, &contexts)? {
             KeymapResolution::Matched { command, args } => {
                 let effects = self.dispatch_command_id(command, args)?;
                 Ok(KeyDispatchOutcome {
@@ -359,7 +330,7 @@ impl App {
         // picker 查询框、settings TOML 视图）通过 `accepts_focus` 自报家门，
         // 由 owner 自己说"我的栈是什么"。owner 不接（focus 不属于它 / settings
         // TOML 视图未开）才落到下方按焦点类别给的兜底栈。
-        if let Some(stack) = self.with_router(|router| router.key_contexts_for(focus)) {
+        if let Some(stack) = self.text_targets.key_contexts_for(&self.session, focus) {
             return stack;
         }
         match focus {
@@ -399,7 +370,7 @@ impl App {
     /// 不接管，后续 Esc 永远到不了 `cancel_new_entry`。
     fn is_composing(&self) -> bool {
         let focus = self.focus.current();
-        self.with_router(|router| router.is_composing(focus))
+        self.text_targets.is_composing(&self.session, focus)
     }
 
     /// 构造一次只读路由视图。
@@ -412,31 +383,7 @@ impl App {
     /// runtime 注入的 owner、最后兜底主编辑区。`accepts_focus` 对 `AppFocus`
     /// 精确匹配，各 owner 覆盖 disjoint 子集，顺序不影响命中。
     pub(crate) fn with_router<R>(&self, f: impl FnOnce(EditorRouter<'_>) -> R) -> R {
-        let main = editor_area::MainEditorOwnerRef::new(&self.workspace, &self.views);
-        // 注册表 owner 的借用 guard 必须比下方 owners 引用活得长。
-        let registry_borrows = self.editor_targets.borrow_all();
-
-        if let Some(search) = self.search_runtime.as_ref() {
-            return search.with_query_owners(|query, replacement| {
-                let mut owners: Vec<&dyn TextTargetQuery> = vec![query, replacement];
-                // settings_toml 由 SettingsRuntime 通过 `install_editor_owner` 注册到
-                // registry，不再出现在这条手工列表里。
-                for borrow in registry_borrows.iter() {
-                    owners.push(&**borrow as &dyn TextTargetQuery);
-                }
-                owners.push(&main as &dyn TextTargetQuery);
-                f(EditorRouter::new(owners))
-            });
-        }
-
-        let mut owners: Vec<&dyn TextTargetQuery> = Vec::new();
-        // settings_toml 由 SettingsRuntime 通过 `install_editor_owner` 注册到
-        // registry，不再出现在这条手工列表里。
-        for borrow in registry_borrows.iter() {
-            owners.push(&**borrow as &dyn TextTargetQuery);
-        }
-        owners.push(&main as &dyn TextTargetQuery);
-        f(EditorRouter::new(owners))
+        self.text_targets.with_router(&self.session, f)
     }
 
     /// 构造一次可写路由视图。
@@ -446,30 +393,8 @@ impl App {
     /// 提供单个 active owner，同时承担 Query / Replacement 两个 field。
     pub(crate) fn with_router_mut<R>(&mut self, f: impl FnOnce(EditorRouterMut<'_>) -> R) -> R {
         let focus = self.focus.current();
-        let mut main = editor_area::MainEditorOwner::new(&mut self.workspace, &mut self.views);
-        // 注册表 owner 的可变借用 guard 必须比下方 owners 引用活得长；每个 RefMut
-        // 独立锁住自己那一格 RefCell，互不冲突。
-        let mut registry_borrows = self.editor_targets.borrow_all_mut();
-        let run = |search_owner: Option<&mut dyn TextTargetOwner>| {
-            let mut owners: Vec<&mut dyn TextTargetOwner> = Vec::new();
-            // search runtime 未装配（如 App-only 单测）时直接跳过。
-            if let Some(owner) = search_owner {
-                owners.push(owner);
-            }
-            // settings_toml 由 SettingsRuntime 通过 `install_editor_owner` 注册到
-            // registry，不再出现在这条手工列表里。
-            for borrow in registry_borrows.iter_mut() {
-                owners.push(&mut **borrow as &mut dyn TextTargetOwner);
-            }
-            owners.push(&mut main as &mut dyn TextTargetOwner);
-            f(EditorRouterMut::new(owners))
-        };
-
-        if let Some(search) = self.search_runtime.as_ref() {
-            return search.with_active_owner(focus, |owner| run(Some(owner)));
-        }
-
-        run(None)
+        self.text_targets
+            .with_router_mut(focus, &mut self.session, f)
     }
 
     /// 由主编辑区 element prepaint 末尾回写：把它实际测得的视口写回当前活动 view，
@@ -480,7 +405,7 @@ impl App {
         viewport: zom_view::ViewportState,
         wrap_map: Option<zom_view::WrapMap>,
     ) {
-        let Some(view) = self.views.active_view_mut() else {
+        let Some(view) = self.session.views_mut().active_view_mut() else {
             return;
         };
         let current = view.viewport();
@@ -492,30 +417,16 @@ impl App {
 
     /// 查询某条命令的快捷键文案 —— 给 Glyph / 命令面板 / 菜单用。
     pub(crate) fn shortcut_for(&self, command_id: &str) -> Option<String> {
-        let command = CommandId::new(command_id).ok()?;
-        self.keymap.format_shortcut_for(&command)
+        self.command.shortcut_for(command_id)
     }
 
     /// 查询某条命令的显示标题 —— UI 不再为命令入口重复维护文案。
     pub(crate) fn command_title_for(&self, command_id: &str) -> Option<String> {
-        let command = CommandId::new(command_id).ok()?;
-        self.registry
-            .command(&command)
-            .map(|command| command.title.clone())
+        self.command.command_title_for(command_id)
     }
 
     pub(crate) fn command_catalog_items(&self) -> Vec<crate::shell::CommandCatalogItem> {
-        self.registry.commands().map(Into::into).collect()
-    }
-
-    /// 命令派发尾部 / IME preedit 更新后必跑一次：把 panel 状态推进活动 buffer
-    /// 的 BufferSearch。具体同步策略由 search runtime handle 封装。
-    ///
-    /// search runtime 未装配时整条早退——App-only 单测不触及搜索焦点，不需要 sync 也不该 panic。
-    fn sync_active_buffer_search(&mut self) {
-        if let Some(search) = self.search_runtime.as_ref() {
-            search.sync_active_buffer_search(&mut self.workspace, &mut self.views);
-        }
+        self.command.command_catalog_items()
     }
 
     /// 排空活动 buffer 自上次 dispatch 以来累积的 `DeltaEvent`，扇出到
@@ -525,12 +436,6 @@ impl App {
     ///
     /// 在 dispatch_command_id 与 ime preedit update 两个尾部都装一次。
     /// 多调几次无害——`take_pending_events` 第二次返空。
-    fn pump_active_buffer_post_edit(&mut self) {
-        if let Some(wb) = self.workspace.active_buffer_mut() {
-            let _ = wb.pump_post_edit();
-        }
-    }
-
     /// 每帧 prepaint 起手由 [`ShellView::render`] 调一次，把后台
     /// `SyntaxWorker` 已就绪的高亮产物落到 workspace 各 buffer 的 `MetadataLayers`。
     ///
@@ -543,7 +448,7 @@ impl App {
     ///
     /// [`SettingsRuntime::pump_pending_highlights`]: crate::shell::features::settings::SettingsRuntime::pump_pending_highlights
     pub fn pump_pending_highlights(&mut self) {
-        self.workspace.pump_pending_highlights();
+        self.background.pump_pending_highlights(&mut self.session);
     }
 
     /// 每帧 prepaint 起手再调一次：收割活动 buffer 的后台 BufferSearch 结果。
@@ -553,7 +458,7 @@ impl App {
     /// 与 `pump_pending_highlights` 平级：两个独立后台子系统，各自有"主线程收割"
     /// 入口，统一在 [`crate::shell::view::ShellView::render`] 拍点驱动。
     pub fn pump_pending_search(&mut self) {
-        SearchRuntimeHandle::pump_active_buffer_search(&mut self.workspace, &mut self.views);
+        self.background.pump_pending_search(&mut self.session);
     }
 
     /// 把活动 view 的可见区间转成 byte range 后推给语法 worker，让 `on_edit`
@@ -567,49 +472,7 @@ impl App {
     ///
     /// 每帧调一次；HighlightWorker 内部对相同 hint 去重，无变化时不再产物。
     pub fn pump_active_viewport_hint(&mut self) {
-        let Some(view) = self.views.active_view() else {
-            return;
-        };
-        let buffer_id = view.buffer();
-        let viewport = view.viewport();
-        let Some(wb) = self.workspace.buffer(buffer_id) else {
-            return;
-        };
-        let snapshot = wb.buffer().snapshot();
-        let total_lines = snapshot.line_count();
-        if total_lines == 0 {
-            return;
-        }
-        const PAD_LINES: u64 = 32;
-        let start_line = viewport.top_line.saturating_sub(PAD_LINES);
-        let raw_end = viewport
-            .top_line
-            .saturating_add(viewport.visible_logical_lines)
-            .saturating_add(PAD_LINES);
-        let end_line = raw_end.min(total_lines as u64);
-        if start_line >= end_line {
-            return;
-        }
-        let Ok(start_byte) = snapshot.line_start_byte(zom_engine::Line::new(start_line as usize))
-        else {
-            return;
-        };
-        let end_byte = if end_line >= total_lines as u64 {
-            snapshot.len_bytes()
-        } else {
-            match snapshot.line_start_byte(zom_engine::Line::new(end_line as usize)) {
-                Ok(b) => b,
-                Err(_) => snapshot.len_bytes(),
-            }
-        };
-        if start_byte >= end_byte {
-            return;
-        }
-        let Ok(range) = zom_engine::TextRange::new(start_byte, end_byte) else {
-            return;
-        };
-        self.workspace
-            .set_buffer_viewport_hint(buffer_id, Some(range));
+        self.background.pump_active_viewport_hint(&mut self.session);
     }
 
     fn dispatch_command_id(
@@ -617,71 +480,30 @@ impl App {
         id: CommandId,
         args: CommandArgs,
     ) -> Result<Vec<HostEffect>, CommandError> {
-        self.queue.dispatch(id, args);
-
         let focus = self.focus.current();
 
-        // 命令派发期需要给 CommandContext 填 `focused_field`，并在 executor 跑完
-        // 之后给 registry owner 调 `after_text_changed`。
-        //
-        let mut run_command = |focused_field: Option<zom_command::EditTarget<'_>>| {
-            let mut effects = EffectQueue::new();
-            let mut context = CommandContext {
-                workspace: &mut self.workspace,
-                views: &mut self.views,
+        // 命令派发期需要给 CommandContext 填 `focused_field`。若命令真的改了
+        // 这个输入目标的文本，派发后再让 owner 跑 `after_text_changed`。
+        let run_command = |focused_field: Option<zom_command::EditTarget<'_>>| {
+            self.command.dispatch_command_id(
+                id.clone(),
+                args.clone(),
+                &mut self.session,
                 focused_field,
-                queue: &mut self.queue,
-                effects: &mut effects,
-                clipboard: &mut *self.clipboard,
-            };
-            let result = self.executor.run(&self.registry, &mut context);
-            let host_effects = effects.drain();
-            result?;
-            Ok(host_effects)
+            )
         };
 
-        // Search 的双输入框 target 由 search runtime handle 封装；其它语义焦点
-        // （FileTree / ProjectPicker / Settings 之类）走 editor_targets 注册表。
-        //
-        // 整段包在内层 block：registry_borrows 出 block 才 drop，RefCell 借用释放，
-        // 外层后续的 `pump_active_buffer_post_edit` / `sync_active_buffer_search`才能拿到 `&mut self`。
-        let host_effects = if let Some(search) = self
-            .search_runtime
-            .as_ref()
-            .filter(|runtime| runtime.accepts_focus(focus))
-        {
-            search.with_edit_target_for_focus(focus, run_command)?
-        } else {
-            let mut registry_borrows = self.editor_targets.borrow_all_mut();
-            let mut registry_matched: Option<usize> = None;
-
-            // 在 registry 找第一个声明接管该 focus 的 owner，borrow_mut 拿 edit_target。
-            // 没有命中（focus 不是文本输入类）返回 None，commands 自己处理。
-            let mut found = None;
-            for (idx, borrow) in registry_borrows.iter_mut().enumerate() {
-                if borrow.accepts_focus(focus) {
-                    if let Some(target) = borrow.edit_target() {
-                        registry_matched = Some(idx);
-                        found = Some(target);
-                    }
-                    break;
-                }
-            }
-
-            let host_effects = run_command(found)?;
-            if let Some(idx) = registry_matched {
-                registry_borrows[idx].after_text_changed();
-            }
-            host_effects
-        };
+        let host_effects = self
+            .text_targets
+            .with_edit_target_for_focus(focus, run_command)?;
 
         // 命令派发可能编辑了活动 buffer（产生 DeltaEvent），扇出给 BufferSearch 与 syntax provider 是无条件的。
         // 否则编辑后高亮 / 搜索命中都不跟版本。
         // 必须先于 `sync_active_buffer_search`：后者依赖搜索状态已被新事件推进。
-        self.pump_active_buffer_post_edit();
+        self.background
+            .after_text_edit(&mut self.session, &self.text_targets);
         // 命令派发也可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴等）。
         // 把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——一处做完，渲染 / 后续命令读到的都是新真值。
-        self.sync_active_buffer_search();
         Ok(host_effects)
     }
 
@@ -725,8 +547,8 @@ impl App {
         // preedit 期间也走 live search——用户在搜索框中文输入时能边输入边看到结果收敛。
         // 同时把 buffer 上累积的 DeltaEvent 扇出到 syntax provider
         // （preedit replace 走 composition state，但 replace_and_mark 内部仍可能产生编辑事件）。
-        self.pump_active_buffer_post_edit();
-        self.sync_active_buffer_search();
+        self.background
+            .after_text_edit(&mut self.session, &self.text_targets);
         result
     }
 
@@ -815,7 +637,7 @@ mod tests {
         app.file_tree_mut().move_selection(1); // src
         app.file_tree_mut().move_selection(1); // README.md
         assert_eq!(
-            app.with_file_tree(|ft, ws, vs| ft.activate_selected(ws, vs)),
+            app.with_file_tree(|ft, session| ft.activate_selected(session)),
             FileTreeActivation::OpenedFile
         );
         app
@@ -965,12 +787,12 @@ tab_size = 8
         app.file_tree_mut().move_selection(1); // README.md
 
         assert_eq!(
-            app.with_file_tree(|ft, ws, vs| ft.activate_selected(ws, vs)),
+            app.with_file_tree(|ft, session| ft.activate_selected(session)),
             FileTreeActivation::OpenedFile
         );
 
         let tab_width = app
-            .workspace
+            .workspace()
             .active_buffer()
             .expect("应有活动 buffer")
             .buffer()
@@ -1299,7 +1121,7 @@ tab_size = 8
         let selected = app.file_tree_state().selected.clone();
         assert_eq!(selected.as_deref(), Some(root.join("README.md").as_path()));
 
-        let action = app.with_file_tree(|ft, ws, vs| ft.activate_selected(ws, vs));
+        let action = app.with_file_tree(|ft, session| ft.activate_selected(session));
         assert_eq!(action, FileTreeActivation::OpenedFile);
 
         let state = app.file_tree_state();
@@ -1318,7 +1140,7 @@ tab_size = 8
         // rows: [root, src, README.md] —— 选到 src。
         app.file_tree_mut().move_selection(1); // root
         app.file_tree_mut().move_selection(1); // src
-        let action = app.with_file_tree(|ft, ws, vs| ft.activate_selected(ws, vs));
+        let action = app.with_file_tree(|ft, session| ft.activate_selected(session));
         assert_eq!(action, FileTreeActivation::ToggledDir);
 
         let state = app.file_tree_state();
@@ -1341,7 +1163,7 @@ tab_size = 8
         app.file_tree_mut().move_selection(1); // src
         app.file_tree_mut().move_selection(1); // README.md
         assert_eq!(
-            app.with_file_tree(|ft, ws, vs| ft.activate_selected(ws, vs)),
+            app.with_file_tree(|ft, session| ft.activate_selected(session)),
             FileTreeActivation::OpenedFile
         );
 
@@ -1352,7 +1174,7 @@ tab_size = 8
         app.file_tree_mut().move_selection(1); // inner
         app.file_tree_mut().move_selection(1); // lib.rs
         assert_eq!(
-            app.with_file_tree(|ft, ws, vs| ft.activate_selected(ws, vs)),
+            app.with_file_tree(|ft, session| ft.activate_selected(session)),
             FileTreeActivation::OpenedFile
         );
 

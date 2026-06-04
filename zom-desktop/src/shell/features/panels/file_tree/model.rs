@@ -6,7 +6,7 @@
 //! - `inline_edit`：新建 / 重命名输入框与 TextTarget 适配；
 //! - `clipboard`：内部 copy / cut 快照；
 //! - `fs_ops`：文件系统操作与目录树动作；
-//! - `workspace_sync`：文件操作后的 buffer / view 同步。
+//! - `WorkspaceSession`：文件操作后的 buffer / view 同步。
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -21,8 +21,6 @@ use super::fs_ops::infer_entry_kind_from_input;
 use super::fs_ops::{compute_paste_target, next_sibling_of};
 use super::inline_edit::{PendingEntry, PendingRenameEntry};
 use super::selection::Stroke;
-#[cfg(test)]
-use super::workspace_sync::{close_buffers_under, selected_path_after_deleting_active};
 use super::{FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry, PendingRename};
 
 pub(crate) struct FileTreeModel {
@@ -168,6 +166,8 @@ impl Default for FileTreeModel {
 mod tests {
     use super::*;
     use crate::shell::editor::OwnedEditorTarget;
+    use crate::shell::features::panels::file_tree::fs_ops::selected_path_after_deleting_active;
+    use crate::workspace_session::WorkspaceSession;
     use std::fs::{File, create_dir_all};
     use zom_view::{ViewId, ViewSet};
     use zom_workspace::BufferId;
@@ -189,6 +189,10 @@ mod tests {
         views.open_view(buffer_id, version)
     }
 
+    fn workspace_session(workspace: Workspace, views: ViewSet) -> WorkspaceSession {
+        WorkspaceSession::new(workspace, views)
+    }
+
     #[test]
     fn deleting_active_file_should_select_next_active_file_path() {
         let root = tmp_root("delete-active-selects-next");
@@ -206,15 +210,19 @@ mod tests {
         open_view_for(&workspace, &mut views, readme_id);
         let lib_view = open_view_for(&workspace, &mut views, lib_id);
         views.set_active(lib_view);
+        let mut session = workspace_session(workspace, views);
 
-        close_buffers_under(&mut workspace, &mut views, &lib);
+        session.close_buffers_under(&lib);
 
         assert_eq!(
-            workspace.active_buffer().and_then(|buffer| buffer.path()),
+            session
+                .workspace()
+                .active_buffer()
+                .and_then(|buffer| buffer.path()),
             Some(readme.as_path())
         );
         assert_eq!(
-            selected_path_after_deleting_active(&tree, &workspace).as_deref(),
+            selected_path_after_deleting_active(&tree, session.workspace()).as_deref(),
             Some(readme.as_path())
         );
     }
@@ -497,8 +505,8 @@ mod tests {
         // 把焦点移到 sub，然后粘贴到 sub 目录里。
         model.selected = Some(root.join("sub"));
 
-        let mut workspace = Workspace::new();
-        model.paste_from_clipboard(&mut workspace);
+        let mut session = workspace_session(Workspace::new(), ViewSet::new());
+        model.paste_from_clipboard(&mut session);
 
         // 副本落在 sub/a.txt，源 a.txt 保留。
         assert!(root.join("sub/a.txt").is_file());
@@ -523,8 +531,8 @@ mod tests {
         // 粘到 sub。
         model.selected = Some(root.join("sub"));
 
-        let mut workspace = Workspace::new();
-        model.paste_from_clipboard(&mut workspace);
+        let mut session = workspace_session(Workspace::new(), ViewSet::new());
+        model.paste_from_clipboard(&mut session);
 
         // a.txt 已从原处消失。
         assert!(!root.join("a.txt").exists());
@@ -542,8 +550,9 @@ mod tests {
         // 假设用户已经把 a.txt 打开成 buffer。
         let mut workspace = Workspace::new();
         let buffer_id = workspace.open_file(root.join("a.txt")).unwrap();
+        let mut session = workspace_session(workspace, ViewSet::new());
         assert_eq!(
-            workspace.buffer_path(buffer_id).unwrap(),
+            session.workspace().buffer_path(buffer_id).unwrap(),
             Some(root.join("a.txt").as_path())
         );
 
@@ -554,15 +563,15 @@ mod tests {
         model.extend_selection(0);
         model.cut_to_clipboard();
         model.selected = Some(root.join("sub"));
-        model.paste_from_clipboard(&mut workspace);
+        model.paste_from_clipboard(&mut session);
 
         // buffer 的绑定路径已 rebase。
         assert_eq!(
-            workspace.buffer_path(buffer_id).unwrap(),
+            session.workspace().buffer_path(buffer_id).unwrap(),
             Some(root.join("sub/a.txt").as_path())
         );
         // 没把 buffer 标 dirty。
-        assert!(!workspace.is_buffer_dirty(buffer_id).unwrap());
+        assert!(!session.workspace().is_buffer_dirty(buffer_id).unwrap());
     }
 
     #[test]
@@ -575,8 +584,8 @@ mod tests {
         model.extend_selection(0);
         model.copy_to_clipboard();
         // 粘贴目标 = root（焦点是 a.txt 文件，target = 父=root）。
-        let mut workspace = Workspace::new();
-        model.paste_from_clipboard(&mut workspace);
+        let mut session = workspace_session(Workspace::new(), ViewSet::new());
+        model.paste_from_clipboard(&mut session);
 
         // 同目录复制走自动改名 → "a (1).txt"。
         assert!(root.join("a (1).txt").is_file());
@@ -601,8 +610,8 @@ mod tests {
             assert!(!tree.is_expanded(&root.join("sub")));
         }
 
-        let mut workspace = Workspace::new();
-        model.paste_from_clipboard(&mut workspace);
+        let mut session = workspace_session(Workspace::new(), ViewSet::new());
+        model.paste_from_clipboard(&mut session);
 
         // 焦点 = sub（target_parent）。
         assert_eq!(model.selected.as_deref(), Some(root.join("sub").as_path()));
@@ -678,9 +687,8 @@ mod tests {
         model.selected = Some(root.join("a.txt"));
 
         model.request_delete();
-        let mut workspace = Workspace::new();
-        let mut views = ViewSet::new();
-        model.confirm_delete(&mut workspace, &mut views);
+        let mut session = workspace_session(Workspace::new(), ViewSet::new());
+        model.confirm_delete(&mut session);
 
         assert!(!root.join("a.txt").exists());
         assert!(!root.join("b.txt").exists());
@@ -705,9 +713,8 @@ mod tests {
         model.selected = Some(root.join("b.txt"));
         model.pending_delete = Some(vec![(root.join("b.txt"), EntryKind::File)]);
 
-        let mut workspace = Workspace::new();
-        let mut views = ViewSet::new();
-        model.confirm_delete(&mut workspace, &mut views);
+        let mut session = workspace_session(Workspace::new(), ViewSet::new());
+        model.confirm_delete(&mut session);
 
         assert_eq!(
             model.selected.as_deref(),
@@ -729,10 +736,11 @@ mod tests {
         workspace.set_active_buffer(a_id).unwrap();
         let mut views = ViewSet::new();
         open_view_for(&workspace, &mut views, a_id);
+        let mut session = workspace_session(workspace, views);
 
         model.selected = Some(root.join("b.txt"));
         model.pending_delete = Some(vec![(root.join("b.txt"), EntryKind::File)]);
-        model.confirm_delete(&mut workspace, &mut views);
+        model.confirm_delete(&mut session);
 
         assert_eq!(
             model.selected.as_deref(),
@@ -751,9 +759,8 @@ mod tests {
         model.selected = Some(root.join("only.txt"));
         model.pending_delete = Some(vec![(root.join("only.txt"), EntryKind::File)]);
 
-        let mut workspace = Workspace::new();
-        let mut views = ViewSet::new();
-        model.confirm_delete(&mut workspace, &mut views);
+        let mut session = workspace_session(Workspace::new(), ViewSet::new());
+        model.confirm_delete(&mut session);
 
         assert_eq!(model.selected.as_deref(), Some(root.as_path()));
     }
@@ -783,12 +790,13 @@ mod tests {
         let readme_id = workspace.open_file(readme.clone()).unwrap();
         let mut views = ViewSet::new();
         open_view_for(&workspace, &mut views, readme_id);
+        let mut session = workspace_session(workspace, views);
 
-        close_buffers_under(&mut workspace, &mut views, &readme);
+        session.close_buffers_under(&readme);
 
-        assert!(workspace.active_buffer().is_none());
+        assert!(session.workspace().active_buffer().is_none());
         assert_eq!(
-            selected_path_after_deleting_active(&tree, &workspace).as_deref(),
+            selected_path_after_deleting_active(&tree, session.workspace()).as_deref(),
             Some(root.as_path())
         );
     }
@@ -820,6 +828,7 @@ mod tests {
         let mut workspace = Workspace::new();
         // 先把 a.txt 打开成 buffer，验证 rebase。
         let a_id = workspace.open_file(root.join("a.txt")).unwrap();
+        let mut session = workspace_session(workspace, ViewSet::new());
 
         model.selected = Some(root.join("a.txt"));
         model.begin_rename();
@@ -828,8 +837,7 @@ mod tests {
             let pending = model.pending_rename.as_mut().unwrap();
             pending.editor = OwnedEditorTarget::with_text_all_selected("renamed.txt");
         }
-        let mut views = ViewSet::new();
-        let activation = model.commit_rename(&mut workspace, &mut views);
+        let activation = model.commit_rename(&mut session);
 
         // 文件落到新路径、旧路径消失。
         assert!(root.join("renamed.txt").is_file());
@@ -842,13 +850,13 @@ mod tests {
         assert!(model.pending_rename.is_none());
         // buffer 路径已 rebase。
         assert_eq!(
-            workspace.buffer_path(a_id).unwrap(),
+            session.workspace().buffer_path(a_id).unwrap(),
             Some(root.join("renamed.txt").as_path())
         );
         // 文件改名后顺势把焦点切给编辑器：被 rebase 的 buffer 设为活动。
         assert_eq!(activation, FileTreeActivation::OpenedFile);
         assert_eq!(
-            workspace.active_buffer().and_then(|b| b.path()),
+            session.workspace().active_buffer().and_then(|b| b.path()),
             Some(root.join("renamed.txt").as_path())
         );
     }
@@ -856,8 +864,7 @@ mod tests {
     #[test]
     fn commit_rename_should_open_renamed_file_without_prior_buffer() {
         let (mut model, root) = model_with_three_files("rename-commit-open");
-        let mut workspace = Workspace::new();
-        let mut views = ViewSet::new();
+        let mut session = workspace_session(Workspace::new(), ViewSet::new());
 
         model.selected = Some(root.join("a.txt"));
         model.begin_rename();
@@ -865,12 +872,12 @@ mod tests {
             let pending = model.pending_rename.as_mut().unwrap();
             pending.editor = OwnedEditorTarget::with_text_all_selected("renamed.txt");
         }
-        let activation = model.commit_rename(&mut workspace, &mut views);
+        let activation = model.commit_rename(&mut session);
 
         assert_eq!(activation, FileTreeActivation::OpenedFile);
         // 文件原本没有 buffer，commit 后应被打开并设为活动。
         assert_eq!(
-            workspace.active_buffer().and_then(|b| b.path()),
+            session.workspace().active_buffer().and_then(|b| b.path()),
             Some(root.join("renamed.txt").as_path())
         );
     }
@@ -883,8 +890,7 @@ mod tests {
         File::create(root.join("sub/inner.txt")).unwrap();
         // 重 open 一次，让新建的子项进入缓存。
         model.open_project(root.clone());
-        let mut workspace = Workspace::new();
-        let mut views = ViewSet::new();
+        let mut session = workspace_session(Workspace::new(), ViewSet::new());
 
         model.selected = Some(root.join("sub"));
         model.begin_rename();
@@ -892,11 +898,11 @@ mod tests {
             let pending = model.pending_rename.as_mut().unwrap();
             pending.editor = OwnedEditorTarget::with_text_all_selected("sub2");
         }
-        let activation = model.commit_rename(&mut workspace, &mut views);
+        let activation = model.commit_rename(&mut session);
 
         assert_eq!(activation, FileTreeActivation::Nothing);
         assert!(root.join("sub2").is_dir());
-        assert!(workspace.active_buffer().is_none());
+        assert!(session.workspace().active_buffer().is_none());
         // 目录已展开：可见行里能看到 sub2/inner.txt。
         let tree = model.project_tree.as_ref().unwrap();
         assert!(tree.is_expanded(&root.join("sub2")));
@@ -921,15 +927,14 @@ mod tests {
         let mut model = FileTreeModel::default();
         model.open_project(root.clone());
 
-        let mut workspace = Workspace::new();
-        let mut views = ViewSet::new();
+        let mut session = workspace_session(Workspace::new(), ViewSet::new());
         model.selected = Some(root.join("sub"));
         model.begin_rename();
         {
             let pending = model.pending_rename.as_mut().unwrap();
             pending.editor = OwnedEditorTarget::with_text_all_selected("renamed");
         }
-        let activation = model.commit_rename(&mut workspace, &mut views);
+        let activation = model.commit_rename(&mut session);
 
         assert_eq!(activation, FileTreeActivation::Nothing);
         assert!(root.join("renamed").is_dir());
@@ -940,7 +945,7 @@ mod tests {
     #[test]
     fn commit_rename_should_keep_pending_on_conflict() {
         let (mut model, root) = model_with_three_files("rename-conflict");
-        let mut workspace = Workspace::new();
+        let mut session = workspace_session(Workspace::new(), ViewSet::new());
         model.selected = Some(root.join("a.txt"));
         model.begin_rename();
         // 改成已存在的 b.txt——磁盘冲突，pending_rename 保留供用户重试。
@@ -948,8 +953,7 @@ mod tests {
             let pending = model.pending_rename.as_mut().unwrap();
             pending.editor = OwnedEditorTarget::with_text_all_selected("b.txt");
         }
-        let mut views = ViewSet::new();
-        let _ = model.commit_rename(&mut workspace, &mut views);
+        let _ = model.commit_rename(&mut session);
 
         assert!(root.join("a.txt").is_file());
         assert!(root.join("b.txt").is_file());
@@ -959,12 +963,11 @@ mod tests {
     #[test]
     fn commit_rename_with_unchanged_name_should_drop_pending_quietly() {
         let (mut model, root) = model_with_three_files("rename-same-name");
-        let mut workspace = Workspace::new();
+        let mut session = workspace_session(Workspace::new(), ViewSet::new());
         model.selected = Some(root.join("a.txt"));
         model.begin_rename();
         // 不动文本（默认就是 a.txt），直接提交——等价于取消。
-        let mut views = ViewSet::new();
-        let _ = model.commit_rename(&mut workspace, &mut views);
+        let _ = model.commit_rename(&mut session);
         assert!(root.join("a.txt").is_file());
         assert!(model.pending_rename.is_none());
     }

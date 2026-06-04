@@ -7,15 +7,13 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use gpui::{Context, FocusHandle, Window};
-use zom_view::ViewSet;
-use zom_workspace::Workspace;
-
 use crate::app::App;
 use crate::shell::KeyRequest;
 use crate::shell::editor::{TextEditorSlot, TextTargetOwner};
 use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::controller::WorkbenchController;
+use crate::workspace_session::WorkspaceSession;
+use gpui::{Context, FocusHandle, Window};
 
 use super::{FileTreeModel, FileTreePanel, FileTreeState};
 
@@ -49,13 +47,13 @@ impl FileTreeRuntime {
         f(&mut self.model.borrow_mut())
     }
 
-    pub(crate) fn with_model_and_app<R>(
+    pub(crate) fn with_model_and_session<R>(
         &self,
         app: &mut App,
-        f: impl FnOnce(&mut FileTreeModel, &mut Workspace, &mut ViewSet) -> R,
+        f: impl FnOnce(&mut FileTreeModel, &mut WorkspaceSession) -> R,
     ) -> R {
         let mut model = self.model.borrow_mut();
-        app.with_workspace_views_mut(|workspace, views| f(&mut model, workspace, views))
+        app.with_workspace_session_mut(|session| f(&mut model, session))
     }
 
     pub(crate) fn open_project(&self, root: PathBuf) {

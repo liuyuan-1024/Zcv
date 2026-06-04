@@ -25,7 +25,6 @@ mod runtime;
 mod selection;
 mod state;
 mod view;
-mod workspace_sync;
 
 pub(crate) use effects::try_apply_effect;
 

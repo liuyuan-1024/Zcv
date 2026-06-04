@@ -23,8 +23,8 @@ use std::rc::Rc;
 
 use zom_command::commands::editor;
 use zom_command::{
-    ClipboardPort, CommandArgs, CommandError, CommandId, FileTreeKeyMode, HostEffect, Invocation,
-    KeyContext, KeymapResolution,
+    ClipboardPort, CommandArgs, CommandCatalogItem, CommandError, CommandId, FileTreeKeyMode,
+    HostEffect, Invocation, KeyContext, KeymapResolution,
 };
 use zom_view::ViewSet;
 use zom_workspace::Workspace;
@@ -454,7 +454,7 @@ impl App {
         self.command.command_title_for(command_id)
     }
 
-    pub(crate) fn command_catalog_items(&self) -> Vec<crate::shell::CommandCatalogItem> {
+    pub(crate) fn command_catalog_items(&self) -> Vec<CommandCatalogItem> {
         self.command.command_catalog_items()
     }
 

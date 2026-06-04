@@ -39,7 +39,7 @@ pub use clipboard::{ClipboardPort, MockClipboard};
 pub use commands::editor::{CompositionBinding, TextEditBindingContext, TextEditKeyContext};
 pub use commands::file_tree::{FileTreeBindingContext, FileTreeKeyContext, FileTreeKeyMode};
 pub use commands::project_picker::{ProjectPickerBindingContext, ProjectPickerKeyContext};
-pub use core::{Command, CommandArgs, CommandId, Invocation, NoArgs};
+pub use core::{Command, CommandArgs, CommandCatalogItem, CommandId, Invocation, NoArgs};
 pub use effects::{EffectQueue, HostEffect, SearchOption};
 pub use error::CommandError;
 pub use executor::{CommandContext, CommandExecutor, CommandOutcome, CommandQueue, EditTarget};

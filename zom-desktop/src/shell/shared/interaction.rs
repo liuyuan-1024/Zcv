@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use gpui::{App as GpuiApp, Window};
-use zom_command::Command;
+use zom_command::CommandCatalogItem;
 
 /// 一个已经绑好命令的点击回调。UI 子组件不接触命令对象，触发时直接调用。
 pub(crate) type ActionRequest = Rc<dyn Fn(&mut Window, &mut GpuiApp)>;
@@ -17,26 +17,6 @@ pub(crate) type ShortcutLookup = Rc<dyn Fn(&str) -> Option<String>>;
 
 /// 反查某条命令的显示标题。占位命令尚未注册时由调用方提供领域内兜底文案。
 pub(crate) type CommandTitleLookup = Rc<dyn Fn(&str) -> Option<String>>;
-
-/// 命令系统暴露给快捷键面板的只读命令元数据。
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CommandCatalogItem {
-    pub(crate) command_id: String,
-    pub(crate) title: String,
-    pub(crate) description: Option<String>,
-    pub(crate) visible_in_shortcuts: bool,
-}
-
-impl From<&Command> for CommandCatalogItem {
-    fn from(command: &Command) -> Self {
-        Self {
-            command_id: command.id.to_string(),
-            title: command.title.clone(),
-            description: command.description.clone(),
-            visible_in_shortcuts: command.visible_in_shortcuts,
-        }
-    }
-}
 
 /// 读取当前命令系统的可展示元数据；具体过滤和排版由面板自己完成。
 pub(crate) type CommandCatalogLookup = Rc<dyn Fn() -> Vec<CommandCatalogItem>>;

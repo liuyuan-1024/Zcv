@@ -5,9 +5,9 @@
 
 use zom_command::commands;
 use zom_command::{
-    ClipboardPort, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId,
-    CommandQueue, EffectQueue, HostEffect, KeyChord, KeyContext, Keymap, KeymapResolution,
-    MockClipboard,
+    ClipboardPort, CommandArgs, CommandCatalogItem, CommandContext, CommandError, CommandExecutor,
+    CommandId, CommandQueue, EffectQueue, HostEffect, KeyChord, KeyContext, Keymap,
+    KeymapResolution, MockClipboard,
 };
 
 use crate::workspace_session::WorkspaceSession;
@@ -90,7 +90,7 @@ impl CommandRuntime {
             .map(|command| command.title.clone())
     }
 
-    pub(super) fn command_catalog_items(&self) -> Vec<crate::shell::CommandCatalogItem> {
+    pub(super) fn command_catalog_items(&self) -> Vec<CommandCatalogItem> {
         self.registry.commands().map(Into::into).collect()
     }
 }

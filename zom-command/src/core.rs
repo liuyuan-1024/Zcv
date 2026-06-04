@@ -126,3 +126,23 @@ impl Command {
         self
     }
 }
+
+/// 命令系统暴露给宿主的只读命令元数据。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommandCatalogItem {
+    pub command_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub visible_in_shortcuts: bool,
+}
+
+impl From<&Command> for CommandCatalogItem {
+    fn from(command: &Command) -> Self {
+        Self {
+            command_id: command.id.to_string(),
+            title: command.title.clone(),
+            description: command.description.clone(),
+            visible_in_shortcuts: command.visible_in_shortcuts,
+        }
+    }
+}

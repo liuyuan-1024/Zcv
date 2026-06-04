@@ -31,7 +31,6 @@ use crate::focus::{
 use crate::shell::editor::{EditorRouter, EditorRouterMut, TextTargetOwner};
 #[cfg(test)]
 use crate::shell::features::panels::file_tree::{FileTreeModel, FileTreeState};
-use crate::shell::features::panels::search::SearchRuntimeHandle;
 use crate::shell::workbench::state as workbench_state;
 use crate::text_target_hub::TextTargetHub;
 use crate::workspace_session::WorkspaceSession;
@@ -100,12 +99,6 @@ impl App {
     /// [`ShellView::new`]: crate::shell::view::ShellView
     pub(crate) fn install_editor_owner(&mut self, owner: Rc<RefCell<dyn TextTargetOwner>>) {
         self.text_targets.install_editor_owner(owner);
-    }
-
-    /// 把 search runtime 的宿主接口装进 App。
-    /// shell 装配阶段调一次；之后路由 / 派发 / 同步都通过这层窄接口进入 search feature。
-    pub(crate) fn install_search_runtime(&mut self, runtime: SearchRuntimeHandle) {
-        self.text_targets.install_search_runtime(runtime);
     }
 
     /// 注册一个编辑后同步观察者。shell 装配阶段调；
@@ -1260,22 +1253,22 @@ tab_size = 8
             fn accepts_focus(&self, focus: AppFocus) -> bool {
                 focus == AppFocus::settings()
             }
-            fn snapshot(&self) -> EditorSnapshot {
+            fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
                 EditorSnapshot::default()
             }
             fn key_contexts(&self) -> Vec<KeyContext> {
                 vec![KeyContext::settings(), KeyContext::global()]
             }
-            fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
+            fn ime_query_target(&self, _focus: AppFocus) -> Option<ImeQueryTarget<'_>> {
                 None
             }
         }
 
         impl TextTargetOwner for StubSettingsOwner {
-            fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
+            fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
                 None
             }
-            fn edit_target(&mut self) -> Option<EditTarget<'_>> {
+            fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
                 None
             }
             fn after_text_changed(&mut self) {

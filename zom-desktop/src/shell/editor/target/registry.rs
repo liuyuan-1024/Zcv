@@ -99,22 +99,22 @@ mod tests {
         fn accepts_focus(&self, focus: AppFocus) -> bool {
             focus == self.focus
         }
-        fn snapshot(&self) -> EditorSnapshot {
+        fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
             EditorSnapshot::default()
         }
         fn key_contexts(&self) -> Vec<KeyContext> {
             vec![KeyContext::global()]
         }
-        fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
+        fn ime_query_target(&self, _focus: AppFocus) -> Option<ImeQueryTarget<'_>> {
             None
         }
     }
 
     impl crate::shell::editor::TextTargetOwner for StubOwner {
-        fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
+        fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
             None
         }
-        fn edit_target(&mut self) -> Option<EditTarget<'_>> {
+        fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
             None
         }
         fn after_text_changed(&mut self) {

@@ -121,7 +121,7 @@ impl TextTargetQuery for ProjectPickerModel {
         )
     }
 
-    fn snapshot(&self) -> EditorSnapshot {
+    fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
         self.query.snapshot(EditorSnapshotRequest::single_line())
     }
 
@@ -133,17 +133,17 @@ impl TextTargetQuery for ProjectPickerModel {
         ]
     }
 
-    fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
+    fn ime_query_target(&self, _focus: AppFocus) -> Option<ImeQueryTarget<'_>> {
         Some(self.query.as_ime_query_target())
     }
 }
 
 impl TextTargetOwner for ProjectPickerModel {
-    fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
+    fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
         Some(self.query.as_ime_target())
     }
 
-    fn edit_target(&mut self) -> Option<EditTarget<'_>> {
+    fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
         Some(self.query.as_edit_target())
     }
 

@@ -60,7 +60,7 @@ impl<'a> EditorRouter<'a> {
         self.owners
             .iter()
             .find(|owner| owner.accepts_focus(focus))
-            .map(|owner| owner.snapshot())
+            .map(|owner| owner.snapshot(focus))
             .unwrap_or_default()
     }
 
@@ -94,7 +94,7 @@ impl<'a> EditorRouter<'a> {
             .owners
             .iter()
             .find(|owner| owner.accepts_focus(focus))?;
-        let query = owner.ime_query_target()?;
+        let query = owner.ime_query_target(focus)?;
         Some(f(&query))
     }
 }
@@ -124,7 +124,7 @@ impl<'a> EditorRouterMut<'a> {
     ) -> Result<R, CommandError> {
         for owner in self.owners.iter_mut() {
             if owner.accepts_focus(focus) {
-                let ime = owner.ime_target().ok_or(CommandError::NoActiveView)?;
+                let ime = owner.ime_target(focus).ok_or(CommandError::NoActiveView)?;
                 let result = f(ime)?;
                 owner.after_text_changed();
                 return Ok(result);

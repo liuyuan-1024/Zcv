@@ -17,14 +17,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Context, Div, FocusHandle, IntoElement, MouseButton, Window, div, prelude::*};
-use zom_command::{EditTarget, SearchOption, commands::search};
+use zom_command::{SearchOption, commands::search};
 use zom_view::ViewSet;
 use zom_workspace::Workspace;
 
 use crate::app::App;
 use crate::background_pumps::{FramePump, PostEditObserver};
 use crate::focus::{AppFocus, SearchField};
-use crate::shell::editor::{TextEditorSlot, TextTargetOwner, TextTargetQuery};
+use crate::shell::editor::{TextEditorSlot, TextTargetOwner};
 use crate::shell::normalized_chord;
 use crate::shell::shared::glyph::Glyph;
 use crate::shell::shared::theme::{color, radius, space, typography};
@@ -55,39 +55,6 @@ pub(crate) struct SearchRuntimeHandle {
 impl SearchRuntimeHandle {
     fn new(model: Rc<RefCell<SearchModel>>) -> Self {
         Self { model }
-    }
-
-    pub(crate) fn accepts_focus(&self, focus: AppFocus) -> bool {
-        matches!(focus, AppFocus::Panel(crate::focus::PanelFocus::Search(_)))
-    }
-
-    pub(crate) fn with_query_owners<R>(
-        &self,
-        f: impl FnOnce(&dyn TextTargetQuery, &dyn TextTargetQuery) -> R,
-    ) -> R {
-        let model = self.model.borrow();
-        let query = model.query_owner();
-        let replacement = model.replacement_owner();
-        f(&query, &replacement)
-    }
-
-    pub(crate) fn with_active_owner<R>(
-        &self,
-        focus: AppFocus,
-        f: impl FnOnce(&mut dyn TextTargetOwner) -> R,
-    ) -> R {
-        let mut model = self.model.borrow_mut();
-        let mut owner = model.active_owner(focus);
-        f(&mut owner)
-    }
-
-    pub(crate) fn with_edit_target_for_focus<R>(
-        &self,
-        focus: AppFocus,
-        f: impl FnOnce(Option<EditTarget<'_>>) -> R,
-    ) -> R {
-        let mut model = self.model.borrow_mut();
-        f(model.edit_target_for_focus(focus))
     }
 
     pub(crate) fn state(&self, workspace: &Workspace) -> SearchState {
@@ -199,6 +166,13 @@ impl SearchRuntime {
 
     pub(crate) fn runtime_handle(&self) -> SearchRuntimeHandle {
         SearchRuntimeHandle::new(self.model.clone())
+    }
+
+    /// 把 SearchModel 作为 [`TextTargetOwner`] 暴露给 router——按 focus
+    /// 内部分派 query / replacement。注册路径与其它 owner 完全一致，
+    /// TextTargetHub 不再为 search 单走特殊分支。
+    pub(crate) fn owner_handle(&self) -> Rc<RefCell<dyn TextTargetOwner>> {
+        self.model.clone()
     }
 
     pub(crate) fn focus_handle(&self) -> FocusHandle {

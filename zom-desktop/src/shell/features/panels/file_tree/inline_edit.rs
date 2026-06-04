@@ -101,7 +101,7 @@ impl TextTargetQuery for FileTreeModel {
         )
     }
 
-    fn snapshot(&self) -> EditorSnapshot {
+    fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
         if let Some(rename) = self.pending_rename.as_ref() {
             return rename.editor.snapshot(EditorSnapshotRequest::single_line());
         }
@@ -128,7 +128,7 @@ impl TextTargetQuery for FileTreeModel {
         ]
     }
 
-    fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
+    fn ime_query_target(&self, _focus: AppFocus) -> Option<ImeQueryTarget<'_>> {
         if let Some(rename) = self.pending_rename.as_ref() {
             return Some(rename.editor.as_ime_query_target());
         }
@@ -139,7 +139,7 @@ impl TextTargetQuery for FileTreeModel {
 }
 
 impl TextTargetOwner for FileTreeModel {
-    fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
+    fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
         if let Some(rename) = self.pending_rename.as_mut() {
             return Some(rename.editor.as_ime_target());
         }
@@ -148,7 +148,7 @@ impl TextTargetOwner for FileTreeModel {
             .map(|pending| pending.editor.as_ime_target())
     }
 
-    fn edit_target(&mut self) -> Option<EditTarget<'_>> {
+    fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
         if let Some(rename) = self.pending_rename.as_mut() {
             return Some(rename.editor.as_edit_target());
         }

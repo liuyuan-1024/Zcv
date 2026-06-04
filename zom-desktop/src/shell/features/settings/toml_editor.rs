@@ -82,7 +82,7 @@ impl TextTargetQuery for SettingsTomlEditor {
         self.open && matches!(focus, AppFocus::Surface(SurfaceFocus::Settings))
     }
 
-    fn snapshot(&self) -> EditorSnapshot {
+    fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
         self.target
             .snapshot(EditorSnapshotRequest::viewport(0, 256))
     }
@@ -99,7 +99,7 @@ impl TextTargetQuery for SettingsTomlEditor {
         true
     }
 
-    fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
+    fn ime_query_target(&self, _focus: AppFocus) -> Option<ImeQueryTarget<'_>> {
         if !self.open {
             return None;
         }
@@ -108,14 +108,14 @@ impl TextTargetQuery for SettingsTomlEditor {
 }
 
 impl TextTargetOwner for SettingsTomlEditor {
-    fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
+    fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
         if !self.open {
             return None;
         }
         Some(self.target.as_ime_target())
     }
 
-    fn edit_target(&mut self) -> Option<EditTarget<'_>> {
+    fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
         if !self.open {
             return None;
         }

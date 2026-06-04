@@ -140,7 +140,7 @@ impl<'a> TextTargetQuery for MainEditorOwner<'a> {
         matches!(focus, AppFocus::Editor(_))
     }
 
-    fn snapshot(&self) -> EditorSnapshot {
+    fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
         snapshot_from_active_view(self.workspace, self.views)
     }
 
@@ -155,20 +155,20 @@ impl<'a> TextTargetQuery for MainEditorOwner<'a> {
         true
     }
 
-    fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
+    fn ime_query_target(&self, _focus: AppFocus) -> Option<ImeQueryTarget<'_>> {
         ime_query_from_active_view(self.workspace, self.views)
     }
 }
 
 impl<'a> TextTargetOwner for MainEditorOwner<'a> {
-    fn ime_target(&mut self) -> Option<ImeTarget<'_>> {
+    fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
         let buffer_id = self.views.active_view()?.buffer();
         let buffer = self.workspace.buffer_mut(buffer_id)?.buffer_mut();
         let selection = self.views.active_view_mut()?.selection_mut();
         Some(ImeTarget::new(buffer, selection))
     }
 
-    fn edit_target(&mut self) -> Option<EditTarget<'_>> {
+    fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
         let buffer_id = self.views.active_view()?.buffer();
         let buffer = self.workspace.buffer_mut(buffer_id)?.buffer_mut();
         let view = self.views.active_view_mut()?;
@@ -192,7 +192,7 @@ impl<'a> TextTargetQuery for MainEditorOwnerRef<'a> {
         matches!(focus, AppFocus::Editor(_))
     }
 
-    fn snapshot(&self) -> EditorSnapshot {
+    fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
         snapshot_from_active_view(self.workspace, self.views)
     }
 
@@ -207,7 +207,7 @@ impl<'a> TextTargetQuery for MainEditorOwnerRef<'a> {
         true
     }
 
-    fn ime_query_target(&self) -> Option<ImeQueryTarget<'_>> {
+    fn ime_query_target(&self, _focus: AppFocus) -> Option<ImeQueryTarget<'_>> {
         ime_query_from_active_view(self.workspace, self.views)
     }
 }

@@ -29,7 +29,6 @@ use crate::shell::CommandCatalogItem;
 use crate::shell::editor::{
     EditorRouter, EditorRouterMut, EditorTargetRegistry, TextTargetOwner, TextTargetQuery,
 };
-use crate::shell::features::panels::file_tree::{FileTreeModel, FileTreeState};
 use crate::shell::features::panels::search::{self as search_panel, SearchModel, SearchState};
 use crate::shell::workbench::editor_area::{MainEditorOwner, MainEditorOwnerRef};
 use crate::shell::workbench::state::{EditorState, build_editor_state};
@@ -51,7 +50,6 @@ pub struct App {
     views: ViewSet,
     focus: FocusStore,
     project_root: Option<PathBuf>,
-    file_tree: FileTreeModel,
     /// 搜索面板 model 的共享句柄——真正拥有者是 [`SearchRuntime`]，shell 装配
     /// 时通过 [`Self::install_search_model`] 把同一份 `Rc` 借进来。
     ///
@@ -126,7 +124,6 @@ impl App {
             // 生产里 ShellView::render 的反向同步会把这值刷到与 GPUI 真实焦点一致。
             focus: FocusStore::new(AppFocus::project_picker(ProjectPickerFocus::Query)),
             project_root: None,
-            file_tree: FileTreeModel::new(),
             search_model: None,
             clipboard: Box::new(MockClipboard::new()),
             soft_wrap,
@@ -239,21 +236,7 @@ impl App {
     }
 
     fn refine_focus(&self, focus: AppFocus) -> AppFocus {
-        match focus {
-            AppFocus::Panel(PanelFocus::FileTree(_)) if self.file_tree.pending_delete_active() => {
-                AppFocus::file_tree(FileTreeFocus::ConfirmDelete)
-            }
-            AppFocus::Panel(PanelFocus::FileTree(_)) if self.file_tree.pending_rename_active() => {
-                AppFocus::file_tree(FileTreeFocus::RenameEntry)
-            }
-            AppFocus::Panel(PanelFocus::FileTree(_)) if self.file_tree.pending_active() => {
-                AppFocus::file_tree(FileTreeFocus::NewEntryName)
-            }
-            AppFocus::Panel(PanelFocus::FileTree(_)) => {
-                AppFocus::file_tree(FileTreeFocus::Navigate)
-            }
-            other => other,
-        }
+        focus
     }
 
     /// 替换默认剪贴板端口。
@@ -263,7 +246,7 @@ impl App {
         self.clipboard = clipboard;
     }
 
-    /// 把指定 root 切成当前活动项目：重置文件树、重建 workspace / view、聚焦编辑区。
+    /// 把指定 root 切成当前活动项目：重建 workspace / view、聚焦编辑区。
     ///
     /// **不**负责把 root 写到"最近项目"列表 —— 那是 picker 自家的 UI 数据，归
     /// shell 侧的 [`ProjectPickerRuntime`] 拥有；shell 在调用本方法后再调
@@ -271,7 +254,6 @@ impl App {
     ///
     /// [`ProjectPickerRuntime`]: crate::shell::features::project_picker::ProjectPickerRuntime
     pub(crate) fn open_project(&mut self, root: PathBuf) {
-        self.file_tree.open_project(root.clone());
         self.project_root = Some(root);
         // 复用现有 SyntaxEngine——不再新开 worker 线程也不再重注 Tier 1。
         let engine = self.workspace.engine().clone();
@@ -306,25 +288,15 @@ impl App {
         }
     }
 
-    /// 可变借用文件树 model——仅限不需要 workspace/views 的纯模型操作
-    /// （`move_selection`、`escape`、`begin_new_entry`...）。需要 workspace/views
-    /// 的写操作走 [`Self::with_file_tree`]。
-    pub(crate) fn file_tree_mut(&mut self) -> &mut FileTreeModel {
-        &mut self.file_tree
+    pub(crate) fn workspace(&self) -> &Workspace {
+        &self.workspace
     }
 
-    /// 把文件树 model + workspace + views 三家的可变引用打包递给闭包。
-    /// `activate_selected` / `commit_new_entry` / `confirm_delete` /
-    /// `paste_from_clipboard` 等需要同时改 model 与 workspace/views 的写操作走这里。
-    pub(crate) fn with_file_tree<R>(
+    pub(crate) fn with_workspace_views_mut<R>(
         &mut self,
-        f: impl FnOnce(&mut FileTreeModel, &mut Workspace, &mut ViewSet) -> R,
+        f: impl FnOnce(&mut Workspace, &mut ViewSet) -> R,
     ) -> R {
-        f(&mut self.file_tree, &mut self.workspace, &mut self.views)
-    }
-
-    pub(crate) fn file_tree_state(&self) -> FileTreeState {
-        self.file_tree.state(&self.workspace)
+        f(&mut self.workspace, &mut self.views)
     }
 
     pub(crate) fn editor_state(&self) -> EditorState {
@@ -459,7 +431,7 @@ impl App {
         let search_replacement = search_borrow.as_deref().map(|m| m.replacement_owner());
         // 注册表 owner 的借用 guard 必须比下方 owners 引用活得长。
         let registry_borrows = self.editor_targets.borrow_all();
-        let mut owners: Vec<&dyn TextTargetQuery> = vec![&self.file_tree as &dyn TextTargetQuery];
+        let mut owners: Vec<&dyn TextTargetQuery> = Vec::new();
         // search_model 未装配（如 App-only 单测）时直接跳过，不影响其它 owner。
         if let Some(q) = search_query.as_ref() {
             owners.push(q as &dyn TextTargetQuery);
@@ -492,8 +464,7 @@ impl App {
         // 注册表 owner 的可变借用 guard 必须比下方 owners 引用活得长；每个 RefMut
         // 独立锁住自己那一格 RefCell，互不冲突。
         let mut registry_borrows = self.editor_targets.borrow_all_mut();
-        let mut owners: Vec<&mut dyn TextTargetOwner> =
-            vec![&mut self.file_tree as &mut dyn TextTargetOwner];
+        let mut owners: Vec<&mut dyn TextTargetOwner> = Vec::new();
         // search_model 未装配（如 App-only 单测）时直接跳过。
         if let Some(s) = search.as_mut() {
             owners.push(s as &mut dyn TextTargetOwner);
@@ -710,13 +681,11 @@ impl App {
         // 命令派发期需要给 CommandContext 填 `focused_field`，并在 executor 跑完
         // 之后给 registry owner 调 `after_text_changed`。
         //
-        // 自家字段（file_tree / search）直接借；其它语义焦点（ProjectPicker / Settings 之类）
-        // 走 editor_targets 注册表 —— 先借出所有 RefMut，找到 accepts_focus 命中的
-        // 那格，记下索引，跑完 executor 后回该 owner 调 after_text_changed。
+        // 自家字段（search）直接借；其它语义焦点（FileTree / ProjectPicker / Settings 之类）走 editor_targets 注册表
+        // —— 先借出所有 RefMut，找到 accepts_focus 命中的那格，记下索引，跑完 executor 后回该 owner 调 after_text_changed。
         //
         // 整段包在内层 block：registry_borrows 出 block 才 drop，RefCell 借用释放，
-        // 外层后续的 `pump_active_buffer_post_edit` / `sync_active_buffer_search`
-        // 才能拿到 `&mut self`。
+        // 外层后续的 `pump_active_buffer_post_edit` / `sync_active_buffer_search`才能拿到 `&mut self`。
         let host_effects = {
             let mut effects = EffectQueue::new();
             let mut registry_borrows = self.editor_targets.borrow_all_mut();
@@ -724,7 +693,6 @@ impl App {
             let mut search_guard = self.search_model.as_ref().map(|m| m.borrow_mut());
 
             let focused_field = match focus {
-                AppFocus::Panel(PanelFocus::FileTree(_)) => self.file_tree.edit_target(),
                 AppFocus::Panel(PanelFocus::Search(_)) => search_guard
                     .as_deref_mut()
                     .and_then(|search| search.edit_target_for_focus(focus)),

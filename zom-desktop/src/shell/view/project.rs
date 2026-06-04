@@ -149,9 +149,10 @@ pub(crate) fn apply_local_project_open(
         return;
     }
 
+    file_tree.open_project(project_root.clone());
     app.borrow_mut().open_project(project_root.clone());
     project_picker.remember_project(project_root, None);
-    file_tree.reveal_after_project_open(app, workbench, window);
+    file_tree.reveal_after_project_open(workbench, window);
     window.refresh();
 }
 
@@ -173,9 +174,10 @@ fn apply_git_project_open(
         return;
     }
 
+    file_tree.open_project(project_root.clone());
     app.borrow_mut().open_project(project_root.clone());
     project_picker.remember_project(project_root, Some(repo));
-    file_tree.reveal_after_project_open(app, workbench, window);
+    file_tree.reveal_after_project_open(workbench, window);
     window.refresh();
 }
 

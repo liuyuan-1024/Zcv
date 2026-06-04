@@ -233,10 +233,6 @@ impl FileTreeModel {
         });
     }
 
-    pub(crate) fn pending_active(&self) -> bool {
-        self.pending.is_some()
-    }
-
     pub(crate) fn cancel_new_entry(&mut self) {
         self.pending = None;
     }
@@ -288,14 +284,6 @@ impl FileTreeModel {
                 FileTreeActivation::Nothing
             }
         }
-    }
-
-    pub(crate) fn pending_delete_active(&self) -> bool {
-        self.pending_delete.is_some()
-    }
-
-    pub(crate) fn pending_rename_active(&self) -> bool {
-        self.pending_rename.is_some()
     }
 
     /// 进入重命名态：以当前焦点行为目标，输入框预填旧名并全选。

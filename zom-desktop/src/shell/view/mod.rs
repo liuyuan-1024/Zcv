@@ -70,6 +70,8 @@ impl ShellView {
         let editor_focus = cx.focus_handle();
         let panel_runtimes = PanelRuntimes::new(cx);
         let file_tree = FileTreeRuntime::new(cx);
+        app.borrow_mut()
+            .install_editor_owner(file_tree.owner_handle());
         // 生产构造路径：最近项目落盘走 `~/.zom/recent_workspaces.toml`。
         // ShellView 是组合 GPUI 窗口的唯一落点，直接选定该策略；
         // 若将来 ShellView 也要单测，再把 path 上抛到构造参数。
@@ -228,7 +230,7 @@ impl ShellView {
             app.project_title(),
             app.has_project(),
             app.editor_state(),
-            app.file_tree_state(),
+            self.file_tree.state(&app),
             app.search_state(),
         )
     }

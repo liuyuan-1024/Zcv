@@ -94,7 +94,7 @@ pub(crate) fn apply_host_effects(
     for effect in effects {
         // 按 feature 顺序问询：第一个认领的 try_apply 返回 true，跳过余下。
         // 剩下的窗口控制 / 跨 feature 变体由本文件下方的兜底 match 处理。
-        if file_tree::try_apply_effect(&effect, app, workbench, &focus, window) {
+        if file_tree::try_apply_effect(&effect, app, workbench, file_tree, &focus, window) {
             continue;
         }
         if search::try_apply_effect(&effect, app, workbench, panel_runtimes, &focus, window) {

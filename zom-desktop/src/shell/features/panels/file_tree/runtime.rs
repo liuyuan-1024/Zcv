@@ -4,22 +4,28 @@
 //! 交互装配。ShellView 只持有这个 feature 实例，不再散落保存 file_tree_* 细节。
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{Context, FocusHandle, Window};
+use zom_view::ViewSet;
+use zom_workspace::Workspace;
 
 use crate::app::App;
 use crate::shell::KeyRequest;
-use crate::shell::editor::TextEditorSlot;
+use crate::shell::editor::{TextEditorSlot, TextTargetOwner};
 use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::controller::WorkbenchController;
 
-use super::{FileTreePanel, FileTreeState};
+use super::{FileTreeModel, FileTreePanel, FileTreeState};
 
 #[derive(Clone)]
 pub(crate) struct FileTreeRuntime {
     focus: FocusHandle,
     scroll: ScrollHandle,
+    /// 文件树 model 的真正拥有者。App 只借共享 handle 组合 workspace/views，
+    /// editor router 通过 `owner_handle` 访问 pending name/rename 输入框。
+    model: Rc<RefCell<FileTreeModel>>,
 }
 
 impl FileTreeRuntime {
@@ -27,7 +33,37 @@ impl FileTreeRuntime {
         Self {
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
+            model: Rc::new(RefCell::new(FileTreeModel::new())),
         }
+    }
+
+    pub(crate) fn model_handle(&self) -> Rc<RefCell<FileTreeModel>> {
+        self.model.clone()
+    }
+
+    pub(crate) fn owner_handle(&self) -> Rc<RefCell<dyn TextTargetOwner>> {
+        self.model.clone()
+    }
+
+    pub(crate) fn with_model_mut<R>(&self, f: impl FnOnce(&mut FileTreeModel) -> R) -> R {
+        f(&mut self.model.borrow_mut())
+    }
+
+    pub(crate) fn with_model_and_app<R>(
+        &self,
+        app: &mut App,
+        f: impl FnOnce(&mut FileTreeModel, &mut Workspace, &mut ViewSet) -> R,
+    ) -> R {
+        let mut model = self.model.borrow_mut();
+        app.with_workspace_views_mut(|workspace, views| f(&mut model, workspace, views))
+    }
+
+    pub(crate) fn open_project(&self, root: PathBuf) {
+        self.model.borrow_mut().open_project(root);
+    }
+
+    pub(crate) fn state(&self, app: &App) -> FileTreeState {
+        self.model.borrow().state(app.workspace())
     }
 
     pub(crate) fn install_listeners<T: 'static>(
@@ -36,7 +72,7 @@ impl FileTreeRuntime {
         window: &mut Window,
         cx: &mut Context<T>,
     ) {
-        super::focus::install_focus_listeners(app, &self.focus, window, cx);
+        super::focus::install_focus_listeners(app, self.model_handle(), &self.focus, window, cx);
     }
 
     pub(crate) fn panel<'a>(
@@ -62,13 +98,10 @@ impl FileTreeRuntime {
 
     pub(crate) fn reveal_after_project_open(
         &self,
-        app: &Rc<RefCell<App>>,
         workbench: &Rc<RefCell<WorkbenchController>>,
         window: &mut Window,
     ) {
-        app.borrow_mut()
-            .file_tree_mut()
-            .ensure_selection_initialized();
+        self.model.borrow_mut().ensure_selection_initialized();
         super::focus::reveal_and_focus(workbench, &self.focus, window);
     }
 }

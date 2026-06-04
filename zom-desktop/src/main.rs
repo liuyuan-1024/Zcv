@@ -17,6 +17,7 @@ mod focus;
 mod ports;
 mod shell;
 mod text_target;
+mod ui_id;
 mod workspace_session;
 
 fn main() {

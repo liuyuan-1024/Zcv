@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use zom_command::commands::file_tree::FileTreeKeyMode;
 use zom_command::{EditTarget, KeyContext};
 
-use crate::focus::{AppFocus, FileTreeFocus, PanelFocus};
+use crate::focus::{AppFocus, FileTreeFocus};
 use crate::shell::editor::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
 };
@@ -94,13 +94,13 @@ impl FileTreeModel {
 
 impl TextTargetQuery for FileTreeModel {
     fn accepts_focus(&self, focus: AppFocus) -> bool {
-        match focus {
-            AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::NewEntryName)) => {
-                self.pending.is_some()
-            }
-            AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::RenameEntry)) => {
-                self.pending_rename.is_some()
-            }
+        let sub = match focus {
+            AppFocus::Panel(p) => p.as_file_tree(),
+            _ => None,
+        };
+        match sub {
+            Some(FileTreeFocus::NewEntryName) => self.pending.is_some(),
+            Some(FileTreeFocus::RenameEntry) => self.pending_rename.is_some(),
             _ => false,
         }
     }

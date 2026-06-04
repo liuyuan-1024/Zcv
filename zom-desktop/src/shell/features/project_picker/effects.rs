@@ -154,9 +154,7 @@ fn show_project_picker(
     };
     project_picker_runtime.reset(initial_mode.into());
     app.borrow_mut()
-        .request_focus(crate::focus::AppFocus::project_picker(
-            crate::focus::ProjectPickerFocus::Query,
-        ));
+        .request_focus(crate::focus::AppFocus::project_picker());
     let runtime_for_projects = project_picker_runtime.clone();
     let projects = Rc::new(move || runtime_for_projects.recent_projects());
     let state_runtime = project_picker_runtime.clone();

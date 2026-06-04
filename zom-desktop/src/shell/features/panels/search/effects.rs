@@ -10,7 +10,7 @@ use gpui::Window;
 use zom_command::HostEffect;
 
 use crate::app::App;
-use crate::focus::{AppFocus, PanelFocus, SearchField};
+use crate::focus::{AppFocus, SearchField};
 use crate::shell::features::panels::PanelId;
 use crate::shell::view::actions::request_focus;
 use crate::shell::view::focus::FocusProjection;
@@ -138,17 +138,19 @@ fn focus_search_field(
     direction: FocusDirection,
     window: &mut Window,
 ) {
-    let target = match (direction, app.borrow().focus().current()) {
-        (FocusDirection::Next, AppFocus::Panel(PanelFocus::Search(SearchField::Query))) => {
+    let current = app.borrow().focus().current();
+    let current_field = match current {
+        AppFocus::Panel(p) => p.as_search(),
+        _ => None,
+    };
+    let target = match (direction, current_field) {
+        (FocusDirection::Next, Some(SearchField::Query)) => {
             AppFocus::search(SearchField::Replacement)
         }
-        (
-            FocusDirection::Previous,
-            AppFocus::Panel(PanelFocus::Search(SearchField::Replacement)),
-        ) => AppFocus::search(SearchField::Query),
-        (FocusDirection::Next | FocusDirection::Previous, _) => {
+        (FocusDirection::Previous, Some(SearchField::Replacement)) => {
             AppFocus::search(SearchField::Query)
         }
+        _ => AppFocus::search(SearchField::Query),
     };
     request_focus(app, focus, target, window);
     window.refresh();

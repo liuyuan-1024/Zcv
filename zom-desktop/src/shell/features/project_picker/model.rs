@@ -1,7 +1,7 @@
 use zom_command::{EditTarget, KeyContext};
 
 use super::recent::RecentProject;
-use crate::focus::{AppFocus, ProjectPickerFocus, SurfaceFocus};
+use crate::focus::AppFocus;
 use crate::shell::editor::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
 };
@@ -115,10 +115,7 @@ impl ProjectPickerModel {
 
 impl TextTargetQuery for ProjectPickerModel {
     fn accepts_focus(&self, focus: AppFocus) -> bool {
-        matches!(
-            focus,
-            AppFocus::Surface(SurfaceFocus::ProjectPicker(ProjectPickerFocus::Query))
-        )
+        focus == AppFocus::project_picker()
     }
 
     fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {

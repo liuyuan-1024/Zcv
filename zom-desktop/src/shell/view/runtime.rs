@@ -13,7 +13,7 @@ use std::rc::Rc;
 use gpui::{AppContext, BorrowAppContext, Context, Entity, FocusHandle};
 
 use crate::app::App;
-use crate::focus::{AppFocus, FileTreeFocus, ProjectPickerFocus, SearchField};
+use crate::focus::{AppFocus, FileTreeFocus, SearchField};
 use crate::shell::bubble::{BubbleRuntime, BubbleShell};
 use crate::shell::editor::{EditorKernel, EditorViewportSyncHook, TextEditorSlot};
 use crate::shell::platform::clipboard::GpuiClipboard;
@@ -97,7 +97,7 @@ impl ShellRuntime {
         );
         let project_picker_slot = TextEditorSlot::install(
             Rc::clone(&app),
-            AppFocus::project_picker(ProjectPickerFocus::Query),
+            AppFocus::project_picker(),
             EditorKernel::single_line(),
             features.project_picker.focus_handle(),
             cx,

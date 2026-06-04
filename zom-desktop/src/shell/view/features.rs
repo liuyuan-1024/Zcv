@@ -91,6 +91,7 @@ impl FeatureRegistry {
             &self.file_tree,
             self.project_picker.focus_handle(),
             Some(self.settings.focus_handle()),
+            self.language_servers.focus_handle(),
         )
     }
 }

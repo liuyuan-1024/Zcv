@@ -1,7 +1,7 @@
 use zom_command::{EditTarget, KeyContext, SearchOption};
 use zom_workspace::BufferSearchOptions;
 
-use crate::focus::{AppFocus, PanelFocus, SearchField};
+use crate::focus::{AppFocus, SearchField};
 use crate::shell::editor::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
 };
@@ -11,7 +11,7 @@ use crate::text_target::{TextTargetOwner, TextTargetQuery};
 /// 各 `TextTargetOwner` 方法入口都先走它，避免散写 match。
 fn search_field(focus: AppFocus) -> Option<SearchField> {
     match focus {
-        AppFocus::Panel(PanelFocus::Search(field)) => Some(field),
+        AppFocus::Panel(p) => p.as_search(),
         _ => None,
     }
 }
@@ -143,7 +143,7 @@ fn search_field_key_contexts(accepts_newline: bool) -> Vec<KeyContext> {
 
 impl TextTargetQuery for SearchModel {
     fn accepts_focus(&self, focus: AppFocus) -> bool {
-        matches!(focus, AppFocus::Panel(PanelFocus::Search(_)))
+        search_field(focus).is_some()
     }
 
     fn snapshot(&self, focus: AppFocus) -> EditorSnapshot {

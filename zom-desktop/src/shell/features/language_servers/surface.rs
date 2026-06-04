@@ -24,6 +24,10 @@ impl LanguageServersRuntime {
         }
     }
 
+    pub(crate) fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
+    }
+
     pub(crate) fn install_listeners<T: 'static>(
         &self,
         surfaces: Entity<SurfaceManager>,

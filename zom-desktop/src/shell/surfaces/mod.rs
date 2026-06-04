@@ -14,16 +14,9 @@ pub(crate) use anchor_registry::{SurfaceAnchorRegistry, track_surface_anchor};
 pub(crate) use manager::{ActiveSurface, SurfaceManager};
 pub(crate) use shell::SurfaceShell;
 
-/// 当前活跃 surface 的身份。它只用于高亮入口、去重与测试，不决定内容。
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub(crate) enum SurfaceId {
-    /// 顶栏"切换项目"入口的浮面：最近项目列表 + 打开本地文件夹。
-    ProjectPicker,
-    /// 顶栏"设置"入口的浮面。
-    Settings,
-    /// 底栏"语言服务器"的浮面。
-    LanguageServers,
-}
+// `SurfaceId` 的定义在 [`crate::ui_id`]，这里 re-export 让
+// `crate::shell::surfaces::SurfaceId` 这一历史路径继续可用。
+pub(crate) use crate::ui_id::SurfaceId;
 
 /// Surface 的定位依据。当前只用召唤它的入口元素。
 #[derive(Clone, Debug, Eq, PartialEq)]

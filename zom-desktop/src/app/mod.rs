@@ -34,12 +34,11 @@ use self::pumps::BackgroundPumps;
 use self::text_target_runtime::TextTargetRuntime;
 use crate::config::{AppConfig, SettingsChange};
 use crate::dispatch::KeyDispatchOutcome;
-use crate::focus::{
-    AppFocus, FileTreeFocus, FocusStore, PanelFocus, ProjectPickerFocus, SurfaceFocus,
-};
+use crate::focus::{AppFocus, FileTreeFocus, FocusStore, PanelSubFocus};
 use crate::ports::{FramePump, PostEditObserver};
 #[cfg(test)]
 use crate::shell::features::panels::file_tree::{FileTreeModel, FileTreeState};
+use crate::shell::surfaces::SurfaceId;
 use crate::text_target::{EditorRouter, EditorRouterMut, TextTargetOwner};
 use crate::workspace_session::WorkspaceSession;
 
@@ -79,7 +78,7 @@ impl App {
             // 启动时没有项目、没有 view，shell 显示的是 project picker；
             // 把初始焦点设成 picker 让 App-only 单测不依赖反向同步也能拿到正确语义。
             // 生产里 ShellView::render 的反向同步会把这值刷到与 GPUI 真实焦点一致。
-            focus: FocusStore::new(AppFocus::project_picker(ProjectPickerFocus::Query)),
+            focus: FocusStore::new(AppFocus::project_picker()),
             project_root: None,
             text_targets: TextTargetRuntime::new(),
             #[cfg(test)]
@@ -170,24 +169,25 @@ impl App {
     }
 
     fn refine_focus(&self, focus: AppFocus) -> AppFocus {
-        if matches!(
-            focus,
-            AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::Navigate))
-        ) {
+        if focus == AppFocus::file_tree(FileTreeFocus::Navigate) {
             let current = self.focus.current();
-            if matches!(
-                current,
-                AppFocus::Panel(PanelFocus::FileTree(
+            let current_ft = match current {
+                AppFocus::Panel(p) => p.as_file_tree(),
+                _ => None,
+            };
+            if let Some(sub) = current_ft {
+                let is_pending = matches!(
+                    sub,
                     FileTreeFocus::NewEntryName
                         | FileTreeFocus::RenameEntry
-                        | FileTreeFocus::ConfirmDelete
-                ))
-            ) && (matches!(
-                current,
-                AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::ConfirmDelete))
-            ) || self.text_targets.accepts_focus(&self.session, current))
-            {
-                return current;
+                        | FileTreeFocus::ConfirmDelete,
+                );
+                if is_pending
+                    && (sub == FileTreeFocus::ConfirmDelete
+                        || self.text_targets.accepts_focus(&self.session, current))
+                {
+                    return current;
+                }
             }
 
             for candidate in [
@@ -242,7 +242,7 @@ impl App {
     pub(crate) fn project_picker_deactivate(&mut self) {
         if matches!(
             self.focus.current(),
-            AppFocus::Surface(SurfaceFocus::ProjectPicker(_))
+            AppFocus::Surface(s) if s.surface == SurfaceId::ProjectPicker
         ) {
             self.restore_previous_focus();
         }
@@ -363,31 +363,31 @@ impl App {
             return stack;
         }
         match focus {
-            AppFocus::None => vec![KeyContext::global()],
-            AppFocus::Editor(_) => vec![KeyContext::global()],
-            AppFocus::Panel(PanelFocus::Search(_)) => vec![KeyContext::global()],
-            AppFocus::Surface(SurfaceFocus::ProjectPicker(ProjectPickerFocus::Query)) => {
-                vec![KeyContext::global()]
-            }
-            AppFocus::Surface(SurfaceFocus::ProjectPicker(_)) => {
-                vec![KeyContext::project_picker(), KeyContext::global()]
-            }
-            AppFocus::Surface(SurfaceFocus::Settings) => {
-                vec![KeyContext::settings(), KeyContext::global()]
-            }
-            AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::ConfirmDelete)) => vec![
-                // 删除确认弹窗打开中：只解析确认 / 取消，导航键全部冻结。
-                KeyContext::file_tree(FileTreeKeyMode::PendingDelete),
-                KeyContext::global(),
-            ],
-            AppFocus::Panel(PanelFocus::FileTree(
-                FileTreeFocus::NewEntryName | FileTreeFocus::RenameEntry,
-            )) => vec![KeyContext::global()],
-            AppFocus::Panel(PanelFocus::FileTree(_)) => vec![
-                KeyContext::file_tree(FileTreeKeyMode::Navigate),
-                KeyContext::global(),
-            ],
-            AppFocus::Panel(_) | AppFocus::Surface(_) => vec![KeyContext::global()],
+            AppFocus::None | AppFocus::Editor(_) => vec![KeyContext::global()],
+            AppFocus::Panel(p) => match p.sub {
+                PanelSubFocus::Search(_) => vec![KeyContext::global()],
+                PanelSubFocus::FileTree(FileTreeFocus::ConfirmDelete) => vec![
+                    // 删除确认弹窗打开中：只解析确认 / 取消，导航键全部冻结。
+                    KeyContext::file_tree(FileTreeKeyMode::PendingDelete),
+                    KeyContext::global(),
+                ],
+                PanelSubFocus::FileTree(
+                    FileTreeFocus::NewEntryName | FileTreeFocus::RenameEntry,
+                ) => vec![KeyContext::global()],
+                PanelSubFocus::FileTree(_) => vec![
+                    KeyContext::file_tree(FileTreeKeyMode::Navigate),
+                    KeyContext::global(),
+                ],
+                PanelSubFocus::Bare => vec![KeyContext::global()],
+            },
+            AppFocus::Surface(s) => match s.surface {
+                // picker focus 永远在 query 输入框上，picker 自己的 key context 由
+                // [`ProjectPickerModel::key_contexts`] 通过 text_target router 提供；
+                // 这里只兜底返回 global。
+                SurfaceId::ProjectPicker => vec![KeyContext::global()],
+                SurfaceId::Settings => vec![KeyContext::settings(), KeyContext::global()],
+                SurfaceId::LanguageServers => vec![KeyContext::global()],
+            },
         }
     }
 
@@ -618,7 +618,7 @@ mod tests {
     use crate::app::App;
     use crate::config::{SettingsChange, THEME_ONE_DARK};
     use crate::editor_state::{EditorState, EditorTab, build_editor_state};
-    use crate::focus::{AppFocus, FileTreeFocus, PanelFocus, ProjectPickerFocus};
+    use crate::focus::{AppFocus, FileTreeFocus};
     use crate::shell::features::panels::PanelId;
     use crate::shell::features::panels::file_tree::FileTreeActivation;
     use crate::shell::features::project_picker::ProjectPickerModel;
@@ -794,7 +794,7 @@ mod tests {
     #[test]
     fn panel_key_surface_should_keep_global_shortcuts_without_text_edit_context() {
         let mut app = App::new();
-        app.request_focus(AppFocus::Panel(PanelFocus::Terminal));
+        app.request_focus(AppFocus::panel(PanelId::Terminal));
 
         let outcome = app
             .dispatch_key("mod-shift-e".to_string())
@@ -873,7 +873,7 @@ mod tests {
     #[test]
     fn open_local_project_command_should_emit_window_action() {
         let mut app = App::new();
-        app.request_focus(AppFocus::project_picker(ProjectPickerFocus::RecentList));
+        app.request_focus(AppFocus::project_picker());
 
         let actions = app
             .dispatch(project_picker_commands::open_local_project())
@@ -1001,7 +1001,7 @@ mod tests {
     fn project_picker_escape_should_dispatch_project_picker_dismiss_command() {
         let mut app = App::new();
         let _picker = install_project_picker(&mut app);
-        app.request_focus(AppFocus::project_picker(ProjectPickerFocus::Query));
+        app.request_focus(AppFocus::project_picker());
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
 
@@ -1214,7 +1214,7 @@ mod tests {
 
         impl TextTargetQuery for StubPanelOwner {
             fn accepts_focus(&self, focus: AppFocus) -> bool {
-                focus == AppFocus::Panel(PanelFocus::KeyboardShortcuts)
+                focus == AppFocus::panel(PanelId::KeyboardShortcuts)
             }
             fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
                 EditorSnapshot::default()
@@ -1300,7 +1300,7 @@ mod tests {
             let dyn_owner: Rc<RefCell<dyn TextTargetOwner>> = owner.clone();
             app.install_editor_owner(dyn_owner);
 
-            let focus = AppFocus::Panel(PanelFocus::KeyboardShortcuts);
+            let focus = AppFocus::panel(PanelId::KeyboardShortcuts);
             let contexts = app.with_router(|router| router.key_contexts_for(focus));
             let contexts = contexts.expect("focus 应被 stub owner 接管");
             assert!(contexts.iter().any(|c| c == &KeyContext::settings()));

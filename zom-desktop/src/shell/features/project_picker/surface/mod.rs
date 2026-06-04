@@ -15,7 +15,7 @@ use gpui::{
 };
 
 use crate::app::App;
-use crate::focus::{AppFocus, ProjectPickerFocus};
+use crate::focus::AppFocus;
 use crate::shell::editor::TextEditorSlot;
 use crate::shell::shared::theme::{color, radius, space};
 use crate::shell::surfaces::{
@@ -132,7 +132,7 @@ impl ProjectPickerRuntime {
         cx.on_focus(&focus_on_focus, window, move |_, _, cx| {
             app_on_focus
                 .borrow_mut()
-                .request_focus_from_shell(AppFocus::project_picker(ProjectPickerFocus::Query));
+                .request_focus_from_shell(AppFocus::project_picker());
             cx.notify();
         })
         .detach();

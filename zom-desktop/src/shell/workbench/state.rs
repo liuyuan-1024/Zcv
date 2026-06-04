@@ -8,7 +8,6 @@
 
 use gpui::Pixels;
 
-pub(crate) use super::editor_area::state::{EditorState, EditorTab, build as build_editor_state};
 use crate::shell::features::panels::PanelId;
 
 /// 三种停靠区域（布局模型 5）。

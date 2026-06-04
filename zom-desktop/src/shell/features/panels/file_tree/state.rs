@@ -42,7 +42,7 @@ pub(crate) struct FileTreeState {
 /// [`EditorRouter`] 拉快照，state 这里只描述外壳（图标 / 缩进）。
 ///
 /// [`TextEditorSlot`]: crate::shell::editor::TextEditorSlot
-/// [`EditorRouter`]: crate::shell::editor::EditorRouter
+    /// [`EditorRouter`]: crate::text_target::EditorRouter
 #[derive(Clone, Debug)]
 pub(crate) struct PendingNewEntry {
     /// 新条目将创建在该目录下。
@@ -55,7 +55,7 @@ pub(crate) struct PendingNewEntry {
 /// 正在重命名某一行的 owned 快照。视图据此把对应行替换成内联输入框，输入框的文本 / 光标由 [`TextEditorSlot`] 自己向 [`EditorRouter`] 拉。
 ///
 /// [`TextEditorSlot`]: crate::shell::editor::TextEditorSlot
-/// [`EditorRouter`]: crate::shell::editor::EditorRouter
+/// [`EditorRouter`]: crate::text_target::EditorRouter
 #[derive(Clone, Debug)]
 pub(crate) struct PendingRename {
     pub(crate) path: PathBuf,

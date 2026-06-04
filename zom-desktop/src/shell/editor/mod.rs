@@ -23,8 +23,5 @@ mod view;
 pub(crate) use input::{ImeQueryTarget, ImeTarget};
 pub(crate) use kernel::EditorKernel;
 pub(crate) use snapshot::{EditorSnapshot, EditorSnapshotRequest, RevealHint, build_snapshot};
-pub(crate) use target::{
-    EditorRouter, EditorRouterMut, EditorTargetRegistry, EmbeddedEditorTarget, OwnedEditorTarget,
-    TextTargetOwner, TextTargetQuery,
-};
+pub(crate) use target::{EmbeddedEditorTarget, OwnedEditorTarget};
 pub(crate) use view::{CaretBlink, EditorViewportSyncHook, TextEditorSlot, drive_caret_blink};

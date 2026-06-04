@@ -193,13 +193,12 @@ impl PanelRuntimes {
         self.search.runtime_handle()
     }
 
-    /// SearchModel 的 [`TextTargetOwner`] 句柄——由 ShellRuntime 走通用 owner
-    /// 注册路径装进 router。
+    /// SearchModel 的 [`TextTargetOwner`] 句柄——由 ShellRuntime 走通用 owner 注册路径装进 router。
     ///
-    /// [`TextTargetOwner`]: crate::shell::editor::TextTargetOwner
+    /// [`TextTargetOwner`]: crate::text_target::TextTargetOwner
     pub(crate) fn search_owner_handle(
         &self,
-    ) -> std::rc::Rc<std::cell::RefCell<dyn crate::shell::editor::TextTargetOwner>> {
+    ) -> std::rc::Rc<std::cell::RefCell<dyn crate::text_target::TextTargetOwner>> {
         self.search.owner_handle()
     }
 

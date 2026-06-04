@@ -4,8 +4,8 @@ use super::recent::RecentProject;
 use crate::focus::{AppFocus, ProjectPickerFocus, SurfaceFocus};
 use crate::shell::editor::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
-    TextTargetOwner, TextTargetQuery,
 };
+use crate::text_target::{TextTargetOwner, TextTargetQuery};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProjectPickerMode {

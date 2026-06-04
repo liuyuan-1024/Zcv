@@ -3,8 +3,18 @@
 //! 组合根装配命令、工作区、配置、文本目标与后台拍点 runtime，
 //! 并把输入统一收敛到 command 管线。
 //!
-//! 依赖方向（手册 2.4）：`app` 可以 import `shell`；`shell` 不可反向 import `app`。
-//! 本文件只做组合根职责；具体功能尽量回到各自 feature / editor / workbench。
+//! 依赖方向：`shell` 只通过 [`App`] 调组合根；`app` 不 import `shell` 的
+//! feature / workbench / editor 类型。反向接入走顶层共享协议
+//! [`crate::ports`] 与 [`crate::text_target`]。
+//! 本目录内的子模块（command_runtime / config_store / config_applier /
+//! text_target_runtime / pumps）都是 App 的私有协作者，对 shell 完全隔离；
+//! shell 想"反向接入"App 走的是 [`crate::ports`] 里的 trait。
+
+mod command_runtime;
+mod config_applier;
+mod config_store;
+mod pumps;
+mod text_target_runtime;
 
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
@@ -20,19 +30,19 @@ use zom_view::ViewSet;
 use zom_workspace::Workspace;
 use zom_workspace::syntax::SyntaxEngine;
 
-use crate::background_pumps::{BackgroundPumps, FramePump, PostEditObserver};
-use crate::command_runtime::CommandRuntime;
+use self::command_runtime::CommandRuntime;
+use self::config_applier::ConfigApplier;
+use self::config_store::ConfigStore;
+use self::pumps::BackgroundPumps;
+use self::text_target_runtime::TextTargetRuntime;
 use crate::config::{AppConfig, SettingsChange};
-use crate::config_applier::ConfigApplier;
-use crate::config_store::ConfigStore;
 use crate::focus::{
     AppFocus, FileTreeFocus, FocusStore, PanelFocus, ProjectPickerFocus, SurfaceFocus,
 };
-use crate::shell::editor::{EditorRouter, EditorRouterMut, TextTargetOwner};
+use crate::ports::{FramePump, PostEditObserver};
 #[cfg(test)]
 use crate::shell::features::panels::file_tree::{FileTreeModel, FileTreeState};
-use crate::shell::workbench::state as workbench_state;
-use crate::text_target_hub::TextTargetHub;
+use crate::text_target::{EditorRouter, EditorRouterMut, TextTargetOwner};
 use crate::workspace_session::WorkspaceSession;
 
 /// 一次按键派发的结果。
@@ -50,7 +60,7 @@ pub struct App {
     background: BackgroundPumps,
     focus: FocusStore,
     project_root: Option<PathBuf>,
-    text_targets: TextTargetHub,
+    text_targets: TextTargetRuntime,
     #[cfg(test)]
     file_tree: FileTreeModel,
 }
@@ -84,7 +94,7 @@ impl App {
             // 生产里 ShellView::render 的反向同步会把这值刷到与 GPUI 真实焦点一致。
             focus: FocusStore::new(AppFocus::project_picker(ProjectPickerFocus::Query)),
             project_root: None,
-            text_targets: TextTargetHub::new(),
+            text_targets: TextTargetRuntime::new(),
             #[cfg(test)]
             file_tree: FileTreeModel::new(),
         }
@@ -256,6 +266,10 @@ impl App {
         f(&mut self.session)
     }
 
+    pub(crate) fn with_workspace_views<R>(&self, f: impl FnOnce(&Workspace, &ViewSet) -> R) -> R {
+        f(self.session.workspace(), self.session.views())
+    }
+
     #[cfg(test)]
     fn file_tree_mut(&mut self) -> &mut FileTreeModel {
         &mut self.file_tree
@@ -277,10 +291,6 @@ impl App {
             outcome,
             &mut self.session,
         )
-    }
-
-    pub(crate) fn editor_state(&self) -> workbench_state::EditorState {
-        workbench_state::build_editor_state(self.session.workspace(), self.session.views())
     }
 
     /// 派发一次命令调用。
@@ -618,13 +628,13 @@ mod tests {
 
     use crate::app::App;
     use crate::config::{SettingsChange, THEME_ONE_DARK};
+    use crate::editor_state::{EditorState, EditorTab, build_editor_state};
     use crate::focus::{AppFocus, PanelFocus, ProjectPickerFocus};
-    use crate::shell::editor::TextTargetOwner;
     use crate::shell::features::panels::PanelId;
     use crate::shell::features::panels::file_tree::FileTreeActivation;
     use crate::shell::features::project_picker::ProjectPickerModel;
     use crate::shell::features::settings::SettingsTomlEditor;
-    use crate::shell::workbench::state::{EditorState, EditorTab};
+    use crate::text_target::TextTargetOwner;
     use std::cell::RefCell;
     use std::fs::{File, create_dir_all};
     use std::path::PathBuf;
@@ -642,6 +652,10 @@ mod tests {
             .iter()
             .find(|tab| tab.is_active)
             .expect("应有活动标签")
+    }
+
+    fn editor_state(app: &App) -> EditorState {
+        app.with_workspace_views(build_editor_state)
     }
 
     fn temp_path(tag: &str) -> PathBuf {
@@ -682,7 +696,7 @@ mod tests {
         assert!(app.dispatch_key("enter".to_string()).unwrap().consumed);
         assert!(app.dispatch_key("return".to_string()).unwrap().consumed);
 
-        let state = app.editor_state();
+        let state = editor_state(&app);
 
         assert!(active_tab(&state).dirty);
     }
@@ -1202,7 +1216,7 @@ tab_size = 8
         );
 
         // 两个标签：README.md 先开、lib.rs 后开且为活动标签。
-        let state = app.editor_state();
+        let state = editor_state(&app);
         assert_eq!(state.tabs.len(), 2);
         assert_eq!(active_tab(&state).title, "lib.rs");
         assert!(state.tabs[1].is_active);
@@ -1210,13 +1224,13 @@ tab_size = 8
         // 切到上一个标签 → README.md。
         app.dispatch(editor::select_tab(editor::SelectTabTarget::Previous))
             .unwrap();
-        let state = app.editor_state();
+        let state = editor_state(&app);
         assert_eq!(active_tab(&state).title, "README.md");
         assert!(state.tabs[0].is_active);
 
         // 关闭当前标签 → 只剩 lib.rs。
         app.dispatch(editor::close_tab()).unwrap();
-        let state = app.editor_state();
+        let state = editor_state(&app);
         assert_eq!(state.tabs.len(), 1);
         assert_eq!(active_tab(&state).title, "lib.rs");
     }
@@ -1228,9 +1242,8 @@ tab_size = 8
     /// 注册到 registry，不再在 App struct 上长字段。本用例守住该机制本身。
     mod registry_integration {
         use super::*;
-        use crate::shell::editor::{
-            EditorSnapshot, ImeQueryTarget, ImeTarget, TextTargetOwner, TextTargetQuery,
-        };
+        use crate::shell::editor::{EditorSnapshot, ImeQueryTarget, ImeTarget};
+        use crate::text_target::{TextTargetOwner, TextTargetQuery};
         use std::cell::RefCell;
         use std::rc::Rc;
         use zom_command::{EditTarget, KeyContext};

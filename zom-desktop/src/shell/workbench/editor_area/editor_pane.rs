@@ -8,9 +8,9 @@ use std::rc::Rc;
 
 use gpui::{Div, FocusHandle, MouseButton, div, prelude::*};
 
+use crate::editor_state::EditorState;
 use crate::shell::editor::TextEditorSlot;
 use crate::shell::shared::theme::{color, radius, space, typography};
-use crate::shell::workbench::state::EditorState;
 use crate::shell::{KeyRequest, normalized_chord};
 
 /// 渲染主编辑区面板：焦点宿主 + 编辑器（或无文件空态）。

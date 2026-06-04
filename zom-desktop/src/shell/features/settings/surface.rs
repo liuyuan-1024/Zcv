@@ -13,7 +13,7 @@ use crate::config::{AppConfig, SettingsChange};
 use crate::shell::KeyRequest;
 use zom_workspace::syntax::SyntaxEngine;
 
-use crate::shell::editor::{TextEditorSlot, TextTargetOwner};
+use crate::shell::editor::TextEditorSlot;
 use crate::shell::features::settings::toml_editor::SettingsTomlEditor;
 use crate::shell::normalized_chord;
 use crate::shell::shared::scroll;
@@ -21,6 +21,7 @@ use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::surfaces::{
     SurfaceAnchor, SurfaceId, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
 };
+use crate::text_target::TextTargetOwner;
 
 #[derive(Clone, Debug)]
 pub(crate) struct SettingsPanelState {

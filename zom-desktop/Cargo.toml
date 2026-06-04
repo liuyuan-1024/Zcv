@@ -9,10 +9,10 @@ name = "zom"
 path = "src/main.rs"
 
 [dependencies]
-zom-command.workspace = true
 zom-engine.workspace = true
-zom-view.workspace = true
 zom-workspace.workspace = true
+zom-view.workspace = true
+zom-command.workspace = true
 gpui.workspace = true
 serde.workspace = true
 toml.workspace = true

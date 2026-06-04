@@ -8,12 +8,13 @@
 
 use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
 
+use crate::editor_state::EditorState;
 use crate::shell::editor::EditorSnapshot;
 use crate::shell::features::panels::PanelId;
 use crate::shell::features::{diagnostics, language_servers};
 use crate::shell::shared::Glyph;
 use crate::shell::workbench::docks::{bottom, left, right};
-use crate::shell::workbench::state::{DockAreaId, DockState, EditorState, WorkbenchState};
+use crate::shell::workbench::state::{DockAreaId, DockState, WorkbenchState};
 use crate::shell::{CommandTitleLookup, ShortcutLookup};
 
 use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_divider, bar_frame};

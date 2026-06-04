@@ -8,8 +8,8 @@ use zom_command::{EditTarget, KeyContext};
 use crate::focus::{AppFocus, FileTreeFocus, PanelFocus};
 use crate::shell::editor::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
-    TextTargetOwner, TextTargetQuery,
 };
+use crate::text_target::{TextTargetOwner, TextTargetQuery};
 
 use super::fs_ops::snapshot_row;
 use super::model::FileTreeModel;

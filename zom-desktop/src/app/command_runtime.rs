@@ -12,7 +12,7 @@ use zom_command::{
 
 use crate::workspace_session::WorkspaceSession;
 
-pub(crate) struct CommandRuntime {
+pub(super) struct CommandRuntime {
     registry: zom_command::CommandRegistry,
     keymap: Keymap,
     executor: CommandExecutor,
@@ -21,7 +21,7 @@ pub(crate) struct CommandRuntime {
 }
 
 impl CommandRuntime {
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         let mut registry = zom_command::CommandRegistry::new();
         let mut keymap = Keymap::new();
         commands::install_all(&mut registry, &mut keymap);
@@ -34,11 +34,11 @@ impl CommandRuntime {
         }
     }
 
-    pub(crate) fn set_clipboard(&mut self, clipboard: Box<dyn ClipboardPort>) {
+    pub(super) fn set_clipboard(&mut self, clipboard: Box<dyn ClipboardPort>) {
         self.clipboard = clipboard;
     }
 
-    pub(crate) fn resolve_key(
+    pub(super) fn resolve_key(
         &self,
         chord: String,
         contexts: &[KeyContext],
@@ -47,7 +47,7 @@ impl CommandRuntime {
         Ok(self.keymap.resolve(&[chord], contexts))
     }
 
-    pub(crate) fn dispatch_command_id(
+    pub(super) fn dispatch_command_id(
         &mut self,
         id: CommandId,
         args: CommandArgs,
@@ -78,19 +78,19 @@ impl CommandRuntime {
         Ok((host_effects, focused_field_changed))
     }
 
-    pub(crate) fn shortcut_for(&self, command_id: &str) -> Option<String> {
+    pub(super) fn shortcut_for(&self, command_id: &str) -> Option<String> {
         let command = CommandId::new(command_id).ok()?;
         self.keymap.format_shortcut_for(&command)
     }
 
-    pub(crate) fn command_title_for(&self, command_id: &str) -> Option<String> {
+    pub(super) fn command_title_for(&self, command_id: &str) -> Option<String> {
         let command = CommandId::new(command_id).ok()?;
         self.registry
             .command(&command)
             .map(|command| command.title.clone())
     }
 
-    pub(crate) fn command_catalog_items(&self) -> Vec<crate::shell::CommandCatalogItem> {
+    pub(super) fn command_catalog_items(&self) -> Vec<crate::shell::CommandCatalogItem> {
         self.registry.commands().map(Into::into).collect()
     }
 }

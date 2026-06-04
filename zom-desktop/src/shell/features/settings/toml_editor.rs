@@ -14,8 +14,8 @@ use crate::config::AppConfig;
 use crate::focus::{AppFocus, SurfaceFocus};
 use crate::shell::editor::{
     EditorSnapshot, EditorSnapshotRequest, EmbeddedEditorTarget, ImeQueryTarget, ImeTarget,
-    TextTargetOwner, TextTargetQuery,
 };
+use crate::text_target::{TextTargetOwner, TextTargetQuery};
 
 pub(crate) struct SettingsTomlEditor {
     open: bool,

@@ -8,19 +8,19 @@ use crate::config::AppConfig;
 use crate::shell::shared::theme::{syntax, typography};
 use crate::workspace_session::WorkspaceSession;
 
-pub(crate) struct ConfigApplier;
+pub(super) struct ConfigApplier;
 
 impl ConfigApplier {
     /// 把字号 / 主题刷到全局视觉子系统。boot 期视觉初始化与运行期 mutate
     /// 后都调本入口。
-    pub(crate) fn apply_visuals(config: &AppConfig) {
+    pub(super) fn apply_visuals(config: &AppConfig) {
         typography::set_sizes(config.ui.font_size, config.editor.font_size);
         syntax::set_theme(&config.general.theme);
     }
 
     /// 把 config 的 [`BufferConfig`](zom_engine::BufferConfig) 推到当前
     /// [`WorkspaceSession`]。
-    pub(crate) fn apply_to_session(config: &AppConfig, session: &mut WorkspaceSession) {
+    pub(super) fn apply_to_session(config: &AppConfig, session: &mut WorkspaceSession) {
         session
             .workspace_mut()
             .set_buffer_config(config.buffer_config());
@@ -28,7 +28,7 @@ impl ConfigApplier {
 
     /// 视觉 + workspace 全量应用。运行期 mutate（apply_change / replace）后
     /// 由调用方喊一次；boot 期不走这一路，因为那时 session 还未构造。
-    pub(crate) fn apply_all(config: &AppConfig, session: &mut WorkspaceSession) {
+    pub(super) fn apply_all(config: &AppConfig, session: &mut WorkspaceSession) {
         Self::apply_visuals(config);
         Self::apply_to_session(config, session);
     }

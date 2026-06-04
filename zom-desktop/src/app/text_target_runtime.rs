@@ -11,33 +11,33 @@ use std::rc::Rc;
 use zom_command::{CommandError, EditTarget, KeyContext};
 
 use crate::focus::AppFocus;
-use crate::shell::editor::{
-    EditorRouter, EditorRouterMut, EditorTargetRegistry, TextTargetOwner, TextTargetQuery,
+use crate::text_target::{
+    EditorRouter, EditorRouterMut, EditorTargetRegistry, MainEditorOwner, MainEditorOwnerRef,
+    TextTargetOwner, TextTargetQuery,
 };
-use crate::shell::workbench::editor_area;
 use crate::workspace_session::WorkspaceSession;
 
-pub(crate) struct TextTargetHub {
+pub(super) struct TextTargetRuntime {
     editor_targets: EditorTargetRegistry,
 }
 
-impl TextTargetHub {
-    pub(crate) fn new() -> Self {
+impl TextTargetRuntime {
+    pub(super) fn new() -> Self {
         Self {
             editor_targets: EditorTargetRegistry::new(),
         }
     }
 
-    pub(crate) fn install_editor_owner(&mut self, owner: Rc<RefCell<dyn TextTargetOwner>>) {
+    pub(super) fn install_editor_owner(&mut self, owner: Rc<RefCell<dyn TextTargetOwner>>) {
         self.editor_targets.register(owner);
     }
 
-    pub(crate) fn with_router<R>(
+    pub(super) fn with_router<R>(
         &self,
         session: &WorkspaceSession,
         f: impl FnOnce(EditorRouter<'_>) -> R,
     ) -> R {
-        let main = editor_area::MainEditorOwnerRef::new(session.workspace(), session.views());
+        let main = MainEditorOwnerRef::new(session.workspace(), session.views());
         let registry_borrows = self.editor_targets.borrow_all();
 
         let mut owners: Vec<&dyn TextTargetQuery> = Vec::new();
@@ -48,14 +48,14 @@ impl TextTargetHub {
         f(EditorRouter::new(owners))
     }
 
-    pub(crate) fn with_router_mut<R>(
+    pub(super) fn with_router_mut<R>(
         &mut self,
         _focus: AppFocus,
         session: &mut WorkspaceSession,
         f: impl FnOnce(EditorRouterMut<'_>) -> R,
     ) -> R {
         let (workspace, views) = session.parts_mut();
-        let mut main = editor_area::MainEditorOwner::new(workspace, views);
+        let mut main = MainEditorOwner::new(workspace, views);
         let mut registry_borrows = self.editor_targets.borrow_all_mut();
 
         let mut owners: Vec<&mut dyn TextTargetOwner> = Vec::new();
@@ -66,7 +66,7 @@ impl TextTargetHub {
         f(EditorRouterMut::new(owners))
     }
 
-    pub(crate) fn key_contexts_for(
+    pub(super) fn key_contexts_for(
         &self,
         session: &WorkspaceSession,
         focus: AppFocus,
@@ -74,11 +74,11 @@ impl TextTargetHub {
         self.with_router(session, |router| router.key_contexts_for(focus))
     }
 
-    pub(crate) fn is_composing(&self, session: &WorkspaceSession, focus: AppFocus) -> bool {
+    pub(super) fn is_composing(&self, session: &WorkspaceSession, focus: AppFocus) -> bool {
         self.with_router(session, |router| router.is_composing(focus))
     }
 
-    pub(crate) fn with_edit_target_for_focus<R>(
+    pub(super) fn with_edit_target_for_focus<R>(
         &mut self,
         focus: AppFocus,
         run: impl FnOnce(Option<EditTarget<'_>>) -> Result<(R, bool), CommandError>,
@@ -104,7 +104,7 @@ impl TextTargetHub {
     }
 }
 
-impl Default for TextTargetHub {
+impl Default for TextTargetRuntime {
     fn default() -> Self {
         Self::new()
     }

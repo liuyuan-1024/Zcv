@@ -22,14 +22,15 @@ use zom_view::ViewSet;
 use zom_workspace::Workspace;
 
 use crate::app::App;
-use crate::background_pumps::{FramePump, PostEditObserver};
 use crate::focus::{AppFocus, SearchField};
-use crate::shell::editor::{TextEditorSlot, TextTargetOwner};
+use crate::ports::{FramePump, PostEditObserver};
+use crate::shell::editor::TextEditorSlot;
 use crate::shell::normalized_chord;
 use crate::shell::shared::glyph::Glyph;
 use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::docks::render_focus_host;
 use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
+use crate::text_target::TextTargetOwner;
 use crate::workspace_session::WorkspaceSession;
 
 use model::SearchModel;
@@ -170,7 +171,7 @@ impl SearchRuntime {
 
     /// 把 SearchModel 作为 [`TextTargetOwner`] 暴露给 router——按 focus
     /// 内部分派 query / replacement。注册路径与其它 owner 完全一致，
-    /// TextTargetHub 不再为 search 单走特殊分支。
+    /// TextTargetRuntime 不再为 search 单走特殊分支。
     pub(crate) fn owner_handle(&self) -> Rc<RefCell<dyn TextTargetOwner>> {
         self.model.clone()
     }

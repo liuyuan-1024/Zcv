@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use crate::config::{AppConfig, SettingsChange};
 
-pub(crate) struct ConfigStore {
+pub(super) struct ConfigStore {
     config: AppConfig,
     config_path: Option<PathBuf>,
     /// 软换行的运行时只读投影：多行 [`EditorKernel`] 构造时借这份 `Rc`，
@@ -23,7 +23,7 @@ pub(crate) struct ConfigStore {
 }
 
 impl ConfigStore {
-    pub(crate) fn new(config_path: Option<PathBuf>) -> Self {
+    pub(super) fn new(config_path: Option<PathBuf>) -> Self {
         let config = AppConfig::load(config_path.as_deref());
         let soft_wrap_state = Rc::new(Cell::new(config.editor.soft_wrap));
         Self {
@@ -34,33 +34,33 @@ impl ConfigStore {
     }
 
     /// 借出 config 的只读引用——Applier 通过此入口拿到 push 给下游的源数据。
-    pub(crate) fn config(&self) -> &AppConfig {
+    pub(super) fn config(&self) -> &AppConfig {
         &self.config
     }
 
-    pub(crate) fn snapshot(&self) -> AppConfig {
+    pub(super) fn snapshot(&self) -> AppConfig {
         self.config.clone()
     }
 
-    pub(crate) fn path(&self) -> Option<PathBuf> {
+    pub(super) fn path(&self) -> Option<PathBuf> {
         self.config_path.clone()
     }
 
-    pub(crate) fn soft_wrap_handle(&self) -> Rc<Cell<bool>> {
+    pub(super) fn soft_wrap_handle(&self) -> Rc<Cell<bool>> {
         self.soft_wrap_state.clone()
     }
 
-    pub(crate) fn buffer_config(&self) -> zom_engine::BufferConfig {
+    pub(super) fn buffer_config(&self) -> zom_engine::BufferConfig {
         self.config.buffer_config()
     }
 
-    pub(crate) fn save(&self) {
+    pub(super) fn save(&self) {
         self.config.save(self.config_path.as_deref());
     }
 
     /// 翻转软换行。视觉与 workspace 不受影响——所以本路径不需要 Applier 介入，
     /// 自己同步 cell 后直接落盘。
-    pub(crate) fn toggle_soft_wrap(&mut self) {
+    pub(super) fn toggle_soft_wrap(&mut self) {
         let next = !self.soft_wrap_state.get();
         self.soft_wrap_state.set(next);
         self.config.editor.soft_wrap = next;
@@ -72,14 +72,14 @@ impl ConfigStore {
     /// 与 [`Self::save`]。
     ///
     /// [`ConfigApplier::apply_all`]: crate::config_applier::ConfigApplier::apply_all
-    pub(crate) fn apply_change(&mut self, change: SettingsChange) {
+    pub(super) fn apply_change(&mut self, change: SettingsChange) {
         self.config.apply_change(change);
         self.sync_soft_wrap_cell();
     }
 
     /// 整份替换 config，保持 soft_wrap cell 一致。视觉 / workspace / 落盘
     /// 同 [`apply_change`](Self::apply_change)。
-    pub(crate) fn replace(&mut self, next: AppConfig) {
+    pub(super) fn replace(&mut self, next: AppConfig) {
         self.config = next;
         self.sync_soft_wrap_cell();
     }

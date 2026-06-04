@@ -16,12 +16,13 @@ use gpui::{
 
 use crate::app::App;
 use crate::focus::{AppFocus, ProjectPickerFocus};
-use crate::shell::editor::{TextEditorSlot, TextTargetOwner};
+use crate::shell::editor::TextEditorSlot;
 use crate::shell::shared::theme::{color, radius, space};
 use crate::shell::surfaces::{
     SurfaceAnchor, SurfaceId, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
 };
 use crate::shell::{KeyRequest, normalized_chord};
+use crate::text_target::TextTargetOwner;
 
 use super::recent::{RecentProject, RecentProjects};
 use super::{

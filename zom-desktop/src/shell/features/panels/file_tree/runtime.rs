@@ -9,9 +9,10 @@ use std::rc::Rc;
 
 use crate::app::App;
 use crate::shell::KeyRequest;
-use crate::shell::editor::{TextEditorSlot, TextTargetOwner};
+use crate::shell::editor::TextEditorSlot;
 use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::controller::WorkbenchController;
+use crate::text_target::TextTargetOwner;
 use gpui::{Context, FocusHandle, Window};
 
 use super::fs_ops::apply_outcome;

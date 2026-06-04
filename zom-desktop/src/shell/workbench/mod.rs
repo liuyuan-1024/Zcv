@@ -23,6 +23,7 @@ use std::rc::Rc;
 
 use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
 
+use crate::editor_state::EditorState;
 use crate::shell::editor::{EditorSnapshot, TextEditorSlot};
 use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::{
@@ -30,7 +31,6 @@ use crate::shell::features::panels::file_tree::{
 };
 use crate::shell::features::panels::search::SearchState;
 use crate::shell::shared::theme::{color, typography};
-use crate::shell::workbench::state::EditorState;
 use crate::shell::{CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup};
 
 mod bars;

@@ -4,8 +4,8 @@ use zom_workspace::BufferSearchOptions;
 use crate::focus::{AppFocus, PanelFocus, SearchField};
 use crate::shell::editor::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
-    TextTargetOwner, TextTargetQuery,
 };
+use crate::text_target::{TextTargetOwner, TextTargetQuery};
 
 /// 从 focus 里抠出当前 search 字段；非 search focus 返回 `None`。
 /// 各 `TextTargetOwner` 方法入口都先走它，避免散写 match。

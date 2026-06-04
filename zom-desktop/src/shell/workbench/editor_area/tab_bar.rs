@@ -11,9 +11,9 @@
 use gpui::{AnyElement, Rgba, ScrollHandle, SharedString, Stateful, div, prelude::*};
 use zom_command::commands::editor;
 
+use crate::editor_state::{EditorState, EditorTab};
 use crate::shell::shared::Glyph;
 use crate::shell::shared::theme::{color, radius, space, typography};
-use crate::shell::workbench::state::{EditorState, EditorTab};
 use crate::shell::{CommandTitleLookup, ShortcutLookup};
 
 pub(crate) fn render(

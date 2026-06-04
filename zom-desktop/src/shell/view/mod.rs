@@ -13,6 +13,7 @@ use zom_command::Invocation;
 use zom_command::commands::{file_tree as file_tree_commands, window as window_commands};
 
 use crate::app::App;
+use crate::editor_state::build_editor_state;
 use crate::focus::AppFocus;
 use crate::shell::platform::clipboard::GpuiClipboardScope;
 
@@ -215,7 +216,10 @@ impl Render for ShellView {
 
         let state = self.workbench_state();
         // 三个 feature 的视图快照旁路收集，不进 WorkbenchState；workbench::render 只看布局。
-        let editor_state = runtime.app.borrow().editor_state();
+        let editor_state = runtime
+            .app
+            .borrow()
+            .with_workspace_views(build_editor_state);
         let file_tree_state = {
             let app = runtime.app.borrow();
             runtime.features.file_tree.state(&app)

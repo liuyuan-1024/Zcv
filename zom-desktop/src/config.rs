@@ -145,14 +145,6 @@ impl AppConfig {
         }
     }
 
-    /// 把当前偏好对应的视觉值刷到主题 / 字号 / 颜色子系统。
-    /// boot 期与每次 settings 写入后调用一次；组合根只调本方法，不去翻每个 setter。
-    pub(crate) fn apply_runtime_visuals(&self) {
-        use crate::shell::shared::theme::{syntax, typography};
-        typography::set_sizes(self.ui.font_size, self.editor.font_size);
-        syntax::set_theme(&self.general.theme);
-    }
-
     /// 把 `editor.tab_size` 映射成 [`BufferConfig`]——主工作区 / 嵌入式文档构造缓冲区前从这里取。
     /// `tab_size = 0` 时 `BufferConfig::default`保留默认值。
     pub(crate) fn buffer_config(&self) -> BufferConfig {

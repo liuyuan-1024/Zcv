@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::config::{AppConfig, SettingsChange};
+use crate::shell::shared::theme::{syntax, typography};
 use crate::workspace_session::WorkspaceSession;
 
 pub(crate) struct ConfigRuntime {
@@ -19,13 +20,21 @@ pub(crate) struct ConfigRuntime {
 impl ConfigRuntime {
     pub(crate) fn new(config_path: Option<PathBuf>) -> Self {
         let config = AppConfig::load(config_path.as_deref());
-        config.apply_runtime_visuals();
         let soft_wrap_state = Rc::new(Cell::new(config.editor.soft_wrap));
-        Self {
+        let runtime = Self {
             config,
             config_path,
             soft_wrap_state,
-        }
+        };
+        runtime.apply_visuals();
+        runtime
+    }
+
+    /// 把当前偏好对应的视觉值刷到主题 / 字号 / 颜色子系统。
+    /// boot 期与每次 settings 写入后调用一次；组合根只调本方法，不去翻每个 setter。
+    fn apply_visuals(&self) {
+        typography::set_sizes(self.config.ui.font_size, self.config.editor.font_size);
+        syntax::set_theme(&self.config.general.theme);
     }
 
     pub(crate) fn snapshot(&self) -> AppConfig {
@@ -72,7 +81,7 @@ impl ConfigRuntime {
     }
 
     pub(crate) fn apply_runtime_config(&mut self, session: &mut WorkspaceSession) {
-        self.config.apply_runtime_visuals();
+        self.apply_visuals();
         session
             .workspace_mut()
             .set_buffer_config(self.config.buffer_config());

@@ -21,8 +21,9 @@ pub(super) struct PendingEntry {
     pub(super) editor: OwnedEditorTarget,
 }
 
-/// 重命名态的内部数据。`path` 是目标条目（旧路径），输入框由 [`OwnedEditorTarget`]
-/// 承载并在 `begin_rename` 处预填旧名 + 全选。
+/// 重命名态的内部数据。
+/// `path` 是目标条目（旧路径），
+/// 输入框由 [`OwnedEditorTarget`] 承载并在 `begin_rename` 处预填旧名 + 光标在末尾。
 pub(super) struct PendingRenameEntry {
     pub(super) path: PathBuf,
     pub(super) editor: OwnedEditorTarget,
@@ -59,7 +60,7 @@ impl FileTreeModel {
         self.pending = None;
     }
 
-    /// 进入重命名态：以当前焦点行为目标，输入框预填旧名并全选。
+    /// 进入重命名态：以当前焦点行为目标，输入框预填旧名并把光标放到末尾。
     pub(crate) fn begin_rename(&mut self) {
         if self.pending.is_some() || self.pending_delete.is_some() {
             return;
@@ -82,7 +83,7 @@ impl FileTreeModel {
         }
         self.pending_rename = Some(PendingRenameEntry {
             path,
-            editor: OwnedEditorTarget::with_text_all_selected(&name),
+            editor: OwnedEditorTarget::with_text_caret_at_end(&name),
         });
     }
 

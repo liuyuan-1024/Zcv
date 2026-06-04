@@ -157,12 +157,12 @@ impl App {
     }
 
     pub(crate) fn request_focus(&mut self, next: AppFocus) {
-        let next = self.refine_focus(next);
         self.focus.request(next);
     }
 
     pub(crate) fn request_focus_from_shell(&mut self, next: AppFocus) {
-        self.request_focus(next);
+        let next = self.refine_focus(next);
+        self.focus.request(next);
     }
 
     pub(crate) fn restore_previous_focus(&mut self) -> AppFocus {
@@ -178,9 +178,14 @@ impl App {
             if matches!(
                 current,
                 AppFocus::Panel(PanelFocus::FileTree(
-                    FileTreeFocus::NewEntryName | FileTreeFocus::RenameEntry
+                    FileTreeFocus::NewEntryName
+                        | FileTreeFocus::RenameEntry
+                        | FileTreeFocus::ConfirmDelete
                 ))
-            ) && self.text_targets.accepts_focus(&self.session, current)
+            ) && (matches!(
+                current,
+                AppFocus::Panel(PanelFocus::FileTree(FileTreeFocus::ConfirmDelete))
+            ) || self.text_targets.accepts_focus(&self.session, current))
             {
                 return current;
             }
@@ -613,7 +618,7 @@ mod tests {
     use crate::app::App;
     use crate::config::{SettingsChange, THEME_ONE_DARK};
     use crate::editor_state::{EditorState, EditorTab, build_editor_state};
-    use crate::focus::{AppFocus, PanelFocus, ProjectPickerFocus};
+    use crate::focus::{AppFocus, FileTreeFocus, PanelFocus, ProjectPickerFocus};
     use crate::shell::features::panels::PanelId;
     use crate::shell::features::panels::file_tree::FileTreeActivation;
     use crate::shell::features::project_picker::ProjectPickerModel;
@@ -920,6 +925,32 @@ mod tests {
             .dispatch(project_picker_commands::remove_recent_project())
             .unwrap();
         assert_eq!(actions, vec![HostEffect::RemoveSelectedRecentProject]);
+    }
+
+    #[test]
+    fn file_tree_confirm_delete_focus_should_route_enter_and_escape_to_dialog_actions() {
+        let mut app = App::new();
+        app.request_focus(AppFocus::file_tree(FileTreeFocus::ConfirmDelete));
+        app.request_focus_from_shell(AppFocus::file_tree(FileTreeFocus::Navigate));
+        assert_eq!(
+            app.focus().current(),
+            AppFocus::file_tree(FileTreeFocus::ConfirmDelete)
+        );
+
+        let outcome = app.dispatch_key("enter".to_string()).unwrap();
+        assert!(outcome.consumed);
+        assert_eq!(outcome.effects, vec![HostEffect::FileTreeConfirmDelete]);
+
+        app.request_focus(AppFocus::file_tree(FileTreeFocus::Navigate));
+        assert_eq!(
+            app.focus().current(),
+            AppFocus::file_tree(FileTreeFocus::Navigate)
+        );
+        app.request_focus(AppFocus::file_tree(FileTreeFocus::ConfirmDelete));
+
+        let outcome = app.dispatch_key("escape".to_string()).unwrap();
+        assert!(outcome.consumed);
+        assert_eq!(outcome.effects, vec![HostEffect::FileTreeCancelDelete]);
     }
 
     #[test]

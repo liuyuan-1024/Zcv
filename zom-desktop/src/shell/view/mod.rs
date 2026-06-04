@@ -252,7 +252,8 @@ impl Render for ShellView {
         let file_tree_panel = runtime.features.file_tree.panel(
             &file_tree_state,
             &key_request_for_panel,
-            &runtime.file_tree_slot,
+            &runtime.file_tree_new_entry_slot,
+            &runtime.file_tree_rename_slot,
             window,
         );
         let shortcut_lookup = self.shortcut_lookup();

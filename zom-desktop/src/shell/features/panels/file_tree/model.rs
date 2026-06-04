@@ -13,6 +13,9 @@ use std::path::PathBuf;
 
 use zom_workspace::{EntryKind, ProjectTree, Workspace};
 
+#[cfg(test)]
+use crate::shell::editor::EditorSnapshotRequest;
+
 use super::clipboard::{ClipboardMode, FileTreeClipboard};
 use super::fs_ops::infer_entry_kind_from_input;
 #[cfg(test)]
@@ -834,8 +837,13 @@ mod tests {
         );
         model.begin_rename();
         let pending = model.pending_rename.as_ref().expect("应有 pending_rename");
+        let snapshot = pending
+            .editor
+            .snapshot(EditorSnapshotRequest::single_line());
         assert_eq!(pending.path, root.join("a.txt"));
         assert_eq!(pending.editor.text(), "a.txt");
+        assert_eq!(snapshot.cursor_byte, "a.txt".len());
+        assert!(snapshot.selection.primary().is_caret());
     }
 
     #[test]

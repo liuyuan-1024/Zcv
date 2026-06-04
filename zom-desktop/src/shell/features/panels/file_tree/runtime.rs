@@ -82,14 +82,16 @@ impl FileTreeRuntime {
         &'a self,
         state: &'a FileTreeState,
         key_request: &'a KeyRequest,
-        slot: &'a Rc<TextEditorSlot>,
+        new_entry_slot: &'a Rc<TextEditorSlot>,
+        rename_slot: &'a Rc<TextEditorSlot>,
         window: &Window,
     ) -> FileTreePanel<'a> {
         FileTreePanel {
             state,
             focus: &self.focus,
             key_request,
-            slot,
+            new_entry_slot,
+            rename_slot,
             scroll: &self.scroll,
             is_focused: self.focus.is_focused(window),
         }

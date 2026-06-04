@@ -35,7 +35,8 @@ pub(super) struct ShellRuntime {
     pub(super) bubble_runtime: Entity<BubbleRuntime>,
     pub(super) bubble_shell: Entity<BubbleShell>,
     pub(super) main_editor_slot: Rc<TextEditorSlot>,
-    pub(super) file_tree_slot: Rc<TextEditorSlot>,
+    pub(super) file_tree_new_entry_slot: Rc<TextEditorSlot>,
+    pub(super) file_tree_rename_slot: Rc<TextEditorSlot>,
     pub(super) search_query_slot: Rc<TextEditorSlot>,
     pub(super) search_replacement_slot: Rc<TextEditorSlot>,
     pub(super) editor_focus: FocusHandle,
@@ -80,9 +81,16 @@ impl ShellRuntime {
             editor_focus.clone(),
             cx,
         );
-        let file_tree_slot = TextEditorSlot::install(
+        let file_tree_new_entry_slot = TextEditorSlot::install(
             Rc::clone(&app),
             AppFocus::file_tree(FileTreeFocus::NewEntryName),
+            EditorKernel::single_line(),
+            features.file_tree.focus_handle(),
+            cx,
+        );
+        let file_tree_rename_slot = TextEditorSlot::install(
+            Rc::clone(&app),
+            AppFocus::file_tree(FileTreeFocus::RenameEntry),
             EditorKernel::single_line(),
             features.file_tree.focus_handle(),
             cx,
@@ -125,7 +133,8 @@ impl ShellRuntime {
             bubble_runtime,
             bubble_shell,
             main_editor_slot,
-            file_tree_slot,
+            file_tree_new_entry_slot,
+            file_tree_rename_slot,
             search_query_slot,
             search_replacement_slot,
             editor_focus,

@@ -24,7 +24,7 @@ impl OwnedEditorTarget {
         }
     }
 
-    /// 预填一段文本并选中全部内容。重命名输入框走这条路径——按下 mod-r 时名称已被全选，用户继续敲键直接覆盖；按 ← / → 可移动光标后微调。
+    /// 预填一段文本并选中全部内容。适合覆盖式输入：用户继续敲键会直接替换原文本。
     pub(crate) fn with_text_all_selected(text: &str) -> Self {
         let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
             .expect("自持输入框文本构造不会失败");
@@ -35,6 +35,14 @@ impl OwnedEditorTarget {
             SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, len)])
         };
         Self { buffer, selection }
+    }
+
+    /// 预填一段文本，并把光标放到文本末尾。
+    pub(crate) fn with_text_caret_at_end(text: &str) -> Self {
+        let mut target = Self::with_text_all_selected(text);
+        let len = target.buffer.len_bytes();
+        target.selection = SelectionSet::caret(len);
+        target
     }
 
     /// 当前完整文本内容（owned 拷贝）。
@@ -54,8 +62,15 @@ impl OwnedEditorTarget {
         build_snapshot(&self.buffer, &self.selection, request)
     }
 
+    fn sync_buffer_selection(&mut self) {
+        self.buffer
+            .set_selection(self.selection.clone())
+            .expect("自持输入框 selection 来自自身 buffer，必须合法");
+    }
+
     /// 把自身暴露成一次编辑命令的作用目标。
     pub(crate) fn as_edit_target(&mut self) -> EditTarget<'_> {
+        self.sync_buffer_selection();
         EditTarget {
             buffer: &mut self.buffer,
             selection: &mut self.selection,
@@ -67,6 +82,7 @@ impl OwnedEditorTarget {
 
     /// 把自身暴露成 IME 作用目标。
     pub(crate) fn as_ime_target(&mut self) -> ImeTarget<'_> {
+        self.sync_buffer_selection();
         ImeTarget::new(&mut self.buffer, &mut self.selection)
     }
 
@@ -102,5 +118,24 @@ mod tests {
         assert_eq!(snapshot.top_line, 1);
         assert_eq!(snapshot.lines.len(), 1);
         assert_eq!(snapshot.lines[0].text, "beta");
+    }
+
+    #[test]
+    fn with_text_caret_at_end_should_prefill_text_without_selecting_it() {
+        let target = OwnedEditorTarget::with_text_caret_at_end("a.txt");
+
+        let snapshot = target.snapshot(EditorSnapshotRequest::single_line());
+
+        assert_eq!(target.text(), "a.txt");
+        assert_eq!(snapshot.cursor_byte, "a.txt".len());
+        assert!(snapshot.selection.primary().is_caret());
+    }
+
+    #[test]
+    fn edit_target_should_sync_prefilled_selection_into_buffer_before_ime_commit() {
+        let mut target = OwnedEditorTarget::with_text_caret_at_end("a.txt");
+        let edit_target = target.as_edit_target();
+
+        assert_eq!(edit_target.buffer.selection().primary().head().get(), 5);
     }
 }

@@ -110,14 +110,32 @@ pub(crate) fn try_apply_effect(
             file_tree.with_model_mut(|ft| ft.cancel_rename());
         }
         HostEffect::FileTreeRequestDelete => {
-            file_tree.with_model_mut(|ft| ft.request_delete());
+            let has_pending_delete = file_tree.with_model_mut(|ft| {
+                ft.request_delete();
+                ft.pending_delete.is_some()
+            });
+            if has_pending_delete {
+                request_focus(
+                    app,
+                    focus,
+                    AppFocus::file_tree(FileTreeFocus::ConfirmDelete),
+                    window,
+                );
+            }
         }
         HostEffect::FileTreeConfirmDelete => {
             let mut app = app.borrow_mut();
             file_tree.execute(&mut app, |ft| ft.confirm_delete());
+            app.request_focus(AppFocus::file_tree(FileTreeFocus::Navigate));
         }
         HostEffect::FileTreeCancelDelete => {
             file_tree.with_model_mut(|ft| ft.cancel_delete());
+            request_focus(
+                app,
+                focus,
+                AppFocus::file_tree(FileTreeFocus::Navigate),
+                window,
+            );
         }
         HostEffect::FileTreeCopy => {
             file_tree.with_model_mut(|ft| ft.copy_to_clipboard());

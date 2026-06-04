@@ -14,13 +14,18 @@ use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::PanelContext;
 use crate::shell::{ActionRequest, KeyRequest};
 
+mod clipboard;
 mod confirm_delete;
 mod effects;
 mod focus;
+mod fs_ops;
+mod inline_edit;
 mod model;
 mod runtime;
+mod selection;
 mod state;
 mod view;
+mod workspace_sync;
 
 pub(crate) use effects::try_apply_effect;
 

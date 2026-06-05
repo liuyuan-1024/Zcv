@@ -15,4 +15,7 @@ pub(crate) mod text;
 mod view;
 
 pub(crate) use kernel::EditorKernel;
-pub(crate) use view::{CaretBlink, EditorViewportSyncHook, TextEditorSlot, drive_caret_blink};
+pub(crate) use view::{
+    CaretBlink, EditorViewportMeasurement, EditorViewportSyncHook, TextEditorSlot,
+    drive_caret_blink,
+};

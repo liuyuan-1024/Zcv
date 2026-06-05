@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use zom_engine::{BufferVersion, ByteOffset, FoldSet, SelectionSet};
+use zom_engine::{Buffer, BufferVersion, ByteOffset, FoldSet, SelectionSet};
 use zom_workspace::BufferId;
 
 mod wrap;
@@ -235,44 +235,70 @@ impl View {
     }
 
     /// 在 `build_snapshot` 之前调用。
-    /// 根据待处理的显露请求与选区行号落定 `viewport.top_line`。
+    /// 根据待处理的显露请求与光标位置落定 `viewport.top_line` / `viewport.top_subrow`。
     /// 后续快照会据此切出正确的窗口范围。
     ///
-    /// 调用方负责把以下值预解析好传入（视图层不持有缓冲区）：
-    /// - `total_lines`：缓冲区的逻辑行总数；
-    /// - `selection_head_line`：主光标当前所在逻辑行（0-based）；
-    /// - `reveal_line`：若有待处理显露请求，把 `reveal.byte` 折成逻辑行后传入；
-    ///   `byte_to_position` 失败时传 `None`。
-    ///   本次请求视为过期：跳过 Y 摆位，但仍推进 `last_applied_reveal_seq` 防止反复重试。
+    /// 调用方只传入 buffer 与主光标 byte；view 内部按当前 `wrap_map` 折算绝对视觉行。
+    /// 有 `wrap_map` 时，软换行 sub-row 也算一条视觉行；无 `wrap_map` 的首帧 / dirty 帧只消费 reveal，跳过 cursor edge-scroll，避免用逻辑行近似误滚。
     ///
-    /// `viewport.visible_logical_lines` 由 `View::new` 初始化为 `DEFAULT_INITIAL_VISIBLE_LINES`。
-    /// 渲染端会同步回写真实值。
-    /// 本函数内部对其取 `.max(1)` 仅作除零防御，不再有「未测量」特殊路径。
+    /// 视觉行坐标系是「软换行 sub-row 也算 1 行」的统一空间——光标无论落在逻辑行哪一段都能被精确判定是否越界，不会出现「光标落在逻辑行最后一个 sub-row 上但该 sub-row 已被裁切」的视觉不一致。
+    ///
+    /// `viewport.visible_visual_rows` 由 `View::new` 初始化为 `DEFAULT_INITIAL_VISIBLE_LINES`；
+    /// 渲染端会按真实视口高度与行高反算「完整可见的视觉行数」同步回写。
+    /// 本函数内部对其取 `.max(1)` 仅作除零防御。
     ///
     /// 算法：
-    /// 1. **显露请求路径**：若 `reveal.seq > last_applied_reveal_seq`，先检查 `RevealKind`。
-    /// `Jump` 强制把 `top_line` 摆到 `reveal_line` 的视区上 1/3。
-    /// `Match` 仅当目标不在 `[top_line, top_line + visible)` 时摆位。
-    /// 2. **边缘滚动防御**：检查 `selection_head_line` 是否在 `[top_line, top_line + visible)`。
-    /// 若不在，把 `top_line` 调到刚好包含光标。
-    /// 3. **范围裁剪**：把 `top_line` 夹到 `[0, total_lines - visible]`。
+    /// 1. 把 `(top_line, top_subrow)` 经 `wrap_map.visual_row_of` 折成 `top_visual_row`；
+    /// 无 `wrap_map` 时即 `top_line`。
+    /// 2. **显露请求路径**：若 `reveal.seq > last_applied_reveal_seq`，先按 `RevealKind` 判定。
+    /// `Jump` 强制把 `top_visual_row` 摆到 reveal 目标视觉行的视区上 1/3；
+    /// `Match` 仅当目标不在 `[top, top + visible)` 时摆位。
+    /// 3. **边缘滚动防御**：仅在已有 `wrap_map`（即渲染端完成过测量）时检查
+    /// 主光标视觉行是否在 `[top, top + visible)`；不在时调到刚好包含光标。
+    /// 无 `wrap_map` 的首帧 / dirty 帧只消费 reveal，跳过 cursor edge-scroll，避免用逻辑行近似误滚。
+    /// 4. **范围裁剪**：把 `top_visual_row` 夹到文档可表示范围内。
+    /// 5. 把 `top_visual_row` 经 `wrap_map.visual_row_to_line_subrow` 还原回
+    /// `(top_line, top_subrow)`；无 `wrap_map` 时 `top_subrow = 0`。
     pub fn settle_viewport_y(
         &mut self,
-        total_lines: u64,
-        selection_head_line: u64,
-        reveal_line: Option<u64>,
+        buffer: &Buffer,
+        selection_head: ByteOffset,
     ) -> ViewportSettlement {
-        let visible = self.viewport.visible_logical_lines.max(1);
+        let visible = self.viewport.visible_visual_rows.max(1);
 
-        let mut top = self.viewport.top_line;
-        let old_top = top;
+        let wrap_map = self.wrap_map.as_ref();
+        let can_edge_scroll = wrap_map.is_some();
+        let total_visual_rows = wrap_map
+            .map(WrapMap::total_visual_rows)
+            .unwrap_or(buffer.line_count() as u64);
+        let cursor_visual_row = wrap_map.and_then(|wm| {
+            wm.resolve(buffer, selection_head, None)
+                .ok()
+                .map(|pos| wm.visual_row_of(pos.logical_line, pos.subrow))
+        });
+
+        // 顶部位置折叠到「绝对视觉行」坐标系。无 wrap_map 时 top_visual_row == top_line。
+        let mut top = match wrap_map {
+            Some(wm) => wm.visual_row_of(self.viewport.top_line, self.viewport.top_subrow as u32),
+            None => self.viewport.top_line,
+        };
 
         // 1. 显露请求路径。
         let mut consumed_reveal = None;
         if let Some(req) = self.reveal
             && Some(req.seq) != self.last_applied_reveal_seq
         {
-            if let Some(row) = reveal_line {
+            let reveal_visual_row = match wrap_map {
+                Some(wm) => wm
+                    .resolve(buffer, req.byte, None)
+                    .ok()
+                    .map(|pos| wm.visual_row_of(pos.logical_line, pos.subrow)),
+                None => buffer
+                    .byte_to_line(req.byte)
+                    .ok()
+                    .map(|line| line.get() as u64),
+            };
+            if let Some(row) = reveal_visual_row {
                 let in_view = row >= top && row < top.saturating_add(visible);
                 let force = matches!(req.kind, RevealKind::Jump);
                 if force || !in_view {
@@ -281,29 +307,36 @@ impl View {
                     top = row.saturating_sub(upper_third);
                 }
             }
-            // 即使 reveal_line == None 也推进序号，避免下一帧补一次延迟反应。
+            // 即使 reveal_visual_row == None 也推进序号，避免下一帧补一次延迟反应。
             self.last_applied_reveal_seq = Some(req.seq);
             consumed_reveal = Some(req);
         }
 
         // 2. 边缘滚动防御。
-        let cursor = selection_head_line;
-        if cursor < top {
-            top = cursor;
-        } else if cursor >= top.saturating_add(visible) {
-            top = cursor.saturating_sub(visible.saturating_sub(1));
+        if can_edge_scroll && let Some(cursor) = cursor_visual_row {
+            if cursor < top {
+                top = cursor;
+            } else if cursor >= top.saturating_add(visible) {
+                top = cursor.saturating_sub(visible.saturating_sub(1));
+            }
         }
 
-        // 3. 裁剪到 [0, total_lines - visible]。
-        let max_top = total_lines.saturating_sub(visible);
+        // 3. 裁剪到 [0, total_visual_rows - visible]。
+        let max_top = total_visual_rows.saturating_sub(visible);
         if top > max_top {
             top = max_top;
         }
 
-        self.viewport.top_line = top;
-        if top != old_top {
-            self.viewport.top_subrow = 0;
-        }
+        // 4. 写回 (top_line, top_subrow)。无 wrap_map 时 top_subrow 恒为 0。
+        let (new_top_line, new_top_subrow) = match wrap_map {
+            Some(wm) => {
+                let (line, sub) = wm.visual_row_to_line_subrow(top);
+                (line, sub as u64)
+            }
+            None => (top, 0),
+        };
+        self.viewport.top_line = new_top_line;
+        self.viewport.top_subrow = new_top_subrow;
         ViewportSettlement {
             viewport: self.viewport,
             consumed_reveal,
@@ -384,7 +417,7 @@ impl ViewSet {
 #[cfg(test)]
 mod settle_tests {
     use super::*;
-    use zom_engine::ByteOffset;
+    use zom_engine::{BufferConfig, ByteOffset, Line};
 
     fn fresh_view() -> View {
         // 走 ViewSet 构造 BufferId（其内部字段对外私有）。
@@ -412,35 +445,77 @@ mod settle_tests {
         v
     }
 
+    fn with_measured_viewport(top: u64, visible: u64, total_rows: u64) -> View {
+        let mut v = with_viewport(top, visible);
+        v.set_wrap_map(Some(WrapMap::new(
+            false,
+            vec![Vec::new(); total_rows as usize],
+        )));
+        v
+    }
+
+    fn buffer_with_line_count(line_count: u64) -> Buffer {
+        assert!(line_count > 0);
+        let mut text = String::new();
+        for line in 0..line_count {
+            if line > 0 {
+                text.push('\n');
+            }
+            text.push('x');
+        }
+        Buffer::from_text(text, BufferConfig::default()).unwrap()
+    }
+
+    fn buffer_from_lines(lines: &[&str]) -> Buffer {
+        Buffer::from_text(lines.join("\n"), BufferConfig::default()).unwrap()
+    }
+
+    fn line_start(buffer: &Buffer, line: u64) -> ByteOffset {
+        buffer.line_start_byte(Line::new(line as usize)).unwrap()
+    }
+
     #[test]
     fn settle_should_leave_top_unchanged_when_cursor_in_view_and_no_reveal() {
         let mut view = with_viewport(100, 40);
-        let out = view.settle_viewport_y(10_000, 120, None);
+        let buffer = buffer_with_line_count(10_000);
+        let out = view.settle_viewport_y(&buffer, line_start(&buffer, 120));
         assert_eq!(out.viewport.top_line, 100);
         assert_eq!(out.consumed_reveal, None);
     }
 
     #[test]
     fn settle_should_edge_scroll_down_when_cursor_below_view() {
-        let mut view = with_viewport(100, 40);
+        let mut view = with_measured_viewport(100, 40, 10_000);
+        let buffer = buffer_with_line_count(10_000);
         // 光标在第 200 行，视口 [100, 140)，应推到 [161, 201)。
-        let out = view.settle_viewport_y(10_000, 200, None);
+        let out = view.settle_viewport_y(&buffer, line_start(&buffer, 200));
         assert_eq!(out.viewport.top_line, 200 - 40 + 1);
     }
 
     #[test]
     fn settle_should_edge_scroll_up_when_cursor_above_view() {
-        let mut view = with_viewport(500, 40);
-        let out = view.settle_viewport_y(10_000, 200, None);
+        let mut view = with_measured_viewport(500, 40, 10_000);
+        let buffer = buffer_with_line_count(10_000);
+        let out = view.settle_viewport_y(&buffer, line_start(&buffer, 200));
         assert_eq!(out.viewport.top_line, 200);
+    }
+
+    #[test]
+    fn settle_should_skip_edge_scroll_until_wrap_map_is_measured() {
+        let mut view = with_viewport(100, 40);
+        let buffer = buffer_with_line_count(10_000);
+        let out = view.settle_viewport_y(&buffer, line_start(&buffer, 200));
+        assert_eq!(out.viewport.top_line, 100);
+        assert_eq!(out.consumed_reveal, None);
     }
 
     #[test]
     fn settle_should_apply_jump_reveal_to_upper_third_even_when_target_visible() {
         let mut view = with_viewport(100, 30);
-        view.request_reveal(ByteOffset::new(0), RevealKind::Jump);
+        let buffer = buffer_with_line_count(10_000);
+        view.request_reveal(line_start(&buffer, 110), RevealKind::Jump);
         // 显露目标在第 110 行，本来已在视区 [100, 130)，`Jump` 强制上 1/3。
-        let out = view.settle_viewport_y(10_000, 110, Some(110));
+        let out = view.settle_viewport_y(&buffer, line_start(&buffer, 110));
         // upper_third = 30 / 3 = 10；top = 110 - 10 = 100。
         assert_eq!(out.viewport.top_line, 100);
         assert!(out.consumed_reveal.is_some());
@@ -449,9 +524,10 @@ mod settle_tests {
     #[test]
     fn settle_should_apply_match_reveal_only_when_target_not_visible() {
         let mut view = with_viewport(100, 30);
-        view.request_reveal(ByteOffset::new(0), RevealKind::Match);
+        let buffer = buffer_with_line_count(100_000);
+        view.request_reveal(line_start(&buffer, 50_000), RevealKind::Match);
         // 目标在第 50000 行，远离视区。
-        let out = view.settle_viewport_y(100_000, 50_000, Some(50_000));
+        let out = view.settle_viewport_y(&buffer, line_start(&buffer, 50_000));
         // upper_third = 10；top = 49_990。
         assert_eq!(out.viewport.top_line, 49_990);
     }
@@ -459,9 +535,10 @@ mod settle_tests {
     #[test]
     fn settle_should_skip_match_reveal_when_target_already_visible() {
         let mut view = with_viewport(100, 30);
-        view.request_reveal(ByteOffset::new(0), RevealKind::Match);
+        let buffer = buffer_with_line_count(10_000);
+        view.request_reveal(line_start(&buffer, 115), RevealKind::Match);
         // 目标在第 115 行，已在视区 [100, 130) 内；`Match` 不强制摆位。
-        let out = view.settle_viewport_y(10_000, 115, Some(115));
+        let out = view.settle_viewport_y(&buffer, line_start(&buffer, 115));
         assert_eq!(out.viewport.top_line, 100);
         // 但序号仍然被消费。
         assert!(out.consumed_reveal.is_some());
@@ -470,25 +547,27 @@ mod settle_tests {
     #[test]
     fn settle_should_not_reapply_same_reveal_seq() {
         let mut view = with_viewport(100, 30);
-        view.request_reveal(ByteOffset::new(0), RevealKind::Jump);
-        let first = view.settle_viewport_y(10_000, 100, Some(5_000));
+        let buffer = buffer_with_line_count(10_000);
+        view.request_reveal(line_start(&buffer, 5_000), RevealKind::Jump);
+        let first = view.settle_viewport_y(&buffer, line_start(&buffer, 100));
         assert!(first.consumed_reveal.is_some());
         // 第二次相同帧调用：序号已经消费过。
-        let second = view.settle_viewport_y(10_000, 100, Some(5_000));
+        let second = view.settle_viewport_y(&buffer, line_start(&buffer, 100));
         assert_eq!(second.consumed_reveal, None);
     }
 
     #[test]
     fn settle_should_advance_seq_even_when_reveal_line_is_unresolved() {
         let mut view = with_viewport(100, 30);
-        view.request_reveal(ByteOffset::new(0), RevealKind::Jump);
-        // `reveal_line == None`：`byte_to_position` 失败，跳过 Y 摆位但仍消费序号。
-        let out = view.settle_viewport_y(10_000, 100, None);
+        let buffer = buffer_with_line_count(10_000);
+        view.request_reveal(ByteOffset::new(usize::MAX), RevealKind::Jump);
+        // reveal byte 解析失败：跳过 Y 摆位但仍消费序号。
+        let out = view.settle_viewport_y(&buffer, line_start(&buffer, 100));
         assert_eq!(out.viewport.top_line, 100); // 未摆位
         assert!(out.consumed_reveal.is_some());
 
         // 下一次相同 reveal 不会被重复应用
-        let next = view.settle_viewport_y(10_000, 100, Some(5_000));
+        let next = view.settle_viewport_y(&buffer, line_start(&buffer, 100));
         assert_eq!(next.consumed_reveal, None);
     }
 
@@ -510,27 +589,85 @@ mod settle_tests {
     fn settle_should_clamp_visible_zero_to_one_as_division_guard() {
         // 调用方故意把 `visible_logical_lines` 设为 0 时，`settle` 不应除以 0；
         // 内部 `.max(1)` 防御会让行为退化为 1 行视口。
-        let mut view = with_viewport(0, 0);
-        let out = view.settle_viewport_y(1_000, 500, None);
+        let mut view = with_measured_viewport(0, 0, 1_000);
+        let buffer = buffer_with_line_count(1_000);
+        let out = view.settle_viewport_y(&buffer, line_start(&buffer, 500));
         // visible=1，光标 500 不在 [0, 1)，边缘滚动会推到 top = 500。
         assert_eq!(out.viewport.top_line, 500);
     }
 
     #[test]
     fn settle_should_clamp_top_to_max_when_cursor_near_end() {
-        let mut view = with_viewport(0, 40);
+        let mut view = with_measured_viewport(0, 40, 100);
+        let buffer = buffer_with_line_count(100);
         // 光标在文件末尾第 99 行；max_top = 100 - 40 = 60。
-        let out = view.settle_viewport_y(100, 99, None);
+        let out = view.settle_viewport_y(&buffer, line_start(&buffer, 99));
         assert_eq!(out.viewport.top_line, 60);
     }
 
     #[test]
     fn settle_should_handle_reveal_target_near_end_with_clamp() {
         let mut view = with_viewport(0, 30);
-        view.request_reveal(ByteOffset::new(0), RevealKind::Jump);
+        let buffer = buffer_with_line_count(100);
+        view.request_reveal(line_start(&buffer, 95), RevealKind::Jump);
         // 目标在第 95 行（视为光标也在 95），upper_third = 10，期望 top = 85；
         // max_top = 100 - 30 = 70，最终裁剪到 70。
-        let out = view.settle_viewport_y(100, 95, Some(95));
+        let out = view.settle_viewport_y(&buffer, line_start(&buffer, 95));
         assert_eq!(out.viewport.top_line, 70);
+    }
+
+    #[test]
+    fn settle_with_wrap_map_edge_scrolls_in_visual_row_space() {
+        // 4 条逻辑行；每条都被切成 2 个 sub-row（共 8 个视觉行）。
+        // 视口高度 3 视觉行，初始 top 在 (line=0, subrow=0)。
+        let mut view = fresh_view();
+        view.set_wrap_map(Some(WrapMap::new(
+            true,
+            vec![vec![5], vec![5], vec![5], vec![5]],
+        )));
+        view.set_viewport(ViewportState {
+            top_line: 0,
+            top_subrow: 0,
+            visible_visual_rows: 3,
+            visible_logical_lines: 2,
+        });
+        // 光标在 (line=1, subrow=1) = 视觉行 3，刚好越出 [0, 3)；
+        // 期望 top 推到视觉行 1 = (line=0, subrow=1)。
+        // 旧的逻辑行算法会把 cursor 当作 line=1，仍在 [0,2) 内不滚——这是修复目标。
+        let buffer = buffer_from_lines(&["abcdefghij", "abcdefghij", "abcdefghij", "abcdefghij"]);
+        let cursor = ByteOffset::new(line_start(&buffer, 1).get() + 5);
+        let cursor_visual = view
+            .wrap_map()
+            .unwrap()
+            .resolve(&buffer, cursor, None)
+            .map(|pos| {
+                view.wrap_map()
+                    .unwrap()
+                    .visual_row_of(pos.logical_line, pos.subrow)
+            })
+            .unwrap();
+        assert_eq!(cursor_visual, 3);
+        let out = view.settle_viewport_y(&buffer, cursor);
+        assert_eq!(out.viewport.top_line, 0);
+        assert_eq!(out.viewport.top_subrow, 1);
+    }
+
+    #[test]
+    fn settle_with_wrap_map_keeps_top_when_cursor_in_view() {
+        // 光标已经在视口内，top 应保持不动（包括 top_subrow）。
+        let mut view = fresh_view();
+        view.set_wrap_map(Some(WrapMap::new(true, vec![vec![5], vec![5], vec![5]])));
+        view.set_viewport(ViewportState {
+            top_line: 1,
+            top_subrow: 0,
+            visible_visual_rows: 2,
+            visible_logical_lines: 1,
+        });
+        // top_visual_row = 2，视口 [2, 4)，光标在 (line=1, subrow=1) = 视觉行 3。
+        let buffer = buffer_from_lines(&["abcdefghij", "abcdefghij", "abcdefghij"]);
+        let cursor = ByteOffset::new(line_start(&buffer, 1).get() + 5);
+        let out = view.settle_viewport_y(&buffer, cursor);
+        assert_eq!(out.viewport.top_line, 1);
+        assert_eq!(out.viewport.top_subrow, 0);
     }
 }

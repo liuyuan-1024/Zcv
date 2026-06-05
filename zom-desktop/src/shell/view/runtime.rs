@@ -59,12 +59,13 @@ impl ShellRuntime {
 
         let features = FeatureRegistry::assemble(&app, cx);
 
-        // 主编辑区内核：多行 + 行号 + 滚动 + 视口写回。
-        // 视口钩子在 prepaint 末尾把测得的 ViewportState 推回 view。
+        // 主编辑区内核：多行 + 行号 + 滚动 + 视口测量回写。
+        // 视口钩子在 prepaint 末尾把可见行数与 wrap map 推回 view。
         let main_viewport_sync: EditorViewportSyncHook = {
             let app = Rc::clone(&app);
-            Rc::new(move |viewport, wrap_map, _cx| {
-                app.borrow_mut().set_main_viewport(viewport, wrap_map);
+            Rc::new(move |measurement, wrap_map, _cx| {
+                app.borrow_mut()
+                    .sync_main_viewport_measurement(measurement, wrap_map);
             })
         };
         // 全局软换行 cell 由 App 持有；

@@ -9,7 +9,7 @@ use std::rc::Rc;
 use gpui::{
     App as GpuiApp, AppContext, Bounds, ElementInputHandler, Entity, FocusHandle, Pixels, Window,
 };
-use zom_view::{ViewportState, WrapMap};
+use zom_view::WrapMap;
 
 use crate::app::App;
 use crate::editor::input::{CaretLayout, EditorInput};
@@ -26,9 +26,17 @@ pub(crate) struct EditorPaintInfo {
 
 pub(crate) type EditorInputHook = Rc<dyn Fn(EditorPaintInfo, &mut Window, &mut GpuiApp)>;
 
-/// element prepaint 末尾用来把测得的 viewport 写回 view 的钩子。
+/// element prepaint 末尾同步给 view 的视口测量值。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct EditorViewportMeasurement {
+    pub visible_visual_rows: u64,
+    pub visible_logical_lines: u64,
+}
+
+/// element prepaint 末尾用来把测量值写回 view 的钩子。
 /// 只有主编辑区装一个真实实现；其它单行嵌入编辑器视口固定为单行，无需写回。
-pub(crate) type EditorViewportSyncHook = Rc<dyn Fn(ViewportState, Option<WrapMap>, &mut GpuiApp)>;
+pub(crate) type EditorViewportSyncHook =
+    Rc<dyn Fn(EditorViewportMeasurement, Option<WrapMap>, &mut GpuiApp)>;
 
 #[derive(Clone)]
 pub(crate) struct EditorInputHost {

@@ -99,11 +99,51 @@ impl WrapMap {
             .sum()
     }
 
+    /// `(逻辑行, sub-row) → 绝对视觉行号`（从 0 开始）。
+    ///
+    /// 用于把 `ViewportState.top_line/top_subrow` 与 `VisualPosition` 折叠到统一的视觉行坐标系，供 `settle_viewport_y` 的边缘滚动 / reveal 判定使用。
+    ///
+    /// 越界处理（友好饱和而非 panic，调用方常在首帧 / headless 路径传入近似值）：
+    /// - `line >= logical_line_count()` → 返回 `total_visual_rows()`（最后一行末尾的下一行）；空 map 直接返回 0。
+    /// - `subrow >= subrow_count(line)` → 夹到该行最后一个 sub-row。
+    pub fn visual_row_of(&self, line: u64, subrow: u32) -> u64 {
+        let line_count = self.logical_line_count();
+        if line >= line_count {
+            return self.total_visual_rows();
+        }
+        let prefix: u64 = self.breaks_per_line[..line as usize]
+            .iter()
+            .map(|v| v.len() as u64 + 1)
+            .sum();
+        let max_subrow = self.subrow_count(line).saturating_sub(1);
+        prefix + subrow.min(max_subrow) as u64
+    }
+
+    /// `绝对视觉行号 → (逻辑行, sub-row)`，是 [`visual_row_of`] 的反函数。
+    ///
+    /// 越界饱和：`row >= total_visual_rows()` 时返回末行末段；空 map 返回 `(0, 0)`。
+    pub fn visual_row_to_line_subrow(&self, row: u64) -> (u64, u32) {
+        if self.breaks_per_line.is_empty() {
+            return (0, 0);
+        }
+        let mut remaining = row;
+        for (line_idx, breaks) in self.breaks_per_line.iter().enumerate() {
+            let count = breaks.len() as u64 + 1;
+            if remaining < count {
+                return (line_idx as u64, remaining as u32);
+            }
+            remaining -= count;
+        }
+        // 越界 → 末行末段。
+        let last_line = self.breaks_per_line.len() as u64 - 1;
+        let last_subrow = self.subrow_count(last_line).saturating_sub(1);
+        (last_line, last_subrow)
+    }
+
     /// 把 byte 解析成 VisualPosition。
     ///
     /// 软换行边界（即 byte 恰好等于某个断点的绝对位置）存在两种视觉位置；
-    /// 由 `hint` 决定取上一段行尾还是下一段行首。`hint == None` 时默认下一段行首
-    /// （与渲染端历史行为一致）。
+    /// 由 `hint` 决定取上一段行尾还是下一段行首。`hint == None` 时默认下一段行首（与渲染端历史行为一致）。
     pub fn resolve(
         &self,
         buffer: &Buffer,
@@ -732,6 +772,52 @@ mod tests {
         // 行 0 三段；行 1 一段。
         let wm = WrapMap::new(true, vec![vec![3, 6], vec![]]);
         assert_eq!(wm.total_visual_rows(), 4);
+    }
+
+    #[test]
+    fn visual_row_of_accumulates_prefix_and_adds_subrow() {
+        // 行 0 三段、行 1 一段、行 2 两段 → 总 6 行。
+        let wm = WrapMap::new(true, vec![vec![3, 6], vec![], vec![4]]);
+        assert_eq!(wm.visual_row_of(0, 0), 0);
+        assert_eq!(wm.visual_row_of(0, 2), 2);
+        assert_eq!(wm.visual_row_of(1, 0), 3);
+        assert_eq!(wm.visual_row_of(2, 0), 4);
+        assert_eq!(wm.visual_row_of(2, 1), 5);
+    }
+
+    #[test]
+    fn visual_row_of_saturates_out_of_range() {
+        let wm = WrapMap::new(true, vec![vec![3, 6], vec![]]);
+        // subrow 超出该行段数 → 夹到末段。
+        assert_eq!(wm.visual_row_of(0, 99), 2);
+        // 逻辑行越界 → total_visual_rows。
+        assert_eq!(wm.visual_row_of(10, 0), 4);
+        // 空 map。
+        let empty = WrapMap::new(true, vec![]);
+        assert_eq!(empty.visual_row_of(0, 0), 0);
+    }
+
+    #[test]
+    fn visual_row_to_line_subrow_is_inverse_of_visual_row_of() {
+        let wm = WrapMap::new(true, vec![vec![3, 6], vec![], vec![4]]);
+        for line in 0..wm.logical_line_count() {
+            for sub in 0..wm.subrow_count(line) {
+                let row = wm.visual_row_of(line, sub);
+                assert_eq!(wm.visual_row_to_line_subrow(row), (line, sub));
+            }
+        }
+    }
+
+    #[test]
+    fn visual_row_to_line_subrow_saturates_out_of_range() {
+        let wm = WrapMap::new(true, vec![vec![3, 6], vec![]]);
+        // total = 4，越界 → 末行末段 (1, 0)。
+        assert_eq!(wm.visual_row_to_line_subrow(4), (1, 0));
+        assert_eq!(wm.visual_row_to_line_subrow(100), (1, 0));
+        // 空 map。
+        let empty = WrapMap::new(true, vec![]);
+        assert_eq!(empty.visual_row_to_line_subrow(0), (0, 0));
+        assert_eq!(empty.visual_row_to_line_subrow(5), (0, 0));
     }
 
     /// 等宽假设下每个字节宽度 10——便于在没有 GPUI ShapedLine 时验证 [`compute_segments`]。

@@ -33,6 +33,7 @@ use self::pumps::BackgroundPumps;
 use self::text_target_runtime::TextTargetRuntime;
 use crate::config::{AppConfig, SettingsChange};
 use crate::dispatch::KeyDispatchOutcome;
+use crate::editor::EditorViewportMeasurement;
 use crate::editor::text::ImeUtf16Range;
 use crate::focus::{AppFocus, FileTreeFocus, FocusStore, PanelSubFocus};
 use crate::ports::{
@@ -438,18 +439,26 @@ impl App {
             .with_router_mut(focus, &mut self.session, f)
     }
 
-    /// 由主编辑区 element prepaint 末尾回写：把它实际测得的视口写回当前活动 view，
-    /// 下一帧 `View::settle_viewport_y` 与 snapshot 切片用更准的行数 / sub-row。
+    /// 由主编辑区 element prepaint 末尾回写测量值。
+    ///
+    /// Y 轴 top（`top_line/top_subrow`）只由 `View::settle_viewport_y` 落定；
+    /// element 只同步可见行数与 wrap map，避免渲染端 fallback 覆盖 view 已经确定的 top。
     /// 无活动 view 时静默忽略。
-    pub(crate) fn set_main_viewport(
+    pub(crate) fn sync_main_viewport_measurement(
         &mut self,
-        viewport: zom_view::ViewportState,
+        measured: EditorViewportMeasurement,
         wrap_map: Option<zom_view::WrapMap>,
     ) {
         let Some(view) = self.session.views_mut().active_view_mut() else {
             return;
         };
         let current = view.viewport();
+        let viewport = zom_view::ViewportState {
+            top_line: current.top_line,
+            top_subrow: current.top_subrow,
+            visible_visual_rows: measured.visible_visual_rows,
+            visible_logical_lines: measured.visible_logical_lines,
+        };
         if current != viewport {
             view.set_viewport(viewport);
         }

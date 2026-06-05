@@ -184,22 +184,22 @@ fn install_all_should_register_every_builtin_command_catalog() {
 
     assert!(
         keymap
-            .format_shortcut_for(&command_id(settings::OPEN))
+            .format_shortcuts_for(&command_id(settings::OPEN))
             .is_some()
     );
     assert!(
         keymap
-            .format_shortcut_for(&command_id(file_tree::TOGGLE_PANEL))
+            .format_shortcuts_for(&command_id(file_tree::TOGGLE_PANEL))
             .is_some()
     );
     assert!(
         keymap
-            .format_shortcut_for(&command_id(search::TOGGLE_CASE_SENSITIVE))
+            .format_shortcuts_for(&command_id(search::TOGGLE_CASE_SENSITIVE))
             .is_some()
     );
     assert!(
         keymap
-            .format_shortcut_for(&command_id(search::REPLACE_ALL))
+            .format_shortcuts_for(&command_id(search::REPLACE_ALL))
             .is_some()
     );
 
@@ -236,7 +236,7 @@ fn visible_shortcut_panel_commands_should_have_descriptions_and_shortcuts() {
             command.id
         );
         assert!(
-            keymap.format_shortcut_for(&command.id).is_some(),
+            keymap.format_shortcuts_for(&command.id).is_some(),
             "{} 标记进入快捷键面板，但没有快捷键",
             command.id
         );

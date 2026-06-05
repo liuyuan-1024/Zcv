@@ -173,7 +173,7 @@ fn show_project_picker(
     let state = Rc::new(move || state_runtime.state());
     let shortcut_app = Rc::clone(app);
     let shortcut_lookup =
-        Rc::new(move |command_id: &str| shortcut_app.borrow().shortcut_for(command_id));
+        Rc::new(move |command_id: &str| shortcut_app.borrow().shortcuts_for(command_id));
     let title_app = Rc::clone(app);
     let command_title_lookup =
         Rc::new(move |command_id: &str| title_app.borrow().command_title_for(command_id));

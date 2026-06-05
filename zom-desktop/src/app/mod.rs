@@ -457,17 +457,24 @@ impl App {
     }
 
     /// 查询某条命令的快捷键文案 —— 给 Glyph / 命令面板 / 菜单用。
-    pub(crate) fn shortcut_for(&self, command_id: &str) -> Option<String> {
-        self.command.shortcut_for(command_id)
+    ///
+    /// 一条命令可能绑了多个 chord（不同 args 或别名）：多个 chord 用 ` / ` 拼接成单串返回。
+    pub(crate) fn shortcuts_for(&self, command_id: &str) -> Option<String> {
+        let command = CommandId::new(command_id).ok()?;
+        self.command.keymap().format_shortcuts_for(&command)
     }
 
     /// 查询某条命令的显示标题 —— UI 不再为命令入口重复维护文案。
     pub(crate) fn command_title_for(&self, command_id: &str) -> Option<String> {
-        self.command.command_title_for(command_id)
+        let command = CommandId::new(command_id).ok()?;
+        self.command
+            .registry()
+            .command(&command)
+            .map(|command| command.title.clone())
     }
 
     pub(crate) fn command_catalog_items(&self) -> Vec<CommandCatalogItem> {
-        self.command.command_catalog_items()
+        self.command.registry().commands().map(Into::into).collect()
     }
 
     /// 排空活动 buffer 自上次 dispatch 以来累积的 `DeltaEvent`，扇出到 `BufferSearch` 与 syntax provider。
@@ -849,14 +856,14 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_for_should_return_formatted_keymap_binding() {
+    fn shortcuts_for_should_return_formatted_keymap_binding() {
         let app = App::new();
 
         // 已绑定的命令：返回格式化后的快捷键。
-        let undo = app.shortcut_for(editor::UNDO).expect("undo 必有快捷键");
-        let save = app.shortcut_for(editor::SAVE).expect("save 必有快捷键");
+        let undo = app.shortcuts_for(editor::UNDO).expect("undo 必有快捷键");
+        let save = app.shortcuts_for(editor::SAVE).expect("save 必有快捷键");
         let file_tree = app
-            .shortcut_for(PanelId::FileTree.toggle_command_id())
+            .shortcuts_for(PanelId::FileTree.toggle_command_id())
             .expect("file_tree 切换必有快捷键");
 
         // 平台差异化校验在专门的格式化测试里做；这里只关心"能查到、非空"。
@@ -865,12 +872,12 @@ mod tests {
         assert!(!file_tree.is_empty());
 
         let settings = app
-            .shortcut_for(settings::OPEN)
+            .shortcuts_for(settings::OPEN)
             .expect("settings.open 必有快捷键");
         assert!(!settings.is_empty());
 
         // 未注册的命令：返回 None。
-        assert!(app.shortcut_for("不存在的命令").is_none());
+        assert!(app.shortcuts_for("不存在的命令").is_none());
     }
 
     #[test]
@@ -926,15 +933,15 @@ mod tests {
         let _picker = install_project_picker(&mut app);
 
         assert!(
-            app.shortcut_for(project_picker_commands::OPEN_LOCAL_PROJECT)
+            app.shortcuts_for(project_picker_commands::OPEN_LOCAL_PROJECT)
                 .is_some()
         );
         assert!(
-            app.shortcut_for(project_picker_commands::START_GIT_CLONE)
+            app.shortcuts_for(project_picker_commands::START_GIT_CLONE)
                 .is_some()
         );
         assert!(
-            app.shortcut_for(project_picker_commands::REMOVE_RECENT_PROJECT)
+            app.shortcuts_for(project_picker_commands::REMOVE_RECENT_PROJECT)
                 .is_some()
         );
 

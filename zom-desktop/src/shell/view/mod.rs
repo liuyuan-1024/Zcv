@@ -178,7 +178,7 @@ impl ShellView {
 
     fn shortcut_lookup(&self) -> ShortcutLookup {
         let app = Rc::clone(&self.runtime.app);
-        Rc::new(move |command_id| app.borrow().shortcut_for(command_id))
+        Rc::new(move |command_id| app.borrow().shortcuts_for(command_id))
     }
 
     fn command_title_lookup(&self) -> CommandTitleLookup {

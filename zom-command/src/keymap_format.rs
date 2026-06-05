@@ -15,7 +15,7 @@ use crate::KeyChord;
 
 /// 把多段 chord（leader key 序列）格式化成一个完整快捷键串。
 ///
-/// 调用方一般不直接用本函数，而是用 [`crate::Keymap::format_shortcut_for`]
+/// 调用方一般不直接用本函数，而是用 [`crate::Keymap::format_shortcuts_for`]
 /// 一步反查 + 格式化。
 pub fn format_sequence(sequence: &[KeyChord]) -> String {
     sequence
@@ -24,6 +24,20 @@ pub fn format_sequence(sequence: &[KeyChord]) -> String {
         .collect::<Vec<_>>()
         .join(CHORD_SEPARATOR)
 }
+
+/// 同一命令的多条快捷键绑定的拼接展示（如 `⌘L / ⌘H`）。
+///
+/// 选用 ` / ` 作为分隔符：避开 [`CHORD_SEPARATOR`]（已用作 leader 序列内分隔），
+/// 跨平台无需本地化，紧凑且不易与 modifier 符号混淆。
+pub fn format_sequences(sequences: &[&[KeyChord]]) -> String {
+    sequences
+        .iter()
+        .map(|sequence| format_sequence(sequence))
+        .collect::<Vec<_>>()
+        .join(BINDING_SEPARATOR)
+}
+
+const BINDING_SEPARATOR: &str = " / ";
 
 /// 把单段 chord（如 `"mod-shift-z"`）格式化成给人看的字符串。
 pub fn format_chord(chord: &str) -> String {
@@ -179,5 +193,15 @@ mod tests {
         let formatted = format_sequence(&[leader, follow]);
         // 不同平台 chord 不同，但中间一定有 CHORD_SEPARATOR。
         assert!(formatted.contains(CHORD_SEPARATOR));
+    }
+
+    #[test]
+    fn multi_binding_should_join_with_slash() {
+        let next = vec![KeyChord::new("mod-l").unwrap()];
+        let prev = vec![KeyChord::new("mod-h").unwrap()];
+        let formatted = format_sequences(&[next.as_slice(), prev.as_slice()]);
+        assert!(formatted.contains(BINDING_SEPARATOR));
+        assert!(formatted.starts_with(&format_chord("mod-l")));
+        assert!(formatted.ends_with(&format_chord("mod-h")));
     }
 }

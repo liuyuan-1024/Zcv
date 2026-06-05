@@ -6,13 +6,17 @@
 //!
 //! 与 BottomBar 共用 `bar_frame`，确保对称（布局模型 4.1）。
 
+#[cfg(target_os = "linux")]
+use gpui::MouseButton;
+#[cfg(target_os = "windows")]
+use gpui::WindowControlArea;
 use gpui::{AnyElement, Div, Window, div, prelude::*};
 
 use crate::shell::features::{project_picker, settings};
 use crate::shell::workbench::state::WorkbenchState;
 use crate::shell::{CommandTitleLookup, ShortcutLookup};
 
-use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_frame};
+use super::frame::{BarEdge, bar_frame};
 use super::window_controls::{WindowControlsHandlers, render_window_controls};
 
 pub(crate) fn render(
@@ -26,30 +30,50 @@ pub(crate) fn render(
 ) -> Div {
     let is_window_active = window.is_window_active();
 
+    // 结构：leading_cluster | drag_spacer | trailing_cluster
+    //
+    // 不挂 `on_mouse_down` 到整条 bar：GPUI 0.2.2 的 window-control hitbox 表按绘制顺序首个命中即返回，
+    // 父节点标 Drag 会盖过所有子按钮（[events.rs:874] / [window.rs:1138]）。
+    // 必须让 drag 区域与按钮区域是兄弟、不要嵌套。
     bar_frame(BarEdge::Top)
-        .child(region(
-            leading_slots(
-                is_window_active,
-                window_controls,
-                shortcuts,
-                titles,
-                workspace_active,
-                &state.project_title,
-            ),
-            BarRegionAlign::Leading,
-        ))
-        .child(region(Vec::new(), BarRegionAlign::Center))
-        .child(region(
-            trailing_slots(settings_active, shortcuts, titles),
-            BarRegionAlign::Trailing,
-        ))
+        .child(cluster(leading_slots(
+            is_window_active,
+            window_controls,
+            shortcuts,
+            titles,
+            workspace_active,
+            &state.project_title,
+        )))
+        .child(drag_spacer())
+        .child(cluster(trailing_slots(settings_active, shortcuts, titles)))
 }
 
-fn region(items: Vec<AnyElement>, align: BarRegionAlign) -> Div {
-    // inner 必须内容自适应；外层 `align_bar_region` 已经 flex_1 + justify_*。
-    // 如果 inner 也写 flex_1，会撑满外层，justify_end / center 失效。
-    let inner = div().flex().items_center().gap_2().children(items);
-    align_bar_region(inner, align)
+/// 顶栏内的按钮簇：内容自适应宽度，作为兄弟节点与 `drag_spacer` 共存。
+fn cluster(items: Vec<AnyElement>) -> Div {
+    div().flex().items_center().gap_2().children(items)
+}
+
+/// 顶栏中央填充区，同时承担拖动窗口的职责。
+///
+/// - macOS：透明系统标题栏自带拖动语义，这里只是 flex 间隔，不需任何介入。
+/// - Windows：在 `WM_NCHITTEST` 里命中 `WindowControlArea::Drag` 的 hitbox 会被映射为 HTCAPTION，
+/// 由 OS 接管拖动；`start_window_move` 在 Windows 上是空实现，必须走这条路径。
+/// - Linux (X11 / Wayland)：`window_control_area` 在这两个后端是 no-op，需要显式调用 `start_window_move`。
+///
+/// 高度上：bar_frame 是 `items_center` 的 flex 容器，自身高度由其它兄弟（按钮簇）撑开；
+/// 这里 `h_full` 让 spacer 与 bar 内容区同高，保证 hit-test 能命中。
+fn drag_spacer() -> Div {
+    let spacer = div().flex_1().h_full();
+
+    #[cfg(target_os = "windows")]
+    let spacer = spacer.window_control_area(WindowControlArea::Drag);
+
+    #[cfg(target_os = "linux")]
+    let spacer = spacer.on_mouse_down(MouseButton::Left, |_, window, _| {
+        window.start_window_move();
+    });
+
+    spacer
 }
 
 fn leading_slots(

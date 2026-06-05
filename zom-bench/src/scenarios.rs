@@ -146,7 +146,7 @@ pub fn measure_edit_with_highlight(
         buffer.insert(mid, "x").expect("必须能插入单字符");
         let events = buffer.take_pending_events();
         let event = events.last().expect("插入必须产生事件");
-        state.handle_edit(&buffer, event.changeset(), event.new_version(), &mut layers);
+        state.handle_edit(&buffer, event, &mut layers);
         total += t0.elapsed();
     }
     // 主线程时间测完即可。
@@ -203,7 +203,7 @@ pub fn measure_edit_with_highlight_e2e(
         buffer.insert(mid, "x").expect("必须能插入单字符");
         let events = buffer.take_pending_events();
         let event = events.last().expect("插入必须产生事件");
-        state.handle_edit(&buffer, event.changeset(), event.new_version(), &mut layers);
+        state.handle_edit(&buffer, event, &mut layers);
         worker.wait_for_idle();
         total += t0.elapsed();
     }
@@ -274,7 +274,7 @@ pub fn measure_edit_with_highlight_viewport(
         buffer.insert(mid, "x").expect("必须能插入单字符");
         let events = buffer.take_pending_events();
         let event = events.last().expect("插入必须产生事件");
-        state.handle_edit(&buffer, event.changeset(), event.new_version(), &mut layers);
+        state.handle_edit(&buffer, event, &mut layers);
         worker.wait_for_idle();
         total += t0.elapsed();
     }

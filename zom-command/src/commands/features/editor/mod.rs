@@ -907,7 +907,12 @@ fn run_ime_commit(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = ImeCommitArgs::try_from(args)?;
-    let target = context.edit_target()?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
+    target
+        .buffer
+        .set_selection(target.selection.clone())
+        .map_err(command_execution_failed)?;
     target
         .buffer
         .commit_composition(&args.text)
@@ -945,6 +950,10 @@ fn run_ime_confirm(
     else {
         return Ok(CommandOutcome::default());
     };
+    target
+        .buffer
+        .set_selection(target.selection.clone())
+        .map_err(command_execution_failed)?;
     target
         .buffer
         .commit_composition(&preedit)

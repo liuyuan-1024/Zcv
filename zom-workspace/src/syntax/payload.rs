@@ -87,10 +87,15 @@ impl TokenModifiers {
     }
 }
 
-/// 所有 syntax MetadataLayer 统一挂在这个 kind 下。
+/// tree-sitter / LSP 已确认的权威 syntax MetadataLayer。
+pub fn syntax_confirmed_layer_kind() -> MetadataLayerKind {
+    MetadataLayerKind::custom("syntax.confirmed")
+}
+
+/// 编辑当帧由主线程生成的临时 syntax MetadataLayer。
 ///
-/// 手册 §三：「不允许把语法高亮挂到别的 kind 上；编辑面的字符层渲染按这个
-/// 固定 kind 取 layer」。
-pub fn syntax_layer_kind() -> MetadataLayerKind {
-    MetadataLayerKind::custom("syntax")
+/// 它只负责在 worker 回来前覆盖新写入 / 脏区附近的字节，避免普通输入时露出默认前景色；
+/// worker 的权威产物会在后续 drain 中替换 confirmed 层。
+pub fn syntax_provisional_layer_kind() -> MetadataLayerKind {
+    MetadataLayerKind::custom("syntax.provisional")
 }

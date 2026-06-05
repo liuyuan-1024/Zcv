@@ -40,7 +40,8 @@ pub(crate) enum DecorationStyle {
 
 #[allow(dead_code)]
 pub(crate) mod priority {
-    pub(crate) const SYNTAX_BASE: u16 = 0;
+    pub(crate) const SYNTAX_CONFIRMED: u16 = 0;
+    pub(crate) const SYNTAX_PROVISIONAL: u16 = 1;
     pub(crate) const FOLD: u16 = 100;
     pub(crate) const CURRENT_LINE: u16 = 200;
     pub(crate) const SELECTION: u16 = 300;

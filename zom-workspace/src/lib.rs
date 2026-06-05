@@ -429,8 +429,8 @@ impl WorkspaceBuffer {
         &mut self.search
     }
 
-    /// 语法高亮 layer 的只读视图。渲染端阶段 3 按 [`syntax::syntax_layer_kind`]
-    /// 取本 layer。
+    /// 语法高亮 layer 的只读视图。
+    /// 渲染端阶段 3 按 [`syntax::syntax_confirmed_layer_kind`] 取本 layer。
     pub fn highlight_layers(&self) -> &MetadataLayers<HighlightSpan> {
         self.document.highlight_layers()
     }

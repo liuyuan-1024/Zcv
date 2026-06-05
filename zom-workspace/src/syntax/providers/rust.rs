@@ -36,7 +36,7 @@ pub fn new_provider() -> HighlightWorker {
 mod tests {
     use super::*;
     use crate::syntax::BufferSyntaxState;
-    use crate::syntax::payload::{HighlightSpan, syntax_layer_kind};
+    use crate::syntax::payload::{HighlightSpan, syntax_confirmed_layer_kind};
     use crate::syntax::provider::HighlightProvider;
     use crate::syntax::providers::common::assert_lookup_matches_capture_names;
     use zom_engine::{Buffer, BufferConfig, MetadataLayers};
@@ -66,7 +66,7 @@ mod tests {
         state.drain_into_layers(buffer.version(), &mut layers);
 
         let layer = layers
-            .layer(&syntax_layer_kind())
+            .layer(&syntax_confirmed_layer_kind())
             .expect("syntax layer 必须存在");
         assert!(layer.len() > 0, "rust provider 应产出 spans");
 

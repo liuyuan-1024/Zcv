@@ -660,6 +660,7 @@ mod tests {
         diagnostics, editor, language_servers, project_picker as project_picker_commands, settings,
     };
     use zom_command::{EditTarget, KeyContext};
+    use zom_engine::{ByteOffset, SelectionSet};
     use zom_view::WrapMap;
 
     /// 取当前活动标签——断言「编辑区正在显示哪个文件」用。
@@ -686,6 +687,18 @@ mod tests {
         app.open_project(root.clone());
         assert!(app.session.open_file(root.join("README.md")));
         app.request_focus(AppFocus::editor());
+        app
+    }
+
+    fn app_with_markdown_text(name: &str, text: &str) -> App {
+        let mut app = App::new();
+        let root = project_fixture(name);
+        std::fs::write(root.join("README.md"), text).unwrap();
+        app.open_project(root.clone());
+        assert!(app.session.open_file(root.join("README.md")));
+        app.request_focus(AppFocus::editor());
+        app.session.workspace().syntax_worker().wait_for_idle();
+        app.pump_pending_highlights();
         app
     }
 
@@ -862,6 +875,57 @@ mod tests {
         assert!(!wrap_map.soft_wrap());
         assert_eq!(wrap_map.logical_line_count(), 2);
         assert_eq!(wrap_map.total_visual_rows(), 2);
+    }
+
+    #[test]
+    fn dispatch_text_edit_exposes_provisional_syntax_in_immediate_snapshot() {
+        let mut app =
+            app_with_markdown_text("immediate-provisional-syntax", "# zom 文档规范\n\n正文。\n");
+        *app.session
+            .views_mut()
+            .active_view_mut()
+            .expect("应有活动视图")
+            .selection_mut() = SelectionSet::caret(ByteOffset::new(18));
+
+        app.dispatch(editor::replace_selection("X")).unwrap();
+
+        let snapshot = app.with_router(|router| router.snapshot_for_focus(AppFocus::editor()));
+        assert!(
+            snapshot.decorations.iter().any(|d| {
+                d.kind == crate::editor::highlight::DecorationKind::Foreground
+                    && d.range.start().get() == 18
+                    && d.range.end().get() == 19
+                    && d.priority == crate::editor::highlight::priority::SYNTAX_PROVISIONAL
+            }),
+            "dispatch 后立即 snapshot 应包含新字符的 provisional syntax decoration，实际 {:?}",
+            snapshot.decorations,
+        );
+    }
+
+    #[test]
+    fn ime_text_commit_exposes_provisional_syntax_in_immediate_snapshot() {
+        let mut app =
+            app_with_markdown_text("ime-provisional-syntax", "# zom 文档规范\n\n正文。\n");
+        let focus = AppFocus::editor();
+        *app.session
+            .views_mut()
+            .active_view_mut()
+            .expect("应有活动视图")
+            .selection_mut() = SelectionSet::caret(ByteOffset::new(18));
+
+        app.ime_replace_text_for(focus, None, "X").unwrap();
+
+        let snapshot = app.with_router(|router| router.snapshot_for_focus(focus));
+        assert!(
+            snapshot.decorations.iter().any(|d| {
+                d.kind == crate::editor::highlight::DecorationKind::Foreground
+                    && d.range.start().get() == 18
+                    && d.range.end().get() == 19
+                    && d.priority == crate::editor::highlight::priority::SYNTAX_PROVISIONAL
+            }),
+            "IME commit 后立即 snapshot 应包含新字符的 provisional syntax decoration，实际 {:?}",
+            snapshot.decorations,
+        );
     }
 
     #[test]

@@ -1,13 +1,14 @@
-//! 词边界分类策略：为文本移动提供 identifier 与 symbol 的字符判定。
+//! 词边界分类策略：为文本移动提供 word / identifier / subword / symbol 的字符判定。
 //!
-//! 本文件不实现移动算法，只提供可配置的字符类别规则。
+//! 本文件不实现移动扫描，只集中维护可配置的字符类别和边界规则。
 
 use super::display::is_combining_mark;
+use crate::selection::MovementUnit;
 
 /// 词边界策略。
 ///
-/// 引擎层只定义纯文本移动语义，不绑定具体 UI 快捷键。不同宿主可以把
-/// Option/Alt/Ctrl + Left/Right 映射到 Word / Identifier / Subword / Symbol。
+/// 引擎层只定义纯文本移动语义，不绑定具体 UI 快捷键。
+/// 不同宿主可以把 Option/Alt/Ctrl + Left/Right 映射到 Word / Identifier / Subword / Symbol。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WordBoundaryPolicy {
     /// `_` 是否视为 identifier 的一部分。
@@ -23,6 +24,18 @@ pub struct WordBoundaryPolicy {
     /// 当前 Unicode word movement 主要依赖 `unicode-segmentation`，该字段
     /// 保留给更细的自然语言策略；identifier / subword / symbol 不使用它。
     pub apostrophe_is_word: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WordBoundaryClassifier {
+    policy: WordBoundaryPolicy,
+    unit: MovementUnit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WordSeparatorStop {
+    BeforeCurrent,
+    AfterCurrent,
 }
 
 impl WordBoundaryPolicy {
@@ -48,6 +61,91 @@ impl WordBoundaryPolicy {
     pub(crate) fn is_symbol_char(self, ch: char) -> bool {
         !ch.is_whitespace() && !self.is_identifier_continue(ch)
     }
+
+    pub(crate) fn classifier(self, unit: MovementUnit) -> Option<WordBoundaryClassifier> {
+        match unit {
+            MovementUnit::Word
+            | MovementUnit::Identifier
+            | MovementUnit::Subword
+            | MovementUnit::Symbol => Some(WordBoundaryClassifier { policy: self, unit }),
+            MovementUnit::Grapheme | MovementUnit::LineEdge => None,
+        }
+    }
+}
+
+impl WordBoundaryClassifier {
+    pub(crate) fn is_subword(self) -> bool {
+        self.unit == MovementUnit::Subword
+    }
+
+    pub(crate) fn is_body(self, ch: char) -> bool {
+        match self.unit {
+            MovementUnit::Word | MovementUnit::Subword => is_natural_word_body(ch),
+            MovementUnit::Identifier => self.policy.is_identifier_continue(ch),
+            MovementUnit::Symbol => self.policy.is_symbol_char(ch),
+            MovementUnit::Grapheme | MovementUnit::LineEdge => unreachable!("non-word classifier"),
+        }
+    }
+
+    pub(crate) fn next_separator_stop(
+        self,
+        current: char,
+        skipped_separator: bool,
+    ) -> Option<WordSeparatorStop> {
+        if skipped_separator && self.is_hard_separator(current) {
+            Some(WordSeparatorStop::BeforeCurrent)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn previous_separator_stop(
+        self,
+        current: char,
+        skipped_separator: bool,
+    ) -> Option<WordSeparatorStop> {
+        if !self.is_hard_separator(current) {
+            return None;
+        }
+
+        if skipped_separator {
+            Some(WordSeparatorStop::AfterCurrent)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn should_start_new_subword(
+        self,
+        previous: char,
+        current: char,
+        next: Option<char>,
+    ) -> bool {
+        debug_assert!(self.is_subword());
+
+        if is_combining_mark(current) || is_combining_mark(previous) {
+            return false;
+        }
+
+        (previous.is_lowercase() && current.is_uppercase())
+            || (previous.is_alphabetic() && current.is_numeric())
+            || (previous.is_numeric() && current.is_alphabetic())
+            || (previous.is_uppercase()
+                && current.is_uppercase()
+                && next.is_some_and(char::is_lowercase))
+    }
+
+    pub(crate) fn is_hard_separator(self, ch: char) -> bool {
+        is_line_break(ch)
+    }
+}
+
+fn is_natural_word_body(ch: char) -> bool {
+    ch.is_alphanumeric() || is_combining_mark(ch)
+}
+
+fn is_line_break(ch: char) -> bool {
+    ch == '\n' || ch == '\r'
 }
 
 impl Default for WordBoundaryPolicy {

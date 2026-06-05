@@ -7,8 +7,8 @@ use gpui::{Div, FocusHandle, ScrollHandle, div, prelude::*};
 
 use std::rc::Rc;
 
+use crate::editor::TextEditorSlot;
 use crate::editor_state::EditorState;
-use crate::shell::editor::TextEditorSlot;
 use crate::shell::workbench::docks::bottom;
 use crate::shell::workbench::docks::resize::DockResizeRequest;
 use crate::shell::workbench::state::DockState;

@@ -8,8 +8,9 @@ use zom_command::HostEffect;
 
 use crate::app::App;
 use crate::shell::features::language_servers::{self, LanguageServersRuntime};
-use crate::shell::surfaces::{SurfaceId, SurfaceManager};
+use crate::shell::surfaces::SurfaceManager;
 use crate::shell::view::actions::open_surface;
+use crate::ui_id::SurfaceId;
 
 pub(crate) fn try_apply_effect(
     effect: &HostEffect,

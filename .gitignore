@@ -6,8 +6,6 @@
 # 包含所有编译后的中间文件、依赖缓存和最终可执行文件（占用空间极大，必须忽略）
 /target/
 **/target/
-!zom-desktop/src/shell/editor/target/
-!zom-desktop/src/shell/editor/target/**
 .DS_Store
 
 # Cargo.lock 的处理规则：

@@ -10,10 +10,11 @@ use gpui::{Context, Corner, Div, Entity, FocusHandle, Window, div, point, prelud
 
 use crate::shell::KeyRequest;
 use crate::shell::normalized_chord;
-use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::surfaces::{
-    SurfaceAnchor, SurfaceId, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
+    SurfaceAnchor, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
 };
+use crate::theme::{color, radius, space, typography};
+use crate::ui_id::SurfaceId;
 
 #[derive(Clone)]
 pub(crate) struct LanguageServersRuntime {

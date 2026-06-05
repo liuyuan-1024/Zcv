@@ -12,11 +12,11 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, Div, Svg, div, prelude::*, svg, uniform_list};
 
-use crate::shell::editor::TextEditorSlot;
+use crate::editor::TextEditorSlot;
 use crate::shell::normalized_chord;
 use crate::shell::shared::scroll;
-use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::PanelContext;
+use crate::theme::{color, radius, space, typography};
 use zom_workspace::EntryKind;
 
 use super::{FileTreeRow, FileTreeState, PendingNewEntry, PendingRename};

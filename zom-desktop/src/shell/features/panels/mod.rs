@@ -6,8 +6,9 @@
 
 use gpui::{AnyElement, Context, FocusHandle, IntoElement, Window};
 
-use crate::shell::editor::TextEditorSlot;
+use crate::editor::TextEditorSlot;
 use crate::shell::{CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup};
+use crate::ui_id::PanelId;
 
 pub(crate) mod debug;
 pub(crate) mod file_tree;
@@ -16,10 +17,6 @@ pub(crate) mod outline;
 pub(crate) mod search;
 pub(crate) mod terminal;
 pub(crate) mod version_control;
-
-// `PanelId` 的定义与所有方法都在 [`crate::ui_id`]，这里 re-export 让
-// `crate::shell::features::panels::PanelId` 这一历史路径继续可用。
-pub(crate) use crate::ui_id::PanelId;
 
 pub(crate) fn focus_panel_handle(focus: FocusHandle, window: &mut Window, on_next_frame: bool) {
     window.focus(&focus);

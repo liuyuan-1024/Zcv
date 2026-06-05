@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use zom_command::BubbleRequest;
 use zom_engine::BufferConfig;
 use zom_view::{ViewId, ViewSet};
 use zom_workspace::{BufferId, Workspace};
@@ -12,11 +13,26 @@ use zom_workspace::{BufferId, Workspace};
 pub(crate) struct WorkspaceSession {
     workspace: Workspace,
     views: ViewSet,
+    /// 文件 / buffer 操作中产生、待落到 BubbleRuntime 的面向用户错误。
+    /// 调用方在每次 session 操作后通过 [`take_bubbles`](Self::take_bubbles) 取走。
+    pending_bubbles: Vec<BubbleRequest>,
 }
 
 impl WorkspaceSession {
     pub(crate) fn new(workspace: Workspace, views: ViewSet) -> Self {
-        Self { workspace, views }
+        Self {
+            workspace,
+            views,
+            pending_bubbles: Vec::new(),
+        }
+    }
+
+    pub(crate) fn take_bubbles(&mut self) -> Vec<BubbleRequest> {
+        std::mem::take(&mut self.pending_bubbles)
+    }
+
+    pub(crate) fn push_bubble(&mut self, request: BubbleRequest) {
+        self.pending_bubbles.push(request);
     }
 
     pub(crate) fn workspace(&self) -> &Workspace {
@@ -64,7 +80,10 @@ impl WorkspaceSession {
         let buffer_id = match self.workspace.open_file(path.clone()) {
             Ok(buffer_id) => buffer_id,
             Err(error) => {
-                eprintln!("打开文件失败：{}：{error}", path.display());
+                self.pending_bubbles.push(
+                    BubbleRequest::error(format!("打开文件失败：{}：{error}", path.display()))
+                        .dedupe("workspace.open_file"),
+                );
                 return false;
             }
         };
@@ -111,7 +130,13 @@ impl WorkspaceSession {
             .collect();
         for (id, new_path) in updates {
             if let Err(error) = self.workspace.rebind_buffer_path(id, new_path.clone()) {
-                eprintln!("重绑定缓冲区路径失败：{}：{error}", new_path.display());
+                self.pending_bubbles.push(
+                    BubbleRequest::error(format!(
+                        "重绑定缓冲区路径失败：{}：{error}",
+                        new_path.display()
+                    ))
+                    .dedupe("workspace.rebind"),
+                );
             }
         }
     }

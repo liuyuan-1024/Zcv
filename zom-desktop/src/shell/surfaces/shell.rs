@@ -8,7 +8,7 @@ use super::{
     ActiveSurface, SurfaceAnchor, SurfaceAnchorRegistry, SurfaceInvokerPoint, SurfaceManager,
     SurfaceRequest,
 };
-use crate::shell::shared::theme::space;
+use crate::theme::space;
 
 pub(crate) struct SurfaceShell {
     manager: Entity<SurfaceManager>,

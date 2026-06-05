@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, ListState, Pixels, UniformListScrollHandle, div, prelude::*, px};
 
-use crate::shell::shared::theme::{color, radius, space};
+use crate::theme::{color, radius, space};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ScrollHandle {

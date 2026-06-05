@@ -5,7 +5,7 @@
 
 use gpui::{Div, div, prelude::*};
 
-use crate::shell::shared::theme::color;
+use crate::theme::color;
 
 #[derive(Clone, Copy)]
 pub(crate) enum DockEdge {

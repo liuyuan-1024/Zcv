@@ -9,6 +9,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use zom_command::BubbleRequest;
 use zom_workspace::{EntryKind, ProjectTree, Workspace};
 
 use crate::workspace_session::WorkspaceSession;
@@ -30,7 +31,10 @@ impl FileTreeModel {
             return FileTreeOutcome::Nothing;
         }
         let Some((name, kind)) = parse_new_entry_input(name) else {
-            eprintln!("新建条目路径无效：{name}");
+            self.pending_bubbles.push(
+                BubbleRequest::error(format!("新建条目路径无效：{name}"))
+                    .dedupe("file_tree.new_entry"),
+            );
             return FileTreeOutcome::Nothing;
         };
         let parent = pending.parent.clone();
@@ -40,7 +44,7 @@ impl FileTreeModel {
         };
         match tree.create_entry(&parent, &name, kind) {
             Ok(path) => {
-                expand_parent_chain(tree, &parent, &path);
+                expand_parent_chain(tree, &parent, &path, &mut self.pending_bubbles);
                 self.selected = Some(path.clone());
                 self.pending = None;
                 match kind {
@@ -53,7 +57,13 @@ impl FileTreeModel {
                     EntryKind::Directory => "目录",
                     EntryKind::File => "文件",
                 };
-                eprintln!("新建{label}失败：{}：{error}", parent.join(&name).display());
+                self.pending_bubbles.push(
+                    BubbleRequest::error(format!(
+                        "新建{label}失败：{}：{error}",
+                        parent.join(&name).display()
+                    ))
+                    .dedupe("file_tree.new_entry"),
+                );
                 FileTreeOutcome::Nothing
             }
         }
@@ -88,7 +98,13 @@ impl FileTreeModel {
             Ok(new_path) => {
                 let is_file = new_path.is_file();
                 if !is_file && let Err(error) = tree.expand(&new_path) {
-                    eprintln!("重命名后展开目录失败：{}：{error}", new_path.display());
+                    self.pending_bubbles.push(
+                        BubbleRequest::error(format!(
+                            "重命名后展开目录失败：{}：{error}",
+                            new_path.display()
+                        ))
+                        .dedupe("file_tree.expand"),
+                    );
                 }
                 let next_focus = if is_file {
                     new_path.clone()
@@ -104,7 +120,13 @@ impl FileTreeModel {
                 }
             }
             Err(error) => {
-                eprintln!("重命名失败：{} → {new_name}：{error}", old_path.display());
+                self.pending_bubbles.push(
+                    BubbleRequest::error(format!(
+                        "重命名失败：{} → {new_name}：{error}",
+                        old_path.display()
+                    ))
+                    .dedupe("file_tree.rename"),
+                );
                 FileTreeOutcome::Nothing
             }
         }
@@ -158,14 +180,19 @@ impl FileTreeModel {
             })
         });
         let mut closed = Vec::new();
+        let mut bubbles = Vec::new();
         for (path, _) in &items {
             match delete_tree_entry(tree, path) {
                 Ok(()) => closed.push(path.clone()),
                 Err(error) => {
-                    eprintln!("删除失败：{}：{error}", path.display());
+                    bubbles.push(
+                        BubbleRequest::error(format!("删除失败：{}：{error}", path.display()))
+                            .dedupe("file_tree.delete"),
+                    );
                 }
             }
         }
+        self.pending_bubbles.extend(bubbles);
         self.selected = next_sibling.clone();
         self.selection.clear();
         self.stroke = None;
@@ -196,6 +223,7 @@ impl FileTreeModel {
         };
         let mut new_paths = Vec::new();
         let mut rebases: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let mut bubbles: Vec<BubbleRequest> = Vec::new();
         for src in &clipboard.paths {
             let result = match clipboard.mode {
                 ClipboardMode::Copy => tree.copy_entry(src, &target_parent),
@@ -209,10 +237,13 @@ impl FileTreeModel {
                     new_paths.push(new_path);
                 }
                 Err(error) => {
-                    eprintln!(
-                        "粘贴失败：{} → {}：{error}",
-                        src.display(),
-                        target_parent.display()
+                    bubbles.push(
+                        BubbleRequest::error(format!(
+                            "粘贴失败：{} → {}：{error}",
+                            src.display(),
+                            target_parent.display()
+                        ))
+                        .dedupe("file_tree.paste"),
                     );
                 }
             }
@@ -224,10 +255,17 @@ impl FileTreeModel {
         }
         if !new_paths.is_empty() {
             if let Err(error) = tree.expand(&target_parent) {
-                eprintln!("粘贴后展开目录失败：{}：{error}", target_parent.display());
+                bubbles.push(
+                    BubbleRequest::error(format!(
+                        "粘贴后展开目录失败：{}：{error}",
+                        target_parent.display()
+                    ))
+                    .dedupe("file_tree.expand"),
+                );
             }
             self.selected = Some(target_parent);
         }
+        self.pending_bubbles.extend(bubbles);
         FileTreeOutcome::Paste { rebases }
     }
 
@@ -290,7 +328,10 @@ impl FileTreeModel {
                 }
             }
         } else if let Err(error) = tree.expand(&selected) {
-            eprintln!("展开目录失败：{}：{error}", selected.display());
+            self.pending_bubbles.push(
+                BubbleRequest::error(format!("展开目录失败：{}：{error}", selected.display()))
+                    .dedupe("file_tree.expand"),
+            );
         }
     }
 
@@ -307,7 +348,13 @@ impl FileTreeModel {
         match kind {
             EntryKind::Directory => {
                 if let Err(error) = tree.toggle(&selected) {
-                    eprintln!("切换目录展开失败：{}：{error}", selected.display());
+                    self.pending_bubbles.push(
+                        BubbleRequest::error(format!(
+                            "切换目录展开失败：{}：{error}",
+                            selected.display()
+                        ))
+                        .dedupe("file_tree.toggle"),
+                    );
                 }
                 FileTreeOutcome::ToggledDir
             }
@@ -399,7 +446,12 @@ fn parse_new_entry_input(input: &str) -> Option<(String, EntryKind)> {
     Some((path.to_string(), kind))
 }
 
-fn expand_parent_chain(tree: &mut ProjectTree, base: &Path, path: &Path) {
+fn expand_parent_chain(
+    tree: &mut ProjectTree,
+    base: &Path,
+    path: &Path,
+    bubbles: &mut Vec<BubbleRequest>,
+) {
     let Some(target_parent) = path.parent() else {
         return;
     };
@@ -418,7 +470,10 @@ fn expand_parent_chain(tree: &mut ProjectTree, base: &Path, path: &Path) {
     dirs.reverse();
     for dir in dirs {
         if let Err(error) = tree.expand(&dir) {
-            eprintln!("展开目录失败：{}：{error}", dir.display());
+            bubbles.push(
+                BubbleRequest::error(format!("展开目录失败：{}：{error}", dir.display()))
+                    .dedupe("file_tree.expand"),
+            );
             break;
         }
     }

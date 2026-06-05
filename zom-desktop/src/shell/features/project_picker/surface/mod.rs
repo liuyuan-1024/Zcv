@@ -15,14 +15,15 @@ use gpui::{
 };
 
 use crate::app::App;
+use crate::editor::TextEditorSlot;
 use crate::focus::AppFocus;
-use crate::shell::editor::TextEditorSlot;
-use crate::shell::shared::theme::{color, radius, space};
 use crate::shell::surfaces::{
-    SurfaceAnchor, SurfaceId, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
+    SurfaceAnchor, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
 };
 use crate::shell::{KeyRequest, normalized_chord};
 use crate::text_target::TextTargetOwner;
+use crate::theme::{color, radius, space};
+use crate::ui_id::SurfaceId;
 
 use super::recent::{RecentProject, RecentProjects};
 use super::{
@@ -107,6 +108,11 @@ impl ProjectPickerRuntime {
         self.recent.borrow_mut().remove(id);
     }
 
+    /// 取走最近项目持久化层累积的人类可读警告。
+    pub(crate) fn take_recent_warnings(&self) -> Vec<String> {
+        self.recent.borrow_mut().take_warnings()
+    }
+
     pub(crate) fn set_key_request(&self, key_request: KeyRequest) {
         *self.key_request.borrow_mut() = Some(key_request);
     }
@@ -156,7 +162,6 @@ impl ProjectPickerRuntime {
 pub(crate) fn request(
     runtime: ProjectPickerRuntime,
     actions: ProjectPickerActions,
-    _initial_mode: ProjectPickerInitialMode,
 ) -> SurfaceRequest {
     let focus = runtime.focus.clone();
     let key_request = Rc::clone(&runtime.key_request);

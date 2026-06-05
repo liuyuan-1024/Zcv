@@ -48,6 +48,7 @@ pub fn run(app: App) {
                     cx.activate(true);
                     window.focus(&shell_view.editor_focus());
                     shell_view.install_feature_listeners(window, cx);
+                    shell_view.flush_startup_bubbles(window, cx);
 
                     // 开发阶段：启动即打开固定项目，方便测试。
                     // 走与选择器完全相同的打开流程；release 构建不编译此分支。
@@ -55,6 +56,7 @@ pub fn run(app: App) {
                     shell_view.open_project(
                         std::path::PathBuf::from("/Users/liuyuan/project/liuyuan/zom"),
                         window,
+                        cx,
                     );
                 })
                 .expect("GPUI 主窗口应能激活");

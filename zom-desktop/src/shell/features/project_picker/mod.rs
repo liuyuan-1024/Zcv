@@ -12,9 +12,9 @@ use std::rc::Rc;
 use gpui::{AnyElement, IntoElement};
 use zom_command::commands::project_picker as project_picker_commands;
 
+use crate::editor::TextEditorSlot;
 use crate::shell::CommandTitleLookup;
 use crate::shell::ShortcutLookup;
-use crate::shell::editor::TextEditorSlot;
 use crate::shell::shared::Glyph;
 use crate::shell::surfaces::track_surface_anchor;
 

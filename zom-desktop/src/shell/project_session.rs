@@ -10,8 +10,10 @@ use std::process::Command;
 use std::rc::Rc;
 
 use gpui::{Entity, Window};
+use zom_command::BubbleRequest;
 
 use crate::app::App;
+use crate::shell::bubble::BubbleRuntime;
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
 use crate::shell::features::project_picker::ProjectPickerRuntime;
 use crate::shell::platform::project as platform_project;
@@ -24,6 +26,7 @@ pub(crate) fn open_local_project(
     surfaces: &Entity<SurfaceManager>,
     file_tree: FileTreeRuntime,
     project_picker: ProjectPickerRuntime,
+    bubbles: Entity<BubbleRuntime>,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -31,17 +34,33 @@ pub(crate) fn open_local_project(
     let selection = platform_project::prompt_for_local_project(cx);
     window
         .spawn(cx, async move |cx| {
-            let Some(project_root) = selection.await else {
-                return;
+            let project_root = match selection.await {
+                Ok(Some(path)) => path,
+                Ok(None) => return,
+                Err(message) => {
+                    let bubbles_for_error = bubbles.clone();
+                    cx.update(|_, cx| {
+                        bubbles_for_error.update(cx, |runtime, cx| {
+                            runtime.push(
+                                BubbleRequest::error(message).dedupe("project.open_local"),
+                                cx,
+                            );
+                        });
+                    })
+                    .ok();
+                    return;
+                }
             };
-            if let Err(error) = cx.update(|window, _| {
+            if let Err(error) = cx.update(|window, cx| {
                 apply_local_project_open(
                     &app,
                     &workbench,
                     &file_tree,
                     &project_picker,
+                    &bubbles,
                     project_root,
                     window,
+                    cx,
                 );
             }) {
                 eprintln!("打开本地项目失败：{error}");
@@ -56,6 +75,7 @@ pub(crate) fn open_recent_project(
     surfaces: &Entity<SurfaceManager>,
     file_tree: FileTreeRuntime,
     project_picker: ProjectPickerRuntime,
+    bubbles: Entity<BubbleRuntime>,
     project_root: PathBuf,
     repo: Option<String>,
     window: &mut Window,
@@ -68,9 +88,11 @@ pub(crate) fn open_recent_project(
             &workbench,
             &file_tree,
             &project_picker,
+            &bubbles,
             project_root,
             repo,
             window,
+            cx,
         );
     } else {
         apply_local_project_open(
@@ -78,8 +100,10 @@ pub(crate) fn open_recent_project(
             &workbench,
             &file_tree,
             &project_picker,
+            &bubbles,
             project_root,
             window,
+            cx,
         );
     }
 }
@@ -90,6 +114,7 @@ pub(crate) fn clone_git_project(
     surfaces: &Entity<SurfaceManager>,
     file_tree: FileTreeRuntime,
     project_picker: ProjectPickerRuntime,
+    bubbles: Entity<BubbleRuntime>,
     repo: String,
     window: &mut Window,
     cx: &mut gpui::App,
@@ -98,26 +123,49 @@ pub(crate) fn clone_git_project(
     let selection = platform_project::prompt_for_clone_parent(cx);
     window
         .spawn(cx, async move |cx| {
-            let Some(parent) = selection.await else {
-                return;
+            let parent = match selection.await {
+                Ok(Some(path)) => path,
+                Ok(None) => return,
+                Err(message) => {
+                    let bubbles_for_error = bubbles.clone();
+                    cx.update(|_, cx| {
+                        bubbles_for_error.update(cx, |runtime, cx| {
+                            runtime.push(BubbleRequest::error(message).dedupe("project.clone"), cx);
+                        });
+                    })
+                    .ok();
+                    return;
+                }
             };
             let destination = parent.join(infer_repo_directory_name(&repo));
             let repo_for_clone = repo.clone();
             let destination_for_clone = destination.clone();
             let clone_result = clone_repo(&repo_for_clone, destination_for_clone);
             if let Err(error) = clone_result {
-                eprintln!("克隆 Git 项目失败：{error}");
+                let bubbles_for_error = bubbles.clone();
+                cx.update(|_, cx| {
+                    bubbles_for_error.update(cx, |runtime, cx| {
+                        runtime.push(
+                            BubbleRequest::error(format!("克隆 Git 项目失败：{error}"))
+                                .dedupe("project.clone"),
+                            cx,
+                        );
+                    });
+                })
+                .ok();
                 return;
             }
-            if let Err(error) = cx.update(|window, _| {
+            if let Err(error) = cx.update(|window, cx| {
                 apply_git_project_open(
                     &app,
                     &workbench,
                     &file_tree,
                     &project_picker,
+                    &bubbles,
                     destination,
                     repo,
                     window,
+                    cx,
                 );
             }) {
                 eprintln!("打开克隆项目失败：{error}");
@@ -136,13 +184,20 @@ pub(crate) fn apply_local_project_open(
     workbench: &Rc<RefCell<WorkbenchController>>,
     file_tree: &FileTreeRuntime,
     project_picker: &ProjectPickerRuntime,
+    bubbles: &Entity<BubbleRuntime>,
     project_root: PathBuf,
     window: &mut Window,
+    cx: &mut gpui::App,
 ) {
     if !project_root.is_dir() {
-        eprintln!(
-            "打开本地项目失败：项目目录不存在或无效 {}",
-            project_root.display()
+        push_bubble(
+            bubbles,
+            cx,
+            format!(
+                "打开本地项目失败：项目目录不存在或无效 {}",
+                project_root.display()
+            ),
+            "project.open_local",
         );
         return;
     }
@@ -151,6 +206,7 @@ pub(crate) fn apply_local_project_open(
     app.borrow_mut().open_project(project_root.clone());
     project_picker.remember_project(project_root, None);
     file_tree.reveal_after_project_open(workbench, window);
+    drain_open_bubbles(app, project_picker, bubbles, cx);
     window.refresh();
 }
 
@@ -159,14 +215,21 @@ fn apply_git_project_open(
     workbench: &Rc<RefCell<WorkbenchController>>,
     file_tree: &FileTreeRuntime,
     project_picker: &ProjectPickerRuntime,
+    bubbles: &Entity<BubbleRuntime>,
     project_root: PathBuf,
     repo: String,
     window: &mut Window,
+    cx: &mut gpui::App,
 ) {
     if !project_root.is_dir() {
-        eprintln!(
-            "打开 Git 项目失败：项目目录不存在或无效 {}",
-            project_root.display()
+        push_bubble(
+            bubbles,
+            cx,
+            format!(
+                "打开 Git 项目失败：项目目录不存在或无效 {}",
+                project_root.display()
+            ),
+            "project.open_git",
         );
         return;
     }
@@ -175,7 +238,36 @@ fn apply_git_project_open(
     app.borrow_mut().open_project(project_root.clone());
     project_picker.remember_project(project_root, Some(repo));
     file_tree.reveal_after_project_open(workbench, window);
+    drain_open_bubbles(app, project_picker, bubbles, cx);
     window.refresh();
+}
+
+fn push_bubble(
+    bubbles: &Entity<BubbleRuntime>,
+    cx: &mut gpui::App,
+    message: String,
+    dedupe: &'static str,
+) {
+    bubbles.update(cx, |runtime, cx| {
+        runtime.push(BubbleRequest::error(message).dedupe(dedupe), cx);
+    });
+}
+
+/// 把 workspace session 与 project picker 累积的气泡一并落到 BubbleRuntime。
+fn drain_open_bubbles(
+    app: &Rc<RefCell<App>>,
+    project_picker: &ProjectPickerRuntime,
+    bubbles: &Entity<BubbleRuntime>,
+    cx: &mut gpui::App,
+) {
+    let mut requests = Vec::new();
+    requests.extend(app.borrow_mut().take_session_bubbles());
+    for warning in project_picker.take_recent_warnings() {
+        requests.push(BubbleRequest::error(warning).dedupe("project.recent"));
+    }
+    for request in requests {
+        bubbles.update(cx, |runtime, cx| runtime.push(request, cx));
+    }
 }
 
 fn dismiss_project_picker(

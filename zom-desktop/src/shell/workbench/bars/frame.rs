@@ -10,7 +10,7 @@
 
 use gpui::{Div, div, prelude::*};
 
-use crate::shell::shared::theme::{color, space, typography};
+use crate::theme::{color, space, typography};
 
 #[derive(Clone, Copy)]
 pub(crate) enum BarEdge {

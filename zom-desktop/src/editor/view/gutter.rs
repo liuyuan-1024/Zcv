@@ -19,7 +19,7 @@
 
 use gpui::{Bounds, ContentMask, Hsla, Pixels, ShapedLine, TextRun, Window, point, px, size};
 
-use crate::shell::shared::theme::color;
+use crate::theme::color;
 
 /// 数字列与正文之间的间距。
 const GAP: f32 = 12.0;

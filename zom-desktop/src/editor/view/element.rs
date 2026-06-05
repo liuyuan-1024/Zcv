@@ -1,7 +1,7 @@
 //! 可嵌入编辑器渲染图元 —— 唯一的编辑器实现（借鉴 Zed 的 `EditorElement`）。
 //!
 //! 单行输入框与主编辑区不是两种编辑器，而是同一个
-//! [`EditorKernel`](crate::shell::editor::EditorKernel) 按能力开关创建出的两个形态；本文件只
+//! [`EditorKernel`](crate::editor::EditorKernel) 按能力开关创建出的两个形态；本文件只
 //! 消费内核传下来的能力开关并完成 GPUI 绘制。
 //!
 //! 文本与光标分层绘制：每帧把视口内每行 shape 成 [`ShapedLine`]，文本只随
@@ -41,12 +41,13 @@ use gpui::{
 use zom_engine::{SelectionSet, TextRange};
 use zom_view::{RevealKind, ViewportState, VisualPosition, WrapMap};
 
-use crate::shell::shared::theme::color;
+use crate::editor::highlight::Decoration;
+use crate::editor::text::snapshot::{RevealHint, SnapshotLine};
+use crate::theme::color;
 
-use crate::shell::editor::highlight::{self, Composition, Decoration};
-use crate::shell::editor::input::CaretLayout;
-use crate::shell::editor::kernel::EditorKernel;
-use crate::shell::editor::snapshot::{RevealHint, SnapshotLine};
+use crate::editor::highlight::compose::{Composition, compose};
+use crate::editor::input::CaretLayout;
+use crate::editor::kernel::EditorKernel;
 
 use super::blink::CaretClock;
 use super::gutter;
@@ -459,7 +460,7 @@ impl Element for EditorElement {
         let Composition {
             foreground: highlight_runs,
             background: range_backgrounds,
-        } = highlight::compose(std::mem::take(&mut self.decorations));
+        } = compose(std::mem::take(&mut self.decorations));
 
         // SelectionSet 经过引擎归一化，as_slice() 已按 start 排序、互不重叠。
         // primary 在归一化前后由 primary_index 跟踪。

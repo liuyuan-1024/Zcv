@@ -13,7 +13,7 @@
 use gpui::{Div, Pixels, Rgba, Stateful, Svg, div, prelude::*, px, rgb, svg};
 
 use crate::shell::ActionRequest;
-use crate::shell::shared::theme::{color, radius, space};
+use crate::theme::{color, radius, space};
 
 /// 顶栏三个窗口控制圆点共享的动作回调包。新加窗控按钮就在这里加字段。
 pub(crate) struct WindowControlsHandlers {

@@ -1,10 +1,10 @@
 use zom_command::{EditTarget, KeyContext};
 
 use super::recent::RecentProject;
-use crate::focus::AppFocus;
-use crate::shell::editor::{
+use crate::editor::text::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
 };
+use crate::focus::AppFocus;
 use crate::text_target::{TextTargetOwner, TextTargetQuery};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

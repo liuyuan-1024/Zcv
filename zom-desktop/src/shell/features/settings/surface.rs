@@ -13,10 +13,11 @@ use crate::config::{AppConfig, SettingsChange};
 use crate::shell::KeyRequest;
 use crate::shell::normalized_chord;
 use crate::shell::shared::scroll;
-use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::surfaces::{
-    SurfaceAnchor, SurfaceId, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
+    SurfaceAnchor, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
 };
+use crate::theme::{color, radius, space, typography};
+use crate::ui_id::SurfaceId;
 
 #[derive(Clone, Debug)]
 pub(crate) struct SettingsPanelState {

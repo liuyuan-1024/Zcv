@@ -7,6 +7,5 @@ pub(crate) mod glyph;
 pub(crate) mod interaction;
 pub(crate) mod keyboard;
 pub(crate) mod scroll;
-pub(crate) mod theme;
 
 pub(crate) use glyph::Glyph;

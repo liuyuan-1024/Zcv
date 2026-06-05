@@ -7,14 +7,15 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, Div, FocusHandle, SharedString, div, prelude::*};
 
-use crate::shell::editor::TextEditorSlot;
+use crate::editor::TextEditorSlot;
 use crate::shell::features::panels::file_tree::FileTreePanel;
 use crate::shell::features::panels::search::SearchState;
-use crate::shell::features::panels::{PanelId, PanelRuntimes, file_tree};
-use crate::shell::shared::theme::{color, typography};
+use crate::shell::features::panels::{PanelRuntimes, file_tree};
 use crate::shell::{
     CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup, normalized_chord,
 };
+use crate::theme::{color, typography};
+use crate::ui_id::PanelId;
 
 /// Dock 调用 `PanelHost` 时透传给具体 panel 的运行态视图。
 ///

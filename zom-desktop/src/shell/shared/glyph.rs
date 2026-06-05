@@ -9,7 +9,7 @@ use gpui::{
     prelude::*, svg,
 };
 
-use crate::shell::shared::theme::{color, radius, space, typography};
+use crate::theme::{color, radius, space, typography};
 
 #[derive(Clone)]
 enum GlyphContent {

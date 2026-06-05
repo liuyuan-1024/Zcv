@@ -1,10 +1,8 @@
 //! syntax producer——把任意「挂着语法高亮的 buffer」的 layer 与视口相交的
 //! span 翻译为 Foreground Decoration。
 //!
-//! `highlight name → 字色` 在 producer 端按 theme 解析（详见
-//! [`crate::shell::editor::highlight`] 模块顶部的 `Resolved` 说明，与高亮架构
-//! 手册 §七）。落 Decoration 时用 [`DecorationStyle::Resolved`]，composer 不再
-//! 二次查表。
+//! `highlight name → 字色` 的解析归 shell composer；producer 只把语法高亮名
+//! 保留在 [`StyleClass::Syntax`] 里，避免应用域知道主题实现。
 //!
 //! 入参是裸的 [`MetadataLayers<HighlightSpan>`]——既兼容主工作区的
 //! [`zom_workspace::WorkspaceBuffer`]，又兼容嵌入式的
@@ -14,9 +12,8 @@
 use zom_engine::{ByteOffset, MetadataLayers, TextRange};
 use zom_workspace::syntax::{HighlightSpan, syntax_layer_kind};
 
-use crate::shell::editor::highlight::{Decoration, DecorationKind, DecorationStyle, priority};
-use crate::shell::editor::snapshot::SnapshotLine;
-use crate::shell::shared::theme::syntax;
+use crate::editor::highlight::{Decoration, DecorationKind, DecorationStyle, StyleClass, priority};
+use crate::editor::text::snapshot::SnapshotLine;
 
 pub(crate) fn push(
     layers: &MetadataLayers<HighlightSpan>,
@@ -28,11 +25,10 @@ pub(crate) fn push(
     };
     let kind = syntax_layer_kind();
     for entry in layers.ranges_for_kind_intersecting(&kind, query_range) {
-        let color = syntax::color_for(entry.metadata().name.as_str());
         out.push(Decoration {
             range: entry.range(),
             kind: DecorationKind::Foreground,
-            style: DecorationStyle::Resolved(color),
+            style: DecorationStyle::Named(StyleClass::Syntax(entry.metadata().name.to_string())),
             priority: priority::SYNTAX_BASE,
         });
     }

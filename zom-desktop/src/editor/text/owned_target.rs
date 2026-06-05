@@ -3,8 +3,8 @@
 use zom_command::EditTarget;
 use zom_engine::{Buffer, BufferConfig, ByteOffset, Selection, SelectionSet};
 
-use crate::shell::editor::input::{ImeQueryTarget, ImeTarget};
-use crate::shell::editor::snapshot::{EditorSnapshot, EditorSnapshotRequest, build_snapshot};
+use crate::editor::text::snapshot::build_snapshot;
+use crate::editor::text::{EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget};
 
 /// 一个独立的文本编辑目标：自持 buffer 与选区。
 pub(crate) struct OwnedEditorTarget {

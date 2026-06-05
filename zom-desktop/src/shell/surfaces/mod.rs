@@ -10,13 +10,11 @@ mod shell;
 use gpui::{AnyElement, Corner, ElementId, FocusHandle, Pixels, Point};
 use std::rc::Rc;
 
+use crate::ui_id::SurfaceId;
+
 pub(crate) use anchor_registry::{SurfaceAnchorRegistry, track_surface_anchor};
 pub(crate) use manager::{ActiveSurface, SurfaceManager};
 pub(crate) use shell::SurfaceShell;
-
-// `SurfaceId` 的定义在 [`crate::ui_id`]，这里 re-export 让
-// `crate::shell::surfaces::SurfaceId` 这一历史路径继续可用。
-pub(crate) use crate::ui_id::SurfaceId;
 
 /// Surface 的定位依据。当前只用召唤它的入口元素。
 #[derive(Clone, Debug, Eq, PartialEq)]

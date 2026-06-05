@@ -4,10 +4,10 @@
 
 use gpui::{Div, div, prelude::*};
 
-use crate::shell::features::panels::PanelId;
-use crate::shell::shared::theme::{color, typography};
 use crate::shell::workbench::state::{DockAreaId, DockState};
 use crate::shell::workbench::{PanelContext, PanelHost};
+use crate::theme::{color, typography};
+use crate::ui_id::PanelId;
 
 use super::resize::{self, DockResizeRequest};
 use super::{DockEdge, dock_frame};

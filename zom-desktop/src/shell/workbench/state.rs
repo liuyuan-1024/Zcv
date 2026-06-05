@@ -8,7 +8,7 @@
 
 use gpui::Pixels;
 
-use crate::shell::features::panels::PanelId;
+use crate::ui_id::PanelId;
 
 /// 三种停靠区域（布局模型 5）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

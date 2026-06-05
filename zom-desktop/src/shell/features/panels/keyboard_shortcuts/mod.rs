@@ -7,9 +7,9 @@ use gpui::{
 };
 
 use crate::shell::shared::scroll;
-use crate::shell::shared::theme::{color, space, typography};
 use crate::shell::workbench::docks::render_focus_host;
 use crate::shell::{CommandCatalogLookup, KeyRequest, ShortcutLookup};
+use crate::theme::{color, space, typography};
 use zom_command::CommandCatalogItem;
 
 #[derive(Clone)]

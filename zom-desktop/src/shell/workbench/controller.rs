@@ -6,7 +6,7 @@
 use super::docks::resize::{DockResize, DockResizeBounds, DockResizeEvent};
 use super::docks::{bottom, left, right};
 use super::state::{BottomBarState, DockAreaId, DockState, PanelStack, WorkbenchState};
-use crate::shell::features::panels::PanelId;
+use crate::ui_id::PanelId;
 
 use gpui::{Pixels, px};
 
@@ -128,11 +128,11 @@ impl Default for WorkbenchController {
 mod tests {
     //! Workbench 窗口 UI 状态测试。
 
-    use crate::shell::features::panels::PanelId;
-    use crate::shell::shared::theme;
     use crate::shell::workbench::controller::WorkbenchController;
     use crate::shell::workbench::docks::resize::{DockResizeBounds, DockResizeEvent};
     use crate::shell::workbench::state::DockAreaId;
+    use crate::theme;
+    use crate::ui_id::PanelId;
     use gpui::{Pixels, point, px};
 
     #[test]

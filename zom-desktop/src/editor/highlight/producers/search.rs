@@ -7,9 +7,7 @@
 
 use zom_workspace::WorkspaceBuffer;
 
-use crate::shell::editor::highlight::{
-    Decoration, DecorationKind, DecorationStyle, StyleClass, priority,
-};
+use crate::editor::highlight::{Decoration, DecorationKind, DecorationStyle, StyleClass, priority};
 
 pub(crate) fn push(buffer: &WorkspaceBuffer, out: &mut Vec<Decoration>) {
     let search = buffer.search();

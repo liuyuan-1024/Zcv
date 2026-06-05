@@ -35,11 +35,12 @@ use self::text_target_runtime::TextTargetRuntime;
 use crate::config::{AppConfig, SettingsChange};
 use crate::dispatch::KeyDispatchOutcome;
 use crate::focus::{AppFocus, FileTreeFocus, FocusStore, PanelSubFocus};
-use crate::ports::{FramePump, PostEditObserver};
-#[cfg(test)]
-use crate::shell::features::panels::file_tree::{FileTreeModel, FileTreeState};
-use crate::shell::surfaces::SurfaceId;
+use crate::ports::{
+    FileTreeAction, FileTreeActionResult, FileTreeHost, FramePump, PostEditObserver, SearchAction,
+    SearchHost,
+};
 use crate::text_target::{EditorRouter, EditorRouterMut, TextTargetOwner};
+use crate::ui_id::SurfaceId;
 use crate::workspace_session::WorkspaceSession;
 
 pub struct App {
@@ -50,8 +51,8 @@ pub struct App {
     focus: FocusStore,
     project_root: Option<PathBuf>,
     text_targets: TextTargetRuntime,
-    #[cfg(test)]
-    file_tree: FileTreeModel,
+    file_tree: Option<Box<dyn FileTreeHost>>,
+    search: Option<Box<dyn SearchHost>>,
 }
 
 impl App {
@@ -81,18 +82,17 @@ impl App {
             focus: FocusStore::new(AppFocus::project_picker()),
             project_root: None,
             text_targets: TextTargetRuntime::new(),
-            #[cfg(test)]
-            file_tree: FileTreeModel::new(),
+            file_tree: None,
+            search: None,
         }
     }
 
     /// 把一个 shell runtime 持有的可嵌入编辑器 owner 注册进路由表。
-    /// 由 [`ShellView::new`] 在装配阶段调；运行期通常不会再注册。
+    /// 由 shell 根视图在装配阶段调；运行期通常不会再注册。
     ///
     /// `Rc` 的生命周期归 runtime（真正拥有者）；本结构只持一份共享引用，
     /// 在路由阶段借出做 query / IME 写入。
     ///
-    /// [`ShellView::new`]: crate::shell::view::ShellView
     pub(crate) fn install_editor_owner(&mut self, owner: Rc<RefCell<dyn TextTargetOwner>>) {
         self.text_targets.install_editor_owner(owner);
     }
@@ -110,6 +110,18 @@ impl App {
         self.background.install_frame_pump(pump);
     }
 
+    /// 注册文件树动作端口。文件树模型归 shell feature runtime 持有；
+    /// app 只通过这个端口组合命令动作与 [`WorkspaceSession`]。
+    pub(crate) fn install_file_tree_host(&mut self, host: Box<dyn FileTreeHost>) {
+        self.file_tree = Some(host);
+    }
+
+    /// 注册搜索动作端口。搜索输入状态归 search feature runtime 持有；
+    /// app 在命令 effect 落地时带着 workspace/view 会话调用它。
+    pub(crate) fn install_search_host(&mut self, host: Box<dyn SearchHost>) {
+        self.search = Some(host);
+    }
+
     /// 共享的软换行 cell——多行 [`EditorKernel`] 在装配时借这份 `Rc`。
     /// 一次写入对所有持有者立刻可见，下一帧 element 就走新渲染路径。
     pub(crate) fn soft_wrap_handle(&self) -> Rc<Cell<bool>> {
@@ -119,17 +131,27 @@ impl App {
     /// 翻转全局软换行。同时更新 [`AppConfig`] 字段并落盘——「切一次软换行」就是「改一次默认值」。
     /// 内存模式（`config_path` 为 `None`）仍在内存里翻，只是 save 是 no-op。
     pub(crate) fn toggle_soft_wrap(&mut self) {
-        self.config.toggle_soft_wrap();
+        if let Err(error) = self.config.toggle_soft_wrap() {
+            self.session
+                .push_bubble(zom_command::BubbleRequest::error(error).dedupe("config.save"));
+        }
     }
 
     /// 把真实的 config.toml 打开到主编辑区。首次打开前先保存当前配置，保证文件存在；
     /// 后续语言识别、语法高亮、保存都走主工作区的普通文件路径。
     pub(crate) fn open_config_file(&mut self) -> bool {
         let Some(path) = self.config.path() else {
-            eprintln!("当前为内存配置模式，没有可打开的 config.toml");
+            self.session.push_bubble(
+                zom_command::BubbleRequest::info("当前为内存配置模式，没有可打开的 config.toml")
+                    .dedupe("config.open"),
+            );
             return false;
         };
-        self.config.save();
+        if let Err(error) = self.config.save() {
+            self.session
+                .push_bubble(zom_command::BubbleRequest::error(error).dedupe("config.save"));
+            return false;
+        }
         if !self.session.open_file(path) {
             return false;
         }
@@ -148,7 +170,18 @@ impl App {
     pub(crate) fn apply_settings_change(&mut self, change: SettingsChange) {
         self.config.apply_change(change);
         ConfigApplier::apply_to_session(self.config.config(), &mut self.session);
-        self.config.save();
+        if let Err(error) = self.config.save() {
+            self.session
+                .push_bubble(zom_command::BubbleRequest::error(error).dedupe("config.save"));
+        }
+    }
+
+    /// 把启动期累积的配置加载诊断收纳到 session 气泡队列，等待下一次 drain。
+    pub(crate) fn pump_config_load_warnings(&mut self) {
+        for warning in self.config.take_load_warnings() {
+            self.session
+                .push_bubble(zom_command::BubbleRequest::error(warning).dedupe("config.load"));
+        }
     }
 
     pub(crate) fn focus(&self) -> &FocusStore {
@@ -211,16 +244,11 @@ impl App {
 
     /// 把指定 root 切成当前活动项目：重建 workspace / view、聚焦编辑区。
     ///
-    /// **不**负责把 root 写到"最近项目"列表 —— 那是 picker 自家的 UI 数据，归
-    /// shell 侧的 [`ProjectPickerRuntime`] 拥有；shell 在调用本方法后再调
-    /// `runtime.remember_project(root, repo)` 完成登记，repo 信息也由 shell 持有。
-    ///
-    /// [`ProjectPickerRuntime`]: crate::shell::features::project_picker::ProjectPickerRuntime
+    /// **不**负责把 root 写到"最近项目"列表 —— 那是 picker 自家的 UI 数据，归 project picker runtime 拥有；
+    /// shell 在调用本方法后再调 `runtime.remember_project(root, repo)` 完成登记，repo 信息也由 shell 持有。
     pub(crate) fn open_project(&mut self, root: PathBuf) {
         self.project_root = Some(root.clone());
         self.session.reset_project(self.config.buffer_config());
-        #[cfg(test)]
-        self.file_tree.open_project(root);
         // 项目打开后焦点转入编辑区。生产里 picker 关闭后由 shell 的dismiss + 反向同步刷到这里；
         // 这里显式写一遍是给 App-only 单测兜底。
         self.request_focus(AppFocus::editor());
@@ -252,46 +280,29 @@ impl App {
         self.session.workspace()
     }
 
-    pub(crate) fn with_workspace_views_mut<R>(
-        &mut self,
-        f: impl FnOnce(&mut Workspace, &mut ViewSet) -> R,
-    ) -> R {
-        let (workspace, views) = self.session.parts_mut();
-        f(workspace, views)
-    }
-
-    pub(crate) fn with_workspace_session_mut<R>(
-        &mut self,
-        f: impl FnOnce(&mut WorkspaceSession) -> R,
-    ) -> R {
-        f(&mut self.session)
+    /// 取走 session 累积的气泡请求；调用方负责把它们落到 BubbleRuntime。
+    pub(crate) fn take_session_bubbles(&mut self) -> Vec<zom_command::BubbleRequest> {
+        self.session.take_bubbles()
     }
 
     pub(crate) fn with_workspace_views<R>(&self, f: impl FnOnce(&Workspace, &ViewSet) -> R) -> R {
         f(self.session.workspace(), self.session.views())
     }
 
-    #[cfg(test)]
-    fn file_tree_mut(&mut self) -> &mut FileTreeModel {
-        &mut self.file_tree
+    pub(crate) fn apply_search_action(&mut self, action: SearchAction) {
+        if let Some(search) = &self.search {
+            search.apply_search_action(action, &mut self.session);
+        }
     }
 
-    #[cfg(test)]
-    fn file_tree_state(&self) -> FileTreeState {
-        self.file_tree.state(self.session.workspace())
-    }
-
-    #[cfg(test)]
-    fn with_file_tree(
+    pub(crate) fn apply_file_tree_action(
         &mut self,
-        f: impl FnOnce(&mut FileTreeModel) -> crate::shell::features::panels::file_tree::FileTreeOutcome,
-    ) -> crate::shell::features::panels::file_tree::FileTreeActivation {
-        let outcome = f(&mut self.file_tree);
-        crate::shell::features::panels::file_tree::apply_outcome(
-            &mut self.file_tree,
-            outcome,
-            &mut self.session,
-        )
+        action: FileTreeAction,
+    ) -> FileTreeActionResult {
+        let Some(file_tree) = &self.file_tree else {
+            return FileTreeActionResult::default();
+        };
+        file_tree.apply_file_tree_action(action, &mut self.session)
     }
 
     /// 派发一次命令调用。
@@ -381,8 +392,8 @@ impl App {
                 PanelSubFocus::Bare => vec![KeyContext::global()],
             },
             AppFocus::Surface(s) => match s.surface {
-                // picker focus 永远在 query 输入框上，picker 自己的 key context 由
-                // [`ProjectPickerModel::key_contexts`] 通过 text_target router 提供；
+                // picker focus 永远在 query 输入框上，
+                // picker 自己的 key context 由 text target owner 通过 router 提供；
                 // 这里只兜底返回 global。
                 SurfaceId::ProjectPicker => vec![KeyContext::global()],
                 SurfaceId::Settings => vec![KeyContext::settings(), KeyContext::global()],
@@ -482,7 +493,7 @@ impl App {
     /// 原本 search 的"收割后台命中"是这里第一个登记者，
     /// 后续 feature 想做同节奏的 drain 也走同一注册路径——BackgroundPumps 不认具体 feature。
     ///
-    /// 统一在 [`crate::shell::view::ShellView::render`] 拍点驱动。
+    /// 统一由 shell 根视图的 render 拍点驱动。
     ///
     /// [`install_frame_pump`]: Self::install_frame_pump
     pub fn pump_frame_observers(&mut self) {
@@ -613,18 +624,15 @@ impl Default for App {
 mod tests {
     //! `App` 派发管线的 headless 单元测试。
     //!
-    //! 这一层不接触 GPUI ——只覆盖 keymap 解析、命令派发、IME 流，以及
-    //! 命令产出的 HostEffect。需要 GPUI 句柄（Entity / Window / 焦点等）的链路
-    //! 在 `shell::view` 那一层做手工 / 集成测试，不进本文件。
+    //! 这一层不接触 GPUI ——只覆盖 keymap 解析、命令派发、IME 流，以及命令产出的 HostEffect。
+    //! 需要 GPUI 句柄（Entity / Window / 焦点等）的链路在 shell 根视图那一层做手工 / 集成测试，不进本文件。
 
     use crate::app::App;
     use crate::config::{SettingsChange, THEME_ONE_DARK};
     use crate::editor_state::{EditorState, EditorTab, build_editor_state};
     use crate::focus::{AppFocus, FileTreeFocus};
-    use crate::shell::features::panels::PanelId;
-    use crate::shell::features::panels::file_tree::FileTreeActivation;
-    use crate::shell::features::project_picker::ProjectPickerModel;
-    use crate::text_target::TextTargetOwner;
+    use crate::text_target::{TextTargetOwner, TextTargetQuery};
+    use crate::ui_id::PanelId;
     use std::cell::RefCell;
     use std::fs::{File, create_dir_all};
     use std::path::PathBuf;
@@ -633,7 +641,7 @@ mod tests {
     use zom_command::commands::{
         diagnostics, editor, language_servers, project_picker as project_picker_commands, settings,
     };
-    use zom_workspace::EntryKind;
+    use zom_command::{EditTarget, KeyContext};
 
     /// 取当前活动标签——断言「编辑区正在显示哪个文件」用。
     fn active_tab(state: &EditorState) -> &EditorTab {
@@ -653,27 +661,60 @@ mod tests {
     }
 
     /// 构造一个已打开项目并激活了一个空文件的 `App`。
-    ///
-    /// 不再有默认空白 buffer，编辑管线测试必须先真实打开一个文件才有活动 buffer。
-    /// 复用 `project_fixture`：rows 为 `[root, src, README.md]`，走到 README.md
-    /// 并 activate。
     fn app_with_open_file(name: &str) -> App {
         let mut app = App::new();
-        app.open_project(project_fixture(name));
-        app.file_tree_mut().move_selection(1); // root
-        app.file_tree_mut().move_selection(1); // src
-        app.file_tree_mut().move_selection(1); // README.md
-        assert_eq!(
-            app.with_file_tree(|ft| ft.activate_selected()),
-            FileTreeActivation::OpenedFile
-        );
+        let root = project_fixture(name);
+        app.open_project(root.clone());
+        assert!(app.session.open_file(root.join("README.md")));
+        app.request_focus(AppFocus::editor());
         app
     }
 
-    /// 在 headless 测试里模拟 ProjectPickerRuntime 装配过：runtime 现在是
-    /// ProjectPickerModel 的真正拥有者，生产路径由 ShellView::new 注册 owner。
-    fn install_project_picker(app: &mut App) -> Rc<RefCell<ProjectPickerModel>> {
-        let picker = Rc::new(RefCell::new(ProjectPickerModel::new()));
+    struct StubProjectPickerOwner {
+        query: crate::editor::text::OwnedEditorTarget,
+    }
+
+    impl TextTargetQuery for StubProjectPickerOwner {
+        fn accepts_focus(&self, focus: AppFocus) -> bool {
+            focus == AppFocus::project_picker()
+        }
+
+        fn snapshot(&self, _focus: AppFocus) -> crate::editor::text::EditorSnapshot {
+            self.query
+                .snapshot(crate::editor::text::EditorSnapshotRequest::single_line())
+        }
+
+        fn key_contexts(&self) -> Vec<KeyContext> {
+            vec![
+                KeyContext::project_picker(),
+                KeyContext::text_edit(false, false),
+                KeyContext::global(),
+            ]
+        }
+
+        fn ime_query_target(
+            &self,
+            _focus: AppFocus,
+        ) -> Option<crate::editor::text::ImeQueryTarget<'_>> {
+            Some(self.query.as_ime_query_target())
+        }
+    }
+
+    impl TextTargetOwner for StubProjectPickerOwner {
+        fn ime_target(&mut self, _focus: AppFocus) -> Option<crate::editor::text::ImeTarget<'_>> {
+            Some(self.query.as_ime_target())
+        }
+
+        fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
+            Some(self.query.as_edit_target())
+        }
+    }
+
+    /// 在 headless 测试里模拟 project picker 注册过 text target owner。
+    fn install_project_picker(app: &mut App) -> Rc<RefCell<StubProjectPickerOwner>> {
+        let picker = Rc::new(RefCell::new(StubProjectPickerOwner {
+            query: crate::editor::text::OwnedEditorTarget::new(),
+        }));
         app.install_editor_owner(picker.clone() as Rc<RefCell<dyn TextTargetOwner>>);
         picker
     }
@@ -707,8 +748,9 @@ mod tests {
         assert_eq!(config.editor.font_size, 18);
         assert!(!config.editor.soft_wrap);
 
-        let loaded = crate::config::AppConfig::load(Some(&path));
+        let (loaded, warnings) = crate::config::AppConfig::load(Some(&path));
         assert_eq!(loaded, config);
+        assert!(warnings.is_empty());
 
         let _ = std::fs::remove_file(path);
     }
@@ -741,15 +783,9 @@ mod tests {
     fn editor_tab_size_setting_should_reach_open_buffers() {
         let mut app = App::new();
         app.apply_settings_change(SettingsChange::CycleEditorTabSize);
-        app.open_project(project_fixture("tab-size-setting"));
-        app.file_tree_mut().move_selection(1); // root
-        app.file_tree_mut().move_selection(1); // src
-        app.file_tree_mut().move_selection(1); // README.md
-
-        assert_eq!(
-            app.with_file_tree(|ft| ft.activate_selected()),
-            FileTreeActivation::OpenedFile
-        );
+        let root = project_fixture("tab-size-setting");
+        app.open_project(root.clone());
+        assert!(app.session.open_file(root.join("README.md")));
 
         let tab_width = app
             .workspace()
@@ -963,7 +999,7 @@ mod tests {
     }
 
     // RecentProjects 的 remember / remove / 落盘语义现在归 picker runtime 拥有，
-    // 单测落在 `shell::features::project_picker::recent::tests`，App 不再覆盖。
+    // 单测落在 project picker recent 模块，App 不再覆盖。
 
     #[test]
     fn language_server_status_command_should_emit_open_surface_window_action() {
@@ -1034,146 +1070,12 @@ mod tests {
     }
 
     #[test]
-    fn file_tree_move_selection_should_walk_visible_rows_in_order() {
-        let mut app = App::new();
-        app.open_project(project_fixture("move"));
-
-        assert!(app.file_tree_state().selected.is_none());
-
-        // rows: [root, src, README.md]
-        app.file_tree_mut().move_selection(1);
-        let state = app.file_tree_state();
-        assert_eq!(state.selected.as_ref(), Some(&state.rows[0].path));
-
-        app.file_tree_mut().move_selection(1);
-        let state = app.file_tree_state();
-        assert_eq!(state.selected.as_ref(), Some(&state.rows[1].path));
-
-        app.file_tree_mut().move_selection(1);
-        let state = app.file_tree_state();
-        assert_eq!(state.selected.as_ref(), Some(&state.rows[2].path));
-
-        // 已在末位时再 down 不会越界。
-        app.file_tree_mut().move_selection(1);
-        let state = app.file_tree_state();
-        assert_eq!(state.selected.as_ref(), Some(&state.rows[2].path));
-    }
-
-    #[test]
-    fn file_tree_focus_initialization_should_select_first_visible_row() {
-        let mut app = App::new();
-        app.open_project(project_fixture("focus-init"));
-
-        app.file_tree_mut().ensure_selection_initialized();
-
-        let state = app.file_tree_state();
-        assert_eq!(state.selected.as_ref(), Some(&state.rows[0].path));
-    }
-
-    #[test]
-    fn file_tree_expand_then_collapse_should_round_trip_via_selection_keys() {
-        let mut app = App::new();
-        let root = project_fixture("expand");
-        app.open_project(root.clone());
-
-        // 初始 rows: [root, src, README.md]，根默认展开。
-        let state = app.file_tree_state();
-        assert_eq!(state.rows.len(), 3);
-
-        // 选到 src（root → src）。
-        app.file_tree_mut().move_selection(1);
-        app.file_tree_mut().move_selection(1);
-        assert_eq!(
-            app.file_tree_state().selected.as_deref(),
-            Some(root.join("src").as_path())
-        );
-
-        app.file_tree_mut().expand_or_into();
-        let state = app.file_tree_state();
-        // 展开 src 后 rows: [root, src, inner, lib.rs, README.md]
-        assert_eq!(state.rows.len(), 5);
-        assert!(
-            state
-                .rows
-                .iter()
-                .find(|r| r.path == root.join("src"))
-                .map(|r| r.expanded)
-                .unwrap_or(false)
-        );
-
-        app.file_tree_mut().collapse_or_parent();
-        assert_eq!(app.file_tree_state().rows.len(), 3);
-    }
-
-    #[test]
-    fn file_tree_activate_on_file_should_open_buffer_and_report_opened() {
-        let mut app = App::new();
-        let root = project_fixture("activate");
-        app.open_project(root.clone());
-
-        // rows: [root, src, README.md] —— 走到 README.md。
-        app.file_tree_mut().move_selection(1); // root
-        app.file_tree_mut().move_selection(1); // src
-        app.file_tree_mut().move_selection(1); // README.md
-        let selected = app.file_tree_state().selected.clone();
-        assert_eq!(selected.as_deref(), Some(root.join("README.md").as_path()));
-
-        let action = app.with_file_tree(|ft| ft.activate_selected());
-        assert_eq!(action, FileTreeActivation::OpenedFile);
-
-        let state = app.file_tree_state();
-        assert_eq!(
-            state.active.as_deref(),
-            Some(root.join("README.md").as_path())
-        );
-    }
-
-    #[test]
-    fn file_tree_activate_on_directory_should_toggle_expanded() {
-        let mut app = App::new();
-        let root = project_fixture("activate-dir");
-        app.open_project(root.clone());
-
-        // rows: [root, src, README.md] —— 选到 src。
-        app.file_tree_mut().move_selection(1); // root
-        app.file_tree_mut().move_selection(1); // src
-        let action = app.with_file_tree(|ft| ft.activate_selected());
-        assert_eq!(action, FileTreeActivation::ToggledDir);
-
-        let state = app.file_tree_state();
-        let src_row = state
-            .rows
-            .iter()
-            .find(|r| r.path == root.join("src"))
-            .unwrap();
-        assert!(matches!(src_row.kind, EntryKind::Directory));
-        assert!(src_row.expanded);
-    }
-
-    #[test]
     fn tab_commands_should_switch_and_close_active_view() {
         let mut app = App::new();
-        app.open_project(project_fixture("tabs"));
-
-        // 打开 README.md：rows = [root, src, README.md]。
-        app.file_tree_mut().move_selection(1); // root
-        app.file_tree_mut().move_selection(1); // src
-        app.file_tree_mut().move_selection(1); // README.md
-        assert_eq!(
-            app.with_file_tree(|ft| ft.activate_selected()),
-            FileTreeActivation::OpenedFile
-        );
-
-        // 展开 src 并打开 src/lib.rs：
-        // 展开后 rows = [root, src, inner, lib.rs, README.md]。
-        app.file_tree_mut().move_selection(-1); // 回到 src
-        app.file_tree_mut().expand_or_into(); // 展开 src
-        app.file_tree_mut().move_selection(1); // inner
-        app.file_tree_mut().move_selection(1); // lib.rs
-        assert_eq!(
-            app.with_file_tree(|ft| ft.activate_selected()),
-            FileTreeActivation::OpenedFile
-        );
+        let root = project_fixture("tabs");
+        app.open_project(root.clone());
+        assert!(app.session.open_file(root.join("README.md")));
+        assert!(app.session.open_file(root.join("src/lib.rs")));
 
         // 两个标签：README.md 先开、lib.rs 后开且为活动标签。
         let state = editor_state(&app);
@@ -1202,10 +1104,10 @@ mod tests {
     /// 注册到 registry，不再在 App struct 上长字段。本用例守住该机制本身。
     mod registry_integration {
         use super::*;
-        use crate::focus::FileTreeFocus;
-        use crate::shell::editor::{
+        use crate::editor::text::{
             EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
         };
+        use crate::focus::FileTreeFocus;
         use crate::text_target::{TextTargetOwner, TextTargetQuery};
         use std::cell::RefCell;
         use std::rc::Rc;

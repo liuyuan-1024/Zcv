@@ -99,9 +99,13 @@ pub(crate) enum SettingsChange {
 
 impl AppConfig {
     /// 从磁盘加载；`None` 路径表示内存模式（测试用）。
-    /// 文件不存在、解析失败均回退到默认配置（同时 stderr 打印诊断）。
-    pub(crate) fn load(path: Option<&Path>) -> Self {
-        path.map(read_from_file).unwrap_or_default()
+    /// 文件不存在、解析失败均回退到默认配置，并把人类可读的诊断挂在 `warnings` 上
+    /// 让调用方决定如何展示（通常是气泡）。
+    pub(crate) fn load(path: Option<&Path>) -> (Self, Vec<String>) {
+        match path {
+            Some(path) => read_from_file(path),
+            None => (Self::default(), Vec::new()),
+        }
     }
 
     /// 发行版默认落盘位置：`$HOME/.zom/config.toml`。
@@ -110,13 +114,12 @@ impl AppConfig {
     }
 
     /// 把当前配置写盘。`None` 路径静默忽略（内存模式）。
-    pub(crate) fn save(&self, path: Option<&Path>) {
+    /// 返回错误消息（如果有），调用方决定如何展示。
+    pub(crate) fn save(&self, path: Option<&Path>) -> Result<(), String> {
         let Some(path) = path else {
-            return;
+            return Ok(());
         };
-        if let Err(error) = write_to_file(path, self) {
-            eprintln!("写入全局配置失败：{error}");
-        }
+        write_to_file(path, self).map_err(|error| format!("写入全局配置失败：{error}"))
     }
 
     pub(crate) fn apply_change(&mut self, change: SettingsChange) {
@@ -187,20 +190,23 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-fn read_from_file(path: &Path) -> AppConfig {
+fn read_from_file(path: &Path) -> (AppConfig, Vec<String>) {
+    let mut warnings = Vec::new();
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return AppConfig::default(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (AppConfig::default(), warnings);
+        }
         Err(error) => {
-            eprintln!("读取全局配置失败：{error}");
-            return AppConfig::default();
+            warnings.push(format!("读取全局配置失败：{error}"));
+            return (AppConfig::default(), warnings);
         }
     };
     match toml::from_str::<AppConfig>(&text) {
-        Ok(config) => config.normalized(),
+        Ok(config) => (config.normalized(), warnings),
         Err(error) => {
-            eprintln!("解析全局配置失败：{error}");
-            AppConfig::default()
+            warnings.push(format!("解析全局配置失败：{error}"));
+            (AppConfig::default(), warnings)
         }
     }
 }
@@ -227,8 +233,9 @@ mod tests {
     fn load_missing_file_returns_default() {
         let path = temp_path("missing");
         let _ = fs::remove_file(&path);
-        let loaded = AppConfig::load(Some(&path));
+        let (loaded, warnings) = AppConfig::load(Some(&path));
         assert_eq!(loaded, AppConfig::default());
+        assert!(warnings.is_empty());
     }
 
     #[test]
@@ -241,16 +248,19 @@ mod tests {
         config.editor.soft_wrap = false;
         config.editor.font_size = 18;
         config.editor.tab_size = 2;
-        config.save(Some(&path));
+        config.save(Some(&path)).unwrap();
 
-        let loaded = AppConfig::load(Some(&path));
+        let (loaded, warnings) = AppConfig::load(Some(&path));
         assert_eq!(loaded, config);
+        assert!(warnings.is_empty());
 
         let _ = fs::remove_file(path);
     }
 
     #[test]
     fn load_with_none_path_returns_default() {
-        assert_eq!(AppConfig::load(None), AppConfig::default());
+        let (loaded, warnings) = AppConfig::load(None);
+        assert_eq!(loaded, AppConfig::default());
+        assert!(warnings.is_empty());
     }
 }

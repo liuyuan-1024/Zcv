@@ -50,9 +50,11 @@ impl FeatureRegistry {
             // SearchModel 同时承载 query / replacement 两个输入框，按 focus 内部分派；
             // 通过同一个 install_editor_owner 注册进 router，TextTargetRuntime 不为它单走特殊分支。
             app.install_editor_owner(panels.search_owner_handle());
-            // 编辑后同步与每帧后台命中收割走通用端口注册——BackgroundPumps
-            // 不认 search feature，由它两个 trait 实现自报家门。
+            // 编辑后同步与每帧后台命中收割走通用端口注册
+            // ——BackgroundPumps 不认 search feature，由它两个 trait 实现自报家门。
             let search_handle = panels.search_runtime_handle();
+            app.install_file_tree_host(Box::new(file_tree.clone()));
+            app.install_search_host(Box::new(search_handle.clone()));
             app.install_post_edit_observer(Box::new(SearchEditObserver::new(search_handle)));
             app.install_frame_pump(Box::new(SearchFramePump));
         }

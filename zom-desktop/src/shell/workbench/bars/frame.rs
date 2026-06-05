@@ -5,7 +5,7 @@
 //! 用的几样：
 //!
 //! - `bar_frame`：bar 外壳（背景 / 上下边框 / 内边距 / 默认字号色）。
-//! - `BarRegionAlign` / `align_bar_region`：三槽对齐（leading / center / trailing）。
+//! - `BarRegionAlign` / `align_bar_region`：两端对齐（leading / trailing）。
 //! - `bar_divider`：槽内分组用的 1px 短线。
 
 use gpui::{Div, div, prelude::*};
@@ -42,16 +42,14 @@ pub(crate) fn bar_frame(edge: BarEdge) -> Div {
 #[derive(Clone, Copy)]
 pub(crate) enum BarRegionAlign {
     Leading,
-    Center,
     Trailing,
 }
 
-/// 把内部内容包成统一的对齐区段，使三槽布局稳定。
+/// 把内部内容包成统一的对齐区段，使两端布局稳定。
 pub(crate) fn align_bar_region(inner: Div, align: BarRegionAlign) -> Div {
     let wrapper = div().flex_1().flex().items_center().gap(space::s8());
     match align {
         BarRegionAlign::Leading => wrapper.justify_start().child(inner),
-        BarRegionAlign::Center => wrapper.justify_center().child(inner),
         BarRegionAlign::Trailing => wrapper.justify_end().child(inner),
     }
 }

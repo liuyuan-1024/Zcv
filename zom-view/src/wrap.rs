@@ -22,6 +22,8 @@
 //! - 不开软换行时所有行的 breaks 列表为空——每条逻辑行恰好 1 个 subrow，查询算子的行为退化为「按逻辑行」，无需在调用端再走分支。
 //! - 断点不含 0 和行尾，故 `subrow_count(line) = breaks(line).len() + 1`。
 
+use std::collections::BTreeMap;
+
 use zom_engine::{Buffer, ByteOffset, EngineResult, Line, MovementDirection};
 
 /// 同一个 byte 在软换行边界处可能对应两个视觉位置；affinity 用于区分。
@@ -52,17 +54,46 @@ pub struct VisualPosition {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WrapMap {
     soft_wrap: bool,
-    breaks_per_line: Vec<Vec<u32>>,
+    line_count: u64,
+    breaks_per_line: BTreeMap<u64, Vec<u32>>,
 }
 
 impl WrapMap {
     /// 构造一份新的 WrapMap。
     ///
-    /// `breaks_per_line[i]` 必须为单调递增、不含 0 与行尾、落在 grapheme 边界的相对字节列表；
-    /// 不软换行时传入与逻辑行数相同长度的空向量。
+    /// `breaks_per_line[i]` 必须为单调递增、不含 0 与行尾、落在 grapheme 边界的相对字节列表。
     pub fn new(soft_wrap: bool, breaks_per_line: Vec<Vec<u32>>) -> Self {
+        let line_count = breaks_per_line.len() as u64;
+        let breaks_per_line = breaks_per_line
+            .into_iter()
+            .enumerate()
+            .filter_map(|(line, breaks)| (!breaks.is_empty()).then_some((line as u64, breaks)))
+            .collect();
         Self {
             soft_wrap,
+            line_count,
+            breaks_per_line,
+        }
+    }
+
+    /// 构造一份稀疏 WrapMap。
+    ///
+    /// 未出现在 `breaks_per_line` 中的逻辑行按 1 个视觉行处理。渲染端每帧只测量
+    /// 视口附近的行，因此主路径必须避免按整篇文档行数分配。
+    pub fn sparse(
+        soft_wrap: bool,
+        line_count: u64,
+        breaks_per_line: impl IntoIterator<Item = (u64, Vec<u32>)>,
+    ) -> Self {
+        let breaks_per_line = breaks_per_line
+            .into_iter()
+            .filter_map(|(line, breaks)| {
+                (line < line_count && !breaks.is_empty()).then_some((line, breaks))
+            })
+            .collect();
+        Self {
+            soft_wrap,
+            line_count,
             breaks_per_line,
         }
     }
@@ -72,13 +103,13 @@ impl WrapMap {
     }
 
     pub fn logical_line_count(&self) -> u64 {
-        self.breaks_per_line.len() as u64
+        self.line_count
     }
 
     /// 指定逻辑行的断点列表（行内相对字节）。越界返回空 slice。
     pub fn breaks(&self, line: u64) -> &[u32] {
         self.breaks_per_line
-            .get(line as usize)
+            .get(&line)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
@@ -86,17 +117,19 @@ impl WrapMap {
     /// 指定逻辑行的视觉段数。越界（理论上不会发生）退化为 1。
     pub fn subrow_count(&self, line: u64) -> u32 {
         self.breaks_per_line
-            .get(line as usize)
+            .get(&line)
             .map(|v| v.len() as u32 + 1)
             .unwrap_or(1)
     }
 
     /// 视觉行总数；用于 viewport / scroll 行号换算。
     pub fn total_visual_rows(&self) -> u64 {
-        self.breaks_per_line
-            .iter()
-            .map(|v| v.len() as u64 + 1)
-            .sum()
+        self.line_count
+            + self
+                .breaks_per_line
+                .values()
+                .map(|v| v.len() as u64)
+                .sum::<u64>()
     }
 
     /// `(逻辑行, sub-row) → 绝对视觉行号`（从 0 开始）。
@@ -111,10 +144,12 @@ impl WrapMap {
         if line >= line_count {
             return self.total_visual_rows();
         }
-        let prefix: u64 = self.breaks_per_line[..line as usize]
-            .iter()
-            .map(|v| v.len() as u64 + 1)
-            .sum();
+        let prefix = line
+            + self
+                .breaks_per_line
+                .range(..line)
+                .map(|(_, breaks)| breaks.len() as u64)
+                .sum::<u64>();
         let max_subrow = self.subrow_count(line).saturating_sub(1);
         prefix + subrow.min(max_subrow) as u64
     }
@@ -123,19 +158,33 @@ impl WrapMap {
     ///
     /// 越界饱和：`row >= total_visual_rows()` 时返回末行末段；空 map 返回 `(0, 0)`。
     pub fn visual_row_to_line_subrow(&self, row: u64) -> (u64, u32) {
-        if self.breaks_per_line.is_empty() {
+        if self.line_count == 0 {
             return (0, 0);
         }
-        let mut remaining = row;
-        for (line_idx, breaks) in self.breaks_per_line.iter().enumerate() {
-            let count = breaks.len() as u64 + 1;
-            if remaining < count {
-                return (line_idx as u64, remaining as u32);
+        let mut cursor_line = 0_u64;
+        let mut visual_base = 0_u64;
+        for (&line, breaks) in &self.breaks_per_line {
+            let gap = line.saturating_sub(cursor_line);
+            if row < visual_base.saturating_add(gap) {
+                return (cursor_line + (row - visual_base), 0);
             }
-            remaining -= count;
+            visual_base = visual_base.saturating_add(gap);
+
+            let count = breaks.len() as u64 + 1;
+            if row < visual_base.saturating_add(count) {
+                return (line, (row - visual_base) as u32);
+            }
+            visual_base = visual_base.saturating_add(count);
+            cursor_line = line.saturating_add(1);
         }
+
+        let remaining_lines = self.line_count.saturating_sub(cursor_line);
+        if row < visual_base.saturating_add(remaining_lines) {
+            return (cursor_line + (row - visual_base), 0);
+        }
+
         // 越界 → 末行末段。
-        let last_line = self.breaks_per_line.len() as u64 - 1;
+        let last_line = self.line_count - 1;
         let last_subrow = self.subrow_count(last_line).saturating_sub(1);
         (last_line, last_subrow)
     }
@@ -324,7 +373,7 @@ impl WrapMap {
         let start = if subrow == 0 {
             0
         } else {
-            breaks[(subrow - 1) as usize]
+            breaks.get((subrow - 1) as usize).copied().unwrap_or(0)
         };
         let end = breaks.get(subrow as usize).copied();
         (start, end)
@@ -772,6 +821,18 @@ mod tests {
         // 行 0 三段；行 1 一段。
         let wm = WrapMap::new(true, vec![vec![3, 6], vec![]]);
         assert_eq!(wm.total_visual_rows(), 4);
+    }
+
+    #[test]
+    fn sparse_wrap_map_treats_unmeasured_lines_as_single_rows() {
+        let wm = WrapMap::sparse(true, 1_000_000, [(1_000, vec![3, 6])]);
+
+        assert_eq!(wm.logical_line_count(), 1_000_000);
+        assert_eq!(wm.total_visual_rows(), 1_000_002);
+        assert_eq!(wm.visual_row_of(1_000, 2), 1_002);
+        assert_eq!(wm.visual_row_to_line_subrow(999), (999, 0));
+        assert_eq!(wm.visual_row_to_line_subrow(1_001), (1_000, 1));
+        assert_eq!(wm.visual_row_to_line_subrow(1_003), (1_001, 0));
     }
 
     #[test]

@@ -555,7 +555,8 @@ impl App {
         // 命令派发可能编辑了活动 buffer（产生 DeltaEvent），扇出给 BufferSearch 与 syntax provider 是无条件的。
         // 否则编辑后高亮 / 搜索命中都不跟版本。
         // 必须先于 `sync_active_buffer_search`：后者依赖搜索状态已被新事件推进。
-        self.background.after_text_edit(&mut self.session);
+        self.background
+            .after_text_edit(&mut self.session, self.config.soft_wrap_enabled());
         // 命令派发也可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴等）。
         // 把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——一处做完，渲染 / 后续命令读到的都是新真值。
         Ok(host_effects)
@@ -601,7 +602,8 @@ impl App {
         // preedit 期间也走 live search——用户在搜索框中文输入时能边输入边看到结果收敛。
         // 同时把 buffer 上累积的 DeltaEvent 扇出到 syntax provider
         // （preedit replace 走 composition state，但 replace_and_mark 内部仍可能产生编辑事件）。
-        self.background.after_text_edit(&mut self.session);
+        self.background
+            .after_text_edit(&mut self.session, self.config.soft_wrap_enabled());
         result
     }
 
@@ -658,6 +660,7 @@ mod tests {
         diagnostics, editor, language_servers, project_picker as project_picker_commands, settings,
     };
     use zom_command::{EditTarget, KeyContext};
+    use zom_view::WrapMap;
 
     /// 取当前活动标签——断言「编辑区正在显示哪个文件」用。
     fn active_tab(state: &EditorState) -> &EditorTab {
@@ -812,6 +815,53 @@ mod tests {
             .tab
             .tab_width();
         assert_eq!(tab_width, 6);
+    }
+
+    #[test]
+    fn text_edit_should_invalidate_active_view_wrap_map() {
+        let mut app = app_with_open_file("invalidate-wrap-map");
+        app.session
+            .views_mut()
+            .active_view_mut()
+            .expect("应有活动视图")
+            .set_wrap_map(Some(WrapMap::sparse(false, 1, [])));
+
+        app.dispatch(editor::insert_newline()).unwrap();
+
+        assert!(
+            app.session
+                .views()
+                .active_view()
+                .expect("应有活动视图")
+                .wrap_map()
+                .is_none(),
+            "文本变化后不能继续使用上一帧的 wrap map",
+        );
+    }
+
+    #[test]
+    fn text_edit_without_soft_wrap_should_refresh_wrap_map_line_count_immediately() {
+        let mut app = app_with_open_file("refresh-nowrap-map");
+        app.apply_settings_change(SettingsChange::ToggleEditorSoftWrap);
+        assert!(!app.config_snapshot().editor.soft_wrap);
+        app.session
+            .views_mut()
+            .active_view_mut()
+            .expect("应有活动视图")
+            .set_wrap_map(Some(WrapMap::sparse(false, 1, [])));
+
+        app.dispatch(editor::insert_newline()).unwrap();
+
+        let wrap_map = app
+            .session
+            .views()
+            .active_view()
+            .expect("应有活动视图")
+            .wrap_map()
+            .expect("关闭软换行时应立即刷新逻辑行视觉模型");
+        assert!(!wrap_map.soft_wrap());
+        assert_eq!(wrap_map.logical_line_count(), 2);
+        assert_eq!(wrap_map.total_visual_rows(), 2);
     }
 
     #[test]

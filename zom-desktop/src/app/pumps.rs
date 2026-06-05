@@ -5,6 +5,7 @@
 
 use crate::ports::{FramePump, PostEditObserver};
 use crate::workspace_session::WorkspaceSession;
+use zom_view::WrapMap;
 
 #[derive(Default)]
 pub(super) struct BackgroundPumps {
@@ -28,8 +29,8 @@ impl BackgroundPumps {
     /// 编辑后扇出 + 通知所有注册的 [`PostEditObserver`]。
     /// 必须先于观察者跑 built-in 的活动 buffer post_edit，否则观察者读到的状态
     /// 还停在旧版本。
-    pub(super) fn after_text_edit(&self, session: &mut WorkspaceSession) {
-        Self::pump_active_buffer_post_edit(session);
+    pub(super) fn after_text_edit(&self, session: &mut WorkspaceSession, soft_wrap: bool) {
+        Self::pump_active_buffer_post_edit(session, soft_wrap);
         for observer in &self.post_edit_observers {
             observer.after_text_edit(session);
         }
@@ -94,9 +95,22 @@ impl BackgroundPumps {
             .set_buffer_viewport_hint(buffer_id, Some(range));
     }
 
-    fn pump_active_buffer_post_edit(session: &mut WorkspaceSession) {
-        if let Some(wb) = session.workspace_mut().active_buffer_mut() {
-            let _ = wb.pump_post_edit();
+    fn pump_active_buffer_post_edit(session: &mut WorkspaceSession, soft_wrap: bool) {
+        let post_edit = session.workspace_mut().active_buffer_mut().and_then(|wb| {
+            let text_changed = wb.pump_post_edit().ok()?;
+            let line_count = wb.buffer().line_count() as u64;
+            Some((text_changed, line_count))
+        });
+        let Some((true, line_count)) = post_edit else {
+            return;
+        };
+        let wrap_map = if soft_wrap {
+            None
+        } else {
+            Some(WrapMap::sparse(false, line_count, []))
+        };
+        if let Some(view) = session.views_mut().active_view_mut() {
+            view.set_wrap_map(wrap_map);
         }
     }
 }

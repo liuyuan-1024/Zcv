@@ -485,11 +485,10 @@ impl Element for EditorElement {
         let mut carets_pos: Vec<Option<(usize, Pixels)>> = vec![None; selections.len()];
         let mut prepainted_lines: Vec<PrepaintedLine> = Vec::with_capacity(self.lines.len());
         let mut visual_rows: Vec<VisualRow> = Vec::with_capacity(self.lines.len());
-        // 视觉模型：每条可见逻辑行的「行内相对字节断点」列表。
-        // 长度 = self.total_lines；未渲染过的行槽位保持空 Vec（= 该行视为 1 个 subrow）。
+        // 视觉模型：本帧测到的「逻辑行 → 行内相对字节断点」。
+        // 未渲染过的行由 WrapMap 按 1 个 subrow 处理，避免每帧按整篇文档行数分配。
         // 命令层走 [`WrapMap::resolve`] 在文本域查询；未填充的行天然退化为「按逻辑行移动」。
-        let total_lines_usize = self.total_lines as usize;
-        let mut breaks_per_line: Vec<Vec<u32>> = vec![Vec::new(); total_lines_usize];
+        let mut breaks_per_line: Vec<(u64, Vec<u32>)> = Vec::with_capacity(self.lines.len());
         // 每条视觉行对应的「逻辑行号」：首段填 Some(line_index)，软换行的续段填 None。
         // 长度与 prepainted_lines 一一对应；不开软换行时全数组都是 Some(...)。
         let mut gutter_rows: Vec<Option<u64>> = Vec::with_capacity(self.lines.len());
@@ -547,12 +546,15 @@ impl Element for EditorElement {
             };
 
             // 收集本条逻辑行的视觉断点（行内相对字节，不含 0 与 line_len）。
-            if (line.line_index as usize) < total_lines_usize {
-                breaks_per_line[line.line_index as usize] = segments
+            if soft_wrap {
+                let breaks = segments
                     .iter()
                     .skip(1)
                     .map(|&(start, _)| start as u32)
-                    .collect();
+                    .collect::<Vec<_>>();
+                if !breaks.is_empty() {
+                    breaks_per_line.push((line.line_index, breaks));
+                }
             }
 
             for (seg_i, &(seg_start, seg_end)) in segments.iter().enumerate() {
@@ -736,7 +738,7 @@ impl Element for EditorElement {
         // 把测得的 viewport 推回 view，让下一帧 snapshot 切片和 soft-wrap 顶部 sub-row 对齐。
         if let Some(sync) = self.viewport_sync.as_ref() {
             let wrap_map = allows_vertical_scroll
-                .then(|| WrapMap::new(soft_wrap, std::mem::take(&mut breaks_per_line)));
+                .then(|| WrapMap::sparse(soft_wrap, self.total_lines, breaks_per_line));
             sync(measured_viewport, wrap_map, cx);
         }
 

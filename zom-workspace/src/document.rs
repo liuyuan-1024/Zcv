@@ -25,6 +25,7 @@ use zom_engine::{Buffer, BufferConfig, DeltaEvent, MetadataLayers, TextRange};
 
 use crate::syntax::{
     BufferSyntaxState, HighlightSpan, LanguageId, MAX_HIGHLIGHT_BYTES, SyntaxEngine,
+    syntax_layer_kind,
 };
 use crate::{BufferId, WorkspaceResult};
 
@@ -152,11 +153,16 @@ impl SyntaxDocument {
         if events.is_empty() {
             return;
         }
-        for event in events {
-            self.highlight_layers.update_through_delta_event(event);
-        }
         if let Some(state) = self.syntax.as_mut() {
             for event in events {
+                // 语法高亮效果是视口范围的，由工作线程重新计算。
+                // 不要在 UI 线程上同步重新映射整个图层：对于大型文件，
+                // 这会导致每次插入换行符时，每个现有的高亮区域都会受到影响。
+                let _ = self.highlight_layers.replace_layer_ranges(
+                    syntax_layer_kind(),
+                    event.new_version(),
+                    std::iter::empty::<(TextRange, HighlightSpan)>(),
+                );
                 state.handle_edit(
                     &self.buffer,
                     event.changeset(),

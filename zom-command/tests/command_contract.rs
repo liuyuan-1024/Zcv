@@ -16,7 +16,7 @@ use zom_engine::{
     Buffer, BufferConfig, ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
     SelectionSet,
 };
-use zom_view::ViewSet;
+use zom_view::{ViewSet, VisualAffinity, VisualPosition};
 use zom_workspace::{BufferId, Workspace};
 
 fn command_id(value: &str) -> CommandId {
@@ -1181,6 +1181,37 @@ fn paste_with_empty_clipboard_should_be_noop() {
     )
     .unwrap();
     assert_eq!(text(&workspace, buffer_id), "hello");
+}
+
+#[test]
+fn insert_newline_should_clear_cached_visual_caret() {
+    let (mut workspace, mut views, _buffer_id) = setup("a");
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+
+    views.active_view_mut().unwrap().set_visual_caret(
+        Some(VisualPosition {
+            byte: ByteOffset::ZERO,
+            logical_line: 0,
+            subrow: 0,
+            column: 0,
+            affinity: VisualAffinity::Inside,
+        }),
+        Some(7),
+    );
+
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::INSERT_NEWLINE, CommandArgs::new())],
+    )
+    .unwrap();
+
+    let view = views.active_view().unwrap();
+    assert_eq!(view.visual_caret(), None);
+    assert_eq!(view.goal_column(), None);
 }
 
 /// 用单 buffer + 单 selection 模拟"聚焦的内嵌输入框"，跑一条命令并返回剪贴板状态。

@@ -775,7 +775,8 @@ fn run_insert_newline(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let target = context.edit_target()?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
     let selections = target.selection.clone();
     target
         .buffer

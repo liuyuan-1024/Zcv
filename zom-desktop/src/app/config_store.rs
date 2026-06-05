@@ -57,6 +57,10 @@ impl ConfigStore {
         self.soft_wrap_state.clone()
     }
 
+    pub(super) fn soft_wrap_enabled(&self) -> bool {
+        self.soft_wrap_state.get()
+    }
+
     pub(super) fn buffer_config(&self) -> zom_engine::BufferConfig {
         self.config.buffer_config()
     }

@@ -23,7 +23,8 @@
 //! ## 手册 §十四 例外
 //!
 //! 手册原本把 "injection / combined parsers" 整体列为非目标。
-//! markdown 的 block+inline 是**同一语言族的两套配套 grammar**，不是真正的跨语言嵌入（代码栅栏里跑 rust / HTML 里跑 JS 仍归非目标）。已在手册侧明确这条例外。
+//! markdown 的 block+inline 是**同一语言族的两套配套 grammar**，不是真正的跨语言嵌入（代码栅栏里跑 rust / HTML 里跑 JS 仍归非目标）。
+//! 已在手册侧明确这条例外。
 
 use std::sync::{Arc, OnceLock};
 
@@ -37,7 +38,62 @@ use crate::syntax::providers::common::{
     SharedConfig, build_shared_config, build_shared_config_with_normalize, collect_spans,
     reset_cursor_range, translate_edits,
 };
+use crate::syntax::providers::injection::injection_config;
 use crate::syntax::sink::HighlightSink;
+
+const MARKDOWN_BLOCK_QUERY_EXTENSION: &str = r#"
+; zom 本地扩展：补齐 tree-sitter-md 随包 nvim query 未覆盖的 Markdown 源码标记。
+[
+  (task_list_marker_checked)
+  (task_list_marker_unchecked)
+] @markup.list
+
+(language) @attribute
+
+(pipe_table_header
+  (pipe_table_cell) @markup.heading)
+
+[
+  (pipe_table_delimiter_cell)
+  (pipe_table_align_left)
+  (pipe_table_align_right)
+] @punctuation.delimiter
+"#;
+
+const MARKDOWN_INLINE_QUERY_EXTENSION: &str = r#"
+; zom 本地扩展：GFM / 源码级行内结构。
+(strikethrough) @markup.strikethrough
+
+(email_autolink) @markup.link.url
+"#;
+
+fn extended_markdown_block_query() -> &'static str {
+    static CELL: OnceLock<&'static str> = OnceLock::new();
+    CELL.get_or_init(|| {
+        Box::leak(
+            format!(
+                "{}\n{}",
+                tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+                MARKDOWN_BLOCK_QUERY_EXTENSION
+            )
+            .into_boxed_str(),
+        )
+    })
+}
+
+fn extended_markdown_inline_query() -> &'static str {
+    static CELL: OnceLock<&'static str> = OnceLock::new();
+    CELL.get_or_init(|| {
+        Box::leak(
+            format!(
+                "{}\n{}",
+                tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
+                MARKDOWN_INLINE_QUERY_EXTENSION
+            )
+            .into_boxed_str(),
+        )
+    })
+}
 
 fn markdown_block_config() -> Result<Arc<SharedConfig>, &'static QueryError> {
     static CELL: OnceLock<Result<Arc<SharedConfig>, QueryError>> = OnceLock::new();
@@ -47,7 +103,7 @@ fn markdown_block_config() -> Result<Arc<SharedConfig>, &'static QueryError> {
         // markup.link.*——这些恰好就是 block 端期望的语义。
         build_shared_config(
             tree_sitter_md::LANGUAGE.into(),
-            tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+            extended_markdown_block_query(),
         )
         .map(Arc::new)
     })
@@ -60,7 +116,7 @@ fn markdown_inline_config() -> Result<Arc<SharedConfig>, &'static QueryError> {
     CELL.get_or_init(|| {
         build_shared_config_with_normalize(
             tree_sitter_md::INLINE_LANGUAGE.into(),
-            tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
+            extended_markdown_inline_query(),
             normalize_md_inline,
         )
         .map(Arc::new)
@@ -100,8 +156,14 @@ pub struct MarkdownWorker {
     inline_config: Arc<SharedConfig>,
     block_parser: Parser,
     inline_parser: Parser,
+    /// 注入 grammar 复用一份 parser 实例：每段 fenced code 前 `set_language` 切换到该段语言。
+    /// tree-sitter `Parser::set_language` 只是替指针，不必为每门注入语言开独立 parser。
+    /// 注入树不缓存——产物期都从切片重 parse；fence 通常很小，代价可控。
+    injection_parser: Parser,
     block_cursor: QueryCursor,
     inline_cursor: QueryCursor,
+    /// 注入 query cursor 也复用一份——`QueryCursor` 与具体 `Query` 解耦，跨语言切换无残留状态。
+    injection_cursor: QueryCursor,
     sink_slot: Option<HighlightSink>,
     /// 上一次解析出的块树。`None` 表示尚未首次解析或上一轮已回退；下一次
     /// `on_edit` 走全量重解析把这两个槽都填回去。
@@ -148,8 +210,10 @@ impl MarkdownWorker {
             inline_config,
             block_parser,
             inline_parser,
+            injection_parser: Parser::new(),
             block_cursor: QueryCursor::new(),
             inline_cursor: QueryCursor::new(),
+            injection_cursor: QueryCursor::new(),
             sink_slot: None,
             block_tree: None,
             last_snapshot: None,
@@ -327,7 +391,22 @@ impl MarkdownWorker {
             &mut inline_spans,
         );
 
+        let mut injection_spans: Vec<(TextRange, HighlightSpan)> = Vec::new();
+        collect_fenced_code_spans(
+            &mut self.injection_parser,
+            &mut self.injection_cursor,
+            block_tree,
+            bytes,
+            viewport,
+            &mut injection_spans,
+        );
+
+        // 三层合并：block 是宿主背景，inline 在其上凿洞（inline-wins），
+        // 注入再在合并结果上凿洞（injection-wins）。
+        // 算法语义与 [`merge_block_with_inline`] 一致——"第二个参数胜出"。
+        // 这里复用同一个函数没有歧义：第二轮把上一轮的合并结果当 "outer"，注入 spans 当 "inner"。
         let merged = merge_block_with_inline(block_spans, inline_spans);
+        let merged = merge_block_with_inline(merged, injection_spans);
         match viewport {
             Some(range) => clip_spans_to_range(merged, range),
             None => merged,
@@ -523,6 +602,128 @@ fn parse_one_inline(
         if let Ok(global) = TextRange::new(ByteOffset::new(new_start), ByteOffset::new(new_end)) {
             out.push((global, span));
         }
+    }
+}
+
+/// 走块树，对每个 `fenced_code_block` 取 info string 里的语言名 → 查注入 grammar →
+/// 把 `code_fence_content` 切片整段重 parse，把 highlights 按偏移平移回全局坐标后追加到 `out`。
+///
+/// 实现要点：
+///
+/// - **不递归进 fenced_code_block 内部**：它的子结构（围栏分隔符 / info_string / code_fence_content）由 [`extract_fence_parts`] 直接 child-iterate 抽取，不必再让外层 walker 下钻。
+/// - **viewport 过滤同 inline 同形**：与视口不相交的 fence 整段跳过；跨界的 fence 整段 parse + collect，端点超出视口的 spans 留给 [`clip_spans_to_range`] 在 merge 之后裁回。
+/// - **未知语言 / 缺 content 节点 / 缺语言名**：silent skip，让 block 端的 `markup.raw.block` 兜底，体验上等于"该 fence 没接注入"。
+fn collect_fenced_code_spans(
+    injection_parser: &mut Parser,
+    injection_cursor: &mut QueryCursor,
+    block_tree: &Tree,
+    source: &[u8],
+    viewport: Option<TextRange>,
+    out: &mut Vec<(TextRange, HighlightSpan)>,
+) {
+    let mut cursor = block_tree.walk();
+    'outer: loop {
+        let node = cursor.node();
+        if node.kind() == "fenced_code_block" {
+            if inline_node_intersects_viewport(&node, viewport) {
+                parse_one_fenced_code(injection_parser, injection_cursor, node, source, out);
+            }
+            // 不下钻 fence 内部——info_string / code_fence_content 已在
+            // parse_one_fenced_code 内部直接 child-iterate 处理。
+        } else if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                continue 'outer;
+            }
+            if !cursor.goto_parent() {
+                return;
+            }
+        }
+    }
+}
+
+/// 给定一个 `fenced_code_block` 节点：抽语言名 + 内容范围，查注入 config，
+/// 整段 parse 内容切片，把 highlights 翻译回全局坐标。
+///
+/// 任一步缺失（无 info_string / 无 language / 未知语言 / 无 content）都直接 return——
+/// 该 fence 不接注入，外层把 `markup.raw.block` 留下来兜底。
+fn parse_one_fenced_code(
+    injection_parser: &mut Parser,
+    injection_cursor: &mut QueryCursor,
+    node: Node<'_>,
+    source: &[u8],
+    out: &mut Vec<(TextRange, HighlightSpan)>,
+) {
+    let Some((language_name, content_start, content_end)) = extract_fence_parts(node, source)
+    else {
+        return;
+    };
+    let Some(config) = injection_config(&language_name) else {
+        return;
+    };
+    if content_end <= content_start || content_end > source.len() {
+        return;
+    }
+    if injection_parser.set_language(&config.language).is_err() {
+        // ABI 不匹配——静态资源问题，sample 阶段就该暴露；运行期里 silent skip 比 panic 稳。
+        return;
+    }
+    let slice = &source[content_start..content_end];
+    let Some(tree) = injection_parser.parse(slice, None) else {
+        return;
+    };
+    reset_cursor_range(injection_cursor);
+    let local_spans = collect_spans(&config, injection_cursor, &tree, slice);
+    for (range, span) in local_spans {
+        let new_start = range.start().get() + content_start;
+        let new_end = range.end().get() + content_start;
+        if let Ok(global) = TextRange::new(ByteOffset::new(new_start), ByteOffset::new(new_end)) {
+            out.push((global, span));
+        }
+    }
+}
+
+/// 从 `fenced_code_block` 节点抽出 `(语言名, content_start, content_end)`。
+///
+/// - 语言名：找 `info_string` 子节点 → 找它的 `language` 子节点 → 取字面 utf-8 字符串。
+///   找不到时返回 `None`（既没指定语言，也就不该注入）。
+/// - content 范围：`code_fence_content` 子节点的字节范围。缺失（空代码块）时返回 `None`。
+fn extract_fence_parts(fence: Node<'_>, source: &[u8]) -> Option<(String, usize, usize)> {
+    let mut language: Option<String> = None;
+    let mut content: Option<(usize, usize)> = None;
+    let mut cursor = fence.walk();
+    for child in fence.children(&mut cursor) {
+        match child.kind() {
+            "info_string" => {
+                let mut info_cursor = child.walk();
+                for grand in child.children(&mut info_cursor) {
+                    if grand.kind() == "language" {
+                        let start = grand.start_byte();
+                        let end = grand.end_byte();
+                        if start < end
+                            && end <= source.len()
+                            && let Ok(s) = std::str::from_utf8(&source[start..end])
+                        {
+                            let trimmed = s.trim();
+                            if !trimmed.is_empty() {
+                                language = Some(trimmed.to_string());
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            "code_fence_content" => {
+                content = Some((child.start_byte(), child.end_byte()));
+            }
+            _ => {}
+        }
+    }
+    match (language, content) {
+        (Some(lang), Some((s, e))) => Some((lang, s, e)),
+        _ => None,
     }
 }
 
@@ -746,6 +947,201 @@ mod tests {
         assert!(
             n.contains(&"markup.link.text"),
             "link 文本应产出 markup.link.text，实际 {n:?}"
+        );
+    }
+
+    #[test]
+    fn inline_strikethrough_emits_markup_strikethrough() {
+        let text = "para with ~~deleted~~ word\n";
+        let n = names(text);
+        assert!(
+            n.contains(&"markup.strikethrough"),
+            "~~deleted~~ 应产出 markup.strikethrough，实际 {n:?}"
+        );
+    }
+
+    #[test]
+    fn inline_email_autolink_emits_markup_link_url() {
+        let text = "contact <hello@example.com>\n";
+        let n = names(text);
+        assert!(
+            n.contains(&"markup.link.url"),
+            "email autolink 应产出 markup.link.url，实际 {n:?}"
+        );
+    }
+
+    #[test]
+    fn task_list_marker_emits_markup_list() {
+        let text = "- [x] done\n- [ ] todo\n";
+        let n = names(text);
+        let count = n.iter().filter(|name| **name == "markup.list").count();
+        assert!(
+            count >= 2,
+            "任务列表 checked/unchecked marker 都应产出 markup.list，实际 {n:?}"
+        );
+    }
+
+    #[test]
+    fn pipe_table_emits_header_and_delimiter_spans() {
+        let text = "| Name | Done |\n| :--- | ---: |\n| A | yes |\n";
+        let n = names(text);
+        assert!(
+            n.contains(&"markup.heading"),
+            "pipe table header cell 应产出 markup.heading，实际 {n:?}"
+        );
+        assert!(
+            n.contains(&"punctuation.delimiter"),
+            "pipe table delimiter / align marker 应产出 punctuation.delimiter，实际 {n:?}"
+        );
+    }
+
+    #[test]
+    fn fenced_code_language_emits_attribute() {
+        let text = "```rust\nfn main() {}\n```\n";
+        let n = names(text);
+        assert!(
+            n.contains(&"attribute"),
+            "fenced code info string 中的语言名应产出 attribute，实际 {n:?}"
+        );
+    }
+
+    // ============== fenced code injection 护栏 ==============
+
+    /// ```rust fence 必须产出 rust grammar 的高亮（keyword / function 之类），
+    /// 而不只剩 block 端的 markup.raw.block。
+    #[test]
+    fn fenced_rust_injects_rust_grammar_spans() {
+        let text = "```rust\nfn main() {}\n```\n";
+        let n = names(text);
+        // rust grammar 的 highlights query 至少会标记 `fn` 关键字。
+        // 不锁定具体 capture 名（grammar 升版可能改），只要"出现非 markdown
+        // 命名空间的 span"即可。
+        let has_rust_span = n.iter().any(|name| {
+            name.starts_with("keyword") || name.starts_with("function") || *name == "type.builtin"
+        });
+        assert!(has_rust_span, "```rust 应注入 rust 高亮，实际 spans={n:?}");
+    }
+
+    /// 注入覆盖：在 `fn main` 这一段范围里，最终落地的 span 不能是
+    /// markup.raw.block——必须被 rust grammar 覆盖。
+    #[test]
+    fn injection_overrides_markup_raw_block_in_content_range() {
+        let text = "```rust\nfn main() {}\n```\n";
+        let spans = collect_names(text);
+        let fn_pos = text.find("fn ").unwrap();
+        // fn_pos 这一字节的覆盖 span 应该是 rust 命名空间，不再是 markup.raw.block。
+        let cover = spans
+            .iter()
+            .find(|(s, e, _)| *s <= fn_pos && fn_pos < *e)
+            .expect("fn 关键字位置必须有 span 覆盖");
+        assert_ne!(
+            cover.2, "markup.raw.block",
+            "fn 关键字所在字节不应再是 markup.raw.block，spans={spans:?}"
+        );
+    }
+
+    /// 未知语言：```zzz fence 内容不应触发任何 rust / 其他注入语言的 span。
+    ///
+    /// 注：tree-sitter-md 把 `code_fence_content` 标为 `@none`（语义即"留给
+    /// injection 填"），无注入命中时 spans 名是 `"none"`，主题会落到默认前景色。
+    /// 不再断言 `markup.raw.block`——那只覆盖 fence 围栏 / 边界换行。
+    #[test]
+    fn unknown_language_does_not_inject() {
+        let text = "```zzznotalanguage\nsome stuff\n```\n";
+        let n = names(text);
+        let has_code_keyword = n.iter().any(|name| {
+            name.starts_with("keyword") || name.starts_with("function") || *name == "type.builtin"
+        });
+        assert!(
+            !has_code_keyword,
+            "未知语言 fence 不应触发任何注入命名空间，实际 spans={n:?}"
+        );
+    }
+
+    /// 无 info string 的裸 fence：同样不触发注入。
+    #[test]
+    fn fence_without_info_string_does_not_inject() {
+        let text = "```\nplain text\n```\n";
+        let n = names(text);
+        let has_code_keyword = n.iter().any(|name| {
+            name.starts_with("keyword") || name.starts_with("function") || *name == "type.builtin"
+        });
+        assert!(
+            !has_code_keyword,
+            "无 info string 的 fence 不应触发注入，实际 spans={n:?}"
+        );
+    }
+
+    /// 注入产出的 spans 偏移必须翻译回全局坐标：在 fence 前加一段长前缀，
+    /// rust 段的字节坐标必须落在 fence 内（即不再是切片局部坐标）。
+    #[test]
+    fn injection_offsets_translated_back_to_document_coords() {
+        let prefix = "# 前置标题\n\n这里是说明文字。\n\n";
+        let text = format!("{prefix}```rust\nfn main() {{}}\n```\n");
+        let fence_content_start = text.find("fn main").unwrap();
+        let fence_content_end = text.find("\n```\n").unwrap();
+
+        let spans = collect_names(&text);
+        // 注入 span 都应在 [fence_content_start, fence_content_end] 内。
+        let rust_spans: Vec<_> = spans
+            .iter()
+            .filter(|(_, _, n)| {
+                n.starts_with("keyword") || n.starts_with("function") || *n == "type.builtin"
+            })
+            .collect();
+        assert!(!rust_spans.is_empty(), "应至少有一个 rust 注入 span");
+        for (s, e, name) in &rust_spans {
+            assert!(
+                *s >= fence_content_start && *e <= fence_content_end,
+                "注入 span {s}..{e} {name} 必须落在 fence 内 [{fence_content_start}, {fence_content_end}]，spans={spans:?}"
+            );
+        }
+    }
+
+    /// 别名 fence（```rs / ```py / ```sh）也应触发对应 grammar。
+    #[test]
+    fn fence_aliases_trigger_corresponding_grammar() {
+        // ```rs → rust
+        let text = "```rs\nfn x() {}\n```\n";
+        let n = names(text);
+        assert!(
+            n.iter()
+                .any(|name| name.starts_with("keyword") || name.starts_with("function")),
+            "```rs 应当走 rust 注入，实际 spans={n:?}"
+        );
+    }
+
+    /// 增量编辑代码块内容后，注入仍然产出（与 baseline 等价）。
+    #[test]
+    fn injection_survives_incremental_edit_inside_fence() {
+        let initial = "前言\n\n```rust\nfn x() {}\n```\n".to_string();
+        let mut buffer = Buffer::from_text(initial.clone(), BufferConfig::default()).unwrap();
+        let mut worker = new_provider();
+        let sink = HighlightSink::new();
+        worker.attach(BufferHandle::new(buffer.snapshot()), sink.clone());
+        let _ = drain_latest(&sink);
+
+        // 在函数体内插入一行
+        let body_pos = current_text(&buffer).find("{}").unwrap() + 1;
+        apply_replace(&mut buffer, body_pos, body_pos, "\n    let y = 1;\n");
+        pump(&mut worker, &mut buffer);
+        let after_edit = drain_latest(&sink).expect("增量编辑必须产出 ReplaceAll");
+        let after_edit_tuples: Vec<(usize, usize, String)> = after_edit
+            .iter()
+            .map(|(r, s)| (r.start().get(), r.end().get(), s.name.as_str().to_string()))
+            .collect();
+        assert_eq!(
+            after_edit_tuples,
+            baseline_spans(&buffer),
+            "代码块内编辑后增量 spans 必须等于 baseline"
+        );
+        // 注入还在：edit 后 `let` 应触发 rust 的 keyword 类 span。
+        let has_let_keyword = after_edit_tuples
+            .iter()
+            .any(|(_, _, n)| n.starts_with("keyword"));
+        assert!(
+            has_let_keyword,
+            "编辑后 `let` 关键字仍应被 rust 注入命中，spans={after_edit_tuples:?}"
         );
     }
 

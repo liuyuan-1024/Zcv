@@ -13,6 +13,7 @@
 //! [`install_builtin_providers`] 完成（手册 §十）。
 
 mod common;
+pub(crate) mod injection;
 
 pub mod bash;
 pub mod css;

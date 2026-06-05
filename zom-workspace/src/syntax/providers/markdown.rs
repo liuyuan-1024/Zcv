@@ -859,6 +859,91 @@ mod tests {
         );
     }
 
+    #[test]
+    fn markdown_spans_should_stay_on_utf8_char_boundaries_for_chinese_inline_markup() {
+        let text = "- **语言**：中文是第一语言（见 `agents/global.md`）。需要兼顾检索性时用「中文说明 + English term」。\n";
+        let buffer = Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap();
+        let spans = baseline_spans(&buffer);
+
+        for (start, end, name) in spans {
+            assert!(
+                text.is_char_boundary(start),
+                "span {start}..{end} {name} start 不在 UTF-8 char boundary"
+            );
+            assert!(
+                text.is_char_boundary(end),
+                "span {start}..{end} {name} end 不在 UTF-8 char boundary"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_incremental_after_deleting_chinese_word_should_keep_span_boundaries() {
+        let text = "# zom 文档规范\n你好\n- **语言**：中文是第一语言（见 `agents/global.md`）。需要兼顾检索性时用「中文说明 + English term」。\n";
+        let mut buffer = Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap();
+        let mut worker = new_provider();
+        let sink = HighlightSink::new();
+        worker.attach(BufferHandle::new(buffer.snapshot()), sink.clone());
+        let _ = drain_latest(&sink);
+
+        let delete_start = text.find("你好").unwrap();
+        apply_replace(&mut buffer, delete_start, delete_start + "你好".len(), "");
+        pump(&mut worker, &mut buffer);
+        let spans = drain_latest(&sink).expect("删除中文词后必须产出增量高亮");
+        let current = current_text(&buffer);
+
+        for (range, span) in spans {
+            let start = range.start().get();
+            let end = range.end().get();
+            assert!(
+                current.is_char_boundary(start),
+                "span {start}..{end} {} start 不在 UTF-8 char boundary",
+                span.name
+            );
+            assert!(
+                current.is_char_boundary(end),
+                "span {start}..{end} {} end 不在 UTF-8 char boundary",
+                span.name
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_layer_after_deleting_chinese_word_should_keep_span_boundaries() {
+        let text = "# zom 文档规范\n你好\n- **语言**：中文是第一语言（见 `agents/global.md`）。需要兼顾检索性时用「中文说明 + English term」。\n";
+        let mut buffer = Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap();
+        let mut layers = MetadataLayers::<HighlightSpan>::new();
+        let provider: Box<dyn HighlightProvider> = Box::new(new_provider());
+        let worker = std::sync::Arc::new(crate::syntax::SyntaxWorkerHandle::spawn());
+        let state = BufferSyntaxState::attach(
+            crate::BufferId::from_raw(1),
+            LanguageId::new("markdown"),
+            provider,
+            &buffer,
+            &mut layers,
+            worker.clone(),
+            None,
+        );
+        worker.wait_for_idle();
+        state.drain_into_layers(buffer.version(), &mut layers);
+        assert_layer_ranges_on_char_boundaries(&buffer, &layers);
+
+        let delete_start = text.find("你好").unwrap();
+        apply_replace(&mut buffer, delete_start, delete_start + "你好".len(), "");
+        let events = buffer.take_pending_events();
+        for event in &events {
+            layers.update_through_delta_event(event);
+        }
+        assert_layer_ranges_on_char_boundaries(&buffer, &layers);
+
+        for event in &events {
+            state.handle_edit(&buffer, event.changeset(), event.new_version(), &mut layers);
+        }
+        worker.wait_for_idle();
+        state.drain_into_layers(buffer.version(), &mut layers);
+        assert_layer_ranges_on_char_boundaries(&buffer, &layers);
+    }
+
     // ============== 增量护栏（与 common::tests 同形） ==============
 
     use zom_engine::{Edit as EngineEdit, TextRange as EngineTextRange, Transaction};
@@ -910,6 +995,30 @@ mod tests {
             .unwrap()
             .into_text()
             .into_owned()
+    }
+
+    fn assert_layer_ranges_on_char_boundaries(
+        buffer: &Buffer,
+        layers: &MetadataLayers<HighlightSpan>,
+    ) {
+        let text = current_text(buffer);
+        let Some(layer) = layers.layer(&syntax_layer_kind()) else {
+            return;
+        };
+        for entry in layer.as_slice() {
+            let start = entry.range().start().get();
+            let end = entry.range().end().get();
+            assert!(
+                text.is_char_boundary(start),
+                "layer span {start}..{end} {} start 不在 UTF-8 char boundary",
+                entry.metadata().name
+            );
+            assert!(
+                text.is_char_boundary(end),
+                "layer span {start}..{end} {} end 不在 UTF-8 char boundary",
+                entry.metadata().name
+            );
+        }
     }
 
     /// 几次小编辑（修标题、改 inline 强调、删一行）后，增量 worker 的产物必须

@@ -5,21 +5,17 @@
 //! ## 当前形态
 //!
 //! provider 实例（`Box<dyn HighlightProvider>`）不再挂在 BufferSyntaxState 内，
-//! 它在 attach 时被一次性移交给 [`SyntaxWorkerHandle`] 持有的后台线程。本结构体只保留**主线程视角**需要的最小集：
-//!
+//! 它在 attach 时被一次性移交给 [`SyntaxWorkerHandle`] 持有的后台线程。
+//! 本结构体只保留**主线程视角**需要的最小集：
 //! - `buffer_id`、`language`：用于任务寻址与诊断；
-//! - `sink`：轻量 clone 的 Arc，worker 推产物、主线程在每帧 `pump_pending_highlights`
-//!   时 drain；
+//! - `sink`：轻量 clone 的 Arc，worker 推产物、主线程在每帧 `pump_pending_highlights` 时 drain；
 //! - `worker`：`Arc<SyntaxWorkerHandle>`，发 Attach / Edit / Detach 任务的出口。
 //!
 //! ## DeltaEvent 单一消费方
 //!
-//! 调度层**不**自己调 `Buffer::take_pending_events`——那条排他链已被
-//! [`crate::WorkspaceBuffer::pump_post_edit`] 占了。pump 入口把每个事件
-//! 扇出到 [`BufferSyntaxState::handle_edit`]，本方法只接 ChangeSet 引用与
-//! 新版本号，不再自取事件。`handle_edit` 立刻把事件克隆成 `Job::Edit`
-//! 投到 worker，**不**当场期待产物落 layer——产物经 sink 异步抵达，主线程下
-//! 一帧调 `pump_pending_highlights` 时再落。
+//! 调度层**不**自己调 `Buffer::take_pending_events`——那条排他链已被 [`crate::WorkspaceBuffer::pump_post_edit`] 占了。
+//! pump 入口把每个事件扇出到 [`BufferSyntaxState::handle_edit`]，本方法只接 ChangeSet 引用与新版本号，不再自取事件。
+//! `handle_edit` 立刻把事件克隆成 `Job::Edit` 投到 worker，**不**当场期待产物落 layer——产物经 sink 异步抵达，主线程下一帧调 `pump_pending_highlights` 时再落。
 //!
 //! ## 版本守护（drain 端）
 //!
@@ -42,15 +38,12 @@ use super::worker::SyntaxWorkerHandle;
 
 /// 大小超此阈值的缓冲区不挂 provider（手册 §十二）。
 ///
-/// **16 MiB**：放阈值的现实平衡点。bench 实测 16 MiB rust 单键 viewport-scoped
-/// e2e ≈ 63 ms、主线程 3 µs、cold parse 1.56 s——一项流畅一档可接受；同档
-/// 64 MiB 端到端飙到 ~250 ms / 键、cold parse 6.3 s，多出来的部分主要在
-/// tree-sitter 解析树本身的 O(file size) 走树代价，不是本项目能撬动的。再大
-/// 的文件几乎只剩日志、生成代码、压缩单页 HTML，那些既无语法语义、又应被
-/// 宿主提示跳过高亮——超 16 MiB 就静默落到 plain 模式即可。
+/// **16 MiB**：放阈值的现实平衡点。bench 实测 16 MiB rust 单键 viewport-scoped e2e ≈ 63 ms、主线程 3 µs、cold parse 1.56 s——一项流畅一档可接受；
+/// 同档 64 MiB 端到端飙到 ~250 ms / 键、cold parse 6.3 s，多出来的部分主要在 tree-sitter 解析树本身的 O(file size) 走树代价，不是本项目能撬动的。
+/// 再大的文件几乎只剩日志、生成代码、压缩单页 HTML，那些既无语法语义、又应被宿主提示跳过高亮——超 16 MiB 就静默落到 plain 模式即可。
 ///
-/// 仍是固定常量；不允许 provider 自报阈值。配置项放在 BufferConfig / workspace
-/// 设置层是下一步话题。
+/// 仍是固定常量；不允许 provider 自报阈值。
+/// 配置项放在 BufferConfig / workspace 设置层是下一步话题。
 pub const MAX_HIGHLIGHT_BYTES: usize = 16 * 1024 * 1024;
 
 /// 一个缓冲区在语法高亮子系统里的运行态（主线程句柄）。

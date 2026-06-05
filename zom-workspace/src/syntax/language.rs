@@ -12,8 +12,7 @@ use super::provider::HighlightProvider;
 
 /// 语言标识。
 ///
-/// 与具体 grammar / provider 实现解耦——`LanguageId("rust")` 既可以走 native
-/// tree-sitter，也可以走 wasm 语言包，registry 端透明。
+/// 与具体 grammar / provider 实现解耦——`LanguageId("rust")` 既可以走 native tree-sitter，也可以走 wasm 语言包，registry 端透明。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct LanguageId(&'static str);
 

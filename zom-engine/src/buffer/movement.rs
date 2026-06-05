@@ -4,7 +4,9 @@
 
 use crate::{
     CharOffset, CoordinateError, EditError, EngineResult, Line, Motion, MovementDirection,
-    MovementUnit, Selection, SelectionSet, WordBoundaryPolicy, storage::TextRead,
+    MovementUnit, Selection, SelectionSet, WordBoundaryPolicy,
+    config::{WordBoundaryClassifier, WordSeparatorStop},
+    storage::TextRead,
 };
 
 use super::{Buffer, coordinates::is_crlf_middle};
@@ -199,18 +201,10 @@ fn movement_boundary_in_text<T: TextRead>(
             MovementDirection::Previous => storage.previous_grapheme_boundary_char(offset),
             MovementDirection::Next => storage.next_grapheme_boundary_char(offset),
         },
-        MovementUnit::Word => {
-            contiguous_grapheme_boundary(storage, offset, direction, is_word_char)
-        }
-        MovementUnit::Identifier => {
-            contiguous_grapheme_boundary(storage, offset, direction, |ch| {
-                policy.is_identifier_continue(ch)
-            })
-        }
-        MovementUnit::Subword => subword_boundary(storage, offset, direction),
-        MovementUnit::Symbol => {
-            contiguous_grapheme_boundary(storage, offset, direction, |ch| policy.is_symbol_char(ch))
-        }
+        MovementUnit::Word
+        | MovementUnit::Identifier
+        | MovementUnit::Subword
+        | MovementUnit::Symbol => word_boundary(storage, offset, direction, policy, unit),
         MovementUnit::LineEdge => line_edge_boundary(storage, offset, direction),
     }
 }
@@ -263,26 +257,64 @@ fn validate_movement_offset<T: TextRead>(storage: &T, offset: CharOffset) -> Eng
     Ok(())
 }
 
-fn contiguous_grapheme_boundary<T: TextRead>(
+fn word_boundary<T: TextRead>(
     storage: &T,
     offset: CharOffset,
     direction: MovementDirection,
-    mut is_body: impl FnMut(char) -> bool,
+    policy: WordBoundaryPolicy,
+    unit: MovementUnit,
+) -> EngineResult<CharOffset> {
+    let Some(classifier) = policy.classifier(unit) else {
+        return movement_unit_bug(unit);
+    };
+
+    if classifier.is_subword() {
+        subword_boundary(storage, offset, direction, classifier)
+    } else {
+        word_like_boundary(storage, offset, direction, classifier)
+    }
+}
+
+fn movement_unit_bug(unit: MovementUnit) -> EngineResult<CharOffset> {
+    Err(crate::EngineError::EngineBug {
+        location: "word_boundary",
+        detail: format!("非词类移动粒度不应进入词边界策略: {unit:?}"),
+    })
+}
+
+fn word_like_boundary<T: TextRead>(
+    storage: &T,
+    offset: CharOffset,
+    direction: MovementDirection,
+    classifier: WordBoundaryClassifier,
 ) -> EngineResult<CharOffset> {
     match direction {
         MovementDirection::Next => {
             let mut cursor = offset;
             let mut skipped_separator = false;
+            let mut line_start_after_separator = None;
 
             while let Some(grapheme) = grapheme_at(storage, cursor)? {
-                if is_body(grapheme.first) {
+                if classifier.is_body(grapheme.first) {
                     if skipped_separator {
                         return Ok(grapheme.start);
                     }
-                    return scan_contiguous_end(storage, grapheme, &mut is_body);
+                    return scan_contiguous_end(storage, grapheme, classifier);
+                }
+
+                if let Some(stop) =
+                    classifier.next_separator_stop(grapheme.first, skipped_separator)
+                {
+                    if let Some(line_start) = line_start_after_separator {
+                        return Ok(line_start);
+                    }
+                    return Ok(separator_stop_offset(grapheme, stop));
                 }
 
                 skipped_separator = true;
+                if classifier.is_hard_separator(grapheme.first) {
+                    line_start_after_separator = Some(grapheme.end);
+                }
                 cursor = grapheme.end;
             }
 
@@ -291,16 +323,29 @@ fn contiguous_grapheme_boundary<T: TextRead>(
         MovementDirection::Previous => {
             let mut cursor = offset;
             let mut skipped_separator = false;
+            let mut line_end_before_separator = None;
 
             while let Some(grapheme) = grapheme_before(storage, cursor)? {
-                if is_body(grapheme.first) {
+                if classifier.is_body(grapheme.first) {
                     if skipped_separator {
                         return Ok(grapheme.end);
                     }
-                    return scan_contiguous_start(storage, grapheme, &mut is_body);
+                    return scan_contiguous_start(storage, grapheme, classifier);
+                }
+
+                if let Some(stop) =
+                    classifier.previous_separator_stop(grapheme.first, skipped_separator)
+                {
+                    if let Some(line_end) = line_end_before_separator {
+                        return Ok(line_end);
+                    }
+                    return Ok(separator_stop_offset(grapheme, stop));
                 }
 
                 skipped_separator = true;
+                if classifier.is_hard_separator(grapheme.first) {
+                    line_end_before_separator = Some(grapheme.start);
+                }
                 cursor = grapheme.start;
             }
 
@@ -312,11 +357,11 @@ fn contiguous_grapheme_boundary<T: TextRead>(
 fn scan_contiguous_end<T: TextRead>(
     storage: &T,
     mut current: MovementGrapheme,
-    is_body: &mut impl FnMut(char) -> bool,
+    classifier: WordBoundaryClassifier,
 ) -> EngineResult<CharOffset> {
     loop {
         match grapheme_at(storage, current.end)? {
-            Some(next) if is_body(next.first) => current = next,
+            Some(next) if classifier.is_body(next.first) => current = next,
             _ => return Ok(current.end),
         }
     }
@@ -325,11 +370,11 @@ fn scan_contiguous_end<T: TextRead>(
 fn scan_contiguous_start<T: TextRead>(
     storage: &T,
     mut current: MovementGrapheme,
-    is_body: &mut impl FnMut(char) -> bool,
+    classifier: WordBoundaryClassifier,
 ) -> EngineResult<CharOffset> {
     loop {
         match grapheme_before(storage, current.start)? {
-            Some(previous) if is_body(previous.first) => current = previous,
+            Some(previous) if classifier.is_body(previous.first) => current = previous,
             _ => return Ok(current.start),
         }
     }
@@ -339,18 +384,36 @@ fn subword_boundary<T: TextRead>(
     storage: &T,
     offset: CharOffset,
     direction: MovementDirection,
+    classifier: WordBoundaryClassifier,
 ) -> EngineResult<CharOffset> {
     match direction {
-        MovementDirection::Next => next_subword_boundary(storage, offset),
-        MovementDirection::Previous => previous_subword_boundary(storage, offset),
+        MovementDirection::Next => next_subword_boundary(storage, offset, classifier),
+        MovementDirection::Previous => previous_subword_boundary(storage, offset, classifier),
     }
 }
 
-fn next_subword_boundary<T: TextRead>(storage: &T, offset: CharOffset) -> EngineResult<CharOffset> {
+fn next_subword_boundary<T: TextRead>(
+    storage: &T,
+    offset: CharOffset,
+    classifier: WordBoundaryClassifier,
+) -> EngineResult<CharOffset> {
     let mut cursor = offset;
+    let mut skipped_separator = false;
+    let mut line_start_after_separator = None;
 
     while let Some(grapheme) = grapheme_at(storage, cursor)? {
-        if !is_subword_body_char(grapheme.first) {
+        if !classifier.is_body(grapheme.first) {
+            if let Some(stop) = classifier.next_separator_stop(grapheme.first, skipped_separator) {
+                if let Some(line_start) = line_start_after_separator {
+                    return Ok(line_start);
+                }
+                return Ok(separator_stop_offset(grapheme, stop));
+            }
+
+            skipped_separator = true;
+            if classifier.is_hard_separator(grapheme.first) {
+                line_start_after_separator = Some(grapheme.end);
+            }
             cursor = grapheme.end;
             continue;
         }
@@ -359,7 +422,7 @@ fn next_subword_boundary<T: TextRead>(storage: &T, offset: CharOffset) -> Engine
             return Ok(grapheme.start);
         }
 
-        return scan_subword_end(storage, grapheme);
+        return scan_subword_end(storage, grapheme, classifier);
     }
 
     Ok(storage.len_chars())
@@ -368,13 +431,27 @@ fn next_subword_boundary<T: TextRead>(storage: &T, offset: CharOffset) -> Engine
 fn previous_subword_boundary<T: TextRead>(
     storage: &T,
     offset: CharOffset,
+    classifier: WordBoundaryClassifier,
 ) -> EngineResult<CharOffset> {
     let mut cursor = offset;
     let mut skipped_separator = false;
+    let mut line_end_before_separator = None;
 
     while let Some(grapheme) = grapheme_before(storage, cursor)? {
-        if !is_subword_body_char(grapheme.first) {
+        if !classifier.is_body(grapheme.first) {
+            if let Some(stop) =
+                classifier.previous_separator_stop(grapheme.first, skipped_separator)
+            {
+                if let Some(line_end) = line_end_before_separator {
+                    return Ok(line_end);
+                }
+                return Ok(separator_stop_offset(grapheme, stop));
+            }
+
             skipped_separator = true;
+            if classifier.is_hard_separator(grapheme.first) {
+                line_end_before_separator = Some(grapheme.start);
+            }
             cursor = grapheme.start;
             continue;
         }
@@ -383,27 +460,35 @@ fn previous_subword_boundary<T: TextRead>(
             return Ok(grapheme.end);
         }
 
-        return scan_subword_start(storage, grapheme);
+        return scan_subword_start(storage, grapheme, classifier);
     }
 
     Ok(CharOffset::ZERO)
 }
 
+fn separator_stop_offset(current: MovementGrapheme, stop: WordSeparatorStop) -> CharOffset {
+    match stop {
+        WordSeparatorStop::BeforeCurrent => current.start,
+        WordSeparatorStop::AfterCurrent => current.end,
+    }
+}
+
 fn scan_subword_end<T: TextRead>(
     storage: &T,
     mut current: MovementGrapheme,
+    classifier: WordBoundaryClassifier,
 ) -> EngineResult<CharOffset> {
     loop {
         let Some(next) = grapheme_at(storage, current.end)? else {
             return Ok(current.end);
         };
 
-        if !is_subword_body_char(next.first) {
+        if !classifier.is_body(next.first) {
             return Ok(current.end);
         }
 
         let after_next = grapheme_at(storage, next.end)?.map(|grapheme| grapheme.first);
-        if should_start_new_subword(current.first, next.first, after_next) {
+        if classifier.should_start_new_subword(current.first, next.first, after_next) {
             return Ok(next.start);
         }
 
@@ -414,18 +499,19 @@ fn scan_subword_end<T: TextRead>(
 fn scan_subword_start<T: TextRead>(
     storage: &T,
     mut current: MovementGrapheme,
+    classifier: WordBoundaryClassifier,
 ) -> EngineResult<CharOffset> {
     loop {
         let Some(previous) = grapheme_before(storage, current.start)? else {
             return Ok(current.start);
         };
 
-        if !is_subword_body_char(previous.first) {
+        if !classifier.is_body(previous.first) {
             return Ok(current.start);
         }
 
         let next = grapheme_at(storage, current.end)?.map(|grapheme| grapheme.first);
-        if should_start_new_subword(previous.first, current.first, next) {
+        if classifier.should_start_new_subword(previous.first, current.first, next) {
             return Ok(current.start);
         }
 
@@ -463,29 +549,4 @@ fn grapheme_before<T: TextRead>(
     };
 
     Ok(Some(MovementGrapheme { start, end, first }))
-}
-
-fn is_word_char(ch: char) -> bool {
-    ch.is_alphanumeric() || crate::config::is_combining_mark(ch)
-}
-
-fn is_subword_body_char(ch: char) -> bool {
-    // grapheme cluster 的首字符；其后的组合标记由 grapheme cluster 自动收纳。
-    // 这里只判断"是否是单词体字符"。
-    ch.is_alphanumeric() || crate::config::is_combining_mark(ch)
-}
-
-fn should_start_new_subword(previous: char, current: char, next: Option<char>) -> bool {
-    // 组合标记不应触发 camelCase / 数字-字母切分（grapheme cluster 内部不会传到这里，
-    // 但跨 cluster 边界若任一端是组合标记，仍应抑制切分）。
-    if crate::config::is_combining_mark(current) || crate::config::is_combining_mark(previous) {
-        return false;
-    }
-
-    (previous.is_lowercase() && current.is_uppercase())
-        || (previous.is_alphabetic() && current.is_numeric())
-        || (previous.is_numeric() && current.is_alphabetic())
-        || (previous.is_uppercase()
-            && current.is_uppercase()
-            && next.is_some_and(char::is_lowercase))
 }

@@ -27,7 +27,6 @@ use crate::{
     required_arg,
 };
 
-#[path = "editor/visual_movement.rs"]
 mod visual_movement;
 use visual_movement::move_target_selection;
 

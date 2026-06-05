@@ -42,7 +42,7 @@ use gpui::{Bounds, Hsla, Pixels, ShapedLine, Window, fill, point, px, size};
 
 use zom_engine::TextRange;
 
-use crate::shell::shared::theme::radius;
+use crate::theme::radius;
 
 // ============================================================================
 // 各阶段消费的数据类型（当前留空的槽位也都用这些类型）

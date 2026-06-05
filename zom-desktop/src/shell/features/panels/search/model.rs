@@ -1,10 +1,10 @@
 use zom_command::{EditTarget, KeyContext, SearchOption};
 use zom_workspace::BufferSearchOptions;
 
-use crate::focus::{AppFocus, SearchField};
-use crate::shell::editor::{
+use crate::editor::text::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
 };
+use crate::focus::{AppFocus, SearchField};
 use crate::text_target::{TextTargetOwner, TextTargetQuery};
 
 /// 从 focus 里抠出当前 search 字段；非 search focus 返回 `None`。

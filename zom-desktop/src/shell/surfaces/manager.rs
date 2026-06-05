@@ -2,7 +2,9 @@
 
 use gpui::{Context, FocusHandle};
 
-use super::{SurfaceId, SurfaceRequest};
+use crate::ui_id::SurfaceId;
+
+use super::SurfaceRequest;
 
 /// 当前活跃 surface 的完整运行时状态。
 #[derive(Clone)]

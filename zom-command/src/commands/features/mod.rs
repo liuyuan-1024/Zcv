@@ -2,9 +2,7 @@
 //!
 //! 每个 feature 模块同处声明命令 id、typed builder、handler 与默认键位。
 
-use crate::{
-    CommandArgs, CommandId, CommandOutcome, CommandRegistry, HostEffect, Invocation, Keymap, NoArgs,
-};
+use crate::{CommandArgs, CommandId, CommandRegistry, HostEffect, Invocation, Keymap};
 
 pub mod debug;
 pub mod diagnostics;
@@ -50,17 +48,12 @@ pub(super) fn register_panel_toggle(
     description: &'static str,
     default_chord: &'static str,
 ) {
-    let panel = panel_str_id.to_string();
     registry
         .install(
             keymap,
             command_id,
             title,
-            Box::new(move |ctx, args| {
-                NoArgs::try_from(args)?;
-                ctx.effects.push(HostEffect::TogglePanel(panel.clone()));
-                Ok(CommandOutcome::default())
-            }),
+            super::emit(HostEffect::TogglePanel(panel_str_id.to_string())),
         )
         .description(description)
         .key(default_chord);

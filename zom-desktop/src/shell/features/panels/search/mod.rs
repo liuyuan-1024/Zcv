@@ -22,15 +22,15 @@ use zom_view::ViewSet;
 use zom_workspace::Workspace;
 
 use crate::app::App;
+use crate::editor::TextEditorSlot;
 use crate::focus::{AppFocus, SearchField};
-use crate::ports::{FramePump, PostEditObserver};
-use crate::shell::editor::TextEditorSlot;
+use crate::ports::{FramePump, PostEditObserver, SearchAction, SearchHost};
 use crate::shell::normalized_chord;
 use crate::shell::shared::glyph::Glyph;
-use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::workbench::docks::render_focus_host;
 use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 use crate::text_target::TextTargetOwner;
+use crate::theme::{color, radius, space, typography};
 use crate::workspace_session::WorkspaceSession;
 
 use model::SearchModel;
@@ -111,6 +111,21 @@ impl SearchRuntimeHandle {
     pub(crate) fn replace_all(&self, workspace: &mut Workspace, views: &mut ViewSet) {
         let mut model = self.model.borrow_mut();
         coordinator::replace_all(&mut model, workspace, views);
+    }
+}
+
+impl SearchHost for SearchRuntimeHandle {
+    fn apply_search_action(&self, action: SearchAction, session: &mut WorkspaceSession) {
+        let (workspace, views) = session.parts_mut();
+        match action {
+            SearchAction::PanelOpened => self.on_panel_opened(workspace, views),
+            SearchAction::PanelClosed => self.on_panel_closed(workspace),
+            SearchAction::ToggleOption(option) => self.toggle_option(workspace, views, option),
+            SearchAction::FindPrevious => self.find_previous(workspace, views),
+            SearchAction::FindNext => self.find_next(workspace, views),
+            SearchAction::ReplaceNext => self.replace_next(workspace, views),
+            SearchAction::ReplaceAll => self.replace_all(workspace, views),
+        }
     }
 }
 

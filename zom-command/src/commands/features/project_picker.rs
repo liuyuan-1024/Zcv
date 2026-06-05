@@ -3,10 +3,10 @@
 //! handler 只 emit `HostEffect`（宿主弹项目选择器、走打开流程），不直接碰 GPUI / shell。
 //! 模块名 `workspace` 是内部代号，面向用户文案统一用「项目」。
 
+use crate::commands::emit;
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandHandler, CommandId, CommandOutcome,
-    CommandRegistry, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
-    reject_unknown_args, required_arg,
+    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
+    HostEffect, Invocation, KeyBindingContext, Keymap, reject_unknown_args, required_arg,
 };
 
 pub const SHOW_PROJECTS_PICKER: &str = "workspace.show_projects_picker";
@@ -132,7 +132,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             ACTIVATE,
             "激活项目选择器选中项",
-            Box::new(run_activate),
+            emit(HostEffect::ProjectPickerActivate),
         )
         .key_in("enter", picker)
         .key_in("return", picker);
@@ -147,15 +147,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_in("escape", picker);
 }
 
-/// 与 `window.rs::emit` 同形态；catalog 里"按一个键就推一个 effect"的样板。
-fn emit(effect: HostEffect) -> CommandHandler {
-    Box::new(move |ctx, args| {
-        NoArgs::try_from(args)?;
-        ctx.effects.push(effect.clone());
-        Ok(CommandOutcome::default())
-    })
-}
-
 fn run_move_selection(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
@@ -164,15 +155,6 @@ fn run_move_selection(
     context
         .effects
         .push(HostEffect::ProjectPickerMoveSelection(args.delta));
-    Ok(CommandOutcome::default())
-}
-
-fn run_activate(
-    context: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    context.effects.push(HostEffect::ProjectPickerActivate);
     Ok(CommandOutcome::default())
 }
 

@@ -27,13 +27,28 @@ pub(crate) struct RecentProject {
 pub(crate) struct RecentProjects {
     items: Vec<RecentProject>,
     path: Option<PathBuf>,
+    /// 读 / 写 / 解析时产生的人类可读错误，调用方在合适时机 drain 出去显示给用户。
+    pending_warnings: Vec<String>,
 }
 
 impl RecentProjects {
     /// 从磁盘加载；`None` 路径表示内存模式（测试用）。
     pub(crate) fn load(path: Option<PathBuf>) -> Self {
-        let items = path.as_deref().map(read_from_file).unwrap_or_default();
-        Self { items, path }
+        let mut pending_warnings = Vec::new();
+        let items = path
+            .as_deref()
+            .map(|p| read_from_file(p, &mut pending_warnings))
+            .unwrap_or_default();
+        Self {
+            items,
+            path,
+            pending_warnings,
+        }
+    }
+
+    /// 取走累积的人类可读警告。
+    pub(crate) fn take_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_warnings)
     }
 
     /// 发行版默认落盘位置：`$HOME/.zom/recent_workspaces.toml`。
@@ -69,12 +84,13 @@ impl RecentProjects {
         self.flush();
     }
 
-    fn flush(&self) {
+    fn flush(&mut self) {
         let Some(path) = &self.path else {
             return;
         };
         if let Err(error) = write_to_file(path, &self.items) {
-            eprintln!("写入最近项目失败：{error}");
+            self.pending_warnings
+                .push(format!("写入最近项目失败：{error}"));
         }
     }
 }
@@ -107,19 +123,19 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-fn read_from_file(path: &Path) -> Vec<RecentProject> {
+fn read_from_file(path: &Path, warnings: &mut Vec<String>) -> Vec<RecentProject> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(error) => {
-            eprintln!("读取最近项目失败：{error}");
+            warnings.push(format!("读取最近项目失败：{error}"));
             return Vec::new();
         }
     };
     let file = match toml::from_str::<RecentProjectsFile>(&text) {
         Ok(file) => file,
         Err(error) => {
-            eprintln!("解析最近项目失败：{error}");
+            warnings.push(format!("解析最近项目失败：{error}"));
             return Vec::new();
         }
     };

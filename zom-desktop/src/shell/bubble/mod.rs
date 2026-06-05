@@ -11,7 +11,7 @@ use gpui::{
 };
 use zom_command::{BubbleKind, BubbleRequest};
 
-use crate::shell::shared::theme::{color, radius, space, typography};
+use crate::theme::{color, radius, space, typography};
 
 const BUBBLE_RIGHT_PX: f32 = 16.0;
 const BUBBLE_BOTTOM_PX: f32 = 16.0;
@@ -143,8 +143,7 @@ fn render_bubble(active: ActiveBubble) -> impl IntoElement {
         .absolute()
         .right(px(BUBBLE_RIGHT_PX))
         .bottom(px(BUBBLE_BOTTOM_PX))
-        .max_w(px(520.0))
-        .min_h(px(34.0))
+        .w(px(420.0))
         .flex()
         .items_center()
         .gap_2()
@@ -158,12 +157,13 @@ fn render_bubble(active: ActiveBubble) -> impl IntoElement {
         .text_color(color::gray::s09())
         .child(
             div()
+                .flex_none()
                 .w(px(3.0))
                 .h(px(18.0))
                 .rounded(radius::full())
                 .bg(accent),
         )
-        .child(div().child(active.request.message))
+        .child(div().flex_1().min_w_0().child(active.request.message))
         .with_animation(
             ("bubble-enter", active.seq),
             Animation::new(Duration::from_millis(BUBBLE_ENTER_MS)).with_easing(ease_out_quint()),

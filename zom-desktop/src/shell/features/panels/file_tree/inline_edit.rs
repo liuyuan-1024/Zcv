@@ -3,12 +3,12 @@
 use std::path::{Path, PathBuf};
 
 use zom_command::commands::file_tree::FileTreeKeyMode;
-use zom_command::{EditTarget, KeyContext};
+use zom_command::{BubbleRequest, EditTarget, KeyContext};
 
-use crate::focus::{AppFocus, FileTreeFocus};
-use crate::shell::editor::{
+use crate::editor::text::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
 };
+use crate::focus::{AppFocus, FileTreeFocus};
 use crate::text_target::{TextTargetOwner, TextTargetQuery};
 
 use super::fs_ops::snapshot_row;
@@ -47,7 +47,10 @@ impl FileTreeModel {
             },
         };
         if let Err(error) = tree.expand(&parent) {
-            eprintln!("展开目录失败：{}：{error}", parent.display());
+            self.pending_bubbles.push(
+                BubbleRequest::error(format!("展开目录失败：{}：{error}", parent.display()))
+                    .dedupe("file_tree.expand"),
+            );
             return;
         }
         self.pending = Some(PendingEntry {

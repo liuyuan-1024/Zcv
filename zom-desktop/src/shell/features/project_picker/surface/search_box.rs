@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use gpui::{Div, div, prelude::*};
 
-use crate::shell::editor::TextEditorSlot;
-use crate::shell::shared::theme::{color, space, typography};
+use crate::editor::TextEditorSlot;
+use crate::theme::{color, space, typography};
 
 use crate::shell::features::project_picker::{ProjectPickerMode, ProjectPickerState};
 

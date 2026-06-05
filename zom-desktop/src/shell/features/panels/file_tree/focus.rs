@@ -10,8 +10,9 @@ use gpui::{Context, FocusHandle, Window};
 
 use crate::app::App;
 use crate::focus::{AppFocus, FileTreeFocus};
-use crate::shell::features::panels::{PanelId, focus_panel_handle};
+use crate::shell::features::panels::focus_panel_handle;
 use crate::shell::workbench::controller::WorkbenchController;
+use crate::ui_id::PanelId;
 
 use super::FileTreeModel;
 

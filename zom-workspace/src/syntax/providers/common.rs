@@ -1,53 +1,45 @@
-//! Tier 1 provider 的共享机制——所有 tree-sitter Tier 1 provider 都是同一份
-//! 「OnceLock 配置 + Parser + QueryCursor + sink 槽 + run_full」结构，
-//! 差异只在三个常量：`(Language, language_name, HIGHLIGHTS_QUERY)`。本模块把
-//! 这一份共同形态抽出来，让每条语言的 provider 文件只剩注册这三个常量。
+//! Tier 1 provider 的共享机制——所有 tree-sitter Tier 1 provider 都是同一份「OnceLock 配置 + Parser + QueryCursor + sink 槽 + run_full」结构，
+//! 差异只在三个常量：`(Language, language_name, HIGHLIGHTS_QUERY)`。
+//! 本模块把这一份共同形态抽出来，让每条语言的 provider 文件只剩注册这三个常量。
 //!
 //! ## 设计要点
 //!
-//! - **共享 `SharedConfig`**：[`build_shared_config`] 一次性构建，跨同语言
-//!   多个缓冲区共享一份 `Language` + `Query` + capture-name 索引表。
-//! - **capture name 派生不手维护**：与 `query.capture_names()` 同序、同长
-//!   的 `Vec<HighlightName>` 在构建时一次性派生；上游 grammar 升版加 capture
-//!   时本路径自动跟上（语法高亮手册 §三）。`Box::leak` 把派生 name 提到
-//!   `'static`——OnceLock 一次性泄漏 ~20 个短字符串，进程级常量。
-//! - **通用 `HighlightWorker`** 实现 [`HighlightProvider`]：调度层拿到的就是
-//!   它。每条语言的 `new_provider()` 函数只是包装一次 `LanguageId` 与
-//!   `SharedConfig`。
-//! - **只处理 highlights**：injections / locals 留空（手册 §十四）；编辑后优先走
-//!   增量重解析，有 viewport hint 时只投递局部 ReplaceRange。
+//! - **共享 `SharedConfig`**：[`build_shared_config`] 一次性构建，跨同语言多个缓冲区共享一份 `Language` + `Query` + capture-name 索引表。
+//! - **capture name 派生不手维护**：
+//! 与 `query.capture_names()` 同序、同长的 `Vec<HighlightName>` 在构建时一次性派生；
+//! 上游 grammar 升版加 capture时本路径自动跟上（语法高亮手册 §三）。
+//! `Box::leak` 把派生 name 提到 `'static`——OnceLock 一次性泄漏 ~20 个短字符串，进程级常量。
+//! - **通用 `HighlightWorker`** 实现 [`HighlightProvider`]：调度层拿到的就是它。
+//! 每条语言的 `new_provider()` 函数只是包装一次 `LanguageId` 与 `SharedConfig`。
+//! - **只处理 highlights**：injections / locals 留空（手册 §十四）；编辑后优先走增量重解析，有 viewport hint 时只投递局部 ReplaceRange。
 //!
 //! ## 当前解析路径
 //!
-//! provider 直接使用 `tree_sitter::Parser` + `Query` + `QueryCursor::captures`，
-//! 自己做嵌套 stack 与「同 node 后到的 pattern 覆盖先到的」语义对齐。这样可以
-//! 持久化 `Parser` / `Tree`，并在编辑后优先走增量重解析。
+//! provider 直接使用 `tree_sitter::Parser` + `Query` + `QueryCursor::captures`，自己做嵌套 stack 与「同 node 后到的 pattern 覆盖先到的」语义对齐。
+//! 这样可以持久化 `Parser` / `Tree`，并在编辑后优先走增量重解析。
 //!
 //! 语义护栏：见 `tests::raw_collects_expected_rust_spans`。
 //!
 //! ## 增量重解析
 //!
-//! worker 缓存 `Option<Tree>` 与上一次解析用的 `Snapshot`。`on_edit` 时把
-//! `ChangeSet::edits()`（旧坐标）+ 旧 / 新 Snapshot 翻译成 `Vec<InputEdit>`，
-//! 逐条调 `Tree::edit`，再走 `Parser::parse_with_options` 喂流式 rope chunks，
-//! 并把旧 Tree 作为 `Some(&old)` 传入。
+//! worker 缓存 `Option<Tree>` 与上一次解析用的 `Snapshot`。
+//! `on_edit` 时把 `ChangeSet::edits()`（旧坐标）+ 旧 / 新 Snapshot 翻译成 `Vec<InputEdit>`，逐条调 `Tree::edit`，再走 `Parser::parse_with_options` 喂流式 rope chunks，并把旧 Tree 作为 `Some(&old)` 传入。
 //!
 //! 三类失败路径都收口到全量重解析 + 复位 Tree（覆盖在 `run_full` 里）：
 //! 1. 无缓存（首次 attach / 上一轮回退过）；
 //! 2. 任一条 InputEdit 翻译失败（如旧 offset 越界、坐标解码出错）；
 //! 3. `parser.parse_with_options` 返回 `None`（grammar ABI / 内部错误）。
 //!
-//! 等价性护栏：`tests::incremental_matches_full_after_edit` 把同样几次小编辑
-//! 分别用「增量 worker」与「每次都从零 parse 的 baseline」跑一遍，断言 spans
-//! 完全一致。
+//! 等价性护栏：`tests::incremental_matches_full_after_edit` 把同样几次小编辑分别用「增量 worker」与「每次都从零 parse 的 baseline」跑一遍，断言 spans 完全一致。
 //!
-//! 有 viewport hint 时，query 限制在 viewport ± 缓冲区，并以 ReplaceRange
-//! 投递局部 spans；无 hint 时走全文 ReplaceAll。
+//! 有 viewport hint 时，query 限制在 viewport ± 缓冲区，并以 ReplaceRange 投递局部 spans；
+//! 无 hint 时走全文 ReplaceAll。
 //!
 //! ## sink 缓存
 //!
-//! trait 只在 `attach` 时给 sink；`on_edit` 不再传。provider 内部缓存 sink，
-//! 编辑或 viewport hint 改变时复用。sink 是轻量 clone 的 Arc，本就为这种场景设计。
+//! trait 只在 `attach` 时给 sink；`on_edit` 不再传。
+//! provider 内部缓存 sink，编辑或 viewport hint 改变时复用。
+//! sink 是轻量 clone 的 Arc，本就为这种场景设计。
 
 use std::{fmt::Debug, sync::Arc};
 
@@ -62,8 +54,8 @@ use crate::syntax::provider::{BufferHandle, HighlightProvider};
 use crate::syntax::sink::HighlightSink;
 use zom_engine::{BufferVersion, ByteOffset, ChangeSet, Snapshot, TextRange};
 
-/// 一门语言已 build 好的高亮配置：`tree_sitter::Query` 加上派生的
-/// 「capture index → [`HighlightName`]」索引表与原始 `Language`。
+/// 一门语言已 build 好的高亮配置：
+/// `tree_sitter::Query` 加上派生的「capture index → [`HighlightName`]」索引表与原始 `Language`。
 pub(crate) struct SharedConfig {
     pub(crate) language: Language,
     pub(crate) query: Query,
@@ -73,19 +65,33 @@ pub(crate) struct SharedConfig {
 
 /// 给一门语言构建一份 [`SharedConfig`]。
 ///
-/// 失败仅发生在 query 语法错误或 ABI 不匹配——静态资源问题，发版前必被
-/// 测试覆盖（语法高亮手册 §十二「降级与边界条件」）。每条语言的 provider
-/// 文件在 `OnceLock` 内调一次。
+/// 失败仅发生在 query 语法错误或 ABI 不匹配——静态资源问题，发版前必被测试覆盖（语法高亮手册 §十二「降级与边界条件」）。
+/// 每条语言的 provider 文件在 `OnceLock` 内调一次。
 pub(crate) fn build_shared_config(
     language: Language,
     highlights_query: &'static str,
+) -> Result<SharedConfig, QueryError> {
+    build_shared_config_with_normalize(language, highlights_query, normalize_highlight_name)
+}
+
+/// 同 [`build_shared_config`]，但允许传入自定义 capture-name 归一化函数。
+///
+/// **当前唯一调用方是 markdown 的 inline grammar**（[`super::markdown`]）
+/// —— inline grammar 的 `text.literal` 指 `code_span`，要归一到 `markup.raw.inline`，
+/// 而 block grammar 的 `text.literal` 指 fenced/indented code block，归一到 `markup.raw.block`。
+/// 两者冲突，单一全局 [`normalize_highlight_name`] 表达不下。
+/// 其余语言走默认归一化即可，不必各自重复。
+pub(crate) fn build_shared_config_with_normalize(
+    language: Language,
+    highlights_query: &'static str,
+    normalize: fn(&str) -> &str,
 ) -> Result<SharedConfig, QueryError> {
     let query = Query::new(&language, highlights_query)?;
     let lookup: Vec<HighlightName> = query
         .capture_names()
         .iter()
         .map(|name| {
-            let normalized = normalize_highlight_name(name);
+            let normalized = normalize(name);
             HighlightName::new(Box::leak(normalized.to_string().into_boxed_str()))
         })
         .collect();
@@ -98,8 +104,8 @@ pub(crate) fn build_shared_config(
 
 /// 把不同 tree-sitter query 生态里的 capture 方言归一到主题使用的 canonical name。
 ///
-/// 当前只覆盖已经观察到的 nvim-treesitter / tree-sitter-md `text.*` 命名；其余
-/// capture 保持原名，让 Helix/Zed 风格 query 可以零成本透传。
+/// 当前只覆盖已经观察到的 nvim-treesitter / tree-sitter-md `text.*` 命名；
+/// 其余 capture 保持原名，让 Helix/Zed 风格 query 可以零成本透传。
 fn normalize_highlight_name(name: &str) -> &str {
     match name {
         "text.title" => "markup.heading",
@@ -112,27 +118,25 @@ fn normalize_highlight_name(name: &str) -> &str {
 
 /// 通用 Tier 1 provider 实现。
 ///
-/// 每个缓冲区一份 `HighlightWorker`，但内部 `Arc<SharedConfig>` 跨缓冲区
-/// 共享。调度层只看 [`HighlightProvider`] trait，并不知道 worker 装的是哪门
-/// 语言——这正是「产出者形态统一、差异封装在内部」的实现兑现。
+/// 每个缓冲区一份 `HighlightWorker`，但内部 `Arc<SharedConfig>` 跨缓冲区共享。
+/// 调度层只看 [`HighlightProvider`] trait，并不知道 worker 装的是哪门语言——这正是「产出者形态统一、差异封装在内部」的实现兑现。
 pub struct HighlightWorker {
     language_id: LanguageId,
     config: Arc<SharedConfig>,
     parser: Parser,
     cursor: QueryCursor,
-    /// attach 时缓存进来；detach 时清掉。on_edit 复用同一 sink。
+    /// attach 时缓存进来；detach 时清掉。
+    /// on_edit 复用同一 sink。
     sink_slot: Option<HighlightSink>,
-    /// 上一次解析出的 Tree。`None` 表示尚未首次解析或上一轮失败（下次
-    /// `on_edit` 走全量重解析把这两个槽都填回去）。
+    /// 上一次解析出的 Tree。
+    /// `None` 表示尚未首次解析或上一轮失败（下次 `on_edit` 走全量重解析把这两个槽都填回去）。
     tree: Option<Tree>,
-    /// 与 `tree` 对应的 Snapshot：增量路径计算 InputEdit **旧端** Point 时
-    /// 需要它（新端 Point 用 on_edit 收到的新 snapshot）。Snapshot 内部是 Arc
-    /// 共享 rope，常驻一份开销可忽略。
+    /// 与 `tree` 对应的 Snapshot：增量路径计算 InputEdit **旧端** Point 时 需要它（新端 Point 用 on_edit 收到的新 snapshot）。
+    /// Snapshot 内部是 Arc 共享 rope，常驻一份开销可忽略。
     last_snapshot: Option<Snapshot>,
-    /// 当前 desktop 上报的 viewport hint。`Some(range)` 时所有 on_edit 出的
-    /// spans 只覆盖 `range`，通过 `sink.replace_range` 投递；`None` 走全文路径
-    /// （全文 `replace_all`）。set_viewport 改变值时会立刻触发一次重 query
-    /// （不重解析），让滚动后新区域 1–2 帧内补齐。
+    /// 当前 desktop 上报的 viewport hint。`Some(range)` 时所有 on_edit 出的 spans 只覆盖 `range`，通过 `sink.replace_range` 投递；
+    /// `None` 走全文路径（全文 `replace_all`）。
+    /// set_viewport 改变值时会立刻触发一次重 query（不重解析），让滚动后新区域 1–2 帧内补齐。
     viewport_hint: Option<TextRange>,
 }
 
@@ -165,19 +169,15 @@ impl HighlightWorker {
     /// 全量解析缓冲区当前 snapshot，把高亮区间推给 sink。
     ///
     /// 同时把新 Tree 与 Snapshot 落进 worker 缓存，供下一轮 `on_edit` 走增量。
-    /// 缓存的 `tree` 不能跨 snapshot 复用而不调用 `Tree::edit`——这条规则由
-    /// 增量路径的 `try_incremental` 保证。
+    /// 缓存的 `tree` 不能跨 snapshot 复用而不调用 `Tree::edit`——这条规则由增量路径的 `try_incremental` 保证。
     ///
-    /// **viewport-aware**：parse 阶段必须走全文（tree-sitter 要构建整棵树），
-    /// 但 query 阶段按 `viewport_hint` 分支：
+    /// **viewport-aware**：parse 阶段必须走全文（tree-sitter 要构建整棵树），但 query 阶段按 `viewport_hint` 分支：
     ///
-    /// - `Some(range)`：先推一份 **空 `ReplaceAll`** 在 sink 上把 layer 锚到本
-    ///   版本（清掉上一份高亮、初始化版本），再 `set_byte_range` 跑局部 query
-    ///   并以 `ReplaceRange` 投递 viewport 段 spans。视口外保持空，等滚动 / 编辑
-    ///   再增量补齐。冷启动 16 MiB rust attach 时这条路径让"高亮亮起"从全树
-    ///   query 的 1.5 s 量级落到 viewport 段的 100–300 ms 量级。
-    /// - `None`：保持原全文 query + `ReplaceAll` 路径。desktop 在 attach 时还
-    ///   没确定 viewport（或显式清空 hint）时落到这里。
+    /// - `Some(range)`：先推一份 **空 `ReplaceAll`** 在 sink 上把 layer 锚到本版本（清掉上一份高亮、初始化版本），再 `set_byte_range` 跑局部 query 并以 `ReplaceRange` 投递 viewport 段 spans。
+    /// 视口外保持空，等滚动/编辑再增量补齐。
+    /// 冷启动 16 MiB rust attach 时这条路径让"高亮亮起"从全树 query 的 1.5 s 量级落到 viewport 段的 100–300 ms 量级。
+    /// - `None`：保持原全文 query + `ReplaceAll` 路径。
+    /// desktop 在 attach 时还没确定 viewport（或显式清空 hint）时落到这里。
     fn run_full(&mut self, buffer: &BufferHandle, sink: &HighlightSink) {
         let snapshot = buffer.snapshot();
         let version = snapshot.version();
@@ -203,8 +203,8 @@ impl HighlightWorker {
 
         match self.viewport_hint {
             Some(range) => {
-                // 先用空 ReplaceAll 把 layer 锚到本版本——既清掉上一轮残留，又给
-                // 后续 ReplaceRange 一个可 in-place 替换的本版本起点。
+                // 先用空 ReplaceAll 把 layer 锚到本版本——既清掉上一轮残留，
+                // 又给后续 ReplaceRange 一个可 in-place 替换的本版本起点。
                 sink.replace_all(version, Vec::new());
                 self.cursor
                     .set_byte_range(range.start().get()..range.end().get());
@@ -313,12 +313,11 @@ impl HighlightWorker {
         true
     }
 
-    /// 立即就 `range` 跑一次 viewport-scoped query，把结果作为 `ReplaceRange`
-    /// 推给 sink——不重 parse、不刷 tree/last_snapshot。
+    /// 立即就 `range` 跑一次 viewport-scoped query，把结果作为 `ReplaceRange` 推给 sink——不重 parse、不刷 tree/last_snapshot。
     ///
-    /// 仅在 worker 已有 tree + last_snapshot + sink 时有效；调用方一般是
-    /// `set_viewport` 在 hint 实际改变后触发，目的是让滚动后新可见区域 1–2
-    /// 帧内就有 spans，而不必等到下一次按键。
+    /// 仅在 worker 已有 tree + last_snapshot + sink 时有效；
+    /// 调用方一般是 `set_viewport` 在 hint 实际改变后触发，
+    /// 目的是让滚动后新可见区域 1–2 帧内就有 spans，而不必等到下一次按键。
     fn reissue_viewport_query(&mut self, range: TextRange) {
         let (Some(tree), Some(snapshot), Some(sink)) = (
             self.tree.as_ref(),
@@ -337,24 +336,22 @@ impl HighlightWorker {
     }
 }
 
-/// 把 `QueryCursor::set_byte_range` 回到全文范围——viewport-scoped query 完成后
-/// 立刻 reset，保证后续 run_full 等全文路径不被上一次约束截断。
+/// 把 `QueryCursor::set_byte_range` 回到全文范围——viewport-scoped query 完成后立刻 reset，保证后续 run_full 等全文路径不被上一次约束截断。
 ///
-/// tree-sitter 内部把 byte range 端点 cast 成 u32；`u32::MAX as usize` 是
-/// 它支持的最大值。
-fn reset_cursor_range(cursor: &mut QueryCursor) {
+/// tree-sitter 内部把 byte range 端点 cast 成 u32；`u32::MAX as usize` 是它支持的最大值。
+pub(crate) fn reset_cursor_range(cursor: &mut QueryCursor) {
     cursor.set_byte_range(0..(u32::MAX as usize));
 }
 
 /// 把 `ChangeSet`（旧坐标 edit 列表）翻译为 tree-sitter `InputEdit` 列表。
 ///
-/// 每条 InputEdit 的旧端 Point 用 `old_snapshot.byte_to_point` 解码，新端 Point
-/// 用 `new_snapshot.byte_to_point` 解码——这两侧坐标系不同源（一个是旧文本、一个是新文本），不能混用同一份 snapshot；详见改造方案 §3.4。
+/// 每条 InputEdit 的旧端 Point 用 `old_snapshot.byte_to_point` 解码，
+/// 新端 Point 用 `new_snapshot.byte_to_point` 解码，
+/// 这两侧坐标系不同源（一个是旧文本、一个是新文本），不能混用同一份 snapshot；详见改造方案 §3.4。
 ///
 /// 任何一条 edit 解码失败（越界 / 非字符边界）就返回 `None`，由调用方全量重解析。
-/// Edit 列表已经过 `EditList::new` 排序且不重叠，按顺序逐条 `Tree::edit`
-/// 即可保证 tree-sitter 看到的内部坐标连续推进。
-fn translate_edits(
+/// Edit 列表已经过 `EditList::new` 排序且不重叠，按顺序逐条 `Tree::edit` 即可保证 tree-sitter 看到的内部坐标连续推进。
+pub(crate) fn translate_edits(
     change: &ChangeSet,
     old_snapshot: &Snapshot,
     new_snapshot: &Snapshot,
@@ -483,7 +480,7 @@ impl<'snap> TextProvider<&'snap [u8]> for SnapshotTextProvider<'snap> {
 /// 把上一条 pending 与之比对——同 node 就替换 pending、不同 node 就先 finalize
 /// 上一条再排上新的。`StreamingIterator` 不能 peek，这种延迟一拍写法是适配
 /// 它的最简方式。
-fn collect_spans<P, I>(
+pub(crate) fn collect_spans<P, I>(
     config: &SharedConfig,
     cursor: &mut QueryCursor,
     tree: &Tree,

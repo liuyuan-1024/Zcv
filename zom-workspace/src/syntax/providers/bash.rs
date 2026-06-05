@@ -12,7 +12,7 @@ use tree_sitter::QueryError;
 use crate::syntax::LanguageId;
 use crate::syntax::providers::common::{HighlightWorker, SharedConfig, build_shared_config};
 
-fn bash_config() -> Result<Arc<SharedConfig>, &'static QueryError> {
+pub(crate) fn bash_config() -> Result<Arc<SharedConfig>, &'static QueryError> {
     static CELL: OnceLock<Result<Arc<SharedConfig>, QueryError>> = OnceLock::new();
     CELL.get_or_init(|| {
         build_shared_config(

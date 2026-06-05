@@ -23,8 +23,8 @@ use std::rc::Rc;
 use gpui::{Context, ElementId, FocusHandle};
 
 use crate::app::App;
+use crate::editor::kernel::EditorKernel;
 use crate::focus::AppFocus;
-use crate::shell::editor::kernel::EditorKernel;
 
 use super::element::EditorElement;
 use super::input_host::EditorInputHost;

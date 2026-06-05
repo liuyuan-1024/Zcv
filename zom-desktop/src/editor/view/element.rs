@@ -1,7 +1,7 @@
 //! 可嵌入编辑器渲染图元 —— 唯一的编辑器实现（借鉴 Zed 的 `EditorElement`）。
 //!
 //! 单行输入框与主编辑区不是两种编辑器，而是同一个
-//! [`EditorKernel`](crate::shell::editor::EditorKernel) 按能力开关创建出的两个形态；本文件只
+//! [`EditorKernel`](crate::editor::EditorKernel) 按能力开关创建出的两个形态；本文件只
 //! 消费内核传下来的能力开关并完成 GPUI 绘制。
 //!
 //! 文本与光标分层绘制：每帧把视口内每行 shape 成 [`ShapedLine`]，文本只随
@@ -41,12 +41,13 @@ use gpui::{
 use zom_engine::{SelectionSet, TextRange};
 use zom_view::{RevealKind, ViewportState, VisualPosition, WrapMap};
 
-use crate::shell::shared::theme::color;
+use crate::editor::highlight::Decoration;
+use crate::editor::text::snapshot::{RevealHint, SnapshotLine};
+use crate::theme::color;
 
-use crate::shell::editor::highlight::{self, Composition, Decoration};
-use crate::shell::editor::input::CaretLayout;
-use crate::shell::editor::kernel::EditorKernel;
-use crate::shell::editor::snapshot::{RevealHint, SnapshotLine};
+use crate::editor::highlight::compose::{Composition, compose};
+use crate::editor::input::CaretLayout;
+use crate::editor::kernel::EditorKernel;
 
 use super::blink::CaretClock;
 use super::gutter;
@@ -459,7 +460,7 @@ impl Element for EditorElement {
         let Composition {
             foreground: highlight_runs,
             background: range_backgrounds,
-        } = highlight::compose(std::mem::take(&mut self.decorations));
+        } = compose(std::mem::take(&mut self.decorations));
 
         // SelectionSet 经过引擎归一化，as_slice() 已按 start 排序、互不重叠。
         // primary 在归一化前后由 primary_index 跟踪。
@@ -990,6 +991,11 @@ fn build_text_runs_for_line(
         if span_end <= span_start {
             continue;
         }
+        let Some((span_start, span_end)) =
+            clamp_span_to_char_boundaries(raw, line_start, span_start, span_end)
+        else {
+            continue;
+        };
         // 行内未着色段：cursor..span_start。
         if span_start > cursor {
             runs.push(text_style.to_run(span_start - cursor));
@@ -1012,6 +1018,46 @@ fn build_text_runs_for_line(
     }
 
     runs
+}
+
+fn clamp_span_to_char_boundaries(
+    raw: &str,
+    line_start: usize,
+    span_start: usize,
+    span_end: usize,
+) -> Option<(usize, usize)> {
+    let rel_start = span_start.checked_sub(line_start)?;
+    let rel_end = span_end.checked_sub(line_start)?;
+    let aligned_start = next_char_boundary(raw, rel_start)?;
+    let aligned_end = previous_char_boundary(raw, rel_end)?;
+
+    if aligned_end <= aligned_start {
+        return None;
+    }
+
+    Some((line_start + aligned_start, line_start + aligned_end))
+}
+
+fn next_char_boundary(text: &str, offset: usize) -> Option<usize> {
+    if offset > text.len() {
+        return None;
+    }
+    if text.is_char_boundary(offset) {
+        return Some(offset);
+    }
+    ((offset + 1)..=text.len()).find(|&candidate| text.is_char_boundary(candidate))
+}
+
+fn previous_char_boundary(text: &str, offset: usize) -> Option<usize> {
+    if offset > text.len() {
+        return None;
+    }
+    if text.is_char_boundary(offset) {
+        return Some(offset);
+    }
+    (0..offset)
+        .rev()
+        .find(|&candidate| text.is_char_boundary(candidate))
 }
 
 #[cfg(test)]
@@ -1067,6 +1113,46 @@ mod tests {
         let runs = build_text_runs_for_line("hello", 0, 5, &[(rng(1, 4), color())], &style());
         assert_eq!(lens(&runs), vec![1, 3, 1]);
         assert_eq!(runs[1].color, color());
+    }
+
+    #[test]
+    fn highlight_inside_multibyte_character_should_be_dropped_before_gpui_shape() {
+        let runs = build_text_runs_for_line("语言", 0, 6, &[(rng(0, 2), color())], &style());
+
+        assert_eq!(lens(&runs), vec![6]);
+        assert_eq!(runs[0].color, style().color);
+    }
+
+    #[test]
+    fn highlight_on_multibyte_character_boundary_should_keep_byte_lengths() {
+        let runs = build_text_runs_for_line("语言", 0, 6, &[(rng(0, 3), color())], &style());
+
+        assert_eq!(lens(&runs), vec![3, 3]);
+        assert_eq!(runs[0].color, color());
+    }
+
+    #[test]
+    fn soft_wrap_subrow_should_rebase_absolute_highlight_ranges_to_segment_text() {
+        let line = "- **语言**：中文是第一语言";
+        let segment = &line[4..];
+        let runs = build_text_runs_for_line(
+            segment,
+            4,
+            line.len(),
+            &[
+                (rng(0, 2), color()),
+                (rng(2, 3), color()),
+                (rng(3, 4), color()),
+                (rng(4, 10), color()),
+                (rng(10, 11), color()),
+                (rng(11, 12), color()),
+            ],
+            &style(),
+        );
+
+        assert_eq!(lens(&runs)[0], "语言".len());
+        let total: usize = runs.iter().map(|run| run.len).sum();
+        assert_eq!(total, segment.len());
     }
 
     #[test]

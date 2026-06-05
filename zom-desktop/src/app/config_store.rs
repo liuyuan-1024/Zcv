@@ -14,23 +14,30 @@ use crate::config::{AppConfig, SettingsChange};
 pub(super) struct ConfigStore {
     config: AppConfig,
     config_path: Option<PathBuf>,
-    /// 软换行的运行时只读投影：多行 [`EditorKernel`] 构造时借这份 `Rc`，
+    /// 软换行的运行时只读投影：多行编辑器内核构造时借这份 `Rc`，
     /// 一次写入对所有持有者同帧可见。Store 是唯一的写入者，所有 mutate 路径
     /// 必须经 [`sync_soft_wrap_cell`](Self::sync_soft_wrap_cell) 保持一致。
-    ///
-    /// [`EditorKernel`]: crate::shell::editor::EditorKernel
     soft_wrap_state: Rc<Cell<bool>>,
+    /// 启动期 load 阶段拿到的诊断（"读取/解析全局配置失败"）。
+    /// 在 BubbleRuntime 装好后由 App 一次性 drain 成气泡。
+    load_warnings: Vec<String>,
 }
 
 impl ConfigStore {
     pub(super) fn new(config_path: Option<PathBuf>) -> Self {
-        let config = AppConfig::load(config_path.as_deref());
+        let (config, load_warnings) = AppConfig::load(config_path.as_deref());
         let soft_wrap_state = Rc::new(Cell::new(config.editor.soft_wrap));
         Self {
             config,
             config_path,
             soft_wrap_state,
+            load_warnings,
         }
+    }
+
+    /// 取走启动期累积的配置加载诊断。
+    pub(super) fn take_load_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.load_warnings)
     }
 
     /// 借出 config 的只读引用——Applier 通过此入口拿到 push 给下游的源数据。
@@ -54,17 +61,17 @@ impl ConfigStore {
         self.config.buffer_config()
     }
 
-    pub(super) fn save(&self) {
-        self.config.save(self.config_path.as_deref());
+    pub(super) fn save(&self) -> Result<(), String> {
+        self.config.save(self.config_path.as_deref())
     }
 
     /// 翻转软换行。视觉与 workspace 不受影响——所以本路径不需要 Applier 介入，
     /// 自己同步 cell 后直接落盘。
-    pub(super) fn toggle_soft_wrap(&mut self) {
+    pub(super) fn toggle_soft_wrap(&mut self) -> Result<(), String> {
         let next = !self.soft_wrap_state.get();
         self.soft_wrap_state.set(next);
         self.config.editor.soft_wrap = next;
-        self.save();
+        self.save()
     }
 
     /// 应用一项 [`SettingsChange`]，保持 soft_wrap cell 与 config 一致。

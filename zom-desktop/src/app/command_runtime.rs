@@ -5,15 +5,15 @@
 
 use zom_command::commands;
 use zom_command::{
-    ClipboardPort, CommandArgs, CommandCatalogItem, CommandContext, CommandError, CommandExecutor,
-    CommandId, CommandQueue, EffectQueue, HostEffect, KeyChord, KeyContext, Keymap,
+    ClipboardPort, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId,
+    CommandQueue, CommandRegistry, EffectQueue, HostEffect, KeyChord, KeyContext, Keymap,
     KeymapResolution, MockClipboard,
 };
 
 use crate::workspace_session::WorkspaceSession;
 
 pub(super) struct CommandRuntime {
-    registry: zom_command::CommandRegistry,
+    registry: CommandRegistry,
     keymap: Keymap,
     executor: CommandExecutor,
     queue: CommandQueue,
@@ -78,20 +78,12 @@ impl CommandRuntime {
         Ok((host_effects, focused_field_changed))
     }
 
-    pub(super) fn shortcut_for(&self, command_id: &str) -> Option<String> {
-        let command = CommandId::new(command_id).ok()?;
-        self.keymap.format_shortcut_for(&command)
+    pub(super) fn keymap(&self) -> &Keymap {
+        &self.keymap
     }
 
-    pub(super) fn command_title_for(&self, command_id: &str) -> Option<String> {
-        let command = CommandId::new(command_id).ok()?;
-        self.registry
-            .command(&command)
-            .map(|command| command.title.clone())
-    }
-
-    pub(super) fn command_catalog_items(&self) -> Vec<CommandCatalogItem> {
-        self.registry.commands().map(Into::into).collect()
+    pub(super) fn registry(&self) -> &CommandRegistry {
+        &self.registry
     }
 }
 

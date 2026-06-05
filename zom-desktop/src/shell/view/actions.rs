@@ -11,19 +11,19 @@ use gpui::{Entity, FocusHandle, Window};
 use zom_command::{HostEffect, Invocation};
 
 use crate::app::App;
+use crate::clipboard::GpuiClipboardScope;
 use crate::focus::AppFocus;
 use crate::shell::ActionRequest;
 use crate::shell::bubble::BubbleRuntime;
 use crate::shell::features::language_servers;
-use crate::shell::features::panels::PanelId;
 use crate::shell::features::panels::file_tree;
 use crate::shell::features::panels::search;
 use crate::shell::features::project_picker;
 use crate::shell::features::settings;
-use crate::shell::platform::clipboard::GpuiClipboardScope;
 use crate::shell::platform::window as platform_window;
-use crate::shell::surfaces::{SurfaceId, SurfaceManager, SurfaceRequest};
+use crate::shell::surfaces::{SurfaceManager, SurfaceRequest};
 use crate::shell::workbench::controller::WorkbenchController;
+use crate::ui_id::{PanelId, SurfaceId};
 
 use super::features::FeatureRegistry;
 use super::focus::{FocusProjection, panel_default_focus};
@@ -81,11 +81,19 @@ pub(super) fn apply_host_effects(
     for effect in effects {
         // 按 feature 顺序问询：第一个认领的 try_apply 返回 true，跳过余下。
         // 剩下的窗口控制 / 跨 feature 变体由本文件下方的兜底 match 处理。
-        if file_tree::try_apply_effect(&effect, app, workbench, &features.file_tree, &focus, window)
-        {
+        if file_tree::try_apply_effect(
+            &effect,
+            app,
+            workbench,
+            &features.file_tree,
+            &focus,
+            bubbles,
+            window,
+            cx,
+        ) {
             continue;
         }
-        if search::try_apply_effect(&effect, app, workbench, &features.panels, &focus, window) {
+        if search::try_apply_effect(&effect, app, workbench, &focus, window) {
             continue;
         }
         if project_picker::try_apply_effect(
@@ -96,6 +104,7 @@ pub(super) fn apply_host_effects(
             editor_focus_fallback,
             &features.file_tree,
             &features.project_picker,
+            bubbles,
             window,
             cx,
         ) {
@@ -201,12 +210,6 @@ fn apply_shell_effect(
                 app.borrow_mut().project_picker_deactivate();
             }
             dismiss_surface(surfaces, window, cx);
-        }
-        HostEffect::ShowSettings => {
-            eprintln!("设置界面尚未实现");
-        }
-        HostEffect::ShowDiagnostics => {
-            eprintln!("诊断面板尚未实现");
         }
         other => {
             eprintln!("未处理的 HostEffect：{other:?}");

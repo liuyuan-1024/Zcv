@@ -13,8 +13,8 @@ use std::rc::Rc;
 
 use gpui::FocusHandle;
 
-use super::snapshot::EditorSnapshot;
 use super::view::{EditorElement, EditorInputHook, EditorViewportSyncHook};
+use crate::editor::text::EditorSnapshot;
 
 /// 编辑器的纵向承载模式。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

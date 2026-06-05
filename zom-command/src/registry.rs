@@ -170,7 +170,7 @@ mod tests {
         assert!(command.visible_in_shortcuts);
         assert!(
             keymap
-                .format_shortcut_for(&CommandId::new("test.help").unwrap())
+                .format_shortcuts_for(&CommandId::new("test.help").unwrap())
                 .is_some()
         );
     }

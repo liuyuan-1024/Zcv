@@ -13,10 +13,10 @@ use std::rc::Rc;
 use gpui::{AppContext, BorrowAppContext, Context, Entity, FocusHandle};
 
 use crate::app::App;
+use crate::clipboard::GpuiClipboard;
+use crate::editor::{EditorKernel, EditorViewportSyncHook, TextEditorSlot};
 use crate::focus::{AppFocus, FileTreeFocus, SearchField};
 use crate::shell::bubble::{BubbleRuntime, BubbleShell};
-use crate::shell::editor::{EditorKernel, EditorViewportSyncHook, TextEditorSlot};
-use crate::shell::platform::clipboard::GpuiClipboard;
 use crate::shell::surfaces::{SurfaceAnchorRegistry, SurfaceManager, SurfaceShell};
 use crate::shell::workbench::PanelHost;
 use crate::shell::workbench::controller::WorkbenchController;

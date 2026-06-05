@@ -11,10 +11,11 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use zom_command::BubbleRequest;
 use zom_workspace::{EntryKind, ProjectTree, Workspace};
 
 #[cfg(test)]
-use crate::shell::editor::EditorSnapshotRequest;
+use crate::editor::text::EditorSnapshotRequest;
 
 use super::clipboard::{ClipboardMode, FileTreeClipboard};
 use super::fs_ops::infer_entry_kind_from_input;
@@ -49,6 +50,8 @@ pub(crate) struct FileTreeModel {
     /// 正在等待确认的待删条目集合（路径 + 类型）。批量删（选区非空）与单删
     /// （焦点回退）共用同一份字段；`None` 表示无删除确认弹窗。
     pub(super) pending_delete: Option<Vec<(PathBuf, EntryKind)>>,
+    /// 待发出的气泡（面向用户的错误 / 提示）。runtime 在调用模型动作后 drain。
+    pub(super) pending_bubbles: Vec<BubbleRequest>,
 }
 
 impl FileTreeModel {
@@ -62,14 +65,23 @@ impl FileTreeModel {
             pending: None,
             pending_rename: None,
             pending_delete: None,
+            pending_bubbles: Vec::new(),
         }
+    }
+
+    /// 取走累积的气泡请求，留空队列给下一次动作。
+    pub(crate) fn take_bubbles(&mut self) -> Vec<BubbleRequest> {
+        std::mem::take(&mut self.pending_bubbles)
     }
 
     pub(crate) fn open_project(&mut self, root: PathBuf) {
         self.project_tree = match ProjectTree::new(root.clone()) {
             Ok(tree) => Some(tree),
             Err(error) => {
-                eprintln!("读取项目目录失败：{}：{error}", root.display());
+                self.pending_bubbles.push(
+                    BubbleRequest::error(format!("读取项目目录失败：{}：{error}", root.display()))
+                        .dedupe("file_tree.open_project"),
+                );
                 None
             }
         };
@@ -168,7 +180,7 @@ impl Default for FileTreeModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::editor::OwnedEditorTarget;
+    use crate::editor::text::OwnedEditorTarget;
     use crate::shell::features::panels::file_tree::fs_ops::{
         apply_outcome, selected_path_after_deleting_active,
     };

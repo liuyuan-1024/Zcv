@@ -12,7 +12,7 @@ use gpui::{
 use zom_view::{ViewportState, WrapMap};
 
 use crate::app::App;
-use crate::shell::editor::input::{CaretLayout, EditorInput};
+use crate::editor::input::{CaretLayout, EditorInput};
 
 /// element paint 阶段传给 input hook 的几何信息。
 ///

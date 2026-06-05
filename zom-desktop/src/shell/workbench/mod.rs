@@ -23,16 +23,17 @@ use std::rc::Rc;
 
 use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
 
+use crate::editor::TextEditorSlot;
+use crate::editor::text::EditorSnapshot;
 use crate::editor_state::EditorState;
 use crate::shell::bubble::BubbleShell;
-use crate::shell::editor::{EditorSnapshot, TextEditorSlot};
 use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::{
     self, ConfirmDeleteHandlers, FileTreePanel, FileTreeState,
 };
 use crate::shell::features::panels::search::SearchState;
-use crate::shell::shared::theme::{color, typography};
 use crate::shell::{CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup};
+use crate::theme::{color, typography};
 
 mod bars;
 pub(crate) mod controller;

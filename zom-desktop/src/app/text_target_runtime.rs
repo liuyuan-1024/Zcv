@@ -10,10 +10,10 @@ use std::rc::Rc;
 
 use zom_command::{CommandError, EditTarget, KeyContext};
 
+use crate::editor::main_owner::{MainEditorOwner, MainEditorOwnerRef};
 use crate::focus::AppFocus;
 use crate::text_target::{
-    EditorRouter, EditorRouterMut, EditorTargetRegistry, MainEditorOwner, MainEditorOwnerRef,
-    TextTargetOwner, TextTargetQuery,
+    EditorRouter, EditorRouterMut, EditorTargetRegistry, TextTargetOwner, TextTargetQuery,
 };
 use crate::workspace_session::WorkspaceSession;
 

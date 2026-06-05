@@ -14,19 +14,19 @@ use zom_command::Invocation;
 use zom_command::commands::{file_tree as file_tree_commands, window as window_commands};
 
 use crate::app::App;
+use crate::clipboard::GpuiClipboardScope;
 use crate::editor_state::build_editor_state;
 use crate::focus::AppFocus;
-use crate::shell::platform::clipboard::GpuiClipboardScope;
 
 use self::runtime::ShellRuntime;
-use super::editor::{CaretBlink, drive_caret_blink};
 use super::features::panels::file_tree::ConfirmDeleteHandlers;
 use super::features::settings;
-use super::surfaces::SurfaceId;
 use super::workbench;
 use super::workbench::WindowControlsHandlers;
 use super::workbench::state::WorkbenchState;
 use super::{ActionRequest, CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup};
+use crate::editor::{CaretBlink, drive_caret_blink};
+use crate::ui_id::SurfaceId;
 
 /// shell 端的根 View。装配产物收敛在 [`ShellRuntime`]；本结构再额外持
 /// 几个跨帧但不入运行期组合根的视图态（编辑区标签栏滚动、光标闪烁）。
@@ -66,15 +66,41 @@ impl ShellView {
     }
 
     /// 打开指定路径的本地项目（不弹选择器）。开发阶段默认项目经由统一项目流程。
+    /// 把启动期累积的配置 / 会话 / 最近项目气泡 flush 到 BubbleRuntime。
+    /// 启动到第一帧之间无气泡 UI，调用方装好后再调用一次本方法。
+    pub(super) fn flush_startup_bubbles(&self, window: &mut Window, cx: &mut gpui::App) {
+        self.runtime.app.borrow_mut().pump_config_load_warnings();
+        let mut requests = self.runtime.app.borrow_mut().take_session_bubbles();
+        for warning in self.runtime.features.project_picker.take_recent_warnings() {
+            requests.push(zom_command::BubbleRequest::error(warning).dedupe("project.recent"));
+        }
+        if requests.is_empty() {
+            return;
+        }
+        for request in requests {
+            self.runtime
+                .bubble_runtime
+                .update(cx, |runtime, cx| runtime.push(request, cx));
+        }
+        window.refresh();
+    }
+
     #[cfg(debug_assertions)]
-    pub(super) fn open_project(&self, project_root: std::path::PathBuf, window: &mut Window) {
+    pub(super) fn open_project(
+        &self,
+        project_root: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
         super::project_session::apply_local_project_open(
             &self.runtime.app,
             &self.runtime.workbench,
             &self.runtime.features.file_tree,
             &self.runtime.features.project_picker,
+            &self.runtime.bubble_runtime,
             project_root,
             window,
+            cx,
         );
     }
 
@@ -152,7 +178,7 @@ impl ShellView {
 
     fn shortcut_lookup(&self) -> ShortcutLookup {
         let app = Rc::clone(&self.runtime.app);
-        Rc::new(move |command_id| app.borrow().shortcut_for(command_id))
+        Rc::new(move |command_id| app.borrow().shortcuts_for(command_id))
     }
 
     fn command_title_lookup(&self) -> CommandTitleLookup {
@@ -168,10 +194,15 @@ impl ShellView {
     fn settings_action_request(&self) -> settings::SettingsActionRequest {
         let app = Rc::clone(&self.runtime.app);
         let editor_focus = self.runtime.editor_focus.clone();
-        Rc::new(move |action, window, _cx| {
+        let bubbles = self.runtime.bubble_runtime.clone();
+        Rc::new(move |action, window, cx| {
             match action {
                 settings::SettingsAction::OpenToml => {
-                    if app.borrow_mut().open_config_file() {
+                    let opened = app.borrow_mut().open_config_file();
+                    for request in app.borrow_mut().take_session_bubbles() {
+                        bubbles.update(cx, |runtime, cx| runtime.push(request, cx));
+                    }
+                    if opened {
                         window.focus(&editor_focus);
                     }
                 }

@@ -9,7 +9,7 @@ use gpui::{
     AnyElement, App, EmptyView, MouseButton, Pixels, Point, Window, deferred, div, prelude::*, px,
 };
 
-use crate::shell::shared::theme;
+use crate::theme;
 
 use super::super::state::DockAreaId;
 

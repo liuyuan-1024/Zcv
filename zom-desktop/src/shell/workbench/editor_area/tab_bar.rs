@@ -13,8 +13,8 @@ use zom_command::commands::editor;
 
 use crate::editor_state::{EditorState, EditorTab};
 use crate::shell::shared::Glyph;
-use crate::shell::shared::theme::{color, radius, space, typography};
 use crate::shell::{CommandTitleLookup, ShortcutLookup};
+use crate::theme::{color, radius, space, typography};
 
 pub(crate) fn render(
     state: &EditorState,

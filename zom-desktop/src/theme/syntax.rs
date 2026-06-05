@@ -31,7 +31,7 @@ use super::color;
 use crate::config::THEME_ONE_DARK;
 
 /// vendor 的默认主题源（启动期 include 进二进制）。
-const THEME_ONE_DARK_TOML: &str = include_str!("../../../../assets/themes/onedark.toml");
+const THEME_ONE_DARK_TOML: &str = include_str!("../../assets/themes/onedark.toml");
 
 /// 默认前景色——任何 name 都无前缀命中时落到这里。
 pub fn default_fg() -> Hsla {

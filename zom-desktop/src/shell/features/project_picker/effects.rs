@@ -10,15 +10,18 @@ use gpui::{Entity, FocusHandle, Window};
 use zom_command::HostEffect;
 
 use crate::app::App;
+use crate::shell::bubble::BubbleRuntime;
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
 use crate::shell::features::project_picker::{
     self, ProjectPickerActions, ProjectPickerActivation, ProjectPickerInitialMode,
     ProjectPickerMode, ProjectPickerRuntime,
 };
 use crate::shell::project_session;
-use crate::shell::surfaces::{SurfaceId, SurfaceManager};
+use crate::shell::surfaces::SurfaceManager;
 use crate::shell::view::actions::open_surface;
 use crate::shell::workbench::controller::WorkbenchController;
+use crate::ui_id::SurfaceId;
+use zom_command::BubbleRequest;
 
 pub(crate) fn try_apply_effect(
     effect: &HostEffect,
@@ -28,6 +31,7 @@ pub(crate) fn try_apply_effect(
     editor_focus_fallback: &FocusHandle,
     file_tree_runtime: &FileTreeRuntime,
     project_picker_runtime: &ProjectPickerRuntime,
+    bubbles: &Entity<BubbleRuntime>,
     window: &mut Window,
     cx: &mut gpui::App,
 ) -> bool {
@@ -50,6 +54,7 @@ pub(crate) fn try_apply_effect(
                 surfaces,
                 file_tree_runtime.clone(),
                 project_picker_runtime.clone(),
+                bubbles.clone(),
                 window,
                 cx,
             );
@@ -83,6 +88,11 @@ pub(crate) fn try_apply_effect(
                 project_picker_runtime.remove_recent(&project_id);
                 let recent = project_picker_runtime.recent_projects();
                 project_picker_runtime.clamp_selection(&recent);
+                for warning in project_picker_runtime.take_recent_warnings() {
+                    bubbles.update(cx, |runtime, cx| {
+                        runtime.push(BubbleRequest::error(warning).dedupe("project.recent"), cx);
+                    });
+                }
                 window.refresh();
             }
         }
@@ -110,6 +120,7 @@ pub(crate) fn try_apply_effect(
                         surfaces,
                         file_tree_runtime.clone(),
                         project_picker_runtime.clone(),
+                        bubbles.clone(),
                         project_record.path,
                         project_record.repo,
                         window,
@@ -123,6 +134,7 @@ pub(crate) fn try_apply_effect(
                         surfaces,
                         file_tree_runtime.clone(),
                         project_picker_runtime.clone(),
+                        bubbles.clone(),
                         repo,
                         window,
                         cx,
@@ -161,7 +173,7 @@ fn show_project_picker(
     let state = Rc::new(move || state_runtime.state());
     let shortcut_app = Rc::clone(app);
     let shortcut_lookup =
-        Rc::new(move |command_id: &str| shortcut_app.borrow().shortcut_for(command_id));
+        Rc::new(move |command_id: &str| shortcut_app.borrow().shortcuts_for(command_id));
     let title_app = Rc::clone(app);
     let command_title_lookup =
         Rc::new(move |command_id: &str| title_app.borrow().command_title_for(command_id));
@@ -173,7 +185,7 @@ fn show_project_picker(
         command_title_lookup,
     };
     open_surface(
-        project_picker::request(project_picker_runtime.clone(), actions, initial_mode),
+        project_picker::request(project_picker_runtime.clone(), actions),
         surfaces,
         editor_focus_fallback,
         window,

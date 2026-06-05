@@ -135,6 +135,128 @@ fn movement_boundaries_should_dispatch_by_unit_and_reject_invalid_offsets() {
 }
 
 #[test]
+fn word_delete_should_not_cross_line_when_current_line_contains_only_separators() {
+    let mut buffer = buffer("# zom 文档规范\n# \n#¥%…… ");
+    let end = buffer.len_bytes();
+
+    buffer
+        .delete_at_selections(
+            SelectionSet::caret(end),
+            Some((MovementDirection::Previous, MovementUnit::Word)),
+        )
+        .unwrap();
+
+    assert_eq!(buffer_text(&buffer), "# zom 文档规范\n# \n");
+    assert_eq!(
+        buffer.selection().primary().head(),
+        b("# zom 文档规范\n# \n".len())
+    );
+}
+
+#[test]
+fn forward_word_delete_should_not_cross_line_when_current_line_contains_only_separators() {
+    let mut buffer = buffer("#¥%…… \nabc");
+
+    buffer
+        .delete_at_selections(
+            SelectionSet::caret(b(0)),
+            Some((MovementDirection::Next, MovementUnit::Word)),
+        )
+        .unwrap();
+
+    assert_eq!(buffer_text(&buffer), "\nabc");
+    assert_eq!(buffer.selection().primary().head(), b(0));
+}
+
+#[test]
+fn backward_word_move_from_empty_line_start_should_land_on_previous_line_end() {
+    let mut buffer = buffer("abc\n\nnext");
+    let empty_line_start = b("abc\n".len());
+
+    buffer
+        .set_selection(set_caret(empty_line_start.get()))
+        .unwrap();
+
+    let moved = buffer
+        .move_current_selection(MovementDirection::Previous, MovementUnit::Word, false)
+        .unwrap();
+
+    assert_eq!(moved.as_slice(), &[caret("abc".len())]);
+    assert_eq!(buffer.selection().primary().head(), b("abc".len()));
+}
+
+#[test]
+fn backward_word_delete_from_empty_line_start_should_remove_empty_line_separator() {
+    let mut buffer = buffer("abc\n\nnext");
+    let empty_line_start = b("abc\n".len());
+
+    let result = buffer
+        .delete_at_selections(
+            SelectionSet::caret(empty_line_start),
+            Some((MovementDirection::Previous, MovementUnit::Word)),
+        )
+        .unwrap();
+
+    assert!(result.is_some());
+    assert_eq!(buffer_text(&buffer), "abc\nnext");
+    assert_eq!(buffer.selection().primary().head(), b("abc".len()));
+}
+
+#[test]
+fn backward_word_move_from_empty_line_to_separator_only_line_should_land_on_line_end() {
+    let mut buffer = buffer("top\n# \n\nnext");
+    let empty_line_start = b("top\n# \n".len());
+    let separator_line_end = b("top\n# ".len());
+
+    buffer
+        .set_selection(set_caret(empty_line_start.get()))
+        .unwrap();
+
+    let moved = buffer
+        .move_current_selection(MovementDirection::Previous, MovementUnit::Word, false)
+        .unwrap();
+
+    assert_eq!(moved.as_slice(), &[caret(separator_line_end.get())]);
+    assert_eq!(buffer.selection().primary().head(), separator_line_end);
+}
+
+#[test]
+fn forward_word_move_from_empty_line_to_separator_only_line_should_land_on_line_start() {
+    let mut buffer = buffer("# zom 文档规范\n\n你好\n\n# \n");
+    let empty_line_start = b("# zom 文档规范\n\n你好\n".len());
+    let separator_line_start = b("# zom 文档规范\n\n你好\n\n".len());
+
+    buffer
+        .set_selection(set_caret(empty_line_start.get()))
+        .unwrap();
+
+    let moved = buffer
+        .move_current_selection(MovementDirection::Next, MovementUnit::Word, false)
+        .unwrap();
+
+    assert_eq!(moved.as_slice(), &[caret(separator_line_start.get())]);
+    assert_eq!(buffer.selection().primary().head(), separator_line_start);
+}
+
+#[test]
+fn forward_word_move_from_empty_line_to_indented_word_should_land_on_word_start() {
+    let mut buffer = buffer("abc\n\n  next");
+    let empty_line_start = b("abc\n".len());
+    let word_start = b("abc\n\n  ".len());
+
+    buffer
+        .set_selection(set_caret(empty_line_start.get()))
+        .unwrap();
+
+    let moved = buffer
+        .move_current_selection(MovementDirection::Next, MovementUnit::Word, false)
+        .unwrap();
+
+    assert_eq!(moved.as_slice(), &[caret(word_start.get())]);
+    assert_eq!(buffer.selection().primary().head(), word_start);
+}
+
+#[test]
 fn move_current_selection_should_collapse_or_extend_from_existing_anchor() {
     let mut buffer = buffer("hello world");
 

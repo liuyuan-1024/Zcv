@@ -12,8 +12,9 @@
 use gpui::{FocusHandle, Window};
 
 use crate::focus::{AppFocus, FileTreeFocus, SearchField};
+use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
-use crate::shell::features::panels::{PanelId, PanelRuntimes};
+use crate::ui_id::PanelId;
 
 /// `AppFocus <-> FocusHandle` 的 shell-only 投影表。
 #[derive(Clone, Default)]

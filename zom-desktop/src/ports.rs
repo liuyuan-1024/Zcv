@@ -6,7 +6,51 @@
 //! 新增端口的规则：trait 只描述"shell 实现什么"，**不要**让它持有 `App` / `ShellHost` 引用；
 //! 状态由实现方自己用 [`Rc<RefCell<...>>`] 等内部可变容器维持。
 
+use zom_command::{BubbleRequest, SearchOption};
+
 use crate::workspace_session::WorkspaceSession;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SearchAction {
+    PanelOpened,
+    PanelClosed,
+    ToggleOption(SearchOption),
+    FindPrevious,
+    FindNext,
+    ReplaceNext,
+    ReplaceAll,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FileTreeAction {
+    Activate,
+    CommitNewEntry,
+    CommitRename,
+    ConfirmDelete,
+    Paste,
+}
+
+#[derive(Default)]
+pub(crate) struct FileTreeActionResult {
+    pub(crate) opened_file: bool,
+    pub(crate) bubbles: Vec<BubbleRequest>,
+}
+
+/// 文件树会话动作端口：shell feature 拥有文件树模型，
+/// app 只在动作需要 [`WorkspaceSession`] 时带着会话调这个端口，避免 shell 直接借出 app 内部 session。
+pub(crate) trait FileTreeHost {
+    fn apply_file_tree_action(
+        &self,
+        action: FileTreeAction,
+        session: &mut WorkspaceSession,
+    ) -> FileTreeActionResult;
+}
+
+/// 搜索动作端口：search feature 拥有 query/replacement/options，app 负责把
+/// 这些动作和 workspace/view 会话组合在一起执行。
+pub(crate) trait SearchHost {
+    fn apply_search_action(&self, action: SearchAction, session: &mut WorkspaceSession);
+}
 
 /// 编辑后同步端口：每次活动 buffer 上产生编辑事件后被调一次。
 ///

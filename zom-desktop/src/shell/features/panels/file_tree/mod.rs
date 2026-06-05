@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, Div, FocusHandle};
 
-use crate::shell::editor::TextEditorSlot;
+use crate::editor::TextEditorSlot;
 use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::PanelContext;
 use crate::shell::{ActionRequest, KeyRequest};
@@ -27,8 +27,6 @@ mod state;
 mod view;
 
 pub(crate) use effects::try_apply_effect;
-#[cfg(test)]
-pub(crate) use fs_ops::apply_outcome;
 
 pub(crate) use model::FileTreeModel;
 pub(crate) use runtime::FileTreeRuntime;

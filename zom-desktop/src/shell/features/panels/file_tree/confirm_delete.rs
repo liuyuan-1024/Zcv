@@ -8,7 +8,7 @@ use zom_workspace::EntryKind;
 
 use super::{ConfirmDeleteHandlers, PendingDelete};
 use crate::shell::ActionRequest;
-use crate::shell::shared::theme::{color, radius, space, typography};
+use crate::theme::{color, radius, space, typography};
 
 /// 渲染居中删除确认弹窗。`deferred` + 高优先级让它压在所有面板与锚定
 /// surface（priority 30）之上。

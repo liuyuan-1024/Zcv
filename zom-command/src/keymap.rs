@@ -223,33 +223,37 @@ impl Keymap {
         &self.bindings
     }
 
-    /// 反查某条命令对应的快捷键序列（原始 `KeyChord` 序列）。
+    /// 反查某条命令对应的全部快捷键序列（原始 `KeyChord` 序列）。
     ///
-    /// UI 入口（Glyph、菜单、命令面板）通常只需要可显示的字符串 —— 用 [`Self::format_shortcut_for`] 一步到位。
-    /// 需要做自定义处理（比如折叠多绑定）时再用本方法拿原始序列。
+    /// 按 install 顺序返回；相同的 `KeySequence` 仅保留首次出现（同一序列绑在多个 context 时去重）。
+    /// UI 通常用 [`Self::format_shortcuts_for`] 直接拿可展示字符串；本方法用于需要自定义渲染的场景。
     ///
-    /// 同一命令绑了多条时返回第一条；全局绑定优先级高于局部绑定。
-    pub fn shortcut_for(&self, command: &CommandId) -> Option<&KeySequence> {
-        self.bindings
-            .iter()
-            .find(|binding| {
-                &binding.command == command && binding.context == KeyBindingContext::global()
-            })
-            .or_else(|| {
-                self.bindings
-                    .iter()
-                    .find(|binding| &binding.command == command)
-            })
-            .map(|binding| &binding.sequence)
+    /// 一个命令可能因不同 `CommandArgs` 绑了多条 chord（如 `editor.select_tab` 的 `mod-l` / `mod-h`）
+    /// —— 这种 args 差异在 `description` 写得统一时视作 alias，UI 合并展示。
+    pub fn shortcuts_for(&self, command: &CommandId) -> Vec<&KeySequence> {
+        let mut result: Vec<&KeySequence> = Vec::new();
+        for binding in &self.bindings {
+            if &binding.command != command {
+                continue;
+            }
+            if !result.iter().any(|seq| *seq == &binding.sequence) {
+                result.push(&binding.sequence);
+            }
+        }
+        result
     }
 
     /// 反查 + 平台投影：给 UI 一个直接能展示的快捷键串。
     ///
-    /// macOS 输出带空隙的符号（如 `⇧ ⌘ Z`），其他平台输出文本拼接（如
-    /// `Ctrl+Shift+Z`）。映射表见 [`crate::keymap_format`]。
-    pub fn format_shortcut_for(&self, command: &CommandId) -> Option<String> {
-        self.shortcut_for(command)
-            .map(|sequence| keymap_format::format_sequence(sequence))
+    /// 单条 binding 输出形如 macOS `⇧⌘Z` / 非 macOS `Ctrl+Shift+Z`。
+    /// 多条 binding 以 ` / ` 拼接（例如 `⌘L / ⌘H`）。映射表见 [`crate::keymap_format`]。
+    pub fn format_shortcuts_for(&self, command: &CommandId) -> Option<String> {
+        let sequences = self.shortcuts_for(command);
+        if sequences.is_empty() {
+            return None;
+        }
+        let slices: Vec<&[KeyChord]> = sequences.iter().map(|seq| seq.as_slice()).collect();
+        Some(keymap_format::format_sequences(&slices))
     }
 
     /// 按已输入的序列前缀解析。`contexts` 按优先级从高到低排列。

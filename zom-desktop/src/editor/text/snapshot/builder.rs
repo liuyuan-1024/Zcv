@@ -2,7 +2,7 @@
 
 use zom_engine::{Buffer, Line, SelectionSet, Viewport};
 
-use crate::shell::editor::highlight;
+use crate::editor::highlight;
 
 use super::{EditorSnapshot, SnapshotLine};
 

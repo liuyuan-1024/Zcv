@@ -3,14 +3,14 @@
 use zom_command::EditTarget;
 use zom_engine::{Buffer, BufferConfig, ByteOffset, Selection, SelectionSet};
 
-use crate::shell::editor::input::{ImeQueryTarget, ImeTarget};
-use crate::shell::editor::snapshot::{EditorSnapshot, EditorSnapshotRequest, build_snapshot};
+use crate::editor::text::snapshot::build_snapshot;
+use crate::editor::text::{EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget};
 
 /// 一个独立的文本编辑目标：自持 buffer 与选区。
 pub(crate) struct OwnedEditorTarget {
     buffer: Buffer,
-    /// 视图侧的权威选区；编辑命令读它、写回它（与主编辑区 view/buffer
-    /// 双选区模型一致）。
+    /// 视图侧的权威选区；
+    /// 编辑命令读它、写回它（与主编辑区 view/buffer 双选区模型一致）。
     selection: SelectionSet,
 }
 
@@ -47,9 +47,8 @@ impl OwnedEditorTarget {
 
     /// 当前完整文本内容（owned 拷贝）。
     ///
-    /// 自持目标（搜索框 / 文件名输入 / 项目选择器）才用它——它们的 buffer
-    /// 永远小，整段读取是 O(buffer size)。渲染仍走 [`Self::snapshot`] 的统一
-    /// 视口切片入口。
+    /// 自持目标（搜索框 / 文件名输入 / 项目选择器）才用它——它们的 buffer 永远小，
+    /// 整段读取是 O(buffer size)。渲染仍走 [`Self::snapshot`] 的统一视口切片入口。
     pub(crate) fn text(&self) -> String {
         self.buffer
             .slice_byte_range(ByteOffset::ZERO, self.buffer.len_bytes())

@@ -3,7 +3,7 @@
 use zom_engine::SelectionSet;
 use zom_view::{RevealKind, VisualPosition};
 
-use crate::shell::editor::highlight::Decoration;
+use crate::editor::highlight::Decoration;
 
 /// 渲染快照里一条逻辑行的描述。
 ///
@@ -52,8 +52,8 @@ pub(crate) struct EditorSnapshot {
     /// 的统一形态（手册《桌面端高亮架构》§四）。
     ///
     /// - 每个 producer 自身保证内部 range 不重叠；跨 producer 允许 Background 重叠。
-    /// - 顺序无要求；prepaint 调 [`compose`](crate::shell::editor::highlight::compose)
-    /// 按 [`DecorationKind`] 切分、按 `priority` 排序、解析 [`StyleClass`]。
+    /// - 顺序无要求；shell prepaint 阶段按 [`DecorationKind`] 切分、按
+    /// `priority` 排序、解析 [`StyleClass`]。
     /// - 空 Vec = 无任何装饰（plain 文本、无选区、无搜索、无 syntax）。
     pub(crate) decorations: Vec<Decoration>,
 }

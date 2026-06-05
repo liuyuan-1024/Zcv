@@ -10,7 +10,6 @@
 
 mod boot;
 pub(crate) mod bubble;
-pub(crate) mod editor;
 pub(crate) mod features;
 pub(crate) mod platform;
 pub(crate) mod project_session;

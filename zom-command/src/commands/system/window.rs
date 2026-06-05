@@ -3,9 +3,8 @@
 //! handler 不直接操作窗口 —— 接触 GPUI 会让 zom-command 反向依赖平台层。
 //! 取而代之，emit [`HostEffect`]，宿主翻译成具体 API 调用。
 
-use crate::{
-    CommandArgs, CommandId, CommandOutcome, CommandRegistry, HostEffect, Invocation, Keymap, NoArgs,
-};
+use crate::commands::emit;
+use crate::{CommandArgs, CommandId, CommandRegistry, HostEffect, Invocation, Keymap};
 
 pub const QUIT: &str = "window.quit";
 pub const MINIMIZE: &str = "window.minimize";
@@ -41,15 +40,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         )
         .description("在普通窗口和最大化窗口之间切换。")
         .key("mod-shift-m");
-}
-
-/// 把"emit 一个固定 effect"打包成 handler —— 整个 catalog 的唯一闭包样板。
-fn emit(effect: HostEffect) -> crate::CommandHandler {
-    Box::new(move |ctx, args| {
-        NoArgs::try_from(args)?;
-        ctx.effects.push(effect.clone());
-        Ok(CommandOutcome::default())
-    })
 }
 
 fn cid(id: &'static str) -> CommandId {

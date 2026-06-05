@@ -2,9 +2,9 @@
 //!
 //! 语言服务器域只表达"当前项目打开了哪些语言服务器、状态如何"；诊断问题列表留在 `diagnostics.*` 域。
 
+use crate::commands::emit;
 use crate::{
-    CommandArgs, CommandId, CommandOutcome, CommandRegistry, HostEffect, Invocation,
-    KeyBindingContext, Keymap, NoArgs,
+    CommandArgs, CommandId, CommandRegistry, HostEffect, Invocation, KeyBindingContext, Keymap,
 };
 
 pub const OPEN_STATUS: &str = "language_server.open_status";
@@ -33,11 +33,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             OPEN_STATUS,
             "语言服务器",
-            Box::new(|ctx, args| {
-                NoArgs::try_from(args)?;
-                ctx.effects.push(HostEffect::ShowLanguageServers);
-                Ok(CommandOutcome::default())
-            }),
+            emit(HostEffect::ShowLanguageServers),
         )
         .description("查看当前项目的语言服务器状态。")
         .key("mod-shift-l");
@@ -47,11 +43,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             DISMISS,
             "关闭语言服务器",
-            Box::new(|ctx, args| {
-                NoArgs::try_from(args)?;
-                ctx.effects.push(HostEffect::DismissSurface);
-                Ok(CommandOutcome::default())
-            }),
+            emit(HostEffect::DismissSurface),
         )
         .key_in("escape", language_servers);
 }

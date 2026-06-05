@@ -1,8 +1,9 @@
 //! 搜索 feature 命令。
 
+use crate::commands::emit;
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SearchOption,
+    CommandArgs, CommandId, CommandRegistry, HostEffect, Invocation, KeyBindingContext, Keymap,
+    SearchOption,
 };
 
 pub const TOGGLE_PANEL: &str = "panel.toggle.search";
@@ -72,9 +73,14 @@ pub fn focus_editor() -> Invocation {
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     let search_panel = KeyBindingContext::search_panel();
 
-    registry.install(keymap, TOGGLE_PANEL, "搜索", Box::new(run_toggle_panel));
+    registry.install(
+        keymap,
+        TOGGLE_PANEL,
+        "搜索",
+        emit(HostEffect::TogglePanel("search".to_string())),
+    );
     registry
-        .install(keymap, ACTIVATE, "搜索", Box::new(run_activate))
+        .install(keymap, ACTIVATE, "搜索", emit(HostEffect::SearchActivate))
         .description("打开搜索面板并聚焦 query；已聚焦则收起。第一版只搜当前 buffer。")
         .key("mod-f");
     registry
@@ -82,7 +88,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             TOGGLE_CASE_SENSITIVE,
             "区分大小写",
-            Box::new(run_toggle_case_sensitive),
+            emit(HostEffect::SearchToggleOption(SearchOption::CaseSensitive)),
         )
         .key_in("alt-c", search_panel);
     registry
@@ -90,7 +96,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             TOGGLE_WHOLE_WORD,
             "全词匹配",
-            Box::new(run_toggle_whole_word),
+            emit(HostEffect::SearchToggleOption(SearchOption::WholeWord)),
         )
         .key_in("alt-w", search_panel);
     registry
@@ -98,32 +104,47 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             TOGGLE_REGEX,
             "正则表达式",
-            Box::new(run_toggle_regex),
+            emit(HostEffect::SearchToggleOption(SearchOption::Regex)),
         )
         .key_in("alt-r", search_panel);
     registry
-        .install(keymap, FIND_PREVIOUS, "上一个", Box::new(run_find_previous))
+        .install(
+            keymap,
+            FIND_PREVIOUS,
+            "上一个",
+            emit(HostEffect::SearchFindPrevious),
+        )
         .key_in("up", search_panel);
     registry
-        .install(keymap, FIND_NEXT, "下一个", Box::new(run_find_next))
+        .install(
+            keymap,
+            FIND_NEXT,
+            "下一个",
+            emit(HostEffect::SearchFindNext),
+        )
         .key_in("down", search_panel);
     registry
         .install(
             keymap,
             REPLACE_NEXT,
             "替换下一个",
-            Box::new(run_replace_next),
+            emit(HostEffect::SearchReplaceNext),
         )
         .key_in("mod-enter", search_panel);
     registry
-        .install(keymap, REPLACE_ALL, "全部替换", Box::new(run_replace_all))
+        .install(
+            keymap,
+            REPLACE_ALL,
+            "全部替换",
+            emit(HostEffect::SearchReplaceAll),
+        )
         .key_in("mod-shift-enter", search_panel);
     registry
         .install(
             keymap,
             FOCUS_NEXT_FIELD,
             "聚焦下一个搜索输入框",
-            Box::new(run_focus_next_field),
+            emit(HostEffect::SearchFocusNextField),
         )
         .key_in("tab", search_panel);
     registry
@@ -131,7 +152,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             FOCUS_PREVIOUS_FIELD,
             "聚焦上一个搜索输入框",
-            Box::new(run_focus_previous_field),
+            emit(HostEffect::SearchFocusPreviousField),
         )
         .key_in("shift-tab", search_panel);
     registry
@@ -139,7 +160,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             FOCUS_EDITOR,
             "焦点回到当前编辑器",
-            Box::new(run_focus_editor),
+            emit(HostEffect::SearchFocusEditor),
         )
         .key_in("escape", search_panel)
         .key_in("enter", search_panel);
@@ -147,118 +168,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
 
 fn no_args(command_id: &'static str) -> Invocation {
     (cid(command_id), CommandArgs::new())
-}
-
-fn run_toggle_panel(
-    ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    ctx.effects
-        .push(HostEffect::TogglePanel("search".to_string()));
-    Ok(CommandOutcome::default())
-}
-
-fn run_activate(
-    ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    ctx.effects.push(HostEffect::SearchActivate);
-    Ok(CommandOutcome::default())
-}
-
-fn run_toggle_case_sensitive(
-    ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    ctx.effects
-        .push(HostEffect::SearchToggleOption(SearchOption::CaseSensitive));
-    Ok(CommandOutcome::default())
-}
-
-fn run_toggle_whole_word(
-    ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    ctx.effects
-        .push(HostEffect::SearchToggleOption(SearchOption::WholeWord));
-    Ok(CommandOutcome::default())
-}
-
-fn run_toggle_regex(
-    ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    ctx.effects
-        .push(HostEffect::SearchToggleOption(SearchOption::Regex));
-    Ok(CommandOutcome::default())
-}
-
-fn run_find_previous(
-    ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    ctx.effects.push(HostEffect::SearchFindPrevious);
-    Ok(CommandOutcome::default())
-}
-
-fn run_find_next(
-    ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    ctx.effects.push(HostEffect::SearchFindNext);
-    Ok(CommandOutcome::default())
-}
-
-fn run_replace_next(
-    ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    ctx.effects.push(HostEffect::SearchReplaceNext);
-    Ok(CommandOutcome::default())
-}
-
-fn run_replace_all(
-    ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    ctx.effects.push(HostEffect::SearchReplaceAll);
-    Ok(CommandOutcome::default())
-}
-
-fn run_focus_next_field(
-    ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    ctx.effects.push(HostEffect::SearchFocusNextField);
-    Ok(CommandOutcome::default())
-}
-
-fn run_focus_previous_field(
-    ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    ctx.effects.push(HostEffect::SearchFocusPreviousField);
-    Ok(CommandOutcome::default())
-}
-
-fn run_focus_editor(
-    ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    ctx.effects.push(HostEffect::SearchFocusEditor);
-    Ok(CommandOutcome::default())
 }
 
 fn cid(id: &'static str) -> CommandId {

@@ -13,8 +13,57 @@ use std::ops::Range;
 
 use zom_command::CommandError;
 use zom_engine::{
-    Buffer, ByteOffset, CompositionSelection, EngineError, SelectionSet, Utf16Offset,
+    Buffer, ByteOffset, CompositionSelection, EngineError, SelectionSet, TextRange, Utf16Offset,
 };
+
+/// 来自 GPUI / AppKit IME 边界的 flat UTF-16 code-unit range。
+///
+/// 裸 `Range<usize>` 只允许停留在平台 input handler 第一层；
+/// 进入编辑器路由后必须带着这个类型，避免把 NSRange / UTF-16 / byte offset 语义混在一起。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImeUtf16Range {
+    range: Range<usize>,
+}
+
+impl ImeUtf16Range {
+    pub(crate) fn new(start: usize, end: usize) -> Result<Self, CommandError> {
+        if start > end {
+            return Err(CommandError::InvalidArgs(
+                "IME UTF-16 range start 大于 end".into(),
+            ));
+        }
+
+        Ok(Self { range: start..end })
+    }
+
+    pub(crate) fn from_gpui_range(range: Range<usize>) -> Result<Self, CommandError> {
+        Self::new(range.start, range.end)
+    }
+
+    pub(crate) fn into_gpui_range(self) -> Range<usize> {
+        self.range
+    }
+
+    fn start(&self) -> usize {
+        self.range.start
+    }
+
+    fn end(&self) -> usize {
+        self.range.end
+    }
+
+    fn to_text_range(&self, buffer: &Buffer) -> Result<TextRange, CommandError> {
+        let start = buffer
+            .utf16_cu_to_byte(Utf16Offset::new(self.start()))
+            .map_err(|_| CommandError::InvalidArgs("IME range start 越界".into()))?;
+        let end = buffer
+            .utf16_cu_to_byte(Utf16Offset::new(self.end()))
+            .map_err(|_| CommandError::InvalidArgs("IME range end 越界".into()))?;
+
+        TextRange::new(start, end)
+            .map_err(|_| CommandError::InvalidArgs("IME range start 大于 end".into()))
+    }
+}
 
 /// 可被系统输入法修改的编辑目标。
 pub(crate) struct ImeTarget<'a> {
@@ -37,7 +86,7 @@ impl<'a> ImeTarget<'a> {
     /// UTF-16 offset，编辑器内部统一转换成 engine 的 byte selection。
     pub(crate) fn apply_replacement_range(
         &mut self,
-        replacement_range_utf16: Option<Range<usize>>,
+        replacement_range_utf16: Option<ImeUtf16Range>,
     ) -> Result<(), CommandError> {
         let Some(range_utf16) = replacement_range_utf16 else {
             return Ok(());
@@ -48,13 +97,13 @@ impl<'a> ImeTarget<'a> {
         self.set_selection_from_utf16(range_utf16)
     }
 
-    /// 更新输入法 preedit。commit 仍走命令通道，这里只处理 composition 的
-    /// 即时展示与选区同步。
+    /// 更新输入法 preedit。
+    /// commit 仍走命令通道，这里只处理 composition 的即时展示与选区同步。
     pub(crate) fn replace_and_mark_text(
         &mut self,
-        replacement_range_utf16: Option<Range<usize>>,
+        replacement_range_utf16: Option<ImeUtf16Range>,
         new_text: &str,
-        new_selected_range_utf16: Option<Range<usize>>,
+        new_selected_range_utf16: Option<ImeUtf16Range>,
     ) -> Result<(), CommandError> {
         self.apply_replacement_range(replacement_range_utf16)?;
 
@@ -81,16 +130,10 @@ impl<'a> ImeTarget<'a> {
         Ok(())
     }
 
-    fn set_selection_from_utf16(&mut self, range_utf16: Range<usize>) -> Result<(), CommandError> {
-        let start = self
-            .buffer
-            .utf16_cu_to_byte(Utf16Offset::new(range_utf16.start))
-            .map_err(|_| CommandError::InvalidArgs("IME range start 越界".into()))?;
-        let end = self
-            .buffer
-            .utf16_cu_to_byte(Utf16Offset::new(range_utf16.end))
-            .map_err(|_| CommandError::InvalidArgs("IME range end 越界".into()))?;
-        let selection = SelectionSet::new(vec![zom_engine::Selection::new(start, end)]);
+    fn set_selection_from_utf16(&mut self, range_utf16: ImeUtf16Range) -> Result<(), CommandError> {
+        let range = range_utf16.to_text_range(self.buffer)?;
+        let selection =
+            SelectionSet::new(vec![zom_engine::Selection::new(range.start(), range.end())]);
         self.buffer
             .set_selection(selection.clone())
             .map_err(map_engine_error)?;
@@ -110,14 +153,14 @@ impl<'a> ImeQueryTarget<'a> {
             .map(|state| state.preedit_text().to_string())
     }
 
-    pub(crate) fn marked_range_utf16(&self) -> Option<Range<usize>> {
+    pub(crate) fn marked_range_utf16(&self) -> Option<ImeUtf16Range> {
         let range = self.buffer.composition()?.range();
         let start = self.buffer.byte_to_utf16_cu(range.start()).ok()?;
         let end = self.buffer.byte_to_utf16_cu(range.end()).ok()?;
-        Some(start.get()..end.get())
+        ImeUtf16Range::new(start.get(), end.get()).ok()
     }
 
-    pub(crate) fn selected_range_utf16(&self) -> (Range<usize>, bool) {
+    pub(crate) fn selected_range_utf16(&self) -> (ImeUtf16Range, bool) {
         let primary = *self.selection.primary();
         // 失败回退到 0..0 ——选区端点理应永远在合法字符边界，转换不应失败；
         // 真的失败时给 IME 一个最保守值，比 panic 强。
@@ -131,22 +174,15 @@ impl<'a> ImeQueryTarget<'a> {
             .byte_to_utf16_cu(primary.end())
             .map(|v| v.get())
             .unwrap_or(start);
-        (start..end, primary.is_reversed())
+        (
+            ImeUtf16Range::new(start, end)
+                .unwrap_or_else(|_| ImeUtf16Range::new(start, start).expect("caret range 合法")),
+            primary.is_reversed(),
+        )
     }
 
-    pub(crate) fn text_for_range_utf16(&self, range_utf16: Range<usize>) -> Option<String> {
-        if range_utf16.start > range_utf16.end {
-            return None;
-        }
-        let start_byte = self
-            .buffer
-            .utf16_cu_to_byte(Utf16Offset::new(range_utf16.start))
-            .ok()?;
-        let end_byte = self
-            .buffer
-            .utf16_cu_to_byte(Utf16Offset::new(range_utf16.end))
-            .ok()?;
-        let range = zom_engine::TextRange::new(start_byte, end_byte).ok()?;
+    pub(crate) fn text_for_range_utf16(&self, range_utf16: ImeUtf16Range) -> Option<String> {
+        let range = range_utf16.to_text_range(self.buffer).ok()?;
         self.buffer
             .slice_text(range)
             .ok()
@@ -158,9 +194,8 @@ fn map_engine_error(error: EngineError) -> CommandError {
     CommandError::ExecutionFailed(error.to_string())
 }
 
-/// 把本地小串的 flat UTF-16 偏移换算回 UTF-8 字节偏移。仅供 preedit
-/// （IME 候选串）使用——preedit 永远小，线性扫描可接受；buffer 路径走
-/// engine 的 `utf16_cu_to_byte`，不要拿这个去扫 buffer 全文。
+/// 把本地小串的 flat UTF-16 偏移换算回 UTF-8 字节偏移。仅供 preedit（IME 候选串）使用——preedit 永远小，线性扫描可接受；
+/// buffer 路径走 engine 的 `utf16_cu_to_byte`，不要拿这个去扫 buffer 全文。
 ///
 /// 落在 surrogate pair 中间视为越界返回 `None`，与 NSTextInputClient 的预期一致：
 /// 调用方不应当在 surrogate pair 内部下手。
@@ -189,11 +224,11 @@ fn utf16_to_byte_offset_in_str(text: &str, target: usize) -> Option<usize> {
 /// 把 preedit 内 UTF-16 区间换算成 byte 区间，构造 `CompositionSelection`。
 fn composition_selection_from_utf16(
     preedit: &str,
-    range_utf16: Range<usize>,
+    range_utf16: ImeUtf16Range,
 ) -> Result<CompositionSelection, CommandError> {
-    let anchor = utf16_to_byte_offset_in_str(preedit, range_utf16.start)
+    let anchor = utf16_to_byte_offset_in_str(preedit, range_utf16.start())
         .ok_or_else(|| CommandError::InvalidArgs("IME preedit selection anchor 越界".into()))?;
-    let head = utf16_to_byte_offset_in_str(preedit, range_utf16.end)
+    let head = utf16_to_byte_offset_in_str(preedit, range_utf16.end())
         .ok_or_else(|| CommandError::InvalidArgs("IME preedit selection head 越界".into()))?;
     Ok(CompositionSelection::new(
         ByteOffset::new(anchor),
@@ -208,6 +243,10 @@ mod tests {
 
     use super::*;
 
+    fn b(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
+    }
+
     #[test]
     fn utf16_to_byte_offset_in_str_handles_surrogate_pair() {
         // "𐐷"在 BMP 外：4 UTF-8 字节，2 UTF-16 code unit。
@@ -217,5 +256,25 @@ mod tests {
         assert_eq!(utf16_to_byte_offset_in_str("𐐷", 2), Some(4));
         // 越界。
         assert_eq!(utf16_to_byte_offset_in_str("𐐷", 3), None);
+    }
+
+    #[test]
+    fn ime_utf16_range_should_convert_to_buffer_byte_range_at_text_boundary() {
+        let buffer = Buffer::from_text(
+            "a\u{00a0}你b".to_string(),
+            zom_engine::BufferConfig::default(),
+        )
+        .unwrap();
+        let range = ImeUtf16Range::new(1, 3).unwrap();
+
+        assert_eq!(
+            range.to_text_range(&buffer).unwrap(),
+            TextRange::new(b(1), b(6)).unwrap()
+        );
+    }
+
+    #[test]
+    fn ime_utf16_range_should_reject_reversed_external_range() {
+        assert!(ImeUtf16Range::new(3, 1).is_err());
     }
 }

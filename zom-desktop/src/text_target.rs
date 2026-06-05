@@ -5,12 +5,11 @@
 //! 不知道这些 owner 来自哪个面板、surface 或 GPUI 组件。
 
 use std::cell::{Ref, RefCell, RefMut};
-use std::ops::Range;
 use std::rc::Rc;
 
 use zom_command::{CommandError, EditTarget, KeyContext};
 
-use crate::editor::text::{EditorSnapshot, ImeQueryTarget, ImeTarget};
+use crate::editor::text::{EditorSnapshot, ImeQueryTarget, ImeTarget, ImeUtf16Range};
 use crate::focus::AppFocus;
 
 /// 只读侧：是哪个 target、当前是否活跃、给路由用的查询能力。
@@ -84,18 +83,18 @@ impl<'a> EditorRouter<'a> {
             .unwrap_or_default()
     }
 
-    pub(crate) fn marked_range_utf16(&self, focus: AppFocus) -> Option<Range<usize>> {
+    pub(crate) fn marked_range_utf16(&self, focus: AppFocus) -> Option<ImeUtf16Range> {
         self.with_query(focus, |q| q.marked_range_utf16()).flatten()
     }
 
-    pub(crate) fn selected_range_utf16(&self, focus: AppFocus) -> Option<(Range<usize>, bool)> {
+    pub(crate) fn selected_range_utf16(&self, focus: AppFocus) -> Option<(ImeUtf16Range, bool)> {
         self.with_query(focus, |q| q.selected_range_utf16())
     }
 
     pub(crate) fn text_for_range_utf16(
         &self,
         focus: AppFocus,
-        range: Range<usize>,
+        range: ImeUtf16Range,
     ) -> Option<String> {
         self.with_query(focus, |q| q.text_for_range_utf16(range))
             .flatten()

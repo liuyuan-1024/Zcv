@@ -14,7 +14,6 @@ mod pumps;
 mod text_target_runtime;
 
 use std::cell::{Cell, RefCell};
-use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -34,6 +33,7 @@ use self::pumps::BackgroundPumps;
 use self::text_target_runtime::TextTargetRuntime;
 use crate::config::{AppConfig, SettingsChange};
 use crate::dispatch::KeyDispatchOutcome;
+use crate::editor::text::ImeUtf16Range;
 use crate::focus::{AppFocus, FileTreeFocus, FocusStore, PanelSubFocus};
 use crate::ports::{
     FileTreeAction, FileTreeActionResult, FileTreeHost, FramePump, PostEditObserver, SearchAction,
@@ -559,7 +559,7 @@ impl App {
     pub(crate) fn ime_replace_text_for(
         &mut self,
         focus: AppFocus,
-        replacement_range_utf16: Option<Range<usize>>,
+        replacement_range_utf16: Option<ImeUtf16Range>,
         text: &str,
     ) -> Result<(), CommandError> {
         self.with_router_mut(|router| {
@@ -576,9 +576,9 @@ impl App {
     pub(crate) fn ime_replace_and_mark_text_for(
         &mut self,
         focus: AppFocus,
-        replacement_range_utf16: Option<Range<usize>>,
+        replacement_range_utf16: Option<ImeUtf16Range>,
         new_text: &str,
-        new_selected_range_utf16: Option<Range<usize>>,
+        new_selected_range_utf16: Option<ImeUtf16Range>,
     ) -> Result<(), CommandError> {
         let result = self.with_router_mut(|router| {
             router.with_ime_target(focus, |mut target| {

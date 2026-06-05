@@ -10,6 +10,7 @@ use gpui::{
 
 use crate::app::App;
 use crate::clipboard::GpuiClipboardScope;
+use crate::editor::text::ImeUtf16Range;
 
 /// primary caret 在 element 内的相对位置 + 行高 —— 系统 IME 候选窗定位用。
 ///
@@ -53,6 +54,7 @@ impl EntityInputHandler for EditorInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
+        let range = ImeUtf16Range::from_gpui_range(range).ok()?;
         let focus = self.app.borrow().focus().current();
         self.app
             .borrow()
@@ -69,7 +71,10 @@ impl EntityInputHandler for EditorInput {
         self.app
             .borrow()
             .with_router(|router| router.selected_range_utf16(focus))
-            .map(|(range, reversed)| UTF16Selection { range, reversed })
+            .map(|(range, reversed)| UTF16Selection {
+                range: range.into_gpui_range(),
+                reversed,
+            })
     }
 
     fn marked_text_range(
@@ -81,6 +86,7 @@ impl EntityInputHandler for EditorInput {
         self.app
             .borrow()
             .with_router(|router| router.marked_range_utf16(focus))
+            .map(ImeUtf16Range::into_gpui_range)
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -107,6 +113,13 @@ impl EntityInputHandler for EditorInput {
         let focus = self.app.borrow().focus().current();
         {
             let _clip = GpuiClipboardScope::enter(&*cx);
+            let range = match range.map(ImeUtf16Range::from_gpui_range).transpose() {
+                Ok(range) => range,
+                Err(error) => {
+                    eprintln!("IME replace_text range 无效：{error}");
+                    return;
+                }
+            };
             if let Err(error) = self
                 .app
                 .borrow_mut()
@@ -130,6 +143,23 @@ impl EntityInputHandler for EditorInput {
         let focus = self.app.borrow().focus().current();
         {
             let _clip = GpuiClipboardScope::enter(&*cx);
+            let range = match range.map(ImeUtf16Range::from_gpui_range).transpose() {
+                Ok(range) => range,
+                Err(error) => {
+                    eprintln!("IME replace_and_mark_text range 无效：{error}");
+                    return;
+                }
+            };
+            let new_selected_range = match new_selected_range
+                .map(ImeUtf16Range::from_gpui_range)
+                .transpose()
+            {
+                Ok(range) => range,
+                Err(error) => {
+                    eprintln!("IME replace_and_mark_text selected range 无效：{error}");
+                    return;
+                }
+            };
             if let Err(error) = self.app.borrow_mut().ime_replace_and_mark_text_for(
                 focus,
                 range,

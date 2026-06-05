@@ -7,6 +7,6 @@ mod ime;
 mod owned_target;
 pub(crate) mod snapshot;
 
-pub(crate) use ime::{ImeQueryTarget, ImeTarget};
+pub(crate) use ime::{ImeQueryTarget, ImeTarget, ImeUtf16Range};
 pub(crate) use owned_target::OwnedEditorTarget;
 pub(crate) use snapshot::{EditorSnapshot, EditorSnapshotRequest, RevealHint, build_snapshot};

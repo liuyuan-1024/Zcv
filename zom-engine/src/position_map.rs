@@ -225,7 +225,11 @@ impl PositionMap {
                 boundary_affinity(stickiness, BoundarySide::End),
             )
             .value();
-        let mapped = text_range(new_start, new_end);
+        let (mapped, endpoints_crossed) = text_range_from_mapped_endpoints(new_start, new_end);
+
+        if endpoints_crossed {
+            return MappingResult::Collapsed(mapped);
+        }
 
         if !range.is_empty() && mapped.is_empty() {
             return MappingResult::Collapsed(mapped);
@@ -249,7 +253,15 @@ impl PositionMap {
                 self.map_new_position_for_range_boundary(range.end(), false),
             )
         };
-        let mapped = text_range(old_start, old_end);
+        let (mapped, endpoints_crossed) = text_range_from_mapped_endpoints(old_start, old_end);
+
+        if endpoints_crossed {
+            if self.new_range_touches_ambiguous_content(range) {
+                return MappingResult::Ambiguous(mapped);
+            }
+
+            return MappingResult::Collapsed(mapped);
+        }
 
         if self.new_range_touches_ambiguous_content(range) {
             return MappingResult::Ambiguous(mapped);
@@ -467,6 +479,14 @@ fn text_range(start: ByteOffset, end: ByteOffset) -> TextRange {
     TextRange::new(start, end).expect("PositionMap 生成的 range 必须满足 start <= end")
 }
 
+fn text_range_from_mapped_endpoints(start: ByteOffset, end: ByteOffset) -> (TextRange, bool) {
+    if start <= end {
+        return (text_range(start, end), false);
+    }
+
+    (text_range(end, end), true)
+}
+
 /// 当前正在计算 stickiness 的区间端点。
 ///
 /// 同一个 `Stickiness` 在起点和终点上的 affinity 往往相反，因此内部映射必须显式区分端点。
@@ -540,6 +560,16 @@ mod tests {
         assert_eq!(
             Selection::new(b(0), b(4)).map_through_position_map(&map),
             Selection::new(b(0), b(5))
+        );
+    }
+
+    #[test]
+    fn position_map_should_not_panic_when_mapped_range_endpoints_cross() {
+        let map = PositionMap::from_edits(vec![Edit::insert(b(0), "X".to_string()).unwrap()]);
+
+        assert_eq!(
+            map.map_old_range_with_stickiness(range(0, 0), Stickiness::Never),
+            MappingResult::Collapsed(range(0, 0))
         );
     }
 }

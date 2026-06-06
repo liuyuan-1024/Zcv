@@ -17,8 +17,8 @@ pub(crate) fn javascript_config() -> Result<Arc<SharedConfig>, &'static QueryErr
     static CELL: OnceLock<Result<Arc<SharedConfig>, QueryError>> = OnceLock::new();
     CELL.get_or_init(|| {
         build_shared_config(
-            tree_sitter_javascript::LANGUAGE.into(),
-            tree_sitter_javascript::HIGHLIGHT_QUERY,
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+            tree_sitter_typescript::HIGHLIGHTS_QUERY,
         )
         .map(Arc::new)
     })

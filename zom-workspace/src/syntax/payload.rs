@@ -3,8 +3,9 @@
 //! 设计来自《桌面端语法高亮》§三。本模块**不**定义颜色 / 字重 / 字号——只承载 tree-sitter highlight name 与修饰位，theme 在 desktop 端按 name 解析为 Hsla。
 //!
 //! name 取值域 = tree-sitter highlight name 命名空间，不在本仓维护词汇表。
-
-use zom_engine::MetadataLayerKind;
+//!
+//! Phase 3 后这里只剩 [`HighlightSpan`] / [`HighlightName`] / [`TokenModifiers`] 三个值类型——它们仍是 [`crate::syntax::BufferSyntaxTree::query_viewport`] 的返回元素，由 paint 阶段消费。
+//! `syntax_confirmed_layer_kind` 在 Phase 3 删除：没有 layer 了，没有 kind 可言。
 
 /// 写入 [`zom_engine::MetadataLayer`] 的 syntax payload。
 ///
@@ -20,8 +21,7 @@ impl HighlightSpan {
         Self { name, modifiers }
     }
 
-    /// 仅取 name，modifiers 走 [`TokenModifiers::EMPTY`]。tree-sitter provider
-    /// 默认产 0 修饰（手册 §三），LSP provider 内部按需叠加。
+    /// 仅取 name，modifiers 走 [`TokenModifiers::EMPTY`]。tree-sitter provider 默认产 0 修饰（手册 §三），LSP provider 内部按需叠加。
     pub const fn from_name(name: HighlightName) -> Self {
         Self {
             name,
@@ -56,8 +56,8 @@ impl std::fmt::Display for HighlightName {
 /// token 修饰位（手册 §三）。
 ///
 /// 主要服务 LSP `SemanticTokenModifiers`，tree-sitter provider 默认产 EMPTY。
-/// 这些位与 LSP 语义 token 修饰符同形；theme 端可按需把 `deprecated` 映射到
-/// 下划线 / 半透明，把 `async` 映射到斜体等样式叠加。
+/// 这些位与 LSP 语义 token 修饰符同形；
+/// theme 端可按需把 `deprecated` 映射到下划线 / 半透明，把 `async` 映射到斜体等样式叠加。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub struct TokenModifiers(u32);
 
@@ -85,17 +85,4 @@ impl TokenModifiers {
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
-}
-
-/// tree-sitter / LSP 已确认的权威 syntax MetadataLayer。
-pub fn syntax_confirmed_layer_kind() -> MetadataLayerKind {
-    MetadataLayerKind::custom("syntax.confirmed")
-}
-
-/// 编辑当帧由主线程生成的临时 syntax MetadataLayer。
-///
-/// 它只负责在 worker 回来前覆盖新写入 / 脏区附近的字节，避免普通输入时露出默认前景色；
-/// worker 的权威产物会在后续 drain 中替换 confirmed 层。
-pub fn syntax_provisional_layer_kind() -> MetadataLayerKind {
-    MetadataLayerKind::custom("syntax.provisional")
 }

@@ -8,19 +8,16 @@ mod engine;
 mod language;
 mod payload;
 mod provider;
-mod sink;
+mod tree;
 mod worker;
 
 pub mod providers;
 
-pub use coordinator::{BufferSyntaxState, MAX_HIGHLIGHT_BYTES};
+pub use coordinator::{BufferSyntax, MAX_HIGHLIGHT_BYTES};
 pub use engine::SyntaxEngine;
 pub use language::{LanguageDetector, LanguageId, LanguageRegistry, ProviderFactory};
-pub use payload::{
-    HighlightName, HighlightSpan, TokenModifiers, syntax_confirmed_layer_kind,
-    syntax_provisional_layer_kind,
-};
+pub use payload::{HighlightName, HighlightSpan, TokenModifiers};
 pub use provider::{BufferHandle, HighlightProvider};
 pub use providers::install_builtin_providers;
-pub use sink::{HighlightSink, SinkMessage};
+pub use tree::{BufferSyntaxTree, BufferSyntaxTreeSlot, SyntaxQueryCursor};
 pub use worker::SyntaxWorkerHandle;

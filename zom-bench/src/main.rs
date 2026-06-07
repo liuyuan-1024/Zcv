@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use zom_engine::{Buffer, BufferConfig, BufferOrigin};
 
-use scenarios::Measurement;
+use scenarios::{Measurement, PercentileMeasurement};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
@@ -121,6 +121,7 @@ fn main() -> ExitCode {
             };
 
             let mut rows: Vec<Measurement> = Vec::new();
+            let mut percentile_rows: Vec<PercentileMeasurement> = Vec::new();
             for lang in langs {
                 for &mib in corpus::sizes() {
                     if let Some(filter) = size_filter
@@ -130,10 +131,11 @@ fn main() -> ExitCode {
                     }
                     let path = corpus::fixture_path(lang, mib);
                     eprintln!("== {} {} MiB ==（{}）", lang.name(), mib, path.display());
-                    run_for_fixture(lang, mib, &path, &mut rows);
+                    run_for_fixture(lang, mib, &path, &mut rows, &mut percentile_rows);
                 }
             }
             print_table(&rows);
+            print_percentile_table(&percentile_rows);
             ExitCode::SUCCESS
         }
         _ => {
@@ -143,7 +145,13 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_for_fixture(lang: Lang, mib: usize, path: &Path, rows: &mut Vec<Measurement>) {
+fn run_for_fixture(
+    lang: Lang,
+    mib: usize,
+    path: &Path,
+    rows: &mut Vec<Measurement>,
+    percentile_rows: &mut Vec<PercentileMeasurement>,
+) {
     let load = scenarios::measure_load(path, mib);
     eprintln!("  load        {}", fmt_dur(load.per_iter()));
     rows.push(load);
@@ -191,15 +199,26 @@ fn run_for_fixture(lang: Lang, mib: usize, path: &Path, rows: &mut Vec<Measureme
         eprintln!("  edit+hl e   跳过（{} 没有高亮提供器）", lang.name());
     }
 
-    if let Some(edit) = scenarios::measure_edit_with_highlight_viewport(&buffer, lang, mib) {
+    // Phase 0：render-time query 改造的前置数字。只跑 rust。
+    if let Some(q) = scenarios::measure_render_query(&buffer, lang, mib) {
         eprintln!(
-            "  edit+hl vp  {}/edit (×{})  (端到端，viewport ±8 KiB)",
-            fmt_dur(edit.per_iter()),
-            edit.iters
+            "  query vp    p50={} p95={} p99={} (×{})",
+            fmt_dur(q.p50()),
+            fmt_dur(q.p95()),
+            fmt_dur(q.p99()),
+            q.count(),
         );
-        rows.push(edit);
-    } else {
-        eprintln!("  edit+hl vp  跳过（{} 没有高亮提供器）", lang.name());
+        percentile_rows.push(q);
+    }
+    if let Some(r) = scenarios::measure_incremental_reparse(&buffer, lang, mib) {
+        eprintln!(
+            "  inc reparse p50={} p95={} p99={} (×{})",
+            fmt_dur(r.p50()),
+            fmt_dur(r.p95()),
+            fmt_dur(r.p99()),
+            r.count(),
+        );
+        percentile_rows.push(r);
     }
 }
 
@@ -225,6 +244,30 @@ fn print_table(rows: &[Measurement]) {
             r.iters,
             fmt_dur(r.total),
             fmt_dur(r.per_iter()),
+            r.note,
+        );
+    }
+}
+
+fn print_percentile_table(rows: &[PercentileMeasurement]) {
+    if rows.is_empty() {
+        return;
+    }
+    println!();
+    println!(
+        "{:<22} {:>5} {:>5} {:>12} {:>12} {:>12}  备注",
+        "Phase 0 场景", "MiB", "样本", "p50", "p95", "p99"
+    );
+    println!("{:-<100}", "");
+    for r in rows {
+        println!(
+            "{:<22} {:>5} {:>5} {:>12} {:>12} {:>12}  {}",
+            r.scenario,
+            r.size_mib,
+            r.count(),
+            fmt_dur(r.p50()),
+            fmt_dur(r.p95()),
+            fmt_dur(r.p99()),
             r.note,
         );
     }

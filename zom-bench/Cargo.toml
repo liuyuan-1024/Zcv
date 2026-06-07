@@ -11,3 +11,5 @@ path = "src/main.rs"
 [dependencies]
 zom-engine.workspace = true
 zom-workspace.workspace = true
+tree-sitter.workspace = true
+tree-sitter-rust.workspace = true

@@ -31,16 +31,16 @@ use std::rc::Rc;
 
 use zom_engine::{
     Buffer, BufferConfig, BufferLoadError, BufferOrigin as EngineBufferOrigin, BufferSaveError,
-    ChangeSet, Delta, EngineError, Line, MetadataLayers,
+    ChangeSet, Delta, EngineError, Line,
 };
 
-use crate::syntax::{HighlightSpan, LanguageId, LanguageRegistry, SyntaxEngine};
+use crate::syntax::{BufferSyntaxTreeSlot, LanguageId, LanguageRegistry, SyntaxEngine};
 
 /// workspace 自己的缓冲区标识，与 `zom_engine::BufferId` 区分。
 ///
-/// 单独建模的理由：把 engine 类型挡在 workspace 这一层；view / command /
-/// desktop 讨论「哪个缓冲区」时只 `use zom_workspace::BufferId`，不被迫拉 engine
-/// 依赖。语义上 engine ID 是「哪个引擎对象」，workspace ID 是「宿主第几个槽位」。
+/// 单独建模的理由：把 engine 类型挡在 workspace 这一层；
+/// view / command / desktop 讨论「哪个缓冲区」时只 `use zom_workspace::BufferId`，不被迫拉 engine 依赖。
+/// 语义上 engine ID 是「哪个引擎对象」，workspace ID 是「宿主第几个槽位」。
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BufferId(u64);
 
@@ -49,8 +49,8 @@ impl BufferId {
         self.0
     }
 
-    /// 测试 / bench 用：从原始 u64 直接构造。生产代码请走
-    /// [`crate::syntax::SyntaxEngine::allocate_buffer_id`] 以保证全局唯一。
+    /// 测试 / bench 用：从原始 u64 直接构造。
+    /// 生产代码请走 [`crate::syntax::SyntaxEngine::allocate_buffer_id`] 以保证全局唯一。
     pub fn from_raw(raw: u64) -> Self {
         Self(raw)
     }
@@ -67,9 +67,8 @@ pub enum BufferOrigin {
 
 /// 工作区：当前打开的全部缓冲区的拥有者。
 ///
-/// 语言注册表、后台 worker 与 buffer id 分配器都收口在共享的 [`SyntaxEngine`] 上（通过 `Rc` 与同进程内的其他容器——例如嵌入式
-/// [`SyntaxDocument`]——共享同一份资源）。组合根在 `Rc::new(SyntaxEngine)`
-/// 之前用 [`SyntaxEngine::registry_mut`] 注一遍内置 provider 工厂；运行期路径只读注册表。
+/// 语言注册表、后台 worker 与 buffer id 分配器都收口在共享的 [`SyntaxEngine`] 上（通过 `Rc` 与同进程内的其他容器——例如嵌入式[`SyntaxDocument`]——共享同一份资源）。
+/// 组合根在 `Rc::new(SyntaxEngine)` 之前用 [`SyntaxEngine::registry_mut`] 注一遍内置 provider 工厂；运行期路径只读注册表。
 #[derive(Debug)]
 pub struct Workspace {
     engine: Rc<SyntaxEngine>,
@@ -91,8 +90,8 @@ impl Workspace {
         Self::with_engine(Rc::new(SyntaxEngine::new()))
     }
 
-    /// 与已有 [`SyntaxEngine`] 共享：嵌入式 [`SyntaxDocument`] 与主工作区
-    /// 用这条路径搭在同一根后台 worker 与同一份注册表上。
+    /// 与已有 [`SyntaxEngine`] 共享：
+    /// 嵌入式 [`SyntaxDocument`] 与主工作区用这条路径搭在同一根后台 worker 与同一份注册表上。
     pub fn with_engine(engine: Rc<SyntaxEngine>) -> Self {
         Self {
             engine,
@@ -114,41 +113,9 @@ impl Workspace {
         }
     }
 
-    /// 后台 SyntaxWorker 句柄（轻量 clone）。测试 / bench 可用
-    /// [`crate::syntax::SyntaxWorkerHandle::wait_for_idle`] 等待异步产物。
+    /// 后台 SyntaxWorker 句柄（轻量 clone）。测试 / bench 可用 [`crate::syntax::SyntaxWorkerHandle::wait_for_idle`] 等待异步产物。
     pub fn syntax_worker(&self) -> &std::sync::Arc<crate::syntax::SyntaxWorkerHandle> {
         self.engine.worker()
-    }
-
-    /// 每帧 prepaint 起手由 desktop 调一次：扫描所有缓冲区，把 worker 已就绪
-    /// 的高亮产物落到各自的 [`MetadataLayers`]。
-    ///
-    /// 主线程开销 = 每个缓冲区一次 hashmap 查 + 一次空 drain（拿锁、看空、
-    /// 放锁）。`O(buffer 数)`，单缓冲区约 µs 级，60 fps 下不掉帧。
-    pub fn pump_pending_highlights(&mut self) {
-        for wb in self.buffers.values_mut() {
-            wb.pump_highlights();
-        }
-    }
-
-    /// 把 viewport hint 转发给指定缓冲区的语法 worker——desktop 在滚动或
-    /// 编辑改变可见区间时调一次，worker 据此把 `QueryCursor::set_byte_range`
-    /// 限制到 viewport ± 缓冲区，每次编辑只产 `ReplaceRange` 局部段
-    /// （[改造方案 §3.6](../docs/语法高亮异步增量改造.md)）。
-    ///
-    /// `byte_range` 通常 = 当前 viewport ± N 行（避免 capture 撕裂边界）。
-    /// `None` 取消 viewport 限定，回退到全文 `ReplaceAll`。
-    ///
-    /// 找不到缓冲区 / 缓冲区未挂语法高亮时静默无操作——desktop 在
-    /// detect 失败的 plain 缓冲区上调本方法也无副作用。
-    pub fn set_buffer_viewport_hint(
-        &self,
-        buffer_id: BufferId,
-        byte_range: Option<zom_engine::TextRange>,
-    ) {
-        if let Some(wb) = self.buffers.get(&buffer_id) {
-            wb.set_viewport_hint(byte_range);
-        }
     }
 
     /// 语言注册表只读视图。
@@ -169,8 +136,8 @@ impl Workspace {
     /// 从磁盘打开文件。
     ///
     /// 走 [`Buffer::from_reader`] 流式加载：一份 64 KiB 读缓冲增量喂 ropey，
-    /// 不再持有"整段 bytes Vec + 整段 String + 整段 rope"三份全量内存。详见
-    /// [`zom-bench/BASELINE.md`](../../zom-bench/BASELINE.md) 的基线数据。
+    /// 不再持有"整段 bytes Vec + 整段 String + 整段 rope"三份全量内存。
+    /// 详见[`zom-bench/BASELINE.md`](../../zom-bench/BASELINE.md) 的基线数据。
     pub fn open_file(&mut self, path: PathBuf) -> WorkspaceResult<BufferId> {
         let metadata = fs::metadata(&path)
             .map_err(|source| WorkspaceError::io(FileAction::ReadMetadata, &path, source))?;
@@ -196,8 +163,8 @@ impl Workspace {
 
     /// 用给定文本创建缓冲区，可选绑定路径。
     ///
-    /// 本路径走 `Buffer::from_text`，不走流式 decoder——文本已是内存中的 `String`，
-    /// 流式收益为零。语言识别仍读首行，与磁盘打开路径行为一致。
+    /// 本路径走 `Buffer::from_text`，不走流式 decoder——文本已是内存中的 `String`，流式收益为零。
+    /// 语言识别仍读首行，与磁盘打开路径行为一致。
     pub fn open_text(
         &mut self,
         path: Option<PathBuf>,
@@ -230,9 +197,9 @@ impl Workspace {
         self.write_buffer_to_path(id, path, true)
     }
 
-    /// 只改缓冲区的绑定路径，不写盘也不改内容。文件树执行「移动 / 重命名」
-    /// 后，已打开的缓冲区用它跟随到新位置；磁盘上的文件内容就是缓冲区里的
-    /// 内容，无需重读、也无需把缓冲区标记成脏。
+    /// 只改缓冲区的绑定路径，不写盘也不改内容。
+    /// 文件树执行「移动 / 重命名」后，已打开的缓冲区用它跟随到新位置；
+    /// 磁盘上的文件内容就是缓冲区里的内容，无需重读、也无需把缓冲区标记成脏。
     pub fn rebind_buffer_path(&mut self, id: BufferId, path: PathBuf) -> WorkspaceResult<()> {
         let buffer = self.buffer_mut_or_error(id)?;
         buffer.origin = BufferOrigin::File(path);
@@ -352,10 +319,8 @@ impl Workspace {
     }
 }
 
-/// `Workspace::open_*` 的语言识别小工厂：从 origin 取 path，从 buffer 取
-/// 首行，喂给注册表。[`WorkspaceBuffer::attach_syntax`] 的等价物——单 buffer
-/// 路径走 [`SyntaxDocument::from_buffer`] 把这套识别 + attach 收口在内部，
-/// 不再让 WorkspaceBuffer 自己挂 provider。
+/// `Workspace::open_*` 的语言识别小工厂：从 origin 取 path，从 buffer 取首行，喂给注册表。
+/// [`WorkspaceBuffer::attach_syntax`] 的等价物——单 buffer 路径走 [`SyntaxDocument::from_buffer`] 把这套识别 + attach 收口在内部，不再让 WorkspaceBuffer 自己挂 provider。
 fn detect_language_for(
     registry: &LanguageRegistry,
     origin: &BufferOrigin,
@@ -376,16 +341,13 @@ fn detect_language_for(
 /// 一个被 workspace 持有的缓冲区，连同它的「**文件边界 + 搜索维度**」。
 ///
 /// 由三块拼成：
-/// - [`SyntaxDocument`]：`Buffer` + 高亮 layer + provider 运行态。这部分跟
-///   嵌入式编辑器**完全共用**实现——「挂语法高亮的 buffer」全工程只有一份
-///   原语，attach / pump / drop 都在 `SyntaxDocument` 上一处实现。
-/// - [`BufferSearch`]：单缓冲区的搜索状态（query、命中、当前命中）。分屏
-///   看同一缓冲区的多个视图共享这一份；EditorView 阶段 2 与 panel 的
-///   「3 / 27」标签都从这里读。
+/// - [`SyntaxDocument`]：`Buffer` + 高亮 layer + provider 运行态。
+/// 这部分跟嵌入式编辑器**完全共用**实现——「挂语法高亮的 buffer」全工程只有一份原语，attach / pump / drop 都在 `SyntaxDocument` 上一处实现。
+/// - [`BufferSearch`]：单缓冲区的搜索状态（query、命中、当前命中）。
+/// 分屏看同一缓冲区的多个视图共享这一份；EditorView 阶段 2 与 panel 的「3 / 27」标签都从这里读。
 /// - [`BufferOrigin`]：文件路径 / 草稿来源 / 脏状态边界。
 ///
-/// 没有 `attach_syntax` 之类的成员——provider 在
-/// [`SyntaxDocument::from_buffer`] 构造时就挂好。
+/// 没有 `attach_syntax` 之类的成员——provider 在 [`SyntaxDocument::from_buffer`] 构造时就挂好。
 #[derive(Debug)]
 pub struct WorkspaceBuffer {
     origin: BufferOrigin,
@@ -429,48 +391,32 @@ impl WorkspaceBuffer {
         &mut self.search
     }
 
-    /// 语法高亮 layer 的只读视图。
-    /// 渲染端阶段 3 按 [`syntax::syntax_confirmed_layer_kind`] 取本 layer。
-    pub fn highlight_layers(&self) -> &MetadataLayers<HighlightSpan> {
-        self.document.highlight_layers()
+    /// 共享的 [`BufferSyntaxTreeSlot`] —— Phase 2 后 paint 端按它现查 tree-sitter
+    /// Query。`None` 表示 plain / 超阈值 / 注册表缺工厂的 buffer。
+    pub fn syntax_tree_slot(&self) -> Option<&BufferSyntaxTreeSlot> {
+        self.document.syntax_tree_slot()
     }
 
-    /// 当前缓冲区 detect 出的 [`LanguageId`]。`None` 表示 plain
-    /// （未挂 provider——detect 出未注册语言、文件超阈值或注册表无 factory）。
+    /// 当前缓冲区 detect 出的 [`LanguageId`]。
+    /// `None` 表示 plain（未挂 provider——detect 出未注册语言、文件超阈值或注册表无 factory）。
     pub fn language(&self) -> Option<LanguageId> {
         let lang = self.document.language();
         (!lang.is_plain()).then_some(lang)
     }
 
-    /// 排空缓冲区自上次调用以来累积的 [`zom_engine::DeltaEvent`]，逐个喂给
-    /// [`BufferSearch`] 与（若挂着）[`BufferSyntaxState`]。
+    /// 排空缓冲区自上次调用以来累积的 [`zom_engine::DeltaEvent`]，逐个喂给 [`BufferSearch`] 与（若挂着）syntax。
     ///
-    /// **调用契约**：缓冲区发生编辑（命令派发、IME commit、replace_all 等）
-    /// 后**有且仅有一处**调用本方法。不放在 [`Workspace::buffer_mut`] /
-    /// `buffer()` 之类的访问器里——访问器会被调多次、调到读路径上，重复 drain 会让事件序丢失。
+    /// **调用契约**：缓冲区发生编辑（命令派发、IME commit、replace_all 等）后**有且仅有一处**调用本方法。
+    /// 不放在 [`Workspace::buffer_mut`] / `buffer()` 之类的访问器里——访问器会被调多次、调到读路径上，重复 drain 会让事件序丢失。
     /// 当前调用点：`zom-command` 在派发结束后统一调一次活动缓冲区的 `pump_post_edit`。
-    ///
-    /// DeltaEvent 单一消费方契约：本方法负责一次 drain；BufferSearch 与语法高亮 provider 各自从 ChangeSet 引用消费，**不**重新调`take_pending_events`。
     pub fn pump_post_edit(&mut self) -> WorkspaceResult<bool> {
         let events = self.document.buffer_mut().take_pending_events();
         let had_events = !events.is_empty();
         for event in &events {
             self.search.apply_delta(event)?;
         }
-        // 高亮调度收口在 SyntaxDocument::apply_pending_events：UI 线程只做轻量
-        // 版本推进 / worker 通知，不同步 remap 整个 syntax layer。
         self.document.apply_pending_events(&events);
         Ok(had_events)
-    }
-
-    /// 把后台 worker 已就绪的高亮产物 drain 到 layers——由[`Workspace::pump_pending_highlights`] 每帧驱动。
-    fn pump_highlights(&mut self) {
-        self.document.pump_pending_highlights();
-    }
-
-    /// 把 viewport hint 转发给挂在本缓冲区上的语法 worker。
-    pub fn set_viewport_hint(&self, byte_range: Option<zom_engine::TextRange>) {
-        self.document.set_viewport_hint(byte_range);
     }
 
     /// 推一拍 BufferSearch 状态机：收割已完成的后台搜索，必要时 spawn 新的。
@@ -485,11 +431,11 @@ impl WorkspaceBuffer {
         self.search.pump_pending(self.document.buffer())
     }
 
-    /// 替换 BufferSearch 当前命中指向的命中。无当前命中或结果集
-    /// 空时返回 `Ok(None)`。
+    /// 替换 BufferSearch 当前命中指向的命中。无当前命中或结果集为空时返回 `Ok(None)`。
     ///
-    /// 落地后**内部**调一次扇出 pump：把缓冲区新产生的 DeltaEvent 喂回
-    /// BufferSearch 与（若挂着）语法高亮 provider；调用方无需自己再 pump。
+    /// 落地后**内部**调一次扇出 pump：
+    /// 把缓冲区新产生的 DeltaEvent 喂回 BufferSearch 与（若挂着）语法高亮 provider；
+    /// 调用方无需自己再 pump。
     pub fn replace_current_search_match(
         &mut self,
         replacement: &str,
@@ -539,8 +485,8 @@ impl WorkspaceBuffer {
         Ok(outcome)
     }
 
-    /// `pump_post_edit` 内部走的扇出 drain，单独抽出来给 replace_* 等
-    /// **同方法内**触发新编辑的入口调用。外部入口请用 `pump_post_edit`。
+    /// `pump_post_edit` 内部走的扇出 drain，单独抽出来给 replace_* 等**同方法内**触发新编辑的入口调用。
+    /// 外部入口请用 `pump_post_edit`。
     fn fanout_pending_events(&mut self) -> WorkspaceResult<()> {
         let events = self.document.buffer_mut().take_pending_events();
         for event in &events {

@@ -490,48 +490,21 @@ impl App {
         self.command.registry().commands().map(Into::into).collect()
     }
 
-    /// 排空活动 buffer 自上次 dispatch 以来累积的 `DeltaEvent`，扇出到 `BufferSearch` 与 syntax provider。
-    /// **无论搜索面板是否开**都要调——
-    /// 否则编辑后 syntax layer 不重算 / 不 remap，渲染端读到旧版本的 span 与新字节叠在一起就是错位的着色。
+    /// 每帧 prepaint 起手调一次：收割活动 buffer 的后台 BufferSearch 结果。
+    /// 没有 in-flight 时 O(1) 早退。
+    /// 新结果落地时同时 reveal 首条命中——避免用户输入查询后 UI 不刷新的"看上去卡住"假象。
     ///
-    /// 在 dispatch_command_id 与 ime preedit update 两个尾部都装一次。
-    /// 多调几次无害——`take_pending_events` 第二次返空。
-    /// 每帧 prepaint 起手由 [`ShellView::render`] 调一次，把后台 `SyntaxWorker` 已就绪的高亮产物落到 workspace 各 buffer 的 `MetadataLayers`。
-    ///
-    /// 主工作区共享同一根后台 worker；本方法只 drain 主 workspace 的 sink。
-    /// 不阻塞——内部全是「拿锁、看空、放锁」级操作，worker 没出新产物即 O(1) 无操作。
-    /// 详见 [改造方案 §3.7](../../zom-workspace/docs/语法高亮异步增量改造.md)。
-    pub fn pump_pending_highlights(&mut self) {
-        self.background.pump_pending_highlights(&mut self.session);
-    }
-
-    /// 每帧 prepaint 起手再调一次：收割活动 buffer 的后台 BufferSearch 结果。
-    /// 没有 in-flight 时 O(1) 早退。新结果落地时同时 reveal 首条命中——避免
-    /// 用户输入查询后 UI 不刷新的"看上去卡住"假象。
-    ///
-    /// 与 `pump_pending_highlights` 平级：跑所有通过 [`install_frame_pump`] 注册的[`FramePump`]。
-    /// 原本 search 的"收割后台命中"是这里第一个登记者，
-    /// 后续 feature 想做同节奏的 drain 也走同一注册路径——BackgroundPumps 不认具体 feature。
+    /// 跑所有通过 [`install_frame_pump`] 注册的[`FramePump`]。
+    /// 原本 search 的"收割后台命中"是这里第一个登记者，后续 feature 想做同节奏的 drain 也走同一注册路径——BackgroundPumps 不认具体 feature。
     ///
     /// 统一由 shell 根视图的 render 拍点驱动。
+    ///
+    /// Phase 3 后**没有**语法高亮帧 drain —— paint 阶段直接从共享 `BufferSyntaxTreeSlot` 现查 tree-sitter Query，没有需要 drain 的中间产物。
+    /// viewport hint 转发也已下线（paint 端按本帧可见行范围 query，不需要预先告知 worker）。
     ///
     /// [`install_frame_pump`]: Self::install_frame_pump
     pub fn pump_frame_observers(&mut self) {
         self.background.pump_frame_observers(&mut self.session);
-    }
-
-    /// 把活动 view 的可见区间转成 byte range 后推给语法 worker，让 `on_edit`
-    /// 走 viewport-scoped query + `ReplaceRange`（[改造方案 §3.6](
-    /// ../../zom-workspace/docs/语法高亮异步增量改造.md)）。
-    ///
-    /// padding ±32 行：tree-sitter `set_byte_range` 只返回起止 byte 都落在范围内
-    /// 的匹配——viewport 边缘的多行字符串、宏调用、属性等 capture 若起点恰
-    /// 好被切在外面就会缺色，多吃几十行可视区域以外的查询代价换不撕裂；视觉上
-    /// 1 帧 ~30 行 vs 32 行 padding 几乎一致，但语义安全。
-    ///
-    /// 每帧调一次；HighlightWorker 内部对相同 hint 去重，无变化时不再产物。
-    pub fn pump_active_viewport_hint(&mut self) {
-        self.background.pump_active_viewport_hint(&mut self.session);
     }
 
     fn dispatch_command_id(
@@ -541,8 +514,8 @@ impl App {
     ) -> Result<Vec<HostEffect>, CommandError> {
         let focus = self.focus.current();
 
-        // 命令派发期需要给 CommandContext 填 `focused_field`。若命令真的改了
-        // 这个输入目标的文本，派发后再让 owner 跑 `after_text_changed`。
+        // 命令派发期需要给 CommandContext 填 `focused_field`。
+        // 若命令真的改了这个输入目标的文本，派发后再让 owner 跑 `after_text_changed`。
         let run_command = |focused_field: Option<zom_command::EditTarget<'_>>| {
             self.command.dispatch_command_id(
                 id.clone(),
@@ -568,8 +541,7 @@ impl App {
 
     /// 提交系统输入法文本。commit 走命令路径，保证进入 undo 历史。
     ///
-    /// 写入成功后由 router 调 owner 的 `after_text_changed` 钩子 —— picker
-    /// 等需要"文本变了就重置选区"的 owner 自己实现，宿主不必特判。
+    /// 写入成功后由 router 调 owner 的 `after_text_changed` 钩子 —— picker 等需要"文本变了就重置选区"的 owner 自己实现，宿主不必特判。
     pub(crate) fn ime_replace_text_for(
         &mut self,
         focus: AppFocus,
@@ -604,8 +576,7 @@ impl App {
             })
         });
         // preedit 期间也走 live search——用户在搜索框中文输入时能边输入边看到结果收敛。
-        // 同时把 buffer 上累积的 DeltaEvent 扇出到 syntax provider
-        // （preedit replace 走 composition state，但 replace_and_mark 内部仍可能产生编辑事件）。
+        // 同时把 buffer 上累积的 DeltaEvent 扇出到 syntax provider（preedit replace 走 composition state，但 replace_and_mark 内部仍可能产生编辑事件）。
         self.background
             .after_text_edit(&mut self.session, self.config.soft_wrap_enabled());
         result
@@ -622,12 +593,11 @@ impl App {
 
 /// 空工作区：不预建任何 buffer/view。
 ///
-/// 早期版本会默认开一个空白 scratch buffer，但它对用户没有意义、还会让编辑区
-/// 显示一个不存在的"文件"，误导用户。现在编辑区在无活动视图时走
-/// `EditorState::default()`，文件从文件树打开后才有内容。
+/// 早期版本会默认开一个空白 scratch buffer，但它对用户没有意义、还会让编辑区显示一个不存在的"文件"，误导用户。
+/// 现在编辑区在无活动视图时走 `EditorState::default()`，文件从文件树打开后才有内容。
 ///
-/// 启动期同时把内置 syntax provider 工厂注入共享 [`SyntaxEngine`]
-/// ——否则后续 `open_file` 落 plain。注册需要在 `Rc::new(engine)` 之前完成。
+/// 启动期同时把内置 syntax provider 工厂注入共享 [`SyntaxEngine`]——否则后续 `open_file` 落 plain。
+/// 注册需要在 `Rc::new(engine)` 之前完成。
 fn empty_workspace() -> (Rc<SyntaxEngine>, Workspace, ViewSet) {
     let mut engine = SyntaxEngine::new();
     install_builtin_providers(&mut engine);
@@ -703,7 +673,6 @@ mod tests {
         assert!(app.session.open_file(root.join("README.md")));
         app.request_focus(AppFocus::editor());
         app.session.workspace().syntax_worker().wait_for_idle();
-        app.pump_pending_highlights();
         app
     }
 
@@ -915,54 +884,91 @@ mod tests {
         assert_eq!(wrap_map.total_visual_rows(), 2);
     }
 
+    /// 收集一份 snapshot 内属于 syntax 的 Foreground decoration（`(start, end, name)`）。
+    /// Phase 4 用：单独抽出 syntax 段方便对比 edit-frame 与 reparse-frame。
+    fn syntax_decorations(
+        snapshot: &crate::editor::text::EditorSnapshot,
+    ) -> Vec<(usize, usize, String)> {
+        let mut out: Vec<_> = snapshot
+            .decorations
+            .iter()
+            .filter(|d| {
+                d.kind == crate::editor::highlight::DecorationKind::Foreground
+                    && d.priority == crate::editor::highlight::priority::SYNTAX_CONFIRMED
+            })
+            .filter_map(|d| match &d.style {
+                crate::editor::highlight::DecorationStyle::Named(
+                    crate::editor::highlight::StyleClass::Syntax(name),
+                ) => Some((d.range.start().get(), d.range.end().get(), name.clone())),
+                _ => None,
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// 不变量：在 token 内部插入字符（结构未变）后立即取 snapshot，syntax
+    /// decoration 必须覆盖新插入字节 —— 主线程 `tree.edit` 把 slot 推进到新版本，
+    /// paint 端按 viewport 现查 Query 就能命中 shifted node。
+    ///
+    /// 这条钉死「token 内插入不会闪默认前景色」。Phase 1 主线程 `tree_slot.try_edit`
+    /// 的存在理由。
     #[test]
-    fn dispatch_text_edit_exposes_provisional_syntax_in_immediate_snapshot() {
+    fn edit_immediately_extends_syntax_decoration_inside_heading_token() {
+        // 在 `# zom 文档规范` 的 `zom` 中间插入字符：byte 4（'z' 与 'o' 之间）。
+        // heading_content 节点 [2..18] 跨越插入点，tree.edit 后变为 [2..19]，
+        // 第一帧 paint 跑 query 应当命中扩展后的 heading 段，新字节 [4..5) 在内。
         let mut app =
-            app_with_markdown_text("immediate-provisional-syntax", "# zom 文档规范\n\n正文。\n");
+            app_with_markdown_text("phase4-token-inside-edit", "# zom 文档规范\n\n正文。\n");
         *app.session
             .views_mut()
             .active_view_mut()
             .expect("应有活动视图")
-            .selection_mut() = SelectionSet::caret(ByteOffset::new(18));
+            .selection_mut() = SelectionSet::caret(ByteOffset::new(4));
 
         app.dispatch(editor::replace_selection("X")).unwrap();
 
         let snapshot = app.with_router(|router| router.snapshot_for_focus(AppFocus::editor()));
         assert!(
-            snapshot.decorations.iter().any(|d| {
-                d.kind == crate::editor::highlight::DecorationKind::Foreground
-                    && d.range.start().get() == 18
-                    && d.range.end().get() == 19
-                    && d.priority == crate::editor::highlight::priority::SYNTAX_PROVISIONAL
-            }),
-            "dispatch 后立即 snapshot 应包含新字符的 provisional syntax decoration，实际 {:?}",
+            snapshot.decorations.iter().any(|d| d.kind
+                == crate::editor::highlight::DecorationKind::Foreground
+                && d.range.start().get() <= 4
+                && d.range.end().get() >= 5
+                && d.priority == crate::editor::highlight::priority::SYNTAX_CONFIRMED),
+            "dispatch 后立即 snapshot 必须包含覆盖新字节 [4, 5) 的 syntax decoration，实际 {:?}",
             snapshot.decorations,
         );
     }
 
+    /// 关键不变量（计划 §Phase 4）：结构未变的小编辑下，edit 后立即 paint 的 syntax
+    /// decoration 必须**逐项等于** worker reparse 完成后的 paint 结果。
+    ///
+    /// `tree.edit` 只推坐标不改结构 —— interpolate tree 跑出的 query 与重 parse
+    /// 后的 query 在 viewport 上应当命中同一组 node。一帧不闪、不糊。
     #[test]
-    fn ime_text_commit_exposes_provisional_syntax_in_immediate_snapshot() {
-        let mut app =
-            app_with_markdown_text("ime-provisional-syntax", "# zom 文档规范\n\n正文。\n");
-        let focus = AppFocus::editor();
+    fn edit_frame_decorations_equal_reparse_frame_for_structure_preserving_edit() {
+        let mut app = app_with_markdown_text("phase4-no-flash", "# zom 文档规范\n\n正文段落。\n");
         *app.session
             .views_mut()
             .active_view_mut()
             .expect("应有活动视图")
-            .selection_mut() = SelectionSet::caret(ByteOffset::new(18));
+            .selection_mut() = SelectionSet::caret(ByteOffset::new(4));
 
-        app.ime_replace_text_for(focus, None, "X").unwrap();
+        app.dispatch(editor::replace_selection("X")).unwrap();
 
-        let snapshot = app.with_router(|router| router.snapshot_for_focus(focus));
-        assert!(
-            snapshot.decorations.iter().any(|d| {
-                d.kind == crate::editor::highlight::DecorationKind::Foreground
-                    && d.range.start().get() == 18
-                    && d.range.end().get() == 19
-                    && d.priority == crate::editor::highlight::priority::SYNTAX_PROVISIONAL
-            }),
-            "IME commit 后立即 snapshot 应包含新字符的 provisional syntax decoration，实际 {:?}",
-            snapshot.decorations,
+        // edit-frame：worker 还没回包，slot 里只有主线程 tree.edit 推进的 interpolate tree。
+        let edit_frame = app.with_router(|router| router.snapshot_for_focus(AppFocus::editor()));
+        let edit_frame_syntax = syntax_decorations(&edit_frame);
+
+        // reparse-frame：等 worker 把真正的重 parse 结果 store 回 slot。
+        app.session.workspace().syntax_worker().wait_for_idle();
+        let reparse_frame = app.with_router(|router| router.snapshot_for_focus(AppFocus::editor()));
+        let reparse_frame_syntax = syntax_decorations(&reparse_frame);
+
+        assert_eq!(
+            edit_frame_syntax, reparse_frame_syntax,
+            "结构未变的小编辑下 edit-frame 与 reparse-frame 必须产出相同 syntax decoration —— \
+             否则就会出现一帧错色 flash。\n  edit-frame: {edit_frame_syntax:?}\n  reparse-frame: {reparse_frame_syntax:?}",
         );
     }
 

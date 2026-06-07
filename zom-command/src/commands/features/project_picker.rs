@@ -2,11 +2,15 @@
 //!
 //! handler 只 emit `HostEffect`（宿主弹项目选择器、走打开流程），不直接碰 GPUI / shell。
 //! 模块名 `workspace` 是内部代号，面向用户文案统一用「项目」。
+//!
+//! esc 走系统级 [`crate::commands::system::dismiss::DISMISS_TOP`]（scope=ProjectPicker）—— [`SHOW_PROJECTS_PICKER`] 推一条 dismiss token，esc 弹出后重新派发 [`DISMISS`]。
 
 use crate::commands::emit;
+use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    HostEffect, Invocation, KeyBindingContext, Keymap, reject_unknown_args, required_arg,
+    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, reject_unknown_args,
+    required_arg,
 };
 
 pub const SHOW_PROJECTS_PICKER: &str = "workspace.show_projects_picker";
@@ -84,7 +88,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             SHOW_PROJECTS_PICKER,
             "切换项目",
-            emit(HostEffect::ShowProjectPicker),
+            Box::new(run_show_projects_picker),
         )
         .description("打开项目选择器，切换到最近项目或导入新项目。")
         .key("mod-o");
@@ -137,14 +141,9 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_in("enter", picker)
         .key_in("return", picker);
 
-    registry
-        .install(
-            keymap,
-            DISMISS,
-            "关闭项目选择器",
-            emit(HostEffect::DismissSurface),
-        )
-        .key_in("escape", picker);
+    registry.install(keymap, DISMISS, "关闭项目选择器", Box::new(run_dismiss));
+
+    dismiss_top::bind_esc(keymap, DismissScope::ProjectPicker, picker);
 }
 
 fn run_move_selection(
@@ -155,6 +154,33 @@ fn run_move_selection(
     context
         .effects
         .push(HostEffect::ProjectPickerMoveSelection(args.delta));
+    Ok(CommandOutcome::default())
+}
+
+/// 打开选择器：清空 [`DismissScope::ProjectPicker`] 栈防止重复 open 导致 token 累积，
+/// 再 push 一个 [`DISMISS`] token —— esc 走 [`crate::commands::system::dismiss::DISMISS_TOP`] 弹这条 token 把 picker 收掉。
+fn run_show_projects_picker(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::ProjectPicker);
+    context
+        .dismiss
+        .push(DismissScope::ProjectPicker, "关闭项目选择器", dismiss());
+    context.effects.push(HostEffect::ShowProjectPicker);
+    Ok(CommandOutcome::default())
+}
+
+/// 关闭选择器：清掉本 scope 上残留 token（万一被 host 直接调走，绕过了 esc 路径），再 emit [`HostEffect::DismissSurface`]。
+/// esc 路径上栈顶已经被 [`crate::commands::system::dismiss::DISMISS_TOP`] 弹掉，这里 [`crate::DismissStacks::clear`] 是幂等 no-op。
+fn run_dismiss(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::ProjectPicker);
+    context.effects.push(HostEffect::DismissSurface);
     Ok(CommandOutcome::default())
 }
 

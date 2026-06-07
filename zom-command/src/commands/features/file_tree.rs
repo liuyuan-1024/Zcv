@@ -4,9 +4,11 @@
 //! 这样 `zom-command` 负责命令与快捷键，仍不反向依赖 `zom-desktop` 的面板实现。
 
 use crate::commands::emit;
+use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    HostEffect, Invocation, KeyBindingContext, Keymap, reject_unknown_args, required_arg,
+    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, reject_unknown_args,
+    required_arg,
 };
 
 pub const TOGGLE_PANEL: &str = "panel.toggle.file_tree";
@@ -235,7 +237,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             BEGIN_NEW_ENTRY,
             "在文件树中新建条目",
-            emit(HostEffect::FileTreeBeginNewEntry),
+            Box::new(run_begin_new_entry),
         )
         .description("在当前目录中默认新建文件，在名称后加 / 会被识别为目录（可嵌套新建）。")
         .key_in("mod-n", navigate);
@@ -245,27 +247,25 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             COMMIT_NEW_ENTRY,
             "提交文件树新建条目",
-            emit(HostEffect::FileTreeCommitNewEntry),
+            Box::new(run_commit_new_entry),
         )
         .key_in("enter", pending_name);
 
-    registry
-        .install(
-            keymap,
-            CANCEL_NEW_ENTRY,
-            "取消文件树新建条目",
-            emit(HostEffect::FileTreeCancelNewEntry),
-        )
-        .key_in("escape", pending_name);
+    registry.install(
+        keymap,
+        CANCEL_NEW_ENTRY,
+        "取消文件树新建条目",
+        Box::new(run_cancel_new_entry),
+    );
 
     registry
         .install(
             keymap,
             BEGIN_RENAME,
             "重命名文件树选中条目",
-            emit(HostEffect::FileTreeBeginRename),
+            Box::new(run_begin_rename),
         )
-        .description("把焦点行的名称作为输入框预填，输入新名后 enter 确认、esc 取消。")
+        .description("重命名焦点行的名称。")
         .key_in("mod-r", navigate);
 
     registry
@@ -273,27 +273,25 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             COMMIT_RENAME,
             "提交重命名",
-            emit(HostEffect::FileTreeCommitRename),
+            Box::new(run_commit_rename),
         )
         .key_in("enter", pending_rename);
 
-    registry
-        .install(
-            keymap,
-            CANCEL_RENAME,
-            "取消重命名",
-            emit(HostEffect::FileTreeCancelRename),
-        )
-        .key_in("escape", pending_rename);
+    registry.install(
+        keymap,
+        CANCEL_RENAME,
+        "取消重命名",
+        Box::new(run_cancel_rename),
+    );
 
     registry
         .install(
             keymap,
             REQUEST_DELETE,
             "删除文件树选中条目",
-            emit(HostEffect::FileTreeRequestDelete),
+            Box::new(run_request_delete),
         )
-        .description("请求删除文件树中选中的条目。enter 确认删除，esc 取消删除。")
+        .description("请求删除文件树中选中的条目。")
         .key_in("mod-backspace", navigate)
         .key_in("mod-delete", navigate);
 
@@ -302,27 +300,31 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             CONFIRM_DELETE,
             "确认删除文件树条目",
-            emit(HostEffect::FileTreeConfirmDelete),
+            Box::new(run_confirm_delete),
         )
         .key_in("enter", pending_delete);
 
-    registry
-        .install(
-            keymap,
-            CANCEL_DELETE,
-            "取消删除文件树条目",
-            emit(HostEffect::FileTreeCancelDelete),
-        )
-        .key_in("escape", pending_delete);
+    registry.install(
+        keymap,
+        CANCEL_DELETE,
+        "取消删除文件树条目",
+        Box::new(run_cancel_delete),
+    );
+
+    // esc 在三种 pending 模式下都走系统级 dismiss_top（scope=FileTree）。
+    // Navigate 模式的 esc 仍是 file_tree.escape 的二段式（清选区 / 焦点回编辑器），不是瞬态取消。
+    dismiss_top::bind_esc(keymap, DismissScope::FileTree, pending_name);
+    dismiss_top::bind_esc(keymap, DismissScope::FileTree, pending_rename);
+    dismiss_top::bind_esc(keymap, DismissScope::FileTree, pending_delete);
 
     registry
         .install(keymap, COPY, "复制选中文件", emit(HostEffect::FileTreeCopy))
-        .description("把选中的文件 / 目录拍进剪贴板（Copy 模式）；空选区时降级到焦点单项。")
+        .description("把选中的文件或目录拍进剪贴板（Copy 模式）；空选区时降级到焦点单项。")
         .key_in("mod-c", navigate);
 
     registry
         .install(keymap, CUT, "剪切选中文件", emit(HostEffect::FileTreeCut))
-        .description("把选中的文件 / 目录拍进剪贴板（Cut 模式）；粘贴时执行移动。")
+        .description("把选中的文件或目录拍进剪贴板（Cut 模式）；粘贴时执行移动。")
         .key_in("mod-x", navigate);
 
     registry
@@ -355,6 +357,112 @@ fn run_extend_selection(
     context
         .effects
         .push(HostEffect::FileTreeExtendSelection(args.delta));
+    Ok(CommandOutcome::default())
+}
+
+// ===== begin/commit/cancel：dismiss stack 桥 =====
+//
+// 三组瞬态（新建 / 重命名 / 删除确认）共享 [`DismissScope::FileTree`] 栈：
+// - begin 命令在 emit 业务 effect 前 `clear` 防累积、再 push 一条对应 cancel 的 token；
+// - commit / confirm 命令 `clear` 把 token 摘掉；
+// - cancel 命令同样 `clear`——esc 路径上栈顶已被弹掉，这里幂等；host 直接调用 cancel 时则负责清理。
+
+fn run_begin_new_entry(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::FileTree);
+    context
+        .dismiss
+        .push(DismissScope::FileTree, "取消新建条目", cancel_new_entry());
+    context.effects.push(HostEffect::FileTreeBeginNewEntry);
+    Ok(CommandOutcome::default())
+}
+
+fn run_commit_new_entry(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::FileTree);
+    context.effects.push(HostEffect::FileTreeCommitNewEntry);
+    Ok(CommandOutcome::default())
+}
+
+fn run_cancel_new_entry(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::FileTree);
+    context.effects.push(HostEffect::FileTreeCancelNewEntry);
+    Ok(CommandOutcome::default())
+}
+
+fn run_begin_rename(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::FileTree);
+    context
+        .dismiss
+        .push(DismissScope::FileTree, "取消重命名", cancel_rename());
+    context.effects.push(HostEffect::FileTreeBeginRename);
+    Ok(CommandOutcome::default())
+}
+
+fn run_commit_rename(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::FileTree);
+    context.effects.push(HostEffect::FileTreeCommitRename);
+    Ok(CommandOutcome::default())
+}
+
+fn run_cancel_rename(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::FileTree);
+    context.effects.push(HostEffect::FileTreeCancelRename);
+    Ok(CommandOutcome::default())
+}
+
+fn run_request_delete(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::FileTree);
+    context
+        .dismiss
+        .push(DismissScope::FileTree, "取消删除", cancel_delete());
+    context.effects.push(HostEffect::FileTreeRequestDelete);
+    Ok(CommandOutcome::default())
+}
+
+fn run_confirm_delete(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::FileTree);
+    context.effects.push(HostEffect::FileTreeConfirmDelete);
+    Ok(CommandOutcome::default())
+}
+
+fn run_cancel_delete(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::FileTree);
+    context.effects.push(HostEffect::FileTreeCancelDelete);
     Ok(CommandOutcome::default())
 }
 

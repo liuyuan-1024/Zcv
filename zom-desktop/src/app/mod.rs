@@ -661,7 +661,8 @@ mod tests {
     use std::rc::Rc;
     use zom_command::HostEffect;
     use zom_command::commands::{
-        diagnostics, editor, language_servers, project_picker as project_picker_commands, settings,
+        diagnostics, editor, file_tree, language_servers,
+        project_picker as project_picker_commands, settings,
     };
     use zom_command::{EditTarget, KeyContext};
     use zom_engine::{ByteOffset, SelectionSet};
@@ -1105,6 +1106,8 @@ mod tests {
     #[test]
     fn file_tree_confirm_delete_focus_should_route_enter_and_escape_to_dialog_actions() {
         let mut app = App::new();
+        // Esc 改走 system.dismiss_top 后，必须经 request_delete() 才能把 cancel token 推上栈。
+        let _ = app.dispatch(file_tree::request_delete()).unwrap();
         app.request_focus(AppFocus::file_tree(FileTreeFocus::ConfirmDelete));
         app.request_focus_from_shell(AppFocus::file_tree(FileTreeFocus::Navigate));
         assert_eq!(
@@ -1116,6 +1119,8 @@ mod tests {
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::FileTreeConfirmDelete]);
 
+        // enter 提交后栈已被 commit 清空；再 esc 必须重新经 request_delete() 才有 token。
+        let _ = app.dispatch(file_tree::request_delete()).unwrap();
         app.request_focus(AppFocus::file_tree(FileTreeFocus::Navigate));
         assert_eq!(
             app.focus().current(),
@@ -1142,7 +1147,7 @@ mod tests {
     fn language_server_status_command_should_emit_open_surface_window_action() {
         let mut app = App::new();
 
-        let actions = app.dispatch(language_servers::open_status()).unwrap();
+        let actions = app.dispatch(language_servers::open()).unwrap();
 
         assert_eq!(actions, vec![HostEffect::ShowLanguageServers]);
     }
@@ -1163,7 +1168,10 @@ mod tests {
 
     #[test]
     fn settings_escape_should_dispatch_settings_dismiss_command() {
+        // Esc 现在走 system.dismiss_top —— 必须先经 settings::open()
+        // push 一条 dismiss token，否则栈空 esc 静默。
         let mut app = App::new();
+        let _ = app.dispatch(settings::open()).unwrap();
         app.request_focus(AppFocus::settings());
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
@@ -1175,6 +1183,7 @@ mod tests {
     #[test]
     fn language_servers_escape_should_dispatch_dismiss_command() {
         let mut app = App::new();
+        let _ = app.dispatch(language_servers::open()).unwrap();
         app.request_focus(AppFocus::language_servers());
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
@@ -1185,8 +1194,15 @@ mod tests {
 
     #[test]
     fn project_picker_escape_should_dispatch_project_picker_dismiss_command() {
+        // Esc 不再静态绑到 DISMISS；现在它走 DISMISS_TOP，先弹 DismissScope::ProjectPicker 的栈顶。
+        // 因此真正的取消能力依赖于 SHOW_PROJECTS_PICKER 在打开 picker 时 push 一条
+        // dismiss token；没 push（host 走非命令路径直接打开 picker）esc 就静默。
         let mut app = App::new();
         let _picker = install_project_picker(&mut app);
+        // 走命令路径打开 picker：SHOW_PROJECTS_PICKER push token + emit ShowProjectPicker。
+        let _ = app
+            .dispatch(project_picker_commands::show_projects_picker())
+            .unwrap();
         app.request_focus(AppFocus::project_picker());
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();

@@ -6,8 +6,8 @@
 use zom_command::commands;
 use zom_command::{
     ClipboardPort, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId,
-    CommandQueue, CommandRegistry, EffectQueue, HostEffect, KeyChord, KeyContext, Keymap,
-    KeymapResolution, MockClipboard,
+    CommandQueue, CommandRegistry, DismissStacks, EffectQueue, HostEffect, KeyChord, KeyContext,
+    Keymap, KeymapResolution, MockClipboard,
 };
 
 use crate::workspace_session::WorkspaceSession;
@@ -18,6 +18,7 @@ pub(super) struct CommandRuntime {
     executor: CommandExecutor,
     queue: CommandQueue,
     clipboard: Box<dyn ClipboardPort>,
+    dismiss: DismissStacks,
 }
 
 impl CommandRuntime {
@@ -31,6 +32,7 @@ impl CommandRuntime {
             executor: CommandExecutor::new(),
             queue: CommandQueue::new(),
             clipboard: Box::new(MockClipboard::new()),
+            dismiss: DismissStacks::new(),
         }
     }
 
@@ -67,6 +69,7 @@ impl CommandRuntime {
             queue: &mut self.queue,
             effects: &mut effects,
             clipboard: &mut *self.clipboard,
+            dismiss: &mut self.dismiss,
         };
         let result = self.executor.run(&self.registry, &mut context);
         let focused_field_changed = match (context.focused_field.as_ref(), field_version_before) {

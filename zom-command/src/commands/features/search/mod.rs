@@ -15,9 +15,9 @@ pub mod project;
 // 兼容旧引用路径：`search::ACTIVATE` / `search::activate()` 等仍然可用。
 // 子模块拆分对外是无感的，下游 import `search::*` 不需要改。
 pub use file::{
-    ACTIVATE, CONFIRM_MATCH, FIND_NEXT, FIND_PREVIOUS, FOCUS_EDITOR, FOCUS_NEXT_FIELD,
+    ACTIVATE, CONFIRM_MATCH, DISMISS, FIND_NEXT, FIND_PREVIOUS, FOCUS_NEXT_FIELD,
     FOCUS_PREVIOUS_FIELD, REPLACE_ALL, REPLACE_NEXT, TOGGLE_CASE_SENSITIVE, TOGGLE_REGEX,
-    TOGGLE_WHOLE_WORD, activate, confirm_match, find_next, find_previous, focus_editor,
+    TOGGLE_WHOLE_WORD, activate, confirm_match, dismiss, find_next, find_previous,
     focus_next_field, focus_previous_field, replace_all, replace_next, toggle_case_sensitive,
     toggle_regex, toggle_whole_word,
 };

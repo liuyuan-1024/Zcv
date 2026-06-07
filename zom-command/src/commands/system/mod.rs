@@ -4,8 +4,10 @@
 
 use crate::{CommandRegistry, Keymap};
 
+pub mod dismiss;
 pub mod window;
 
 pub fn install_all(registry: &mut CommandRegistry, keymap: &mut Keymap) {
+    dismiss::install(registry, keymap);
     window::install(registry, keymap);
 }

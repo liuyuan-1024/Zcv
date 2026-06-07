@@ -2,15 +2,18 @@
 //!
 //! 由 `mod-f` 唤起编辑器上方的内联 bar：query / replacement 双输入框 + 命中高亮 + 上下导航。
 //! 算法层落在 `WorkspaceBuffer::BufferSearch`，命令侧只 emit `HostEffect`，宿主翻译。
+//!
+//! 打开当前文件的内联搜索栏并聚焦 query 输入框。已开则只搬焦点（幂等）。
+//! 同时往 [`DismissScope::SearchInput`] push 一条 dismiss token。
+//! esc 走系统级 [`crate::commands::system::dismiss::DISMISS_TOP`] 弹出后重新派发 [`DISMISS`]。
 
 use crate::commands::emit;
+use crate::commands::system::dismiss as dismiss_top;
 use crate::{
-    CommandArgs, CommandId, CommandRegistry, HostEffect, Invocation, KeyBindingContext, Keymap,
-    SearchOption,
+    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
+    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SearchOption,
 };
 
-/// 打开当前文件的内联搜索栏并聚焦 query 输入框。已开则只搬焦点（幂等）。
-/// 收起走 `escape`（[`FOCUS_EDITOR`]），不在本命令里复用。
 pub const ACTIVATE: &str = "search.activate";
 pub const TOGGLE_CASE_SENSITIVE: &str = "search.toggle_case_sensitive";
 pub const TOGGLE_WHOLE_WORD: &str = "search.toggle_whole_word";
@@ -21,9 +24,9 @@ pub const REPLACE_NEXT: &str = "search.replace_next";
 pub const REPLACE_ALL: &str = "search.replace_all";
 pub const FOCUS_NEXT_FIELD: &str = "search.focus_next_field";
 pub const FOCUS_PREVIOUS_FIELD: &str = "search.focus_previous_field";
-/// Esc 路径：把光标折叠到当前命中末尾，再收起 bar 并把焦点交回编辑器。
-pub const FOCUS_EDITOR: &str = "search.focus_editor";
-/// Enter 路径：把光标折叠到当前命中末尾、焦点回编辑器；**bar 保留**。
+/// Esc 路径：收起搜索栏，焦点交还给上一个焦点位置。
+pub const DISMISS: &str = "search.dismiss";
+/// Enter 路径：把光标折叠到当前命中末尾、焦点回编辑器；**搜索栏保留**。
 /// 想再改 query，从编辑器按 mod-f 即可回到 query 输入框。
 pub const CONFIRM_MATCH: &str = "search.confirm_match";
 
@@ -67,8 +70,8 @@ pub fn focus_previous_field() -> Invocation {
     no_args(FOCUS_PREVIOUS_FIELD)
 }
 
-pub fn focus_editor() -> Invocation {
-    no_args(FOCUS_EDITOR)
+pub fn dismiss() -> Invocation {
+    no_args(DISMISS)
 }
 
 pub fn confirm_match() -> Invocation {
@@ -80,8 +83,8 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     let search_input = KeyBindingContext::search_input();
 
     registry
-        .install(keymap, ACTIVATE, "查找", emit(HostEffect::SearchActivate))
-        .description("打开当前文件的内联搜索栏并聚焦 query。收起请按 Esc。")
+        .install(keymap, ACTIVATE, "查找", Box::new(run_activate))
+        .description("打开当前文件的内联搜索栏并聚焦搜索框。")
         .key_in("mod-f", text_edit);
     registry
         .install(
@@ -155,24 +158,51 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             emit(HostEffect::SearchFocusPreviousField),
         )
         .key_in("shift-tab", search_input);
-    registry
-        .install(
-            keymap,
-            FOCUS_EDITOR,
-            "退出搜索",
-            emit(HostEffect::SearchFocusEditor),
-        )
-        .description("取消搜索栏，把光标折叠到当前命中末尾。")
-        .key_in("escape", search_input);
+    registry.install(keymap, DISMISS, "退出搜索", Box::new(run_dismiss));
     registry
         .install(
             keymap,
             CONFIRM_MATCH,
             "跳转到匹配末尾",
-            emit(HostEffect::SearchConfirmMatch),
+            Box::new(run_confirm_match),
         )
         .description("把光标折叠到当前命中末尾")
         .key_in("enter", search_input);
+
+    dismiss_top::bind_esc(keymap, DismissScope::SearchInput, search_input);
+}
+
+fn run_activate(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::SearchInput);
+    context
+        .dismiss
+        .push(DismissScope::SearchInput, "退出搜索", dismiss());
+    context.effects.push(HostEffect::SearchActivate);
+    Ok(CommandOutcome::default())
+}
+
+fn run_dismiss(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::SearchInput);
+    context.effects.push(HostEffect::SearchDismiss);
+    Ok(CommandOutcome::default())
+}
+
+fn run_confirm_match(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::SearchInput);
+    context.effects.push(HostEffect::SearchConfirmMatch);
+    Ok(CommandOutcome::default())
 }
 
 fn no_args(command_id: &'static str) -> Invocation {

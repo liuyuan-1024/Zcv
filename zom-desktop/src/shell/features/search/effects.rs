@@ -31,16 +31,12 @@ pub(crate) fn try_apply_effect(
         HostEffect::SearchFocusPreviousField => {
             focus_search_field(app, focus, FocusDirection::Previous, window);
         }
-        HostEffect::SearchFocusEditor => {
-            // Esc 路径：先把光标折叠到命中末尾，再收起 bar、焦点回编辑器。
-            // close_bar 里的 Closed 会清掉高亮，但 selection 已经在前一步定下来。
+        HostEffect::SearchDismiss => {
             app.borrow_mut()
                 .apply_search_action(SearchAction::ConfirmMatch);
             close_bar(app, focus, window);
         }
         HostEffect::SearchConfirmMatch => {
-            // Enter 路径：光标折叠到命中末尾，焦点回编辑器；**bar 保留**。
-            // 想继续改 query，用户从编辑器按 mod-f 即可回到输入框。
             app.borrow_mut()
                 .apply_search_action(SearchAction::ConfirmMatch);
             request_focus(app, focus, AppFocus::editor(), window);
@@ -76,7 +72,7 @@ pub(crate) fn try_apply_effect(
 }
 
 /// `mod-f`：打开 bar 并把焦点送到 query。已开则只搬焦点（幂等）。
-/// 收起由 Esc（[`HostEffect::SearchFocusEditor`]）显式触发，不在本函数里走切换。
+/// 收起由 Esc（[`HostEffect::SearchDismiss`]）显式触发，不在本函数里走切换。
 ///
 /// 当前只有单文件搜索（per-buffer），没有 scope 维度；跨文件搜索是
 /// `search.project_activate`，独立路径。
@@ -90,7 +86,10 @@ fn activate_search(app: &Rc<RefCell<App>>, focus: &FocusProjection, window: &mut
 
 fn close_bar(app: &Rc<RefCell<App>>, focus: &FocusProjection, window: &mut Window) {
     app.borrow_mut().apply_search_action(SearchAction::Closed);
-    request_focus(app, focus, AppFocus::editor(), window);
+    // 回上一个焦点（通常是编辑器，但如果搜索从别处被唤起也尊重那条路径），
+    // 与 project picker dismiss 走的是同一套 restore_previous_focus 语义。
+    let previous = app.borrow_mut().restore_previous_focus();
+    focus.apply(previous, window);
     window.refresh();
 }
 

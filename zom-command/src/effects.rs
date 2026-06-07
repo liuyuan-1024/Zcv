@@ -105,7 +105,7 @@ pub enum HostEffect {
 
     // ===== Search =====
     /// 打开搜索栏并把焦点送到查询输入框。已开则只搬焦点（幂等）。
-    /// 收起走 [`SearchFocusEditor`]（Esc 路径），不在本变体里复用。
+    /// 收起走 [`SearchDismiss`]（Esc 路径），不在本变体里复用。
     ///
     /// 第一版只有单文件搜索（per-buffer），不带 scope。
     /// 跨文件搜索后续作为独立 workspace 服务再加，
@@ -125,10 +125,10 @@ pub enum HostEffect {
     SearchFocusNextField,
     /// 把搜索面板焦点移动到上一个输入框。
     SearchFocusPreviousField,
-    /// 退出搜索（Esc 路径）：把光标折叠到当前命中末尾，再收起 bar、焦点回编辑器。
-    SearchFocusEditor,
+    /// 退出搜索（Esc 路径）：把光标折叠到当前命中末尾，再收起搜索框；
+    SearchDismiss,
     /// 确认当前命中（Enter 路径）：把光标折叠到当前匹配末尾，并把焦点交回编辑器。
-    /// **bar 不收** —— query / 命中高亮都保留；从编辑器按 mod-f 即可回到 query 输入框继续改。
+    /// **搜索框不收** —— query / 命中高亮都保留；从编辑器按 mod-f 即可回到 query 输入框继续改。
     SearchConfirmMatch,
 
     // ===== Editor 视图设置 =====

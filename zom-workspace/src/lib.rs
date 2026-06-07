@@ -429,8 +429,8 @@ impl WorkspaceBuffer {
         &mut self.search
     }
 
-    /// 语法高亮 layer 的只读视图。渲染端阶段 3 按 [`syntax::syntax_layer_kind`]
-    /// 取本 layer。
+    /// 语法高亮 layer 的只读视图。
+    /// 渲染端阶段 3 按 [`syntax::syntax_confirmed_layer_kind`] 取本 layer。
     pub fn highlight_layers(&self) -> &MetadataLayers<HighlightSpan> {
         self.document.highlight_layers()
     }
@@ -451,14 +451,16 @@ impl WorkspaceBuffer {
     /// 当前调用点：`zom-command` 在派发结束后统一调一次活动缓冲区的 `pump_post_edit`。
     ///
     /// DeltaEvent 单一消费方契约：本方法负责一次 drain；BufferSearch 与语法高亮 provider 各自从 ChangeSet 引用消费，**不**重新调`take_pending_events`。
-    pub fn pump_post_edit(&mut self) -> WorkspaceResult<()> {
+    pub fn pump_post_edit(&mut self) -> WorkspaceResult<bool> {
         let events = self.document.buffer_mut().take_pending_events();
+        let had_events = !events.is_empty();
         for event in &events {
             self.search.apply_delta(event)?;
         }
-        // 同步把高亮 layer 沿编辑平移到新版本（手册 §五）——layer remap + provider 通知都收口在 SyntaxDocument::apply_pending_events 内部。
+        // 高亮调度收口在 SyntaxDocument::apply_pending_events：UI 线程只做轻量
+        // 版本推进 / worker 通知，不同步 remap 整个 syntax layer。
         self.document.apply_pending_events(&events);
-        Ok(())
+        Ok(had_events)
     }
 
     /// 把后台 worker 已就绪的高亮产物 drain 到 layers——由[`Workspace::pump_pending_highlights`] 每帧驱动。

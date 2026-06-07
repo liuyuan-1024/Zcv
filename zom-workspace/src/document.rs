@@ -122,7 +122,7 @@ impl SyntaxDocument {
     }
 
     /// 高亮 layer 只读视图——desktop 渲染端按
-    /// [`crate::syntax::syntax_layer_kind`] 取本 layer。
+    /// [`crate::syntax::syntax_confirmed_layer_kind`] 取本 layer。
     pub fn highlight_layers(&self) -> &MetadataLayers<HighlightSpan> {
         &self.highlight_layers
     }
@@ -152,17 +152,9 @@ impl SyntaxDocument {
         if events.is_empty() {
             return;
         }
-        for event in events {
-            self.highlight_layers.update_through_delta_event(event);
-        }
         if let Some(state) = self.syntax.as_mut() {
             for event in events {
-                state.handle_edit(
-                    &self.buffer,
-                    event.changeset(),
-                    event.new_version(),
-                    &mut self.highlight_layers,
-                );
+                state.handle_edit(&self.buffer, event, &mut self.highlight_layers);
             }
         }
     }
@@ -224,7 +216,7 @@ mod tests {
     use super::*;
     use crate::syntax::{
         BufferHandle, HighlightName, HighlightProvider, HighlightSink, LanguageDetector,
-        syntax_layer_kind,
+        syntax_confirmed_layer_kind,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -283,7 +275,7 @@ mod tests {
         assert_eq!(attached.load(Ordering::SeqCst), 1);
         assert!(
             doc.highlight_layers()
-                .layer(&syntax_layer_kind())
+                .layer(&syntax_confirmed_layer_kind())
                 .unwrap()
                 .len()
                 > 0
@@ -300,7 +292,7 @@ mod tests {
         doc.pump_pending_highlights();
         assert!(
             doc.highlight_layers()
-                .layer(&syntax_layer_kind())
+                .layer(&syntax_confirmed_layer_kind())
                 .unwrap()
                 .len()
                 > 0
@@ -312,7 +304,7 @@ mod tests {
         // 语言不变，rust provider 仍在；这里只验证切换中不残留旧 span。
         assert!(
             doc.highlight_layers()
-                .layer(&syntax_layer_kind())
+                .layer(&syntax_confirmed_layer_kind())
                 .unwrap()
                 .len()
                 > 0

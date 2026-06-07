@@ -6,7 +6,7 @@ use zom_view::{ViewSet, VisualPosition, WrapMap};
 use zom_workspace::Workspace;
 
 use crate::clipboard::ClipboardPort;
-use crate::{CommandArgs, CommandError, CommandId, CommandRegistry, EffectQueue};
+use crate::{CommandArgs, CommandError, CommandId, CommandRegistry, DismissStacks, EffectQueue};
 
 /// 命令执行上下文。
 ///
@@ -27,6 +27,10 @@ pub struct CommandContext<'a> {
     /// engine 不持有剪贴板状态，宿主在派发前注入实现（GPUI 适配器或
     /// 测试用 `MockClipboard`）。
     pub clipboard: &'a mut dyn ClipboardPort,
+    /// 各上下文家族的 dismiss 栈：
+    /// esc 路径与"begin/cancel/commit"瞬态命令通过 [`DismissStacks::push`] / [`DismissStacks::pop_top`] / [`DismissStacks::remove`] 协调，
+    /// 避免在同一上下文里两个命令都静态绑 esc 造成冲突。详见 [`crate::dismiss`]。
+    pub dismiss: &'a mut DismissStacks,
 }
 
 /// 一次编辑命令作用的目标：文本缓冲 + 选区。
@@ -146,15 +150,22 @@ impl CommandExecutor {
         registry: &CommandRegistry,
         context: &mut CommandContext<'_>,
     ) -> Result<(), CommandError> {
-        while let Some((id, args)) = context.queue.pop() {
-            let handler = registry
-                .handler(&id)
-                .ok_or_else(|| CommandError::UnknownCommand(id.clone()))?;
-            handler(context, args)?;
-        }
-
-        Ok(())
+        // 排空 queue，所有 handler 跑完后无论成败都对齐一次 dismiss 栈
+        // —— handler 报错时把 `?` 早返之前的 reconcile 兜底。
+        let result = drain(registry, context);
+        crate::commands::reconcile::after_dispatch(context);
+        result
     }
+}
+
+fn drain(registry: &CommandRegistry, context: &mut CommandContext<'_>) -> Result<(), CommandError> {
+    while let Some((id, args)) = context.queue.pop() {
+        let handler = registry
+            .handler(&id)
+            .ok_or_else(|| CommandError::UnknownCommand(id.clone()))?;
+        handler(context, args)?;
+    }
+    Ok(())
 }
 
 /// 取活动视图指向的 buffer id。

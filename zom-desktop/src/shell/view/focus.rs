@@ -14,6 +14,7 @@ use gpui::{FocusHandle, Window};
 use crate::focus::{AppFocus, FileTreeFocus, SearchField};
 use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
+use crate::shell::features::search::SearchRuntime;
 use crate::ui_id::PanelId;
 
 /// `AppFocus <-> FocusHandle` 的 shell-only 投影表。
@@ -67,7 +68,6 @@ impl FocusProjection {
 pub(crate) fn panel_default_focus(panel: PanelId) -> AppFocus {
     match panel {
         PanelId::FileTree => AppFocus::file_tree(FileTreeFocus::Navigate),
-        PanelId::Search => AppFocus::search(SearchField::Query),
         other => AppFocus::panel(other),
     }
 }
@@ -76,6 +76,7 @@ pub(crate) fn projection_from_runtimes(
     editor: FocusHandle,
     panel_runtimes: &PanelRuntimes,
     file_tree: &FileTreeRuntime,
+    search: &SearchRuntime,
     project_picker: FocusHandle,
     settings: Option<FocusHandle>,
     language_servers: FocusHandle,
@@ -87,11 +88,11 @@ pub(crate) fn projection_from_runtimes(
         AppFocus::file_tree(FileTreeFocus::Navigate),
     );
     projection.register(
-        panel_runtimes.search_query_focus_handle(),
+        search.query_focus_handle(),
         AppFocus::search(SearchField::Query),
     );
     projection.register(
-        panel_runtimes.search_replacement_focus_handle(),
+        search.replacement_focus_handle(),
         AppFocus::search(SearchField::Replacement),
     );
     projection.register(project_picker, AppFocus::project_picker());

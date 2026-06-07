@@ -12,13 +12,17 @@ use crate::workspace_session::WorkspaceSession;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SearchAction {
-    PanelOpened,
-    PanelClosed,
+    /// 搜索栏刚被打开 —— 立刻把 query 推进活动 buffer 的 BufferSearch 并 reveal 首条命中。
+    Opened,
+    /// 搜索栏关闭 —— 清掉活动 buffer 的命中高亮，标记 open=false 阻止后续 sync 复活。
+    Closed,
     ToggleOption(SearchOption),
     FindPrevious,
     FindNext,
     ReplaceNext,
     ReplaceAll,
+    /// 把活动 view 的光标折叠到当前命中末尾。
+    ConfirmMatch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -16,7 +16,10 @@ pub mod providers;
 pub use coordinator::{BufferSyntaxState, MAX_HIGHLIGHT_BYTES};
 pub use engine::SyntaxEngine;
 pub use language::{LanguageDetector, LanguageId, LanguageRegistry, ProviderFactory};
-pub use payload::{HighlightName, HighlightSpan, TokenModifiers, syntax_layer_kind};
+pub use payload::{
+    HighlightName, HighlightSpan, TokenModifiers, syntax_confirmed_layer_kind,
+    syntax_provisional_layer_kind,
+};
 pub use provider::{BufferHandle, HighlightProvider};
 pub use providers::install_builtin_providers;
 pub use sink::{HighlightSink, SinkMessage};

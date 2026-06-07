@@ -17,7 +17,7 @@ pub(crate) use surface::{LanguageServersRuntime, request};
 /// 底栏语言服务器入口的稳定入口 id。
 pub(crate) const INVOKER_ID: &str = "bottom-bar.language_server";
 
-const COMMAND: &str = language_servers::OPEN_STATUS;
+const COMMAND: &str = language_servers::OPEN;
 
 pub(crate) fn entry(
     connected: bool,

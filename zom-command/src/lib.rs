@@ -7,21 +7,16 @@
 //!
 //! ## 模块划分
 //!
-//! 下列模块均私有（`mod`），其类型在 crate 根经 `pub use` 重导出 ——
-//! 对外只有 `zom_command::CommandId` 一条路径，不暴露内部模块名。
-//! - `core`：命令基础类型 —— `CommandId / CommandArgs / NoArgs / Command /
-//!   Invocation`。
-//! - `registry`：开放注册表 `CommandRegistry / CommandHandler` 与链式
-//!   `CommandBuilder`。
-//! - `executor`：执行上下文与队列 —— `CommandContext / EditTarget /
-//!   CommandQueue / CommandExecutor`。
+//! 下列模块均私有（`mod`），其类型在 crate 根经 `pub use` 重导出 —— 对外只有 `zom_command::CommandId` 一条路径，不暴露内部模块名。
+//! - `core`：命令基础类型 —— `CommandId / CommandArgs / NoArgs / Command / Invocation`。
+//! - `registry`：开放注册表 `CommandRegistry / CommandHandler` 与链式 `CommandBuilder`。
+//! - `executor`：执行上下文与队列 —— `CommandContext / EditTarget / CommandQueue / CommandExecutor`。
 //! - `keymap`：键位模型 —— `KeyChord / KeyBinding / Keymap / KeyContext`。
 //! - `error`：统一错误 `CommandError`。
 //!
 //! 以下模块对外公开：
 //! - [`effects`] / [`keymap_format`]：宿主副作用队列、快捷键平台投影。
-//! - [`commands`]：按域分组的「命令目录」。每个域一个子模块，**同处**声明：常量 id、typed args、typed builders、handler、默认键位 ——
-//!   域专属的键位上下文类型（如 `TextEditKeyContext`、`FileTreeKeyContext`）也内聚在对应域模块里。
+//! - [`commands`]：按域分组的「命令目录」。每个域一个子模块，**同处**声明：常量 id、typed args、typed builders、handler、默认键位 —— 域专属的键位上下文类型（如 `TextEditKeyContext`、`FileTreeKeyContext`）也内聚在对应域模块里。
 //!   本文件只做模块编排与重导出，不直接持有任何具体定义。
 
 pub mod commands;
@@ -30,6 +25,7 @@ pub mod keymap_format;
 
 mod clipboard;
 mod core;
+mod dismiss;
 mod error;
 mod executor;
 mod keymap;
@@ -40,6 +36,7 @@ pub use commands::editor::{CompositionBinding, TextEditBindingContext, TextEditK
 pub use commands::file_tree::{FileTreeBindingContext, FileTreeKeyContext, FileTreeKeyMode};
 pub use commands::project_picker::{ProjectPickerBindingContext, ProjectPickerKeyContext};
 pub use core::{Command, CommandArgs, CommandCatalogItem, CommandId, Invocation, NoArgs};
+pub use dismiss::{DismissScope, DismissStacks, DismissTokenId};
 pub use effects::{BubbleKind, BubbleRequest, EffectQueue, HostEffect, SearchOption};
 pub use error::CommandError;
 pub use executor::{CommandContext, CommandExecutor, CommandOutcome, CommandQueue, EditTarget};

@@ -1,4 +1,4 @@
-//! 搜索面板 HostEffect 落地。
+//! 搜索 HostEffect 落地。
 //!
 //! view 层把 HostEffect 流过来，本模块只认 `Search*` 这批变体；其余一律
 //! 返回 `false`，让 view 转给下一个 feature 试。
@@ -14,19 +14,16 @@ use crate::focus::{AppFocus, SearchField};
 use crate::ports::SearchAction;
 use crate::shell::view::actions::request_focus;
 use crate::shell::view::focus::FocusProjection;
-use crate::shell::workbench::controller::WorkbenchController;
-use crate::ui_id::PanelId;
 
 pub(crate) fn try_apply_effect(
     effect: &HostEffect,
     app: &Rc<RefCell<App>>,
-    workbench: &Rc<RefCell<WorkbenchController>>,
     focus: &FocusProjection,
     window: &mut Window,
 ) -> bool {
     match effect {
         HostEffect::SearchActivate => {
-            activate_search(app, workbench, focus, window);
+            activate_search(app, focus, window);
         }
         HostEffect::SearchFocusNextField => {
             focus_search_field(app, focus, FocusDirection::Next, window);
@@ -34,8 +31,16 @@ pub(crate) fn try_apply_effect(
         HostEffect::SearchFocusPreviousField => {
             focus_search_field(app, focus, FocusDirection::Previous, window);
         }
-        HostEffect::SearchFocusEditor => {
+        HostEffect::SearchDismiss => {
+            app.borrow_mut()
+                .apply_search_action(SearchAction::ConfirmMatch);
+            close_bar(app, focus, window);
+        }
+        HostEffect::SearchConfirmMatch => {
+            app.borrow_mut()
+                .apply_search_action(SearchAction::ConfirmMatch);
             request_focus(app, focus, AppFocus::editor(), window);
+            window.refresh();
         }
         HostEffect::SearchToggleOption(option) => {
             app.borrow_mut()
@@ -66,49 +71,25 @@ pub(crate) fn try_apply_effect(
     true
 }
 
-/// `mod-f` 行为矩阵：
+/// `mod-f`：打开 bar 并把焦点送到 query。已开则只搬焦点（幂等）。
+/// 收起由 Esc（[`HostEffect::SearchDismiss`]）显式触发，不在本函数里走切换。
 ///
-/// | 可见 | 焦点在面板 | 行为 |
-/// |---|---|---|
-/// | 否 | * | 显示 + 聚焦 query |
-/// | 是 | 在 | 隐藏，焦点回编辑器 |
-/// | 是 | 不在 | 把焦点搬到面板 |
-///
-/// 当前只有单文件搜索（per-buffer），没有 scope 维度；跨文件搜索作为
-/// 独立 workspace 服务再加，会引入各自的命令与 effect，不复用本路径。
-fn activate_search(
-    app: &Rc<RefCell<App>>,
-    workbench: &Rc<RefCell<WorkbenchController>>,
-    focus: &FocusProjection,
-    window: &mut Window,
-) {
-    let panel = PanelId::Search;
-    let visible = workbench.borrow().is_panel_active(panel);
+/// 当前只有单文件搜索（per-buffer），没有 scope 维度；跨文件搜索是
+/// `search.project_activate`，独立路径。
+fn activate_search(app: &Rc<RefCell<App>>, focus: &FocusProjection, window: &mut Window) {
+    // Opened 是幂等的：set_open(true) no-op；sync 在 query/options 没变时
+    // 返回 Idle、不动光标。所以即便 bar 已开也无脑发一次，省一次 is_open 读。
+    app.borrow_mut().apply_search_action(SearchAction::Opened);
+    request_focus(app, focus, AppFocus::search(SearchField::Query), window);
+    window.refresh();
+}
 
-    if !visible {
-        // 隐藏 → 显示 + 聚焦
-        workbench.borrow_mut().show_panel(panel);
-        app.borrow_mut()
-            .apply_search_action(SearchAction::PanelOpened);
-        request_focus(app, focus, AppFocus::search(SearchField::Query), window);
-        window.refresh();
-        return;
-    }
-
-    // 已显示：query / replacement 任一输入框聚焦都算"焦点在搜索面板"。
-    let focus_in_panel = focus.is_at_panel(panel, window);
-
-    if focus_in_panel {
-        // 已显示 + 焦点在面板 → 收起，焦点回编辑器。
-        // 同时清掉活动 buffer 的 search 高亮，标记 panel 关闭。
-        workbench.borrow_mut().hide_panel(panel);
-        app.borrow_mut()
-            .apply_search_action(SearchAction::PanelClosed);
-        request_focus(app, focus, AppFocus::editor(), window);
-    } else {
-        // 已显示 + 焦点不在 → 把焦点搬过去
-        request_focus(app, focus, AppFocus::search(SearchField::Query), window);
-    }
+fn close_bar(app: &Rc<RefCell<App>>, focus: &FocusProjection, window: &mut Window) {
+    app.borrow_mut().apply_search_action(SearchAction::Closed);
+    // 回上一个焦点（通常是编辑器，但如果搜索从别处被唤起也尊重那条路径），
+    // 与 project picker dismiss 走的是同一套 restore_previous_focus 语义。
+    let previous = app.borrow_mut().restore_previous_focus();
+    focus.apply(previous, window);
     window.refresh();
 }
 
@@ -124,11 +105,7 @@ fn focus_search_field(
     direction: FocusDirection,
     window: &mut Window,
 ) {
-    let current = app.borrow().focus().current();
-    let current_field = match current {
-        AppFocus::Panel(p) => p.as_search(),
-        _ => None,
-    };
+    let current_field = app.borrow().focus().current().as_search();
     let target = match (direction, current_field) {
         (FocusDirection::Next, Some(SearchField::Query)) => {
             AppFocus::search(SearchField::Replacement)

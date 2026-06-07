@@ -31,7 +31,7 @@ use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::{
     self, ConfirmDeleteHandlers, FileTreePanel, FileTreeState,
 };
-use crate::shell::features::panels::search::SearchState;
+use crate::shell::features::search::{SearchRuntime, SearchState};
 use crate::shell::{CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup};
 use crate::theme::{color, typography};
 
@@ -78,6 +78,7 @@ pub(crate) fn render(
     search_replacement_slot: Rc<TextEditorSlot>,
     editor_focus: FocusHandle,
     panel_runtimes: PanelRuntimes,
+    search_runtime: SearchRuntime,
     file_tree: FileTreePanel<'_>,
     editor_tab_scroll: ScrollHandle,
     confirm_delete: ConfirmDeleteHandlers,
@@ -113,6 +114,7 @@ pub(crate) fn render(
             search_replacement_slot,
             editor_focus,
             panel_runtimes,
+            search_runtime,
             file_tree,
             editor_tab_scroll,
             shortcut_lookup.clone(),
@@ -147,6 +149,7 @@ fn render_body(
     search_replacement_slot: Rc<TextEditorSlot>,
     editor_focus: FocusHandle,
     panel_runtimes: PanelRuntimes,
+    search_runtime: SearchRuntime,
     file_tree: FileTreePanel<'_>,
     editor_tab_scroll: ScrollHandle,
     shortcut_lookup: ShortcutLookup,
@@ -162,9 +165,6 @@ fn render_body(
     let panel_ctx = PanelContext {
         has_project: state.has_project,
         file_tree,
-        search_state: features.search,
-        search_query_slot: &search_query_slot,
-        search_replacement_slot: &search_replacement_slot,
         panel_runtimes: &panel_runtimes,
         key_request: &key_request_for_panels,
         shortcut_lookup: &shortcut_lookup,
@@ -181,6 +181,7 @@ fn render_body(
             Rc::clone(&dock_resize),
         ));
     }
+    let search_open = search_runtime.runtime_handle().is_open();
     row = row.child(editor_area::render(
         &state.bottom_dock,
         features.editor,
@@ -193,6 +194,11 @@ fn render_body(
         editor_tab_scroll,
         shortcut_lookup.clone(),
         Rc::clone(&command_title_lookup),
+        &search_runtime,
+        features.search,
+        search_query_slot,
+        search_replacement_slot,
+        search_open,
     ));
     if state.right_dock.is_visible() {
         row = row.child(docks::right::render(

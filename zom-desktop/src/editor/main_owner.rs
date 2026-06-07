@@ -4,7 +4,7 @@
 //! 让 [`crate::text_target::EditorRouter`] 能像对待小输入框一样统一路由主编辑区。
 
 use zom_command::{EditTarget, KeyContext};
-use zom_view::ViewSet;
+use zom_view::{ViewSet, ViewportState, WrapMap};
 use zom_workspace::Workspace;
 
 use crate::editor::highlight;
@@ -45,20 +45,39 @@ fn settle_active_view_y(workspace: &Workspace, views: &mut ViewSet) {
     let Some(buffer) = workspace.buffer(view.buffer()) else {
         return;
     };
-    let total_lines = buffer.buffer().line_count() as u64;
-    let selection_head_line = buffer
-        .buffer()
-        .byte_to_position(view.selection().primary().head())
-        .map(|pos| pos.line().get() as u64)
-        .unwrap_or(0);
-    let reveal_line = view.reveal().and_then(|req| {
-        buffer
-            .buffer()
-            .byte_to_position(req.byte)
-            .ok()
-            .map(|pos| pos.line().get() as u64)
-    });
-    view.settle_viewport_y(total_lines, selection_head_line, reveal_line);
+    let buf = buffer.buffer();
+    view.settle_viewport_y(buf, view.selection().primary().head());
+}
+
+/// 算出 snapshot 应当切出的逻辑行范围 `(start, len)`。
+///
+/// 算法：以视觉行坐标为准，在视口窗口的两侧各留 `visible_visual_rows` 行作为冗余（共 3 个视口高度），
+/// 再用 [`WrapMap::visual_row_to_line_subrow`] 把视觉行端点映回逻辑行。
+/// 这样软换行严重时（一条逻辑行覆盖远多于一个视口）也能保证视口顶 / 底所属的整条逻辑行都进得了 snapshot。
+///
+/// 无 `wrap_map` 时按逻辑行切片；测量完成后再用视觉行反查精确范围。
+fn compute_snapshot_logical_slice(vp: ViewportState, wrap_map: Option<&WrapMap>) -> (u64, u64) {
+    let visible = vp.visible_visual_rows.max(1);
+    let (slice_start_line, slice_end_line) = match wrap_map {
+        Some(wm) => {
+            let top = wm.visual_row_of(vp.top_line, vp.top_subrow as u32);
+            let head = top.saturating_sub(visible);
+            let tail = top.saturating_add(visible).saturating_add(visible);
+            let (start_line, _) = wm.visual_row_to_line_subrow(head);
+            let (end_line, _) = wm.visual_row_to_line_subrow(tail);
+            (start_line, end_line)
+        }
+        None => {
+            // 无 wrap_map：top_visual == top_line，逻辑行号即视觉行号。
+            let head = vp.top_line.saturating_sub(visible);
+            let tail = vp.top_line.saturating_add(visible).saturating_add(visible);
+            (head, tail)
+        }
+    };
+    let len = slice_end_line
+        .saturating_sub(slice_start_line)
+        .saturating_add(1);
+    (slice_start_line, len)
 }
 
 fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSnapshot {
@@ -71,9 +90,7 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
     let selection = view.selection().clone();
 
     let vp = view.viewport();
-    let visible_lines = vp.visible_logical_lines;
-    let slice_start = vp.top_line.saturating_sub(visible_lines);
-    let slice_len = visible_lines.saturating_mul(3);
+    let (slice_start, slice_len) = compute_snapshot_logical_slice(vp, view.wrap_map());
     let request = EditorSnapshotRequest::viewport(slice_start, slice_len);
     let mut snapshot = build_snapshot(buffer.buffer(), &selection, request);
     snapshot.top_line = vp.top_line;

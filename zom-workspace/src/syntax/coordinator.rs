@@ -26,12 +26,14 @@
 
 use std::sync::Arc;
 
-use zom_engine::{Buffer, BufferVersion, ChangeSet, MetadataLayers, TextRange};
+use zom_engine::{
+    Buffer, BufferVersion, ByteOffset, DeltaEvent, MetadataLayer, MetadataLayers, TextRange,
+};
 
 use crate::BufferId;
 
 use super::language::LanguageId;
-use super::payload::{HighlightSpan, syntax_layer_kind};
+use super::payload::{HighlightSpan, syntax_confirmed_layer_kind, syntax_provisional_layer_kind};
 use super::provider::HighlightProvider;
 use super::sink::{HighlightSink, SinkMessage};
 use super::worker::SyntaxWorkerHandle;
@@ -123,21 +125,27 @@ impl BufferSyntaxState {
 
     /// 编辑发生后调度入口。
     ///
-    /// 主线程消耗 = 克隆 Snapshot（rope Arc 共享）+ 克隆 ChangeSet（edits 在
-    /// `EditList` 内 `Arc<[Edit]>` 共享）+ 投一次 channel send。这条路径不再
-    /// 调 provider，所以**单字符按键的主线程时间与文件大小无关**。
+    /// 主线程消耗 = 克隆 Snapshot（rope Arc 共享）+ 克隆 ChangeSet（edits 在 `EditList` 内 `Arc<[Edit]>` 共享）+ 投一次 channel send。
+    /// 这条路径不再调 provider，所以**单字符按键的主线程时间与文件大小无关**。
     pub fn handle_edit(
         &self,
         buffer: &Buffer,
-        change: &ChangeSet,
-        new_version: BufferVersion,
-        _layers: &mut MetadataLayers<HighlightSpan>,
+        event: &DeltaEvent,
+        layers: &mut MetadataLayers<HighlightSpan>,
     ) {
+        let provisional = provisional_spans_for_edit(layers, event);
+        // 主线程同步推动高亮层坐标平移
+        // 这行代码会立刻遍历该 buffer 的现有高亮区间，按 Delta 偏移，
+        // 并将 syntax layer 的 version 原地提升到 event.new_version()。
+        // 渲染器这一帧去拿 snapshot 时，高亮已经无缝跟上了。
+        layers.update_through_delta_event(event);
+        install_provisional_spans(layers, event.new_version(), provisional);
+
         self.worker.edit(
             self.buffer_id,
-            change.clone(),
+            event.changeset().clone(),
             buffer.snapshot(),
-            new_version,
+            event.new_version(),
         );
     }
 
@@ -152,14 +160,18 @@ impl BufferSyntaxState {
     pub fn detach(self, layers: &mut MetadataLayers<HighlightSpan>) {
         self.sink.close();
         self.worker.detach(self.buffer_id);
-        let kind = syntax_layer_kind();
-        if let Some(existing) = layers.layer(&kind) {
-            let version = existing.version();
-            let _ = layers.replace_layer_ranges(
-                kind,
-                version,
-                std::iter::empty::<(zom_engine::TextRange, HighlightSpan)>(),
-            );
+        for kind in [
+            syntax_confirmed_layer_kind(),
+            syntax_provisional_layer_kind(),
+        ] {
+            if let Some(existing) = layers.layer(&kind) {
+                let version = existing.version();
+                let _ = layers.replace_layer_ranges(
+                    kind,
+                    version,
+                    std::iter::empty::<(zom_engine::TextRange, HighlightSpan)>(),
+                );
+            }
         }
     }
 
@@ -173,11 +185,10 @@ impl BufferSyntaxState {
     /// drain 出的消息序列里允许混杂 [`SinkMessage::ReplaceAll`] 与
     /// [`SinkMessage::ReplaceRange`]：
     ///
-    /// - 遇到一条 `ReplaceAll`：它直接重建整层 spans，之前累积的 `ReplaceAll` 与
+    /// - 遇到一条 `ReplaceAll`：它直接重建 confirmed 层 spans，之前累积的 `ReplaceAll` 与
     ///   `ReplaceRange` 都被它覆盖——清空累计；
-    /// - 累计期遇到 `ReplaceRange`：先 stash，等收集完所有消息后按 FIFO 顺序应用
-    ///   到 `MetadataLayers::replace_layer_ranges_in_range`（[改造方案 §3.6](
-    ///   ../../docs/语法高亮异步增量改造.md)）；
+    /// - 累计期遇到 `ReplaceRange`：先 stash，等收集完所有消息后按 FIFO 顺序应用到 `MetadataLayers::replace_layer_ranges_in_range`（[改造方案 §3.6](../../docs/语法高亮异步增量改造.md)）；
+    /// - 正式产物落地时同步清理 provisional 层：`ReplaceAll` 清空整层，`ReplaceRange` 清掉同 byte range 内的临时 spans。
     ///
     /// 每条消息都独立做版本守护（手册 §五）：
     /// - == buffer.version → 落 layer；
@@ -215,27 +226,221 @@ impl BufferSyntaxState {
             }
         }
 
-        let kind = syntax_layer_kind();
+        let kind = syntax_confirmed_layer_kind();
         if let Some((version, spans)) = anchor {
             if !version_landed(version, current_version) {
                 return;
             }
             let _ = layers.replace_layer_ranges(kind.clone(), version, spans);
+            clear_all_provisional_spans(layers, version);
         }
         for (version, byte_range, spans) in ranges {
             if !version_landed(version, current_version) {
                 continue;
             }
             let _ = layers.replace_layer_ranges_in_range(kind.clone(), version, byte_range, spans);
+            clear_provisional_spans_in_range(layers, version, byte_range);
         }
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ProvisionalSpan {
+    range: TextRange,
+    span: HighlightSpan,
+}
+
+fn provisional_spans_for_edit(
+    layers: &MetadataLayers<HighlightSpan>,
+    event: &DeltaEvent,
+) -> Vec<ProvisionalSpan> {
+    let mut out = Vec::new();
+    let mut shift: isize = 0;
+
+    for edit in event.changeset().edits() {
+        let old_range = edit.range();
+        let replacement_len = edit.replacement().len();
+        let span = infer_highlight_for_edit(layers, old_range);
+
+        let start = old_range.start().get();
+        let shifted_start = start as isize + shift;
+        if replacement_len > 0
+            && shifted_start >= 0
+            && let Some(span) = span
+            && let Some(new_end) = (shifted_start as usize).checked_add(replacement_len)
+            && let Ok(range) = TextRange::new(
+                ByteOffset::new(shifted_start as usize),
+                ByteOffset::new(new_end),
+            )
+        {
+            out.push(ProvisionalSpan { range, span });
+        }
+
+        shift += replacement_len as isize - old_range.len() as isize;
+    }
+
+    out
+}
+
+fn infer_highlight_for_edit(
+    layers: &MetadataLayers<HighlightSpan>,
+    old_range: TextRange,
+) -> Option<HighlightSpan> {
+    for kind in [
+        syntax_provisional_layer_kind(),
+        syntax_confirmed_layer_kind(),
+    ] {
+        let Some(layer) = layers.layer(&kind) else {
+            continue;
+        };
+        if let Some(span) = infer_highlight_from_layer(layer, old_range) {
+            return Some(span);
+        }
+    }
+    None
+}
+
+fn infer_highlight_from_layer(
+    layer: &MetadataLayer<HighlightSpan>,
+    old_range: TextRange,
+) -> Option<HighlightSpan> {
+    if !old_range.is_empty() {
+        return layer
+            .as_slice()
+            .iter()
+            .filter_map(|entry| {
+                let overlap = overlap_len(entry.range(), old_range)?;
+                Some((overlap, *entry.metadata()))
+            })
+            .max_by_key(|(overlap, _)| *overlap)
+            .map(|(_, span)| span)
+            .or_else(|| infer_highlight_at_offset(layer, old_range.start()));
+    }
+
+    infer_highlight_at_offset(layer, old_range.start())
+}
+
+fn infer_highlight_at_offset(
+    layer: &MetadataLayer<HighlightSpan>,
+    offset: ByteOffset,
+) -> Option<HighlightSpan> {
+    if let Some(span) = layer
+        .as_slice()
+        .iter()
+        .find(|entry| entry.range().contains(offset))
+        .map(|entry| *entry.metadata())
+    {
+        return Some(span);
+    }
+
+    if let Some(left) = offset.get().checked_sub(1).map(ByteOffset::new)
+        && let Some(span) = layer
+            .as_slice()
+            .iter()
+            .find(|entry| entry.range().contains(left))
+            .map(|entry| *entry.metadata())
+    {
+        return Some(span);
+    }
+
+    layer
+        .as_slice()
+        .iter()
+        .find(|entry| entry.range().end() == offset)
+        .map(|entry| *entry.metadata())
+        .or_else(|| {
+            layer
+                .as_slice()
+                .iter()
+                .find(|entry| entry.range().start() == offset)
+                .map(|entry| *entry.metadata())
+        })
+}
+
+fn overlap_len(a: TextRange, b: TextRange) -> Option<usize> {
+    let start = a.start().max(b.start());
+    let end = a.end().min(b.end());
+    if start < end {
+        Some(end.get() - start.get())
+    } else {
+        None
+    }
+}
+
+fn install_provisional_spans(
+    layers: &mut MetadataLayers<HighlightSpan>,
+    version: BufferVersion,
+    provisional: Vec<ProvisionalSpan>,
+) {
+    for ProvisionalSpan { range, span } in provisional {
+        if range.is_empty() || syntax_range_is_covered(layers, range) {
+            continue;
+        }
+
+        let kind = syntax_provisional_layer_kind();
+        if layers
+            .replace_layer_ranges_in_range(kind.clone(), version, range, vec![(range, span)])
+            .is_err()
+        {
+            let _ = layers.replace_layer_ranges(
+                kind.clone(),
+                version,
+                std::iter::empty::<(TextRange, HighlightSpan)>(),
+            );
+            let _ = layers.replace_layer_ranges_in_range(kind, version, range, vec![(range, span)]);
+        }
+    }
+}
+
+fn clear_all_provisional_spans(layers: &mut MetadataLayers<HighlightSpan>, version: BufferVersion) {
+    let kind = syntax_provisional_layer_kind();
+    if layers.layer(&kind).is_some() {
+        let _ = layers.replace_layer_ranges(
+            kind,
+            version,
+            std::iter::empty::<(TextRange, HighlightSpan)>(),
+        );
+    }
+}
+
+fn clear_provisional_spans_in_range(
+    layers: &mut MetadataLayers<HighlightSpan>,
+    version: BufferVersion,
+    range: TextRange,
+) {
+    let kind = syntax_provisional_layer_kind();
+    if layers.layer(&kind).is_some() {
+        let _ = layers.replace_layer_ranges_in_range(
+            kind,
+            version,
+            range,
+            std::iter::empty::<(TextRange, HighlightSpan)>(),
+        );
+    }
+}
+
+fn syntax_range_is_covered(layers: &MetadataLayers<HighlightSpan>, range: TextRange) -> bool {
+    for kind in [
+        syntax_provisional_layer_kind(),
+        syntax_confirmed_layer_kind(),
+    ] {
+        let Some(layer) = layers.layer(&kind) else {
+            continue;
+        };
+        if layer.as_slice().iter().any(|entry| {
+            entry.range().start() <= range.start() && entry.range().end() >= range.end()
+        }) {
+            return true;
+        }
+    }
+    false
+}
+
 /// 版本守护：` == ` 落 layer；` < ` 过期丢弃；` > ` debug_assert 后丢弃。
 ///
-/// `>` 情况返回 `false`——调用方在 anchor 路径上视为整条 batch 中断，因为下面
-/// 任何 ReplaceRange 都会基于这个「未来版本」产生不一致；ReplaceRange 路径上则
-/// 仅丢单条，继续处理后续同 batch 的 ReplaceRange——它们独立做版本判定。
+/// `>` 情况返回 `false`——调用方在 anchor 路径上视为整条 batch 中断，
+/// 因为下面任何 ReplaceRange 都会基于这个「未来版本」产生不一致；
+/// ReplaceRange 路径上则仅丢单条，继续处理后续同 batch 的 ReplaceRange——它们独立做版本判定。
 fn version_landed(msg_version: BufferVersion, current_version: BufferVersion) -> bool {
     if msg_version.get() > current_version.get() {
         debug_assert!(
@@ -256,7 +461,7 @@ mod tests {
     use crate::syntax::provider::BufferHandle;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use zom_engine::{BufferConfig, ByteOffset, TextRange};
+    use zom_engine::{BufferConfig, ByteOffset, ChangeSet, TextRange};
 
     /// 一个在 attach 时推一份固定 span 的 mock provider。
     struct StaticProvider {
@@ -329,7 +534,9 @@ mod tests {
         state.drain_into_layers(buffer.version(), &mut layers);
 
         assert_eq!(attached.load(Ordering::SeqCst), 1);
-        let layer = layers.layer(&syntax_layer_kind()).expect("layer 必须存在");
+        let layer = layers
+            .layer(&syntax_confirmed_layer_kind())
+            .expect("layer 必须存在");
         assert_eq!(layer.len(), 1);
         assert_eq!(state.language(), LanguageId::new("rust"));
     }
@@ -351,13 +558,15 @@ mod tests {
         );
         worker.wait_for_idle();
         state.drain_into_layers(buffer.version(), &mut layers);
-        assert!(layers.layer(&syntax_layer_kind()).unwrap().len() > 0);
+        assert!(layers.layer(&syntax_confirmed_layer_kind()).unwrap().len() > 0);
 
         state.detach(&mut layers);
         worker.wait_for_idle();
 
         assert_eq!(detached.load(Ordering::SeqCst), 1);
-        let layer = layers.layer(&syntax_layer_kind()).expect("layer 必须存在");
+        let layer = layers
+            .layer(&syntax_confirmed_layer_kind())
+            .expect("layer 必须存在");
         assert_eq!(layer.len(), 0, "detach 后 syntax layer 应为空");
     }
 
@@ -379,7 +588,7 @@ mod tests {
         worker.wait_for_idle();
         state.drain_into_layers(buffer.version(), &mut layers);
 
-        let original_len = layers.layer(&syntax_layer_kind()).unwrap().len();
+        let original_len = layers.layer(&syntax_confirmed_layer_kind()).unwrap().len();
         let future = BufferVersion::new(buffer.version().get() + 999);
         state.sink.replace_all(
             future,
@@ -394,9 +603,56 @@ mod tests {
             state.drain_into_layers(buffer.version(), &mut layers);
         }));
         assert_eq!(
-            layers.layer(&syntax_layer_kind()).unwrap().len(),
+            layers.layer(&syntax_confirmed_layer_kind()).unwrap().len(),
             original_len,
             "future version must not overwrite layer"
+        );
+    }
+
+    #[test]
+    fn replace_range_clears_matching_provisional_spans() {
+        let (provider, _, _) = make_provider();
+        let buffer = make_buffer("fn main() {}");
+        let mut layers = MetadataLayers::<HighlightSpan>::new();
+        let worker = Arc::new(SyntaxWorkerHandle::spawn());
+        let state = BufferSyntaxState::attach(
+            id(4),
+            LanguageId::new("rust"),
+            provider,
+            &buffer,
+            &mut layers,
+            worker.clone(),
+            None,
+        );
+        worker.wait_for_idle();
+        state.drain_into_layers(buffer.version(), &mut layers);
+
+        let provisional_kind = syntax_provisional_layer_kind();
+        layers
+            .replace_layer_ranges(
+                provisional_kind.clone(),
+                buffer.version(),
+                vec![(
+                    TextRange::new(ByteOffset::new(0), ByteOffset::new(2)).unwrap(),
+                    HighlightSpan::from_name(HighlightName::new("keyword")),
+                )],
+            )
+            .unwrap();
+
+        let range = TextRange::new(ByteOffset::new(0), ByteOffset::new(1)).unwrap();
+        state.sink.replace_range(
+            buffer.version(),
+            range,
+            vec![(
+                range,
+                HighlightSpan::from_name(HighlightName::new("string")),
+            )],
+        );
+        state.drain_into_layers(buffer.version(), &mut layers);
+
+        assert!(
+            layers.layer(&provisional_kind).unwrap().is_empty(),
+            "正式 ReplaceRange 覆盖范围内的 provisional spans 必须被清掉"
         );
     }
 }

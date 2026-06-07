@@ -223,12 +223,10 @@ impl MarkdownWorker {
 
     /// 全量解析当前 snapshot，按 viewport hint 决定 query 与 sink 投递路径。
     ///
-    /// **viewport-aware**：parse 阶段必须走全文（tree-sitter 要构建整棵树），但
-    /// query 阶段按 [`Self::viewport_hint`] 分支：
+    /// **viewport-aware**：parse 阶段必须走全文（tree-sitter 要构建整棵树），但query 阶段按 [`Self::viewport_hint`] 分支：
     ///
-    /// - `Some(range)`：先推一份**空 `ReplaceAll`** 在 sink 上把 layer 锚到本
-    ///   版本（清掉上一份高亮），再就 viewport 跑 block + inline 联合 query 并
-    ///   以 `ReplaceRange` 投递视口段 spans。视口外保持空，等滚动 / 编辑再补齐。
+    /// - `Some(range)`：就 viewport 跑 block + inline 联合 query，并以 `ReplaceRange` 投递视口段 spans。
+    /// 首份 `ReplaceRange` 可以直接创建 confirmed layer，避免空 `ReplaceAll` 暴露为可见中间态。
     /// - `None`：全文 query + `ReplaceAll`。
     fn run_full(&mut self, buffer: &BufferHandle, sink: &HighlightSink) {
         let snapshot = buffer.snapshot();
@@ -253,7 +251,6 @@ impl MarkdownWorker {
 
         match self.viewport_hint {
             Some(range) => {
-                sink.replace_all(version, Vec::new());
                 let merged = self.produce_spans(&block_tree, bytes, Some(range));
                 sink.replace_range(version, range, merged);
             }
@@ -358,7 +355,8 @@ impl MarkdownWorker {
     /// 给定块树与全文 bytes，产出 block + inline 合并后的最终 spans。
     ///
     /// `viewport`：
-    /// - `Some(range)`：block query 用 `set_byte_range` 限定到 viewport；inline pass 跳过不与 viewport 相交的 `inline` 节点（节点内仍整段重 parse，保证 emphasis / strong 等成对结构不被截开），最后把 merged spans 按 viewport 裁剪一次——丢掉完全在外的，端点跨界的 clamp 到边界。
+    /// - `Some(range)`：block query 用 `set_byte_range` 限定到 viewport；inline pass 跳过不与 viewport 相交的 `inline` 节点（节点内仍整段重 parse，保证 emphasis / strong 等成对结构不被截开），
+    /// 最后把 merged spans 按 viewport 裁剪一次——丢掉完全在外的，端点跨界的 clamp 到边界。
     /// - `None`：等价于全文路径。
     fn produce_spans(
         &mut self,
@@ -807,7 +805,7 @@ mod tests {
     use super::*;
     use crate::syntax::BufferSyntaxState;
     use crate::syntax::SinkMessage;
-    use crate::syntax::payload::syntax_layer_kind;
+    use crate::syntax::payload::syntax_confirmed_layer_kind;
     use crate::syntax::providers::common::assert_lookup_matches_capture_names;
     use crate::syntax::{HighlightProvider, HighlightSpan, TokenModifiers};
     use zom_engine::{Buffer, BufferConfig, MetadataLayers};
@@ -839,7 +837,7 @@ mod tests {
         worker.wait_for_idle();
         state.drain_into_layers(buffer.version(), &mut layers);
         let names = layers
-            .layer(&syntax_layer_kind())
+            .layer(&syntax_confirmed_layer_kind())
             .expect("syntax layer 必须存在")
             .as_slice()
             .iter()
@@ -871,7 +869,7 @@ mod tests {
         worker.wait_for_idle();
         state.drain_into_layers(buffer.version(), &mut layers);
         let layer = layers
-            .layer(&syntax_layer_kind())
+            .layer(&syntax_confirmed_layer_kind())
             .expect("syntax layer 必须存在");
         assert!(layer.len() > 0, "markdown provider 应至少产出一个 span");
     }
@@ -1333,7 +1331,7 @@ mod tests {
         assert_layer_ranges_on_char_boundaries(&buffer, &layers);
 
         for event in &events {
-            state.handle_edit(&buffer, event.changeset(), event.new_version(), &mut layers);
+            state.handle_edit(&buffer, event, &mut layers);
         }
         worker.wait_for_idle();
         state.drain_into_layers(buffer.version(), &mut layers);
@@ -1398,7 +1396,7 @@ mod tests {
         layers: &MetadataLayers<HighlightSpan>,
     ) {
         let text = current_text(buffer);
-        let Some(layer) = layers.layer(&syntax_layer_kind()) else {
+        let Some(layer) = layers.layer(&syntax_confirmed_layer_kind()) else {
             return;
         };
         for entry in layer.as_slice() {
@@ -1651,7 +1649,7 @@ mod tests {
     }
 
     #[test]
-    fn run_full_with_hint_emits_anchor_replace_all_plus_replace_range() {
+    fn run_full_with_hint_emits_only_replace_range() {
         let text = "# h1\n\n*italic* one\n\n*italic* two\n\n*italic* three\n".to_string();
         let cutoff = text.find("*italic* three").unwrap();
         let viewport = TextRange::new(ByteOffset::new(0), ByteOffset::new(cutoff)).unwrap();
@@ -1663,9 +1661,8 @@ mod tests {
         worker.attach(BufferHandle::new(buffer.snapshot()), sink.clone());
 
         let (alls, ranges) = split_messages(&sink);
-        assert_eq!(alls.len(), 1, "必须先推一条空 ReplaceAll 锚版本");
-        assert!(alls[0].is_empty(), "锚定 ReplaceAll 的 spans 必须为空");
-        assert_eq!(ranges.len(), 1, "必须随后推一条 viewport 段 ReplaceRange");
+        assert_eq!(alls.len(), 0, "viewport-aware attach 不应推 ReplaceAll");
+        assert_eq!(ranges.len(), 1, "必须推一条 viewport 段 ReplaceRange");
         let (got_range, got_spans) = &ranges[0];
         assert_eq!(*got_range, viewport);
         assert!(!got_spans.is_empty(), "viewport 内至少产出一个 span");

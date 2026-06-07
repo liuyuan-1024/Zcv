@@ -33,6 +33,7 @@ use self::pumps::BackgroundPumps;
 use self::text_target_runtime::TextTargetRuntime;
 use crate::config::{AppConfig, SettingsChange};
 use crate::dispatch::KeyDispatchOutcome;
+use crate::editor::EditorViewportMeasurement;
 use crate::editor::text::ImeUtf16Range;
 use crate::focus::{AppFocus, FileTreeFocus, FocusStore, PanelSubFocus};
 use crate::ports::{
@@ -375,8 +376,12 @@ impl App {
         }
         match focus {
             AppFocus::None | AppFocus::Editor(_) => vec![KeyContext::global()],
+            // 不变式：SearchModel 是 SearchBar 焦点的 TextTargetOwner，router 必定在前一步接管。
+            // 若装配链路漏注册 owner，停在这里比静默走 global 容易抓。
+            AppFocus::SearchBar(_) => {
+                unreachable!("SearchModel 是 SearchBar 焦点的 TextTargetOwner，router 必定接管")
+            }
             AppFocus::Panel(p) => match p.sub {
-                PanelSubFocus::Search(_) => vec![KeyContext::global()],
                 PanelSubFocus::FileTree(FileTreeFocus::ConfirmDelete) => vec![
                     // 删除确认弹窗打开中：只解析确认 / 取消，导航键全部冻结。
                     KeyContext::file_tree(FileTreeKeyMode::PendingDelete),
@@ -438,18 +443,26 @@ impl App {
             .with_router_mut(focus, &mut self.session, f)
     }
 
-    /// 由主编辑区 element prepaint 末尾回写：把它实际测得的视口写回当前活动 view，
-    /// 下一帧 `View::settle_viewport_y` 与 snapshot 切片用更准的行数 / sub-row。
+    /// 由主编辑区 element prepaint 末尾回写测量值。
+    ///
+    /// Y 轴 top（`top_line/top_subrow`）只由 `View::settle_viewport_y` 落定；
+    /// element 只同步可见行数与 wrap map，避免渲染端 fallback 覆盖 view 已经确定的 top。
     /// 无活动 view 时静默忽略。
-    pub(crate) fn set_main_viewport(
+    pub(crate) fn sync_main_viewport_measurement(
         &mut self,
-        viewport: zom_view::ViewportState,
+        measured: EditorViewportMeasurement,
         wrap_map: Option<zom_view::WrapMap>,
     ) {
         let Some(view) = self.session.views_mut().active_view_mut() else {
             return;
         };
         let current = view.viewport();
+        let viewport = zom_view::ViewportState {
+            top_line: current.top_line,
+            top_subrow: current.top_subrow,
+            visible_visual_rows: measured.visible_visual_rows,
+            visible_logical_lines: measured.visible_logical_lines,
+        };
         if current != viewport {
             view.set_viewport(viewport);
         }
@@ -546,7 +559,8 @@ impl App {
         // 命令派发可能编辑了活动 buffer（产生 DeltaEvent），扇出给 BufferSearch 与 syntax provider 是无条件的。
         // 否则编辑后高亮 / 搜索命中都不跟版本。
         // 必须先于 `sync_active_buffer_search`：后者依赖搜索状态已被新事件推进。
-        self.background.after_text_edit(&mut self.session);
+        self.background
+            .after_text_edit(&mut self.session, self.config.soft_wrap_enabled());
         // 命令派发也可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴等）。
         // 把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——一处做完，渲染 / 后续命令读到的都是新真值。
         Ok(host_effects)
@@ -592,7 +606,8 @@ impl App {
         // preedit 期间也走 live search——用户在搜索框中文输入时能边输入边看到结果收敛。
         // 同时把 buffer 上累积的 DeltaEvent 扇出到 syntax provider
         // （preedit replace 走 composition state，但 replace_and_mark 内部仍可能产生编辑事件）。
-        self.background.after_text_edit(&mut self.session);
+        self.background
+            .after_text_edit(&mut self.session, self.config.soft_wrap_enabled());
         result
     }
 
@@ -646,9 +661,12 @@ mod tests {
     use std::rc::Rc;
     use zom_command::HostEffect;
     use zom_command::commands::{
-        diagnostics, editor, language_servers, project_picker as project_picker_commands, settings,
+        diagnostics, editor, file_tree, language_servers,
+        project_picker as project_picker_commands, settings,
     };
     use zom_command::{EditTarget, KeyContext};
+    use zom_engine::{ByteOffset, SelectionSet};
+    use zom_view::WrapMap;
 
     /// 取当前活动标签——断言「编辑区正在显示哪个文件」用。
     fn active_tab(state: &EditorState) -> &EditorTab {
@@ -674,6 +692,18 @@ mod tests {
         app.open_project(root.clone());
         assert!(app.session.open_file(root.join("README.md")));
         app.request_focus(AppFocus::editor());
+        app
+    }
+
+    fn app_with_markdown_text(name: &str, text: &str) -> App {
+        let mut app = App::new();
+        let root = project_fixture(name);
+        std::fs::write(root.join("README.md"), text).unwrap();
+        app.open_project(root.clone());
+        assert!(app.session.open_file(root.join("README.md")));
+        app.request_focus(AppFocus::editor());
+        app.session.workspace().syntax_worker().wait_for_idle();
+        app.pump_pending_highlights();
         app
     }
 
@@ -724,6 +754,39 @@ mod tests {
         }));
         app.install_editor_owner(picker.clone() as Rc<RefCell<dyn TextTargetOwner>>);
         picker
+    }
+
+    #[test]
+    fn esc_should_collapse_extended_selection_via_dismiss_stack() {
+        // 没有 picker / search bar / pending dialog 等更高瞬态在前，esc 应该塌掉编辑区的非空选区。
+        // 这条路径由 command_runtime 末尾的 reconcile_text_edit_dismiss 自动 push 一条
+        // editor.clear_selection token；esc 在 text_edit 上下文走 system.dismiss_top(TextEdit)
+        // 把它弹出再派发。
+        let mut app = app_with_markdown_text("esc-clear-selection", "hello world");
+
+        app.dispatch(editor::select_all()).unwrap();
+        let extent_before = app.with_workspace_views(|_, views| {
+            !views
+                .active_view()
+                .unwrap()
+                .selection()
+                .primary()
+                .is_caret()
+        });
+        assert!(extent_before, "select_all 之后选区必须非空");
+
+        let outcome = app.dispatch_key("escape".to_string()).unwrap();
+        assert!(outcome.consumed, "esc 必须被 dismiss_top 消化");
+
+        let is_caret_after = app.with_workspace_views(|_, views| {
+            views
+                .active_view()
+                .unwrap()
+                .selection()
+                .primary()
+                .is_caret()
+        });
+        assert!(is_caret_after, "esc 应当把扩展选区塌成 caret");
     }
 
     #[test]
@@ -806,6 +869,104 @@ mod tests {
     }
 
     #[test]
+    fn text_edit_should_invalidate_active_view_wrap_map() {
+        let mut app = app_with_open_file("invalidate-wrap-map");
+        app.session
+            .views_mut()
+            .active_view_mut()
+            .expect("应有活动视图")
+            .set_wrap_map(Some(WrapMap::sparse(false, 1, [])));
+
+        app.dispatch(editor::insert_newline()).unwrap();
+
+        assert!(
+            app.session
+                .views()
+                .active_view()
+                .expect("应有活动视图")
+                .wrap_map()
+                .is_none(),
+            "文本变化后不能继续使用上一帧的 wrap map",
+        );
+    }
+
+    #[test]
+    fn text_edit_without_soft_wrap_should_refresh_wrap_map_line_count_immediately() {
+        let mut app = app_with_open_file("refresh-nowrap-map");
+        app.apply_settings_change(SettingsChange::ToggleEditorSoftWrap);
+        assert!(!app.config_snapshot().editor.soft_wrap);
+        app.session
+            .views_mut()
+            .active_view_mut()
+            .expect("应有活动视图")
+            .set_wrap_map(Some(WrapMap::sparse(false, 1, [])));
+
+        app.dispatch(editor::insert_newline()).unwrap();
+
+        let wrap_map = app
+            .session
+            .views()
+            .active_view()
+            .expect("应有活动视图")
+            .wrap_map()
+            .expect("关闭软换行时应立即刷新逻辑行视觉模型");
+        assert!(!wrap_map.soft_wrap());
+        assert_eq!(wrap_map.logical_line_count(), 2);
+        assert_eq!(wrap_map.total_visual_rows(), 2);
+    }
+
+    #[test]
+    fn dispatch_text_edit_exposes_provisional_syntax_in_immediate_snapshot() {
+        let mut app =
+            app_with_markdown_text("immediate-provisional-syntax", "# zom 文档规范\n\n正文。\n");
+        *app.session
+            .views_mut()
+            .active_view_mut()
+            .expect("应有活动视图")
+            .selection_mut() = SelectionSet::caret(ByteOffset::new(18));
+
+        app.dispatch(editor::replace_selection("X")).unwrap();
+
+        let snapshot = app.with_router(|router| router.snapshot_for_focus(AppFocus::editor()));
+        assert!(
+            snapshot.decorations.iter().any(|d| {
+                d.kind == crate::editor::highlight::DecorationKind::Foreground
+                    && d.range.start().get() == 18
+                    && d.range.end().get() == 19
+                    && d.priority == crate::editor::highlight::priority::SYNTAX_PROVISIONAL
+            }),
+            "dispatch 后立即 snapshot 应包含新字符的 provisional syntax decoration，实际 {:?}",
+            snapshot.decorations,
+        );
+    }
+
+    #[test]
+    fn ime_text_commit_exposes_provisional_syntax_in_immediate_snapshot() {
+        let mut app =
+            app_with_markdown_text("ime-provisional-syntax", "# zom 文档规范\n\n正文。\n");
+        let focus = AppFocus::editor();
+        *app.session
+            .views_mut()
+            .active_view_mut()
+            .expect("应有活动视图")
+            .selection_mut() = SelectionSet::caret(ByteOffset::new(18));
+
+        app.ime_replace_text_for(focus, None, "X").unwrap();
+
+        let snapshot = app.with_router(|router| router.snapshot_for_focus(focus));
+        assert!(
+            snapshot.decorations.iter().any(|d| {
+                d.kind == crate::editor::highlight::DecorationKind::Foreground
+                    && d.range.start().get() == 18
+                    && d.range.end().get() == 19
+                    && d.priority == crate::editor::highlight::priority::SYNTAX_PROVISIONAL
+            }),
+            "IME commit 后立即 snapshot 应包含新字符的 provisional syntax decoration，实际 {:?}",
+            snapshot.decorations,
+        );
+    }
+
+    #[test]
     fn panel_toggle_command_should_emit_host_effect() {
         let mut app = App::new();
 
@@ -823,17 +984,20 @@ mod tests {
     #[test]
     fn search_shortcut_should_emit_activate_effect() {
         let mut app = App::new();
+        // mod-f 限定在 text_edit 上下文内（编辑器 / 搜索输入框）；空 focus 不响应。
+        app.request_focus(AppFocus::editor());
 
         let outcome = app.dispatch_key("mod-f".to_string()).expect("派发成功");
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::SearchActivate]);
 
-        // mod-shift-f 当前没有绑定（项目级搜索尚未引入）；不被消费。
+        // mod-shift-f 绑到项目搜索占位命令：弹一条"敬请期待"气泡。
         let outcome = app
             .dispatch_key("mod-shift-f".to_string())
             .expect("派发成功");
-        assert!(!outcome.consumed);
-        assert!(outcome.effects.is_empty());
+        assert!(outcome.consumed);
+        assert_eq!(outcome.effects.len(), 1);
+        assert!(matches!(outcome.effects[0], HostEffect::ShowBubble(_)));
     }
 
     #[test]
@@ -975,6 +1139,8 @@ mod tests {
     #[test]
     fn file_tree_confirm_delete_focus_should_route_enter_and_escape_to_dialog_actions() {
         let mut app = App::new();
+        // Esc 改走 system.dismiss_top 后，必须经 request_delete() 才能把 cancel token 推上栈。
+        let _ = app.dispatch(file_tree::request_delete()).unwrap();
         app.request_focus(AppFocus::file_tree(FileTreeFocus::ConfirmDelete));
         app.request_focus_from_shell(AppFocus::file_tree(FileTreeFocus::Navigate));
         assert_eq!(
@@ -986,6 +1152,8 @@ mod tests {
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::FileTreeConfirmDelete]);
 
+        // enter 提交后栈已被 commit 清空；再 esc 必须重新经 request_delete() 才有 token。
+        let _ = app.dispatch(file_tree::request_delete()).unwrap();
         app.request_focus(AppFocus::file_tree(FileTreeFocus::Navigate));
         assert_eq!(
             app.focus().current(),
@@ -1012,7 +1180,7 @@ mod tests {
     fn language_server_status_command_should_emit_open_surface_window_action() {
         let mut app = App::new();
 
-        let actions = app.dispatch(language_servers::open_status()).unwrap();
+        let actions = app.dispatch(language_servers::open()).unwrap();
 
         assert_eq!(actions, vec![HostEffect::ShowLanguageServers]);
     }
@@ -1033,7 +1201,10 @@ mod tests {
 
     #[test]
     fn settings_escape_should_dispatch_settings_dismiss_command() {
+        // Esc 现在走 system.dismiss_top —— 必须先经 settings::open()
+        // push 一条 dismiss token，否则栈空 esc 静默。
         let mut app = App::new();
+        let _ = app.dispatch(settings::open()).unwrap();
         app.request_focus(AppFocus::settings());
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
@@ -1045,6 +1216,7 @@ mod tests {
     #[test]
     fn language_servers_escape_should_dispatch_dismiss_command() {
         let mut app = App::new();
+        let _ = app.dispatch(language_servers::open()).unwrap();
         app.request_focus(AppFocus::language_servers());
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
@@ -1055,8 +1227,15 @@ mod tests {
 
     #[test]
     fn project_picker_escape_should_dispatch_project_picker_dismiss_command() {
+        // Esc 不再静态绑到 DISMISS；现在它走 DISMISS_TOP，先弹 DismissScope::ProjectPicker 的栈顶。
+        // 因此真正的取消能力依赖于 SHOW_PROJECTS_PICKER 在打开 picker 时 push 一条
+        // dismiss token；没 push（host 走非命令路径直接打开 picker）esc 就静默。
         let mut app = App::new();
         let _picker = install_project_picker(&mut app);
+        // 走命令路径打开 picker：SHOW_PROJECTS_PICKER push token + emit ShowProjectPicker。
+        let _ = app
+            .dispatch(project_picker_commands::show_projects_picker())
+            .unwrap();
         app.request_focus(AppFocus::project_picker());
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();

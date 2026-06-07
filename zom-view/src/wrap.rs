@@ -22,6 +22,8 @@
 //! - 不开软换行时所有行的 breaks 列表为空——每条逻辑行恰好 1 个 subrow，查询算子的行为退化为「按逻辑行」，无需在调用端再走分支。
 //! - 断点不含 0 和行尾，故 `subrow_count(line) = breaks(line).len() + 1`。
 
+use std::collections::BTreeMap;
+
 use zom_engine::{Buffer, ByteOffset, EngineResult, Line, MovementDirection};
 
 /// 同一个 byte 在软换行边界处可能对应两个视觉位置；affinity 用于区分。
@@ -52,17 +54,46 @@ pub struct VisualPosition {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WrapMap {
     soft_wrap: bool,
-    breaks_per_line: Vec<Vec<u32>>,
+    line_count: u64,
+    breaks_per_line: BTreeMap<u64, Vec<u32>>,
 }
 
 impl WrapMap {
     /// 构造一份新的 WrapMap。
     ///
-    /// `breaks_per_line[i]` 必须为单调递增、不含 0 与行尾、落在 grapheme 边界的相对字节列表；
-    /// 不软换行时传入与逻辑行数相同长度的空向量。
+    /// `breaks_per_line[i]` 必须为单调递增、不含 0 与行尾、落在 grapheme 边界的相对字节列表。
     pub fn new(soft_wrap: bool, breaks_per_line: Vec<Vec<u32>>) -> Self {
+        let line_count = breaks_per_line.len() as u64;
+        let breaks_per_line = breaks_per_line
+            .into_iter()
+            .enumerate()
+            .filter_map(|(line, breaks)| (!breaks.is_empty()).then_some((line as u64, breaks)))
+            .collect();
         Self {
             soft_wrap,
+            line_count,
+            breaks_per_line,
+        }
+    }
+
+    /// 构造一份稀疏 WrapMap。
+    ///
+    /// 未出现在 `breaks_per_line` 中的逻辑行按 1 个视觉行处理。渲染端每帧只测量
+    /// 视口附近的行，因此主路径必须避免按整篇文档行数分配。
+    pub fn sparse(
+        soft_wrap: bool,
+        line_count: u64,
+        breaks_per_line: impl IntoIterator<Item = (u64, Vec<u32>)>,
+    ) -> Self {
+        let breaks_per_line = breaks_per_line
+            .into_iter()
+            .filter_map(|(line, breaks)| {
+                (line < line_count && !breaks.is_empty()).then_some((line, breaks))
+            })
+            .collect();
+        Self {
+            soft_wrap,
+            line_count,
             breaks_per_line,
         }
     }
@@ -72,13 +103,13 @@ impl WrapMap {
     }
 
     pub fn logical_line_count(&self) -> u64 {
-        self.breaks_per_line.len() as u64
+        self.line_count
     }
 
     /// 指定逻辑行的断点列表（行内相对字节）。越界返回空 slice。
     pub fn breaks(&self, line: u64) -> &[u32] {
         self.breaks_per_line
-            .get(line as usize)
+            .get(&line)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
@@ -86,24 +117,82 @@ impl WrapMap {
     /// 指定逻辑行的视觉段数。越界（理论上不会发生）退化为 1。
     pub fn subrow_count(&self, line: u64) -> u32 {
         self.breaks_per_line
-            .get(line as usize)
+            .get(&line)
             .map(|v| v.len() as u32 + 1)
             .unwrap_or(1)
     }
 
     /// 视觉行总数；用于 viewport / scroll 行号换算。
     pub fn total_visual_rows(&self) -> u64 {
-        self.breaks_per_line
-            .iter()
-            .map(|v| v.len() as u64 + 1)
-            .sum()
+        self.line_count
+            + self
+                .breaks_per_line
+                .values()
+                .map(|v| v.len() as u64)
+                .sum::<u64>()
+    }
+
+    /// `(逻辑行, sub-row) → 绝对视觉行号`（从 0 开始）。
+    ///
+    /// 用于把 `ViewportState.top_line/top_subrow` 与 `VisualPosition` 折叠到统一的视觉行坐标系，供 `settle_viewport_y` 的边缘滚动 / reveal 判定使用。
+    ///
+    /// 越界处理（友好饱和而非 panic，调用方常在首帧 / headless 路径传入近似值）：
+    /// - `line >= logical_line_count()` → 返回 `total_visual_rows()`（最后一行末尾的下一行）；空 map 直接返回 0。
+    /// - `subrow >= subrow_count(line)` → 夹到该行最后一个 sub-row。
+    pub fn visual_row_of(&self, line: u64, subrow: u32) -> u64 {
+        let line_count = self.logical_line_count();
+        if line >= line_count {
+            return self.total_visual_rows();
+        }
+        let prefix = line
+            + self
+                .breaks_per_line
+                .range(..line)
+                .map(|(_, breaks)| breaks.len() as u64)
+                .sum::<u64>();
+        let max_subrow = self.subrow_count(line).saturating_sub(1);
+        prefix + subrow.min(max_subrow) as u64
+    }
+
+    /// `绝对视觉行号 → (逻辑行, sub-row)`，是 [`visual_row_of`] 的反函数。
+    ///
+    /// 越界饱和：`row >= total_visual_rows()` 时返回末行末段；空 map 返回 `(0, 0)`。
+    pub fn visual_row_to_line_subrow(&self, row: u64) -> (u64, u32) {
+        if self.line_count == 0 {
+            return (0, 0);
+        }
+        let mut cursor_line = 0_u64;
+        let mut visual_base = 0_u64;
+        for (&line, breaks) in &self.breaks_per_line {
+            let gap = line.saturating_sub(cursor_line);
+            if row < visual_base.saturating_add(gap) {
+                return (cursor_line + (row - visual_base), 0);
+            }
+            visual_base = visual_base.saturating_add(gap);
+
+            let count = breaks.len() as u64 + 1;
+            if row < visual_base.saturating_add(count) {
+                return (line, (row - visual_base) as u32);
+            }
+            visual_base = visual_base.saturating_add(count);
+            cursor_line = line.saturating_add(1);
+        }
+
+        let remaining_lines = self.line_count.saturating_sub(cursor_line);
+        if row < visual_base.saturating_add(remaining_lines) {
+            return (cursor_line + (row - visual_base), 0);
+        }
+
+        // 越界 → 末行末段。
+        let last_line = self.line_count - 1;
+        let last_subrow = self.subrow_count(last_line).saturating_sub(1);
+        (last_line, last_subrow)
     }
 
     /// 把 byte 解析成 VisualPosition。
     ///
     /// 软换行边界（即 byte 恰好等于某个断点的绝对位置）存在两种视觉位置；
-    /// 由 `hint` 决定取上一段行尾还是下一段行首。`hint == None` 时默认下一段行首
-    /// （与渲染端历史行为一致）。
+    /// 由 `hint` 决定取上一段行尾还是下一段行首。`hint == None` 时默认下一段行首（与渲染端历史行为一致）。
     pub fn resolve(
         &self,
         buffer: &Buffer,
@@ -284,7 +373,7 @@ impl WrapMap {
         let start = if subrow == 0 {
             0
         } else {
-            breaks[(subrow - 1) as usize]
+            breaks.get((subrow - 1) as usize).copied().unwrap_or(0)
         };
         let end = breaks.get(subrow as usize).copied();
         (start, end)
@@ -732,6 +821,64 @@ mod tests {
         // 行 0 三段；行 1 一段。
         let wm = WrapMap::new(true, vec![vec![3, 6], vec![]]);
         assert_eq!(wm.total_visual_rows(), 4);
+    }
+
+    #[test]
+    fn sparse_wrap_map_treats_unmeasured_lines_as_single_rows() {
+        let wm = WrapMap::sparse(true, 1_000_000, [(1_000, vec![3, 6])]);
+
+        assert_eq!(wm.logical_line_count(), 1_000_000);
+        assert_eq!(wm.total_visual_rows(), 1_000_002);
+        assert_eq!(wm.visual_row_of(1_000, 2), 1_002);
+        assert_eq!(wm.visual_row_to_line_subrow(999), (999, 0));
+        assert_eq!(wm.visual_row_to_line_subrow(1_001), (1_000, 1));
+        assert_eq!(wm.visual_row_to_line_subrow(1_003), (1_001, 0));
+    }
+
+    #[test]
+    fn visual_row_of_accumulates_prefix_and_adds_subrow() {
+        // 行 0 三段、行 1 一段、行 2 两段 → 总 6 行。
+        let wm = WrapMap::new(true, vec![vec![3, 6], vec![], vec![4]]);
+        assert_eq!(wm.visual_row_of(0, 0), 0);
+        assert_eq!(wm.visual_row_of(0, 2), 2);
+        assert_eq!(wm.visual_row_of(1, 0), 3);
+        assert_eq!(wm.visual_row_of(2, 0), 4);
+        assert_eq!(wm.visual_row_of(2, 1), 5);
+    }
+
+    #[test]
+    fn visual_row_of_saturates_out_of_range() {
+        let wm = WrapMap::new(true, vec![vec![3, 6], vec![]]);
+        // subrow 超出该行段数 → 夹到末段。
+        assert_eq!(wm.visual_row_of(0, 99), 2);
+        // 逻辑行越界 → total_visual_rows。
+        assert_eq!(wm.visual_row_of(10, 0), 4);
+        // 空 map。
+        let empty = WrapMap::new(true, vec![]);
+        assert_eq!(empty.visual_row_of(0, 0), 0);
+    }
+
+    #[test]
+    fn visual_row_to_line_subrow_is_inverse_of_visual_row_of() {
+        let wm = WrapMap::new(true, vec![vec![3, 6], vec![], vec![4]]);
+        for line in 0..wm.logical_line_count() {
+            for sub in 0..wm.subrow_count(line) {
+                let row = wm.visual_row_of(line, sub);
+                assert_eq!(wm.visual_row_to_line_subrow(row), (line, sub));
+            }
+        }
+    }
+
+    #[test]
+    fn visual_row_to_line_subrow_saturates_out_of_range() {
+        let wm = WrapMap::new(true, vec![vec![3, 6], vec![]]);
+        // total = 4，越界 → 末行末段 (1, 0)。
+        assert_eq!(wm.visual_row_to_line_subrow(4), (1, 0));
+        assert_eq!(wm.visual_row_to_line_subrow(100), (1, 0));
+        // 空 map。
+        let empty = WrapMap::new(true, vec![]);
+        assert_eq!(empty.visual_row_to_line_subrow(0), (0, 0));
+        assert_eq!(empty.visual_row_to_line_subrow(5), (0, 0));
     }
 
     /// 等宽假设下每个字节宽度 10——便于在没有 GPUI ShapedLine 时验证 [`compute_segments`]。

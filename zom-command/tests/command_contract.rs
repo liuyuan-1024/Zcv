@@ -4,19 +4,20 @@ use std::rc::Rc;
 use zom_command::commands::{
     debug, diagnostics,
     editor::{self, InsertTextArgs, MoveSelectionArgs, ReplaceSelectionArgs},
-    file_tree, keyboard_shortcuts, outline, search, settings, terminal, version_control,
+    file_tree, keyboard_shortcuts, outline, project_picker, search, settings, terminal,
+    version_control,
 };
 use zom_command::{
     BubbleKind, Command, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId,
-    CommandQueue, CommandRegistry, EditTarget, EffectQueue, FileTreeKeyMode, HostEffect,
-    KeyBinding, KeyBindingContext, KeyChord, KeyContext, Keymap, KeymapResolution, MockClipboard,
-    NoArgs, SearchOption,
+    CommandQueue, CommandRegistry, DismissScope, DismissStacks, EditTarget, EffectQueue,
+    FileTreeKeyMode, HostEffect, KeyBinding, KeyBindingContext, KeyChord, KeyContext, Keymap,
+    KeymapResolution, MockClipboard, NoArgs, SearchOption,
 };
 use zom_engine::{
     Buffer, BufferConfig, ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
     SelectionSet,
 };
-use zom_view::ViewSet;
+use zom_view::{ViewSet, VisualAffinity, VisualPosition};
 use zom_workspace::{BufferId, Workspace};
 
 fn command_id(value: &str) -> CommandId {
@@ -44,7 +45,7 @@ fn composing_text_edit_context() -> [KeyContext; 1] {
 }
 
 fn search_panel_context() -> [KeyContext; 1] {
-    [KeyContext::search_panel()]
+    [KeyContext::search_bar()]
 }
 
 fn file_tree_context(mode: FileTreeKeyMode) -> [KeyContext; 1] {
@@ -77,6 +78,7 @@ fn run(
 
     let mut effects = EffectQueue::new();
     let mut clipboard = MockClipboard::new();
+    let mut dismiss = DismissStacks::new();
     let mut context = CommandContext {
         workspace,
         views,
@@ -84,6 +86,7 @@ fn run(
         queue: &mut queue,
         effects: &mut effects,
         clipboard: &mut clipboard,
+        dismiss: &mut dismiss,
     };
     CommandExecutor::new().run(registry, &mut context)
 }
@@ -102,6 +105,7 @@ fn run_with_clipboard(
     }
 
     let mut effects = EffectQueue::new();
+    let mut dismiss = DismissStacks::new();
     let mut context = CommandContext {
         workspace,
         views,
@@ -109,6 +113,7 @@ fn run_with_clipboard(
         queue: &mut queue,
         effects: &mut effects,
         clipboard,
+        dismiss: &mut dismiss,
     };
     CommandExecutor::new().run(registry, &mut context)
 }
@@ -126,6 +131,7 @@ fn run_and_collect_effects(
 
     let mut effects = EffectQueue::new();
     let mut clipboard = MockClipboard::new();
+    let mut dismiss = DismissStacks::new();
     let mut context = CommandContext {
         workspace,
         views,
@@ -133,6 +139,7 @@ fn run_and_collect_effects(
         queue: &mut queue,
         effects: &mut effects,
         clipboard: &mut clipboard,
+        dismiss: &mut dismiss,
     };
     CommandExecutor::new().run(registry, &mut context)?;
     Ok(effects.drain())
@@ -162,8 +169,8 @@ fn install_all_should_register_every_builtin_command_catalog() {
         (file_tree::TOGGLE_PANEL, "文件树"),
         (version_control::TOGGLE_PANEL, "版本管理"),
         (outline::TOGGLE_PANEL, "大纲"),
-        (search::TOGGLE_PANEL, "搜索"),
-        (search::ACTIVATE, "搜索"),
+        (search::ACTIVATE, "查找"),
+        (search::PROJECT_ACTIVATE, "项目搜索"),
         (search::TOGGLE_CASE_SENSITIVE, "区分大小写"),
         (search::TOGGLE_WHOLE_WORD, "全词匹配"),
         (search::TOGGLE_REGEX, "正则表达式"),
@@ -263,6 +270,8 @@ fn search_ui_commands_should_emit_state_effects() {
             (search::FIND_NEXT, CommandArgs::new()),
             (search::REPLACE_NEXT, CommandArgs::new()),
             (search::REPLACE_ALL, CommandArgs::new()),
+            (search::DISMISS, CommandArgs::new()),
+            (search::CONFIRM_MATCH, CommandArgs::new()),
         ],
     )
     .unwrap();
@@ -278,6 +287,8 @@ fn search_ui_commands_should_emit_state_effects() {
             HostEffect::SearchFindNext,
             HostEffect::SearchReplaceNext,
             HostEffect::SearchReplaceAll,
+            HostEffect::SearchDismiss,
+            HostEffect::SearchConfirmMatch,
         ]
     );
 }
@@ -314,15 +325,19 @@ fn save_without_file_path_should_emit_error_bubble() {
 }
 
 #[test]
-fn search_activate_shortcut_should_be_global() {
+fn search_activate_shortcut_should_be_available_in_text_edit_and_search_contexts() {
     let mut registry = CommandRegistry::new();
     let mut keymap = Keymap::new();
     search::install(&mut registry, &mut keymap);
-    let global = global_context();
-    let search_field = [KeyContext::search_panel(), KeyContext::global()];
+    // mod-f 限定在 text_edit 内（编辑器 / 搜索输入框都是 text_edit）；纯空态没活动文件时不响应。
+    // 同时也可在 search_panel 内触发——按一次开 bar、再按一次收起 bar 的口径。
+    let editor = text_edit_context();
+    let search_field = [
+        KeyContext::search_bar(),
+        KeyContext::text_edit(false, false),
+    ];
 
-    // mod-f 同时在编辑器全局与搜索面板内可用：在编辑器里打开面板，在面板里关掉它。
-    for contexts in [&global[..], &search_field[..]] {
+    for contexts in [&editor[..], &search_field[..]] {
         assert_eq!(
             keymap.resolve(&[key("mod-f")], contexts),
             KeymapResolution::Matched {
@@ -830,6 +845,54 @@ fn select_all_undo_and_redo_should_roundtrip_text_and_view_selection() {
 }
 
 #[test]
+fn clear_selection_should_collapse_each_selection_to_caret_at_head() {
+    let (mut workspace, mut views, _) = setup("hello world");
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+
+    // 先扩出非空选区。
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::SELECT_ALL, CommandArgs::new())],
+    )
+    .unwrap();
+    assert!(
+        !views
+            .active_view()
+            .unwrap()
+            .selection()
+            .primary()
+            .is_caret()
+    );
+
+    // CLEAR_SELECTION 把每条选区塌成 caret，head 不动。
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::CLEAR_SELECTION, CommandArgs::new())],
+    )
+    .unwrap();
+    let primary = views.active_view().unwrap().selection().primary();
+    assert!(primary.is_caret(), "clear_selection 必须留下纯 caret");
+    assert_eq!(primary.head(), byte("hello world".len()));
+
+    // 已是 caret 时再调一次是 no-op，不报错。
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::CLEAR_SELECTION, CommandArgs::new())],
+    )
+    .unwrap();
+    let primary = views.active_view().unwrap().selection().primary();
+    assert!(primary.is_caret());
+}
+
+#[test]
 fn movement_commands_should_update_active_view_selection() {
     let (mut workspace, mut views, _) = setup("hello world");
     let mut registry = CommandRegistry::new();
@@ -1183,6 +1246,37 @@ fn paste_with_empty_clipboard_should_be_noop() {
     assert_eq!(text(&workspace, buffer_id), "hello");
 }
 
+#[test]
+fn insert_newline_should_clear_cached_visual_caret() {
+    let (mut workspace, mut views, _buffer_id) = setup("a");
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+
+    views.active_view_mut().unwrap().set_visual_caret(
+        Some(VisualPosition {
+            byte: ByteOffset::ZERO,
+            logical_line: 0,
+            subrow: 0,
+            column: 0,
+            affinity: VisualAffinity::Inside,
+        }),
+        Some(7),
+    );
+
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::INSERT_NEWLINE, CommandArgs::new())],
+    )
+    .unwrap();
+
+    let view = views.active_view().unwrap();
+    assert_eq!(view.visual_caret(), None);
+    assert_eq!(view.goal_column(), None);
+}
+
 /// 用单 buffer + 单 selection 模拟"聚焦的内嵌输入框"，跑一条命令并返回剪贴板状态。
 ///
 /// 关键点：当 `focused_field = Some(EditTarget { ... })` 时，handler 走 `focused_field` 分支，
@@ -1202,6 +1296,7 @@ fn run_on_focused_field(
     }
 
     let mut effects = EffectQueue::new();
+    let mut dismiss = DismissStacks::new();
     let mut context = CommandContext {
         workspace,
         views,
@@ -1215,6 +1310,7 @@ fn run_on_focused_field(
         queue: &mut queue,
         effects: &mut effects,
         clipboard,
+        dismiss: &mut dismiss,
     };
     CommandExecutor::new().run(registry, &mut context)
 }
@@ -1568,4 +1664,133 @@ fn keymap_should_reject_overlapping_but_allow_disjoint_text_edit_contexts() {
             })
             .is_ok()
     );
+}
+
+#[test]
+fn project_picker_esc_routes_through_dismiss_stack() {
+    // 接入证明：show_projects_picker 命令 push 一个 dismiss token；
+    // picker 上下文里 esc 解析到 DISMISS_TOP；执行 DISMISS_TOP 触发栈顶 invocation（DISMISS），
+    // 后者 emit DismissSurface 并清掉残留 token。
+
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    zom_command::commands::install_all(&mut registry, &mut keymap);
+
+    let (mut workspace, mut views, _) = setup("");
+    let mut clipboard = MockClipboard::new();
+    let mut dismiss = DismissStacks::new();
+
+    // 1) SHOW_PROJECTS_PICKER：栈被 push 一条 token，effect 是 ShowProjectPicker。
+    {
+        let mut queue = CommandQueue::new();
+        queue.dispatch(
+            command_id(project_picker::SHOW_PROJECTS_PICKER),
+            CommandArgs::new(),
+        );
+        let mut effects = EffectQueue::new();
+        let mut context = CommandContext {
+            workspace: &mut workspace,
+            views: &mut views,
+            focused_field: None,
+            queue: &mut queue,
+            effects: &mut effects,
+            clipboard: &mut clipboard,
+            dismiss: &mut dismiss,
+        };
+        CommandExecutor::new().run(&registry, &mut context).unwrap();
+        assert_eq!(effects.drain(), vec![HostEffect::ShowProjectPicker]);
+        assert_eq!(dismiss.depth(DismissScope::ProjectPicker), 1);
+        assert_eq!(
+            dismiss.top_label(DismissScope::ProjectPicker),
+            Some("关闭项目选择器")
+        );
+    }
+
+    // 2) picker 上下文里 escape 必须解析到系统级 system.dismiss_top（带 scope=ProjectPicker），
+    //    而不再是 picker 自己的 DISMISS。
+    let resolution = keymap.resolve(
+        &[key("escape")],
+        &[KeyContext::project_picker(), KeyContext::global()],
+    );
+    let (resolved_id, resolved_args) = match resolution {
+        KeymapResolution::Matched { command, args } => (command, args),
+        other => panic!("escape 应该解析到 system.dismiss_top，实际：{other:?}"),
+    };
+    assert_eq!(
+        resolved_id,
+        command_id(zom_command::commands::system::dismiss::DISMISS_TOP),
+    );
+    assert_eq!(resolved_args.get("scope"), Some("ProjectPicker"));
+
+    // 3) 执行 system.dismiss_top(ProjectPicker)：栈被弹空，进而派发 DISMISS，最终 emit DismissSurface。
+    {
+        let mut queue = CommandQueue::new();
+        queue.dispatch(resolved_id.clone(), resolved_args.clone());
+        let mut effects = EffectQueue::new();
+        let mut context = CommandContext {
+            workspace: &mut workspace,
+            views: &mut views,
+            focused_field: None,
+            queue: &mut queue,
+            effects: &mut effects,
+            clipboard: &mut clipboard,
+            dismiss: &mut dismiss,
+        };
+        CommandExecutor::new().run(&registry, &mut context).unwrap();
+        assert_eq!(effects.drain(), vec![HostEffect::DismissSurface]);
+        assert!(dismiss.is_empty(DismissScope::ProjectPicker));
+    }
+
+    // 4) 栈空后再来一次 dismiss_top —— no-op，不产生 effect、不报错。
+    {
+        let mut queue = CommandQueue::new();
+        queue.dispatch(resolved_id, resolved_args);
+        let mut effects = EffectQueue::new();
+        let mut context = CommandContext {
+            workspace: &mut workspace,
+            views: &mut views,
+            focused_field: None,
+            queue: &mut queue,
+            effects: &mut effects,
+            clipboard: &mut clipboard,
+            dismiss: &mut dismiss,
+        };
+        CommandExecutor::new().run(&registry, &mut context).unwrap();
+        assert!(effects.drain().is_empty());
+    }
+}
+
+#[test]
+fn project_picker_show_is_idempotent_does_not_stack_tokens() {
+    // 已开 picker 时再调 SHOW_PROJECTS_PICKER（host 二次响应同一个快捷键），不应该让栈累积。
+
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    zom_command::commands::install_all(&mut registry, &mut keymap);
+
+    let (mut workspace, mut views, _) = setup("");
+    let mut clipboard = MockClipboard::new();
+    let mut dismiss = DismissStacks::new();
+
+    let mut queue = CommandQueue::new();
+    queue.dispatch(
+        command_id(project_picker::SHOW_PROJECTS_PICKER),
+        CommandArgs::new(),
+    );
+    queue.dispatch(
+        command_id(project_picker::SHOW_PROJECTS_PICKER),
+        CommandArgs::new(),
+    );
+    let mut effects = EffectQueue::new();
+    let mut context = CommandContext {
+        workspace: &mut workspace,
+        views: &mut views,
+        focused_field: None,
+        queue: &mut queue,
+        effects: &mut effects,
+        clipboard: &mut clipboard,
+        dismiss: &mut dismiss,
+    };
+    CommandExecutor::new().run(&registry, &mut context).unwrap();
+    assert_eq!(dismiss.depth(DismissScope::ProjectPicker), 1);
 }

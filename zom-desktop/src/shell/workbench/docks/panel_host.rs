@@ -7,9 +7,7 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, Div, FocusHandle, SharedString, div, prelude::*};
 
-use crate::editor::TextEditorSlot;
 use crate::shell::features::panels::file_tree::FileTreePanel;
-use crate::shell::features::panels::search::SearchState;
 use crate::shell::features::panels::{PanelRuntimes, file_tree};
 use crate::shell::{
     CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup, normalized_chord,
@@ -25,9 +23,6 @@ use crate::ui_id::PanelId;
 pub(crate) struct PanelContext<'a> {
     pub(crate) has_project: bool,
     pub(crate) file_tree: FileTreePanel<'a>,
-    pub(crate) search_state: &'a SearchState,
-    pub(crate) search_query_slot: &'a Rc<TextEditorSlot>,
-    pub(crate) search_replacement_slot: &'a Rc<TextEditorSlot>,
     pub(crate) panel_runtimes: &'a PanelRuntimes,
     pub(crate) key_request: &'a KeyRequest,
     pub(crate) shortcut_lookup: &'a ShortcutLookup,
@@ -50,9 +45,6 @@ impl PanelHost {
                 .render(
                     id,
                     ctx.key_request,
-                    ctx.search_state,
-                    ctx.search_query_slot,
-                    ctx.search_replacement_slot,
                     ctx.shortcut_lookup,
                     ctx.command_title_lookup,
                     ctx.command_catalog_lookup,

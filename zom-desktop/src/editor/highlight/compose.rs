@@ -27,16 +27,16 @@ pub(crate) fn compose(decorations: Vec<Decoration>) -> Composition {
     if decorations.is_empty() {
         return Composition::empty();
     }
-    let mut foreground: Vec<(TextRange, Hsla)> = Vec::new();
+    let mut foreground: Vec<(u16, TextRange, Hsla)> = Vec::new();
     let mut background: Vec<(u16, TextRange, Hsla)> = Vec::new();
     for d in decorations {
         let resolved = resolve(d.style);
         match d.kind {
-            DecorationKind::Foreground => foreground.push((d.range, resolved)),
+            DecorationKind::Foreground => foreground.push((d.priority, d.range, resolved)),
             DecorationKind::Background => background.push((d.priority, d.range, resolved)),
         }
     }
-    foreground.sort_by_key(|(range, _)| range.start());
+    let foreground = compose_foreground(foreground);
     background.sort_by_key(|(priority, range, _)| (*priority, range.start()));
     Composition {
         foreground,
@@ -45,6 +45,46 @@ pub(crate) fn compose(decorations: Vec<Decoration>) -> Composition {
             .map(|(_, range, resolved)| (range, resolved))
             .collect(),
     }
+}
+
+fn compose_foreground(mut foreground: Vec<(u16, TextRange, Hsla)>) -> Vec<(TextRange, Hsla)> {
+    foreground.sort_by_key(|(priority, range, _)| (*priority, range.start()));
+
+    let mut composed: Vec<(TextRange, Hsla)> = Vec::new();
+    for (_, range, color) in foreground {
+        let mut next = Vec::with_capacity(composed.len() + 1);
+        for (existing, existing_color) in composed {
+            for remainder in subtract_range(existing, range) {
+                next.push((remainder, existing_color));
+            }
+        }
+        next.push((range, color));
+        composed = next;
+    }
+
+    composed.sort_by_key(|(range, _)| range.start());
+    composed
+}
+
+fn subtract_range(existing: TextRange, cover: TextRange) -> Vec<TextRange> {
+    if !existing.overlaps(cover) {
+        return vec![existing];
+    }
+
+    let mut out = Vec::with_capacity(2);
+    if existing.start() < cover.start()
+        && let Ok(left) = TextRange::new(existing.start(), cover.start())
+        && !left.is_empty()
+    {
+        out.push(left);
+    }
+    if cover.end() < existing.end()
+        && let Ok(right) = TextRange::new(cover.end(), existing.end())
+        && !right.is_empty()
+    {
+        out.push(right);
+    }
+    out
 }
 
 fn resolve(style: DecorationStyle) -> Hsla {
@@ -59,5 +99,39 @@ fn resolve_named(class: StyleClass) -> Hsla {
         StyleClass::SearchNormalBackground => color::blue::a05().into(),
         StyleClass::SearchCurrentBackground => color::yellow::a05().into(),
         StyleClass::Syntax(name) => syntax::color_for(name.as_str()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zom_engine::ByteOffset;
+
+    fn range(start: usize, end: usize) -> TextRange {
+        TextRange::new(ByteOffset::new(start), ByteOffset::new(end)).unwrap()
+    }
+
+    fn syntax_decoration(priority: u16, range: TextRange, name: &str) -> Decoration {
+        Decoration {
+            range,
+            kind: DecorationKind::Foreground,
+            style: DecorationStyle::Named(StyleClass::Syntax(name.to_string())),
+            priority,
+        }
+    }
+
+    #[test]
+    fn foreground_priority_clips_lower_priority_runs() {
+        let composition = compose(vec![
+            syntax_decoration(0, range(0, 6), "keyword"),
+            syntax_decoration(1, range(2, 4), "string"),
+        ]);
+
+        let ranges = composition
+            .foreground
+            .iter()
+            .map(|(range, _)| (range.start().get(), range.end().get()))
+            .collect::<Vec<_>>();
+        assert_eq!(ranges, vec![(0, 2), (2, 4), (4, 6)]);
     }
 }

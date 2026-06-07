@@ -173,8 +173,8 @@ impl HighlightWorker {
     ///
     /// **viewport-aware**：parse 阶段必须走全文（tree-sitter 要构建整棵树），但 query 阶段按 `viewport_hint` 分支：
     ///
-    /// - `Some(range)`：先推一份 **空 `ReplaceAll`** 在 sink 上把 layer 锚到本版本（清掉上一份高亮、初始化版本），再 `set_byte_range` 跑局部 query 并以 `ReplaceRange` 投递 viewport 段 spans。
-    /// 视口外保持空，等滚动/编辑再增量补齐。
+    /// - `Some(range)`：`set_byte_range` 跑局部 query 并以 `ReplaceRange` 投递 viewport 段 spans。
+    ///   首份 `ReplaceRange` 可以直接创建 confirmed layer，避免空 `ReplaceAll` 暴露为可见中间态。
     /// 冷启动 16 MiB rust attach 时这条路径让"高亮亮起"从全树 query 的 1.5 s 量级落到 viewport 段的 100–300 ms 量级。
     /// - `None`：保持原全文 query + `ReplaceAll` 路径。
     /// desktop 在 attach 时还没确定 viewport（或显式清空 hint）时落到这里。
@@ -203,9 +203,6 @@ impl HighlightWorker {
 
         match self.viewport_hint {
             Some(range) => {
-                // 先用空 ReplaceAll 把 layer 锚到本版本——既清掉上一轮残留，
-                // 又给后续 ReplaceRange 一个可 in-place 替换的本版本起点。
-                sink.replace_all(version, Vec::new());
                 self.cursor
                     .set_byte_range(range.start().get()..range.end().get());
                 let spans = collect_spans(&self.config, &mut self.cursor, &tree, bytes);
@@ -741,7 +738,9 @@ where
     F: FnOnce() -> HighlightWorker,
 {
     use crate::BufferId;
-    use crate::syntax::{BufferSyntaxState, SyntaxWorkerHandle, payload::syntax_layer_kind};
+    use crate::syntax::{
+        BufferSyntaxState, SyntaxWorkerHandle, payload::syntax_confirmed_layer_kind,
+    };
     use std::sync::Arc;
     use zom_engine::{Buffer, BufferConfig, MetadataLayers};
 
@@ -762,7 +761,7 @@ where
     worker.wait_for_idle();
     state.drain_into_layers(buffer.version(), &mut layers);
     let layer = layers
-        .layer(&syntax_layer_kind())
+        .layer(&syntax_confirmed_layer_kind())
         .expect("syntax layer 必须存在");
     assert!(layer.len() > 0, "provider 应至少为样本文本产出一个 span");
 }
@@ -1222,10 +1221,10 @@ mod tests {
 
     // ============== viewport-aware attach 护栏 ==============
 
-    /// 设 viewport_hint 后 attach：run_full 必须先推一份空 ReplaceAll 把 layer
-    /// 锚到当前版本，再推 viewport 段 ReplaceRange——而**不是**全文 ReplaceAll。
+    /// 设 viewport_hint 后 attach：run_full 必须只推 viewport 段 ReplaceRange，
+    /// 不允许先推空 ReplaceAll 造成可见中间态。
     #[test]
-    fn run_full_with_hint_emits_anchor_replace_all_plus_replace_range() {
+    fn run_full_with_hint_emits_only_replace_range() {
         let source = "pub fn a() -> i32 { 1 }\npub fn b() -> i32 { 2 }\npub fn c() -> i32 { 3 }\npub fn d() -> i32 { 4 }\npub fn e() -> i32 { 5 }\n".to_string();
         let cutoff = source.find("pub fn c").unwrap();
         let viewport = TextRange::new(ByteOffset::new(0), ByteOffset::new(cutoff)).unwrap();
@@ -1241,19 +1240,14 @@ mod tests {
         let (alls, ranges) = split_messages(&sink);
         assert_eq!(
             alls.len(),
-            1,
-            "viewport-aware attach 必须先推一条空 ReplaceAll 锚定版本，实际 {} 条",
+            0,
+            "viewport-aware attach 不应推 ReplaceAll，实际 {} 条",
             alls.len()
-        );
-        assert!(
-            alls[0].is_empty(),
-            "锚定 ReplaceAll 的 spans 必须为空，实际 {} 条",
-            alls[0].len()
         );
         assert_eq!(
             ranges.len(),
             1,
-            "viewport-aware attach 必须随后推一条 viewport 段 ReplaceRange，实际 {} 条",
+            "viewport-aware attach 必须推一条 viewport 段 ReplaceRange，实际 {} 条",
             ranges.len()
         );
         let (got_range, got_spans) = &ranges[0];

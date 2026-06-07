@@ -7,4 +7,5 @@ pub(crate) mod diagnostics;
 pub(crate) mod language_servers;
 pub(crate) mod panels;
 pub(crate) mod project_picker;
+pub(crate) mod search;
 pub(crate) mod settings;

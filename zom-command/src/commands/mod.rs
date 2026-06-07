@@ -7,6 +7,7 @@ use crate::{CommandHandler, CommandOutcome, CommandRegistry, HostEffect, Keymap,
 
 pub(crate) mod args;
 pub mod features;
+pub(crate) mod reconcile;
 pub mod system;
 
 pub use features::debug;

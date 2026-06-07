@@ -16,7 +16,6 @@ pub(crate) enum PanelId {
     FileTree,
     VersionControl,
     Outline,
-    Search,
     Terminal,
     Debug,
     KeyboardShortcuts,
@@ -29,7 +28,6 @@ impl PanelId {
             PanelId::FileTree => "icons/panels/file_tree.svg",
             PanelId::VersionControl => "icons/panels/version_control.svg",
             PanelId::Outline => "icons/panels/outline.svg",
-            PanelId::Search => "icons/panels/search.svg",
             PanelId::Terminal => "icons/panels/terminal.svg",
             PanelId::Debug => "icons/panels/debug.svg",
             PanelId::KeyboardShortcuts => "icons/panels/keyboard_shortcuts.svg",
@@ -41,13 +39,12 @@ impl PanelId {
     /// 供 bar glyph 等 UI 标注。
     pub(crate) fn toggle_command_id(self) -> &'static str {
         use zom_command::commands::{
-            debug, file_tree, keyboard_shortcuts, outline, search, terminal, version_control,
+            debug, file_tree, keyboard_shortcuts, outline, terminal, version_control,
         };
         match self {
             PanelId::FileTree => file_tree::TOGGLE_PANEL,
             PanelId::VersionControl => version_control::TOGGLE_PANEL,
             PanelId::Outline => outline::TOGGLE_PANEL,
-            PanelId::Search => search::TOGGLE_PANEL,
             PanelId::Terminal => terminal::TOGGLE_PANEL,
             PanelId::Debug => debug::TOGGLE_PANEL,
             PanelId::KeyboardShortcuts => keyboard_shortcuts::TOGGLE_PANEL,
@@ -61,7 +58,6 @@ impl PanelId {
             PanelId::FileTree => "file_tree",
             PanelId::VersionControl => "version_control",
             PanelId::Outline => "outline",
-            PanelId::Search => "search",
             PanelId::Terminal => "terminal",
             PanelId::Debug => "debug",
             PanelId::KeyboardShortcuts => "keyboard_shortcuts",
@@ -81,7 +77,6 @@ impl PanelId {
         PanelId::FileTree,
         PanelId::VersionControl,
         PanelId::Outline,
-        PanelId::Search,
         PanelId::Terminal,
         PanelId::Debug,
         PanelId::KeyboardShortcuts,

@@ -757,6 +757,39 @@ mod tests {
     }
 
     #[test]
+    fn esc_should_collapse_extended_selection_via_dismiss_stack() {
+        // 没有 picker / search bar / pending dialog 等更高瞬态在前，esc 应该塌掉编辑区的非空选区。
+        // 这条路径由 command_runtime 末尾的 reconcile_text_edit_dismiss 自动 push 一条
+        // editor.clear_selection token；esc 在 text_edit 上下文走 system.dismiss_top(TextEdit)
+        // 把它弹出再派发。
+        let mut app = app_with_markdown_text("esc-clear-selection", "hello world");
+
+        app.dispatch(editor::select_all()).unwrap();
+        let extent_before = app.with_workspace_views(|_, views| {
+            !views
+                .active_view()
+                .unwrap()
+                .selection()
+                .primary()
+                .is_caret()
+        });
+        assert!(extent_before, "select_all 之后选区必须非空");
+
+        let outcome = app.dispatch_key("escape".to_string()).unwrap();
+        assert!(outcome.consumed, "esc 必须被 dismiss_top 消化");
+
+        let is_caret_after = app.with_workspace_views(|_, views| {
+            views
+                .active_view()
+                .unwrap()
+                .selection()
+                .primary()
+                .is_caret()
+        });
+        assert!(is_caret_after, "esc 应当把扩展选区塌成 caret");
+    }
+
+    #[test]
     fn tab_and_enter_should_dispatch_editor_commands() {
         let mut app = app_with_open_file("tab-enter");
 

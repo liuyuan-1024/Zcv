@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::Invocation;
+use crate::{CommandId, Invocation};
 
 /// 一个 DismissStack 的所属上下文家族。
 ///
@@ -160,6 +160,12 @@ impl DismissStacks {
     /// 栈顶 token 的 label——供命令面板 / 调试 UI 渲染"esc 会做什么"。
     pub fn top_label(&self, scope: DismissScope) -> Option<&'static str> {
         self.stacks.get(&scope)?.last().map(|e| e.label)
+    }
+
+    /// 栈顶 token 的 invocation 命令 id——给 reconcile 类逻辑用：
+    /// host 想知道"当前 esc 会派发哪条命令"，按 id 判断而不依赖 label 字面量。
+    pub fn top_command_id(&self, scope: DismissScope) -> Option<&CommandId> {
+        self.stacks.get(&scope)?.last().map(|e| &e.invocation.0)
     }
 }
 

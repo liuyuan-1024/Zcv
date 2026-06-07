@@ -150,15 +150,22 @@ impl CommandExecutor {
         registry: &CommandRegistry,
         context: &mut CommandContext<'_>,
     ) -> Result<(), CommandError> {
-        while let Some((id, args)) = context.queue.pop() {
-            let handler = registry
-                .handler(&id)
-                .ok_or_else(|| CommandError::UnknownCommand(id.clone()))?;
-            handler(context, args)?;
-        }
-
-        Ok(())
+        // 排空 queue，所有 handler 跑完后无论成败都对齐一次 dismiss 栈
+        // —— handler 报错时把 `?` 早返之前的 reconcile 兜底。
+        let result = drain(registry, context);
+        crate::commands::reconcile::after_dispatch(context);
+        result
     }
+}
+
+fn drain(registry: &CommandRegistry, context: &mut CommandContext<'_>) -> Result<(), CommandError> {
+    while let Some((id, args)) = context.queue.pop() {
+        let handler = registry
+            .handler(&id)
+            .ok_or_else(|| CommandError::UnknownCommand(id.clone()))?;
+        handler(context, args)?;
+    }
+    Ok(())
 }
 
 /// 取活动视图指向的 buffer id。

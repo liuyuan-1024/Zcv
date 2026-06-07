@@ -845,6 +845,54 @@ fn select_all_undo_and_redo_should_roundtrip_text_and_view_selection() {
 }
 
 #[test]
+fn clear_selection_should_collapse_each_selection_to_caret_at_head() {
+    let (mut workspace, mut views, _) = setup("hello world");
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+
+    // 先扩出非空选区。
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::SELECT_ALL, CommandArgs::new())],
+    )
+    .unwrap();
+    assert!(
+        !views
+            .active_view()
+            .unwrap()
+            .selection()
+            .primary()
+            .is_caret()
+    );
+
+    // CLEAR_SELECTION 把每条选区塌成 caret，head 不动。
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::CLEAR_SELECTION, CommandArgs::new())],
+    )
+    .unwrap();
+    let primary = views.active_view().unwrap().selection().primary();
+    assert!(primary.is_caret(), "clear_selection 必须留下纯 caret");
+    assert_eq!(primary.head(), byte("hello world".len()));
+
+    // 已是 caret 时再调一次是 no-op，不报错。
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        vec![(editor::CLEAR_SELECTION, CommandArgs::new())],
+    )
+    .unwrap();
+    let primary = views.active_view().unwrap().selection().primary();
+    assert!(primary.is_caret());
+}
+
+#[test]
 fn movement_commands_should_update_active_view_selection() {
     let (mut workspace, mut views, _) = setup("hello world");
     let mut registry = CommandRegistry::new();

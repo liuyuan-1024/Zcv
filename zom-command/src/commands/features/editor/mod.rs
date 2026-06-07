@@ -20,9 +20,10 @@ use zom_engine::{
 };
 use zom_view::ViewId;
 
+use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     BubbleRequest, CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome,
-    CommandRegistry, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
+    CommandRegistry, DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
     active_view_buffer_id, command_execution_failed, parse_optional_bool, reject_unknown_args,
     required_arg,
 };
@@ -42,6 +43,8 @@ pub const OUTDENT: &str = "editor.outdent";
 pub const DELETE: &str = "editor.delete";
 pub const MOVE_SELECTION: &str = "editor.move_selection";
 pub const SELECT_ALL: &str = "editor.select_all";
+/// 把每个选区塌成 caret（head 位置不变）。多 caret 不合并，只去 extent。
+pub const CLEAR_SELECTION: &str = "editor.clear_selection";
 pub const UNDO: &str = "editor.undo";
 pub const REDO: &str = "editor.redo";
 pub const IME_COMMIT: &str = "editor.ime_commit";
@@ -358,6 +361,10 @@ pub fn select_all() -> Invocation {
     (cid(SELECT_ALL), CommandArgs::new())
 }
 
+pub fn clear_selection() -> Invocation {
+    (cid(CLEAR_SELECTION), CommandArgs::new())
+}
+
 pub fn undo() -> Invocation {
     (cid(UNDO), CommandArgs::new())
 }
@@ -441,12 +448,14 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         )
         .key_in("enter", text_edit_multiline)
         .key_in("return", text_edit_multiline);
+
     registry
         .install(keymap, INDENT, "增加缩进", Box::new(run_indent))
         .key_in("tab", text_edit_multiline);
     registry
         .install(keymap, OUTDENT, "减少缩进", Box::new(run_outdent))
         .key_in("shift-tab", text_edit_multiline);
+
     // 删除的所有方向 / 单位变体共用一条命令，按预设 args 区分——与 MOVE_SELECTION 同形。
     registry
         .install(keymap, DELETE, "删除", Box::new(run_delete))
@@ -471,6 +480,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             delete_args(MovementDirection::Next, MovementUnit::Word),
             text_edit,
         );
+
     // 光标 / 选区的全部 移动 / 扩展 变体共用一条命令，按预设 args 区分。
     use MovementDirection::*;
     use MovementUnit::*;
@@ -487,6 +497,8 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             text_edit,
         )
         .key_with_in("down", move_args(Next, Motion::LineStep, false), text_edit)
+        .key_with_in("left", move_args(Previous, Grapheme, false), text_edit)
+        .key_with_in("right", move_args(Next, Grapheme, false), text_edit)
         // pageup / pagedown：keymap 里使用 PAGE_STEP_LINES 作为首帧兜底；
         // handler 里若主编辑区已测得 visible_visual_rows（element prepaint 反算写回），按真实值覆盖。
         .key_with_in(
@@ -511,8 +523,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             ),
             text_edit,
         )
-        .key_with_in("left", move_args(Previous, Grapheme, false), text_edit)
-        .key_with_in("right", move_args(Next, Grapheme, false), text_edit)
         .key_with_in(
             "shift-up",
             move_args(Previous, Motion::LineStep, true),
@@ -560,6 +570,13 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .install(keymap, SELECT_ALL, "全选", Box::new(run_select_all))
         .description("选中当前编辑器中的全部文本。")
         .key_in("mod-a", text_edit);
+
+    registry.install(
+        keymap,
+        CLEAR_SELECTION,
+        "取消选区",
+        Box::new(run_clear_selection),
+    );
     registry
         .install(keymap, UNDO, "撤销", Box::new(run_undo))
         .description("撤销上一次编辑。")
@@ -592,8 +609,11 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_in("enter", text_edit_composition)
         .key_in("return", text_edit_composition);
 
-    // 标签切换 / 关闭：键盘驱动，不接鼠标。
-    // 下/上一个用 mod-l/h；mod-w 关当前。
+    // 非 composition 态的 esc 路由到 system.dismiss_top(TextEdit)：
+    // host 在选区扩展时往这条栈上 push 一条 [`CLEAR_SELECTION`] token，esc 弹出后塌掉选区。
+    // composition Active 仍由上面的 IME_CANCEL 静态接管（两个 composition 维度互斥不冲突）。
+    dismiss_top::bind_esc(keymap, DismissScope::TextEdit, text_edit);
+
     registry
         .install(keymap, SELECT_TAB, "切换标签", Box::new(run_select_tab))
         .description("在编辑器标签之间切换。")
@@ -603,7 +623,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             select_tab_args(SelectTabTarget::Previous),
             text_edit,
         );
-
     registry
         .install(keymap, CLOSE_TAB, "关闭标签", Box::new(run_close_tab))
         .description("关闭当前编辑器标签。")
@@ -852,6 +871,70 @@ fn run_select_all(
         .set_selection(selection.clone())
         .map_err(command_execution_failed)?;
     *target.selection = selection;
+    Ok(CommandOutcome::default())
+}
+
+/// 把主编辑区"选区是否扩展"映射到 [`DismissScope::TextEdit`] 栈：
+/// - 选区有 extent 且栈顶不是 [`CLEAR_SELECTION`] token → push 一条；
+/// - 选区已塌（全是 caret）且栈顶就是 [`CLEAR_SELECTION`] token → pop。
+///
+/// 由 [`crate::commands::reconcile::after_dispatch`] 在每次 dispatch 末尾调一次。
+/// 任何修改选区的命令（select_all / 带 shift 的 move / 文本编辑 / undo / redo / IME commit ……）
+/// 都自动维护 esc 入口；handler 自身不需要 push / pop。
+///
+/// 只看活动 view 的主选区——focused_field（搜索框 / 项目选择器输入框）即便也有"选区"也不参与，
+/// 它们各自的瞬态由各自 scope（SearchInput / ProjectPicker）管理。
+pub(crate) fn reconcile_text_edit_dismiss(context: &mut CommandContext<'_>) {
+    let has_extent = context.views.active_view().is_some_and(|view| {
+        view.selection()
+            .as_slice()
+            .iter()
+            .any(|sel| !sel.is_caret())
+    });
+    let top_is_selection_token = context
+        .dismiss
+        .top_command_id(DismissScope::TextEdit)
+        .is_some_and(|id| id.as_str() == CLEAR_SELECTION);
+
+    match (has_extent, top_is_selection_token) {
+        (true, false) => {
+            context
+                .dismiss
+                .push(DismissScope::TextEdit, "取消选区", clear_selection());
+        }
+        (false, true) => {
+            let _ = context.dismiss.pop_top(DismissScope::TextEdit);
+        }
+        _ => {}
+    }
+}
+
+/// 把每个选区塌成 caret——head 不动，丢掉 anchor 形成的 extent；
+/// 多 caret 保持不合并。
+/// 选区本身就是 caret（无 extent）时 no-op。
+fn run_clear_selection(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    let mut target = context.edit_target()?;
+    if target.selection.as_slice().iter().all(|sel| sel.is_caret()) {
+        return Ok(CommandOutcome::default());
+    }
+    target.clear_visual_caret();
+    let collapsed: Vec<Selection> = target
+        .selection
+        .as_slice()
+        .iter()
+        .map(|sel| Selection::caret(sel.head()))
+        .collect();
+    let primary_index = target.selection.primary_index();
+    let next = SelectionSet::new_with_primary(collapsed, primary_index);
+    target
+        .buffer
+        .set_selection(next.clone())
+        .map_err(command_execution_failed)?;
+    *target.selection = next;
     Ok(CommandOutcome::default())
 }
 

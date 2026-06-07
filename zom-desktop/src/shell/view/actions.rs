@@ -17,8 +17,8 @@ use crate::shell::ActionRequest;
 use crate::shell::bubble::BubbleRuntime;
 use crate::shell::features::language_servers;
 use crate::shell::features::panels::file_tree;
-use crate::shell::features::panels::search;
 use crate::shell::features::project_picker;
+use crate::shell::features::search;
 use crate::shell::features::settings;
 use crate::shell::platform::window as platform_window;
 use crate::shell::surfaces::{SurfaceManager, SurfaceRequest};
@@ -93,7 +93,7 @@ pub(super) fn apply_host_effects(
         ) {
             continue;
         }
-        if search::try_apply_effect(&effect, app, workbench, &focus, window) {
+        if search::try_apply_effect(&effect, app, &focus, window) {
             continue;
         }
         if project_picker::try_apply_effect(

@@ -16,6 +16,7 @@ use crate::shell::workbench::docks::{bottom, left, right};
 use crate::shell::workbench::state::{DockAreaId, DockState, WorkbenchState};
 use crate::shell::{CommandTitleLookup, ShortcutLookup};
 use crate::ui_id::PanelId;
+use zom_command::commands::search;
 
 use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_divider, bar_frame};
 
@@ -54,8 +55,7 @@ fn leading_slots(
     language_server_active: bool,
 ) -> Vec<AnyElement> {
     let toggles = panel_slot_group(DockAreaId::Left, left::PANELS, state, shortcuts, titles);
-    // Group 2：语言服务器 / 诊断。当前不绑 Dock；纯状态指示。
-    // 但仍可关联命令入口（"打开 LSP 状态" / "查看问题面板"）。
+    // Group 2：语言服务器 / 诊断 / 项目级搜索。当前都不绑 Dock；混了状态指示与命令入口。
     let status = vec![
         language_servers::entry(
             state.bottom_bar.lsp_connected,
@@ -64,8 +64,22 @@ fn leading_slots(
             titles,
         ),
         diagnostics::entry(state.bottom_bar.diagnostics_count, shortcuts, titles),
+        project_search_slot(shortcuts, titles),
     ];
     join_groups(vec![toggles, status])
+}
+
+fn project_search_slot(shortcuts: &ShortcutLookup, titles: &CommandTitleLookup) -> AnyElement {
+    let command_id = search::PROJECT_ACTIVATE;
+    let title = titles(command_id).unwrap_or_else(|| command_id.to_string());
+    Glyph::icon(
+        "bottom-bar.search.project",
+        "icons/panels/search.svg",
+        title,
+    )
+    .hint(shortcuts(command_id))
+    .active(false)
+    .render()
 }
 
 fn trailing_slots(

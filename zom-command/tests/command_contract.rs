@@ -44,7 +44,7 @@ fn composing_text_edit_context() -> [KeyContext; 1] {
 }
 
 fn search_panel_context() -> [KeyContext; 1] {
-    [KeyContext::search_panel()]
+    [KeyContext::search_bar()]
 }
 
 fn file_tree_context(mode: FileTreeKeyMode) -> [KeyContext; 1] {
@@ -162,8 +162,8 @@ fn install_all_should_register_every_builtin_command_catalog() {
         (file_tree::TOGGLE_PANEL, "文件树"),
         (version_control::TOGGLE_PANEL, "版本管理"),
         (outline::TOGGLE_PANEL, "大纲"),
-        (search::TOGGLE_PANEL, "搜索"),
-        (search::ACTIVATE, "搜索"),
+        (search::ACTIVATE, "查找"),
+        (search::PROJECT_ACTIVATE, "项目搜索"),
         (search::TOGGLE_CASE_SENSITIVE, "区分大小写"),
         (search::TOGGLE_WHOLE_WORD, "全词匹配"),
         (search::TOGGLE_REGEX, "正则表达式"),
@@ -263,6 +263,8 @@ fn search_ui_commands_should_emit_state_effects() {
             (search::FIND_NEXT, CommandArgs::new()),
             (search::REPLACE_NEXT, CommandArgs::new()),
             (search::REPLACE_ALL, CommandArgs::new()),
+            (search::FOCUS_EDITOR, CommandArgs::new()),
+            (search::CONFIRM_MATCH, CommandArgs::new()),
         ],
     )
     .unwrap();
@@ -278,6 +280,8 @@ fn search_ui_commands_should_emit_state_effects() {
             HostEffect::SearchFindNext,
             HostEffect::SearchReplaceNext,
             HostEffect::SearchReplaceAll,
+            HostEffect::SearchFocusEditor,
+            HostEffect::SearchConfirmMatch,
         ]
     );
 }
@@ -314,15 +318,19 @@ fn save_without_file_path_should_emit_error_bubble() {
 }
 
 #[test]
-fn search_activate_shortcut_should_be_global() {
+fn search_activate_shortcut_should_be_available_in_text_edit_and_search_contexts() {
     let mut registry = CommandRegistry::new();
     let mut keymap = Keymap::new();
     search::install(&mut registry, &mut keymap);
-    let global = global_context();
-    let search_field = [KeyContext::search_panel(), KeyContext::global()];
+    // mod-f 限定在 text_edit 内（编辑器 / 搜索输入框都是 text_edit）；纯空态没活动文件时不响应。
+    // 同时也可在 search_panel 内触发——按一次开 bar、再按一次收起 bar 的口径。
+    let editor = text_edit_context();
+    let search_field = [
+        KeyContext::search_bar(),
+        KeyContext::text_edit(false, false),
+    ];
 
-    // mod-f 同时在编辑器全局与搜索面板内可用：在编辑器里打开面板，在面板里关掉它。
-    for contexts in [&global[..], &search_field[..]] {
+    for contexts in [&editor[..], &search_field[..]] {
         assert_eq!(
             keymap.resolve(&[key("mod-f")], contexts),
             KeymapResolution::Matched {

@@ -1,4 +1,7 @@
-//! 搜索 feature 命令。
+//! 文件级（per-buffer）搜索 / 替换命令。
+//!
+//! 由 `mod-f` 唤起编辑器上方的内联 bar：query / replacement 双输入框 + 命中高亮 + 上下导航。
+//! 算法层落在 `WorkspaceBuffer::BufferSearch`，命令侧只 emit `HostEffect`，宿主翻译。
 
 use crate::commands::emit;
 use crate::{
@@ -6,10 +9,8 @@ use crate::{
     SearchOption,
 };
 
-pub const TOGGLE_PANEL: &str = "panel.toggle.search";
-/// 打开搜索面板并聚焦 query 输入框；面板已聚焦则收起。
-///
-/// 第一版只承载单文件搜索（per-buffer），不再分 in_buffer / in_project —— 跨文件搜索是 workspace 层的另一个东西，后续单开命令。
+/// 打开当前文件的内联搜索栏并聚焦 query 输入框。已开则只搬焦点（幂等）。
+/// 收起走 `escape`（[`FOCUS_EDITOR`]），不在本命令里复用。
 pub const ACTIVATE: &str = "search.activate";
 pub const TOGGLE_CASE_SENSITIVE: &str = "search.toggle_case_sensitive";
 pub const TOGGLE_WHOLE_WORD: &str = "search.toggle_whole_word";
@@ -20,11 +21,11 @@ pub const REPLACE_NEXT: &str = "search.replace_next";
 pub const REPLACE_ALL: &str = "search.replace_all";
 pub const FOCUS_NEXT_FIELD: &str = "search.focus_next_field";
 pub const FOCUS_PREVIOUS_FIELD: &str = "search.focus_previous_field";
+/// Esc 路径：把光标折叠到当前命中末尾，再收起 bar 并把焦点交回编辑器。
 pub const FOCUS_EDITOR: &str = "search.focus_editor";
-
-pub fn toggle_panel() -> Invocation {
-    super::panel_toggle_invocation(TOGGLE_PANEL)
-}
+/// Enter 路径：把光标折叠到当前命中末尾、焦点回编辑器；**bar 保留**。
+/// 想再改 query，从编辑器按 mod-f 即可回到 query 输入框。
+pub const CONFIRM_MATCH: &str = "search.confirm_match";
 
 pub fn activate() -> Invocation {
     no_args(ACTIVATE)
@@ -70,19 +71,18 @@ pub fn focus_editor() -> Invocation {
     no_args(FOCUS_EDITOR)
 }
 
-pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
-    let search_panel = KeyBindingContext::search_panel();
+pub fn confirm_match() -> Invocation {
+    no_args(CONFIRM_MATCH)
+}
 
-    registry.install(
-        keymap,
-        TOGGLE_PANEL,
-        "搜索",
-        emit(HostEffect::TogglePanel("search".to_string())),
-    );
+pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
+    let text_edit = KeyBindingContext::text_edit();
+    let search_input = KeyBindingContext::search_input();
+
     registry
-        .install(keymap, ACTIVATE, "搜索", emit(HostEffect::SearchActivate))
-        .description("打开搜索面板并聚焦 query；已聚焦则收起。第一版只搜当前 buffer。")
-        .key("mod-f");
+        .install(keymap, ACTIVATE, "查找", emit(HostEffect::SearchActivate))
+        .description("打开当前文件的内联搜索栏并聚焦 query。收起请按 Esc。")
+        .key_in("mod-f", text_edit);
     registry
         .install(
             keymap,
@@ -90,7 +90,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "区分大小写",
             emit(HostEffect::SearchToggleOption(SearchOption::CaseSensitive)),
         )
-        .key_in("alt-c", search_panel);
+        .key_in("alt-c", search_input);
     registry
         .install(
             keymap,
@@ -98,7 +98,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "全词匹配",
             emit(HostEffect::SearchToggleOption(SearchOption::WholeWord)),
         )
-        .key_in("alt-w", search_panel);
+        .key_in("alt-w", search_input);
     registry
         .install(
             keymap,
@@ -106,7 +106,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "正则表达式",
             emit(HostEffect::SearchToggleOption(SearchOption::Regex)),
         )
-        .key_in("alt-r", search_panel);
+        .key_in("alt-r", search_input);
     registry
         .install(
             keymap,
@@ -114,7 +114,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "上一个",
             emit(HostEffect::SearchFindPrevious),
         )
-        .key_in("up", search_panel);
+        .key_in("up", search_input);
     registry
         .install(
             keymap,
@@ -122,7 +122,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "下一个",
             emit(HostEffect::SearchFindNext),
         )
-        .key_in("down", search_panel);
+        .key_in("down", search_input);
     registry
         .install(
             keymap,
@@ -130,7 +130,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "替换下一个",
             emit(HostEffect::SearchReplaceNext),
         )
-        .key_in("mod-enter", search_panel);
+        .key_in("mod-enter", search_input);
     registry
         .install(
             keymap,
@@ -138,7 +138,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "全部替换",
             emit(HostEffect::SearchReplaceAll),
         )
-        .key_in("mod-shift-enter", search_panel);
+        .key_in("mod-shift-enter", search_input);
     registry
         .install(
             keymap,
@@ -146,7 +146,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "聚焦下一个搜索输入框",
             emit(HostEffect::SearchFocusNextField),
         )
-        .key_in("tab", search_panel);
+        .key_in("tab", search_input);
     registry
         .install(
             keymap,
@@ -154,16 +154,25 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "聚焦上一个搜索输入框",
             emit(HostEffect::SearchFocusPreviousField),
         )
-        .key_in("shift-tab", search_panel);
+        .key_in("shift-tab", search_input);
     registry
         .install(
             keymap,
             FOCUS_EDITOR,
-            "焦点回到当前编辑器",
+            "退出搜索",
             emit(HostEffect::SearchFocusEditor),
         )
-        .key_in("escape", search_panel)
-        .key_in("enter", search_panel);
+        .description("取消搜索栏，把光标折叠到当前命中末尾。")
+        .key_in("escape", search_input);
+    registry
+        .install(
+            keymap,
+            CONFIRM_MATCH,
+            "跳转到匹配末尾",
+            emit(HostEffect::SearchConfirmMatch),
+        )
+        .description("把光标折叠到当前命中末尾")
+        .key_in("enter", search_input);
 }
 
 fn no_args(command_id: &'static str) -> Invocation {

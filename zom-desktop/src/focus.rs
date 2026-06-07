@@ -21,6 +21,9 @@ pub(crate) enum AppFocus {
     Panel(PanelFocus),
     /// 浮面 / palette 类 surface。
     Surface(SurfaceFocus),
+    /// 编辑器上方的内联搜索栏的某一个输入框。
+    /// 搜索栏不挂在 dock 也不是 surface，单独立一类。
+    SearchBar(SearchField),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -30,7 +33,7 @@ pub(crate) enum EditorFocus {
 
 /// Panel 焦点：哪一个 panel（位置维度）+ 该 panel 内的 sub-focus（子模式维度）。
 ///
-/// 字段公开，但**只能**通过 [`PanelFocus::bare`] / [`PanelFocus::file_tree`] / [`PanelFocus::search`] 构造，
+/// 字段公开，但**只能**通过 [`PanelFocus::bare`] / [`PanelFocus::file_tree`] 构造，
 /// 避免 panel ↔ sub 错配（例如 Outline + FileTreeFocus）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct PanelFocus {
@@ -43,7 +46,6 @@ pub(crate) enum PanelSubFocus {
     /// 没有 sub-focus —— panel 自身的容器焦点。
     Bare,
     FileTree(FileTreeFocus),
-    Search(SearchField),
 }
 
 impl PanelFocus {
@@ -61,23 +63,9 @@ impl PanelFocus {
         }
     }
 
-    pub(crate) fn search(field: SearchField) -> Self {
-        Self {
-            panel: PanelId::Search,
-            sub: PanelSubFocus::Search(field),
-        }
-    }
-
     pub(crate) fn as_file_tree(self) -> Option<FileTreeFocus> {
         match self.sub {
             PanelSubFocus::FileTree(focus) => Some(focus),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn as_search(self) -> Option<SearchField> {
-        match self.sub {
-            PanelSubFocus::Search(field) => Some(field),
             _ => None,
         }
     }
@@ -131,7 +119,16 @@ impl AppFocus {
     }
 
     pub(crate) fn search(field: SearchField) -> Self {
-        Self::Panel(PanelFocus::search(field))
+        Self::SearchBar(field)
+    }
+
+    /// 当前焦点是否落在搜索栏的某个输入框；不是则 `None`。
+    /// 各 `TextTargetOwner` / handler 从 `AppFocus` 抠 SearchField 都走这里。
+    pub(crate) fn as_search(self) -> Option<SearchField> {
+        match self {
+            Self::SearchBar(field) => Some(field),
+            _ => None,
+        }
     }
 
     /// 无 sub-focus 的 panel 焦点（版本控制 / 大纲 / 终端 / 调试 / 键盘快捷键等）。
@@ -153,12 +150,14 @@ impl AppFocus {
 
     /// 是否投影到同一个 GPUI 焦点宿主。
     /// panel/surface 相同即视为同投影，sub-focus 差异（如文件树内部模式）由 App 自行细化。
+    /// 搜索栏的 query / replacement 是两个独立 handle，按 field 严格分。
     pub(crate) fn same_projection(self, other: Self) -> bool {
         match (self, other) {
             (Self::None, Self::None) => true,
             (Self::Editor(_), Self::Editor(_)) => true,
             (Self::Panel(a), Self::Panel(b)) => a.panel == b.panel,
             (Self::Surface(a), Self::Surface(b)) => a.surface == b.surface,
+            (Self::SearchBar(a), Self::SearchBar(b)) => a == b,
             (left, right) => left == right,
         }
     }

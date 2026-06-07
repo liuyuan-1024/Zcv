@@ -104,12 +104,8 @@ pub enum HostEffect {
     TogglePanel(String),
 
     // ===== Search =====
-    /// 打开搜索面板并把焦点送到查询输入框。
-    ///
-    /// 行为矩阵（由宿主侧 handler 实现）：
-    /// - 隐藏 → 显示 + 聚焦 query
-    /// - 已显示 + 焦点不在面板 → 把焦点搬到 query
-    /// - 已显示 + 焦点在面板 → 收起，焦点回编辑器
+    /// 打开搜索栏并把焦点送到查询输入框。已开则只搬焦点（幂等）。
+    /// 收起走 [`SearchFocusEditor`]（Esc 路径），不在本变体里复用。
     ///
     /// 第一版只有单文件搜索（per-buffer），不带 scope。
     /// 跨文件搜索后续作为独立 workspace 服务再加，
@@ -129,8 +125,11 @@ pub enum HostEffect {
     SearchFocusNextField,
     /// 把搜索面板焦点移动到上一个输入框。
     SearchFocusPreviousField,
-    /// 把焦点从搜索面板退回当前活动编辑器。
+    /// 退出搜索（Esc 路径）：把光标折叠到当前命中末尾，再收起 bar、焦点回编辑器。
     SearchFocusEditor,
+    /// 确认当前命中（Enter 路径）：把光标折叠到当前匹配末尾，并把焦点交回编辑器。
+    /// **bar 不收** —— query / 命中高亮都保留；从编辑器按 mod-f 即可回到 query 输入框继续改。
+    SearchConfirmMatch,
 
     // ===== Editor 视图设置 =====
     /// 翻转主编辑区的软换行开关。

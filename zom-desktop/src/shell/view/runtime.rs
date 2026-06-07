@@ -110,14 +110,14 @@ impl ShellRuntime {
             Rc::clone(&app),
             AppFocus::search(SearchField::Query),
             EditorKernel::single_line(),
-            features.panels.search_query_focus_handle(),
+            features.search.query_focus_handle(),
             cx,
         );
         let search_replacement_slot = TextEditorSlot::install(
             Rc::clone(&app),
             AppFocus::search(SearchField::Replacement),
             EditorKernel::single_line(),
-            features.panels.search_replacement_focus_handle(),
+            features.search.replacement_focus_handle(),
             cx,
         );
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));

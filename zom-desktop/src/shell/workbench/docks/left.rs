@@ -13,12 +13,8 @@ use crate::ui_id::PanelId;
 use super::resize::{self, DockResizeRequest};
 use super::{DockEdge, dock_frame};
 
-pub(in crate::shell::workbench) const PANELS: &[PanelId] = &[
-    PanelId::FileTree,
-    PanelId::VersionControl,
-    PanelId::Outline,
-    PanelId::Search,
-];
+pub(in crate::shell::workbench) const PANELS: &[PanelId] =
+    &[PanelId::FileTree, PanelId::VersionControl, PanelId::Outline];
 
 pub(crate) fn render(
     state: &DockState,

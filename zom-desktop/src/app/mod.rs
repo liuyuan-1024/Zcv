@@ -376,8 +376,12 @@ impl App {
         }
         match focus {
             AppFocus::None | AppFocus::Editor(_) => vec![KeyContext::global()],
+            // 不变式：SearchModel 是 SearchBar 焦点的 TextTargetOwner，router 必定在前一步接管。
+            // 若装配链路漏注册 owner，停在这里比静默走 global 容易抓。
+            AppFocus::SearchBar(_) => {
+                unreachable!("SearchModel 是 SearchBar 焦点的 TextTargetOwner，router 必定接管")
+            }
             AppFocus::Panel(p) => match p.sub {
-                PanelSubFocus::Search(_) => vec![KeyContext::global()],
                 PanelSubFocus::FileTree(FileTreeFocus::ConfirmDelete) => vec![
                     // 删除确认弹窗打开中：只解析确认 / 取消，导航键全部冻结。
                     KeyContext::file_tree(FileTreeKeyMode::PendingDelete),
@@ -946,17 +950,20 @@ mod tests {
     #[test]
     fn search_shortcut_should_emit_activate_effect() {
         let mut app = App::new();
+        // mod-f 限定在 text_edit 上下文内（编辑器 / 搜索输入框）；空 focus 不响应。
+        app.request_focus(AppFocus::editor());
 
         let outcome = app.dispatch_key("mod-f".to_string()).expect("派发成功");
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::SearchActivate]);
 
-        // mod-shift-f 当前没有绑定（项目级搜索尚未引入）；不被消费。
+        // mod-shift-f 绑到项目搜索占位命令：弹一条"敬请期待"气泡。
         let outcome = app
             .dispatch_key("mod-shift-f".to_string())
             .expect("派发成功");
-        assert!(!outcome.consumed);
-        assert!(outcome.effects.is_empty());
+        assert!(outcome.consumed);
+        assert_eq!(outcome.effects.len(), 1);
+        assert!(matches!(outcome.effects[0], HostEffect::ShowBubble(_)));
     }
 
     #[test]

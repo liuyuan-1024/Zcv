@@ -1,16 +1,16 @@
-//! 搜索协调：把 panel 状态 + 活动 buffer 的 `BufferSearch` + 活动 view 的
+//! 搜索协调：把搜索栏输入 + 活动 buffer 的 `BufferSearch` + 活动 view 的
 //! selection 拧成一束。
 //!
-//! 这一层不存任何状态——所有可变状态分属 [`SearchModel`]（panel 输入）、
+//! 这一层不存任何状态——所有可变状态分属 [`SearchModel`]（bar 输入）、
 //! [`Workspace`]（buffer 内的 `BufferSearch`）、[`ViewSet`]（selection /
 //! viewport）。函数只承担"把这三家拉到一起"的流程，所以全是 free function。
 //!
 //! 入口分两类：
-//! - **HostEffect 落地**：`on_panel_opened` / `on_panel_closed` /
+//! - **HostEffect 落地**：`on_opened` / `on_closed` /
 //!   `toggle_option` / `find_*` / `replace_*` —— 由 [`super::effects`] 在
-//!   面板按钮 / 快捷键触发时调。
+//!   bar 按钮 / 快捷键触发时调。
 //! - **派发尾部 / IME 同步**：`sync_active_buffer_search` —— 由 `App` 在
-//!   每次命令派发尾部 + IME preedit 更新时调，确保 panel 文本一改就立刻
+//!   每次命令派发尾部 + IME preedit 更新时调，确保 bar 文本一改就立刻
 //!   在 buffer 里重算命中。
 
 use zom_command::SearchOption;
@@ -20,28 +20,24 @@ use zom_workspace::{SearchSyncOutcome, Workspace};
 
 use super::model::{HitCount, SearchModel};
 
-/// 面板刚被打开（mod-f 从隐藏切到显示）。立刻 sync 一次把当前 query 推进
+/// 搜索栏刚被打开（mod-f 从隐藏切到显示）。立刻 sync 一次把当前 query 推进
 /// 活动 buffer 并 reveal 第一项命中——用户期待的"打开搜索就看到结果"。
-pub(crate) fn on_panel_opened(
-    search: &mut SearchModel,
-    workspace: &mut Workspace,
-    views: &mut ViewSet,
-) {
-    search.set_panel_open(true);
+pub(crate) fn on_opened(search: &mut SearchModel, workspace: &mut Workspace, views: &mut ViewSet) {
+    search.set_open(true);
     sync_active_buffer_search(search, workspace, views);
 }
 
-/// 面板被关闭：清掉活动 buffer 的 BufferSearch 高亮，同时把 panel_open 设
-/// 回 false 让后续 dispatch tail 的 sync 跳过——不然下一个编辑器按键会触
-/// 发同步把高亮复活。
+/// 搜索栏被关闭：清掉活动 buffer 的 BufferSearch 高亮，同时把 open
+/// 设回 false 让后续 dispatch tail 的 sync 跳过——不然下一个编辑器按键会
+/// 触发同步把高亮复活。
 ///
-/// panel 上的 query/replacement 文本本身**不动**：再开面板时仍能看到上次
+/// bar 上的 query/replacement 文本本身**不动**：再开 bar 时仍能看到上次
 /// 输入，按 Enter 即可重新搜。
-pub(crate) fn on_panel_closed(search: &mut SearchModel, workspace: &mut Workspace) {
-    search.set_panel_open(false);
+pub(crate) fn on_closed(search: &mut SearchModel, workspace: &mut Workspace) {
+    search.set_open(false);
     if let Some(wb) = workspace.active_buffer_mut() {
         // 把 query 置空 → BufferSearch.slot 被清空 → ranges() 空 → EditorView 阶段 2 没东西画。
-        // 下次面板再开会重新 set_query。
+        // 下次 bar 再开会重新 set_query。
         wb.search_mut().set_query(String::new());
     }
 }
@@ -100,6 +96,26 @@ pub(crate) fn replace_next(
     }
 }
 
+/// Enter 退出搜索：把活动 view 的 selection 折叠到当前命中末尾，方便用户接着
+/// 在匹配尾部继续编辑。如果没有活动 buffer / 没有 current_range，什么也不做。
+///
+/// 与 `move_selection_to_match` 不同：那个把选区设为整条命中（start..end），
+/// 而这里要的是一个 caret（end..end）。
+pub(crate) fn confirm_match(workspace: &mut Workspace, views: &mut ViewSet) {
+    let Some(wb) = workspace.active_buffer() else {
+        return;
+    };
+    let Some(range) = wb.search().current_range() else {
+        return;
+    };
+    let Some(view) = views.active_view_mut() else {
+        return;
+    };
+    let end = range.end();
+    *view.selection_mut() = SelectionSet::new(vec![Selection::new(end, end)]);
+    view.request_reveal(end, RevealKind::Match);
+}
+
 pub(crate) fn replace_all(
     search: &mut SearchModel,
     workspace: &mut Workspace,
@@ -118,14 +134,14 @@ pub(crate) fn replace_all(
     }
 }
 
-/// 把 panel 的 query / options 推进**活动 buffer** 的 BufferSearch，并
+/// 把搜索栏的 query / options 推进**活动 buffer** 的 BufferSearch，并
 /// `sync` 一次，确保后续 find/replace handler 读到的命中是最新的。
 ///
-/// 调用点：命令派发尾部、IME preedit 更新、以及 panel 自己各 handler 的
+/// 调用点：命令派发尾部、IME preedit 更新、以及 bar 自己各 handler 的
 /// 前置位置——一处做完，渲染 / 后续命令读到的都是新真值。
 ///
-/// 面板没在屏上时整条早退——避免编辑器普通按键的 dispatch tail 把上一轮
-/// 搜索的高亮复活（参见 [`on_panel_closed`]）。
+/// bar 没在屏上时整条早退——避免编辑器普通按键的 dispatch tail 把上一轮
+/// 搜索的高亮复活（参见 [`on_closed`]）。
 ///
 /// ## 异步 sync + 延迟 reveal
 ///
@@ -142,7 +158,7 @@ pub(crate) fn sync_active_buffer_search(
     workspace: &mut Workspace,
     views: &mut ViewSet,
 ) {
-    if !search.panel_open() {
+    if !search.is_open() {
         return;
     }
     let query = search.query_text();

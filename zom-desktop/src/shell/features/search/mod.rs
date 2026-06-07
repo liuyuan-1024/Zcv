@@ -1,11 +1,11 @@
-//! Search —— L3 panel 组件。
+//! Search —— 内联在活动文件上方的搜索栏（mod-f 唤起，Zed 风格）。
 //!
-//! 当前 panel **只是输入控制条**：query / replacement 输入框 + 选项 toggle +
+//! bar 只是输入控制条：query / replacement 输入框 + 选项 toggle +
 //! 上一/下一/替换按钮 + "3 / 27" 命中数标签。
 //!
-//! - 所有命中**直接在编辑器内高亮**（EditorView 阶段 2），panel 不显示结果列表
-//! - 算法层由 `WorkspaceBuffer::BufferSearch` 提供，panel 不持搜索状态
-//! - 跨文件搜索 / 替换是 workspace 层另一笔账，与本面板无关
+//! - 所有命中**直接在编辑器内高亮**（EditorView 阶段 2），bar 不显示结果列表
+//! - 算法层由 `WorkspaceBuffer::BufferSearch` 提供，bar 不持搜索状态
+//! - 跨文件搜索 / 替换是 workspace 层另一笔账（`search.project_activate`），与本 bar 无关
 
 pub(crate) mod coordinator;
 mod effects;
@@ -27,7 +27,6 @@ use crate::focus::{AppFocus, SearchField};
 use crate::ports::{FramePump, PostEditObserver, SearchAction, SearchHost};
 use crate::shell::normalized_chord;
 use crate::shell::shared::glyph::Glyph;
-use crate::shell::workbench::docks::render_focus_host;
 use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 use crate::text_target::TextTargetOwner;
 use crate::theme::{color, radius, space, typography};
@@ -46,8 +45,8 @@ const REPLACE_ALL_ICON: &str = "icons/actions/replace_all.svg";
 
 /// 搜索面板暴露给宿主的窄接口。
 ///
-/// `SearchModel` 的双输入框 owner 拆分、panel 状态同步、命中导航都留在 search
-/// feature 内；App 只在输入派发和 workspace/view 生命周期点调用这里的能力方法。
+/// `SearchModel` 的双输入框 owner 拆分、panel 状态同步、命中导航都留在 search feature 内；
+/// App 只在输入派发和 workspace/view 生命周期点调用这里的能力方法。
 #[derive(Clone)]
 pub(crate) struct SearchRuntimeHandle {
     model: Rc<RefCell<SearchModel>>,
@@ -64,6 +63,11 @@ impl SearchRuntimeHandle {
         state
     }
 
+    /// 内联搜索栏当前是否在屏。workbench 渲染层据此决定是否画 bar。
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.borrow().is_open()
+    }
+
     pub(crate) fn sync_active_buffer_search(&self, workspace: &mut Workspace, views: &mut ViewSet) {
         let mut model = self.model.borrow_mut();
         coordinator::sync_active_buffer_search(&mut model, workspace, views);
@@ -73,14 +77,14 @@ impl SearchRuntimeHandle {
         coordinator::pump_active_buffer_search(workspace, views);
     }
 
-    pub(crate) fn on_panel_opened(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+    pub(crate) fn on_opened(&self, workspace: &mut Workspace, views: &mut ViewSet) {
         let mut model = self.model.borrow_mut();
-        coordinator::on_panel_opened(&mut model, workspace, views);
+        coordinator::on_opened(&mut model, workspace, views);
     }
 
-    pub(crate) fn on_panel_closed(&self, workspace: &mut Workspace) {
+    pub(crate) fn on_closed(&self, workspace: &mut Workspace) {
         let mut model = self.model.borrow_mut();
-        coordinator::on_panel_closed(&mut model, workspace);
+        coordinator::on_closed(&mut model, workspace);
     }
 
     pub(crate) fn toggle_option(
@@ -118,13 +122,15 @@ impl SearchHost for SearchRuntimeHandle {
     fn apply_search_action(&self, action: SearchAction, session: &mut WorkspaceSession) {
         let (workspace, views) = session.parts_mut();
         match action {
-            SearchAction::PanelOpened => self.on_panel_opened(workspace, views),
-            SearchAction::PanelClosed => self.on_panel_closed(workspace),
+            SearchAction::Opened => self.on_opened(workspace, views),
+            SearchAction::Closed => self.on_closed(workspace),
             SearchAction::ToggleOption(option) => self.toggle_option(workspace, views, option),
             SearchAction::FindPrevious => self.find_previous(workspace, views),
             SearchAction::FindNext => self.find_next(workspace, views),
             SearchAction::ReplaceNext => self.replace_next(workspace, views),
             SearchAction::ReplaceAll => self.replace_all(workspace, views),
+            // ConfirmMatch 只读 buffer + 写 view，不依赖 SearchModel；直接调 coordinator。
+            SearchAction::ConfirmMatch => coordinator::confirm_match(workspace, views),
         }
     }
 }
@@ -191,10 +197,6 @@ impl SearchRuntime {
         self.model.clone()
     }
 
-    pub(crate) fn focus_handle(&self) -> FocusHandle {
-        self.query_focus.clone()
-    }
-
     pub(crate) fn query_focus_handle(&self) -> FocusHandle {
         self.query_focus.clone()
     }
@@ -234,10 +236,18 @@ impl SearchRuntime {
         shortcuts: &ShortcutLookup,
         titles: &CommandTitleLookup,
     ) -> Div {
-        render_focus_host(
-            &self.focus,
-            key_request,
-            search_panel(
+        let key_request_clone = Rc::clone(key_request);
+        div()
+            .w_full()
+            .flex_shrink_0()
+            .track_focus(&self.focus)
+            .tab_index(0)
+            .on_key_down(move |event, window, cx| {
+                if key_request_clone(normalized_chord(&event.keystroke), window, cx) {
+                    cx.stop_propagation();
+                }
+            })
+            .child(search_bar(
                 state,
                 key_request,
                 &self.query_focus,
@@ -246,9 +256,7 @@ impl SearchRuntime {
                 replacement_slot,
                 shortcuts,
                 titles,
-            )
-            .into_any_element(),
-        )
+            ))
     }
 }
 
@@ -273,7 +281,7 @@ fn install_field_focus_listener<T: 'static>(
     .detach();
 }
 
-fn search_panel(
+fn search_bar(
     state: &SearchState,
     key_request: &KeyRequest,
     query_focus: &FocusHandle,
@@ -283,8 +291,10 @@ fn search_panel(
     shortcuts: &ShortcutLookup,
     titles: &CommandTitleLookup,
 ) -> Div {
+    // 编辑区上方的一条横向 bar：宽度撑满父级，高度由内容决定。
+    // 不再像 dock 那样吃 size_full —— 那是 panel 时代留下的。
     div()
-        .size_full()
+        .w_full()
         .flex()
         .flex_col()
         .bg(color::gray::s02())

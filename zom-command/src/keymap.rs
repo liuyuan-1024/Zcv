@@ -46,7 +46,7 @@ pub enum KeyContext {
     ProjectPicker(ProjectPickerKeyContext),
     Settings(SettingsKeyContext),
     LanguageServers(LanguageServersKeyContext),
-    SearchPanel,
+    SearchBar,
 }
 
 impl KeyContext {
@@ -77,8 +77,8 @@ impl KeyContext {
         Self::LanguageServers(LanguageServersKeyContext)
     }
 
-    pub fn search_panel() -> Self {
-        Self::SearchPanel
+    pub fn search_bar() -> Self {
+        Self::SearchBar
     }
 }
 
@@ -91,7 +91,7 @@ pub enum KeyBindingContext {
     ProjectPicker(ProjectPickerBindingContext),
     Settings(SettingsBindingContext),
     LanguageServers(LanguageServersBindingContext),
-    SearchPanel,
+    SearchInput,
 }
 
 impl KeyBindingContext {
@@ -136,8 +136,8 @@ impl KeyBindingContext {
         Self::LanguageServers(LanguageServersBindingContext)
     }
 
-    pub fn search_panel() -> Self {
-        Self::SearchPanel
+    pub fn search_input() -> Self {
+        Self::SearchInput
     }
 
     /// 两条绑定的上下文是否可能被同一个运行时 [`KeyContext`] 同时命中。
@@ -156,7 +156,7 @@ impl KeyBindingContext {
             (Self::ProjectPicker(_), Self::ProjectPicker(_)) => true,
             (Self::Settings(_), Self::Settings(_)) => true,
             (Self::LanguageServers(_), Self::LanguageServers(_)) => true,
-            (Self::SearchPanel, Self::SearchPanel) => true,
+            (Self::SearchInput, Self::SearchInput) => true,
             _ => false,
         }
     }
@@ -319,7 +319,7 @@ fn binding_matches_context(binding: &KeyBinding, context: KeyContext) -> bool {
         (KeyBindingContext::ProjectPicker(_), KeyContext::ProjectPicker(_)) => true,
         (KeyBindingContext::Settings(_), KeyContext::Settings(_)) => true,
         (KeyBindingContext::LanguageServers(_), KeyContext::LanguageServers(_)) => true,
-        (KeyBindingContext::SearchPanel, KeyContext::SearchPanel) => true,
+        (KeyBindingContext::SearchInput, KeyContext::SearchBar) => true,
         _ => false,
     }
 }

@@ -246,7 +246,11 @@ impl Render for ShellView {
         };
         let search_state = {
             let app = runtime.app.borrow();
-            runtime.features.panels.search_state(app.workspace())
+            runtime
+                .features
+                .search
+                .runtime_handle()
+                .state(app.workspace())
         };
 
         // 光标一移动就重置闪烁为实心，让用户立刻定位到光标；定时链与全局可见位都由 editor 子系统驱动。
@@ -336,6 +340,7 @@ impl Render for ShellView {
             Rc::clone(&runtime.search_replacement_slot),
             runtime.editor_focus.clone(),
             runtime.features.panels.clone(),
+            runtime.features.search.clone(),
             file_tree_panel,
             self.editor_tab_scroll.clone(),
             confirm_delete,

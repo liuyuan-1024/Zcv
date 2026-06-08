@@ -23,7 +23,7 @@ use crate::shell::features::settings;
 use crate::shell::platform::window as platform_window;
 use crate::shell::surfaces::{SurfaceManager, SurfaceRequest};
 use crate::shell::workbench::controller::WorkbenchController;
-use crate::ui_id::{PanelId, SurfaceId};
+use crate::ui_id::SurfaceId;
 
 use super::features::FeatureRegistry;
 use super::focus::{FocusProjection, panel_default_focus};
@@ -184,11 +184,8 @@ fn apply_shell_effect(
             bubbles.update(cx, |runtime, cx| runtime.push(request.clone(), cx));
             window.refresh();
         }
-        HostEffect::TogglePanel(panel_str_id) => {
-            let Some(panel) = PanelId::from_command_str_id(panel_str_id) else {
-                eprintln!("HostEffect::TogglePanel 收到未知 panel id：{panel_str_id}");
-                return;
-            };
+        HostEffect::TogglePanel(panel) => {
+            let panel = *panel;
             let visible = workbench.borrow().is_panel_active(panel);
             if visible && focus.is_at_panel(panel, window) {
                 // 已显示且焦点就在它身上 —— 收起，焦点回编辑区。

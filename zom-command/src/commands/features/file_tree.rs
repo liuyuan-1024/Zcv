@@ -7,11 +7,10 @@ use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, reject_unknown_args,
-    required_arg,
+    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, PanelKind,
+    reject_unknown_args, required_arg,
 };
 
-pub const TOGGLE_PANEL: &str = "panel.toggle.file_tree";
 pub const MOVE_SELECTION: &str = "file_tree.move_selection";
 pub const EXTEND_SELECTION: &str = "file_tree.extend_selection";
 pub const ESCAPE: &str = "file_tree.escape";
@@ -78,10 +77,6 @@ impl TryFrom<CommandArgs> for MoveSelectionArgs {
             .map_err(|_| CommandError::InvalidArgs(format!("无效文件树移动步长：{raw}")))?;
         Ok(Self { delta })
     }
-}
-
-pub fn toggle_panel() -> Invocation {
-    super::panel_toggle_invocation(TOGGLE_PANEL)
 }
 
 pub fn move_selection(delta: isize) -> Invocation {
@@ -160,8 +155,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     super::register_panel_toggle(
         registry,
         keymap,
-        TOGGLE_PANEL,
-        "file_tree",
+        PanelKind::FileTree,
         "文件树",
         "打开或关闭文件树面板。",
         "mod-shift-e",

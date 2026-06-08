@@ -984,7 +984,7 @@ mod tests {
         assert!(outcome.consumed);
         assert_eq!(
             outcome.effects,
-            vec![HostEffect::TogglePanel("file_tree".to_string())]
+            vec![HostEffect::TogglePanel(PanelId::FileTree)]
         );
     }
 
@@ -1018,7 +1018,7 @@ mod tests {
         assert!(outcome.consumed);
         assert_eq!(
             outcome.effects,
-            vec![HostEffect::TogglePanel("file_tree".to_string())]
+            vec![HostEffect::TogglePanel(PanelId::FileTree)]
         );
 
         let outcome = app.dispatch_key("mod-a".to_string()).expect("派发成功");

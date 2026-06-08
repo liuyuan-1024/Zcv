@@ -3,12 +3,12 @@
 //! 当前渲染「占位中」灰字。
 
 use gpui::{Context, Div, FocusHandle, IntoElement};
-use zom_command::commands::terminal;
+use zom_command::PanelKind;
 
 use crate::shell::workbench::docks::{placeholder, render_focus_host};
 use crate::shell::{CommandTitleLookup, KeyRequest};
 
-const COMMAND: &str = terminal::TOGGLE_PANEL;
+const COMMAND: &str = PanelKind::Terminal.toggle_command_id();
 
 #[derive(Clone)]
 pub(crate) struct TerminalRuntime {

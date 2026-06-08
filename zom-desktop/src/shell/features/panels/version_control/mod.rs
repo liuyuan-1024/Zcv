@@ -3,12 +3,12 @@
 //! 当前渲染「占位中」灰字。
 
 use gpui::{Context, Div, FocusHandle, IntoElement};
-use zom_command::commands::version_control;
+use zom_command::PanelKind;
 
 use crate::shell::workbench::docks::{placeholder, render_focus_host};
 use crate::shell::{CommandTitleLookup, KeyRequest};
 
-const COMMAND: &str = version_control::TOGGLE_PANEL;
+const COMMAND: &str = PanelKind::VersionControl.toggle_command_id();
 
 #[derive(Clone)]
 pub(crate) struct VersionControlRuntime {

@@ -2,7 +2,7 @@
 //!
 //! 每个 feature 模块同处声明命令 id、typed builder、handler 与默认键位。
 
-use crate::{CommandArgs, CommandId, CommandRegistry, HostEffect, Invocation, Keymap};
+use crate::{CommandRegistry, HostEffect, Keymap, PanelKind};
 
 pub mod debug;
 pub mod diagnostics;
@@ -35,15 +35,12 @@ pub fn install_all(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     diagnostics::install(registry, keymap);
 }
 
-pub(super) fn panel_toggle_invocation(command_id: &'static str) -> Invocation {
-    (cid(command_id), CommandArgs::new())
-}
-
+/// 注册"切换某 panel"的内建命令。命令 id 直接取自 [`PanelKind::toggle_command_id`]，
+/// 保证 emit 与查询用的 id 强绑定 —— 不再手写两端字符串。
 pub(super) fn register_panel_toggle(
     registry: &mut CommandRegistry,
     keymap: &mut Keymap,
-    command_id: &'static str,
-    panel_str_id: &'static str,
+    panel: PanelKind,
     title: &'static str,
     description: &'static str,
     default_chord: &'static str,
@@ -51,14 +48,10 @@ pub(super) fn register_panel_toggle(
     registry
         .install(
             keymap,
-            command_id,
+            panel.toggle_command_id(),
             title,
-            super::emit(HostEffect::TogglePanel(panel_str_id.to_string())),
+            super::emit(HostEffect::TogglePanel(panel)),
         )
         .description(description)
         .key(default_chord);
-}
-
-fn cid(id: &'static str) -> CommandId {
-    CommandId::new(id).expect("内建命令 ID 必须非空")
 }

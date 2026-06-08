@@ -2,16 +2,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use zom_command::commands::{
-    debug, diagnostics,
+    diagnostics,
     editor::{self, InsertTextArgs, MoveSelectionArgs, ReplaceSelectionArgs},
-    file_tree, keyboard_shortcuts, outline, project_picker, search, settings, terminal,
-    version_control,
+    file_tree, project_picker, search, settings,
 };
 use zom_command::{
     BubbleKind, Command, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId,
     CommandQueue, CommandRegistry, DismissScope, DismissStacks, EditTarget, EffectQueue,
     FileTreeKeyMode, HostEffect, KeyBinding, KeyBindingContext, KeyChord, KeyContext, Keymap,
-    KeymapResolution, MockClipboard, NoArgs, SearchOption,
+    KeymapResolution, MockClipboard, NoArgs, PanelKind, SearchOption,
 };
 use zom_engine::{
     Buffer, BufferConfig, ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
@@ -166,9 +165,9 @@ fn install_all_should_register_every_builtin_command_catalog() {
     let registered_titles = [
         (settings::OPEN, "设置"),
         (diagnostics::SHOW_PROBLEMS, "诊断"),
-        (file_tree::TOGGLE_PANEL, "文件树"),
-        (version_control::TOGGLE_PANEL, "版本管理"),
-        (outline::TOGGLE_PANEL, "大纲"),
+        (PanelKind::FileTree.toggle_command_id(), "文件树"),
+        (PanelKind::VersionControl.toggle_command_id(), "版本管理"),
+        (PanelKind::Outline.toggle_command_id(), "大纲"),
         (search::ACTIVATE, "查找"),
         (search::PROJECT_ACTIVATE, "项目搜索"),
         (search::TOGGLE_CASE_SENSITIVE, "区分大小写"),
@@ -178,9 +177,9 @@ fn install_all_should_register_every_builtin_command_catalog() {
         (search::FIND_NEXT, "下一个"),
         (search::REPLACE_NEXT, "替换下一个"),
         (search::REPLACE_ALL, "全部替换"),
-        (terminal::TOGGLE_PANEL, "终端"),
-        (debug::TOGGLE_PANEL, "调试"),
-        (keyboard_shortcuts::TOGGLE_PANEL, "快捷键"),
+        (PanelKind::Terminal.toggle_command_id(), "终端"),
+        (PanelKind::Debug.toggle_command_id(), "调试"),
+        (PanelKind::KeyboardShortcuts.toggle_command_id(), "快捷键"),
     ];
 
     for (id, title) in registered_titles {
@@ -196,7 +195,7 @@ fn install_all_should_register_every_builtin_command_catalog() {
     );
     assert!(
         keymap
-            .format_shortcuts_for(&command_id(file_tree::TOGGLE_PANEL))
+            .format_shortcuts_for(&command_id(PanelKind::FileTree.toggle_command_id()))
             .is_some()
     );
     assert!(
@@ -1716,10 +1715,7 @@ fn project_picker_esc_routes_through_dismiss_stack() {
         KeymapResolution::Matched { command, args } => (command, args),
         other => panic!("escape 应该解析到 system.dismiss_top，实际：{other:?}"),
     };
-    assert_eq!(
-        resolved_id,
-        command_id(zom_command::commands::system::dismiss::DISMISS_TOP),
-    );
+    assert_eq!(resolved_id, command_id("system.dismiss_top"));
     assert_eq!(resolved_args.get("scope"), Some("ProjectPicker"));
 
     // 3) 执行 system.dismiss_top(ProjectPicker)：栈被弹空，进而派发 DISMISS，最终 emit DismissSurface。

@@ -16,42 +16,41 @@
 - **构建**：release。
 - **峰值内存**：bench 不自测；外层用 `/usr/bin/time -l`（macOS）或 `/usr/bin/time -v`（Linux）读 maximum resident set size。
 
-## 2. 16 MiB 基线（rust 语料，2026-06-02 实测）
+## 2. 16 MiB 基线（rust 语料，2026-06-08 实测）
 
-P0–P4 全部落地后的稳态。v0.2.0 起点与各阶段过渡数字见 §6 历史快照。
+`BufferSyntaxTree` slot 改造落地后的稳态：sink / `MetadataLayer<HighlightSpan>` / coalesce 整条路径下线，worker reparse 完成后写 `Arc<BufferSyntaxTree>` 进共享 slot，paint 端按 viewport 现查。v0.2.0 起点与各阶段过渡数字见 §6 历史快照。
 
 | 场景 | 16 MiB | 红线 | 备注 |
 |---|---:|---:|---|
-| `load` | **41.7 ms** | — | `Buffer::from_reader` 流式：64 KiB 读缓冲 + 单次扫描合并 UTF-8 / 行尾 / 最长行 |
-| `viewport` | **30.8 µs** | ≤ 100 µs ✅ | `snapshot.slice_viewport(60 行 @ 中位行)`；渲染热路径 |
-| `search` | **5.3 ms** | ≤ 200 ms ✅ | regex `\bfn\b|\blet\b|\bimpl\b`；命中 114357 处；8 MiB 硬限已解除 |
-| `parse` | **1.55 s** | ≤ 1.5 s ≈✅ | tree-sitter 冷启动；worker 异步、不阻塞主线程 |
-| `edit+hl 主线程` | **2.9 µs / 键** | ≤ 5 ms ✅ | `insert` + `take_pending` + push channel；与文件大小脱钩（1800× 余量） |
-| `edit+hl viewport e2e` | **54.5 ms / 键** | ≤ 100 ms ✅ | viewport ±8 KiB + worker `wait_for_idle`；`QueryCursor::set_byte_range` + `sink.replace_range` |
-| `edit+hl 全文 e2e` | 776 ms / 键 | — | 全文 query 端到端；保留作旧路径回归观察，非红线 |
+| `load` | **42.5 ms** | — | `Buffer::from_reader` 流式：64 KiB 读缓冲 + 单次扫描合并 UTF-8 / 行尾 / 最长行 |
+| `viewport` | **35.7 µs** | ≤ 100 µs ✅ | `snapshot.slice_viewport(60 行 @ 中位行)`；渲染热路径 |
+| `search` | **5.6 ms** | ≤ 200 ms ✅ | regex `\bfn\b|\blet\b|\bimpl\b`；命中 114357 处；8 MiB 硬限已解除 |
+| `parse` | **0.92 s** | ≤ 1.5 s ✅ | tree-sitter 冷启动；worker 异步、不阻塞主线程 |
+| `edit+hl 主线程` | **6.0 µs / 键** | ≤ 5 ms ✅ | `insert` + 主线程同步 `tree_slot.try_edit` 推坐标 + push channel；与文件大小脱钩（830× 余量） |
+| `edit+hl 端到端` | **78.6 ms / 键** | ≤ 100 ms ✅ | 编辑 + worker `wait_for_idle`（增量 reparse 完成）；新 tree 写入共享 slot 后下一帧 paint 现查即正确 |
 
 > 1 MiB / 4 MiB 一档作秒级回归（`run rust 4`）使用，触发红线告警已足够，不再列入本表。
 > 64 MiB 一档仍可跑作"远端劣化"观察，见 §6；超过 16 MiB 已不在红线管辖。
 > json / log 语料尚未实测。
 
-## 2.1 render-time query 与增量 reparse 的分位数（2026-06-07）
+## 2.1 render-time query 与增量 reparse 的分位数（2026-06-08）
 
 paint 路径与编辑路径上两条核心 tree-sitter 调用的实测分位数，作为「render-time query 现查 viewport 是否够快」「主线程同步 reparse 是否可行」的依据。
 
 | 场景 | 1 MiB | 4 MiB | 16 MiB | 红线参考 | 备注 |
 |---|---:|---:|---:|---:|---|
-| `render-time query` p50 | 70.3 µs | 71.1 µs | 72.7 µs | — | 直接用 `tree_sitter::QueryCursor::captures` + `set_byte_range`，50 行 viewport ×200 次 |
-| `render-time query` p95 | 73.6 µs | 74.2 µs | 76.5 µs | — | |
-| `render-time query` p99 | **76.0 µs** | **79.0 µs** | **95.7 µs** | < 500 µs | 跨规模几乎常数——`set_byte_range` 把工作限定在 viewport 内 |
-| `incremental reparse` p50 | 1.25 ms | 6.92 ms | 47.5 ms | — | `tree.edit` + `parse_with_options(Some(&old))`；单字符 ASCII 插入 ×100 次 |
-| `incremental reparse` p95 | 1.60 ms | 9.78 ms | 56.1 ms | — | |
-| `incremental reparse` p99 | **2.04 ms** | **11.2 ms** | **58.1 ms** | — | 严格随文件大小线性增长 |
+| `render-time query` p50 | 72.8 µs | 74.3 µs | 75.1 µs | — | 直接用 `tree_sitter::QueryCursor::captures` + `set_byte_range`，50 行 viewport ×200 次 |
+| `render-time query` p95 | 81.0 µs | 78.6 µs | 84.8 µs | — | |
+| `render-time query` p99 | **92.3 µs** | **90.0 µs** | **100.1 µs** | < 500 µs | 跨规模几乎常数——`set_byte_range` 把工作限定在 viewport 内 |
+| `incremental reparse` p50 | 1.37 ms | 13.4 ms | 68.7 ms | — | `tree.edit` + `parse_with_options(Some(&old))`；单字符 ASCII 插入 ×100 次 |
+| `incremental reparse` p95 | 1.85 ms | 15.9 ms | 82.7 ms | — | |
+| `incremental reparse` p99 | **2.38 ms** | **18.5 ms** | **87.0 ms** | — | 严格随文件大小线性增长 |
 
 **结论**：
 
-1. **render-time query 直接走，不缓存**。p99 < 0.1 ms 远低于 0.5 ms 阈值，paint 时现查 viewport 16 MiB rust 仍只占 60 FPS 帧预算的 0.6%。
-2. **主线程不做同步增量 reparse**。16 MiB 单键 48–58 ms ≈ 3–4 帧，必须留在 worker 上。小文件上叠加"命中预算就同步 reparse"的 fast-path 是可选优化（≤ 1 ms budget 覆盖 1 MiB、≤ 5 ms 覆盖 4 MiB）。
-3. **wrong-color flash 的根源**：16 MiB 上观察到的"补色尾迹"≈ 3-4 帧，本质是 tree-sitter 增量 reparse 在该规模下的固有耗时，工程上靠"主线程 `tree.edit` 推坐标 + paint 现查"消掉首帧错位，剩余只能等 reparse。
+1. **render-time query 直接走，不缓存**。p99 跨规模 < 0.11 ms 远低于 0.5 ms 阈值，paint 时现查 viewport 16 MiB rust 仍只占 60 FPS 帧预算的 0.7%。
+2. **主线程不做同步增量 reparse**。16 MiB 单键 69–87 ms ≈ 4–6 帧，必须留在 worker 上。小文件上叠加"命中预算就同步 reparse"的 fast-path 是可选优化（≤ 1.5 ms budget 覆盖 1 MiB、≤ 5 ms 覆盖 4 MiB）。
+3. **wrong-color flash 的根源**：16 MiB 上观察到的"补色尾迹"≈ 4-6 帧，本质是 tree-sitter 增量 reparse 在该规模下的固有耗时，工程上靠"主线程 `tree.edit` 推坐标 + paint 现查"消掉首帧错位，剩余只能等 reparse。
 
 ## 3. 关键发现（v0.2.0 回顾，已被 P0–P4 解决）
 
@@ -112,9 +111,6 @@ cargo run --release -p zom-bench -- run rust
 /usr/bin/time -l ./target/release/zom-bench run rust 16    # macOS
 /usr/bin/time -v ./target/release/zom-bench run rust 16    # Linux
 
-# 64 MiB 仍可跑作回归观察（不作红线）
-/usr/bin/time -l ./target/release/zom-bench run rust 64
-
 # 三语言全跑
 cargo run --release -p zom-bench -- run all
 ```
@@ -137,4 +133,4 @@ cargo run --release -p zom-bench -- run all
 | 2026-06-01 | 收口 16 MiB（阈值回收） | (16MB: 44 ms) | TBD | 32 µs | (16MB: 1.56 s) | (16MB: vp 63 ms / 主线程 3 µs / 全文 e2e 786 ms) | (16MB: 3.0 GB bench 并发) | **`MAX_HIGHLIGHT_BYTES` 64 → 16 MiB**：bench 实测 16 MiB rust 单键 viewport-scoped e2e 63 ms（红线 ≤ 100 ms ✅）、主线程 3 µs（≤ 5 ms ✅）、cold parse 1.56 s（≈ 1.5 s ✅）；64 MiB 一档单键 ~250 ms，cold parse 6.3 s，是 tree-sitter 走树本身 O(file size) 的常数代价，不再继续追。16 MiB 覆盖单文件主流代码量（小型 monorepo 单文件 99 分位 < 8 MiB），超过部分多为日志/生成代码/单页 HTML，宿主应提示用户跳过。BASELINE §4 红线表也同步收口到 16 MiB 一档；64 MiB 仍在 bench 跑，仅作回归观察、不当红线。**P0–P4 阶段性收尾**：方案兑现"主线程脱钩文件大小 + viewport-scoped query + 异步 worker"三件套；剩余 search 8 MiB 硬限独立成项。 |
 | 2026-06-07 | confirmed layer Stickiness::Expand + 删 provisional | — | — | — | — | (16MB: 3 µs 主线程，e2e 同 §2) | — | 把 confirmed layer 落 span 时 stickiness 从 `Never` 切到 `Expand`：编辑当帧 `update_through_delta_event` 让相邻 span 自动吞下新字节，不再需要 provisional 层。删除：`syntax_provisional_layer_kind`、`ProvisionalSpan`、`provisional_spans_for_edit`、`infer_highlight_*`、`syntax_range_is_covered`、`clear_provisional_*`（~190 行），主线程少跑 3 次 O(N) 扫描；删除 desktop `SYNTAX_PROVISIONAL` priority 与 producer 第二层 push。bench 数字未跑（主线程仍 3 µs/键 量级，区别在 layer 写入路径而非可测耗时）。**遗留问题**：仍有"先以旧 tree 颜色显示、worker reparse 回包后再纠正"的色跳——这一帧延迟由 worker 异步交付协议本身造成，是下一步 render-time query 改造的动机。 |
 | 2026-06-07 | render-time query 前置测量 | — | — | — | — | — | — | bench 新增两个分位数场景：`render-time query`（直跑 `QueryCursor::captures` + `set_byte_range`，~50 行 viewport ×200 次）与 `incremental reparse`（`tree.edit` + `parse_with_options(Some(&old))` ×100 次）。**关键发现**：（1）render-time query p99 跨 1/4/16 MiB 都 < 100 µs，远低于 0.5 ms 阈值——paint 现查 viewport 完全可行，不必加 viewport spans cache；（2）incremental reparse p99 在 1 MiB 2.0 ms / 4 MiB 11.2 ms / 16 MiB 58.1 ms 强线性增长，16 MiB 严禁主线程同步——这也是 "wrong color flash" 持续 3-4 帧的根因，tree-sitter 增量 reparse 自身代价不可绕过。详见 §2.1。 |
-| 2026-06-08 | BufferSyntaxTree + slot 改造落地 | — | — | — | — | — | — | sink / `MetadataLayer<HighlightSpan>` / coalesce 整条路径下线；改成 worker reparse 后把 `Arc<BufferSyntaxTree>` 写共享 slot，paint 端按 viewport 现查 `query_viewport`。主线程编辑入口同步 `tree_slot.try_edit` 推坐标，让首帧 paint 拿到的 tree 已对齐新 snapshot，token 内插入不再闪默认前景色。等价性由 `incremental_matches_full_after_edits` / `edit_frame_decorations_equal_reparse_frame_for_structure_preserving_edit` 钉死。markdown 退化为单层 block grammar（inline 着色 / 代码栏注入留作未来工作项）。 |
+| 2026-06-08 | BufferSyntaxTree + slot 改造落地 | (16MB: 42.9 ms) | TBD | (16MB: 35.8 µs) | (16MB: 0.90 s) | (16MB: 主线程 5.9 µs / e2e 75.6 ms) | (1+4+16 三档全跑: 1.58 GB / footprint 1.16 GB) | sink / `MetadataLayer<HighlightSpan>` / coalesce 整条路径下线；改成 worker reparse 后把 `Arc<BufferSyntaxTree>` 写共享 slot，paint 端按 viewport 现查 `query_viewport`。主线程编辑入口同步 `tree_slot.try_edit` 推坐标，让首帧 paint 拿到的 tree 已对齐新 snapshot，token 内插入不再闪默认前景色。等价性由 `incremental_matches_full_after_edits` / `edit_frame_decorations_equal_reparse_frame_for_structure_preserving_edit` 钉死。markdown 退化为单层 block grammar（inline 着色 / 代码栏注入留作未来工作项）。**首次实测**（`time -l cargo run --release -p zom-bench -- run rust`）：16 MiB 红线全过——主线程 5.9 µs/键 ≤ 5 ms（850× 余量）、e2e 75.6 ms ≤ 100 ms（24% 余量）、cold parse 0.90 s ≤ 1.5 s。full-run peak RSS 1.58 GB 对比 2026-06-01 收口 行的 16 MiB 单档 3.0 GB，slot 方案在并发跑三档情况下仍砍掉 ~半（sink + MetadataLayer 双份 spans 不再常驻），与 §2.1 incremental reparse p99 16 MiB 87 ms 一致，e2e 预算几乎全花在 tree-sitter 自身。`time -l ./target/release/zom-bench load rust 16` 单测 load-only RSS 尚未跑。 |

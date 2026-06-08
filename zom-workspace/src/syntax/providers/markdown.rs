@@ -1,20 +1,14 @@
-//! Markdown provider (Phase 3 后形态).
+//! Markdown provider —— 单层 block tree。
 //!
-//! Phase 3 整段清理把原 `MarkdownWorker`（block + inline + injection 三层 tree） 收口为单层 block tree：
-//! 复用通用的 [`super::common::HighlightWorker`]，只挂 `tree-sitter-md` 的 block grammar。
+//! 复用通用的 [`super::common::HighlightWorker`]，只挂 `tree-sitter-md` 的 block grammar，加本仓的 query 扩展（任务列表标记、表格分隔符、`@attribute`）。
+//! capture name 走默认归一化：`text.title → markup.heading`、`text.literal → markup.raw.block`、`text.uri / text.reference → markup.link.*`。
 //!
-//! ## 已下线（计划 §"风险与未知点" 3）
+//! ## 不覆盖的部分
 //!
-//! - **inline 着色**：emphasis / strong / code span / strikethrough 不再单独标色。
-//! 它们仍是 block 树里的子节点，但 block query 不覆盖。
-//! - **fenced code 注入**：```` ```rust ```` 之类的代码块不再按宿主语言着色，整段走 `markup.raw.block`。
+//! - **inline 着色**：emphasis / strong / code span / strikethrough 不单独标色——它们仍是 block 树里的子节点，但 block query 不覆盖。
+//! - **fenced code 注入**：```` ```rust ```` 之类的代码块不按宿主语言着色，整段走 `markup.raw.block`。
 //!
-//! 恢复这两条特性需要扩展 [`crate::syntax::BufferSyntaxTree`] 为多树容器(`Arc<Vec<Arc<Tree>>>`)，paint 端 query 入口能跨多 grammar，是独立工作项。
-//!
-//! ## 仍保留
-//!
-//! - block grammar + 本仓的 query 扩展（任务列表标记、表格分隔符、`@attribute`）。
-//! - capture name 走默认归一化：`text.title → markup.heading`、`text.literal → markup.raw.block`、`text.uri / text.reference → markup.link.*`。
+//! 恢复这两条特性需要扩展 [`crate::syntax::BufferSyntaxTree`] 为多树容器，paint 端 query 入口能跨多 grammar。
 
 use std::sync::{Arc, OnceLock};
 

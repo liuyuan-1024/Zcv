@@ -1,4 +1,4 @@
-//! `SyntaxDocument` —— 单缓冲区文档（Phase 3 后形态）。
+//! `SyntaxDocument` —— 单缓冲区文档。
 //!
 //! 嵌入式编辑器（设置面板的 TOML 视图、未来的代码片段输入框 ……）需要的不是一整个 [`crate::Workspace`] —— 它们没有多 buffer / active buffer / 文件树这些概念，只是想要「一个挂着语法高亮的 [`Buffer`]」。
 //!
@@ -8,11 +8,10 @@
 //! - 通过 `Rc<SyntaxEngine>` 与主工作区共享语言注册表 / 后台 worker / buffer id 分配器。
 //! - 暴露 [`Self::pump_post_edit`] 把编辑事件喂给 syntax；paint 端按 [`Self::syntax_tree_slot`] 现查共享 tree。
 //!
-//! Phase 3 后**没有**`highlight_layers` 字段 / `pump_pending_highlights` 方法 / `set_viewport_hint` 转发——layer 路径整段下线。
-//!
 //! ## 为什么直接吃 [`LanguageId`]
 //!
-//! 嵌入式编辑器对自身语言通常**已知**（设置面板就是 toml，代码片段输入框由调用方决定），不需要走 [`crate::Workspace::open_*`] 那种「按 path + 首行 shebang 识别」的路径。直接传 [`LanguageId`] 让 API 表达意图。
+//! 嵌入式编辑器对自身语言通常**已知**（设置面板就是 toml，代码片段输入框由调用方决定），
+//! 不需要走 [`crate::Workspace::open_*`] 那种「按 path + 首行 shebang 识别」的路径。直接传 [`LanguageId`] 让 API 表达意图。
 
 use std::rc::Rc;
 

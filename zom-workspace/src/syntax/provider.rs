@@ -1,8 +1,7 @@
 //! HighlightProvider trait + BufferHandle。
 //!
-//! 计划 §Phase 3 后形态：provider 只剩"持有 Parser + Tree、按编辑事件 reparse、把 (config + tree + snapshot + version) 导出到共享 [`BufferSyntaxTreeSlot`]"四步。
-//! sink、viewport hint、apply_pending_edit / coalesce 全部下线 —— viewport-scoped Query 由 paint 阶段（[`crate::syntax::BufferSyntaxTree::query_viewport`]）现查；
-//! coalesce 也不再需要 —— 产物落在 slot 而不是 sink 队列，下一次 reparse 自然覆盖。
+//! Provider 只剩四步：持有 Parser + Tree、按编辑事件 reparse、把 `(config + tree + snapshot + version)` 导出到共享 [`BufferSyntaxTreeSlot`]、释放资源。
+//! viewport-scoped Query 由 paint 阶段（[`crate::syntax::BufferSyntaxTree::query_viewport`]）现查，provider 不必知道 viewport。
 //!
 //! trait 仍存在的理由：把 tree-sitter / LSP / 占位三类 provider 形态对调度层 ([`crate::syntax::worker`]) 抽象成同一面；
 //! 调度层负责 Job 调度、panic 隔离、Entry 生命周期，不关心 provider 装的是哪门语言。
@@ -47,7 +46,7 @@ impl BufferHandle {
     }
 }
 
-/// 语法高亮 provider 的最小公共面（Phase 3 后形态）。
+/// 语法高亮 provider 的最小公共面。
 pub trait HighlightProvider: Send + Sync {
     /// 本 provider 服务的语言 id。registry 在 attach 前已经按此 id 选了 provider，
     /// 但留这个方法是给后续多 provider 叠加 / 诊断显示用。

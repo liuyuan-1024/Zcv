@@ -3,8 +3,7 @@
 //! 活动 buffer 的 post_edit 扇出仍是内置入口；
 //! 跨 feature 的"编辑后同步"与"每帧 drain"通过 [`PostEditObserver`] / [`FramePump`] 两个端口（在[`crate::ports`]）注册，让 BackgroundPumps 不必认识具体 feature。
 //!
-//! Phase 3 后**没有**语法高亮 drain 拍点 —— paint 阶段直接从共享 `BufferSyntaxTreeSlot` 现查 tree-sitter Query，没有需要 drain 的中间产物。
-//! viewport hint 转发也已下线（worker 不再需要知道 viewport）。
+//! 语法高亮没有需要 drain 的中间产物 —— paint 阶段直接从共享 `BufferSyntaxTreeSlot` 现查 tree-sitter Query。
 
 use crate::ports::{FramePump, PostEditObserver};
 use crate::workspace_session::WorkspaceSession;

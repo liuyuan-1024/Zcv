@@ -1,7 +1,6 @@
 //! syntax producer —— 把当前 [`BufferSyntaxTree`] 在 viewport 上的 query 结果翻译为 Foreground Decoration。
 //!
-//! 计划 §Phase 2：颜色 = 当前 tree 在 viewport 上的纯函数。
-//! 没有缓存、没有 layer、没有"先看到旧颜色再看到新颜色"的中间帧——每帧从共享的 [`BufferSyntaxTree`] 出发跑一次 viewport-scoped tree-sitter Query。
+//! 颜色 = 当前 tree 在 viewport 上的纯函数：没有缓存、没有中间帧——每帧从共享的 [`BufferSyntaxTree`] 出发跑一次 viewport-scoped tree-sitter Query。
 //!
 //! `highlight name → 字色` 的解析归 shell composer；producer 只把语法高亮名保留在 [`StyleClass::Syntax`] 里，避免应用域知道主题实现。
 //!

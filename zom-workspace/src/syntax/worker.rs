@@ -1,7 +1,5 @@
 //! 后台 SyntaxWorker：一根 std::thread 串行承载所有 buffer 的 provider 调用。
 //!
-//! 设计依据：[语法高亮重构计划 §Phase 3](../../docs/语法高亮重构计划.md)。
-//!
 //! ## 总体形态
 //!
 //! ```text
@@ -18,17 +16,10 @@
 //!
 //! 关键边界：
 //! - **Provider 实例的真实归属在 worker**：`Box<dyn HighlightProvider>` 通过 `Job::Attach` 从主线程交接到 worker；worker 退出前以 `Detach` 回收并 drop。
-//! - **产物落 slot，不落 sink**：Phase 3 已把 sink / `MetadataLayers<HighlightSpan>` 整条路径删除。
-//! worker 每条 Job 处理完调一次 `provider.export_syntax_tree(&slot)`， paint 端按 slot 上的 `Arc<BufferSyntaxTree>` 现查 viewport-scoped Query。
+//! - **产物落 slot**：worker 每条 Job 处理完调一次 `provider.export_syntax_tree(&slot)`，paint 端按 slot 上的 `Arc<BufferSyntaxTree>` 现查 viewport-scoped Query。
 //! - **Job 投递不阻塞主线程**：`mpsc::Sender::send` 在标准 channel 上是 lock-free 的入队。
 //! - **Panic 守护**：每条 Job 用 `catch_unwind` 包住；某 buffer 的 provider 触发 panic 不会拖垮线程，只把出问题的 entry 丢弃，buffer 退化成 plain；其他 buffer 不受影响。
 //! - **同步等待**：[`SyntaxWorkerHandle::wait_for_idle`] 仅给测试 / bench 使用；正常前台路径不该走，否则就吃掉异步收益。
-//!
-//! ## 不再做的事（Phase 3 删除）
-//!
-//! - **Job::SetViewport 与 `set_viewport` 钩子**：viewport-scoped Query 由 paint 端按 [`crate::syntax::BufferSyntaxTree::query_viewport`] 在主线程 thread-local cursor 上现做，worker 不必知道 viewport。
-//! - **apply_pending_edit / coalesce**：Phase 1 改造后产物落 slot —— slot 只保留最新值，连续按键的中间 reparse 即便被 worker 真跑了也只是被下一次 swap 覆盖，不会污染 sink 队列。
-//! 少了 sink 也就没有"避免覆盖浪费"的目标，coalesce 没意义。
 
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};

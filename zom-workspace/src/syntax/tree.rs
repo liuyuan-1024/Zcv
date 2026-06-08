@@ -1,25 +1,20 @@
 //! `BufferSyntaxTree`：单缓冲区的"当前 tree-sitter 解析树 + 对应 snapshot"共享态。
 //!
-//! 设计来自 [语法高亮重构计划 §Phase 1](../../docs/语法高亮重构计划.md)。
-//!
 //! ## 角色
 //!
 //! 把"语言配置 + 当前 Tree + 对应 Snapshot + 版本号"打包成一个**不可变快照**值，
 //! 通过 [`BufferSyntaxTreeSlot`] 在主线程与后台 SyntaxWorker 之间共享：
 //!
 //! - **worker 线程**（[`crate::syntax::worker`]）在 attach / 增量 reparse 完成后用 [`BufferSyntaxTreeSlot::store_if_newer`] 写入最新树；
-//! - **主线程**编辑入口（[`crate::syntax::BufferSyntaxState::handle_edit`]）在每次编辑发生时用 [`BufferSyntaxTreeSlot::try_edit`] 把 `tree.edit(InputEdit)` 同步推进到 slot 里 —— 让 paint 阶段哪怕在 worker 还没回包前也能看见**带正确字节坐标**的 tree；
-//! - **paint 阶段**（Phase 2 desktop 侧改造完成后）用 [`BufferSyntaxTreeSlot::load`] 拿到 `Arc<BufferSyntaxTree>`，按 viewport 现查 tree-sitter Query 出 spans。
+//! - **主线程**编辑入口（[`crate::syntax::BufferSyntax::handle_edit`]）在每次编辑发生时用 [`BufferSyntaxTreeSlot::try_edit`] 把 `tree.edit(InputEdit)` 同步推进到 slot 里 —— 让 paint 阶段哪怕在 worker 还没回包前也能看见**带正确字节坐标**的 tree；
+//! - **paint 阶段**用 [`BufferSyntaxTreeSlot::load`] 拿到 `Arc<BufferSyntaxTree>`，按 viewport 现查 tree-sitter Query 出 spans。
 //!
 //! ## 为什么 Mutex
 //!
-//! 计划文档列了两种实现：双缓冲 `arc_swap`（A）与 `Mutex`（B）。这里走 B：
-//! tree-sitter 的 `Tree::clone` 本身是 `O(1)`（内部 `Arc` 共享），加上"两侧都要写"的现实（主线程 tree.edit + worker reparse），单写多读的 arc_swap 范式并不直接适用。
+//! tree-sitter 的 `Tree::clone` 本身是 `O(1)`（内部 `Arc` 共享），加上"两侧都要写"的现实（主线程 tree.edit + worker reparse），单写多读的 `arc_swap` 范式并不直接适用。
 //!
-//! 锁的临界区只包**载 / 存 Arc**，最长一次 `Tree::clone` + `tree.edit(InputEdit)`，
-//! 都是 `O(log N)` 操作；锁竞争窗口比"主线程 paint 内的整段 query"短两个量级，不构成拖帧来源。
-//!
-//! 真要观察到锁竞争影响 paint，再切到 `arc_swap`（plan §"风险与未知点"）。
+//! 锁的临界区只包**载 / 存 Arc**，最长一次 `Tree::clone` + `tree.edit(InputEdit)`，都是 `O(log N)` 操作；
+//! 锁竞争窗口比"主线程 paint 内的整段 query"短两个量级，不构成拖帧来源。
 
 use std::sync::{Arc, Mutex};
 
@@ -62,14 +57,6 @@ impl BufferSyntaxTree {
         }
     }
 
-    /// `SharedConfig` 是 `pub(crate)` —— Phase 2 切换 render path 时 zom-desktop 端不会直接拿 `&SharedConfig` 跑 query，
-    /// 而是通过 [`BufferSyntaxTree`] 上的高层 API 出 spans。
-    /// 本 getter 暂时给 crate 内部 bench / 测试使用。
-    #[allow(dead_code)]
-    pub(crate) fn config(&self) -> &Arc<SharedConfig> {
-        &self.config
-    }
-
     pub fn tree(&self) -> &Tree {
         &self.tree
     }
@@ -84,8 +71,7 @@ impl BufferSyntaxTree {
 
     /// 在 `viewport` 字节区间上跑 tree-sitter Query，返回非重叠 `(range, span)` 列表。
     ///
-    /// 设计来自计划 §Phase 2 —— paint 阶段的"render-time query"入口：
-    /// 不缓存 spans、每帧重算，颜色 = 当前 tree 在 viewport 上的纯函数。
+    /// paint 阶段的"render-time query"入口：不缓存 spans、每帧重算，颜色 = 当前 tree 在 viewport 上的纯函数。
     ///
     /// **复用 `cursor`**：tree-sitter 的 [`QueryCursor`] 构造一次还好，每帧多次会累积分配；
     /// 调用方应当用 [`SyntaxQueryCursor`] 在 thread-local / surface 上缓存一份，每帧 paint 时借出。
@@ -109,9 +95,7 @@ impl BufferSyntaxTree {
 
 /// 跨帧复用的 tree-sitter [`QueryCursor`] 包装。
 ///
-/// 计划 §Phase 2 关键细节："`QueryCursor` 不要每帧 new" —— 渲染端在 surface / thread-local 上持一份 [`SyntaxQueryCursor`]，每帧借给 [`BufferSyntaxTree::query_viewport`]。
-///
-/// 内部只包一个 [`QueryCursor`]；构造代价小但非零（tree-sitter 内部 alloc），跨帧复用能把这部分摊掉。
+/// 渲染端在 surface / thread-local 上持一份，每帧借给 [`BufferSyntaxTree::query_viewport`]——`QueryCursor` 构造代价小但非零（tree-sitter 内部 alloc），跨帧复用能把这部分摊掉。
 pub struct SyntaxQueryCursor {
     inner: QueryCursor,
 }
@@ -165,8 +149,8 @@ impl BufferSyntaxTreeSlot {
         self.inner.lock().ok().and_then(|g| g.as_ref().cloned())
     }
 
-    /// 无条件覆盖——worker 首次 attach 完成时用。
-    #[allow(dead_code)]
+    /// 无条件覆盖——单测用。运行时一律走 [`Self::store_if_newer`]，避免把过期 reparse 结果盖掉。
+    #[cfg(test)]
     pub(crate) fn store(&self, tree: BufferSyntaxTree) {
         if let Ok(mut g) = self.inner.lock() {
             *g = Some(Arc::new(tree));

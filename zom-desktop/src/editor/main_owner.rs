@@ -108,7 +108,7 @@ fn snapshot_from_active_view(workspace: &Workspace, views: &ViewSet) -> EditorSn
     });
     snapshot.reveal = reveal;
     highlight::push_workspace_search(buffer, &mut snapshot.decorations);
-    // Phase 2：syntax decoration 从共享 BufferSyntaxTree 现查 viewport-scoped Query。
+    // syntax decoration 从共享 BufferSyntaxTree 现查 viewport-scoped Query。
     // `slot.load()` 返回 `Arc<BufferSyntaxTree>` clone（计数 +1，无锁路径）；
     // `as_deref` 把 `Option<Arc<_>>` 借成 `Option<&BufferSyntaxTree>` 给 push 用。
     let syntax_tree = buffer.syntax_tree_slot().and_then(|slot| slot.load());

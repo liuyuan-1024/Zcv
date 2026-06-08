@@ -1,4 +1,4 @@
-//! Tier 1 provider 的共享机制——所有 tree-sitter Tier 1 provider 都是同一份「OnceLock 配置 + Parser + QueryCursor + sink 槽 + run_full」结构，
+//! Tier 1 provider 的共享机制——所有 tree-sitter Tier 1 provider 都是同一份「OnceLock 配置 + Parser + 增量 reparse」结构，
 //! 差异只在三个常量：`(Language, language_name, HIGHLIGHTS_QUERY)`。
 //! 本模块把这一份共同形态抽出来，让每条语言的 provider 文件只剩注册这三个常量。
 //!
@@ -11,14 +11,7 @@
 //! `Box::leak` 把派生 name 提到 `'static`——OnceLock 一次性泄漏 ~20 个短字符串，进程级常量。
 //! - **通用 `HighlightWorker`** 实现 [`HighlightProvider`]：调度层拿到的就是它。
 //! 每条语言的 `new_provider()` 函数只是包装一次 `LanguageId` 与 `SharedConfig`。
-//! - **只处理 highlights**：injections / locals 留空（手册 §十四）；编辑后优先走增量重解析，有 viewport hint 时只投递局部 ReplaceRange。
-//!
-//! ## 当前解析路径
-//!
-//! provider 直接使用 `tree_sitter::Parser` + `Query` + `QueryCursor::captures`，自己做嵌套 stack 与「同 node 后到的 pattern 覆盖先到的」语义对齐。
-//! 这样可以持久化 `Parser` / `Tree`，并在编辑后优先走增量重解析。
-//!
-//! 语义护栏：见 `tests::raw_collects_expected_rust_spans`。
+//! - **只处理 highlights**：injections / locals 留空（手册 §十四）。
 //!
 //! ## 增量重解析
 //!
@@ -32,14 +25,7 @@
 //!
 //! 等价性护栏：`tests::incremental_matches_full_after_edit` 把同样几次小编辑分别用「增量 worker」与「每次都从零 parse 的 baseline」跑一遍，断言 spans 完全一致。
 //!
-//! 有 viewport hint 时，query 限制在 viewport ± 缓冲区，并以 ReplaceRange 投递局部 spans；
-//! 无 hint 时走全文 ReplaceAll。
-//!
-//! ## sink 缓存
-//!
-//! trait 只在 `attach` 时给 sink；`on_edit` 不再传。
-//! provider 内部缓存 sink，编辑或 viewport hint 改变时复用。
-//! sink 是轻量 clone 的 Arc，本就为这种场景设计。
+//! 语义护栏：见 `tests::raw_collects_expected_rust_spans`。
 
 use std::{fmt::Debug, sync::Arc};
 
@@ -120,8 +106,7 @@ fn normalize_highlight_name(name: &str) -> &str {
 /// 每个缓冲区一份 `HighlightWorker`，但内部 `Arc<SharedConfig>` 跨缓冲区共享。
 /// 调度层只看 [`HighlightProvider`] trait，并不知道 worker 装的是哪门语言——这正是「产出者形态统一、差异封装在内部」的实现兑现。
 ///
-/// Phase 3 后形态：worker 只负责 parse + tree 缓存，**不产 spans**。
-/// spans 由 paint 阶段从共享 [`BufferSyntaxTree`] 现查；worker 通过 `export_syntax_tree` 把内部 `(tree, snapshot)` 写到共享 slot 即可。
+/// worker 只负责 parse + tree 缓存，**不产 spans**：spans 由 paint 阶段从共享 [`BufferSyntaxTree`] 现查；worker 通过 `export_syntax_tree` 把内部 `(tree, snapshot)` 写到共享 slot 即可。
 pub struct HighlightWorker {
     language_id: LanguageId,
     config: Arc<SharedConfig>,
@@ -159,8 +144,7 @@ impl HighlightWorker {
 
     /// 全量解析缓冲区当前 snapshot，把新 Tree 与 Snapshot 落进 worker 缓存。
     ///
-    /// 缓存的 `tree` 不能跨 snapshot 复用而不调用 `Tree::edit` —— 这条规则由增量路径的 `try_incremental` 保证。Phase 3 后不再 query / 推 sink；
-    /// spans 由 paint 阶段从共享 [`BufferSyntaxTree`] 现查。
+    /// 缓存的 `tree` 不能跨 snapshot 复用而不调用 `Tree::edit` —— 这条规则由增量路径的 `try_incremental` 保证。
     fn run_full(&mut self, buffer: &BufferHandle) {
         let snapshot = buffer.snapshot();
         let text =
@@ -248,7 +232,7 @@ pub(crate) fn reset_cursor_range(cursor: &mut QueryCursor) {
 
 /// 把 `ChangeSet`（旧坐标 edit 列表）翻译为 tree-sitter `InputEdit` 列表。
 ///
-/// 每条 InputEdit 的旧端 Point 用 `old_snapshot.byte_to_point` 解码，新端 Point 用 `new_snapshot.byte_to_point` 解码，这两侧坐标系不同源（一个是旧文本、一个是新文本），不能混用同一份 snapshot；详见改造方案 §3.4。
+/// 每条 InputEdit 的旧端 Point 用 `old_snapshot.byte_to_point` 解码，新端 Point 用 `new_snapshot.byte_to_point` 解码——两侧坐标系不同源（一个是旧文本、一个是新文本），不能混用同一份 snapshot。
 ///
 /// 任何一条 edit 解码失败（越界 / 非字符边界）就返回 `None`，由调用方全量重解析。
 /// Edit 列表已经过 `EditList::new` 排序且不重叠，按顺序逐条 `Tree::edit` 即可保证 tree-sitter 看到的内部坐标连续推进。
@@ -729,8 +713,7 @@ mod tests {
     #[test]
     fn incremental_matches_full_after_edits() {
         // 几次小编辑后，增量 worker 的内部 tree 跑出的 spans 必须与每次都全量 parse
-        // 的 baseline 完全等价 —— 计划 §Phase 4 "edit-frame paint == reparse-frame paint"
-        // 的核心不变量。
+        // 的 baseline 完全等价 —— "edit-frame paint == reparse-frame paint" 的核心不变量。
         let initial = "pub fn answer() -> i32 {\n    let value = 42;\n    value\n}\n".to_string();
         let mut buffer = Buffer::from_text(initial, BufferConfig::default()).unwrap();
         let mut worker = HighlightWorker::new(LanguageId::new("rust"), rust_config());

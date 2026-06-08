@@ -208,8 +208,7 @@ impl Workspace {
 
     /// 关闭并丢弃缓冲区。
     ///
-    /// `wb` 在函数返回时 drop，会触发 [`SyntaxDocument::drop`]——
-    /// provider detach + sink close 都在那里完成（手册 §九 不变量）。
+    /// `wb` 在函数返回时 drop，会触发 [`SyntaxDocument::drop`]——provider detach 都在那里完成（手册 §九 不变量）。
     pub fn close_buffer(&mut self, id: BufferId) -> WorkspaceResult<()> {
         if self.buffers.remove(&id).is_none() {
             return Err(WorkspaceError::BufferNotFound(id));
@@ -391,8 +390,8 @@ impl WorkspaceBuffer {
         &mut self.search
     }
 
-    /// 共享的 [`BufferSyntaxTreeSlot`] —— Phase 2 后 paint 端按它现查 tree-sitter
-    /// Query。`None` 表示 plain / 超阈值 / 注册表缺工厂的 buffer。
+    /// 共享的 [`BufferSyntaxTreeSlot`] —— paint 端按它现查 tree-sitter Query。
+    /// `None` 表示 plain / 超阈值 / 注册表缺工厂的 buffer。
     pub fn syntax_tree_slot(&self) -> Option<&BufferSyntaxTreeSlot> {
         self.document.syntax_tree_slot()
     }

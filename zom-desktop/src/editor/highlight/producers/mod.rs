@@ -1,8 +1,7 @@
 //! 各 producer 翻译为 [`Decoration`](super::Decoration) 的适配器。
 //!
 //! 架构手册 §三 的 producer 清单在物理上的对应物：每个子模块对应一类 producer，
-//! 输入是它的原生数据（`SelectionSet` / `MetadataLayer<HighlightSpan>` /
-//! `BufferSearch`），输出 push 到 `&mut Vec<Decoration>`。
+//! 输入是它的原生数据（`SelectionSet` / `BufferSyntaxTree` / `BufferSearch`），输出 push 到 `&mut Vec<Decoration>`。
 //!
 //! ## 为什么适配器都在 desktop
 //!

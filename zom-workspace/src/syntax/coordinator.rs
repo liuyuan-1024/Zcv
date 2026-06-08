@@ -1,12 +1,9 @@
-//! `BufferSyntax`：单个缓冲区的语法高亮**主线程句柄**（Phase 3 后形态）。
+//! `BufferSyntax`：单个缓冲区的语法高亮**主线程句柄**。
 //!
-//! 计划 §Phase 3 前身叫 `BufferSyntaxState`，职责庞大（sink drain、layer remap、viewport hint 转发……）。
-//! Phase 3 后只剩两件事：
+//! 只做两件事：
 //!
 //! 1. 持有共享的 [`BufferSyntaxTreeSlot`] —— paint 端按它现查 viewport-scoped Query。
 //! 2. 在编辑入口同步推进 slot 里 tree 的字节坐标 + 投 worker reparse Job。
-//!
-//! sink、`MetadataLayers<HighlightSpan>`、`drain_into_layers`、`pump_pending_highlights`、`set_viewport_hint` 全部下线。
 
 use std::sync::Arc;
 
@@ -24,7 +21,6 @@ use super::worker::SyntaxWorkerHandle;
 ///
 /// **16 MiB**：放阈值的现实平衡点。
 /// bench 实测 16 MiB rust 单键 viewport-scoped e2e ≈ 63 ms、主线程 3 µs、cold parse 1.56 s——一项流畅一档可接受；
-/// 同档 64 MiB 端到端飙到 ~250 ms / 键、cold parse 6.3 s，多出来的部分主要在 tree-sitter 解析树本身的 O(file size) 走树代价。
 /// 再大的文件几乎只剩日志、生成代码——超 16 MiB 就静默落到 plain 模式。
 pub const MAX_HIGHLIGHT_BYTES: usize = 16 * 1024 * 1024;
 

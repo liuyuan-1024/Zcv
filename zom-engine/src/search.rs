@@ -788,9 +788,6 @@ fn accepts_match<T: TextRead>(
 }
 
 /// 内部 byte 区间构造：调用方应保证 `start <= end`；违反时返回 `EngineBug`，**永不 panic**。
-///
-/// 这取代了 Phase 1.4 残留的 `expect("内部不变量：search start <= end")`，
-/// 让 search.rs 路径不再有不安全的 panic 出口。
 fn text_range(start: ByteOffset, end: ByteOffset) -> EngineResult<TextRange> {
     TextRange::new(start, end).map_err(|_| EngineError::EngineBug {
         location: "search::text_range",

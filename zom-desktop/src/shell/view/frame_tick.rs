@@ -1,7 +1,7 @@
 //! 每帧 prepaint 起手的后台子系统收割。
 //!
-//! Phase 3 后这里只剩跨 feature 的 [`FramePump`] 收割（search 后台命中等）。
-//! 语法高亮没有需要 drain 的中间产物——paint 阶段直接从共享 `BufferSyntaxTreeSlot` 现查 tree-sitter Query。viewport hint 也已下线。
+//! 跑跨 feature 的 [`FramePump`] 收割（search 后台命中等）。
+//! 语法高亮没有需要 drain 的中间产物 —— paint 阶段直接从共享 `BufferSyntaxTreeSlot` 现查 tree-sitter Query。
 //!
 //! [`FramePump`]: crate::ports::FramePump
 

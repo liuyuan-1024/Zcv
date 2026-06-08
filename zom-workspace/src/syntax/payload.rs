@@ -3,11 +3,8 @@
 //! 设计来自《桌面端语法高亮》§三。本模块**不**定义颜色 / 字重 / 字号——只承载 tree-sitter highlight name 与修饰位，theme 在 desktop 端按 name 解析为 Hsla。
 //!
 //! name 取值域 = tree-sitter highlight name 命名空间，不在本仓维护词汇表。
-//!
-//! Phase 3 后这里只剩 [`HighlightSpan`] / [`HighlightName`] / [`TokenModifiers`] 三个值类型——它们仍是 [`crate::syntax::BufferSyntaxTree::query_viewport`] 的返回元素，由 paint 阶段消费。
-//! `syntax_confirmed_layer_kind` 在 Phase 3 删除：没有 layer 了，没有 kind 可言。
 
-/// 写入 [`zom_engine::MetadataLayer`] 的 syntax payload。
+/// 单条 highlight 命中的 payload —— [`crate::syntax::BufferSyntaxTree::query_viewport`] 的返回元素。
 ///
 /// 不携带颜色——颜色由 desktop 端按 `name` 通过点分前缀回退链查 theme。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]

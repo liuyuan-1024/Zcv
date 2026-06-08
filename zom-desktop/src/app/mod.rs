@@ -503,8 +503,7 @@ impl App {
     ///
     /// 统一由 shell 根视图的 render 拍点驱动。
     ///
-    /// Phase 3 后**没有**语法高亮帧 drain —— paint 阶段直接从共享 `BufferSyntaxTreeSlot` 现查 tree-sitter Query，没有需要 drain 的中间产物。
-    /// viewport hint 转发也已下线（paint 端按本帧可见行范围 query，不需要预先告知 worker）。
+    /// 语法高亮没有需要 drain 的中间产物 —— paint 阶段直接从共享 `BufferSyntaxTreeSlot` 现查 tree-sitter Query。
     ///
     /// [`install_frame_pump`]: Self::install_frame_pump
     pub fn pump_frame_observers(&mut self) {
@@ -889,7 +888,7 @@ mod tests {
     }
 
     /// 收集一份 snapshot 内属于 syntax 的 Foreground decoration（`(start, end, name)`）。
-    /// Phase 4 用：单独抽出 syntax 段方便对比 edit-frame 与 reparse-frame。
+    /// 单独抽出 syntax 段方便对比 edit-frame 与 reparse-frame。
     fn syntax_decorations(
         snapshot: &crate::editor::text::EditorSnapshot,
     ) -> Vec<(usize, usize, String)> {
@@ -915,15 +914,13 @@ mod tests {
     /// decoration 必须覆盖新插入字节 —— 主线程 `tree.edit` 把 slot 推进到新版本，
     /// paint 端按 viewport 现查 Query 就能命中 shifted node。
     ///
-    /// 这条钉死「token 内插入不会闪默认前景色」。Phase 1 主线程 `tree_slot.try_edit`
-    /// 的存在理由。
+    /// 这条钉死「token 内插入不会闪默认前景色」—— 主线程 `tree_slot.try_edit` 的存在理由。
     #[test]
     fn edit_immediately_extends_syntax_decoration_inside_heading_token() {
         // 在 `# zom 文档规范` 的 `zom` 中间插入字符：byte 4（'z' 与 'o' 之间）。
         // heading_content 节点 [2..18] 跨越插入点，tree.edit 后变为 [2..19]，
         // 第一帧 paint 跑 query 应当命中扩展后的 heading 段，新字节 [4..5) 在内。
-        let mut app =
-            app_with_markdown_text("phase4-token-inside-edit", "# zom 文档规范\n\n正文。\n");
+        let mut app = app_with_markdown_text("token-inside-edit", "# zom 文档规范\n\n正文。\n");
         *app.session
             .views_mut()
             .active_view_mut()
@@ -944,14 +941,14 @@ mod tests {
         );
     }
 
-    /// 关键不变量（计划 §Phase 4）：结构未变的小编辑下，edit 后立即 paint 的 syntax
-    /// decoration 必须**逐项等于** worker reparse 完成后的 paint 结果。
+    /// 关键不变量：结构未变的小编辑下，edit 后立即 paint 的 syntax decoration
+    /// 必须**逐项等于** worker reparse 完成后的 paint 结果。
     ///
     /// `tree.edit` 只推坐标不改结构 —— interpolate tree 跑出的 query 与重 parse
     /// 后的 query 在 viewport 上应当命中同一组 node。一帧不闪、不糊。
     #[test]
     fn edit_frame_decorations_equal_reparse_frame_for_structure_preserving_edit() {
-        let mut app = app_with_markdown_text("phase4-no-flash", "# zom 文档规范\n\n正文段落。\n");
+        let mut app = app_with_markdown_text("no-flash", "# zom 文档规范\n\n正文段落。\n");
         *app.session
             .views_mut()
             .active_view_mut()

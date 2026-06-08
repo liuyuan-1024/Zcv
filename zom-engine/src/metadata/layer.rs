@@ -205,15 +205,8 @@ impl<T> MetadataLayer<T> {
     /// 局部替换：删除 `byte_range` 内（按 start 落点判定）的现存 ranges，再把
     /// `new_ranges` 追加进 layer。`byte_range` 外的 ranges 完全保留，版本不动。
     ///
-    /// 服务于语法高亮的 viewport-scoped ReplaceRange 路径（[改造方案
-    /// §3.6](../../../zom-workspace/docs/语法高亮异步增量改造.md)）：worker 只产
-    /// viewport ± 缓冲区段的 spans，远处旧 spans 保持不变，避免每次编辑都全层
-    /// 重建。
-    ///
-    /// 版本必须与 layer.version 一致；不一致返回 `VersionMismatch`，调用方应在
-    /// drain 前做版本守护。`new_ranges` 不必落在 `byte_range` 内（caller 责任），
-    /// 但落在该范围外的新 range 会与未删除的旧 range 共存，调用方需自行避免重叠
-    /// 语义冲突。
+    /// 版本必须与 layer.version 一致；不一致返回 `VersionMismatch`，调用方应在 drain 前做版本守护。
+    /// `new_ranges` 不必落在 `byte_range` 内（caller 责任），但落在该范围外的新 range 会与未删除的旧 range 共存，调用方需自行避免重叠语义冲突。
     pub fn replace_in_range(
         &mut self,
         version: BufferVersion,

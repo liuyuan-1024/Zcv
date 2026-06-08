@@ -129,8 +129,8 @@ impl TextTargetQuery for FileTreeModel {
             FileTreeKeyMode::PendingName
         };
         vec![
-            KeyContext::text_edit(self.accepts_newline(), false),
             KeyContext::file_tree(file_tree_mode),
+            KeyContext::text_edit(self.accepts_newline(), false),
             KeyContext::global(),
         ]
     }

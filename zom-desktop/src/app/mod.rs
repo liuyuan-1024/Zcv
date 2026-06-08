@@ -33,8 +33,8 @@ use self::pumps::BackgroundPumps;
 use self::text_target_runtime::TextTargetRuntime;
 use crate::config::{AppConfig, SettingsChange};
 use crate::dispatch::KeyDispatchOutcome;
-use crate::editor::EditorViewportMeasurement;
 use crate::editor::text::ImeUtf16Range;
+use crate::editor::{EditorViewportMeasurement, SettledViewportTop};
 use crate::focus::{AppFocus, FileTreeFocus, FocusStore, PanelSubFocus};
 use crate::ports::{
     FileTreeAction, FileTreeActionResult, FileTreeHost, FramePump, PostEditObserver, SearchAction,
@@ -421,41 +421,37 @@ impl App {
 
     /// 构造一次只读路由视图。
     ///
-    /// 这是 editor 子系统访问 App 内部状态的唯一桥：调用方拿到 [`EditorRouter`]
-    /// 后直接做 IME 查询 / focused target / snapshot 等 —— App 不再为每种查询
-    /// 包一层方法。
+    /// 这是 editor 子系统访问 App 内部状态的唯一桥：调用方拿到 [`EditorRouter`] 后直接做 IME 查询 / focused target / snapshot 等 —— App 不再为每种查询包一层方法。
     ///
-    /// Owners 顺序：先 search runtime 提供的双输入框 owner、再注册表里由 shell
-    /// runtime 注入的 owner、最后兜底主编辑区。`accepts_focus` 对 `AppFocus`
-    /// 精确匹配，各 owner 覆盖 disjoint 子集，顺序不影响命中。
+    /// Owners 顺序：先 search runtime 提供的双输入框 owner、再注册表里由 shell runtime 注入的 owner、最后兜底主编辑区。`accepts_focus` 对 `AppFocus` 精确匹配，各 owner 覆盖 disjoint 子集，顺序不影响命中。
     pub(crate) fn with_router<R>(&self, f: impl FnOnce(EditorRouter<'_>) -> R) -> R {
         self.text_targets.with_router(&self.session, f)
     }
 
     /// 构造一次可写路由视图。
     ///
-    /// Owners 通过 `accepts_focus` 对 [`AppFocus`] 精确匹配，各自覆盖 disjoint 的
-    /// focus 子集，vec 顺序与优先级无关。搜索面板在写路径由 search runtime
-    /// 提供单个 active owner，同时承担 Query / Replacement 两个 field。
+    /// Owners 通过 `accepts_focus` 对 [`AppFocus`] 精确匹配，各自覆盖 disjoint 的 focus 子集，vec 顺序与优先级无关。
+    /// 搜索面板在写路径由 search runtime 提供单个 active owner，同时承担 Query / Replacement 两个 field。
     pub(crate) fn with_router_mut<R>(&mut self, f: impl FnOnce(EditorRouterMut<'_>) -> R) -> R {
         let focus = self.focus.current();
         self.text_targets
             .with_router_mut(focus, &mut self.session, f)
     }
 
-    /// 由主编辑区 element prepaint 末尾回写测量值。
+    /// 由主编辑区 element prepaint 中段回写测量值并即时落定视口顶端。
     ///
-    /// Y 轴 top（`top_line/top_subrow`）只由 `View::settle_viewport_y` 落定；
-    /// element 只同步可见行数与 wrap map，避免渲染端 fallback 覆盖 view 已经确定的 top。
-    /// 无活动 view 时静默忽略。
+    /// 1. 把本帧测得的 `visible_visual_rows` 与新 `wrap_map` 写回 view；
+    /// 2. 立即用新 wrap_map 跑一次 [`zom_view::View::settle_viewport_y`]，把 edit / soft-wrap 触发的新视觉行同帧消化掉——不再依赖下一帧补 settle。
+    ///
+    /// 返回 settle 后的视口顶端；element 拿到后用它解析本帧的 `top_visual_row`。
+    /// 无活动 view 时返回 `None`，element 退回 view 当前 top（与首帧一致）。
     pub(crate) fn sync_main_viewport_measurement(
         &mut self,
         measured: EditorViewportMeasurement,
         wrap_map: Option<zom_view::WrapMap>,
-    ) {
-        let Some(view) = self.session.views_mut().active_view_mut() else {
-            return;
-        };
+    ) -> Option<SettledViewportTop> {
+        let (workspace, views) = self.session.parts_mut();
+        let view = views.active_view_mut()?;
         let current = view.viewport();
         let viewport = zom_view::ViewportState {
             top_line: current.top_line,
@@ -467,6 +463,14 @@ impl App {
             view.set_viewport(viewport);
         }
         view.set_wrap_map(wrap_map);
+
+        let buffer = workspace.buffer(view.buffer())?;
+        let cursor = view.selection().primary().head();
+        let settlement = view.settle_viewport_y(buffer.buffer(), cursor);
+        Some(SettledViewportTop {
+            top_line: settlement.viewport.top_line,
+            top_subrow: settlement.viewport.top_subrow,
+        })
     }
 
     /// 查询某条命令的快捷键文案 —— 给 Glyph / 命令面板 / 菜单用。

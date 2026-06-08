@@ -20,7 +20,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.4.17"
+version = "0.4.20"
 edition = "2024"
 
 [workspace.dependencies]
@@ -39,6 +39,7 @@ unicode-segmentation = "1.13.2"
 
 # ---- 工作区层（zom-workspace） ----
 trash = "5"
+ignore = "0.4"
 
 # ---- 语法高亮（tree-sitter 系） ----
 tree-sitter = { version = "0.26.9", features = ["wasm"] }

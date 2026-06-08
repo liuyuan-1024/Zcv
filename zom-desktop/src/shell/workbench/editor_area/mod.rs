@@ -3,7 +3,8 @@
 //!
 //! 与左右 Dock 平级；BottomDock 只占本列下半部，不侵入左右 Dock。
 //!
-//! 当开启文件级搜索时，标签栏与编辑器之间插入一条内联搜索栏。
+//! 标签栏与编辑器之间常驻一条 [`FileStatusBar`]：左侧文件路径、右侧动作 glyph。
+//! 文件级搜索唤起时，bar 内的右侧动作槽切换为搜索控制组件——不再单独占一条 sliver。
 
 use gpui::{Div, FocusHandle, ScrollHandle, div, prelude::*};
 
@@ -19,6 +20,7 @@ use crate::shell::workbench::{PanelContext, PanelHost};
 use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 
 mod editor_pane;
+mod file_status_bar;
 mod tab_bar;
 
 #[allow(clippy::too_many_arguments)]
@@ -41,7 +43,7 @@ pub(crate) fn render(
     search_open: bool,
 ) -> Div {
     let mut column = div().flex_1().flex().flex_col().h_full().overflow_hidden();
-    // 有打开的文件才显示标签栏；空态不挂这条 sliver。
+    // 有打开的文件才挂 tab 栏；空态保持空白。
     if !editor_state.tabs.is_empty() {
         column = column.child(tab_bar::render(
             editor_state,
@@ -50,14 +52,16 @@ pub(crate) fn render(
             &command_title_lookup,
         ));
     }
-    // 内联搜索栏：状态由 SearchModel.open 决定，与 dock 无关。
-    // 仅在有活动文件时出现——空态打 mod-f 没意义，搜也没东西可搜。
-    if search_open && !editor_state.tabs.is_empty() {
-        column = column.child(search_runtime.render(
-            search_state,
+    // 文件状态栏：仅在有活动文件时出现；搜索打开时由它在内部追加搜索第二行。
+    if let Some(active) = editor_state.tabs.iter().find(|tab| tab.is_active) {
+        column = column.child(file_status_bar::render(
+            active,
             &key_request,
+            search_runtime,
+            search_state,
             &search_query_slot,
             &search_replacement_slot,
+            search_open,
             &shortcut_lookup,
             &command_title_lookup,
         ));

@@ -19,6 +19,49 @@ pub enum SearchOption {
     Regex,
 }
 
+/// 内建 panel 的稳定标识。
+///
+/// 字符串形态曾出现在 [`HostEffect::TogglePanel`] 里桥接 zom-command ↔ 宿主；
+/// 现在两侧都用本枚举，宿主只需 `match` 一次即可分发，不再做字符串往返。
+///
+/// 新增 panel = 在此加变体 + 给 [`PanelKind::toggle_command_id`] 补一行。
+/// 宿主侧的图标 / 焦点 / 渲染等 UI 细节继续由 desktop 自己维护。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum PanelKind {
+    FileTree,
+    VersionControl,
+    Outline,
+    Terminal,
+    Debug,
+    KeyboardShortcuts,
+}
+
+impl PanelKind {
+    /// 切换本 panel 显隐的命令 ID（也用于查询其默认快捷键 / 标题）。
+    pub const fn toggle_command_id(self) -> &'static str {
+        match self {
+            PanelKind::FileTree => "panel.toggle.file_tree",
+            PanelKind::VersionControl => "panel.toggle.version_control",
+            PanelKind::Outline => "panel.toggle.outline",
+            PanelKind::Terminal => "panel.toggle.terminal",
+            PanelKind::Debug => "panel.toggle.debug",
+            PanelKind::KeyboardShortcuts => "panel.toggle.keyboard_shortcuts",
+        }
+    }
+
+    /// panel 的稳定短名（适合做调试 id、序列化键）。
+    pub const fn slug(self) -> &'static str {
+        match self {
+            PanelKind::FileTree => "file_tree",
+            PanelKind::VersionControl => "version_control",
+            PanelKind::Outline => "outline",
+            PanelKind::Terminal => "terminal",
+            PanelKind::Debug => "debug",
+            PanelKind::KeyboardShortcuts => "keyboard_shortcuts",
+        }
+    }
+}
+
 /// 轻量气泡提示类型。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BubbleKind {
@@ -95,13 +138,8 @@ pub enum HostEffect {
     ShowBubble(BubbleRequest),
 
     // ===== Dock / Panel =====
-    /// 切换某个 panel 的显隐。
-    ///
-    /// `panel_id` 是宿主侧 PanelId 的**字符串形式**，
-    /// 例如 `"file_tree"` / `"terminal"`。
-    /// 由宿主的 `PanelId::from_str` 解析。
-    /// zom-command 不 import 宿主枚举，靠字符串桥接。
-    TogglePanel(String),
+    /// 切换某个 panel 的显隐。宿主直接 `match` 该枚举分发到具体 panel runtime。
+    TogglePanel(PanelKind),
 
     // ===== Search =====
     /// 打开搜索栏并把焦点送到查询输入框。已开则只搬焦点（幂等）。

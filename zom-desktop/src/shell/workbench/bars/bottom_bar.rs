@@ -15,7 +15,7 @@ use crate::shell::shared::Glyph;
 use crate::shell::workbench::docks::{bottom, left, right};
 use crate::shell::workbench::state::{DockAreaId, DockState, WorkbenchState};
 use crate::shell::{CommandTitleLookup, ShortcutLookup};
-use crate::ui_id::PanelId;
+use crate::ui_id::{self, PanelId};
 use zom_command::commands::search;
 
 use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_divider, bar_frame};
@@ -161,7 +161,7 @@ fn panel_slot(
     let command_id = panel.toggle_command_id();
     let title = titles(command_id).unwrap_or_else(|| command_id.to_string());
 
-    Glyph::icon(panel_glyph_id(panel), panel.icon_path(), title)
+    Glyph::icon(panel_glyph_id(panel), ui_id::panel_icon_path(panel), title)
         .hint(shortcuts(command_id))
         .active(active)
         .render()
@@ -170,5 +170,5 @@ fn panel_slot(
 /// bottom bar 内 panel 入口 glyph 的 element id —— GPUI 用它跟踪 element
 /// 身份，与命令 id 无关；从 PanelId 派生避免散落字符串。
 fn panel_glyph_id(panel: PanelId) -> gpui::SharedString {
-    format!("bottom-bar.{}", panel.command_str_id()).into()
+    format!("bottom-bar.{}", panel.slug()).into()
 }

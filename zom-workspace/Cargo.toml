@@ -7,6 +7,7 @@ description = "工作区模型层：文件、缓冲区生命周期、路径绑�
 [dependencies]
 zom-engine.workspace = true
 trash.workspace = true
+ignore.workspace = true
 tree-sitter.workspace = true
 tree-sitter-rust.workspace = true
 tree-sitter-toml-ng.workspace = true

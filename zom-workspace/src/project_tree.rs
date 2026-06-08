@@ -3,14 +3,55 @@
 //! 持有项目根、按需懒加载的目录子项缓存，以及目录展开状态。子项排序规则：
 //! 目录优先、字母序（不区分大小写）。
 //!
-//! 这是一个面向只读浏览的快照层：`visible_rows` 给 UI 直接消费；`expand`
-//! / `collapse` / `toggle` 由命令侧调用。本层不负责文件内容、git 状态、
-//! watch 失效——这些由上层服务叠加，本模块只维护目录树快照。
+//! 这是一个面向只读浏览的快照层：`visible_rows` 给 UI 直接消费；`expand` / `collapse` / `toggle` 由命令侧调用。
+//! 本层不负责文件内容、git 状态、watch 失效——这些由上层服务叠加，本模块只维护目录树快照。
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+
+use ignore::Match;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
+
+/// 项目级 zom 配置目录名。
+///
+/// 用户级配置在 `$HOME/.zom/`；项目级在 `项目根/.zom/`。
+/// 两边同名，语义上「项目级覆盖用户级」——目前只用到 `.zomignore`，后续 `config.toml` 等
+/// 项目级覆盖落地时复用本目录。
+const PROJECT_CONFIG_DIR: &str = ".zom";
+const ZOMIGNORE_FILE: &str = ".zomignore";
+const GITIGNORE_FILE: &str = ".gitignore";
+
+/// 首次为项目生成 `.zom/.zomignore` 时写入的默认内容。
+///
+/// 设计取向：「不想看到」的文件交给 `.gitignore` 维护（也确保它们不被提交）—— 它由 [`IgnoreMatcher`] 默认继承（与 Zed / VSCode 一致）。
+/// `.zomignore` 的单一职责是**反向放开**：用 `!pattern` 把「不想提交、但想在编辑器里看到」的文件 / 目录从 `.gitignore` 的隐藏里取回。
+/// 默认模板因此不含任何规则，只留注释说明用法。
+const ZOMIGNORE_DEFAULT: &str = "\
+# zom 文件树忽略规则（语法同 .gitignore）。
+#
+# 项目根的 .gitignore 已被默认继承——「不想看到」的文件请写在那边，顺便也避免被提交。
+#
+# 本文件的用途是反过来：用 `!pattern` 把被 .gitignore 隐藏、但你想在
+# 编辑器里看到的文件 / 目录放回文件树。
+
+# 环境变量示例——团队共享，常被通配 .env* 一并隐藏
+!.env.example
+!.env.sample
+!.env*.example
+
+# 空目录占位——容易被过度匹配的规则误伤
+!.gitkeep
+!.keep
+
+# 构建产物——偶尔想浏览生成结果 / 检查产物结构。
+# 文件树懒加载，不展开不会扫盘；node_modules 这种巨型依赖目录默认不放开。
+!target/
+!dist/
+!build/
+!out/
+";
 
 /// 节点类型。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,8 +70,7 @@ pub struct TreeEntry {
 
 /// 用于渲染的一行。
 ///
-/// 借用 [`ProjectTree`] 内部缓存，避免快照时复制大量 PathBuf。生命周期与
-/// 产出它的 `visible_rows` 调用保持一致。
+/// 借用 [`ProjectTree`] 内部缓存，避免快照时复制大量 PathBuf。生命周期与产出它的 `visible_rows` 调用保持一致。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TreeRow<'a> {
     pub path: &'a Path,
@@ -51,15 +91,23 @@ pub struct ProjectTree {
     children: HashMap<PathBuf, Vec<TreeEntry>>,
     /// 当前展开的目录路径集合。根目录默认在集合里。
     expanded: HashSet<PathBuf>,
+    /// 项目根级别的忽略规则集，构造时一次性加载。
+    /// `load_dir` 用它过滤掉每个目录下被忽略的子项。
+    ignore: IgnoreMatcher,
 }
 
 impl ProjectTree {
     /// 新建并立刻加载根目录子项；根目录读取失败时返回 IO 错误。
+    ///
+    /// 构造期会确保 `项目根/.zom/.zomignore` 存在（首次打开新项目时自动写入 [`ZOMIGNORE_DEFAULT`]），
+    /// 随后与 `项目根/.gitignore` 一起编译成[`IgnoreMatcher`]；
+    /// 之后 `load_dir` 据此过滤每层子项。
     pub fn new(root: PathBuf) -> io::Result<Self> {
         let root_name = root
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| root.to_string_lossy().into_owned());
+        let ignore = IgnoreMatcher::for_root(&root)?;
         let mut expanded = HashSet::new();
         expanded.insert(root.clone());
         let mut tree = Self {
@@ -67,6 +115,7 @@ impl ProjectTree {
             root_name,
             children: HashMap::new(),
             expanded,
+            ignore,
         };
         tree.load_dir(&root)?;
         Ok(tree)
@@ -82,8 +131,7 @@ impl ProjectTree {
 
     /// 展开目录。
     ///
-    /// 第一次展开时按需读盘；读盘失败的目录保持折叠并保留错误的语义（调用方
-    /// 拿到 `Err` 自行决定如何提示）。
+    /// 第一次展开时按需读盘；读盘失败的目录保持折叠并保留错误的语义（调用方拿到 `Err` 自行决定如何提示）。
     pub fn expand(&mut self, path: &Path) -> io::Result<()> {
         self.ensure_loaded(path)?;
         self.expanded.insert(path.to_path_buf());
@@ -103,10 +151,10 @@ impl ProjectTree {
         }
     }
 
-    /// 在 `parent` 目录下创建一个文件 / 子目录，并刷新目录缓存，使
-    /// `visible_rows` 立即反映新条目。返回新条目的完整路径。
-    /// `name` 可以是相对路径；创建文件时会按需创建中间目录，创建目录时
-    /// 会创建整段目录路径。
+    /// 在 `parent` 目录下创建一个文件 / 子目录，并刷新目录缓存，使 `visible_rows` 立即反映新条目。
+    /// 返回新条目的完整路径。
+    /// `name` 可以是相对路径；
+    /// 创建文件时会按需创建中间目录，创建目录时会创建整段目录路径。
     ///
     /// 同名条目已存在时返回 [`io::ErrorKind::AlreadyExists`]，不会覆盖。
     pub fn create_entry(
@@ -172,8 +220,8 @@ impl ProjectTree {
     /// 目标目录已有同名时自动追加 ` (n)` 后缀直到找到空位，**永不覆盖**。
     /// 文件直接 `fs::copy`，目录递归复制。返回最终落点的绝对路径。
     ///
-    /// 拒绝把 `src` 复制到自身或自己的子目录（会形成无限递归）；找不到 `src`
-    /// 或 `dst_parent` 不是目录时返回相应 IO 错误。
+    /// 拒绝把 `src` 复制到自身或自己的子目录（会形成无限递归）；
+    /// 找不到 `src` 或 `dst_parent` 不是目录时返回相应 IO 错误。
     ///
     /// 跨进程粘贴的「来自外部 Finder」也走这条路径——`src` 不必在项目根之内。
     pub fn copy_entry(&mut self, src: &Path, dst_parent: &Path) -> io::Result<PathBuf> {
@@ -183,15 +231,13 @@ impl ProjectTree {
         Ok(final_dst)
     }
 
-    /// 把 `src` 移动到 `dst_parent` 下。命名规则与 [`copy_entry`](Self::copy_entry)
-    /// 一致：默认沿用 `src` 文件名、冲突自动改名、永不覆盖。返回新位置。
+    /// 把 `src` 移动到 `dst_parent` 下。命名规则与 [`copy_entry`](Self::copy_entry) 一致：
+    /// 默认沿用 `src` 文件名、冲突自动改名、永不覆盖。返回新位置。
     ///
-    /// 同源同父目录的「移动」是无操作（早返），避免触发自动改名得到 `foo (1).txt`
-    /// 这种用户没要的结果。
+    /// 同源同父目录的「移动」是无操作（早返），避免触发自动改名得到 `foo (1).txt` 这种用户没要的结果。
     ///
-    /// 实现优先用 `fs::rename`（同盘符瞬时），失败时回退到 `copy_recursive +
-    /// remove_recursive`，覆盖跨文件系统 / 跨盘的情形。回退路径里若 copy 或
-    /// remove 自身也失败，原 rename 错误会被抛出，让调用方至少知道操作未完成。
+    /// 实现优先用 `fs::rename`（同盘符瞬时），失败时回退到 `copy_recursive + remove_recursive`，覆盖跨文件系统 / 跨盘的情形。
+    /// 回退路径里若 copy 或 remove 自身也失败，原 rename 错误会被抛出，让调用方至少知道操作未完成。
     pub fn move_entry(&mut self, src: &Path, dst_parent: &Path) -> io::Result<PathBuf> {
         if src.parent() == Some(dst_parent) {
             // 同父目录 + 同名：无操作；不调用 pick_unique_name，避免误改名。
@@ -329,8 +375,15 @@ impl ProjectTree {
             } else {
                 EntryKind::File
             };
+            let entry_path = entry.path();
+            if self
+                .ignore
+                .is_ignored(&entry_path, matches!(kind, EntryKind::Directory))
+            {
+                continue;
+            }
             entries.push(TreeEntry {
-                path: entry.path(),
+                path: entry_path,
                 name: entry.file_name().to_string_lossy().into_owned(),
                 kind,
             });
@@ -355,6 +408,60 @@ impl ProjectTree {
         }
         Ok(())
     }
+}
+
+/// 项目级 ignore 规则集：把 `项目根/.gitignore` 与 `项目根/.zom/.zomignore` 编译成单个 [`Gitignore`] matcher。
+///
+/// 加载顺序：`.gitignore` → `.zomignore`。`Gitignore` 内部按"最后匹配胜出" 的 gitignore 语义解析，
+/// 所以 `.zomignore` 里的 `!pattern` 能覆盖 `.gitignore` 里的忽略——这是用户「想看 `dist/` 某个子目录」的标准入口。
+///
+/// 本结构只读根级两个文件。子目录里的 `.gitignore` 暂不递归继承——多数项目把 ignore 集中在根，简化实现；
+/// 后续需要时再加层级累积。
+struct IgnoreMatcher {
+    matcher: Gitignore,
+}
+
+impl IgnoreMatcher {
+    fn for_root(root: &Path) -> io::Result<Self> {
+        ensure_zomignore_exists(root)?;
+        let mut builder = GitignoreBuilder::new(root);
+        let gitignore_path = root.join(GITIGNORE_FILE);
+        if gitignore_path.is_file() {
+            if let Some(error) = builder.add(&gitignore_path) {
+                return Err(io::Error::other(format!(
+                    "解析 {} 失败：{error}",
+                    gitignore_path.display()
+                )));
+            }
+        }
+        let zomignore_path = root.join(PROJECT_CONFIG_DIR).join(ZOMIGNORE_FILE);
+        if let Some(error) = builder.add(&zomignore_path) {
+            return Err(io::Error::other(format!(
+                "解析 {} 失败：{error}",
+                zomignore_path.display()
+            )));
+        }
+        let matcher = builder
+            .build()
+            .map_err(|error| io::Error::other(format!("构建忽略规则失败：{error}")))?;
+        Ok(Self { matcher })
+    }
+
+    fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+        matches!(self.matcher.matched(path, is_dir), Match::Ignore(_))
+    }
+}
+
+/// 首次为项目生成 `.zom/.zomignore`：若文件已存在则跳过（**不覆盖用户编辑**），否则按需建目录并写入 [`ZOMIGNORE_DEFAULT`]。
+/// 父目录是只读等场景下返回 IO 错误，由 [`ProjectTree::new`] 透传给上层。
+fn ensure_zomignore_exists(root: &Path) -> io::Result<()> {
+    let dir = root.join(PROJECT_CONFIG_DIR);
+    let path = dir.join(ZOMIGNORE_FILE);
+    if path.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(&dir)?;
+    fs::write(&path, ZOMIGNORE_DEFAULT)
 }
 
 fn validate_relative_entry_path(raw: &str) -> io::Result<PathBuf> {
@@ -410,8 +517,8 @@ fn ensure_directory_path_available(root: &Path, target: &Path) -> io::Result<()>
     Ok(())
 }
 
-/// 给「粘贴到 `dst_parent`」挑一个最终路径：验完基本边界后，按 `src` 的
-/// 文件名取一个未占用的名字。**不**做任何文件 IO 写入。
+/// 给「粘贴到 `dst_parent`」挑一个最终路径：验完基本边界后，按 `src` 的文件名取一个未占用的名字。
+/// **不**做任何文件 IO 写入。
 fn prepare_paste_destination(src: &Path, dst_parent: &Path) -> io::Result<PathBuf> {
     if !src.exists() {
         return Err(io::Error::new(
@@ -452,15 +559,15 @@ fn prepare_paste_destination(src: &Path, dst_parent: &Path) -> io::Result<PathBu
 }
 
 /// 在 `parent` 目录里挑一个未被占用的文件名。无冲突直接返回 `desired`；
-/// 冲突时按 `foo (1).txt`、`foo (2).txt` 顺序探测。万一全占用，兜底返回
-/// 带纳秒时间戳的名字——这条几乎不会触发，但保证函数永远有返回值。
+/// 冲突时按 `foo (1).txt`、`foo (2).txt` 顺序探测。
+/// 万一全占用，兜底返回带纳秒时间戳的名字——这条几乎不会触发，但保证函数永远有返回值。
 fn pick_unique_name(parent: &Path, desired: &str) -> String {
     if !parent.join(desired).exists() {
         return desired.to_string();
     }
     let path = Path::new(desired);
-    // file_stem / extension 是按「最后一个点」切的：foo.tar.gz → stem=foo.tar、
-    // ext=gz。结果是 "foo.tar (1).gz"——和 macOS Finder 行为一致。
+    // file_stem / extension 是按「最后一个点」切的：foo.tar.gz → stem=foo.tar、ext=gz。
+    // 结果是 "foo.tar (1).gz"——和 macOS Finder 行为一致。
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -475,7 +582,8 @@ fn pick_unique_name(parent: &Path, desired: &str) -> String {
             return candidate;
         }
     }
-    // 兜底：一万条都占的情况，退化到纳秒时间戳。理论极端，实践中不会撞。
+    // 兜底：一万条都占的情况，退化到纳秒时间戳。
+    // 理论极端，实践中不会撞。
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -486,9 +594,8 @@ fn pick_unique_name(parent: &Path, desired: &str) -> String {
     }
 }
 
-/// 递归复制：文件走 `fs::copy`（跟随 symlink，与 cp / Finder 一致），目录
-/// 走 `create_dir + read_dir` 的递归。失败时已写入的副本不回滚——上层若需
-/// 原子语义，应自行清理。
+/// 递归复制：文件走 `fs::copy`（跟随 symlink，与 cp / Finder 一致），目录走 `create_dir + read_dir` 的递归。
+/// 失败时已写入的副本不回滚——上层若需原子语义，应自行清理。
 fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(src)?;
     if metadata.file_type().is_dir() {
@@ -505,8 +612,7 @@ fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
 }
 
 /// 递归删除：目录走 `remove_dir_all`，文件 / 符号链接走 `remove_file`。
-/// 区别于 [`delete_entry`](ProjectTree::delete_entry) —— 这里是真删，不走回收
-/// 站，仅用于 `move_entry` 的跨文件系统路径（先 copy 出去再删源）。
+/// 区别于 [`delete_entry`](ProjectTree::delete_entry) —— 这里是真删，不走回收站，仅用于 `move_entry` 的跨文件系统路径（先 copy 出去再删源）。
 fn remove_recursive(path: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_dir() {
@@ -551,11 +657,13 @@ mod tests {
             .into_iter()
             .map(|row| (row.name.to_string(), row.depth, row.kind, row.expanded))
             .collect();
-        // 根行 depth=0 默认展开；其下两项 depth=1（目录优先 + 字母序）。
+        // 根行 depth=0 默认展开；其下 depth=1（目录优先 + 字母序）。
+        // `.zom/` 是 ProjectTree::new 自动创建的项目配置目录，与其他目录同列。
         assert_eq!(
             rows,
             vec![
                 (root_name.clone(), 0, EntryKind::Directory, true),
+                (".zom".to_string(), 1, EntryKind::Directory, false),
                 ("src".to_string(), 1, EntryKind::Directory, false),
                 ("README.md".to_string(), 1, EntryKind::File, false),
             ]
@@ -571,6 +679,7 @@ mod tests {
             rows,
             vec![
                 (root_name.clone(), 0),
+                (".zom".to_string(), 1),
                 ("src".to_string(), 1),
                 ("inner".to_string(), 2),
                 ("lib.rs".to_string(), 2),
@@ -579,7 +688,8 @@ mod tests {
         );
 
         tree.collapse(&root.join("src"));
-        assert_eq!(tree.visible_rows().len(), 3);
+        // root + .zom + src + README.md
+        assert_eq!(tree.visible_rows().len(), 4);
 
         // 折叠根目录后只剩根这一行。
         tree.collapse(&root);
@@ -822,15 +932,171 @@ mod tests {
             .into_iter()
             .map(|row| row.name.to_string())
             .collect();
+        // 目录优先 + 字母序（不区分大小写）；自动生成的 `.zom/` 按字母序混在
+        // 大写目录前面（'.' < 'A'）。
         assert_eq!(
             names,
             vec![
                 root_display_name(&root),
+                ".zom".to_string(),
                 "A_dir".to_string(),
                 "b_dir".to_string(),
                 "Afile".to_string(),
                 "zfile".to_string(),
             ]
         );
+    }
+
+    /// 新项目根没有 `.zom/.zomignore` 时，构造期应自动建目录并写入默认模板。
+    #[test]
+    fn project_tree_new_should_create_default_zomignore_when_missing() {
+        let root = tmp_root("zomignore-default");
+        assert!(!root.join(".zom").exists());
+
+        let _tree = ProjectTree::new(root.clone()).unwrap();
+
+        let path = root.join(".zom").join(".zomignore");
+        assert!(path.is_file(), "应自动创建 .zom/.zomignore");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, ZOMIGNORE_DEFAULT);
+    }
+
+    /// 已存在 `.zom/.zomignore` 时不被覆盖——保护用户编辑。
+    #[test]
+    fn project_tree_new_should_not_overwrite_existing_zomignore() {
+        let root = tmp_root("zomignore-preserve");
+        create_dir_all(root.join(".zom")).unwrap();
+        let path = root.join(".zom").join(".zomignore");
+        std::fs::write(&path, "# my custom rules\nnotes.md\n").unwrap();
+
+        let _tree = ProjectTree::new(root.clone()).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "# my custom rules\nnotes.md\n");
+    }
+
+    /// `.gitignore` 默认继承，里面列出的目录 / 文件应从文件树消失。
+    #[test]
+    fn project_tree_should_honor_root_gitignore() {
+        let root = tmp_root("respect-gitignore");
+        std::fs::write(root.join(".gitignore"), "target/\nsecret.txt\n").unwrap();
+        create_dir_all(root.join("target/debug")).unwrap();
+        File::create(root.join("target/debug/zom")).unwrap();
+        File::create(root.join("secret.txt")).unwrap();
+        File::create(root.join("README.md")).unwrap();
+        // 让 `.zom/` 也对断言隐形，聚焦在 .gitignore 行为上。
+        create_dir_all(root.join(".zom")).unwrap();
+        std::fs::write(root.join(".zom/.zomignore"), ".zom/\n").unwrap();
+
+        let tree = ProjectTree::new(root.clone()).unwrap();
+        let names: Vec<String> = tree
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.name.to_string())
+            .collect();
+        // .gitignore 自身按 git 习惯不被忽略；target/ 与 secret.txt 不应出现。
+        assert!(names.contains(&".gitignore".to_string()));
+        assert!(names.contains(&"README.md".to_string()));
+        assert!(!names.contains(&"target".to_string()));
+        assert!(!names.contains(&"secret.txt".to_string()));
+    }
+
+    /// `.zomignore` 用 `!pattern` 反向放开 `.gitignore` 隐藏的项。
+    #[test]
+    fn zomignore_should_be_able_to_unignore_gitignored_paths() {
+        let root = tmp_root("zomignore-unignore");
+        std::fs::write(root.join(".gitignore"), "dist/\n").unwrap();
+        create_dir_all(root.join("dist")).unwrap();
+        File::create(root.join("dist/bundle.js")).unwrap();
+        create_dir_all(root.join(".zom")).unwrap();
+        // 同时压住 `.zom/` 自身，并放开 `dist/`。
+        std::fs::write(root.join(".zom/.zomignore"), ".zom/\n!dist/\n").unwrap();
+
+        let tree = ProjectTree::new(root.clone()).unwrap();
+        let names: Vec<String> = tree
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.name.to_string())
+            .collect();
+        assert!(
+            names.contains(&"dist".to_string()),
+            "`!dist/` 应让目录回到文件树：{names:?}"
+        );
+    }
+
+    /// 默认 `.zomignore` 模板**只有反向放开规则**，不主动隐藏任何东西——
+    /// 没 `.gitignore` 的项目里，`.DS_Store`、`.git/` 等都该默认可见。
+    #[test]
+    fn default_zomignore_should_not_hide_anything_without_gitignore() {
+        let root = tmp_root("default-no-rules");
+        create_dir_all(root.join(".git/objects")).unwrap();
+        File::create(root.join(".DS_Store")).unwrap();
+        File::create(root.join("main.rs")).unwrap();
+        File::create(root.join("notes.swp")).unwrap();
+
+        let tree = ProjectTree::new(root.clone()).unwrap();
+        let names: Vec<String> = tree
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.name.to_string())
+            .collect();
+        assert!(names.contains(&".git".to_string()), "{names:?}");
+        assert!(names.contains(&".DS_Store".to_string()), "{names:?}");
+        assert!(names.contains(&"notes.swp".to_string()), "{names:?}");
+        assert!(names.contains(&"main.rs".to_string()), "{names:?}");
+    }
+
+    /// 默认模板里的 `!.env.example` 等放开规则：当 `.gitignore` 用通配把它们
+    /// 隐藏时，模板应把它们取回。把「默认有效」钉成契约——以后增删默认放开项
+    /// 至少有一个 case 在测一头。
+    #[test]
+    fn default_zomignore_should_unhide_common_examples_and_keepers() {
+        let root = tmp_root("default-unhide");
+        std::fs::write(
+            root.join(".gitignore"),
+            ".env*\n*.keep\n*.gitkeep\ntarget/\ndist/\nbuild/\nout/\n",
+        )
+        .unwrap();
+        File::create(root.join(".env")).unwrap();
+        File::create(root.join(".env.example")).unwrap();
+        File::create(root.join(".env.sample")).unwrap();
+        File::create(root.join(".env.local.example")).unwrap();
+        create_dir_all(root.join("empty_dir")).unwrap();
+        File::create(root.join("empty_dir/.gitkeep")).unwrap();
+        File::create(root.join("empty_dir/.keep")).unwrap();
+        create_dir_all(root.join("target/debug")).unwrap();
+        create_dir_all(root.join("dist")).unwrap();
+        create_dir_all(root.join("build")).unwrap();
+        create_dir_all(root.join("out")).unwrap();
+
+        let mut tree = ProjectTree::new(root.clone()).unwrap();
+        let names: Vec<String> = tree
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.name.to_string())
+            .collect();
+        // .env 本身仍被 .gitignore 隐藏。
+        assert!(!names.contains(&".env".to_string()), "{names:?}");
+        // 默认 !.env.example / !.env.sample / !.env*.example 把示例放回来。
+        assert!(names.contains(&".env.example".to_string()), "{names:?}");
+        assert!(names.contains(&".env.sample".to_string()), "{names:?}");
+        assert!(
+            names.contains(&".env.local.example".to_string()),
+            "{names:?}"
+        );
+        // 默认 !target/ / !dist/ / !build/ / !out/ 把构建产物放回来。
+        assert!(names.contains(&"target".to_string()), "{names:?}");
+        assert!(names.contains(&"dist".to_string()), "{names:?}");
+        assert!(names.contains(&"build".to_string()), "{names:?}");
+        assert!(names.contains(&"out".to_string()), "{names:?}");
+
+        // 占位文件——展开后该可见。
+        tree.expand(&root.join("empty_dir")).unwrap();
+        let names: Vec<String> = tree
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.name.to_string())
+            .collect();
+        assert!(names.contains(&".gitkeep".to_string()), "{names:?}");
+        assert!(names.contains(&".keep".to_string()), "{names:?}");
     }
 }

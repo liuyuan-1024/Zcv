@@ -3,6 +3,8 @@
 //! 这里只描述「工作台标签栏要显示哪些 tab」；正文 / 光标 / IME 属于
 //! [`crate::text_target::EditorRouter`] 与 shell 的编辑器视图职责。
 
+use std::path::Path;
+
 use zom_view::{ViewId, ViewSet};
 use zom_workspace::{Workspace, WorkspaceBuffer};
 
@@ -18,9 +20,16 @@ pub(crate) struct EditorTab {
     pub(crate) language: String,
     pub(crate) dirty: bool,
     pub(crate) is_active: bool,
+    /// 项目根的相对显示路径（统一正斜杠）。
+    /// 无项目根或文件不在项目内时为 None。
+    pub(crate) relative_path: Option<String>,
 }
 
-pub(crate) fn build_editor_state(workspace: &Workspace, views: &ViewSet) -> EditorState {
+pub(crate) fn build_editor_state(
+    workspace: &Workspace,
+    views: &ViewSet,
+    project_root: Option<&Path>,
+) -> EditorState {
     let active = views.active();
     let tabs = views
         .views()
@@ -29,16 +38,35 @@ pub(crate) fn build_editor_state(workspace: &Workspace, views: &ViewSet) -> Edit
             let title = buffer
                 .map(buffer_title)
                 .unwrap_or_else(|| "未命名".to_string());
+            let relative_path = buffer.and_then(|b| relative_display(b.path(), project_root));
             EditorTab {
                 id,
                 language: language_label(&title),
                 title,
                 dirty: buffer.map(WorkspaceBuffer::is_dirty).unwrap_or(false),
                 is_active: Some(id) == active,
+                relative_path,
             }
         })
         .collect();
     EditorState { tabs }
+}
+
+/// 把 buffer 绝对路径折成项目相对、正斜杠显示串。
+///
+/// 项目根缺失、或文件不在项目根之下时返回 None——状态栏会回退到 tab 文件名。
+fn relative_display(path: Option<&Path>, project_root: Option<&Path>) -> Option<String> {
+    let path = path?;
+    let root = project_root?;
+    let rel = path.strip_prefix(root).ok()?;
+    let mut out = String::new();
+    for (i, part) in rel.iter().enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        out.push_str(&part.to_string_lossy());
+    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 fn buffer_title(buffer: &WorkspaceBuffer) -> String {

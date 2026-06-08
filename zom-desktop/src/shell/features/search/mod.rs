@@ -247,7 +247,7 @@ impl SearchRuntime {
                     cx.stop_propagation();
                 }
             })
-            .child(search_bar(
+            .child(search_controls(
                 state,
                 key_request,
                 &self.query_focus,
@@ -281,38 +281,8 @@ fn install_field_focus_listener<T: 'static>(
     .detach();
 }
 
-fn search_bar(
-    state: &SearchState,
-    key_request: &KeyRequest,
-    query_focus: &FocusHandle,
-    replacement_focus: &FocusHandle,
-    query_slot: &Rc<TextEditorSlot>,
-    replacement_slot: &Rc<TextEditorSlot>,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
-) -> Div {
-    // 编辑区上方的一条横向 bar：宽度撑满父级，高度由内容决定。
-    // 不再像 dock 那样吃 size_full —— 那是 panel 时代留下的。
-    div()
-        .w_full()
-        .flex()
-        .flex_col()
-        .bg(color::gray::s02())
-        .text_size(typography::ui())
-        .line_height(typography::ui_line())
-        .text_color(color::gray::s09())
-        .child(search_controls(
-            state,
-            key_request,
-            query_focus,
-            replacement_focus,
-            query_slot,
-            replacement_slot,
-            shortcuts,
-            titles,
-        ))
-}
-
+/// 嵌入 file_status_bar 作为它的第二行：背景 / 内边距 / 字号 / 底边由宿主 bar 提供，
+/// 这里只画输入框与按钮组的列布局。
 fn search_controls(
     state: &SearchState,
     key_request: &KeyRequest,
@@ -326,10 +296,7 @@ fn search_controls(
     div()
         .flex()
         .flex_col()
-        .gap(space::s6())
-        .border_b_1()
-        .border_color(color::gray::s05())
-        .p(space::s6())
+        .gap(space::s4())
         .child(search_row(
             "查找...",
             query_focus,

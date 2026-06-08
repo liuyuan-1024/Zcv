@@ -268,6 +268,10 @@ impl App {
         self.project_root.is_some()
     }
 
+    pub(crate) fn project_root(&self) -> Option<&std::path::Path> {
+        self.project_root.as_deref()
+    }
+
     pub(crate) fn project_picker_deactivate(&mut self) {
         if matches!(
             self.focus.current(),
@@ -651,7 +655,8 @@ mod tests {
     }
 
     fn editor_state(app: &App) -> EditorState {
-        app.with_workspace_views(build_editor_state)
+        let project_root = app.project_root().map(|p| p.to_path_buf());
+        app.with_workspace_views(|ws, views| build_editor_state(ws, views, project_root.as_deref()))
     }
 
     fn temp_path(tag: &str) -> PathBuf {

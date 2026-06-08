@@ -236,10 +236,13 @@ impl Render for ShellView {
 
         let state = self.workbench_state();
         // 三个 feature 的视图快照旁路收集，不进 WorkbenchState；workbench::render 只看布局。
-        let editor_state = runtime
-            .app
-            .borrow()
-            .with_workspace_views(build_editor_state);
+        let editor_state = {
+            let app = runtime.app.borrow();
+            let project_root = app.project_root().map(|p| p.to_path_buf());
+            app.with_workspace_views(|ws, views| {
+                build_editor_state(ws, views, project_root.as_deref())
+            })
+        };
         let file_tree_state = {
             let app = runtime.app.borrow();
             runtime.features.file_tree.state(&app)

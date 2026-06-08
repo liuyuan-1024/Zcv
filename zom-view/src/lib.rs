@@ -40,8 +40,7 @@ pub const DEFAULT_INITIAL_VISIBLE_LINES: u64 = 200;
 /// 不开软换行时 `top_subrow` 恒为 0。
 ///
 /// `top_line` 的真源是视图自身，由 `settle_viewport_y` 落定。
-/// `visible_visual_rows` 与 `visible_logical_lines` 由渲染端按边界、
-/// 行高和软换行结果测量后同步回写。
+/// `visible_visual_rows` 与 `visible_logical_lines` 由渲染端按边界、行高和软换行结果测量后同步回写。
 /// `View::new` 给二者非零初值。
 /// 消费侧不需要再为「还没测过」保留特殊路径。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

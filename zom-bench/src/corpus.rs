@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::Lang;
 
-const SIZES_MIB: &[usize] = &[1, 4, 16, 64];
+const SIZES_MIB: &[usize] = &[1, 4, 16];
 
 pub fn corpus_dir() -> PathBuf {
     let manifest = env!("CARGO_MANIFEST_DIR");

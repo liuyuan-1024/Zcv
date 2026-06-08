@@ -201,7 +201,6 @@ mod tests {
     use super::*;
     use crate::syntax::BufferHandle;
     use crate::syntax::provider::HighlightProvider;
-    use crate::syntax::sink::HighlightSink;
     use zom_engine::{BufferVersion, ChangeSet};
 
     #[derive(Debug)]
@@ -213,7 +212,7 @@ mod tests {
         fn language(&self) -> LanguageId {
             self.id
         }
-        fn attach(&mut self, _buffer: BufferHandle, _sink: HighlightSink) {}
+        fn attach(&mut self, _buffer: BufferHandle) {}
         fn on_edit(&mut self, _buffer: BufferHandle, _change: &ChangeSet, _version: BufferVersion) {
         }
         fn detach(&mut self) {}

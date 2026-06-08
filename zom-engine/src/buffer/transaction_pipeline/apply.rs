@@ -72,7 +72,7 @@ impl Buffer {
         let mut prepared = self.prepare_transaction(tx)?;
         self.apply_large_transaction_policy(&mut prepared)?;
 
-        // Phase 4 引入 Arc<[T]>：以下所有 clone 都是 O(1) 引用计数递增，无堆分配。
+        // `Arc<[T]>` 让以下所有 clone 都是 O(1) 引用计数递增，无堆分配。
         // 仍然显式列出便于读者理解所有权流动；编译器不会自动 elide 这些 Arc::clone。
         let (transaction_id, delta, changeset) = self.apply_edit_list(
             prepared.base_version,

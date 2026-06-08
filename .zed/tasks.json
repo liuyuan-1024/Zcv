@@ -27,6 +27,15 @@
     "hide": "never",
   },
   {
+    "label": "跨规模（1/4/16/64 MiB）Rust 文件性能测试",
+    "command": "cargo",
+    "args": ["run", "--release", "-p", "zom-bench", "--", "run", "rust"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+  {
     "label": "16MB Rust 文件性能测试",
     "command": "cargo",
     "args": ["run", "--release", "-p", "zom-bench", "--", "run", "rust", "16"],

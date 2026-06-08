@@ -2,9 +2,9 @@
 //!
 //! 本模块只描述“哪些字节范围要以什么语义装饰”，不解析主题颜色，也不绘制。
 
-use zom_engine::{MetadataLayers, SelectionSet, TextRange};
+use zom_engine::{SelectionSet, TextRange};
 use zom_workspace::WorkspaceBuffer;
-use zom_workspace::syntax::HighlightSpan;
+use zom_workspace::syntax::BufferSyntaxTree;
 
 use crate::editor::text::snapshot::SnapshotLine;
 
@@ -41,7 +41,6 @@ pub(crate) enum DecorationStyle {
 #[allow(dead_code)]
 pub(crate) mod priority {
     pub(crate) const SYNTAX_CONFIRMED: u16 = 0;
-    pub(crate) const SYNTAX_PROVISIONAL: u16 = 1;
     pub(crate) const FOLD: u16 = 100;
     pub(crate) const CURRENT_LINE: u16 = 200;
     pub(crate) const SELECTION: u16 = 300;
@@ -60,10 +59,12 @@ pub(crate) fn push_workspace_search(buffer: &WorkspaceBuffer, out: &mut Vec<Deco
     producers::search::push(buffer, out);
 }
 
-pub(crate) fn push_syntax_layers(
-    layers: &MetadataLayers<HighlightSpan>,
+/// 把当前 [`BufferSyntaxTree`] 在 viewport 上的 query 结果作为 Foreground decoration 推入 `out`。
+/// `syntax_tree` 为 `None` 表示 buffer 还没首份 tree（首次 Attach 未回包）或 plain / 超阈值 / 无 provider 的缓冲区——本帧不产 syntax 装饰。
+pub(crate) fn push_syntax_tree(
+    syntax_tree: Option<&BufferSyntaxTree>,
     lines: &[SnapshotLine],
     out: &mut Vec<Decoration>,
 ) {
-    producers::syntax::push(layers, lines, out);
+    producers::syntax::push(syntax_tree, lines, out);
 }

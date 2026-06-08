@@ -36,7 +36,7 @@
 | P1 Command 到编辑事务闭环 | `CommandArgs` / `TryFrom`、`CommandExecutor::run`、editor 命令 catalog（插入 / 删除 / 替换 / 选择 / undo / redo / movement）、`Keymap` 前缀 trie |
 | P2 Desktop 最小编辑循环 | GPUI 外壳 + TopBar / Body / BottomBar；keymap → 命令队列 → 执行器；IME commit + preedit 直通；阶段 2 范围背景渲染原语；selection / 多光标 caret |
 | P3 搜索与视口 | `BufferSearch` 数据模型（per-buffer 共享 + `try_remap`）；search 接入阶段 2 高亮；search 系列 handler；`ViewportSlice` 替换全文读取 |
-| 语法高亮异步增量 | 单全局 `SyntaxWorker` + tree-sitter 增量 reparse + viewport-scoped query + `ReplaceRange` 局部产物 + 每帧 `pump_pending_highlights`。`MAX_HIGHLIGHT_BYTES = 16 MiB`（rust 单键 e2e 63 ms / 主线程 3 µs / cold parse 1.56 s）。详见 [`zom-workspace/docs/语法高亮异步增量改造.md`](zom-workspace/docs/语法高亮异步增量改造.md) |
+| 语法高亮 render-time query | 单全局 `SyntaxWorker` + tree-sitter 增量 reparse；worker 把 `Arc<BufferSyntaxTree>` 写共享 slot，paint 端按 viewport 现查 Query。主线程 `tree_slot.try_edit` 同步推坐标消掉 token 内插入的首帧错色。`MAX_HIGHLIGHT_BYTES = 16 MiB`。详见 [`zom-desktop/docs/桌面端语法高亮.md`](zom-desktop/docs/桌面端语法高亮.md) |
 | 搜索异步化 | 引擎：`SearchHandle` + 协作式取消 + `SearchProgress`。Workspace：`BufferSearch` 持 pending handle，`sync` 非阻塞，`pump_pending_search` 渲染线程每帧 drain。`DEFAULT_REGEX_HAYSTACK_BYTE_LIMIT` 8 MiB 硬限已删（10 MiB 全文 regex 测试 320 ms） |
 
 ## 进行中 / 未开工

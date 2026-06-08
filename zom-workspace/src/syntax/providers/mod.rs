@@ -12,8 +12,7 @@
 //! 注册由组合根在创建共享 [`SyntaxEngine`](crate::syntax::SyntaxEngine) 时调用
 //! [`install_builtin_providers`] 完成（手册 §十）。
 
-mod common;
-pub(crate) mod injection;
+pub(crate) mod common;
 
 pub mod bash;
 pub mod css;

@@ -10,7 +10,9 @@
 //!
 //! 视口切片：snapshot 已经按 view 当前 `(top_line, visible_logical_lines)` 给出一段 `SnapshotLine[]`，element 只 shape 这一段；
 //! `total_lines` 决定`content_height`，从而支持 GB 级文件不爆显存。
-//! prepaint 末尾根据 bounds / line_height 反算实际可见行数，回写 view 供下一帧 settle / snapshot 使用；
+//! prepaint 在 shape 出本帧 `breaks_per_line` 之后立刻调 [`EditorViewportSyncHook`]：
+//! 把可见行数和新 wrap_map 写回 view、随即跑一次 settle，再用 settle 结果决定本帧 `top_visual_row`。
+//! 这样「插入新行 / 触发新 sub-row」在同一帧里就能被 edge-scroll 拉回视区，不留一帧滞后。
 //! 首帧由 main_editor 的 `DEFAULT_VISIBLE_LINES` 兜底。
 //!
 //! 软换行：开关由 [`EditorKernel::soft_wrap`] 控制，运行时可切换。
@@ -54,6 +56,7 @@ use super::blink::CaretClock;
 use super::gutter;
 use super::input_host::{
     EditorInputHook, EditorPaintInfo, EditorViewportMeasurement, EditorViewportSyncHook,
+    SettledViewportTop,
 };
 use super::phases::{
     GlyphOverlay, LineBackgroundQuad, LineMetric, paint_phase_1_line_backgrounds,
@@ -648,16 +651,42 @@ impl Element for EditorElement {
         } else {
             1
         };
-        let initial_top_visual_row = resolve_visual_top(
+
+        // 先用 view 当前 top（可能是上一帧的旧值）解析一个临时位置，
+        // 仅用于构造 measurement——sync 钩子会立刻用本帧新 wrap_map 跑 settle 修正。
+        let provisional_top_visual_row = resolve_visual_top(
             &visual_rows,
             self.top_line,
             if soft_wrap { self.top_subrow } else { 0 },
         );
+        let measured_viewport = viewport_measurement_from_visual_top(
+            &visual_rows,
+            provisional_top_visual_row,
+            visible_visual_rows,
+        );
 
-        // Y 轴 top（含 reveal、edge-scroll）已由 `View::settle_viewport_y` 在视觉行坐标系内提前落定，
-        // 这里只跟随 view 的 `top_line/top_subrow` 解析出 `initial_top_visual_row`。
+        // 同帧 settle：把本帧测出的 wrap_map / 可见行数推回 view，让 settle 用「新」wrap_map 而不是上一帧的旧 map 决定 top。
+        // 返回值取代 self.top_line/top_subrow——这样「插入新行 / 触发新 sub-row」当帧 edge-scroll 就生效，不留一帧滞后。
+        // 无 viewport_sync 的内核（单行嵌入框）或无活动 view 时退回 self 持有的 top。
+        let settled_top = self.viewport_sync.as_ref().and_then(|sync| {
+            let wrap_map = allows_vertical_scroll
+                .then(|| WrapMap::sparse(soft_wrap, self.total_lines, breaks_per_line));
+            sync(measured_viewport, wrap_map, cx)
+        });
+        let (effective_top_line, effective_top_subrow) = match settled_top {
+            Some(SettledViewportTop {
+                top_line,
+                top_subrow,
+            }) => (top_line, top_subrow),
+            None => (self.top_line, self.top_subrow),
+        };
+        let top_visual_row = resolve_visual_top(
+            &visual_rows,
+            effective_top_line,
+            if soft_wrap { effective_top_subrow } else { 0 },
+        );
+
         // element 仅负责 X 轴：软换行下 X 恒 0（横向不溢出），关掉软换行才有 X reveal / edge-scroll。
-        let top_visual_row = initial_top_visual_row;
         let scroll = match id {
             Some(global_id) => {
                 let content_width = prepainted_lines.iter().fold(px(0.), |max, line| {
@@ -730,17 +759,8 @@ impl Element for EditorElement {
             None => Point::new(px(0.), px(0.)),
         };
 
-        let _ = viewport_h; // 仅留作上文 viewport_h_f 的语义来源，避免 unused-binding 警告。
-
-        let measured_viewport =
-            viewport_measurement_from_visual_top(&visual_rows, top_visual_row, visible_visual_rows);
-
-        // 把测得的 viewport 推回 view，让下一帧 snapshot 切片和 soft-wrap 顶部 sub-row 对齐。
-        if let Some(sync) = self.viewport_sync.as_ref() {
-            let wrap_map = allows_vertical_scroll
-                .then(|| WrapMap::sparse(soft_wrap, self.total_lines, breaks_per_line));
-            sync(measured_viewport, wrap_map, cx);
-        }
+        // 仅留作上文 viewport_h_f 的语义来源，避免 unused-binding 警告。
+        let _ = viewport_h;
 
         // top 已吸收 snapshot 上方 padding 的真实视觉行数修正。
         // phases 用 row_index 算 y 即可，**不需要再知道视口起点**。

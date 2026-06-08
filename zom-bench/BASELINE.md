@@ -11,8 +11,8 @@
   - `load`：`Buffer::from_reader` 流式读取，含 UTF-8 校验 / 行尾扫描 / 最长行扫描 / rope build。3 次取平均。
   - `viewport`：`snapshot.slice_viewport(Viewport::new(中位行, 60))`。1000 次取平均，衡量渲染热路径。
   - `search`：`buffer.search_regex(pattern, default)`。3 次取平均。
-  - `parse`：`BufferSyntaxState::attach` 内含的全量 `run_full`。3 次取平均。
-  - `edit+highlight`：`buffer.insert` + `BufferSyntaxState::handle_edit`（当前架构会同步全量 reparse）。规模越大迭代越少，避免一次跑几分钟。
+  - `parse`：`BufferSyntax::attach` 内含的全量 `run_full`。3 次取平均。
+  - `edit+highlight`：`buffer.insert` + `BufferSyntax::handle_edit`。规模越大迭代越少，避免一次跑几分钟。
 - **构建**：release。
 - **峰值内存**：bench 不自测；外层用 `/usr/bin/time -l`（macOS）或 `/usr/bin/time -v`（Linux）读 maximum resident set size。
 
@@ -34,6 +34,25 @@ P0–P4 全部落地后的稳态。v0.2.0 起点与各阶段过渡数字见 §6 
 > 64 MiB 一档仍可跑作"远端劣化"观察，见 §6；超过 16 MiB 已不在红线管辖。
 > json / log 语料尚未实测。
 
+## 2.1 render-time query 与增量 reparse 的分位数（2026-06-07）
+
+paint 路径与编辑路径上两条核心 tree-sitter 调用的实测分位数，作为「render-time query 现查 viewport 是否够快」「主线程同步 reparse 是否可行」的依据。
+
+| 场景 | 1 MiB | 4 MiB | 16 MiB | 红线参考 | 备注 |
+|---|---:|---:|---:|---:|---|
+| `render-time query` p50 | 70.3 µs | 71.1 µs | 72.7 µs | — | 直接用 `tree_sitter::QueryCursor::captures` + `set_byte_range`，50 行 viewport ×200 次 |
+| `render-time query` p95 | 73.6 µs | 74.2 µs | 76.5 µs | — | |
+| `render-time query` p99 | **76.0 µs** | **79.0 µs** | **95.7 µs** | < 500 µs | 跨规模几乎常数——`set_byte_range` 把工作限定在 viewport 内 |
+| `incremental reparse` p50 | 1.25 ms | 6.92 ms | 47.5 ms | — | `tree.edit` + `parse_with_options(Some(&old))`；单字符 ASCII 插入 ×100 次 |
+| `incremental reparse` p95 | 1.60 ms | 9.78 ms | 56.1 ms | — | |
+| `incremental reparse` p99 | **2.04 ms** | **11.2 ms** | **58.1 ms** | — | 严格随文件大小线性增长 |
+
+**结论**：
+
+1. **render-time query 直接走，不缓存**。p99 < 0.1 ms 远低于 0.5 ms 阈值，paint 时现查 viewport 16 MiB rust 仍只占 60 FPS 帧预算的 0.6%。
+2. **主线程不做同步增量 reparse**。16 MiB 单键 48–58 ms ≈ 3–4 帧，必须留在 worker 上。小文件上叠加"命中预算就同步 reparse"的 fast-path 是可选优化（≤ 1 ms budget 覆盖 1 MiB、≤ 5 ms 覆盖 4 MiB）。
+3. **wrong-color flash 的根源**：16 MiB 上观察到的"补色尾迹"≈ 3-4 帧，本质是 tree-sitter 增量 reparse 在该规模下的固有耗时，工程上靠"主线程 `tree.edit` 推坐标 + paint 现查"消掉首帧错位，剩余只能等 reparse。
+
 ## 3. 关键发现（v0.2.0 回顾，已被 P0–P4 解决）
 
 > 本节是 v0.2.0 起点时的问题诊断，留作历史参考。三个阻塞点在 §6 历史快照
@@ -44,11 +63,11 @@ P0–P4 全部落地后的稳态。v0.2.0 起点与各阶段过渡数字见 §6 
 1. **搜索 8 MiB 硬限**（[zom-engine/src/search.rs:13](../zom-engine/src/search.rs)）
    `DEFAULT_REGEX_HAYSTACK_BYTE_LIMIT = 8 * 1024 * 1024`。64 MiB 文件 `search_regex` 直接报 `RangeTooLarge`，**根本扫不了**。
 
-2. **高亮 4 MiB 跳过**（[zom-workspace/src/syntax/coordinator.rs:32](../zom-workspace/src/syntax/coordinator.rs)）
-   `MAX_HIGHLIGHT_BYTES = 4 * 1024 * 1024`。超阈值的 buffer 不挂 provider，**完全没有高亮**。
+2. **高亮 4 MiB 跳过**（[zom-workspace/src/syntax/coordinator.rs](../zom-workspace/src/syntax/coordinator.rs)）
+   原 `MAX_HIGHLIGHT_BYTES = 4 * 1024 * 1024`。超阈值的 buffer 不挂 provider，**完全没有高亮**。当前已收口为 16 MiB。
 
-3. **高亮同步全量**（[zom-workspace/src/syntax/providers/common.rs:109](../zom-workspace/src/syntax/providers/common.rs) `run_full`）
-   tree-sitter 每次编辑都从头 parse 全文，跑在主线程，结果 `replace_all` 重建整个 metadata layer。即使解开 #2 也跑不动——64 MiB 单键 7.6 s。
+3. **高亮同步全量**（[zom-workspace/src/syntax/providers/common.rs](../zom-workspace/src/syntax/providers/common.rs) `run_full`）
+   tree-sitter 每次编辑都从头 parse 全文，跑在主线程，结果重建整个 metadata layer。即使解开 #2 也跑不动——64 MiB 单键 7.6 s。
 
 ### 3.2 内存比时间更难处理
 
@@ -116,3 +135,6 @@ cargo run --release -p zom-bench -- run all
 | 2026-06-01 | P3 viewport-scoped ReplaceRange | 174 ms | TBD | 37 µs | 6.3 s | **viewport ±8 KiB e2e 246 ms / 键**（全文 e2e 仍 3.3 s，主线程 3 µs） | 7.1 GB (bench 并发) | 桌面端把 viewport ± 缓冲区作为 byte range hint 喂给 worker；worker 用 `QueryCursor::set_byte_range` + `SnapshotTextProvider`（predicate 按节点取字节，避免物化全文）跑局部 query，产物以 `sink.replace_range` 投递。coordinator 把 `ReplaceRange` 接到 `MetadataLayer::replace_in_range`——按 span 起点落在新区间内的判定删旧、追加新，远处 spans 完全保留。engine 新增 `MetadataLayer::replace_in_range` / `MetadataLayers::replace_layer_ranges_in_range`。**4 MiB viewport-scoped e2e 11.2 ms（target 50 ms，4.5× 余量）；64 MiB 246 ms（target 50 ms，5× 未达 — 余量在 tree-sitter 节点遍历开销上）**；vs 全文 e2e 3.3 s 砍 92%。`set_viewport` 自身立即触发一次 viewport-scoped re-query，滚动后新区域 1–2 帧内见高亮。首次 attach 仍 `ReplaceAll` 铺底；viewport hint 清空回退到 `ReplaceAll`。**剩余 64 MiB 瓶颈**：（1）attach 冷启动依旧全树 query → 6.3 s，需 viewport-aware attach；（2）QueryCursor 在 64 MiB tree 上即便 set_byte_range 也要从 root 走，目前 ~150 ms/键；（3）SnapshotTextProvider 每个 predicate 节点 alloc 一个 Vec<u8>，rust grammar `#match?` 触发频次高。三条都是 P4 / P5 候选项。 |
 | 2026-06-01 | P3 收尾 + P4 放阈值 | 168 ms | TBD | 36 µs | 6.3 s | viewport ±8 KiB e2e 264 ms / 键（主线程 3 µs） | 10.2 GB (bench 并发) | desktop 接 `App::pump_active_viewport_hint`：`ShellView::render` 每帧把活动 view 的 `top_line` + `visible_line_count` ± 32 行 padding 算成 byte_range，调 `Workspace::set_buffer_viewport_hint`；HighlightWorker 内部对相同 hint 去重，无变化不重 query。**`MAX_HIGHLIGHT_BYTES` 4 MiB → 64 MiB**——viewport-scoped 路径已脱钩文件大小，4 MiB 阈值是 P0–P2 时代为了拦"全量阻塞"留的临时门槛，现在可以撤掉。64 MiB rust 现在能挂上 syntax provider，主线程不卡：cold parse 6.3 s 在 worker 上异步跑，主线程立刻就能编辑（无高亮），spans 后续帧补齐。bench worker 端数字与 P3 基本同档（噪声 ±10%）。peak RSS 上涨到 10.2 GB 仍是 bench 工艺：连跑 5 个场景（parse 3 iter + edit+hl m 200 iter + e2e 3 iter + vp 30 iter）会有多根 worker 线程并发持 64 MiB tree；生产单 buffer 单线程不会触发——常驻只有当前 worker 一份 tree (≈ 400 MB) + viewport-scoped spans (< 1 MB)。搜索 8 MiB 硬限单独立项，需先做异步搜索 + 可取消 + 进度上报。 |
 | 2026-06-01 | 收口 16 MiB（阈值回收） | (16MB: 44 ms) | TBD | 32 µs | (16MB: 1.56 s) | (16MB: vp 63 ms / 主线程 3 µs / 全文 e2e 786 ms) | (16MB: 3.0 GB bench 并发) | **`MAX_HIGHLIGHT_BYTES` 64 → 16 MiB**：bench 实测 16 MiB rust 单键 viewport-scoped e2e 63 ms（红线 ≤ 100 ms ✅）、主线程 3 µs（≤ 5 ms ✅）、cold parse 1.56 s（≈ 1.5 s ✅）；64 MiB 一档单键 ~250 ms，cold parse 6.3 s，是 tree-sitter 走树本身 O(file size) 的常数代价，不再继续追。16 MiB 覆盖单文件主流代码量（小型 monorepo 单文件 99 分位 < 8 MiB），超过部分多为日志/生成代码/单页 HTML，宿主应提示用户跳过。BASELINE §4 红线表也同步收口到 16 MiB 一档；64 MiB 仍在 bench 跑，仅作回归观察、不当红线。**P0–P4 阶段性收尾**：方案兑现"主线程脱钩文件大小 + viewport-scoped query + 异步 worker"三件套；剩余 search 8 MiB 硬限独立成项。 |
+| 2026-06-07 | confirmed layer Stickiness::Expand + 删 provisional | — | — | — | — | (16MB: 3 µs 主线程，e2e 同 §2) | — | 把 confirmed layer 落 span 时 stickiness 从 `Never` 切到 `Expand`：编辑当帧 `update_through_delta_event` 让相邻 span 自动吞下新字节，不再需要 provisional 层。删除：`syntax_provisional_layer_kind`、`ProvisionalSpan`、`provisional_spans_for_edit`、`infer_highlight_*`、`syntax_range_is_covered`、`clear_provisional_*`（~190 行），主线程少跑 3 次 O(N) 扫描；删除 desktop `SYNTAX_PROVISIONAL` priority 与 producer 第二层 push。bench 数字未跑（主线程仍 3 µs/键 量级，区别在 layer 写入路径而非可测耗时）。**遗留问题**：仍有"先以旧 tree 颜色显示、worker reparse 回包后再纠正"的色跳——这一帧延迟由 worker 异步交付协议本身造成，是下一步 render-time query 改造的动机。 |
+| 2026-06-07 | render-time query 前置测量 | — | — | — | — | — | — | bench 新增两个分位数场景：`render-time query`（直跑 `QueryCursor::captures` + `set_byte_range`，~50 行 viewport ×200 次）与 `incremental reparse`（`tree.edit` + `parse_with_options(Some(&old))` ×100 次）。**关键发现**：（1）render-time query p99 跨 1/4/16 MiB 都 < 100 µs，远低于 0.5 ms 阈值——paint 现查 viewport 完全可行，不必加 viewport spans cache；（2）incremental reparse p99 在 1 MiB 2.0 ms / 4 MiB 11.2 ms / 16 MiB 58.1 ms 强线性增长，16 MiB 严禁主线程同步——这也是 "wrong color flash" 持续 3-4 帧的根因，tree-sitter 增量 reparse 自身代价不可绕过。详见 §2.1。 |
+| 2026-06-08 | BufferSyntaxTree + slot 改造落地 | — | — | — | — | — | — | sink / `MetadataLayer<HighlightSpan>` / coalesce 整条路径下线；改成 worker reparse 后把 `Arc<BufferSyntaxTree>` 写共享 slot，paint 端按 viewport 现查 `query_viewport`。主线程编辑入口同步 `tree_slot.try_edit` 推坐标，让首帧 paint 拿到的 tree 已对齐新 snapshot，token 内插入不再闪默认前景色。等价性由 `incremental_matches_full_after_edits` / `edit_frame_decorations_equal_reparse_frame_for_structure_preserving_edit` 钉死。markdown 退化为单层 block grammar（inline 着色 / 代码栏注入留作未来工作项）。 |

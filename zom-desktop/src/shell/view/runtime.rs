@@ -60,12 +60,13 @@ impl ShellRuntime {
         let features = FeatureRegistry::assemble(&app, cx);
 
         // 主编辑区内核：多行 + 行号 + 滚动 + 视口测量回写。
-        // 视口钩子在 prepaint 末尾把可见行数与 wrap map 推回 view。
+        // 视口钩子在 prepaint 测出本帧 wrap_map 后即时调用，
+        // App 侧顺手用新 wrap_map 跑一次 settle，把 settle 后的顶端返回给 element。
         let main_viewport_sync: EditorViewportSyncHook = {
             let app = Rc::clone(&app);
             Rc::new(move |measurement, wrap_map, _cx| {
                 app.borrow_mut()
-                    .sync_main_viewport_measurement(measurement, wrap_map);
+                    .sync_main_viewport_measurement(measurement, wrap_map)
             })
         };
         // 全局软换行 cell 由 App 持有；

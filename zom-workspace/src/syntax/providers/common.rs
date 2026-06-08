@@ -523,7 +523,7 @@ impl HighlightProvider for HighlightWorker {
             return;
         };
         let version = snapshot.version();
-        slot.store_if_newer(BufferSyntaxTree::new(
+        slot.store_if_newer(BufferSyntaxTree::single(
             self.config.clone(),
             tree.clone(),
             snapshot.clone(),

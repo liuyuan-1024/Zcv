@@ -58,5 +58,6 @@ Thumbs.db
 .claude/
 .codex/
 .deepseek/
+.codegraph/
 
 *.local.*

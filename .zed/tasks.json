@@ -73,4 +73,22 @@
     "reveal": "always",
     "hide": "never",
   },
+  {
+    "label": "增量更新 codegraph 索引",
+    "command": "codegraph",
+    "args": ["sync"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+  {
+    "label": "全量更新 codegraph 索引",
+    "command": "codegraph",
+    "args": ["index"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
 ]

@@ -250,6 +250,7 @@ pub fn measure_search(buffer: &Buffer, pattern: &str, size_mib: usize) -> Measur
     for _ in 0..ITERS {
         let t0 = Instant::now();
         match buffer
+            .snapshot()
             .search_regex(pattern, RegexSearchOptions::default())
             .join()
         {

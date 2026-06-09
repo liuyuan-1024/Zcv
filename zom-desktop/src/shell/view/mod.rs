@@ -15,7 +15,6 @@ use zom_command::commands::{file_tree as file_tree_commands, window as window_co
 
 use crate::app::App;
 use crate::clipboard::GpuiClipboardScope;
-use crate::editor_state::build_editor_state;
 use crate::focus::AppFocus;
 
 use self::runtime::ShellRuntime;
@@ -236,24 +235,18 @@ impl Render for ShellView {
 
         let state = self.workbench_state();
         // 三个 feature 的视图快照旁路收集，不进 WorkbenchState；workbench::render 只看布局。
-        let editor_state = {
-            let app = runtime.app.borrow();
-            let project_root = app.project_root().map(|p| p.to_path_buf());
-            app.with_workspace_views(|ws, views| {
-                build_editor_state(ws, views, project_root.as_deref())
-            })
-        };
+        let editor_state = runtime.app.borrow().editor_state();
         let file_tree_state = {
             let app = runtime.app.borrow();
             runtime.features.file_tree.state(&app)
         };
         let search_state = {
             let app = runtime.app.borrow();
-            runtime
-                .features
-                .search
-                .runtime_handle()
-                .state(app.workspace())
+            runtime.features.search.runtime_handle().state(
+                app.workspace(),
+                app.views(),
+                app.active_view_id(),
+            )
         };
 
         // 光标一移动就重置闪烁为实心，让用户立刻定位到光标；定时链与全局可见位都由 editor 子系统驱动。

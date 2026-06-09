@@ -60,10 +60,10 @@ fn render_tab(
     };
 
     // 每个标签一个唯一 group：让关闭 glyph 只在悬停「本标签」时显现，而不会因为同名 group 连带点亮其它标签。
-    let hover_group = SharedString::from(format!("editor-tab-{}", tab.id.as_u64()));
+    let hover_group = SharedString::from(format!("editor-tab-{}", tab.element_key()));
 
     div()
-        .id(("editor-tab", tab.id.as_u64() as usize))
+        .id(("editor-tab", tab.element_key() as usize))
         .group(hover_group.clone())
         .flex()
         .flex_row()
@@ -93,7 +93,7 @@ fn close_glyph(
 ) -> AnyElement {
     let close_title = titles(editor::CLOSE_TAB).unwrap_or_else(|| editor::CLOSE_TAB.to_string());
     let glyph = Glyph::icon(
-        ("editor-tab-close", tab.id.as_u64() as usize),
+        ("editor-tab-close", tab.element_key() as usize),
         "icons/actions/close.svg",
         close_title,
     )

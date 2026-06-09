@@ -427,12 +427,12 @@ impl BufferSearch {
             let pattern = regex_pattern(&self.query, self.options.whole_word);
             let options =
                 EngineRegexOptions::new().with_case_sensitive(self.options.case_sensitive);
-            PendingSearch::Regex(buffer.search_regex(&pattern, options))
+            PendingSearch::Regex(buffer.snapshot().search_regex(&pattern, options))
         } else {
             let options = EngineLiteralOptions::new()
                 .with_case_sensitive(self.options.case_sensitive)
                 .with_whole_word(self.options.whole_word);
-            PendingSearch::Literal(buffer.search(&self.query, options))
+            PendingSearch::Literal(buffer.snapshot().search(&self.query, options))
         }
     }
 

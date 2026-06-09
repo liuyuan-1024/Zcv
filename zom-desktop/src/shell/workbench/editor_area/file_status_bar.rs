@@ -9,7 +9,10 @@
 use std::rc::Rc;
 
 use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
+use zom_command::commands::editor as editor_commands;
 use zom_command::commands::search;
+
+use zom_view::ViewKind;
 
 use crate::editor::TextEditorSlot;
 use crate::editor_state::EditorTab;
@@ -19,6 +22,7 @@ use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 use crate::theme::{color, space, typography};
 
 const FILE_SEARCH_ICON: &str = "icons/panels/search.svg";
+const FILE_PREVIEW_ICON: &str = "icons/actions/preview.svg";
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render(
@@ -70,7 +74,7 @@ fn header_row(tab: &EditorTab, shortcuts: &ShortcutLookup, titles: &CommandTitle
         .gap(space::s8())
         .child(path_label(tab))
         .child(div().flex_1())
-        .child(action_slot(shortcuts, titles))
+        .child(action_slot(tab, shortcuts, titles))
 }
 
 /// 左侧路径标签：优先项目相对路径，回退到 tab 文件名。
@@ -88,11 +92,28 @@ fn path_label(tab: &EditorTab) -> Div {
         .child(text)
 }
 
-/// 右侧动作槽。当前只挂"打开文件搜索"glyph；新动作直接 push 进 `actions` 即可。
-///
-/// glyph 纯视觉、不接 click——动作走快捷键（与 tab 关闭、search 上一/下一个一致的约定）。
-fn action_slot(shortcuts: &ShortcutLookup, titles: &CommandTitleLookup) -> AnyElement {
+/// 右侧动作槽。glyph 纯视觉、不接 click——动作走快捷键。
+fn action_slot(
+    tab: &EditorTab,
+    shortcuts: &ShortcutLookup,
+    titles: &CommandTitleLookup,
+) -> AnyElement {
     let mut actions: Vec<AnyElement> = Vec::new();
+
+    // Markdown 预览 glyph（仅在可预览文件上显示）
+    if tab.language == "Markdown" {
+        let preview_active = matches!(tab.kind, ViewKind::Preview);
+        let title =
+            titles(editor_commands::OPEN_PREVIEW).unwrap_or_else(|| "Markdown 预览".to_string());
+        actions.push(
+            Glyph::icon("file-status-bar.preview", FILE_PREVIEW_ICON, title)
+                .hint(shortcuts(editor_commands::OPEN_PREVIEW))
+                .active(preview_active)
+                .render(),
+        );
+    }
+
+    // 文件搜索 glyph（常驻）
     let title = titles(search::ACTIVATE).unwrap_or_else(|| search::ACTIVATE.to_string());
     actions.push(
         Glyph::icon("file-status-bar.search", FILE_SEARCH_ICON, title)

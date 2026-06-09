@@ -51,7 +51,12 @@ impl FileTreeRuntime {
     }
 
     pub(crate) fn state(&self, app: &App) -> FileTreeState {
-        self.model.borrow().state(app.workspace())
+        let active_path = app
+            .active_buffer_id()
+            .and_then(|id| app.workspace().buffer(id))
+            .and_then(|wb| wb.path())
+            .map(std::path::PathBuf::from);
+        self.model.borrow().state(active_path)
     }
 
     pub(crate) fn install_listeners<T: 'static>(

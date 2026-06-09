@@ -45,11 +45,14 @@ impl BackgroundPumps {
     }
 
     fn pump_active_buffer_post_edit(session: &mut WorkspaceSession, soft_wrap: bool) {
-        let post_edit = session.workspace_mut().active_buffer_mut().and_then(|wb| {
-            let text_changed = wb.pump_post_edit().ok()?;
-            let line_count = wb.buffer().line_count() as u64;
-            Some((text_changed, line_count))
-        });
+        let active_buffer_id = session.active_buffer_id();
+        let post_edit = active_buffer_id
+            .and_then(|id| session.workspace_mut().buffer_mut(id))
+            .and_then(|wb| {
+                let text_changed = wb.pump_post_edit().ok()?;
+                let line_count = wb.buffer().line_count() as u64;
+                Some((text_changed, line_count))
+            });
         let Some((true, line_count)) = post_edit else {
             return;
         };
@@ -58,7 +61,8 @@ impl BackgroundPumps {
         } else {
             Some(WrapMap::sparse(false, line_count, []))
         };
-        if let Some(view) = session.views_mut().active_view_mut() {
+        let active_view_id = session.active_edit_view_id();
+        if let Some(view) = active_view_id.and_then(|id| session.views_mut().edit_view_mut(id)) {
             view.set_wrap_map(wrap_map);
         }
     }

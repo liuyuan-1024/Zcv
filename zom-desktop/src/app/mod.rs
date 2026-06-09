@@ -19,8 +19,8 @@ use std::rc::Rc;
 
 use zom_command::commands::editor;
 use zom_command::{
-    ClipboardPort, CommandArgs, CommandCatalogItem, CommandError, CommandId, FileTreeKeyMode,
-    HostEffect, Invocation, KeyContext, KeymapResolution,
+    ClipboardPort, CommandCatalogItem, CommandError, CommandId, FileTreeKeyMode, HostEffect,
+    Invocation, KeyContext, KeymapResolution,
 };
 use zom_view::ViewSet;
 use zom_workspace::Workspace;
@@ -136,6 +136,12 @@ impl App {
             self.session
                 .push_bubble(zom_command::BubbleRequest::error(error).dedupe("config.save"));
         }
+    }
+
+    /// 把活动 tab 切到指定 view（对应 `HostEffect::EditorSelectTab`）。
+    /// 由 shell 端 effect handler 调，不直接给业务 / 命令使用。
+    pub(crate) fn activate_view_tab(&mut self, view_id: zom_view::ViewId) {
+        self.session.set_active_view(view_id);
     }
 
     /// 把真实的 config.toml 打开到主编辑区。首次打开前先保存当前配置，保证文件存在；
@@ -285,13 +291,34 @@ impl App {
         self.session.workspace()
     }
 
+    pub(crate) fn views(&self) -> &ViewSet {
+        self.session.views()
+    }
+
+    pub(crate) fn active_view_id(&self) -> Option<zom_view::ViewId> {
+        self.session.active_view_id()
+    }
+
+    /// 当前活动视图对应的 buffer id——文件树等"跟随活动文件"的 UI 从此投影。
+    pub(crate) fn active_buffer_id(&self) -> Option<zom_workspace::BufferId> {
+        self.session.active_buffer_id()
+    }
+
     /// 取走 session 累积的气泡请求；调用方负责把它们落到 BubbleRuntime。
     pub(crate) fn take_session_bubbles(&mut self) -> Vec<zom_command::BubbleRequest> {
         self.session.take_bubbles()
     }
 
-    pub(crate) fn with_workspace_views<R>(&self, f: impl FnOnce(&Workspace, &ViewSet) -> R) -> R {
-        f(self.session.workspace(), self.session.views())
+    /// 构造一份 tab bar 渲染快照。
+    /// 集中读 session.workspace / views / active_view，调用方不必再手拼这几样。
+    pub(crate) fn editor_state(&self) -> crate::editor_state::EditorState {
+        let project_root = self.project_root().map(|p| p.to_path_buf());
+        crate::editor_state::build_editor_state(
+            self.session.workspace(),
+            self.session.views(),
+            self.session.active_view_id(),
+            project_root.as_deref(),
+        )
     }
 
     pub(crate) fn apply_search_action(&mut self, action: SearchAction) {
@@ -319,7 +346,52 @@ impl App {
         invocation: Invocation,
     ) -> Result<Vec<HostEffect>, CommandError> {
         let (id, args) = invocation;
-        self.dispatch_command_id(id, args)
+        let focus = self.focus.current();
+
+        // 命令派发期需要给 CommandContext 填 `focused_field`。
+        // 若命令真的改了这个输入目标的文本，派发后再让 owner 跑 `after_text_changed`。
+        let run_command = |focused_field: Option<zom_command::EditTarget<'_>>| {
+            self.command
+                .run_invocation(id.clone(), args.clone(), &mut self.session, focused_field)
+        };
+
+        let mut host_effects = self
+            .text_targets
+            .with_edit_target_for_focus(focus, run_command)?;
+
+        // 命令派发可能编辑了活动 buffer（产生 DeltaEvent），扇出给 BufferSearch 与 syntax provider 是无条件的。
+        // 否则编辑后高亮 / 搜索命中都不跟版本。
+        // 必须先于 `sync_active_buffer_search`：后者依赖搜索状态已被新事件推进。
+        self.background
+            .after_text_edit(&mut self.session, self.config.soft_wrap_enabled());
+        // 命令派发也可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴等）。
+        // 把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——一处做完，渲染 / 后续命令读到的都是新真值。
+
+        // 纯 session 状态变更类 effect（tab 切换 / 关闭）在 App 层就近消化，
+        // 不再透传给 shell —— 这两条不动 GPUI / DockState / 焦点，不必走 actions.rs。
+        // 这样 `App::dispatch` 的程序化调用方（含集成测试）拿回去的就是已经落地的新状态。
+        host_effects.retain(|effect| match effect {
+            HostEffect::EditorSelectTab(view_id) => {
+                self.session.set_active_view(*view_id);
+                false
+            }
+            HostEffect::EditorOpenPreview(buffer_id) => {
+                self.session.open_preview(*buffer_id);
+                false
+            }
+            HostEffect::EditorSelectAdjacentTab(forward) => {
+                select_adjacent_tab(&mut self.session, *forward);
+                false
+            }
+            HostEffect::EditorCloseActiveTab => {
+                if let Some(view_id) = self.session.active_view_id() {
+                    self.session.close_view(view_id);
+                }
+                false
+            }
+            _ => true,
+        });
+        Ok(host_effects)
     }
 
     /// 处理一次归一化按键。
@@ -345,7 +417,7 @@ impl App {
         let contexts = self.key_contexts();
         match self.command.resolve_key(chord, &contexts)? {
             KeymapResolution::Matched { command, args } => {
-                let effects = self.dispatch_command_id(command, args)?;
+                let effects = self.dispatch((command, args))?;
                 Ok(KeyDispatchOutcome {
                     consumed: true,
                     effects,
@@ -454,8 +526,9 @@ impl App {
         measured: EditorViewportMeasurement,
         wrap_map: Option<zom_view::WrapMap>,
     ) -> Option<SettledViewportTop> {
+        let active_view_id = self.session.active_edit_view_id()?;
         let (workspace, views) = self.session.parts_mut();
-        let view = views.active_view_mut()?;
+        let view = views.edit_view_mut(active_view_id)?;
         let current = view.viewport();
         let viewport = zom_view::ViewportState {
             top_line: current.top_line,
@@ -512,38 +585,6 @@ impl App {
     /// [`install_frame_pump`]: Self::install_frame_pump
     pub fn pump_frame_observers(&mut self) {
         self.background.pump_frame_observers(&mut self.session);
-    }
-
-    fn dispatch_command_id(
-        &mut self,
-        id: CommandId,
-        args: CommandArgs,
-    ) -> Result<Vec<HostEffect>, CommandError> {
-        let focus = self.focus.current();
-
-        // 命令派发期需要给 CommandContext 填 `focused_field`。
-        // 若命令真的改了这个输入目标的文本，派发后再让 owner 跑 `after_text_changed`。
-        let run_command = |focused_field: Option<zom_command::EditTarget<'_>>| {
-            self.command.dispatch_command_id(
-                id.clone(),
-                args.clone(),
-                &mut self.session,
-                focused_field,
-            )
-        };
-
-        let host_effects = self
-            .text_targets
-            .with_edit_target_for_focus(focus, run_command)?;
-
-        // 命令派发可能编辑了活动 buffer（产生 DeltaEvent），扇出给 BufferSearch 与 syntax provider 是无条件的。
-        // 否则编辑后高亮 / 搜索命中都不跟版本。
-        // 必须先于 `sync_active_buffer_search`：后者依赖搜索状态已被新事件推进。
-        self.background
-            .after_text_edit(&mut self.session, self.config.soft_wrap_enabled());
-        // 命令派发也可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴等）。
-        // 把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——一处做完，渲染 / 后续命令读到的都是新真值。
-        Ok(host_effects)
     }
 
     /// 提交系统输入法文本。commit 走命令路径，保证进入 undo 历史。
@@ -619,6 +660,30 @@ impl Default for App {
     }
 }
 
+/// tab 顺序 = ViewSet 的 ViewId 升序（编辑视图与预览视图共占同一序列），循环导航。
+fn select_adjacent_tab(session: &mut WorkspaceSession, forward: bool) {
+    let view_ids: Vec<_> = session.views().views().map(|(id, _)| id).collect();
+    let total = view_ids.len();
+    if total == 0 {
+        return;
+    }
+    let current = session
+        .active_view_id()
+        .and_then(|vid| view_ids.iter().position(|id| *id == vid));
+    let target = if forward {
+        match current {
+            Some(i) => (i + 1) % total,
+            None => 0,
+        }
+    } else {
+        match current {
+            Some(i) => (i + total - 1) % total,
+            None => 0,
+        }
+    };
+    session.set_active_view(view_ids[target]);
+}
+
 #[cfg(test)]
 mod tests {
     //! `App` 派发管线的 headless 单元测试。
@@ -628,7 +693,7 @@ mod tests {
 
     use crate::app::App;
     use crate::config::{SettingsChange, THEME_ONE_DARK};
-    use crate::editor_state::{EditorState, EditorTab, build_editor_state};
+    use crate::editor_state::{EditorState, EditorTab};
     use crate::focus::{AppFocus, FileTreeFocus};
     use crate::text_target::{TextTargetOwner, TextTargetQuery};
     use crate::ui_id::PanelId;
@@ -655,8 +720,7 @@ mod tests {
     }
 
     fn editor_state(app: &App) -> EditorState {
-        let project_root = app.project_root().map(|p| p.to_path_buf());
-        app.with_workspace_views(|ws, views| build_editor_state(ws, views, project_root.as_deref()))
+        app.editor_state()
     }
 
     fn temp_path(tag: &str) -> PathBuf {
@@ -736,33 +800,30 @@ mod tests {
     #[test]
     fn esc_should_collapse_extended_selection_via_dismiss_stack() {
         // 没有 picker / search bar / pending dialog 等更高瞬态在前，esc 应该塌掉编辑区的非空选区。
-        // 这条路径由 command_runtime 末尾的 reconcile_text_edit_dismiss 自动 push 一条
-        // editor.clear_selection token；esc 在 text_edit 上下文走 system.dismiss_top(TextEdit)
-        // 把它弹出再派发。
+        // 这条路径由 command_runtime 末尾的 reconcile_text_edit_dismiss 自动 push 一条 editor.clear_selection token；
+        // esc 在 text_edit 上下文走 system.dismiss_top(TextEdit) 把它弹出再派发。
         let mut app = app_with_markdown_text("esc-clear-selection", "hello world");
 
         app.dispatch(editor::select_all()).unwrap();
-        let extent_before = app.with_workspace_views(|_, views| {
-            !views
-                .active_view()
-                .unwrap()
-                .selection()
-                .primary()
-                .is_caret()
-        });
+        let extent_before = !app
+            .session
+            .active_edit_view()
+            .unwrap()
+            .selection()
+            .primary()
+            .is_caret();
         assert!(extent_before, "select_all 之后选区必须非空");
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
         assert!(outcome.consumed, "esc 必须被 dismiss_top 消化");
 
-        let is_caret_after = app.with_workspace_views(|_, views| {
-            views
-                .active_view()
-                .unwrap()
-                .selection()
-                .primary()
-                .is_caret()
-        });
+        let is_caret_after = app
+            .session
+            .active_edit_view()
+            .unwrap()
+            .selection()
+            .primary()
+            .is_caret();
         assert!(is_caret_after, "esc 应当把扩展选区塌成 caret");
     }
 
@@ -835,8 +896,8 @@ mod tests {
         assert!(app.session.open_file(root.join("README.md")));
 
         let tab_width = app
-            .workspace()
-            .active_buffer()
+            .active_buffer_id()
+            .and_then(|id| app.workspace().buffer(id))
             .expect("应有活动 buffer")
             .buffer()
             .config()
@@ -849,8 +910,7 @@ mod tests {
     fn text_edit_should_invalidate_active_view_wrap_map() {
         let mut app = app_with_open_file("invalidate-wrap-map");
         app.session
-            .views_mut()
-            .active_view_mut()
+            .active_edit_view_mut()
             .expect("应有活动视图")
             .set_wrap_map(Some(WrapMap::sparse(false, 1, [])));
 
@@ -858,8 +918,7 @@ mod tests {
 
         assert!(
             app.session
-                .views()
-                .active_view()
+                .active_edit_view()
                 .expect("应有活动视图")
                 .wrap_map()
                 .is_none(),
@@ -873,8 +932,7 @@ mod tests {
         app.apply_settings_change(SettingsChange::ToggleEditorSoftWrap);
         assert!(!app.config_snapshot().editor.soft_wrap);
         app.session
-            .views_mut()
-            .active_view_mut()
+            .active_edit_view_mut()
             .expect("应有活动视图")
             .set_wrap_map(Some(WrapMap::sparse(false, 1, [])));
 
@@ -882,8 +940,7 @@ mod tests {
 
         let wrap_map = app
             .session
-            .views()
-            .active_view()
+            .active_edit_view()
             .expect("应有活动视图")
             .wrap_map()
             .expect("关闭软换行时应立即刷新逻辑行视觉模型");
@@ -927,8 +984,7 @@ mod tests {
         // 第一帧 paint 跑 query 应当命中扩展后的 heading 段，新字节 [4..5) 在内。
         let mut app = app_with_markdown_text("token-inside-edit", "# zom 文档规范\n\n正文。\n");
         *app.session
-            .views_mut()
-            .active_view_mut()
+            .active_edit_view_mut()
             .expect("应有活动视图")
             .selection_mut() = SelectionSet::caret(ByteOffset::new(4));
 
@@ -955,8 +1011,7 @@ mod tests {
     fn edit_frame_decorations_equal_reparse_frame_for_structure_preserving_edit() {
         let mut app = app_with_markdown_text("no-flash", "# zom 文档规范\n\n正文段落。\n");
         *app.session
-            .views_mut()
-            .active_view_mut()
+            .active_edit_view_mut()
             .expect("应有活动视图")
             .selection_mut() = SelectionSet::caret(ByteOffset::new(4));
 

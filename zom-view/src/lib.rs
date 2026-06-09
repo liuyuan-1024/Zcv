@@ -7,6 +7,10 @@
 //!
 //! `SelectionSet` / `FoldSet` 的实例归视图层持有。
 //! `zom-engine` 提供类型、光标移动与编辑后状态转移算法。
+//!
+//! 视图分两类，统一活在 [`ViewSet`] 的同一 id 空间下：
+//! - [`EditView`]：对 buffer 的可编辑视角；持选区、视口、wrap_map、折叠等。
+//! - [`PreviewView`]：对 buffer 的只读渲染视角（如 Markdown 预览）；只持 buffer id。
 
 use std::collections::BTreeMap;
 
@@ -27,7 +31,7 @@ impl ViewId {
     }
 }
 
-/// 视口尚未由渲染端测量过时，`View::new` 给可见行数的初始估值。
+/// 视口尚未由渲染端测量过时，`EditView::new` 给可见行数的初始估值。
 ///
 /// 取一个接近常见大屏首帧需求、又不会让小缓冲区过度分配的值。
 /// 第一帧渲染元素测出真实值后会同步回写覆盖。
@@ -41,7 +45,7 @@ pub const DEFAULT_INITIAL_VISIBLE_LINES: u64 = 200;
 ///
 /// `top_line` 的真源是视图自身，由 `settle_viewport_y` 落定。
 /// `visible_visual_rows` 与 `visible_logical_lines` 由渲染端按边界、行高和软换行结果测量后同步回写。
-/// `View::new` 给二者非零初值。
+/// `EditView::new` 给二者非零初值。
 /// 消费侧不需要再为「还没测过」保留特殊路径。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ViewportState {
@@ -91,14 +95,87 @@ pub struct RevealRequest {
     pub seq: u64,
 }
 
+/// 视图种类——编辑视图与预览视图共用 ViewId 空间，但语义不同。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum ViewKind {
+    Edit,
+    Preview,
+}
+
 /// 一个视图：对某个缓冲区（buffer）的一次观察。
+///
+/// `View` 是枚举，区分编辑视角（`Edit`）与预览视角（`Preview`）。
+/// 上层用统一的 [`ViewId`] 标识，按"一 view = 一 tab"驱动 UI。
+/// 编辑命令通过 [`View::as_edit_mut`] / [`ViewSet::edit_view_mut`] 拿到 [`EditView`] 后操作；
+/// 预览视图当前只持 buffer id，将来要加滚动位置 / 渲染参数都加到 [`PreviewView`]。
+#[derive(Debug)]
+pub enum View {
+    Edit(EditView),
+    Preview(PreviewView),
+}
+
+impl View {
+    pub fn kind(&self) -> ViewKind {
+        match self {
+            View::Edit(_) => ViewKind::Edit,
+            View::Preview(_) => ViewKind::Preview,
+        }
+    }
+
+    pub fn buffer(&self) -> BufferId {
+        match self {
+            View::Edit(v) => v.buffer(),
+            View::Preview(v) => v.buffer(),
+        }
+    }
+
+    pub fn as_edit(&self) -> Option<&EditView> {
+        match self {
+            View::Edit(v) => Some(v),
+            View::Preview(_) => None,
+        }
+    }
+
+    pub fn as_edit_mut(&mut self) -> Option<&mut EditView> {
+        match self {
+            View::Edit(v) => Some(v),
+            View::Preview(_) => None,
+        }
+    }
+
+    pub fn as_preview(&self) -> Option<&PreviewView> {
+        match self {
+            View::Preview(v) => Some(v),
+            View::Edit(_) => None,
+        }
+    }
+}
+
+/// 只读渲染视角——只标记"这条 tab 是某 buffer 的预览"，
+/// 不持选区 / 视口等编辑态。
+#[derive(Debug)]
+pub struct PreviewView {
+    buffer: BufferId,
+}
+
+impl PreviewView {
+    pub fn new(buffer: BufferId) -> Self {
+        Self { buffer }
+    }
+
+    pub fn buffer(&self) -> BufferId {
+        self.buffer
+    }
+}
+
+/// 编辑视图：可写、有选区与视口、参与命令派发。
 ///
 /// 视觉模型采用 zom-engine 的 [`WrapMap`]：渲染端按字体度量算好行内断点，
 /// 整篇同步落到 `wrap_map`；命令层从 view 取出后在文本域查询，不依赖帧渲染节奏。
 /// `visual_caret` 是 primary caret 的视觉投影，`goal_column` 是连续上下移动的 sticky 列；
 /// 二者一起替代旧的 `VisualCaretState`。
 #[derive(Debug)]
-pub struct View {
+pub struct EditView {
     buffer: BufferId,
     selection: SelectionSet,
     folds: FoldSet,
@@ -113,7 +190,7 @@ pub struct View {
     last_applied_reveal_seq: Option<u64>,
 }
 
-/// `View::settle_viewport_y` 的产出：已就位的视口与本帧是否消费了显露请求。
+/// `EditView::settle_viewport_y` 的产出：已就位的视口与本帧是否消费了显露请求。
 ///
 /// `viewport` 内容已写入 `self.viewport`，单独返回供调用方读取最终值。
 /// `consumed_reveal` 在本帧成功应用 Y 轴显露请求时为 `Some(req)`。
@@ -124,7 +201,7 @@ pub struct ViewportSettlement {
     pub consumed_reveal: Option<RevealRequest>,
 }
 
-impl View {
+impl EditView {
     /// 新建视图。
     /// `base_version` 是被观察缓冲区的当前版本。
     /// `FoldSet` 必须版本绑定，因此构造时必须提供。
@@ -242,7 +319,7 @@ impl View {
     ///
     /// 视觉行坐标系是「软换行 sub-row 也算 1 行」的统一空间——光标无论落在逻辑行哪一段都能被精确判定是否越界，不会出现「光标落在逻辑行最后一个 sub-row 上但该 sub-row 已被裁切」的视觉不一致。
     ///
-    /// `viewport.visible_visual_rows` 由 `View::new` 初始化为 `DEFAULT_INITIAL_VISIBLE_LINES`；
+    /// `viewport.visible_visual_rows` 由 `EditView::new` 初始化为 `DEFAULT_INITIAL_VISIBLE_LINES`；
     /// 渲染端会按真实视口高度与行高反算「完整可见的视觉行数」同步回写。
     /// 本函数内部对其取 `.max(1)` 仅作除零防御。
     ///
@@ -343,12 +420,15 @@ impl View {
     }
 }
 
-/// 全部视图的集合，并记录当前活动视图。
+/// 全部视图的集合。
+///
+/// 编辑视图与预览视图共用 id 空间——按打开顺序遍历即"tab 顺序"。
+/// `ViewSet` 是纯集合，不记录"哪个 view 是活动的"。
+/// 活动状态由上层（`WorkspaceSession::active_view` / `CommandContext::active_view_id`）按需提供。
 #[derive(Debug, Default)]
 pub struct ViewSet {
     next_view_id: u64,
     views: BTreeMap<ViewId, View>,
-    active: Option<ViewId>,
 }
 
 impl ViewSet {
@@ -356,48 +436,34 @@ impl ViewSet {
         Self {
             next_view_id: 1,
             views: BTreeMap::new(),
-            active: None,
         }
     }
 
-    /// 为某个缓冲区新建视图；若当前没有活动视图，则设为活动。
-    pub fn open_view(&mut self, buffer: BufferId, base_version: BufferVersion) -> ViewId {
-        let id = ViewId(self.next_view_id);
-        self.next_view_id += 1;
-        self.views.insert(id, View::new(buffer, base_version));
-        if self.active.is_none() {
-            self.active = Some(id);
-        }
+    /// 为某个缓冲区新建可编辑视图。
+    pub fn open_edit_view(&mut self, buffer: BufferId, base_version: BufferVersion) -> ViewId {
+        let id = self.next_id();
+        self.views
+            .insert(id, View::Edit(EditView::new(buffer, base_version)));
         id
     }
 
-    /// 关闭视图；若关掉的是活动视图，则把活动指向任意剩余视图。
+    /// 为某个缓冲区新建预览视图。
+    pub fn open_preview_view(&mut self, buffer: BufferId) -> ViewId {
+        let id = self.next_id();
+        self.views
+            .insert(id, View::Preview(PreviewView::new(buffer)));
+        id
+    }
+
+    fn next_id(&mut self) -> ViewId {
+        let id = ViewId(self.next_view_id);
+        self.next_view_id += 1;
+        id
+    }
+
+    /// 关闭视图。上层若把它当作活动 view，需要自己在 close 后挑选下一个候选。
     pub fn close_view(&mut self, id: ViewId) {
         self.views.remove(&id);
-        if self.active == Some(id) {
-            self.active = self.views.keys().next().copied();
-        }
-    }
-
-    pub fn active(&self) -> Option<ViewId> {
-        self.active
-    }
-
-    pub fn set_active(&mut self, id: ViewId) {
-        if self.views.contains_key(&id) {
-            self.active = Some(id);
-        }
-    }
-
-    pub fn active_view(&self) -> Option<&View> {
-        self.active.and_then(|id| self.views.get(&id))
-    }
-
-    pub fn active_view_mut(&mut self) -> Option<&mut View> {
-        match self.active {
-            Some(id) => self.views.get_mut(&id),
-            None => None,
-        }
     }
 
     pub fn view(&self, id: ViewId) -> Option<&View> {
@@ -408,8 +474,41 @@ impl ViewSet {
         self.views.get_mut(&id)
     }
 
+    /// 拿编辑视图——非编辑 view 返回 None。
+    pub fn edit_view(&self, id: ViewId) -> Option<&EditView> {
+        self.views.get(&id).and_then(View::as_edit)
+    }
+
+    /// 拿编辑视图的可变借用——非编辑 view 返回 None。
+    pub fn edit_view_mut(&mut self, id: ViewId) -> Option<&mut EditView> {
+        self.views.get_mut(&id).and_then(View::as_edit_mut)
+    }
+
     pub fn views(&self) -> impl Iterator<Item = (ViewId, &View)> {
         self.views.iter().map(|(id, view)| (*id, view))
+    }
+
+    /// 反查：第一个跟踪指定 buffer 的编辑视图（按 ViewId 升序）。
+    ///
+    /// 当前 zom-desktop 是 1 buffer:1 edit view，所以"第一个"即"唯一"。
+    /// 未来若同一 buffer 开多个编辑 view，调用方自行扩展。
+    pub fn find_edit_view_for_buffer(&self, buffer: BufferId) -> Option<ViewId> {
+        self.views.iter().find_map(|(id, view)| {
+            matches!(view, View::Edit(v) if v.buffer() == buffer).then_some(*id)
+        })
+    }
+
+    /// 反查：跟踪指定 buffer 的预览视图（同一 buffer 至多一条预览）。
+    pub fn find_preview_view_for_buffer(&self, buffer: BufferId) -> Option<ViewId> {
+        self.views.iter().find_map(|(id, view)| {
+            matches!(view, View::Preview(v) if v.buffer() == buffer).then_some(*id)
+        })
+    }
+
+    /// 第一个可用的 ViewId（按 ViewId 升序）。
+    /// 给"关掉活动 view 后挑下一个"用。
+    pub fn first_view_id(&self) -> Option<ViewId> {
+        self.views.keys().next().copied()
     }
 }
 
@@ -418,22 +517,18 @@ mod settle_tests {
     use super::*;
     use zom_engine::{BufferConfig, ByteOffset, Line};
 
-    fn fresh_view() -> View {
+    fn fresh_view() -> EditView {
         // 走 ViewSet 构造 BufferId（其内部字段对外私有）。
-        let mut views = ViewSet::new();
-        let id = views.open_view(views_first_buffer_id(), BufferVersion::INITIAL);
-        // 测试需要持有独立的 `View`。
-        let view = views.view(id).unwrap();
-        View::new(view.buffer(), BufferVersion::INITIAL)
+        EditView::new(views_first_buffer_id(), BufferVersion::INITIAL)
     }
 
-    /// `ViewSet::open_view` 需要一个 `BufferId`；用工作区真实构造一个最简的。
+    /// `ViewSet::open_edit_view` 需要一个 `BufferId`；用工作区真实构造一个最简的。
     fn views_first_buffer_id() -> BufferId {
         let mut ws = zom_workspace::Workspace::new();
         ws.open_text(None, "".to_string()).unwrap()
     }
 
-    fn with_viewport(top: u64, visible: u64) -> View {
+    fn with_viewport(top: u64, visible: u64) -> EditView {
         let mut v = fresh_view();
         v.set_viewport(ViewportState {
             top_line: top,
@@ -444,7 +539,7 @@ mod settle_tests {
         v
     }
 
-    fn with_measured_viewport(top: u64, visible: u64, total_rows: u64) -> View {
+    fn with_measured_viewport(top: u64, visible: u64, total_rows: u64) -> EditView {
         let mut v = with_viewport(top, visible);
         v.set_wrap_map(Some(WrapMap::new(
             false,
@@ -572,7 +667,7 @@ mod settle_tests {
 
     #[test]
     fn fresh_view_should_carry_default_initial_visible_lines() {
-        // `View::new` 不应再让可见行数为 0；下游消费侧不必再做「未测量」特殊路径。
+        // `EditView::new` 不应再让可见行数为 0；下游消费侧不必再做「未测量」特殊路径。
         let view = fresh_view();
         assert_eq!(
             view.viewport().visible_visual_rows,

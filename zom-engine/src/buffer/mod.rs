@@ -27,7 +27,6 @@ mod lifecycle;
 mod movement;
 mod reload;
 mod replace;
-mod search;
 mod selection_ops;
 mod slicing;
 mod transaction_pipeline;

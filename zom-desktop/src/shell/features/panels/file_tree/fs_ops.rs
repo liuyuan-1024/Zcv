@@ -10,7 +10,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use zom_command::BubbleRequest;
-use zom_workspace::{EntryKind, ProjectTree, Workspace};
+use zom_workspace::{EntryKind, ProjectTree};
 
 use crate::workspace_session::WorkspaceSession;
 
@@ -401,9 +401,15 @@ pub(crate) fn apply_outcome(
                 session.close_buffers_under(path);
             }
             if picked_sibling.is_none() {
-                let fallback = model.project_tree.as_ref().and_then(|tree| {
-                    selected_path_after_deleting_active(tree, session.workspace())
-                });
+                let active_path = session
+                    .active_buffer_id()
+                    .and_then(|id| session.workspace().buffer(id))
+                    .and_then(|wb| wb.path())
+                    .map(Path::to_path_buf);
+                let fallback = model
+                    .project_tree
+                    .as_ref()
+                    .and_then(|tree| selected_path_after_deleting_active(tree, active_path));
                 model.selected = fallback;
             }
             FileTreeActivation::Nothing
@@ -487,13 +493,9 @@ fn first_visible_path(tree: &ProjectTree) -> Option<PathBuf> {
 
 pub(super) fn selected_path_after_deleting_active(
     tree: &ProjectTree,
-    workspace: &Workspace,
+    active_buffer_path: Option<PathBuf>,
 ) -> Option<PathBuf> {
-    workspace
-        .active_buffer()
-        .and_then(|buffer| buffer.path())
-        .map(Path::to_path_buf)
-        .or_else(|| first_visible_path(tree))
+    active_buffer_path.or_else(|| first_visible_path(tree))
 }
 
 #[cfg(not(test))]

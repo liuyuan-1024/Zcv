@@ -7,7 +7,7 @@
 
 use std::rc::Rc;
 
-use zom_engine::{ByteOffset, TextRange};
+use zom_engine::{Buffer, BufferConfig, ByteOffset, TextRange};
 use zom_workspace::SyntaxDocument;
 use zom_workspace::syntax::{
     LanguageId, SyntaxEngine, SyntaxQueryCursor, install_builtin_providers,
@@ -39,7 +39,8 @@ fn tuples_in_range(
 #[test]
 fn viewport_scoped_query_equals_full_query_filtered() {
     let engine = engine_with_builtins();
-    let doc = SyntaxDocument::with_text(engine.clone(), LanguageId::new("rust"), SOURCE).unwrap();
+    let buffer = Buffer::from_text(SOURCE.to_string(), BufferConfig::default()).unwrap();
+    let doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
     engine.worker().wait_for_idle();
 
     let slot = doc.syntax_tree_slot().expect("rust 必须挂 provider");
@@ -76,7 +77,8 @@ fn viewport_scoped_query_equals_full_query_filtered() {
 #[test]
 fn viewport_scoped_query_subset_when_viewport_in_middle() {
     let engine = engine_with_builtins();
-    let doc = SyntaxDocument::with_text(engine.clone(), LanguageId::new("rust"), SOURCE).unwrap();
+    let buffer = Buffer::from_text(SOURCE.to_string(), BufferConfig::default()).unwrap();
+    let doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
     engine.worker().wait_for_idle();
 
     let slot = doc.syntax_tree_slot().unwrap();

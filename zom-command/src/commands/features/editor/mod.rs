@@ -14,18 +14,16 @@
 
 use std::collections::BTreeSet;
 
-use zom_engine::{
-    Buffer, ByteOffset, EngineError, Line, Motion, MovementDirection, MovementUnit, Selection,
-    SelectionSet, TextRange,
-};
-use zom_view::ViewId;
-
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     BubbleRequest, CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome,
     CommandRegistry, DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
     active_view_buffer_id, command_execution_failed, parse_optional_bool, reject_unknown_args,
     required_arg,
+};
+use zom_engine::{
+    Buffer, ByteOffset, EngineError, Line, Motion, MovementDirection, MovementUnit, Selection,
+    SelectionSet, TextRange,
 };
 
 mod visual_movement;
@@ -57,6 +55,7 @@ pub const COPY: &str = "editor.copy";
 pub const CUT: &str = "editor.cut";
 pub const PASTE: &str = "editor.paste";
 pub const TOGGLE_SOFT_WRAP: &str = "editor.toggle_soft_wrap";
+pub const OPEN_PREVIEW: &str = "editor.preview.open";
 
 /// 文本编辑器当前能力。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -179,7 +178,7 @@ impl TryFrom<CommandArgs> for ImeCommitArgs {
     }
 }
 
-/// `editor.delete` 的参数集——与 [`MoveSelectionArgs`] 同构（一条命令 + args 区分）。
+/// `editor.delete` 的参数集——与 [`MoveCaretArgs`] 同构（一条命令 + args 区分）。
 ///
 /// 三种语义全在一组 args 里：
 /// - `direction = Some(dir) + unit`：caret 沿 `dir` 删一个 `unit`；非空 selection 整段删。
@@ -233,14 +232,14 @@ impl TryFrom<CommandArgs> for DeleteArgs {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MoveSelectionArgs {
+pub struct MoveCaretArgs {
     pub direction: MovementDirection,
     pub motion: Motion,
     pub extend: bool,
 }
 
-impl From<MoveSelectionArgs> for CommandArgs {
-    fn from(args: MoveSelectionArgs) -> Self {
+impl From<MoveCaretArgs> for CommandArgs {
+    fn from(args: MoveCaretArgs) -> Self {
         let mut out = CommandArgs::new()
             .with("direction", direction_to_str(args.direction))
             .with("motion", motion_to_str(args.motion))
@@ -252,7 +251,7 @@ impl From<MoveSelectionArgs> for CommandArgs {
     }
 }
 
-impl TryFrom<CommandArgs> for MoveSelectionArgs {
+impl TryFrom<CommandArgs> for MoveCaretArgs {
     type Error = CommandError;
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
         reject_unknown_args(&args, &["direction", "motion", "extend", "lines"])?;
@@ -349,7 +348,7 @@ pub fn move_selection(
     motion: impl Into<Motion>,
     extend: bool,
 ) -> Invocation {
-    let args = MoveSelectionArgs {
+    let args = MoveCaretArgs {
         direction,
         motion: motion.into(),
         extend,
@@ -412,6 +411,20 @@ pub fn paste() -> Invocation {
 
 pub fn toggle_soft_wrap() -> Invocation {
     (cid(TOGGLE_SOFT_WRAP), CommandArgs::new())
+}
+
+pub fn open_preview() -> Invocation {
+    (cid(OPEN_PREVIEW), CommandArgs::new())
+}
+
+fn run_open_preview(
+    ctx: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    let buffer_id = active_view_buffer_id(ctx)?;
+    ctx.effects.push(HostEffect::EditorOpenPreview(buffer_id));
+    Ok(CommandOutcome::default())
 }
 
 // ==================================================
@@ -652,10 +665,15 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         "切换软换行",
         Box::new(run_toggle_soft_wrap),
     );
+
+    registry
+        .install(keymap, OPEN_PREVIEW, "预览", Box::new(run_open_preview))
+        .description("打开或跳转到当前文件的预览标签页。")
+        .key_in("alt-p", text_edit);
 }
 
 fn move_args(direction: MovementDirection, motion: impl Into<Motion>, extend: bool) -> CommandArgs {
-    MoveSelectionArgs {
+    MoveCaretArgs {
         direction,
         motion: motion.into(),
         extend,
@@ -708,7 +726,7 @@ fn unit_to_str(unit: MovementUnit) -> &'static str {
 }
 
 /// 反向：仅接受 `MovementUnit` 枚举值，拒绝 `line-step` / `page-step`。
-/// `DeleteArgs` 与 `MoveSelectionArgs` 都用得到——后者再额外扩展到 Motion。
+/// `DeleteArgs` 与 `MoveCaretArgs` 都用得到——后者再额外扩展到 Motion。
 fn parse_unit(value: &str) -> Result<MovementUnit, CommandError> {
     match value {
         "grapheme" | "character" | "char" => Ok(MovementUnit::Grapheme),
@@ -879,13 +897,13 @@ fn run_select_all(
 /// - 选区已塌（全是 caret）且栈顶就是 [`CLEAR_SELECTION`] token → pop。
 ///
 /// 由 [`crate::commands::reconcile::after_dispatch`] 在每次 dispatch 末尾调一次。
-/// 任何修改选区的命令（select_all / 带 shift 的 move / 文本编辑 / undo / redo / IME commit ……）
-/// 都自动维护 esc 入口；handler 自身不需要 push / pop。
+/// 任何修改选区的命令（select_all / 带 shift 的 move / 文本编辑 / undo / redo / IME commit ……）都自动维护 esc 入口；
+/// handler 自身不需要 push / pop。
 ///
 /// 只看活动 view 的主选区——focused_field（搜索框 / 项目选择器输入框）即便也有"选区"也不参与，
 /// 它们各自的瞬态由各自 scope（SearchInput / ProjectPicker）管理。
 pub(crate) fn reconcile_text_edit_dismiss(context: &mut CommandContext<'_>) {
-    let has_extent = context.views.active_view().is_some_and(|view| {
+    let has_extent = context.active_view().is_some_and(|view| {
         view.selection()
             .as_slice()
             .iter()
@@ -966,13 +984,13 @@ fn run_move_selection(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
-    let mut args = MoveSelectionArgs::try_from(args)?;
+    let mut args = MoveCaretArgs::try_from(args)?;
     // PageStep 步长按真实视口高度走：element 上一帧 prepaint 已把测得的 visible_visual_rows 写回 ViewportState，从这里读。
     // focused_field 模式下作用于输入框（通常单行），主编辑区的视口高度对它无意义，保留 keymap 兜底。
     // visible_visual_rows == 0（首帧 / headless）也走兜底。
     if let Motion::PageStep { lines } = &mut args.motion
         && context.focused_field.is_none()
-        && let Some(view) = context.views.active_view()
+        && let Some(view) = context.active_view()
     {
         let measured = view.viewport().visible_visual_rows;
         if measured > 0 {
@@ -1050,30 +1068,12 @@ fn run_select_tab(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = SelectTabArgs::try_from(args)?;
-    // tab 顺序即 ViewSet 的视图顺序（= 打开顺序）。
-    let ids: Vec<ViewId> = context.views.views().map(|(id, _)| id).collect();
-    if ids.is_empty() {
-        return Ok(CommandOutcome::default());
-    }
-    let current = context
-        .views
-        .active()
-        .and_then(|active| ids.iter().position(|id| *id == active));
-    let target = match args.target {
-        SelectTabTarget::Next => match current {
-            Some(index) => (index + 1) % ids.len(),
-            None => 0,
-        },
-        SelectTabTarget::Previous => match current {
-            Some(index) => (index + ids.len() - 1) % ids.len(),
-            None => 0,
-        },
-    };
-    // target 已对标签数取模，必落在范围内；get 仅作防御。
-    if let Some(id) = ids.get(target) {
-        context.views.set_active(*id);
-        sync_active_buffer(context);
-    }
+    // 导航需要同时感知编辑 tab 与预览 tab，而 CommandContext 只持有 ViewSet。
+    // 把方向交给宿主，由宿主在完整 session 上完成跨类型的循环导航。
+    let forward = matches!(args.target, SelectTabTarget::Next);
+    context
+        .effects
+        .push(HostEffect::EditorSelectAdjacentTab(forward));
     Ok(CommandOutcome::default())
 }
 
@@ -1082,13 +1082,8 @@ fn run_close_tab(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let Some(active) = context.views.active() else {
-        return Ok(CommandOutcome::default());
-    };
-    // 只关视图，不关 buffer：dirty 内容仍留在 workspace，不丢数据。
-    // 孤立 buffer 的回收留待后续（确认弹窗 / 引用计数）。
-    context.views.close_view(active);
-    sync_active_buffer(context);
+    // 宿主侧拿 session.active_view_id() 直接 close_view，编辑 / 预览同一套路径。
+    context.effects.push(HostEffect::EditorCloseActiveTab);
     Ok(CommandOutcome::default())
 }
 
@@ -1113,7 +1108,7 @@ fn run_toggle_soft_wrap(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    if let Some(view) = context.views.active_view_mut() {
+    if let Some(view) = context.active_view_mut() {
         view.clear_visual_caret();
     }
     context.effects.push(HostEffect::EditorToggleSoftWrap);
@@ -1276,12 +1271,4 @@ fn collect_caret_line_ranges(
         ranges.push(buffer.slice_line(line)?.range());
     }
     Ok(ranges)
-}
-
-/// 把 workspace 的活动 buffer 同步到当前活动视图——让文件树「活动文件」高亮跟随标签切换 / 关闭。
-/// 无活动视图时（标签全关）保持原值不动。
-fn sync_active_buffer(context: &mut CommandContext<'_>) {
-    if let Some(buffer_id) = context.views.active_view().map(|view| view.buffer()) {
-        let _ = context.workspace.set_active_buffer(buffer_id);
-    }
 }

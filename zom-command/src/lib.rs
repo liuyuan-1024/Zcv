@@ -10,7 +10,7 @@
 //! 下列模块均私有（`mod`），其类型在 crate 根经 `pub use` 重导出 —— 对外只有 `zom_command::CommandId` 一条路径，不暴露内部模块名。
 //! - `core`：命令基础类型 —— `CommandId / CommandArgs / NoArgs / Command / Invocation`。
 //! - `registry`：开放注册表 `CommandRegistry / CommandHandler` 与链式 `CommandBuilder`。
-//! - `executor`：执行上下文与队列 —— `CommandContext / EditTarget / CommandQueue / CommandExecutor`。
+//! - `executor`：执行上下文与队列 —— `CommandContext / EditTarget / CommandQueue` 与排空入口 `run`。
 //! - `keymap`：键位模型 —— `KeyChord / KeyBinding / Keymap / KeyContext`。
 //! - `error`：统一错误 `CommandError`。
 //!
@@ -39,7 +39,7 @@ pub use core::{Command, CommandArgs, CommandCatalogItem, CommandId, Invocation, 
 pub use dismiss::{DismissScope, DismissStacks, DismissTokenId};
 pub use effects::{BubbleKind, BubbleRequest, EffectQueue, HostEffect, PanelKind, SearchOption};
 pub use error::CommandError;
-pub use executor::{CommandContext, CommandExecutor, CommandOutcome, CommandQueue, EditTarget};
+pub use executor::{CommandContext, CommandOutcome, CommandQueue, EditTarget, run};
 pub use keymap::{
     KeyBinding, KeyBindingContext, KeyChord, KeyContext, KeySequence, Keymap, KeymapResolution,
 };

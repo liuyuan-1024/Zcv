@@ -72,7 +72,6 @@ pub enum BufferOrigin {
 #[derive(Debug)]
 pub struct Workspace {
     engine: Rc<SyntaxEngine>,
-    active_buffer_id: Option<BufferId>,
     buffers: BTreeMap<BufferId, WorkspaceBuffer>,
     buffer_config: BufferConfig,
 }
@@ -95,7 +94,6 @@ impl Workspace {
     pub fn with_engine(engine: Rc<SyntaxEngine>) -> Self {
         Self {
             engine,
-            active_buffer_id: None,
             buffers: BTreeMap::new(),
             buffer_config: BufferConfig::default(),
         }
@@ -157,7 +155,6 @@ impl Workspace {
         let wb = self.wrap_into_workspace_buffer(origin, buffer);
         let id = wb.document.buffer_id();
         self.buffers.insert(id, wb);
-        self.set_active_buffer_unchecked(id);
         Ok(id)
     }
 
@@ -178,7 +175,6 @@ impl Workspace {
         let wb = self.wrap_into_workspace_buffer(origin, buffer);
         let id = wb.document.buffer_id();
         self.buffers.insert(id, wb);
-        self.set_active_buffer_unchecked(id);
         Ok(id)
     }
 
@@ -213,9 +209,6 @@ impl Workspace {
         if self.buffers.remove(&id).is_none() {
             return Err(WorkspaceError::BufferNotFound(id));
         }
-        if self.active_buffer_id == Some(id) {
-            self.active_buffer_id = self.buffers.keys().next_back().copied();
-        }
         Ok(())
     }
 
@@ -231,26 +224,6 @@ impl Workspace {
         self.buffers.iter().map(|(id, buffer)| (*id, buffer))
     }
 
-    pub fn active_buffer_id(&self) -> Option<BufferId> {
-        self.active_buffer_id
-    }
-
-    pub fn set_active_buffer(&mut self, id: BufferId) -> WorkspaceResult<()> {
-        if !self.buffers.contains_key(&id) {
-            return Err(WorkspaceError::BufferNotFound(id));
-        }
-        self.set_active_buffer_unchecked(id);
-        Ok(())
-    }
-
-    pub fn active_buffer(&self) -> Option<&WorkspaceBuffer> {
-        self.active_buffer_id.and_then(|id| self.buffer(id))
-    }
-
-    pub fn active_buffer_mut(&mut self) -> Option<&mut WorkspaceBuffer> {
-        self.active_buffer_id.and_then(|id| self.buffer_mut(id))
-    }
-
     pub fn buffer_path(&self, id: BufferId) -> WorkspaceResult<Option<&Path>> {
         Ok(self.buffer_or_error(id)?.path())
     }
@@ -261,10 +234,6 @@ impl Workspace {
 
     pub fn is_buffer_read_only(&self, id: BufferId) -> WorkspaceResult<bool> {
         Ok(self.buffer_or_error(id)?.is_read_only())
-    }
-
-    fn set_active_buffer_unchecked(&mut self, id: BufferId) {
-        self.active_buffer_id = Some(id);
     }
 
     fn buffer_or_error(&self, id: BufferId) -> WorkspaceResult<&WorkspaceBuffer> {

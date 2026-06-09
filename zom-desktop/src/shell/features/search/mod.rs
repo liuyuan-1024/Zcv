@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use gpui::{Context, Div, FocusHandle, IntoElement, MouseButton, Window, div, prelude::*};
 use zom_command::{SearchOption, commands::search};
-use zom_view::ViewSet;
+use zom_view::{ViewId, ViewSet};
 use zom_workspace::Workspace;
 
 use crate::app::App;
@@ -57,9 +57,14 @@ impl SearchRuntimeHandle {
         Self { model }
     }
 
-    pub(crate) fn state(&self, workspace: &Workspace) -> SearchState {
+    pub(crate) fn state(
+        &self,
+        workspace: &Workspace,
+        views: &ViewSet,
+        active_view_id: Option<ViewId>,
+    ) -> SearchState {
         let mut state = self.model.borrow().state();
-        state.hit_count = coordinator::current_hit_count(workspace);
+        state.hit_count = coordinator::current_hit_count(workspace, views, active_view_id);
         state
     }
 
@@ -68,69 +73,114 @@ impl SearchRuntimeHandle {
         self.model.borrow().is_open()
     }
 
-    pub(crate) fn sync_active_buffer_search(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+    pub(crate) fn sync_active_buffer_search(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::sync_active_buffer_search(&mut model, workspace, views);
+        coordinator::sync_active_buffer_search(&mut model, workspace, views, active_view_id);
     }
 
-    pub(crate) fn pump_active_buffer_search(workspace: &mut Workspace, views: &mut ViewSet) {
-        coordinator::pump_active_buffer_search(workspace, views);
+    pub(crate) fn pump_active_buffer_search(
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
+        coordinator::pump_active_buffer_search(workspace, views, active_view_id);
     }
 
-    pub(crate) fn on_opened(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+    pub(crate) fn on_opened(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::on_opened(&mut model, workspace, views);
+        coordinator::on_opened(&mut model, workspace, views, active_view_id);
     }
 
-    pub(crate) fn on_closed(&self, workspace: &mut Workspace) {
+    pub(crate) fn on_closed(
+        &self,
+        workspace: &mut Workspace,
+        views: &ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::on_closed(&mut model, workspace);
+        coordinator::on_closed(&mut model, workspace, views, active_view_id);
     }
 
     pub(crate) fn toggle_option(
         &self,
         workspace: &mut Workspace,
         views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
         option: SearchOption,
     ) {
         let mut model = self.model.borrow_mut();
-        coordinator::toggle_option(&mut model, workspace, views, option);
+        coordinator::toggle_option(&mut model, workspace, views, active_view_id, option);
     }
 
-    pub(crate) fn find_next(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+    pub(crate) fn find_next(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::find_next(&mut model, workspace, views);
+        coordinator::find_next(&mut model, workspace, views, active_view_id);
     }
 
-    pub(crate) fn find_previous(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+    pub(crate) fn find_previous(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::find_previous(&mut model, workspace, views);
+        coordinator::find_previous(&mut model, workspace, views, active_view_id);
     }
 
-    pub(crate) fn replace_next(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+    pub(crate) fn replace_next(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::replace_next(&mut model, workspace, views);
+        coordinator::replace_next(&mut model, workspace, views, active_view_id);
     }
 
-    pub(crate) fn replace_all(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+    pub(crate) fn replace_all(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::replace_all(&mut model, workspace, views);
+        coordinator::replace_all(&mut model, workspace, views, active_view_id);
     }
 }
 
 impl SearchHost for SearchRuntimeHandle {
     fn apply_search_action(&self, action: SearchAction, session: &mut WorkspaceSession) {
+        let active_view_id = session.active_view_id();
         let (workspace, views) = session.parts_mut();
         match action {
-            SearchAction::Opened => self.on_opened(workspace, views),
-            SearchAction::Closed => self.on_closed(workspace),
-            SearchAction::ToggleOption(option) => self.toggle_option(workspace, views, option),
-            SearchAction::FindPrevious => self.find_previous(workspace, views),
-            SearchAction::FindNext => self.find_next(workspace, views),
-            SearchAction::ReplaceNext => self.replace_next(workspace, views),
-            SearchAction::ReplaceAll => self.replace_all(workspace, views),
+            SearchAction::Opened => self.on_opened(workspace, views, active_view_id),
+            SearchAction::Closed => self.on_closed(workspace, views, active_view_id),
+            SearchAction::ToggleOption(option) => {
+                self.toggle_option(workspace, views, active_view_id, option)
+            }
+            SearchAction::FindPrevious => self.find_previous(workspace, views, active_view_id),
+            SearchAction::FindNext => self.find_next(workspace, views, active_view_id),
+            SearchAction::ReplaceNext => self.replace_next(workspace, views, active_view_id),
+            SearchAction::ReplaceAll => self.replace_all(workspace, views, active_view_id),
             // ConfirmMatch 只读 buffer + 写 view，不依赖 SearchModel；直接调 coordinator。
-            SearchAction::ConfirmMatch => coordinator::confirm_match(workspace, views),
+            SearchAction::ConfirmMatch => {
+                coordinator::confirm_match(workspace, views, active_view_id)
+            }
         }
     }
 }
@@ -147,8 +197,10 @@ impl SearchEditObserver {
 
 impl PostEditObserver for SearchEditObserver {
     fn after_text_edit(&self, session: &mut WorkspaceSession) {
+        let active_view_id = session.active_view_id();
         let (workspace, views) = session.parts_mut();
-        self.0.sync_active_buffer_search(workspace, views);
+        self.0
+            .sync_active_buffer_search(workspace, views, active_view_id);
     }
 }
 
@@ -158,16 +210,16 @@ pub(crate) struct SearchFramePump;
 
 impl FramePump for SearchFramePump {
     fn pump(&self, session: &mut WorkspaceSession) {
+        let active_view_id = session.active_view_id();
         let (workspace, views) = session.parts_mut();
-        SearchRuntimeHandle::pump_active_buffer_search(workspace, views);
+        SearchRuntimeHandle::pump_active_buffer_search(workspace, views, active_view_id);
     }
 }
 
 /// 搜索面板的 shell 端 runtime —— 焦点宿主 + `SearchModel` 的真正拥有者。
 ///
-/// App 只保存 [`SearchRuntimeHandle`]，不直接认识 `SearchModel` 或 coordinator
-/// 函数。这样搜索输入框的 owner 拆分仍能参与全局 editor router，同时业务动作
-/// 留在 search feature 内部。
+/// App 只保存 [`SearchRuntimeHandle`]，不直接认识 `SearchModel` 或 coordinator 函数。
+/// 这样搜索输入框的 owner 拆分仍能参与全局 editor router，同时业务动作留在 search feature 内部。
 #[derive(Clone)]
 pub(crate) struct SearchRuntime {
     focus: FocusHandle,
@@ -190,9 +242,8 @@ impl SearchRuntime {
         SearchRuntimeHandle::new(self.model.clone())
     }
 
-    /// 把 SearchModel 作为 [`TextTargetOwner`] 暴露给 router——按 focus
-    /// 内部分派 query / replacement。注册路径与其它 owner 完全一致，
-    /// TextTargetRuntime 不再为 search 单走特殊分支。
+    /// 把 SearchModel 作为 [`TextTargetOwner`] 暴露给 router——按 focus 内部分派 query / replacement。
+    /// 注册路径与其它 owner 完全一致，TextTargetRuntime 不再为 search 单走特殊分支。
     pub(crate) fn owner_handle(&self) -> Rc<RefCell<dyn TextTargetOwner>> {
         self.model.clone()
     }
@@ -281,7 +332,8 @@ fn install_field_focus_listener<T: 'static>(
     .detach();
 }
 
-/// 嵌入 file_status_bar 作为它的第二行：背景 / 内边距 / 字号 / 底边由宿主 bar 提供，
+/// 嵌入 file_status_bar 作为它的第二行：
+/// 背景 / 内边距 / 字号 / 底边由宿主 bar 提供，
 /// 这里只画输入框与按钮组的列布局。
 fn search_controls(
     state: &SearchState,

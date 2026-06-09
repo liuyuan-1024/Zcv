@@ -29,17 +29,17 @@ pub struct ProjectPickerKeyContext;
 pub struct ProjectPickerBindingContext;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MoveSelectionArgs {
+pub struct PickerMoveArgs {
     pub delta: isize,
 }
 
-impl From<MoveSelectionArgs> for CommandArgs {
-    fn from(args: MoveSelectionArgs) -> Self {
+impl From<PickerMoveArgs> for CommandArgs {
+    fn from(args: PickerMoveArgs) -> Self {
         CommandArgs::new().with("delta", args.delta.to_string())
     }
 }
 
-impl TryFrom<CommandArgs> for MoveSelectionArgs {
+impl TryFrom<CommandArgs> for PickerMoveArgs {
     type Error = CommandError;
 
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
@@ -69,7 +69,7 @@ pub fn remove_recent_project() -> Invocation {
 }
 
 pub fn move_selection(delta: isize) -> Invocation {
-    (cid(MOVE_SELECTION), MoveSelectionArgs { delta }.into())
+    (cid(MOVE_SELECTION), PickerMoveArgs { delta }.into())
 }
 
 pub fn activate() -> Invocation {
@@ -150,7 +150,7 @@ fn run_move_selection(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
-    let args = MoveSelectionArgs::try_from(args)?;
+    let args = PickerMoveArgs::try_from(args)?;
     context
         .effects
         .push(HostEffect::ProjectPickerMoveSelection(args.delta));
@@ -185,7 +185,7 @@ fn run_dismiss(
 }
 
 fn move_args(delta: isize) -> CommandArgs {
-    MoveSelectionArgs { delta }.into()
+    PickerMoveArgs { delta }.into()
 }
 
 fn cid(id: &'static str) -> CommandId {

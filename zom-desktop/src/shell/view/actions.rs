@@ -202,6 +202,10 @@ fn apply_shell_effect(
             app.borrow_mut().toggle_soft_wrap();
             window.refresh();
         }
+        HostEffect::EditorSelectTab(view_id) => {
+            app.borrow_mut().activate_view_tab(*view_id);
+            window.refresh();
+        }
         HostEffect::DismissSurface => {
             if surfaces.read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker)) {
                 app.borrow_mut().project_picker_deactivate();

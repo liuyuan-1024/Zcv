@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use zom_view::{ViewSet, VisualPosition, WrapMap};
+use zom_view::{EditView, ViewId, ViewSet, VisualPosition, WrapMap};
 use zom_workspace::Workspace;
 
 use crate::clipboard::ClipboardPort;
@@ -10,33 +10,35 @@ use crate::{CommandArgs, CommandError, CommandId, CommandRegistry, DismissStacks
 
 /// 命令执行上下文。
 ///
-/// 具体结构体而非 trait —— `zom-command` 本就依赖 `workspace` / `view`，
-/// 直接命名它们，不做 trait 抽象体操。
+/// 具体结构体而非 trait —— `zom-command` 本就依赖 `workspace` / `view`，直接命名它们，不做 trait 抽象体操。
 ///
-/// handler 接触不到的宿主资源（GPUI Window、shell DockState 等）通过
-/// `effects` emit 出去，宿主在派发结束后翻译。详见 [`crate::effects`]。
+/// handler 接触不到的宿主资源（GPUI Window、shell DockState 等）通过 `effects` emit 出去，宿主在派发结束后翻译。
+/// 详见 [`crate::effects`]。
 pub struct CommandContext<'a> {
     pub workspace: &'a mut Workspace,
     pub views: &'a mut ViewSet,
-    /// 聚焦的输入框编辑目标。`Some` 时编辑命令作用于它而非主编辑区
-    /// —— 由宿主（组合根）在派发前按 GPUI 焦点决定。
+    /// 主编辑区当前活动**编辑** view 的 id。
+    ///
+    /// 由宿主（组合根）在派发前从 `WorkspaceSession::active_edit_view_id()` 取得并填入。
+    /// `None` 表示当前没有活动编辑 view（如所有 tab 关闭或活动的是预览 tab）。
+    /// 编辑命令通过 [`Self::active_view`] / [`Self::active_view_mut`] / [`Self::active_view_buffer`] 访问对应 view —— 不再由 `ViewSet` 自身记录。
+    pub active_view_id: Option<ViewId>,
+    /// 聚焦的输入框编辑目标。`Some` 时编辑命令作用于它而非主编辑区 —— 由宿主（组合根）在派发前按 GPUI 焦点决定。
     pub focused_field: Option<EditTarget<'a>>,
     pub queue: &'a mut CommandQueue,
     pub effects: &'a mut EffectQueue,
     /// 剪贴板端口：copy / cut / paste handler 读写宿主剪贴板。
-    /// engine 不持有剪贴板状态，宿主在派发前注入实现（GPUI 适配器或
-    /// 测试用 `MockClipboard`）。
+    /// engine 不持有剪贴板状态，宿主在派发前注入实现（GPUI 适配器或测试用 `MockClipboard`）。
     pub clipboard: &'a mut dyn ClipboardPort,
     /// 各上下文家族的 dismiss 栈：
-    /// esc 路径与"begin/cancel/commit"瞬态命令通过 [`DismissStacks::push`] / [`DismissStacks::pop_top`] / [`DismissStacks::remove`] 协调，
+    /// esc 路径与"begin/cancel/commit"瞬态命令通过 [`DismissStacks::push`] / [`DismissStacks::pop_top`] / [`DismissStacks::remove`] 协调,
     /// 避免在同一上下文里两个命令都静态绑 esc 造成冲突。详见 [`crate::dismiss`]。
     pub dismiss: &'a mut DismissStacks,
 }
 
 /// 一次编辑命令作用的目标：文本缓冲 + 选区。
 ///
-/// 把编辑命令与「buffer / selection 存放在哪」解耦 —— 主编辑区是 workspace
-/// buffer + view selection，输入框是各自私有的 buffer + selection。
+/// 把编辑命令与「buffer / selection 存放在哪」解耦 —— 主编辑区是 workspace buffer + view selection，输入框是各自私有的 buffer + selection。
 /// 编辑 handler 只认这个目标，不再直接穿 `workspace` / `views` 结构。
 pub struct EditTarget<'a> {
     pub buffer: &'a mut zom_engine::Buffer,
@@ -55,6 +57,24 @@ pub struct EditTarget<'a> {
 }
 
 impl<'a> CommandContext<'a> {
+    /// 当前活动编辑 view 的不可变引用。
+    /// `None` 表示无活动编辑 view 或活动 view 已不在 ViewSet 中。
+    pub fn active_view(&self) -> Option<&EditView> {
+        self.active_view_id.and_then(|id| self.views.edit_view(id))
+    }
+
+    /// 当前活动编辑 view 的可变引用。
+    pub fn active_view_mut(&mut self) -> Option<&mut EditView> {
+        self.active_view_id
+            .and_then(move |id| self.views.edit_view_mut(id))
+    }
+
+    /// 当前活动编辑 view 关联的 buffer id。等价于 `active_view().map(EditView::buffer)`，
+    /// 但避免 handler 端为了一个 BufferId 而借走整段 view。
+    pub fn active_view_buffer(&self) -> Option<zom_workspace::BufferId> {
+        self.active_view().map(|view| view.buffer())
+    }
+
     /// 解析当前编辑命令的作用目标：
     /// 有聚焦输入框则作用于它，否则作用于主编辑区的活动视图。
     pub fn edit_target(&mut self) -> Result<EditTarget<'_>, CommandError> {
@@ -67,9 +87,10 @@ impl<'a> CommandContext<'a> {
                 goal_column: field.goal_column.as_deref_mut(),
             });
         }
+        let view_id = self.active_view_id.ok_or(CommandError::NoActiveView)?;
         let buffer_id = self
             .views
-            .active_view()
+            .edit_view(view_id)
             .map(|view| view.buffer())
             .ok_or(CommandError::NoActiveView)?;
         let buffer = self
@@ -79,7 +100,7 @@ impl<'a> CommandContext<'a> {
             .buffer_mut();
         let view = self
             .views
-            .active_view_mut()
+            .edit_view_mut(view_id)
             .ok_or(CommandError::NoActiveView)?;
         let (selection, visual_caret, goal_column, wrap_map) = view.vertical_movement_state_mut();
         Ok(EditTarget {
@@ -123,7 +144,7 @@ impl CommandQueue {
         Self::default()
     }
 
-    pub fn dispatch(&mut self, id: CommandId, args: CommandArgs) {
+    pub fn enqueue(&mut self, id: CommandId, args: CommandArgs) {
         self.pending.push_back((id, args));
     }
 
@@ -136,26 +157,14 @@ impl CommandQueue {
     }
 }
 
-/// 命令执行器：排空队列，对注册表 + 上下文执行。
-#[derive(Default)]
-pub struct CommandExecutor;
-
-impl CommandExecutor {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn run(
-        &self,
-        registry: &CommandRegistry,
-        context: &mut CommandContext<'_>,
-    ) -> Result<(), CommandError> {
-        // 排空 queue，所有 handler 跑完后无论成败都对齐一次 dismiss 栈
-        // —— handler 报错时把 `?` 早返之前的 reconcile 兜底。
-        let result = drain(registry, context);
-        crate::commands::reconcile::after_dispatch(context);
-        result
-    }
+/// 排空命令队列：对注册表 + 上下文执行；handler 报错时也会先对齐 dismiss 栈再返回。
+pub fn run(
+    registry: &CommandRegistry,
+    context: &mut CommandContext<'_>,
+) -> Result<(), CommandError> {
+    let result = drain(registry, context);
+    crate::commands::reconcile::after_dispatch(context);
+    result
 }
 
 fn drain(registry: &CommandRegistry, context: &mut CommandContext<'_>) -> Result<(), CommandError> {
@@ -175,8 +184,5 @@ fn drain(registry: &CommandRegistry, context: &mut CommandContext<'_>) -> Result
 pub(crate) fn active_view_buffer_id(
     ctx: &CommandContext<'_>,
 ) -> Result<zom_workspace::BufferId, CommandError> {
-    ctx.views
-        .active_view()
-        .map(|view| view.buffer())
-        .ok_or(CommandError::NoActiveView)
+    ctx.active_view_buffer().ok_or(CommandError::NoActiveView)
 }

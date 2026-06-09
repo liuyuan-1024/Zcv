@@ -21,7 +21,7 @@ fn search_field(focus: AppFocus) -> Option<SearchField> {
 pub(crate) struct SearchState {
     pub(crate) query: EditorSnapshot,
     pub(crate) replacement: EditorSnapshot,
-    pub(crate) options: SearchOptions,
+    pub(crate) options: BufferSearchOptions,
     /// 当前命中 / 总命中数；`None` 表示尚无命中（query 空或未搜出结果）。
     /// 由活动 buffer 的 `BufferSearch` 同步推进或重新计算。
     pub(crate) hit_count: Option<HitCount>,
@@ -36,13 +36,6 @@ pub(crate) struct HitCount {
     pub(crate) total: usize,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct SearchOptions {
-    pub(crate) case_sensitive: bool,
-    pub(crate) whole_word: bool,
-    pub(crate) regex: bool,
-}
-
 /// 搜索栏的核心状态。
 ///
 /// 算法层是**空的**：搜索 / 替换 / 导航全部委托给底层
@@ -51,7 +44,7 @@ pub(crate) struct SearchOptions {
 pub(crate) struct SearchModel {
     query: OwnedEditorTarget,
     replacement: OwnedEditorTarget,
-    options: SearchOptions,
+    options: BufferSearchOptions,
     /// 是否可见（mod-f 显示 / 收起的逻辑栅栏）。关闭后用来扣掉 buffer 高亮、
     /// 阻止后续 dispatch tail 的 `sync_active_buffer_search` 把命中复活。
     open: bool,
@@ -62,7 +55,7 @@ impl SearchModel {
         Self {
             query: OwnedEditorTarget::new(),
             replacement: OwnedEditorTarget::new(),
-            options: SearchOptions::default(),
+            options: BufferSearchOptions::default(),
             open: false,
         }
     }
@@ -90,14 +83,9 @@ impl SearchModel {
         self.replacement.text()
     }
 
-    /// 转成 zom-workspace 的 `BufferSearchOptions`——一字段映射，分离两边的命名
-    /// 空间。`App` 在 sync 路径上调它把面板状态推到 `BufferSearch`。
+    /// 当前面板选项——`App` 在 sync 路径上调它把面板状态推到 `BufferSearch`。
     pub(crate) fn buffer_search_options(&self) -> BufferSearchOptions {
-        BufferSearchOptions {
-            case_sensitive: self.options.case_sensitive,
-            whole_word: self.options.whole_word,
-            regex: self.options.regex,
-        }
+        self.options
     }
 
     pub(crate) fn toggle_option(&mut self, option: SearchOption) {

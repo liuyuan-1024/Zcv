@@ -19,6 +19,7 @@ macro_rules! asset {
 }
 
 const ASSETS: &[(&str, &[u8])] = &[
+    asset!("icons/actions/preview.svg"),
     asset!("icons/actions/settings.svg"),
     asset!("icons/actions/close.svg"),
     asset!("icons/actions/check.svg"),

@@ -5,9 +5,9 @@
 
 use zom_command::commands;
 use zom_command::{
-    ClipboardPort, CommandArgs, CommandContext, CommandError, CommandExecutor, CommandId,
-    CommandQueue, CommandRegistry, DismissStacks, EffectQueue, HostEffect, KeyChord, KeyContext,
-    Keymap, KeymapResolution, MockClipboard,
+    ClipboardPort, CommandArgs, CommandContext, CommandError, CommandId, CommandQueue,
+    CommandRegistry, DismissStacks, EffectQueue, HostEffect, KeyChord, KeyContext, Keymap,
+    KeymapResolution, MockClipboard,
 };
 
 use crate::workspace_session::WorkspaceSession;
@@ -15,7 +15,6 @@ use crate::workspace_session::WorkspaceSession;
 pub(super) struct CommandRuntime {
     registry: CommandRegistry,
     keymap: Keymap,
-    executor: CommandExecutor,
     queue: CommandQueue,
     clipboard: Box<dyn ClipboardPort>,
     dismiss: DismissStacks,
@@ -29,7 +28,6 @@ impl CommandRuntime {
         Self {
             registry,
             keymap,
-            executor: CommandExecutor::new(),
             queue: CommandQueue::new(),
             clipboard: Box::new(MockClipboard::new()),
             dismiss: DismissStacks::new(),
@@ -49,29 +47,31 @@ impl CommandRuntime {
         Ok(self.keymap.resolve(&[chord], contexts))
     }
 
-    pub(super) fn dispatch_command_id(
+    pub(super) fn run_invocation(
         &mut self,
         id: CommandId,
         args: CommandArgs,
         session: &mut WorkspaceSession,
         focused_field: Option<zom_command::EditTarget<'_>>,
     ) -> Result<(Vec<HostEffect>, bool), CommandError> {
-        self.queue.dispatch(id, args);
+        self.queue.enqueue(id, args);
         let field_version_before = focused_field
             .as_ref()
             .map(|target| target.buffer.snapshot().version());
         let mut effects = EffectQueue::new();
+        let active_view_id = session.active_edit_view_id();
         let (workspace, views) = session.parts_mut();
         let mut context = CommandContext {
             workspace,
             views,
+            active_view_id,
             focused_field,
             queue: &mut self.queue,
             effects: &mut effects,
             clipboard: &mut *self.clipboard,
             dismiss: &mut self.dismiss,
         };
-        let result = self.executor.run(&self.registry, &mut context);
+        let result = zom_command::run(&self.registry, &mut context);
         let focused_field_changed = match (context.focused_field.as_ref(), field_version_before) {
             (Some(target), Some(before)) => target.buffer.snapshot().version() != before,
             _ => false,

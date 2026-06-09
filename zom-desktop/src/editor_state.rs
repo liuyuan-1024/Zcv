@@ -7,6 +7,7 @@
 
 use std::path::Path;
 
+use zom_engine::ByteOffset;
 use zom_view::{View, ViewId, ViewKind, ViewSet};
 use zom_workspace::{Workspace, WorkspaceBuffer};
 
@@ -27,6 +28,9 @@ pub(crate) struct EditorTab {
     /// 项目根的相对显示路径（统一正斜杠）。
     /// 无项目根或文件不在项目内时为 None。
     pub(crate) relative_path: Option<String>,
+    /// 预览 tab 的整段源码文本——只在 `kind == Preview` 时填充，供 markdown 渲染器消费。
+    /// 编辑 tab 永远为 None：编辑视图的正文由独立的编辑器子系统从 buffer 实时切片，不走这里。
+    pub(crate) preview_text: Option<String>,
 }
 
 impl EditorTab {
@@ -71,6 +75,10 @@ fn build_tab(
         ViewKind::Edit => base_title.clone(),
         ViewKind::Preview => format!("{base_title} · 预览"),
     };
+    let preview_text = match kind {
+        ViewKind::Preview => buffer.and_then(read_full_text),
+        ViewKind::Edit => None,
+    };
     EditorTab {
         view_id,
         kind,
@@ -81,7 +89,20 @@ fn build_tab(
             && buffer.map(WorkspaceBuffer::is_dirty).unwrap_or(false),
         is_active: active_view == Some(view_id),
         relative_path,
+        preview_text,
     }
+}
+
+/// 把整个 buffer 读成 owned `String`——只给预览 tab 用，调用频率随渲染节奏。
+///
+/// 预览路径目前每帧重渲染，故每帧拷贝一份 buffer 文本；
+/// 大文档下 CPU 偏高时再做"按 BufferVersion 缓存"的版本。
+fn read_full_text(buffer: &WorkspaceBuffer) -> Option<String> {
+    let inner = buffer.buffer();
+    inner
+        .slice_byte_range(ByteOffset::ZERO, inner.len_bytes())
+        .ok()
+        .map(|slice| slice.into_text().into_owned())
 }
 
 /// 把 buffer 绝对路径折成项目相对、正斜杠显示串。

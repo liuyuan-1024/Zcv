@@ -44,7 +44,7 @@ pub(crate) fn render(
         .gap(space::s4())
         .px(space::s6())
         .py(space::s4())
-        .bg(color::gray::s02())
+        .bg(color::gray::s01())
         .border_b_1()
         .border_color(color::gray::s05())
         .text_size(typography::ui())

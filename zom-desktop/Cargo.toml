@@ -14,6 +14,7 @@ zom-workspace.workspace = true
 zom-view.workspace = true
 zom-command.workspace = true
 gpui.workspace = true
+pulldown-cmark.workspace = true
 serde.workspace = true
 toml.workspace = true
 

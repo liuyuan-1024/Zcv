@@ -21,6 +21,7 @@ use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 
 mod editor_pane;
 mod file_status_bar;
+mod markdown_preview;
 mod tab_bar;
 
 #[allow(clippy::too_many_arguments)]

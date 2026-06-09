@@ -1,12 +1,11 @@
 //! 主编辑区面板 —— 围绕可嵌入编辑器元素的工作台外壳。
 //!
-//! 外壳（键盘焦点宿主、背景 / 圆角 / 内边距、无文件时的空态）属于工作台
-//! 编辑区，不属于编辑器本身：焦点与按键路由随交互面（`KeySurface::Editor`）
-//! 而定，编辑器只是被嵌进来的那个子元素。
+//! 外壳（键盘焦点宿主、背景 / 圆角 / 内边距、无文件时的空态）属于工作台编辑区，不属于编辑器本身：
+//! 焦点与按键路由随交互面（`KeySurface::Editor`）而定，编辑器只是被嵌进来的那个子元素。
 
 use std::rc::Rc;
 
-use gpui::{Div, FocusHandle, MouseButton, div, prelude::*};
+use gpui::{AnyElement, Div, FocusHandle, MouseButton, div, prelude::*};
 
 use zom_view::ViewKind;
 
@@ -14,6 +13,8 @@ use crate::editor::TextEditorSlot;
 use crate::editor_state::EditorState;
 use crate::shell::{KeyRequest, normalized_chord};
 use crate::theme::{color, radius, space, typography};
+
+use super::markdown_preview;
 
 /// 渲染主编辑区面板：焦点宿主 + 编辑器（或无文件空态）。
 pub(super) fn render(
@@ -26,10 +27,12 @@ pub(super) fn render(
 
     // 无活动文件时给一句提示，而不是渲染一个空编辑器 —— 与文件树未打开项目时的占位口径一致。
     // 焦点宿主（track_focus + on_key_down）两态都挂。
-    let body = match state.tabs.iter().find(|t| t.is_active) {
-        None => empty_message("尚未打开文件"),
-        Some(tab) if matches!(tab.kind, ViewKind::Preview) => markdown_preview_surface(),
-        _ => editor_surface(&editor_slot),
+    let body: AnyElement = match state.tabs.iter().find(|t| t.is_active) {
+        None => empty_message("尚未打开文件").into_any_element(),
+        Some(tab) if matches!(tab.kind, ViewKind::Preview) => {
+            markdown_preview_surface(tab.preview_text.as_deref().unwrap_or(""))
+        }
+        _ => editor_surface(&editor_slot).into_any_element(),
     };
 
     div()
@@ -84,18 +87,7 @@ fn editor_surface(slot: &Rc<TextEditorSlot>) -> Div {
         .child(slot.embed())
 }
 
-/// Markdown 预览面：占位实现，后续替换为真正的渲染器。
-fn markdown_preview_surface() -> Div {
-    div()
-        .flex_1()
-        .overflow_hidden()
-        .rounded(radius::r4())
-        .bg(color::gray::s01())
-        .p(space::s6())
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(typography::ui())
-        .text_color(color::gray::s08())
-        .child("Markdown 预览")
+/// Markdown 预览面：CommonMark → GPUI 元素树。
+fn markdown_preview_surface(source: &str) -> AnyElement {
+    markdown_preview::render(source).into_any_element()
 }

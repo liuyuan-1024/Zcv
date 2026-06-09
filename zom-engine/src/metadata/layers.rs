@@ -1,23 +1,25 @@
-//! MetadataLayers 聚合：按 MetadataLayerKind 组织多组外部 metadata ranges。
+//! MetadataLayers：按 `MetadataLayerKind` 索引若干 `VersionedRangeSet<T>`。
 //!
-//! 本文件负责 layer 替换、按 kind 查询和过期丢弃，不进入单条 range 的跟随细节。
+//! kind 只作为查询 / 替换的寻址键，不进入单个 set 的内禀状态。多 layer 的查询与替换全部委托给底层 `VersionedRangeSet`。
 
 use crate::{
+    EngineResult,
     buffer::Buffer,
-    errors::MetadataError,
+    errors::VersionedResultError,
     transaction::DeltaEvent,
     types::{BufferVersion, LineRange, TextRange},
+    versioned::{
+        VersionedRangeEntry, VersionedRangeEntryId, VersionedRangeSet, VersionedRangeSpec,
+        VersionedRangeUpdate,
+    },
 };
 
-use super::{
-    MetadataLayer, MetadataLayerKind, MetadataLineWindow, MetadataRange, MetadataRangeId,
-    MetadataRangeSpec, MetadataRangeUpdate, query::text_range_for_line_range,
-};
+use super::MetadataLayerKind;
 
-/// 多个 metadata layers 的轻量集合，供宿主按 layer kind 查询、替换和丢弃过期结果。
+/// 多个按 kind 索引的 `VersionedRangeSet`，供宿主按业务分类查询、替换和丢弃过期结果。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MetadataLayers<T> {
-    layers: Vec<MetadataLayer<T>>,
+    layers: Vec<(MetadataLayerKind, VersionedRangeSet<T>)>,
 }
 
 impl<T> MetadataLayers<T> {
@@ -25,7 +27,9 @@ impl<T> MetadataLayers<T> {
         Self { layers: Vec::new() }
     }
 
-    pub fn from_layers(layers: impl IntoIterator<Item = MetadataLayer<T>>) -> Self {
+    pub fn from_layers(
+        layers: impl IntoIterator<Item = (MetadataLayerKind, VersionedRangeSet<T>)>,
+    ) -> Self {
         Self {
             layers: layers.into_iter().collect(),
         }
@@ -39,62 +43,72 @@ impl<T> MetadataLayers<T> {
         self.layers.is_empty()
     }
 
-    pub fn as_slice(&self) -> &[MetadataLayer<T>] {
+    pub fn as_slice(&self) -> &[(MetadataLayerKind, VersionedRangeSet<T>)] {
         &self.layers
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &MetadataLayer<T>> {
+    pub fn iter(&self) -> impl Iterator<Item = &(MetadataLayerKind, VersionedRangeSet<T>)> {
         self.layers.iter()
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut MetadataLayer<T>> {
+    pub fn iter_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut (MetadataLayerKind, VersionedRangeSet<T>)> {
         self.layers.iter_mut()
     }
 
-    pub fn push(&mut self, layer: MetadataLayer<T>) {
-        self.layers.push(layer);
+    /// 插入或替换：若已存在同 kind 的 layer 则覆盖并返回旧 set，否则追加并返回 `None`。
+    pub fn insert(
+        &mut self,
+        kind: MetadataLayerKind,
+        set: VersionedRangeSet<T>,
+    ) -> Option<VersionedRangeSet<T>> {
+        if let Some(index) = self.layers.iter().position(|(k, _)| k == &kind) {
+            let (_, existing) = std::mem::replace(&mut self.layers[index], (kind, set));
+            return Some(existing);
+        }
+
+        self.layers.push((kind, set));
+        None
     }
 
-    pub fn layer(&self, kind: &MetadataLayerKind) -> Option<&MetadataLayer<T>> {
-        self.layers.iter().find(|layer| layer.kind() == kind)
+    pub fn layer(&self, kind: &MetadataLayerKind) -> Option<&VersionedRangeSet<T>> {
+        self.layers
+            .iter()
+            .find(|(k, _)| k == kind)
+            .map(|(_, set)| set)
     }
 
-    pub fn layer_mut(&mut self, kind: &MetadataLayerKind) -> Option<&mut MetadataLayer<T>> {
-        self.layers.iter_mut().find(|layer| layer.kind() == kind)
+    pub fn layer_mut(&mut self, kind: &MetadataLayerKind) -> Option<&mut VersionedRangeSet<T>> {
+        self.layers
+            .iter_mut()
+            .find(|(k, _)| k == kind)
+            .map(|(_, set)| set)
     }
 
     pub fn layers_of_kind(
         &self,
         kind: &MetadataLayerKind,
-    ) -> impl Iterator<Item = &MetadataLayer<T>> {
-        self.layers.iter().filter(move |layer| layer.kind() == kind)
-    }
-
-    pub fn replace_layer(&mut self, layer: MetadataLayer<T>) -> Option<MetadataLayer<T>> {
-        if let Some(index) = self
-            .layers
+    ) -> impl Iterator<Item = &VersionedRangeSet<T>> {
+        self.layers
             .iter()
-            .position(|existing| existing.kind() == layer.kind())
-        {
-            return Some(std::mem::replace(&mut self.layers[index], layer));
-        }
-
-        self.layers.push(layer);
-        None
+            .filter(move |(k, _)| k == kind)
+            .map(|(_, set)| set)
     }
 
+    /// 按 kind 整盘替换：layer 不存在则在 `version` 上新建。
     pub fn replace_layer_ranges(
         &mut self,
         kind: MetadataLayerKind,
         version: BufferVersion,
         ranges: impl IntoIterator<Item = (TextRange, T)>,
-    ) -> Result<Vec<MetadataRangeId>, MetadataError> {
+    ) -> Result<Vec<VersionedRangeEntryId>, VersionedResultError> {
         self.replace_layer_ranges_with_options(
             kind,
             version,
             ranges
                 .into_iter()
-                .map(|(range, metadata)| MetadataRangeSpec::new(range, metadata)),
+                .map(|(range, payload)| VersionedRangeSpec::new(range, payload)),
         )
     }
 
@@ -102,34 +116,33 @@ impl<T> MetadataLayers<T> {
         &mut self,
         kind: MetadataLayerKind,
         version: BufferVersion,
-        ranges: impl IntoIterator<Item = MetadataRangeSpec<T>>,
-    ) -> Result<Vec<MetadataRangeId>, MetadataError> {
-        if let Some(index) = self.layers.iter().position(|layer| layer.kind() == &kind) {
-            return self.layers[index].replace_all_with_options(version, ranges);
+        ranges: impl IntoIterator<Item = VersionedRangeSpec<T>>,
+    ) -> Result<Vec<VersionedRangeEntryId>, VersionedResultError> {
+        if let Some(set) = self.layer_mut(&kind) {
+            return set.replace_all_with_options(version, ranges);
         }
 
-        let mut layer = MetadataLayer::with_kind(kind, version);
-        let ids = layer.replace_all_with_options(version, ranges)?;
-        self.layers.push(layer);
+        let mut set = VersionedRangeSet::new(version);
+        let ids = set.replace_all_with_options(version, ranges)?;
+        self.layers.push((kind, set));
         Ok(ids)
     }
 
-    /// 局部替换：与 [`MetadataLayer::replace_in_range`] 同语义，但接受 `kind`
-    /// 寻址。若 layer 不存在，先以 `version` 建空 layer 再走局部替换——等价于
-    /// "首份 ReplaceRange 起手铺底"。版本不匹配返回 `VersionMismatch`。
+    /// 按 kind 局部替换：与 [`VersionedRangeSet::replace_in_range`] 同语义。
+    /// 若 layer 不存在，先以 `version` 建空 set 再走局部替换。版本不匹配返回 `VersionMismatch`。
     pub fn replace_layer_ranges_in_range(
         &mut self,
         kind: MetadataLayerKind,
         version: BufferVersion,
         byte_range: TextRange,
         ranges: impl IntoIterator<Item = (TextRange, T)>,
-    ) -> Result<Vec<MetadataRangeId>, MetadataError> {
-        if let Some(index) = self.layers.iter().position(|layer| layer.kind() == &kind) {
-            return self.layers[index].replace_in_range(version, byte_range, ranges);
+    ) -> Result<Vec<VersionedRangeEntryId>, VersionedResultError> {
+        if let Some(set) = self.layer_mut(&kind) {
+            return set.replace_in_range(version, byte_range, ranges);
         }
-        let mut layer = MetadataLayer::with_kind(kind, version);
-        let ids = layer.replace_in_range(version, byte_range, ranges)?;
-        self.layers.push(layer);
+        let mut set = VersionedRangeSet::new(version);
+        let ids = set.replace_in_range(version, byte_range, ranges)?;
+        self.layers.push((kind, set));
         Ok(ids)
     }
 
@@ -137,9 +150,9 @@ impl<T> MetadataLayers<T> {
         &self,
         kind: &MetadataLayerKind,
         query: TextRange,
-    ) -> impl Iterator<Item = &MetadataRange<T>> {
+    ) -> impl Iterator<Item = &VersionedRangeEntry<T>> {
         self.layers_of_kind(kind)
-            .flat_map(move |layer| layer.ranges_intersecting(query))
+            .flat_map(move |set| set.entries_intersecting(query))
     }
 
     pub fn ranges_for_kind_in_line_range(
@@ -147,21 +160,12 @@ impl<T> MetadataLayers<T> {
         kind: &MetadataLayerKind,
         buffer: &Buffer,
         query: LineRange,
-    ) -> crate::EngineResult<Vec<&MetadataRange<T>>> {
-        let query = text_range_for_line_range(buffer, query)?;
+    ) -> EngineResult<Vec<&VersionedRangeEntry<T>>> {
+        let query = crate::versioned::query::text_range_for_line_range(buffer, query)?;
         Ok(self.ranges_for_kind_intersecting(kind, query).collect())
     }
 
-    pub fn ranges_for_kind_in_line_window(
-        &self,
-        kind: &MetadataLayerKind,
-        buffer: &Buffer,
-        window: MetadataLineWindow,
-    ) -> crate::EngineResult<Vec<&MetadataRange<T>>> {
-        self.ranges_for_kind_in_line_range(kind, buffer, window.lines())
-    }
-
-    /// 把 `event` 应用到所有 `version == event.old_version()` 的 layer，让 layer 内每条 range 沿编辑前后的字节坐标平移。
+    /// 把 `event` 应用到所有 `version == event.old_version()` 的 layer，让 layer 内每条 entry 沿编辑前后的字节坐标平移。
     ///
     /// **为什么是部分应用**：layer 的 version 由 producer 自主推进（worker 的 `ReplaceAll` / `ReplaceRange` 各自标版本）。
     /// 一次 `pump_post_edit` 喂事件时，刚好与 `event.old_version()` 对齐的 layer 才能推进；
@@ -172,25 +176,28 @@ impl<T> MetadataLayers<T> {
     pub fn update_through_delta_event(
         &mut self,
         event: &DeltaEvent,
-    ) -> Vec<(MetadataLayerKind, Vec<MetadataRangeUpdate>)> {
+    ) -> Vec<(MetadataLayerKind, Vec<VersionedRangeUpdate>)> {
         let mut out = Vec::new();
-        for layer in self.layers.iter_mut() {
-            if layer.version() != event.old_version() {
+        for (kind, set) in self.layers.iter_mut() {
+            if set.version() != event.old_version() {
                 continue;
             }
-            if let Ok(updates) = layer.update_through_delta_event(event) {
-                out.push((layer.kind().clone(), updates));
+            if let Ok(updates) = set.update_through_delta_event(event) {
+                out.push((kind.clone(), updates));
             }
         }
         out
     }
 
-    pub fn discard_stale(&mut self, current_version: BufferVersion) -> Vec<MetadataLayer<T>> {
+    pub fn discard_stale(
+        &mut self,
+        current_version: BufferVersion,
+    ) -> Vec<(MetadataLayerKind, VersionedRangeSet<T>)> {
         let mut stale = Vec::new();
         let mut index = 0;
 
         while index < self.layers.len() {
-            if self.layers[index].is_stale(current_version) {
+            if self.layers[index].1.is_stale(current_version) {
                 stale.push(self.layers.remove(index));
             } else {
                 index += 1;
@@ -244,7 +251,7 @@ mod tests {
         assert_eq!(
             layers
                 .ranges_for_kind_intersecting(&kind, range(1, 5))
-                .map(|entry| *entry.metadata())
+                .map(|entry| *entry.payload())
                 .collect::<Vec<_>>(),
             vec!["alpha", "beta"]
         );
@@ -267,7 +274,6 @@ mod tests {
         let mut layers = MetadataLayers::new();
         let kind = MetadataLayerKind::custom("syntax");
 
-        // 起点：四段全文 spans。
         layers
             .replace_layer_ranges(
                 kind.clone(),
@@ -281,7 +287,6 @@ mod tests {
             )
             .unwrap();
 
-        // 局部替换 byte_range = [2, 8)：b 与 c 的 start 落在其中，应被替换；a 与 d 保留。
         layers
             .replace_layer_ranges_in_range(
                 kind.clone(),
@@ -296,7 +301,7 @@ mod tests {
             .unwrap()
             .as_slice()
             .iter()
-            .map(|r| *r.metadata())
+            .map(|entry| *entry.payload())
             .collect();
         survivors.sort();
         assert_eq!(survivors, vec!["B", "C", "a", "d"]);
@@ -305,14 +310,11 @@ mod tests {
     #[test]
     fn update_through_delta_event_shifts_aligned_layer_and_skips_others() {
         use crate::{Edit, Transaction};
-        // 文件含多字节字符：插一字符后让旧 span 端点原本会落进 char 内部时，
-        // 平移应整体把它跟过插入点。
         let mut buf = buffer("# zom 文档规范\n");
         let kind = MetadataLayerKind::custom("syntax");
         let other_kind = MetadataLayerKind::custom("other");
 
         let mut layers: MetadataLayers<&'static str> = MetadataLayers::new();
-        // 模拟 syntax worker 在初始版本上落两段 span。
         layers
             .replace_layer_ranges(
                 kind.clone(),
@@ -320,13 +322,11 @@ mod tests {
                 vec![(range(0, 1), "punct"), (range(2, 18), "heading")],
             )
             .unwrap();
-        // 同时挂一个版本「领先」的 layer，验证 update 静默跳过它。
-        layers.push(MetadataLayer::with_kind(
+        layers.insert(
             other_kind.clone(),
-            BufferVersion::new(buf.version().get() + 10),
-        ));
+            VersionedRangeSet::new(BufferVersion::new(buf.version().get() + 10)),
+        );
 
-        // 在 byte 5（`m` 后）插入 'X'，模拟一次按键。
         let edit = Edit::insert(b(5), "X".to_string()).unwrap();
         let tx = Transaction::from_edits(buf.version(), vec![edit]).unwrap();
         buf.apply_transaction(tx).unwrap();
@@ -339,20 +339,17 @@ mod tests {
         assert_eq!(updates.len(), 1, "只有 syntax layer 版本对齐，应只推进一条");
         assert_eq!(updates[0].0, kind);
 
-        let layer = layers.layer(&kind).unwrap();
-        assert_eq!(layer.version(), event.new_version());
+        let set = layers.layer(&kind).unwrap();
+        assert_eq!(set.version(), event.new_version());
 
-        let mut ranges: Vec<(usize, usize)> = layer
+        let mut ranges: Vec<(usize, usize)> = set
             .as_slice()
             .iter()
-            .map(|r| (r.range().start().get(), r.range().end().get()))
+            .map(|entry| (entry.range().start().get(), entry.range().end().get()))
             .collect();
         ranges.sort();
-        // 旧 [2, 18) 的 end=18 在插入点 5 之后，整体右移 1 → [2, 19)；
-        // 19 在新文本里是 newline 字节，char-aligned。
         assert_eq!(ranges, vec![(0, 1), (2, 19)]);
 
-        // 另一 layer 版本超前，静默跳过、未被推进。
         let other = layers.layer(&other_kind).unwrap();
         assert_ne!(other.version(), event.new_version());
     }
@@ -375,7 +372,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            crate::errors::MetadataError::VersionMismatch { .. }
+            crate::errors::VersionedResultError::VersionMismatch { .. }
         ));
     }
 }

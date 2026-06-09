@@ -31,14 +31,11 @@ pub use config::{
 };
 pub use errors::{
     AnchorError, BufferLoadError, BufferSaveError, CoordinateError, EditError, EngineError,
-    EngineResult, FoldError, MetadataError, ProjectionError, SearchError, StorageError,
-    TransactionError, VersionedResultError,
+    EngineResult, FoldError, ProjectionError, SearchError, StorageError, TransactionError,
+    VersionedResultError,
 };
 pub use fold::{FoldRange, FoldRangeId, FoldRangeUpdate, FoldSet, FoldToggleOutcome, HiddenRange};
-pub use metadata::{
-    MetadataLayer, MetadataLayerKind, MetadataLayers, MetadataLineWindow, MetadataRange,
-    MetadataRangeId, MetadataRangeSpec, MetadataRangeUpdate,
-};
+pub use metadata::{MetadataLayerKind, MetadataLayers};
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
 pub use projection::{
     ApplyOutcome, FoldPlaceholder, LogicalPoint, LogicalPointProjection, LogicalProjection,
@@ -68,4 +65,7 @@ pub use types::{
     Line, LineEndingStyle, LineRange, LogicalColumn, OriginKind, Position, TextRange,
     TransactionId, Utf16Offset, Utf16Position,
 };
-pub use versioned::{VersionedRangeEntry, VersionedRangeSet, VersionedRangeSpec, VersionedResult};
+pub use versioned::{
+    VersionedRangeEntry, VersionedRangeEntryId, VersionedRangeSet, VersionedRangeSpec,
+    VersionedRangeUpdate, VersionedResult,
+};

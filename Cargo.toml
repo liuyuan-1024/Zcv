@@ -33,6 +33,7 @@ zom-ai = { path = "zom-ai" }
 
 # ---- 引擎底层（zom-engine） ----
 regex = "1.12.3"
+regex-automata = "0.4.14"
 ropey = "1.6.1"
 thiserror = "2.0.18"
 unicode-segmentation = "1.13.2"

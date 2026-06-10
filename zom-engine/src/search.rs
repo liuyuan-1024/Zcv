@@ -8,6 +8,7 @@ use crate::{
     search_async::SearchControl, storage::TextRead, transaction::DeltaEvent,
 };
 use regex::{Regex, RegexBuilder};
+use regex_automata::meta;
 
 /// 普通字符串搜索选项。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -445,33 +446,123 @@ pub(crate) fn search_in_text_with_control<T: TextRead>(
     ))
 }
 
-pub(crate) fn search_regex_in_text_with_control<T: TextRead>(
+/// 流式 regex 搜索：按 rope chunks 逐步累积到有界窗口，永不一次性物化整个 haystack。
+///
+/// 滑动窗口 + 重叠区保证跨窗口边界匹配不被截断；
+/// 若匹配命中 buffer 末端且还有更多数据则动态扩展——在罕见长匹配场景退化为物化，保证正确性。
+fn search_regex_streaming<T: TextRead>(
     storage: &T,
     version: BufferVersion,
     pattern: &str,
     options: RegexSearchOptions,
     control: &SearchControl,
 ) -> EngineResult<RegexSearchResult> {
-    let regex = build_regex(pattern, options)?;
+    let regex = build_regex_automata(pattern, options)?;
     let search_range = resolve_search_range(storage, options.range())?;
     validate_search_range(storage, search_range)?;
 
     let base_offset = search_range.start().get();
-    let haystack = regex_haystack(storage, search_range)?;
-    let mut matches = Vec::new();
-    for (ordinal, regex_match) in regex.find_iter(haystack.as_ref()).enumerate() {
-        // 每个命中前检查一次取消位——regex `find_iter` 在内部 DFA 走批量字符时
-        // 不可分割，这里是最细的协作粒度。
-        control.check_cancel()?;
-        // regex 是 byte-native：直接拼上 base_offset
-        let start = base_offset + regex_match.start();
-        let end = base_offset + regex_match.end();
-        // 进度按"已经扫到的 haystack 字节数"上报，单调推进。
-        control.set_scanned(regex_match.end() as u64);
-        matches.push(SearchMatch::new(
-            ordinal,
-            text_range(ByteOffset::new(start), ByteOffset::new(end))?,
-        ));
+
+    const WINDOW_SIZE: usize = 256 * 1024; // 256 KiB
+    const OVERLAP_MIN: usize = 4096;
+
+    // 重叠区至少 pattern.len() * 8 或 4 KiB，不超过窗口一半
+    let overlap = (pattern.len() * 8).max(OVERLAP_MIN).min(WINDOW_SIZE / 2);
+
+    let mut buf: Vec<u8> = Vec::with_capacity(WINDOW_SIZE + overlap);
+    // buf[0] 在文件中的绝对字节偏移
+    let mut buf_start: usize = base_offset;
+    let mut last_reported_end: usize = base_offset;
+    let mut matches: Vec<SearchMatch> = Vec::new();
+    let mut ordinal: usize = 0;
+    let mut first_window = true;
+
+    let mut chunks = storage.chunks(search_range)?;
+    let mut chunks_exhausted = false;
+
+    // 直到没有更多数据且 buffer 已处理完
+    loop {
+        // 向 buffer 填数据
+        while buf.len() < WINDOW_SIZE {
+            match chunks.next() {
+                Some(chunk) => {
+                    control.check_cancel()?;
+                    buf.extend_from_slice(chunk.as_bytes());
+                }
+                None => {
+                    chunks_exhausted = true;
+                    break;
+                }
+            }
+        }
+
+        if buf.is_empty() {
+            break;
+        }
+
+        // 搜索当前 buffer，若命中末端且还有更多数据则扩展 buffer 重搜。
+        // 用于处理极长匹配（rare case），正常匹配不会触发。
+        loop {
+            let mut boundary_hit = false;
+            for m in regex.find_iter(&buf[..]) {
+                if m.end() == buf.len() && !chunks_exhausted {
+                    boundary_hit = true;
+                    break;
+                }
+            }
+
+            if !boundary_hit {
+                break;
+            }
+
+            // 扩展 buffer 并重搜
+            match chunks.next() {
+                Some(chunk) => buf.extend_from_slice(chunk.as_bytes()),
+                None => {
+                    chunks_exhausted = true;
+                    break;
+                }
+            }
+        }
+
+        let new_data_boundary = if first_window { 0 } else { overlap };
+
+        // 收割结果
+        for m in regex.find_iter(&buf[..]) {
+            let abs_end = buf_start + m.end();
+            // 去重：跳过已上报的命中
+            if abs_end <= last_reported_end {
+                continue;
+            }
+            // 跳过完全落在重叠区的命中（已被前序窗口上报）
+            if !first_window && m.end() <= new_data_boundary {
+                continue;
+            }
+
+            let abs_start = buf_start + m.start();
+            matches.push(SearchMatch::new(
+                ordinal,
+                text_range(ByteOffset::new(abs_start), ByteOffset::new(abs_end))?,
+            ));
+            ordinal += 1;
+            last_reported_end = abs_end;
+            // 进度按"已扫描到的 haystack 字节数"上报，单调推进
+            control.set_scanned((last_reported_end - base_offset) as u64);
+        }
+
+        if chunks_exhausted {
+            break;
+        }
+
+        // 剪裁 buffer：保留末尾 overlap 字节作为下一窗口的前缀
+        let trim = buf.len().saturating_sub(overlap);
+        if trim == 0 {
+            // buffer 比 overlap 还小，继续累积
+            continue;
+        }
+        buf_start += trim;
+        buf.drain(..trim);
+        first_window = false;
     }
 
     control.finish_scan();
@@ -482,6 +573,16 @@ pub(crate) fn search_regex_in_text_with_control<T: TextRead>(
         options,
         matches,
     ))
+}
+
+pub(crate) fn search_regex_in_text_with_control<T: TextRead>(
+    storage: &T,
+    version: BufferVersion,
+    pattern: &str,
+    options: RegexSearchOptions,
+    control: &SearchControl,
+) -> EngineResult<RegexSearchResult> {
+    search_regex_streaming(storage, version, pattern, options, control)
 }
 
 pub(crate) fn regex_replacements_in_text<'a, T: TextRead>(
@@ -594,11 +695,26 @@ fn build_regex(pattern: &str, options: RegexSearchOptions) -> EngineResult<Regex
         })
 }
 
-fn regex_haystack<T: TextRead>(
-    storage: &T,
-    search_range: TextRange,
-) -> EngineResult<std::borrow::Cow<'_, str>> {
-    storage.slice_text(search_range)
+fn build_regex_automata(pattern: &str, options: RegexSearchOptions) -> EngineResult<meta::Regex> {
+    let syntax = regex_automata::util::syntax::Config::new()
+        .case_insensitive(!options.is_case_sensitive())
+        .multi_line(options.is_multi_line())
+        .dot_matches_new_line(options.dot_matches_new_line());
+
+    let meta_config =
+        regex_automata::meta::Config::new().dfa_size_limit(Some(options.dfa_size_limit()));
+
+    meta::Builder::new()
+        .configure(meta_config)
+        .syntax(syntax)
+        .build(pattern)
+        .map_err(|error| {
+            SearchError::InvalidRegex {
+                pattern: pattern.to_string(),
+                message: error.to_string(),
+            }
+            .into()
+        })
 }
 
 fn regex_haystack_owned<T: TextRead>(storage: &T, search_range: TextRange) -> EngineResult<String> {

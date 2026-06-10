@@ -8180,6 +8180,7 @@ version = "0.4.29"
 dependencies = [
  "criterion",
  "regex",
+ "regex-automata",
  "ropey",
  "thiserror 2.0.18",
  "unicode-segmentation",

@@ -26,9 +26,9 @@ pub(super) fn render(source: &str) -> impl IntoElement {
         .flex()
         .flex_col()
         .gap_3()
-        .bg(color::gray::s01())
+        .bg(color::current().gray.s01)
         .text_size(body_size())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .children(blocks)
 }
 
@@ -328,8 +328,8 @@ fn wrap_block(frame: BlockFrame) -> AnyElement {
             .gap_2()
             .pl_3()
             .border_l_2()
-            .border_color(color::gray::s04())
-            .text_color(color::gray::s08())
+            .border_color(color::current().gray.s04)
+            .text_color(color::current().gray.s08)
             .children(frame.children)
             .into_any_element(),
 
@@ -351,7 +351,7 @@ fn wrap_block(frame: BlockFrame) -> AnyElement {
                 let marker = div()
                     .w(px(28.0))
                     .flex_none()
-                    .text_color(color::gray::s07())
+                    .text_color(color::current().gray.s07)
                     .font(typography::editor_font())
                     .child(SharedString::from(marker_text));
 
@@ -389,7 +389,7 @@ fn wrap_block(frame: BlockFrame) -> AnyElement {
             .gap_1()
             .py_2()
             .border_1()
-            .border_color(color::gray::s04())
+            .border_color(color::current().gray.s04)
             .rounded(radius::r4())
             .children(frame.children)
             .into_any_element(),
@@ -409,7 +409,7 @@ fn wrap_block(frame: BlockFrame) -> AnyElement {
                 .px_2()
                 .py_1()
                 .font_weight(FontWeight::BOLD)
-                .bg(color::gray::s02());
+                .bg(color::current().gray.s02);
             for child in frame.children {
                 row = row.child(child);
             }
@@ -442,7 +442,7 @@ fn wrap_inline(frame: InlineFrame) -> AnyElement {
         InlineKind::Heading(level) => base
             .text_size(heading_size(level))
             .font_weight(FontWeight::BOLD)
-            .text_color(color::gray::s09())
+            .text_color(color::current().gray.s09)
             .into_any_element(),
     }
 }
@@ -451,8 +451,8 @@ fn code_block_element(text: &str, lang: Option<&str>) -> AnyElement {
     let mut block = div()
         .p(space::s8())
         .rounded(radius::r4())
-        .bg(color::gray::s02())
-        .text_color(color::gray::s09())
+        .bg(color::current().gray.s02)
+        .text_color(color::current().gray.s09)
         .font(typography::editor_font())
         .text_size(typography::editor())
         .line_height(typography::editor_line());
@@ -461,7 +461,7 @@ fn code_block_element(text: &str, lang: Option<&str>) -> AnyElement {
         block = block.child(
             div()
                 .text_size(typography::ui())
-                .text_color(color::gray::s07())
+                .text_color(color::current().gray.s07)
                 .mb_1()
                 .child(SharedString::from(lang.to_string())),
         );
@@ -484,7 +484,7 @@ fn horizontal_rule() -> AnyElement {
     div()
         .h(px(1.0))
         .w_full()
-        .bg(color::gray::s04())
+        .bg(color::current().gray.s04)
         .into_any_element()
 }
 

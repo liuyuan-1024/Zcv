@@ -449,8 +449,10 @@ fn search_controls(
 /// 由 SearchModel::state() 从 active buffer 的 BufferSearch 读出真实数据。
 fn hit_count_badge(hit_count: Option<HitCount>) -> gpui::AnyElement {
     let (text, color) = match hit_count {
-        Some(HitCount { total: 0, .. }) | None => ("0/0".to_string(), color::gray::s07()),
-        Some(HitCount { current, total }) => (format!("{current}/{total}"), color::gray::s09()),
+        Some(HitCount { total: 0, .. }) | None => ("0/0".to_string(), color::current().gray.s07),
+        Some(HitCount { current, total }) => {
+            (format!("{current}/{total}"), color::current().gray.s09)
+        }
     };
     div()
         .flex()
@@ -553,9 +555,9 @@ fn base_input_box(
         .p(space::s6())
         .border_1()
         .rounded(radius::r4())
-        .border_color(color::gray::s05())
-        .bg(color::gray::s01())
-        .text_color(color::gray::s08())
+        .border_color(color::current().gray.s05)
+        .bg(color::current().gray.s01)
+        .text_color(color::current().gray.s08)
         .track_focus(focus)
         .tab_index(0)
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -584,14 +586,14 @@ fn editor(slot: &Rc<TextEditorSlot>, show_placeholder: bool, placeholder: &'stat
         .h(typography::ui_line())
         .flex_1()
         .overflow_hidden()
-        .text_color(color::gray::s09());
+        .text_color(color::current().gray.s09);
     if show_placeholder {
         editor = editor.child(
             div()
                 .absolute()
                 .top_0()
                 .left_0()
-                .text_color(color::gray::s08())
+                .text_color(color::current().gray.s08)
                 .child(placeholder),
         );
     }

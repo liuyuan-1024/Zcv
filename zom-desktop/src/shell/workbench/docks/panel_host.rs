@@ -90,7 +90,7 @@ pub(crate) fn placeholder(hint: impl Into<SharedString>) -> Div {
             .items_center()
             .justify_center()
             .text_size(typography::ui())
-            .text_color(color::gray::s08())
+            .text_color(color::current().gray.s08)
             .child(hint.into()),
     )
 }

@@ -91,9 +91,9 @@ pub(crate) fn render(
         .flex_col()
         .size_full()
         .overflow_hidden()
-        .bg(color::gray::s02())
+        .bg(color::current().gray.s02)
         .font(typography::ui_font())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .child(render_top_bar(
             state,
             window,

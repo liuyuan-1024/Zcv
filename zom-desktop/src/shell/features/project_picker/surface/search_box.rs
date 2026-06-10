@@ -24,10 +24,10 @@ fn input_box(state: &ProjectPickerState, slot: &Rc<TextEditorSlot>) -> Div {
         .overflow_hidden()
         .p(space::s6())
         .border_b_1()
-        .border_color(color::gray::s05())
+        .border_color(color::current().gray.s05)
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .child(
             div()
                 .flex_1()
@@ -54,7 +54,7 @@ fn editor(slot: &Rc<TextEditorSlot>, show_placeholder: bool, placeholder: &'stat
         .h(typography::ui_line())
         .flex_1()
         .overflow_hidden()
-        .text_color(color::gray::s09());
+        .text_color(color::current().gray.s09);
 
     if show_placeholder {
         editor = editor.child(
@@ -62,7 +62,7 @@ fn editor(slot: &Rc<TextEditorSlot>, show_placeholder: bool, placeholder: &'stat
                 .absolute()
                 .top_0()
                 .left_0()
-                .text_color(color::gray::s08())
+                .text_color(color::current().gray.s08)
                 .child(placeholder),
         );
     }

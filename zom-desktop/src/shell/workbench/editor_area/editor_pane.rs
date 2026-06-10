@@ -40,8 +40,8 @@ pub(super) fn render(
         .flex()
         .flex_col()
         .overflow_hidden()
-        .bg(color::gray::s02())
-        .text_color(color::gray::s09())
+        .bg(color::current().gray.s02)
+        .text_color(color::current().gray.s09)
         .track_focus(&editor_focus)
         .tab_index(0)
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -66,7 +66,7 @@ fn empty_message(hint: &'static str) -> Div {
         .items_center()
         .justify_center()
         .text_size(typography::ui())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .child(hint)
 }
 
@@ -78,12 +78,12 @@ fn editor_surface(slot: &Rc<TextEditorSlot>) -> Div {
         .flex_1()
         .overflow_hidden()
         .rounded(radius::r4())
-        .bg(color::gray::s01())
+        .bg(color::current().gray.s01)
         .p(space::s6())
         .font(typography::editor_font())
         .line_height(typography::editor_line())
         .text_size(typography::editor())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .child(slot.embed())
 }
 

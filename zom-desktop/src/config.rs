@@ -82,6 +82,7 @@ impl Default for EditorConfig {
 }
 
 pub(crate) const THEME_ONE_DARK: &str = "one-dark";
+pub(crate) const THEME_ONE_LIGHT: &str = "one-light";
 
 const UI_FONT_MIN: u16 = 11;
 const UI_FONT_MAX: u16 = 18;
@@ -95,6 +96,7 @@ pub(crate) enum SettingsChange {
     AdjustEditorFont(i16),
     ToggleEditorSoftWrap,
     CycleEditorTabSize,
+    CycleTheme,
 }
 
 impl AppConfig {
@@ -141,6 +143,9 @@ impl AppConfig {
             SettingsChange::CycleEditorTabSize => {
                 self.editor.tab_size = next_tab_size(self.editor.tab_size);
             }
+            SettingsChange::CycleTheme => {
+                self.general.theme = next_theme(&self.general.theme);
+            }
         }
     }
 
@@ -155,7 +160,10 @@ impl AppConfig {
     }
 
     pub(crate) fn normalized(mut self) -> Self {
-        if !matches!(self.general.theme.as_str(), THEME_ONE_DARK) {
+        if !matches!(
+            self.general.theme.as_str(),
+            THEME_ONE_DARK | THEME_ONE_LIGHT
+        ) {
             self.general.theme = THEME_ONE_DARK.to_string();
         }
         self.ui.font_size = self.ui.font_size.clamp(UI_FONT_MIN, UI_FONT_MAX);
@@ -184,6 +192,12 @@ fn next_tab_size(current: u16) -> u16 {
         Some(index) => TAB_SIZES[(index + 1) % TAB_SIZES.len()],
         None => 4,
     }
+}
+
+fn next_theme(current: &str) -> String {
+    let themes = [THEME_ONE_DARK, THEME_ONE_LIGHT];
+    let index = themes.iter().position(|t| *t == current).unwrap_or(0);
+    themes[(index + 1) % themes.len()].to_string()
 }
 
 fn home_dir() -> Option<PathBuf> {

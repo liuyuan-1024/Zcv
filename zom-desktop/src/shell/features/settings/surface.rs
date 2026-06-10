@@ -144,8 +144,8 @@ fn render(
         .flex_col()
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::s05())
-        .bg(color::gray::s03())
+        .border_color(color::current().gray.s05)
+        .bg(color::current().gray.s03)
         .overflow_hidden()
         .track_focus(focus)
         .tab_index(0)
@@ -174,17 +174,16 @@ fn header(
         .px(space::s12())
         .py(space::s8())
         .border_b_1()
-        .border_color(color::gray::s05())
+        .border_color(color::current().gray.s05)
         .child(
             div()
                 .flex()
                 .flex_col()
                 .gap(space::s4())
-                .child(title("设置".to_string()))
                 .child(muted(state.path_label())),
         )
-        .child(ghost_button(
-            "打开 TOML".to_string(),
+        .child(clickable(
+            pill("打开 TOML".to_string()),
             action_request,
             SettingsAction::OpenToml,
         ))
@@ -224,10 +223,12 @@ fn settings_section_item(
     let content = match index {
         0 => section(
             "全局".to_string(),
-            vec![value_row(
+            vec![select_row(
                 "主题".to_string(),
                 theme_label(&state.config.general.theme),
                 "general.theme",
+                Rc::clone(&action_request),
+                SettingsAction::Change(SettingsChange::CycleTheme),
             )],
         ),
         1 => section(
@@ -286,7 +287,7 @@ fn section(label: String, rows: Vec<Div>) -> Div {
                 .flex_col()
                 .rounded(radius::r4())
                 .border_1()
-                .border_color(color::gray::s05())
+                .border_color(color::current().gray.s05)
                 .overflow_hidden()
                 .children(rows),
         )
@@ -300,10 +301,6 @@ fn select_row(
     action: SettingsAction,
 ) -> Div {
     setting_row(label, key, clickable(pill(value), action_request, action))
-}
-
-fn value_row(label: String, value: String, key: &'static str) -> Div {
-    setting_row(label, key, value_box(value))
 }
 
 fn stepper_row(
@@ -344,7 +341,7 @@ fn setting_row(label: String, key: &'static str, control: Div) -> Div {
         .px(space::s12())
         .py(space::s8())
         .border_b_1()
-        .border_color(color::gray::s05())
+        .border_color(color::current().gray.s05)
         .child(
             div()
                 .flex()
@@ -356,19 +353,11 @@ fn setting_row(label: String, key: &'static str, control: Div) -> Div {
         .child(control)
 }
 
-fn title(text: String) -> Div {
-    div()
-        .text_size(typography::ui())
-        .line_height(typography::ui_line())
-        .text_color(color::gray::a09())
-        .child(text)
-}
-
 fn section_label(text: String) -> Div {
     div()
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::s08())
+        .text_color(color::current().gray.s08)
         .child(text)
 }
 
@@ -376,7 +365,7 @@ fn label_text(text: String) -> Div {
     div()
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .child(text)
 }
 
@@ -384,33 +373,8 @@ fn muted(text: impl Into<String>) -> Div {
     div()
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::s08())
+        .text_color(color::current().gray.s08)
         .child(text.into())
-}
-
-fn ghost_button(
-    text: String,
-    action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
-    action: SettingsAction,
-) -> Div {
-    div()
-        .rounded(radius::r4())
-        .border_1()
-        .border_color(color::gray::s05())
-        .cursor_pointer()
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            let Some(action_request) = action_request.borrow().clone() else {
-                return;
-            };
-            action_request(action, window, cx);
-            cx.stop_propagation();
-        })
-        .px(space::s8())
-        .py(space::s6())
-        .text_size(typography::ui())
-        .line_height(typography::ui_line())
-        .text_color(color::gray::s09())
-        .child(text)
 }
 
 fn clickable(
@@ -432,12 +396,13 @@ fn clickable(
 fn pill(text: String) -> Div {
     div()
         .rounded(radius::r4())
-        .bg(color::gray::s04())
+        .border_1()
+        .border_color(color::current().gray.s05)
         .px(space::s8())
         .py(space::s6())
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::a09())
+        .text_color(color::current().gray.s09)
         .child(text)
 }
 
@@ -477,11 +442,11 @@ fn stepper_button(
         .justify_center()
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::s05())
+        .border_color(color::current().gray.s05)
         .cursor_pointer()
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             let Some(action_request) = action_request.borrow().clone() else {
                 return;
@@ -500,12 +465,12 @@ fn value_box(text: String) -> Div {
         .justify_center()
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::s05())
+        .border_color(color::current().gray.s05)
         .px(space::s8())
         .py(space::s6())
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .child(text)
 }
 
@@ -517,9 +482,9 @@ fn toggle(enabled: bool) -> Div {
         .h(px(20.0))
         .rounded(radius::full())
         .bg(if enabled {
-            color::blue::s05()
+            color::current().blue.s05
         } else {
-            color::gray::s04()
+            color::current().gray.s04
         })
         .child(
             div()
@@ -529,13 +494,14 @@ fn toggle(enabled: bool) -> Div {
                 .w(px(12.0))
                 .h(px(12.0))
                 .rounded(radius::full())
-                .bg(color::gray::a09()),
+                .bg(color::current().gray.a09),
         )
 }
 
 fn theme_label(theme: &str) -> String {
     match theme {
         "one-dark" => "One Dark",
+        "one-light" => "One Light",
         _ => "One Dark",
     }
     .to_string()

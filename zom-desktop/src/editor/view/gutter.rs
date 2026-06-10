@@ -26,7 +26,7 @@ const GAP: f32 = 12.0;
 
 /// 行号文字颜色 —— 次级信息。
 fn text_color() -> Hsla {
-    color::gray::s08().into()
+    color::current().gray.s08.into()
 }
 
 /// gutter 装饰图标的一条记录。

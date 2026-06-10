@@ -69,7 +69,7 @@ const CARET_WIDTH: f32 = 2.0;
 
 /// 光标竖条颜色 —— 编辑器自持的视觉角色，不随嵌入处而变。
 fn caret_color() -> Hsla {
-    color::blue::s07().into()
+    color::current().blue.s07.into()
 }
 
 /// 一个独立文本编辑单元的渲染图元。

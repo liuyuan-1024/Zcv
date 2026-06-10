@@ -135,7 +135,7 @@ fn pip_symbol(path: &'static str) -> Svg {
     svg()
         .path(path)
         .size(PIP_SYMBOL_SIZE)
-        .text_color(color::gray::s01())
+        .text_color(color::current().gray.s01)
         .opacity(0.0)
         .group_hover(PIP_GROUP, |style| style.opacity(1.0))
 }

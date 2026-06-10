@@ -35,8 +35,8 @@ pub(crate) fn render(
         .items_center()
         .w_full()
         .min_h_0()
-        .bg(color::gray::s04())
-        .border_color(color::gray::s05())
+        .bg(color::current().gray.s04)
+        .border_color(color::current().gray.s05)
         .overflow_hidden()
         .overflow_x_scroll();
 
@@ -54,9 +54,9 @@ fn render_tab(
     // 活动标签背景与编辑器正文一致，标签与内容视觉连成一体；
     // 非活动标签透明底，沿用标签栏自身的 s04 底色。
     let (bg, text) = if tab.is_active {
-        (color::gray::s01(), color::gray::s09())
+        (color::current().gray.s01, color::current().gray.s09)
     } else {
-        (gpui::rgba(0), color::gray::s09())
+        (gpui::rgba(0), color::current().gray.s09)
     };
 
     // 每个标签一个唯一 group：让关闭 glyph 只在悬停「本标签」时显现，而不会因为同名 group 连带点亮其它标签。

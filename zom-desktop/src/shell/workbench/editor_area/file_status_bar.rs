@@ -44,12 +44,12 @@ pub(crate) fn render(
         .gap(space::s4())
         .px(space::s6())
         .py(space::s4())
-        .bg(color::gray::s01())
+        .bg(color::current().gray.s01)
         .border_b_1()
-        .border_color(color::gray::s05())
+        .border_color(color::current().gray.s05)
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .child(header_row(active_tab, shortcuts, titles));
 
     if search_open {
@@ -88,7 +88,7 @@ fn path_label(tab: &EditorTab) -> Div {
         .flex_shrink_0()
         .overflow_hidden()
         .whitespace_nowrap()
-        .text_color(color::gray::s08())
+        .text_color(color::current().gray.s08)
         .child(text)
 }
 

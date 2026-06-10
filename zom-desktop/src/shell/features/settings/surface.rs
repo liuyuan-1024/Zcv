@@ -5,17 +5,15 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    Context, Corner, Div, Entity, FocusHandle, InteractiveElement, ListAlignment, ListState,
-    MouseButton, Window, div, list, point, prelude::*, px,
+    Context, Div, Entity, FocusHandle, InteractiveElement, ListAlignment, ListState, MouseButton,
+    Window, div, list, prelude::*, px,
 };
 
 use crate::config::{AppConfig, SettingsChange};
 use crate::shell::KeyRequest;
 use crate::shell::normalized_chord;
 use crate::shell::shared::scroll;
-use crate::shell::surfaces::{
-    SurfaceAnchor, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
-};
+use crate::shell::surfaces::{SurfaceAnchor, SurfaceManager, SurfaceRequest, WindowPosition};
 use crate::theme::{color, radius, space, typography};
 use crate::ui_id::SurfaceId;
 
@@ -115,12 +113,8 @@ pub(crate) fn request(runtime: SettingsRuntime) -> SurfaceRequest {
     let focus = runtime.focus.clone();
     SurfaceRequest {
         id: SurfaceId::Settings,
-        anchor: SurfaceAnchor::Invoker(super::INVOKER_ID.into()),
-        placement: SurfacePlacement {
-            invoker_point: SurfaceInvokerPoint::TopLeft,
-            corner: Corner::TopRight,
-            offset: point(px(0.0), px(18.0)),
-            fallback_position: point(px(520.0), px(28.0)),
+        anchor: SurfaceAnchor::Window {
+            position: WindowPosition::Center,
         },
         focus_on_open: Some(focus),
         render: Rc::new(move || {

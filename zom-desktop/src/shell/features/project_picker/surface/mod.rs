@@ -17,12 +17,10 @@ use gpui::{
 use crate::app::App;
 use crate::editor::TextEditorSlot;
 use crate::focus::AppFocus;
-use crate::shell::surfaces::{
-    SurfaceAnchor, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
-};
+use crate::shell::surfaces::{SurfaceAnchor, SurfaceManager, SurfaceRequest};
 use crate::shell::{KeyRequest, normalized_chord};
 use crate::text_target::TextTargetOwner;
-use crate::theme::{color, radius, space};
+use crate::theme::{color, radius};
 use crate::ui_id::SurfaceId;
 
 use super::recent::{RecentProject, RecentProjects};
@@ -167,11 +165,9 @@ pub(crate) fn request(
     let key_request = Rc::clone(&runtime.key_request);
     SurfaceRequest {
         id: SurfaceId::ProjectPicker,
-        anchor: SurfaceAnchor::Invoker(super::INVOKER_ID.into()),
-        placement: SurfacePlacement {
-            invoker_point: SurfaceInvokerPoint::BottomLeft,
-            corner: Corner::TopLeft,
-            offset: point(px(0.0), space::s4()),
+        anchor: SurfaceAnchor::Invoker {
+            id: super::INVOKER_ID.into(),
+            attachment: Corner::TopLeft,
             fallback_position: point(px(48.0), px(28.0)),
         },
         focus_on_open: Some(focus),

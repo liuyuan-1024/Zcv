@@ -16,32 +16,29 @@ pub(crate) use anchor_registry::{SurfaceAnchorRegistry, track_surface_anchor};
 pub(crate) use manager::{ActiveSurface, SurfaceManager};
 pub(crate) use shell::SurfaceShell;
 
-/// Surface 的定位依据。当前只用召唤它的入口元素。
+/// Surface 的定位依据，每种变体自带定位参数。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SurfaceAnchor {
     /// 锚到召唤该 surface 的已渲染 element 矩形上。
-    Invoker(ElementId),
+    /// `attachment` 是浮面贴到入口的角，入口锚点取对角。
+    Invoker {
+        id: ElementId,
+        attachment: Corner,
+        fallback_position: Point<Pixels>,
+    },
+    /// 相对于窗口定位。
+    Window { position: WindowPosition },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SurfaceInvokerPoint {
-    TopLeft,
-    BottomLeft,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct SurfacePlacement {
-    pub(crate) invoker_point: SurfaceInvokerPoint,
-    pub(crate) corner: Corner,
-    pub(crate) offset: Point<Pixels>,
-    pub(crate) fallback_position: Point<Pixels>,
+pub(crate) enum WindowPosition {
+    Center,
 }
 
 #[derive(Clone)]
 pub(crate) struct SurfaceRequest {
     pub(crate) id: SurfaceId,
     pub(crate) anchor: SurfaceAnchor,
-    pub(crate) placement: SurfacePlacement,
     pub(crate) focus_on_open: Option<FocusHandle>,
     pub(crate) render: Rc<dyn Fn() -> AnyElement>,
 }

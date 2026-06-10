@@ -10,9 +10,7 @@ use gpui::{Context, Corner, Div, Entity, FocusHandle, Window, div, point, prelud
 
 use crate::shell::KeyRequest;
 use crate::shell::normalized_chord;
-use crate::shell::surfaces::{
-    SurfaceAnchor, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
-};
+use crate::shell::surfaces::{SurfaceAnchor, SurfaceManager, SurfaceRequest};
 use crate::theme::{color, radius, space, typography};
 use crate::ui_id::SurfaceId;
 
@@ -61,11 +59,9 @@ pub(crate) fn request(runtime: LanguageServersRuntime) -> SurfaceRequest {
     let focus = runtime.focus.clone();
     SurfaceRequest {
         id: SurfaceId::LanguageServers,
-        anchor: SurfaceAnchor::Invoker(super::INVOKER_ID.into()),
-        placement: SurfacePlacement {
-            invoker_point: SurfaceInvokerPoint::TopLeft,
-            corner: Corner::BottomLeft,
-            offset: point(px(0.0), -space::s6()),
+        anchor: SurfaceAnchor::Invoker {
+            id: super::INVOKER_ID.into(),
+            attachment: Corner::BottomLeft,
             fallback_position: point(px(48.0), px(540.0)),
         },
         focus_on_open: Some(focus),

@@ -4,10 +4,9 @@ use gpui::{
     Context, Entity, MouseButton, Render, Subscription, Window, anchored, deferred, div, prelude::*,
 };
 
-use super::{
-    ActiveSurface, SurfaceAnchor, SurfaceAnchorRegistry, SurfaceInvokerPoint, SurfaceManager,
-    SurfaceRequest,
-};
+use gpui::Corner;
+
+use super::{ActiveSurface, SurfaceAnchor, SurfaceAnchorRegistry, SurfaceManager, WindowPosition};
 use crate::theme::space;
 
 pub(crate) struct SurfaceShell {
@@ -34,11 +33,12 @@ impl Render for SurfaceShell {
             return div().absolute().top_0().left_0().size_full().invisible();
         };
         let anchor_bounds = match &active.request().anchor {
-            SurfaceAnchor::Invoker(id) => {
+            SurfaceAnchor::Invoker { id, .. } => {
                 cx.read_global::<SurfaceAnchorRegistry, _>(|anchors, _| {
                     anchors.resolve_anchor(window, id)
                 })
             }
+            SurfaceAnchor::Window { .. } => None,
         };
 
         div()
@@ -55,7 +55,6 @@ fn render_active(
     anchor_bounds: Option<gpui::Bounds<gpui::Pixels>>,
 ) -> impl IntoElement {
     let request = active.request().clone();
-    let placement = request.placement.clone();
     let focus_on_click = request.focus_on_open.clone();
     let surface = div()
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -66,28 +65,38 @@ fn render_active(
         })
         .child((request.render)());
 
-    anchored()
-        .anchor(placement.corner)
-        .position(anchor_position(&request, anchor_bounds))
-        .offset(placement.offset)
-        .snap_to_window_with_margin(space::s8())
-        .child(surface)
-}
-
-fn anchor_position(
-    request: &SurfaceRequest,
-    anchor_bounds: Option<gpui::Bounds<gpui::Pixels>>,
-) -> gpui::Point<gpui::Pixels> {
-    if let Some(bounds) = anchor_bounds {
-        return match request.placement.invoker_point {
-            SurfaceInvokerPoint::TopLeft => bounds.origin,
-            SurfaceInvokerPoint::BottomLeft => bounds.bottom_left(),
-        };
-    }
-
     match &request.anchor {
-        // anchor provider 首帧尚未 prepaint 或本帧缺席时，退回对应 bar 区域的保守位置。
-        // 下一帧 registry 更新后会自动重绘到真实入口。
-        SurfaceAnchor::Invoker(_) => request.placement.fallback_position,
+        SurfaceAnchor::Window {
+            position: WindowPosition::Center,
+        } => div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(surface)
+            .into_any_element(),
+        SurfaceAnchor::Invoker {
+            attachment,
+            fallback_position,
+            ..
+        } => {
+            let position = anchor_bounds
+                .map(|bounds| match attachment {
+                    Corner::TopLeft => bounds.bottom_left(),
+                    Corner::TopRight => bounds.bottom_right(),
+                    Corner::BottomLeft => bounds.origin,
+                    Corner::BottomRight => bounds.top_right(),
+                })
+                .unwrap_or(*fallback_position);
+            anchored()
+                .anchor(*attachment)
+                .position(position)
+                .snap_to_window_with_margin(space::s8())
+                .child(surface)
+                .into_any_element()
+        }
     }
 }

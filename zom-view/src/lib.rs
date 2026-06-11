@@ -21,7 +21,7 @@ use zom_workspace::BufferId;
 
 mod wrap;
 
-pub use wrap::{VisualAffinity, VisualPosition, WrapMap, compute_segments};
+pub use wrap::{VisualAffinity, VisualPosition, VisualRowCount, WrapMap, compute_segments};
 
 /// 视图标识。
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -101,16 +101,18 @@ pub struct RevealRequest {
 ///
 /// 普通编辑的直觉是「插入点之后的内容移动，插入点之前的屏幕内容尽量不动」。
 /// 因此锚点记录编辑前视口顶部的位置，而不是 primary caret 的屏幕行。
-/// 编辑提交后通过 [`DeltaEvent::position_map`] 映射 `top_byte`，等渲染端回写新的 [`WrapMap`] 时再用新视觉模型恢复 `top_line/top_subrow`。
+/// 编辑提交后通过 [`DeltaEvent::position_map`] 映射 `top_visual_byte`。
+/// 同点插入时锚点吸附到插入文本之后，让锚点跟随编辑前的顶部视觉行内容，而不是粘在新插入内容之前。
+/// 等渲染端回写新的 [`WrapMap`] 时再用新视觉模型恢复 `top_line/top_subrow`。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ViewportEditAnchor {
-    top_byte: ByteOffset,
+    top_visual_byte: ByteOffset,
     top_subrow: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PendingViewportEditAnchor {
-    top_byte: ByteOffset,
+    top_visual_byte: ByteOffset,
     top_subrow: u64,
 }
 
@@ -344,9 +346,7 @@ impl EditView {
     /// 后续 `settle_viewport_y` 仍会在光标越界时做最小 edge-scroll。
     pub fn capture_viewport_edit_anchor(&self, buffer: &Buffer) -> Option<ViewportEditAnchor> {
         Some(ViewportEditAnchor {
-            top_byte: buffer
-                .line_start_byte(Line::new(self.viewport.top_line as usize))
-                .ok()?,
+            top_visual_byte: self.viewport_top_visual_byte(buffer)?,
             top_subrow: self.viewport.top_subrow,
         })
     }
@@ -363,7 +363,7 @@ impl EditView {
 
         let Some(mut pending) = anchor
             .map(|anchor| PendingViewportEditAnchor {
-                top_byte: anchor.top_byte,
+                top_visual_byte: anchor.top_visual_byte,
                 top_subrow: anchor.top_subrow,
             })
             .or(self.pending_edit_anchor)
@@ -371,12 +371,39 @@ impl EditView {
             return;
         };
         for event in events {
-            pending.top_byte = event
+            pending.top_visual_byte = event
                 .position_map()
-                .map_old_position_with_affinity(pending.top_byte, Affinity::Before)
+                .map_old_position_with_affinity(pending.top_visual_byte, Affinity::After)
                 .value();
         }
         self.pending_edit_anchor = Some(pending);
+    }
+
+    fn viewport_top_visual_byte(&self, buffer: &Buffer) -> Option<ByteOffset> {
+        let line = Line::new(self.viewport.top_line as usize);
+        let line_start = buffer.line_start_byte(line).ok()?;
+        let Some(wm) = self.wrap_map.as_ref() else {
+            return Some(line_start);
+        };
+        if needs_measured_subrow(wm, self.viewport.top_line, self.viewport.top_subrow) {
+            return self
+                .pending_edit_anchor
+                .map(|anchor| anchor.top_visual_byte)
+                .or(Some(line_start));
+        }
+
+        let max_subrow = wm.subrow_count(self.viewport.top_line).saturating_sub(1) as u64;
+        let subrow = self.viewport.top_subrow.min(max_subrow);
+        if subrow == 0 {
+            return Some(line_start);
+        }
+
+        let start_rel = wm
+            .breaks(self.viewport.top_line)
+            .get((subrow - 1) as usize)
+            .copied()
+            .unwrap_or(0);
+        Some(ByteOffset::new(line_start.get() + start_rel as usize))
     }
 
     /// 用户滚轮滚动：直接移动视口顶端，不改变 selection。
@@ -390,17 +417,20 @@ impl EditView {
 
         let visible = self.viewport.visible_visual_rows.max(1);
         let wrap_map = self.wrap_map.as_ref();
-        let total_visual_rows = wrap_map
-            .map(WrapMap::total_visual_rows)
-            .unwrap_or(buffer.line_count() as u64);
-        let max_top = total_visual_rows.saturating_sub(visible);
+        let visual_row_count = wrap_map
+            .map(WrapMap::visual_row_count)
+            .unwrap_or(VisualRowCount::Exact(buffer.line_count() as u64));
 
         let top = match wrap_map {
             Some(wm) => wm.visual_row_of(self.viewport.top_line, self.viewport.top_subrow as u32),
             None => self.viewport.top_line,
         };
         let next_top = if delta_visual_rows > 0 {
-            top.saturating_add(delta_visual_rows as u64).min(max_top)
+            let candidate = top.saturating_add(delta_visual_rows as u64);
+            match visual_row_count.exact_max_top(visible) {
+                Some(max_top) => candidate.min(max_top),
+                None => candidate.min(visual_row_count.value().saturating_sub(1)),
+            }
         } else {
             top.saturating_sub(delta_visual_rows.unsigned_abs())
         };
@@ -464,9 +494,9 @@ impl EditView {
         let wrap_map = self.wrap_map.as_ref();
         let can_edge_scroll =
             wrap_map.is_some() && self.manual_scroll_anchor != Some(selection_head);
-        let total_visual_rows = wrap_map
-            .map(WrapMap::total_visual_rows)
-            .unwrap_or(buffer.line_count() as u64);
+        let visual_row_count = wrap_map
+            .map(WrapMap::visual_row_count)
+            .unwrap_or(VisualRowCount::Exact(buffer.line_count() as u64));
         let cursor_visual_row = wrap_map.and_then(|wm| {
             wm.resolve(buffer, selection_head, None)
                 .ok()
@@ -486,8 +516,27 @@ impl EditView {
         if let Some(anchor) = self.pending_edit_anchor
             && let Some(wm) = wrap_map
         {
-            if let Ok(line) = buffer.byte_to_line(anchor.top_byte) {
-                top = wm.visual_row_of(line.get() as u64, anchor.top_subrow as u32);
+            let anchor_line = buffer
+                .byte_to_line(anchor.top_visual_byte)
+                .ok()
+                .map(|line| line.get() as u64);
+            if let Some(line) = anchor_line
+                && needs_measured_subrow(wm, line, anchor.top_subrow)
+            {
+                self.viewport.top_line = line;
+                self.viewport.top_subrow = anchor.top_subrow;
+                return ViewportSettlement {
+                    viewport: self.viewport,
+                    consumed_reveal: None,
+                };
+            }
+
+            if let Ok(pos) = wm.resolve(
+                buffer,
+                anchor.top_visual_byte,
+                Some(VisualAffinity::LineStart),
+            ) {
+                top = wm.visual_row_of(pos.logical_line, pos.subrow);
             }
             self.pending_edit_anchor = None;
         }
@@ -531,8 +580,9 @@ impl EditView {
         }
 
         // 3. 裁剪到 [0, total_visual_rows - visible]。
-        let max_top = total_visual_rows.saturating_sub(visible);
-        if top > max_top {
+        if let Some(max_top) = visual_row_count.exact_max_top(visible)
+            && top > max_top
+        {
             top = max_top;
         }
 
@@ -551,6 +601,10 @@ impl EditView {
             consumed_reveal,
         }
     }
+}
+
+fn needs_measured_subrow(wm: &WrapMap, line: u64, subrow: u64) -> bool {
+    wm.soft_wrap() && subrow > 0 && !wm.is_line_measured(line)
 }
 
 /// 全部视图的集合。
@@ -923,6 +977,30 @@ mod settle_tests {
     }
 
     #[test]
+    fn edit_anchor_should_follow_old_top_line_when_inserting_at_top_start() {
+        let mut view = with_measured_viewport(1, 3, 4);
+        let mut buffer = buffer_from_lines(&["a", "b", "c", "d"]);
+        let old_top = line_start(&buffer, 1);
+        let old_cursor = line_start(&buffer, 2);
+        *view.selection_mut() = SelectionSet::caret(old_cursor);
+
+        let anchor = view.capture_viewport_edit_anchor(&buffer);
+        buffer.insert(old_top, "x\n").unwrap();
+        let events = buffer.take_pending_events();
+        view.track_viewport_anchor_after_edit(anchor, &events);
+        view.set_wrap_map(Some(WrapMap::sparse(false, buffer.line_count() as u64, [])));
+
+        let new_cursor = events[0]
+            .position_map()
+            .map_old_position_with_affinity(old_cursor, zom_engine::Affinity::After)
+            .value();
+        let out = view.settle_viewport_y(&buffer, new_cursor);
+
+        assert_eq!(out.viewport.top_line, 2);
+        assert_eq!(buffer.slice_line(Line::new(2)).unwrap().to_string(), "b\n");
+    }
+
+    #[test]
     fn edit_anchor_should_survive_soft_wrap_remeasurement() {
         let mut view = fresh_view();
         let mut buffer = buffer_from_lines(&["abcdefghij", "abcdefghij", "abcdefghij"]);
@@ -958,6 +1036,156 @@ mod settle_tests {
         // edge-scroll 做最小移动，把 cursor 放回视区。
         assert_eq!(out.viewport.top_line, 0);
         assert_eq!(out.viewport.top_subrow, 2);
+    }
+
+    #[test]
+    fn edit_anchor_should_track_visual_subrow_start_after_edit_before_it() {
+        let mut view = fresh_view();
+        let mut buffer = buffer_from_lines(&["abcdefghijklmnopqrst", "z"]);
+        view.set_wrap_map(Some(WrapMap::new(true, vec![vec![5, 10, 15], Vec::new()])));
+        view.set_viewport(ViewportState {
+            top_line: 0,
+            top_subrow: 2,
+            visible_visual_rows: 3,
+            visible_logical_lines: 2,
+        });
+        let old_cursor = line_start(&buffer, 1);
+        *view.selection_mut() = SelectionSet::caret(old_cursor);
+
+        let anchor = view.capture_viewport_edit_anchor(&buffer);
+        buffer.insert(ByteOffset::new(5), "xxxxx").unwrap();
+        let events = buffer.take_pending_events();
+        view.track_viewport_anchor_after_edit(anchor, &events);
+        view.set_wrap_map(Some(WrapMap::new(
+            true,
+            vec![vec![5, 10, 15, 20], Vec::new()],
+        )));
+
+        let new_cursor = events[0]
+            .position_map()
+            .map_old_position_with_affinity(old_cursor, zom_engine::Affinity::After)
+            .value();
+        let out = view.settle_viewport_y(&buffer, new_cursor);
+
+        assert_eq!(out.viewport.top_line, 0);
+        assert_eq!(out.viewport.top_subrow, 3);
+    }
+
+    #[test]
+    fn edit_anchor_should_follow_old_visual_subrow_when_inserting_at_subrow_start() {
+        let mut view = fresh_view();
+        let mut buffer = buffer_from_lines(&["abcdefghijklmnopqrst", "z"]);
+        view.set_wrap_map(Some(WrapMap::new(true, vec![vec![5, 10, 15], Vec::new()])));
+        view.set_viewport(ViewportState {
+            top_line: 0,
+            top_subrow: 2,
+            visible_visual_rows: 3,
+            visible_logical_lines: 2,
+        });
+        let old_top = ByteOffset::new(10);
+        let old_cursor = line_start(&buffer, 1);
+        *view.selection_mut() = SelectionSet::caret(old_cursor);
+
+        let anchor = view.capture_viewport_edit_anchor(&buffer);
+        buffer.insert(old_top, "xxxxx").unwrap();
+        let events = buffer.take_pending_events();
+        view.track_viewport_anchor_after_edit(anchor, &events);
+        view.set_wrap_map(Some(WrapMap::new(
+            true,
+            vec![vec![5, 10, 15, 20], Vec::new()],
+        )));
+
+        let new_cursor = events[0]
+            .position_map()
+            .map_old_position_with_affinity(old_cursor, zom_engine::Affinity::After)
+            .value();
+        let out = view.settle_viewport_y(&buffer, new_cursor);
+
+        assert_eq!(out.viewport.top_line, 0);
+        assert_eq!(out.viewport.top_subrow, 3);
+    }
+
+    #[test]
+    fn edit_anchor_should_not_bottom_clamp_against_sparse_unmeasured_tail() {
+        let mut view = fresh_view();
+        let long_line = "a".repeat(100);
+        let text = format!("{long_line}\n{long_line}");
+        let mut buffer = Buffer::from_text(text, BufferConfig::default()).unwrap();
+        let breaks = (5..100).step_by(5).map(|byte| byte as u32).collect();
+        view.set_wrap_map(Some(WrapMap::new(true, vec![breaks, vec![5, 10, 15]])));
+        view.set_viewport(ViewportState {
+            top_line: 0,
+            top_subrow: 11,
+            visible_visual_rows: 20,
+            visible_logical_lines: 2,
+        });
+        let old_cursor = ByteOffset::new(line_start(&buffer, 1).get() + 1);
+        *view.selection_mut() = SelectionSet::caret(old_cursor);
+
+        let anchor = view.capture_viewport_edit_anchor(&buffer);
+        buffer.insert(old_cursor, "x").unwrap();
+        let events = buffer.take_pending_events();
+        view.track_viewport_anchor_after_edit(anchor, &events);
+        let preserved = view
+            .wrap_map()
+            .unwrap()
+            .preserve_after_edit_events(&buffer, &events);
+        view.set_wrap_map(Some(preserved));
+
+        let new_cursor = events[0]
+            .position_map()
+            .map_old_position_with_affinity(old_cursor, zom_engine::Affinity::After)
+            .value();
+        let out = view.settle_viewport_y(&buffer, new_cursor);
+
+        assert_eq!(out.viewport.top_line, 0);
+        assert_eq!(out.viewport.top_subrow, 11);
+    }
+
+    #[test]
+    fn edit_anchor_should_not_collapse_high_visual_subrow_while_anchor_line_is_unmeasured() {
+        let mut view = fresh_view();
+        let line = "a".repeat(100);
+        let text = format!("{line}\nz");
+        let mut buffer = Buffer::from_text(text, BufferConfig::default()).unwrap();
+        let breaks = (5..100).step_by(5).map(|byte| byte as u32).collect();
+        view.set_wrap_map(Some(WrapMap::new(true, vec![breaks, Vec::new()])));
+        view.set_viewport(ViewportState {
+            top_line: 0,
+            top_subrow: 13,
+            visible_visual_rows: 5,
+            visible_logical_lines: 1,
+        });
+        let old_cursor = ByteOffset::new(83);
+        *view.selection_mut() = SelectionSet::caret(old_cursor);
+
+        let anchor = view.capture_viewport_edit_anchor(&buffer);
+        buffer.insert(old_cursor, "xxxxx").unwrap();
+        let events = buffer.take_pending_events();
+        view.track_viewport_anchor_after_edit(anchor, &events);
+
+        view.set_wrap_map(Some(WrapMap::sparse(
+            true,
+            buffer.line_count() as u64,
+            [(1, Vec::new())],
+        )));
+        let new_cursor = events[0]
+            .position_map()
+            .map_old_position_with_affinity(old_cursor, zom_engine::Affinity::After)
+            .value();
+        let unmeasured = view.settle_viewport_y(&buffer, new_cursor);
+        assert_eq!(unmeasured.viewport.top_line, 0);
+        assert_eq!(unmeasured.viewport.top_subrow, 13);
+
+        let measured_breaks = (5..105).step_by(5).map(|byte| byte as u32).collect();
+        view.set_wrap_map(Some(WrapMap::sparse(
+            true,
+            buffer.line_count() as u64,
+            [(0, measured_breaks), (1, Vec::new())],
+        )));
+        let measured = view.settle_viewport_y(&buffer, new_cursor);
+        assert_eq!(measured.viewport.top_line, 0);
+        assert_eq!(measured.viewport.top_subrow, 13);
     }
 
     #[test]
@@ -1044,5 +1272,24 @@ mod settle_tests {
 
         assert_eq!(view.viewport().top_line, 1);
         assert_eq!(view.viewport().top_subrow, 1);
+    }
+
+    #[test]
+    fn manual_scroll_should_not_bottom_clamp_against_sparse_lower_bound() {
+        let mut view = fresh_view();
+        let breaks = (5..100).step_by(5).map(|byte| byte as u32).collect();
+        view.set_wrap_map(Some(WrapMap::sparse(true, 2, [(0, breaks)])));
+        view.set_viewport(ViewportState {
+            top_line: 0,
+            top_subrow: 11,
+            visible_visual_rows: 20,
+            visible_logical_lines: 2,
+        });
+        let buffer = buffer_from_lines(&["aaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbb"]);
+
+        assert!(view.scroll_visual_rows(&buffer, 1));
+
+        assert_eq!(view.viewport().top_line, 0);
+        assert_eq!(view.viewport().top_subrow, 12);
     }
 }

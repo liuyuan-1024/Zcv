@@ -576,9 +576,7 @@ impl Element for EditorElement {
                     .skip(1)
                     .map(|&(start, _)| start as u32)
                     .collect::<Vec<_>>();
-                if !breaks.is_empty() {
-                    breaks_per_line.push((line.line_index, breaks));
-                }
+                breaks_per_line.push((line.line_index, breaks));
             }
 
             for (seg_i, &(seg_start, seg_end)) in segments.iter().enumerate() {

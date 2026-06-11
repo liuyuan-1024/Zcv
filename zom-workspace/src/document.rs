@@ -176,7 +176,7 @@ mod tests {
         let engine = engine_with_builtins();
         let buffer = Buffer::from_text("fn x() {}".to_string(), BufferConfig::default()).unwrap();
         let doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
-        engine.worker().wait_for_idle();
+        engine.worker().wait_for_idle_for_test_or_bench();
         let tree = doc
             .syntax_tree_slot()
             .expect("rust buffer 必须挂 provider")
@@ -190,14 +190,14 @@ mod tests {
         let engine = engine_with_builtins();
         let buffer = Buffer::from_text("fn x() {}".to_string(), BufferConfig::default()).unwrap();
         let mut doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
-        engine.worker().wait_for_idle();
+        engine.worker().wait_for_idle_for_test_or_bench();
         let old_slot = doc.syntax_tree_slot().unwrap().clone();
         assert!(old_slot.load().is_some());
 
         doc.replace_text("// new text").unwrap();
         // 旧 slot 在 replace_text 内的 detach 路径上已被清空。
         assert!(old_slot.load().is_none());
-        engine.worker().wait_for_idle();
+        engine.worker().wait_for_idle_for_test_or_bench();
         // 新 slot 在新 syntax 内：仍能拿到 tree。
         assert!(doc.syntax_tree_slot().unwrap().load().is_some());
         assert_eq!(doc.language(), LanguageId::new("rust"));

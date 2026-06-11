@@ -28,7 +28,7 @@ pub struct CommandContext<'a> {
     pub queue: &'a mut CommandQueue,
     pub effects: &'a mut EffectQueue,
     /// 剪贴板端口：copy / cut / paste handler 读写宿主剪贴板。
-    /// engine 不持有剪贴板状态，宿主在派发前注入实现（GPUI 适配器或测试用 `MockClipboard`）。
+    /// engine 不持有剪贴板状态，宿主在派发前注入实现（GPUI 适配器或 headless noop 实现）。
     pub clipboard: &'a mut dyn ClipboardPort,
     /// 各上下文家族的 dismiss 栈：
     /// esc 路径与"begin/cancel/commit"瞬态命令通过 [`DismissStacks::push`] / [`DismissStacks::pop_top`] / [`DismissStacks::remove`] 协调,

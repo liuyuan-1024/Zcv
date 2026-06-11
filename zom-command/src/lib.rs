@@ -31,7 +31,7 @@ mod executor;
 mod keymap;
 mod registry;
 
-pub use clipboard::{ClipboardPort, MockClipboard};
+pub use clipboard::{ClipboardPort, NoopClipboard};
 pub use commands::editor::{CompositionBinding, TextEditBindingContext, TextEditKeyContext};
 pub use commands::file_tree::{FileTreeBindingContext, FileTreeKeyContext, FileTreeKeyMode};
 pub use commands::project_picker::{ProjectPickerBindingContext, ProjectPickerKeyContext};

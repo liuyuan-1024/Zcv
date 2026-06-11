@@ -7,7 +7,7 @@ use zom_command::commands;
 use zom_command::{
     ClipboardPort, CommandArgs, CommandContext, CommandError, CommandId, CommandQueue,
     CommandRegistry, DismissStacks, EffectQueue, HostEffect, KeyChord, KeyContext, Keymap,
-    KeymapResolution, MockClipboard,
+    KeymapResolution, NoopClipboard,
 };
 
 use crate::workspace_session::WorkspaceSession;
@@ -29,7 +29,7 @@ impl CommandRuntime {
             registry,
             keymap,
             queue: CommandQueue::new(),
-            clipboard: Box::new(MockClipboard::new()),
+            clipboard: Box::new(NoopClipboard::new()),
             dismiss: DismissStacks::new(),
         }
     }

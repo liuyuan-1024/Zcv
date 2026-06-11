@@ -35,7 +35,7 @@ pub fn new_provider() -> HighlightWorker {
 mod tests {
     use super::*;
     use crate::syntax::provider::HighlightProvider;
-    use crate::syntax::providers::common::assert_lookup_matches_capture_names;
+    use crate::syntax::providers::common::test_support::assert_lookup_matches_capture_names;
     use crate::syntax::{BufferSyntax, SyntaxQueryCursor};
     use zom_engine::{Buffer, BufferConfig, ByteOffset, TextRange};
 
@@ -57,7 +57,7 @@ mod tests {
             &buffer,
             worker.clone(),
         );
-        worker.wait_for_idle();
+        worker.wait_for_idle_for_test_or_bench();
         let tree = syntax
             .tree_slot()
             .load()

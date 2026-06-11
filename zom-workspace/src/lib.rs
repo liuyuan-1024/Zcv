@@ -49,8 +49,10 @@ impl BufferId {
         self.0
     }
 
-    /// 测试 / bench 用：从原始 u64 直接构造。
-    /// 生产代码请走 [`crate::syntax::SyntaxEngine::allocate_buffer_id`] 以保证全局唯一。
+    /// 从原始 u64 构造缓冲区 id。
+    ///
+    /// 生产分配新 id 应走 [`crate::syntax::SyntaxEngine::allocate_buffer_id`]，它内部使用本函数封装 allocator 产出的原始值。
+    /// 测试 / bench 构造固定 id 时也可使用，但调用者必须自己保证不会撞 id。
     pub fn from_raw(raw: u64) -> Self {
         Self(raw)
     }
@@ -111,7 +113,8 @@ impl Workspace {
         }
     }
 
-    /// 后台 SyntaxWorker 句柄（轻量 clone）。测试 / bench 可用 [`crate::syntax::SyntaxWorkerHandle::wait_for_idle`] 等待异步产物。
+    /// 后台 SyntaxWorker 句柄（轻量 clone）。
+    /// 测试 / bench 可用 [`crate::syntax::SyntaxWorkerHandle::wait_for_idle_for_test_or_bench`] 等待异步产物。
     pub fn syntax_worker(&self) -> &std::sync::Arc<crate::syntax::SyntaxWorkerHandle> {
         self.engine.worker()
     }

@@ -50,7 +50,7 @@ impl ShellRuntime {
         let app = Rc::new(RefCell::new(app));
         config_visuals::apply(&app.borrow().config_snapshot());
         // 让命令派发期间的 copy / cut / paste 走系统剪贴板。
-        // headless 单测路径不经过 ShellRuntime::assemble，所以仍是 MockClipboard。
+        // headless 路径不经过 ShellRuntime::assemble，所以仍是 NoopClipboard。
         app.borrow_mut().set_clipboard(Box::new(GpuiClipboard));
         let workbench = Rc::new(RefCell::new(WorkbenchController::new()));
         cx.update_default_global::<SurfaceAnchorRegistry, _>(|_, _| ());

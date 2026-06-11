@@ -54,7 +54,7 @@ pub fn new_tsx_provider() -> HighlightWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::providers::common::{
+    use crate::syntax::providers::common::test_support::{
         assert_lookup_matches_capture_names, smoke_test_provider,
     };
 

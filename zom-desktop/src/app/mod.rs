@@ -242,7 +242,7 @@ impl App {
 
     /// 替换默认剪贴板端口。
     /// shell 启动时注入 `GpuiClipboard`，让 copy / cut / paste 走系统剪贴板；
-    /// headless 单测保持默认 [`MockClipboard`]。
+    /// headless 路径保持默认 [`zom_command::NoopClipboard`]。
     pub(crate) fn set_clipboard(&mut self, clipboard: Box<dyn ClipboardPort>) {
         self.command.set_clipboard(clipboard);
     }
@@ -701,7 +701,10 @@ mod tests {
         app.apply_open_project_from_effect(root.clone());
         assert!(app.session.open_file(root.join("README.md")));
         app.request_focus(AppFocus::editor());
-        app.session.workspace().syntax_worker().wait_for_idle();
+        app.session
+            .workspace()
+            .syntax_worker()
+            .wait_for_idle_for_test_or_bench();
         app
     }
 
@@ -1019,7 +1022,10 @@ mod tests {
         let edit_frame_syntax = syntax_decorations(&edit_frame);
 
         // reparse-frame：等 worker 把真正的重 parse 结果 store 回 slot。
-        app.session.workspace().syntax_worker().wait_for_idle();
+        app.session
+            .workspace()
+            .syntax_worker()
+            .wait_for_idle_for_test_or_bench();
         let reparse_frame = app.with_router(|router| router.snapshot_for_focus(AppFocus::editor()));
         let reparse_frame_syntax = syntax_decorations(&reparse_frame);
 

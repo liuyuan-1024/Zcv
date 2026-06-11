@@ -10,7 +10,7 @@ use zom_command::{
     BubbleKind, Command, CommandArgs, CommandContext, CommandError, CommandId, CommandQueue,
     CommandRegistry, DismissScope, DismissStacks, EditTarget, EffectQueue, FileTreeKeyMode,
     HostEffect, KeyBinding, KeyBindingContext, KeyChord, KeyContext, Keymap, KeymapResolution,
-    MockClipboard, NoArgs, PanelKind, SearchOption, SettingsChangeRequest,
+    NoArgs, PanelKind, SearchOption, SettingsChangeRequest,
 };
 use zom_engine::{
     Buffer, BufferConfig, ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
@@ -18,6 +18,10 @@ use zom_engine::{
 };
 use zom_view::{ViewId, ViewSet, VisualAffinity, VisualPosition};
 use zom_workspace::{BufferId, Workspace};
+
+mod support;
+
+use support::MockClipboard;
 
 fn command_id(value: &str) -> CommandId {
     CommandId::new(value).unwrap()

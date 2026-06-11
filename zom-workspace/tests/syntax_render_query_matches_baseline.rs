@@ -41,7 +41,7 @@ fn viewport_scoped_query_equals_full_query_filtered() {
     let engine = engine_with_builtins();
     let buffer = Buffer::from_text(SOURCE.to_string(), BufferConfig::default()).unwrap();
     let doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
-    engine.worker().wait_for_idle();
+    engine.worker().wait_for_idle_for_test_or_bench();
 
     let slot = doc.syntax_tree_slot().expect("rust 必须挂 provider");
     let tree = slot.load().expect("首份 tree 必须就位");
@@ -79,7 +79,7 @@ fn viewport_scoped_query_subset_when_viewport_in_middle() {
     let engine = engine_with_builtins();
     let buffer = Buffer::from_text(SOURCE.to_string(), BufferConfig::default()).unwrap();
     let doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
-    engine.worker().wait_for_idle();
+    engine.worker().wait_for_idle_for_test_or_bench();
 
     let slot = doc.syntax_tree_slot().unwrap();
     let tree = slot.load().unwrap();

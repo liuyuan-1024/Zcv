@@ -2,7 +2,7 @@
 //!
 //! engine 不持有剪贴板状态——「粘贴」属于宿主词汇表，详见 zom-engine `TransactionSource` 头注。
 //! zom-command 自身也不直接依赖 GPUI。
-//! 剪贴板交互都走这个 trait：宿主在派发命令前，往 [`crate::CommandContext`] 注入具体实现（zom-desktop 的 GPUI 适配器，或测试用的 [`MockClipboard`]）。
+//! 剪贴板交互都走这个 trait：宿主在派发命令前，往 [`crate::CommandContext`] 注入具体实现（zom-desktop 的 GPUI 适配器，或 headless 默认的 [`NoopClipboard`]）。
 //!
 //! 端口故意只暴露 `&str` / `String`：剪贴板层不携带"行模式"等额外语义；
 //! 复制到什么字符串，粘贴就插入什么字符串。
@@ -19,34 +19,22 @@ pub trait ClipboardPort {
     fn read(&self) -> Option<String>;
 }
 
-/// 测试用内存剪贴板。
+/// 不连接系统剪贴板的生产默认实现。
+///
+/// headless 运行时可以安全持有它；真正的宿主需要在组合根注入平台剪贴板适配器。
 #[derive(Clone, Debug, Default)]
-pub struct MockClipboard {
-    contents: Option<String>,
-}
+pub struct NoopClipboard;
 
-impl MockClipboard {
+impl NoopClipboard {
     pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_contents(text: impl Into<String>) -> Self {
-        Self {
-            contents: Some(text.into()),
-        }
-    }
-
-    pub fn contents(&self) -> Option<&str> {
-        self.contents.as_deref()
+        Self
     }
 }
 
-impl ClipboardPort for MockClipboard {
-    fn write(&mut self, text: &str) {
-        self.contents = Some(text.to_string());
-    }
+impl ClipboardPort for NoopClipboard {
+    fn write(&mut self, _text: &str) {}
 
     fn read(&self) -> Option<String> {
-        self.contents.clone()
+        None
     }
 }

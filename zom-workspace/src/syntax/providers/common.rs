@@ -536,50 +536,53 @@ impl HighlightProvider for HighlightWorker {
 // 单测用辅助
 // =============================================================================
 #[cfg(test)]
-pub(crate) fn assert_lookup_matches_capture_names(config: &SharedConfig) {
-    // 派生路径自洽：lookup 与 query.capture_names() 同序、同长，且每项等于 capture name 归一化后的 canonical name。
-    // 这条断言保证未来任何修改不会让两侧错位。
-    let capture_names: Vec<&str> = config.query.capture_names().iter().copied().collect();
-    assert_eq!(config.lookup.len(), capture_names.len());
-    for (i, name) in capture_names.iter().enumerate() {
-        assert_eq!(config.lookup[i].as_str(), normalize_highlight_name(name));
+pub(crate) mod test_support {
+    use super::*;
+
+    pub(crate) fn assert_lookup_matches_capture_names(config: &SharedConfig) {
+        // 派生路径自洽：lookup 与 query.capture_names() 同序、同长，且每项等于 capture name 归一化后的 canonical name。
+        // 这条断言保证未来任何修改不会让两侧错位。
+        let capture_names: Vec<&str> = config.query.capture_names().iter().copied().collect();
+        assert_eq!(config.lookup.len(), capture_names.len());
+        for (i, name) in capture_names.iter().enumerate() {
+            assert_eq!(config.lookup[i].as_str(), normalize_highlight_name(name));
+        }
     }
-}
 
-/// 给一门语言的 provider 跑「装上 → 喂样本 → 至少 query 出一个 span」的烟雾测试。
-///
-/// 不断言具体 capture name——name 是 grammar 内部细节，对未来升级太脆；只要
-/// 证明 provider 接进调度链路、tree 落到 slot、paint 端 query 能出 spans。
-#[cfg(test)]
-pub(crate) fn smoke_test_provider<F>(language_id: LanguageId, sample: &str, make: F)
-where
-    F: FnOnce() -> HighlightWorker,
-{
-    use crate::BufferId;
-    use crate::syntax::{BufferSyntax, SyntaxQueryCursor, SyntaxWorkerHandle};
-    use std::sync::Arc;
-    use zom_engine::{Buffer, BufferConfig, ByteOffset, TextRange};
+    /// 给一门语言的 provider 跑「装上 → 喂样本 → 至少 query 出一个 span」的烟雾测试。
+    ///
+    /// 不断言具体 capture name——name 是 grammar 内部细节，对未来升级太脆；只要
+    /// 证明 provider 接进调度链路、tree 落到 slot、paint 端 query 能出 spans。
+    pub(crate) fn smoke_test_provider<F>(language_id: LanguageId, sample: &str, make: F)
+    where
+        F: FnOnce() -> HighlightWorker,
+    {
+        use crate::BufferId;
+        use crate::syntax::{BufferSyntax, SyntaxQueryCursor, SyntaxWorkerHandle};
+        use std::sync::Arc;
+        use zom_engine::{Buffer, BufferConfig, ByteOffset, TextRange};
 
-    let buffer = Buffer::from_text(sample.to_string(), BufferConfig::default()).unwrap();
-    let provider: Box<dyn HighlightProvider> = Box::new(make());
-    let worker = Arc::new(SyntaxWorkerHandle::spawn());
-    let syntax = BufferSyntax::attach(
-        BufferId::from_raw(1),
-        language_id,
-        provider,
-        &buffer,
-        worker.clone(),
-    );
-    worker.wait_for_idle();
-    let tree = syntax
-        .tree_slot()
-        .load()
-        .expect("attach 完成后 slot 必须有 tree");
-    let viewport =
-        TextRange::new(ByteOffset::ZERO, buffer.snapshot().len_bytes()).expect("空文档边界");
-    let mut cursor = SyntaxQueryCursor::new();
-    let spans = tree.query_viewport(viewport, &mut cursor);
-    assert!(!spans.is_empty(), "provider 应至少为样本文本产出一个 span");
+        let buffer = Buffer::from_text(sample.to_string(), BufferConfig::default()).unwrap();
+        let provider: Box<dyn HighlightProvider> = Box::new(make());
+        let worker = Arc::new(SyntaxWorkerHandle::spawn());
+        let syntax = BufferSyntax::attach(
+            BufferId::from_raw(1),
+            language_id,
+            provider,
+            &buffer,
+            worker.clone(),
+        );
+        worker.wait_for_idle_for_test_or_bench();
+        let tree = syntax
+            .tree_slot()
+            .load()
+            .expect("attach 完成后 slot 必须有 tree");
+        let viewport =
+            TextRange::new(ByteOffset::ZERO, buffer.snapshot().len_bytes()).expect("空文档边界");
+        let mut cursor = SyntaxQueryCursor::new();
+        let spans = tree.query_viewport(viewport, &mut cursor);
+        assert!(!spans.is_empty(), "provider 应至少为样本文本产出一个 span");
+    }
 }
 
 #[cfg(test)]

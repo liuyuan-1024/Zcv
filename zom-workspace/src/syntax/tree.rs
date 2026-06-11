@@ -91,7 +91,6 @@ impl BufferSyntaxTree {
     ///
     /// `layers` 顺序即 precedence 顺序：`layers[0]` 最底，最后一个最顶。
     /// 调用方保证 `!layers.is_empty()`——空 `layers` 在调度层不合法。
-    #[allow(dead_code)] // 调用方在 Task #3（markdown provider）落地
     pub(crate) fn layered(
         layers: Vec<SyntaxLayer>,
         snapshot: Snapshot,
@@ -119,15 +118,9 @@ impl BufferSyntaxTree {
     /// **底层** tree——多层情境下指 `layers[0]`。
     ///
     /// 大多数 caller（测试 / bench）只关心主结构（block tree / 单 grammar tree），不需要遍历所有层。
-    /// 真要全部层走 [`Self::layers`]。
+    /// 多层查询由 [`Self::query_viewport`] 内部按 precedence 遍历全部层。
     pub fn tree(&self) -> &Tree {
         &self.layers[0].tree
-    }
-
-    /// 全部解析层——按 precedence 自下而上。
-    #[allow(dead_code)]
-    pub(crate) fn layers(&self) -> &[SyntaxLayer] {
-        &self.layers
     }
 
     /// 在 `viewport` 字节区间上跑所有层的 tree-sitter Query，按 precedence 合并，返回非重叠 `(range, span)` 列表。
@@ -453,7 +446,7 @@ mod tests {
         ));
         let loaded = slot.load().expect("应当存在快照");
         assert_eq!(loaded.version(), snapshot.version());
-        assert_eq!(loaded.layers().len(), 1);
+        assert_eq!(loaded.layers.len(), 1);
     }
 
     #[test]
@@ -569,7 +562,7 @@ mod tests {
         assert!(slot.try_edit(&[edit], new_snap.clone(), new_version));
         let loaded = slot.load().unwrap();
         assert_eq!(loaded.version(), new_version);
-        for layer in loaded.layers() {
+        for layer in &loaded.layers {
             assert_eq!(
                 layer.tree.root_node().end_byte(),
                 10,

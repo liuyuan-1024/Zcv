@@ -97,7 +97,7 @@ pub fn measure_load(path: &Path, size_mib: usize) -> Measurement {
 /// 首次全量高亮解析的**端到端**耗时：attach 投任务 + worker 同步等待。
 ///
 /// `BufferSyntax::attach` 异步返回，真正的 `run_full` 跑在后台线程。
-/// 这里用 `worker.wait_for_idle()` 把 worker 计算时间也算进总耗时。
+/// 这里用 `worker.wait_for_idle_for_test_or_bench()` 把 worker 计算时间也算进总耗时。
 /// bench 关心的是「首屏高亮多久能看到」，等价于异步路径下的「冷启动延迟」。
 pub fn measure_parse(buffer: &Buffer, lang: Lang, size_mib: usize) -> Option<Measurement> {
     let probe = make_provider(lang)?;
@@ -116,10 +116,10 @@ pub fn measure_parse(buffer: &Buffer, lang: Lang, size_mib: usize) -> Option<Mea
             buffer,
             worker.clone(),
         );
-        worker.wait_for_idle();
+        worker.wait_for_idle_for_test_or_bench();
         total += t0.elapsed();
         state.detach();
-        worker.wait_for_idle();
+        worker.wait_for_idle_for_test_or_bench();
     }
     drop(probe);
     Some(Measurement {
@@ -127,7 +127,7 @@ pub fn measure_parse(buffer: &Buffer, lang: Lang, size_mib: usize) -> Option<Mea
         size_mib,
         iters: ITERS,
         total,
-        note: "attach 投任务 + worker wait_for_idle；端到端冷启动".into(),
+        note: "attach 投任务 + worker wait_for_idle_for_test_or_bench；端到端冷启动".into(),
     })
 }
 
@@ -144,7 +144,7 @@ pub fn measure_edit_with_highlight(
     // 提高迭代数可以压低计时噪声。
     // 注意：iters 个任务会全部入队 worker。
     // 每条任务可能在后台跑数秒到数十秒。
-    // 测完用 `forget_join` 脱离 worker，让进程立刻退出，不等积压跑完。
+    // 测完用 `forget_join_for_bench` 脱离 worker，让进程立刻退出，不等积压跑完。
     let iters: u32 = match size_mib {
         1 => 5000,
         4 => 2000,
@@ -163,7 +163,7 @@ pub fn measure_edit_with_highlight(
         worker.clone(),
     );
     // 等首次全量解析落定，下一拍主线程发的编辑任务才能走增量。
-    worker.wait_for_idle();
+    worker.wait_for_idle_for_test_or_bench();
     let mid = ByteOffset::new(safe_insert_offset(&buffer));
     let _ = buffer.take_pending_events();
 
@@ -178,7 +178,7 @@ pub fn measure_edit_with_highlight(
     }
     // 主线程时间测完即可。bench 不关心后台任务，脱离 worker 让进程退出时不 join。
     state.detach();
-    worker.forget_join();
+    worker.forget_join_for_bench();
 
     Some(Measurement {
         scenario: "edit+hl main",
@@ -213,7 +213,7 @@ pub fn measure_edit_with_highlight_e2e(
         &buffer,
         worker.clone(),
     );
-    worker.wait_for_idle();
+    worker.wait_for_idle_for_test_or_bench();
     let mid = ByteOffset::new(safe_insert_offset(&buffer));
     let _ = buffer.take_pending_events();
 
@@ -224,18 +224,18 @@ pub fn measure_edit_with_highlight_e2e(
         let events = buffer.take_pending_events();
         let event = events.last().expect("插入必须产生事件");
         state.handle_edit(&buffer, event);
-        worker.wait_for_idle();
+        worker.wait_for_idle_for_test_or_bench();
         total += t0.elapsed();
     }
     state.detach();
-    worker.wait_for_idle();
+    worker.wait_for_idle_for_test_or_bench();
 
     Some(Measurement {
         scenario: "edit+hl e2e",
         size_mib,
         iters,
         total,
-        note: "端到端：上一行 + worker wait_for_idle（增量重解析完成）".into(),
+        note: "端到端：上一行 + worker wait_for_idle_for_test_or_bench（增量重解析完成）".into(),
     })
 }
 

@@ -10,7 +10,7 @@ use zom_command::{
     BubbleKind, Command, CommandArgs, CommandContext, CommandError, CommandId, CommandQueue,
     CommandRegistry, DismissScope, DismissStacks, EditTarget, EffectQueue, FileTreeKeyMode,
     HostEffect, KeyBinding, KeyBindingContext, KeyChord, KeyContext, Keymap, KeymapResolution,
-    MockClipboard, NoArgs, PanelKind, SearchOption,
+    MockClipboard, NoArgs, PanelKind, SearchOption, SettingsChangeRequest,
 };
 use zom_engine::{
     Buffer, BufferConfig, ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
@@ -300,6 +300,40 @@ fn search_ui_commands_should_emit_state_effects() {
             HostEffect::SearchReplaceAll,
             HostEffect::SearchDismiss,
             HostEffect::SearchConfirmMatch,
+        ]
+    );
+}
+
+#[test]
+fn settings_ui_commands_should_emit_host_effects() {
+    let mut registry = CommandRegistry::new();
+    let mut keymap = Keymap::new();
+    settings::install(&mut registry, &mut keymap);
+    let (mut workspace, mut views, _, view_id) = setup("");
+
+    let effects = run_and_collect_effects(
+        &registry,
+        &mut workspace,
+        &mut views,
+        view_id,
+        vec![
+            (settings::OPEN_TOML, CommandArgs::new()),
+            (
+                settings::APPLY_CHANGE,
+                settings::SettingsChangeArgs {
+                    change: SettingsChangeRequest::AdjustEditorFont(1),
+                }
+                .into(),
+            ),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        effects,
+        vec![
+            HostEffect::SettingsOpenToml,
+            HostEffect::SettingsApplyChange(SettingsChangeRequest::AdjustEditorFont(1)),
         ]
     );
 }
@@ -934,8 +968,8 @@ fn clear_selection_should_collapse_each_selection_to_caret_at_head() {
             .is_caret()
     );
 
-    // CLEAR_SELECTION 把每条选区塌成 caret，head 不动。
-    run(
+    // CLEAR_SELECTION 把每条选区塌成 caret，head 不动，并通知宿主取消鼠标拖选会话。
+    let effects = run_and_collect_effects(
         &registry,
         &mut workspace,
         &mut views,
@@ -943,12 +977,13 @@ fn clear_selection_should_collapse_each_selection_to_caret_at_head() {
         vec![(editor::CLEAR_SELECTION, CommandArgs::new())],
     )
     .unwrap();
+    assert_eq!(effects, vec![HostEffect::EditorCancelPointerSelection]);
     let primary = views.edit_view(view_id).unwrap().selection().primary();
     assert!(primary.is_caret(), "clear_selection 必须留下纯 caret");
     assert_eq!(primary.head(), byte("hello world".len()));
 
     // 已是 caret 时再调一次是 no-op，不报错。
-    run(
+    let effects = run_and_collect_effects(
         &registry,
         &mut workspace,
         &mut views,
@@ -956,6 +991,7 @@ fn clear_selection_should_collapse_each_selection_to_caret_at_head() {
         vec![(editor::CLEAR_SELECTION, CommandArgs::new())],
     )
     .unwrap();
+    assert!(effects.is_empty());
     let primary = views.edit_view(view_id).unwrap().selection().primary();
     assert!(primary.is_caret());
 }

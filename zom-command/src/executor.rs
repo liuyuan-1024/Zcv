@@ -114,6 +114,33 @@ impl<'a> CommandContext<'a> {
 }
 
 impl EditTarget<'_> {
+    /// 设置当前编辑目标的 selection，并清除连续视觉移动状态。
+    ///
+    /// 鼠标 click/drag、select-all、clear-selection 等“直接指定 selection”的能力都应走这里，
+    /// 从而保证 buffer 侧校验与 view/field 侧 selection 同步只在一处实现。
+    pub fn set_selection(
+        &mut self,
+        selection: zom_engine::SelectionSet,
+    ) -> Result<(), CommandError> {
+        self.clear_visual_caret();
+        self.set_selection_preserving_visual_state(selection)
+    }
+
+    /// 设置 selection 但保留/交由调用方维护视觉移动状态。
+    ///
+    /// 仅供软换行视觉移动这类命令使用：它们会在写入 selection 后显式更新
+    /// `visual_caret` / `goal_column`，不能由通用入口提前清掉。
+    pub fn set_selection_preserving_visual_state(
+        &mut self,
+        selection: zom_engine::SelectionSet,
+    ) -> Result<(), CommandError> {
+        self.buffer
+            .set_selection(selection.clone())
+            .map_err(|error| CommandError::ExecutionFailed(error.to_string()))?;
+        *self.selection = selection;
+        Ok(())
+    }
+
     /// 清除 primary caret 的视觉投影与 sticky 列。
     ///
     /// 横向移动、编辑、select-all、undo/redo、IME、cut/paste 等离开"连续上下移动"语义时调用。

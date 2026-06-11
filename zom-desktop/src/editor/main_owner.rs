@@ -9,7 +9,7 @@ use zom_workspace::Workspace;
 
 use crate::editor::highlight;
 use crate::editor::text::{
-    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, RevealHint, build_snapshot,
+    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, RevealHint, build_snapshot,
 };
 use crate::focus::AppFocus;
 use crate::text_target::{TextTargetOwner, TextTargetQuery};
@@ -184,14 +184,6 @@ impl<'a> TextTargetQuery for MainEditorOwner<'a> {
 }
 
 impl<'a> TextTargetOwner for MainEditorOwner<'a> {
-    fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
-        let view_id = self.active_view_id?;
-        let buffer_id = self.views.edit_view(view_id)?.buffer();
-        let buffer = self.workspace.buffer_mut(buffer_id)?.buffer_mut();
-        let selection = self.views.edit_view_mut(view_id)?.selection_mut();
-        Some(ImeTarget::new(buffer, selection))
-    }
-
     fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
         let view_id = self.active_view_id?;
         let buffer_id = self.views.edit_view(view_id)?.buffer();

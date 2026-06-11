@@ -33,37 +33,38 @@ pub(crate) fn try_apply_effect(
         }
         HostEffect::SearchDismiss => {
             app.borrow_mut()
-                .apply_search_action(SearchAction::ConfirmMatch);
+                .apply_search_action_from_effect(SearchAction::ConfirmMatch);
             close_bar(app, focus, window);
         }
         HostEffect::SearchConfirmMatch => {
             app.borrow_mut()
-                .apply_search_action(SearchAction::ConfirmMatch);
+                .apply_search_action_from_effect(SearchAction::ConfirmMatch);
             request_focus(app, focus, AppFocus::editor(), window);
             window.refresh();
         }
         HostEffect::SearchToggleOption(option) => {
             app.borrow_mut()
-                .apply_search_action(SearchAction::ToggleOption(*option));
+                .apply_search_action_from_effect(SearchAction::ToggleOption(*option));
             window.refresh();
         }
         HostEffect::SearchFindNext => {
-            app.borrow_mut().apply_search_action(SearchAction::FindNext);
+            app.borrow_mut()
+                .apply_search_action_from_effect(SearchAction::FindNext);
             window.refresh();
         }
         HostEffect::SearchFindPrevious => {
             app.borrow_mut()
-                .apply_search_action(SearchAction::FindPrevious);
+                .apply_search_action_from_effect(SearchAction::FindPrevious);
             window.refresh();
         }
         HostEffect::SearchReplaceNext => {
             app.borrow_mut()
-                .apply_search_action(SearchAction::ReplaceNext);
+                .apply_search_action_from_effect(SearchAction::ReplaceNext);
             window.refresh();
         }
         HostEffect::SearchReplaceAll => {
             app.borrow_mut()
-                .apply_search_action(SearchAction::ReplaceAll);
+                .apply_search_action_from_effect(SearchAction::ReplaceAll);
             window.refresh();
         }
         _ => return false,
@@ -79,13 +80,15 @@ pub(crate) fn try_apply_effect(
 fn activate_search(app: &Rc<RefCell<App>>, focus: &FocusProjection, window: &mut Window) {
     // Opened 是幂等的：set_open(true) no-op；sync 在 query/options 没变时
     // 返回 Idle、不动光标。所以即便 bar 已开也无脑发一次，省一次 is_open 读。
-    app.borrow_mut().apply_search_action(SearchAction::Opened);
+    app.borrow_mut()
+        .apply_search_action_from_effect(SearchAction::Opened);
     request_focus(app, focus, AppFocus::search(SearchField::Query), window);
     window.refresh();
 }
 
 fn close_bar(app: &Rc<RefCell<App>>, focus: &FocusProjection, window: &mut Window) {
-    app.borrow_mut().apply_search_action(SearchAction::Closed);
+    app.borrow_mut()
+        .apply_search_action_from_effect(SearchAction::Closed);
     // 回上一个焦点（通常是编辑器，但如果搜索从别处被唤起也尊重那条路径），
     // 与 project picker dismiss 走的是同一套 restore_previous_focus 语义。
     let previous = app.borrow_mut().restore_previous_focus();

@@ -160,7 +160,7 @@ impl FileTreeRuntime {
 }
 
 impl FileTreeHost for FileTreeRuntime {
-    fn apply_file_tree_action(
+    fn apply_file_tree_action_from_effect(
         &self,
         action: FileTreeAction,
         session: &mut WorkspaceSession,

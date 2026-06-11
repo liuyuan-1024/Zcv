@@ -34,11 +34,12 @@
 //! 两条路径共用一份跨帧滚动偏移（[`EditorScroll`]），存于 GPUI 元素状态。
 
 use std::panic::Location;
+use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, ContentMask, Element, ElementId, FocusHandle, GlobalElementId, Hsla,
-    InspectorElementId, IntoElement, LayoutId, Pixels, Point, ShapedLine, SharedString, Style,
-    TextRun, Window, point, px, relative, size,
+    App, Bounds, ContentMask, Element, ElementId, FocusHandle, GlobalElementId, Hitbox,
+    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, ShapedLine,
+    SharedString, Style, TextRun, Window, point, px, relative, size,
 };
 
 use zom_engine::{SelectionSet, TextRange};
@@ -51,6 +52,10 @@ use crate::theme::color;
 use crate::editor::highlight::compose::{Composition, compose};
 use crate::editor::input::CaretLayout;
 use crate::editor::kernel::EditorKernel;
+use crate::editor::pointer::{
+    PointerHitLine, PointerHitTest, PointerScrollHook, PointerSelectionHook,
+    PointerSelectionSession, install_scroll_handler, install_selection_handlers,
+};
 
 use super::blink::CaretClock;
 use super::gutter;
@@ -90,26 +95,26 @@ pub(crate) struct EditorElement {
     top_line: u64,
     /// `top_line` 内的软换行视觉段序号（0-based）。不开软换行时为 0。
     top_subrow: u64,
-    /// 完整选区集合。每个 selection 的 head 各画一个 caret（阶段 5）；reveal /
-    /// edge-scroll 只看 primary。`SelectionSet::Clone` 是 O(1)（内部 Arc），元素
-    /// 按帧重建。
+    /// 完整选区集合。
+    /// 每个 selection 的 head 各画一个 caret（阶段 5）；
+    /// reveal / edge-scroll 只看 primary。`SelectionSet::Clone` 是 O(1)（内部 Arc），元素按帧重建。
     ///
-    /// **非空 selection 的 range 已作为 `Background` Decoration 由 snapshot 构造
-    /// 端推入 [`Self::decorations`]**（手册架构 §三 把选区列为独立 producer），
-    /// 本字段只剩 caret 几何用途；范围背景由 composer 与 syntax / search 等
-    /// 一起合成。
+    /// **非空 selection 的 range 已作为 `Background` Decoration 由 snapshot 构造端推入 [`Self::decorations`]**（手册架构 §三 把选区列为独立 producer），本字段只剩 caret 几何用途；
+    /// 范围背景由 composer 与 syntax / search 等一起合成。
     selection: SelectionSet,
     /// primary caret 的视觉投影，用来区分软换行边界处同一个 byte 的两个显示位置。
     visual_caret: Option<VisualPosition>,
     focus: FocusHandle,
     input_handler_hook: EditorInputHook,
+    scroll_hook: Option<PointerScrollHook>,
+    selection_hook: Option<PointerSelectionHook>,
+    pointer_session: Option<PointerSelectionSession>,
     /// 跨帧滚动偏移的状态键。每个编辑器实例都应给一个稳定 id。
     element_id: Option<ElementId>,
     /// 外部 reveal 请求；按 seq 触发一次 reveal 路径。
     reveal: Option<RevealHint>,
-    /// 高亮装饰集合——syntax / selection / search 等 producer 的统一产物
-    /// （手册《桌面端高亮架构》§四）。prepaint 调
-    /// [`highlight::compose`] 切分为前景 / 背景，分别喂给阶段 3 / 阶段 2。
+    /// 高亮装饰集合——syntax / selection / search 等 producer 的统一产物（手册《桌面端高亮架构》§四）。
+    /// prepaint 调用 [`highlight::compose`] 切分为前景 / 背景，分别喂给阶段 3 / 阶段 2。
     decorations: Vec<Decoration>,
     /// prepaint 末尾调用，把当前帧测得的 viewport 写回 view 的视口测量值；只主编辑区装。
     viewport_sync: Option<EditorViewportSyncHook>,
@@ -137,6 +142,9 @@ impl EditorElement {
             visual_caret,
             focus,
             input_handler_hook,
+            scroll_hook: None,
+            selection_hook: None,
+            pointer_session: None,
             element_id: None,
             reveal: None,
             decorations: Vec::new(),
@@ -157,9 +165,9 @@ impl EditorElement {
 
     /// 装载本编辑器的高亮装饰集合（syntax / selection / search 等）。
     ///
-    /// 输入要求：每个 producer 自身保证内部 range 不重叠；跨 producer 允许
-    /// Background 重叠（alpha 叠加表达层叠语义）。空 Vec = 无装饰，前景退到
-    /// 继承的 text_style 单 run，背景全无。
+    /// 输入要求：每个 producer 自身保证内部 range 不重叠；
+    /// 跨 producer 允许 Background 重叠（alpha 叠加表达层叠语义）。
+    /// 空 Vec = 无装饰，前景退到继承的 text_style 单 run，背景全无。
     pub(crate) fn decorations(mut self, decorations: Vec<Decoration>) -> Self {
         self.decorations = decorations;
         self
@@ -167,6 +175,21 @@ impl EditorElement {
 
     pub(crate) fn viewport_sync(mut self, hook: EditorViewportSyncHook) -> Self {
         self.viewport_sync = Some(hook);
+        self
+    }
+
+    pub(crate) fn scroll_hook(mut self, hook: PointerScrollHook) -> Self {
+        self.scroll_hook = Some(hook);
+        self
+    }
+
+    pub(crate) fn selection_hook(mut self, hook: PointerSelectionHook) -> Self {
+        self.selection_hook = Some(hook);
+        self
+    }
+
+    pub(crate) fn pointer_session(mut self, session: PointerSelectionSession) -> Self {
+        self.pointer_session = Some(session);
         self
     }
 
@@ -193,11 +216,8 @@ pub(crate) struct EditorLayout {
 /// 跨过哪一行、行内 x_start / x_end 在哪，都依赖 `line_start_byte` / `line_len`
 /// 把整段文本的字节区间投影到每行内。
 ///
-/// 注意：从视口切片接入起，`line_start_byte` 是该行在整 buffer 中的**绝对**
-/// 字节偏移，而非 element 内某段文本的局部偏移——selection / search 命中的
-/// `TextRange` 也是绝对 byte，二者天然对齐。开启软换行后，本结构表示**视觉
-/// 行**（一条逻辑行可拆成多个 sub-row），`line_start_byte` / `line_len`
-/// 仍指当前 sub-row 在 buffer 中的绝对字节区间。
+/// 注意：从视口切片接入起，`line_start_byte` 是该行在整 buffer 中的**绝对**字节偏移，而非 element 内某段文本的局部偏移——selection / search 命中的 `TextRange` 也是绝对 byte，二者天然对齐。
+/// 开启软换行后，本结构表示**视觉行**（一条逻辑行可拆成多个 sub-row），`line_start_byte` / `line_len` 仍指当前 sub-row 在 buffer 中的绝对字节区间。
 pub(crate) struct PrepaintedLine {
     /// 本行起始字节在整 buffer 中的绝对偏移。
     line_start_byte: usize,
@@ -207,8 +227,7 @@ pub(crate) struct PrepaintedLine {
 }
 
 impl PrepaintedLine {
-    /// 暴露给阶段 3 绘制的 shape 结果。其余阶段需要按行 byte→x 映射的，请走
-    /// [`LineMetric`]（在 paint 入口处由 prepaint.lines 构造）。
+    /// 暴露给阶段 3 绘制的 shape 结果。其余阶段需要按行 byte→x 映射的，请走 [`LineMetric`]（在 paint 入口处由 prepaint.lines 构造）。
     pub(crate) fn shaped(&self) -> &ShapedLine {
         &self.shaped
     }
@@ -226,19 +245,17 @@ struct VisualRow {
 /// v1 不接入的槽位（阶段 1 行背景、阶段 4 字符叠加、阶段 5 IME underline、阶段 6 装饰图标）固定为空 Vec；
 /// 接入新装饰来源时只需在 prepaint 出口处往对应 Vec 推条目，paint 主干不变。
 ///
-/// 颜色解析的位置：所有装饰来源遵循「语义键 + theme 解析」契约，**解析在
-/// [`highlight::compose`] 内一次性完成**；prepaint 拿到的就是 `(range, Hsla)`
-/// 列表，paint 阶段只看几何与颜色，不再 if 路由"这条 range 来自 selection 还是
-/// search"。详见 phases.rs 模块注释与 [`highlight`] 模块。
+/// 颜色解析的位置：所有装饰来源遵循「语义键 + theme 解析」契约，**解析在[`highlight::compose`] 内一次性完成**；
+/// prepaint 拿到的就是 `(range, Hsla)` 列表，paint 阶段只看几何与颜色，不再 if 路由"这条 range 来自 selection 还是 search"。
+/// 详见 phases.rs 模块注释与 [`highlight`] 模块。
 pub(crate) struct EditorPrepaint {
     // ── 阶段 1：行背景 ─────────────────────────────────────────────────────
     /// 当前为空 Vec；active line / diff hunk 等整段背景可接入这里。
     line_backgrounds: Vec<LineBackgroundQuad>,
 
     // ── 阶段 2：范围背景 ───────────────────────────────────────────────────
-    /// composer 已切分、已按 priority 升序排好的 `Background` 装饰
-    /// （selection / search / 未来 diagnostics / AI 提案等）。paint 顺序就是
-    /// Vec 顺序，低优先级先画、高优先级后画，alpha 叠加。
+    /// composer 已切分、已按 priority 升序排好的 `Background` 装饰（selection / search / 未来 diagnostics / AI 提案等）。
+    /// paint 顺序就是 Vec 顺序，低优先级先画、高优先级后画，alpha 叠加。
     range_backgrounds: Vec<(TextRange, Hsla)>,
 
     // ── 阶段 3：字符层 ─────────────────────────────────────────────────────
@@ -276,6 +293,10 @@ pub(crate) struct EditorPrepaint {
     /// `top` 已经吸收了 snapshot 上方视觉行 padding 的修正：phases 用
     /// `top + row_index × line_height` 即可拿到正确像素 y，无需知道视口起点。
     top_adjusted: Pixels,
+    /// 编辑器鼠标命中区。
+    mouse_hitbox: Hitbox,
+    /// 当前内核是否允许纵向滚动。
+    allows_vertical_scroll: bool,
 }
 
 /// 跨帧保留的 X 轴滚动偏移，存于 GPUI 元素状态。
@@ -781,6 +802,7 @@ impl Element for EditorElement {
                 carets.push((row, x));
             }
         }
+        let mouse_hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
 
         EditorPrepaint {
             // v1 空槽位：行背景。
@@ -798,6 +820,8 @@ impl Element for EditorElement {
             line_height,
             scroll,
             top_adjusted,
+            mouse_hitbox,
+            allows_vertical_scroll,
         }
     }
 
@@ -813,6 +837,42 @@ impl Element for EditorElement {
     ) {
         let line_height = prepaint.line_height;
         let scroll = prepaint.scroll;
+        if let (Some(selection_hook), Some(pointer_session)) =
+            (self.selection_hook.clone(), self.pointer_session.clone())
+        {
+            let hitbox = prepaint.mouse_hitbox.clone();
+            let hit_test = Rc::new(PointerHitTest::new(
+                prepaint
+                    .lines
+                    .iter()
+                    .map(|line| {
+                        PointerHitLine::new(
+                            line.line_start_byte,
+                            line.line_len,
+                            line.shaped.clone(),
+                        )
+                    })
+                    .collect(),
+                prepaint.gutter.offset(),
+                prepaint.scroll,
+                prepaint.line_height,
+                prepaint.top_adjusted,
+            ));
+            install_selection_handlers(
+                hitbox,
+                bounds,
+                hit_test,
+                pointer_session,
+                selection_hook,
+                window,
+            );
+        }
+        if prepaint.allows_vertical_scroll
+            && let Some(scroll_hook) = self.scroll_hook.clone()
+        {
+            let hitbox = prepaint.mouse_hitbox.clone();
+            install_scroll_handler(hitbox, line_height, scroll_hook, window);
+        }
         // 纵向滚动 + 视口顶行修正都已吸收进 prepaint.top_adjusted；这里 phases 用 row_index × line_height 算 y 即可。
         let top = prepaint.top_adjusted;
         let gutter_offset = prepaint.gutter.offset();

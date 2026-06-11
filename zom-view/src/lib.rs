@@ -188,6 +188,9 @@ pub struct EditView {
     /// 已被 `settle_viewport_y` 消费过的最新显露请求序号。
     /// 避免同一条显露请求被反复应用；新一次 `request_reveal` 会推进序号。
     last_applied_reveal_seq: Option<u64>,
+    /// 用户手动滚轮滚动后，允许 caret 暂时离开视区。
+    /// 当 selection head 变化时，下一次 settle 会恢复 caret edge-scroll。
+    manual_scroll_anchor: Option<ByteOffset>,
 }
 
 /// `EditView::settle_viewport_y` 的产出：已就位的视口与本帧是否消费了显露请求。
@@ -217,6 +220,7 @@ impl EditView {
             reveal: None,
             reveal_seq: 0,
             last_applied_reveal_seq: None,
+            manual_scroll_anchor: None,
         }
     }
 
@@ -302,12 +306,56 @@ impl EditView {
     /// 每次调用都推进序号。
     /// 哪怕同一字节位置、同一种意图也算「新一次请求」，让渲染端有依据再触发一次。
     pub fn request_reveal(&mut self, byte: ByteOffset, kind: RevealKind) {
+        self.manual_scroll_anchor = None;
         self.reveal_seq = self.reveal_seq.wrapping_add(1);
         self.reveal = Some(RevealRequest {
             byte,
             kind,
             seq: self.reveal_seq,
         });
+    }
+
+    /// 用户滚轮滚动：直接移动视口顶端，不改变 selection。
+    ///
+    /// `delta_visual_rows > 0` 表示向文档后方滚动，`< 0` 表示向文档前方滚动。
+    /// 有 wrap map 时在视觉行坐标系里滚；无 wrap map 时退化为逻辑行滚动。
+    pub fn scroll_visual_rows(&mut self, buffer: &Buffer, delta_visual_rows: i64) -> bool {
+        if delta_visual_rows == 0 {
+            return false;
+        }
+
+        let visible = self.viewport.visible_visual_rows.max(1);
+        let wrap_map = self.wrap_map.as_ref();
+        let total_visual_rows = wrap_map
+            .map(WrapMap::total_visual_rows)
+            .unwrap_or(buffer.line_count() as u64);
+        let max_top = total_visual_rows.saturating_sub(visible);
+
+        let top = match wrap_map {
+            Some(wm) => wm.visual_row_of(self.viewport.top_line, self.viewport.top_subrow as u32),
+            None => self.viewport.top_line,
+        };
+        let next_top = if delta_visual_rows > 0 {
+            top.saturating_add(delta_visual_rows as u64).min(max_top)
+        } else {
+            top.saturating_sub(delta_visual_rows.unsigned_abs())
+        };
+
+        if next_top == top {
+            return false;
+        }
+
+        let (top_line, top_subrow) = match wrap_map {
+            Some(wm) => {
+                let (line, subrow) = wm.visual_row_to_line_subrow(next_top);
+                (line, subrow as u64)
+            }
+            None => (next_top, 0),
+        };
+        self.viewport.top_line = top_line;
+        self.viewport.top_subrow = top_subrow;
+        self.manual_scroll_anchor = Some(self.selection.primary().head());
+        true
     }
 
     /// 在 `build_snapshot` 之前调用。
@@ -342,8 +390,16 @@ impl EditView {
     ) -> ViewportSettlement {
         let visible = self.viewport.visible_visual_rows.max(1);
 
+        if self
+            .manual_scroll_anchor
+            .is_some_and(|anchor| anchor != selection_head)
+        {
+            self.manual_scroll_anchor = None;
+        }
+
         let wrap_map = self.wrap_map.as_ref();
-        let can_edge_scroll = wrap_map.is_some();
+        let can_edge_scroll =
+            wrap_map.is_some() && self.manual_scroll_anchor != Some(selection_head);
         let total_visual_rows = wrap_map
             .map(WrapMap::total_visual_rows)
             .unwrap_or(buffer.line_count() as u64);
@@ -763,5 +819,48 @@ mod settle_tests {
         let out = view.settle_viewport_y(&buffer, cursor);
         assert_eq!(out.viewport.top_line, 1);
         assert_eq!(out.viewport.top_subrow, 0);
+    }
+
+    #[test]
+    fn manual_scroll_should_move_viewport_without_moving_selection() {
+        let mut view = with_measured_viewport(10, 5, 100);
+        let buffer = buffer_with_line_count(100);
+
+        assert!(view.scroll_visual_rows(&buffer, 3));
+
+        assert_eq!(view.viewport().top_line, 13);
+        assert_eq!(view.selection().primary().head(), ByteOffset::ZERO);
+    }
+
+    #[test]
+    fn settle_should_not_edge_scroll_back_after_manual_scroll_until_cursor_moves() {
+        let mut view = with_measured_viewport(0, 5, 100);
+        let buffer = buffer_with_line_count(100);
+        *view.selection_mut() = SelectionSet::caret(line_start(&buffer, 0));
+
+        assert!(view.scroll_visual_rows(&buffer, 20));
+        let after_scroll = view.settle_viewport_y(&buffer, line_start(&buffer, 0));
+        assert_eq!(after_scroll.viewport.top_line, 20);
+
+        let after_cursor_move = view.settle_viewport_y(&buffer, line_start(&buffer, 1));
+        assert_eq!(after_cursor_move.viewport.top_line, 1);
+    }
+
+    #[test]
+    fn manual_scroll_with_wrap_map_should_scroll_in_visual_rows() {
+        let mut view = fresh_view();
+        view.set_wrap_map(Some(WrapMap::new(true, vec![vec![5], vec![5], vec![5]])));
+        view.set_viewport(ViewportState {
+            top_line: 0,
+            top_subrow: 0,
+            visible_visual_rows: 2,
+            visible_logical_lines: 1,
+        });
+        let buffer = buffer_from_lines(&["abcdefghij", "abcdefghij", "abcdefghij"]);
+
+        assert!(view.scroll_visual_rows(&buffer, 3));
+
+        assert_eq!(view.viewport().top_line, 1);
+        assert_eq!(view.viewport().top_subrow, 1);
     }
 }

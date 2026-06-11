@@ -72,7 +72,7 @@ pub(super) fn move_target_selection(
         .buffer
         .move_selections(selections, direction, motion, extend)
         .map_err(command_execution_failed)?;
-    *target.selection = moved;
+    target.set_selection_preserving_visual_state(moved)?;
     Ok(())
 }
 
@@ -164,11 +164,7 @@ fn apply_visual_row_step(
         .collect::<Vec<_>>();
 
     let moved = SelectionSet::new_with_primary(moved, primary_index);
-    target
-        .buffer
-        .set_selection(moved.clone())
-        .map_err(command_execution_failed)?;
-    *target.selection = moved;
+    target.set_selection_preserving_visual_state(moved)?;
 
     if let Some(caret) = target.visual_caret.as_deref_mut() {
         *caret = next_primary_caret;
@@ -226,11 +222,7 @@ fn apply_visual_line_edge(
         .collect::<Vec<_>>();
 
     let moved = SelectionSet::new_with_primary(moved, primary_index);
-    target
-        .buffer
-        .set_selection(moved.clone())
-        .map_err(command_execution_failed)?;
-    *target.selection = moved;
+    target.set_selection_preserving_visual_state(moved)?;
     if let Some(caret) = target.visual_caret.as_deref_mut() {
         *caret = next_primary_caret;
     }
@@ -290,11 +282,7 @@ fn try_grapheme_wrap_boundary(
         let mut updated = selections.as_slice().to_vec();
         updated[primary_index] = new_primary;
         let moved = SelectionSet::new_with_primary(updated, primary_index);
-        target
-            .buffer
-            .set_selection(moved.clone())
-            .map_err(command_execution_failed)?;
-        *target.selection = moved;
+        target.set_selection_preserving_visual_state(moved)?;
     }
     if let Some(caret) = target.visual_caret.as_deref_mut() {
         *caret = Some(next);

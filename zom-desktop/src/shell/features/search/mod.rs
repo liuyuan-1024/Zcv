@@ -164,7 +164,11 @@ impl SearchRuntimeHandle {
 }
 
 impl SearchHost for SearchRuntimeHandle {
-    fn apply_search_action(&self, action: SearchAction, session: &mut WorkspaceSession) {
+    fn apply_search_action_from_effect(
+        &self,
+        action: SearchAction,
+        session: &mut WorkspaceSession,
+    ) {
         let active_view_id = session.active_view_id();
         let (workspace, views) = session.parts_mut();
         match action {

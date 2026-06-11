@@ -2,7 +2,7 @@ use zom_command::{EditTarget, KeyContext, SearchOption};
 use zom_workspace::BufferSearchOptions;
 
 use crate::editor::text::{
-    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
+    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, OwnedEditorTarget,
 };
 use crate::focus::{AppFocus, SearchField};
 use crate::text_target::{TextTargetOwner, TextTargetQuery};
@@ -146,13 +146,6 @@ impl TextTargetQuery for SearchModel {
 }
 
 impl TextTargetOwner for SearchModel {
-    fn ime_target(&mut self, focus: AppFocus) -> Option<ImeTarget<'_>> {
-        match search_field(focus)? {
-            SearchField::Query => Some(self.query.as_ime_target()),
-            SearchField::Replacement => Some(self.replacement.as_ime_target()),
-        }
-    }
-
     fn edit_target(&mut self, focus: AppFocus) -> Option<EditTarget<'_>> {
         self.edit_target_for_focus(focus)
     }

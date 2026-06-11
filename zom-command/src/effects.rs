@@ -19,6 +19,16 @@ pub enum SearchOption {
     Regex,
 }
 
+/// 设置界面的宿主侧变更请求。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsChangeRequest {
+    AdjustUiFont(i16),
+    AdjustEditorFont(i16),
+    ToggleEditorSoftWrap,
+    CycleEditorTabSize,
+    CycleTheme,
+}
+
 /// 内建 panel 的稳定标识。
 ///
 /// 字符串形态曾出现在 [`HostEffect::TogglePanel`] 里桥接 zom-command ↔ 宿主；
@@ -190,6 +200,11 @@ pub enum HostEffect {
     /// 同一 buffer 至多一条预览视图——已存在则直接激活，不重复创建。
     /// 宿主侧调 `WorkspaceSession::open_preview`。
     EditorOpenPreview(zom_workspace::BufferId),
+    /// 取消宿主侧正在进行的鼠标选区手势。
+    ///
+    /// `editor.clear_selection` 已经完成真正的选区折叠；这个 effect 只清理输入设备
+    /// adapter 的跨帧临时状态，避免拖拽流在命令之后继续补发旧 selection。
+    EditorCancelPointerSelection,
 
     // ===== Workspace / Project =====
     /// 顶栏"切换项目"入口；宿主弹出最近项目。
@@ -210,6 +225,10 @@ pub enum HostEffect {
     ShowLanguageServers,
     /// 打开设置界面。
     ShowSettings,
+    /// 打开真实的 config.toml。
+    SettingsOpenToml,
+    /// 应用一项设置变更。
+    SettingsApplyChange(SettingsChangeRequest),
     /// 打开诊断问题列表。
     ShowDiagnostics,
     /// 关闭当前浮面。

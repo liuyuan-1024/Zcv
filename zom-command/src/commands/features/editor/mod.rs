@@ -9,7 +9,7 @@
 //!
 //! // 2. 调用（类型安全，不再手拼字符串）
 //! let invocation = editor::insert_text("hi");
-//! app.dispatch(invocation);
+//! app.dispatch_command(invocation);
 //! ```
 
 use std::collections::BTreeSet;
@@ -22,8 +22,8 @@ use crate::{
     required_arg,
 };
 use zom_engine::{
-    Buffer, ByteOffset, EngineError, Line, Motion, MovementDirection, MovementUnit, Selection,
-    SelectionSet, TextRange,
+    Buffer, ByteOffset, CompositionSelection, EngineError, Line, Motion, MovementDirection,
+    MovementUnit, Selection, SelectionSet, TextRange, Utf16Offset,
 };
 
 mod visual_movement;
@@ -40,11 +40,14 @@ pub const INDENT: &str = "editor.indent";
 pub const OUTDENT: &str = "editor.outdent";
 pub const DELETE: &str = "editor.delete";
 pub const MOVE_SELECTION: &str = "editor.move_selection";
+pub const SET_SELECTION: &str = "editor.set_selection";
+pub const SCROLL_VIEWPORT: &str = "editor.scroll_viewport";
 pub const SELECT_ALL: &str = "editor.select_all";
 /// 把每个选区塌成 caret（head 位置不变）。多 caret 不合并，只去 extent。
 pub const CLEAR_SELECTION: &str = "editor.clear_selection";
 pub const UNDO: &str = "editor.undo";
 pub const REDO: &str = "editor.redo";
+pub const IME_UPDATE: &str = "editor.ime_update";
 pub const IME_COMMIT: &str = "editor.ime_commit";
 pub const IME_CANCEL: &str = "editor.ime_cancel";
 pub const IME_CONFIRM: &str = "editor.ime_confirm";
@@ -159,22 +162,106 @@ impl TryFrom<CommandArgs> for ReplaceSelectionArgs {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ImeCommitArgs {
+    pub replacement_range_utf16: Option<ImeUtf16RangeArgs>,
     pub text: String,
 }
 
 impl From<ImeCommitArgs> for CommandArgs {
     fn from(args: ImeCommitArgs) -> Self {
-        CommandArgs::new().with("text", args.text)
+        let mut out = CommandArgs::new().with("text", args.text);
+        if let Some(range) = args.replacement_range_utf16 {
+            out = range.write_to_args(out, "replacement");
+        }
+        out
     }
 }
 
 impl TryFrom<CommandArgs> for ImeCommitArgs {
     type Error = CommandError;
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["text"])?;
+        reject_unknown_args(&args, &["text", "replacement_start", "replacement_end"])?;
         Ok(Self {
+            replacement_range_utf16: ImeUtf16RangeArgs::parse_optional(&args, "replacement")?,
             text: args.get("text").unwrap_or("").to_string(),
         })
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ImeUpdateArgs {
+    pub replacement_range_utf16: Option<ImeUtf16RangeArgs>,
+    pub text: String,
+    pub selected_range_utf16: Option<ImeUtf16RangeArgs>,
+}
+
+impl From<ImeUpdateArgs> for CommandArgs {
+    fn from(args: ImeUpdateArgs) -> Self {
+        let mut out = CommandArgs::new().with("text", args.text);
+        if let Some(range) = args.replacement_range_utf16 {
+            out = range.write_to_args(out, "replacement");
+        }
+        if let Some(range) = args.selected_range_utf16 {
+            out = range.write_to_args(out, "selected");
+        }
+        out
+    }
+}
+
+impl TryFrom<CommandArgs> for ImeUpdateArgs {
+    type Error = CommandError;
+    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
+        reject_unknown_args(
+            &args,
+            &[
+                "text",
+                "replacement_start",
+                "replacement_end",
+                "selected_start",
+                "selected_end",
+            ],
+        )?;
+        Ok(Self {
+            replacement_range_utf16: ImeUtf16RangeArgs::parse_optional(&args, "replacement")?,
+            text: args.get("text").unwrap_or("").to_string(),
+            selected_range_utf16: ImeUtf16RangeArgs::parse_optional(&args, "selected")?,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ImeUtf16RangeArgs {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl ImeUtf16RangeArgs {
+    pub fn new(start: usize, end: usize) -> Result<Self, CommandError> {
+        if start > end {
+            return Err(CommandError::InvalidArgs(
+                "IME UTF-16 range start 大于 end".into(),
+            ));
+        }
+        Ok(Self { start, end })
+    }
+
+    fn parse_optional(args: &CommandArgs, prefix: &str) -> Result<Option<Self>, CommandError> {
+        let start_key = format!("{prefix}_start");
+        let end_key = format!("{prefix}_end");
+        match (args.get(&start_key), args.get(&end_key)) {
+            (None, None) => Ok(None),
+            (Some(start), Some(end)) => Ok(Some(Self::new(
+                parse_usize_arg(start, &start_key)?,
+                parse_usize_arg(end, &end_key)?,
+            )?)),
+            _ => Err(CommandError::InvalidArgs(format!(
+                "IME {prefix} range 需要同时提供 start/end"
+            ))),
+        }
+    }
+
+    fn write_to_args(self, args: CommandArgs, prefix: &str) -> CommandArgs {
+        args.with(format!("{prefix}_start"), self.start.to_string())
+            .with(format!("{prefix}_end"), self.end.to_string())
     }
 }
 
@@ -261,6 +348,54 @@ impl TryFrom<CommandArgs> for MoveCaretArgs {
             motion: parse_motion(&motion_kind, &args)?,
             extend: parse_optional_bool(args.get("extend"))?,
         })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SetSelectionArgs {
+    pub anchor: ByteOffset,
+    pub head: ByteOffset,
+}
+
+impl From<SetSelectionArgs> for CommandArgs {
+    fn from(args: SetSelectionArgs) -> Self {
+        CommandArgs::new()
+            .with("anchor", args.anchor.get().to_string())
+            .with("head", args.head.get().to_string())
+    }
+}
+
+impl TryFrom<CommandArgs> for SetSelectionArgs {
+    type Error = CommandError;
+    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
+        reject_unknown_args(&args, &["anchor", "head"])?;
+        Ok(Self {
+            anchor: parse_byte_offset(&required_arg(&args, "anchor")?, "anchor")?,
+            head: parse_byte_offset(&required_arg(&args, "head")?, "head")?,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScrollViewportArgs {
+    pub delta_visual_rows: i64,
+}
+
+impl From<ScrollViewportArgs> for CommandArgs {
+    fn from(args: ScrollViewportArgs) -> Self {
+        CommandArgs::new().with("delta_visual_rows", args.delta_visual_rows.to_string())
+    }
+}
+
+impl TryFrom<CommandArgs> for ScrollViewportArgs {
+    type Error = CommandError;
+    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
+        reject_unknown_args(&args, &["delta_visual_rows"])?;
+        let raw = required_arg(&args, "delta_visual_rows")?;
+        let delta_visual_rows = raw
+            .parse::<i64>()
+            .map_err(|_| CommandError::InvalidArgs(format!("无效 delta_visual_rows：{raw}")))?;
+        Ok(Self { delta_visual_rows })
     }
 }
 
@@ -356,6 +491,17 @@ pub fn move_selection(
     (cid(MOVE_SELECTION), args.into())
 }
 
+pub fn set_selection(anchor: ByteOffset, head: ByteOffset) -> Invocation {
+    (cid(SET_SELECTION), SetSelectionArgs { anchor, head }.into())
+}
+
+pub fn scroll_viewport(delta_visual_rows: i64) -> Invocation {
+    (
+        cid(SCROLL_VIEWPORT),
+        ScrollViewportArgs { delta_visual_rows }.into(),
+    )
+}
+
 pub fn select_all() -> Invocation {
     (cid(SELECT_ALL), CommandArgs::new())
 }
@@ -372,8 +518,34 @@ pub fn redo() -> Invocation {
     (cid(REDO), CommandArgs::new())
 }
 
-pub fn ime_commit(text: impl Into<String>) -> Invocation {
-    (cid(IME_COMMIT), ImeCommitArgs { text: text.into() }.into())
+pub fn ime_update(
+    replacement_range_utf16: Option<ImeUtf16RangeArgs>,
+    text: impl Into<String>,
+    selected_range_utf16: Option<ImeUtf16RangeArgs>,
+) -> Invocation {
+    (
+        cid(IME_UPDATE),
+        ImeUpdateArgs {
+            replacement_range_utf16,
+            text: text.into(),
+            selected_range_utf16,
+        }
+        .into(),
+    )
+}
+
+pub fn ime_commit(
+    replacement_range_utf16: Option<ImeUtf16RangeArgs>,
+    text: impl Into<String>,
+) -> Invocation {
+    (
+        cid(IME_COMMIT),
+        ImeCommitArgs {
+            replacement_range_utf16,
+            text: text.into(),
+        }
+        .into(),
+    )
 }
 
 pub fn ime_cancel() -> Invocation {
@@ -584,6 +756,24 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .description("选中当前编辑器中的全部文本。")
         .key_in("mod-a", text_edit);
 
+    registry
+        .install(
+            keymap,
+            SET_SELECTION,
+            "设置选区",
+            Box::new(run_set_selection),
+        )
+        .hide_from_shortcuts();
+
+    registry
+        .install(
+            keymap,
+            SCROLL_VIEWPORT,
+            "滚动编辑器视口",
+            Box::new(run_scroll_viewport),
+        )
+        .hide_from_shortcuts();
+
     registry.install(
         keymap,
         CLEAR_SELECTION,
@@ -598,6 +788,14 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .install(keymap, REDO, "重做", Box::new(run_redo))
         .description("重做上一次被撤销的编辑。")
         .key_in("mod-shift-z", text_edit);
+    registry
+        .install(
+            keymap,
+            IME_UPDATE,
+            "更新输入法组合",
+            Box::new(run_ime_update),
+        )
+        .hide_from_shortcuts();
     registry.install(
         keymap,
         IME_COMMIT,
@@ -749,6 +947,17 @@ fn parse_direction(value: &str) -> Result<MovementDirection, CommandError> {
     }
 }
 
+fn parse_byte_offset(value: &str, name: &str) -> Result<ByteOffset, CommandError> {
+    let raw = parse_usize_arg(value, name)?;
+    Ok(ByteOffset::new(raw))
+}
+
+fn parse_usize_arg(value: &str, name: &str) -> Result<usize, CommandError> {
+    value
+        .parse::<usize>()
+        .map_err(|_| CommandError::InvalidArgs(format!("无效 {name}：{value}")))
+}
+
 fn parse_motion(value: &str, args: &CommandArgs) -> Result<Motion, CommandError> {
     match value {
         "line-step" => Ok(Motion::LineStep),
@@ -884,11 +1093,37 @@ fn run_select_all(
         ByteOffset::ZERO,
         target.buffer.len_bytes(),
     )]);
-    target
-        .buffer
-        .set_selection(selection.clone())
-        .map_err(command_execution_failed)?;
-    *target.selection = selection;
+    target.set_selection(selection)?;
+    Ok(CommandOutcome::default())
+}
+
+fn run_set_selection(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    let args = SetSelectionArgs::try_from(args)?;
+    let mut target = context.edit_target()?;
+    let selection = SelectionSet::new(vec![Selection::new(args.anchor, args.head)]);
+    target.set_selection(selection)?;
+    Ok(CommandOutcome::default())
+}
+
+fn run_scroll_viewport(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    let args = ScrollViewportArgs::try_from(args)?;
+    let buffer_id = active_view_buffer_id(context)?;
+    let buffer = context
+        .workspace
+        .buffer(buffer_id)
+        .ok_or(CommandError::BufferNotFound(buffer_id))?;
+    let view_id = context.active_view_id.ok_or(CommandError::NoActiveView)?;
+    let view = context
+        .views
+        .edit_view_mut(view_id)
+        .ok_or(CommandError::NoActiveView)?;
+    view.scroll_visual_rows(buffer.buffer(), args.delta_visual_rows);
     Ok(CommandOutcome::default())
 }
 
@@ -935,24 +1170,25 @@ fn run_clear_selection(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let mut target = context.edit_target()?;
-    if target.selection.as_slice().iter().all(|sel| sel.is_caret()) {
-        return Ok(CommandOutcome::default());
+    {
+        let mut target = context.edit_target()?;
+        if target.selection.as_slice().iter().all(|sel| sel.is_caret()) {
+            return Ok(CommandOutcome::default());
+        }
+        target.clear_visual_caret();
+        let collapsed: Vec<Selection> = target
+            .selection
+            .as_slice()
+            .iter()
+            .map(|sel| Selection::caret(sel.head()))
+            .collect();
+        let primary_index = target.selection.primary_index();
+        let next = SelectionSet::new_with_primary(collapsed, primary_index);
+        target.set_selection(next)?;
     }
-    target.clear_visual_caret();
-    let collapsed: Vec<Selection> = target
-        .selection
-        .as_slice()
-        .iter()
-        .map(|sel| Selection::caret(sel.head()))
-        .collect();
-    let primary_index = target.selection.primary_index();
-    let next = SelectionSet::new_with_primary(collapsed, primary_index);
-    target
-        .buffer
-        .set_selection(next.clone())
-        .map_err(command_execution_failed)?;
-    *target.selection = next;
+    context
+        .effects
+        .push(HostEffect::EditorCancelPointerSelection);
     Ok(CommandOutcome::default())
 }
 
@@ -1010,6 +1246,7 @@ fn run_ime_commit(
     let args = ImeCommitArgs::try_from(args)?;
     let mut target = context.edit_target()?;
     target.clear_visual_caret();
+    apply_ime_replacement_range(&mut target, args.replacement_range_utf16)?;
     target
         .buffer
         .set_selection(target.selection.clone())
@@ -1017,6 +1254,40 @@ fn run_ime_commit(
     target
         .buffer
         .commit_composition(&args.text)
+        .map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
+    Ok(CommandOutcome::default())
+}
+
+fn run_ime_update(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    let args = ImeUpdateArgs::try_from(args)?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
+    apply_ime_replacement_range(&mut target, args.replacement_range_utf16)?;
+
+    // 系统输入法把 marked text 置空 = 放弃组合（如按 Esc 取消候选）。
+    // 必须真正结束 composition，避免系统 IME 继续认为组合会话仍在。
+    if args.text.is_empty() {
+        if target.buffer.is_composing() {
+            target
+                .buffer
+                .cancel_composition()
+                .map_err(command_execution_failed)?;
+            *target.selection = target.buffer.selection().clone();
+        }
+        return Ok(CommandOutcome::default());
+    }
+
+    let relative_selection = match args.selected_range_utf16 {
+        Some(range) => Some(composition_selection_from_utf16(&args.text, range)?),
+        None => None,
+    };
+    target
+        .buffer
+        .update_composition(&args.text, relative_selection)
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
@@ -1035,6 +1306,72 @@ fn run_ime_cancel(
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
+}
+
+fn apply_ime_replacement_range(
+    target: &mut crate::EditTarget<'_>,
+    replacement_range_utf16: Option<ImeUtf16RangeArgs>,
+) -> Result<(), CommandError> {
+    let Some(range_utf16) = replacement_range_utf16 else {
+        return Ok(());
+    };
+    if target.buffer.is_composing() {
+        return Ok(());
+    }
+    let range = ime_range_to_text_range(target.buffer, range_utf16)?;
+    let selection = SelectionSet::new(vec![Selection::new(range.start(), range.end())]);
+    target.set_selection(selection)
+}
+
+fn ime_range_to_text_range(
+    buffer: &Buffer,
+    range_utf16: ImeUtf16RangeArgs,
+) -> Result<TextRange, CommandError> {
+    let start = buffer
+        .utf16_cu_to_byte(Utf16Offset::new(range_utf16.start))
+        .map_err(|_| CommandError::InvalidArgs("IME range start 越界".into()))?;
+    let end = buffer
+        .utf16_cu_to_byte(Utf16Offset::new(range_utf16.end))
+        .map_err(|_| CommandError::InvalidArgs("IME range end 越界".into()))?;
+
+    TextRange::new(start, end)
+        .map_err(|_| CommandError::InvalidArgs("IME range start 大于 end".into()))
+}
+
+fn composition_selection_from_utf16(
+    preedit: &str,
+    range_utf16: ImeUtf16RangeArgs,
+) -> Result<CompositionSelection, CommandError> {
+    let anchor = utf16_to_byte_offset_in_str(preedit, range_utf16.start)
+        .ok_or_else(|| CommandError::InvalidArgs("IME preedit selection anchor 越界".into()))?;
+    let head = utf16_to_byte_offset_in_str(preedit, range_utf16.end)
+        .ok_or_else(|| CommandError::InvalidArgs("IME preedit selection head 越界".into()))?;
+    Ok(CompositionSelection::new(
+        ByteOffset::new(anchor),
+        ByteOffset::new(head),
+    ))
+}
+
+fn utf16_to_byte_offset_in_str(text: &str, target: usize) -> Option<usize> {
+    if target == 0 {
+        return Some(0);
+    }
+    let mut utf16 = 0usize;
+    for (idx, ch) in text.char_indices() {
+        let step = ch.len_utf16();
+        if utf16 + step > target {
+            return None;
+        }
+        utf16 += step;
+        if utf16 == target {
+            return Some(idx + ch.len_utf8());
+        }
+    }
+    if utf16 == target {
+        Some(text.len())
+    } else {
+        None
+    }
 }
 
 fn run_ime_confirm(

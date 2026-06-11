@@ -7,6 +7,8 @@ use std::rc::Rc;
 use gpui::{
     Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, Window, point, size,
 };
+use zom_command::commands::editor as editor_commands;
+use zom_command::commands::editor::ImeUtf16RangeArgs;
 
 use crate::app::App;
 use crate::clipboard::GpuiClipboardScope;
@@ -90,12 +92,14 @@ impl EntityInputHandler for EditorInput {
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let focus = self.app.borrow().focus().current();
         {
-            // IME 路径也可能触发命令派发（commit → editor.ime_commit）。
-            // 需为期间的剪贴板读写借出 cx。
+            // IME 路径触发命令派发，需为期间的剪贴板读写借出 cx。
             let _clip = GpuiClipboardScope::enter(&*cx);
-            if let Err(error) = self.app.borrow_mut().ime_unmark_for(focus) {
+            if let Err(error) = self
+                .app
+                .borrow_mut()
+                .dispatch_command(editor_commands::ime_confirm())
+            {
                 eprintln!("IME unmark 失败：{error}");
             }
         }
@@ -110,7 +114,6 @@ impl EntityInputHandler for EditorInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let focus = self.app.borrow().focus().current();
         {
             let _clip = GpuiClipboardScope::enter(&*cx);
             let range = match range.map(ImeUtf16Range::from_gpui_range).transpose() {
@@ -123,7 +126,7 @@ impl EntityInputHandler for EditorInput {
             if let Err(error) = self
                 .app
                 .borrow_mut()
-                .ime_replace_text_for(focus, range, text)
+                .dispatch_command(editor_commands::ime_commit(range.map(ime_range_args), text))
             {
                 eprintln!("IME replace_text 失败：{error}");
             }
@@ -140,7 +143,6 @@ impl EntityInputHandler for EditorInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let focus = self.app.borrow().focus().current();
         {
             let _clip = GpuiClipboardScope::enter(&*cx);
             let range = match range.map(ImeUtf16Range::from_gpui_range).transpose() {
@@ -160,12 +162,15 @@ impl EntityInputHandler for EditorInput {
                     return;
                 }
             };
-            if let Err(error) = self.app.borrow_mut().ime_replace_and_mark_text_for(
-                focus,
-                range,
-                new_text,
-                new_selected_range,
-            ) {
+            if let Err(error) = self
+                .app
+                .borrow_mut()
+                .dispatch_command(editor_commands::ime_update(
+                    range.map(ime_range_args),
+                    new_text,
+                    new_selected_range.map(ime_range_args),
+                ))
+            {
                 eprintln!("IME replace_and_mark_text 失败：{error}");
             }
         }
@@ -201,4 +206,8 @@ impl EntityInputHandler for EditorInput {
     ) -> Option<usize> {
         None
     }
+}
+
+fn ime_range_args(range: ImeUtf16Range) -> ImeUtf16RangeArgs {
+    ImeUtf16RangeArgs::new(range.start(), range.end()).expect("IME range 已在边界层校验")
 }

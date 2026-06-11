@@ -10,8 +10,9 @@ mod runtime;
 use std::rc::Rc;
 
 use gpui::{Context, FocusHandle, IntoElement, Render, ScrollHandle, Window};
-use zom_command::Invocation;
+use zom_command::commands::settings as settings_commands;
 use zom_command::commands::{file_tree as file_tree_commands, window as window_commands};
+use zom_command::{Invocation, SettingsChangeRequest};
 
 use crate::app::App;
 use crate::clipboard::GpuiClipboardScope;
@@ -120,6 +121,7 @@ impl ShellView {
             self.runtime.bubble_runtime.clone(),
             self.runtime.editor_focus.clone(),
             self.runtime.features.clone(),
+            self.runtime.text_editor_slots(),
             invocation,
         )
     }
@@ -140,6 +142,7 @@ impl ShellView {
         let editor_focus_fallback = self.runtime.editor_focus.clone();
         let features = self.runtime.features.clone();
         let focus_projection = self.runtime.focus_projection.clone();
+        let text_editor_slots = self.runtime.text_editor_slots();
         Rc::new(move |chord, window, cx| {
             let outcome = {
                 // scope 内 GpuiClipboard 才能拿到 cx 访问系统剪贴板。
@@ -165,6 +168,7 @@ impl ShellView {
                 &bubbles,
                 &editor_focus_fallback,
                 &features,
+                &text_editor_slots,
                 window,
                 cx,
             );
@@ -192,30 +196,65 @@ impl ShellView {
 
     fn settings_action_request(&self) -> settings::SettingsActionRequest {
         let app = Rc::clone(&self.runtime.app);
-        let editor_focus = self.runtime.editor_focus.clone();
+        let workbench = Rc::clone(&self.runtime.workbench);
+        let surfaces = self.runtime.surface_manager.clone();
         let bubbles = self.runtime.bubble_runtime.clone();
+        let editor_focus_fallback = self.runtime.editor_focus.clone();
+        let features = self.runtime.features.clone();
+        let text_editor_slots = self.runtime.text_editor_slots();
         Rc::new(move |action, window, cx| {
-            match action {
-                settings::SettingsAction::OpenToml => {
-                    let opened = app.borrow_mut().open_config_file();
-                    for request in app.borrow_mut().take_session_bubbles() {
-                        bubbles.update(cx, |runtime, cx| runtime.push(request, cx));
-                    }
-                    if opened {
-                        window.focus(&editor_focus);
+            let invocation = settings_action_invocation(action);
+            let effects = {
+                let _clip = GpuiClipboardScope::enter(cx);
+                match app.borrow_mut().dispatch_command(invocation) {
+                    Ok(effects) => effects,
+                    Err(error) => {
+                        eprintln!("设置命令执行失败：{error}");
+                        return;
                     }
                 }
-                settings::SettingsAction::Change(change) => {
-                    let config = {
-                        let mut app = app.borrow_mut();
-                        app.apply_settings_change(change);
-                        app.config_snapshot()
-                    };
-                    config_visuals::apply(&config);
-                }
-            }
+            };
+            actions::apply_host_effects_with_settings(
+                effects,
+                &app,
+                &workbench,
+                &surfaces,
+                &bubbles,
+                &editor_focus_fallback,
+                &features,
+                &text_editor_slots,
+                window,
+                cx,
+            );
             window.refresh();
         })
+    }
+}
+
+fn settings_action_invocation(action: settings::SettingsAction) -> Invocation {
+    match action {
+        settings::SettingsAction::OpenToml => settings_commands::open_toml(),
+        settings::SettingsAction::Change(change) => {
+            settings_commands::apply_change(settings_change_request(change))
+        }
+    }
+}
+
+fn settings_change_request(change: crate::config::SettingsChange) -> SettingsChangeRequest {
+    match change {
+        crate::config::SettingsChange::AdjustUiFont(delta) => {
+            SettingsChangeRequest::AdjustUiFont(delta)
+        }
+        crate::config::SettingsChange::AdjustEditorFont(delta) => {
+            SettingsChangeRequest::AdjustEditorFont(delta)
+        }
+        crate::config::SettingsChange::ToggleEditorSoftWrap => {
+            SettingsChangeRequest::ToggleEditorSoftWrap
+        }
+        crate::config::SettingsChange::CycleEditorTabSize => {
+            SettingsChangeRequest::CycleEditorTabSize
+        }
+        crate::config::SettingsChange::CycleTheme => SettingsChangeRequest::CycleTheme,
     }
 }
 

@@ -37,6 +37,7 @@ pub(super) struct ShellRuntime {
     pub(super) main_editor_slot: Rc<TextEditorSlot>,
     pub(super) file_tree_new_entry_slot: Rc<TextEditorSlot>,
     pub(super) file_tree_rename_slot: Rc<TextEditorSlot>,
+    pub(super) project_picker_slot: Rc<TextEditorSlot>,
     pub(super) search_query_slot: Rc<TextEditorSlot>,
     pub(super) search_replacement_slot: Rc<TextEditorSlot>,
     pub(super) editor_focus: FocusHandle,
@@ -137,11 +138,23 @@ impl ShellRuntime {
             main_editor_slot,
             file_tree_new_entry_slot,
             file_tree_rename_slot,
+            project_picker_slot,
             search_query_slot,
             search_replacement_slot,
             editor_focus,
             focus_projection,
             panel_host: PanelHost::new(),
         }
+    }
+
+    pub(super) fn text_editor_slots(&self) -> Vec<Rc<TextEditorSlot>> {
+        vec![
+            Rc::clone(&self.main_editor_slot),
+            Rc::clone(&self.file_tree_new_entry_slot),
+            Rc::clone(&self.file_tree_rename_slot),
+            Rc::clone(&self.project_picker_slot),
+            Rc::clone(&self.search_query_slot),
+            Rc::clone(&self.search_replacement_slot),
+        ]
     }
 }

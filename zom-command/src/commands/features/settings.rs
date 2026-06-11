@@ -7,13 +7,18 @@
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
+    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SettingsChangeRequest,
+    reject_unknown_args, required_arg,
 };
 
 /// 打开设置面板。
 pub const OPEN: &str = "settings.open";
 /// 关闭设置面板。
 pub const DISMISS: &str = "settings.dismiss";
+/// 打开真实的 config.toml。
+pub const OPEN_TOML: &str = "settings.open_toml";
+/// 应用一项设置变更。
+pub const APPLY_CHANGE: &str = "settings.apply_change";
 
 /// 设置面板拥有自己的键盘上下文，Esc 等面板内按键不污染全局快捷键空间。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,6 +35,61 @@ pub fn dismiss() -> Invocation {
     (cid(DISMISS), CommandArgs::new())
 }
 
+pub fn open_toml() -> Invocation {
+    (cid(OPEN_TOML), CommandArgs::new())
+}
+
+pub fn apply_change(change: SettingsChangeRequest) -> Invocation {
+    (cid(APPLY_CHANGE), SettingsChangeArgs { change }.into())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SettingsChangeArgs {
+    pub change: SettingsChangeRequest,
+}
+
+impl From<SettingsChangeArgs> for CommandArgs {
+    fn from(args: SettingsChangeArgs) -> Self {
+        match args.change {
+            SettingsChangeRequest::AdjustUiFont(delta) => CommandArgs::new()
+                .with("kind", "adjust_ui_font")
+                .with("delta", delta.to_string()),
+            SettingsChangeRequest::AdjustEditorFont(delta) => CommandArgs::new()
+                .with("kind", "adjust_editor_font")
+                .with("delta", delta.to_string()),
+            SettingsChangeRequest::ToggleEditorSoftWrap => {
+                CommandArgs::new().with("kind", "toggle_editor_soft_wrap")
+            }
+            SettingsChangeRequest::CycleEditorTabSize => {
+                CommandArgs::new().with("kind", "cycle_editor_tab_size")
+            }
+            SettingsChangeRequest::CycleTheme => CommandArgs::new().with("kind", "cycle_theme"),
+        }
+    }
+}
+
+impl TryFrom<CommandArgs> for SettingsChangeArgs {
+    type Error = CommandError;
+
+    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
+        reject_unknown_args(&args, &["kind", "delta"])?;
+        let kind = required_arg(&args, "kind")?;
+        let change = match kind.as_str() {
+            "adjust_ui_font" => SettingsChangeRequest::AdjustUiFont(required_delta(&args)?),
+            "adjust_editor_font" => SettingsChangeRequest::AdjustEditorFont(required_delta(&args)?),
+            "toggle_editor_soft_wrap" => SettingsChangeRequest::ToggleEditorSoftWrap,
+            "cycle_editor_tab_size" => SettingsChangeRequest::CycleEditorTabSize,
+            "cycle_theme" => SettingsChangeRequest::CycleTheme,
+            other => {
+                return Err(CommandError::InvalidArgs(format!(
+                    "未知设置变更类型：{other}"
+                )));
+            }
+        };
+        Ok(Self { change })
+    }
+}
+
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     let settings = KeyBindingContext::settings();
 
@@ -39,6 +99,17 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key("mod-,");
 
     registry.install(keymap, DISMISS, "关闭设置", Box::new(run_dismiss));
+    registry
+        .install(keymap, OPEN_TOML, "打开设置 TOML", Box::new(run_open_toml))
+        .hide_from_shortcuts();
+    registry
+        .install(
+            keymap,
+            APPLY_CHANGE,
+            "应用设置变更",
+            Box::new(run_apply_change),
+        )
+        .hide_from_shortcuts();
 
     dismiss_top::bind_esc(keymap, DismissScope::Settings, settings);
 }
@@ -64,6 +135,32 @@ fn run_dismiss(
     context.dismiss.clear(DismissScope::Settings);
     context.effects.push(HostEffect::DismissSurface);
     Ok(CommandOutcome::default())
+}
+
+fn run_open_toml(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.effects.push(HostEffect::SettingsOpenToml);
+    Ok(CommandOutcome::default())
+}
+
+fn run_apply_change(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    let args = SettingsChangeArgs::try_from(args)?;
+    context
+        .effects
+        .push(HostEffect::SettingsApplyChange(args.change));
+    Ok(CommandOutcome::default())
+}
+
+fn required_delta(args: &CommandArgs) -> Result<i16, CommandError> {
+    let raw = required_arg(args, "delta")?;
+    raw.parse()
+        .map_err(|_| CommandError::InvalidArgs(format!("无效设置变更步长：{raw}")))
 }
 
 fn cid(id: &'static str) -> CommandId {

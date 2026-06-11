@@ -37,7 +37,10 @@ pub use commands::file_tree::{FileTreeBindingContext, FileTreeKeyContext, FileTr
 pub use commands::project_picker::{ProjectPickerBindingContext, ProjectPickerKeyContext};
 pub use core::{Command, CommandArgs, CommandCatalogItem, CommandId, Invocation, NoArgs};
 pub use dismiss::{DismissScope, DismissStacks, DismissTokenId};
-pub use effects::{BubbleKind, BubbleRequest, EffectQueue, HostEffect, PanelKind, SearchOption};
+pub use effects::{
+    BubbleKind, BubbleRequest, EffectQueue, HostEffect, PanelKind, SearchOption,
+    SettingsChangeRequest,
+};
 pub use error::CommandError;
 pub use executor::{CommandContext, CommandOutcome, CommandQueue, EditTarget, run};
 pub use keymap::{

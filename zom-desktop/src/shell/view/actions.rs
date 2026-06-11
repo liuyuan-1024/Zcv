@@ -8,10 +8,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
-use zom_command::{HostEffect, Invocation};
+use zom_command::{HostEffect, Invocation, SettingsChangeRequest};
 
 use crate::app::App;
 use crate::clipboard::GpuiClipboardScope;
+use crate::config::SettingsChange;
+use crate::editor::TextEditorSlot;
 use crate::focus::AppFocus;
 use crate::shell::ActionRequest;
 use crate::shell::bubble::BubbleRuntime;
@@ -25,6 +27,7 @@ use crate::shell::surfaces::{SurfaceManager, SurfaceRequest};
 use crate::shell::workbench::controller::WorkbenchController;
 use crate::ui_id::SurfaceId;
 
+use super::config_visuals;
 use super::features::FeatureRegistry;
 use super::focus::{FocusProjection, panel_default_focus};
 
@@ -35,13 +38,14 @@ pub(super) fn bind_action_request(
     bubbles: Entity<BubbleRuntime>,
     editor_focus_fallback: FocusHandle,
     features: FeatureRegistry,
+    text_editor_slots: Vec<Rc<TextEditorSlot>>,
     invocation: Invocation,
 ) -> ActionRequest {
     Rc::new(move |window, cx| {
         let effects = {
             // 同 key_request：进入命令派发前借出 cx 给 GpuiClipboard。
             let _clip = GpuiClipboardScope::enter(cx);
-            match app.borrow_mut().dispatch(invocation.clone()) {
+            match app.borrow_mut().dispatch_command(invocation.clone()) {
                 Ok(effects) => effects,
                 Err(error) => {
                     eprintln!("命令执行失败：{error}");
@@ -57,6 +61,7 @@ pub(super) fn bind_action_request(
             &bubbles,
             &editor_focus_fallback,
             &features,
+            &text_editor_slots,
             window,
             cx,
         );
@@ -74,6 +79,7 @@ pub(super) fn apply_host_effects(
     bubbles: &Entity<BubbleRuntime>,
     editor_focus_fallback: &FocusHandle,
     features: &FeatureRegistry,
+    text_editor_slots: &[Rc<TextEditorSlot>],
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -122,7 +128,15 @@ pub(super) fn apply_host_effects(
             continue;
         }
         apply_shell_effect(
-            &effect, app, workbench, surfaces, bubbles, &focus, window, cx,
+            &effect,
+            app,
+            workbench,
+            surfaces,
+            bubbles,
+            &focus,
+            text_editor_slots,
+            window,
+            cx,
         );
     }
 }
@@ -135,6 +149,7 @@ pub(super) fn apply_host_effects_with_settings(
     bubbles: &Entity<BubbleRuntime>,
     editor_focus_fallback: &FocusHandle,
     features: &FeatureRegistry,
+    text_editor_slots: &[Rc<TextEditorSlot>],
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -158,6 +173,7 @@ pub(super) fn apply_host_effects_with_settings(
             bubbles,
             editor_focus_fallback,
             features,
+            text_editor_slots,
             window,
             cx,
         );
@@ -173,6 +189,7 @@ fn apply_shell_effect(
     surfaces: &Entity<SurfaceManager>,
     bubbles: &Entity<BubbleRuntime>,
     focus: &FocusProjection,
+    text_editor_slots: &[Rc<TextEditorSlot>],
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -182,6 +199,25 @@ fn apply_shell_effect(
         HostEffect::ToggleMaximize => platform_window::toggle_maximize(window),
         HostEffect::ShowBubble(request) => {
             bubbles.update(cx, |runtime, cx| runtime.push(request.clone(), cx));
+            window.refresh();
+        }
+        HostEffect::SettingsOpenToml => {
+            let opened = app.borrow_mut().apply_open_config_file_from_effect();
+            for request in app.borrow_mut().take_session_bubbles() {
+                bubbles.update(cx, |runtime, cx| runtime.push(request, cx));
+            }
+            if opened {
+                request_focus(app, focus, AppFocus::editor(), window);
+            }
+            window.refresh();
+        }
+        HostEffect::SettingsApplyChange(change) => {
+            let config = {
+                let mut app = app.borrow_mut();
+                app.apply_settings_change_from_effect(settings_change(*change));
+                app.config_snapshot()
+            };
+            config_visuals::apply(&config);
             window.refresh();
         }
         HostEffect::TogglePanel(panel) => {
@@ -206,6 +242,11 @@ fn apply_shell_effect(
             app.borrow_mut().activate_view_tab(*view_id);
             window.refresh();
         }
+        HostEffect::EditorCancelPointerSelection => {
+            for slot in text_editor_slots {
+                slot.cancel_pointer_selection();
+            }
+        }
         HostEffect::DismissSurface => {
             if surfaces.read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker)) {
                 app.borrow_mut().project_picker_deactivate();
@@ -215,6 +256,16 @@ fn apply_shell_effect(
         other => {
             eprintln!("未处理的 HostEffect：{other:?}");
         }
+    }
+}
+
+fn settings_change(change: SettingsChangeRequest) -> SettingsChange {
+    match change {
+        SettingsChangeRequest::AdjustUiFont(delta) => SettingsChange::AdjustUiFont(delta),
+        SettingsChangeRequest::AdjustEditorFont(delta) => SettingsChange::AdjustEditorFont(delta),
+        SettingsChangeRequest::ToggleEditorSoftWrap => SettingsChange::ToggleEditorSoftWrap,
+        SettingsChangeRequest::CycleEditorTabSize => SettingsChange::CycleEditorTabSize,
+        SettingsChangeRequest::CycleTheme => SettingsChange::CycleTheme,
     }
 }
 

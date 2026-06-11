@@ -4,7 +4,7 @@ use zom_command::EditTarget;
 use zom_engine::{Buffer, BufferConfig, ByteOffset, Selection, SelectionSet};
 
 use crate::editor::text::snapshot::build_snapshot;
-use crate::editor::text::{EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget};
+use crate::editor::text::{EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget};
 
 /// 一个独立的文本编辑目标：自持 buffer 与选区。
 pub(crate) struct OwnedEditorTarget {
@@ -77,12 +77,6 @@ impl OwnedEditorTarget {
             visual_caret: None,
             goal_column: None,
         }
-    }
-
-    /// 把自身暴露成 IME 作用目标。
-    pub(crate) fn as_ime_target(&mut self) -> ImeTarget<'_> {
-        self.sync_buffer_selection();
-        ImeTarget::new(&mut self.buffer, &mut self.selection)
     }
 
     /// 把自身暴露成 IME 查询目标。

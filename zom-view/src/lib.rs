@@ -23,6 +23,8 @@ mod wrap;
 
 pub use wrap::{VisualAffinity, VisualPosition, VisualRowCount, WrapMap, compute_segments};
 
+const MANUAL_SCROLL_MAX_TRAILING_BLANK_DENOMINATOR: u64 = 3;
+
 /// 视图标识。
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ViewId(u64);
@@ -427,10 +429,7 @@ impl EditView {
         };
         let next_top = if delta_visual_rows > 0 {
             let candidate = top.saturating_add(delta_visual_rows as u64);
-            match visual_row_count.exact_max_top(visible) {
-                Some(max_top) => candidate.min(max_top),
-                None => candidate.min(visual_row_count.value().saturating_sub(1)),
-            }
+            candidate.min(manual_scroll_max_top(visual_row_count, visible, top))
         } else {
             top.saturating_sub(delta_visual_rows.unsigned_abs())
         };
@@ -601,6 +600,13 @@ impl EditView {
             consumed_reveal,
         }
     }
+}
+
+fn manual_scroll_max_top(row_count: VisualRowCount, visible_rows: u64, current_top: u64) -> u64 {
+    let max_blank_rows = visible_rows / MANUAL_SCROLL_MAX_TRAILING_BLANK_DENOMINATOR;
+    row_count
+        .max_top_with_blank_budget(visible_rows, max_blank_rows)
+        .max(current_top)
 }
 
 fn needs_measured_subrow(wm: &WrapMap, line: u64, subrow: u64) -> bool {
@@ -895,6 +901,15 @@ mod settle_tests {
         // max_top = 100 - 30 = 70，最终裁剪到 70。
         let out = view.settle_viewport_y(&buffer, line_start(&buffer, 95));
         assert_eq!(out.viewport.top_line, 70);
+    }
+
+    #[test]
+    fn manual_scroll_max_top_should_limit_blank_only_for_lower_bounds() {
+        assert_eq!(manual_scroll_max_top(VisualRowCount::Exact(21), 20, 0), 1);
+        assert_eq!(
+            manual_scroll_max_top(VisualRowCount::LowerBound(21), 20, 0),
+            7
+        );
     }
 
     #[test]
@@ -1275,21 +1290,21 @@ mod settle_tests {
     }
 
     #[test]
-    fn manual_scroll_should_not_bottom_clamp_against_sparse_lower_bound() {
+    fn manual_scroll_should_limit_blank_space_against_sparse_lower_bound() {
         let mut view = fresh_view();
         let breaks = (5..100).step_by(5).map(|byte| byte as u32).collect();
         view.set_wrap_map(Some(WrapMap::sparse(true, 2, [(0, breaks)])));
         view.set_viewport(ViewportState {
             top_line: 0,
-            top_subrow: 11,
+            top_subrow: 0,
             visible_visual_rows: 20,
             visible_logical_lines: 2,
         });
         let buffer = buffer_from_lines(&["aaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbb"]);
 
-        assert!(view.scroll_visual_rows(&buffer, 1));
+        assert!(view.scroll_visual_rows(&buffer, 20));
 
         assert_eq!(view.viewport().top_line, 0);
-        assert_eq!(view.viewport().top_subrow, 12);
+        assert_eq!(view.viewport().top_subrow, 7);
     }
 }

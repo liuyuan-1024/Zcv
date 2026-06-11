@@ -77,6 +77,16 @@ impl VisualRowCount {
             Self::LowerBound(_) => None,
         }
     }
+
+    pub fn max_top_with_blank_budget(self, visible_rows: u64, blank_rows: u64) -> u64 {
+        match self {
+            Self::Exact(rows) => rows.saturating_sub(visible_rows),
+            Self::LowerBound(rows) => {
+                let required_content_rows = visible_rows.saturating_sub(blank_rows);
+                rows.saturating_sub(required_content_rows)
+            }
+        }
+    }
 }
 
 /// 每条逻辑行的软换行断点（行内相对字节）。

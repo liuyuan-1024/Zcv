@@ -23,7 +23,8 @@ use crate::{
 };
 use zom_engine::{
     Buffer, ByteOffset, CompositionSelection, EngineError, Line, Motion, MovementDirection,
-    MovementUnit, Selection, SelectionSet, TextRange, Utf16Offset,
+    MovementUnit, Selection, SelectionSet, TextRange, TransactionMetadata, TransactionSource,
+    Utf16Offset,
 };
 
 mod visual_movement;
@@ -989,12 +990,16 @@ fn run_insert_text(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = InsertTextArgs::try_from(args)?;
+    let merge_policy = context.edit_merge_policy;
     let mut target = context.edit_target()?;
     target.clear_visual_caret();
     let selections = target.selection.clone();
+    let metadata = TransactionMetadata::new(TransactionSource::Programmatic)
+        .with_merge_policy(merge_policy)
+        .with_description("在选定位置插入");
     target
         .buffer
-        .insert_at_selections(selections, &args.text)
+        .insert_at_selections(selections, &args.text, metadata)
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
@@ -1010,7 +1015,12 @@ fn run_replace_selection(
     let selections = target.selection.clone();
     target
         .buffer
-        .replace_selections(selections, &args.text)
+        .replace_selections(
+            selections,
+            &args.text,
+            TransactionMetadata::new(TransactionSource::Programmatic)
+                .with_description("替换所选内容"),
+        )
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
@@ -1021,12 +1031,19 @@ fn run_insert_newline(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
+    let merge_policy = context.edit_merge_policy;
     let mut target = context.edit_target()?;
     target.clear_visual_caret();
     let selections = target.selection.clone();
     target
         .buffer
-        .insert_at_selections(selections, "\n")
+        .insert_at_selections(
+            selections,
+            "\n",
+            TransactionMetadata::new(TransactionSource::Programmatic)
+                .with_merge_policy(merge_policy)
+                .with_description("插入换行"),
+        )
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
@@ -1068,18 +1085,41 @@ fn run_delete(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = DeleteArgs::try_from(args)?;
+    let merge_policy = context.edit_merge_policy;
     let mut target = context.edit_target()?;
     target.clear_visual_caret();
     let selections = target.selection.clone();
     // caret_motion = Some → caret 沿方向删 unit、非空选区整段删；
     // caret_motion = None → caret no-op，仅删非空选区。
     let caret_motion = args.direction.map(|dir| (dir, args.unit));
+    let description = delete_description(caret_motion);
+    let metadata = TransactionMetadata::new(TransactionSource::Programmatic)
+        .with_merge_policy(merge_policy)
+        .with_description(description);
     target
         .buffer
-        .delete_at_selections(selections, caret_motion)
+        .delete_at_selections(selections, caret_motion, metadata)
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
+}
+
+fn delete_description(caret_motion: Option<(MovementDirection, MovementUnit)>) -> &'static str {
+    match caret_motion {
+        None => "删除所选内容",
+        Some((MovementDirection::Previous, MovementUnit::Grapheme)) => "向后删除选定内容",
+        Some((MovementDirection::Next, MovementUnit::Grapheme)) => "向前删除所选内容",
+        Some((MovementDirection::Previous, MovementUnit::Word)) => "向后删除单词",
+        Some((MovementDirection::Next, MovementUnit::Word)) => "向前删除单词",
+        Some((MovementDirection::Previous, MovementUnit::Subword)) => "向后删除子词",
+        Some((MovementDirection::Next, MovementUnit::Subword)) => "向前删除子词",
+        Some((MovementDirection::Previous, MovementUnit::Identifier)) => "向后删除标识符",
+        Some((MovementDirection::Next, MovementUnit::Identifier)) => "向前删除标识符",
+        Some((MovementDirection::Previous, MovementUnit::Symbol)) => "向后删除符号",
+        Some((MovementDirection::Next, MovementUnit::Symbol)) => "向前删除符号",
+        Some((MovementDirection::Previous, MovementUnit::LineEdge)) => "删除到行首",
+        Some((MovementDirection::Next, MovementUnit::LineEdge)) => "删除到行尾",
+    }
 }
 
 fn run_select_all(
@@ -1505,7 +1545,12 @@ fn run_cut(
         CutPlan::DeleteSelections(selections) => {
             target
                 .buffer
-                .delete_at_selections(selections, None)
+                .delete_at_selections(
+                    selections,
+                    None,
+                    TransactionMetadata::new(TransactionSource::Programmatic)
+                        .with_description("剪切所选内容"),
+                )
                 .map_err(command_execution_failed)?;
         }
         CutPlan::DeleteLineRanges(line_ranges) => {
@@ -1513,7 +1558,12 @@ fn run_cut(
                 let line_selections = SelectionSet::from_ranges(line_ranges);
                 target
                     .buffer
-                    .delete_at_selections(line_selections, None)
+                    .delete_at_selections(
+                        line_selections,
+                        None,
+                        TransactionMetadata::new(TransactionSource::Programmatic)
+                            .with_description("剪切行"),
+                    )
                     .map_err(command_execution_failed)?;
             }
         }
@@ -1538,7 +1588,11 @@ fn run_paste(
     let selections = target.selection.clone();
     target
         .buffer
-        .replace_selections(selections, &text)
+        .replace_selections(
+            selections,
+            &text,
+            TransactionMetadata::new(TransactionSource::Programmatic).with_description("粘贴"),
+        )
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())

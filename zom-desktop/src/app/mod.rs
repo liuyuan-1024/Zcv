@@ -708,6 +708,21 @@ mod tests {
         app
     }
 
+    fn active_buffer_text(app: &App) -> String {
+        let buffer_id = app.active_buffer_id().expect("应有活动 buffer");
+        let buffer = app
+            .session
+            .workspace()
+            .buffer(buffer_id)
+            .expect("活动 buffer 应存在")
+            .buffer();
+        buffer
+            .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+            .unwrap()
+            .into_text()
+            .into_owned()
+    }
+
     struct StubProjectPickerOwner {
         query: crate::editor::text::OwnedEditorTarget,
     }
@@ -922,6 +937,23 @@ mod tests {
         assert_eq!(wrap_map.logical_line_count(), 2);
         assert!(wrap_map.breaks(0).is_empty());
         assert_eq!(wrap_map.breaks(1), &[4]);
+    }
+
+    #[test]
+    fn desktop_text_input_should_merge_consecutive_same_edit_commands_for_undo_redo() {
+        let mut app = app_with_markdown_text("merge-text-input-history", "");
+
+        app.dispatch_command(editor::insert_text("a")).unwrap();
+        app.dispatch_command(editor::insert_text("b")).unwrap();
+        app.dispatch_command(editor::insert_text("c")).unwrap();
+
+        assert_eq!(active_buffer_text(&app), "abc");
+
+        app.dispatch_command(editor::undo()).unwrap();
+        assert_eq!(active_buffer_text(&app), "");
+
+        app.dispatch_command(editor::redo()).unwrap();
+        assert_eq!(active_buffer_text(&app), "abc");
     }
 
     #[test]

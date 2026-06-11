@@ -14,7 +14,7 @@ use zom_command::{
 };
 use zom_engine::{
     Buffer, BufferConfig, ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
-    SelectionSet,
+    SelectionSet, TransactionMergePolicy,
 };
 use zom_view::{ViewId, ViewSet, VisualAffinity, VisualPosition};
 use zom_workspace::{BufferId, Workspace};
@@ -97,6 +97,7 @@ fn run(
         effects: &mut effects,
         clipboard: &mut clipboard,
         dismiss: &mut dismiss,
+        edit_merge_policy: TransactionMergePolicy::Never,
     };
     zom_command::run(registry, &mut context)
 }
@@ -126,6 +127,7 @@ fn run_with_clipboard(
         effects: &mut effects,
         clipboard,
         dismiss: &mut dismiss,
+        edit_merge_policy: TransactionMergePolicy::Never,
     };
     zom_command::run(registry, &mut context)
 }
@@ -154,6 +156,7 @@ fn run_and_collect_effects(
         effects: &mut effects,
         clipboard: &mut clipboard,
         dismiss: &mut dismiss,
+        edit_merge_policy: TransactionMergePolicy::Never,
     };
     zom_command::run(registry, &mut context)?;
     Ok(effects.drain())
@@ -1447,6 +1450,7 @@ fn run_on_focused_field(
         effects: &mut effects,
         clipboard,
         dismiss: &mut dismiss,
+        edit_merge_policy: TransactionMergePolicy::Never,
     };
     zom_command::run(registry, &mut context)
 }
@@ -1835,6 +1839,7 @@ fn project_picker_esc_routes_through_dismiss_stack() {
             effects: &mut effects,
             clipboard: &mut clipboard,
             dismiss: &mut dismiss,
+            edit_merge_policy: TransactionMergePolicy::Never,
         };
         zom_command::run(&registry, &mut context).unwrap();
         assert_eq!(effects.drain(), vec![HostEffect::ShowProjectPicker]);
@@ -1872,6 +1877,7 @@ fn project_picker_esc_routes_through_dismiss_stack() {
             effects: &mut effects,
             clipboard: &mut clipboard,
             dismiss: &mut dismiss,
+            edit_merge_policy: TransactionMergePolicy::Never,
         };
         zom_command::run(&registry, &mut context).unwrap();
         assert_eq!(effects.drain(), vec![HostEffect::DismissSurface]);
@@ -1892,6 +1898,7 @@ fn project_picker_esc_routes_through_dismiss_stack() {
             effects: &mut effects,
             clipboard: &mut clipboard,
             dismiss: &mut dismiss,
+            edit_merge_policy: TransactionMergePolicy::Never,
         };
         zom_command::run(&registry, &mut context).unwrap();
         assert!(effects.drain().is_empty());
@@ -1929,6 +1936,7 @@ fn project_picker_show_is_idempotent_does_not_stack_tokens() {
         effects: &mut effects,
         clipboard: &mut clipboard,
         dismiss: &mut dismiss,
+        edit_merge_policy: TransactionMergePolicy::Never,
     };
     zom_command::run(&registry, &mut context).unwrap();
     assert_eq!(dismiss.depth(DismissScope::ProjectPicker), 1);

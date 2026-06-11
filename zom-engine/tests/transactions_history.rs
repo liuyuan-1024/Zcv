@@ -24,6 +24,14 @@ fn tx(buffer: &Buffer, edits: Vec<Edit>) -> Transaction {
     Transaction::from_edits(buffer.version(), edits).unwrap()
 }
 
+fn metadata(description: &str) -> TransactionMetadata {
+    TransactionMetadata::new(TransactionSource::Programmatic).with_description(description)
+}
+
+fn merge_metadata(description: &str) -> TransactionMetadata {
+    metadata(description).with_merge_policy(TransactionMergePolicy::MergeWithPrevious)
+}
+
 #[test]
 fn apply_transaction_should_emit_delta_changeset_position_map_and_pending_event() {
     let mut buffer = buffer("abc def");
@@ -137,7 +145,7 @@ fn undo_redo_should_restore_text_selection_and_dirty_state() {
     let mut buffer = buffer("abc");
     buffer.set_selection(SelectionSet::caret(b(1))).unwrap();
     buffer
-        .insert_at_selections(buffer.selection().clone(), "X")
+        .insert_at_selections(buffer.selection().clone(), "X", metadata("insert"))
         .unwrap();
     buffer.mark_saved();
     buffer.insert(b(4), "!").unwrap();
@@ -153,6 +161,58 @@ fn undo_redo_should_restore_text_selection_and_dirty_state() {
     buffer.redo().unwrap().unwrap();
     assert_eq!(buffer_text(&buffer), "aXbc!");
     assert!(buffer.is_dirty());
+}
+
+#[test]
+fn explicit_history_merge_should_merge_selection_edits_into_one_undo_step() {
+    let mut buffer = buffer("");
+
+    for (index, text) in ["a", "b", "c"].into_iter().enumerate() {
+        let metadata = if index == 0 {
+            metadata("insert")
+        } else {
+            merge_metadata("insert")
+        };
+        buffer
+            .insert_at_selections(buffer.selection().clone(), text, metadata)
+            .unwrap();
+    }
+
+    assert_eq!(buffer_text(&buffer), "abc");
+    assert_eq!(buffer.history_status().undo_depth, 1);
+
+    buffer.undo().unwrap().unwrap();
+    assert_eq!(buffer_text(&buffer), "");
+    assert_eq!(buffer.selection().ranges(), vec![range(0, 0)]);
+
+    buffer.redo().unwrap().unwrap();
+    assert_eq!(buffer_text(&buffer), "abc");
+    assert_eq!(buffer.selection().ranges(), vec![range(3, 3)]);
+}
+
+#[test]
+fn default_selection_edits_should_stay_separate() {
+    let mut buffer = buffer("");
+
+    buffer
+        .insert_at_selections(buffer.selection().clone(), "a", metadata("insert"))
+        .unwrap();
+    buffer
+        .delete_at_selections(
+            buffer.selection().clone(),
+            Some((MovementDirection::Previous, MovementUnit::Grapheme)),
+            metadata("delete"),
+        )
+        .unwrap();
+
+    assert_eq!(buffer_text(&buffer), "");
+    assert_eq!(buffer.history_status().undo_depth, 2);
+
+    buffer.undo().unwrap().unwrap();
+    assert_eq!(buffer_text(&buffer), "a");
+
+    buffer.undo().unwrap().unwrap();
+    assert_eq!(buffer_text(&buffer), "");
 }
 
 #[test]

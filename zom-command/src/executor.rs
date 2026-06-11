@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 
+use zom_engine::TransactionMergePolicy;
 use zom_view::{EditView, ViewId, ViewSet, VisualPosition, WrapMap};
 use zom_workspace::Workspace;
 
@@ -34,6 +35,9 @@ pub struct CommandContext<'a> {
     /// esc 路径与"begin/cancel/commit"瞬态命令通过 [`DismissStacks::push`] / [`DismissStacks::pop_top`] / [`DismissStacks::remove`] 协调,
     /// 避免在同一上下文里两个命令都静态绑 esc 造成冲突。详见 [`crate::dismiss`]。
     pub dismiss: &'a mut DismissStacks,
+    /// 宿主在派发前决定的编辑历史合并策略；
+    /// 命令只负责把它写入事务 metadata。
+    pub edit_merge_policy: TransactionMergePolicy,
 }
 
 /// 一次编辑命令作用的目标：文本缓冲 + 选区。

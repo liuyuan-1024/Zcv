@@ -31,7 +31,7 @@ use std::rc::Rc;
 
 use zom_engine::{
     Buffer, BufferConfig, BufferLoadError, BufferOrigin as EngineBufferOrigin, BufferSaveError,
-    ChangeSet, Delta, EngineError, Line,
+    ChangeSet, Delta, DeltaEvent, EngineError, Line,
 };
 
 use crate::syntax::{BufferSyntaxTreeSlot, LanguageId, LanguageRegistry, SyntaxEngine};
@@ -377,14 +377,13 @@ impl WorkspaceBuffer {
     /// **调用契约**：缓冲区发生编辑（命令派发、IME commit、replace_all 等）后**有且仅有一处**调用本方法。
     /// 不放在 [`Workspace::buffer_mut`] / `buffer()` 之类的访问器里——访问器会被调多次、调到读路径上，重复 drain 会让事件序丢失。
     /// 当前调用点：`zom-command` 在派发结束后统一调一次活动缓冲区的 `pump_post_edit`。
-    pub fn pump_post_edit(&mut self) -> WorkspaceResult<bool> {
+    pub fn pump_post_edit(&mut self) -> WorkspaceResult<Vec<DeltaEvent>> {
         let events = self.document.buffer_mut().take_pending_events();
-        let had_events = !events.is_empty();
         for event in &events {
             self.search.apply_delta(event)?;
         }
         self.document.apply_pending_events(&events);
-        Ok(had_events)
+        Ok(events)
     }
 
     /// 推一拍 BufferSearch 状态机：收割已完成的后台搜索，必要时 spawn 新的。

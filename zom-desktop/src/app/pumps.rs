@@ -7,7 +7,7 @@
 
 use crate::ports::{FramePump, PostEditObserver};
 use crate::workspace_session::WorkspaceSession;
-use zom_view::WrapMap;
+use zom_view::{ViewportEditAnchor, WrapMap};
 
 #[derive(Default)]
 pub(super) struct BackgroundPumps {
@@ -30,8 +30,13 @@ impl BackgroundPumps {
 
     /// 编辑后扇出 + 通知所有注册的 [`PostEditObserver`]。
     /// 必须先于观察者跑 built-in 的活动 buffer post_edit，否则观察者读到的状态还停在旧版本。
-    pub(super) fn after_text_edit(&self, session: &mut WorkspaceSession, soft_wrap: bool) {
-        Self::pump_active_buffer_post_edit(session, soft_wrap);
+    pub(super) fn after_text_edit(
+        &self,
+        session: &mut WorkspaceSession,
+        soft_wrap: bool,
+        viewport_anchor: Option<ViewportEditAnchor>,
+    ) {
+        Self::pump_active_buffer_post_edit(session, soft_wrap, viewport_anchor);
         for observer in &self.post_edit_observers {
             observer.after_text_edit(session);
         }
@@ -44,25 +49,38 @@ impl BackgroundPumps {
         }
     }
 
-    fn pump_active_buffer_post_edit(session: &mut WorkspaceSession, soft_wrap: bool) {
+    fn pump_active_buffer_post_edit(
+        session: &mut WorkspaceSession,
+        soft_wrap: bool,
+        viewport_anchor: Option<ViewportEditAnchor>,
+    ) {
         let active_buffer_id = session.active_buffer_id();
         let post_edit = active_buffer_id
             .and_then(|id| session.workspace_mut().buffer_mut(id))
             .and_then(|wb| {
-                let text_changed = wb.pump_post_edit().ok()?;
+                let events = wb.pump_post_edit().ok()?;
                 let line_count = wb.buffer().line_count() as u64;
-                Some((text_changed, line_count))
+                Some((events, line_count))
             });
-        let Some((true, line_count)) = post_edit else {
+        let Some((events, line_count)) = post_edit else {
             return;
         };
-        let wrap_map = if soft_wrap {
-            None
-        } else {
-            Some(WrapMap::sparse(false, line_count, []))
-        };
+        if events.is_empty() {
+            return;
+        }
         let active_view_id = session.active_edit_view_id();
-        if let Some(view) = active_view_id.and_then(|id| session.views_mut().edit_view_mut(id)) {
+        let (workspace, views) = session.parts_mut();
+        let Some(buffer) = active_buffer_id.and_then(|id| workspace.buffer(id)) else {
+            return;
+        };
+        if let Some(view) = active_view_id.and_then(|id| views.edit_view_mut(id)) {
+            let wrap_map = if soft_wrap {
+                view.wrap_map()
+                    .map(|wm| wm.preserve_after_edit_events(buffer.buffer(), &events))
+            } else {
+                Some(WrapMap::sparse(false, line_count, []))
+            };
+            view.track_viewport_anchor_after_edit(viewport_anchor, &events);
             view.set_wrap_map(wrap_map);
         }
     }

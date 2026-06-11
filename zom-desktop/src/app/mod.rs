@@ -21,7 +21,7 @@ use zom_command::{
     ClipboardPort, CommandCatalogItem, CommandError, CommandId, FileTreeKeyMode, HostEffect,
     Invocation, KeyContext, KeymapResolution,
 };
-use zom_view::ViewSet;
+use zom_view::{ViewSet, ViewportEditAnchor};
 use zom_workspace::Workspace;
 use zom_workspace::syntax::{SyntaxEngine, install_builtin_providers};
 
@@ -301,6 +301,13 @@ impl App {
         self.session.active_buffer_id()
     }
 
+    fn capture_active_viewport_edit_anchor(&self) -> Option<ViewportEditAnchor> {
+        let view_id = self.session.active_edit_view_id()?;
+        let view = self.session.views().edit_view(view_id)?;
+        let buffer = self.session.workspace().buffer(view.buffer())?;
+        view.capture_viewport_edit_anchor(buffer.buffer())
+    }
+
     /// 取走 session 累积的气泡请求；调用方负责把它们落到 BubbleRuntime。
     pub(crate) fn take_session_bubbles(&mut self) -> Vec<zom_command::BubbleRequest> {
         self.session.take_bubbles()
@@ -344,6 +351,7 @@ impl App {
     ) -> Result<Vec<HostEffect>, CommandError> {
         let (id, args) = invocation;
         let focus = self.focus.current();
+        let viewport_anchor = self.capture_active_viewport_edit_anchor();
 
         // 命令派发期需要给 CommandContext 填 `focused_field`。
         // 若命令真的改了这个输入目标的文本，派发后再让 owner 跑 `after_text_changed`。
@@ -359,8 +367,11 @@ impl App {
         // 命令派发可能编辑了活动 buffer（产生 DeltaEvent），扇出给 BufferSearch 与 syntax provider 是无条件的。
         // 否则编辑后高亮 / 搜索命中都不跟版本。
         // 必须先于 `sync_active_buffer_search`：后者依赖搜索状态已被新事件推进。
-        self.background
-            .after_text_edit(&mut self.session, self.config.soft_wrap_enabled());
+        self.background.after_text_edit(
+            &mut self.session,
+            self.config.soft_wrap_enabled(),
+            viewport_anchor,
+        );
         // 命令派发也可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴等）。
         // 把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——一处做完，渲染 / 后续命令读到的都是新真值。
 
@@ -890,23 +901,24 @@ mod tests {
     }
 
     #[test]
-    fn text_edit_should_invalidate_active_view_wrap_map() {
-        let mut app = app_with_open_file("invalidate-wrap-map");
+    fn text_edit_should_preserve_conservative_active_view_wrap_map() {
+        let mut app = app_with_markdown_text("preserve-wrap-map", "abcdefghij\nklmnopqrst");
         app.session
             .active_edit_view_mut()
             .expect("应有活动视图")
-            .set_wrap_map(Some(WrapMap::sparse(false, 1, [])));
+            .set_wrap_map(Some(WrapMap::new(true, vec![vec![5], vec![4]])));
 
-        app.dispatch_command(editor::insert_newline()).unwrap();
+        app.dispatch_command(editor::insert_text("X")).unwrap();
 
-        assert!(
-            app.session
-                .active_edit_view()
-                .expect("应有活动视图")
-                .wrap_map()
-                .is_none(),
-            "文本变化后不能继续使用上一帧的 wrap map",
-        );
+        let wrap_map = app
+            .session
+            .active_edit_view()
+            .expect("应有活动视图")
+            .wrap_map()
+            .expect("文本变化后应保留一份保守 wrap map");
+        assert_eq!(wrap_map.logical_line_count(), 2);
+        assert!(wrap_map.breaks(0).is_empty());
+        assert_eq!(wrap_map.breaks(1), &[4]);
     }
 
     #[test]

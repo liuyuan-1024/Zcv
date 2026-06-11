@@ -61,10 +61,6 @@ impl WorkspaceSession {
         &self.views
     }
 
-    pub(crate) fn views_mut(&mut self) -> &mut ViewSet {
-        &mut self.views
-    }
-
     pub(crate) fn parts_mut(&mut self) -> (&mut Workspace, &mut ViewSet) {
         (&mut self.workspace, &mut self.views)
     }

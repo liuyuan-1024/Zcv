@@ -14,7 +14,9 @@
 
 use std::collections::BTreeMap;
 
-use zom_engine::{Buffer, BufferVersion, ByteOffset, FoldSet, SelectionSet};
+use zom_engine::{
+    Affinity, Buffer, BufferVersion, ByteOffset, DeltaEvent, FoldSet, Line, SelectionSet,
+};
 use zom_workspace::BufferId;
 
 mod wrap;
@@ -93,6 +95,23 @@ pub struct RevealRequest {
     /// 单调递增计数。
     /// 同一个字节位置和同一种意图也能被反复触发，渲染端按序号判别是否为新请求。
     pub seq: u64,
+}
+
+/// 文本编辑前捕获的视口锚点。
+///
+/// 普通编辑的直觉是「插入点之后的内容移动，插入点之前的屏幕内容尽量不动」。
+/// 因此锚点记录编辑前视口顶部的位置，而不是 primary caret 的屏幕行。
+/// 编辑提交后通过 [`DeltaEvent::position_map`] 映射 `top_byte`，等渲染端回写新的 [`WrapMap`] 时再用新视觉模型恢复 `top_line/top_subrow`。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ViewportEditAnchor {
+    top_byte: ByteOffset,
+    top_subrow: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingViewportEditAnchor {
+    top_byte: ByteOffset,
+    top_subrow: u64,
 }
 
 /// 视图种类——编辑视图与预览视图共用 ViewId 空间，但语义不同。
@@ -191,6 +210,8 @@ pub struct EditView {
     /// 用户手动滚轮滚动后，允许 caret 暂时离开视区。
     /// 当 selection head 变化时，下一次 settle 会恢复 caret edge-scroll。
     manual_scroll_anchor: Option<ByteOffset>,
+    /// 文本编辑后等待新 wrap map 落地的视口锚点。
+    pending_edit_anchor: Option<PendingViewportEditAnchor>,
 }
 
 /// `EditView::settle_viewport_y` 的产出：已就位的视口与本帧是否消费了显露请求。
@@ -221,6 +242,7 @@ impl EditView {
             reveal_seq: 0,
             last_applied_reveal_seq: None,
             manual_scroll_anchor: None,
+            pending_edit_anchor: None,
         }
     }
 
@@ -307,12 +329,54 @@ impl EditView {
     /// 哪怕同一字节位置、同一种意图也算「新一次请求」，让渲染端有依据再触发一次。
     pub fn request_reveal(&mut self, byte: ByteOffset, kind: RevealKind) {
         self.manual_scroll_anchor = None;
+        self.pending_edit_anchor = None;
         self.reveal_seq = self.reveal_seq.wrapping_add(1);
         self.reveal = Some(RevealRequest {
             byte,
             kind,
             seq: self.reveal_seq,
         });
+    }
+
+    /// 捕获一次即将发生的文本编辑所需的视口锚点。
+    ///
+    /// 锚定视口顶部，让普通输入/换行/退格优先保持编辑点之前的内容稳定；
+    /// 后续 `settle_viewport_y` 仍会在光标越界时做最小 edge-scroll。
+    pub fn capture_viewport_edit_anchor(&self, buffer: &Buffer) -> Option<ViewportEditAnchor> {
+        Some(ViewportEditAnchor {
+            top_byte: buffer
+                .line_start_byte(Line::new(self.viewport.top_line as usize))
+                .ok()?,
+            top_subrow: self.viewport.top_subrow,
+        })
+    }
+
+    /// 把编辑前捕获的锚点穿过已提交的文本事件，登记为下一次 Y 轴 settle 的优先输入。
+    pub fn track_viewport_anchor_after_edit(
+        &mut self,
+        anchor: Option<ViewportEditAnchor>,
+        events: &[DeltaEvent],
+    ) {
+        if events.is_empty() {
+            return;
+        }
+
+        let Some(mut pending) = anchor
+            .map(|anchor| PendingViewportEditAnchor {
+                top_byte: anchor.top_byte,
+                top_subrow: anchor.top_subrow,
+            })
+            .or(self.pending_edit_anchor)
+        else {
+            return;
+        };
+        for event in events {
+            pending.top_byte = event
+                .position_map()
+                .map_old_position_with_affinity(pending.top_byte, Affinity::Before)
+                .value();
+        }
+        self.pending_edit_anchor = Some(pending);
     }
 
     /// 用户滚轮滚动：直接移动视口顶端，不改变 selection。
@@ -377,12 +441,12 @@ impl EditView {
     /// 2. **显露请求路径**：若 `reveal.seq > last_applied_reveal_seq`，先按 `RevealKind` 判定。
     /// `Jump` 强制把 `top_visual_row` 摆到 reveal 目标视觉行的视区上 1/3；
     /// `Match` 仅当目标不在 `[top, top + visible)` 时摆位。
-    /// 3. **边缘滚动防御**：仅在已有 `wrap_map`（即渲染端完成过测量）时检查
-    /// 主光标视觉行是否在 `[top, top + visible)`；不在时调到刚好包含光标。
+    /// 3. **边缘滚动防御**：仅在已有 `wrap_map`（即渲染端完成过测量）时检查主光标视觉行是否在 `[top, top + visible)`；
+    /// 不在时调到刚好包含光标。
     /// 无 `wrap_map` 的首帧 / dirty 帧只消费 reveal，跳过 cursor edge-scroll，避免用逻辑行近似误滚。
     /// 4. **范围裁剪**：把 `top_visual_row` 夹到文档可表示范围内。
-    /// 5. 把 `top_visual_row` 经 `wrap_map.visual_row_to_line_subrow` 还原回
-    /// `(top_line, top_subrow)`；无 `wrap_map` 时 `top_subrow = 0`。
+    /// 5. 把 `top_visual_row` 经 `wrap_map.visual_row_to_line_subrow` 还原回 `(top_line, top_subrow)`；
+    /// 无 `wrap_map` 时 `top_subrow = 0`。
     pub fn settle_viewport_y(
         &mut self,
         buffer: &Buffer,
@@ -414,6 +478,19 @@ impl EditView {
             Some(wm) => wm.visual_row_of(self.viewport.top_line, self.viewport.top_subrow as u32),
             None => self.viewport.top_line,
         };
+
+        // 0. 编辑锚点路径。
+        //
+        // 软换行编辑后 wrap_map 会先失效，再由 element prepaint 用新文本重新测量。
+        // 因此只有拿到新 wrap_map 时才消费 pending anchor；否则保留到下一次 settle。
+        if let Some(anchor) = self.pending_edit_anchor
+            && let Some(wm) = wrap_map
+        {
+            if let Ok(line) = buffer.byte_to_line(anchor.top_byte) {
+                top = wm.visual_row_of(line.get() as u64, anchor.top_subrow as u32);
+            }
+            self.pending_edit_anchor = None;
+        }
 
         // 1. 显露请求路径。
         let mut consumed_reveal = None;
@@ -819,6 +896,111 @@ mod settle_tests {
         let out = view.settle_viewport_y(&buffer, cursor);
         assert_eq!(out.viewport.top_line, 1);
         assert_eq!(out.viewport.top_subrow, 0);
+    }
+
+    #[test]
+    fn edit_anchor_should_keep_top_stable_when_cursor_remains_visible_near_file_end() {
+        let mut view = with_measured_viewport(58, 27, 85);
+        let mut buffer = buffer_with_line_count(85);
+        let old_cursor = line_start(&buffer, 78);
+        *view.selection_mut() = SelectionSet::caret(old_cursor);
+
+        let anchor = view.capture_viewport_edit_anchor(&buffer);
+        buffer.insert(old_cursor, "\n").unwrap();
+        let events = buffer.take_pending_events();
+        view.track_viewport_anchor_after_edit(anchor, &events);
+        view.set_wrap_map(Some(WrapMap::sparse(false, buffer.line_count() as u64, [])));
+
+        let new_cursor = events[0]
+            .position_map()
+            .map_old_position_with_affinity(old_cursor, zom_engine::Affinity::After)
+            .value();
+        let out = view.settle_viewport_y(&buffer, new_cursor);
+
+        // 光标从 78 行移动到 79 行后仍在视口内，因此保持视口顶部稳定；
+        // 插入点前面的内容不应为了维持 caret 屏幕行而主动移动。
+        assert_eq!(out.viewport.top_line, 58);
+    }
+
+    #[test]
+    fn edit_anchor_should_survive_soft_wrap_remeasurement() {
+        let mut view = fresh_view();
+        let mut buffer = buffer_from_lines(&["abcdefghij", "abcdefghij", "abcdefghij"]);
+        view.set_wrap_map(Some(WrapMap::new(
+            true,
+            vec![Vec::new(), Vec::new(), Vec::new()],
+        )));
+        view.set_viewport(ViewportState {
+            top_line: 0,
+            top_subrow: 0,
+            visible_visual_rows: 3,
+            visible_logical_lines: 3,
+        });
+        let old_cursor = line_start(&buffer, 2);
+        *view.selection_mut() = SelectionSet::caret(old_cursor);
+
+        let anchor = view.capture_viewport_edit_anchor(&buffer);
+        buffer.insert(ByteOffset::ZERO, "xxxxx").unwrap();
+        let events = buffer.take_pending_events();
+        view.track_viewport_anchor_after_edit(anchor, &events);
+        view.set_wrap_map(Some(WrapMap::new(
+            true,
+            vec![vec![5, 10], Vec::new(), Vec::new()],
+        )));
+
+        let new_cursor = events[0]
+            .position_map()
+            .map_old_position_with_affinity(old_cursor, zom_engine::Affinity::After)
+            .value();
+        let out = view.settle_viewport_y(&buffer, new_cursor);
+
+        // top 锚点先保持在文档开头；随后 cursor 因 line 0 新增 subrow 跑出 3 行视口，
+        // edge-scroll 做最小移动，把 cursor 放回视区。
+        assert_eq!(out.viewport.top_line, 0);
+        assert_eq!(out.viewport.top_subrow, 2);
+    }
+
+    #[test]
+    fn pending_edit_anchor_should_remap_across_consecutive_edits_before_measurement() {
+        let mut view = fresh_view();
+        let mut buffer = buffer_from_lines(&["a", "b", "c", "d"]);
+        view.set_wrap_map(Some(WrapMap::new(
+            false,
+            vec![Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+        )));
+        view.set_viewport(ViewportState {
+            top_line: 0,
+            top_subrow: 0,
+            visible_visual_rows: 3,
+            visible_logical_lines: 3,
+        });
+        let old_cursor = line_start(&buffer, 2);
+        *view.selection_mut() = SelectionSet::caret(old_cursor);
+
+        let anchor = view.capture_viewport_edit_anchor(&buffer);
+        buffer.insert(ByteOffset::ZERO, "x\n").unwrap();
+        let first_events = buffer.take_pending_events();
+        view.track_viewport_anchor_after_edit(anchor, &first_events);
+        view.set_wrap_map(None);
+
+        buffer.insert(ByteOffset::ZERO, "y\n").unwrap();
+        let second_events = buffer.take_pending_events();
+        view.track_viewport_anchor_after_edit(None, &second_events);
+        view.set_wrap_map(Some(WrapMap::sparse(false, buffer.line_count() as u64, [])));
+
+        let new_cursor = second_events[0]
+            .position_map()
+            .map_old_position_with_affinity(
+                first_events[0]
+                    .position_map()
+                    .map_old_position_with_affinity(old_cursor, zom_engine::Affinity::After)
+                    .value(),
+                zom_engine::Affinity::After,
+            )
+            .value();
+        let out = view.settle_viewport_y(&buffer, new_cursor);
+
+        assert_eq!(out.viewport.top_line, 2);
     }
 
     #[test]

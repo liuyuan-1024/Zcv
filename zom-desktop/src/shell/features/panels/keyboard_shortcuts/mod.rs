@@ -7,8 +7,10 @@ use gpui::{
 };
 
 use crate::shell::shared::scroll;
+
+use crate::host_intent::KeyRequest;
 use crate::shell::workbench::docks::render_focus_host;
-use crate::shell::{CommandCatalogLookup, KeyRequest, ShortcutLookup};
+use crate::shell::{CommandCatalogLookup, ShortcutLookup};
 use crate::theme::{color, space, typography};
 use zom_command::CommandCatalogItem;
 
@@ -85,10 +87,10 @@ fn shortcuts_panel(rows: Vec<ShortcutRow>, list_state: &ListState) -> Div {
         .size_full()
         .flex()
         .flex_col()
-        .bg(color::gray::s02())
+        .bg(color::current().gray.s02)
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .child(div().flex_1().overflow_hidden().child(body))
 }
 
@@ -124,7 +126,7 @@ fn render_row(row: ShortcutRow) -> Div {
         .w_full()
         .gap(space::s6())
         .border_b_1()
-        .border_color(color::gray::s05())
+        .border_color(color::current().gray.s05)
         .p(space::s6())
         .child(
             div()
@@ -139,7 +141,7 @@ fn render_row(row: ShortcutRow) -> Div {
                         .flex_1()
                         .overflow_hidden()
                         .truncate()
-                        .text_color(color::gray::a09())
+                        .text_color(color::current().gray.a09)
                         .child(row.title),
                 )
                 .child(shortcut_badge(row.shortcut)),
@@ -148,7 +150,7 @@ fn render_row(row: ShortcutRow) -> Div {
             div()
                 .w_full()
                 .overflow_hidden()
-                .text_color(color::gray::s08())
+                .text_color(color::current().gray.s08)
                 .line_height(typography::ui_line())
                 .child(row.description),
         )
@@ -158,7 +160,7 @@ fn shortcut_badge(shortcut: String) -> Div {
     div()
         .flex_shrink_0()
         .whitespace_nowrap()
-        .text_color(color::gray::a09())
+        .text_color(color::current().gray.a09)
         .child(shortcut)
 }
 
@@ -170,7 +172,7 @@ fn empty_message(hint: &'static str) -> Div {
             .items_center()
             .justify_center()
             .text_size(typography::ui())
-            .text_color(color::gray::s08())
+            .text_color(color::current().gray.s08)
             .child(hint),
     )
 }

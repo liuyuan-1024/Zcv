@@ -7,7 +7,7 @@ use gpui::{AnyElement, MouseButton, Rgba, black, deferred, div, prelude::*, px};
 use zom_workspace::EntryKind;
 
 use super::{ConfirmDeleteHandlers, PendingDelete};
-use crate::shell::ActionRequest;
+use crate::host_intent::CommandRequest;
 use crate::theme::{color, radius, space, typography};
 
 /// 渲染居中删除确认弹窗。`deferred` + 高优先级让它压在所有面板与锚定
@@ -69,20 +69,20 @@ fn dialog(pending: &PendingDelete, handlers: &ConfirmDeleteHandlers) -> impl Int
         .p(space::s6())
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::s05())
-        .bg(color::gray::s03())
+        .border_color(color::current().gray.s05)
+        .bg(color::current().gray.s03)
         // 吞掉对话框内的按下，避免冒泡到遮罩误触发取消。
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             div()
                 .text_size(typography::ui())
-                .text_color(color::gray::s09())
+                .text_color(color::current().gray.s09)
                 .child("移到回收站"),
         )
         .child(
             div()
                 .text_size(typography::ui())
-                .text_color(color::gray::s09())
+                .text_color(color::current().gray.s09)
                 .child(message),
         )
         .child(
@@ -94,13 +94,13 @@ fn dialog(pending: &PendingDelete, handlers: &ConfirmDeleteHandlers) -> impl Int
                 .child(button(
                     "confirm-delete.cancel",
                     "取消",
-                    color::gray::s09(),
+                    color::current().gray.s09,
                     handlers.cancel.clone(),
                 ))
                 .child(button(
                     "confirm-delete.confirm",
                     "删除",
-                    color::red::s07(),
+                    color::current().red.s07,
                     handlers.confirm.clone(),
                 )),
         )
@@ -110,13 +110,13 @@ fn button(
     id: &'static str,
     label: &'static str,
     text_color: Rgba,
-    action: ActionRequest,
+    action: CommandRequest,
 ) -> impl IntoElement {
     div()
         .id(id)
         .p(space::s6())
         .rounded(radius::r4())
-        .bg(color::gray::s04())
+        .bg(color::current().gray.s04)
         .text_size(typography::ui())
         .text_color(text_color)
         .cursor_pointer()

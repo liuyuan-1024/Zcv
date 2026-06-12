@@ -37,7 +37,11 @@ impl TextTargetRuntime {
         session: &WorkspaceSession,
         f: impl FnOnce(EditorRouter<'_>) -> R,
     ) -> R {
-        let main = MainEditorOwnerRef::new(session.workspace(), session.views());
+        let main = MainEditorOwnerRef::new(
+            session.workspace(),
+            session.views(),
+            session.active_edit_view_id(),
+        );
         let registry_borrows = self.editor_targets.borrow_all();
 
         let mut owners: Vec<&dyn TextTargetQuery> = Vec::new();
@@ -54,8 +58,9 @@ impl TextTargetRuntime {
         session: &mut WorkspaceSession,
         f: impl FnOnce(EditorRouterMut<'_>) -> R,
     ) -> R {
+        let active_view_id = session.active_edit_view_id();
         let (workspace, views) = session.parts_mut();
-        let mut main = MainEditorOwner::new(workspace, views);
+        let mut main = MainEditorOwner::new(workspace, views, active_view_id);
         let mut registry_borrows = self.editor_targets.borrow_all_mut();
 
         let mut owners: Vec<&mut dyn TextTargetOwner> = Vec::new();

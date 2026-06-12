@@ -10,9 +10,9 @@ use std::rc::Rc;
 use gpui::{AnyElement, Div, FocusHandle};
 
 use crate::editor::TextEditorSlot;
+use crate::host_intent::{CommandRequest, KeyRequest};
 use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::PanelContext;
-use crate::shell::{ActionRequest, KeyRequest};
 
 mod clipboard;
 mod confirm_delete;
@@ -37,8 +37,8 @@ pub(crate) use state::{
 
 /// 删除确认弹窗的两个动作回调。由根视图绑定命令后注入。
 pub(crate) struct ConfirmDeleteHandlers {
-    pub(crate) confirm: ActionRequest,
-    pub(crate) cancel: ActionRequest,
+    pub(crate) confirm: CommandRequest,
+    pub(crate) cancel: CommandRequest,
 }
 
 /// 处于删除确认态时渲染居中模态弹窗；否则返回 `None`。

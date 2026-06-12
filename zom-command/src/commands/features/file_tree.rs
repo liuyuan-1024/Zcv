@@ -56,17 +56,17 @@ pub struct FileTreeBindingContext {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MoveSelectionArgs {
+pub struct FileTreeMoveArgs {
     pub delta: isize,
 }
 
-impl From<MoveSelectionArgs> for CommandArgs {
-    fn from(args: MoveSelectionArgs) -> Self {
+impl From<FileTreeMoveArgs> for CommandArgs {
+    fn from(args: FileTreeMoveArgs) -> Self {
         CommandArgs::new().with("delta", args.delta.to_string())
     }
 }
 
-impl TryFrom<CommandArgs> for MoveSelectionArgs {
+impl TryFrom<CommandArgs> for FileTreeMoveArgs {
     type Error = CommandError;
 
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
@@ -80,11 +80,11 @@ impl TryFrom<CommandArgs> for MoveSelectionArgs {
 }
 
 pub fn move_selection(delta: isize) -> Invocation {
-    (cid(MOVE_SELECTION), MoveSelectionArgs { delta }.into())
+    (cid(MOVE_SELECTION), FileTreeMoveArgs { delta }.into())
 }
 
 pub fn extend_selection(delta: isize) -> Invocation {
-    (cid(EXTEND_SELECTION), MoveSelectionArgs { delta }.into())
+    (cid(EXTEND_SELECTION), FileTreeMoveArgs { delta }.into())
 }
 
 pub fn escape() -> Invocation {
@@ -336,7 +336,7 @@ fn run_move_selection(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
-    let args = MoveSelectionArgs::try_from(args)?;
+    let args = FileTreeMoveArgs::try_from(args)?;
     context
         .effects
         .push(HostEffect::FileTreeMoveSelection(args.delta));
@@ -347,7 +347,7 @@ fn run_extend_selection(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
-    let args = MoveSelectionArgs::try_from(args)?;
+    let args = FileTreeMoveArgs::try_from(args)?;
     context
         .effects
         .push(HostEffect::FileTreeExtendSelection(args.delta));
@@ -461,7 +461,7 @@ fn run_cancel_delete(
 }
 
 fn move_args(delta: isize) -> CommandArgs {
-    MoveSelectionArgs { delta }.into()
+    FileTreeMoveArgs { delta }.into()
 }
 
 fn cid(id: &'static str) -> CommandId {

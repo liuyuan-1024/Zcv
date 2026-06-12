@@ -43,7 +43,7 @@ pub(crate) struct FileTreeActionResult {
 /// 文件树会话动作端口：shell feature 拥有文件树模型，
 /// app 只在动作需要 [`WorkspaceSession`] 时带着会话调这个端口，避免 shell 直接借出 app 内部 session。
 pub(crate) trait FileTreeHost {
-    fn apply_file_tree_action(
+    fn apply_file_tree_action_from_effect(
         &self,
         action: FileTreeAction,
         session: &mut WorkspaceSession,
@@ -53,7 +53,7 @@ pub(crate) trait FileTreeHost {
 /// 搜索动作端口：search feature 拥有 query/replacement/options，app 负责把
 /// 这些动作和 workspace/view 会话组合在一起执行。
 pub(crate) trait SearchHost {
-    fn apply_search_action(&self, action: SearchAction, session: &mut WorkspaceSession);
+    fn apply_search_action_from_effect(&self, action: SearchAction, session: &mut WorkspaceSession);
 }
 
 /// 编辑后同步端口：每次活动 buffer 上产生编辑事件后被调一次。

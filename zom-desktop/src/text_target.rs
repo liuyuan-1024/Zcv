@@ -1,16 +1,15 @@
 //! 文本目标路由协议。
 //!
 //! 这是 app 与 shell 之间的共享词汇：
-//! app 只知道“某个文本目标 owner 能按 [`crate::focus::AppFocus`] 提供命令 / IME 路由能力”，
+//! app 只知道“某个文本目标 owner 能按 [`crate::focus::AppFocus`] 提供命令 / IME 查询能力”，
 //! 不知道这些 owner 来自哪个面板、surface 或 GPUI 组件。
 
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
 
-use zom_command::{CommandError, EditTarget, KeyContext};
-
-use crate::editor::text::{EditorSnapshot, ImeQueryTarget, ImeTarget, ImeUtf16Range};
+use crate::editor::text::{EditorSnapshot, ImeQueryTarget, ImeUtf16Range};
 use crate::focus::AppFocus;
+use zom_command::{EditTarget, KeyContext};
 
 /// 只读侧：是哪个 target、当前是否活跃、给路由用的查询能力。
 pub(crate) trait TextTargetQuery {
@@ -32,9 +31,8 @@ pub(crate) trait TextTargetQuery {
     fn ime_query_target(&self, focus: AppFocus) -> Option<ImeQueryTarget<'_>>;
 }
 
-/// 可写侧：IME 写入与编辑命令作用目标。
+/// 可写侧：编辑命令作用目标。
 pub(crate) trait TextTargetOwner: TextTargetQuery {
-    fn ime_target(&mut self, focus: AppFocus) -> Option<ImeTarget<'_>>;
     fn edit_target(&mut self, focus: AppFocus) -> Option<EditTarget<'_>>;
 
     /// 文本输入后置钩子。默认无操作；owner 想响应“文本变了”时自行 override。
@@ -49,7 +47,7 @@ pub(crate) struct EditorRouter<'a> {
     owners: Vec<&'a dyn TextTargetQuery>,
 }
 
-/// 可写路由：仅承载 IME 写入回调（不返回借用）。
+/// 可写路由：承载需要落到目标 owner 的可写回调。
 pub(crate) struct EditorRouterMut<'a> {
     owners: Vec<&'a mut dyn TextTargetOwner>,
 }
@@ -127,22 +125,6 @@ impl<'a> EditorRouterMut<'a> {
         if let Some(owner) = self.owners.iter_mut().find(|o| o.accepts_focus(focus)) {
             owner.settle_viewport_y();
         }
-    }
-
-    pub(crate) fn with_ime_target<R>(
-        mut self,
-        focus: AppFocus,
-        f: impl FnOnce(ImeTarget<'_>) -> Result<R, CommandError>,
-    ) -> Result<R, CommandError> {
-        for owner in self.owners.iter_mut() {
-            if owner.accepts_focus(focus) {
-                let ime = owner.ime_target(focus).ok_or(CommandError::NoActiveView)?;
-                let result = f(ime)?;
-                owner.after_text_changed();
-                return Ok(result);
-            }
-        }
-        Err(CommandError::NoActiveView)
     }
 }
 

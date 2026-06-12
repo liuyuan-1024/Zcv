@@ -2,7 +2,7 @@ use zom_command::{EditTarget, KeyContext};
 
 use super::recent::RecentProject;
 use crate::editor::text::{
-    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
+    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, OwnedEditorTarget,
 };
 use crate::focus::AppFocus;
 use crate::text_target::{TextTargetOwner, TextTargetQuery};
@@ -136,16 +136,12 @@ impl TextTargetQuery for ProjectPickerModel {
 }
 
 impl TextTargetOwner for ProjectPickerModel {
-    fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
-        Some(self.query.as_ime_target())
-    }
-
     fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
         Some(self.query.as_edit_target())
     }
 
     /// 查询文本一变就把候选 cursor 跳回第一项 —— 旧的下标可能超出新过滤结果。
-    /// 由 [`super::EditorRouterMut::with_ime_target`] 在 IME 写入成功后调。
+    /// 由命令管线发现编辑目标文本变更后调。
     fn after_text_changed(&mut self) {
         self.reset_selection();
     }

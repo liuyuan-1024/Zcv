@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use zom_engine::{Buffer, ByteOffset};
+use zom_engine::ByteOffset;
 use zom_workspace::{BufferOrigin, Workspace, WorkspaceError};
 
 struct TempDir {
@@ -34,39 +34,20 @@ impl Drop for TempDir {
     }
 }
 
-fn buffer_text(buffer: &Buffer) -> String {
-    buffer
-        .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
-        .unwrap()
-        .into_text()
-        .into_owned()
-}
-
 #[test]
-fn open_text_should_track_active_buffer_and_close_fallback() {
+fn open_close_buffers_should_track_buffer_set() {
     let mut workspace = Workspace::new();
 
-    assert_eq!(workspace.active_buffer_id(), None);
+    assert_eq!(workspace.buffers().count(), 0);
 
     let first = workspace.open_text(None, "first").unwrap();
     let second = workspace.open_text(None, "second").unwrap();
     let third = workspace.open_text(None, "third").unwrap();
-
-    assert_eq!(workspace.active_buffer_id(), Some(third));
-    workspace.set_active_buffer(first).unwrap();
-    assert_eq!(
-        buffer_text(workspace.active_buffer().unwrap().buffer()),
-        "first"
-    );
+    assert_eq!(workspace.buffers().count(), 3);
 
     workspace.close_buffer(second).unwrap();
-    assert_eq!(workspace.active_buffer_id(), Some(first));
-
     workspace.close_buffer(first).unwrap();
-    assert_eq!(workspace.active_buffer_id(), Some(third));
-
     workspace.close_buffer(third).unwrap();
-    assert_eq!(workspace.active_buffer_id(), None);
     assert_eq!(workspace.buffers().count(), 0);
 }
 
@@ -79,7 +60,6 @@ fn open_file_and_save_file_should_preserve_path_and_clean_state() {
     let mut workspace = Workspace::new();
     let id = workspace.open_file(path.clone()).unwrap();
 
-    assert_eq!(workspace.active_buffer_id(), Some(id));
     assert_eq!(workspace.buffer_path(id).unwrap(), Some(path.as_path()));
     assert!(!workspace.is_buffer_dirty(id).unwrap());
     assert!(!workspace.is_buffer_read_only(id).unwrap());
@@ -164,10 +144,6 @@ fn status_queries_should_report_missing_buffer() {
 
     assert!(matches!(
         workspace.is_buffer_dirty(id),
-        Err(WorkspaceError::BufferNotFound(found)) if found == id
-    ));
-    assert!(matches!(
-        workspace.set_active_buffer(id),
         Err(WorkspaceError::BufferNotFound(found)) if found == id
     ));
     assert!(matches!(

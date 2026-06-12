@@ -6,7 +6,8 @@
 
 use gpui::{AnyElement, Context, FocusHandle, IntoElement, Window};
 
-use crate::shell::{CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup};
+use crate::host_intent::KeyRequest;
+use crate::shell::{CommandCatalogLookup, CommandTitleLookup, ShortcutLookup};
 use crate::ui_id::PanelId;
 
 pub(crate) mod debug;

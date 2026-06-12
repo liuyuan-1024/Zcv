@@ -189,16 +189,16 @@ fn render_input_row(kind: EntryKind, depth: usize, slot: &Rc<TextEditorSlot>) ->
         .overflow_hidden()
         .rounded(radius::r2())
         .border_1()
-        .border_color(color::blue::s07())
+        .border_color(color::current().blue.s07)
         .pl(indent_unit() * (depth as f32) + space::s4())
         .text_size(typography::ui())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .child(
             div().flex_shrink_0().size(typography::ui_line()).child(
                 svg()
                     .path(icon)
                     .size(typography::ui_line())
-                    .text_color(color::gray::s09()),
+                    .text_color(color::current().gray.s09),
             ),
         )
         .child(
@@ -220,7 +220,7 @@ fn empty_message(hint: &'static str) -> Div {
             .items_center()
             .justify_center()
             .text_size(typography::ui())
-            .text_color(color::gray::s09())
+            .text_color(color::current().gray.s09)
             .child(hint),
     )
 }
@@ -241,24 +241,24 @@ fn render_row(
     // 边框始终占 1px，保证选中态切换时行高不抖。
     // 失焦时直接染透明，让选中标记瞬时消失；获焦后再画上。
     let border_color = if is_selected && is_focused {
-        color::blue::s07()
+        color::current().blue.s07
     } else {
         gpui::rgba(0)
     };
     // 背景三态：多选选区 > 活动文件 > 透明。
     // 选区色用蓝 a04（theme 注释里就是"选区色块"），与活动文件的灰底视觉上一眼可分。
     let bg_color = if is_in_selection {
-        color::blue::a04()
+        color::current().blue.a04
     } else if is_active {
-        color::gray::s04()
+        color::current().gray.s04
     } else {
         gpui::rgba(0)
     };
     // 与 top bar Glyph 同基线：常态 g75，活动项 g95。
     let text_color = if is_active {
-        color::gray::s09()
+        color::current().gray.s09
     } else {
-        color::gray::s09()
+        color::current().gray.s09
     };
 
     let mut row_div = div()
@@ -276,7 +276,7 @@ fn render_row(
         .text_size(typography::ui())
         .line_height(typography::ui_line())
         .text_color(text_color)
-        .child(icon_cell(row, is_active))
+        .child(icon_cell(row))
         .child(
             div()
                 .flex_1()
@@ -292,26 +292,21 @@ fn render_row(
     row_div
 }
 
-fn icon_cell(row: &FileTreeRow, is_active: bool) -> Div {
+fn icon_cell(row: &FileTreeRow) -> Div {
     div()
         .flex_shrink_0()
         .size(typography::ui_line())
-        .child(entry_icon(row, is_active))
+        .child(entry_icon(row))
 }
 
-fn entry_icon(row: &FileTreeRow, is_active: bool) -> Svg {
+fn entry_icon(row: &FileTreeRow) -> Svg {
     let path = match row.kind {
         EntryKind::Directory if row.expanded => FOLDER_OPEN_ICON,
         EntryKind::Directory => FOLDER_ICON,
         EntryKind::File => FILE_ICON,
     };
-    let tint = if is_active {
-        color::gray::s09()
-    } else {
-        color::gray::s09()
-    };
     svg()
         .path(path)
         .size(typography::ui_line())
-        .text_color(tint)
+        .text_color(color::current().gray.s09)
 }

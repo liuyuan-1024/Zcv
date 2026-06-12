@@ -36,6 +36,10 @@ fn buffer(text: &str) -> Buffer {
     Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
 }
 
+fn metadata(description: &str) -> TransactionMetadata {
+    TransactionMetadata::new(TransactionSource::Programmatic).with_description(description)
+}
+
 #[test]
 fn set_selection_should_reject_out_of_bounds_invalid_utf8_and_grapheme_middle_offsets_atomically() {
     for (text, offset) in [("abc", 4), ("你a", 1), ("ae\u{301}b", 2), ("a\r\nb", 2)] {
@@ -52,7 +56,11 @@ fn multi_cursor_insert_replace_delete_should_apply_one_state_transition_per_comm
     let mut buffer = buffer("abcdef");
 
     buffer
-        .insert_at_selections(SelectionSet::new(vec![caret(1), caret(4)]), "X")
+        .insert_at_selections(
+            SelectionSet::new(vec![caret(1), caret(4)]),
+            "X",
+            metadata("insert"),
+        )
         .unwrap();
     assert_eq!(buffer_text(&buffer), "aXbcdXef");
     assert_eq!(buffer.history_status().undo_depth, 1);
@@ -62,6 +70,7 @@ fn multi_cursor_insert_replace_delete_should_apply_one_state_transition_per_comm
         .replace_selections(
             SelectionSet::new(vec![selection(1, 3), selection(5, 7)]),
             "Q",
+            metadata("replace"),
         )
         .unwrap();
     assert_eq!(buffer_text(&buffer), "aQcdQf");
@@ -71,6 +80,7 @@ fn multi_cursor_insert_replace_delete_should_apply_one_state_transition_per_comm
         .delete_at_selections(
             SelectionSet::new(vec![selection(1, 2), selection(4, 5)]),
             None,
+            metadata("delete"),
         )
         .unwrap();
     assert_eq!(buffer_text(&buffer), "acdf");
@@ -86,6 +96,7 @@ fn delete_at_selections_should_respect_grapheme_clusters() {
         .delete_at_selections(
             set_caret(4),
             Some((MovementDirection::Previous, MovementUnit::Grapheme)),
+            metadata("delete"),
         )
         .unwrap();
     assert_eq!(buffer_text(&backward), "ab");
@@ -96,6 +107,7 @@ fn delete_at_selections_should_respect_grapheme_clusters() {
         .delete_at_selections(
             set_caret(1),
             Some((MovementDirection::Next, MovementUnit::Grapheme)),
+            metadata("delete"),
         )
         .unwrap();
     assert_eq!(buffer_text(&forward), "ab");
@@ -143,6 +155,7 @@ fn word_delete_should_not_cross_line_when_current_line_contains_only_separators(
         .delete_at_selections(
             SelectionSet::caret(end),
             Some((MovementDirection::Previous, MovementUnit::Word)),
+            metadata("delete"),
         )
         .unwrap();
 
@@ -161,6 +174,7 @@ fn forward_word_delete_should_not_cross_line_when_current_line_contains_only_sep
         .delete_at_selections(
             SelectionSet::caret(b(0)),
             Some((MovementDirection::Next, MovementUnit::Word)),
+            metadata("delete"),
         )
         .unwrap();
 
@@ -194,6 +208,7 @@ fn backward_word_delete_from_empty_line_start_should_remove_empty_line_separator
         .delete_at_selections(
             SelectionSet::caret(empty_line_start),
             Some((MovementDirection::Previous, MovementUnit::Word)),
+            metadata("delete"),
         )
         .unwrap();
 

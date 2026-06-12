@@ -8,11 +8,9 @@ use std::rc::Rc;
 
 use gpui::{Context, Corner, Div, Entity, FocusHandle, Window, div, point, prelude::*, px};
 
-use crate::shell::KeyRequest;
+use crate::host_intent::KeyRequest;
 use crate::shell::normalized_chord;
-use crate::shell::surfaces::{
-    SurfaceAnchor, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
-};
+use crate::shell::surfaces::{SurfaceAnchor, SurfaceManager, SurfaceRequest};
 use crate::theme::{color, radius, space, typography};
 use crate::ui_id::SurfaceId;
 
@@ -61,11 +59,9 @@ pub(crate) fn request(runtime: LanguageServersRuntime) -> SurfaceRequest {
     let focus = runtime.focus.clone();
     SurfaceRequest {
         id: SurfaceId::LanguageServers,
-        anchor: SurfaceAnchor::Invoker(super::INVOKER_ID.into()),
-        placement: SurfacePlacement {
-            invoker_point: SurfaceInvokerPoint::TopLeft,
-            corner: Corner::BottomLeft,
-            offset: point(px(0.0), -space::s6()),
+        anchor: SurfaceAnchor::Invoker {
+            id: super::INVOKER_ID.into(),
+            attachment: Corner::BottomLeft,
             fallback_position: point(px(48.0), px(540.0)),
         },
         focus_on_open: Some(focus),
@@ -81,8 +77,8 @@ fn render(focus: &FocusHandle, key_request: Rc<RefCell<Option<KeyRequest>>>) -> 
         .p(space::s6())
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::s05())
-        .bg(color::gray::s03())
+        .border_color(color::current().gray.s05)
+        .bg(color::current().gray.s03)
         .track_focus(focus)
         .tab_index(0)
         .on_key_down(move |event, window, cx| {
@@ -96,15 +92,15 @@ fn render(focus: &FocusHandle, key_request: Rc<RefCell<Option<KeyRequest>>>) -> 
         .child(
             div()
                 .text_size(typography::ui())
-                .text_color(color::gray::s08())
+                .text_color(color::current().gray.s08)
                 .child("当前文件暂无已连接的语言服务器"),
         )
         .child(
             div()
                 .rounded(radius::r4())
-                .bg(color::gray::s04())
+                .bg(color::current().gray.s04)
                 .text_size(typography::ui())
-                .text_color(color::gray::s09())
+                .text_color(color::current().gray.s09)
                 .child("等待语言服务器接入"),
         )
 }

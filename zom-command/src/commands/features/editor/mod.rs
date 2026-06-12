@@ -9,16 +9,10 @@
 //!
 //! // 2. 调用（类型安全，不再手拼字符串）
 //! let invocation = editor::insert_text("hi");
-//! app.dispatch(invocation);
+//! app.dispatch_command(invocation);
 //! ```
 
 use std::collections::BTreeSet;
-
-use zom_engine::{
-    Buffer, ByteOffset, EngineError, Line, Motion, MovementDirection, MovementUnit, Selection,
-    SelectionSet, TextRange,
-};
-use zom_view::ViewId;
 
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
@@ -26,6 +20,11 @@ use crate::{
     CommandRegistry, DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
     active_view_buffer_id, command_execution_failed, parse_optional_bool, reject_unknown_args,
     required_arg,
+};
+use zom_engine::{
+    Buffer, ByteOffset, CompositionSelection, EngineError, Line, Motion, MovementDirection,
+    MovementUnit, Selection, SelectionSet, TextRange, TransactionMetadata, TransactionSource,
+    Utf16Offset,
 };
 
 mod visual_movement;
@@ -42,11 +41,14 @@ pub const INDENT: &str = "editor.indent";
 pub const OUTDENT: &str = "editor.outdent";
 pub const DELETE: &str = "editor.delete";
 pub const MOVE_SELECTION: &str = "editor.move_selection";
+pub const SET_SELECTION: &str = "editor.set_selection";
+pub const SCROLL_VIEWPORT: &str = "editor.scroll_viewport";
 pub const SELECT_ALL: &str = "editor.select_all";
 /// 把每个选区塌成 caret（head 位置不变）。多 caret 不合并，只去 extent。
 pub const CLEAR_SELECTION: &str = "editor.clear_selection";
 pub const UNDO: &str = "editor.undo";
 pub const REDO: &str = "editor.redo";
+pub const IME_UPDATE: &str = "editor.ime_update";
 pub const IME_COMMIT: &str = "editor.ime_commit";
 pub const IME_CANCEL: &str = "editor.ime_cancel";
 pub const IME_CONFIRM: &str = "editor.ime_confirm";
@@ -57,6 +59,7 @@ pub const COPY: &str = "editor.copy";
 pub const CUT: &str = "editor.cut";
 pub const PASTE: &str = "editor.paste";
 pub const TOGGLE_SOFT_WRAP: &str = "editor.toggle_soft_wrap";
+pub const OPEN_PREVIEW: &str = "editor.preview.open";
 
 /// 文本编辑器当前能力。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -160,26 +163,110 @@ impl TryFrom<CommandArgs> for ReplaceSelectionArgs {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ImeCommitArgs {
+    pub replacement_range_utf16: Option<ImeUtf16RangeArgs>,
     pub text: String,
 }
 
 impl From<ImeCommitArgs> for CommandArgs {
     fn from(args: ImeCommitArgs) -> Self {
-        CommandArgs::new().with("text", args.text)
+        let mut out = CommandArgs::new().with("text", args.text);
+        if let Some(range) = args.replacement_range_utf16 {
+            out = range.write_to_args(out, "replacement");
+        }
+        out
     }
 }
 
 impl TryFrom<CommandArgs> for ImeCommitArgs {
     type Error = CommandError;
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["text"])?;
+        reject_unknown_args(&args, &["text", "replacement_start", "replacement_end"])?;
         Ok(Self {
+            replacement_range_utf16: ImeUtf16RangeArgs::parse_optional(&args, "replacement")?,
             text: args.get("text").unwrap_or("").to_string(),
         })
     }
 }
 
-/// `editor.delete` 的参数集——与 [`MoveSelectionArgs`] 同构（一条命令 + args 区分）。
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ImeUpdateArgs {
+    pub replacement_range_utf16: Option<ImeUtf16RangeArgs>,
+    pub text: String,
+    pub selected_range_utf16: Option<ImeUtf16RangeArgs>,
+}
+
+impl From<ImeUpdateArgs> for CommandArgs {
+    fn from(args: ImeUpdateArgs) -> Self {
+        let mut out = CommandArgs::new().with("text", args.text);
+        if let Some(range) = args.replacement_range_utf16 {
+            out = range.write_to_args(out, "replacement");
+        }
+        if let Some(range) = args.selected_range_utf16 {
+            out = range.write_to_args(out, "selected");
+        }
+        out
+    }
+}
+
+impl TryFrom<CommandArgs> for ImeUpdateArgs {
+    type Error = CommandError;
+    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
+        reject_unknown_args(
+            &args,
+            &[
+                "text",
+                "replacement_start",
+                "replacement_end",
+                "selected_start",
+                "selected_end",
+            ],
+        )?;
+        Ok(Self {
+            replacement_range_utf16: ImeUtf16RangeArgs::parse_optional(&args, "replacement")?,
+            text: args.get("text").unwrap_or("").to_string(),
+            selected_range_utf16: ImeUtf16RangeArgs::parse_optional(&args, "selected")?,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ImeUtf16RangeArgs {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl ImeUtf16RangeArgs {
+    pub fn new(start: usize, end: usize) -> Result<Self, CommandError> {
+        if start > end {
+            return Err(CommandError::InvalidArgs(
+                "IME UTF-16 range start 大于 end".into(),
+            ));
+        }
+        Ok(Self { start, end })
+    }
+
+    fn parse_optional(args: &CommandArgs, prefix: &str) -> Result<Option<Self>, CommandError> {
+        let start_key = format!("{prefix}_start");
+        let end_key = format!("{prefix}_end");
+        match (args.get(&start_key), args.get(&end_key)) {
+            (None, None) => Ok(None),
+            (Some(start), Some(end)) => Ok(Some(Self::new(
+                parse_usize_arg(start, &start_key)?,
+                parse_usize_arg(end, &end_key)?,
+            )?)),
+            _ => Err(CommandError::InvalidArgs(format!(
+                "IME {prefix} range 需要同时提供 start/end"
+            ))),
+        }
+    }
+
+    fn write_to_args(self, args: CommandArgs, prefix: &str) -> CommandArgs {
+        args.with(format!("{prefix}_start"), self.start.to_string())
+            .with(format!("{prefix}_end"), self.end.to_string())
+    }
+}
+
+/// `editor.delete` 的参数集——与 [`MoveCaretArgs`] 同构（一条命令 + args 区分）。
 ///
 /// 三种语义全在一组 args 里：
 /// - `direction = Some(dir) + unit`：caret 沿 `dir` 删一个 `unit`；非空 selection 整段删。
@@ -233,14 +320,14 @@ impl TryFrom<CommandArgs> for DeleteArgs {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MoveSelectionArgs {
+pub struct MoveCaretArgs {
     pub direction: MovementDirection,
     pub motion: Motion,
     pub extend: bool,
 }
 
-impl From<MoveSelectionArgs> for CommandArgs {
-    fn from(args: MoveSelectionArgs) -> Self {
+impl From<MoveCaretArgs> for CommandArgs {
+    fn from(args: MoveCaretArgs) -> Self {
         let mut out = CommandArgs::new()
             .with("direction", direction_to_str(args.direction))
             .with("motion", motion_to_str(args.motion))
@@ -252,7 +339,7 @@ impl From<MoveSelectionArgs> for CommandArgs {
     }
 }
 
-impl TryFrom<CommandArgs> for MoveSelectionArgs {
+impl TryFrom<CommandArgs> for MoveCaretArgs {
     type Error = CommandError;
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
         reject_unknown_args(&args, &["direction", "motion", "extend", "lines"])?;
@@ -262,6 +349,54 @@ impl TryFrom<CommandArgs> for MoveSelectionArgs {
             motion: parse_motion(&motion_kind, &args)?,
             extend: parse_optional_bool(args.get("extend"))?,
         })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SetSelectionArgs {
+    pub anchor: ByteOffset,
+    pub head: ByteOffset,
+}
+
+impl From<SetSelectionArgs> for CommandArgs {
+    fn from(args: SetSelectionArgs) -> Self {
+        CommandArgs::new()
+            .with("anchor", args.anchor.get().to_string())
+            .with("head", args.head.get().to_string())
+    }
+}
+
+impl TryFrom<CommandArgs> for SetSelectionArgs {
+    type Error = CommandError;
+    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
+        reject_unknown_args(&args, &["anchor", "head"])?;
+        Ok(Self {
+            anchor: parse_byte_offset(&required_arg(&args, "anchor")?, "anchor")?,
+            head: parse_byte_offset(&required_arg(&args, "head")?, "head")?,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScrollViewportArgs {
+    pub delta_visual_rows: i64,
+}
+
+impl From<ScrollViewportArgs> for CommandArgs {
+    fn from(args: ScrollViewportArgs) -> Self {
+        CommandArgs::new().with("delta_visual_rows", args.delta_visual_rows.to_string())
+    }
+}
+
+impl TryFrom<CommandArgs> for ScrollViewportArgs {
+    type Error = CommandError;
+    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
+        reject_unknown_args(&args, &["delta_visual_rows"])?;
+        let raw = required_arg(&args, "delta_visual_rows")?;
+        let delta_visual_rows = raw
+            .parse::<i64>()
+            .map_err(|_| CommandError::InvalidArgs(format!("无效 delta_visual_rows：{raw}")))?;
+        Ok(Self { delta_visual_rows })
     }
 }
 
@@ -349,12 +484,23 @@ pub fn move_selection(
     motion: impl Into<Motion>,
     extend: bool,
 ) -> Invocation {
-    let args = MoveSelectionArgs {
+    let args = MoveCaretArgs {
         direction,
         motion: motion.into(),
         extend,
     };
     (cid(MOVE_SELECTION), args.into())
+}
+
+pub fn set_selection(anchor: ByteOffset, head: ByteOffset) -> Invocation {
+    (cid(SET_SELECTION), SetSelectionArgs { anchor, head }.into())
+}
+
+pub fn scroll_viewport(delta_visual_rows: i64) -> Invocation {
+    (
+        cid(SCROLL_VIEWPORT),
+        ScrollViewportArgs { delta_visual_rows }.into(),
+    )
 }
 
 pub fn select_all() -> Invocation {
@@ -373,8 +519,34 @@ pub fn redo() -> Invocation {
     (cid(REDO), CommandArgs::new())
 }
 
-pub fn ime_commit(text: impl Into<String>) -> Invocation {
-    (cid(IME_COMMIT), ImeCommitArgs { text: text.into() }.into())
+pub fn ime_update(
+    replacement_range_utf16: Option<ImeUtf16RangeArgs>,
+    text: impl Into<String>,
+    selected_range_utf16: Option<ImeUtf16RangeArgs>,
+) -> Invocation {
+    (
+        cid(IME_UPDATE),
+        ImeUpdateArgs {
+            replacement_range_utf16,
+            text: text.into(),
+            selected_range_utf16,
+        }
+        .into(),
+    )
+}
+
+pub fn ime_commit(
+    replacement_range_utf16: Option<ImeUtf16RangeArgs>,
+    text: impl Into<String>,
+) -> Invocation {
+    (
+        cid(IME_COMMIT),
+        ImeCommitArgs {
+            replacement_range_utf16,
+            text: text.into(),
+        }
+        .into(),
+    )
 }
 
 pub fn ime_cancel() -> Invocation {
@@ -412,6 +584,20 @@ pub fn paste() -> Invocation {
 
 pub fn toggle_soft_wrap() -> Invocation {
     (cid(TOGGLE_SOFT_WRAP), CommandArgs::new())
+}
+
+pub fn open_preview() -> Invocation {
+    (cid(OPEN_PREVIEW), CommandArgs::new())
+}
+
+fn run_open_preview(
+    ctx: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    let buffer_id = active_view_buffer_id(ctx)?;
+    ctx.effects.push(HostEffect::EditorOpenPreview(buffer_id));
+    Ok(CommandOutcome::default())
 }
 
 // ==================================================
@@ -571,6 +757,24 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .description("选中当前编辑器中的全部文本。")
         .key_in("mod-a", text_edit);
 
+    registry
+        .install(
+            keymap,
+            SET_SELECTION,
+            "设置选区",
+            Box::new(run_set_selection),
+        )
+        .hide_from_shortcuts();
+
+    registry
+        .install(
+            keymap,
+            SCROLL_VIEWPORT,
+            "滚动编辑器视口",
+            Box::new(run_scroll_viewport),
+        )
+        .hide_from_shortcuts();
+
     registry.install(
         keymap,
         CLEAR_SELECTION,
@@ -585,6 +789,14 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .install(keymap, REDO, "重做", Box::new(run_redo))
         .description("重做上一次被撤销的编辑。")
         .key_in("mod-shift-z", text_edit);
+    registry
+        .install(
+            keymap,
+            IME_UPDATE,
+            "更新输入法组合",
+            Box::new(run_ime_update),
+        )
+        .hide_from_shortcuts();
     registry.install(
         keymap,
         IME_COMMIT,
@@ -652,10 +864,15 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         "切换软换行",
         Box::new(run_toggle_soft_wrap),
     );
+
+    registry
+        .install(keymap, OPEN_PREVIEW, "预览", Box::new(run_open_preview))
+        .description("打开或跳转到当前文件的预览标签页。")
+        .key_in("alt-p", text_edit);
 }
 
 fn move_args(direction: MovementDirection, motion: impl Into<Motion>, extend: bool) -> CommandArgs {
-    MoveSelectionArgs {
+    MoveCaretArgs {
         direction,
         motion: motion.into(),
         extend,
@@ -708,7 +925,7 @@ fn unit_to_str(unit: MovementUnit) -> &'static str {
 }
 
 /// 反向：仅接受 `MovementUnit` 枚举值，拒绝 `line-step` / `page-step`。
-/// `DeleteArgs` 与 `MoveSelectionArgs` 都用得到——后者再额外扩展到 Motion。
+/// `DeleteArgs` 与 `MoveCaretArgs` 都用得到——后者再额外扩展到 Motion。
 fn parse_unit(value: &str) -> Result<MovementUnit, CommandError> {
     match value {
         "grapheme" | "character" | "char" => Ok(MovementUnit::Grapheme),
@@ -729,6 +946,17 @@ fn parse_direction(value: &str) -> Result<MovementDirection, CommandError> {
         "next" | "right" => Ok(MovementDirection::Next),
         other => Err(CommandError::InvalidArgs(format!("未知移动方向：{other}"))),
     }
+}
+
+fn parse_byte_offset(value: &str, name: &str) -> Result<ByteOffset, CommandError> {
+    let raw = parse_usize_arg(value, name)?;
+    Ok(ByteOffset::new(raw))
+}
+
+fn parse_usize_arg(value: &str, name: &str) -> Result<usize, CommandError> {
+    value
+        .parse::<usize>()
+        .map_err(|_| CommandError::InvalidArgs(format!("无效 {name}：{value}")))
 }
 
 fn parse_motion(value: &str, args: &CommandArgs) -> Result<Motion, CommandError> {
@@ -762,12 +990,16 @@ fn run_insert_text(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = InsertTextArgs::try_from(args)?;
+    let merge_policy = context.edit_merge_policy;
     let mut target = context.edit_target()?;
     target.clear_visual_caret();
     let selections = target.selection.clone();
+    let metadata = TransactionMetadata::new(TransactionSource::Programmatic)
+        .with_merge_policy(merge_policy)
+        .with_description("在选定位置插入");
     target
         .buffer
-        .insert_at_selections(selections, &args.text)
+        .insert_at_selections(selections, &args.text, metadata)
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
@@ -783,7 +1015,12 @@ fn run_replace_selection(
     let selections = target.selection.clone();
     target
         .buffer
-        .replace_selections(selections, &args.text)
+        .replace_selections(
+            selections,
+            &args.text,
+            TransactionMetadata::new(TransactionSource::Programmatic)
+                .with_description("替换所选内容"),
+        )
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
@@ -794,12 +1031,19 @@ fn run_insert_newline(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
+    let merge_policy = context.edit_merge_policy;
     let mut target = context.edit_target()?;
     target.clear_visual_caret();
     let selections = target.selection.clone();
     target
         .buffer
-        .insert_at_selections(selections, "\n")
+        .insert_at_selections(
+            selections,
+            "\n",
+            TransactionMetadata::new(TransactionSource::Programmatic)
+                .with_merge_policy(merge_policy)
+                .with_description("插入换行"),
+        )
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
@@ -841,18 +1085,41 @@ fn run_delete(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = DeleteArgs::try_from(args)?;
+    let merge_policy = context.edit_merge_policy;
     let mut target = context.edit_target()?;
     target.clear_visual_caret();
     let selections = target.selection.clone();
     // caret_motion = Some → caret 沿方向删 unit、非空选区整段删；
     // caret_motion = None → caret no-op，仅删非空选区。
     let caret_motion = args.direction.map(|dir| (dir, args.unit));
+    let description = delete_description(caret_motion);
+    let metadata = TransactionMetadata::new(TransactionSource::Programmatic)
+        .with_merge_policy(merge_policy)
+        .with_description(description);
     target
         .buffer
-        .delete_at_selections(selections, caret_motion)
+        .delete_at_selections(selections, caret_motion, metadata)
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
+}
+
+fn delete_description(caret_motion: Option<(MovementDirection, MovementUnit)>) -> &'static str {
+    match caret_motion {
+        None => "删除所选内容",
+        Some((MovementDirection::Previous, MovementUnit::Grapheme)) => "向后删除选定内容",
+        Some((MovementDirection::Next, MovementUnit::Grapheme)) => "向前删除所选内容",
+        Some((MovementDirection::Previous, MovementUnit::Word)) => "向后删除单词",
+        Some((MovementDirection::Next, MovementUnit::Word)) => "向前删除单词",
+        Some((MovementDirection::Previous, MovementUnit::Subword)) => "向后删除子词",
+        Some((MovementDirection::Next, MovementUnit::Subword)) => "向前删除子词",
+        Some((MovementDirection::Previous, MovementUnit::Identifier)) => "向后删除标识符",
+        Some((MovementDirection::Next, MovementUnit::Identifier)) => "向前删除标识符",
+        Some((MovementDirection::Previous, MovementUnit::Symbol)) => "向后删除符号",
+        Some((MovementDirection::Next, MovementUnit::Symbol)) => "向前删除符号",
+        Some((MovementDirection::Previous, MovementUnit::LineEdge)) => "删除到行首",
+        Some((MovementDirection::Next, MovementUnit::LineEdge)) => "删除到行尾",
+    }
 }
 
 fn run_select_all(
@@ -866,11 +1133,37 @@ fn run_select_all(
         ByteOffset::ZERO,
         target.buffer.len_bytes(),
     )]);
-    target
-        .buffer
-        .set_selection(selection.clone())
-        .map_err(command_execution_failed)?;
-    *target.selection = selection;
+    target.set_selection(selection)?;
+    Ok(CommandOutcome::default())
+}
+
+fn run_set_selection(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    let args = SetSelectionArgs::try_from(args)?;
+    let mut target = context.edit_target()?;
+    let selection = SelectionSet::new(vec![Selection::new(args.anchor, args.head)]);
+    target.set_selection(selection)?;
+    Ok(CommandOutcome::default())
+}
+
+fn run_scroll_viewport(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    let args = ScrollViewportArgs::try_from(args)?;
+    let buffer_id = active_view_buffer_id(context)?;
+    let buffer = context
+        .workspace
+        .buffer(buffer_id)
+        .ok_or(CommandError::BufferNotFound(buffer_id))?;
+    let view_id = context.active_view_id.ok_or(CommandError::NoActiveView)?;
+    let view = context
+        .views
+        .edit_view_mut(view_id)
+        .ok_or(CommandError::NoActiveView)?;
+    view.scroll_visual_rows(buffer.buffer(), args.delta_visual_rows);
     Ok(CommandOutcome::default())
 }
 
@@ -879,13 +1172,13 @@ fn run_select_all(
 /// - 选区已塌（全是 caret）且栈顶就是 [`CLEAR_SELECTION`] token → pop。
 ///
 /// 由 [`crate::commands::reconcile::after_dispatch`] 在每次 dispatch 末尾调一次。
-/// 任何修改选区的命令（select_all / 带 shift 的 move / 文本编辑 / undo / redo / IME commit ……）
-/// 都自动维护 esc 入口；handler 自身不需要 push / pop。
+/// 任何修改选区的命令（select_all / 带 shift 的 move / 文本编辑 / undo / redo / IME commit ……）都自动维护 esc 入口；
+/// handler 自身不需要 push / pop。
 ///
 /// 只看活动 view 的主选区——focused_field（搜索框 / 项目选择器输入框）即便也有"选区"也不参与，
 /// 它们各自的瞬态由各自 scope（SearchInput / ProjectPicker）管理。
 pub(crate) fn reconcile_text_edit_dismiss(context: &mut CommandContext<'_>) {
-    let has_extent = context.views.active_view().is_some_and(|view| {
+    let has_extent = context.active_view().is_some_and(|view| {
         view.selection()
             .as_slice()
             .iter()
@@ -917,24 +1210,25 @@ fn run_clear_selection(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let mut target = context.edit_target()?;
-    if target.selection.as_slice().iter().all(|sel| sel.is_caret()) {
-        return Ok(CommandOutcome::default());
+    {
+        let mut target = context.edit_target()?;
+        if target.selection.as_slice().iter().all(|sel| sel.is_caret()) {
+            return Ok(CommandOutcome::default());
+        }
+        target.clear_visual_caret();
+        let collapsed: Vec<Selection> = target
+            .selection
+            .as_slice()
+            .iter()
+            .map(|sel| Selection::caret(sel.head()))
+            .collect();
+        let primary_index = target.selection.primary_index();
+        let next = SelectionSet::new_with_primary(collapsed, primary_index);
+        target.set_selection(next)?;
     }
-    target.clear_visual_caret();
-    let collapsed: Vec<Selection> = target
-        .selection
-        .as_slice()
-        .iter()
-        .map(|sel| Selection::caret(sel.head()))
-        .collect();
-    let primary_index = target.selection.primary_index();
-    let next = SelectionSet::new_with_primary(collapsed, primary_index);
-    target
-        .buffer
-        .set_selection(next.clone())
-        .map_err(command_execution_failed)?;
-    *target.selection = next;
+    context
+        .effects
+        .push(HostEffect::EditorCancelPointerSelection);
     Ok(CommandOutcome::default())
 }
 
@@ -966,13 +1260,13 @@ fn run_move_selection(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
-    let mut args = MoveSelectionArgs::try_from(args)?;
+    let mut args = MoveCaretArgs::try_from(args)?;
     // PageStep 步长按真实视口高度走：element 上一帧 prepaint 已把测得的 visible_visual_rows 写回 ViewportState，从这里读。
     // focused_field 模式下作用于输入框（通常单行），主编辑区的视口高度对它无意义，保留 keymap 兜底。
     // visible_visual_rows == 0（首帧 / headless）也走兜底。
     if let Motion::PageStep { lines } = &mut args.motion
         && context.focused_field.is_none()
-        && let Some(view) = context.views.active_view()
+        && let Some(view) = context.active_view()
     {
         let measured = view.viewport().visible_visual_rows;
         if measured > 0 {
@@ -992,6 +1286,7 @@ fn run_ime_commit(
     let args = ImeCommitArgs::try_from(args)?;
     let mut target = context.edit_target()?;
     target.clear_visual_caret();
+    apply_ime_replacement_range(&mut target, args.replacement_range_utf16)?;
     target
         .buffer
         .set_selection(target.selection.clone())
@@ -999,6 +1294,40 @@ fn run_ime_commit(
     target
         .buffer
         .commit_composition(&args.text)
+        .map_err(command_execution_failed)?;
+    *target.selection = target.buffer.selection().clone();
+    Ok(CommandOutcome::default())
+}
+
+fn run_ime_update(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    let args = ImeUpdateArgs::try_from(args)?;
+    let mut target = context.edit_target()?;
+    target.clear_visual_caret();
+    apply_ime_replacement_range(&mut target, args.replacement_range_utf16)?;
+
+    // 系统输入法把 marked text 置空 = 放弃组合（如按 Esc 取消候选）。
+    // 必须真正结束 composition，避免系统 IME 继续认为组合会话仍在。
+    if args.text.is_empty() {
+        if target.buffer.is_composing() {
+            target
+                .buffer
+                .cancel_composition()
+                .map_err(command_execution_failed)?;
+            *target.selection = target.buffer.selection().clone();
+        }
+        return Ok(CommandOutcome::default());
+    }
+
+    let relative_selection = match args.selected_range_utf16 {
+        Some(range) => Some(composition_selection_from_utf16(&args.text, range)?),
+        None => None,
+    };
+    target
+        .buffer
+        .update_composition(&args.text, relative_selection)
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
@@ -1017,6 +1346,72 @@ fn run_ime_cancel(
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
+}
+
+fn apply_ime_replacement_range(
+    target: &mut crate::EditTarget<'_>,
+    replacement_range_utf16: Option<ImeUtf16RangeArgs>,
+) -> Result<(), CommandError> {
+    let Some(range_utf16) = replacement_range_utf16 else {
+        return Ok(());
+    };
+    if target.buffer.is_composing() {
+        return Ok(());
+    }
+    let range = ime_range_to_text_range(target.buffer, range_utf16)?;
+    let selection = SelectionSet::new(vec![Selection::new(range.start(), range.end())]);
+    target.set_selection(selection)
+}
+
+fn ime_range_to_text_range(
+    buffer: &Buffer,
+    range_utf16: ImeUtf16RangeArgs,
+) -> Result<TextRange, CommandError> {
+    let start = buffer
+        .utf16_cu_to_byte(Utf16Offset::new(range_utf16.start))
+        .map_err(|_| CommandError::InvalidArgs("IME range start 越界".into()))?;
+    let end = buffer
+        .utf16_cu_to_byte(Utf16Offset::new(range_utf16.end))
+        .map_err(|_| CommandError::InvalidArgs("IME range end 越界".into()))?;
+
+    TextRange::new(start, end)
+        .map_err(|_| CommandError::InvalidArgs("IME range start 大于 end".into()))
+}
+
+fn composition_selection_from_utf16(
+    preedit: &str,
+    range_utf16: ImeUtf16RangeArgs,
+) -> Result<CompositionSelection, CommandError> {
+    let anchor = utf16_to_byte_offset_in_str(preedit, range_utf16.start)
+        .ok_or_else(|| CommandError::InvalidArgs("IME preedit selection anchor 越界".into()))?;
+    let head = utf16_to_byte_offset_in_str(preedit, range_utf16.end)
+        .ok_or_else(|| CommandError::InvalidArgs("IME preedit selection head 越界".into()))?;
+    Ok(CompositionSelection::new(
+        ByteOffset::new(anchor),
+        ByteOffset::new(head),
+    ))
+}
+
+fn utf16_to_byte_offset_in_str(text: &str, target: usize) -> Option<usize> {
+    if target == 0 {
+        return Some(0);
+    }
+    let mut utf16 = 0usize;
+    for (idx, ch) in text.char_indices() {
+        let step = ch.len_utf16();
+        if utf16 + step > target {
+            return None;
+        }
+        utf16 += step;
+        if utf16 == target {
+            return Some(idx + ch.len_utf8());
+        }
+    }
+    if utf16 == target {
+        Some(text.len())
+    } else {
+        None
+    }
 }
 
 fn run_ime_confirm(
@@ -1050,30 +1445,12 @@ fn run_select_tab(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = SelectTabArgs::try_from(args)?;
-    // tab 顺序即 ViewSet 的视图顺序（= 打开顺序）。
-    let ids: Vec<ViewId> = context.views.views().map(|(id, _)| id).collect();
-    if ids.is_empty() {
-        return Ok(CommandOutcome::default());
-    }
-    let current = context
-        .views
-        .active()
-        .and_then(|active| ids.iter().position(|id| *id == active));
-    let target = match args.target {
-        SelectTabTarget::Next => match current {
-            Some(index) => (index + 1) % ids.len(),
-            None => 0,
-        },
-        SelectTabTarget::Previous => match current {
-            Some(index) => (index + ids.len() - 1) % ids.len(),
-            None => 0,
-        },
-    };
-    // target 已对标签数取模，必落在范围内；get 仅作防御。
-    if let Some(id) = ids.get(target) {
-        context.views.set_active(*id);
-        sync_active_buffer(context);
-    }
+    // 导航需要同时感知编辑 tab 与预览 tab，而 CommandContext 只持有 ViewSet。
+    // 把方向交给宿主，由宿主在完整 session 上完成跨类型的循环导航。
+    let forward = matches!(args.target, SelectTabTarget::Next);
+    context
+        .effects
+        .push(HostEffect::EditorSelectAdjacentTab(forward));
     Ok(CommandOutcome::default())
 }
 
@@ -1082,13 +1459,8 @@ fn run_close_tab(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    let Some(active) = context.views.active() else {
-        return Ok(CommandOutcome::default());
-    };
-    // 只关视图，不关 buffer：dirty 内容仍留在 workspace，不丢数据。
-    // 孤立 buffer 的回收留待后续（确认弹窗 / 引用计数）。
-    context.views.close_view(active);
-    sync_active_buffer(context);
+    // 宿主侧拿 session.active_view_id() 直接 close_view，编辑 / 预览同一套路径。
+    context.effects.push(HostEffect::EditorCloseActiveTab);
     Ok(CommandOutcome::default())
 }
 
@@ -1113,7 +1485,7 @@ fn run_toggle_soft_wrap(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    if let Some(view) = context.views.active_view_mut() {
+    if let Some(view) = context.active_view_mut() {
         view.clear_visual_caret();
     }
     context.effects.push(HostEffect::EditorToggleSoftWrap);
@@ -1173,7 +1545,12 @@ fn run_cut(
         CutPlan::DeleteSelections(selections) => {
             target
                 .buffer
-                .delete_at_selections(selections, None)
+                .delete_at_selections(
+                    selections,
+                    None,
+                    TransactionMetadata::new(TransactionSource::Programmatic)
+                        .with_description("剪切所选内容"),
+                )
                 .map_err(command_execution_failed)?;
         }
         CutPlan::DeleteLineRanges(line_ranges) => {
@@ -1181,7 +1558,12 @@ fn run_cut(
                 let line_selections = SelectionSet::from_ranges(line_ranges);
                 target
                     .buffer
-                    .delete_at_selections(line_selections, None)
+                    .delete_at_selections(
+                        line_selections,
+                        None,
+                        TransactionMetadata::new(TransactionSource::Programmatic)
+                            .with_description("剪切行"),
+                    )
                     .map_err(command_execution_failed)?;
             }
         }
@@ -1206,7 +1588,11 @@ fn run_paste(
     let selections = target.selection.clone();
     target
         .buffer
-        .replace_selections(selections, &text)
+        .replace_selections(
+            selections,
+            &text,
+            TransactionMetadata::new(TransactionSource::Programmatic).with_description("粘贴"),
+        )
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
     Ok(CommandOutcome::default())
@@ -1276,12 +1662,4 @@ fn collect_caret_line_ranges(
         ranges.push(buffer.slice_line(line)?.range());
     }
     Ok(ranges)
-}
-
-/// 把 workspace 的活动 buffer 同步到当前活动视图——让文件树「活动文件」高亮跟随标签切换 / 关闭。
-/// 无活动视图时（标签全关）保持原值不动。
-fn sync_active_buffer(context: &mut CommandContext<'_>) {
-    if let Some(buffer_id) = context.views.active_view().map(|view| view.buffer()) {
-        let _ = context.workspace.set_active_buffer(buffer_id);
-    }
 }

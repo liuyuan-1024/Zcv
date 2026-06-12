@@ -132,10 +132,10 @@ impl Render for BubbleShell {
 
 fn render_bubble(active: ActiveBubble) -> impl IntoElement {
     let accent = match active.request.kind {
-        BubbleKind::Info => color::blue::s07(),
-        BubbleKind::Success => color::green::s07(),
-        BubbleKind::Warning => color::yellow::s07(),
-        BubbleKind::Error => color::red::s07(),
+        BubbleKind::Info => color::current().blue.s07,
+        BubbleKind::Success => color::current().green.s07,
+        BubbleKind::Warning => color::current().yellow.s07,
+        BubbleKind::Error => color::current().red.s07,
     };
 
     div()
@@ -149,12 +149,12 @@ fn render_bubble(active: ActiveBubble) -> impl IntoElement {
         .gap_2()
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::s05())
-        .bg(color::gray::s03())
+        .border_color(color::current().gray.s05)
+        .bg(color::current().gray.s03)
         .px(space::s12())
         .py(space::s8())
         .text_size(typography::ui())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .child(
             div()
                 .flex_none()

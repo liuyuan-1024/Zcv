@@ -33,13 +33,11 @@ const ZOMIGNORE_DEFAULT: &str = "\
 #
 # 项目根的 .gitignore 已被默认继承——「不想看到」的文件请写在那边，顺便也避免被提交。
 #
-# 本文件的用途是反过来：用 `!pattern` 把被 .gitignore 隐藏、但你想在
-# 编辑器里看到的文件 / 目录放回文件树。
+# 本文件的用途是反过来：用 `!pattern` 把被 .gitignore 隐藏、但你想在编辑器里看到的文件 / 目录放回文件树。
 
-# 环境变量示例——团队共享，常被通配 .env* 一并隐藏
-!.env.example
-!.env.sample
-!.env*.example
+# 环境变量示例——团队共享，常被通配 .env*
+!.env
+!.env.*
 
 # 空目录占位——容易被过度匹配的规则误伤
 !.gitkeep
@@ -1057,6 +1055,7 @@ mod tests {
         )
         .unwrap();
         File::create(root.join(".env")).unwrap();
+        File::create(root.join(".env.local")).unwrap();
         File::create(root.join(".env.example")).unwrap();
         File::create(root.join(".env.sample")).unwrap();
         File::create(root.join(".env.local.example")).unwrap();
@@ -1074,9 +1073,10 @@ mod tests {
             .into_iter()
             .map(|row| row.name.to_string())
             .collect();
-        // .env 本身仍被 .gitignore 隐藏。
-        assert!(!names.contains(&".env".to_string()), "{names:?}");
-        // 默认 !.env.example / !.env.sample / !.env*.example 把示例放回来。
+        // 默认 !.env / !.env.* 把 .env 本体和示例放回来。
+        assert!(names.contains(&".env".to_string()), "{names:?}");
+        // .env.local 也被 !.env.* 取回。
+        assert!(names.contains(&".env.local".to_string()), "{names:?}");
         assert!(names.contains(&".env.example".to_string()), "{names:?}");
         assert!(names.contains(&".env.sample".to_string()), "{names:?}");
         assert!(

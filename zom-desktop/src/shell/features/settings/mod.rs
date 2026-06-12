@@ -9,29 +9,32 @@ mod surface;
 pub(crate) use effects::try_apply_effect;
 
 use gpui::{AnyElement, IntoElement};
-use zom_command::commands::settings;
 
+use crate::host_intent::CommandRequest;
+use crate::shell::CommandPresentation;
 use crate::shell::shared::Glyph;
 use crate::shell::surfaces::track_surface_anchor;
-use crate::shell::{CommandTitleLookup, ShortcutLookup};
 
 pub(crate) use surface::{
-    SettingsAction, SettingsActionRequest, SettingsPanelState, SettingsRuntime, request,
+    SettingsIntent, SettingsIntentRequest, SettingsPanelState, SettingsRuntime, request,
 };
 
 pub(crate) const INVOKER_ID: &str = "top-bar.settings";
-const COMMAND: &str = settings::OPEN;
 
 pub(crate) fn entry(
     active: bool,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
+    command_request: CommandRequest,
+    presentation: &CommandPresentation,
 ) -> AnyElement {
-    let title = titles(COMMAND).unwrap_or_else(|| COMMAND.to_string());
-    let glyph = Glyph::icon(INVOKER_ID, "icons/actions/settings.svg", title)
-        .hint(shortcuts(COMMAND))
-        .active(active)
-        .render();
+    let glyph = Glyph::icon(
+        INVOKER_ID,
+        "icons/actions/settings.svg",
+        presentation.title.clone(),
+    )
+    .hint(presentation.hint.clone())
+    .active(active)
+    .on_press(command_request)
+    .render();
 
     track_surface_anchor(INVOKER_ID, glyph).into_any_element()
 }

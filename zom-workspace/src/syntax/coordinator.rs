@@ -138,7 +138,7 @@ mod tests {
             &buffer,
             worker.clone(),
         );
-        worker.wait_for_idle();
+        worker.wait_for_idle_for_test_or_bench();
 
         let tree = syntax
             .tree_slot()
@@ -159,12 +159,12 @@ mod tests {
             &buffer,
             worker.clone(),
         );
-        worker.wait_for_idle();
+        worker.wait_for_idle_for_test_or_bench();
         assert!(syntax.tree_slot().load().is_some());
 
         let slot = syntax.tree_slot().clone();
         syntax.detach();
-        worker.wait_for_idle();
+        worker.wait_for_idle_for_test_or_bench();
         assert!(
             slot.load().is_none(),
             "detach 后 slot 必须为空（不让下一任 provider 读到旧 tree）"

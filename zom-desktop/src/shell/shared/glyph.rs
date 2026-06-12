@@ -5,10 +5,11 @@
 //! `Glyph` 只表达视觉，不知道命令系统、bar、surface 或 invoker。
 
 use gpui::{
-    AnyElement, AnyView, App, Context, ElementId, IntoElement, Pixels, Render, Svg, Window, div,
-    prelude::*, svg,
+    AnyElement, AnyView, App, Context, ElementId, IntoElement, MouseButton, Pixels, Render,
+    Stateful, Svg, Window, div, prelude::*, svg,
 };
 
+use crate::host_intent::CommandRequest;
 use crate::theme::{color, radius, space, typography};
 
 #[derive(Clone)]
@@ -28,6 +29,7 @@ pub(crate) struct Glyph {
     icon_size: Pixels,
     font_size: Pixels,
     line_height: Pixels,
+    press: Option<CommandRequest>,
 }
 
 impl Glyph {
@@ -73,6 +75,7 @@ impl Glyph {
             icon_size: typography::ui(),
             font_size: typography::ui(),
             line_height: typography::ui_line(),
+            press: None,
         }
     }
 
@@ -87,11 +90,19 @@ impl Glyph {
         self
     }
 
+    /// 绑定一个已由 shell 预先接好的命令请求。
+    ///
+    /// `Glyph` 不知道命令 id 或 Invocation，只在鼠标按下时转发请求。
+    pub(crate) fn on_press(mut self, request: CommandRequest) -> Self {
+        self.press = Some(request);
+        self
+    }
+
     pub(crate) fn render(self) -> AnyElement {
         let color_value = if self.active {
-            color::blue::s07()
+            color::current().blue.s07
         } else {
-            color::gray::s09()
+            color::current().gray.s09
         };
         let id = self.id.clone();
         let icon_size = self.icon_size;
@@ -99,49 +110,70 @@ impl Glyph {
         let line_height = self.line_height;
         let tooltip = self.tooltip.clone();
         let hint = self.hint.clone();
+        let press = self.press;
 
         let build_tooltip = move |_window: &mut Window, cx: &mut App| -> AnyView {
             tooltip_view(cx, tooltip.clone(), hint.clone())
         };
 
         match self.content {
-            GlyphContent::Text(text) => div()
-                .id(id)
-                .text_size(font_size)
-                .line_height(line_height)
-                .text_color(color_value)
-                .cursor_pointer()
-                .tooltip(build_tooltip)
-                .child(text)
-                .into_any_element(),
-            GlyphContent::Icon(path) => div()
-                .id(id)
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .tooltip(build_tooltip)
-                .child(svg_icon(path, color_value, icon_size))
-                .into_any_element(),
-            GlyphContent::IconText { icon: path, text } => div()
-                .id(id)
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(space::s4())
-                .cursor_pointer()
-                .tooltip(build_tooltip)
-                .child(svg_icon(path, color_value, icon_size))
-                .child(
-                    div()
-                        .text_size(font_size)
-                        .line_height(line_height)
-                        .text_color(color_value)
-                        .child(text),
-                )
-                .into_any_element(),
+            GlyphContent::Text(text) => pressable(
+                div()
+                    .id(id)
+                    .text_size(font_size)
+                    .line_height(line_height)
+                    .text_color(color_value)
+                    .cursor_pointer()
+                    .tooltip(build_tooltip)
+                    .child(text),
+                press,
+            )
+            .into_any_element(),
+            GlyphContent::Icon(path) => pressable(
+                div()
+                    .id(id)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .tooltip(build_tooltip)
+                    .child(svg_icon(path, color_value, icon_size)),
+                press,
+            )
+            .into_any_element(),
+            GlyphContent::IconText { icon: path, text } => pressable(
+                div()
+                    .id(id)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(space::s4())
+                    .cursor_pointer()
+                    .tooltip(build_tooltip)
+                    .child(svg_icon(path, color_value, icon_size))
+                    .child(
+                        div()
+                            .text_size(font_size)
+                            .line_height(line_height)
+                            .text_color(color_value)
+                            .child(text),
+                    ),
+                press,
+            )
+            .into_any_element(),
         }
     }
+}
+
+fn pressable(element: Stateful<gpui::Div>, request: Option<CommandRequest>) -> Stateful<gpui::Div> {
+    let Some(request) = request else {
+        return element;
+    };
+
+    element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+        request(window, cx);
+        cx.stop_propagation();
+    })
 }
 
 fn svg_icon(path: &'static str, color: gpui::Rgba, size: Pixels) -> Svg {
@@ -169,14 +201,14 @@ impl Render for GlyphTooltip {
             .px(space::s6())
             .pt(space::s4())
             .pb(space::s6())
-            .bg(color::gray::s03())
+            .bg(color::current().gray.s03)
             .border_1()
-            .border_color(color::gray::s05())
+            .border_color(color::current().gray.s05)
             .rounded(radius::r4())
             .child(
                 div()
                     .text_size(typography::ui())
-                    .text_color(color::gray::s09())
+                    .text_color(color::current().gray.s09)
                     .child(self.label.clone()),
             );
 
@@ -184,7 +216,7 @@ impl Render for GlyphTooltip {
             row = row.child(
                 div()
                     .text_size(typography::ui())
-                    .text_color(color::gray::s08())
+                    .text_color(color::current().gray.s08)
                     .child(hint.clone()),
             );
         }

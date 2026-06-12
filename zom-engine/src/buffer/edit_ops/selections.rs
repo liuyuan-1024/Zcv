@@ -22,13 +22,9 @@ impl Buffer {
         &mut self,
         selections: SelectionSet,
         text: &str,
+        metadata: TransactionMetadata,
     ) -> EngineResult<Option<(Delta, ChangeSet)>> {
-        self.replace_selection_ranges_with_metadata(
-            selections,
-            text,
-            TransactionMetadata::new(TransactionSource::Programmatic)
-                .with_description("在选定位置插入"),
-        )
+        self.replace_selection_ranges_with_metadata(selections, text, metadata)
     }
 
     /// 用同一段文本替换每个 selection。
@@ -36,23 +32,18 @@ impl Buffer {
         &mut self,
         selections: SelectionSet,
         replacement: &str,
+        metadata: TransactionMetadata,
     ) -> EngineResult<Option<(Delta, ChangeSet)>> {
-        self.replace_selection_ranges_with_metadata(
-            selections,
-            replacement,
-            TransactionMetadata::new(TransactionSource::Programmatic)
-                .with_description("替换所选内容"),
-        )
+        self.replace_selection_ranges_with_metadata(selections, replacement, metadata)
     }
 
     /// Tab 缩进，按"标准 IDE"语义分流：
     ///
     /// - **所有 selection 都是 caret**：在每个 caret 原位插入一个"软 Tab"。
-    ///   `insert_spaces = true` 时按 `indent_width − (display_column mod indent_width)`
-    ///   计算空格数，让 caret 落到下一个 `indent_width` 列位；
-    ///   `insert_spaces = false` 时插入一个 `'\t'`。
+    ///   `insert_spaces = true` 时按 `indent_width − (display_column mod indent_width)` 计算空格数，让 caret 落到下一个 `indent_width` 列位；
+    /// insert_spaces = false` 时插入一个 `'\t'`。
     /// - **存在任何非空 selection**：将选区涉及的所有行做行块缩进（不替换选中内容）。
-    ///   多 selection 共占同一行只缩进一次。
+    /// 多 selection 共占同一行只缩进一次。
     pub fn indent_at_selections(
         &mut self,
         selections: SelectionSet,
@@ -143,35 +134,6 @@ impl Buffer {
     ///
     /// 事务描述按 `(dir, unit)` 落到 `(direction, unit)` 矩阵；`None` 时写「删除所选内容」。
     pub fn delete_at_selections(
-        &mut self,
-        selections: SelectionSet,
-        caret_motion: Option<(MovementDirection, MovementUnit)>,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
-        let description = match caret_motion {
-            None => "删除所选内容",
-            Some((MovementDirection::Previous, MovementUnit::Grapheme)) => "向后删除选定内容",
-            Some((MovementDirection::Next, MovementUnit::Grapheme)) => "向前删除所选内容",
-            Some((MovementDirection::Previous, MovementUnit::Word)) => "向后删除单词",
-            Some((MovementDirection::Next, MovementUnit::Word)) => "向前删除单词",
-            Some((MovementDirection::Previous, MovementUnit::Subword)) => "向后删除子词",
-            Some((MovementDirection::Next, MovementUnit::Subword)) => "向前删除子词",
-            Some((MovementDirection::Previous, MovementUnit::Identifier)) => "向后删除标识符",
-            Some((MovementDirection::Next, MovementUnit::Identifier)) => "向前删除标识符",
-            Some((MovementDirection::Previous, MovementUnit::Symbol)) => "向后删除符号",
-            Some((MovementDirection::Next, MovementUnit::Symbol)) => "向前删除符号",
-            Some((MovementDirection::Previous, MovementUnit::LineEdge)) => "删除到行首",
-            Some((MovementDirection::Next, MovementUnit::LineEdge)) => "删除到行尾",
-        };
-        self.delete_at_selections_with_metadata(
-            selections,
-            caret_motion,
-            TransactionMetadata::new(TransactionSource::Programmatic).with_description(description),
-        )
-    }
-
-    /// 同 [`delete_at_selections`]，但允许调用方自定义事务 metadata——AI 改写 /
-    /// 批量重构等场景想把多次删除归入同一逻辑事务时用得到。
-    pub(in crate::buffer) fn delete_at_selections_with_metadata(
         &mut self,
         selections: SelectionSet,
         caret_motion: Option<(MovementDirection, MovementUnit)>,

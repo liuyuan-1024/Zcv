@@ -24,6 +24,7 @@ fn buffer_text(buffer: &Buffer) -> String {
 fn literal_search_should_return_versioned_byte_ranges_with_case_and_range_options() {
     let buffer = buffer("Alpha alpha ALPHA");
     let result = buffer
+        .snapshot()
         .search(
             "alpha",
             SearchOptions::new()
@@ -47,7 +48,7 @@ fn literal_search_should_return_versioned_byte_ranges_with_case_and_range_option
 fn empty_search_query_should_return_specific_error_variant() {
     let buffer = buffer("abc");
 
-    let err = buffer.search_literal("").join().unwrap_err();
+    let err = buffer.snapshot().search_literal("").join().unwrap_err();
 
     assert!(matches!(err, EngineError::Search(SearchError::EmptyQuery)));
 }
@@ -56,6 +57,7 @@ fn empty_search_query_should_return_specific_error_variant() {
 fn whole_word_search_should_not_match_inside_identifier() {
     let buffer = buffer("foo food foo_bar foo");
     let result = buffer
+        .snapshot()
         .search("foo", SearchOptions::new().with_whole_word(true))
         .join()
         .unwrap();
@@ -69,7 +71,7 @@ fn whole_word_search_should_not_match_inside_identifier() {
 #[test]
 fn search_result_should_remap_forward_and_drop_deleted_matches() {
     let mut buffer = buffer("aa bb aa");
-    let result = buffer.search_literal("aa").join().unwrap();
+    let result = buffer.snapshot().search_literal("aa").join().unwrap();
 
     buffer.delete(range(0, 2)).unwrap();
     let event = buffer.last_delta_event().unwrap().clone();
@@ -82,7 +84,7 @@ fn search_result_should_remap_forward_and_drop_deleted_matches() {
 #[test]
 fn replace_search_match_should_reject_missing_match_and_preserve_state() {
     let mut buffer = buffer("ab ab");
-    let result = buffer.search_literal("ab").join().unwrap();
+    let result = buffer.snapshot().search_literal("ab").join().unwrap();
     let version = buffer.version();
 
     let err = buffer.replace_search_match(&result, 9, "x").unwrap_err();
@@ -99,7 +101,7 @@ fn replace_search_match_should_reject_missing_match_and_preserve_state() {
 fn replace_all_literal_matches_should_apply_single_atomic_transaction_and_restore_through_history()
 {
     let mut buffer = buffer("red blue red");
-    let result = buffer.search_literal("red").join().unwrap();
+    let result = buffer.snapshot().search_literal("red").join().unwrap();
 
     let applied = buffer.replace_all_search_matches(&result, "green").unwrap();
 
@@ -116,7 +118,7 @@ fn replace_all_literal_matches_should_apply_single_atomic_transaction_and_restor
 #[test]
 fn stale_search_result_should_not_drive_replacement_after_state_transition() {
     let mut buffer = buffer("ab ab");
-    let result = buffer.search_literal("ab").join().unwrap();
+    let result = buffer.snapshot().search_literal("ab").join().unwrap();
     buffer.insert(b(0), "x").unwrap();
     let version = buffer.version();
 
@@ -136,6 +138,7 @@ fn stale_search_result_should_not_drive_replacement_after_state_transition() {
 fn regex_search_should_respect_options_and_reject_invalid_patterns() {
     let buffer = buffer("a1\nb22\nc333");
     let result = buffer
+        .snapshot()
         .search_regex(
             r"(?m)^[a-z]\d+",
             RegexSearchOptions::new().with_multi_line(true),
@@ -150,6 +153,7 @@ fn regex_search_should_respect_options_and_reject_invalid_patterns() {
     );
 
     let invalid = buffer
+        .snapshot()
         .search_regex("(", RegexSearchOptions::new())
         .join()
         .unwrap_err();
@@ -172,6 +176,7 @@ fn regex_search_should_not_reject_haystacks_beyond_the_old_8mib_cap() {
     let buffer = buffer(&text);
 
     let result = buffer
+        .snapshot()
         .search_regex(r"bravo", RegexSearchOptions::new())
         .join()
         .unwrap();
@@ -185,6 +190,7 @@ fn regex_search_should_not_reject_haystacks_beyond_the_old_8mib_cap() {
 fn regex_replacement_should_expand_captures_for_single_and_all_matches() {
     let mut single = buffer("one=1 two=22");
     let result = single
+        .snapshot()
         .search_regex(r"([a-z]+)=(\d+)", RegexSearchOptions::new())
         .join()
         .unwrap();
@@ -193,6 +199,7 @@ fn regex_replacement_should_expand_captures_for_single_and_all_matches() {
 
     let mut all = buffer("one=1 two=22");
     let result = all
+        .snapshot()
         .search_regex(r"([a-z]+)=(\d+)", RegexSearchOptions::new())
         .join()
         .unwrap();
@@ -206,7 +213,7 @@ fn search_handle_should_report_progress_and_complete() {
     let buffer = buffer(&text);
     let total = buffer.len_bytes().get() as u64;
 
-    let mut handle = buffer.search_literal("abc");
+    let mut handle = buffer.snapshot().search_literal("abc");
     while !handle.is_finished() {
         std::thread::yield_now();
     }
@@ -227,7 +234,7 @@ fn search_handle_cancel_should_stop_the_worker_with_cancelled_error() {
     // 我们不依赖比赛精度——cancel 在线程跑完前命中就返回 Cancelled，否则正常完成。
     let text: String = "x".repeat(512 * 1024);
     let buffer = buffer(&text);
-    let handle = buffer.search_literal("x");
+    let handle = buffer.snapshot().search_literal("x");
     handle.cancel();
     let outcome = handle.join();
 
@@ -244,6 +251,6 @@ fn search_handle_drop_should_cancel_silently() {
     // drop handle 即取消——这里不验证线程立即退出（无法直接观测），只验证 drop 不阻塞。
     let text: String = "y".repeat(1024);
     let buffer = buffer(&text);
-    let handle = buffer.search_literal("y");
+    let handle = buffer.snapshot().search_literal("y");
     drop(handle);
 }

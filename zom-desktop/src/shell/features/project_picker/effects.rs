@@ -14,7 +14,7 @@ use crate::shell::bubble::BubbleRuntime;
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
 use crate::shell::features::project_picker::{
     self, ProjectPickerActions, ProjectPickerActivation, ProjectPickerInitialMode,
-    ProjectPickerMode, ProjectPickerRuntime,
+    ProjectPickerIntent, ProjectPickerIntentRequest, ProjectPickerMode, ProjectPickerRuntime,
 };
 use crate::shell::project_session;
 use crate::shell::surfaces::SurfaceManager;
@@ -43,6 +43,7 @@ pub(crate) fn try_apply_effect(
                 surfaces,
                 editor_focus_fallback,
                 project_picker_runtime,
+                bubbles,
                 window,
                 cx,
             );
@@ -73,6 +74,7 @@ pub(crate) fn try_apply_effect(
                     surfaces,
                     editor_focus_fallback,
                     project_picker_runtime,
+                    bubbles,
                     window,
                     cx,
                 );
@@ -157,6 +159,7 @@ fn show_project_picker(
     surfaces: &Entity<SurfaceManager>,
     editor_focus_fallback: &FocusHandle,
     project_picker_runtime: &ProjectPickerRuntime,
+    bubbles: &Entity<BubbleRuntime>,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -177,10 +180,23 @@ fn show_project_picker(
     let title_app = Rc::clone(app);
     let command_title_lookup =
         Rc::new(move |command_id: &str| title_app.borrow().command_title_for(command_id));
+    let remove_recent_presentation = {
+        let app = app.borrow();
+        crate::shell::CommandPresentation {
+            title: app
+                .command_title_for(zom_command::commands::project_picker::REMOVE_RECENT_PROJECT)
+                .unwrap_or_else(|| "移除最近项目".to_string()),
+            hint: app.shortcuts_for(zom_command::commands::project_picker::REMOVE_RECENT_PROJECT),
+        }
+    };
+    let intent_request =
+        project_picker_intent_request(project_picker_runtime.clone(), bubbles.clone());
     let actions = ProjectPickerActions {
         projects,
         state,
         slot: project_picker_slot,
+        intent_request,
+        remove_recent_presentation,
         shortcut_lookup,
         command_title_lookup,
     };
@@ -191,4 +207,23 @@ fn show_project_picker(
         window,
         cx,
     );
+}
+
+fn project_picker_intent_request(
+    runtime: ProjectPickerRuntime,
+    bubbles: Entity<BubbleRuntime>,
+) -> ProjectPickerIntentRequest {
+    Rc::new(move |intent, window, cx| match intent {
+        ProjectPickerIntent::RemoveRecentProject { id } => {
+            runtime.remove_recent(&id);
+            let recent = runtime.recent_projects();
+            runtime.clamp_selection(&recent);
+            for warning in runtime.take_recent_warnings() {
+                bubbles.update(cx, |runtime, cx| {
+                    runtime.push(BubbleRequest::error(warning).dedupe("project.recent"), cx);
+                });
+            }
+            window.refresh();
+        }
+    })
 }

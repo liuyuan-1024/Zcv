@@ -1,11 +1,10 @@
 //! Search —— 内联在活动文件上方的搜索栏（mod-f 唤起，Zed 风格）。
 //!
-//! bar 只是输入控制条：query / replacement 输入框 + 选项 toggle +
-//! 上一/下一/替换按钮 + "3 / 27" 命中数标签。
+//! bar 只是输入控制条：query / replacement 输入框 + 选项 toggle + 上一/下一/替换按钮 + "3 / 27" 命中数标签。
 //!
-//! - 所有命中**直接在编辑器内高亮**（EditorView 阶段 2），bar 不显示结果列表
-//! - 算法层由 `WorkspaceBuffer::BufferSearch` 提供，bar 不持搜索状态
-//! - 跨文件搜索 / 替换是 workspace 层另一笔账（`search.project_activate`），与本 bar 无关
+//! - 所有命中**直接在编辑器内高亮**（EditorView 阶段 2），
+//! bar 不显示结果列表 - 算法层由 `WorkspaceBuffer::BufferSearch` 提供，
+//! bar 不持搜索状态 - 跨文件搜索 / 替换是 workspace 层另一笔账（`search.project_activate`），与本 bar 无关
 
 pub(crate) mod coordinator;
 mod effects;
@@ -17,17 +16,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Context, Div, FocusHandle, IntoElement, MouseButton, Window, div, prelude::*};
-use zom_command::{SearchOption, commands::search};
-use zom_view::ViewSet;
+use zom_command::SearchOption;
+use zom_view::{ViewId, ViewSet};
 use zom_workspace::Workspace;
 
 use crate::app::App;
 use crate::editor::TextEditorSlot;
 use crate::focus::{AppFocus, SearchField};
+use crate::host_intent::{CommandRequest, KeyRequest};
 use crate::ports::{FramePump, PostEditObserver, SearchAction, SearchHost};
 use crate::shell::normalized_chord;
 use crate::shell::shared::glyph::Glyph;
-use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
+use crate::shell::{CommandPresentation, FocusRequest, FocusRequestTarget};
 use crate::text_target::TextTargetOwner;
 use crate::theme::{color, radius, space, typography};
 use crate::workspace_session::WorkspaceSession;
@@ -43,6 +43,24 @@ const FIND_NEXT_ICON: &str = "icons/navigation/chevron_right.svg";
 const REPLACE_NEXT_ICON: &str = "icons/actions/replace_next.svg";
 const REPLACE_ALL_ICON: &str = "icons/actions/replace_all.svg";
 
+/// 搜索栏按钮上报给宿主的领域意图。
+///
+/// 组件只知道这些 search 语义，不知道命令 id 或 Invocation。
+#[derive(Clone, Copy)]
+pub(crate) enum SearchIntent {
+    ToggleCaseSensitive,
+    ToggleWholeWord,
+    ToggleRegex,
+    FindPrevious,
+    FindNext,
+    ReplaceNext,
+    ReplaceAll,
+}
+
+pub(crate) type SearchIntentRequest = Rc<dyn Fn(SearchIntent, &mut Window, &mut gpui::App)>;
+
+pub(crate) type SearchIntentPresentationLookup = Rc<dyn Fn(SearchIntent) -> CommandPresentation>;
+
 /// 搜索面板暴露给宿主的窄接口。
 ///
 /// `SearchModel` 的双输入框 owner 拆分、panel 状态同步、命中导航都留在 search feature 内；
@@ -57,9 +75,14 @@ impl SearchRuntimeHandle {
         Self { model }
     }
 
-    pub(crate) fn state(&self, workspace: &Workspace) -> SearchState {
+    pub(crate) fn state(
+        &self,
+        workspace: &Workspace,
+        views: &ViewSet,
+        active_view_id: Option<ViewId>,
+    ) -> SearchState {
         let mut state = self.model.borrow().state();
-        state.hit_count = coordinator::current_hit_count(workspace);
+        state.hit_count = coordinator::current_hit_count(workspace, views, active_view_id);
         state
     }
 
@@ -68,69 +91,118 @@ impl SearchRuntimeHandle {
         self.model.borrow().is_open()
     }
 
-    pub(crate) fn sync_active_buffer_search(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+    pub(crate) fn sync_active_buffer_search(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::sync_active_buffer_search(&mut model, workspace, views);
+        coordinator::sync_active_buffer_search(&mut model, workspace, views, active_view_id);
     }
 
-    pub(crate) fn pump_active_buffer_search(workspace: &mut Workspace, views: &mut ViewSet) {
-        coordinator::pump_active_buffer_search(workspace, views);
+    pub(crate) fn pump_active_buffer_search(
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
+        coordinator::pump_active_buffer_search(workspace, views, active_view_id);
     }
 
-    pub(crate) fn on_opened(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+    pub(crate) fn on_opened(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::on_opened(&mut model, workspace, views);
+        coordinator::on_opened(&mut model, workspace, views, active_view_id);
     }
 
-    pub(crate) fn on_closed(&self, workspace: &mut Workspace) {
+    pub(crate) fn on_closed(
+        &self,
+        workspace: &mut Workspace,
+        views: &ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::on_closed(&mut model, workspace);
+        coordinator::on_closed(&mut model, workspace, views, active_view_id);
     }
 
     pub(crate) fn toggle_option(
         &self,
         workspace: &mut Workspace,
         views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
         option: SearchOption,
     ) {
         let mut model = self.model.borrow_mut();
-        coordinator::toggle_option(&mut model, workspace, views, option);
+        coordinator::toggle_option(&mut model, workspace, views, active_view_id, option);
     }
 
-    pub(crate) fn find_next(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+    pub(crate) fn find_next(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::find_next(&mut model, workspace, views);
+        coordinator::find_next(&mut model, workspace, views, active_view_id);
     }
 
-    pub(crate) fn find_previous(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+    pub(crate) fn find_previous(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::find_previous(&mut model, workspace, views);
+        coordinator::find_previous(&mut model, workspace, views, active_view_id);
     }
 
-    pub(crate) fn replace_next(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+    pub(crate) fn replace_next(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::replace_next(&mut model, workspace, views);
+        coordinator::replace_next(&mut model, workspace, views, active_view_id);
     }
 
-    pub(crate) fn replace_all(&self, workspace: &mut Workspace, views: &mut ViewSet) {
+    pub(crate) fn replace_all(
+        &self,
+        workspace: &mut Workspace,
+        views: &mut ViewSet,
+        active_view_id: Option<ViewId>,
+    ) {
         let mut model = self.model.borrow_mut();
-        coordinator::replace_all(&mut model, workspace, views);
+        coordinator::replace_all(&mut model, workspace, views, active_view_id);
     }
 }
 
 impl SearchHost for SearchRuntimeHandle {
-    fn apply_search_action(&self, action: SearchAction, session: &mut WorkspaceSession) {
+    fn apply_search_action_from_effect(
+        &self,
+        action: SearchAction,
+        session: &mut WorkspaceSession,
+    ) {
+        let active_view_id = session.active_view_id();
         let (workspace, views) = session.parts_mut();
         match action {
-            SearchAction::Opened => self.on_opened(workspace, views),
-            SearchAction::Closed => self.on_closed(workspace),
-            SearchAction::ToggleOption(option) => self.toggle_option(workspace, views, option),
-            SearchAction::FindPrevious => self.find_previous(workspace, views),
-            SearchAction::FindNext => self.find_next(workspace, views),
-            SearchAction::ReplaceNext => self.replace_next(workspace, views),
-            SearchAction::ReplaceAll => self.replace_all(workspace, views),
+            SearchAction::Opened => self.on_opened(workspace, views, active_view_id),
+            SearchAction::Closed => self.on_closed(workspace, views, active_view_id),
+            SearchAction::ToggleOption(option) => {
+                self.toggle_option(workspace, views, active_view_id, option)
+            }
+            SearchAction::FindPrevious => self.find_previous(workspace, views, active_view_id),
+            SearchAction::FindNext => self.find_next(workspace, views, active_view_id),
+            SearchAction::ReplaceNext => self.replace_next(workspace, views, active_view_id),
+            SearchAction::ReplaceAll => self.replace_all(workspace, views, active_view_id),
             // ConfirmMatch 只读 buffer + 写 view，不依赖 SearchModel；直接调 coordinator。
-            SearchAction::ConfirmMatch => coordinator::confirm_match(workspace, views),
+            SearchAction::ConfirmMatch => {
+                coordinator::confirm_match(workspace, views, active_view_id)
+            }
         }
     }
 }
@@ -147,8 +219,10 @@ impl SearchEditObserver {
 
 impl PostEditObserver for SearchEditObserver {
     fn after_text_edit(&self, session: &mut WorkspaceSession) {
+        let active_view_id = session.active_view_id();
         let (workspace, views) = session.parts_mut();
-        self.0.sync_active_buffer_search(workspace, views);
+        self.0
+            .sync_active_buffer_search(workspace, views, active_view_id);
     }
 }
 
@@ -158,16 +232,16 @@ pub(crate) struct SearchFramePump;
 
 impl FramePump for SearchFramePump {
     fn pump(&self, session: &mut WorkspaceSession) {
+        let active_view_id = session.active_view_id();
         let (workspace, views) = session.parts_mut();
-        SearchRuntimeHandle::pump_active_buffer_search(workspace, views);
+        SearchRuntimeHandle::pump_active_buffer_search(workspace, views, active_view_id);
     }
 }
 
 /// 搜索面板的 shell 端 runtime —— 焦点宿主 + `SearchModel` 的真正拥有者。
 ///
-/// App 只保存 [`SearchRuntimeHandle`]，不直接认识 `SearchModel` 或 coordinator
-/// 函数。这样搜索输入框的 owner 拆分仍能参与全局 editor router，同时业务动作
-/// 留在 search feature 内部。
+/// App 只保存 [`SearchRuntimeHandle`]，不直接认识 `SearchModel` 或 coordinator 函数。
+/// 这样搜索输入框的 owner 拆分仍能参与全局 editor router，同时业务动作留在 search feature 内部。
 #[derive(Clone)]
 pub(crate) struct SearchRuntime {
     focus: FocusHandle,
@@ -190,9 +264,8 @@ impl SearchRuntime {
         SearchRuntimeHandle::new(self.model.clone())
     }
 
-    /// 把 SearchModel 作为 [`TextTargetOwner`] 暴露给 router——按 focus
-    /// 内部分派 query / replacement。注册路径与其它 owner 完全一致，
-    /// TextTargetRuntime 不再为 search 单走特殊分支。
+    /// 把 SearchModel 作为 [`TextTargetOwner`] 暴露给 router——按 focus 内部分派 query / replacement。
+    /// 注册路径与其它 owner 完全一致，TextTargetRuntime 不再为 search 单走特殊分支。
     pub(crate) fn owner_handle(&self) -> Rc<RefCell<dyn TextTargetOwner>> {
         self.model.clone()
     }
@@ -231,10 +304,11 @@ impl SearchRuntime {
         &self,
         state: &SearchState,
         key_request: &KeyRequest,
+        intent_request: &SearchIntentRequest,
+        intent_presentation: &SearchIntentPresentationLookup,
         query_slot: &Rc<TextEditorSlot>,
         replacement_slot: &Rc<TextEditorSlot>,
-        shortcuts: &ShortcutLookup,
-        titles: &CommandTitleLookup,
+        focus_request: &FocusRequest,
     ) -> Div {
         let key_request_clone = Rc::clone(key_request);
         div()
@@ -252,10 +326,11 @@ impl SearchRuntime {
                 key_request,
                 &self.query_focus,
                 &self.replacement_focus,
+                intent_request,
+                intent_presentation,
                 query_slot,
                 replacement_slot,
-                shortcuts,
-                titles,
+                focus_request,
             ))
     }
 }
@@ -281,17 +356,19 @@ fn install_field_focus_listener<T: 'static>(
     .detach();
 }
 
-/// 嵌入 file_status_bar 作为它的第二行：背景 / 内边距 / 字号 / 底边由宿主 bar 提供，
+/// 嵌入 file_status_bar 作为它的第二行：
+/// 背景 / 内边距 / 字号 / 底边由宿主 bar 提供，
 /// 这里只画输入框与按钮组的列布局。
 fn search_controls(
     state: &SearchState,
     key_request: &KeyRequest,
     query_focus: &FocusHandle,
     replacement_focus: &FocusHandle,
+    intent_request: &SearchIntentRequest,
+    intent_presentation: &SearchIntentPresentationLookup,
     query_slot: &Rc<TextEditorSlot>,
     replacement_slot: &Rc<TextEditorSlot>,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
+    focus_request: &FocusRequest,
 ) -> Div {
     div()
         .flex()
@@ -308,53 +385,67 @@ fn search_controls(
                 .first()
                 .map(|line| line.text.is_empty())
                 .unwrap_or(true),
+            focus_request,
             vec![
                 hit_count_badge(state.hit_count),
                 Glyph::icon(
                     "search-case-sensitive",
                     CASE_SENSITIVE_ICON,
-                    titles(search::TOGGLE_CASE_SENSITIVE)
-                        .unwrap_or_else(|| search::TOGGLE_CASE_SENSITIVE.to_string()),
+                    intent_presentation(SearchIntent::ToggleCaseSensitive).title,
                 )
-                .hint(shortcuts(search::TOGGLE_CASE_SENSITIVE))
+                .hint(intent_presentation(SearchIntent::ToggleCaseSensitive).hint)
                 .active(state.options.case_sensitive)
+                .on_press(intent_press_request(
+                    intent_request,
+                    SearchIntent::ToggleCaseSensitive,
+                ))
                 .render(),
                 Glyph::icon(
                     "search-whole-word",
                     WHOLE_WORD_ICON,
-                    titles(search::TOGGLE_WHOLE_WORD)
-                        .unwrap_or_else(|| search::TOGGLE_WHOLE_WORD.to_string()),
+                    intent_presentation(SearchIntent::ToggleWholeWord).title,
                 )
-                .hint(shortcuts(search::TOGGLE_WHOLE_WORD))
+                .hint(intent_presentation(SearchIntent::ToggleWholeWord).hint)
                 .active(state.options.whole_word)
+                .on_press(intent_press_request(
+                    intent_request,
+                    SearchIntent::ToggleWholeWord,
+                ))
                 .render(),
                 Glyph::icon(
                     "search-regex",
                     REGEX_ICON,
-                    titles(search::TOGGLE_REGEX)
-                        .unwrap_or_else(|| search::TOGGLE_REGEX.to_string()),
+                    intent_presentation(SearchIntent::ToggleRegex).title,
                 )
-                .hint(shortcuts(search::TOGGLE_REGEX))
+                .hint(intent_presentation(SearchIntent::ToggleRegex).hint)
                 .active(state.options.regex)
+                .on_press(intent_press_request(
+                    intent_request,
+                    SearchIntent::ToggleRegex,
+                ))
                 .render(),
             ],
             vec![
                 Glyph::icon(
                     "search-find-previous",
                     FIND_PREVIOUS_ICON,
-                    titles(search::FIND_PREVIOUS)
-                        .unwrap_or_else(|| search::FIND_PREVIOUS.to_string()),
+                    intent_presentation(SearchIntent::FindPrevious).title,
                 )
-                .hint(shortcuts(search::FIND_PREVIOUS))
+                .hint(intent_presentation(SearchIntent::FindPrevious).hint)
                 .active(false)
+                .on_press(intent_press_request(
+                    intent_request,
+                    SearchIntent::FindPrevious,
+                ))
                 .render(),
                 Glyph::icon(
                     "search-find-next",
                     FIND_NEXT_ICON,
-                    titles(search::FIND_NEXT).unwrap_or_else(|| search::FIND_NEXT.to_string()),
+                    intent_presentation(SearchIntent::FindNext).title,
                 )
-                .hint(shortcuts(search::FIND_NEXT))
+                .hint(intent_presentation(SearchIntent::FindNext).hint)
                 .active(false)
+                .on_press(intent_press_request(intent_request, SearchIntent::FindNext))
                 .render(),
             ],
         ))
@@ -369,26 +460,39 @@ fn search_controls(
                 .first()
                 .map(|line| line.text.is_empty())
                 .unwrap_or(true),
+            focus_request,
             vec![
                 Glyph::icon(
                     "search-replace-next",
                     REPLACE_NEXT_ICON,
-                    titles(search::REPLACE_NEXT)
-                        .unwrap_or_else(|| search::REPLACE_NEXT.to_string()),
+                    intent_presentation(SearchIntent::ReplaceNext).title,
                 )
-                .hint(shortcuts(search::REPLACE_NEXT))
+                .hint(intent_presentation(SearchIntent::ReplaceNext).hint)
                 .active(false)
+                .on_press(intent_press_request(
+                    intent_request,
+                    SearchIntent::ReplaceNext,
+                ))
                 .render(),
                 Glyph::icon(
                     "search-replace-all",
                     REPLACE_ALL_ICON,
-                    titles(search::REPLACE_ALL).unwrap_or_else(|| search::REPLACE_ALL.to_string()),
+                    intent_presentation(SearchIntent::ReplaceAll).title,
                 )
-                .hint(shortcuts(search::REPLACE_ALL))
+                .hint(intent_presentation(SearchIntent::ReplaceAll).hint)
                 .active(false)
+                .on_press(intent_press_request(
+                    intent_request,
+                    SearchIntent::ReplaceAll,
+                ))
                 .render(),
             ],
         ))
+}
+
+fn intent_press_request(request: &SearchIntentRequest, intent: SearchIntent) -> CommandRequest {
+    let request = Rc::clone(request);
+    Rc::new(move |window, cx| request(intent, window, cx))
 }
 
 /// 输入行右侧的 "3 / 27" 命中数小标签。无命中时显示淡灰 "0 / 0"，避免布局抖动。
@@ -397,8 +501,10 @@ fn search_controls(
 /// 由 SearchModel::state() 从 active buffer 的 BufferSearch 读出真实数据。
 fn hit_count_badge(hit_count: Option<HitCount>) -> gpui::AnyElement {
     let (text, color) = match hit_count {
-        Some(HitCount { total: 0, .. }) | None => ("0/0".to_string(), color::gray::s07()),
-        Some(HitCount { current, total }) => (format!("{current}/{total}"), color::gray::s09()),
+        Some(HitCount { total: 0, .. }) | None => ("0/0".to_string(), color::current().gray.s07),
+        Some(HitCount { current, total }) => {
+            (format!("{current}/{total}"), color::current().gray.s09)
+        }
     };
     div()
         .flex()
@@ -415,6 +521,7 @@ fn search_row(
     key_request: &KeyRequest,
     slot: &Rc<TextEditorSlot>,
     show_placeholder: bool,
+    focus_request: &FocusRequest,
     input_actions: Vec<gpui::AnyElement>,
     actions: Vec<gpui::AnyElement>,
 ) -> Div {
@@ -434,6 +541,7 @@ fn search_row(
             key_request,
             slot,
             show_placeholder,
+            focus_request,
             input_actions,
         ))
         .child(action_group)
@@ -445,6 +553,7 @@ fn replace_row(
     key_request: &KeyRequest,
     slot: &Rc<TextEditorSlot>,
     show_placeholder: bool,
+    focus_request: &FocusRequest,
     actions: Vec<gpui::AnyElement>,
 ) -> Div {
     let mut action_group = div().flex().flex_row().items_center().gap(space::s6());
@@ -463,6 +572,7 @@ fn replace_row(
             key_request,
             slot,
             show_placeholder,
+            focus_request,
         ))
         .child(action_group)
 }
@@ -473,6 +583,7 @@ fn input_box_with_actions(
     key_request: &KeyRequest,
     slot: &Rc<TextEditorSlot>,
     show_placeholder: bool,
+    focus_request: &FocusRequest,
     actions: Vec<gpui::AnyElement>,
 ) -> Div {
     let mut action_group = div().flex().flex_row().items_center().gap(space::s6());
@@ -480,7 +591,15 @@ fn input_box_with_actions(
         action_group = action_group.child(action);
     }
 
-    base_input_box(placeholder, focus, key_request, slot, show_placeholder).child(action_group)
+    base_input_box(
+        placeholder,
+        focus,
+        key_request,
+        slot,
+        show_placeholder,
+        focus_request,
+    )
+    .child(action_group)
 }
 
 fn base_input_box(
@@ -489,8 +608,10 @@ fn base_input_box(
     key_request: &KeyRequest,
     slot: &Rc<TextEditorSlot>,
     show_placeholder: bool,
+    focus_request: &FocusRequest,
 ) -> Div {
     let focus_for_click = focus.clone();
+    let focus_request = Rc::clone(focus_request);
     let key_request = Rc::clone(key_request);
     div()
         .flex_1()
@@ -501,13 +622,17 @@ fn base_input_box(
         .p(space::s6())
         .border_1()
         .rounded(radius::r4())
-        .border_color(color::gray::s05())
-        .bg(color::gray::s01())
-        .text_color(color::gray::s08())
+        .border_color(color::current().gray.s05)
+        .bg(color::current().gray.s01)
+        .text_color(color::current().gray.s08)
         .track_focus(focus)
         .tab_index(0)
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            window.focus(&focus_for_click);
+            focus_request(
+                FocusRequestTarget::Handle(focus_for_click.clone()),
+                window,
+                cx,
+            );
             cx.stop_propagation();
         })
         .on_key_down(move |event, window, cx| {
@@ -532,14 +657,14 @@ fn editor(slot: &Rc<TextEditorSlot>, show_placeholder: bool, placeholder: &'stat
         .h(typography::ui_line())
         .flex_1()
         .overflow_hidden()
-        .text_color(color::gray::s09());
+        .text_color(color::current().gray.s09);
     if show_placeholder {
         editor = editor.child(
             div()
                 .absolute()
                 .top_0()
                 .left_0()
-                .text_color(color::gray::s08())
+                .text_color(color::current().gray.s08)
                 .child(placeholder),
         );
     }

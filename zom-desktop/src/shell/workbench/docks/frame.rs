@@ -25,12 +25,15 @@ pub(crate) fn dock_frame(edge: DockEdge) -> Div {
         .flex_col()
         .flex_shrink_0()
         .h_full()
-        .bg(color::gray::s02())
-        .text_color(color::gray::s09());
+        .bg(color::current().gray.s02)
+        .text_color(color::current().gray.s09);
 
     match edge {
-        DockEdge::Left => frame.border_r_1().border_color(color::gray::s05()),
-        DockEdge::Right => frame.border_l_1().border_color(color::gray::s05()),
-        DockEdge::Bottom => frame.border_t_1().border_color(color::gray::s05()).w_full(),
+        DockEdge::Left => frame.border_r_1().border_color(color::current().gray.s05),
+        DockEdge::Right => frame.border_l_1().border_color(color::current().gray.s05),
+        DockEdge::Bottom => frame
+            .border_t_1()
+            .border_color(color::current().gray.s05)
+            .w_full(),
     }
 }

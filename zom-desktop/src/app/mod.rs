@@ -17,12 +17,11 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use zom_command::commands::editor;
 use zom_command::{
-    ClipboardPort, CommandArgs, CommandCatalogItem, CommandError, CommandId, FileTreeKeyMode,
-    HostEffect, Invocation, KeyContext, KeymapResolution,
+    ClipboardPort, CommandCatalogItem, CommandError, CommandId, FileTreeKeyMode, HostEffect,
+    Invocation, KeyContext, KeymapResolution,
 };
-use zom_view::ViewSet;
+use zom_view::{ViewSet, ViewportEditAnchor};
 use zom_workspace::Workspace;
 use zom_workspace::syntax::{SyntaxEngine, install_builtin_providers};
 
@@ -33,7 +32,6 @@ use self::pumps::BackgroundPumps;
 use self::text_target_runtime::TextTargetRuntime;
 use crate::config::{AppConfig, SettingsChange};
 use crate::dispatch::KeyDispatchOutcome;
-use crate::editor::text::ImeUtf16Range;
 use crate::editor::{EditorViewportMeasurement, SettledViewportTop};
 use crate::focus::{AppFocus, FileTreeFocus, FocusStore, PanelSubFocus};
 use crate::ports::{
@@ -92,7 +90,7 @@ impl App {
     /// 由 shell 根视图在装配阶段调；运行期通常不会再注册。
     ///
     /// `Rc` 的生命周期归 runtime（真正拥有者）；本结构只持一份共享引用，
-    /// 在路由阶段借出做 query / IME 写入。
+    /// 在路由阶段借出做 query / 命令写入。
     ///
     pub(crate) fn install_editor_owner(&mut self, owner: Rc<RefCell<dyn TextTargetOwner>>) {
         self.text_targets.install_editor_owner(owner);
@@ -138,9 +136,15 @@ impl App {
         }
     }
 
+    /// 把活动 tab 切到指定 view（对应 `HostEffect::EditorSelectTab`）。
+    /// 由 shell 端 effect handler 调，不直接给业务 / 命令使用。
+    pub(crate) fn activate_view_tab(&mut self, view_id: zom_view::ViewId) {
+        self.session.set_active_view(view_id);
+    }
+
     /// 把真实的 config.toml 打开到主编辑区。首次打开前先保存当前配置，保证文件存在；
     /// 后续语言识别、语法高亮、保存都走主工作区的普通文件路径。
-    pub(crate) fn open_config_file(&mut self) -> bool {
+    pub(crate) fn apply_open_config_file_from_effect(&mut self) -> bool {
         let Some(path) = self.config.path() else {
             self.session.push_bubble(
                 zom_command::BubbleRequest::info("当前为内存配置模式，没有可打开的 config.toml")
@@ -168,7 +172,7 @@ impl App {
         self.config.path()
     }
 
-    pub(crate) fn apply_settings_change(&mut self, change: SettingsChange) {
+    pub(crate) fn apply_settings_change_from_effect(&mut self, change: SettingsChange) {
         self.config.apply_change(change);
         ConfigApplier::apply_to_session(self.config.config(), &mut self.session);
         if let Err(error) = self.config.save() {
@@ -238,7 +242,7 @@ impl App {
 
     /// 替换默认剪贴板端口。
     /// shell 启动时注入 `GpuiClipboard`，让 copy / cut / paste 走系统剪贴板；
-    /// headless 单测保持默认 [`MockClipboard`]。
+    /// headless 路径保持默认 [`zom_command::NoopClipboard`]。
     pub(crate) fn set_clipboard(&mut self, clipboard: Box<dyn ClipboardPort>) {
         self.command.set_clipboard(clipboard);
     }
@@ -247,11 +251,10 @@ impl App {
     ///
     /// **不**负责把 root 写到"最近项目"列表 —— 那是 picker 自家的 UI 数据，归 project picker runtime 拥有；
     /// shell 在调用本方法后再调 `runtime.remember_project(root, repo)` 完成登记，repo 信息也由 shell 持有。
-    pub(crate) fn open_project(&mut self, root: PathBuf) {
+    /// HostEffect/project_session 落地入口：把指定 root 切成当前活动项目。
+    pub(crate) fn apply_open_project_from_effect(&mut self, root: PathBuf) {
         self.project_root = Some(root.clone());
         self.session.reset_project(self.config.buffer_config());
-        // 项目打开后焦点转入编辑区。生产里 picker 关闭后由 shell 的dismiss + 反向同步刷到这里；
-        // 这里显式写一遍是给 App-only 单测兜底。
         self.request_focus(AppFocus::editor());
     }
 
@@ -285,41 +288,118 @@ impl App {
         self.session.workspace()
     }
 
+    pub(crate) fn views(&self) -> &ViewSet {
+        self.session.views()
+    }
+
+    pub(crate) fn active_view_id(&self) -> Option<zom_view::ViewId> {
+        self.session.active_view_id()
+    }
+
+    /// 当前活动视图对应的 buffer id——文件树等"跟随活动文件"的 UI 从此投影。
+    pub(crate) fn active_buffer_id(&self) -> Option<zom_workspace::BufferId> {
+        self.session.active_buffer_id()
+    }
+
+    fn capture_active_viewport_edit_anchor(&self) -> Option<ViewportEditAnchor> {
+        let view_id = self.session.active_edit_view_id()?;
+        let view = self.session.views().edit_view(view_id)?;
+        let buffer = self.session.workspace().buffer(view.buffer())?;
+        view.capture_viewport_edit_anchor(buffer.buffer())
+    }
+
     /// 取走 session 累积的气泡请求；调用方负责把它们落到 BubbleRuntime。
     pub(crate) fn take_session_bubbles(&mut self) -> Vec<zom_command::BubbleRequest> {
         self.session.take_bubbles()
     }
 
-    pub(crate) fn with_workspace_views<R>(&self, f: impl FnOnce(&Workspace, &ViewSet) -> R) -> R {
-        f(self.session.workspace(), self.session.views())
+    /// 构造一份 tab bar 渲染快照。
+    /// 集中读 session.workspace / views / active_view，调用方不必再手拼这几样。
+    pub(crate) fn editor_state(&self) -> crate::editor_state::EditorState {
+        let project_root = self.project_root().map(|p| p.to_path_buf());
+        crate::editor_state::build_editor_state(
+            self.session.workspace(),
+            self.session.views(),
+            self.session.active_view_id(),
+            project_root.as_deref(),
+        )
     }
 
-    pub(crate) fn apply_search_action(&mut self, action: SearchAction) {
+    pub(crate) fn apply_search_action_from_effect(&mut self, action: SearchAction) {
         if let Some(search) = &self.search {
-            search.apply_search_action(action, &mut self.session);
+            search.apply_search_action_from_effect(action, &mut self.session);
         }
     }
 
-    pub(crate) fn apply_file_tree_action(
+    pub(crate) fn apply_file_tree_action_from_effect(
         &mut self,
         action: FileTreeAction,
     ) -> FileTreeActionResult {
         let Some(file_tree) = &self.file_tree else {
             return FileTreeActionResult::default();
         };
-        file_tree.apply_file_tree_action(action, &mut self.session)
+        file_tree.apply_file_tree_action_from_effect(action, &mut self.session)
     }
 
     /// 派发一次命令调用。
     ///
-    /// 调用方应当来自 typed builder（如 `editor::insert_text("hi")`），从而避免
-    /// 在调用点手写 `CommandId::new(...)` 或 `CommandArgs::new().with(...)`。
-    pub(crate) fn dispatch(
+    /// 调用方应当来自 typed builder（如 `editor::insert_text("hi")`），
+    /// 从而避免在调用点手写 `CommandId::new(...)` 或 `CommandArgs::new().with(...)`。
+    pub(crate) fn dispatch_command(
         &mut self,
         invocation: Invocation,
     ) -> Result<Vec<HostEffect>, CommandError> {
         let (id, args) = invocation;
-        self.dispatch_command_id(id, args)
+        let focus = self.focus.current();
+        let viewport_anchor = self.capture_active_viewport_edit_anchor();
+
+        // 命令派发期需要给 CommandContext 填 `focused_field`。
+        // 若命令真的改了这个输入目标的文本，派发后再让 owner 跑 `after_text_changed`。
+        let run_command = |focused_field: Option<zom_command::EditTarget<'_>>| {
+            self.command
+                .run_invocation(id.clone(), args.clone(), &mut self.session, focused_field)
+        };
+
+        let mut host_effects = self
+            .text_targets
+            .with_edit_target_for_focus(focus, run_command)?;
+
+        // 命令派发可能编辑了活动 buffer（产生 DeltaEvent），扇出给 BufferSearch 与 syntax provider 是无条件的。
+        // 否则编辑后高亮 / 搜索命中都不跟版本。
+        // 必须先于 `sync_active_buffer_search`：后者依赖搜索状态已被新事件推进。
+        self.background.after_text_edit(
+            &mut self.session,
+            self.config.soft_wrap_enabled(),
+            viewport_anchor,
+        );
+        // 命令派发也可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴等）。
+        // 把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——一处做完，渲染 / 后续命令读到的都是新真值。
+
+        // 纯 session 状态变更类 effect（tab 切换 / 关闭）在 App 层就近消化，
+        // 不再透传给 shell —— 这两条不动 GPUI / DockState / 焦点，不必走 actions.rs。
+        // 这样 `App::dispatch` 的程序化调用方（含集成测试）拿回去的就是已经落地的新状态。
+        host_effects.retain(|effect| match effect {
+            HostEffect::EditorSelectTab(view_id) => {
+                self.session.set_active_view(*view_id);
+                false
+            }
+            HostEffect::EditorOpenPreview(buffer_id) => {
+                self.session.open_preview(*buffer_id);
+                false
+            }
+            HostEffect::EditorSelectAdjacentTab(forward) => {
+                select_adjacent_tab(&mut self.session, *forward);
+                false
+            }
+            HostEffect::EditorCloseActiveTab => {
+                if let Some(view_id) = self.session.active_view_id() {
+                    self.session.close_view(view_id);
+                }
+                false
+            }
+            _ => true,
+        });
+        Ok(host_effects)
     }
 
     /// 处理一次归一化按键。
@@ -328,7 +408,7 @@ impl App {
     /// 命令与快捷键的定义全在 zom-command，宿主不持有任何 chord → 动作 的映射表。
     ///
     /// 文本输入不在这里兜底：交给 GPUI 的 `EntityInputHandler` 路径，
-    /// 由系统输入法或 NSTextInputClient 把文本喂给 `App::ime_*`。
+    /// 系统输入法或 NSTextInputClient 回调会被输入适配层转换为 `editor.ime_*` 命令。
     pub(crate) fn dispatch_key(
         &mut self,
         chord: String,
@@ -345,7 +425,7 @@ impl App {
         let contexts = self.key_contexts();
         match self.command.resolve_key(chord, &contexts)? {
             KeymapResolution::Matched { command, args } => {
-                let effects = self.dispatch_command_id(command, args)?;
+                let effects = self.dispatch_command((command, args))?;
                 Ok(KeyDispatchOutcome {
                     consumed: true,
                     effects,
@@ -454,8 +534,9 @@ impl App {
         measured: EditorViewportMeasurement,
         wrap_map: Option<zom_view::WrapMap>,
     ) -> Option<SettledViewportTop> {
+        let active_view_id = self.session.active_edit_view_id()?;
         let (workspace, views) = self.session.parts_mut();
-        let view = views.active_view_mut()?;
+        let view = views.edit_view_mut(active_view_id)?;
         let current = view.viewport();
         let viewport = zom_view::ViewportState {
             top_line: current.top_line,
@@ -513,89 +594,6 @@ impl App {
     pub fn pump_frame_observers(&mut self) {
         self.background.pump_frame_observers(&mut self.session);
     }
-
-    fn dispatch_command_id(
-        &mut self,
-        id: CommandId,
-        args: CommandArgs,
-    ) -> Result<Vec<HostEffect>, CommandError> {
-        let focus = self.focus.current();
-
-        // 命令派发期需要给 CommandContext 填 `focused_field`。
-        // 若命令真的改了这个输入目标的文本，派发后再让 owner 跑 `after_text_changed`。
-        let run_command = |focused_field: Option<zom_command::EditTarget<'_>>| {
-            self.command.dispatch_command_id(
-                id.clone(),
-                args.clone(),
-                &mut self.session,
-                focused_field,
-            )
-        };
-
-        let host_effects = self
-            .text_targets
-            .with_edit_target_for_focus(focus, run_command)?;
-
-        // 命令派发可能编辑了活动 buffer（产生 DeltaEvent），扇出给 BufferSearch 与 syntax provider 是无条件的。
-        // 否则编辑后高亮 / 搜索命中都不跟版本。
-        // 必须先于 `sync_active_buffer_search`：后者依赖搜索状态已被新事件推进。
-        self.background
-            .after_text_edit(&mut self.session, self.config.soft_wrap_enabled());
-        // 命令派发也可能改了 panel 的 query 文本（在搜索框内按键 / 退格 / 粘贴等）。
-        // 把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——一处做完，渲染 / 后续命令读到的都是新真值。
-        Ok(host_effects)
-    }
-
-    /// 提交系统输入法文本。commit 走命令路径，保证进入 undo 历史。
-    ///
-    /// 写入成功后由 router 调 owner 的 `after_text_changed` 钩子 —— picker 等需要"文本变了就重置选区"的 owner 自己实现，宿主不必特判。
-    pub(crate) fn ime_replace_text_for(
-        &mut self,
-        focus: AppFocus,
-        replacement_range_utf16: Option<ImeUtf16Range>,
-        text: &str,
-    ) -> Result<(), CommandError> {
-        self.with_router_mut(|router| {
-            router.with_ime_target(focus, |mut target| {
-                target.apply_replacement_range(replacement_range_utf16)
-            })
-        })?;
-
-        self.dispatch(editor::ime_commit(text))?;
-        Ok(())
-    }
-
-    /// 更新输入法 preedit。update 走直接通道，避免每次按键都过命令队列。
-    pub(crate) fn ime_replace_and_mark_text_for(
-        &mut self,
-        focus: AppFocus,
-        replacement_range_utf16: Option<ImeUtf16Range>,
-        new_text: &str,
-        new_selected_range_utf16: Option<ImeUtf16Range>,
-    ) -> Result<(), CommandError> {
-        let result = self.with_router_mut(|router| {
-            router.with_ime_target(focus, |mut target| {
-                target.replace_and_mark_text(
-                    replacement_range_utf16,
-                    new_text,
-                    new_selected_range_utf16,
-                )
-            })
-        });
-        // preedit 期间也走 live search——用户在搜索框中文输入时能边输入边看到结果收敛。
-        // 同时把 buffer 上累积的 DeltaEvent 扇出到 syntax provider（preedit replace 走 composition state，但 replace_and_mark 内部仍可能产生编辑事件）。
-        self.background
-            .after_text_edit(&mut self.session, self.config.soft_wrap_enabled());
-        result
-    }
-
-    pub(crate) fn ime_unmark_for(&mut self, focus: AppFocus) -> Result<(), CommandError> {
-        let Some(preedit) = self.with_router(|router| router.preedit_text(focus)) else {
-            return Ok(());
-        };
-        self.dispatch(editor::ime_commit(preedit))?;
-        Ok(())
-    }
 }
 
 /// 空工作区：不预建任何 buffer/view。
@@ -619,6 +617,30 @@ impl Default for App {
     }
 }
 
+/// tab 顺序 = ViewSet 的 ViewId 升序（编辑视图与预览视图共占同一序列），循环导航。
+fn select_adjacent_tab(session: &mut WorkspaceSession, forward: bool) {
+    let view_ids: Vec<_> = session.views().views().map(|(id, _)| id).collect();
+    let total = view_ids.len();
+    if total == 0 {
+        return;
+    }
+    let current = session
+        .active_view_id()
+        .and_then(|vid| view_ids.iter().position(|id| *id == vid));
+    let target = if forward {
+        match current {
+            Some(i) => (i + 1) % total,
+            None => 0,
+        }
+    } else {
+        match current {
+            Some(i) => (i + total - 1) % total,
+            None => 0,
+        }
+    };
+    session.set_active_view(view_ids[target]);
+}
+
 #[cfg(test)]
 mod tests {
     //! `App` 派发管线的 headless 单元测试。
@@ -628,7 +650,7 @@ mod tests {
 
     use crate::app::App;
     use crate::config::{SettingsChange, THEME_ONE_DARK};
-    use crate::editor_state::{EditorState, EditorTab, build_editor_state};
+    use crate::editor_state::{EditorState, EditorTab};
     use crate::focus::{AppFocus, FileTreeFocus};
     use crate::text_target::{TextTargetOwner, TextTargetQuery};
     use crate::ui_id::PanelId;
@@ -655,8 +677,7 @@ mod tests {
     }
 
     fn editor_state(app: &App) -> EditorState {
-        let project_root = app.project_root().map(|p| p.to_path_buf());
-        app.with_workspace_views(|ws, views| build_editor_state(ws, views, project_root.as_deref()))
+        app.editor_state()
     }
 
     fn temp_path(tag: &str) -> PathBuf {
@@ -667,7 +688,7 @@ mod tests {
     fn app_with_open_file(name: &str) -> App {
         let mut app = App::new();
         let root = project_fixture(name);
-        app.open_project(root.clone());
+        app.apply_open_project_from_effect(root.clone());
         assert!(app.session.open_file(root.join("README.md")));
         app.request_focus(AppFocus::editor());
         app
@@ -677,11 +698,29 @@ mod tests {
         let mut app = App::new();
         let root = project_fixture(name);
         std::fs::write(root.join("README.md"), text).unwrap();
-        app.open_project(root.clone());
+        app.apply_open_project_from_effect(root.clone());
         assert!(app.session.open_file(root.join("README.md")));
         app.request_focus(AppFocus::editor());
-        app.session.workspace().syntax_worker().wait_for_idle();
+        app.session
+            .workspace()
+            .syntax_worker()
+            .wait_for_idle_for_test_or_bench();
         app
+    }
+
+    fn active_buffer_text(app: &App) -> String {
+        let buffer_id = app.active_buffer_id().expect("应有活动 buffer");
+        let buffer = app
+            .session
+            .workspace()
+            .buffer(buffer_id)
+            .expect("活动 buffer 应存在")
+            .buffer();
+        buffer
+            .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+            .unwrap()
+            .into_text()
+            .into_owned()
     }
 
     struct StubProjectPickerOwner {
@@ -715,10 +754,6 @@ mod tests {
     }
 
     impl TextTargetOwner for StubProjectPickerOwner {
-        fn ime_target(&mut self, _focus: AppFocus) -> Option<crate::editor::text::ImeTarget<'_>> {
-            Some(self.query.as_ime_target())
-        }
-
         fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
             Some(self.query.as_edit_target())
         }
@@ -736,34 +771,72 @@ mod tests {
     #[test]
     fn esc_should_collapse_extended_selection_via_dismiss_stack() {
         // 没有 picker / search bar / pending dialog 等更高瞬态在前，esc 应该塌掉编辑区的非空选区。
-        // 这条路径由 command_runtime 末尾的 reconcile_text_edit_dismiss 自动 push 一条
-        // editor.clear_selection token；esc 在 text_edit 上下文走 system.dismiss_top(TextEdit)
-        // 把它弹出再派发。
+        // 这条路径由 command_runtime 末尾的 reconcile_text_edit_dismiss 自动 push 一条 editor.clear_selection token；
+        // esc 在 text_edit 上下文走 system.dismiss_top(TextEdit) 把它弹出再派发。
         let mut app = app_with_markdown_text("esc-clear-selection", "hello world");
 
-        app.dispatch(editor::select_all()).unwrap();
-        let extent_before = app.with_workspace_views(|_, views| {
-            !views
-                .active_view()
-                .unwrap()
-                .selection()
-                .primary()
-                .is_caret()
-        });
+        app.dispatch_command(editor::select_all()).unwrap();
+        let extent_before = !app
+            .session
+            .active_edit_view()
+            .unwrap()
+            .selection()
+            .primary()
+            .is_caret();
         assert!(extent_before, "select_all 之后选区必须非空");
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
         assert!(outcome.consumed, "esc 必须被 dismiss_top 消化");
 
-        let is_caret_after = app.with_workspace_views(|_, views| {
-            views
-                .active_view()
+        let is_caret_after = app
+            .session
+            .active_edit_view()
+            .unwrap()
+            .selection()
+            .primary()
+            .is_caret();
+        assert!(is_caret_after, "esc 应当把扩展选区塌成 caret");
+    }
+
+    #[test]
+    fn esc_should_collapse_pointer_selection_on_first_press() {
+        let mut app = app_with_markdown_text("esc-pointer-selection", "hello world");
+
+        app.request_focus(AppFocus::panel(PanelId::Terminal));
+        // Pointer adapter 在派发 editor.set_selection 前必须同步 slot 对应的语义焦点；
+        // 否则 selection 虽然会落到 active view，但后续 Esc 仍按旧焦点解析，第一下不会清选区。
+        app.request_focus(AppFocus::editor());
+        app.dispatch_command(editor::set_selection(
+            ByteOffset::new(1),
+            ByteOffset::new(5),
+        ))
+        .unwrap();
+        assert!(
+            !app.session
+                .active_edit_view()
                 .unwrap()
                 .selection()
                 .primary()
-                .is_caret()
-        });
-        assert!(is_caret_after, "esc 应当把扩展选区塌成 caret");
+                .is_caret(),
+            "pointer 等价命令产生的选区必须立刻进入 dismiss 栈"
+        );
+
+        let outcome = app.dispatch_key("escape".to_string()).unwrap();
+        assert!(outcome.consumed, "第一下 esc 必须清掉 pointer 选区");
+        assert_eq!(
+            outcome.effects,
+            vec![HostEffect::EditorCancelPointerSelection],
+            "第一下 esc 还必须取消宿主侧鼠标拖选会话，避免 stale mousemove 复活选区"
+        );
+        assert!(
+            app.session
+                .active_edit_view()
+                .unwrap()
+                .selection()
+                .primary()
+                .is_caret(),
+            "pointer 选区不应需要第二下 esc"
+        );
     }
 
     #[test]
@@ -785,9 +858,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let mut app = App::new_with_paths(Some(path.clone()));
 
-        app.apply_settings_change(SettingsChange::AdjustUiFont(1));
-        app.apply_settings_change(SettingsChange::AdjustEditorFont(2));
-        app.apply_settings_change(SettingsChange::ToggleEditorSoftWrap);
+        app.apply_settings_change_from_effect(SettingsChange::AdjustUiFont(1));
+        app.apply_settings_change_from_effect(SettingsChange::AdjustEditorFont(2));
+        app.apply_settings_change_from_effect(SettingsChange::ToggleEditorSoftWrap);
 
         let config = app.config_snapshot();
         assert_eq!(config.general.theme, THEME_ONE_DARK);
@@ -808,7 +881,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let mut app = App::new_with_paths(Some(path.clone()));
 
-        assert!(app.open_config_file());
+        assert!(app.apply_open_config_file_from_effect());
         assert!(path.exists());
         assert_eq!(app.focus().current(), AppFocus::editor());
 
@@ -829,14 +902,14 @@ mod tests {
     #[test]
     fn editor_tab_size_setting_should_reach_open_buffers() {
         let mut app = App::new();
-        app.apply_settings_change(SettingsChange::CycleEditorTabSize);
+        app.apply_settings_change_from_effect(SettingsChange::CycleEditorTabSize);
         let root = project_fixture("tab-size-setting");
-        app.open_project(root.clone());
+        app.apply_open_project_from_effect(root.clone());
         assert!(app.session.open_file(root.join("README.md")));
 
         let tab_width = app
-            .workspace()
-            .active_buffer()
+            .active_buffer_id()
+            .and_then(|id| app.workspace().buffer(id))
             .expect("应有活动 buffer")
             .buffer()
             .config()
@@ -846,44 +919,58 @@ mod tests {
     }
 
     #[test]
-    fn text_edit_should_invalidate_active_view_wrap_map() {
-        let mut app = app_with_open_file("invalidate-wrap-map");
+    fn text_edit_should_preserve_conservative_active_view_wrap_map() {
+        let mut app = app_with_markdown_text("preserve-wrap-map", "abcdefghij\nklmnopqrst");
         app.session
-            .views_mut()
-            .active_view_mut()
+            .active_edit_view_mut()
             .expect("应有活动视图")
-            .set_wrap_map(Some(WrapMap::sparse(false, 1, [])));
+            .set_wrap_map(Some(WrapMap::new(true, vec![vec![5], vec![4]])));
 
-        app.dispatch(editor::insert_newline()).unwrap();
+        app.dispatch_command(editor::insert_text("X")).unwrap();
 
-        assert!(
-            app.session
-                .views()
-                .active_view()
-                .expect("应有活动视图")
-                .wrap_map()
-                .is_none(),
-            "文本变化后不能继续使用上一帧的 wrap map",
-        );
+        let wrap_map = app
+            .session
+            .active_edit_view()
+            .expect("应有活动视图")
+            .wrap_map()
+            .expect("文本变化后应保留一份保守 wrap map");
+        assert_eq!(wrap_map.logical_line_count(), 2);
+        assert!(wrap_map.breaks(0).is_empty());
+        assert_eq!(wrap_map.breaks(1), &[4]);
+    }
+
+    #[test]
+    fn desktop_text_input_should_merge_consecutive_same_edit_commands_for_undo_redo() {
+        let mut app = app_with_markdown_text("merge-text-input-history", "");
+
+        app.dispatch_command(editor::insert_text("a")).unwrap();
+        app.dispatch_command(editor::insert_text("b")).unwrap();
+        app.dispatch_command(editor::insert_text("c")).unwrap();
+
+        assert_eq!(active_buffer_text(&app), "abc");
+
+        app.dispatch_command(editor::undo()).unwrap();
+        assert_eq!(active_buffer_text(&app), "");
+
+        app.dispatch_command(editor::redo()).unwrap();
+        assert_eq!(active_buffer_text(&app), "abc");
     }
 
     #[test]
     fn text_edit_without_soft_wrap_should_refresh_wrap_map_line_count_immediately() {
         let mut app = app_with_open_file("refresh-nowrap-map");
-        app.apply_settings_change(SettingsChange::ToggleEditorSoftWrap);
+        app.apply_settings_change_from_effect(SettingsChange::ToggleEditorSoftWrap);
         assert!(!app.config_snapshot().editor.soft_wrap);
         app.session
-            .views_mut()
-            .active_view_mut()
+            .active_edit_view_mut()
             .expect("应有活动视图")
             .set_wrap_map(Some(WrapMap::sparse(false, 1, [])));
 
-        app.dispatch(editor::insert_newline()).unwrap();
+        app.dispatch_command(editor::insert_newline()).unwrap();
 
         let wrap_map = app
             .session
-            .views()
-            .active_view()
+            .active_edit_view()
             .expect("应有活动视图")
             .wrap_map()
             .expect("关闭软换行时应立即刷新逻辑行视觉模型");
@@ -927,12 +1014,12 @@ mod tests {
         // 第一帧 paint 跑 query 应当命中扩展后的 heading 段，新字节 [4..5) 在内。
         let mut app = app_with_markdown_text("token-inside-edit", "# zom 文档规范\n\n正文。\n");
         *app.session
-            .views_mut()
-            .active_view_mut()
+            .active_edit_view_mut()
             .expect("应有活动视图")
             .selection_mut() = SelectionSet::caret(ByteOffset::new(4));
 
-        app.dispatch(editor::replace_selection("X")).unwrap();
+        app.dispatch_command(editor::replace_selection("X"))
+            .unwrap();
 
         let snapshot = app.with_router(|router| router.snapshot_for_focus(AppFocus::editor()));
         assert!(
@@ -955,19 +1042,22 @@ mod tests {
     fn edit_frame_decorations_equal_reparse_frame_for_structure_preserving_edit() {
         let mut app = app_with_markdown_text("no-flash", "# zom 文档规范\n\n正文段落。\n");
         *app.session
-            .views_mut()
-            .active_view_mut()
+            .active_edit_view_mut()
             .expect("应有活动视图")
             .selection_mut() = SelectionSet::caret(ByteOffset::new(4));
 
-        app.dispatch(editor::replace_selection("X")).unwrap();
+        app.dispatch_command(editor::replace_selection("X"))
+            .unwrap();
 
         // edit-frame：worker 还没回包，slot 里只有主线程 tree.edit 推进的 interpolate tree。
         let edit_frame = app.with_router(|router| router.snapshot_for_focus(AppFocus::editor()));
         let edit_frame_syntax = syntax_decorations(&edit_frame);
 
         // reparse-frame：等 worker 把真正的重 parse 结果 store 回 slot。
-        app.session.workspace().syntax_worker().wait_for_idle();
+        app.session
+            .workspace()
+            .syntax_worker()
+            .wait_for_idle_for_test_or_bench();
         let reparse_frame = app.with_router(|router| router.snapshot_for_focus(AppFocus::editor()));
         let reparse_frame_syntax = syntax_decorations(&reparse_frame);
 
@@ -1097,7 +1187,7 @@ mod tests {
         app.request_focus(AppFocus::project_picker());
 
         let actions = app
-            .dispatch(project_picker_commands::open_local_project())
+            .dispatch_command(project_picker_commands::open_local_project())
             .unwrap();
 
         assert_eq!(actions, vec![HostEffect::OpenLocalProject]);
@@ -1138,12 +1228,12 @@ mod tests {
         assert_eq!(outcome.effects, vec![HostEffect::ProjectPickerActivate]);
 
         let actions = app
-            .dispatch(project_picker_commands::start_git_clone())
+            .dispatch_command(project_picker_commands::start_git_clone())
             .unwrap();
         assert_eq!(actions, vec![HostEffect::StartGitClone]);
 
         let actions = app
-            .dispatch(project_picker_commands::remove_recent_project())
+            .dispatch_command(project_picker_commands::remove_recent_project())
             .unwrap();
         assert_eq!(actions, vec![HostEffect::RemoveSelectedRecentProject]);
     }
@@ -1152,7 +1242,7 @@ mod tests {
     fn file_tree_confirm_delete_focus_should_route_enter_and_escape_to_dialog_actions() {
         let mut app = App::new();
         // Esc 改走 system.dismiss_top 后，必须经 request_delete() 才能把 cancel token 推上栈。
-        let _ = app.dispatch(file_tree::request_delete()).unwrap();
+        let _ = app.dispatch_command(file_tree::request_delete()).unwrap();
         app.request_focus(AppFocus::file_tree(FileTreeFocus::ConfirmDelete));
         app.request_focus_from_shell(AppFocus::file_tree(FileTreeFocus::Navigate));
         assert_eq!(
@@ -1165,7 +1255,7 @@ mod tests {
         assert_eq!(outcome.effects, vec![HostEffect::FileTreeConfirmDelete]);
 
         // enter 提交后栈已被 commit 清空；再 esc 必须重新经 request_delete() 才有 token。
-        let _ = app.dispatch(file_tree::request_delete()).unwrap();
+        let _ = app.dispatch_command(file_tree::request_delete()).unwrap();
         app.request_focus(AppFocus::file_tree(FileTreeFocus::Navigate));
         assert_eq!(
             app.focus().current(),
@@ -1192,7 +1282,7 @@ mod tests {
     fn language_server_status_command_should_emit_open_surface_window_action() {
         let mut app = App::new();
 
-        let actions = app.dispatch(language_servers::open()).unwrap();
+        let actions = app.dispatch_command(language_servers::open()).unwrap();
 
         assert_eq!(actions, vec![HostEffect::ShowLanguageServers]);
     }
@@ -1201,13 +1291,13 @@ mod tests {
     fn settings_and_diagnostics_commands_should_be_registered() {
         let mut app = App::new();
 
-        let actions = app.dispatch(settings::open()).unwrap();
+        let actions = app.dispatch_command(settings::open()).unwrap();
         assert_eq!(actions, vec![HostEffect::ShowSettings]);
 
-        let actions = app.dispatch(settings::dismiss()).unwrap();
+        let actions = app.dispatch_command(settings::dismiss()).unwrap();
         assert_eq!(actions, vec![HostEffect::DismissSurface]);
 
-        let actions = app.dispatch(diagnostics::show_problems()).unwrap();
+        let actions = app.dispatch_command(diagnostics::show_problems()).unwrap();
         assert_eq!(actions, vec![HostEffect::ShowDiagnostics]);
     }
 
@@ -1216,7 +1306,7 @@ mod tests {
         // Esc 现在走 system.dismiss_top —— 必须先经 settings::open()
         // push 一条 dismiss token，否则栈空 esc 静默。
         let mut app = App::new();
-        let _ = app.dispatch(settings::open()).unwrap();
+        let _ = app.dispatch_command(settings::open()).unwrap();
         app.request_focus(AppFocus::settings());
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
@@ -1228,7 +1318,7 @@ mod tests {
     #[test]
     fn language_servers_escape_should_dispatch_dismiss_command() {
         let mut app = App::new();
-        let _ = app.dispatch(language_servers::open()).unwrap();
+        let _ = app.dispatch_command(language_servers::open()).unwrap();
         app.request_focus(AppFocus::language_servers());
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
@@ -1246,7 +1336,7 @@ mod tests {
         let _picker = install_project_picker(&mut app);
         // 走命令路径打开 picker：SHOW_PROJECTS_PICKER push token + emit ShowProjectPicker。
         let _ = app
-            .dispatch(project_picker_commands::show_projects_picker())
+            .dispatch_command(project_picker_commands::show_projects_picker())
             .unwrap();
         app.request_focus(AppFocus::project_picker());
 
@@ -1271,7 +1361,7 @@ mod tests {
     fn tab_commands_should_switch_and_close_active_view() {
         let mut app = App::new();
         let root = project_fixture("tabs");
-        app.open_project(root.clone());
+        app.apply_open_project_from_effect(root.clone());
         assert!(app.session.open_file(root.join("README.md")));
         assert!(app.session.open_file(root.join("src/lib.rs")));
 
@@ -1282,28 +1372,28 @@ mod tests {
         assert!(state.tabs[1].is_active);
 
         // 切到上一个标签 → README.md。
-        app.dispatch(editor::select_tab(editor::SelectTabTarget::Previous))
+        app.dispatch_command(editor::select_tab(editor::SelectTabTarget::Previous))
             .unwrap();
         let state = editor_state(&app);
         assert_eq!(active_tab(&state).title, "README.md");
         assert!(state.tabs[0].is_active);
 
         // 关闭当前标签 → 只剩 lib.rs。
-        app.dispatch(editor::close_tab()).unwrap();
+        app.dispatch_command(editor::close_tab()).unwrap();
         let state = editor_state(&app);
         assert_eq!(state.tabs.len(), 1);
         assert_eq!(active_tab(&state).title, "lib.rs");
     }
 
     /// EditorTargetRegistry 集成契约：runtime 注册进来的 owner 能被 router
-    /// 通过 `accepts_focus` 找到并落到 query / IME 写入路径上。
+    /// 通过 `accepts_focus` 找到并落到 query / 命令写入路径上。
     ///
     /// 该测试是 §2 拆分 App 字段的基础——后续每个 model 迁出时只需把自己
     /// 注册到 registry，不再在 App struct 上长字段。本用例守住该机制本身。
     mod registry_integration {
         use super::*;
         use crate::editor::text::{
-            EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
+            EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, OwnedEditorTarget,
         };
         use crate::focus::FileTreeFocus;
         use crate::text_target::{TextTargetOwner, TextTargetQuery};
@@ -1341,9 +1431,6 @@ mod tests {
         }
 
         impl TextTargetOwner for StubPanelOwner {
-            fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
-                None
-            }
             fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
                 None
             }
@@ -1397,10 +1484,6 @@ mod tests {
         }
 
         impl TextTargetOwner for StubFileTreeNameOwner {
-            fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
-                Some(self.target.as_ime_target())
-            }
-
             fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
                 Some(self.target.as_edit_target())
             }
@@ -1454,8 +1537,8 @@ mod tests {
                 AppFocus::file_tree(FileTreeFocus::NewEntryName)
             );
 
-            let focus = app.focus().current();
-            app.ime_replace_text_for(focus, None, "zom").unwrap();
+            app.dispatch_command(editor::ime_commit(None, "zom"))
+                .unwrap();
             assert_eq!(owner.borrow().text(), "zom");
         }
     }

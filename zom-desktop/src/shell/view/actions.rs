@@ -8,12 +8,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
-use zom_command::{HostEffect, Invocation};
+use zom_command::{HostEffect, Invocation, SettingsChangeRequest};
 
 use crate::app::App;
 use crate::clipboard::GpuiClipboardScope;
+use crate::config::SettingsChange;
+use crate::editor::TextEditorSlot;
 use crate::focus::AppFocus;
-use crate::shell::ActionRequest;
+use crate::host_intent::{CommandRequest, KeyRequest};
+use crate::host_intent::{HostIntent, HostIntentOutcome, HostIntentRequest};
 use crate::shell::bubble::BubbleRuntime;
 use crate::shell::features::language_servers;
 use crate::shell::features::panels::file_tree;
@@ -25,30 +28,70 @@ use crate::shell::surfaces::{SurfaceManager, SurfaceRequest};
 use crate::shell::workbench::controller::WorkbenchController;
 use crate::ui_id::SurfaceId;
 
+use super::config_visuals;
 use super::features::FeatureRegistry;
 use super::focus::{FocusProjection, panel_default_focus};
 
-pub(super) fn bind_action_request(
+pub(super) fn bind_command_request(
+    host_intent: HostIntentRequest,
+    invocation: Invocation,
+) -> CommandRequest {
+    Rc::new(move |window, cx| {
+        host_intent(HostIntent::Command(invocation.clone()), window, cx);
+    })
+}
+
+pub(super) fn bind_key_request(host_intent: HostIntentRequest) -> KeyRequest {
+    Rc::new(move |chord, window, cx| host_intent(HostIntent::KeyChord(chord), window, cx).consumed)
+}
+
+pub(super) fn bind_host_intent_request(
     app: Rc<RefCell<App>>,
     workbench: Rc<RefCell<WorkbenchController>>,
     surfaces: Entity<SurfaceManager>,
     bubbles: Entity<BubbleRuntime>,
     editor_focus_fallback: FocusHandle,
     features: FeatureRegistry,
-    invocation: Invocation,
-) -> ActionRequest {
-    Rc::new(move |window, cx| {
-        let effects = {
-            // 同 key_request：进入命令派发前借出 cx 给 GpuiClipboard。
+    focus_projection: FocusProjection,
+    text_editor_slots: Rc<dyn Fn() -> Vec<Rc<TextEditorSlot>>>,
+) -> HostIntentRequest {
+    Rc::new(move |intent, window, cx| {
+        let dispatch = {
             let _clip = GpuiClipboardScope::enter(cx);
-            match app.borrow_mut().dispatch(invocation.clone()) {
-                Ok(effects) => effects,
-                Err(error) => {
-                    eprintln!("命令执行失败：{error}");
-                    return;
+            match intent {
+                HostIntent::Command(invocation) => app
+                    .borrow_mut()
+                    .dispatch_command(invocation)
+                    .map(|effects| (effects, HostIntentOutcome::consumed(), true)),
+                HostIntent::KeyChord(chord) => {
+                    let current = focus_projection.current_focus(window);
+                    let mut app = app.borrow_mut();
+                    app.request_focus_from_shell(current);
+                    app.dispatch_key(chord).map(|outcome| {
+                        (
+                            outcome.effects,
+                            HostIntentOutcome {
+                                consumed: outcome.consumed,
+                            },
+                            outcome.consumed,
+                        )
+                    })
                 }
+                HostIntent::Ime(intent) => app
+                    .borrow_mut()
+                    .dispatch_command(intent.into_invocation())
+                    .map(|effects| (effects, HostIntentOutcome::consumed(), true)),
             }
         };
+        let (effects, outcome, should_refresh) = match dispatch {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                eprintln!("宿主意图派发失败：{error}");
+                return HostIntentOutcome::passed_through();
+            }
+        };
+
+        let text_editor_slots = text_editor_slots();
         apply_host_effects_with_settings(
             effects,
             &app,
@@ -57,12 +100,14 @@ pub(super) fn bind_action_request(
             &bubbles,
             &editor_focus_fallback,
             &features,
+            &text_editor_slots,
             window,
             cx,
         );
-        // 命令可能改了渲染可见的模型状态（如关闭删除确认弹窗）。
-        // 与 key_request 的按键路径对称，点击路径在此统一刷新。
-        window.refresh();
+        if should_refresh {
+            window.refresh();
+        }
+        outcome
     })
 }
 
@@ -74,6 +119,7 @@ pub(super) fn apply_host_effects(
     bubbles: &Entity<BubbleRuntime>,
     editor_focus_fallback: &FocusHandle,
     features: &FeatureRegistry,
+    text_editor_slots: &[Rc<TextEditorSlot>],
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -122,7 +168,15 @@ pub(super) fn apply_host_effects(
             continue;
         }
         apply_shell_effect(
-            &effect, app, workbench, surfaces, bubbles, &focus, window, cx,
+            &effect,
+            app,
+            workbench,
+            surfaces,
+            bubbles,
+            &focus,
+            text_editor_slots,
+            window,
+            cx,
         );
     }
 }
@@ -135,6 +189,7 @@ pub(super) fn apply_host_effects_with_settings(
     bubbles: &Entity<BubbleRuntime>,
     editor_focus_fallback: &FocusHandle,
     features: &FeatureRegistry,
+    text_editor_slots: &[Rc<TextEditorSlot>],
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -158,6 +213,7 @@ pub(super) fn apply_host_effects_with_settings(
             bubbles,
             editor_focus_fallback,
             features,
+            text_editor_slots,
             window,
             cx,
         );
@@ -173,6 +229,7 @@ fn apply_shell_effect(
     surfaces: &Entity<SurfaceManager>,
     bubbles: &Entity<BubbleRuntime>,
     focus: &FocusProjection,
+    text_editor_slots: &[Rc<TextEditorSlot>],
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -182,6 +239,25 @@ fn apply_shell_effect(
         HostEffect::ToggleMaximize => platform_window::toggle_maximize(window),
         HostEffect::ShowBubble(request) => {
             bubbles.update(cx, |runtime, cx| runtime.push(request.clone(), cx));
+            window.refresh();
+        }
+        HostEffect::SettingsOpenToml => {
+            let opened = app.borrow_mut().apply_open_config_file_from_effect();
+            for request in app.borrow_mut().take_session_bubbles() {
+                bubbles.update(cx, |runtime, cx| runtime.push(request, cx));
+            }
+            if opened {
+                request_focus(app, focus, AppFocus::editor(), window);
+            }
+            window.refresh();
+        }
+        HostEffect::SettingsApplyChange(change) => {
+            let config = {
+                let mut app = app.borrow_mut();
+                app.apply_settings_change_from_effect(settings_change(*change));
+                app.config_snapshot()
+            };
+            config_visuals::apply(&config);
             window.refresh();
         }
         HostEffect::TogglePanel(panel) => {
@@ -202,6 +278,15 @@ fn apply_shell_effect(
             app.borrow_mut().toggle_soft_wrap();
             window.refresh();
         }
+        HostEffect::EditorSelectTab(view_id) => {
+            app.borrow_mut().activate_view_tab(*view_id);
+            window.refresh();
+        }
+        HostEffect::EditorCancelPointerSelection => {
+            for slot in text_editor_slots {
+                slot.cancel_pointer_selection();
+            }
+        }
         HostEffect::DismissSurface => {
             if surfaces.read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker)) {
                 app.borrow_mut().project_picker_deactivate();
@@ -211,6 +296,16 @@ fn apply_shell_effect(
         other => {
             eprintln!("未处理的 HostEffect：{other:?}");
         }
+    }
+}
+
+fn settings_change(change: SettingsChangeRequest) -> SettingsChange {
+    match change {
+        SettingsChangeRequest::AdjustUiFont(delta) => SettingsChange::AdjustUiFont(delta),
+        SettingsChangeRequest::AdjustEditorFont(delta) => SettingsChange::AdjustEditorFont(delta),
+        SettingsChangeRequest::ToggleEditorSoftWrap => SettingsChange::ToggleEditorSoftWrap,
+        SettingsChangeRequest::CycleEditorTabSize => SettingsChange::CycleEditorTabSize,
+        SettingsChangeRequest::CycleTheme => SettingsChange::CycleTheme,
     }
 }
 

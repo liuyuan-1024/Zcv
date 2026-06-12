@@ -5,17 +5,15 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    Context, Corner, Div, Entity, FocusHandle, InteractiveElement, ListAlignment, ListState,
-    MouseButton, Window, div, list, point, prelude::*, px,
+    Context, Div, Entity, FocusHandle, InteractiveElement, ListAlignment, ListState, MouseButton,
+    Window, div, list, prelude::*, px,
 };
 
 use crate::config::{AppConfig, SettingsChange};
-use crate::shell::KeyRequest;
+use crate::host_intent::KeyRequest;
 use crate::shell::normalized_chord;
 use crate::shell::shared::scroll;
-use crate::shell::surfaces::{
-    SurfaceAnchor, SurfaceInvokerPoint, SurfaceManager, SurfacePlacement, SurfaceRequest,
-};
+use crate::shell::surfaces::{SurfaceAnchor, SurfaceManager, SurfaceRequest, WindowPosition};
 use crate::theme::{color, radius, space, typography};
 use crate::ui_id::SurfaceId;
 
@@ -48,19 +46,19 @@ impl Default for SettingsPanelState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SettingsAction {
+pub(crate) enum SettingsIntent {
     OpenToml,
     Change(SettingsChange),
 }
 
-pub(crate) type SettingsActionRequest = Rc<dyn Fn(SettingsAction, &mut Window, &mut gpui::App)>;
+pub(crate) type SettingsIntentRequest = Rc<dyn Fn(SettingsIntent, &mut Window, &mut gpui::App)>;
 
 #[derive(Clone)]
 pub(crate) struct SettingsRuntime {
     focus: FocusHandle,
     list_state: ListState,
     key_request: Rc<RefCell<Option<KeyRequest>>>,
-    action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
+    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
     state: Rc<RefCell<SettingsPanelState>>,
 }
 
@@ -71,7 +69,7 @@ impl SettingsRuntime {
             list_state: ListState::new(SETTINGS_SECTION_COUNT, ListAlignment::Top, px(48.0))
                 .measure_all(),
             key_request: Rc::new(RefCell::new(None)),
-            action_request: Rc::new(RefCell::new(None)),
+            intent_request: Rc::new(RefCell::new(None)),
             state: Rc::new(RefCell::new(SettingsPanelState::default())),
         }
     }
@@ -80,8 +78,8 @@ impl SettingsRuntime {
         *self.key_request.borrow_mut() = Some(key_request);
     }
 
-    pub(crate) fn set_action_request(&self, action_request: SettingsActionRequest) {
-        *self.action_request.borrow_mut() = Some(action_request);
+    pub(crate) fn set_intent_request(&self, intent_request: SettingsIntentRequest) {
+        *self.intent_request.borrow_mut() = Some(intent_request);
     }
 
     pub(crate) fn set_state(&self, state: SettingsPanelState) {
@@ -115,12 +113,8 @@ pub(crate) fn request(runtime: SettingsRuntime) -> SurfaceRequest {
     let focus = runtime.focus.clone();
     SurfaceRequest {
         id: SurfaceId::Settings,
-        anchor: SurfaceAnchor::Invoker(super::INVOKER_ID.into()),
-        placement: SurfacePlacement {
-            invoker_point: SurfaceInvokerPoint::TopLeft,
-            corner: Corner::TopRight,
-            offset: point(px(0.0), px(18.0)),
-            fallback_position: point(px(520.0), px(28.0)),
+        anchor: SurfaceAnchor::Window {
+            position: WindowPosition::Center,
         },
         focus_on_open: Some(focus),
         render: Rc::new(move || {
@@ -128,7 +122,7 @@ pub(crate) fn request(runtime: SettingsRuntime) -> SurfaceRequest {
                 &runtime.focus,
                 runtime.list_state.clone(),
                 Rc::clone(&runtime.key_request),
-                Rc::clone(&runtime.action_request),
+                Rc::clone(&runtime.intent_request),
                 runtime.state.borrow().clone(),
             )
             .into_any_element()
@@ -140,7 +134,7 @@ fn render(
     focus: &FocusHandle,
     list_state: ListState,
     key_request: Rc<RefCell<Option<KeyRequest>>>,
-    action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
+    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
     state: SettingsPanelState,
 ) -> Div {
     div()
@@ -150,8 +144,8 @@ fn render(
         .flex_col()
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::s05())
-        .bg(color::gray::s03())
+        .border_color(color::current().gray.s05)
+        .bg(color::current().gray.s03)
         .overflow_hidden()
         .track_focus(focus)
         .tab_index(0)
@@ -164,13 +158,13 @@ fn render(
             }
         })
         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-        .child(header(&state, Rc::clone(&action_request)))
-        .child(body(list_state, action_request, state))
+        .child(header(&state, Rc::clone(&intent_request)))
+        .child(body(list_state, intent_request, state))
 }
 
 fn header(
     state: &SettingsPanelState,
-    action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
+    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
 ) -> Div {
     div()
         .flex()
@@ -180,19 +174,18 @@ fn header(
         .px(space::s12())
         .py(space::s8())
         .border_b_1()
-        .border_color(color::gray::s05())
+        .border_color(color::current().gray.s05)
         .child(
             div()
                 .flex()
                 .flex_col()
                 .gap(space::s4())
-                .child(title("设置".to_string()))
                 .child(muted(state.path_label())),
         )
-        .child(ghost_button(
-            "打开 TOML".to_string(),
-            action_request,
-            SettingsAction::OpenToml,
+        .child(clickable(
+            pill("打开 TOML".to_string()),
+            intent_request,
+            SettingsIntent::OpenToml,
         ))
 }
 
@@ -200,7 +193,7 @@ const SETTINGS_SECTION_COUNT: usize = 3;
 
 fn body(
     list_state: ListState,
-    action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
+    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
     state: SettingsPanelState,
 ) -> impl IntoElement {
     if list_state.item_count() != SETTINGS_SECTION_COUNT {
@@ -214,7 +207,7 @@ fn body(
         .p(space::s4())
         .child(
             list(list_state.clone(), move |index, _, _| {
-                settings_section_item(index, Rc::clone(&action_request), &state).into_any_element()
+                settings_section_item(index, Rc::clone(&intent_request), &state).into_any_element()
             })
             .w_full()
             .h_full(),
@@ -224,16 +217,18 @@ fn body(
 
 fn settings_section_item(
     index: usize,
-    action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
+    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
     state: &SettingsPanelState,
 ) -> Div {
     let content = match index {
         0 => section(
             "全局".to_string(),
-            vec![value_row(
+            vec![select_row(
                 "主题".to_string(),
                 theme_label(&state.config.general.theme),
                 "general.theme",
+                Rc::clone(&intent_request),
+                SettingsIntent::Change(SettingsChange::CycleTheme),
             )],
         ),
         1 => section(
@@ -242,7 +237,7 @@ fn settings_section_item(
                 "字号".to_string(),
                 format!("{} px", state.config.ui.font_size),
                 "ui.font_size",
-                Rc::clone(&action_request),
+                Rc::clone(&intent_request),
                 SettingsChange::AdjustUiFont(-1),
                 SettingsChange::AdjustUiFont(1),
             )],
@@ -254,7 +249,7 @@ fn settings_section_item(
                     "编辑字号".to_string(),
                     format!("{} px", state.config.editor.font_size),
                     "editor.font_size",
-                    Rc::clone(&action_request),
+                    Rc::clone(&intent_request),
                     SettingsChange::AdjustEditorFont(-1),
                     SettingsChange::AdjustEditorFont(1),
                 ),
@@ -262,15 +257,15 @@ fn settings_section_item(
                     "软换行".to_string(),
                     state.config.editor.soft_wrap,
                     "editor.soft_wrap",
-                    Rc::clone(&action_request),
-                    SettingsAction::Change(SettingsChange::ToggleEditorSoftWrap),
+                    Rc::clone(&intent_request),
+                    SettingsIntent::Change(SettingsChange::ToggleEditorSoftWrap),
                 ),
                 select_row(
                     "Tab 宽度".to_string(),
                     state.config.editor.tab_size.to_string(),
                     "editor.tab_size",
-                    Rc::clone(&action_request),
-                    SettingsAction::Change(SettingsChange::CycleEditorTabSize),
+                    Rc::clone(&intent_request),
+                    SettingsIntent::Change(SettingsChange::CycleEditorTabSize),
                 ),
             ],
         ),
@@ -292,7 +287,7 @@ fn section(label: String, rows: Vec<Div>) -> Div {
                 .flex_col()
                 .rounded(radius::r4())
                 .border_1()
-                .border_color(color::gray::s05())
+                .border_color(color::current().gray.s05)
                 .overflow_hidden()
                 .children(rows),
         )
@@ -302,28 +297,24 @@ fn select_row(
     label: String,
     value: String,
     key: &'static str,
-    action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
-    action: SettingsAction,
+    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
+    intent: SettingsIntent,
 ) -> Div {
-    setting_row(label, key, clickable(pill(value), action_request, action))
-}
-
-fn value_row(label: String, value: String, key: &'static str) -> Div {
-    setting_row(label, key, value_box(value))
+    setting_row(label, key, clickable(pill(value), intent_request, intent))
 }
 
 fn stepper_row(
     label: String,
     value: String,
     key: &'static str,
-    action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
+    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
     decrement: SettingsChange,
     increment: SettingsChange,
 ) -> Div {
     setting_row(
         label,
         key,
-        stepper(value, action_request, decrement, increment),
+        stepper(value, intent_request, decrement, increment),
     )
 }
 
@@ -331,13 +322,13 @@ fn toggle_row(
     label: String,
     enabled: bool,
     key: &'static str,
-    action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
-    action: SettingsAction,
+    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
+    intent: SettingsIntent,
 ) -> Div {
     setting_row(
         label,
         key,
-        clickable(toggle(enabled), action_request, action),
+        clickable(toggle(enabled), intent_request, intent),
     )
 }
 
@@ -350,7 +341,7 @@ fn setting_row(label: String, key: &'static str, control: Div) -> Div {
         .px(space::s12())
         .py(space::s8())
         .border_b_1()
-        .border_color(color::gray::s05())
+        .border_color(color::current().gray.s05)
         .child(
             div()
                 .flex()
@@ -362,19 +353,11 @@ fn setting_row(label: String, key: &'static str, control: Div) -> Div {
         .child(control)
 }
 
-fn title(text: String) -> Div {
-    div()
-        .text_size(typography::ui())
-        .line_height(typography::ui_line())
-        .text_color(color::gray::a09())
-        .child(text)
-}
-
 fn section_label(text: String) -> Div {
     div()
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::s08())
+        .text_color(color::current().gray.s08)
         .child(text)
 }
 
@@ -382,7 +365,7 @@ fn label_text(text: String) -> Div {
     div()
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .child(text)
 }
 
@@ -390,47 +373,22 @@ fn muted(text: impl Into<String>) -> Div {
     div()
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::s08())
+        .text_color(color::current().gray.s08)
         .child(text.into())
-}
-
-fn ghost_button(
-    text: String,
-    action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
-    action: SettingsAction,
-) -> Div {
-    div()
-        .rounded(radius::r4())
-        .border_1()
-        .border_color(color::gray::s05())
-        .cursor_pointer()
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            let Some(action_request) = action_request.borrow().clone() else {
-                return;
-            };
-            action_request(action, window, cx);
-            cx.stop_propagation();
-        })
-        .px(space::s8())
-        .py(space::s6())
-        .text_size(typography::ui())
-        .line_height(typography::ui_line())
-        .text_color(color::gray::s09())
-        .child(text)
 }
 
 fn clickable(
     control: Div,
-    action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
-    action: SettingsAction,
+    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
+    intent: SettingsIntent,
 ) -> Div {
     control
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            let Some(action_request) = action_request.borrow().clone() else {
+            let Some(intent_request) = intent_request.borrow().clone() else {
                 return;
             };
-            action_request(action, window, cx);
+            intent_request(intent, window, cx);
             cx.stop_propagation();
         })
 }
@@ -438,18 +396,19 @@ fn clickable(
 fn pill(text: String) -> Div {
     div()
         .rounded(radius::r4())
-        .bg(color::gray::s04())
+        .border_1()
+        .border_color(color::current().gray.s05)
         .px(space::s8())
         .py(space::s6())
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::a09())
+        .text_color(color::current().gray.s09)
         .child(text)
 }
 
 fn stepper(
     value: String,
-    action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
+    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
     decrement: SettingsChange,
     increment: SettingsChange,
 ) -> Div {
@@ -459,21 +418,21 @@ fn stepper(
         .gap(space::s4())
         .child(stepper_button(
             "-",
-            Rc::clone(&action_request),
-            SettingsAction::Change(decrement),
+            Rc::clone(&intent_request),
+            SettingsIntent::Change(decrement),
         ))
         .child(value_box(value))
         .child(stepper_button(
             "+",
-            action_request,
-            SettingsAction::Change(increment),
+            intent_request,
+            SettingsIntent::Change(increment),
         ))
 }
 
 fn stepper_button(
     text: &'static str,
-    action_request: Rc<RefCell<Option<SettingsActionRequest>>>,
-    action: SettingsAction,
+    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
+    intent: SettingsIntent,
 ) -> Div {
     div()
         .w(px(24.0))
@@ -483,16 +442,16 @@ fn stepper_button(
         .justify_center()
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::s05())
+        .border_color(color::current().gray.s05)
         .cursor_pointer()
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            let Some(action_request) = action_request.borrow().clone() else {
+            let Some(intent_request) = intent_request.borrow().clone() else {
                 return;
             };
-            action_request(action, window, cx);
+            intent_request(intent, window, cx);
             cx.stop_propagation();
         })
         .child(text)
@@ -506,12 +465,12 @@ fn value_box(text: String) -> Div {
         .justify_center()
         .rounded(radius::r4())
         .border_1()
-        .border_color(color::gray::s05())
+        .border_color(color::current().gray.s05)
         .px(space::s8())
         .py(space::s6())
         .text_size(typography::ui())
         .line_height(typography::ui_line())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .child(text)
 }
 
@@ -523,9 +482,9 @@ fn toggle(enabled: bool) -> Div {
         .h(px(20.0))
         .rounded(radius::full())
         .bg(if enabled {
-            color::blue::s05()
+            color::current().blue.s05
         } else {
-            color::gray::s04()
+            color::current().gray.s04
         })
         .child(
             div()
@@ -535,13 +494,14 @@ fn toggle(enabled: bool) -> Div {
                 .w(px(12.0))
                 .h(px(12.0))
                 .rounded(radius::full())
-                .bg(color::gray::a09()),
+                .bg(color::current().gray.a09),
         )
 }
 
 fn theme_label(theme: &str) -> String {
     match theme {
         "one-dark" => "One Dark",
+        "one-light" => "One Light",
         _ => "One Dark",
     }
     .to_string()

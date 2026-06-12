@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use zom_command::BubbleRequest;
-use zom_workspace::{EntryKind, ProjectTree, Workspace};
+use zom_workspace::{EntryKind, ProjectTree};
 
 #[cfg(test)]
 use crate::editor::text::EditorSnapshotRequest;
@@ -94,7 +94,7 @@ impl FileTreeModel {
         self.pending_delete = None;
     }
 
-    pub(crate) fn state(&self, workspace: &Workspace) -> FileTreeState {
+    pub(crate) fn state(&self, active_buffer_path: Option<PathBuf>) -> FileTreeState {
         let Some(tree) = self.project_tree.as_ref() else {
             return FileTreeState::default();
         };
@@ -109,10 +109,7 @@ impl FileTreeModel {
                 expanded: row.expanded,
             })
             .collect();
-        let active = workspace
-            .active_buffer()
-            .and_then(|buffer| buffer.path())
-            .map(PathBuf::from);
+        let active = active_buffer_path;
         // 输入行缩进 = 父目录行 depth + 1；父目录必可见（新建前已展开它）。
         let pending = self.pending.as_ref().map(|pending| {
             let depth = rows
@@ -187,7 +184,7 @@ mod tests {
     use crate::workspace_session::WorkspaceSession;
     use std::fs::{File, create_dir_all};
     use zom_view::{ViewId, ViewSet};
-    use zom_workspace::BufferId;
+    use zom_workspace::{BufferId, Workspace};
 
     /// 测试桥：跑模型动作 → 翻 outcome 到 session，得到 activation。
     /// 让 `model.foo(); apply_outcome(...)` 两步在测试里合成一行。
@@ -224,7 +221,7 @@ mod tests {
             .expect("缓冲区应存在")
             .buffer()
             .version();
-        views.open_view(buffer_id, version)
+        views.open_edit_view(buffer_id, version)
     }
 
     fn workspace_session(workspace: Workspace, views: ViewSet) -> WorkspaceSession {
@@ -246,21 +243,31 @@ mod tests {
         let lib_id = workspace.open_file(lib.clone()).unwrap();
         let mut views = ViewSet::new();
         open_view_for(&workspace, &mut views, readme_id);
-        let lib_view = open_view_for(&workspace, &mut views, lib_id);
-        views.set_active(lib_view);
+        let _lib_view = open_view_for(&workspace, &mut views, lib_id);
         let mut session = workspace_session(workspace, views);
+        // 模拟"lib.rs 是当前活动 view"——session 是活动视图的真相源。
+        let lib_view_id = session
+            .views()
+            .find_edit_view_for_buffer(lib_id)
+            .expect("lib.rs 的编辑视图应已存在");
+        session.set_active_view(lib_view_id);
 
         session.close_buffers_under(&lib);
 
         assert_eq!(
             session
-                .workspace()
-                .active_buffer()
+                .active_buffer_id()
+                .and_then(|id| session.workspace().buffer(id))
                 .and_then(|buffer| buffer.path()),
             Some(readme.as_path())
         );
+        let active_path = session
+            .active_buffer_id()
+            .and_then(|id| session.workspace().buffer(id))
+            .and_then(|wb| wb.path())
+            .map(PathBuf::from);
         assert_eq!(
-            selected_path_after_deleting_active(&tree, session.workspace()).as_deref(),
+            selected_path_after_deleting_active(&tree, active_path).as_deref(),
             Some(readme.as_path())
         );
     }
@@ -276,10 +283,6 @@ mod tests {
         (model, root)
     }
 
-    fn workspace_for_state() -> Workspace {
-        Workspace::new()
-    }
-
     #[test]
     fn extend_selection_should_add_both_endpoints_first_call() {
         let (mut model, root) = model_with_three_files("extend-first-call");
@@ -289,8 +292,7 @@ mod tests {
 
         // 第一次 Shift+↓：起点（root）与终点（a.txt）都应进选区。
         model.extend_selection(1);
-        let ws = workspace_for_state();
-        let state = model.state(&ws);
+        let state = model.state(None);
         assert!(state.selection.contains(&root));
         assert!(state.selection.contains(&root.join("a.txt")));
         assert_eq!(
@@ -306,7 +308,7 @@ mod tests {
         model.extend_selection(1); // root, a
         model.extend_selection(1); // + b
         model.extend_selection(1); // + c
-        let state = model.state(&workspace_for_state());
+        let state = model.state(None);
         assert_eq!(state.selection.len(), 4);
         for name in ["a.txt", "b.txt", "c.txt"] {
             assert!(state.selection.contains(&root.join(name)));
@@ -326,7 +328,7 @@ mod tests {
         // 普通方向键：焦点继续往下，但选区不变。
         model.move_selection(1); // 焦点到 b
         model.move_selection(1); // 焦点到 c
-        let state = model.state(&workspace_for_state());
+        let state = model.state(None);
         assert_eq!(state.selection.len(), 2);
         assert!(state.selection.contains(&root));
         assert!(state.selection.contains(&root.join("a.txt")));
@@ -347,7 +349,7 @@ mod tests {
         model.move_selection(1); // 焦点 c
         // Shift+↑ 在 c 处累加：起点 c 入选区，终点 b 也入选区。
         model.extend_selection(-1);
-        let state = model.state(&workspace_for_state());
+        let state = model.state(None);
         assert!(state.selection.contains(&root));
         assert!(state.selection.contains(&root.join("a.txt")));
         assert!(state.selection.contains(&root.join("b.txt")));
@@ -503,13 +505,13 @@ mod tests {
         model.move_selection(1); // a.txt
         model.cut_to_clipboard();
 
-        let state = model.state(&Workspace::new());
+        let state = model.state(None);
         assert!(state.cut_paths.contains(&root.join("a.txt")));
         assert_eq!(state.cut_paths.len(), 1);
 
         // Copy 模式不会暴露 cut_paths。
         model.copy_to_clipboard();
-        let state = model.state(&Workspace::new());
+        let state = model.state(None);
         assert!(state.cut_paths.is_empty());
     }
 
@@ -681,7 +683,7 @@ mod tests {
         let expected: BTreeSet<_> = [root.join("sub"), root.join("a.txt")].into_iter().collect();
         assert_eq!(paths, expected);
         // first_kind/has_directory 由 state() 计算；含 sub（目录）。
-        let state = model.state(&Workspace::new());
+        let state = model.state(None);
         let pending = state.pending_delete.expect("状态应有待删除项");
         assert_eq!(pending.count, 2);
         assert!(pending.has_directory);
@@ -696,7 +698,7 @@ mod tests {
         let items = model.pending_delete.as_ref().expect("应有 pending_delete");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].0, root.join("a.txt"));
-        let state = model.state(&Workspace::new());
+        let state = model.state(None);
         let pending = state.pending_delete.expect("状态应有待删除项");
         assert_eq!(pending.count, 1);
         assert!(!pending.has_directory);
@@ -771,10 +773,10 @@ mod tests {
 
         let mut workspace = Workspace::new();
         let a_id = workspace.open_file(root.join("a.txt")).unwrap();
-        workspace.set_active_buffer(a_id).unwrap();
         let mut views = ViewSet::new();
-        open_view_for(&workspace, &mut views, a_id);
+        let a_view_id = open_view_for(&workspace, &mut views, a_id);
         let mut session = workspace_session(workspace, views);
+        session.set_active_view(a_view_id);
 
         model.selected = Some(root.join("b.txt"));
         model.pending_delete = Some(vec![(root.join("b.txt"), EntryKind::File)]);
@@ -832,9 +834,9 @@ mod tests {
 
         session.close_buffers_under(&readme);
 
-        assert!(session.workspace().active_buffer().is_none());
+        assert!(session.active_buffer_id().is_none());
         assert_eq!(
-            selected_path_after_deleting_active(&tree, session.workspace()).as_deref(),
+            selected_path_after_deleting_active(&tree, None).as_deref(),
             Some(root.as_path())
         );
     }
@@ -899,7 +901,10 @@ mod tests {
         // 文件改名后顺势把焦点切给编辑器：被 rebase 的 buffer 设为活动。
         assert_eq!(activation, FileTreeActivation::OpenedFile);
         assert_eq!(
-            session.workspace().active_buffer().and_then(|b| b.path()),
+            session
+                .active_buffer_id()
+                .and_then(|id| session.workspace().buffer(id))
+                .and_then(|b| b.path()),
             Some(root.join("renamed.txt").as_path())
         );
     }
@@ -920,7 +925,10 @@ mod tests {
         assert_eq!(activation, FileTreeActivation::OpenedFile);
         // 文件原本没有 buffer，commit 后应被打开并设为活动。
         assert_eq!(
-            session.workspace().active_buffer().and_then(|b| b.path()),
+            session
+                .active_buffer_id()
+                .and_then(|id| session.workspace().buffer(id))
+                .and_then(|b| b.path()),
             Some(root.join("renamed.txt").as_path())
         );
     }
@@ -945,7 +953,7 @@ mod tests {
 
         assert_eq!(activation, FileTreeActivation::Nothing);
         assert!(root.join("sub2").is_dir());
-        assert!(session.workspace().active_buffer().is_none());
+        assert!(session.active_buffer_id().is_none());
         // 目录已展开：可见行里能看到 sub2/inner.txt。
         let tree = model.project_tree.as_ref().unwrap();
         assert!(tree.is_expanded(&root.join("sub2")));

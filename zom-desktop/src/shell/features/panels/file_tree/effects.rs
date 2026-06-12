@@ -155,7 +155,7 @@ fn apply_action(
     action: FileTreeAction,
     requests: &mut Vec<zom_command::BubbleRequest>,
 ) -> FileTreeActionResult {
-    let mut result = app.borrow_mut().apply_file_tree_action(action);
+    let mut result = app.borrow_mut().apply_file_tree_action_from_effect(action);
     requests.append(&mut result.bubbles);
     result
 }

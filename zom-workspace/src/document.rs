@@ -64,17 +64,6 @@ impl SyntaxDocument {
         })
     }
 
-    /// 文档初始即带内容：常用于「打开磁盘文本投影到嵌入编辑器」。
-    /// 内部走 [`Self::from_buffer`]，构造期就 attach。
-    pub fn with_text(
-        engine: Rc<SyntaxEngine>,
-        language: LanguageId,
-        text: impl Into<String>,
-    ) -> WorkspaceResult<Self> {
-        let buffer = Buffer::from_text(text.into(), BufferConfig::default())?;
-        Ok(Self::from_buffer(engine, buffer, language))
-    }
-
     /// 文档持有的稳定 [`BufferId`]。
     pub fn buffer_id(&self) -> BufferId {
         self.buffer_id
@@ -185,9 +174,9 @@ mod tests {
     #[test]
     fn explicit_language_attaches_provider_and_populates_slot() {
         let engine = engine_with_builtins();
-        let doc = SyntaxDocument::with_text(engine.clone(), LanguageId::new("rust"), "fn x() {}")
-            .unwrap();
-        engine.worker().wait_for_idle();
+        let buffer = Buffer::from_text("fn x() {}".to_string(), BufferConfig::default()).unwrap();
+        let doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
+        engine.worker().wait_for_idle_for_test_or_bench();
         let tree = doc
             .syntax_tree_slot()
             .expect("rust buffer 必须挂 provider")
@@ -199,17 +188,16 @@ mod tests {
     #[test]
     fn replace_text_keeps_language_and_clears_old_slot_before_re_attach() {
         let engine = engine_with_builtins();
-        let mut doc =
-            SyntaxDocument::with_text(engine.clone(), LanguageId::new("rust"), "fn x() {}")
-                .unwrap();
-        engine.worker().wait_for_idle();
+        let buffer = Buffer::from_text("fn x() {}".to_string(), BufferConfig::default()).unwrap();
+        let mut doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
+        engine.worker().wait_for_idle_for_test_or_bench();
         let old_slot = doc.syntax_tree_slot().unwrap().clone();
         assert!(old_slot.load().is_some());
 
         doc.replace_text("// new text").unwrap();
         // 旧 slot 在 replace_text 内的 detach 路径上已被清空。
         assert!(old_slot.load().is_none());
-        engine.worker().wait_for_idle();
+        engine.worker().wait_for_idle_for_test_or_bench();
         // 新 slot 在新 syntax 内：仍能拿到 tree。
         assert!(doc.syntax_tree_slot().unwrap().load().is_some());
         assert_eq!(doc.language(), LanguageId::new("rust"));
@@ -218,7 +206,8 @@ mod tests {
     #[test]
     fn plain_language_yields_no_syntax_state() {
         let engine = engine_with_builtins();
-        let doc = SyntaxDocument::with_text(engine, LanguageId::PLAIN, "hello world").unwrap();
+        let buffer = Buffer::from_text("hello world".to_string(), BufferConfig::default()).unwrap();
+        let doc = SyntaxDocument::from_buffer(engine, buffer, LanguageId::PLAIN);
         assert!(doc.language().is_plain());
         assert!(doc.syntax_tree_slot().is_none());
     }

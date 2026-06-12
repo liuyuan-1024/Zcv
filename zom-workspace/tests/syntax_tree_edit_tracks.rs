@@ -6,6 +6,7 @@
 
 use std::rc::Rc;
 
+use zom_engine::{Buffer, BufferConfig};
 use zom_workspace::SyntaxDocument;
 use zom_workspace::syntax::{LanguageId, SyntaxEngine, install_builtin_providers};
 
@@ -18,11 +19,10 @@ fn engine_with_builtins() -> Rc<SyntaxEngine> {
 #[test]
 fn insert_advances_tree_end_byte_in_same_main_thread_tick() {
     let engine = engine_with_builtins();
-    let mut doc =
-        SyntaxDocument::with_text(engine.clone(), LanguageId::new("rust"), "fn main() {}\n")
-            .unwrap();
+    let buffer = Buffer::from_text("fn main() {}\n".to_string(), BufferConfig::default()).unwrap();
+    let mut doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
     // 等首份 tree 落到 slot（attach 是异步的）。
-    engine.worker().wait_for_idle();
+    engine.worker().wait_for_idle_for_test_or_bench();
 
     let slot = doc
         .syntax_tree_slot()
@@ -59,15 +59,16 @@ fn insert_advances_tree_end_byte_in_same_main_thread_tick() {
 #[test]
 fn multiple_consecutive_inserts_keep_tree_aligned() {
     // 连续插入多次：每次主线程 try_edit 都把 slot 推到最新版本；worker 端的
-    // reparse 异步覆盖。本测不调 wait_for_idle，直接比对主线程视角下的不变量。
+    // reparse 异步覆盖。
+    // 本测不调 wait_for_idle_for_test_or_bench，直接比对主线程视角下的不变量。
     let engine = engine_with_builtins();
-    let mut doc = SyntaxDocument::with_text(
-        engine.clone(),
-        LanguageId::new("rust"),
-        "fn main() { let mut s = String::new(); }\n",
+    let buffer = Buffer::from_text(
+        "fn main() { let mut s = String::new(); }\n".to_string(),
+        BufferConfig::default(),
     )
     .unwrap();
-    engine.worker().wait_for_idle();
+    let mut doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
+    engine.worker().wait_for_idle_for_test_or_bench();
     let slot = doc.syntax_tree_slot().unwrap().clone();
 
     for ch in ["a", "b", "c", "d", "e"] {

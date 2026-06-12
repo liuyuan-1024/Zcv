@@ -203,7 +203,8 @@ pub(crate) fn apply_local_project_open(
     }
 
     file_tree.open_project(project_root.clone());
-    app.borrow_mut().open_project(project_root.clone());
+    app.borrow_mut()
+        .apply_open_project_from_effect(project_root.clone());
     project_picker.remember_project(project_root, None);
     file_tree.reveal_after_project_open(workbench, window);
     drain_open_bubbles(app, project_picker, bubbles, cx);
@@ -235,7 +236,8 @@ fn apply_git_project_open(
     }
 
     file_tree.open_project(project_root.clone());
-    app.borrow_mut().open_project(project_root.clone());
+    app.borrow_mut()
+        .apply_open_project_from_effect(project_root.clone());
     project_picker.remember_project(project_root, Some(repo));
     file_tree.reveal_after_project_open(workbench, window);
     drain_open_bubbles(app, project_picker, bubbles, cx);

@@ -95,9 +95,9 @@ fn resolve(style: DecorationStyle) -> Hsla {
 
 fn resolve_named(class: StyleClass) -> Hsla {
     match class {
-        StyleClass::SelectionBackground => color::blue::a05().into(),
-        StyleClass::SearchNormalBackground => color::blue::a05().into(),
-        StyleClass::SearchCurrentBackground => color::yellow::a05().into(),
+        StyleClass::SelectionBackground => color::selection_bg().into(),
+        StyleClass::SearchNormalBackground => color::search_normal_bg().into(),
+        StyleClass::SearchCurrentBackground => color::search_current_bg().into(),
         StyleClass::Syntax(name) => syntax::color_for(name.as_str()),
     }
 }

@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use crate::app::App;
 use crate::editor::TextEditorSlot;
+use crate::host_intent::KeyRequest;
 use crate::ports::{FileTreeAction, FileTreeActionResult, FileTreeHost};
-use crate::shell::KeyRequest;
 use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::controller::WorkbenchController;
 use crate::text_target::TextTargetOwner;
@@ -51,7 +51,12 @@ impl FileTreeRuntime {
     }
 
     pub(crate) fn state(&self, app: &App) -> FileTreeState {
-        self.model.borrow().state(app.workspace())
+        let active_path = app
+            .active_buffer_id()
+            .and_then(|id| app.workspace().buffer(id))
+            .and_then(|wb| wb.path())
+            .map(std::path::PathBuf::from);
+        self.model.borrow().state(active_path)
     }
 
     pub(crate) fn install_listeners<T: 'static>(
@@ -155,7 +160,7 @@ impl FileTreeRuntime {
 }
 
 impl FileTreeHost for FileTreeRuntime {
-    fn apply_file_tree_action(
+    fn apply_file_tree_action_from_effect(
         &self,
         action: FileTreeAction,
         session: &mut WorkspaceSession,

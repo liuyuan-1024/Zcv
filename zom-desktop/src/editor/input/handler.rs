@@ -9,8 +9,8 @@ use gpui::{
 };
 
 use crate::app::App;
-use crate::clipboard::GpuiClipboardScope;
 use crate::editor::text::ImeUtf16Range;
+use crate::host_intent::{HostIntent, HostIntentRequest, ImeIntent};
 
 /// primary caret 在 element 内的相对位置 + 行高 —— 系统 IME 候选窗定位用。
 ///
@@ -29,13 +29,15 @@ pub(crate) struct CaretLayout {
 
 pub(crate) struct EditorInput {
     app: Rc<RefCell<App>>,
+    host_intent: HostIntentRequest,
     caret_layout: Option<CaretLayout>,
 }
 
 impl EditorInput {
-    pub(crate) fn new(app: Rc<RefCell<App>>) -> Self {
+    pub(crate) fn new(app: Rc<RefCell<App>>, host_intent: HostIntentRequest) -> Self {
         Self {
             app,
+            host_intent,
             caret_layout: None,
         }
     }
@@ -90,16 +92,7 @@ impl EntityInputHandler for EditorInput {
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let focus = self.app.borrow().focus().current();
-        {
-            // IME 路径也可能触发命令派发（commit → editor.ime_commit）。
-            // 需为期间的剪贴板读写借出 cx。
-            let _clip = GpuiClipboardScope::enter(&*cx);
-            if let Err(error) = self.app.borrow_mut().ime_unmark_for(focus) {
-                eprintln!("IME unmark 失败：{error}");
-            }
-        }
-        window.refresh();
+        (self.host_intent)(HostIntent::Ime(ImeIntent::Confirm), window, &mut *cx);
         cx.notify();
     }
 
@@ -110,25 +103,21 @@ impl EntityInputHandler for EditorInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let focus = self.app.borrow().focus().current();
-        {
-            let _clip = GpuiClipboardScope::enter(&*cx);
-            let range = match range.map(ImeUtf16Range::from_gpui_range).transpose() {
-                Ok(range) => range,
-                Err(error) => {
-                    eprintln!("IME replace_text range 无效：{error}");
-                    return;
-                }
-            };
-            if let Err(error) = self
-                .app
-                .borrow_mut()
-                .ime_replace_text_for(focus, range, text)
-            {
-                eprintln!("IME replace_text 失败：{error}");
+        let range = match range.map(ImeUtf16Range::from_gpui_range).transpose() {
+            Ok(range) => range,
+            Err(error) => {
+                eprintln!("IME replace_text range 无效：{error}");
+                return;
             }
-        }
-        window.refresh();
+        };
+        (self.host_intent)(
+            HostIntent::Ime(ImeIntent::Commit {
+                range,
+                text: text.to_string(),
+            }),
+            window,
+            &mut *cx,
+        );
         cx.notify();
     }
 
@@ -140,36 +129,32 @@ impl EntityInputHandler for EditorInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let focus = self.app.borrow().focus().current();
-        {
-            let _clip = GpuiClipboardScope::enter(&*cx);
-            let range = match range.map(ImeUtf16Range::from_gpui_range).transpose() {
-                Ok(range) => range,
-                Err(error) => {
-                    eprintln!("IME replace_and_mark_text range 无效：{error}");
-                    return;
-                }
-            };
-            let new_selected_range = match new_selected_range
-                .map(ImeUtf16Range::from_gpui_range)
-                .transpose()
-            {
-                Ok(range) => range,
-                Err(error) => {
-                    eprintln!("IME replace_and_mark_text selected range 无效：{error}");
-                    return;
-                }
-            };
-            if let Err(error) = self.app.borrow_mut().ime_replace_and_mark_text_for(
-                focus,
-                range,
-                new_text,
-                new_selected_range,
-            ) {
-                eprintln!("IME replace_and_mark_text 失败：{error}");
+        let range = match range.map(ImeUtf16Range::from_gpui_range).transpose() {
+            Ok(range) => range,
+            Err(error) => {
+                eprintln!("IME replace_and_mark_text range 无效：{error}");
+                return;
             }
-        }
-        window.refresh();
+        };
+        let selected_range = match new_selected_range
+            .map(ImeUtf16Range::from_gpui_range)
+            .transpose()
+        {
+            Ok(range) => range,
+            Err(error) => {
+                eprintln!("IME replace_and_mark_text selected range 无效：{error}");
+                return;
+            }
+        };
+        (self.host_intent)(
+            HostIntent::Ime(ImeIntent::Update {
+                range,
+                text: new_text.to_string(),
+                selected_range,
+            }),
+            window,
+            &mut *cx,
+        );
         cx.notify();
     }
 

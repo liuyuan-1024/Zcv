@@ -16,15 +16,16 @@ use crate::app::App;
 use crate::clipboard::GpuiClipboard;
 use crate::editor::{EditorKernel, EditorViewportSyncHook, TextEditorSlot};
 use crate::focus::{AppFocus, FileTreeFocus, SearchField};
+use crate::host_intent::HostIntentRequest;
 use crate::shell::bubble::{BubbleRuntime, BubbleShell};
 use crate::shell::surfaces::{SurfaceAnchorRegistry, SurfaceManager, SurfaceShell};
 use crate::shell::workbench::PanelHost;
 use crate::shell::workbench::controller::WorkbenchController;
 
-use super::ShellView;
 use super::config_visuals;
 use super::features::FeatureRegistry;
 use super::focus::FocusProjection;
+use super::{ShellView, actions};
 
 pub(super) struct ShellRuntime {
     pub(super) app: Rc<RefCell<App>>,
@@ -41,6 +42,7 @@ pub(super) struct ShellRuntime {
     pub(super) search_replacement_slot: Rc<TextEditorSlot>,
     pub(super) editor_focus: FocusHandle,
     pub(super) focus_projection: FocusProjection,
+    pub(super) host_intent: HostIntentRequest,
     pub(super) panel_host: PanelHost,
 }
 
@@ -49,7 +51,7 @@ impl ShellRuntime {
         let app = Rc::new(RefCell::new(app));
         config_visuals::apply(&app.borrow().config_snapshot());
         // 让命令派发期间的 copy / cut / paste 走系统剪贴板。
-        // headless 单测路径不经过 ShellRuntime::assemble，所以仍是 MockClipboard。
+        // headless 路径不经过 ShellRuntime::assemble，所以仍是 NoopClipboard。
         app.borrow_mut().set_clipboard(Box::new(GpuiClipboard));
         let workbench = Rc::new(RefCell::new(WorkbenchController::new()));
         cx.update_default_global::<SurfaceAnchorRegistry, _>(|_, _| ());
@@ -58,6 +60,23 @@ impl ShellRuntime {
         let editor_focus = cx.focus_handle();
 
         let features = FeatureRegistry::assemble(&app, cx);
+        let focus_projection = features.focus_projection(editor_focus.clone());
+        let text_editor_slots: Rc<RefCell<Vec<Rc<TextEditorSlot>>>> =
+            Rc::new(RefCell::new(Vec::new()));
+        let text_editor_slots_provider = {
+            let text_editor_slots = Rc::clone(&text_editor_slots);
+            Rc::new(move || text_editor_slots.borrow().clone())
+        };
+        let host_intent = actions::bind_host_intent_request(
+            Rc::clone(&app),
+            Rc::clone(&workbench),
+            surface_manager.clone(),
+            bubble_runtime.clone(),
+            editor_focus.clone(),
+            features.clone(),
+            focus_projection.clone(),
+            text_editor_slots_provider,
+        );
 
         // 主编辑区内核：多行 + 行号 + 滚动 + 视口测量回写。
         // 视口钩子在 prepaint 测出本帧 wrap_map 后即时调用，
@@ -78,6 +97,7 @@ impl ShellRuntime {
             .with_viewport_sync(main_viewport_sync);
         let main_editor_slot = TextEditorSlot::install(
             Rc::clone(&app),
+            Rc::clone(&host_intent),
             AppFocus::editor(),
             main_editor_kernel,
             editor_focus.clone(),
@@ -85,6 +105,7 @@ impl ShellRuntime {
         );
         let file_tree_new_entry_slot = TextEditorSlot::install(
             Rc::clone(&app),
+            Rc::clone(&host_intent),
             AppFocus::file_tree(FileTreeFocus::NewEntryName),
             EditorKernel::single_line(),
             features.file_tree.focus_handle(),
@@ -92,6 +113,7 @@ impl ShellRuntime {
         );
         let file_tree_rename_slot = TextEditorSlot::install(
             Rc::clone(&app),
+            Rc::clone(&host_intent),
             AppFocus::file_tree(FileTreeFocus::RenameEntry),
             EditorKernel::single_line(),
             features.file_tree.focus_handle(),
@@ -99,6 +121,7 @@ impl ShellRuntime {
         );
         let project_picker_slot = TextEditorSlot::install(
             Rc::clone(&app),
+            Rc::clone(&host_intent),
             AppFocus::project_picker(),
             EditorKernel::single_line(),
             features.project_picker.focus_handle(),
@@ -109,6 +132,7 @@ impl ShellRuntime {
             .set_slot(Rc::clone(&project_picker_slot));
         let search_query_slot = TextEditorSlot::install(
             Rc::clone(&app),
+            Rc::clone(&host_intent),
             AppFocus::search(SearchField::Query),
             EditorKernel::single_line(),
             features.search.query_focus_handle(),
@@ -116,15 +140,22 @@ impl ShellRuntime {
         );
         let search_replacement_slot = TextEditorSlot::install(
             Rc::clone(&app),
+            Rc::clone(&host_intent),
             AppFocus::search(SearchField::Replacement),
             EditorKernel::single_line(),
             features.search.replacement_focus_handle(),
             cx,
         );
+        *text_editor_slots.borrow_mut() = vec![
+            Rc::clone(&main_editor_slot),
+            Rc::clone(&file_tree_new_entry_slot),
+            Rc::clone(&file_tree_rename_slot),
+            Rc::clone(&project_picker_slot),
+            Rc::clone(&search_query_slot),
+            Rc::clone(&search_replacement_slot),
+        ];
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));
         let bubble_shell = cx.new(|cx| BubbleShell::new(bubble_runtime.clone(), cx));
-
-        let focus_projection = features.focus_projection(editor_focus.clone());
 
         Self {
             app,
@@ -141,6 +172,7 @@ impl ShellRuntime {
             search_replacement_slot,
             editor_focus,
             focus_projection,
+            host_intent,
             panel_host: PanelHost::new(),
         }
     }

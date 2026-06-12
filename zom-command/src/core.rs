@@ -7,8 +7,7 @@ use crate::{CommandError, format_arg_keys};
 
 /// 一次命令调用所需的两个组件，等价于"未提交的派发请求"。
 ///
-/// 各 catalog 的 typed builders（如 `editor::insert_text(...)`）都返回此别名 ——
-/// 调用方拿到后只需 `app.dispatch(invocation)`，无需再手拼 id 字符串或 args。
+/// 各 catalog 的 typed builders（如 `editor::insert_text(...)`）都返回此别名 —— 调用方拿到后只需 `app.dispatch_command(invocation)`，无需再手拼 id 字符串或 args。
 pub type Invocation = (CommandId, CommandArgs);
 
 /// 命令的稳定标识，例如 `editor.insert_text`。
@@ -37,8 +36,7 @@ impl fmt::Display for CommandId {
 
 /// 命令参数的不透明载荷（方案 A）。
 ///
-/// 派发边界统一为此类型，每条命令在自己的目录模块里通过
-/// `TryFrom<CommandArgs>` 解析成强类型参数，构造侧则通过 `From<TypedArgs>`
+/// 派发边界统一为此类型，每条命令在自己的目录模块里通过 `TryFrom<CommandArgs>` 解析成强类型参数，构造侧则通过 `From<TypedArgs>`
 /// 反向生成 —— 字段名只在命令模块出现一次。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CommandArgs {

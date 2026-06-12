@@ -92,6 +92,6 @@ fn thumb(top: Pixels, height: Pixels) -> AnyElement {
         .w(space::s4())
         .h(height)
         .rounded(radius::full())
-        .bg(color::gray::s05())
+        .bg(color::current().gray.s05)
         .into_any_element()
 }

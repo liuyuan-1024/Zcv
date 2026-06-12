@@ -11,6 +11,7 @@ pub(crate) mod highlight;
 mod input;
 mod kernel;
 pub(crate) mod main_owner;
+mod pointer;
 pub(crate) mod text;
 mod view;
 

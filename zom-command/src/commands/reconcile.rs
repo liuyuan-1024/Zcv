@@ -1,6 +1,6 @@
 //! "Dispatch 末尾"中央 hook：所有按 scope 自动维护 dismiss 栈的策略集中调用点。
 //!
-//! 由 [`crate::CommandExecutor::run`] 在每次 dispatch 结束后调一次（无论成功还是 handler 报错），
+//! 由 [`crate::run`] 在每次 dispatch 结束后调一次（无论成功还是 handler 报错），
 //! 把"运行时态 ↔ dismiss 栈"重新对齐：
 //! - 比如选区被某个命令扩展了，但 token 没人 push —— 这里补 push；
 //! - 反过来选区被塌掉了，但 selection token 还挂在栈顶 —— 这里负责 pop。

@@ -27,15 +27,17 @@ use std::sync::{OnceLock, RwLock};
 
 use gpui::{Hsla, Rgba, rgb, rgba};
 
+use crate::config::{THEME_ONE_DARK, THEME_ONE_LIGHT};
+
 use super::color;
-use crate::config::THEME_ONE_DARK;
 
 /// vendor 的默认主题源（启动期 include 进二进制）。
 const THEME_ONE_DARK_TOML: &str = include_str!("../../assets/themes/onedark.toml");
+const THEME_ONE_LIGHT_TOML: &str = include_str!("../../assets/themes/onelight.toml");
 
 /// 默认前景色——任何 name 都无前缀命中时落到这里。
 pub fn default_fg() -> Hsla {
-    color::gray::s09().into()
+    color::current().gray.s09.into()
 }
 
 /// 按 highlight name 解析出字色；遵守点分前缀回退链。
@@ -59,6 +61,7 @@ pub fn color_for(name: &str) -> Hsla {
 pub(crate) fn set_theme(theme: &str) {
     let source = match theme {
         THEME_ONE_DARK => THEME_ONE_DARK_TOML,
+        THEME_ONE_LIGHT => THEME_ONE_LIGHT_TOML,
         _ => THEME_ONE_DARK_TOML,
     };
     let table = parse_helix_theme(source).unwrap_or_default();

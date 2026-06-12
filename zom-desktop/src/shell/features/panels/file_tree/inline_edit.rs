@@ -6,7 +6,7 @@ use zom_command::commands::file_tree::FileTreeKeyMode;
 use zom_command::{BubbleRequest, EditTarget, KeyContext};
 
 use crate::editor::text::{
-    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, ImeTarget, OwnedEditorTarget,
+    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, OwnedEditorTarget,
 };
 use crate::focus::{AppFocus, FileTreeFocus};
 use crate::text_target::{TextTargetOwner, TextTargetQuery};
@@ -146,15 +146,6 @@ impl TextTargetQuery for FileTreeModel {
 }
 
 impl TextTargetOwner for FileTreeModel {
-    fn ime_target(&mut self, _focus: AppFocus) -> Option<ImeTarget<'_>> {
-        if let Some(rename) = self.pending_rename.as_mut() {
-            return Some(rename.editor.as_ime_target());
-        }
-        self.pending
-            .as_mut()
-            .map(|pending| pending.editor.as_ime_target())
-    }
-
     fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
         if let Some(rename) = self.pending_rename.as_mut() {
             return Some(rename.editor.as_edit_target());

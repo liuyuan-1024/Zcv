@@ -77,7 +77,7 @@ pub fn bind(
 fn run(ctx: &mut CommandContext<'_>, args: CommandArgs) -> Result<CommandOutcome, CommandError> {
     let DismissTopArgs { scope } = DismissTopArgs::try_from(args)?;
     if let Some((id, args)) = ctx.dismiss.pop_top(scope) {
-        ctx.queue.dispatch(id, args);
+        ctx.queue.enqueue(id, args);
     }
     Ok(CommandOutcome::default())
 }

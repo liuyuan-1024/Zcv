@@ -113,21 +113,6 @@ pub enum AnchorError {
     },
 }
 
-/// MetadataLayer 承载与版本推进相关错误。
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum MetadataError {
-    /// 单个 MetadataLayer 的 range id 计数器耗尽；这表示 layer 生命周期需要重建。
-    #[error("MetadataLayer range id 溢出")]
-    IdOverflow,
-
-    /// MetadataLayer 只能应用同一 base_version 的 DeltaEvent，过期结果应由宿主替换或丢弃。
-    #[error("MetadataLayer 版本不匹配：预期版本 {expected:?}，实际版本 {actual:?}")]
-    VersionMismatch {
-        expected: BufferVersion,
-        actual: BufferVersion,
-    },
-}
-
 /// FoldSet 折叠集合相关错误。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum FoldError {
@@ -179,7 +164,7 @@ pub enum ProjectionError {
     },
 }
 
-/// VersionedResult 版本绑定与 remap 相关错误。
+/// VersionedRangeSet / VersionedResult 版本绑定与 remap 相关错误。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VersionedResultError {
     /// 调用方传入的 DeltaEvent::old_version() 与 VersionedResult 当前绑定版本不一致。
@@ -192,6 +177,10 @@ pub enum VersionedResultError {
     /// remap 闭包判定 payload 无法在新版本上保持语义；reason 由调用方填写。
     #[error("VersionedResult remap 失败：{reason}")]
     RemapFailed { reason: String },
+
+    /// 单个 VersionedRangeSet 的 entry id 计数器耗尽；调用方应重建 set。
+    #[error("VersionedRangeSet entry id 溢出")]
+    IdOverflow,
 }
 
 /// 当前 Buffer 内搜索相关错误。
@@ -262,10 +251,6 @@ pub enum EngineError {
     /// Anchor 或 TrackedRange 的版本推进失败。
     #[error(transparent)]
     Anchor(#[from] AnchorError),
-
-    /// MetadataLayer 与 Buffer 版本或 range 身份管理不一致。
-    #[error(transparent)]
-    Metadata(#[from] MetadataError),
 
     /// FoldSet 折叠集合的版本、嵌套或边界不变量被破坏。
     #[error(transparent)]

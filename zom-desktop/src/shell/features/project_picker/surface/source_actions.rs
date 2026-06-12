@@ -34,12 +34,12 @@ fn source_action_row(label: String, hint: String) -> Div {
         .items_center()
         .justify_between()
         .text_size(typography::ui())
-        .text_color(color::gray::s09())
+        .text_color(color::current().gray.s09)
         .child(div().truncate().child(label))
         .child(
             div()
                 .flex_shrink_0()
-                .text_color(color::gray::s08())
+                .text_color(color::current().gray.s08)
                 .child(hint),
         )
 }

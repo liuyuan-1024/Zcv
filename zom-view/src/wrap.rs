@@ -24,7 +24,9 @@
 
 use std::collections::BTreeMap;
 
-use zom_engine::{Buffer, ByteOffset, EngineResult, Line, MovementDirection};
+use zom_engine::{
+    Buffer, ByteOffset, DeltaEvent, EngineResult, Line, MovementDirection, TextRange,
+};
 
 /// 同一个 byte 在软换行边界处可能对应两个视觉位置；affinity 用于区分。
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -48,6 +50,43 @@ pub struct VisualPosition {
     pub subrow: u32,
     pub column: u32,
     pub affinity: VisualAffinity,
+}
+
+/// 整篇文档的视觉行数。
+///
+/// 完整 wrap map 可以给出精确值；稀疏 soft-wrap map 只能把未测量行暂按 1 行估算，因而得到的是下界。
+/// 调用方如果要做“文档底部”这类硬边界判断，必须只接受 [`Exact`](Self::Exact)。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VisualRowCount {
+    /// 精确的视觉行数。
+    Exact(u64),
+    /// 未测量行暂按 1 行估算的下界视觉行数。
+    LowerBound(u64),
+}
+
+impl VisualRowCount {
+    pub fn value(self) -> u64 {
+        match self {
+            Self::Exact(rows) | Self::LowerBound(rows) => rows,
+        }
+    }
+
+    pub fn exact_max_top(self, visible_rows: u64) -> Option<u64> {
+        match self {
+            Self::Exact(rows) => Some(rows.saturating_sub(visible_rows)),
+            Self::LowerBound(_) => None,
+        }
+    }
+
+    pub fn max_top_with_blank_budget(self, visible_rows: u64, blank_rows: u64) -> u64 {
+        match self {
+            Self::Exact(rows) => rows.saturating_sub(visible_rows),
+            Self::LowerBound(rows) => {
+                let required_content_rows = visible_rows.saturating_sub(blank_rows);
+                rows.saturating_sub(required_content_rows)
+            }
+        }
+    }
 }
 
 /// 每条逻辑行的软换行断点（行内相对字节）。
@@ -78,8 +117,10 @@ impl WrapMap {
 
     /// 构造一份稀疏 WrapMap。
     ///
-    /// 未出现在 `breaks_per_line` 中的逻辑行按 1 个视觉行处理。渲染端每帧只测量
-    /// 视口附近的行，因此主路径必须避免按整篇文档行数分配。
+    /// 未出现在 `breaks_per_line` 中的逻辑行按未测量处理，在视觉行计数上仍临时按 1 个视觉行退化。
+    /// 渲染端每帧只测量视口附近的行，因此主路径必须避免按整篇文档行数分配。
+    ///
+    /// 空 `breaks` 也会保留，用来表示「这行已测量且没有软换行断点」。
     pub fn sparse(
         soft_wrap: bool,
         line_count: u64,
@@ -87,9 +128,7 @@ impl WrapMap {
     ) -> Self {
         let breaks_per_line = breaks_per_line
             .into_iter()
-            .filter_map(|(line, breaks)| {
-                (line < line_count && !breaks.is_empty()).then_some((line, breaks))
-            })
+            .filter_map(|(line, breaks)| (line < line_count).then_some((line, breaks)))
             .collect();
         Self {
             soft_wrap,
@@ -106,12 +145,74 @@ impl WrapMap {
         self.line_count
     }
 
+    /// 用编辑事件把现有测量缓存推进到新文本的保守版本。
+    ///
+    /// 这不是精确的 wrap 增量维护：`DeltaEvent` 不携带被删除文本的旧行内容，无法安全平移所有旧断点。
+    /// 这里的目标是保留显然仍可信的测量结果：
+    ///
+    /// - 行数不变：仅丢弃新文本 changed lines 上的 breaks，其它行号仍稳定。
+    /// - 行数变化：只保留首个 changed line 之前的 breaks，避免后续行号漂移后误用旧断点。
+    ///
+    /// 渲染端下一帧会用真实 shape 结果覆盖视口附近的行；
+    /// 这个保守 map 只用于消除编辑后到新测量落地之间的一帧大幅漂移。
+    pub fn preserve_after_edit_events(&self, buffer: &Buffer, events: &[DeltaEvent]) -> Self {
+        let line_count = buffer.line_count() as u64;
+        let mut next = Self {
+            soft_wrap: self.soft_wrap,
+            line_count,
+            breaks_per_line: self.breaks_per_line.clone(),
+        };
+        next.breaks_per_line.retain(|line, _| *line < line_count);
+
+        let mut changed_ranges = Vec::new();
+        for event in events {
+            let Ok(ranges) = event
+                .changed_ranges_result()
+                .map(|result| result.into_value())
+            else {
+                continue;
+            };
+            for range in ranges {
+                if let Some(line_range) = changed_line_range(buffer, range) {
+                    changed_ranges.push(line_range);
+                }
+            }
+        }
+
+        if changed_ranges.is_empty() {
+            return next;
+        }
+
+        if self.line_count != line_count {
+            let preserve_before = changed_ranges
+                .iter()
+                .map(|(start, _)| *start)
+                .min()
+                .unwrap_or(line_count);
+            next.breaks_per_line
+                .retain(|line, _| *line < preserve_before);
+            return next;
+        }
+
+        next.breaks_per_line.retain(|line, _| {
+            !changed_ranges
+                .iter()
+                .any(|(start, end)| *start <= *line && *line < *end)
+        });
+        next
+    }
+
     /// 指定逻辑行的断点列表（行内相对字节）。越界返回空 slice。
     pub fn breaks(&self, line: u64) -> &[u32] {
         self.breaks_per_line
             .get(&line)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// 这条逻辑行是否由渲染端在当前稀疏 map 中测量过。
+    pub fn is_line_measured(&self, line: u64) -> bool {
+        !self.soft_wrap || self.breaks_per_line.contains_key(&line)
     }
 
     /// 指定逻辑行的视觉段数。越界（理论上不会发生）退化为 1。
@@ -122,7 +223,22 @@ impl WrapMap {
             .unwrap_or(1)
     }
 
-    /// 视觉行总数；用于 viewport / scroll 行号换算。
+    /// 视觉行数的当前估计。
+    ///
+    /// 稀疏 soft-wrap map 尚未测量所有行时返回 [`VisualRowCount::LowerBound`]。
+    pub fn visual_row_count(&self) -> VisualRowCount {
+        let rows = self.total_visual_rows();
+        if self.soft_wrap && self.breaks_per_line.len() as u64 != self.line_count {
+            VisualRowCount::LowerBound(rows)
+        } else {
+            VisualRowCount::Exact(rows)
+        }
+    }
+
+    /// 视觉行总数或下界；用于视觉行号换算。
+    ///
+    /// 对稀疏 soft-wrap map 来说，未测量行临时按 1 个视觉行估算，因此这个值可能是下界。
+    /// 需要判断滚动底部边界时，优先使用 [`visual_row_count`](Self::visual_row_count)。
     pub fn total_visual_rows(&self) -> u64 {
         self.line_count
             + self
@@ -417,6 +533,24 @@ impl WrapMap {
 /// 行号转 `Line`。
 fn line_from_u64(line: u64) -> Line {
     Line::new(line as usize)
+}
+
+fn changed_line_range(buffer: &Buffer, range: TextRange) -> Option<(u64, u64)> {
+    let line_count = buffer.line_count() as u64;
+    if line_count == 0 {
+        return None;
+    }
+
+    let len = buffer.len_bytes();
+    let start = range.start().min(len);
+    let end = range.end().min(len);
+    let start_line = buffer.byte_to_line(start).ok()?.get() as u64;
+    let end_line = buffer
+        .byte_to_line(end)
+        .ok()
+        .map(|line| line.get() as u64)
+        .unwrap_or_else(|| line_count.saturating_sub(1));
+    Some((start_line, end_line.saturating_add(1).min(line_count)))
 }
 
 fn line_index_u64(line: Line) -> u64 {
@@ -833,6 +967,48 @@ mod tests {
         assert_eq!(wm.visual_row_to_line_subrow(999), (999, 0));
         assert_eq!(wm.visual_row_to_line_subrow(1_001), (1_000, 1));
         assert_eq!(wm.visual_row_to_line_subrow(1_003), (1_001, 0));
+    }
+
+    #[test]
+    fn sparse_wrap_map_remembers_measured_lines_without_breaks() {
+        let wm = WrapMap::sparse(true, 10, [(3, Vec::new()), (5, vec![2])]);
+
+        assert!(wm.is_line_measured(3));
+        assert!(wm.is_line_measured(5));
+        assert!(!wm.is_line_measured(4));
+        assert_eq!(wm.visual_row_count(), VisualRowCount::LowerBound(11));
+        assert_eq!(wm.subrow_count(3), 1);
+        assert_eq!(wm.total_visual_rows(), 11);
+    }
+
+    #[test]
+    fn preserve_after_edit_events_should_drop_changed_line_and_keep_stable_lines() {
+        let mut buffer = buf("abcdefghij\nklmnopqrst");
+        let wm = WrapMap::new(true, vec![vec![5], vec![4]]);
+
+        buffer.insert(ByteOffset::new(1), "X").unwrap();
+        let events = buffer.take_pending_events();
+        let preserved = wm.preserve_after_edit_events(&buffer, &events);
+
+        assert_eq!(preserved.logical_line_count(), 2);
+        assert_eq!(preserved.breaks(0), &[]);
+        assert_eq!(preserved.breaks(1), &[4]);
+    }
+
+    #[test]
+    fn preserve_after_edit_events_should_discard_shifted_lines_after_line_count_change() {
+        let mut buffer = buf("abcdefghij\nklmnopqrst\nuvwxyz");
+        let wm = WrapMap::new(true, vec![vec![5], vec![4], vec![3]]);
+        let line_1_start = buffer.line_start_byte(zom_engine::Line::new(1)).unwrap();
+
+        buffer.insert(line_1_start, "\n").unwrap();
+        let events = buffer.take_pending_events();
+        let preserved = wm.preserve_after_edit_events(&buffer, &events);
+
+        assert_eq!(preserved.logical_line_count(), 4);
+        assert_eq!(preserved.breaks(0), &[5]);
+        assert_eq!(preserved.breaks(1), &[]);
+        assert_eq!(preserved.breaks(2), &[]);
     }
 
     #[test]

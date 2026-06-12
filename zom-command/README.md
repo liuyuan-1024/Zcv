@@ -1,10 +1,10 @@
 # zom-command
 
-`zom-command` 是 zom 宿主层的命令派发脊柱 crate，承载「所有操作均是命令」这一核心原则与键位模型。
+`zom-command` 是 zom 宿主层的命令与快捷键基础设施，承载「可命名的离散动作是命令」这一原则与键位模型。
 
 ## 定位
 
-键盘、命令面板、AI、菜单都把意图收敛成 `(CommandId, CommandArgs)`，经唯一派发路径进入执行器。`zom-command` 是这条路径的基础设施。
+键盘快捷键、命令面板、AI、菜单等入口都可以把可命名动作收敛成 `(CommandId, CommandArgs)`，经唯一命令派发路径进入执行器。连续输入设备事件由桌面端输入意图层处理。
 
 它是命令的汇聚点（sink），不是被各层 import 的服务：输入源产出意图，由组合根喂给执行器。
 
@@ -50,10 +50,8 @@ tests/        command 契约测试
 ## 相关文档
 
 - [`docs/命令与快捷键.md`](docs/命令与快捷键.md)：完整设计文档 —— 模块边界、数据模型、catalog 模式、HostEffect 解耦、键位约定、加新命令的步骤、反例清单。先看这一份。
-- [`docs/命令清单.md`](docs/命令清单.md)：当前已注册命令、HostEffect 变体、待办清单。随命令增删滚动更新。
-- `../agents/global.md`、`../agents/project.md`：workspace 全局规则与项目规则。
-- `../TODO.md`：宿主层开发规划。
+- `../AGENTS_GLOBAL.md`、`../AGENTS_PROJECT.md`：workspace 全局规则与项目规则。
 
 ## 文档维护
 
-本 README 只维护稳定边界、核心能力和依赖关系；具体命令清单与阶段计划分别放在 `docs/命令清单.md` 和 `../TODO.md`。
+本 README 只维护稳定边界、核心能力和依赖关系；当前命令以 `src/commands/` catalog 与 `tests/command_contract.rs` 为准。

@@ -568,7 +568,7 @@ mod tests {
             buffer,
             worker.clone(),
         );
-        worker.wait_for_idle();
+        worker.wait_for_idle_for_test_or_bench();
         (syntax, worker)
     }
 
@@ -760,7 +760,7 @@ mod tests {
         let events = buffer.take_pending_events();
         let event = events.into_iter().next().unwrap();
         syntax.handle_edit(&buffer, &event);
-        worker.wait_for_idle();
+        worker.wait_for_idle_for_test_or_bench();
 
         let incremental = span_names(&query_full(&syntax, &buffer));
 
@@ -791,7 +791,7 @@ mod tests {
         let events = buffer.take_pending_events();
         let event = events.into_iter().next().unwrap();
         syntax.handle_edit(&buffer, &event);
-        worker.wait_for_idle();
+        worker.wait_for_idle_for_test_or_bench();
 
         let incremental = span_names(&query_full(&syntax, &buffer));
 

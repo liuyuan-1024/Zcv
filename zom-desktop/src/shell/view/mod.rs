@@ -10,26 +10,33 @@ mod runtime;
 use std::rc::Rc;
 
 use gpui::{Context, FocusHandle, IntoElement, Render, ScrollHandle, Window};
-use zom_command::Invocation;
-use zom_command::commands::{file_tree as file_tree_commands, window as window_commands};
+use zom_command::commands::{
+    diagnostics as diagnostics_commands, editor as editor_commands,
+    file_tree as file_tree_commands, language_servers as language_server_commands,
+    project_picker as project_picker_commands,
+    search::{file as search_file_commands, project as search_project_commands},
+    settings as settings_commands, window as window_commands,
+};
+use zom_command::{CommandArgs, CommandId, Invocation, SettingsChangeRequest};
 
 use crate::app::App;
-use crate::clipboard::GpuiClipboardScope;
-use crate::editor_state::build_editor_state;
 use crate::focus::AppFocus;
 
 use self::runtime::ShellRuntime;
 use super::features::panels::file_tree::ConfirmDeleteHandlers;
+use super::features::search::{SearchIntent, SearchIntentPresentationLookup, SearchIntentRequest};
 use super::features::settings;
 use super::workbench;
 use super::workbench::WindowControlsHandlers;
+use super::workbench::WorkbenchCommandRequests;
 use super::workbench::state::WorkbenchState;
-use super::{ActionRequest, CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup};
+use super::{CommandCatalogLookup, CommandPresentation, CommandTitleLookup, ShortcutLookup};
 use crate::editor::{CaretBlink, drive_caret_blink};
-use crate::ui_id::SurfaceId;
+use crate::host_intent::{CommandRequest, HostIntent, HostIntentRequest, KeyRequest};
+use crate::ui_id::{PanelId, SurfaceId};
 
-/// shell 端的根 View。装配产物收敛在 [`ShellRuntime`]；本结构再额外持
-/// 几个跨帧但不入运行期组合根的视图态（编辑区标签栏滚动、光标闪烁）。
+/// shell 端的根 View。装配产物收敛在 [`ShellRuntime`]；
+/// 本结构再额外持几个跨帧但不入运行期组合根的视图态（编辑区标签栏滚动、光标闪烁）。
 pub(crate) struct ShellView {
     runtime: ShellRuntime,
     /// 编辑区标签栏的滚动状态。跨帧保留，否则每帧重建会丢失滚动位置。
@@ -112,68 +119,149 @@ impl ShellView {
             .state(app.project_title(), app.has_project())
     }
 
-    /// 把一个 [`Invocation`] 绑成 [`ActionRequest`]：点击时派发并应用窗口动作。
-    fn bind_action(&self, invocation: Invocation) -> ActionRequest {
-        actions::bind_action_request(
-            Rc::clone(&self.runtime.app),
-            Rc::clone(&self.runtime.workbench),
-            self.runtime.surface_manager.clone(),
-            self.runtime.bubble_runtime.clone(),
-            self.runtime.editor_focus.clone(),
-            self.runtime.features.clone(),
-            invocation,
-        )
+    /// 把一个 [`Invocation`] 绑成 [`CommandRequest`]：触发时进入命令管线。
+    fn bind_command(&self, invocation: Invocation) -> CommandRequest {
+        actions::bind_command_request(self.host_intent_request(), invocation)
+    }
+
+    fn host_intent_request(&self) -> HostIntentRequest {
+        Rc::clone(&self.runtime.host_intent)
+    }
+
+    fn bind_command_id(&self, command_id: &'static str) -> CommandRequest {
+        let command_id = CommandId::new(command_id).expect("内建命令 ID 必须非空");
+        self.bind_command((command_id, CommandArgs::new()))
+    }
+
+    fn search_intent_request(&self) -> SearchIntentRequest {
+        let toggle_case_sensitive =
+            self.bind_command(search_file_commands::toggle_case_sensitive());
+        let toggle_whole_word = self.bind_command(search_file_commands::toggle_whole_word());
+        let toggle_regex = self.bind_command(search_file_commands::toggle_regex());
+        let find_previous = self.bind_command(search_file_commands::find_previous());
+        let find_next = self.bind_command(search_file_commands::find_next());
+        let replace_next = self.bind_command(search_file_commands::replace_next());
+        let replace_all = self.bind_command(search_file_commands::replace_all());
+
+        Rc::new(move |intent, window, cx| {
+            let request = match intent {
+                SearchIntent::ToggleCaseSensitive => &toggle_case_sensitive,
+                SearchIntent::ToggleWholeWord => &toggle_whole_word,
+                SearchIntent::ToggleRegex => &toggle_regex,
+                SearchIntent::FindPrevious => &find_previous,
+                SearchIntent::FindNext => &find_next,
+                SearchIntent::ReplaceNext => &replace_next,
+                SearchIntent::ReplaceAll => &replace_all,
+            };
+            request(window, cx);
+        })
+    }
+
+    fn search_intent_presentation_lookup(&self) -> SearchIntentPresentationLookup {
+        let shortcuts = self.shortcut_lookup();
+        let titles = self.command_title_lookup();
+        Rc::new(move |intent| {
+            let command_id = search_intent_command_id(intent);
+            CommandPresentation {
+                title: titles(command_id).unwrap_or_else(|| command_id.to_string()),
+                hint: shortcuts(command_id),
+            }
+        })
+    }
+
+    fn command_presentation(
+        &self,
+        command_id: &'static str,
+        fallback_title: impl Into<String>,
+    ) -> CommandPresentation {
+        let fallback_title = fallback_title.into();
+        let app = self.runtime.app.borrow();
+        CommandPresentation {
+            title: app.command_title_for(command_id).unwrap_or(fallback_title),
+            hint: app.shortcuts_for(command_id),
+        }
+    }
+
+    fn workbench_command_requests(&self) -> WorkbenchCommandRequests {
+        let file_tree = self.bind_command_id(PanelId::FileTree.toggle_command_id());
+        let version_control = self.bind_command_id(PanelId::VersionControl.toggle_command_id());
+        let outline = self.bind_command_id(PanelId::Outline.toggle_command_id());
+        let terminal = self.bind_command_id(PanelId::Terminal.toggle_command_id());
+        let debug = self.bind_command_id(PanelId::Debug.toggle_command_id());
+        let keyboard_shortcuts =
+            self.bind_command_id(PanelId::KeyboardShortcuts.toggle_command_id());
+        let panel_toggle = Rc::new(move |panel| match panel {
+            PanelId::FileTree => Rc::clone(&file_tree),
+            PanelId::VersionControl => Rc::clone(&version_control),
+            PanelId::Outline => Rc::clone(&outline),
+            PanelId::Terminal => Rc::clone(&terminal),
+            PanelId::Debug => Rc::clone(&debug),
+            PanelId::KeyboardShortcuts => Rc::clone(&keyboard_shortcuts),
+        });
+        let app = Rc::clone(&self.runtime.app);
+        let panel_toggle_presentation = Rc::new(move |panel: PanelId| {
+            let command_id = panel.toggle_command_id();
+            let app = app.borrow();
+            CommandPresentation {
+                title: app
+                    .command_title_for(command_id)
+                    .unwrap_or_else(|| command_id.to_string()),
+                hint: app.shortcuts_for(command_id),
+            }
+        });
+
+        WorkbenchCommandRequests {
+            project_picker_open: self.bind_command(project_picker_commands::show_projects_picker()),
+            project_picker_open_presentation: self.command_presentation(
+                project_picker_commands::SHOW_PROJECTS_PICKER,
+                project_picker_commands::SHOW_PROJECTS_PICKER,
+            ),
+            settings_open: self.bind_command(settings_commands::open()),
+            settings_open_presentation: self
+                .command_presentation(settings_commands::OPEN, settings_commands::OPEN),
+            language_servers_open: self.bind_command(language_server_commands::open()),
+            language_servers_open_presentation: self.command_presentation(
+                language_server_commands::OPEN,
+                language_server_commands::OPEN,
+            ),
+            diagnostics_show_problems: self.bind_command(diagnostics_commands::show_problems()),
+            diagnostics_show_problems_presentation: self.command_presentation(
+                diagnostics_commands::SHOW_PROBLEMS,
+                diagnostics_commands::SHOW_PROBLEMS,
+            ),
+            project_search_activate: self.bind_command(search_project_commands::project_activate()),
+            project_search_activate_presentation: self.command_presentation(
+                search_project_commands::PROJECT_ACTIVATE,
+                search_project_commands::PROJECT_ACTIVATE,
+            ),
+            editor_close_tab: self.bind_command(editor_commands::close_tab()),
+            editor_close_tab_presentation: self
+                .command_presentation(editor_commands::CLOSE_TAB, editor_commands::CLOSE_TAB),
+            editor_open_preview: self.bind_command(editor_commands::open_preview()),
+            editor_open_preview_presentation: self
+                .command_presentation(editor_commands::OPEN_PREVIEW, "Markdown 预览"),
+            file_search_activate: self.bind_command(search_file_commands::activate()),
+            file_search_activate_presentation: self.command_presentation(
+                search_file_commands::ACTIVATE,
+                search_file_commands::ACTIVATE,
+            ),
+            panel_toggle,
+            panel_toggle_presentation,
+            search_intent: self.search_intent_request(),
+            search_intent_presentation: self.search_intent_presentation_lookup(),
+        }
     }
 
     fn window_controls_handlers(&self) -> WindowControlsHandlers {
         WindowControlsHandlers {
-            quit: self.bind_action(window_commands::quit()),
-            minimize: self.bind_action(window_commands::minimize()),
-            toggle_maximize: self.bind_action(window_commands::toggle_maximize()),
+            quit: self.bind_command(window_commands::quit()),
+            minimize: self.bind_command(window_commands::minimize()),
+            toggle_maximize: self.bind_command(window_commands::toggle_maximize()),
         }
     }
 
     fn key_request(&self) -> KeyRequest {
-        let app = Rc::clone(&self.runtime.app);
-        let workbench = Rc::clone(&self.runtime.workbench);
-        let surfaces = self.runtime.surface_manager.clone();
-        let bubbles = self.runtime.bubble_runtime.clone();
-        let editor_focus_fallback = self.runtime.editor_focus.clone();
-        let features = self.runtime.features.clone();
-        let focus_projection = self.runtime.focus_projection.clone();
-        Rc::new(move |chord, window, cx| {
-            let outcome = {
-                // scope 内 GpuiClipboard 才能拿到 cx 访问系统剪贴板。
-                // scope drop 后 thread-local 立即恢复，避免悬空。
-                let _clip = GpuiClipboardScope::enter(cx);
-                let current = focus_projection.current_focus(window);
-                let mut app = app.borrow_mut();
-                app.request_focus_from_shell(current);
-                match app.dispatch_key(chord) {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        eprintln!("命令执行失败：{error}");
-                        return false;
-                    }
-                }
-            };
-
-            actions::apply_host_effects_with_settings(
-                outcome.effects,
-                &app,
-                &workbench,
-                &surfaces,
-                &bubbles,
-                &editor_focus_fallback,
-                &features,
-                window,
-                cx,
-            );
-            if outcome.consumed {
-                window.refresh();
-            }
-            outcome.consumed
-        })
+        actions::bind_key_request(self.host_intent_request())
     }
 
     fn shortcut_lookup(&self) -> ShortcutLookup {
@@ -191,32 +279,51 @@ impl ShellView {
         Rc::new(move || app.borrow().command_catalog_items())
     }
 
-    fn settings_action_request(&self) -> settings::SettingsActionRequest {
-        let app = Rc::clone(&self.runtime.app);
-        let editor_focus = self.runtime.editor_focus.clone();
-        let bubbles = self.runtime.bubble_runtime.clone();
-        Rc::new(move |action, window, cx| {
-            match action {
-                settings::SettingsAction::OpenToml => {
-                    let opened = app.borrow_mut().open_config_file();
-                    for request in app.borrow_mut().take_session_bubbles() {
-                        bubbles.update(cx, |runtime, cx| runtime.push(request, cx));
-                    }
-                    if opened {
-                        window.focus(&editor_focus);
-                    }
-                }
-                settings::SettingsAction::Change(change) => {
-                    let config = {
-                        let mut app = app.borrow_mut();
-                        app.apply_settings_change(change);
-                        app.config_snapshot()
-                    };
-                    config_visuals::apply(&config);
-                }
-            }
-            window.refresh();
+    fn settings_intent_request(&self) -> settings::SettingsIntentRequest {
+        let host_intent = self.host_intent_request();
+        Rc::new(move |intent, window, cx| {
+            let invocation = settings_intent_invocation(intent);
+            host_intent(HostIntent::Command(invocation), window, cx);
         })
+    }
+}
+
+fn settings_intent_invocation(intent: settings::SettingsIntent) -> Invocation {
+    match intent {
+        settings::SettingsIntent::OpenToml => settings_commands::open_toml(),
+        settings::SettingsIntent::Change(change) => {
+            settings_commands::apply_change(settings_change_request(change))
+        }
+    }
+}
+
+fn search_intent_command_id(intent: SearchIntent) -> &'static str {
+    match intent {
+        SearchIntent::ToggleCaseSensitive => search_file_commands::TOGGLE_CASE_SENSITIVE,
+        SearchIntent::ToggleWholeWord => search_file_commands::TOGGLE_WHOLE_WORD,
+        SearchIntent::ToggleRegex => search_file_commands::TOGGLE_REGEX,
+        SearchIntent::FindPrevious => search_file_commands::FIND_PREVIOUS,
+        SearchIntent::FindNext => search_file_commands::FIND_NEXT,
+        SearchIntent::ReplaceNext => search_file_commands::REPLACE_NEXT,
+        SearchIntent::ReplaceAll => search_file_commands::REPLACE_ALL,
+    }
+}
+
+fn settings_change_request(change: crate::config::SettingsChange) -> SettingsChangeRequest {
+    match change {
+        crate::config::SettingsChange::AdjustUiFont(delta) => {
+            SettingsChangeRequest::AdjustUiFont(delta)
+        }
+        crate::config::SettingsChange::AdjustEditorFont(delta) => {
+            SettingsChangeRequest::AdjustEditorFont(delta)
+        }
+        crate::config::SettingsChange::ToggleEditorSoftWrap => {
+            SettingsChangeRequest::ToggleEditorSoftWrap
+        }
+        crate::config::SettingsChange::CycleEditorTabSize => {
+            SettingsChangeRequest::CycleEditorTabSize
+        }
+        crate::config::SettingsChange::CycleTheme => SettingsChangeRequest::CycleTheme,
     }
 }
 
@@ -236,24 +343,18 @@ impl Render for ShellView {
 
         let state = self.workbench_state();
         // 三个 feature 的视图快照旁路收集，不进 WorkbenchState；workbench::render 只看布局。
-        let editor_state = {
-            let app = runtime.app.borrow();
-            let project_root = app.project_root().map(|p| p.to_path_buf());
-            app.with_workspace_views(|ws, views| {
-                build_editor_state(ws, views, project_root.as_deref())
-            })
-        };
+        let editor_state = runtime.app.borrow().editor_state();
         let file_tree_state = {
             let app = runtime.app.borrow();
             runtime.features.file_tree.state(&app)
         };
         let search_state = {
             let app = runtime.app.borrow();
-            runtime
-                .features
-                .search
-                .runtime_handle()
-                .state(app.workspace())
+            runtime.features.search.runtime_handle().state(
+                app.workspace(),
+                app.views(),
+                app.active_view_id(),
+            )
         };
 
         // 光标一移动就重置闪烁为实心，让用户立刻定位到光标；定时链与全局可见位都由 editor 子系统驱动。
@@ -275,7 +376,7 @@ impl Render for ShellView {
         runtime
             .features
             .settings
-            .set_action_request(self.settings_action_request());
+            .set_intent_request(self.settings_intent_request());
         runtime.features.settings.set_state({
             let app = runtime.app.borrow();
             settings::SettingsPanelState::new(app.config_snapshot(), app.config_path())
@@ -311,8 +412,8 @@ impl Render for ShellView {
             .surface_manager
             .read_with(cx, |manager, _| manager.is_active(SurfaceId::Settings));
         let confirm_delete = ConfirmDeleteHandlers {
-            confirm: self.bind_action(file_tree_commands::confirm_delete()),
-            cancel: self.bind_action(file_tree_commands::cancel_delete()),
+            confirm: self.bind_command(file_tree_commands::confirm_delete()),
+            cancel: self.bind_command(file_tree_commands::cancel_delete()),
         };
         let main_editor_snapshot = {
             let app = runtime.app.borrow();
@@ -325,6 +426,7 @@ impl Render for ShellView {
                 file_tree: &file_tree_state,
                 search: &search_state,
             },
+            self.workbench_command_requests(),
             &runtime.panel_host,
             Rc::clone(&runtime.workbench),
             window,

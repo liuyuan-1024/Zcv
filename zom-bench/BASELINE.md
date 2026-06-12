@@ -27,7 +27,7 @@
 | `search` | **5.6 ms** | ≤ 200 ms ✅ | regex `\bfn\b|\blet\b|\bimpl\b`；命中 114357 处；8 MiB 硬限已解除 |
 | `parse` | **0.92 s** | ≤ 1.5 s ✅ | tree-sitter 冷启动；worker 异步、不阻塞主线程 |
 | `edit+hl 主线程` | **6.0 µs / 键** | ≤ 5 ms ✅ | `insert` + 主线程同步 `tree_slot.try_edit` 推坐标 + push channel；与文件大小脱钩（830× 余量） |
-| `edit+hl 端到端` | **78.6 ms / 键** | ≤ 100 ms ✅ | 编辑 + worker `wait_for_idle`（增量 reparse 完成）；新 tree 写入共享 slot 后下一帧 paint 现查即正确 |
+| `edit+hl 端到端` | **78.6 ms / 键** | ≤ 100 ms ✅ | 编辑 + worker `wait_for_idle_for_test_or_bench`（增量 reparse 完成）；新 tree 写入共享 slot 后下一帧 paint 现查即正确 |
 
 > 1 MiB / 4 MiB 一档作秒级回归（`run rust 4`）使用，触发红线告警已足够，不再列入本表。
 > 64 MiB 一档仍可跑作"远端劣化"观察，见 §6；超过 16 MiB 已不在红线管辖。

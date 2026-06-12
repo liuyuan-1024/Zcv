@@ -31,7 +31,7 @@ use std::rc::Rc;
 
 use zom_engine::{
     Buffer, BufferConfig, BufferLoadError, BufferOrigin as EngineBufferOrigin, BufferSaveError,
-    ChangeSet, Delta, EngineError, Line,
+    ChangeSet, Delta, DeltaEvent, EngineError, Line,
 };
 
 use crate::syntax::{BufferSyntaxTreeSlot, LanguageId, LanguageRegistry, SyntaxEngine};
@@ -49,8 +49,10 @@ impl BufferId {
         self.0
     }
 
-    /// 测试 / bench 用：从原始 u64 直接构造。
-    /// 生产代码请走 [`crate::syntax::SyntaxEngine::allocate_buffer_id`] 以保证全局唯一。
+    /// 从原始 u64 构造缓冲区 id。
+    ///
+    /// 生产分配新 id 应走 [`crate::syntax::SyntaxEngine::allocate_buffer_id`]，它内部使用本函数封装 allocator 产出的原始值。
+    /// 测试 / bench 构造固定 id 时也可使用，但调用者必须自己保证不会撞 id。
     pub fn from_raw(raw: u64) -> Self {
         Self(raw)
     }
@@ -72,7 +74,6 @@ pub enum BufferOrigin {
 #[derive(Debug)]
 pub struct Workspace {
     engine: Rc<SyntaxEngine>,
-    active_buffer_id: Option<BufferId>,
     buffers: BTreeMap<BufferId, WorkspaceBuffer>,
     buffer_config: BufferConfig,
 }
@@ -95,7 +96,6 @@ impl Workspace {
     pub fn with_engine(engine: Rc<SyntaxEngine>) -> Self {
         Self {
             engine,
-            active_buffer_id: None,
             buffers: BTreeMap::new(),
             buffer_config: BufferConfig::default(),
         }
@@ -113,7 +113,8 @@ impl Workspace {
         }
     }
 
-    /// 后台 SyntaxWorker 句柄（轻量 clone）。测试 / bench 可用 [`crate::syntax::SyntaxWorkerHandle::wait_for_idle`] 等待异步产物。
+    /// 后台 SyntaxWorker 句柄（轻量 clone）。
+    /// 测试 / bench 可用 [`crate::syntax::SyntaxWorkerHandle::wait_for_idle_for_test_or_bench`] 等待异步产物。
     pub fn syntax_worker(&self) -> &std::sync::Arc<crate::syntax::SyntaxWorkerHandle> {
         self.engine.worker()
     }
@@ -157,7 +158,6 @@ impl Workspace {
         let wb = self.wrap_into_workspace_buffer(origin, buffer);
         let id = wb.document.buffer_id();
         self.buffers.insert(id, wb);
-        self.set_active_buffer_unchecked(id);
         Ok(id)
     }
 
@@ -178,7 +178,6 @@ impl Workspace {
         let wb = self.wrap_into_workspace_buffer(origin, buffer);
         let id = wb.document.buffer_id();
         self.buffers.insert(id, wb);
-        self.set_active_buffer_unchecked(id);
         Ok(id)
     }
 
@@ -213,9 +212,6 @@ impl Workspace {
         if self.buffers.remove(&id).is_none() {
             return Err(WorkspaceError::BufferNotFound(id));
         }
-        if self.active_buffer_id == Some(id) {
-            self.active_buffer_id = self.buffers.keys().next_back().copied();
-        }
         Ok(())
     }
 
@@ -231,26 +227,6 @@ impl Workspace {
         self.buffers.iter().map(|(id, buffer)| (*id, buffer))
     }
 
-    pub fn active_buffer_id(&self) -> Option<BufferId> {
-        self.active_buffer_id
-    }
-
-    pub fn set_active_buffer(&mut self, id: BufferId) -> WorkspaceResult<()> {
-        if !self.buffers.contains_key(&id) {
-            return Err(WorkspaceError::BufferNotFound(id));
-        }
-        self.set_active_buffer_unchecked(id);
-        Ok(())
-    }
-
-    pub fn active_buffer(&self) -> Option<&WorkspaceBuffer> {
-        self.active_buffer_id.and_then(|id| self.buffer(id))
-    }
-
-    pub fn active_buffer_mut(&mut self) -> Option<&mut WorkspaceBuffer> {
-        self.active_buffer_id.and_then(|id| self.buffer_mut(id))
-    }
-
     pub fn buffer_path(&self, id: BufferId) -> WorkspaceResult<Option<&Path>> {
         Ok(self.buffer_or_error(id)?.path())
     }
@@ -261,10 +237,6 @@ impl Workspace {
 
     pub fn is_buffer_read_only(&self, id: BufferId) -> WorkspaceResult<bool> {
         Ok(self.buffer_or_error(id)?.is_read_only())
-    }
-
-    fn set_active_buffer_unchecked(&mut self, id: BufferId) {
-        self.active_buffer_id = Some(id);
     }
 
     fn buffer_or_error(&self, id: BufferId) -> WorkspaceResult<&WorkspaceBuffer> {
@@ -408,14 +380,13 @@ impl WorkspaceBuffer {
     /// **调用契约**：缓冲区发生编辑（命令派发、IME commit、replace_all 等）后**有且仅有一处**调用本方法。
     /// 不放在 [`Workspace::buffer_mut`] / `buffer()` 之类的访问器里——访问器会被调多次、调到读路径上，重复 drain 会让事件序丢失。
     /// 当前调用点：`zom-command` 在派发结束后统一调一次活动缓冲区的 `pump_post_edit`。
-    pub fn pump_post_edit(&mut self) -> WorkspaceResult<bool> {
+    pub fn pump_post_edit(&mut self) -> WorkspaceResult<Vec<DeltaEvent>> {
         let events = self.document.buffer_mut().take_pending_events();
-        let had_events = !events.is_empty();
         for event in &events {
             self.search.apply_delta(event)?;
         }
         self.document.apply_pending_events(&events);
-        Ok(had_events)
+        Ok(events)
     }
 
     /// 推一拍 BufferSearch 状态机：收割已完成的后台搜索，必要时 spawn 新的。

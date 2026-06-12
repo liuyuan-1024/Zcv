@@ -12,14 +12,14 @@
 
 use gpui::{Div, Pixels, Rgba, Stateful, Svg, div, prelude::*, px, rgb, svg};
 
-use crate::shell::ActionRequest;
+use crate::host_intent::CommandRequest;
 use crate::theme::{color, radius, space};
 
 /// 顶栏三个窗口控制圆点共享的动作回调包。新加窗控按钮就在这里加字段。
 pub(crate) struct WindowControlsHandlers {
-    pub(crate) quit: ActionRequest,
-    pub(crate) minimize: ActionRequest,
-    pub(crate) toggle_maximize: ActionRequest,
+    pub(crate) quit: CommandRequest,
+    pub(crate) minimize: CommandRequest,
+    pub(crate) toggle_maximize: CommandRequest,
 }
 
 /// 三个圆点的身份。
@@ -135,7 +135,7 @@ fn pip_symbol(path: &'static str) -> Svg {
     svg()
         .path(path)
         .size(PIP_SYMBOL_SIZE)
-        .text_color(color::gray::s01())
+        .text_color(color::current().gray.s01)
         .opacity(0.0)
         .group_hover(PIP_GROUP, |style| style.opacity(1.0))
 }

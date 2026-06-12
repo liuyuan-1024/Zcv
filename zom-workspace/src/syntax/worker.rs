@@ -19,7 +19,8 @@
 //! - **产物落 slot**：worker 每条 Job 处理完调一次 `provider.export_syntax_tree(&slot)`，paint 端按 slot 上的 `Arc<BufferSyntaxTree>` 现查 viewport-scoped Query。
 //! - **Job 投递不阻塞主线程**：`mpsc::Sender::send` 在标准 channel 上是 lock-free 的入队。
 //! - **Panic 守护**：每条 Job 用 `catch_unwind` 包住；某 buffer 的 provider 触发 panic 不会拖垮线程，只把出问题的 entry 丢弃，buffer 退化成 plain；其他 buffer 不受影响。
-//! - **同步等待**：[`SyntaxWorkerHandle::wait_for_idle`] 仅给测试 / bench 使用；正常前台路径不该走，否则就吃掉异步收益。
+//! - **同步等待**：[`SyntaxWorkerHandle::wait_for_idle_for_test_or_bench`] 仅给测试 / bench 使用；
+//! 正常前台路径不该走，否则就吃掉异步收益。
 
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -59,7 +60,7 @@ struct Entry {
     tree_slot: BufferSyntaxTreeSlot,
 }
 
-/// 在飞任务计数器 + Condvar，给 [`SyntaxWorkerHandle::wait_for_idle`] 用。
+/// 在飞任务计数器 + Condvar，给 [`SyntaxWorkerHandle::wait_for_idle_for_test_or_bench`] 用。
 struct InFlight {
     count: AtomicUsize,
     mutex: Mutex<()>,
@@ -180,17 +181,19 @@ impl SyntaxWorkerHandle {
         self.post(Job::Detach { buffer_id });
     }
 
-    /// 阻塞直到当前已投递的所有任务都被 worker 处理完。
+    /// Test/bench support：阻塞直到当前已投递的所有任务都被 worker 处理完。
     ///
-    /// **只给测试 / bench 用**。前台代码靠 paint 端直接读 slot，不需要同步等待。
-    pub fn wait_for_idle(&self) {
+    /// 只允许测试、benchmark、诊断工具使用。
+    /// 前台产品路径靠 paint 端直接读 slot，不应同步等待，否则会吃掉异步 worker 的收益。
+    pub fn wait_for_idle_for_test_or_bench(&self) {
         self.in_flight.wait_idle();
     }
 
-    /// 把 JoinHandle 抢出来 detach。drop 时不再 join。
+    /// Bench support：把 JoinHandle 抢出来 detach。drop 时不再 join。
     ///
-    /// **只给 bench / 长跑测试用**——bench 投 1000 任务测主线程耗时，但工艺上 worker 真处理这些重 reparse 可能跑很久；测完直接 detach 让进程退出。
-    pub fn forget_join(&self) {
+    /// 只允许 benchmark 使用。产品路径必须让 Drop 正常关闭 channel 并 join worker。
+    /// 这个入口用于主线程耗时 benchmark：测完后不等待积压的重 reparse 任务。
+    pub fn forget_join_for_bench(&self) {
         if let Ok(mut guard) = self.join.lock() {
             if let Some(join) = guard.take() {
                 drop(join);
@@ -347,7 +350,7 @@ mod tests {
             handle.edit(buf_id, change, snapshot, version);
         }
         handle.detach(buf_id);
-        handle.wait_for_idle();
+        handle.wait_for_idle_for_test_or_bench();
 
         assert_eq!(attach_count.load(Ordering::SeqCst), 1);
         assert_eq!(on_edit_count.load(Ordering::SeqCst), 3);

@@ -1,16 +1,14 @@
-//! `VersionedRangeSet<T>`：泛型 payload + `TrackedRange` 的版本化集合。
+//! `VersionedRangeSet<T>`：把 (TrackedRange, payload) 与 BufferVersion 绑定的核心集合。
 //!
-//! 与 `MetadataLayer<T>` 的差异：不携带 `MetadataLayerKind`，不为 entry 分配稳定 ID；
-//! 主要面向不需要 layer 业务身份的宿主分析产物（解析树节点、外部 range 标注等）。
+//! 每条 entry 由 set 分配稳定 `VersionedRangeEntryId`，跨 delta 不变；
+//! 调用方通过 id 访问、删除或读取 entry，而不是位置下标——位置下标在 `update_through_delta_event` 失效条目后会发生漂移。
+//!
+//! `MetadataLayers` 把它按 `MetadataLayerKind` 索引；fold / 自定义分析产物等其他容器直接持有。
 
 use crate::{
     EngineResult,
     buffer::Buffer,
     errors::VersionedResultError,
-    metadata::{
-        MetadataLayer, MetadataLayerKind, MetadataLineWindow, MetadataRangeSpec,
-        query::{range_contains_offset, ranges_intersect, text_range_for_line_range},
-    },
     position_map::Stickiness,
     snapshot::Snapshot,
     tracking::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
@@ -18,9 +16,30 @@ use crate::{
     types::{BufferVersion, ByteOffset, LineRange, TextRange, Utf16Position},
 };
 
-/// 单条 entry：把 payload 绑定到一个可跟随的 `TrackedRange`。
+use super::query::{range_contains_offset, ranges_intersect, text_range_for_line_range};
+
+/// VersionedRangeEntry 在单个 set 内的稳定身份。
+///
+/// 仅在 set 生命周期内稳定，不跨 set 表达全局身份。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VersionedRangeEntryId(u64);
+
+impl VersionedRangeEntryId {
+    const INITIAL: Self = Self(0);
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    fn next(self) -> Option<Self> {
+        self.0.checked_add(1).map(Self)
+    }
+}
+
+/// 单条 entry：把 payload 绑定到一个可跟随的 `TrackedRange`，附带稳定 id。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionedRangeEntry<T> {
+    id: VersionedRangeEntryId,
     tracked_range: TrackedRange,
     update_policy: TrackedRangeUpdatePolicy,
     payload: T,
@@ -28,15 +47,21 @@ pub struct VersionedRangeEntry<T> {
 
 impl<T> VersionedRangeEntry<T> {
     fn new(
+        id: VersionedRangeEntryId,
         tracked_range: TrackedRange,
         update_policy: TrackedRangeUpdatePolicy,
         payload: T,
     ) -> Self {
         Self {
+            id,
             tracked_range,
             update_policy,
             payload,
         }
+    }
+
+    pub fn id(&self) -> VersionedRangeEntryId {
+        self.id
     }
 
     pub fn version(&self) -> BufferVersion {
@@ -71,8 +96,28 @@ impl<T> VersionedRangeEntry<T> {
         self.payload
     }
 
-    pub fn into_parts(self) -> (TrackedRange, TrackedRangeUpdatePolicy, T) {
-        (self.tracked_range, self.update_policy, self.payload)
+    pub fn into_parts(
+        self,
+    ) -> (
+        VersionedRangeEntryId,
+        TrackedRange,
+        TrackedRangeUpdatePolicy,
+        T,
+    ) {
+        (
+            self.id,
+            self.tracked_range,
+            self.update_policy,
+            self.payload,
+        )
+    }
+
+    pub fn map_through_delta_event(
+        &self,
+        event: &DeltaEvent,
+    ) -> Result<TrackedRangeUpdate, crate::errors::AnchorError> {
+        self.tracked_range
+            .map_through_delta_event_with_policy(event, self.update_policy)
     }
 
     fn set_tracked_range(&mut self, tracked_range: TrackedRange) {
@@ -148,10 +193,96 @@ impl<T> VersionedRangeSpec<T> {
     }
 }
 
-/// 版本化的 (TrackedRange, payload) 集合。
+/// 单条 entry 通过一次 `DeltaEvent` 后的更新事实。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VersionedRangeUpdate {
+    /// 区间无删除触碰地推进到新版本，entry 可以原样保留。
+    Mapped {
+        id: VersionedRangeEntryId,
+        range: TextRange,
+        version: BufferVersion,
+    },
+    /// 原区间被删除内容触碰，但按策略仍保留折算后的区间。
+    Deleted {
+        id: VersionedRangeEntryId,
+        range: TextRange,
+        version: BufferVersion,
+    },
+    /// 原非空区间映射后成为空区间，并且当前策略允许继续保留。
+    Collapsed {
+        id: VersionedRangeEntryId,
+        range: TextRange,
+        version: BufferVersion,
+    },
+    /// 当前 update policy 判定 entry 不应继续存在，返回最后合法位置供宿主清理或展示。
+    Invalidated {
+        id: VersionedRangeEntryId,
+        range: TextRange,
+        version: BufferVersion,
+    },
+}
+
+impl VersionedRangeUpdate {
+    pub fn id(self) -> VersionedRangeEntryId {
+        match self {
+            Self::Mapped { id, .. }
+            | Self::Deleted { id, .. }
+            | Self::Collapsed { id, .. }
+            | Self::Invalidated { id, .. } => id,
+        }
+    }
+
+    pub fn range(self) -> TextRange {
+        match self {
+            Self::Mapped { range, .. }
+            | Self::Deleted { range, .. }
+            | Self::Collapsed { range, .. }
+            | Self::Invalidated { range, .. } => range,
+        }
+    }
+
+    pub fn version(self) -> BufferVersion {
+        match self {
+            Self::Mapped { version, .. }
+            | Self::Deleted { version, .. }
+            | Self::Collapsed { version, .. }
+            | Self::Invalidated { version, .. } => version,
+        }
+    }
+
+    pub fn is_invalidated(self) -> bool {
+        matches!(self, Self::Invalidated { .. })
+    }
+
+    fn from_tracked(id: VersionedRangeEntryId, update: TrackedRangeUpdate) -> Self {
+        match update {
+            TrackedRangeUpdate::Mapped(range) => Self::Mapped {
+                id,
+                range: range.range(),
+                version: range.version(),
+            },
+            TrackedRangeUpdate::Deleted(range) => Self::Deleted {
+                id,
+                range: range.range(),
+                version: range.version(),
+            },
+            TrackedRangeUpdate::Collapsed(range) => Self::Collapsed {
+                id,
+                range: range.range(),
+                version: range.version(),
+            },
+            TrackedRangeUpdate::Invalidated { range, version } => {
+                Self::Invalidated { id, range, version }
+            }
+        }
+    }
+}
+
+/// 版本化的 (id, TrackedRange, payload) 集合。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionedRangeSet<T> {
     version: BufferVersion,
+    next_id: VersionedRangeEntryId,
     default_stickiness: Stickiness,
     default_update_policy: TrackedRangeUpdatePolicy,
     entries: Vec<VersionedRangeEntry<T>>,
@@ -161,6 +292,7 @@ impl<T> VersionedRangeSet<T> {
     pub fn new(version: BufferVersion) -> Self {
         Self {
             version,
+            next_id: VersionedRangeEntryId::INITIAL,
             default_stickiness: Stickiness::default(),
             default_update_policy: TrackedRangeUpdatePolicy::default(),
             entries: Vec::new(),
@@ -209,16 +341,21 @@ impl<T> VersionedRangeSet<T> {
         self.entries.iter()
     }
 
-    pub fn entry(&self, index: usize) -> Option<&VersionedRangeEntry<T>> {
-        self.entries.get(index)
+    /// 按稳定 id 查询 entry。
+    pub fn get(&self, id: VersionedRangeEntryId) -> Option<&VersionedRangeEntry<T>> {
+        self.entries.iter().find(|entry| entry.id() == id)
     }
 
-    pub fn entry_mut(&mut self, index: usize) -> Option<&mut VersionedRangeEntry<T>> {
-        self.entries.get_mut(index)
+    pub fn get_mut(&mut self, id: VersionedRangeEntryId) -> Option<&mut VersionedRangeEntry<T>> {
+        self.entries.iter_mut().find(|entry| entry.id() == id)
     }
 
-    /// 追加 entry，返回新 entry 在 set 内的索引。
-    pub fn insert(&mut self, range: TextRange, payload: T) -> usize {
+    /// 追加 entry，返回新分配的稳定 id。
+    pub fn insert(
+        &mut self,
+        range: TextRange,
+        payload: T,
+    ) -> Result<VersionedRangeEntryId, VersionedResultError> {
         self.insert_with_options(
             range,
             self.default_stickiness,
@@ -232,7 +369,7 @@ impl<T> VersionedRangeSet<T> {
         range: TextRange,
         stickiness: Stickiness,
         payload: T,
-    ) -> usize {
+    ) -> Result<VersionedRangeEntryId, VersionedResultError> {
         self.insert_with_options(range, stickiness, self.default_update_policy, payload)
     }
 
@@ -242,21 +379,21 @@ impl<T> VersionedRangeSet<T> {
         stickiness: Stickiness,
         update_policy: TrackedRangeUpdatePolicy,
         payload: T,
-    ) -> usize {
+    ) -> Result<VersionedRangeEntryId, VersionedResultError> {
+        let id = self.reserve_id()?;
         let tracked_range = TrackedRange::from_range(self.version, range, stickiness);
-        let index = self.entries.len();
         self.entries.push(VersionedRangeEntry::new(
+            id,
             tracked_range,
             update_policy,
             payload,
         ));
-        index
+        Ok(id)
     }
 
-    pub fn remove(&mut self, index: usize) -> Option<VersionedRangeEntry<T>> {
-        if index >= self.entries.len() {
-            return None;
-        }
+    /// 删除指定 id 的 entry。
+    pub fn remove(&mut self, id: VersionedRangeEntryId) -> Option<VersionedRangeEntry<T>> {
+        let index = self.entries.iter().position(|entry| entry.id() == id)?;
         Some(self.entries.remove(index))
     }
 
@@ -268,41 +405,104 @@ impl<T> VersionedRangeSet<T> {
         &mut self,
         version: BufferVersion,
         ranges: impl IntoIterator<Item = (TextRange, T)>,
-    ) {
+    ) -> Result<Vec<VersionedRangeEntryId>, VersionedResultError> {
         self.replace_all_with_options(
             version,
             ranges
                 .into_iter()
                 .map(|(range, payload)| VersionedRangeSpec::new(range, payload)),
-        );
+        )
     }
 
     pub fn replace_all_with_options(
         &mut self,
         version: BufferVersion,
         specs: impl IntoIterator<Item = VersionedRangeSpec<T>>,
-    ) {
-        let entries = specs
-            .into_iter()
-            .map(|spec| {
-                let (range, stickiness, update_policy, payload) = spec.into_parts();
-                let tracked_range = TrackedRange::from_range(version, range, stickiness);
-                VersionedRangeEntry::new(tracked_range, update_policy, payload)
-            })
-            .collect();
+    ) -> Result<Vec<VersionedRangeEntryId>, VersionedResultError> {
+        let mut next_id = VersionedRangeEntryId::INITIAL;
+        let mut ids = Vec::new();
+        let mut new_entries = Vec::new();
+
+        for spec in specs {
+            let id = next_id;
+            next_id = next_id.next().ok_or(VersionedResultError::IdOverflow)?;
+            let (range, stickiness, update_policy, payload) = spec.into_parts();
+            let tracked_range = TrackedRange::from_range(version, range, stickiness);
+            ids.push(id);
+            new_entries.push(VersionedRangeEntry::new(
+                id,
+                tracked_range,
+                update_policy,
+                payload,
+            ));
+        }
 
         self.version = version;
-        self.entries = entries;
+        self.next_id = next_id;
+        self.entries = new_entries;
+        Ok(ids)
     }
 
-    /// 应用一次 `DeltaEvent`，按每个 entry 的 update policy 推进 tracked range。
+    /// 局部替换：删除 `byte_range` 内（按 start 落点判定）的现存 entry，再把 `new_ranges` 追加进 set。
+    /// `byte_range` 外的 entry 完全保留，版本不动。
     ///
-    /// 返回与 entry 原顺序对齐的 `TrackedRangeUpdate` 列表（含 `Invalidated`）；
-    /// 失效的 entry 在 set 内删除，未失效的保留并更新 tracked range。
+    /// 版本必须与 set.version 一致；不一致返回 `VersionMismatch`。
+    /// `new_ranges` 不必落在 `byte_range` 内（caller 责任），但落在该范围外的新 entry 会与未删除的旧 entry 共存，调用方需自行避免重叠语义冲突。
+    pub fn replace_in_range(
+        &mut self,
+        version: BufferVersion,
+        byte_range: TextRange,
+        new_ranges: impl IntoIterator<Item = (TextRange, T)>,
+    ) -> Result<Vec<VersionedRangeEntryId>, VersionedResultError> {
+        self.replace_in_range_with_options(
+            version,
+            byte_range,
+            new_ranges
+                .into_iter()
+                .map(|(range, payload)| VersionedRangeSpec::new(range, payload)),
+        )
+    }
+
+    pub fn replace_in_range_with_options(
+        &mut self,
+        version: BufferVersion,
+        byte_range: TextRange,
+        new_ranges: impl IntoIterator<Item = VersionedRangeSpec<T>>,
+    ) -> Result<Vec<VersionedRangeEntryId>, VersionedResultError> {
+        if self.version != version {
+            return Err(VersionedResultError::VersionMismatch {
+                expected: self.version,
+                actual: version,
+            });
+        }
+        let cutoff_start = byte_range.start();
+        let cutoff_end = byte_range.end();
+        self.entries.retain(|entry| {
+            let start = entry.range().start();
+            !(start >= cutoff_start && start < cutoff_end)
+        });
+        let mut ids = Vec::new();
+        for spec in new_ranges {
+            let id = self.reserve_id()?;
+            let (range, stickiness, update_policy, payload) = spec.into_parts();
+            let tracked_range = TrackedRange::from_range(version, range, stickiness);
+            self.entries.push(VersionedRangeEntry::new(
+                id,
+                tracked_range,
+                update_policy,
+                payload,
+            ));
+            ids.push(id);
+        }
+        Ok(ids)
+    }
+
+    /// 应用一次 `DeltaEvent`：按每条 entry 的 update policy 推进 tracked range；
+    /// 失效的 entry 在 set 内删除，返回所有 entry（含失效条目）的更新事实。
     pub fn update_through_delta_event(
         &mut self,
         event: &DeltaEvent,
-    ) -> Result<Vec<TrackedRangeUpdate>, VersionedResultError> {
+    ) -> Result<Vec<VersionedRangeUpdate>, VersionedResultError> {
         if self.version != event.old_version() {
             return Err(VersionedResultError::VersionMismatch {
                 expected: event.old_version(),
@@ -314,18 +514,20 @@ impl<T> VersionedRangeSet<T> {
         let mut retained = Vec::with_capacity(self.entries.len());
 
         for mut entry in self.entries.drain(..) {
+            let id = entry.id();
             let tracked_update = entry.tracked_range.map_through_position_map_with_policy(
                 event.new_version(),
                 event.position_map(),
                 entry.update_policy,
             );
+            let update = VersionedRangeUpdate::from_tracked(id, tracked_update);
 
             if let Some(tracked_range) = tracked_update.tracked_range() {
                 entry.set_tracked_range(tracked_range);
                 retained.push(entry);
             }
 
-            updates.push(tracked_update);
+            updates.push(update);
         }
 
         self.entries = retained;
@@ -360,18 +562,10 @@ impl<T> VersionedRangeSet<T> {
         Ok(self.entries_intersecting(query).collect())
     }
 
-    pub fn entries_in_line_window(
-        &self,
-        buffer: &Buffer,
-        window: MetadataLineWindow,
-    ) -> EngineResult<Vec<&VersionedRangeEntry<T>>> {
-        self.entries_in_line_range(buffer, window.lines())
-    }
-
     /// 在与 set 同版本的 `Snapshot` 上转换每条 entry 的 payload，常用于 UTF-16 边界 import / export。
     ///
     /// `snapshot.version()` 必须等于当前 `version()`；闭包接收 (payload, current_text_range, snapshot)，
-    /// 不允许移动或拆解 entry 的 tracked range / stickiness / update policy。
+    /// 不允许移动或拆解 entry 的 tracked range / stickiness / update policy。entry id 沿用。
     pub fn try_map_payloads_at_snapshot<U, F>(
         self,
         snapshot: &Snapshot,
@@ -390,10 +584,11 @@ impl<T> VersionedRangeSet<T> {
 
         let mut new_entries = Vec::with_capacity(self.entries.len());
         for entry in self.entries.into_iter() {
-            let (tracked_range, update_policy, payload) = entry.into_parts();
+            let (id, tracked_range, update_policy, payload) = entry.into_parts();
             let range = tracked_range.range();
             let new_payload = f(payload, range, snapshot)?;
             new_entries.push(VersionedRangeEntry::new(
+                id,
                 tracked_range,
                 update_policy,
                 new_payload,
@@ -402,6 +597,7 @@ impl<T> VersionedRangeSet<T> {
 
         Ok(VersionedRangeSet {
             version: self.version,
+            next_id: self.next_id,
             default_stickiness: self.default_stickiness,
             default_update_policy: self.default_update_policy,
             entries: new_entries,
@@ -410,11 +606,11 @@ impl<T> VersionedRangeSet<T> {
 
     /// 把每条 entry 的范围导出为 UTF-16 行列对，便于喂给外部协议（LSP 等）。
     ///
-    /// 返回 `(start, end, &payload)` 顺序与 `as_slice()` 一致。
+    /// 返回 `(id, start, end, &payload)` 顺序与 `as_slice()` 一致。
     pub fn try_export_entries_to_utf16<'a>(
         &'a self,
         snapshot: &Snapshot,
-    ) -> EngineResult<Vec<(Utf16Position, Utf16Position, &'a T)>> {
+    ) -> EngineResult<Vec<(VersionedRangeEntryId, Utf16Position, Utf16Position, &'a T)>> {
         if snapshot.version() != self.version {
             return Err(VersionedResultError::VersionMismatch {
                 expected: self.version,
@@ -426,10 +622,9 @@ impl<T> VersionedRangeSet<T> {
         let mut exported = Vec::with_capacity(self.entries.len());
         for entry in &self.entries {
             let range = entry.range();
-            // 边界投影：byte -> utf16
             let start = snapshot.byte_to_utf16_position(range.start())?;
             let end = snapshot.byte_to_utf16_position(range.end())?;
-            exported.push((start, end, entry.payload()));
+            exported.push((entry.id(), start, end, entry.payload()));
         }
         Ok(exported)
     }
@@ -441,7 +636,7 @@ impl<T> VersionedRangeSet<T> {
         start: Utf16Position,
         end: Utf16Position,
         payload: T,
-    ) -> EngineResult<usize> {
+    ) -> EngineResult<VersionedRangeEntryId> {
         self.try_insert_utf16_range_with_options(
             snapshot,
             start,
@@ -461,7 +656,7 @@ impl<T> VersionedRangeSet<T> {
         stickiness: Stickiness,
         update_policy: TrackedRangeUpdatePolicy,
         payload: T,
-    ) -> EngineResult<usize> {
+    ) -> EngineResult<VersionedRangeEntryId> {
         if snapshot.version() != self.version {
             return Err(VersionedResultError::VersionMismatch {
                 expected: self.version,
@@ -471,50 +666,16 @@ impl<T> VersionedRangeSet<T> {
         }
 
         let range = utf16_range_to_text_range(snapshot, start, end)?;
-        Ok(self.insert_with_options(range, stickiness, update_policy, payload))
+        Ok(self.insert_with_options(range, stickiness, update_policy, payload)?)
     }
 
-    /// 把 set 转换为指定 kind 的 `MetadataLayer<T>`，沿用版本、默认策略和每条 entry 的策略。
-    pub fn into_metadata_layer(self, kind: MetadataLayerKind) -> MetadataLayer<T> {
-        let version = self.version;
-        let default_stickiness = self.default_stickiness;
-        let default_update_policy = self.default_update_policy;
-        let mut layer = MetadataLayer::with_kind(kind, version)
-            .with_default_stickiness(default_stickiness)
-            .with_default_update_policy(default_update_policy);
-
-        let specs = self.entries.into_iter().map(|entry| {
-            let (tracked_range, update_policy, payload) = entry.into_parts();
-            MetadataRangeSpec::new(tracked_range.range(), payload)
-                .with_stickiness(tracked_range.stickiness())
-                .with_update_policy(update_policy)
-        });
-
-        layer
-            .replace_all_with_options(version, specs)
-            .expect("entry 数量受 Vec 容量限制，远低于 MetadataRangeId u64 上限");
-        layer
-    }
-}
-
-impl<T> From<MetadataLayer<T>> for VersionedRangeSet<T> {
-    fn from(layer: MetadataLayer<T>) -> Self {
-        let (_kind, version, default_stickiness, default_update_policy, ranges) =
-            layer.into_parts();
-        let entries = ranges
-            .into_iter()
-            .map(|range| {
-                let (_id, tracked_range, update_policy, payload) = range.into_parts();
-                VersionedRangeEntry::new(tracked_range, update_policy, payload)
-            })
-            .collect();
-
-        Self {
-            version,
-            default_stickiness,
-            default_update_policy,
-            entries,
-        }
+    fn reserve_id(&mut self) -> Result<VersionedRangeEntryId, VersionedResultError> {
+        let id = self.next_id;
+        self.next_id = self
+            .next_id
+            .next()
+            .ok_or(VersionedResultError::IdOverflow)?;
+        Ok(id)
     }
 }
 
@@ -523,7 +684,6 @@ fn utf16_range_to_text_range(
     start: Utf16Position,
     end: Utf16Position,
 ) -> EngineResult<TextRange> {
-    // 边界投影：utf16 -> byte（深核区间类型）
     let start_offset = snapshot.utf16_position_to_byte(start)?;
     let end_offset = snapshot.utf16_position_to_byte(end)?;
     Ok(TextRange::new(start_offset, end_offset)?)
@@ -532,9 +692,7 @@ fn utf16_range_to_text_range(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        BufferConfig, Edit, Line, LineRange, Transaction, Utf16Offset, metadata::MetadataLayerKind,
-    };
+    use crate::{BufferConfig, Edit, Line, LineRange, Transaction, Utf16Offset};
 
     fn b(value: usize) -> ByteOffset {
         ByteOffset::new(value)
@@ -564,12 +722,13 @@ mod tests {
     }
 
     #[test]
-    fn versioned_range_set_should_update_query_export_utf16_and_roundtrip_metadata_layer() {
+    fn versioned_range_set_should_insert_query_update_and_keep_ids_stable() {
         let mut buffer = buffer("a😀b\ncd");
         let snapshot = buffer.snapshot();
-        let mut set = VersionedRangeSet::new(buffer.version());
+        let mut set = VersionedRangeSet::new(buffer.version())
+            .with_default_update_policy(TrackedRangeUpdatePolicy::invalidate_when_fully_deleted());
 
-        let idx = set
+        let emoji_id = set
             .try_insert_utf16_range(
                 &snapshot,
                 Utf16Position::new(line(0), Utf16Offset::new(1)),
@@ -577,9 +736,9 @@ mod tests {
                 "emoji",
             )
             .unwrap();
-        set.insert(range(7, 9), "cd");
+        let cd_id = set.insert(range(7, 9), "cd").unwrap();
 
-        assert_eq!(idx, 0);
+        assert_ne!(emoji_id, cd_id);
         assert_eq!(set.entries_containing(b(1)).count(), 1);
         assert_eq!(
             set.entries_in_line_range(&buffer, line_range(1, 2))
@@ -587,24 +746,52 @@ mod tests {
                 .len(),
             1
         );
-        assert_eq!(
-            set.try_export_entries_to_utf16(&snapshot).unwrap()[0],
-            (
-                Utf16Position::new(line(0), Utf16Offset::new(1)),
-                Utf16Position::new(line(0), Utf16Offset::new(3)),
-                &"emoji"
-            )
-        );
+        let exported = set.try_export_entries_to_utf16(&snapshot).unwrap();
+        assert_eq!(exported[0].0, emoji_id);
+        assert_eq!(exported[0].3, &"emoji");
 
         let event = event_after(&mut buffer, Edit::insert(b(0), "Z".to_string()).unwrap());
         let updates = set.update_through_delta_event(&event).unwrap();
         assert_eq!(updates.len(), 2);
         assert_eq!(set.version(), event.new_version());
-        assert_eq!(set.entry(0).unwrap().range(), range(2, 6));
+        // id 跨 delta 不变：仍可按原 id 查询到平移后的 entry。
+        assert_eq!(set.get(emoji_id).unwrap().range(), range(2, 6));
+        assert_eq!(set.get(cd_id).unwrap().range(), range(8, 10));
 
-        let layer = set.into_metadata_layer(MetadataLayerKind::custom("roundtrip"));
-        let roundtrip: VersionedRangeSet<&str> = VersionedRangeSet::from(layer);
-        assert_eq!(roundtrip.len(), 2);
-        assert_eq!(roundtrip.entry(0).unwrap().payload(), &"emoji");
+        // 删一条后剩下的 entry 仍可按原 id 命中（位置下标会漂移，id 不会）。
+        set.remove(emoji_id).unwrap();
+        assert!(set.get(emoji_id).is_none());
+        assert_eq!(set.get(cd_id).unwrap().payload(), &"cd");
+    }
+
+    #[test]
+    fn replace_in_range_drops_inside_and_keeps_outside() {
+        let buffer = buffer("abcdefghij");
+        let mut set = VersionedRangeSet::<&str>::new(buffer.version());
+        set.replace_all(
+            buffer.version(),
+            vec![
+                (range(0, 2), "a"),
+                (range(2, 5), "b"),
+                (range(5, 8), "c"),
+                (range(8, 10), "d"),
+            ],
+        )
+        .unwrap();
+
+        set.replace_in_range(
+            buffer.version(),
+            range(2, 8),
+            vec![(range(2, 4), "B"), (range(4, 7), "C")],
+        )
+        .unwrap();
+
+        let mut survivors: Vec<&str> = set
+            .as_slice()
+            .iter()
+            .map(|entry| *entry.payload())
+            .collect();
+        survivors.sort();
+        assert_eq!(survivors, vec!["B", "C", "a", "d"]);
     }
 }

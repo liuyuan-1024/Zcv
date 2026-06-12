@@ -1,30 +1,28 @@
 //! 诊断功能。
 //!
-//! 当前只提供状态入口：功能图标归本模块所有，命令标题归
-//! `zom_command::commands::diagnostics`。问题面板 UI 接入时在本目录补
+//! 当前只提供状态入口：功能图标归本模块所有。问题面板 UI 接入时在本目录补
 //! `view.rs` / `state.rs` 等文件。
 
 use gpui::AnyElement;
-use zom_command::commands::diagnostics;
 
+use crate::host_intent::CommandRequest;
+use crate::shell::CommandPresentation;
 use crate::shell::shared::Glyph;
-use crate::shell::{CommandTitleLookup, ShortcutLookup};
 
 const INVOKER_ID: &str = "bottom-bar.diagnostics";
-const COMMAND: &str = diagnostics::SHOW_PROBLEMS;
 
 pub(crate) fn entry(
     count: u32,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
+    command_request: CommandRequest,
+    presentation: &CommandPresentation,
 ) -> AnyElement {
-    let title = titles(COMMAND).unwrap_or_else(|| COMMAND.to_string());
     Glyph::icon_text(
         INVOKER_ID,
         "icons/status/diagnostics.svg",
         count.to_string(),
-        title,
+        presentation.title.clone(),
     )
-    .hint(shortcuts(COMMAND))
+    .hint(presentation.hint.clone())
+    .on_press(command_request)
     .render()
 }

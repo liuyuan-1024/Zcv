@@ -46,14 +46,19 @@ pub fn format_chord(chord: &str) -> String {
         return String::new();
     };
 
-    let mut out = String::new();
+    let mut labels = Vec::new();
     // MODIFIERS 决定显示顺序：遍历表本身而不是 tokens，保证幂等。
-    for (name, label) in MODIFIERS {
-        if mods.contains(name) {
-            out.push_str(label);
-            if !MODIFIER_SEPARATOR.is_empty() {
-                out.push_str(MODIFIER_SEPARATOR);
-            }
+    for &(name, label) in MODIFIERS {
+        if mods.contains(&name) && !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+
+    let mut out = String::new();
+    for label in labels {
+        out.push_str(label);
+        if !MODIFIER_SEPARATOR.is_empty() {
+            out.push_str(MODIFIER_SEPARATOR);
         }
     }
     out.push_str(&format_key(key));
@@ -81,9 +86,9 @@ fn format_key(key: &str) -> String {
 #[cfg(target_os = "macos")]
 mod platform {
     /// 修饰键与主键之间用空格分隔，避免连续符号难以区分。
-    pub(super) const MODIFIER_SEPARATOR: &str = "";
+    pub(super) const MODIFIER_SEPARATOR: &str = " ";
     /// 多段 chord 之间用更宽的空隙分隔（如 `"⌘ K  ⌘ B"`）。
-    pub(super) const CHORD_SEPARATOR: &str = " ";
+    pub(super) const CHORD_SEPARATOR: &str = "  ";
 
     /// 逻辑修饰键 → 显示符号；**顺序就是显示顺序**（HIG: ⌃⌥⇧⌘）。
     pub(super) const MODIFIERS: &[(&str, &str)] = &[
@@ -122,10 +127,10 @@ mod platform {
     /// 逻辑修饰键 → 显示文本；顺序：Ctrl → Alt → Shift。
     pub(super) const MODIFIERS: &[(&str, &str)] = &[
         // `mod` 在非 macOS 上等价于物理 Ctrl，统一显示成 "Ctrl"。
+        ("mod", "Ctrl"),
         ("ctrl", "Ctrl"),
         ("alt", "Alt"),
         ("shift", "Shift"),
-        ("mod", "Ctrl"),
         ("fn", "Fn"),
     ];
 
@@ -158,11 +163,11 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn mac_should_render_hig_modifier_order_with_symbol_spacing() {
-        assert_eq!(format_chord("mod-z"), "⌘Z");
+        assert_eq!(format_chord("mod-z"), "⌘ Z");
         // 任何顺序都按 MODIFIERS 表里的顺序输出。
-        assert_eq!(format_chord("mod-shift-z"), "⇧⌘Z");
-        assert_eq!(format_chord("shift-mod-z"), "⇧⌘Z");
-        assert_eq!(format_chord("shift-alt-left"), "⌥⇧←");
+        assert_eq!(format_chord("mod-shift-z"), "⇧ ⌘ Z");
+        assert_eq!(format_chord("shift-mod-z"), "⇧ ⌘ Z");
+        assert_eq!(format_chord("shift-alt-left"), "⌥ ⇧ ←");
         assert_eq!(format_chord("backspace"), "⌫");
         assert_eq!(format_chord("escape"), "⎋");
         assert_eq!(format_chord("space"), "␣");
@@ -174,6 +179,7 @@ mod tests {
         assert_eq!(format_chord("mod-z"), "Ctrl+Z");
         assert_eq!(format_chord("mod-shift-z"), "Ctrl+Shift+Z");
         assert_eq!(format_chord("shift-mod-z"), "Ctrl+Shift+Z");
+        assert_eq!(format_chord("ctrl-mod-shift-z"), "Ctrl+Shift+Z");
         assert_eq!(format_chord("shift-alt-left"), "Alt+Shift+←");
         assert_eq!(format_chord("backspace"), "Backspace");
         assert_eq!(format_chord("escape"), "Esc");

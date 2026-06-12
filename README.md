@@ -107,6 +107,8 @@ zom-engine   ─┘  纯文本编辑引擎底座
 - 「同一文件开两个分屏会不同的状态」归 `zom-view`，「不会不同的状态」归 `zom-workspace`。
 - 历史不归命令执行器 —— `editor.undo` 只是一条命令，真实事务由引擎记录。
 
+长期架构原则见 [`架构原则.md`](架构原则.md)。
+
 各 crate 边界详见其 README：[engine](zom-engine/README.md) · [workspace](zom-workspace/README.md) · [view](zom-view/README.md) · [command](zom-command/README.md) · [ai](zom-ai/README.md) · [desktop](zom-desktop/README.md)。
 
 ## 路线图

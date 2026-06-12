@@ -18,6 +18,7 @@ mod dispatch;
 mod editor;
 mod editor_state;
 mod focus;
+mod host_intent;
 mod ports;
 mod shell;
 mod text_target;

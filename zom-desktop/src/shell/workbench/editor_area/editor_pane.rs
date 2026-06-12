@@ -11,7 +11,8 @@ use zom_view::ViewKind;
 
 use crate::editor::TextEditorSlot;
 use crate::editor_state::EditorState;
-use crate::shell::{KeyRequest, normalized_chord};
+use crate::host_intent::KeyRequest;
+use crate::shell::{FocusRequest, FocusRequestTarget, normalized_chord};
 use crate::theme::{color, radius, space, typography};
 
 use super::markdown_preview;
@@ -22,6 +23,7 @@ pub(super) fn render(
     key_request: KeyRequest,
     editor_slot: Rc<TextEditorSlot>,
     editor_focus: FocusHandle,
+    focus_request: FocusRequest,
 ) -> Div {
     let focus_for_click = editor_focus.clone();
 
@@ -45,7 +47,11 @@ pub(super) fn render(
         .track_focus(&editor_focus)
         .tab_index(0)
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            window.focus(&focus_for_click);
+            focus_request(
+                FocusRequestTarget::Handle(focus_for_click.clone()),
+                window,
+                cx,
+            );
             cx.stop_propagation();
         })
         .on_key_down(move |event, window, cx| {

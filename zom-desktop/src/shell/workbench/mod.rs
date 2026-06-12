@@ -26,14 +26,20 @@ use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
 use crate::editor::TextEditorSlot;
 use crate::editor::text::EditorSnapshot;
 use crate::editor_state::EditorState;
+use crate::host_intent::{CommandRequest, KeyRequest};
 use crate::shell::bubble::BubbleShell;
 use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::{
     self, ConfirmDeleteHandlers, FileTreePanel, FileTreeState,
 };
-use crate::shell::features::search::{SearchRuntime, SearchState};
-use crate::shell::{CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup};
+use crate::shell::features::search::{
+    SearchIntentPresentationLookup, SearchIntentRequest, SearchRuntime, SearchState,
+};
+use crate::shell::{
+    CommandCatalogLookup, CommandPresentation, CommandTitleLookup, ShortcutLookup, focus_request,
+};
 use crate::theme::{color, typography};
+use crate::ui_id::PanelId;
 
 mod bars;
 pub(crate) mod controller;
@@ -57,9 +63,34 @@ pub(crate) struct WorkbenchFeatureStates<'a> {
     pub(crate) search: &'a SearchState,
 }
 
+#[derive(Clone)]
+pub(crate) struct WorkbenchCommandRequests {
+    pub(crate) project_picker_open: CommandRequest,
+    pub(crate) project_picker_open_presentation: CommandPresentation,
+    pub(crate) settings_open: CommandRequest,
+    pub(crate) settings_open_presentation: CommandPresentation,
+    pub(crate) language_servers_open: CommandRequest,
+    pub(crate) language_servers_open_presentation: CommandPresentation,
+    pub(crate) diagnostics_show_problems: CommandRequest,
+    pub(crate) diagnostics_show_problems_presentation: CommandPresentation,
+    pub(crate) project_search_activate: CommandRequest,
+    pub(crate) project_search_activate_presentation: CommandPresentation,
+    pub(crate) editor_close_tab: CommandRequest,
+    pub(crate) editor_close_tab_presentation: CommandPresentation,
+    pub(crate) editor_open_preview: CommandRequest,
+    pub(crate) editor_open_preview_presentation: CommandPresentation,
+    pub(crate) file_search_activate: CommandRequest,
+    pub(crate) file_search_activate_presentation: CommandPresentation,
+    pub(crate) panel_toggle: Rc<dyn Fn(PanelId) -> CommandRequest>,
+    pub(crate) panel_toggle_presentation: Rc<dyn Fn(PanelId) -> CommandPresentation>,
+    pub(crate) search_intent: SearchIntentRequest,
+    pub(crate) search_intent_presentation: SearchIntentPresentationLookup,
+}
+
 pub(crate) fn render(
     state: &WorkbenchState,
     features: WorkbenchFeatureStates<'_>,
+    commands: WorkbenchCommandRequests,
     host: &PanelHost,
     workbench: Rc<RefCell<WorkbenchController>>,
     window: &Window,
@@ -85,6 +116,7 @@ pub(crate) fn render(
     main_editor_snapshot: EditorSnapshot,
 ) -> Div {
     let dock_resize = dock_resize_request(Rc::clone(&workbench));
+    let focus_request = focus_request();
     div()
         .relative()
         .flex()
@@ -98,8 +130,7 @@ pub(crate) fn render(
             state,
             window,
             window_controls,
-            &shortcut_lookup,
-            &command_title_lookup,
+            &commands,
             workspace_active,
             settings_active,
         ))
@@ -108,6 +139,7 @@ pub(crate) fn render(
             &features,
             host,
             dock_resize,
+            focus_request,
             key_request,
             editor_slot,
             search_query_slot,
@@ -120,12 +152,12 @@ pub(crate) fn render(
             shortcut_lookup.clone(),
             command_title_lookup.clone(),
             command_catalog_lookup.clone(),
+            commands.clone(),
         ))
         .child(render_bottom_bar(
             state,
             features.editor,
-            &shortcut_lookup,
-            &command_title_lookup,
+            &commands,
             language_server_active,
             &main_editor_snapshot,
         ))
@@ -143,6 +175,7 @@ fn render_body(
     features: &WorkbenchFeatureStates<'_>,
     host: &PanelHost,
     dock_resize: DockResizeRequest,
+    focus_request: crate::shell::FocusRequest,
     key_request: KeyRequest,
     editor_slot: Rc<TextEditorSlot>,
     search_query_slot: Rc<TextEditorSlot>,
@@ -155,6 +188,7 @@ fn render_body(
     shortcut_lookup: ShortcutLookup,
     command_title_lookup: CommandTitleLookup,
     command_catalog_lookup: CommandCatalogLookup,
+    commands: WorkbenchCommandRequests,
 ) -> Div {
     // 所有面板与编辑区共用同一个 KeyRequest —— 角色由 FocusRegistry 在派发瞬间解析。
     // 调用侧不再区分 panel / editor / file_tree 三套闭包。
@@ -190,10 +224,10 @@ fn render_body(
         key_request,
         editor_slot,
         editor_focus,
+        focus_request,
         Rc::clone(&dock_resize),
         editor_tab_scroll,
-        shortcut_lookup.clone(),
-        Rc::clone(&command_title_lookup),
+        commands,
         &search_runtime,
         features.search,
         search_query_slot,

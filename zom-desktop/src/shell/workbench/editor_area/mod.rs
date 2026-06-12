@@ -12,12 +12,14 @@ use std::rc::Rc;
 
 use crate::editor::TextEditorSlot;
 use crate::editor_state::EditorState;
+use crate::host_intent::KeyRequest;
+use crate::shell::FocusRequest;
 use crate::shell::features::search::{SearchRuntime, SearchState};
+use crate::shell::workbench::WorkbenchCommandRequests;
 use crate::shell::workbench::docks::bottom;
 use crate::shell::workbench::docks::resize::DockResizeRequest;
 use crate::shell::workbench::state::DockState;
 use crate::shell::workbench::{PanelContext, PanelHost};
-use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
 
 mod editor_pane;
 mod file_status_bar;
@@ -33,10 +35,10 @@ pub(crate) fn render(
     key_request: KeyRequest,
     editor_slot: Rc<TextEditorSlot>,
     editor_focus: FocusHandle,
+    focus_request: FocusRequest,
     resize: DockResizeRequest,
     tab_scroll: ScrollHandle,
-    shortcut_lookup: ShortcutLookup,
-    command_title_lookup: CommandTitleLookup,
+    commands: WorkbenchCommandRequests,
     search_runtime: &SearchRuntime,
     search_state: &SearchState,
     search_query_slot: Rc<TextEditorSlot>,
@@ -49,8 +51,8 @@ pub(crate) fn render(
         column = column.child(tab_bar::render(
             editor_state,
             tab_scroll,
-            &shortcut_lookup,
-            &command_title_lookup,
+            &commands.editor_close_tab,
+            &commands.editor_close_tab_presentation,
         ));
     }
     // 文件状态栏：仅在有活动文件时出现；搜索打开时由它在内部追加搜索第二行。
@@ -63,8 +65,8 @@ pub(crate) fn render(
             &search_query_slot,
             &search_replacement_slot,
             search_open,
-            &shortcut_lookup,
-            &command_title_lookup,
+            &focus_request,
+            &commands,
         ));
     }
     column = column.child(editor_pane::render(
@@ -72,6 +74,7 @@ pub(crate) fn render(
         key_request,
         editor_slot,
         editor_focus,
+        focus_request,
     ));
     if bottom_dock_state.is_visible() {
         column = column.child(bottom::render(bottom_dock_state, host, panel_ctx, resize));

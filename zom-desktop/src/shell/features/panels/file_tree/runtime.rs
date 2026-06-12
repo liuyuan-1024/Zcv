@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use crate::app::App;
 use crate::editor::TextEditorSlot;
+use crate::host_intent::KeyRequest;
 use crate::ports::{FileTreeAction, FileTreeActionResult, FileTreeHost};
-use crate::shell::KeyRequest;
 use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::controller::WorkbenchController;
 use crate::text_target::TextTargetOwner;

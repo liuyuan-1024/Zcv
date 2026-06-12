@@ -28,6 +28,7 @@ use crate::app::App;
 use crate::editor::kernel::EditorKernel;
 use crate::editor::pointer::{PointerScrollHook, PointerSelectionHook, PointerSelectionSession};
 use crate::focus::AppFocus;
+use crate::host_intent::HostIntentRequest;
 
 use super::element::EditorElement;
 use super::input_host::EditorInputHost;
@@ -45,12 +46,13 @@ pub(crate) struct TextEditorSlot {
 impl TextEditorSlot {
     pub(crate) fn install<V: 'static>(
         app: Rc<RefCell<App>>,
+        host_intent: HostIntentRequest,
         focus: AppFocus,
         kernel: EditorKernel,
         focus_handle: FocusHandle,
         cx: &mut Context<V>,
     ) -> Rc<Self> {
-        let input = EditorInputHost::new(Rc::clone(&app), focus_handle, cx);
+        let input = EditorInputHost::new(Rc::clone(&app), host_intent, focus_handle, cx);
 
         // 基于 AppFocus 算出稳定的 ElementId
         let mut hasher = std::collections::hash_map::DefaultHasher::new();

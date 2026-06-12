@@ -1,22 +1,24 @@
 //! BottomBar —— 窗口级底部外壳（布局模型 4.3）。
 //!
-//! 当前只用 leading / trailing 两个槽（无 center）。每个槽内按 Dock
-//! 归属分组，组与组之间用一根 `bar_divider` 视觉隔开。
+//! 当前只用 leading / trailing 两个槽（无 center）。
+//! 每个槽内按 Dock 归属分组，组与组之间用一根 `bar_divider` 视觉隔开。
 //!
-//! 面板切换 slot 是 `panel.toggle.<id>` 命令的视图——BottomBar 不知道
-//! panel 是什么，只 emit CommandId。
+//! 面板切换 slot 接收 shell 预绑定的 `CommandRequest`；BottomBar 自己不派发命令。
+
+use std::rc::Rc;
 
 use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
 
 use crate::editor::text::EditorSnapshot;
 use crate::editor_state::EditorState;
+use crate::host_intent::CommandRequest;
+use crate::shell::CommandPresentation;
 use crate::shell::features::{diagnostics, language_servers};
 use crate::shell::shared::Glyph;
+use crate::shell::workbench::WorkbenchCommandRequests;
 use crate::shell::workbench::docks::{bottom, left, right};
 use crate::shell::workbench::state::{DockAreaId, DockState, WorkbenchState};
-use crate::shell::{CommandTitleLookup, ShortcutLookup};
 use crate::ui_id::{self, PanelId};
-use zom_command::commands::search;
 
 use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_divider, bar_frame};
 
@@ -26,18 +28,17 @@ const LANGUAGE_ID: &str = "bottom-bar.language";
 pub(crate) fn render(
     state: &WorkbenchState,
     editor: &EditorState,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
+    commands: &WorkbenchCommandRequests,
     language_server_active: bool,
     main_editor_snapshot: &EditorSnapshot,
 ) -> Div {
     bar_frame(BarEdge::Bottom)
         .child(region(
-            leading_slots(state, shortcuts, titles, language_server_active),
+            leading_slots(state, commands, language_server_active),
             BarRegionAlign::Leading,
         ))
         .child(region(
-            trailing_slots(state, editor, shortcuts, titles, main_editor_snapshot),
+            trailing_slots(state, editor, commands, main_editor_snapshot),
             BarRegionAlign::Trailing,
         ))
 }
@@ -50,48 +51,56 @@ fn region(items: Vec<AnyElement>, align: BarRegionAlign) -> Div {
 
 fn leading_slots(
     state: &WorkbenchState,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
+    commands: &WorkbenchCommandRequests,
     language_server_active: bool,
 ) -> Vec<AnyElement> {
-    let toggles = panel_slot_group(DockAreaId::Left, left::PANELS, state, shortcuts, titles);
-    // Group 2：语言服务器 / 诊断 / 项目级搜索。当前都不绑 Dock；混了状态指示与命令入口。
+    let toggles = panel_slot_group(DockAreaId::Left, left::PANELS, state, commands);
+    // Group 2：语言服务器 / 诊断 / 项目级搜索。当前都不绑 Dock；
+    // 混了状态指示与命令入口。
     let status = vec![
         language_servers::entry(
             state.bottom_bar.lsp_connected,
             language_server_active,
-            shortcuts,
-            titles,
+            Rc::clone(&commands.language_servers_open),
+            &commands.language_servers_open_presentation,
         ),
-        diagnostics::entry(state.bottom_bar.diagnostics_count, shortcuts, titles),
-        project_search_slot(shortcuts, titles),
+        diagnostics::entry(
+            state.bottom_bar.diagnostics_count,
+            Rc::clone(&commands.diagnostics_show_problems),
+            &commands.diagnostics_show_problems_presentation,
+        ),
+        project_search_slot(
+            Rc::clone(&commands.project_search_activate),
+            &commands.project_search_activate_presentation,
+        ),
     ];
     join_groups(vec![toggles, status])
 }
 
-fn project_search_slot(shortcuts: &ShortcutLookup, titles: &CommandTitleLookup) -> AnyElement {
-    let command_id = search::PROJECT_ACTIVATE;
-    let title = titles(command_id).unwrap_or_else(|| command_id.to_string());
+fn project_search_slot(
+    command_request: CommandRequest,
+    presentation: &CommandPresentation,
+) -> AnyElement {
     Glyph::icon(
         "bottom-bar.search.project",
         "icons/panels/search.svg",
-        title,
+        presentation.title.clone(),
     )
-    .hint(shortcuts(command_id))
+    .hint(presentation.hint.clone())
     .active(false)
+    .on_press(command_request)
     .render()
 }
 
 fn trailing_slots(
     state: &WorkbenchState,
     editor_state: &EditorState,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
+    commands: &WorkbenchCommandRequests,
     main_editor_snapshot: &EditorSnapshot,
 ) -> Vec<AnyElement> {
     let editor = editor_status_slots(editor_state, main_editor_snapshot);
-    let bottom = panel_slot_group(DockAreaId::Bottom, bottom::PANELS, state, shortcuts, titles);
-    let right = panel_slot_group(DockAreaId::Right, right::PANELS, state, shortcuts, titles);
+    let bottom = panel_slot_group(DockAreaId::Bottom, bottom::PANELS, state, commands);
+    let right = panel_slot_group(DockAreaId::Right, right::PANELS, state, commands);
     join_groups(vec![editor, bottom, right])
 }
 
@@ -132,13 +141,12 @@ fn panel_slot_group(
     area: DockAreaId,
     panels: &[PanelId],
     state: &WorkbenchState,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
+    commands: &WorkbenchCommandRequests,
 ) -> Vec<AnyElement> {
     panels
         .iter()
         .copied()
-        .map(|panel| panel_slot(panel, dock_state_for(area, state), shortcuts, titles))
+        .map(|panel| panel_slot(panel, dock_state_for(area, state), commands))
         .collect()
 }
 
@@ -154,17 +162,20 @@ fn dock_state_for(area: DockAreaId, state: &WorkbenchState) -> &DockState {
 fn panel_slot(
     panel: PanelId,
     dock_state: &DockState,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
+    commands: &WorkbenchCommandRequests,
 ) -> AnyElement {
     let active = dock_state.is_visible() && dock_state.active_panel() == Some(panel);
-    let command_id = panel.toggle_command_id();
-    let title = titles(command_id).unwrap_or_else(|| command_id.to_string());
+    let presentation = (commands.panel_toggle_presentation)(panel);
 
-    Glyph::icon(panel_glyph_id(panel), ui_id::panel_icon_path(panel), title)
-        .hint(shortcuts(command_id))
-        .active(active)
-        .render()
+    Glyph::icon(
+        panel_glyph_id(panel),
+        ui_id::panel_icon_path(panel),
+        presentation.title,
+    )
+    .hint(presentation.hint)
+    .active(active)
+    .on_press((commands.panel_toggle)(panel))
+    .render()
 }
 
 /// bottom bar 内 panel 入口 glyph 的 element id —— GPUI 用它跟踪 element

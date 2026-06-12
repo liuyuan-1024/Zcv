@@ -7,6 +7,7 @@ use gpui::{
 use gpui::Corner;
 
 use super::{ActiveSurface, SurfaceAnchor, SurfaceAnchorRegistry, SurfaceManager, WindowPosition};
+use crate::shell::{FocusRequestTarget, focus_request};
 use crate::theme::space;
 
 pub(crate) struct SurfaceShell {
@@ -56,10 +57,11 @@ fn render_active(
 ) -> impl IntoElement {
     let request = active.request().clone();
     let focus_on_click = request.focus_on_open.clone();
+    let focus_request = focus_request();
     let surface = div()
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             if let Some(focus) = &focus_on_click {
-                window.focus(focus);
+                focus_request(FocusRequestTarget::Handle(focus.clone()), window, cx);
             }
             cx.stop_propagation();
         })

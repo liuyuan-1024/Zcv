@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use gpui::{Context, Corner, Div, Entity, FocusHandle, Window, div, point, prelude::*, px};
 
-use crate::shell::KeyRequest;
+use crate::host_intent::KeyRequest;
 use crate::shell::normalized_chord;
 use crate::shell::surfaces::{SurfaceAnchor, SurfaceManager, SurfaceRequest};
 use crate::theme::{color, radius, space, typography};

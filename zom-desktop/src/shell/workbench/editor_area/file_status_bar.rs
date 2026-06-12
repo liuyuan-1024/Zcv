@@ -9,16 +9,16 @@
 use std::rc::Rc;
 
 use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
-use zom_command::commands::editor as editor_commands;
-use zom_command::commands::search;
 
 use zom_view::ViewKind;
 
 use crate::editor::TextEditorSlot;
 use crate::editor_state::EditorTab;
+use crate::host_intent::KeyRequest;
+use crate::shell::FocusRequest;
 use crate::shell::features::search::{SearchRuntime, SearchState};
 use crate::shell::shared::Glyph;
-use crate::shell::{CommandTitleLookup, KeyRequest, ShortcutLookup};
+use crate::shell::workbench::WorkbenchCommandRequests;
 use crate::theme::{color, space, typography};
 
 const FILE_SEARCH_ICON: &str = "icons/panels/search.svg";
@@ -33,8 +33,8 @@ pub(crate) fn render(
     search_query_slot: &Rc<TextEditorSlot>,
     search_replacement_slot: &Rc<TextEditorSlot>,
     search_open: bool,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
+    focus_request: &FocusRequest,
+    commands: &WorkbenchCommandRequests,
 ) -> Div {
     let mut bar = div()
         .w_full()
@@ -50,23 +50,24 @@ pub(crate) fn render(
         .text_size(typography::ui())
         .line_height(typography::ui_line())
         .text_color(color::current().gray.s09)
-        .child(header_row(active_tab, shortcuts, titles));
+        .child(header_row(active_tab, commands));
 
     if search_open {
         bar = bar.child(search_runtime.render(
             search_state,
             key_request,
+            &commands.search_intent,
+            &commands.search_intent_presentation,
             search_query_slot,
             search_replacement_slot,
-            shortcuts,
-            titles,
+            focus_request,
         ));
     }
 
     bar
 }
 
-fn header_row(tab: &EditorTab, shortcuts: &ShortcutLookup, titles: &CommandTitleLookup) -> Div {
+fn header_row(tab: &EditorTab, commands: &WorkbenchCommandRequests) -> Div {
     div()
         .flex()
         .flex_row()
@@ -74,7 +75,7 @@ fn header_row(tab: &EditorTab, shortcuts: &ShortcutLookup, titles: &CommandTitle
         .gap(space::s8())
         .child(path_label(tab))
         .child(div().flex_1())
-        .child(action_slot(tab, shortcuts, titles))
+        .child(action_slot(tab, commands))
 }
 
 /// 左侧路径标签：优先项目相对路径，回退到 tab 文件名。
@@ -92,34 +93,37 @@ fn path_label(tab: &EditorTab) -> Div {
         .child(text)
 }
 
-/// 右侧动作槽。glyph 纯视觉、不接 click——动作走快捷键。
-fn action_slot(
-    tab: &EditorTab,
-    shortcuts: &ShortcutLookup,
-    titles: &CommandTitleLookup,
-) -> AnyElement {
+/// 右侧动作槽。点击 glyph 与快捷键共享同一条命令路径。
+fn action_slot(tab: &EditorTab, commands: &WorkbenchCommandRequests) -> AnyElement {
     let mut actions: Vec<AnyElement> = Vec::new();
 
     // Markdown 预览 glyph（仅在可预览文件上显示）
     if tab.language == "Markdown" {
         let preview_active = matches!(tab.kind, ViewKind::Preview);
-        let title =
-            titles(editor_commands::OPEN_PREVIEW).unwrap_or_else(|| "Markdown 预览".to_string());
         actions.push(
-            Glyph::icon("file-status-bar.preview", FILE_PREVIEW_ICON, title)
-                .hint(shortcuts(editor_commands::OPEN_PREVIEW))
-                .active(preview_active)
-                .render(),
+            Glyph::icon(
+                "file-status-bar.preview",
+                FILE_PREVIEW_ICON,
+                commands.editor_open_preview_presentation.title.clone(),
+            )
+            .hint(commands.editor_open_preview_presentation.hint.clone())
+            .active(preview_active)
+            .on_press(Rc::clone(&commands.editor_open_preview))
+            .render(),
         );
     }
 
     // 文件搜索 glyph（常驻）
-    let title = titles(search::ACTIVATE).unwrap_or_else(|| search::ACTIVATE.to_string());
     actions.push(
-        Glyph::icon("file-status-bar.search", FILE_SEARCH_ICON, title)
-            .hint(shortcuts(search::ACTIVATE))
-            .active(false)
-            .render(),
+        Glyph::icon(
+            "file-status-bar.search",
+            FILE_SEARCH_ICON,
+            commands.file_search_activate_presentation.title.clone(),
+        )
+        .hint(commands.file_search_activate_presentation.hint.clone())
+        .active(false)
+        .on_press(Rc::clone(&commands.file_search_activate))
+        .render(),
     );
 
     let mut group = div().flex().flex_row().items_center().gap(space::s6());

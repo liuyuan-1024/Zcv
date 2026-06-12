@@ -3,12 +3,11 @@
 //! 本模块定义 Workbench 内部 resize 事件、回调类型，并集中处理拖拽过程中的
 //! 尺寸计算。具体 dock 只负责发事件，controller 只负责读写对应 Dock 状态。
 
-use std::rc::Rc;
-
 use gpui::{
     AnyElement, App, EmptyView, MouseButton, Pixels, Point, Window, deferred, div, prelude::*, px,
 };
 
+use crate::shell::InteractionRequest;
 use crate::theme;
 
 use super::super::state::DockAreaId;
@@ -28,8 +27,7 @@ pub(crate) enum DockResizeEvent {
     End,
 }
 
-pub(in crate::shell::workbench) type DockResizeRequest =
-    Rc<dyn Fn(DockResizeEvent, &mut Window, &mut App)>;
+pub(in crate::shell::workbench) type DockResizeRequest = InteractionRequest<DockResizeEvent>;
 
 #[derive(Clone, Copy)]
 pub(crate) struct DockResizeBounds {

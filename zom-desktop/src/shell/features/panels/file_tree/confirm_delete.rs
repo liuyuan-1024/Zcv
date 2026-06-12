@@ -7,7 +7,7 @@ use gpui::{AnyElement, MouseButton, Rgba, black, deferred, div, prelude::*, px};
 use zom_workspace::EntryKind;
 
 use super::{ConfirmDeleteHandlers, PendingDelete};
-use crate::shell::ActionRequest;
+use crate::host_intent::CommandRequest;
 use crate::theme::{color, radius, space, typography};
 
 /// 渲染居中删除确认弹窗。`deferred` + 高优先级让它压在所有面板与锚定
@@ -110,7 +110,7 @@ fn button(
     id: &'static str,
     label: &'static str,
     text_color: Rgba,
-    action: ActionRequest,
+    action: CommandRequest,
 ) -> impl IntoElement {
     div()
         .id(id)

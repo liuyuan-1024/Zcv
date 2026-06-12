@@ -1,11 +1,13 @@
-use gpui::{Div, div, prelude::*};
-use zom_command::commands::project_picker as project_picker_commands;
+use std::rc::Rc;
 
-use crate::shell::features::project_picker::RecentProject;
+use gpui::{Div, div, prelude::*};
+
+use crate::host_intent::CommandRequest;
+use crate::shell::features::project_picker::{ProjectPickerIntent, RecentProject};
 use crate::shell::shared::Glyph;
 use crate::theme::{color, radius, space, typography};
 
-use super::{ProjectPickerActions, ProjectPickerMode, command_title};
+use super::{ProjectPickerActions, ProjectPickerMode};
 
 pub(super) fn render(
     projects: &[RecentProject],
@@ -77,11 +79,10 @@ fn project_row(
                 .truncate()
                 .child(project.name.clone()),
         )
-        .child(project_actions(index, actions))
+        .child(project_actions(project, index, actions))
 }
 
-fn project_actions(index: usize, actions: &ProjectPickerActions) -> Div {
-    let remove_command = project_picker_commands::REMOVE_RECENT_PROJECT;
+fn project_actions(project: &RecentProject, index: usize, actions: &ProjectPickerActions) -> Div {
     div()
         .flex_shrink_0()
         .flex()
@@ -92,11 +93,23 @@ fn project_actions(index: usize, actions: &ProjectPickerActions) -> Div {
             Glyph::icon(
                 ("project-picker.remove-recent", index),
                 "icons/actions/close.svg",
-                command_title(actions, remove_command),
+                actions.remove_recent_presentation.title.clone(),
             )
-            .hint((actions.shortcut_lookup)(remove_command))
+            .hint(actions.remove_recent_presentation.hint.clone())
+            .on_press(remove_recent_request(project.id.clone(), actions))
             .render(),
         )
+}
+
+fn remove_recent_request(id: String, actions: &ProjectPickerActions) -> CommandRequest {
+    let intent_request = Rc::clone(&actions.intent_request);
+    Rc::new(move |window, cx| {
+        intent_request(
+            ProjectPickerIntent::RemoveRecentProject { id: id.clone() },
+            window,
+            cx,
+        );
+    })
 }
 
 fn empty_hint(message: &'static str) -> Div {

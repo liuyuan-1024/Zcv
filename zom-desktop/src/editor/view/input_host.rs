@@ -13,6 +13,7 @@ use zom_view::WrapMap;
 
 use crate::app::App;
 use crate::editor::input::{CaretLayout, EditorInput};
+use crate::host_intent::HostIntentRequest;
 
 /// element paint 阶段传给 input hook 的几何信息。
 ///
@@ -61,10 +62,11 @@ pub(crate) struct EditorInputHost {
 impl EditorInputHost {
     pub(crate) fn new<T>(
         app: Rc<RefCell<App>>,
+        host_intent: HostIntentRequest,
         focus: FocusHandle,
         cx: &mut gpui::Context<T>,
     ) -> Self {
-        let input = cx.new(|_| EditorInput::new(app));
+        let input = cx.new(|_| EditorInput::new(app, host_intent));
         Self { focus, input }
     }
 

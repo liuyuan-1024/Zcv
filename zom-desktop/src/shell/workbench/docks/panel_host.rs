@@ -7,11 +7,10 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, Div, FocusHandle, SharedString, div, prelude::*};
 
+use crate::host_intent::KeyRequest;
 use crate::shell::features::panels::file_tree::FileTreePanel;
 use crate::shell::features::panels::{PanelRuntimes, file_tree};
-use crate::shell::{
-    CommandCatalogLookup, CommandTitleLookup, KeyRequest, ShortcutLookup, normalized_chord,
-};
+use crate::shell::{CommandCatalogLookup, CommandTitleLookup, ShortcutLookup, normalized_chord};
 use crate::theme::{color, typography};
 use crate::ui_id::PanelId;
 

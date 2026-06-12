@@ -15,7 +15,8 @@ use crate::clipboard::GpuiClipboardScope;
 use crate::config::SettingsChange;
 use crate::editor::TextEditorSlot;
 use crate::focus::AppFocus;
-use crate::shell::ActionRequest;
+use crate::host_intent::{CommandRequest, KeyRequest};
+use crate::host_intent::{HostIntent, HostIntentOutcome, HostIntentRequest};
 use crate::shell::bubble::BubbleRuntime;
 use crate::shell::features::language_servers;
 use crate::shell::features::panels::file_tree;
@@ -31,28 +32,66 @@ use super::config_visuals;
 use super::features::FeatureRegistry;
 use super::focus::{FocusProjection, panel_default_focus};
 
-pub(super) fn bind_action_request(
+pub(super) fn bind_command_request(
+    host_intent: HostIntentRequest,
+    invocation: Invocation,
+) -> CommandRequest {
+    Rc::new(move |window, cx| {
+        host_intent(HostIntent::Command(invocation.clone()), window, cx);
+    })
+}
+
+pub(super) fn bind_key_request(host_intent: HostIntentRequest) -> KeyRequest {
+    Rc::new(move |chord, window, cx| host_intent(HostIntent::KeyChord(chord), window, cx).consumed)
+}
+
+pub(super) fn bind_host_intent_request(
     app: Rc<RefCell<App>>,
     workbench: Rc<RefCell<WorkbenchController>>,
     surfaces: Entity<SurfaceManager>,
     bubbles: Entity<BubbleRuntime>,
     editor_focus_fallback: FocusHandle,
     features: FeatureRegistry,
-    text_editor_slots: Vec<Rc<TextEditorSlot>>,
-    invocation: Invocation,
-) -> ActionRequest {
-    Rc::new(move |window, cx| {
-        let effects = {
-            // 同 key_request：进入命令派发前借出 cx 给 GpuiClipboard。
+    focus_projection: FocusProjection,
+    text_editor_slots: Rc<dyn Fn() -> Vec<Rc<TextEditorSlot>>>,
+) -> HostIntentRequest {
+    Rc::new(move |intent, window, cx| {
+        let dispatch = {
             let _clip = GpuiClipboardScope::enter(cx);
-            match app.borrow_mut().dispatch_command(invocation.clone()) {
-                Ok(effects) => effects,
-                Err(error) => {
-                    eprintln!("命令执行失败：{error}");
-                    return;
+            match intent {
+                HostIntent::Command(invocation) => app
+                    .borrow_mut()
+                    .dispatch_command(invocation)
+                    .map(|effects| (effects, HostIntentOutcome::consumed(), true)),
+                HostIntent::KeyChord(chord) => {
+                    let current = focus_projection.current_focus(window);
+                    let mut app = app.borrow_mut();
+                    app.request_focus_from_shell(current);
+                    app.dispatch_key(chord).map(|outcome| {
+                        (
+                            outcome.effects,
+                            HostIntentOutcome {
+                                consumed: outcome.consumed,
+                            },
+                            outcome.consumed,
+                        )
+                    })
                 }
+                HostIntent::Ime(intent) => app
+                    .borrow_mut()
+                    .dispatch_command(intent.into_invocation())
+                    .map(|effects| (effects, HostIntentOutcome::consumed(), true)),
             }
         };
+        let (effects, outcome, should_refresh) = match dispatch {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                eprintln!("宿主意图派发失败：{error}");
+                return HostIntentOutcome::passed_through();
+            }
+        };
+
+        let text_editor_slots = text_editor_slots();
         apply_host_effects_with_settings(
             effects,
             &app,
@@ -65,9 +104,10 @@ pub(super) fn bind_action_request(
             window,
             cx,
         );
-        // 命令可能改了渲染可见的模型状态（如关闭删除确认弹窗）。
-        // 与 key_request 的按键路径对称，点击路径在此统一刷新。
-        window.refresh();
+        if should_refresh {
+            window.refresh();
+        }
+        outcome
     })
 }
 

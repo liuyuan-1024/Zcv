@@ -17,8 +17,9 @@ use gpui::{
 use crate::app::App;
 use crate::editor::TextEditorSlot;
 use crate::focus::AppFocus;
+use crate::host_intent::KeyRequest;
+use crate::shell::normalized_chord;
 use crate::shell::surfaces::{SurfaceAnchor, SurfaceManager, SurfaceRequest};
-use crate::shell::{KeyRequest, normalized_chord};
 use crate::text_target::TextTargetOwner;
 use crate::theme::{color, radius};
 use crate::ui_id::SurfaceId;

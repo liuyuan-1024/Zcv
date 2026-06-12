@@ -5,8 +5,9 @@
 use gpui::{Context, Div, FocusHandle, IntoElement};
 use zom_command::PanelKind;
 
+use crate::host_intent::KeyRequest;
+use crate::shell::CommandTitleLookup;
 use crate::shell::workbench::docks::{placeholder, render_focus_host};
-use crate::shell::{CommandTitleLookup, KeyRequest};
 
 const COMMAND: &str = PanelKind::VersionControl.toggle_command_id();
 

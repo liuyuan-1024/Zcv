@@ -6,8 +6,10 @@ use gpui::{App as GpuiApp, Window};
 use zom_command::Invocation;
 use zom_command::commands::editor as editor_commands;
 use zom_command::commands::editor::ImeUtf16RangeArgs;
+use zom_engine::ByteOffset;
 
 use crate::editor::text::ImeUtf16Range;
+use crate::focus::AppFocus;
 
 /// shell 预绑定的命令意图窄口。
 ///
@@ -21,7 +23,7 @@ pub(crate) type CommandRequest = Rc<dyn Fn(&mut Window, &mut GpuiApp)>;
 /// 返回 `false` 表示没有匹配，必须放行给系统输入法。
 pub(crate) type KeyRequest = Rc<dyn Fn(String, &mut Window, &mut GpuiApp) -> bool>;
 
-/// shell / editor 之间的统一离散宿主意图出口。
+/// shell / editor 之间的统一宿主意图出口。
 pub(crate) type HostIntentRequest =
     Rc<dyn Fn(HostIntent, &mut Window, &mut GpuiApp) -> HostIntentOutcome>;
 
@@ -40,9 +42,7 @@ impl HostIntentOutcome {
     }
 }
 
-/// 离散宿主意图。
-///
-/// 高频 drag / scroll / resize 不放进这里，仍走 typed `InteractionRequest<Event>`。
+/// 宿主意图。
 pub(crate) enum HostIntent {
     /// 明确要执行哪条命令
     Command(Invocation),
@@ -50,6 +50,26 @@ pub(crate) enum HostIntent {
     KeyChord(String),
     /// 系统输入法文本输入
     Ime(ImeIntent),
+    /// 设备连续交互。
+    Interaction(InteractionIntent),
+}
+
+/// 设备连续交互的领域意图。
+pub(crate) enum InteractionIntent {
+    Pointer(PointerIntent),
+}
+
+/// 鼠标 / 触控板交互意图。
+pub(crate) enum PointerIntent {
+    SetSelection {
+        focus: AppFocus,
+        anchor: ByteOffset,
+        head: ByteOffset,
+    },
+    ScrollViewport {
+        focus: AppFocus,
+        delta_visual_rows: i64,
+    },
 }
 
 /// 系统输入法写入路径的领域意图。

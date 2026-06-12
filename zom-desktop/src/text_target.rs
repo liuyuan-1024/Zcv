@@ -9,7 +9,8 @@ use std::rc::Rc;
 
 use crate::editor::text::{EditorSnapshot, ImeQueryTarget, ImeUtf16Range};
 use crate::focus::AppFocus;
-use zom_command::{EditTarget, KeyContext};
+use zom_command::{CommandError, EditTarget, KeyContext};
+use zom_engine::{ByteOffset, Selection, SelectionSet};
 
 /// 只读侧：是哪个 target、当前是否活跃、给路由用的查询能力。
 pub(crate) trait TextTargetQuery {
@@ -34,6 +35,15 @@ pub(crate) trait TextTargetQuery {
 /// 可写侧：编辑命令作用目标。
 pub(crate) trait TextTargetOwner: TextTargetQuery {
     fn edit_target(&mut self, focus: AppFocus) -> Option<EditTarget<'_>>;
+
+    /// 交互管线请求滚动视口。非视口型文本目标默认忽略。
+    fn scroll_viewport(
+        &mut self,
+        _focus: AppFocus,
+        _delta_visual_rows: i64,
+    ) -> Result<(), CommandError> {
+        Ok(())
+    }
 
     /// 文本输入后置钩子。默认无操作；owner 想响应“文本变了”时自行 override。
     fn after_text_changed(&mut self) {}
@@ -125,6 +135,34 @@ impl<'a> EditorRouterMut<'a> {
         if let Some(owner) = self.owners.iter_mut().find(|o| o.accepts_focus(focus)) {
             owner.settle_viewport_y();
         }
+    }
+
+    pub(crate) fn set_pointer_selection(
+        &mut self,
+        focus: AppFocus,
+        anchor: ByteOffset,
+        head: ByteOffset,
+    ) -> Result<(), CommandError> {
+        let owner = self
+            .owners
+            .iter_mut()
+            .find(|owner| owner.accepts_focus(focus))
+            .ok_or(CommandError::NoActiveView)?;
+        let mut target = owner.edit_target(focus).ok_or(CommandError::NoActiveView)?;
+        target.set_selection(SelectionSet::new(vec![Selection::new(anchor, head)]))
+    }
+
+    pub(crate) fn scroll_viewport(
+        &mut self,
+        focus: AppFocus,
+        delta_visual_rows: i64,
+    ) -> Result<(), CommandError> {
+        let owner = self
+            .owners
+            .iter_mut()
+            .find(|owner| owner.accepts_focus(focus))
+            .ok_or(CommandError::NoActiveView)?;
+        owner.scroll_viewport(focus, delta_visual_rows)
     }
 }
 

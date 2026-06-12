@@ -194,8 +194,16 @@ pub fn run(
     context: &mut CommandContext<'_>,
 ) -> Result<(), CommandError> {
     let result = drain(registry, context);
-    crate::commands::reconcile::after_dispatch(context);
+    reconcile_after_input_mutation(context);
     result
+}
+
+/// 对齐一次输入造成的运行时瞬态。
+///
+/// 命令 dispatch 结束后会调用它；
+/// 宿主侧 interaction 管线如果直接修改了 selection / viewport，也应复用这里，避免 Esc dismiss 等运行态只跟命令路径同步。
+pub fn reconcile_after_input_mutation(context: &mut CommandContext<'_>) {
+    crate::commands::reconcile::after_dispatch(context);
 }
 
 fn drain(registry: &CommandRegistry, context: &mut CommandContext<'_>) -> Result<(), CommandError> {

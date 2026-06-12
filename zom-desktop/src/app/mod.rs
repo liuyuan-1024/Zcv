@@ -34,6 +34,7 @@ use crate::config::{AppConfig, SettingsChange};
 use crate::dispatch::KeyDispatchOutcome;
 use crate::editor::{EditorViewportMeasurement, SettledViewportTop};
 use crate::focus::{AppFocus, FileTreeFocus, FocusStore, PanelSubFocus};
+use crate::host_intent::{InteractionIntent, PointerIntent};
 use crate::ports::{
     FileTreeAction, FileTreeActionResult, FileTreeHost, FramePump, PostEditObserver, SearchAction,
     SearchHost,
@@ -402,6 +403,41 @@ impl App {
         Ok(host_effects)
     }
 
+    /// 派发一次设备交互意图。
+    ///
+    /// 交互管线不经过 command catalog / keymap，但它和命令一样会在修改编辑状态后对齐 dismiss、清掉编辑合并状态，并由 shell 统一刷新。
+    pub(crate) fn dispatch_interaction(
+        &mut self,
+        intent: InteractionIntent,
+    ) -> Result<Vec<HostEffect>, CommandError> {
+        match intent {
+            InteractionIntent::Pointer(intent) => self.dispatch_pointer_interaction(intent)?,
+        }
+        self.command
+            .reconcile_after_input_mutation(&mut self.session);
+        Ok(Vec::new())
+    }
+
+    fn dispatch_pointer_interaction(&mut self, intent: PointerIntent) -> Result<(), CommandError> {
+        match intent {
+            PointerIntent::SetSelection {
+                focus,
+                anchor,
+                head,
+            } => {
+                self.request_focus(focus);
+                self.with_router_mut(|mut router| router.set_pointer_selection(focus, anchor, head))
+            }
+            PointerIntent::ScrollViewport {
+                focus,
+                delta_visual_rows,
+            } => {
+                self.request_focus(focus);
+                self.with_router_mut(|mut router| router.scroll_viewport(focus, delta_visual_rows))
+            }
+        }
+    }
+
     /// 处理一次归一化按键。
     ///
     /// 组合根按当前唯一焦点 / 运行态算出 `KeyContext` 栈交给 keymap 解析 ——
@@ -444,12 +480,11 @@ impl App {
 
     /// 把「当前焦点面 + 运行态」映射成 keymap 解析用的 `KeyContext` 优先级栈。
     ///
-    /// 这是宿主该做的事 —— 告诉 zom-command「现在处于什么上下文」；至于哪个
-    /// chord 对应哪条命令，仍由各 catalog 注册进 keymap 的绑定决定。
+    /// 这是宿主该做的事 —— 告诉 zom-command「现在处于什么上下文」；
+    /// 至于哪个 chord 对应哪条命令，仍由各 catalog 注册进 keymap 的绑定决定。
     ///
     /// `composing` 恒为 `false`：`dispatch_key` 在组合态直接让位给系统输入法，根本不会走到这里。
-    /// 组合上下文（`KeyContext::text_edit` 的第二参）保留在签名里，
-    /// 待将来真有「宿主侧处理组合键」的需求再启用。
+    /// 组合上下文（`KeyContext::text_edit` 的第二参）保留在签名里，待将来真有「宿主侧处理组合键」的需求再启用。
     fn key_contexts(&self) -> Vec<KeyContext> {
         let focus = self.focus.current();
         // 先问 router —— 文本输入类 owner（主编辑区、文件树新建/重命名、搜索框、picker 查询框）
@@ -495,9 +530,8 @@ impl App {
 
     /// 当前聚焦的编辑目标是否处于「有 preedit 的」输入法组合态。
     ///
-    /// 空 preedit 不算 —— 系统输入法取消候选后会把 preedit 清空、但 composition
-    /// 壳可能仍在。若空壳也算组合态，`dispatch_key` 会一直让位、keymap 再也
-    /// 不接管，后续 Esc 永远到不了 `cancel_new_entry`。
+    /// 空 preedit 不算 —— 系统输入法取消候选后会把 preedit 清空、但 composition 壳可能仍在。
+    /// 若空壳也算组合态，`dispatch_key` 会一直让位、keymap 再也不接管，后续 Esc 永远到不了 `cancel_new_entry`。
     fn is_composing(&self) -> bool {
         let focus = self.focus.current();
         self.text_targets.is_composing(&self.session, focus)
@@ -652,6 +686,7 @@ mod tests {
     use crate::config::{SettingsChange, THEME_ONE_DARK};
     use crate::editor_state::{EditorState, EditorTab};
     use crate::focus::{AppFocus, FileTreeFocus};
+    use crate::host_intent::{InteractionIntent, PointerIntent};
     use crate::text_target::{TextTargetOwner, TextTargetQuery};
     use crate::ui_id::PanelId;
     use std::cell::RefCell;
@@ -665,7 +700,7 @@ mod tests {
     };
     use zom_command::{EditTarget, KeyContext};
     use zom_engine::{ByteOffset, SelectionSet};
-    use zom_view::WrapMap;
+    use zom_view::{ViewportState, WrapMap};
 
     /// 取当前活动标签——断言「编辑区正在显示哪个文件」用。
     fn active_tab(state: &EditorState) -> &EditorTab {
@@ -803,13 +838,13 @@ mod tests {
         let mut app = app_with_markdown_text("esc-pointer-selection", "hello world");
 
         app.request_focus(AppFocus::panel(PanelId::Terminal));
-        // Pointer adapter 在派发 editor.set_selection 前必须同步 slot 对应的语义焦点；
+        // Pointer interaction 必须同步 slot 对应的语义焦点；
         // 否则 selection 虽然会落到 active view，但后续 Esc 仍按旧焦点解析，第一下不会清选区。
-        app.request_focus(AppFocus::editor());
-        app.dispatch_command(editor::set_selection(
-            ByteOffset::new(1),
-            ByteOffset::new(5),
-        ))
+        app.dispatch_interaction(InteractionIntent::Pointer(PointerIntent::SetSelection {
+            focus: AppFocus::editor(),
+            anchor: ByteOffset::new(1),
+            head: ByteOffset::new(5),
+        }))
         .unwrap();
         assert!(
             !app.session
@@ -818,7 +853,7 @@ mod tests {
                 .selection()
                 .primary()
                 .is_caret(),
-            "pointer 等价命令产生的选区必须立刻进入 dismiss 栈"
+            "pointer interaction 产生的选区必须立刻进入 dismiss 栈"
         );
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
@@ -837,6 +872,39 @@ mod tests {
                 .is_caret(),
             "pointer 选区不应需要第二下 esc"
         );
+    }
+
+    #[test]
+    fn pointer_scroll_should_move_viewport_through_interaction_pipeline() {
+        let text = (0..100)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut app = app_with_markdown_text("pointer-scroll", &text);
+        app.session
+            .active_edit_view_mut()
+            .expect("应有活动视图")
+            .set_viewport(ViewportState {
+                top_line: 0,
+                top_subrow: 0,
+                visible_visual_rows: 5,
+                visible_logical_lines: 5,
+            });
+
+        app.request_focus(AppFocus::panel(PanelId::Terminal));
+        app.dispatch_interaction(InteractionIntent::Pointer(PointerIntent::ScrollViewport {
+            focus: AppFocus::editor(),
+            delta_visual_rows: 3,
+        }))
+        .unwrap();
+
+        let viewport = app
+            .session
+            .active_edit_view()
+            .expect("应有活动视图")
+            .viewport();
+        assert_eq!(viewport.top_line, 3);
+        assert_eq!(app.focus().current(), AppFocus::editor());
     }
 
     #[test]

@@ -22,14 +22,13 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use gpui::{App as GpuiApp, Context, ElementId, FocusHandle, Pixels, Window};
-use zom_command::commands::editor;
 use zom_engine::ByteOffset;
 
 use crate::app::App;
 use crate::editor::kernel::EditorKernel;
 use crate::editor::pointer::{PointerScrollHook, PointerSelectionHook, PointerSelectionSession};
 use crate::focus::AppFocus;
-use crate::host_intent::HostIntentRequest;
+use crate::host_intent::{HostIntent, HostIntentRequest, InteractionIntent, PointerIntent};
 
 use super::element::EditorElement;
 use super::input_host::EditorInputHost;
@@ -38,6 +37,7 @@ pub(crate) struct TextEditorSlot {
     focus: AppFocus,
     kernel: EditorKernel,
     input: EditorInputHost,
+    host_intent: HostIntentRequest,
     app: Rc<RefCell<App>>,
     element_id: ElementId,
     scroll_accumulated_y: Rc<Cell<f32>>,
@@ -53,7 +53,8 @@ impl TextEditorSlot {
         focus_handle: FocusHandle,
         cx: &mut Context<V>,
     ) -> Rc<Self> {
-        let input = EditorInputHost::new(Rc::clone(&app), host_intent, focus_handle, cx);
+        let input =
+            EditorInputHost::new(Rc::clone(&app), Rc::clone(&host_intent), focus_handle, cx);
 
         // 基于 AppFocus 算出稳定的 ElementId
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -64,6 +65,7 @@ impl TextEditorSlot {
             focus,
             kernel,
             input,
+            host_intent,
             app,
             element_id,
             scroll_accumulated_y: Rc::new(Cell::new(0.0)),
@@ -98,45 +100,45 @@ impl TextEditorSlot {
     }
 
     fn scroll_hook(&self) -> PointerScrollHook {
-        let app = Rc::clone(&self.app);
+        let host_intent = Rc::clone(&self.host_intent);
+        let focus = self.focus;
         let accumulated_scroll_y = Rc::clone(&self.scroll_accumulated_y);
         Rc::new(
-            move |incoming: Pixels, line_height: Pixels, window: &mut Window, _cx: &mut GpuiApp| {
+            move |incoming: Pixels, line_height: Pixels, window: &mut Window, cx: &mut GpuiApp| {
                 let delta_visual_rows =
                     consume_scroll_rows(&accumulated_scroll_y, incoming, line_height);
                 if delta_visual_rows == 0 {
                     return;
                 }
-                if let Err(error) = app
-                    .borrow_mut()
-                    .dispatch_command(editor::scroll_viewport(delta_visual_rows))
-                {
-                    eprintln!("鼠标滚动视口失败：{error}");
-                } else {
-                    window.refresh();
-                }
+                host_intent(
+                    HostIntent::Interaction(InteractionIntent::Pointer(
+                        PointerIntent::ScrollViewport {
+                            focus,
+                            delta_visual_rows,
+                        },
+                    )),
+                    window,
+                    cx,
+                );
             },
         )
     }
 
     fn selection_hook(&self) -> PointerSelectionHook {
-        let app = Rc::clone(&self.app);
+        let host_intent = Rc::clone(&self.host_intent);
         let focus = self.focus;
         let focus_handle = self.input.focus_handle();
-        Rc::new(move |update, window: &mut Window, _cx: &mut GpuiApp| {
+        Rc::new(move |update, window: &mut Window, cx: &mut GpuiApp| {
             window.focus(&focus_handle);
-            let invocation =
-                editor::set_selection(ByteOffset::new(update.anchor), ByteOffset::new(update.head));
-            let result = {
-                let mut app = app.borrow_mut();
-                app.request_focus(focus);
-                app.dispatch_command(invocation)
-            };
-            if let Err(error) = result {
-                eprintln!("鼠标设置选区失败：{error}");
-            } else {
-                window.refresh();
-            }
+            host_intent(
+                HostIntent::Interaction(InteractionIntent::Pointer(PointerIntent::SetSelection {
+                    focus,
+                    anchor: ByteOffset::new(update.anchor),
+                    head: ByteOffset::new(update.head),
+                })),
+                window,
+                cx,
+            );
         })
     }
 

@@ -41,8 +41,6 @@ pub const INDENT: &str = "editor.indent";
 pub const OUTDENT: &str = "editor.outdent";
 pub const DELETE: &str = "editor.delete";
 pub const MOVE_SELECTION: &str = "editor.move_selection";
-pub const SET_SELECTION: &str = "editor.set_selection";
-pub const SCROLL_VIEWPORT: &str = "editor.scroll_viewport";
 pub const SELECT_ALL: &str = "editor.select_all";
 /// 把每个选区塌成 caret（head 位置不变）。多 caret 不合并，只去 extent。
 pub const CLEAR_SELECTION: &str = "editor.clear_selection";
@@ -352,54 +350,6 @@ impl TryFrom<CommandArgs> for MoveCaretArgs {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SetSelectionArgs {
-    pub anchor: ByteOffset,
-    pub head: ByteOffset,
-}
-
-impl From<SetSelectionArgs> for CommandArgs {
-    fn from(args: SetSelectionArgs) -> Self {
-        CommandArgs::new()
-            .with("anchor", args.anchor.get().to_string())
-            .with("head", args.head.get().to_string())
-    }
-}
-
-impl TryFrom<CommandArgs> for SetSelectionArgs {
-    type Error = CommandError;
-    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["anchor", "head"])?;
-        Ok(Self {
-            anchor: parse_byte_offset(&required_arg(&args, "anchor")?, "anchor")?,
-            head: parse_byte_offset(&required_arg(&args, "head")?, "head")?,
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ScrollViewportArgs {
-    pub delta_visual_rows: i64,
-}
-
-impl From<ScrollViewportArgs> for CommandArgs {
-    fn from(args: ScrollViewportArgs) -> Self {
-        CommandArgs::new().with("delta_visual_rows", args.delta_visual_rows.to_string())
-    }
-}
-
-impl TryFrom<CommandArgs> for ScrollViewportArgs {
-    type Error = CommandError;
-    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["delta_visual_rows"])?;
-        let raw = required_arg(&args, "delta_visual_rows")?;
-        let delta_visual_rows = raw
-            .parse::<i64>()
-            .map_err(|_| CommandError::InvalidArgs(format!("无效 delta_visual_rows：{raw}")))?;
-        Ok(Self { delta_visual_rows })
-    }
-}
-
 /// `editor.select_tab` 的目标标签（一个 tab ↔ 一个 View）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SelectTabTarget {
@@ -490,17 +440,6 @@ pub fn move_selection(
         extend,
     };
     (cid(MOVE_SELECTION), args.into())
-}
-
-pub fn set_selection(anchor: ByteOffset, head: ByteOffset) -> Invocation {
-    (cid(SET_SELECTION), SetSelectionArgs { anchor, head }.into())
-}
-
-pub fn scroll_viewport(delta_visual_rows: i64) -> Invocation {
-    (
-        cid(SCROLL_VIEWPORT),
-        ScrollViewportArgs { delta_visual_rows }.into(),
-    )
 }
 
 pub fn select_all() -> Invocation {
@@ -757,24 +696,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .description("选中当前编辑器中的全部文本。")
         .key_in("mod-a", text_edit);
 
-    registry
-        .install(
-            keymap,
-            SET_SELECTION,
-            "设置选区",
-            Box::new(run_set_selection),
-        )
-        .hide_from_shortcuts();
-
-    registry
-        .install(
-            keymap,
-            SCROLL_VIEWPORT,
-            "滚动编辑器视口",
-            Box::new(run_scroll_viewport),
-        )
-        .hide_from_shortcuts();
-
     registry.install(
         keymap,
         CLEAR_SELECTION,
@@ -946,11 +867,6 @@ fn parse_direction(value: &str) -> Result<MovementDirection, CommandError> {
         "next" | "right" => Ok(MovementDirection::Next),
         other => Err(CommandError::InvalidArgs(format!("未知移动方向：{other}"))),
     }
-}
-
-fn parse_byte_offset(value: &str, name: &str) -> Result<ByteOffset, CommandError> {
-    let raw = parse_usize_arg(value, name)?;
-    Ok(ByteOffset::new(raw))
 }
 
 fn parse_usize_arg(value: &str, name: &str) -> Result<usize, CommandError> {
@@ -1134,36 +1050,6 @@ fn run_select_all(
         target.buffer.len_bytes(),
     )]);
     target.set_selection(selection)?;
-    Ok(CommandOutcome::default())
-}
-
-fn run_set_selection(
-    context: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    let args = SetSelectionArgs::try_from(args)?;
-    let mut target = context.edit_target()?;
-    let selection = SelectionSet::new(vec![Selection::new(args.anchor, args.head)]);
-    target.set_selection(selection)?;
-    Ok(CommandOutcome::default())
-}
-
-fn run_scroll_viewport(
-    context: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    let args = ScrollViewportArgs::try_from(args)?;
-    let buffer_id = active_view_buffer_id(context)?;
-    let buffer = context
-        .workspace
-        .buffer(buffer_id)
-        .ok_or(CommandError::BufferNotFound(buffer_id))?;
-    let view_id = context.active_view_id.ok_or(CommandError::NoActiveView)?;
-    let view = context
-        .views
-        .edit_view_mut(view_id)
-        .ok_or(CommandError::NoActiveView)?;
-    view.scroll_visual_rows(buffer.buffer(), args.delta_visual_rows);
     Ok(CommandOutcome::default())
 }
 

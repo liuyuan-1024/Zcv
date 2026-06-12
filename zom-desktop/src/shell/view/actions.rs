@@ -81,6 +81,10 @@ pub(super) fn bind_host_intent_request(
                     .borrow_mut()
                     .dispatch_command(intent.into_invocation())
                     .map(|effects| (effects, HostIntentOutcome::consumed(), true)),
+                HostIntent::Interaction(intent) => app
+                    .borrow_mut()
+                    .dispatch_interaction(intent)
+                    .map(|effects| (effects, HostIntentOutcome::consumed(), true)),
             }
         };
         let (effects, outcome, should_refresh) = match dispatch {

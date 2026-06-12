@@ -118,6 +118,26 @@ impl CommandRuntime {
         Ok((host_effects, focused_field_changed))
     }
 
+    pub(super) fn reconcile_after_input_mutation(&mut self, session: &mut WorkspaceSession) {
+        self.edit_merge = None;
+
+        let mut effects = EffectQueue::new();
+        let active_view_id = session.active_edit_view_id();
+        let (workspace, views) = session.parts_mut();
+        let mut context = CommandContext {
+            workspace,
+            views,
+            active_view_id,
+            focused_field: None,
+            queue: &mut self.queue,
+            effects: &mut effects,
+            clipboard: &mut *self.clipboard,
+            dismiss: &mut self.dismiss,
+            edit_merge_policy: TransactionMergePolicy::Never,
+        };
+        zom_command::reconcile_after_input_mutation(&mut context);
+    }
+
     pub(super) fn keymap(&self) -> &Keymap {
         &self.keymap
     }

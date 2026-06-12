@@ -106,7 +106,7 @@ impl Palette {
                 a01: rgba(0x74ade81a),
                 a02: rgba(0x74ade826),
                 a03: rgba(0x74ade83d),
-                a04: rgba(0x74ade840), // 选区色块
+                a04: rgba(0x74ade848), // 选区色块
                 a05: rgba(0x74ade84d), // 搜索普通命中
                 a06: rgba(0x74ade8b3),
                 a07: rgba(0x74ade8cc),

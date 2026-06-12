@@ -3,7 +3,7 @@
 //! 把 `Workspace + ViewSet` 适配成 [`TextTargetOwner`] / [`TextTargetQuery`]，
 //! 让 [`crate::text_target::EditorRouter`] 能像对待小输入框一样统一路由主编辑区。
 
-use zom_command::{EditTarget, KeyContext};
+use zom_command::{CommandError, EditTarget, KeyContext};
 use zom_view::{ViewId, ViewSet, ViewportState, WrapMap};
 use zom_workspace::Workspace;
 
@@ -71,6 +71,27 @@ fn settle_active_view_y(
     };
     let buf = buffer.buffer();
     view.settle_viewport_y(buf, view.selection().primary().head());
+}
+
+fn scroll_active_view_y(
+    workspace: &Workspace,
+    views: &mut ViewSet,
+    active_view_id: Option<ViewId>,
+    delta_visual_rows: i64,
+) -> Result<(), CommandError> {
+    let view_id = active_view_id.ok_or(CommandError::NoActiveView)?;
+    let buffer_id = views
+        .edit_view(view_id)
+        .map(|view| view.buffer())
+        .ok_or(CommandError::NoActiveView)?;
+    let buffer = workspace
+        .buffer(buffer_id)
+        .ok_or(CommandError::BufferNotFound(buffer_id))?;
+    let view = views
+        .edit_view_mut(view_id)
+        .ok_or(CommandError::NoActiveView)?;
+    view.scroll_visual_rows(buffer.buffer(), delta_visual_rows);
+    Ok(())
 }
 
 /// 算出 snapshot 应当切出的逻辑行范围 `(start, len)`。
@@ -201,6 +222,19 @@ impl<'a> TextTargetOwner for MainEditorOwner<'a> {
 
     fn settle_viewport_y(&mut self) {
         settle_active_view_y(self.workspace, self.views, self.active_view_id);
+    }
+
+    fn scroll_viewport(
+        &mut self,
+        _focus: AppFocus,
+        delta_visual_rows: i64,
+    ) -> Result<(), CommandError> {
+        scroll_active_view_y(
+            self.workspace,
+            self.views,
+            self.active_view_id,
+            delta_visual_rows,
+        )
     }
 }
 

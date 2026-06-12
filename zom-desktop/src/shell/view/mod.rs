@@ -13,7 +13,8 @@ use gpui::{Context, FocusHandle, IntoElement, Render, ScrollHandle, Window};
 use zom_command::commands::{
     diagnostics as diagnostics_commands, editor as editor_commands,
     file_tree as file_tree_commands, language_servers as language_server_commands,
-    project_picker as project_picker_commands, search as search_commands,
+    project_picker as project_picker_commands,
+    search::{file as search_file_commands, project as search_project_commands},
     settings as settings_commands, window as window_commands,
 };
 use zom_command::{CommandArgs, CommandId, Invocation, SettingsChangeRequest};
@@ -133,13 +134,14 @@ impl ShellView {
     }
 
     fn search_intent_request(&self) -> SearchIntentRequest {
-        let toggle_case_sensitive = self.bind_command(search_commands::toggle_case_sensitive());
-        let toggle_whole_word = self.bind_command(search_commands::toggle_whole_word());
-        let toggle_regex = self.bind_command(search_commands::toggle_regex());
-        let find_previous = self.bind_command(search_commands::find_previous());
-        let find_next = self.bind_command(search_commands::find_next());
-        let replace_next = self.bind_command(search_commands::replace_next());
-        let replace_all = self.bind_command(search_commands::replace_all());
+        let toggle_case_sensitive =
+            self.bind_command(search_file_commands::toggle_case_sensitive());
+        let toggle_whole_word = self.bind_command(search_file_commands::toggle_whole_word());
+        let toggle_regex = self.bind_command(search_file_commands::toggle_regex());
+        let find_previous = self.bind_command(search_file_commands::find_previous());
+        let find_next = self.bind_command(search_file_commands::find_next());
+        let replace_next = self.bind_command(search_file_commands::replace_next());
+        let replace_all = self.bind_command(search_file_commands::replace_all());
 
         Rc::new(move |intent, window, cx| {
             let request = match intent {
@@ -227,10 +229,10 @@ impl ShellView {
                 diagnostics_commands::SHOW_PROBLEMS,
                 diagnostics_commands::SHOW_PROBLEMS,
             ),
-            project_search_activate: self.bind_command(search_commands::project_activate()),
+            project_search_activate: self.bind_command(search_project_commands::project_activate()),
             project_search_activate_presentation: self.command_presentation(
-                search_commands::PROJECT_ACTIVATE,
-                search_commands::PROJECT_ACTIVATE,
+                search_project_commands::PROJECT_ACTIVATE,
+                search_project_commands::PROJECT_ACTIVATE,
             ),
             editor_close_tab: self.bind_command(editor_commands::close_tab()),
             editor_close_tab_presentation: self
@@ -238,9 +240,11 @@ impl ShellView {
             editor_open_preview: self.bind_command(editor_commands::open_preview()),
             editor_open_preview_presentation: self
                 .command_presentation(editor_commands::OPEN_PREVIEW, "Markdown 预览"),
-            file_search_activate: self.bind_command(search_commands::activate()),
-            file_search_activate_presentation: self
-                .command_presentation(search_commands::ACTIVATE, search_commands::ACTIVATE),
+            file_search_activate: self.bind_command(search_file_commands::activate()),
+            file_search_activate_presentation: self.command_presentation(
+                search_file_commands::ACTIVATE,
+                search_file_commands::ACTIVATE,
+            ),
             panel_toggle,
             panel_toggle_presentation,
             search_intent: self.search_intent_request(),
@@ -295,13 +299,13 @@ fn settings_intent_invocation(intent: settings::SettingsIntent) -> Invocation {
 
 fn search_intent_command_id(intent: SearchIntent) -> &'static str {
     match intent {
-        SearchIntent::ToggleCaseSensitive => search_commands::TOGGLE_CASE_SENSITIVE,
-        SearchIntent::ToggleWholeWord => search_commands::TOGGLE_WHOLE_WORD,
-        SearchIntent::ToggleRegex => search_commands::TOGGLE_REGEX,
-        SearchIntent::FindPrevious => search_commands::FIND_PREVIOUS,
-        SearchIntent::FindNext => search_commands::FIND_NEXT,
-        SearchIntent::ReplaceNext => search_commands::REPLACE_NEXT,
-        SearchIntent::ReplaceAll => search_commands::REPLACE_ALL,
+        SearchIntent::ToggleCaseSensitive => search_file_commands::TOGGLE_CASE_SENSITIVE,
+        SearchIntent::ToggleWholeWord => search_file_commands::TOGGLE_WHOLE_WORD,
+        SearchIntent::ToggleRegex => search_file_commands::TOGGLE_REGEX,
+        SearchIntent::FindPrevious => search_file_commands::FIND_PREVIOUS,
+        SearchIntent::FindNext => search_file_commands::FIND_NEXT,
+        SearchIntent::ReplaceNext => search_file_commands::REPLACE_NEXT,
+        SearchIntent::ReplaceAll => search_file_commands::REPLACE_ALL,
     }
 }
 

@@ -2,7 +2,7 @@
 
 `zom-ai` 是 chat / agentic（多轮 + 工具调用）AI 请求的**协议层**：定义消息、工具、流式事件、错误，以及 `AiProvider` trait。
 
-完整设计与权衡见 [`docs/抽象重设计.md`](docs/抽象重设计.md)。
+完整设计与权衡见 [`docs/协议层设计.md`](docs/协议层设计.md)。
 
 ## 定位
 
@@ -47,9 +47,9 @@ src/
 ├── provider.rs      AiProvider / EventStream
 └── error.rs         AiError
 docs/
-└── 抽象重设计.md    设计文档（背景、目标、数据模型、迁移计划等）
+└── 协议层设计.md    设计文档（目标、数据模型、接口边界等）
 ```
 
 ## 发布状态
 
-0.2.0：本轮重写为协议层形状，无对外 stable 承诺；不保留旧 `AiRequest / AiProposal / ProposedEdit / ProposedRange` 等类型的 deprecation alias。
+0.2.0：协议层形状仍在收敛中，暂不承诺对外 stable API。

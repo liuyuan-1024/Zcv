@@ -6,7 +6,7 @@
 //! - 系统输入法的 [`EditorInputHost`] 注册由 slot 内部完成 —— 调用方不接触；
 //! - 快照（文本 + 光标字节位）由 slot 通过 [`EditorRouter`] 反查 owner 取，
 //!   调用方不再透传 `state.text` / `state.cursor_byte`；
-//! - 跨帧稳定的 element id 由 slot 根据 [`TextTargetId`] 自带，调用方不再起名字；
+//! - 跨帧稳定的 element id 由 slot 根据 [`AppFocus`] 派生，调用方不再起名字；
 //! - 光标闪烁由 [`super::CaretClock`] 全局承载，与 slot 无关。
 //!
 //! slot 不预设"什么场景配什么能力" —— 内核形态（多行 / 单行 + gutter / scroll /
@@ -15,6 +15,7 @@
 //!
 //! [`ShellView`]: crate::shell::view::ShellView
 //! [`EditorRouter`]: super::EditorRouter
+//! [`AppFocus`]: crate::focus::AppFocus
 
 use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};

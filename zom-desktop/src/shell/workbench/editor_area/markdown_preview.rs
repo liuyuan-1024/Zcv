@@ -92,8 +92,8 @@ enum StyleMod {
     Bold,
     Italic,
     Strikethrough,
-    Link(SharedString),
-    Image(SharedString),
+    Link,
+    Image,
 }
 
 impl Builder {
@@ -194,12 +194,8 @@ impl Builder {
             Tag::Emphasis => self.style_stack.push(StyleMod::Italic),
             Tag::Strong => self.style_stack.push(StyleMod::Bold),
             Tag::Strikethrough => self.style_stack.push(StyleMod::Strikethrough),
-            Tag::Link { dest_url, .. } => self
-                .style_stack
-                .push(StyleMod::Link(SharedString::from(dest_url.into_string()))),
-            Tag::Image { dest_url, .. } => self
-                .style_stack
-                .push(StyleMod::Image(SharedString::from(dest_url.into_string()))),
+            Tag::Link { .. } => self.style_stack.push(StyleMod::Link),
+            Tag::Image { .. } => self.style_stack.push(StyleMod::Image),
             Tag::TableHead => self.block_stack.push(BlockFrame {
                 kind: BlockKind::TableHead,
                 children: Vec::new(),
@@ -269,7 +265,7 @@ impl Builder {
         if self
             .style_stack
             .iter()
-            .any(|modifier| matches!(modifier, StyleMod::Image(_)))
+            .any(|modifier| matches!(modifier, StyleMod::Image))
         {
             text = format!("🖼 {text}");
         }

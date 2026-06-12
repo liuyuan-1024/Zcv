@@ -38,6 +38,7 @@ pub(crate) enum DecorationStyle {
     Named(StyleClass),
 }
 
+#[allow(dead_code)]
 pub(crate) mod priority {
     pub(crate) const SYNTAX_CONFIRMED: u16 = 0;
     pub(crate) const FOLD: u16 = 100;

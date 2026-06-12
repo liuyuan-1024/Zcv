@@ -190,7 +190,7 @@ fn render_body(
     command_catalog_lookup: CommandCatalogLookup,
     commands: WorkbenchCommandRequests,
 ) -> Div {
-    // 所有面板与编辑区共用同一个 KeyRequest —— 角色由 FocusRegistry 在派发瞬间解析。
+    // 所有面板与编辑区共用同一个 KeyRequest —— 角色由当前 AppFocus 在派发瞬间解析。
     // 调用侧不再区分 panel / editor / file_tree 三套闭包。
     //
     // PanelContext 借用此 clone；编辑区那一支后续 move 走 `key_request` 本体。

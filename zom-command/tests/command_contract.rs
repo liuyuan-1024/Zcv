@@ -4,7 +4,9 @@ use std::rc::Rc;
 use zom_command::commands::{
     diagnostics,
     editor::{self, InsertTextArgs, MoveCaretArgs, ReplaceSelectionArgs},
-    file_tree, project_picker, search, settings,
+    file_tree, project_picker,
+    search::{self, file as search_file, project as search_project},
+    settings,
 };
 use zom_command::{
     BubbleKind, Command, CommandArgs, CommandContext, CommandError, CommandId, CommandQueue,
@@ -186,15 +188,15 @@ fn install_all_should_register_every_builtin_command_catalog() {
         (PanelKind::FileTree.toggle_command_id(), "文件树"),
         (PanelKind::VersionControl.toggle_command_id(), "版本管理"),
         (PanelKind::Outline.toggle_command_id(), "大纲"),
-        (search::ACTIVATE, "查找"),
-        (search::PROJECT_ACTIVATE, "项目搜索"),
-        (search::TOGGLE_CASE_SENSITIVE, "区分大小写"),
-        (search::TOGGLE_WHOLE_WORD, "全词匹配"),
-        (search::TOGGLE_REGEX, "正则表达式"),
-        (search::FIND_PREVIOUS, "上一个"),
-        (search::FIND_NEXT, "下一个"),
-        (search::REPLACE_NEXT, "替换下一个"),
-        (search::REPLACE_ALL, "全部替换"),
+        (search_file::ACTIVATE, "查找"),
+        (search_project::PROJECT_ACTIVATE, "项目搜索"),
+        (search_file::TOGGLE_CASE_SENSITIVE, "区分大小写"),
+        (search_file::TOGGLE_WHOLE_WORD, "全词匹配"),
+        (search_file::TOGGLE_REGEX, "正则表达式"),
+        (search_file::FIND_PREVIOUS, "上一个"),
+        (search_file::FIND_NEXT, "下一个"),
+        (search_file::REPLACE_NEXT, "替换下一个"),
+        (search_file::REPLACE_ALL, "全部替换"),
         (PanelKind::Terminal.toggle_command_id(), "终端"),
         (PanelKind::Debug.toggle_command_id(), "调试"),
         (PanelKind::KeyboardShortcuts.toggle_command_id(), "快捷键"),
@@ -218,12 +220,12 @@ fn install_all_should_register_every_builtin_command_catalog() {
     );
     assert!(
         keymap
-            .format_shortcuts_for(&command_id(search::TOGGLE_CASE_SENSITIVE))
+            .format_shortcuts_for(&command_id(search_file::TOGGLE_CASE_SENSITIVE))
             .is_some()
     );
     assert!(
         keymap
-            .format_shortcuts_for(&command_id(search::REPLACE_ALL))
+            .format_shortcuts_for(&command_id(search_file::REPLACE_ALL))
             .is_some()
     );
 
@@ -280,16 +282,16 @@ fn search_ui_commands_should_emit_state_effects() {
         &mut views,
         view_id,
         vec![
-            (search::ACTIVATE, CommandArgs::new()),
-            (search::TOGGLE_CASE_SENSITIVE, CommandArgs::new()),
-            (search::TOGGLE_WHOLE_WORD, CommandArgs::new()),
-            (search::TOGGLE_REGEX, CommandArgs::new()),
-            (search::FIND_PREVIOUS, CommandArgs::new()),
-            (search::FIND_NEXT, CommandArgs::new()),
-            (search::REPLACE_NEXT, CommandArgs::new()),
-            (search::REPLACE_ALL, CommandArgs::new()),
-            (search::DISMISS, CommandArgs::new()),
-            (search::CONFIRM_MATCH, CommandArgs::new()),
+            (search_file::ACTIVATE, CommandArgs::new()),
+            (search_file::TOGGLE_CASE_SENSITIVE, CommandArgs::new()),
+            (search_file::TOGGLE_WHOLE_WORD, CommandArgs::new()),
+            (search_file::TOGGLE_REGEX, CommandArgs::new()),
+            (search_file::FIND_PREVIOUS, CommandArgs::new()),
+            (search_file::FIND_NEXT, CommandArgs::new()),
+            (search_file::REPLACE_NEXT, CommandArgs::new()),
+            (search_file::REPLACE_ALL, CommandArgs::new()),
+            (search_file::DISMISS, CommandArgs::new()),
+            (search_file::CONFIRM_MATCH, CommandArgs::new()),
         ],
     )
     .unwrap();
@@ -394,7 +396,7 @@ fn search_activate_shortcut_should_be_available_in_text_edit_and_search_contexts
         assert_eq!(
             keymap.resolve(&[key("mod-f")], contexts),
             KeymapResolution::Matched {
-                command: command_id(search::ACTIVATE),
+                command: command_id(search_file::ACTIVATE),
                 args: CommandArgs::new(),
             }
         );
@@ -413,14 +415,14 @@ fn search_tab_keys_should_resolve_only_in_search_panel_context() {
     assert_eq!(
         keymap.resolve(&[key("tab")], &search_panel),
         KeymapResolution::Matched {
-            command: command_id(search::FOCUS_NEXT_FIELD),
+            command: command_id(search_file::FOCUS_NEXT_FIELD),
             args: CommandArgs::new(),
         }
     );
     assert_eq!(
         keymap.resolve(&[key("shift-tab")], &search_panel),
         KeymapResolution::Matched {
-            command: command_id(search::FOCUS_PREVIOUS_FIELD),
+            command: command_id(search_file::FOCUS_PREVIOUS_FIELD),
             args: CommandArgs::new(),
         }
     );
@@ -440,8 +442,8 @@ fn search_tab_keys_should_resolve_only_in_search_panel_context() {
         &mut views,
         view_id,
         vec![
-            (search::FOCUS_NEXT_FIELD, CommandArgs::new()),
-            (search::FOCUS_PREVIOUS_FIELD, CommandArgs::new()),
+            (search_file::FOCUS_NEXT_FIELD, CommandArgs::new()),
+            (search_file::FOCUS_PREVIOUS_FIELD, CommandArgs::new()),
         ],
     )
     .unwrap();

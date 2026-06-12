@@ -452,11 +452,13 @@ impl EditView {
     }
 
     /// 在 `build_snapshot` 之前调用。
-    /// 根据待处理的显露请求与光标位置落定 `viewport.top_line` / `viewport.top_subrow`。
+    /// 根据编辑锚点、待处理的显露请求、手动滚动锚点与主光标位置，落定 `viewport.top_line` / `viewport.top_subrow`。
     /// 后续快照会据此切出正确的窗口范围。
     ///
-    /// 调用方只传入 buffer 与主光标 byte；view 内部按当前 `wrap_map` 折算绝对视觉行。
-    /// 有 `wrap_map` 时，软换行 sub-row 也算一条视觉行；无 `wrap_map` 的首帧 / dirty 帧只消费 reveal，跳过 cursor edge-scroll，避免用逻辑行近似误滚。
+    /// 调用方只传入 buffer 与主光标 byte；
+    /// view 内部按当前 `wrap_map` 折算绝对视觉行。
+    /// 有 `wrap_map` 时，软换行 sub-row 也算一条视觉行；
+    /// 无 `wrap_map` 的首帧 / dirty 帧只消费 reveal，跳过 cursor edge-scroll，避免用逻辑行近似误滚。
     ///
     /// 视觉行坐标系是「软换行 sub-row 也算 1 行」的统一空间——光标无论落在逻辑行哪一段都能被精确判定是否越界，不会出现「光标落在逻辑行最后一个 sub-row 上但该 sub-row 已被裁切」的视觉不一致。
     ///
@@ -464,18 +466,20 @@ impl EditView {
     /// 渲染端会按真实视口高度与行高反算「完整可见的视觉行数」同步回写。
     /// 本函数内部对其取 `.max(1)` 仅作除零防御。
     ///
+    /// 底部滚动边界允许最多 `visible_visual_rows / 3` 行尾部留白，因此当内容超过视口高度的 2/3 时，用户可以继续向下滚动，给底部留出输入空间；
+    /// 内容不足 2/3 视口时则不会产生纯空白滚动。
+    ///
     /// 算法：
     /// 1. 把 `(top_line, top_subrow)` 经 `wrap_map.visual_row_of` 折成 `top_visual_row`；
     /// 无 `wrap_map` 时即 `top_line`。
-    /// 2. **显露请求路径**：若 `reveal.seq > last_applied_reveal_seq`，先按 `RevealKind` 判定。
-    /// `Jump` 强制把 `top_visual_row` 摆到 reveal 目标视觉行的视区上 1/3；
-    /// `Match` 仅当目标不在 `[top, top + visible)` 时摆位。
-    /// 3. **边缘滚动防御**：仅在已有 `wrap_map`（即渲染端完成过测量）时检查主光标视觉行是否在 `[top, top + visible)`；
-    /// 不在时调到刚好包含光标。
-    /// 无 `wrap_map` 的首帧 / dirty 帧只消费 reveal，跳过 cursor edge-scroll，避免用逻辑行近似误滚。
-    /// 4. **范围裁剪**：把 `top_visual_row` 夹到文档可表示范围内。
-    /// 5. 把 `top_visual_row` 经 `wrap_map.visual_row_to_line_subrow` 还原回 `(top_line, top_subrow)`；
-    /// 无 `wrap_map` 时 `top_subrow = 0`。
+    /// 2. **编辑锚点路径**：若存在 `pending_edit_anchor` 且新的 `wrap_map` 已可用，先把编辑前的视口顶部锚点映射到编辑后的视觉行，优先保持输入前的视口位置稳定。
+    /// 3. **显露请求路径**：若 `reveal.seq > last_applied_reveal_seq`，先按 `RevealKind` 判定。
+    /// `Jump` 强制把目标摆到视区上 1/3；`Match` 仅当目标不在 `[top, top + visible)` 时摆位。
+    /// 4. **边缘滚动防御**：仅在已有 `wrap_map` 且没有有效的手动滚动锚点时，检查主光标视觉行是否在 `[top, top + visible)`；
+    /// 不在时调到刚好包含光标。手动滚动后，只要 selection head 未变化，就暂时不因光标位置把视口拉回。
+    /// 5. **底部裁剪**：把 `top_visual_row` 夹到合法滚动范围内；
+    /// 底部允许最多 `visible / 3` 行尾部留白，因此内容超过 2/3 视口时也能向下滚出输入空间。
+    /// 6. 把 `top_visual_row` 经 `wrap_map.visual_row_to_line_subrow` 还原回 `(top_line, top_subrow)`；无 `wrap_map` 时 `top_subrow = 0`。
     pub fn settle_viewport_y(
         &mut self,
         buffer: &Buffer,
@@ -578,11 +582,16 @@ impl EditView {
             }
         }
 
-        // 3. 裁剪到 [0, total_visual_rows - visible]。
-        if let Some(max_top) = visual_row_count.exact_max_top(visible)
-            && top > max_top
-        {
-            top = max_top;
+        // 3. 裁剪到底部边界。只有精确视觉行数才能作为硬边界；
+        // 稀疏 soft-wrap 的 LowerBound 只是下界，不能用来把当前 top 往回压。
+        // 精确边界允许最多 1/3 视口的尾部留白，让内容超过 2/3 视口时也能向下滚出输入空间。
+        if let VisualRowCount::Exact(rows) = visual_row_count {
+            let blank_rows = visible / MANUAL_SCROLL_MAX_TRAILING_BLANK_DENOMINATOR;
+            let required_content_rows = visible.saturating_sub(blank_rows);
+            let max_top = rows.saturating_sub(required_content_rows);
+            if top > max_top {
+                top = max_top;
+            }
         }
 
         // 4. 写回 (top_line, top_subrow)。无 wrap_map 时 top_subrow 恒为 0。
@@ -602,11 +611,24 @@ impl EditView {
     }
 }
 
+/// 手动滚动向下时允许到达的最大 viewport top。
+///
+/// 在普通精确行数场景下，这个上限允许底部最多保留 `visible_rows / 3` 行空白；
+/// 在 sparse soft-wrap 只有视觉行数下界时，不能用下界把用户当前已经滚到的位置压回去，
+/// 因此用 `.max(current_top)` 保住当前 top，只限制“继续向下滚”的候选值。
 fn manual_scroll_max_top(row_count: VisualRowCount, visible_rows: u64, current_top: u64) -> u64 {
-    let max_blank_rows = visible_rows / MANUAL_SCROLL_MAX_TRAILING_BLANK_DENOMINATOR;
-    row_count
-        .max_top_with_blank_budget(visible_rows, max_blank_rows)
-        .max(current_top)
+    max_top_with_trailing_blank(row_count, visible_rows).max(current_top)
+}
+
+/// 统一的底部合法边界：允许尾部最多留下 1/3 视口高度的空白。
+///
+/// 这让内容超过 2/3 视口时也能向下滚动，把输入位置从底部抬起来；
+/// 同时内容不足 2/3 视口时不会产生纯空白滚动。
+fn max_top_with_trailing_blank(row_count: VisualRowCount, visible_rows: u64) -> u64 {
+    row_count.max_top_with_blank_budget(
+        visible_rows,
+        visible_rows / MANUAL_SCROLL_MAX_TRAILING_BLANK_DENOMINATOR,
+    )
 }
 
 fn needs_measured_subrow(wm: &WrapMap, line: u64, subrow: u64) -> bool {
@@ -898,17 +920,33 @@ mod settle_tests {
         let buffer = buffer_with_line_count(100);
         view.request_reveal(line_start(&buffer, 95), RevealKind::Jump);
         // 目标在第 95 行（视为光标也在 95），upper_third = 10，期望 top = 85；
-        // max_top = 100 - 30 = 70，最终裁剪到 70。
+        // max_top = 100 - (30 - 10) = 80，最终裁剪到 80。
         let out = view.settle_viewport_y(&buffer, line_start(&buffer, 95));
-        assert_eq!(out.viewport.top_line, 70);
+        assert_eq!(out.viewport.top_line, 80);
     }
 
     #[test]
-    fn manual_scroll_max_top_should_limit_blank_only_for_lower_bounds() {
-        assert_eq!(manual_scroll_max_top(VisualRowCount::Exact(21), 20, 0), 1);
+    fn max_top_with_trailing_blank_should_allow_one_third_blank_for_exact_counts() {
+        assert_eq!(
+            max_top_with_trailing_blank(VisualRowCount::Exact(21), 20),
+            7
+        );
+        assert_eq!(
+            max_top_with_trailing_blank(VisualRowCount::Exact(13), 20),
+            0
+        );
+    }
+
+    #[test]
+    fn manual_scroll_max_top_should_not_clamp_current_top_against_lower_bounds() {
+        assert_eq!(manual_scroll_max_top(VisualRowCount::Exact(21), 20, 0), 7);
         assert_eq!(
             manual_scroll_max_top(VisualRowCount::LowerBound(21), 20, 0),
             7
+        );
+        assert_eq!(
+            manual_scroll_max_top(VisualRowCount::LowerBound(21), 20, 30),
+            30
         );
     }
 
@@ -1269,6 +1307,40 @@ mod settle_tests {
 
         let after_cursor_move = view.settle_viewport_y(&buffer, line_start(&buffer, 1));
         assert_eq!(after_cursor_move.viewport.top_line, 1);
+    }
+
+    #[test]
+    fn manual_scroll_should_allow_trailing_blank_when_content_exceeds_two_thirds_viewport() {
+        let mut view = with_measured_viewport(0, 30, 21);
+        let buffer = buffer_with_line_count(21);
+
+        assert!(view.scroll_visual_rows(&buffer, 100));
+
+        assert_eq!(view.viewport().top_line, 1);
+    }
+
+    #[test]
+    fn settle_should_preserve_manual_trailing_blank_after_cursor_moves_within_view() {
+        let mut view = with_measured_viewport(0, 30, 21);
+        let buffer = buffer_with_line_count(21);
+        *view.selection_mut() = SelectionSet::caret(line_start(&buffer, 0));
+
+        assert!(view.scroll_visual_rows(&buffer, 100));
+        assert_eq!(view.viewport().top_line, 1);
+
+        let out = view.settle_viewport_y(&buffer, line_start(&buffer, 1));
+
+        assert_eq!(out.viewport.top_line, 1);
+    }
+
+    #[test]
+    fn manual_scroll_should_not_create_blank_when_content_does_not_exceed_two_thirds_viewport() {
+        let mut view = with_measured_viewport(0, 30, 20);
+        let buffer = buffer_with_line_count(20);
+
+        assert!(!view.scroll_visual_rows(&buffer, 100));
+
+        assert_eq!(view.viewport().top_line, 0);
     }
 
     #[test]

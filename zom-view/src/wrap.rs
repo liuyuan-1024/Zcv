@@ -79,10 +79,9 @@ impl VisualRowCount {
     }
 
     pub fn max_top_with_blank_budget(self, visible_rows: u64, blank_rows: u64) -> u64 {
+        let required_content_rows = visible_rows.saturating_sub(blank_rows);
         match self {
-            Self::Exact(rows) => rows.saturating_sub(visible_rows),
-            Self::LowerBound(rows) => {
-                let required_content_rows = visible_rows.saturating_sub(blank_rows);
+            Self::Exact(rows) | Self::LowerBound(rows) => {
                 rows.saturating_sub(required_content_rows)
             }
         }

@@ -21,6 +21,8 @@ pub(super) fn render(source: &str) -> impl IntoElement {
     div()
         .id("markdown-preview")
         .flex_1()
+        .min_w_0()
+        .w_full()
         .overflow_y_scroll()
         .p(space::s16())
         .flex()
@@ -319,6 +321,8 @@ fn wrap_block(frame: BlockFrame) -> AnyElement {
     match frame.kind {
         BlockKind::Root => unreachable!("Root 不进入 wrap_block"),
         BlockKind::BlockQuote => div()
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .gap_2()
@@ -330,7 +334,7 @@ fn wrap_block(frame: BlockFrame) -> AnyElement {
             .into_any_element(),
 
         BlockKind::List { ordered_start } => {
-            let mut col = div().w_full().flex().flex_col().gap_1().pl_4();
+            let mut col = div().w_full().min_w_0().flex().flex_col().gap_1().pl_4();
 
             let mut index = ordered_start.unwrap_or(1);
 
@@ -354,7 +358,7 @@ fn wrap_block(frame: BlockFrame) -> AnyElement {
                 // 注意这里：
                 // content 只承载一个完整的 item block，而 item block 内的段落是 StyledText。
                 // 不再把 "first" / "second" 等行内文本拆成多个 div 参与 flex 测量。
-                let content = div().flex_auto().w_full().child(child);
+                let content = div().flex_1().min_w_0().child(child);
 
                 let row = div()
                     .w_full()
@@ -373,6 +377,7 @@ fn wrap_block(frame: BlockFrame) -> AnyElement {
 
         BlockKind::Item => div()
             .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .gap_1()
@@ -380,6 +385,8 @@ fn wrap_block(frame: BlockFrame) -> AnyElement {
             .into_any_element(),
 
         BlockKind::Table => div()
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .gap_1()
@@ -394,10 +401,12 @@ fn wrap_block(frame: BlockFrame) -> AnyElement {
         // 里直接就是 TableCell。所以 TableHead 和 TableRow 都要做 flex_row，
         // TableCell 把 py_1 自带，row/head 不再多套一层 div。
         // 表格使用 flex_1 (basis:0%) 而非 flex_auto —— 只有各行的列都均分宽度，
-        // 表头和表体才能列对齐。去掉 min_w(0) 后，taffy 默认的 min-width:auto
-        // 防止内容塌陷到 0，所以 flex_1 在这里是安全的。
+        // 表头和表体才能列对齐。min_w_0 让单元格正文拿到有限宽度，交给
+        // StyledText 做软换行，而不是被长内容撑开。
         BlockKind::TableHead => {
             let mut row = div()
+                .w_full()
+                .min_w_0()
                 .flex()
                 .flex_row()
                 .items_start()
@@ -413,7 +422,15 @@ fn wrap_block(frame: BlockFrame) -> AnyElement {
         }
 
         BlockKind::TableRow => {
-            let mut row = div().flex().flex_row().items_start().gap_2().px_2().py_1();
+            let mut row = div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_row()
+                .items_start()
+                .gap_2()
+                .px_2()
+                .py_1();
             for child in frame.children {
                 row = row.child(child);
             }
@@ -422,6 +439,7 @@ fn wrap_block(frame: BlockFrame) -> AnyElement {
 
         BlockKind::TableCell => div()
             .flex_1()
+            .min_w_0()
             .px_1()
             .children(frame.children)
             .into_any_element(),
@@ -431,7 +449,12 @@ fn wrap_block(frame: BlockFrame) -> AnyElement {
 fn wrap_inline(frame: InlineFrame) -> AnyElement {
     let text = StyledText::new(frame.text);
 
-    let base = div().w_full().child(text);
+    let base = div()
+        .w_full()
+        .min_w_0()
+        .whitespace_normal()
+        .line_height(typography::editor_line())
+        .child(text);
 
     match frame.kind {
         InlineKind::Paragraph => base.into_any_element(),

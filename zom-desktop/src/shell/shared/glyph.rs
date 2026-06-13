@@ -1,8 +1,8 @@
 //! `Glyph` —— shell 内复用的基础视觉标记。
 //!
-//! 它可以承载文字、图标、图标 + 文字，
-//! 统一携带 tooltip 数据并在悬停时由 GPUI 的 tooltip 通道呈现。
-//! `Glyph` 只表达视觉，不知道命令系统、bar、surface 或 invoker。
+//! 它可以承载文字、图标、图标 + 文字。
+//! 通过 `.command(CommandBinding)` 绑定一条命令后，Glyph 自动从中央 lookup 拉取 tooltip 与快捷键 hint，并在点击时派发命令请求。
+//! 未绑命令时为纯展示元素。
 
 use gpui::{
     AnyElement, AnyView, App, Context, ElementId, IntoElement, MouseButton, Pixels, Render,
@@ -12,6 +12,8 @@ use gpui::{
 use crate::host_intent::CommandRequest;
 use crate::theme::{color, radius, space, typography};
 
+use super::interaction::{CommandTitleLookup, ShortcutLookup};
+
 #[derive(Clone)]
 enum GlyphContent {
     Text(String),
@@ -19,41 +21,36 @@ enum GlyphContent {
     IconText { icon: &'static str, text: String },
 }
 
+/// 一条命令在 Glyph 上的完整表达：标识 + 展示查表 + 点击执行。
+#[derive(Clone)]
+pub(crate) struct CommandBinding {
+    pub(crate) id: String,
+    pub(crate) title: CommandTitleLookup,
+    pub(crate) shortcut: ShortcutLookup,
+    pub(crate) request: CommandRequest,
+}
+
 /// 一个基础视觉标记。
 pub(crate) struct Glyph {
     id: ElementId,
     content: GlyphContent,
-    tooltip: String,
-    hint: Option<String>,
+    command: Option<CommandBinding>,
     active: bool,
-    icon_size: Pixels,
-    font_size: Pixels,
-    line_height: Pixels,
-    press: Option<CommandRequest>,
 }
 
 impl Glyph {
-    pub(crate) fn text(
-        id: impl Into<ElementId>,
-        text: impl Into<String>,
-        tooltip: impl Into<String>,
-    ) -> Self {
-        Self::new(id, GlyphContent::Text(text.into()), tooltip)
+    pub(crate) fn text(id: impl Into<ElementId>, text: impl Into<String>) -> Self {
+        Self::new(id, GlyphContent::Text(text.into()))
     }
 
-    pub(crate) fn icon(
-        id: impl Into<ElementId>,
-        path: &'static str,
-        tooltip: impl Into<String>,
-    ) -> Self {
-        Self::new(id, GlyphContent::Icon(path), tooltip)
+    pub(crate) fn icon(id: impl Into<ElementId>, path: &'static str) -> Self {
+        Self::new(id, GlyphContent::Icon(path))
     }
 
     pub(crate) fn icon_text(
         id: impl Into<ElementId>,
         path: &'static str,
         text: impl Into<String>,
-        tooltip: impl Into<String>,
     ) -> Self {
         Self::new(
             id,
@@ -61,28 +58,16 @@ impl Glyph {
                 icon: path,
                 text: text.into(),
             },
-            tooltip,
         )
     }
 
-    fn new(id: impl Into<ElementId>, content: GlyphContent, tooltip: impl Into<String>) -> Self {
+    fn new(id: impl Into<ElementId>, content: GlyphContent) -> Self {
         Self {
             id: id.into(),
             content,
-            tooltip: tooltip.into(),
-            hint: None,
+            command: None,
             active: false,
-            icon_size: typography::ui(),
-            font_size: typography::ui(),
-            line_height: typography::ui_line(),
-            press: None,
         }
-    }
-
-    /// 设置 tooltip 右侧的辅助文本，例如快捷键。
-    pub(crate) fn hint(mut self, hint: impl Into<Option<String>>) -> Self {
-        self.hint = hint.into();
-        self
     }
 
     pub(crate) fn active(mut self, active: bool) -> Self {
@@ -90,11 +75,10 @@ impl Glyph {
         self
     }
 
-    /// 绑定一个已由 shell 预先接好的命令请求。
-    ///
-    /// `Glyph` 不知道命令 id 或 Invocation，只在鼠标按下时转发请求。
-    pub(crate) fn on_press(mut self, request: CommandRequest) -> Self {
-        self.press = Some(request);
+    /// 告诉 Glyph 它代表哪条命令。
+    /// 渲染时自动从 lookup 拉取 tooltip 和快捷键 hint，并在点击时派发 `request`。
+    pub(crate) fn command(mut self, binding: CommandBinding) -> Self {
+        self.command = Some(binding);
         self
     }
 
@@ -105,12 +89,16 @@ impl Glyph {
             color::current().gray.s09
         };
         let id = self.id.clone();
-        let icon_size = self.icon_size;
-        let font_size = self.font_size;
-        let line_height = self.line_height;
-        let tooltip = self.tooltip.clone();
-        let hint = self.hint.clone();
-        let press = self.press;
+        let icon_size = typography::ui();
+        let font_size = typography::ui();
+        let line_height = typography::ui_line();
+        let (tooltip, hint, press) = if let Some(ref cmd) = self.command {
+            let title = (cmd.title)(&cmd.id).unwrap_or_else(|| cmd.id.clone());
+            let hint = (cmd.shortcut)(&cmd.id);
+            (title, hint, Some(cmd.request.clone()))
+        } else {
+            (String::new(), None, None)
+        };
 
         let build_tooltip = move |_window: &mut Window, cx: &mut App| -> AnyView {
             tooltip_view(cx, tooltip.clone(), hint.clone())

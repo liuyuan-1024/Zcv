@@ -26,11 +26,12 @@ use crate::focus::{AppFocus, SearchField};
 use crate::host_intent::{CommandRequest, KeyRequest};
 use crate::ports::{FramePump, PostEditObserver, SearchAction, SearchHost};
 use crate::shell::normalized_chord;
-use crate::shell::shared::glyph::Glyph;
-use crate::shell::{CommandPresentation, FocusRequest, FocusRequestTarget};
+use crate::shell::shared::{CommandBinding, Glyph};
+use crate::shell::{CommandTitleLookup, FocusRequest, FocusRequestTarget, ShortcutLookup};
 use crate::text_target::TextTargetOwner;
 use crate::theme::{color, radius, space, typography};
 use crate::workspace_session::WorkspaceSession;
+use zom_command::commands::search as search_commands;
 
 use model::SearchModel;
 pub(crate) use model::{HitCount, SearchState};
@@ -59,7 +60,32 @@ pub(crate) enum SearchIntent {
 
 pub(crate) type SearchIntentRequest = Rc<dyn Fn(SearchIntent, &mut Window, &mut gpui::App)>;
 
-pub(crate) type SearchIntentPresentationLookup = Rc<dyn Fn(SearchIntent) -> CommandPresentation>;
+fn search_binding(
+    intent: SearchIntent,
+    intent_request: &SearchIntentRequest,
+    title_lookup: &CommandTitleLookup,
+    shortcut_lookup: &ShortcutLookup,
+) -> CommandBinding {
+    let command_id = search_intent_command_id(intent);
+    CommandBinding {
+        id: command_id.to_string(),
+        title: Rc::clone(title_lookup),
+        shortcut: Rc::clone(shortcut_lookup),
+        request: intent_press_request(intent_request, intent),
+    }
+}
+
+fn search_intent_command_id(intent: SearchIntent) -> &'static str {
+    match intent {
+        SearchIntent::ToggleCaseSensitive => search_commands::file::TOGGLE_CASE_SENSITIVE,
+        SearchIntent::ToggleWholeWord => search_commands::file::TOGGLE_WHOLE_WORD,
+        SearchIntent::ToggleRegex => search_commands::file::TOGGLE_REGEX,
+        SearchIntent::FindPrevious => search_commands::file::FIND_PREVIOUS,
+        SearchIntent::FindNext => search_commands::file::FIND_NEXT,
+        SearchIntent::ReplaceNext => search_commands::file::REPLACE_NEXT,
+        SearchIntent::ReplaceAll => search_commands::file::REPLACE_ALL,
+    }
+}
 
 /// 搜索面板暴露给宿主的窄接口。
 ///
@@ -305,7 +331,8 @@ impl SearchRuntime {
         state: &SearchState,
         key_request: &KeyRequest,
         intent_request: &SearchIntentRequest,
-        intent_presentation: &SearchIntentPresentationLookup,
+        title_lookup: &CommandTitleLookup,
+        shortcut_lookup: &ShortcutLookup,
         query_slot: &Rc<TextEditorSlot>,
         replacement_slot: &Rc<TextEditorSlot>,
         focus_request: &FocusRequest,
@@ -327,7 +354,8 @@ impl SearchRuntime {
                 &self.query_focus,
                 &self.replacement_focus,
                 intent_request,
-                intent_presentation,
+                title_lookup,
+                shortcut_lookup,
                 query_slot,
                 replacement_slot,
                 focus_request,
@@ -365,11 +393,14 @@ fn search_controls(
     query_focus: &FocusHandle,
     replacement_focus: &FocusHandle,
     intent_request: &SearchIntentRequest,
-    intent_presentation: &SearchIntentPresentationLookup,
+    title_lookup: &CommandTitleLookup,
+    shortcut_lookup: &ShortcutLookup,
     query_slot: &Rc<TextEditorSlot>,
     replacement_slot: &Rc<TextEditorSlot>,
     focus_request: &FocusRequest,
 ) -> Div {
+    let b = |intent| search_binding(intent, intent_request, title_lookup, shortcut_lookup);
+
     div()
         .flex()
         .flex_col()
@@ -388,65 +419,28 @@ fn search_controls(
             focus_request,
             vec![
                 hit_count_badge(state.hit_count),
-                Glyph::icon(
-                    "search-case-sensitive",
-                    CASE_SENSITIVE_ICON,
-                    intent_presentation(SearchIntent::ToggleCaseSensitive).title,
-                )
-                .hint(intent_presentation(SearchIntent::ToggleCaseSensitive).hint)
-                .active(state.options.case_sensitive)
-                .on_press(intent_press_request(
-                    intent_request,
-                    SearchIntent::ToggleCaseSensitive,
-                ))
-                .render(),
-                Glyph::icon(
-                    "search-whole-word",
-                    WHOLE_WORD_ICON,
-                    intent_presentation(SearchIntent::ToggleWholeWord).title,
-                )
-                .hint(intent_presentation(SearchIntent::ToggleWholeWord).hint)
-                .active(state.options.whole_word)
-                .on_press(intent_press_request(
-                    intent_request,
-                    SearchIntent::ToggleWholeWord,
-                ))
-                .render(),
-                Glyph::icon(
-                    "search-regex",
-                    REGEX_ICON,
-                    intent_presentation(SearchIntent::ToggleRegex).title,
-                )
-                .hint(intent_presentation(SearchIntent::ToggleRegex).hint)
-                .active(state.options.regex)
-                .on_press(intent_press_request(
-                    intent_request,
-                    SearchIntent::ToggleRegex,
-                ))
-                .render(),
+                Glyph::icon("search-case-sensitive", CASE_SENSITIVE_ICON)
+                    .active(state.options.case_sensitive)
+                    .command(b(SearchIntent::ToggleCaseSensitive))
+                    .render(),
+                Glyph::icon("search-whole-word", WHOLE_WORD_ICON)
+                    .active(state.options.whole_word)
+                    .command(b(SearchIntent::ToggleWholeWord))
+                    .render(),
+                Glyph::icon("search-regex", REGEX_ICON)
+                    .active(state.options.regex)
+                    .command(b(SearchIntent::ToggleRegex))
+                    .render(),
             ],
             vec![
-                Glyph::icon(
-                    "search-find-previous",
-                    FIND_PREVIOUS_ICON,
-                    intent_presentation(SearchIntent::FindPrevious).title,
-                )
-                .hint(intent_presentation(SearchIntent::FindPrevious).hint)
-                .active(false)
-                .on_press(intent_press_request(
-                    intent_request,
-                    SearchIntent::FindPrevious,
-                ))
-                .render(),
-                Glyph::icon(
-                    "search-find-next",
-                    FIND_NEXT_ICON,
-                    intent_presentation(SearchIntent::FindNext).title,
-                )
-                .hint(intent_presentation(SearchIntent::FindNext).hint)
-                .active(false)
-                .on_press(intent_press_request(intent_request, SearchIntent::FindNext))
-                .render(),
+                Glyph::icon("search-find-previous", FIND_PREVIOUS_ICON)
+                    .active(false)
+                    .command(b(SearchIntent::FindPrevious))
+                    .render(),
+                Glyph::icon("search-find-next", FIND_NEXT_ICON)
+                    .active(false)
+                    .command(b(SearchIntent::FindNext))
+                    .render(),
             ],
         ))
         .child(replace_row(
@@ -462,30 +456,14 @@ fn search_controls(
                 .unwrap_or(true),
             focus_request,
             vec![
-                Glyph::icon(
-                    "search-replace-next",
-                    REPLACE_NEXT_ICON,
-                    intent_presentation(SearchIntent::ReplaceNext).title,
-                )
-                .hint(intent_presentation(SearchIntent::ReplaceNext).hint)
-                .active(false)
-                .on_press(intent_press_request(
-                    intent_request,
-                    SearchIntent::ReplaceNext,
-                ))
-                .render(),
-                Glyph::icon(
-                    "search-replace-all",
-                    REPLACE_ALL_ICON,
-                    intent_presentation(SearchIntent::ReplaceAll).title,
-                )
-                .hint(intent_presentation(SearchIntent::ReplaceAll).hint)
-                .active(false)
-                .on_press(intent_press_request(
-                    intent_request,
-                    SearchIntent::ReplaceAll,
-                ))
-                .render(),
+                Glyph::icon("search-replace-next", REPLACE_NEXT_ICON)
+                    .active(false)
+                    .command(b(SearchIntent::ReplaceNext))
+                    .render(),
+                Glyph::icon("search-replace-all", REPLACE_ALL_ICON)
+                    .active(false)
+                    .command(b(SearchIntent::ReplaceAll))
+                    .render(),
             ],
         ))
 }

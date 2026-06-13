@@ -11,7 +11,6 @@ use gpui::MouseButton;
 #[cfg(target_os = "windows")]
 use gpui::WindowControlArea;
 use gpui::{AnyElement, Div, Window, div, prelude::*};
-use std::rc::Rc;
 
 use crate::shell::features::{project_picker, settings};
 use crate::shell::workbench::WorkbenchCommandRequests;
@@ -85,8 +84,7 @@ fn leading_slots(
     let workspace = project_picker::entry(
         project_title,
         workspace_active,
-        Rc::clone(&commands.project_picker_open),
-        &commands.project_picker_open_presentation,
+        commands.project_picker_open.clone(),
     );
 
     vec![
@@ -98,7 +96,6 @@ fn leading_slots(
 fn trailing_slots(settings_active: bool, commands: &WorkbenchCommandRequests) -> Vec<AnyElement> {
     vec![settings::entry(
         settings_active,
-        Rc::clone(&commands.settings_open),
-        &commands.settings_open_presentation,
+        commands.settings_open.clone(),
     )]
 }

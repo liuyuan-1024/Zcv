@@ -57,7 +57,8 @@ pub(crate) fn render(
             search_state,
             key_request,
             &commands.search_intent,
-            &commands.search_intent_presentation,
+            &commands.title_lookup,
+            &commands.shortcut_lookup,
             search_query_slot,
             search_replacement_slot,
             focus_request,
@@ -101,29 +102,19 @@ fn action_slot(tab: &EditorTab, commands: &WorkbenchCommandRequests) -> AnyEleme
     if tab.language == "Markdown" {
         let preview_active = matches!(tab.kind, ViewKind::Preview);
         actions.push(
-            Glyph::icon(
-                "file-status-bar.preview",
-                FILE_PREVIEW_ICON,
-                commands.editor_open_preview_presentation.title.clone(),
-            )
-            .hint(commands.editor_open_preview_presentation.hint.clone())
-            .active(preview_active)
-            .on_press(Rc::clone(&commands.editor_open_preview))
-            .render(),
+            Glyph::icon("file-status-bar.preview", FILE_PREVIEW_ICON)
+                .active(preview_active)
+                .command(commands.editor_open_preview.clone())
+                .render(),
         );
     }
 
     // 文件搜索 glyph（常驻）
     actions.push(
-        Glyph::icon(
-            "file-status-bar.search",
-            FILE_SEARCH_ICON,
-            commands.file_search_activate_presentation.title.clone(),
-        )
-        .hint(commands.file_search_activate_presentation.hint.clone())
-        .active(false)
-        .on_press(Rc::clone(&commands.file_search_activate))
-        .render(),
+        Glyph::icon("file-status-bar.search", FILE_SEARCH_ICON)
+            .active(false)
+            .command(commands.file_search_activate.clone())
+            .render(),
     );
 
     let mut group = div().flex().flex_row().items_center().gap(space::s6());

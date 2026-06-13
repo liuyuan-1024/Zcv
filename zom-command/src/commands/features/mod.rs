@@ -2,7 +2,7 @@
 //!
 //! 每个 feature 模块同处声明命令 id、typed builder、handler 与默认键位。
 
-use crate::{CommandRegistry, HostEffect, Keymap, PanelKind};
+use crate::{CommandOutcome, CommandRegistry, HostEffect, Keymap, PanelKind};
 
 pub mod debug;
 pub mod diagnostics;
@@ -35,8 +35,9 @@ pub fn install_all(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     diagnostics::install(registry, keymap);
 }
 
-/// 注册"切换某 panel"的内建命令。命令 id 直接取自 [`PanelKind::toggle_command_id`]，
-/// 保证 emit 与查询用的 id 强绑定 —— 不再手写两端字符串。
+/// 注册"切换某 panel"的内建命令。命令 id 直接取自 [`PanelKind::toggle_command_id`]，保证 emit 与查询用的 id 强绑定 —— 不再手写两端字符串。
+///
+/// handler 读取可选 `via` arg：`"pointer"` 时为鼠标点击路径（纯 toggle，不判断焦点归属），否则为键盘路径（焦点在面板上才收起）。
 pub(super) fn register_panel_toggle(
     registry: &mut CommandRegistry,
     keymap: &mut Keymap,
@@ -50,7 +51,12 @@ pub(super) fn register_panel_toggle(
             keymap,
             panel.toggle_command_id(),
             title,
-            super::emit(HostEffect::TogglePanel(panel)),
+            Box::new(move |ctx, args| {
+                let via_pointer = args.get("via") == Some("pointer");
+                ctx.effects
+                    .push(HostEffect::TogglePanel(panel, via_pointer));
+                Ok(CommandOutcome::default())
+            }),
         )
         .description(description)
         .key(default_chord);

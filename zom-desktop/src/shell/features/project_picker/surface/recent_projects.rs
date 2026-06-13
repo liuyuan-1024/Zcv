@@ -2,9 +2,8 @@ use std::rc::Rc;
 
 use gpui::{Div, div, prelude::*};
 
-use crate::host_intent::CommandRequest;
 use crate::shell::features::project_picker::{ProjectPickerIntent, RecentProject};
-use crate::shell::shared::Glyph;
+use crate::shell::shared::{CommandBinding, Glyph};
 use crate::theme::{color, radius, space, typography};
 
 use super::{ProjectPickerActions, ProjectPickerMode};
@@ -83,6 +82,9 @@ fn project_row(
 }
 
 fn project_actions(project: &RecentProject, index: usize, actions: &ProjectPickerActions) -> Div {
+    let project_id = project.id.clone();
+    let intent_request = Rc::clone(&actions.intent_request);
+
     div()
         .flex_shrink_0()
         .flex()
@@ -93,23 +95,21 @@ fn project_actions(project: &RecentProject, index: usize, actions: &ProjectPicke
             Glyph::icon(
                 ("project-picker.remove-recent", index),
                 "icons/actions/close.svg",
-                actions.remove_recent_presentation.title.clone(),
             )
-            .hint(actions.remove_recent_presentation.hint.clone())
-            .on_press(remove_recent_request(project.id.clone(), actions))
+            .command(CommandBinding {
+                request: Rc::new(move |window, cx| {
+                    intent_request(
+                        ProjectPickerIntent::RemoveRecentProject {
+                            id: project_id.clone(),
+                        },
+                        window,
+                        cx,
+                    );
+                }),
+                ..actions.remove_recent_command.clone()
+            })
             .render(),
         )
-}
-
-fn remove_recent_request(id: String, actions: &ProjectPickerActions) -> CommandRequest {
-    let intent_request = Rc::clone(&actions.intent_request);
-    Rc::new(move |window, cx| {
-        intent_request(
-            ProjectPickerIntent::RemoveRecentProject { id: id.clone() },
-            window,
-            cx,
-        );
-    })
 }
 
 fn empty_hint(message: &'static str) -> Div {

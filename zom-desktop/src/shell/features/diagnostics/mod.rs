@@ -5,24 +5,16 @@
 
 use gpui::AnyElement;
 
-use crate::host_intent::CommandRequest;
-use crate::shell::CommandPresentation;
-use crate::shell::shared::Glyph;
+use crate::shell::shared::{CommandBinding, Glyph};
 
 const INVOKER_ID: &str = "bottom-bar.diagnostics";
 
-pub(crate) fn entry(
-    count: u32,
-    command_request: CommandRequest,
-    presentation: &CommandPresentation,
-) -> AnyElement {
+pub(crate) fn entry(count: u32, command: CommandBinding) -> AnyElement {
     Glyph::icon_text(
         INVOKER_ID,
         "icons/status/diagnostics.svg",
         count.to_string(),
-        presentation.title.clone(),
     )
-    .hint(presentation.hint.clone())
-    .on_press(command_request)
+    .command(command)
     .render()
 }

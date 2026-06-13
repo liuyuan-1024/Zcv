@@ -1,8 +1,7 @@
 //! ShellView 的命令动作与 HostEffect 解释。
 //!
-//! 此文件只承担 view 层壳：命令派发入口、HostEffect 总调度、跨 feature 的
-//! 窗口 / surface 管理。每个 feature 自己的 HostEffect 处理都在
-//! `features/<feature>/effects.rs` 里，由 [`apply_host_effects`] 按顺序问询。
+//! 此文件只承担 view 层壳：命令派发入口、HostEffect 总调度、跨 feature 的窗口 / surface 管理。
+//! 每个 feature 自己的 HostEffect 处理都在 `features/<feature>/effects.rs` 里，由 [`apply_host_effects`] 按顺序问询。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -264,17 +263,27 @@ fn apply_shell_effect(
             config_visuals::apply(&config);
             window.refresh();
         }
-        HostEffect::TogglePanel(panel) => {
+        HostEffect::TogglePanel(panel, via_pointer) => {
             let panel = *panel;
-            let visible = workbench.borrow().is_panel_active(panel);
-            if visible && focus.is_at_panel(panel, window) {
-                // 已显示且焦点就在它身上 —— 收起，焦点回编辑区。
-                workbench.borrow_mut().hide_panel(panel);
-                request_focus(app, focus, AppFocus::editor(), window);
+            if *via_pointer {
+                // 鼠标点击：纯 toggle，不判断焦点归属。
+                if workbench.borrow().is_panel_active(panel) {
+                    workbench.borrow_mut().hide_panel(panel);
+                    request_focus(app, focus, AppFocus::editor(), window);
+                } else {
+                    workbench.borrow_mut().show_panel(panel);
+                    request_focus(app, focus, panel_default_focus(panel), window);
+                }
             } else {
-                // 未显示，或虽显示但焦点不在它身上 —— 显示并把焦点交给它。
-                workbench.borrow_mut().show_panel(panel);
-                request_focus(app, focus, panel_default_focus(panel), window);
+                // 键盘：已显示且焦点在面板上才收起。
+                let visible = workbench.borrow().is_panel_active(panel);
+                if visible && focus.is_at_panel(panel, window) {
+                    workbench.borrow_mut().hide_panel(panel);
+                    request_focus(app, focus, AppFocus::editor(), window);
+                } else {
+                    workbench.borrow_mut().show_panel(panel);
+                    request_focus(app, focus, panel_default_focus(panel), window);
+                }
             }
             window.refresh();
         }

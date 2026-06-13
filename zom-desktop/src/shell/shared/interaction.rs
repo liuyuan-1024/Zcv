@@ -1,22 +1,11 @@
-//! 多个 shell 功能共享的交互回调原语。
+//! 多个 shell 功能共享的交互回调原语与命令查表类型。
 
 use std::rc::Rc;
 
 use gpui::{App as GpuiApp, FocusHandle, Window};
 use zom_command::CommandCatalogItem;
 
-/// shell 注入给 UI 的命令展示元数据。
-///
-/// 组件只消费标题和快捷键文案，不需要知道这些文案来自哪条 command id。
-#[derive(Clone)]
-pub(crate) struct CommandPresentation {
-    pub(crate) title: String,
-    pub(crate) hint: Option<String>,
-}
-
-/// shell 预绑定的连续交互出口。
-///
-/// 用于 resize、scroll、selection drag、focus 等不适合进入 command catalog 的高频设备交互。
+/// 设备连续交互请求。例如 resize、scroll、selection drag——不适合进入 command catalog 的高频操作。
 /// 组件只提交领域内交互事件，真正的状态修改仍由 shell / feature runtime 持有的 handler 完成。
 pub(crate) type InteractionRequest<Event> = Rc<dyn Fn(Event, &mut Window, &mut GpuiApp)>;
 

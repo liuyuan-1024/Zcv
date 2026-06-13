@@ -10,16 +10,17 @@ use gpui::{Entity, FocusHandle, Window};
 use zom_command::HostEffect;
 
 use crate::app::App;
+use crate::focus::AppFocus;
 use crate::shell::bubble::BubbleRuntime;
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
 use crate::shell::features::project_picker::{
     self, ProjectPickerActions, ProjectPickerActivation, ProjectPickerInitialMode,
     ProjectPickerIntent, ProjectPickerIntentRequest, ProjectPickerMode, ProjectPickerRuntime,
 };
-use crate::shell::project_session;
 use crate::shell::surfaces::SurfaceManager;
 use crate::shell::view::actions::open_surface;
 use crate::shell::workbench::controller::WorkbenchController;
+use crate::shell::{CommandTitleLookup, ShortcutLookup, project_session, shared};
 use crate::ui_id::SurfaceId;
 use zom_command::BubbleRequest;
 
@@ -168,26 +169,22 @@ fn show_project_picker(
         return;
     };
     project_picker_runtime.reset(initial_mode.into());
-    app.borrow_mut()
-        .request_focus(crate::focus::AppFocus::project_picker());
+    app.borrow_mut().request_focus(AppFocus::project_picker());
     let runtime_for_projects = project_picker_runtime.clone();
     let projects = Rc::new(move || runtime_for_projects.recent_projects());
     let state_runtime = project_picker_runtime.clone();
     let state = Rc::new(move || state_runtime.state());
     let shortcut_app = Rc::clone(app);
-    let shortcut_lookup =
+    let shortcut_lookup: ShortcutLookup =
         Rc::new(move |command_id: &str| shortcut_app.borrow().shortcuts_for(command_id));
     let title_app = Rc::clone(app);
-    let command_title_lookup =
+    let command_title_lookup: CommandTitleLookup =
         Rc::new(move |command_id: &str| title_app.borrow().command_title_for(command_id));
-    let remove_recent_presentation = {
-        let app = app.borrow();
-        crate::shell::CommandPresentation {
-            title: app
-                .command_title_for(zom_command::commands::project_picker::REMOVE_RECENT_PROJECT)
-                .unwrap_or_else(|| "移除最近项目".to_string()),
-            hint: app.shortcuts_for(zom_command::commands::project_picker::REMOVE_RECENT_PROJECT),
-        }
+    let remove_recent_command = shared::CommandBinding {
+        id: zom_command::commands::project_picker::REMOVE_RECENT_PROJECT.to_string(),
+        title: Rc::clone(&command_title_lookup),
+        shortcut: Rc::clone(&shortcut_lookup),
+        request: Rc::new(|_, _| {}),
     };
     let intent_request =
         project_picker_intent_request(project_picker_runtime.clone(), bubbles.clone());
@@ -196,7 +193,7 @@ fn show_project_picker(
         state,
         slot: project_picker_slot,
         intent_request,
-        remove_recent_presentation,
+        remove_recent_command,
         shortcut_lookup,
         command_title_lookup,
     };

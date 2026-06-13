@@ -2,8 +2,7 @@
 //!
 //! 当前只用 leading / trailing 两个槽（无 center）。
 //! 每个槽内按 Dock 归属分组，组与组之间用一根 `bar_divider` 视觉隔开。
-//!
-//! 面板切换 slot 接收 shell 预绑定的 `CommandRequest`；BottomBar 自己不派发命令。
+//! 每个 Glyph 通过 `CommandBinding` 自己从中央 keymap 拉取 tooltip 与快捷键 hint。
 
 use std::rc::Rc;
 
@@ -11,10 +10,8 @@ use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
 
 use crate::editor::text::EditorSnapshot;
 use crate::editor_state::EditorState;
-use crate::host_intent::CommandRequest;
-use crate::shell::CommandPresentation;
 use crate::shell::features::{diagnostics, language_servers};
-use crate::shell::shared::Glyph;
+use crate::shell::shared::{CommandBinding, Glyph};
 use crate::shell::workbench::WorkbenchCommandRequests;
 use crate::shell::workbench::docks::{bottom, left, right};
 use crate::shell::workbench::state::{DockAreaId, DockState, WorkbenchState};
@@ -55,41 +52,27 @@ fn leading_slots(
     language_server_active: bool,
 ) -> Vec<AnyElement> {
     let toggles = panel_slot_group(DockAreaId::Left, left::PANELS, state, commands);
-    // Group 2：语言服务器 / 诊断 / 项目级搜索。当前都不绑 Dock；
-    // 混了状态指示与命令入口。
+    // Group 2：语言服务器 / 诊断 / 项目级搜索。
     let status = vec![
         language_servers::entry(
             state.bottom_bar.lsp_connected,
             language_server_active,
-            Rc::clone(&commands.language_servers_open),
-            &commands.language_servers_open_presentation,
+            commands.language_servers_open.clone(),
         ),
         diagnostics::entry(
             state.bottom_bar.diagnostics_count,
-            Rc::clone(&commands.diagnostics_show_problems),
-            &commands.diagnostics_show_problems_presentation,
+            commands.diagnostics_show_problems.clone(),
         ),
-        project_search_slot(
-            Rc::clone(&commands.project_search_activate),
-            &commands.project_search_activate_presentation,
-        ),
+        project_search_slot(commands.project_search_activate.clone()),
     ];
     join_groups(vec![toggles, status])
 }
 
-fn project_search_slot(
-    command_request: CommandRequest,
-    presentation: &CommandPresentation,
-) -> AnyElement {
-    Glyph::icon(
-        "bottom-bar.search.project",
-        "icons/panels/search.svg",
-        presentation.title.clone(),
-    )
-    .hint(presentation.hint.clone())
-    .active(false)
-    .on_press(command_request)
-    .render()
+fn project_search_slot(command: CommandBinding) -> AnyElement {
+    Glyph::icon("bottom-bar.search.project", "icons/panels/search.svg")
+        .active(false)
+        .command(command)
+        .render()
 }
 
 fn trailing_slots(
@@ -98,14 +81,18 @@ fn trailing_slots(
     commands: &WorkbenchCommandRequests,
     main_editor_snapshot: &EditorSnapshot,
 ) -> Vec<AnyElement> {
-    let editor = editor_status_slots(editor_state, main_editor_snapshot);
+    let editor = editor_status_slots(editor_state, main_editor_snapshot, commands);
     let bottom = panel_slot_group(DockAreaId::Bottom, bottom::PANELS, state, commands);
     let right = panel_slot_group(DockAreaId::Right, right::PANELS, state, commands);
     join_groups(vec![editor, bottom, right])
 }
 
 /// 活动文件状态组：光标行列 + 语言类型。没有打开文件时返回空组。
-fn editor_status_slots(editor: &EditorState, snapshot: &EditorSnapshot) -> Vec<AnyElement> {
+fn editor_status_slots(
+    editor: &EditorState,
+    snapshot: &EditorSnapshot,
+    commands: &WorkbenchCommandRequests,
+) -> Vec<AnyElement> {
     let Some(active) = editor.tabs.iter().find(|tab| tab.is_active) else {
         return Vec::new();
     };
@@ -115,13 +102,12 @@ fn editor_status_slots(editor: &EditorState, snapshot: &EditorSnapshot) -> Vec<A
     let line = line0 + 1;
     let column = column0 + 1;
     vec![
-        Glyph::text(
-            CURSOR_POSITION_ID,
-            format!("{line}:{column}"),
-            "光标位置（行:列）",
-        )
-        .render(),
-        Glyph::text(LANGUAGE_ID, active.language.clone(), "文件语言").render(),
+        Glyph::text(CURSOR_POSITION_ID, format!("{line}:{column}"))
+            .command(commands.editor_go_to_line.clone())
+            .render(),
+        Glyph::text(LANGUAGE_ID, active.language.clone())
+            .command(commands.editor_change_language.clone())
+            .render(),
     ]
 }
 
@@ -165,17 +151,17 @@ fn panel_slot(
     commands: &WorkbenchCommandRequests,
 ) -> AnyElement {
     let active = dock_state.is_visible() && dock_state.active_panel() == Some(panel);
-    let presentation = (commands.panel_toggle_presentation)(panel);
+    let command_id = panel.toggle_command_id();
 
-    Glyph::icon(
-        panel_glyph_id(panel),
-        ui_id::panel_icon_path(panel),
-        presentation.title,
-    )
-    .hint(presentation.hint)
-    .active(active)
-    .on_press((commands.panel_toggle)(panel))
-    .render()
+    Glyph::icon(panel_glyph_id(panel), ui_id::panel_icon_path(panel))
+        .active(active)
+        .command(CommandBinding {
+            id: command_id.to_string(),
+            title: Rc::clone(&commands.title_lookup),
+            shortcut: Rc::clone(&commands.shortcut_lookup),
+            request: (commands.panel_toggle)(panel),
+        })
+        .render()
 }
 
 /// bottom bar 内 panel 入口 glyph 的 element id —— GPUI 用它跟踪 element

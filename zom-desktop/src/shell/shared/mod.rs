@@ -8,4 +8,4 @@ pub(crate) mod interaction;
 pub(crate) mod keyboard;
 pub(crate) mod scroll;
 
-pub(crate) use glyph::Glyph;
+pub(crate) use glyph::{CommandBinding, Glyph};

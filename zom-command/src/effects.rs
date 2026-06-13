@@ -148,8 +148,8 @@ pub enum HostEffect {
     ShowBubble(BubbleRequest),
 
     // ===== Dock / Panel =====
-    /// 切换某个 panel 的显隐。宿主直接 `match` 该枚举分发到具体 panel runtime。
-    TogglePanel(PanelKind),
+    /// 切换某个 panel 的显隐。`bool` = 是否由鼠标点击触发（`via_pointer`）。
+    TogglePanel(PanelKind, bool),
 
     // ===== Search =====
     /// 打开搜索栏并把焦点送到查询输入框。已开则只搬焦点（幂等）。

@@ -12,11 +12,9 @@ use std::rc::Rc;
 use gpui::{AnyElement, IntoElement};
 
 use crate::editor::TextEditorSlot;
-use crate::host_intent::CommandRequest;
-use crate::shell::CommandPresentation;
 use crate::shell::CommandTitleLookup;
 use crate::shell::ShortcutLookup;
-use crate::shell::shared::Glyph;
+use crate::shell::shared::{CommandBinding, Glyph};
 use crate::shell::surfaces::track_surface_anchor;
 
 pub(crate) use model::{
@@ -45,21 +43,15 @@ pub(crate) struct ProjectPickerActions {
     pub(crate) state: ProjectPickerStateRequest,
     pub(crate) slot: Rc<TextEditorSlot>,
     pub(crate) intent_request: ProjectPickerIntentRequest,
-    pub(crate) remove_recent_presentation: CommandPresentation,
+    pub(crate) remove_recent_command: CommandBinding,
     pub(crate) shortcut_lookup: ShortcutLookup,
     pub(crate) command_title_lookup: CommandTitleLookup,
 }
 
-pub(crate) fn entry(
-    project_title: &str,
-    active: bool,
-    command_request: CommandRequest,
-    presentation: &CommandPresentation,
-) -> AnyElement {
-    let glyph = Glyph::text(INVOKER_ID, project_title, presentation.title.clone())
-        .hint(presentation.hint.clone())
+pub(crate) fn entry(project_title: &str, active: bool, command: CommandBinding) -> AnyElement {
+    let glyph = Glyph::text(INVOKER_ID, project_title)
         .active(active)
-        .on_press(command_request)
+        .command(command)
         .render();
 
     track_surface_anchor(INVOKER_ID, glyph).into_any_element()

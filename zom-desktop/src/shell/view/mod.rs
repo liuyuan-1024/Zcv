@@ -24,13 +24,14 @@ use crate::focus::AppFocus;
 
 use self::runtime::ShellRuntime;
 use super::features::panels::file_tree::ConfirmDeleteHandlers;
-use super::features::search::{SearchIntent, SearchIntentPresentationLookup, SearchIntentRequest};
+use super::features::search::{SearchIntent, SearchIntentRequest};
 use super::features::settings;
+use super::shared::CommandBinding;
 use super::workbench;
 use super::workbench::WindowControlsHandlers;
 use super::workbench::WorkbenchCommandRequests;
 use super::workbench::state::WorkbenchState;
-use super::{CommandCatalogLookup, CommandPresentation, CommandTitleLookup, ShortcutLookup};
+use super::{CommandCatalogLookup, CommandTitleLookup, ShortcutLookup};
 use crate::editor::{CaretBlink, drive_caret_blink};
 use crate::host_intent::{CommandRequest, HostIntent, HostIntentRequest, KeyRequest};
 use crate::ui_id::{PanelId, SurfaceId};
@@ -128,11 +129,6 @@ impl ShellView {
         Rc::clone(&self.runtime.host_intent)
     }
 
-    fn bind_command_id(&self, command_id: &'static str) -> CommandRequest {
-        let command_id = CommandId::new(command_id).expect("内建命令 ID 必须非空");
-        self.bind_command((command_id, CommandArgs::new()))
-    }
-
     fn search_intent_request(&self) -> SearchIntentRequest {
         let toggle_case_sensitive =
             self.bind_command(search_file_commands::toggle_case_sensitive());
@@ -157,98 +153,67 @@ impl ShellView {
         })
     }
 
-    fn search_intent_presentation_lookup(&self) -> SearchIntentPresentationLookup {
-        let shortcuts = self.shortcut_lookup();
-        let titles = self.command_title_lookup();
-        Rc::new(move |intent| {
-            let command_id = search_intent_command_id(intent);
-            CommandPresentation {
-                title: titles(command_id).unwrap_or_else(|| command_id.to_string()),
-                hint: shortcuts(command_id),
-            }
-        })
-    }
-
-    fn command_presentation(
-        &self,
-        command_id: &'static str,
-        fallback_title: impl Into<String>,
-    ) -> CommandPresentation {
-        let fallback_title = fallback_title.into();
-        let app = self.runtime.app.borrow();
-        CommandPresentation {
-            title: app.command_title_for(command_id).unwrap_or(fallback_title),
-            hint: app.shortcuts_for(command_id),
-        }
-    }
-
     fn workbench_command_requests(&self) -> WorkbenchCommandRequests {
-        let file_tree = self.bind_command_id(PanelId::FileTree.toggle_command_id());
-        let version_control = self.bind_command_id(PanelId::VersionControl.toggle_command_id());
-        let outline = self.bind_command_id(PanelId::Outline.toggle_command_id());
-        let terminal = self.bind_command_id(PanelId::Terminal.toggle_command_id());
-        let debug = self.bind_command_id(PanelId::Debug.toggle_command_id());
-        let keyboard_shortcuts =
-            self.bind_command_id(PanelId::KeyboardShortcuts.toggle_command_id());
-        let panel_toggle = Rc::new(move |panel| match panel {
-            PanelId::FileTree => Rc::clone(&file_tree),
-            PanelId::VersionControl => Rc::clone(&version_control),
-            PanelId::Outline => Rc::clone(&outline),
-            PanelId::Terminal => Rc::clone(&terminal),
-            PanelId::Debug => Rc::clone(&debug),
-            PanelId::KeyboardShortcuts => Rc::clone(&keyboard_shortcuts),
-        });
-        let app = Rc::clone(&self.runtime.app);
-        let panel_toggle_presentation = Rc::new(move |panel: PanelId| {
-            let command_id = panel.toggle_command_id();
-            let app = app.borrow();
-            CommandPresentation {
-                title: app
-                    .command_title_for(command_id)
-                    .unwrap_or_else(|| command_id.to_string()),
-                hint: app.shortcuts_for(command_id),
+        let title = self.command_title_lookup();
+        let shortcut = self.shortcut_lookup();
+
+        let binding = |cmd_id: &'static str, inv: Invocation| -> CommandBinding {
+            CommandBinding {
+                id: cmd_id.to_string(),
+                title: Rc::clone(&title),
+                shortcut: Rc::clone(&shortcut),
+                request: self.bind_command(inv),
+            }
+        };
+
+        let panel_toggle = Rc::new({
+            let this = Rc::clone(&self.runtime.host_intent);
+            move |panel: PanelId| {
+                let command_id =
+                    CommandId::new(panel.toggle_command_id()).expect("内建命令 ID 必须非空");
+                actions::bind_command_request(
+                    Rc::clone(&this),
+                    (command_id, CommandArgs::new().with("via", "pointer")),
+                )
             }
         });
 
         WorkbenchCommandRequests {
-            project_picker_open: self.bind_command(project_picker_commands::show_projects_picker()),
-            project_picker_open_presentation: self.command_presentation(
+            project_picker_open: binding(
                 project_picker_commands::SHOW_PROJECTS_PICKER,
-                project_picker_commands::SHOW_PROJECTS_PICKER,
+                project_picker_commands::show_projects_picker(),
             ),
-            settings_open: self.bind_command(settings_commands::open()),
-            settings_open_presentation: self
-                .command_presentation(settings_commands::OPEN, settings_commands::OPEN),
-            language_servers_open: self.bind_command(language_server_commands::open()),
-            language_servers_open_presentation: self.command_presentation(
+            settings_open: binding(settings_commands::OPEN, settings_commands::open()),
+            language_servers_open: binding(
                 language_server_commands::OPEN,
-                language_server_commands::OPEN,
+                language_server_commands::open(),
             ),
-            diagnostics_show_problems: self.bind_command(diagnostics_commands::show_problems()),
-            diagnostics_show_problems_presentation: self.command_presentation(
+            diagnostics_show_problems: binding(
                 diagnostics_commands::SHOW_PROBLEMS,
-                diagnostics_commands::SHOW_PROBLEMS,
+                diagnostics_commands::show_problems(),
             ),
-            project_search_activate: self.bind_command(search_project_commands::project_activate()),
-            project_search_activate_presentation: self.command_presentation(
+            project_search_activate: binding(
                 search_project_commands::PROJECT_ACTIVATE,
-                search_project_commands::PROJECT_ACTIVATE,
+                search_project_commands::project_activate(),
             ),
-            editor_close_tab: self.bind_command(editor_commands::close_tab()),
-            editor_close_tab_presentation: self
-                .command_presentation(editor_commands::CLOSE_TAB, editor_commands::CLOSE_TAB),
-            editor_open_preview: self.bind_command(editor_commands::open_preview()),
-            editor_open_preview_presentation: self
-                .command_presentation(editor_commands::OPEN_PREVIEW, "Markdown 预览"),
-            file_search_activate: self.bind_command(search_file_commands::activate()),
-            file_search_activate_presentation: self.command_presentation(
+            editor_close_tab: binding(editor_commands::CLOSE_TAB, editor_commands::close_tab()),
+            editor_open_preview: binding(
+                editor_commands::OPEN_PREVIEW,
+                editor_commands::open_preview(),
+            ),
+            file_search_activate: binding(
                 search_file_commands::ACTIVATE,
-                search_file_commands::ACTIVATE,
+                search_file_commands::activate(),
+            ),
+            editor_go_to_line: binding(editor_commands::GO_TO_LINE, editor_commands::go_to_line()),
+            editor_change_language: binding(
+                editor_commands::CHANGE_LANGUAGE,
+                editor_commands::change_language(),
             ),
             panel_toggle,
-            panel_toggle_presentation,
             search_intent: self.search_intent_request(),
-            search_intent_presentation: self.search_intent_presentation_lookup(),
+            shortcut_lookup: shortcut,
+            title_lookup: title,
         }
     }
 
@@ -294,18 +259,6 @@ fn settings_intent_invocation(intent: settings::SettingsIntent) -> Invocation {
         settings::SettingsIntent::Change(change) => {
             settings_commands::apply_change(settings_change_request(change))
         }
-    }
-}
-
-fn search_intent_command_id(intent: SearchIntent) -> &'static str {
-    match intent {
-        SearchIntent::ToggleCaseSensitive => search_file_commands::TOGGLE_CASE_SENSITIVE,
-        SearchIntent::ToggleWholeWord => search_file_commands::TOGGLE_WHOLE_WORD,
-        SearchIntent::ToggleRegex => search_file_commands::TOGGLE_REGEX,
-        SearchIntent::FindPrevious => search_file_commands::FIND_PREVIOUS,
-        SearchIntent::FindNext => search_file_commands::FIND_NEXT,
-        SearchIntent::ReplaceNext => search_file_commands::REPLACE_NEXT,
-        SearchIntent::ReplaceAll => search_file_commands::REPLACE_ALL,
     }
 }
 

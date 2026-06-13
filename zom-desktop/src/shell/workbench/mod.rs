@@ -32,12 +32,9 @@ use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::{
     self, ConfirmDeleteHandlers, FileTreePanel, FileTreeState,
 };
-use crate::shell::features::search::{
-    SearchIntentPresentationLookup, SearchIntentRequest, SearchRuntime, SearchState,
-};
-use crate::shell::{
-    CommandCatalogLookup, CommandPresentation, CommandTitleLookup, ShortcutLookup, focus_request,
-};
+use crate::shell::features::search::{SearchIntentRequest, SearchRuntime, SearchState};
+use crate::shell::shared::CommandBinding;
+use crate::shell::{CommandCatalogLookup, CommandTitleLookup, ShortcutLookup, focus_request};
 use crate::theme::{color, typography};
 use crate::ui_id::PanelId;
 
@@ -65,26 +62,20 @@ pub(crate) struct WorkbenchFeatureStates<'a> {
 
 #[derive(Clone)]
 pub(crate) struct WorkbenchCommandRequests {
-    pub(crate) project_picker_open: CommandRequest,
-    pub(crate) project_picker_open_presentation: CommandPresentation,
-    pub(crate) settings_open: CommandRequest,
-    pub(crate) settings_open_presentation: CommandPresentation,
-    pub(crate) language_servers_open: CommandRequest,
-    pub(crate) language_servers_open_presentation: CommandPresentation,
-    pub(crate) diagnostics_show_problems: CommandRequest,
-    pub(crate) diagnostics_show_problems_presentation: CommandPresentation,
-    pub(crate) project_search_activate: CommandRequest,
-    pub(crate) project_search_activate_presentation: CommandPresentation,
-    pub(crate) editor_close_tab: CommandRequest,
-    pub(crate) editor_close_tab_presentation: CommandPresentation,
-    pub(crate) editor_open_preview: CommandRequest,
-    pub(crate) editor_open_preview_presentation: CommandPresentation,
-    pub(crate) file_search_activate: CommandRequest,
-    pub(crate) file_search_activate_presentation: CommandPresentation,
+    pub(crate) project_picker_open: CommandBinding,
+    pub(crate) settings_open: CommandBinding,
+    pub(crate) language_servers_open: CommandBinding,
+    pub(crate) diagnostics_show_problems: CommandBinding,
+    pub(crate) project_search_activate: CommandBinding,
+    pub(crate) editor_close_tab: CommandBinding,
+    pub(crate) editor_open_preview: CommandBinding,
+    pub(crate) file_search_activate: CommandBinding,
+    pub(crate) editor_go_to_line: CommandBinding,
+    pub(crate) editor_change_language: CommandBinding,
     pub(crate) panel_toggle: Rc<dyn Fn(PanelId) -> CommandRequest>,
-    pub(crate) panel_toggle_presentation: Rc<dyn Fn(PanelId) -> CommandPresentation>,
     pub(crate) search_intent: SearchIntentRequest,
-    pub(crate) search_intent_presentation: SearchIntentPresentationLookup,
+    pub(crate) shortcut_lookup: ShortcutLookup,
+    pub(crate) title_lookup: CommandTitleLookup,
 }
 
 pub(crate) fn render(

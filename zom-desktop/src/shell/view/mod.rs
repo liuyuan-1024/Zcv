@@ -205,6 +205,10 @@ impl ShellView {
                 search_file_commands::ACTIVATE,
                 search_file_commands::activate(),
             ),
+            file_search_dismiss: binding(
+                search_file_commands::DISMISS,
+                search_file_commands::dismiss(),
+            ),
             editor_go_to_line: binding(editor_commands::GO_TO_LINE, editor_commands::go_to_line()),
             editor_change_language: binding(
                 editor_commands::CHANGE_LANGUAGE,

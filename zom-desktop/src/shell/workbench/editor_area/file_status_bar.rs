@@ -50,7 +50,7 @@ pub(crate) fn render(
         .text_size(typography::ui())
         .line_height(typography::ui_line())
         .text_color(color::current().gray.s09)
-        .child(header_row(active_tab, commands));
+        .child(header_row(active_tab, search_open, commands));
 
     if search_open {
         bar = bar.child(search_runtime.render(
@@ -68,7 +68,7 @@ pub(crate) fn render(
     bar
 }
 
-fn header_row(tab: &EditorTab, commands: &WorkbenchCommandRequests) -> Div {
+fn header_row(tab: &EditorTab, search_open: bool, commands: &WorkbenchCommandRequests) -> Div {
     div()
         .flex()
         .flex_row()
@@ -76,7 +76,7 @@ fn header_row(tab: &EditorTab, commands: &WorkbenchCommandRequests) -> Div {
         .gap(space::s8())
         .child(path_label(tab))
         .child(div().flex_1())
-        .child(action_slot(tab, commands))
+        .child(action_slot(tab, search_open, commands))
 }
 
 /// 左侧路径标签：优先项目相对路径，回退到 tab 文件名。
@@ -95,7 +95,11 @@ fn path_label(tab: &EditorTab) -> Div {
 }
 
 /// 右侧动作槽。点击 glyph 与快捷键共享同一条命令路径。
-fn action_slot(tab: &EditorTab, commands: &WorkbenchCommandRequests) -> AnyElement {
+fn action_slot(
+    tab: &EditorTab,
+    search_open: bool,
+    commands: &WorkbenchCommandRequests,
+) -> AnyElement {
     let mut actions: Vec<AnyElement> = Vec::new();
 
     // Markdown 预览 glyph（仅在可预览文件上显示）
@@ -109,11 +113,16 @@ fn action_slot(tab: &EditorTab, commands: &WorkbenchCommandRequests) -> AnyEleme
         );
     }
 
-    // 文件搜索 glyph（常驻）
+    // 文件搜索 glyph（常驻）：打开时高亮，点击可关闭。
+    let search_command = if search_open {
+        commands.file_search_dismiss.clone()
+    } else {
+        commands.file_search_activate.clone()
+    };
     actions.push(
         Glyph::icon("file-status-bar.search", FILE_SEARCH_ICON)
-            .active(false)
-            .command(commands.file_search_activate.clone())
+            .active(search_open)
+            .command(search_command)
             .render(),
     );
 

@@ -70,6 +70,7 @@ pub(crate) struct WorkbenchCommandRequests {
     pub(crate) editor_close_tab: CommandBinding,
     pub(crate) editor_open_preview: CommandBinding,
     pub(crate) file_search_activate: CommandBinding,
+    pub(crate) file_search_dismiss: CommandBinding,
     pub(crate) editor_go_to_line: CommandBinding,
     pub(crate) editor_change_language: CommandBinding,
     pub(crate) panel_toggle: Rc<dyn Fn(PanelId) -> CommandRequest>,

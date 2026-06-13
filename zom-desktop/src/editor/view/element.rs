@@ -1,12 +1,8 @@
 //! 可嵌入编辑器渲染图元 —— 唯一的编辑器实现（借鉴 Zed 的 `EditorElement`）。
 //!
-//! 单行输入框与主编辑区不是两种编辑器，而是同一个
-//! [`EditorKernel`](crate::editor::EditorKernel) 按能力开关创建出的两个形态；本文件只
-//! 消费内核传下来的能力开关并完成 GPUI 绘制。
+//! 单行输入框与主编辑区不是两种编辑器，而是同一个[`EditorKernel`](crate::editor::EditorKernel) 按能力开关创建出的两个形态；本文件只费内核传下来的能力开关并完成 GPUI 绘制。
 //!
-//! 文本与光标分层绘制：每帧把视口内每行 shape 成 [`ShapedLine`]，文本只随
-//! 内容变化，光标只是一个独立填充矩形 —— 移动光标不触发文本重排，这是
-//! 「不闪烁」的根因。
+//! 文本与光标分层绘制：每帧把视口内每行 shape 成 [`ShapedLine`]，文本只随内容变化，光标只是一个独立填充矩形 —— 移动光标不触发文本重排，这是「不闪烁」的根因。
 //!
 //! 视口切片：snapshot 已经按 view 当前 `(top_line, visible_logical_lines)` 给出一段 `SnapshotLine[]`，element 只 shape 这一段；
 //! `total_lines` 决定`content_height`，从而支持 GB 级文件不爆显存。
@@ -18,8 +14,7 @@
 //! 软换行：开关由 [`EditorKernel::soft_wrap`] 控制，运行时可切换。
 //! 开启后每条逻辑行可能被拆成多条「视觉行」（sub-row），prepaint 阶段在 shape 完一次全行后用 [`zom_view::compute_segments`] 按视口宽度算出断点字节列表，再为每段 sub-row 重 shape。
 //! 分行规则与 CJK 边界判定都内聚在 zom-view 的 wrap 模块——这里只负责测量与绘制。
-//! 下游 phases / gutter 一律按视觉行索引消费；`PrepaintedLine` 的
-//! `line_start_byte` / `line_len` 直接描述当前视觉段的字节边界。
+//! 下游 phases / gutter 一律按视觉行索引消费；`PrepaintedLine` 的 `line_start_byte` / `line_len` 直接描述当前视觉段的字节边界。
 //! 软换行打开时禁用横向滚动，viewport_sync 回写的不是视觉行数而是「下一帧切多少条逻辑行就够铺满视口」。
 //!
 //! 滚动有两条独立路径，共存于 [`Self::prepaint`]：
@@ -28,8 +23,7 @@
 //! 响应外部 [`zom_view::RevealRequest`]（搜索 / goto-* 等命令调 `view.request_reveal(...)` 投递）。
 //! 按 [`RevealKind`] 翻译成具体摆位策略；每个 seq 只触发一次。
 //! - **edge-scroll 路径**：
-//! caret 跟随。永远跑，作为兜底。reveal 摆完位置后，edge-scroll 仍会跑，保证 caret 真的可见
-//! —— 哪怕 reveal 把 reveal byte 摆到上 1/3 但 caret（=match end）跨了多行被推到视区外，edge-scroll 会把它拉回来。
+//! caret 跟随。永远跑，作为兜底。reveal 摆完位置后，edge-scroll 仍会跑，保证 caret 真的可见 —— 哪怕 reveal 把 reveal byte 摆到上 1/3 但 caret（=match end）跨了多行被推到视区外，edge-scroll 会把它拉回来。
 //!
 //! 两条路径共用一份跨帧滚动偏移（[`EditorScroll`]），存于 GPUI 元素状态。
 
@@ -37,9 +31,9 @@ use std::panic::Location;
 use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, ContentMask, Element, ElementId, FocusHandle, GlobalElementId, Hitbox,
-    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, ShapedLine,
-    SharedString, Style, TextRun, Window, point, px, relative, size,
+    App, Bounds, ContentMask, CursorStyle, Element, ElementId, FocusHandle, GlobalElementId,
+    Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point,
+    ShapedLine, SharedString, Style, TextRun, Window, point, px, relative, size,
 };
 
 use zom_engine::{SelectionSet, TextRange};
@@ -833,6 +827,7 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        window.set_cursor_style(CursorStyle::IBeam, &prepaint.mouse_hitbox);
         let line_height = prepaint.line_height;
         let scroll = prepaint.scroll;
         if let (Some(selection_hook), Some(pointer_session)) =

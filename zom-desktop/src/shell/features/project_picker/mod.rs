@@ -24,7 +24,8 @@ pub(crate) use model::{
 pub(crate) use recent::{RecentProject, RecentProjects};
 pub(crate) use surface::{ProjectPickerInitialMode, ProjectPickerRuntime, request};
 
-/// 顶栏项目入口的稳定入口 id。功能 owns 它，承载它的 bar 只负责写入 element。
+/// 顶栏项目入口的稳定入口 id。
+/// 功能 owns 它，承载它的 bar 只负责写入 element。
 pub(crate) const INVOKER_ID: &str = "top-bar.workspace";
 
 pub(crate) type ProjectListRequest = Rc<dyn Fn() -> Vec<RecentProject>>;
@@ -35,6 +36,9 @@ pub(crate) type ProjectPickerIntentRequest =
 #[derive(Clone)]
 pub(crate) enum ProjectPickerIntent {
     RemoveRecentProject { id: String },
+    Activate,
+    OpenLocalProject,
+    StartGitClone,
 }
 
 #[derive(Clone)]
@@ -46,6 +50,8 @@ pub(crate) struct ProjectPickerActions {
     pub(crate) remove_recent_command: CommandBinding,
     pub(crate) shortcut_lookup: ShortcutLookup,
     pub(crate) command_title_lookup: CommandTitleLookup,
+    /// 点击行时先选中再发 Activate intent。
+    pub(crate) select: Rc<dyn Fn(usize)>,
 }
 
 pub(crate) fn entry(project_title: &str, active: bool, command: CommandBinding) -> AnyElement {

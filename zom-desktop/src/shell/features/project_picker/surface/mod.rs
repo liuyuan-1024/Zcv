@@ -79,6 +79,10 @@ impl ProjectPickerRuntime {
         self.model.borrow().selected_project_id(projects)
     }
 
+    pub(crate) fn select(&self, index: usize, projects: &[RecentProject]) {
+        self.model.borrow_mut().select(index, projects);
+    }
+
     pub(crate) fn move_selection(&self, delta: isize, projects: &[RecentProject]) {
         self.model.borrow_mut().move_selection(delta, projects);
     }

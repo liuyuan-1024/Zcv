@@ -1,16 +1,14 @@
 //! 文件树的具体行渲染。
 //!
-//! 输入：[`FileTreeState`] 已是 flatten 后的可见行序列（已应用展开/折叠 +
-//! 排序），本文件负责"画出来"+"接受键盘焦点并把按键转给 App"。
+//! 输入：[`FileTreeState`] 已是 flatten 后的可见行序列（已应用展开/折叠 + 排序），本文件负责"画出来"+"接受键盘焦点并把按键转给 App"。
 //!
-//! 焦点宿主（track_focus + on_key_down 的那个外层 div）在任何状态下都得
-//! 在树里——包括"尚未打开项目"占位——否则在打开项目的瞬间 `window.focus`
-//! 找不到挂载点，焦点请求就会丢失。
+//! 焦点宿主（track_focus + on_key_down 的那个外层 div）在任何状态下都得在树里——包括"尚未打开项目"占位——否则在打开项目的瞬间 `window.focus` 找不到挂载点，焦点请求就会丢失。
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::rc::Rc;
 
-use gpui::{AnyElement, Div, Svg, div, prelude::*, svg, uniform_list};
+use gpui::{AnyElement, Div, MouseButton, Svg, Window, div, prelude::*, svg, uniform_list};
 
 use crate::editor::TextEditorSlot;
 use crate::shell::normalized_chord;
@@ -45,6 +43,7 @@ pub(super) fn render(ctx: PanelContext<'_>) -> Div {
             panel.new_entry_slot,
             panel.rename_slot,
             panel.scroll,
+            panel.on_item_click,
         )
         .into_any_element()
     };
@@ -69,6 +68,7 @@ fn render_list(
     new_entry_slot: &Rc<TextEditorSlot>,
     rename_slot: &Rc<TextEditorSlot>,
     scroll_handle: &scroll::ScrollHandle,
+    on_item_click: &Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>,
 ) -> Div {
     let items = logical_items(state);
     let selected_item = selected_item_index(&items, state);
@@ -87,6 +87,7 @@ fn render_list(
     let active = state.active.clone();
     let new_entry_slot = Rc::clone(new_entry_slot);
     let rename_slot = Rc::clone(rename_slot);
+    let on_item_click = Rc::clone(on_item_click);
     if let Some(index) = selected_item.filter(|index| *index < items.len()) {
         scroll_handle.reveal_item_if_changed(index);
     }
@@ -108,6 +109,7 @@ fn render_list(
                             &cut_paths,
                             active.as_ref(),
                             is_focused,
+                            &on_item_click,
                         )
                         .into_any_element(),
                         FileTreeItem::Pending(pending) => {
@@ -232,6 +234,7 @@ fn render_row(
     cut_paths: &BTreeSet<std::path::PathBuf>,
     active: Option<&std::path::PathBuf>,
     is_focused: bool,
+    on_item_click: &Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>,
 ) -> Div {
     let is_selected = selected.map(|p| p == &row.path).unwrap_or(false);
     let is_in_selection = selection.contains(&row.path);
@@ -284,6 +287,13 @@ fn render_row(
                 .truncate()
                 .child(row.name.clone()),
         );
+    let click_path = row.path.clone();
+    let on_click = Rc::clone(on_item_click);
+    row_div = row_div
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            on_click(click_path.clone(), window, cx)
+        });
     // 剪切待粘贴的行：整行降透明度，向用户提示"它将被移走"。
     // 粘贴成功后 model 清空剪贴板、cut_paths 也清空，该效果随之消失。
     if is_cut {

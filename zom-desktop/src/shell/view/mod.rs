@@ -7,7 +7,7 @@ pub(crate) mod focus;
 mod frame_tick;
 mod runtime;
 
-use std::rc::Rc;
+use std::{path::PathBuf, rc::Rc};
 
 use gpui::{Context, FocusHandle, IntoElement, Render, ScrollHandle, Window};
 use zom_command::commands::{
@@ -345,11 +345,20 @@ impl Render for ShellView {
         // file_tree_panel 借用此 clone；下面把 `key_request` 本体 move 给 `workbench::render`。
         // 借用与移动落到不同的 Rc 副本上，互不冲突。
         let key_request_for_panel = Rc::clone(&key_request);
+        let on_item_click: Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)> = {
+            let file_tree = runtime.features.file_tree.clone();
+            let activate = self.bind_command(file_tree_commands::activate());
+            Rc::new(move |path, window, cx| {
+                file_tree.select(path);
+                activate(window, cx);
+            })
+        };
         let file_tree_panel = runtime.features.file_tree.panel(
             &file_tree_state,
             &key_request_for_panel,
             &runtime.file_tree_new_entry_slot,
             &runtime.file_tree_rename_slot,
+            &on_item_click,
             window,
         );
         let shortcut_lookup = self.shortcut_lookup();

@@ -30,15 +30,14 @@ use super::{FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry, PendingR
 pub(crate) struct FileTreeModel {
     pub(super) project_tree: Option<ProjectTree>,
     pub(super) selected: Option<PathBuf>,
-    /// **已提交的选区**——过去 Shift+方向"笔画"沉淀下来的、通过普通方向键
-    /// 提交的项。当前正在进行中的笔画不存在这里，而是放在
-    /// [`stroke`](Self::stroke) 里，可随 Shift+↑/↓ 自由伸缩。对外暴露
-    /// （[`state()`](Self::state) / 复制 / 粘贴 / 删除）总是看二者的并集。
+    /// **已提交的选区**——过去 Shift+方向"笔画"沉淀下来的、通过普通方向键提交的项。
+    /// 当前正在进行中的笔画不存在这里，而是放在 [`stroke`](Self::stroke) 里，可随 Shift+↑/↓ 自由伸缩。
+    /// 对外暴露（[`state()`](Self::state) / 复制 / 粘贴 / 删除）总是看二者的并集。
     pub(super) selection: BTreeSet<PathBuf>,
-    /// 当前活跃的"扩选笔画"。第一次按 Shift+方向时建立、锚定在按键时的焦点
-    /// 行；后续 Shift+↑/↓ 不再追加而是**重算 `[锚点, 新焦点]` 区间**，因此
-    /// 可以缩。普通方向键（不带 Shift）会把它的 `items` 并入
-    /// [`selection`](Self::selection) 然后清空 stroke——这一步称为"提交"。
+    /// 当前活跃的"扩选笔画"。
+    /// 第一次按 Shift+方向时建立、锚定在按键时的焦点行；
+    /// 后续 Shift+↑/↓ 不再追加而是**重算 `[锚点, 新焦点]` 区间**，因此可以缩。
+    /// 普通方向键（不带 Shift）会把它的 `items` 并入[`selection`](Self::selection) 然后清空 stroke——这一步称为"提交"。
     pub(super) stroke: Option<Stroke>,
     /// 内部剪贴板。Copy / Cut 时拍下当时的选区（空选区降级到焦点单项）。
     /// 跨进程不参与——本阶段仅 zom 内部生效。
@@ -47,8 +46,9 @@ pub(crate) struct FileTreeModel {
     pub(super) pending: Option<PendingEntry>,
     /// 正在重命名的条目；与 [`pending`](Self::pending) 互斥（同一时刻只能开一个输入框）。
     pub(super) pending_rename: Option<PendingRenameEntry>,
-    /// 正在等待确认的待删条目集合（路径 + 类型）。批量删（选区非空）与单删
-    /// （焦点回退）共用同一份字段；`None` 表示无删除确认弹窗。
+    /// 正在等待确认的待删条目集合（路径 + 类型）。
+    /// 批量删（选区非空）与单删（焦点回退）共用同一份字段；
+    /// `None` 表示无删除确认弹窗。
     pub(super) pending_delete: Option<Vec<(PathBuf, EntryKind)>>,
     /// 待发出的气泡（面向用户的错误 / 提示）。runtime 在调用模型动作后 drain。
     pub(super) pending_bubbles: Vec<BubbleRequest>,

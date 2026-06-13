@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use gpui::{Div, div, prelude::*};
+use gpui::{Div, MouseButton, div, prelude::*};
 
 use crate::shell::features::project_picker::{ProjectPickerIntent, RecentProject};
 use crate::shell::shared::{CommandBinding, Glyph};
@@ -60,6 +60,8 @@ fn project_row(
     } else {
         color::current().gray.s09
     };
+    let select = Rc::clone(&actions.select);
+    let intent_request = Rc::clone(&actions.intent_request);
     div()
         .flex()
         .flex_row()
@@ -71,6 +73,11 @@ fn project_row(
         .overflow_hidden()
         .text_size(typography::ui())
         .text_color(text_color)
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            (select)(index);
+            intent_request(ProjectPickerIntent::Activate, window, cx);
+        })
         .child(
             div()
                 .flex_1()

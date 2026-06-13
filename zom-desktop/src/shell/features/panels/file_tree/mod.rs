@@ -1,13 +1,12 @@
 //! FileTree —— L3 panel：项目目录树。
 //!
-//! 数据来源 [`zom_workspace::ProjectTree`]，App 把它转成 owned 的
-//! [`FileTreeState`] 快照传进来。面板把焦点态的按键交给宿主统一的
-//! `KeyRequest`（`KeySurface::FileTree`），由 keymap 在 `FileTree` 上下文里
-//! 解析 —— 面板自己不持有任何「按键 → 动作」的映射。
+//! 数据来源 [`zom_workspace::ProjectTree`]，App 把它转成 owned 的 [`FileTreeState`] 快照传进来。
+//! 面板把焦点态的按键交给宿主统一的 `KeyRequest`（`KeySurface::FileTree`），由 keymap 在 `FileTree` 上下文里解析 —— 面板自己不持有任何「按键 → 动作」的映射。
 
+use std::path::PathBuf;
 use std::rc::Rc;
 
-use gpui::{AnyElement, Div, FocusHandle};
+use gpui::{AnyElement, Div, FocusHandle, Window};
 
 use crate::editor::TextEditorSlot;
 use crate::host_intent::{CommandRequest, KeyRequest};
@@ -56,8 +55,8 @@ pub(crate) fn render_confirm_delete(
 
 /// 文件树面板渲染所需的所有"非状态"依赖（焦点、按键回调）。
 ///
-/// 与 [`FileTreeState`] 区分：后者是 App 端的渲染快照，可序列化；本结构是
-/// shell 端构造的回调与句柄，不进 WorkbenchState。
+/// 与 [`FileTreeState`] 区分：后者是 App 端的渲染快照，可序列化；
+/// 本结构是 shell 端构造的回调与句柄，不进 WorkbenchState。
 #[derive(Clone, Copy)]
 pub(crate) struct FileTreePanel<'a> {
     pub(crate) state: &'a FileTreeState,
@@ -68,6 +67,8 @@ pub(crate) struct FileTreePanel<'a> {
     pub(crate) scroll: &'a ScrollHandle,
     /// 当前焦点是否在文件树容器上；决定选中边框是否可见。
     pub(crate) is_focused: bool,
+    /// 点击文件树行的回调：参数为被点击行的路径。先选中再发 activate 命令。
+    pub(crate) on_item_click: &'a Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>,
 }
 
 pub(crate) fn render(ctx: PanelContext<'_>) -> Div {

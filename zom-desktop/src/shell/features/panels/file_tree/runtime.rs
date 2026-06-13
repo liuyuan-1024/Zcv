@@ -24,8 +24,8 @@ use super::{FileTreeActivation, FileTreeModel, FileTreePanel, FileTreeState};
 pub(crate) struct FileTreeRuntime {
     focus: FocusHandle,
     scroll: ScrollHandle,
-    /// 文件树 model 的真正拥有者。App 只借共享 handle 组合 workspace/views，
-    /// editor router 通过 `owner_handle` 访问 pending name/rename 输入框。
+    /// 文件树 model 的真正拥有者。
+    /// App 只借共享 handle 组合 workspace/views，editor router 通过 `owner_handle` 访问 pending name/rename 输入框。
     model: Rc<RefCell<FileTreeModel>>,
 }
 
@@ -74,6 +74,7 @@ impl FileTreeRuntime {
         key_request: &'a KeyRequest,
         new_entry_slot: &'a Rc<TextEditorSlot>,
         rename_slot: &'a Rc<TextEditorSlot>,
+        on_item_click: &'a Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>,
         window: &Window,
     ) -> FileTreePanel<'a> {
         FileTreePanel {
@@ -84,6 +85,7 @@ impl FileTreeRuntime {
             rename_slot,
             scroll: &self.scroll,
             is_focused: self.focus.is_focused(window),
+            on_item_click,
         }
     }
 
@@ -98,6 +100,10 @@ impl FileTreeRuntime {
     ) {
         self.model.borrow_mut().ensure_selection_initialized();
         super::focus::reveal_and_focus(workbench, &self.focus, window);
+    }
+
+    pub(crate) fn select(&self, path: PathBuf) {
+        self.model.borrow_mut().selected = Some(path);
     }
 
     pub(crate) fn move_selection(&self, delta: isize) {

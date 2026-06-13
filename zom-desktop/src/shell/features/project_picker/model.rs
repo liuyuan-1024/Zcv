@@ -64,6 +64,13 @@ impl ProjectPickerModel {
             .map(|project| project.id.clone())
     }
 
+    pub(crate) fn select(&mut self, index: usize, projects: &[RecentProject]) {
+        let count = filtered_projects(projects, &self.query.text()).len();
+        if index < count {
+            self.selected = index;
+        }
+    }
+
     pub(crate) fn move_selection(&mut self, delta: isize, projects: &[RecentProject]) {
         if self.mode != ProjectPickerMode::Browse {
             return;

@@ -1,7 +1,6 @@
 //! 项目选择器 HostEffect 落地。
 //!
-//! view 把 HostEffect 流过来，本模块只认 picker 相关的 6 个变体；其余
-//! 一律返回 `false`。
+//! view 把 HostEffect 流过来，本模块只认 picker 相关的 6 个变体；其余一律返回 `false`。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -38,13 +37,21 @@ pub(crate) fn try_apply_effect(
 ) -> bool {
     match effect {
         HostEffect::ShowProjectPicker => {
+            let intent_request = project_picker_intent_request(
+                project_picker_runtime.clone(),
+                Rc::clone(app),
+                Rc::clone(workbench),
+                surfaces.clone(),
+                file_tree_runtime.clone(),
+                bubbles.clone(),
+            );
             show_project_picker(
                 ProjectPickerInitialMode::Browse,
                 app,
                 surfaces,
                 editor_focus_fallback,
                 project_picker_runtime,
-                bubbles,
+                intent_request,
                 window,
                 cx,
             );
@@ -69,13 +76,21 @@ pub(crate) fn try_apply_effect(
                 project_picker_runtime.reset(ProjectPickerMode::CloneGit);
                 window.refresh();
             } else {
+                let intent_request = project_picker_intent_request(
+                    project_picker_runtime.clone(),
+                    Rc::clone(app),
+                    Rc::clone(workbench),
+                    surfaces.clone(),
+                    file_tree_runtime.clone(),
+                    bubbles.clone(),
+                );
                 show_project_picker(
                     ProjectPickerInitialMode::CloneGit,
                     app,
                     surfaces,
                     editor_focus_fallback,
                     project_picker_runtime,
-                    bubbles,
+                    intent_request,
                     window,
                     cx,
                 );
@@ -160,7 +175,7 @@ fn show_project_picker(
     surfaces: &Entity<SurfaceManager>,
     editor_focus_fallback: &FocusHandle,
     project_picker_runtime: &ProjectPickerRuntime,
-    bubbles: &Entity<BubbleRuntime>,
+    intent_request: ProjectPickerIntentRequest,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
@@ -186,8 +201,13 @@ fn show_project_picker(
         shortcut: Rc::clone(&shortcut_lookup),
         request: Rc::new(|_, _| {}),
     };
-    let intent_request =
-        project_picker_intent_request(project_picker_runtime.clone(), bubbles.clone());
+    let select = {
+        let runtime = project_picker_runtime.clone();
+        Rc::new(move |index| {
+            let recent = runtime.recent_projects();
+            runtime.select(index, &recent);
+        })
+    };
     let actions = ProjectPickerActions {
         projects,
         state,
@@ -196,6 +216,7 @@ fn show_project_picker(
         remove_recent_command,
         shortcut_lookup,
         command_title_lookup,
+        select,
     };
     open_surface(
         project_picker::request(project_picker_runtime.clone(), actions),
@@ -208,6 +229,10 @@ fn show_project_picker(
 
 fn project_picker_intent_request(
     runtime: ProjectPickerRuntime,
+    app: Rc<RefCell<App>>,
+    workbench: Rc<RefCell<WorkbenchController>>,
+    surfaces: Entity<SurfaceManager>,
+    file_tree: FileTreeRuntime,
     bubbles: Entity<BubbleRuntime>,
 ) -> ProjectPickerIntentRequest {
     Rc::new(move |intent, window, cx| match intent {
@@ -221,6 +246,60 @@ fn project_picker_intent_request(
                 });
             }
             window.refresh();
+        }
+        ProjectPickerIntent::Activate => {
+            let recent = runtime.recent_projects();
+            let activation = runtime.activation(&recent);
+            match activation {
+                ProjectPickerActivation::None => {}
+                ProjectPickerActivation::Open(project_record) => {
+                    project_session::open_recent_project(
+                        Rc::clone(&app),
+                        Rc::clone(&workbench),
+                        &surfaces,
+                        file_tree.clone(),
+                        runtime.clone(),
+                        bubbles.clone(),
+                        project_record.path,
+                        project_record.repo,
+                        window,
+                        cx,
+                    );
+                }
+                ProjectPickerActivation::CloneGit(repo) => {
+                    project_session::clone_git_project(
+                        Rc::clone(&app),
+                        Rc::clone(&workbench),
+                        &surfaces,
+                        file_tree.clone(),
+                        runtime.clone(),
+                        bubbles.clone(),
+                        repo,
+                        window,
+                        cx,
+                    );
+                }
+            }
+        }
+        ProjectPickerIntent::OpenLocalProject => {
+            project_session::open_local_project(
+                Rc::clone(&app),
+                Rc::clone(&workbench),
+                &surfaces,
+                file_tree.clone(),
+                runtime.clone(),
+                bubbles.clone(),
+                window,
+                cx,
+            );
+        }
+        ProjectPickerIntent::StartGitClone => {
+            let is_active =
+                surfaces.read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker));
+            if is_active {
+                runtime.reset(ProjectPickerMode::CloneGit);
+                window.refresh();
+            }
         }
     })
 }

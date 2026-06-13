@@ -38,7 +38,6 @@ pub(crate) fn render(
         .min_h_0()
         .bg(color::current().gray.s04)
         .border_color(color::current().gray.s05)
-        .overflow_hidden()
         .overflow_x_scroll();
 
     for tab in &state.tabs {

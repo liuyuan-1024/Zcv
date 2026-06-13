@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use gpui::{AnyElement, Div, MouseButton, Svg, Window, div, prelude::*, svg, uniform_list};
+use gpui::{AnyElement, Div, MouseButton, Svg, Window, div, prelude::*, px, svg, uniform_list};
 
 use crate::editor::TextEditorSlot;
 use crate::shell::normalized_chord;
@@ -17,7 +17,7 @@ use crate::shell::workbench::PanelContext;
 use crate::theme::{color, radius, space, typography};
 use zom_workspace::EntryKind;
 
-use super::{FileTreeRow, FileTreeState, PendingNewEntry, PendingRename};
+use super::{FileTreeRow, FileTreeState};
 
 const FOLDER_ICON: &str = "icons/files/folder.svg";
 const FOLDER_OPEN_ICON: &str = "icons/files/folder_open.svg";
@@ -26,6 +26,80 @@ const FILE_ICON: &str = "icons/files/file.svg";
 /// 单层缩进对应的像素宽度。
 fn indent_unit() -> gpui::Pixels {
     space::s12()
+}
+
+/// 从 terminal_mask 推出延续掩码：第 k 位为 1 表示第 k 层祖先在当前行之后还有更多可见后代。
+fn continuation(terminal: u64, depth: usize) -> u64 {
+    ((1 << depth) - 1) & !terminal
+}
+
+/// 渲染层级竖线：在缩进区画出纵向连线与拐角。
+///
+/// * `continuation_mask` — 延续掩码，第 k 位为 1 表示第 k 层祖先有后续兄弟。
+/// * `depth` — 该行的缩进深度。`depth == 0` 时不画任何线。
+///
+/// 祖先层的延续竖线画满整行高——行在 uniform_list 里无缝堆叠，相邻行的同层竖线自然连成一条直线。
+fn render_guide_lines(continuation_mask: u64, depth: usize) -> impl IntoElement {
+    let line_color = color::current().gray.s05;
+    let line_w = px(1.0);
+    let row_h = typography::ui_line();
+    let half_indent = indent_unit() / 2.0;
+
+    let mut container = div().absolute().top(px(0.)).left(px(0.)).w_full().h(row_h);
+
+    for k in 0..depth {
+        let x_center = indent_unit() * (k as f32) + half_indent;
+        let mid_y = row_h / 2.0;
+
+        if k < depth - 1 {
+            // 祖先层：延续时画通头竖线
+            if continuation_mask & (1 << k) != 0 {
+                container = container.child(
+                    div()
+                        .absolute()
+                        .left(x_center - line_w / 2.0)
+                        .top(px(0.))
+                        .w(line_w)
+                        .h(row_h)
+                        .bg(line_color),
+                );
+            }
+        } else {
+            // 直接父层：画拐角连接符
+            container = container.child(
+                div()
+                    .absolute()
+                    .left(x_center - line_w / 2.0)
+                    .top(px(0.))
+                    .w(line_w)
+                    .h(mid_y + line_w / 2.0)
+                    .bg(line_color),
+            );
+            if continuation_mask & (1 << k) != 0 {
+                container = container.child(
+                    div()
+                        .absolute()
+                        .left(x_center - line_w / 2.0)
+                        .top(mid_y)
+                        .w(line_w)
+                        .h(row_h - mid_y)
+                        .bg(line_color),
+                );
+            }
+            // 横线：从竖线位置连到图标左沿
+            container = container.child(
+                div()
+                    .absolute()
+                    .left(x_center)
+                    .top(mid_y - line_w / 2.0)
+                    .w(half_indent + space::s4())
+                    .h(line_w)
+                    .bg(line_color),
+            );
+        }
+    }
+
+    container
 }
 
 pub(super) fn render(ctx: PanelContext<'_>) -> Div {
@@ -112,14 +186,20 @@ fn render_list(
                             &on_item_click,
                         )
                         .into_any_element(),
-                        FileTreeItem::Pending(pending) => {
-                            render_input_row(pending.kind, pending.depth, &new_entry_slot)
-                                .into_any_element()
-                        }
-                        FileTreeItem::Rename(rename) => {
-                            render_input_row(rename.kind, rename.depth, &rename_slot)
-                                .into_any_element()
-                        }
+                        FileTreeItem::Pending(pending) => render_input_row(
+                            pending.kind,
+                            pending.depth,
+                            pending.terminal,
+                            &new_entry_slot,
+                        )
+                        .into_any_element(),
+                        FileTreeItem::Rename(rename) => render_input_row(
+                            rename.kind,
+                            rename.depth,
+                            rename.terminal,
+                            &rename_slot,
+                        )
+                        .into_any_element(),
                     })
                     .collect()
             })
@@ -132,8 +212,17 @@ fn render_list(
 #[derive(Clone)]
 enum FileTreeItem {
     Row(FileTreeRow),
-    Pending(PendingNewEntry),
-    Rename(PendingRename),
+    Pending(PendingItem),
+    Rename(PendingItem),
+}
+
+/// Pending 和 Rename 行的数据在逻辑行构造时补上 terminal_mask，
+/// 避免专门新建一个 state 字段。
+#[derive(Clone)]
+struct PendingItem {
+    kind: EntryKind,
+    depth: usize,
+    terminal: u64,
 }
 
 fn logical_items(state: &FileTreeState) -> Vec<FileTreeItem> {
@@ -143,15 +232,24 @@ fn logical_items(state: &FileTreeState) -> Vec<FileTreeItem> {
         if let Some(rename) = &state.pending_rename
             && rename.path == row.path
         {
-            items.push(FileTreeItem::Rename(rename.clone()));
+            items.push(FileTreeItem::Rename(PendingItem {
+                kind: rename.kind,
+                depth: rename.depth,
+                terminal: row.terminal_mask,
+            }));
             continue;
         }
         items.push(FileTreeItem::Row(row.clone()));
-        // 新建条目的输入行紧跟在其父目录行之后。
+        // 新建条目的输入行紧跟在其父目录行之后，是父目录的"最后一个子项"。
         if let Some(pending) = &state.pending
             && pending.parent == row.path
         {
-            items.push(FileTreeItem::Pending(pending.clone()));
+            let terminal = row.terminal_mask | (1 << row.depth);
+            items.push(FileTreeItem::Pending(PendingItem {
+                kind: pending.kind,
+                depth: pending.depth,
+                terminal,
+            }));
         }
     }
     items
@@ -177,24 +275,31 @@ fn selected_item_index(items: &[FileTreeItem], state: &FileTreeState) -> Option<
 
 /// 内联输入行：新建 / 重命名共用。图标按目标类型挑（重命名时取原条目类型），
 /// 文本与光标由 slot.embed 内部从 router 拉。
-fn render_input_row(kind: EntryKind, depth: usize, slot: &Rc<TextEditorSlot>) -> Div {
+fn render_input_row(
+    kind: EntryKind,
+    depth: usize,
+    terminal: u64,
+    slot: &Rc<TextEditorSlot>,
+) -> Div {
     let icon = match kind {
         EntryKind::Directory => FOLDER_OPEN_ICON,
         EntryKind::File => FILE_ICON,
     };
+    let cont = continuation(terminal, depth);
     div()
+        .relative()
         .flex()
         .flex_row()
         .items_center()
         .w_full()
         .gap(space::s4())
-        .overflow_hidden()
         .rounded(radius::r2())
         .border_1()
         .border_color(color::current().blue.s07)
         .pl(indent_unit() * (depth as f32) + space::s4())
         .text_size(typography::ui())
         .text_color(color::current().gray.s09)
+        .child(render_guide_lines(cont, depth))
         .child(
             div().flex_shrink_0().size(typography::ui_line()).child(
                 svg()
@@ -264,13 +369,14 @@ fn render_row(
         color::current().gray.s09
     };
 
+    let cont = continuation(row.terminal_mask, row.depth);
     let mut row_div = div()
+        .relative()
         .flex()
         .flex_row()
         .items_center()
         .w_full()
         .gap(space::s4())
-        .overflow_hidden()
         .rounded(radius::r2())
         .border_1()
         .border_color(border_color)
@@ -279,6 +385,7 @@ fn render_row(
         .text_size(typography::ui())
         .line_height(typography::ui_line())
         .text_color(text_color)
+        .child(render_guide_lines(cont, row.depth))
         .child(icon_cell(row))
         .child(
             div()

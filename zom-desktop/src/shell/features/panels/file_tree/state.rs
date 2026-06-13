@@ -81,6 +81,8 @@ pub(crate) struct FileTreeRow {
     pub(crate) depth: usize,
     pub(crate) kind: EntryKind,
     pub(crate) expanded: bool,
+    /// 第 k 位为 1 表示该行是其第 k 层祖先的最后一个可见后代。
+    pub(crate) terminal_mask: u64,
 }
 
 /// `file_tree_activate` 的反馈，用于让 shell 决定是否把焦点切回 editor。

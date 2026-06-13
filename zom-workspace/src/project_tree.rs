@@ -77,6 +77,9 @@ pub struct TreeRow<'a> {
     pub kind: EntryKind,
     /// 仅对目录有意义；文件恒为 false。
     pub expanded: bool,
+    /// 第 k 位为 1 表示该行是其第 k 层祖先的最后一个可见后代。
+    /// 视图层据此在缩进区决定竖线延续还是收尾。
+    pub terminal_mask: u64,
 }
 
 /// 项目目录树。
@@ -327,18 +330,31 @@ impl ProjectTree {
             depth: 0,
             kind: EntryKind::Directory,
             expanded: root_expanded,
+            terminal_mask: 0,
         });
         if root_expanded {
-            self.collect_visible(&self.root, 1, &mut rows);
+            self.collect_visible(&self.root, 1, 0, &mut rows);
         }
         rows
     }
 
-    fn collect_visible<'a>(&'a self, dir: &Path, depth: usize, rows: &mut Vec<TreeRow<'a>>) {
+    fn collect_visible<'a>(
+        &'a self,
+        dir: &Path,
+        depth: usize,
+        parent_terminal: u64,
+        rows: &mut Vec<TreeRow<'a>>,
+    ) {
         let Some(entries) = self.children.get(dir) else {
             return;
         };
-        for entry in entries {
+        let last = entries.len().saturating_sub(1);
+        for (i, entry) in entries.iter().enumerate() {
+            let is_last = i == last;
+            let mut terminal = parent_terminal;
+            if is_last {
+                terminal |= 1 << (depth - 1);
+            }
             let expanded =
                 matches!(entry.kind, EntryKind::Directory) && self.expanded.contains(&entry.path);
             rows.push(TreeRow {
@@ -347,9 +363,10 @@ impl ProjectTree {
                 depth,
                 kind: entry.kind,
                 expanded,
+                terminal_mask: terminal,
             });
             if expanded {
-                self.collect_visible(&entry.path, depth + 1, rows);
+                self.collect_visible(&entry.path, depth + 1, terminal, rows);
             }
         }
     }

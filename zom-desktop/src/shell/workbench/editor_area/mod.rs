@@ -52,6 +52,7 @@ pub(crate) fn render(
             editor_state,
             tab_scroll,
             &commands.editor_close_tab,
+            &commands.tab_select,
         ));
     }
     // 文件状态栏：仅在有活动文件时出现；搜索打开时由它在内部追加搜索第二行。

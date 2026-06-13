@@ -22,6 +22,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
+use zom_view::ViewId;
 
 use crate::editor::TextEditorSlot;
 use crate::editor::text::EditorSnapshot;
@@ -77,6 +78,7 @@ pub(crate) struct WorkbenchCommandRequests {
     pub(crate) search_intent: SearchIntentRequest,
     pub(crate) shortcut_lookup: ShortcutLookup,
     pub(crate) title_lookup: CommandTitleLookup,
+    pub(crate) tab_select: Rc<dyn Fn(ViewId, &mut Window, &mut gpui::App)>,
 }
 
 pub(crate) fn render(

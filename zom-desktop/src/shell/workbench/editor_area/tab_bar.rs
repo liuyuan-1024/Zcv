@@ -10,7 +10,8 @@
 
 use std::rc::Rc;
 
-use gpui::{AnyElement, Rgba, ScrollHandle, SharedString, Stateful, div, prelude::*};
+use gpui::{AnyElement, MouseButton, Rgba, ScrollHandle, SharedString, Stateful, Window, div, prelude::*};
+use zom_view::ViewId;
 
 use crate::editor_state::{EditorState, EditorTab};
 use crate::shell::shared::{CommandBinding, Glyph};
@@ -20,6 +21,7 @@ pub(crate) fn render(
     state: &EditorState,
     scroll: ScrollHandle,
     close_active_tab: &CommandBinding,
+    on_item_click: &Rc<dyn Fn(ViewId, &mut Window, &mut gpui::App)>,
 ) -> Stateful<gpui::Div> {
     // 把活动标签滚进可视区——scroll_to_item 记下目标，实际滚动在 prepaint 完成。
     if let Some(active) = state.tabs.iter().position(|tab| tab.is_active) {
@@ -40,12 +42,16 @@ pub(crate) fn render(
         .overflow_x_scroll();
 
     for tab in &state.tabs {
-        bar = bar.child(render_tab(tab, close_active_tab));
+        bar = bar.child(render_tab(tab, close_active_tab, on_item_click));
     }
     bar
 }
 
-fn render_tab(tab: &EditorTab, close_active_tab: &CommandBinding) -> Stateful<gpui::Div> {
+fn render_tab(
+    tab: &EditorTab,
+    close_active_tab: &CommandBinding,
+    on_item_click: &Rc<dyn Fn(ViewId, &mut Window, &mut gpui::App)>,
+) -> Stateful<gpui::Div> {
     // 活动标签背景与编辑器正文一致，标签与内容视觉连成一体；
     // 非活动标签透明底，沿用标签栏自身的 s04 底色。
     let (bg, text) = if tab.is_active {
@@ -57,6 +63,8 @@ fn render_tab(tab: &EditorTab, close_active_tab: &CommandBinding) -> Stateful<gp
     // 每个标签一个唯一 group：让关闭 glyph 只在悬停「本标签」时显现，而不会因为同名 group 连带点亮其它标签。
     let hover_group = SharedString::from(format!("editor-tab-{}", tab.element_key()));
 
+    let view_id = tab.view_id;
+    let click = Rc::clone(on_item_click);
     div()
         .id(("editor-tab", tab.element_key() as usize))
         .group(hover_group.clone())
@@ -70,6 +78,10 @@ fn render_tab(tab: &EditorTab, close_active_tab: &CommandBinding) -> Stateful<gp
         .text_size(typography::ui())
         .line_height(typography::ui_line())
         .text_color(text)
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            click(view_id, window, cx);
+        })
         // 修改标志放文字左侧；标志槽常驻，dirty 切换时文字不跳。
         .child(dirty_marker(tab.dirty, text))
         .child(div().whitespace_nowrap().child(tab.title.clone()))

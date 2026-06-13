@@ -18,6 +18,7 @@ use zom_command::commands::{
     settings as settings_commands, window as window_commands,
 };
 use zom_command::{CommandArgs, CommandId, Invocation, SettingsChangeRequest};
+use zom_view::ViewId;
 
 use crate::app::App;
 use crate::focus::AppFocus;
@@ -178,6 +179,14 @@ impl ShellView {
             }
         });
 
+        let tab_select: Rc<dyn Fn(ViewId, &mut Window, &mut gpui::App)> = {
+            let app = Rc::clone(&self.runtime.app);
+            Rc::new(move |view_id, window, _cx| {
+                app.borrow_mut().activate_view_tab(view_id);
+                window.refresh();
+            })
+        };
+
         WorkbenchCommandRequests {
             project_picker_open: binding(
                 project_picker_commands::SHOW_PROJECTS_PICKER,
@@ -218,6 +227,7 @@ impl ShellView {
             search_intent: self.search_intent_request(),
             shortcut_lookup: shortcut,
             title_lookup: title,
+            tab_select,
         }
     }
 

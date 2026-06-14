@@ -20,7 +20,7 @@ pub(crate) mod workbench;
 
 pub use boot::run;
 pub(crate) use shared::interaction::{
-    CommandCatalogLookup, CommandTitleLookup, FocusRequest,
-    FocusRequestTarget, InteractionRequest, ShortcutLookup, focus_request,
+    CommandCatalogLookup, CommandTitleLookup, FocusRequest, FocusRequestTarget, InteractionRequest,
+    ShortcutLookup, focus_request,
 };
 pub(crate) use shared::keyboard::normalized_chord;

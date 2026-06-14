@@ -10,7 +10,9 @@
 
 use std::rc::Rc;
 
-use gpui::{AnyElement, MouseButton, Rgba, ScrollHandle, SharedString, Stateful, Window, div, prelude::*};
+use gpui::{
+    AnyElement, MouseButton, Rgba, ScrollHandle, SharedString, Stateful, Window, div, prelude::*,
+};
 use zom_view::ViewId;
 
 use crate::editor_state::{EditorState, EditorTab};

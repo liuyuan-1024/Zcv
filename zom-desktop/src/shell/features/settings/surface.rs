@@ -5,16 +5,14 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    Context, Div, Entity, FocusHandle, InteractiveElement, ListAlignment, ListState, MouseButton,
+    Context, Div, FocusHandle, InteractiveElement, ListAlignment, ListState, MouseButton,
     Window, div, list, prelude::*, px,
 };
 
 use crate::config::{AppConfig, SettingsChange};
-use crate::host_intent::KeyRequest;
-use crate::shell::normalized_chord;
 use crate::shell::shared::scroll;
-use crate::shell::surfaces::{SurfaceAnchor, SurfaceManager, SurfaceRequest, WindowPosition};
-use crate::theme::{color, radius, space, typography};
+use crate::shell::surfaces::{SurfaceAnchor, SurfaceRequest, WindowPosition};
+use crate::theme::{color, radius, space};
 use crate::ui_id::SurfaceId;
 
 #[derive(Clone, Debug)]
@@ -57,7 +55,6 @@ pub(crate) type SettingsIntentRequest = Rc<dyn Fn(SettingsIntent, &mut Window, &
 pub(crate) struct SettingsRuntime {
     focus: FocusHandle,
     list_state: ListState,
-    key_request: Rc<RefCell<Option<KeyRequest>>>,
     intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
     state: Rc<RefCell<SettingsPanelState>>,
 }
@@ -68,14 +65,9 @@ impl SettingsRuntime {
             focus: cx.focus_handle(),
             list_state: ListState::new(SETTINGS_SECTION_COUNT, ListAlignment::Top, px(48.0))
                 .measure_all(),
-            key_request: Rc::new(RefCell::new(None)),
             intent_request: Rc::new(RefCell::new(None)),
             state: Rc::new(RefCell::new(SettingsPanelState::default())),
         }
-    }
-
-    pub(crate) fn set_key_request(&self, key_request: KeyRequest) {
-        *self.key_request.borrow_mut() = Some(key_request);
     }
 
     pub(crate) fn set_intent_request(&self, intent_request: SettingsIntentRequest) {
@@ -90,23 +82,6 @@ impl SettingsRuntime {
         self.focus.clone()
     }
 
-    pub(crate) fn install_listeners<T: 'static>(
-        &self,
-        surfaces: Entity<SurfaceManager>,
-        window: &mut Window,
-        cx: &mut Context<T>,
-    ) {
-        let focus = self.focus.clone();
-        cx.on_blur(&focus, window, move |_, _, cx| {
-            surfaces.update(cx, |surfaces, cx| {
-                if surfaces.is_active(SurfaceId::Settings) {
-                    surfaces.dismiss(cx);
-                }
-            });
-            cx.notify();
-        })
-        .detach();
-    }
 }
 
 pub(crate) fn request(runtime: SettingsRuntime) -> SurfaceRequest {
@@ -121,7 +96,6 @@ pub(crate) fn request(runtime: SettingsRuntime) -> SurfaceRequest {
             render(
                 &runtime.focus,
                 runtime.list_state.clone(),
-                Rc::clone(&runtime.key_request),
                 Rc::clone(&runtime.intent_request),
                 runtime.state.borrow().clone(),
             )
@@ -133,7 +107,6 @@ pub(crate) fn request(runtime: SettingsRuntime) -> SurfaceRequest {
 fn render(
     focus: &FocusHandle,
     list_state: ListState,
-    key_request: Rc<RefCell<Option<KeyRequest>>>,
     intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
     state: SettingsPanelState,
 ) -> Div {
@@ -149,14 +122,6 @@ fn render(
         .overflow_hidden()
         .track_focus(focus)
         .tab_index(0)
-        .on_key_down(move |event, window, cx| {
-            let Some(key_request) = key_request.borrow().clone() else {
-                return;
-            };
-            if key_request(normalized_chord(&event.keystroke), window, cx) {
-                cx.stop_propagation();
-            }
-        })
         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
         .child(header(&state, Rc::clone(&intent_request)))
         .child(body(list_state, intent_request, state))
@@ -354,25 +319,15 @@ fn setting_row(label: String, key: &'static str, control: Div) -> Div {
 }
 
 fn section_label(text: String) -> Div {
-    div()
-        .text_size(typography::ui())
-        .line_height(typography::ui_line())
-        .text_color(color::current().gray.s08)
-        .child(text)
+    div().text_color(color::current().gray.s08).child(text)
 }
 
 fn label_text(text: String) -> Div {
-    div()
-        .text_size(typography::ui())
-        .line_height(typography::ui_line())
-        .text_color(color::current().gray.s09)
-        .child(text)
+    div().text_color(color::current().gray.s09).child(text)
 }
 
 fn muted(text: impl Into<String>) -> Div {
     div()
-        .text_size(typography::ui())
-        .line_height(typography::ui_line())
         .text_color(color::current().gray.s08)
         .child(text.into())
 }
@@ -400,8 +355,6 @@ fn pill(text: String) -> Div {
         .border_color(color::current().gray.s05)
         .px(space::s8())
         .py(space::s6())
-        .text_size(typography::ui())
-        .line_height(typography::ui_line())
         .text_color(color::current().gray.s09)
         .child(text)
 }
@@ -444,8 +397,6 @@ fn stepper_button(
         .border_1()
         .border_color(color::current().gray.s05)
         .cursor_pointer()
-        .text_size(typography::ui())
-        .line_height(typography::ui_line())
         .text_color(color::current().gray.s09)
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             let Some(intent_request) = intent_request.borrow().clone() else {
@@ -468,8 +419,6 @@ fn value_box(text: String) -> Div {
         .border_color(color::current().gray.s05)
         .px(space::s8())
         .py(space::s6())
-        .text_size(typography::ui())
-        .line_height(typography::ui_line())
         .text_color(color::current().gray.s09)
         .child(text)
 }

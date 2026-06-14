@@ -3,56 +3,30 @@
 //! 当前承载静态状态入口；接入真实语言服务器 registry 时只改本模块
 //! 和状态输入，不影响 SurfaceShell / 命令系统。
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{Context, Corner, Div, Entity, FocusHandle, Window, div, point, prelude::*, px};
+use gpui::{Context, Corner, FocusHandle, div, point, prelude::*, px};
 
-use crate::host_intent::KeyRequest;
-use crate::shell::normalized_chord;
-use crate::shell::surfaces::{SurfaceAnchor, SurfaceManager, SurfaceRequest};
-use crate::theme::{color, radius, space, typography};
+use crate::shell::surfaces::{SurfaceAnchor, SurfaceRequest};
+use crate::theme::{color, radius, space};
 use crate::ui_id::SurfaceId;
 
 #[derive(Clone)]
 pub(crate) struct LanguageServersRuntime {
     focus: FocusHandle,
-    key_request: Rc<RefCell<Option<KeyRequest>>>,
 }
 
 impl LanguageServersRuntime {
     pub(crate) fn new<T>(cx: &mut Context<T>) -> Self {
         Self {
             focus: cx.focus_handle(),
-            key_request: Rc::new(RefCell::new(None)),
         }
-    }
-
-    pub(crate) fn set_key_request(&self, key_request: KeyRequest) {
-        *self.key_request.borrow_mut() = Some(key_request);
     }
 
     pub(crate) fn focus_handle(&self) -> FocusHandle {
         self.focus.clone()
     }
 
-    pub(crate) fn install_listeners<T: 'static>(
-        &self,
-        surfaces: Entity<SurfaceManager>,
-        window: &mut Window,
-        cx: &mut Context<T>,
-    ) {
-        let focus = self.focus.clone();
-        cx.on_blur(&focus, window, move |_, _, cx| {
-            surfaces.update(cx, |surfaces, cx| {
-                if surfaces.is_active(SurfaceId::LanguageServers) {
-                    surfaces.dismiss(cx);
-                }
-            });
-            cx.notify();
-        })
-        .detach();
-    }
 }
 
 pub(crate) fn request(runtime: LanguageServersRuntime) -> SurfaceRequest {
@@ -64,43 +38,30 @@ pub(crate) fn request(runtime: LanguageServersRuntime) -> SurfaceRequest {
             attachment: Corner::BottomLeft,
             fallback_position: point(px(48.0), px(540.0)),
         },
-        focus_on_open: Some(focus),
+        focus_on_open: Some(focus.clone()),
         render: Rc::new(move || {
-            render(&runtime.focus, Rc::clone(&runtime.key_request)).into_any_element()
+            div()
+                .w(px(280.0))
+                .p(space::s6())
+                .rounded(radius::r4())
+                .border_1()
+                .border_color(color::current().gray.s05)
+                .bg(color::current().gray.s03)
+                .track_focus(&focus)
+                .tab_index(0)
+                .child(
+                    div()
+                        .text_color(color::current().gray.s08)
+                        .child("当前文件暂无已连接的语言服务器"),
+                )
+                .child(
+                    div()
+                        .rounded(radius::r4())
+                        .bg(color::current().gray.s04)
+                        .text_color(color::current().gray.s09)
+                        .child("等待语言服务器接入"),
+                )
+                .into_any_element()
         }),
     }
-}
-
-fn render(focus: &FocusHandle, key_request: Rc<RefCell<Option<KeyRequest>>>) -> Div {
-    div()
-        .w(px(280.0))
-        .p(space::s6())
-        .rounded(radius::r4())
-        .border_1()
-        .border_color(color::current().gray.s05)
-        .bg(color::current().gray.s03)
-        .track_focus(focus)
-        .tab_index(0)
-        .on_key_down(move |event, window, cx| {
-            let Some(key_request) = key_request.borrow().clone() else {
-                return;
-            };
-            if key_request(normalized_chord(&event.keystroke), window, cx) {
-                cx.stop_propagation();
-            }
-        })
-        .child(
-            div()
-                .text_size(typography::ui())
-                .text_color(color::current().gray.s08)
-                .child("当前文件暂无已连接的语言服务器"),
-        )
-        .child(
-            div()
-                .rounded(radius::r4())
-                .bg(color::current().gray.s04)
-                .text_size(typography::ui())
-                .text_color(color::current().gray.s09)
-                .child("等待语言服务器接入"),
-        )
 }

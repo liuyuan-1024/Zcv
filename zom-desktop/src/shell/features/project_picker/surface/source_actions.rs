@@ -4,7 +4,7 @@ use gpui::{Div, MouseButton, div, prelude::*};
 use zom_command::commands::project_picker as project_picker_commands;
 
 use crate::shell::features::project_picker::ProjectPickerIntent;
-use crate::theme::{color, space, typography};
+use crate::theme::{color, space};
 
 use super::{ProjectPickerActions, ProjectPickerMode, command_shortcut, command_title};
 
@@ -46,7 +46,6 @@ fn source_action_row(
         .flex()
         .items_center()
         .justify_between()
-        .text_size(typography::ui())
         .text_color(color::current().gray.s09)
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {

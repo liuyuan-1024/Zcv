@@ -25,8 +25,6 @@ fn input_box(state: &ProjectPickerState, slot: &Rc<TextEditorSlot>) -> Div {
         .p(space::s6())
         .border_b_1()
         .border_color(color::current().gray.s05)
-        .text_size(typography::ui())
-        .line_height(typography::ui_line())
         .text_color(color::current().gray.s09)
         .child(
             div()

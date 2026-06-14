@@ -71,7 +71,6 @@ fn project_row(
         .border_color(border)
         .bg(bg)
         .overflow_hidden()
-        .text_size(typography::ui())
         .text_color(text_color)
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -124,7 +123,6 @@ fn empty_hint(message: &'static str) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .text_size(typography::ui())
         .text_color(color::current().gray.s08)
         .child(message)
 }
@@ -134,7 +132,6 @@ fn clone_hint() -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .text_size(typography::ui())
         .text_color(color::current().gray.s08)
         .child("回车后选择克隆位置")
 }

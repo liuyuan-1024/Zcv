@@ -22,8 +22,8 @@ use crate::theme::{color, radius, space, typography};
 pub(crate) fn render(
     state: &EditorState,
     scroll: ScrollHandle,
-    close_active_tab: &CommandBinding,
     on_item_click: &Rc<dyn Fn(ViewId, &mut Window, &mut gpui::App)>,
+    on_close_tab: &Rc<dyn Fn(ViewId) -> CommandBinding>,
 ) -> Stateful<gpui::Div> {
     // 把活动标签滚进可视区——scroll_to_item 记下目标，实际滚动在 prepaint 完成。
     if let Some(active) = state.tabs.iter().position(|tab| tab.is_active) {
@@ -43,15 +43,15 @@ pub(crate) fn render(
         .overflow_x_scroll();
 
     for tab in &state.tabs {
-        bar = bar.child(render_tab(tab, close_active_tab, on_item_click));
+        bar = bar.child(render_tab(tab, on_item_click, on_close_tab));
     }
     bar
 }
 
 fn render_tab(
     tab: &EditorTab,
-    close_active_tab: &CommandBinding,
     on_item_click: &Rc<dyn Fn(ViewId, &mut Window, &mut gpui::App)>,
+    on_close_tab: &Rc<dyn Fn(ViewId) -> CommandBinding>,
 ) -> Stateful<gpui::Div> {
     // 活动标签背景与编辑器正文一致，标签与内容视觉连成一体；
     // 非活动标签透明底，沿用标签栏自身的 s04 底色。
@@ -86,23 +86,18 @@ fn render_tab(
         // 修改标志放文字左侧；标志槽常驻，dirty 切换时文字不跳。
         .child(dirty_marker(tab.dirty, text))
         .child(div().whitespace_nowrap().child(tab.title.clone()))
-        .child(close_glyph(tab, hover_group, close_active_tab))
+        .child(close_glyph(tab, hover_group, on_close_tab))
 }
 
-/// 标签右侧的关闭标记：tooltip 与点击都复用 `editor.close_tab`。
+/// 标签右侧的关闭标记。
 ///
 /// 默认 `opacity(0)` 隐身、仅占位（不挪动标签宽度），悬停本标签时浮现。
 fn close_glyph(
     tab: &EditorTab,
     hover_group: SharedString,
-    close_active_tab: &CommandBinding,
+    on_close_tab: &Rc<dyn Fn(ViewId) -> CommandBinding>,
 ) -> AnyElement {
-    let mut binding = close_active_tab.clone();
-    // 非活动标签不绑点击——`editor.close_tab` 当前只关闭活动标签，误触会关错文件。
-    if !tab.is_active {
-        binding.request = Rc::new(|_, _| {});
-    }
-
+    let binding = on_close_tab(tab.view_id);
     let glyph = Glyph::icon(
         ("editor-tab-close", tab.element_key() as usize),
         "icons/actions/close.svg",

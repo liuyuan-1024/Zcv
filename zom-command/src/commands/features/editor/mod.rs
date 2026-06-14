@@ -26,6 +26,7 @@ use zom_engine::{
     MovementUnit, Selection, SelectionSet, TextRange, TransactionMetadata, TransactionSource,
     Utf16Offset,
 };
+use zom_view::ViewId;
 
 mod visual_movement;
 use visual_movement::move_target_selection;
@@ -501,8 +502,17 @@ pub fn select_tab(target: SelectTabTarget) -> Invocation {
     (cid(SELECT_TAB), SelectTabArgs { target }.into())
 }
 
-pub fn close_tab() -> Invocation {
+/// 关闭当前活动标签（键盘快捷键 / 程序化调用路径）。
+/// handler 从 `context.active_view_id` 取目标 view。
+pub fn close_active_tab() -> Invocation {
     (cid(CLOSE_TAB), CommandArgs::new())
+}
+
+/// 关闭指定 view（点击标签关闭 glyph 路径）。
+/// args 包含序列化的 view_id，handler 反序列化时走 [`ViewId::from_u64`]。
+pub fn close_tab_by_id(target: ViewId) -> Invocation {
+    let args = CommandArgs::new().with("view_id", target.as_u64().to_string());
+    (cid(CLOSE_TAB), args)
 }
 
 /// 用于命令面板 / 菜单等以编程方式触发保存。键盘绑 `mod-s` 走 keymap 直派发。
@@ -1370,9 +1380,21 @@ fn run_close_tab(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    // 宿主侧拿 session.active_view_id() 直接 close_view，编辑 / 预览同一套路径。
-    context.effects.push(HostEffect::EditorCloseActiveTab);
+    let view_id = if args.is_empty() {
+        // 键盘快捷键路径：keymap 绑定时无参，从 context 取当前活动 view。
+        context
+            .active_view_id
+            .ok_or_else(|| CommandError::InvalidArgs("没有活动标签可关闭".into()))?
+    } else {
+        // 点击标签关闭 glyph 路径：args 含序列化的 ViewId。
+        reject_unknown_args(&args, &["view_id"])?;
+        let raw = required_arg(&args, "view_id")?;
+        let id: u64 = raw
+            .parse()
+            .map_err(|_| CommandError::InvalidArgs(format!("无效的 view_id：{raw}")))?;
+        ViewId::from_u64(id)
+    };
+    context.effects.push(HostEffect::EditorCloseTab(view_id));
     Ok(CommandOutcome::default())
 }
 

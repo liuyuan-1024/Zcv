@@ -186,6 +186,24 @@ impl ShellView {
             })
         };
 
+        let tab_close: Rc<dyn Fn(ViewId) -> CommandBinding> = {
+            let host_intent = self.host_intent_request();
+            let title = Rc::clone(&title);
+            let shortcut = Rc::clone(&shortcut);
+            Rc::new(move |view_id| {
+                let request = actions::bind_command_request(
+                    Rc::clone(&host_intent),
+                    editor_commands::close_tab_by_id(view_id),
+                );
+                CommandBinding {
+                    id: editor_commands::CLOSE_TAB.to_string(),
+                    title: Rc::clone(&title),
+                    shortcut: Rc::clone(&shortcut),
+                    request,
+                }
+            })
+        };
+
         WorkbenchCommandRequests {
             project_picker_open: binding(
                 project_picker_commands::SHOW_PROJECTS_PICKER,
@@ -204,7 +222,6 @@ impl ShellView {
                 search_project_commands::PROJECT_ACTIVATE,
                 search_project_commands::project_activate(),
             ),
-            editor_close_tab: binding(editor_commands::CLOSE_TAB, editor_commands::close_tab()),
             editor_open_preview: binding(
                 editor_commands::OPEN_PREVIEW,
                 editor_commands::open_preview(),
@@ -230,6 +247,7 @@ impl ShellView {
             shortcut_lookup: shortcut,
             title_lookup: title,
             tab_select,
+            tab_close,
         }
     }
 

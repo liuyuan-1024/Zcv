@@ -33,6 +33,14 @@ impl ViewId {
     pub fn as_u64(self) -> u64 {
         self.0
     }
+
+    /// **仅用于命令边界反序列化**：[`run_close_tab`] 从 `CommandArgs` 的 `"view_id"` 字段还原。
+    ///
+    /// 一般业务代码构造 `ViewId` 的唯一入口是 `ViewSet::next_view_id`。
+    /// 此处是反序列化器，不是通用构造器 —— 不应在其他地方调用。
+    pub fn from_u64(id: u64) -> Self {
+        Self(id)
+    }
 }
 
 /// 视口尚未由渲染端测量过时，`EditView::new` 给可见行数的初始估值。

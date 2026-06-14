@@ -415,10 +415,8 @@ impl App {
                 select_adjacent_tab(&mut self.session, *forward);
                 false
             }
-            HostEffect::EditorCloseActiveTab => {
-                if let Some(view_id) = self.session.active_view_id() {
-                    self.session.close_view(view_id);
-                }
+            HostEffect::EditorCloseTab(view_id) => {
+                self.session.close_view(*view_id);
                 false
             }
             _ => true,
@@ -1474,7 +1472,7 @@ mod tests {
         assert!(state.tabs[0].is_active);
 
         // 关闭当前标签 → 只剩 lib.rs。
-        app.dispatch_command(editor::close_tab()).unwrap();
+        app.dispatch_command(editor::close_active_tab()).unwrap();
         let state = editor_state(&app);
         assert_eq!(state.tabs.len(), 1);
         assert_eq!(active_tab(&state).title, "lib.rs");

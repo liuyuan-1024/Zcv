@@ -68,7 +68,6 @@ pub(crate) struct WorkbenchCommandRequests {
     pub(crate) language_servers_open: CommandBinding,
     pub(crate) diagnostics_show_problems: CommandBinding,
     pub(crate) project_search_activate: CommandBinding,
-    pub(crate) editor_close_tab: CommandBinding,
     pub(crate) editor_open_preview: CommandBinding,
     pub(crate) file_search_activate: CommandBinding,
     pub(crate) file_search_dismiss: CommandBinding,
@@ -79,6 +78,7 @@ pub(crate) struct WorkbenchCommandRequests {
     pub(crate) shortcut_lookup: ShortcutLookup,
     pub(crate) title_lookup: CommandTitleLookup,
     pub(crate) tab_select: Rc<dyn Fn(ViewId, &mut Window, &mut gpui::App)>,
+    pub(crate) tab_close: Rc<dyn Fn(ViewId) -> CommandBinding>,
 }
 
 pub(crate) fn render(

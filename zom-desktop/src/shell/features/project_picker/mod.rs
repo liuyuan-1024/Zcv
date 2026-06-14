@@ -13,6 +13,7 @@ use gpui::{AnyElement, IntoElement};
 
 use crate::editor::TextEditorSlot;
 use crate::shell::CommandTitleLookup;
+use crate::theme::color;
 use crate::shell::ShortcutLookup;
 use crate::shell::shared::{CommandBinding, Glyph};
 use crate::shell::surfaces::track_surface_anchor;
@@ -55,8 +56,13 @@ pub(crate) struct ProjectPickerActions {
 }
 
 pub(crate) fn entry(project_title: &str, active: bool, command: CommandBinding) -> AnyElement {
+    let entry_color = if active {
+        color::glyph_active()
+    } else {
+        color::glyph_default()
+    };
     let glyph = Glyph::text(INVOKER_ID, project_title)
-        .active(active)
+        .color(entry_color)
         .command(command)
         .render();
 

@@ -319,3 +319,15 @@ pub fn search_normal_bg() -> Rgba {
 pub fn search_current_bg() -> Rgba {
     current().yellow.a05
 }
+
+// ---------- Glyph 语义色 ----------
+
+/// Glyph 默认色（未激活 / 关闭态）。
+pub fn glyph_default() -> Rgba {
+    current().gray.s09
+}
+
+/// Glyph 激活色（面板打开 / 开关 on / surface 可见）。
+pub fn glyph_active() -> Rgba {
+    current().blue.s07
+}

@@ -50,7 +50,7 @@ use self::bars::{render_bottom_bar, render_top_bar};
 use self::controller::WorkbenchController;
 use self::docks::resize::{DockResizeBounds, DockResizeEvent, DockResizeRequest};
 pub(crate) use self::docks::{PanelContext, PanelHost};
-use crate::shell::surfaces::SurfaceShell;
+use crate::shell::surfaces::{SurfaceShell, SurfaceStates};
 use state::WorkbenchState;
 
 /// 渲染期 feature 状态旁路：
@@ -91,9 +91,7 @@ pub(crate) fn render(
     window_controls: WindowControlsHandlers,
     surface_shell: Entity<SurfaceShell>,
     bubble_shell: Entity<BubbleShell>,
-    workspace_active: bool,
-    settings_active: bool,
-    language_server_active: bool,
+    surfaces: &SurfaceStates,
     key_request: KeyRequest,
     shortcut_lookup: ShortcutLookup,
     command_title_lookup: CommandTitleLookup,
@@ -125,8 +123,7 @@ pub(crate) fn render(
             window,
             window_controls,
             &commands,
-            workspace_active,
-            settings_active,
+            surfaces,
         ))
         .child(render_body(
             state,
@@ -152,8 +149,8 @@ pub(crate) fn render(
             state,
             features.editor,
             &commands,
-            language_server_active,
             &main_editor_snapshot,
+            surfaces,
         ))
         .child(surface_shell)
         .child(bubble_shell)

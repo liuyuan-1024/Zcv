@@ -12,10 +12,12 @@ use crate::editor::text::EditorSnapshot;
 use crate::editor_state::EditorState;
 use crate::shell::features::{diagnostics, go_to_line, language_servers};
 use crate::shell::shared::{CommandBinding, Glyph};
+use crate::shell::surfaces::SurfaceStates;
 use crate::shell::workbench::WorkbenchCommandRequests;
 use crate::shell::workbench::docks::{bottom, left, right};
 use crate::shell::workbench::state::{DockAreaId, DockState, WorkbenchState};
-use crate::ui_id::{self, PanelId};
+use crate::theme::color;
+use crate::ui_id::{self, PanelId, SurfaceId};
 
 use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_divider, bar_frame};
 
@@ -25,16 +27,16 @@ pub(crate) fn render(
     state: &WorkbenchState,
     editor: &EditorState,
     commands: &WorkbenchCommandRequests,
-    language_server_active: bool,
     main_editor_snapshot: &EditorSnapshot,
+    surfaces: &SurfaceStates,
 ) -> Div {
     bar_frame(BarEdge::Bottom)
         .child(region(
-            leading_slots(state, commands, language_server_active),
+            leading_slots(state, commands, surfaces),
             BarRegionAlign::Leading,
         ))
         .child(region(
-            trailing_slots(state, editor, commands, main_editor_snapshot),
+            trailing_slots(state, editor, commands, main_editor_snapshot, surfaces),
             BarRegionAlign::Trailing,
         ))
 }
@@ -48,14 +50,14 @@ fn region(items: Vec<AnyElement>, align: BarRegionAlign) -> Div {
 fn leading_slots(
     state: &WorkbenchState,
     commands: &WorkbenchCommandRequests,
-    language_server_active: bool,
+    surfaces: &SurfaceStates,
 ) -> Vec<AnyElement> {
     let toggles = panel_slot_group(DockAreaId::Left, left::PANELS, state, commands);
     // Group 2：语言服务器 / 诊断 / 项目级搜索。
     let status = vec![
         language_servers::entry(
             state.bottom_bar.lsp_connected,
-            language_server_active,
+            surfaces.is_active(SurfaceId::LanguageServers),
             commands.language_servers_open.clone(),
         ),
         diagnostics::entry(
@@ -69,7 +71,6 @@ fn leading_slots(
 
 fn project_search_slot(command: CommandBinding) -> AnyElement {
     Glyph::icon("bottom-bar.search.project", "icons/panels/search.svg")
-        .active(false)
         .command(command)
         .render()
 }
@@ -79,8 +80,9 @@ fn trailing_slots(
     editor_state: &EditorState,
     commands: &WorkbenchCommandRequests,
     main_editor_snapshot: &EditorSnapshot,
+    surfaces: &SurfaceStates,
 ) -> Vec<AnyElement> {
-    let editor = editor_status_slots(editor_state, main_editor_snapshot, commands);
+    let editor = editor_status_slots(editor_state, main_editor_snapshot, commands, surfaces);
     let bottom = panel_slot_group(DockAreaId::Bottom, bottom::PANELS, state, commands);
     let right = panel_slot_group(DockAreaId::Right, right::PANELS, state, commands);
     join_groups(vec![editor, bottom, right])
@@ -91,6 +93,7 @@ fn editor_status_slots(
     editor: &EditorState,
     snapshot: &EditorSnapshot,
     commands: &WorkbenchCommandRequests,
+    surfaces: &SurfaceStates,
 ) -> Vec<AnyElement> {
     let Some(active) = editor.tabs.iter().find(|tab| tab.is_active) else {
         return Vec::new();
@@ -101,7 +104,12 @@ fn editor_status_slots(
     let line = line0 + 1;
     let column = column0 + 1;
     vec![
-        go_to_line::entry(line, column, commands.editor_go_to_line.clone()),
+        go_to_line::entry(
+            line,
+            column,
+            commands.editor_go_to_line.clone(),
+            surfaces.is_active(SurfaceId::GoToLine),
+        ),
         Glyph::text(LANGUAGE_ID, active.language.clone())
             .command(commands.editor_change_language.clone())
             .render(),
@@ -150,8 +158,13 @@ fn panel_slot(
     let active = dock_state.is_visible() && dock_state.active_panel() == Some(panel);
     let command_id = panel.toggle_command_id();
 
+    let panel_color = if active {
+        color::glyph_active()
+    } else {
+        color::glyph_default()
+    };
     Glyph::icon(panel_glyph_id(panel), ui_id::panel_icon_path(panel))
-        .active(active)
+        .color(panel_color)
         .command(CommandBinding {
             id: command_id.to_string(),
             title: Rc::clone(&commands.title_lookup),
@@ -161,8 +174,8 @@ fn panel_slot(
         .render()
 }
 
-/// bottom bar 内 panel 入口 glyph 的 element id —— GPUI 用它跟踪 element
-/// 身份，与命令 id 无关；从 PanelId 派生避免散落字符串。
+/// bottom bar 内 panel 入口 glyph 的 element id —— GPUI 用它跟踪 element 身份，与命令 id 无关；
+/// 从 PanelId 派生避免散落字符串。
 fn panel_glyph_id(panel: PanelId) -> gpui::SharedString {
     format!("bottom-bar.{}", panel.slug()).into()
 }

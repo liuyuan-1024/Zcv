@@ -28,6 +28,7 @@ use super::features::panels::file_tree::ConfirmDeleteHandlers;
 use super::features::search::{SearchIntent, SearchIntentRequest};
 use super::features::settings;
 use super::shared::CommandBinding;
+use super::surfaces::SurfaceStates;
 use super::workbench;
 use super::workbench::WindowControlsHandlers;
 use super::workbench::WorkbenchCommandRequests;
@@ -66,11 +67,9 @@ impl ShellView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.runtime.features.install_listeners(
-            Rc::clone(&self.runtime.app),
-            window,
-            cx,
-        );
+        self.runtime
+            .features
+            .install_listeners(Rc::clone(&self.runtime.app), window, cx);
     }
 
     /// 打开指定路径的本地项目（不弹选择器）。开发阶段默认项目经由统一项目流程。
@@ -389,15 +388,20 @@ impl Render for ShellView {
         let shortcut_lookup = self.shortcut_lookup();
         let command_title_lookup = self.command_title_lookup();
         let command_catalog_lookup = self.command_catalog_lookup();
-        let workspace_active = runtime
-            .surface_manager
-            .read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker));
-        let language_server_active = runtime.surface_manager.read_with(cx, |manager, _| {
-            manager.is_active(SurfaceId::LanguageServers)
-        });
-        let settings_active = runtime
-            .surface_manager
-            .read_with(cx, |manager, _| manager.is_active(SurfaceId::Settings));
+        let surface_states = SurfaceStates {
+            project_picker: runtime
+                .surface_manager
+                .read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker)),
+            settings: runtime
+                .surface_manager
+                .read_with(cx, |manager, _| manager.is_active(SurfaceId::Settings)),
+            language_servers: runtime.surface_manager.read_with(cx, |manager, _| {
+                manager.is_active(SurfaceId::LanguageServers)
+            }),
+            go_to_line: runtime
+                .surface_manager
+                .read_with(cx, |manager, _| manager.is_active(SurfaceId::GoToLine)),
+        };
         let confirm_delete = ConfirmDeleteHandlers {
             confirm: self.bind_command(file_tree_commands::confirm_delete()),
             cancel: self.bind_command(file_tree_commands::cancel_delete()),
@@ -420,9 +424,7 @@ impl Render for ShellView {
             window_controls,
             runtime.surface_shell.clone(),
             runtime.bubble_shell.clone(),
-            workspace_active,
-            settings_active,
-            language_server_active,
+            &surface_states,
             key_request,
             shortcut_lookup,
             command_title_lookup,

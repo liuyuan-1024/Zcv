@@ -102,12 +102,20 @@ fn action_slot(
 ) -> AnyElement {
     let mut actions: Vec<AnyElement> = Vec::new();
 
+    let active_color = color::glyph_active();
+    let default_color = color::glyph_default();
+
     // Markdown 预览 glyph（仅在可预览文件上显示）
     if tab.language == "Markdown" {
         let preview_active = matches!(tab.kind, ViewKind::Preview);
+        let color = if preview_active {
+            active_color
+        } else {
+            default_color
+        };
         actions.push(
             Glyph::icon("file-status-bar.preview", FILE_PREVIEW_ICON)
-                .active(preview_active)
+                .color(color)
                 .command(commands.editor_open_preview.clone())
                 .render(),
         );
@@ -119,9 +127,14 @@ fn action_slot(
     } else {
         commands.file_search_activate.clone()
     };
+    let color = if search_open {
+        active_color
+    } else {
+        default_color
+    };
     actions.push(
         Glyph::icon("file-status-bar.search", FILE_SEARCH_ICON)
-            .active(search_open)
+            .color(color)
             .command(search_command)
             .render(),
     );

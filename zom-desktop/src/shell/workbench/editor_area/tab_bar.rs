@@ -102,7 +102,6 @@ fn close_glyph(
         ("editor-tab-close", tab.element_key() as usize),
         "icons/actions/close.svg",
     )
-    .active(tab.is_active)
     .command(binding)
     .render();
 

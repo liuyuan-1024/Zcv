@@ -400,6 +400,7 @@ fn search_controls(
     focus_request: &FocusRequest,
 ) -> Div {
     let b = |intent| search_binding(intent, intent_request, title_lookup, shortcut_lookup);
+    let active_color = color::glyph_active();
 
     div()
         .flex()
@@ -420,25 +421,23 @@ fn search_controls(
             vec![
                 hit_count_badge(state.hit_count),
                 Glyph::icon("search-case-sensitive", CASE_SENSITIVE_ICON)
-                    .active(state.options.case_sensitive)
+                    .color(if state.options.case_sensitive { active_color } else { color::glyph_default() })
                     .command(b(SearchIntent::ToggleCaseSensitive))
                     .render(),
                 Glyph::icon("search-whole-word", WHOLE_WORD_ICON)
-                    .active(state.options.whole_word)
+                    .color(if state.options.whole_word { active_color } else { color::glyph_default() })
                     .command(b(SearchIntent::ToggleWholeWord))
                     .render(),
                 Glyph::icon("search-regex", REGEX_ICON)
-                    .active(state.options.regex)
+                    .color(if state.options.regex { active_color } else { color::glyph_default() })
                     .command(b(SearchIntent::ToggleRegex))
                     .render(),
             ],
             vec![
                 Glyph::icon("search-find-previous", FIND_PREVIOUS_ICON)
-                    .active(false)
                     .command(b(SearchIntent::FindPrevious))
                     .render(),
                 Glyph::icon("search-find-next", FIND_NEXT_ICON)
-                    .active(false)
                     .command(b(SearchIntent::FindNext))
                     .render(),
             ],
@@ -457,11 +456,9 @@ fn search_controls(
             focus_request,
             vec![
                 Glyph::icon("search-replace-next", REPLACE_NEXT_ICON)
-                    .active(false)
                     .command(b(SearchIntent::ReplaceNext))
                     .render(),
                 Glyph::icon("search-replace-all", REPLACE_ALL_ICON)
-                    .active(false)
                     .command(b(SearchIntent::ReplaceAll))
                     .render(),
             ],

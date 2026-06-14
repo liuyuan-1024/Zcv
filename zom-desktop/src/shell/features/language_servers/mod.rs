@@ -8,6 +8,7 @@ pub(crate) use effects::try_apply_effect;
 use gpui::{AnyElement, IntoElement};
 
 use crate::shell::shared::{CommandBinding, Glyph};
+use crate::theme::color;
 use crate::shell::surfaces::track_surface_anchor;
 
 pub(crate) use surface::{LanguageServersRuntime, request};
@@ -16,8 +17,13 @@ pub(crate) use surface::{LanguageServersRuntime, request};
 pub(crate) const INVOKER_ID: &str = "bottom-bar.language_server";
 
 pub(crate) fn entry(connected: bool, active: bool, command: CommandBinding) -> AnyElement {
+    let entry_color = if connected || active {
+        color::glyph_active()
+    } else {
+        color::glyph_default()
+    };
     let glyph = Glyph::icon(INVOKER_ID, "icons/status/language_server.svg")
-        .active(connected || active)
+        .color(entry_color)
         .command(command)
         .render();
 

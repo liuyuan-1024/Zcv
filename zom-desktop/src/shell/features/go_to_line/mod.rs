@@ -202,11 +202,17 @@ fn editor(slot: &Rc<TextEditorSlot>, show_placeholder: bool, placeholder: &'stat
 }
 
 /// 底栏跳转到行入口：用 track_surface_anchor 包裹，surface 锚定此 glyph。
-pub(crate) fn entry(line: u64, column: u64, command: CommandBinding) -> AnyElement {
+pub(crate) fn entry(line: u64, column: u64, command: CommandBinding, active: bool) -> AnyElement {
     let element_id: gpui::ElementId = INVOKER_ID.into();
+    let entry_color = if active {
+        color::glyph_active()
+    } else {
+        color::glyph_default()
+    };
     track_surface_anchor(
         element_id,
         Glyph::text(INVOKER_ID, format!("{line}:{column}"))
+            .color(entry_color)
             .command(command)
             .render(),
     )

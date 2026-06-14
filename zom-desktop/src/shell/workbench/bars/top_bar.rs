@@ -13,8 +13,10 @@ use gpui::WindowControlArea;
 use gpui::{AnyElement, Div, Window, div, prelude::*};
 
 use crate::shell::features::{project_picker, settings};
+use crate::shell::surfaces::SurfaceStates;
 use crate::shell::workbench::WorkbenchCommandRequests;
 use crate::shell::workbench::state::WorkbenchState;
+use crate::ui_id::SurfaceId;
 
 use super::frame::{BarEdge, bar_frame};
 use super::window_controls::{WindowControlsHandlers, render_window_controls};
@@ -24,8 +26,7 @@ pub(crate) fn render(
     window: &Window,
     window_controls: WindowControlsHandlers,
     commands: &WorkbenchCommandRequests,
-    workspace_active: bool,
-    settings_active: bool,
+    surfaces: &SurfaceStates,
 ) -> Div {
     let is_window_active = window.is_window_active();
 
@@ -38,12 +39,12 @@ pub(crate) fn render(
         .child(cluster(leading_slots(
             is_window_active,
             window_controls,
-            workspace_active,
             &state.project_title,
             commands,
+            surfaces,
         )))
         .child(drag_spacer())
-        .child(cluster(trailing_slots(settings_active, commands)))
+        .child(cluster(trailing_slots(commands, surfaces)))
 }
 
 /// 顶栏内的按钮簇：内容自适应宽度，作为兄弟节点与 `drag_spacer` 共存。
@@ -77,13 +78,13 @@ fn drag_spacer() -> Div {
 fn leading_slots(
     is_window_active: bool,
     window_controls: WindowControlsHandlers,
-    workspace_active: bool,
     project_title: &str,
     commands: &WorkbenchCommandRequests,
+    surfaces: &SurfaceStates,
 ) -> Vec<AnyElement> {
     let workspace = project_picker::entry(
         project_title,
-        workspace_active,
+        surfaces.is_active(SurfaceId::ProjectPicker),
         commands.project_picker_open.clone(),
     );
 
@@ -93,9 +94,12 @@ fn leading_slots(
     ]
 }
 
-fn trailing_slots(settings_active: bool, commands: &WorkbenchCommandRequests) -> Vec<AnyElement> {
+fn trailing_slots(
+    commands: &WorkbenchCommandRequests,
+    surfaces: &SurfaceStates,
+) -> Vec<AnyElement> {
     vec![settings::entry(
-        settings_active,
+        surfaces.is_active(SurfaceId::Settings),
         commands.settings_open.clone(),
     )]
 }

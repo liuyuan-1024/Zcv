@@ -16,6 +16,28 @@ pub(crate) use anchor_registry::{SurfaceAnchorRegistry, track_surface_anchor};
 pub(crate) use manager::{ActiveSurface, SurfaceManager};
 pub(crate) use shell::SurfaceShell;
 
+/// 各 surface 的 active 态快照，在渲染帧起点一次性解析，下发给 glyph 查表。
+///
+/// 每个 surface entry 通过 [`Self::is_active`] 自行查询，不再需要调用方逐层透传 `bool` 参数。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SurfaceStates {
+    pub(crate) project_picker: bool,
+    pub(crate) settings: bool,
+    pub(crate) language_servers: bool,
+    pub(crate) go_to_line: bool,
+}
+
+impl SurfaceStates {
+    pub(crate) fn is_active(&self, id: SurfaceId) -> bool {
+        match id {
+            SurfaceId::ProjectPicker => self.project_picker,
+            SurfaceId::Settings => self.settings,
+            SurfaceId::LanguageServers => self.language_servers,
+            SurfaceId::GoToLine => self.go_to_line,
+        }
+    }
+}
+
 /// Surface 的定位依据，每种变体自带定位参数。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SurfaceAnchor {

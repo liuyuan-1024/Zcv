@@ -35,7 +35,7 @@ pub(crate) struct Glyph {
     id: ElementId,
     content: GlyphContent,
     command: Option<CommandBinding>,
-    active: bool,
+    color: Option<gpui::Rgba>,
 }
 
 impl Glyph {
@@ -66,12 +66,13 @@ impl Glyph {
             id: id.into(),
             content,
             command: None,
-            active: false,
+            color: None,
         }
     }
 
-    pub(crate) fn active(mut self, active: bool) -> Self {
-        self.active = active;
+    /// 覆盖默认的文字/图标颜色。不调用则使用 [`color::glyph_default`]。
+    pub(crate) fn color(mut self, color: gpui::Rgba) -> Self {
+        self.color = Some(color);
         self
     }
 
@@ -83,11 +84,7 @@ impl Glyph {
     }
 
     pub(crate) fn render(self) -> AnyElement {
-        let color_value = if self.active {
-            color::current().blue.s07
-        } else {
-            color::current().gray.s09
-        };
+        let color_value = self.color.unwrap_or(color::glyph_default());
         let id = self.id.clone();
         let icon_size = typography::ui();
         let font_size = typography::ui();

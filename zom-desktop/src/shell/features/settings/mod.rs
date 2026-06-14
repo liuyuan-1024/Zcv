@@ -11,6 +11,7 @@ pub(crate) use effects::try_apply_effect;
 use gpui::{AnyElement, IntoElement};
 
 use crate::shell::shared::{CommandBinding, Glyph};
+use crate::theme::color;
 use crate::shell::surfaces::track_surface_anchor;
 
 pub(crate) use surface::{
@@ -20,8 +21,13 @@ pub(crate) use surface::{
 pub(crate) const INVOKER_ID: &str = "top-bar.settings";
 
 pub(crate) fn entry(active: bool, command: CommandBinding) -> AnyElement {
+    let entry_color = if active {
+        color::glyph_active()
+    } else {
+        color::glyph_default()
+    };
     let glyph = Glyph::icon(INVOKER_ID, "icons/actions/settings.svg")
-        .active(active)
+        .color(entry_color)
         .command(command)
         .render();
 

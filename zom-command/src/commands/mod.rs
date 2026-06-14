@@ -17,6 +17,7 @@ mod system;
 pub use features::diagnostics;
 pub use features::editor;
 pub use features::file_tree;
+pub use features::go_to_line;
 pub use features::language_servers;
 pub use features::project_picker;
 pub use features::search;

@@ -17,6 +17,7 @@ use crate::focus::AppFocus;
 use crate::host_intent::{CommandRequest, KeyRequest};
 use crate::host_intent::{HostIntent, HostIntentOutcome, HostIntentRequest};
 use crate::shell::bubble::BubbleRuntime;
+use crate::shell::features::go_to_line;
 use crate::shell::features::language_servers;
 use crate::shell::features::panels::file_tree;
 use crate::shell::features::project_picker;
@@ -143,6 +144,18 @@ pub(super) fn apply_host_effects(
             continue;
         }
         if search::try_apply_effect(&effect, app, &focus, window) {
+            continue;
+        }
+        if go_to_line::try_apply_effect(
+            &effect,
+            app,
+            &focus,
+            surfaces,
+            editor_focus_fallback,
+            &features.go_to_line,
+            window,
+            cx,
+        ) {
             continue;
         }
         if project_picker::try_apply_effect(

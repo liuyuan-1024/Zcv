@@ -146,6 +146,15 @@ impl ShellRuntime {
             features.search.replacement_focus_handle(),
             cx,
         );
+        let go_to_line_slot = TextEditorSlot::install(
+            Rc::clone(&app),
+            Rc::clone(&host_intent),
+            AppFocus::go_to_line(),
+            EditorKernel::single_line(),
+            features.go_to_line.focus_handle(),
+            cx,
+        );
+        features.go_to_line.set_slot(Rc::clone(&go_to_line_slot));
         *text_editor_slots.borrow_mut() = vec![
             Rc::clone(&main_editor_slot),
             Rc::clone(&file_tree_new_entry_slot),
@@ -153,6 +162,7 @@ impl ShellRuntime {
             Rc::clone(&project_picker_slot),
             Rc::clone(&search_query_slot),
             Rc::clone(&search_replacement_slot),
+            Rc::clone(&go_to_line_slot),
         ];
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));
         let bubble_shell = cx.new(|cx| BubbleShell::new(bubble_runtime.clone(), cx));

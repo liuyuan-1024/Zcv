@@ -58,7 +58,6 @@ pub const CUT: &str = "editor.cut";
 pub const PASTE: &str = "editor.paste";
 pub const TOGGLE_SOFT_WRAP: &str = "editor.toggle_soft_wrap";
 pub const OPEN_PREVIEW: &str = "editor.preview.open";
-pub const GO_TO_LINE: &str = "editor.go_to_line";
 pub const CHANGE_LANGUAGE: &str = "editor.change_language";
 
 /// 文本编辑器当前能力。
@@ -531,10 +530,6 @@ pub fn open_preview() -> Invocation {
     (cid(OPEN_PREVIEW), CommandArgs::new())
 }
 
-pub fn go_to_line() -> Invocation {
-    (cid(GO_TO_LINE), CommandArgs::new())
-}
-
 pub fn change_language() -> Invocation {
     (cid(CHANGE_LANGUAGE), CommandArgs::new())
 }
@@ -546,18 +541,6 @@ fn run_open_preview(
     NoArgs::try_from(args)?;
     let buffer_id = active_view_buffer_id(ctx)?;
     ctx.effects.push(HostEffect::EditorOpenPreview(buffer_id));
-    Ok(CommandOutcome::default())
-}
-
-fn run_go_to_line(
-    _ctx: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    _ctx.effects
-        .push(HostEffect::ShowBubble(BubbleRequest::info(
-            "跳转到行（⌘G）功能尚未实现",
-        )));
     Ok(CommandOutcome::default())
 }
 
@@ -825,10 +808,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .description("打开或跳转到当前文件的预览标签页。")
         .key_in("alt-p", text_edit);
 
-    registry
-        .install(keymap, GO_TO_LINE, "跳转到行", Box::new(run_go_to_line))
-        .description("跳转到指定行。")
-        .key_in("mod-g", text_edit);
+    super::go_to_line::install(registry, keymap);
 
     registry.install(
         keymap,

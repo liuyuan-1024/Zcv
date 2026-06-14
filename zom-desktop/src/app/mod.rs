@@ -21,7 +21,8 @@ use zom_command::{
     ClipboardPort, CommandCatalogItem, CommandError, CommandId, FileTreeKeyMode, HostEffect,
     Invocation, KeyContext, KeymapResolution,
 };
-use zom_view::{ViewSet, ViewportEditAnchor};
+use zom_engine::{ByteOffset, Selection, SelectionSet};
+use zom_view::{RevealKind, ViewSet, ViewportEditAnchor};
 use zom_workspace::Workspace;
 use zom_workspace::syntax::{SyntaxEngine, install_builtin_providers};
 
@@ -332,6 +333,28 @@ impl App {
         }
     }
 
+    pub(crate) fn go_to_line_jump(&mut self, target_byte: usize) {
+        let Some(view_id) = self.session.active_edit_view_id() else {
+            return;
+        };
+        let (workspace, views) = self.session.parts_mut();
+        let Some(view) = views.edit_view_mut(view_id) else {
+            return;
+        };
+        let buffer_id = view.buffer();
+        let Some(wb) = workspace.buffer_mut(buffer_id) else {
+            return;
+        };
+        let buf = wb.buffer_mut();
+        let offset = ByteOffset::new(target_byte);
+        let selection = SelectionSet::new(vec![Selection::caret(offset)]);
+        if buf.set_selection(selection.clone()).is_ok() {
+            let (v_sel, _, _, _) = view.vertical_movement_state_mut();
+            *v_sel = selection;
+            view.request_reveal(offset, RevealKind::Jump);
+        }
+    }
+
     pub(crate) fn apply_file_tree_action_from_effect(
         &mut self,
         action: FileTreeAction,
@@ -500,6 +523,9 @@ impl App {
             AppFocus::SearchBar(_) => {
                 unreachable!("SearchModel 是 SearchBar 焦点的 TextTargetOwner，router 必定接管")
             }
+            AppFocus::GoToLine => {
+                unreachable!("GoToLineModel 是 GoToLine 焦点的 TextTargetOwner，router 必定接管")
+            }
             AppFocus::Panel(p) => match p.sub {
                 PanelSubFocus::FileTree(FileTreeFocus::ConfirmDelete) => vec![
                     // 删除确认弹窗打开中：只解析确认 / 取消，导航键全部冻结。
@@ -524,6 +550,7 @@ impl App {
                 SurfaceId::LanguageServers => {
                     vec![KeyContext::language_servers(), KeyContext::global()]
                 }
+                SurfaceId::GoToLine => vec![KeyContext::global()],
             },
         }
     }

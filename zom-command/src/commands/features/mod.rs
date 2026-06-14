@@ -8,6 +8,7 @@ pub mod debug;
 pub mod diagnostics;
 pub mod editor;
 pub mod file_tree;
+pub mod go_to_line;
 pub mod keyboard_shortcuts;
 pub mod language_servers;
 pub mod outline;

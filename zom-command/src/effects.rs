@@ -179,6 +179,14 @@ pub enum HostEffect {
     /// **搜索框不收** —— query / 命中高亮都保留；从编辑器按 mod-f 即可回到 query 输入框继续改。
     SearchConfirmMatch,
 
+    // ===== Go-to-line =====
+    /// 打开跳转到行输入栏并聚焦输入框。
+    GoToLineActivate,
+    /// 收起跳转到行输入栏，焦点交还给编辑器。
+    GoToLineDismiss,
+    /// 活动视图跳转到指定字节偏移。
+    GoToLineJump(usize),
+
     // ===== Editor 视图设置 =====
     /// 翻转主编辑区的软换行开关。
     ///

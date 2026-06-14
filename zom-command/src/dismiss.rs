@@ -31,6 +31,7 @@ pub enum DismissScope {
     FileTree,
     ProjectPicker,
     SearchInput,
+    GoToLineInput,
     Settings,
     LanguageServers,
 }
@@ -44,6 +45,7 @@ impl DismissScope {
             Self::FileTree => "FileTree",
             Self::ProjectPicker => "ProjectPicker",
             Self::SearchInput => "SearchInput",
+            Self::GoToLineInput => "GoToLineInput",
             Self::Settings => "Settings",
             Self::LanguageServers => "LanguageServers",
         }
@@ -55,6 +57,7 @@ impl DismissScope {
             "FileTree" => Self::FileTree,
             "ProjectPicker" => Self::ProjectPicker,
             "SearchInput" => Self::SearchInput,
+            "GoToLineInput" => Self::GoToLineInput,
             "Settings" => Self::Settings,
             "LanguageServers" => Self::LanguageServers,
             _ => return None,

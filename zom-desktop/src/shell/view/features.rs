@@ -11,16 +11,16 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{Context, Entity, FocusHandle, Window};
+use gpui::{Context, FocusHandle, Window};
 
 use crate::app::App;
+use crate::shell::features::go_to_line::GoToLineRuntime;
 use crate::shell::features::language_servers::LanguageServersRuntime;
 use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
 use crate::shell::features::project_picker::{ProjectPickerRuntime, RecentProjects};
 use crate::shell::features::search::{SearchEditObserver, SearchFramePump, SearchRuntime};
 use crate::shell::features::settings::SettingsRuntime;
-use crate::shell::surfaces::SurfaceManager;
 
 use super::focus::{FocusProjection, projection_from_runtimes};
 
@@ -31,6 +31,7 @@ pub(super) struct FeatureRegistry {
     pub(super) project_picker: ProjectPickerRuntime,
     pub(super) language_servers: LanguageServersRuntime,
     pub(super) search: SearchRuntime,
+    pub(super) go_to_line: GoToLineRuntime,
     pub(super) settings: SettingsRuntime,
 }
 
@@ -43,6 +44,7 @@ impl FeatureRegistry {
         let project_picker = ProjectPickerRuntime::new(cx, RecentProjects::default_path());
         let language_servers = LanguageServersRuntime::new(cx);
         let search = SearchRuntime::new(cx);
+        let go_to_line = GoToLineRuntime::new(cx);
         let settings = SettingsRuntime::new(cx);
 
         {
@@ -52,6 +54,7 @@ impl FeatureRegistry {
             // SearchModel 同时承载 query / replacement 两个输入框，按 focus 内部分派；
             // 通过同一个 install_editor_owner 注册进 router，TextTargetRuntime 不为它单走特殊分支。
             app.install_editor_owner(search.owner_handle());
+            app.install_editor_owner(go_to_line.owner_handle());
             // 编辑后同步与每帧后台命中收割走通用端口注册
             // ——BackgroundPumps 不认 search feature，由它两个 trait 实现自报家门。
             let search_handle = search.runtime_handle();
@@ -67,6 +70,7 @@ impl FeatureRegistry {
             project_picker,
             language_servers,
             search,
+            go_to_line,
             settings,
         }
     }
@@ -74,18 +78,15 @@ impl FeatureRegistry {
     pub(super) fn install_listeners<T: 'static>(
         &self,
         app: Rc<RefCell<App>>,
-        surfaces: Entity<SurfaceManager>,
         window: &mut Window,
         cx: &mut Context<T>,
     ) {
         self.file_tree
             .install_listeners(Rc::clone(&app), window, cx);
         self.project_picker
-            .install_listeners(Rc::clone(&app), surfaces.clone(), window, cx);
-        self.language_servers
-            .install_listeners(surfaces.clone(), window, cx);
-        self.settings.install_listeners(surfaces, window, cx);
-        self.search.install_listeners(app, window, cx);
+            .install_listeners(Rc::clone(&app), window, cx);
+        self.search.install_listeners(Rc::clone(&app), window, cx);
+        self.go_to_line.install_listeners(app, window, cx);
     }
 
     /// 组合给定 editor focus 与各 feature 的 focus handle 成 `AppFocus <-> FocusHandle` 投影表。
@@ -98,6 +99,7 @@ impl FeatureRegistry {
             self.project_picker.focus_handle(),
             Some(self.settings.focus_handle()),
             self.language_servers.focus_handle(),
+            self.go_to_line.focus_handle(),
         )
     }
 }

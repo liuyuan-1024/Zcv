@@ -33,4 +33,6 @@ pub(crate) enum SurfaceId {
     Settings,
     /// 底栏"语言服务器"的浮面。
     LanguageServers,
+    /// 底栏"跳转到行"的浮面。
+    GoToLine,
 }

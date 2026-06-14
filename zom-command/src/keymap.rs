@@ -47,6 +47,7 @@ pub enum KeyContext {
     Settings(SettingsKeyContext),
     LanguageServers(LanguageServersKeyContext),
     SearchBar,
+    GoToLineInput,
 }
 
 impl KeyContext {
@@ -80,6 +81,10 @@ impl KeyContext {
     pub fn search_bar() -> Self {
         Self::SearchBar
     }
+
+    pub fn go_to_line_input() -> Self {
+        Self::GoToLineInput
+    }
 }
 
 /// 键位绑定适用的结构化上下文。
@@ -92,6 +97,7 @@ pub enum KeyBindingContext {
     Settings(SettingsBindingContext),
     LanguageServers(LanguageServersBindingContext),
     SearchInput,
+    GoToLineInput,
 }
 
 impl KeyBindingContext {
@@ -140,6 +146,10 @@ impl KeyBindingContext {
         Self::SearchInput
     }
 
+    pub fn go_to_line_input() -> Self {
+        Self::GoToLineInput
+    }
+
     /// 两条绑定的上下文是否可能被同一个运行时 [`KeyContext`] 同时命中。
     ///
     /// 这是「冲突」的真正定义：同一序列下两条绑定一旦重叠，[`Keymap::resolve`]
@@ -157,6 +167,7 @@ impl KeyBindingContext {
             (Self::Settings(_), Self::Settings(_)) => true,
             (Self::LanguageServers(_), Self::LanguageServers(_)) => true,
             (Self::SearchInput, Self::SearchInput) => true,
+            (Self::GoToLineInput, Self::GoToLineInput) => true,
             _ => false,
         }
     }
@@ -320,6 +331,7 @@ fn binding_matches_context(binding: &KeyBinding, context: KeyContext) -> bool {
         (KeyBindingContext::Settings(_), KeyContext::Settings(_)) => true,
         (KeyBindingContext::LanguageServers(_), KeyContext::LanguageServers(_)) => true,
         (KeyBindingContext::SearchInput, KeyContext::SearchBar) => true,
+        (KeyBindingContext::GoToLineInput, KeyContext::GoToLineInput) => true,
         _ => false,
     }
 }

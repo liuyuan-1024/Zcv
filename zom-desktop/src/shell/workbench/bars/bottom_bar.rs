@@ -10,7 +10,7 @@ use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
 
 use crate::editor::text::EditorSnapshot;
 use crate::editor_state::EditorState;
-use crate::shell::features::{diagnostics, language_servers};
+use crate::shell::features::{diagnostics, go_to_line, language_servers};
 use crate::shell::shared::{CommandBinding, Glyph};
 use crate::shell::workbench::WorkbenchCommandRequests;
 use crate::shell::workbench::docks::{bottom, left, right};
@@ -19,7 +19,6 @@ use crate::ui_id::{self, PanelId};
 
 use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_divider, bar_frame};
 
-const CURSOR_POSITION_ID: &str = "bottom-bar.cursor-position";
 const LANGUAGE_ID: &str = "bottom-bar.language";
 
 pub(crate) fn render(
@@ -102,9 +101,7 @@ fn editor_status_slots(
     let line = line0 + 1;
     let column = column0 + 1;
     vec![
-        Glyph::text(CURSOR_POSITION_ID, format!("{line}:{column}"))
-            .command(commands.editor_go_to_line.clone())
-            .render(),
+        go_to_line::entry(line, column, commands.editor_go_to_line.clone()),
         Glyph::text(LANGUAGE_ID, active.language.clone())
             .command(commands.editor_change_language.clone())
             .render(),

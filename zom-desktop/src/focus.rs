@@ -24,6 +24,8 @@ pub(crate) enum AppFocus {
     /// 编辑器上方的内联搜索栏的某一个输入框。
     /// 搜索栏不挂在 dock 也不是 surface，单独立一类。
     SearchBar(SearchField),
+    /// 跳转到指定行列的输入栏。
+    GoToLine,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -122,6 +124,10 @@ impl AppFocus {
         Self::SearchBar(field)
     }
 
+    pub(crate) fn go_to_line() -> Self {
+        Self::GoToLine
+    }
+
     /// 当前焦点是否落在搜索栏的某个输入框；不是则 `None`。
     /// 各 `TextTargetOwner` / handler 从 `AppFocus` 抠 SearchField 都走这里。
     pub(crate) fn as_search(self) -> Option<SearchField> {
@@ -158,6 +164,7 @@ impl AppFocus {
             (Self::Panel(a), Self::Panel(b)) => a.panel == b.panel,
             (Self::Surface(a), Self::Surface(b)) => a.surface == b.surface,
             (Self::SearchBar(a), Self::SearchBar(b)) => a == b,
+            (Self::GoToLine, Self::GoToLine) => true,
             (left, right) => left == right,
         }
     }

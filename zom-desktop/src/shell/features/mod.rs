@@ -4,6 +4,7 @@
 //! 本层功能目录。
 
 pub(crate) mod diagnostics;
+pub(crate) mod go_to_line;
 pub(crate) mod language_servers;
 pub(crate) mod panels;
 pub(crate) mod project_picker;

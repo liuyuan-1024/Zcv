@@ -80,6 +80,7 @@ pub(crate) fn projection_from_runtimes(
     project_picker: FocusHandle,
     settings: Option<FocusHandle>,
     language_servers: FocusHandle,
+    go_to_line: FocusHandle,
 ) -> FocusProjection {
     let mut projection = FocusProjection::new();
     projection.register(editor, AppFocus::editor());
@@ -100,6 +101,7 @@ pub(crate) fn projection_from_runtimes(
         projection.register(settings, AppFocus::settings());
     }
     projection.register(language_servers, AppFocus::language_servers());
+    projection.register(go_to_line, AppFocus::go_to_line());
     for panel in [
         PanelId::VersionControl,
         PanelId::Outline,

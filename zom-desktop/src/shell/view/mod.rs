@@ -12,8 +12,8 @@ use std::{path::PathBuf, rc::Rc};
 use gpui::{Context, FocusHandle, IntoElement, Render, ScrollHandle, Window};
 use zom_command::commands::{
     diagnostics as diagnostics_commands, editor as editor_commands,
-    file_tree as file_tree_commands, language_servers as language_server_commands,
-    project_picker as project_picker_commands,
+    file_tree as file_tree_commands, go_to_line as go_to_line_commands,
+    language_servers as language_server_commands, project_picker as project_picker_commands,
     search::{file as search_file_commands, project as search_project_commands},
     settings as settings_commands, window as window_commands,
 };
@@ -68,7 +68,6 @@ impl ShellView {
     ) {
         self.runtime.features.install_listeners(
             Rc::clone(&self.runtime.app),
-            self.runtime.surface_manager.clone(),
             window,
             cx,
         );
@@ -218,7 +217,10 @@ impl ShellView {
                 search_file_commands::DISMISS,
                 search_file_commands::dismiss(),
             ),
-            editor_go_to_line: binding(editor_commands::GO_TO_LINE, editor_commands::go_to_line()),
+            editor_go_to_line: binding(
+                go_to_line_commands::ACTIVATE,
+                go_to_line_commands::activate(),
+            ),
             editor_change_language: binding(
                 editor_commands::CHANGE_LANGUAGE,
                 editor_commands::change_language(),
@@ -339,23 +341,14 @@ impl Render for ShellView {
         runtime
             .features
             .settings
-            .set_key_request(Rc::clone(&key_request));
-        runtime
-            .features
-            .settings
             .set_intent_request(self.settings_intent_request());
         runtime.features.settings.set_state({
             let app = runtime.app.borrow();
             settings::SettingsPanelState::new(app.config_snapshot(), app.config_path())
         });
-        runtime
-            .features
-            .project_picker
-            .set_key_request(Rc::clone(&key_request));
-        runtime
-            .features
-            .language_servers
-            .set_key_request(Rc::clone(&key_request));
+        runtime.surface_shell.update(cx, |shell, _| {
+            shell.set_key_request(Rc::clone(&key_request))
+        });
         // file_tree_panel 借用此 clone；下面把 `key_request` 本体 move 给 `workbench::render`。
         // 借用与移动落到不同的 Rc 副本上，互不冲突。
         let key_request_for_panel = Rc::clone(&key_request);

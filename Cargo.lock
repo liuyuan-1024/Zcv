@@ -8139,7 +8139,7 @@ dependencies = [
 
 [[package]]
 name = "zom-bench"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "tree-sitter",
  "tree-sitter-rust",
@@ -8149,7 +8149,7 @@ dependencies = [
 
 [[package]]
 name = "zom-command"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "zom-engine",
  "zom-view",
@@ -8158,7 +8158,7 @@ dependencies = [
 
 [[package]]
 name = "zom-desktop"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "cocoa 0.26.0",
  "gpui",
@@ -8176,7 +8176,7 @@ dependencies = [
 
 [[package]]
 name = "zom-engine"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "criterion",
  "regex",
@@ -8188,7 +8188,7 @@ dependencies = [
 
 [[package]]
 name = "zom-view"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "zom-engine",
  "zom-workspace",
@@ -8196,7 +8196,7 @@ dependencies = [
 
 [[package]]
 name = "zom-workspace"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "ignore",
  "trash",

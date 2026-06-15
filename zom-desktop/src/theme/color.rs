@@ -25,7 +25,7 @@ use std::sync::{OnceLock, RwLock};
 
 use gpui::{Rgba, rgb, rgba};
 
-use crate::config::{THEME_ONE_DARK, THEME_ONE_LIGHT};
+use crate::theme::ConcreteTheme;
 
 /// 单个色相的 solid + alpha 双阶梯。
 ///
@@ -282,12 +282,11 @@ impl Palette {
     }
 }
 
-/// 按主题名切换调色板。不匹配时静默回退 one-dark。
-pub(crate) fn set_palette(theme: &str) {
+/// 按落地主题切换调色板。
+pub(crate) fn set_palette(theme: ConcreteTheme) {
     let palette = match theme {
-        THEME_ONE_DARK => Palette::one_dark(),
-        THEME_ONE_LIGHT => Palette::one_light(),
-        _ => Palette::one_dark(),
+        ConcreteTheme::Dark => Palette::one_dark(),
+        ConcreteTheme::Light => Palette::one_light(),
     };
     let lock = ACTIVE_PALETTE.get_or_init(|| RwLock::new(Palette::one_dark()));
     match lock.write() {

@@ -49,7 +49,7 @@ pub(super) struct ShellRuntime {
 impl ShellRuntime {
     pub(super) fn assemble(app: App, cx: &mut Context<ShellView>) -> Self {
         let app = Rc::new(RefCell::new(app));
-        config_visuals::apply(&app.borrow().config_snapshot());
+        config_visuals::apply(&app.borrow().config_snapshot(), None);
         // 让命令派发期间的 copy / cut / paste 走系统剪贴板。
         // headless 路径不经过 ShellRuntime::assemble，所以仍是 NoopClipboard。
         app.borrow_mut().set_clipboard(Box::new(GpuiClipboard));

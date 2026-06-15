@@ -1,12 +1,95 @@
 //! L1 视觉 token —— 命名常量。
 //! 尺寸、字号、圆角、icon 不参与主题切换（手册 5.1 / 6.x）。
+//!
+//! [`Theme`] 是颜色主题的唯一真相源：配置字符串 ↔ 枚举 ↔ 调色板/语法高亮 的映射集中在这里。
+//! 新增主题只需改这个文件。
 
 use std::sync::OnceLock;
 
-use gpui::{Font, FontFallbacks, Pixels, font, px};
+use gpui::{Font, FontFallbacks, Pixels, Window, WindowAppearance, font, px};
 
 pub mod color;
 pub mod syntax;
+
+/// 用户可选的主题（含"跟随系统"）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Theme {
+    System,
+    OneDark,
+    OneLight,
+}
+
+/// 落地后的具体主题（dark / light 之一）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConcreteTheme {
+    Dark,
+    Light,
+}
+
+impl Theme {
+    /// 配置字符串 → 枚举。非法值兜底 System。
+    pub(crate) fn from_config(s: &str) -> Self {
+        match s {
+            "one-dark" => Self::OneDark,
+            "one-light" => Self::OneLight,
+            _ => Self::System,
+        }
+    }
+
+    /// 枚举 → 配置字符串。
+    pub(crate) fn as_config(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::OneDark => "one-dark",
+            Self::OneLight => "one-light",
+        }
+    }
+
+    /// 设置面板展示用标签。
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::System => "跟随系统",
+            Self::OneDark => "One Dark",
+            Self::OneLight => "One Light",
+        }
+    }
+
+    /// 轮转到下一个主题。
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::System => Self::OneDark,
+            Self::OneDark => Self::OneLight,
+            Self::OneLight => Self::System,
+        }
+    }
+
+    /// 是否跟随系统外观。
+    pub(crate) fn is_system(self) -> bool {
+        self == Self::System
+    }
+
+    /// 解析为落地主题：system 读取窗口外观，固定主题直接映射。
+    pub(crate) fn effective(self, window: Option<&Window>) -> ConcreteTheme {
+        match self {
+            Self::System => match window.map(|w| w.appearance()) {
+                Some(WindowAppearance::Dark | WindowAppearance::VibrantDark) => ConcreteTheme::Dark,
+                Some(WindowAppearance::Light | WindowAppearance::VibrantLight) => {
+                    ConcreteTheme::Light
+                }
+                None => ConcreteTheme::Dark,
+            },
+            Self::OneDark => ConcreteTheme::Dark,
+            Self::OneLight => ConcreteTheme::Light,
+        }
+    }
+
+    /// 一次性应用主题：更新调色板 + 语法高亮表。
+    pub(crate) fn apply(self, window: Option<&Window>) {
+        let concrete = self.effective(window);
+        color::set_palette(concrete);
+        syntax::set_theme(concrete);
+    }
+}
 
 /// 距离类节拍尺（手册 6.1 / 6.2）。
 pub mod space {

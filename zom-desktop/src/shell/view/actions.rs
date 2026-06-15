@@ -273,7 +273,7 @@ fn apply_shell_effect(
                 app.apply_settings_change_from_effect(settings_change(*change));
                 app.config_snapshot()
             };
-            config_visuals::apply(&config);
+            config_visuals::apply(&config, Some(window));
             window.refresh();
         }
         HostEffect::TogglePanel(panel, via_pointer) => {

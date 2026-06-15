@@ -15,10 +15,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use zom_engine::{BufferConfig, TabConfig};
 
+use crate::theme::Theme;
+
 /// 顶层配置：按面分组，每组一个子结构。
 ///
-/// `#[serde(default)]` 让旧版本配置文件缺字段时也能反序列化为默认值——
-/// 新增字段不破坏老配置。
+/// `#[serde(default)]` 让旧版本配置文件缺字段时也能反序列化为默认值——新增字段不破坏老配置。
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub(crate) struct AppConfig {
@@ -38,7 +39,7 @@ pub(crate) struct GeneralConfig {
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
-            theme: THEME_ONE_DARK.to_string(),
+            theme: Theme::System.as_config().to_string(),
         }
     }
 }
@@ -80,9 +81,6 @@ impl Default for EditorConfig {
         }
     }
 }
-
-pub(crate) const THEME_ONE_DARK: &str = "one-dark";
-pub(crate) const THEME_ONE_LIGHT: &str = "one-light";
 
 const UI_FONT_MIN: u16 = 10;
 const UI_FONT_MAX: u16 = 18;
@@ -160,12 +158,8 @@ impl AppConfig {
     }
 
     pub(crate) fn normalized(mut self) -> Self {
-        if !matches!(
-            self.general.theme.as_str(),
-            THEME_ONE_DARK | THEME_ONE_LIGHT
-        ) {
-            self.general.theme = THEME_ONE_DARK.to_string();
-        }
+        let theme = Theme::from_config(&self.general.theme);
+        self.general.theme = theme.as_config().to_string();
         self.ui.font_size = self.ui.font_size.clamp(UI_FONT_MIN, UI_FONT_MAX);
         self.editor.font_size = self
             .editor
@@ -195,9 +189,7 @@ fn next_tab_size(current: u16) -> u16 {
 }
 
 fn next_theme(current: &str) -> String {
-    let themes = [THEME_ONE_DARK, THEME_ONE_LIGHT];
-    let index = themes.iter().position(|t| *t == current).unwrap_or(0);
-    themes[(index + 1) % themes.len()].to_string()
+    Theme::from_config(current).next().as_config().to_string()
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -257,7 +249,7 @@ mod tests {
         let path = temp_path("roundtrip");
         let _ = fs::remove_file(&path);
         let mut config = AppConfig::default();
-        config.general.theme = THEME_ONE_DARK.to_string();
+        config.general.theme = Theme::OneDark.as_config().to_string();
         config.ui.font_size = 14;
         config.editor.soft_wrap = false;
         config.editor.font_size = 18;

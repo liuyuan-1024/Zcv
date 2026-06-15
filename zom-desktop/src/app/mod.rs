@@ -708,11 +708,12 @@ mod tests {
     //! 需要 GPUI 句柄（Entity / Window / 焦点等）的链路在 shell 根视图那一层做手工 / 集成测试，不进本文件。
 
     use crate::app::App;
-    use crate::config::{SettingsChange, THEME_ONE_DARK};
+    use crate::config::SettingsChange;
     use crate::editor_state::{EditorState, EditorTab};
     use crate::focus::{AppFocus, FileTreeFocus};
     use crate::host_intent::{InteractionIntent, PointerIntent};
     use crate::text_target::{TextTargetOwner, TextTargetQuery};
+    use crate::theme::Theme;
     use crate::ui_id::PanelId;
     use std::cell::RefCell;
     use std::fs::{File, create_dir_all};
@@ -956,7 +957,7 @@ mod tests {
         app.apply_settings_change_from_effect(SettingsChange::ToggleEditorSoftWrap);
 
         let config = app.config_snapshot();
-        assert_eq!(config.general.theme, THEME_ONE_DARK);
+        assert_eq!(config.general.theme, Theme::System.as_config());
         assert_eq!(config.ui.font_size, 14);
         assert_eq!(config.editor.font_size, 18);
         assert!(!config.editor.soft_wrap);

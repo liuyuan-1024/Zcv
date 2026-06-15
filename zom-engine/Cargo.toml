@@ -21,3 +21,6 @@ harness = false
 [[bench]]
 name = "projection"
 harness = false
+
+[lints]
+workspace = true

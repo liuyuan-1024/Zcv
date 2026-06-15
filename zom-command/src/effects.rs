@@ -176,7 +176,6 @@ pub enum HostEffect {
     /// 退出搜索（Esc 路径）：把光标折叠到当前命中末尾，再收起搜索框；
     SearchDismiss,
     /// 确认当前命中（Enter 路径）：把光标折叠到当前匹配末尾，并把焦点交回编辑器。
-    /// **搜索框不收** —— query / 命中高亮都保留；从编辑器按 mod-f 即可回到 query 输入框继续改。
     SearchConfirmMatch,
 
     // ===== Go-to-line =====

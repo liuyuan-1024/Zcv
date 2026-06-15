@@ -6,9 +6,9 @@
 
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SettingsChangeRequest,
-    reject_unknown_args, required_arg,
+    CommandArgs, CommandContext, CommandError, CommandHandler, CommandId, CommandOutcome,
+    CommandRegistry, DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
+    SettingsChangeRequest, reject_unknown_args, required_arg,
 };
 
 /// 打开设置面板。
@@ -19,6 +19,14 @@ pub const DISMISS: &str = "settings.dismiss";
 pub const OPEN_TOML: &str = "settings.open_toml";
 /// 应用一项设置变更。
 pub const APPLY_CHANGE: &str = "settings.apply_change";
+/// 增大编辑器字号。
+pub const INCREASE_EDITOR_FONT_SIZE: &str = "settings.increase_editor_font_size";
+/// 减小编辑器字号。
+pub const DECREASE_EDITOR_FONT_SIZE: &str = "settings.decrease_editor_font_size";
+/// 增大UI字号。
+pub const INCREASE_UI_FONT_SIZE: &str = "settings.increase_ui_font_size";
+/// 减小UI字号。
+pub const DECREASE_UI_FONT_SIZE: &str = "settings.decrease_ui_font_size";
 
 /// 设置面板拥有自己的键盘上下文，Esc 等面板内按键不污染全局快捷键空间。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,9 +104,10 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     registry
         .install(keymap, OPEN, "设置", Box::new(run_open))
         .description("打开设置面板。")
-        .key("mod-,");
-
+        .key("mod ,");
     registry.install(keymap, DISMISS, "关闭设置", Box::new(run_dismiss));
+    dismiss_top::bind_esc(keymap, DismissScope::Settings, settings);
+
     registry
         .install(keymap, OPEN_TOML, "打开设置 TOML", Box::new(run_open_toml))
         .hide_from_shortcuts();
@@ -111,7 +120,42 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         )
         .hide_from_shortcuts();
 
-    dismiss_top::bind_esc(keymap, DismissScope::Settings, settings);
+    registry
+        .install(
+            keymap,
+            INCREASE_EDITOR_FONT_SIZE,
+            "增大编辑器字号",
+            run_adjust_font_size(SettingsChangeRequest::AdjustEditorFont(1)),
+        )
+        .description("增大编辑器字号。")
+        .key("mod =");
+    registry
+        .install(
+            keymap,
+            DECREASE_EDITOR_FONT_SIZE,
+            "减小编辑器字号",
+            run_adjust_font_size(SettingsChangeRequest::AdjustEditorFont(-1)),
+        )
+        .description("减小编辑器字号。")
+        .key("mod -");
+    registry
+        .install(
+            keymap,
+            INCREASE_UI_FONT_SIZE,
+            "增大UI字号",
+            run_adjust_font_size(SettingsChangeRequest::AdjustUiFont(1)),
+        )
+        .description("增大UI字号。")
+        .key("mod +");
+    registry
+        .install(
+            keymap,
+            DECREASE_UI_FONT_SIZE,
+            "减小UI字号",
+            run_adjust_font_size(SettingsChangeRequest::AdjustUiFont(-1)),
+        )
+        .description("减小UI字号。")
+        .key("mod _");
 }
 
 fn run_open(
@@ -155,6 +199,15 @@ fn run_apply_change(
         .effects
         .push(HostEffect::SettingsApplyChange(args.change));
     Ok(CommandOutcome::default())
+}
+
+fn run_adjust_font_size(change: SettingsChangeRequest) -> CommandHandler {
+    Box::new(move |context, _args| {
+        context
+            .effects
+            .push(HostEffect::SettingsApplyChange(change));
+        Ok(CommandOutcome::default())
+    })
 }
 
 fn required_delta(args: &CommandArgs) -> Result<i16, CommandError> {

@@ -1,13 +1,15 @@
 //! 逻辑 chord → 平台快捷键文案的统一投影。
 //!
-//! 底层 `Keymap` 永远只认逻辑 chord 字符串（如 `"mod-shift-z"`）；
+//! 底层 `Keymap` 永远只认逻辑 chord 字符串；
 //! UI 层需要展示给人看时，统一经过本模块投影到当前平台的符号或文本，**不要在调用方手动拼接符号**。
+//!
+//! chord 内用空格分隔修饰键与主键名，最后一段是主键，其余是修饰键。
 //!
 //! 平台差异由两张数据表承载：
 //! - [`MODIFIERS`]：逻辑修饰键 → 显示文本。
 //! - [`SPECIAL_KEYS`]：特殊键名 → 显示文本（普通字母数字键直接大写）。
 //!
-//! [`MODIFIERS`] 还规定了**显示顺序**，保证 `"shift-alt-mod-z"` 和 `"mod-shift-alt-z"` 给出同样的字符串。
+//! [`MODIFIERS`] 还规定了**显示顺序**，保证 `"shift alt mod z"` 和 `"mod shift alt z"` 给出同样的字符串。
 //! macOS 按 HIG 顺序 `⌃⌥⇧⌘`；其他平台按习惯顺序 `Ctrl+Alt+Shift+...`。
 //! macOS 符号之间保留空隙，避免 tooltip / 菜单里连续符号难以区分。
 
@@ -25,7 +27,7 @@ pub fn format_sequence(sequence: &[KeyChord]) -> String {
         .join(CHORD_SEPARATOR)
 }
 
-/// 同一命令的多条快捷键绑定的拼接展示（如 `⌘L / ⌘H`）。
+/// 同一命令的多条快捷键绑定的拼接展示。
 ///
 /// 选用 ` / ` 作为分隔符：避开 [`CHORD_SEPARATOR`]（已用作 leader 序列内分隔），
 /// 跨平台无需本地化，紧凑且不易与 modifier 符号混淆。
@@ -39,9 +41,9 @@ pub fn format_sequences(sequences: &[&[KeyChord]]) -> String {
 
 const BINDING_SEPARATOR: &str = " / ";
 
-/// 把单段 chord（如 `"mod-shift-z"`）格式化成给人看的字符串。
+/// 把单段 chord 格式化成给人看的字符串。
 pub fn format_chord(chord: &str) -> String {
-    let tokens: Vec<&str> = chord.split('-').collect();
+    let tokens: Vec<&str> = chord.split_whitespace().collect();
     let Some((key, mods)) = tokens.split_last() else {
         return String::new();
     };
@@ -87,7 +89,7 @@ fn format_key(key: &str) -> String {
 mod platform {
     /// 修饰键与主键之间用空格分隔，避免连续符号难以区分。
     pub(super) const MODIFIER_SEPARATOR: &str = " ";
-    /// 多段 chord 之间用更宽的空隙分隔（如 `"⌘ K  ⌘ B"`）。
+    /// 多段 chord 之间用双空格分隔。
     pub(super) const CHORD_SEPARATOR: &str = "  ";
 
     /// 逻辑修饰键 → 显示符号；**顺序就是显示顺序**（HIG: ⌃⌥⇧⌘）。
@@ -163,11 +165,11 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn mac_should_render_hig_modifier_order_with_symbol_spacing() {
-        assert_eq!(format_chord("mod-z"), "⌘ Z");
+        assert_eq!(format_chord("mod z"), "⌘ Z");
         // 任何顺序都按 MODIFIERS 表里的顺序输出。
-        assert_eq!(format_chord("mod-shift-z"), "⇧ ⌘ Z");
-        assert_eq!(format_chord("shift-mod-z"), "⇧ ⌘ Z");
-        assert_eq!(format_chord("shift-alt-left"), "⌥ ⇧ ←");
+        assert_eq!(format_chord("mod shift z"), "⇧ ⌘ Z");
+        assert_eq!(format_chord("shift mod z"), "⇧ ⌘ Z");
+        assert_eq!(format_chord("shift alt left"), "⌥ ⇧ ←");
         assert_eq!(format_chord("backspace"), "⌫");
         assert_eq!(format_chord("escape"), "⎋");
         assert_eq!(format_chord("space"), "␣");
@@ -176,11 +178,11 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn non_mac_should_render_textual_modifiers_with_plus() {
-        assert_eq!(format_chord("mod-z"), "Ctrl+Z");
-        assert_eq!(format_chord("mod-shift-z"), "Ctrl+Shift+Z");
-        assert_eq!(format_chord("shift-mod-z"), "Ctrl+Shift+Z");
-        assert_eq!(format_chord("ctrl-mod-shift-z"), "Ctrl+Shift+Z");
-        assert_eq!(format_chord("shift-alt-left"), "Alt+Shift+←");
+        assert_eq!(format_chord("mod z"), "Ctrl+Z");
+        assert_eq!(format_chord("mod shift z"), "Ctrl+Shift+Z");
+        assert_eq!(format_chord("shift mod z"), "Ctrl+Shift+Z");
+        assert_eq!(format_chord("ctrl mod shift z"), "Ctrl+Shift+Z");
+        assert_eq!(format_chord("shift alt left"), "Alt+Shift+←");
         assert_eq!(format_chord("backspace"), "Backspace");
         assert_eq!(format_chord("escape"), "Esc");
         assert_eq!(format_chord("space"), "Space");
@@ -193,9 +195,15 @@ mod tests {
     }
 
     #[test]
+    fn extra_spaces_are_harmless() {
+        // split_whitespace 对待多个空格跟单空格一样。
+        assert_eq!(format_chord("mod  z"), format_chord("mod z"));
+    }
+
+    #[test]
     fn multi_chord_sequence_should_join_with_chord_separator() {
-        let leader = KeyChord::new("mod-k").unwrap();
-        let follow = KeyChord::new("mod-b").unwrap();
+        let leader = KeyChord::new("mod k").unwrap();
+        let follow = KeyChord::new("mod b").unwrap();
         let formatted = format_sequence(&[leader, follow]);
         // 不同平台 chord 不同，但中间一定有 CHORD_SEPARATOR。
         assert!(formatted.contains(CHORD_SEPARATOR));
@@ -203,11 +211,11 @@ mod tests {
 
     #[test]
     fn multi_binding_should_join_with_slash() {
-        let next = vec![KeyChord::new("mod-l").unwrap()];
-        let prev = vec![KeyChord::new("mod-h").unwrap()];
+        let next = vec![KeyChord::new("mod l").unwrap()];
+        let prev = vec![KeyChord::new("mod h").unwrap()];
         let formatted = format_sequences(&[next.as_slice(), prev.as_slice()]);
         assert!(formatted.contains(BINDING_SEPARATOR));
-        assert!(formatted.starts_with(&format_chord("mod-l")));
-        assert!(formatted.ends_with(&format_chord("mod-h")));
+        assert!(formatted.starts_with(&format_chord("mod l")));
+        assert!(formatted.ends_with(&format_chord("mod h")));
     }
 }

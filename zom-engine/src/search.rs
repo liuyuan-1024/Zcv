@@ -467,7 +467,7 @@ fn search_regex_streaming<T: TextRead>(
     const OVERLAP_MIN: usize = 4096;
 
     // 重叠区至少 pattern.len() * 8 或 4 KiB，不超过窗口一半
-    let overlap = (pattern.len() * 8).max(OVERLAP_MIN).min(WINDOW_SIZE / 2);
+    let overlap = (pattern.len() * 8).clamp(OVERLAP_MIN, WINDOW_SIZE / 2);
 
     let mut buf: Vec<u8> = Vec::with_capacity(WINDOW_SIZE + overlap);
     // buf[0] 在文件中的绝对字节偏移

@@ -1,6 +1,6 @@
-//! GoToLine —— 锚定底栏光标位置 glyph 的跳转到行浮面（⌘G，Zed 风格）。
+//! GoToLine —— 锚定底栏光标位置 glyph 的跳转到行浮面。
 //!
-//! 走 surface 系统：⌘G 打开、Esc 关闭，SurfaceManager 管生命周期。
+//! 走 surface 系统：打开、Esc 关闭，SurfaceManager 管生命周期。
 
 use std::cell::RefCell;
 use std::rc::Rc;

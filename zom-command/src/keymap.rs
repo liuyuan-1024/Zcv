@@ -239,7 +239,7 @@ impl Keymap {
     /// 按 install 顺序返回；相同的 `KeySequence` 仅保留首次出现（同一序列绑在多个 context 时去重）。
     /// UI 通常用 [`Self::format_shortcuts_for`] 直接拿可展示字符串；本方法用于需要自定义渲染的场景。
     ///
-    /// 一个命令可能因不同 `CommandArgs` 绑了多条 chord（如 `editor.select_tab` 的 `mod-l` / `mod-h`）
+    /// 一个命令可能因不同 `CommandArgs` 绑了多条 chord
     /// —— 这种 args 差异在 `description` 写得统一时视作 alias，UI 合并展示。
     pub fn shortcuts_for(&self, command: &CommandId) -> Vec<&KeySequence> {
         let mut result: Vec<&KeySequence> = Vec::new();
@@ -247,7 +247,7 @@ impl Keymap {
             if &binding.command != command {
                 continue;
             }
-            if !result.iter().any(|seq| *seq == &binding.sequence) {
+            if !result.contains(&&binding.sequence) {
                 result.push(&binding.sequence);
             }
         }
@@ -256,8 +256,7 @@ impl Keymap {
 
     /// 反查 + 平台投影：给 UI 一个直接能展示的快捷键串。
     ///
-    /// 单条 binding 输出形如 macOS `⇧⌘Z` / 非 macOS `Ctrl+Shift+Z`。
-    /// 多条 binding 以 ` / ` 拼接（例如 `⌘L / ⌘H`）。映射表见 [`crate::keymap_format`]。
+    /// 多条 binding 输出以 ` / ` 拼接，由 [`crate::keymap_format`] 做平台投影。
     pub fn format_shortcuts_for(&self, command: &CommandId) -> Option<String> {
         let sequences = self.shortcuts_for(command);
         if sequences.is_empty() {

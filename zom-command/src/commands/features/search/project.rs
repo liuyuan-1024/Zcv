@@ -27,7 +27,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             )),
         )
         .description("跨文件搜索入口（待实现）。")
-        .key("mod-shift-f");
+        .key("mod shift f");
 }
 
 fn no_args(command_id: &'static str) -> Invocation {

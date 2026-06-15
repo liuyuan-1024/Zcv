@@ -26,11 +26,11 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     registry
         .install(keymap, QUIT, "退出应用", emit(HostEffect::Quit))
         .description("退出应用。")
-        .key("mod-q");
+        .key("mod q");
     registry
         .install(keymap, MINIMIZE, "最小化窗口", emit(HostEffect::Minimize))
         .description("最小化当前窗口。")
-        .key("mod-m");
+        .key("mod m");
     registry
         .install(
             keymap,
@@ -39,7 +39,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             emit(HostEffect::ToggleMaximize),
         )
         .description("在普通窗口和最大化窗口之间切换。")
-        .key("mod-shift-m");
+        .key("mod shift m");
 }
 
 fn cid(id: &'static str) -> CommandId {

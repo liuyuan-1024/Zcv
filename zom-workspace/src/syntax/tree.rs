@@ -352,7 +352,7 @@ fn overlay_two(
 
         if t_start <= b_start {
             // 上层胜出：把 top[ti] 推入输出，并把被它覆盖的 base 区间裁掉。
-            let top_span = top[ti].clone();
+            let top_span = top[ti];
             let t_end = top_span.0.end().get();
             out.push(top_span);
             ti += 1;
@@ -363,22 +363,22 @@ fn overlay_two(
             }
             // 跨过 t_end 的 base span 起点裁到 t_end，等待下一轮循环输出尾段。
             if bi < base.len() && base[bi].0.start().get() < t_end {
-                let (br, bs) = base[bi].clone();
+                let (br, bs) = base[bi];
                 if let Ok(truncated) = TextRange::new(ByteOffset::new(t_end), br.end()) {
                     base[bi] = (truncated, bs);
                 }
             }
         } else {
             // base 先开始：能否整段输出取决于它是否撞到下一个 top 起点。
-            let (br, bs) = base[bi].clone();
+            let (br, bs) = base[bi];
             let b_end = br.end().get();
             if t_start < b_end {
                 // base 横跨 top 的起点：把 base 拦腰切成 [b_start, t_start) 输出，
                 // 剩下的 [t_start, b_end) 留给下一轮（下一轮会进入上层胜出分支）。
-                if t_start > br.start().get() {
-                    if let Ok(prefix) = TextRange::new(br.start(), ByteOffset::new(t_start)) {
-                        out.push((prefix, bs));
-                    }
+                if t_start > br.start().get()
+                    && let Ok(prefix) = TextRange::new(br.start(), ByteOffset::new(t_start))
+                {
+                    out.push((prefix, bs));
                 }
                 if t_start < b_end {
                     if let Ok(remainder) = TextRange::new(ByteOffset::new(t_start), br.end()) {

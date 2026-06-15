@@ -91,7 +91,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_show_projects_picker),
         )
         .description("打开项目选择器，切换到最近项目或导入新项目。")
-        .key("mod-o");
+        .key("mod o");
 
     registry
         .install(
@@ -100,7 +100,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "从本地路径导入",
             emit(HostEffect::OpenLocalProject),
         )
-        .key_in("mod-l", picker);
+        .key_in("mod l", picker);
 
     registry
         .install(
@@ -109,7 +109,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "从 Git 地址导入",
             emit(HostEffect::StartGitClone),
         )
-        .key_in("mod-g", picker);
+        .key_in("mod g", picker);
 
     registry
         .install(
@@ -118,8 +118,8 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "移除最近项目",
             emit(HostEffect::RemoveSelectedRecentProject),
         )
-        .key_in("mod-backspace", picker)
-        .key_in("mod-delete", picker);
+        .key_in("mod backspace", picker)
+        .key_in("mod delete", picker);
 
     registry
         .install(

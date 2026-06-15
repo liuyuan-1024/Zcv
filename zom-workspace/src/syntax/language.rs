@@ -165,7 +165,7 @@ impl LanguageRegistry {
         for (id, entry) in &self.entries {
             for detector in &entry.detectors {
                 if let LanguageDetector::Filename(names) = detector
-                    && names.iter().any(|n| *n == name)
+                    && names.contains(&name)
                 {
                     return Some(*id);
                 }
@@ -185,7 +185,7 @@ impl LanguageRegistry {
                         if token.is_empty() {
                             continue;
                         }
-                        if names.iter().any(|n| *n == token) {
+                        if names.contains(&token) {
                             return Some(*id);
                         }
                     }

@@ -9,6 +9,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         PanelKind::KeyboardShortcuts,
         "快捷键",
         "打开或关闭快捷键面板。",
-        "mod-shift-k",
+        "mod shift k",
     );
 }

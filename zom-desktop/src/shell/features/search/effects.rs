@@ -72,7 +72,7 @@ pub(crate) fn try_apply_effect(
     true
 }
 
-/// `mod-f`：打开 bar 并把焦点送到 query。已开则只搬焦点（幂等）。
+/// 打开 bar 并把焦点送到 query。已开则只搬焦点（幂等）。
 /// 收起由 Esc（[`HostEffect::SearchDismiss`]）显式触发，不在本函数里走切换。
 ///
 /// 当前只有单文件搜索（per-buffer），没有 scope 维度；跨文件搜索是

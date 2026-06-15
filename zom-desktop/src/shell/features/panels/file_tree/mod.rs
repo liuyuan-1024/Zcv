@@ -3,13 +3,12 @@
 //! 数据来源 [`zom_workspace::ProjectTree`]，App 把它转成 owned 的 [`FileTreeState`] 快照传进来。
 //! 面板把焦点态的按键交给宿主统一的 `KeyRequest`（`KeySurface::FileTree`），由 keymap 在 `FileTree` 上下文里解析 —— 面板自己不持有任何「按键 → 动作」的映射。
 
-use std::path::PathBuf;
 use std::rc::Rc;
 
-use gpui::{AnyElement, Div, FocusHandle, Window};
+use gpui::{AnyElement, Div, FocusHandle};
 
 use crate::editor::TextEditorSlot;
-use crate::host_intent::{CommandRequest, KeyRequest};
+use crate::host_intent::{CommandRequest, FileTreeClickCallback, KeyRequest};
 use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::PanelContext;
 
@@ -68,7 +67,7 @@ pub(crate) struct FileTreePanel<'a> {
     /// 当前焦点是否在文件树容器上；决定选中边框是否可见。
     pub(crate) is_focused: bool,
     /// 点击文件树行的回调：参数为被点击行的路径。先选中再发 activate 命令。
-    pub(crate) on_item_click: &'a Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>,
+    pub(crate) on_item_click: &'a FileTreeClickCallback,
 }
 
 pub(crate) fn render(ctx: PanelContext<'_>) -> Div {

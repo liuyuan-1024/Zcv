@@ -441,13 +441,13 @@ impl IgnoreMatcher {
         ensure_zomignore_exists(root)?;
         let mut builder = GitignoreBuilder::new(root);
         let gitignore_path = root.join(GITIGNORE_FILE);
-        if gitignore_path.is_file() {
-            if let Some(error) = builder.add(&gitignore_path) {
-                return Err(io::Error::other(format!(
-                    "解析 {} 失败：{error}",
-                    gitignore_path.display()
-                )));
-            }
+        if gitignore_path.is_file()
+            && let Some(error) = builder.add(&gitignore_path)
+        {
+            return Err(io::Error::other(format!(
+                "解析 {} 失败：{error}",
+                gitignore_path.display()
+            )));
         }
         let zomignore_path = root.join(PROJECT_CONFIG_DIR).join(ZOMIGNORE_FILE);
         if let Some(error) = builder.add(&zomignore_path) {

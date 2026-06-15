@@ -425,7 +425,7 @@ pub fn outdent() -> Invocation {
 /// 删除的唯一入口。三种语义全靠 [`DeleteArgs`] 区分：
 ///
 /// - `DeleteArgs { direction: Some(prev), unit: Grapheme }`：backspace
-/// - `DeleteArgs { direction: Some(next), unit: Word }`：alt-delete
+/// - `DeleteArgs { direction: Some(next), unit: Word }`：alt delete
 /// - `DeleteArgs { direction: None, .. }`：caret 不动，只删非空 selection
 pub fn delete(args: DeleteArgs) -> Invocation {
     (cid(DELETE), args.into())
@@ -515,7 +515,7 @@ pub fn close_tab_by_id(target: ViewId) -> Invocation {
     (cid(CLOSE_TAB), args)
 }
 
-/// 用于命令面板 / 菜单等以编程方式触发保存。键盘绑 `mod-s` 走 keymap 直派发。
+/// 用于命令面板 / 菜单等以编程方式触发保存。
 pub fn save() -> Invocation {
     (cid(SAVE), CommandArgs::new())
 }
@@ -574,7 +574,6 @@ fn run_change_language(
 ///
 /// 默认键位采用逻辑修饰键（`mod / alt / shift`），平台投影在 UI 层完成；
 /// 见 `zom-desktop/src/shell/keymap_format.rs`。
-
 const PAGE_STEP_LINES: u32 = 1;
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
@@ -606,7 +605,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_in("tab", text_edit_multiline);
     registry
         .install(keymap, OUTDENT, "减少缩进", Box::new(run_outdent))
-        .key_in("shift-tab", text_edit_multiline);
+        .key_in("shift tab", text_edit_multiline);
 
     // 删除的所有方向 / 单位变体共用一条命令，按预设 args 区分——与 MOVE_SELECTION 同形。
     registry
@@ -621,14 +620,14 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             delete_args(MovementDirection::Next, MovementUnit::Grapheme),
             text_edit,
         )
-        // alt-backspace / alt-delete 与 alt-left / alt-right（按词移动）对称：按词删除。
+        // alt backspace / alt delete 与 alt left / alt right（按词移动）对称：按词删除。
         .key_with_in(
-            "alt-backspace",
+            "alt backspace",
             delete_args(MovementDirection::Previous, MovementUnit::Word),
             text_edit,
         )
         .key_with_in(
-            "alt-delete",
+            "alt delete",
             delete_args(MovementDirection::Next, MovementUnit::Word),
             text_edit,
         );
@@ -676,17 +675,17 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             text_edit,
         )
         .key_with_in(
-            "shift-up",
+            "shift up",
             move_args(Previous, Motion::LineStep, true),
             text_edit,
         )
         .key_with_in(
-            "shift-down",
+            "shift down",
             move_args(Next, Motion::LineStep, true),
             text_edit,
         )
         .key_with_in(
-            "shift-pageup",
+            "shift pageup",
             move_args(
                 Previous,
                 Motion::PageStep {
@@ -697,7 +696,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             text_edit,
         )
         .key_with_in(
-            "shift-pagedown",
+            "shift pagedown",
             move_args(
                 Next,
                 Motion::PageStep {
@@ -707,21 +706,21 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             ),
             text_edit,
         )
-        .key_with_in("shift-left", move_args(Previous, Grapheme, true), text_edit)
-        .key_with_in("shift-right", move_args(Next, Grapheme, true), text_edit)
-        .key_with_in("alt-left", move_args(Previous, Word, false), text_edit)
-        .key_with_in("alt-right", move_args(Next, Word, false), text_edit)
-        .key_with_in("alt-shift-left", move_args(Previous, Word, true), text_edit)
-        .key_with_in("alt-shift-right", move_args(Next, Word, true), text_edit)
+        .key_with_in("shift left", move_args(Previous, Grapheme, true), text_edit)
+        .key_with_in("shift right", move_args(Next, Grapheme, true), text_edit)
+        .key_with_in("alt left", move_args(Previous, Word, false), text_edit)
+        .key_with_in("alt right", move_args(Next, Word, false), text_edit)
+        .key_with_in("alt shift left", move_args(Previous, Word, true), text_edit)
+        .key_with_in("alt shift right", move_args(Next, Word, true), text_edit)
         .key_with_in("home", move_args(Previous, LineEdge, false), text_edit)
         .key_with_in("end", move_args(Next, LineEdge, false), text_edit)
-        .key_with_in("shift-home", move_args(Previous, LineEdge, true), text_edit)
-        .key_with_in("shift-end", move_args(Next, LineEdge, true), text_edit);
+        .key_with_in("shift home", move_args(Previous, LineEdge, true), text_edit)
+        .key_with_in("shift end", move_args(Next, LineEdge, true), text_edit);
 
     registry
         .install(keymap, SELECT_ALL, "全选", Box::new(run_select_all))
         .description("选中当前编辑器中的全部文本。")
-        .key_in("mod-a", text_edit);
+        .key_in("mod a", text_edit);
 
     registry.install(
         keymap,
@@ -732,11 +731,11 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     registry
         .install(keymap, UNDO, "撤销", Box::new(run_undo))
         .description("撤销上一次编辑。")
-        .key_in("mod-z", text_edit);
+        .key_in("mod z", text_edit);
     registry
         .install(keymap, REDO, "重做", Box::new(run_redo))
         .description("重做上一次被撤销的编辑。")
-        .key_in("mod-shift-z", text_edit);
+        .key_in("mod shift z", text_edit);
     registry
         .install(
             keymap,
@@ -777,34 +776,34 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     registry
         .install(keymap, SELECT_TAB, "切换标签", Box::new(run_select_tab))
         .description("在编辑器标签之间切换。")
-        .key_with_in("mod-l", select_tab_args(SelectTabTarget::Next), text_edit)
+        .key_with_in("mod l", select_tab_args(SelectTabTarget::Next), text_edit)
         .key_with_in(
-            "mod-h",
+            "mod h",
             select_tab_args(SelectTabTarget::Previous),
             text_edit,
         );
     registry
         .install(keymap, CLOSE_TAB, "关闭标签", Box::new(run_close_tab))
         .description("关闭当前编辑器标签。")
-        .key_in("mod-w", text_edit);
+        .key_in("mod w", text_edit);
 
     registry
         .install(keymap, SAVE, "保存", Box::new(run_save))
         .description("保存当前打开的文件。")
-        .key_in("mod-s", text_edit);
+        .key_in("mod s", text_edit);
 
     registry
         .install(keymap, COPY, "复制", Box::new(run_copy))
         .description("复制选区文本；无选区时复制当前行（含换行符）。")
-        .key_in("mod-c", text_edit);
+        .key_in("mod c", text_edit);
     registry
         .install(keymap, CUT, "剪切", Box::new(run_cut))
         .description("剪切选区文本；无选区时剪切当前行（含换行符）。")
-        .key_in("mod-x", text_edit);
+        .key_in("mod x", text_edit);
     registry
         .install(keymap, PASTE, "粘贴", Box::new(run_paste))
         .description("将剪贴板内容写入选区。")
-        .key_in("mod-v", text_edit);
+        .key_in("mod v", text_edit);
 
     registry.install(
         keymap,
@@ -816,7 +815,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     registry
         .install(keymap, OPEN_PREVIEW, "预览", Box::new(run_open_preview))
         .description("打开或跳转到当前文件的预览标签页。")
-        .key_in("alt-p", text_edit);
+        .key_in("alt p", text_edit);
 
     super::go_to_line::install(registry, keymap);
 

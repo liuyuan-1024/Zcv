@@ -33,7 +33,6 @@ pub struct LoadedTextInfo {
 }
 
 impl LoadedTextInfo {
-    #[allow(clippy::too_many_arguments)]
     pub const fn new(
         encoding: TextEncoding,
         bom_policy: BomPolicy,

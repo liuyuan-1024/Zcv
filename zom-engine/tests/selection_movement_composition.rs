@@ -352,7 +352,7 @@ fn composition_relative_selection_inside_grapheme_cluster_should_be_rejected_ato
 }
 
 // ====================================================================
-// Tab / Shift-Tab：标准 IDE 语义
+// Tab / shift Tab：标准 IDE 语义
 // ====================================================================
 
 fn buffer_with_tab(text: &str, indent_width: usize, insert_spaces: bool) -> Buffer {

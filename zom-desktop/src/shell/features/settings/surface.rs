@@ -5,17 +5,19 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    Context, Div, FocusHandle, InteractiveElement, ListAlignment, ListState, MouseButton,
-    Window, div, list, prelude::*, px,
+    Context, Div, FocusHandle, InteractiveElement, IntoElement, ListAlignment, ListState,
+    MouseButton, Window, div, list, prelude::*, px,
 };
+use zom_command::commands::settings as settings_commands;
 
 use crate::config::{AppConfig, SettingsChange};
-use crate::shell::shared::scroll;
+use crate::shell::shared::{CommandBinding, Glyph, scroll};
 use crate::shell::surfaces::{SurfaceAnchor, SurfaceRequest, WindowPosition};
+use crate::shell::{CommandTitleLookup, ShortcutLookup};
 use crate::theme::{color, radius, space};
 use crate::ui_id::SurfaceId;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct SettingsPanelState {
     config: AppConfig,
     path: Option<PathBuf>,
@@ -34,15 +36,6 @@ impl SettingsPanelState {
     }
 }
 
-impl Default for SettingsPanelState {
-    fn default() -> Self {
-        Self {
-            config: AppConfig::default(),
-            path: None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SettingsIntent {
     OpenToml,
@@ -56,6 +49,8 @@ pub(crate) struct SettingsRuntime {
     focus: FocusHandle,
     list_state: ListState,
     intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
+    title_lookup: Rc<RefCell<Option<CommandTitleLookup>>>,
+    shortcut_lookup: Rc<RefCell<Option<ShortcutLookup>>>,
     state: Rc<RefCell<SettingsPanelState>>,
 }
 
@@ -66,12 +61,22 @@ impl SettingsRuntime {
             list_state: ListState::new(SETTINGS_SECTION_COUNT, ListAlignment::Top, px(48.0))
                 .measure_all(),
             intent_request: Rc::new(RefCell::new(None)),
+            title_lookup: Rc::new(RefCell::new(None)),
+            shortcut_lookup: Rc::new(RefCell::new(None)),
             state: Rc::new(RefCell::new(SettingsPanelState::default())),
         }
     }
 
     pub(crate) fn set_intent_request(&self, intent_request: SettingsIntentRequest) {
         *self.intent_request.borrow_mut() = Some(intent_request);
+    }
+
+    pub(crate) fn set_title_lookup(&self, title_lookup: CommandTitleLookup) {
+        *self.title_lookup.borrow_mut() = Some(title_lookup);
+    }
+
+    pub(crate) fn set_shortcut_lookup(&self, shortcut_lookup: ShortcutLookup) {
+        *self.shortcut_lookup.borrow_mut() = Some(shortcut_lookup);
     }
 
     pub(crate) fn set_state(&self, state: SettingsPanelState) {
@@ -81,11 +86,69 @@ impl SettingsRuntime {
     pub(crate) fn focus_handle(&self) -> FocusHandle {
         self.focus.clone()
     }
-
 }
+
+// ── 渲染上下文 ──
+// 把三个运行时注入的 lookup 归拢到一个 struct 里，渲染函数只传 &ctx。
+
+#[derive(Clone)]
+struct RenderCtx {
+    intent: Rc<RefCell<Option<SettingsIntentRequest>>>,
+    title: Rc<RefCell<Option<CommandTitleLookup>>>,
+    shortcut: Rc<RefCell<Option<ShortcutLookup>>>,
+}
+
+impl RenderCtx {
+    fn from_runtime(runtime: &SettingsRuntime) -> Self {
+        Self {
+            intent: Rc::clone(&runtime.intent_request),
+            title: Rc::clone(&runtime.title_lookup),
+            shortcut: Rc::clone(&runtime.shortcut_lookup),
+        }
+    }
+
+    /// 构造一条 [`CommandBinding`]：点击时执行 `intent`，悬浮时从 title/shortcut lookup 取 tooltip。
+    fn binding(&self, command_id: &'static str, intent: SettingsIntent) -> CommandBinding {
+        let intent_request = self.intent.borrow().clone();
+        CommandBinding {
+            id: command_id.to_string(),
+            title: self
+                .title
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| Rc::new(|_| None)),
+            shortcut: self
+                .shortcut
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| Rc::new(|_| None)),
+            request: Rc::new(move |window, cx| {
+                if let Some(f) = intent_request.as_ref() {
+                    f(intent, window, cx);
+                }
+            }),
+        }
+    }
+
+    /// 给非 Glyph 控件挂上 click 行为（pill / toggle）。
+    fn clickable(&self, control: Div, intent: SettingsIntent) -> Div {
+        let intent_request = self.intent.clone();
+        control
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                if let Some(f) = intent_request.borrow().as_ref() {
+                    f(intent, window, cx);
+                }
+                cx.stop_propagation();
+            })
+    }
+}
+
+// ── surface 入口 ──
 
 pub(crate) fn request(runtime: SettingsRuntime) -> SurfaceRequest {
     let focus = runtime.focus.clone();
+    let ctx = RenderCtx::from_runtime(&runtime);
     SurfaceRequest {
         id: SurfaceId::Settings,
         anchor: SurfaceAnchor::Window {
@@ -96,7 +159,7 @@ pub(crate) fn request(runtime: SettingsRuntime) -> SurfaceRequest {
             render(
                 &runtime.focus,
                 runtime.list_state.clone(),
-                Rc::clone(&runtime.intent_request),
+                &ctx,
                 runtime.state.borrow().clone(),
             )
             .into_any_element()
@@ -107,7 +170,7 @@ pub(crate) fn request(runtime: SettingsRuntime) -> SurfaceRequest {
 fn render(
     focus: &FocusHandle,
     list_state: ListState,
-    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
+    ctx: &RenderCtx,
     state: SettingsPanelState,
 ) -> Div {
     div()
@@ -123,14 +186,13 @@ fn render(
         .track_focus(focus)
         .tab_index(0)
         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-        .child(header(&state, Rc::clone(&intent_request)))
-        .child(body(list_state, intent_request, state))
+        .child(header(&state, ctx))
+        .child(body(list_state, ctx, state))
 }
 
-fn header(
-    state: &SettingsPanelState,
-    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
-) -> Div {
+// ── 头部 ──
+
+fn header(state: &SettingsPanelState, ctx: &RenderCtx) -> Div {
     div()
         .flex()
         .items_center()
@@ -147,24 +209,19 @@ fn header(
                 .gap(space::s4())
                 .child(muted(state.path_label())),
         )
-        .child(clickable(
-            pill("打开 TOML".to_string()),
-            intent_request,
-            SettingsIntent::OpenToml,
-        ))
+        .child(ctx.clickable(pill("打开 TOML".to_string()), SettingsIntent::OpenToml))
 }
+
+// ── 列表 body ──
 
 const SETTINGS_SECTION_COUNT: usize = 3;
 
-fn body(
-    list_state: ListState,
-    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
-    state: SettingsPanelState,
-) -> impl IntoElement {
+fn body(list_state: ListState, ctx: &RenderCtx, state: SettingsPanelState) -> impl IntoElement {
     if list_state.item_count() != SETTINGS_SECTION_COUNT {
         list_state.reset(SETTINGS_SECTION_COUNT);
     }
 
+    let ctx = ctx.clone();
     div()
         .relative()
         .flex_1()
@@ -172,7 +229,7 @@ fn body(
         .p(space::s4())
         .child(
             list(list_state.clone(), move |index, _, _| {
-                settings_section_item(index, Rc::clone(&intent_request), &state).into_any_element()
+                settings_section_item(index, &ctx, &state).into_any_element()
             })
             .w_full()
             .h_full(),
@@ -180,11 +237,7 @@ fn body(
         .child(scroll::list_scrollbar(&list_state))
 }
 
-fn settings_section_item(
-    index: usize,
-    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
-    state: &SettingsPanelState,
-) -> Div {
+fn settings_section_item(index: usize, ctx: &RenderCtx, state: &SettingsPanelState) -> Div {
     let content = match index {
         0 => section(
             "全局".to_string(),
@@ -192,7 +245,7 @@ fn settings_section_item(
                 "主题".to_string(),
                 theme_label(&state.config.general.theme),
                 "general.theme",
-                Rc::clone(&intent_request),
+                ctx,
                 SettingsIntent::Change(SettingsChange::CycleTheme),
             )],
         ),
@@ -202,9 +255,11 @@ fn settings_section_item(
                 "字号".to_string(),
                 format!("{} px", state.config.ui.font_size),
                 "ui.font_size",
-                Rc::clone(&intent_request),
+                ctx,
                 SettingsChange::AdjustUiFont(-1),
                 SettingsChange::AdjustUiFont(1),
+                settings_commands::DECREASE_UI_FONT_SIZE,
+                settings_commands::INCREASE_UI_FONT_SIZE,
             )],
         ),
         2 => section(
@@ -214,22 +269,24 @@ fn settings_section_item(
                     "编辑字号".to_string(),
                     format!("{} px", state.config.editor.font_size),
                     "editor.font_size",
-                    Rc::clone(&intent_request),
+                    ctx,
                     SettingsChange::AdjustEditorFont(-1),
                     SettingsChange::AdjustEditorFont(1),
+                    settings_commands::DECREASE_EDITOR_FONT_SIZE,
+                    settings_commands::INCREASE_EDITOR_FONT_SIZE,
                 ),
                 toggle_row(
                     "软换行".to_string(),
                     state.config.editor.soft_wrap,
                     "editor.soft_wrap",
-                    Rc::clone(&intent_request),
+                    ctx,
                     SettingsIntent::Change(SettingsChange::ToggleEditorSoftWrap),
                 ),
                 select_row(
                     "Tab 宽度".to_string(),
                     state.config.editor.tab_size.to_string(),
                     "editor.tab_size",
-                    Rc::clone(&intent_request),
+                    ctx,
                     SettingsIntent::Change(SettingsChange::CycleEditorTabSize),
                 ),
             ],
@@ -239,6 +296,8 @@ fn settings_section_item(
 
     div().px(space::s12()).pb(space::s12()).child(content)
 }
+
+// ── 行控件 ──
 
 fn section(label: String, rows: Vec<Div>) -> Div {
     div()
@@ -262,24 +321,33 @@ fn select_row(
     label: String,
     value: String,
     key: &'static str,
-    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
+    ctx: &RenderCtx,
     intent: SettingsIntent,
 ) -> Div {
-    setting_row(label, key, clickable(pill(value), intent_request, intent))
+    setting_row(label, key, ctx.clickable(pill(value), intent))
 }
 
 fn stepper_row(
     label: String,
     value: String,
     key: &'static str,
-    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
+    ctx: &RenderCtx,
     decrement: SettingsChange,
     increment: SettingsChange,
+    decrement_cmd: &'static str,
+    increment_cmd: &'static str,
 ) -> Div {
     setting_row(
         label,
         key,
-        stepper(value, intent_request, decrement, increment),
+        stepper(
+            value,
+            ctx,
+            decrement,
+            increment,
+            decrement_cmd,
+            increment_cmd,
+        ),
     )
 }
 
@@ -287,14 +355,10 @@ fn toggle_row(
     label: String,
     enabled: bool,
     key: &'static str,
-    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
+    ctx: &RenderCtx,
     intent: SettingsIntent,
 ) -> Div {
-    setting_row(
-        label,
-        key,
-        clickable(toggle(enabled), intent_request, intent),
-    )
+    setting_row(label, key, ctx.clickable(toggle(enabled), intent))
 }
 
 fn setting_row(label: String, key: &'static str, control: Div) -> Div {
@@ -318,6 +382,8 @@ fn setting_row(label: String, key: &'static str, control: Div) -> Div {
         .child(control)
 }
 
+// ── 通用原子控件 ──
+
 fn section_label(text: String) -> Div {
     div().text_color(color::current().gray.s08).child(text)
 }
@@ -332,88 +398,8 @@ fn muted(text: impl Into<String>) -> Div {
         .child(text.into())
 }
 
-fn clickable(
-    control: Div,
-    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
-    intent: SettingsIntent,
-) -> Div {
-    control
-        .cursor_pointer()
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            let Some(intent_request) = intent_request.borrow().clone() else {
-                return;
-            };
-            intent_request(intent, window, cx);
-            cx.stop_propagation();
-        })
-}
-
 fn pill(text: String) -> Div {
     div()
-        .rounded(radius::r4())
-        .border_1()
-        .border_color(color::current().gray.s05)
-        .px(space::s8())
-        .py(space::s6())
-        .text_color(color::current().gray.s09)
-        .child(text)
-}
-
-fn stepper(
-    value: String,
-    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
-    decrement: SettingsChange,
-    increment: SettingsChange,
-) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(space::s4())
-        .child(stepper_button(
-            "-",
-            Rc::clone(&intent_request),
-            SettingsIntent::Change(decrement),
-        ))
-        .child(value_box(value))
-        .child(stepper_button(
-            "+",
-            intent_request,
-            SettingsIntent::Change(increment),
-        ))
-}
-
-fn stepper_button(
-    text: &'static str,
-    intent_request: Rc<RefCell<Option<SettingsIntentRequest>>>,
-    intent: SettingsIntent,
-) -> Div {
-    div()
-        .w(px(24.0))
-        .h(px(24.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(radius::r4())
-        .border_1()
-        .border_color(color::current().gray.s05)
-        .cursor_pointer()
-        .text_color(color::current().gray.s09)
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            let Some(intent_request) = intent_request.borrow().clone() else {
-                return;
-            };
-            intent_request(intent, window, cx);
-            cx.stop_propagation();
-        })
-        .child(text)
-}
-
-fn value_box(text: String) -> Div {
-    div()
-        .min_w(px(64.0))
-        .flex()
-        .items_center()
-        .justify_center()
         .rounded(radius::r4())
         .border_1()
         .border_color(color::current().gray.s05)
@@ -445,6 +431,65 @@ fn toggle(enabled: bool) -> Div {
                 .rounded(radius::full())
                 .bg(color::current().gray.a09),
         )
+}
+
+fn value_box(text: String) -> Div {
+    div()
+        .min_w(px(64.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(radius::r4())
+        .border_1()
+        .border_color(color::current().gray.s05)
+        .px(space::s8())
+        .py(space::s6())
+        .text_color(color::current().gray.s09)
+        .child(text)
+}
+
+// ── stepper ──
+
+const MINUS_ICON: &str = "icons/actions/square_minus.svg";
+const PLUS_ICON: &str = "icons/actions/square_plus.svg";
+
+fn stepper(
+    value: String,
+    ctx: &RenderCtx,
+    decrement: SettingsChange,
+    increment: SettingsChange,
+    decrement_cmd: &'static str,
+    increment_cmd: &'static str,
+) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(space::s4())
+        .child(stepper_button(
+            MINUS_ICON,
+            ctx,
+            SettingsIntent::Change(decrement),
+            decrement_cmd,
+        ))
+        .child(value_box(value))
+        .child(stepper_button(
+            PLUS_ICON,
+            ctx,
+            SettingsIntent::Change(increment),
+            increment_cmd,
+        ))
+}
+
+/// stepper 按钮——纯 Glyph 渲染，点击与 tooltip 都走 [`CommandBinding`]。
+fn stepper_button(
+    icon_path: &'static str,
+    ctx: &RenderCtx,
+    intent: SettingsIntent,
+    command_id: &'static str,
+) -> impl IntoElement {
+    Glyph::icon(command_id, icon_path)
+        .command(ctx.binding(command_id, intent))
+        .render()
 }
 
 fn theme_label(theme: &str) -> String {

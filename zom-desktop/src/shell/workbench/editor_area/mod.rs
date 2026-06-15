@@ -26,7 +26,6 @@ mod file_status_bar;
 mod markdown_preview;
 mod tab_bar;
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn render(
     bottom_dock_state: &DockState,
     editor_state: &EditorState,

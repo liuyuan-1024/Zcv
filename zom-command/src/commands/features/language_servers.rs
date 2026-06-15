@@ -34,7 +34,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     registry
         .install(keymap, OPEN, "语言服务器", Box::new(run_open))
         .description("查看当前项目的语言服务器状态。")
-        .key("mod-shift-l");
+        .key("mod shift l");
 
     registry.install(keymap, DISMISS, "关闭语言服务器", Box::new(run_dismiss));
 

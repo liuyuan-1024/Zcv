@@ -8,3 +8,6 @@ description = "命令系统层：命令标识、参数模型、键位表与统�
 zom-engine.workspace = true
 zom-workspace.workspace = true
 zom-view.workspace = true
+
+[lints]
+workspace = true

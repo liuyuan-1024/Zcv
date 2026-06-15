@@ -9,6 +9,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         PanelKind::Debug,
         "调试",
         "打开或关闭调试面板。",
-        "mod-shift-d",
+        "mod shift d",
     );
 }

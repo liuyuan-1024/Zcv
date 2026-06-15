@@ -13,10 +13,10 @@ use gpui::{AnyElement, IntoElement};
 
 use crate::editor::TextEditorSlot;
 use crate::shell::CommandTitleLookup;
-use crate::theme::color;
 use crate::shell::ShortcutLookup;
 use crate::shell::shared::{CommandBinding, Glyph};
 use crate::shell::surfaces::track_surface_anchor;
+use crate::theme::color;
 
 pub(crate) use model::{
     ProjectPickerActivation, ProjectPickerMode, ProjectPickerModel, ProjectPickerState,

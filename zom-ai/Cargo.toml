@@ -9,3 +9,6 @@ zom-engine.workspace = true
 futures-core.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
+
+[lints]
+workspace = true

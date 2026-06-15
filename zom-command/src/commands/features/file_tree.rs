@@ -158,7 +158,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         PanelKind::FileTree,
         "文件树",
         "打开或关闭文件树面板。",
-        "mod-shift-e",
+        "mod shift e",
     );
 
     let navigate = KeyBindingContext::file_tree(FileTreeKeyMode::Navigate);
@@ -185,10 +185,10 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "扩展文件树多选选区",
             Box::new(run_extend_selection),
         )
-        .key_with_in("shift-up", move_args(-1), navigate)
-        .key_with_in("shift-down", move_args(1), navigate)
-        .key_with_in("shift-pageup", move_args(-PAGE_LINES), navigate)
-        .key_with_in("shift-pagedown", move_args(PAGE_LINES), navigate);
+        .key_with_in("shift up", move_args(-1), navigate)
+        .key_with_in("shift down", move_args(1), navigate)
+        .key_with_in("shift pageup", move_args(-PAGE_LINES), navigate)
+        .key_with_in("shift pagedown", move_args(PAGE_LINES), navigate);
 
     registry
         .install(
@@ -234,7 +234,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_begin_new_entry),
         )
         .description("在当前目录中默认新建文件，在名称后加 / 会被识别为目录（可嵌套新建）。")
-        .key_in("mod-n", navigate);
+        .key_in("mod n", navigate);
 
     registry
         .install(
@@ -260,7 +260,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_begin_rename),
         )
         .description("重命名焦点行的名称。")
-        .key_in("mod-r", navigate);
+        .key_in("mod r", navigate);
 
     registry
         .install(
@@ -286,8 +286,8 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_request_delete),
         )
         .description("请求删除文件树中选中的条目。")
-        .key_in("mod-backspace", navigate)
-        .key_in("mod-delete", navigate);
+        .key_in("mod backspace", navigate)
+        .key_in("mod delete", navigate);
 
     registry
         .install(
@@ -314,12 +314,12 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     registry
         .install(keymap, COPY, "复制选中文件", emit(HostEffect::FileTreeCopy))
         .description("把选中的文件或目录拍进剪贴板（Copy 模式）；空选区时降级到焦点单项。")
-        .key_in("mod-c", navigate);
+        .key_in("mod c", navigate);
 
     registry
         .install(keymap, CUT, "剪切选中文件", emit(HostEffect::FileTreeCut))
         .description("把选中的文件或目录拍进剪贴板（Cut 模式）；粘贴时执行移动。")
-        .key_in("mod-x", navigate);
+        .key_in("mod x", navigate);
 
     registry
         .install(
@@ -329,7 +329,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             emit(HostEffect::FileTreePaste),
         )
         .description("把剪贴板内容粘贴到焦点所在目录；冲突自动改名、永不覆盖。")
-        .key_in("mod-v", navigate);
+        .key_in("mod v", navigate);
 }
 
 fn run_move_selection(

@@ -9,6 +9,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         PanelKind::Terminal,
         "终端",
         "打开或关闭终端面板。",
-        "mod-j",
+        "mod j",
     );
 }

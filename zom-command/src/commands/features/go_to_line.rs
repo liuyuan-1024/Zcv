@@ -27,7 +27,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     registry
         .install(keymap, ACTIVATE, "跳转到行", Box::new(run_activate))
         .description("跳转到指定行。")
-        .key_in("mod-g", text_edit);
+        .key_in("mod g", text_edit);
 
     registry
         .install(keymap, DISMISS, "退出跳转到行", Box::new(run_dismiss))

@@ -1,5 +1,14 @@
 [
   {
+    "label": "检查代码",
+    "command": "cargo",
+    "args": ["clippy"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+  {
     "label": "格式化代码",
     "command": "cargo",
     "args": ["fmt"],

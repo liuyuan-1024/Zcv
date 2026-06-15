@@ -158,7 +158,7 @@ mod tests {
         registry
             .install(&mut keymap, "test.help", "帮助命令", Box::new(noop_handler))
             .description("打开搜索面板，在当前文件或整个项目中查找文本。")
-            .key("mod-shift-f");
+            .key("mod shift f");
 
         let command = registry
             .command(&CommandId::new("test.help").expect("测试命令 ID 必须合法"))

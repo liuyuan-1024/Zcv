@@ -194,10 +194,10 @@ impl SyntaxWorkerHandle {
     /// 只允许 benchmark 使用。产品路径必须让 Drop 正常关闭 channel 并 join worker。
     /// 这个入口用于主线程耗时 benchmark：测完后不等待积压的重 reparse 任务。
     pub fn forget_join_for_bench(&self) {
-        if let Ok(mut guard) = self.join.lock() {
-            if let Some(join) = guard.take() {
-                drop(join);
-            }
+        if let Ok(mut guard) = self.join.lock()
+            && let Some(join) = guard.take()
+        {
+            drop(join);
         }
     }
 }

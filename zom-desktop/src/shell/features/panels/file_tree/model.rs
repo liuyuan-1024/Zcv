@@ -124,7 +124,7 @@ impl FileTreeModel {
                 depth,
             }
         });
-        // 重命名快照：从可见行里查目标行的 depth / kind，落不到（被外部移除 / 折叠不可触达）就丢弃，输入态自然降级回 Navigate，下一次按 mod-r 重新起。
+        // 重命名快照：从可见行里查目标行的 depth / kind，落不到（被外部移除 / 折叠不可触达）就丢弃，输入态自然降级回 Navigate。
         let pending_rename = self.pending_rename.as_ref().and_then(|pending| {
             rows.iter()
                 .find(|row| row.path == pending.path)

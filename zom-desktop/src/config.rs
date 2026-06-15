@@ -84,11 +84,11 @@ impl Default for EditorConfig {
 pub(crate) const THEME_ONE_DARK: &str = "one-dark";
 pub(crate) const THEME_ONE_LIGHT: &str = "one-light";
 
-const UI_FONT_MIN: u16 = 11;
+const UI_FONT_MIN: u16 = 10;
 const UI_FONT_MAX: u16 = 18;
 const EDITOR_FONT_MIN: u16 = 12;
-const EDITOR_FONT_MAX: u16 = 26;
-const TAB_SIZES: [u16; 4] = [2, 4, 6, 8];
+const EDITOR_FONT_MAX: u16 = 24;
+const TAB_SIZES: [u16; 2] = [2, 4];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SettingsChange {

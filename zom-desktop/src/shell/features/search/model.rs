@@ -45,7 +45,7 @@ pub(crate) struct SearchModel {
     query: OwnedEditorTarget,
     replacement: OwnedEditorTarget,
     options: BufferSearchOptions,
-    /// 是否可见（mod-f 显示 / 收起的逻辑栅栏）。关闭后用来扣掉 buffer 高亮、
+    /// 是否可见（显示 / 收起的逻辑栅栏）。关闭后用来扣掉 buffer 高亮、
     /// 阻止后续 dispatch tail 的 `sync_active_buffer_search` 把命中复活。
     open: bool,
 }
@@ -98,7 +98,7 @@ impl SearchModel {
         }
     }
 
-    /// 内联搜索栏是否在屏。effects.rs 在 mod-f / Esc 翻转。
+    /// 内联搜索栏是否在屏。
     pub(crate) fn set_open(&mut self, open: bool) {
         self.open = open;
     }

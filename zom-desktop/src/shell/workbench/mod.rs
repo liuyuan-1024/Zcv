@@ -27,7 +27,7 @@ use zom_view::ViewId;
 use crate::editor::TextEditorSlot;
 use crate::editor::text::EditorSnapshot;
 use crate::editor_state::EditorState;
-use crate::host_intent::{CommandRequest, KeyRequest};
+use crate::host_intent::{CommandRequest, KeyRequest, TabCallback};
 use crate::shell::bubble::BubbleShell;
 use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::{
@@ -77,7 +77,7 @@ pub(crate) struct WorkbenchCommandRequests {
     pub(crate) search_intent: SearchIntentRequest,
     pub(crate) shortcut_lookup: ShortcutLookup,
     pub(crate) title_lookup: CommandTitleLookup,
-    pub(crate) tab_select: Rc<dyn Fn(ViewId, &mut Window, &mut gpui::App)>,
+    pub(crate) tab_select: TabCallback,
     pub(crate) tab_close: Rc<dyn Fn(ViewId) -> CommandBinding>,
 }
 

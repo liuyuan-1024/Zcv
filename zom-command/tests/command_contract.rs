@@ -384,7 +384,7 @@ fn search_activate_shortcut_should_be_available_in_text_edit_and_search_contexts
     let mut registry = CommandRegistry::new();
     let mut keymap = Keymap::new();
     search::install(&mut registry, &mut keymap);
-    // mod-f 限定在 text_edit 内（编辑器 / 搜索输入框都是 text_edit）；纯空态没活动文件时不响应。
+    // 搜索快捷键限定在 text_edit 内；纯空态没活动文件时不响应。
     // 同时也可在 search_panel 内触发——按一次开 bar、再按一次收起 bar 的口径。
     let editor = text_edit_context();
     let search_field = [
@@ -394,7 +394,7 @@ fn search_activate_shortcut_should_be_available_in_text_edit_and_search_contexts
 
     for contexts in [&editor[..], &search_field[..]] {
         assert_eq!(
-            keymap.resolve(&[key("mod-f")], contexts),
+            keymap.resolve(&[key("mod f")], contexts),
             KeymapResolution::Matched {
                 command: command_id(search_file::ACTIVATE),
                 args: CommandArgs::new(),
@@ -420,7 +420,7 @@ fn search_tab_keys_should_resolve_only_in_search_panel_context() {
         }
     );
     assert_eq!(
-        keymap.resolve(&[key("shift-tab")], &search_panel),
+        keymap.resolve(&[key("shift tab")], &search_panel),
         KeymapResolution::Matched {
             command: command_id(search_file::FOCUS_PREVIOUS_FIELD),
             args: CommandArgs::new(),
@@ -818,7 +818,7 @@ fn delete_with_motion_but_no_direction_should_error() {
 
 #[test]
 fn default_keymap_binds_delete_variants() {
-    // 默认 keymap：backspace / delete / alt-backspace / alt-delete 都落到 DELETE，
+    // 默认 keymap：backspace / delete / alt backspace / alt delete 都落到 DELETE，
     // 用 direction × motion args 区分四种行为。
     let mut registry = CommandRegistry::new();
     let mut keymap = Keymap::new();
@@ -828,8 +828,8 @@ fn default_keymap_binds_delete_variants() {
     let cases: &[(&str, &str, Option<&str>)] = &[
         ("backspace", "previous", None),
         ("delete", "next", None),
-        ("alt-backspace", "previous", Some("word")),
-        ("alt-delete", "next", Some("word")),
+        ("alt backspace", "previous", Some("word")),
+        ("alt delete", "next", Some("word")),
     ];
     for (chord, direction, motion) in cases {
         match keymap.resolve(&[key(chord)], &context) {
@@ -1088,7 +1088,7 @@ fn editor_default_keymap_should_include_line_and_page_movement() {
     let (_, shift_end_args) =
         editor::move_selection(MovementDirection::Next, MovementUnit::LineEdge, true);
     assert_eq!(
-        keymap.resolve(&[key("shift-end")], &text_edit),
+        keymap.resolve(&[key("shift end")], &text_edit),
         KeymapResolution::Matched {
             command: command_id(editor::MOVE_SELECTION),
             args: shift_end_args,
@@ -1107,7 +1107,7 @@ fn editor_default_keymap_should_include_line_and_page_movement() {
     let (_, shift_down_args) =
         editor::move_selection(MovementDirection::Next, Motion::LineStep, true);
     assert_eq!(
-        keymap.resolve(&[key("shift-down")], &text_edit),
+        keymap.resolve(&[key("shift down")], &text_edit),
         KeymapResolution::Matched {
             command: command_id(editor::MOVE_SELECTION),
             args: shift_down_args,
@@ -1548,9 +1548,9 @@ fn editor_default_keymap_should_bind_clipboard_commands() {
     let text_edit = text_edit_context();
 
     for (chord, expected) in [
-        ("mod-c", editor::COPY),
-        ("mod-x", editor::CUT),
-        ("mod-v", editor::PASTE),
+        ("mod c", editor::COPY),
+        ("mod x", editor::CUT),
+        ("mod v", editor::PASTE),
     ] {
         assert_eq!(
             keymap.resolve(&[key(chord)], &text_edit),
@@ -1602,7 +1602,7 @@ fn editor_default_keymap_should_include_newline_indent_and_outdent() {
         KeymapResolution::NoMatch
     );
     assert_eq!(
-        keymap.resolve(&[key("shift-tab")], &text_edit),
+        keymap.resolve(&[key("shift tab")], &text_edit),
         KeymapResolution::NoMatch
     );
     assert_eq!(
@@ -1613,7 +1613,7 @@ fn editor_default_keymap_should_include_newline_indent_and_outdent() {
         }
     );
     assert_eq!(
-        keymap.resolve(&[key("shift-tab")], &multiline),
+        keymap.resolve(&[key("shift tab")], &multiline),
         KeymapResolution::Matched {
             command: command_id(editor::OUTDENT),
             args: CommandArgs::new(),

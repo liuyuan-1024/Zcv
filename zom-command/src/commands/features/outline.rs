@@ -9,6 +9,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         PanelKind::Outline,
         "大纲",
         "打开或关闭当前文件的大纲面板。",
-        "mod-shift-o",
+        "mod shift o",
     );
 }

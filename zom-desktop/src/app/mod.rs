@@ -995,6 +995,7 @@ mod tests {
     #[test]
     fn editor_tab_size_setting_should_reach_open_buffers() {
         let mut app = App::new();
+        // 从默认 4 切到 2。
         app.apply_settings_change_from_effect(SettingsChange::CycleEditorTabSize);
         let root = project_fixture("tab-size-setting");
         app.apply_open_project_from_effect(root.clone());
@@ -1008,7 +1009,7 @@ mod tests {
             .config()
             .tab
             .tab_width();
-        assert_eq!(tab_width, 6);
+        assert_eq!(tab_width, 2);
     }
 
     #[test]
@@ -1165,9 +1166,9 @@ mod tests {
     fn panel_toggle_command_should_emit_host_effect() {
         let mut app = App::new();
 
-        // 命中 mod-shift-e → editor 区按下时应被 keymap 消费。
+        // 命中 mod shift e → editor 区按下时应被 keymap 消费。
         let outcome = app
-            .dispatch_key("mod-shift-e".to_string())
+            .dispatch_key("mod shift e".to_string())
             .expect("派发成功");
         assert!(outcome.consumed);
         assert_eq!(
@@ -1179,16 +1180,16 @@ mod tests {
     #[test]
     fn search_shortcut_should_emit_activate_effect() {
         let mut app = App::new();
-        // mod-f 限定在 text_edit 上下文内（编辑器 / 搜索输入框）；空 focus 不响应。
+        // 搜索快捷键限定在 text_edit 上下文内；空 focus 不响应。
         app.request_focus(AppFocus::editor());
 
-        let outcome = app.dispatch_key("mod-f".to_string()).expect("派发成功");
+        let outcome = app.dispatch_key("mod f".to_string()).expect("派发成功");
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::SearchActivate]);
 
-        // mod-shift-f 绑到项目搜索占位命令：弹一条"敬请期待"气泡。
+        // mod shift f 绑到项目搜索占位命令：弹一条"敬请期待"气泡。
         let outcome = app
-            .dispatch_key("mod-shift-f".to_string())
+            .dispatch_key("mod shift f".to_string())
             .expect("派发成功");
         assert!(outcome.consumed);
         assert_eq!(outcome.effects.len(), 1);
@@ -1201,7 +1202,7 @@ mod tests {
         app.request_focus(AppFocus::panel(PanelId::Terminal));
 
         let outcome = app
-            .dispatch_key("mod-shift-e".to_string())
+            .dispatch_key("mod shift e".to_string())
             .expect("派发成功");
         assert!(outcome.consumed);
         assert_eq!(
@@ -1209,7 +1210,7 @@ mod tests {
             vec![HostEffect::TogglePanel(PanelId::FileTree, false)]
         );
 
-        let outcome = app.dispatch_key("mod-a".to_string()).expect("派发成功");
+        let outcome = app.dispatch_key("mod a".to_string()).expect("派发成功");
         assert!(!outcome.consumed);
         assert!(outcome.effects.is_empty());
     }
@@ -1268,7 +1269,7 @@ mod tests {
     fn project_picker_command_should_emit_open_surface_window_action() {
         let mut app = App::new();
 
-        let outcome = app.dispatch_key("mod-o".to_string()).unwrap();
+        let outcome = app.dispatch_key("mod o".to_string()).unwrap();
 
         assert!(outcome.consumed);
         assert_eq!(outcome.effects, vec![HostEffect::ShowProjectPicker]);

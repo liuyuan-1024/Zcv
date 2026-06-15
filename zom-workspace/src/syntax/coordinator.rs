@@ -92,13 +92,12 @@ impl BufferSyntax {
     pub fn handle_edit(&self, buffer: &Buffer, event: &DeltaEvent) {
         let new_snapshot = buffer.snapshot();
 
-        if let Some(curr) = self.tree_slot.load() {
-            if let Some(input_edits) =
+        if let Some(curr) = self.tree_slot.load()
+            && let Some(input_edits) =
                 translate_edits(event.changeset(), curr.snapshot(), &new_snapshot)
-            {
-                self.tree_slot
-                    .try_edit(&input_edits, new_snapshot.clone(), event.new_version());
-            }
+        {
+            self.tree_slot
+                .try_edit(&input_edits, new_snapshot.clone(), event.new_version());
         }
 
         self.worker.edit(

@@ -438,8 +438,9 @@ impl BufferSearch {
 
     /// 已完成的 pending → slot；做版本 / 错误判断。调用前保证 `pending.is_finished()`。
     fn install_finished(&mut self, buffer: &Buffer, pending: PendingSearch) -> Installed {
+        type SearchInstall = (BufferVersion, Box<dyn FnOnce(&mut BufferSearch)>);
         let buffer_version = buffer.version();
-        let (version, install): (BufferVersion, Box<dyn FnOnce(&mut Self)>) = match pending {
+        let (version, install): SearchInstall = match pending {
             PendingSearch::Literal(handle) => match handle.join() {
                 Ok(result) => (
                     result.version(),

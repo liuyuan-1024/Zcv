@@ -11,18 +11,19 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, MouseButton, Rgba, ScrollHandle, SharedString, Stateful, Window, div, prelude::*,
+    AnyElement, MouseButton, Rgba, ScrollHandle, SharedString, Stateful, div, prelude::*,
 };
 use zom_view::ViewId;
 
 use crate::editor_state::{EditorState, EditorTab};
+use crate::host_intent::TabCallback;
 use crate::shell::shared::{CommandBinding, Glyph};
 use crate::theme::{color, radius, space, typography};
 
 pub(crate) fn render(
     state: &EditorState,
     scroll: ScrollHandle,
-    on_item_click: &Rc<dyn Fn(ViewId, &mut Window, &mut gpui::App)>,
+    on_item_click: &TabCallback,
     on_close_tab: &Rc<dyn Fn(ViewId) -> CommandBinding>,
 ) -> Stateful<gpui::Div> {
     // 把活动标签滚进可视区——scroll_to_item 记下目标，实际滚动在 prepaint 完成。
@@ -50,7 +51,7 @@ pub(crate) fn render(
 
 fn render_tab(
     tab: &EditorTab,
-    on_item_click: &Rc<dyn Fn(ViewId, &mut Window, &mut gpui::App)>,
+    on_item_click: &TabCallback,
     on_close_tab: &Rc<dyn Fn(ViewId) -> CommandBinding>,
 ) -> Stateful<gpui::Div> {
     // 活动标签背景与编辑器正文一致，标签与内容视觉连成一体；

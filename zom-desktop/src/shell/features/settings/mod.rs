@@ -11,8 +11,8 @@ pub(crate) use effects::try_apply_effect;
 use gpui::{AnyElement, IntoElement};
 
 use crate::shell::shared::{CommandBinding, Glyph};
-use crate::theme::color;
 use crate::shell::surfaces::track_surface_anchor;
+use crate::theme::color;
 
 pub(crate) use surface::{
     SettingsIntent, SettingsIntentRequest, SettingsPanelState, SettingsRuntime, request,

@@ -88,10 +88,10 @@ fn render_active(
         .on_key_down({
             let key_request = Rc::clone(&key_request);
             move |event, window, cx| {
-                if let Some(key_request) = key_request.borrow().clone() {
-                    if key_request(normalized_chord(&event.keystroke), window, cx) {
-                        cx.stop_propagation();
-                    }
+                if let Some(key_request) = key_request.borrow().clone()
+                    && key_request(normalized_chord(&event.keystroke), window, cx)
+                {
+                    cx.stop_propagation();
                 }
             }
         })

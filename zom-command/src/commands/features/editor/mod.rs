@@ -574,7 +574,6 @@ fn run_change_language(
 ///
 /// 默认键位采用逻辑修饰键（`mod / alt / shift`），平台投影在 UI 层完成；
 /// 见 `zom-desktop/src/shell/keymap_format.rs`。
-
 const PAGE_STEP_LINES: u32 = 1;
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {

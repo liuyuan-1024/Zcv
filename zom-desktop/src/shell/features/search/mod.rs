@@ -421,15 +421,27 @@ fn search_controls(
             vec![
                 hit_count_badge(state.hit_count),
                 Glyph::icon("search-case-sensitive", CASE_SENSITIVE_ICON)
-                    .color(if state.options.case_sensitive { active_color } else { color::glyph_default() })
+                    .color(if state.options.case_sensitive {
+                        active_color
+                    } else {
+                        color::glyph_default()
+                    })
                     .command(b(SearchIntent::ToggleCaseSensitive))
                     .render(),
                 Glyph::icon("search-whole-word", WHOLE_WORD_ICON)
-                    .color(if state.options.whole_word { active_color } else { color::glyph_default() })
+                    .color(if state.options.whole_word {
+                        active_color
+                    } else {
+                        color::glyph_default()
+                    })
                     .command(b(SearchIntent::ToggleWholeWord))
                     .render(),
                 Glyph::icon("search-regex", REGEX_ICON)
-                    .color(if state.options.regex { active_color } else { color::glyph_default() })
+                    .color(if state.options.regex {
+                        active_color
+                    } else {
+                        color::glyph_default()
+                    })
                     .command(b(SearchIntent::ToggleRegex))
                     .render(),
             ],

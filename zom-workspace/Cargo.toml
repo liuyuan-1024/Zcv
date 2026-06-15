@@ -20,3 +20,6 @@ tree-sitter-css.workspace = true
 tree-sitter-typescript.workspace = true
 tree-sitter-java.workspace = true
 tree-sitter-python.workspace = true
+
+[lints]
+workspace = true

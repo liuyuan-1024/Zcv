@@ -24,7 +24,6 @@ use crate::theme::{color, space, typography};
 const FILE_SEARCH_ICON: &str = "icons/panels/search.svg";
 const FILE_PREVIEW_ICON: &str = "icons/actions/preview.svg";
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn render(
     active_tab: &EditorTab,
     key_request: &KeyRequest,

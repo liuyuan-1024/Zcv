@@ -8,6 +8,8 @@ use crate::theme::{color, space};
 
 use super::{ProjectPickerActions, ProjectPickerMode, command_shortcut, command_title};
 
+type PickerIntentRequest = Rc<dyn Fn(ProjectPickerIntent, &mut gpui::Window, &mut gpui::App)>;
+
 pub(super) fn render(mode: ProjectPickerMode, actions: &ProjectPickerActions) -> Div {
     let intent_request = Rc::clone(&actions.intent_request);
     div()
@@ -40,7 +42,7 @@ fn source_action_row(
     label: String,
     hint: String,
     intent: ProjectPickerIntent,
-    intent_request: Rc<dyn Fn(ProjectPickerIntent, &mut gpui::Window, &mut gpui::App)>,
+    intent_request: PickerIntentRequest,
 ) -> Div {
     div()
         .flex()

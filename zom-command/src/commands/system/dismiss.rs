@@ -38,8 +38,9 @@ impl TryFrom<CommandArgs> for DismissTopArgs {
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
         reject_unknown_args(&args, &[ARG_SCOPE])?;
         let raw = required_arg(&args, ARG_SCOPE)?;
-        let scope = DismissScope::from_str(&raw)
-            .ok_or_else(|| CommandError::InvalidArgs(format!("未知 dismiss scope：{raw}")))?;
+        let scope: DismissScope = raw
+            .parse()
+            .map_err(|_| CommandError::InvalidArgs(format!("未知 dismiss scope：{raw}")))?;
         Ok(Self { scope })
     }
 }

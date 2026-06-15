@@ -1,15 +1,23 @@
 //! 宿主意图：shell / editor 共享的离散用户动作派发词汇。
 
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{App as GpuiApp, Window};
 use zom_command::Invocation;
+use zom_view::ViewId;
 use zom_command::commands::editor as editor_commands;
 use zom_command::commands::editor::ImeUtf16RangeArgs;
 use zom_engine::ByteOffset;
 
 use crate::editor::text::ImeUtf16Range;
 use crate::focus::AppFocus;
+
+/// 标签切换/关闭回调（view 端发到 App 端）。
+pub(crate) type TabCallback = Rc<dyn Fn(ViewId, &mut Window, &mut GpuiApp)>;
+
+/// 文件树条目点击回调。
+pub(crate) type FileTreeClickCallback = Rc<dyn Fn(PathBuf, &mut Window, &mut GpuiApp)>;
 
 /// shell 预绑定的命令意图窄口。
 ///

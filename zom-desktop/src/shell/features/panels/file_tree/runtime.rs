@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use crate::app::App;
 use crate::editor::TextEditorSlot;
-use crate::host_intent::KeyRequest;
+use crate::host_intent::{FileTreeClickCallback, KeyRequest};
 use crate::ports::{FileTreeAction, FileTreeActionResult, FileTreeHost};
 use crate::shell::shared::scroll::ScrollHandle;
 use crate::shell::workbench::controller::WorkbenchController;
@@ -74,7 +74,7 @@ impl FileTreeRuntime {
         key_request: &'a KeyRequest,
         new_entry_slot: &'a Rc<TextEditorSlot>,
         rename_slot: &'a Rc<TextEditorSlot>,
-        on_item_click: &'a Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>,
+        on_item_click: &'a FileTreeClickCallback,
         window: &Window,
     ) -> FileTreePanel<'a> {
         FileTreePanel {

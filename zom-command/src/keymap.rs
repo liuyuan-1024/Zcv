@@ -247,7 +247,7 @@ impl Keymap {
             if &binding.command != command {
                 continue;
             }
-            if !result.iter().any(|seq| *seq == &binding.sequence) {
+            if !result.contains(&&binding.sequence) {
                 result.push(&binding.sequence);
             }
         }

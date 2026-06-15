@@ -7,3 +7,6 @@ description = "编辑面状态层：视图、分屏、滚动、本视图选区�
 [dependencies]
 zom-engine.workspace = true
 zom-workspace.workspace = true
+
+[lints]
+workspace = true

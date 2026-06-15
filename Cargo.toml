@@ -20,8 +20,11 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.5.21"
+version = "0.5.26"
 edition = "2024"
+
+[workspace.lints.clippy]
+doc_lazy_continuation = "allow"
 
 [workspace.dependencies]
 # ---- 内部 crate ----

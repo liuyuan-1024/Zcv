@@ -200,8 +200,8 @@ pub(crate) fn sync_active_buffer_search(
     let Some(wb) = active_buffer_mut(workspace, views, active_view_id) else {
         return;
     };
-    let query_changed = wb.search_mut().set_query(query);
-    let options_changed = wb.search_mut().set_options(options);
+    let _query_changed = wb.search_mut().set_query(query);
+    let _options_changed = wb.search_mut().set_options(options);
     // 先把 buffer 上累积的 DeltaEvent 喂回 BufferSearch 再 sync。
     // sync 检测版本时优先复用 try_remap 的结果，没有时才 spawn。
     let _ = wb.pump_post_edit();
@@ -210,14 +210,10 @@ pub(crate) fn sync_active_buffer_search(
     // 真的拿到了新结果 → reveal 首条命中。两种触发场景：
     // 1. query/options 刚变，对应 spawn 在本帧立即完成（小 buffer）；
     // 2. 上次留下的 pending 在本帧收割完。
-    // query/options 没变但有 JustReady 也 reveal——典型是用户按住快捷键，前一次
-    // 仍未落地的结果在本帧补上。
-    let should_reveal = matches!(outcome, SearchSyncOutcome::JustReady)
-        || ((query_changed || options_changed) && matches!(outcome, SearchSyncOutcome::JustReady));
-    if should_reveal {
-        if let Some(range) = wb.search().current_range() {
-            move_selection_to_match(views, active_view_id, range);
-        }
+    if matches!(outcome, SearchSyncOutcome::JustReady)
+        && let Some(range) = wb.search().current_range()
+    {
+        move_selection_to_match(views, active_view_id, range);
     }
 }
 
@@ -231,10 +227,10 @@ pub(crate) fn pump_active_buffer_search(
     let Some(wb) = active_buffer_mut(workspace, views, active_view_id) else {
         return;
     };
-    if matches!(wb.pump_pending_search(), SearchSyncOutcome::JustReady) {
-        if let Some(range) = wb.search().current_range() {
-            move_selection_to_match(views, active_view_id, range);
-        }
+    if matches!(wb.pump_pending_search(), SearchSyncOutcome::JustReady)
+        && let Some(range) = wb.search().current_range()
+    {
+        move_selection_to_match(views, active_view_id, range);
     }
 }
 

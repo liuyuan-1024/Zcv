@@ -26,7 +26,6 @@ impl LanguageServersRuntime {
     pub(crate) fn focus_handle(&self) -> FocusHandle {
         self.focus.clone()
     }
-
 }
 
 pub(crate) fn request(runtime: LanguageServersRuntime) -> SurfaceRequest {

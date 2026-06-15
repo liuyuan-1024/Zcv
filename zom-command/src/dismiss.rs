@@ -50,9 +50,13 @@ impl DismissScope {
             Self::LanguageServers => "LanguageServers",
         }
     }
+}
 
-    pub fn from_str(value: &str) -> Option<Self> {
-        Some(match value {
+impl std::str::FromStr for DismissScope {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(match value {
             "TextEdit" => Self::TextEdit,
             "FileTree" => Self::FileTree,
             "ProjectPicker" => Self::ProjectPicker,
@@ -60,7 +64,7 @@ impl DismissScope {
             "GoToLineInput" => Self::GoToLineInput,
             "Settings" => Self::Settings,
             "LanguageServers" => Self::LanguageServers,
-            _ => return None,
+            _ => return Err(value.to_string()),
         })
     }
 }

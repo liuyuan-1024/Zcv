@@ -7,7 +7,7 @@ pub(crate) mod focus;
 mod frame_tick;
 mod runtime;
 
-use std::{path::PathBuf, rc::Rc};
+use std::rc::Rc;
 
 use gpui::{Context, FocusHandle, IntoElement, Render, ScrollHandle, Window};
 use zom_command::commands::{
@@ -35,7 +35,9 @@ use super::workbench::WorkbenchCommandRequests;
 use super::workbench::state::WorkbenchState;
 use super::{CommandCatalogLookup, CommandTitleLookup, ShortcutLookup};
 use crate::editor::{CaretBlink, drive_caret_blink};
-use crate::host_intent::{CommandRequest, HostIntent, HostIntentRequest, KeyRequest};
+use crate::host_intent::{
+    CommandRequest, FileTreeClickCallback, HostIntent, HostIntentRequest, KeyRequest, TabCallback,
+};
 use crate::ui_id::{PanelId, SurfaceId};
 
 /// shell 端的根 View。装配产物收敛在 [`ShellRuntime`]；
@@ -177,7 +179,7 @@ impl ShellView {
             }
         });
 
-        let tab_select: Rc<dyn Fn(ViewId, &mut Window, &mut gpui::App)> = {
+        let tab_select: TabCallback = {
             let app = Rc::clone(&self.runtime.app);
             Rc::new(move |view_id, window, _cx| {
                 app.borrow_mut().activate_view_tab(view_id);
@@ -359,6 +361,14 @@ impl Render for ShellView {
             .features
             .settings
             .set_intent_request(self.settings_intent_request());
+        runtime
+            .features
+            .settings
+            .set_title_lookup(self.command_title_lookup());
+        runtime
+            .features
+            .settings
+            .set_shortcut_lookup(self.shortcut_lookup());
         runtime.features.settings.set_state({
             let app = runtime.app.borrow();
             settings::SettingsPanelState::new(app.config_snapshot(), app.config_path())
@@ -369,7 +379,7 @@ impl Render for ShellView {
         // file_tree_panel 借用此 clone；下面把 `key_request` 本体 move 给 `workbench::render`。
         // 借用与移动落到不同的 Rc 副本上，互不冲突。
         let key_request_for_panel = Rc::clone(&key_request);
-        let on_item_click: Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)> = {
+        let on_item_click: FileTreeClickCallback = {
             let file_tree = runtime.features.file_tree.clone();
             let activate = self.bind_command(file_tree_commands::activate());
             Rc::new(move |path, window, cx| {

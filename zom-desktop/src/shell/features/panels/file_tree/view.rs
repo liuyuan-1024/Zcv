@@ -5,12 +5,12 @@
 //! 焦点宿主（track_focus + on_key_down 的那个外层 div）在任何状态下都得在树里——包括"尚未打开项目"占位——否则在打开项目的瞬间 `window.focus` 找不到挂载点，焦点请求就会丢失。
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::rc::Rc;
 
-use gpui::{AnyElement, Div, MouseButton, Svg, Window, div, prelude::*, px, svg, uniform_list};
+use gpui::{AnyElement, Div, MouseButton, Svg, div, prelude::*, px, svg, uniform_list};
 
 use crate::editor::TextEditorSlot;
+use crate::host_intent::FileTreeClickCallback;
 use crate::shell::normalized_chord;
 use crate::shell::shared::scroll;
 use crate::shell::workbench::PanelContext;
@@ -142,7 +142,7 @@ fn render_list(
     new_entry_slot: &Rc<TextEditorSlot>,
     rename_slot: &Rc<TextEditorSlot>,
     scroll_handle: &scroll::ScrollHandle,
-    on_item_click: &Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>,
+    on_item_click: &FileTreeClickCallback,
 ) -> Div {
     let items = logical_items(state);
     let selected_item = selected_item_index(&items, state);
@@ -339,7 +339,7 @@ fn render_row(
     cut_paths: &BTreeSet<std::path::PathBuf>,
     active: Option<&std::path::PathBuf>,
     is_focused: bool,
-    on_item_click: &Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>,
+    on_item_click: &FileTreeClickCallback,
 ) -> Div {
     let is_selected = selected.map(|p| p == &row.path).unwrap_or(false);
     let is_in_selection = selection.contains(&row.path);
@@ -362,11 +362,11 @@ fn render_row(
     } else {
         gpui::rgba(0)
     };
-    // 与 top bar Glyph 同基线：常态 g75，活动项 g95。
+    // 与 top bar Glyph 同基线：常态 g07，活动项 g09。
     let text_color = if is_active {
         color::current().gray.s09
     } else {
-        color::current().gray.s09
+        color::current().gray.s07
     };
 
     let cont = continuation(row.terminal_mask, row.depth);

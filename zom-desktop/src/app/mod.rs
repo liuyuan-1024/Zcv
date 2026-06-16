@@ -470,15 +470,6 @@ impl App {
         &mut self,
         chord: String,
     ) -> Result<KeyDispatchOutcome, CommandError> {
-        // 组合态下宿主完全让位给系统输入法：不解析、不消费、不 stop_propagation。
-        // 一旦拦下某个键（如 Esc → ime_cancel），系统 IME 会话就和我们脱节，它会再吞掉一个后续按键 —— 表现为「取消候选后要多按一次 Esc 才退出新建」。
-        // 组合的更新 / 提交 / 取消都由 IME 回调（`ime_*`）驱动。
-        if self.is_composing() {
-            return Ok(KeyDispatchOutcome {
-                consumed: false,
-                effects: Vec::new(),
-            });
-        }
         let contexts = self.key_contexts();
         match self.command.resolve_key(chord, &contexts)? {
             KeymapResolution::Matched { command, args } => {
@@ -492,6 +483,9 @@ impl App {
                 consumed: true,
                 effects: Vec::new(),
             }),
+            // IME 组合态下 unbound 按键仍需放行给系统输入法，因此 consumed: false 不变。
+            // 已命中 keymap 的命令（如 Cmd+V/Cmd+Z）则正常派发——它们内部有
+            // cancel_composition_before_text_edit 保护，不会造成 IME 会话脱节。
             KeymapResolution::NoMatch => Ok(KeyDispatchOutcome {
                 consumed: false,
                 effects: Vec::new(),
@@ -504,8 +498,8 @@ impl App {
     /// 这是宿主该做的事 —— 告诉 zom-command「现在处于什么上下文」；
     /// 至于哪个 chord 对应哪条命令，仍由各 catalog 注册进 keymap 的绑定决定。
     ///
-    /// `composing` 恒为 `false`：`dispatch_key` 在组合态直接让位给系统输入法，根本不会走到这里。
-    /// 组合上下文（`KeyContext::text_edit` 的第二参）保留在签名里，待将来真有「宿主侧处理组合键」的需求再启用。
+    /// `composing` 恒为 `false`：keymap 已通过 `text_edit` / `text_edit_composition` 上下文区分组合态，
+    /// IME 专属按键（Esc/Enter 在 composition 态）绑定在 composition 上下文，未命中才放行给系统输入法。
     fn key_contexts(&self) -> Vec<KeyContext> {
         let focus = self.focus.current();
         // 先问 router —— 文本输入类 owner（主编辑区、文件树新建/重命名、搜索框、picker 查询框）
@@ -551,15 +545,6 @@ impl App {
                 SurfaceId::GoToLine => vec![KeyContext::global()],
             },
         }
-    }
-
-    /// 当前聚焦的编辑目标是否处于「有 preedit 的」输入法组合态。
-    ///
-    /// 空 preedit 不算 —— 系统输入法取消候选后会把 preedit 清空、但 composition 壳可能仍在。
-    /// 若空壳也算组合态，`dispatch_key` 会一直让位、keymap 再也不接管，后续 Esc 永远到不了 `cancel_new_entry`。
-    fn is_composing(&self) -> bool {
-        let focus = self.focus.current();
-        self.text_targets.is_composing(&self.session, focus)
     }
 
     /// 构造一次只读路由视图。

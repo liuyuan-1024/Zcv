@@ -78,6 +78,10 @@ impl ShellRuntime {
             text_editor_slots_provider,
         );
 
+        bubble_runtime.update(cx, |runtime, _| {
+            runtime.set_intent_request(host_intent.clone());
+        });
+
         // 主编辑区内核：多行 + 行号 + 滚动 + 视口测量回写。
         // 视口钩子在 prepaint 测出本帧 wrap_map 后即时调用，
         // App 侧顺手用新 wrap_map 跑一次 settle，把 settle 后的顶端返回给 element。
@@ -165,7 +169,16 @@ impl ShellRuntime {
             Rc::clone(&go_to_line_slot),
         ];
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));
-        let bubble_shell = cx.new(|cx| BubbleShell::new(bubble_runtime.clone(), cx));
+        let title_lookup: crate::shell::CommandTitleLookup = {
+            let app = Rc::clone(&app);
+            Rc::new(move |id| app.borrow().command_title_for(id))
+        };
+        let shortcut_lookup: crate::shell::ShortcutLookup = {
+            let app = Rc::clone(&app);
+            Rc::new(move |id| app.borrow().shortcuts_for(id))
+        };
+        let bubble_shell = cx
+            .new(|cx| BubbleShell::new(bubble_runtime.clone(), title_lookup, shortcut_lookup, cx));
 
         Self {
             app,

@@ -14,6 +14,7 @@ mod features;
 pub(crate) mod reconcile;
 mod system;
 
+pub use features::bubble;
 pub use features::diagnostics;
 pub use features::editor;
 pub use features::file_tree;

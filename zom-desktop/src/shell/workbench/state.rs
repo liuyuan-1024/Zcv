@@ -52,6 +52,14 @@ pub(crate) struct DockState {
 }
 
 impl DockState {
+    pub(crate) fn new(stack: PanelStack, default_size: Pixels) -> Self {
+        Self {
+            collapsed: true,
+            size: default_size,
+            stack,
+        }
+    }
+
     pub(crate) fn is_visible(&self) -> bool {
         !self.collapsed && self.stack.active().is_some()
     }

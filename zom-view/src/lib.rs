@@ -112,7 +112,7 @@ pub struct RevealRequest {
 /// 普通编辑的直觉是「插入点之后的内容移动，插入点之前的屏幕内容尽量不动」。
 /// 因此锚点记录编辑前视口顶部的位置，而不是 primary caret 的屏幕行。
 /// 编辑提交后通过 [`DeltaEvent::position_map`] 映射 `top_visual_byte`。
-/// 同点插入时锚点吸附到插入文本之后，让锚点跟随编辑前的顶部视觉行内容，而不是粘在新插入内容之前。
+/// 同点插入时锚点吸附到插入文本之前，保持视口顶部不动，让内容在视口内下移。
 /// 等渲染端回写新的 [`WrapMap`] 时再用新视觉模型恢复 `top_line/top_subrow`。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ViewportEditAnchor {
@@ -383,7 +383,7 @@ impl EditView {
         for event in events {
             pending.top_visual_byte = event
                 .position_map()
-                .map_old_position_with_affinity(pending.top_visual_byte, Affinity::After)
+                .map_old_position_with_affinity(pending.top_visual_byte, Affinity::Before)
                 .value();
         }
         self.pending_edit_anchor = Some(pending);
@@ -1038,7 +1038,7 @@ mod settle_tests {
     }
 
     #[test]
-    fn edit_anchor_should_follow_old_top_line_when_inserting_at_top_start() {
+    fn edit_anchor_should_keep_top_stable_when_inserting_at_top_start() {
         let mut view = with_measured_viewport(1, 3, 4);
         let mut buffer = buffer_from_lines(&["a", "b", "c", "d"]);
         let old_top = line_start(&buffer, 1);
@@ -1057,8 +1057,9 @@ mod settle_tests {
             .value();
         let out = view.settle_viewport_y(&buffer, new_cursor);
 
-        assert_eq!(out.viewport.top_line, 2);
-        assert_eq!(buffer.slice_line(Line::new(2)).unwrap().to_string(), "b\n");
+        // 在视口顶部行首插入时不滚动，锚点留在插入点之前，内容在视口内集体下移。
+        assert_eq!(out.viewport.top_line, 1);
+        assert_eq!(buffer.slice_line(Line::new(1)).unwrap().to_string(), "x\n");
     }
 
     #[test]
@@ -1133,18 +1134,19 @@ mod settle_tests {
     }
 
     #[test]
-    fn edit_anchor_should_follow_old_visual_subrow_when_inserting_at_subrow_start() {
+    fn edit_anchor_should_keep_top_subrow_stable_when_inserting_at_subrow_start() {
         let mut view = fresh_view();
         let mut buffer = buffer_from_lines(&["abcdefghijklmnopqrst", "z"]);
         view.set_wrap_map(Some(WrapMap::new(true, vec![vec![5, 10, 15], Vec::new()])));
         view.set_viewport(ViewportState {
             top_line: 0,
             top_subrow: 2,
-            visible_visual_rows: 3,
+            visible_visual_rows: 4,
             visible_logical_lines: 2,
         });
         let old_top = ByteOffset::new(10);
-        let old_cursor = line_start(&buffer, 1);
+        // 光标放在 subrow 2 内部（byte 12），避免触发边缘滚动干扰锚点测试。
+        let old_cursor = ByteOffset::new(12);
         *view.selection_mut() = SelectionSet::caret(old_cursor);
 
         let anchor = view.capture_viewport_edit_anchor(&buffer);
@@ -1162,8 +1164,9 @@ mod settle_tests {
             .value();
         let out = view.settle_viewport_y(&buffer, new_cursor);
 
+        // 在视口顶部 subrow 起点插入时不滚动，锚点留在插入点之前。
         assert_eq!(out.viewport.top_line, 0);
-        assert_eq!(out.viewport.top_subrow, 3);
+        assert_eq!(out.viewport.top_subrow, 2);
     }
 
     #[test]

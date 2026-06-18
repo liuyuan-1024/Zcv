@@ -400,7 +400,7 @@ impl App {
         // 把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——一处做完，渲染 / 后续命令读到的都是新真值。
 
         // 纯 session 状态变更类 effect（tab 切换 / 关闭）在 App 层就近消化，
-        // 不再透传给 shell —— 这两条不动 GPUI / DockState / 焦点，不必走 actions.rs。
+        // 不动 GPUI / DockState / 焦点，不必走 actions.rs。
         // 这样 `App::dispatch` 的程序化调用方（含集成测试）拿回去的就是已经落地的新状态。
         host_effects.retain(|effect| match effect {
             HostEffect::EditorSelectTab(view_id) => {
@@ -470,15 +470,6 @@ impl App {
         &mut self,
         chord: String,
     ) -> Result<KeyDispatchOutcome, CommandError> {
-        // 组合态下宿主完全让位给系统输入法：不解析、不消费、不 stop_propagation。
-        // 一旦拦下某个键（如 Esc → ime_cancel），系统 IME 会话就和我们脱节，它会再吞掉一个后续按键 —— 表现为「取消候选后要多按一次 Esc 才退出新建」。
-        // 组合的更新 / 提交 / 取消都由 IME 回调（`ime_*`）驱动。
-        if self.is_composing() {
-            return Ok(KeyDispatchOutcome {
-                consumed: false,
-                effects: Vec::new(),
-            });
-        }
         let contexts = self.key_contexts();
         match self.command.resolve_key(chord, &contexts)? {
             KeymapResolution::Matched { command, args } => {
@@ -492,6 +483,9 @@ impl App {
                 consumed: true,
                 effects: Vec::new(),
             }),
+            // IME 组合态下 unbound 按键仍需放行给系统输入法，因此 consumed: false 不变。
+            // 已命中 keymap 的命令（如 Cmd+V/Cmd+Z）则正常派发——它们内部有
+            // cancel_composition_before_text_edit 保护，不会造成 IME 会话脱节。
             KeymapResolution::NoMatch => Ok(KeyDispatchOutcome {
                 consumed: false,
                 effects: Vec::new(),
@@ -504,8 +498,8 @@ impl App {
     /// 这是宿主该做的事 —— 告诉 zom-command「现在处于什么上下文」；
     /// 至于哪个 chord 对应哪条命令，仍由各 catalog 注册进 keymap 的绑定决定。
     ///
-    /// `composing` 恒为 `false`：`dispatch_key` 在组合态直接让位给系统输入法，根本不会走到这里。
-    /// 组合上下文（`KeyContext::text_edit` 的第二参）保留在签名里，待将来真有「宿主侧处理组合键」的需求再启用。
+    /// `composing` 恒为 `false`：keymap 已通过 `text_edit` / `text_edit_composition` 上下文区分组合态，
+    /// IME 专属按键（Esc/Enter 在 composition 态）绑定在 composition 上下文，未命中才放行给系统输入法。
     fn key_contexts(&self) -> Vec<KeyContext> {
         let focus = self.focus.current();
         // 先问 router —— 文本输入类 owner（主编辑区、文件树新建/重命名、搜索框、picker 查询框）
@@ -553,18 +547,9 @@ impl App {
         }
     }
 
-    /// 当前聚焦的编辑目标是否处于「有 preedit 的」输入法组合态。
-    ///
-    /// 空 preedit 不算 —— 系统输入法取消候选后会把 preedit 清空、但 composition 壳可能仍在。
-    /// 若空壳也算组合态，`dispatch_key` 会一直让位、keymap 再也不接管，后续 Esc 永远到不了 `cancel_new_entry`。
-    fn is_composing(&self) -> bool {
-        let focus = self.focus.current();
-        self.text_targets.is_composing(&self.session, focus)
-    }
-
     /// 构造一次只读路由视图。
     ///
-    /// 这是 editor 子系统访问 App 内部状态的唯一桥：调用方拿到 [`EditorRouter`] 后直接做 IME 查询 / focused target / snapshot 等 —— App 不再为每种查询包一层方法。
+    /// 这是 editor 子系统访问 App 内部状态的唯一桥：调用方拿到 [`EditorRouter`] 后直接做 IME 查询 / focused target / snapshot。
     ///
     /// Owners 顺序：先 search runtime 提供的双输入框 owner、再注册表里由 shell runtime 注入的 owner、最后兜底主编辑区。`accepts_focus` 对 `AppFocus` 精确匹配，各 owner 覆盖 disjoint 子集，顺序不影响命中。
     pub(crate) fn with_router<R>(&self, f: impl FnOnce(EditorRouter<'_>) -> R) -> R {
@@ -708,11 +693,12 @@ mod tests {
     //! 需要 GPUI 句柄（Entity / Window / 焦点等）的链路在 shell 根视图那一层做手工 / 集成测试，不进本文件。
 
     use crate::app::App;
-    use crate::config::{SettingsChange, THEME_ONE_DARK};
+    use crate::config::SettingsChange;
     use crate::editor_state::{EditorState, EditorTab};
     use crate::focus::{AppFocus, FileTreeFocus};
     use crate::host_intent::{InteractionIntent, PointerIntent};
     use crate::text_target::{TextTargetOwner, TextTargetQuery};
+    use crate::theme::Theme;
     use crate::ui_id::PanelId;
     use std::cell::RefCell;
     use std::fs::{File, create_dir_all};
@@ -956,7 +942,7 @@ mod tests {
         app.apply_settings_change_from_effect(SettingsChange::ToggleEditorSoftWrap);
 
         let config = app.config_snapshot();
-        assert_eq!(config.general.theme, THEME_ONE_DARK);
+        assert_eq!(config.general.theme, Theme::System.as_config());
         assert_eq!(config.ui.font_size, 14);
         assert_eq!(config.editor.font_size, 18);
         assert!(!config.editor.soft_wrap);
@@ -1086,7 +1072,7 @@ mod tests {
                     && d.priority == crate::editor::highlight::priority::SYNTAX_CONFIRMED
             })
             .filter_map(|d| match &d.style {
-                crate::editor::highlight::DecorationStyle::Named(
+                crate::editor::highlight::DecorationStyle(
                     crate::editor::highlight::StyleClass::Syntax(name),
                 ) => Some((d.range.start().get(), d.range.end().get(), name.clone())),
                 _ => None,

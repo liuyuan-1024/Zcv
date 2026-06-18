@@ -89,7 +89,7 @@ fn subtract_range(existing: TextRange, cover: TextRange) -> Vec<TextRange> {
 
 fn resolve(style: DecorationStyle) -> Hsla {
     match style {
-        DecorationStyle::Named(class) => resolve_named(class),
+        DecorationStyle(class) => resolve_named(class),
     }
 }
 
@@ -115,7 +115,7 @@ mod tests {
         Decoration {
             range,
             kind: DecorationKind::Foreground,
-            style: DecorationStyle::Named(StyleClass::Syntax(name.to_string())),
+            style: DecorationStyle(StyleClass::Syntax(name.to_string())),
             priority,
         }
     }

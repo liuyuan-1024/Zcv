@@ -97,8 +97,6 @@ pub struct WrapMap {
 }
 
 impl WrapMap {
-    /// 构造一份新的 WrapMap。
-    ///
     /// `breaks_per_line[i]` 必须为单调递增、不含 0 与行尾、落在 grapheme 边界的相对字节列表。
     pub fn new(soft_wrap: bool, breaks_per_line: Vec<Vec<u32>>) -> Self {
         let line_count = breaks_per_line.len() as u64;
@@ -114,8 +112,6 @@ impl WrapMap {
         }
     }
 
-    /// 构造一份稀疏 WrapMap。
-    ///
     /// 未出现在 `breaks_per_line` 中的逻辑行按未测量处理，在视觉行计数上仍临时按 1 个视觉行退化。
     /// 渲染端每帧只测量视口附近的行，因此主路径必须避免按整篇文档行数分配。
     ///

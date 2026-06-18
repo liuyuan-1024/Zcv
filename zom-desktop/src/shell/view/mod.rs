@@ -9,7 +9,7 @@ mod runtime;
 
 use std::rc::Rc;
 
-use gpui::{Context, FocusHandle, IntoElement, Render, ScrollHandle, Window};
+use gpui::{Context, FocusHandle, IntoElement, Render, ScrollHandle, Subscription, Window};
 use zom_command::commands::{
     diagnostics as diagnostics_commands, editor as editor_commands,
     file_tree as file_tree_commands, go_to_line as go_to_line_commands,
@@ -20,8 +20,8 @@ use zom_command::commands::{
 use zom_command::{CommandArgs, CommandId, Invocation, SettingsChangeRequest};
 use zom_view::ViewId;
 
-use crate::app::App;
-use crate::focus::AppFocus;
+use crate::{app::App, theme::Theme};
+use crate::{config, focus::AppFocus};
 
 use self::runtime::ShellRuntime;
 use super::features::panels::file_tree::ConfirmDeleteHandlers;
@@ -48,6 +48,8 @@ pub(crate) struct ShellView {
     editor_tab_scroll: ScrollHandle,
     /// 主编辑区光标闪烁状态，由本视图的定时链驱动。
     caret: CaretBlink,
+    /// 系统外观变化订阅。持有即保持回调存活，Drop 时自动取消。
+    _appearance_subscription: Option<Subscription>,
 }
 
 impl ShellView {
@@ -56,6 +58,7 @@ impl ShellView {
             runtime: ShellRuntime::assemble(app, cx),
             editor_tab_scroll: ScrollHandle::new(),
             caret: CaretBlink::new(),
+            _appearance_subscription: None,
         }
     }
 
@@ -69,9 +72,26 @@ impl ShellView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 窗口就绪后立即用正确的系统外观解析 "system" 主题。
+        {
+            let config = self.runtime.app.borrow().config_snapshot();
+            config_visuals::apply(&config, Some(window));
+        }
+
         self.runtime
             .features
             .install_listeners(Rc::clone(&self.runtime.app), window, cx);
+
+        // 系统外观变化时自动跟随。
+        let app = Rc::clone(&self.runtime.app);
+        self._appearance_subscription =
+            Some(cx.observe_window_appearance(window, move |_, window, cx| {
+                let config = app.borrow().config_snapshot();
+                if Theme::from_config(&config.general.theme).is_system() {
+                    config_visuals::apply(&config, Some(window));
+                    cx.notify();
+                }
+            }));
     }
 
     /// 打开指定路径的本地项目（不弹选择器）。开发阶段默认项目经由统一项目流程。
@@ -297,21 +317,15 @@ fn settings_intent_invocation(intent: settings::SettingsIntent) -> Invocation {
     }
 }
 
-fn settings_change_request(change: crate::config::SettingsChange) -> SettingsChangeRequest {
+fn settings_change_request(change: config::SettingsChange) -> SettingsChangeRequest {
     match change {
-        crate::config::SettingsChange::AdjustUiFont(delta) => {
-            SettingsChangeRequest::AdjustUiFont(delta)
-        }
-        crate::config::SettingsChange::AdjustEditorFont(delta) => {
+        config::SettingsChange::AdjustUiFont(delta) => SettingsChangeRequest::AdjustUiFont(delta),
+        config::SettingsChange::AdjustEditorFont(delta) => {
             SettingsChangeRequest::AdjustEditorFont(delta)
         }
-        crate::config::SettingsChange::ToggleEditorSoftWrap => {
-            SettingsChangeRequest::ToggleEditorSoftWrap
-        }
-        crate::config::SettingsChange::CycleEditorTabSize => {
-            SettingsChangeRequest::CycleEditorTabSize
-        }
-        crate::config::SettingsChange::CycleTheme => SettingsChangeRequest::CycleTheme,
+        config::SettingsChange::ToggleEditorSoftWrap => SettingsChangeRequest::ToggleEditorSoftWrap,
+        config::SettingsChange::CycleEditorTabSize => SettingsChangeRequest::CycleEditorTabSize,
+        config::SettingsChange::CycleTheme => SettingsChangeRequest::CycleTheme,
     }
 }
 

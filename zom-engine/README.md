@@ -52,7 +52,7 @@ projection/   Fold 后的逻辑坐标、投影坐标和 viewport
 - `AGENTS.md`：AI 协作规则与稳定工程约束。
 - `docs/引擎能力.md`：能力边界与长期方向。
 - `docs/STATUS.md`：当前状态、结构概览和建议验证命令。
-- `../agents/project.md`：workspace 项目规则与统一测试策略。
+- `../AGENTS_PROJECT.md`：workspace 项目规则与统一测试策略。
 
 ## 文档维护
 

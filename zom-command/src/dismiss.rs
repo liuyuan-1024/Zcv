@@ -5,8 +5,8 @@
 //! Esc 触发后，命令侧执行 [`pop_top`]，把 invocation 重新 dispatch —— 这样原有的 `cancel_*` 命令逻辑一行不动，只是触发路径从"静态 mode 分区下的 esc 绑定"变成"栈顶弹出"。
 //!
 //! 栈按 [`DismissScope`] 隔离 —— 一个上下文家族一个独立栈。
-//! 同一焦点里多个瞬态共存时，最近 push 的最先被 esc 消费（"最近开的最先关"），这就是设计要解决的核心问题：
-//! 不再需要为每个新瞬态都在 [`crate::KeyBindingContext`] 里再切出一个 mode 来避免 esc 冲突。
+//! 同一焦点里多个瞬态共存时，最近 push 的最先被 esc 消费（"最近开的最先关"）。
+//! 新增瞬态无需在 [`crate::KeyBindingContext`] 里切新的 mode 避免 esc 冲突——push token 即可。
 //!
 //! ## token 生命周期
 //!

@@ -15,7 +15,7 @@ pub(crate) fn push(selection: &SelectionSet, out: &mut Vec<Decoration>) {
         out.push(Decoration {
             range: sel.range(),
             kind: DecorationKind::Background,
-            style: DecorationStyle::Named(StyleClass::SelectionBackground),
+            style: DecorationStyle(StyleClass::SelectionBackground),
             priority: priority::SELECTION,
         });
     }

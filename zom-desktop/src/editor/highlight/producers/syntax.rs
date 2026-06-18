@@ -40,7 +40,7 @@ pub(crate) fn push(
         out.push(Decoration {
             range,
             kind: DecorationKind::Foreground,
-            style: DecorationStyle::Named(StyleClass::Syntax(span.name.to_string())),
+            style: DecorationStyle(StyleClass::Syntax(span.name.to_string())),
             priority: priority::SYNTAX_CONFIRMED,
         });
     }

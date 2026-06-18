@@ -761,8 +761,7 @@ mod tests {
         buffer.insert(zom_engine::ByteOffset::new(0), "x ").unwrap();
         let event = buffer.take_pending_events().pop().unwrap();
         search.apply_delta(&event).unwrap();
-        // pending 被取消；slot 可能保留也可能没有（取决于 sync 先后），关键是
-        // 这里不再有 in-flight 任务挂着。
+        // pending 被取消；slot 可能保留也可能没有（取决于 sync 先后）。
         assert!(!search.is_searching());
 
         sync_blocking(&mut search, &buffer);

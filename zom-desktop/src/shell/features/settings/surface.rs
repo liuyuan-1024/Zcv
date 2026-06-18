@@ -14,7 +14,7 @@ use crate::config::{AppConfig, SettingsChange};
 use crate::shell::shared::{CommandBinding, Glyph, scroll};
 use crate::shell::surfaces::{SurfaceAnchor, SurfaceRequest, WindowPosition};
 use crate::shell::{CommandTitleLookup, ShortcutLookup};
-use crate::theme::{color, radius, space};
+use crate::theme::{Theme, color, radius, space};
 use crate::ui_id::SurfaceId;
 
 #[derive(Clone, Debug, Default)]
@@ -493,10 +493,5 @@ fn stepper_button(
 }
 
 fn theme_label(theme: &str) -> String {
-    match theme {
-        "one-dark" => "One Dark",
-        "one-light" => "One Light",
-        _ => "One Dark",
-    }
-    .to_string()
+    Theme::from_config(theme).label().to_string()
 }

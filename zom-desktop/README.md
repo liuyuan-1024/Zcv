@@ -53,9 +53,8 @@ assets/                      内置图标、字体与默认主题
 
 ## 相关文档
 
-- `../agents/global.md`、`../agents/project.md`：workspace 全局规则与项目规则。
-- `../TODO.md`：宿主层开发规划。
+- `../AGENTS_GLOBAL.md`、`../AGENTS_PROJECT.md`：workspace 全局规则与项目规则。
 
 ## 文档维护
 
-本 README 只维护稳定边界、核心职责、依赖关系与目录概览；阶段规划与设计决策放入 `../TODO.md` 和 `docs/` 文档。
+本 README 只维护稳定边界、核心职责、依赖关系与目录概览。

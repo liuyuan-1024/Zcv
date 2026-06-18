@@ -16,7 +16,7 @@ pub struct VersionedResult<T> {
 }
 
 impl<T> VersionedResult<T> {
-    /// 构造一个版本绑定结果。
+    /// 绑定结果到 `BufferVersion`，用于消费侧校验版本一致性。
     pub const fn new(version: BufferVersion, value: T) -> Self {
         Self { version, value }
     }

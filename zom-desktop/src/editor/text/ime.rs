@@ -74,12 +74,6 @@ impl<'a> ImeQueryTarget<'a> {
         Self { buffer, selection }
     }
 
-    pub(crate) fn preedit_text(&self) -> Option<String> {
-        self.buffer
-            .composition()
-            .map(|state| state.preedit_text().to_string())
-    }
-
     pub(crate) fn marked_range_utf16(&self) -> Option<ImeUtf16Range> {
         let range = self.buffer.composition()?.range();
         let start = self.buffer.byte_to_utf16_cu(range.start()).ok()?;

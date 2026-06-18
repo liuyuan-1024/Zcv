@@ -31,7 +31,7 @@ pub struct SelectionSet {
 }
 
 impl SelectionSet {
-    /// 创建选区集合。空集合会被规范化为文首单 caret。
+    /// 空集合会被规范化为文首单 caret。
     pub fn new(selections: Vec<Selection>) -> Self {
         Self::new_with_primary(selections, 0)
     }

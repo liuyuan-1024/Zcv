@@ -78,11 +78,6 @@ impl<'a> EditorRouter<'a> {
             .map(|owner| owner.key_contexts())
     }
 
-    pub(crate) fn is_composing(&self, focus: AppFocus) -> bool {
-        self.preedit_text(focus)
-            .is_some_and(|preedit| !preedit.is_empty())
-    }
-
     pub(crate) fn snapshot_for_focus(&self, focus: AppFocus) -> EditorSnapshot {
         self.owners
             .iter()
@@ -106,10 +101,6 @@ impl<'a> EditorRouter<'a> {
     ) -> Option<String> {
         self.with_query(focus, |q| q.text_for_range_utf16(range))
             .flatten()
-    }
-
-    pub(crate) fn preedit_text(&self, focus: AppFocus) -> Option<String> {
-        self.with_query(focus, |q| q.preedit_text()).flatten()
     }
 
     fn with_query<R>(

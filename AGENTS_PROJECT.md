@@ -4,18 +4,7 @@
 
 ## 1. 项目结构
 
-`zom` 是 Cargo workspace 根项目，用于统一管理多个相互黑盒隔离的 crate：
-
-```text
-zom-engine      核心文本编辑引擎
-zom-workspace   工作区、文件、buffer 编排
-zom-view        编辑面状态：view、滚动、selection、fold
-zom-command     命令系统
-zom-ai          AI 抽象与集成
-zom-desktop     桌面入口，组合其他 crate
-```
-
-crate 之间只能通过 public API 连接。不要跨 crate 依赖私有实现、源码路径或测试专用细节。
+`zom` 是 Cargo workspace 根项目，Cargo workspace 各 crate 的职责边界与依赖图见 [`README.md`](README.md)。crate 之间只能通过 public API 连接。
 
 ## 2. 工作区规则
 

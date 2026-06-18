@@ -137,7 +137,7 @@ impl Workspace {
     /// 从磁盘打开文件。
     ///
     /// 走 [`Buffer::from_reader`] 流式加载：一份 64 KiB 读缓冲增量喂 ropey，
-    /// 不再持有"整段 bytes Vec + 整段 String + 整段 rope"三份全量内存。
+    /// 避免全量内存副本。
     /// 详见[`zom-bench/BASELINE.md`](../../zom-bench/BASELINE.md) 的基线数据。
     pub fn open_file(&mut self, path: PathBuf) -> WorkspaceResult<BufferId> {
         let metadata = fs::metadata(&path)

@@ -15,12 +15,12 @@ pub(crate) fn push(buffer: &WorkspaceBuffer, out: &mut Vec<Decoration>) {
     for hit in search.ranges() {
         let (style, prio) = if Some(hit) == current {
             (
-                DecorationStyle::Named(StyleClass::SearchCurrentBackground),
+                DecorationStyle(StyleClass::SearchCurrentBackground),
                 priority::SEARCH_CURRENT,
             )
         } else {
             (
-                DecorationStyle::Named(StyleClass::SearchNormalBackground),
+                DecorationStyle(StyleClass::SearchNormalBackground),
                 priority::SEARCH_NORMAL,
             )
         };

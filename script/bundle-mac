@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # 打包 macOS .app（可选 .dmg）并生成 GitHub Release 风格 zip。
-# Release 资产命名: zom_0.1.0_darwin_arm64.zip
+# Release 资产命名: zom_xx.xx.xx_darwin_arm64.zip
 #
 # 用法:
 #   script/bundle-mac                 # 输出 .app、zip 和 .dmg
@@ -14,9 +14,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-APP_NAME="zom"
+APP_NAME="Zom"
 BUNDLE_ID="dev.liuyuan.zom"
-BIN_NAME="zom"
+BIN_NAME="Zom"
 PACKAGE="zom-desktop"
 ICON_SVG="zom-desktop/assets/icons/app/zom.svg"
 VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)"

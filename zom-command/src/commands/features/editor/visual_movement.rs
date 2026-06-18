@@ -6,8 +6,8 @@
 //!
 //! sticky 用「视觉列」（grapheme 数），不依赖像素 x，垂直移动模型与帧渲染节奏完全解耦。
 //! 当 `wrap_map` 为空（首帧未送达，或对该 target 不适用）时回退到 engine 的逻辑行移动；
-//! WrapMap 在不软换行时 breaks 列表为空，行为天然退化为逻辑行，
-//! 因此**正常路径不再需要**这条 fallback —— 仅保留处理 wrap_map 未就绪的极端情况。
+//! WrapMap 在不软换行时 breaks 列表为空，行为天然退化为逻辑行；
+//! 本模块仅保留处理 wrap_map 未就绪的极端情况。
 
 use zom_engine::{Motion, MovementDirection, MovementUnit, Selection, SelectionSet};
 use zom_view::{VisualAffinity, VisualPosition, WrapMap};

@@ -21,8 +21,6 @@ pub struct TextRange {
 }
 
 impl TextRange {
-    /// 创建文本区间。
-    ///
     /// 校验 `start <= end`，避免在公共 API 边界 panic。
     pub fn new(start: ByteOffset, end: ByteOffset) -> Result<Self, CoordinateError> {
         if start > end {

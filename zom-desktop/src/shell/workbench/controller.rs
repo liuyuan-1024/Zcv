@@ -21,21 +21,9 @@ pub(crate) struct WorkbenchController {
 impl WorkbenchController {
     pub(crate) fn new() -> Self {
         Self {
-            left_dock: DockState {
-                collapsed: true,
-                size: px(240.0),
-                stack: PanelStack::new(left::PANELS.to_vec(), None),
-            },
-            right_dock: DockState {
-                collapsed: true,
-                size: px(240.0),
-                stack: PanelStack::new(right::PANELS.to_vec(), None),
-            },
-            bottom_dock: DockState {
-                collapsed: true,
-                size: px(200.0),
-                stack: PanelStack::new(bottom::PANELS.to_vec(), None),
-            },
+            left_dock: DockState::new(PanelStack::new(left::PANELS.to_vec(), None), px(240.0)),
+            right_dock: DockState::new(PanelStack::new(right::PANELS.to_vec(), None), px(240.0)),
+            bottom_dock: DockState::new(PanelStack::new(bottom::PANELS.to_vec(), None), px(200.0)),
             bottom_bar: BottomBarState::default(),
             dock_resize: DockResize::default(),
         }

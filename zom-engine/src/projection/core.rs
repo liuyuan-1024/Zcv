@@ -217,7 +217,6 @@ impl Projection {
             .ok_or_else(|| crate::CoordinateError::LineOutOfBounds(line).into())
     }
 
-    /// 判断某条逻辑行是否被任意 fold 隐藏。
     pub fn is_logical_line_hidden(&self, line: Line) -> EngineResult<bool> {
         Ok(self.logical_to_projected(line)?.is_hidden())
     }

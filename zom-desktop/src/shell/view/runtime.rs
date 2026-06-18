@@ -49,7 +49,7 @@ pub(super) struct ShellRuntime {
 impl ShellRuntime {
     pub(super) fn assemble(app: App, cx: &mut Context<ShellView>) -> Self {
         let app = Rc::new(RefCell::new(app));
-        config_visuals::apply(&app.borrow().config_snapshot());
+        config_visuals::apply(&app.borrow().config_snapshot(), None);
         // 让命令派发期间的 copy / cut / paste 走系统剪贴板。
         // headless 路径不经过 ShellRuntime::assemble，所以仍是 NoopClipboard。
         app.borrow_mut().set_clipboard(Box::new(GpuiClipboard));
@@ -77,6 +77,10 @@ impl ShellRuntime {
             focus_projection.clone(),
             text_editor_slots_provider,
         );
+
+        bubble_runtime.update(cx, |runtime, _| {
+            runtime.set_intent_request(host_intent.clone());
+        });
 
         // 主编辑区内核：多行 + 行号 + 滚动 + 视口测量回写。
         // 视口钩子在 prepaint 测出本帧 wrap_map 后即时调用，
@@ -165,7 +169,16 @@ impl ShellRuntime {
             Rc::clone(&go_to_line_slot),
         ];
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));
-        let bubble_shell = cx.new(|cx| BubbleShell::new(bubble_runtime.clone(), cx));
+        let title_lookup: crate::shell::CommandTitleLookup = {
+            let app = Rc::clone(&app);
+            Rc::new(move |id| app.borrow().command_title_for(id))
+        };
+        let shortcut_lookup: crate::shell::ShortcutLookup = {
+            let app = Rc::clone(&app);
+            Rc::new(move |id| app.borrow().shortcuts_for(id))
+        };
+        let bubble_shell = cx
+            .new(|cx| BubbleShell::new(bubble_runtime.clone(), title_lookup, shortcut_lookup, cx));
 
         Self {
             app,

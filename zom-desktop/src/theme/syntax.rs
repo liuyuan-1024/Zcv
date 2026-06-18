@@ -27,9 +27,8 @@ use std::sync::{OnceLock, RwLock};
 
 use gpui::{Hsla, Rgba, rgb, rgba};
 
-use crate::config::{THEME_ONE_DARK, THEME_ONE_LIGHT};
-
 use super::color;
+use crate::theme::ConcreteTheme;
 
 /// vendor 的默认主题源（启动期 include 进二进制）。
 const THEME_ONE_DARK_TOML: &str = include_str!("../../assets/themes/onedark.toml");
@@ -58,11 +57,10 @@ pub fn color_for(name: &str) -> Hsla {
     }
 }
 
-pub(crate) fn set_theme(theme: &str) {
+pub(crate) fn set_theme(theme: ConcreteTheme) {
     let source = match theme {
-        THEME_ONE_DARK => THEME_ONE_DARK_TOML,
-        THEME_ONE_LIGHT => THEME_ONE_LIGHT_TOML,
-        _ => THEME_ONE_DARK_TOML,
+        ConcreteTheme::Dark => THEME_ONE_DARK_TOML,
+        ConcreteTheme::Light => THEME_ONE_LIGHT_TOML,
     };
     let table = parse_helix_theme(source).unwrap_or_default();
     let lock = ACTIVE_THEME.get_or_init(|| RwLock::new(default_theme_table()));

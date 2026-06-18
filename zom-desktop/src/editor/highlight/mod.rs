@@ -34,9 +34,7 @@ pub(crate) enum StyleClass {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum DecorationStyle {
-    Named(StyleClass),
-}
+pub(crate) struct DecorationStyle(pub(crate) StyleClass);
 
 #[allow(dead_code)]
 pub(crate) mod priority {

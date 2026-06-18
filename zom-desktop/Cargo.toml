@@ -5,7 +5,7 @@ edition.workspace = true
 description = "桌面入口层：组合 engine、workspace、view、command 与 GPUI 外壳"
 
 [[bin]]
-name = "zom"
+name = "Zom"
 path = "src/main.rs"
 
 [dependencies]

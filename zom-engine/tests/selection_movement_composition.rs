@@ -451,7 +451,7 @@ fn outdent_should_remove_leading_indent_regardless_of_selection_shape() {
 #[test]
 fn line_step_should_move_caret_to_same_display_column_on_target_line() {
     let mut buffer = buffer("abcdef\nghijkl");
-    // caret 在 line 0 col 3（"abc|def"）。
+    // caret 在 line 0 col 3。
     let after = buffer
         .move_selections(
             set_caret(3),
@@ -460,10 +460,10 @@ fn line_step_should_move_caret_to_same_display_column_on_target_line() {
             false,
         )
         .unwrap();
-    // 下移：落到 line 1 col 3（"ghi|jkl" = byte 7 + 3 = byte 10）。
+    // 下移：落到下一行同列。
     assert_eq!(after.primary().head(), b(10));
 
-    // 再上移回 line 0 col 3。
+    // 再上移回原行同列。
     let after = buffer
         .move_selections(after, MovementDirection::Previous, Motion::LineStep, false)
         .unwrap();
@@ -473,7 +473,7 @@ fn line_step_should_move_caret_to_same_display_column_on_target_line() {
 #[test]
 fn line_step_should_clamp_to_line_end_on_shorter_target_line() {
     let mut buffer = buffer("abcdef\nxy");
-    // caret 在 line 0 col 5（"abcde|f"）。
+    // caret 在 line 0 col 5。
     let after = buffer
         .move_selections(
             set_caret(5),
@@ -482,7 +482,7 @@ fn line_step_should_clamp_to_line_end_on_shorter_target_line() {
             false,
         )
         .unwrap();
-    // line 1 只有 2 列，应当 clamp 到行尾（byte 7 + 2 = byte 9）。
+    // line 1 只有 2 列，应当 clamp 到行尾。
     assert_eq!(after.primary().head(), b(9));
 }
 
@@ -519,12 +519,12 @@ fn line_step_at_last_line_next_should_land_at_document_end() {
 #[test]
 fn line_step_should_preserve_anchor_when_extending_selection() {
     let mut buffer = buffer("abcdef\nghijkl");
-    // 选区 anchor=byte 1, head=byte 3（已选 "bc"）。
+    // 选区 anchor=head，已选 "bc"。
     let initial = SelectionSet::new(vec![selection(1, 3)]);
     let after = buffer
         .move_selections(initial, MovementDirection::Next, Motion::LineStep, true)
         .unwrap();
-    // 扩展：anchor 保留 1，head 下移到 line 1 col 3 = byte 10。
+    // 扩展：anchor 保留，head 下移到下一行同列。
     let primary = *after.primary();
     assert_eq!(primary.anchor(), b(1));
     assert_eq!(primary.head(), b(10));
@@ -547,10 +547,10 @@ fn page_step_should_jump_n_lines_keeping_display_column() {
             false,
         )
         .unwrap();
-    // line 2 起始 byte = 14；col 3 → byte 17。
+    // 跳到目标行同列。
     assert_eq!(after.primary().head(), b(17));
 
-    // 反向跳 1 行：回到 line 1 col 3 = byte 10。
+    // 反向跳 1 行：回到 line 1 同列。
     let after = buffer
         .move_selections(
             after,
@@ -574,7 +574,7 @@ fn page_step_should_clamp_to_last_line_when_lines_exceeds_remaining() {
             false,
         )
         .unwrap();
-    // line 2 起始 byte = 6；col 1 → byte 7。
+    // 跳到末行同列。
     assert_eq!(after.primary().head(), b(7));
 }
 

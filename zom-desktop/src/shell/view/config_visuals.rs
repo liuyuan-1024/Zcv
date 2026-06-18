@@ -1,10 +1,11 @@
 //! 把 AppConfig 的视觉字段投影到 shell 全局视觉状态。
 
-use crate::config::AppConfig;
-use crate::theme::{color, syntax, typography};
+use gpui::Window;
 
-pub(super) fn apply(config: &AppConfig) {
+use crate::config::AppConfig;
+use crate::theme::{Theme, typography};
+
+pub(super) fn apply(config: &AppConfig, window: Option<&Window>) {
     typography::set_sizes(config.ui.font_size, config.editor.font_size);
-    syntax::set_theme(&config.general.theme);
-    color::set_palette(&config.general.theme);
+    Theme::from_config(&config.general.theme).apply(window);
 }

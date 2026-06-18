@@ -28,7 +28,7 @@
 
 ### 预编译版本
 
-正在发布中，请关注 [Releases](../../releases) 页面。
+预编译版本请见 [Releases](../../releases) 页面。
 
 ### 从源码构建
 
@@ -113,7 +113,7 @@ zom-engine   ─┘  纯文本编辑引擎底座
 
 ## 路线图
 
-以 `zom-engine` 的能力域为主轴，逐步把能力稳定接入宿主层与桌面外壳。详见 [`TODO.md`](TODO.md)。
+以 `zom-engine` 的能力域为主轴，逐步把能力稳定接入宿主层与桌面外壳。
 
 近期重点：
 
@@ -137,12 +137,12 @@ cargo fmt
 cargo run -p zom-desktop
 ```
 
-协作约定与代码风格见 [`AGENT_GLOBAL.md`](AGENT_GLOBAL.md)；项目结构和测试策略见 [`AGENTS_PROJECT.md`](AGENTS_PROJECT.md)。
+协作约定与代码风格见 [`AGENTS_GLOBAL.md`](AGENTS_GLOBAL.md)；项目结构和测试策略见 [`AGENTS_PROJECT.md`](AGENTS_PROJECT.md)。
 
 ## 贡献
 
 欢迎 issue 与 PR。提交前请：
 
-1. 阅读 [`AGENT_GLOBAL.md`](AGENT_GLOBAL.md) 与 [`AGENTS_PROJECT.md`](AGENTS_PROJECT.md)。
+1. 阅读 [`AGENTS_GLOBAL.md`](AGENTS_GLOBAL.md) 与 [`AGENTS_PROJECT.md`](AGENTS_PROJECT.md)。
 2. 运行 `cargo fmt` 与 `cargo test --workspace`。
 3. 新增 public API 时同步说明长期语义、调用方影响与测试覆盖。

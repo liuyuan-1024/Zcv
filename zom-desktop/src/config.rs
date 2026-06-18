@@ -103,7 +103,7 @@ impl AppConfig {
     /// 让调用方决定如何展示（通常是气泡）。
     pub(crate) fn load(path: Option<&Path>) -> (Self, Vec<String>) {
         match path {
-            Some(path) => read_from_file(path),
+            Some(path) => read_config_from_file(path),
             None => (Self::default(), Vec::new()),
         }
     }
@@ -119,7 +119,7 @@ impl AppConfig {
         let Some(path) = path else {
             return Ok(());
         };
-        write_to_file(path, self).map_err(|error| format!("写入全局配置失败：{error}"))
+        write_config_to_file(path, self).map_err(|error| format!("写入全局配置失败：{error}"))
     }
 
     pub(crate) fn apply_change(&mut self, change: SettingsChange) {
@@ -192,11 +192,11 @@ fn next_theme(current: &str) -> String {
     Theme::from_config(current).next().as_config().to_string()
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-fn read_from_file(path: &Path) -> (AppConfig, Vec<String>) {
+fn read_config_from_file(path: &Path) -> (AppConfig, Vec<String>) {
     let mut warnings = Vec::new();
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -217,7 +217,7 @@ fn read_from_file(path: &Path) -> (AppConfig, Vec<String>) {
     }
 }
 
-fn write_to_file(path: &Path, config: &AppConfig) -> Result<(), String> {
+fn write_config_to_file(path: &Path, config: &AppConfig) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("无法创建配置目录 {}：{error}", parent.display()))?;

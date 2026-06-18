@@ -291,7 +291,7 @@ impl SearchRuntime {
     }
 
     /// 把 SearchModel 作为 [`TextTargetOwner`] 暴露给 router——按 focus 内部分派 query / replacement。
-    /// 注册路径与其它 owner 完全一致，TextTargetRuntime 不再为 search 单走特殊分支。
+    /// 注册路径与其它 owner 完全一致。
     pub(crate) fn owner_handle(&self) -> Rc<RefCell<dyn TextTargetOwner>> {
         self.model.clone()
     }

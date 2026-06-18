@@ -31,8 +31,7 @@ pub enum SettingsChangeRequest {
 
 /// 内建 panel 的稳定标识。
 ///
-/// 字符串形态曾出现在 [`HostEffect::TogglePanel`] 里桥接 zom-command ↔ 宿主；
-/// 现在两侧都用本枚举，宿主只需 `match` 一次即可分发，不再做字符串往返。
+/// 两侧都用本枚举，宿主 `match` 一次即可分发。
 ///
 /// 新增 panel = 在此加变体 + 给 [`PanelKind::toggle_command_id`] 补一行。
 /// 宿主侧的图标 / 焦点 / 渲染等 UI 细节继续由 desktop 自己维护。

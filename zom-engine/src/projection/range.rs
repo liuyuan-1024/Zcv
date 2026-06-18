@@ -15,7 +15,7 @@ pub struct LogicalRange {
 }
 
 impl LogicalRange {
-    /// 创建逻辑范围；要求 `start <= end`（按 line, column 字典序）。
+    /// 要求 `start <= end`（按 line, column 字典序）。
     pub fn new(start: LogicalPoint, end: LogicalPoint) -> Result<Self, CoordinateError> {
         if !is_ordered_logical(start, end) {
             return Err(CoordinateError::InvalidLineRange {
@@ -58,7 +58,7 @@ pub struct ProjectedRange {
 }
 
 impl ProjectedRange {
-    /// 创建投影范围；要求 `start <= end`（按 projected line, column 字典序）。
+    /// 要求 `start <= end`（按 projected line, column 字典序）。
     pub fn new(start: ProjectedPoint, end: ProjectedPoint) -> Result<Self, CoordinateError> {
         if !is_ordered_projected(start, end) {
             return Err(CoordinateError::InvalidLineRange {

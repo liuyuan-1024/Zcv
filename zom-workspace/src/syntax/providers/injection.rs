@@ -6,7 +6,7 @@
 //! ## 设计立场
 //!
 //! - **只覆盖 Tier 1**：tree-sitter grammar 已经编进 zom-desktop 的语言才支持注入。Tier 2 wasm 语言包未来接入，逻辑相同（registry 查表），届时再扩。
-//! - **不接 markdown 递归注入**：fenced 内写 ```` ```markdown ```` 不再嵌套展开——栈结构开销不值得，文本编辑里也极罕见。
+//! - **不接 markdown 递归注入**：fenced 内写 ```` ```markdown ```` 不展开——栈结构开销不值得，文本编辑里也极罕见。
 //! - **不接 html_block / frontmatter / inline 注入**：tree-sitter-md 的 `injections.scm` 还想为 html_block 套 html grammar、frontmatter 套 yaml/toml、`inline` 套 markdown_inline grammar。
 //! 第一项暂不接（markdown 文档里 html_block 不多见）；
 //! frontmatter 暂不接（编辑场景边界情况）；

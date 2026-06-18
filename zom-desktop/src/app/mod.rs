@@ -400,7 +400,7 @@ impl App {
         // 把 panel 状态推进活动 buffer 的 BufferSearch 并 sync——一处做完，渲染 / 后续命令读到的都是新真值。
 
         // 纯 session 状态变更类 effect（tab 切换 / 关闭）在 App 层就近消化，
-        // 不再透传给 shell —— 这两条不动 GPUI / DockState / 焦点，不必走 actions.rs。
+        // 不动 GPUI / DockState / 焦点，不必走 actions.rs。
         // 这样 `App::dispatch` 的程序化调用方（含集成测试）拿回去的就是已经落地的新状态。
         host_effects.retain(|effect| match effect {
             HostEffect::EditorSelectTab(view_id) => {
@@ -549,7 +549,7 @@ impl App {
 
     /// 构造一次只读路由视图。
     ///
-    /// 这是 editor 子系统访问 App 内部状态的唯一桥：调用方拿到 [`EditorRouter`] 后直接做 IME 查询 / focused target / snapshot 等 —— App 不再为每种查询包一层方法。
+    /// 这是 editor 子系统访问 App 内部状态的唯一桥：调用方拿到 [`EditorRouter`] 后直接做 IME 查询 / focused target / snapshot。
     ///
     /// Owners 顺序：先 search runtime 提供的双输入框 owner、再注册表里由 shell runtime 注入的 owner、最后兜底主编辑区。`accepts_focus` 对 `AppFocus` 精确匹配，各 owner 覆盖 disjoint 子集，顺序不影响命中。
     pub(crate) fn with_router<R>(&self, f: impl FnOnce(EditorRouter<'_>) -> R) -> R {
@@ -1072,7 +1072,7 @@ mod tests {
                     && d.priority == crate::editor::highlight::priority::SYNTAX_CONFIRMED
             })
             .filter_map(|d| match &d.style {
-                crate::editor::highlight::DecorationStyle::Named(
+                crate::editor::highlight::DecorationStyle(
                     crate::editor::highlight::StyleClass::Syntax(name),
                 ) => Some((d.range.start().get(), d.range.end().get(), name.clone())),
                 _ => None,

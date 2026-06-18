@@ -106,8 +106,7 @@ fn inline_edit_with_static_fold_should_be_compatible() {
 
     // 在 "echo" 一行的开头插入一个字符；不跨行、不影响 fold
     let outcome = step_and_diff(&mut buffer, &mut folds, &mut projection, |buf| {
-        // line 4 起点：alpha\n bravo\n charlie\n delta\n echo\n
-        //              6      12      20        26      31
+        // line 4 起点。
         buf.insert(b(26), "X").unwrap();
     });
 
@@ -119,7 +118,7 @@ fn fold_dropped_by_delta_should_trigger_rebuilt() {
     let mut buffer = buffer("alpha\nbravo\ncharlie\ndelta\n");
     let snapshot = buffer.snapshot();
     let mut folds = FoldSet::new(snapshot.version());
-    // 折叠 line 1..3 → byte 6..20 ("bravo\ncharlie\n")
+    // 折叠 line 1..3。
     folds.fold_lines(&snapshot, line_range(1, 3)).unwrap();
     let mut projection = Projection::build(&snapshot, &folds).unwrap();
     assert_eq!(folds.as_slice()[0].range().start().get(), 6);
@@ -175,13 +174,12 @@ fn mixed_compatible_and_rebuilt_sequence_should_keep_projections_aligned() {
     assert!(matches!(o1, ApplyOutcome::Compatible));
 
     // 2. 在开头插入换行 → 行数 +1 → Rebuilt
-    //    新文本："\nAalpha\nbravo\ncharlie\ndelta\necho\n"，byte 0 是 '\n'，byte 1 是 'A'。
     let o2 = step_and_diff(&mut buffer, &mut folds, &mut projection, |buf| {
         buf.insert(b(0), "\n").unwrap();
     });
     assert!(matches!(o2, ApplyOutcome::Rebuilt));
 
-    // 3. 行内删除：删 byte 1..2 删掉 'A'，不跨行 → Compatible
+    // 3. 行内删除：不跨行 → Compatible
     let o3 = step_and_diff(&mut buffer, &mut folds, &mut projection, |buf| {
         let r = TextRange::new(b(1), b(2)).unwrap();
         buf.delete(r).unwrap();

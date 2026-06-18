@@ -19,7 +19,6 @@ use super::{Buffer, history};
 static NEXT_BUFFER_ID: AtomicU64 = AtomicU64::new(1);
 
 impl Buffer {
-    /// 创建空 Buffer（匿名来源）。
     pub fn new(config: BufferConfig) -> EngineResult<Self> {
         Self::from_text(String::new(), config)
     }
@@ -69,10 +68,9 @@ impl Buffer {
         Ok(buffer)
     }
 
-    /// 共享构造路径：from_text / with_origin / from_reader 都走这里。
+    /// from_text / with_origin / from_reader 的共享构造路径。
     ///
-    /// 抽出来的唯一目的是消除"创建 Buffer 各字段初值"的重复代码——任何关于
-    /// Buffer 字段默认值的演进只需要改一处。
+    /// Buffer 字段默认值变更只需改这一处。
     fn from_parts(
         origin: BufferOrigin,
         storage: RopeyStorage,
@@ -126,7 +124,7 @@ impl Buffer {
         Self::with_origin(BufferOrigin::external(handle), text, config)
     }
 
-    /// 创建匿名 / 临时草稿 Buffer。语义等同 `from_text`，保留独立入口便于宿主语义清晰。
+    /// 语义等同 `from_text`。保留独立入口便于宿主语义清晰。
     pub fn scratch(text: String, config: BufferConfig) -> EngineResult<Self> {
         Self::with_origin(BufferOrigin::anonymous(), text, config)
     }
@@ -210,7 +208,7 @@ impl Buffer {
             .is_large_byte_size(self.storage.len_bytes().get())
     }
 
-    /// 当前 Buffer 大致内存占用估算（字节）。
+    /// 粗略内存占用估算（字节）。
     ///
     /// 度量包含：
     /// - 文本存储字节数（`len_bytes()`，不计 `ropey::Rope` 内部节点开销）

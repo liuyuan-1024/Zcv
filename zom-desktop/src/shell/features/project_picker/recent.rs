@@ -10,6 +10,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::config::home_dir;
 use serde::{Deserialize, Serialize};
 
 /// 顶栏项目选择器使用的最近项目摘要。
@@ -37,7 +38,7 @@ impl RecentProjects {
         let mut pending_warnings = Vec::new();
         let items = path
             .as_deref()
-            .map(|p| read_from_file(p, &mut pending_warnings))
+            .map(|p| read_recent_from_file(p, &mut pending_warnings))
             .unwrap_or_default();
         Self {
             items,
@@ -88,7 +89,7 @@ impl RecentProjects {
         let Some(path) = &self.path else {
             return;
         };
-        if let Err(error) = write_to_file(path, &self.items) {
+        if let Err(error) = write_recent_to_file(path, &self.items) {
             self.pending_warnings
                 .push(format!("写入最近项目失败：{error}"));
         }
@@ -119,11 +120,7 @@ fn project_name(path: &Path) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
-}
-
-fn read_from_file(path: &Path, warnings: &mut Vec<String>) -> Vec<RecentProject> {
+fn read_recent_from_file(path: &Path, warnings: &mut Vec<String>) -> Vec<RecentProject> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
@@ -169,7 +166,7 @@ fn read_from_file(path: &Path, warnings: &mut Vec<String>) -> Vec<RecentProject>
         .collect()
 }
 
-fn write_to_file(path: &Path, projects: &[RecentProject]) -> Result<(), String> {
+fn write_recent_to_file(path: &Path, projects: &[RecentProject]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("无法创建最近项目目录 {}：{error}", parent.display()))?;

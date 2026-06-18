@@ -22,7 +22,7 @@ pub struct CommandContext<'a> {
     ///
     /// 由宿主（组合根）在派发前从 `WorkspaceSession::active_edit_view_id()` 取得并填入。
     /// `None` 表示当前没有活动编辑 view（如所有 tab 关闭或活动的是预览 tab）。
-    /// 编辑命令通过 [`Self::active_view`] / [`Self::active_view_mut`] / [`Self::active_view_buffer`] 访问对应 view —— 不再由 `ViewSet` 自身记录。
+    /// 编辑命令通过 [`Self::active_view`] / [`Self::active_view_mut`] / [`Self::active_view_buffer`] 访问对应 view。
     pub active_view_id: Option<ViewId>,
     /// 聚焦的输入框编辑目标。`Some` 时编辑命令作用于它而非主编辑区 —— 由宿主（组合根）在派发前按 GPUI 焦点决定。
     pub focused_field: Option<EditTarget<'a>>,
@@ -43,7 +43,7 @@ pub struct CommandContext<'a> {
 /// 一次编辑命令作用的目标：文本缓冲 + 选区。
 ///
 /// 把编辑命令与「buffer / selection 存放在哪」解耦 —— 主编辑区是 workspace buffer + view selection，输入框是各自私有的 buffer + selection。
-/// 编辑 handler 只认这个目标，不再直接穿 `workspace` / `views` 结构。
+/// 编辑 handler 只认这个目标。
 pub struct EditTarget<'a> {
     pub buffer: &'a mut zom_engine::Buffer,
     pub selection: &'a mut zom_engine::SelectionSet,

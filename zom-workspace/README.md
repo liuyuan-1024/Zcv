@@ -48,9 +48,8 @@ tests/                    workspace 生命周期契约测试
 
 ## 相关文档
 
-- `../agents/global.md`、`../agents/project.md`：workspace 全局规则与项目规则。
-- `../TODO.md`：宿主层开发规划。
+- `../AGENTS_GLOBAL.md`、`../AGENTS_PROJECT.md`：workspace 全局规则与项目规则。
 
 ## 文档维护
 
-本 README 只维护稳定边界、核心类型、依赖关系与目录概览；阶段计划与性能演进记录分别放入 `../TODO.md` 和相关 `docs/` 文档。
+本 README 只维护稳定边界、核心类型、依赖关系与目录概览。

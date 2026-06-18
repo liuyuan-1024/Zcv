@@ -42,9 +42,8 @@ src/lib.rs    View / ViewSet / ViewId / ViewportState
 
 ## 相关文档
 
-- `../agents/global.md`、`../agents/project.md`：workspace 全局规则与项目规则。
-- `../TODO.md`：宿主层开发规划。
+- `../AGENTS_GLOBAL.md`、`../AGENTS_PROJECT.md`：workspace 全局规则与项目规则。
 
 ## 文档维护
 
-本 README 只维护稳定边界、核心类型和依赖关系；阶段计划、任务清单和临时实现细节放入 `../TODO.md`。
+本 README 只维护稳定边界、核心类型和依赖关系。

@@ -77,4 +77,23 @@ pub trait HighlightProvider: Send + Sync {
     fn export_syntax_tree(&self, slot: &SyntaxHighlightsSlot) {
         let _ = slot;
     }
+
+    /// 对一段独立代码片段做一次性的语法高亮查询（同步、不依赖 buffer）。
+    ///
+    /// 用于 Markdown 预览中的代码块等独立场景。
+    /// 返回按 byte range 排序的 highlight span 列表。
+    ///
+    /// **注意**：返回的 byte range 直接来自 tree-sitter node，**可能落在 UTF-8 多字节
+    /// 字符中间**，且 range 可能嵌套重叠。消费端在传给 GPUI 之前需要做：
+    /// 1. 端点钳位到 char boundary — [`crate::SyntaxEngine::highlight_snippet`] 已做
+    /// 2. 重叠展平为不重叠段 — desktop 端 `flatten_highlights` 负责
+    ///
+    /// 默认实现返回空 Vec——不支持 snippet 高亮的 provider（如 LSP provider）不做任何事。
+    fn highlight_snippet(
+        &self,
+        code: &str,
+    ) -> Vec<(std::ops::Range<usize>, super::payload::HighlightName)> {
+        let _ = code;
+        Vec::new()
+    }
 }

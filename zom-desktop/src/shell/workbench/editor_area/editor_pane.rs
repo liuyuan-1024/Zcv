@@ -8,6 +8,7 @@ use std::rc::Rc;
 use gpui::{AnyElement, Div, FocusHandle, MouseButton, div, prelude::*};
 
 use zom_view::ViewKind;
+use zom_workspace::syntax::SyntaxEngine;
 
 use crate::editor::TextEditorSlot;
 use crate::editor_state::EditorState;
@@ -32,7 +33,12 @@ pub(super) fn render(
     let body: AnyElement = match state.tabs.iter().find(|t| t.is_active) {
         None => empty_message("尚未打开文件").into_any_element(),
         Some(tab) if matches!(tab.kind, ViewKind::Preview) => {
-            markdown_preview_surface(tab.preview_text.as_deref().unwrap_or(""))
+            let scroll_handle = state.preview_scroll_handles.get(&tab.view_id).cloned();
+            markdown_preview_surface(
+                tab.preview_text.as_deref().unwrap_or(""),
+                scroll_handle,
+                state.syntax_engine.as_deref(),
+            )
         }
         _ => editor_surface(&editor_slot).into_any_element(),
     };
@@ -94,6 +100,10 @@ fn editor_surface(slot: &Rc<TextEditorSlot>) -> Div {
 }
 
 /// Markdown 预览面：CommonMark → GPUI 元素树。
-fn markdown_preview_surface(source: &str) -> AnyElement {
-    markdown_preview::render(source).into_any_element()
+fn markdown_preview_surface(
+    source: &str,
+    scroll_handle: Option<gpui::ScrollHandle>,
+    syntax_engine: Option<&SyntaxEngine>,
+) -> AnyElement {
+    markdown_preview::render(source, scroll_handle, syntax_engine).into_any_element()
 }

@@ -14,6 +14,7 @@ mod pumps;
 mod text_target_runtime;
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -21,8 +22,8 @@ use zom_command::{
     ClipboardPort, CommandCatalogItem, CommandError, CommandId, FileTreeKeyMode, HostEffect,
     Invocation, KeyContext, KeymapResolution,
 };
-use zom_engine::{ByteOffset, Selection, SelectionSet};
-use zom_view::{RevealKind, ViewSet, ViewportEditAnchor};
+use zom_engine::{BufferVersion, ByteOffset, Selection, SelectionSet};
+use zom_view::{RevealKind, ViewId, ViewSet, ViewportEditAnchor};
 use zom_workspace::syntax::{SyntaxEngine, install_builtin_providers};
 use zom_workspace::{BufferId, Workspace};
 
@@ -34,6 +35,7 @@ use self::text_target_runtime::TextTargetRuntime;
 use crate::config::{AppConfig, SettingsChange};
 use crate::dispatch::KeyDispatchOutcome;
 use crate::editor::{EditorViewportMeasurement, SettledViewportTop};
+use crate::editor_state::{self, EditorState};
 use crate::focus::{AppFocus, FileTreeFocus, FocusStore, PanelSubFocus};
 use crate::host_intent::{InteractionIntent, PointerIntent};
 use crate::ports::{
@@ -57,6 +59,10 @@ pub struct App {
     search: Option<Box<dyn SearchHost>>,
     /// LSP 主机：管理语言服务器实例池、文档同步路由与诊断收集、每帧推进后台状态。
     lsp_host: LspHost,
+    /// 预览文本缓存：跨帧复用，避免每帧全量重读 buffer。
+    preview_cache: RefCell<BTreeMap<ViewId, (BufferVersion, String)>>,
+    /// 预览滚动句柄：跨帧 / 跨 tab 切换复用，保持预览滚动位置。
+    preview_scroll_handles: RefCell<BTreeMap<ViewId, gpui::ScrollHandle>>,
 }
 
 impl App {
@@ -89,6 +95,8 @@ impl App {
             file_tree: None,
             search: None,
             lsp_host: LspHost::new(),
+            preview_cache: RefCell::new(BTreeMap::new()),
+            preview_scroll_handles: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -336,14 +344,23 @@ impl App {
 
     /// 构造一份 tab bar 渲染快照。
     /// 集中读 session.workspace / views / active_view，调用方不必再手拼这几样。
-    pub(crate) fn editor_state(&self) -> crate::editor_state::EditorState {
+    pub(crate) fn editor_state(&self) -> EditorState {
         let project_root = self.project_root().map(|p| p.to_path_buf());
-        crate::editor_state::build_editor_state(
+        let prev_cache = self.preview_cache.borrow();
+        let prev_scroll_handles = self.preview_scroll_handles.borrow();
+        let state = editor_state::build_editor_state(
             self.session.workspace(),
             self.session.views(),
             self.session.active_view_id(),
             project_root.as_deref(),
-        )
+            &prev_cache,
+            &prev_scroll_handles,
+        );
+        drop(prev_cache);
+        drop(prev_scroll_handles);
+        *self.preview_cache.borrow_mut() = state.preview_cache.clone();
+        *self.preview_scroll_handles.borrow_mut() = state.preview_scroll_handles.clone();
+        state
     }
 
     pub(crate) fn apply_search_action_from_effect(&mut self, action: SearchAction) {

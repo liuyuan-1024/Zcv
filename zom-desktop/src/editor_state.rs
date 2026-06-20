@@ -5,15 +5,39 @@
 //!
 //! 一条 view = 一条 tab：直接迭代 [`ViewSet`]，按 view 的 kind 决定 tab 的显示形式（编辑视图正常显示文件名 + dirty 标记；预览视图加 " · 预览" 后缀且不显示 dirty）。
 
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::rc::Rc;
 
-use zom_engine::ByteOffset;
+use gpui::ScrollHandle;
+use zom_engine::{BufferVersion, ByteOffset};
 use zom_view::{View, ViewId, ViewKind, ViewSet};
+use zom_workspace::syntax::SyntaxEngine;
 use zom_workspace::{Workspace, WorkspaceBuffer};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct EditorState {
     pub(crate) tabs: Vec<EditorTab>,
+    /// 预览文本缓存：view_id → (buffer_version, cached_text)。
+    /// 跨帧复用，避免每帧全量重读 buffer。
+    pub(crate) preview_cache: BTreeMap<ViewId, (BufferVersion, String)>,
+    /// 预览滚动句柄：view_id → ScrollHandle。
+    /// 跨帧 / 跨 tab 切换复用，保持预览滚动位置。
+    pub(crate) preview_scroll_handles: BTreeMap<ViewId, ScrollHandle>,
+    /// 共享语法引擎：供 Markdown 预览代码块高亮使用。
+    /// `None` 仅在无 workspace 时（单元测试 / 零文件启动）。
+    pub(crate) syntax_engine: Option<Rc<SyntaxEngine>>,
+}
+
+impl Default for EditorState {
+    fn default() -> Self {
+        Self {
+            tabs: Vec::new(),
+            preview_cache: BTreeMap::new(),
+            preview_scroll_handles: BTreeMap::new(),
+            syntax_engine: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -49,12 +73,45 @@ pub(crate) fn build_editor_state(
     views: &ViewSet,
     active_view: Option<ViewId>,
     project_root: Option<&Path>,
+    prev_cache: &BTreeMap<ViewId, (BufferVersion, String)>,
+    prev_scroll_handles: &BTreeMap<ViewId, ScrollHandle>,
 ) -> EditorState {
-    let tabs = views
+    let mut preview_cache: BTreeMap<ViewId, (BufferVersion, String)> = BTreeMap::new();
+    let mut preview_scroll_handles: BTreeMap<ViewId, ScrollHandle> = BTreeMap::new();
+    // 跨帧迁移已有句柄——同一 preview view 复用时保留旧滚动位置。
+    for (view_id, handle) in prev_scroll_handles {
+        preview_scroll_handles.insert(*view_id, handle.clone());
+    }
+    let tabs: Vec<EditorTab> = views
         .views()
-        .map(|(view_id, view)| build_tab(workspace, project_root, view_id, view, active_view))
+        .map(|(view_id, view)| {
+            build_tab(
+                workspace,
+                project_root,
+                view_id,
+                view,
+                active_view,
+                prev_cache,
+                &mut preview_cache,
+            )
+        })
         .collect();
-    EditorState { tabs }
+    // 清理已不存在的 view 的句柄；为尚无句柄的预览 tab 创建新句柄
+    let live_ids: std::collections::BTreeSet<ViewId> = tabs.iter().map(|t| t.view_id).collect();
+    preview_scroll_handles.retain(|id, _| live_ids.contains(id));
+    for tab in &tabs {
+        if matches!(tab.kind, ViewKind::Preview)
+            && !preview_scroll_handles.contains_key(&tab.view_id)
+        {
+            preview_scroll_handles.insert(tab.view_id, ScrollHandle::default());
+        }
+    }
+    EditorState {
+        tabs,
+        preview_cache,
+        preview_scroll_handles,
+        syntax_engine: Some(workspace.engine().clone()),
+    }
 }
 
 fn build_tab(
@@ -63,6 +120,8 @@ fn build_tab(
     view_id: ViewId,
     view: &View,
     active_view: Option<ViewId>,
+    prev_cache: &BTreeMap<ViewId, (BufferVersion, String)>,
+    out_cache: &mut BTreeMap<ViewId, (BufferVersion, String)>,
 ) -> EditorTab {
     let buffer_id = view.buffer();
     let buffer = workspace.buffer(buffer_id);
@@ -76,7 +135,20 @@ fn build_tab(
         ViewKind::Preview => format!("{base_title} · 预览"),
     };
     let preview_text = match kind {
-        ViewKind::Preview => buffer.and_then(read_full_text),
+        ViewKind::Preview => buffer.and_then(|buf| {
+            let version = buf.buffer().version();
+            // 命中缓存：版本一致时直接复用
+            if let Some((cached_version, cached_text)) = prev_cache.get(&view_id) {
+                if *cached_version == version {
+                    out_cache.insert(view_id, (*cached_version, cached_text.clone()));
+                    return Some(cached_text.clone());
+                }
+            }
+            // 未命中：全量读取并写入新缓存
+            let text = read_full_text(buf)?;
+            out_cache.insert(view_id, (version, text.clone()));
+            Some(text)
+        }),
         ViewKind::Edit => None,
     };
     EditorTab {

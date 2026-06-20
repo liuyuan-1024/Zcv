@@ -139,6 +139,14 @@ impl LanguageRegistry {
         self.entries.is_empty()
     }
 
+    /// 按语言名查找已注册的 [`LanguageId`]（精确匹配，不含别名展开）。
+    ///
+    /// 不在此做扩展名/shebang/别名推断——别名归一化由上层
+    /// [`crate::SyntaxEngine::highlight_snippet`] 完成。
+    pub(crate) fn find_by_name(&self, name: &str) -> Option<LanguageId> {
+        self.entries.keys().find(|id| id.as_str() == name).copied()
+    }
+
     /// 实例化某语言的 provider；未注册返回 None。
     pub fn make_provider(&self, id: LanguageId) -> Option<Box<dyn HighlightProvider>> {
         self.entries.get(&id).map(|entry| (entry.factory)())

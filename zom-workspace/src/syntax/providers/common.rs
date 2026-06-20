@@ -531,6 +531,38 @@ impl HighlightProvider for HighlightWorker {
             version,
         ));
     }
+
+    fn highlight_snippet(
+        &self,
+        code: &str,
+    ) -> Vec<(
+        std::ops::Range<usize>,
+        crate::syntax::payload::HighlightName,
+    )> {
+        let mut parser = Parser::new();
+        if parser.set_language(&self.config.language).is_err() {
+            return Vec::new();
+        }
+        let Some(tree) = parser.parse(code.as_bytes(), None) else {
+            return Vec::new();
+        };
+
+        let mut cursor = QueryCursor::new();
+        let mut captures = cursor.captures(&self.config.query, tree.root_node(), code.as_bytes());
+        let mut spans: Vec<(
+            std::ops::Range<usize>,
+            crate::syntax::payload::HighlightName,
+        )> = Vec::new();
+        while let Some((m, capture_ix)) = captures.next() {
+            let capture = m.captures[*capture_ix];
+            let range = capture.node.start_byte()..capture.node.end_byte();
+            if let Some(name) = self.config.lookup.get(capture.index as usize).copied() {
+                spans.push((range, name));
+            }
+        }
+        spans.sort_by(|a, b| a.0.start.cmp(&b.0.start));
+        spans
+    }
 }
 
 // =============================================================================

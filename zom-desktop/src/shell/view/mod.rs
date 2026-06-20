@@ -247,13 +247,9 @@ impl ShellView {
                 editor_commands::OPEN_PREVIEW,
                 editor_commands::open_preview(),
             ),
-            file_search_activate: binding(
-                search_file_commands::ACTIVATE,
-                search_file_commands::activate(),
-            ),
-            file_search_dismiss: binding(
-                search_file_commands::DISMISS,
-                search_file_commands::dismiss(),
+            file_search_toggle: binding(
+                search_file_commands::TOGGLE,
+                search_file_commands::toggle(),
             ),
             editor_go_to_line: binding(
                 go_to_line_commands::ACTIVATE,

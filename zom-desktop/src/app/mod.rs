@@ -357,6 +357,10 @@ impl App {
         }
     }
 
+    pub(crate) fn is_search_open(&self) -> bool {
+        self.search.as_ref().map_or(false, |s| s.is_open())
+    }
+
     pub(crate) fn go_to_line_jump(&mut self, target_byte: usize) {
         let Some(view_id) = self.session.active_edit_view_id() else {
             return;
@@ -1201,7 +1205,7 @@ mod tests {
 
         let outcome = app.dispatch_key("mod f".to_string()).expect("派发成功");
         assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::SearchActivate]);
+        assert_eq!(outcome.effects, vec![HostEffect::SearchToggle]);
 
         // mod shift f 绑到项目搜索占位命令：弹一条"敬请期待"气泡。
         let outcome = app

@@ -22,9 +22,6 @@ pub(crate) fn try_apply_effect(
     window: &mut Window,
 ) -> bool {
     match effect {
-        HostEffect::SearchActivate => {
-            activate_search(app, focus, window);
-        }
         HostEffect::SearchFocusNextField => {
             focus_search_field(app, focus, FocusDirection::Next, window);
         }
@@ -32,9 +29,14 @@ pub(crate) fn try_apply_effect(
             focus_search_field(app, focus, FocusDirection::Previous, window);
         }
         HostEffect::SearchDismiss => {
-            app.borrow_mut()
-                .apply_search_action_from_effect(SearchAction::ConfirmMatch);
-            close_bar(app, focus, window);
+            dismiss_search(app, focus, window);
+        }
+        HostEffect::SearchToggle => {
+            if app.borrow().is_search_open() {
+                dismiss_search(app, focus, window);
+            } else {
+                activate_search(app, focus, window);
+            }
         }
         HostEffect::SearchConfirmMatch => {
             app.borrow_mut()
@@ -43,46 +45,43 @@ pub(crate) fn try_apply_effect(
             window.refresh();
         }
         HostEffect::SearchToggleOption(option) => {
-            app.borrow_mut()
-                .apply_search_action_from_effect(SearchAction::ToggleOption(*option));
-            window.refresh();
+            apply_search(app, SearchAction::ToggleOption(*option), window);
         }
         HostEffect::SearchFindNext => {
-            app.borrow_mut()
-                .apply_search_action_from_effect(SearchAction::FindNext);
-            window.refresh();
+            apply_search(app, SearchAction::FindNext, window);
         }
         HostEffect::SearchFindPrevious => {
-            app.borrow_mut()
-                .apply_search_action_from_effect(SearchAction::FindPrevious);
-            window.refresh();
+            apply_search(app, SearchAction::FindPrevious, window);
         }
         HostEffect::SearchReplaceNext => {
-            app.borrow_mut()
-                .apply_search_action_from_effect(SearchAction::ReplaceNext);
-            window.refresh();
+            apply_search(app, SearchAction::ReplaceNext, window);
         }
         HostEffect::SearchReplaceAll => {
-            app.borrow_mut()
-                .apply_search_action_from_effect(SearchAction::ReplaceAll);
-            window.refresh();
+            apply_search(app, SearchAction::ReplaceAll, window);
         }
         _ => return false,
     }
     true
 }
 
-/// 打开 bar 并把焦点送到 query。已开则只搬焦点（幂等）。
-/// 收起由 Esc（[`HostEffect::SearchDismiss`]）显式触发，不在本函数里走切换。
-///
-/// 当前只有单文件搜索（per-buffer），没有 scope 维度；跨文件搜索是
-/// `search.project_activate`，独立路径。
+/// 打开 bar 并把焦点送到 query。收起走 [`dismiss_search`]。
 fn activate_search(app: &Rc<RefCell<App>>, focus: &FocusProjection, window: &mut Window) {
     // Opened 是幂等的：set_open(true) no-op；sync 在 query/options 没变时
     // 返回 Idle、不动光标。所以即便 bar 已开也无脑发一次，省一次 is_open 读。
     app.borrow_mut()
         .apply_search_action_from_effect(SearchAction::Opened);
     request_focus(app, focus, AppFocus::search(SearchField::Query), window);
+    window.refresh();
+}
+
+fn dismiss_search(app: &Rc<RefCell<App>>, focus: &FocusProjection, window: &mut Window) {
+    app.borrow_mut()
+        .apply_search_action_from_effect(SearchAction::ConfirmMatch);
+    close_bar(app, focus, window);
+}
+
+fn apply_search(app: &Rc<RefCell<App>>, action: SearchAction, window: &mut Window) {
+    app.borrow_mut().apply_search_action_from_effect(action);
     window.refresh();
 }
 

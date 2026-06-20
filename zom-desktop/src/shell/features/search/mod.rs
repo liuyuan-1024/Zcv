@@ -231,6 +231,10 @@ impl SearchHost for SearchRuntimeHandle {
             }
         }
     }
+
+    fn is_open(&self) -> bool {
+        self.is_open()
+    }
 }
 
 /// 把 search 的"编辑后同步"包成通用 [`PostEditObserver`]；

@@ -120,12 +120,7 @@ fn action_slot(
         );
     }
 
-    // 文件搜索 glyph（常驻）：打开时高亮，点击可关闭。
-    let search_command = if search_open {
-        commands.file_search_dismiss.clone()
-    } else {
-        commands.file_search_activate.clone()
-    };
+    // 文件搜索 glyph（常驻）：单条 toggle 命令，与 case-sensitive 等 Glyph 同一模式。
     let color = if search_open {
         active_color
     } else {
@@ -134,7 +129,7 @@ fn action_slot(
     actions.push(
         Glyph::icon("file-status-bar.search", FILE_SEARCH_ICON)
             .color(color)
-            .command(search_command)
+            .command(commands.file_search_toggle.clone())
             .render(),
     );
 

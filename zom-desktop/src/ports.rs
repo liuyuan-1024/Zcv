@@ -54,6 +54,7 @@ pub(crate) trait FileTreeHost {
 /// 这些动作和 workspace/view 会话组合在一起执行。
 pub(crate) trait SearchHost {
     fn apply_search_action_from_effect(&self, action: SearchAction, session: &mut WorkspaceSession);
+    fn is_open(&self) -> bool;
 }
 
 /// 编辑后同步端口：每次活动 buffer 上产生编辑事件后被调一次。

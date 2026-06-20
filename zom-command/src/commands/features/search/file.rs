@@ -2,8 +2,6 @@
 //!
 //! 算法层落在 `WorkspaceBuffer::BufferSearch`，命令侧只 emit `HostEffect`，宿主翻译。
 //!
-//! 打开当前文件的内联搜索栏并聚焦 query 输入框。已开则只搬焦点（幂等）。
-//! 同时往 [`DismissScope::SearchInput`] push 一条 dismiss token。
 //! esc 走系统级 [`crate::commands::system::dismiss::DISMISS_TOP`] 弹出后重新派发 [`DISMISS`]。
 
 use crate::commands::cid;
@@ -14,7 +12,6 @@ use crate::{
     HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SearchOption,
 };
 
-pub const ACTIVATE: &str = "search.activate";
 pub const TOGGLE_CASE_SENSITIVE: &str = "search.toggle_case_sensitive";
 pub const TOGGLE_WHOLE_WORD: &str = "search.toggle_whole_word";
 pub const TOGGLE_REGEX: &str = "search.toggle_regex";
@@ -26,11 +23,13 @@ pub const FOCUS_NEXT_FIELD: &str = "search.focus_next_field";
 pub const FOCUS_PREVIOUS_FIELD: &str = "search.focus_previous_field";
 /// Esc 路径：收起搜索栏，焦点交还给上一个焦点位置。
 pub const DISMISS: &str = "search.dismiss";
+/// 切换搜索栏开关。
+pub const TOGGLE: &str = "search.toggle";
 /// Enter 路径：把光标折叠到当前命中末尾、焦点回编辑器；**搜索栏保留**。
 pub const CONFIRM_MATCH: &str = "search.confirm_match";
 
-pub fn activate() -> Invocation {
-    no_args(ACTIVATE)
+pub fn toggle() -> Invocation {
+    no_args(TOGGLE)
 }
 
 pub fn toggle_case_sensitive() -> Invocation {
@@ -81,10 +80,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     let text_edit = KeyBindingContext::text_edit();
     let search_input = KeyBindingContext::search_input();
 
-    registry
-        .install(keymap, ACTIVATE, "查找", Box::new(run_activate))
-        .description("打开当前文件的内联搜索栏并聚焦搜索框。")
-        .key_in("mod f", text_edit);
     registry
         .install(
             keymap,
@@ -159,6 +154,9 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_in("shift tab", search_input);
     registry.install(keymap, DISMISS, "退出搜索", Box::new(run_dismiss));
     registry
+        .install(keymap, TOGGLE, "查找", emit(HostEffect::SearchToggle))
+        .key_in("mod f", text_edit);
+    registry
         .install(
             keymap,
             CONFIRM_MATCH,
@@ -169,19 +167,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_in("enter", search_input);
 
     dismiss_top::bind_esc(keymap, DismissScope::SearchInput, search_input);
-}
-
-fn run_activate(
-    context: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    context.dismiss.clear(DismissScope::SearchInput);
-    context
-        .dismiss
-        .push(DismissScope::SearchInput, "退出搜索", dismiss());
-    context.effects.push(HostEffect::SearchActivate);
-    Ok(CommandOutcome::default())
 }
 
 fn run_dismiss(

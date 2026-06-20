@@ -188,7 +188,7 @@ fn install_all_should_register_every_builtin_command_catalog() {
         (PanelKind::FileTree.toggle_command_id(), "文件树"),
         (PanelKind::VersionControl.toggle_command_id(), "版本管理"),
         (PanelKind::Outline.toggle_command_id(), "大纲"),
-        (search_file::ACTIVATE, "查找"),
+        (search_file::TOGGLE, "查找"),
         (search_project::PROJECT_ACTIVATE, "项目搜索"),
         (search_file::TOGGLE_CASE_SENSITIVE, "区分大小写"),
         (search_file::TOGGLE_WHOLE_WORD, "全词匹配"),
@@ -282,7 +282,7 @@ fn search_ui_commands_should_emit_state_effects() {
         &mut views,
         view_id,
         vec![
-            (search_file::ACTIVATE, CommandArgs::new()),
+            (search_file::TOGGLE, CommandArgs::new()),
             (search_file::TOGGLE_CASE_SENSITIVE, CommandArgs::new()),
             (search_file::TOGGLE_WHOLE_WORD, CommandArgs::new()),
             (search_file::TOGGLE_REGEX, CommandArgs::new()),
@@ -299,7 +299,7 @@ fn search_ui_commands_should_emit_state_effects() {
     assert_eq!(
         effects,
         vec![
-            HostEffect::SearchActivate,
+            HostEffect::SearchToggle,
             HostEffect::SearchToggleOption(SearchOption::CaseSensitive),
             HostEffect::SearchToggleOption(SearchOption::WholeWord),
             HostEffect::SearchToggleOption(SearchOption::Regex),
@@ -396,7 +396,7 @@ fn search_activate_shortcut_should_be_available_in_text_edit_and_search_contexts
         assert_eq!(
             keymap.resolve(&[key("mod f")], contexts),
             KeymapResolution::Matched {
-                command: command_id(search_file::ACTIVATE),
+                command: command_id(search_file::TOGGLE),
                 args: CommandArgs::new(),
             }
         );

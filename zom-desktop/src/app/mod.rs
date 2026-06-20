@@ -23,8 +23,8 @@ use zom_command::{
 };
 use zom_engine::{ByteOffset, Selection, SelectionSet};
 use zom_view::{RevealKind, ViewSet, ViewportEditAnchor};
-use zom_workspace::Workspace;
 use zom_workspace::syntax::{SyntaxEngine, install_builtin_providers};
+use zom_workspace::{BufferId, Workspace};
 
 use self::command_runtime::CommandRuntime;
 use self::config_applier::ConfigApplier;
@@ -43,6 +43,7 @@ use crate::ports::{
 use crate::text_target::{EditorRouter, EditorRouterMut, TextTargetOwner};
 use crate::ui_id::SurfaceId;
 use crate::workspace_session::WorkspaceSession;
+use zom_workspace::lsp_host::LspHost;
 
 pub struct App {
     command: CommandRuntime,
@@ -54,6 +55,8 @@ pub struct App {
     text_targets: TextTargetRuntime,
     file_tree: Option<Box<dyn FileTreeHost>>,
     search: Option<Box<dyn SearchHost>>,
+    /// LSP 主机：管理语言服务器实例池、文档同步路由与诊断收集、每帧推进后台状态。
+    lsp_host: LspHost,
 }
 
 impl App {
@@ -85,6 +88,7 @@ impl App {
             text_targets: TextTargetRuntime::new(),
             file_tree: None,
             search: None,
+            lsp_host: LspHost::new(),
         }
     }
 
@@ -133,8 +137,7 @@ impl App {
     /// 内存模式（`config_path` 为 `None`）仍在内存里翻，只是 save 是 no-op。
     pub(crate) fn toggle_soft_wrap(&mut self) {
         if let Err(error) = self.config.toggle_soft_wrap() {
-            self.session
-                .push_bubble(zom_command::BubbleRequest::error(error).dedupe("config.save"));
+            self.push_config_save_error(error);
         }
     }
 
@@ -155,8 +158,7 @@ impl App {
             return false;
         };
         if let Err(error) = self.config.save() {
-            self.session
-                .push_bubble(zom_command::BubbleRequest::error(error).dedupe("config.save"));
+            self.push_config_save_error(error);
             return false;
         }
         if !self.session.open_file(path) {
@@ -178,9 +180,13 @@ impl App {
         self.config.apply_change(change);
         ConfigApplier::apply_to_session(self.config.config(), &mut self.session);
         if let Err(error) = self.config.save() {
-            self.session
-                .push_bubble(zom_command::BubbleRequest::error(error).dedupe("config.save"));
+            self.push_config_save_error(error);
         }
+    }
+
+    fn push_config_save_error(&mut self, error: impl Into<String>) {
+        self.session
+            .push_bubble(zom_command::BubbleRequest::error(error).dedupe("config.save"));
     }
 
     /// 把启动期累积的配置加载诊断收纳到 session 气泡队列，等待下一次 drain。
@@ -189,6 +195,18 @@ impl App {
             self.session
                 .push_bubble(zom_command::BubbleRequest::error(warning).dedupe("config.load"));
         }
+    }
+
+    /// LSP 主机状态快照——供语言服务器浮面等 UI 消费。
+    #[allow(dead_code)]
+    pub(crate) fn lsp_snapshot(&self) -> zom_workspace::lsp_host::LspHostSnapshot {
+        self.lsp_host.snapshot()
+    }
+
+    /// 是否已连接任何语言服务器。
+    #[allow(dead_code)]
+    pub(crate) fn lsp_connected(&self) -> bool {
+        self.lsp_host.has_connected_servers()
     }
 
     pub(crate) fn focus(&self) -> &FocusStore {
@@ -256,6 +274,7 @@ impl App {
     /// HostEffect/project_session 落地入口：把指定 root 切成当前活动项目。
     pub(crate) fn apply_open_project_from_effect(&mut self, root: PathBuf) {
         self.project_root = Some(root.clone());
+        self.lsp_host.set_project_root(Some(&root));
         self.session.reset_project(self.config.buffer_config());
         self.request_focus(AppFocus::editor());
     }
@@ -299,7 +318,7 @@ impl App {
     }
 
     /// 当前活动视图对应的 buffer id——文件树等"跟随活动文件"的 UI 从此投影。
-    pub(crate) fn active_buffer_id(&self) -> Option<zom_workspace::BufferId> {
+    pub(crate) fn active_buffer_id(&self) -> Option<BufferId> {
         self.session.active_buffer_id()
     }
 
@@ -632,11 +651,17 @@ impl App {
     ///
     /// 统一由 shell 根视图的 render 拍点驱动。
     ///
-    /// 语法高亮没有需要 drain 的中间产物 —— paint 阶段直接从共享 `BufferSyntaxTreeSlot` 现查 tree-sitter Query。
+    /// 语法高亮没有需要 drain 的中间产物 —— paint 阶段直接从共享 [`SyntaxHighlightsSlot`] 现查统一 Query。
     ///
     /// [`install_frame_pump`]: Self::install_frame_pump
     pub fn pump_frame_observers(&mut self) {
         self.background.pump_frame_observers(&mut self.session);
+    }
+
+    /// 每帧推进 LSP 状态：收割 server 启动结果 → semantic tokens 响应 → 文档同步 → 请求新 tokens。
+    pub fn pump_lsp_tokens(&mut self) {
+        let workspace = self.session.workspace();
+        self.lsp_host.pump(workspace);
     }
 }
 
@@ -1069,7 +1094,7 @@ mod tests {
             .iter()
             .filter(|d| {
                 d.kind == crate::editor::highlight::DecorationKind::Foreground
-                    && d.priority == crate::editor::highlight::priority::SYNTAX_CONFIRMED
+                    && d.priority == crate::editor::highlight::priority::SYNTAX
             })
             .filter_map(|d| match &d.style {
                 crate::editor::highlight::DecorationStyle(
@@ -1107,7 +1132,7 @@ mod tests {
                 == crate::editor::highlight::DecorationKind::Foreground
                 && d.range.start().get() <= 4
                 && d.range.end().get() >= 5
-                && d.priority == crate::editor::highlight::priority::SYNTAX_CONFIRMED),
+                && d.priority == crate::editor::highlight::priority::SYNTAX),
             "dispatch 后立即 snapshot 必须包含覆盖新字节 [4, 5) 的 syntax decoration，实际 {:?}",
             snapshot.decorations,
         );

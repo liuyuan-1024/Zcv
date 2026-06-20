@@ -43,8 +43,8 @@ fn viewport_scoped_query_equals_full_query_filtered() {
     let doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
     engine.worker().wait_for_idle_for_test_or_bench();
 
-    let slot = doc.syntax_tree_slot().expect("rust 必须挂 provider");
-    let tree = slot.load().expect("首份 tree 必须就位");
+    let slot = doc.highlights_slot().expect("rust 必须挂 provider");
+    let highlights = slot.load().expect("首份 highlights 必须就位");
 
     // viewport 覆盖前两行——切到 fn c 之前。
     let cutoff = SOURCE.find("fn c").unwrap();
@@ -52,8 +52,8 @@ fn viewport_scoped_query_equals_full_query_filtered() {
     let full = TextRange::new(ByteOffset::ZERO, doc.buffer().snapshot().len_bytes()).unwrap();
 
     let mut cursor = SyntaxQueryCursor::new();
-    let viewport_spans = tree.query_viewport(viewport, &mut cursor);
-    let full_spans = tree.query_viewport(full, &mut cursor);
+    let viewport_spans = highlights.query_viewport(viewport, &mut cursor);
+    let full_spans = highlights.query_viewport(full, &mut cursor);
 
     let mut viewport_tuples = tuples_in_range(&viewport_spans, viewport);
     let mut baseline = tuples_in_range(&full_spans, viewport);
@@ -81,8 +81,8 @@ fn viewport_scoped_query_subset_when_viewport_in_middle() {
     let doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
     engine.worker().wait_for_idle_for_test_or_bench();
 
-    let slot = doc.syntax_tree_slot().unwrap();
-    let tree = slot.load().unwrap();
+    let slot = doc.highlights_slot().unwrap();
+    let highlights = slot.load().unwrap();
 
     // viewport 卡在第三行（fn c）—— 测中间区间的等价性。
     let start = SOURCE.find("fn c").unwrap();
@@ -91,8 +91,8 @@ fn viewport_scoped_query_subset_when_viewport_in_middle() {
     let full = TextRange::new(ByteOffset::ZERO, doc.buffer().snapshot().len_bytes()).unwrap();
 
     let mut cursor = SyntaxQueryCursor::new();
-    let viewport_spans = tree.query_viewport(viewport, &mut cursor);
-    let full_spans = tree.query_viewport(full, &mut cursor);
+    let viewport_spans = highlights.query_viewport(viewport, &mut cursor);
+    let full_spans = highlights.query_viewport(full, &mut cursor);
 
     let mut viewport_tuples = tuples_in_range(&viewport_spans, viewport);
     let mut baseline = tuples_in_range(&full_spans, viewport);

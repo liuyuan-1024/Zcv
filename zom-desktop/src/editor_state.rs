@@ -82,7 +82,10 @@ fn build_tab(
     EditorTab {
         view_id,
         kind,
-        language: language_label(&base_title),
+        language: buffer
+            .and_then(|b| b.language())
+            .map(|lang| lang.display_name().to_string())
+            .unwrap_or_else(|| "Unknown".to_string()),
         title: display_title,
         // 预览 tab 不显示脏标记——buffer 是否脏由对应的编辑 tab 反映。
         dirty: matches!(kind, ViewKind::Edit)
@@ -128,42 +131,4 @@ fn buffer_title(buffer: &WorkspaceBuffer) -> String {
         .and_then(|path| path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "未命名".to_string())
-}
-
-fn language_label(title: &str) -> String {
-    match std::path::Path::new(title)
-        .extension()
-        .and_then(|ext| ext.to_str())
-    {
-        Some("rs") => "Rust".to_string(),
-        Some("toml") | Some("lock") => "TOML".to_string(),
-        Some("md") | Some("markdown") => "Markdown".to_string(),
-        Some("json") => "JSON".to_string(),
-        Some("js") | Some("mjs") | Some("cjs") => "JavaScript".to_string(),
-        Some("ts") => "TypeScript".to_string(),
-        Some("jsx") => "JSX".to_string(),
-        Some("tsx") => "TSX".to_string(),
-        Some("html") | Some("htm") => "HTML".to_string(),
-        Some("css") => "CSS".to_string(),
-        Some("scss") | Some("sass") => "Sass".to_string(),
-        Some("yaml") | Some("yml") => "YAML".to_string(),
-        Some("xml") => "XML".to_string(),
-        Some("py") => "Python".to_string(),
-        Some("go") => "Go".to_string(),
-        Some("c") | Some("h") => "C".to_string(),
-        Some("cpp") | Some("cc") | Some("cxx") | Some("hpp") => "C++".to_string(),
-        Some("java") => "Java".to_string(),
-        Some("kt") | Some("kts") => "Kotlin".to_string(),
-        Some("swift") => "Swift".to_string(),
-        Some("rb") => "Ruby".to_string(),
-        Some("php") => "PHP".to_string(),
-        Some("sh") | Some("bash") | Some("zsh") => "Shell".to_string(),
-        Some("sql") => "SQL".to_string(),
-        Some("ini") | Some("conf") | Some("cfg") => "INI".to_string(),
-        Some("txt") | Some("text") => "Text".to_string(),
-        Some("csv") => "CSV".to_string(),
-        Some("svg") => "SVG".to_string(),
-        Some(other) => other.to_uppercase(),
-        None => "Unknown".to_string(),
-    }
 }

@@ -30,6 +30,41 @@ impl LanguageId {
     pub fn is_plain(self) -> bool {
         self.0 == "plain"
     }
+
+    /// UI 显示的友好名称（如 `"Rust"`、`"TypeScript"`）。
+    pub fn display_name(self) -> &'static str {
+        match self.0 {
+            "rust" => "Rust",
+            "toml" => "TOML",
+            "markdown" => "Markdown",
+            "json" => "JSON",
+            "yaml" => "YAML",
+            "bash" => "Shell",
+            "html" => "HTML",
+            "css" => "CSS",
+            "javascript" => "JavaScript",
+            "typescript" => "TypeScript",
+            "tsx" => "TSX",
+            "jsx" => "JSX",
+            "java" => "Java",
+            "python" => "Python",
+            "go" => "Go",
+            "c" => "C",
+            "cpp" => "C++",
+            "kotlin" => "Kotlin",
+            "swift" => "Swift",
+            "ruby" => "Ruby",
+            "php" => "PHP",
+            "sql" => "SQL",
+            "xml" => "XML",
+            "scss" => "Sass",
+            "ini" => "INI",
+            "csv" => "CSV",
+            "svg" => "SVG",
+            "plain" => "Unknown",
+            other => other,
+        }
+    }
 }
 
 impl std::fmt::Display for LanguageId {

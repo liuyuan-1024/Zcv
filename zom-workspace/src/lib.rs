@@ -13,6 +13,7 @@
 
 mod buffer_search;
 mod document;
+pub mod lsp_host;
 mod project_tree;
 pub mod syntax;
 
@@ -34,7 +35,7 @@ use zom_engine::{
     ChangeSet, Delta, DeltaEvent, EngineError, Line,
 };
 
-use crate::syntax::{BufferSyntaxTreeSlot, LanguageId, LanguageRegistry, SyntaxEngine};
+use crate::syntax::{LanguageId, LanguageRegistry, SyntaxEngine, SyntaxHighlightsSlot};
 
 /// workspace 自己的缓冲区标识，与 `zom_engine::BufferId` 区分。
 ///
@@ -362,10 +363,10 @@ impl WorkspaceBuffer {
         &mut self.search
     }
 
-    /// 共享的 [`BufferSyntaxTreeSlot`] —— paint 端按它现查 tree-sitter Query。
+    /// 共享的 [`SyntaxHighlightsSlot`] —— paint 端按它现查统一的高亮 Query（tree-sitter + LSP overlay）。
     /// `None` 表示 plain / 超阈值 / 注册表缺工厂的 buffer。
-    pub fn syntax_tree_slot(&self) -> Option<&BufferSyntaxTreeSlot> {
-        self.document.syntax_tree_slot()
+    pub fn highlights_slot(&self) -> Option<&SyntaxHighlightsSlot> {
+        self.document.highlights_slot()
     }
 
     /// 当前缓冲区 detect 出的 [`LanguageId`]。

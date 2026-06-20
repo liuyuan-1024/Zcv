@@ -986,7 +986,7 @@ mod tests {
         let preserved = wm.preserve_after_edit_events(&buffer, &events);
 
         assert_eq!(preserved.logical_line_count(), 2);
-        assert_eq!(preserved.breaks(0), &[]);
+        assert_eq!(preserved.breaks(0), &[] as &[u32]);
         assert_eq!(preserved.breaks(1), &[4]);
     }
 
@@ -1002,8 +1002,8 @@ mod tests {
 
         assert_eq!(preserved.logical_line_count(), 4);
         assert_eq!(preserved.breaks(0), &[5]);
-        assert_eq!(preserved.breaks(1), &[]);
-        assert_eq!(preserved.breaks(2), &[]);
+        assert_eq!(preserved.breaks(1), &[] as &[u32]);
+        assert_eq!(preserved.breaks(2), &[] as &[u32]);
     }
 
     #[test]

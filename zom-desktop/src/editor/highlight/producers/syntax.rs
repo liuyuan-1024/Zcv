@@ -1,6 +1,7 @@
-//! syntax producer —— 把当前 [`BufferSyntaxTree`] 在 viewport 上的 query 结果翻译为 Foreground Decoration。
+//! syntax producer —— 把 [`SyntaxHighlights`] 在 viewport 上的统一 query 结果翻译为 Foreground Decoration。
 //!
-//! 颜色 = 当前 tree 在 viewport 上的纯函数：没有缓存、没有中间帧——每帧从共享的 [`BufferSyntaxTree`] 出发跑一次 viewport-scoped tree-sitter Query。
+//! 颜色 = 当前 highlights 在 viewport 上的纯函数：没有缓存、没有中间帧——每帧从共享的 [`SyntaxHighlights`] 出发跑一次 viewport-scoped Query。
+//! tree-sitter base 与 LSP semantic tokens 的 overlay 在 [`SyntaxHighlights::query_viewport`] 内部完成，本 producer 不区分数据源。
 //!
 //! `highlight name → 字色` 的解析归 shell composer；producer 只把语法高亮名保留在 [`StyleClass::Syntax`] 里，避免应用域知道主题实现。
 //!
@@ -12,7 +13,7 @@
 use std::cell::RefCell;
 
 use zom_engine::{ByteOffset, TextRange};
-use zom_workspace::syntax::{BufferSyntaxTree, SyntaxQueryCursor};
+use zom_workspace::syntax::{SyntaxHighlights, SyntaxQueryCursor};
 
 use crate::editor::highlight::{Decoration, DecorationKind, DecorationStyle, StyleClass, priority};
 use crate::editor::text::snapshot::SnapshotLine;
@@ -24,24 +25,24 @@ thread_local! {
 }
 
 pub(crate) fn push(
-    syntax_tree: Option<&BufferSyntaxTree>,
+    highlights: Option<&SyntaxHighlights>,
     snapshot_lines: &[SnapshotLine],
     out: &mut Vec<Decoration>,
 ) {
-    let Some(st) = syntax_tree else { return };
+    let Some(h) = highlights else { return };
     let Some(viewport) = viewport_byte_range(snapshot_lines) else {
         return;
     };
     let spans = QUERY_CURSOR.with(|cell| {
         let mut cursor = cell.borrow_mut();
-        st.query_viewport(viewport, &mut cursor)
+        h.query_viewport(viewport, &mut cursor)
     });
     for (range, span) in spans {
         out.push(Decoration {
             range,
             kind: DecorationKind::Foreground,
             style: DecorationStyle(StyleClass::Syntax(span.name.to_string())),
-            priority: priority::SYNTAX_CONFIRMED,
+            priority: priority::SYNTAX,
         });
     }
 }

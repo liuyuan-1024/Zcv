@@ -59,7 +59,7 @@ mod tests {
         );
         worker.wait_for_idle_for_test_or_bench();
         let tree = syntax
-            .tree_slot()
+            .highlights_slot()
             .load()
             .expect("attach 完成后 slot 必须有 tree");
         let viewport = TextRange::new(ByteOffset::ZERO, buffer.snapshot().len_bytes()).unwrap();

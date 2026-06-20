@@ -1,7 +1,7 @@
 //! HighlightProvider trait + BufferHandle。
 //!
-//! Provider 只剩四步：持有 Parser + Tree、按编辑事件 reparse、把 `(config + tree + snapshot + version)` 导出到共享 [`BufferSyntaxTreeSlot`]、释放资源。
-//! viewport-scoped Query 由 paint 阶段（[`crate::syntax::BufferSyntaxTree::query_viewport`]）现查，provider 不必知道 viewport。
+//! Provider 只剩四步：持有 Parser + Tree、按编辑事件 reparse、把 `(config + tree + snapshot + version)` 导出到共享 [`SyntaxHighlightsSlot`]、释放资源。
+//! viewport-scoped Query 由 paint 阶段（[`crate::syntax::SyntaxHighlights::query_viewport`]）现查，provider 不必知道 viewport。
 //!
 //! trait 仍存在的理由：把 tree-sitter / LSP / 占位三类 provider 形态对调度层 ([`crate::syntax::worker`]) 抽象成同一面；
 //! 调度层负责 Job 调度、panic 隔离、Entry 生命周期，不关心 provider 装的是哪门语言。
@@ -10,8 +10,8 @@ use std::sync::{Arc, RwLock};
 
 use zom_engine::{BufferVersion, ChangeSet, Snapshot};
 
+use super::highlights::SyntaxHighlightsSlot;
 use super::language::LanguageId;
-use super::tree::BufferSyntaxTreeSlot;
 
 /// 调度层借给 provider 的 buffer 只读句柄。
 ///
@@ -70,11 +70,11 @@ pub trait HighlightProvider: Send + Sync {
     /// 把 provider 当前持有的"语法树 + 对应 snapshot"导出到共享槽位。
     ///
     /// 调度层（[`crate::syntax::worker`]）在每次 attach / on_edit 处理完成后调用，
-    /// 让 paint 阶段能用 [`BufferSyntaxTreeSlot::load`] 拿到与 worker 内部状态对齐的 [`crate::syntax::BufferSyntaxTree`]。
+    /// 让 paint 阶段能用 [`SyntaxHighlightsSlot::load`] 拿到与 worker 内部状态对齐的 [`crate::syntax::SyntaxHighlights`]。
     ///
     /// 默认实现无操作——LSP / 占位 provider 没有 tree-sitter 树，自然没什么可导出。
     /// tree-sitter provider 在自身的 `HighlightWorker` 上 override。
-    fn export_syntax_tree(&self, slot: &BufferSyntaxTreeSlot) {
+    fn export_syntax_tree(&self, slot: &SyntaxHighlightsSlot) {
         let _ = slot;
     }
 }

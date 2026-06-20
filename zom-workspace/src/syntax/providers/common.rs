@@ -35,9 +35,10 @@ use tree_sitter::{
 };
 
 use crate::syntax::LanguageId;
+use crate::syntax::highlights::SyntaxHighlightsSlot;
 use crate::syntax::payload::{HighlightName, HighlightSpan, TokenModifiers};
 use crate::syntax::provider::{BufferHandle, HighlightProvider};
-use crate::syntax::tree::{BufferSyntaxTree, BufferSyntaxTreeSlot};
+use crate::syntax::tree::BufferSyntaxTree;
 use zom_engine::{BufferVersion, ByteOffset, ChangeSet, Snapshot, TextRange};
 
 /// 一门语言已 build 好的高亮配置：
@@ -515,15 +516,15 @@ impl HighlightProvider for HighlightWorker {
     }
 
     /// 把 worker 内部最新的 `tree` + `snapshot` 写到共享 slot，让主线程 paint 端能按 viewport 现查 Query。
-    /// `store_if_newer` 保证不会把过期 reparse 结果盖到主线程 `tree.edit` 已经推进过的更新版本上。
+    /// `store_tree` 保证不会把过期 reparse 结果盖到主线程 `tree.edit` 已经推进过的更新版本上。
     ///
     /// 任一槽位缺失（首次 attach 失败 / 上一轮回退过）直接返回，让 slot 维持上次值。
-    fn export_syntax_tree(&self, slot: &BufferSyntaxTreeSlot) {
+    fn export_syntax_tree(&self, slot: &SyntaxHighlightsSlot) {
         let (Some(tree), Some(snapshot)) = (self.tree.as_ref(), self.last_snapshot.as_ref()) else {
             return;
         };
         let version = snapshot.version();
-        slot.store_if_newer(BufferSyntaxTree::single(
+        slot.store_tree(BufferSyntaxTree::single(
             self.config.clone(),
             tree.clone(),
             snapshot.clone(),
@@ -574,7 +575,7 @@ pub(crate) mod test_support {
         );
         worker.wait_for_idle_for_test_or_bench();
         let tree = syntax
-            .tree_slot()
+            .highlights_slot()
             .load()
             .expect("attach 完成后 slot 必须有 tree");
         let viewport =

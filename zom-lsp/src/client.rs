@@ -94,7 +94,8 @@ pub struct LspClient {
     stdin: Arc<Mutex<ChildStdin>>,
     /// 子进程句柄——shutdown 时需要。
     child: Arc<Mutex<Option<Child>>>,
-    /// 通知处理器。
+    /// 通知处理器。字段仅用于持有 Arc 所有权，读线程通过独立 clone 访问。
+    #[allow(dead_code)]
     notification_handler: Arc<Mutex<Option<Box<dyn NotificationHandler>>>>,
     /// 标记读线程是否存活。
     alive: Arc<AtomicBool>,

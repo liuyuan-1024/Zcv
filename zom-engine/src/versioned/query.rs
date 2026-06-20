@@ -1,6 +1,6 @@
 //! 区间查询数学：把 `TextRange`、`LineRange` 和 offset 查询统一为半开区间相交判断。
 //!
-//! 无状态 helper，供 `VersionedRangeSet` 与按 kind 索引的 `MetadataLayers` 复用。
+//! 无状态 helper，供 `VersionedRangeSet` 复用。
 
 use crate::{
     buffer::Buffer,

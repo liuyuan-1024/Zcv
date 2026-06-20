@@ -1,10 +1,10 @@
 //! 跳转到行命令。
 
+use crate::commands::cid;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
-    command_execution_failed,
+    CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
+    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, command_execution_failed,
 };
 use zom_engine::{ByteOffset, Line, TextRange};
 
@@ -170,8 +170,4 @@ fn parse_line_column(input: &str) -> Result<(usize, usize), CommandError> {
     };
 
     Ok((line, column))
-}
-
-fn cid(id: &'static str) -> CommandId {
-    CommandId::new(id).expect("内建命令 ID 必须非空")
 }

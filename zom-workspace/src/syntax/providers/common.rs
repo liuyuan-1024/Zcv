@@ -799,3 +799,94 @@ mod tests {
         assert!(worker.tree.is_some());
     }
 }
+
+// ---------------------------------------------------------------------------
+// 声明宏：消除 10 个 Tier 1 provider 文件的重复样板
+// ---------------------------------------------------------------------------
+
+/// 生成一条语言 provider 的 `OnceLock` 配置函数与 `new_provider` 工厂。
+///
+/// 样板原形约 25 行，现在一行宏调用。使用示例：
+///
+/// ```ignore
+/// declare_tier1_provider!(json_config, new_provider, "json",
+///     tree_sitter_json::LANGUAGE, tree_sitter_json::HIGHLIGHTS_QUERY);
+/// ```
+///
+/// # 参数
+///
+/// - `$config_fn`：配置函数名（如 `json_config`）。
+/// - `$new_provider_fn`：`new_provider` 工厂名。
+/// - `$name_str`：语言 id 字符串，如 `"json"`。
+/// - `$lang`：`tree_sitter::Language` 常量。
+/// - `$query`：`&'static str` 高亮 query 源码。
+///
+/// typescript 这种一个 crate 两条语言的，调两次本宏；markdown 是自定义
+/// [`HighlightProvider`]，不走本宏。
+#[macro_export]
+macro_rules! declare_tier1_provider {
+    ($config_fn:ident, $new_provider_fn:ident, $name_str:expr, $lang:expr, $query:expr) => {
+        pub(crate) fn $config_fn() -> Result<
+            std::sync::Arc<$crate::syntax::providers::common::SharedConfig>,
+            &'static tree_sitter::QueryError,
+        > {
+            static CELL: std::sync::OnceLock<
+                Result<
+                    std::sync::Arc<$crate::syntax::providers::common::SharedConfig>,
+                    tree_sitter::QueryError,
+                >,
+            > = std::sync::OnceLock::new();
+            CELL.get_or_init(|| {
+                $crate::syntax::providers::common::build_shared_config($lang.into(), $query)
+                    .map(std::sync::Arc::new)
+            })
+            .as_ref()
+            .map(|c| c.clone())
+        }
+
+        pub fn $new_provider_fn() -> $crate::syntax::providers::common::HighlightWorker {
+            let config =
+                $config_fn().expect(concat!("tree-sitter-", $name_str, " 高亮配置必须构建"));
+            $crate::syntax::providers::common::HighlightWorker::new(
+                $crate::syntax::LanguageId::new($name_str),
+                config,
+            )
+        }
+    };
+}
+
+/// 生成 Tier 1 provider 的标准两个测试：烟雾测试 + lookup table 一致性测试。
+///
+/// ```ignore
+/// standard_provider_tests!(json_config, new_provider, "json",
+///     r#"{"name": "zom"}"#);
+/// ```
+#[macro_export]
+macro_rules! standard_provider_tests {
+    ($config_fn:ident, $new_provider_fn:ident, $name_str:expr, $sample:expr) => {
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+            use $crate::syntax::providers::common::test_support::{
+                assert_lookup_matches_capture_names, smoke_test_provider,
+            };
+
+            const SAMPLE: &str = $sample;
+
+            #[test]
+            fn provider_emits_spans() {
+                smoke_test_provider(
+                    $crate::syntax::LanguageId::new($name_str),
+                    SAMPLE,
+                    $new_provider_fn,
+                );
+            }
+
+            #[test]
+            fn lookup_table_matches_query_capture_names() {
+                let cfg = $config_fn().expect(concat!($name_str, " 配置必须构建"));
+                assert_lookup_matches_capture_names(&cfg);
+            }
+        }
+    };
+}

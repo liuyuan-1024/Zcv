@@ -23,8 +23,8 @@ use zom_command::{
     Invocation, KeyContext, KeymapResolution,
 };
 use zom_engine::{BufferVersion, ByteOffset, Selection, SelectionSet};
-use zom_view::{RevealKind, ViewId, ViewSet, ViewportEditAnchor};
 use zom_workspace::syntax::{SyntaxEngine, install_builtin_providers};
+use zom_workspace::view::{RevealKind, ViewId, ViewSet, ViewportEditAnchor};
 use zom_workspace::{BufferId, Workspace};
 
 use self::command_runtime::CommandRuntime;
@@ -38,6 +38,7 @@ use crate::editor::{EditorViewportMeasurement, SettledViewportTop};
 use crate::editor_state::{self, EditorState};
 use crate::focus::{AppFocus, FileTreeFocus, FocusStore, PanelSubFocus};
 use crate::host_intent::{InteractionIntent, PointerIntent};
+use crate::lsp_host::LspHost;
 use crate::ports::{
     FileTreeAction, FileTreeActionResult, FileTreeHost, FramePump, PostEditObserver, SearchAction,
     SearchHost,
@@ -45,7 +46,6 @@ use crate::ports::{
 use crate::text_target::{EditorRouter, EditorRouterMut, TextTargetOwner};
 use crate::ui_id::SurfaceId;
 use crate::workspace_session::WorkspaceSession;
-use zom_workspace::lsp_host::LspHost;
 
 pub struct App {
     command: CommandRuntime,
@@ -151,7 +151,7 @@ impl App {
 
     /// 把活动 tab 切到指定 view（对应 `HostEffect::EditorSelectTab`）。
     /// 由 shell 端 effect handler 调，不直接给业务 / 命令使用。
-    pub(crate) fn activate_view_tab(&mut self, view_id: zom_view::ViewId) {
+    pub(crate) fn activate_view_tab(&mut self, view_id: zom_workspace::view::ViewId) {
         self.session.set_active_view(view_id);
     }
 
@@ -203,18 +203,6 @@ impl App {
             self.session
                 .push_bubble(zom_command::BubbleRequest::error(warning).dedupe("config.load"));
         }
-    }
-
-    /// LSP 主机状态快照——供语言服务器浮面等 UI 消费。
-    #[allow(dead_code)]
-    pub(crate) fn lsp_snapshot(&self) -> zom_workspace::lsp_host::LspHostSnapshot {
-        self.lsp_host.snapshot()
-    }
-
-    /// 是否已连接任何语言服务器。
-    #[allow(dead_code)]
-    pub(crate) fn lsp_connected(&self) -> bool {
-        self.lsp_host.has_connected_servers()
     }
 
     pub(crate) fn focus(&self) -> &FocusStore {
@@ -321,7 +309,7 @@ impl App {
         self.session.views()
     }
 
-    pub(crate) fn active_view_id(&self) -> Option<zom_view::ViewId> {
+    pub(crate) fn active_view_id(&self) -> Option<zom_workspace::view::ViewId> {
         self.session.active_view_id()
     }
 
@@ -605,20 +593,20 @@ impl App {
     /// 由主编辑区 element prepaint 中段回写测量值并即时落定视口顶端。
     ///
     /// 1. 把本帧测得的 `visible_visual_rows` 与新 `wrap_map` 写回 view；
-    /// 2. 立即用新 wrap_map 跑一次 [`zom_view::View::settle_viewport_y`]，把 edit / soft-wrap 触发的新视觉行同帧消化掉——不再依赖下一帧补 settle。
+    /// 2. 立即用新 wrap_map 跑一次 [`zom_workspace::view::View::settle_viewport_y`]，把 edit / soft-wrap 触发的新视觉行同帧消化掉——不再依赖下一帧补 settle。
     ///
     /// 返回 settle 后的视口顶端；element 拿到后用它解析本帧的 `top_visual_row`。
     /// 无活动 view 时返回 `None`，element 退回 view 当前 top（与首帧一致）。
     pub(crate) fn sync_main_viewport_measurement(
         &mut self,
         measured: EditorViewportMeasurement,
-        wrap_map: Option<zom_view::WrapMap>,
+        wrap_map: Option<zom_workspace::view::WrapMap>,
     ) -> Option<SettledViewportTop> {
         let active_view_id = self.session.active_edit_view_id()?;
         let (workspace, views) = self.session.parts_mut();
         let view = views.edit_view_mut(active_view_id)?;
         let current = view.viewport();
-        let viewport = zom_view::ViewportState {
+        let viewport = zom_workspace::view::ViewportState {
             top_line: current.top_line,
             top_subrow: current.top_subrow,
             visible_visual_rows: measured.visible_visual_rows,
@@ -753,7 +741,7 @@ mod tests {
     };
     use zom_command::{EditTarget, KeyContext};
     use zom_engine::{ByteOffset, SelectionSet};
-    use zom_view::{ViewportState, WrapMap};
+    use zom_workspace::view::{ViewportState, WrapMap};
 
     /// 取当前活动标签——断言「编辑区正在显示哪个文件」用。
     fn active_tab(state: &EditorState) -> &EditorTab {

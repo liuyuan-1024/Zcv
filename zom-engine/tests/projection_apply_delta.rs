@@ -6,22 +6,8 @@
 //! - 改变行数 / 改变 fold 结构 → `Rebuilt`
 
 use zom_engine::*;
-
-fn b(value: usize) -> ByteOffset {
-    ByteOffset::new(value)
-}
-
-fn line(value: usize) -> Line {
-    Line::new(value)
-}
-
-fn line_range(start: usize, end: usize) -> LineRange {
-    LineRange::new(line(start), line(end)).unwrap()
-}
-
-fn buffer(text: &str) -> Buffer {
-    Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
-}
+mod common;
+use common::*;
 
 /// 在 `buffer` 上施加一次编辑，同步推进 folds 与 incremental projection，
 /// 并对比"增量推进结果"与"按新版本全量 build"是否字段级相等。

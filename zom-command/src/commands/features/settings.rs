@@ -4,11 +4,12 @@
 //!
 //! esc 走系统级 [`crate::commands::system::dismiss::DISMISS_TOP`]（scope=Settings）—— [`OPEN`] 推一条 dismiss token，esc 弹出后重新派发 [`DISMISS`]。
 
+use crate::commands::cid;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandHandler, CommandId, CommandOutcome,
-    CommandRegistry, DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
-    SettingsChangeRequest, reject_unknown_args, required_arg,
+    CommandArgs, CommandContext, CommandError, CommandHandler, CommandOutcome, CommandRegistry,
+    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SettingsChangeRequest,
+    reject_unknown_args, required_arg,
 };
 
 /// 打开设置面板。
@@ -214,8 +215,4 @@ fn required_delta(args: &CommandArgs) -> Result<i16, CommandError> {
     let raw = required_arg(args, "delta")?;
     raw.parse()
         .map_err(|_| CommandError::InvalidArgs(format!("无效设置变更步长：{raw}")))
-}
-
-fn cid(id: &'static str) -> CommandId {
-    CommandId::new(id).expect("内建命令 ID 必须非空")
 }

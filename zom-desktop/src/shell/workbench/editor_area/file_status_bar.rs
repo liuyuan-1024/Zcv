@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
 
-use zom_view::ViewKind;
+use zom_workspace::view::ViewKind;
 
 use crate::editor::TextEditorSlot;
 use crate::editor_state::EditorTab;

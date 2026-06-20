@@ -11,17 +11,26 @@
 members = [
     "zom-engine",
     "zom-workspace",
-    "zom-view",
     "zom-command",
     "zom-ai",
     "zom-desktop",
     "zom-bench",
     "zom-lsp",
 ]
+# 默认构建的 crate。zom-ai 不在此列——它是可选 AI 抽象层，当前无下游消费者。
+# 要启用 zom-ai：在下游 crate 的 Cargo.toml 里 `zom-ai.workspace = true`，然后显式构建：
+# cargo build -p zom-ai -p <你的-crate>
+default-members = [
+    "zom-engine",
+    "zom-workspace",
+    "zom-command",
+    "zom-desktop",
+    "zom-bench",
+    "zom-lsp",
+]
 resolver = "3"
-
 [workspace.package]
-version = "0.6.3"
+version = "0.6.4"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -31,7 +40,6 @@ doc_lazy_continuation = "allow"
 # ---- 内部 crate ----
 zom-engine = { path = "zom-engine" }
 zom-workspace = { path = "zom-workspace" }
-zom-view = { path = "zom-view" }
 zom-command = { path = "zom-command" }
 zom-ai = { path = "zom-ai" }
 zom-lsp = { path = "zom-lsp" }

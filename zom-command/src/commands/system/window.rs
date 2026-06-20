@@ -3,8 +3,9 @@
 //! handler 不直接操作窗口 —— 接触 GPUI 会让 zom-command 反向依赖平台层。
 //! 取而代之，emit [`HostEffect`]，宿主翻译成具体 API 调用。
 
+use crate::commands::cid;
 use crate::commands::emit;
-use crate::{CommandArgs, CommandId, CommandRegistry, HostEffect, Invocation, Keymap};
+use crate::{CommandArgs, CommandRegistry, HostEffect, Invocation, Keymap};
 
 pub const QUIT: &str = "window.quit";
 pub const MINIMIZE: &str = "window.minimize";
@@ -40,8 +41,4 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         )
         .description("在普通窗口和最大化窗口之间切换。")
         .key("mod shift m");
-}
-
-fn cid(id: &'static str) -> CommandId {
-    CommandId::new(id).expect("内建命令 ID 必须非空")
 }

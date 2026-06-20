@@ -11,7 +11,7 @@
 use std::rc::Rc;
 
 use gpui::{AnyElement, MouseButton, Rgba, ScrollHandle, SharedString, Stateful, div, prelude::*};
-use zom_view::ViewId;
+use zom_workspace::view::ViewId;
 
 use crate::editor_state::{EditorState, EditorTab};
 use crate::host_intent::TabCallback;

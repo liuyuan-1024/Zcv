@@ -7,7 +7,7 @@
 
 use crate::ports::{FramePump, PostEditObserver};
 use crate::workspace_session::WorkspaceSession;
-use zom_view::{ViewportEditAnchor, WrapMap};
+use zom_workspace::view::{ViewportEditAnchor, WrapMap};
 
 #[derive(Default)]
 pub(super) struct BackgroundPumps {

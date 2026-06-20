@@ -12,7 +12,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use crate::error::{ExitStatus, LspError};
+use crate::error::LspError;
 
 /// 一条从服务器收到的原始消息（已解帧的 JSON 字符串）。
 #[derive(Debug)]
@@ -67,39 +67,6 @@ impl StdioTransport {
     /// 返回 `None` 表示 stdout 已关闭（服务器退出）。
     pub fn recv(&mut self) -> Result<Option<RawMessage>, LspError> {
         read_message(&mut self.reader)
-    }
-
-    /// 检查进程是否已退出。返回退出状态。
-    #[allow(dead_code)]
-    pub fn try_wait(&mut self) -> Option<ExitStatus> {
-        match self.child.try_wait() {
-            Ok(Some(status)) => {
-                if let Some(code) = status.code() {
-                    Some(ExitStatus::Code(code))
-                } else {
-                    Some(ExitStatus::Signal)
-                }
-            }
-            Ok(None) => None,
-            Err(_) => Some(ExitStatus::Signal),
-        }
-    }
-
-    /// 优雅关闭：发 shutdown + exit 后等待进程退出。
-    #[allow(dead_code)]
-    pub fn shutdown(&mut self, timeout_ms: u64) {
-        let _ = self.send(r#"{"jsonrpc":"2.0","method":"shutdown","id":0}"#);
-        let _ = self.send(r#"{"jsonrpc":"2.0","method":"exit","id":0}"#);
-
-        let start = std::time::Instant::now();
-        while start.elapsed() < std::time::Duration::from_millis(timeout_ms) {
-            if self.try_wait().is_some() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-
-        let _ = self.child.kill();
     }
 
     /// 拆分为独立部件——供多线程使用。

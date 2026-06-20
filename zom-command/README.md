@@ -24,7 +24,7 @@
 ```text
 zom-command → zom-engine
 zom-command → zom-workspace
-zom-command → zom-view
+zom-command → zom-workspace
 ```
 
 **不依赖 `zom-ai`** —— 与 `zom-ai` 无依赖边，两者在 `zom-desktop` 组合根相遇。

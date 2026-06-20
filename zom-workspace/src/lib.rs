@@ -2,10 +2,10 @@
 //!
 //! 拥有 `Buffer` 实例本身，管理缓冲区与文件的生命周期：路径、来源、
 //! 脏状态、只读、保存点。不持有视图状态（滚动、光标、折叠）—— 那些
-//! 属于 `zom-view`。
+//! 属于 [`view`] 模块。
 //!
 //! 判据：同一文件开两个分屏不会不同的状态归这里（脏状态、文件路径、
-//! 只读）；会不同的归 `zom-view`。
+//! 只读）；会不同的归 [`view`] 模块。
 //!
 //! `Workspace` 维护一个可为空的活动缓冲区指针：打开新缓冲区后自动成为活动项；
 //! 关闭非活动缓冲区不影响当前活动项；关闭活动缓冲区后切到仍打开缓冲区中最近
@@ -13,9 +13,9 @@
 
 mod buffer_search;
 mod document;
-pub mod lsp_host;
 mod project_tree;
 pub mod syntax;
+pub mod view;
 
 pub use buffer_search::{
     BufferSearch, BufferSearchOptions, CurrentReplaceTarget, SearchSyncOutcome,
@@ -37,11 +37,10 @@ use zom_engine::{
 
 use crate::syntax::{LanguageId, LanguageRegistry, SyntaxEngine, SyntaxHighlightsSlot};
 
-/// workspace 自己的缓冲区标识，与 `zom_engine::BufferId` 区分。
+/// 全项目唯一的缓冲区标识。
 ///
-/// 单独建模的理由：把 engine 类型挡在 workspace 这一层；
-/// view / command / desktop 讨论「哪个缓冲区」时只 `use zom_workspace::BufferId`，不被迫拉 engine 依赖。
-/// 语义上 engine ID 是「哪个引擎对象」，workspace ID 是「宿主第几个槽位」。
+/// view / command / desktop 讨论「哪个缓冲区」时只 `use zom_workspace::BufferId`。
+/// engine 内部的 `BufferId` 已降为 `pub(crate)`——本类型是下游唯一入口。
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BufferId(u64);
 

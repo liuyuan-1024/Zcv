@@ -6,11 +6,12 @@
 //! 同时往 [`DismissScope::SearchInput`] push 一条 dismiss token。
 //! esc 走系统级 [`crate::commands::system::dismiss::DISMISS_TOP`] 弹出后重新派发 [`DISMISS`]。
 
+use crate::commands::cid;
 use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SearchOption,
+    CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
+    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SearchOption,
 };
 
 pub const ACTIVATE: &str = "search.activate";
@@ -205,8 +206,4 @@ fn run_confirm_match(
 
 fn no_args(command_id: &'static str) -> Invocation {
     (cid(command_id), CommandArgs::new())
-}
-
-fn cid(id: &'static str) -> CommandId {
-    CommandId::new(id).expect("内建命令 ID 必须非空")
 }

@@ -2,8 +2,9 @@
 //!
 //! 诊断面板暂未实现；命令先完整注册，状态栏和命令面板可以统一查询元数据。
 
+use crate::commands::cid;
 use crate::commands::emit;
-use crate::{CommandArgs, CommandId, CommandRegistry, HostEffect, Invocation, Keymap};
+use crate::{CommandArgs, CommandRegistry, HostEffect, Invocation, Keymap};
 
 /// 打开"问题"面板查看诊断列表。
 pub const SHOW_PROBLEMS: &str = "diagnostics.show_problems";
@@ -19,8 +20,4 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         "诊断",
         emit(HostEffect::ShowDiagnostics),
     );
-}
-
-fn cid(id: &'static str) -> CommandId {
-    CommandId::new(id).expect("内建命令 ID 必须非空")
 }

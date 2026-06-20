@@ -18,7 +18,7 @@ use zom_command::commands::{
     settings as settings_commands, window as window_commands,
 };
 use zom_command::{CommandArgs, CommandId, Invocation, SettingsChangeRequest};
-use zom_view::ViewId;
+use zom_workspace::view::ViewId;
 
 use crate::{app::App, theme::Theme};
 use crate::{config, focus::AppFocus};

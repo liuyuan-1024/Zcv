@@ -12,21 +12,21 @@
 //! app.dispatch_command(invocation);
 //! ```
 
+use crate::commands::cid;
 use std::collections::BTreeSet;
 
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
-    BubbleRequest, CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome,
-    CommandRegistry, DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
-    active_view_buffer_id, command_execution_failed, parse_optional_bool, reject_unknown_args,
-    required_arg,
+    BubbleRequest, CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry,
+    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, active_view_buffer_id,
+    command_execution_failed, parse_optional_bool, reject_unknown_args, required_arg,
 };
 use zom_engine::{
     Buffer, ByteOffset, CompositionSelection, EngineError, Line, Motion, MovementDirection,
     MovementUnit, Selection, SelectionSet, TextRange, TransactionMetadata, TransactionSource,
     Utf16Offset,
 };
-use zom_view::ViewId;
+use zom_workspace::view::ViewId;
 
 mod visual_movement;
 use visual_movement::move_target_selection;
@@ -110,10 +110,6 @@ pub(crate) fn text_edit_context_matches(
 // ==================================================
 // Typed builders 工具
 // ==================================================
-
-fn cid(id: &'static str) -> CommandId {
-    CommandId::new(id).expect("内建命令 ID 必须非空")
-}
 
 // ==================================================
 // Typed args + 双向转换

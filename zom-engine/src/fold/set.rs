@@ -182,7 +182,18 @@ impl FoldSet {
             return Ok(FoldToggleOutcome::Unfolded(id));
         }
 
-        let id = self.fold(snapshot, range)?;
+        // 走 fold 内部路径但跳过重复的 find_exact——上面刚查过，不存在。
+        self.validate_nesting(range)?;
+        let line_span = fold_line_span(snapshot, range)?;
+        let id = self.reserve_id()?;
+        self.ranges.push(FoldRange::with_policy(
+            id,
+            self.version,
+            range,
+            self.default_update_policy,
+            line_span,
+        ));
+        self.normalize();
         Ok(FoldToggleOutcome::Folded(id))
     }
 

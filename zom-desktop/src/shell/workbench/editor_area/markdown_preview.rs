@@ -6,8 +6,7 @@
 //!   `HighlightStyle` 映射，一个段落只生成一个 `StyledText`；
 //! - 列表 marker（`•` / `1.`）与正文分离，正文是完整文本块；
 //! - 任务列表 checkbox 渲染为 ☑/☐ 并附加颜色；
-//! - 粗体 / 斜体 / 删除线 / 链接 / 行内代码通过 `compute_highlight_style` 将 style_stack 折叠为
-//!   `HighlightStyle`，支持嵌套样式叠加。
+//! - 粗体 / 斜体 / 删除线 / 链接 / 行内代码通过 `compute_highlight_style` 将 style_stack 折叠为 `HighlightStyle`，支持嵌套样式叠加。
 
 use gpui::{
     AnyElement, FontStyle, FontWeight, HighlightStyle, Hsla, ScrollHandle, SharedString,
@@ -234,7 +233,7 @@ impl<'a> Builder<'a> {
             Event::SoftBreak => self.on_text(" "),
             Event::HardBreak => self.on_text("\n"),
             Event::Rule => self.push_block_element(horizontal_rule()),
-            Event::Html(text) | Event::InlineHtml(text) => self.on_text(text.as_ref()),
+            Event::Html(_) | Event::InlineHtml(_) => {}
             Event::FootnoteReference(text) => self.on_text(text.as_ref()),
             Event::TaskListMarker(checked) => {
                 let marker = if checked { "☑ " } else { "☐ " };

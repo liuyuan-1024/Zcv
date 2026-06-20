@@ -36,17 +36,11 @@ pub(crate) enum StyleClass {
 #[derive(Clone, Debug)]
 pub(crate) struct DecorationStyle(pub(crate) StyleClass);
 
-#[allow(dead_code)]
 pub(crate) mod priority {
     pub(crate) const SYNTAX: u16 = 0;
-    pub(crate) const FOLD: u16 = 100;
-    pub(crate) const CURRENT_LINE: u16 = 200;
     pub(crate) const SELECTION: u16 = 300;
     pub(crate) const SEARCH_NORMAL: u16 = 400;
     pub(crate) const SEARCH_CURRENT: u16 = 450;
-    pub(crate) const DIAGNOSTIC: u16 = 500;
-    pub(crate) const HOVER: u16 = 600;
-    pub(crate) const AI_PROPOSAL: u16 = 700;
 }
 
 pub(crate) fn push_selection(selection: &SelectionSet, out: &mut Vec<Decoration>) {

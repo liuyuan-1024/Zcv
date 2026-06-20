@@ -4,8 +4,8 @@
 //! 让 [`crate::text_target::EditorRouter`] 能像对待小输入框一样统一路由主编辑区。
 
 use zom_command::{CommandError, EditTarget, KeyContext};
-use zom_view::{ViewId, ViewSet, ViewportState, WrapMap};
 use zom_workspace::Workspace;
+use zom_workspace::view::{ViewId, ViewSet, ViewportState, WrapMap};
 
 use crate::editor::highlight;
 use crate::editor::text::{

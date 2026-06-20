@@ -1,62 +1,6 @@
 use zom_engine::*;
-
-fn b(value: usize) -> ByteOffset {
-    ByteOffset::new(value)
-}
-
-fn c(value: usize) -> CharOffset {
-    CharOffset::new(value)
-}
-
-fn line(value: usize) -> Line {
-    Line::new(value)
-}
-
-fn col(value: usize) -> LogicalColumn {
-    LogicalColumn::new(value)
-}
-
-fn dcol(value: usize) -> DisplayColumn {
-    DisplayColumn::new(value)
-}
-
-fn range(start: usize, end: usize) -> TextRange {
-    TextRange::new(b(start), b(end)).unwrap()
-}
-
-fn line_range(start: usize, end: usize) -> LineRange {
-    LineRange::new(line(start), line(end)).unwrap()
-}
-
-trait FullText {
-    fn full_text(&self) -> String;
-}
-
-impl FullText for Buffer {
-    fn full_text(&self) -> String {
-        self.slice_byte_range(ByteOffset::ZERO, self.len_bytes())
-            .unwrap()
-            .into_text()
-            .into_owned()
-    }
-}
-
-impl FullText for Snapshot {
-    fn full_text(&self) -> String {
-        self.slice_byte_range(ByteOffset::ZERO, self.len_bytes())
-            .unwrap()
-            .into_text()
-            .into_owned()
-    }
-}
-
-fn buffer_text(text: &impl FullText) -> String {
-    text.full_text()
-}
-
-fn buffer(text: &str) -> Buffer {
-    Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
-}
+mod common;
+use common::*;
 
 #[test]
 fn byte_char_position_utf16_roundtrip_should_preserve_explicit_coordinate_domains() {

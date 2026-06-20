@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
-use zom_view::ViewId;
+use zom_workspace::view::ViewId;
 
 use crate::editor::TextEditorSlot;
 use crate::editor::text::EditorSnapshot;

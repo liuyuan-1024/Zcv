@@ -41,7 +41,7 @@ storage/      TextStorage 抽象与 RopeyStorage
 transaction/  Edit、Transaction、Delta、ChangeSet、record
 selection/    Cursor、Selection、SelectionSet、movement、composition
 tracking/     Anchor、Mark、TrackedRange 及跟随策略
-metadata/     MetadataRange / MetadataLayer
+
 projection/   Fold 后的逻辑坐标、投影坐标和 viewport
 ```
 

@@ -11,9 +11,8 @@
 //! 栈空时 no-op：本帧没有可取消的瞬态，esc 静默不消耗。
 
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    DismissScope, KeyBinding, KeyBindingContext, KeyChord, Keymap, reject_unknown_args,
-    required_arg,
+    CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
+    KeyBinding, KeyBindingContext, KeyChord, Keymap, reject_unknown_args, required_arg,
 };
 
 pub const DISMISS_TOP: &str = "system.dismiss_top";
@@ -69,7 +68,7 @@ pub fn bind(
     let chord = KeyChord::new(chord).expect("快捷键必须非空");
     keymap.bind(KeyBinding {
         sequence: vec![chord],
-        command: cid(),
+        command: crate::commands::cid(DISMISS_TOP),
         args: DismissTopArgs { scope }.into(),
         context,
     });
@@ -81,8 +80,4 @@ fn run(ctx: &mut CommandContext<'_>, args: CommandArgs) -> Result<CommandOutcome
         ctx.queue.enqueue(id, args);
     }
     Ok(CommandOutcome::default())
-}
-
-fn cid() -> CommandId {
-    CommandId::new(DISMISS_TOP).expect("内建命令 ID 必须非空")
 }

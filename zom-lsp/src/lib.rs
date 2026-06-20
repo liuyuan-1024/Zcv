@@ -25,11 +25,10 @@
 //! zom-lsp → futures-core / async-trait  （异步抽象）
 //! ```
 //!
-//! 不依赖：tokio、网络栈、zom-command、zom-workspace、zom-view、zom-desktop、GPUI。
+//! 不依赖：tokio、网络栈、zom-command、zom-workspace、zom-desktop、GPUI。
 
 pub mod client;
 pub mod error;
-pub mod features;
 pub mod transport;
 
 pub use client::{LspClient, NotificationHandler};

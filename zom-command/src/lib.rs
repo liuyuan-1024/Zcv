@@ -3,7 +3,7 @@
 //! 键盘、命令面板、AI、菜单等离散动作把意图收敛成 `(CommandId, CommandArgs)`，经唯一命令派发路径进入执行器。
 //! 鼠标拖拽、滚轮、resize 等连续设备交互由宿主的 interaction 管线处理，可复用同一批底层编辑状态能力，但不进入 command catalog。
 //!
-//! 依赖 `zom-workspace` / `zom-view` / `zom-engine`（它要编辑的东西），
+//! 依赖 `zom-workspace` / `zom-engine`（它要编辑的东西），
 //! **不依赖** `zom-ai` 等扩展域 —— 扩展域的命令由 `zom-desktop` 组合根注册（handler 闭包捕获扩展服务）。
 //!
 //! ## 模块划分

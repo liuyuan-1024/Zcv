@@ -17,8 +17,8 @@ use std::rc::Rc;
 
 use gpui::{Context, Div, FocusHandle, IntoElement, MouseButton, Window, div, prelude::*};
 use zom_command::SearchOption;
-use zom_view::{ViewId, ViewSet};
 use zom_workspace::Workspace;
+use zom_workspace::view::{ViewId, ViewSet};
 
 use crate::app::App;
 use crate::editor::TextEditorSlot;

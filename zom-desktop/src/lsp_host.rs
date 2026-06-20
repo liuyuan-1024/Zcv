@@ -25,8 +25,8 @@ use serde_json::Value;
 use zom_engine::ByteOffset;
 use zom_lsp::{LspClient, LspError, NotificationHandler};
 
-use crate::syntax::LanguageId;
-use crate::{BufferId, Workspace};
+use zom_workspace::syntax::LanguageId;
+use zom_workspace::{BufferId, Workspace};
 
 /// 一个文件的 LSP 诊断集合。
 #[derive(Clone, Debug, Default)]
@@ -205,8 +205,9 @@ impl LspHost {
 
             let snapshot = wb.buffer().snapshot();
             let version = wb.buffer().version();
-            let spans =
-                crate::syntax::lsp_tokens::decode_semantic_tokens(&data, &legend, &snapshot);
+            let spans = zom_workspace::syntax::lsp_tokens::decode_semantic_tokens(
+                &data, &legend, &snapshot,
+            );
             slot.store_lsp(Arc::new(spans), version);
         }
     }

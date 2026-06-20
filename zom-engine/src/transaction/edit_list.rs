@@ -72,7 +72,8 @@ fn share_repeated_replacements(edits: &mut [Edit]) {
         return;
     }
 
-    let mut interned: HashMap<Arc<str>, ()> = HashMap::with_capacity(edits.len());
+    // &str → Arc<str>：按值查找已有 replacement，命中则共享 Arc，未命中则登记当前 Arc。
+    let mut interned: HashMap<&str, Arc<str>> = HashMap::with_capacity(edits.len());
 
     for edit in edits {
         if edit.replacement().is_empty() {
@@ -80,14 +81,10 @@ fn share_repeated_replacements(edits: &mut [Edit]) {
             continue;
         }
 
-        let shared = interned
-            .get_key_value(edit.replacement())
-            .map(|(replacement, ())| Arc::clone(replacement));
-
-        if let Some(shared) = shared {
-            edit.share_replacement_with(shared);
+        if let Some(canonical) = interned.get(edit.replacement()) {
+            edit.share_replacement_with(Arc::clone(canonical));
         } else {
-            interned.insert(Arc::clone(edit.replacement_arc()), ());
+            interned.insert(edit.replacement(), Arc::clone(edit.replacement_arc()));
         }
     }
 }

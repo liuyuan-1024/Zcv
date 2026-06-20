@@ -395,31 +395,7 @@ _ _ _
 
 ---
 
-## 13. HTML 块与行内 HTML
-
-<div class="note">
-  <p>这是一个 HTML 块。</p>
-  <strong>HTML bold</strong>
-</div>
-
-Markdown 中的 <span class="inline">inline HTML</span> 示例。
-
-<!-- 这是 HTML 注释，测试注释高亮 -->
-
-<script>
-const unsafe = "<strong>html inside script</strong>";
-console.log(unsafe);
-</script>
-
-<style>
-.markdown-preview {
-  line-height: 1.6;
-}
-</style>
-
----
-
-## 14. 数学公式
+## 13. 数学公式
 
 行内公式：$E = mc^2$
 
@@ -442,7 +418,7 @@ $$
 
 ---
 
-## 15. 脚注
+## 14. 脚注
 
 这里有一个脚注引用。[^note]
 
@@ -460,7 +436,7 @@ $$
 
 ---
 
-## 16. 定义列表（扩展语法）
+## 15. 定义列表（扩展语法）
 
 Term 1
 : Definition 1
@@ -471,7 +447,7 @@ Term 2
 
 ---
 
-## 17. 删除、插入、标记扩展
+## 16. 删除、插入、标记扩展
 
 ++Inserted text++  
 ==Marked text==  
@@ -480,7 +456,7 @@ Term 2
 
 ---
 
-## 18. Emoji 与短代码
+## 17. Emoji 与短代码
 
 😀 😃 😄 🚀 🧪 🧵
 
@@ -488,7 +464,7 @@ Term 2
 
 ---
 
-## 19. Mermaid 图
+## 18. Mermaid 图
 
 ```mermaid
 flowchart TD
@@ -511,7 +487,7 @@ sequenceDiagram
 
 ---
 
-## 20. TOML / YAML / INI
+## 19. TOML / YAML / INI
 
 ```toml
 [package]
@@ -539,7 +515,7 @@ line_numbers=true
 
 ---
 
-## 21. Diff
+## 20. Diff
 
 ```diff
 - old line
@@ -552,7 +528,7 @@ line_numbers=true
 
 ---
 
-## 22. 正则表达式测试
+## 21. 正则表达式测试
 
 ```regex
 ^(#{1,6})[ \t]+(.+?)\s*#*$
@@ -562,7 +538,7 @@ line_numbers=true
 
 ---
 
-## 23. Unicode 与字节边界测试
+## 22. Unicode 与字节边界测试
 
 中文：写法风格  
 日文：こんにちは世界  
@@ -583,7 +559,7 @@ emoji：👨‍👩‍👧‍👦 🧑🏽‍💻 🇨🇳 🇺🇸
 
 ---
 
-## 24. 嵌套与歧义测试
+## 23. 嵌套与歧义测试
 
 ***bold italic or thematic break?***
 
@@ -601,7 +577,7 @@ emoji：👨‍👩‍👧‍👦 🧑🏽‍💻 🇨🇳 🇺🇸
 
 ---
 
-## 25. 空行、空白与边界
+## 24. 空行、空白与边界
 
 下面是多个空行：
 
@@ -620,7 +596,7 @@ emoji：👨‍👩‍👧‍👦 🧑🏽‍💻 🇨🇳 🇺🇸
 
 ---
 
-## 26. 自定义容器（部分扩展支持）
+## 25. 自定义容器（部分扩展支持）
 
 ::: note
 这是 note 容器。
@@ -640,7 +616,7 @@ console.log("inside details container");
 
 ---
 
-## 27. MDX / JSX 风格语法
+## 26. MDX / JSX 风格语法
 
 <MyComponent title="Hello Markdown" count={3}>
   <Child enabled />
@@ -654,7 +630,7 @@ export const metadata = {
 
 ---
 
-## 28. 链接引用与脚注靠近文件末尾
+## 27. 链接引用与脚注靠近文件末尾
 
 [near-end-ref]: https://example.com/end "End Reference"
 
@@ -666,7 +642,7 @@ export const metadata = {
 
 ---
 
-## 29. 故意复杂的一段
+## 28. 故意复杂的一段
 
 > 1. 引用中的有序列表
 >    - 子项包含 [链接](https://example.com)、`代码`、**加粗**
@@ -684,6 +660,6 @@ export const metadata = {
 
 ---
 
-## 30. 文件结束测试
+## 29. 文件结束测试
 
 最后一行没有特殊语法，但用于测试 EOF 状态。

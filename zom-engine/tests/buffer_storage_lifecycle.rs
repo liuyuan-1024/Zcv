@@ -1,62 +1,6 @@
 use zom_engine::*;
-
-fn b(value: usize) -> ByteOffset {
-    ByteOffset::new(value)
-}
-
-fn c(value: usize) -> CharOffset {
-    CharOffset::new(value)
-}
-
-fn line(value: usize) -> Line {
-    Line::new(value)
-}
-
-fn range(start: usize, end: usize) -> TextRange {
-    TextRange::new(b(start), b(end)).unwrap()
-}
-
-fn buffer(text: &str) -> Buffer {
-    Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
-}
-
-fn loaded_buffer(
-    origin: BufferOrigin,
-    bytes: impl AsRef<[u8]>,
-    config: BufferConfig,
-) -> Result<Buffer, BufferLoadError> {
-    Buffer::from_reader(
-        origin,
-        std::io::Cursor::new(bytes.as_ref().to_vec()),
-        config,
-    )
-}
-
-trait FullText {
-    fn full_text(&self) -> String;
-}
-
-impl FullText for Buffer {
-    fn full_text(&self) -> String {
-        self.slice_byte_range(ByteOffset::ZERO, self.len_bytes())
-            .unwrap()
-            .into_text()
-            .into_owned()
-    }
-}
-
-impl FullText for Snapshot {
-    fn full_text(&self) -> String {
-        self.slice_byte_range(ByteOffset::ZERO, self.len_bytes())
-            .unwrap()
-            .into_text()
-            .into_owned()
-    }
-}
-
-fn buffer_text(text: &impl FullText) -> String {
-    text.full_text()
-}
+mod common;
+use common::*;
 
 #[test]
 fn create_edit_delete_replace_should_update_text_version_dirty_and_line_index() {

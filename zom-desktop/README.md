@@ -26,10 +26,10 @@
 ## 依赖
 
 ```text
-zom-desktop → zom-engine / zom-workspace / zom-view / zom-command
+zom-desktop → zom-engine / zom-workspace / zom-command
 ```
 
-依赖全部宿主 crate 中的 `zom-engine` / `zom-workspace` / `zom-view` / `zom-command`。
+依赖全部宿主 crate 中的 `zom-engine` / `zom-workspace` / `zom-command`。
 
 `gpui` 已在 `shell` 落地，用于窗口启动、资源加载和基础外壳渲染。async 运行时仍遵循桌面端设计手册约定，优先使用 GPUI 执行器，不预拉独立 runtime。
 

@@ -1,32 +1,6 @@
 use zom_engine::*;
-
-fn b(value: usize) -> ByteOffset {
-    ByteOffset::new(value)
-}
-
-fn line(value: usize) -> Line {
-    Line::new(value)
-}
-
-fn col(value: usize) -> LogicalColumn {
-    LogicalColumn::new(value)
-}
-
-fn range(start: usize, end: usize) -> TextRange {
-    TextRange::new(b(start), b(end)).unwrap()
-}
-
-fn line_range(start: usize, end: usize) -> LineRange {
-    LineRange::new(line(start), line(end)).unwrap()
-}
-
-fn projected(value: usize) -> ProjectedLineIndex {
-    ProjectedLineIndex::new(value)
-}
-
-fn buffer(text: &str) -> Buffer {
-    Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
-}
+mod common;
+use common::*;
 
 #[test]
 fn fold_set_should_reject_empty_and_partial_overlap_while_allowing_exact_toggle() {

@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use gpui::ScrollHandle;
 use zom_engine::{BufferVersion, ByteOffset};
-use zom_view::{View, ViewId, ViewKind, ViewSet};
 use zom_workspace::syntax::SyntaxEngine;
+use zom_workspace::view::{View, ViewId, ViewKind, ViewSet};
 use zom_workspace::{Workspace, WorkspaceBuffer};
 
 #[derive(Clone, Debug)]

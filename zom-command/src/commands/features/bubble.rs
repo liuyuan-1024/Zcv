@@ -3,9 +3,10 @@
 //! 气泡不属于编辑器，但它需要走命令管线来写剪贴板。
 //! 这里只声明 id、builder 和 handler，handler 直接借用 `CommandContext::clipboard` 的 `ClipboardPort` 写入，不依赖编辑器选区。
 
+use crate::commands::cid;
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    Invocation, Keymap, reject_unknown_args, required_arg,
+    CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, Invocation, Keymap,
+    reject_unknown_args, required_arg,
 };
 
 pub const COPY: &str = "bubble.copy";
@@ -29,10 +30,6 @@ impl TryFrom<CommandArgs> for CopyArgs {
             text: required_arg(&args, "text")?,
         })
     }
-}
-
-fn cid(id: &'static str) -> CommandId {
-    CommandId::new(id).expect("内建命令 ID 必须非空")
 }
 
 pub fn copy(text: impl Into<String>) -> Invocation {

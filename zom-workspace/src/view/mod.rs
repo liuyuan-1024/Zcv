@@ -1,26 +1,12 @@
-//! 编辑面状态层。
-//!
-//! 持有「我怎么看一个缓冲区（buffer）」的状态。
-//! 包括看哪个缓冲区、滚到哪、本视图的光标与折叠。
-//! 判据：同一文件开两个分屏会不同的状态归这里。
-//! 属于文件本身的状态归 `zom-workspace`。
-//!
-//! `SelectionSet` / `FoldSet` 的实例归视图层持有。
-//! `zom-engine` 提供类型、光标移动与编辑后状态转移算法。
-//!
-//! 视图分两类，统一活在 [`ViewSet`] 的同一 id 空间下：
-//! - [`EditView`]：对 buffer 的可编辑视角；持选区、视口、wrap_map、折叠等。
-//! - [`PreviewView`]：对 buffer 的只读渲染视角（如 Markdown 预览）；只持 buffer id。
+//! 编辑面状态层：视图模型、滚动、选区、折叠、软换行。
 
+use crate::BufferId;
 use std::collections::BTreeMap;
-
 use zom_engine::{
     Affinity, Buffer, BufferVersion, ByteOffset, DeltaEvent, FoldSet, Line, SelectionSet,
 };
-use zom_workspace::BufferId;
 
 mod wrap;
-
 pub use wrap::{VisualAffinity, VisualPosition, VisualRowCount, WrapMap, compute_segments};
 
 const MANUAL_SCROLL_MAX_TRAILING_BLANK_DENOMINATOR: u64 = 3;
@@ -86,7 +72,7 @@ impl Default for ViewportState {
 ///
 /// 调用方表达为什么要显露目标位置。
 /// 渲染端再翻译成具体滚动策略：位置、是否仅在不可见时触发、是否伴随高亮等。
-/// 这层抽象让 `zom-view` 不绑定具体视觉风格。
+/// 这层抽象让视图层不绑定具体视觉风格。
 /// 调整全局风格时只需要改渲染端映射。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RevealKind {
@@ -116,12 +102,6 @@ pub struct RevealRequest {
 /// 等渲染端回写新的 [`WrapMap`] 时再用新视觉模型恢复 `top_line/top_subrow`。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ViewportEditAnchor {
-    top_visual_byte: ByteOffset,
-    top_subrow: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PendingViewportEditAnchor {
     top_visual_byte: ByteOffset,
     top_subrow: u64,
 }
@@ -223,7 +203,7 @@ pub struct EditView {
     /// 当 selection head 变化时，下一次 settle 会恢复 caret edge-scroll。
     manual_scroll_anchor: Option<ByteOffset>,
     /// 文本编辑后等待新 wrap map 落地的视口锚点。
-    pending_edit_anchor: Option<PendingViewportEditAnchor>,
+    pending_edit_anchor: Option<ViewportEditAnchor>,
 }
 
 /// `EditView::settle_viewport_y` 的产出：已就位的视口与本帧是否消费了显露请求。
@@ -372,7 +352,7 @@ impl EditView {
         }
 
         let Some(mut pending) = anchor
-            .map(|anchor| PendingViewportEditAnchor {
+            .map(|anchor| ViewportEditAnchor {
                 top_visual_byte: anchor.top_visual_byte,
                 top_subrow: anchor.top_subrow,
             })
@@ -747,7 +727,7 @@ mod settle_tests {
 
     /// `ViewSet::open_edit_view` 需要一个 `BufferId`；用工作区真实构造一个最简的。
     fn views_first_buffer_id() -> BufferId {
-        let mut ws = zom_workspace::Workspace::new();
+        let mut ws = crate::Workspace::new();
         ws.open_text(None, "".to_string()).unwrap()
     }
 

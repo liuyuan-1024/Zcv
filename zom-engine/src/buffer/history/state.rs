@@ -31,7 +31,6 @@ pub(in crate::buffer) struct HistoryState {
     roots: Vec<HistoryNodeId>,
     current: Option<HistoryNodeId>,
     next_id: u64,
-    next_sequence: u64,
 }
 
 impl HistoryState {
@@ -98,20 +97,12 @@ impl HistoryState {
         entry: HistoryEntry,
     ) -> EngineResult<HistoryNodeId> {
         let id = HistoryNodeId::new(self.next_id);
+        let sequence = self.next_id;
         let next_id = self
             .next_id
             .checked_add(1)
             .ok_or(EngineError::HistoryIdExhausted)?;
-        let sequence = self.next_sequence;
-        let next_sequence =
-            self.next_sequence
-                .checked_add(1)
-                .ok_or_else(|| EngineError::EngineBug {
-                    location: "HistoryState::push_child",
-                    detail: "历史节点序号溢出".to_string(),
-                })?;
         self.next_id = next_id;
-        self.next_sequence = next_sequence;
 
         let parent = self.current;
         let node = HistoryNode::new(id, sequence, parent, entry);

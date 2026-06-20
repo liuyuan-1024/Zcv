@@ -8161,7 +8161,7 @@ dependencies = [
 
 [[package]]
 name = "zom-bench"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "tree-sitter",
  "tree-sitter-rust",
@@ -8171,19 +8171,19 @@ dependencies = [
 
 [[package]]
 name = "zom-command"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "zom-engine",
- "zom-view",
  "zom-workspace",
 ]
 
 [[package]]
 name = "zom-desktop"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "cocoa 0.26.0",
  "gpui",
+ "lsp-types",
  "pulldown-cmark",
  "raw-window-handle",
  "resvg",
@@ -8193,13 +8193,13 @@ dependencies = [
  "windows 0.57.0",
  "zom-command",
  "zom-engine",
- "zom-view",
+ "zom-lsp",
  "zom-workspace",
 ]
 
 [[package]]
 name = "zom-engine"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "criterion",
  "regex",
@@ -8220,16 +8220,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "zom-view"
-version = "0.6.3"
-dependencies = [
- "zom-engine",
- "zom-workspace",
-]
-
-[[package]]
 name = "zom-workspace"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "ignore",
  "lsp-types",
@@ -8248,7 +8240,6 @@ dependencies = [
  "tree-sitter-typescript",
  "tree-sitter-yaml",
  "zom-engine",
- "zom-lsp",
 ]
 
 [[package]]

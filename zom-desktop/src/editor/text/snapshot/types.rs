@@ -1,7 +1,7 @@
 //! 编辑器渲染快照类型。
 
 use zom_engine::SelectionSet;
-use zom_view::{RevealKind, VisualPosition};
+use zom_workspace::view::{RevealKind, VisualPosition};
 
 use crate::editor::highlight::Decoration;
 
@@ -58,7 +58,7 @@ pub(crate) struct EditorSnapshot {
     pub(crate) decorations: Vec<Decoration>,
 }
 
-/// [`zom_view::RevealRequest`] 的渲染端镜像 —— 把 `ByteOffset` 换成 `usize`，
+/// [`zom_workspace::view::RevealRequest`] 的渲染端镜像 —— 把 `ByteOffset` 换成 `usize`，
 /// 便于元素侧直接用，不再跨 crate 引 engine 类型。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RevealHint {

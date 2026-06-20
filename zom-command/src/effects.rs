@@ -195,12 +195,12 @@ pub enum HostEffect {
     // ===== Editor Tabs =====
     /// 把活动 view 切到指定 view（编辑或预览均可）。
     /// 宿主侧调 `WorkspaceSession::set_active_view`。
-    EditorSelectTab(zom_view::ViewId),
+    EditorSelectTab(zom_workspace::view::ViewId),
     /// 切换到相邻 tab。`true` = 向右（Next），`false` = 向左（Previous）。
     /// 宿主持有完整 session，按 ViewSet 顺序循环。
     EditorSelectAdjacentTab(bool),
     /// 关闭指定 view。
-    EditorCloseTab(zom_view::ViewId),
+    EditorCloseTab(zom_workspace::view::ViewId),
     /// 打开（或跳转到）指定 buffer 的 Markdown 预览视图。
     /// 同一 buffer 至多一条预览视图——已存在则直接激活，不重复创建。
     /// 宿主侧调 `WorkspaceSession::open_preview`。

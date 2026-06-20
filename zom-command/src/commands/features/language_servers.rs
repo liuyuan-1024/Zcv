@@ -4,10 +4,11 @@
 //!
 //! esc 走系统级 [`crate::commands::system::dismiss::DISMISS_TOP`]（scope=LanguageServers）—— [`OPEN`] 推一条 dismiss token，esc 弹出后重新派发 [`DISMISS`]。
 
+use crate::commands::cid;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
+    CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
+    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
 };
 
 pub const OPEN: &str = "language_server.open";
@@ -62,8 +63,4 @@ fn run_dismiss(
     context.dismiss.clear(DismissScope::LanguageServers);
     context.effects.push(HostEffect::DismissSurface);
     Ok(CommandOutcome::default())
-}
-
-fn cid(id: &'static str) -> CommandId {
-    CommandId::new(id).expect("内建命令 ID 必须非空")
 }

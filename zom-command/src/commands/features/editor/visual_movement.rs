@@ -10,7 +10,7 @@
 //! 本模块仅保留处理 wrap_map 未就绪的极端情况。
 
 use zom_engine::{Motion, MovementDirection, MovementUnit, Selection, SelectionSet};
-use zom_view::{VisualAffinity, VisualPosition, WrapMap};
+use zom_workspace::view::{VisualAffinity, VisualPosition, WrapMap};
 
 use crate::{CommandError, command_execution_failed};
 

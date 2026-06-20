@@ -18,7 +18,7 @@ use zom_engine::{
     Buffer, BufferConfig, ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
     SelectionSet, TransactionMergePolicy,
 };
-use zom_view::{ViewId, ViewSet, VisualAffinity, VisualPosition};
+use zom_workspace::view::{ViewId, ViewSet, VisualAffinity, VisualPosition};
 use zom_workspace::{BufferId, Workspace};
 
 mod support;

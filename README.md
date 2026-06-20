@@ -94,7 +94,7 @@ zom-desktop  ─┐
               │
 zom-command  ─┤  命令派发脊柱 + 键位模型
 zom-workspace┤  缓冲区与文件生命周期
-zom-view     ─┤  视图状态：滚动、selection、fold
+view          ─┤  视图状态：滚动、selection、fold（zom_workspace::view）
 zom-ai       ─┤  AI 协议层（消息 / 工具 / 流式）
               │
 zom-engine   ─┘  纯文本编辑引擎底座
@@ -104,12 +104,12 @@ zom-engine   ─┘  纯文本编辑引擎底座
 
 - 每个 crate 只通过 public API 连接，跨 crate 不依赖私有实现。
 - `zom-engine` 不知道 UI、命令、AI 的存在，因此可独立演进并被复用。
-- 「同一文件开两个分屏会不同的状态」归 `zom-view`，「不会不同的状态」归 `zom-workspace`。
+- 「同一文件开两个分屏会不同的状态」归 `view` 模块，「不会不同的状态」归 `zom-workspace`。
 - 历史不归命令执行器 —— `editor.undo` 只是一条命令，真实事务由引擎记录。
 
 长期架构原则见 [`架构原则.md`](架构原则.md)。
 
-各 crate 边界详见其 README：[engine](zom-engine/README.md) · [workspace](zom-workspace/README.md) · [view](zom-view/README.md) · [command](zom-command/README.md) · [ai](zom-ai/README.md) · [desktop](zom-desktop/README.md)。
+各 crate 边界详见其 README：[engine](zom-engine/README.md) · [workspace](zom-workspace/README.md) · [command](zom-command/README.md) · [ai](zom-ai/README.md) · [desktop](zom-desktop/README.md)。
 
 ## 路线图
 

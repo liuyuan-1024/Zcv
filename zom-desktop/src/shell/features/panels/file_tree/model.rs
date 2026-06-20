@@ -184,7 +184,7 @@ mod tests {
     };
     use crate::workspace_session::WorkspaceSession;
     use std::fs::{File, create_dir_all};
-    use zom_view::{ViewId, ViewSet};
+    use zom_workspace::view::{ViewId, ViewSet};
     use zom_workspace::{BufferId, Workspace};
 
     /// 测试桥：跑模型动作 → 翻 outcome 到 session，得到 activation。

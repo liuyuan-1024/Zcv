@@ -49,8 +49,7 @@ tests/        command 契约测试
 
 ## 相关文档
 
-- [`docs/命令与快捷键.md`](docs/命令与快捷键.md)：完整设计文档 —— 模块边界、数据模型、catalog 模式、HostEffect 解耦、键位约定、加新命令的步骤、反例清单。先看这一份。
-- `../AGENTS_GLOBAL.md`、`../AGENTS_PROJECT.md`：workspace 全局规则与项目规则。
+- [`docs/命令与快捷键.md`](docs/命令与快捷键.md)：完整设计文档 —— 模块边界、数据模型、catalog 模式、HostEffect 解耦、键位约定、加新命令的步骤、反例清单。
 
 ## 文档维护
 

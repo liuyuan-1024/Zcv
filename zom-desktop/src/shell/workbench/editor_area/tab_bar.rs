@@ -25,7 +25,7 @@ pub(crate) fn render(
     on_close_tab: &Rc<dyn Fn(ViewId) -> CommandBinding>,
 ) -> Stateful<gpui::Div> {
     // 把活动标签滚进可视区——scroll_to_item 记下目标，实际滚动在 prepaint 完成。
-    if let Some(active) = state.tabs.iter().position(|tab| tab.is_active) {
+    if let Some(active) = state.tabs.iter().position(|tab| tab.is_active()) {
         scroll.scroll_to_item(active);
     }
 
@@ -52,18 +52,19 @@ fn render_tab(
     on_item_click: &TabCallback,
     on_close_tab: &Rc<dyn Fn(ViewId) -> CommandBinding>,
 ) -> Stateful<gpui::Div> {
-    // 活动标签背景与编辑器正文一致，标签与内容视觉连成一体；
-    // 非活动标签透明底，沿用标签栏自身的 s04 底色。
-    let (bg, text) = if tab.is_active {
+    let (bg, text) = if tab.is_active() {
         (color::current().gray.s01, color::current().gray.s09)
     } else {
         (gpui::rgba(0), color::current().gray.s09)
     };
 
-    // 每个标签一个唯一 group：让关闭 glyph 只在悬停「本标签」时显现，而不会因为同名 group 连带点亮其它标签。
     let hover_group = SharedString::from(format!("editor-tab-{}", tab.element_key()));
 
-    let view_id = tab.view_id;
+    let view_id = tab.view_id();
+    let dirty = match tab {
+        EditorTab::Edit(t) => t.dirty,
+        EditorTab::Preview(_) => false,
+    };
     let click = Rc::clone(on_item_click);
     div()
         .id(("editor-tab", tab.element_key() as usize))
@@ -82,9 +83,12 @@ fn render_tab(
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             click(view_id, window, cx);
         })
-        // 修改标志放文字左侧；标志槽常驻，dirty 切换时文字不跳。
-        .child(dirty_marker(tab.dirty, text))
-        .child(div().whitespace_nowrap().child(tab.title.clone()))
+        .child(dirty_marker(dirty, text))
+        .child(
+            div()
+                .whitespace_nowrap()
+                .child(SharedString::from(tab.title().to_string())),
+        )
         .child(close_glyph(tab, hover_group, on_close_tab))
 }
 
@@ -96,7 +100,7 @@ fn close_glyph(
     hover_group: SharedString,
     on_close_tab: &Rc<dyn Fn(ViewId) -> CommandBinding>,
 ) -> AnyElement {
-    let binding = on_close_tab(tab.view_id);
+    let binding = on_close_tab(tab.view_id());
     let glyph = Glyph::icon(
         ("editor-tab-close", tab.element_key() as usize),
         "icons/actions/close.svg",

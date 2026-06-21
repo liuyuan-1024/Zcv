@@ -55,7 +55,7 @@ pub(crate) fn render(
         ));
     }
     // 文件状态栏：仅在有活动文件时出现；搜索打开时由它在内部追加搜索第二行。
-    if let Some(active) = editor_state.tabs.iter().find(|tab| tab.is_active) {
+    if let Some(active) = editor_state.tabs.iter().find(|tab| tab.is_active()) {
         column = column.child(file_status_bar::render(
             active,
             &key_request,

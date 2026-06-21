@@ -1,6 +1,6 @@
-# AGENTS_GLOBAL.md
+# CODEX.md
 
-> 本文记录全局 agent 工作约定、验证命令和代码风格。项目独有结构与边界见 `project.md`。
+> 本文记录全局 agent 工作约定、验证命令和代码风格。项目结构与边界见 `agents.md`。
 
 ## 称呼
 

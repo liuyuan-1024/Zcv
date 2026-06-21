@@ -31,7 +31,7 @@ Setext Heading 1
 Setext Heading 2
 ----------------
 
-### 标题中包含 `inline code`、**加粗**、*斜体* 和 [链接](https://example.com)
+### 标题中包含 `inline code`、**加粗**、*斜体 hello* 和 [链接](https://example.com)
 
 ---
 

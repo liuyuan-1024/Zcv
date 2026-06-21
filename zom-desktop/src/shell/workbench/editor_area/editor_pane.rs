@@ -3,15 +3,15 @@
 //! 外壳（键盘焦点宿主、背景 / 圆角 / 内边距、无文件时的空态）属于工作台编辑区，不属于编辑器本身：
 //! 焦点与按键路由随交互面（`KeySurface::Editor`）而定，编辑器只是被嵌进来的那个子元素。
 
+use std::path::Path;
 use std::rc::Rc;
 
 use gpui::{AnyElement, Div, FocusHandle, MouseButton, div, prelude::*};
 
 use zom_workspace::syntax::SyntaxEngine;
-use zom_workspace::view::ViewKind;
 
 use crate::editor::TextEditorSlot;
-use crate::editor_state::EditorState;
+use crate::editor_state::{EditorState, EditorTab};
 use crate::host_intent::KeyRequest;
 use crate::shell::{FocusRequest, FocusRequestTarget, normalized_chord};
 use crate::theme::{color, radius, space, typography};
@@ -30,17 +30,18 @@ pub(super) fn render(
 
     // 无活动文件时给一句提示，而不是渲染一个空编辑器 —— 与文件树未打开项目时的占位口径一致。
     // 焦点宿主（track_focus + on_key_down）两态都挂。
-    let body: AnyElement = match state.tabs.iter().find(|t| t.is_active) {
+    let body: AnyElement = match state.tabs.iter().find(|t| t.is_active()) {
         None => empty_message("尚未打开文件").into_any_element(),
-        Some(tab) if matches!(tab.kind, ViewKind::Preview) => {
-            let scroll_handle = state.preview_scroll_handles.get(&tab.view_id).cloned();
+        Some(EditorTab::Preview(p)) => {
+            let scroll_handle = state.preview_scroll_handles.get(&p.view_id).cloned();
             markdown_preview_surface(
-                tab.preview_text.as_deref().unwrap_or(""),
+                &p.preview_text,
                 scroll_handle,
                 state.syntax_engine.as_deref(),
+                p.buffer_path.as_deref(),
             )
         }
-        _ => editor_surface(&editor_slot).into_any_element(),
+        Some(EditorTab::Edit(_)) => editor_surface(&editor_slot).into_any_element(),
     };
 
     div()
@@ -104,6 +105,7 @@ fn markdown_preview_surface(
     source: &str,
     scroll_handle: Option<gpui::ScrollHandle>,
     syntax_engine: Option<&SyntaxEngine>,
+    base_dir: Option<&Path>,
 ) -> AnyElement {
-    markdown_preview::render(source, scroll_handle, syntax_engine).into_any_element()
+    markdown_preview::render(source, scroll_handle, syntax_engine, base_dir).into_any_element()
 }

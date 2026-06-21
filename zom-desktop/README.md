@@ -51,10 +51,6 @@ src/shell/workbench/         顶栏、底栏、dock、panel host、编辑区布�
 assets/                      内置图标、字体与默认主题
 ```
 
-## 相关文档
-
-- `../AGENTS_GLOBAL.md`、`../AGENTS_PROJECT.md`：workspace 全局规则与项目规则。
-
 ## 文档维护
 
 本 README 只维护稳定边界、核心职责、依赖关系与目录概览。

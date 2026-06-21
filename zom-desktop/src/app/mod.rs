@@ -752,7 +752,7 @@ mod tests {
         state
             .tabs
             .iter()
-            .find(|tab| tab.is_active)
+            .find(|tab| tab.is_active())
             .expect("应有活动标签")
     }
 
@@ -962,7 +962,10 @@ mod tests {
 
         let state = editor_state(&app);
 
-        assert!(active_tab(&state).dirty);
+        assert!(matches!(
+            active_tab(&state),
+            EditorTab::Edit(t) if t.dirty
+        ));
     }
 
     #[test]
@@ -1001,13 +1004,14 @@ mod tests {
         let state = editor_state(&app);
         let active = active_tab(&state);
         assert_eq!(
-            active.title,
+            active.title(),
             path.file_name()
                 .expect("临时配置路径应有文件名")
                 .to_string_lossy()
                 .into_owned()
+                .as_str()
         );
-        assert_eq!(active.language, "TOML");
+        assert!(matches!(active, EditorTab::Edit(t) if t.language == "TOML"));
 
         let _ = std::fs::remove_file(path);
     }
@@ -1482,21 +1486,21 @@ mod tests {
         // 两个标签：README.md 先开、lib.rs 后开且为活动标签。
         let state = editor_state(&app);
         assert_eq!(state.tabs.len(), 2);
-        assert_eq!(active_tab(&state).title, "lib.rs");
-        assert!(state.tabs[1].is_active);
+        assert_eq!(active_tab(&state).title(), "lib.rs");
+        assert!(state.tabs[1].is_active());
 
         // 切到上一个标签 → README.md。
         app.dispatch_command(editor::select_tab(editor::SelectTabTarget::Previous))
             .unwrap();
         let state = editor_state(&app);
-        assert_eq!(active_tab(&state).title, "README.md");
-        assert!(state.tabs[0].is_active);
+        assert_eq!(active_tab(&state).title(), "README.md");
+        assert!(state.tabs[0].is_active());
 
         // 关闭当前标签 → 只剩 lib.rs。
         app.dispatch_command(editor::close_active_tab()).unwrap();
         let state = editor_state(&app);
         assert_eq!(state.tabs.len(), 1);
-        assert_eq!(active_tab(&state).title, "lib.rs");
+        assert_eq!(active_tab(&state).title(), "lib.rs");
     }
 
     /// EditorTargetRegistry 集成契约：runtime 注册进来的 owner 能被 router

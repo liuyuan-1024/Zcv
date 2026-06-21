@@ -46,10 +46,6 @@ tests/                    workspace 生命周期契约测试
 
 核心类型仍由 `src/lib.rs` 对外汇总；搜索、文件树和语法高亮按能力域拆分到独立模块。
 
-## 相关文档
-
-- `../AGENTS_GLOBAL.md`、`../AGENTS_PROJECT.md`：workspace 全局规则与项目规则。
-
 ## 文档维护
 
 本 README 只维护稳定边界、核心类型、依赖关系与目录概览。

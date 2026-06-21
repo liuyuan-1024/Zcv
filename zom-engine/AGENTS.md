@@ -7,8 +7,8 @@
 开发、重构、测试生成或代码审查前，先读：
 
 ```text
-../AGENTS_GLOBAL.md
-../AGENTS_PROJECT.md
+../CLAUDE.md
+../agents.md
 AGENTS.md
 README.md
 docs/引擎能力.md
@@ -21,8 +21,8 @@ docs/STATUS.md（如果存在）
 
 ```text
 1. 用户本轮明确要求
-2. ../AGENTS_GLOBAL.md workspace 全局规则
-3. ../AGENTS_PROJECT.md workspace 项目规则
+2. ../CLAUDE.md workspace 全局规则
+3. ../agents.md workspace 项目规则
 4. AGENTS.md zom-engine 长期规则
 5. docs/STATUS.md 当前阶段状态
 6. docs/引擎能力.md 能力规划
@@ -213,7 +213,7 @@ TextRange::new(start, end).expect("内部不变量: start <= end")
 
 ## 8. 验证要求
 
-测试组织统一遵循 `../AGENTS_PROJECT.md` 的 workspace 测试策略；`zom-engine` 不另设 crate 专属测试策略。
+测试组织统一遵循 workspace 测试策略（见 `../agents.md`）；`zom-engine` 不另设 crate 专属测试策略。
 
 修改后通常运行：
 
@@ -250,7 +250,7 @@ cargo test
 ```text
 阶段状态、结构概览、建议命令 -> docs/STATUS.md
 能力边界变化 -> docs/引擎能力.md
-测试放置策略、测试目录职责变化 -> ../AGENTS_PROJECT.md
+测试放置策略、测试目录职责变化 -> ../agents.md
 AI 协作规范变化 -> AGENTS.md
 项目概览变化 -> README.md
 public API 契约变化 -> 对应测试和必要文档同步更新

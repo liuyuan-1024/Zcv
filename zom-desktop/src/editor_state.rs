@@ -5,38 +5,93 @@
 //!
 //! 一条 view = 一条 tab：直接迭代 [`ViewSet`]，按 view 的 kind 决定 tab 的显示形式（编辑视图正常显示文件名 + dirty 标记；预览视图加 " · 预览" 后缀且不显示 dirty）。
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
-use zom_engine::ByteOffset;
-use zom_view::{View, ViewId, ViewKind, ViewSet};
+use gpui::ScrollHandle;
+use zom_engine::{BufferVersion, ByteOffset};
+use zom_workspace::syntax::SyntaxEngine;
+use zom_workspace::view::{View, ViewId, ViewKind, ViewSet};
 use zom_workspace::{Workspace, WorkspaceBuffer};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct EditorState {
     pub(crate) tabs: Vec<EditorTab>,
+    /// 预览文本缓存：view_id → (buffer_version, cached_text)。
+    /// 跨帧复用，避免每帧全量重读 buffer。
+    pub(crate) preview_cache: BTreeMap<ViewId, (BufferVersion, String)>,
+    /// 预览滚动句柄：view_id → ScrollHandle。
+    /// 跨帧 / 跨 tab 切换复用，保持预览滚动位置。
+    pub(crate) preview_scroll_handles: BTreeMap<ViewId, ScrollHandle>,
+    /// 共享语法引擎：供 Markdown 预览代码块高亮使用。
+    /// `None` 仅在无 workspace 时（单元测试 / 零文件启动）。
+    pub(crate) syntax_engine: Option<Rc<SyntaxEngine>>,
+}
+
+impl Default for EditorState {
+    fn default() -> Self {
+        Self {
+            tabs: Vec::new(),
+            preview_cache: BTreeMap::new(),
+            preview_scroll_handles: BTreeMap::new(),
+            syntax_engine: None,
+        }
+    }
+}
+
+// ── Tab 类型 ──
+
+#[derive(Clone, Debug)]
+pub(crate) enum EditorTab {
+    Edit(EditTab),
+    Preview(PreviewTab),
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct EditorTab {
-    /// tab 的稳定身份：背后那条 view 的 id。
+pub(crate) struct EditTab {
     pub(crate) view_id: ViewId,
-    pub(crate) kind: ViewKind,
     pub(crate) title: String,
+    pub(crate) is_active: bool,
     pub(crate) language: String,
     pub(crate) dirty: bool,
-    pub(crate) is_active: bool,
-    /// 项目根的相对显示路径（统一正斜杠）。
-    /// 无项目根或文件不在项目内时为 None。
     pub(crate) relative_path: Option<String>,
-    /// 预览 tab 的整段源码文本——只在 `kind == Preview` 时填充，供 markdown 渲染器消费。
-    /// 编辑 tab 永远为 None：编辑视图的正文由独立的编辑器子系统从 buffer 实时切片，不走这里。
-    pub(crate) preview_text: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreviewTab {
+    pub(crate) view_id: ViewId,
+    pub(crate) title: String,
+    pub(crate) is_active: bool,
+    pub(crate) preview_text: String,
+    pub(crate) buffer_path: Option<PathBuf>,
 }
 
 impl EditorTab {
-    /// 给 GPUI `.id((..,key))` 用的稳定 key——直接用 ViewId 的数值即可，全局唯一。
+    pub(crate) fn view_id(&self) -> ViewId {
+        match self {
+            EditorTab::Edit(t) => t.view_id,
+            EditorTab::Preview(t) => t.view_id,
+        }
+    }
+
+    pub(crate) fn title(&self) -> &str {
+        match self {
+            EditorTab::Edit(t) => &t.title,
+            EditorTab::Preview(t) => &t.title,
+        }
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        match self {
+            EditorTab::Edit(t) => t.is_active,
+            EditorTab::Preview(t) => t.is_active,
+        }
+    }
+
+    /// 给 GPUI `.id((..,key))` 用的稳定 key。
     pub(crate) fn element_key(&self) -> u64 {
-        self.view_id.as_u64()
+        self.view_id().as_u64()
     }
 }
 
@@ -49,12 +104,44 @@ pub(crate) fn build_editor_state(
     views: &ViewSet,
     active_view: Option<ViewId>,
     project_root: Option<&Path>,
+    prev_cache: &BTreeMap<ViewId, (BufferVersion, String)>,
+    prev_scroll_handles: &BTreeMap<ViewId, ScrollHandle>,
 ) -> EditorState {
-    let tabs = views
+    let mut preview_cache: BTreeMap<ViewId, (BufferVersion, String)> = BTreeMap::new();
+    let mut preview_scroll_handles: BTreeMap<ViewId, ScrollHandle> = BTreeMap::new();
+    for (view_id, handle) in prev_scroll_handles {
+        preview_scroll_handles.insert(*view_id, handle.clone());
+    }
+    let tabs: Vec<EditorTab> = views
         .views()
-        .map(|(view_id, view)| build_tab(workspace, project_root, view_id, view, active_view))
+        .map(|(view_id, view)| {
+            build_tab(
+                workspace,
+                project_root,
+                view_id,
+                view,
+                active_view,
+                prev_cache,
+                &mut preview_cache,
+            )
+        })
         .collect();
-    EditorState { tabs }
+    // 为尚无句柄的预览 tab 创建新句柄。
+    let live_ids: std::collections::BTreeSet<ViewId> = tabs.iter().map(|t| t.view_id()).collect();
+    preview_scroll_handles.retain(|id, _| live_ids.contains(id));
+    for tab in &tabs {
+        if let EditorTab::Preview(p) = tab {
+            if !preview_scroll_handles.contains_key(&p.view_id) {
+                preview_scroll_handles.insert(p.view_id, ScrollHandle::default());
+            }
+        }
+    }
+    EditorState {
+        tabs,
+        preview_cache,
+        preview_scroll_handles,
+        syntax_engine: Some(workspace.engine().clone()),
+    }
 }
 
 fn build_tab(
@@ -63,33 +150,54 @@ fn build_tab(
     view_id: ViewId,
     view: &View,
     active_view: Option<ViewId>,
+    prev_cache: &BTreeMap<ViewId, (BufferVersion, String)>,
+    out_cache: &mut BTreeMap<ViewId, (BufferVersion, String)>,
 ) -> EditorTab {
-    let buffer_id = view.buffer();
-    let buffer = workspace.buffer(buffer_id);
+    let buffer = workspace.buffer(view.buffer());
     let base_title = buffer
         .map(buffer_title)
         .unwrap_or_else(|| "未命名".to_string());
-    let relative_path = buffer.and_then(|b| relative_display(b.path(), project_root));
-    let kind = view.kind();
-    let display_title = match kind {
-        ViewKind::Edit => base_title.clone(),
-        ViewKind::Preview => format!("{base_title} · 预览"),
-    };
-    let preview_text = match kind {
-        ViewKind::Preview => buffer.and_then(read_full_text),
-        ViewKind::Edit => None,
-    };
-    EditorTab {
-        view_id,
-        kind,
-        language: language_label(&base_title),
-        title: display_title,
-        // 预览 tab 不显示脏标记——buffer 是否脏由对应的编辑 tab 反映。
-        dirty: matches!(kind, ViewKind::Edit)
-            && buffer.map(WorkspaceBuffer::is_dirty).unwrap_or(false),
-        is_active: active_view == Some(view_id),
-        relative_path,
-        preview_text,
+    let is_active = active_view == Some(view_id);
+
+    match view.kind() {
+        ViewKind::Edit => {
+            let relative_path = buffer.and_then(|b| relative_display(b.path(), project_root));
+            EditorTab::Edit(EditTab {
+                view_id,
+                title: base_title,
+                language: buffer
+                    .and_then(|b| b.language())
+                    .map(|lang| lang.display_name().to_string())
+                    .unwrap_or_else(|| "Unknown".to_string()),
+                dirty: buffer.map(WorkspaceBuffer::is_dirty).unwrap_or(false),
+                is_active,
+                relative_path,
+            })
+        }
+        ViewKind::Preview => {
+            let preview_text = buffer.and_then(|buf| {
+                let version = buf.buffer().version();
+                if let Some((cached_version, cached_text)) = prev_cache.get(&view_id) {
+                    if *cached_version == version {
+                        out_cache.insert(view_id, (*cached_version, cached_text.clone()));
+                        return Some(cached_text.clone());
+                    }
+                }
+                let text = read_full_text(buf)?;
+                out_cache.insert(view_id, (version, text.clone()));
+                Some(text)
+            });
+            EditorTab::Preview(PreviewTab {
+                view_id,
+                title: format!("{base_title} · 预览"),
+                is_active,
+                preview_text: preview_text.unwrap_or_default(),
+                buffer_path: buffer.and_then(|b| {
+                    b.path()
+                        .and_then(|p| p.parent().map(|parent| parent.to_path_buf()))
+                }),
+            })
+        }
     }
 }
 
@@ -128,42 +236,4 @@ fn buffer_title(buffer: &WorkspaceBuffer) -> String {
         .and_then(|path| path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "未命名".to_string())
-}
-
-fn language_label(title: &str) -> String {
-    match std::path::Path::new(title)
-        .extension()
-        .and_then(|ext| ext.to_str())
-    {
-        Some("rs") => "Rust".to_string(),
-        Some("toml") | Some("lock") => "TOML".to_string(),
-        Some("md") | Some("markdown") => "Markdown".to_string(),
-        Some("json") => "JSON".to_string(),
-        Some("js") | Some("mjs") | Some("cjs") => "JavaScript".to_string(),
-        Some("ts") => "TypeScript".to_string(),
-        Some("jsx") => "JSX".to_string(),
-        Some("tsx") => "TSX".to_string(),
-        Some("html") | Some("htm") => "HTML".to_string(),
-        Some("css") => "CSS".to_string(),
-        Some("scss") | Some("sass") => "Sass".to_string(),
-        Some("yaml") | Some("yml") => "YAML".to_string(),
-        Some("xml") => "XML".to_string(),
-        Some("py") => "Python".to_string(),
-        Some("go") => "Go".to_string(),
-        Some("c") | Some("h") => "C".to_string(),
-        Some("cpp") | Some("cc") | Some("cxx") | Some("hpp") => "C++".to_string(),
-        Some("java") => "Java".to_string(),
-        Some("kt") | Some("kts") => "Kotlin".to_string(),
-        Some("swift") => "Swift".to_string(),
-        Some("rb") => "Ruby".to_string(),
-        Some("php") => "PHP".to_string(),
-        Some("sh") | Some("bash") | Some("zsh") => "Shell".to_string(),
-        Some("sql") => "SQL".to_string(),
-        Some("ini") | Some("conf") | Some("cfg") => "INI".to_string(),
-        Some("txt") | Some("text") => "Text".to_string(),
-        Some("csv") => "CSV".to_string(),
-        Some("svg") => "SVG".to_string(),
-        Some(other) => other.to_uppercase(),
-        None => "Unknown".to_string(),
-    }
 }

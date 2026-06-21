@@ -6,7 +6,7 @@
 //!
 //! - 持有 [`Buffer`] + 可选的 [`BufferSyntax`] —— 与 [`crate::WorkspaceBuffer`] 同款。
 //! - 通过 `Rc<SyntaxEngine>` 与主工作区共享语言注册表 / 后台 worker / buffer id 分配器。
-//! - 暴露 [`Self::pump_post_edit`] 把编辑事件喂给 syntax；paint 端按 [`Self::syntax_tree_slot`] 现查共享 tree。
+//! - 暴露 [`Self::pump_post_edit`] 把编辑事件喂给 syntax；paint 端按 [`Self::highlights_slot`] 现查共享 tree。
 //!
 //! ## 为什么直接吃 [`LanguageId`]
 //!
@@ -18,7 +18,7 @@ use std::rc::Rc;
 use zom_engine::{Buffer, BufferConfig, DeltaEvent};
 
 use crate::syntax::{
-    BufferSyntax, BufferSyntaxTreeSlot, LanguageId, MAX_HIGHLIGHT_BYTES, SyntaxEngine,
+    BufferSyntax, LanguageId, MAX_HIGHLIGHT_BYTES, SyntaxEngine, SyntaxHighlightsSlot,
 };
 use crate::{BufferId, WorkspaceResult};
 
@@ -94,12 +94,12 @@ impl SyntaxDocument {
         &self.engine
     }
 
-    /// 当前缓冲区的共享 [`BufferSyntaxTreeSlot`]。
+    /// 当前缓冲区的共享 [`SyntaxHighlightsSlot`]。
     ///
     /// `None` 表示 buffer 未挂 provider（plain 语言 / 超阈值 / 注册表缺工厂）。
-    /// 调用方 `load()` 拿到 `Arc<BufferSyntaxTree>` 后按 viewport 现查 Query。
-    pub fn syntax_tree_slot(&self) -> Option<&BufferSyntaxTreeSlot> {
-        self.syntax.as_ref().map(|s| s.tree_slot())
+    /// 调用方 `load()` 拿到 `Arc<SyntaxHighlights>` 后按 viewport 现查 Query。
+    pub fn highlights_slot(&self) -> Option<&SyntaxHighlightsSlot> {
+        self.syntax.as_ref().map(|s| s.highlights_slot())
     }
 
     /// 构造期钉死的语言；`LanguageId::PLAIN` 表示不挂 provider 的纯文本。
@@ -178,11 +178,11 @@ mod tests {
         let doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
         engine.worker().wait_for_idle_for_test_or_bench();
         let tree = doc
-            .syntax_tree_slot()
+            .highlights_slot()
             .expect("rust buffer 必须挂 provider")
             .load()
             .expect("attach 完成后 slot 必须有 tree");
-        assert_eq!(tree.version(), doc.buffer().version());
+        assert_eq!(tree.tree().version(), doc.buffer().version());
     }
 
     #[test]
@@ -191,7 +191,7 @@ mod tests {
         let buffer = Buffer::from_text("fn x() {}".to_string(), BufferConfig::default()).unwrap();
         let mut doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
         engine.worker().wait_for_idle_for_test_or_bench();
-        let old_slot = doc.syntax_tree_slot().unwrap().clone();
+        let old_slot = doc.highlights_slot().unwrap().clone();
         assert!(old_slot.load().is_some());
 
         doc.replace_text("// new text").unwrap();
@@ -199,7 +199,7 @@ mod tests {
         assert!(old_slot.load().is_none());
         engine.worker().wait_for_idle_for_test_or_bench();
         // 新 slot 在新 syntax 内：仍能拿到 tree。
-        assert!(doc.syntax_tree_slot().unwrap().load().is_some());
+        assert!(doc.highlights_slot().unwrap().load().is_some());
         assert_eq!(doc.language(), LanguageId::new("rust"));
     }
 
@@ -209,6 +209,6 @@ mod tests {
         let buffer = Buffer::from_text("hello world".to_string(), BufferConfig::default()).unwrap();
         let doc = SyntaxDocument::from_buffer(engine, buffer, LanguageId::PLAIN);
         assert!(doc.language().is_plain());
-        assert!(doc.syntax_tree_slot().is_none());
+        assert!(doc.highlights_slot().is_none());
     }
 }

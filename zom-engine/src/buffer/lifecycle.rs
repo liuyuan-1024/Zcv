@@ -129,8 +129,9 @@ impl Buffer {
         Self::with_origin(BufferOrigin::anonymous(), text, config)
     }
 
-    pub fn id(&self) -> BufferId {
-        self.id
+    /// 以 `u64` 返回 buffer 标识。
+    pub fn id_u64(&self) -> u64 {
+        self.id.get()
     }
 
     /// Buffer 来源句柄（宿主自解释，引擎不解析）。

@@ -9,7 +9,7 @@ use std::rc::Rc;
 use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
 
 use crate::editor::text::EditorSnapshot;
-use crate::editor_state::EditorState;
+use crate::editor_state::{EditorState, EditorTab};
 use crate::shell::features::{diagnostics, go_to_line, language_servers};
 use crate::shell::shared::{CommandBinding, Glyph};
 use crate::shell::surfaces::SurfaceStates;
@@ -95,7 +95,7 @@ fn editor_status_slots(
     commands: &WorkbenchCommandRequests,
     surfaces: &SurfaceStates,
 ) -> Vec<AnyElement> {
-    let Some(active) = editor.tabs.iter().find(|tab| tab.is_active) else {
+    let Some(active) = editor.tabs.iter().find(|tab| tab.is_active()) else {
         return Vec::new();
     };
     // snapshot 已经按 `buffer.byte_to_position` 折好行列（0-based）；这里只换算到 1-based。
@@ -110,10 +110,17 @@ fn editor_status_slots(
             commands.editor_go_to_line.clone(),
             surfaces.is_active(SurfaceId::GoToLine),
         ),
-        Glyph::text(LANGUAGE_ID, active.language.clone())
+        Glyph::text(LANGUAGE_ID, active_title(active))
             .command(commands.editor_change_language.clone())
             .render(),
     ]
+}
+
+fn active_title(tab: &EditorTab) -> String {
+    match tab {
+        EditorTab::Edit(t) => t.language.clone(),
+        EditorTab::Preview(_) => "Markdown".to_string(),
+    }
 }
 
 /// 把多个组拼起来，组与组之间插入一条 `bar_divider`。空组直接跳过。

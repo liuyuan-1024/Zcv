@@ -12,15 +12,15 @@
 //! 首帧由 main_editor 的 `DEFAULT_VISIBLE_LINES` 兜底。
 //!
 //! 软换行：开关由 [`EditorKernel::soft_wrap`] 控制，运行时可切换。
-//! 开启后每条逻辑行可能被拆成多条「视觉行」（sub-row），prepaint 阶段在 shape 完一次全行后用 [`zom_view::compute_segments`] 按视口宽度算出断点字节列表，再为每段 sub-row 重 shape。
-//! 分行规则与 CJK 边界判定都内聚在 zom-view 的 wrap 模块——这里只负责测量与绘制。
+//! 开启后每条逻辑行可能被拆成多条「视觉行」（sub-row），prepaint 阶段在 shape 完一次全行后用 [`zom_workspace::view::compute_segments`] 按视口宽度算出断点字节列表，再为每段 sub-row 重 shape。
+//! 分行规则与 CJK 边界判定都内聚在 `view::wrap` 模块——这里只负责测量与绘制。
 //! 下游 phases / gutter 一律按视觉行索引消费；`PrepaintedLine` 的 `line_start_byte` / `line_len` 直接描述当前视觉段的字节边界。
 //! 软换行打开时禁用横向滚动，viewport_sync 回写的不是视觉行数而是「下一帧切多少条逻辑行就够铺满视口」。
 //!
 //! 滚动有两条独立路径，共存于 [`Self::prepaint`]：
 //!
 //! - **reveal 路径**：
-//! 响应外部 [`zom_view::RevealRequest`]（搜索 / goto-* 等命令调 `view.request_reveal(...)` 投递）。
+//! 响应外部 [`zom_workspace::view::RevealRequest`]（搜索 / goto-* 等命令调 `view.request_reveal(...)` 投递）。
 //! 按 [`RevealKind`] 翻译成具体摆位策略；每个 seq 只触发一次。
 //! - **edge-scroll 路径**：
 //! caret 跟随。永远跑，作为兜底。reveal 摆完位置后，edge-scroll 仍会跑，保证 caret 真的可见 —— 哪怕 reveal 把 reveal byte 摆到上 1/3 但 caret（=match end）跨了多行被推到视区外，edge-scroll 会把它拉回来。
@@ -37,7 +37,7 @@ use gpui::{
 };
 
 use zom_engine::{SelectionSet, TextRange};
-use zom_view::{RevealKind, VisualPosition, WrapMap};
+use zom_workspace::view::{RevealKind, VisualPosition, WrapMap};
 
 use crate::editor::highlight::Decoration;
 use crate::editor::text::snapshot::{RevealHint, SnapshotLine};
@@ -545,7 +545,7 @@ impl Element for EditorElement {
             // soft_wrap 关 → 单段 (0, len)。
             // soft_wrap 开 → 先 shape 一次全行用来测断点；
             // shape 结果只用于测量，sub-row 再单独 re-shape（GPUI 行布局缓存：同内容 + 同样式不付二次成本）。
-            // 分行规则与 CJK 边界判定都内聚在 [`zom_view::compute_segments`]，渲染端只把测量结果（x_for_index）以闭包形式喂进去。
+            // 分行规则与 CJK 边界判定都内聚在 [`zom_workspace::view::compute_segments`]，渲染端只把测量结果（x_for_index）以闭包形式喂进去。
             let segments: Vec<(usize, usize)> = if soft_wrap {
                 let measure_shaped = window.text_system().shape_line(
                     SharedString::from(raw.to_string()),
@@ -553,7 +553,7 @@ impl Element for EditorElement {
                     &full_runs,
                     None,
                 );
-                zom_view::compute_segments(
+                zom_workspace::view::compute_segments(
                     raw,
                     f32::from(measure_shaped.width),
                     f32::from(text_viewport_w),

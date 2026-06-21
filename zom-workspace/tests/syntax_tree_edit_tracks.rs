@@ -25,12 +25,12 @@ fn insert_advances_tree_end_byte_in_same_main_thread_tick() {
     engine.worker().wait_for_idle_for_test_or_bench();
 
     let slot = doc
-        .syntax_tree_slot()
+        .highlights_slot()
         .expect("rust buffer 必须挂 provider")
         .clone();
-    let initial = slot.load().expect("attach 完成后必须有 tree");
+    let initial = slot.load().expect("attach 完成后必须有 highlights");
     assert_eq!(
-        initial.tree().root_node().end_byte(),
+        initial.tree().tree().root_node().end_byte(),
         doc.buffer().snapshot().len_bytes().get(),
         "首次 attach 后 tree 应当与 buffer 字节长度对齐"
     );
@@ -45,12 +45,12 @@ fn insert_advances_tree_end_byte_in_same_main_thread_tick() {
         .load()
         .expect("handle_edit 后 slot 仍应当有 tree（主线程 tree.edit）");
     assert_eq!(
-        advanced.version(),
+        advanced.tree().version(),
         doc.buffer().version(),
         "slot 的版本应当被 try_edit 同步推到编辑后的新版本"
     );
     assert_eq!(
-        advanced.tree().root_node().end_byte(),
+        advanced.tree().tree().root_node().end_byte(),
         doc.buffer().snapshot().len_bytes().get(),
         "tree.edit 后根节点 end_byte 必须等于新 buffer 字节长度"
     );
@@ -69,21 +69,21 @@ fn multiple_consecutive_inserts_keep_tree_aligned() {
     .unwrap();
     let mut doc = SyntaxDocument::from_buffer(engine.clone(), buffer, LanguageId::new("rust"));
     engine.worker().wait_for_idle_for_test_or_bench();
-    let slot = doc.syntax_tree_slot().unwrap().clone();
+    let slot = doc.highlights_slot().unwrap().clone();
 
     for ch in ["a", "b", "c", "d", "e"] {
         let at = doc.buffer().snapshot().len_bytes();
         doc.buffer_mut().insert(at, ch).unwrap();
         doc.pump_post_edit().unwrap();
 
-        let tree = slot.load().expect("每次编辑后 slot 应当持有 tree");
+        let highlights = slot.load().expect("每次编辑后 slot 应当持有 highlights");
         assert_eq!(
-            tree.version(),
+            highlights.tree().version(),
             doc.buffer().version(),
             "slot 版本必须紧跟 buffer 版本"
         );
         assert_eq!(
-            tree.tree().root_node().end_byte(),
+            highlights.tree().tree().root_node().end_byte(),
             doc.buffer().snapshot().len_bytes().get(),
             "tree.edit 链必须严格跟住 buffer 字节长度（插入 '{ch}' 后）"
         );

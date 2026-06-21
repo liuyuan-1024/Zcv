@@ -6,7 +6,7 @@
 ///
 /// 引擎内的文档对象标识，不等同于文件路径、URI 或外部项目索引 ID。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BufferId(u64);
+pub(crate) struct BufferId(u64);
 
 impl BufferId {
     pub const INITIAL: Self = Self(0);

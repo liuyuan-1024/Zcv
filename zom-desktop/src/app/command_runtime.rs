@@ -199,7 +199,7 @@ fn edit_target_before(
 ) -> Option<EditTargetSnapshot> {
     if let Some(target) = focused_field {
         return Some(EditTargetSnapshot {
-            target: EditMergeTarget(target.buffer.id().get()),
+            target: EditMergeTarget(target.buffer.id_u64()),
             version: target.buffer.version(),
         });
     }
@@ -208,7 +208,7 @@ fn edit_target_before(
     let buffer_id = session.views().edit_view(view_id)?.buffer();
     let buffer = session.workspace().buffer(buffer_id)?.buffer();
     Some(EditTargetSnapshot {
-        target: EditMergeTarget(buffer.id().get()),
+        target: EditMergeTarget(buffer.id_u64()),
         version: buffer.version(),
     })
 }
@@ -220,7 +220,7 @@ fn edit_target_after(
     let before = before?;
     if let Some(target) = context.focused_field.as_ref() {
         let snapshot = EditTargetSnapshot {
-            target: EditMergeTarget(target.buffer.id().get()),
+            target: EditMergeTarget(target.buffer.id_u64()),
             version: target.buffer.version(),
         };
         return (snapshot.target == before.target).then_some(snapshot);
@@ -230,7 +230,7 @@ fn edit_target_after(
     let buffer_id = context.views.edit_view(view_id)?.buffer();
     let buffer = context.workspace.buffer(buffer_id)?.buffer();
     let snapshot = EditTargetSnapshot {
-        target: EditMergeTarget(buffer.id().get()),
+        target: EditMergeTarget(buffer.id_u64()),
         version: buffer.version(),
     };
     (snapshot.target == before.target).then_some(snapshot)

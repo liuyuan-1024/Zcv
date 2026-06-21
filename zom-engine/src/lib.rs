@@ -8,7 +8,6 @@ mod config;
 mod coordinates;
 mod errors;
 mod fold;
-mod metadata;
 mod position_map;
 mod projection;
 mod search;
@@ -35,7 +34,6 @@ pub use errors::{
     VersionedResultError,
 };
 pub use fold::{FoldRange, FoldRangeId, FoldRangeUpdate, FoldSet, FoldToggleOutcome, HiddenRange};
-pub use metadata::{MetadataLayerKind, MetadataLayers};
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
 pub use projection::{
     ApplyOutcome, FoldPlaceholder, LogicalPoint, LogicalPointProjection, LogicalProjection,
@@ -60,10 +58,11 @@ pub use transaction::{
     ChangeSet, Delta, DeltaEvent, Edit, EditList, Transaction, TransactionMergePolicy,
     TransactionMetadata, TransactionRecord, TransactionSource,
 };
+pub(crate) use types::BufferId;
 pub use types::{
-    BufferId, BufferOrigin, BufferState, BufferVersion, ByteOffset, CharOffset, DisplayColumn,
-    Line, LineEndingStyle, LineRange, LogicalColumn, OriginKind, Position, TextRange,
-    TransactionId, Utf16Offset, Utf16Position,
+    BufferOrigin, BufferState, BufferVersion, ByteOffset, CharOffset, DisplayColumn, Line,
+    LineEndingStyle, LineRange, LogicalColumn, OriginKind, Position, TextRange, TransactionId,
+    Utf16Offset, Utf16Position,
 };
 pub use versioned::{
     VersionedRangeEntry, VersionedRangeEntryId, VersionedRangeSet, VersionedRangeSpec,

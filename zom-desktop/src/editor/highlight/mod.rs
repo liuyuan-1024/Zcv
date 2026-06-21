@@ -4,7 +4,7 @@
 
 use zom_engine::{SelectionSet, TextRange};
 use zom_workspace::WorkspaceBuffer;
-use zom_workspace::syntax::BufferSyntaxTree;
+use zom_workspace::syntax::SyntaxHighlights;
 
 use crate::editor::text::snapshot::SnapshotLine;
 
@@ -36,17 +36,11 @@ pub(crate) enum StyleClass {
 #[derive(Clone, Debug)]
 pub(crate) struct DecorationStyle(pub(crate) StyleClass);
 
-#[allow(dead_code)]
 pub(crate) mod priority {
-    pub(crate) const SYNTAX_CONFIRMED: u16 = 0;
-    pub(crate) const FOLD: u16 = 100;
-    pub(crate) const CURRENT_LINE: u16 = 200;
+    pub(crate) const SYNTAX: u16 = 0;
     pub(crate) const SELECTION: u16 = 300;
     pub(crate) const SEARCH_NORMAL: u16 = 400;
     pub(crate) const SEARCH_CURRENT: u16 = 450;
-    pub(crate) const DIAGNOSTIC: u16 = 500;
-    pub(crate) const HOVER: u16 = 600;
-    pub(crate) const AI_PROPOSAL: u16 = 700;
 }
 
 pub(crate) fn push_selection(selection: &SelectionSet, out: &mut Vec<Decoration>) {
@@ -57,12 +51,12 @@ pub(crate) fn push_workspace_search(buffer: &WorkspaceBuffer, out: &mut Vec<Deco
     producers::search::push(buffer, out);
 }
 
-/// 把当前 [`BufferSyntaxTree`] 在 viewport 上的 query 结果作为 Foreground decoration 推入 `out`。
-/// `syntax_tree` 为 `None` 表示 buffer 还没首份 tree（首次 Attach 未回包）或 plain / 超阈值 / 无 provider 的缓冲区——本帧不产 syntax 装饰。
-pub(crate) fn push_syntax_tree(
-    syntax_tree: Option<&BufferSyntaxTree>,
+/// 把当前 [`SyntaxHighlights`] 在 viewport 上的统一 query 结果（tree-sitter base + LSP overlay）作为 Foreground decoration 推入 `out`。
+/// `highlights` 为 `None` 表示 buffer 还没首份 tree 或 plain / 超阈值 / 无 provider——本帧不产 syntax 装饰。
+pub(crate) fn push_syntax_highlights(
+    highlights: Option<&SyntaxHighlights>,
     lines: &[SnapshotLine],
     out: &mut Vec<Decoration>,
 ) {
-    producers::syntax::push(syntax_tree, lines, out);
+    producers::syntax::push(highlights, lines, out);
 }

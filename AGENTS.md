@@ -1,6 +1,6 @@
-# project.md
+# agents.md
 
-> 本文记录 `zom` workspace 的项目独有结构与边界。全局协作、验证命令和代码风格见 `global.md`。
+> 本文记录 `zom` workspace 的项目结构与边界。全局协作约定见 `CLAUDE.md`。
 
 ## 1. 项目结构
 

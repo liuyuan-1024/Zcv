@@ -249,4 +249,51 @@ mod tests {
         // 坏文件返 None；调用方（theme_table）落空表，所有 name 自然 default_fg。
         assert!(parse_helix_theme("this is not [valid toml").is_none());
     }
+
+    // ----------------------------------------------------------------
+    // LSP semantic token → highlight name → color 端到端
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn lsp_parameter_resolves_to_color_via_variable_parameter() {
+        // onedark 有 `"variable.parameter" = { fg = "red" }`，所以
+        // LSP "parameter" → "variable.parameter" 应命中实际颜色而非 default_fg。
+        let c = color_for("variable.parameter");
+        assert_ne!(
+            c,
+            default_fg(),
+            "onedark 必须给 variable.parameter 上色（LSP parameter 产此名）"
+        );
+    }
+
+    #[test]
+    fn lsp_method_falls_back_to_function() {
+        // LSP "method" → "function.method"；onedark 有 "function" 但无 "function.method"。
+        // 点分回退应让 function.method 取 function 的颜色。
+        assert_eq!(color_for("function.method"), color_for("function"));
+    }
+
+    #[test]
+    fn lsp_enum_member_resolves_via_variable_other_member() {
+        // onedark 有 `"variable.other.member" = { fg = "red" }`；
+        // LSP enumMember → "variable.other.member" 应命中。
+        let c = color_for("variable.other.member");
+        assert_ne!(
+            c,
+            default_fg(),
+            "onedark 必须给 variable.other.member 上色（LSP enumMember 产此名）"
+        );
+    }
+
+    #[test]
+    fn lsp_macro_resolves_via_function_dot_macro() {
+        // onedark 有 `"function.macro" = { fg = "purple" }`；
+        // LSP macro → "function.macro" 应命中。
+        let c = color_for("function.macro");
+        assert_ne!(
+            c,
+            default_fg(),
+            "onedark 必须给 function.macro 上色（LSP macro 产此名）"
+        );
+    }
 }

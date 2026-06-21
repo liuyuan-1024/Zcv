@@ -151,13 +151,6 @@ pub enum HostEffect {
     TogglePanel(PanelKind, bool),
 
     // ===== Search =====
-    /// 打开搜索栏并把焦点送到查询输入框。已开则只搬焦点（幂等）。
-    /// 收起走 [`SearchDismiss`]（Esc 路径），不在本变体里复用。
-    ///
-    /// 第一版只有单文件搜索（per-buffer），不带 scope。
-    /// 跨文件搜索后续作为独立 workspace 服务再加，
-    /// 那时会引入各自的命令与 effect，不复用本变体。
-    SearchActivate,
     /// 切换搜索选项。
     SearchToggleOption(SearchOption),
     /// 选中上一个搜索结果。
@@ -174,6 +167,8 @@ pub enum HostEffect {
     SearchFocusPreviousField,
     /// 退出搜索（Esc 路径）：把光标折叠到当前命中末尾，再收起搜索框；
     SearchDismiss,
+    /// 切换搜索栏开关（Glyph 点击 / mod+f）：开则关、关则开。
+    SearchToggle,
     /// 确认当前命中（Enter 路径）：把光标折叠到当前匹配末尾，并把焦点交回编辑器。
     SearchConfirmMatch,
 
@@ -195,12 +190,12 @@ pub enum HostEffect {
     // ===== Editor Tabs =====
     /// 把活动 view 切到指定 view（编辑或预览均可）。
     /// 宿主侧调 `WorkspaceSession::set_active_view`。
-    EditorSelectTab(zom_view::ViewId),
+    EditorSelectTab(zom_workspace::view::ViewId),
     /// 切换到相邻 tab。`true` = 向右（Next），`false` = 向左（Previous）。
     /// 宿主持有完整 session，按 ViewSet 顺序循环。
     EditorSelectAdjacentTab(bool),
     /// 关闭指定 view。
-    EditorCloseTab(zom_view::ViewId),
+    EditorCloseTab(zom_workspace::view::ViewId),
     /// 打开（或跳转到）指定 buffer 的 Markdown 预览视图。
     /// 同一 buffer 至多一条预览视图——已存在则直接激活，不重复创建。
     /// 宿主侧调 `WorkspaceSession::open_preview`。

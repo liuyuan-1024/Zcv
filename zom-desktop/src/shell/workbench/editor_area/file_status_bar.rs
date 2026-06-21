@@ -10,8 +10,6 @@ use std::rc::Rc;
 
 use gpui::{AnyElement, Div, IntoElement, div, prelude::*};
 
-use zom_view::ViewKind;
-
 use crate::editor::TextEditorSlot;
 use crate::editor_state::EditorTab;
 use crate::host_intent::KeyRequest;
@@ -81,10 +79,10 @@ fn header_row(tab: &EditorTab, search_open: bool, commands: &WorkbenchCommandReq
 /// 左侧路径标签：优先项目相对路径，回退到 tab 文件名。
 /// 单行 + truncate 防止过长路径撑爆 bar。
 fn path_label(tab: &EditorTab) -> Div {
-    let text = tab
-        .relative_path
-        .clone()
-        .unwrap_or_else(|| tab.title.clone());
+    let text = match tab {
+        EditorTab::Edit(t) => t.relative_path.clone().unwrap_or_else(|| t.title.clone()),
+        EditorTab::Preview(t) => t.title.clone(),
+    };
     div()
         .flex_shrink_0()
         .overflow_hidden()
@@ -104,10 +102,13 @@ fn action_slot(
     let active_color = color::glyph_active();
     let default_color = color::glyph_default();
 
-    // Markdown 预览 glyph（仅在可预览文件上显示）
-    if tab.language == "Markdown" {
-        let preview_active = matches!(tab.kind, ViewKind::Preview);
-        let color = if preview_active {
+    // Markdown 预览 glyph（编辑 tab 且语言为 Markdown 时，或已经是预览 tab 时显示）。
+    let (is_markdown, is_preview) = match tab {
+        EditorTab::Edit(t) => (t.language == "Markdown", false),
+        EditorTab::Preview(_) => (true, true),
+    };
+    if is_markdown {
+        let color = if is_preview {
             active_color
         } else {
             default_color
@@ -120,12 +121,7 @@ fn action_slot(
         );
     }
 
-    // 文件搜索 glyph（常驻）：打开时高亮，点击可关闭。
-    let search_command = if search_open {
-        commands.file_search_dismiss.clone()
-    } else {
-        commands.file_search_activate.clone()
-    };
+    // 文件搜索 glyph（常驻）：单条 toggle 命令，与 case-sensitive 等 Glyph 同一模式。
     let color = if search_open {
         active_color
     } else {
@@ -134,7 +130,7 @@ fn action_slot(
     actions.push(
         Glyph::icon("file-status-bar.search", FILE_SEARCH_ICON)
             .color(color)
-            .command(search_command)
+            .command(commands.file_search_toggle.clone())
             .render(),
     );
 

@@ -9,7 +9,7 @@ use super::{EditorSnapshot, SnapshotLine};
 /// 构造编辑器渲染快照时使用的视口请求。
 ///
 /// 所有嵌入点都走同一种请求：单行输入框只是 `top_line = 0`、
-/// `visible_logical_lines = 1`，主编辑区则由 `zom-view::ViewportState` 提供值。
+/// `visible_logical_lines = 1`，主编辑区则由 `zom_workspace::view::ViewportState` 提供值。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct EditorSnapshotRequest {
     pub(crate) top_line: u64,

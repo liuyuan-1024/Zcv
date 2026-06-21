@@ -8,7 +8,7 @@ use zom_command::Invocation;
 use zom_command::commands::editor as editor_commands;
 use zom_command::commands::editor::ImeUtf16RangeArgs;
 use zom_engine::ByteOffset;
-use zom_view::ViewId;
+use zom_workspace::view::ViewId;
 
 use crate::editor::text::ImeUtf16Range;
 use crate::focus::AppFocus;

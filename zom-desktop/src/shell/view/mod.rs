@@ -18,7 +18,7 @@ use zom_command::commands::{
     settings as settings_commands, window as window_commands,
 };
 use zom_command::{CommandArgs, CommandId, Invocation, SettingsChangeRequest};
-use zom_view::ViewId;
+use zom_workspace::view::ViewId;
 
 use crate::{app::App, theme::Theme};
 use crate::{config, focus::AppFocus};
@@ -247,13 +247,9 @@ impl ShellView {
                 editor_commands::OPEN_PREVIEW,
                 editor_commands::open_preview(),
             ),
-            file_search_activate: binding(
-                search_file_commands::ACTIVATE,
-                search_file_commands::activate(),
-            ),
-            file_search_dismiss: binding(
-                search_file_commands::DISMISS,
-                search_file_commands::dismiss(),
+            file_search_toggle: binding(
+                search_file_commands::TOGGLE,
+                search_file_commands::toggle(),
             ),
             editor_go_to_line: binding(
                 go_to_line_commands::ACTIVATE,

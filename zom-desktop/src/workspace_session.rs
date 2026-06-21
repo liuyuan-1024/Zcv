@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use zom_command::BubbleRequest;
 use zom_engine::BufferConfig;
-use zom_view::{View, ViewId, ViewSet};
+use zom_workspace::view::{View, ViewId, ViewSet};
 use zom_workspace::{BufferId, Workspace};
 
 pub(crate) struct WorkspaceSession {
@@ -86,14 +86,14 @@ impl WorkspaceSession {
 
     /// 当前活动编辑视图的不可变借用——活动视图为预览或不存在时返回 None。
     #[cfg(test)]
-    pub(crate) fn active_edit_view(&self) -> Option<&zom_view::EditView> {
+    pub(crate) fn active_edit_view(&self) -> Option<&zom_workspace::view::EditView> {
         let id = self.active_view?;
         self.views.edit_view(id)
     }
 
     /// 当前活动编辑视图的可变借用。
     #[cfg(test)]
-    pub(crate) fn active_edit_view_mut(&mut self) -> Option<&mut zom_view::EditView> {
+    pub(crate) fn active_edit_view_mut(&mut self) -> Option<&mut zom_workspace::view::EditView> {
         let id = self.active_view?;
         self.views.edit_view_mut(id)
     }

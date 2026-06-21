@@ -14,6 +14,7 @@ mod pumps;
 mod text_target_runtime;
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -21,10 +22,10 @@ use zom_command::{
     ClipboardPort, CommandCatalogItem, CommandError, CommandId, FileTreeKeyMode, HostEffect,
     Invocation, KeyContext, KeymapResolution,
 };
-use zom_engine::{ByteOffset, Selection, SelectionSet};
-use zom_view::{RevealKind, ViewSet, ViewportEditAnchor};
-use zom_workspace::Workspace;
+use zom_engine::{BufferVersion, ByteOffset, Selection, SelectionSet};
 use zom_workspace::syntax::{SyntaxEngine, install_builtin_providers};
+use zom_workspace::view::{RevealKind, ViewId, ViewSet, ViewportEditAnchor};
+use zom_workspace::{BufferId, Workspace};
 
 use self::command_runtime::CommandRuntime;
 use self::config_applier::ConfigApplier;
@@ -34,8 +35,10 @@ use self::text_target_runtime::TextTargetRuntime;
 use crate::config::{AppConfig, SettingsChange};
 use crate::dispatch::KeyDispatchOutcome;
 use crate::editor::{EditorViewportMeasurement, SettledViewportTop};
+use crate::editor_state::{self, EditorState};
 use crate::focus::{AppFocus, FileTreeFocus, FocusStore, PanelSubFocus};
 use crate::host_intent::{InteractionIntent, PointerIntent};
+use crate::lsp_host::LspHost;
 use crate::ports::{
     FileTreeAction, FileTreeActionResult, FileTreeHost, FramePump, PostEditObserver, SearchAction,
     SearchHost,
@@ -54,6 +57,12 @@ pub struct App {
     text_targets: TextTargetRuntime,
     file_tree: Option<Box<dyn FileTreeHost>>,
     search: Option<Box<dyn SearchHost>>,
+    /// LSP 主机：管理语言服务器实例池、文档同步路由与诊断收集、每帧推进后台状态。
+    lsp_host: LspHost,
+    /// 预览文本缓存：跨帧复用，避免每帧全量重读 buffer。
+    preview_cache: RefCell<BTreeMap<ViewId, (BufferVersion, String)>>,
+    /// 预览滚动句柄：跨帧 / 跨 tab 切换复用，保持预览滚动位置。
+    preview_scroll_handles: RefCell<BTreeMap<ViewId, gpui::ScrollHandle>>,
 }
 
 impl App {
@@ -85,6 +94,9 @@ impl App {
             text_targets: TextTargetRuntime::new(),
             file_tree: None,
             search: None,
+            lsp_host: LspHost::new(),
+            preview_cache: RefCell::new(BTreeMap::new()),
+            preview_scroll_handles: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -133,14 +145,13 @@ impl App {
     /// 内存模式（`config_path` 为 `None`）仍在内存里翻，只是 save 是 no-op。
     pub(crate) fn toggle_soft_wrap(&mut self) {
         if let Err(error) = self.config.toggle_soft_wrap() {
-            self.session
-                .push_bubble(zom_command::BubbleRequest::error(error).dedupe("config.save"));
+            self.push_config_save_error(error);
         }
     }
 
     /// 把活动 tab 切到指定 view（对应 `HostEffect::EditorSelectTab`）。
     /// 由 shell 端 effect handler 调，不直接给业务 / 命令使用。
-    pub(crate) fn activate_view_tab(&mut self, view_id: zom_view::ViewId) {
+    pub(crate) fn activate_view_tab(&mut self, view_id: zom_workspace::view::ViewId) {
         self.session.set_active_view(view_id);
     }
 
@@ -155,8 +166,7 @@ impl App {
             return false;
         };
         if let Err(error) = self.config.save() {
-            self.session
-                .push_bubble(zom_command::BubbleRequest::error(error).dedupe("config.save"));
+            self.push_config_save_error(error);
             return false;
         }
         if !self.session.open_file(path) {
@@ -178,9 +188,13 @@ impl App {
         self.config.apply_change(change);
         ConfigApplier::apply_to_session(self.config.config(), &mut self.session);
         if let Err(error) = self.config.save() {
-            self.session
-                .push_bubble(zom_command::BubbleRequest::error(error).dedupe("config.save"));
+            self.push_config_save_error(error);
         }
+    }
+
+    fn push_config_save_error(&mut self, error: impl Into<String>) {
+        self.session
+            .push_bubble(zom_command::BubbleRequest::error(error).dedupe("config.save"));
     }
 
     /// 把启动期累积的配置加载诊断收纳到 session 气泡队列，等待下一次 drain。
@@ -256,6 +270,7 @@ impl App {
     /// HostEffect/project_session 落地入口：把指定 root 切成当前活动项目。
     pub(crate) fn apply_open_project_from_effect(&mut self, root: PathBuf) {
         self.project_root = Some(root.clone());
+        self.lsp_host.set_project_root(Some(&root));
         self.session.reset_project(self.config.buffer_config());
         self.request_focus(AppFocus::editor());
     }
@@ -294,12 +309,12 @@ impl App {
         self.session.views()
     }
 
-    pub(crate) fn active_view_id(&self) -> Option<zom_view::ViewId> {
+    pub(crate) fn active_view_id(&self) -> Option<zom_workspace::view::ViewId> {
         self.session.active_view_id()
     }
 
     /// 当前活动视图对应的 buffer id——文件树等"跟随活动文件"的 UI 从此投影。
-    pub(crate) fn active_buffer_id(&self) -> Option<zom_workspace::BufferId> {
+    pub(crate) fn active_buffer_id(&self) -> Option<BufferId> {
         self.session.active_buffer_id()
     }
 
@@ -317,20 +332,33 @@ impl App {
 
     /// 构造一份 tab bar 渲染快照。
     /// 集中读 session.workspace / views / active_view，调用方不必再手拼这几样。
-    pub(crate) fn editor_state(&self) -> crate::editor_state::EditorState {
+    pub(crate) fn editor_state(&self) -> EditorState {
         let project_root = self.project_root().map(|p| p.to_path_buf());
-        crate::editor_state::build_editor_state(
+        let prev_cache = self.preview_cache.borrow();
+        let prev_scroll_handles = self.preview_scroll_handles.borrow();
+        let state = editor_state::build_editor_state(
             self.session.workspace(),
             self.session.views(),
             self.session.active_view_id(),
             project_root.as_deref(),
-        )
+            &prev_cache,
+            &prev_scroll_handles,
+        );
+        drop(prev_cache);
+        drop(prev_scroll_handles);
+        *self.preview_cache.borrow_mut() = state.preview_cache.clone();
+        *self.preview_scroll_handles.borrow_mut() = state.preview_scroll_handles.clone();
+        state
     }
 
     pub(crate) fn apply_search_action_from_effect(&mut self, action: SearchAction) {
         if let Some(search) = &self.search {
             search.apply_search_action_from_effect(action, &mut self.session);
         }
+    }
+
+    pub(crate) fn is_search_open(&self) -> bool {
+        self.search.as_ref().map_or(false, |s| s.is_open())
     }
 
     pub(crate) fn go_to_line_jump(&mut self, target_byte: usize) {
@@ -569,20 +597,20 @@ impl App {
     /// 由主编辑区 element prepaint 中段回写测量值并即时落定视口顶端。
     ///
     /// 1. 把本帧测得的 `visible_visual_rows` 与新 `wrap_map` 写回 view；
-    /// 2. 立即用新 wrap_map 跑一次 [`zom_view::View::settle_viewport_y`]，把 edit / soft-wrap 触发的新视觉行同帧消化掉——不再依赖下一帧补 settle。
+    /// 2. 立即用新 wrap_map 跑一次 [`zom_workspace::view::View::settle_viewport_y`]，把 edit / soft-wrap 触发的新视觉行同帧消化掉——不再依赖下一帧补 settle。
     ///
     /// 返回 settle 后的视口顶端；element 拿到后用它解析本帧的 `top_visual_row`。
     /// 无活动 view 时返回 `None`，element 退回 view 当前 top（与首帧一致）。
     pub(crate) fn sync_main_viewport_measurement(
         &mut self,
         measured: EditorViewportMeasurement,
-        wrap_map: Option<zom_view::WrapMap>,
+        wrap_map: Option<zom_workspace::view::WrapMap>,
     ) -> Option<SettledViewportTop> {
         let active_view_id = self.session.active_edit_view_id()?;
         let (workspace, views) = self.session.parts_mut();
         let view = views.edit_view_mut(active_view_id)?;
         let current = view.viewport();
-        let viewport = zom_view::ViewportState {
+        let viewport = zom_workspace::view::ViewportState {
             top_line: current.top_line,
             top_subrow: current.top_subrow,
             visible_visual_rows: measured.visible_visual_rows,
@@ -632,11 +660,17 @@ impl App {
     ///
     /// 统一由 shell 根视图的 render 拍点驱动。
     ///
-    /// 语法高亮没有需要 drain 的中间产物 —— paint 阶段直接从共享 `BufferSyntaxTreeSlot` 现查 tree-sitter Query。
+    /// 语法高亮没有需要 drain 的中间产物 —— paint 阶段直接从共享 [`SyntaxHighlightsSlot`] 现查统一 Query。
     ///
     /// [`install_frame_pump`]: Self::install_frame_pump
     pub fn pump_frame_observers(&mut self) {
         self.background.pump_frame_observers(&mut self.session);
+    }
+
+    /// 每帧推进 LSP 状态：收割 server 启动结果 → semantic tokens 响应 → 文档同步 → 请求新 tokens。
+    pub fn pump_lsp_tokens(&mut self) {
+        let workspace = self.session.workspace();
+        self.lsp_host.pump(workspace);
     }
 }
 
@@ -711,14 +745,14 @@ mod tests {
     };
     use zom_command::{EditTarget, KeyContext};
     use zom_engine::{ByteOffset, SelectionSet};
-    use zom_view::{ViewportState, WrapMap};
+    use zom_workspace::view::{ViewportState, WrapMap};
 
     /// 取当前活动标签——断言「编辑区正在显示哪个文件」用。
     fn active_tab(state: &EditorState) -> &EditorTab {
         state
             .tabs
             .iter()
-            .find(|tab| tab.is_active)
+            .find(|tab| tab.is_active())
             .expect("应有活动标签")
     }
 
@@ -928,7 +962,10 @@ mod tests {
 
         let state = editor_state(&app);
 
-        assert!(active_tab(&state).dirty);
+        assert!(matches!(
+            active_tab(&state),
+            EditorTab::Edit(t) if t.dirty
+        ));
     }
 
     #[test]
@@ -967,13 +1004,14 @@ mod tests {
         let state = editor_state(&app);
         let active = active_tab(&state);
         assert_eq!(
-            active.title,
+            active.title(),
             path.file_name()
                 .expect("临时配置路径应有文件名")
                 .to_string_lossy()
                 .into_owned()
+                .as_str()
         );
-        assert_eq!(active.language, "TOML");
+        assert!(matches!(active, EditorTab::Edit(t) if t.language == "TOML"));
 
         let _ = std::fs::remove_file(path);
     }
@@ -1069,7 +1107,7 @@ mod tests {
             .iter()
             .filter(|d| {
                 d.kind == crate::editor::highlight::DecorationKind::Foreground
-                    && d.priority == crate::editor::highlight::priority::SYNTAX_CONFIRMED
+                    && d.priority == crate::editor::highlight::priority::SYNTAX
             })
             .filter_map(|d| match &d.style {
                 crate::editor::highlight::DecorationStyle(
@@ -1107,7 +1145,7 @@ mod tests {
                 == crate::editor::highlight::DecorationKind::Foreground
                 && d.range.start().get() <= 4
                 && d.range.end().get() >= 5
-                && d.priority == crate::editor::highlight::priority::SYNTAX_CONFIRMED),
+                && d.priority == crate::editor::highlight::priority::SYNTAX),
             "dispatch 后立即 snapshot 必须包含覆盖新字节 [4, 5) 的 syntax decoration，实际 {:?}",
             snapshot.decorations,
         );
@@ -1171,7 +1209,7 @@ mod tests {
 
         let outcome = app.dispatch_key("mod f".to_string()).expect("派发成功");
         assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::SearchActivate]);
+        assert_eq!(outcome.effects, vec![HostEffect::SearchToggle]);
 
         // mod shift f 绑到项目搜索占位命令：弹一条"敬请期待"气泡。
         let outcome = app
@@ -1448,21 +1486,21 @@ mod tests {
         // 两个标签：README.md 先开、lib.rs 后开且为活动标签。
         let state = editor_state(&app);
         assert_eq!(state.tabs.len(), 2);
-        assert_eq!(active_tab(&state).title, "lib.rs");
-        assert!(state.tabs[1].is_active);
+        assert_eq!(active_tab(&state).title(), "lib.rs");
+        assert!(state.tabs[1].is_active());
 
         // 切到上一个标签 → README.md。
         app.dispatch_command(editor::select_tab(editor::SelectTabTarget::Previous))
             .unwrap();
         let state = editor_state(&app);
-        assert_eq!(active_tab(&state).title, "README.md");
-        assert!(state.tabs[0].is_active);
+        assert_eq!(active_tab(&state).title(), "README.md");
+        assert!(state.tabs[0].is_active());
 
         // 关闭当前标签 → 只剩 lib.rs。
         app.dispatch_command(editor::close_active_tab()).unwrap();
         let state = editor_state(&app);
         assert_eq!(state.tabs.len(), 1);
-        assert_eq!(active_tab(&state).title, "lib.rs");
+        assert_eq!(active_tab(&state).title(), "lib.rs");
     }
 
     /// EditorTargetRegistry 集成契约：runtime 注册进来的 owner 能被 router

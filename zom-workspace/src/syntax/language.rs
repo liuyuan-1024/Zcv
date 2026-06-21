@@ -30,6 +30,41 @@ impl LanguageId {
     pub fn is_plain(self) -> bool {
         self.0 == "plain"
     }
+
+    /// UI 显示的友好名称（如 `"Rust"`、`"TypeScript"`）。
+    pub fn display_name(self) -> &'static str {
+        match self.0 {
+            "rust" => "Rust",
+            "toml" => "TOML",
+            "markdown" => "Markdown",
+            "json" => "JSON",
+            "yaml" => "YAML",
+            "bash" => "Shell",
+            "html" => "HTML",
+            "css" => "CSS",
+            "javascript" => "JavaScript",
+            "typescript" => "TypeScript",
+            "tsx" => "TSX",
+            "jsx" => "JSX",
+            "java" => "Java",
+            "python" => "Python",
+            "go" => "Go",
+            "c" => "C",
+            "cpp" => "C++",
+            "kotlin" => "Kotlin",
+            "swift" => "Swift",
+            "ruby" => "Ruby",
+            "php" => "PHP",
+            "sql" => "SQL",
+            "xml" => "XML",
+            "scss" => "Sass",
+            "ini" => "INI",
+            "csv" => "CSV",
+            "svg" => "SVG",
+            "plain" => "Unknown",
+            other => other,
+        }
+    }
 }
 
 impl std::fmt::Display for LanguageId {
@@ -102,6 +137,14 @@ impl LanguageRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// 按语言名查找已注册的 [`LanguageId`]（精确匹配，不含别名展开）。
+    ///
+    /// 不在此做扩展名/shebang/别名推断——别名归一化由上层
+    /// [`crate::SyntaxEngine::highlight_snippet`] 完成。
+    pub(crate) fn find_by_name(&self, name: &str) -> Option<LanguageId> {
+        self.entries.keys().find(|id| id.as_str() == name).copied()
     }
 
     /// 实例化某语言的 provider；未注册返回 None。

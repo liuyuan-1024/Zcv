@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Div, Entity, FocusHandle, ScrollHandle, Window, div, prelude::*};
-use zom_view::ViewId;
+use zom_workspace::view::ViewId;
 
 use crate::editor::TextEditorSlot;
 use crate::editor::text::EditorSnapshot;
@@ -69,8 +69,7 @@ pub(crate) struct WorkbenchCommandRequests {
     pub(crate) diagnostics_show_problems: CommandBinding,
     pub(crate) project_search_activate: CommandBinding,
     pub(crate) editor_open_preview: CommandBinding,
-    pub(crate) file_search_activate: CommandBinding,
-    pub(crate) file_search_dismiss: CommandBinding,
+    pub(crate) file_search_toggle: CommandBinding,
     pub(crate) editor_go_to_line: CommandBinding,
     pub(crate) editor_change_language: CommandBinding,
     pub(crate) panel_toggle: Rc<dyn Fn(PanelId) -> CommandRequest>,

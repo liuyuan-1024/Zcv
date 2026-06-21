@@ -1,36 +1,6 @@
 use zom_engine::*;
-
-fn b(value: usize) -> ByteOffset {
-    ByteOffset::new(value)
-}
-
-fn range(start: usize, end: usize) -> TextRange {
-    TextRange::new(b(start), b(end)).unwrap()
-}
-
-fn buffer(text: &str) -> Buffer {
-    Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
-}
-
-fn buffer_text(buffer: &Buffer) -> String {
-    buffer
-        .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
-        .unwrap()
-        .into_text()
-        .into_owned()
-}
-
-fn tx(buffer: &Buffer, edits: Vec<Edit>) -> Transaction {
-    Transaction::from_edits(buffer.version(), edits).unwrap()
-}
-
-fn metadata(description: &str) -> TransactionMetadata {
-    TransactionMetadata::new(TransactionSource::Programmatic).with_description(description)
-}
-
-fn merge_metadata(description: &str) -> TransactionMetadata {
-    metadata(description).with_merge_policy(TransactionMergePolicy::MergeWithPrevious)
-}
+mod common;
+use common::*;
 
 #[test]
 fn apply_transaction_should_emit_delta_changeset_position_map_and_pending_event() {

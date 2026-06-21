@@ -19,6 +19,7 @@ mod editor;
 mod editor_state;
 mod focus;
 mod host_intent;
+mod lsp_host;
 mod ports;
 mod shell;
 mod text_target;

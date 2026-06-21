@@ -11,12 +11,12 @@
 //!                                     ↓
 //!                                provider.export_syntax_tree(&slot)
 //!                                     ↓
-//!  paint reads slot.load() ◀── BufferSyntaxTreeSlot
+//!  paint reads slot.load() ◀── SyntaxHighlightsSlot
 //! ```
 //!
 //! 关键边界：
 //! - **Provider 实例的真实归属在 worker**：`Box<dyn HighlightProvider>` 通过 `Job::Attach` 从主线程交接到 worker；worker 退出前以 `Detach` 回收并 drop。
-//! - **产物落 slot**：worker 每条 Job 处理完调一次 `provider.export_syntax_tree(&slot)`，paint 端按 slot 上的 `Arc<BufferSyntaxTree>` 现查 viewport-scoped Query。
+//! - **产物落 slot**：worker 每条 Job 处理完调一次 `provider.export_syntax_tree(&slot)`，paint 端按 slot 上的 `Arc<SyntaxHighlights>` 现查 viewport-scoped Query。
 //! - **Job 投递不阻塞主线程**：`mpsc::Sender::send` 在标准 channel 上是 lock-free 的入队。
 //! - **Panic 守护**：每条 Job 用 `catch_unwind` 包住；某 buffer 的 provider 触发 panic 不会拖垮线程，只把出问题的 entry 丢弃，buffer 退化成 plain；其他 buffer 不受影响。
 //! - **同步等待**：[`SyntaxWorkerHandle::wait_for_idle_for_test_or_bench`] 仅给测试 / bench 使用；
@@ -33,8 +33,8 @@ use zom_engine::{BufferVersion, ChangeSet, Snapshot};
 
 use crate::BufferId;
 
+use super::highlights::SyntaxHighlightsSlot;
 use super::provider::{BufferHandle, HighlightProvider};
-use super::tree::BufferSyntaxTreeSlot;
 
 /// 主线程 → worker 的请求。
 enum Job {
@@ -42,7 +42,7 @@ enum Job {
         buffer_id: BufferId,
         provider: Box<dyn HighlightProvider>,
         snapshot: Snapshot,
-        tree_slot: BufferSyntaxTreeSlot,
+        tree_slot: SyntaxHighlightsSlot,
     },
     Edit {
         buffer_id: BufferId,
@@ -57,7 +57,7 @@ enum Job {
 
 struct Entry {
     provider: Box<dyn HighlightProvider>,
-    tree_slot: BufferSyntaxTreeSlot,
+    tree_slot: SyntaxHighlightsSlot,
 }
 
 /// 在飞任务计数器 + Condvar，给 [`SyntaxWorkerHandle::wait_for_idle_for_test_or_bench`] 用。
@@ -152,7 +152,7 @@ impl SyntaxWorkerHandle {
         buffer_id: BufferId,
         provider: Box<dyn HighlightProvider>,
         snapshot: Snapshot,
-        tree_slot: BufferSyntaxTreeSlot,
+        tree_slot: SyntaxHighlightsSlot,
     ) {
         self.post(Job::Attach {
             buffer_id,
@@ -343,7 +343,7 @@ mod tests {
             buf_id,
             provider,
             bootstrap_buffer.snapshot(),
-            BufferSyntaxTreeSlot::new(),
+            SyntaxHighlightsSlot::new(),
         );
         for _ in 0..3 {
             let (change, snapshot, version) = make_edit();

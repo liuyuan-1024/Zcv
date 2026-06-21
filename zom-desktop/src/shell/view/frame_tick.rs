@@ -1,7 +1,7 @@
 //! 每帧 prepaint 起手的后台子系统收割。
 //!
 //! 跑跨 feature 的 [`FramePump`] 收割（search 后台命中等）。
-//! 语法高亮没有需要 drain 的中间产物 —— paint 阶段直接从共享 `BufferSyntaxTreeSlot` 现查 tree-sitter Query。
+//! 语法高亮没有需要 drain 的中间产物 —— paint 阶段直接从共享 [`SyntaxHighlightsSlot`] 现查统一 Query。
 //!
 //! [`FramePump`]: crate::ports::FramePump
 
@@ -14,5 +14,6 @@ pub(super) fn advance(app: &mut App) {
     // 跑所有注册的 FramePump——search 的"收割后台命中"目前是唯一登记者：
     // 大文件 search 在后台跑，这一拍把已就绪 SearchResult 落到 slot 并 reveal 首条命中。
     // 其它 feature 同节奏的 drain 走同一端口注册。
+    app.pump_lsp_tokens();
     app.pump_frame_observers();
 }

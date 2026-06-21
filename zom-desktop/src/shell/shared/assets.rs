@@ -66,6 +66,7 @@ pub(crate) fn embedded_fonts() -> Vec<Cow<'static, [u8]>> {
     vec![
         font_asset!("JetBrainsMono-Regular.ttf"),
         font_asset!("JetBrainsMono-SemiBold.ttf"),
+        font_asset!("JetBrainsMono-Italic.ttf"),
         font_asset!("SarasaMonoSC-Regular.ttf"),
         font_asset!("SarasaMonoSC-Bold.ttf"),
     ]

@@ -1,7 +1,7 @@
 //! 项目目录树（文件树面板的数据源）。
 //!
-//! 持有项目根、按需懒加载的目录子项缓存，以及目录展开状态。子项排序规则：
-//! 目录优先、字母序（不区分大小写）。
+//! 持有项目根、按需懒加载的目录子项缓存，以及目录展开状态。
+//! 子项排序规则：目录优先、字母序（不区分大小写）。
 //!
 //! 这是一个面向只读浏览的快照层：`visible_rows` 给 UI 直接消费；`expand` / `collapse` / `toggle` 由命令侧调用。
 //! 本层不负责文件内容、git 状态、watch 失效——这些由上层服务叠加，本模块只维护目录树快照。
@@ -21,34 +21,17 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 /// 项目级覆盖落地时复用本目录。
 const PROJECT_CONFIG_DIR: &str = ".zom";
 const ZOMIGNORE_FILE: &str = ".zomignore";
-const GITIGNORE_FILE: &str = ".gitignore";
 
 /// 首次为项目生成 `.zom/.zomignore` 时写入的默认内容。
 ///
-/// 设计取向：「不想看到」的文件交给 `.gitignore` 维护（也确保它们不被提交）—— 它由 [`IgnoreMatcher`] 默认继承（与 Zed / VSCode 一致）。
-/// `.zomignore` 的单一职责是**反向放开**：用 `!pattern` 把「不想提交、但想在编辑器里看到」的文件 / 目录从 `.gitignore` 的隐藏里取回。
-/// 默认模板因此不含任何规则，只留注释说明用法。
+/// `.zomignore` 是 zom 文件树的**唯一忽略规则来源**，完全独立决定哪些文件 / 目录在文件树中可见。
+/// 默认模板包含版本控制目录、巨型依赖目录、系统杂项与常见构建产物——这些几乎从不需要在编辑器中浏览。
 const ZOMIGNORE_DEFAULT: &str = "\
 # zom 文件树忽略规则（语法同 .gitignore）。
-#
-# 项目根的 .gitignore 已被默认继承——「不想看到」的文件请写在那边，顺便也避免被提交。
-#
-# 本文件的用途是反过来：用 `!pattern` 把被 .gitignore 隐藏、但你想在编辑器里看到的文件 / 目录放回文件树。
 
-# 环境变量示例——团队共享，常被通配 .env*
-!.env
-!.env.*
-
-# 空目录占位——容易被过度匹配的规则误伤
-!.gitkeep
-!.keep
-
-# 构建产物——偶尔想浏览生成结果 / 检查产物结构。
-# 文件树懒加载，不展开不会扫盘；node_modules 这种巨型依赖目录默认不放开。
-!target/
-!dist/
-!build/
-!out/
+# 系统文件
+.DS_Store
+Thumbs.db
 ";
 
 /// 节点类型。
@@ -101,7 +84,7 @@ impl ProjectTree {
     /// 新建并立刻加载根目录子项；根目录读取失败时返回 IO 错误。
     ///
     /// 构造期会确保 `项目根/.zom/.zomignore` 存在（首次打开新项目时自动写入 [`ZOMIGNORE_DEFAULT`]），
-    /// 随后与 `项目根/.gitignore` 一起编译成[`IgnoreMatcher`]；
+    /// 随后编译成[`IgnoreMatcher`]；
     /// 之后 `load_dir` 据此过滤每层子项。
     pub fn new(root: PathBuf) -> io::Result<Self> {
         let root_name = root
@@ -425,13 +408,10 @@ impl ProjectTree {
     }
 }
 
-/// 项目级 ignore 规则集：把 `项目根/.gitignore` 与 `项目根/.zom/.zomignore` 编译成单个 [`Gitignore`] matcher。
+/// 项目级 ignore 规则集：把 `项目根/.zom/.zomignore` 编译成单个 [`Gitignore`] matcher。
 ///
-/// 加载顺序：`.gitignore` → `.zomignore`。`Gitignore` 内部按"最后匹配胜出" 的 gitignore 语义解析，
-/// 所以 `.zomignore` 里的 `!pattern` 能覆盖 `.gitignore` 里的忽略——这是用户「想看 `dist/` 某个子目录」的标准入口。
-///
-/// 本结构只读根级两个文件。子目录里的 `.gitignore` 暂不递归继承——多数项目把 ignore 集中在根，简化实现；
-/// 后续需要时再加层级累积。
+/// `.zomignore` 是唯一的忽略规则来源，不与 `.gitignore` 合并。
+/// 子目录里的 `.gitignore` 不递归继承。
 struct IgnoreMatcher {
     matcher: Gitignore,
 }
@@ -440,15 +420,6 @@ impl IgnoreMatcher {
     fn for_root(root: &Path) -> io::Result<Self> {
         ensure_zomignore_exists(root)?;
         let mut builder = GitignoreBuilder::new(root);
-        let gitignore_path = root.join(GITIGNORE_FILE);
-        if gitignore_path.is_file()
-            && let Some(error) = builder.add(&gitignore_path)
-        {
-            return Err(io::Error::other(format!(
-                "解析 {} 失败：{error}",
-                gitignore_path.display()
-            )));
-        }
         let zomignore_path = root.join(PROJECT_CONFIG_DIR).join(ZOMIGNORE_FILE);
         if let Some(error) = builder.add(&zomignore_path) {
             return Err(io::Error::other(format!(
@@ -989,16 +960,16 @@ mod tests {
         assert_eq!(content, "# my custom rules\nnotes.md\n");
     }
 
-    /// `.gitignore` 默认继承，里面列出的目录 / 文件应从文件树消失。
+    /// `.zomignore` 完全独立于 `.gitignore`——`.gitignore` 里的规则不影响文件树。
     #[test]
-    fn project_tree_should_honor_root_gitignore() {
-        let root = tmp_root("respect-gitignore");
+    fn gitignore_should_not_affect_file_tree() {
+        let root = tmp_root("gitignore-no-effect");
         std::fs::write(root.join(".gitignore"), "target/\nsecret.txt\n").unwrap();
         create_dir_all(root.join("target/debug")).unwrap();
         File::create(root.join("target/debug/zom")).unwrap();
         File::create(root.join("secret.txt")).unwrap();
         File::create(root.join("README.md")).unwrap();
-        // 让 `.zom/` 也对断言隐形，聚焦在 .gitignore 行为上。
+        // 让 `.zom/` 也对断言隐形。
         create_dir_all(root.join(".zom")).unwrap();
         std::fs::write(root.join(".zom/.zomignore"), ".zom/\n").unwrap();
 
@@ -1008,23 +979,29 @@ mod tests {
             .into_iter()
             .map(|row| row.name.to_string())
             .collect();
-        // .gitignore 自身按 git 习惯不被忽略；target/ 与 secret.txt 不应出现。
-        assert!(names.contains(&".gitignore".to_string()));
-        assert!(names.contains(&"README.md".to_string()));
-        assert!(!names.contains(&"target".to_string()));
-        assert!(!names.contains(&"secret.txt".to_string()));
+        // .gitignore 不影响文件树——target/ 和 secret.txt 都应可见。
+        assert!(names.contains(&".gitignore".to_string()), "{names:?}");
+        assert!(names.contains(&"README.md".to_string()), "{names:?}");
+        assert!(
+            names.contains(&"target".to_string()),
+            "target/ 应可见：{names:?}"
+        );
+        assert!(
+            names.contains(&"secret.txt".to_string()),
+            "secret.txt 应可见：{names:?}"
+        );
     }
 
-    /// `.zomignore` 用 `!pattern` 反向放开 `.gitignore` 隐藏的项。
+    /// `.zomignore` 独立控制可见性——不依赖 `.gitignore`。
     #[test]
-    fn zomignore_should_be_able_to_unignore_gitignored_paths() {
-        let root = tmp_root("zomignore-unignore");
-        std::fs::write(root.join(".gitignore"), "dist/\n").unwrap();
+    fn zomignore_should_control_visibility_independently() {
+        let root = tmp_root("zomignore-standalone");
         create_dir_all(root.join("dist")).unwrap();
         File::create(root.join("dist/bundle.js")).unwrap();
+        File::create(root.join("README.md")).unwrap();
         create_dir_all(root.join(".zom")).unwrap();
-        // 同时压住 `.zom/` 自身，并放开 `dist/`。
-        std::fs::write(root.join(".zom/.zomignore"), ".zom/\n!dist/\n").unwrap();
+        // 用 .zomignore 隐藏 dist/ 和 .zom/ 自身。
+        std::fs::write(root.join(".zom/.zomignore"), ".zom/\ndist/\n").unwrap();
 
         let tree = ProjectTree::new(root.clone()).unwrap();
         let names: Vec<String> = tree
@@ -1032,21 +1009,24 @@ mod tests {
             .into_iter()
             .map(|row| row.name.to_string())
             .collect();
+        assert!(names.contains(&"README.md".to_string()), "{names:?}");
         assert!(
-            names.contains(&"dist".to_string()),
-            "`!dist/` 应让目录回到文件树：{names:?}"
+            !names.contains(&"dist".to_string()),
+            "dist/ 应被 .zomignore 隐藏：{names:?}"
         );
     }
 
-    /// 默认 `.zomignore` 模板**只有反向放开规则**，不主动隐藏任何东西——
-    /// 没 `.gitignore` 的项目里，`.DS_Store`、`.git/` 等都该默认可见。
+    /// 默认 `.zomignore` 模板：只隐藏系统杂项文件；其余全部可见。
     #[test]
-    fn default_zomignore_should_not_hide_anything_without_gitignore() {
-        let root = tmp_root("default-no-rules");
+    fn default_zomignore_hides_system_files_only() {
+        let root = tmp_root("default-noise");
         create_dir_all(root.join(".git/objects")).unwrap();
+        create_dir_all(root.join("node_modules/pkg")).unwrap();
+        create_dir_all(root.join("target/debug")).unwrap();
+        create_dir_all(root.join("src")).unwrap();
         File::create(root.join(".DS_Store")).unwrap();
+        File::create(root.join("Thumbs.db")).unwrap();
         File::create(root.join("main.rs")).unwrap();
-        File::create(root.join("notes.swp")).unwrap();
 
         let tree = ProjectTree::new(root.clone()).unwrap();
         let names: Vec<String> = tree
@@ -1054,66 +1034,29 @@ mod tests {
             .into_iter()
             .map(|row| row.name.to_string())
             .collect();
-        assert!(names.contains(&".git".to_string()), "{names:?}");
-        assert!(names.contains(&".DS_Store".to_string()), "{names:?}");
-        assert!(names.contains(&"notes.swp".to_string()), "{names:?}");
-        assert!(names.contains(&"main.rs".to_string()), "{names:?}");
-    }
-
-    /// 默认模板里的 `!.env.example` 等放开规则：当 `.gitignore` 用通配把它们
-    /// 隐藏时，模板应把它们取回。把「默认有效」钉成契约——以后增删默认放开项
-    /// 至少有一个 case 在测一头。
-    #[test]
-    fn default_zomignore_should_unhide_common_examples_and_keepers() {
-        let root = tmp_root("default-unhide");
-        std::fs::write(
-            root.join(".gitignore"),
-            ".env*\n*.keep\n*.gitkeep\ntarget/\ndist/\nbuild/\nout/\n",
-        )
-        .unwrap();
-        File::create(root.join(".env")).unwrap();
-        File::create(root.join(".env.local")).unwrap();
-        File::create(root.join(".env.example")).unwrap();
-        File::create(root.join(".env.sample")).unwrap();
-        File::create(root.join(".env.local.example")).unwrap();
-        create_dir_all(root.join("empty_dir")).unwrap();
-        File::create(root.join("empty_dir/.gitkeep")).unwrap();
-        File::create(root.join("empty_dir/.keep")).unwrap();
-        create_dir_all(root.join("target/debug")).unwrap();
-        create_dir_all(root.join("dist")).unwrap();
-        create_dir_all(root.join("build")).unwrap();
-        create_dir_all(root.join("out")).unwrap();
-
-        let mut tree = ProjectTree::new(root.clone()).unwrap();
-        let names: Vec<String> = tree
-            .visible_rows()
-            .into_iter()
-            .map(|row| row.name.to_string())
-            .collect();
-        // 默认 !.env / !.env.* 把 .env 本体和示例放回来。
-        assert!(names.contains(&".env".to_string()), "{names:?}");
-        // .env.local 也被 !.env.* 取回。
-        assert!(names.contains(&".env.local".to_string()), "{names:?}");
-        assert!(names.contains(&".env.example".to_string()), "{names:?}");
-        assert!(names.contains(&".env.sample".to_string()), "{names:?}");
+        // 被默认模板隐藏的项。
         assert!(
-            names.contains(&".env.local.example".to_string()),
-            "{names:?}"
+            !names.contains(&".DS_Store".to_string()),
+            ".DS_Store 应隐藏：{names:?}"
         );
-        // 默认 !target/ / !dist/ / !build/ / !out/ 把构建产物放回来。
-        assert!(names.contains(&"target".to_string()), "{names:?}");
-        assert!(names.contains(&"dist".to_string()), "{names:?}");
-        assert!(names.contains(&"build".to_string()), "{names:?}");
-        assert!(names.contains(&"out".to_string()), "{names:?}");
-
-        // 占位文件——展开后该可见。
-        tree.expand(&root.join("empty_dir")).unwrap();
-        let names: Vec<String> = tree
-            .visible_rows()
-            .into_iter()
-            .map(|row| row.name.to_string())
-            .collect();
-        assert!(names.contains(&".gitkeep".to_string()), "{names:?}");
-        assert!(names.contains(&".keep".to_string()), "{names:?}");
+        assert!(
+            !names.contains(&"Thumbs.db".to_string()),
+            "Thumbs.db 应隐藏：{names:?}"
+        );
+        // 未被隐藏的项。
+        assert!(
+            names.contains(&".git".to_string()),
+            ".git 应可见：{names:?}"
+        );
+        assert!(
+            names.contains(&"node_modules".to_string()),
+            "node_modules 应可见：{names:?}"
+        );
+        assert!(
+            names.contains(&"target".to_string()),
+            "target/ 应可见：{names:?}"
+        );
+        assert!(names.contains(&"src".to_string()), "{names:?}");
+        assert!(names.contains(&"main.rs".to_string()), "{names:?}");
     }
 }

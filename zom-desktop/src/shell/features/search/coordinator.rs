@@ -10,7 +10,7 @@
 
 use zom_command::SearchOption;
 use zom_engine::{Selection, SelectionSet, TextRange};
-use zom_view::{RevealKind, ViewId, ViewSet};
+use zom_workspace::view::{RevealKind, ViewId, ViewSet};
 use zom_workspace::{BufferId, SearchSyncOutcome, Workspace, WorkspaceBuffer};
 
 use super::model::{HitCount, SearchModel};
@@ -19,7 +19,7 @@ use super::model::{HitCount, SearchModel};
 /// 预览 view 也可以参与搜索；调用方按需进一步筛选。
 fn active_buffer_id(views: &ViewSet, active_view_id: Option<ViewId>) -> Option<BufferId> {
     let view_id = active_view_id?;
-    views.view(view_id).map(zom_view::View::buffer)
+    views.view(view_id).map(zom_workspace::view::View::buffer)
 }
 
 fn active_buffer<'a>(

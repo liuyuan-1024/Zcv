@@ -3,8 +3,8 @@
 use std::collections::VecDeque;
 
 use zom_engine::TransactionMergePolicy;
-use zom_view::{EditView, ViewId, ViewSet, VisualPosition, WrapMap};
 use zom_workspace::Workspace;
+use zom_workspace::view::{EditView, ViewId, ViewSet, VisualPosition, WrapMap};
 
 use crate::clipboard::ClipboardPort;
 use crate::{CommandArgs, CommandError, CommandId, CommandRegistry, DismissStacks, EffectQueue};

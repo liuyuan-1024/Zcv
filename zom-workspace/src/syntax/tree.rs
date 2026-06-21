@@ -3,11 +3,7 @@
 //! ## 角色
 //!
 //! 把"语言配置 + 当前 Tree（多棵）+ 对应 Snapshot + 版本号"打包成一个**不可变快照**值，
-//! 通过 [`BufferSyntaxTreeSlot`] 在主线程与后台 SyntaxWorker 之间共享：
-//!
-//! - **worker 线程**（[`crate::syntax::worker`]）在 attach / 增量 reparse 完成后用 [`BufferSyntaxTreeSlot::store_if_newer`] 写入最新树；
-//! - **主线程**编辑入口（[`crate::syntax::BufferSyntax::handle_edit`]）在每次编辑发生时用 [`BufferSyntaxTreeSlot::try_edit`] 把 `tree.edit(InputEdit)` 同步推进到 slot 里 —— 让 paint 阶段哪怕在 worker 还没回包前也能看见**带正确字节坐标**的 tree；
-//! - **paint 阶段**用 [`BufferSyntaxTreeSlot::load`] 拿到 `Arc<BufferSyntaxTree>`，按 viewport 现查 tree-sitter Query 出 spans。
+//! paint 端通过 [`crate::syntax::SyntaxHighlights`] 统一查询——tree-sitter spans 与 LSP semantic tokens 在 [`crate::syntax::SyntaxHighlights::query_viewport`] 内部 overlay。
 //!
 //! ## 多层（layered）
 //!
@@ -19,18 +15,11 @@
 //! - **同一 snapshot + version**：所有层共享一份 `Snapshot`，对同一份 bytes 解析得到。
 //! - **precedence 自下而上**：`layers[0]` 是底层（如 markdown block），`layers[i]`（i 越大）覆盖越靠上；
 //! [`BufferSyntaxTree::query_viewport`] 用 [`overlay_layers`] 把多层 spans 合并成最终非重叠序列，上层在覆盖区间内胜出。
-//! - **同步推进**：[`BufferSyntaxTreeSlot::try_edit`] 把同一批 InputEdit 应用到每层 tree。
-//!
-//! ## 为什么 Mutex
-//!
-//! tree-sitter 的 `Tree::clone` 本身是 `O(1)`（内部 `Arc` 共享），加上"两侧都要写"的现实（主线程 tree.edit + worker reparse），单写多读的 `arc_swap` 范式并不直接适用。
-//!
-//! 锁的临界区只包**载 / 存 Arc**，最长一次 `Tree::clone` + `tree.edit(InputEdit)`，都是 `O(log N)` 操作；
-//! 锁竞争窗口比"主线程 paint 内的整段 query"短两个量级，不构成拖帧来源。
+//! - **同步推进**：[`crate::syntax::SyntaxHighlightsSlot::try_edit`] 把同一批 InputEdit 应用到每层 tree。
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use tree_sitter::{InputEdit, QueryCursor, Tree};
+use tree_sitter::{QueryCursor, Tree};
 use zom_engine::{BufferVersion, ByteOffset, Snapshot, TextRange};
 
 use super::payload::HighlightSpan;
@@ -205,97 +194,8 @@ impl std::fmt::Debug for BufferSyntaxTree {
     }
 }
 
-/// 跨线程共享的 [`BufferSyntaxTree`] 槽位。轻量 clone（内部 `Arc<Mutex>`）。
-///
-/// 主线程持一份用于 `try_edit` 与 `load`；worker 线程持一份用于 `store_if_newer`。
-#[derive(Clone, Default, Debug)]
-pub struct BufferSyntaxTreeSlot {
-    inner: Arc<Mutex<Option<Arc<BufferSyntaxTree>>>>,
-}
-
-impl BufferSyntaxTreeSlot {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// 当前快照——`None` 表示尚未首次 parse（worker 还在跑 attach）。
-    ///
-    /// 返回 `Arc<BufferSyntaxTree>` clone（原子计数 +1），调用方拿走后立即放锁。
-    pub fn load(&self) -> Option<Arc<BufferSyntaxTree>> {
-        self.inner.lock().ok().and_then(|g| g.as_ref().cloned())
-    }
-
-    /// 无条件覆盖——单测用。运行时一律走 [`Self::store_if_newer`]，避免把过期 reparse 结果盖掉。
-    #[cfg(test)]
-    pub(crate) fn store(&self, tree: BufferSyntaxTree) {
-        if let Ok(mut g) = self.inner.lock() {
-            *g = Some(Arc::new(tree));
-        }
-    }
-
-    /// 只有"新版本 ≥ 当前版本"才覆盖——避免 worker 把过期 reparse 结果盖到主线程已经 `tree.edit` 推进过的更新版本上。
-    pub(crate) fn store_if_newer(&self, tree: BufferSyntaxTree) {
-        if let Ok(mut g) = self.inner.lock() {
-            let should = match g.as_ref() {
-                Some(curr) => curr.version.get() <= tree.version.get(),
-                None => true,
-            };
-            if should {
-                *g = Some(Arc::new(tree));
-            }
-        }
-    }
-
-    /// detach 时清空——保证下一任 provider 不会读到旧 tree。
-    pub(crate) fn clear(&self) {
-        if let Ok(mut g) = self.inner.lock() {
-            *g = None;
-        }
-    }
-
-    /// 主线程同步编辑入口：克隆当前所有层 tree、对每层逐条调 `Tree::edit`、把新版本写回 slot。
-    ///
-    /// 不重 parse、不查 query —— 只让 paint 这一帧拿到的 tree 字节坐标与新 snapshot 对齐。
-    /// worker 端的 Job::Edit 在后续到达，会用真正的 reparse 结果覆盖本次 interpolate tree。
-    ///
-    /// 多层情境下每层 tree 都要推进——只推一层会让上层 tree 的 byte range 与 snapshot 错位，paint 端 query 就会切到错乱字节坐标。
-    ///
-    /// 返回 `true` 表示 slot 里原本就有 tree 并被推进；
-    /// `false` 表示槽位为空，调用方什么也不必做（worker 的首份 Attach 产物到达后会自动初始化）。
-    pub(crate) fn try_edit(
-        &self,
-        edits: &[InputEdit],
-        new_snapshot: Snapshot,
-        new_version: BufferVersion,
-    ) -> bool {
-        let Ok(mut g) = self.inner.lock() else {
-            return false;
-        };
-        let Some(curr) = g.as_ref().cloned() else {
-            return false;
-        };
-        let new_layers: Vec<SyntaxLayer> = curr
-            .layers
-            .iter()
-            .map(|layer| {
-                let mut new_tree = layer.tree.clone();
-                for ie in edits {
-                    new_tree.edit(ie);
-                }
-                SyntaxLayer {
-                    config: layer.config.clone(),
-                    tree: new_tree,
-                }
-            })
-            .collect();
-        *g = Some(Arc::new(BufferSyntaxTree {
-            layers: new_layers,
-            snapshot: new_snapshot,
-            version: new_version,
-        }));
-        true
-    }
-}
+// BufferSyntaxTreeSlot 已迁移至 super::highlights::SyntaxHighlightsSlot。
+// tree.rs 仅保留树数据结构和查询逻辑，不再维护共享槽。
 
 // =============================================================================
 // 多层 span 合并（overlay）
@@ -401,21 +301,6 @@ fn overlay_two(
 mod tests {
     use super::*;
     use crate::syntax::payload::{HighlightName, TokenModifiers};
-    use crate::syntax::providers::common::build_shared_config;
-    use tree_sitter::{Language, Parser};
-    use zom_engine::{Buffer, BufferConfig};
-
-    fn rust_config() -> Arc<SharedConfig> {
-        let language: Language = tree_sitter_rust::LANGUAGE.into();
-        Arc::new(build_shared_config(language, tree_sitter_rust::HIGHLIGHTS_QUERY).unwrap())
-    }
-
-    fn parse(config: &SharedConfig, text: &str) -> Tree {
-        let mut parser = Parser::new();
-        parser.set_language(&config.language).unwrap();
-        parser.parse(text.as_bytes(), None).expect("parse 失败")
-    }
-
     fn span(start: usize, end: usize, name: &'static str) -> (TextRange, HighlightSpan) {
         let range = TextRange::new(ByteOffset::new(start), ByteOffset::new(end)).unwrap();
         let span = HighlightSpan::new(HighlightName::new(name), TokenModifiers::EMPTY);
@@ -428,148 +313,7 @@ mod tests {
             .collect()
     }
 
-    // ============== Slot 行为（单层退化与多层均覆盖） ==============
-
-    #[test]
-    fn store_and_load_round_trip() {
-        let cfg = rust_config();
-        let buffer = Buffer::from_text("fn a() {}".to_string(), BufferConfig::default()).unwrap();
-        let snapshot = buffer.snapshot();
-        let tree = parse(&cfg, "fn a() {}");
-        let slot = BufferSyntaxTreeSlot::new();
-        assert!(slot.load().is_none());
-        slot.store(BufferSyntaxTree::single(
-            cfg.clone(),
-            tree,
-            snapshot.clone(),
-            snapshot.version(),
-        ));
-        let loaded = slot.load().expect("应当存在快照");
-        assert_eq!(loaded.version(), snapshot.version());
-        assert_eq!(loaded.layers.len(), 1);
-    }
-
-    #[test]
-    fn store_if_newer_skips_older() {
-        let cfg = rust_config();
-        let mut buffer =
-            Buffer::from_text("fn a() {}".to_string(), BufferConfig::default()).unwrap();
-        let initial_snap = buffer.snapshot();
-        let initial_tree = parse(&cfg, "fn a() {}");
-        let slot = BufferSyntaxTreeSlot::new();
-
-        // 推进 buffer 到新版本，造一份"主线程已经 tree.edit 过"的更新快照。
-        buffer.insert(zom_engine::ByteOffset::new(9), " ").unwrap();
-        let newer_snap = buffer.snapshot();
-        let newer_version = newer_snap.version();
-
-        slot.store(BufferSyntaxTree::single(
-            cfg.clone(),
-            initial_tree.clone(),
-            newer_snap,
-            newer_version,
-        ));
-
-        // worker 端拿"老版本"试图覆盖——必须被丢弃。
-        slot.store_if_newer(BufferSyntaxTree::single(
-            cfg,
-            initial_tree,
-            initial_snap.clone(),
-            initial_snap.version(),
-        ));
-        let loaded = slot.load().unwrap();
-        assert_eq!(
-            loaded.version(),
-            newer_version,
-            "更新版本必须保留，过期的 worker reparse 不能覆盖"
-        );
-    }
-
-    #[test]
-    fn try_edit_advances_single_layer_tree() {
-        let cfg = rust_config();
-        let mut buffer =
-            Buffer::from_text("fn a() {}".to_string(), BufferConfig::default()).unwrap();
-        let initial_snap = buffer.snapshot();
-        let initial_tree = parse(&cfg, "fn a() {}");
-        let slot = BufferSyntaxTreeSlot::new();
-        slot.store(BufferSyntaxTree::single(
-            cfg,
-            initial_tree,
-            initial_snap.clone(),
-            initial_snap.version(),
-        ));
-
-        // 末尾插入一个字符：构造 InputEdit 推进 tree。
-        buffer.insert(zom_engine::ByteOffset::new(9), " ").unwrap();
-        let new_snap = buffer.snapshot();
-        let new_version = new_snap.version();
-        let edit = InputEdit {
-            start_byte: 9,
-            old_end_byte: 9,
-            new_end_byte: 10,
-            start_position: tree_sitter::Point::new(0, 9),
-            old_end_position: tree_sitter::Point::new(0, 9),
-            new_end_position: tree_sitter::Point::new(0, 10),
-        };
-        assert!(slot.try_edit(&[edit], new_snap.clone(), new_version));
-        let loaded = slot.load().unwrap();
-        assert_eq!(loaded.version(), new_version);
-        assert_eq!(
-            loaded.tree().root_node().end_byte(),
-            10,
-            "tree.edit 后根节点 end_byte 必须与新 snapshot 对齐"
-        );
-    }
-
-    #[test]
-    fn try_edit_advances_all_layers_byte_range() {
-        // 多层 try_edit 必须对每层 tree 都 tree.edit，否则上层 tree 的字节坐标会与 snapshot 错位。
-        // 此处用两份 rust tree 占位作为"两层"——这条护栏只关心 tree.edit 是否对每层都生效，与 grammar 是否真的不同无关。
-        let cfg = rust_config();
-        let mut buffer =
-            Buffer::from_text("fn a() {}".to_string(), BufferConfig::default()).unwrap();
-        let initial_snap = buffer.snapshot();
-        let tree_a = parse(&cfg, "fn a() {}");
-        let tree_b = parse(&cfg, "fn a() {}");
-        let slot = BufferSyntaxTreeSlot::new();
-        slot.store(BufferSyntaxTree::layered(
-            vec![
-                SyntaxLayer {
-                    config: cfg.clone(),
-                    tree: tree_a,
-                },
-                SyntaxLayer {
-                    config: cfg.clone(),
-                    tree: tree_b,
-                },
-            ],
-            initial_snap.clone(),
-            initial_snap.version(),
-        ));
-
-        buffer.insert(zom_engine::ByteOffset::new(9), " ").unwrap();
-        let new_snap = buffer.snapshot();
-        let new_version = new_snap.version();
-        let edit = InputEdit {
-            start_byte: 9,
-            old_end_byte: 9,
-            new_end_byte: 10,
-            start_position: tree_sitter::Point::new(0, 9),
-            old_end_position: tree_sitter::Point::new(0, 9),
-            new_end_position: tree_sitter::Point::new(0, 10),
-        };
-        assert!(slot.try_edit(&[edit], new_snap.clone(), new_version));
-        let loaded = slot.load().unwrap();
-        assert_eq!(loaded.version(), new_version);
-        for layer in &loaded.layers {
-            assert_eq!(
-                layer.tree.root_node().end_byte(),
-                10,
-                "每层 tree.edit 后 root_end_byte 都必须推进到新 snapshot 末尾"
-            );
-        }
-    }
+    // Slot 测试已迁移至 super::highlights 模块。
 
     // ============== overlay 单测 ==============
 

@@ -3,7 +3,7 @@
 //! 每条 entry 由 set 分配稳定 `VersionedRangeEntryId`，跨 delta 不变；
 //! 调用方通过 id 访问、删除或读取 entry，而不是位置下标——位置下标在 `update_through_delta_event` 失效条目后会发生漂移。
 //!
-//! `MetadataLayers` 把它按 `MetadataLayerKind` 索引；fold / 自定义分析产物等其他容器直接持有。
+//! 自定义分析产物等容器直接持有。
 
 use crate::{
     EngineResult,

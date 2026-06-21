@@ -3,12 +3,13 @@
 //! 文件树命令只描述"用户意图"，实际修改 `FileTreeModel` 由宿主解释 [`HostEffect`] 完成。
 //! 这样 `zom-command` 负责命令与快捷键，仍不反向依赖 `zom-desktop` 的面板实现。
 
+use crate::commands::cid;
 use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, PanelKind,
-    reject_unknown_args, required_arg,
+    CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
+    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, PanelKind, reject_unknown_args,
+    required_arg,
 };
 
 pub const MOVE_SELECTION: &str = "file_tree.move_selection";
@@ -462,8 +463,4 @@ fn run_cancel_delete(
 
 fn move_args(delta: isize) -> CommandArgs {
     FileTreeMoveArgs { delta }.into()
-}
-
-fn cid(id: &'static str) -> CommandId {
-    CommandId::new(id).expect("内建命令 ID 必须非空")
 }

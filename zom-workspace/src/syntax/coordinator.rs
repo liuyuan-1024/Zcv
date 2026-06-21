@@ -2,7 +2,7 @@
 //!
 //! 只做两件事：
 //!
-//! 1. 持有共享的 [`BufferSyntaxTreeSlot`] —— paint 端按它现查 viewport-scoped Query。
+//! 1. 持有共享的 [`SyntaxHighlightsSlot`] —— paint 端按它现查 viewport-scoped Query。
 //! 2. 在编辑入口同步推进 slot 里 tree 的字节坐标 + 投 worker reparse Job。
 
 use std::sync::Arc;
@@ -11,10 +11,10 @@ use zom_engine::{Buffer, DeltaEvent};
 
 use crate::BufferId;
 
+use super::highlights::SyntaxHighlightsSlot;
 use super::language::LanguageId;
 use super::provider::HighlightProvider;
 use super::providers::common::translate_edits;
-use super::tree::BufferSyntaxTreeSlot;
 use super::worker::SyntaxWorkerHandle;
 
 /// 大小超此阈值的缓冲区不挂 provider（手册 §十二）。
@@ -30,7 +30,7 @@ pub const MAX_HIGHLIGHT_BYTES: usize = 16 * 1024 * 1024;
 pub struct BufferSyntax {
     buffer_id: BufferId,
     language: LanguageId,
-    tree_slot: BufferSyntaxTreeSlot,
+    highlights_slot: SyntaxHighlightsSlot,
     worker: Arc<SyntaxWorkerHandle>,
 }
 
@@ -56,20 +56,25 @@ impl BufferSyntax {
         buffer: &Buffer,
         worker: Arc<SyntaxWorkerHandle>,
     ) -> Self {
-        let tree_slot = BufferSyntaxTreeSlot::new();
-        worker.attach(buffer_id, provider, buffer.snapshot(), tree_slot.clone());
+        let highlights_slot = SyntaxHighlightsSlot::new();
+        worker.attach(
+            buffer_id,
+            provider,
+            buffer.snapshot(),
+            highlights_slot.clone(),
+        );
         Self {
             buffer_id,
             language,
-            tree_slot,
+            highlights_slot,
             worker,
         }
     }
 
-    /// 主线程读 paint 入口——返回与本缓冲区共享的 [`BufferSyntaxTreeSlot`]。
-    /// desktop 渲染端 `slot.load()` 拿 `Arc<BufferSyntaxTree>` 跑 Query。
-    pub fn tree_slot(&self) -> &BufferSyntaxTreeSlot {
-        &self.tree_slot
+    /// 主线程读 paint 入口——返回与本缓冲区共享的 [`SyntaxHighlightsSlot`]。
+    /// desktop 渲染端 `slot.load()` 拿 `Arc<SyntaxHighlights>` 跑 Query。
+    pub fn highlights_slot(&self) -> &SyntaxHighlightsSlot {
+        &self.highlights_slot
     }
 
     pub fn language(&self) -> LanguageId {
@@ -92,11 +97,11 @@ impl BufferSyntax {
     pub fn handle_edit(&self, buffer: &Buffer, event: &DeltaEvent) {
         let new_snapshot = buffer.snapshot();
 
-        if let Some(curr) = self.tree_slot.load()
+        if let Some(curr) = self.highlights_slot.load()
             && let Some(input_edits) =
-                translate_edits(event.changeset(), curr.snapshot(), &new_snapshot)
+                translate_edits(event.changeset(), curr.tree().snapshot(), &new_snapshot)
         {
-            self.tree_slot
+            self.highlights_slot
                 .try_edit(&input_edits, new_snapshot.clone(), event.new_version());
         }
 
@@ -110,7 +115,7 @@ impl BufferSyntax {
 
     /// 关闭缓冲区 / 切换语言时清空 slot + 通知 worker。
     pub fn detach(self) {
-        self.tree_slot.clear();
+        self.highlights_slot.clear();
         self.worker.detach(self.buffer_id);
     }
 }
@@ -127,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn attach_populates_tree_slot_after_pump() {
+    fn attach_populates_highlights_slot_after_pump() {
         let buffer = make_buffer("fn main() {}");
         let worker = Arc::new(SyntaxWorkerHandle::spawn());
         let syntax = BufferSyntax::attach(
@@ -139,16 +144,16 @@ mod tests {
         );
         worker.wait_for_idle_for_test_or_bench();
 
-        let tree = syntax
-            .tree_slot()
+        let highlights = syntax
+            .highlights_slot()
             .load()
-            .expect("attach 完成后 slot 必须有 tree");
-        assert_eq!(tree.version(), buffer.version());
+            .expect("attach 完成后 slot 必须有 highlights");
+        assert_eq!(highlights.tree().version(), buffer.version());
         assert_eq!(syntax.language(), LanguageId::new("rust"));
     }
 
     #[test]
-    fn detach_clears_tree_slot() {
+    fn detach_clears_highlights_slot() {
         let buffer = make_buffer("fn main() {}");
         let worker = Arc::new(SyntaxWorkerHandle::spawn());
         let syntax = BufferSyntax::attach(
@@ -159,9 +164,9 @@ mod tests {
             worker.clone(),
         );
         worker.wait_for_idle_for_test_or_bench();
-        assert!(syntax.tree_slot().load().is_some());
+        assert!(syntax.highlights_slot().load().is_some());
 
-        let slot = syntax.tree_slot().clone();
+        let slot = syntax.highlights_slot().clone();
         syntax.detach();
         worker.wait_for_idle_for_test_or_bench();
         assert!(

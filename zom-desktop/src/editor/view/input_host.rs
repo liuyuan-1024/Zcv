@@ -9,7 +9,7 @@ use std::rc::Rc;
 use gpui::{
     App as GpuiApp, AppContext, Bounds, ElementInputHandler, Entity, FocusHandle, Pixels, Window,
 };
-use zom_view::WrapMap;
+use zom_workspace::view::WrapMap;
 
 use crate::app::App;
 use crate::editor::input::{CaretLayout, EditorInput};
@@ -44,7 +44,7 @@ pub(crate) struct SettledViewportTop {
 
 /// element prepaint 中段用来把本帧测得的视口与 wrap_map 写回 view 的钩子。
 ///
-/// 钩子内部先把 `wrap_map` / `visible_visual_rows` 落到 view，然后用最新 wrap_map 立即 [`zom_view::View::settle_viewport_y`] 一次，返回 settle 后的视口顶端；
+/// 钩子内部先把 `wrap_map` / `visible_visual_rows` 落到 view，然后用最新 wrap_map 立即 [`zom_workspace::view::View::settle_viewport_y`] 一次，返回 settle 后的视口顶端；
 /// element 用返回值决定本帧的 `top_visual_row`，从而软 / 硬换行下都能在「插入新行 / 触发新 sub-row」的同一帧把光标拉回视区。
 ///
 /// 主编辑区装一个真实实现；其它单行嵌入编辑器视口固定为单行，无需钩子。

@@ -7,9 +7,18 @@
 //! 纯 panel 切换类（terminal / debug / outline / version_control / keyboard_shortcuts）
 //! 已通过 [`crate::PanelKind`] 暴露，不再单独 re-export。
 
-use crate::{CommandHandler, CommandOutcome, CommandRegistry, HostEffect, Keymap, NoArgs};
+use crate::{
+    CommandHandler, CommandId, CommandOutcome, CommandRegistry, HostEffect, Keymap, NoArgs,
+};
 
 pub(crate) mod args;
+
+/// 把 `&'static str` 转成 [`CommandId`]——所有 feature 模块共用的单行工厂。
+///
+/// 之前这份 3 行函数在 11 个 feature 文件里逐份复制，现在收敛到这一处。
+pub(crate) fn cid(id: &'static str) -> CommandId {
+    CommandId::new(id).expect("内建命令 ID 必须非空")
+}
 mod features;
 pub(crate) mod reconcile;
 mod system;

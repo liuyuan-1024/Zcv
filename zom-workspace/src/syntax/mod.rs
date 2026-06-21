@@ -5,7 +5,10 @@
 
 mod coordinator;
 mod engine;
+pub mod highlight_names;
+mod highlights;
 mod language;
+pub mod lsp_tokens;
 mod payload;
 mod provider;
 mod tree;
@@ -15,9 +18,10 @@ pub mod providers;
 
 pub use coordinator::{BufferSyntax, MAX_HIGHLIGHT_BYTES};
 pub use engine::SyntaxEngine;
+pub use highlights::{SyntaxHighlights, SyntaxHighlightsSlot};
 pub use language::{LanguageDetector, LanguageId, LanguageRegistry, ProviderFactory};
 pub use payload::{HighlightName, HighlightSpan, TokenModifiers};
 pub use provider::{BufferHandle, HighlightProvider};
 pub use providers::install_builtin_providers;
-pub use tree::{BufferSyntaxTree, BufferSyntaxTreeSlot, SyntaxQueryCursor};
+pub use tree::{BufferSyntaxTree, SyntaxQueryCursor};
 pub use worker::SyntaxWorkerHandle;

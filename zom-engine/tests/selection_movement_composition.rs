@@ -1,44 +1,6 @@
 use zom_engine::*;
-
-fn b(value: usize) -> ByteOffset {
-    ByteOffset::new(value)
-}
-
-fn c(value: usize) -> CharOffset {
-    CharOffset::new(value)
-}
-
-fn range(start: usize, end: usize) -> TextRange {
-    TextRange::new(b(start), b(end)).unwrap()
-}
-
-fn selection(anchor: usize, head: usize) -> Selection {
-    Selection::new(b(anchor), b(head))
-}
-
-fn caret(offset: usize) -> Selection {
-    Selection::caret(b(offset))
-}
-
-fn set_caret(offset: usize) -> SelectionSet {
-    SelectionSet::caret(b(offset))
-}
-
-fn buffer_text(buffer: &Buffer) -> String {
-    buffer
-        .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
-        .unwrap()
-        .into_text()
-        .into_owned()
-}
-
-fn buffer(text: &str) -> Buffer {
-    Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
-}
-
-fn metadata(description: &str) -> TransactionMetadata {
-    TransactionMetadata::new(TransactionSource::Programmatic).with_description(description)
-}
+mod common;
+use common::*;
 
 #[test]
 fn set_selection_should_reject_out_of_bounds_invalid_utf8_and_grapheme_middle_offsets_atomically() {

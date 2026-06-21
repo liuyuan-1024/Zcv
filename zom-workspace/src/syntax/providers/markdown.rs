@@ -39,12 +39,13 @@ use tree_sitter::{Node, Parser, Range, Tree};
 use zom_engine::{BufferVersion, ByteOffset, ChangeSet, Snapshot};
 
 use crate::syntax::LanguageId;
+use crate::syntax::highlights::SyntaxHighlightsSlot;
 use crate::syntax::provider::{BufferHandle, HighlightProvider};
 use crate::syntax::providers::common::{
     SharedConfig, build_shared_config, build_shared_config_with_normalize, translate_edits,
 };
 use crate::syntax::providers::injection::resolve_injection_language;
-use crate::syntax::tree::{BufferSyntaxTree, BufferSyntaxTreeSlot, SyntaxLayer};
+use crate::syntax::tree::{BufferSyntaxTree, SyntaxLayer};
 
 const MARKDOWN_BLOCK_QUERY_EXTENSION: &str = r#"
 ; zom 本地扩展：补齐 tree-sitter-md 随包 nvim query 未覆盖的 Markdown 源码标记。
@@ -342,7 +343,7 @@ impl HighlightProvider for MarkdownProvider {
     ///
     /// inline 与 fence 之间天然不相交：fenced_code_block 是 block 级节点，不会被 `inline` 包裹。
     /// 所以三类层之间放成何种顺序对最终 spans 不影响，按上述顺序排只是为了让 export 与 overlay 的 precedence 含义自洽，便于排查。
-    fn export_syntax_tree(&self, slot: &BufferSyntaxTreeSlot) {
+    fn export_syntax_tree(&self, slot: &SyntaxHighlightsSlot) {
         let Some(state) = self.state.as_ref() else {
             return;
         };
@@ -365,7 +366,7 @@ impl HighlightProvider for MarkdownProvider {
             });
         }
         let version = state.snapshot.version();
-        slot.store_if_newer(BufferSyntaxTree::layered(
+        slot.store_tree(BufferSyntaxTree::layered(
             layers,
             state.snapshot.clone(),
             version,
@@ -581,7 +582,7 @@ mod tests {
 
     fn query_full(syntax: &BufferSyntax, buffer: &Buffer) -> Vec<(TextRange, HighlightSpan)> {
         let tree = syntax
-            .tree_slot()
+            .highlights_slot()
             .load()
             .expect("attach 完成后 slot 必须有 tree");
         let viewport =

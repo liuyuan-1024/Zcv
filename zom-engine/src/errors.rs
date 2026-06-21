@@ -9,6 +9,42 @@ use crate::{
     types::{BufferVersion, ByteOffset, CharOffset, Line, TextRange, TransactionId, Utf16Position},
 };
 
+/// `BufferLoadError` 与 `BufferSaveError` 的共享 impl 模板。
+/// 两份类型结构相同仅文案不同，`From` / `Display` / `Error` 收敛到这一个宏里。
+macro_rules! define_buffer_io_error {
+    ($name:ident, $io_label:expr, $engine_label:expr) => {
+        impl From<std::io::Error> for $name {
+            fn from(value: std::io::Error) -> Self {
+                Self::Io(value)
+            }
+        }
+
+        impl From<EngineError> for $name {
+            fn from(value: EngineError) -> Self {
+                Self::Engine(value)
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    Self::Io(e) => write!(f, "Buffer {}：{e}", $io_label),
+                    Self::Engine(e) => write!(f, "Buffer {}：{e}", $engine_label),
+                }
+            }
+        }
+
+        impl std::error::Error for $name {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                match self {
+                    Self::Io(e) => Some(e),
+                    Self::Engine(e) => Some(e),
+                }
+            }
+        }
+    };
+}
+
 /// 坐标转换、边界校验或越界相关的错误（坐标不合法）。
 ///
 /// **坐标系唯一真理**：引擎内部所有越界错误以 `ByteOffset` 描述；`CharOffset`
@@ -307,29 +343,18 @@ pub type EngineResult<T> = Result<T, EngineError>;
 /// 流式加载（`Buffer::from_reader`）失败的统一错误类型。
 ///
 /// 加载路径同时跨 `io::Read` 与引擎解码校验两个边界；任一侧失败都用本类型上抛。
-/// 调用方（宿主层 workspace）通常会把两种变体分别 wrap 为自己的错误。
 ///
 /// 不进 [`EngineError`]：`io::Error` 不可比较 / 不可哈希，混入 `EngineError`
 /// 会破坏现有的 `PartialEq` 派生与测试模式。
+///
+/// 实现由 [`define_buffer_io_error!`] 生成，与 [`BufferSaveError`] 共享同一份定义模板。
 #[derive(Debug)]
 pub enum BufferLoadError {
-    /// 从底层 reader 读取字节失败。
     Io(std::io::Error),
-    /// 解码或边界校验失败（包括非法 UTF-8、内部容量耗尽等）。
     Engine(EngineError),
 }
 
-impl From<std::io::Error> for BufferLoadError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<EngineError> for BufferLoadError {
-    fn from(value: EngineError) -> Self {
-        Self::Engine(value)
-    }
-}
+define_buffer_io_error!(BufferLoadError, "加载 IO 失败", "加载解码失败");
 
 impl From<StorageError> for BufferLoadError {
     fn from(value: StorageError) -> Self {
@@ -337,66 +362,17 @@ impl From<StorageError> for BufferLoadError {
     }
 }
 
-impl std::fmt::Display for BufferLoadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "Buffer 加载 IO 失败：{e}"),
-            Self::Engine(e) => write!(f, "Buffer 加载解码失败：{e}"),
-        }
-    }
-}
-
-impl std::error::Error for BufferLoadError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(e) => Some(e),
-            Self::Engine(e) => Some(e),
-        }
-    }
-}
-
 /// 流式保存（`Buffer::write_to`）失败的统一错误类型。
 ///
 /// 保存路径同时跨 `io::Write` 与引擎版本检查两个边界；任一侧失败都用本类型上抛。
-/// 与 [`BufferLoadError`] 一样，不混入 [`EngineError`]，避免 `io::Error` 破坏
-/// `EngineError` 的可比较语义。
+/// 实现由 [`define_buffer_io_error!`] 生成，与 [`BufferLoadError`] 共享同一份定义模板。
 #[derive(Debug)]
 pub enum BufferSaveError {
-    /// 写入底层 writer 失败。
     Io(std::io::Error),
-    /// 版本检查或文本边界校验失败。
     Engine(EngineError),
 }
 
-impl From<std::io::Error> for BufferSaveError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<EngineError> for BufferSaveError {
-    fn from(value: EngineError) -> Self {
-        Self::Engine(value)
-    }
-}
-
-impl std::fmt::Display for BufferSaveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "Buffer 保存 IO 失败：{e}"),
-            Self::Engine(e) => write!(f, "Buffer 保存校验失败：{e}"),
-        }
-    }
-}
-
-impl std::error::Error for BufferSaveError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(e) => Some(e),
-            Self::Engine(e) => Some(e),
-        }
-    }
-}
+define_buffer_io_error!(BufferSaveError, "保存 IO 失败", "保存校验失败");
 
 #[cfg(test)]
 mod tests {

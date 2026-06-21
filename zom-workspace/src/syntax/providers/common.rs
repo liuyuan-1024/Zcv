@@ -35,9 +35,10 @@ use tree_sitter::{
 };
 
 use crate::syntax::LanguageId;
+use crate::syntax::highlights::SyntaxHighlightsSlot;
 use crate::syntax::payload::{HighlightName, HighlightSpan, TokenModifiers};
 use crate::syntax::provider::{BufferHandle, HighlightProvider};
-use crate::syntax::tree::{BufferSyntaxTree, BufferSyntaxTreeSlot};
+use crate::syntax::tree::BufferSyntaxTree;
 use zom_engine::{BufferVersion, ByteOffset, ChangeSet, Snapshot, TextRange};
 
 /// 一门语言已 build 好的高亮配置：
@@ -515,20 +516,52 @@ impl HighlightProvider for HighlightWorker {
     }
 
     /// 把 worker 内部最新的 `tree` + `snapshot` 写到共享 slot，让主线程 paint 端能按 viewport 现查 Query。
-    /// `store_if_newer` 保证不会把过期 reparse 结果盖到主线程 `tree.edit` 已经推进过的更新版本上。
+    /// `store_tree` 保证不会把过期 reparse 结果盖到主线程 `tree.edit` 已经推进过的更新版本上。
     ///
     /// 任一槽位缺失（首次 attach 失败 / 上一轮回退过）直接返回，让 slot 维持上次值。
-    fn export_syntax_tree(&self, slot: &BufferSyntaxTreeSlot) {
+    fn export_syntax_tree(&self, slot: &SyntaxHighlightsSlot) {
         let (Some(tree), Some(snapshot)) = (self.tree.as_ref(), self.last_snapshot.as_ref()) else {
             return;
         };
         let version = snapshot.version();
-        slot.store_if_newer(BufferSyntaxTree::single(
+        slot.store_tree(BufferSyntaxTree::single(
             self.config.clone(),
             tree.clone(),
             snapshot.clone(),
             version,
         ));
+    }
+
+    fn highlight_snippet(
+        &self,
+        code: &str,
+    ) -> Vec<(
+        std::ops::Range<usize>,
+        crate::syntax::payload::HighlightName,
+    )> {
+        let mut parser = Parser::new();
+        if parser.set_language(&self.config.language).is_err() {
+            return Vec::new();
+        }
+        let Some(tree) = parser.parse(code.as_bytes(), None) else {
+            return Vec::new();
+        };
+
+        let mut cursor = QueryCursor::new();
+        let mut captures = cursor.captures(&self.config.query, tree.root_node(), code.as_bytes());
+        let mut spans: Vec<(
+            std::ops::Range<usize>,
+            crate::syntax::payload::HighlightName,
+        )> = Vec::new();
+        while let Some((m, capture_ix)) = captures.next() {
+            let capture = m.captures[*capture_ix];
+            let range = capture.node.start_byte()..capture.node.end_byte();
+            if let Some(name) = self.config.lookup.get(capture.index as usize).copied() {
+                spans.push((range, name));
+            }
+        }
+        spans.sort_by(|a, b| a.0.start.cmp(&b.0.start));
+        spans
     }
 }
 
@@ -574,7 +607,7 @@ pub(crate) mod test_support {
         );
         worker.wait_for_idle_for_test_or_bench();
         let tree = syntax
-            .tree_slot()
+            .highlights_slot()
             .load()
             .expect("attach 完成后 slot 必须有 tree");
         let viewport =
@@ -765,4 +798,95 @@ mod tests {
         assert_eq!(actual, expected, "版本跳跃时全量路径必须产出完整 spans");
         assert!(worker.tree.is_some());
     }
+}
+
+// ---------------------------------------------------------------------------
+// 声明宏：消除 10 个 Tier 1 provider 文件的重复样板
+// ---------------------------------------------------------------------------
+
+/// 生成一条语言 provider 的 `OnceLock` 配置函数与 `new_provider` 工厂。
+///
+/// 样板原形约 25 行，现在一行宏调用。使用示例：
+///
+/// ```ignore
+/// declare_tier1_provider!(json_config, new_provider, "json",
+///     tree_sitter_json::LANGUAGE, tree_sitter_json::HIGHLIGHTS_QUERY);
+/// ```
+///
+/// # 参数
+///
+/// - `$config_fn`：配置函数名（如 `json_config`）。
+/// - `$new_provider_fn`：`new_provider` 工厂名。
+/// - `$name_str`：语言 id 字符串，如 `"json"`。
+/// - `$lang`：`tree_sitter::Language` 常量。
+/// - `$query`：`&'static str` 高亮 query 源码。
+///
+/// typescript 这种一个 crate 两条语言的，调两次本宏；markdown 是自定义
+/// [`HighlightProvider`]，不走本宏。
+#[macro_export]
+macro_rules! declare_tier1_provider {
+    ($config_fn:ident, $new_provider_fn:ident, $name_str:expr, $lang:expr, $query:expr) => {
+        pub(crate) fn $config_fn() -> Result<
+            std::sync::Arc<$crate::syntax::providers::common::SharedConfig>,
+            &'static tree_sitter::QueryError,
+        > {
+            static CELL: std::sync::OnceLock<
+                Result<
+                    std::sync::Arc<$crate::syntax::providers::common::SharedConfig>,
+                    tree_sitter::QueryError,
+                >,
+            > = std::sync::OnceLock::new();
+            CELL.get_or_init(|| {
+                $crate::syntax::providers::common::build_shared_config($lang.into(), $query)
+                    .map(std::sync::Arc::new)
+            })
+            .as_ref()
+            .map(|c| c.clone())
+        }
+
+        pub fn $new_provider_fn() -> $crate::syntax::providers::common::HighlightWorker {
+            let config =
+                $config_fn().expect(concat!("tree-sitter-", $name_str, " 高亮配置必须构建"));
+            $crate::syntax::providers::common::HighlightWorker::new(
+                $crate::syntax::LanguageId::new($name_str),
+                config,
+            )
+        }
+    };
+}
+
+/// 生成 Tier 1 provider 的标准两个测试：烟雾测试 + lookup table 一致性测试。
+///
+/// ```ignore
+/// standard_provider_tests!(json_config, new_provider, "json",
+///     r#"{"name": "zom"}"#);
+/// ```
+#[macro_export]
+macro_rules! standard_provider_tests {
+    ($config_fn:ident, $new_provider_fn:ident, $name_str:expr, $sample:expr) => {
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+            use $crate::syntax::providers::common::test_support::{
+                assert_lookup_matches_capture_names, smoke_test_provider,
+            };
+
+            const SAMPLE: &str = $sample;
+
+            #[test]
+            fn provider_emits_spans() {
+                smoke_test_provider(
+                    $crate::syntax::LanguageId::new($name_str),
+                    SAMPLE,
+                    $new_provider_fn,
+                );
+            }
+
+            #[test]
+            fn lookup_table_matches_query_capture_names() {
+                let cfg = $config_fn().expect(concat!($name_str, " 配置必须构建"));
+                assert_lookup_matches_capture_names(&cfg);
+            }
+        }
+    };
 }

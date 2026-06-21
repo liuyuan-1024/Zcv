@@ -8,15 +8,15 @@
 
 它拥有 `zom_engine::Buffer` 实例本身，负责文件路径、来源、脏状态、只读、保存点等属于文件本身的状态。
 
-它不负责视图状态（滚动、光标、折叠）—— 那些「同一文件开两个分屏会不同」的状态属于 `zom-view`。它也不做文件监听、冲突弹窗、保存 UI、项目索引或跨文件搜索。
+它不负责视图状态（滚动、光标、折叠）—— 那些「同一文件开两个分屏会不同」的状态属于 `view` 模块。它也不做文件监听、冲突弹窗、保存 UI、项目索引或跨文件搜索。
 
-判据：同一文件开两个分屏不会不同的状态归这里；会不同的归 `zom-view`。
+判据：同一文件开两个分屏不会不同的状态归这里；会不同的归 `view` 模块。
 
 ## 核心类型
 
 - `Workspace` —— 当前打开的全部缓冲区的拥有者。
 - `WorkspaceBuffer` —— 一个被持有的缓冲区，连同它的文件边界状态。
-- `BufferId` —— workspace 自己的缓冲区标识（与 `zom_engine::BufferId` 区分）。
+- `BufferId` —— workspace 自己的缓冲区标识（`zom_engine::BufferId` 已降为 `pub(crate)`，下游唯一入口）。
 - `BufferOrigin` —— 缓冲区来源：绑定文件或未命名草稿。
 - `WorkspaceError` / `WorkspaceResult` —— workspace 文件生命周期错误边界。
 
@@ -45,10 +45,6 @@ tests/                    workspace 生命周期契约测试
 ```
 
 核心类型仍由 `src/lib.rs` 对外汇总；搜索、文件树和语法高亮按能力域拆分到独立模块。
-
-## 相关文档
-
-- `../AGENTS_GLOBAL.md`、`../AGENTS_PROJECT.md`：workspace 全局规则与项目规则。
 
 ## 文档维护
 

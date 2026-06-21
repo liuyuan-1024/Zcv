@@ -2,7 +2,7 @@
 name = "zom-desktop"
 version.workspace = true
 edition.workspace = true
-description = "桌面入口层：组合 engine、workspace、view、command 与 GPUI 外壳"
+description = "桌面入口层：组合 engine、workspace、command 与 GPUI 外壳"
 
 [[bin]]
 name = "Zom"
@@ -11,11 +11,13 @@ path = "src/main.rs"
 [dependencies]
 zom-engine.workspace = true
 zom-workspace.workspace = true
-zom-view.workspace = true
 zom-command.workspace = true
+zom-lsp.workspace = true
+lsp-types.workspace = true
 gpui.workspace = true
 pulldown-cmark.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

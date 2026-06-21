@@ -1,7 +1,7 @@
 //! HighlightProvider trait + BufferHandle。
 //!
-//! Provider 只剩四步：持有 Parser + Tree、按编辑事件 reparse、把 `(config + tree + snapshot + version)` 导出到共享 [`BufferSyntaxTreeSlot`]、释放资源。
-//! viewport-scoped Query 由 paint 阶段（[`crate::syntax::BufferSyntaxTree::query_viewport`]）现查，provider 不必知道 viewport。
+//! Provider 只剩四步：持有 Parser + Tree、按编辑事件 reparse、把 `(config + tree + snapshot + version)` 导出到共享 [`SyntaxHighlightsSlot`]、释放资源。
+//! viewport-scoped Query 由 paint 阶段（[`crate::syntax::SyntaxHighlights::query_viewport`]）现查，provider 不必知道 viewport。
 //!
 //! trait 仍存在的理由：把 tree-sitter / LSP / 占位三类 provider 形态对调度层 ([`crate::syntax::worker`]) 抽象成同一面；
 //! 调度层负责 Job 调度、panic 隔离、Entry 生命周期，不关心 provider 装的是哪门语言。
@@ -10,8 +10,8 @@ use std::sync::{Arc, RwLock};
 
 use zom_engine::{BufferVersion, ChangeSet, Snapshot};
 
+use super::highlights::SyntaxHighlightsSlot;
 use super::language::LanguageId;
-use super::tree::BufferSyntaxTreeSlot;
 
 /// 调度层借给 provider 的 buffer 只读句柄。
 ///
@@ -70,11 +70,30 @@ pub trait HighlightProvider: Send + Sync {
     /// 把 provider 当前持有的"语法树 + 对应 snapshot"导出到共享槽位。
     ///
     /// 调度层（[`crate::syntax::worker`]）在每次 attach / on_edit 处理完成后调用，
-    /// 让 paint 阶段能用 [`BufferSyntaxTreeSlot::load`] 拿到与 worker 内部状态对齐的 [`crate::syntax::BufferSyntaxTree`]。
+    /// 让 paint 阶段能用 [`SyntaxHighlightsSlot::load`] 拿到与 worker 内部状态对齐的 [`crate::syntax::SyntaxHighlights`]。
     ///
     /// 默认实现无操作——LSP / 占位 provider 没有 tree-sitter 树，自然没什么可导出。
     /// tree-sitter provider 在自身的 `HighlightWorker` 上 override。
-    fn export_syntax_tree(&self, slot: &BufferSyntaxTreeSlot) {
+    fn export_syntax_tree(&self, slot: &SyntaxHighlightsSlot) {
         let _ = slot;
+    }
+
+    /// 对一段独立代码片段做一次性的语法高亮查询（同步、不依赖 buffer）。
+    ///
+    /// 用于 Markdown 预览中的代码块等独立场景。
+    /// 返回按 byte range 排序的 highlight span 列表。
+    ///
+    /// **注意**：返回的 byte range 直接来自 tree-sitter node，**可能落在 UTF-8 多字节
+    /// 字符中间**，且 range 可能嵌套重叠。消费端在传给 GPUI 之前需要做：
+    /// 1. 端点钳位到 char boundary — [`crate::SyntaxEngine::highlight_snippet`] 已做
+    /// 2. 重叠展平为不重叠段 — desktop 端 `flatten_highlights` 负责
+    ///
+    /// 默认实现返回空 Vec——不支持 snippet 高亮的 provider（如 LSP provider）不做任何事。
+    fn highlight_snippet(
+        &self,
+        code: &str,
+    ) -> Vec<(std::ops::Range<usize>, super::payload::HighlightName)> {
+        let _ = code;
+        Vec::new()
     }
 }

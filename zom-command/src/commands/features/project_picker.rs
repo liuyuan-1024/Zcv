@@ -5,12 +5,12 @@
 //!
 //! esc 走系统级 [`crate::commands::system::dismiss::DISMISS_TOP`]（scope=ProjectPicker）—— [`SHOW_PROJECTS_PICKER`] 推一条 dismiss token，esc 弹出后重新派发 [`DISMISS`]。
 
+use crate::commands::cid;
 use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, CommandRegistry,
-    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, reject_unknown_args,
-    required_arg,
+    CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
+    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, reject_unknown_args, required_arg,
 };
 
 pub const SHOW_PROJECTS_PICKER: &str = "workspace.show_projects_picker";
@@ -186,8 +186,4 @@ fn run_dismiss(
 
 fn move_args(delta: isize) -> CommandArgs {
     PickerMoveArgs { delta }.into()
-}
-
-fn cid(id: &'static str) -> CommandId {
-    CommandId::new(id).expect("内建命令 ID 必须非空")
 }

@@ -4,8 +4,8 @@
 //! 让 [`crate::text_target::EditorRouter`] 能像对待小输入框一样统一路由主编辑区。
 
 use zom_command::{CommandError, EditTarget, KeyContext};
-use zom_view::{ViewId, ViewSet, ViewportState, WrapMap};
 use zom_workspace::Workspace;
+use zom_workspace::view::{ViewId, ViewSet, ViewportState, WrapMap};
 
 use crate::editor::highlight;
 use crate::editor::text::{
@@ -157,12 +157,9 @@ fn snapshot_from_active_view(
     });
     snapshot.reveal = reveal;
     highlight::push_workspace_search(buffer, &mut snapshot.decorations);
-    // syntax decoration 从共享 BufferSyntaxTree 现查 viewport-scoped Query。
-    // `slot.load()` 返回 `Arc<BufferSyntaxTree>` clone（计数 +1，无锁路径）；
-    // `as_deref` 把 `Option<Arc<_>>` 借成 `Option<&BufferSyntaxTree>` 给 push 用。
-    let syntax_tree = buffer.syntax_tree_slot().and_then(|slot| slot.load());
-    highlight::push_syntax_tree(
-        syntax_tree.as_deref(),
+    let highlights = buffer.highlights_slot().and_then(|slot| slot.load());
+    highlight::push_syntax_highlights(
+        highlights.as_deref(),
         &snapshot.lines,
         &mut snapshot.decorations,
     );

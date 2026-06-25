@@ -1197,7 +1197,10 @@ mod tests {
         assert!(outcome.consumed);
         assert_eq!(
             outcome.effects,
-            vec![HostEffect::TogglePanel(PanelId::FileTree, false)]
+            vec![
+                HostEffect::TogglePanel(PanelId::FileTree, false),
+                HostEffect::EditorCancelPointerSelection,
+            ]
         );
     }
 
@@ -1209,15 +1212,25 @@ mod tests {
 
         let outcome = app.dispatch_key("mod f".to_string()).expect("派发成功");
         assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::SearchToggle]);
+        assert_eq!(
+            outcome.effects,
+            vec![
+                HostEffect::SearchToggle,
+                HostEffect::EditorCancelPointerSelection
+            ]
+        );
 
         // mod shift f 绑到项目搜索占位命令：弹一条"敬请期待"气泡。
         let outcome = app
             .dispatch_key("mod shift f".to_string())
             .expect("派发成功");
         assert!(outcome.consumed);
-        assert_eq!(outcome.effects.len(), 1);
+        assert_eq!(outcome.effects.len(), 2);
         assert!(matches!(outcome.effects[0], HostEffect::ShowBubble(_)));
+        assert!(matches!(
+            outcome.effects[1],
+            HostEffect::EditorCancelPointerSelection
+        ));
     }
 
     #[test]
@@ -1231,7 +1244,10 @@ mod tests {
         assert!(outcome.consumed);
         assert_eq!(
             outcome.effects,
-            vec![HostEffect::TogglePanel(PanelId::FileTree, false)]
+            vec![
+                HostEffect::TogglePanel(PanelId::FileTree, false),
+                HostEffect::EditorCancelPointerSelection,
+            ]
         );
 
         let outcome = app.dispatch_key("mod a".to_string()).expect("派发成功");
@@ -1296,7 +1312,13 @@ mod tests {
         let outcome = app.dispatch_key("mod o".to_string()).unwrap();
 
         assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::ShowProjectPicker]);
+        assert_eq!(
+            outcome.effects,
+            vec![
+                HostEffect::ShowProjectPicker,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
     }
 
     #[test]
@@ -1308,7 +1330,13 @@ mod tests {
             .dispatch_command(project_picker_commands::open_local_project())
             .unwrap();
 
-        assert_eq!(actions, vec![HostEffect::OpenLocalProject]);
+        assert_eq!(
+            actions,
+            vec![
+                HostEffect::OpenLocalProject,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
     }
 
     #[test]
@@ -1333,7 +1361,10 @@ mod tests {
         assert!(outcome.consumed);
         assert_eq!(
             outcome.effects,
-            vec![HostEffect::ProjectPickerMoveSelection(1)]
+            vec![
+                HostEffect::ProjectPickerMoveSelection(1),
+                HostEffect::EditorCancelPointerSelection,
+            ]
         );
 
         // backspace 落到 picker query 的 text_edit 上下文，由 DELETE 命令处理（删一个字符）。
@@ -1343,17 +1374,35 @@ mod tests {
 
         let outcome = app.dispatch_key("enter".to_string()).unwrap();
         assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::ProjectPickerActivate]);
+        assert_eq!(
+            outcome.effects,
+            vec![
+                HostEffect::ProjectPickerActivate,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
 
         let actions = app
             .dispatch_command(project_picker_commands::start_git_clone())
             .unwrap();
-        assert_eq!(actions, vec![HostEffect::StartGitClone]);
+        assert_eq!(
+            actions,
+            vec![
+                HostEffect::StartGitClone,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
 
         let actions = app
             .dispatch_command(project_picker_commands::remove_recent_project())
             .unwrap();
-        assert_eq!(actions, vec![HostEffect::RemoveSelectedRecentProject]);
+        assert_eq!(
+            actions,
+            vec![
+                HostEffect::RemoveSelectedRecentProject,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
     }
 
     #[test]
@@ -1370,7 +1419,13 @@ mod tests {
 
         let outcome = app.dispatch_key("enter".to_string()).unwrap();
         assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::FileTreeConfirmDelete]);
+        assert_eq!(
+            outcome.effects,
+            vec![
+                HostEffect::FileTreeConfirmDelete,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
 
         // enter 提交后栈已被 commit 清空；再 esc 必须重新经 request_delete() 才有 token。
         let _ = app.dispatch_command(file_tree::request_delete()).unwrap();
@@ -1383,7 +1438,13 @@ mod tests {
 
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
         assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::FileTreeCancelDelete]);
+        assert_eq!(
+            outcome.effects,
+            vec![
+                HostEffect::FileTreeCancelDelete,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
     }
 
     #[test]
@@ -1402,7 +1463,13 @@ mod tests {
 
         let actions = app.dispatch_command(language_servers::open()).unwrap();
 
-        assert_eq!(actions, vec![HostEffect::ShowLanguageServers]);
+        assert_eq!(
+            actions,
+            vec![
+                HostEffect::ShowLanguageServers,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
     }
 
     #[test]
@@ -1410,13 +1477,31 @@ mod tests {
         let mut app = App::new();
 
         let actions = app.dispatch_command(settings::open()).unwrap();
-        assert_eq!(actions, vec![HostEffect::ShowSettings]);
+        assert_eq!(
+            actions,
+            vec![
+                HostEffect::ShowSettings,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
 
         let actions = app.dispatch_command(settings::dismiss()).unwrap();
-        assert_eq!(actions, vec![HostEffect::DismissSurface]);
+        assert_eq!(
+            actions,
+            vec![
+                HostEffect::DismissSurface,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
 
         let actions = app.dispatch_command(diagnostics::show_problems()).unwrap();
-        assert_eq!(actions, vec![HostEffect::ShowDiagnostics]);
+        assert_eq!(
+            actions,
+            vec![
+                HostEffect::ShowDiagnostics,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
     }
 
     #[test]
@@ -1430,7 +1515,13 @@ mod tests {
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
 
         assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::DismissSurface]);
+        assert_eq!(
+            outcome.effects,
+            vec![
+                HostEffect::DismissSurface,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
     }
 
     #[test]
@@ -1442,7 +1533,13 @@ mod tests {
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
 
         assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::DismissSurface]);
+        assert_eq!(
+            outcome.effects,
+            vec![
+                HostEffect::DismissSurface,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
     }
 
     #[test]
@@ -1461,7 +1558,13 @@ mod tests {
         let outcome = app.dispatch_key("escape".to_string()).unwrap();
 
         assert!(outcome.consumed);
-        assert_eq!(outcome.effects, vec![HostEffect::DismissSurface]);
+        assert_eq!(
+            outcome.effects,
+            vec![
+                HostEffect::DismissSurface,
+                HostEffect::EditorCancelPointerSelection,
+            ]
+        );
     }
 
     fn project_fixture(name: &str) -> PathBuf {

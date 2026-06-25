@@ -1143,9 +1143,6 @@ fn run_clear_selection(
         let next = SelectionSet::new_with_primary(collapsed, primary_index);
         target.set_selection(next)?;
     }
-    context
-        .effects
-        .push(HostEffect::EditorCancelPointerSelection);
     Ok(CommandOutcome::default())
 }
 
@@ -1190,9 +1187,29 @@ fn run_move_selection(
             *lines = u32::try_from((measured * 2 / 3).max(1)).unwrap_or(u32::MAX);
         }
     }
+    let extend = args.extend;
     let target = context.edit_target()?;
     let selections = target.selection.clone();
-    move_target_selection(target, selections, args.direction, args.motion, args.extend)?;
+    // 非扩展移动且有选区时，先塌缩到方向边缘，再交给下游移动。
+    // 这样 engine / visual_movement 只看到简单 caret，不需要各自处理塌缩——换行边界、视觉行移动等路径一个都不用改。
+    let had_extent = !extend && selections.as_slice().iter().any(|sel| !sel.is_caret());
+    let selections = if had_extent {
+        let primary_index = selections.primary_index();
+        let collapsed: Vec<Selection> = selections
+            .as_slice()
+            .iter()
+            .map(|sel| {
+                Selection::caret(match args.direction {
+                    MovementDirection::Previous => sel.start(),
+                    MovementDirection::Next => sel.end(),
+                })
+            })
+            .collect();
+        SelectionSet::new_with_primary(collapsed, primary_index)
+    } else {
+        selections
+    };
+    move_target_selection(target, selections, args.direction, args.motion, extend)?;
     Ok(CommandOutcome::default())
 }
 

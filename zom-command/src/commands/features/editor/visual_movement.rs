@@ -235,8 +235,8 @@ fn apply_visual_line_edge(
 
 /// 处理 primary caret 正好在软换行边界、单 grapheme 步进需要原地翻转 affinity 的情形。
 ///
-/// 返回 `Ok(true)` 表示已在边界翻转完成；`Ok(false)` 表示 caret 不在边界，调用方按
-/// engine 的常规 grapheme 步进路径处理。
+/// 返回 `Ok(true)` 表示已在边界翻转完成；
+/// 返回 `Ok(false)` 表示 caret 不在边界，调用方按 engine 的常规 grapheme 步进路径处理。
 fn try_grapheme_wrap_boundary(
     target: &mut crate::EditTarget<'_>,
     wrap_map: &WrapMap,

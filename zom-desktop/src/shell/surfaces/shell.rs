@@ -62,6 +62,7 @@ impl Render for SurfaceShell {
             .top_0()
             .left_0()
             .size_full()
+            .occlude()
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 if let Some(focus) = dismiss_manager.update(cx, |m, cx| m.dismiss(cx)) {
                     window.focus(&focus);

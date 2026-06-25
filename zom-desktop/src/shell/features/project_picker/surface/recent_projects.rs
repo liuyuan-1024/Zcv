@@ -50,16 +50,6 @@ fn project_row(
     } else {
         gpui::rgba(0)
     };
-    let bg = if selected {
-        color::current().gray.s04
-    } else {
-        gpui::rgba(0)
-    };
-    let text_color = if selected {
-        color::current().blue.s07
-    } else {
-        color::current().gray.s09
-    };
     let select = Rc::clone(&actions.select);
     let intent_request = Rc::clone(&actions.intent_request);
     div()
@@ -69,9 +59,9 @@ fn project_row(
         .rounded(radius::r2())
         .border_1()
         .border_color(border)
-        .bg(bg)
+        .hover(|style| style.bg(color::current().gray.s04))
         .overflow_hidden()
-        .text_color(text_color)
+        .text_color(color::current().gray.s09)
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             (select)(index);

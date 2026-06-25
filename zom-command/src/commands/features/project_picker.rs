@@ -106,7 +106,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .install(
             keymap,
             START_GIT_CLONE,
-            "从 Git 地址导入",
+            "从远程地址导入",
             emit(HostEffect::StartGitClone),
         )
         .key_in("mod g", picker);

@@ -394,6 +394,7 @@ fn render_row(
                 .truncate()
                 .child(row.name.clone()),
         );
+    row_div = row_div.hover(|style| style.bg(color::current().gray.s04));
     let click_path = row.path.clone();
     let on_click = Rc::clone(on_item_click);
     row_div = row_div

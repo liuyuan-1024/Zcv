@@ -179,15 +179,16 @@ impl GitService {
 
             // 去掉路径首尾的空白和引号
             let path_str = path_str.trim();
-            // git 会对含特殊字符的路径做 C 风格引用：外层双引号 + 内层转义
+            // git 会对含非 ASCII 字符的路径做 C 风格引用：外层双引号 + 八进制转义。
+            // 例如 "\346\236\266\346\236\204.md" 实际对应 "架构.md"。
             let path_str = if path_str.starts_with('"') && path_str.ends_with('"') {
-                &path_str[1..path_str.len() - 1]
+                unquote_git_path(&path_str[1..path_str.len() - 1])
             } else {
-                path_str
+                path_str.to_string()
             };
 
             let status = classify_xy(x, y);
-            new_statuses.insert(PathBuf::from(path_str), status);
+            new_statuses.insert(PathBuf::from(&path_str), status);
         }
 
         // 子文件状态向上冒泡到所有祖先目录
@@ -250,30 +251,6 @@ impl GitService {
         let rel = resolved.strip_prefix(&self.repo_root).ok()?;
         Some(rel.to_path_buf())
     }
-}
-
-/// 一个 diff hunk 的行范围描述——gutter 据此画色条。
-///
-/// `new_start` 和 `new_lines` 描述工作区文件中的行范围（1-based）。
-#[derive(Debug, Clone, Copy)]
-pub struct DiffHunk {
-    pub new_start: u32,
-    pub new_lines: u32,
-    pub kind: DiffHunkKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffHunkKind {
-    /// 新增行（只出现在工作区）。
-    Added,
-    /// 修改行（HEAD 和工作区都有，内容不同）。
-    Modified,
-    /// 删除行（只出现在 HEAD）。gutter 不直接对应到工作区行，用 old_start 标记位置。
-    Deleted,
-}
-
-impl GitService {
-    // （已有方法省略，在此追加）
 
     /// 查询单个文件的 diff hunk 列表（相对 HEAD）。
     ///
@@ -297,26 +274,51 @@ impl GitService {
     }
 }
 
+/// 一个 diff hunk 的行范围描述——gutter 据此画色条。
+///
+/// `new_start` 和 `new_lines` 描述工作区文件中的行范围（1-based）。
+#[derive(Debug, Clone, Copy)]
+pub struct DiffHunk {
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub kind: DiffHunkKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffHunkKind {
+    /// 新增行（只出现在工作区）。
+    Added,
+    /// 修改行（HEAD 和工作区都有，内容不同）。
+    Modified,
+    /// 删除行（只出现在 HEAD）。gutter 不直接对应到工作区行，用 old_start 标记位置。
+    Deleted,
+}
+
 /// 解析 unified diff 输出的 hunk header：`@@ -old_start,old_lines +new_start,new_lines @@`
+///
+/// 用 `@@` 定界取数字段，不依赖 `+`/`-` 不出现在路径或函数名中的假设。
 fn parse_diff_hunks(diff: &str) -> Vec<DiffHunk> {
     let mut hunks = Vec::new();
     for line in diff.lines() {
-        if !line.starts_with("@@") {
-            continue;
-        }
-        // 提取 +new_start,new_lines
-        let plus = match line.split('+').nth(1) {
-            Some(p) => p.split(' ').next().unwrap_or(""),
+        // 格式：@@ -old_start,old_count +new_start,new_count @@ 可选尾部上下文
+        // 用 "@@" 劈开取中间的数字段，不依赖 '+'/'-' 不出现在路径中。
+        let body = match line.split("@@").nth(1) {
+            Some(s) => s.trim(),
             None => continue,
         };
-        let parts: Vec<&str> = plus.split(',').collect();
-        let new_start: u32 = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let new_lines: u32 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
-
-        // 提取 -old_start,old_lines 判断类型
-        let minus = line.split('-').nth(1).and_then(|m| m.split(' ').next());
-        let old_parts: Vec<&str> = minus.unwrap_or("").split(',').collect();
-        let old_lines: u32 = old_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
+        // body: "-10,3 +10,5"
+        let mut parts = body.split_whitespace();
+        let (Some(minus), Some(plus)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let parse_pair = |s: &str| -> (u32, u32) {
+            let mut ns = s[1..].split(',');
+            let start: u32 = ns.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+            let count: u32 = ns.next().and_then(|n| n.parse().ok()).unwrap_or(1);
+            (start, count)
+        };
+        let (new_start, new_lines) = parse_pair(plus);
+        let (_old_start, old_lines) = parse_pair(minus);
 
         let kind = if new_lines == 0 {
             DiffHunkKind::Deleted
@@ -359,6 +361,57 @@ fn parse_code(c: u8) -> StatusCode {
         b'T' => StatusCode::TypeChanged,
         _ => StatusCode::Unmodified,
     }
+}
+
+/// 解码 git 对含非 ASCII 字符路径的 C 风格八进制转义。
+///
+/// git 的 `core.quotePath` 默认为 true，会将路径中非 ASCII 字节写成 `\ooo` 格式
+/// （`\` 后跟 3 位八进制数）。例如 `\346\236\266\346\236\204.md` 解码后为 `架构.md`。
+///
+/// 此外也处理 `\\`、`\"`、`\n`、`\t` 等标准 C 转义。
+fn unquote_git_path(quoted: &str) -> String {
+    let mut bytes = Vec::with_capacity(quoted.len());
+    let mut chars = quoted.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            // 直接推入 UTF-8 字节（ASCII 路径的常见情况）
+            bytes.extend_from_slice(ch.encode_utf8(&mut [0u8; 4]).as_bytes());
+            continue;
+        }
+        // 处理转义序列
+        match chars.next() {
+            Some('\\') => bytes.push(b'\\'),
+            Some('"') => bytes.push(b'"'),
+            Some('n') => bytes.push(b'\n'),
+            Some('t') => bytes.push(b'\t'),
+            Some(d0) if d0.is_ascii_digit() => {
+                // 八进制转义：\ooo（最多 3 位）
+                let v0 = (d0 as u8) - b'0';
+                let mut val: u16 = v0 as u16;
+                // 再取最多两个八进制数字
+                if let Some(&d1) = chars.peek()
+                    && d1.is_ascii_digit()
+                {
+                    chars.next();
+                    val = val * 8 + (d1 as u8 - b'0') as u16;
+                }
+                if let Some(&d2) = chars.peek()
+                    && d2.is_ascii_digit()
+                {
+                    chars.next();
+                    val = val * 8 + (d2 as u8 - b'0') as u16;
+                }
+                bytes.push(val as u8);
+            }
+            // 不认识的转义序列：保持原样（包括 `\` 和后面的字符）
+            Some(other) => {
+                bytes.push(b'\\');
+                bytes.extend_from_slice(other.encode_utf8(&mut [0u8; 4]).as_bytes());
+            }
+            None => bytes.push(b'\\'),
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 #[cfg(test)]
@@ -593,5 +646,38 @@ index 123..456 100644
         assert_eq!(hunks[2].new_start, 35);
         assert_eq!(hunks[2].new_lines, 0);
         assert!(matches!(hunks[2].kind, DiffHunkKind::Deleted));
+    }
+
+    #[test]
+    fn unquote_git_path_should_decode_octal_escapes() {
+        // 中文文件名 "架构原则.md" 的八进制转义形式
+        assert_eq!(
+            unquote_git_path(r"\346\236\266\346\236\204\345\216\237\345\210\231.md"),
+            "架构原则.md"
+        );
+    }
+
+    #[test]
+    fn unquote_git_path_should_handle_mixed_ascii_and_escape() {
+        assert_eq!(
+            unquote_git_path(r"src/\346\265\213\350\257\225/mod.rs"),
+            "src/测试/mod.rs"
+        );
+    }
+
+    #[test]
+    fn unquote_git_path_should_preserve_plain_ascii() {
+        assert_eq!(unquote_git_path("README.md"), "README.md");
+        assert_eq!(unquote_git_path("src/lib.rs"), "src/lib.rs");
+    }
+
+    #[test]
+    fn unquote_git_path_should_handle_backslash_and_quote_escapes() {
+        // \" → " 和 \\ → \
+        assert_eq!(unquote_git_path("file\\\"name.txt"), "file\"name.txt");
+        assert_eq!(
+            unquote_git_path("path\\\\to\\\\file.txt"),
+            "path\\to\\file.txt"
+        );
     }
 }

@@ -30,7 +30,7 @@ default-members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.6.10"
+version = "0.6.11"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -83,6 +83,10 @@ lsp-types = "0.97"
 
 # ---- 桌面 UI ----
 gpui = "0.2.2"
+
+# ---- 文件监听 ----
+notify = "7"
+crossbeam-channel = "0.5"
 
 # ---- Markdown 渲染（zom-desktop preview） ----
 pulldown-cmark = { version = "0.13", default-features = false }

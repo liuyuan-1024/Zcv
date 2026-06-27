@@ -395,7 +395,7 @@ impl ProjectTree {
         Ok(())
     }
 
-    fn reload_expanded_dirs(&mut self) -> io::Result<()> {
+    pub fn reload_expanded_dirs(&mut self) -> io::Result<()> {
         let mut expanded: Vec<_> = self.expanded.iter().cloned().collect();
         expanded.sort_by_key(|path| path.components().count());
         self.children.clear();

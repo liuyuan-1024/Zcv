@@ -17,6 +17,7 @@ mod config;
 mod dispatch;
 mod editor;
 mod editor_state;
+mod file_watcher;
 mod focus;
 mod git_service;
 mod host_intent;

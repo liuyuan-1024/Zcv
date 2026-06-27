@@ -3,7 +3,7 @@
 //! `FileTreeModel` 是应用数据；`FileTreeRuntime` 是每个窗口自己的焦点句柄与
 //! 交互装配。ShellView 只持有这个 feature 实例，不再散落保存 file_tree_* 细节。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -31,11 +31,15 @@ pub(crate) struct FileTreeRuntime {
 }
 
 impl FileTreeRuntime {
-    pub(crate) fn new<T>(cx: &mut Context<T>, git_handle: Rc<RefCell<GitService>>) -> Self {
+    pub(crate) fn new<T>(
+        cx: &mut Context<T>,
+        git_handle: Rc<RefCell<GitService>>,
+        fs_changed: Rc<Cell<bool>>,
+    ) -> Self {
         Self {
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
-            model: Rc::new(RefCell::new(FileTreeModel::new(git_handle))),
+            model: Rc::new(RefCell::new(FileTreeModel::new(git_handle, fs_changed))),
         }
     }
 
@@ -57,7 +61,7 @@ impl FileTreeRuntime {
             .and_then(|id| app.workspace().buffer(id))
             .and_then(|wb| wb.path())
             .map(std::path::PathBuf::from);
-        self.model.borrow().state(active_path)
+        self.model.borrow_mut().state(active_path)
     }
 
     pub(crate) fn install_listeners<T: 'static>(

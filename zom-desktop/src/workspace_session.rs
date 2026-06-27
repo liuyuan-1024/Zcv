@@ -223,6 +223,48 @@ impl WorkspaceSession {
         }
     }
 
+    /// 检测并处理文件的外部修改。
+    ///
+    /// 若 `path` 对应一个打开的 buffer 且磁盘内容已变化：
+    /// - 缓冲区无未保存修改 → 自动 `reload_from_text` 更新到磁盘版本
+    /// - 缓冲区有未保存修改 → 跳过，保留用户编辑
+    ///
+    /// 由 [`FileWatcherService`](crate::file_watcher::FileWatcherService) 在检测到
+    /// `Modified` 事件时调用。
+    pub(crate) fn reload_if_externally_changed(&mut self, path: &Path) {
+        // 找到匹配 path 的 buffer
+        let buffer_id = self
+            .workspace
+            .buffers()
+            .find_map(|(id, buffer)| buffer.path().filter(|p| *p == path).map(|_| id));
+
+        let Some(buffer_id) = buffer_id else {
+            return;
+        };
+
+        let Some(wb) = self.workspace.buffer_mut(buffer_id) else {
+            return;
+        };
+
+        // 有未保存修改时不覆盖用户编辑
+        if wb.buffer().has_unsaved_changes() {
+            return;
+        }
+
+        // 读取磁盘文件并 reload
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        if let Err(error) = wb.buffer_mut().reload_from_text(text) {
+            self.pending_bubbles.push(
+                BubbleRequest::error(format!("重载外部修改失败：{}：{error}", path.display()))
+                    .dedupe("workspace.reload"),
+            );
+        }
+    }
+
     fn focus_buffer_edit_view(&mut self, buffer_id: BufferId) {
         let view_id = match self.views.find_edit_view_for_buffer(buffer_id) {
             Some(id) => id,

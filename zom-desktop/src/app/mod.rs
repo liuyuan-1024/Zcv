@@ -36,6 +36,7 @@ use crate::config::{AppConfig, SettingsChange};
 use crate::dispatch::KeyDispatchOutcome;
 use crate::editor::{EditorViewportMeasurement, SettledViewportTop};
 use crate::editor_state::{self, EditorState};
+use crate::file_watcher::{FileWatcherService, FsEventKind};
 use crate::focus::{AppFocus, FileTreeFocus, FocusStore, PanelSubFocus};
 use crate::git_service::GitService;
 use crate::host_intent::{InteractionIntent, PointerIntent};
@@ -66,6 +67,10 @@ pub struct App {
     preview_cache: RefCell<BTreeMap<ViewId, (BufferVersion, String)>>,
     /// 预览滚动句柄：跨帧 / 跨 tab 切换复用，保持预览滚动位置。
     preview_scroll_handles: RefCell<BTreeMap<ViewId, gpui::ScrollHandle>>,
+    /// 文件监听服务：项目打开时启动，关闭时释放。
+    file_watcher: Option<FileWatcherService>,
+    /// 文件系统变更标志：文件监听器检测到变更时置 true，FileTreeModel::state() 消费后清回 false。
+    fs_changed: Rc<Cell<bool>>,
 }
 
 impl App {
@@ -102,6 +107,8 @@ impl App {
             lsp_host: LspHost::new(),
             preview_cache: RefCell::new(BTreeMap::new()),
             preview_scroll_handles: RefCell::new(BTreeMap::new()),
+            file_watcher: None,
+            fs_changed: Rc::new(Cell::new(false)),
         }
     }
 
@@ -131,6 +138,11 @@ impl App {
     /// 获取共享的 git 状态服务句柄，供 FileTreeRuntime 等消费方初始化时注入。
     pub(crate) fn git_handle(&self) -> Rc<RefCell<GitService>> {
         self.git.clone()
+    }
+
+    /// 文件树脏标志：文件监听器发现有文件变更时置 true；FileTreeModel 消费后清回 false。
+    pub(crate) fn fs_changed_handle(&self) -> Rc<Cell<bool>> {
+        self.fs_changed.clone()
     }
 
     pub(crate) fn install_file_tree_host(&mut self, host: Box<dyn FileTreeHost>) {
@@ -281,6 +293,8 @@ impl App {
         self.lsp_host.set_project_root(Some(&root));
         self.session.reset_project(self.config.buffer_config());
         self.request_focus(AppFocus::editor());
+        // 启动文件监听。失败时静默降级——文件树仍可通过手动操作刷新。
+        self.file_watcher = FileWatcherService::start(&root).ok();
     }
 
     pub(crate) fn project_title(&self) -> String {
@@ -456,8 +470,8 @@ impl App {
                 false
             }
             HostEffect::RefreshGitStatus => {
-                // TODO: 此 effect 当前由文件保存触发，是临时方案。
-                // 将来由 FS watcher 监听 .git/ 目录变化驱动，本 handler 保留作为刷新入口。
+                // 手动触发 git 状态刷新（命令/快捷键入口）。
+                // 文件监听器也会在 .git/ 变更时自动刷新——二者互为补充。
                 let _ = self.git.borrow_mut().refresh();
                 false
             }
@@ -679,6 +693,33 @@ impl App {
     /// [`install_frame_pump`]: Self::install_frame_pump
     pub fn pump_frame_observers(&mut self) {
         self.background.pump_frame_observers(&mut self.session);
+    }
+
+    /// 每帧排空文件监听事件。
+    ///
+    /// 只处理必须由 App 做的事（buffer 重载需要 WorkspaceSession）。
+    /// git 状态刷新也在此提前完成——不依赖 FileTreeModel::state() 的 dirty flag 时序。
+    pub fn pump_file_watcher(&mut self) {
+        let Some(watcher) = self.file_watcher.as_mut() else {
+            return;
+        };
+        let events = watcher.drain_events();
+        if events.is_empty() {
+            return;
+        }
+
+        // buffer 外部修改重载：需要 WorkspaceSession。
+        for event in &events {
+            if event.kind == FsEventKind::Modified {
+                self.session.reload_if_externally_changed(&event.path);
+            }
+        }
+
+        // 提前刷新 git 状态——确保 state() 无论何时被调用都能拿到最新颜色。
+        let _ = self.git.borrow_mut().refresh();
+
+        // 通知文件树重载目录缓存（reload_expanded_dirs）。
+        self.fs_changed.set(true);
     }
 
     /// 每帧推进 LSP 状态：收割 server 启动结果 → semantic tokens 响应 → 文档同步 → 请求新 tokens。

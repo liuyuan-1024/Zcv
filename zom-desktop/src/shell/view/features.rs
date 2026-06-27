@@ -41,7 +41,8 @@ impl FeatureRegistry {
     pub(super) fn assemble<T>(app: &Rc<RefCell<App>>, cx: &mut Context<T>) -> Self {
         let panels = PanelRuntimes::new(cx);
         let git_handle = app.borrow().git_handle();
-        let file_tree = FileTreeRuntime::new(cx, git_handle);
+        let fs_changed = app.borrow().fs_changed_handle();
+        let file_tree = FileTreeRuntime::new(cx, git_handle, fs_changed);
         let project_picker = ProjectPickerRuntime::new(cx, RecentProjects::default_path());
         let language_servers = LanguageServersRuntime::new(cx);
         let search = SearchRuntime::new(cx);

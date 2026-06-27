@@ -276,7 +276,8 @@ pub enum HostEffect {
     FileTreePaste,
     /// 刷新 git 状态缓存（文件树着色、editor gutter、Git Panel 等所有消费方同步更新）。
     ///
-    /// TODO: 当前由文件保存触发，是临时方案。将来 FS watcher 监听 .git/ 变化时自动 emit。
+    /// 文件保存时 emit，同时 FileWatcherService 在检测到 .git/ 变更时自动在 pump 中刷新。
+    /// 二者互为补充——前者覆盖编辑器内操作，后者覆盖外部 git 操作。
     RefreshGitStatus,
 }
 

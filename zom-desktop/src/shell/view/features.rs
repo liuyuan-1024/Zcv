@@ -40,7 +40,8 @@ impl FeatureRegistry {
     /// 生产路径用 [`RecentProjects::default_path`]；headless 单测不经过 ShellView::new。
     pub(super) fn assemble<T>(app: &Rc<RefCell<App>>, cx: &mut Context<T>) -> Self {
         let panels = PanelRuntimes::new(cx);
-        let file_tree = FileTreeRuntime::new(cx);
+        let git_handle = app.borrow().git_handle();
+        let file_tree = FileTreeRuntime::new(cx, git_handle);
         let project_picker = ProjectPickerRuntime::new(cx, RecentProjects::default_path());
         let language_servers = LanguageServersRuntime::new(cx);
         let search = SearchRuntime::new(cx);

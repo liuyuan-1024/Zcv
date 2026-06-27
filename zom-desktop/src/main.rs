@@ -18,6 +18,7 @@ mod dispatch;
 mod editor;
 mod editor_state;
 mod focus;
+mod git_service;
 mod host_intent;
 mod lsp_host;
 mod ports;

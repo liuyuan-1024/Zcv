@@ -91,8 +91,21 @@ impl TextEditorSlot {
             .borrow()
             .with_router(|router| router.snapshot_for_focus(self.focus));
 
+        let buffer_path = {
+            let app = self.app.borrow();
+            app.active_buffer_id()
+                .and_then(|id| app.workspace().buffer(id))
+                .and_then(|wb| wb.path())
+                .map(std::path::PathBuf::from)
+        };
+
         self.kernel
-            .element(snapshot, self.input.focus_handle(), self.input.hook())
+            .element(
+                snapshot,
+                self.input.focus_handle(),
+                self.input.hook(),
+                buffer_path.as_deref(),
+            )
             .element_id(self.element_id.clone())
             .scroll_hook(self.scroll_hook())
             .selection_hook(self.selection_hook())

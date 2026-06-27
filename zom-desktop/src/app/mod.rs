@@ -37,6 +37,7 @@ use crate::dispatch::KeyDispatchOutcome;
 use crate::editor::{EditorViewportMeasurement, SettledViewportTop};
 use crate::editor_state::{self, EditorState};
 use crate::focus::{AppFocus, FileTreeFocus, FocusStore, PanelSubFocus};
+use crate::git_service::GitService;
 use crate::host_intent::{InteractionIntent, PointerIntent};
 use crate::lsp_host::LspHost;
 use crate::ports::{
@@ -55,6 +56,8 @@ pub struct App {
     focus: FocusStore,
     project_root: Option<PathBuf>,
     text_targets: TextTargetRuntime,
+    /// git 状态服务：App 层持有，文件树 / editor gutter / Git Panel 共享查询。
+    git: Rc<RefCell<GitService>>,
     file_tree: Option<Box<dyn FileTreeHost>>,
     search: Option<Box<dyn SearchHost>>,
     /// LSP 主机：管理语言服务器实例池、文档同步路由与诊断收集、每帧推进后台状态。
@@ -92,6 +95,8 @@ impl App {
             focus: FocusStore::new(AppFocus::project_picker()),
             project_root: None,
             text_targets: TextTargetRuntime::new(),
+            // 初始化为空，项目打开后 FileTreeModel 会替换内部 GitService
+            git: Rc::new(RefCell::new(GitService::new(std::path::Path::new("")))),
             file_tree: None,
             search: None,
             lsp_host: LspHost::new(),
@@ -123,8 +128,11 @@ impl App {
         self.background.install_frame_pump(pump);
     }
 
-    /// 注册文件树动作端口。文件树模型归 shell feature runtime 持有；
-    /// app 只通过这个端口组合命令动作与 [`WorkspaceSession`]。
+    /// 获取共享的 git 状态服务句柄，供 FileTreeRuntime 等消费方初始化时注入。
+    pub(crate) fn git_handle(&self) -> Rc<RefCell<GitService>> {
+        self.git.clone()
+    }
+
     pub(crate) fn install_file_tree_host(&mut self, host: Box<dyn FileTreeHost>) {
         self.file_tree = Some(host);
     }
@@ -445,6 +453,12 @@ impl App {
             }
             HostEffect::EditorCloseTab(view_id) => {
                 self.session.close_view(*view_id);
+                false
+            }
+            HostEffect::RefreshGitStatus => {
+                // TODO: 此 effect 当前由文件保存触发，是临时方案。
+                // 将来由 FS watcher 监听 .git/ 目录变化驱动，本 handler 保留作为刷新入口。
+                let _ = self.git.borrow_mut().refresh();
                 false
             }
             _ => true,

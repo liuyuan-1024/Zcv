@@ -14,7 +14,7 @@ use crate::editor::TextEditorSlot;
 use crate::editor_state::{EditorState, EditorTab};
 use crate::host_intent::KeyRequest;
 use crate::shell::{FocusRequest, FocusRequestTarget, normalized_chord};
-use crate::theme::{color, radius, space, typography};
+use crate::theme::{color, radius, typography};
 
 use super::markdown_preview;
 
@@ -92,7 +92,6 @@ fn editor_surface(slot: &Rc<TextEditorSlot>) -> Div {
         .overflow_hidden()
         .rounded(radius::r4())
         .bg(color::current().gray.s01)
-        .p(space::s6())
         .font(typography::editor_font())
         .line_height(typography::editor_line())
         .text_size(typography::editor())

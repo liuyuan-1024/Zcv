@@ -1420,6 +1420,9 @@ fn run_save(
         context.effects.push(HostEffect::ShowBubble(
             BubbleRequest::error(format!("保存失败：{error}")).dedupe("editor.save"),
         ));
+    } else {
+        // TODO: 文件保存触发 git 刷新是临时方案，将来改用 FS watcher 监听 .git/。
+        context.effects.push(HostEffect::RefreshGitStatus);
     }
     Ok(CommandOutcome::default())
 }

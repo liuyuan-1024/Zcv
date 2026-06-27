@@ -109,6 +109,10 @@ pub mod space {
     pub fn s16() -> Pixels {
         px(16.0)
     }
+    /// gutter 左缘 git diff 色条宽度。
+    pub fn gutter_bar() -> Pixels {
+        px(4.0)
+    }
 }
 
 pub mod radius {

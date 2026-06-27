@@ -362,11 +362,16 @@ fn render_row(
     } else {
         gpui::rgba(0)
     };
-    // 与 top bar Glyph 同基线：常态 g07，活动项 g09。
-    let text_color = if is_active {
-        color::current().gray.s09
-    } else {
-        color::current().gray.s07
+    // 文件名颜色：git 状态优先，其次看是否活动文件。
+    let text_color = match row.git_color {
+        Some(kind) => color::git_status(kind),
+        None => {
+            if is_active {
+                color::current().gray.s09
+            } else {
+                color::current().gray.s07
+            }
+        }
     };
 
     let cont = continuation(row.terminal_mask, row.depth);

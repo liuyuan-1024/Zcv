@@ -274,6 +274,10 @@ pub enum HostEffect {
     /// 把剪贴板内容粘贴到焦点所在目录（焦点是文件则其父，无焦点用项目根）。
     /// Cut 模式粘贴完清空剪贴板与选区；Copy 模式保留两者以便连续粘到多处。
     FileTreePaste,
+    /// 刷新 git 状态缓存（文件树着色、editor gutter、Git Panel 等所有消费方同步更新）。
+    ///
+    /// TODO: 当前由文件保存触发，是临时方案。将来 FS watcher 监听 .git/ 变化时自动 emit。
+    RefreshGitStatus,
 }
 
 /// `CommandContext` 内的 effect 缓冲。

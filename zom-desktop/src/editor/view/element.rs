@@ -50,6 +50,7 @@ use crate::editor::pointer::{
     PointerHitLine, PointerHitTest, PointerScrollHook, PointerSelectionHook,
     PointerSelectionSession, install_scroll_handler, install_selection_handlers,
 };
+use crate::git_service::{ColorKind, DiffHunk, DiffHunkKind};
 
 use super::blink::CaretClock;
 use super::gutter;
@@ -112,6 +113,8 @@ pub(crate) struct EditorElement {
     decorations: Vec<Decoration>,
     /// prepaint 末尾调用，把当前帧测得的 viewport 写回 view 的视口测量值；只主编辑区装。
     viewport_sync: Option<EditorViewportSyncHook>,
+    /// git diff hunk 数据，用于 gutter 画添加/修改/删除色条。
+    diff_hunks: Vec<DiffHunk>,
 }
 
 impl EditorElement {
@@ -143,6 +146,7 @@ impl EditorElement {
             reveal: None,
             decorations: Vec::new(),
             viewport_sync: None,
+            diff_hunks: Vec::new(),
         }
     }
 
@@ -169,6 +173,11 @@ impl EditorElement {
 
     pub(crate) fn viewport_sync(mut self, hook: EditorViewportSyncHook) -> Self {
         self.viewport_sync = Some(hook);
+        self
+    }
+
+    pub(crate) fn diff_hunks(mut self, hunks: Vec<DiffHunk>) -> Self {
+        self.diff_hunks = hunks;
         self
     }
 
@@ -643,6 +652,7 @@ impl Element for EditorElement {
                 self.total_lines,
                 &text_style,
                 font_size,
+                &self.diff_hunks,
                 window,
             )
         } else {
@@ -796,9 +806,33 @@ impl Element for EditorElement {
         }
         let mouse_hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
 
+        // git diff 行背景
+        let mut git_backgrounds = Vec::new();
+        if !self.diff_hunks.is_empty() {
+            for (visual_row, entry) in gutter_rows.iter().enumerate() {
+                if let Some(line_index) = entry {
+                    for hunk in &self.diff_hunks {
+                        let start = hunk.new_start.saturating_sub(1) as u64;
+                        let end = start + hunk.new_lines as u64;
+                        if *line_index >= start && *line_index < end {
+                            let kind = match hunk.kind {
+                                DiffHunkKind::Added => ColorKind::Added,
+                                DiffHunkKind::Modified => ColorKind::Modified,
+                                DiffHunkKind::Deleted => ColorKind::Deleted,
+                            };
+                            git_backgrounds.push(LineBackgroundQuad {
+                                row: visual_row,
+                                color: color::git_status_bg(kind),
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         EditorPrepaint {
-            // v1 空槽位：行背景。
-            line_backgrounds: Vec::new(),
+            line_backgrounds: git_backgrounds,
             // composer 已按 priority 排好；paint 顺序 = Vec 顺序，低优先级先画。
             range_backgrounds,
             lines: prepainted_lines,

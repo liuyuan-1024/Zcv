@@ -8,27 +8,27 @@
 //! - `fs_ops`：文件系统操作与目录树动作；
 //! - `WorkspaceSession`：文件操作后的 buffer / view 同步。
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use zom_command::BubbleRequest;
 use zom_workspace::{EntryKind, ProjectTree};
 
-#[cfg(test)]
-use crate::editor::text::EditorSnapshotRequest;
+use crate::git_service::GitService;
 
 use super::clipboard::{ClipboardMode, FileTreeClipboard};
 use super::fs_ops::infer_entry_kind_from_input;
-#[cfg(test)]
-use super::fs_ops::{compute_paste_target, next_sibling_of};
 use super::inline_edit::{PendingEntry, PendingRenameEntry};
 use super::selection::Stroke;
-#[cfg(test)]
-use super::{FileTreeActivation, FileTreeOutcome};
 use super::{FileTreeRow, FileTreeState, PendingDelete, PendingNewEntry, PendingRename};
 
 pub(crate) struct FileTreeModel {
     pub(super) project_tree: Option<ProjectTree>,
+    /// git 状态服务共享句柄。App 层持有主引用，文件树通过此 handle 查询。
+    /// 项目打开时替换内部 GitService；App 层 RefreshGitStatus 直接写同一个实例。
+    pub(super) git_service: Rc<RefCell<GitService>>,
     pub(super) selected: Option<PathBuf>,
     /// **已提交的选区**——过去 Shift+方向"笔画"沉淀下来的、通过普通方向键提交的项。
     /// 当前正在进行中的笔画不存在这里，而是放在 [`stroke`](Self::stroke) 里，可随 Shift+↑/↓ 自由伸缩。
@@ -55,9 +55,10 @@ pub(crate) struct FileTreeModel {
 }
 
 impl FileTreeModel {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(git_handle: Rc<RefCell<GitService>>) -> Self {
         Self {
             project_tree: None,
+            git_service: git_handle,
             selected: None,
             selection: BTreeSet::new(),
             stroke: None,
@@ -85,6 +86,18 @@ impl FileTreeModel {
                 None
             }
         };
+        // 重建 GitService 并拉取初始状态。
+        // TODO: 项目打开时手动 refresh 是临时方案，将来 FS watcher 接管后移除。
+        {
+            let mut svc = self.git_service.borrow_mut();
+            *svc = GitService::new(&root);
+            if let Err(error) = svc.refresh() {
+                self.pending_bubbles.push(
+                    BubbleRequest::error(format!("git status 刷新失败：{error}"))
+                        .dedupe("file_tree.git_status"),
+                );
+            }
+        }
         self.selected = None;
         self.selection.clear();
         self.stroke = None;
@@ -101,13 +114,22 @@ impl FileTreeModel {
         let rows: Vec<FileTreeRow> = tree
             .visible_rows()
             .into_iter()
-            .map(|row| FileTreeRow {
-                path: row.path.to_path_buf(),
-                name: row.name.to_string(),
-                depth: row.depth,
-                kind: row.kind,
-                expanded: row.expanded,
-                terminal_mask: row.terminal_mask,
+            .map(|row| {
+                let git_color = match row.kind {
+                    EntryKind::Directory => {
+                        self.git_service.borrow().directory_color_kind(&row.path)
+                    }
+                    EntryKind::File => self.git_service.borrow().color_kind(&row.path),
+                };
+                FileTreeRow {
+                    path: row.path.to_path_buf(),
+                    name: row.name.to_string(),
+                    depth: row.depth,
+                    kind: row.kind,
+                    expanded: row.expanded,
+                    terminal_mask: row.terminal_mask,
+                    git_color,
+                }
             })
             .collect();
         let active = active_buffer_path;
@@ -171,21 +193,27 @@ impl FileTreeModel {
 #[cfg(test)]
 impl Default for FileTreeModel {
     fn default() -> Self {
-        Self::new()
+        Self::new(Rc::new(RefCell::new(GitService::new(
+            std::path::Path::new(""),
+        ))))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::text::OwnedEditorTarget;
+    use crate::editor::text::{EditorSnapshotRequest, OwnedEditorTarget};
+    use crate::git_service::{ColorKind, GitService};
     use crate::shell::features::panels::file_tree::fs_ops::{
-        apply_outcome, selected_path_after_deleting_active,
+        apply_outcome, compute_paste_target, next_sibling_of, selected_path_after_deleting_active,
     };
     use crate::workspace_session::WorkspaceSession;
+    use std::fs;
     use std::fs::{File, create_dir_all};
     use zom_workspace::view::{ViewId, ViewSet};
     use zom_workspace::{BufferId, Workspace};
+
+    use crate::shell::features::panels::file_tree::{FileTreeActivation, FileTreeOutcome};
 
     /// 测试桥：跑模型动作 → 翻 outcome 到 session，得到 activation。
     /// 让 `model.foo(); apply_outcome(...)` 两步在测试里合成一行。
@@ -1022,5 +1050,96 @@ mod tests {
         let _ = apply(&mut model, &mut session, |m| m.commit_rename());
         assert!(root.join("a.txt").is_file());
         assert!(model.pending_rename.is_none());
+    }
+
+    /// 验证：在 git 仓库中打开项目后，文件树的 git 状态着色链路完整走通。
+    #[test]
+    fn git_color_should_flow_from_git_service_to_state() {
+        use std::process::Command as StdCommand;
+
+        let root = tmp_root("git-color-flow");
+        // git init
+        StdCommand::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["config", "user.email", "test@zom.local"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["config", "user.name", "zom-test"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+
+        // 创建 clean.txt 并提交（干净文件不应着色）
+        File::create(root.join("clean.txt")).unwrap();
+        StdCommand::new("git")
+            .args(["add", "clean.txt"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+
+        // 创建 untracked.txt（不 git add）
+        File::create(root.join("untracked.txt")).unwrap();
+
+        // 修改 clean.txt（应显示 Modified 颜色）
+        fs::write(root.join("clean.txt"), b"modified content").unwrap();
+
+        // 共享 GitService 句柄，模拟 App → FileTreeModel 的真实链路
+        let git_handle = Rc::new(RefCell::new(GitService::new(std::path::Path::new(""))));
+        let mut model = FileTreeModel::new(git_handle);
+        // 新建子目录 + 目录内未跟踪文件，验证目录颜色冒泡
+        create_dir_all(root.join("sub")).unwrap();
+        File::create(root.join("sub/new_in_sub.txt")).unwrap();
+        // 子目录内还有一个已提交再修改的文件
+        File::create(root.join("sub/mod_in_sub.txt")).unwrap();
+        StdCommand::new("git")
+            .args(["add", "sub/mod_in_sub.txt"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["commit", "-m", "add sub file"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        fs::write(root.join("sub/mod_in_sub.txt"), b"changed in sub").unwrap();
+
+        // 重新 open_project 触发刷新，让新文件进入 ProjectTree 缓存
+        model.open_project(root.clone());
+        let state = model.state(None);
+        let color_of = |name: &str| -> Option<ColorKind> {
+            state
+                .rows
+                .iter()
+                .find(|r| r.name == name)
+                .and_then(|r| r.git_color)
+        };
+
+        // clean.txt 被修改 → Modified（黄）
+        assert_eq!(color_of("clean.txt"), Some(ColorKind::Modified));
+
+        // untracked.txt 未跟踪 → Untracked（浅绿灰）
+        assert_eq!(color_of("untracked.txt"), Some(ColorKind::Untracked));
+
+        // "sub" 目录包含 Modified(mod_in_sub.txt) + Untracked(new_in_sub.txt)
+        // Modified 比 Untracked 严重 → 目录应显示 Modified
+        assert_eq!(
+            color_of("sub"),
+            Some(ColorKind::Modified),
+            "sub 目录内含已修改文件，折叠时目录名应显示 Modified 颜色"
+        );
+
+        // 干净子目录不应有着色（如果没有任何变更的话不在此测）
+        // ——项目根 root 本身在 visible_rows 中也是目录行，如果有子项变更也应着色
     }
 }

@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use crate::app::App;
 use crate::editor::TextEditorSlot;
+use crate::git_service::GitService;
 use crate::host_intent::{FileTreeClickCallback, KeyRequest};
 use crate::ports::{FileTreeAction, FileTreeActionResult, FileTreeHost};
 use crate::shell::shared::scroll::ScrollHandle;
@@ -30,11 +31,11 @@ pub(crate) struct FileTreeRuntime {
 }
 
 impl FileTreeRuntime {
-    pub(crate) fn new<T>(cx: &mut Context<T>) -> Self {
+    pub(crate) fn new<T>(cx: &mut Context<T>, git_handle: Rc<RefCell<GitService>>) -> Self {
         Self {
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
-            model: Rc::new(RefCell::new(FileTreeModel::new())),
+            model: Rc::new(RefCell::new(FileTreeModel::new(git_handle))),
         }
     }
 

@@ -154,7 +154,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_in("shift tab", search_input);
     registry.install(keymap, DISMISS, "退出搜索", Box::new(run_dismiss));
     registry
-        .install(keymap, TOGGLE, "查找", emit(HostEffect::SearchToggle))
+        .install(keymap, TOGGLE, "查找", Box::new(run_toggle))
         .key_in("mod f", text_edit);
     registry
         .install(
@@ -167,6 +167,19 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_in("enter", search_input);
 
     dismiss_top::bind_esc(keymap, DismissScope::SearchInput, search_input);
+}
+
+fn run_toggle(
+    context: &mut CommandContext<'_>,
+    args: CommandArgs,
+) -> Result<CommandOutcome, CommandError> {
+    NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::SearchInput);
+    context
+        .dismiss
+        .push(DismissScope::SearchInput, "退出搜索", dismiss());
+    context.effects.push(HostEffect::SearchToggle);
+    Ok(CommandOutcome::default())
 }
 
 fn run_dismiss(

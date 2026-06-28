@@ -17,9 +17,22 @@ use crate::theme::color;
 use zom_workspace::syntax::SyntaxEngine;
 
 use super::elements::{
-    code_block_element, horizontal_rule, image_element, wrap_block, wrap_inline, wrap_inline_flex,
+    code_block_element, horizontal_rule, image_element, wrap_block, wrap_inline,
+    wrap_inline_as_flex_items,
 };
 use super::math;
+
+// ───────────────── 行内元素段 ─────────────────
+
+/// 行内流中暂存的元素段，最终在 close_inline 中组装为 flex_row + flex_wrap。
+pub(super) enum InlineSegment {
+    /// 文本字词——在 flex 容器中用 flex_none 包裹。
+    Text(AnyElement),
+    /// 公式/图片等媒体——直接以自然尺寸参与 flex 流。
+    Media(AnyElement),
+    /// flex_wrap 强制断行——w_full + 0 高度，把后续元素挤到下一 flex 行。
+    Break,
+}
 
 // ───────────────── 构建器 ─────────────────
 
@@ -33,9 +46,8 @@ pub(super) struct Builder<'a> {
     pub(super) base_dir: Option<PathBuf>,
     /// 当前行内 frame 的 kind——用于跨 image 分割后重建同类型 frame。
     pub(super) current_inline_kind: Option<InlineKind>,
-    /// image/公式 分割行内流时暂存的已完结元素段。
-    /// `true` 表示文本段（需要用 flex_1 参与行内流），`false` 表示媒体元素（自然宽度）。
-    pub(super) inline_segments: Vec<(bool, AnyElement)>,
+    /// image/公式/换行 分割行内流时暂存的已完结元素段。
+    pub(super) inline_segments: Vec<InlineSegment>,
     /// 元素计数器——为每个 img 生成唯一 ElementId，用于跨帧状态持久化。
     pub(super) element_counter: u64,
     /// 预览滚动句柄——锚点链接点击时用于滚动到目标标题。
@@ -235,7 +247,7 @@ impl<'a> Builder<'a> {
                 // 行内公式：拆分行内流，作为自然宽度媒体嵌入文本流。
                 self.split_inline();
                 let element = math::math_element(text.as_ref(), false);
-                self.inline_segments.push((false, element));
+                self.inline_segments.push(InlineSegment::Media(element));
             }
             Event::DisplayMath(text) => {
                 // 块级公式：$$...$$ → 居中、自然尺寸。
@@ -250,14 +262,11 @@ impl<'a> Builder<'a> {
             }
             Event::SoftBreak => self.on_text(" "),
             Event::HardBreak => {
-                // 在有 inline 分割（如公式/图片）的上下文中，flex 布局内 \n 只能在该 flex item 内部换行，
-                // 换行后文本起点是 flex item 的左边缘，而非容器左边缘，会产生偏移。
-                // 此时关闭当前 flex 布局，让换行后文本从新的行首开始。
-                if !self.inline_segments.is_empty() {
-                    self.close_inline();
-                } else {
-                    self.on_text("\n");
-                }
+                // 在 flex 流中插入强制断行元素——w_full + 0 高度，
+                // 让 flex_wrap 把后续内容挤到下一 flex 行，行间距由
+                // line_height 自然控制（与软换行间距一致）。
+                self.split_inline();
+                self.inline_segments.push(InlineSegment::Break);
             }
             Event::Rule => self.push_block_element(horizontal_rule()),
             Event::Html(_) | Event::InlineHtml(_) => {}
@@ -432,7 +441,7 @@ impl<'a> Builder<'a> {
                         self.base_dir.as_deref(),
                         img_id,
                     );
-                    self.inline_segments.push((false, element));
+                    self.inline_segments.push(InlineSegment::Media(element));
                 }
             }
             _ => {}
@@ -517,48 +526,37 @@ impl<'a> Builder<'a> {
             return;
         }
 
-        // 有 image/公式 分割 → 收尾当前 frame 并拼装。
+        // 有分割 → 收尾当前 frame 并拼装。
         if let Some(frame) = frame {
             if !frame.spans.is_empty() {
-                let is_heading = matches!(frame.kind, InlineKind::Heading(_));
-                if is_heading {
-                    self.element_counter += 1;
+                for el in wrap_inline_as_flex_items(frame, base_dir, scroll_handle, heading_anchors)
+                {
+                    self.inline_segments.push(InlineSegment::Text(el));
                 }
-                let elem_id = if is_heading {
-                    Some(("md-h", self.element_counter))
-                } else {
-                    None
-                };
-                let element =
-                    wrap_inline_flex(frame, base_dir, scroll_handle, heading_anchors, elem_id);
-                self.inline_segments.push((true, element));
             }
         }
 
         let segments = std::mem::take(&mut self.inline_segments);
         let body: AnyElement = if segments.len() == 1 {
-            let (_, el) = segments.into_iter().next().unwrap();
-            el
+            match segments.into_iter().next().unwrap() {
+                InlineSegment::Text(el) | InlineSegment::Media(el) => el,
+                InlineSegment::Break => return, // 孤立断行无意义
+            }
         } else {
-            // flex_row + flex_wrap：所有文本段用 flex_auto 参与行内流（从内容宽度起步，可缩但不会缩到 0）。
-            let seg_count = segments.len();
+            // 多段混排（文本字词 + 公式/图片 + 换行）→ flex_row + flex_wrap。
             let children: Vec<AnyElement> = segments
                 .into_iter()
-                .enumerate()
-                .map(|(i, (is_text, el))| {
-                    if is_text {
-                        if i + 1 == seg_count {
-                            // 末段：flex_1 从 0 起步填满剩余空间。
-                            gpui::div().flex_1().min_w_0().child(el).into_any_element()
-                        } else {
-                            // 非末段：flex_none 不拉伸不收缩，刚好贴合内容宽度。
-                            gpui::div().flex_none().child(el).into_any_element()
-                        }
-                    } else {
-                        el
-                    }
+                .map(|seg| match seg {
+                    InlineSegment::Text(el) => gpui::div().flex_none().child(el).into_any_element(),
+                    InlineSegment::Media(el) => el,
+                    InlineSegment::Break => gpui::div()
+                        .w_full()
+                        .h(px(0.0))
+                        .flex_none()
+                        .into_any_element(),
                 })
                 .collect();
+
             gpui::div()
                 .w_full()
                 .min_w_0()
@@ -582,18 +580,11 @@ impl<'a> Builder<'a> {
         let heading_anchors = &self.heading_anchors;
         if let Some(frame) = frame {
             if !frame.spans.is_empty() {
-                let is_heading = matches!(frame.kind, InlineKind::Heading(_));
-                if is_heading {
-                    self.element_counter += 1;
+                // 逐词拆分为多个 flex_none 子元素，让 flex_wrap 在字词边界自然换行。
+                for el in wrap_inline_as_flex_items(frame, base_dir, scroll_handle, heading_anchors)
+                {
+                    self.inline_segments.push(InlineSegment::Text(el));
                 }
-                let elem_id = if is_heading {
-                    Some(("md-h", self.element_counter))
-                } else {
-                    None
-                };
-                let element =
-                    wrap_inline_flex(frame, base_dir, scroll_handle, heading_anchors, elem_id);
-                self.inline_segments.push((true, element));
             }
         }
         if let Some(kind) = self.current_inline_kind {

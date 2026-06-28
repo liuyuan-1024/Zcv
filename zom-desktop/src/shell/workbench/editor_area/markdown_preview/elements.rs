@@ -218,25 +218,6 @@ pub(super) fn wrap_inline(
     )
 }
 
-/// `fill_width`: 为 true 时外层 div 设 w_full()（独立段落），
-/// 为 false 时不设（用于 flex_row 容器内的文本段，按自然宽度参与行内流）。
-pub(super) fn wrap_inline_flex(
-    frame: InlineFrame,
-    base_dir: Option<&Path>,
-    scroll_handle: Option<&ScrollHandle>,
-    heading_anchors: &Rc<RefCell<HashMap<String, ScrollAnchor>>>,
-    elem_id: Option<(&'static str, u64)>,
-) -> AnyElement {
-    wrap_inline_impl(
-        frame,
-        base_dir,
-        scroll_handle,
-        heading_anchors,
-        elem_id,
-        false,
-    )
-}
-
 fn wrap_inline_impl(
     frame: InlineFrame,
     base_dir: Option<&Path>,
@@ -334,6 +315,144 @@ fn wrap_inline_impl(
             }
         }
     }
+}
+
+// ───────────────── 行内逐词拆分 ─────────────────
+
+/// 将 InlineFrame 的 span 按字/词边界拆成多个 flex_none 子元素。
+///
+/// 每个元素以自然宽度参与 flex_row + flex_wrap，让 flex_wrap 能在字词边界自然换行——公式和图片只是其中一种 flex 子元素，文本不再是一个整块的 StyledText。
+pub(super) fn wrap_inline_as_flex_items(
+    frame: InlineFrame,
+    base_dir: Option<&Path>,
+    _scroll_handle: Option<&ScrollHandle>,
+    heading_anchors: &Rc<RefCell<HashMap<String, ScrollAnchor>>>,
+) -> Vec<AnyElement> {
+    let font = typography::editor_font();
+    let font_size = typography::editor();
+    let line_height = typography::editor_line();
+    let color = color::current().gray.s09;
+
+    // 收集链接区间（全文本字节范围 → URL）。
+    let link_ranges: Vec<(std::ops::Range<usize>, String)> = frame
+        .link_spans
+        .iter()
+        .filter(|ls| ls.end > ls.start)
+        .map(|ls| (ls.start..ls.end, ls.url.clone()))
+        .collect();
+
+    let heading_anchors_for_click = Rc::clone(heading_anchors);
+
+    let mut items = Vec::new();
+    let mut byte_offset = 0usize; // 当前 span 在全文本中的起始字节偏移
+
+    for span in &frame.spans {
+        let segs = split_text_to_segments(&span.text);
+        for seg in segs {
+            let seg_start = byte_offset;
+            let seg_end = seg_start + seg.len();
+
+            // 检查此段是否在某个链接区间内。
+            let link_url: Option<String> = link_ranges
+                .iter()
+                .find(|(range, _)| range.start <= seg_start && range.end >= seg_end)
+                .map(|(_, url)| url.clone());
+
+            let styled = StyledText::new(seg.to_string()).with_highlights(
+                if span.style != HighlightStyle::default() {
+                    vec![(0..seg.len(), span.style)]
+                } else {
+                    Vec::new()
+                },
+            );
+
+            let text_el: AnyElement = if let Some(url) = link_url {
+                let url_for_anchor = url.clone();
+                let resolved = resolve_link_url(&url, base_dir);
+                let is_anchor = url.starts_with('#');
+                let anchors = heading_anchors_for_click.clone();
+                InteractiveText::new("md-inline", styled)
+                    .on_click(vec![0..seg.len()], move |_idx, _window, app| {
+                        if is_anchor {
+                            let map = anchors.borrow();
+                            if let Some(scroll_anchor) = map.get(&url_for_anchor[1..]) {
+                                scroll_anchor.scroll_to(_window, app);
+                                return;
+                            }
+                        }
+                        if let Some(ext_url) = &resolved {
+                            app.open_url(ext_url);
+                        }
+                    })
+                    .into_any_element()
+            } else {
+                styled.into_any_element()
+            };
+
+            items.push(
+                div()
+                    .flex_none()
+                    .font(font.clone())
+                    .text_size(font_size)
+                    .line_height(line_height)
+                    .text_color(color)
+                    .child(text_el)
+                    .into_any_element(),
+            );
+
+            byte_offset = seg_end;
+        }
+    }
+
+    items
+}
+
+/// 将文本切分为适合 flex 换行的最小单元：
+/// - CJK 字符（含标点）：逐字拆分
+/// - 空白字符：单独成段
+/// - 拉丁字母/数字：连续的非CJK非空白字符作为一个词
+fn split_text_to_segments(text: &str) -> Vec<&str> {
+    let mut segs = Vec::new();
+    let mut byte_pos = 0usize;
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let start = byte_pos;
+        let ch = chars[i];
+        if is_cjk_char(ch) {
+            byte_pos += ch.len_utf8();
+            segs.push(&text[start..byte_pos]);
+            i += 1;
+        } else if ch.is_whitespace() {
+            byte_pos += ch.len_utf8();
+            segs.push(&text[start..byte_pos]);
+            i += 1;
+        } else {
+            // 拉丁/数字/符号：连续收集直到遇到 CJK 或空白
+            while i < chars.len() && !chars[i].is_whitespace() && !is_cjk_char(chars[i]) {
+                byte_pos += chars[i].len_utf8();
+                i += 1;
+            }
+            segs.push(&text[start..byte_pos]);
+        }
+    }
+    segs
+}
+
+fn is_cjk_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{4E00}'..='\u{9FFF}'   // CJK Unified Ideographs
+        | '\u{3400}'..='\u{4DBF}' // CJK Extension A
+        | '\u{20000}'..='\u{2A6DF}' // CJK Extension B
+        | '\u{F900}'..='\u{FAFF}' // CJK Compatibility Ideographs
+        | '\u{2F800}'..='\u{2FA1F}' // CJK Compatibility Supplement
+        | '\u{3000}'..='\u{303F}' // CJK Symbols and Punctuation
+        | '\u{FF00}'..='\u{FFEF}' // Halfwidth and Fullwidth Forms
+        | '\u{FE30}'..='\u{FE4F}' // CJK Compatibility Forms
+        | '\u{2E80}'..='\u{2EFF}' // CJK Radicals Supplement
+        | '\u{31C0}'..='\u{31EF}' // CJK Strokes
+    )
 }
 
 // ───────────────── 辅助：文本高亮构建 ─────────────────

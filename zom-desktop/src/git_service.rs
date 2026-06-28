@@ -135,15 +135,17 @@ impl GitService {
         self.valid
     }
 
-    /// 刷新 `git status --porcelain=v1 -u` 缓存。
+    /// 刷新 git 状态缓存。
     ///
-    /// 执行一次 git 进程调用，解析全部文件的 XY 状态。
     /// 非 git 仓库时直接返回 Ok。
     pub fn refresh(&mut self) -> Result<(), String> {
         if !self.valid {
             return Ok(());
         }
 
+        // 1. tracked / untracked / modified / deleted：`git status -u`。
+        //    不加 --ignored——含 --ignored 会递归列出 target/ 深处所有文件
+        //   （本项目 >80 万行），耗时数秒。
         let output = Command::new("git")
             .args(["status", "--porcelain=v1", "-u"])
             .current_dir(&self.repo_root)
@@ -191,10 +193,51 @@ impl GitService {
             new_statuses.insert(PathBuf::from(&path_str), status);
         }
 
-        // 子文件状态向上冒泡到所有祖先目录
+        // 2. Ignored 文件/目录：`git ls-files --others --ignored --exclude-standard --directory`。
+        //    --directory 让 git 只输出被忽略目录的顶层条目（如 `target/`），不递归内部文件，
+        //    避免了 previous 方案里 `git status --ignored` 递归 80 万行的问题。
+        if let Ok(output) = Command::new("git")
+            .args([
+                "ls-files",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "--directory",
+                "-z",
+            ])
+            .current_dir(&self.repo_root)
+            .output()
+        {
+            if output.status.success() {
+                for chunk in output.stdout.split(|&b| b == 0) {
+                    if chunk.is_empty() {
+                        continue;
+                    }
+                    if let Ok(s) = std::str::from_utf8(chunk) {
+                        // 去掉可能存在的末尾 `/`（目录条目）
+                        let path = s.trim_end_matches('/');
+                        new_statuses
+                            .entry(PathBuf::from(path))
+                            .or_insert(GitStatus::Ignored);
+                    }
+                }
+            }
+        }
+
+        // 子文件状态向上冒泡到所有祖先目录。
+        //
+        // 第一步：条目自身颜色写入 dir_colors——目录条目（如 `target/`）靠此拿到自己的颜色。
+        // 第二步：向上冒泡——Ignored 不参与（target 被忽略 != zom-ai 被忽略）。
         let mut dir_colors: HashMap<PathBuf, ColorKind> = HashMap::new();
         for (rel_path, status) in &new_statuses {
             if let Some(color) = status.color_kind() {
+                dir_colors
+                    .entry(rel_path.clone())
+                    .and_modify(|e| *e = std::cmp::max(*e, color))
+                    .or_insert(color);
+                if color == ColorKind::Ignored {
+                    continue; // 不向祖先冒泡
+                }
                 let mut parent = rel_path.parent();
                 while let Some(p) = parent {
                     if p.as_os_str().is_empty() {
@@ -526,10 +569,8 @@ mod tests {
     }
 
     #[test]
-    fn ignored_file_not_in_output_without_ignored_flag() {
-        // 不带 --ignored 时 git status 不输出被忽略文件。
-        // 这是有意为之：遍历 node_modules 等忽略目录代价太高。
-        // GitStatus::Ignored 变体保留供后续按需开启 --ignored。
+    fn ignored_file_with_ignored_flag() {
+        // --ignored 让 git status 输出被忽略文件，用于文件树着色区分。
         let repo = init_git_repo("ignored");
         fs::write(repo.join(".gitignore"), "*.ignored\n").unwrap();
         File::create(repo.join("test.ignored")).unwrap();
@@ -537,8 +578,9 @@ mod tests {
         let mut service = GitService::new(&repo);
         service.refresh().unwrap();
 
-        // 不带 --ignored 时被忽略文件不出现在输出中
-        assert!(service.file_status(&repo.join("test.ignored")).is_none());
+        // 带 --ignored 时被忽略文件应返回 Ignored 颜色
+        let kind = service.color_kind(&repo.join("test.ignored"));
+        assert_eq!(kind, Some(ColorKind::Ignored));
     }
 
     #[test]

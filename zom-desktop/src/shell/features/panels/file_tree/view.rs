@@ -171,6 +171,7 @@ fn render_list(
         .size_full()
         .overflow_hidden()
         .p(space::s4())
+        .text_color(color::current().gray.s08)
         .child(
             uniform_list("file-tree-list", items.len(), move |range, _, _| {
                 range
@@ -362,18 +363,8 @@ fn render_row(
     } else {
         gpui::rgba(0)
     };
-    // 文件名颜色：git 状态优先，其次看是否活动文件。
-    let text_color = match row.git_color {
-        Some(kind) => color::git_status(kind),
-        None => {
-            if is_active {
-                color::current().gray.s09
-            } else {
-                color::current().gray.s07
-            }
-        }
-    };
-
+    // 文件名颜色：git 状态覆盖父级默认色，其余继承列表容器的 s08。
+    // 活动文件通过背景高亮（s04）来区分，不靠文字颜色。
     let cont = continuation(row.terminal_mask, row.depth);
     let mut row_div = div()
         .relative()
@@ -388,8 +379,11 @@ fn render_row(
         .bg(bg_color)
         .pl(indent_unit() * (row.depth as f32) + space::s4())
         .text_size(typography::ui())
-        .line_height(typography::ui_line())
-        .text_color(text_color)
+        .line_height(typography::ui_line());
+    if let Some(kind) = row.git_color {
+        row_div = row_div.text_color(color::git_status(kind));
+    }
+    row_div = row_div
         .child(render_guide_lines(cont, row.depth))
         .child(icon_cell(row))
         .child(

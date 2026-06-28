@@ -313,20 +313,19 @@ pub fn git_status(kind: ColorKind) -> Rgba {
         ColorKind::Added => current().green.s07,
         ColorKind::Deleted => current().red.s07,
         ColorKind::Conflict => current().red.s07,
-        ColorKind::Untracked => current().green.s06,
-        ColorKind::Ignored => current().gray.s04,
+        ColorKind::Untracked => current().green.s07, // 和 Added 同为 Created，对齐 Zed 语义
+        ColorKind::Ignored => current().gray.s05,    // 比默认文字 s07 暗两档，可识别但不抢眼
     }
 }
 
 /// git 状态 → 行背景色（同色相低透明度版，用于 editor 内 diff 行的背景着色）。
+/// 只有 Added / Modified / Deleted 会走到这里，其余状态逻辑上不产生 diff 行。
 pub fn git_status_bg(kind: ColorKind) -> Hsla {
     let rgba = match kind {
         ColorKind::Modified => current().yellow.a02,
         ColorKind::Added => current().green.a02,
         ColorKind::Deleted => current().red.a02,
-        ColorKind::Conflict => current().red.a03,
-        ColorKind::Untracked => current().green.a01,
-        ColorKind::Ignored => current().gray.a01,
+        _ => gpui::rgba(0),
     };
     rgba.into()
 }

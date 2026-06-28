@@ -242,7 +242,6 @@ impl<'a> Builder<'a> {
                 self.close_inline();
                 let element = gpui::div()
                     .w_full()
-                    .py_2()
                     .flex()
                     .justify_center()
                     .child(math::math_element(text.as_ref(), true))
@@ -250,7 +249,16 @@ impl<'a> Builder<'a> {
                 self.push_block_element(element);
             }
             Event::SoftBreak => self.on_text(" "),
-            Event::HardBreak => self.on_text("\n"),
+            Event::HardBreak => {
+                // 在有 inline 分割（如公式/图片）的上下文中，flex 布局内 \n 只能在该 flex item 内部换行，
+                // 换行后文本起点是 flex item 的左边缘，而非容器左边缘，会产生偏移。
+                // 此时关闭当前 flex 布局，让换行后文本从新的行首开始。
+                if !self.inline_segments.is_empty() {
+                    self.close_inline();
+                } else {
+                    self.on_text("\n");
+                }
+            }
             Event::Rule => self.push_block_element(horizontal_rule()),
             Event::Html(_) | Event::InlineHtml(_) => {}
             Event::FootnoteReference(text) => self.on_text(text.as_ref()),

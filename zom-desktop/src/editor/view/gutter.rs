@@ -21,6 +21,7 @@ use gpui::{
     Bounds, ContentMask, Hsla, Pixels, Rgba, ShapedLine, TextRun, Window, fill, point, px, size,
 };
 
+use super::element::VisualRow;
 use crate::git_service::{DiffHunk, DiffHunkKind};
 use crate::theme::{color, space};
 
@@ -113,15 +114,12 @@ fn measure_number_width(
 ///
 /// `total_lines` 为 buffer 总行数（**不是**当前视口最大行号），决定数字列宽的位数——这是「列宽不随滚动抖动」的关键。
 ///
-/// `line_numbers_per_row` 长度等于视觉行数：
-/// - `Some(line_index)`：该视觉行是某条逻辑行的首段，要画行号；
-/// - `None`：续行（软换行的非首段），行号留空。
-///
-/// 不开软换行时 caller 传 `Some(line_index)` 全数组即可——退化回旧行为。
+/// `visual_rows` 长度等于视觉行数。每条视觉行都携带 `line_index`（属于哪个逻辑行），
+/// 软换行的续行与首段同属一个逻辑行；`subrow == 0` 表示首段，需要画行号。
 ///
 /// `diff_hunks` 是当前文件的 git diff hunk 列表，用于在行号左侧画添加/修改/删除色条。
 pub(crate) fn prepare(
-    line_numbers_per_row: &[Option<u64>],
+    visual_rows: &[VisualRow],
     total_lines: u64,
     text_style: &gpui::TextStyle,
     font_size: Pixels,
@@ -130,26 +128,31 @@ pub(crate) fn prepare(
 ) -> Prepaint {
     let number_width = measure_number_width(total_lines, text_style, font_size, window);
 
-    let mut line_numbers = Vec::with_capacity(line_numbers_per_row.len());
+    let mut line_numbers = Vec::with_capacity(visual_rows.len());
     let mut git_bars = Vec::new();
 
-    for (visual_row, entry) in line_numbers_per_row.iter().enumerate() {
-        // 行号
-        match entry {
-            Some(line_index) => {
-                let label = (line_index + 1).to_string();
-                line_numbers.push(Some(shape_digits(&label, text_style, font_size, window)));
-            }
-            None => line_numbers.push(None),
+    // 缓存上一次 diff hunk 查表结果，避免同逻辑行的续行重复遍历 hunk 列表。
+    let mut last_line_index: Option<u64> = None;
+    let mut last_bar_color: Option<Rgba> = None;
+
+    for (visual_row, vr) in visual_rows.iter().enumerate() {
+        // 行号：仅首段视觉行（subrow == 0）需要画
+        if vr.subrow == 0 {
+            let label = (vr.line_index + 1).to_string();
+            line_numbers.push(Some(shape_digits(&label, text_style, font_size, window)));
+        } else {
+            line_numbers.push(None);
         }
 
-        // git diff 色条：仅首段视觉行（对应真实 buffer 行）才标记
-        if let Some(line_index) = entry {
+        // git diff 色条：逻辑行变化时才重新查 hunk，续行复用缓存结果
+        if last_line_index != Some(vr.line_index) {
+            last_line_index = Some(vr.line_index);
+            last_bar_color = None;
             for hunk in diff_hunks {
                 let start = hunk.new_start.saturating_sub(1) as u64; // 1-based → 0-based
                 let end = start + hunk.new_lines as u64;
-                if *line_index >= start && *line_index < end {
-                    let bar_color = match hunk.kind {
+                if vr.line_index >= start && vr.line_index < end {
+                    last_bar_color = Some(match hunk.kind {
                         DiffHunkKind::Added => {
                             color::git_status(crate::git_service::ColorKind::Added)
                         }
@@ -159,14 +162,16 @@ pub(crate) fn prepare(
                         DiffHunkKind::Deleted => {
                             color::git_status(crate::git_service::ColorKind::Deleted)
                         }
-                    };
-                    git_bars.push(GitBar {
-                        row: visual_row,
-                        color: bar_color,
                     });
                     break; // 一个行只属于一个 hunk
                 }
             }
+        }
+        if let Some(bar_color) = last_bar_color {
+            git_bars.push(GitBar {
+                row: visual_row,
+                color: bar_color,
+            });
         }
     }
     Prepaint {

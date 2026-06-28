@@ -42,6 +42,7 @@
 "markup.italic" = { fg = "purple", modifiers = ["italic"] }
 "markup.strikethrough" = { modifiers = ["crossed_out"] }
 "markup.list" = { fg = "red" }
+"markup.math" = { fg = "gold" }
 "markup.quote" = { fg = "yellow" }
 "markup.link.url" = { fg = "cyan", modifiers = ["underlined"]}
 "markup.link.text" = { fg = "purple" }

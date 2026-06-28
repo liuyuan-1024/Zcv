@@ -66,6 +66,28 @@ const MARKDOWN_BLOCK_QUERY_EXTENSION: &str = r#"
 ] @punctuation.delimiter
 "#;
 
+const MARKDOWN_INLINE_QUERY_EXTENSION: &str = r#"
+; zom 本地扩展：数学公式（$...$ / $$...$$）语法高亮。
+; tree-sitter-md inline grammar 已解析 latex_block 节点，
+; 但上游 highlights.scm 未捕获——这里补上。
+(latex_block) @text.math
+(latex_span_delimiter) @punctuation.delimiter
+"#;
+
+fn extended_markdown_inline_query() -> &'static str {
+    static CELL: OnceLock<&'static str> = OnceLock::new();
+    CELL.get_or_init(|| {
+        Box::leak(
+            format!(
+                "{}\n{}",
+                tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
+                MARKDOWN_INLINE_QUERY_EXTENSION
+            )
+            .into_boxed_str(),
+        )
+    })
+}
+
 fn extended_markdown_block_query() -> &'static str {
     static CELL: OnceLock<&'static str> = OnceLock::new();
     CELL.get_or_init(|| {
@@ -100,7 +122,7 @@ fn inline_config() -> Arc<SharedConfig> {
         Arc::new(
             build_shared_config_with_normalize(
                 tree_sitter_md::INLINE_LANGUAGE.into(),
-                tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
+                extended_markdown_inline_query(),
                 normalize_inline_capture,
             )
             .expect("tree-sitter-md inline 高亮配置必须构建"),
@@ -122,6 +144,7 @@ fn normalize_inline_capture(name: &str) -> &str {
         "text.strong" => "markup.bold",
         "text.uri" => "markup.link.url",
         "text.reference" => "markup.link.text",
+        "text.math" => "markup.math",
         other => other,
     }
 }
@@ -810,6 +833,38 @@ mod tests {
         assert_eq!(
             incremental, baseline,
             "markdown 增量后 spans 必须与从零 parse 的 baseline 一致"
+        );
+    }
+
+    #[test]
+    fn inline_math_block_highlights_as_markup_math() {
+        // $...$ 应被 inline grammar 标为 markup.math。
+        let buffer =
+            Buffer::from_text("text $E=mc^2$ end\n".to_string(), BufferConfig::default()).unwrap();
+        let (syntax, _w) = attach_markdown(&buffer);
+        let names = span_names(&query_full(&syntax, &buffer));
+        assert!(
+            names.iter().any(|(_, _, n)| n == "markup.math"),
+            "行内公式 $...$ 应被标为 markup.math：实际 {names:?}"
+        );
+        // $ 定界符应被标为 punctuation.delimiter。
+        assert!(
+            names.iter().any(|(_, _, n)| n == "punctuation.delimiter"),
+            "$ 定界符应被标为 punctuation.delimiter：实际 {names:?}"
+        );
+    }
+
+    #[test]
+    fn display_math_block_not_highlighted_by_inline_grammar() {
+        // $$...$$ 是 block-level 节点（被 block grammar 的 inline 节点包裹），
+        // 它的高亮同样走 inline grammar 内部的 latex_block 捕获。
+        let buffer =
+            Buffer::from_text("$$\nE=mc^2\n$$\n".to_string(), BufferConfig::default()).unwrap();
+        let (syntax, _w) = attach_markdown(&buffer);
+        let names = span_names(&query_full(&syntax, &buffer));
+        assert!(
+            names.iter().any(|(_, _, n)| n == "markup.math"),
+            "块级公式 $$...$$ 同样应被标为 markup.math：实际 {names:?}"
         );
     }
 }

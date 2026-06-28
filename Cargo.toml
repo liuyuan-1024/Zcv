@@ -30,7 +30,7 @@ default-members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.6.14"
+version = "0.6.15"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -90,6 +90,12 @@ crossbeam-channel = "0.5"
 
 # ---- Markdown 渲染（zom-desktop preview） ----
 pulldown-cmark = { version = "0.13", default-features = false }
+
+# ---- 数学公式渲染（Markdown preview KaTeX 兼容） ----
+ratex-parser = "0.1.12"
+ratex-layout = "0.1.12"
+ratex-svg = { version = "0.1.12", features = ["standalone", "embed-fonts"] }
+ratex-types = "0.1.12"
 
 # ---- 平台特定 ----
 cocoa = "0.26.0"

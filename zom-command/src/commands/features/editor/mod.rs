@@ -17,9 +17,10 @@ use std::collections::BTreeSet;
 
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
-    BubbleRequest, CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry,
-    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, active_view_buffer_id,
-    command_execution_failed, parse_optional_bool, reject_unknown_args, required_arg,
+    BubbleEffect, BubbleRequest, CommandArgs, CommandContext, CommandError, CommandOutcome,
+    CommandRegistry, DismissScope, EditorEffect, GitEffect, HostEffect, Invocation,
+    KeyBindingContext, Keymap, NoArgs, active_view_buffer_id, command_execution_failed,
+    parse_optional_bool, reject_unknown_args, required_arg,
 };
 use zom_engine::{
     Buffer, ByteOffset, CompositionSelection, EngineError, Line, Motion, MovementDirection,
@@ -546,7 +547,8 @@ fn run_open_preview(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     let buffer_id = active_view_buffer_id(ctx)?;
-    ctx.effects.push(HostEffect::EditorOpenPreview(buffer_id));
+    ctx.effects
+        .push(HostEffect::Editor(EditorEffect::OpenPreview(buffer_id)));
     Ok(CommandOutcome::default())
 }
 
@@ -556,9 +558,9 @@ fn run_change_language(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     _ctx.effects
-        .push(HostEffect::ShowBubble(BubbleRequest::info(
+        .push(HostEffect::Bubble(BubbleEffect::Show(BubbleRequest::info(
             "切换语言功能尚未实现",
-        )));
+        ))));
     Ok(CommandOutcome::default())
 }
 
@@ -1384,7 +1386,7 @@ fn run_select_tab(
     let forward = matches!(args.target, SelectTabTarget::Next);
     context
         .effects
-        .push(HostEffect::EditorSelectAdjacentTab(forward));
+        .push(HostEffect::Editor(EditorEffect::SelectAdjacentTab(forward)));
     Ok(CommandOutcome::default())
 }
 
@@ -1406,7 +1408,9 @@ fn run_close_tab(
             .map_err(|_| CommandError::InvalidArgs(format!("无效的 view_id：{raw}")))?;
         ViewId::from_u64(id)
     };
-    context.effects.push(HostEffect::EditorCloseTab(view_id));
+    context
+        .effects
+        .push(HostEffect::Editor(EditorEffect::CloseTab(view_id)));
     Ok(CommandOutcome::default())
 }
 
@@ -1417,12 +1421,12 @@ fn run_save(
     NoArgs::try_from(args)?;
     let buffer_id = active_view_buffer_id(context)?;
     if let Err(error) = context.workspace.save_file(buffer_id) {
-        context.effects.push(HostEffect::ShowBubble(
+        context.effects.push(HostEffect::Bubble(BubbleEffect::Show(
             BubbleRequest::error(format!("保存失败：{error}")).dedupe("editor.save"),
-        ));
+        )));
     } else {
         // TODO: 文件保存触发 git 刷新是临时方案，将来改用 FS watcher 监听 .git/。
-        context.effects.push(HostEffect::RefreshGitStatus);
+        context.effects.push(HostEffect::Git(GitEffect::Refresh));
     }
     Ok(CommandOutcome::default())
 }
@@ -1437,7 +1441,9 @@ fn run_toggle_soft_wrap(
     if let Some(view) = context.active_view_mut() {
         view.clear_visual_caret();
     }
-    context.effects.push(HostEffect::EditorToggleSoftWrap);
+    context
+        .effects
+        .push(HostEffect::Editor(EditorEffect::ToggleSoftWrap));
     Ok(CommandOutcome::default())
 }
 

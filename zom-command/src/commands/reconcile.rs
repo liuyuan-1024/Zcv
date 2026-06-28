@@ -8,7 +8,7 @@
 //! 每个域的具体策略写在对应 feature 模块里（如 [`super::features::editor::reconcile_text_edit_dismiss`]），
 //! 本文件只做编排：新增 scope 时在 [`after_dispatch`] 列表里加一行。
 
-use crate::{CommandContext, HostEffect, commands::editor};
+use crate::{CommandContext, EditorEffect, HostEffect, commands::editor};
 
 /// 在 dispatch 末尾对齐所有 dismiss 策略与指针状态。
 ///
@@ -25,5 +25,5 @@ pub(crate) fn after_dispatch(context: &mut CommandContext<'_>) {
     // cancel_pointer_selection 是 idempotent 的——session 已空时只是 no-op。
     context
         .effects
-        .push(HostEffect::EditorCancelPointerSelection);
+        .push(HostEffect::Editor(EditorEffect::CancelPointerSelection));
 }

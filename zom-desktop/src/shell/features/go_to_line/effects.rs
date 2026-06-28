@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
-use zom_command::HostEffect;
+use zom_command::{GoToLineEffect, HostEffect};
 
 use crate::app::App;
 use crate::focus::AppFocus;
@@ -24,7 +24,7 @@ pub(crate) fn try_apply_effect(
     cx: &mut gpui::App,
 ) -> bool {
     match effect {
-        HostEffect::GoToLineActivate => {
+        HostEffect::GoToLine(GoToLineEffect::Activate) => {
             open_surface(
                 go_to_line::request(go_to_line_runtime.clone()),
                 surfaces,
@@ -34,12 +34,12 @@ pub(crate) fn try_apply_effect(
             );
             request_focus(app, focus, AppFocus::go_to_line(), window);
         }
-        HostEffect::GoToLineDismiss => {
+        HostEffect::GoToLine(GoToLineEffect::Dismiss) => {
             dismiss_surface(surfaces, window, cx);
             let previous = app.borrow_mut().restore_previous_focus();
             focus.apply(previous, window);
         }
-        HostEffect::GoToLineJump(target_byte) => {
+        HostEffect::GoToLine(GoToLineEffect::Jump(target_byte)) => {
             dismiss_surface(surfaces, window, cx);
             app.borrow_mut().go_to_line_jump(*target_byte);
             let previous = app.borrow_mut().restore_previous_focus();

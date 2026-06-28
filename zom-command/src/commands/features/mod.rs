@@ -2,7 +2,7 @@
 //!
 //! 每个 feature 模块同处声明命令 id、typed builder、handler 与默认键位。
 
-use crate::{CommandOutcome, CommandRegistry, HostEffect, Keymap, PanelKind};
+use crate::{CommandOutcome, CommandRegistry, HostEffect, Keymap, PanelEffect, PanelKind};
 
 pub mod bubble;
 pub mod debug;
@@ -57,7 +57,7 @@ pub(super) fn register_panel_toggle(
             Box::new(move |ctx, args| {
                 let via_pointer = args.get("via") == Some("pointer");
                 ctx.effects
-                    .push(HostEffect::TogglePanel(panel, via_pointer));
+                    .push(HostEffect::Panel(PanelEffect::Toggle(panel, via_pointer)));
                 Ok(CommandOutcome::default())
             }),
         )

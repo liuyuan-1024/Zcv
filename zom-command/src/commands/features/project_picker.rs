@@ -10,7 +10,8 @@ use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
-    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, reject_unknown_args, required_arg,
+    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, ProjectEffect, SurfaceEffect,
+    reject_unknown_args, required_arg,
 };
 
 pub const SHOW_PROJECTS_PICKER: &str = "workspace.show_projects_picker";
@@ -98,7 +99,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             OPEN_LOCAL_PROJECT,
             "从本地路径导入",
-            emit(HostEffect::OpenLocalProject),
+            emit(HostEffect::Project(ProjectEffect::OpenLocalProject)),
         )
         .key_in("mod l", picker);
 
@@ -107,7 +108,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             START_GIT_CLONE,
             "从远程地址导入",
-            emit(HostEffect::StartGitClone),
+            emit(HostEffect::Project(ProjectEffect::StartGitClone)),
         )
         .key_in("mod g", picker);
 
@@ -116,7 +117,9 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             REMOVE_RECENT_PROJECT,
             "移除最近项目",
-            emit(HostEffect::RemoveSelectedRecentProject),
+            emit(HostEffect::Project(
+                ProjectEffect::RemoveSelectedRecentProject,
+            )),
         )
         .key_in("mod backspace", picker)
         .key_in("mod delete", picker);
@@ -136,7 +139,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             ACTIVATE,
             "激活项目选择器选中项",
-            emit(HostEffect::ProjectPickerActivate),
+            emit(HostEffect::Project(ProjectEffect::ActivatePicker)),
         )
         .key_in("enter", picker)
         .key_in("return", picker);
@@ -153,7 +156,9 @@ fn run_move_selection(
     let args = PickerMoveArgs::try_from(args)?;
     context
         .effects
-        .push(HostEffect::ProjectPickerMoveSelection(args.delta));
+        .push(HostEffect::Project(ProjectEffect::MovePickerSelection(
+            args.delta,
+        )));
     Ok(CommandOutcome::default())
 }
 
@@ -168,11 +173,13 @@ fn run_show_projects_picker(
     context
         .dismiss
         .push(DismissScope::ProjectPicker, "关闭项目选择器", dismiss());
-    context.effects.push(HostEffect::ShowProjectPicker);
+    context
+        .effects
+        .push(HostEffect::Project(ProjectEffect::ShowPicker));
     Ok(CommandOutcome::default())
 }
 
-/// 关闭选择器：清掉本 scope 上残留 token（万一被 host 直接调走，绕过了 esc 路径），再 emit [`HostEffect::DismissSurface`]。
+/// 关闭选择器：清掉本 scope 上残留 token（万一被 host 直接调走，绕过了 esc 路径），再 emit [`HostEffect::Surface(SurfaceEffect::Dismiss)`]。
 /// esc 路径上栈顶已经被 [`crate::commands::system::dismiss::DISMISS_TOP`] 弹掉，这里 [`crate::DismissStacks::clear`] 是幂等 no-op。
 fn run_dismiss(
     context: &mut CommandContext<'_>,
@@ -180,7 +187,9 @@ fn run_dismiss(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.dismiss.clear(DismissScope::ProjectPicker);
-    context.effects.push(HostEffect::DismissSurface);
+    context
+        .effects
+        .push(HostEffect::Surface(SurfaceEffect::Dismiss));
     Ok(CommandOutcome::default())
 }
 

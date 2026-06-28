@@ -9,7 +9,7 @@ use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
-    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SearchOption,
+    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SearchEffect, SearchOption,
 };
 
 pub const TOGGLE_CASE_SENSITIVE: &str = "search.toggle_case_sensitive";
@@ -85,7 +85,9 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             TOGGLE_CASE_SENSITIVE,
             "区分大小写",
-            emit(HostEffect::SearchToggleOption(SearchOption::CaseSensitive)),
+            emit(HostEffect::Search(SearchEffect::ToggleOption(
+                SearchOption::CaseSensitive,
+            ))),
         )
         .key_in("alt c", search_input);
     registry
@@ -93,7 +95,9 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             TOGGLE_WHOLE_WORD,
             "全词匹配",
-            emit(HostEffect::SearchToggleOption(SearchOption::WholeWord)),
+            emit(HostEffect::Search(SearchEffect::ToggleOption(
+                SearchOption::WholeWord,
+            ))),
         )
         .key_in("alt w", search_input);
     registry
@@ -101,7 +105,9 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             TOGGLE_REGEX,
             "正则表达式",
-            emit(HostEffect::SearchToggleOption(SearchOption::Regex)),
+            emit(HostEffect::Search(SearchEffect::ToggleOption(
+                SearchOption::Regex,
+            ))),
         )
         .key_in("alt r", search_input);
     registry
@@ -109,7 +115,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             FIND_PREVIOUS,
             "上一个",
-            emit(HostEffect::SearchFindPrevious),
+            emit(HostEffect::Search(SearchEffect::FindPrevious)),
         )
         .key_in("up", search_input);
     registry
@@ -117,7 +123,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             FIND_NEXT,
             "下一个",
-            emit(HostEffect::SearchFindNext),
+            emit(HostEffect::Search(SearchEffect::FindNext)),
         )
         .key_in("down", search_input);
     registry
@@ -125,7 +131,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             REPLACE_NEXT,
             "替换下一个",
-            emit(HostEffect::SearchReplaceNext),
+            emit(HostEffect::Search(SearchEffect::ReplaceNext)),
         )
         .key_in("mod enter", search_input);
     registry
@@ -133,7 +139,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             REPLACE_ALL,
             "全部替换",
-            emit(HostEffect::SearchReplaceAll),
+            emit(HostEffect::Search(SearchEffect::ReplaceAll)),
         )
         .key_in("mod shift enter", search_input);
     registry
@@ -141,7 +147,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             FOCUS_NEXT_FIELD,
             "聚焦下一个搜索输入框",
-            emit(HostEffect::SearchFocusNextField),
+            emit(HostEffect::Search(SearchEffect::FocusNextField)),
         )
         .key_in("tab", search_input);
     registry
@@ -149,7 +155,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             FOCUS_PREVIOUS_FIELD,
             "聚焦上一个搜索输入框",
-            emit(HostEffect::SearchFocusPreviousField),
+            emit(HostEffect::Search(SearchEffect::FocusPreviousField)),
         )
         .key_in("shift tab", search_input);
     registry.install(keymap, DISMISS, "退出搜索", Box::new(run_dismiss));
@@ -178,7 +184,9 @@ fn run_toggle(
     context
         .dismiss
         .push(DismissScope::SearchInput, "退出搜索", dismiss());
-    context.effects.push(HostEffect::SearchToggle);
+    context
+        .effects
+        .push(HostEffect::Search(SearchEffect::Toggle));
     Ok(CommandOutcome::default())
 }
 
@@ -188,7 +196,9 @@ fn run_dismiss(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.dismiss.clear(DismissScope::SearchInput);
-    context.effects.push(HostEffect::SearchDismiss);
+    context
+        .effects
+        .push(HostEffect::Search(SearchEffect::Dismiss));
     Ok(CommandOutcome::default())
 }
 
@@ -198,7 +208,9 @@ fn run_confirm_match(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.dismiss.clear(DismissScope::SearchInput);
-    context.effects.push(HostEffect::SearchConfirmMatch);
+    context
+        .effects
+        .push(HostEffect::Search(SearchEffect::ConfirmMatch));
     Ok(CommandOutcome::default())
 }
 

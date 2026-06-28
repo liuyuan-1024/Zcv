@@ -9,10 +9,11 @@ use zom_command::commands::{
     settings,
 };
 use zom_command::{
-    BubbleKind, Command, CommandArgs, CommandContext, CommandError, CommandId, CommandQueue,
-    CommandRegistry, DismissScope, DismissStacks, EditTarget, EffectQueue, FileTreeKeyMode,
-    HostEffect, KeyBinding, KeyBindingContext, KeyChord, KeyContext, Keymap, KeymapResolution,
-    NoArgs, PanelKind, SearchOption, SettingsChangeRequest,
+    BubbleEffect, BubbleKind, Command, CommandArgs, CommandContext, CommandError, CommandId,
+    CommandQueue, CommandRegistry, DismissScope, DismissStacks, EditTarget, EditorEffect,
+    EffectQueue, FileTreeEffect, FileTreeKeyMode, HostEffect, KeyBinding, KeyBindingContext,
+    KeyChord, KeyContext, Keymap, KeymapResolution, NoArgs, PanelKind, ProjectEffect, SearchEffect,
+    SearchOption, SettingsChangeRequest, SurfaceEffect,
 };
 use zom_engine::{
     Buffer, BufferConfig, ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
@@ -299,17 +300,17 @@ fn search_ui_commands_should_emit_state_effects() {
     assert_eq!(
         effects,
         vec![
-            HostEffect::SearchToggle,
-            HostEffect::SearchToggleOption(SearchOption::CaseSensitive),
-            HostEffect::SearchToggleOption(SearchOption::WholeWord),
-            HostEffect::SearchToggleOption(SearchOption::Regex),
-            HostEffect::SearchFindPrevious,
-            HostEffect::SearchFindNext,
-            HostEffect::SearchReplaceNext,
-            HostEffect::SearchReplaceAll,
-            HostEffect::SearchDismiss,
-            HostEffect::SearchConfirmMatch,
-            HostEffect::EditorCancelPointerSelection,
+            HostEffect::Search(SearchEffect::Toggle),
+            HostEffect::Search(SearchEffect::ToggleOption(SearchOption::CaseSensitive)),
+            HostEffect::Search(SearchEffect::ToggleOption(SearchOption::WholeWord)),
+            HostEffect::Search(SearchEffect::ToggleOption(SearchOption::Regex)),
+            HostEffect::Search(SearchEffect::FindPrevious),
+            HostEffect::Search(SearchEffect::FindNext),
+            HostEffect::Search(SearchEffect::ReplaceNext),
+            HostEffect::Search(SearchEffect::ReplaceAll),
+            HostEffect::Search(SearchEffect::Dismiss),
+            HostEffect::Search(SearchEffect::ConfirmMatch),
+            HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );
 }
@@ -342,9 +343,11 @@ fn settings_ui_commands_should_emit_host_effects() {
     assert_eq!(
         effects,
         vec![
-            HostEffect::SettingsOpenToml,
-            HostEffect::SettingsApplyChange(SettingsChangeRequest::AdjustEditorFont(1)),
-            HostEffect::EditorCancelPointerSelection,
+            HostEffect::Surface(SurfaceEffect::OpenSettingsToml),
+            HostEffect::Surface(SurfaceEffect::ApplySettingsChange(
+                SettingsChangeRequest::AdjustEditorFont(1)
+            )),
+            HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );
 }
@@ -366,8 +369,11 @@ fn save_without_file_path_should_emit_error_bubble() {
     .unwrap();
 
     assert_eq!(effects.len(), 2);
-    assert_eq!(effects[1], HostEffect::EditorCancelPointerSelection);
-    let HostEffect::ShowBubble(request) = &effects[0] else {
+    assert_eq!(
+        effects[1],
+        HostEffect::Editor(EditorEffect::CancelPointerSelection)
+    );
+    let HostEffect::Bubble(BubbleEffect::Show(request)) = &effects[0] else {
         panic!("保存失败应该显示气泡，实际为 {:?}", effects[0]);
     };
     assert_eq!(request.kind, BubbleKind::Error);
@@ -453,9 +459,9 @@ fn search_tab_keys_should_resolve_only_in_search_panel_context() {
     assert_eq!(
         effects,
         vec![
-            HostEffect::SearchFocusNextField,
-            HostEffect::SearchFocusPreviousField,
-            HostEffect::EditorCancelPointerSelection,
+            HostEffect::Search(SearchEffect::FocusNextField),
+            HostEffect::Search(SearchEffect::FocusPreviousField),
+            HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );
 }
@@ -1080,7 +1086,10 @@ fn clear_selection_should_collapse_each_selection_to_caret_at_head() {
         vec![(editor::CLEAR_SELECTION, CommandArgs::new())],
     )
     .unwrap();
-    assert_eq!(effects, vec![HostEffect::EditorCancelPointerSelection]);
+    assert_eq!(
+        effects,
+        vec![HostEffect::Editor(EditorEffect::CancelPointerSelection)]
+    );
     let primary = views.edit_view(view_id).unwrap().selection().primary();
     assert!(primary.is_caret(), "clear_selection 必须留下纯 caret");
     assert_eq!(primary.head(), byte("hello world".len()));
@@ -1095,7 +1104,10 @@ fn clear_selection_should_collapse_each_selection_to_caret_at_head() {
         vec![(editor::CLEAR_SELECTION, CommandArgs::new())],
     )
     .unwrap();
-    assert_eq!(effects, vec![HostEffect::EditorCancelPointerSelection]);
+    assert_eq!(
+        effects,
+        vec![HostEffect::Editor(EditorEffect::CancelPointerSelection)]
+    );
     let primary = views.edit_view(view_id).unwrap().selection().primary();
     assert!(primary.is_caret());
 }
@@ -1891,10 +1903,10 @@ fn file_tree_commands_should_emit_host_effects() {
     assert_eq!(
         effects,
         vec![
-            HostEffect::FileTreeMoveSelection(1),
-            HostEffect::FileTreeBeginNewEntry,
-            HostEffect::FileTreeCancelNewEntry,
-            HostEffect::EditorCancelPointerSelection,
+            HostEffect::FileTree(FileTreeEffect::MoveSelection(1)),
+            HostEffect::FileTree(FileTreeEffect::BeginNewEntry),
+            HostEffect::FileTree(FileTreeEffect::CancelNewEntry),
+            HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );
 }
@@ -2040,8 +2052,8 @@ fn project_picker_esc_routes_through_dismiss_stack() {
         assert_eq!(
             effects.drain(),
             vec![
-                HostEffect::ShowProjectPicker,
-                HostEffect::EditorCancelPointerSelection,
+                HostEffect::Project(ProjectEffect::ShowPicker),
+                HostEffect::Editor(EditorEffect::CancelPointerSelection),
             ]
         );
         assert_eq!(dismiss.depth(DismissScope::ProjectPicker), 1);
@@ -2084,8 +2096,8 @@ fn project_picker_esc_routes_through_dismiss_stack() {
         assert_eq!(
             effects.drain(),
             vec![
-                HostEffect::DismissSurface,
-                HostEffect::EditorCancelPointerSelection,
+                HostEffect::Surface(SurfaceEffect::Dismiss),
+                HostEffect::Editor(EditorEffect::CancelPointerSelection),
             ]
         );
         assert!(dismiss.is_empty(DismissScope::ProjectPicker));
@@ -2110,7 +2122,7 @@ fn project_picker_esc_routes_through_dismiss_stack() {
         zom_command::run(&registry, &mut context).unwrap();
         assert_eq!(
             effects.drain(),
-            vec![HostEffect::EditorCancelPointerSelection]
+            vec![HostEffect::Editor(EditorEffect::CancelPointerSelection)]
         );
     }
 }

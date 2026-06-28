@@ -43,7 +43,7 @@ pub enum EntryKind {
 
 /// 一个目录下的单个子项。
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TreeEntry {
+pub(crate) struct TreeEntry {
     pub path: PathBuf,
     pub name: String,
     pub kind: EntryKind,

@@ -6,7 +6,9 @@
 
 use crate::commands::cid;
 use crate::commands::emit;
-use crate::{BubbleRequest, CommandArgs, CommandRegistry, HostEffect, Invocation, Keymap};
+use crate::{
+    BubbleEffect, BubbleRequest, CommandArgs, CommandRegistry, HostEffect, Invocation, Keymap,
+};
 
 /// 项目级搜索入口。当前 placeholder：宿主弹一条"敬请期待"气泡。
 pub const PROJECT_ACTIVATE: &str = "search.project_activate";
@@ -21,9 +23,9 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             PROJECT_ACTIVATE,
             "项目搜索",
-            emit(HostEffect::ShowBubble(
+            emit(HostEffect::Bubble(BubbleEffect::Show(
                 BubbleRequest::info("项目级搜索敬请期待").dedupe("search.project_activate"),
-            )),
+            ))),
         )
         .description("跨文件搜索入口（待实现）。")
         .key("mod shift f");

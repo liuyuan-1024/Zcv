@@ -8,8 +8,8 @@ use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
-    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, PanelKind, reject_unknown_args,
-    required_arg,
+    FileTreeEffect, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, PanelKind,
+    reject_unknown_args, required_arg,
 };
 
 pub const MOVE_SELECTION: &str = "file_tree.move_selection";
@@ -196,7 +196,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             ESCAPE,
             "文件树 Esc",
-            emit(HostEffect::FileTreeEscape),
+            emit(HostEffect::FileTree(FileTreeEffect::Escape)),
         )
         .key_in("escape", navigate);
 
@@ -205,7 +205,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             COLLAPSE_OR_PARENT,
             "折叠文件树条目或跳到父目录",
-            emit(HostEffect::FileTreeCollapseOrParent),
+            emit(HostEffect::FileTree(FileTreeEffect::CollapseOrParent)),
         )
         .key_in("left", navigate);
 
@@ -214,7 +214,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             EXPAND_OR_INTO,
             "展开文件树条目或进入子项",
-            emit(HostEffect::FileTreeExpandOrInto),
+            emit(HostEffect::FileTree(FileTreeEffect::ExpandOrInto)),
         )
         .key_in("right", navigate);
 
@@ -223,7 +223,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             ACTIVATE,
             "激活文件树条目",
-            emit(HostEffect::FileTreeActivate),
+            emit(HostEffect::FileTree(FileTreeEffect::Activate)),
         )
         .key_in("enter", navigate);
 
@@ -313,12 +313,22 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     dismiss_top::bind_esc(keymap, DismissScope::FileTree, pending_delete);
 
     registry
-        .install(keymap, COPY, "复制选中文件", emit(HostEffect::FileTreeCopy))
+        .install(
+            keymap,
+            COPY,
+            "复制选中文件",
+            emit(HostEffect::FileTree(FileTreeEffect::Copy)),
+        )
         .description("把选中的文件或目录拍进剪贴板（Copy 模式）；空选区时降级到焦点单项。")
         .key_in("mod c", navigate);
 
     registry
-        .install(keymap, CUT, "剪切选中文件", emit(HostEffect::FileTreeCut))
+        .install(
+            keymap,
+            CUT,
+            "剪切选中文件",
+            emit(HostEffect::FileTree(FileTreeEffect::Cut)),
+        )
         .description("把选中的文件或目录拍进剪贴板（Cut 模式）；粘贴时执行移动。")
         .key_in("mod x", navigate);
 
@@ -327,7 +337,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             PASTE,
             "粘贴到焦点目录",
-            emit(HostEffect::FileTreePaste),
+            emit(HostEffect::FileTree(FileTreeEffect::Paste)),
         )
         .description("把剪贴板内容粘贴到焦点所在目录；冲突自动改名、永不覆盖。")
         .key_in("mod v", navigate);
@@ -340,7 +350,9 @@ fn run_move_selection(
     let args = FileTreeMoveArgs::try_from(args)?;
     context
         .effects
-        .push(HostEffect::FileTreeMoveSelection(args.delta));
+        .push(HostEffect::FileTree(FileTreeEffect::MoveSelection(
+            args.delta,
+        )));
     Ok(CommandOutcome::default())
 }
 
@@ -351,7 +363,9 @@ fn run_extend_selection(
     let args = FileTreeMoveArgs::try_from(args)?;
     context
         .effects
-        .push(HostEffect::FileTreeExtendSelection(args.delta));
+        .push(HostEffect::FileTree(FileTreeEffect::ExtendSelection(
+            args.delta,
+        )));
     Ok(CommandOutcome::default())
 }
 
@@ -371,7 +385,9 @@ fn run_begin_new_entry(
     context
         .dismiss
         .push(DismissScope::FileTree, "取消新建条目", cancel_new_entry());
-    context.effects.push(HostEffect::FileTreeBeginNewEntry);
+    context
+        .effects
+        .push(HostEffect::FileTree(FileTreeEffect::BeginNewEntry));
     Ok(CommandOutcome::default())
 }
 
@@ -381,7 +397,9 @@ fn run_commit_new_entry(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.dismiss.clear(DismissScope::FileTree);
-    context.effects.push(HostEffect::FileTreeCommitNewEntry);
+    context
+        .effects
+        .push(HostEffect::FileTree(FileTreeEffect::CommitNewEntry));
     Ok(CommandOutcome::default())
 }
 
@@ -391,7 +409,9 @@ fn run_cancel_new_entry(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.dismiss.clear(DismissScope::FileTree);
-    context.effects.push(HostEffect::FileTreeCancelNewEntry);
+    context
+        .effects
+        .push(HostEffect::FileTree(FileTreeEffect::CancelNewEntry));
     Ok(CommandOutcome::default())
 }
 
@@ -404,7 +424,9 @@ fn run_begin_rename(
     context
         .dismiss
         .push(DismissScope::FileTree, "取消重命名", cancel_rename());
-    context.effects.push(HostEffect::FileTreeBeginRename);
+    context
+        .effects
+        .push(HostEffect::FileTree(FileTreeEffect::BeginRename));
     Ok(CommandOutcome::default())
 }
 
@@ -414,7 +436,9 @@ fn run_commit_rename(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.dismiss.clear(DismissScope::FileTree);
-    context.effects.push(HostEffect::FileTreeCommitRename);
+    context
+        .effects
+        .push(HostEffect::FileTree(FileTreeEffect::CommitRename));
     Ok(CommandOutcome::default())
 }
 
@@ -424,7 +448,9 @@ fn run_cancel_rename(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.dismiss.clear(DismissScope::FileTree);
-    context.effects.push(HostEffect::FileTreeCancelRename);
+    context
+        .effects
+        .push(HostEffect::FileTree(FileTreeEffect::CancelRename));
     Ok(CommandOutcome::default())
 }
 
@@ -437,7 +463,9 @@ fn run_request_delete(
     context
         .dismiss
         .push(DismissScope::FileTree, "取消删除", cancel_delete());
-    context.effects.push(HostEffect::FileTreeRequestDelete);
+    context
+        .effects
+        .push(HostEffect::FileTree(FileTreeEffect::RequestDelete));
     Ok(CommandOutcome::default())
 }
 
@@ -447,7 +475,9 @@ fn run_confirm_delete(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.dismiss.clear(DismissScope::FileTree);
-    context.effects.push(HostEffect::FileTreeConfirmDelete);
+    context
+        .effects
+        .push(HostEffect::FileTree(FileTreeEffect::ConfirmDelete));
     Ok(CommandOutcome::default())
 }
 
@@ -457,7 +487,9 @@ fn run_cancel_delete(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.dismiss.clear(DismissScope::FileTree);
-    context.effects.push(HostEffect::FileTreeCancelDelete);
+    context
+        .effects
+        .push(HostEffect::FileTree(FileTreeEffect::CancelDelete));
     Ok(CommandOutcome::default())
 }
 

@@ -39,8 +39,9 @@ pub use commands::project_picker::{ProjectPickerBindingContext, ProjectPickerKey
 pub use core::{Command, CommandArgs, CommandCatalogItem, CommandId, Invocation, NoArgs};
 pub use dismiss::{DismissScope, DismissStacks, DismissTokenId};
 pub use effects::{
-    BubbleKind, BubbleRequest, EffectQueue, HostEffect, PanelKind, SearchOption,
-    SettingsChangeRequest,
+    BubbleEffect, BubbleKind, BubbleRequest, EditorEffect, EffectQueue, FileTreeEffect, GitEffect,
+    GoToLineEffect, HostEffect, PanelEffect, PanelKind, ProjectEffect, SearchEffect, SearchOption,
+    SettingsChangeRequest, SurfaceEffect, WindowEffect,
 };
 pub use error::CommandError;
 pub use executor::{

@@ -5,9 +5,12 @@
 //!
 //! 语法高亮没有需要 drain 的中间产物 —— paint 阶段直接从共享 [`SyntaxHighlightsSlot`] 现查统一 Query。
 
+use crate::file_watcher::FsEventKind;
 use crate::ports::{FramePump, PostEditObserver};
 use crate::workspace_session::WorkspaceSession;
 use zom_workspace::view::{ViewportEditAnchor, WrapMap};
+
+use super::App;
 
 #[derive(Default)]
 pub(super) struct BackgroundPumps {
@@ -83,5 +86,43 @@ impl BackgroundPumps {
             view.track_viewport_anchor_after_edit(viewport_anchor, &events);
             view.set_wrap_map(wrap_map);
         }
+    }
+}
+
+// ── App 帧泵方法 ──────────────────────────────────────────────
+
+impl App {
+    /// 每帧 prepaint 起手调一次：收割活动 buffer 的后台 BufferSearch 结果。
+    pub fn pump_frame_observers(&mut self) {
+        self.background.pump_frame_observers(&mut self.session);
+    }
+
+    /// 每帧排空文件监听事件。
+    ///
+    /// 只处理必须由 App 做的事（buffer 重载需要 WorkspaceSession）。
+    /// git 状态刷新也在此提前完成——不依赖 FileTreeModel::state() 的 dirty flag 时序。
+    pub fn pump_file_watcher(&mut self) {
+        let Some(watcher) = self.file_watcher.as_mut() else {
+            return;
+        };
+        let events = watcher.drain_events();
+        if events.is_empty() {
+            return;
+        }
+
+        for event in &events {
+            if event.kind == FsEventKind::Modified {
+                self.session.reload_if_externally_changed(&event.path);
+            }
+        }
+
+        let _ = self.git.borrow_mut().refresh();
+        self.fs_changed.set(true);
+    }
+
+    /// 每帧推进 LSP 状态：收割 server 启动结果 → semantic tokens 响应 → 文档同步 → 请求新 tokens。
+    pub fn pump_lsp_tokens(&mut self) {
+        let workspace = self.session.workspace();
+        self.lsp_host.pump(workspace);
     }
 }

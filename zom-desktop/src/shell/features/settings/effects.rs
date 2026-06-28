@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
-use zom_command::HostEffect;
+use zom_command::{HostEffect, SurfaceEffect};
 
 use crate::app::App;
 use crate::shell::features::settings::{self, SettingsRuntime};
@@ -22,7 +22,7 @@ pub(crate) fn try_apply_effect(
     cx: &mut gpui::App,
 ) -> bool {
     match effect {
-        HostEffect::ShowSettings => {
+        HostEffect::Surface(SurfaceEffect::ShowSettings) => {
             if surfaces.read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker)) {
                 app.borrow_mut().project_picker_deactivate();
             }

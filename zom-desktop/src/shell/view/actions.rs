@@ -7,7 +7,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
-use zom_command::{HostEffect, Invocation, SettingsChangeRequest};
+use zom_command::{
+    BubbleEffect, EditorEffect, HostEffect, Invocation, PanelEffect, SettingsChangeRequest,
+    SurfaceEffect, WindowEffect,
+};
 
 use crate::app::App;
 use crate::clipboard::GpuiClipboardScope;
@@ -250,14 +253,16 @@ fn apply_shell_effect(
     cx: &mut gpui::App,
 ) {
     match effect {
-        HostEffect::Quit => platform_window::quit(cx),
-        HostEffect::Minimize => platform_window::minimize(window),
-        HostEffect::ToggleMaximize => platform_window::toggle_maximize(window),
-        HostEffect::ShowBubble(request) => {
+        HostEffect::Window(WindowEffect::Quit) => platform_window::quit(cx),
+        HostEffect::Window(WindowEffect::Minimize) => platform_window::minimize(window),
+        HostEffect::Window(WindowEffect::ToggleMaximize) => {
+            platform_window::toggle_maximize(window)
+        }
+        HostEffect::Bubble(BubbleEffect::Show(request)) => {
             bubbles.update(cx, |runtime, cx| runtime.push(request.clone(), cx));
             window.refresh();
         }
-        HostEffect::SettingsOpenToml => {
+        HostEffect::Surface(SurfaceEffect::OpenSettingsToml) => {
             let opened = app.borrow_mut().apply_open_config_file_from_effect();
             for request in app.borrow_mut().take_session_bubbles() {
                 bubbles.update(cx, |runtime, cx| runtime.push(request, cx));
@@ -267,7 +272,7 @@ fn apply_shell_effect(
             }
             window.refresh();
         }
-        HostEffect::SettingsApplyChange(change) => {
+        HostEffect::Surface(SurfaceEffect::ApplySettingsChange(change)) => {
             let config = {
                 let mut app = app.borrow_mut();
                 app.apply_settings_change_from_effect(settings_change(*change));
@@ -276,7 +281,7 @@ fn apply_shell_effect(
             config_visuals::apply(&config, Some(window));
             window.refresh();
         }
-        HostEffect::TogglePanel(panel, via_pointer) => {
+        HostEffect::Panel(PanelEffect::Toggle(panel, via_pointer)) => {
             let panel = *panel;
             if *via_pointer {
                 // 鼠标点击：纯 toggle，不判断焦点归属。
@@ -300,20 +305,20 @@ fn apply_shell_effect(
             }
             window.refresh();
         }
-        HostEffect::EditorToggleSoftWrap => {
+        HostEffect::Editor(EditorEffect::ToggleSoftWrap) => {
             app.borrow_mut().toggle_soft_wrap();
             window.refresh();
         }
-        HostEffect::EditorSelectTab(view_id) => {
+        HostEffect::Editor(EditorEffect::SelectTab(view_id)) => {
             app.borrow_mut().activate_view_tab(*view_id);
             window.refresh();
         }
-        HostEffect::EditorCancelPointerSelection => {
+        HostEffect::Editor(EditorEffect::CancelPointerSelection) => {
             for slot in text_editor_slots {
                 slot.cancel_pointer_selection();
             }
         }
-        HostEffect::DismissSurface => {
+        HostEffect::Surface(SurfaceEffect::Dismiss) => {
             if surfaces.read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker)) {
                 app.borrow_mut().project_picker_deactivate();
             }

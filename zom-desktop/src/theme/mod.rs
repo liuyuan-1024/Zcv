@@ -109,6 +109,10 @@ pub mod space {
     pub fn s16() -> Pixels {
         px(16.0)
     }
+    /// gutter 左缘 git diff 色条宽度。
+    pub fn gutter_bar() -> Pixels {
+        px(4.0)
+    }
 }
 
 pub mod radius {
@@ -202,10 +206,16 @@ pub mod typography {
     pub fn ui_line() -> Pixels {
         px((current().ui_font_size + 3.0).max(14.0))
     }
+
     /// 编辑区代码字号。后续做成用户可调。
     pub fn editor() -> Pixels {
         px(current().editor_font_size)
     }
+    /// 编辑区字号的原始 f32 值，供 ratex 等非 GPUI 渲染使用。
+    pub fn editor_font_size() -> f32 {
+        current().editor_font_size
+    }
+
     /// 编辑区行高（约 1.5×，照顾代码可读性）。
     pub fn editor_line() -> Pixels {
         px(current().editor_font_size * 1.5)

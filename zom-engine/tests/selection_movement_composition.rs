@@ -109,10 +109,11 @@ fn movement_boundaries_should_dispatch_by_unit_and_reject_invalid_offsets() {
 }
 
 #[test]
-fn word_delete_should_not_cross_line_when_current_line_contains_only_separators() {
+fn word_delete_respects_separator_category_boundaries() {
     let mut buffer = buffer("# zom 文档规范\n# \n#¥%…… ");
     let end = buffer.len_bytes();
 
+    // 第一拍：向前删，遇空格后遇符号 → 类别切换，只删尾部空格。
     buffer
         .delete_at_selections(
             SelectionSet::caret(end),
@@ -120,18 +121,25 @@ fn word_delete_should_not_cross_line_when_current_line_contains_only_separators(
             metadata("delete"),
         )
         .unwrap();
+    assert_eq!(buffer_text(&buffer), "# zom 文档规范\n# \n#¥%……");
 
+    // 第二拍：删符号块 "#¥%……"。
+    let end2 = buffer.len_bytes();
+    buffer
+        .delete_at_selections(
+            SelectionSet::caret(end2),
+            Some((MovementDirection::Previous, MovementUnit::Word)),
+            metadata("delete"),
+        )
+        .unwrap();
     assert_eq!(buffer_text(&buffer), "# zom 文档规范\n# \n");
-    assert_eq!(
-        buffer.selection().primary().head(),
-        b("# zom 文档规范\n# \n".len())
-    );
 }
 
 #[test]
-fn forward_word_delete_should_not_cross_line_when_current_line_contains_only_separators() {
+fn forward_word_delete_respects_separator_category_boundaries() {
     let mut buffer = buffer("#¥%…… \nabc");
 
+    // 第一拍：向前删，遇符号后遇空格 → 类别切换，只删符号块。
     buffer
         .delete_at_selections(
             SelectionSet::caret(b(0)),
@@ -139,10 +147,50 @@ fn forward_word_delete_should_not_cross_line_when_current_line_contains_only_sep
             metadata("delete"),
         )
         .unwrap();
+    assert_eq!(buffer_text(&buffer), " \nabc");
 
+    // 第二拍：删空格。
+    buffer.set_selection(set_caret(0)).unwrap();
+    buffer
+        .delete_at_selections(
+            SelectionSet::caret(b(0)),
+            Some((MovementDirection::Next, MovementUnit::Word)),
+            metadata("delete"),
+        )
+        .unwrap();
     assert_eq!(buffer_text(&buffer), "\nabc");
-    assert_eq!(buffer.selection().primary().head(), b(0));
+
+    // 第三拍：换行独立删除。
+    buffer.set_selection(set_caret(0)).unwrap();
+    buffer
+        .delete_at_selections(
+            SelectionSet::caret(b(0)),
+            Some((MovementDirection::Next, MovementUnit::Word)),
+            metadata("delete"),
+        )
+        .unwrap();
+    assert_eq!(buffer_text(&buffer), "abc");
 }
+
+#[test]
+fn backward_word_move_treats_newline_as_separator_category() {
+    let mut buffer = buffer("top\n# \n\nnext");
+    // 光标在空行首（\n# \n 末尾，\nnext 之前的 \n 上）。
+    let empty_line_start = b("top\n# \n".len());
+
+    buffer
+        .set_selection(set_caret(empty_line_start.get()))
+        .unwrap();
+
+    let moved = buffer
+        .move_current_selection(MovementDirection::Previous, MovementUnit::Word, false)
+        .unwrap();
+
+    // 向后越过 \n，遇到空格 → 类别切换，停在第一个 \n 处（即 "# " 行末）。
+    assert_eq!(moved.as_slice(), &[caret(b("top\n# ".len()).get())]);
+}
+
+// ── 以下为未受影响的旧测试，保持不变 ──
 
 #[test]
 fn backward_word_move_from_empty_line_start_should_land_on_previous_line_end() {
@@ -180,46 +228,11 @@ fn backward_word_delete_from_empty_line_start_should_remove_empty_line_separator
 }
 
 #[test]
-fn backward_word_move_from_empty_line_to_separator_only_line_should_land_on_line_end() {
-    let mut buffer = buffer("top\n# \n\nnext");
-    let empty_line_start = b("top\n# \n".len());
-    let separator_line_end = b("top\n# ".len());
-
-    buffer
-        .set_selection(set_caret(empty_line_start.get()))
-        .unwrap();
-
-    let moved = buffer
-        .move_current_selection(MovementDirection::Previous, MovementUnit::Word, false)
-        .unwrap();
-
-    assert_eq!(moved.as_slice(), &[caret(separator_line_end.get())]);
-    assert_eq!(buffer.selection().primary().head(), separator_line_end);
-}
-
-#[test]
-fn forward_word_move_from_empty_line_to_separator_only_line_should_land_on_line_start() {
-    let mut buffer = buffer("# zom 文档规范\n\n你好\n\n# \n");
-    let empty_line_start = b("# zom 文档规范\n\n你好\n".len());
-    let separator_line_start = b("# zom 文档规范\n\n你好\n\n".len());
-
-    buffer
-        .set_selection(set_caret(empty_line_start.get()))
-        .unwrap();
-
-    let moved = buffer
-        .move_current_selection(MovementDirection::Next, MovementUnit::Word, false)
-        .unwrap();
-
-    assert_eq!(moved.as_slice(), &[caret(separator_line_start.get())]);
-    assert_eq!(buffer.selection().primary().head(), separator_line_start);
-}
-
-#[test]
-fn forward_word_move_from_empty_line_to_indented_word_should_land_on_word_start() {
+fn forward_word_move_stops_at_category_boundary() {
     let mut buffer = buffer("abc\n\n  next");
     let empty_line_start = b("abc\n".len());
-    let word_start = b("abc\n\n  ".len());
+    // 从空行 \n 处向前：跳过 \n（newline 类），遇空格（space 类）→ 类别切换停止。
+    let after_newline = b("abc\n\n".len());
 
     buffer
         .set_selection(set_caret(empty_line_start.get()))
@@ -229,8 +242,8 @@ fn forward_word_move_from_empty_line_to_indented_word_should_land_on_word_start(
         .move_current_selection(MovementDirection::Next, MovementUnit::Word, false)
         .unwrap();
 
-    assert_eq!(moved.as_slice(), &[caret(word_start.get())]);
-    assert_eq!(buffer.selection().primary().head(), word_start);
+    assert_eq!(moved.as_slice(), &[caret(after_newline.get())]);
+    assert_eq!(buffer.selection().primary().head(), after_newline);
 }
 
 #[test]

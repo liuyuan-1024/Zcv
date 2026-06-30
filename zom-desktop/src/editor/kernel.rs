@@ -8,13 +8,14 @@
 //! 覆盖层（search overlay / reveal）走"数据驱动"：是否生效取决于 snapshot
 //! 里是否带数据，不在内核上单独开关。调用方填了就画，没填就不画。
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::FocusHandle;
 
 use super::view::{EditorElement, EditorInputHook, EditorViewportSyncHook};
 use crate::editor::text::EditorSnapshot;
+use crate::git_service::GitService;
 
 /// 编辑器的纵向承载模式。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,6 +39,8 @@ pub(crate) struct EditorKernel {
     vertical_scroll: bool,
     viewport_sync: Option<EditorViewportSyncHook>,
     soft_wrap: Rc<Cell<bool>>,
+    /// git diff 查询句柄。单行编辑器为 None，主编辑区装配时注入。
+    git: Option<Rc<RefCell<GitService>>>,
 }
 
 impl EditorKernel {
@@ -50,6 +53,7 @@ impl EditorKernel {
             vertical_scroll: false,
             viewport_sync: None,
             soft_wrap: Rc::new(Cell::new(false)),
+            git: None,
         }
     }
 
@@ -65,6 +69,7 @@ impl EditorKernel {
             vertical_scroll: false,
             viewport_sync: None,
             soft_wrap,
+            git: None,
         }
     }
 
@@ -85,6 +90,12 @@ impl EditorKernel {
         self
     }
 
+    /// 注入 git 服务句柄，使 editor gutter 能查询 diff hunk。
+    pub(crate) fn with_git(mut self, git: Rc<RefCell<GitService>>) -> Self {
+        self.git = Some(git);
+        self
+    }
+
     pub(crate) fn has_gutter(&self) -> bool {
         self.gutter
     }
@@ -102,14 +113,21 @@ impl EditorKernel {
         self.soft_wrap.get()
     }
 
-    /// 从快照创建渲染元素。覆盖层（search / reveal）数据原样传给 element，
-    /// element 看数据存在与否决定是否绘制。
+    /// 从快照创建渲染元素。
+    /// 覆盖层（search / reveal / git diff）数据原样传给 element，element 看数据存在与否决定是否绘制。
+    ///
+    /// `buffer_path` 是当前 buffer 对应的文件路径，用于 git diff 查询。单行编辑器传 `None`。
     pub(crate) fn element(
         &self,
         snapshot: EditorSnapshot,
         focus: FocusHandle,
         input_handler_hook: EditorInputHook,
+        buffer_path: Option<&std::path::Path>,
     ) -> EditorElement {
+        let diff_hunks = match (&self.git, buffer_path) {
+            (Some(git), Some(path)) => git.borrow().diff_hunks(path),
+            _ => Vec::new(),
+        };
         let mut element = EditorElement::new(
             self.clone(),
             snapshot.lines,
@@ -122,7 +140,8 @@ impl EditorKernel {
             input_handler_hook,
         )
         .reveal_if_some(snapshot.reveal)
-        .decorations(snapshot.decorations);
+        .decorations(snapshot.decorations)
+        .diff_hunks(diff_hunks);
         if let Some(hook) = self.viewport_sync.as_ref() {
             element = element.viewport_sync(Rc::clone(hook));
         }

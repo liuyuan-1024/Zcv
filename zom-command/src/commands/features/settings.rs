@@ -9,7 +9,7 @@ use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandHandler, CommandOutcome, CommandRegistry,
     DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SettingsChangeRequest,
-    reject_unknown_args, required_arg,
+    SurfaceEffect, reject_unknown_args, required_arg,
 };
 
 /// 打开设置面板。
@@ -168,7 +168,9 @@ fn run_open(
     context
         .dismiss
         .push(DismissScope::Settings, "关闭设置", dismiss());
-    context.effects.push(HostEffect::ShowSettings);
+    context
+        .effects
+        .push(HostEffect::Surface(SurfaceEffect::ShowSettings));
     Ok(CommandOutcome::default())
 }
 
@@ -178,7 +180,9 @@ fn run_dismiss(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.dismiss.clear(DismissScope::Settings);
-    context.effects.push(HostEffect::DismissSurface);
+    context
+        .effects
+        .push(HostEffect::Surface(SurfaceEffect::Dismiss));
     Ok(CommandOutcome::default())
 }
 
@@ -187,7 +191,9 @@ fn run_open_toml(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
-    context.effects.push(HostEffect::SettingsOpenToml);
+    context
+        .effects
+        .push(HostEffect::Surface(SurfaceEffect::OpenSettingsToml));
     Ok(CommandOutcome::default())
 }
 
@@ -198,7 +204,9 @@ fn run_apply_change(
     let args = SettingsChangeArgs::try_from(args)?;
     context
         .effects
-        .push(HostEffect::SettingsApplyChange(args.change));
+        .push(HostEffect::Surface(SurfaceEffect::ApplySettingsChange(
+            args.change,
+        )));
     Ok(CommandOutcome::default())
 }
 
@@ -206,7 +214,9 @@ fn run_adjust_font_size(change: SettingsChangeRequest) -> CommandHandler {
     Box::new(move |context, _args| {
         context
             .effects
-            .push(HostEffect::SettingsApplyChange(change));
+            .push(HostEffect::Surface(SurfaceEffect::ApplySettingsChange(
+                change,
+            )));
         Ok(CommandOutcome::default())
     })
 }

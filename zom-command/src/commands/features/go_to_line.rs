@@ -4,7 +4,8 @@ use crate::commands::cid;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
-    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, command_execution_failed,
+    GoToLineEffect, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
+    command_execution_failed,
 };
 use zom_engine::{ByteOffset, Line, TextRange};
 
@@ -55,7 +56,9 @@ fn run_activate(
     context
         .dismiss
         .push(DismissScope::GoToLineInput, "退出跳转到行", dismiss());
-    context.effects.push(HostEffect::GoToLineActivate);
+    context
+        .effects
+        .push(HostEffect::GoToLine(GoToLineEffect::Activate));
     Ok(CommandOutcome::default())
 }
 
@@ -65,7 +68,9 @@ fn run_dismiss(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.dismiss.clear(DismissScope::GoToLineInput);
-    context.effects.push(HostEffect::GoToLineDismiss);
+    context
+        .effects
+        .push(HostEffect::GoToLine(GoToLineEffect::Dismiss));
     Ok(CommandOutcome::default())
 }
 
@@ -132,7 +137,9 @@ fn run_confirm(
     .get();
 
     context.dismiss.clear(DismissScope::GoToLineInput);
-    context.effects.push(HostEffect::GoToLineJump(target_byte));
+    context
+        .effects
+        .push(HostEffect::GoToLine(GoToLineEffect::Jump(target_byte)));
 
     Ok(CommandOutcome::default())
 }

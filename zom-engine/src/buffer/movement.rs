@@ -4,8 +4,7 @@
 
 use crate::{
     CharOffset, CoordinateError, EditError, EngineResult, Line, Motion, MovementDirection,
-    MovementUnit, Selection, SelectionSet, WordBoundaryPolicy,
-    config::{WordBoundaryClassifier, WordSeparatorStop},
+    MovementUnit, Selection, SelectionSet, WordBoundaryPolicy, config::WordBoundaryClassifier,
     storage::TextRead,
 };
 
@@ -292,7 +291,7 @@ fn word_like_boundary<T: TextRead>(
         MovementDirection::Next => {
             let mut cursor = offset;
             let mut skipped_separator = false;
-            let mut line_start_after_separator = None;
+            let mut sep_kind: Option<u8> = None;
 
             while let Some(grapheme) = grapheme_at(storage, cursor)? {
                 if classifier.is_body(grapheme.first) {
@@ -302,19 +301,23 @@ fn word_like_boundary<T: TextRead>(
                     return scan_contiguous_end(storage, grapheme, classifier);
                 }
 
-                if let Some(stop) =
-                    classifier.next_separator_stop(grapheme.first, skipped_separator)
-                {
-                    if let Some(line_start) = line_start_after_separator {
-                        return Ok(line_start);
+                let kind = separator_kind(grapheme.first);
+
+                // 换行不分连续：每个 \n 独立为一个删除单元。
+                if kind == K_NEWLINE && skipped_separator {
+                    return Ok(cursor);
+                }
+
+                // 分隔符类别切换 → 停止，不同类别不混合删除。
+                if let Some(prev) = sep_kind {
+                    if prev != kind {
+                        return Ok(cursor);
                     }
-                    return Ok(separator_stop_offset(grapheme, stop));
+                } else {
+                    sep_kind = Some(kind);
                 }
 
                 skipped_separator = true;
-                if classifier.is_hard_separator(grapheme.first) {
-                    line_start_after_separator = Some(grapheme.end);
-                }
                 cursor = grapheme.end;
             }
 
@@ -323,7 +326,7 @@ fn word_like_boundary<T: TextRead>(
         MovementDirection::Previous => {
             let mut cursor = offset;
             let mut skipped_separator = false;
-            let mut line_end_before_separator = None;
+            let mut sep_kind: Option<u8> = None;
 
             while let Some(grapheme) = grapheme_before(storage, cursor)? {
                 if classifier.is_body(grapheme.first) {
@@ -333,24 +336,41 @@ fn word_like_boundary<T: TextRead>(
                     return scan_contiguous_start(storage, grapheme, classifier);
                 }
 
-                if let Some(stop) =
-                    classifier.previous_separator_stop(grapheme.first, skipped_separator)
-                {
-                    if let Some(line_end) = line_end_before_separator {
-                        return Ok(line_end);
+                let kind = separator_kind(grapheme.first);
+
+                // 换行不分连续：每个 \n 独立为一个删除单元。
+                if kind == K_NEWLINE && skipped_separator {
+                    return Ok(cursor);
+                }
+
+                // 分隔符类别切换 → 停止。
+                if let Some(prev) = sep_kind {
+                    if prev != kind {
+                        return Ok(cursor);
                     }
-                    return Ok(separator_stop_offset(grapheme, stop));
+                } else {
+                    sep_kind = Some(kind);
                 }
 
                 skipped_separator = true;
-                if classifier.is_hard_separator(grapheme.first) {
-                    line_end_before_separator = Some(grapheme.start);
-                }
                 cursor = grapheme.start;
             }
 
             Ok(CharOffset::ZERO)
         }
+    }
+}
+
+/// 分隔符分类：空格（\t 在内）可连续合并；换行独立为单个删除单元；其余符号为第三类。
+const K_SPACE: u8 = 1;
+const K_NEWLINE: u8 = 2;
+const K_SYMBOL: u8 = 3;
+
+fn separator_kind(ch: char) -> u8 {
+    match ch {
+        ' ' | '\t' => K_SPACE,
+        '\n' | '\r' => K_NEWLINE,
+        _ => K_SYMBOL,
     }
 }
 
@@ -398,22 +418,24 @@ fn next_subword_boundary<T: TextRead>(
     classifier: WordBoundaryClassifier,
 ) -> EngineResult<CharOffset> {
     let mut cursor = offset;
-    let mut skipped_separator = false;
-    let mut line_start_after_separator = None;
+    let mut sep_kind: Option<u8> = None;
 
     while let Some(grapheme) = grapheme_at(storage, cursor)? {
         if !classifier.is_body(grapheme.first) {
-            if let Some(stop) = classifier.next_separator_stop(grapheme.first, skipped_separator) {
-                if let Some(line_start) = line_start_after_separator {
-                    return Ok(line_start);
-                }
-                return Ok(separator_stop_offset(grapheme, stop));
+            let kind = separator_kind(grapheme.first);
+
+            if kind == K_NEWLINE && sep_kind.is_some() {
+                return Ok(cursor);
             }
 
-            skipped_separator = true;
-            if classifier.is_hard_separator(grapheme.first) {
-                line_start_after_separator = Some(grapheme.end);
+            if let Some(prev) = sep_kind {
+                if prev != kind {
+                    return Ok(cursor);
+                }
+            } else {
+                sep_kind = Some(kind);
             }
+
             cursor = grapheme.end;
             continue;
         }
@@ -435,23 +457,25 @@ fn previous_subword_boundary<T: TextRead>(
 ) -> EngineResult<CharOffset> {
     let mut cursor = offset;
     let mut skipped_separator = false;
-    let mut line_end_before_separator = None;
+    let mut sep_kind: Option<u8> = None;
 
     while let Some(grapheme) = grapheme_before(storage, cursor)? {
         if !classifier.is_body(grapheme.first) {
-            if let Some(stop) =
-                classifier.previous_separator_stop(grapheme.first, skipped_separator)
-            {
-                if let Some(line_end) = line_end_before_separator {
-                    return Ok(line_end);
+            let kind = separator_kind(grapheme.first);
+
+            if kind == K_NEWLINE && skipped_separator {
+                return Ok(cursor);
+            }
+
+            if let Some(prev) = sep_kind {
+                if prev != kind {
+                    return Ok(cursor);
                 }
-                return Ok(separator_stop_offset(grapheme, stop));
+            } else {
+                sep_kind = Some(kind);
             }
 
             skipped_separator = true;
-            if classifier.is_hard_separator(grapheme.first) {
-                line_end_before_separator = Some(grapheme.start);
-            }
             cursor = grapheme.start;
             continue;
         }
@@ -464,13 +488,6 @@ fn previous_subword_boundary<T: TextRead>(
     }
 
     Ok(CharOffset::ZERO)
-}
-
-fn separator_stop_offset(current: MovementGrapheme, stop: WordSeparatorStop) -> CharOffset {
-    match stop {
-        WordSeparatorStop::BeforeCurrent => current.start,
-        WordSeparatorStop::AfterCurrent => current.end,
-    }
 }
 
 fn scan_subword_end<T: TextRead>(

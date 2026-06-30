@@ -50,6 +50,7 @@ use crate::editor::pointer::{
     PointerHitLine, PointerHitTest, PointerScrollHook, PointerSelectionHook,
     PointerSelectionSession, install_scroll_handler, install_selection_handlers,
 };
+use crate::git_service::{ColorKind, DiffHunk, DiffHunkKind};
 
 use super::blink::CaretClock;
 use super::gutter;
@@ -112,6 +113,8 @@ pub(crate) struct EditorElement {
     decorations: Vec<Decoration>,
     /// prepaint 末尾调用，把当前帧测得的 viewport 写回 view 的视口测量值；只主编辑区装。
     viewport_sync: Option<EditorViewportSyncHook>,
+    /// git diff hunk 数据，用于 gutter 画添加/修改/删除色条。
+    diff_hunks: Vec<DiffHunk>,
 }
 
 impl EditorElement {
@@ -143,6 +146,7 @@ impl EditorElement {
             reveal: None,
             decorations: Vec::new(),
             viewport_sync: None,
+            diff_hunks: Vec::new(),
         }
     }
 
@@ -169,6 +173,11 @@ impl EditorElement {
 
     pub(crate) fn viewport_sync(mut self, hook: EditorViewportSyncHook) -> Self {
         self.viewport_sync = Some(hook);
+        self
+    }
+
+    pub(crate) fn diff_hunks(mut self, hunks: Vec<DiffHunk>) -> Self {
+        self.diff_hunks = hunks;
         self
     }
 
@@ -227,10 +236,14 @@ impl PrepaintedLine {
     }
 }
 
+/// 一条视觉行对应的逻辑行信息。
+///
+/// 不开软换行时 `subrow` 恒为 0；软换行下同一个逻辑行可能对应多条视觉行，`subrow` 从 0 开始递增。
+/// 所有视觉行都携带 `line_index`，消费方无需再手动追踪"续行属于哪个逻辑行"。
 #[derive(Clone, Copy, Debug)]
-struct VisualRow {
-    line_index: u64,
-    subrow: u64,
+pub(crate) struct VisualRow {
+    pub line_index: u64,
+    pub subrow: u64,
 }
 
 /// `prepaint` 阶段 shape 出的、供 `paint` 直接绘制的结果。
@@ -507,9 +520,6 @@ impl Element for EditorElement {
         // 未渲染过的行由 WrapMap 按 1 个 subrow 处理，避免每帧按整篇文档行数分配。
         // 命令层走 [`WrapMap::resolve`] 在文本域查询；未填充的行天然退化为「按逻辑行移动」。
         let mut breaks_per_line: Vec<(u64, Vec<u32>)> = Vec::with_capacity(self.lines.len());
-        // 每条视觉行对应的「逻辑行号」：首段填 Some(line_index)，软换行的续段填 None。
-        // 长度与 prepainted_lines 一一对应；不开软换行时全数组都是 Some(...)。
-        let mut gutter_rows: Vec<Option<u64>> = Vec::with_capacity(self.lines.len());
         let mut primary_caret_visual_row: Option<usize> = None;
 
         // reveal 是否生效完全看快照里有没有；调用方不需要 reveal 时自然就不会在 owner.snapshot() 里填这个字段。
@@ -608,11 +618,6 @@ impl Element for EditorElement {
                     line_index: line.line_index,
                     subrow: seg_i as u64,
                 });
-                gutter_rows.push(if seg_i == 0 {
-                    Some(line.line_index)
-                } else {
-                    None
-                });
             }
         }
 
@@ -635,14 +640,15 @@ impl Element for EditorElement {
             reveal_visible_row_x = Some((row, x));
         }
 
-        // gutter：按视觉行 shape 行号——续行槽位为 None，paint 时跳过。
+        // gutter：按视觉行 shape 行号——续行（subrow > 0）行号留空，paint 时跳过。
         // 列宽仍由 buffer 总行数决定（避免滚动时列宽抖动）。
         let gutter_prepaint = if has_gutter {
             gutter::prepare(
-                &gutter_rows,
+                &visual_rows,
                 self.total_lines,
                 &text_style,
                 font_size,
+                &self.diff_hunks,
                 window,
             )
         } else {
@@ -796,9 +802,40 @@ impl Element for EditorElement {
         }
         let mouse_hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
 
+        // git diff 行背景
+        // 每条视觉行都携带 line_index；逻辑行变化时才重新查 hunk，同逻辑行的续行复用缓存结果。
+        let mut git_backgrounds = Vec::new();
+        if !self.diff_hunks.is_empty() {
+            let mut last_line_index: Option<u64> = None;
+            let mut last_bg_kind: Option<ColorKind> = None;
+            for (visual_row, vr) in visual_rows.iter().enumerate() {
+                if last_line_index != Some(vr.line_index) {
+                    last_line_index = Some(vr.line_index);
+                    last_bg_kind = None;
+                    for hunk in &self.diff_hunks {
+                        let start = hunk.new_start.saturating_sub(1) as u64;
+                        let end = start + hunk.new_lines as u64;
+                        if vr.line_index >= start && vr.line_index < end {
+                            last_bg_kind = Some(match hunk.kind {
+                                DiffHunkKind::Added => ColorKind::Added,
+                                DiffHunkKind::Modified => ColorKind::Modified,
+                                DiffHunkKind::Deleted => ColorKind::Deleted,
+                            });
+                            break;
+                        }
+                    }
+                }
+                if let Some(kind) = last_bg_kind {
+                    git_backgrounds.push(LineBackgroundQuad {
+                        row: visual_row,
+                        color: color::git_status_bg(kind),
+                    });
+                }
+            }
+        }
+
         EditorPrepaint {
-            // v1 空槽位：行背景。
-            line_backgrounds: Vec::new(),
+            line_backgrounds: git_backgrounds,
             // composer 已按 priority 排好；paint 顺序 = Vec 顺序，低优先级先画。
             range_backgrounds,
             lines: prepainted_lines,

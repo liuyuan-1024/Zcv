@@ -4,8 +4,12 @@
 //! 负责把命令、布局与功能模块连接起来。承载小件（焦点宿主、占位面板）属于
 //! workbench 的 panel 框架，见 `workbench::docks`。
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gpui::{AnyElement, Context, FocusHandle, IntoElement, Window};
 
+use crate::git_service::GitService;
 use crate::host_intent::KeyRequest;
 use crate::shell::{CommandCatalogLookup, CommandTitleLookup, ShortcutLookup};
 use crate::ui_id::PanelId;
@@ -36,14 +40,18 @@ pub(crate) struct PanelRuntimes {
 }
 
 impl PanelRuntimes {
-    pub(crate) fn new<T>(cx: &mut Context<T>) -> Self {
+    pub(crate) fn new<T>(cx: &mut Context<T>, git_handle: Rc<RefCell<GitService>>) -> Self {
         Self {
-            version_control: version_control::VersionControlRuntime::new(cx),
+            version_control: version_control::VersionControlRuntime::new(cx, git_handle),
             outline: outline::OutlineRuntime::new(cx),
             terminal: terminal::TerminalRuntime::new(cx),
             debug: debug::DebugRuntime::new(cx),
             keyboard_shortcuts: keyboard_shortcuts::KeyboardShortcutsRuntime::new(cx),
         }
+    }
+
+    pub(crate) fn vc_runtime(&self) -> &version_control::VersionControlRuntime {
+        &self.version_control
     }
 
     pub(crate) fn focus_handle(&self, panel: PanelId) -> Option<FocusHandle> {
@@ -64,12 +72,13 @@ impl PanelRuntimes {
         shortcuts: &ShortcutLookup,
         titles: &CommandTitleLookup,
         command_catalog: &CommandCatalogLookup,
+        has_project: bool,
     ) -> Option<AnyElement> {
         match panel {
             PanelId::FileTree => None,
             PanelId::VersionControl => Some(
                 self.version_control
-                    .render(key_request, titles)
+                    .render(key_request, titles, has_project)
                     .into_any_element(),
             ),
             PanelId::Outline => Some(self.outline.render(key_request, titles).into_any_element()),

@@ -46,6 +46,7 @@ pub enum KeyContext {
     ProjectPicker(ProjectPickerKeyContext),
     Settings(SettingsKeyContext),
     LanguageServers(LanguageServersKeyContext),
+    VersionControl,
     SearchBar,
     GoToLineInput,
 }
@@ -78,6 +79,10 @@ impl KeyContext {
         Self::LanguageServers(LanguageServersKeyContext)
     }
 
+    pub fn version_control() -> Self {
+        Self::VersionControl
+    }
+
     pub fn search_bar() -> Self {
         Self::SearchBar
     }
@@ -96,6 +101,7 @@ pub enum KeyBindingContext {
     ProjectPicker(ProjectPickerBindingContext),
     Settings(SettingsBindingContext),
     LanguageServers(LanguageServersBindingContext),
+    VersionControl,
     SearchInput,
     GoToLineInput,
 }
@@ -142,6 +148,10 @@ impl KeyBindingContext {
         Self::LanguageServers(LanguageServersBindingContext)
     }
 
+    pub fn version_control() -> Self {
+        Self::VersionControl
+    }
+
     pub fn search_input() -> Self {
         Self::SearchInput
     }
@@ -166,6 +176,7 @@ impl KeyBindingContext {
             (Self::ProjectPicker(_), Self::ProjectPicker(_)) => true,
             (Self::Settings(_), Self::Settings(_)) => true,
             (Self::LanguageServers(_), Self::LanguageServers(_)) => true,
+            (Self::VersionControl, Self::VersionControl) => true,
             (Self::SearchInput, Self::SearchInput) => true,
             (Self::GoToLineInput, Self::GoToLineInput) => true,
             _ => false,
@@ -329,6 +340,7 @@ fn binding_matches_context(binding: &KeyBinding, context: KeyContext) -> bool {
         (KeyBindingContext::ProjectPicker(_), KeyContext::ProjectPicker(_)) => true,
         (KeyBindingContext::Settings(_), KeyContext::Settings(_)) => true,
         (KeyBindingContext::LanguageServers(_), KeyContext::LanguageServers(_)) => true,
+        (KeyBindingContext::VersionControl, KeyContext::VersionControl) => true,
         (KeyBindingContext::SearchInput, KeyContext::SearchBar) => true,
         (KeyBindingContext::GoToLineInput, KeyContext::GoToLineInput) => true,
         _ => false,

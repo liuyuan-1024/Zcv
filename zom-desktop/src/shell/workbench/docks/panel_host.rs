@@ -47,6 +47,7 @@ impl PanelHost {
                     ctx.shortcut_lookup,
                     ctx.command_title_lookup,
                     ctx.command_catalog_lookup,
+                    ctx.has_project,
                 )
                 .unwrap_or_else(|| gpui::div().into_any_element()),
         }

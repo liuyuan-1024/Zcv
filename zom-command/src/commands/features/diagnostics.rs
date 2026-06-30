@@ -4,7 +4,7 @@
 
 use crate::commands::cid;
 use crate::commands::emit;
-use crate::{CommandArgs, CommandRegistry, HostEffect, Invocation, Keymap};
+use crate::{CommandArgs, CommandRegistry, HostEffect, Invocation, Keymap, SurfaceEffect};
 
 /// 打开"问题"面板查看诊断列表。
 pub const SHOW_PROBLEMS: &str = "diagnostics.show_problems";
@@ -18,6 +18,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         keymap,
         SHOW_PROBLEMS,
         "诊断",
-        emit(HostEffect::ShowDiagnostics),
+        emit(HostEffect::Surface(SurfaceEffect::ShowDiagnostics)),
     );
 }

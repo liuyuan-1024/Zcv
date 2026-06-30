@@ -409,7 +409,7 @@ impl BufferSearch {
     /// 让调用方拿着这两个去调 `buffer.replace_search_match` / `replace_regex_match`，
     /// 替换成功后必须紧跟一次 `WorkspaceBuffer::pump_post_edit` 把新生的 DeltaEvent 喂回来。
     /// 本模块不内嵌替换处理器——边界留给 zom-command。
-    pub fn current_for_replace(&self) -> Option<CurrentReplaceTarget<'_>> {
+    pub(crate) fn current_for_replace(&self) -> Option<CurrentReplaceTarget<'_>> {
         let slot = self.slot.as_ref()?;
         let ordinal = self.current_hit?;
         Some(CurrentReplaceTarget { slot, ordinal })

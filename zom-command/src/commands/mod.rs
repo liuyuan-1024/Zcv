@@ -32,6 +32,7 @@ pub use features::language_servers;
 pub use features::project_picker;
 pub use features::search;
 pub use features::settings;
+pub use features::version_control;
 pub use system::window;
 
 /// 安装全部内建命令。

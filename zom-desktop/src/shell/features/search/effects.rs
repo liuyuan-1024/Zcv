@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::Window;
-use zom_command::HostEffect;
+use zom_command::{HostEffect, SearchEffect};
 
 use crate::app::App;
 use crate::focus::{AppFocus, SearchField};
@@ -22,41 +22,43 @@ pub(crate) fn try_apply_effect(
     window: &mut Window,
 ) -> bool {
     match effect {
-        HostEffect::SearchFocusNextField => {
+        HostEffect::Search(SearchEffect::FocusNextField) => {
             focus_search_field(app, focus, FocusDirection::Next, window);
         }
-        HostEffect::SearchFocusPreviousField => {
+        HostEffect::Search(SearchEffect::FocusPreviousField) => {
             focus_search_field(app, focus, FocusDirection::Previous, window);
         }
-        HostEffect::SearchDismiss => {
+        HostEffect::Search(SearchEffect::Dismiss) => {
             dismiss_search(app, focus, window);
         }
-        HostEffect::SearchToggle => {
-            if app.borrow().is_search_open() {
+        HostEffect::Search(SearchEffect::Toggle) => {
+            // 与 panel toggle 一致的键盘显隐逻辑：已打开且焦点在搜索栏内才收起，
+            // 否则（未打开 / 已打开但焦点不在搜索栏）一律打开。
+            if app.borrow().is_search_open() && focus.current_focus(window).as_search().is_some() {
                 dismiss_search(app, focus, window);
             } else {
                 activate_search(app, focus, window);
             }
         }
-        HostEffect::SearchConfirmMatch => {
+        HostEffect::Search(SearchEffect::ConfirmMatch) => {
             app.borrow_mut()
                 .apply_search_action_from_effect(SearchAction::ConfirmMatch);
             request_focus(app, focus, AppFocus::editor(), window);
             window.refresh();
         }
-        HostEffect::SearchToggleOption(option) => {
+        HostEffect::Search(SearchEffect::ToggleOption(option)) => {
             apply_search(app, SearchAction::ToggleOption(*option), window);
         }
-        HostEffect::SearchFindNext => {
+        HostEffect::Search(SearchEffect::FindNext) => {
             apply_search(app, SearchAction::FindNext, window);
         }
-        HostEffect::SearchFindPrevious => {
+        HostEffect::Search(SearchEffect::FindPrevious) => {
             apply_search(app, SearchAction::FindPrevious, window);
         }
-        HostEffect::SearchReplaceNext => {
+        HostEffect::Search(SearchEffect::ReplaceNext) => {
             apply_search(app, SearchAction::ReplaceNext, window);
         }
-        HostEffect::SearchReplaceAll => {
+        HostEffect::Search(SearchEffect::ReplaceAll) => {
             apply_search(app, SearchAction::ReplaceAll, window);
         }
         _ => return false,

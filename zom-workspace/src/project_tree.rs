@@ -43,7 +43,7 @@ pub enum EntryKind {
 
 /// 一个目录下的单个子项。
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TreeEntry {
+pub(crate) struct TreeEntry {
     pub path: PathBuf,
     pub name: String,
     pub kind: EntryKind,
@@ -60,9 +60,6 @@ pub struct TreeRow<'a> {
     pub kind: EntryKind,
     /// 仅对目录有意义；文件恒为 false。
     pub expanded: bool,
-    /// 第 k 位为 1 表示该行是其第 k 层祖先的最后一个可见后代。
-    /// 视图层据此在缩进区决定竖线延续还是收尾。
-    pub terminal_mask: u64,
 }
 
 /// 项目目录树。
@@ -313,31 +310,18 @@ impl ProjectTree {
             depth: 0,
             kind: EntryKind::Directory,
             expanded: root_expanded,
-            terminal_mask: 0,
         });
         if root_expanded {
-            self.collect_visible(&self.root, 1, 0, &mut rows);
+            self.collect_visible(&self.root, 1, &mut rows);
         }
         rows
     }
 
-    fn collect_visible<'a>(
-        &'a self,
-        dir: &Path,
-        depth: usize,
-        parent_terminal: u64,
-        rows: &mut Vec<TreeRow<'a>>,
-    ) {
+    fn collect_visible<'a>(&'a self, dir: &Path, depth: usize, rows: &mut Vec<TreeRow<'a>>) {
         let Some(entries) = self.children.get(dir) else {
             return;
         };
-        let last = entries.len().saturating_sub(1);
-        for (i, entry) in entries.iter().enumerate() {
-            let is_last = i == last;
-            let mut terminal = parent_terminal;
-            if is_last {
-                terminal |= 1 << (depth - 1);
-            }
+        for entry in entries.iter() {
             let expanded =
                 matches!(entry.kind, EntryKind::Directory) && self.expanded.contains(&entry.path);
             rows.push(TreeRow {
@@ -346,10 +330,9 @@ impl ProjectTree {
                 depth,
                 kind: entry.kind,
                 expanded,
-                terminal_mask: terminal,
             });
             if expanded {
-                self.collect_visible(&entry.path, depth + 1, terminal, rows);
+                self.collect_visible(&entry.path, depth + 1, rows);
             }
         }
     }
@@ -395,7 +378,7 @@ impl ProjectTree {
         Ok(())
     }
 
-    fn reload_expanded_dirs(&mut self) -> io::Result<()> {
+    pub fn reload_expanded_dirs(&mut self) -> io::Result<()> {
         let mut expanded: Vec<_> = self.expanded.iter().cloned().collect();
         expanded.sort_by_key(|path| path.components().count());
         self.children.clear();

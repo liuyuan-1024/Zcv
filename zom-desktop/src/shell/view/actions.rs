@@ -7,7 +7,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
-use zom_command::{HostEffect, Invocation, SettingsChangeRequest};
+use zom_command::{
+    BubbleEffect, EditorEffect, HostEffect, Invocation, PanelEffect, SettingsChangeRequest,
+    SurfaceEffect, WindowEffect,
+};
 
 use crate::app::App;
 use crate::clipboard::GpuiClipboardScope;
@@ -20,6 +23,7 @@ use crate::shell::bubble::BubbleRuntime;
 use crate::shell::features::go_to_line;
 use crate::shell::features::language_servers;
 use crate::shell::features::panels::file_tree;
+use crate::shell::features::panels::version_control;
 use crate::shell::features::project_picker;
 use crate::shell::features::search;
 use crate::shell::features::settings;
@@ -131,6 +135,9 @@ pub(super) fn apply_host_effects(
     for effect in effects {
         // 按 feature 顺序问询：第一个认领的 try_apply 返回 true，跳过余下。
         // 剩下的窗口控制 / 跨 feature 变体由本文件下方的兜底 match 处理。
+        if version_control::try_apply_effect(features.panels.vc_runtime(), &effect, app).is_some() {
+            continue;
+        }
         if file_tree::try_apply_effect(
             &effect,
             app,
@@ -250,14 +257,16 @@ fn apply_shell_effect(
     cx: &mut gpui::App,
 ) {
     match effect {
-        HostEffect::Quit => platform_window::quit(cx),
-        HostEffect::Minimize => platform_window::minimize(window),
-        HostEffect::ToggleMaximize => platform_window::toggle_maximize(window),
-        HostEffect::ShowBubble(request) => {
+        HostEffect::Window(WindowEffect::Quit) => platform_window::quit(cx),
+        HostEffect::Window(WindowEffect::Minimize) => platform_window::minimize(window),
+        HostEffect::Window(WindowEffect::ToggleMaximize) => {
+            platform_window::toggle_maximize(window)
+        }
+        HostEffect::Bubble(BubbleEffect::Show(request)) => {
             bubbles.update(cx, |runtime, cx| runtime.push(request.clone(), cx));
             window.refresh();
         }
-        HostEffect::SettingsOpenToml => {
+        HostEffect::Surface(SurfaceEffect::OpenSettingsToml) => {
             let opened = app.borrow_mut().apply_open_config_file_from_effect();
             for request in app.borrow_mut().take_session_bubbles() {
                 bubbles.update(cx, |runtime, cx| runtime.push(request, cx));
@@ -267,7 +276,7 @@ fn apply_shell_effect(
             }
             window.refresh();
         }
-        HostEffect::SettingsApplyChange(change) => {
+        HostEffect::Surface(SurfaceEffect::ApplySettingsChange(change)) => {
             let config = {
                 let mut app = app.borrow_mut();
                 app.apply_settings_change_from_effect(settings_change(*change));
@@ -276,7 +285,7 @@ fn apply_shell_effect(
             config_visuals::apply(&config, Some(window));
             window.refresh();
         }
-        HostEffect::TogglePanel(panel, via_pointer) => {
+        HostEffect::Panel(PanelEffect::Toggle(panel, via_pointer)) => {
             let panel = *panel;
             if *via_pointer {
                 // 鼠标点击：纯 toggle，不判断焦点归属。
@@ -300,20 +309,20 @@ fn apply_shell_effect(
             }
             window.refresh();
         }
-        HostEffect::EditorToggleSoftWrap => {
+        HostEffect::Editor(EditorEffect::ToggleSoftWrap) => {
             app.borrow_mut().toggle_soft_wrap();
             window.refresh();
         }
-        HostEffect::EditorSelectTab(view_id) => {
+        HostEffect::Editor(EditorEffect::SelectTab(view_id)) => {
             app.borrow_mut().activate_view_tab(*view_id);
             window.refresh();
         }
-        HostEffect::EditorCancelPointerSelection => {
+        HostEffect::Editor(EditorEffect::CancelPointerSelection) => {
             for slot in text_editor_slots {
                 slot.cancel_pointer_selection();
             }
         }
-        HostEffect::DismissSurface => {
+        HostEffect::Surface(SurfaceEffect::Dismiss) => {
             if surfaces.read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker)) {
                 app.borrow_mut().project_picker_deactivate();
             }

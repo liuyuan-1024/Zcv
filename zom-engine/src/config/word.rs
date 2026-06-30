@@ -32,12 +32,6 @@ pub(crate) struct WordBoundaryClassifier {
     unit: MovementUnit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WordSeparatorStop {
-    BeforeCurrent,
-    AfterCurrent,
-}
-
 impl WordBoundaryPolicy {
     pub const fn new(
         underscore_is_identifier: bool,
@@ -87,34 +81,6 @@ impl WordBoundaryClassifier {
         }
     }
 
-    pub(crate) fn next_separator_stop(
-        self,
-        current: char,
-        skipped_separator: bool,
-    ) -> Option<WordSeparatorStop> {
-        if skipped_separator && self.is_hard_separator(current) {
-            Some(WordSeparatorStop::BeforeCurrent)
-        } else {
-            None
-        }
-    }
-
-    pub(crate) fn previous_separator_stop(
-        self,
-        current: char,
-        skipped_separator: bool,
-    ) -> Option<WordSeparatorStop> {
-        if !self.is_hard_separator(current) {
-            return None;
-        }
-
-        if skipped_separator {
-            Some(WordSeparatorStop::AfterCurrent)
-        } else {
-            None
-        }
-    }
-
     pub(crate) fn should_start_new_subword(
         self,
         previous: char,
@@ -134,18 +100,10 @@ impl WordBoundaryClassifier {
                 && current.is_uppercase()
                 && next.is_some_and(char::is_lowercase))
     }
-
-    pub(crate) fn is_hard_separator(self, ch: char) -> bool {
-        is_line_break(ch)
-    }
 }
 
 fn is_natural_word_body(ch: char) -> bool {
     ch.is_alphanumeric() || is_combining_mark(ch)
-}
-
-fn is_line_break(ch: char) -> bool {
-    ch == '\n' || ch == '\r'
 }
 
 impl Default for WordBoundaryPolicy {

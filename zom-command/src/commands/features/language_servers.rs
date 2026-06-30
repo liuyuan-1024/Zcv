@@ -8,7 +8,7 @@ use crate::commands::cid;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
-    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
+    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SurfaceEffect,
 };
 
 pub const OPEN: &str = "language_server.open";
@@ -51,7 +51,9 @@ fn run_open(
     context
         .dismiss
         .push(DismissScope::LanguageServers, "关闭语言服务器", dismiss());
-    context.effects.push(HostEffect::ShowLanguageServers);
+    context
+        .effects
+        .push(HostEffect::Surface(SurfaceEffect::ShowLanguageServers));
     Ok(CommandOutcome::default())
 }
 
@@ -61,6 +63,8 @@ fn run_dismiss(
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
     context.dismiss.clear(DismissScope::LanguageServers);
-    context.effects.push(HostEffect::DismissSurface);
+    context
+        .effects
+        .push(HostEffect::Surface(SurfaceEffect::Dismiss));
     Ok(CommandOutcome::default())
 }

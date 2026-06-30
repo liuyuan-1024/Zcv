@@ -10,12 +10,13 @@
 use gpui::MouseButton;
 #[cfg(target_os = "windows")]
 use gpui::WindowControlArea;
-use gpui::{AnyElement, Div, Window, div, prelude::*};
+use gpui::{AnyElement, Div, Window, div, prelude::*, svg};
 
 use crate::shell::features::{project_picker, settings};
 use crate::shell::surfaces::SurfaceStates;
 use crate::shell::workbench::WorkbenchCommandRequests;
 use crate::shell::workbench::state::WorkbenchState;
+use crate::theme;
 use crate::ui_id::SurfaceId;
 
 use super::frame::{BarEdge, bar_frame};
@@ -40,6 +41,7 @@ pub(crate) fn render(
             is_window_active,
             window_controls,
             &state.project_title,
+            &state.project_branch,
             commands,
             surfaces,
         )))
@@ -79,6 +81,7 @@ fn leading_slots(
     is_window_active: bool,
     window_controls: WindowControlsHandlers,
     project_title: &str,
+    project_branch: &Option<String>,
     commands: &WorkbenchCommandRequests,
     surfaces: &SurfaceStates,
 ) -> Vec<AnyElement> {
@@ -88,10 +91,41 @@ fn leading_slots(
         commands.project_picker_open.clone(),
     );
 
-    vec![
+    let mut slots = vec![
         render_window_controls(is_window_active, window_controls).into_any_element(),
         workspace,
-    ]
+    ];
+
+    if let Some(branch) = project_branch {
+        slots.push(branch_badge(branch));
+    }
+
+    slots
+}
+
+/// 顶栏当前项目分支徽章：分支图标 + 分支名。
+fn branch_badge(branch: &str) -> AnyElement {
+    let muted = theme::color::current().gray.s08;
+    let icon_size = theme::typography::ui();
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(theme::space::s4())
+        .text_color(muted)
+        .child(
+            svg()
+                .path("icons/panels/version_control.svg")
+                .size(icon_size)
+                .text_color(muted),
+        )
+        .child(
+            div()
+                .text_size(theme::typography::ui())
+                .line_height(theme::typography::ui_line())
+                .child(branch.to_string()),
+        )
+        .into_any_element()
 }
 
 fn trailing_slots(

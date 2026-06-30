@@ -48,6 +48,8 @@ pub(crate) enum PanelSubFocus {
     /// 没有 sub-focus —— panel 自身的容器焦点。
     Bare,
     FileTree(FileTreeFocus),
+    /// 版本管理面板焦点。
+    VersionControl,
 }
 
 impl PanelFocus {
@@ -62,6 +64,13 @@ impl PanelFocus {
         Self {
             panel: PanelId::FileTree,
             sub: PanelSubFocus::FileTree(sub),
+        }
+    }
+
+    pub(crate) fn version_control() -> Self {
+        Self {
+            panel: PanelId::VersionControl,
+            sub: PanelSubFocus::VersionControl,
         }
     }
 

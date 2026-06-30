@@ -95,10 +95,12 @@ impl ShellRuntime {
         // 全局软换行 cell 由 App 持有；
         // 多行内核构造时从 App 借这份 `Rc`， 一次 toggle 同帧生效到主编辑区。
         let soft_wrap = app.borrow().soft_wrap_handle();
+        let git_handle = app.borrow().git_handle();
         let main_editor_kernel = EditorKernel::multi_line(soft_wrap)
             .with_gutter()
             .with_vertical_scroll()
-            .with_viewport_sync(main_viewport_sync);
+            .with_viewport_sync(main_viewport_sync)
+            .with_git(git_handle);
         let main_editor_slot = TextEditorSlot::install(
             Rc::clone(&app),
             Rc::clone(&host_intent),

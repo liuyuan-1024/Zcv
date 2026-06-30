@@ -3,15 +3,18 @@
 //! handler 不能直接调 GPUI `Window`、改 shell `DockState` 等宿主侧资源，那会让 zom-command 反向依赖 UI / 平台层。
 //! 取而代之，handler **emit 一个 `HostEffect`**，宿主在派发结束后翻译成具体动作。
 //!
-//! `HostEffect` 是**闭合枚举**：新增宿主能力 = 必须在此添加变体，并由宿主补 `apply_host_effect` 的 match 分支。
-//! 这是"全部命令集中在 zom-command"的必然代价。
-//! 但相比"宿主各处自己 register_*_commands"，集中一份 enum 更可控、可枚举、易测。
+//! `HostEffect` 按 **feature 分组**：每个 feature 拥有自己的子枚举，加新 feature 只需在此加一行包装变体，
+//! 不需要改动已有 feature 的子枚举。宿主 dispacher 按子枚举类型路由到对应 handler。
 //!
 //! 不在这里出现的：**编辑文本**。文本类操作（插入、删除、移动、撤销...）
-//! 全部直接操作 `CommandContext { workspace, views, queue }`，无需经过
-//! HostEffect —— 这些资源本来就在 zom-command 看得到。
+//! 全部直接操作 `CommandContext { workspace, views, queue }`，无需经过 HostEffect。
 
-/// 搜索面板的开关选项。当前只驱动 UI 状态，搜索后端接入后再参与匹配规则。
+use zom_workspace::BufferId;
+use zom_workspace::view::ViewId;
+
+// ── 共享原语 ──────────────────────────────────────────────────
+
+/// 搜索面板的开关选项。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchOption {
     CaseSensitive,
@@ -30,11 +33,6 @@ pub enum SettingsChangeRequest {
 }
 
 /// 内建 panel 的稳定标识。
-///
-/// 两侧都用本枚举，宿主 `match` 一次即可分发。
-///
-/// 新增 panel = 在此加变体 + 给 [`PanelKind::toggle_command_id`] 补一行。
-/// 宿主侧的图标 / 焦点 / 渲染等 UI 细节继续由 desktop 自己维护。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum PanelKind {
     FileTree,
@@ -46,7 +44,6 @@ pub enum PanelKind {
 }
 
 impl PanelKind {
-    /// 切换本 panel 显隐的命令 ID（也用于查询其默认快捷键 / 标题）。
     pub const fn toggle_command_id(self) -> &'static str {
         match self {
             PanelKind::FileTree => "panel.toggle.file_tree",
@@ -58,7 +55,6 @@ impl PanelKind {
         }
     }
 
-    /// panel 的稳定短名（适合做调试 id、序列化键）。
     pub const fn slug(self) -> &'static str {
         match self {
             PanelKind::FileTree => "file_tree",
@@ -131,155 +127,142 @@ impl BubbleRequest {
     }
 }
 
-/// 命令处理器请求宿主执行的副作用。**按域分组**，加新变体时贴在对应组下。
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum HostEffect {
-    // ===== Window / 平台 =====
-    /// 退出整个应用。
+// ── Feature 子枚举 ─────────────────────────────────────────────
+
+/// 窗口 / 平台控制。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WindowEffect {
     Quit,
-    /// 最小化当前窗口。
     Minimize,
-    /// 切换当前窗口最大化 / 还原。
     ToggleMaximize,
-
-    // ===== Bubble =====
-    /// 显示一条轻量气泡提示。
-    ShowBubble(BubbleRequest),
-
-    // ===== Dock / Panel =====
-    /// 切换某个 panel 的显隐。`bool` = 是否由鼠标点击触发（`via_pointer`）。
-    TogglePanel(PanelKind, bool),
-
-    // ===== Search =====
-    /// 切换搜索选项。
-    SearchToggleOption(SearchOption),
-    /// 选中上一个搜索结果。
-    SearchFindPrevious,
-    /// 选中下一个搜索结果。
-    SearchFindNext,
-    /// 替换当前搜索结果。
-    SearchReplaceNext,
-    /// 替换全部搜索结果。
-    SearchReplaceAll,
-    /// 把搜索面板焦点移动到下一个输入框。
-    SearchFocusNextField,
-    /// 把搜索面板焦点移动到上一个输入框。
-    SearchFocusPreviousField,
-    /// 退出搜索（Esc 路径）：把光标折叠到当前命中末尾，再收起搜索框；
-    SearchDismiss,
-    /// 切换搜索栏开关（Glyph 点击 / mod+f）：开则关、关则开。
-    SearchToggle,
-    /// 确认当前命中（Enter 路径）：把光标折叠到当前匹配末尾，并把焦点交回编辑器。
-    SearchConfirmMatch,
-
-    // ===== Go-to-line =====
-    /// 打开跳转到行输入栏并聚焦输入框。
-    GoToLineActivate,
-    /// 收起跳转到行输入栏，焦点交还给编辑器。
-    GoToLineDismiss,
-    /// 活动视图跳转到指定字节偏移。
-    GoToLineJump(usize),
-
-    // ===== Editor 视图设置 =====
-    /// 翻转主编辑区的软换行开关。
-    ///
-    /// 这是「视图设置」类副作用：宿主侧维护具体编辑器的渲染开关，zom-command 只知道「请求翻转」。
-    /// 具体哪个编辑器（主编辑 / 输入框）由宿主自行规定
-    EditorToggleSoftWrap,
-
-    // ===== Editor Tabs =====
-    /// 把活动 view 切到指定 view（编辑或预览均可）。
-    /// 宿主侧调 `WorkspaceSession::set_active_view`。
-    EditorSelectTab(zom_workspace::view::ViewId),
-    /// 切换到相邻 tab。`true` = 向右（Next），`false` = 向左（Previous）。
-    /// 宿主持有完整 session，按 ViewSet 顺序循环。
-    EditorSelectAdjacentTab(bool),
-    /// 关闭指定 view。
-    EditorCloseTab(zom_workspace::view::ViewId),
-    /// 打开（或跳转到）指定 buffer 的 Markdown 预览视图。
-    /// 同一 buffer 至多一条预览视图——已存在则直接激活，不重复创建。
-    /// 宿主侧调 `WorkspaceSession::open_preview`。
-    EditorOpenPreview(zom_workspace::BufferId),
-    /// 取消宿主侧正在进行的鼠标选区手势。
-    ///
-    /// `editor.clear_selection` 已经完成真正的选区折叠；这个 effect 只清理输入设备
-    /// adapter 的跨帧临时状态，避免拖拽流在命令之后继续补发旧 selection。
-    EditorCancelPointerSelection,
-
-    // ===== Workspace / Project =====
-    /// 顶栏"切换项目"入口；宿主弹出最近项目。
-    ShowProjectPicker,
-    /// 从本机选择一个文件夹作为当前项目根目录。
-    OpenLocalProject,
-    /// 进入 Git 地址克隆流程。
-    StartGitClone,
-    /// 从项目选择器移除当前高亮的最近项目记录。
-    RemoveSelectedRecentProject,
-    /// 移动项目选择器的高亮项。
-    ProjectPickerMoveSelection(isize),
-    /// 激活项目选择器当前输入或高亮项。
-    ProjectPickerActivate,
-
-    // ===== Surface =====
-    /// 打开语言服务器。
-    ShowLanguageServers,
-    /// 打开设置界面。
-    ShowSettings,
-    /// 打开真实的 config.toml。
-    SettingsOpenToml,
-    /// 应用一项设置变更。
-    SettingsApplyChange(SettingsChangeRequest),
-    /// 打开诊断问题列表。
-    ShowDiagnostics,
-    /// 关闭当前浮面。
-    DismissSurface,
-
-    // ===== File tree =====
-    /// 移动文件树选中行（焦点）。绑定 Up/Down 走 ±1，PageUp/PageDown 走更大步长。
-    FileTreeMoveSelection(isize),
-    /// 扩展多选选区：当前焦点行加入选区 → 焦点按 delta 移动 → 新焦点行也加入。
-    /// 绑定 Shift+Up/Down / Shift+PageUp/PageDown。
-    FileTreeExtendSelection(isize),
-    /// Esc 二段式：选区非空时清空选区（不离开面板）；否则把焦点交回编辑器。
-    /// 是否消化由 model 决定，宿主据此选择是否再走 focus_editor。
-    FileTreeEscape,
-    /// 折叠当前目录或跳到父目录。
-    FileTreeCollapseOrParent,
-    /// 展开当前目录或进入子项。
-    FileTreeExpandOrInto,
-    /// 激活当前文件树条目。
-    FileTreeActivate,
-    /// 开始新建文件或目录（提交时按输入末尾 `/` 推断类型）。
-    FileTreeBeginNewEntry,
-    /// 提交正在输入的新建条目。
-    FileTreeCommitNewEntry,
-    /// 取消正在输入的新建条目。
-    FileTreeCancelNewEntry,
-    /// 开始重命名当前选中条目（输入框预填原名并全选）。
-    FileTreeBeginRename,
-    /// 提交正在输入的重命名。
-    FileTreeCommitRename,
-    /// 取消重命名。
-    FileTreeCancelRename,
-    /// 请求删除当前选中条目：打开确认弹窗。
-    FileTreeRequestDelete,
-    /// 确认删除：把待删条目移入回收站。
-    FileTreeConfirmDelete,
-    /// 取消删除：关闭确认弹窗。
-    FileTreeCancelDelete,
-    /// 把当前选区（空时降级到焦点）拍进内部剪贴板，模式 Copy。
-    FileTreeCopy,
-    /// 把当前选区（空时降级到焦点）拍进内部剪贴板，模式 Cut。
-    FileTreeCut,
-    /// 把剪贴板内容粘贴到焦点所在目录（焦点是文件则其父，无焦点用项目根）。
-    /// Cut 模式粘贴完清空剪贴板与选区；Copy 模式保留两者以便连续粘到多处。
-    FileTreePaste,
 }
 
+/// 气泡提示。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BubbleEffect {
+    Show(BubbleRequest),
+}
+
+/// Dock Panel 显隐。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PanelEffect {
+    Toggle(PanelKind, bool),
+}
+
+/// 搜索面板。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchEffect {
+    ToggleOption(SearchOption),
+    FindPrevious,
+    FindNext,
+    ReplaceNext,
+    ReplaceAll,
+    FocusNextField,
+    FocusPreviousField,
+    Dismiss,
+    Toggle,
+    ConfirmMatch,
+}
+
+/// 跳转到行。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GoToLineEffect {
+    Activate,
+    Dismiss,
+    Jump(usize),
+}
+
+/// 编辑器视图设置与 tab 管理。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EditorEffect {
+    ToggleSoftWrap,
+    SelectTab(ViewId),
+    SelectAdjacentTab(bool),
+    CloseTab(ViewId),
+    OpenPreview(BufferId),
+    CancelPointerSelection,
+}
+
+/// 项目 / 工作区。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectEffect {
+    ShowPicker,
+    OpenLocalProject,
+    StartGitClone,
+    RemoveSelectedRecentProject,
+    MovePickerSelection(isize),
+    ActivatePicker,
+}
+
+/// 浮面（设置、诊断、语言服务器等）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceEffect {
+    ShowLanguageServers,
+    ShowSettings,
+    OpenSettingsToml,
+    ApplySettingsChange(SettingsChangeRequest),
+    ShowDiagnostics,
+    Dismiss,
+}
+
+/// 文件树。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileTreeEffect {
+    MoveSelection(isize),
+    ExtendSelection(isize),
+    Escape,
+    CollapseOrParent,
+    ExpandOrInto,
+    Activate,
+    BeginNewEntry,
+    CommitNewEntry,
+    CancelNewEntry,
+    BeginRename,
+    CommitRename,
+    CancelRename,
+    RequestDelete,
+    ConfirmDelete,
+    CancelDelete,
+    Copy,
+    Cut,
+    Paste,
+}
+
+/// 版本管理面板。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VersionControlEffect {
+    MoveSelection(isize),
+    Toggle,
+    Activate,
+    CollapseOrParent,
+    ExpandOrInto,
+}
+
+/// Git 状态刷新。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitEffect {
+    Refresh,
+}
+
+/// 命令处理器请求宿主执行的副作用。**按 feature 分组**。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HostEffect {
+    Window(WindowEffect),
+    Bubble(BubbleEffect),
+    Panel(PanelEffect),
+    Search(SearchEffect),
+    GoToLine(GoToLineEffect),
+    Editor(EditorEffect),
+    Project(ProjectEffect),
+    Surface(SurfaceEffect),
+    FileTree(FileTreeEffect),
+    VersionControl(VersionControlEffect),
+    Git(GitEffect),
+}
+
+// ── Effect 队列 ─────────────────────────────────────────────────
+
 /// `CommandContext` 内的 effect 缓冲。
-///
-/// handler 调用 `ctx.effects.push(...)` emit；宿主在 [`crate::run`] 返回后调用 `drain` 把全部 effect 应用出去。
-/// **不在 handler 中应用** —— 那会要求 handler 持 `&mut Host`，破坏命令系统的解耦。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EffectQueue {
     pending: Vec<HostEffect>,
@@ -294,7 +277,6 @@ impl EffectQueue {
         self.pending.push(effect);
     }
 
-    /// 取走全部待处理 effect，按 push 顺序返回。宿主调用一次后 queue 清空。
     pub fn drain(&mut self) -> Vec<HostEffect> {
         std::mem::take(&mut self.pending)
     }
@@ -309,19 +291,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bubble_request_should_be_emit_as_host_effect() {
+    fn bubble_effect_roundtrip() {
         let request = BubbleRequest::success("已保存")
             .dedupe("editor.save")
             .ttl_ms(1200);
 
         assert_eq!(
-            HostEffect::ShowBubble(request.clone()),
-            HostEffect::ShowBubble(BubbleRequest {
+            HostEffect::Bubble(BubbleEffect::Show(request.clone())),
+            HostEffect::Bubble(BubbleEffect::Show(BubbleRequest {
                 kind: BubbleKind::Success,
                 message: "已保存".to_string(),
                 dedupe_key: Some("editor.save".to_string()),
                 ttl_ms: Some(1200),
-            })
+            }))
         );
     }
 }

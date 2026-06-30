@@ -17,12 +17,13 @@
 //! - `Prepaint::offset` 给出正文水平偏移，element 用它裁剪文本区；
 //! - `paint` 在阶段 1～5 之后调用，gutter 列横向固定、不参与正文滚动。
 
-use gpui::{Bounds, ContentMask, Hsla, Pixels, ShapedLine, TextRun, Window, point, px, size};
+use gpui::{
+    Bounds, ContentMask, Hsla, Pixels, Rgba, ShapedLine, TextRun, Window, fill, point, px, size,
+};
 
-use crate::theme::color;
-
-/// 数字列与正文之间的间距。
-const GAP: f32 = 12.0;
+use super::element::VisualRow;
+use crate::git_service::{DiffHunk, DiffHunkKind};
+use crate::theme::{color, space};
 
 /// 行号文字颜色 —— 次级信息。
 fn text_color() -> Hsla {
@@ -34,10 +35,16 @@ fn text_color() -> Hsla {
 /// `row` 为视觉行号；`shaped` 是图标字形已 shape 的结果。
 /// 颜色随 `shaped` 自带（producer 在构造 [`TextRun`] 时填入），本结构不再带独立 color 字段。
 ///
-/// 当前为空 Vec；breakpoint / git diff / 诊断 glyph / bookmark 等可在此接入。
+/// breakpoint / 诊断 glyph / bookmark 等可在此接入。
 pub(crate) struct IconQuad {
     pub row: usize,
     pub shaped: ShapedLine,
+}
+
+/// git diff 色条：gutter 左缘 3px 宽竖条，标记该行属于哪个 diff hunk。
+struct GitBar {
+    row: usize,
+    color: Rgba,
 }
 
 /// gutter 的 prepaint 产物。
@@ -52,6 +59,7 @@ pub(crate) struct Prepaint {
     enabled: bool,
     line_numbers: Vec<Option<ShapedLine>>,
     icons: Vec<IconQuad>,
+    git_bars: Vec<GitBar>,
     /// 行号数字列宽（不含 [`GAP`]）；由 buffer 总行数与字体度量决定。
     number_width: Pixels,
 }
@@ -63,14 +71,16 @@ impl Prepaint {
             enabled: false,
             line_numbers: Vec::new(),
             icons: Vec::new(),
+            git_bars: Vec::new(),
             number_width: px(0.),
         }
     }
 
-    /// 正文起点相对 gutter 左缘的水平偏移：`number_width + GAP`，关闭时为 0。
+    /// 正文起点相对 gutter 左缘的水平偏移：`左padding + 数字列 + 右padding`，关闭时为 0。
+    /// 左右 padding 对称，色条浮在左 padding 上。
     pub(crate) fn offset(&self) -> Pixels {
         if self.enabled {
-            self.number_width + px(GAP)
+            space::s16() + self.number_width + space::s16()
         } else {
             px(0.)
         }
@@ -79,16 +89,15 @@ impl Prepaint {
 
 /// 软换行场景下，按视觉行**预先测量**数字列宽。
 ///
-/// 仅依赖 buffer 总行数与字体度量，与具体视口切片无关——用来在 prepaint
-/// 早期、还没决定每条逻辑行要拆成多少视觉行时，先算出正文起点的 X 偏移
-/// （= number_width + GAP），以便用「正文区宽度」推断软换行的断行宽度。
+/// 仅依赖 buffer 总行数与字体度量，与具体视口切片无关。
+/// 用来在 prepaint 早期、还没决定每条逻辑行要拆成多少视觉行时，先算出正文起点的 X 偏移，以便用「正文区宽度」推断软换行的断行宽度。
 pub(crate) fn measure_offset(
     total_lines: u64,
     text_style: &gpui::TextStyle,
     font_size: Pixels,
     window: &mut Window,
 ) -> Pixels {
-    measure_number_width(total_lines, text_style, font_size, window) + px(GAP)
+    space::s16() + measure_number_width(total_lines, text_style, font_size, window) + space::s16()
 }
 
 fn measure_number_width(
@@ -105,34 +114,71 @@ fn measure_number_width(
 ///
 /// `total_lines` 为 buffer 总行数（**不是**当前视口最大行号），决定数字列宽的位数——这是「列宽不随滚动抖动」的关键。
 ///
-/// `line_numbers_per_row` 长度等于视觉行数：
-/// - `Some(line_index)`：该视觉行是某条逻辑行的首段，要画行号；
-/// - `None`：续行（软换行的非首段），行号留空。
+/// `visual_rows` 长度等于视觉行数。每条视觉行都携带 `line_index`（属于哪个逻辑行），
+/// 软换行的续行与首段同属一个逻辑行；`subrow == 0` 表示首段，需要画行号。
 ///
-/// 不开软换行时 caller 传 `Some(line_index)` 全数组即可——退化回旧行为。
+/// `diff_hunks` 是当前文件的 git diff hunk 列表，用于在行号左侧画添加/修改/删除色条。
 pub(crate) fn prepare(
-    line_numbers_per_row: &[Option<u64>],
+    visual_rows: &[VisualRow],
     total_lines: u64,
     text_style: &gpui::TextStyle,
     font_size: Pixels,
+    diff_hunks: &[DiffHunk],
     window: &mut Window,
 ) -> Prepaint {
     let number_width = measure_number_width(total_lines, text_style, font_size, window);
 
-    let mut line_numbers = Vec::with_capacity(line_numbers_per_row.len());
-    for entry in line_numbers_per_row {
-        match entry {
-            Some(line_index) => {
-                let label = (line_index + 1).to_string();
-                line_numbers.push(Some(shape_digits(&label, text_style, font_size, window)));
+    let mut line_numbers = Vec::with_capacity(visual_rows.len());
+    let mut git_bars = Vec::new();
+
+    // 缓存上一次 diff hunk 查表结果，避免同逻辑行的续行重复遍历 hunk 列表。
+    let mut last_line_index: Option<u64> = None;
+    let mut last_bar_color: Option<Rgba> = None;
+
+    for (visual_row, vr) in visual_rows.iter().enumerate() {
+        // 行号：仅首段视觉行（subrow == 0）需要画
+        if vr.subrow == 0 {
+            let label = (vr.line_index + 1).to_string();
+            line_numbers.push(Some(shape_digits(&label, text_style, font_size, window)));
+        } else {
+            line_numbers.push(None);
+        }
+
+        // git diff 色条：逻辑行变化时才重新查 hunk，续行复用缓存结果
+        if last_line_index != Some(vr.line_index) {
+            last_line_index = Some(vr.line_index);
+            last_bar_color = None;
+            for hunk in diff_hunks {
+                let start = hunk.new_start.saturating_sub(1) as u64; // 1-based → 0-based
+                let end = start + hunk.new_lines as u64;
+                if vr.line_index >= start && vr.line_index < end {
+                    last_bar_color = Some(match hunk.kind {
+                        DiffHunkKind::Added => {
+                            color::git_status(crate::git_service::ColorKind::Added)
+                        }
+                        DiffHunkKind::Modified => {
+                            color::git_status(crate::git_service::ColorKind::Modified)
+                        }
+                        DiffHunkKind::Deleted => {
+                            color::git_status(crate::git_service::ColorKind::Deleted)
+                        }
+                    });
+                    break; // 一个行只属于一个 hunk
+                }
             }
-            None => line_numbers.push(None),
+        }
+        if let Some(bar_color) = last_bar_color {
+            git_bars.push(GitBar {
+                row: visual_row,
+                color: bar_color,
+            });
         }
     }
     Prepaint {
         enabled: true,
         line_numbers,
         icons: Vec::new(),
+        git_bars,
         number_width,
     }
 }
@@ -159,9 +205,8 @@ fn shape_digits(
 
 /// 绘制 gutter 列。
 ///
-/// 行号右对齐到数字列右缘（`bounds_x + number_width`）——每个字形宽度不同
-/// 时低位对低位、高位对高位。图标按 row 索引贴 `bounds_x` 起绘。两类绘制都
-/// 在 gutter 区域内（自建 ContentMask），不溢出到正文。
+/// 行号右对齐到「左padding + 数字列」的右缘——每个字形宽度不同时低位对低位、高位对高位。
+/// 图标按 row 索引贴 `bounds_x` 起绘。两类绘制都在 gutter 区域内（自建 ContentMask），不溢出到正文。
 pub(crate) fn paint(
     prepaint: &Prepaint,
     bounds_x: Pixels,
@@ -175,12 +220,13 @@ pub(crate) fn paint(
     if !prepaint.enabled {
         return;
     }
-    let total_width = prepaint.number_width + px(GAP);
+    let total_width = space::s16() + prepaint.number_width + space::s16();
     let gutter_area = Bounds {
         origin: point(bounds_x, bounds_top),
         size: size(total_width, bounds_height),
     };
-    let number_right_edge_x = bounds_x + prepaint.number_width;
+    // 行号右对齐到「左padding + 数字列」的右缘，左 padding 留给色条浮动。
+    let number_right_edge_x = bounds_x + space::s16() + prepaint.number_width;
     window.with_content_mask(
         Some(ContentMask {
             bounds: gutter_area,
@@ -192,6 +238,7 @@ pub(crate) fn paint(
                     continue;
                 };
                 let y = top + line_height * index as f32;
+                // 右对齐：个位对个位、十位对十位
                 let x = number_right_edge_x - line_number.width;
                 let _ = line_number.paint(point(x, y), line_height, window, cx);
             }
@@ -200,6 +247,15 @@ pub(crate) fn paint(
                 let _ = icon
                     .shaped
                     .paint(point(bounds_x, y), line_height, window, cx);
+            }
+            // git diff 色条：贴 gutter 左缘
+            for bar in &prepaint.git_bars {
+                let y = top + line_height * bar.row as f32;
+                let bar_rect = Bounds {
+                    origin: point(bounds_x, y),
+                    size: size(space::gutter_bar(), line_height),
+                };
+                window.paint_quad(fill(bar_rect, bar.color));
             }
         },
     );

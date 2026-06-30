@@ -11,7 +11,7 @@
 
 use gpui::{FocusHandle, Window};
 
-use crate::focus::{AppFocus, FileTreeFocus, SearchField};
+use crate::focus::{AppFocus, FileTreeFocus, PanelFocus, SearchField};
 use crate::shell::features::panels::PanelRuntimes;
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
 use crate::shell::features::search::SearchRuntime;
@@ -102,6 +102,9 @@ pub(crate) fn projection_from_runtimes(
     }
     projection.register(language_servers, AppFocus::language_servers());
     projection.register(go_to_line, AppFocus::go_to_line());
+    if let Some(vc_focus) = panel_runtimes.focus_handle(PanelId::VersionControl) {
+        projection.register(vc_focus, AppFocus::Panel(PanelFocus::version_control()));
+    }
     for panel in [
         PanelId::VersionControl,
         PanelId::Outline,

@@ -39,8 +39,10 @@ impl FeatureRegistry {
     /// 构造全部 feature runtime，并把它们要 owner / search 接入 router 的事一次性做完。
     /// 生产路径用 [`RecentProjects::default_path`]；headless 单测不经过 ShellView::new。
     pub(super) fn assemble<T>(app: &Rc<RefCell<App>>, cx: &mut Context<T>) -> Self {
-        let panels = PanelRuntimes::new(cx);
-        let file_tree = FileTreeRuntime::new(cx);
+        let git_handle = app.borrow().git_handle();
+        let fs_changed = app.borrow().fs_changed_handle();
+        let panels = PanelRuntimes::new(cx, git_handle.clone());
+        let file_tree = FileTreeRuntime::new(cx, git_handle, fs_changed);
         let project_picker = ProjectPickerRuntime::new(cx, RecentProjects::default_path());
         let language_servers = LanguageServersRuntime::new(cx);
         let search = SearchRuntime::new(cx);

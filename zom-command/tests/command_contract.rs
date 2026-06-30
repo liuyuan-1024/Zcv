@@ -9,10 +9,11 @@ use zom_command::commands::{
     settings,
 };
 use zom_command::{
-    BubbleKind, Command, CommandArgs, CommandContext, CommandError, CommandId, CommandQueue,
-    CommandRegistry, DismissScope, DismissStacks, EditTarget, EffectQueue, FileTreeKeyMode,
-    HostEffect, KeyBinding, KeyBindingContext, KeyChord, KeyContext, Keymap, KeymapResolution,
-    NoArgs, PanelKind, SearchOption, SettingsChangeRequest,
+    BubbleEffect, BubbleKind, Command, CommandArgs, CommandContext, CommandError, CommandId,
+    CommandQueue, CommandRegistry, DismissScope, DismissStacks, EditTarget, EditorEffect,
+    EffectQueue, FileTreeEffect, FileTreeKeyMode, HostEffect, KeyBinding, KeyBindingContext,
+    KeyChord, KeyContext, Keymap, KeymapResolution, NoArgs, PanelKind, ProjectEffect, SearchEffect,
+    SearchOption, SettingsChangeRequest, SurfaceEffect,
 };
 use zom_engine::{
     Buffer, BufferConfig, ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
@@ -299,16 +300,17 @@ fn search_ui_commands_should_emit_state_effects() {
     assert_eq!(
         effects,
         vec![
-            HostEffect::SearchToggle,
-            HostEffect::SearchToggleOption(SearchOption::CaseSensitive),
-            HostEffect::SearchToggleOption(SearchOption::WholeWord),
-            HostEffect::SearchToggleOption(SearchOption::Regex),
-            HostEffect::SearchFindPrevious,
-            HostEffect::SearchFindNext,
-            HostEffect::SearchReplaceNext,
-            HostEffect::SearchReplaceAll,
-            HostEffect::SearchDismiss,
-            HostEffect::SearchConfirmMatch,
+            HostEffect::Search(SearchEffect::Toggle),
+            HostEffect::Search(SearchEffect::ToggleOption(SearchOption::CaseSensitive)),
+            HostEffect::Search(SearchEffect::ToggleOption(SearchOption::WholeWord)),
+            HostEffect::Search(SearchEffect::ToggleOption(SearchOption::Regex)),
+            HostEffect::Search(SearchEffect::FindPrevious),
+            HostEffect::Search(SearchEffect::FindNext),
+            HostEffect::Search(SearchEffect::ReplaceNext),
+            HostEffect::Search(SearchEffect::ReplaceAll),
+            HostEffect::Search(SearchEffect::Dismiss),
+            HostEffect::Search(SearchEffect::ConfirmMatch),
+            HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );
 }
@@ -341,8 +343,11 @@ fn settings_ui_commands_should_emit_host_effects() {
     assert_eq!(
         effects,
         vec![
-            HostEffect::SettingsOpenToml,
-            HostEffect::SettingsApplyChange(SettingsChangeRequest::AdjustEditorFont(1)),
+            HostEffect::Surface(SurfaceEffect::OpenSettingsToml),
+            HostEffect::Surface(SurfaceEffect::ApplySettingsChange(
+                SettingsChangeRequest::AdjustEditorFont(1)
+            )),
+            HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );
 }
@@ -363,8 +368,12 @@ fn save_without_file_path_should_emit_error_bubble() {
     )
     .unwrap();
 
-    assert_eq!(effects.len(), 1);
-    let HostEffect::ShowBubble(request) = &effects[0] else {
+    assert_eq!(effects.len(), 2);
+    assert_eq!(
+        effects[1],
+        HostEffect::Editor(EditorEffect::CancelPointerSelection)
+    );
+    let HostEffect::Bubble(BubbleEffect::Show(request)) = &effects[0] else {
         panic!("保存失败应该显示气泡，实际为 {:?}", effects[0]);
     };
     assert_eq!(request.kind, BubbleKind::Error);
@@ -450,8 +459,9 @@ fn search_tab_keys_should_resolve_only_in_search_panel_context() {
     assert_eq!(
         effects,
         vec![
-            HostEffect::SearchFocusNextField,
-            HostEffect::SearchFocusPreviousField,
+            HostEffect::Search(SearchEffect::FocusNextField),
+            HostEffect::Search(SearchEffect::FocusPreviousField),
+            HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );
 }
@@ -844,6 +854,96 @@ fn default_keymap_binds_delete_variants() {
 }
 
 #[test]
+fn backspace_with_multiline_selection_should_collapse_to_caret() {
+    // 复现：选中多行文本后按 backspace，选区应塌缩为单个 caret，
+    // 不应保留为 range 覆盖下方文字。
+    let text =
+        "# 灵巧手\n\n阿水淀粉\n阿水淀粉i额asa\n啊的身份框架二\n\n## LEAP Hand\n特点：16个自由度";
+    let (mut workspace, mut views, _buffer_id, view_id) = setup(text);
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+
+    // 找到"阿水淀粉"到"啊的身份框架二"行尾（含换行符）的范围
+    let full = text.to_string();
+    let sel_start = full.find("阿水淀粉").unwrap();
+    let sel_end = full.find("## LEAP Hand").unwrap();
+
+    // 正向选区：从上往下拖选
+    *views.edit_view_mut(view_id).unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::new(byte(sel_start), byte(sel_end))]);
+
+    let delete_invocation = editor::delete(editor::DeleteArgs {
+        direction: Some(MovementDirection::Previous),
+        unit: MovementUnit::Grapheme,
+    });
+
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        view_id,
+        vec![(delete_invocation.0.as_str(), delete_invocation.1)],
+    )
+    .unwrap();
+
+    let view_sel = views.edit_view(view_id).unwrap().selection();
+    let all_carets: Vec<bool> = view_sel.as_slice().iter().map(|s| s.is_caret()).collect();
+    assert!(
+        all_carets.iter().all(|c| *c),
+        "删除后选区应全部是 caret，实际 is_caret={all_carets:?}, ranges={:?}",
+        view_sel.ranges(),
+    );
+    assert_eq!(view_sel.len(), 1, "删除后应只有一个 caret");
+    assert_eq!(
+        view_sel.primary().head(),
+        byte(sel_start),
+        "caret 应在删除区域起始位置"
+    );
+}
+
+#[test]
+fn backspace_with_reversed_multiline_selection_should_collapse_to_caret() {
+    // 反向选区：从下往上拖选（anchor > head）
+    let text =
+        "# 灵巧手\n\n阿水淀粉\n阿水淀粉i额asa\n啊的身份框架二\n\n## LEAP Hand\n特点：16个自由度";
+    let (mut workspace, mut views, _buffer_id, view_id) = setup(text);
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+
+    let full = text.to_string();
+    let sel_start = full.find("阿水淀粉").unwrap();
+    let sel_end = full.find("## LEAP Hand").unwrap();
+
+    // 反向选区：anchor 在下面，head 在上面
+    *views.edit_view_mut(view_id).unwrap().selection_mut() =
+        SelectionSet::new(vec![Selection::new(byte(sel_end), byte(sel_start))]);
+
+    let delete_invocation = editor::delete(editor::DeleteArgs {
+        direction: Some(MovementDirection::Previous),
+        unit: MovementUnit::Grapheme,
+    });
+
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        view_id,
+        vec![(delete_invocation.0.as_str(), delete_invocation.1)],
+    )
+    .unwrap();
+
+    let view_sel = views.edit_view(view_id).unwrap().selection();
+    assert!(
+        view_sel.as_slice().iter().all(|s| s.is_caret()),
+        "反向选区删除后应全是 caret，实际 ranges={:?}",
+        view_sel.ranges(),
+    );
+    assert_eq!(view_sel.primary().head(), byte(sel_start));
+}
+
+#[test]
 fn newline_indent_and_outdent_commands_should_edit_active_view_buffer() {
     let (mut workspace, mut views, buffer_id, view_id) = setup("a");
     let mut registry = CommandRegistry::new();
@@ -986,12 +1086,16 @@ fn clear_selection_should_collapse_each_selection_to_caret_at_head() {
         vec![(editor::CLEAR_SELECTION, CommandArgs::new())],
     )
     .unwrap();
-    assert_eq!(effects, vec![HostEffect::EditorCancelPointerSelection]);
+    assert_eq!(
+        effects,
+        vec![HostEffect::Editor(EditorEffect::CancelPointerSelection)]
+    );
     let primary = views.edit_view(view_id).unwrap().selection().primary();
     assert!(primary.is_caret(), "clear_selection 必须留下纯 caret");
     assert_eq!(primary.head(), byte("hello world".len()));
 
-    // 已是 caret 时再调一次是 no-op，不报错。
+    // 已是 caret 时再调一次是 no-op，不报错；
+    // reconcile::after_dispatch 会统一推送 EditorCancelPointerSelection 以清除可能残留的 pointer session。
     let effects = run_and_collect_effects(
         &registry,
         &mut workspace,
@@ -1000,7 +1104,10 @@ fn clear_selection_should_collapse_each_selection_to_caret_at_head() {
         vec![(editor::CLEAR_SELECTION, CommandArgs::new())],
     )
     .unwrap();
-    assert!(effects.is_empty());
+    assert_eq!(
+        effects,
+        vec![HostEffect::Editor(EditorEffect::CancelPointerSelection)]
+    );
     let primary = views.edit_view(view_id).unwrap().selection().primary();
     assert!(primary.is_caret());
 }
@@ -1065,6 +1172,103 @@ fn movement_commands_should_update_active_view_selection() {
             .primary()
             .head(),
         byte(5)
+    );
+}
+
+/// 方向键不带 shift 且有选区时，应先塌缩到方向边缘再移动，使一次按压离开选区。
+/// 引擎层不感知这个语义——塌缩发生在命令入口 `run_move_selection`。
+#[test]
+fn move_without_extend_should_collapse_to_edge_before_moving() {
+    let (mut workspace, mut views, _, view_id) = setup("abc def ghi");
+    let mut registry = CommandRegistry::new();
+    let mut throwaway_keymap = Keymap::new();
+    editor::install(&mut registry, &mut throwaway_keymap);
+
+    // 用 select_all 选中全文 [0, 11]。
+    let (id, args) = editor::select_all();
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        view_id,
+        vec![(id.as_str(), args)],
+    )
+    .unwrap();
+    assert!(
+        !views
+            .edit_view(view_id)
+            .unwrap()
+            .selection()
+            .primary()
+            .is_caret()
+    );
+
+    // 左方向键：塌缩到 start=0，engine 从 0 左移 grapheme → 仍在 0。
+    let (id, args) =
+        editor::move_selection(MovementDirection::Previous, MovementUnit::Grapheme, false);
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        view_id,
+        vec![(id.as_str(), args)],
+    )
+    .unwrap();
+    assert!(
+        views
+            .edit_view(view_id)
+            .unwrap()
+            .selection()
+            .primary()
+            .is_caret()
+    );
+    assert_eq!(
+        views
+            .edit_view(view_id)
+            .unwrap()
+            .selection()
+            .primary()
+            .head(),
+        byte(0)
+    );
+
+    // 再次 select_all。
+    let (id, args) = editor::select_all();
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        view_id,
+        vec![(id.as_str(), args)],
+    )
+    .unwrap();
+
+    // 右方向键：塌缩到 end=11，engine 从 11 右移 grapheme → 仍在 11（文档末尾）。
+    let (id, args) = editor::move_selection(MovementDirection::Next, MovementUnit::Grapheme, false);
+    run(
+        &registry,
+        &mut workspace,
+        &mut views,
+        view_id,
+        vec![(id.as_str(), args)],
+    )
+    .unwrap();
+    assert!(
+        views
+            .edit_view(view_id)
+            .unwrap()
+            .selection()
+            .primary()
+            .is_caret()
+    );
+    assert_eq!(
+        views
+            .edit_view(view_id)
+            .unwrap()
+            .selection()
+            .primary()
+            .head(),
+        byte(11)
     );
 }
 
@@ -1699,9 +1903,10 @@ fn file_tree_commands_should_emit_host_effects() {
     assert_eq!(
         effects,
         vec![
-            HostEffect::FileTreeMoveSelection(1),
-            HostEffect::FileTreeBeginNewEntry,
-            HostEffect::FileTreeCancelNewEntry,
+            HostEffect::FileTree(FileTreeEffect::MoveSelection(1)),
+            HostEffect::FileTree(FileTreeEffect::BeginNewEntry),
+            HostEffect::FileTree(FileTreeEffect::CancelNewEntry),
+            HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );
 }
@@ -1844,7 +2049,13 @@ fn project_picker_esc_routes_through_dismiss_stack() {
             edit_merge_policy: TransactionMergePolicy::Never,
         };
         zom_command::run(&registry, &mut context).unwrap();
-        assert_eq!(effects.drain(), vec![HostEffect::ShowProjectPicker]);
+        assert_eq!(
+            effects.drain(),
+            vec![
+                HostEffect::Project(ProjectEffect::ShowPicker),
+                HostEffect::Editor(EditorEffect::CancelPointerSelection),
+            ]
+        );
         assert_eq!(dismiss.depth(DismissScope::ProjectPicker), 1);
         assert_eq!(
             dismiss.top_label(DismissScope::ProjectPicker),
@@ -1882,7 +2093,13 @@ fn project_picker_esc_routes_through_dismiss_stack() {
             edit_merge_policy: TransactionMergePolicy::Never,
         };
         zom_command::run(&registry, &mut context).unwrap();
-        assert_eq!(effects.drain(), vec![HostEffect::DismissSurface]);
+        assert_eq!(
+            effects.drain(),
+            vec![
+                HostEffect::Surface(SurfaceEffect::Dismiss),
+                HostEffect::Editor(EditorEffect::CancelPointerSelection),
+            ]
+        );
         assert!(dismiss.is_empty(DismissScope::ProjectPicker));
     }
 
@@ -1903,7 +2120,10 @@ fn project_picker_esc_routes_through_dismiss_stack() {
             edit_merge_policy: TransactionMergePolicy::Never,
         };
         zom_command::run(&registry, &mut context).unwrap();
-        assert!(effects.drain().is_empty());
+        assert_eq!(
+            effects.drain(),
+            vec![HostEffect::Editor(EditorEffect::CancelPointerSelection)]
+        );
     }
 }
 

@@ -22,7 +22,7 @@ pub(crate) use model::{
     ProjectPickerActivation, ProjectPickerMode, ProjectPickerModel, ProjectPickerState,
     filtered_projects,
 };
-pub(crate) use recent::{RecentProject, RecentProjects};
+pub(crate) use recent::{RecentProject, RecentProjects, current_branch};
 pub(crate) use surface::{ProjectPickerInitialMode, ProjectPickerRuntime, request};
 
 /// 顶栏项目入口的稳定入口 id。

@@ -5,7 +5,7 @@
 
 use crate::commands::cid;
 use crate::commands::emit;
-use crate::{CommandArgs, CommandRegistry, HostEffect, Invocation, Keymap};
+use crate::{CommandArgs, CommandRegistry, HostEffect, Invocation, Keymap, WindowEffect};
 
 pub const QUIT: &str = "window.quit";
 pub const MINIMIZE: &str = "window.minimize";
@@ -25,11 +25,21 @@ pub fn toggle_maximize() -> Invocation {
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     registry
-        .install(keymap, QUIT, "退出应用", emit(HostEffect::Quit))
+        .install(
+            keymap,
+            QUIT,
+            "退出应用",
+            emit(HostEffect::Window(WindowEffect::Quit)),
+        )
         .description("退出应用。")
         .key("mod q");
     registry
-        .install(keymap, MINIMIZE, "最小化窗口", emit(HostEffect::Minimize))
+        .install(
+            keymap,
+            MINIMIZE,
+            "最小化窗口",
+            emit(HostEffect::Window(WindowEffect::Minimize)),
+        )
         .description("最小化当前窗口。")
         .key("mod m");
     registry
@@ -37,7 +47,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             TOGGLE_MAXIMIZE,
             "切换窗口最大化",
-            emit(HostEffect::ToggleMaximize),
+            emit(HostEffect::Window(WindowEffect::ToggleMaximize)),
         )
         .description("在普通窗口和最大化窗口之间切换。")
         .key("mod shift m");

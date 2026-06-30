@@ -23,9 +23,9 @@
 
 use std::sync::{OnceLock, RwLock};
 
-use gpui::{Rgba, rgb, rgba};
+use gpui::{Hsla, Rgba, rgb, rgba};
 
-use crate::theme::ConcreteTheme;
+use crate::{git_service::ColorKind, theme::ConcreteTheme};
 
 /// 单个色相的 solid + alpha 双阶梯。
 ///
@@ -305,6 +305,30 @@ pub fn current() -> Palette {
 }
 
 // ---------- 语义色（跨色相、不受 hue 命名的颜色角色）----------
+
+/// git 状态 → 主题色。单一映射入口，消费方不自行 match ColorKind。
+pub fn git_status(kind: ColorKind) -> Rgba {
+    match kind {
+        ColorKind::Modified => current().yellow.s07,
+        ColorKind::Added => current().green.s07,
+        ColorKind::Deleted => current().red.s07,
+        ColorKind::Conflict => current().red.s07,
+        ColorKind::Untracked => current().green.s07, // 和 Added 同为 Created，对齐 Zed 语义
+        ColorKind::Ignored => current().gray.s05,    // 比默认文字 s07 暗两档，可识别但不抢眼
+    }
+}
+
+/// git 状态 → 行背景色（同色相低透明度版，用于 editor 内 diff 行的背景着色）。
+/// 只有 Added / Modified / Deleted 会走到这里，其余状态逻辑上不产生 diff 行。
+pub fn git_status_bg(kind: ColorKind) -> Hsla {
+    let rgba = match kind {
+        ColorKind::Modified => current().yellow.a02,
+        ColorKind::Added => current().green.a02,
+        ColorKind::Deleted => current().red.a02,
+        _ => gpui::rgba(0),
+    };
+    rgba.into()
+}
 
 /// 选区背景色。
 pub fn selection_bg() -> Rgba {

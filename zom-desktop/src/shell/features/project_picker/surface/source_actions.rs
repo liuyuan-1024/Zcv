@@ -46,10 +46,12 @@ fn source_action_row(
 ) -> Div {
     div()
         .flex()
+        .border_1()
         .items_center()
         .justify_between()
         .text_color(color::current().gray.s09)
         .cursor_pointer()
+        .hover(|style| style.bg(color::current().gray.s04))
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             intent_request(intent.clone(), window, cx);
         })

@@ -49,7 +49,7 @@ pub(crate) enum PanelSubFocus {
     Bare,
     FileTree(FileTreeFocus),
     /// 版本管理面板焦点。
-    VersionControl,
+    VersionControl(VersionControlFocus),
 }
 
 impl PanelFocus {
@@ -70,13 +70,27 @@ impl PanelFocus {
     pub(crate) fn version_control() -> Self {
         Self {
             panel: PanelId::VersionControl,
-            sub: PanelSubFocus::VersionControl,
+            sub: PanelSubFocus::VersionControl(VersionControlFocus::Navigate),
+        }
+    }
+
+    pub(crate) fn version_control_commit() -> Self {
+        Self {
+            panel: PanelId::VersionControl,
+            sub: PanelSubFocus::VersionControl(VersionControlFocus::CommitMessage),
         }
     }
 
     pub(crate) fn as_file_tree(self) -> Option<FileTreeFocus> {
         match self.sub {
             PanelSubFocus::FileTree(focus) => Some(focus),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_version_control(self) -> Option<VersionControlFocus> {
+        match self.sub {
+            PanelSubFocus::VersionControl(focus) => Some(focus),
             _ => None,
         }
     }
@@ -88,6 +102,15 @@ pub(crate) enum FileTreeFocus {
     NewEntryName,
     RenameEntry,
     ConfirmDelete,
+}
+
+/// 版本控制面板内的子焦点。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(crate) enum VersionControlFocus {
+    /// 树形导航。
+    Navigate,
+    /// 提交信息编辑。
+    CommitMessage,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]

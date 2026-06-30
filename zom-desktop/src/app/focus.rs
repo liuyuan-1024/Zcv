@@ -5,9 +5,9 @@
 //! - shell 粗粒度焦点的精化（保留输入态）
 //! - 从当前焦点推导 keymap 上下文栈
 
-use zom_command::{FileTreeKeyMode, KeyContext};
+use zom_command::{FileTreeKeyMode, KeyContext, VersionControlKeyMode};
 
-use crate::focus::{AppFocus, FileTreeFocus, PanelSubFocus};
+use crate::focus::{AppFocus, FileTreeFocus, PanelSubFocus, VersionControlFocus};
 use crate::ui_id::SurfaceId;
 
 use super::App;
@@ -93,8 +93,15 @@ impl App {
                     KeyContext::file_tree(FileTreeKeyMode::Navigate),
                     KeyContext::global(),
                 ],
-                PanelSubFocus::VersionControl => {
-                    vec![KeyContext::version_control(), KeyContext::global()]
+                PanelSubFocus::VersionControl(VersionControlFocus::Navigate) => {
+                    vec![
+                        KeyContext::version_control(VersionControlKeyMode::Navigate),
+                        KeyContext::global(),
+                    ]
+                }
+                // CommitMessage 模式由 router 提前接管，此处是兜底安全分支。
+                PanelSubFocus::VersionControl(VersionControlFocus::CommitMessage) => {
+                    vec![KeyContext::global()]
                 }
                 PanelSubFocus::Bare => vec![KeyContext::global()],
             },

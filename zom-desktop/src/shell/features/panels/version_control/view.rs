@@ -8,6 +8,9 @@ use std::rc::Rc;
 
 use gpui::{Div, MouseButton, Window, div, prelude::*, px, rgba, svg, uniform_list};
 
+use crate::editor::TextEditorSlot;
+use crate::git_service::ColorKind;
+use crate::shell::shared::Glyph;
 use crate::shell::shared::scroll;
 use crate::shell::shared::tree::{self};
 use crate::theme::{color, space, typography};
@@ -128,4 +131,159 @@ fn render_checkbox(
             cx.stop_propagation();
             on_click(window, cx);
         })
+}
+
+// ── 顶栏 ──
+
+/// 渲染面板顶栏：diff 图标 + 变更统计 + 暂存全部复选框。
+pub(super) fn render_top_bar(
+    diff_stats: (u32, u32),
+    all_staged: bool,
+    on_toggle_stage_all: impl Fn(&mut Window, &mut gpui::App) + 'static,
+) -> Div {
+    let (added, deleted) = diff_stats;
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .px(space::s4())
+        .h(typography::ui_line())
+        .bg(color::current().gray.s02)
+        .border_b_1()
+        .border_color(color::current().gray.s05)
+        .text_size(typography::ui())
+        .text_color(color::current().gray.s09)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(space::s4())
+                // 变更统计图标：只展示 tooltip，不绑定点击动作。
+                .child(
+                    Glyph::icon("vc.diff-icon", "icons/status/diff.svg")
+                        .command(crate::shell::shared::CommandBinding {
+                            id: "vc.diff_stats".into(),
+                            title: std::rc::Rc::new(|_| Some("变更统计".into())),
+                            shortcut: std::rc::Rc::new(|_| None),
+                            request: std::rc::Rc::new(|_, _| {}),
+                        })
+                        .render(),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_color(color::git_status(ColorKind::Added))
+                                .child(format!("+{added}")),
+                        )
+                        .child(
+                            div()
+                                .text_color(color::git_status(ColorKind::Deleted))
+                                .child(format!("-{deleted}")),
+                        ),
+                ),
+        )
+        // 右侧：暂存全部复选框
+        .child(render_checkbox(all_staged, on_toggle_stage_all))
+}
+
+// ── 提交信息编辑区 ──
+
+/// 提交编辑器组件：分隔线 + 多行编辑区 + 内嵌提交按钮。
+///
+/// ```text
+/// ─────────────────  ← 分隔线
+/// │ placeholder…   │
+/// │                │  ← 编辑区（固定 N 行）
+/// │          ✓ 提交 │  ← 内嵌按钮
+/// ─────────────────
+/// ```
+pub(super) struct CommitEditor;
+
+impl CommitEditor {
+    const LINES: f32 = 12.0;
+
+    /// 渲染完整组件（分隔线 + 编辑区 + 提交按钮）。
+    pub(super) fn render(
+        slot: Option<&Rc<TextEditorSlot>>,
+        show_placeholder: bool,
+        on_commit: impl Fn(&mut Window, &mut gpui::App) + 'static,
+    ) -> Div {
+        let line_h = typography::ui_line();
+        let editor_h = line_h * Self::LINES + space::s4() * 2.0;
+
+        let mut editor = div()
+            .relative()
+            .w_full()
+            .h(editor_h)
+            .bg(color::current().gray.s01)
+            .px(space::s8())
+            .py(space::s4())
+            .text_size(typography::ui())
+            .line_height(line_h)
+            .text_color(color::current().gray.s09);
+
+        if show_placeholder {
+            editor = editor.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .pl(space::s8())
+                    .pt(space::s4())
+                    .text_color(color::current().gray.s06)
+                    .child("输入提交信息…"),
+            );
+        }
+
+        editor = editor.child(Self::commit_button(line_h, on_commit));
+        if let Some(s) = slot {
+            editor = editor.child(s.embed());
+        }
+
+        div()
+            .flex_col()
+            .child(div().w_full().h(px(1.0)).bg(color::current().gray.s05))
+            .child(editor)
+    }
+
+    fn commit_button(
+        line_h: gpui::Pixels,
+        on_commit: impl Fn(&mut Window, &mut gpui::App) + 'static,
+    ) -> Div {
+        div()
+            .absolute()
+            .bottom_0()
+            .right_0()
+            .pr(space::s8())
+            .pb(space::s4())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::s4())
+                    .px(space::s8())
+                    .h(line_h * 1.2)
+                    .rounded(px(3.0))
+                    .bg(color::current().blue.s03)
+                    .text_color(color::current().blue.s08)
+                    .text_size(typography::ui())
+                    .cursor_pointer()
+                    .hover(|style| style.bg(color::current().blue.s05))
+                    .child(
+                        svg()
+                            .path("icons/actions/check.svg")
+                            .size(px(12.0))
+                            .text_color(color::current().blue.s08),
+                    )
+                    .child("提交")
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        cx.stop_propagation();
+                        on_commit(window, cx);
+                    }),
+            )
+    }
 }

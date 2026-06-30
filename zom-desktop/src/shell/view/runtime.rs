@@ -15,7 +15,7 @@ use gpui::{AppContext, BorrowAppContext, Context, Entity, FocusHandle};
 use crate::app::App;
 use crate::clipboard::GpuiClipboard;
 use crate::editor::{EditorKernel, EditorViewportSyncHook, TextEditorSlot};
-use crate::focus::{AppFocus, FileTreeFocus, SearchField};
+use crate::focus::{AppFocus, FileTreeFocus, PanelFocus, SearchField};
 use crate::host_intent::HostIntentRequest;
 use crate::shell::bubble::{BubbleRuntime, BubbleShell};
 use crate::shell::surfaces::{SurfaceAnchorRegistry, SurfaceManager, SurfaceShell};
@@ -96,7 +96,7 @@ impl ShellRuntime {
         // 多行内核构造时从 App 借这份 `Rc`， 一次 toggle 同帧生效到主编辑区。
         let soft_wrap = app.borrow().soft_wrap_handle();
         let git_handle = app.borrow().git_handle();
-        let main_editor_kernel = EditorKernel::multi_line(soft_wrap)
+        let main_editor_kernel = EditorKernel::multi_line(soft_wrap.clone())
             .with_gutter()
             .with_vertical_scroll()
             .with_viewport_sync(main_viewport_sync)
@@ -161,6 +161,18 @@ impl ShellRuntime {
             cx,
         );
         features.go_to_line.set_slot(Rc::clone(&go_to_line_slot));
+        let vc_commit_message_slot = TextEditorSlot::install(
+            Rc::clone(&app),
+            Rc::clone(&host_intent),
+            AppFocus::Panel(PanelFocus::version_control_commit()),
+            EditorKernel::multi_line(soft_wrap.clone()).with_vertical_scroll(),
+            features.panels.vc_runtime().focus_handle(),
+            cx,
+        );
+        features
+            .panels
+            .vc_runtime()
+            .set_slot(Rc::clone(&vc_commit_message_slot));
         *text_editor_slots.borrow_mut() = vec![
             Rc::clone(&main_editor_slot),
             Rc::clone(&file_tree_new_entry_slot),
@@ -169,6 +181,7 @@ impl ShellRuntime {
             Rc::clone(&search_query_slot),
             Rc::clone(&search_replacement_slot),
             Rc::clone(&go_to_line_slot),
+            Rc::clone(&vc_commit_message_slot),
         ];
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));
         let title_lookup: crate::shell::CommandTitleLookup = {

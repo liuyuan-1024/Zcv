@@ -9,13 +9,19 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use gpui::{Context, Div, FocusHandle, IntoElement, Window};
-use zom_command::PanelKind;
+use gpui::{AnyElement, Context, Div, FocusHandle, IntoElement, Window, div, prelude::*};
+use zom_command::{BubbleRequest, EditTarget, KeyContext, PanelKind, VersionControlKeyMode};
 
+use crate::editor::TextEditorSlot;
+use crate::editor::text::{
+    EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, OwnedEditorTarget,
+};
+use crate::focus::{AppFocus, PanelFocus, VersionControlFocus};
 use crate::git_service::{ColorKind, GitService, GitStatus, StatusCode};
 use crate::host_intent::KeyRequest;
 use crate::shell::CommandTitleLookup;
 use crate::shell::workbench::docks::{placeholder, render_focus_host};
+use crate::text_target::{TextTargetOwner, TextTargetQuery};
 
 mod effects;
 mod view;
@@ -61,6 +67,10 @@ pub(crate) struct VersionControlState {
     pub has_project: bool,
     pub is_git_repo: bool,
     pub is_empty: bool,
+    /// 变更统计：(增行数, 删行数)。
+    pub diff_stats: (u32, u32),
+    /// 是否所有文件已暂存。
+    pub all_staged: bool,
 }
 
 // ── Model ──
@@ -78,8 +88,13 @@ struct VersionControlModel {
     /// 缓存的代际号与行列表。
     cached_generation: u64,
     cached_rows: Rc<Vec<VersionControlRow>>,
+    cached_diff_stats: (u32, u32),
     /// 键盘焦点行。
     selected: Option<PathBuf>,
+    /// 提交信息编辑缓冲区。
+    commit_message: OwnedEditorTarget,
+    /// 待弹出的反馈气泡。
+    pending_bubbles: Vec<BubbleRequest>,
 }
 
 impl VersionControlModel {
@@ -93,7 +108,10 @@ impl VersionControlModel {
             expanded: HashSet::new(),
             cached_generation: 0,
             cached_rows: Rc::new(Vec::new()),
+            cached_diff_stats: (0, 0),
             selected: None,
+            commit_message: OwnedEditorTarget::new(),
+            pending_bubbles: Vec::new(),
         }
     }
 
@@ -284,7 +302,22 @@ impl VersionControlModel {
         let is_dir = entry.is_dir;
         let expanded = is_dir && self.expanded.contains(path);
 
-        // 从 GitStatus 推导暂存状态：目录和未跟踪文件不展示为已暂存。
+        // 单子目录链折叠：若展开后只有一个子目录，合并显示为 "父/子"。
+        // path 仍为链条起点，toggle 时正确折叠起点目录。
+        let (display_name, effective_key) = if is_dir && expanded {
+            let chain = crate::shell::shared::tree::flatten_single_dir_chain(
+                path.to_path_buf(),
+                &entry.name,
+                &self.children,
+                &self.entries,
+                |e: &VcEntry| &e.name,
+                |e: &VcEntry| e.is_dir,
+            );
+            (chain.display_name, chain.deepest)
+        } else {
+            (entry.name.clone(), path.to_path_buf())
+        };
+
         let staged = if is_dir {
             false
         } else {
@@ -298,7 +331,7 @@ impl VersionControlModel {
 
         rows.push(VersionControlRow {
             path: path.to_path_buf(),
-            name: entry.name.clone(),
+            name: display_name,
             depth,
             is_dir,
             expanded,
@@ -307,7 +340,8 @@ impl VersionControlModel {
         });
 
         if expanded {
-            if let Some(kids) = self.children.get(path) {
+            // 若折叠了深层目录，从链条最深处的 children 继续递归，跳过中间层。
+            if let Some(kids) = self.children.get(&effective_key) {
                 for child in kids.iter() {
                     self.collect_visible(child, depth + 1, rows);
                 }
@@ -357,6 +391,8 @@ impl VersionControlModel {
                 has_project: true,
                 is_git_repo: false,
                 is_empty: true,
+                diff_stats: (0, 0),
+                all_staged: false,
             };
         }
 
@@ -364,6 +400,7 @@ impl VersionControlModel {
         if generation != self.cached_generation {
             self.build_index();
             self.cached_rows = Rc::new(self.visible_rows());
+            self.cached_diff_stats = self.git_service.borrow().diff_stats();
             self.cached_generation = generation;
         }
 
@@ -372,12 +409,20 @@ impl VersionControlModel {
             self.selected = self.cached_rows.first().map(|r| r.path.clone());
         }
 
+        let all_staged = self
+            .cached_rows
+            .iter()
+            .filter(|r| !r.is_dir)
+            .all(|r| r.staged);
+
         VersionControlState {
             rows: self.cached_rows.clone(),
             selected: self.selected.clone(),
             has_project: true,
             is_git_repo: true,
             is_empty,
+            diff_stats: self.cached_diff_stats,
+            all_staged,
         }
     }
 
@@ -518,6 +563,66 @@ impl VersionControlModel {
             self.cached_rows = Rc::new(self.visible_rows());
         }
     }
+
+    /// 读取提交信息文本。
+    fn commit_text(&self) -> String {
+        self.commit_message.text()
+    }
+
+    /// 清空提交信息。
+    fn clear_commit_message(&mut self) {
+        self.commit_message = OwnedEditorTarget::new();
+    }
+
+    /// 消费待弹出的反馈气泡。
+    fn take_pending_bubbles(&mut self) -> Vec<BubbleRequest> {
+        std::mem::take(&mut self.pending_bubbles)
+    }
+}
+
+// ── TextTarget 协议 ──
+
+fn vc_commit_focus(focus: AppFocus) -> Option<()> {
+    match focus {
+        AppFocus::Panel(p) => match p.as_version_control() {
+            Some(VersionControlFocus::CommitMessage) => Some(()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+impl TextTargetQuery for VersionControlModel {
+    fn accepts_focus(&self, focus: AppFocus) -> bool {
+        vc_commit_focus(focus).is_some()
+    }
+
+    fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
+        self.commit_message
+            .snapshot(EditorSnapshotRequest::viewport(0, 5))
+    }
+
+    fn key_contexts(&self) -> Vec<KeyContext> {
+        vec![
+            KeyContext::version_control(VersionControlKeyMode::CommitMessage),
+            KeyContext::text_edit(true, false),
+            KeyContext::global(),
+        ]
+    }
+
+    fn accepts_newline(&self) -> bool {
+        true
+    }
+
+    fn ime_query_target(&self, _focus: AppFocus) -> Option<ImeQueryTarget<'_>> {
+        Some(self.commit_message.as_ime_query_target())
+    }
+}
+
+impl TextTargetOwner for VersionControlModel {
+    fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
+        Some(self.commit_message.as_edit_target())
+    }
 }
 
 // ── Runtime ──
@@ -528,6 +633,8 @@ pub(crate) struct VersionControlRuntime {
     model: Rc<RefCell<VersionControlModel>>,
     /// Rc 包装确保 clone 后共享同一回调。
     click_callback: Rc<RefCell<Option<Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>>>>,
+    /// 提交信息编辑器插槽。ShellRuntime 装配完成后通过 set_slot 注入。
+    slot: Rc<RefCell<Option<Rc<TextEditorSlot>>>>,
 }
 
 impl VersionControlRuntime {
@@ -536,6 +643,7 @@ impl VersionControlRuntime {
             focus: cx.focus_handle(),
             model: Rc::new(RefCell::new(VersionControlModel::new(git_handle))),
             click_callback: Rc::new(RefCell::new(None)),
+            slot: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -579,6 +687,84 @@ impl VersionControlRuntime {
         self.model.borrow_mut().expand_or_into();
     }
 
+    pub(crate) fn set_slot(&self, slot: Rc<TextEditorSlot>) {
+        *self.slot.borrow_mut() = Some(slot);
+    }
+
+    pub(crate) fn owner_handle(&self) -> Rc<RefCell<dyn TextTargetOwner>> {
+        self.model.clone()
+    }
+
+    pub(crate) fn commit_text(&self) -> String {
+        self.model.borrow().commit_text()
+    }
+
+    pub(crate) fn clear_commit_message(&self) {
+        self.model.borrow_mut().clear_commit_message();
+    }
+
+    pub(crate) fn take_pending_bubbles(&self) -> Vec<BubbleRequest> {
+        self.model.borrow_mut().take_pending_bubbles()
+    }
+
+    pub(crate) fn stage_all(&self, window: &mut Window) {
+        let git = self.model.borrow().git_service.clone();
+        if let Err(e) = git.borrow().stage_all() {
+            self.model
+                .borrow_mut()
+                .pending_bubbles
+                .push(BubbleRequest::error(format!("暂存全部失败：{e}")).dedupe("vc.stage_all"));
+        }
+        let _ = git.borrow_mut().refresh();
+        self.model.borrow_mut().cached_generation = 0;
+        window.refresh();
+    }
+
+    pub(crate) fn unstage_all(&self, window: &mut Window) {
+        let git = self.model.borrow().git_service.clone();
+        if let Err(e) = git.borrow().unstage_all() {
+            self.model.borrow_mut().pending_bubbles.push(
+                BubbleRequest::error(format!("取消暂存全部失败：{e}")).dedupe("vc.unstage_all"),
+            );
+        }
+        let _ = git.borrow_mut().refresh();
+        self.model.borrow_mut().cached_generation = 0;
+        window.refresh();
+    }
+
+    /// 执行 git commit，成功时清空编辑区 + 弹气泡，失败时弹错误气泡。
+    pub(crate) fn perform_commit(&self, app: &Rc<RefCell<crate::app::App>>) {
+        let msg = self.commit_text();
+        if msg.trim().is_empty() {
+            self.model
+                .borrow_mut()
+                .pending_bubbles
+                .push(BubbleRequest::error("提交信息不能为空").dedupe("vc.commit.empty"));
+            return;
+        }
+        let git = self.model.borrow().git_service.clone();
+        match git.borrow().commit(&msg) {
+            Ok(()) => {
+                self.clear_commit_message();
+                self.model
+                    .borrow_mut()
+                    .pending_bubbles
+                    .push(BubbleRequest::info("提交成功").dedupe("vc.commit.success"));
+                // 切回 Navigate 焦点。
+                app.borrow_mut()
+                    .request_focus(AppFocus::Panel(PanelFocus::version_control()));
+                // 刷新 git 状态。
+                let _ = git.borrow_mut().refresh();
+            }
+            Err(e) => {
+                self.model
+                    .borrow_mut()
+                    .pending_bubbles
+                    .push(BubbleRequest::error(format!("提交失败：{e}")).dedupe("vc.commit.error"));
+            }
+        }
+    }
+
     pub(crate) fn render(
         &self,
         key_request: &KeyRequest,
@@ -615,25 +801,74 @@ impl VersionControlRuntime {
         let selected = state.selected.clone();
         let runtime = self.clone();
         let checkbox_runtime = self.clone();
+        let slot_opt = self.slot.borrow().clone();
+        let commit_text = self.commit_text();
+        let show_placeholder = commit_text.trim().is_empty();
+        let commit_runtime = self.clone();
 
-        render_focus_host(
-            &self.focus,
-            key_request,
-            view::render_list(
-                &state,
-                selected,
-                move |path, window, cx| {
-                    runtime.select(path.clone());
-                    if let Some(cb) = runtime.click_callback.borrow().as_ref() {
-                        cb(path, window, cx);
+        let tree_list = view::render_list(
+            &state,
+            selected,
+            move |path, window, cx| {
+                runtime.select(path.clone());
+                if let Some(cb) = runtime.click_callback.borrow().as_ref() {
+                    cb(path, window, cx);
+                }
+            },
+            move |path, window, _cx| {
+                checkbox_runtime.toggle_stage(&path, window);
+            },
+        );
+
+        let body: AnyElement =
+            div()
+                .flex()
+                .flex_col()
+                .size_full()
+                .child(view::render_top_bar(state.diff_stats, state.all_staged, {
+                    let rt = self.clone();
+                    move |window: &mut Window, _cx: &mut gpui::App| {
+                        if state.all_staged {
+                            rt.unstage_all(window);
+                        } else {
+                            rt.stage_all(window);
+                        }
                     }
-                },
-                move |path, window, _cx| {
-                    checkbox_runtime.toggle_stage(&path, window);
-                },
-            )
-            .into_any_element(),
-        )
+                }))
+                .child(div().flex_1().overflow_hidden().child(tree_list))
+                .child(view::CommitEditor::render(
+                    slot_opt.as_ref(),
+                    show_placeholder,
+                    move |window, _cx| {
+                        let msg = commit_runtime.commit_text();
+                        if msg.trim().is_empty() {
+                            commit_runtime.model.borrow_mut().pending_bubbles.push(
+                                BubbleRequest::error("提交信息不能为空").dedupe("vc.commit.empty"),
+                            );
+                            return;
+                        }
+                        let git = commit_runtime.model.borrow().git_service.clone();
+                        match git.borrow().commit(&msg) {
+                            Ok(()) => {
+                                commit_runtime.clear_commit_message();
+                                commit_runtime.model.borrow_mut().pending_bubbles.push(
+                                    BubbleRequest::info("提交成功").dedupe("vc.commit.success"),
+                                );
+                                let _ = git.borrow_mut().refresh();
+                            }
+                            Err(e) => {
+                                commit_runtime.model.borrow_mut().pending_bubbles.push(
+                                    BubbleRequest::error(format!("提交失败：{e}"))
+                                        .dedupe("vc.commit.error"),
+                                );
+                            }
+                        }
+                        window.refresh();
+                    },
+                ))
+                .into_any_element();
+
+        render_focus_host(&self.focus, key_request, body)
     }
 }
 

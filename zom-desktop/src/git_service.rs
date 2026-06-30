@@ -504,6 +504,95 @@ impl GitService {
         }
         Ok(())
     }
+
+    /// 执行 git commit。
+    ///
+    /// 提交信息可以包含换行符，git 会正确解析多行 commit message。
+    pub fn commit(&self, message: &str) -> Result<(), String> {
+        if !self.valid {
+            return Err("不在 Git 仓库中".to_string());
+        }
+        let output = Command::new("git")
+            .args(["commit", "-m", message])
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|e| format!("无法执行 git commit：{e}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        Ok(())
+    }
+
+    /// 暂存所有变更：`git add -A`。
+    pub fn stage_all(&self) -> Result<(), String> {
+        self.run_git(&["add", "-A"])
+    }
+
+    /// 取消暂存所有文件：`git reset HEAD`。
+    pub fn unstage_all(&self) -> Result<(), String> {
+        self.run_git(&["reset", "HEAD"])
+    }
+
+    /// 从远端拉取：`git fetch`。
+    pub fn fetch(&self) -> Result<(), String> {
+        self.run_git(&["fetch"])
+    }
+
+    /// 拉取并合并：`git pull`。
+    pub fn pull(&self) -> Result<(), String> {
+        self.run_git(&["pull"])
+    }
+
+    /// 变更统计：(增行数, 删行数)，不受暂存状态影响。
+    ///
+    /// `git diff --numstat HEAD` 一口统计暂存区 + 工作区相对 HEAD 的总变更。
+    /// 未跟踪文件单独统计行数（视为纯新增）。
+    pub fn diff_stats(&self) -> (u32, u32) {
+        let mut added: u32 = 0;
+        let mut deleted: u32 = 0;
+        // 暂存区 + 工作区相对 HEAD 的总变更
+        if let Ok(output) = Command::new("git")
+            .args(["diff", "--numstat", "HEAD"])
+            .current_dir(&self.repo_root)
+            .output()
+        {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let parts: Vec<&str> = line.split('\t').collect();
+                if parts.len() >= 2 {
+                    added += parts[0].parse::<u32>().unwrap_or(0);
+                    deleted += parts[1].parse::<u32>().unwrap_or(0);
+                }
+            }
+        }
+        // 未跟踪文件：不在 diff 中，按文件行数计入新增
+        let untracked: Vec<PathBuf> = self
+            .statuses
+            .iter()
+            .filter(|(_, s)| matches!(s, GitStatus::Untracked))
+            .map(|(p, _)| self.repo_root.join(p))
+            .collect();
+        for path in &untracked {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                added += content.lines().count() as u32;
+            }
+        }
+        (added, deleted)
+    }
+
+    fn run_git(&self, args: &[&str]) -> Result<(), String> {
+        if !self.valid {
+            return Err("不在 Git 仓库中".to_string());
+        }
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|e| format!("无法执行 git：{e}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        Ok(())
+    }
 }
 
 /// 一个 diff hunk 的行范围描述——gutter 据此画色条。

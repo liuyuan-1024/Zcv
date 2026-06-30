@@ -10,6 +10,9 @@ use crate::commands::{
     language_servers::{LanguageServersBindingContext, LanguageServersKeyContext},
     project_picker::{ProjectPickerBindingContext, ProjectPickerKeyContext},
     settings::{SettingsBindingContext, SettingsKeyContext},
+    version_control::{
+        VersionControlBindingContext, VersionControlKeyContext, VersionControlKeyMode,
+    },
 };
 use crate::{CommandArgs, CommandError, CommandId, keymap_format};
 
@@ -46,7 +49,7 @@ pub enum KeyContext {
     ProjectPicker(ProjectPickerKeyContext),
     Settings(SettingsKeyContext),
     LanguageServers(LanguageServersKeyContext),
-    VersionControl,
+    VersionControl(VersionControlKeyContext),
     SearchBar,
     GoToLineInput,
 }
@@ -79,8 +82,8 @@ impl KeyContext {
         Self::LanguageServers(LanguageServersKeyContext)
     }
 
-    pub fn version_control() -> Self {
-        Self::VersionControl
+    pub fn version_control(mode: VersionControlKeyMode) -> Self {
+        Self::VersionControl(VersionControlKeyContext { mode })
     }
 
     pub fn search_bar() -> Self {
@@ -101,7 +104,7 @@ pub enum KeyBindingContext {
     ProjectPicker(ProjectPickerBindingContext),
     Settings(SettingsBindingContext),
     LanguageServers(LanguageServersBindingContext),
-    VersionControl,
+    VersionControl(VersionControlBindingContext),
     SearchInput,
     GoToLineInput,
 }
@@ -148,8 +151,8 @@ impl KeyBindingContext {
         Self::LanguageServers(LanguageServersBindingContext)
     }
 
-    pub fn version_control() -> Self {
-        Self::VersionControl
+    pub fn version_control(mode: VersionControlKeyMode) -> Self {
+        Self::VersionControl(VersionControlBindingContext { mode })
     }
 
     pub fn search_input() -> Self {
@@ -176,7 +179,7 @@ impl KeyBindingContext {
             (Self::ProjectPicker(_), Self::ProjectPicker(_)) => true,
             (Self::Settings(_), Self::Settings(_)) => true,
             (Self::LanguageServers(_), Self::LanguageServers(_)) => true,
-            (Self::VersionControl, Self::VersionControl) => true,
+            (Self::VersionControl(a), Self::VersionControl(b)) => a.mode == b.mode,
             (Self::SearchInput, Self::SearchInput) => true,
             (Self::GoToLineInput, Self::GoToLineInput) => true,
             _ => false,
@@ -340,7 +343,9 @@ fn binding_matches_context(binding: &KeyBinding, context: KeyContext) -> bool {
         (KeyBindingContext::ProjectPicker(_), KeyContext::ProjectPicker(_)) => true,
         (KeyBindingContext::Settings(_), KeyContext::Settings(_)) => true,
         (KeyBindingContext::LanguageServers(_), KeyContext::LanguageServers(_)) => true,
-        (KeyBindingContext::VersionControl, KeyContext::VersionControl) => true,
+        (KeyBindingContext::VersionControl(binding), KeyContext::VersionControl(active)) => {
+            binding.mode == active.mode
+        }
         (KeyBindingContext::SearchInput, KeyContext::SearchBar) => true,
         (KeyBindingContext::GoToLineInput, KeyContext::GoToLineInput) => true,
         _ => false,

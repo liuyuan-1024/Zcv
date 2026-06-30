@@ -236,6 +236,11 @@ pub enum VersionControlEffect {
     Activate,
     CollapseOrParent,
     ExpandOrInto,
+    EditCommitMessage,
+    CancelCommitMessage,
+    Commit,
+    StageAll,
+    UnstageAll,
 }
 
 /// Git 状态刷新。

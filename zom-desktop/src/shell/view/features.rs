@@ -57,6 +57,7 @@ impl FeatureRegistry {
             // 通过同一个 install_editor_owner 注册进 router，TextTargetRuntime 不为它单走特殊分支。
             app.install_editor_owner(search.owner_handle());
             app.install_editor_owner(go_to_line.owner_handle());
+            app.install_editor_owner(panels.vc_runtime().owner_handle());
             // 编辑后同步与每帧后台命中收割走通用端口注册
             // ——BackgroundPumps 不认 search feature，由它两个 trait 实现自报家门。
             let search_handle = search.runtime_handle();

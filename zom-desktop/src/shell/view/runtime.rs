@@ -166,7 +166,7 @@ impl ShellRuntime {
             Rc::clone(&host_intent),
             AppFocus::Panel(PanelFocus::version_control_commit()),
             EditorKernel::multi_line(soft_wrap.clone()).with_vertical_scroll(),
-            features.panels.vc_runtime().focus_handle(),
+            features.panels.vc_runtime().commit_focus_handle(),
             cx,
         );
         features

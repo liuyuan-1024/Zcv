@@ -133,8 +133,8 @@ impl FileTreeModel {
                     EntryKind::File => self.git_service.borrow().color_kind(&row.path),
                 };
                 FileTreeRow {
-                    path: row.path.to_path_buf(),
-                    name: row.name.to_string(),
+                    path: row.path,
+                    name: row.name,
                     depth: row.depth,
                     kind: row.kind,
                     expanded: row.expanded,

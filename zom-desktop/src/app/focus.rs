@@ -27,29 +27,21 @@ impl App {
     }
 
     /// shell 反向同步过来的焦点是粗粒度的（文件树只有 Navigate，不区分 NewEntryName / RenameEntry）。
-    /// 此方法保留仍有效的输入态——否则 IME commit 会误落到主编辑区。
+    ///
+    /// 架构保证：`actions.rs` 中 `KeyChord` 只在 GPUI focus 真正切换时才调用本方法，
+    /// 不会每次按键都冲刷。因此不再需要「从 `current` 恢复被覆盖焦点」的保留逻辑——
+    /// 焦点切换时 `current` 已经是上一个投影目标，不再是 pending 状态。
+    ///
+    /// 保留两个恢复路径：
+    /// - `ConfirmDelete` 是动作确认态，没有对应 TextTargetOwner，无条件保留。
+    /// - `RenameEntry` / `NewEntryName` 可能由菜单、命令面板等非键盘路径启动，
+    ///   此时 TextTargetOwner 已就绪但 AppFocus 尚未同步，主动检测一次。
     fn refine_focus(&self, focus: AppFocus) -> AppFocus {
         if focus == AppFocus::file_tree(FileTreeFocus::Navigate) {
-            let current = self.focus.current();
-            let current_ft = match current {
-                AppFocus::Panel(p) => p.as_file_tree(),
-                _ => None,
-            };
-            if let Some(sub) = current_ft {
-                let is_pending = matches!(
-                    sub,
-                    FileTreeFocus::NewEntryName
-                        | FileTreeFocus::RenameEntry
-                        | FileTreeFocus::ConfirmDelete,
-                );
-                if is_pending
-                    && (sub == FileTreeFocus::ConfirmDelete
-                        || self.text_targets.accepts_focus(&self.session, current))
-                {
-                    return current;
-                }
+            // 删除确认不应因焦点投影被吞掉。
+            if self.focus.current() == AppFocus::file_tree(FileTreeFocus::ConfirmDelete) {
+                return self.focus.current();
             }
-
             for candidate in [
                 AppFocus::file_tree(FileTreeFocus::RenameEntry),
                 AppFocus::file_tree(FileTreeFocus::NewEntryName),

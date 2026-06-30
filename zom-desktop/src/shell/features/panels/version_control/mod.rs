@@ -20,6 +20,8 @@ use crate::focus::{AppFocus, PanelFocus, VersionControlFocus};
 use crate::git_service::{ColorKind, GitService, GitStatus, StatusCode};
 use crate::host_intent::KeyRequest;
 use crate::shell::CommandTitleLookup;
+use crate::shell::normalized_chord;
+use crate::shell::shared::scroll;
 use crate::shell::workbench::docks::{placeholder, render_focus_host};
 use crate::text_target::{TextTargetOwner, TextTargetQuery};
 
@@ -97,6 +99,8 @@ struct VersionControlModel {
     pending_bubbles: Vec<BubbleRequest>,
     /// 异步回调产生的延迟气泡（如 on_next_frame 中的 git 操作错误）。
     deferred_bubbles: Rc<RefCell<Vec<BubbleRequest>>>,
+    /// 变更树滚动句柄，跨渲染帧持久化以保持滚动位置。
+    scroll_handle: scroll::ScrollHandle,
 }
 
 /// 目录优先 + 字母序（不区分大小写）排序，与文件树一致。
@@ -149,6 +153,7 @@ impl VersionControlModel {
             commit_message: OwnedEditorTarget::new(),
             pending_bubbles: Vec::new(),
             deferred_bubbles: Rc::new(RefCell::new(Vec::new())),
+            scroll_handle: scroll::ScrollHandle::new(),
         }
     }
 
@@ -304,32 +309,81 @@ impl VersionControlModel {
         sort_by_dir_entries(&self.entries, &mut root_entries);
 
         for child in root_entries.iter() {
-            self.collect_visible(child, 1, &mut rows);
+            self.collect_visible(child, 1, String::new(), None, &mut rows);
         }
         rows
     }
 
-    fn collect_visible(&self, path: &Path, depth: usize, rows: &mut Vec<VersionControlRow>) {
+    fn collect_visible(
+        &self,
+        path: &Path,
+        depth: usize,
+        chain_prefix: String,
+        chain_start: Option<PathBuf>,
+        rows: &mut Vec<VersionControlRow>,
+    ) {
         let Some(entry) = self.entries.get(path) else {
             return;
         };
         let is_dir = entry.is_dir;
-        let expanded = is_dir && self.expanded.contains(path);
+        let explicitly_expanded = is_dir && self.expanded.contains(path);
+        let in_chain = !chain_prefix.is_empty();
+        let expanded = explicitly_expanded || in_chain;
 
-        // 单子目录链折叠：若展开后只有一个子目录，合并显示为 "父/子"。
-        // path 仍为链条起点，toggle 时正确折叠起点目录。
-        let (display_name, effective_key) = if is_dir && expanded {
-            let chain = crate::shell::shared::tree::flatten_single_dir_chain(
-                path.to_path_buf(),
-                &entry.name,
-                &self.children,
-                &self.entries,
-                |e: &VcEntry| &e.name,
-                |e: &VcEntry| e.is_dir,
-            );
-            (chain.display_name, chain.deepest)
+        // 单子目录链省略：展开 + 只有一个子目录，或在链中继续向下。
+        // VC 的 collect_visible 以 entry 自身为处理单元（不像文件树以"目录的子项"为单元），
+        // 所以 chain_prefix 只含已省略的上层目录名，不含当前 entry 的路径。
+        if self.single_dir_child(path) && (explicitly_expanded || in_chain) {
+            let start = chain_start.clone().unwrap_or_else(|| path.to_path_buf());
+            // 将当前 entry 名加入前缀（只含已省略的上层名）
+            let mid = if chain_prefix.is_empty() {
+                entry.name.clone()
+            } else {
+                format!("{}/{}", chain_prefix, entry.name)
+            };
+            let child = self.children.get(path).and_then(|k| k.first());
+            if let Some(child) = child {
+                if self.single_dir_child(child) {
+                    // 子目录仍需省略 → 前缀带上当前名，继续向下
+                    self.collect_visible(child, depth, mid, Some(start), rows);
+                } else {
+                    // 链末端：子目录名也拼进前缀，push 后正常递归
+                    let child_entry = &self.entries[child];
+                    let display_name = if mid.is_empty() {
+                        child_entry.name.clone()
+                    } else {
+                        format!("{}/{}", mid, child_entry.name)
+                    };
+                    rows.push(VersionControlRow {
+                        path: start,
+                        name: display_name,
+                        depth,
+                        is_dir: child_entry.is_dir,
+                        expanded: true,
+                        git_color: child_entry.git_color,
+                        staged: false,
+                    });
+                    // 链末端已作为链行 push，直接递归子项。
+                    if let Some(kids) = self.children.get(child) {
+                        for grandchild in kids.iter() {
+                            self.collect_visible(grandchild, depth + 1, String::new(), None, rows);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        // 不省略：push 本行
+        let base_name = if chain_prefix.is_empty() {
+            entry.name.clone()
         } else {
-            (entry.name.clone(), path.to_path_buf())
+            format!("{}/{}", chain_prefix, entry.name)
+        };
+        let display_name = if is_dir && !expanded {
+            self.folded_name(path, &base_name)
+        } else {
+            base_name
         };
 
         let staged = if is_dir {
@@ -354,13 +408,43 @@ impl VersionControlModel {
         });
 
         if expanded {
-            // 若折叠了深层目录，从链条最深处的 children 继续递归，跳过中间层。
-            if let Some(kids) = self.children.get(&effective_key) {
+            if let Some(kids) = self.children.get(path) {
                 for child in kids.iter() {
-                    self.collect_visible(child, depth + 1, rows);
+                    self.collect_visible(child, depth + 1, String::new(), None, rows);
                 }
             }
         }
+    }
+
+    /// 目录是否只有一个子目录（可被折叠省略）。
+    fn single_dir_child(&self, path: &Path) -> bool {
+        match self.children.get(path) {
+            Some(kids) if kids.len() == 1 => self
+                .entries
+                .get(&kids[0])
+                .map(|e| e.is_dir)
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    /// 沿已加载的单子目录链拼接折叠名。
+    fn folded_name(&self, start: &Path, base: &str) -> String {
+        let mut name = base.to_string();
+        let mut current = start.to_path_buf();
+        loop {
+            let kids = match self.children.get(&current) {
+                Some(k) if k.len() == 1 => k,
+                _ => break,
+            };
+            let child_entry = match self.entries.get(&kids[0]) {
+                Some(e) if e.is_dir => e,
+                _ => break,
+            };
+            name = format!("{}/{}", name, child_entry.name);
+            current = kids[0].clone();
+        }
+        name
     }
 
     /// 切换目录的折叠/展开状态。空路径表示根目录。
@@ -605,7 +689,10 @@ impl VersionControlModel {
             return;
         }
         let git = self.git_service.clone();
-        match git.borrow().commit(&msg) {
+        // 把 commit 结果提取到局部变量——match 表达式中 git.borrow() 的
+        // 临时 Ref 会存活到整个 match 结束，与 Ok 分支内 borrow_mut() 冲突。
+        let result = git.borrow().commit(&msg);
+        match result {
             Ok(()) => {
                 self.clear_commit_message();
                 self.pending_bubbles
@@ -673,7 +760,10 @@ impl TextTargetOwner for VersionControlModel {
 
 #[derive(Clone)]
 pub(crate) struct VersionControlRuntime {
+    /// 变更树导航的焦点句柄。
     focus: FocusHandle,
+    /// 提交信息编辑器的独立焦点句柄。与导航分离，避免 `on_key_down` 拦截文本输入。
+    commit_focus: FocusHandle,
     model: Rc<RefCell<VersionControlModel>>,
     /// Rc 包装确保 clone 后共享同一回调。
     click_callback: Rc<RefCell<Option<Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>>>>,
@@ -685,10 +775,15 @@ impl VersionControlRuntime {
     pub(crate) fn new<T>(cx: &mut Context<T>, git_handle: Rc<RefCell<GitService>>) -> Self {
         Self {
             focus: cx.focus_handle(),
+            commit_focus: cx.focus_handle(),
             model: Rc::new(RefCell::new(VersionControlModel::new(git_handle))),
             click_callback: Rc::new(RefCell::new(None)),
             slot: Rc::new(RefCell::new(None)),
         }
+    }
+
+    pub(crate) fn commit_focus_handle(&self) -> FocusHandle {
+        self.commit_focus.clone()
     }
 
     pub(crate) fn set_click_callback(&self, cb: Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>) {
@@ -820,10 +915,12 @@ impl VersionControlRuntime {
         let commit_text = self.commit_text();
         let show_placeholder = commit_text.trim().is_empty();
         let commit_runtime = self.clone();
+        let scroll_handle = self.model.borrow().scroll_handle.clone();
 
         let tree_list = view::render_list(
             &state,
             selected,
+            &scroll_handle,
             move |path, window, cx| {
                 runtime.select(path.clone());
                 if let Some(cb) = runtime.click_callback.borrow().as_ref() {
@@ -834,6 +931,27 @@ impl VersionControlRuntime {
                 checkbox_runtime.toggle_stage(&path, window);
             },
         );
+
+        // 提交编辑器的独立焦点宿主——只包裹 track_focus + on_key_down，
+        // 不加 .size_full()，让 flex 布局中的树列表正常获得剩余空间。
+        let commit_focus = self.commit_focus.clone();
+        let kr = Rc::clone(key_request);
+        let commit_editor_host = div()
+            .track_focus(&commit_focus)
+            .tab_index(0)
+            .on_key_down(move |event, window, cx| {
+                if kr(normalized_chord(&event.keystroke), window, cx) {
+                    cx.stop_propagation();
+                }
+            })
+            .child(view::CommitEditor::render(
+                slot_opt.as_ref(),
+                show_placeholder,
+                move |window, _cx| {
+                    commit_runtime.model.borrow_mut().try_commit();
+                    window.refresh();
+                },
+            ));
 
         let body: AnyElement = div()
             .flex()
@@ -850,14 +968,7 @@ impl VersionControlRuntime {
                 }
             }))
             .child(div().flex_1().overflow_hidden().child(tree_list))
-            .child(view::CommitEditor::render(
-                slot_opt.as_ref(),
-                show_placeholder,
-                move |window, _cx| {
-                    commit_runtime.model.borrow_mut().try_commit();
-                    window.refresh();
-                },
-            ))
+            .child(commit_editor_host)
             .into_any_element();
 
         render_focus_host(&self.focus, key_request, body)

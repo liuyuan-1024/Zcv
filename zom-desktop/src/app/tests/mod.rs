@@ -6,7 +6,7 @@
 use crate::app::App;
 use crate::config::SettingsChange;
 use crate::editor_state::{EditorState, EditorTab};
-use crate::focus::{AppFocus, FileTreeFocus};
+use crate::focus::{AppFocus, FileTreeFocus, PanelFocus, VersionControlFocus};
 use crate::host_intent::{InteractionIntent, PointerIntent};
 use crate::text_target::{TextTargetOwner, TextTargetQuery};
 use crate::theme::Theme;
@@ -902,7 +902,7 @@ mod registry_integration {
     use crate::text_target::{TextTargetOwner, TextTargetQuery};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use zom_command::{EditTarget, FileTreeKeyMode, KeyContext};
+    use zom_command::{EditTarget, FileTreeKeyMode, KeyContext, VersionControlKeyMode};
 
     /// 自定义 focus 的桩 owner：accepts_focus 只命中一个普通 panel；
     /// after_text_changed 翻一个 flag 让 router 写路径可观察。
@@ -1042,5 +1042,65 @@ mod registry_integration {
         app.dispatch_command(editor::ime_commit(None, "zom"))
             .unwrap();
         assert_eq!(owner.borrow().text(), "zom");
+    }
+
+    struct StubVcOwner {
+        target: OwnedEditorTarget,
+    }
+
+    impl StubVcOwner {
+        fn new() -> Self {
+            Self {
+                target: OwnedEditorTarget::new(),
+            }
+        }
+
+        fn text(&self) -> String {
+            self.target.text()
+        }
+    }
+
+    impl TextTargetQuery for StubVcOwner {
+        fn accepts_focus(&self, focus: AppFocus) -> bool {
+            matches!(
+                focus,
+                AppFocus::Panel(p) if matches!(p.as_version_control(), Some(VersionControlFocus::CommitMessage))
+            )
+        }
+
+        fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
+            self.target.snapshot(EditorSnapshotRequest::viewport(0, 5))
+        }
+
+        fn key_contexts(&self) -> Vec<KeyContext> {
+            vec![
+                KeyContext::version_control(VersionControlKeyMode::CommitMessage),
+                KeyContext::text_edit(true, false),
+                KeyContext::global(),
+            ]
+        }
+
+        fn ime_query_target(&self, _focus: AppFocus) -> Option<ImeQueryTarget<'_>> {
+            Some(self.target.as_ime_query_target())
+        }
+    }
+
+    impl TextTargetOwner for StubVcOwner {
+        fn edit_target(&mut self, _focus: AppFocus) -> Option<EditTarget<'_>> {
+            Some(self.target.as_edit_target())
+        }
+    }
+
+    #[test]
+    fn vc_commit_message_dispatch_works_via_registered_owner() {
+        let mut app = App::new();
+        let owner = Rc::new(RefCell::new(StubVcOwner::new()));
+        let dyn_owner: Rc<RefCell<dyn TextTargetOwner>> = owner.clone();
+        app.install_editor_owner(dyn_owner);
+
+        app.request_focus(AppFocus::Panel(PanelFocus::version_control_commit()));
+        app.dispatch_command(editor::ime_commit(None, "test"))
+            .unwrap();
+        assert_eq!(owner.borrow().text(), "test");
     }
 }

@@ -21,6 +21,7 @@ use super::{VersionControlRow, VersionControlState};
 pub(super) fn render_list(
     state: &VersionControlState,
     selected: Option<PathBuf>,
+    scroll_handle: &scroll::ScrollHandle,
     on_click: impl Fn(PathBuf, &mut Window, &mut gpui::App) + 'static,
     on_checkbox_click: impl Fn(PathBuf, &mut Window, &mut gpui::App) + 'static,
 ) -> Div {
@@ -28,8 +29,6 @@ pub(super) fn render_list(
     let on_click = Rc::new(on_click);
     let on_checkbox_click = Rc::new(on_checkbox_click);
     let selected = Rc::new(selected);
-
-    let scroll_handle = scroll::ScrollHandle::new();
 
     let selected_index = (*selected)
         .as_ref()
@@ -225,6 +224,10 @@ impl CommitEditor {
             .line_height(line_h)
             .text_color(color::current().gray.s09);
 
+        if let Some(s) = slot {
+            editor = editor.child(s.embed());
+        }
+
         if show_placeholder {
             editor = editor.child(
                 div()
@@ -239,9 +242,6 @@ impl CommitEditor {
         }
 
         editor = editor.child(Self::commit_button(line_h, on_commit));
-        if let Some(s) = slot {
-            editor = editor.child(s.embed());
-        }
 
         div()
             .flex_col()

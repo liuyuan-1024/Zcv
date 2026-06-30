@@ -322,7 +322,7 @@ impl FileTreeModel {
                     .visible_rows()
                     .get(idx + 1)
                     .filter(|row| row.depth > depth)
-                    .map(|row| row.path.to_path_buf());
+                    .map(|row| row.path.clone());
                 if let Some(path) = next {
                     self.selected = Some(path);
                 }
@@ -510,10 +510,10 @@ fn delete_tree_entry(tree: &mut ProjectTree, path: &Path) -> io::Result<()> {
 
 fn neighbor_after(tree: &ProjectTree, path: &Path) -> Option<PathBuf> {
     let rows = tree.visible_rows();
-    let idx = rows.iter().position(|row| row.path == path)?;
+    let idx = rows.iter().position(|row| row.path.as_path() == path)?;
     rows.get(idx + 1)
         .or_else(|| idx.checked_sub(1).and_then(|prev| rows.get(prev)))
-        .map(|row| row.path.to_path_buf())
+        .map(|row| row.path.clone())
 }
 
 pub(super) fn next_sibling_of(
@@ -523,15 +523,15 @@ pub(super) fn next_sibling_of(
 ) -> Option<PathBuf> {
     let parent = path.parent()?;
     let rows = tree.visible_rows();
-    let idx = rows.iter().position(|row| row.path == path)?;
+    let idx = rows.iter().position(|row| row.path.as_path() == path)?;
     rows.iter().skip(idx + 1).find_map(|row| {
         if row.path.parent() != Some(parent) {
             return None;
         }
-        if skip(row.path) {
+        if skip(&row.path) {
             return None;
         }
-        Some(row.path.to_path_buf())
+        Some(row.path.clone())
     })
 }
 
@@ -539,7 +539,7 @@ pub(super) fn next_sibling_of(
 pub(super) fn snapshot_row(tree: &ProjectTree, path: &Path) -> Option<(EntryKind, bool, usize)> {
     tree.visible_rows()
         .into_iter()
-        .find(|row| row.path == path)
+        .find(|row| row.path.as_path() == path)
         .map(|row| (row.kind, row.expanded, row.depth))
 }
 

@@ -3,7 +3,7 @@
 //! 此文件只承担 view 层壳：命令派发入口、HostEffect 总调度、跨 feature 的窗口 / surface 管理。
 //! 每个 feature 自己的 HostEffect 处理都在 `features/<feature>/effects.rs` 里，由 [`apply_host_effects`] 按顺序问询。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
@@ -59,6 +59,8 @@ pub(super) fn bind_host_intent_request(
     focus_projection: FocusProjection,
     text_editor_slots: Rc<dyn Fn() -> Vec<Rc<TextEditorSlot>>>,
 ) -> HostIntentRequest {
+    let last_projected_focus: Rc<Cell<Option<AppFocus>>> = Rc::new(Cell::new(None));
+
     Rc::new(move |intent, window, cx| {
         let dispatch = {
             let _clip = GpuiClipboardScope::enter(cx);
@@ -68,9 +70,15 @@ pub(super) fn bind_host_intent_request(
                     .dispatch_command(invocation)
                     .map(|effects| (effects, HostIntentOutcome::consumed(), true)),
                 HostIntent::KeyChord(chord) => {
-                    let current = focus_projection.current_focus(window);
+                    let projected = focus_projection.current_focus(window);
+                    // VC 面板和提交编辑器各自持有独立 FocusHandle，分别投影为
+                    // Navigate 和 CommitMessage。只在投影值真正变化时才刷新 AppFocus，
+                    // 避免同一 handle 内每次按键都触发无意义的 focus 同步。
+                    if last_projected_focus.replace(Some(projected)) != Some(projected) {
+                        let mut app = app.borrow_mut();
+                        app.request_focus_from_shell(projected);
+                    }
                     let mut app = app.borrow_mut();
-                    app.request_focus_from_shell(current);
                     app.dispatch_key(chord).map(|outcome| {
                         (
                             outcome.effects,

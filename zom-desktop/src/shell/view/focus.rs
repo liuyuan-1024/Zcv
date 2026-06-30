@@ -105,6 +105,12 @@ pub(crate) fn projection_from_runtimes(
     if let Some(vc_focus) = panel_runtimes.focus_handle(PanelId::VersionControl) {
         projection.register(vc_focus, AppFocus::Panel(PanelFocus::version_control()));
     }
+    // 提交信息编辑器使用独立 focus handle，与导航分离——
+    // 文本输入直达 ElementInputHandler，不被面板 on_key_down 拦截。
+    projection.register(
+        panel_runtimes.vc_runtime().commit_focus_handle(),
+        AppFocus::Panel(PanelFocus::version_control_commit()),
+    );
     for panel in [
         PanelId::VersionControl,
         PanelId::Outline,

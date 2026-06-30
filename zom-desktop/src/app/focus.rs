@@ -93,6 +93,9 @@ impl App {
                     KeyContext::file_tree(FileTreeKeyMode::Navigate),
                     KeyContext::global(),
                 ],
+                PanelSubFocus::VersionControl => {
+                    vec![KeyContext::version_control(), KeyContext::global()]
+                }
                 PanelSubFocus::Bare => vec![KeyContext::global()],
             },
             AppFocus::Surface(s) => match s.surface {

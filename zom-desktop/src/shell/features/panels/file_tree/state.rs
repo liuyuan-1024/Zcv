@@ -82,8 +82,6 @@ pub(crate) struct FileTreeRow {
     pub(crate) depth: usize,
     pub(crate) kind: EntryKind,
     pub(crate) expanded: bool,
-    /// 第 k 位为 1 表示该行是其第 k 层祖先的最后一个可见后代。
-    pub(crate) terminal_mask: u64,
     /// 该文件的 git 状态归约色，用于文件名着色。
     /// `None` 表示文件无变更（干净或在非 git 仓库中）。
     pub(crate) git_color: Option<ColorKind>,

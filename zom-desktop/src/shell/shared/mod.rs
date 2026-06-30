@@ -7,5 +7,6 @@ pub(crate) mod glyph;
 pub(crate) mod interaction;
 pub(crate) mod keyboard;
 pub(crate) mod scroll;
+pub(crate) mod tree;
 
 pub(crate) use glyph::{CommandBinding, Glyph};

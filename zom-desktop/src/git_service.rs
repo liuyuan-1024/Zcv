@@ -100,6 +100,9 @@ pub struct GitService {
     dir_colors: HashMap<PathBuf, ColorKind>,
     /// 当前目录是否在一个有效的 git 仓库内。
     valid: bool,
+    /// 刷新代际：每次 [`refresh`](Self::refresh) 成功完成后递增。
+    /// 消费方（如 VersionControlModel）比对代际号来判断缓存是否失效。
+    generation: u64,
 }
 
 impl GitService {
@@ -127,12 +130,42 @@ impl GitService {
             statuses: HashMap::new(),
             dir_colors: HashMap::new(),
             valid,
+            generation: 0,
         }
     }
 
-    #[cfg(test)]
-    pub fn is_valid(&self) -> bool {
+    pub fn is_git_repo(&self) -> bool {
         self.valid
+    }
+
+    /// 仓库根目录绝对路径。
+    pub fn repo_root_path(&self) -> &Path {
+        &self.repo_root
+    }
+
+    /// 刷新代际号。消费方通过比对代际号判断是否需要重建缓存。
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// 仓库根目录的展示名（目录名）。
+    pub fn root_name(&self) -> String {
+        self.repo_root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.repo_root.to_string_lossy().into_owned())
+    }
+
+    /// 返回所有文件级 git 状态的只读引用。
+    /// key 为相对于 repo_root 的路径。
+    pub fn statuses(&self) -> &HashMap<PathBuf, GitStatus> {
+        &self.statuses
+    }
+
+    /// 返回目录级聚合颜色的只读引用。
+    /// key 为相对于 repo_root 的路径。
+    pub fn dir_colors(&self) -> &HashMap<PathBuf, ColorKind> {
+        &self.dir_colors
     }
 
     /// 刷新 git 状态缓存。
@@ -252,6 +285,7 @@ impl GitService {
 
         self.statuses = new_statuses;
         self.dir_colors = dir_colors;
+        self.generation += 1;
         Ok(())
     }
 
@@ -491,7 +525,7 @@ mod tests {
     fn non_git_project_should_be_invalid() {
         let dir = std::env::temp_dir();
         let mut service = GitService::new(&dir);
-        assert!(!service.is_valid());
+        assert!(!service.is_git_repo());
         // refresh 在 non-git 项目上不应报错
         assert!(service.refresh().is_ok());
     }
@@ -502,7 +536,7 @@ mod tests {
         File::create(repo.join("new.txt")).unwrap();
 
         let mut service = GitService::new(&repo);
-        assert!(service.is_valid());
+        assert!(service.is_git_repo());
         service.refresh().unwrap();
 
         let status = service.file_status(&repo.join("new.txt")).unwrap();
@@ -647,7 +681,7 @@ mod tests {
 
         // 以子目录为项目根
         let mut service = GitService::new(&subdir);
-        assert!(service.is_valid());
+        assert!(service.is_git_repo());
         service.refresh().unwrap();
 
         // root_file.txt 的路径应该相对于 repo_root 查询

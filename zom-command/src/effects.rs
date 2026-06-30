@@ -228,6 +228,16 @@ pub enum FileTreeEffect {
     Paste,
 }
 
+/// 版本管理面板。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VersionControlEffect {
+    MoveSelection(isize),
+    Toggle,
+    Activate,
+    CollapseOrParent,
+    ExpandOrInto,
+}
+
 /// Git 状态刷新。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GitEffect {
@@ -246,6 +256,7 @@ pub enum HostEffect {
     Project(ProjectEffect),
     Surface(SurfaceEffect),
     FileTree(FileTreeEffect),
+    VersionControl(VersionControlEffect),
     Git(GitEffect),
 }
 

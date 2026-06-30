@@ -138,7 +138,6 @@ impl FileTreeModel {
                     depth: row.depth,
                     kind: row.kind,
                     expanded: row.expanded,
-                    terminal_mask: row.terminal_mask,
                     git_color,
                 }
             })

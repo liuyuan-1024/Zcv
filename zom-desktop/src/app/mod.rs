@@ -54,7 +54,7 @@ use crate::workspace_session::WorkspaceSession;
 
 pub struct App {
     command: CommandRuntime,
-    session: WorkspaceSession,
+    pub(crate) session: WorkspaceSession,
     config: ConfigStore,
     background: BackgroundPumps,
     focus: FocusStore,

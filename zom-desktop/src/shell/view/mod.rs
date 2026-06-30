@@ -15,7 +15,8 @@ use zom_command::commands::{
     file_tree as file_tree_commands, go_to_line as go_to_line_commands,
     language_servers as language_server_commands, project_picker as project_picker_commands,
     search::{file as search_file_commands, project as search_project_commands},
-    settings as settings_commands, window as window_commands,
+    settings as settings_commands, version_control as version_control_commands,
+    window as window_commands,
 };
 use zom_command::{CommandArgs, CommandId, Invocation, SettingsChangeRequest};
 use zom_workspace::view::ViewId;
@@ -397,6 +398,16 @@ impl Render for ShellView {
                 activate(window, cx);
             })
         };
+        // 版本控制树点击回调：选中 + 激活命令（和文件树一致）。
+        {
+            let vc_runtime = runtime.features.panels.vc_runtime().clone();
+            let activate = self.bind_command(version_control_commands::activate());
+            let vc2 = vc_runtime.clone();
+            vc_runtime.set_click_callback(Rc::new(move |path, window, cx| {
+                vc2.select(path);
+                activate(window, cx);
+            }));
+        }
         let file_tree_panel = runtime.features.file_tree.panel(
             &file_tree_state,
             &key_request_for_panel,

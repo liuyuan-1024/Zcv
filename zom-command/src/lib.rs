@@ -41,7 +41,7 @@ pub use dismiss::{DismissScope, DismissStacks, DismissTokenId};
 pub use effects::{
     BubbleEffect, BubbleKind, BubbleRequest, EditorEffect, EffectQueue, FileTreeEffect, GitEffect,
     GoToLineEffect, HostEffect, PanelEffect, PanelKind, ProjectEffect, SearchEffect, SearchOption,
-    SettingsChangeRequest, SurfaceEffect, WindowEffect,
+    SettingsChangeRequest, SurfaceEffect, VersionControlEffect, WindowEffect,
 };
 pub use error::CommandError;
 pub use executor::{

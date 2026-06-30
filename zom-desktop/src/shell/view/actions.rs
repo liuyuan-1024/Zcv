@@ -23,6 +23,7 @@ use crate::shell::bubble::BubbleRuntime;
 use crate::shell::features::go_to_line;
 use crate::shell::features::language_servers;
 use crate::shell::features::panels::file_tree;
+use crate::shell::features::panels::version_control;
 use crate::shell::features::project_picker;
 use crate::shell::features::search;
 use crate::shell::features::settings;
@@ -134,6 +135,9 @@ pub(super) fn apply_host_effects(
     for effect in effects {
         // 按 feature 顺序问询：第一个认领的 try_apply 返回 true，跳过余下。
         // 剩下的窗口控制 / 跨 feature 变体由本文件下方的兜底 match 处理。
+        if version_control::try_apply_effect(features.panels.vc_runtime(), &effect, app).is_some() {
+            continue;
+        }
         if file_tree::try_apply_effect(
             &effect,
             app,

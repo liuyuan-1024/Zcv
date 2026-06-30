@@ -136,10 +136,11 @@ impl ShellView {
 
     fn workbench_state(&self) -> WorkbenchState {
         let app = self.runtime.app.borrow();
-        self.runtime
-            .workbench
-            .borrow()
-            .state(app.project_title(), app.has_project())
+        self.runtime.workbench.borrow().state(
+            app.project_title(),
+            app.current_branch(),
+            app.has_project(),
+        )
     }
 
     /// 把一个 [`Invocation`] 绑成 [`CommandRequest`]：触发时进入命令管线。

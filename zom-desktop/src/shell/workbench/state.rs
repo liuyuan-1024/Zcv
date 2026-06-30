@@ -76,6 +76,9 @@ impl DockState {
 #[derive(Clone, Debug)]
 pub(crate) struct WorkbenchState {
     pub(crate) project_title: String,
+    /// 当前项目所在 git 仓库的分支名（`git rev-parse --abbrev-ref HEAD`）。
+    /// 仅在项目是 git 仓库且 HEAD 指向分支时存在。
+    pub(crate) project_branch: Option<String>,
     pub(crate) has_project: bool,
     pub(crate) left_dock: DockState,
     pub(crate) right_dock: DockState,

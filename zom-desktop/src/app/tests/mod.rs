@@ -48,7 +48,7 @@ fn temp_path(tag: &str) -> PathBuf {
 fn app_with_open_file(name: &str) -> App {
     let mut app = App::new();
     let root = project_fixture(name);
-    app.apply_open_project_from_effect(root.clone());
+    app.apply_open_project_from_effect(root.clone(), None);
     assert!(app.session.open_file(root.join("README.md")));
     app.request_focus(AppFocus::editor());
     app
@@ -58,7 +58,7 @@ fn app_with_markdown_text(name: &str, text: &str) -> App {
     let mut app = App::new();
     let root = project_fixture(name);
     std::fs::write(root.join("README.md"), text).unwrap();
-    app.apply_open_project_from_effect(root.clone());
+    app.apply_open_project_from_effect(root.clone(), None);
     assert!(app.session.open_file(root.join("README.md")));
     app.request_focus(AppFocus::editor());
     app.session
@@ -302,7 +302,7 @@ fn editor_tab_size_setting_should_reach_open_buffers() {
     // 从默认 4 切到 2。
     app.apply_settings_change_from_effect(SettingsChange::CycleEditorTabSize);
     let root = project_fixture("tab-size-setting");
-    app.apply_open_project_from_effect(root.clone());
+    app.apply_open_project_from_effect(root.clone(), None);
     assert!(app.session.open_file(root.join("README.md")));
 
     let tab_width = app
@@ -864,7 +864,7 @@ fn project_fixture(name: &str) -> PathBuf {
 fn tab_commands_should_switch_and_close_active_view() {
     let mut app = App::new();
     let root = project_fixture("tabs");
-    app.apply_open_project_from_effect(root.clone());
+    app.apply_open_project_from_effect(root.clone(), None);
     assert!(app.session.open_file(root.join("README.md")));
     assert!(app.session.open_file(root.join("src/lib.rs")));
 

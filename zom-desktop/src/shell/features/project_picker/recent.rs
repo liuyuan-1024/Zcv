@@ -21,6 +21,9 @@ pub(crate) struct RecentProject {
     pub(crate) path: PathBuf,
     pub(crate) identifier: String,
     pub(crate) repo: Option<String>,
+    /// 最近一次记住时所在的 git 分支名（`git rev-parse --abbrev-ref HEAD`）。
+    /// 仅在项目是 git 仓库且 HEAD 指向分支时存在。
+    pub(crate) branch: Option<String>,
 }
 
 /// 最近项目内存表 + 落盘路径。
@@ -62,7 +65,7 @@ impl RecentProjects {
     }
 
     /// 把一个项目记成"最近打开"。同 id 的旧记录会被去重；新条目永远在最前。
-    pub(crate) fn remember(&mut self, root: PathBuf, repo: Option<String>) {
+    pub(crate) fn remember(&mut self, root: PathBuf, repo: Option<String>, branch: Option<String>) {
         let id = project_id(&root);
         self.items.retain(|project| project.id != id);
         self.items.insert(
@@ -75,6 +78,7 @@ impl RecentProjects {
                     .unwrap_or_else(|| root.to_string_lossy().into_owned()),
                 path: root,
                 repo,
+                branch,
             },
         );
         self.flush();
@@ -108,6 +112,9 @@ struct RecentProjectRecord {
     path: PathBuf,
     identifier: String,
     repo: Option<String>,
+    /// 最近一次记住时所在的 git 分支名。旧记录缺失此字段时为 None。
+    #[serde(default)]
+    branch: Option<String>,
 }
 
 fn project_id(path: &Path) -> String {
@@ -118,6 +125,25 @@ fn project_name(path: &Path) -> Option<&str> {
     path.file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
+}
+
+/// 获取指定目录下 git 仓库的当前分支名。
+///
+/// 执行 `git rev-parse --abbrev-ref HEAD`，仅在 HEAD 指向分支（非 detached HEAD）
+/// 且命令成功时返回分支名。
+pub(crate) fn current_branch(project_root: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(project_root)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if branch != "HEAD" && !branch.is_empty() {
+            return Some(branch);
+        }
+    }
+    None
 }
 
 fn read_recent_from_file(path: &Path, warnings: &mut Vec<String>) -> Vec<RecentProject> {
@@ -161,6 +187,7 @@ fn read_recent_from_file(path: &Path, warnings: &mut Vec<String>) -> Vec<RecentP
                 },
                 path: record.path,
                 repo: record.repo,
+                branch: record.branch,
             }
         })
         .collect()
@@ -181,6 +208,7 @@ fn write_recent_to_file(path: &Path, projects: &[RecentProject]) -> Result<(), S
                 path: project.path.clone(),
                 identifier: project.identifier.clone(),
                 repo: project.repo.clone(),
+                branch: project.branch.clone(),
             })
             .collect(),
     };
@@ -215,10 +243,11 @@ mod tests {
         let local = project_fixture("dedupe-local");
         let cloned = project_fixture("dedupe-git");
 
-        recent.remember(local.clone(), None);
+        recent.remember(local.clone(), None, None);
         recent.remember(
             cloned.clone(),
             Some("https://example.com/org/dedupe-git.git".to_string()),
+            None,
         );
 
         let items = recent.items();
@@ -238,10 +267,11 @@ mod tests {
         let local = project_fixture("remove-local");
         let cloned = project_fixture("remove-git");
 
-        recent.remember(local.clone(), None);
+        recent.remember(local.clone(), None, None);
         recent.remember(
             cloned.clone(),
             Some("https://example.com/org/remove-git.git".to_string()),
+            None,
         );
 
         let id = recent.items()[0].id.clone();
@@ -264,10 +294,11 @@ mod tests {
 
         {
             let mut recent = RecentProjects::load(Some(store.clone()));
-            recent.remember(local.clone(), None);
+            recent.remember(local.clone(), None, None);
             recent.remember(
                 cloned.clone(),
                 Some("https://example.com/org/persist-git.git".to_string()),
+                None,
             );
         }
 

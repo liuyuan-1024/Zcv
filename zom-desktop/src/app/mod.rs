@@ -59,6 +59,8 @@ pub struct App {
     background: BackgroundPumps,
     focus: FocusStore,
     project_root: Option<PathBuf>,
+    /// 当前项目所在 git 仓库的分支名。打开项目时通过 `git rev-parse --abbrev-ref HEAD` 获取。
+    project_branch: Option<String>,
     text_targets: TextTargetRuntime,
     /// git 状态服务：App 层持有，文件树 / editor gutter / Git Panel 共享查询。
     git: Rc<RefCell<GitService>>,
@@ -99,6 +101,7 @@ impl App {
             background: BackgroundPumps::new(),
             focus: FocusStore::new(AppFocus::project_picker()),
             project_root: None,
+            project_branch: None,
             text_targets: TextTargetRuntime::new(),
             git: Rc::new(RefCell::new(GitService::new(std::path::Path::new("")))),
             file_tree: None,
@@ -238,8 +241,9 @@ impl App {
         self.command.set_clipboard(clipboard);
     }
 
-    pub(crate) fn apply_open_project_from_effect(&mut self, root: PathBuf) {
+    pub(crate) fn apply_open_project_from_effect(&mut self, root: PathBuf, branch: Option<String>) {
         self.project_root = Some(root.clone());
+        self.project_branch = branch;
         self.lsp_host.set_project_root(Some(&root));
         self.session.reset_project(self.config.buffer_config());
         self.request_focus(AppFocus::editor());
@@ -257,6 +261,10 @@ impl App {
 
     pub(crate) fn has_project(&self) -> bool {
         self.project_root.is_some()
+    }
+
+    pub(crate) fn current_branch(&self) -> Option<String> {
+        self.project_branch.clone()
     }
 
     pub(crate) fn project_root(&self) -> Option<&std::path::Path> {

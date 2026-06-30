@@ -16,6 +16,7 @@ use crate::app::App;
 use crate::shell::bubble::BubbleRuntime;
 use crate::shell::features::panels::file_tree::FileTreeRuntime;
 use crate::shell::features::project_picker::ProjectPickerRuntime;
+use crate::shell::features::project_picker::current_branch;
 use crate::shell::platform::project as platform_project;
 use crate::shell::surfaces::SurfaceManager;
 use crate::shell::workbench::controller::WorkbenchController;
@@ -203,9 +204,10 @@ pub(crate) fn apply_local_project_open(
     }
 
     file_tree.open_project(project_root.clone());
+    let branch = current_branch(&project_root);
     app.borrow_mut()
-        .apply_open_project_from_effect(project_root.clone());
-    project_picker.remember_project(project_root, None);
+        .apply_open_project_from_effect(project_root.clone(), branch.clone());
+    project_picker.remember_project(project_root, None, branch);
     file_tree.reveal_after_project_open(workbench, window);
     drain_open_bubbles(app, project_picker, bubbles, cx);
     window.refresh();
@@ -236,9 +238,10 @@ fn apply_git_project_open(
     }
 
     file_tree.open_project(project_root.clone());
+    let branch = current_branch(&project_root);
     app.borrow_mut()
-        .apply_open_project_from_effect(project_root.clone());
-    project_picker.remember_project(project_root, Some(repo));
+        .apply_open_project_from_effect(project_root.clone(), branch.clone());
+    project_picker.remember_project(project_root, Some(repo), branch);
     file_tree.reveal_after_project_open(workbench, window);
     drain_open_bubbles(app, project_picker, bubbles, cx);
     window.refresh();

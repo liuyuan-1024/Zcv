@@ -96,8 +96,13 @@ impl ProjectPickerRuntime {
 
     /// 项目打开成功后由 shell 侧调一次，把它记进"最近"。
     /// 落盘在 [`RecentProjects::remember`] 内完成，调用方无需再 flush。
-    pub(crate) fn remember_project(&self, root: PathBuf, repo: Option<String>) {
-        self.recent.borrow_mut().remember(root, repo);
+    pub(crate) fn remember_project(
+        &self,
+        root: PathBuf,
+        repo: Option<String>,
+        branch: Option<String>,
+    ) {
+        self.recent.borrow_mut().remember(root, repo, branch);
     }
 
     /// 从最近列表移除；调用方随后让 picker model clamp 当前 selection。

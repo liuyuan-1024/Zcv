@@ -29,9 +29,15 @@ impl WorkbenchController {
         }
     }
 
-    pub(crate) fn state(&self, project_title: String, has_project: bool) -> WorkbenchState {
+    pub(crate) fn state(
+        &self,
+        project_title: String,
+        project_branch: Option<String>,
+        has_project: bool,
+    ) -> WorkbenchState {
         WorkbenchState {
             project_title,
+            project_branch,
             has_project,
             left_dock: self.left_dock.clone(),
             right_dock: self.right_dock.clone(),
@@ -126,19 +132,19 @@ mod tests {
     #[test]
     fn show_and_hide_panel_should_drive_dock_visibility() {
         let mut workbench = WorkbenchController::new();
-        let initial = workbench.state("打开项目".to_string(), false);
+        let initial = workbench.state("打开项目".to_string(), None, false);
         assert!(!initial.left_dock.is_visible());
         assert_eq!(initial.left_dock.active_panel(), None);
         assert!(!initial.right_dock.is_visible());
         assert!(!initial.bottom_dock.is_visible());
 
         workbench.show_panel(PanelId::FileTree);
-        let after_show = workbench.state("打开项目".to_string(), false);
+        let after_show = workbench.state("打开项目".to_string(), None, false);
         assert!(after_show.left_dock.is_visible());
         assert_eq!(after_show.left_dock.active_panel(), Some(PanelId::FileTree));
 
         workbench.hide_panel(PanelId::FileTree);
-        let after_hide = workbench.state("打开项目".to_string(), false);
+        let after_hide = workbench.state("打开项目".to_string(), None, false);
         assert!(!after_hide.left_dock.is_visible());
     }
 
@@ -149,7 +155,7 @@ mod tests {
         workbench.show_panel(PanelId::FileTree);
         workbench.show_panel(PanelId::VersionControl);
 
-        let state = workbench.state("打开项目".to_string(), false);
+        let state = workbench.state("打开项目".to_string(), None, false);
         assert!(state.left_dock.is_visible());
         assert_eq!(
             state.left_dock.active_panel(),
@@ -175,7 +181,7 @@ mod tests {
             },
             resize_bounds(px(640.0)),
         );
-        let state = workbench.state("打开项目".to_string(), false);
+        let state = workbench.state("打开项目".to_string(), None, false);
         assert_eq!(state.left_dock.size, px(640.0) - theme::space::s12());
 
         workbench.handle_dock_resize(
@@ -184,7 +190,7 @@ mod tests {
             },
             resize_bounds(px(640.0)),
         );
-        let state = workbench.state("打开项目".to_string(), false);
+        let state = workbench.state("打开项目".to_string(), None, false);
         assert_eq!(state.left_dock.size, theme::space::s12());
     }
 
@@ -205,7 +211,7 @@ mod tests {
             },
             resize_bounds(px(800.0)),
         );
-        let state = workbench.state("打开项目".to_string(), false);
+        let state = workbench.state("打开项目".to_string(), None, false);
         assert_eq!(state.left_dock.size, px(280.0));
 
         workbench.handle_dock_resize(
@@ -221,7 +227,7 @@ mod tests {
             },
             resize_bounds(px(800.0)),
         );
-        let state = workbench.state("打开项目".to_string(), false);
+        let state = workbench.state("打开项目".to_string(), None, false);
         assert_eq!(state.right_dock.size, px(200.0));
 
         workbench.handle_dock_resize(
@@ -237,7 +243,7 @@ mod tests {
             },
             resize_bounds(px(800.0)),
         );
-        let state = workbench.state("打开项目".to_string(), false);
+        let state = workbench.state("打开项目".to_string(), None, false);
         assert_eq!(state.bottom_dock.size, px(240.0));
     }
 
@@ -260,7 +266,7 @@ mod tests {
             bounds,
         );
 
-        let state = workbench.state("打开项目".to_string(), false);
+        let state = workbench.state("打开项目".to_string(), None, false);
         // bottom dock 拖到上限时，对侧（编辑区）至少留出 s12 的可视带。
         // 用 bounds.body_height 取值而非硬编码 bar_height 两倍。
         // 让断言独立于 theme::typography::ui_line() 等字号 / 节拍尺的具体大小。

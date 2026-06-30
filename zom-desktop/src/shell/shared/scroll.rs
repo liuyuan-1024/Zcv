@@ -36,6 +36,12 @@ impl ScrollHandle {
     pub(crate) fn inner(&self) -> UniformListScrollHandle {
         self.inner.clone()
     }
+
+    /// 当前滚动偏移量（正 = 内容向下滚动了多少）。
+    pub(crate) fn scroll_offset_y(&self) -> Pixels {
+        let state = self.inner.0.borrow();
+        -state.base_handle.offset().y
+    }
 }
 
 impl Default for ScrollHandle {

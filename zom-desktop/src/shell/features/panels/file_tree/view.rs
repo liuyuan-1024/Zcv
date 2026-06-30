@@ -64,15 +64,6 @@ fn render_list(
 ) -> Div {
     let items = logical_items(state);
     let selected_item = selected_item_index(&items, state);
-    // pending / rename 激活时让"导航焦点"指示器（行的蓝框）让位给输入行的蓝框。
-    // 同色规则同时生效会出现两个蓝框；视觉上焦点只能有一个。
-    let selected = if state.pending.is_some() || state.pending_rename.is_some() {
-        None
-    } else {
-        state.selected.clone()
-    };
-    // 选区与"焦点边框"是两套视觉：pending 名称输入时焦点边框让位（见上），
-    // 但已经被用户累加的选区不应该静默丢失，所以这里照实传，不随 pending 收起。
     let selection = state.selection.clone();
     // 剪切待粘贴的行做半透明提示；仅 Cut 模式下非空（Copy 模式无视觉标记）。
     let cut_paths = state.cut_paths.clone();
@@ -87,7 +78,6 @@ fn render_list(
     div()
         .relative()
         .size_full()
-        .overflow_hidden()
         .p(space::s4())
         .text_color(color::current().gray.s08)
         .child(
@@ -95,16 +85,10 @@ fn render_list(
                 range
                     .filter_map(|index| items.get(index))
                     .map(|item| match item {
-                        FileTreeItem::Row(row) => render_row(
-                            row,
-                            selected.as_ref(),
-                            &selection,
-                            &cut_paths,
-                            active.as_ref(),
-                            is_focused,
-                            &on_item_click,
-                        )
-                        .into_any_element(),
+                        FileTreeItem::Row(row) => {
+                            render_row(row, &selection, &cut_paths, active.as_ref(), &on_item_click)
+                                .into_any_element()
+                        }
                         FileTreeItem::Pending(pending) => {
                             render_input_row(pending.kind, pending.depth, &new_entry_slot)
                                 .into_any_element()
@@ -120,6 +104,9 @@ fn render_list(
             .track_scroll(scroll_handle.inner()),
         )
         .child(scroll::scrollbar(scroll_handle))
+        .when(is_focused, |el| {
+            el.children(tree::list_selection_overlay(selected_item, scroll_handle))
+        })
 }
 
 #[derive(Clone)]
@@ -216,14 +203,11 @@ fn empty_message(hint: &'static str) -> Div {
 
 fn render_row(
     row: &FileTreeRow,
-    selected: Option<&std::path::PathBuf>,
     selection: &BTreeSet<std::path::PathBuf>,
     cut_paths: &BTreeSet<std::path::PathBuf>,
     active: Option<&std::path::PathBuf>,
-    is_focused: bool,
     on_item_click: &FileTreeClickCallback,
 ) -> Div {
-    let is_selected = selected.map(|p| p == &row.path).unwrap_or(false);
     let is_in_selection = selection.contains(&row.path);
     let is_cut = cut_paths.contains(&row.path);
     let is_active = active.map(|p| p == &row.path).unwrap_or(false);
@@ -237,22 +221,18 @@ fn render_row(
         gpui::rgba(0)
     };
 
-    let mut row_div = tree::row_skeleton(row.depth)
-        .bg(bg_color)
-        .child(tree::guide_lines(row.depth))
-        .child(tree::icon(
-            matches!(row.kind, EntryKind::Directory),
-            row.expanded,
-        ))
-        .child(tree::label(&row.name));
+    let mut row_div = tree::render_row_base(
+        row.depth,
+        matches!(row.kind, EntryKind::Directory),
+        row.expanded,
+        &row.name,
+    )
+    .bg(bg_color);
 
     if let Some(kind) = row.git_color {
         row_div = row_div.text_color(color::git_status(kind));
     }
     row_div = row_div.hover(|style| style.bg(color::current().gray.s04));
-    if is_selected && is_focused {
-        row_div = row_div.child(tree::selection_overlay());
-    }
     let click_path = row.path.clone();
     let on_click = Rc::clone(on_item_click);
     row_div = row_div

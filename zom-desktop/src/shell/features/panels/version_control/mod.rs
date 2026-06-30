@@ -12,7 +12,7 @@ use std::rc::Rc;
 use gpui::{Context, Div, FocusHandle, IntoElement, Window};
 use zom_command::PanelKind;
 
-use crate::git_service::{ColorKind, GitService};
+use crate::git_service::{ColorKind, GitService, GitStatus, StatusCode};
 use crate::host_intent::KeyRequest;
 use crate::shell::CommandTitleLookup;
 use crate::shell::workbench::docks::{placeholder, render_focus_host};
@@ -49,6 +49,8 @@ pub(crate) struct VersionControlRow {
     pub is_dir: bool,
     pub expanded: bool,
     pub git_color: Option<ColorKind>,
+    /// 文件是否已在暂存区。目录行为 false。
+    pub staged: bool,
 }
 
 /// 面板渲染快照。
@@ -238,6 +240,7 @@ impl VersionControlModel {
             is_dir: true,
             expanded: root_expanded,
             git_color: root_color,
+            staged: false,
         });
 
         // 收集顶层条目：parent 不在 entries 里的就是仓库根的直属子项。
@@ -281,6 +284,18 @@ impl VersionControlModel {
         let is_dir = entry.is_dir;
         let expanded = is_dir && self.expanded.contains(path);
 
+        // 从 GitStatus 推导暂存状态：目录和未跟踪文件不展示为已暂存。
+        let staged = if is_dir {
+            false
+        } else {
+            self.git_service
+                .borrow()
+                .statuses()
+                .get(path)
+                .map(|s| matches!(s, GitStatus::Tracked { index, .. } if *index != StatusCode::Unmodified))
+                .unwrap_or(false)
+        };
+
         rows.push(VersionControlRow {
             path: path.to_path_buf(),
             name: entry.name.clone(),
@@ -288,6 +303,7 @@ impl VersionControlModel {
             is_dir,
             expanded,
             git_color: entry.git_color,
+            staged,
         });
 
         if expanded {
@@ -385,6 +401,50 @@ impl VersionControlModel {
             let abs = self.git_service.borrow().repo_root_path().join(&path);
             Some(abs)
         }
+    }
+
+    /// 切换文件的暂存状态：未暂存 → `git add`，已暂存 → `git reset HEAD`。
+    /// 目录不受理（无意义）。
+    ///
+    /// 先乐观翻转内存状态并立即刷新 UI（复选框瞬间响应），
+    /// 再把真实 git 操作推迟到下一帧执行，避免阻塞渲染。
+    fn toggle_stage(&mut self, path: &Path, window: &mut Window) {
+        let is_dir = self.entries.get(path).map(|e| e.is_dir).unwrap_or(false);
+        if is_dir {
+            return;
+        }
+
+        let svc = self.git_service.borrow();
+        let staged = svc
+            .statuses()
+            .get(path)
+            .map(|s| matches!(s, GitStatus::Tracked { index, .. } if *index != StatusCode::Unmodified))
+            .unwrap_or(false);
+        drop(svc);
+
+        // ① 乐观翻转内存状态 → 下一帧渲染时复选框已更新。
+        self.git_service
+            .borrow_mut()
+            .flip_staged_in_memory(path, !staged);
+        self.cached_generation = 0;
+        window.refresh();
+
+        // ② 推迟真实 git 操作到下一帧，不阻塞当前帧的渲染。
+        let git = self.git_service.clone();
+        let path = path.to_path_buf();
+        let target_staged = !staged;
+        window.on_next_frame(move |_window, _cx| {
+            let result = if target_staged {
+                git.borrow().stage_file(&path)
+            } else {
+                git.borrow().unstage_file(&path)
+            };
+            if let Err(e) = result {
+                eprintln!("git stage/unstage 失败（{path:?}）：{e}");
+            }
+            // 用真实 git 状态校准内存数据。
+            let _ = git.borrow_mut().refresh_single(&path);
+        });
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -507,6 +567,10 @@ impl VersionControlRuntime {
         self.model.borrow_mut().activate_selected()
     }
 
+    pub(crate) fn toggle_stage(&self, path: &Path, window: &mut Window) {
+        self.model.borrow_mut().toggle_stage(path, window);
+    }
+
     pub(crate) fn collapse_or_parent(&self) {
         self.model.borrow_mut().collapse_or_parent();
     }
@@ -550,16 +614,24 @@ impl VersionControlRuntime {
 
         let selected = state.selected.clone();
         let runtime = self.clone();
+        let checkbox_runtime = self.clone();
 
         render_focus_host(
             &self.focus,
             key_request,
-            view::render_list(&state, selected, move |path, window, cx| {
-                runtime.select(path.clone());
-                if let Some(cb) = runtime.click_callback.borrow().as_ref() {
-                    cb(path, window, cx);
-                }
-            })
+            view::render_list(
+                &state,
+                selected,
+                move |path, window, cx| {
+                    runtime.select(path.clone());
+                    if let Some(cb) = runtime.click_callback.borrow().as_ref() {
+                        cb(path, window, cx);
+                    }
+                },
+                move |path, window, _cx| {
+                    checkbox_runtime.toggle_stage(&path, window);
+                },
+            )
             .into_any_element(),
         )
     }

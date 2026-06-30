@@ -2,7 +2,8 @@
 
 use gpui::{div, prelude::*, px, svg};
 
-use crate::theme::{color, radius, typography};
+use super::scroll;
+use crate::theme::{color, radius, space, typography};
 
 /// 文件夹图标
 pub(crate) const FOLDER_ICON: &str = "icons/files/folder.svg";
@@ -96,15 +97,42 @@ pub(crate) fn label(name: &str) -> gpui::Div {
         .child(name.to_string())
 }
 
+// ── 行完整渲染 ──
+
+/// 树行完整渲染：行骨架 + 缩进竖线 + 图标 + 名称。
+///
+/// 消费方在此基础上继续链式调用 `.bg()`、`.hover()` 等来定制行外观。
+pub(crate) fn render_row_base(depth: usize, is_dir: bool, expanded: bool, name: &str) -> gpui::Div {
+    row_skeleton(depth)
+        .child(guide_lines(depth))
+        .child(icon(is_dir, expanded))
+        .child(label(name))
+}
+
 // ── 选中框 ──
 
-/// 选中行浮层边框——absolute 覆盖整行，不参与布局，不影响竖线拼接。
-pub(crate) fn selection_overlay() -> impl IntoElement {
+/// 容器层选中浮层——渲染在 uniform_list 外部，避免列表裁切。
+///
+/// `selected_index` 是选中行在 flat list 中的索引，`None` 时无选中。
+pub(crate) fn list_selection_overlay(
+    selected_index: Option<usize>,
+    scroll_handle: &scroll::ScrollHandle,
+) -> Option<gpui::Div> {
+    selected_index.map(|idx| {
+        let top =
+            space::s4() + typography::ui_line() * (idx as f32) - scroll_handle.scroll_offset_y();
+        selection_overlay().top(top)
+    })
+}
+
+/// 选中行浮层边框——absolute 覆盖整行，不参与布局。
+fn selection_overlay() -> gpui::Div {
     div()
         .absolute()
         .top(px(0.))
         .left(px(0.))
-        .size_full()
+        .right(px(0.))
+        .h(typography::ui_line())
         .rounded(radius::r2())
         .border_1()
         .border_color(color::current().blue.s07)

@@ -168,6 +168,123 @@ impl GitService {
         &self.dir_colors
     }
 
+    /// 在内存中翻转暂存状态（乐观更新，不调 git）。
+    ///
+    /// 用于点击复选框后立即更新 UI，真实 git 操作稍后执行。
+    pub fn flip_staged_in_memory(&mut self, rel_path: &Path, staged: bool) {
+        match self.statuses.get(rel_path) {
+            Some(GitStatus::Tracked { index, worktree }) => {
+                let (new_index, new_worktree) = if staged {
+                    // 暂存：把 worktree 状态移到 index
+                    (*worktree, StatusCode::Unmodified)
+                } else {
+                    // 取消暂存：把 index 状态移回 worktree
+                    let new_worktree = match index {
+                        StatusCode::Deleted => StatusCode::Deleted,
+                        _ => StatusCode::Modified,
+                    };
+                    (StatusCode::Unmodified, new_worktree)
+                };
+                self.statuses.insert(
+                    rel_path.to_path_buf(),
+                    GitStatus::Tracked {
+                        index: new_index,
+                        worktree: new_worktree,
+                    },
+                );
+            }
+            Some(GitStatus::Untracked) if staged => {
+                self.statuses.insert(
+                    rel_path.to_path_buf(),
+                    GitStatus::Tracked {
+                        index: StatusCode::Added,
+                        worktree: StatusCode::Unmodified,
+                    },
+                );
+            }
+            Some(GitStatus::Unmerged) if staged => {
+                self.statuses.insert(
+                    rel_path.to_path_buf(),
+                    GitStatus::Tracked {
+                        index: StatusCode::Modified,
+                        worktree: StatusCode::Unmodified,
+                    },
+                );
+            }
+            _ => return,
+        }
+        self.reindex_dir_colors();
+    }
+
+    /// `git add`、`git reset` 后刷新单个文件的 git 状态。
+    ///
+    /// 只运行 `git status --porcelain=v1 -- <path>`，速度快于全仓库扫描。
+    /// 之后重建 dir_colors（纯内存操作）。
+    pub fn refresh_single(&mut self, rel_path: &Path) -> Result<(), String> {
+        if !self.valid {
+            return Ok(());
+        }
+        let output = Command::new("git")
+            .args(["status", "--porcelain=v1", "--"])
+            .arg(rel_path)
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|e| format!("无法执行 git status：{e}"))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // 解析单文件输出："XY path" 或空（文件干净，无变更）
+        if let Some(line) = stdout.lines().next() {
+            if line.len() >= 4 {
+                let bytes = line.as_bytes();
+                let x = bytes[0];
+                let y = bytes[1];
+                let path_str = line[3..].trim();
+                // 处理重命名："R  old -> new" 取新路径
+                let path_str = if x == b'R' || y == b'R' {
+                    path_str.rsplit(" -> ").next().unwrap_or(path_str)
+                } else {
+                    path_str
+                };
+                let status = classify_xy(x, y);
+                self.statuses.insert(PathBuf::from(path_str), status);
+            }
+        } else {
+            // 文件已干净 —— 从 statuses 中移除。
+            self.statuses.remove(rel_path);
+        }
+
+        self.reindex_dir_colors();
+        self.generation += 1;
+        Ok(())
+    }
+
+    /// 从 statuses 重建 dir_colors。纯内存操作，不调 git。
+    fn reindex_dir_colors(&mut self) {
+        let mut dir_colors: HashMap<PathBuf, ColorKind> = HashMap::new();
+        for (rel_path, status) in &self.statuses {
+            let Some(color) = status.color_kind() else {
+                continue;
+            };
+            dir_colors
+                .entry(rel_path.clone())
+                .and_modify(|e| *e = std::cmp::max(*e, color))
+                .or_insert(color);
+            if color == ColorKind::Ignored {
+                continue;
+            }
+            let mut parent = rel_path.parent();
+            while let Some(p) = parent {
+                if p.as_os_str().is_empty() {
+                    break;
+                }
+                let entry = dir_colors.entry(p.to_path_buf()).or_insert(color);
+                *entry = std::cmp::max(*entry, color);
+                parent = p.parent();
+            }
+        }
+        self.dir_colors = dir_colors;
+    }
+
     /// 刷新 git 状态缓存。
     ///
     /// 非 git 仓库时直接返回 Ok。
@@ -348,6 +465,44 @@ impl GitService {
         };
         let stdout = String::from_utf8_lossy(&output.stdout);
         parse_diff_hunks(&stdout)
+    }
+
+    /// `git add <path>` —— 将文件变更加入暂存区。
+    ///
+    /// `rel_path` 为相对于 `repo_root` 的路径。
+    pub fn stage_file(&self, rel_path: &Path) -> Result<(), String> {
+        if !self.valid {
+            return Err("不在 Git 仓库中".to_string());
+        }
+        let output = Command::new("git")
+            .args(["add", "--"])
+            .arg(rel_path)
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|e| format!("无法执行 git add：{e}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        Ok(())
+    }
+
+    /// `git reset HEAD <path>` —— 将文件从暂存区移除。
+    ///
+    /// `rel_path` 为相对于 `repo_root` 的路径。
+    pub fn unstage_file(&self, rel_path: &Path) -> Result<(), String> {
+        if !self.valid {
+            return Err("不在 Git 仓库中".to_string());
+        }
+        let output = Command::new("git")
+            .args(["reset", "HEAD", "--"])
+            .arg(rel_path)
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|e| format!("无法执行 git reset：{e}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        Ok(())
     }
 }
 

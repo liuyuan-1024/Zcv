@@ -374,34 +374,8 @@ impl GitService {
             }
         }
 
-        // 子文件状态向上冒泡到所有祖先目录。
-        //
-        // 第一步：条目自身颜色写入 dir_colors——目录条目（如 `target/`）靠此拿到自己的颜色。
-        // 第二步：向上冒泡——Ignored 不参与（target 被忽略 != zom-ai 被忽略）。
-        let mut dir_colors: HashMap<PathBuf, ColorKind> = HashMap::new();
-        for (rel_path, status) in &new_statuses {
-            if let Some(color) = status.color_kind() {
-                dir_colors
-                    .entry(rel_path.clone())
-                    .and_modify(|e| *e = std::cmp::max(*e, color))
-                    .or_insert(color);
-                if color == ColorKind::Ignored {
-                    continue; // 不向祖先冒泡
-                }
-                let mut parent = rel_path.parent();
-                while let Some(p) = parent {
-                    if p.as_os_str().is_empty() {
-                        break;
-                    }
-                    let entry = dir_colors.entry(p.to_path_buf()).or_insert(color);
-                    *entry = std::cmp::max(*entry, color);
-                    parent = p.parent();
-                }
-            }
-        }
-
         self.statuses = new_statuses;
-        self.dir_colors = dir_colors;
+        self.reindex_dir_colors();
         self.generation += 1;
         Ok(())
     }
@@ -534,11 +508,15 @@ impl GitService {
     }
 
     /// 从远端拉取：`git fetch`。
+    // 预留给后续 Git Panel。
+    #[allow(dead_code)]
     pub fn fetch(&self) -> Result<(), String> {
         self.run_git(&["fetch"])
     }
 
     /// 拉取并合并：`git pull`。
+    // 预留给后续 Git Panel。
+    #[allow(dead_code)]
     pub fn pull(&self) -> Result<(), String> {
         self.run_git(&["pull"])
     }
@@ -564,7 +542,8 @@ impl GitService {
                 }
             }
         }
-        // 未跟踪文件：不在 diff 中，按文件行数计入新增
+        // 未跟踪文件：不在 diff 中，按文件行数计入新增。
+        // 用 BufRead 增量读取，避免大文件全部加载到内存。
         let untracked: Vec<PathBuf> = self
             .statuses
             .iter()
@@ -572,8 +551,9 @@ impl GitService {
             .map(|(p, _)| self.repo_root.join(p))
             .collect();
         for path in &untracked {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                added += content.lines().count() as u32;
+            if let Ok(file) = std::fs::File::open(path) {
+                use std::io::BufRead;
+                added += std::io::BufReader::new(file).lines().count() as u32;
             }
         }
         (added, deleted)

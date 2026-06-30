@@ -291,7 +291,7 @@ fn word_like_boundary<T: TextRead>(
         MovementDirection::Next => {
             let mut cursor = offset;
             let mut skipped_separator = false;
-            let mut sep_kind: Option<u8> = None;
+            let mut sep_kind: Option<SeparatorKind> = None;
 
             while let Some(grapheme) = grapheme_at(storage, cursor)? {
                 if classifier.is_body(grapheme.first) {
@@ -304,7 +304,7 @@ fn word_like_boundary<T: TextRead>(
                 let kind = separator_kind(grapheme.first);
 
                 // 换行不分连续：每个 \n 独立为一个删除单元。
-                if kind == K_NEWLINE && skipped_separator {
+                if kind == SeparatorKind::Newline && skipped_separator {
                     return Ok(cursor);
                 }
 
@@ -326,7 +326,7 @@ fn word_like_boundary<T: TextRead>(
         MovementDirection::Previous => {
             let mut cursor = offset;
             let mut skipped_separator = false;
-            let mut sep_kind: Option<u8> = None;
+            let mut sep_kind: Option<SeparatorKind> = None;
 
             while let Some(grapheme) = grapheme_before(storage, cursor)? {
                 if classifier.is_body(grapheme.first) {
@@ -339,7 +339,7 @@ fn word_like_boundary<T: TextRead>(
                 let kind = separator_kind(grapheme.first);
 
                 // 换行不分连续：每个 \n 独立为一个删除单元。
-                if kind == K_NEWLINE && skipped_separator {
+                if kind == SeparatorKind::Newline && skipped_separator {
                     return Ok(cursor);
                 }
 
@@ -362,15 +362,18 @@ fn word_like_boundary<T: TextRead>(
 }
 
 /// 分隔符分类：空格（\t 在内）可连续合并；换行独立为单个删除单元；其余符号为第三类。
-const K_SPACE: u8 = 1;
-const K_NEWLINE: u8 = 2;
-const K_SYMBOL: u8 = 3;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeparatorKind {
+    Space,
+    Newline,
+    Symbol,
+}
 
-fn separator_kind(ch: char) -> u8 {
+fn separator_kind(ch: char) -> SeparatorKind {
     match ch {
-        ' ' | '\t' => K_SPACE,
-        '\n' | '\r' => K_NEWLINE,
-        _ => K_SYMBOL,
+        ' ' | '\t' => SeparatorKind::Space,
+        '\n' | '\r' => SeparatorKind::Newline,
+        _ => SeparatorKind::Symbol,
     }
 }
 
@@ -418,13 +421,13 @@ fn next_subword_boundary<T: TextRead>(
     classifier: WordBoundaryClassifier,
 ) -> EngineResult<CharOffset> {
     let mut cursor = offset;
-    let mut sep_kind: Option<u8> = None;
+    let mut sep_kind: Option<SeparatorKind> = None;
 
     while let Some(grapheme) = grapheme_at(storage, cursor)? {
         if !classifier.is_body(grapheme.first) {
             let kind = separator_kind(grapheme.first);
 
-            if kind == K_NEWLINE && sep_kind.is_some() {
+            if kind == SeparatorKind::Newline && sep_kind.is_some() {
                 return Ok(cursor);
             }
 
@@ -457,13 +460,13 @@ fn previous_subword_boundary<T: TextRead>(
 ) -> EngineResult<CharOffset> {
     let mut cursor = offset;
     let mut skipped_separator = false;
-    let mut sep_kind: Option<u8> = None;
+    let mut sep_kind: Option<SeparatorKind> = None;
 
     while let Some(grapheme) = grapheme_before(storage, cursor)? {
         if !classifier.is_body(grapheme.first) {
             let kind = separator_kind(grapheme.first);
 
-            if kind == K_NEWLINE && skipped_separator {
+            if kind == SeparatorKind::Newline && skipped_separator {
                 return Ok(cursor);
             }
 

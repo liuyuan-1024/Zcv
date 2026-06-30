@@ -1858,7 +1858,7 @@ fn file_tree_keymap_should_share_chords_with_editor_by_context() {
         keymap.resolve(&[key("up")], &file_tree_navigate),
         KeymapResolution::Matched {
             command: command_id(file_tree::MOVE_SELECTION),
-            args: file_tree::FileTreeMoveArgs { delta: -1 }.into(),
+            args: file_tree::MoveDeltaArgs { delta: -1 }.into(),
         }
     );
     assert_eq!(
@@ -1892,7 +1892,7 @@ fn file_tree_commands_should_emit_host_effects() {
         vec![
             (
                 file_tree::MOVE_SELECTION,
-                file_tree::FileTreeMoveArgs { delta: 1 }.into(),
+                file_tree::MoveDeltaArgs { delta: 1 }.into(),
             ),
             (file_tree::BEGIN_NEW_ENTRY, CommandArgs::new()),
             (file_tree::CANCEL_NEW_ENTRY, CommandArgs::new()),

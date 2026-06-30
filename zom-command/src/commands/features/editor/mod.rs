@@ -13,7 +13,6 @@
 //! ```
 
 use crate::commands::cid;
-use std::collections::BTreeSet;
 
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
@@ -107,10 +106,6 @@ pub(crate) fn text_edit_context_matches(
         CompositionBinding::Inactive => !active.composing,
     }
 }
-
-// ==================================================
-// Typed builders 工具
-// ==================================================
 
 // ==================================================
 // Typed args + 双向转换
@@ -1054,20 +1049,43 @@ fn run_delete(
 }
 
 fn delete_description(caret_motion: Option<(MovementDirection, MovementUnit)>) -> &'static str {
-    match caret_motion {
-        None => "删除所选内容",
-        Some((MovementDirection::Previous, MovementUnit::Grapheme)) => "向后删除选定内容",
-        Some((MovementDirection::Next, MovementUnit::Grapheme)) => "向前删除所选内容",
-        Some((MovementDirection::Previous, MovementUnit::Word)) => "向后删除单词",
-        Some((MovementDirection::Next, MovementUnit::Word)) => "向前删除单词",
-        Some((MovementDirection::Previous, MovementUnit::Subword)) => "向后删除子词",
-        Some((MovementDirection::Next, MovementUnit::Subword)) => "向前删除子词",
-        Some((MovementDirection::Previous, MovementUnit::Identifier)) => "向后删除标识符",
-        Some((MovementDirection::Next, MovementUnit::Identifier)) => "向前删除标识符",
-        Some((MovementDirection::Previous, MovementUnit::Symbol)) => "向后删除符号",
-        Some((MovementDirection::Next, MovementUnit::Symbol)) => "向前删除符号",
-        Some((MovementDirection::Previous, MovementUnit::LineEdge)) => "删除到行首",
-        Some((MovementDirection::Next, MovementUnit::LineEdge)) => "删除到行尾",
+    let Some((dir, unit)) = caret_motion else {
+        return "删除所选内容";
+    };
+    // LineEdge 的文案不遵循"方向 + 删除 + 单位"模板，单独处理。
+    if unit == MovementUnit::LineEdge {
+        return match dir {
+            MovementDirection::Previous => "删除到行首",
+            MovementDirection::Next => "删除到行尾",
+        };
+    }
+    let prefix = match dir {
+        MovementDirection::Previous => "向后",
+        MovementDirection::Next => "向前",
+    };
+    let target = match (dir, unit) {
+        (MovementDirection::Previous, MovementUnit::Grapheme) => "选定内容",
+        (MovementDirection::Next, MovementUnit::Grapheme) => "所选内容",
+        (_, MovementUnit::Word) => "单词",
+        (_, MovementUnit::Subword) => "子词",
+        (_, MovementUnit::Identifier) => "标识符",
+        (_, MovementUnit::Symbol) => "符号",
+        _ => unreachable!(),
+    };
+    // 仍返回 static str：所有组合在编译期已知，
+    // 通过 (prefix, target) 查表实际上等价于原始全枚举，但按方向/单位分解了职责。
+    match (prefix, target) {
+        ("向后", "选定内容") => "向后删除选定内容",
+        ("向前", "所选内容") => "向前删除所选内容",
+        ("向后", "单词") => "向后删除单词",
+        ("向前", "单词") => "向前删除单词",
+        ("向后", "子词") => "向后删除子词",
+        ("向前", "子词") => "向前删除子词",
+        ("向后", "标识符") => "向后删除标识符",
+        ("向前", "标识符") => "向前删除标识符",
+        ("向后", "符号") => "向后删除符号",
+        ("向前", "符号") => "向前删除符号",
+        _ => unreachable!(),
     }
 }
 
@@ -1595,15 +1613,15 @@ fn collect_caret_lines(
     buffer: &Buffer,
     selections: &SelectionSet,
 ) -> Result<Vec<Line>, EngineError> {
-    let mut set: BTreeSet<Line> = BTreeSet::new();
-    for sel in selections.as_slice() {
-        if !sel.is_caret() {
-            continue;
-        }
-        let pos = buffer.byte_to_position(sel.start())?;
-        set.insert(pos.line());
-    }
-    Ok(set.into_iter().collect())
+    let mut lines: Vec<Line> = selections
+        .as_slice()
+        .iter()
+        .filter(|sel| sel.is_caret())
+        .map(|sel| buffer.byte_to_position(sel.start()).map(|pos| pos.line()))
+        .collect::<Result<Vec<_>, _>>()?;
+    lines.sort_unstable();
+    lines.dedup();
+    Ok(lines)
 }
 
 /// 全 caret 模式下：行号 → 整行 byte 范围（含 `\n`），供 cut 路径删除。

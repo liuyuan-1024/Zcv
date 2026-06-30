@@ -105,12 +105,15 @@ impl Default for SyntaxEngine {
 }
 
 /// 把 byte 位置钳位到最近的 UTF-8 char boundary（向下取整）。
+///
+/// UTF-8 最多 4 字节一个字符，非法边界只出现在多字节字符内部——最多回退 3 字节。
 fn floor_char_boundary(pos: usize, text: &str) -> usize {
     let pos = pos.min(text.len());
     if text.is_char_boundary(pos) {
         return pos;
     }
-    (0..pos)
+    let start = pos.saturating_sub(3);
+    (start..pos)
         .rev()
         .find(|&p| text.is_char_boundary(p))
         .unwrap_or(0)
@@ -178,18 +181,36 @@ mod tests {
     }
 }
 
+/// 把语言别名（已 lowercase 归一）映射为 canonical 语言 id。
+///
+/// 涵盖常见简写（如 `js` → `javascript`、`py` → `python`）和 fence injection 用到的全线别名（`rs`、`sh`、`yml`、`htm` 等）。
+/// 未识别的别名返回 `None`。
+///
+/// 本表是项目级唯一别名真源；`injection::canonicalize` 和`normalize_lang_alias` 都复用同一份映射。
+pub(crate) fn resolve_lang_alias(tag: &str) -> Option<&'static str> {
+    let mapped = match tag {
+        "rust" | "rs" => "rust",
+        "toml" => "toml",
+        "json" => "json",
+        "yaml" | "yml" => "yaml",
+        "bash" | "sh" | "shell" | "zsh" => "bash",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "javascript" | "js" | "mjs" | "cjs" | "jsx" => "javascript",
+        "typescript" | "ts" | "mts" | "cts" => "typescript",
+        "tsx" => "tsx",
+        "java" => "java",
+        "python" | "py" | "python3" => "python",
+        "ruby" | "rb" => "ruby",
+        "markdown" | "md" | "mkd" => "markdown",
+        _ => return None,
+    };
+    Some(mapped)
+}
+
 /// 把 Markdown fenced code block 语言标签映射为 [`LanguageId`] 名。
 ///
-/// 处理常见简写别名（如 `js` → `javascript`、`py` → `python`）。
+/// 复用 [`resolve_lang_alias`]；未识别的别名直接返回原标签。
 fn normalize_lang_alias(tag: &str) -> &str {
-    match tag {
-        "js" => "javascript",
-        "ts" => "typescript",
-        "py" => "python",
-        "rb" => "ruby",
-        "sh" | "shell" => "bash",
-        "yml" => "yaml",
-        "md" | "mkd" => "markdown",
-        other => other,
-    }
+    resolve_lang_alias(tag).unwrap_or(tag)
 }

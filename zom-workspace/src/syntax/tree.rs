@@ -194,9 +194,6 @@ impl std::fmt::Debug for BufferSyntaxTree {
     }
 }
 
-// BufferSyntaxTreeSlot 已迁移至 super::highlights::SyntaxHighlightsSlot。
-// tree.rs 仅保留树数据结构和查询逻辑，不再维护共享槽。
-
 // =============================================================================
 // 多层 span 合并（overlay）
 // =============================================================================

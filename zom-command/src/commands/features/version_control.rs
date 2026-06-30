@@ -1,10 +1,10 @@
 //! `version_control.*` 命令目录。
 
+use crate::commands::args::MoveDeltaArgs;
 use crate::commands::cid;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, HostEffect,
     Invocation, KeyBindingContext, Keymap, NoArgs, PanelKind, VersionControlEffect,
-    reject_unknown_args, required_arg,
 };
 
 /// 版本控制面板当前键盘模式。
@@ -35,32 +35,8 @@ pub const EDIT_COMMIT_MESSAGE: &str = "version_control.edit_commit_message";
 pub const CANCEL_COMMIT_MESSAGE: &str = "version_control.cancel_commit_message";
 pub const COMMIT: &str = "version_control.commit";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct VcMoveArgs {
-    pub delta: isize,
-}
-
-impl From<VcMoveArgs> for CommandArgs {
-    fn from(args: VcMoveArgs) -> Self {
-        CommandArgs::new().with("delta", args.delta.to_string())
-    }
-}
-
-impl TryFrom<CommandArgs> for VcMoveArgs {
-    type Error = CommandError;
-
-    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["delta"])?;
-        let raw = required_arg(&args, "delta")?;
-        let delta = raw
-            .parse()
-            .map_err(|_| CommandError::InvalidArgs(format!("无效移动步长：{raw}")))?;
-        Ok(Self { delta })
-    }
-}
-
 pub fn move_selection(delta: isize) -> Invocation {
-    (cid(MOVE_SELECTION), VcMoveArgs { delta }.into())
+    (cid(MOVE_SELECTION), MoveDeltaArgs { delta }.into())
 }
 
 pub fn toggle() -> Invocation {
@@ -176,7 +152,7 @@ fn run_move_selection(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
-    let args = VcMoveArgs::try_from(args)?;
+    let args = MoveDeltaArgs::try_from(args)?;
     context.effects.push(HostEffect::VersionControl(
         VersionControlEffect::MoveSelection(args.delta),
     ));
@@ -261,5 +237,5 @@ fn run_commit(
 }
 
 fn move_args(delta: isize) -> CommandArgs {
-    VcMoveArgs { delta }.into()
+    MoveDeltaArgs { delta }.into()
 }

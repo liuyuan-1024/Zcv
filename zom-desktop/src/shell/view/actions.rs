@@ -8,8 +8,8 @@ use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
 use zom_command::{
-    BubbleEffect, EditorEffect, HostEffect, Invocation, PanelEffect, SettingsChangeRequest,
-    SurfaceEffect, WindowEffect,
+    BubbleEffect, BubbleRequest, EditorEffect, HostEffect, Invocation, PanelEffect,
+    SettingsChangeRequest, SurfaceEffect, WindowEffect,
 };
 
 use crate::app::App;
@@ -94,7 +94,12 @@ pub(super) fn bind_host_intent_request(
         let (effects, outcome, should_refresh) = match dispatch {
             Ok(dispatch) => dispatch,
             Err(error) => {
-                eprintln!("宿主意图派发失败：{error}");
+                bubbles.update(cx, |runtime, cx| {
+                    runtime.push(
+                        BubbleRequest::error(format!("命令执行失败：{error}")).dedupe("cmd.error"),
+                        cx,
+                    );
+                });
                 return HostIntentOutcome::passed_through();
             }
         };
@@ -338,7 +343,13 @@ fn apply_shell_effect(
             dismiss_surface(surfaces, window, cx);
         }
         other => {
-            eprintln!("未处理的 HostEffect：{other:?}");
+            bubbles.update(cx, |runtime, cx| {
+                runtime.push(
+                    BubbleRequest::error(format!("未实现的功能：{other:?}"))
+                        .dedupe("shell.unhandled"),
+                    cx,
+                );
+            });
         }
     }
 }

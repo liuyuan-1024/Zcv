@@ -900,6 +900,10 @@ fn char_at_byte(rope: &Rope, byte_offset: usize) -> Option<char> {
 }
 
 fn fingerprint_rope(rope: &Rope) -> TextFingerprint {
+    // 手写 FNV-1a 哈希而非引入标准 hash crate（如 fnv / rustc-hash）。
+    //
+    // TextFingerprint 只需要 64 位非密码学哈希用于快速文本等价性探测，不参与安全决策；
+    // FNV-1a 实现仅 6 行代码，增量开销为零，且比引入一个仅暴露 pub const 的 micro crate 更符合"依赖最小化"原则。
     const FNV_OFFSET: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
 

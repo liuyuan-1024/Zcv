@@ -9,7 +9,7 @@ use zom_engine::{
 mod wrap;
 pub use wrap::{VisualAffinity, VisualPosition, VisualRowCount, WrapMap, compute_segments};
 
-const MANUAL_SCROLL_MAX_TRAILING_BLANK_DENOMINATOR: u64 = 3;
+const MAX_TRAILING_BLANK_FRACTION: u64 = 3;
 
 /// 视图标识。
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -574,7 +574,7 @@ impl EditView {
         // 稀疏 soft-wrap 的 LowerBound 只是下界，不能用来把当前 top 往回压。
         // 精确边界允许最多 1/3 视口的尾部留白，让内容超过 2/3 视口时也能向下滚出输入空间。
         if let VisualRowCount::Exact(rows) = visual_row_count {
-            let blank_rows = visible / MANUAL_SCROLL_MAX_TRAILING_BLANK_DENOMINATOR;
+            let blank_rows = visible / MAX_TRAILING_BLANK_FRACTION;
             let required_content_rows = visible.saturating_sub(blank_rows);
             let max_top = rows.saturating_sub(required_content_rows);
             if top > max_top {
@@ -613,10 +613,7 @@ fn manual_scroll_max_top(row_count: VisualRowCount, visible_rows: u64, current_t
 /// 这让内容超过 2/3 视口时也能向下滚动，把输入位置从底部抬起来；
 /// 同时内容不足 2/3 视口时不会产生纯空白滚动。
 fn max_top_with_trailing_blank(row_count: VisualRowCount, visible_rows: u64) -> u64 {
-    row_count.max_top_with_blank_budget(
-        visible_rows,
-        visible_rows / MANUAL_SCROLL_MAX_TRAILING_BLANK_DENOMINATOR,
-    )
+    row_count.max_top_with_blank_budget(visible_rows, visible_rows / MAX_TRAILING_BLANK_FRACTION)
 }
 
 fn needs_measured_subrow(wm: &WrapMap, line: u64, subrow: u64) -> bool {
@@ -955,7 +952,7 @@ mod settle_tests {
         });
         // 光标在 (line=1, subrow=1) = 视觉行 3，刚好越出 [0, 3)；
         // 期望 top 推到视觉行 1 = (line=0, subrow=1)。
-        // 旧的逻辑行算法会把 cursor 当作 line=1，仍在 [0,2) 内不滚——这是修复目标。
+        // 旧的逻辑行算法会把 cursor 当作 line=1，仍在 [0,2) 内不滚——这是修复内容。
         let buffer = buffer_from_lines(&["abcdefghij", "abcdefghij", "abcdefghij", "abcdefghij"]);
         let cursor = ByteOffset::new(line_start(&buffer, 1).get() + 5);
         let cursor_visual = view

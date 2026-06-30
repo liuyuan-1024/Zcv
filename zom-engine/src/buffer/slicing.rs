@@ -46,4 +46,15 @@ impl Buffer {
     pub fn slice_viewport(&self, viewport: Viewport) -> EngineResult<ViewportSlice<'_>> {
         viewport_slice_for_text(&self.storage, viewport)
     }
+
+    /// 把 `LineRange` 转换为 `TextRange`（字节区间）。
+    ///
+    /// 本方法与 `crate::slicing::text_range_for_line_range` 共享同一实现，仅以 `&self`
+    /// 形式暴露给 `versioned` 等不能直接访问 `storage` 的模块，避免跨模块重复定义。
+    pub(crate) fn text_range_for_line_range(
+        &self,
+        line_range: LineRange,
+    ) -> EngineResult<TextRange> {
+        text_range_for_line_range(&self.storage, line_range)
+    }
 }

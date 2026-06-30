@@ -3,13 +3,13 @@
 //! 文件树命令只描述"用户意图"，实际修改 `FileTreeModel` 由宿主解释 [`HostEffect`] 完成。
 //! 这样 `zom-command` 负责命令与快捷键，仍不反向依赖 `zom-desktop` 的面板实现。
 
+pub use crate::commands::args::MoveDeltaArgs;
 use crate::commands::cid;
 use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
     FileTreeEffect, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, PanelKind,
-    reject_unknown_args, required_arg,
 };
 
 pub const MOVE_SELECTION: &str = "file_tree.move_selection";
@@ -56,36 +56,12 @@ pub struct FileTreeBindingContext {
     pub mode: FileTreeKeyMode,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FileTreeMoveArgs {
-    pub delta: isize,
-}
-
-impl From<FileTreeMoveArgs> for CommandArgs {
-    fn from(args: FileTreeMoveArgs) -> Self {
-        CommandArgs::new().with("delta", args.delta.to_string())
-    }
-}
-
-impl TryFrom<CommandArgs> for FileTreeMoveArgs {
-    type Error = CommandError;
-
-    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["delta"])?;
-        let raw = required_arg(&args, "delta")?;
-        let delta = raw
-            .parse()
-            .map_err(|_| CommandError::InvalidArgs(format!("无效文件树移动步长：{raw}")))?;
-        Ok(Self { delta })
-    }
-}
-
 pub fn move_selection(delta: isize) -> Invocation {
-    (cid(MOVE_SELECTION), FileTreeMoveArgs { delta }.into())
+    (cid(MOVE_SELECTION), MoveDeltaArgs { delta }.into())
 }
 
 pub fn extend_selection(delta: isize) -> Invocation {
-    (cid(EXTEND_SELECTION), FileTreeMoveArgs { delta }.into())
+    (cid(EXTEND_SELECTION), MoveDeltaArgs { delta }.into())
 }
 
 pub fn escape() -> Invocation {
@@ -347,7 +323,7 @@ fn run_move_selection(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
-    let args = FileTreeMoveArgs::try_from(args)?;
+    let args = MoveDeltaArgs::try_from(args)?;
     context
         .effects
         .push(HostEffect::FileTree(FileTreeEffect::MoveSelection(
@@ -360,7 +336,7 @@ fn run_extend_selection(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
-    let args = FileTreeMoveArgs::try_from(args)?;
+    let args = MoveDeltaArgs::try_from(args)?;
     context
         .effects
         .push(HostEffect::FileTree(FileTreeEffect::ExtendSelection(
@@ -494,5 +470,5 @@ fn run_cancel_delete(
 }
 
 fn move_args(delta: isize) -> CommandArgs {
-    FileTreeMoveArgs { delta }.into()
+    MoveDeltaArgs { delta }.into()
 }

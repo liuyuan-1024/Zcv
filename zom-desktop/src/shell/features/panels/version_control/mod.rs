@@ -95,6 +95,42 @@ struct VersionControlModel {
     commit_message: OwnedEditorTarget,
     /// 待弹出的反馈气泡。
     pending_bubbles: Vec<BubbleRequest>,
+    /// 异步回调产生的延迟气泡（如 on_next_frame 中的 git 操作错误）。
+    deferred_bubbles: Rc<RefCell<Vec<BubbleRequest>>>,
+}
+
+/// 目录优先 + 字母序（不区分大小写）排序，与文件树一致。
+fn sort_by_dir_then_name(entries: &BTreeMap<PathBuf, VcEntry>, paths: &mut [PathBuf]) {
+    paths.sort_by(|a, b| {
+        let a_is_dir = entries.get(a).map(|e| e.is_dir).unwrap_or(false);
+        let b_is_dir = entries.get(b).map(|e| e.is_dir).unwrap_or(false);
+        match (a_is_dir, b_is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => {
+                let a_name = entries.get(a).map(|e| e.name.as_str()).unwrap_or("");
+                let b_name = entries.get(b).map(|e| e.name.as_str()).unwrap_or("");
+                a_name.to_lowercase().cmp(&b_name.to_lowercase())
+            }
+        }
+    });
+}
+
+/// 同 [`sort_by_dir_then_name`]，但接受 `&PathBuf` 引用切片（用于顶层条目排序）。
+fn sort_by_dir_entries(entries: &BTreeMap<PathBuf, VcEntry>, paths: &mut [&PathBuf]) {
+    paths.sort_by(|a, b| {
+        let a_is_dir = entries.get(*a).map(|e| e.is_dir).unwrap_or(false);
+        let b_is_dir = entries.get(*b).map(|e| e.is_dir).unwrap_or(false);
+        match (a_is_dir, b_is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => {
+                let a_name = entries.get(*a).map(|e| e.name.as_str()).unwrap_or("");
+                let b_name = entries.get(*b).map(|e| e.name.as_str()).unwrap_or("");
+                a_name.to_lowercase().cmp(&b_name.to_lowercase())
+            }
+        }
+    });
 }
 
 impl VersionControlModel {
@@ -112,6 +148,7 @@ impl VersionControlModel {
             selected: None,
             commit_message: OwnedEditorTarget::new(),
             pending_bubbles: Vec::new(),
+            deferred_bubbles: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -199,20 +236,9 @@ impl VersionControlModel {
         }
 
         // 每个目录的子项排序：目录优先 + 字母序（不区分大小写），与文件树一致。
+        let entries = &self.entries;
         for kids in self.children.values_mut() {
-            kids.sort_by(|a, b| {
-                let a_is_dir = self.entries.get(a).map(|e| e.is_dir).unwrap_or(false);
-                let b_is_dir = self.entries.get(b).map(|e| e.is_dir).unwrap_or(false);
-                match (a_is_dir, b_is_dir) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => {
-                        let a_name = self.entries.get(a).map(|e| e.name.as_str()).unwrap_or("");
-                        let b_name = self.entries.get(b).map(|e| e.name.as_str()).unwrap_or("");
-                        a_name.to_lowercase().cmp(&b_name.to_lowercase())
-                    }
-                }
-            });
+            sort_by_dir_then_name(entries, kids);
         }
 
         // 对新目录默认展开（保留已有展开状态中的条目，清除不再存在的）。
@@ -275,19 +301,7 @@ impl VersionControlModel {
             })
             .collect();
         // 顶层排序：目录优先 + 字母序
-        root_entries.sort_by(|a, b| {
-            let a_is_dir = self.entries.get(*a).map(|e| e.is_dir).unwrap_or(false);
-            let b_is_dir = self.entries.get(*b).map(|e| e.is_dir).unwrap_or(false);
-            match (a_is_dir, b_is_dir) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => {
-                    let a_name = self.entries.get(*a).map(|e| e.name.as_str()).unwrap_or("");
-                    let b_name = self.entries.get(*b).map(|e| e.name.as_str()).unwrap_or("");
-                    a_name.to_lowercase().cmp(&b_name.to_lowercase())
-                }
-            }
-        });
+        sort_by_dir_entries(&self.entries, &mut root_entries);
 
         for child in root_entries.iter() {
             self.collect_visible(child, 1, &mut rows);
@@ -478,6 +492,7 @@ impl VersionControlModel {
         let git = self.git_service.clone();
         let path = path.to_path_buf();
         let target_staged = !staged;
+        let deferred = self.deferred_bubbles.clone();
         window.on_next_frame(move |_window, _cx| {
             let result = if target_staged {
                 git.borrow().stage_file(&path)
@@ -485,7 +500,13 @@ impl VersionControlModel {
                 git.borrow().unstage_file(&path)
             };
             if let Err(e) = result {
-                eprintln!("git stage/unstage 失败（{path:?}）：{e}");
+                deferred.borrow_mut().push(
+                    BubbleRequest::error(format!(
+                        "git stage/unstage 失败（{}）：{e}",
+                        path.display()
+                    ))
+                    .dedupe("vc.stage"),
+                );
             }
             // 用真实 git 状态校准内存数据。
             let _ = git.borrow_mut().refresh_single(&path);
@@ -574,27 +595,50 @@ impl VersionControlModel {
         self.commit_message = OwnedEditorTarget::new();
     }
 
-    /// 消费待弹出的反馈气泡。
+    /// 执行 git commit 的核心逻辑：校验非空 → 提交 → 清空编辑区 → 弹气泡 → 刷新 git。
+    /// 调用方负责焦点切换和 window.refresh()。
+    fn try_commit(&mut self) {
+        let msg = self.commit_text();
+        if msg.trim().is_empty() {
+            self.pending_bubbles
+                .push(BubbleRequest::error("提交信息不能为空").dedupe("vc.commit.empty"));
+            return;
+        }
+        let git = self.git_service.clone();
+        match git.borrow().commit(&msg) {
+            Ok(()) => {
+                self.clear_commit_message();
+                self.pending_bubbles
+                    .push(BubbleRequest::info("提交成功").dedupe("vc.commit.success"));
+                let _ = git.borrow_mut().refresh();
+            }
+            Err(e) => {
+                self.pending_bubbles
+                    .push(BubbleRequest::error(format!("提交失败：{e}")).dedupe("vc.commit.error"));
+            }
+        }
+    }
+
+    /// 消费待弹出的反馈气泡（包含同步和异步两个来源）。
     fn take_pending_bubbles(&mut self) -> Vec<BubbleRequest> {
-        std::mem::take(&mut self.pending_bubbles)
+        let mut bubbles = std::mem::take(&mut self.pending_bubbles);
+        bubbles.append(&mut self.deferred_bubbles.borrow_mut());
+        bubbles
     }
 }
 
 // ── TextTarget 协议 ──
 
-fn vc_commit_focus(focus: AppFocus) -> Option<()> {
-    match focus {
-        AppFocus::Panel(p) => match p.as_version_control() {
-            Some(VersionControlFocus::CommitMessage) => Some(()),
-            _ => None,
-        },
-        _ => None,
-    }
+fn vc_commit_focus(focus: AppFocus) -> bool {
+    matches!(
+        focus,
+        AppFocus::Panel(p) if matches!(p.as_version_control(), Some(VersionControlFocus::CommitMessage))
+    )
 }
 
 impl TextTargetQuery for VersionControlModel {
     fn accepts_focus(&self, focus: AppFocus) -> bool {
-        vc_commit_focus(focus).is_some()
+        vc_commit_focus(focus)
     }
 
     fn snapshot(&self, _focus: AppFocus) -> EditorSnapshot {
@@ -699,10 +743,6 @@ impl VersionControlRuntime {
         self.model.borrow().commit_text()
     }
 
-    pub(crate) fn clear_commit_message(&self) {
-        self.model.borrow_mut().clear_commit_message();
-    }
-
     pub(crate) fn take_pending_bubbles(&self) -> Vec<BubbleRequest> {
         self.model.borrow_mut().take_pending_bubbles()
     }
@@ -732,37 +772,12 @@ impl VersionControlRuntime {
         window.refresh();
     }
 
-    /// 执行 git commit，成功时清空编辑区 + 弹气泡，失败时弹错误气泡。
+    /// 执行 git commit，成功时清空编辑区 + 弹气泡 + 切回导航焦点。
     pub(crate) fn perform_commit(&self, app: &Rc<RefCell<crate::app::App>>) {
-        let msg = self.commit_text();
-        if msg.trim().is_empty() {
-            self.model
-                .borrow_mut()
-                .pending_bubbles
-                .push(BubbleRequest::error("提交信息不能为空").dedupe("vc.commit.empty"));
-            return;
-        }
-        let git = self.model.borrow().git_service.clone();
-        match git.borrow().commit(&msg) {
-            Ok(()) => {
-                self.clear_commit_message();
-                self.model
-                    .borrow_mut()
-                    .pending_bubbles
-                    .push(BubbleRequest::info("提交成功").dedupe("vc.commit.success"));
-                // 切回 Navigate 焦点。
-                app.borrow_mut()
-                    .request_focus(AppFocus::Panel(PanelFocus::version_control()));
-                // 刷新 git 状态。
-                let _ = git.borrow_mut().refresh();
-            }
-            Err(e) => {
-                self.model
-                    .borrow_mut()
-                    .pending_bubbles
-                    .push(BubbleRequest::error(format!("提交失败：{e}")).dedupe("vc.commit.error"));
-            }
-        }
+        self.model.borrow_mut().try_commit();
+        // 切回 Navigate 焦点。
+        app.borrow_mut()
+            .request_focus(AppFocus::Panel(PanelFocus::version_control()));
     }
 
     pub(crate) fn render(
@@ -820,53 +835,30 @@ impl VersionControlRuntime {
             },
         );
 
-        let body: AnyElement =
-            div()
-                .flex()
-                .flex_col()
-                .size_full()
-                .child(view::render_top_bar(state.diff_stats, state.all_staged, {
-                    let rt = self.clone();
-                    move |window: &mut Window, _cx: &mut gpui::App| {
-                        if state.all_staged {
-                            rt.unstage_all(window);
-                        } else {
-                            rt.stage_all(window);
-                        }
+        let body: AnyElement = div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .child(view::render_top_bar(state.diff_stats, state.all_staged, {
+                let rt = self.clone();
+                move |window: &mut Window, _cx: &mut gpui::App| {
+                    if state.all_staged {
+                        rt.unstage_all(window);
+                    } else {
+                        rt.stage_all(window);
                     }
-                }))
-                .child(div().flex_1().overflow_hidden().child(tree_list))
-                .child(view::CommitEditor::render(
-                    slot_opt.as_ref(),
-                    show_placeholder,
-                    move |window, _cx| {
-                        let msg = commit_runtime.commit_text();
-                        if msg.trim().is_empty() {
-                            commit_runtime.model.borrow_mut().pending_bubbles.push(
-                                BubbleRequest::error("提交信息不能为空").dedupe("vc.commit.empty"),
-                            );
-                            return;
-                        }
-                        let git = commit_runtime.model.borrow().git_service.clone();
-                        match git.borrow().commit(&msg) {
-                            Ok(()) => {
-                                commit_runtime.clear_commit_message();
-                                commit_runtime.model.borrow_mut().pending_bubbles.push(
-                                    BubbleRequest::info("提交成功").dedupe("vc.commit.success"),
-                                );
-                                let _ = git.borrow_mut().refresh();
-                            }
-                            Err(e) => {
-                                commit_runtime.model.borrow_mut().pending_bubbles.push(
-                                    BubbleRequest::error(format!("提交失败：{e}"))
-                                        .dedupe("vc.commit.error"),
-                                );
-                            }
-                        }
-                        window.refresh();
-                    },
-                ))
-                .into_any_element();
+                }
+            }))
+            .child(div().flex_1().overflow_hidden().child(tree_list))
+            .child(view::CommitEditor::render(
+                slot_opt.as_ref(),
+                show_placeholder,
+                move |window, _cx| {
+                    commit_runtime.model.borrow_mut().try_commit();
+                    window.refresh();
+                },
+            ))
+            .into_any_element();
 
         render_focus_host(&self.focus, key_request, body)
     }

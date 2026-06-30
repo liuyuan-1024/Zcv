@@ -776,7 +776,7 @@ fn find_case_sensitive_matches_streaming<T: TextRead>(
                 ByteOffset::new(absolute_end),
             )?;
 
-            if accepts_match(storage, config, range, options)? {
+            if passes_whole_word_filter(storage, config, range, options)? {
                 matches.push(SearchMatch::new(matches.len(), range));
                 next_allowed_start = absolute_end;
                 search_from = byte_end;
@@ -855,7 +855,7 @@ fn find_case_insensitive_matches_streaming<T: TextRead>(
                         ByteOffset::new(match_orig_end),
                     )?;
 
-                    if accepts_match(storage, config, range, options)? {
+                    if passes_whole_word_filter(storage, config, range, options)? {
                         matches.push(SearchMatch::new(matches.len(), range));
                         // 非重叠：清空窗口，从下一字符开始重新累积
                         folded_buf.clear();
@@ -878,7 +878,10 @@ fn find_case_insensitive_matches_streaming<T: TextRead>(
     Ok(matches)
 }
 
-fn accepts_match<T: TextRead>(
+/// 全词匹配过滤：检查匹配区间两侧的相邻字符是否都是词边界。
+///
+/// 仅当 `options.is_whole_word()` 为 `true` 时才执行过滤；否则直接通过。
+fn passes_whole_word_filter<T: TextRead>(
     storage: &T,
     config: &BufferConfig,
     range: TextRange,

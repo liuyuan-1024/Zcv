@@ -147,33 +147,19 @@ fn run_confirm(
 /// 从 "行:列" / "行,列" / "行 列" 等格式中解析 1-based 行号和列号。
 /// 无列时列号默认为 1。
 fn parse_line_column(input: &str) -> Result<(usize, usize), CommandError> {
-    // 找第一个数字序列
-    let first_start = input
-        .find(|c: char| c.is_ascii_digit())
-        .ok_or_else(|| CommandError::InvalidArgs(format!("无效行号：{input}")))?;
-    let first_end = input[first_start..]
-        .find(|c: char| !c.is_ascii_digit())
-        .map(|p| first_start + p)
-        .unwrap_or(input.len());
-    let line: usize = input[first_start..first_end]
-        .parse()
-        .map_err(|_| CommandError::InvalidArgs(format!("无效行号：{input}")))?;
+    let input = input.trim();
+    let invalid = || CommandError::InvalidArgs(format!("无效行号：{input}"));
 
-    // 跳过非数字分隔符，找第二个数字序列
-    let after_first = &input[first_end..];
-    let second_start = after_first.find(|c: char| c.is_ascii_digit());
-    let column = match second_start {
-        None => 1,
-        Some(pos) => {
-            let start = first_end + pos;
-            let end = input[start..]
-                .find(|c: char| !c.is_ascii_digit())
-                .map(|p| start + p)
-                .unwrap_or(input.len());
-            input[start..end]
-                .parse()
-                .map_err(|_| CommandError::InvalidArgs(format!("无效行号：{input}")))?
-        }
+    let (line_str, col_str) = input
+        .split_once([':', ',', ' '])
+        .map(|(l, r)| (l.trim(), Some(r.trim())))
+        .unwrap_or((input, None));
+
+    let line: usize = line_str.parse().map_err(|_| invalid())?;
+
+    let column: usize = match col_str {
+        None | Some("") => 1,
+        Some(s) => s.parse().map_err(|_| invalid())?,
     };
 
     Ok((line, column))

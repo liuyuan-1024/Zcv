@@ -64,7 +64,13 @@ pub(crate) fn open_local_project(
                     cx,
                 );
             }) {
-                eprintln!("打开本地项目失败：{error}");
+                let _ = bubbles.update(cx, |runtime, cx| {
+                    runtime.push(
+                        BubbleRequest::error(format!("打开本地项目失败：{error}"))
+                            .dedupe("project.open_local"),
+                        cx,
+                    );
+                });
             }
         })
         .detach();
@@ -169,7 +175,13 @@ pub(crate) fn clone_git_project(
                     cx,
                 );
             }) {
-                eprintln!("打开克隆项目失败：{error}");
+                let _ = bubbles.update(cx, |runtime, cx| {
+                    runtime.push(
+                        BubbleRequest::error(format!("打开克隆项目失败：{error}"))
+                            .dedupe("project.clone"),
+                        cx,
+                    );
+                });
             }
         })
         .detach();

@@ -50,12 +50,12 @@ pub struct BufferSearchOptions {
 ///
 /// 两边都带 `try_remap`，对外暴露统一的 ranges / hit count 接口。
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum SearchSlot {
+enum CachedSearch {
     Literal(SearchResult),
     Regex(RegexSearchResult),
 }
 
-impl SearchSlot {
+impl CachedSearch {
     fn version(&self) -> BufferVersion {
         match self {
             Self::Literal(result) => result.version(),
@@ -100,12 +100,12 @@ impl SearchSlot {
 /// Drop 即自动 `cancel`——`set_query` / `set_options` / `apply_delta` 都靠
 /// 直接 `take` 来取消。
 #[derive(Debug)]
-enum PendingSearch {
+enum RunningSearch {
     Literal(SearchHandle<SearchResult>),
     Regex(SearchHandle<RegexSearchResult>),
 }
 
-impl PendingSearch {
+impl RunningSearch {
     fn is_finished(&self) -> bool {
         match self {
             Self::Literal(h) => h.is_finished(),
@@ -157,14 +157,14 @@ enum Installed {
 pub struct BufferSearch {
     query: String,
     options: BufferSearchOptions,
-    slot: Option<SearchSlot>,
+    slot: Option<CachedSearch>,
     /// 当前命中在 `slot.matches()` 中的下标（0-based）。`None` 表示空结果集
     /// 或还没跑过。导航命令把它推进 / 倒退；replace 后由 `pump_delta` 经过
     /// try_remap 自然减一或失效。
     current_hit: Option<usize>,
     /// 正在跑的后台搜索；`sync` spawn 进来，下次轮询取走。
     /// 不参与 PartialEq——`SearchHandle` 不可比较，外部测试看 `is_searching()`。
-    pending: Option<PendingSearch>,
+    pending: Option<RunningSearch>,
 }
 
 impl Clone for BufferSearch {
@@ -422,36 +422,36 @@ impl BufferSearch {
     }
 
     /// 启动一次后台搜索；立刻返回 handle，不等。
-    fn spawn_search(&self, buffer: &Buffer) -> PendingSearch {
+    fn spawn_search(&self, buffer: &Buffer) -> RunningSearch {
         if self.options.regex {
             let pattern = regex_pattern(&self.query, self.options.whole_word);
             let options =
                 EngineRegexOptions::new().with_case_sensitive(self.options.case_sensitive);
-            PendingSearch::Regex(buffer.snapshot().search_regex(&pattern, options))
+            RunningSearch::Regex(buffer.snapshot().search_regex(&pattern, options))
         } else {
             let options = EngineLiteralOptions::new()
                 .with_case_sensitive(self.options.case_sensitive)
                 .with_whole_word(self.options.whole_word);
-            PendingSearch::Literal(buffer.snapshot().search(&self.query, options))
+            RunningSearch::Literal(buffer.snapshot().search(&self.query, options))
         }
     }
 
     /// 已完成的 pending → slot；做版本 / 错误判断。调用前保证 `pending.is_finished()`。
-    fn install_finished(&mut self, buffer: &Buffer, pending: PendingSearch) -> Installed {
+    fn install_finished(&mut self, buffer: &Buffer, pending: RunningSearch) -> Installed {
         type SearchInstall = (BufferVersion, Box<dyn FnOnce(&mut BufferSearch)>);
         let buffer_version = buffer.version();
         let (version, install): SearchInstall = match pending {
-            PendingSearch::Literal(handle) => match handle.join() {
+            RunningSearch::Literal(handle) => match handle.join() {
                 Ok(result) => (
                     result.version(),
-                    Box::new(move |this| this.slot = Some(SearchSlot::Literal(result))),
+                    Box::new(move |this| this.slot = Some(CachedSearch::Literal(result))),
                 ),
                 Err(_) => return Installed::Failed,
             },
-            PendingSearch::Regex(handle) => match handle.join() {
+            RunningSearch::Regex(handle) => match handle.join() {
                 Ok(result) => (
                     result.version(),
-                    Box::new(move |this| this.slot = Some(SearchSlot::Regex(result))),
+                    Box::new(move |this| this.slot = Some(CachedSearch::Regex(result))),
                 ),
                 Err(_) => return Installed::Failed,
             },
@@ -497,7 +497,7 @@ impl BufferSearch {
 /// 故意只暴露访问器、不可 Clone——让调用方在持有 BufferSearch 不可变借用的
 /// 同时无法逃逸；replace 完毕调 `WorkspaceBuffer::pump_post_edit` 是契约。
 pub struct CurrentReplaceTarget<'a> {
-    slot: &'a SearchSlot,
+    slot: &'a CachedSearch,
     ordinal: usize,
 }
 
@@ -508,15 +508,15 @@ impl<'a> CurrentReplaceTarget<'a> {
 
     pub fn literal(&self) -> Option<&'a SearchResult> {
         match self.slot {
-            SearchSlot::Literal(result) => Some(result),
-            SearchSlot::Regex(_) => None,
+            CachedSearch::Literal(result) => Some(result),
+            CachedSearch::Regex(_) => None,
         }
     }
 
     pub fn regex(&self) -> Option<&'a RegexSearchResult> {
         match self.slot {
-            SearchSlot::Regex(result) => Some(result),
-            SearchSlot::Literal(_) => None,
+            CachedSearch::Regex(result) => Some(result),
+            CachedSearch::Literal(_) => None,
         }
     }
 }

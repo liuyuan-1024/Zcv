@@ -48,22 +48,7 @@ fn canonicalize(name: &str) -> Option<&'static str> {
     // tree-sitter-md 的 (language) 节点已经把 fence 紧邻 ``` 后面的标识符提取出来，
     // 一般是 ASCII 单词；做一次 lower 即可。
     let lower = trimmed.to_ascii_lowercase();
-    let mapped: &'static str = match lower.as_str() {
-        "rust" | "rs" => "rust",
-        "toml" => "toml",
-        "json" => "json",
-        "yaml" | "yml" => "yaml",
-        "bash" | "sh" | "shell" | "zsh" => "bash",
-        "html" | "htm" => "html",
-        "css" => "css",
-        "javascript" | "js" | "mjs" | "cjs" | "jsx" => "javascript",
-        "typescript" | "ts" | "mts" | "cts" => "typescript",
-        "tsx" => "tsx",
-        "java" => "java",
-        "python" | "py" | "python3" => "python",
-        _ => return None,
-    };
-    Some(mapped)
+    super::super::engine::resolve_lang_alias(lower.as_str())
 }
 
 /// 拿到 canonical 语言 id 对应的 [`SharedConfig`]。

@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
-use zom_command::{HostEffect, ProjectEffect};
+use zom_command::{BubbleRequest, HostEffect, ProjectEffect};
 
 use crate::app::App;
 use crate::focus::AppFocus;
@@ -21,8 +21,6 @@ use crate::shell::view::actions::open_surface;
 use crate::shell::workbench::controller::WorkbenchController;
 use crate::shell::{CommandTitleLookup, ShortcutLookup, project_session, shared};
 use crate::ui_id::SurfaceId;
-use zom_command::BubbleRequest;
-
 pub(crate) fn try_apply_effect(
     effect: &HostEffect,
     app: &Rc<RefCell<App>>,
@@ -52,6 +50,7 @@ pub(crate) fn try_apply_effect(
                 editor_focus_fallback,
                 project_picker_runtime,
                 intent_request,
+                bubbles,
                 window,
                 cx,
             );
@@ -91,6 +90,7 @@ pub(crate) fn try_apply_effect(
                     editor_focus_fallback,
                     project_picker_runtime,
                     intent_request,
+                    bubbles,
                     window,
                     cx,
                 );
@@ -176,11 +176,17 @@ fn show_project_picker(
     editor_focus_fallback: &FocusHandle,
     project_picker_runtime: &ProjectPickerRuntime,
     intent_request: ProjectPickerIntentRequest,
+    bubbles: &Entity<BubbleRuntime>,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
     let Some(project_picker_slot) = project_picker_runtime.slot() else {
-        eprintln!("项目选择器未安装 TextEditorSlot");
+        bubbles.update(cx, |runtime, cx| {
+            runtime.push(
+                BubbleRequest::error("项目选择器组件未就绪").dedupe("picker.no_slot"),
+                cx,
+            );
+        });
         return;
     };
     project_picker_runtime.reset(initial_mode.into());

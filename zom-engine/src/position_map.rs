@@ -128,10 +128,8 @@ impl PositionMap {
                 if pos == old_start {
                     let mapped = match affinity {
                         Affinity::Before => new_start,
-                        Affinity::After => checked_add_offset(
-                            new_start,
-                            replacement_len,
-                            "map_old_position_with_affinity",
+                        Affinity::After => checked_add_offset(new_start, replacement_len).expect(
+                            "内部不变量：在 map_old_position_with_affinity 映射时发生字节偏移溢出",
                         ),
                     };
 
@@ -175,8 +173,8 @@ impl PositionMap {
             let new_start = shift
                 .apply_old_to_new(old_start)
                 .expect("内部不变量：old start 映射不会发生字节偏移溢出");
-            let new_end =
-                checked_add_offset(new_start, replacement_len, "map_new_position_with_bias");
+            let new_end = checked_add_offset(new_start, replacement_len)
+                .expect("内部不变量：在 map_new_position_with_bias 映射时发生字节偏移溢出");
 
             if pos < new_start {
                 break;
@@ -342,10 +340,8 @@ impl PositionMap {
             let new_start = shift
                 .apply_old_to_new(old_start)
                 .expect("内部不变量：old start 映射不会发生字节偏移溢出");
-            let new_end = checked_add_offset(
-                new_start,
-                replacement_len,
-                "map_new_position_for_range_boundary",
+            let new_end = checked_add_offset(new_start, replacement_len).expect(
+                "内部不变量：在 map_new_position_for_range_boundary 映射时发生字节偏移溢出",
             );
 
             if pos < new_start {
@@ -393,10 +389,8 @@ impl PositionMap {
             let new_start = shift
                 .apply_old_to_new(edit_range.start())
                 .expect("内部不变量：old start 映射不会发生字节偏移溢出");
-            let new_end = checked_add_offset(
-                new_start,
-                replacement_len,
-                "new_range_touches_ambiguous_content",
+            let new_end = checked_add_offset(new_start, replacement_len).expect(
+                "内部不变量：在 new_range_touches_ambiguous_content 映射时发生字节偏移溢出",
             );
 
             if replacement_len == 0 {
@@ -462,10 +456,12 @@ impl OffsetShift {
     }
 }
 
-fn checked_add_offset(offset: ByteOffset, rhs: usize, location: &'static str) -> ByteOffset {
-    offset
-        .checked_add(rhs)
-        .unwrap_or_else(|| panic!("内部不变量：在 {location} 映射时发生字节偏移溢出"))
+/// `ByteOffset::checked_add` 的便捷包装。
+///
+/// 返回 `None` 表示加法后溢出 `usize` 范围。调用方按场景决定是报 `EngineBug`
+/// 还是按 `MappingResult` 语义静默处理，**本函数不 panic**。
+fn checked_add_offset(offset: ByteOffset, rhs: usize) -> Option<ByteOffset> {
+    offset.checked_add(rhs)
 }
 
 fn biased_offset(start: ByteOffset, end: ByteOffset, bias: Bias) -> ByteOffset {

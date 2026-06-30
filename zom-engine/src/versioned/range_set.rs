@@ -16,7 +16,7 @@ use crate::{
     types::{BufferVersion, ByteOffset, LineRange, TextRange, Utf16Position},
 };
 
-use super::query::{range_contains_offset, ranges_intersect, text_range_for_line_range};
+use super::query::{range_contains_offset, ranges_intersect};
 
 /// VersionedRangeEntry 在单个 set 内的稳定身份。
 ///
@@ -558,7 +558,7 @@ impl<T> VersionedRangeSet<T> {
         buffer: &Buffer,
         query: LineRange,
     ) -> EngineResult<Vec<&VersionedRangeEntry<T>>> {
-        let query = text_range_for_line_range(buffer, query)?;
+        let query = buffer.text_range_for_line_range(query)?;
         Ok(self.entries_intersecting(query).collect())
     }
 

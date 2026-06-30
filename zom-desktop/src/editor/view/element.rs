@@ -663,7 +663,8 @@ impl Element for EditorElement {
             .and_then(|slot| slot.map(|(_, x)| x))
             .unwrap_or(px(0.));
 
-        let viewport_h = bounds.size.height;
+        // 仅留作上文 viewport_h_f 的语义来源，不做实际计算。
+        let _viewport_h = bounds.size.height;
         let viewport_w = clamp_px(bounds.size.width - gutter_offset, px(0.), bounds.size.width);
         let visible_visual_rows = if allows_vertical_scroll {
             (visible_pixel_rows as u64).max(1)
@@ -777,9 +778,6 @@ impl Element for EditorElement {
             }
             None => Point::new(px(0.), px(0.)),
         };
-
-        // 仅留作上文 viewport_h_f 的语义来源，避免 unused-binding 警告。
-        let _ = viewport_h;
 
         // top 已吸收 snapshot 上方 padding 的真实视觉行数修正。
         // phases 用 row_index 算 y 即可，**不需要再知道视口起点**。

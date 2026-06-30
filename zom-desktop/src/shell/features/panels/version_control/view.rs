@@ -31,8 +31,7 @@ pub(super) fn render_list(
 
     let scroll_handle = scroll::ScrollHandle::new();
 
-    let selected_index = selected
-        .as_ref()
+    let selected_index = (*selected)
         .as_ref()
         .and_then(|sel| rows.iter().position(|r| &r.path == sel));
 

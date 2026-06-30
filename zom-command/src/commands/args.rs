@@ -4,6 +4,31 @@ use zom_engine::EngineError;
 
 use crate::{CommandArgs, CommandError};
 
+/// 通用移动步长参数，被 file_tree、version_control、project_picker 共享。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MoveDeltaArgs {
+    pub delta: isize,
+}
+
+impl From<MoveDeltaArgs> for CommandArgs {
+    fn from(args: MoveDeltaArgs) -> Self {
+        CommandArgs::new().with("delta", args.delta.to_string())
+    }
+}
+
+impl TryFrom<CommandArgs> for MoveDeltaArgs {
+    type Error = CommandError;
+
+    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
+        reject_unknown_args(&args, &["delta"])?;
+        let raw = required_arg(&args, "delta")?;
+        let delta = raw
+            .parse()
+            .map_err(|_| CommandError::InvalidArgs(format!("无效移动步长：{raw}")))?;
+        Ok(Self { delta })
+    }
+}
+
 pub(crate) fn required_arg(args: &CommandArgs, key: &str) -> Result<String, CommandError> {
     args.get(key)
         .map(ToOwned::to_owned)

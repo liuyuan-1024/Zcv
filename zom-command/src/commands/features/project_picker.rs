@@ -5,13 +5,13 @@
 //!
 //! esc 走系统级 [`crate::commands::system::dismiss::DISMISS_TOP`]（scope=ProjectPicker）—— [`SHOW_PROJECTS_PICKER`] 推一条 dismiss token，esc 弹出后重新派发 [`DISMISS`]。
 
+use crate::commands::args::MoveDeltaArgs;
 use crate::commands::cid;
 use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
     HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, ProjectEffect, SurfaceEffect,
-    reject_unknown_args, required_arg,
 };
 
 pub const SHOW_PROJECTS_PICKER: &str = "workspace.show_projects_picker";
@@ -28,30 +28,6 @@ pub struct ProjectPickerKeyContext;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProjectPickerBindingContext;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PickerMoveArgs {
-    pub delta: isize,
-}
-
-impl From<PickerMoveArgs> for CommandArgs {
-    fn from(args: PickerMoveArgs) -> Self {
-        CommandArgs::new().with("delta", args.delta.to_string())
-    }
-}
-
-impl TryFrom<CommandArgs> for PickerMoveArgs {
-    type Error = CommandError;
-
-    fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["delta"])?;
-        let raw = required_arg(&args, "delta")?;
-        let delta = raw
-            .parse()
-            .map_err(|_| CommandError::InvalidArgs(format!("无效项目选择器移动步长：{raw}")))?;
-        Ok(Self { delta })
-    }
-}
 
 pub fn show_projects_picker() -> Invocation {
     (cid(SHOW_PROJECTS_PICKER), CommandArgs::new())
@@ -70,7 +46,7 @@ pub fn remove_recent_project() -> Invocation {
 }
 
 pub fn move_selection(delta: isize) -> Invocation {
-    (cid(MOVE_SELECTION), PickerMoveArgs { delta }.into())
+    (cid(MOVE_SELECTION), MoveDeltaArgs { delta }.into())
 }
 
 pub fn activate() -> Invocation {
@@ -153,7 +129,7 @@ fn run_move_selection(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
-    let args = PickerMoveArgs::try_from(args)?;
+    let args = MoveDeltaArgs::try_from(args)?;
     context
         .effects
         .push(HostEffect::Project(ProjectEffect::MovePickerSelection(
@@ -194,5 +170,5 @@ fn run_dismiss(
 }
 
 fn move_args(delta: isize) -> CommandArgs {
-    PickerMoveArgs { delta }.into()
+    MoveDeltaArgs { delta }.into()
 }

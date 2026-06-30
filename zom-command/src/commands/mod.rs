@@ -11,7 +11,7 @@ use crate::{
     CommandHandler, CommandId, CommandOutcome, CommandRegistry, HostEffect, Keymap, NoArgs,
 };
 
-pub(crate) mod args;
+pub mod args;
 
 /// 把 `&'static str` 转成 [`CommandId`]——所有 feature 模块共用的单行工厂。
 ///

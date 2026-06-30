@@ -13,8 +13,6 @@
 //! 但 `LspClient` 内部的写操作是 fire-and-forget 的非阻塞 channel send，通知回调在后台读线程上执行。
 //! 因此诊断数据用 `Arc<Mutex<>>` 保护。
 
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::mpsc;
@@ -29,20 +27,26 @@ use zom_workspace::syntax::LanguageId;
 use zom_workspace::{BufferId, Workspace};
 
 /// 一个文件的 LSP 诊断集合。
+/// 预留给诊断面板展示使用，当前通过 diagnostics_handle 对外暴露。
 #[derive(Clone, Debug, Default)]
+#[allow(dead_code)]
 pub struct FileDiagnostics {
     pub diagnostics: Vec<lsp_types::Diagnostic>,
 }
 
 /// LSP 主机状态快照——供 UI 只读查询。
+/// 预留给语言服务器浮面使用，当前 snapshot() 已构造但消费方尚未接入。
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct LspHostSnapshot {
     /// 每个已连接的语言服务器及其状态。
     pub servers: Vec<ServerStatus>,
 }
 
 /// 单个语言服务器的连接状态。
+/// 预留给语言服务器浮面使用。
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct ServerStatus {
     pub language_id: LanguageId,
     pub command: String,
@@ -59,10 +63,12 @@ pub struct LspHost {
     lsp_opened: HashSet<BufferId>,
     /// buffer_id → 上次 did_change 时的 buffer version（u64 from BufferVersion::get）。
     lsp_sent_version: HashMap<BufferId, u64>,
-    /// 飞行中的 semantic tokens 请求：(buffer_id, mpsc receiver)。
-    lsp_pending: Vec<(BufferId, mpsc::Receiver<Result<Value, LspError>>)>,
-    /// 无需再尝试启动 server 的语言——无内置映射或启动失败。
-    lsp_no_server: HashSet<LanguageId>,
+    /// 飞行中的 semantic tokens 请求：buffer_id → mpsc receiver。
+    lsp_pending: HashMap<BufferId, mpsc::Receiver<Result<Value, LspError>>>,
+    /// 无已知 LSP server 命令映射的语言——`default_server_command` 返回 None。
+    lsp_none_mapped: HashSet<LanguageId>,
+    /// server 启动失败的语言——后续可加重试逻辑（当前不重试，行为不变）。
+    lsp_launch_failed: HashSet<LanguageId>,
     /// 后台启动中的 server：language_id → 共享结果槽。
     lsp_starting: HashMap<LanguageId, Arc<Mutex<Option<Result<LspClient, LspError>>>>>,
 }
@@ -76,8 +82,9 @@ impl LspHost {
             project_root: None,
             lsp_opened: HashSet::new(),
             lsp_sent_version: HashMap::new(),
-            lsp_pending: Vec::new(),
-            lsp_no_server: HashSet::new(),
+            lsp_pending: HashMap::new(),
+            lsp_none_mapped: HashSet::new(),
+            lsp_launch_failed: HashSet::new(),
             lsp_starting: HashMap::new(),
         }
     }
@@ -89,7 +96,8 @@ impl LspHost {
         self.lsp_opened.clear();
         self.lsp_sent_version.clear();
         self.lsp_pending.clear();
-        self.lsp_no_server.clear();
+        self.lsp_none_mapped.clear();
+        self.lsp_launch_failed.clear();
         self.lsp_starting.clear();
         if let Ok(mut diags) = self.diagnostics.lock() {
             diags.clear();
@@ -102,6 +110,8 @@ impl LspHost {
     }
 
     /// 主机状态快照——供语言服务器浮面等 UI 消费。
+    /// 预留给语言服务器浮面使用，当前已构造但消费方尚未接入。
+    #[allow(dead_code)]
     pub fn snapshot(&self) -> LspHostSnapshot {
         let servers = self
             .clients
@@ -124,6 +134,8 @@ impl LspHost {
     }
 
     /// 是否有任何已连接的 server。
+    /// 此方法预留给 UI 层（如语言服务器浮面）展示连接状态使用，当前尚未接入。
+    #[allow(dead_code)]
     pub fn has_connected_servers(&self) -> bool {
         !self.clients.is_empty()
     }
@@ -158,7 +170,7 @@ impl LspHost {
                     self.insert_client(lang_id, client);
                 }
                 Err(_) => {
-                    self.lsp_no_server.insert(lang_id);
+                    self.lsp_launch_failed.insert(lang_id);
                 }
             }
         }
@@ -166,15 +178,27 @@ impl LspHost {
 
     fn drain_semantic_tokens(&mut self, workspace: &Workspace) {
         let mut completed: Vec<(BufferId, Value)> = Vec::new();
-        self.lsp_pending.retain(|(id, rx)| match rx.try_recv() {
-            Ok(Ok(value)) => {
-                completed.push((*id, value));
-                false
+        let mut to_remove: Vec<BufferId> = Vec::new();
+        for (id, rx) in self.lsp_pending.iter_mut() {
+            match rx.try_recv() {
+                Ok(Ok(value)) => {
+                    completed.push((*id, value));
+                    to_remove.push(*id);
+                }
+                Ok(Err(_)) => {
+                    to_remove.push(*id);
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // 仍在等待中，保留
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    to_remove.push(*id);
+                }
             }
-            Ok(Err(_)) => false,
-            Err(mpsc::TryRecvError::Empty) => true,
-            Err(mpsc::TryRecvError::Disconnected) => false,
-        });
+        }
+        for id in to_remove {
+            self.lsp_pending.remove(&id);
+        }
 
         for (buffer_id, response) in completed {
             let Some(wb) = workspace.buffer(buffer_id) else {
@@ -223,7 +247,9 @@ impl LspHost {
             let Some(language) = language else {
                 continue;
             };
-            if self.lsp_no_server.contains(&language) {
+            if self.lsp_none_mapped.contains(&language)
+                || self.lsp_launch_failed.contains(&language)
+            {
                 continue;
             }
             let Some(wb) = workspace.buffer(buffer_id) else {
@@ -280,7 +306,7 @@ impl LspHost {
             }
 
             // Request new semantic tokens if stale
-            let already_pending = self.lsp_pending.iter().any(|(bid, _)| *bid == buffer_id);
+            let already_pending = self.lsp_pending.contains_key(&buffer_id);
             let needs_tokens = !already_pending
                 && wb
                     .highlights_slot()
@@ -292,7 +318,7 @@ impl LspHost {
                     if let Some(uri) = path_to_uri(path) {
                         if let Some(client) = self.client_for(language) {
                             if let Ok(rx) = client.request_semantic_tokens(uri) {
-                                self.lsp_pending.push((buffer_id, rx));
+                                self.lsp_pending.insert(buffer_id, rx);
                             }
                         }
                     }
@@ -306,11 +332,11 @@ impl LspHost {
             return;
         };
         let Some(root_uri) = file_uri(root) else {
-            self.lsp_no_server.insert(language);
+            self.lsp_launch_failed.insert(language);
             return;
         };
         let Some((command, args)) = default_server_command(language) else {
-            self.lsp_no_server.insert(language);
+            self.lsp_none_mapped.insert(language);
             return;
         };
         let command = command.to_string();
@@ -392,6 +418,9 @@ impl LspHost {
     }
 
     /// buffer 关闭时调用。
+    /// 此方法预留给 LSP didClose 协议——当前 buffer 生命周期由 workspace 管理，
+    /// 尚未接入关闭通知。保留以便后续完善协议完整性。
+    #[allow(dead_code)]
     pub fn did_close(&mut self, path: &Path, language_id: LanguageId) -> Result<(), LspError> {
         let Some(uri) = path_to_uri(path) else {
             return Ok(());

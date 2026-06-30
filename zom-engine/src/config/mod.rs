@@ -14,5 +14,5 @@ pub use display::{DisplayColumnAffinity, DisplayWidthPolicy};
 pub use encoding::EncodingConfig;
 pub use large_file::{LargeFilePolicy, LargeTransactionPolicy};
 pub use line_endings::{LineEndingConfig, PositionEncodingConfig};
+pub(crate) use word::WordBoundaryClassifier;
 pub use word::WordBoundaryPolicy;
-pub(crate) use word::{WordBoundaryClassifier, WordSeparatorStop};

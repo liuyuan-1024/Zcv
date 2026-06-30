@@ -260,11 +260,10 @@ impl<'a> Builder<'a> {
                     .into_any_element();
                 self.push_block_element(element);
             }
-            Event::SoftBreak => self.on_text(" "),
-            Event::HardBreak => {
-                // 在 flex 流中插入强制断行元素——w_full + 0 高度，
-                // 让 flex_wrap 把后续内容挤到下一 flex 行，行间距由
-                // line_height 自然控制（与软换行间距一致）。
+            Event::SoftBreak | Event::HardBreak => {
+                // 软换行（单回车）和硬换行统一处理：在 flex 流中插入强制断行。
+                // w_full + 0 高度让 flex_wrap 把后续内容挤到下一行，
+                // 行间距由 line_height 自然控制。
                 self.split_inline();
                 self.inline_segments.push(InlineSegment::Break);
             }

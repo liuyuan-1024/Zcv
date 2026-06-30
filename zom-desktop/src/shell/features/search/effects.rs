@@ -32,7 +32,9 @@ pub(crate) fn try_apply_effect(
             dismiss_search(app, focus, window);
         }
         HostEffect::Search(SearchEffect::Toggle) => {
-            if app.borrow().is_search_open() {
+            // 与 panel toggle 一致的键盘显隐逻辑：已打开且焦点在搜索栏内才收起，
+            // 否则（未打开 / 已打开但焦点不在搜索栏）一律打开。
+            if app.borrow().is_search_open() && focus.current_focus(window).as_search().is_some() {
                 dismiss_search(app, focus, window);
             } else {
                 activate_search(app, focus, window);

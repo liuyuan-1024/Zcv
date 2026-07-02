@@ -246,9 +246,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         create_dir_all(&dir).unwrap();
         // model 层的测试聚焦选区 / 剪贴板 / 新建-重命名，断言「root 下只有显式创建的项」。
-        // 生产里 `ProjectTree::new` 会自动生成 `.zom/.zomignore`，默认不忽略 `.zom/` 自身，会多出一行污染断言。
-        // 这里预先写一份只忽略 `.zom/` 的 `.zomignore`——`ensure_zomignore_exists` 检测到文件已存在就不会覆盖，
-        // 效果等价于让测试在「.zom/ 对文件树隐形」的项目里跑。
+        // 生产里 `IgnoreMatcher` 内置规则不忽略 `.zom/` 自身，会多出一行污染断言。
+        // 这里预先写一份只忽略 `.zom/` 的 `.zomignore`，
+        // 让测试在「.zom/ 对文件树隐形」的项目里跑。
         let zom_dir = dir.join(".zom");
         create_dir_all(&zom_dir).unwrap();
         std::fs::write(zom_dir.join(".zomignore"), ".zom/\n").unwrap();

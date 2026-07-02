@@ -1,5 +1,0 @@
-# zom 文件树忽略规则（语法同 .gitignore）。
-
-# 系统文件
-.DS_Store
-Thumbs.db

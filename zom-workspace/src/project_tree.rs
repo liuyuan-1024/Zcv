@@ -22,17 +22,52 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 const PROJECT_CONFIG_DIR: &str = ".zom";
 const ZOMIGNORE_FILE: &str = ".zomignore";
 
-/// 首次为项目生成 `.zom/.zomignore` 时写入的默认内容。
+/// 内置忽略规则，始终生效，无需用户配置。
 ///
-/// `.zomignore` 是 zom 文件树的**唯一忽略规则来源**，完全独立决定哪些文件 / 目录在文件树中可见。
-/// 默认模板包含版本控制目录、巨型依赖目录、系统杂项与常见构建产物——这些几乎从不需要在编辑器中浏览。
-const ZOMIGNORE_DEFAULT: &str = "\
-# zom 文件树忽略规则（语法同 .gitignore）。
-
-# 系统文件
-.DS_Store
-Thumbs.db
-";
+/// 涵盖版本控制元数据、各平台系统杂项、编辑器临时 / 崩溃恢复文件、
+/// 常见巨型依赖目录与构建产物——这些几乎从不需要在文件树中浏览。
+///
+/// 内置规则在项目级 `.zom/.zomignore` 之前加载，
+/// 用户可以在 `.zomignore` 中用 `!` 前缀取消特定内置规则的忽略。
+const BUILTIN_IGNORE_PATTERNS: &[&str] = &[
+    // ── 版本控制元数据 ──
+    ".git/",
+    ".svn/",
+    ".hg/",
+    // ── macOS 系统文件 ──
+    ".DS_Store",
+    "._*", // AppleDouble 资源分支
+    // ── Windows 系统文件 ──
+    "Thumbs.db",
+    "desktop.ini",
+    // ── 编辑器临时 / 崩溃恢复文件 ──
+    "*~",     // Emacs / Vim 备份
+    ".*.swp", // Vim swap
+    ".*.swo",
+    ".*.swn",
+    ".~*", // MS Office 锁文件（如 .~lock.filename.docx#）
+    // ── 巨型依赖目录 ──
+    "node_modules/",
+    // ── 构建产物目录 ──
+    "target/", // Rust
+    "dist/",
+    "build/",
+    // ── Python 字节码 / 虚拟环境 ──
+    "__pycache__/",
+    "*.pyc",
+    "*.pyo",
+    ".venv/",
+    "venv/",
+    // ── 编译中间文件 ──
+    "*.o",
+    "*.obj",
+    "*.so",
+    "*.dylib",
+    "*.dll",
+    "*.class",
+    "*.a",
+    "*.lib",
+];
 
 /// 节点类型。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -78,8 +113,8 @@ pub struct ProjectTree {
 impl ProjectTree {
     /// 新建并预加载整棵目录树——构造期一次性读盘，后续操作零 IO。
     ///
-    /// 构造期会确保 `项目根/.zom/.zomignore` 存在（首次打开新项目时自动写入 [`ZOMIGNORE_DEFAULT`]），
-    /// 随后编译成[`IgnoreMatcher`]；`load_dir` 据此过滤每层子项。
+    /// 忽略规则由[`BUILTIN_IGNORE_PATTERNS`]（始终生效）与可选的项目级
+    /// `.zom/.zomignore`（仅在用户已创建时加载）合并而成。
     pub fn new(root: PathBuf) -> io::Result<Self> {
         let root_name = root
             .file_name()
@@ -387,7 +422,12 @@ impl ProjectTree {
                             for grandchild in kids.iter() {
                                 if grandchild.kind == EntryKind::Directory {
                                     self.collect_visible(
-                                        &grandchild.path, depth + 1, String::new(), None, rows);
+                                        &grandchild.path,
+                                        depth + 1,
+                                        String::new(),
+                                        None,
+                                        rows,
+                                    );
                                 } else {
                                     rows.push(TreeRow {
                                         path: grandchild.path.clone(),
@@ -499,25 +539,38 @@ impl ProjectTree {
     }
 }
 
-/// 项目级 ignore 规则集：把 `项目根/.zom/.zomignore` 编译成单个 [`Gitignore`] matcher。
+/// 忽略规则集：内置规则 + 可选项目级 `.zom/.zomignore`。
 ///
-/// `.zomignore` 是唯一的忽略规则来源，不与 `.gitignore` 合并。
-/// 子目录里的 `.gitignore` 不递归继承。
+/// 内置规则始终生效；若用户创建了项目级 `.zom/.zomignore`，
+/// 其规则追加在内置规则之后——用户可以用 `!` 前缀取消内置忽略。
+///
+/// `.zomignore` 是唯一的用户规则来源，不与 `.gitignore` 合并。
 struct IgnoreMatcher {
     matcher: Gitignore,
 }
 
 impl IgnoreMatcher {
     fn for_root(root: &Path) -> io::Result<Self> {
-        ensure_zomignore_exists(root)?;
         let mut builder = GitignoreBuilder::new(root);
-        let zomignore_path = root.join(PROJECT_CONFIG_DIR).join(ZOMIGNORE_FILE);
-        if let Some(error) = builder.add(&zomignore_path) {
-            return Err(io::Error::other(format!(
-                "解析 {} 失败：{error}",
-                zomignore_path.display()
-            )));
+
+        // 内置规则——始终加载。
+        for pattern in BUILTIN_IGNORE_PATTERNS {
+            builder.add_line(None, pattern).map_err(|error| {
+                io::Error::other(format!("内置忽略规则 '{pattern}' 解析失败：{error}"))
+            })?;
         }
+
+        // 项目级 .zomignore——仅在用户已创建时加载。
+        let zomignore_path = root.join(PROJECT_CONFIG_DIR).join(ZOMIGNORE_FILE);
+        if zomignore_path.exists() {
+            if let Some(error) = builder.add(&zomignore_path) {
+                return Err(io::Error::other(format!(
+                    "解析 {} 失败：{error}",
+                    zomignore_path.display()
+                )));
+            }
+        }
+
         let matcher = builder
             .build()
             .map_err(|error| io::Error::other(format!("构建忽略规则失败：{error}")))?;
@@ -527,18 +580,6 @@ impl IgnoreMatcher {
     fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
         matches!(self.matcher.matched(path, is_dir), Match::Ignore(_))
     }
-}
-
-/// 首次为项目生成 `.zom/.zomignore`：若文件已存在则跳过（**不覆盖用户编辑**），否则按需建目录并写入 [`ZOMIGNORE_DEFAULT`]。
-/// 父目录是只读等场景下返回 IO 错误，由 [`ProjectTree::new`] 透传给上层。
-fn ensure_zomignore_exists(root: &Path) -> io::Result<()> {
-    let dir = root.join(PROJECT_CONFIG_DIR);
-    let path = dir.join(ZOMIGNORE_FILE);
-    if path.exists() {
-        return Ok(());
-    }
-    fs::create_dir_all(&dir)?;
-    fs::write(&path, ZOMIGNORE_DEFAULT)
 }
 
 fn validate_relative_entry_path(raw: &str) -> io::Result<PathBuf> {
@@ -735,12 +776,11 @@ mod tests {
             .map(|row| (row.name.to_string(), row.depth, row.kind, row.expanded))
             .collect();
         // 根行 depth=0 默认展开；其下 depth=1（目录优先 + 字母序）。
-        // `.zom/` 是 ProjectTree::new 自动创建的项目配置目录，与其他目录同列。
+        // 内置规则不再自动创建 .zom/，测试数据中也没有它。
         assert_eq!(
             rows,
             vec![
                 (root_name.clone(), 0, EntryKind::Directory, true),
-                (".zom".to_string(), 1, EntryKind::Directory, false),
                 ("src".to_string(), 1, EntryKind::Directory, false),
                 ("README.md".to_string(), 1, EntryKind::File, false),
             ]
@@ -756,7 +796,6 @@ mod tests {
             rows,
             vec![
                 (root_name.clone(), 0),
-                (".zom".to_string(), 1),
                 ("src".to_string(), 1),
                 ("inner".to_string(), 2),
                 ("lib.rs".to_string(), 2),
@@ -765,8 +804,8 @@ mod tests {
         );
 
         tree.collapse(&root.join("src"));
-        // root + .zom + src + README.md
-        assert_eq!(tree.visible_rows().len(), 4);
+        // root + src + README.md
+        assert_eq!(tree.visible_rows().len(), 3);
 
         // 折叠根目录后只剩根这一行。
         tree.collapse(&root);
@@ -1009,13 +1048,12 @@ mod tests {
             .into_iter()
             .map(|row| row.name.to_string())
             .collect();
-        // 目录优先 + 字母序（不区分大小写）；自动生成的 `.zom/` 按字母序混在
-        // 大写目录前面（'.' < 'A'）。
+        // 目录优先 + 字母序（不区分大小写）。
+        // 内置规则不再自动创建 .zom/，测试数据中也没有它。
         assert_eq!(
             names,
             vec![
                 root_display_name(&root),
-                ".zom".to_string(),
                 "A_dir".to_string(),
                 "b_dir".to_string(),
                 "Afile".to_string(),
@@ -1024,40 +1062,45 @@ mod tests {
         );
     }
 
-    /// 新项目根没有 `.zom/.zomignore` 时，构造期应自动建目录并写入默认模板。
+    /// 无 `.zom/.zomignore` 时不应自动创建文件——内置规则始终生效，无需落盘。
     #[test]
-    fn project_tree_new_should_create_default_zomignore_when_missing() {
-        let root = tmp_root("zomignore-default");
+    fn no_zomignore_file_auto_created() {
+        let root = tmp_root("zomignore-no-auto");
         assert!(!root.join(".zom").exists());
 
         let _tree = ProjectTree::new(root.clone()).unwrap();
 
-        let path = root.join(".zom").join(".zomignore");
-        assert!(path.is_file(), "应自动创建 .zom/.zomignore");
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(content, ZOMIGNORE_DEFAULT);
+        assert!(
+            !root.join(".zom").join(".zomignore").exists(),
+            "不应自动创建 .zom/.zomignore"
+        );
     }
 
-    /// 已存在 `.zom/.zomignore` 时不被覆盖——保护用户编辑。
+    /// 已存在的 `.zom/.zomignore` 会被合并加载，且不会被覆盖。
     #[test]
-    fn project_tree_new_should_not_overwrite_existing_zomignore() {
-        let root = tmp_root("zomignore-preserve");
+    fn existing_zomignore_is_merged_and_preserved() {
+        let root = tmp_root("zomignore-merge");
         create_dir_all(root.join(".zom")).unwrap();
+        File::create(root.join(".zom").join(".zomignore")).unwrap();
         let path = root.join(".zom").join(".zomignore");
         std::fs::write(&path, "# my custom rules\nnotes.md\n").unwrap();
 
         let _tree = ProjectTree::new(root.clone()).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(content, "# my custom rules\nnotes.md\n");
+        assert_eq!(
+            content, "# my custom rules\nnotes.md\n",
+            "用户文件不应被覆盖"
+        );
     }
 
-    /// `.zomignore` 完全独立于 `.gitignore`——`.gitignore` 里的规则不影响文件树。
+    /// `.gitignore` 里的规则不影响文件树。
     #[test]
     fn gitignore_should_not_affect_file_tree() {
         let root = tmp_root("gitignore-no-effect");
-        std::fs::write(root.join(".gitignore"), "target/\nsecret.txt\n").unwrap();
-        create_dir_all(root.join("target/debug")).unwrap();
-        File::create(root.join("target/debug/zom")).unwrap();
+        // 使用 output/ 而非 target/，因为 target/ 已被内置规则忽略。
+        std::fs::write(root.join(".gitignore"), "output/\nsecret.txt\n").unwrap();
+        create_dir_all(root.join("output/debug")).unwrap();
+        File::create(root.join("output/debug/zom")).unwrap();
         File::create(root.join("secret.txt")).unwrap();
         File::create(root.join("README.md")).unwrap();
         // 让 `.zom/` 也对断言隐形。
@@ -1070,12 +1113,12 @@ mod tests {
             .into_iter()
             .map(|row| row.name.to_string())
             .collect();
-        // .gitignore 不影响文件树——target/debug（单子目录链折叠）和 secret.txt 都应可见。
+        // .gitignore 不影响文件树——output/debug（单子目录链折叠）和 secret.txt 都应可见。
         assert!(names.contains(&".gitignore".to_string()), "{names:?}");
         assert!(names.contains(&"README.md".to_string()), "{names:?}");
         assert!(
-            names.contains(&"target/debug".to_string()),
-            "target/debug 应可见（target/ 只有一个子目录 debug/，链折叠为一行）：{names:?}"
+            names.contains(&"output/debug".to_string()),
+            "output/debug 应可见：{names:?}"
         );
         assert!(
             names.contains(&"secret.txt".to_string()),
@@ -1083,41 +1126,34 @@ mod tests {
         );
     }
 
-    /// `.zomignore` 独立控制可见性——不依赖 `.gitignore`。
+    /// 内置规则覆盖常见杂项——无需 `.zomignore` 文件。
     #[test]
-    fn zomignore_should_control_visibility_independently() {
-        let root = tmp_root("zomignore-standalone");
-        create_dir_all(root.join("dist")).unwrap();
-        File::create(root.join("dist/bundle.js")).unwrap();
-        File::create(root.join("README.md")).unwrap();
-        create_dir_all(root.join(".zom")).unwrap();
-        // 用 .zomignore 隐藏 dist/ 和 .zom/ 自身。
-        std::fs::write(root.join(".zom/.zomignore"), ".zom/\ndist/\n").unwrap();
-
-        let tree = ProjectTree::new(root.clone()).unwrap();
-        let names: Vec<String> = tree
-            .visible_rows()
-            .into_iter()
-            .map(|row| row.name.to_string())
-            .collect();
-        assert!(names.contains(&"README.md".to_string()), "{names:?}");
-        assert!(
-            !names.contains(&"dist".to_string()),
-            "dist/ 应被 .zomignore 隐藏：{names:?}"
-        );
-    }
-
-    /// 默认 `.zomignore` 模板：只隐藏系统杂项文件；其余全部可见。
-    #[test]
-    fn default_zomignore_hides_system_files_only() {
-        let root = tmp_root("default-noise");
+    fn builtin_patterns_hide_common_noise() {
+        let root = tmp_root("builtin-noise");
+        // 版本控制元数据。
         create_dir_all(root.join(".git/objects")).unwrap();
+        // 巨型依赖目录。
         create_dir_all(root.join("node_modules/pkg")).unwrap();
+        // 构建产物目录。
         create_dir_all(root.join("target/debug")).unwrap();
-        create_dir_all(root.join("src")).unwrap();
+        create_dir_all(root.join("dist")).unwrap();
+        create_dir_all(root.join("build")).unwrap();
+        // 系统杂项文件。
         File::create(root.join(".DS_Store")).unwrap();
         File::create(root.join("Thumbs.db")).unwrap();
+        File::create(root.join("desktop.ini")).unwrap();
+        // 编辑器临时 / 崩溃恢复文件。
+        File::create(root.join("backup~")).unwrap();
+        File::create(root.join(".README.md.swp")).unwrap();
+        File::create(root.join(".~lock.test.docx#")).unwrap();
+        // Python 字节码 / venv。
+        create_dir_all(root.join("__pycache__")).unwrap();
+        File::create(root.join("mod.pyc")).unwrap();
+        create_dir_all(root.join(".venv/bin")).unwrap();
+        // 正常源码。
+        create_dir_all(root.join("src")).unwrap();
         File::create(root.join("main.rs")).unwrap();
+        File::create(root.join("README.md")).unwrap();
 
         let tree = ProjectTree::new(root.clone()).unwrap();
         let names: Vec<String> = tree
@@ -1125,7 +1161,8 @@ mod tests {
             .into_iter()
             .map(|row| row.name.to_string())
             .collect();
-        // 被默认模板隐藏的项。
+
+        // ── 应被隐藏 ──
         assert!(
             !names.contains(&".DS_Store".to_string()),
             ".DS_Store 应隐藏：{names:?}"
@@ -1134,20 +1171,112 @@ mod tests {
             !names.contains(&"Thumbs.db".to_string()),
             "Thumbs.db 应隐藏：{names:?}"
         );
-        // 未被隐藏的项。单子目录链被折叠为一行（如 .git/objects、target/debug）。
         assert!(
-            names.contains(&".git/objects".to_string()),
-            ".git 应可见：{names:?}"
+            !names.contains(&"desktop.ini".to_string()),
+            "desktop.ini 应隐藏：{names:?}"
         );
         assert!(
-            names.contains(&"node_modules/pkg".to_string()),
-            "node_modules 应可见：{names:?}"
+            !names.contains(&"backup~".to_string()),
+            "backup~ 应隐藏：{names:?}"
         );
         assert!(
-            names.contains(&"target/debug".to_string()),
-            "target/ 应可见：{names:?}"
+            !names.contains(&".README.md.swp".to_string()),
+            ".README.md.swp 应隐藏：{names:?}"
         );
-        assert!(names.contains(&"src".to_string()), "{names:?}");
-        assert!(names.contains(&"main.rs".to_string()), "{names:?}");
+        assert!(
+            !names.contains(&".~lock.test.docx#".to_string()),
+            ".~lock.test.docx# 应隐藏：{names:?}"
+        );
+        // 内置规则中的目录——被忽略后不进入 children，whole-dir 名不会出现在 visible_rows 中。
+        // 单子目录链折叠需要 children 中有子项，被忽略的目录无 children，
+        // 所以不会出现 ".git/objects" 之类的折叠名。
+        assert!(
+            !names.iter().any(|n| n.starts_with(".git")),
+            ".git/ 子树应隐藏：{names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("node_modules")),
+            "node_modules/ 子树应隐藏：{names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("target")),
+            "target/ 子树应隐藏：{names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("dist")),
+            "dist/ 应隐藏：{names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("build")),
+            "build/ 应隐藏：{names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("__pycache__")),
+            "__pycache__/ 应隐藏：{names:?}"
+        );
+        assert!(
+            !names.contains(&"mod.pyc".to_string()),
+            "mod.pyc 应隐藏：{names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with(".venv")),
+            ".venv/ 应隐藏：{names:?}"
+        );
+
+        // ── 应可见 ──
+        assert!(names.contains(&"src".to_string()), "src/ 应可见：{names:?}");
+        assert!(
+            names.contains(&"main.rs".to_string()),
+            "main.rs 应可见：{names:?}"
+        );
+        assert!(
+            names.contains(&"README.md".to_string()),
+            "README.md 应可见：{names:?}"
+        );
+    }
+
+    /// 项目级 `.zomignore` 追加在内置规则之后，可增补忽略 / 用 `!` 取消内置忽略。
+    #[test]
+    fn project_zomignore_extends_builtin() {
+        let root = tmp_root("zomignore-extend");
+        // 被内置规则隐藏的目录。
+        create_dir_all(root.join("node_modules/pkg")).unwrap();
+        // 不被内置规则隐藏的自定义目录。
+        create_dir_all(root.join("mydata")).unwrap();
+        File::create(root.join("mydata/config.json")).unwrap();
+        File::create(root.join("README.md")).unwrap();
+
+        // 用户 .zomignore：取消 node_modules 的忽略，追加隐藏 mydata/ 和 .zom/ 自身。
+        create_dir_all(root.join(".zom")).unwrap();
+        std::fs::write(
+            root.join(".zom/.zomignore"),
+            "!node_modules/\n.zom/\nmydata/\n",
+        )
+        .unwrap();
+
+        let tree = ProjectTree::new(root.clone()).unwrap();
+        let names: Vec<String> = tree
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.name.to_string())
+            .collect();
+
+        // node_modules/ 被用户用 ! 取消忽略——应恢复可见。
+        assert!(
+            names.iter().any(|n| n.starts_with("node_modules")),
+            "node_modules 应被 ! 恢复可见：{names:?}"
+        );
+        // mydata/ 被用户追加忽略。
+        assert!(
+            !names.iter().any(|n| n.starts_with("mydata")),
+            "mydata 应被 .zomignore 隐藏：{names:?}"
+        );
+        // .zom/ 被用户隐藏。
+        assert!(
+            !names.iter().any(|n| n.starts_with(".zom")),
+            ".zom/ 应被隐藏：{names:?}"
+        );
+        // 不受影响的文件。
+        assert!(names.contains(&"README.md".to_string()), "{names:?}");
     }
 }

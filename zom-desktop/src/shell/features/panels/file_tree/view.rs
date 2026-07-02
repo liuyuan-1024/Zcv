@@ -172,8 +172,6 @@ fn selected_item_index(items: &[FileTreeItem], state: &FileTreeState) -> Option<
 fn render_input_row(kind: EntryKind, depth: usize, slot: &Rc<TextEditorSlot>) -> Div {
     let is_dir = matches!(kind, EntryKind::Directory);
     tree::row_skeleton(depth)
-        .border_1()
-        .border_color(color::current().blue.s07)
         .text_color(color::current().gray.s09)
         .child(tree::guide_lines(depth))
         .child(tree::icon(is_dir, true))

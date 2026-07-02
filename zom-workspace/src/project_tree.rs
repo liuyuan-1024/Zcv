@@ -349,8 +349,8 @@ impl ProjectTree {
 
     /// 自根向下做 DFS，按目录优先 + 字母序产出可见行。
     ///
-    /// 按 Zed 的单子目录折叠方式：展开目录若只有一个子目录，省略本行，
-    /// 名称累积到 `chain_prefix` 传给下一层。折叠态也沿链拼接名以保持视觉上下文一致。
+    /// 单子目录链折叠：展开的目录若仅有一个子目录，沿链走到链终点，推一行拼接名，再递归链终点的子项。
+    /// 折叠态目录也用同一链名拼接保持上下文一致。
     /// 预加载保证所有目录已在 `children` 中，无需按需 IO。
     pub fn visible_rows(&self) -> Vec<TreeRow> {
         let mut rows = Vec::new();
@@ -363,129 +363,74 @@ impl ProjectTree {
             expanded: root_expanded,
         });
         if root_expanded {
-            self.collect_visible(&self.root, 1, String::new(), None, &mut rows);
+            self.collect_visible(&self.root, 1, &mut rows);
         }
         rows
     }
 
-    fn collect_visible(
-        &self,
-        dir: &Path,
-        depth: usize,
-        chain_prefix: String,
-        chain_start: Option<PathBuf>,
-        rows: &mut Vec<TreeRow>,
-    ) {
+    /// DFS 收集 `dir` 的子项到 `rows`。每条路径都是统一的「推一行 → 若展开则递归子项」。
+    fn collect_visible(&self, dir: &Path, depth: usize, rows: &mut Vec<TreeRow>) {
         let Some(entries) = self.children.get(dir) else {
             return;
         };
         let entries: Vec<TreeEntry> = entries.clone();
         for entry in entries.iter() {
             let is_dir = matches!(entry.kind, EntryKind::Directory);
-            let explicitly_expanded = is_dir && self.expanded.contains(&entry.path);
-            // 在链中的目录视为等效展开——上层已展开并沿链走到这里，本层也应展示子项。
-            let in_chain = !chain_prefix.is_empty();
-            let expanded = explicitly_expanded || in_chain;
+            let expanded = is_dir && self.expanded.contains(&entry.path);
 
-            // 单子目录链省略：显式展开 + 只有一个子目录，或者已在链中继续向下。
-            if self.single_dir_child(&entry.path) && (explicitly_expanded || in_chain) {
-                let start = chain_start.clone().unwrap_or_else(|| entry.path.clone());
-                // 前缀加入本目录名
-                let mid = if chain_prefix.is_empty() {
-                    entry.name.clone()
+            if is_dir && expanded && self.single_dir_child(&entry.path) {
+                // 单子目录链折叠：沿链走到底，推一行拼接名，再递归链终点的子项。
+                let (chain_end, chain_name) = self.resolve_chain(&entry.path, &entry.name);
+                rows.push(TreeRow {
+                    path: entry.path.clone(),
+                    name: chain_name,
+                    depth,
+                    kind: EntryKind::Directory,
+                    expanded: true,
+                });
+                self.collect_visible(&chain_end, depth + 1, rows);
+            } else {
+                // 常规路径。
+                let display_name = if is_dir && !expanded {
+                    Self::folded_name(self, &entry.path, entry.name.clone())
                 } else {
-                    format!("{}/{}", chain_prefix, entry.name)
+                    entry.name.clone()
                 };
-                // 唯一子目录也在链中，其名一并加入前缀。
-                let child = self.children.get(&entry.path).and_then(|k| k.first());
-                if let Some(child) = child {
-                    let next_prefix = if mid.is_empty() {
-                        child.name.clone()
-                    } else {
-                        format!("{}/{}", mid, child.name)
-                    };
-                    if self.single_dir_child(&child.path) {
-                        // 子目录仍有单子目录 → 继续省略
-                        self.collect_visible(&child.path, depth, next_prefix, Some(start), rows);
-                    } else {
-                        // 链末端 → push，path 用链起点以保证 toggle 折叠整条链
-                        rows.push(TreeRow {
-                            path: start,
-                            name: next_prefix,
-                            depth,
-                            kind: child.kind,
-                            expanded: true,
-                        });
-                        // 直接处理子项——文件直接 push，目录走 collect_visible
-                        if let Some(kids) = self.children.get(&child.path) {
-                            let kids: Vec<TreeEntry> = kids.clone();
-                            for grandchild in kids.iter() {
-                                if grandchild.kind == EntryKind::Directory {
-                                    self.collect_visible(
-                                        &grandchild.path,
-                                        depth + 1,
-                                        String::new(),
-                                        None,
-                                        rows,
-                                    );
-                                } else {
-                                    rows.push(TreeRow {
-                                        path: grandchild.path.clone(),
-                                        name: grandchild.name.clone(),
-                                        depth: depth + 1,
-                                        kind: grandchild.kind,
-                                        expanded: false,
-                                    });
-                                }
-                            }
-                        }
-                    }
+                rows.push(TreeRow {
+                    path: entry.path.clone(),
+                    name: display_name,
+                    depth,
+                    kind: entry.kind,
+                    expanded,
+                });
+                if expanded {
+                    self.collect_visible(&entry.path, depth + 1, rows);
                 }
-                continue;
-            }
-
-            // 不省略：消费前缀拼显示名
-            let base_name = if chain_prefix.is_empty() {
-                entry.name.clone()
-            } else {
-                format!("{}/{}", chain_prefix, entry.name)
-            };
-
-            // 折叠态目录：沿已加载的链追加后缀名（与展开态保持一致的视觉上下文）
-            let display_name = if is_dir && !expanded {
-                Self::folded_name(self, &entry.path, base_name)
-            } else {
-                base_name
-            };
-
-            rows.push(TreeRow {
-                path: entry.path.clone(),
-                name: display_name,
-                depth,
-                kind: entry.kind,
-                expanded,
-            });
-
-            if expanded {
-                self.collect_visible(&entry.path, depth + 1, String::new(), None, rows);
             }
         }
     }
 
-    /// 沿已加载的单子目录链拼接折叠名（如 `"a"` → `"a/b/c"`）。
-    fn folded_name(&self, start: &Path, base: String) -> String {
-        let mut name = base;
+    /// 沿单子目录链走到终点，返回 `(链终点路径, 拼接名)`。
+    ///
+    /// 例如 `a/ → b/ → c/`（c/ 有多个子项）：返回 `(c/, "a/b/c")`。
+    /// 若 `start` 自身不是单子目录，返回 `(start, base)`。
+    fn resolve_chain(&self, start: &Path, base: &str) -> (PathBuf, String) {
+        let mut name = base.to_string();
         let mut current = start.to_path_buf();
-        loop {
-            let children = self.children.get(&current);
-            let kids = match children {
-                Some(k) if k.len() == 1 && k[0].kind == EntryKind::Directory => k,
-                _ => break,
-            };
-            name = format!("{}/{}", name, kids[0].name);
-            current = kids[0].path.clone();
+        while self.single_dir_child(&current) {
+            if let Some(child) = self.children.get(&current).and_then(|k| k.first()) {
+                name = format!("{}/{}", name, child.name);
+                current = child.path.clone();
+            } else {
+                break;
+            }
         }
-        name
+        (current, name)
+    }
+
+    /// 折叠态目录沿已加载的单子目录链拼接后缀名（如 `"a"` → `"a/b/c"`）。
+    fn folded_name(&self, start: &Path, base: String) -> String {
+        self.resolve_chain(start, &base).1
     }
 
     /// 目录是否只有一个子目录（可被折叠省略）。
@@ -1278,5 +1223,48 @@ mod tests {
         );
         // 不受影响的文件。
         assert!(names.contains(&"README.md".to_string()), "{names:?}");
+    }
+
+    /// 链末端目录应显示为独立行——回归测试：目录子项不能被展平到上级。
+    ///
+    /// 场景：`a/b/c/你好.md` + `a/b/哈喽.md`，展开 a/。
+    /// a/ 下只有 b/ → 启动单子目录链 → b/ 下有 c/ 和 哈喽.md → 链结束于 b/。
+    /// c/ 应作为 b/ 的子行出现，而非被吞掉让 你好.md 直接挂在 a/b/ 下。
+    #[test]
+    fn chain_end_directory_should_appear_as_own_row() {
+        let root = tmp_root("chain-end-dir");
+        create_dir_all(root.join("a/b/c")).unwrap();
+        File::create(root.join("a/b/c/你好.md")).unwrap();
+        File::create(root.join("a/b/哈喽.md")).unwrap();
+
+        let mut tree = ProjectTree::new(root.clone()).unwrap();
+        // 展开 a/ 和 c/：a/ → b/ 触发单子目录链折叠，c/ → 显示其子项 你好.md
+        tree.expand(&root.join("a")).unwrap();
+        tree.expand(&root.join("a/b/c")).unwrap();
+
+        let rows: Vec<(String, usize)> = tree
+            .visible_rows()
+            .into_iter()
+            .map(|row| (row.name.to_string(), row.depth))
+            .collect();
+        let root_name = root_display_name(&root);
+
+        // ── 期望结构 ──
+        // root          depth 0
+        //   a/b/        depth 1  ← 链折叠：a/ → b/
+        //     c/        depth 2  ← 关键：c/ 必须是一行
+        //       你好.md  depth 3
+        //     哈喽.md    depth 2
+        let expected = vec![
+            (root_name, 0usize),
+            ("a/b".to_string(), 1),
+            ("c".to_string(), 2),
+            ("你好.md".to_string(), 3),
+            ("哈喽.md".to_string(), 2),
+        ];
+        assert_eq!(
+            rows, expected,
+            "链末端目录 c/ 应作为独立行出现，不能被子项展平"
+        );
     }
 }

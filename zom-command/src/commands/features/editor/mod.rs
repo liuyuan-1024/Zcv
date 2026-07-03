@@ -1413,9 +1413,9 @@ fn run_close_tab(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let view_id = if args.is_empty() {
-        // 键盘快捷键路径：keymap 绑定时无参，从 context 取当前活动 view。
+        // 键盘快捷键路径：keymap 绑定时无参，取当前活动 view（不限类型，预览 tab 也可关闭）。
         context
-            .active_view_id
+            .any_active_view_id
             .ok_or_else(|| CommandError::InvalidArgs("没有活动标签可关闭".into()))?
     } else {
         // 点击标签关闭 glyph 路径：args 含序列化的 ViewId。

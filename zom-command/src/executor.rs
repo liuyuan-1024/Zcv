@@ -18,12 +18,11 @@ use crate::{CommandArgs, CommandError, CommandId, CommandRegistry, DismissStacks
 pub struct CommandContext<'a> {
     pub workspace: &'a mut Workspace,
     pub views: &'a mut ViewSet,
-    /// 主编辑区当前活动**编辑** view 的 id。
-    ///
-    /// 由宿主（组合根）在派发前从 `WorkspaceSession::active_edit_view_id()` 取得并填入。
-    /// `None` 表示当前没有活动编辑 view（如所有 tab 关闭或活动的是预览 tab）。
-    /// 编辑命令通过 [`Self::active_view`] / [`Self::active_view_mut`] / [`Self::active_view_buffer`] 访问对应 view。
+    /// 当前活动编辑 view 的 id。`None` 表示没有活动编辑 view（如所有 tab 关闭或活动的是预览 tab）。
     pub active_view_id: Option<ViewId>,
+    /// 当前活动 view 的 id，不限类型（编辑 view 与预览 view 均可）。
+    /// 仅用于关闭标签等不关心 view 类型的命令。
+    pub any_active_view_id: Option<ViewId>,
     /// 聚焦的输入框编辑目标。`Some` 时编辑命令作用于它而非主编辑区 —— 由宿主（组合根）在派发前按 GPUI 焦点决定。
     pub focused_field: Option<EditTarget<'a>>,
     pub queue: &'a mut CommandQueue,
@@ -31,9 +30,8 @@ pub struct CommandContext<'a> {
     /// 剪贴板端口：copy / cut / paste handler 读写宿主剪贴板。
     /// engine 不持有剪贴板状态，宿主在派发前注入实现（GPUI 适配器或 headless noop 实现）。
     pub clipboard: &'a mut dyn ClipboardPort,
-    /// 各上下文家族的 dismiss 栈：
-    /// esc 路径与"begin/cancel/commit"瞬态命令通过 [`DismissStacks::push`] / [`DismissStacks::pop_top`] / [`DismissStacks::remove`] 协调,
-    /// 避免在同一上下文里两个命令都静态绑 esc 造成冲突。详见 [`crate::dismiss`]。
+    /// 瞬态上下文（搜索栏、重命名输入框、删除确认等）的 dismiss 栈。
+    /// esc 路径与 begin/cancel/commit 命令通过它协调，避免同一上下文里多个命令静态绑 esc 造成冲突。
     pub dismiss: &'a mut DismissStacks,
     /// 宿主在派发前决定的编辑历史合并策略；
     /// 命令只负责把它写入事务 metadata。

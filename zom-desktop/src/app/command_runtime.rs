@@ -79,11 +79,13 @@ impl CommandRuntime {
             .map(|target| target.buffer.snapshot().version());
         let mut effects = EffectQueue::new();
         let active_view_id = session.active_edit_view_id();
+        let any_active_view_id = session.active_view_id();
         let (workspace, views) = session.parts_mut();
         let mut context = CommandContext {
             workspace,
             views,
             active_view_id,
+            any_active_view_id,
             focused_field,
             queue: &mut self.queue,
             effects: &mut effects,
@@ -123,11 +125,13 @@ impl CommandRuntime {
 
         let mut effects = EffectQueue::new();
         let active_view_id = session.active_edit_view_id();
+        let any_active_view_id = session.active_view_id();
         let (workspace, views) = session.parts_mut();
         let mut context = CommandContext {
             workspace,
             views,
             active_view_id,
+            any_active_view_id,
             focused_field: None,
             queue: &mut self.queue,
             effects: &mut effects,

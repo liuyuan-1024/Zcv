@@ -21,7 +21,7 @@ pub use buffer_search::{
     BufferSearch, BufferSearchOptions, CurrentReplaceTarget, SearchSyncOutcome,
 };
 pub use document::SyntaxDocument;
-pub use project_tree::{EntryKind, ProjectTree, TreeRow};
+pub use project_tree::{EntryKind, ProjectTree, TreeRow, rebase_path};
 
 use std::collections::BTreeMap;
 use std::fmt;

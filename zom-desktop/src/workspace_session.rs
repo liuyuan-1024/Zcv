@@ -206,8 +206,8 @@ impl WorkspaceSession {
             .buffers()
             .filter_map(|(id, buffer)| {
                 let path = buffer.path()?;
-                let rest = path.strip_prefix(old_prefix).ok()?;
-                Some((id, new_prefix.join(rest)))
+                let new_path = zom_workspace::rebase_path(path, old_prefix, new_prefix)?;
+                Some((id, new_path))
             })
             .collect();
         for (id, new_path) in updates {

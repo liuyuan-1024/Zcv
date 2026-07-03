@@ -333,10 +333,7 @@ impl ProjectTree {
             .expanded
             .iter()
             .filter_map(|expanded| {
-                expanded
-                    .strip_prefix(path)
-                    .ok()
-                    .map(|rest| (expanded.clone(), dst.join(rest)))
+                rebase_path(expanded, path, &dst).map(|new_path| (expanded.clone(), new_path))
             })
             .collect();
         for (old, new) in rebased {
@@ -475,12 +472,26 @@ impl ProjectTree {
         Ok(())
     }
 
-    /// 全量重载整棵目录树——预加载模式下每次文件变更都需要完整刷新，
-    /// 否则深层单子目录链因中间目录未加载而断裂。
+    /// 全量重载整棵目录树。
+    /// 预加载模式下每次文件变更都需要完整刷新，否则深层单子目录链因中间目录未加载而断裂。
     pub fn reload_expanded_dirs(&mut self) -> io::Result<()> {
         let root = self.root.clone();
         self.children.clear();
         self.preload_dir(&root)
+    }
+}
+
+/// 将路径从旧前缀换为新前缀。
+///
+/// `Path::join("")` 会在末尾追加 `/`，因此 `rest` 为空时必须直接用 `new_prefix`，否则路径末尾会出现多余的路径分隔符，导致 `Not a directory` 等错误。
+///
+/// 文件树 expanded 重定向与 workspace buffer 重绑定共用本函数，避免各自手写 `strip_prefix + join` 时遗漏同一个边界条件。
+pub fn rebase_path(path: &Path, old_prefix: &Path, new_prefix: &Path) -> Option<PathBuf> {
+    let rest = path.strip_prefix(old_prefix).ok()?;
+    if rest.as_os_str().is_empty() {
+        Some(new_prefix.to_path_buf())
+    } else {
+        Some(new_prefix.join(rest))
     }
 }
 

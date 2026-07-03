@@ -15,7 +15,7 @@ use crate::shell::normalized_chord;
 use crate::shell::shared::scroll;
 use crate::shell::shared::tree::{self};
 use crate::shell::workbench::PanelContext;
-use crate::theme::{color, space, typography};
+use crate::theme::{color, typography};
 use zom_workspace::EntryKind;
 
 use super::{FileTreeRow, FileTreeState};
@@ -78,7 +78,6 @@ fn render_list(
     div()
         .relative()
         .size_full()
-        .p(space::s4())
         .text_color(color::current().gray.s08)
         .child(
             uniform_list("file-tree-list", items.len(), move |range, _, _| {

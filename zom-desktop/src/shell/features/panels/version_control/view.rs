@@ -37,7 +37,6 @@ pub(super) fn render_list(
     div()
         .relative()
         .size_full()
-        .p(space::s4())
         .text_size(typography::ui())
         .line_height(typography::ui_line())
         .text_color(color::current().gray.s08)

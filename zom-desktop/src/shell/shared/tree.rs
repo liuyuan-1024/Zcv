@@ -28,8 +28,9 @@ pub(crate) fn row_skeleton(depth: usize) -> gpui::Div {
         .flex_row()
         .items_center()
         .w_full()
-        .gap(typography::ui_line() / 4.0) // ≈ 图标间距
+        .gap(space::s4())
         .rounded(radius::r2())
+        .px(space::s4()) // 水平内边距从外层容器移入行内，使 hover 背景与选中框等宽
         .pl(indent_unit() * (depth as f32))
         .text_size(typography::ui())
         .line_height(typography::ui_line())
@@ -111,7 +112,7 @@ pub(crate) fn render_row_base(depth: usize, is_dir: bool, expanded: bool, name: 
 
 // ── 选中框 ──
 
-/// 容器层选中浮层——渲染在 uniform_list 外部，避免列表裁切。
+/// 容器层选中浮层——渲染在 uniform_list 外部，不参与行布局，避免切换时抖动。
 ///
 /// `selected_index` 是选中行在 flat list 中的索引，`None` 时无选中。
 pub(crate) fn list_selection_overlay(
@@ -119,13 +120,12 @@ pub(crate) fn list_selection_overlay(
     scroll_handle: &scroll::ScrollHandle,
 ) -> Option<gpui::Div> {
     selected_index.map(|idx| {
-        let top =
-            space::s4() + typography::ui_line() * (idx as f32) - scroll_handle.scroll_offset_y();
+        let top = typography::ui_line() * (idx as f32) - scroll_handle.scroll_offset_y();
         selection_overlay().top(top)
     })
 }
 
-/// 选中行浮层边框——absolute 覆盖整行，不参与布局。
+/// 选中行蓝框——absolute 覆盖整行，不参与布局，避免 border 切换导致抖动。
 fn selection_overlay() -> gpui::Div {
     div()
         .absolute()

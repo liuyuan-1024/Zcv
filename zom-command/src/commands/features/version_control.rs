@@ -2,9 +2,11 @@
 
 use crate::commands::args::MoveDeltaArgs;
 use crate::commands::cid;
+use crate::commands::emit;
+use crate::commands::system::dismiss as dismiss_top;
 use crate::{
-    CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, HostEffect,
-    Invocation, KeyBindingContext, Keymap, NoArgs, PanelKind, VersionControlEffect,
+    CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
+    HostEffect, Invocation, KeyContext, Keymap, NoArgs, PanelKind, VersionControlEffect,
 };
 
 /// 版本控制面板当前键盘模式。
@@ -19,11 +21,6 @@ pub enum VersionControlKeyMode {
     Navigate,
     /// 提交信息编辑：文本输入、换行、Esc 取消。
     CommitMessage,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct VersionControlBindingContext {
-    pub mode: VersionControlKeyMode,
 }
 
 pub const MOVE_SELECTION: &str = "version_control.move_selection";
@@ -77,8 +74,8 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         "mod shift g",
     );
 
-    let vc_navigate = KeyBindingContext::version_control(VersionControlKeyMode::Navigate);
-    let vc_commit_msg = KeyBindingContext::version_control(VersionControlKeyMode::CommitMessage);
+    let vc_navigate = KeyContext::version_control(VersionControlKeyMode::Navigate);
+    let vc_commit_msg = KeyContext::version_control(VersionControlKeyMode::CommitMessage);
 
     registry
         .install(
@@ -87,6 +84,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "移动版本管理选中项",
             Box::new(run_move_selection),
         )
+        .description("在版本管理面板中上下移动选中项。")
         .key_with_in("up", move_args(-1), vc_navigate)
         .key_with_in("down", move_args(1), vc_navigate);
 
@@ -94,37 +92,47 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .install(
             keymap,
             ACTIVATE,
-            "激活版本管理条目（文件=打开，目录=折叠展开）",
-            Box::new(run_activate),
+            "激活版本管理条目",
+            emit(HostEffect::VersionControl(VersionControlEffect::Activate)),
         )
+        .description("打开文件或折叠/展开目录。")
         .key_in("enter", vc_navigate);
 
-    registry.install(
-        keymap,
-        TOGGLE,
-        "折叠或展开版本管理目录",
-        Box::new(run_toggle),
-    );
+    registry
+        .install(
+            keymap,
+            TOGGLE,
+            "暂存切换",
+            emit(HostEffect::VersionControl(VersionControlEffect::Toggle)),
+        )
+        .description("暂存或取消暂存当前选中文件。")
+        .key_in("space", vc_navigate);
 
     registry
         .install(
             keymap,
             COLLAPSE_OR_PARENT,
-            "折叠目录或跳转到父目录",
-            Box::new(run_collapse_or_parent),
+            "折叠或跳到父目录",
+            emit(HostEffect::VersionControl(
+                VersionControlEffect::CollapseOrParent,
+            )),
         )
+        .description("折叠当前展开的目录，或跳转到父级。")
         .key_in("left", vc_navigate);
 
     registry
         .install(
             keymap,
             EXPAND_OR_INTO,
-            "展开目录或进入子项",
-            Box::new(run_expand_or_into),
+            "展开或进入子项",
+            emit(HostEffect::VersionControl(
+                VersionControlEffect::ExpandOrInto,
+            )),
         )
+        .description("展开目录或进入子文件。")
         .key_in("right", vc_navigate);
 
-    // ── 提交信息编辑 ──
+    // ── 提交信息编辑（需 dismiss 栈，不能用 emit）──
 
     registry
         .install(
@@ -133,6 +141,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "编辑提交信息",
             Box::new(run_edit_commit_message),
         )
+        .description("进入提交信息编辑模式。")
         .key_in("c", vc_navigate);
 
     registry
@@ -142,10 +151,15 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "取消提交信息编辑",
             Box::new(run_cancel_commit_message),
         )
-        .key_in("escape", vc_commit_msg);
+        .hide_from_shortcuts();
 
     // COMMIT 命令只注册不绑键盘快捷键，由 Glyph 按钮触发。
-    registry.install(keymap, COMMIT, "提交变更", Box::new(run_commit));
+    registry
+        .install(keymap, COMMIT, "提交变更", Box::new(run_commit))
+        .hide_from_shortcuts();
+
+    // esc 走 dismiss 栈统一路由（与 file_tree、search、go_to_line 一致）
+    dismiss_top::bind_esc(keymap, DismissScope::VersionControl, vc_commit_msg);
 }
 
 fn run_move_selection(
@@ -159,55 +173,17 @@ fn run_move_selection(
     Ok(CommandOutcome::default())
 }
 
-fn run_activate(
-    context: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    context
-        .effects
-        .push(HostEffect::VersionControl(VersionControlEffect::Activate));
-    Ok(CommandOutcome::default())
-}
-
-fn run_toggle(
-    context: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    context
-        .effects
-        .push(HostEffect::VersionControl(VersionControlEffect::Toggle));
-    Ok(CommandOutcome::default())
-}
-
-fn run_collapse_or_parent(
-    context: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    context.effects.push(HostEffect::VersionControl(
-        VersionControlEffect::CollapseOrParent,
-    ));
-    Ok(CommandOutcome::default())
-}
-
-fn run_expand_or_into(
-    context: &mut CommandContext<'_>,
-    args: CommandArgs,
-) -> Result<CommandOutcome, CommandError> {
-    NoArgs::try_from(args)?;
-    context.effects.push(HostEffect::VersionControl(
-        VersionControlEffect::ExpandOrInto,
-    ));
-    Ok(CommandOutcome::default())
-}
-
 fn run_edit_commit_message(
     context: &mut CommandContext<'_>,
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::VersionControl);
+    context.dismiss.push(
+        DismissScope::VersionControl,
+        "取消提交信息编辑",
+        cancel_commit_message(),
+    );
     context.effects.push(HostEffect::VersionControl(
         VersionControlEffect::EditCommitMessage,
     ));
@@ -219,6 +195,7 @@ fn run_cancel_commit_message(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::VersionControl);
     context.effects.push(HostEffect::VersionControl(
         VersionControlEffect::CancelCommitMessage,
     ));
@@ -230,6 +207,7 @@ fn run_commit(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     NoArgs::try_from(args)?;
+    context.dismiss.clear(DismissScope::VersionControl);
     context
         .effects
         .push(HostEffect::VersionControl(VersionControlEffect::Commit));

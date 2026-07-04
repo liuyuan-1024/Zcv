@@ -6,7 +6,7 @@ use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     BranchEffect, CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry,
-    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SurfaceEffect,
+    DismissScope, HostEffect, Invocation, KeyContext, Keymap, NoArgs, SurfaceEffect,
 };
 
 pub const SHOW_PICKER: &str = "branch_picker.show_picker";
@@ -36,7 +36,7 @@ pub fn delete() -> Invocation {
 }
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
-    let ctx = KeyBindingContext::branch_picker();
+    let ctx = KeyContext::branch_picker();
 
     registry
         .install(keymap, SHOW_PICKER, "切换分支", Box::new(run_show_picker))

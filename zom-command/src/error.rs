@@ -4,14 +4,14 @@ use std::fmt;
 
 use zom_workspace::BufferId;
 
-use crate::{CommandId, KeyBindingContext, KeySequence, keymap_format};
+use crate::{CommandId, KeyContext, KeySequence, keymap_format};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommandError {
     DuplicateCommand(CommandId),
     DuplicateKeyBinding {
         sequence: KeySequence,
-        context: KeyBindingContext,
+        context: KeyContext,
     },
     InvalidCommandId,
     InvalidKeyChord,

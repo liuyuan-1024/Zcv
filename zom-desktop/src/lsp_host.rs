@@ -26,38 +26,10 @@ use zom_lsp::{LspClient, LspError, NotificationHandler};
 use zom_workspace::syntax::LanguageId;
 use zom_workspace::{BufferId, Workspace};
 
-/// 一个文件的 LSP 诊断集合。
-/// 预留给诊断面板展示使用，当前通过 diagnostics_handle 对外暴露。
-#[derive(Clone, Debug, Default)]
-#[allow(dead_code)]
-pub struct FileDiagnostics {
-    pub diagnostics: Vec<lsp_types::Diagnostic>,
-}
-
-/// LSP 主机状态快照——供 UI 只读查询。
-/// 预留给语言服务器浮面使用，当前 snapshot() 已构造但消费方尚未接入。
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub struct LspHostSnapshot {
-    /// 每个已连接的语言服务器及其状态。
-    pub servers: Vec<ServerStatus>,
-}
-
-/// 单个语言服务器的连接状态。
-/// 预留给语言服务器浮面使用。
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub struct ServerStatus {
-    pub language_id: LanguageId,
-    pub command: String,
-    pub connected: bool,
-    pub has_semantic_tokens: bool,
-}
-
 /// LSP 主机：按需启动 language server，路由文档同步，收集诊断，每帧推进后台状态。
 pub struct LspHost {
     clients: HashMap<LanguageId, LspClient>,
-    diagnostics: Arc<Mutex<HashMap<Uri, FileDiagnostics>>>,
+    diagnostics: Arc<Mutex<HashMap<Uri, Vec<lsp_types::Diagnostic>>>>,
     project_root: Option<std::path::PathBuf>,
     /// 已通过 did_open 通知过 LSP server 的 buffer。
     lsp_opened: HashSet<BufferId>,
@@ -105,39 +77,13 @@ impl LspHost {
     }
 
     /// 诊断数据的共享句柄——UI 侧在 frame pump 中轮询读取。
-    pub fn diagnostics_handle(&self) -> Arc<Mutex<HashMap<Uri, FileDiagnostics>>> {
+    pub fn diagnostics_handle(&self) -> Arc<Mutex<HashMap<Uri, Vec<lsp_types::Diagnostic>>>> {
         Arc::clone(&self.diagnostics)
-    }
-
-    /// 主机状态快照——供语言服务器浮面等 UI 消费。
-    /// 预留给语言服务器浮面使用，当前已构造但消费方尚未接入。
-    #[allow(dead_code)]
-    pub fn snapshot(&self) -> LspHostSnapshot {
-        let servers = self
-            .clients
-            .iter()
-            .map(|(lang_id, client)| ServerStatus {
-                language_id: *lang_id,
-                command: default_server_command(*lang_id)
-                    .map(|(cmd, _)| cmd.to_string())
-                    .unwrap_or_else(|| "-".to_string()),
-                connected: true,
-                has_semantic_tokens: client.has_semantic_tokens(),
-            })
-            .collect();
-        LspHostSnapshot { servers }
     }
 
     /// 手动插入一个已启动的 client——供异步启动路径使用。
     pub fn insert_client(&mut self, language_id: LanguageId, client: LspClient) {
         self.clients.insert(language_id, client);
-    }
-
-    /// 是否有任何已连接的 server。
-    /// 此方法预留给 UI 层（如语言服务器浮面）展示连接状态使用，当前尚未接入。
-    #[allow(dead_code)]
-    pub fn has_connected_servers(&self) -> bool {
-        !self.clients.is_empty()
     }
 
     /// 返回 `language_id` 对应的已连接 client——用于发送异步请求。
@@ -417,20 +363,6 @@ impl LspHost {
         )
     }
 
-    /// buffer 关闭时调用。
-    /// 此方法预留给 LSP didClose 协议——当前 buffer 生命周期由 workspace 管理，
-    /// 尚未接入关闭通知。保留以便后续完善协议完整性。
-    #[allow(dead_code)]
-    pub fn did_close(&mut self, path: &Path, language_id: LanguageId) -> Result<(), LspError> {
-        let Some(uri) = path_to_uri(path) else {
-            return Ok(());
-        };
-        let Some(client) = self.clients.get_mut(&language_id) else {
-            return Ok(());
-        };
-        client.did_close(uri)
-    }
-
     // ── server lifecycle ─────────────────────────────────────────
 
     /// 确保 `language_id` 对应的 server 已启动。
@@ -489,7 +421,7 @@ impl Drop for LspHost {
 ///
 /// 在后台读线程上执行——只做 `Arc<Mutex<>>` 写入，不碰 UI 状态。
 struct LspHostHandler {
-    diagnostics: Arc<Mutex<HashMap<Uri, FileDiagnostics>>>,
+    diagnostics: Arc<Mutex<HashMap<Uri, Vec<lsp_types::Diagnostic>>>>,
 }
 
 impl NotificationHandler for LspHostHandler {
@@ -509,7 +441,7 @@ impl NotificationHandler for LspHostHandler {
                 .unwrap_or_default();
 
             if let Ok(mut map) = self.diagnostics.lock() {
-                map.insert(parsed_uri, FileDiagnostics { diagnostics: diags });
+                map.insert(parsed_uri, diags);
             }
         }
         // 后续扩展：window/logMessage, window/showMessage 等

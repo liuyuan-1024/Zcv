@@ -9,7 +9,7 @@ use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
-    FileTreeEffect, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, PanelKind,
+    FileTreeEffect, HostEffect, Invocation, KeyContext, Keymap, NoArgs, PanelKind,
 };
 
 pub const MOVE_SELECTION: &str = "file_tree.move_selection";
@@ -49,11 +49,6 @@ pub enum FileTreeKeyMode {
     PendingRename,
     /// 删除确认弹窗打开中：只响应确认 / 取消。
     PendingDelete,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FileTreeBindingContext {
-    pub mode: FileTreeKeyMode,
 }
 
 pub fn move_selection(delta: isize) -> Invocation {
@@ -138,10 +133,10 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         "mod shift e",
     );
 
-    let navigate = KeyBindingContext::file_tree(FileTreeKeyMode::Navigate);
-    let pending_name = KeyBindingContext::file_tree(FileTreeKeyMode::PendingName);
-    let pending_rename = KeyBindingContext::file_tree(FileTreeKeyMode::PendingRename);
-    let pending_delete = KeyBindingContext::file_tree(FileTreeKeyMode::PendingDelete);
+    let navigate = KeyContext::file_tree(FileTreeKeyMode::Navigate);
+    let pending_name = KeyContext::file_tree(FileTreeKeyMode::PendingName);
+    let pending_rename = KeyContext::file_tree(FileTreeKeyMode::PendingRename);
+    let pending_delete = KeyContext::file_tree(FileTreeKeyMode::PendingDelete);
 
     registry
         .install(
@@ -211,7 +206,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_begin_new_entry),
         )
         .description("在当前目录中默认新建文件，在名称后加 / 会被识别为目录（可嵌套新建）。")
-        .key_in("mod n", navigate);
+        .key_in("n", navigate);
 
     registry
         .install(
@@ -237,7 +232,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             Box::new(run_begin_rename),
         )
         .description("重命名焦点行的名称。")
-        .key_in("mod r", navigate);
+        .key_in("r", navigate);
 
     registry
         .install(

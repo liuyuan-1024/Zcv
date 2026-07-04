@@ -8,7 +8,7 @@ use crate::commands::cid;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandHandler, CommandOutcome, CommandRegistry,
-    DismissScope, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SettingsChangeRequest,
+    DismissScope, HostEffect, Invocation, KeyContext, Keymap, NoArgs, SettingsChangeRequest,
     SurfaceEffect, reject_unknown_args, required_arg,
 };
 
@@ -33,9 +33,6 @@ pub const DECREASE_UI_FONT_SIZE: &str = "settings.decrease_ui_font_size";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SettingsKeyContext;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SettingsBindingContext;
-
 pub fn open() -> Invocation {
     (cid(OPEN), CommandArgs::new())
 }
@@ -57,22 +54,33 @@ pub struct SettingsChangeArgs {
     pub change: SettingsChangeRequest,
 }
 
+impl SettingsChangeArgs {
+    const KEY_KIND: &str = "kind";
+    const KEY_DELTA: &str = "delta";
+
+    fn known_keys() -> &'static [&'static str] {
+        &[Self::KEY_KIND, Self::KEY_DELTA]
+    }
+}
+
 impl From<SettingsChangeArgs> for CommandArgs {
     fn from(args: SettingsChangeArgs) -> Self {
         match args.change {
             SettingsChangeRequest::AdjustUiFont(delta) => CommandArgs::new()
-                .with("kind", "adjust_ui_font")
-                .with("delta", delta.to_string()),
+                .with(SettingsChangeArgs::KEY_KIND, "adjust_ui_font")
+                .with(SettingsChangeArgs::KEY_DELTA, delta.to_string()),
             SettingsChangeRequest::AdjustEditorFont(delta) => CommandArgs::new()
-                .with("kind", "adjust_editor_font")
-                .with("delta", delta.to_string()),
+                .with(SettingsChangeArgs::KEY_KIND, "adjust_editor_font")
+                .with(SettingsChangeArgs::KEY_DELTA, delta.to_string()),
             SettingsChangeRequest::ToggleEditorSoftWrap => {
-                CommandArgs::new().with("kind", "toggle_editor_soft_wrap")
+                CommandArgs::new().with(SettingsChangeArgs::KEY_KIND, "toggle_editor_soft_wrap")
             }
             SettingsChangeRequest::CycleEditorTabSize => {
-                CommandArgs::new().with("kind", "cycle_editor_tab_size")
+                CommandArgs::new().with(SettingsChangeArgs::KEY_KIND, "cycle_editor_tab_size")
             }
-            SettingsChangeRequest::CycleTheme => CommandArgs::new().with("kind", "cycle_theme"),
+            SettingsChangeRequest::CycleTheme => {
+                CommandArgs::new().with(SettingsChangeArgs::KEY_KIND, "cycle_theme")
+            }
         }
     }
 }
@@ -81,8 +89,8 @@ impl TryFrom<CommandArgs> for SettingsChangeArgs {
     type Error = CommandError;
 
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["kind", "delta"])?;
-        let kind = required_arg(&args, "kind")?;
+        reject_unknown_args(&args, SettingsChangeArgs::known_keys())?;
+        let kind = required_arg(&args, SettingsChangeArgs::KEY_KIND)?;
         let change = match kind.as_str() {
             "adjust_ui_font" => SettingsChangeRequest::AdjustUiFont(required_delta(&args)?),
             "adjust_editor_font" => SettingsChangeRequest::AdjustEditorFont(required_delta(&args)?),
@@ -100,7 +108,7 @@ impl TryFrom<CommandArgs> for SettingsChangeArgs {
 }
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
-    let settings = KeyBindingContext::settings();
+    let settings = KeyContext::settings();
 
     registry
         .install(keymap, OPEN, "设置", Box::new(run_open))
@@ -222,7 +230,7 @@ fn run_adjust_font_size(change: SettingsChangeRequest) -> CommandHandler {
 }
 
 fn required_delta(args: &CommandArgs) -> Result<i16, CommandError> {
-    let raw = required_arg(args, "delta")?;
+    let raw = required_arg(args, SettingsChangeArgs::KEY_DELTA)?;
     raw.parse()
         .map_err(|_| CommandError::InvalidArgs(format!("无效设置变更步长：{raw}")))
 }

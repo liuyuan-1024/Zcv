@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
-use zom_command::{BubbleRequest, HostEffect, ProjectEffect};
+use zom_command::{BubbleRequest, HostEffect, ProjectPickerEffect};
 
 use crate::app::App;
 use crate::focus::AppFocus;
@@ -34,7 +34,7 @@ pub(crate) fn try_apply_effect(
     cx: &mut gpui::App,
 ) -> bool {
     match effect {
-        HostEffect::Project(ProjectEffect::ShowPicker) => {
+        HostEffect::ProjectPicker(ProjectPickerEffect::ShowPicker) => {
             let intent_request = project_picker_intent_request(
                 project_picker_runtime.clone(),
                 Rc::clone(app),
@@ -55,7 +55,7 @@ pub(crate) fn try_apply_effect(
                 cx,
             );
         }
-        HostEffect::Project(ProjectEffect::OpenLocalProject) => {
+        HostEffect::ProjectPicker(ProjectPickerEffect::OpenLocalProject) => {
             project_session::open_local_project(
                 Rc::clone(app),
                 Rc::clone(workbench),
@@ -67,7 +67,7 @@ pub(crate) fn try_apply_effect(
                 cx,
             );
         }
-        HostEffect::Project(ProjectEffect::StartGitClone) => {
+        HostEffect::ProjectPicker(ProjectPickerEffect::StartGitClone) => {
             if picker_active(surfaces, cx) {
                 // 已在 picker 浮面里切模式：只重置模型 + 刷新视图。
                 // 不再走 open_surface —— 否则 focus_to_restore 会被当前 picker 自己的句柄覆盖，
@@ -96,7 +96,7 @@ pub(crate) fn try_apply_effect(
                 );
             }
         }
-        HostEffect::Project(ProjectEffect::RemoveSelectedRecentProject) => {
+        HostEffect::ProjectPicker(ProjectPickerEffect::RemoveSelectedRecentProject) => {
             if !picker_active(surfaces, cx) {
                 return true;
             }
@@ -114,7 +114,7 @@ pub(crate) fn try_apply_effect(
                 window.refresh();
             }
         }
-        HostEffect::Project(ProjectEffect::MovePickerSelection(delta)) => {
+        HostEffect::ProjectPicker(ProjectPickerEffect::MovePickerSelection(delta)) => {
             if !picker_active(surfaces, cx) {
                 return true;
             }
@@ -123,7 +123,7 @@ pub(crate) fn try_apply_effect(
             project_picker_runtime.move_selection(delta, &recent);
             window.refresh();
         }
-        HostEffect::Project(ProjectEffect::ActivatePicker) => {
+        HostEffect::ProjectPicker(ProjectPickerEffect::ActivatePicker) => {
             if !picker_active(surfaces, cx) {
                 return true;
             }

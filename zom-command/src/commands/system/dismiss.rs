@@ -12,7 +12,7 @@
 
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
-    KeyBinding, KeyBindingContext, KeyChord, Keymap, reject_unknown_args, required_arg,
+    KeyBinding, KeyChord, KeyContext, Keymap, reject_unknown_args, required_arg,
 };
 
 pub const DISMISS_TOP: &str = "system.dismiss_top";
@@ -46,7 +46,7 @@ impl TryFrom<CommandArgs> for DismissTopArgs {
 
 pub fn install(registry: &mut CommandRegistry, _keymap: &mut Keymap) {
     // 单独注册命令；不在这里绑默认键 —— 每个 scope 在自己的 install 里用 [`bind_esc`]
-    // 绑到对应的 [`KeyBindingContext`]，预填 scope 参数。
+    // 绑到对应的 [`KeyContext`]，预填 scope 参数。
     registry
         .install(_keymap, DISMISS_TOP, "弹出栈顶 dismiss", Box::new(run))
         .hide_from_shortcuts();
@@ -54,17 +54,12 @@ pub fn install(registry: &mut CommandRegistry, _keymap: &mut Keymap) {
 
 /// 给某个上下文绑 esc → `system.dismiss_top`(scope=...)。
 /// feature 模块的 install 函数调用本助手，不需要直接碰 [`KeyBinding`]。
-pub fn bind_esc(keymap: &mut Keymap, scope: DismissScope, context: KeyBindingContext) {
+pub fn bind_esc(keymap: &mut Keymap, scope: DismissScope, context: KeyContext) {
     bind(keymap, "escape", scope, context);
 }
 
 /// 绑任意 chord。esc 是惯例入口，但留个口子方便测试 / 异端配置。
-pub fn bind(
-    keymap: &mut Keymap,
-    chord: &'static str,
-    scope: DismissScope,
-    context: KeyBindingContext,
-) {
+pub fn bind(keymap: &mut Keymap, chord: &'static str, scope: DismissScope, context: KeyContext) {
     let chord = KeyChord::new(chord).expect("快捷键必须非空");
     keymap.bind(KeyBinding {
         sequence: vec![chord],

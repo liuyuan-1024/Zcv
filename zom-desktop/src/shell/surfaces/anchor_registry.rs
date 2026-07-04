@@ -9,8 +9,9 @@ use gpui::{
 
 /// 每窗口 Surface anchor bounds。
 ///
-/// 它是 Surface 的内部几何缓存，不是业务状态。召唤者只需要稳定的
-/// `ElementId`；真实 bounds 由 `track_surface_anchor` 在 prepaint 阶段自动记录。
+/// 它是 Surface 的内部几何缓存，不是业务状态。
+/// 召唤者只需要稳定的`ElementId`；
+/// 真实 bounds 由 `track_surface_anchor` 在 prepaint 阶段自动记录。
 #[derive(Default)]
 pub(crate) struct SurfaceAnchorRegistry {
     windows: HashMap<WindowId, HashMap<ElementId, Bounds<Pixels>>>,

@@ -47,6 +47,29 @@ struct JsonRpcRequest<'a> {
     params: Value,
 }
 
+impl<'a> JsonRpcRequest<'a> {
+    fn to_json(&self) -> Result<String, LspError> {
+        serde_json::to_string(self).map_err(|e| LspError::ProtocolViolation {
+            detail: format!("序列化请求失败：{e}"),
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct JsonRpcNotification<'a> {
+    jsonrpc: &'static str,
+    method: &'a str,
+    params: Value,
+}
+
+impl<'a> JsonRpcNotification<'a> {
+    fn to_json(&self) -> Result<String, LspError> {
+        serde_json::to_string(self).map_err(|e| LspError::ProtocolViolation {
+            detail: format!("序列化通知失败：{e}"),
+        })
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct IncomingMessage {
     #[serde(default)]
@@ -65,13 +88,6 @@ struct IncomingMessage {
 struct ResponseError {
     code: i64,
     message: String,
-}
-
-#[derive(Debug, Serialize)]
-struct JsonRpcNotification<'a> {
-    jsonrpc: &'static str,
-    method: &'a str,
-    params: Value,
 }
 
 /// 异步请求的回调：主线程创建 mpsc channel，读线程拿到响应后 send。
@@ -94,9 +110,6 @@ pub struct LspClient {
     stdin: Arc<Mutex<ChildStdin>>,
     /// 子进程句柄——shutdown 时需要。
     child: Arc<Mutex<Option<Child>>>,
-    /// 通知处理器。字段仅用于持有 Arc 所有权，读线程通过独立 clone 访问。
-    #[allow(dead_code)]
-    notification_handler: Arc<Mutex<Option<Box<dyn NotificationHandler>>>>,
     /// 标记读线程是否存活。
     alive: Arc<AtomicBool>,
     /// 后台读线程——`shutdown` 时 join；
@@ -147,7 +160,6 @@ impl LspClient {
             capabilities,
             stdin,
             child,
-            notification_handler,
             alive,
             _read_thread: Some(read_thread),
         })
@@ -245,14 +257,12 @@ impl LspClient {
 
     /// 发送一条通知（无 id，不期待响应）。
     fn notify(&self, method: &str, params: Value) -> Result<(), LspError> {
-        let notif = JsonRpcNotification {
+        let json = JsonRpcNotification {
             jsonrpc: "2.0",
             method,
             params,
-        };
-        let json = serde_json::to_string(&notif).map_err(|e| LspError::ProtocolViolation {
-            detail: format!("序列化通知失败：{e}"),
-        })?;
+        }
+        .to_json()?;
         let mut stdin = self.stdin.lock().map_err(|_| LspError::ChannelClosed)?;
         transport::write_message(&mut stdin, &json)
     }
@@ -261,7 +271,7 @@ impl LspClient {
     ///
     /// 返回值是 `mpsc::Receiver`——调用方应尽快 `recv` 或 drop 它，
     /// 否则读线程在 `sender.send()` 时会阻塞（unbuffered channel）。
-    pub fn send_request(
+    pub(crate) fn send_request(
         &self,
         method: &str,
         params: Value,
@@ -280,11 +290,9 @@ impl LspClient {
             method,
             params,
         };
-        let json = serde_json::to_string(&req).map_err(|e| LspError::ProtocolViolation {
-            detail: format!("序列化请求失败：{e}"),
-        })?;
+        let json = req.to_json()?;
 
-        // Drop pending lock before taking stdin lock to avoid deadlock
+        // 在获取 stdin 锁之前删除挂起锁以避免死锁
         let mut stdin = self.stdin.lock().map_err(|_| LspError::ChannelClosed)?;
         let result = transport::write_message(&mut stdin, &json);
         if result.is_err() {
@@ -310,24 +318,24 @@ impl LspClient {
         self.alive.store(false, Ordering::Relaxed);
 
         // 先确保子进程终止——关闭 stdout 管道让读线程读到 EOF。
-        if let Ok(mut child_opt) = self.child.lock() {
-            if let Some(mut child) = child_opt.take() {
-                let start = std::time::Instant::now();
-                while start.elapsed() < std::time::Duration::from_millis(timeout_ms) {
-                    match child.try_wait() {
-                        Ok(Some(_)) => break,
-                        Ok(None) => {
-                            std::thread::sleep(std::time::Duration::from_millis(50));
-                        }
-                        Err(_) => {
-                            let _ = child.kill();
-                            break;
-                        }
+        if let Ok(mut child_opt) = self.child.lock()
+            && let Some(mut child) = child_opt.take()
+        {
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_millis(timeout_ms) {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Err(_) => {
+                        let _ = child.kill();
+                        break;
                     }
                 }
-                if start.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
-                    let _ = child.kill();
-                }
+            }
+            if start.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
+                let _ = child.kill();
             }
         }
 
@@ -387,39 +395,45 @@ fn read_loop(
     while alive.load(Ordering::Relaxed) {
         let raw = match transport::read_message(reader) {
             Ok(Some(msg)) => msg,
-            Ok(None) => break,  // EOF
-            Err(_) => continue, // 协议错误则跳过本条，继续读下一条
+            Ok(None) => break, // EOF
+            Err(e) => {
+                eprintln!("[LSP] 读消息失败：{e}");
+                continue;
+            }
         };
 
         let message: IncomingMessage = match serde_json::from_str(&raw.body) {
             Ok(m) => m,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!("[LSP] JSON 反序列化失败：{e}");
+                continue;
+            }
         };
 
         if let Some(id) = message.id {
             // Response：按 id 匹配 pending sender
-            if let Ok(mut pending) = pending.lock() {
-                if let Some(sender) = pending.remove(&id) {
-                    let result = if let Some(err) = message.error {
-                        Err(LspError::ServerError {
-                            code: err.code,
-                            message: err.message,
-                        })
-                    } else {
-                        message.result.ok_or(LspError::ProtocolViolation {
-                            detail: "响应缺少 result".to_string(),
-                        })
-                    };
-                    // send 失败 = 调用方已 drop rx（正常情况）
-                    let _ = sender.send(result);
-                }
+            if let Ok(mut pending) = pending.lock()
+                && let Some(sender) = pending.remove(&id)
+            {
+                let result = if let Some(err) = message.error {
+                    Err(LspError::ServerError {
+                        code: err.code,
+                        message: err.message,
+                    })
+                } else {
+                    message.result.ok_or(LspError::ProtocolViolation {
+                        detail: "响应缺少 result".to_string(),
+                    })
+                };
+                // send 失败 = 调用方已 drop rx（正常情况）
+                let _ = sender.send(result);
             }
         } else if let Some(method) = message.method {
             // Notification：交给上层回调
-            if let Ok(handler) = notification_handler.lock() {
-                if let Some(ref h) = *handler {
-                    h.on_notification(&method, message.params.unwrap_or(Value::Null));
-                }
+            if let Ok(handler) = notification_handler.lock()
+                && let Some(ref h) = *handler
+            {
+                h.on_notification(&method, message.params.unwrap_or(Value::Null));
             }
         }
         // else: server→client request（少见的反向请求）——MVP 忽略
@@ -440,9 +454,7 @@ fn send_request_sync(
         method,
         params,
     };
-    let json = serde_json::to_string(&req).map_err(|e| LspError::ProtocolViolation {
-        detail: format!("序列化请求失败：{e}"),
-    })?;
+    let json = req.to_json()?;
     transport.send(&json)?;
 
     loop {
@@ -474,13 +486,11 @@ fn send_notification_sync(
     method: &str,
     params: Value,
 ) -> Result<(), LspError> {
-    let notif = JsonRpcNotification {
+    let json = JsonRpcNotification {
         jsonrpc: "2.0",
         method,
         params,
-    };
-    let json = serde_json::to_string(&notif).map_err(|e| LspError::ProtocolViolation {
-        detail: format!("序列化通知失败：{e}"),
-    })?;
+    }
+    .to_json()?;
     transport.send(&json)
 }

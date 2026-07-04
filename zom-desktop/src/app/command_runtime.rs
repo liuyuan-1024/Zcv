@@ -7,8 +7,8 @@ use zom_command::commands;
 use zom_command::commands::editor;
 use zom_command::{
     ClipboardPort, CommandArgs, CommandContext, CommandError, CommandId, CommandQueue,
-    CommandRegistry, DismissStacks, EffectQueue, HostEffect, KeyChord, KeyContext, Keymap,
-    KeymapResolution, NoopClipboard,
+    CommandRegistry, DismissStacks, EditMergeKind, EffectQueue, HostEffect, KeyChord, KeyContext,
+    Keymap, KeymapResolution, NoopClipboard,
 };
 use zom_engine::{BufferVersion, TransactionMergePolicy};
 
@@ -58,7 +58,7 @@ impl CommandRuntime {
         session: &mut WorkspaceSession,
         focused_field: Option<zom_command::EditTarget<'_>>,
     ) -> Result<(Vec<HostEffect>, bool), CommandError> {
-        let edit_kind = EditMergeKind::from_invocation(&id, &args);
+        let edit_kind = editor::edit_merge_kind(&id, &args);
         let target_before = edit_kind
             .as_ref()
             .and_then(|_| edit_target_before(session, focused_field.as_ref()));
@@ -159,30 +159,6 @@ struct EditTargetSnapshot {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EditMergeTarget(u64);
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum EditMergeKind {
-    InsertText,
-    InsertNewline,
-    Delete {
-        direction: Option<String>,
-        motion: Option<String>,
-    },
-}
-
-impl EditMergeKind {
-    fn from_invocation(id: &CommandId, args: &CommandArgs) -> Option<Self> {
-        match id.as_str() {
-            editor::INSERT_TEXT => Some(Self::InsertText),
-            editor::INSERT_NEWLINE => Some(Self::InsertNewline),
-            editor::DELETE => Some(Self::Delete {
-                direction: args.get("direction").map(ToOwned::to_owned),
-                motion: args.get("motion").map(ToOwned::to_owned),
-            }),
-            _ => None,
-        }
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct EditMergeState {

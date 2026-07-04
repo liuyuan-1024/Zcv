@@ -42,11 +42,14 @@ pub(crate) fn try_apply_effect(
         HostEffect::VersionControl(VersionControlEffect::EditCommitMessage) => {
             app.borrow_mut()
                 .request_focus(AppFocus::Panel(PanelFocus::version_control_commit()));
+            // 把 GPUI 焦点转移到提交信息编辑器的独立 FocusHandle——仅更新 AppFocus 不会让窗口系统把按键路由到编辑器。
+            window.focus(&runtime.commit_focus_handle());
             window.refresh();
         }
         HostEffect::VersionControl(VersionControlEffect::CancelCommitMessage) => {
             app.borrow_mut()
                 .request_focus(AppFocus::Panel(PanelFocus::version_control()));
+            window.focus(&runtime.focus_handle());
             window.refresh();
         }
         HostEffect::VersionControl(VersionControlEffect::Commit) => {

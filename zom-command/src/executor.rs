@@ -156,9 +156,63 @@ impl EditTarget<'_> {
     }
 }
 
+/// 编辑命令的事务合并分类。
+///
+/// 宿主在执行前通过 [`editor::edit_merge_kind`] 查询合并类别，与上一次执行的合并类别比较以决定 `TransactionMergePolicy`。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EditMergeKind {
+    InsertText,
+    InsertNewline,
+    /// `direction` / `motion` 使用 `Option<String>` 而非类型化枚举，
+    /// 因为值直接从 `CommandArgs` 字符串 key 读取，仅用于 `Eq` 比较，不经过解析、不用于逻辑分支，字符串形态足以满足"同种删除可合并"的判断。
+    Delete {
+        direction: Option<String>,
+        motion: Option<String>,
+    },
+}
+
 /// 命令执行的产出，用于告知外壳后续动作（重绘、焦点变化等）。
+///
+/// 默认值（两项都 false）适用于不触碰编辑缓冲区的命令（文件树、搜索面板、设置等 HostEffect 发射器）。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct CommandOutcome {}
+pub struct CommandOutcome {
+    /// 本次命令修改了 buffer 内容（文本编辑、缩进、撤销/重做等）。
+    pub buffer_edited: bool,
+    /// 本次命令修改了选区位置或范围。
+    pub selection_changed: bool,
+}
+
+impl CommandOutcome {
+    /// 仅 buffer 被编辑。
+    pub fn buffer_edited() -> Self {
+        Self {
+            buffer_edited: true,
+            selection_changed: false,
+        }
+    }
+
+    /// 仅选区被改变（移动、扩展、塌缩等）。
+    pub fn selection_changed() -> Self {
+        Self {
+            buffer_edited: false,
+            selection_changed: true,
+        }
+    }
+
+    /// buffer 与选区同时被改变（插入、删除、缩进等绝大多数编辑操作）。
+    pub fn edit() -> Self {
+        Self {
+            buffer_edited: true,
+            selection_changed: true,
+        }
+    }
+
+    /// 合并另一个 outcome 到自身（用于队列中多条命令的聚合）。
+    pub fn merge(&mut self, other: &CommandOutcome) {
+        self.buffer_edited |= other.buffer_edited;
+        self.selection_changed |= other.selection_changed;
+    }
+}
 
 /// 命令队列。
 ///
@@ -186,14 +240,15 @@ impl CommandQueue {
     }
 }
 
-/// 排空命令队列：对注册表 + 上下文执行；handler 报错时也会先对齐 dismiss 栈再返回。
+/// 排空命令队列：对注册表 + 上下文执行；返回聚合的 [`CommandOutcome`]。
+/// handler 报错时也会先对齐 dismiss 栈再返回。
 pub fn run(
     registry: &CommandRegistry,
     context: &mut CommandContext<'_>,
-) -> Result<(), CommandError> {
-    let result = drain(registry, context);
+) -> Result<CommandOutcome, CommandError> {
+    let outcome = drain(registry, context);
     reconcile_after_input_mutation(context);
-    result
+    outcome
 }
 
 /// 对齐一次输入造成的运行时瞬态。
@@ -204,14 +259,19 @@ pub fn reconcile_after_input_mutation(context: &mut CommandContext<'_>) {
     crate::commands::reconcile::after_dispatch(context);
 }
 
-fn drain(registry: &CommandRegistry, context: &mut CommandContext<'_>) -> Result<(), CommandError> {
+fn drain(
+    registry: &CommandRegistry,
+    context: &mut CommandContext<'_>,
+) -> Result<CommandOutcome, CommandError> {
+    let mut aggregate = CommandOutcome::default();
     while let Some((id, args)) = context.queue.pop() {
         let handler = registry
             .handler(&id)
             .ok_or_else(|| CommandError::UnknownCommand(id.clone()))?;
-        handler(context, args)?;
+        let outcome = handler(context, args)?;
+        aggregate.merge(&outcome);
     }
-    Ok(())
+    Ok(aggregate)
 }
 
 /// 取活动视图指向的 buffer id。

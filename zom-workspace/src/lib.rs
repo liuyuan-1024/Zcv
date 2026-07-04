@@ -124,20 +124,9 @@ impl Workspace {
         self.engine.registry()
     }
 
-    /// 语言注册表可变视图——组合根在启动期注入内置 provider 工厂。
-    ///
-    /// 只在 `Rc::new(SyntaxEngine)` 之前对其调用：一旦引擎被 `Rc` 共享，
-    /// 调本方法会在运行期 panic（`Rc::get_mut` 在 strong_count > 1 时返回 `None`）。
-    pub fn language_registry_mut(&mut self) -> &mut LanguageRegistry {
-        Rc::get_mut(&mut self.engine)
-            .expect("language_registry_mut 需在 SyntaxEngine 被 Rc 共享前调用")
-            .registry_mut()
-    }
-
     /// 从磁盘打开文件。
     ///
-    /// 走 [`Buffer::from_reader`] 流式加载：一份 64 KiB 读缓冲增量喂 ropey，
-    /// 避免全量内存副本。
+    /// 走 [`Buffer::from_reader`] 流式加载：一份 64 KiB 读缓冲增量喂 ropey，避免全量内存副本。
     /// 详见[`zom-bench/BASELINE.md`](../../zom-bench/BASELINE.md) 的基线数据。
     pub fn open_file(&mut self, path: PathBuf) -> WorkspaceResult<BufferId> {
         let metadata = fs::metadata(&path)

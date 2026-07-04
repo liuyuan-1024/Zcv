@@ -271,7 +271,13 @@ impl VersionControlModel {
     ///
     /// 第一行是仓库根目录（depth=0），其下为变更文件树。
     /// 只递归进入 expanded 集合中的目录。
+    ///
+    /// 工作区干净（无变更）时返回空列表。
     fn visible_rows(&self) -> Vec<VersionControlRow> {
+        if self.entries.is_empty() {
+            return Vec::new();
+        }
+
         let mut rows = Vec::new();
 
         // 仓库根目录行（depth=0），与文件树一致。
@@ -501,11 +507,10 @@ impl VersionControlModel {
             self.selected = self.cached_rows.first().map(|r| r.path.clone());
         }
 
-        let all_staged = self
-            .cached_rows
-            .iter()
-            .filter(|r| !r.is_dir)
-            .all(|r| r.staged);
+        // 空列表时 `Iterator::all` 返回 true（空虚真值），
+        // 但无变更文件时应显示为"未全暂存"状态，而非"全已暂存"。
+        let file_rows: Vec<_> = self.cached_rows.iter().filter(|r| !r.is_dir).collect();
+        let all_staged = !file_rows.is_empty() && file_rows.iter().all(|r| r.staged);
 
         VersionControlState {
             rows: self.cached_rows.clone(),

@@ -41,7 +41,6 @@ LspClient                    LspHighlightProvider           LspHost
 2. `did_open` 发送后 server 不报错
 3. `did_change` 发送增量内容后 server 不报错
 4. `shutdown()` 后子进程正常退出
-5. server 非预期退出时 `LspError::ServerExited` 被正确返回
 
 ## 阶段二：HighlightProvider 适配
 

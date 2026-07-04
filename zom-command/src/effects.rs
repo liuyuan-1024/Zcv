@@ -185,7 +185,7 @@ pub enum EditorEffect {
 
 /// 项目 / 工作区。
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProjectEffect {
+pub enum ProjectPickerEffect {
     ShowPicker,
     OpenLocalProject,
     StartGitClone,
@@ -268,7 +268,7 @@ pub enum HostEffect {
     Search(SearchEffect),
     GoToLine(GoToLineEffect),
     Editor(EditorEffect),
-    Project(ProjectEffect),
+    ProjectPicker(ProjectPickerEffect),
     Surface(SurfaceEffect),
     FileTree(FileTreeEffect),
     VersionControl(VersionControlEffect),

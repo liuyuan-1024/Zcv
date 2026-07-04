@@ -1,7 +1,7 @@
-//! `workspace.*` 命令目录 —— 项目切换 / 打开。
+//! `project_picker.*` 命令目录 —— 项目切换 / 打开。
 //!
 //! handler 只 emit `HostEffect`（宿主弹项目选择器、走打开流程），不直接碰 GPUI / shell。
-//! 模块名 `workspace` 是内部代号，面向用户文案统一用「项目」。
+//! 面向用户文案统一用「项目选择器」。
 //!
 //! esc 走系统级 [`crate::commands::system::dismiss::DISMISS_TOP`]（scope=ProjectPicker）—— [`SHOW_PROJECTS_PICKER`] 推一条 dismiss token，esc 弹出后重新派发 [`DISMISS`]。
 
@@ -11,23 +11,20 @@ use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
-    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, ProjectEffect, SurfaceEffect,
+    HostEffect, Invocation, KeyContext, Keymap, NoArgs, ProjectPickerEffect, SurfaceEffect,
 };
 
-pub const SHOW_PROJECTS_PICKER: &str = "workspace.show_projects_picker";
-pub const OPEN_LOCAL_PROJECT: &str = "workspace.open_local_project";
-pub const START_GIT_CLONE: &str = "workspace.start_git_clone";
-pub const REMOVE_RECENT_PROJECT: &str = "workspace.remove_recent_project";
-pub const MOVE_SELECTION: &str = "workspace.project_picker.move_selection";
-pub const ACTIVATE: &str = "workspace.project_picker.activate";
-pub const DISMISS: &str = "workspace.project_picker.dismiss";
+pub const SHOW_PROJECTS_PICKER: &str = "project_picker.show_projects_picker";
+pub const OPEN_LOCAL_PROJECT: &str = "project_picker.open_local_project";
+pub const START_GIT_CLONE: &str = "project_picker.start_git_clone";
+pub const REMOVE_RECENT_PROJECT: &str = "project_picker.remove_recent_project";
+pub const MOVE_SELECTION: &str = "project_picker.move_selection";
+pub const ACTIVATE: &str = "project_picker.activate";
+pub const DISMISS: &str = "project_picker.dismiss";
 
 /// 项目选择器拥有自己的键盘上下文：Up/Down/Enter 等非文本按键只在选择器聚焦时解释，不污染全局快捷键空间。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProjectPickerKeyContext;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProjectPickerBindingContext;
 
 pub fn show_projects_picker() -> Invocation {
     (cid(SHOW_PROJECTS_PICKER), CommandArgs::new())
@@ -58,7 +55,7 @@ pub fn dismiss() -> Invocation {
 }
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
-    let picker = KeyBindingContext::project_picker();
+    let picker = KeyContext::project_picker();
 
     registry
         .install(
@@ -75,7 +72,9 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             OPEN_LOCAL_PROJECT,
             "从本地路径导入",
-            emit(HostEffect::Project(ProjectEffect::OpenLocalProject)),
+            emit(HostEffect::ProjectPicker(
+                ProjectPickerEffect::OpenLocalProject,
+            )),
         )
         .key_in("mod l", picker);
 
@@ -84,7 +83,9 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             START_GIT_CLONE,
             "从远程地址导入",
-            emit(HostEffect::Project(ProjectEffect::StartGitClone)),
+            emit(HostEffect::ProjectPicker(
+                ProjectPickerEffect::StartGitClone,
+            )),
         )
         .key_in("mod g", picker);
 
@@ -93,8 +94,8 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             REMOVE_RECENT_PROJECT,
             "移除最近项目",
-            emit(HostEffect::Project(
-                ProjectEffect::RemoveSelectedRecentProject,
+            emit(HostEffect::ProjectPicker(
+                ProjectPickerEffect::RemoveSelectedRecentProject,
             )),
         )
         .key_in("mod backspace", picker)
@@ -115,7 +116,9 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             keymap,
             ACTIVATE,
             "激活项目选择器选中项",
-            emit(HostEffect::Project(ProjectEffect::ActivatePicker)),
+            emit(HostEffect::ProjectPicker(
+                ProjectPickerEffect::ActivatePicker,
+            )),
         )
         .key_in("enter", picker)
         .key_in("return", picker);
@@ -129,11 +132,9 @@ fn run_move_selection(
     args: CommandArgs,
 ) -> Result<CommandOutcome, CommandError> {
     let args = MoveDeltaArgs::try_from(args)?;
-    context
-        .effects
-        .push(HostEffect::Project(ProjectEffect::MovePickerSelection(
-            args.delta,
-        )));
+    context.effects.push(HostEffect::ProjectPicker(
+        ProjectPickerEffect::MovePickerSelection(args.delta),
+    ));
     Ok(CommandOutcome::default())
 }
 
@@ -150,7 +151,7 @@ fn run_show_projects_picker(
         .push(DismissScope::ProjectPicker, "关闭项目选择器", dismiss());
     context
         .effects
-        .push(HostEffect::Project(ProjectEffect::ShowPicker));
+        .push(HostEffect::ProjectPicker(ProjectPickerEffect::ShowPicker));
     Ok(CommandOutcome::default())
 }
 

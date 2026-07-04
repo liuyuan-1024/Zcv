@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     Command, CommandArgs, CommandContext, CommandError, CommandId, CommandOutcome, KeyBinding,
-    KeyBindingContext, KeyChord, Keymap,
+    KeyChord, KeyContext, Keymap,
 };
 
 /// 命令 handler：对 `CommandContext` 执行一次操作。
@@ -103,21 +103,16 @@ impl<'a> CommandBuilder<'a> {
 
     /// 绑一条有参全局快捷键。
     pub fn key_with(self, chord: &'static str, args: CommandArgs) -> Self {
-        self.key_with_in(chord, args, KeyBindingContext::global())
+        self.key_with_in(chord, args, KeyContext::global())
     }
 
     /// 绑一条指定上下文的快捷键。
-    pub fn key_in(self, chord: &'static str, context: KeyBindingContext) -> Self {
+    pub fn key_in(self, chord: &'static str, context: KeyContext) -> Self {
         self.key_with_in(chord, CommandArgs::new(), context)
     }
 
     /// 绑一条指定上下文且带预设 args 的快捷键。
-    pub fn key_with_in(
-        self,
-        chord: &'static str,
-        args: CommandArgs,
-        context: KeyBindingContext,
-    ) -> Self {
+    pub fn key_with_in(self, chord: &'static str, args: CommandArgs, context: KeyContext) -> Self {
         let chord = KeyChord::new(chord).expect("快捷键必须非空");
         self.keymap.bind(KeyBinding {
             sequence: vec![chord],

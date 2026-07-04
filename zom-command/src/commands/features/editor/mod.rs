@@ -16,9 +16,9 @@ use crate::commands::cid;
 
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
-    BubbleEffect, BubbleRequest, CommandArgs, CommandContext, CommandError, CommandOutcome,
-    CommandRegistry, DismissScope, EditorEffect, GitEffect, HostEffect, Invocation,
-    KeyBindingContext, Keymap, NoArgs, active_view_buffer_id, command_execution_failed,
+    BubbleEffect, BubbleRequest, CommandArgs, CommandContext, CommandError, CommandId,
+    CommandOutcome, CommandRegistry, DismissScope, EditorEffect, HostEffect, Invocation,
+    KeyContext, Keymap, NoArgs, active_view_buffer_id, command_execution_failed,
     parse_optional_bool, reject_unknown_args, required_arg,
 };
 use zom_engine::{
@@ -61,49 +61,63 @@ pub const TOGGLE_SOFT_WRAP: &str = "editor.toggle_soft_wrap";
 pub const OPEN_PREVIEW: &str = "editor.preview.open";
 pub const CHANGE_LANGUAGE: &str = "editor.change_language";
 
+/// `editor.close_tab` 的 view_id 参数 key。
+const CLOSE_TAB_KEY_VIEW_ID: &str = "view_id";
+
 /// 文本编辑器当前能力。
+///
+/// 同时承担绑定约束与运行时上下文双重角色：
+/// - 运行时：`composing` 总是 `Some(bool)`，表达当前输入法组合态。
+/// - 绑定时：`composing: None` 表示不关心输入法组合态；
+///   `composing: Some(_)` 表示仅在对应态下匹配。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TextEditKeyContext {
     pub accepts_newline: bool,
-    pub composing: bool,
+    /// 运行时总是 `Some(_)`；绑定时 `None` 等价于旧的 `CompositionBinding::Any`。
+    pub composing: Option<bool>,
 }
 
-/// 文本编辑命令的键位适用条件。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TextEditBindingContext {
-    pub requires_newline: bool,
-    pub composition: CompositionBinding,
-}
+impl TextEditKeyContext {
+    /// 绑定时用来判断当前运行时上下文是否匹配本条绑定的约束。
+    pub(crate) fn matches_binding(&self, binding: &Self) -> bool {
+        if binding.accepts_newline && !self.accepts_newline {
+            return false;
+        }
+        match binding.composing {
+            None => true,
+            Some(true) => self.composing == Some(true),
+            Some(false) => self.composing == Some(false),
+        }
+    }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CompositionBinding {
-    Any,
-    Active,
-    Inactive,
-}
-
-impl CompositionBinding {
-    /// 两个组合态约束能否被同一运行时态同时满足。
-    /// `Active` 与 `Inactive` 互斥；含 `Any` 的组合都有交集。
-    pub(crate) fn overlaps(self, other: Self) -> bool {
-        !matches!(
-            (self, other),
-            (Self::Active, Self::Inactive) | (Self::Inactive, Self::Active)
-        )
+    /// 两条绑定约束是否可能被同一运行时上下文同时命中。
+    ///
+    /// `accepts_newline` 是单向过滤器不切分键位空间，不参与重叠判定；
+    /// `composing` 才是真正互斥的维度。
+    pub(crate) fn overlaps_binding(&self, other: &Self) -> bool {
+        match (self.composing, other.composing) {
+            (Some(true), Some(false)) | (Some(false), Some(true)) => false,
+            _ => true,
+        }
     }
 }
 
-pub(crate) fn text_edit_context_matches(
-    binding: TextEditBindingContext,
-    active: TextEditKeyContext,
-) -> bool {
-    if binding.requires_newline && !active.accepts_newline {
-        return false;
-    }
-    match binding.composition {
-        CompositionBinding::Any => true,
-        CompositionBinding::Active => active.composing,
-        CompositionBinding::Inactive => !active.composing,
+// ==================================================
+// 事务合并分类 —— 宿主通过此入口查询，不再在自己侧硬编码命令 ID
+// ==================================================
+
+/// 返回 `editor.*` 命令的事务合并类别。
+///
+/// 宿主在派发前调用此函数以决定 `TransactionMergePolicy`，而不是在桌面层维护一份独立的 `EditMergeKind` 命令匹配表。
+pub fn edit_merge_kind(id: &CommandId, args: &CommandArgs) -> Option<crate::EditMergeKind> {
+    match id.as_str() {
+        INSERT_TEXT => Some(crate::EditMergeKind::InsertText),
+        INSERT_NEWLINE => Some(crate::EditMergeKind::InsertNewline),
+        DELETE => Some(crate::EditMergeKind::Delete {
+            direction: args.get("direction").map(ToOwned::to_owned),
+            motion: args.get("motion").map(ToOwned::to_owned),
+        }),
+        _ => None,
     }
 }
 
@@ -116,18 +130,22 @@ pub struct InsertTextArgs {
     pub text: String,
 }
 
+impl InsertTextArgs {
+    const KEY_TEXT: &str = "text";
+}
+
 impl From<InsertTextArgs> for CommandArgs {
     fn from(args: InsertTextArgs) -> Self {
-        CommandArgs::new().with("text", args.text)
+        CommandArgs::new().with(InsertTextArgs::KEY_TEXT, args.text)
     }
 }
 
 impl TryFrom<CommandArgs> for InsertTextArgs {
     type Error = CommandError;
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["text"])?;
+        reject_unknown_args(&args, &[InsertTextArgs::KEY_TEXT])?;
         Ok(Self {
-            text: required_arg(&args, "text")?,
+            text: required_arg(&args, InsertTextArgs::KEY_TEXT)?,
         })
     }
 }
@@ -137,18 +155,22 @@ pub struct ReplaceSelectionArgs {
     pub text: String,
 }
 
+impl ReplaceSelectionArgs {
+    const KEY_TEXT: &str = "text";
+}
+
 impl From<ReplaceSelectionArgs> for CommandArgs {
     fn from(args: ReplaceSelectionArgs) -> Self {
-        CommandArgs::new().with("text", args.text)
+        CommandArgs::new().with(ReplaceSelectionArgs::KEY_TEXT, args.text)
     }
 }
 
 impl TryFrom<CommandArgs> for ReplaceSelectionArgs {
     type Error = CommandError;
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["text"])?;
+        reject_unknown_args(&args, &[ReplaceSelectionArgs::KEY_TEXT])?;
         Ok(Self {
-            text: required_arg(&args, "text")?,
+            text: required_arg(&args, ReplaceSelectionArgs::KEY_TEXT)?,
         })
     }
 }
@@ -159,11 +181,20 @@ pub struct ImeCommitArgs {
     pub text: String,
 }
 
+impl ImeCommitArgs {
+    const KEY_TEXT: &str = "text";
+    const PREFIX_REPLACEMENT: &str = "replacement";
+
+    fn known_keys() -> &'static [&'static str] {
+        &[Self::KEY_TEXT, "replacement_start", "replacement_end"]
+    }
+}
+
 impl From<ImeCommitArgs> for CommandArgs {
     fn from(args: ImeCommitArgs) -> Self {
-        let mut out = CommandArgs::new().with("text", args.text);
+        let mut out = CommandArgs::new().with(ImeCommitArgs::KEY_TEXT, args.text);
         if let Some(range) = args.replacement_range_utf16 {
-            out = range.write_to_args(out, "replacement");
+            out = range.write_to_args(out, ImeCommitArgs::PREFIX_REPLACEMENT);
         }
         out
     }
@@ -172,10 +203,13 @@ impl From<ImeCommitArgs> for CommandArgs {
 impl TryFrom<CommandArgs> for ImeCommitArgs {
     type Error = CommandError;
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["text", "replacement_start", "replacement_end"])?;
+        reject_unknown_args(&args, ImeCommitArgs::known_keys())?;
         Ok(Self {
-            replacement_range_utf16: ImeUtf16RangeArgs::parse_optional(&args, "replacement")?,
-            text: args.get("text").unwrap_or("").to_string(),
+            replacement_range_utf16: ImeUtf16RangeArgs::parse_optional(
+                &args,
+                ImeCommitArgs::PREFIX_REPLACEMENT,
+            )?,
+            text: args.get(ImeCommitArgs::KEY_TEXT).unwrap_or("").to_string(),
         })
     }
 }
@@ -187,14 +221,30 @@ pub struct ImeUpdateArgs {
     pub selected_range_utf16: Option<ImeUtf16RangeArgs>,
 }
 
+impl ImeUpdateArgs {
+    const KEY_TEXT: &str = "text";
+    const PREFIX_REPLACEMENT: &str = "replacement";
+    const PREFIX_SELECTED: &str = "selected";
+
+    fn known_keys() -> &'static [&'static str] {
+        &[
+            Self::KEY_TEXT,
+            "replacement_start",
+            "replacement_end",
+            "selected_start",
+            "selected_end",
+        ]
+    }
+}
+
 impl From<ImeUpdateArgs> for CommandArgs {
     fn from(args: ImeUpdateArgs) -> Self {
-        let mut out = CommandArgs::new().with("text", args.text);
+        let mut out = CommandArgs::new().with(ImeUpdateArgs::KEY_TEXT, args.text);
         if let Some(range) = args.replacement_range_utf16 {
-            out = range.write_to_args(out, "replacement");
+            out = range.write_to_args(out, ImeUpdateArgs::PREFIX_REPLACEMENT);
         }
         if let Some(range) = args.selected_range_utf16 {
-            out = range.write_to_args(out, "selected");
+            out = range.write_to_args(out, ImeUpdateArgs::PREFIX_SELECTED);
         }
         out
     }
@@ -203,20 +253,17 @@ impl From<ImeUpdateArgs> for CommandArgs {
 impl TryFrom<CommandArgs> for ImeUpdateArgs {
     type Error = CommandError;
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(
-            &args,
-            &[
-                "text",
-                "replacement_start",
-                "replacement_end",
-                "selected_start",
-                "selected_end",
-            ],
-        )?;
+        reject_unknown_args(&args, ImeUpdateArgs::known_keys())?;
         Ok(Self {
-            replacement_range_utf16: ImeUtf16RangeArgs::parse_optional(&args, "replacement")?,
-            text: args.get("text").unwrap_or("").to_string(),
-            selected_range_utf16: ImeUtf16RangeArgs::parse_optional(&args, "selected")?,
+            replacement_range_utf16: ImeUtf16RangeArgs::parse_optional(
+                &args,
+                ImeUpdateArgs::PREFIX_REPLACEMENT,
+            )?,
+            text: args.get(ImeUpdateArgs::KEY_TEXT).unwrap_or("").to_string(),
+            selected_range_utf16: ImeUtf16RangeArgs::parse_optional(
+                &args,
+                ImeUpdateArgs::PREFIX_SELECTED,
+            )?,
         })
     }
 }
@@ -272,14 +319,23 @@ pub struct DeleteArgs {
     pub unit: MovementUnit,
 }
 
+impl DeleteArgs {
+    const KEY_DIRECTION: &str = "direction";
+    const KEY_MOTION: &str = "motion";
+
+    fn known_keys() -> &'static [&'static str] {
+        &[Self::KEY_DIRECTION, Self::KEY_MOTION]
+    }
+}
+
 impl From<DeleteArgs> for CommandArgs {
     fn from(args: DeleteArgs) -> Self {
         let mut out = CommandArgs::new();
         if let Some(dir) = args.direction {
-            out = out.with("direction", direction_to_str(dir));
+            out = out.with(DeleteArgs::KEY_DIRECTION, direction_to_str(dir));
             // Grapheme 是默认值，省略 motion 让 keymap 文件最短。
             if args.unit != MovementUnit::Grapheme {
-                out = out.with("motion", unit_to_str(args.unit));
+                out = out.with(DeleteArgs::KEY_MOTION, unit_to_str(args.unit));
             }
         }
         // direction = None 时 unit 无意义，不序列化。
@@ -290,12 +346,12 @@ impl From<DeleteArgs> for CommandArgs {
 impl TryFrom<CommandArgs> for DeleteArgs {
     type Error = CommandError;
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["direction", "motion"])?;
-        let direction = match args.get("direction") {
+        reject_unknown_args(&args, DeleteArgs::known_keys())?;
+        let direction = match args.get(DeleteArgs::KEY_DIRECTION) {
             None | Some("") => None,
             Some(value) => Some(parse_direction(value)?),
         };
-        let unit = match args.get("motion") {
+        let unit = match args.get(DeleteArgs::KEY_MOTION) {
             None | Some("") => MovementUnit::Grapheme,
             Some(value) => {
                 if direction.is_none() {
@@ -318,14 +374,36 @@ pub struct MoveCaretArgs {
     pub extend: bool,
 }
 
+impl MoveCaretArgs {
+    const KEY_DIRECTION: &str = "direction";
+    const KEY_MOTION: &str = "motion";
+    const KEY_EXTEND: &str = "extend";
+    const KEY_LINES: &str = "lines";
+
+    fn known_keys() -> &'static [&'static str] {
+        &[
+            Self::KEY_DIRECTION,
+            Self::KEY_MOTION,
+            Self::KEY_EXTEND,
+            Self::KEY_LINES,
+        ]
+    }
+}
+
 impl From<MoveCaretArgs> for CommandArgs {
     fn from(args: MoveCaretArgs) -> Self {
         let mut out = CommandArgs::new()
-            .with("direction", direction_to_str(args.direction))
-            .with("motion", motion_to_str(args.motion))
-            .with("extend", if args.extend { "true" } else { "false" });
+            .with(
+                MoveCaretArgs::KEY_DIRECTION,
+                direction_to_str(args.direction),
+            )
+            .with(MoveCaretArgs::KEY_MOTION, motion_to_str(args.motion))
+            .with(
+                MoveCaretArgs::KEY_EXTEND,
+                if args.extend { "true" } else { "false" },
+            );
         if let Motion::PageStep { lines } = args.motion {
-            out = out.with("lines", lines.to_string());
+            out = out.with(MoveCaretArgs::KEY_LINES, lines.to_string());
         }
         out
     }
@@ -334,12 +412,12 @@ impl From<MoveCaretArgs> for CommandArgs {
 impl TryFrom<CommandArgs> for MoveCaretArgs {
     type Error = CommandError;
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["direction", "motion", "extend", "lines"])?;
-        let motion_kind = required_arg(&args, "motion")?;
+        reject_unknown_args(&args, MoveCaretArgs::known_keys())?;
+        let motion_kind = required_arg(&args, MoveCaretArgs::KEY_MOTION)?;
         Ok(Self {
-            direction: parse_direction(&required_arg(&args, "direction")?)?,
+            direction: parse_direction(&required_arg(&args, MoveCaretArgs::KEY_DIRECTION)?)?,
             motion: parse_motion(&motion_kind, &args)?,
-            extend: parse_optional_bool(args.get("extend"))?,
+            extend: parse_optional_bool(args.get(MoveCaretArgs::KEY_EXTEND))?,
         })
     }
 }
@@ -358,21 +436,25 @@ pub struct SelectTabArgs {
     pub target: SelectTabTarget,
 }
 
+impl SelectTabArgs {
+    const KEY_TARGET: &str = "target";
+}
+
 impl From<SelectTabArgs> for CommandArgs {
     fn from(args: SelectTabArgs) -> Self {
         let target = match args.target {
             SelectTabTarget::Next => "next".to_string(),
             SelectTabTarget::Previous => "previous".to_string(),
         };
-        CommandArgs::new().with("target", target)
+        CommandArgs::new().with(SelectTabArgs::KEY_TARGET, target)
     }
 }
 
 impl TryFrom<CommandArgs> for SelectTabArgs {
     type Error = CommandError;
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["target"])?;
-        let raw = required_arg(&args, "target")?;
+        reject_unknown_args(&args, &[SelectTabArgs::KEY_TARGET])?;
+        let raw = required_arg(&args, SelectTabArgs::KEY_TARGET)?;
         let target = match raw.as_str() {
             "next" => SelectTabTarget::Next,
             "previous" => SelectTabTarget::Previous,
@@ -503,7 +585,7 @@ pub fn close_active_tab() -> Invocation {
 /// 关闭指定 view（点击标签关闭 glyph 路径）。
 /// args 包含序列化的 view_id，handler 反序列化时走 [`ViewId::from_u64`]。
 pub fn close_tab_by_id(target: ViewId) -> Invocation {
-    let args = CommandArgs::new().with("view_id", target.as_u64().to_string());
+    let args = CommandArgs::new().with(CLOSE_TAB_KEY_VIEW_ID, target.as_u64().to_string());
     (cid(CLOSE_TAB), args)
 }
 
@@ -547,6 +629,7 @@ fn run_open_preview(
     Ok(CommandOutcome::default())
 }
 
+// TODO: 实现语言切换功能（settings 集成 + config 持久化）。
 fn run_change_language(
     _ctx: &mut CommandContext<'_>,
     args: CommandArgs,
@@ -570,9 +653,18 @@ fn run_change_language(
 const PAGE_STEP_LINES: u32 = 1;
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
-    let text_edit = KeyBindingContext::text_edit();
-    let text_edit_multiline = KeyBindingContext::text_edit_multiline();
-    let text_edit_composition = KeyBindingContext::text_edit_composition();
+    let text_edit = KeyContext::TextEdit(TextEditKeyContext {
+        accepts_newline: false,
+        composing: Some(false),
+    });
+    let text_edit_multiline = KeyContext::TextEdit(TextEditKeyContext {
+        accepts_newline: true,
+        composing: Some(false),
+    });
+    let text_edit_composition = KeyContext::TextEdit(TextEditKeyContext {
+        accepts_newline: false,
+        composing: Some(true),
+    });
 
     // 没有默认键位的文本输入命令（文本输入走 IME；命令面板 / AI 直接调用）只 install 不 .key。
     registry.install(keymap, INSERT_TEXT, "插入文本", Box::new(run_insert_text));
@@ -946,7 +1038,7 @@ fn run_insert_text(
         .insert_at_selections(selections, &args.text, metadata)
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::edit())
 }
 
 fn run_replace_selection(
@@ -967,7 +1059,7 @@ fn run_replace_selection(
         )
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::edit())
 }
 
 fn run_insert_newline(
@@ -990,7 +1082,7 @@ fn run_insert_newline(
         )
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::edit())
 }
 
 fn run_indent(
@@ -1005,7 +1097,7 @@ fn run_indent(
         .indent_at_selections(selections)
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::edit())
 }
 
 fn run_outdent(
@@ -1021,7 +1113,7 @@ fn run_outdent(
         .outdent_at_selections(selections)
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::edit())
 }
 
 fn run_delete(
@@ -1045,47 +1137,27 @@ fn run_delete(
         .delete_at_selections(selections, caret_motion, metadata)
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::edit())
 }
 
 fn delete_description(caret_motion: Option<(MovementDirection, MovementUnit)>) -> &'static str {
     let Some((dir, unit)) = caret_motion else {
         return "删除所选内容";
     };
-    // LineEdge 的文案不遵循"方向 + 删除 + 单位"模板，单独处理。
-    if unit == MovementUnit::LineEdge {
-        return match dir {
-            MovementDirection::Previous => "删除到行首",
-            MovementDirection::Next => "删除到行尾",
-        };
-    }
-    let prefix = match dir {
-        MovementDirection::Previous => "向后",
-        MovementDirection::Next => "向前",
-    };
-    let target = match (dir, unit) {
-        (MovementDirection::Previous, MovementUnit::Grapheme) => "选定内容",
-        (MovementDirection::Next, MovementUnit::Grapheme) => "所选内容",
-        (_, MovementUnit::Word) => "单词",
-        (_, MovementUnit::Subword) => "子词",
-        (_, MovementUnit::Identifier) => "标识符",
-        (_, MovementUnit::Symbol) => "符号",
-        _ => unreachable!(),
-    };
-    // 仍返回 static str：所有组合在编译期已知，
-    // 通过 (prefix, target) 查表实际上等价于原始全枚举，但按方向/单位分解了职责。
-    match (prefix, target) {
-        ("向后", "选定内容") => "向后删除选定内容",
-        ("向前", "所选内容") => "向前删除所选内容",
-        ("向后", "单词") => "向后删除单词",
-        ("向前", "单词") => "向前删除单词",
-        ("向后", "子词") => "向后删除子词",
-        ("向前", "子词") => "向前删除子词",
-        ("向后", "标识符") => "向后删除标识符",
-        ("向前", "标识符") => "向前删除标识符",
-        ("向后", "符号") => "向后删除符号",
-        ("向前", "符号") => "向前删除符号",
-        _ => unreachable!(),
+    // 直接 match (方向, 单位) 枚举对 —— 所有组合编译期已知，新增 variant 时编译器强制补全。
+    match (dir, unit) {
+        (MovementDirection::Previous, MovementUnit::LineEdge) => "删除到行首",
+        (MovementDirection::Next, MovementUnit::LineEdge) => "删除到行尾",
+        (MovementDirection::Previous, MovementUnit::Grapheme) => "向后删除",
+        (MovementDirection::Next, MovementUnit::Grapheme) => "向前删除",
+        (MovementDirection::Previous, MovementUnit::Word) => "向后删除单词",
+        (MovementDirection::Next, MovementUnit::Word) => "向前删除单词",
+        (MovementDirection::Previous, MovementUnit::Subword) => "向后删除子词",
+        (MovementDirection::Next, MovementUnit::Subword) => "向前删除子词",
+        (MovementDirection::Previous, MovementUnit::Identifier) => "向后删除标识符",
+        (MovementDirection::Next, MovementUnit::Identifier) => "向前删除标识符",
+        (MovementDirection::Previous, MovementUnit::Symbol) => "向后删除符号",
+        (MovementDirection::Next, MovementUnit::Symbol) => "向前删除符号",
     }
 }
 
@@ -1101,7 +1173,7 @@ fn run_select_all(
         target.buffer.len_bytes(),
     )]);
     target.set_selection(selection)?;
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::selection_changed())
 }
 
 /// 把主编辑区"选区是否扩展"映射到 [`DismissScope::TextEdit`] 栈：
@@ -1163,7 +1235,7 @@ fn run_clear_selection(
         let next = SelectionSet::new_with_primary(collapsed, primary_index);
         target.set_selection(next)?;
     }
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::selection_changed())
 }
 
 fn run_undo(
@@ -1175,7 +1247,7 @@ fn run_undo(
     target.clear_visual_caret();
     target.buffer.undo().map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::edit())
 }
 
 fn run_redo(
@@ -1187,7 +1259,7 @@ fn run_redo(
     target.clear_visual_caret();
     target.buffer.redo().map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::edit())
 }
 
 fn run_move_selection(
@@ -1230,7 +1302,7 @@ fn run_move_selection(
         selections
     };
     move_target_selection(target, selections, args.direction, args.motion, extend)?;
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::selection_changed())
 }
 
 fn run_ime_commit(
@@ -1250,7 +1322,7 @@ fn run_ime_commit(
         .commit_composition(&args.text)
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::edit())
 }
 
 fn run_ime_update(
@@ -1284,7 +1356,7 @@ fn run_ime_update(
         .update_composition(&args.text, relative_selection)
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::selection_changed())
 }
 
 fn run_ime_cancel(
@@ -1419,8 +1491,8 @@ fn run_close_tab(
             .ok_or_else(|| CommandError::InvalidArgs("没有活动标签可关闭".into()))?
     } else {
         // 点击标签关闭 glyph 路径：args 含序列化的 ViewId。
-        reject_unknown_args(&args, &["view_id"])?;
-        let raw = required_arg(&args, "view_id")?;
+        reject_unknown_args(&args, &[CLOSE_TAB_KEY_VIEW_ID])?;
+        let raw = required_arg(&args, CLOSE_TAB_KEY_VIEW_ID)?;
         let id: u64 = raw
             .parse()
             .map_err(|_| CommandError::InvalidArgs(format!("无效的 view_id：{raw}")))?;
@@ -1442,10 +1514,8 @@ fn run_save(
         context.effects.push(HostEffect::Bubble(BubbleEffect::Show(
             BubbleRequest::error(format!("保存失败：{error}")).dedupe("editor.save"),
         )));
-    } else {
-        // TODO: 文件保存触发 git 刷新是临时方案，将来改用 FS watcher 监听 .git/。
-        context.effects.push(HostEffect::Git(GitEffect::Refresh));
     }
+    // git 状态由 pump_file_watcher 在下一帧根据 FS 事件自动刷新，save handler 不再手动触发。
     Ok(CommandOutcome::default())
 }
 
@@ -1542,7 +1612,7 @@ fn run_cut(
         }
     }
     *target.selection = target.buffer.selection().clone();
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::edit())
 }
 
 fn run_paste(
@@ -1568,7 +1638,7 @@ fn run_paste(
         )
         .map_err(command_execution_failed)?;
     *target.selection = target.buffer.selection().clone();
-    Ok(CommandOutcome::default())
+    Ok(CommandOutcome::edit())
 }
 
 /// 收集要写入剪贴板的字符串。

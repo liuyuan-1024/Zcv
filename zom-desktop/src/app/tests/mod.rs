@@ -20,7 +20,7 @@ use zom_command::commands::{
     settings,
 };
 use zom_command::{
-    BubbleEffect, EditorEffect, FileTreeEffect, HostEffect, PanelEffect, ProjectEffect,
+    BubbleEffect, EditorEffect, FileTreeEffect, HostEffect, PanelEffect, ProjectPickerEffect,
     SearchEffect, SurfaceEffect,
 };
 use zom_command::{EditTarget, KeyContext};
@@ -598,7 +598,7 @@ fn project_picker_command_should_emit_open_surface_window_action() {
     assert_eq!(
         outcome.effects,
         vec![
-            HostEffect::Project(ProjectEffect::ShowPicker),
+            HostEffect::ProjectPicker(ProjectPickerEffect::ShowPicker),
             HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );
@@ -616,7 +616,7 @@ fn open_local_project_command_should_emit_window_action() {
     assert_eq!(
         actions,
         vec![
-            HostEffect::Project(ProjectEffect::OpenLocalProject),
+            HostEffect::ProjectPicker(ProjectPickerEffect::OpenLocalProject),
             HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );
@@ -645,7 +645,7 @@ fn project_action_commands_should_have_shortcuts_and_emit_effects() {
     assert_eq!(
         outcome.effects,
         vec![
-            HostEffect::Project(ProjectEffect::MovePickerSelection(1)),
+            HostEffect::ProjectPicker(ProjectPickerEffect::MovePickerSelection(1)),
             HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );
@@ -660,7 +660,7 @@ fn project_action_commands_should_have_shortcuts_and_emit_effects() {
     assert_eq!(
         outcome.effects,
         vec![
-            HostEffect::Project(ProjectEffect::ActivatePicker),
+            HostEffect::ProjectPicker(ProjectPickerEffect::ActivatePicker),
             HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );
@@ -671,7 +671,7 @@ fn project_action_commands_should_have_shortcuts_and_emit_effects() {
     assert_eq!(
         actions,
         vec![
-            HostEffect::Project(ProjectEffect::StartGitClone),
+            HostEffect::ProjectPicker(ProjectPickerEffect::StartGitClone),
             HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );
@@ -682,7 +682,7 @@ fn project_action_commands_should_have_shortcuts_and_emit_effects() {
     assert_eq!(
         actions,
         vec![
-            HostEffect::Project(ProjectEffect::RemoveSelectedRecentProject),
+            HostEffect::ProjectPicker(ProjectPickerEffect::RemoveSelectedRecentProject),
             HostEffect::Editor(EditorEffect::CancelPointerSelection),
         ]
     );

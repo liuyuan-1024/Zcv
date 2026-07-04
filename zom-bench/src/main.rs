@@ -3,7 +3,7 @@
 //! 用法（一律 release 跑）：
 //!
 //! ```text
-//! cargo run --release -p zom-bench -- corpus           # 生成 1/4/16/64 MiB 语料到 target/bench-corpus/
+//! cargo run --release -p zom-bench -- corpus           # 生成 1/4/16 MiB 语料到 target/bench-corpus/
 //! cargo run --release -p zom-bench -- run rust         # 跑 rust 全部规模
 //! cargo run --release -p zom-bench -- run rust 16      # 只跑 rust 16 MiB 一档（红线档）
 //! cargo run --release -p zom-bench -- run all          # 三语言全跑
@@ -292,7 +292,7 @@ fn print_usage() {
     println!("用法:");
     println!("  zom-bench corpus               生成语料到 target/bench-corpus/");
     println!(
-        "  zom-bench run <lang> [size]    跑测量。lang 为 rust|json|log|all；size 可选 1|4|16|64"
+        "  zom-bench run <lang> [size]    跑测量。lang 为 rust|json|log|all；size 可选 1|4|16"
     );
     println!();
     println!("示例:");

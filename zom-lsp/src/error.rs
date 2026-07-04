@@ -11,9 +11,6 @@ pub enum LspError {
     /// 服务器进程启动失败（权限不足、缺少运行时等）。
     ServerStartFailed { command: String, reason: String },
 
-    /// 服务器进程非预期退出。
-    ServerExited { command: String, exit: ExitStatus },
-
     /// JSON-RPC 编解码失败。
     ProtocolViolation { detail: String },
 
@@ -27,13 +24,6 @@ pub enum LspError {
     ChannelClosed,
 }
 
-/// 进程退出状态快照。
-#[derive(Debug, Clone)]
-pub enum ExitStatus {
-    Code(i32),
-    Signal,
-}
-
 impl std::fmt::Display for LspError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -42,9 +32,6 @@ impl std::fmt::Display for LspError {
             }
             LspError::ServerStartFailed { command, reason } => {
                 write!(f, "启动 {command} 失败：{reason}")
-            }
-            LspError::ServerExited { command, exit } => {
-                write!(f, "{command} 已退出（{exit:?}）")
             }
             LspError::ProtocolViolation { detail } => {
                 write!(f, "协议错误：{detail}")

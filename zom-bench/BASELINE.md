@@ -6,7 +6,7 @@
 ## 1. 测量方法
 
 - **工具**：[`zom-bench`](src/) crate。`cargo run --release -p zom-bench -- run <lang> [size]`。
-- **语料**：合成数据，落盘到 `target/bench-corpus/`，由 `zom-bench corpus` 一键生成；`{rust, json, log} × {1, 4, 16, 64} MiB` 共 12 份。语料只追求"形态像真实代码"以经过 tree-sitter 的典型分支，不追求语义正确。
+- **语料**：合成数据，落盘到 `target/bench-corpus/`，由 `zom-bench corpus` 一键生成；`{rust, json, log} × {1, 4, 16} MiB` 共 9 份。语料只追求"形态像真实代码"以经过 tree-sitter 的典型分支，不追求语义正确。
 - **场景**：
   - `load`：`Buffer::from_reader` 流式读取，含 UTF-8 校验 / 行尾扫描 / 最长行扫描 / rope build。3 次取平均。
   - `viewport`：`snapshot.slice_viewport(Viewport::new(中位行, 60))`。1000 次取平均，衡量渲染热路径。

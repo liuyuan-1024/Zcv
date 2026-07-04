@@ -4,8 +4,7 @@ use crate::commands::cid;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
-    GoToLineEffect, HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs,
-    command_execution_failed,
+    GoToLineEffect, HostEffect, Invocation, KeyContext, Keymap, NoArgs, command_execution_failed,
 };
 use zom_engine::{ByteOffset, Line, TextRange};
 
@@ -22,8 +21,8 @@ fn dismiss() -> Invocation {
 }
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
-    let text_edit = KeyBindingContext::text_edit();
-    let go_to_line_input = KeyBindingContext::go_to_line_input();
+    let text_edit = KeyContext::text_edit_binding();
+    let go_to_line_input = KeyContext::go_to_line_input();
 
     registry
         .install(keymap, ACTIVATE, "跳转到行", Box::new(run_activate))
@@ -43,7 +42,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     dismiss_top::bind_esc(
         keymap,
         DismissScope::GoToLineInput,
-        KeyBindingContext::go_to_line_input(),
+        KeyContext::go_to_line_input(),
     );
 }
 

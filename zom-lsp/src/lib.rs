@@ -29,7 +29,7 @@
 
 pub mod client;
 pub mod error;
-pub mod transport;
+pub(crate) mod transport;
 
 pub use client::{LspClient, NotificationHandler};
 pub use error::LspError;

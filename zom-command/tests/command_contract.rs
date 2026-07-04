@@ -11,9 +11,9 @@ use zom_command::commands::{
 use zom_command::{
     BubbleEffect, BubbleKind, Command, CommandArgs, CommandContext, CommandError, CommandId,
     CommandQueue, CommandRegistry, DismissScope, DismissStacks, EditTarget, EditorEffect,
-    EffectQueue, FileTreeEffect, FileTreeKeyMode, HostEffect, KeyBinding, KeyBindingContext,
-    KeyChord, KeyContext, Keymap, KeymapResolution, NoArgs, PanelKind, ProjectEffect, SearchEffect,
-    SearchOption, SettingsChangeRequest, SurfaceEffect,
+    EffectQueue, FileTreeEffect, FileTreeKeyMode, HostEffect, KeyBinding, KeyChord, KeyContext,
+    Keymap, KeymapResolution, NoArgs, PanelKind, ProjectPickerEffect, SearchEffect, SearchOption,
+    SettingsChangeRequest, SurfaceEffect,
 };
 use zom_engine::{
     Buffer, BufferConfig, ByteOffset, Motion, MovementDirection, MovementUnit, Selection,
@@ -103,7 +103,7 @@ fn run(
         dismiss: &mut dismiss,
         edit_merge_policy: TransactionMergePolicy::Never,
     };
-    zom_command::run(registry, &mut context)
+    zom_command::run(registry, &mut context).map(|_| ())
 }
 
 /// 与 [`run`] 同形，但接收外部 `MockClipboard` 供测试断言其内容。
@@ -134,7 +134,7 @@ fn run_with_clipboard(
         dismiss: &mut dismiss,
         edit_merge_policy: TransactionMergePolicy::Never,
     };
-    zom_command::run(registry, &mut context)
+    zom_command::run(registry, &mut context).map(|_| ())
 }
 
 fn run_and_collect_effects(
@@ -1662,7 +1662,7 @@ fn run_on_focused_field(
         dismiss: &mut dismiss,
         edit_merge_policy: TransactionMergePolicy::Never,
     };
-    zom_command::run(registry, &mut context)
+    zom_command::run(registry, &mut context).map(|_| ())
 }
 
 #[test]
@@ -1922,26 +1922,26 @@ fn keymap_should_resolve_prefixes_and_prioritized_contexts() {
         sequence: vec![key("ctrl+x"), key("s")],
         command: command_id("file.save"),
         args: CommandArgs::new(),
-        context: KeyBindingContext::text_edit(),
+        context: KeyContext::text_edit_binding(),
     });
     keymap.bind(KeyBinding {
         sequence: vec![key("ctrl+x"), key("c")],
         command: command_id("editor.copy"),
         args: CommandArgs::new().with("kind", "copy"),
-        context: KeyBindingContext::global(),
+        context: KeyContext::global(),
     });
     keymap.bind(KeyBinding {
         sequence: vec![key("ctrl+x"), key("c")],
         command: command_id("editor.cancel"),
         args: CommandArgs::new().with("kind", "cancel"),
-        context: KeyBindingContext::file_tree(FileTreeKeyMode::Navigate),
+        context: KeyContext::file_tree(FileTreeKeyMode::Navigate),
     });
     assert!(matches!(
         keymap.try_bind(KeyBinding {
             sequence: vec![key("ctrl+x"), key("c")],
             command: command_id("editor.duplicate_copy"),
             args: CommandArgs::new(),
-            context: KeyBindingContext::global(),
+            context: KeyContext::global(),
         }),
         Err(CommandError::DuplicateKeyBinding { .. })
     ));
@@ -1991,7 +1991,7 @@ fn keymap_should_reject_overlapping_but_allow_disjoint_text_edit_contexts() {
         sequence: vec![key("enter")],
         command: command_id("editor.a"),
         args: CommandArgs::new(),
-        context: KeyBindingContext::text_edit(),
+        context: KeyContext::text_edit_binding(),
     });
 
     // text_edit 与 text_edit_multiline 的 composition 都是 Inactive（后者只多了 requires_newline 过滤），
@@ -2001,7 +2001,7 @@ fn keymap_should_reject_overlapping_but_allow_disjoint_text_edit_contexts() {
             sequence: vec![key("enter")],
             command: command_id("editor.b"),
             args: CommandArgs::new(),
-            context: KeyBindingContext::text_edit_multiline(),
+            context: KeyContext::text_edit_multiline_binding(),
         }),
         Err(CommandError::DuplicateKeyBinding { .. })
     ));
@@ -2013,7 +2013,7 @@ fn keymap_should_reject_overlapping_but_allow_disjoint_text_edit_contexts() {
                 sequence: vec![key("enter")],
                 command: command_id("editor.c"),
                 args: CommandArgs::new(),
-                context: KeyBindingContext::text_edit_composition(),
+                context: KeyContext::text_edit_composition_binding(),
             })
             .is_ok()
     );
@@ -2057,7 +2057,7 @@ fn project_picker_esc_routes_through_dismiss_stack() {
         assert_eq!(
             effects.drain(),
             vec![
-                HostEffect::Project(ProjectEffect::ShowPicker),
+                HostEffect::ProjectPicker(ProjectPickerEffect::ShowPicker),
                 HostEffect::Editor(EditorEffect::CancelPointerSelection),
             ]
         );

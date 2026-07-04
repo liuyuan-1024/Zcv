@@ -50,14 +50,12 @@ pub fn run(app: App) {
                     shell_view.install_feature_listeners(window, cx);
                     shell_view.flush_startup_bubbles(window, cx);
 
-                    // 开发阶段：启动即打开固定项目，方便测试。
+                    // 开发阶段：设置 ZOM_DEBUG_PROJECT 环境变量可在启动时自动打开指定项目。
                     // 走与选择器完全相同的打开流程；release 构建不编译此分支。
                     #[cfg(debug_assertions)]
-                    shell_view.open_project(
-                        std::path::PathBuf::from("/Users/liuyuan/project/liuyuan/zom"),
-                        window,
-                        cx,
-                    );
+                    if let Ok(project_path) = std::env::var("ZOM_DEBUG_PROJECT") {
+                        shell_view.open_project(std::path::PathBuf::from(project_path), window, cx);
+                    }
                 })
                 .expect("GPUI 主窗口应能激活");
 

@@ -1,7 +1,7 @@
 //! ShellView 的命令动作与 HostEffect 解释。
 //!
 //! 此文件只承担 view 层壳：命令派发入口、HostEffect 总调度、跨 feature 的窗口 / surface 管理。
-//! 每个 feature 自己的 HostEffect 处理都在 `features/<feature>/effects.rs` 里，由 [`apply_host_effects`] 按顺序问询。
+//! 每个 feature 自己的 HostEffect 处理都在 `features/<feature>/effects.rs` 里，由 [`apply_host_effects_with_settings`] 按顺序问询。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -133,7 +133,7 @@ pub(super) fn bind_host_intent_request(
     })
 }
 
-pub(super) fn apply_host_effects(
+pub(super) fn apply_host_effects_with_settings(
     effects: Vec<HostEffect>,
     app: &Rc<RefCell<App>>,
     workbench: &Rc<RefCell<WorkbenchController>>,
@@ -147,112 +147,6 @@ pub(super) fn apply_host_effects(
 ) {
     let focus = features.focus_projection(editor_focus_fallback.clone());
     for effect in effects {
-        // 按 feature 顺序问询：第一个认领的 try_apply 返回 true，跳过余下。
-        // 剩下的窗口控制 / 跨 feature 变体由本文件下方的兜底 match 处理。
-        if version_control::try_apply_effect(
-            features.panels.vc_runtime(),
-            &effect,
-            app,
-            bubbles,
-            window,
-            cx,
-        )
-        .is_some()
-        {
-            continue;
-        }
-        if file_tree::try_apply_effect(
-            &effect,
-            app,
-            workbench,
-            &features.file_tree,
-            &focus,
-            bubbles,
-            window,
-            cx,
-        ) {
-            continue;
-        }
-        if search::try_apply_effect(&effect, app, &focus, window) {
-            continue;
-        }
-        if go_to_line::try_apply_effect(
-            &effect,
-            app,
-            &focus,
-            surfaces,
-            editor_focus_fallback,
-            &features.go_to_line,
-            window,
-            cx,
-        ) {
-            continue;
-        }
-        if branch_picker::try_apply_effect(
-            &effect,
-            app,
-            &focus,
-            surfaces,
-            editor_focus_fallback,
-            &features.branch_picker,
-            bubbles,
-            window,
-            cx,
-        ) {
-            continue;
-        }
-        if project_picker::try_apply_effect(
-            &effect,
-            app,
-            workbench,
-            surfaces,
-            editor_focus_fallback,
-            &features.file_tree,
-            &features.project_picker,
-            bubbles,
-            window,
-            cx,
-        ) {
-            continue;
-        }
-        if language_servers::try_apply_effect(
-            &effect,
-            app,
-            surfaces,
-            editor_focus_fallback,
-            &features.language_servers,
-            window,
-            cx,
-        ) {
-            continue;
-        }
-        apply_shell_effect(
-            &effect,
-            app,
-            workbench,
-            surfaces,
-            bubbles,
-            &focus,
-            text_editor_slots,
-            window,
-            cx,
-        );
-    }
-}
-
-pub(super) fn apply_host_effects_with_settings(
-    effects: Vec<HostEffect>,
-    app: &Rc<RefCell<App>>,
-    workbench: &Rc<RefCell<WorkbenchController>>,
-    surfaces: &Entity<SurfaceManager>,
-    bubbles: &Entity<BubbleRuntime>,
-    editor_focus_fallback: &FocusHandle,
-    features: &FeatureRegistry,
-    text_editor_slots: &[Rc<TextEditorSlot>],
-    window: &mut Window,
-    cx: &mut gpui::App,
-) {
-    for effect in effects {
         if settings::try_apply_effect(
             &effect,
             app,
@@ -264,12 +158,13 @@ pub(super) fn apply_host_effects_with_settings(
         ) {
             continue;
         }
-        apply_host_effects(
-            vec![effect],
+        dispatch_single_effect(
+            &effect,
             app,
             workbench,
             surfaces,
             bubbles,
+            &focus,
             editor_focus_fallback,
             features,
             text_editor_slots,
@@ -279,8 +174,125 @@ pub(super) fn apply_host_effects_with_settings(
     }
 }
 
-/// 没有归属到具体 feature 的"壳"级变体：窗口控制、TogglePanel、
-/// DismissSurface、未实现的占位。
+// ── 单 effect 派发（两个 apply_host_effects* 的共享实现）──────────────────
+
+/// 注册表模式：按顺序问询每个 feature 的 effect handler；
+/// 第一个认领的返回 true，跳过余下。新 feature 只需加一行 `try_apply!`。
+///
+/// 用宏消除逐个 if-continue 的线性链；每个 handler 闭包捕获它需要的依赖。
+/// `FnMut` 是因为 `window` / `cx` 是 `&mut` 引用。
+fn dispatch_single_effect(
+    effect: &HostEffect,
+    app: &Rc<RefCell<App>>,
+    workbench: &Rc<RefCell<WorkbenchController>>,
+    surfaces: &Entity<SurfaceManager>,
+    bubbles: &Entity<BubbleRuntime>,
+    focus: &FocusProjection,
+    editor_focus_fallback: &FocusHandle,
+    features: &FeatureRegistry,
+    text_editor_slots: &[Rc<TextEditorSlot>],
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    macro_rules! try_apply {
+        ($handler:expr) => {
+            if ($handler)(effect) {
+                return;
+            }
+        };
+    }
+
+    try_apply!(|effect: &HostEffect| -> bool {
+        version_control::try_apply_effect(
+            features.panels.vc_runtime(),
+            effect,
+            app,
+            bubbles,
+            window,
+            cx,
+        )
+        .is_some()
+    });
+    try_apply!(|effect: &HostEffect| -> bool {
+        file_tree::try_apply_effect(
+            effect,
+            app,
+            workbench,
+            &features.file_tree,
+            focus,
+            bubbles,
+            window,
+            cx,
+        )
+    });
+    try_apply!(|effect: &HostEffect| -> bool {
+        search::try_apply_effect(effect, app, focus, window)
+    });
+    try_apply!(|effect: &HostEffect| -> bool {
+        go_to_line::try_apply_effect(
+            effect,
+            app,
+            focus,
+            surfaces,
+            editor_focus_fallback,
+            &features.go_to_line,
+            window,
+            cx,
+        )
+    });
+    try_apply!(|effect: &HostEffect| -> bool {
+        branch_picker::try_apply_effect(
+            effect,
+            app,
+            focus,
+            surfaces,
+            editor_focus_fallback,
+            &features.branch_picker,
+            bubbles,
+            window,
+            cx,
+        )
+    });
+    try_apply!(|effect: &HostEffect| -> bool {
+        project_picker::try_apply_effect(
+            effect,
+            app,
+            workbench,
+            surfaces,
+            editor_focus_fallback,
+            &features.file_tree,
+            &features.project_picker,
+            bubbles,
+            window,
+            cx,
+        )
+    });
+    try_apply!(|effect: &HostEffect| -> bool {
+        language_servers::try_apply_effect(
+            effect,
+            app,
+            surfaces,
+            editor_focus_fallback,
+            &features.language_servers,
+            window,
+            cx,
+        )
+    });
+
+    apply_shell_effect(
+        effect,
+        app,
+        workbench,
+        surfaces,
+        bubbles,
+        focus,
+        text_editor_slots,
+        window,
+        cx,
+    );
+}
+
+/// 没有归属到具体 feature 的"壳"级变体：窗口控制、TogglePanel、DismissSurface、未实现的占位。
 fn apply_shell_effect(
     effect: &HostEffect,
     app: &Rc<RefCell<App>>,

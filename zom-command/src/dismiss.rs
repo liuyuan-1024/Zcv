@@ -6,7 +6,7 @@
 //!
 //! 栈按 [`DismissScope`] 隔离 —— 一个上下文家族一个独立栈。
 //! 同一焦点里多个瞬态共存时，最近 push 的最先被 esc 消费（"最近开的最先关"）。
-//! 新增瞬态无需在 [`crate::KeyBindingContext`] 里切新的 mode 避免 esc 冲突——push token 即可。
+//! 新增瞬态无需在 [`crate::KeyContext`] 里切新的 mode 避免 esc 冲突——push token 即可。
 //!
 //! ## token 生命周期
 //!
@@ -23,7 +23,7 @@ use crate::{CommandId, Invocation};
 
 /// 一个 DismissStack 的所属上下文家族。
 ///
-/// 与 [`crate::KeyBindingContext`] 的家族一一对应；
+/// 与 [`crate::KeyContext`] 的家族一一对应；
 /// esc 绑定按家族注册，栈也按家族隔离 —— SearchInput 聚焦时弹出的是 SearchInput 栈顶，不会跨家族越界。
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum DismissScope {
@@ -35,6 +35,7 @@ pub enum DismissScope {
     Settings,
     LanguageServers,
     BranchPicker,
+    VersionControl,
 }
 
 impl DismissScope {
@@ -50,6 +51,7 @@ impl DismissScope {
             Self::Settings => "Settings",
             Self::LanguageServers => "LanguageServers",
             Self::BranchPicker => "BranchPicker",
+            Self::VersionControl => "VersionControl",
         }
     }
 }
@@ -67,6 +69,7 @@ impl std::str::FromStr for DismissScope {
             "Settings" => Self::Settings,
             "LanguageServers" => Self::LanguageServers,
             "BranchPicker" => Self::BranchPicker,
+            "VersionControl" => Self::VersionControl,
             _ => return Err(value.to_string()),
         })
     }

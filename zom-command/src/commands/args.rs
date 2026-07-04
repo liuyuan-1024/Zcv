@@ -10,9 +10,13 @@ pub struct MoveDeltaArgs {
     pub delta: isize,
 }
 
+impl MoveDeltaArgs {
+    const KEY_DELTA: &str = "delta";
+}
+
 impl From<MoveDeltaArgs> for CommandArgs {
     fn from(args: MoveDeltaArgs) -> Self {
-        CommandArgs::new().with("delta", args.delta.to_string())
+        CommandArgs::new().with(MoveDeltaArgs::KEY_DELTA, args.delta.to_string())
     }
 }
 
@@ -20,8 +24,8 @@ impl TryFrom<CommandArgs> for MoveDeltaArgs {
     type Error = CommandError;
 
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["delta"])?;
-        let raw = required_arg(&args, "delta")?;
+        reject_unknown_args(&args, &[MoveDeltaArgs::KEY_DELTA])?;
+        let raw = required_arg(&args, MoveDeltaArgs::KEY_DELTA)?;
         let delta = raw
             .parse()
             .map_err(|_| CommandError::InvalidArgs(format!("无效移动步长：{raw}")))?;

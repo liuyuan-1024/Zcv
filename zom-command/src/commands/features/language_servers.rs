@@ -8,7 +8,7 @@ use crate::commands::cid;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
-    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SurfaceEffect,
+    HostEffect, Invocation, KeyContext, Keymap, NoArgs, SurfaceEffect,
 };
 
 pub const OPEN: &str = "language_server.open";
@@ -17,9 +17,6 @@ pub const DISMISS: &str = "language_server.dismiss";
 /// 语言服务器浮面拥有自己的键盘上下文，Esc 等面板内按键不污染全局快捷键空间。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LanguageServersKeyContext;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LanguageServersBindingContext;
 
 pub fn open() -> Invocation {
     (cid(OPEN), CommandArgs::new())
@@ -30,7 +27,7 @@ pub fn dismiss() -> Invocation {
 }
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
-    let language_servers = KeyBindingContext::language_servers();
+    let language_servers = KeyContext::language_servers();
 
     registry
         .install(keymap, OPEN, "语言服务器", Box::new(run_open))

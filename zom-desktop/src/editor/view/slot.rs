@@ -176,11 +176,11 @@ fn consume_scroll_rows(
 
     let accumulated_f = accumulated_scroll_y.get();
     let incoming_f: f32 = incoming.into();
-    let incoming_f = if cfg!(target_os = "macos") {
-        -incoming_f
-    } else {
-        incoming_f
-    };
+    // macOS 触控板滚动方向与其它平台相反，编译时翻转。
+    #[cfg(target_os = "macos")]
+    let incoming_f = -incoming_f;
+    #[cfg(not(target_os = "macos"))]
+    let incoming_f = incoming_f;
     let combined = if incoming_f == 0.0 {
         accumulated_f
     } else if accumulated_f == 0.0 || accumulated_f.signum() == incoming_f.signum() {

@@ -16,18 +16,22 @@ pub struct CopyArgs {
     pub text: String,
 }
 
+impl CopyArgs {
+    const KEY_TEXT: &str = "text";
+}
+
 impl From<CopyArgs> for CommandArgs {
     fn from(args: CopyArgs) -> Self {
-        CommandArgs::new().with("text", args.text)
+        CommandArgs::new().with(CopyArgs::KEY_TEXT, args.text)
     }
 }
 
 impl TryFrom<CommandArgs> for CopyArgs {
     type Error = CommandError;
     fn try_from(args: CommandArgs) -> Result<Self, Self::Error> {
-        reject_unknown_args(&args, &["text"])?;
+        reject_unknown_args(&args, &[CopyArgs::KEY_TEXT])?;
         Ok(Self {
-            text: required_arg(&args, "text")?,
+            text: required_arg(&args, CopyArgs::KEY_TEXT)?,
         })
     }
 }

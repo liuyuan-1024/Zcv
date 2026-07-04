@@ -27,9 +27,12 @@
     "hide": "never",
   },
   {
-    "label": "macOS 启动软件",
+    "label": "macOS Debug 启动软件",
     "command": "sh",
     "args": ["-c", "cargo fmt && cargo run --bin Zom"],
+    "env": {
+      "ZOM_DEBUG_PROJECT": "/Users/liuyuan/project/liuyuan/zom",
+    },
     "cwd": "$ZED_WORKTREE_ROOT",
     "save": "all",
     "reveal": "always",
@@ -85,7 +88,7 @@
     "hide": "never",
   },
   {
-    "label": "Windows 启动软件",
+    "label": "Windows Debug 启动软件",
     "command": "powershell",
     "args": [
       "-NoProfile",
@@ -94,6 +97,9 @@
       "-Command",
       "cargo fmt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cargo run --bin Zom",
     ],
+    "env": {
+      "ZOM_DEBUG_PROJECT": "D:/project/liuyuan/zom",
+    },
     "cwd": "$ZED_WORKTREE_ROOT",
     "save": "all",
     "reveal": "always",

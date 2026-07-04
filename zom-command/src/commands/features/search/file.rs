@@ -9,7 +9,7 @@ use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
-    HostEffect, Invocation, KeyBindingContext, Keymap, NoArgs, SearchEffect, SearchOption,
+    HostEffect, Invocation, KeyContext, Keymap, NoArgs, SearchEffect, SearchOption,
 };
 
 pub const TOGGLE_CASE_SENSITIVE: &str = "search.toggle_case_sensitive";
@@ -77,8 +77,8 @@ pub fn confirm_match() -> Invocation {
 }
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
-    let text_edit = KeyBindingContext::text_edit();
-    let search_input = KeyBindingContext::search_input();
+    let text_edit = KeyContext::text_edit_binding();
+    let search_input = KeyContext::search_bar();
 
     registry
         .install(

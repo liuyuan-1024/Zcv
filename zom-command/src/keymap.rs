@@ -3,16 +3,12 @@
 use std::collections::BTreeMap;
 
 use crate::commands::{
-    editor::{
-        CompositionBinding, TextEditBindingContext, TextEditKeyContext, text_edit_context_matches,
-    },
-    file_tree::{FileTreeBindingContext, FileTreeKeyContext, FileTreeKeyMode},
-    language_servers::{LanguageServersBindingContext, LanguageServersKeyContext},
-    project_picker::{ProjectPickerBindingContext, ProjectPickerKeyContext},
-    settings::{SettingsBindingContext, SettingsKeyContext},
-    version_control::{
-        VersionControlBindingContext, VersionControlKeyContext, VersionControlKeyMode,
-    },
+    editor::TextEditKeyContext,
+    file_tree::{FileTreeKeyContext, FileTreeKeyMode},
+    language_servers::LanguageServersKeyContext,
+    project_picker::ProjectPickerKeyContext,
+    settings::SettingsKeyContext,
+    version_control::{VersionControlKeyContext, VersionControlKeyMode},
 };
 use crate::{CommandArgs, CommandError, CommandId, keymap_format};
 
@@ -60,10 +56,11 @@ impl KeyContext {
         Self::Global
     }
 
+    /// 运行时构造：`composing` 参数自动包装为 `Some(_)`。
     pub fn text_edit(accepts_newline: bool, composing: bool) -> Self {
         Self::TextEdit(TextEditKeyContext {
             accepts_newline,
-            composing,
+            composing: Some(composing),
         })
     }
 
@@ -98,99 +95,70 @@ impl KeyContext {
     pub fn branch_picker() -> Self {
         Self::BranchPicker
     }
-}
 
-/// 键位绑定适用的结构化上下文。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum KeyBindingContext {
-    Global,
-    TextEdit(TextEditBindingContext),
-    FileTree(FileTreeBindingContext),
-    ProjectPicker(ProjectPickerBindingContext),
-    Settings(SettingsBindingContext),
-    LanguageServers(LanguageServersBindingContext),
-    VersionControl(VersionControlBindingContext),
-    SearchInput,
-    GoToLineInput,
-    BranchPicker,
-}
+    // ── 绑定时构造器（替代原 KeyBindingContext 的方法）──
 
-impl KeyBindingContext {
-    pub fn global() -> Self {
-        Self::Global
-    }
-
-    pub fn text_edit() -> Self {
-        Self::TextEdit(TextEditBindingContext {
-            requires_newline: false,
-            composition: CompositionBinding::Inactive,
+    /// 绑定时：匹配非输入法态下的单行文本编辑上下文。
+    pub fn text_edit_binding() -> Self {
+        Self::TextEdit(TextEditKeyContext {
+            accepts_newline: false,
+            composing: Some(false),
         })
     }
 
-    pub fn text_edit_multiline() -> Self {
-        Self::TextEdit(TextEditBindingContext {
-            requires_newline: true,
-            composition: CompositionBinding::Inactive,
+    /// 绑定时：匹配非输入法态下的多行文本编辑上下文。
+    pub fn text_edit_multiline_binding() -> Self {
+        Self::TextEdit(TextEditKeyContext {
+            accepts_newline: true,
+            composing: Some(false),
         })
     }
 
-    pub fn text_edit_composition() -> Self {
-        Self::TextEdit(TextEditBindingContext {
-            requires_newline: false,
-            composition: CompositionBinding::Active,
+    /// 绑定时：匹配输入法组合态下的文本编辑上下文。
+    pub fn text_edit_composition_binding() -> Self {
+        Self::TextEdit(TextEditKeyContext {
+            accepts_newline: false,
+            composing: Some(true),
         })
     }
 
-    pub fn file_tree(mode: FileTreeKeyMode) -> Self {
-        Self::FileTree(FileTreeBindingContext { mode })
+    // 以下构造器运行时与绑定时语义一致，复用同一方法名。
+    // file_tree / project_picker / settings / language_servers / version_control
+    // search_bar / go_to_line_input / branch_picker / global 已在上面定义。
+
+    // ── 内核方法 ──
+
+    /// 运行时上下文是否满足本条绑定的约束（替换原 `binding_matches_context` 自由函数）。
+    fn matches_binding(&self, binding: &KeyContext) -> bool {
+        match (self, binding) {
+            (Self::Global, Self::Global) => true,
+            (Self::TextEdit(active), Self::TextEdit(binding)) => active.matches_binding(binding),
+            (Self::FileTree(active), Self::FileTree(binding)) => active.mode == binding.mode,
+            (Self::ProjectPicker(_), Self::ProjectPicker(_)) => true,
+            (Self::Settings(_), Self::Settings(_)) => true,
+            (Self::LanguageServers(_), Self::LanguageServers(_)) => true,
+            (Self::VersionControl(active), Self::VersionControl(binding)) => {
+                active.mode == binding.mode
+            }
+            (Self::SearchBar, Self::SearchBar) => true,
+            (Self::GoToLineInput, Self::GoToLineInput) => true,
+            (Self::BranchPicker, Self::BranchPicker) => true,
+            // 跨家族的上下文不匹配
+            _ => false,
+        }
     }
 
-    pub fn project_picker() -> Self {
-        Self::ProjectPicker(ProjectPickerBindingContext)
-    }
-
-    pub fn settings() -> Self {
-        Self::Settings(SettingsBindingContext)
-    }
-
-    pub fn language_servers() -> Self {
-        Self::LanguageServers(LanguageServersBindingContext)
-    }
-
-    pub fn version_control(mode: VersionControlKeyMode) -> Self {
-        Self::VersionControl(VersionControlBindingContext { mode })
-    }
-
-    pub fn search_input() -> Self {
-        Self::SearchInput
-    }
-
-    pub fn go_to_line_input() -> Self {
-        Self::GoToLineInput
-    }
-
-    pub fn branch_picker() -> Self {
-        Self::BranchPicker
-    }
-
-    /// 两条绑定的上下文是否可能被同一个运行时 [`KeyContext`] 同时命中。
-    ///
-    /// 这是「冲突」的真正定义：同一序列下两条绑定一旦重叠，[`Keymap::resolve`]
-    /// 就只能靠注册顺序裁决——所以 [`Keymap::try_bind`] 用它（而非相等）判重。
-    ///
-    /// `requires_newline` 是单向过滤、不切分上下文空间，故不参与重叠判定；
-    /// 真正切分上下文的维度是 `composition`（`Active`/`Inactive` 互斥）与
-    /// `FileTree` 的 `mode`。
-    pub(crate) fn overlaps(&self, other: &Self) -> bool {
+    /// 两条绑定约束是否可能被同一运行时上下文同时命中（替换原 `KeyBindingContext::overlaps`）。
+    pub(crate) fn overlaps_binding(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Global, Self::Global) => true,
-            (Self::TextEdit(a), Self::TextEdit(b)) => a.composition.overlaps(b.composition),
+            (Self::TextEdit(a), Self::TextEdit(b)) => a.overlaps_binding(b),
             (Self::FileTree(a), Self::FileTree(b)) => a.mode == b.mode,
             (Self::ProjectPicker(_), Self::ProjectPicker(_)) => true,
             (Self::Settings(_), Self::Settings(_)) => true,
             (Self::LanguageServers(_), Self::LanguageServers(_)) => true,
             (Self::VersionControl(a), Self::VersionControl(b)) => a.mode == b.mode,
-            (Self::SearchInput, Self::SearchInput) => true,
+            (Self::SearchBar, Self::SearchBar) => true,
             (Self::GoToLineInput, Self::GoToLineInput) => true,
             (Self::BranchPicker, Self::BranchPicker) => true,
             _ => false,
@@ -204,7 +172,7 @@ pub struct KeyBinding {
     pub sequence: KeySequence,
     pub command: CommandId,
     pub args: CommandArgs,
-    pub context: KeyBindingContext,
+    pub context: KeyContext,
 }
 
 /// 键位表。内部维护前缀 trie，用于识别多段 key sequence。
@@ -231,11 +199,12 @@ impl Keymap {
     }
 
     /// 绑定一条快捷键。冲突判定按「上下文重叠」而非「上下文相等」——
-    /// 详见 `KeyBindingContext::overlaps`。
+    /// 详见 `KeyContext::overlaps_binding`。
     /// 同一序列在互不重叠的上下文里复用（如 `enter` 同时绑给文件树导航和编辑器换行）不算冲突。
     pub fn try_bind(&mut self, binding: KeyBinding) -> Result<(), CommandError> {
         if self.bindings.iter().any(|existing| {
-            existing.sequence == binding.sequence && existing.context.overlaps(&binding.context)
+            existing.sequence == binding.sequence
+                && existing.context.overlaps_binding(&binding.context)
         }) {
             return Err(CommandError::DuplicateKeyBinding {
                 sequence: binding.sequence,
@@ -303,7 +272,7 @@ impl Keymap {
                 .iter()
                 .rev()
                 .filter_map(|index| self.bindings.get(*index))
-                .find(|binding| binding_matches_context(binding, *context))
+                .find(|binding| context.matches_binding(&binding.context))
             {
                 return KeymapResolution::Matched {
                     command: binding.command.clone(),
@@ -342,28 +311,6 @@ pub enum KeymapResolution {
     NoMatch,
 }
 
-fn binding_matches_context(binding: &KeyBinding, context: KeyContext) -> bool {
-    match (binding.context, context) {
-        (KeyBindingContext::Global, KeyContext::Global) => true,
-        (KeyBindingContext::TextEdit(binding), KeyContext::TextEdit(active)) => {
-            text_edit_context_matches(binding, active)
-        }
-        (KeyBindingContext::FileTree(binding), KeyContext::FileTree(active)) => {
-            binding.mode == active.mode
-        }
-        (KeyBindingContext::ProjectPicker(_), KeyContext::ProjectPicker(_)) => true,
-        (KeyBindingContext::Settings(_), KeyContext::Settings(_)) => true,
-        (KeyBindingContext::LanguageServers(_), KeyContext::LanguageServers(_)) => true,
-        (KeyBindingContext::VersionControl(binding), KeyContext::VersionControl(active)) => {
-            binding.mode == active.mode
-        }
-        (KeyBindingContext::SearchInput, KeyContext::SearchBar) => true,
-        (KeyBindingContext::GoToLineInput, KeyContext::GoToLineInput) => true,
-        (KeyBindingContext::BranchPicker, KeyContext::BranchPicker) => true,
-        _ => false,
-    }
-}
-
 fn node_has_context_match(
     node: &KeymapNode,
     bindings: &[KeyBinding],
@@ -375,7 +322,7 @@ fn node_has_context_match(
         .any(|binding| {
             contexts
                 .iter()
-                .any(|context| binding_matches_context(binding, *context))
+                .any(|context| context.matches_binding(&binding.context))
         })
         || node
             .children

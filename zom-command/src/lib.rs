@@ -33,27 +33,24 @@ mod keymap;
 mod registry;
 
 pub use clipboard::{ClipboardPort, NoopClipboard};
-pub use commands::editor::{CompositionBinding, TextEditBindingContext, TextEditKeyContext};
-pub use commands::file_tree::{FileTreeBindingContext, FileTreeKeyContext, FileTreeKeyMode};
-pub use commands::project_picker::{ProjectPickerBindingContext, ProjectPickerKeyContext};
-pub use commands::version_control::{
-    VersionControlBindingContext, VersionControlKeyContext, VersionControlKeyMode,
-};
+pub use commands::editor::TextEditKeyContext;
+pub use commands::file_tree::{FileTreeKeyContext, FileTreeKeyMode};
+pub use commands::project_picker::ProjectPickerKeyContext;
+pub use commands::version_control::{VersionControlKeyContext, VersionControlKeyMode};
 pub use core::{Command, CommandArgs, CommandCatalogItem, CommandId, Invocation, NoArgs};
 pub use dismiss::{DismissScope, DismissStacks, DismissTokenId};
 pub use effects::{
     BranchEffect, BubbleEffect, BubbleKind, BubbleRequest, EditorEffect, EffectQueue,
-    FileTreeEffect, GitEffect, GoToLineEffect, HostEffect, PanelEffect, PanelKind, ProjectEffect,
-    SearchEffect, SearchOption, SettingsChangeRequest, SurfaceEffect, VersionControlEffect,
-    WindowEffect,
+    FileTreeEffect, GitEffect, GoToLineEffect, HostEffect, PanelEffect, PanelKind,
+    ProjectPickerEffect, SearchEffect, SearchOption, SettingsChangeRequest, SurfaceEffect,
+    VersionControlEffect, WindowEffect,
 };
 pub use error::CommandError;
 pub use executor::{
-    CommandContext, CommandOutcome, CommandQueue, EditTarget, reconcile_after_input_mutation, run,
+    CommandContext, CommandOutcome, CommandQueue, EditMergeKind, EditTarget,
+    reconcile_after_input_mutation, run,
 };
-pub use keymap::{
-    KeyBinding, KeyBindingContext, KeyChord, KeyContext, KeySequence, Keymap, KeymapResolution,
-};
+pub use keymap::{KeyBinding, KeyChord, KeyContext, KeySequence, Keymap, KeymapResolution};
 pub use registry::{CommandBuilder, CommandHandler, CommandRegistry};
 
 pub(crate) use commands::args::{

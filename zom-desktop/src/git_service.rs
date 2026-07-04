@@ -514,20 +514,6 @@ impl GitService {
         self.run_git(&["reset", "HEAD"])
     }
 
-    /// 从远端拉取：`git fetch`。
-    // 预留给后续 Git Panel。
-    #[allow(dead_code)]
-    pub fn fetch(&self) -> Result<(), String> {
-        self.run_git(&["fetch"])
-    }
-
-    /// 拉取并合并：`git pull`。
-    // 预留给后续 Git Panel。
-    #[allow(dead_code)]
-    pub fn pull(&self) -> Result<(), String> {
-        self.run_git(&["pull"])
-    }
-
     /// 变更统计：(增行数, 删行数)，不受暂存状态影响。
     ///
     /// `git diff --numstat HEAD` 一口统计暂存区 + 工作区相对 HEAD 的总变更。

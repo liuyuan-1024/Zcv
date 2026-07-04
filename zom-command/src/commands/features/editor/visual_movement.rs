@@ -28,7 +28,9 @@ pub(super) fn move_target_selection(
                 let n = match motion {
                     Motion::LineStep => 1,
                     Motion::PageStep { lines } => lines.max(1),
-                    Motion::ByUnit(_) => unreachable!(),
+                    Motion::ByUnit(_) => {
+                        unreachable!("外层 match 已保证只有 LineStep / PageStep 能进入此分支")
+                    }
                 };
                 return apply_visual_row_step(
                     &mut target,

@@ -11,6 +11,9 @@
 //! app 与 shell 共用：数据 schema、语义焦点、编辑区标签摘要、workspace 薄壳、反向接入端口、文本目标路由协议。
 //! - `theme` / `clipboard` —— 顶层共享基础设施：主题色 token / 字号 / 圆角，以及 GPUI 剪贴板适配层；shell 与可嵌入编辑器都依赖。
 
+// Windows: GUI 应用不弹出控制台窗口。
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod app;
 mod clipboard;
 mod config;

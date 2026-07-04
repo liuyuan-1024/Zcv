@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use gpui::{Context, FocusHandle, IntoElement, Render, ScrollHandle, Subscription, Window};
 use zom_command::commands::{
-    diagnostics as diagnostics_commands, editor as editor_commands,
-    file_tree as file_tree_commands, go_to_line as go_to_line_commands,
+    branch_picker as branch_picker_commands, diagnostics as diagnostics_commands,
+    editor as editor_commands, file_tree as file_tree_commands, go_to_line as go_to_line_commands,
     language_servers as language_server_commands, project_picker as project_picker_commands,
     search::{file as search_file_commands, project as search_project_commands},
     settings as settings_commands, version_control as version_control_commands,
@@ -261,6 +261,10 @@ impl ShellView {
                 editor_commands::CHANGE_LANGUAGE,
                 editor_commands::change_language(),
             ),
+            branch_picker_open: binding(
+                branch_picker_commands::SHOW_PICKER,
+                branch_picker_commands::show_picker(),
+            ),
             panel_toggle,
             search_intent: self.search_intent_request(),
             shortcut_lookup: shortcut,
@@ -433,6 +437,9 @@ impl Render for ShellView {
             go_to_line: runtime
                 .surface_manager
                 .read_with(cx, |manager, _| manager.is_active(SurfaceId::GoToLine)),
+            branch_picker: runtime
+                .surface_manager
+                .read_with(cx, |manager, _| manager.is_active(SurfaceId::BranchPicker)),
         };
         let confirm_delete = ConfirmDeleteHandlers {
             confirm: self.bind_command(file_tree_commands::confirm_delete()),

@@ -4,6 +4,7 @@
 
 use crate::{CommandOutcome, CommandRegistry, HostEffect, Keymap, PanelEffect, PanelKind};
 
+pub mod branch_picker;
 pub mod bubble;
 pub mod debug;
 pub mod diagnostics;
@@ -23,6 +24,7 @@ pub mod version_control;
 ///
 /// 组合根只需要选择"是否安装内建命令集"；具体 feature 的注册顺序和完整性由 zom-command 自己维护。
 pub fn install_all(registry: &mut CommandRegistry, keymap: &mut Keymap) {
+    branch_picker::install(registry, keymap);
     bubble::install(registry, keymap);
     editor::install(registry, keymap);
     project_picker::install(registry, keymap);

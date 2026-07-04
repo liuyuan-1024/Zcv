@@ -23,6 +23,7 @@ mod features;
 pub(crate) mod reconcile;
 mod system;
 
+pub use features::branch_picker;
 pub use features::bubble;
 pub use features::diagnostics;
 pub use features::editor;

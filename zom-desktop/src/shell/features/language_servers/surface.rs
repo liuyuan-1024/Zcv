@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use gpui::{Context, Corner, FocusHandle, div, point, prelude::*, px};
+use gpui::{Context, Corner, FocusHandle, div, prelude::*, px};
 
 use crate::shell::surfaces::{SurfaceAnchor, SurfaceRequest};
 use crate::theme::{color, radius, space};
@@ -35,7 +35,6 @@ pub(crate) fn request(runtime: LanguageServersRuntime) -> SurfaceRequest {
         anchor: SurfaceAnchor::Invoker {
             id: super::INVOKER_ID.into(),
             attachment: Corner::BottomLeft,
-            fallback_position: point(px(48.0), px(540.0)),
         },
         focus_on_open: Some(focus.clone()),
         render: Rc::new(move || {

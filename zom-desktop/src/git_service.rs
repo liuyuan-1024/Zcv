@@ -162,6 +162,13 @@ impl GitService {
         &self.statuses
     }
 
+    /// 是否有未提交的变更（排除 Ignored 文件）。
+    pub fn has_changes(&self) -> bool {
+        self.statuses
+            .values()
+            .any(|s| s.color_kind().is_some() && s.color_kind() != Some(ColorKind::Ignored))
+    }
+
     /// 返回目录级聚合颜色的只读引用。
     /// key 为相对于 repo_root 的路径。
     pub fn dir_colors(&self) -> &HashMap<PathBuf, ColorKind> {
@@ -557,6 +564,65 @@ impl GitService {
             }
         }
         (added, deleted)
+    }
+
+    /// 列出所有本地分支，返回 (分支名, 是否当前分支) 列表。
+    pub fn list_branches(&self) -> Result<Vec<(String, bool)>, String> {
+        if !self.valid {
+            return Err("不在 Git 仓库中".to_string());
+        }
+        let output = Command::new("git")
+            .args(["branch", "--format=%(refname:short)|%(HEAD)"])
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|e| format!("无法执行 git branch：{e}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        let mut branches = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some((name, head)) = line.split_once('|') {
+                let is_current = head == "*";
+                branches.push((name.to_string(), is_current));
+            }
+        }
+        Ok(branches)
+    }
+
+    /// 切换到指定分支。
+    pub fn switch_branch(&self, name: &str) -> Result<(), String> {
+        if !self.valid {
+            return Err("不在 Git 仓库中".to_string());
+        }
+        let output = Command::new("git")
+            .args(["switch", name])
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|e| format!("无法执行 git switch：{e}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        Ok(())
+    }
+
+    /// 强制删除指定分支。
+    pub fn delete_branch(&self, name: &str) -> Result<(), String> {
+        if !self.valid {
+            return Err("不在 Git 仓库中".to_string());
+        }
+        let output = Command::new("git")
+            .args(["branch", "-D", name])
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|e| format!("无法执行 git branch -D：{e}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        Ok(())
     }
 
     fn run_git(&self, args: &[&str]) -> Result<(), String> {

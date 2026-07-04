@@ -72,6 +72,7 @@ pub(crate) struct WorkbenchCommandRequests {
     pub(crate) file_search_toggle: CommandBinding,
     pub(crate) editor_go_to_line: CommandBinding,
     pub(crate) editor_change_language: CommandBinding,
+    pub(crate) branch_picker_open: CommandBinding,
     pub(crate) panel_toggle: Rc<dyn Fn(PanelId) -> CommandRequest>,
     pub(crate) search_intent: SearchIntentRequest,
     pub(crate) shortcut_lookup: ShortcutLookup,

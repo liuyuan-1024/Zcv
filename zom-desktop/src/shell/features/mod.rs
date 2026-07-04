@@ -3,6 +3,7 @@
 //! Dock panel 统一放在 `features::panels`，非 panel 的 bar / surface 入口保留在
 //! 本层功能目录。
 
+pub(crate) mod branch_picker;
 pub(crate) mod diagnostics;
 pub(crate) mod go_to_line;
 pub(crate) mod language_servers;

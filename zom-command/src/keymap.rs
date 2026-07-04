@@ -52,6 +52,7 @@ pub enum KeyContext {
     VersionControl(VersionControlKeyContext),
     SearchBar,
     GoToLineInput,
+    BranchPicker,
 }
 
 impl KeyContext {
@@ -93,6 +94,10 @@ impl KeyContext {
     pub fn go_to_line_input() -> Self {
         Self::GoToLineInput
     }
+
+    pub fn branch_picker() -> Self {
+        Self::BranchPicker
+    }
 }
 
 /// 键位绑定适用的结构化上下文。
@@ -107,6 +112,7 @@ pub enum KeyBindingContext {
     VersionControl(VersionControlBindingContext),
     SearchInput,
     GoToLineInput,
+    BranchPicker,
 }
 
 impl KeyBindingContext {
@@ -163,6 +169,10 @@ impl KeyBindingContext {
         Self::GoToLineInput
     }
 
+    pub fn branch_picker() -> Self {
+        Self::BranchPicker
+    }
+
     /// 两条绑定的上下文是否可能被同一个运行时 [`KeyContext`] 同时命中。
     ///
     /// 这是「冲突」的真正定义：同一序列下两条绑定一旦重叠，[`Keymap::resolve`]
@@ -182,6 +192,7 @@ impl KeyBindingContext {
             (Self::VersionControl(a), Self::VersionControl(b)) => a.mode == b.mode,
             (Self::SearchInput, Self::SearchInput) => true,
             (Self::GoToLineInput, Self::GoToLineInput) => true,
+            (Self::BranchPicker, Self::BranchPicker) => true,
             _ => false,
         }
     }
@@ -348,6 +359,7 @@ fn binding_matches_context(binding: &KeyBinding, context: KeyContext) -> bool {
         }
         (KeyBindingContext::SearchInput, KeyContext::SearchBar) => true,
         (KeyBindingContext::GoToLineInput, KeyContext::GoToLineInput) => true,
+        (KeyBindingContext::BranchPicker, KeyContext::BranchPicker) => true,
         _ => false,
     }
 }

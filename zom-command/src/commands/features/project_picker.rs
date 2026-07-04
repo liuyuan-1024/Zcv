@@ -121,7 +121,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         .key_in("return", picker);
 
     registry.install(keymap, DISMISS, "关闭项目选择器", Box::new(run_dismiss));
-
     dismiss_top::bind_esc(keymap, DismissScope::ProjectPicker, picker);
 }
 

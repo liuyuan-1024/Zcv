@@ -94,7 +94,7 @@ fn thumb(top: Pixels, height: Pixels) -> AnyElement {
         .id("shared-scrollbar")
         .absolute()
         .top(top)
-        .right(px(1.0))
+        .right_0()
         .w(space::s4())
         .h(height)
         .rounded(radius::full())

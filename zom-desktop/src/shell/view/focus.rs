@@ -81,6 +81,7 @@ pub(crate) fn projection_from_runtimes(
     settings: Option<FocusHandle>,
     language_servers: FocusHandle,
     go_to_line: FocusHandle,
+    branch_picker: FocusHandle,
 ) -> FocusProjection {
     let mut projection = FocusProjection::new();
     projection.register(editor, AppFocus::editor());
@@ -102,6 +103,7 @@ pub(crate) fn projection_from_runtimes(
     }
     projection.register(language_servers, AppFocus::language_servers());
     projection.register(go_to_line, AppFocus::go_to_line());
+    projection.register(branch_picker, AppFocus::branch_picker());
     if let Some(vc_focus) = panel_runtimes.focus_handle(PanelId::VersionControl) {
         projection.register(vc_focus, AppFocus::Panel(PanelFocus::version_control()));
     }

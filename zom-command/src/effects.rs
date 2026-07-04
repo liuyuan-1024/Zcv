@@ -249,6 +249,16 @@ pub enum GitEffect {
     Refresh,
 }
 
+/// 分支选择器命令。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BranchEffect {
+    ShowPicker,
+    Dismiss,
+    MoveSelection(isize),
+    Switch,
+    DeleteSelected,
+}
+
 /// 命令处理器请求宿主执行的副作用。**按 feature 分组**。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HostEffect {
@@ -263,6 +273,7 @@ pub enum HostEffect {
     FileTree(FileTreeEffect),
     VersionControl(VersionControlEffect),
     Git(GitEffect),
+    Branch(BranchEffect),
 }
 
 // ── Effect 队列 ─────────────────────────────────────────────────

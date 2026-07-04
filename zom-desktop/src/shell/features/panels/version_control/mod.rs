@@ -68,7 +68,6 @@ pub(crate) struct VersionControlState {
     pub selected: Option<PathBuf>,
     pub has_project: bool,
     pub is_git_repo: bool,
-    pub is_empty: bool,
     /// 变更统计：(增行数, 删行数)。
     pub diff_stats: (u32, u32),
     /// 是否所有文件已暂存。
@@ -475,10 +474,6 @@ impl VersionControlModel {
         let svc = self.git_service.borrow();
         let is_git_repo = svc.is_git_repo();
         let generation = svc.generation();
-        let is_empty = svc
-            .statuses()
-            .iter()
-            .all(|(_, s)| s.color_kind().is_none() || s.color_kind() == Some(ColorKind::Ignored));
         drop(svc);
 
         if !is_git_repo {
@@ -488,7 +483,6 @@ impl VersionControlModel {
                 selected: None,
                 has_project: true,
                 is_git_repo: false,
-                is_empty: true,
                 diff_stats: (0, 0),
                 all_staged: false,
             };
@@ -518,7 +512,6 @@ impl VersionControlModel {
             selected: self.selected.clone(),
             has_project: true,
             is_git_repo: true,
-            is_empty,
             diff_stats: self.cached_diff_stats,
             all_staged,
         }
@@ -897,14 +890,6 @@ impl VersionControlRuntime {
                 &self.focus,
                 key_request,
                 placeholder("当前目录不是 Git 仓库").into_any_element(),
-            );
-        }
-
-        if state.is_empty {
-            return render_focus_host(
-                &self.focus,
-                key_request,
-                placeholder("无变更文件").into_any_element(),
             );
         }
 

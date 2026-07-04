@@ -31,6 +31,7 @@ const ASSETS: &[(&str, &[u8])] = &[
     asset!("icons/actions/copy.svg"),
     asset!("icons/actions/square_plus.svg"),
     asset!("icons/actions/square_minus.svg"),
+    asset!("icons/actions/trash.svg"),
     asset!("icons/window/close.svg"),
     asset!("icons/window/minimize.svg"),
     asset!("icons/window/maximize.svg"),

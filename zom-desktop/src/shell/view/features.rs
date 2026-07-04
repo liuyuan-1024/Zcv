@@ -14,6 +14,7 @@ use std::rc::Rc;
 use gpui::{Context, FocusHandle, Window};
 
 use crate::app::App;
+use crate::shell::features::branch_picker::BranchPickerRuntime;
 use crate::shell::features::go_to_line::GoToLineRuntime;
 use crate::shell::features::language_servers::LanguageServersRuntime;
 use crate::shell::features::panels::PanelRuntimes;
@@ -33,6 +34,7 @@ pub(super) struct FeatureRegistry {
     pub(super) search: SearchRuntime,
     pub(super) go_to_line: GoToLineRuntime,
     pub(super) settings: SettingsRuntime,
+    pub(super) branch_picker: BranchPickerRuntime,
 }
 
 impl FeatureRegistry {
@@ -42,12 +44,13 @@ impl FeatureRegistry {
         let git_handle = app.borrow().git_handle();
         let fs_changed = app.borrow().fs_changed_handle();
         let panels = PanelRuntimes::new(cx, git_handle.clone());
-        let file_tree = FileTreeRuntime::new(cx, git_handle, fs_changed);
+        let file_tree = FileTreeRuntime::new(cx, git_handle.clone(), fs_changed);
         let project_picker = ProjectPickerRuntime::new(cx, RecentProjects::default_path());
         let language_servers = LanguageServersRuntime::new(cx);
         let search = SearchRuntime::new(cx);
         let go_to_line = GoToLineRuntime::new(cx);
         let settings = SettingsRuntime::new(cx);
+        let branch_picker = BranchPickerRuntime::new(cx, git_handle);
 
         {
             let mut app = app.borrow_mut();
@@ -58,6 +61,7 @@ impl FeatureRegistry {
             app.install_editor_owner(search.owner_handle());
             app.install_editor_owner(go_to_line.owner_handle());
             app.install_editor_owner(panels.vc_runtime().owner_handle());
+            app.install_editor_owner(branch_picker.owner_handle());
             // 编辑后同步与每帧后台命中收割走通用端口注册
             // ——BackgroundPumps 不认 search feature，由它两个 trait 实现自报家门。
             let search_handle = search.runtime_handle();
@@ -75,6 +79,7 @@ impl FeatureRegistry {
             search,
             go_to_line,
             settings,
+            branch_picker,
         }
     }
 
@@ -89,7 +94,8 @@ impl FeatureRegistry {
         self.project_picker
             .install_listeners(Rc::clone(&app), window, cx);
         self.search.install_listeners(Rc::clone(&app), window, cx);
-        self.go_to_line.install_listeners(app, window, cx);
+        self.go_to_line.install_listeners(app.clone(), window, cx);
+        self.branch_picker.install_listeners(app, window, cx);
     }
 
     /// 组合给定 editor focus 与各 feature 的 focus handle 成 `AppFocus <-> FocusHandle` 投影表。
@@ -103,6 +109,7 @@ impl FeatureRegistry {
             Some(self.settings.focus_handle()),
             self.language_servers.focus_handle(),
             self.go_to_line.focus_handle(),
+            self.branch_picker.focus_handle(),
         )
     }
 }

@@ -7,7 +7,7 @@ mod anchor_registry;
 mod manager;
 mod shell;
 
-use gpui::{AnyElement, Corner, ElementId, FocusHandle, Pixels, Point};
+use gpui::{AnyElement, Corner, ElementId, FocusHandle};
 use std::rc::Rc;
 
 use crate::ui_id::SurfaceId;
@@ -25,6 +25,7 @@ pub(crate) struct SurfaceStates {
     pub(crate) settings: bool,
     pub(crate) language_servers: bool,
     pub(crate) go_to_line: bool,
+    pub(crate) branch_picker: bool,
 }
 
 impl SurfaceStates {
@@ -34,6 +35,7 @@ impl SurfaceStates {
             SurfaceId::Settings => self.settings,
             SurfaceId::LanguageServers => self.language_servers,
             SurfaceId::GoToLine => self.go_to_line,
+            SurfaceId::BranchPicker => self.branch_picker,
         }
     }
 }
@@ -43,11 +45,7 @@ impl SurfaceStates {
 pub(crate) enum SurfaceAnchor {
     /// 锚到召唤该 surface 的已渲染 element 矩形上。
     /// `attachment` 是浮面贴到入口的角，入口锚点取对角。
-    Invoker {
-        id: ElementId,
-        attachment: Corner,
-        fallback_position: Point<Pixels>,
-    },
+    Invoker { id: ElementId, attachment: Corner },
     /// 相对于窗口定位。
     Window { position: WindowPosition },
 }

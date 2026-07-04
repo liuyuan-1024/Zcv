@@ -186,6 +186,10 @@ impl AppFocus {
         Self::Surface(SurfaceFocus::bare(SurfaceId::LanguageServers))
     }
 
+    pub(crate) fn branch_picker() -> Self {
+        Self::Surface(SurfaceFocus::bare(SurfaceId::BranchPicker))
+    }
+
     /// 是否投影到同一个 GPUI 焦点宿主。
     /// panel/surface 相同即视为同投影，sub-focus 差异（如文件树内部模式）由 App 自行细化。
     /// 搜索栏的 query / replacement 是两个独立 handle，按 field 严格分。

@@ -6,7 +6,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    Context, Entity, MouseButton, Render, Subscription, Window, anchored, deferred, div, prelude::*,
+    Context, Entity, MouseButton, Render, Subscription, Window, anchored, deferred, div, point,
+    prelude::*, px,
 };
 
 use gpui::Corner;
@@ -117,11 +118,7 @@ fn render_active(
             .justify_center()
             .child(surface)
             .into_any_element(),
-        SurfaceAnchor::Invoker {
-            attachment,
-            fallback_position,
-            ..
-        } => {
+        SurfaceAnchor::Invoker { attachment, .. } => {
             let position = anchor_bounds
                 .map(|bounds| match attachment {
                     Corner::TopLeft => bounds.bottom_left(),
@@ -129,7 +126,7 @@ fn render_active(
                     Corner::BottomLeft => bounds.origin,
                     Corner::BottomRight => bounds.top_right(),
                 })
-                .unwrap_or(*fallback_position);
+                .unwrap_or(point(px(0.0), px(0.0)));
             anchored()
                 .anchor(*attachment)
                 .position(position)

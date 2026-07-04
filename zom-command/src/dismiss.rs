@@ -34,6 +34,7 @@ pub enum DismissScope {
     GoToLineInput,
     Settings,
     LanguageServers,
+    BranchPicker,
 }
 
 impl DismissScope {
@@ -48,6 +49,7 @@ impl DismissScope {
             Self::GoToLineInput => "GoToLineInput",
             Self::Settings => "Settings",
             Self::LanguageServers => "LanguageServers",
+            Self::BranchPicker => "BranchPicker",
         }
     }
 }
@@ -64,6 +66,7 @@ impl std::str::FromStr for DismissScope {
             "GoToLineInput" => Self::GoToLineInput,
             "Settings" => Self::Settings,
             "LanguageServers" => Self::LanguageServers,
+            "BranchPicker" => Self::BranchPicker,
             _ => return Err(value.to_string()),
         })
     }

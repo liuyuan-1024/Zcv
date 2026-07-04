@@ -90,7 +90,7 @@ fn project_actions(project: &RecentProject, index: usize, actions: &ProjectPicke
         .child(
             Glyph::icon(
                 ("project-picker.remove-recent", index),
-                "icons/actions/close.svg",
+                "icons/actions/trash.svg",
             )
             .command(CommandBinding {
                 request: Rc::new(move |window, cx| {

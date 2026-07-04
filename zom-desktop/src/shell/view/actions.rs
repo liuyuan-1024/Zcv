@@ -20,6 +20,7 @@ use crate::focus::AppFocus;
 use crate::host_intent::{CommandRequest, KeyRequest};
 use crate::host_intent::{HostIntent, HostIntentOutcome, HostIntentRequest};
 use crate::shell::bubble::BubbleRuntime;
+use crate::shell::features::branch_picker;
 use crate::shell::features::go_to_line;
 use crate::shell::features::language_servers;
 use crate::shell::features::panels::file_tree;
@@ -182,6 +183,19 @@ pub(super) fn apply_host_effects(
             surfaces,
             editor_focus_fallback,
             &features.go_to_line,
+            window,
+            cx,
+        ) {
+            continue;
+        }
+        if branch_picker::try_apply_effect(
+            &effect,
+            app,
+            &focus,
+            surfaces,
+            editor_focus_fallback,
+            &features.branch_picker,
+            bubbles,
             window,
             cx,
         ) {

@@ -104,6 +104,7 @@ impl App {
                     vec![KeyContext::language_servers(), KeyContext::global()]
                 }
                 SurfaceId::GoToLine => vec![KeyContext::global()],
+                SurfaceId::BranchPicker => vec![KeyContext::branch_picker(), KeyContext::global()],
             },
         }
     }

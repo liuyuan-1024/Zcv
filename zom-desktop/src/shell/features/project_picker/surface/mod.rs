@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use gpui::{Context, Corner, FocusHandle, Window, div, point, prelude::*, px};
+use gpui::{Context, Corner, FocusHandle, Window, div, prelude::*, px};
 
 use crate::app::App;
 use crate::editor::TextEditorSlot;
@@ -156,7 +156,6 @@ pub(crate) fn request(
         anchor: SurfaceAnchor::Invoker {
             id: super::INVOKER_ID.into(),
             attachment: Corner::TopLeft,
-            fallback_position: point(px(48.0), px(28.0)),
         },
         focus_on_open: Some(focus),
         render: Rc::new(move || {

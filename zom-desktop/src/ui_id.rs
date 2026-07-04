@@ -35,4 +35,6 @@ pub(crate) enum SurfaceId {
     LanguageServers,
     /// 底栏"跳转到行"的浮面。
     GoToLine,
+    /// 顶栏分支徽章弹出"切换分支"的浮面。
+    BranchPicker,
 }

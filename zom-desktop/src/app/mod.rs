@@ -267,6 +267,10 @@ impl App {
         self.project_branch.clone()
     }
 
+    pub(crate) fn set_branch(&mut self, branch: String) {
+        self.project_branch = Some(branch);
+    }
+
     pub(crate) fn project_root(&self) -> Option<&std::path::Path> {
         self.project_root.as_deref()
     }

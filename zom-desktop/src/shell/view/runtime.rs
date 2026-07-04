@@ -10,13 +10,15 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use zom_command::commands::branch_picker as branch_picker_commands;
+
 use gpui::{AppContext, BorrowAppContext, Context, Entity, FocusHandle};
 
 use crate::app::App;
 use crate::clipboard::GpuiClipboard;
 use crate::editor::{EditorKernel, EditorViewportSyncHook, TextEditorSlot};
 use crate::focus::{AppFocus, FileTreeFocus, PanelFocus, SearchField};
-use crate::host_intent::HostIntentRequest;
+use crate::host_intent::{CommandRequest, HostIntent, HostIntentRequest};
 use crate::shell::bubble::{BubbleRuntime, BubbleShell};
 use crate::shell::surfaces::{SurfaceAnchorRegistry, SurfaceManager, SurfaceShell};
 use crate::shell::workbench::PanelHost;
@@ -161,6 +163,33 @@ impl ShellRuntime {
             cx,
         );
         features.go_to_line.set_slot(Rc::clone(&go_to_line_slot));
+        let branch_picker_slot = TextEditorSlot::install(
+            Rc::clone(&app),
+            Rc::clone(&host_intent),
+            AppFocus::branch_picker(),
+            EditorKernel::single_line(),
+            features.branch_picker.focus_handle(),
+            cx,
+        );
+        features
+            .branch_picker
+            .set_slot(Rc::clone(&branch_picker_slot));
+        {
+            let host_intent = Rc::clone(&host_intent);
+            let switch_invocation = branch_picker_commands::switch();
+            let switch_request: CommandRequest = Rc::new(move |window, cx| {
+                host_intent(HostIntent::Command(switch_invocation.clone()), window, cx);
+            });
+            features.branch_picker.set_switch_request(switch_request);
+        }
+        {
+            let host_intent = Rc::clone(&host_intent);
+            let delete_invocation = branch_picker_commands::delete();
+            let delete_request: CommandRequest = Rc::new(move |window, cx| {
+                host_intent(HostIntent::Command(delete_invocation.clone()), window, cx);
+            });
+            features.branch_picker.set_delete_request(delete_request);
+        }
         let vc_commit_message_slot = TextEditorSlot::install(
             Rc::clone(&app),
             Rc::clone(&host_intent),
@@ -181,6 +210,7 @@ impl ShellRuntime {
             Rc::clone(&search_query_slot),
             Rc::clone(&search_replacement_slot),
             Rc::clone(&go_to_line_slot),
+            Rc::clone(&branch_picker_slot),
             Rc::clone(&vc_commit_message_slot),
         ];
         let surface_shell = cx.new(|cx| SurfaceShell::new(surface_manager.clone(), cx));

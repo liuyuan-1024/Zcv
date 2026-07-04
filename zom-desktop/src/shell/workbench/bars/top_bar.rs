@@ -10,10 +10,11 @@
 use gpui::MouseButton;
 #[cfg(target_os = "windows")]
 use gpui::WindowControlArea;
-use gpui::{AnyElement, Div, Window, div, prelude::*, svg};
+use gpui::{AnyElement, Div, Window, div, prelude::*};
 
 use crate::shell::features::{project_picker, settings};
-use crate::shell::surfaces::SurfaceStates;
+use crate::shell::shared::{CommandBinding, Glyph};
+use crate::shell::surfaces::{SurfaceStates, track_surface_anchor};
 use crate::shell::workbench::WorkbenchCommandRequests;
 use crate::shell::workbench::state::WorkbenchState;
 use crate::theme;
@@ -97,35 +98,33 @@ fn leading_slots(
     ];
 
     if let Some(branch) = project_branch {
-        slots.push(branch_badge(branch));
+        slots.push(branch_badge(
+            branch,
+            surfaces.is_active(SurfaceId::BranchPicker),
+            commands.branch_picker_open.clone(),
+        ));
     }
 
     slots
 }
 
-/// 顶栏当前项目分支徽章：分支图标 + 分支名。
-fn branch_badge(branch: &str) -> AnyElement {
-    let muted = theme::color::current().gray.s08;
-    let icon_size = theme::typography::ui();
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(theme::space::s4())
-        .text_color(muted)
-        .child(
-            svg()
-                .path("icons/panels/version_control.svg")
-                .size(icon_size)
-                .text_color(muted),
-        )
-        .child(
-            div()
-                .text_size(theme::typography::ui())
-                .line_height(theme::typography::ui_line())
-                .child(branch.to_string()),
-        )
-        .into_any_element()
+/// 顶栏分支徽章：分支图标 + 分支名。点击弹出分支选择器。
+const BRANCH_BADGE_ID: &str = "top-bar.branch-badge";
+
+fn branch_badge(branch: &str, active: bool, command: CommandBinding) -> AnyElement {
+    let entry_color = if active {
+        theme::color::glyph_active()
+    } else {
+        theme::color::glyph_default()
+    };
+
+    let glyph = Glyph::icon_text(BRANCH_BADGE_ID, "icons/panels/version_control.svg", branch)
+        .color(entry_color)
+        .command(command)
+        .render();
+
+    let element_id: gpui::ElementId = BRANCH_BADGE_ID.into();
+    track_surface_anchor(element_id, glyph).into_any_element()
 }
 
 fn trailing_slots(

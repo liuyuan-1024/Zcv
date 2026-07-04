@@ -145,7 +145,6 @@ pub(crate) fn request(runtime: GoToLineRuntime) -> SurfaceRequest {
         anchor: SurfaceAnchor::Invoker {
             id: INVOKER_ID.into(),
             attachment: gpui::Corner::BottomRight,
-            fallback_position: gpui::point(gpui::px(0.0), gpui::px(540.0)),
         },
         focus_on_open: Some(focus.clone()),
         render: Rc::new(move || {

@@ -42,9 +42,10 @@ pub use commands::version_control::{
 pub use core::{Command, CommandArgs, CommandCatalogItem, CommandId, Invocation, NoArgs};
 pub use dismiss::{DismissScope, DismissStacks, DismissTokenId};
 pub use effects::{
-    BubbleEffect, BubbleKind, BubbleRequest, EditorEffect, EffectQueue, FileTreeEffect, GitEffect,
-    GoToLineEffect, HostEffect, PanelEffect, PanelKind, ProjectEffect, SearchEffect, SearchOption,
-    SettingsChangeRequest, SurfaceEffect, VersionControlEffect, WindowEffect,
+    BranchEffect, BubbleEffect, BubbleKind, BubbleRequest, EditorEffect, EffectQueue,
+    FileTreeEffect, GitEffect, GoToLineEffect, HostEffect, PanelEffect, PanelKind, ProjectEffect,
+    SearchEffect, SearchOption, SettingsChangeRequest, SurfaceEffect, VersionControlEffect,
+    WindowEffect,
 };
 pub use error::CommandError;
 pub use executor::{

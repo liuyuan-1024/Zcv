@@ -78,6 +78,13 @@ impl SearchModel {
         self.query.text()
     }
 
+    /// 用指定文本预填 query 字段并全选。
+    ///
+    /// 打开搜索栏时若编辑器有非空选区，把选区文本填入搜索栏。
+    pub(crate) fn set_query_text_selected(&mut self, text: &str) {
+        self.query = OwnedEditorTarget::with_text_all_selected(text);
+    }
+
     /// 当前 replacement 文本，给 replace handler 用。
     pub(crate) fn replacement_text(&self) -> String {
         self.replacement.text()

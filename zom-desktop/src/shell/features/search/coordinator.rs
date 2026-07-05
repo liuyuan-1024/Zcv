@@ -40,12 +40,40 @@ fn active_buffer_mut<'a>(
 
 /// 搜索栏刚被打开（从隐藏切到显示）。
 /// 立刻 sync 一次把当前 query 推进活动 buffer 并 reveal 第一项命中——用户期待的"打开搜索就看到结果"。
+///
+/// 若活动编辑器有非空文本选区，自动把选中文本填入搜索栏。
 pub(crate) fn on_opened(
     search: &mut SearchModel,
     workspace: &mut Workspace,
     views: &mut ViewSet,
     active_view_id: Option<ViewId>,
 ) {
+    // 提取编辑器选区文本，预填搜索输入框。
+    // 多行选区：换行符转为 \n、正则元字符转义、自动开启 regex 选项。
+    if let Some(view_id) = active_view_id {
+        if let Some(view) = views.edit_view(view_id) {
+            let sel = view.selection().primary();
+            if !sel.is_caret() {
+                let buffer_id = view.buffer();
+                if let Some(wb) = workspace.buffer(buffer_id) {
+                    if let Ok(slice) = wb.buffer().slice_byte_range(sel.start(), sel.end()) {
+                        let text = slice.as_str();
+                        if !text.is_empty() {
+                            if text.contains('\n') {
+                                search.set_query_text_selected(&escape_regex_literal(text));
+                                if !search.buffer_search_options().regex {
+                                    search.toggle_option(SearchOption::Regex);
+                                }
+                            } else {
+                                search.set_query_text_selected(text);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     search.set_open(true);
     sync_active_buffer_search(search, workspace, views, active_view_id);
 }
@@ -248,6 +276,24 @@ pub(crate) fn current_hit_count(
         current,
         total: bs.hit_count(),
     })
+}
+
+/// 把多行选区文本转为单行 regex 查询：换行 → `\n`，其余正则元字符转义。
+///
+/// 转换后文本在单行搜索栏中可见完整查询，配合 regex 选项开启即可跨行匹配。
+fn escape_regex_literal(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\n' => escaped.push_str("\\n"),
+            '\\' | '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 /// 把活动 view 的 selection 挪到 search 命中的 range，并 reveal。

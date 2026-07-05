@@ -47,6 +47,9 @@ pub(crate) struct ShellView {
     runtime: ShellRuntime,
     /// 编辑区标签栏的滚动状态。跨帧保留，否则每帧重建会丢失滚动位置。
     editor_tab_scroll: ScrollHandle,
+    /// 上次自动滚动的活动标签索引。仅在活动标签变化时才触发 scroll_to_item，
+    /// 避免每帧无条件滚动导致首/尾标签处用户无法用滚轮滚动标签栏。
+    last_scrolled_active_tab: Option<usize>,
     /// 主编辑区光标闪烁状态，由本视图的定时链驱动。
     caret: CaretBlink,
     /// 系统外观变化订阅。持有即保持回调存活，Drop 时自动取消。
@@ -58,6 +61,7 @@ impl ShellView {
         Self {
             runtime: ShellRuntime::assemble(app, cx),
             editor_tab_scroll: ScrollHandle::new(),
+            last_scrolled_active_tab: None,
             caret: CaretBlink::new(),
             _appearance_subscription: None,
         }
@@ -348,6 +352,13 @@ impl Render for ShellView {
         let state = self.workbench_state();
         // 三个 feature 的视图快照旁路收集，不进 WorkbenchState；workbench::render 只看布局。
         let editor_state = runtime.app.borrow().editor_state();
+        // 仅在活动标签变化时才滚动标签栏，避免每帧无条件 scroll_to_item 导致首/尾标签处用户无法用滚轮滚动标签栏。
+        if let Some(active) = editor_state.tabs.iter().position(|tab| tab.is_active()) {
+            if self.last_scrolled_active_tab != Some(active) {
+                self.editor_tab_scroll.scroll_to_item(active);
+                self.last_scrolled_active_tab = Some(active);
+            }
+        }
         let file_tree_state = {
             let app = runtime.app.borrow();
             runtime.features.file_tree.state(&app)

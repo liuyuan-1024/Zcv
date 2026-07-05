@@ -24,11 +24,6 @@ pub(crate) fn render(
     on_item_click: &TabCallback,
     on_close_tab: &Rc<dyn Fn(ViewId) -> CommandBinding>,
 ) -> Stateful<gpui::Div> {
-    // 把活动标签滚进可视区——scroll_to_item 记下目标，实际滚动在 prepaint 完成。
-    if let Some(active) = state.tabs.iter().position(|tab| tab.is_active()) {
-        scroll.scroll_to_item(active);
-    }
-
     let mut bar = div()
         .id("editor-tab-bar")
         .track_scroll(&scroll)

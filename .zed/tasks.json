@@ -1,6 +1,6 @@
 [
   {
-    "label": "检查代码",
+    "label": "1. 检查代码",
     "command": "cargo",
     "args": ["clippy"],
     "cwd": "$ZED_WORKTREE_ROOT",
@@ -9,7 +9,7 @@
     "hide": "never",
   },
   {
-    "label": "格式化代码",
+    "label": "2. 格式化代码",
     "command": "cargo",
     "args": ["fmt"],
     "cwd": "$ZED_WORKTREE_ROOT",
@@ -18,18 +18,18 @@
     "hide": "never",
   },
   {
-    "label": "macOS 全量测试",
-    "command": "sh",
-    "args": ["-c", "cargo fmt && cargo test"],
+    "label": "3. 全量测试",
+    "command": "cargo",
+    "args": ["test"],
     "cwd": "$ZED_WORKTREE_ROOT",
     "save": "all",
     "reveal": "always",
     "hide": "never",
   },
   {
-    "label": "macOS Debug 启动软件",
-    "command": "sh",
-    "args": ["-c", "cargo fmt && cargo run --bin Zom"],
+    "label": "4. macOS Debug 启动软件",
+    "command": "zsh",
+    "args": ["-i", "-c", "cargo run --bin Zom"],
     "env": {
       "ZOM_DEBUG_PROJECT": "/Users/liuyuan/project/liuyuan/zom",
     },
@@ -39,63 +39,14 @@
     "hide": "never",
   },
   {
-    "label": "macOS 跨规模 Rust 性能 + 峰值内存",
-    "command": "sh",
-    "args": [
-      "-c",
-      "cargo build --release -p zom-bench && /usr/bin/time -l ./target/release/zom-bench run rust",
-    ],
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "save": "all",
-    "reveal": "always",
-    "hide": "never",
-  },
-  {
-    "label": "macOS 16MB Rust 性能 + 峰值内存",
-    "command": "sh",
-    "args": [
-      "-c",
-      "cargo build --release -p zom-bench && /usr/bin/time -l ./target/release/zom-bench run rust 16",
-    ],
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "save": "all",
-    "reveal": "always",
-    "hide": "never",
-  },
-  {
-    "label": "macOS 打包 .app",
-    "command": "script/bundle-mac",
-    "args": ["--no-dmg"],
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "save": "all",
-    "reveal": "always",
-    "hide": "never",
-  },
-
-  {
-    "label": "Windows 全量测试",
+    "label": "4. Windows Debug 启动软件",
     "command": "powershell",
     "args": [
       "-NoProfile",
       "-ExecutionPolicy",
       "Bypass",
       "-Command",
-      "cargo fmt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cargo test",
-    ],
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "save": "all",
-    "reveal": "always",
-    "hide": "never",
-  },
-  {
-    "label": "Windows Debug 启动软件",
-    "command": "powershell",
-    "args": [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      "cargo fmt; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cargo run --bin Zom",
+      "cargo run --bin Zom",
     ],
     "env": {
       "ZOM_DEBUG_PROJECT": "D:/project/liuyuan/zom",
@@ -106,14 +57,12 @@
     "hide": "never",
   },
   {
-    "label": "Windows 跨规模 Rust 性能 + 峰值内存",
-    "command": "powershell",
+    "label": "5. macOS 16MB Rust 性能 + 峰值内存",
+    "command": "zsh",
     "args": [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      "cargo build --release -p zom-bench; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; $elapsed = Measure-Command { .\\target\\release\\zom-bench.exe run rust }; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Write-Host ('Elapsed: {0:N3}s' -f $elapsed.TotalSeconds)",
+      "-i",
+      "-c",
+      "cd $ZED_WORKTREE_ROOT && cargo build --release -p zom-bench && /usr/bin/time -l ./target/release/zom-bench run rust 16",
     ],
     "cwd": "$ZED_WORKTREE_ROOT",
     "save": "all",
@@ -121,7 +70,7 @@
     "hide": "never",
   },
   {
-    "label": "Windows 16MB Rust 性能 + 峰值内存",
+    "label": "5. Windows 16MB Rust 性能 + 峰值内存",
     "command": "powershell",
     "args": [
       "-NoProfile",
@@ -136,7 +85,44 @@
     "hide": "never",
   },
   {
-    "label": "Windows 打包 .exe",
+    "label": "6. macOS 跨规模 Rust 性能 + 峰值内存",
+    "command": "zsh",
+    "args": [
+      "-i",
+      "-c",
+      "cd $ZED_WORKTREE_ROOT && cargo build --release -p zom-bench && /usr/bin/time -l ./target/release/zom-bench run rust",
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+  {
+    "label": "6. Windows 跨规模 Rust 性能 + 峰值内存",
+    "command": "powershell",
+    "args": [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      "cargo build --release -p zom-bench; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; $elapsed = Measure-Command { .\\target\\release\\zom-bench.exe run rust }; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Write-Host ('Elapsed: {0:N3}s' -f $elapsed.TotalSeconds)",
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+  {
+    "label": "7. macOS 打包 .app",
+    "command": "script/bundle-mac",
+    "args": ["--no-dmg"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+  {
+    "label": "7. Windows 打包 .exe",
     "command": "powershell",
     "args": [
       "-NoProfile",
@@ -150,9 +136,8 @@
     "reveal": "always",
     "hide": "never",
   },
-
   {
-    "label": "增量更新 codegraph 索引",
+    "label": "8. 增量更新 codegraph 索引",
     "command": "codegraph",
     "args": ["sync"],
     "cwd": "$ZED_WORKTREE_ROOT",
@@ -161,7 +146,7 @@
     "hide": "never",
   },
   {
-    "label": "全量更新 codegraph 索引",
+    "label": "9. 全量更新 codegraph 索引",
     "command": "codegraph",
     "args": ["index"],
     "cwd": "$ZED_WORKTREE_ROOT",

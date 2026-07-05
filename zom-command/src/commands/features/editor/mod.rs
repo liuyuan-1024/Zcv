@@ -95,10 +95,10 @@ impl TextEditKeyContext {
     /// `accepts_newline` 是单向过滤器不切分键位空间，不参与重叠判定；
     /// `composing` 才是真正互斥的维度。
     pub(crate) fn overlaps_binding(&self, other: &Self) -> bool {
-        match (self.composing, other.composing) {
-            (Some(true), Some(false)) | (Some(false), Some(true)) => false,
-            _ => true,
-        }
+        !matches!(
+            (self.composing, other.composing),
+            (Some(true), Some(false)) | (Some(false), Some(true))
+        )
     }
 }
 

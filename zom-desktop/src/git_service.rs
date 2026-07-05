@@ -364,19 +364,18 @@ impl GitService {
             ])
             .current_dir(&self.repo_root)
             .output()
+            && output.status.success()
         {
-            if output.status.success() {
-                for chunk in output.stdout.split(|&b| b == 0) {
-                    if chunk.is_empty() {
-                        continue;
-                    }
-                    if let Ok(s) = std::str::from_utf8(chunk) {
-                        // 去掉可能存在的末尾 `/`（目录条目）
-                        let path = s.trim_end_matches('/');
-                        new_statuses
-                            .entry(PathBuf::from(path))
-                            .or_insert(GitStatus::Ignored);
-                    }
+            for chunk in output.stdout.split(|&b| b == 0) {
+                if chunk.is_empty() {
+                    continue;
+                }
+                if let Ok(s) = std::str::from_utf8(chunk) {
+                    // 去掉可能存在的末尾 `/`（目录条目）
+                    let path = s.trim_end_matches('/');
+                    new_statuses
+                        .entry(PathBuf::from(path))
+                        .or_insert(GitStatus::Ignored);
                 }
             }
         }

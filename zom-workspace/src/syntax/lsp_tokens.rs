@@ -143,7 +143,7 @@ pub fn decode_semantic_tokens(
     legend: &SemanticTokensLegend,
     snapshot: &Snapshot,
 ) -> Vec<(TextRange, HighlightSpan)> {
-    if data.is_empty() || data.len() % 5 != 0 {
+    if data.is_empty() || !data.len().is_multiple_of(5) {
         return Vec::new();
     }
 

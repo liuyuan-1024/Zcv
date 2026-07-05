@@ -353,11 +353,11 @@ impl Render for ShellView {
         // 三个 feature 的视图快照旁路收集，不进 WorkbenchState；workbench::render 只看布局。
         let editor_state = runtime.app.borrow().editor_state();
         // 仅在活动标签变化时才滚动标签栏，避免每帧无条件 scroll_to_item 导致首/尾标签处用户无法用滚轮滚动标签栏。
-        if let Some(active) = editor_state.tabs.iter().position(|tab| tab.is_active()) {
-            if self.last_scrolled_active_tab != Some(active) {
-                self.editor_tab_scroll.scroll_to_item(active);
-                self.last_scrolled_active_tab = Some(active);
-            }
+        if let Some(active) = editor_state.tabs.iter().position(|tab| tab.is_active())
+            && self.last_scrolled_active_tab != Some(active)
+        {
+            self.editor_tab_scroll.scroll_to_item(active);
+            self.last_scrolled_active_tab = Some(active);
         }
         let file_tree_state = {
             let app = runtime.app.borrow();

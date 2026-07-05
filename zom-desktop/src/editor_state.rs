@@ -15,7 +15,7 @@ use zom_workspace::syntax::SyntaxEngine;
 use zom_workspace::view::{View, ViewId, ViewKind, ViewSet};
 use zom_workspace::{Workspace, WorkspaceBuffer};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct EditorState {
     pub(crate) tabs: Vec<EditorTab>,
     /// 预览文本缓存：view_id → (buffer_version, cached_text)。
@@ -27,17 +27,6 @@ pub(crate) struct EditorState {
     /// 共享语法引擎：供 Markdown 预览代码块高亮使用。
     /// `None` 仅在无 workspace 时（单元测试 / 零文件启动）。
     pub(crate) syntax_engine: Option<Rc<SyntaxEngine>>,
-}
-
-impl Default for EditorState {
-    fn default() -> Self {
-        Self {
-            tabs: Vec::new(),
-            preview_cache: BTreeMap::new(),
-            preview_scroll_handles: BTreeMap::new(),
-            syntax_engine: None,
-        }
-    }
 }
 
 // ── Tab 类型 ──
@@ -131,9 +120,7 @@ pub(crate) fn build_editor_state(
     preview_scroll_handles.retain(|id, _| live_ids.contains(id));
     for tab in &tabs {
         if let EditorTab::Preview(p) = tab {
-            if !preview_scroll_handles.contains_key(&p.view_id) {
-                preview_scroll_handles.insert(p.view_id, ScrollHandle::default());
-            }
+            preview_scroll_handles.entry(p.view_id).or_default();
         }
     }
     EditorState {
@@ -177,11 +164,11 @@ fn build_tab(
         ViewKind::Preview => {
             let preview_text = buffer.and_then(|buf| {
                 let version = buf.buffer().version();
-                if let Some((cached_version, cached_text)) = prev_cache.get(&view_id) {
-                    if *cached_version == version {
-                        out_cache.insert(view_id, (*cached_version, cached_text.clone()));
-                        return Some(cached_text.clone());
-                    }
+                if let Some((cached_version, cached_text)) = prev_cache.get(&view_id)
+                    && *cached_version == version
+                {
+                    out_cache.insert(view_id, (*cached_version, cached_text.clone()));
+                    return Some(cached_text.clone());
                 }
                 let text = read_full_text(buf)?;
                 out_cache.insert(view_id, (version, text.clone()));

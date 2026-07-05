@@ -13,6 +13,9 @@ use gpui::{AnyElement, Context, Div, FocusHandle, IntoElement, Window, div, prel
 use zom_command::{BubbleRequest, EditTarget, KeyContext, PanelKind, VersionControlKeyMode};
 
 use crate::editor::TextEditorSlot;
+
+/// VC 树点击回调。
+type VcClickCallback = Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>;
 use crate::editor::text::{
     EditorSnapshot, EditorSnapshotRequest, ImeQueryTarget, OwnedEditorTarget,
 };
@@ -215,27 +218,27 @@ impl VersionControlModel {
 
         // 构建 children 索引：遍历 entries，把每个条目挂到父目录下。
         for (path, entry) in &self.entries {
-            if !entry.is_dir {
-                if let Some(parent) = path.parent() {
-                    if !parent.as_os_str().is_empty() && self.entries.contains_key(parent) {
-                        self.children
-                            .entry(parent.to_path_buf())
-                            .or_default()
-                            .push(path.clone());
-                    }
-                }
+            if !entry.is_dir
+                && let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+                && self.entries.contains_key(parent)
+            {
+                self.children
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .push(path.clone());
             }
         }
         for (path, entry) in &self.entries {
-            if entry.is_dir {
-                if let Some(parent) = path.parent() {
-                    if !parent.as_os_str().is_empty() && self.entries.contains_key(parent) {
-                        self.children
-                            .entry(parent.to_path_buf())
-                            .or_default()
-                            .push(path.clone());
-                    }
-                }
+            if entry.is_dir
+                && let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+                && self.entries.contains_key(parent)
+            {
+                self.children
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .push(path.clone());
             }
         }
 
@@ -412,11 +415,9 @@ impl VersionControlModel {
             staged,
         });
 
-        if expanded {
-            if let Some(kids) = self.children.get(path) {
-                for child in kids.iter() {
-                    self.collect_visible(child, depth + 1, String::new(), None, rows);
-                }
+        if expanded && let Some(kids) = self.children.get(path) {
+            for child in kids.iter() {
+                self.collect_visible(child, depth + 1, String::new(), None, rows);
             }
         }
     }
@@ -635,10 +636,11 @@ impl VersionControlModel {
             return;
         }
         // 文件或折叠目录 → 跳到父目录。
-        if let Some(parent) = selected.parent() {
-            if !parent.as_os_str().is_empty() && self.entries.contains_key(parent) {
-                self.selected = Some(parent.to_path_buf());
-            }
+        if let Some(parent) = selected.parent()
+            && !parent.as_os_str().is_empty()
+            && self.entries.contains_key(parent)
+        {
+            self.selected = Some(parent.to_path_buf());
         }
     }
 
@@ -655,10 +657,10 @@ impl VersionControlModel {
         }
         if self.expanded.contains(&selected) {
             // 已展开 → 跳入第一个子项。
-            if let Some(kids) = self.children.get(&selected) {
-                if let Some(first) = kids.first() {
-                    self.selected = Some(first.clone());
-                }
+            if let Some(kids) = self.children.get(&selected)
+                && let Some(first) = kids.first()
+            {
+                self.selected = Some(first.clone());
             }
         } else {
             // 折叠 → 展开。
@@ -764,7 +766,7 @@ pub(crate) struct VersionControlRuntime {
     commit_focus: FocusHandle,
     model: Rc<RefCell<VersionControlModel>>,
     /// Rc 包装确保 clone 后共享同一回调。
-    click_callback: Rc<RefCell<Option<Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>>>>,
+    click_callback: Rc<RefCell<Option<VcClickCallback>>>,
     /// 提交信息编辑器插槽。ShellRuntime 装配完成后通过 set_slot 注入。
     slot: Rc<RefCell<Option<Rc<TextEditorSlot>>>>,
 }
@@ -784,7 +786,7 @@ impl VersionControlRuntime {
         self.commit_focus.clone()
     }
 
-    pub(crate) fn set_click_callback(&self, cb: Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>) {
+    pub(crate) fn set_click_callback(&self, cb: VcClickCallback) {
         *self.click_callback.borrow_mut() = Some(cb);
     }
 

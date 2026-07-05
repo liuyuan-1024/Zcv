@@ -252,13 +252,7 @@ fn wrap_inline_impl(
             .collect();
         let anchors: Vec<Option<String>> = link_ranges
             .iter()
-            .map(|(_, raw)| {
-                if raw.starts_with('#') {
-                    Some(raw[1..].to_string())
-                } else {
-                    None
-                }
-            })
+            .map(|(_, raw)| raw.strip_prefix('#').map(|s| s.to_string()))
             .collect();
         let text_id = "md-text";
         InteractiveText::new(text_id, styled)
@@ -372,18 +366,21 @@ pub(super) fn wrap_inline_as_flex_items(
                 let is_anchor = url.starts_with('#');
                 let anchors = heading_anchors_for_click.clone();
                 InteractiveText::new("md-inline", styled)
-                    .on_click(vec![0..seg.len()], move |_idx, _window, app| {
-                        if is_anchor {
-                            let map = anchors.borrow();
-                            if let Some(scroll_anchor) = map.get(&url_for_anchor[1..]) {
-                                scroll_anchor.scroll_to(_window, app);
-                                return;
+                    .on_click(
+                        std::iter::once(0..seg.len()).collect(),
+                        move |_idx, _window, app| {
+                            if is_anchor {
+                                let map = anchors.borrow();
+                                if let Some(scroll_anchor) = map.get(&url_for_anchor[1..]) {
+                                    scroll_anchor.scroll_to(_window, app);
+                                    return;
+                                }
                             }
-                        }
-                        if let Some(ext_url) = &resolved {
-                            app.open_url(ext_url);
-                        }
-                    })
+                            if let Some(ext_url) = &resolved {
+                                app.open_url(ext_url);
+                            }
+                        },
+                    )
                     .into_any_element()
             } else {
                 styled.into_any_element()
@@ -419,11 +416,7 @@ fn split_text_to_segments(text: &str) -> Vec<&str> {
     while i < chars.len() {
         let start = byte_pos;
         let ch = chars[i];
-        if is_cjk_char(ch) {
-            byte_pos += ch.len_utf8();
-            segs.push(&text[start..byte_pos]);
-            i += 1;
-        } else if ch.is_whitespace() {
+        if is_cjk_char(ch) || ch.is_whitespace() {
             byte_pos += ch.len_utf8();
             segs.push(&text[start..byte_pos]);
             i += 1;
@@ -566,26 +559,26 @@ pub(super) fn code_block_element(
     }
 
     // 尝试语法高亮：SyntaxEngine 内聚了别名归一化 + provider 查找 + 一次性 highlight query。
-    if let (Some(lang), Some(engine)) = (lang, syntax_engine) {
-        if let Some(spans) = engine.highlight_snippet(lang, trimmed) {
-            let highlights: Vec<_> = spans
-                .into_iter()
-                .map(|(range, name)| {
-                    (
-                        range,
-                        HighlightStyle {
-                            color: Some(syntax_theme::color_for(name.as_str())),
-                            ..Default::default()
-                        },
-                    )
-                })
-                .collect();
-            let text = trimmed.to_string();
-            let highlights = flatten_highlights(highlights, &text);
-            return block
-                .child(StyledText::new(text).with_highlights(highlights))
-                .into_any_element();
-        }
+    if let (Some(lang), Some(engine)) = (lang, syntax_engine)
+        && let Some(spans) = engine.highlight_snippet(lang, trimmed)
+    {
+        let highlights: Vec<_> = spans
+            .into_iter()
+            .map(|(range, name)| {
+                (
+                    range,
+                    HighlightStyle {
+                        color: Some(syntax_theme::color_for(name.as_str())),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let text = trimmed.to_string();
+        let highlights = flatten_highlights(highlights, &text);
+        return block
+            .child(StyledText::new(text).with_highlights(highlights))
+            .into_any_element();
     }
 
     // 退化路径：无语言标签 / 无引擎 / 不支持的语言 → 逐行纯文本。

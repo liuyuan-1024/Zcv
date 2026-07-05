@@ -121,7 +121,7 @@ pub enum ViewKind {
 /// 预览视图当前只持 buffer id，将来要加滚动位置 / 渲染参数都加到 [`PreviewView`]。
 #[derive(Debug)]
 pub enum View {
-    Edit(EditView),
+    Edit(Box<EditView>),
     Preview(PreviewView),
 }
 
@@ -142,14 +142,14 @@ impl View {
 
     pub fn as_edit(&self) -> Option<&EditView> {
         match self {
-            View::Edit(v) => Some(v),
+            View::Edit(v) => Some(&**v),
             View::Preview(_) => None,
         }
     }
 
     pub fn as_edit_mut(&mut self) -> Option<&mut EditView> {
         match self {
-            View::Edit(v) => Some(v),
+            View::Edit(v) => Some(&mut **v),
             View::Preview(_) => None,
         }
     }
@@ -642,8 +642,10 @@ impl ViewSet {
     /// 为某个缓冲区新建可编辑视图。
     pub fn open_edit_view(&mut self, buffer: BufferId, base_version: BufferVersion) -> ViewId {
         let id = self.next_id();
-        self.views
-            .insert(id, View::Edit(EditView::new(buffer, base_version)));
+        self.views.insert(
+            id,
+            View::Edit(Box::new(EditView::new(buffer, base_version))),
+        );
         id
     }
 

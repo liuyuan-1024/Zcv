@@ -186,18 +186,18 @@ impl Render for BubbleShell {
                         if this.hovering {
                             this.hovering = false;
                             this.dismiss_generation += 1;
-                            if let Some(ref mut active) = this.active {
-                                if let Some(ttl_ms) = active.request.ttl_ms {
-                                    active.expires_at =
-                                        Some(Instant::now() + Duration::from_millis(ttl_ms));
-                                    let generation = this.dismiss_generation;
-                                    schedule_expiry(
-                                        active.seq,
-                                        generation,
-                                        Duration::from_millis(ttl_ms),
-                                        cx,
-                                    );
-                                }
+                            if let Some(ref mut active) = this.active
+                                && let Some(ttl_ms) = active.request.ttl_ms
+                            {
+                                active.expires_at =
+                                    Some(Instant::now() + Duration::from_millis(ttl_ms));
+                                let generation = this.dismiss_generation;
+                                schedule_expiry(
+                                    active.seq,
+                                    generation,
+                                    Duration::from_millis(ttl_ms),
+                                    cx,
+                                );
                             }
                             cx.notify();
                         }

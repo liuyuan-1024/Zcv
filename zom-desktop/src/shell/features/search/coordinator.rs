@@ -50,24 +50,24 @@ pub(crate) fn on_opened(
 ) {
     // 提取编辑器选区文本，预填搜索输入框。
     // 多行选区：换行符转为 \n、正则元字符转义、自动开启 regex 选项。
-    if let Some(view_id) = active_view_id {
-        if let Some(view) = views.edit_view(view_id) {
-            let sel = view.selection().primary();
-            if !sel.is_caret() {
-                let buffer_id = view.buffer();
-                if let Some(wb) = workspace.buffer(buffer_id) {
-                    if let Ok(slice) = wb.buffer().slice_byte_range(sel.start(), sel.end()) {
-                        let text = slice.as_str();
-                        if !text.is_empty() {
-                            if text.contains('\n') {
-                                search.set_query_text_selected(&escape_regex_literal(text));
-                                if !search.buffer_search_options().regex {
-                                    search.toggle_option(SearchOption::Regex);
-                                }
-                            } else {
-                                search.set_query_text_selected(text);
-                            }
+    if let Some(view_id) = active_view_id
+        && let Some(view) = views.edit_view(view_id)
+    {
+        let sel = view.selection().primary();
+        if !sel.is_caret() {
+            let buffer_id = view.buffer();
+            if let Some(wb) = workspace.buffer(buffer_id)
+                && let Ok(slice) = wb.buffer().slice_byte_range(sel.start(), sel.end())
+            {
+                let text = slice.as_str();
+                if !text.is_empty() {
+                    if text.contains('\n') {
+                        search.set_query_text_selected(&escape_regex_literal(text));
+                        if !search.buffer_search_options().regex {
+                            search.toggle_option(SearchOption::Regex);
                         }
+                    } else {
+                        search.set_query_text_selected(text);
                     }
                 }
             }

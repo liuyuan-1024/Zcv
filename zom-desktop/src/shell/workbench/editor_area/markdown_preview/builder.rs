@@ -526,12 +526,11 @@ impl<'a> Builder<'a> {
         }
 
         // 有分割 → 收尾当前 frame 并拼装。
-        if let Some(frame) = frame {
-            if !frame.spans.is_empty() {
-                for el in wrap_inline_as_flex_items(frame, base_dir, scroll_handle, heading_anchors)
-                {
-                    self.inline_segments.push(InlineSegment::Text(el));
-                }
+        if let Some(frame) = frame
+            && !frame.spans.is_empty()
+        {
+            for el in wrap_inline_as_flex_items(frame, base_dir, scroll_handle, heading_anchors) {
+                self.inline_segments.push(InlineSegment::Text(el));
             }
         }
 
@@ -577,13 +576,12 @@ impl<'a> Builder<'a> {
         let base_dir = self.base_dir.as_deref();
         let scroll_handle = self.scroll_handle.as_ref();
         let heading_anchors = &self.heading_anchors;
-        if let Some(frame) = frame {
-            if !frame.spans.is_empty() {
-                // 逐词拆分为多个 flex_none 子元素，让 flex_wrap 在字词边界自然换行。
-                for el in wrap_inline_as_flex_items(frame, base_dir, scroll_handle, heading_anchors)
-                {
-                    self.inline_segments.push(InlineSegment::Text(el));
-                }
+        if let Some(frame) = frame
+            && !frame.spans.is_empty()
+        {
+            // 逐词拆分为多个 flex_none 子元素，让 flex_wrap 在字词边界自然换行。
+            for el in wrap_inline_as_flex_items(frame, base_dir, scroll_handle, heading_anchors) {
+                self.inline_segments.push(InlineSegment::Text(el));
             }
         }
         if let Some(kind) = self.current_inline_kind {

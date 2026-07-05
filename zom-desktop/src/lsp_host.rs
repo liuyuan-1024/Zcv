@@ -26,6 +26,9 @@ use zom_lsp::{LspClient, LspError, NotificationHandler};
 use zom_workspace::syntax::LanguageId;
 use zom_workspace::{BufferId, Workspace};
 
+/// 后台启动中的 LSP server 结果槽。
+type LspLaunchSlot = Arc<Mutex<Option<Result<LspClient, LspError>>>>;
+
 /// LSP 主机：按需启动 language server，路由文档同步，收集诊断，每帧推进后台状态。
 pub struct LspHost {
     clients: HashMap<LanguageId, LspClient>,
@@ -42,7 +45,7 @@ pub struct LspHost {
     /// server 启动失败的语言——后续可加重试逻辑（当前不重试，行为不变）。
     lsp_launch_failed: HashSet<LanguageId>,
     /// 后台启动中的 server：language_id → 共享结果槽。
-    lsp_starting: HashMap<LanguageId, Arc<Mutex<Option<Result<LspClient, LspError>>>>>,
+    lsp_starting: HashMap<LanguageId, LspLaunchSlot>,
 }
 
 impl LspHost {
@@ -103,10 +106,10 @@ impl LspHost {
     fn reap_started_servers(&mut self) {
         let mut completed: Vec<(LanguageId, Result<LspClient, LspError>)> = Vec::new();
         for (lang_id, slot) in &self.lsp_starting {
-            if let Ok(mut guard) = slot.lock() {
-                if let Some(result) = guard.take() {
-                    completed.push((*lang_id, result));
-                }
+            if let Ok(mut guard) = slot.lock()
+                && let Some(result) = guard.take()
+            {
+                completed.push((*lang_id, result));
             }
         }
         for (lang_id, result) in completed {
@@ -244,11 +247,11 @@ impl LspHost {
             // did_change (full-text sync)
             let cur_version = wb.buffer().version();
             let sent_version = self.lsp_sent_version.get(&buffer_id).copied().unwrap_or(0);
-            if cur_version.get() > sent_version {
-                if let Some(path) = wb.path() {
-                    let _ = self.did_change(path, language, &text, cur_version.get() as i32);
-                    self.lsp_sent_version.insert(buffer_id, cur_version.get());
-                }
+            if cur_version.get() > sent_version
+                && let Some(path) = wb.path()
+            {
+                let _ = self.did_change(path, language, &text, cur_version.get() as i32);
+                self.lsp_sent_version.insert(buffer_id, cur_version.get());
             }
 
             // Request new semantic tokens if stale
@@ -259,16 +262,14 @@ impl LspHost {
                     .and_then(|slot| slot.lsp_version())
                     .map(|v| v.get() < cur_version.get())
                     .unwrap_or(true);
-            if needs_tokens && project_root.is_some() {
-                if let Some(path) = wb.path() {
-                    if let Some(uri) = path_to_uri(path) {
-                        if let Some(client) = self.client_for(language) {
-                            if let Ok(rx) = client.request_semantic_tokens(uri) {
-                                self.lsp_pending.insert(buffer_id, rx);
-                            }
-                        }
-                    }
-                }
+            if needs_tokens
+                && project_root.is_some()
+                && let Some(path) = wb.path()
+                && let Some(uri) = path_to_uri(path)
+                && let Some(client) = self.client_for(language)
+                && let Ok(rx) = client.request_semantic_tokens(uri)
+            {
+                self.lsp_pending.insert(buffer_id, rx);
             }
         }
     }
@@ -383,7 +384,7 @@ impl LspHost {
             None => return Ok(None),
         };
 
-        let root_uri = file_uri(&root).ok_or_else(|| LspError::ChannelClosed)?;
+        let root_uri = file_uri(&root).ok_or(LspError::ChannelClosed)?;
 
         let diags = Arc::clone(&self.diagnostics);
         let handler = Box::new(LspHostHandler { diagnostics: diags });

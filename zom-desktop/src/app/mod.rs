@@ -343,7 +343,7 @@ impl App {
     }
 
     pub(crate) fn is_search_open(&self) -> bool {
-        self.search.as_ref().map_or(false, |s| s.is_open())
+        self.search.as_ref().is_some_and(|s| s.is_open())
     }
 
     pub(crate) fn go_to_line_jump(&mut self, target_byte: usize) {

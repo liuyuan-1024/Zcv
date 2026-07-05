@@ -432,10 +432,7 @@ impl ProjectTree {
 
     /// 目录是否只有一个子目录（可被折叠省略）。
     fn single_dir_child(&self, path: &Path) -> bool {
-        match self.children.get(path) {
-            Some(kids) if kids.len() == 1 && kids[0].kind == EntryKind::Directory => true,
-            _ => false,
-        }
+        matches!(self.children.get(path), Some(kids) if kids.len() == 1 && kids[0].kind == EntryKind::Directory)
     }
 
     fn load_dir(&mut self, dir: &Path) -> io::Result<()> {
@@ -518,13 +515,13 @@ impl IgnoreMatcher {
 
         // 项目级 .zomignore——仅在用户已创建时加载。
         let zomignore_path = root.join(PROJECT_CONFIG_DIR).join(ZOMIGNORE_FILE);
-        if zomignore_path.exists() {
-            if let Some(error) = builder.add(&zomignore_path) {
-                return Err(io::Error::other(format!(
-                    "解析 {} 失败：{error}",
-                    zomignore_path.display()
-                )));
-            }
+        if zomignore_path.exists()
+            && let Some(error) = builder.add(&zomignore_path)
+        {
+            return Err(io::Error::other(format!(
+                "解析 {} 失败：{error}",
+                zomignore_path.display()
+            )));
         }
 
         let matcher = builder

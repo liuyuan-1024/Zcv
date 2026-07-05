@@ -59,8 +59,8 @@ pub(super) fn render_list(
             .size_full()
             .track_scroll(scroll_handle.inner()),
         )
-        .child(scroll::scrollbar(&scroll_handle))
-        .children(tree::list_selection_overlay(selected_index, &scroll_handle))
+        .child(scroll::scrollbar(scroll_handle))
+        .children(tree::list_selection_overlay(selected_index, scroll_handle))
 }
 
 /// 渲染单行。

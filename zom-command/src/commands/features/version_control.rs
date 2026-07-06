@@ -6,7 +6,7 @@ use crate::commands::emit;
 use crate::commands::system::dismiss as dismiss_top;
 use crate::{
     CommandArgs, CommandContext, CommandError, CommandOutcome, CommandRegistry, DismissScope,
-    HostEffect, Invocation, KeyContext, Keymap, NoArgs, PanelKind, VersionControlEffect,
+    GitEffect, HostEffect, Invocation, KeyContext, Keymap, NoArgs, PanelKind, VersionControlEffect,
 };
 
 /// 版本控制面板当前键盘模式。
@@ -31,6 +31,9 @@ pub const EXPAND_OR_INTO: &str = "version_control.expand_or_into";
 pub const EDIT_COMMIT_MESSAGE: &str = "version_control.edit_commit_message";
 pub const CANCEL_COMMIT_MESSAGE: &str = "version_control.cancel_commit_message";
 pub const COMMIT: &str = "version_control.commit";
+pub const FETCH: &str = "version_control.fetch";
+pub const PULL: &str = "version_control.pull";
+pub const PUSH: &str = "version_control.push";
 
 pub fn move_selection(delta: isize) -> Invocation {
     (cid(MOVE_SELECTION), MoveDeltaArgs { delta }.into())
@@ -62,6 +65,18 @@ pub fn cancel_commit_message() -> Invocation {
 
 pub fn commit() -> Invocation {
     (cid(COMMIT), CommandArgs::new())
+}
+
+pub fn fetch() -> Invocation {
+    (cid(FETCH), CommandArgs::new())
+}
+
+pub fn pull() -> Invocation {
+    (cid(PULL), CommandArgs::new())
+}
+
+pub fn push() -> Invocation {
+    (cid(PUSH), CommandArgs::new())
 }
 
 pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
@@ -156,6 +171,34 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
     // COMMIT 命令只注册不绑键盘快捷键，由 Glyph 按钮触发。
     registry
         .install(keymap, COMMIT, "提交变更", Box::new(run_commit))
+        .hide_from_shortcuts();
+
+    // FETCH / PULL / PUSH 只注册不绑键盘快捷键，由顶栏 Glyph 触发。
+    registry
+        .install(
+            keymap,
+            FETCH,
+            "获取远程更新",
+            emit(HostEffect::Git(GitEffect::Fetch)),
+        )
+        .hide_from_shortcuts();
+
+    registry
+        .install(
+            keymap,
+            PULL,
+            "拉取远程提交",
+            emit(HostEffect::Git(GitEffect::Pull)),
+        )
+        .hide_from_shortcuts();
+
+    registry
+        .install(
+            keymap,
+            PUSH,
+            "推送本地提交",
+            emit(HostEffect::Git(GitEffect::Push)),
+        )
         .hide_from_shortcuts();
 
     // esc 走 dismiss 栈统一路由（与 file_tree、search、go_to_line 一致）

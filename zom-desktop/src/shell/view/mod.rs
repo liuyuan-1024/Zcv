@@ -139,10 +139,14 @@ impl ShellView {
     }
 
     fn workbench_state(&self) -> WorkbenchState {
-        let app = self.runtime.app.borrow();
+        let mut app = self.runtime.app.borrow_mut();
+        app.sync_ahead_counts();
+        let (remote, local) = (app.remote_ahead_count(), app.local_ahead_count());
         self.runtime.workbench.borrow().state(
             app.project_title(),
             app.current_branch(),
+            remote,
+            local,
             app.has_project(),
         )
     }
@@ -268,6 +272,18 @@ impl ShellView {
             branch_picker_open: binding(
                 branch_picker_commands::SHOW_PICKER,
                 branch_picker_commands::show_picker(),
+            ),
+            git_fetch: binding(
+                version_control_commands::FETCH,
+                version_control_commands::fetch(),
+            ),
+            git_pull: binding(
+                version_control_commands::PULL,
+                version_control_commands::pull(),
+            ),
+            git_push: binding(
+                version_control_commands::PUSH,
+                version_control_commands::push(),
             ),
             panel_toggle,
             search_intent: self.search_intent_request(),

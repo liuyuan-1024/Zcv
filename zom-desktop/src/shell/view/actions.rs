@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use gpui::{Entity, FocusHandle, Window};
 use zom_command::{
-    BubbleEffect, BubbleRequest, EditorEffect, HostEffect, Invocation, PanelEffect,
+    BubbleEffect, BubbleRequest, EditorEffect, GitEffect, HostEffect, Invocation, PanelEffect,
     SettingsChangeRequest, SurfaceEffect, WindowEffect,
 };
 
@@ -17,6 +17,7 @@ use crate::clipboard::GpuiClipboardScope;
 use crate::config::SettingsChange;
 use crate::editor::TextEditorSlot;
 use crate::focus::AppFocus;
+use crate::git_service::GitService;
 use crate::host_intent::{CommandRequest, KeyRequest};
 use crate::host_intent::{HostIntent, HostIntentOutcome, HostIntentRequest};
 use crate::shell::bubble::BubbleRuntime;
@@ -370,6 +371,62 @@ fn apply_shell_effect(
                 slot.cancel_pointer_selection();
             }
         }
+        HostEffect::Git(GitEffect::Fetch) => spawn_git_op(
+            app,
+            bubbles,
+            window,
+            cx,
+            ("正在获取远程更新…", "git.fetch_status"),
+            ("fetch", &[] as &[&str]),
+            |git, app| {
+                let remote = git.remote_ahead_count();
+                let local = git.local_ahead_count();
+                app.set_remote_ahead_count(remote);
+                app.set_local_ahead_count(local);
+                if remote > 0 || local > 0 {
+                    let mut parts = Vec::new();
+                    if remote > 0 {
+                        parts.push(format!("远程 {remote} 个新提交"));
+                    }
+                    if local > 0 {
+                        parts.push(format!("本地 {local} 个未推送"));
+                    }
+                    BubbleRequest::success(parts.join("，"))
+                } else {
+                    BubbleRequest::success("已是最新")
+                }
+            },
+            "获取远程更新失败",
+        ),
+        HostEffect::Git(GitEffect::Pull) => spawn_git_op(
+            app,
+            bubbles,
+            window,
+            cx,
+            ("正在拉取远程提交…", "git.pull_status"),
+            ("merge", &["--ff-only", "@{upstream}"]),
+            |git, app| {
+                let local = git.local_ahead_count();
+                app.set_remote_ahead_count(0);
+                app.set_local_ahead_count(local);
+                BubbleRequest::success("拉取成功")
+            },
+            "拉取远程提交失败",
+        ),
+        HostEffect::Git(GitEffect::Push) => spawn_git_op(
+            app,
+            bubbles,
+            window,
+            cx,
+            ("正在推送本地提交…", "git.push_status"),
+            ("push", &[]),
+            |git, app| {
+                let local = git.local_ahead_count();
+                app.set_local_ahead_count(local);
+                BubbleRequest::success("推送成功")
+            },
+            "推送失败",
+        ),
         HostEffect::Surface(SurfaceEffect::Dismiss) => {
             if surfaces.read_with(cx, |manager, _| manager.is_active(SurfaceId::ProjectPicker)) {
                 app.borrow_mut().project_picker_deactivate();
@@ -386,6 +443,92 @@ fn apply_shell_effect(
             });
         }
     }
+}
+
+/// 在后台线程执行 git 网络操作，主线程推占位气泡 + 结果气泡。
+///
+/// `on_ok` 在 git 成功后、主线程 `cx.update` 内执行，负责更新 App 状态并返回结果气泡。
+fn spawn_git_op(
+    app: &Rc<RefCell<App>>,
+    bubbles: &Entity<BubbleRuntime>,
+    window: &mut Window,
+    cx: &mut gpui::App,
+    placeholder: (&str, &str),
+    git_cmd: (&str, &[&str]),
+    on_ok: impl FnOnce(&GitService, &mut App) -> BubbleRequest + 'static,
+    error_prefix: &str,
+) {
+    let git_handle = app.borrow().git_handle();
+    if !git_handle.borrow().is_git_repo() {
+        let (_, dedupe_key) = placeholder;
+        bubbles.update(cx, |runtime, cx| {
+            runtime.push(
+                BubbleRequest::error("不在 Git 仓库中").dedupe(dedupe_key),
+                cx,
+            );
+        });
+        window.refresh();
+        return;
+    }
+
+    let repo_root = git_handle.borrow().repo_root_path().to_path_buf();
+    let app = app.clone();
+    let bubbles = bubbles.clone();
+    let ph_key = placeholder.1.to_string();
+    let git_command = git_cmd.0.to_string();
+    let git_args: Vec<String> = git_cmd.1.iter().map(|s| s.to_string()).collect();
+    let error_prefix = error_prefix.to_string();
+
+    bubbles.update(cx, |runtime, cx| {
+        runtime.push(BubbleRequest::info(placeholder.0).dedupe(&ph_key), cx);
+    });
+    window.refresh();
+
+    let ph_key_for_spawn = ph_key.clone();
+    let git_cmd_name = git_command.clone();
+    window
+        .spawn(cx, async move |cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.arg(&git_command);
+                    for arg in &git_args {
+                        cmd.arg(arg);
+                    }
+                    let output = cmd
+                        .current_dir(&repo_root)
+                        .output()
+                        .map_err(|e| format!("无法执行 git {git_cmd_name}：{e}"))?;
+                    if !output.status.success() {
+                        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+                    }
+                    Ok(())
+                })
+                .await;
+            let _ = cx.update(|window, cx| {
+                let git = git_handle.borrow();
+                match result {
+                    Ok(()) => {
+                        let bubble = on_ok(&git, &mut app.borrow_mut());
+                        bubbles.update(cx, |runtime, cx| {
+                            runtime.push(bubble.dedupe(&ph_key_for_spawn), cx);
+                        });
+                    }
+                    Err(e) => {
+                        bubbles.update(cx, |runtime, cx| {
+                            runtime.push(
+                                BubbleRequest::error(format!("{error_prefix}：{e}"))
+                                    .dedupe(&ph_key_for_spawn),
+                                cx,
+                            );
+                        });
+                    }
+                }
+                window.refresh();
+            });
+        })
+        .detach();
 }
 
 fn settings_change(change: SettingsChangeRequest) -> SettingsChange {

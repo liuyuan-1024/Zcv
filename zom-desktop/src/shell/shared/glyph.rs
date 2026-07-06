@@ -132,7 +132,7 @@ impl Glyph {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(space::s4())
+                    .gap(space::s2())
                     .cursor_pointer()
                     .tooltip(build_tooltip)
                     .child(svg_icon(path, color_value, icon_size))

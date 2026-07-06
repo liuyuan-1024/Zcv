@@ -56,6 +56,9 @@ const ASSETS: &[(&str, &[u8])] = &[
     asset!("icons/files/folder.svg"),
     asset!("icons/files/folder_open.svg"),
     asset!("icons/files/file.svg"),
+    asset!("icons/actions/arrow_circle.svg"),
+    asset!("icons/actions/arrow_down.svg"),
+    asset!("icons/actions/arrow_up.svg"),
 ];
 
 macro_rules! font_asset {

@@ -610,6 +610,50 @@ impl GitService {
         Ok(())
     }
 
+    /// 检查远程领先当前分支的提交数。
+    ///
+    /// 通过 `git rev-list --count HEAD..@{upstream}` 计算。
+    /// 上游未配置或命令失败时返回 0。
+    pub fn remote_ahead_count(&self) -> usize {
+        if !self.valid {
+            return 0;
+        }
+        let output = match Command::new("git")
+            .args(["rev-list", "--count", "HEAD..@{upstream}"])
+            .current_dir(&self.repo_root)
+            .output()
+        {
+            Ok(o) if o.status.success() => o,
+            _ => return 0,
+        };
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0)
+    }
+
+    /// 检查本地领先远程的提交数。
+    ///
+    /// 通过 `git rev-list --count @{upstream}..HEAD` 计算。
+    /// 上游未配置或命令失败时返回 0。
+    pub fn local_ahead_count(&self) -> usize {
+        if !self.valid {
+            return 0;
+        }
+        let output = match Command::new("git")
+            .args(["rev-list", "--count", "@{upstream}..HEAD"])
+            .current_dir(&self.repo_root)
+            .output()
+        {
+            Ok(o) if o.status.success() => o,
+            _ => return 0,
+        };
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0)
+    }
+
     fn run_git(&self, args: &[&str]) -> Result<(), String> {
         if !self.valid {
             return Err("不在 Git 仓库中".to_string());

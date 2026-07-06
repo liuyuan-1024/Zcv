@@ -28,8 +28,8 @@
   },
   {
     "label": "4. macOS Debug 启动软件",
-    "command": "zsh",
-    "args": ["-i", "-c", "cargo run --bin Zom"],
+    "command": "cargo",
+    "args": ["run --bin Zom"],
     "env": {
       "ZOM_DEBUG_PROJECT": "/Users/liuyuan/project/liuyuan/zom",
     },
@@ -40,14 +40,8 @@
   },
   {
     "label": "4. Windows Debug 启动软件",
-    "command": "powershell",
-    "args": [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      "cargo run --bin Zom",
-    ],
+    "command": "cargo",
+    "args": ["run --bin Zom"],
     "env": {
       "ZOM_DEBUG_PROJECT": "D:/project/liuyuan/zom",
     },
@@ -58,11 +52,9 @@
   },
   {
     "label": "5. macOS 16MB Rust 性能 + 峰值内存",
-    "command": "zsh",
+    "command": "cargo",
     "args": [
-      "-i",
-      "-c",
-      "cd $ZED_WORKTREE_ROOT && cargo build --release -p zom-bench && /usr/bin/time -l ./target/release/zom-bench run rust 16",
+      "build --release -p zom-bench && /usr/bin/time -l ./target/release/zom-bench run rust 16",
     ],
     "cwd": "$ZED_WORKTREE_ROOT",
     "save": "all",
@@ -86,11 +78,9 @@
   },
   {
     "label": "6. macOS 跨规模 Rust 性能 + 峰值内存",
-    "command": "zsh",
+    "command": "cargo",
     "args": [
-      "-i",
-      "-c",
-      "cd $ZED_WORKTREE_ROOT && cargo build --release -p zom-bench && /usr/bin/time -l ./target/release/zom-bench run rust",
+      "build --release -p zom-bench && /usr/bin/time -l ./target/release/zom-bench run rust",
     ],
     "cwd": "$ZED_WORKTREE_ROOT",
     "save": "all",

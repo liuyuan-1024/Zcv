@@ -681,12 +681,13 @@ impl VersionControlModel {
 
     /// 执行 git commit 的核心逻辑：校验非空 → 提交 → 清空编辑区 → 弹气泡 → 刷新 git。
     /// 调用方负责焦点切换和 window.refresh()。
-    fn try_commit(&mut self) {
+    /// 返回 `true` 表示 commit 成功执行。
+    fn try_commit(&mut self) -> bool {
         let msg = self.commit_text();
         if msg.trim().is_empty() {
             self.pending_bubbles
                 .push(BubbleRequest::error("提交信息不能为空").dedupe("vc.commit.empty"));
-            return;
+            return false;
         }
         let git = self.git_service.clone();
         // 把 commit 结果提取到局部变量——match 表达式中 git.borrow() 的
@@ -698,10 +699,12 @@ impl VersionControlModel {
                 self.pending_bubbles
                     .push(BubbleRequest::info("提交成功").dedupe("vc.commit.success"));
                 let _ = git.borrow_mut().refresh();
+                true
             }
             Err(e) => {
                 self.pending_bubbles
                     .push(BubbleRequest::error(format!("提交失败：{e}")).dedupe("vc.commit.error"));
+                false
             }
         }
     }
@@ -869,7 +872,13 @@ impl VersionControlRuntime {
 
     /// 执行 git commit，成功时清空编辑区 + 弹气泡 + 切回导航焦点。
     pub(crate) fn perform_commit(&self, app: &Rc<RefCell<crate::app::App>>) {
-        self.model.borrow_mut().try_commit();
+        let committed = self.model.borrow_mut().try_commit();
+        // commit 后刷新本地领先计数，顶栏 push glyph 即时更新。
+        if committed {
+            let git = self.model.borrow().git_service.clone();
+            let local = git.borrow().local_ahead_count();
+            app.borrow_mut().set_local_ahead_count(local);
+        }
         // 切回 Navigate 焦点。
         app.borrow_mut()
             .request_focus(AppFocus::Panel(PanelFocus::version_control()));

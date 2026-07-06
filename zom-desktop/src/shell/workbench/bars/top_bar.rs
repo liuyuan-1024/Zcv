@@ -43,6 +43,8 @@ pub(crate) fn render(
             window_controls,
             &state.project_title,
             &state.project_branch,
+            state.remote_ahead_count,
+            state.local_ahead_count,
             commands,
             surfaces,
         )))
@@ -83,6 +85,8 @@ fn leading_slots(
     window_controls: WindowControlsHandlers,
     project_title: &str,
     project_branch: &Option<String>,
+    remote_ahead_count: usize,
+    local_ahead_count: usize,
     commands: &WorkbenchCommandRequests,
     surfaces: &SurfaceStates,
 ) -> Vec<AnyElement> {
@@ -103,9 +107,65 @@ fn leading_slots(
             surfaces.is_active(SurfaceId::BranchPicker),
             commands.branch_picker_open.clone(),
         ));
+
+        // git 操作 glyph：跟在分支徽章后面
+        slots.extend(git_action_glyphs(
+            remote_ahead_count,
+            local_ahead_count,
+            commands,
+        ));
     }
 
     slots
+}
+
+/// 分支徽章后面的 git 操作 glyph。
+///
+/// - 远程有新提交 → pull 图标 + 数字
+/// - 本地有新提交 → push 图标 + 数字
+/// - 都没有 → fetch 图标（循环箭头）
+const GIT_FETCH_ID: &str = "top-bar.git-fetch";
+const GIT_PULL_ID: &str = "top-bar.git-pull";
+const GIT_PUSH_ID: &str = "top-bar.git-push";
+
+fn git_action_glyphs(
+    remote_ahead_count: usize,
+    local_ahead_count: usize,
+    commands: &WorkbenchCommandRequests,
+) -> Vec<AnyElement> {
+    let mut glyphs = Vec::new();
+
+    if remote_ahead_count > 0 {
+        glyphs.push(
+            Glyph::icon_text(
+                GIT_PULL_ID,
+                "icons/actions/arrow_down.svg",
+                remote_ahead_count.to_string(),
+            )
+            .command(commands.git_pull.clone())
+            .render(),
+        );
+    } else {
+        glyphs.push(
+            Glyph::icon(GIT_FETCH_ID, "icons/actions/arrow_circle.svg")
+                .command(commands.git_fetch.clone())
+                .render(),
+        );
+    }
+
+    if local_ahead_count > 0 {
+        glyphs.push(
+            Glyph::icon_text(
+                GIT_PUSH_ID,
+                "icons/actions/arrow_up.svg",
+                local_ahead_count.to_string(),
+            )
+            .command(commands.git_push.clone())
+            .render(),
+        );
+    }
+
+    glyphs
 }
 
 /// 顶栏分支徽章：分支图标 + 分支名。点击弹出分支选择器。

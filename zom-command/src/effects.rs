@@ -243,10 +243,16 @@ pub enum VersionControlEffect {
     UnstageAll,
 }
 
-/// Git 状态刷新。
+/// Git 操作。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GitEffect {
     Refresh,
+    /// 从远程获取最新引用。
+    Fetch,
+    /// 快进合并远程提交。
+    Pull,
+    /// 推送本地提交到远程。
+    Push,
 }
 
 /// 分支选择器命令。

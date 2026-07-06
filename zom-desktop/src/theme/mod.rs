@@ -94,6 +94,9 @@ impl Theme {
 /// 距离类节拍尺（手册 6.1 / 6.2）。
 pub mod space {
     use super::*;
+    pub fn s2() -> Pixels {
+        px(2.0)
+    }
     pub fn s4() -> Pixels {
         px(4.0)
     }

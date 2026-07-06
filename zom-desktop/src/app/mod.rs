@@ -61,6 +61,14 @@ pub struct App {
     project_root: Option<PathBuf>,
     /// 当前项目所在 git 仓库的分支名。打开项目时通过 `git rev-parse --abbrev-ref HEAD` 获取。
     project_branch: Option<String>,
+    /// 远程领先当前分支的提交数（`git rev-list --count HEAD..@{upstream}`）。
+    /// 为 0 时顶栏显示 fetch 图标，> 0 时显示 pull 图标 + 数字。
+    remote_ahead_count: usize,
+    /// 本地领先远程的提交数（`git rev-list --count @{upstream}..HEAD`）。
+    /// > 0 时顶栏显示 push 图标 + 数字。
+    local_ahead_count: usize,
+    /// 上次同步 ahead 计数时的 GitService generation。用于增量更新。
+    ahead_generation: u64,
     text_targets: TextTargetRuntime,
     /// git 状态服务：App 层持有，文件树 / editor gutter / Git Panel 共享查询。
     git: Rc<RefCell<GitService>>,
@@ -102,6 +110,9 @@ impl App {
             focus: FocusStore::new(AppFocus::project_picker()),
             project_root: None,
             project_branch: None,
+            remote_ahead_count: 0,
+            local_ahead_count: 0,
+            ahead_generation: 0,
             text_targets: TextTargetRuntime::new(),
             git: Rc::new(RefCell::new(GitService::new(std::path::Path::new("")))),
             file_tree: None,
@@ -246,6 +257,13 @@ impl App {
         self.project_branch = branch;
         self.lsp_host.set_project_root(Some(&root));
         self.session.reset_project(self.config.buffer_config());
+        // 打开项目 / 切换分支后，从 GitService 读取初始的远程/本地领先计数。
+        let (remote, local) = {
+            let git = self.git.borrow();
+            (git.remote_ahead_count(), git.local_ahead_count())
+        };
+        self.remote_ahead_count = remote;
+        self.local_ahead_count = local;
         self.request_focus(AppFocus::editor());
         self.file_watcher = FileWatcherService::start(&root).ok();
     }
@@ -269,6 +287,35 @@ impl App {
 
     pub(crate) fn set_branch(&mut self, branch: String) {
         self.project_branch = Some(branch);
+    }
+
+    pub(crate) fn remote_ahead_count(&self) -> usize {
+        self.remote_ahead_count
+    }
+
+    pub(crate) fn set_remote_ahead_count(&mut self, count: usize) {
+        self.remote_ahead_count = count;
+    }
+
+    pub(crate) fn local_ahead_count(&self) -> usize {
+        self.local_ahead_count
+    }
+
+    pub(crate) fn set_local_ahead_count(&mut self, count: usize) {
+        self.local_ahead_count = count;
+    }
+
+    /// 若 GitService generation 自上次同步后发生变化，重新读取 ahead 计数。
+    /// 这样 commit/stage/unstage 等操作后，顶栏 glyph 自动跟随，无需手动 fetch。
+    pub(crate) fn sync_ahead_counts(&mut self) {
+        let git = self.git.borrow();
+        let generation = git.generation();
+        if generation == self.ahead_generation {
+            return;
+        }
+        self.remote_ahead_count = git.remote_ahead_count();
+        self.local_ahead_count = git.local_ahead_count();
+        self.ahead_generation = generation;
     }
 
     pub(crate) fn project_root(&self) -> Option<&std::path::Path> {

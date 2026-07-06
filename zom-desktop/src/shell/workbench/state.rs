@@ -79,6 +79,10 @@ pub(crate) struct WorkbenchState {
     /// 当前项目所在 git 仓库的分支名（`git rev-parse --abbrev-ref HEAD`）。
     /// 仅在项目是 git 仓库且 HEAD 指向分支时存在。
     pub(crate) project_branch: Option<String>,
+    /// 远程领先当前分支的提交数。为 0 时顶栏显示 fetch 图标，> 0 时显示 pull 图标 + 数字。
+    pub(crate) remote_ahead_count: usize,
+    /// 本地领先远程的提交数。> 0 时顶栏显示 push 图标 + 数字。
+    pub(crate) local_ahead_count: usize,
     pub(crate) has_project: bool,
     pub(crate) left_dock: DockState,
     pub(crate) right_dock: DockState,

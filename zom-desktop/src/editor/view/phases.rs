@@ -70,20 +70,18 @@ pub(crate) struct GlyphOverlay {
     pub shaped: ShapedLine,
 }
 
-/// 单行 byte→x 映射所需的最小信息。由 prepaint 阶段构造、paint 阶段消费。
+/// 单行 byte→x 映射所需的最小信息，由 prepaint 构造、paint 消费。
 ///
-/// `line_start_byte` / `line_len` 与 [`super::element::EditorElement`] 的
-/// prepaint 里 `offset` / `raw.len()` 的语义一致；`line_len` **不含 `\n`**——
-/// 选区跨行时的 EOL 视觉延伸由本模块的 [`EOL_EXTENSION`] 统一处理。
+/// `line_len` **不含换行符**；跨行选区的行尾视觉延伸由 [`EOL_EXTENSION`] 统一处理。
 pub(crate) struct LineMetric<'a> {
     pub line_start_byte: usize,
     pub line_len: usize,
     pub shaped: &'a ShapedLine,
 }
 
-/// 跨行选区在行尾的视觉延伸（像素）：让"换行被选中"显式可见，也避免多行
-/// 选区在换行处看上去断成几段。当前固定常量，未来如需主题化再升级。
-const EOL_EXTENSION: f32 = 4.0;
+/// 跨行选区在行尾的视觉延伸（像素）：让"换行被选中"显式可见，也避免多行选区在换行处看上去断成几段。
+/// 当前固定常量，未来如需主题化再升级。
+pub(crate) const EOL_EXTENSION: f32 = 4.0;
 
 // ============================================================================
 // 阶段 1：行背景
@@ -108,8 +106,8 @@ pub(crate) fn paint_phase_1_line_backgrounds(
         if row_bottom < text_area.origin.y || row_top > text_area.origin.y + text_area.size.height {
             continue;
         }
-        // 当前行背景与文本区等宽。未来若需要 active-line 全宽（含 gutter），
-        // 拆出 phase_1b 在 mask 外画即可，不改本函数。
+        // 当前行背景与文本区等宽。
+        // 未来若需要 active-line 全宽（含 gutter），拆出 phase_1b 在 mask 外画即可，不改本函数。
         let bounds = Bounds {
             origin: point(text_left, row_top),
             size: size(text_area.size.width, line_height),
@@ -124,8 +122,8 @@ pub(crate) fn paint_phase_1_line_backgrounds(
 
 /// 阶段 2：跨字节区间的半透明色块（selection / search / AI 区间等）。
 ///
-/// 各 producer 内部保证 ranges 按 `start` 升序、互不重叠（调试断言）；多
-/// producer 合并后整体不要求互不重叠，alpha 叠加表达层叠语义。
+/// 各 producer 内部保证 ranges 按 `start` 升序、互不重叠（调试断言）；
+/// 多 producer 合并后整体不要求互不重叠，alpha 叠加表达层叠语义。
 ///
 /// 调用方需保证：
 /// - `lines` 的下标即视觉行号，顺序覆盖 `[0, n)` 行，与 prepaint 产出同序同长
@@ -145,7 +143,8 @@ pub(crate) fn paint_phase_2_range_backgrounds(
             // caret-only 区间在阶段 5 画；本阶段跳过避免 1px 色条瑕疵。
             continue;
         }
-        paint_one_range(
+        // 优先尝试流体多边形渲染；失败时回退到逐行 quad。
+        if !super::fluid_selection::paint_fluid_range(
             *range,
             *color,
             lines,
@@ -154,17 +153,31 @@ pub(crate) fn paint_phase_2_range_backgrounds(
             line_height,
             text_area,
             window,
-        );
+        ) {
+            paint_one_range(
+                *range,
+                *color,
+                lines,
+                text_left,
+                top,
+                line_height,
+                text_area,
+                window,
+            );
+        }
     }
 }
 
 /// 把单个区间在它跨过的每一行上各画一个 quad。
+///
+/// 保留为流体多边形渲染的回退路径：当 PathBuilder 三角化失败时使用。
 ///
 /// 行内裁剪规则：
 /// - 区间结束于行首之前（`r_end <= line_start`）→ 跳过
 /// - 区间开始于行末之后（`r_start > line_end`）→ 跳过
 /// - 区间跨过行末换行（`r_end > line_end`）→ x_end 取 `shaped.width + EOL_EXTENSION`，
 ///   显式表达"换行被选中"
+#[allow(dead_code)]
 fn paint_one_range(
     range: TextRange,
     color: Hsla,

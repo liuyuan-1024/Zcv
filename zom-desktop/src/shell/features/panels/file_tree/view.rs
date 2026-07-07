@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use gpui::{AnyElement, Div, MouseButton, div, prelude::*, uniform_list};
+use gpui::{AnyElement, Div, MouseButton, div, prelude::*, px, uniform_list};
 
 use crate::editor::TextEditorSlot;
 use crate::host_intent::FileTreeClickCallback;
@@ -225,6 +225,11 @@ fn render_row(
         &row.name,
     )
     .bg(bg_color);
+
+    // 选区行用直角，消除行间圆角凹口。
+    if is_in_selection {
+        row_div = row_div.rounded(px(0.0));
+    }
 
     if let Some(kind) = row.git_color {
         row_div = row_div.text_color(color::git_status(kind));

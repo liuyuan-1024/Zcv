@@ -2,6 +2,7 @@
 
 mod blink;
 mod element;
+mod fluid_selection;
 mod gutter;
 mod input_host;
 mod phases;

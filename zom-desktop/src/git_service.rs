@@ -686,7 +686,7 @@ pub enum DiffHunkKind {
     Added,
     /// 修改行（HEAD 和工作区都有，内容不同）。
     Modified,
-    /// 删除行（只出现在 HEAD）。gutter 不直接对应到工作区行，用 old_start 标记位置。
+    /// 删除行（只出现在 HEAD）。`new_lines == 0`，用 `old_start` 定位间隙边界。
     Deleted,
 }
 

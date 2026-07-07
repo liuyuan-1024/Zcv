@@ -18,7 +18,8 @@
 //! - `paint` 在阶段 1～5 之后调用，gutter 列横向固定、不参与正文滚动。
 
 use gpui::{
-    Bounds, ContentMask, Hsla, Pixels, Rgba, ShapedLine, TextRun, Window, fill, point, px, size,
+    Bounds, ContentMask, Hsla, Path, Pixels, Rgba, ShapedLine, TextRun, Window, fill, point, px,
+    size,
 };
 
 use super::element::VisualRow;
@@ -47,19 +48,21 @@ struct GitBar {
     color: Rgba,
 }
 
+/// 删除三角——用 GPU 原生三角形绘制。
+struct DeletionMark {
+    row: usize,
+    /// true = ◣（左下角朝下的直角三角形），false = ◤（左上角朝上的直角三角形）。
+    is_top: bool,
+    color: Rgba,
+}
+
 /// gutter 的 prepaint 产物。
-///
-/// `enabled=false` 时 [`Self::offset`] 返回 0、[`paint`] 直接 noop——单行
-/// 输入框等无行号编辑器走这个分支。
-///
-/// `line_numbers` 与视觉行一一对应：
-/// - `Some(shaped)`：该视觉行是某条逻辑行的**首段**，画行号；
-/// - `None`：该视觉行是软换行后的**续行**，行号留空（同一逻辑行的下一段）。
 pub(crate) struct Prepaint {
     enabled: bool,
     line_numbers: Vec<Option<ShapedLine>>,
     icons: Vec<IconQuad>,
     git_bars: Vec<GitBar>,
+    deletion_marks: Vec<DeletionMark>,
     /// 行号数字列宽（不含 [`GAP`]）；由 buffer 总行数与字体度量决定。
     number_width: Pixels,
 }
@@ -72,6 +75,7 @@ impl Prepaint {
             line_numbers: Vec::new(),
             icons: Vec::new(),
             git_bars: Vec::new(),
+            deletion_marks: Vec::new(),
             number_width: px(0.),
         }
     }
@@ -130,6 +134,18 @@ pub(crate) fn prepare(
 
     let mut line_numbers = Vec::with_capacity(visual_rows.len());
     let mut git_bars = Vec::new();
+    let mut deletion_marks = Vec::new();
+
+    // 行号 → 首段视觉行索引映射，用于删除标记定位。
+    let mut first_visual_row: Vec<Option<usize>> = vec![None; total_lines as usize];
+    for (visual_row, vr) in visual_rows.iter().enumerate() {
+        if vr.subrow == 0 {
+            let idx = vr.line_index as usize;
+            if idx < first_visual_row.len() {
+                first_visual_row[idx] = Some(visual_row);
+            }
+        }
+    }
 
     // 缓存上一次 diff hunk 查表结果，避免同逻辑行的续行重复遍历 hunk 列表。
     let mut last_line_index: Option<u64> = None;
@@ -174,11 +190,44 @@ pub(crate) fn prepare(
             });
         }
     }
+
+    // 删除三角：上方行 ◣（左下填充），下方行 ◤（左上填充），共同指向删除间隙。
+    let max_line = total_lines.saturating_sub(1);
+    let del_color = color::git_status(crate::git_service::ColorKind::Deleted);
+    for hunk in diff_hunks {
+        if !matches!(hunk.kind, DiffHunkKind::Deleted) {
+            continue;
+        }
+        // git diff -U0 在多 hunk 场景下 +new_start 比实际位置少 1，
+        // 因此用 (new_start-1, new_start) 替代理论值 (new_start-2, new_start-1)。
+        let before = hunk.new_start.saturating_sub(1) as u64; // 间隙上方行（0-based）
+        let after = hunk.new_start as u64; // 间隙下方行（0-based）
+        if before <= max_line {
+            if let Some(Some(vr)) = first_visual_row.get(before as usize).copied() {
+                deletion_marks.push(DeletionMark {
+                    row: vr,
+                    is_top: true,
+                    color: del_color,
+                });
+            }
+        }
+        if after <= max_line {
+            if let Some(Some(vr)) = first_visual_row.get(after as usize).copied() {
+                deletion_marks.push(DeletionMark {
+                    row: vr,
+                    is_top: false,
+                    color: del_color,
+                });
+            }
+        }
+    }
+
     Prepaint {
         enabled: true,
         line_numbers,
         icons: Vec::new(),
         git_bars,
+        deletion_marks,
         number_width,
     }
 }
@@ -248,7 +297,28 @@ pub(crate) fn paint(
                     .shaped
                     .paint(point(bounds_x, y), line_height, window, cx);
             }
-            // git diff 色条：贴 gutter 左缘
+            // 删除三角：GPU 原生三角形，上 ◣ 下 ◤ 在间隙处无缝拼接。
+            let tri_w = space::gutter_bar();
+            let tri_h = line_height * 0.33;
+            for mark in &prepaint.deletion_marks {
+                let y = top + line_height * mark.row as f32;
+                let path = if mark.is_top {
+                    // ◣：左下角直角三角形，从 y+h-tri_h 到 y+h，与下方 ◤ 对称。
+                    let tip_y = y + line_height - tri_h;
+                    let mut p = Path::new(point(bounds_x, tip_y));
+                    p.line_to(point(bounds_x + tri_w, y + line_height));
+                    p.line_to(point(bounds_x, y + line_height));
+                    p
+                } else {
+                    // ◤：左上角直角三角形，从 y 到 y+tri_h，与上方 ◣ 对称。
+                    let mut p = Path::new(point(bounds_x, y));
+                    p.line_to(point(bounds_x + tri_w, y));
+                    p.line_to(point(bounds_x, y + tri_h));
+                    p
+                };
+                window.paint_path(path, mark.color);
+            }
+            // git diff 色条：全高，贴 gutter 左缘
             for bar in &prepaint.git_bars {
                 let y = top + line_height * bar.row as f32;
                 let bar_rect = Bounds {

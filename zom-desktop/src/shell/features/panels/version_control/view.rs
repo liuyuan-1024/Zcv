@@ -15,7 +15,7 @@ use crate::shell::shared::scroll;
 use crate::shell::shared::tree::{self};
 use crate::theme::{color, space, typography};
 
-use super::{VersionControlRow, VersionControlState};
+use super::{StageStatus, VersionControlRow, VersionControlState};
 
 /// 渲染整个变更文件列表。
 pub(super) fn render_list(
@@ -71,10 +71,8 @@ where
 {
     let mut row_div = tree::render_row_base(row.depth, row.is_dir, row.expanded, &row.name);
 
-    // 文件行行尾渲染暂存复选框；目录行不渲染。
-    if !row.is_dir {
-        row_div = row_div.child(render_checkbox(row.staged, on_checkbox_click));
-    }
+    // 行尾渲染暂存复选框。
+    row_div = row_div.child(render_checkbox(row.stage_status, on_checkbox_click));
 
     if let Some(kind) = row.git_color {
         row_div = row_div.text_color(color::git_status(kind));
@@ -89,20 +87,21 @@ where
         })
 }
 
-/// 渲染暂存复选框——CSS 方形外框 + SVG 勾选标记（参照 Zed Checkbox）。
+/// 渲染暂存复选框——三态：未暂存、已暂存、部分暂存。
 ///
 /// 点击时调用 `on_click` 并阻止事件冒泡，避免触发行激活（打开文件）。
 fn render_checkbox(
-    staged: bool,
+    stage_status: StageStatus,
     on_click: impl Fn(&mut Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
     let size = typography::ui_line() * 0.75;
     let rounded = px(3.0);
 
-    let (bg, border) = if staged {
-        (color::current().blue.s07, color::current().blue.s07)
+    let has_staged = stage_status != StageStatus::Unstaged;
+    let icon_color = if has_staged {
+        color::current().blue.s07
     } else {
-        (rgba(0), color::current().gray.s06)
+        rgba(0)
     };
 
     div()
@@ -110,18 +109,26 @@ fn render_checkbox(
         .size(size)
         .rounded(rounded)
         .border_1()
-        .border_color(border)
-        .bg(bg)
+        .border_color(color::current().gray.s06)
+        .bg(rgba(0))
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .when(staged, |el| {
+        .when(stage_status == StageStatus::Staged, |el| {
             el.child(
                 svg()
                     .path("icons/actions/check.svg")
                     .size(size - px(2.0))
-                    .text_color(rgba(0xffffffff)),
+                    .text_color(icon_color),
+            )
+        })
+        .when(stage_status == StageStatus::Partial, |el| {
+            el.child(
+                svg()
+                    .path("icons/actions/dash.svg")
+                    .size(size - px(2.0))
+                    .text_color(icon_color),
             )
         })
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -135,7 +142,7 @@ fn render_checkbox(
 /// 渲染面板顶栏：diff 图标 + 变更统计 + 暂存全部复选框。
 pub(super) fn render_top_bar(
     diff_stats: (u32, u32),
-    all_staged: bool,
+    all_stage_status: StageStatus,
     on_toggle_stage_all: impl Fn(&mut Window, &mut gpui::App) + 'static,
 ) -> Div {
     let (added, deleted) = diff_stats;
@@ -184,7 +191,7 @@ pub(super) fn render_top_bar(
                 ),
         )
         // 右侧：暂存全部复选框
-        .child(render_checkbox(all_staged, on_toggle_stage_all))
+        .child(render_checkbox(all_stage_status, on_toggle_stage_all))
 }
 
 // ── 提交信息编辑区 ──

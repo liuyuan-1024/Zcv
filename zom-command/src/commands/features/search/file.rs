@@ -169,7 +169,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "跳转到匹配末尾",
             Box::new(run_confirm_match),
         )
-        .description("把光标折叠到当前命中末尾")
         .key_in("enter", search_input);
 
     dismiss_top::bind_esc(keymap, DismissScope::SearchInput, search_input);

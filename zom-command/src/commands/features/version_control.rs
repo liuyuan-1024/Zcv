@@ -99,7 +99,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "移动版本管理选中项",
             Box::new(run_move_selection),
         )
-        .description("在版本管理面板中上下移动选中项。")
         .key_with_in("up", move_args(-1), vc_navigate)
         .key_with_in("down", move_args(1), vc_navigate);
 
@@ -110,7 +109,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
             "激活版本管理条目",
             emit(HostEffect::VersionControl(VersionControlEffect::Activate)),
         )
-        .description("打开文件或折叠/展开目录。")
         .key_in("enter", vc_navigate);
 
     registry
@@ -132,7 +130,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
                 VersionControlEffect::CollapseOrParent,
             )),
         )
-        .description("折叠当前展开的目录，或跳转到父级。")
         .key_in("left", vc_navigate);
 
     registry
@@ -144,7 +141,6 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
                 VersionControlEffect::ExpandOrInto,
             )),
         )
-        .description("展开目录或进入子文件。")
         .key_in("right", vc_navigate);
 
     // ── 提交信息编辑（需 dismiss 栈，不能用 emit）──

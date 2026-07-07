@@ -26,7 +26,7 @@ pub(crate) fn try_apply_effect(
             runtime.move_selection(*delta);
         }
         HostEffect::VersionControl(VersionControlEffect::Toggle) => {
-            runtime.toggle_selected();
+            runtime.toggle_selected(window);
         }
         HostEffect::VersionControl(VersionControlEffect::Activate) => {
             if let Some(abs_path) = runtime.activate_selected() {

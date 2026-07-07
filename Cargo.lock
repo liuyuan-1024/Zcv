@@ -8460,7 +8460,7 @@ dependencies = [
 
 [[package]]
 name = "zom-bench"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "tree-sitter",
  "tree-sitter-rust",
@@ -8470,7 +8470,7 @@ dependencies = [
 
 [[package]]
 name = "zom-command"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "zom-engine",
  "zom-workspace",
@@ -8478,7 +8478,7 @@ dependencies = [
 
 [[package]]
 name = "zom-desktop"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "cocoa 0.26.0",
  "crossbeam-channel",
@@ -8504,7 +8504,7 @@ dependencies = [
 
 [[package]]
 name = "zom-engine"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "criterion",
  "regex",
@@ -8526,7 +8526,7 @@ dependencies = [
 
 [[package]]
 name = "zom-workspace"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "ignore",
  "lsp-types",

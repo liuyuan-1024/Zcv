@@ -50,6 +50,55 @@ struct VcEntry {
 
 // ── 渲染行 ──
 
+/// 文件暂存状态。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum StageStatus {
+    /// 未暂存（index 无变更）。
+    #[default]
+    Unstaged,
+    /// 已暂存且工作区无额外变更。
+    Staged,
+    /// 已暂存但工作区有额外变更（index 和 worktree 同时有变更）。
+    Partial,
+}
+
+/// 从 GitStatus 提取单文件暂存状态。
+fn file_stage_status(s: Option<&GitStatus>) -> StageStatus {
+    match s {
+        Some(GitStatus::Tracked { index, worktree }) => {
+            let idx = *index != StatusCode::Unmodified;
+            let wt = *worktree != StatusCode::Unmodified;
+            match (idx, wt) {
+                (true, false) => StageStatus::Staged,
+                (true, true) => StageStatus::Partial,
+                (false, _) => StageStatus::Unstaged,
+            }
+        }
+        _ => StageStatus::Unstaged,
+    }
+}
+
+/// 聚合一组 StageStatus：全部 Staged → Staged，无任何暂存 → Unstaged，其余 → Partial。
+fn aggregate_stage(statuses: impl Iterator<Item = StageStatus>) -> StageStatus {
+    let mut any_staged = false;
+    let mut any_not_fully_staged = false;
+    for s in statuses {
+        match s {
+            StageStatus::Staged => any_staged = true,
+            StageStatus::Partial => {
+                any_staged = true;
+                any_not_fully_staged = true;
+            }
+            StageStatus::Unstaged => any_not_fully_staged = true,
+        }
+    }
+    match (any_staged, any_not_fully_staged) {
+        (false, _) => StageStatus::Unstaged,
+        (true, false) => StageStatus::Staged,
+        (true, true) => StageStatus::Partial,
+    }
+}
+
 /// 渲染快照中的一行。
 #[derive(Clone, Debug)]
 pub(crate) struct VersionControlRow {
@@ -60,8 +109,8 @@ pub(crate) struct VersionControlRow {
     pub is_dir: bool,
     pub expanded: bool,
     pub git_color: Option<ColorKind>,
-    /// 文件是否已在暂存区。目录行为 false。
-    pub staged: bool,
+    /// 本行暂存状态。文件为自身状态，目录为子孙文件的聚合状态。
+    pub stage_status: StageStatus,
 }
 
 /// 面板渲染快照。
@@ -73,8 +122,8 @@ pub(crate) struct VersionControlState {
     pub is_git_repo: bool,
     /// 变更统计：(增行数, 删行数)。
     pub diff_stats: (u32, u32),
-    /// 是否所有文件已暂存。
-    pub all_staged: bool,
+    /// 全部文件的聚合暂存状态（用于顶栏复选框）。
+    pub all_stage_status: StageStatus,
 }
 
 // ── Model ──
@@ -270,6 +319,50 @@ impl VersionControlModel {
         }
     }
 
+    /// 收集目录下所有子孙文件路径（根目录则收集全部文件）。
+    fn collect_files_under(&self, path: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        if path == self.root_path {
+            for (p, e) in &self.entries {
+                if !e.is_dir {
+                    files.push(p.clone());
+                }
+            }
+        } else {
+            self.collect_descendant_files(path, &mut files);
+        }
+        files
+    }
+
+    /// 递归收集 `children` 中的子孙文件。
+    fn collect_descendant_files(&self, path: &Path, files: &mut Vec<PathBuf>) {
+        if let Some(kids) = self.children.get(path) {
+            for child in kids {
+                if self.entries.get(child).map(|e| e.is_dir).unwrap_or(false) {
+                    self.collect_descendant_files(child, files);
+                } else {
+                    files.push(child.clone());
+                }
+            }
+        }
+    }
+
+    /// 目录的聚合暂存状态。
+    fn dir_stage_status(&self, path: &Path) -> StageStatus {
+        let files = self.collect_files_under(path);
+        if files.is_empty() {
+            return StageStatus::Unstaged;
+        }
+
+        let svc = self.git_service.borrow();
+        let statuses: Vec<_> = files
+            .iter()
+            .map(|f| file_stage_status(svc.statuses().get(f)))
+            .collect();
+        drop(svc);
+        aggregate_stage(statuses.into_iter())
+    }
+
     /// DFS 产出可见行。
     ///
     /// 第一行是仓库根目录（depth=0），其下为变更文件树。
@@ -297,7 +390,7 @@ impl VersionControlModel {
             is_dir: true,
             expanded: root_expanded,
             git_color: root_color,
-            staged: false,
+            stage_status: self.dir_stage_status(&self.root_path.clone()),
         });
 
         // 收集顶层条目：parent 不在 entries 里的就是仓库根的直属子项。
@@ -362,6 +455,7 @@ impl VersionControlModel {
                     } else {
                         format!("{}/{}", mid, child_entry.name)
                     };
+                    let chain_stage = self.dir_stage_status(&start);
                     rows.push(VersionControlRow {
                         path: start,
                         name: display_name,
@@ -369,7 +463,7 @@ impl VersionControlModel {
                         is_dir: child_entry.is_dir,
                         expanded: true,
                         git_color: child_entry.git_color,
-                        staged: false,
+                        stage_status: chain_stage,
                     });
                     // 链末端已作为链行 push，直接递归子项。
                     if let Some(kids) = self.children.get(child) {
@@ -394,15 +488,11 @@ impl VersionControlModel {
             base_name
         };
 
-        let staged = if is_dir {
-            false
+        let stage_status = if is_dir {
+            self.dir_stage_status(path)
         } else {
-            self.git_service
-                .borrow()
-                .statuses()
-                .get(path)
-                .map(|s| matches!(s, GitStatus::Tracked { index, .. } if *index != StatusCode::Unmodified))
-                .unwrap_or(false)
+            let svc = self.git_service.borrow();
+            file_stage_status(svc.statuses().get(path))
         };
 
         rows.push(VersionControlRow {
@@ -412,7 +502,7 @@ impl VersionControlModel {
             is_dir,
             expanded,
             git_color: entry.git_color,
-            staged,
+            stage_status,
         });
 
         if expanded && let Some(kids) = self.children.get(path) {
@@ -491,7 +581,7 @@ impl VersionControlModel {
                 has_project: true,
                 is_git_repo: false,
                 diff_stats: (0, 0),
-                all_staged: false,
+                all_stage_status: StageStatus::Unstaged,
             };
         }
 
@@ -508,10 +598,13 @@ impl VersionControlModel {
             self.selected = self.cached_rows.first().map(|r| r.path.clone());
         }
 
-        // 空列表时 `Iterator::all` 返回 true（空虚真值），
-        // 但无变更文件时应显示为"未全暂存"状态，而非"全已暂存"。
-        let file_rows: Vec<_> = self.cached_rows.iter().filter(|r| !r.is_dir).collect();
-        let all_staged = !file_rows.is_empty() && file_rows.iter().all(|r| r.staged);
+        // 全部文件的聚合暂存状态，与目录聚合逻辑一致。
+        let all_stage_status = aggregate_stage(
+            self.cached_rows
+                .iter()
+                .filter(|r| !r.is_dir)
+                .map(|r| r.stage_status),
+        );
 
         VersionControlState {
             rows: self.cached_rows.clone(),
@@ -519,14 +612,15 @@ impl VersionControlModel {
             has_project: true,
             is_git_repo: true,
             diff_stats: self.cached_diff_stats,
-            all_staged,
+            all_stage_status,
         }
     }
 
-    fn toggle_selected(&mut self) {
+    /// 空格键暂存/取消暂存当前选中条目（文件或目录）。
+    fn toggle_selected(&mut self, window: &mut Window) {
         let path = self.selected.clone();
         if let Some(p) = path {
-            self.toggle(&p);
+            self.toggle_stage(&p, window);
         }
     }
 
@@ -545,39 +639,70 @@ impl VersionControlModel {
         }
     }
 
-    /// 切换文件的暂存状态：未暂存 → `git add`，已暂存 → `git reset HEAD`。
-    /// 目录不受理（无意义）。
+    /// 切换暂存状态：未暂存 → `git add`，已暂存/部分暂存 → `git reset HEAD`。
     ///
+    /// 文件只影响自身；目录递归影响所有子孙文件。
     /// 先乐观翻转内存状态并立即刷新 UI（复选框瞬间响应），
-    /// 再把真实 git 操作推迟到下一帧执行，避免阻塞渲染。
+    /// 再把真实 git 操作推迟到下一帧执行。
     fn toggle_stage(&mut self, path: &Path, window: &mut Window) {
-        let is_dir = self.entries.get(path).map(|e| e.is_dir).unwrap_or(false);
-        if is_dir {
+        // 收集受影响文件。
+        let is_dir =
+            path == self.root_path || self.entries.get(path).map(|e| e.is_dir).unwrap_or(false);
+        let files = if is_dir {
+            self.collect_files_under(path)
+        } else {
+            vec![path.to_path_buf()]
+        };
+
+        if files.is_empty() {
             return;
         }
 
+        // 任意文件已暂存 → 全部取消暂存；全部未暂存 → 全部暂存。
         let svc = self.git_service.borrow();
-        let staged = svc
-            .statuses()
-            .get(path)
-            .map(|s| matches!(s, GitStatus::Tracked { index, .. } if *index != StatusCode::Unmodified))
-            .unwrap_or(false);
+        let any_staged = files.iter().any(|f| {
+            svc.statuses()
+                .get(f)
+                .map(|s| {
+                    matches!(s, GitStatus::Tracked { index, .. } if *index != StatusCode::Unmodified)
+                })
+                .unwrap_or(false)
+        });
         drop(svc);
+        let target_staged = !any_staged;
 
-        // ① 乐观翻转内存状态 → 下一帧渲染时复选框已更新。
-        self.git_service
-            .borrow_mut()
-            .flip_staged_in_memory(path, !staged);
+        // ① 乐观翻转每个尚未处于目标状态的文件。
+        {
+            let mut git = self.git_service.borrow_mut();
+            for file in &files {
+                let already = git
+                    .statuses()
+                    .get(file)
+                    .map(|s| {
+                        matches!(s, GitStatus::Tracked { index, .. } if *index != StatusCode::Unmodified)
+                    })
+                    .unwrap_or(false);
+                if already != target_staged {
+                    git.flip_staged_in_memory(file, target_staged);
+                }
+            }
+        }
         self.cached_generation = 0;
         window.refresh();
 
-        // ② 推迟真实 git 操作到下一帧，不阻塞当前帧的渲染。
+        // ② 推迟真实 git 操作到下一帧。目录路径直接传给 git（git 原生支持）。
         let git = self.git_service.clone();
         let path = path.to_path_buf();
-        let target_staged = !staged;
         let deferred = self.deferred_bubbles.clone();
+        let is_root = path == self.root_path;
         window.on_next_frame(move |_window, _cx| {
-            let result = if target_staged {
+            let result = if is_root {
+                if target_staged {
+                    git.borrow().stage_all()
+                } else {
+                    git.borrow().unstage_all()
+                }
+            } else if target_staged {
                 git.borrow().stage_file(&path)
             } else {
                 git.borrow().unstage_file(&path)
@@ -592,7 +717,10 @@ impl VersionControlModel {
                 );
             }
             // 用真实 git 状态校准内存数据。
-            let _ = git.borrow_mut().refresh_single(&path);
+            let mut svc = git.borrow_mut();
+            for file in &files {
+                let _ = svc.refresh_single(file);
+            }
         });
     }
 
@@ -809,8 +937,8 @@ impl VersionControlRuntime {
         self.model.borrow_mut().selected = Some(path);
     }
 
-    pub(crate) fn toggle_selected(&self) {
-        self.model.borrow_mut().toggle_selected();
+    pub(crate) fn toggle_selected(&self, window: &mut Window) {
+        self.model.borrow_mut().toggle_selected(window);
     }
 
     pub(crate) fn activate_selected(&self) -> Option<PathBuf> {
@@ -958,16 +1086,21 @@ impl VersionControlRuntime {
             .flex()
             .flex_col()
             .size_full()
-            .child(view::render_top_bar(state.diff_stats, state.all_staged, {
-                let rt = self.clone();
-                move |window: &mut Window, _cx: &mut gpui::App| {
-                    if state.all_staged {
-                        rt.unstage_all(window);
-                    } else {
-                        rt.stage_all(window);
+            .child(view::render_top_bar(
+                state.diff_stats,
+                state.all_stage_status,
+                {
+                    let rt = self.clone();
+                    let status = state.all_stage_status;
+                    move |window: &mut Window, _cx: &mut gpui::App| {
+                        if status != StageStatus::Unstaged {
+                            rt.unstage_all(window);
+                        } else {
+                            rt.stage_all(window);
+                        }
                     }
-                }
-            }))
+                },
+            ))
             .child(div().flex_1().overflow_hidden().child(tree_list))
             .child(commit_editor_host)
             .into_any_element();

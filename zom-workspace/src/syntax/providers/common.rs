@@ -1,4 +1,4 @@
-//! Tier 1 provider 的共享机制——所有 tree-sitter Tier 1 provider 都是同一份「OnceLock 配置 + Parser + 增量 reparse」结构，
+//! 内建 provider 的共享机制——所有 tree-sitter 内建 provider 都是同一份「OnceLock 配置 + Parser + 增量 reparse」结构，
 //! 差异只在三个常量：`(Language, language_name, HIGHLIGHTS_QUERY)`。
 //! 本模块把这一份共同形态抽出来，让每条语言的 provider 文件只剩注册这三个常量。
 //!
@@ -102,7 +102,7 @@ fn normalize_highlight_name(name: &str) -> &str {
     }
 }
 
-/// 通用 Tier 1 provider 实现。
+/// 通用 内建 provider 实现。
 ///
 /// 每个缓冲区一份 `HighlightWorker`，但内部 `Arc<SharedConfig>` 跨缓冲区共享。
 /// 调度层只看 [`HighlightProvider`] trait，并不知道 worker 装的是哪门语言——这正是「产出者形态统一、差异封装在内部」的实现兑现。
@@ -801,7 +801,7 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// 声明宏：消除 10 个 Tier 1 provider 文件的重复样板
+// 声明宏：消除 10 个 内建 provider 文件的重复样板
 // ---------------------------------------------------------------------------
 
 /// 生成一条语言 provider 的 `OnceLock` 配置函数与 `new_provider` 工厂。
@@ -809,7 +809,7 @@ mod tests {
 /// 样板原形约 25 行，现在一行宏调用。使用示例：
 ///
 /// ```ignore
-/// declare_tier1_provider!(json_config, new_provider, "json",
+/// declare_builtin_provider!(json_config, new_provider, "json",
 ///     tree_sitter_json::LANGUAGE, tree_sitter_json::HIGHLIGHTS_QUERY);
 /// ```
 ///
@@ -824,7 +824,7 @@ mod tests {
 /// typescript 这种一个 crate 两条语言的，调两次本宏；markdown 是自定义
 /// [`HighlightProvider`]，不走本宏。
 #[macro_export]
-macro_rules! declare_tier1_provider {
+macro_rules! declare_builtin_provider {
     ($config_fn:ident, $new_provider_fn:ident, $name_str:expr, $lang:expr, $query:expr) => {
         pub(crate) fn $config_fn() -> Result<
             std::sync::Arc<$crate::syntax::providers::common::SharedConfig>,
@@ -855,7 +855,7 @@ macro_rules! declare_tier1_provider {
     };
 }
 
-/// 生成 Tier 1 provider 的标准两个测试：烟雾测试 + lookup table 一致性测试。
+/// 生成 内建 provider 的标准两个测试：烟雾测试 + lookup table 一致性测试。
 ///
 /// ```ignore
 /// standard_provider_tests!(json_config, new_provider, "json",

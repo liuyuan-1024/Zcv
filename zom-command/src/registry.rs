@@ -9,12 +9,12 @@ use crate::{
 
 /// 命令 handler：对 `CommandContext` 执行一次操作。
 ///
-/// 内建编辑命令在 [`crate::commands::editor`] 注册；`ai.*`、未来 lsp/git 由
-/// `zom-desktop` 注册 —— 闭包捕获扩展服务，扩展域不进 `CommandContext`。
+/// 内建编辑命令在 [`crate::commands::editor`] 注册；
+/// 需要宿主资源的命令由 `zom-desktop` 接线，不进入 `CommandContext`。
 pub type CommandHandler =
     Box<dyn Fn(&mut CommandContext<'_>, CommandArgs) -> Result<CommandOutcome, CommandError>>;
 
-/// 类型擦除的开放注册表：`CommandId -> (元数据, handler)`。
+/// 内建命令注册表：`CommandId -> (元数据, handler)`。
 #[derive(Default)]
 pub struct CommandRegistry {
     commands: BTreeMap<CommandId, (Command, CommandHandler)>,

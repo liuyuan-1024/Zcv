@@ -491,7 +491,7 @@ fn parse_inline_trees(
 /// 4. 临时 [`Parser`] + `set_language` + `set_included_ranges(&[content_range])` + `parse(bytes, None)`；
 /// 5. parse 失败 → 跳过该 fence。
 ///
-/// 任一 fence 失败都只丢自己那条注入，**不**让其余 fence / inline / block 受牵连——fence 注入是「外语言能力」，单条挂掉与「该语言不在 Tier 1」等价，都让 block grammar 的 `markup.raw.block` 兜底。
+/// 任一 fence 失败都只丢自己那条注入，**不**让其余 fence / inline / block 受牵连——fence 注入是「外语言能力」，单条挂掉与「该语言不在 内建」等价，都让 block grammar 的 `markup.raw.block` 兜底。
 ///
 /// 不缓存 parser：每条 fence 一个新 [`Parser`]。`set_language` 在 fence 个数很多时会累，
 /// 典型 markdown 文档（fence ≤ 几十个）单次 attach / on_edit 加 100µs 量级，不构成瓶颈；

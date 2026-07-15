@@ -1,8 +1,8 @@
 //! Language registry：把 buffer 识别为语言 + 取对应 provider 工厂。
 //!
 //! 设计来自《桌面端语法高亮》§六。识别优先级：
-//! 用户显式声明 > shebang > mode-line > 扩展名 > 默认 plain。
-//! 当前调用方暂不提供「用户显式声明」通道，先按 shebang → mode-line → 扩展名
+//! 用户显式声明 > shebang > 扩展名 > 默认 plain。
+//! 当前调用方暂不提供「用户显式声明」通道，先按 shebang → 扩展名
 //! → filename → plain 顺序兜底。
 
 use std::collections::BTreeMap;
@@ -12,7 +12,7 @@ use super::provider::HighlightProvider;
 
 /// 语言标识。
 ///
-/// 与具体 grammar / provider 实现解耦——`LanguageId("rust")` 既可以走 native tree-sitter，也可以走 wasm 语言包，registry 端透明。
+/// 与具体 grammar / provider 实现解耦。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct LanguageId(&'static str);
 
@@ -80,9 +80,6 @@ pub enum LanguageDetector {
     Extension(&'static [&'static str]),
     /// 文件首行 shebang 命中的解释器名（如 `"rust-script"`）。
     Shebang(&'static [&'static str]),
-    /// emacs/vim 风格 mode-line 中的 mode 名（如 `"ruby"`）。当前识别路径未消费；
-    /// 保留枚举位，避免以后新增时改动公共枚举形状。
-    ModeLine(&'static [&'static str]),
     /// 完整文件名匹配（如 `"Makefile"`）。
     Filename(&'static [&'static str]),
 }
@@ -105,8 +102,7 @@ impl std::fmt::Debug for RegistryEntry {
 
 /// 语言注册表。
 ///
-/// 一个 LanguageId 对应**一个** provider 工厂；后续接 LSP / wasm 时同样通过
-/// `register` 注入，对调度层透明（手册 §十）。
+/// 一个 LanguageId 对应一个内建 provider 工厂。
 #[derive(Debug, Default)]
 pub struct LanguageRegistry {
     entries: BTreeMap<LanguageId, RegistryEntry>,

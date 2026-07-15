@@ -261,7 +261,7 @@ pub(crate) struct EditorPrepaint {
     line_backgrounds: Vec<LineBackgroundQuad>,
 
     // ── 阶段 2：范围背景 ───────────────────────────────────────────────────
-    /// composer 已切分、已按 priority 升序排好的 `Background` 装饰（selection / search / 未来 diagnostics / AI 提案等）。
+    /// composer 已切分、已按 priority 升序排好的 `Background` 装饰（selection / search / 未来 diagnostics 等）。
     /// paint 顺序就是 Vec 顺序，低优先级先画、高优先级后画，alpha 叠加。
     range_backgrounds: Vec<(TextRange, Hsla)>,
 
@@ -270,7 +270,7 @@ pub(crate) struct EditorPrepaint {
     lines: Vec<PrepaintedLine>,
 
     // ── 阶段 4：字符叠加 ───────────────────────────────────────────────────
-    /// 当前为空 Vec；inlay hint / AI ghost text 接入点。
+    /// 当前为空 Vec；inlay hint 接入点。
     glyph_overlays: Vec<GlyphOverlay>,
 
     // ── 阶段 5：caret + IME composition underline ─────────────────────────
@@ -944,7 +944,7 @@ impl Element for EditorElement {
                 window,
             );
 
-            // 阶段 2：范围背景（selection / 未来 search / AI 区间）。
+            // 阶段 2：范围背景（selection / 未来 search）。
             paint_phase_2_range_backgrounds(
                 &prepaint.range_backgrounds,
                 &line_metrics,

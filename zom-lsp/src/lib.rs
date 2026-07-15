@@ -22,7 +22,6 @@
 //! zom-lsp → zom-engine          （UTF-16 坐标类型）
 //! zom-lsp → lsp-types            （LSP 协议类型定义）
 //! zom-lsp → serde_json            （JSON-RPC 序列化）
-//! zom-lsp → futures-core / async-trait  （异步抽象）
 //! ```
 //!
 //! 不依赖：tokio、网络栈、zom-command、zom-workspace、zom-desktop、GPUI。

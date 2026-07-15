@@ -666,7 +666,7 @@ pub fn install(registry: &mut CommandRegistry, keymap: &mut Keymap) {
         composing: Some(true),
     });
 
-    // 没有默认键位的文本输入命令（文本输入走 IME；命令面板 / AI 直接调用）只 install 不 .key。
+    // 没有默认键位的文本输入命令（文本输入走 IME；命令面板可直接调用）只 install 不 .key。
     registry.install(keymap, INSERT_TEXT, "插入文本", Box::new(run_insert_text));
     registry.install(
         keymap,

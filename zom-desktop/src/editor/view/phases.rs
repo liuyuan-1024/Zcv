@@ -7,7 +7,7 @@
 //! | 阶段 | 内容 | 当前状态 |
 //! |---|---|---|
 //! | 1 | 行背景（active line / diff hunk 等整段） | 槽位留空 |
-//! | 2 | 范围背景（selection / search / AI 提案区间） | selection |
+//! | 2 | 范围背景（selection / search） | selection |
 //! | 3 | 字符层（字色 / 字重 / 下划线 / 波浪线） | 仅字色 |
 //! | 4 | 字符叠加（inline ghost text / inlay hint） | 槽位留空 |
 //! | 5 | caret + IME composition underline | caret，underline 槽位留空 |
@@ -26,7 +26,7 @@
 //! - paint 阶段只看 Hsla，不再 if 出"这条 range 是 selection 还是 search"
 //!
 //! 这与"prepaint 只算几何、paint 配色"的纯几何分层不同——多来源（selection /
-//! search current vs normal hit / AI ghost vs diff）下，paint 里 if 路由会迅速
+//! search current vs normal hit 等需求下，paint 里 if 路由会迅速
 //! 退化成 LayerKind dispatch，违反"阶段顺序固定"的契约。
 //!
 //! ## 输入契约（调试断言）
@@ -64,7 +64,7 @@ pub(crate) struct LineBackgroundQuad {
 /// shape 时通过 [`gpui::TextRun::color`] 烤进去**，本结构不再带独立 color 字段
 /// （和阶段 6 行号同一路径，避免双源真相）。
 ///
-/// 当前为空 Vec；inlay hint、AI ghost text 可在此接入。
+/// 当前为空 Vec；inlay hint 可在此接入。
 pub(crate) struct GlyphOverlay {
     pub at_byte: usize,
     pub shaped: ShapedLine,
@@ -120,7 +120,7 @@ pub(crate) fn paint_phase_1_line_backgrounds(
 // 阶段 2：范围背景
 // ============================================================================
 
-/// 阶段 2：跨字节区间的半透明色块（selection / search / AI 区间等）。
+/// 阶段 2：跨字节区间的半透明色块（selection / search 等）。
 ///
 /// 各 producer 内部保证 ranges 按 `start` 升序、互不重叠（调试断言）；
 /// 多 producer 合并后整体不要求互不重叠，alpha 叠加表达层叠语义。
@@ -267,7 +267,7 @@ pub(crate) fn paint_phase_3_glyphs(
 
 /// 阶段 4：在字节位置上叠加非文档字形（ghost text / inlay hint）。
 ///
-/// 调用方传 `&[]` 时函数无操作。inlay hint / AI ghost text 接入时，
+/// 调用方传 `&[]` 时函数无操作。inlay hint 接入时，
 /// 由 prepaint 把字节位置算出对应的 `(行, 行内 x)`，shape 出叠加文本，
 /// 推进 `glyph_overlays` Vec。
 ///

@@ -1,7 +1,7 @@
-//! tree-sitter-typescript Tier 1 provider（TypeScript + TSX 两套 grammar
+//! tree-sitter-typescript 内建 provider（TypeScript + TSX 两套 grammar
 //! 共一个 crate）。
 //!
-//! 机制全部在 [`super::common`] 里——本文件只通过 [`declare_tier1_provider!`] 声明语言常量。
+//! 机制全部在 [`super::common`] 里——本文件只通过 [`declare_builtin_provider!`] 声明语言常量。
 //! 设计说明详见该模块注释。
 //!
 //! ## TypeScript 与 TSX 的关系
@@ -9,9 +9,9 @@
 //! `tree-sitter-typescript` 这一个 crate 同时导出 `LANGUAGE_TYPESCRIPT`（`.ts`）与 `LANGUAGE_TSX`（`.tsx`）两个 grammar，并共用同一份 `HIGHLIGHTS_QUERY`。
 //! 它们对调度层是**两条独立语言**——`LanguageId::new("typescript")` 与 `LanguageId::new("tsx")`——内置 provider 安装入口会分别注册扩展名。
 
-use crate::declare_tier1_provider;
+use crate::declare_builtin_provider;
 
-declare_tier1_provider!(
+declare_builtin_provider!(
     typescript_config,
     new_typescript_provider,
     "typescript",
@@ -19,7 +19,7 @@ declare_tier1_provider!(
     tree_sitter_typescript::HIGHLIGHTS_QUERY
 );
 
-declare_tier1_provider!(
+declare_builtin_provider!(
     tsx_config,
     new_tsx_provider,
     "tsx",

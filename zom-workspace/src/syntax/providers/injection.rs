@@ -5,7 +5,7 @@
 //!
 //! ## 设计立场
 //!
-//! - **只覆盖 Tier 1**：tree-sitter grammar 已经编进 zom-desktop 的语言才支持注入。Tier 2 wasm 语言包未来接入，逻辑相同（registry 查表），届时再扩。
+//! - **只覆盖内建语言**：只有已经编进 zom-desktop 的 tree-sitter grammar 才支持注入。
 //! - **不接 markdown 递归注入**：fenced 内写 ```` ```markdown ```` 不展开——栈结构开销不值得，文本编辑里也极罕见。
 //! - **不接 html_block / frontmatter / inline 注入**：tree-sitter-md 的 `injections.scm` 还想为 html_block 套 html grammar、frontmatter 套 yaml/toml、`inline` 套 markdown_inline grammar。
 //! 第一项暂不接（markdown 文档里 html_block 不多见）；
@@ -17,7 +17,7 @@
 //!
 //! 任一 config 函数返回 `Err`（query 语法错 / ABI 不匹配）→ `resolve_injection_language` 返回 `None`，
 //! markdown provider 把该 fence 当作未识别语言处理（保持 `markup.raw.block`）。
-//! 这与 Tier 1 主路径「config 失败 = 发版前必须修」的契约一致：注入路径不该让 fence 处理为 panic / 拖整个 buffer。
+//! 这与内建语言主路径「config 失败 = 发版前必须修」的契约一致：注入路径不该让 fence 处理为 panic / 拖整个 buffer。
 
 use std::sync::Arc;
 
@@ -54,7 +54,7 @@ fn canonicalize(name: &str) -> Option<&'static str> {
 /// 拿到 canonical 语言 id 对应的 [`SharedConfig`]。
 ///
 /// 与 [`crate::syntax::providers::install_builtin_providers`] 注册的工厂一一对应。
-/// 新加 Tier 1 语言时这里也要补一行——不补就是 fence 注入对该语言无效，与 fallback 行为等价（保持 markup.raw.block）。
+/// 新加 内建 语言时这里也要补一行——不补就是 fence 注入对该语言无效，与 fallback 行为等价（保持 markup.raw.block）。
 fn config_for(canonical: &'static str) -> Result<Arc<SharedConfig>, ()> {
     let cfg = match canonical {
         "rust" => rust::rust_config(),

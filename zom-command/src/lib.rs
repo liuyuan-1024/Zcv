@@ -1,16 +1,16 @@
 //! 命令派发脊柱与键位模型。
 //!
-//! 键盘、命令面板、AI、菜单等离散动作把意图收敛成 `(CommandId, CommandArgs)`，经唯一命令派发路径进入执行器。
+//! 键盘、命令面板、菜单等离散动作把意图收敛成 `(CommandId, CommandArgs)`，经唯一命令派发路径进入执行器。
 //! 鼠标拖拽、滚轮、resize 等连续设备交互由宿主的 interaction 管线处理，可复用同一批底层编辑状态能力，但不进入 command catalog。
 //!
 //! 依赖 `zom-workspace` / `zom-engine`（它要编辑的东西），
-//! **不依赖** `zom-ai` 等扩展域 —— 扩展域的命令由 `zom-desktop` 组合根注册（handler 闭包捕获扩展服务）。
+//! 需要宿主资源的命令由 `zom-desktop` 组合根接线。
 //!
 //! ## 模块划分
 //!
 //! 下列模块均私有（`mod`），其类型在 crate 根经 `pub use` 重导出 —— 对外只有 `zom_command::CommandId` 一条路径，不暴露内部模块名。
 //! - `core`：命令基础类型 —— `CommandId / CommandArgs / NoArgs / Command / Invocation`。
-//! - `registry`：开放注册表 `CommandRegistry / CommandHandler` 与链式 `CommandBuilder`。
+//! - `registry`：内建命令注册表 `CommandRegistry / CommandHandler` 与链式 `CommandBuilder`。
 //! - `executor`：执行上下文与队列 —— `CommandContext / EditTarget / CommandQueue` 与排空入口 `run`。
 //! - `keymap`：键位模型 —— `KeyChord / KeyBinding / Keymap / KeyContext`。
 //! - `error`：统一错误 `CommandError`。

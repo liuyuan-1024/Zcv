@@ -10,6 +10,14 @@
     }
   },
   {
+    "context": "Pane",
+    "bindings": {
+      "ctrl-w": "layout::CloseTab",
+      "ctrl-tab": "layout::NextTab",
+      "ctrl-shift-tab": "layout::PrevTab"
+    }
+  },
+  {
     "bindings": {
       "ctrl-q": "window_controls::QuitWindow",
       "ctrl-m": "window_controls::MinimizeWindow",
@@ -40,13 +48,13 @@
     }
   },
   {
-    "context": "FileTree",
+    "context": "ProjectTree",
     "bindings": {
-      "up": "project_tree::TreeUp",
-      "down": "project_tree::TreeDown",
-      "left": "project_tree::TreeLeft",
-      "right": "project_tree::TreeRight",
-      "space": "project_tree::TreeSpace"
+      "up": "project_tree::TreeSelectPrev",
+      "down": "project_tree::TreeSelectNext",
+      "left": "project_tree::TreeCollapse",
+      "right": "project_tree::TreeExpand",
+      "space": "project_tree::TreeActivate"
     }
   }
 ]

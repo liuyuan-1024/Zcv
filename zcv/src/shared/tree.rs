@@ -1,3 +1,5 @@
+//! 树行渲染辅助函数 —— 缩进、图标、名称、选中框。
+
 use gpui::{div, prelude::*, px};
 
 use crate::shared::icon::SvgIcon;
@@ -6,6 +8,30 @@ use crate::theme::{color, radius, space, typography};
 const FOLDER: &str = "icons/files/folder.svg";
 const FOLDER_OPEN: &str = "icons/files/folder_open.svg";
 const FILE: &str = "icons/files/file.svg";
+
+/// 树行完整渲染：行骨架 + 缩进竖线 + 图标 + 名称。
+pub(crate) fn render_row_base(depth: usize, is_dir: bool, expanded: bool, name: &str) -> gpui::Div {
+    row_skeleton(depth)
+        .child(guide_lines(depth))
+        .child(icon(is_dir, expanded))
+        .child(label(name))
+}
+
+/// 选中行蓝框——absolute 覆盖整行，不参与行布局。
+/// `.when(is_selected, |el| el.child(tree::selection_border()))`
+pub(crate) fn selection_border() -> gpui::Div {
+    div()
+        .absolute()
+        .top(px(0.))
+        .left(px(0.))
+        .right(px(0.))
+        .h(typography::ui())
+        .rounded(radius::R2)
+        .border_1()
+        .border_color(color::current().blue.s[6])
+}
+
+// ── 私有辅助函数 ─────────────────────────────────────────────────────
 
 fn indent_unit() -> gpui::Pixels {
     typography::ui()
@@ -66,26 +92,4 @@ fn label(name: &str) -> gpui::Div {
         .overflow_hidden()
         .truncate()
         .child(name.to_string())
-}
-
-/// 树行完整渲染：行骨架 + 缩进竖线 + 图标 + 名称。
-pub(crate) fn render_row_base(depth: usize, is_dir: bool, expanded: bool, name: &str) -> gpui::Div {
-    row_skeleton(depth)
-        .child(guide_lines(depth))
-        .child(icon(is_dir, expanded))
-        .child(label(name))
-}
-
-/// 选中行蓝框——absolute 覆盖整行，不参与行布局。
-/// `.when(is_selected, |el| el.child(tree::selection_border()))`
-pub(crate) fn selection_border() -> gpui::Div {
-    div()
-        .absolute()
-        .top(px(0.))
-        .left(px(0.))
-        .right(px(0.))
-        .h(typography::ui())
-        .rounded(radius::R2)
-        .border_1()
-        .border_color(color::current().blue.s[6])
 }

@@ -56,13 +56,7 @@ impl MyComponent {
         // 1. 获得焦点句柄（带焦点的组件必须调用）
         let focus = cx.focus_handle();
 
-        // 2. 注册快捷键（多个 binding 统一收集到 Vec 传入）
-        cx.bind_keys(vec![
-            KeyBinding::new("cmd-x", ActionA, None),
-            KeyBinding::new("cmd-y", ActionB, Some("KeyboardContext")),
-        ]);
-
-        // 3. 创建子 Entity
+        // 2. 创建子 Entity
         let child = cx.new(|cx| ChildComponent::new(cx));
 
         Self { focus, state: Rc::new(RefCell::new(MyState::new())), child }
@@ -73,7 +67,7 @@ impl MyComponent {
 **规则：**
 - `new` 的参数，精简为 `cx` 加最少必要参数。根级组件可加初始数据参数（如 `ProjectTree::new(root, cx)`）
 - `FocusHandle` 必须在 `new` 中通过 `cx.focus_handle()` 获取，不能延迟
-- `cx.bind_keys()` 传入 `Vec<KeyBinding>`，不分开多次调用
+- 快捷键不在 `new` 中注册，统一走 `keymap.rs` + JSON（见快捷键注册说明）
 - 不需要焦点时不声明 `focus` 字段
 
 ---
@@ -286,10 +280,6 @@ pub(crate) struct Counter {
 impl Counter {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
-        cx.bind_keys(vec![
-            KeyBinding::new("cmd-=", Increment, None),
-            KeyBinding::new("cmd--", Decrement, None),
-        ]);
         Self { focus, count: Rc::new(RefCell::new(0)) }
     }
 
@@ -329,7 +319,71 @@ impl Render for Counter {
 
 ---
 
-## 四、决策速查表
+## 四、快捷键注册说明
+
+快捷键**不**在组件 `new` 中通过 `cx.bind_keys()` 注册，而是统一走集中式 keymap 系统。一个快捷键从定义到生效需完成以下步骤：
+
+### 4.1 在组件中定义 Action
+
+```rust
+// 需要键盘交互的组件定义自己的 action
+use gpui::actions;
+actions!(pane, [CloseTab, NextTab, PrevTab]);
+```
+
+### 4.2 在 keymap.rs build 函数中添加映射
+
+```rust
+// src/keymap.rs — 把 action 名称字符串映射到 Rust 类型
+fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBinding> {
+    let binding = match action_name {
+        // 已有绑定...
+        "pane::CloseTab" => KeyBinding::new(keys, CloseTab, context),
+        "pane::NextTab"  => KeyBinding::new(keys, NextTab, context),
+        "pane::PrevTab"  => KeyBinding::new(keys, PrevTab, context),
+        _ => return None,
+    };
+    Some(binding)
+}
+```
+
+需要把 action 类型导入 keymap.rs：
+
+```rust
+use crate::workbench::{CloseTab, NextTab, PrevTab, ...};
+```
+
+### 4.3 在 JSON 文件中定义键位
+
+```json
+{
+  "context": "Pane",
+  "bindings": {
+    "cmd-w": "pane::CloseTab",
+    "cmd-l": "pane::NextTab",
+    "cmd-h": "pane::PrevTab"
+  }
+}
+```
+
+### 4.4 在组件 Render 中绑定 handler
+
+```rust
+impl Render for MyComponent {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .key_context("Pane")                      // 与 JSON 中的 context 对应
+            .on_action(cx.listener(Self::handle_next_tab))
+    }
+}
+```
+
+**要点：**
+- `key_context("Xxx")` 必须与 JSON 中的 `"context"` 字段匹配，否则快捷键不触发
+- Action 名称字符串（`"pane::CloseTab"`）由 `actions!()` 宏根据模块名自动生成，不能写错
+- 不需要快捷键的组件跳过以上所有步骤
+
+## 五、决策速查表
 
 | 问题 | 做法 |
 |---|---|

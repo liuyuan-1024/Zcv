@@ -25,53 +25,6 @@ actions!(
     ]
 );
 
-// ── action handler（自由函数，通过全局 LayoutRef 访问布局） ────────
-
-pub(crate) fn handle_toggle_project_tree(
-    _: &ToggleProjectTree,
-    window: &mut Window,
-    cx: &mut gpui::App,
-) {
-    toggle(PanelId::ProjectTree, window, cx);
-}
-
-pub(crate) fn handle_toggle_version_control(
-    _: &ToggleVersionControl,
-    window: &mut Window,
-    cx: &mut gpui::App,
-) {
-    toggle(PanelId::VersionControl, window, cx);
-}
-
-pub(crate) fn handle_toggle_outline(_: &ToggleOutline, window: &mut Window, cx: &mut gpui::App) {
-    toggle(PanelId::Outline, window, cx);
-}
-
-pub(crate) fn handle_toggle_terminal(_: &ToggleTerminal, window: &mut Window, cx: &mut gpui::App) {
-    toggle(PanelId::Terminal, window, cx);
-}
-
-pub(crate) fn handle_toggle_debug(_: &ToggleDebug, window: &mut Window, cx: &mut gpui::App) {
-    toggle(PanelId::Debug, window, cx);
-}
-
-pub(crate) fn handle_toggle_keyboard_shortcuts(
-    _: &ToggleKeyboardShortcuts,
-    window: &mut Window,
-    cx: &mut gpui::App,
-) {
-    toggle(PanelId::KeyboardShortcuts, window, cx);
-}
-
-fn toggle(panel: PanelId, window: &mut Window, cx: &mut gpui::App) {
-    if let Some(layout) = cx.try_global::<LayoutRef>()
-        && let Some(ctrl) = layout.0.upgrade()
-    {
-        ctrl.borrow_mut().toggle_panel(panel);
-        window.refresh();
-    }
-}
-
 // ── BottomBar Entity ───────────────────────────────────────────────
 
 pub(crate) struct BottomBar;

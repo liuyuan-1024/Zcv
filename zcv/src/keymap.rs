@@ -9,7 +9,9 @@ use gpui::KeyBinding;
 use serde::Deserialize;
 
 use crate::editor::editable::{Copy, Cut, Paste, Redo, Undo};
-use crate::workbench::{bottom_bar, project_tree, top_bar, window_controls};
+use crate::workbench::{
+    CloseTab, NextTab, PrevTab, bottom_bar, project_tree, top_bar, window_controls,
+};
 
 // ── 公开类型 ─────────────────────────────────────────────────────────
 
@@ -189,6 +191,16 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
         "editor::Cut" => KeyBinding::new(keys, Cut, context),
         "editor::Copy" => KeyBinding::new(keys, Copy, context),
         "editor::Paste" => KeyBinding::new(keys, Paste, context),
+        // pane
+        "pane::CloseTab" => KeyBinding::new(keys, CloseTab, context),
+        "pane::NextTab" => KeyBinding::new(keys, NextTab, context),
+        "pane::PrevTab" => KeyBinding::new(keys, PrevTab, context),
+        // project_tree
+        "project_tree::TreeSelectPrev" => bind!(project_tree::TreeSelectPrev),
+        "project_tree::TreeSelectNext" => bind!(project_tree::TreeSelectNext),
+        "project_tree::TreeCollapse" => bind!(project_tree::TreeCollapse),
+        "project_tree::TreeExpand" => bind!(project_tree::TreeExpand),
+        "project_tree::TreeActivate" => bind!(project_tree::TreeActivate),
         // window_controls
         "window_controls::QuitWindow" => bind!(window_controls::QuitWindow),
         "window_controls::MinimizeWindow" => bind!(window_controls::MinimizeWindow),
@@ -210,12 +222,6 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
         "bottom_bar::ToggleTerminal" => bind!(bottom_bar::ToggleTerminal),
         "bottom_bar::ToggleDebug" => bind!(bottom_bar::ToggleDebug),
         "bottom_bar::ToggleKeyboardShortcuts" => bind!(bottom_bar::ToggleKeyboardShortcuts),
-        // project_tree
-        "project_tree::TreeUp" => bind!(project_tree::TreeUp),
-        "project_tree::TreeDown" => bind!(project_tree::TreeDown),
-        "project_tree::TreeLeft" => bind!(project_tree::TreeLeft),
-        "project_tree::TreeRight" => bind!(project_tree::TreeRight),
-        "project_tree::TreeSpace" => bind!(project_tree::TreeSpace),
         _ => {
             eprintln!("未知 action 名称: {action_name}");
             return None;

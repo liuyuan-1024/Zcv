@@ -5,7 +5,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::Global;
@@ -60,6 +60,13 @@ impl ViewRegistry {
 
     pub fn get_mut(&mut self, id: ViewId) -> Option<&mut View> {
         self.views.get_mut(&id)
+    }
+
+    /// 按文件路径查找已有 View。
+    pub fn find_by_path(&self, path: &Path) -> Option<ViewId> {
+        self.views
+            .iter()
+            .find_map(|(id, v)| if v.path == path { Some(*id) } else { None })
     }
 
     pub fn remove(&mut self, id: ViewId) {

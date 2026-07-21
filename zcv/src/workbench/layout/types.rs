@@ -129,87 +129,6 @@ impl TabItem {
     }
 }
 
-/// 一个 Pane = 一组 tab + 当前激活的 view。
-#[derive(Debug, Clone)]
-pub(crate) struct Pane {
-    pub id: PaneId,
-    pub tabs: Vec<TabItem>,
-    pub active: Option<ViewId>,
-}
-
-impl Pane {
-    pub(crate) fn new(id: PaneId) -> Self {
-        Self {
-            id,
-            tabs: Vec::new(),
-            active: None,
-        }
-    }
-
-    /// 无内容且无 tab 的 pane 视为空，compact 时将被折叠。
-    pub(crate) fn is_empty(&self) -> bool {
-        self.tabs.is_empty() && self.active.is_none()
-    }
-}
-
-/// PaneGroup 递归树 —— 编辑区的布局结构。
-#[derive(Debug, Clone)]
-pub(crate) enum PaneGroup {
-    /// 叶子节点：一组 tab + 当前编辑视图。
-    Pane(Pane),
-    /// 分栏：将区域沿 axis 按 ratio 比例分割。
-    Split {
-        id: SplitId,
-        axis: Axis,
-        ratio: f32,
-        children: [Box<PaneGroup>; 2],
-    },
-}
-
-impl PaneGroup {
-    pub(crate) fn pane_count(&self) -> usize {
-        match self {
-            PaneGroup::Pane(_) => 1,
-            PaneGroup::Split { children, .. } => {
-                children[0].pane_count() + children[1].pane_count()
-            }
-        }
-    }
-
-    pub(crate) fn all_panes(&self) -> Vec<PaneId> {
-        match self {
-            PaneGroup::Pane(pane) => vec![pane.id],
-            PaneGroup::Split { children, .. } => {
-                let mut ids = children[0].all_panes();
-                ids.extend(children[1].all_panes());
-                ids
-            }
-        }
-    }
-
-    pub(crate) fn find_pane(&self, id: PaneId) -> Option<&Pane> {
-        match self {
-            PaneGroup::Pane(pane) if pane.id == id => Some(pane),
-            PaneGroup::Split { children, .. } => children[0]
-                .find_pane(id)
-                .or_else(|| children[1].find_pane(id)),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn contains_pane(&self, id: PaneId) -> bool {
-        self.find_pane(id).is_some()
-    }
-
-    /// 递归遍历找到第一个叶子 Pane。
-    pub(crate) fn first_pane_id(&self) -> Option<PaneId> {
-        match self {
-            PaneGroup::Pane(pane) => Some(pane.id),
-            PaneGroup::Split { children, .. } => children[0].first_pane_id(),
-        }
-    }
-}
-
 // ── 拖拽状态 ─────────────────────────────────────────────────────
 
 /// 拖拽目标（当前仅支持 dock 分隔线）。
@@ -227,16 +146,4 @@ pub(crate) struct DragState {
     pub start_cursor: gpui::Point<Pixels>,
     /// 拖拽目标的起始尺寸（dock 的 size 像素值）。
     pub start_size: Pixels,
-}
-
-// ── 布局快照（只读，给 render 用） ──────────────────────────────────
-
-/// 渲染期只读布局快照。
-#[derive(Debug, Clone)]
-pub(crate) struct LayoutSnapshot {
-    pub left_dock: DockState,
-    pub right_dock: DockState,
-    pub bottom_dock: DockState,
-    pub center: PaneGroup,
-    pub focus: LayoutFocus,
 }

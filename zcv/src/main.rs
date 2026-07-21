@@ -22,9 +22,13 @@ use features::project_picker::ProjectSearchEditor;
 use shared::assets::{EmbeddedAssets, embedded_fonts};
 use surface::{SurfaceManager, SurfaceShell};
 use theme::Theme;
+use workbench::bottom_bar::{
+    ToggleDebug, ToggleKeyboardShortcuts, ToggleOutline, ToggleProjectTree, ToggleTerminal,
+    ToggleVersionControl,
+};
 use workbench::{
-    BottomBar, LayoutController, LayoutRef, ProjectTree, TopBar, bottom_bar, top_bar,
-    window_controls,
+    BottomBar, LayoutController, LayoutRef, Pane, PaneId, PanelId, ProjectTree, TopBar,
+    handle_close_tab, top_bar, window_controls,
 };
 
 struct AppView {
@@ -49,7 +53,10 @@ impl AppView {
 
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-        let layout = Rc::new(RefCell::new(LayoutController::new()));
+        let initial_pane = cx.new(|cx| Pane::new(PaneId(1), cx));
+        let layout = Rc::new(RefCell::new(LayoutController::with_initial_pane(
+            initial_pane,
+        )));
         cx.set_global(LayoutRef(Rc::downgrade(&layout)));
 
         let project_tree = cx.new(|cx| ProjectTree::new(root, cx));
@@ -70,12 +77,78 @@ impl AppView {
             surface_shell,
         }
     }
+
+    fn handle_toggle_project_tree(
+        &mut self,
+        _: &ToggleProjectTree,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut layout = self.layout.borrow_mut();
+        layout.toggle_panel(PanelId::ProjectTree);
+        drop(layout);
+        window.focus(&self.project_tree.read(cx).focus);
+        window.refresh();
+    }
+
+    fn handle_toggle_version_control(
+        &mut self,
+        _: &ToggleVersionControl,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.layout
+            .borrow_mut()
+            .toggle_panel(PanelId::VersionControl);
+        window.refresh();
+    }
+
+    fn handle_toggle_outline(
+        &mut self,
+        _: &ToggleOutline,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.layout.borrow_mut().toggle_panel(PanelId::Outline);
+        window.refresh();
+    }
+
+    fn handle_toggle_terminal(
+        &mut self,
+        _: &ToggleTerminal,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.layout.borrow_mut().toggle_panel(PanelId::Terminal);
+        window.refresh();
+    }
+
+    fn handle_toggle_debug(
+        &mut self,
+        _: &ToggleDebug,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.layout.borrow_mut().toggle_panel(PanelId::Debug);
+        window.refresh();
+    }
+
+    fn handle_toggle_keyboard_shortcuts(
+        &mut self,
+        _: &ToggleKeyboardShortcuts,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.layout
+            .borrow_mut()
+            .toggle_panel(PanelId::KeyboardShortcuts);
+        window.refresh();
+    }
 }
 
 impl Render for AppView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.layout.borrow().snapshot();
-        let views = cx.global::<ViewRegistry>();
 
         let layout_clone1 = self.layout.clone();
         let layout_clone2 = self.layout.clone();
@@ -90,24 +163,24 @@ impl Render for AppView {
                 &self.bottom_bar,
                 &snapshot,
                 &self.project_tree,
-                views,
             ))
             .child(self.surface_shell.clone())
             .on_action(window_controls::handle_quit)
             .on_action(window_controls::handle_minimize)
             .on_action(window_controls::handle_toggle_maximize)
+            .on_action(handle_close_tab)
             .on_action(top_bar::handle_open_settings)
             .on_action(top_bar::handle_open_project_picker)
             .on_action(top_bar::handle_toggle_branch_picker)
             .on_action(top_bar::handle_git_fetch)
             .on_action(top_bar::handle_git_pull)
             .on_action(top_bar::handle_git_push)
-            .on_action(bottom_bar::handle_toggle_project_tree)
-            .on_action(bottom_bar::handle_toggle_version_control)
-            .on_action(bottom_bar::handle_toggle_outline)
-            .on_action(bottom_bar::handle_toggle_terminal)
-            .on_action(bottom_bar::handle_toggle_debug)
-            .on_action(bottom_bar::handle_toggle_keyboard_shortcuts)
+            .on_action(cx.listener(Self::handle_toggle_project_tree))
+            .on_action(cx.listener(Self::handle_toggle_version_control))
+            .on_action(cx.listener(Self::handle_toggle_outline))
+            .on_action(cx.listener(Self::handle_toggle_terminal))
+            .on_action(cx.listener(Self::handle_toggle_debug))
+            .on_action(cx.listener(Self::handle_toggle_keyboard_shortcuts))
             // 拖拽分隔线时：鼠标移动 → 更新 dock 尺寸
             .on_mouse_move(move |event, window, _cx| {
                 let mut ctrl = layout_clone1.borrow_mut();

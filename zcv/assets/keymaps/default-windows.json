@@ -1,0 +1,42 @@
+[
+  {
+    "bindings": {
+      "ctrl-q": "window_controls::QuitWindow",
+      "ctrl-m": "window_controls::MinimizeWindow",
+      "ctrl-shift-m": "window_controls::ToggleMaximizeWindow"
+    }
+  },
+  {
+    "bindings": {
+      "ctrl-,": "top_bar::OpenSettings",
+      "ctrl-shift-p": "top_bar::OpenProjectPicker",
+      "ctrl-shift-b": "top_bar::ToggleBranchPicker",
+      "ctrl-shift-f": "top_bar::GitFetch",
+      "ctrl-shift-pull": "top_bar::GitPull",
+      "ctrl-shift-enter": "top_bar::GitPush"
+    }
+  },
+  {
+    "bindings": {
+      "ctrl-shift-e": "bottom_bar::ToggleProjectTree",
+      "ctrl-shift-g": "bottom_bar::ToggleVersionControl",
+      "ctrl-shift-o": "bottom_bar::ToggleOutline",
+      "ctrl-shift-l": "bottom_bar::ToggleLanguageServer",
+      "ctrl-shift-m": "bottom_bar::ToggleDiagnostics",
+      "ctrl-shift-f": "bottom_bar::ToggleProjectSearch",
+      "ctrl-j": "bottom_bar::ToggleTerminal",
+      "ctrl-shift-d": "bottom_bar::ToggleDebug",
+      "ctrl-shift-k": "bottom_bar::ToggleKeyboardShortcuts"
+    }
+  },
+  {
+    "context": "FileTree",
+    "bindings": {
+      "up": "project_tree::TreeUp",
+      "down": "project_tree::TreeDown",
+      "left": "project_tree::TreeLeft",
+      "right": "project_tree::TreeRight",
+      "space": "project_tree::TreeSpace"
+    }
+  }
+]

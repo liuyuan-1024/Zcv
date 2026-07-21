@@ -1,0 +1,41 @@
+[
+  {
+    "label": "1. 检查代码",
+    "command": "cargo",
+    "args": ["clippy"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+  {
+    "label": "2. 格式化代码",
+    "command": "cargo",
+    "args": ["fmt"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+  {
+    "label": "3. 全量测试",
+    "command": "cargo",
+    "args": ["test"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+  {
+    "label": "4. macOS 调试启动",
+    "command": "cargo",
+    "args": ["run --bin zcv"],
+    "env": {
+      "ZCV_DEBUG_PROJECT": "/Users/liuyuan/project/liuyuan/zcv",
+    },
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+]

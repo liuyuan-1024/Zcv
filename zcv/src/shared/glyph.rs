@@ -6,9 +6,10 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, AnyView, App, Context, ElementId, IntoElement, Pixels, Render, Svg, Window, div,
-    prelude::*, svg,
+    AnyElement, AnyView, App, Context, ElementId, IntoElement, Render, Window, div, prelude::*,
 };
+
+use crate::shared::icon::SvgIcon;
 
 use crate::keymap::KeyBindings;
 use crate::theme::{color, radius, space, typography};
@@ -136,7 +137,7 @@ impl IntoElement for Glyph {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(svg_icon(path, color_value, icon_size)),
+                    .child(SvgIcon::new(path).size(icon_size).color(color_value)),
             ),
             GlyphContent::IconText { icon: path, text } => base(
                 div()
@@ -145,15 +146,11 @@ impl IntoElement for Glyph {
                     .flex_row()
                     .items_center()
                     .gap(space::S2)
-                    .child(svg_icon(path, color_value, icon_size))
+                    .child(SvgIcon::new(path).size(icon_size).color(color_value))
                     .child(div().text_color(color_value).child(text)),
             ),
         }
     }
-}
-
-fn svg_icon(path: &'static str, color: gpui::Rgba, size: Pixels) -> Svg {
-    svg().path(path).size(size).text_color(color)
 }
 
 /// 构造 Glyph 共用的 tooltip 视图。

@@ -1,7 +1,8 @@
 //! shell 共享基础设施。
 
 pub(crate) mod assets;
-mod glyph;
+pub(crate) mod glyph;
+pub(crate) mod icon;
 pub(crate) mod picker;
 pub(crate) mod tree;
 

@@ -1,5 +1,6 @@
-use gpui::{div, prelude::*, px, svg};
+use gpui::{div, prelude::*, px};
 
+use crate::shared::icon::SvgIcon;
 use crate::theme::{color, radius, space, typography};
 
 const FOLDER: &str = "icons/files/folder.svg";
@@ -55,12 +56,7 @@ fn icon(is_dir: bool, expanded: bool) -> impl IntoElement {
     } else {
         FILE
     };
-    div().flex_shrink_0().size(typography::ui()).child(
-        svg()
-            .path(path)
-            .size(typography::ui())
-            .text_color(color::current().gray.s[7]),
-    )
+    div().flex_shrink_0().child(SvgIcon::new(path))
 }
 
 /// 条目名称文本，尾部溢出截断。

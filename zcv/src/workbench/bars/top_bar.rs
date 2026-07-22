@@ -9,6 +9,7 @@ use crate::shared::Glyph;
 use crate::surface::{
     AnchorRegistry, SurfaceAnchor, SurfaceId, SurfaceManager, anchor_from_bounds, track_anchor,
 };
+use crate::theme::color;
 
 actions!(
     top_bar,
@@ -101,8 +102,13 @@ fn leading_slots(window: &Window, is_active: &dyn Fn(SurfaceId) -> bool) -> Vec<
     out.push(
         track_anchor(
             "top-bar.project-picker",
-            Glyph::text("top-bar.project-picker", "打开项目", "项目选择器")
-                .active(is_active(SurfaceId::ProjectPicker))
+            Glyph::text("top-bar.project-picker", "打开项目")
+                .label("项目选择器")
+                .color(if is_active(SurfaceId::ProjectPicker) {
+                    color::glyph_active()
+                } else {
+                    color::glyph_default()
+                })
                 .on_click(|window, cx| {
                     window.dispatch_action(Box::new(OpenProjectPicker), cx);
                 })
@@ -113,48 +119,37 @@ fn leading_slots(window: &Window, is_active: &dyn Fn(SurfaceId) -> bool) -> Vec<
     out.push(
         track_anchor(
             "top-bar.branch",
-            Glyph::icon_text(
-                "top-bar.branch",
-                "icons/panels/version_control.svg",
-                "main",
-                "分支",
-            )
-            .active(is_active(SurfaceId::BranchPicker))
-            .on_click(|window, cx| {
-                window.dispatch_action(Box::new(ToggleBranchPicker), cx);
-            })
+            Glyph::icon_text("top-bar.branch", "icons/panels/version_control.svg", "main")
+                .label("分支")
+                .color(if is_active(SurfaceId::BranchPicker) {
+                    color::glyph_active()
+                } else {
+                    color::glyph_default()
+                })
+                .on_click(|window, cx| {
+                    window.dispatch_action(Box::new(ToggleBranchPicker), cx);
+                })
+                .into_any_element(),
+        )
+        .into_any_element(),
+    );
+    out.push(
+        Glyph::icon("top-bar.git-fetch", "icons/actions/arrow_circle.svg")
+            .label("fetch")
+            .on_click(|_, _| println!("点击 fetch"))
             .into_any_element(),
-        )
-        .into_any_element(),
     );
     out.push(
-        Glyph::icon(
-            "top-bar.git-fetch",
-            "icons/actions/arrow_circle.svg",
-            "fetch",
-        )
-        .on_click(|_, _| println!("点击 fetch"))
-        .into_any_element(),
+        Glyph::icon_text("top-bar.git-pull", "icons/actions/arrow_down.svg", "0")
+            .label("pull")
+            .on_click(|_, _| println!("点击 pull"))
+            .into_any_element(),
     );
     out.push(
-        Glyph::icon_text(
-            "top-bar.git-pull",
-            "icons/actions/arrow_down.svg",
-            "0",
-            "pull",
-        )
-        .on_click(|_, _| println!("点击 pull"))
-        .into_any_element(),
-    );
-    out.push(
-        Glyph::icon_text(
-            "top-bar.git-push",
-            "icons/actions/arrow_up.svg",
-            "0",
-            "push",
-        )
-        .on_click(|_, _| println!("点击 push"))
-        .into_any_element(),
+        Glyph::icon_text("top-bar.git-push", "icons/actions/arrow_up.svg", "0")
+            .label("push")
+            .on_click(|_, _| println!("点击 push"))
+            .into_any_element(),
     );
 
     out
@@ -162,7 +157,8 @@ fn leading_slots(window: &Window, is_active: &dyn Fn(SurfaceId) -> bool) -> Vec<
 
 fn trailing_slots() -> Vec<AnyElement> {
     vec![
-        Glyph::icon("top-bar.settings", "icons/actions/settings.svg", "设置")
+        Glyph::icon("top-bar.settings", "icons/actions/settings.svg")
+            .label("设置")
             .on_click(|_, _| println!("点击设置"))
             .into_any_element(),
     ]

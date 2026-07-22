@@ -1,7 +1,7 @@
-//! `Glyph` —— shell 内复用的基础交互组件。
+//! `Glyph` —— shell 内复用的基础展示组件。
 //!
 //! 可以承载文字、图标、图标 + 文字。
-//! tooltip 是必选项，快捷键（通过 action 关联）是可选项。
+//! label 和 shortcut 是可选的 tooltip 信息，通过 builder 方法设置。
 
 use std::rc::Rc;
 
@@ -10,8 +10,6 @@ use gpui::{
 };
 
 use crate::shared::icon::SvgIcon;
-
-use crate::keymap::KeyBindings;
 use crate::theme::{color, radius, space, typography};
 
 type ClickHandler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -24,38 +22,30 @@ enum GlyphContent {
 }
 
 /// 一个基础视觉标记。
+///
+/// 通过 builder 设置 label/shortcut/color 来控制展示内容。
 pub(crate) struct Glyph {
     id: ElementId,
     content: GlyphContent,
     color: gpui::Rgba,
-    active: bool,
-    tooltip: String,
-    action_name: Option<&'static str>,
+    label: Option<String>,
+    shortcut: Option<String>,
     on_click: Option<ClickHandler>,
 }
 
 impl Glyph {
-    pub(crate) fn icon(
-        id: impl Into<ElementId>,
-        path: &'static str,
-        tooltip: impl Into<String>,
-    ) -> Self {
-        Self::new(id, GlyphContent::Icon(path), tooltip.into())
+    pub(crate) fn icon(id: impl Into<ElementId>, path: &'static str) -> Self {
+        Self::new(id, GlyphContent::Icon(path))
     }
 
-    pub(crate) fn text(
-        id: impl Into<ElementId>,
-        text: impl Into<String>,
-        tooltip: impl Into<String>,
-    ) -> Self {
-        Self::new(id, GlyphContent::Text(text.into()), tooltip.into())
+    pub(crate) fn text(id: impl Into<ElementId>, text: impl Into<String>) -> Self {
+        Self::new(id, GlyphContent::Text(text.into()))
     }
 
     pub(crate) fn icon_text(
         id: impl Into<ElementId>,
         path: &'static str,
         text: impl Into<String>,
-        tooltip: impl Into<String>,
     ) -> Self {
         Self::new(
             id,
@@ -63,31 +53,35 @@ impl Glyph {
                 icon: path,
                 text: text.into(),
             },
-            tooltip.into(),
         )
     }
 
-    fn new(id: impl Into<ElementId>, content: GlyphContent, tooltip: String) -> Self {
+    fn new(id: impl Into<ElementId>, content: GlyphContent) -> Self {
         Self {
             id: id.into(),
             content,
             color: color::glyph_default(),
-            active: false,
-            tooltip,
-            action_name: None,
+            label: None,
+            shortcut: None,
             on_click: None,
         }
     }
 
-    /// 设为激活态，文字/图标颜色自动切换为激活色。
-    pub(crate) fn active(mut self, active: bool) -> Self {
-        self.active = active;
+    /// 设置 tooltip 标签文字。
+    pub(crate) fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
         self
     }
 
-    /// 关联一个 action，tooltip 自动从 keymap 查询快捷键。
-    pub(crate) fn action(mut self, action: impl gpui::Action + 'static) -> Self {
-        self.action_name = Some(action.name());
+    /// 设置 tooltip 快捷键提示文字。
+    pub(crate) fn shortcut(mut self, shortcut: Option<String>) -> Self {
+        self.shortcut = shortcut;
+        self
+    }
+
+    /// 设置颜色（覆盖默认色）。
+    pub(crate) fn color(mut self, color: gpui::Rgba) -> Self {
+        self.color = color;
         self
     }
 
@@ -102,26 +96,20 @@ impl IntoElement for Glyph {
     type Element = AnyElement;
 
     fn into_element(self) -> Self::Element {
-        let color_value = if self.active {
-            color::glyph_active()
-        } else {
-            self.color
-        };
         let icon_size = typography::ui();
-        let label_text = self.tooltip;
-        let action_name = self.action_name;
+        let label = self.label;
+        let shortcut = self.shortcut;
         let on_click = self.on_click;
+        let has_tooltip = label.is_some() || shortcut.is_some();
 
         let build_tooltip = move |_: &mut Window, cx: &mut App| -> AnyView {
-            let shortcut = action_name.and_then(|name| {
-                cx.try_global::<KeyBindings>()
-                    .and_then(|kb| kb.display_shortcut(name))
-            });
-            tooltip_view(cx, label_text.clone(), shortcut)
+            tooltip_view(cx, label.clone(), shortcut.clone())
         };
 
         let base = |mut el: gpui::Stateful<gpui::Div>| {
-            el = el.cursor_pointer().tooltip(build_tooltip);
+            if has_tooltip {
+                el = el.tooltip(build_tooltip);
+            }
             if let Some(ref handler) = on_click {
                 let h = Rc::clone(handler);
                 el = el.on_click(move |_, window, cx| h(window, cx));
@@ -130,14 +118,14 @@ impl IntoElement for Glyph {
         };
 
         match self.content {
-            GlyphContent::Text(text) => base(div().id(self.id).text_color(color_value).child(text)),
+            GlyphContent::Text(text) => base(div().id(self.id).text_color(self.color).child(text)),
             GlyphContent::Icon(path) => base(
                 div()
                     .id(self.id)
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(SvgIcon::new(path).size(icon_size).color(color_value)),
+                    .child(SvgIcon::new(path).size(icon_size).color(self.color)),
             ),
             GlyphContent::IconText { icon: path, text } => base(
                 div()
@@ -146,21 +134,21 @@ impl IntoElement for Glyph {
                     .flex_row()
                     .items_center()
                     .gap(space::S2)
-                    .child(SvgIcon::new(path).size(icon_size).color(color_value))
-                    .child(div().text_color(color_value).child(text)),
+                    .child(SvgIcon::new(path).size(icon_size).color(self.color))
+                    .child(div().text_color(self.color).child(text)),
             ),
         }
     }
 }
 
 /// 构造 Glyph 共用的 tooltip 视图。
-fn tooltip_view(cx: &mut App, label: String, shortcut: Option<String>) -> AnyView {
+fn tooltip_view(cx: &mut App, label: Option<String>, shortcut: Option<String>) -> AnyView {
     cx.new(|_| GlyphTooltip { label, shortcut }).into()
 }
 
 /// Glyph 悬停时呈现的小视图。
 struct GlyphTooltip {
-    label: String,
+    label: Option<String>,
     shortcut: Option<String>,
 }
 
@@ -178,11 +166,12 @@ impl Render for GlyphTooltip {
             .border_1()
             .border_color(color::current().gray.s[4])
             .rounded(radius::R4)
-            .child(
+            .children(self.label.as_ref().map(|l| {
                 div()
                     .text_color(color::current().gray.s[8])
-                    .child(self.label.clone()),
-            )
+                    .child(l.clone())
+                    .into_any_element()
+            }))
             .children(self.shortcut.as_ref().map(|s| {
                 div()
                     .text_color(color::current().gray.s[5])

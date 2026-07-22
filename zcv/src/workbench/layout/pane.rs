@@ -205,16 +205,12 @@ fn file_icon() -> impl gpui::IntoElement {
 /// 标签关闭按钮（叉 glyph）。
 fn close_glyph(pane_entity: &gpui::Entity<Pane>, view_id: ViewId) -> impl gpui::IntoElement {
     let entity = pane_entity.clone();
-    Glyph::icon(
-        ("tab-close", view_id.0),
-        "icons/actions/close.svg",
-        "关闭标签",
-    )
-    .action(CloseTab)
-    .on_click(move |window: &mut gpui::Window, cx: &mut gpui::App| {
-        entity.update(cx, |pane, _| pane.close_tab(view_id));
-        window.refresh();
-    })
+    Glyph::icon(("tab-close", view_id.0), "icons/actions/close.svg")
+        .label("关闭标签")
+        .on_click(move |window: &mut gpui::Window, cx: &mut gpui::App| {
+            entity.update(cx, |pane, _| pane.close_tab(view_id));
+            window.refresh();
+        })
 }
 
 // ── Editor Content ────────────────────────────────────────────────────

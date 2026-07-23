@@ -7,10 +7,7 @@ use super::window_controls;
 use crate::features::project_picker::ProjectPicker;
 use crate::shared::Glyph;
 
-actions!(
-    top_bar,
-    [OpenProjectPicker, OpenSettings, GitFetch, GitPull, GitPush,]
-);
+actions!(top_bar, [OpenSettings, GitFetch, GitPull, GitPush,]);
 
 pub(crate) struct TopBar {
     pub(crate) project_picker: Entity<ProjectPicker>,

@@ -9,6 +9,7 @@ use gpui::KeyBinding;
 use serde::Deserialize;
 
 use crate::editor::editable::{Copy, Cut, Paste, Redo, Undo};
+use crate::features::project_picker::{OpenLocalProject, TogglePicker};
 use crate::shared::picker::{PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev};
 use crate::workbench::{
     CloseTab, NextTab, PrevTab, bottom_bar, project_tree, top_bar, window_controls,
@@ -208,7 +209,6 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
         "window_controls::ToggleMaximizeWindow" => bind!(window_controls::ToggleMaximizeWindow),
         // top_bar
         "top_bar::OpenSettings" => bind!(top_bar::OpenSettings),
-        "top_bar::OpenProjectPicker" => bind!(top_bar::OpenProjectPicker),
         "top_bar::GitFetch" => bind!(top_bar::GitFetch),
         "top_bar::GitPull" => bind!(top_bar::GitPull),
         "top_bar::GitPush" => bind!(top_bar::GitPush),
@@ -227,6 +227,8 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
         "picker::PickerSelectPrev" => KeyBinding::new(keys, PickerSelectPrev, context),
         "picker::PickerConfirm" => KeyBinding::new(keys, PickerConfirm, context),
         "picker::PickerCancel" => KeyBinding::new(keys, PickerCancel, context),
+        "project_picker::TogglePicker" => KeyBinding::new(keys, TogglePicker, context),
+        "project_picker::OpenLocalProject" => KeyBinding::new(keys, OpenLocalProject, context),
         _ => {
             eprintln!("未知 action 名称: {action_name}");
             return None;

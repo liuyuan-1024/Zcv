@@ -28,13 +28,14 @@
     }
   },
   {
+    "context": "Picker",
     "bindings": {
       "up": "picker::PickerSelectPrev",
       "down": "picker::PickerSelectNext",
       "enter": "picker::PickerConfirm",
-      "escape": "picker::PickerCancel"
-    },
-    "context": "Picker"
+      "escape": "picker::PickerCancel",
+      "cmd-o": "project_picker::OpenLocalProject"
+    }
   },
   {
     "bindings": {
@@ -48,7 +49,7 @@
       "cmd-,": "top_bar::OpenSettings",
       "cmd-shift-b": "top_bar::ToggleBranchPicker",
       "cmd-shift-enter": "top_bar::GitPush",
-      "cmd-shift-p": "top_bar::OpenProjectPicker",
+      "cmd-shift-p": "project_picker::TogglePicker",
       "cmd-shift-pull": "top_bar::GitPull"
     }
   },

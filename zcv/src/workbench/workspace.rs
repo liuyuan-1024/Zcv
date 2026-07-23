@@ -55,18 +55,6 @@ impl Workspace {
         }
     }
 
-    fn handle_open_project_picker(
-        &mut self,
-        _: &top_bar::OpenProjectPicker,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let picker = self.top_bar.read(cx).project_picker.clone();
-        picker.update(cx, |p, app| {
-            p.toggle(window, app);
-        });
-    }
-
     fn handle_git_fetch(_: &top_bar::GitFetch, _: &mut Window, _: &mut gpui::App) {
         println!("fetch");
     }
@@ -210,7 +198,6 @@ impl Render for Workspace {
             .on_action(Self::handle_git_pull)
             .on_action(Self::handle_git_push)
             .on_action(Self::handle_open_settings)
-            .on_action(cx.listener(Self::handle_open_project_picker))
             .on_action(cx.listener(Self::handle_toggle_project_tree))
             .on_action(cx.listener(Self::handle_toggle_version_control))
             .on_action(cx.listener(Self::handle_toggle_outline))

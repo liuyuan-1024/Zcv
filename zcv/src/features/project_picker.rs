@@ -1,27 +1,27 @@
-//! ProjectPicker —— 项目选择器浮面。
+//! ProjectPicker —— 项目选择器。
 //!
-//! 验证 Picker + Surface 全链路的试点。
+//! 自含 glyph 按钮 + 浮层，浮层内嵌 `Picker<ProjectPickerDelegate>`。
+//! glyph 内联在布局中，浮层用 deferred + anchored 逃逸。
 
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui::{AnyElement, App, Entity, Global, Window, div, prelude::*, px};
-
-use crate::editor::EditableText;
-use crate::shared::picker::{
-    PickerDelegate, picker_footer, picker_footer_row, picker_row, picker_search_box,
-    picker_two_line, render_picker,
+use gpui::{
+    Action, AnyElement, App, Context, Corner, Entity, FocusHandle, MouseButton, Render, Window,
+    actions, anchored, deferred, div, point, prelude::*, px,
 };
-use crate::surface::{SurfaceAnchor, SurfaceRequest};
-use crate::theme::color;
 
-/// 项目选择器搜索框编辑器全局句柄。
-pub(crate) struct ProjectSearchEditor(pub(crate) Entity<EditableText>);
-impl Global for ProjectSearchEditor {}
+use crate::keymap::KeyBindings;
+use crate::shared::Glyph;
+use crate::shared::list_item::{ListItem, list_item_two_line};
+use crate::shared::picker::{Picker, PickerDelegate, picker_divider};
+use crate::theme::{color, space, typography};
 
-/// 项目条目。
+actions!(project_picker, [TogglePicker, OpenLocalProject]);
+
+// ═══ 数据 ════════════════════════════════════════════════════════
+
 struct ProjectEntry {
-    id: String,
     label: String,
     path: String,
     is_current: bool,
@@ -69,20 +69,7 @@ impl ProjectPickerDelegate {
 }
 
 impl PickerDelegate for ProjectPickerDelegate {
-    fn placeholder(&self) -> &str {
-        "搜索项目..."
-    }
-
-    fn query(&self) -> &str {
-        &self.query
-    }
-
-    fn set_query(&mut self, query: &str) {
-        self.query = query.to_string();
-        self.do_filter();
-    }
-
-    fn item_count(&self) -> usize {
+    fn match_count(&self) -> usize {
         self.filtered.len()
     }
 
@@ -90,16 +77,16 @@ impl PickerDelegate for ProjectPickerDelegate {
         self.selected_index
     }
 
-    fn move_selection(&mut self, delta: isize) {
-        let count = self.filtered.len();
-        if count == 0 {
-            return;
-        }
-        let new = self.selected_index as isize + delta;
-        self.selected_index = new.rem_euclid(count as isize) as usize;
+    fn set_selected_index(&mut self, ix: usize) {
+        self.selected_index = ix;
     }
 
-    fn confirm(&self, _window: &mut Window, _cx: &mut App) {
+    fn update_matches(&mut self, query: String) {
+        self.query = query;
+        self.do_filter();
+    }
+
+    fn confirm(&mut self, _window: &mut Window, _cx: &mut App) {
         if self.filtered.is_empty() {
             return;
         }
@@ -107,99 +94,213 @@ impl PickerDelegate for ProjectPickerDelegate {
         println!("打开项目: {} ({})", entry.label, entry.path);
     }
 
-    fn render_item(&self, index: usize, is_selected: bool) -> AnyElement {
+    fn dismissed(&mut self) {}
+    fn render_match(&self, index: usize, is_selected: bool) -> AnyElement {
         let entry = &self.projects[self.filtered[index]];
-        let prefix = if entry.is_current { "✓ " } else { "  " };
-        picker_row(
-            picker_two_line(
+        ListItem::new(index)
+            .toggle_state(is_selected)
+            .child(list_item_two_line(
                 div()
                     .text_color(color::current().gray.s[8])
-                    .child(format!("{}{}", prefix, entry.label)),
+                    .child(entry.label.clone()),
                 entry.path.clone(),
-            ),
-            is_selected,
-        )
+            ))
+            .into_any_element()
     }
 
-    fn render_footer(&self) -> Option<AnyElement> {
-        Some(
-            picker_footer(vec![
-                picker_footer_row("打开本地项目"),
-                picker_footer_row("克隆 Git 仓库"),
-            ])
-            .into_any_element(),
-        )
+    fn placeholder_text(&self) -> &str {
+        "搜索项目..."
+    }
+    fn render_footer(&self, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+        let shortcut = cx
+            .try_global::<KeyBindings>()
+            .and_then(|kb| kb.display_shortcut(OpenLocalProject.name()));
+        let item = ListItem::new("open-local").child("打开本地项目");
+        let item = if let Some(s) = shortcut {
+            item.end_slot(
+                div()
+                    .text_color(color::current().gray.s[5])
+                    .text_size(typography::ui())
+                    .child(s),
+            )
+        } else {
+            item
+        };
+        Some(div().child(picker_divider()).child(item).into_any_element())
     }
 }
 
-// ── 公共 API ──
+// ═══ Entity ═════════════════════════════════════════════════════
 
-pub(crate) fn open(anchor: SurfaceAnchor, window: &mut Window, cx: &mut gpui::App) {
-    let projects = mock_projects();
-    let delegate = Rc::new(RefCell::new(ProjectPickerDelegate::new(projects)));
-    let render_delegate = Rc::clone(&delegate);
+/// 项目选择器 —— 自含 glyph 按钮 + 浮层。
+pub(crate) struct ProjectPicker {
+    is_open: bool,
+    dismiss_flag: Rc<Cell<bool>>,
+    focus: FocusHandle,
+    picker: Entity<Picker<ProjectPickerDelegate>>,
+}
 
-    let Some(editor) = cx.try_global::<ProjectSearchEditor>().map(|g| g.0.clone()) else {
-        return;
-    };
+impl ProjectPicker {
+    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+        let delegate = ProjectPickerDelegate::new(mock_projects());
+        let dismiss_flag = Rc::new(Cell::new(false));
 
-    // 编辑器文本变更 → 更新 delegate 的搜索过滤
-    {
-        let delegate = Rc::clone(&delegate);
-        editor.update(cx, |e, _cx| {
-            e.set_on_change(move |text, _window, _cx| {
-                delegate.borrow_mut().set_query(text);
-            });
+        let picker = cx.new(|cx| Picker::new(delegate, px(360.0), cx));
+        let on_dismiss = {
+            let df = dismiss_flag.clone();
+            Box::new(move |window: &mut Window, _app: &mut App| {
+                df.set(true);
+                window.refresh();
+            })
+        };
+        picker.update(cx, |picker, cx| {
+            picker.init(cx);
+            picker.set_on_dismiss(on_dismiss);
         });
+
+        Self {
+            is_open: false,
+            dismiss_flag,
+            focus: cx.focus_handle(),
+            picker,
+        }
     }
 
-    let focus = editor.update(cx, |e, _cx| e.focus_handle());
-    let editor_entity = editor.clone();
+    /// 外部切换（快捷键/按钮等）。
+    pub(crate) fn toggle(&mut self, window: &mut Window, cx: &mut App) {
+        self.dismiss_flag.set(false);
+        self.is_open = !self.is_open;
+        if self.is_open {
+            let editor = self.picker.read(cx).editor().clone();
+            let focus = editor.update(cx, |e, _| e.focus_handle());
+            window.focus(&focus);
+        } else {
+            window.focus(&self.focus);
+        }
+        window.refresh();
+    }
 
-    let request = SurfaceRequest {
-        id: crate::surface::SurfaceId::ProjectPicker,
-        anchor,
-        focus_on_open: Some(focus),
-        render: Rc::new(move || {
-            render_picker(
-                px(420.0),
-                render_delegate.clone(),
-                picker_search_box(editor_entity.clone()),
-            )
-        }),
-    };
+    fn handle_toggle(&mut self, _: &TogglePicker, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle(window, cx);
+    }
 
-    crate::surface::open_surface(request, window, cx);
+    fn handle_open_local_project(
+        &mut self,
+        _: &OpenLocalProject,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        println!("打开本地项目: 未实现");
+    }
+}
+
+impl Render for ProjectPicker {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 检查是否需要关闭（Escape / 点击外部）
+        if self.dismiss_flag.replace(false) {
+            self.is_open = false;
+            window.focus(&self.focus);
+        }
+
+        let color_value = if self.is_open {
+            color::glyph_active()
+        } else {
+            color::glyph_default()
+        };
+
+        let glyph = Glyph::text("project-picker", "打开项目")
+            .label("项目选择器")
+            .shortcut(&TogglePicker, cx)
+            .color(color_value)
+            .on_click(|window, cx| {
+                window.dispatch_action(Box::new(TogglePicker), cx);
+            });
+
+        let mut root = div()
+            .track_focus(&self.focus)
+            .on_action(cx.listener(Self::handle_toggle))
+            .on_action(cx.listener(Self::handle_open_local_project))
+            .relative()
+            .child(glyph);
+
+        // 浮层
+        if self.is_open {
+            let dismiss = self.dismiss_flag.clone();
+            let win_size = window.bounds().size;
+
+            // 全屏点击拦截（优先级 0，垫底）
+            root = root
+                .child(
+                    deferred(
+                        div()
+                            .absolute()
+                            .top(px(0.0))
+                            .left(px(0.0))
+                            .w(win_size.width)
+                            .h(win_size.height)
+                            .on_mouse_down(MouseButton::Left, move |_, window, _cx| {
+                                dismiss.set(true);
+                                window.refresh();
+                            }),
+                    )
+                    .with_priority(0),
+                )
+                // Picker 浮层（优先级 1，Local 定位到 glyph 旁边）
+                .child(
+                    deferred(
+                        anchored()
+                            .anchor(Corner::TopLeft)
+                            .position(point(px(0.0), px(0.0)))
+                            .position_mode(gpui::AnchoredPositionMode::Local)
+                            .snap_to_window_with_margin(space::S8)
+                            .child(
+                                div()
+                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                        cx.stop_propagation();
+                                    })
+                                    .child(
+                                        div()
+                                            .border_l_3()
+                                            .border_color(color::glyph_active())
+                                            .border_1()
+                                            .border_color(color::current().gray.s[4])
+                                            .rounded(px(8.0))
+                                            .overflow_hidden()
+                                            .child(self.picker.clone()),
+                                    ),
+                            ),
+                    )
+                    .with_priority(1),
+                );
+        }
+
+        root
+    }
 }
 
 fn mock_projects() -> Vec<ProjectEntry> {
     vec![
         ProjectEntry {
-            id: "1".into(),
             label: "zcv".into(),
             path: "/Users/liuyuan/project/liuyuan/zcv".into(),
             is_current: true,
         },
         ProjectEntry {
-            id: "2".into(),
             label: "zed".into(),
             path: "/Users/liuyuan/code/zed".into(),
             is_current: false,
         },
         ProjectEntry {
-            id: "3".into(),
             label: "gpui".into(),
             path: "/Users/liuyuan/code/gpui".into(),
             is_current: false,
         },
         ProjectEntry {
-            id: "4".into(),
             label: "zcv".into(),
             path: "/Users/liuyuan/project/zcv".into(),
             is_current: false,
         },
         ProjectEntry {
-            id: "5".into(),
             label: "rust-analyzer".into(),
             path: "/Users/liuyuan/code/rust-analyzer".into(),
             is_current: false,

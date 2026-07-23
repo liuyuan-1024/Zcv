@@ -7,8 +7,8 @@ use gpui::{Context, FocusHandle, Render, Window, actions, div, prelude::*};
 use zcv_engine::{ByteOffset, TextRange};
 
 use crate::editor::{ViewRegistry, view::View};
-use crate::shared::glyph::Glyph;
-use crate::shared::icon::SvgIcon;
+use crate::shared::Glyph;
+use crate::shared::SvgIcon;
 use crate::theme::{color, radius, space, typography};
 
 use super::types::{PaneId, TabItem, ViewId};

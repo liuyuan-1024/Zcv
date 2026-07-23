@@ -2,9 +2,8 @@
 //!
 //! action handler 通过 GPUI 全局状态 `LayoutRef` 访问布局控制器。
 
-use gpui::{Action, AnyElement, Context, Div, Window, actions, div, prelude::*};
+use gpui::{AnyElement, App, Context, Div, Window, actions, div, prelude::*};
 
-use crate::keymap::KeyBindings;
 use crate::shared::Glyph;
 use crate::theme::color;
 use crate::workbench::PanelId;
@@ -45,16 +44,14 @@ impl gpui::Render for BottomBar {
                 .map(|ctrl| ctrl.borrow().is_panel_active(panel))
                 .unwrap_or(false)
         };
-        let kb = cx.try_global::<KeyBindings>();
-
         bar_frame(BarEdge::Bottom)
             .id("bottom-bar")
             .child(region(
-                leading_slots(&is_active, kb),
+                leading_slots(&is_active, cx),
                 BarRegionAlign::Leading,
             ))
             .child(region(
-                trailing_slots(&is_active, kb),
+                trailing_slots(&is_active, cx),
                 BarRegionAlign::Trailing,
             ))
     }
@@ -72,14 +69,12 @@ macro_rules! dispatch {
     };
 }
 
-fn leading_slots(is_active: &dyn Fn(PanelId) -> bool, kb: Option<&KeyBindings>) -> Vec<AnyElement> {
-    let s = |name: &str| kb.and_then(|kb| kb.display_shortcut(name));
-
+fn leading_slots(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Vec<AnyElement> {
     join_groups(vec![
         vec![
             Glyph::icon("bottom-bar.project-tree", "icons/panels/project_tree.svg")
                 .label("项目树")
-                .shortcut(s(ToggleProjectTree.name()))
+                .shortcut(&ToggleProjectTree, cx)
                 .color(if is_active(PanelId::ProjectTree) {
                     color::glyph_active()
                 } else {
@@ -92,7 +87,7 @@ fn leading_slots(is_active: &dyn Fn(PanelId) -> bool, kb: Option<&KeyBindings>) 
                 "icons/panels/version_control.svg",
             )
             .label("版本控制")
-            .shortcut(s(ToggleVersionControl.name()))
+            .shortcut(&ToggleVersionControl, cx)
             .color(if is_active(PanelId::VersionControl) {
                 color::glyph_active()
             } else {
@@ -102,7 +97,7 @@ fn leading_slots(is_active: &dyn Fn(PanelId) -> bool, kb: Option<&KeyBindings>) 
             .into_any_element(),
             Glyph::icon("bottom-bar.outline", "icons/panels/outline.svg")
                 .label("大纲")
-                .shortcut(s(ToggleOutline.name()))
+                .shortcut(&ToggleOutline, cx)
                 .color(if is_active(PanelId::Outline) {
                     color::glyph_active()
                 } else {
@@ -117,7 +112,7 @@ fn leading_slots(is_active: &dyn Fn(PanelId) -> bool, kb: Option<&KeyBindings>) 
                 "icons/status/language_server.svg",
             )
             .label("语言服务器")
-            .shortcut(s(ToggleLanguageServer.name()))
+            .shortcut(&ToggleLanguageServer, cx)
             .on_click(|window, cx| dispatch!(window, ToggleLanguageServer, cx))
             .into_any_element(),
             Glyph::icon_text(
@@ -126,24 +121,19 @@ fn leading_slots(is_active: &dyn Fn(PanelId) -> bool, kb: Option<&KeyBindings>) 
                 "0",
             )
             .label("诊断")
-            .shortcut(s(ToggleDiagnostics.name()))
+            .shortcut(&ToggleDiagnostics, cx)
             .on_click(|window, cx| dispatch!(window, ToggleDiagnostics, cx))
             .into_any_element(),
             Glyph::icon("bottom-bar.project-search", "icons/panels/search.svg")
                 .label("项目搜索")
-                .shortcut(s(ToggleProjectSearch.name()))
+                .shortcut(&ToggleProjectSearch, cx)
                 .on_click(|window, cx| dispatch!(window, ToggleProjectSearch, cx))
                 .into_any_element(),
         ],
     ])
 }
 
-fn trailing_slots(
-    is_active: &dyn Fn(PanelId) -> bool,
-    kb: Option<&KeyBindings>,
-) -> Vec<AnyElement> {
-    let s = |name: &str| kb.and_then(|kb| kb.display_shortcut(name));
-
+fn trailing_slots(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Vec<AnyElement> {
     join_groups(vec![
         vec![
             Glyph::text("bottom-bar.cursor", "1:1")
@@ -156,7 +146,7 @@ fn trailing_slots(
         vec![
             Glyph::icon("bottom-bar.terminal", "icons/panels/terminal.svg")
                 .label("终端")
-                .shortcut(s(ToggleTerminal.name()))
+                .shortcut(&ToggleTerminal, cx)
                 .color(if is_active(PanelId::Terminal) {
                     color::glyph_active()
                 } else {
@@ -166,7 +156,7 @@ fn trailing_slots(
                 .into_any_element(),
             Glyph::icon("bottom-bar.debug", "icons/panels/debug.svg")
                 .label("调试")
-                .shortcut(s(ToggleDebug.name()))
+                .shortcut(&ToggleDebug, cx)
                 .color(if is_active(PanelId::Debug) {
                     color::glyph_active()
                 } else {
@@ -181,7 +171,7 @@ fn trailing_slots(
                 "icons/panels/keyboard_shortcuts.svg",
             )
             .label("快捷键")
-            .shortcut(s(ToggleKeyboardShortcuts.name()))
+            .shortcut(&ToggleKeyboardShortcuts, cx)
             .color(if is_active(PanelId::KeyboardShortcuts) {
                 color::glyph_active()
             } else {

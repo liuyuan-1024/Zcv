@@ -6,9 +6,11 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, AnyView, App, Context, ElementId, IntoElement, Render, Window, div, prelude::*,
+    Action, AnyElement, AnyView, App, Context, ElementId, IntoElement, Render, Window, div,
+    prelude::*,
 };
 
+use crate::keymap::KeyBindings;
 use crate::shared::icon::SvgIcon;
 use crate::theme::{color, radius, space, typography};
 
@@ -73,9 +75,11 @@ impl Glyph {
         self
     }
 
-    /// 设置 tooltip 快捷键提示文字。
-    pub(crate) fn shortcut(mut self, shortcut: Option<String>) -> Self {
-        self.shortcut = shortcut;
+    /// 从当前 keymap 中获取 action 对应的快捷键并设为提示。
+    pub(crate) fn shortcut(mut self, action: &impl Action, cx: &App) -> Self {
+        self.shortcut = cx
+            .try_global::<KeyBindings>()
+            .and_then(|kb| kb.display_shortcut(action.name()));
         self
     }
 

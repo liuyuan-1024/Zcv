@@ -107,6 +107,7 @@ impl IntoElement for Glyph {
         };
 
         let base = |mut el: gpui::Stateful<gpui::Div>| {
+            el = el.cursor_pointer();
             if has_tooltip {
                 el = el.tooltip(build_tooltip);
             }

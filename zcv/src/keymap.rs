@@ -208,7 +208,6 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
         // top_bar
         "top_bar::OpenSettings" => bind!(top_bar::OpenSettings),
         "top_bar::OpenProjectPicker" => bind!(top_bar::OpenProjectPicker),
-        "top_bar::ToggleBranchPicker" => bind!(top_bar::ToggleBranchPicker),
         "top_bar::GitFetch" => bind!(top_bar::GitFetch),
         "top_bar::GitPull" => bind!(top_bar::GitPull),
         "top_bar::GitPush" => bind!(top_bar::GitPush),

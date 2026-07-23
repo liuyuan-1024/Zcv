@@ -109,6 +109,12 @@ impl ProjectTree {
         }
     }
 
+    /// 更换项目根目录。
+    pub(crate) fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        self.state.borrow_mut().set_root(root);
+        cx.notify();
+    }
+
     fn rows_and_len(&self) -> Vec<ProjectTreeRow> {
         self.state.borrow().visible_rows()
     }
@@ -281,6 +287,14 @@ impl ProjectTreeState {
             expanded,
             selected: None,
         }
+    }
+
+    /// 更换根目录，重置展开和选中状态。
+    fn set_root(&mut self, root: PathBuf) {
+        self.root = root;
+        self.expanded.clear();
+        self.expanded.insert(self.root.clone());
+        self.selected = None;
     }
 
     fn visible_rows(&self) -> Vec<ProjectTreeRow> {

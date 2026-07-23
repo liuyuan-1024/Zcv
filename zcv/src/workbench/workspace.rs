@@ -13,7 +13,8 @@ use super::{
     TopBar, handle_close_tab, render_layout_body, top_bar, window_controls,
 };
 use crate::editor::ViewRegistry;
-use crate::features::project_picker;
+use crate::features::project_picker::{self, OnProjectSelected};
+use crate::features::projects;
 use crate::keymap;
 
 pub(crate) struct Workspace {
@@ -32,7 +33,17 @@ impl Workspace {
         cx.bind_keys(keybindings.bindings.clone());
         cx.set_global(keybindings);
 
-        let top_bar = cx.new(TopBar::new);
+        // 创建项目切换回调
+        let weak_self: gpui::WeakEntity<Self> = cx.weak_entity();
+        let on_project_selected: OnProjectSelected = Rc::new(move |path, window, app| {
+            if let Some(ws) = weak_self.upgrade() {
+                ws.update(app, |workspace, cx| {
+                    workspace.switch_project(&path, window, cx);
+                });
+            }
+        });
+
+        let top_bar = cx.new(|cx| TopBar::new(on_project_selected, cx));
         let bottom_bar = cx.new(BottomBar::new);
 
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -150,6 +161,18 @@ impl Workspace {
                 picker.toggle(window, cx);
             });
         });
+    }
+
+    /// 切换到指定目录作为项目根目录。
+    fn switch_project(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let root = PathBuf::from(path);
+        // 更新项目树
+        self.project_tree.update(cx, |tree, cx| {
+            tree.set_root(root, cx);
+        });
+        // 持久化到最近项目
+        projects::add_to_recent(path);
+        window.refresh();
     }
 }
 

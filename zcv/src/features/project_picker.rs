@@ -2,15 +2,18 @@
 //!
 //! 自含 glyph 按钮 + 浮层，浮层内嵌 `Picker<ProjectPickerDelegate>`。
 //! glyph 内联在布局中，浮层用 deferred + anchored 逃逸。
+//!
+//! 最近项目从 `~/.zcv/recent_projects.json` 读取，"打开本地项目"调用系统文件选择器选择目录。
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
-    Action, AnyElement, App, Context, Corner, Entity, FocusHandle, MouseButton, Render, Window,
-    actions, anchored, deferred, div, point, prelude::*, px,
+    Action, App, Context, Corner, Entity, FocusHandle, MouseButton, PathPromptOptions, Render,
+    Window, actions, anchored, deferred, div, point, prelude::*, px,
 };
 
+use crate::features::projects::{self, ProjectEntry};
 use crate::keymap::KeyBindings;
 use crate::shared::Glyph;
 use crate::shared::list_item::{ListItem, list_item_two_line};
@@ -19,13 +22,12 @@ use crate::theme::{color, space, typography};
 
 actions!(project_picker, [ToggleProjectPicker, OpenLocalProject]);
 
-// ═══ 数据 ════════════════════════════════════════════════════════
+// ═══ 回调 ════════════════════════════════════════════════════════
 
-struct ProjectEntry {
-    label: String,
-    path: String,
-    is_current: bool,
-}
+/// 项目选中回调 —— 参数为项目路径。
+pub(crate) type OnProjectSelected = Rc<dyn Fn(String, &mut Window, &mut App)>;
+
+// ═══ 数据源 ═══════════════════════════════════════════════════════
 
 /// 项目选择器数据源。
 struct ProjectPickerDelegate {
@@ -33,17 +35,19 @@ struct ProjectPickerDelegate {
     projects: Vec<ProjectEntry>,
     filtered: Vec<usize>,
     selected_index: usize,
+    on_selected: OnProjectSelected,
 }
 
 impl ProjectPickerDelegate {
-    fn new(projects: Vec<ProjectEntry>) -> Self {
+    fn new(projects: Vec<ProjectEntry>, on_selected: OnProjectSelected) -> Self {
         let filtered: Vec<usize> = (0..projects.len()).collect();
-        let selected = projects.iter().position(|p| p.is_current).unwrap_or(0);
+        let selected_index = projects.iter().position(|p| p.is_current).unwrap_or(0);
         Self {
             query: String::new(),
             projects,
             filtered,
-            selected_index: selected,
+            selected_index,
+            on_selected,
         }
     }
 
@@ -66,6 +70,35 @@ impl ProjectPickerDelegate {
             .selected_index
             .min(self.filtered.len().saturating_sub(1));
     }
+
+    /// 从磁盘重新加载最近项目列表，保留当前搜索 query。
+    fn reload_projects(&mut self) {
+        self.projects = projects::load_recent_projects();
+        if self.projects.is_empty() {
+            // 回到退路：当前工作目录
+            if let Ok(cwd) = std::env::current_dir() {
+                let label = cwd
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !label.is_empty() {
+                    self.projects.push(ProjectEntry {
+                        label,
+                        path: cwd.to_string_lossy().to_string(),
+                        is_current: true,
+                    });
+                }
+            }
+        }
+        // 选中当前项目
+        self.selected_index = self
+            .projects
+            .iter()
+            .position(|p| p.is_current)
+            .unwrap_or(0);
+        // 重新应用过滤
+        self.do_filter();
+    }
 }
 
 impl PickerDelegate for ProjectPickerDelegate {
@@ -86,16 +119,18 @@ impl PickerDelegate for ProjectPickerDelegate {
         self.do_filter();
     }
 
-    fn confirm(&mut self, _window: &mut Window, _cx: &mut App) {
+    fn confirm(&mut self, window: &mut Window, cx: &mut App) {
         if self.filtered.is_empty() {
             return;
         }
         let entry = &self.projects[self.filtered[self.selected_index]];
-        println!("打开项目: {} ({})", entry.label, entry.path);
+        // 由回调（Workspace::switch_project）负责持久化最近项目
+        let cb = self.on_selected.clone();
+        cb(entry.path.clone(), window, cx);
     }
 
     fn dismissed(&mut self) {}
-    fn render_match(&self, index: usize, is_selected: bool) -> AnyElement {
+    fn render_match(&self, index: usize, is_selected: bool) -> gpui::AnyElement {
         let entry = &self.projects[self.filtered[index]];
         ListItem::new(index)
             .toggle_state(is_selected)
@@ -111,7 +146,7 @@ impl PickerDelegate for ProjectPickerDelegate {
     fn placeholder_text(&self) -> &str {
         "搜索项目..."
     }
-    fn render_footer(&self, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    fn render_footer(&self, _window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement> {
         let shortcut = cx
             .try_global::<KeyBindings>()
             .and_then(|kb| kb.display_shortcut(OpenLocalProject.name()));
@@ -126,24 +161,69 @@ impl PickerDelegate for ProjectPickerDelegate {
         } else {
             item
         };
-        Some(div().child(picker_divider()).child(item).into_any_element())
+        // 整个 footer 区域可点击，派发 OpenLocalProject action
+        Some(
+            div()
+                .child(picker_divider())
+                .child(item)
+                .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                    window.dispatch_action(Box::new(OpenLocalProject), cx);
+                })
+                .into_any_element(),
+        )
     }
 }
 
 // ═══ Entity ═════════════════════════════════════════════════════
 
 /// 项目选择器 —— 自含 glyph 按钮 + 浮层。
+///
+/// glyph 显示当前项目名称，无项目时显示「选择项目」。
 pub(crate) struct ProjectPicker {
     is_open: bool,
     dismiss_flag: Rc<Cell<bool>>,
     focus: FocusHandle,
     picker: Entity<Picker<ProjectPickerDelegate>>,
+    /// 异步「打开本地项目」暂存的路径
+    pending_path: Rc<RefCell<Option<String>>>,
+    /// 项目选中回调
+    on_selected: OnProjectSelected,
+    /// 当前项目名称（glyph 上显示）
+    current_label: String,
 }
 
 impl ProjectPicker {
-    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        let delegate = ProjectPickerDelegate::new(mock_projects());
+    fn load_projects() -> Vec<ProjectEntry> {
+        let mut projects = projects::load_recent_projects();
+        // 最近列表为空时，将当前工作目录作为候选
+        if projects.is_empty() {
+            if let Ok(cwd) = std::env::current_dir() {
+                let label = cwd
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !label.is_empty() {
+                    projects.push(ProjectEntry {
+                        label,
+                        path: cwd.to_string_lossy().to_string(),
+                        is_current: true,
+                    });
+                }
+            }
+        }
+        projects
+    }
+
+    pub(crate) fn new(on_selected: OnProjectSelected, cx: &mut Context<Self>) -> Self {
+        let projects = Self::load_projects();
+        let current_label = projects
+            .iter()
+            .find(|p| p.is_current)
+            .map(|p| p.label.clone())
+            .unwrap_or_default();
+        let delegate = ProjectPickerDelegate::new(projects, on_selected.clone());
         let dismiss_flag = Rc::new(Cell::new(false));
+        let pending_path = Rc::new(RefCell::new(None));
 
         let picker = cx.new(|cx| Picker::new(delegate, px(360.0), cx));
         let on_dismiss = {
@@ -163,6 +243,9 @@ impl ProjectPicker {
             dismiss_flag,
             focus: cx.focus_handle(),
             picker,
+            pending_path,
+            on_selected,
+            current_label,
         }
     }
 
@@ -171,6 +254,20 @@ impl ProjectPicker {
         self.dismiss_flag.set(false);
         self.is_open = !self.is_open;
         if self.is_open {
+            // 打开时从磁盘重新加载最近项目列表
+            self.picker.update(cx, |picker, cx| {
+                picker.delegate_mut().reload_projects();
+                // 清空搜索框文字
+                picker.editor().update(cx, |editor, _| {
+                    editor.set_text("");
+                });
+                cx.notify();
+            });
+            // 同步 glyph 上显示的当前项目名
+            let delegate = self.picker.read(cx).delegate();
+            if let Some(entry) = delegate.projects.iter().find(|p| p.is_current) {
+                self.current_label = entry.label.clone();
+            }
             let editor = self.picker.read(cx).editor().clone();
             let focus = editor.update(cx, |e, _| e.focus_handle());
             window.focus(&focus);
@@ -193,9 +290,37 @@ impl ProjectPicker {
         &mut self,
         _: &OpenLocalProject,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
-        println!("打开本地项目: 未实现");
+        let pending = self.pending_path.clone();
+
+        // 同步触发系统文件选择器，返回一个异步 channel
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("选择项目目录".into()),
+        });
+
+        // 通过 foreground executor 处理异步结果
+        cx.foreground_executor()
+            .spawn(async move {
+                match rx.await {
+                    Ok(inner) => match inner {
+                        Ok(Some(paths)) => {
+                            if let Some(path) = paths.first() {
+                                *pending.borrow_mut() = Some(path.to_string_lossy().to_string());
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            eprintln!("文件选择器出错: {e}");
+                        }
+                    },
+                    Err(_) => {} // channel 被关闭（取消）
+                }
+            })
+            .detach();
     }
 }
 
@@ -207,13 +332,33 @@ impl Render for ProjectPicker {
             window.focus(&self.focus);
         }
 
+        // 处理异步「打开本地项目」返回的路径
+        if let Some(path) = self.pending_path.borrow_mut().take() {
+            self.is_open = false;
+            window.focus(&self.focus);
+            // 从路径提取项目名
+            if let Some(file_name) = std::path::Path::new(&path).file_name() {
+                self.current_label = file_name.to_string_lossy().to_string();
+            }
+            projects::add_to_recent(&path);
+            let cb = self.on_selected.clone();
+            cb(path, window, cx);
+        }
+
         let color_value = if self.is_open {
             color::highlight()
         } else {
             color::default()
         };
 
-        let glyph = Glyph::text("project-picker", "打开项目")
+        // glyph 上显示当前项目名称，没有时显示「选择项目」
+        let glyph_text: &str = if self.current_label.is_empty() {
+            "选择项目"
+        } else {
+            &self.current_label
+        };
+
+        let glyph = Glyph::text("project-picker", glyph_text.to_string())
             .label("项目选择器")
             .shortcut(&ToggleProjectPicker, cx)
             .color(color_value)
@@ -282,34 +427,4 @@ impl Render for ProjectPicker {
 
         root
     }
-}
-
-fn mock_projects() -> Vec<ProjectEntry> {
-    vec![
-        ProjectEntry {
-            label: "zcv".into(),
-            path: "/Users/liuyuan/project/liuyuan/zcv".into(),
-            is_current: true,
-        },
-        ProjectEntry {
-            label: "zed".into(),
-            path: "/Users/liuyuan/code/zed".into(),
-            is_current: false,
-        },
-        ProjectEntry {
-            label: "gpui".into(),
-            path: "/Users/liuyuan/code/gpui".into(),
-            is_current: false,
-        },
-        ProjectEntry {
-            label: "zcv".into(),
-            path: "/Users/liuyuan/project/zcv".into(),
-            is_current: false,
-        },
-        ProjectEntry {
-            label: "rust-analyzer".into(),
-            path: "/Users/liuyuan/code/rust-analyzer".into(),
-            is_current: false,
-        },
-    ]
 }

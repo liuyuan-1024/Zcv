@@ -4,7 +4,7 @@ use gpui::{AnyElement, Context, Div, Entity, Window, actions, div, prelude::*};
 
 use super::frame::{BarEdge, bar_frame};
 use super::window_controls;
-use crate::features::project_picker::ProjectPicker;
+use crate::features::project_picker::{OnProjectSelected, ProjectPicker};
 use crate::shared::Glyph;
 
 actions!(top_bar, [OpenSettings, GitFetch, GitPull, GitPush,]);
@@ -14,8 +14,8 @@ pub(crate) struct TopBar {
 }
 
 impl TopBar {
-    pub(crate) fn new(cx: &mut gpui::Context<Self>) -> Self {
-        let project_picker = cx.new(ProjectPicker::new);
+    pub(crate) fn new(on_selected: OnProjectSelected, cx: &mut gpui::Context<Self>) -> Self {
+        let project_picker = cx.new(|cx| ProjectPicker::new(on_selected, cx));
         Self { project_picker }
     }
 }

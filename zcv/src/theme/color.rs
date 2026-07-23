@@ -308,48 +308,11 @@ pub fn current() -> Palette {
         .unwrap_or_else(|_| Palette::one_dark())
 }
 
-// ── 语义色 ─────────────────────────────────────────────────────────
+// ── 主题色 ─────────────────────────────────────────────────────────
 
-pub fn selection_bg() -> Rgba {
-    current().blue.a[3]
-}
-pub fn search_normal_bg() -> Rgba {
-    current().blue.a[4]
-}
-pub fn search_current_bg() -> Rgba {
-    current().yellow.a[4]
-}
-pub fn glyph_default() -> Rgba {
+pub fn default() -> Rgba {
     current().gray.s[8]
 }
-pub fn glyph_active() -> Rgba {
+pub fn highlight() -> Rgba {
     current().blue.s[6]
-}
-
-// ── 窗口控制 ──────────────────────────────────────────────────────
-// 窗控圆点颜色不随主题变化（macOS 风格，所有主题保持一致）。
-
-pub fn wc_close_fill() -> Rgba {
-    rgb(0xff5f57)
-}
-pub fn wc_close_border() -> Rgba {
-    rgb(0xe0443e)
-}
-pub fn wc_minimize_fill() -> Rgba {
-    rgb(0xffbd2e)
-}
-pub fn wc_minimize_border() -> Rgba {
-    rgb(0xde9f18)
-}
-pub fn wc_maximize_fill() -> Rgba {
-    rgb(0x28c840)
-}
-pub fn wc_maximize_border() -> Rgba {
-    rgb(0x1aab29)
-}
-pub fn wc_inactive_fill() -> Rgba {
-    rgb(0x6f7378)
-}
-pub fn wc_inactive_border() -> Rgba {
-    rgb(0x5c6066)
 }

@@ -62,7 +62,7 @@ impl Glyph {
         Self {
             id: id.into(),
             content,
-            color: color::glyph_default(),
+            color: color::default(),
             label: None,
             shortcut: None,
             on_click: None,

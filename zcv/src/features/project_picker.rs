@@ -203,9 +203,9 @@ impl Render for ProjectPicker {
         }
 
         let color_value = if self.is_open {
-            color::glyph_active()
+            color::highlight()
         } else {
-            color::glyph_default()
+            color::default()
         };
 
         let glyph = Glyph::text("project-picker", "打开项目")
@@ -261,7 +261,7 @@ impl Render for ProjectPicker {
                                     .child(
                                         div()
                                             .border_l_3()
-                                            .border_color(color::glyph_active())
+                                            .border_color(color::highlight())
                                             .border_1()
                                             .border_color(color::current().gray.s[4])
                                             .rounded(px(8.0))

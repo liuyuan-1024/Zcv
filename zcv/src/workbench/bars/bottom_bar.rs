@@ -76,9 +76,9 @@ fn leading_slots(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Vec<AnyElemen
                 .label("项目树")
                 .shortcut(&ToggleProjectTree, cx)
                 .color(if is_active(PanelId::ProjectTree) {
-                    color::glyph_active()
+                    color::highlight()
                 } else {
-                    color::glyph_default()
+                    color::default()
                 })
                 .on_click(|window, cx| dispatch!(window, ToggleProjectTree, cx))
                 .into_any_element(),
@@ -89,9 +89,9 @@ fn leading_slots(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Vec<AnyElemen
             .label("版本控制")
             .shortcut(&ToggleVersionControl, cx)
             .color(if is_active(PanelId::VersionControl) {
-                color::glyph_active()
+                color::highlight()
             } else {
-                color::glyph_default()
+                color::default()
             })
             .on_click(|window, cx| dispatch!(window, ToggleVersionControl, cx))
             .into_any_element(),
@@ -99,9 +99,9 @@ fn leading_slots(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Vec<AnyElemen
                 .label("大纲")
                 .shortcut(&ToggleOutline, cx)
                 .color(if is_active(PanelId::Outline) {
-                    color::glyph_active()
+                    color::highlight()
                 } else {
-                    color::glyph_default()
+                    color::default()
                 })
                 .on_click(|window, cx| dispatch!(window, ToggleOutline, cx))
                 .into_any_element(),
@@ -148,9 +148,9 @@ fn trailing_slots(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Vec<AnyEleme
                 .label("终端")
                 .shortcut(&ToggleTerminal, cx)
                 .color(if is_active(PanelId::Terminal) {
-                    color::glyph_active()
+                    color::highlight()
                 } else {
-                    color::glyph_default()
+                    color::default()
                 })
                 .on_click(|window, cx| dispatch!(window, ToggleTerminal, cx))
                 .into_any_element(),
@@ -158,9 +158,9 @@ fn trailing_slots(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Vec<AnyEleme
                 .label("调试")
                 .shortcut(&ToggleDebug, cx)
                 .color(if is_active(PanelId::Debug) {
-                    color::glyph_active()
+                    color::highlight()
                 } else {
-                    color::glyph_default()
+                    color::default()
                 })
                 .on_click(|window, cx| dispatch!(window, ToggleDebug, cx))
                 .into_any_element(),
@@ -173,9 +173,9 @@ fn trailing_slots(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Vec<AnyEleme
             .label("快捷键")
             .shortcut(&ToggleKeyboardShortcuts, cx)
             .color(if is_active(PanelId::KeyboardShortcuts) {
-                color::glyph_active()
+                color::highlight()
             } else {
-                color::glyph_default()
+                color::default()
             })
             .on_click(|window, cx| dispatch!(window, ToggleKeyboardShortcuts, cx))
             .into_any_element(),

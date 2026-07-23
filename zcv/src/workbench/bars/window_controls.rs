@@ -1,6 +1,6 @@
 //! 窗口控制 —— 自绘 macOS 风格三色圆点。
 
-use gpui::{Window, actions, div, prelude::*, px, svg};
+use gpui::{Window, actions, div, prelude::*, px, rgb, svg};
 
 use crate::theme::{color, radius, space};
 
@@ -103,12 +103,12 @@ enum Pip {
 impl Pip {
     fn palette(self, active: bool) -> (gpui::Rgba, gpui::Rgba) {
         if !active {
-            return (color::wc_inactive_fill(), color::wc_inactive_border());
+            return (rgb(0x6f7378), rgb(0x5c6066));
         }
         match self {
-            Pip::Close => (color::wc_close_fill(), color::wc_close_border()),
-            Pip::Minimize => (color::wc_minimize_fill(), color::wc_minimize_border()),
-            Pip::Maximize => (color::wc_maximize_fill(), color::wc_maximize_border()),
+            Pip::Close => (rgb(0xff5f57), rgb(0xe0443e)),
+            Pip::Minimize => (rgb(0xffbd2e), rgb(0xde9f18)),
+            Pip::Maximize => (rgb(0x28c840), rgb(0x1aab29)),
         }
     }
 

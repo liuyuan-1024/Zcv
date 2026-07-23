@@ -6,12 +6,11 @@
 use gpui::{Context, FocusHandle, Render, Window, actions, div, prelude::*};
 use zcv_engine::{ByteOffset, TextRange};
 
-use crate::editor::{ViewRegistry, view::View};
-use crate::shared::Glyph;
-use crate::shared::SvgIcon;
+use super::layout::{PaneId, TabItem, ViewId};
+use crate::editor::registry::{View, ViewRegistry};
 use crate::theme::{color, radius, space, typography};
-
-use super::types::{PaneId, TabItem, ViewId};
+use crate::ui::glyph::Glyph;
+use crate::ui::icon::SvgIcon;
 
 actions!(pane, [CloseTab, NextTab, PrevTab]);
 

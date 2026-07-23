@@ -8,13 +8,17 @@ use super::bars::bottom_bar::{
     ToggleDebug, ToggleKeyboardShortcuts, ToggleOutline, ToggleProjectTree, ToggleTerminal,
     ToggleVersionControl,
 };
-use super::{
-    BottomBar, LayoutController, LayoutRef, LayoutSnapshot, Pane, PaneId, PanelId, ProjectTree,
-    TopBar, handle_close_tab, render_layout_body, top_bar, window_controls,
+use super::bars::{
+    bottom_bar::BottomBar, project_picker, project_picker::OnProjectSelected, top_bar,
+    top_bar::TopBar, window_controls,
 };
-use crate::editor::ViewRegistry;
-use crate::features::project_picker::{self, OnProjectSelected};
-use crate::features::projects;
+use super::layout::{
+    LayoutController, LayoutRef, LayoutSnapshot, PaneId, PanelId, handle_close_tab,
+    render_body as render_layout_body,
+};
+use super::project_tree::ProjectTree;
+use super::recent_projects;
+use crate::editor::registry::ViewRegistry;
 use crate::keymap;
 
 pub(crate) struct Workspace {
@@ -171,12 +175,13 @@ impl Workspace {
             tree.set_root(root, cx);
         });
         // 持久化到最近项目
-        projects::add_to_recent(path);
+        recent_projects::add_to_recent(path);
         window.refresh();
     }
 }
 
 use crate::theme::{color, typography};
+use crate::workbench::pane::Pane;
 
 /// 工作台顶层框架组装。
 fn render_frame(

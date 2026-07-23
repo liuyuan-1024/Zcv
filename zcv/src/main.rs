@@ -1,10 +1,10 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod assets;
 mod editor;
-mod features;
 mod keymap;
-mod shared;
 mod theme;
+mod ui;
 mod workbench;
 
 use gpui::{
@@ -12,9 +12,9 @@ use gpui::{
     size,
 };
 
-use shared::assets::{EmbeddedAssets, embedded_fonts};
+use assets::{EmbeddedAssets, embedded_fonts};
 use theme::Theme;
-use workbench::Workspace;
+use workbench::workspace::Workspace;
 
 fn main() {
     Application::new()

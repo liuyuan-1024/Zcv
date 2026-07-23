@@ -2,8 +2,8 @@
 
 use gpui::{div, prelude::*, px};
 
-use crate::shared::icon::SvgIcon;
 use crate::theme::{color, radius, space, typography};
+use crate::ui::icon::SvgIcon;
 
 const FOLDER: &str = "icons/files/folder.svg";
 const FOLDER_OPEN: &str = "icons/files/folder_open.svg";

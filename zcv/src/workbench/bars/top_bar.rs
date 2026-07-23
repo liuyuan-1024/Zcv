@@ -3,9 +3,9 @@
 use gpui::{AnyElement, Context, Div, Entity, Window, actions, div, prelude::*};
 
 use super::frame::{BarEdge, bar_frame};
+use super::project_picker::{OnProjectSelected, ProjectPicker};
 use super::window_controls;
-use crate::features::project_picker::{OnProjectSelected, ProjectPicker};
-use crate::shared::Glyph;
+use crate::ui::glyph::Glyph;
 
 actions!(top_bar, [OpenSettings, GitFetch, GitPull, GitPush,]);
 

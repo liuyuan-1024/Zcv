@@ -12,7 +12,7 @@ macro_rules! asset {
     ($path:literal) => {
         (
             $path,
-            include_bytes!(concat!("../../assets/", $path)).as_slice(),
+            include_bytes!(concat!("../assets/", $path)).as_slice(),
         )
     };
 }
@@ -82,10 +82,10 @@ impl AssetSource for EmbeddedAssets {
 /// 内嵌字体（字体不通过 AssetSource 加载，GPUI 要求直接传字节）。
 pub(crate) fn embedded_fonts() -> Vec<Cow<'static, [u8]>> {
     vec![
-        Cow::Borrowed(include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf").as_slice()),
-        Cow::Borrowed(include_bytes!("../../assets/fonts/JetBrainsMono-SemiBold.ttf").as_slice()),
-        Cow::Borrowed(include_bytes!("../../assets/fonts/JetBrainsMono-Italic.ttf").as_slice()),
-        Cow::Borrowed(include_bytes!("../../assets/fonts/SarasaMonoSC-Regular.ttf").as_slice()),
-        Cow::Borrowed(include_bytes!("../../assets/fonts/SarasaMonoSC-Bold.ttf").as_slice()),
+        Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf").as_slice()),
+        Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-SemiBold.ttf").as_slice()),
+        Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf").as_slice()),
+        Cow::Borrowed(include_bytes!("../assets/fonts/SarasaMonoSC-Regular.ttf").as_slice()),
+        Cow::Borrowed(include_bytes!("../assets/fonts/SarasaMonoSC-Bold.ttf").as_slice()),
     ]
 }

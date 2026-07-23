@@ -14,7 +14,7 @@ use gpui::{
     div, prelude::*, px,
 };
 
-use crate::editor::EditableText;
+use crate::editor::editable::EditableText;
 use crate::theme::{color, space};
 
 actions!(

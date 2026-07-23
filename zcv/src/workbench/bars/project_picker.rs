@@ -13,12 +13,12 @@ use gpui::{
     Window, actions, anchored, deferred, div, point, prelude::*, px,
 };
 
-use crate::features::projects::{self, ProjectEntry};
 use crate::keymap::KeyBindings;
-use crate::shared::Glyph;
-use crate::shared::list_item::{ListItem, list_item_two_line};
-use crate::shared::picker::{Picker, PickerDelegate, picker_divider};
 use crate::theme::{color, space, typography};
+use crate::ui::glyph::Glyph;
+use crate::ui::list_item::{ListItem, list_item_two_line};
+use crate::ui::picker::{Picker, PickerDelegate, picker_divider};
+use crate::workbench::recent_projects::{self, ProjectEntry};
 
 actions!(project_picker, [ToggleProjectPicker, OpenLocalProject]);
 
@@ -73,7 +73,7 @@ impl ProjectPickerDelegate {
 
     /// 从磁盘重新加载最近项目列表，保留当前搜索 query。
     fn reload_projects(&mut self) {
-        self.projects = projects::load_recent_projects();
+        self.projects = recent_projects::load_recent_projects();
         if self.projects.is_empty() {
             // 回到退路：当前工作目录
             if let Ok(cwd) = std::env::current_dir() {
@@ -91,11 +91,7 @@ impl ProjectPickerDelegate {
             }
         }
         // 选中当前项目
-        self.selected_index = self
-            .projects
-            .iter()
-            .position(|p| p.is_current)
-            .unwrap_or(0);
+        self.selected_index = self.projects.iter().position(|p| p.is_current).unwrap_or(0);
         // 重新应用过滤
         self.do_filter();
     }
@@ -194,7 +190,7 @@ pub(crate) struct ProjectPicker {
 
 impl ProjectPicker {
     fn load_projects() -> Vec<ProjectEntry> {
-        let mut projects = projects::load_recent_projects();
+        let mut projects = recent_projects::load_recent_projects();
         // 最近列表为空时，将当前工作目录作为候选
         if projects.is_empty() {
             if let Ok(cwd) = std::env::current_dir() {
@@ -340,7 +336,7 @@ impl Render for ProjectPicker {
             if let Some(file_name) = std::path::Path::new(&path).file_name() {
                 self.current_label = file_name.to_string_lossy().to_string();
             }
-            projects::add_to_recent(&path);
+            recent_projects::add_to_recent(&path);
             let cb = self.on_selected.clone();
             cb(path, window, cx);
         }

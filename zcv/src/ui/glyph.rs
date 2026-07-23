@@ -11,8 +11,8 @@ use gpui::{
 };
 
 use crate::keymap::KeyBindings;
-use crate::shared::icon::SvgIcon;
 use crate::theme::{color, radius, space, typography};
+use crate::ui::icon::SvgIcon;
 
 type ClickHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 

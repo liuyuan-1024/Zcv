@@ -4,10 +4,10 @@
 
 use gpui::{AnyElement, App, Context, Div, Window, actions, div, prelude::*};
 
-use crate::shared::Glyph;
 use crate::theme::color;
-use crate::workbench::PanelId;
+use crate::ui::glyph::Glyph;
 use crate::workbench::layout::LayoutRef;
+use crate::workbench::layout::PanelId;
 
 use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_divider, bar_frame};
 

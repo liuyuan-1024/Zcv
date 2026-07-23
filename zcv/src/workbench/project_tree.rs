@@ -14,10 +14,10 @@ use gpui::{
 };
 use zcv_engine::{Buffer, BufferConfig, BufferOrigin};
 
-use crate::editor::ViewRegistry;
-use crate::shared::tree;
+use crate::editor::registry::ViewRegistry;
 use crate::theme::color;
-use crate::workbench::LayoutRef;
+use crate::ui::tree;
+use crate::workbench::layout::LayoutRef;
 
 actions!(
     project_tree,

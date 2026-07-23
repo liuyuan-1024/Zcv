@@ -11,7 +11,7 @@ use std::rc::Rc;
 use gpui::Global;
 use zcv_engine::Buffer;
 
-use crate::workbench::ViewId;
+use crate::workbench::layout::ViewId;
 
 /// 一个 View 对应一个 Buffer 的"打开实例"。
 pub(crate) struct View {

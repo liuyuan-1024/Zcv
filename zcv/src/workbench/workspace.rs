@@ -87,17 +87,43 @@ impl Workspace {
         println!("设置");
     }
 
+    /// 切换面板焦点：若面板已聚焦则隐藏并退焦到编辑区，否则显示并聚焦。
+    fn toggle_panel_focus(
+        &mut self,
+        panel: PanelId,
+        focus_handle: &FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if focus_handle.contains_focused(window, cx) {
+            // 面板已聚焦 → 隐藏面板，退焦到编辑区
+            self.layout.borrow_mut().toggle_panel(panel);
+            self.focus_center_pane(window, cx);
+        } else {
+            // 面板未聚焦 → 确保可见并聚焦
+            if !self.layout.borrow().is_panel_active(panel) {
+                self.layout.borrow_mut().toggle_panel(panel);
+            }
+            window.focus(focus_handle);
+        }
+        window.refresh();
+    }
+
+    /// 聚焦回编辑区。
+    fn focus_center_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pane_entity) = self.layout.borrow().focus_pane_entity() {
+            window.focus(&pane_entity.read(cx).focus);
+        }
+    }
+
     fn handle_toggle_project_tree(
         &mut self,
         _: &ToggleProjectTree,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut layout = self.layout.borrow_mut();
-        layout.toggle_panel(PanelId::ProjectTree);
-        drop(layout);
-        window.focus(&self.project_tree.read(cx).focus);
-        window.refresh();
+        let focus = self.project_tree.read(cx).focus.clone();
+        self.toggle_panel_focus(PanelId::ProjectTree, &focus, window, cx);
     }
 
     fn handle_toggle_version_control(

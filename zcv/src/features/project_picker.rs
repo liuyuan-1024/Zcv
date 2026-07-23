@@ -17,7 +17,7 @@ use crate::shared::list_item::{ListItem, list_item_two_line};
 use crate::shared::picker::{Picker, PickerDelegate, picker_divider};
 use crate::theme::{color, space, typography};
 
-actions!(project_picker, [TogglePicker, OpenLocalProject]);
+actions!(project_picker, [ToggleProjectPicker, OpenLocalProject]);
 
 // ═══ 数据 ════════════════════════════════════════════════════════
 
@@ -180,7 +180,12 @@ impl ProjectPicker {
         window.refresh();
     }
 
-    fn handle_toggle(&mut self, _: &TogglePicker, window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_toggle(
+        &mut self,
+        _: &ToggleProjectPicker,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.toggle(window, cx);
     }
 
@@ -210,10 +215,10 @@ impl Render for ProjectPicker {
 
         let glyph = Glyph::text("project-picker", "打开项目")
             .label("项目选择器")
-            .shortcut(&TogglePicker, cx)
+            .shortcut(&ToggleProjectPicker, cx)
             .color(color_value)
             .on_click(|window, cx| {
-                window.dispatch_action(Box::new(TogglePicker), cx);
+                window.dispatch_action(Box::new(ToggleProjectPicker), cx);
             });
 
         let mut root = div()
@@ -260,6 +265,7 @@ impl Render for ProjectPicker {
                                     })
                                     .child(
                                         div()
+                                            .bg(color::current().gray.s[2])
                                             .border_l_3()
                                             .border_color(color::highlight())
                                             .border_1()

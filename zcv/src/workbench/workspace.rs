@@ -13,6 +13,7 @@ use super::{
     TopBar, handle_close_tab, render_layout_body, top_bar, window_controls,
 };
 use crate::editor::ViewRegistry;
+use crate::features::project_picker;
 use crate::keymap;
 
 pub(crate) struct Workspace {
@@ -137,6 +138,19 @@ impl Workspace {
             .toggle_panel(PanelId::KeyboardShortcuts);
         window.refresh();
     }
+
+    fn handle_toggle_project_picker(
+        &mut self,
+        _: &project_picker::ToggleProjectPicker,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.top_bar.update(cx, |bar, cx| {
+            bar.project_picker.update(cx, |picker, cx| {
+                picker.toggle(window, cx);
+            });
+        });
+    }
 }
 
 use crate::theme::{color, typography};
@@ -204,6 +218,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_toggle_terminal))
             .on_action(cx.listener(Self::handle_toggle_debug))
             .on_action(cx.listener(Self::handle_toggle_keyboard_shortcuts))
+            .on_action(cx.listener(Self::handle_toggle_project_picker))
             // 拖拽分隔线时：鼠标移动 → 更新 dock 尺寸
             .on_mouse_move(move |event, window, _cx| {
                 let mut ctrl = layout_clone1.borrow_mut();

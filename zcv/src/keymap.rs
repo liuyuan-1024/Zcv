@@ -9,7 +9,7 @@ use gpui::KeyBinding;
 use serde::Deserialize;
 
 use crate::editor::editable::{Copy, Cut, Paste, Redo, Undo};
-use crate::features::project_picker::{OpenLocalProject, TogglePicker};
+use crate::features::project_picker::{OpenLocalProject, ToggleProjectPicker};
 use crate::shared::picker::{PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev};
 use crate::workbench::{
     CloseTab, NextTab, PrevTab, bottom_bar, project_tree, top_bar, window_controls,
@@ -227,7 +227,9 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
         "picker::PickerSelectPrev" => KeyBinding::new(keys, PickerSelectPrev, context),
         "picker::PickerConfirm" => KeyBinding::new(keys, PickerConfirm, context),
         "picker::PickerCancel" => KeyBinding::new(keys, PickerCancel, context),
-        "project_picker::TogglePicker" => KeyBinding::new(keys, TogglePicker, context),
+        "project_picker::ToggleProjectPicker" => {
+            KeyBinding::new(keys, ToggleProjectPicker, context)
+        }
         "project_picker::OpenLocalProject" => KeyBinding::new(keys, OpenLocalProject, context),
         _ => {
             eprintln!("未知 action 名称: {action_name}");

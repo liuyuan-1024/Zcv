@@ -2,58 +2,58 @@
   {
     "context": "Editor",
     "bindings": {
-      "cmd-z": "editor::Undo",
-      "cmd-shift-z": "editor::Redo",
-      "cmd-x": "editor::Cut",
       "cmd-c": "editor::Copy",
-      "cmd-v": "editor::Paste"
+      "cmd-shift-z": "editor::Redo",
+      "cmd-v": "editor::Paste",
+      "cmd-x": "editor::Cut",
+      "cmd-z": "editor::Undo"
+    }
+  },
+  {
+    "context": "ProjectTree",
+    "bindings": {
+      "down": "project_tree::TreeSelectNext",
+      "left": "project_tree::TreeCollapse",
+      "right": "project_tree::TreeExpand",
+      "space": "project_tree::TreeActivate",
+      "up": "project_tree::TreeSelectPrev"
     }
   },
   {
     "context": "Pane",
     "bindings": {
-      "cmd-w": "pane::CloseTab",
+      "cmd-h": "pane::PrevTab",
       "cmd-l": "pane::NextTab",
-      "cmd-h": "pane::PrevTab"
+      "cmd-w": "pane::CloseTab"
     }
   },
   {
     "bindings": {
-      "cmd-q": "window_controls::QuitWindow",
       "cmd-m": "window_controls::MinimizeWindow",
+      "cmd-q": "window_controls::QuitWindow",
       "ctrl-cmd-f": "window_controls::ToggleMaximizeWindow"
     }
   },
   {
     "bindings": {
       "cmd-,": "top_bar::OpenSettings",
-      "cmd-shift-p": "top_bar::OpenProjectPicker",
       "cmd-shift-b": "top_bar::ToggleBranchPicker",
-      "cmd-shift-pull": "top_bar::GitPull",
-      "cmd-shift-enter": "top_bar::GitPush"
+      "cmd-shift-enter": "top_bar::GitPush",
+      "cmd-shift-p": "top_bar::OpenProjectPicker",
+      "cmd-shift-pull": "top_bar::GitPull"
     }
   },
   {
     "bindings": {
-      "cmd-shift-e": "bottom_bar::ToggleProjectTree",
-      "cmd-shift-g": "bottom_bar::ToggleVersionControl",
-      "cmd-shift-o": "bottom_bar::ToggleOutline",
-      "cmd-shift-l": "bottom_bar::ToggleLanguageServer",
-      "cmd-shift-m": "bottom_bar::ToggleDiagnostics",
-      "cmd-shift-f": "bottom_bar::ToggleProjectSearch",
       "cmd-j": "bottom_bar::ToggleTerminal",
       "cmd-shift-d": "bottom_bar::ToggleDebug",
-      "cmd-shift-k": "bottom_bar::ToggleKeyboardShortcuts"
-    }
-  },
-  {
-    "context": "ProjectTree",
-    "bindings": {
-      "up": "project_tree::TreeSelectPrev",
-      "down": "project_tree::TreeSelectNext",
-      "left": "project_tree::TreeCollapse",
-      "right": "project_tree::TreeExpand",
-      "space": "project_tree::TreeActivate"
+      "cmd-shift-e": "bottom_bar::ToggleProjectTree",
+      "cmd-shift-f": "bottom_bar::ToggleProjectSearch",
+      "cmd-shift-g": "bottom_bar::ToggleVersionControl",
+      "cmd-shift-k": "bottom_bar::ToggleKeyboardShortcuts",
+      "cmd-shift-l": "bottom_bar::ToggleLanguageServer",
+      "cmd-shift-m": "bottom_bar::ToggleDiagnostics",
+      "cmd-shift-o": "bottom_bar::ToggleOutline"
     }
   }
 ]

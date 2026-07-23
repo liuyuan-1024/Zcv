@@ -2,59 +2,59 @@
   {
     "context": "Editor",
     "bindings": {
-      "ctrl-z": "editor::Undo",
-      "ctrl-shift-z": "editor::Redo",
-      "ctrl-x": "editor::Cut",
       "ctrl-c": "editor::Copy",
-      "ctrl-v": "editor::Paste"
+      "ctrl-shift-z": "editor::Redo",
+      "ctrl-v": "editor::Paste",
+      "ctrl-x": "editor::Cut",
+      "ctrl-z": "editor::Undo"
+    }
+  },
+  {
+    "context": "ProjectTree",
+    "bindings": {
+      "down": "project_tree::TreeSelectNext",
+      "left": "project_tree::TreeCollapse",
+      "right": "project_tree::TreeExpand",
+      "space": "project_tree::TreeActivate",
+      "up": "project_tree::TreeSelectPrev"
     }
   },
   {
     "context": "Pane",
     "bindings": {
-      "ctrl-w": "layout::CloseTab",
+      "ctrl-shift-tab": "layout::PrevTab",
       "ctrl-tab": "layout::NextTab",
-      "ctrl-shift-tab": "layout::PrevTab"
+      "ctrl-w": "layout::CloseTab"
     }
   },
   {
     "bindings": {
-      "ctrl-q": "window_controls::QuitWindow",
       "ctrl-m": "window_controls::MinimizeWindow",
+      "ctrl-q": "window_controls::QuitWindow",
       "ctrl-shift-m": "window_controls::ToggleMaximizeWindow"
     }
   },
   {
     "bindings": {
       "ctrl-,": "top_bar::OpenSettings",
-      "ctrl-shift-p": "top_bar::OpenProjectPicker",
       "ctrl-shift-b": "top_bar::ToggleBranchPicker",
-      "ctrl-shift-r": "top_bar::GitFetch",
+      "ctrl-shift-enter": "top_bar::GitPush",
+      "ctrl-shift-p": "top_bar::OpenProjectPicker",
       "ctrl-shift-pull": "top_bar::GitPull",
-      "ctrl-shift-enter": "top_bar::GitPush"
+      "ctrl-shift-r": "top_bar::GitFetch"
     }
   },
   {
     "bindings": {
-      "ctrl-shift-e": "bottom_bar::ToggleProjectTree",
-      "ctrl-shift-g": "bottom_bar::ToggleVersionControl",
-      "ctrl-shift-o": "bottom_bar::ToggleOutline",
-      "ctrl-shift-l": "bottom_bar::ToggleLanguageServer",
-      "ctrl-shift-x": "bottom_bar::ToggleDiagnostics",
-      "ctrl-shift-f": "bottom_bar::ToggleProjectSearch",
       "ctrl-j": "bottom_bar::ToggleTerminal",
       "ctrl-shift-d": "bottom_bar::ToggleDebug",
-      "ctrl-shift-k": "bottom_bar::ToggleKeyboardShortcuts"
-    }
-  },
-  {
-    "context": "ProjectTree",
-    "bindings": {
-      "up": "project_tree::TreeSelectPrev",
-      "down": "project_tree::TreeSelectNext",
-      "left": "project_tree::TreeCollapse",
-      "right": "project_tree::TreeExpand",
-      "space": "project_tree::TreeActivate"
+      "ctrl-shift-e": "bottom_bar::ToggleProjectTree",
+      "ctrl-shift-f": "bottom_bar::ToggleProjectSearch",
+      "ctrl-shift-g": "bottom_bar::ToggleVersionControl",
+      "ctrl-shift-k": "bottom_bar::ToggleKeyboardShortcuts",
+      "ctrl-shift-l": "bottom_bar::ToggleLanguageServer",
+      "ctrl-shift-o": "bottom_bar::ToggleOutline",
+      "ctrl-shift-x": "bottom_bar::ToggleDiagnostics"
     }
   }
 ]

@@ -1,84 +1,33 @@
 //! TopBar —— 窗口级顶部外壳。
 
-use gpui::{AnyElement, Context, Corner, Div, Window, actions, div, prelude::*};
+use gpui::{AnyElement, Context, Div, Entity, Window, actions, div, prelude::*};
 
 use super::frame::{BarEdge, bar_frame};
 use super::window_controls;
-use crate::features::{branch_picker, project_picker};
+use crate::features::project_picker::ProjectPicker;
 use crate::shared::Glyph;
-use crate::surface::{
-    AnchorRegistry, SurfaceAnchor, SurfaceId, SurfaceManager, anchor_from_bounds, track_anchor,
-};
-use crate::theme::color;
 
 actions!(
     top_bar,
-    [
-        OpenSettings,
-        OpenProjectPicker,
-        ToggleBranchPicker,
-        GitFetch,
-        GitPull,
-        GitPush,
-    ]
+    [OpenProjectPicker, OpenSettings, GitFetch, GitPull, GitPush,]
 );
 
-pub(crate) fn handle_open_settings(_: &OpenSettings, _: &mut Window, _: &mut gpui::App) {
-    println!("设置");
+pub(crate) struct TopBar {
+    pub(crate) project_picker: Entity<ProjectPicker>,
 }
-pub(crate) fn handle_open_project_picker(
-    _: &OpenProjectPicker,
-    window: &mut Window,
-    cx: &mut gpui::App,
-) {
-    let anchor = cx
-        .try_global::<AnchorRegistry>()
-        .and_then(|reg| reg.resolve(window, &"top-bar.project-picker".into()))
-        .map(|bounds| anchor_from_bounds(bounds, Corner::TopLeft))
-        .unwrap_or(SurfaceAnchor::Center);
-    project_picker::open(anchor, window, cx);
-}
-pub(crate) fn handle_toggle_branch_picker(
-    _: &ToggleBranchPicker,
-    window: &mut Window,
-    cx: &mut gpui::App,
-) {
-    let anchor = cx
-        .try_global::<AnchorRegistry>()
-        .and_then(|reg| reg.resolve(window, &"top-bar.branch".into()))
-        .map(|bounds| anchor_from_bounds(bounds, Corner::TopLeft))
-        .unwrap_or(SurfaceAnchor::Center);
-    branch_picker::open(anchor, window, cx);
-}
-pub(crate) fn handle_git_fetch(_: &GitFetch, _: &mut Window, _: &mut gpui::App) {
-    println!("fetch");
-}
-pub(crate) fn handle_git_pull(_: &GitPull, _: &mut Window, _: &mut gpui::App) {
-    println!("pull");
-}
-pub(crate) fn handle_git_push(_: &GitPush, _: &mut Window, _: &mut gpui::App) {
-    println!("push");
-}
-
-pub(crate) struct TopBar;
 
 impl TopBar {
-    pub(crate) fn new(_cx: &mut gpui::Context<Self>) -> Self {
-        Self
+    pub(crate) fn new(cx: &mut gpui::Context<Self>) -> Self {
+        let project_picker = cx.new(ProjectPicker::new);
+        Self { project_picker }
     }
 }
 
 impl gpui::Render for TopBar {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        let is_active = |id: SurfaceId| -> bool {
-            cx.try_global::<SurfaceManager>()
-                .map(|m| m.is_active(id))
-                .unwrap_or(false)
-        };
-
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
         bar_frame(BarEdge::Top)
             .id("top-bar")
-            .child(cluster(leading_slots(window, &is_active)))
+            .child(cluster(leading_slots(window, &self.project_picker)))
             .child(drag_spacer())
             .child(cluster(trailing_slots()))
     }
@@ -92,59 +41,36 @@ fn drag_spacer() -> Div {
     div().flex_1().h_full()
 }
 
-fn leading_slots(window: &Window, is_active: &dyn Fn(SurfaceId) -> bool) -> Vec<AnyElement> {
+fn leading_slots(window: &Window, project_picker: &Entity<ProjectPicker>) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();
 
     // 窗口控制
     out.push(window_controls::render(window).into_any_element());
 
-    // 项目选择器 + 分支 + Git 操作
+    // 项目选择器
+    out.push(project_picker.clone().into_any_element());
+    // Git 分支
     out.push(
-        track_anchor(
-            "top-bar.project-picker",
-            Glyph::text("top-bar.project-picker", "打开项目")
-                .label("项目选择器")
-                .color(if is_active(SurfaceId::ProjectPicker) {
-                    color::glyph_active()
-                } else {
-                    color::glyph_default()
-                })
-                .on_click(|window, cx| {
-                    window.dispatch_action(Box::new(OpenProjectPicker), cx);
-                })
-                .into_any_element(),
-        )
-        .into_any_element(),
+        Glyph::icon_text("top-bar.branch", "icons/panels/version_control.svg", "main")
+            .label("分支")
+            .on_click(|_, _| println!("点击分支"))
+            .into_any_element(),
     );
-    out.push(
-        track_anchor(
-            "top-bar.branch",
-            Glyph::icon_text("top-bar.branch", "icons/panels/version_control.svg", "main")
-                .label("分支")
-                .color(if is_active(SurfaceId::BranchPicker) {
-                    color::glyph_active()
-                } else {
-                    color::glyph_default()
-                })
-                .on_click(|window, cx| {
-                    window.dispatch_action(Box::new(ToggleBranchPicker), cx);
-                })
-                .into_any_element(),
-        )
-        .into_any_element(),
-    );
+    // Git fetch
     out.push(
         Glyph::icon("top-bar.git-fetch", "icons/actions/arrow_circle.svg")
             .label("fetch")
             .on_click(|_, _| println!("点击 fetch"))
             .into_any_element(),
     );
+    // Git pull
     out.push(
         Glyph::icon_text("top-bar.git-pull", "icons/actions/arrow_down.svg", "0")
             .label("pull")
             .on_click(|_, _| println!("点击 pull"))
             .into_any_element(),
     );
+    // Git push
     out.push(
         Glyph::icon_text("top-bar.git-push", "icons/actions/arrow_up.svg", "0")
             .label("push")

@@ -9,6 +9,7 @@ use gpui::KeyBinding;
 use serde::Deserialize;
 
 use crate::editor::editable::{Copy, Cut, Paste, Redo, Undo};
+use crate::shared::picker::{PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev};
 use crate::workbench::{
     CloseTab, NextTab, PrevTab, bottom_bar, project_tree, top_bar, window_controls,
 };
@@ -221,6 +222,11 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
         "bottom_bar::ToggleTerminal" => bind!(bottom_bar::ToggleTerminal),
         "bottom_bar::ToggleDebug" => bind!(bottom_bar::ToggleDebug),
         "bottom_bar::ToggleKeyboardShortcuts" => bind!(bottom_bar::ToggleKeyboardShortcuts),
+        // picker
+        "picker::PickerSelectNext" => KeyBinding::new(keys, PickerSelectNext, context),
+        "picker::PickerSelectPrev" => KeyBinding::new(keys, PickerSelectPrev, context),
+        "picker::PickerConfirm" => KeyBinding::new(keys, PickerConfirm, context),
+        "picker::PickerCancel" => KeyBinding::new(keys, PickerCancel, context),
         _ => {
             eprintln!("未知 action 名称: {action_name}");
             return None;

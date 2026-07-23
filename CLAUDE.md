@@ -2,7 +2,7 @@
 
 > 本文记录全局 agent 工作约定、验证命令和代码风格。项目结构与边界见 `agents.md`。
 
-修改 zcv 模块时，请先阅读 zcv/docs/下的所有文档规范。
+修改 zcv 模块时，请先阅读 zcv/docs/下的所有文档规范。同时查阅**[zed编辑器](https://github.com/zed-industries/zed)**的源码，看看zed是如何实现的，参考zed的实现方式，甚至是直接照搬zed的实现方式。
 
 ## 称呼
 

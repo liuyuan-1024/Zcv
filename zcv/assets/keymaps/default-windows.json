@@ -28,6 +28,15 @@
   },
   {
     "bindings": {
+      "up": "picker::PickerSelectPrev",
+      "down": "picker::PickerSelectNext",
+      "enter": "picker::PickerConfirm",
+      "escape": "picker::PickerCancel"
+    },
+    "context": "Picker"
+  },
+  {
+    "bindings": {
       "ctrl-j": "bottom_bar::ToggleTerminal",
       "ctrl-shift-d": "bottom_bar::ToggleDebug",
       "ctrl-shift-e": "bottom_bar::ToggleProjectTree",

@@ -29,6 +29,15 @@
   },
   {
     "bindings": {
+      "up": "picker::PickerSelectPrev",
+      "down": "picker::PickerSelectNext",
+      "enter": "picker::PickerConfirm",
+      "escape": "picker::PickerCancel"
+    },
+    "context": "Picker"
+  },
+  {
+    "bindings": {
       "ctrl-m": "window_controls::MinimizeWindow",
       "ctrl-q": "window_controls::QuitWindow",
       "ctrl-shift-m": "window_controls::ToggleMaximizeWindow"

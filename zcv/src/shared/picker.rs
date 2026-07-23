@@ -1,170 +1,227 @@
-//! Picker —— 通用搜索-选择器。
+//! Picker —— 通用搜索-选择器 Entity。
 //!
-//! `render_picker` 只负责三个区域的纵向堆叠，不介入各区域内部样式。
-//! 搜索框、条目列表、footer 各自独立实现自己的样式。
+//! 参考 zed `crates/picker/src/picker.rs` 架构：
+//! - `Picker<D: PickerDelegate>` 是 gpui Entity，自管生命周期
+//! - 内嵌 `EditableText` 作为搜索框（后续替换为 Editor）
+//! - 搜索过滤、键盘导航、确认/取消均由 Picker 内部处理
+//! - 调用方只需要实现 `PickerDelegate` 并提供数据
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{AnyElement, App, Pixels, Window, div, prelude::*, px};
+use gpui::{
+    AnyElement, App, Context, Entity, FocusHandle, Pixels, Render, SharedString, Window, actions,
+    div, prelude::*, px,
+};
 
-use crate::theme::{color, radius, space, typography};
+use crate::editor::EditableText;
+use crate::theme::{color, space};
 
-/// Picker 数据源 trait。
-pub(crate) trait PickerDelegate {
-    fn placeholder(&self) -> &str;
-    fn query(&self) -> &str;
-    fn set_query(&mut self, query: &str);
-    fn item_count(&self) -> usize;
+actions!(
+    picker,
+    [
+        PickerSelectNext,
+        PickerSelectPrev,
+        PickerConfirm,
+        PickerCancel
+    ]
+);
+
+// ═══ PickerDelegate ═════════════════════════════════════════════
+
+/// Picker 数据源接口。
+///
+/// 调用方实现此 trait 提供数据、匹配逻辑和行渲染。
+pub trait PickerDelegate: 'static {
+    fn match_count(&self) -> usize;
     fn selected_index(&self) -> usize;
-    fn move_selection(&mut self, delta: isize);
-    fn confirm(&self, window: &mut Window, cx: &mut App);
-    fn render_item(&self, index: usize, is_selected: bool) -> AnyElement;
-    fn render_footer(&self) -> Option<AnyElement> {
+    fn set_selected_index(&mut self, ix: usize);
+    fn update_matches(&mut self, query: String);
+    fn confirm(&mut self, window: &mut Window, cx: &mut App);
+    fn dismissed(&mut self);
+    fn render_match(&self, ix: usize, selected: bool) -> AnyElement;
+
+    fn placeholder_text(&self) -> &str {
+        "搜索..."
+    }
+
+    fn no_matches_text(&self) -> Option<SharedString> {
+        Some("无匹配".into())
+    }
+
+    fn render_header(&self) -> Option<AnyElement> {
+        None
+    }
+
+    fn render_footer(&self, _window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
         None
     }
 }
 
-/// 渲染完整的 Picker Surface 内容。
-///
-/// 三个区域各自维护自己的样式：
-/// - `search_box`：调用方用 `picker_search_box()` 包裹
-/// - 条目列表：Picker 内部用 `picker_row()` 渲染
-/// - footer：调用方在 `render_footer()` 中用 `picker_footer()` 包裹
-pub(crate) fn render_picker<D: PickerDelegate + 'static>(
+// ═══ Picker Entity ══════════════════════════════════════════════
+
+pub struct Picker<D: PickerDelegate> {
+    delegate: D,
+    editor: Entity<EditableText>,
+    focus_handle: FocusHandle,
     width: Pixels,
-    delegate: Rc<RefCell<D>>,
-    search_box: impl IntoElement,
-) -> AnyElement {
-    let (count, selected, footer) = {
-        let d = delegate.borrow();
-        (d.item_count(), d.selected_index(), d.render_footer())
-    };
-
-    let items: Vec<AnyElement> = {
-        let d = delegate.borrow();
-        (0..count)
-            .map(|i| d.render_item(i, i == selected))
-            .collect()
-    };
-
-    div()
-        .w(width)
-        .rounded(radius::R4)
-        .border_1()
-        .border_color(color::current().gray.s[4])
-        .bg(color::current().gray.s[2])
-        .overflow_hidden()
-        .on_key_down({
-            let delegate = Rc::clone(&delegate);
-            move |event, window, cx| match event.keystroke.key.as_str() {
-                "up" => {
-                    delegate.borrow_mut().move_selection(-1);
-                    window.refresh();
-                }
-                "down" => {
-                    delegate.borrow_mut().move_selection(1);
-                    window.refresh();
-                }
-                "enter" => {
-                    let d = delegate.borrow();
-                    if d.item_count() > 0 {
-                        d.confirm(window, cx);
-                    }
-                }
-                _ => {}
-            }
-        })
-        .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
-            cx.stop_propagation()
-        })
-        // 三个区域各自独立
-        .child(search_box)
-        .child(picker_list_view(items))
-        .when_some(footer, |container, f| container.child(f))
-        .into_any_element()
+    pending_query: Rc<RefCell<String>>,
+    on_dismiss: Option<Box<dyn Fn(&mut Window, &mut App)>>,
 }
 
-// ═══ 区域容器辅助 ═════════════════════════════════════════
+impl<D: PickerDelegate> Picker<D> {
+    pub fn new(delegate: D, width: Pixels, cx: &mut Context<Self>) -> Self {
+        let focus = cx.focus_handle();
+        let editor = cx.new(|cx| EditableText::new("picker-search", cx));
+        Self {
+            delegate,
+            editor,
+            focus_handle: focus,
+            width,
+            pending_query: Rc::new(RefCell::new(String::new())),
+            on_dismiss: None,
+        }
+    }
 
-/// 搜索框容器：带底部边框和间距。
-pub(crate) fn picker_search_box(content: impl IntoElement) -> impl IntoElement {
+    /// Entity 创建后调用，连接编辑器输入。
+    pub fn init(&mut self, cx: &mut Context<Self>) {
+        let pending = self.pending_query.clone();
+        self.editor.update(cx, |editor, _cx| {
+            editor.set_on_change(Box::new(
+                move |text: &str, window: &mut Window, _app: &mut App| {
+                    *pending.borrow_mut() = text.to_string();
+                    window.refresh();
+                },
+            ));
+        });
+    }
+
+    /// 设置关闭回调（由父 Entity 调用，例如关闭浮层）。
+    pub fn set_on_dismiss(&mut self, f: Box<dyn Fn(&mut Window, &mut App)>) {
+        self.on_dismiss = Some(f);
+    }
+
+    pub fn delegate(&self) -> &D {
+        &self.delegate
+    }
+
+    pub fn delegate_mut(&mut self) -> &mut D {
+        &mut self.delegate
+    }
+
+    pub fn editor(&self) -> &Entity<EditableText> {
+        &self.editor
+    }
+
+    /// 处理挂起的查询。
+    fn flush_pending_query(&mut self) {
+        let query = self.pending_query.borrow_mut();
+        if !query.is_empty() {
+            let q = query.clone();
+            drop(query);
+            self.delegate.update_matches(q);
+            *self.pending_query.borrow_mut() = String::new();
+        }
+    }
+
+    // ══ 内部：action handler ════════════════════════════════════
+
+    fn select_next(&mut self, _: &PickerSelectNext, _: &mut Window, cx: &mut Context<Self>) {
+        let count = self.delegate.match_count();
+        if count == 0 {
+            return;
+        }
+        let next = (self.delegate.selected_index() + 1) % count;
+        self.delegate.set_selected_index(next);
+        cx.notify();
+    }
+
+    fn select_prev(&mut self, _: &PickerSelectPrev, _: &mut Window, cx: &mut Context<Self>) {
+        let count = self.delegate.match_count();
+        if count == 0 {
+            return;
+        }
+        let prev = (self.delegate.selected_index() + count - 1) % count;
+        self.delegate.set_selected_index(prev);
+        cx.notify();
+    }
+
+    fn confirm(&mut self, _: &PickerConfirm, window: &mut Window, cx: &mut Context<Self>) {
+        self.delegate.confirm(window, cx);
+        cx.notify();
+    }
+
+    fn cancel(&mut self, _: &PickerCancel, window: &mut Window, cx: &mut Context<Self>) {
+        self.delegate.dismissed();
+        if let Some(ref on_dismiss) = self.on_dismiss {
+            on_dismiss(window, cx);
+        }
+    }
+}
+
+impl<D: PickerDelegate> Render for Picker<D> {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 先消费挂起的查询
+        self.flush_pending_query();
+
+        let count = self.delegate.match_count();
+
+        // 无匹配提示
+        let no_match = (count == 0)
+            .then(|| self.delegate.no_matches_text())
+            .flatten()
+            .map(|text| {
+                div()
+                    .text_center()
+                    .text_color(color::current().gray.s[5])
+                    .child(text)
+            });
+
+        // 列表项（delegate 通过 ListItem 返回完整行）
+        let items = (0..count)
+            .map(|i| {
+                self.delegate
+                    .render_match(i, i == self.delegate.selected_index())
+            })
+            .collect::<Vec<AnyElement>>();
+
+        // 基础容器（视觉外壳由父组件提供）
+        let root = div()
+            .track_focus(&self.focus_handle)
+            .key_context("Picker")
+            .w(self.width)
+            .overflow_hidden()
+            .on_action(cx.listener(Self::select_next))
+            .on_action(cx.listener(Self::select_prev))
+            .on_action(cx.listener(Self::confirm))
+            .on_action(cx.listener(Self::cancel));
+
+        root.child(picker_search_box(self.editor.clone()))
+            .when_some(self.delegate.render_header(), |el, h| el.child(h))
+            .when_some(no_match, |el, n| el.child(n))
+            .children(items)
+            .when_some(self.delegate.render_footer(_window, cx), |el, f| {
+                el.child(f)
+            })
+    }
+}
+
+/// 搜索框容器：带回顶部边框和间距。
+pub fn picker_search_box(content: impl IntoElement) -> impl IntoElement {
     div()
         .w_full()
         .flex()
+        .flex_none()
         .items_center()
-        .px(space::S6)
-        .h(px(32.0))
+        .overflow_hidden()
+        .px(space::S4)
+        .h(px(27.0))
         .border_b_1()
         .border_color(color::current().gray.s[4])
         .child(content)
 }
 
-/// 列表视图容器：给项目列表提供垂直间距。
-pub(crate) fn picker_list_view(items: Vec<AnyElement>) -> impl IntoElement {
-    div().flex().flex_col().py(space::S6).children(items)
-}
-
-/// Footer 容器：带回顶部边框线和间距。
-pub(crate) fn picker_footer(items: Vec<AnyElement>) -> impl IntoElement {
-    div()
-        .child(picker_divider())
-        .child(div().pt(space::S2).pb(space::S2).children(items))
-}
-
-// ═══ 标准行渲染辅助 ═══════════════════════════════════════
-
-/// 标准 Picker 行容器，含 hover / 选中边框 / 间距 / 圆角。
-/// 调用方只需嵌入行内内容。
-pub(crate) fn picker_row(content: impl IntoElement, is_selected: bool) -> AnyElement {
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .px(space::S6)
-        .py(space::S2)
-        .rounded(radius::R2)
-        .border_1()
-        .border_color(if is_selected {
-            color::current().blue.s[6]
-        } else {
-            gpui::rgba(0)
-        })
-        .cursor_pointer()
-        .hover(|style| style.bg(color::current().gray.s[3]))
-        .child(content)
-        .into_any_element()
-}
-
-/// 标准 Picker footer 行（与列表项同款样式，无边框）。
-pub(crate) fn picker_footer_row(content: impl IntoElement) -> AnyElement {
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .px(space::S6)
-        .py(space::S2)
-        .cursor_pointer()
-        .hover(|style| style.bg(color::current().gray.s[3]))
-        .text_color(color::current().gray.s[8])
-        .child(content)
-        .into_any_element()
-}
-
-/// 标准两行标签：主标题 + 灰色副标题（如路径、描述）。
-pub(crate) fn picker_two_line(
-    title: impl IntoElement,
-    subtitle: impl IntoElement,
-) -> impl IntoElement {
-    div().flex_1().child(title).child(
-        div()
-            .text_color(color::current().gray.s[5])
-            .text_size(typography::ui())
-            .child(subtitle),
-    )
-}
-
 /// 分隔线。
-pub(crate) fn picker_divider() -> impl IntoElement {
+pub fn picker_divider() -> impl IntoElement {
     div().w_full().h(px(1.0)).bg(color::current().gray.s[4])
 }

@@ -4,6 +4,7 @@ pub(crate) mod assets;
 pub(crate) mod context_menu;
 mod glyph;
 mod icon;
+pub(crate) mod list_item;
 pub(crate) mod picker;
 pub(crate) mod tree;
 

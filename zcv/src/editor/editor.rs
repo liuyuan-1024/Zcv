@@ -6,6 +6,7 @@ use std::rc::Rc;
 use gpui::{Context, FocusHandle};
 use zcv_engine::{Buffer, BufferConfig, SelectionSet};
 
+use super::display_map::DisplayMap;
 use super::scroll::ScrollManager;
 use super::selection::SelectionHistory;
 
@@ -21,6 +22,7 @@ pub(crate) enum EditorMode {
 
 pub(crate) struct Editor {
     buffer: Rc<RefCell<Buffer>>,
+    display_map: DisplayMap,
     mode: EditorMode,
     selections: SelectionSet,
     selection_history: SelectionHistory,
@@ -61,8 +63,10 @@ impl Editor {
     }
 
     fn new(buffer: Rc<RefCell<Buffer>>, mode: EditorMode, cx: &mut Context<Self>) -> Self {
+        let display_map = DisplayMap::new(buffer.borrow().snapshot());
         Self {
             buffer,
+            display_map,
             mode,
             selections: SelectionSet::default(),
             selection_history: SelectionHistory::default(),
@@ -75,9 +79,10 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use gpui::{AppContext, TestAppContext, point, px};
-    use zcv_engine::{BufferConfig, ByteOffset, SelectionSet, TransactionId};
+    use zcv_engine::{BufferConfig, ByteOffset, DisplayColumn, SelectionSet, TransactionId};
 
     use super::*;
+    use crate::editor::display_map::{DisplayPoint, DisplayRow};
 
     #[gpui::test]
     fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext) {
@@ -90,6 +95,9 @@ mod tests {
 
         cx.update_entity(&first, |editor, _| {
             editor.selections = SelectionSet::caret(ByteOffset::new(1));
+            editor
+                .scroll_manager
+                .set_anchor(DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(2)));
             editor.scroll_manager.set_offset(point(px(4.0), px(12.0)));
             editor.selection_history.record_transaction(
                 TransactionId::new(1),
@@ -108,6 +116,7 @@ mod tests {
             assert!(Rc::ptr_eq(&editor.buffer, &buffer));
             assert_eq!(editor.buffer.borrow().len_bytes(), ByteOffset::new(4));
             assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::ZERO));
+            assert_eq!(editor.scroll_manager.anchor(), DisplayPoint::ZERO);
             assert_eq!(editor.scroll_manager.offset(), point(px(0.0), px(0.0)));
             assert!(
                 editor
@@ -118,6 +127,10 @@ mod tests {
         });
 
         cx.read_entity(&first, |editor, _| {
+            assert_eq!(
+                editor.scroll_manager.anchor(),
+                DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(2))
+            );
             let history = editor
                 .selection_history
                 .transaction(TransactionId::new(1))
@@ -135,6 +148,10 @@ mod tests {
         let single_buffer = cx.read_entity(&single_line, |editor, _| {
             assert_eq!(editor.mode, EditorMode::SingleLine);
             assert_eq!(editor.selections, SelectionSet::default());
+            assert_eq!(
+                editor.display_map.version(),
+                editor.buffer.borrow().version()
+            );
             let _focus = editor.focus_handle();
             Rc::clone(&editor.buffer)
         });

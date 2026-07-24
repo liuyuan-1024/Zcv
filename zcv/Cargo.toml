@@ -6,6 +6,7 @@ description = "zcv —— 新一代 GPUI 桌面编辑器"
 
 [dependencies]
 gpui.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

@@ -53,7 +53,6 @@ impl Workspace {
         });
 
         let top_bar = cx.new(|cx| TopBar::new(on_project_selected, cx));
-        let bottom_bar = cx.new(BottomBar::new);
 
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
@@ -62,6 +61,9 @@ impl Workspace {
             initial_pane,
         )));
         cx.set_global(LayoutRef(Rc::downgrade(&layout)));
+
+        // BottomBar 需要 LayoutRef 已就绪才能跟踪活跃编辑器
+        let bottom_bar = cx.new(BottomBar::new);
 
         let project_tree = cx.new(|cx| ProjectTree::new(root, cx));
 

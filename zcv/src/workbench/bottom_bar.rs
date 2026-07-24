@@ -2,12 +2,17 @@
 //!
 //! action handler 通过 GPUI 全局状态 `LayoutRef` 访问布局控制器。
 
-use gpui::{AnyElement, App, Context, Div, Window, actions, div, prelude::*};
+use gpui::{
+    AnyElement, App, Context, Div, Entity, Subscription, WeakEntity, Window, actions, div,
+    prelude::*,
+};
 
+use crate::editor::editor::Editor;
 use crate::theme::color;
 use crate::ui::glyph::Glyph;
 use crate::workbench::dock::LayoutRef;
 use crate::workbench::dock::PanelId;
+use crate::workbench::pane::Pane;
 
 actions!(
     bottom_bar,
@@ -26,11 +31,113 @@ actions!(
 
 // ── BottomBar Entity ───────────────────────────────────────────────
 
-pub(crate) struct BottomBar;
+pub(crate) struct BottomBar {
+    cursor_text: String,
+    language: String,
+    file_path: Option<std::path::PathBuf>,
+    active_editor: Option<WeakEntity<Editor>>,
+    _pane_subscription: Option<Subscription>,
+    _editor_subscription: Option<Subscription>,
+}
 
 impl BottomBar {
-    pub(crate) fn new(_cx: &mut Context<Self>) -> Self {
-        Self
+    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+        let mut bar = Self {
+            cursor_text: String::new(),
+            language: String::new(),
+            file_path: None,
+            active_editor: None,
+            _pane_subscription: None,
+            _editor_subscription: None,
+        };
+        bar.follow_active_editor(cx);
+        bar
+    }
+
+    /// 通过 LayoutRef 找到焦点 Pane 和活跃 Editor，订阅变化。
+    fn follow_active_editor(&mut self, cx: &mut Context<Self>) {
+        let pane = cx
+            .try_global::<LayoutRef>()
+            .and_then(|r| r.0.upgrade())
+            .and_then(|ctrl| ctrl.borrow().focus_pane.clone());
+
+        // 订阅 Pane 切换 tab
+        self._pane_subscription = pane.as_ref().map(|pane| {
+            cx.observe(pane, |this, pane, cx| {
+                this.on_pane_changed(pane, cx);
+            })
+        });
+
+        if let Some(pane) = &pane {
+            self.on_pane_changed(pane.clone(), cx);
+        }
+    }
+
+    fn on_pane_changed(&mut self, pane: Entity<Pane>, cx: &mut Context<Self>) {
+        let (editor, path) = {
+            let pane = pane.read(cx);
+            (pane.active_editor(), pane.active_file().map(|(_, p)| p))
+        };
+        self.file_path = path;
+        self.watch_editor(editor.as_ref(), cx);
+    }
+
+    fn watch_editor(&mut self, editor: Option<&Entity<Editor>>, cx: &mut Context<Self>) {
+        // 取消旧订阅
+        self._editor_subscription = None;
+        self.active_editor = editor.map(|e| e.downgrade());
+
+        // 订阅新 Editor 的变更（选区移动、编辑等都会触发 notify）
+        if let Some(editor) = editor {
+            self._editor_subscription = Some(cx.observe(editor, |this, editor, cx| {
+                this.sync_from_editor(Some(&editor), cx);
+            }));
+        }
+
+        self.sync_from_editor(editor, cx);
+    }
+
+    fn sync_from_editor(&mut self, editor: Option<&Entity<Editor>>, cx: &mut Context<Self>) {
+        match editor {
+            Some(editor) => {
+                let editor_ref = editor.read(cx);
+                self.cursor_text = editor_ref.cursor_text();
+
+                // 语言检测：优先用文件路径，path_suffixes 未命中时读 Buffer 首行查 shebang
+                self.language = self
+                    .file_path
+                    .as_deref()
+                    .and_then(|path| {
+                        let first_line = editor_ref
+                            .render_snapshot()
+                            .slice_byte_range(
+                                zcv_engine::ByteOffset::ZERO,
+                                zcv_engine::ByteOffset::new(256.min(
+                                    editor_ref.render_snapshot().len_bytes().get(),
+                                )),
+                            )
+                            .ok()
+                            .map(|s| {
+                                s.as_str()
+                                    .lines()
+                                    .next()
+                                    .unwrap_or("")
+                                    .to_owned()
+                            });
+                        crate::available_languages::language_for_file(
+                            path,
+                            first_line.as_deref(),
+                        )
+                    })
+                    .map(|name| name.to_owned())
+                    .unwrap_or_default();
+            }
+            None => {
+                self.cursor_text = String::new();
+                self.language = String::new();
+            }
+        }
+        cx.notify();
     }
 }
 
@@ -69,7 +176,12 @@ impl gpui::Render for BottomBar {
         bar_frame()
             .id("bottom-bar")
             .child(leading_region(&is_active, cx))
-            .child(trailing_region(&is_active, cx))
+            .child(trailing_region(
+                &is_active,
+                cx,
+                &self.cursor_text,
+                &self.language,
+            ))
     }
 }
 
@@ -94,8 +206,13 @@ fn leading_region(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Div {
     region(leading_slots(is_active, cx), true)
 }
 
-fn trailing_region(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Div {
-    region(trailing_slots(is_active, cx), false)
+fn trailing_region(
+    is_active: &dyn Fn(PanelId) -> bool,
+    cx: &App,
+    cursor_text: &str,
+    language: &str,
+) -> Div {
+    region(trailing_slots(is_active, cx, cursor_text, language), false)
 }
 
 fn leading_slots(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Vec<AnyElement> {
@@ -162,13 +279,18 @@ fn leading_slots(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Vec<AnyElemen
     ])
 }
 
-fn trailing_slots(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Vec<AnyElement> {
+fn trailing_slots(
+    is_active: &dyn Fn(PanelId) -> bool,
+    cx: &App,
+    cursor_text: &str,
+    language: &str,
+) -> Vec<AnyElement> {
     join_groups(vec![
         vec![
-            Glyph::text("bottom-bar.cursor", "1:1")
+            Glyph::text("bottom-bar.cursor", cursor_text.to_owned())
                 .label("光标位置")
                 .into_any_element(),
-            Glyph::text("bottom-bar.language", "Rust")
+            Glyph::text("bottom-bar.language", language.to_owned())
                 .label("语言")
                 .into_any_element(),
         ],

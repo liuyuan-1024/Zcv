@@ -272,12 +272,24 @@ impl Editor {
         self.apply_edit_outcome(before_selections, outcome, cx);
     }
 
-    pub(super) fn render_snapshot(&self) -> Snapshot {
+    pub(crate) fn render_snapshot(&self) -> Snapshot {
         self.display_map.snapshot().clone()
     }
 
-    pub(super) fn selections(&self) -> SelectionSet {
+    pub(crate) fn selections(&self) -> SelectionSet {
         self.selections.clone()
+    }
+
+    /// 光标位置的 "行:列" 文本，行和列均从 1 开始计数。
+    pub(crate) fn cursor_text(&self) -> String {
+        let point = self
+            .display_map
+            .snapshot()
+            .byte_to_position(self.selections.primary().head());
+        match point {
+            Ok(p) => format!("{}:{}", p.line().get() + 1, p.column().get() + 1),
+            Err(_) => String::new(),
+        }
     }
 
     pub(super) fn presentation(&self) -> EditorPresentation {

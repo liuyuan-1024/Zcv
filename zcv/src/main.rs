@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod available_languages;
 mod assets;
 mod editor;
 mod keymap;

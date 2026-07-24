@@ -196,9 +196,19 @@ impl Workspace {
     /// 切换到指定目录作为项目根目录。
     fn switch_project(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
         let root = PathBuf::from(path);
+        let label = root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         // 更新项目树
         self.project_tree.update(cx, |tree, cx| {
-            tree.set_root(root, cx);
+            tree.set_root(root.clone(), cx);
+        });
+        // 更新项目选择器显示的名称
+        self.top_bar.update(cx, |bar, cx| {
+            bar.project_picker.update(cx, |picker, _cx| {
+                picker.set_current_label(label);
+            });
         });
         // 持久化到最近项目
         recent_projects::add_to_recent(path);

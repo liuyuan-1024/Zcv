@@ -245,6 +245,11 @@ impl ProjectPicker {
         }
     }
 
+    /// 设置当前项目名称。
+    pub(crate) fn set_current_label(&mut self, label: impl Into<String>) {
+        self.current_label = label.into();
+    }
+
     /// 外部切换（快捷键/按钮等）。
     pub(crate) fn toggle(&mut self, window: &mut Window, cx: &mut App) {
         self.dismiss_flag.set(false);

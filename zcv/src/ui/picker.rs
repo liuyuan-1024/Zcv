@@ -237,8 +237,7 @@ pub fn picker_search_box(
         .flex_none()
         .items_center()
         .overflow_hidden()
-        .px(space::S4)
-        .h(px(27.0))
+        .p(space::S4)
         .border_b_1()
         .border_color(color::current().gray.s[4])
         .when_some(placeholder, |el, placeholder| {

@@ -40,15 +40,18 @@ fn main() {
                         }),
                         ..Default::default()
                     },
-                    |_window, cx| {
+                    |window, cx| {
                         let workspace = cx.new(Workspace::new);
                         #[cfg(debug_assertions)]
                         workspace.update(cx, |workspace, cx| {
-                            workspace.open_development_project(_window, cx);
+                            workspace.open_development_project(window, cx);
                         });
+                        window.focus(&workspace.read(cx).focus);
                         workspace
                     },
                 )
                 .expect("主窗口应能创建");
+
+            cx.activate(true);
         });
 }

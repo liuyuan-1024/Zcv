@@ -835,7 +835,19 @@ impl Render for Editor {
         self.display_map
             .set_snapshot(self.buffer.read(cx).snapshot());
 
-        let line_height = typography::editor_line();
+        // SingleLine / AutoHeight 用于搜索框等 UI 场景，应使用 UI 字号而非编辑器字号
+        let (font, text_size, line_height) = match self.mode {
+            EditorMode::SingleLine | EditorMode::AutoHeight { .. } => (
+                typography::ui_font(),
+                typography::ui(),
+                typography::ui_line(),
+            ),
+            EditorMode::Full => (
+                typography::editor_font(),
+                typography::editor(),
+                typography::editor_line(),
+            ),
+        };
         let visible_lines = match self.mode {
             EditorMode::SingleLine => Some(1),
             EditorMode::AutoHeight {
@@ -867,8 +879,8 @@ impl Render for Editor {
                 })
                 .when(visible_lines.is_none(), |element| element.flex_1().h_full())
                 .overflow_hidden()
-                .font(typography::editor_font())
-                .text_size(typography::editor())
+                .font(font)
+                .text_size(text_size)
                 .line_height(line_height)
                 .text_color(color::current().gray.s[8]),
             cx,

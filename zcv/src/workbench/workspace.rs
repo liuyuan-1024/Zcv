@@ -27,8 +27,8 @@ use crate::workbench::{project_picker, project_picker::OnProjectSelected, window
 actions!(workspace, [Save]);
 
 pub(crate) struct Workspace {
+    pub(crate) focus: FocusHandle,
     layout: Rc<RefCell<LayoutController>>,
-    focus: FocusHandle,
     top_bar: Entity<TopBar>,
     bottom_bar: Entity<BottomBar>,
     project_tree: Entity<ProjectTree>,

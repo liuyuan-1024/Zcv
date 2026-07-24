@@ -144,13 +144,18 @@ pub mod typography {
     pub fn ui() -> Pixels {
         px(ui_size())
     }
+    /// UI 行高（黄金比例），用于搜索框等单行输入场景
+    pub fn ui_line() -> Pixels {
+        px((ui_size() * 1.618_034).round())
+    }
     pub fn editor() -> Pixels {
         px(editor_size())
     }
     pub fn editor_font_size() -> f32 {
         editor_size()
     }
+    /// 编辑器行高（黄金比例），与 Zed 一致：`round(font_size * 1.618034)`
     pub fn editor_line() -> Pixels {
-        px(editor_size() * 1.5)
+        px((editor_size() * 1.618_034).round())
     }
 }

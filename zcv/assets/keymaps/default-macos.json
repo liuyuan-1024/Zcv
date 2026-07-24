@@ -2,11 +2,31 @@
   {
     "context": "Editor",
     "bindings": {
+      "alt-left": "editor::MoveToPreviousWord",
+      "alt-right": "editor::MoveToNextWord",
+      "alt-shift-left": "editor::SelectToPreviousWord",
+      "alt-shift-right": "editor::SelectToNextWord",
+      "backspace": "editor::Backspace",
+      "cmd-a": "editor::SelectAll",
       "cmd-c": "editor::Copy",
+      "cmd-left": "editor::MoveToBeginningOfLine",
+      "cmd-right": "editor::MoveToEndOfLine",
+      "cmd-shift-left": "editor::SelectToBeginningOfLine",
+      "cmd-shift-right": "editor::SelectToEndOfLine",
       "cmd-shift-z": "editor::Redo",
       "cmd-v": "editor::Paste",
       "cmd-x": "editor::Cut",
-      "cmd-z": "editor::Undo"
+      "cmd-z": "editor::Undo",
+      "delete": "editor::Delete",
+      "down": "editor::MoveDown",
+      "enter": "editor::Newline",
+      "left": "editor::MoveLeft",
+      "right": "editor::MoveRight",
+      "up": "editor::MoveUp",
+      "shift-down": "editor::SelectDown",
+      "shift-left": "editor::SelectLeft",
+      "shift-right": "editor::SelectRight",
+      "shift-up": "editor::SelectUp"
     }
   },
   {

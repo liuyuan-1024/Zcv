@@ -6,12 +6,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    Bounds, Context, CursorStyle, EntityInputHandler, FocusHandle, IntoElement, Pixels, Point,
-    Render, Styled, UTF16Selection, Window, div, prelude::*,
+    Bounds, ClipboardItem, Context, CursorStyle, EntityInputHandler, FocusHandle, IntoElement,
+    Pixels, Point, Render, Styled, UTF16Selection, Window, actions, div, prelude::*,
 };
 use zcv_engine::{
-    Buffer, BufferConfig, ByteOffset, Selection, SelectionSet, Snapshot, TextRange,
-    TransactionMetadata, TransactionSource, Utf16Offset,
+    Buffer, BufferConfig, ByteOffset, EditOutcome, EngineResult, Motion, MovementDirection,
+    MovementUnit, Selection, SelectionSet, Snapshot, TextRange, TransactionMetadata,
+    TransactionSource, Utf16Offset,
 };
 
 use super::display_map::{DisplayMap, DisplayPoint};
@@ -19,6 +20,37 @@ use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::ScrollManager;
 use super::selection::SelectionHistory;
 use crate::theme::{color, typography};
+
+actions!(
+    editor,
+    [
+        MoveLeft,
+        MoveRight,
+        MoveUp,
+        MoveDown,
+        MoveToPreviousWord,
+        MoveToNextWord,
+        MoveToBeginningOfLine,
+        MoveToEndOfLine,
+        SelectLeft,
+        SelectRight,
+        SelectUp,
+        SelectDown,
+        SelectToPreviousWord,
+        SelectToNextWord,
+        SelectToBeginningOfLine,
+        SelectToEndOfLine,
+        SelectAll,
+        Backspace,
+        Delete,
+        Newline,
+        Undo,
+        Redo,
+        Cut,
+        Copy,
+        Paste,
+    ]
+);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EditorMode {
@@ -222,10 +254,29 @@ impl Editor {
     pub(super) fn set_caret(&mut self, offset: ByteOffset) {
         self.composition = None;
         self.selections = SelectionSet::caret(offset);
+        self.request_autoscroll();
     }
 
     pub(super) fn set_input_layout(&mut self, layout: EditorInputLayout) {
         self.input_layout = Some(layout);
+    }
+
+    pub(super) fn prepare_scroll_viewport(&mut self, viewport_height: Pixels, line_height: Pixels) {
+        self.scroll_manager.update_viewport(
+            self.display_map.snapshot().line_count(),
+            viewport_height,
+            line_height,
+        );
+    }
+
+    pub(super) fn scroll_by(&mut self, delta: Point<Pixels>, cx: &mut Context<Self>) -> bool {
+        if self.scroll_manager.scroll_by(delta) {
+            self.input_layout = None;
+            cx.notify();
+            true
+        } else {
+            false
+        }
     }
 
     fn new(buffer: Rc<RefCell<Buffer>>, mode: EditorMode, cx: &mut Context<Self>) -> Self {
@@ -285,11 +336,22 @@ impl Editor {
         } else {
             text.to_owned()
         };
-        let outcome = self.buffer.borrow_mut().insert_at_selections(
-            &targets,
-            &text,
-            TransactionMetadata::new(TransactionSource::Programmatic).with_description("输入文本"),
-        );
+        let outcome = {
+            self.buffer.borrow_mut().insert_at_selections(
+                &targets,
+                &text,
+                edit_metadata("输入文本"),
+            )
+        };
+        self.apply_edit_outcome(before_selections, outcome, cx);
+    }
+
+    fn apply_edit_outcome(
+        &mut self,
+        before_selections: SelectionSet,
+        outcome: EngineResult<EditOutcome>,
+        cx: &mut Context<Self>,
+    ) {
         match outcome {
             Ok(outcome) => {
                 if let Some(transaction_id) = outcome.history_transaction_id() {
@@ -302,12 +364,369 @@ impl Editor {
                 self.selections = outcome.into_after_selections();
                 self.display_map
                     .set_snapshot(self.buffer.borrow().snapshot());
+                self.request_autoscroll();
                 self.input_layout = None;
                 cx.notify();
             }
-            Err(error) => eprintln!("Editor 输入事务失败：{error}"),
+            Err(error) => eprintln!("Editor 编辑事务失败：{error}"),
         }
     }
+
+    fn move_selections(
+        &mut self,
+        direction: MovementDirection,
+        motion: impl Into<Motion>,
+        extend: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let outcome =
+            self.buffer
+                .borrow()
+                .move_selections(&self.selections, direction, motion, extend);
+        match outcome {
+            Ok(selections) => {
+                self.composition = None;
+                self.selections = selections;
+                self.request_autoscroll();
+                self.input_layout = None;
+                cx.notify();
+            }
+            Err(error) => eprintln!("Editor 选区移动失败：{error}"),
+        }
+    }
+
+    fn delete(
+        &mut self,
+        direction: MovementDirection,
+        description: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        self.composition = None;
+        let before_selections = self.selections.clone();
+        let outcome = {
+            self.buffer.borrow_mut().delete_at_selections(
+                &before_selections,
+                Some((direction, MovementUnit::Grapheme)),
+                edit_metadata(description),
+            )
+        };
+        self.apply_edit_outcome(before_selections, outcome, cx);
+    }
+
+    fn insert_newline(&mut self, cx: &mut Context<Self>) {
+        if self.mode == EditorMode::SingleLine {
+            cx.propagate();
+            return;
+        }
+        self.replace_text(None, "\n", cx);
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let snapshot = self.buffer.borrow().snapshot();
+        let mut parts = Vec::new();
+        for selection in self.selections.as_slice() {
+            if selection.is_caret() {
+                continue;
+            }
+            parts.push(
+                snapshot
+                    .slice_text(selection.range())
+                    .ok()?
+                    .as_str()
+                    .to_owned(),
+            );
+        }
+        (!parts.is_empty()).then(|| parts.join("\n"))
+    }
+
+    fn undo(&mut self, cx: &mut Context<Self>) {
+        let outcome = { self.buffer.borrow_mut().undo() };
+        match outcome {
+            Ok(Some(outcome)) => {
+                if let Some(selections) = self
+                    .selection_history
+                    .transaction(outcome.transaction_id())
+                    .map(|history| history.undo().clone())
+                {
+                    self.selections = selections;
+                }
+                self.synchronize_after_history_edit(cx);
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("Editor Undo 失败：{error}"),
+        }
+    }
+
+    fn redo(&mut self, cx: &mut Context<Self>) {
+        let outcome = { self.buffer.borrow_mut().redo() };
+        match outcome {
+            Ok(Some(outcome)) => {
+                if let Some(selections) = self
+                    .selection_history
+                    .transaction(outcome.transaction_id())
+                    .map(|history| history.redo().clone())
+                {
+                    self.selections = selections;
+                }
+                self.synchronize_after_history_edit(cx);
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("Editor Redo 失败：{error}"),
+        }
+    }
+
+    fn synchronize_after_history_edit(&mut self, cx: &mut Context<Self>) {
+        self.composition = None;
+        self.display_map
+            .set_snapshot(self.buffer.borrow().snapshot());
+        self.request_autoscroll();
+        self.input_layout = None;
+        cx.notify();
+    }
+
+    fn request_autoscroll(&mut self) {
+        let head = self.selections.primary().head();
+        if let Ok(point) = self.display_map.offset_to_display_point(head) {
+            self.scroll_manager.request_autoscroll(point);
+        }
+    }
+
+    pub(super) fn handle_move_left(
+        &mut self,
+        _: &MoveLeft,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(
+            MovementDirection::Previous,
+            MovementUnit::Grapheme,
+            false,
+            cx,
+        );
+    }
+
+    pub(super) fn handle_move_right(
+        &mut self,
+        _: &MoveRight,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(MovementDirection::Next, MovementUnit::Grapheme, false, cx);
+    }
+
+    pub(super) fn handle_move_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_selections(MovementDirection::Previous, Motion::LineStep, false, cx);
+    }
+
+    pub(super) fn handle_move_down(
+        &mut self,
+        _: &MoveDown,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(MovementDirection::Next, Motion::LineStep, false, cx);
+    }
+
+    pub(super) fn handle_move_to_previous_word(
+        &mut self,
+        _: &MoveToPreviousWord,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(MovementDirection::Previous, MovementUnit::Word, false, cx);
+    }
+
+    pub(super) fn handle_move_to_next_word(
+        &mut self,
+        _: &MoveToNextWord,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(MovementDirection::Next, MovementUnit::Word, false, cx);
+    }
+
+    pub(super) fn handle_move_to_beginning_of_line(
+        &mut self,
+        _: &MoveToBeginningOfLine,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(
+            MovementDirection::Previous,
+            MovementUnit::LineEdge,
+            false,
+            cx,
+        );
+    }
+
+    pub(super) fn handle_move_to_end_of_line(
+        &mut self,
+        _: &MoveToEndOfLine,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(MovementDirection::Next, MovementUnit::LineEdge, false, cx);
+    }
+
+    pub(super) fn handle_select_left(
+        &mut self,
+        _: &SelectLeft,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(
+            MovementDirection::Previous,
+            MovementUnit::Grapheme,
+            true,
+            cx,
+        );
+    }
+
+    pub(super) fn handle_select_right(
+        &mut self,
+        _: &SelectRight,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(MovementDirection::Next, MovementUnit::Grapheme, true, cx);
+    }
+
+    pub(super) fn handle_select_up(
+        &mut self,
+        _: &SelectUp,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(MovementDirection::Previous, Motion::LineStep, true, cx);
+    }
+
+    pub(super) fn handle_select_down(
+        &mut self,
+        _: &SelectDown,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(MovementDirection::Next, Motion::LineStep, true, cx);
+    }
+
+    pub(super) fn handle_select_to_previous_word(
+        &mut self,
+        _: &SelectToPreviousWord,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(MovementDirection::Previous, MovementUnit::Word, true, cx);
+    }
+
+    pub(super) fn handle_select_to_next_word(
+        &mut self,
+        _: &SelectToNextWord,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(MovementDirection::Next, MovementUnit::Word, true, cx);
+    }
+
+    pub(super) fn handle_select_to_beginning_of_line(
+        &mut self,
+        _: &SelectToBeginningOfLine,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(
+            MovementDirection::Previous,
+            MovementUnit::LineEdge,
+            true,
+            cx,
+        );
+    }
+
+    pub(super) fn handle_select_to_end_of_line(
+        &mut self,
+        _: &SelectToEndOfLine,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(MovementDirection::Next, MovementUnit::LineEdge, true, cx);
+    }
+
+    pub(super) fn handle_select_all(
+        &mut self,
+        _: &SelectAll,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let end = self.buffer.borrow().len_bytes();
+        self.composition = None;
+        self.selections = SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, end)]);
+        self.request_autoscroll();
+        self.input_layout = None;
+        cx.notify();
+    }
+
+    pub(super) fn handle_backspace(
+        &mut self,
+        _: &Backspace,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete(MovementDirection::Previous, "向后删除", cx);
+    }
+
+    pub(super) fn handle_delete(&mut self, _: &Delete, _: &mut Window, cx: &mut Context<Self>) {
+        self.delete(MovementDirection::Next, "向前删除", cx);
+    }
+
+    pub(super) fn handle_newline(&mut self, _: &Newline, _: &mut Window, cx: &mut Context<Self>) {
+        self.insert_newline(cx);
+    }
+
+    pub(super) fn handle_undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        self.undo(cx);
+    }
+
+    pub(super) fn handle_redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        self.redo(cx);
+    }
+
+    pub(super) fn handle_copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = self.selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    pub(super) fn handle_cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self.selected_text() else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.composition = None;
+        let before_selections = self.selections.clone();
+        let outcome = {
+            self.buffer.borrow_mut().delete_at_selections(
+                &before_selections,
+                None,
+                edit_metadata("剪切"),
+            )
+        };
+        self.apply_edit_outcome(before_selections, outcome, cx);
+    }
+
+    pub(super) fn handle_paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        let Some(text) = item.text() else {
+            return;
+        };
+        if !text.is_empty() {
+            self.replace_text(None, &text, cx);
+        }
+    }
+}
+
+fn edit_metadata(description: &'static str) -> TransactionMetadata {
+    TransactionMetadata::new(TransactionSource::Programmatic).with_description(description)
 }
 
 impl Render for Editor {
@@ -335,22 +754,25 @@ impl Render for Editor {
             EditorMode::Full => None,
         };
 
-        div()
-            .track_focus(&self.focus)
-            .key_context("Editor")
-            .tab_index(0)
-            .cursor(CursorStyle::IBeam)
-            .w_full()
-            .when_some(visible_lines, |element, lines| {
-                element.h(line_height * lines)
-            })
-            .when(visible_lines.is_none(), |element| element.flex_1().h_full())
-            .overflow_hidden()
-            .font(typography::editor_font())
-            .text_size(typography::editor())
-            .line_height(line_height)
-            .text_color(color::current().gray.s[8])
-            .child(EditorElement::new(cx.entity()))
+        EditorElement::register_actions(
+            div()
+                .track_focus(&self.focus)
+                .key_context("Editor")
+                .tab_index(0)
+                .cursor(CursorStyle::IBeam)
+                .w_full()
+                .when_some(visible_lines, |element, lines| {
+                    element.h(line_height * lines)
+                })
+                .when(visible_lines.is_none(), |element| element.flex_1().h_full())
+                .overflow_hidden()
+                .font(typography::editor_font())
+                .text_size(typography::editor())
+                .line_height(line_height)
+                .text_color(color::current().gray.s[8]),
+            cx,
+        )
+        .child(EditorElement::new(cx.entity()))
     }
 }
 
@@ -495,7 +917,7 @@ fn byte_for_utf16_offset(text: &str, target: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext, Bounds, TestAppContext, point, px};
+    use gpui::{AppContext, Bounds, ScrollDelta, ScrollWheelEvent, TestAppContext, point, px};
     use zcv_engine::{BufferConfig, ByteOffset, DisplayColumn, SelectionSet, TransactionId};
 
     use super::*;
@@ -634,6 +1056,209 @@ mod tests {
                 ByteOffset::new("中😀e\u{301}".len())
             );
             assert!(editor.composition.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn editor_actions_move_extend_delete_and_restore_unicode_selection(cx: &mut TestAppContext) {
+        let buffer = Rc::new(RefCell::new(
+            Buffer::scratch("a😀b".to_owned(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建"),
+        ));
+        let (editor, cx) = cx.add_window_view({
+            let buffer = Rc::clone(&buffer);
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+
+        cx.simulate_click(point(px(0.), px(12.)), gpui::Modifiers::default());
+        cx.dispatch_action(MoveRight);
+        cx.dispatch_action(SelectRight);
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(
+                editor.selections,
+                SelectionSet::new(vec![Selection::new(ByteOffset::new(1), ByteOffset::new(5))])
+            );
+        });
+
+        cx.dispatch_action(Backspace);
+        assert_eq!(buffer_text(&buffer), "ab");
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(1)));
+        });
+
+        cx.dispatch_action(Undo);
+        assert_eq!(buffer_text(&buffer), "a😀b");
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(
+                editor.selections,
+                SelectionSet::new(vec![Selection::new(ByteOffset::new(1), ByteOffset::new(5))])
+            );
+        });
+
+        cx.dispatch_action(Redo);
+        assert_eq!(buffer_text(&buffer), "ab");
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(1)));
+        });
+    }
+
+    #[gpui::test]
+    fn clipboard_actions_edit_selected_text_through_transactions(cx: &mut TestAppContext) {
+        let buffer = Rc::new(RefCell::new(
+            Buffer::scratch("hello".to_owned(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建"),
+        ));
+        let (editor, cx) = cx.add_window_view({
+            let buffer = Rc::clone(&buffer);
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+
+        cx.simulate_click(point(px(0.), px(12.)), gpui::Modifiers::default());
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections =
+                SelectionSet::new(vec![Selection::new(ByteOffset::new(1), ByteOffset::new(4))]);
+        });
+        cx.dispatch_action(Copy);
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some("ell".to_owned())
+            );
+        });
+
+        cx.dispatch_action(Cut);
+        assert_eq!(buffer_text(&buffer), "ho");
+        cx.dispatch_action(Undo);
+        assert_eq!(buffer_text(&buffer), "hello");
+
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::caret(ByteOffset::new(5));
+        });
+        cx.dispatch_action(Paste);
+        assert_eq!(buffer_text(&buffer), "helloell");
+        assert!(buffer.borrow().can_undo());
+    }
+
+    #[gpui::test]
+    fn moving_caret_beyond_viewport_scrolls_it_back_into_view(cx: &mut TestAppContext) {
+        let text = (0..120)
+            .map(|row| format!("line {row}\n"))
+            .collect::<String>();
+        let buffer = Rc::new(RefCell::new(
+            Buffer::scratch(text, BufferConfig::default()).expect("测试 Buffer 应能创建"),
+        ));
+        let (editor, cx) = cx.add_window_view({
+            let buffer = Rc::clone(&buffer);
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+
+        cx.simulate_click(point(px(0.), px(12.)), gpui::Modifiers::default());
+        for _ in 0..80 {
+            cx.dispatch_action(MoveDown);
+        }
+        cx.run_until_parked();
+
+        cx.read_entity(&editor, |editor, _| {
+            let caret = editor.selections.primary().head();
+            let caret_row = editor
+                .render_snapshot()
+                .byte_to_position(caret)
+                .expect("caret 应保持有效")
+                .line()
+                .get();
+            assert_eq!(caret_row, 80);
+            assert!(editor.scroll_manager.anchor().row().get() > 0);
+            assert!(editor.scroll_manager.anchor().row().get() <= caret_row);
+        });
+    }
+
+    #[gpui::test]
+    fn wheel_input_updates_editor_scroll_state(cx: &mut TestAppContext) {
+        let text = (0..120)
+            .map(|row| format!("line {row}\n"))
+            .collect::<String>();
+        let buffer = Rc::new(RefCell::new(
+            Buffer::scratch(text, BufferConfig::default()).expect("测试 Buffer 应能创建"),
+        ));
+        let (editor, cx) = cx.add_window_view({
+            let buffer = Rc::clone(&buffer);
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+
+        cx.run_until_parked();
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(4.), px(4.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-120.))),
+            ..Default::default()
+        });
+
+        cx.read_entity(&editor, |editor, _| {
+            assert!(
+                editor.scroll_manager.anchor().row() > DisplayRow::ZERO
+                    || editor.scroll_manager.offset().y > px(0.)
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn word_line_and_vertical_movement_use_engine_boundaries(cx: &mut TestAppContext) {
+        let buffer = Rc::new(RefCell::new(
+            Buffer::scratch("alpha 你好\nxy".to_owned(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建"),
+        ));
+        let editor = cx.new({
+            let buffer = Rc::clone(&buffer);
+            move |cx| {
+                let mut editor = Editor::for_buffer(buffer, cx);
+                editor.selections = SelectionSet::caret(ByteOffset::new("alpha 你好".len()));
+                editor
+            }
+        });
+
+        cx.update_entity(&editor, |editor, cx| {
+            editor.move_selections(MovementDirection::Previous, MovementUnit::Word, false, cx);
+            assert_eq!(editor.selections.primary().head(), ByteOffset::new(6));
+
+            editor.move_selections(MovementDirection::Next, MovementUnit::LineEdge, false, cx);
+            assert_eq!(
+                editor.selections.primary().head(),
+                ByteOffset::new("alpha 你好".len())
+            );
+
+            editor.move_selections(MovementDirection::Next, Motion::LineStep, false, cx);
+            assert_eq!(
+                editor.selections.primary().head(),
+                ByteOffset::new("alpha 你好\nxy".len())
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn newline_is_a_transaction_and_undo_restores_selection(cx: &mut TestAppContext) {
+        let buffer = Rc::new(RefCell::new(
+            Buffer::scratch("ab".to_owned(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建"),
+        ));
+        let editor = cx.new({
+            let buffer = Rc::clone(&buffer);
+            move |cx| {
+                let mut editor = Editor::for_buffer(buffer, cx);
+                editor.selections = SelectionSet::caret(ByteOffset::new(1));
+                editor
+            }
+        });
+
+        cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+        assert_eq!(buffer_text(&buffer), "a\nb");
+        assert!(buffer.borrow().can_undo());
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(2)));
+        });
+
+        cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+        assert_eq!(buffer_text(&buffer), "ab");
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(1)));
         });
     }
 

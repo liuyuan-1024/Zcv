@@ -8,7 +8,12 @@ use std::collections::{BTreeMap, HashMap};
 use gpui::KeyBinding;
 use serde::Deserialize;
 
-use crate::editor::editable::{Copy, Cut, Paste, Redo, Undo};
+use crate::editor::editor::{
+    Backspace, Copy, Cut, Delete, MoveDown, MoveLeft, MoveRight, MoveToBeginningOfLine,
+    MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Paste, Redo, SelectAll,
+    SelectDown, SelectLeft, SelectRight, SelectToBeginningOfLine, SelectToEndOfLine,
+    SelectToNextWord, SelectToPreviousWord, SelectUp, Undo,
+};
 use crate::project_tree;
 use crate::ui::picker::{PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev};
 use crate::workbench::pane::{CloseTab, NextTab, PrevTab};
@@ -193,6 +198,28 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
         "editor::Cut" => KeyBinding::new(keys, Cut, context),
         "editor::Copy" => KeyBinding::new(keys, Copy, context),
         "editor::Paste" => KeyBinding::new(keys, Paste, context),
+        "editor::MoveLeft" => KeyBinding::new(keys, MoveLeft, context),
+        "editor::MoveRight" => KeyBinding::new(keys, MoveRight, context),
+        "editor::MoveUp" => KeyBinding::new(keys, MoveUp, context),
+        "editor::MoveDown" => KeyBinding::new(keys, MoveDown, context),
+        "editor::MoveToPreviousWord" => KeyBinding::new(keys, MoveToPreviousWord, context),
+        "editor::MoveToNextWord" => KeyBinding::new(keys, MoveToNextWord, context),
+        "editor::MoveToBeginningOfLine" => KeyBinding::new(keys, MoveToBeginningOfLine, context),
+        "editor::MoveToEndOfLine" => KeyBinding::new(keys, MoveToEndOfLine, context),
+        "editor::SelectLeft" => KeyBinding::new(keys, SelectLeft, context),
+        "editor::SelectRight" => KeyBinding::new(keys, SelectRight, context),
+        "editor::SelectUp" => KeyBinding::new(keys, SelectUp, context),
+        "editor::SelectDown" => KeyBinding::new(keys, SelectDown, context),
+        "editor::SelectToPreviousWord" => KeyBinding::new(keys, SelectToPreviousWord, context),
+        "editor::SelectToNextWord" => KeyBinding::new(keys, SelectToNextWord, context),
+        "editor::SelectToBeginningOfLine" => {
+            KeyBinding::new(keys, SelectToBeginningOfLine, context)
+        }
+        "editor::SelectToEndOfLine" => KeyBinding::new(keys, SelectToEndOfLine, context),
+        "editor::SelectAll" => KeyBinding::new(keys, SelectAll, context),
+        "editor::Backspace" => KeyBinding::new(keys, Backspace, context),
+        "editor::Delete" => KeyBinding::new(keys, Delete, context),
+        "editor::Newline" => KeyBinding::new(keys, Newline, context),
         // pane
         "pane::CloseTab" => KeyBinding::new(keys, CloseTab, context),
         "pane::NextTab" => KeyBinding::new(keys, NextTab, context),

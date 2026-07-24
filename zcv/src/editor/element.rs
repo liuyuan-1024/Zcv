@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, DispatchPhase, Element, ElementId, ElementInputHandler, Entity, GlobalElementId,
-    HitboxBehavior, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    PaintQuad, Pixels, Point, ShapedLine, Style, TextRun, UnderlineStyle, Window, fill, point, px,
-    relative, size,
+    App, Bounds, Context, DispatchPhase, Element, ElementId, ElementInputHandler, Entity,
+    GlobalElementId, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
+    MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Style,
+    TextRun, UnderlineStyle, Window, fill, point, px, relative, size,
 };
 use zcv_engine::{SelectionSet, Snapshot};
 
@@ -21,6 +21,38 @@ pub(super) struct EditorElement {
 impl EditorElement {
     pub(super) fn new(editor: Entity<Editor>) -> Self {
         Self { editor }
+    }
+
+    pub(super) fn register_actions<E: InteractiveElement>(
+        element: E,
+        cx: &mut Context<Editor>,
+    ) -> E {
+        element
+            .on_action(cx.listener(Editor::handle_move_left))
+            .on_action(cx.listener(Editor::handle_move_right))
+            .on_action(cx.listener(Editor::handle_move_up))
+            .on_action(cx.listener(Editor::handle_move_down))
+            .on_action(cx.listener(Editor::handle_move_to_previous_word))
+            .on_action(cx.listener(Editor::handle_move_to_next_word))
+            .on_action(cx.listener(Editor::handle_move_to_beginning_of_line))
+            .on_action(cx.listener(Editor::handle_move_to_end_of_line))
+            .on_action(cx.listener(Editor::handle_select_left))
+            .on_action(cx.listener(Editor::handle_select_right))
+            .on_action(cx.listener(Editor::handle_select_up))
+            .on_action(cx.listener(Editor::handle_select_down))
+            .on_action(cx.listener(Editor::handle_select_to_previous_word))
+            .on_action(cx.listener(Editor::handle_select_to_next_word))
+            .on_action(cx.listener(Editor::handle_select_to_beginning_of_line))
+            .on_action(cx.listener(Editor::handle_select_to_end_of_line))
+            .on_action(cx.listener(Editor::handle_select_all))
+            .on_action(cx.listener(Editor::handle_backspace))
+            .on_action(cx.listener(Editor::handle_delete))
+            .on_action(cx.listener(Editor::handle_newline))
+            .on_action(cx.listener(Editor::handle_undo))
+            .on_action(cx.listener(Editor::handle_redo))
+            .on_action(cx.listener(Editor::handle_cut))
+            .on_action(cx.listener(Editor::handle_copy))
+            .on_action(cx.listener(Editor::handle_paste))
     }
 }
 
@@ -176,6 +208,10 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        let line_height = window.line_height();
+        self.editor.update(cx, |editor, _| {
+            editor.prepare_scroll_viewport(bounds.size.height, line_height);
+        });
         let (snapshot, presentation, selections, start_row, scroll_offset) = {
             let editor = self.editor.read(cx);
             (
@@ -186,7 +222,6 @@ impl Element for EditorElement {
                 editor.scroll_offset(),
             )
         };
-        let line_height = window.line_height();
         let layout = Arc::new(layout_visible_lines(
             &snapshot,
             presentation,
@@ -222,7 +257,6 @@ impl Element for EditorElement {
             ElementInputHandler::new(bounds, self.editor.clone()),
             cx,
         );
-
         let editor = self.editor.clone();
         let event_layout = Arc::clone(&prepaint.layout);
         let hitbox = prepaint.hitbox.clone();
@@ -248,6 +282,20 @@ impl Element for EditorElement {
             });
             window.focus(&mouse_focus);
             cx.stop_propagation();
+        });
+
+        let scroll_editor = self.editor.clone();
+        let scroll_hitbox = prepaint.hitbox.clone();
+        let scroll_line_height = prepaint.layout.line_height;
+        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble || !scroll_hitbox.should_handle_scroll(window) {
+                return;
+            }
+            let delta = event.delta.pixel_delta(scroll_line_height);
+            let handled = scroll_editor.update(cx, |editor, cx| editor.scroll_by(delta, cx));
+            if handled {
+                cx.stop_propagation();
+            }
         });
 
         for selection in prepaint.selections.drain(..) {
@@ -278,8 +326,7 @@ fn layout_visible_lines(
     line_height: Pixels,
     window: &mut Window,
 ) -> EditorLayout {
-    let presentation_lines = presentation_lines(presentation.text());
-    let line_count = presentation_lines.len();
+    let line_count = presentation_lines(presentation.text()).count();
     let start = start_row.get().min(line_count.saturating_sub(1));
     let visible_count = ((bounds.size.height + scroll_offset.y) / line_height).ceil() as usize + 1;
     let end = (start + visible_count).min(line_count);
@@ -287,7 +334,11 @@ fn layout_visible_lines(
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let mut lines = Vec::with_capacity(end.saturating_sub(start));
 
-    for (row, presentation_line) in presentation_lines.iter().enumerate().take(end).skip(start) {
+    for (row, presentation_line) in presentation_lines(presentation.text())
+        .enumerate()
+        .take(end)
+        .skip(start)
+    {
         let text = presentation_line.text;
         let runs = text_runs(
             text,
@@ -377,12 +428,10 @@ fn layout_display_range(
     caret_quads: &mut Vec<PaintQuad>,
 ) {
     if is_caret {
-        let Some(line) = layout
-            .lines
-            .iter()
-            .rev()
-            .find(|line| line.global_byte_start <= range.start)
-        else {
+        let Some(line) = layout.lines.iter().find(|line| {
+            line.global_byte_start <= range.start
+                && range.start <= line.global_byte_start + line.shaped.len()
+        }) else {
             return;
         };
         let local_byte = range
@@ -437,29 +486,26 @@ struct PresentationLine<'a> {
     utf16_start: usize,
 }
 
-fn presentation_lines(text: &str) -> Vec<PresentationLine<'_>> {
-    let mut lines = Vec::new();
+fn presentation_lines(text: &str) -> impl Iterator<Item = PresentationLine<'_>> {
     let mut byte_start = 0;
     let mut utf16_start = 0;
-
-    for part in text.split_inclusive('\n') {
+    let lines = text.split_inclusive('\n').map(move |part| {
         let visible = part.trim_end_matches(['\r', '\n']);
-        lines.push(PresentationLine {
+        let line = PresentationLine {
             text: visible,
             byte_start,
             utf16_start,
-        });
+        };
         byte_start += part.len();
         utf16_start += part.encode_utf16().count();
-    }
-    if text.is_empty() || text.ends_with('\n') {
-        lines.push(PresentationLine {
-            text: "",
-            byte_start,
-            utf16_start,
-        });
-    }
-    lines
+        line
+    });
+    let trailing_line = (text.is_empty() || text.ends_with('\n')).then(|| PresentationLine {
+        text: "",
+        byte_start: text.len(),
+        utf16_start: text.encode_utf16().count(),
+    });
+    lines.chain(trailing_line)
 }
 
 fn text_runs(
@@ -536,7 +582,7 @@ mod tests {
     use super::*;
     use crate::editor::display_map::DisplayPoint;
     use gpui::{Empty, TestAppContext, font};
-    use zcv_engine::{Buffer, BufferConfig, DisplayColumn, Line, LogicalColumn};
+    use zcv_engine::{Buffer, BufferConfig, ByteOffset, DisplayColumn, Line, LogicalColumn};
 
     #[test]
     fn logical_columns_map_to_utf8_boundaries() {
@@ -616,6 +662,70 @@ mod tests {
                     DisplayPoint::new(DisplayRow::new(3), DisplayColumn::new(2)).row(),
                     DisplayRow::new(3)
                 );
+            })
+            .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
+    fn large_buffer_layout_shapes_only_visible_rows(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, _| {
+                let text = (0..10_000)
+                    .map(|row| format!("line {row}\n"))
+                    .collect::<String>();
+                let snapshot = Buffer::scratch(text, BufferConfig::default())
+                    .expect("大文本测试 Buffer 应能创建")
+                    .snapshot();
+                let presentation = EditorPresentation::new(&snapshot, None);
+                let layout = layout_visible_lines(
+                    &snapshot,
+                    presentation,
+                    Bounds::new(point(px(0.), px(0.)), size(px(800.), px(100.))),
+                    DisplayRow::new(5_000),
+                    point(px(0.), px(10.)),
+                    px(20.),
+                    window,
+                );
+
+                assert_eq!(
+                    layout.lines.first().map(|line| line.row),
+                    Some(DisplayRow::new(5_000))
+                );
+                assert_eq!(
+                    layout.lines.last().map(|line| line.row),
+                    Some(DisplayRow::new(5_006))
+                );
+                assert_eq!(layout.lines.len(), 7);
+            })
+            .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
+    fn caret_outside_visible_rows_is_not_painted_on_viewport_edge(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, _| {
+                let snapshot = Buffer::scratch(
+                    (0..20).map(|_| "x\n").collect::<String>(),
+                    BufferConfig::default(),
+                )
+                .expect("测试 Buffer 应能创建")
+                .snapshot();
+                let presentation = EditorPresentation::new(&snapshot, None);
+                let layout = layout_visible_lines(
+                    &snapshot,
+                    presentation,
+                    Bounds::new(point(px(0.), px(0.)), size(px(200.), px(40.))),
+                    DisplayRow::new(10),
+                    point(px(0.), px(0.)),
+                    px(20.),
+                    window,
+                );
+                let (_, carets) =
+                    layout_selections(&SelectionSet::caret(ByteOffset::ZERO), &layout, px(20.));
+
+                assert!(carets.is_empty());
             })
             .expect("测试窗口应保持可用");
     }

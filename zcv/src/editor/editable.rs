@@ -7,25 +7,13 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
-    ClipboardItem, Context, CursorStyle, ElementId, FocusHandle, Render, Window, actions, div,
-    prelude::*, px,
+    ClipboardItem, Context, CursorStyle, ElementId, FocusHandle, Render, Window, div, prelude::*,
+    px,
 };
 use zcv_engine::{Buffer, BufferConfig, ByteOffset, TextRange};
 
+use super::editor::{Copy, Cut, Paste, Redo, Undo};
 use crate::theme::{color, typography};
-
-// ═══ 1. Action 定义 ═══════════════════════════════════════
-
-actions!(
-    editor,
-    [
-        Undo,  // cmd-z
-        Redo,  // cmd-shift-z
-        Cut,   // cmd-x
-        Copy,  // cmd-c
-        Paste, // cmd-v
-    ]
-);
 
 // ═══ 2. Struct + constructor ══════════════════════════════
 

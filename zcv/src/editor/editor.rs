@@ -235,6 +235,10 @@ impl Editor {
         self.focus.clone()
     }
 
+    pub(crate) fn buffer(&self) -> Entity<Buffer> {
+        self.buffer.clone()
+    }
+
     pub(crate) fn text(&self, cx: &App) -> String {
         let snapshot = self.buffer.read(cx).snapshot();
         snapshot

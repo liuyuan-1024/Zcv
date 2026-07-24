@@ -1,8 +1,12 @@
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use gpui::{Context, Div, Entity, FocusHandle, MouseButton, Render, Window, div, prelude::*};
+use gpui::{
+    Context, Div, Entity, FocusHandle, MouseButton, Render, Window, actions, div, prelude::*,
+};
+use zcv_engine::{Buffer, BufferSaveError};
 
 use super::dock::{
     LayoutController, LayoutRef, LayoutSnapshot, PanelId, handle_close_tab,
@@ -11,7 +15,6 @@ use super::dock::{
 use super::pane_group::PaneId;
 use super::recent_projects;
 use crate::editor::buffer_store::BufferStore;
-use crate::editor::registry::ViewRegistry;
 use crate::keymap;
 use crate::project_tree::ProjectTree;
 use crate::workbench::bottom_bar::{
@@ -20,6 +23,8 @@ use crate::workbench::bottom_bar::{
 };
 use crate::workbench::top_bar::{self, TopBar};
 use crate::workbench::{project_picker, project_picker::OnProjectSelected, window_controls};
+
+actions!(workspace, [Save]);
 
 pub(crate) struct Workspace {
     layout: Rc<RefCell<LayoutController>>,
@@ -60,7 +65,6 @@ impl Workspace {
 
         let project_tree = cx.new(|cx| ProjectTree::new(root, cx));
 
-        cx.set_global(ViewRegistry::new());
         cx.set_global(BufferStore::new());
 
         Self {
@@ -94,6 +98,31 @@ impl Workspace {
 
     fn handle_open_settings(_: &top_bar::OpenSettings, _: &mut Window, _: &mut gpui::App) {
         println!("设置");
+    }
+
+    fn handle_save(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.layout.borrow().focus_pane_entity().cloned() else {
+            return;
+        };
+        let (editor, path) = {
+            let pane = pane.read(cx);
+            let Some(active_file) = pane.active_file() else {
+                return;
+            };
+            active_file
+        };
+        let buffer = editor.read(cx).buffer();
+
+        let result = buffer.update(cx, |buffer, cx| {
+            let result = write_buffer_to_path(buffer, &path);
+            if result.is_ok() {
+                cx.notify();
+            }
+            result
+        });
+        if let Err(error) = result {
+            eprintln!("保存文件失败（{}）：{error}", path.display());
+        }
     }
 
     /// 切换面板焦点：若面板已聚焦则隐藏并退焦到编辑区，否则显示并聚焦。
@@ -274,6 +303,7 @@ impl Render for Workspace {
         div()
             .id("app-view")
             .track_focus(&self.focus)
+            .key_context("Workspace")
             .size_full()
             .relative()
             .child(render_frame(
@@ -290,6 +320,7 @@ impl Render for Workspace {
             .on_action(Self::handle_git_pull)
             .on_action(Self::handle_git_push)
             .on_action(Self::handle_open_settings)
+            .on_action(cx.listener(Self::handle_save))
             .on_action(cx.listener(Self::handle_toggle_project_tree))
             .on_action(cx.listener(Self::handle_toggle_version_control))
             .on_action(cx.listener(Self::handle_toggle_outline))
@@ -310,5 +341,68 @@ impl Render for Workspace {
                 layout_clone2.borrow_mut().end_drag();
                 window.refresh();
             })
+    }
+}
+
+fn write_buffer_to_path(buffer: &mut Buffer, path: &Path) -> Result<(), BufferSaveError> {
+    let version = buffer.version();
+    let mut file = File::create(path)?;
+    buffer.write_to(version, &mut file)?;
+    file.sync_all()?;
+    buffer.mark_saved();
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use zcv_engine::{BufferConfig, ByteOffset};
+
+    use super::*;
+
+    #[test]
+    fn saving_buffer_writes_current_version_and_marks_it_clean() {
+        let path = test_file_path();
+        let mut buffer =
+            Buffer::scratch("旧内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
+        buffer
+            .insert(buffer.len_bytes(), " + 新内容")
+            .expect("测试编辑应成功");
+        assert!(buffer.is_dirty());
+
+        write_buffer_to_path(&mut buffer, &path).expect("保存应成功");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("应读回文件"),
+            "旧内容 + 新内容"
+        );
+        assert!(!buffer.is_dirty());
+        fs::remove_file(path).expect("测试文件应可删除");
+    }
+
+    #[test]
+    fn failed_save_keeps_buffer_dirty() {
+        let path = test_file_path().join("missing.txt");
+        let mut buffer =
+            Buffer::scratch("内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
+        buffer
+            .insert(ByteOffset::ZERO, "未保存")
+            .expect("测试编辑应成功");
+
+        assert!(write_buffer_to_path(&mut buffer, &path).is_err());
+        assert!(buffer.is_dirty());
+    }
+
+    fn test_file_path() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("系统时间应晚于 Unix Epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "zcv-workspace-save-{}-{nonce}.txt",
+            std::process::id()
+        ))
     }
 }

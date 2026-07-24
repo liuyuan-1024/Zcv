@@ -48,6 +48,12 @@
     }
   },
   {
+    "context": "Workspace",
+    "bindings": {
+      "cmd-s": "workspace::Save"
+    }
+  },
+  {
     "context": "Picker",
     "bindings": {
       "up": "picker::PickerSelectPrev",

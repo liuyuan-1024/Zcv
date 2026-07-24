@@ -478,17 +478,13 @@ Pane 负责标签切换和容器布局，Editor 负责内容编辑与绘制。
 
 多个 Editor 可以共享同一个 Buffer，但不能共享 Selection 和 ScrollManager。
 
-### ViewRegistry
+### 文件视图生命周期
 
-如果继续使用 ViewRegistry，它只负责：
+Pane 的 Tab 直接持有文件路径和 `Entity<Editor>`，负责当前 Pane 内的文件去重与
+Editor 生命周期。`ViewRegistry` 已删除，不再维护重复的路径、Buffer 或 Editor 映射。
 
-- `ViewId` 到 `Entity<Editor>` 的映射。
-- 文件路径与已打开 View 的索引。
-- View 生命周期管理。
-
-它不再单独保存 Buffer、滚动行号等已经属于 Editor 的状态。
-
-如果后续 Pane 可以直接持有 Editor Entity，则可以删除 ViewRegistry，但不能同时在 Pane、Registry 和 Editor 中保存重复的编辑状态。
+跨 Pane 打开同一文件时，由 BufferStore 按规范化路径复用 `Entity<Buffer>`，各 Pane
+分别创建并持有独立 Editor，从而共享文本内容但保持 Selection 和 ScrollManager 独立。
 
 ### 其他输入组件
 
@@ -674,7 +670,7 @@ src/editor/
 - 禁止 Buffer 持有某个 Editor 的当前 SelectionSet。
 - 禁止 Buffer 持有当前输入焦点的 IME composition 会话。
 - 禁止 Buffer 文本历史绑定某一个 Editor 的前后选区。
-- 禁止同时在 Pane、ViewRegistry 和 Editor 保存滚动状态。
+- 禁止在 Pane 和 Editor 中重复保存滚动状态。
 - 禁止为短期演示绕过编辑事务直接改文本。
 - 禁止在没有真实需求时照搬 Zed 的 LSP、协作、补全等大型子系统。
 

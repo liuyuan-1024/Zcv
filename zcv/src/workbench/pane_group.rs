@@ -36,22 +36,6 @@ pub(crate) enum Direction {
     Down,
 }
 
-/// 标签页项。
-#[derive(Debug, Clone)]
-pub(crate) struct TabItem {
-    pub view_id: ViewId,
-    pub title: String,
-}
-
-impl TabItem {
-    pub(crate) fn new(view_id: ViewId, title: impl Into<String>) -> Self {
-        Self {
-            view_id,
-            title: title.into(),
-        }
-    }
-}
-
 // ═══ PaneGroup ═══════════════════════════════════════════════════
 
 /// PaneGroup 递归树 —— 编辑区的布局结构。

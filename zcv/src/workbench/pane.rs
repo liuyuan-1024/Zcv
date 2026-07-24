@@ -3,15 +3,16 @@
 //! 持有自己的 FocusHandle、tabs、激活状态。
 //! 渲染标签栏和编辑器内容，处理键盘事件。
 
-use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Render, Window, actions, div, prelude::*,
 };
+use zcv_engine::Buffer;
 
-use super::pane_group::{PaneId, TabItem, ViewId};
+use super::pane_group::{PaneId, ViewId};
 use crate::editor::editor::Editor;
-use crate::editor::registry::ViewRegistry;
 use crate::theme::{color, radius, space};
 use crate::ui::glyph::Glyph;
 use crate::ui::icon::SvgIcon;
@@ -19,8 +20,18 @@ use crate::ui::icon::SvgIcon;
 actions!(pane, [CloseTab, NextTab, PrevTab]);
 
 const TAB_HOVER_GROUP: &str = "pane.tab";
+static NEXT_VIEW_ID: AtomicU64 = AtomicU64::new(1);
 
 // ═══ 1. Struct + constructor ═══════════════════════════════════════
+
+/// Pane 直接拥有的标签页；文件身份和 Editor 生命周期不再经由全局 Registry 中转。
+#[derive(Clone)]
+pub(crate) struct TabItem {
+    pub view_id: ViewId,
+    pub title: String,
+    pub path: PathBuf,
+    pub editor: Entity<Editor>,
+}
 
 /// 单个编辑区 Pane。
 pub(crate) struct Pane {
@@ -28,7 +39,6 @@ pub(crate) struct Pane {
     pub id: PaneId,
     pub tabs: Vec<TabItem>,
     pub active: Option<ViewId>,
-    editors: HashMap<ViewId, Entity<Editor>>,
 }
 
 impl Pane {
@@ -38,33 +48,33 @@ impl Pane {
             id,
             tabs: Vec::new(),
             active: None,
-            editors: HashMap::new(),
         }
     }
 
-    /// 添加一个 tab，若已存在则激活。
-    pub fn add_tab(
+    /// 打开文件；当前 Pane 已有同一路径时只激活已有 Editor。
+    pub fn open_file(
         &mut self,
-        view_id: ViewId,
-        title: &str,
+        path: PathBuf,
+        title: impl Into<String>,
+        buffer: Entity<Buffer>,
         cx: &mut Context<Self>,
-    ) -> Option<Entity<Editor>> {
-        if !self.editors.contains_key(&view_id) {
-            let buffer = cx
-                .global::<ViewRegistry>()
-                .get(view_id)
-                .map(|view| view.buffer.clone())?;
-            let editor = cx.new(|cx| Editor::for_buffer(buffer, cx));
-            cx.observe(&editor, |_, _, cx| cx.notify()).detach();
-            self.editors.insert(view_id, editor);
+    ) -> Entity<Editor> {
+        if let Some(tab) = self.tabs.iter().find(|tab| tab.path == path) {
+            self.active = Some(tab.view_id);
+            return tab.editor.clone();
         }
-        if let Some(_tab) = self.tabs.iter_mut().find(|t| t.view_id == view_id) {
-            self.active = Some(view_id);
-            return self.editors.get(&view_id).cloned();
-        }
-        self.tabs.push(TabItem::new(view_id, title));
+
+        let view_id = ViewId(NEXT_VIEW_ID.fetch_add(1, Ordering::Relaxed));
+        let editor = cx.new(|cx| Editor::for_buffer(buffer, cx));
+        cx.observe(&editor, |_, _, cx| cx.notify()).detach();
+        self.tabs.push(TabItem {
+            view_id,
+            title: title.into(),
+            path,
+            editor: editor.clone(),
+        });
         self.active = Some(view_id);
-        self.editors.get(&view_id).cloned()
+        editor
     }
 
     /// 激活指定 tab。
@@ -110,7 +120,6 @@ impl Pane {
     pub fn close_tab(&mut self, view_id: ViewId) {
         if let Some(pos) = self.tabs.iter().position(|t| t.view_id == view_id) {
             self.tabs.remove(pos);
-            self.editors.remove(&view_id);
             if self.active == Some(view_id) {
                 self.active = self.tabs.last().map(|t| t.view_id);
             }
@@ -118,8 +127,17 @@ impl Pane {
     }
 
     pub(crate) fn active_editor(&self) -> Option<Entity<Editor>> {
-        self.active
-            .and_then(|view_id| self.editors.get(&view_id).cloned())
+        self.active_tab().map(|tab| tab.editor.clone())
+    }
+
+    pub(crate) fn active_file(&self) -> Option<(Entity<Editor>, PathBuf)> {
+        self.active_tab()
+            .map(|tab| (tab.editor.clone(), tab.path.clone()))
+    }
+
+    fn active_tab(&self) -> Option<&TabItem> {
+        let view_id = self.active?;
+        self.tabs.iter().find(|tab| tab.view_id == view_id)
     }
 
     fn focus_active_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -165,13 +183,7 @@ impl Render for Pane {
             .bg(color::current().gray.s[1])
             .on_action(cx.listener(Self::handle_next_tab))
             .on_action(cx.listener(Self::handle_prev_tab))
-            .child(render_tab_bar(
-                &self.tabs,
-                &self.editors,
-                active_view,
-                pane_entity,
-                cx,
-            ))
+            .child(render_tab_bar(&self.tabs, active_view, pane_entity, cx))
             .child(render_content(active_view, active_editor))
     }
 }
@@ -183,7 +195,6 @@ impl Render for Pane {
 /// 标签栏：一组标签的容器。
 fn render_tab_bar(
     tabs: &[TabItem],
-    editors: &HashMap<ViewId, Entity<Editor>>,
     active_view: Option<ViewId>,
     pane_entity: gpui::Entity<Pane>,
     cx: &App,
@@ -202,9 +213,7 @@ fn render_tab_bar(
         .border_b_1()
         .border_color(color::current().gray.s[4])
         .children(tabs.iter().map(|tab| {
-            let is_dirty = editors
-                .get(&tab.view_id)
-                .is_some_and(|editor| editor.read(cx).is_dirty(cx));
+            let is_dirty = tab.editor.read(cx).is_dirty(cx);
             render_tab(
                 tab,
                 Some(tab.view_id) == active_view,
@@ -275,7 +284,7 @@ fn close_glyph(
 ) -> impl gpui::IntoElement {
     let entity = pane_entity.clone();
     Glyph::icon(("tab-close", view_id.0), "icons/actions/close.svg")
-        .label("关闭标签")
+        .label("关闭")
         .shortcut(&CloseTab, cx)
         .on_click(move |window: &mut gpui::Window, cx: &mut gpui::App| {
             let editor = entity.update(cx, |pane, _| {
@@ -368,33 +377,22 @@ fn render_content(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use gpui::{AppContext, TestAppContext};
     use zcv_engine::{Buffer, BufferConfig};
 
     use super::*;
 
     #[gpui::test]
-    fn pane_uses_an_editor_backed_by_the_registered_buffer(cx: &mut TestAppContext) {
+    fn pane_owns_file_path_and_editor_backed_by_the_given_buffer(cx: &mut TestAppContext) {
         let buffer = cx.new(|_| {
             Buffer::scratch("真实编辑器".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建")
         });
-        let view_id = cx.update({
-            let buffer = buffer.clone();
-            move |cx| {
-                let mut registry = ViewRegistry::new();
-                let view_id = registry.register(PathBuf::from("demo.txt"), buffer);
-                cx.set_global(registry);
-                view_id
-            }
-        });
         let pane = cx.new(|cx| Pane::new(PaneId(1), cx));
 
-        let editor = cx
-            .update_entity(&pane, |pane, cx| pane.add_tab(view_id, "demo.txt", cx))
-            .expect("已注册的 View 应创建 Editor");
+        let editor = cx.update_entity(&pane, |pane, cx| {
+            pane.open_file(PathBuf::from("demo.txt"), "demo.txt", buffer.clone(), cx)
+        });
         cx.read_entity(&editor, |editor, cx| assert!(!editor.is_dirty(cx)));
         cx.update_entity(&editor, |editor, cx| editor.set_text("阶段七", cx));
         cx.read_entity(&editor, |editor, cx| assert!(editor.is_dirty(cx)));
@@ -409,9 +407,31 @@ mod tests {
             );
         });
         cx.read_entity(&pane, |pane, _| {
-            assert_eq!(pane.active, Some(view_id));
             assert_eq!(pane.tabs.len(), 1);
+            assert_eq!(pane.tabs[0].path, PathBuf::from("demo.txt"));
+            assert_eq!(pane.active, Some(pane.tabs[0].view_id));
             assert!(pane.active_editor().is_some());
         });
+    }
+
+    #[gpui::test]
+    fn opening_the_same_path_reuses_the_pane_editor(cx: &mut TestAppContext) {
+        let first_buffer = cx.new(|_| {
+            Buffer::scratch("首次".to_owned(), BufferConfig::default()).expect("应创建 Buffer")
+        });
+        let second_buffer = cx.new(|_| {
+            Buffer::scratch("重复".to_owned(), BufferConfig::default()).expect("应创建 Buffer")
+        });
+        let pane = cx.new(|cx| Pane::new(PaneId(1), cx));
+
+        let first = cx.update_entity(&pane, |pane, cx| {
+            pane.open_file(PathBuf::from("demo.txt"), "demo.txt", first_buffer, cx)
+        });
+        let second = cx.update_entity(&pane, |pane, cx| {
+            pane.open_file(PathBuf::from("demo.txt"), "demo.txt", second_buffer, cx)
+        });
+
+        assert_eq!(first, second);
+        cx.read_entity(&pane, |pane, _| assert_eq!(pane.tabs.len(), 1));
     }
 }

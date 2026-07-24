@@ -4,6 +4,5 @@ pub(crate) mod buffer_store;
 pub(crate) mod display_map;
 pub(crate) mod editor;
 mod element;
-pub(crate) mod registry;
 mod scroll;
 mod selection;

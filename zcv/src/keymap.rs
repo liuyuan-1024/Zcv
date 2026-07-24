@@ -18,6 +18,7 @@ use crate::project_tree;
 use crate::ui::picker::{PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev};
 use crate::workbench::pane::{CloseTab, NextTab, PrevTab};
 use crate::workbench::project_picker::{OpenLocalProject, ToggleProjectPicker};
+use crate::workbench::workspace::Save;
 use crate::workbench::{bottom_bar, top_bar, window_controls};
 
 // ── 公开类型 ─────────────────────────────────────────────────────────
@@ -224,6 +225,8 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
         "pane::CloseTab" => KeyBinding::new(keys, CloseTab, context),
         "pane::NextTab" => KeyBinding::new(keys, NextTab, context),
         "pane::PrevTab" => KeyBinding::new(keys, PrevTab, context),
+        // workspace
+        "workspace::Save" => KeyBinding::new(keys, Save, context),
         // project_tree
         "project_tree::TreeSelectPrev" => bind!(project_tree::TreeSelectPrev),
         "project_tree::TreeSelectNext" => bind!(project_tree::TreeSelectNext),
@@ -264,4 +267,22 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
         }
     };
     Some(binding)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_macos_keymap_defines_workspace_save_shortcut() {
+        let expected_keys = "cmd-s";
+        let groups: Vec<RawBindingGroup> =
+            serde_json::from_str(include_str!("../assets/keymaps/default-macos.json"))
+                .expect("macOS 默认 keymap JSON 应合法");
+        assert!(groups.iter().any(|group| {
+            group.context.as_deref() == Some("Workspace")
+                && group.bindings.get(expected_keys).map(String::as_str) == Some("workspace::Save")
+        }));
+        assert!(build(expected_keys, "workspace::Save", Some("Workspace")).is_some());
+    }
 }

@@ -14,7 +14,6 @@ use gpui::{
 };
 
 use crate::editor::buffer_store::BufferStore;
-use crate::editor::registry::ViewRegistry;
 use crate::theme::color;
 use crate::ui::tree;
 use crate::workbench::dock::LayoutRef;
@@ -51,23 +50,20 @@ fn activate_node(
 
 /// 打开文件并在编辑器中显示。
 fn open_file_in_editor(path: &Path, window: &mut Window, cx: &mut gpui::App) {
-    // 查该文件是否已打开
-    let mut existing = None;
-    cx.update_global::<ViewRegistry, _>(|reg, _| existing = reg.find_by_path(path));
-
-    let view_id = if let Some(vid) = existing {
-        vid
-    } else {
-        let buffer =
-            match cx.update_global::<BufferStore, _>(|store, cx| store.open_buffer(path, cx)) {
-                Ok(buffer) => buffer,
-                Err(error) => {
-                    eprintln!("打开文件失败：{}：{error}", path.display());
-                    return;
-                }
-            };
-
-        cx.update_global::<ViewRegistry, _>(|reg, _| reg.register(path.to_path_buf(), buffer))
+    let path = match path.canonicalize() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("打开文件失败：{}：{error}", path.display());
+            return;
+        }
+    };
+    let buffer = match cx.update_global::<BufferStore, _>(|store, cx| store.open_buffer(&path, cx))
+    {
+        Ok(buffer) => buffer,
+        Err(error) => {
+            eprintln!("打开文件失败：{}：{error}", path.display());
+            return;
+        }
     };
 
     let file_name = path
@@ -79,10 +75,9 @@ fn open_file_in_editor(path: &Path, window: &mut Window, cx: &mut gpui::App) {
     if let Some(layout_ref) = cx.try_global::<LayoutRef>() {
         if let Some(ctrl) = layout_ref.0.upgrade() {
             if let Some(entity) = ctrl.borrow().focus_pane.clone() {
-                let editor = entity.update(cx, |pane, cx| pane.add_tab(view_id, &file_name, cx));
-                if let Some(editor) = editor {
-                    window.focus(&editor.read(cx).focus_handle());
-                }
+                let editor =
+                    entity.update(cx, |pane, cx| pane.open_file(path, file_name, buffer, cx));
+                window.focus(&editor.read(cx).focus_handle());
                 window.refresh();
             }
         }

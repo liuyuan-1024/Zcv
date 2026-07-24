@@ -3,12 +3,17 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{Context, FocusHandle};
-use zcv_engine::{Buffer, BufferConfig, SelectionSet};
+use gpui::{
+    Context, CursorStyle, FocusHandle, IntoElement, Pixels, Point, Render, Styled, Window, div,
+    prelude::*,
+};
+use zcv_engine::{Buffer, BufferConfig, ByteOffset, SelectionSet, Snapshot};
 
-use super::display_map::DisplayMap;
+use super::display_map::{DisplayMap, DisplayPoint};
+use super::element::EditorElement;
 use super::scroll::ScrollManager;
 use super::selection::SelectionHistory;
+use crate::theme::{color, typography};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EditorMode {
@@ -62,6 +67,26 @@ impl Editor {
         self.focus.clone()
     }
 
+    pub(super) fn render_snapshot(&self) -> Snapshot {
+        self.display_map.snapshot().clone()
+    }
+
+    pub(super) fn selections(&self) -> SelectionSet {
+        self.selections.clone()
+    }
+
+    pub(super) fn scroll_anchor(&self) -> DisplayPoint {
+        self.scroll_manager.anchor()
+    }
+
+    pub(super) fn scroll_offset(&self) -> Point<Pixels> {
+        self.scroll_manager.offset()
+    }
+
+    pub(super) fn set_caret(&mut self, offset: ByteOffset) {
+        self.selections = SelectionSet::caret(offset);
+    }
+
     fn new(buffer: Rc<RefCell<Buffer>>, mode: EditorMode, cx: &mut Context<Self>) -> Self {
         let display_map = DisplayMap::new(buffer.borrow().snapshot());
         Self {
@@ -73,6 +98,43 @@ impl Editor {
             scroll_manager: ScrollManager::default(),
             focus: cx.focus_handle(),
         }
+    }
+}
+
+impl Render for Editor {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.display_map
+            .set_snapshot(self.buffer.borrow().snapshot());
+
+        let line_height = typography::editor_line();
+        let visible_lines = match self.mode {
+            EditorMode::SingleLine => Some(1),
+            EditorMode::AutoHeight {
+                min_lines,
+                max_lines,
+            } => {
+                let line_count = self.display_map.snapshot().line_count().max(min_lines);
+                Some(max_lines.map_or(line_count, |maximum| line_count.min(maximum)))
+            }
+            EditorMode::Full => None,
+        };
+
+        div()
+            .track_focus(&self.focus)
+            .key_context("Editor")
+            .tab_index(0)
+            .cursor(CursorStyle::IBeam)
+            .w_full()
+            .when_some(visible_lines, |element, lines| {
+                element.h(line_height * lines)
+            })
+            .when(visible_lines.is_none(), |element| element.flex_1().h_full())
+            .overflow_hidden()
+            .font(typography::editor_font())
+            .text_size(typography::editor())
+            .line_height(line_height)
+            .text_color(color::current().gray.s[8])
+            .child(EditorElement::new(cx.entity()))
     }
 }
 
@@ -167,5 +229,24 @@ mod tests {
         });
 
         assert!(!Rc::ptr_eq(&single_buffer, &auto_height_buffer));
+    }
+
+    #[gpui::test]
+    fn editor_element_renders_multiline_unicode_text(cx: &mut TestAppContext) {
+        let buffer = Rc::new(RefCell::new(
+            Buffer::scratch("a你\n😀b".to_string(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建"),
+        ));
+        let (editor, cx) = cx.add_window_view({
+            let buffer = Rc::clone(&buffer);
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+
+        cx.run_until_parked();
+        cx.simulate_click(point(px(1000.), px(12.)), gpui::Modifiers::default());
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.render_snapshot().line_count(), 2);
+            assert_eq!(editor.selections.primary().head(), ByteOffset::new(4));
+        });
     }
 }

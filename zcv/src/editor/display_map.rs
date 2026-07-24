@@ -97,6 +97,10 @@ impl DisplayMap {
         self.snapshot.version()
     }
 
+    pub(crate) fn set_snapshot(&mut self, snapshot: Snapshot) {
+        self.snapshot = snapshot;
+    }
+
     pub(crate) fn offset_to_display_point(&self, offset: ByteOffset) -> EngineResult<DisplayPoint> {
         let point = BufferPoint::from(self.snapshot.byte_to_position(offset)?);
         self.buffer_point_to_display_point(point)

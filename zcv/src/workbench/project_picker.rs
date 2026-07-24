@@ -341,9 +341,8 @@ impl Render for ProjectPicker {
             if let Some(file_name) = std::path::Path::new(&path).file_name() {
                 self.current_label = file_name.to_string_lossy().to_string();
             }
-            recent_projects::add_to_recent(&path);
             let cb = self.on_selected.clone();
-            cb(path, window, cx);
+            window.defer(cx, move |window, cx| cb(path, window, cx));
         }
 
         let color_value = if self.is_open {

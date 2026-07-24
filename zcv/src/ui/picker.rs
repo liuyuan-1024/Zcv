@@ -7,11 +7,11 @@
 //! - 调用方只需要实现 `PickerDelegate` 并提供数据
 
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, Pixels, Render, SharedString, Window, actions,
-    div, prelude::*, px,
+    AnyElement, App, Context, Entity, FocusHandle, MouseButton, Pixels, Render, SharedString,
+    Window, actions, div, prelude::*, px,
 };
 
-use crate::editor::editor::Editor;
+use crate::editor::editor::{Editor, MoveDown, MoveUp};
 use crate::theme::{color, space};
 
 actions!(
@@ -132,9 +132,24 @@ impl<D: PickerDelegate> Picker<D> {
         cx.notify();
     }
 
-    fn confirm(&mut self, _: &PickerConfirm, window: &mut Window, cx: &mut Context<Self>) {
+    fn editor_move_down(&mut self, _: &MoveDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_next(&PickerSelectNext, window, cx);
+    }
+
+    fn editor_move_up(&mut self, _: &MoveUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_prev(&PickerSelectPrev, window, cx);
+    }
+
+    fn confirm_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.delegate.confirm(window, cx);
+        if let Some(ref on_dismiss) = self.on_dismiss {
+            on_dismiss(window, cx);
+        }
         cx.notify();
+    }
+
+    fn confirm(&mut self, _: &PickerConfirm, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_selection(window, cx);
     }
 
     fn cancel(&mut self, _: &PickerCancel, window: &mut Window, cx: &mut Context<Self>) {
@@ -161,10 +176,24 @@ impl<D: PickerDelegate> Render for Picker<D> {
             });
 
         // 列表项（delegate 通过 ListItem 返回完整行）
+        let picker = cx.entity();
         let items = (0..count)
-            .map(|i| {
-                self.delegate
-                    .render_match(i, i == self.delegate.selected_index())
+            .map(|index| {
+                let picker = picker.clone();
+                div()
+                    .id(("picker-match", index))
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        picker.update(cx, |picker, cx| {
+                            picker.delegate.set_selected_index(index);
+                            picker.confirm_selection(window, cx);
+                        });
+                        cx.stop_propagation();
+                    })
+                    .child(
+                        self.delegate
+                            .render_match(index, index == self.delegate.selected_index()),
+                    )
+                    .into_any_element()
             })
             .collect::<Vec<AnyElement>>();
 
@@ -176,6 +205,8 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .overflow_hidden()
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_prev))
+            .on_action(cx.listener(Self::editor_move_down))
+            .on_action(cx.listener(Self::editor_move_up))
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel));
 
@@ -229,9 +260,13 @@ pub fn picker_divider() -> impl IntoElement {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext, TestAppContext};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use gpui::{AppContext, KeyBinding, TestAppContext};
 
     use super::*;
+    use crate::editor::editor::Newline;
 
     struct TestDelegate {
         query: String,
@@ -283,5 +318,70 @@ mod tests {
             assert_eq!(picker.query, "zedstyle");
             assert_eq!(picker.delegate().query, "zedstyle");
         });
+    }
+
+    struct ConfirmDelegate {
+        confirmed: Rc<Cell<bool>>,
+        selected_index: Rc<Cell<usize>>,
+    }
+
+    impl PickerDelegate for ConfirmDelegate {
+        fn match_count(&self) -> usize {
+            2
+        }
+
+        fn selected_index(&self) -> usize {
+            self.selected_index.get()
+        }
+
+        fn set_selected_index(&mut self, index: usize) {
+            self.selected_index.set(index);
+        }
+
+        fn update_matches(&mut self, _: String) {}
+
+        fn confirm(&mut self, _: &mut Window, _: &mut App) {
+            self.confirmed.set(true);
+        }
+
+        fn dismissed(&mut self) {}
+
+        fn render_match(&self, _: usize, _: bool) -> AnyElement {
+            div().child("项目").into_any_element()
+        }
+    }
+
+    #[gpui::test]
+    fn navigation_and_confirm_work_while_search_editor_is_focused(cx: &mut TestAppContext) {
+        let confirmed = Rc::new(Cell::new(false));
+        let selected_index = Rc::new(Cell::new(0));
+        let (picker, cx) = cx.add_window_view({
+            let confirmed = confirmed.clone();
+            let selected_index = selected_index.clone();
+            move |_, cx| {
+                cx.bind_keys([
+                    KeyBinding::new("down", crate::editor::editor::MoveDown, Some("Editor")),
+                    KeyBinding::new("down", PickerSelectNext, Some("Picker")),
+                    KeyBinding::new("enter", Newline, Some("Editor")),
+                    KeyBinding::new("enter", PickerConfirm, Some("Picker")),
+                ]);
+                Picker::new(
+                    ConfirmDelegate {
+                        confirmed,
+                        selected_index,
+                    },
+                    px(300.0),
+                    cx,
+                )
+            }
+        });
+        let editor = cx.read_entity(&picker, |picker, _| picker.editor().clone());
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+
+        cx.simulate_keystrokes("down");
+        assert_eq!(selected_index.get(), 1);
+
+        cx.simulate_keystrokes("enter");
+        assert!(confirmed.get());
     }
 }

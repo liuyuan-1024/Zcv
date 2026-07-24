@@ -581,6 +581,10 @@ impl Editor {
     }
 
     pub(super) fn handle_move_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == EditorMode::SingleLine {
+            cx.propagate();
+            return;
+        }
         self.move_selections(MovementDirection::Previous, Motion::LineStep, false, cx);
     }
 
@@ -590,6 +594,10 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.mode == EditorMode::SingleLine {
+            cx.propagate();
+            return;
+        }
         self.move_selections(MovementDirection::Next, Motion::LineStep, false, cx);
     }
 

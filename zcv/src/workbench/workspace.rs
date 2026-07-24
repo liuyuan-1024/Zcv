@@ -10,6 +10,7 @@ use super::dock::{
 };
 use super::pane_group::PaneId;
 use super::recent_projects;
+use crate::editor::buffer_store::BufferStore;
 use crate::editor::registry::ViewRegistry;
 use crate::keymap;
 use crate::project_tree::ProjectTree;
@@ -60,6 +61,7 @@ impl Workspace {
         let project_tree = cx.new(|cx| ProjectTree::new(root, cx));
 
         cx.set_global(ViewRegistry::new());
+        cx.set_global(BufferStore::new());
 
         Self {
             focus,

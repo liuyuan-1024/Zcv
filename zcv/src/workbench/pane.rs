@@ -295,9 +295,7 @@ fn render_content(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::path::PathBuf;
-    use std::rc::Rc;
 
     use gpui::{AppContext, TestAppContext};
     use zcv_engine::{Buffer, BufferConfig};
@@ -306,12 +304,12 @@ mod tests {
 
     #[gpui::test]
     fn pane_uses_an_editor_backed_by_the_registered_buffer(cx: &mut TestAppContext) {
-        let buffer = Rc::new(RefCell::new(
+        let buffer = cx.new(|_| {
             Buffer::scratch("真实编辑器".to_owned(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建"),
-        ));
+                .expect("测试 Buffer 应能创建")
+        });
         let view_id = cx.update({
-            let buffer = Rc::clone(&buffer);
+            let buffer = buffer.clone();
             move |cx| {
                 let mut registry = ViewRegistry::new();
                 let view_id = registry.register(PathBuf::from("demo.txt"), buffer);
@@ -326,14 +324,15 @@ mod tests {
             .expect("已注册的 View 应创建 Editor");
         cx.update_entity(&editor, |editor, cx| editor.set_text("阶段七", cx));
 
-        assert_eq!(
-            buffer
-                .borrow()
-                .slice_byte_range(zcv_engine::ByteOffset::ZERO, buffer.borrow().len_bytes(),)
-                .expect("完整 Buffer 应可读取")
-                .as_str(),
-            "阶段七"
-        );
+        cx.read_entity(&buffer, |buffer, _| {
+            assert_eq!(
+                buffer
+                    .slice_byte_range(zcv_engine::ByteOffset::ZERO, buffer.len_bytes())
+                    .expect("完整 Buffer 应可读取")
+                    .as_str(),
+                "阶段七"
+            );
+        });
         cx.read_entity(&pane, |pane, _| {
             assert_eq!(pane.active, Some(view_id));
             assert_eq!(pane.tabs.len(), 1);

@@ -12,8 +12,8 @@ use gpui::{
     Context, Div, MouseButton, UniformListScrollHandle, Window, actions, div, prelude::*,
     uniform_list,
 };
-use zcv_engine::{Buffer, BufferConfig, BufferOrigin};
 
+use crate::editor::buffer_store::BufferStore;
 use crate::editor::registry::ViewRegistry;
 use crate::theme::color;
 use crate::ui::tree;
@@ -58,19 +58,14 @@ fn open_file_in_editor(path: &Path, window: &mut Window, cx: &mut gpui::App) {
     let view_id = if let Some(vid) = existing {
         vid
     } else {
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-
-        let buffer = Rc::new(RefCell::new(
-            Buffer::with_origin(
-                BufferOrigin::external(path.to_string_lossy().to_string()),
-                content,
-                BufferConfig::default(),
-            )
-            .expect("创建 Buffer 不应失败"),
-        ));
+        let buffer =
+            match cx.update_global::<BufferStore, _>(|store, cx| store.open_buffer(path, cx)) {
+                Ok(buffer) => buffer,
+                Err(error) => {
+                    eprintln!("打开文件失败：{}：{error}", path.display());
+                    return;
+                }
+            };
 
         cx.update_global::<ViewRegistry, _>(|reg, _| reg.register(path.to_path_buf(), buffer))
     };

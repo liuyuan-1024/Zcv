@@ -83,7 +83,7 @@ impl<D: PickerDelegate> Picker<D> {
     /// Entity 创建后调用，连接编辑器输入。
     pub fn init(&mut self, cx: &mut Context<Self>) {
         cx.observe(&self.editor, |picker, editor, cx| {
-            let query = editor.read(cx).text();
+            let query = editor.read(cx).text(cx);
             if picker.query != query {
                 picker.query = query.clone();
                 picker.delegate.update_matches(query);

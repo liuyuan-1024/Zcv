@@ -1,14 +1,12 @@
 //! 统一 Editor 的跨帧状态骨架。
 
-use std::cell::RefCell;
 use std::ops::Range;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    Bounds, ClipboardItem, Context, CursorStyle, EntityInputHandler, FocusHandle, IntoElement,
-    Pixels, Point, Render, Styled, UTF16Selection, Window, actions, div, point, prelude::*, px,
-    size,
+    App, Bounds, ClipboardItem, Context, CursorStyle, Entity, EntityInputHandler, FocusHandle,
+    IntoElement, Pixels, Point, Render, Styled, UTF16Selection, Window, actions, div, point,
+    prelude::*, px, size,
 };
 use zcv_engine::{
     Buffer, BufferConfig, ByteOffset, EditOutcome, EngineResult, Motion, MovementDirection,
@@ -189,7 +187,7 @@ impl EditorPresentation {
 }
 
 pub(crate) struct Editor {
-    buffer: Rc<RefCell<Buffer>>,
+    buffer: Entity<Buffer>,
     display_map: DisplayMap,
     mode: EditorMode,
     selections: SelectionSet,
@@ -207,7 +205,8 @@ impl Editor {
     pub(crate) fn single_line(cx: &mut Context<Self>) -> Self {
         let buffer = Buffer::scratch(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
-        Self::new(Rc::new(RefCell::new(buffer)), EditorMode::SingleLine, cx)
+        let buffer = cx.new(|_| buffer);
+        Self::new(buffer, EditorMode::SingleLine, cx)
     }
 
     pub(crate) fn auto_height(
@@ -217,8 +216,9 @@ impl Editor {
     ) -> Self {
         let buffer = Buffer::scratch(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
+        let buffer = cx.new(|_| buffer);
         Self::new(
-            Rc::new(RefCell::new(buffer)),
+            buffer,
             EditorMode::AutoHeight {
                 min_lines,
                 max_lines,
@@ -227,7 +227,7 @@ impl Editor {
         )
     }
 
-    pub(crate) fn for_buffer(buffer: Rc<RefCell<Buffer>>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn for_buffer(buffer: Entity<Buffer>, cx: &mut Context<Self>) -> Self {
         Self::new(buffer, EditorMode::Full, cx)
     }
 
@@ -235,8 +235,8 @@ impl Editor {
         self.focus.clone()
     }
 
-    pub(crate) fn text(&self) -> String {
-        let snapshot = self.buffer.borrow().snapshot();
+    pub(crate) fn text(&self, cx: &App) -> String {
+        let snapshot = self.buffer.read(cx).snapshot();
         snapshot
             .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
             .expect("完整 Editor Snapshot 范围必须可读取")
@@ -249,20 +249,18 @@ impl Editor {
         let before_selections = self.selections.clone();
         let targets = SelectionSet::new(vec![Selection::new(
             ByteOffset::ZERO,
-            self.buffer.borrow().len_bytes(),
+            self.buffer.read(cx).len_bytes(),
         )]);
         let text = if self.mode == EditorMode::SingleLine {
             text.replace(['\r', '\n'], "")
         } else {
             text.to_owned()
         };
-        let outcome = {
-            self.buffer.borrow_mut().insert_at_selections(
-                &targets,
-                &text,
-                edit_metadata("设置文本"),
-            )
-        };
+        let outcome = self.buffer.update(cx, |buffer, cx| {
+            let outcome = buffer.insert_at_selections(&targets, &text, edit_metadata("设置文本"));
+            cx.notify();
+            outcome
+        });
         self.apply_edit_outcome(before_selections, outcome, cx);
     }
 
@@ -330,8 +328,14 @@ impl Editor {
         }
     }
 
-    fn new(buffer: Rc<RefCell<Buffer>>, mode: EditorMode, cx: &mut Context<Self>) -> Self {
-        let display_map = DisplayMap::new(buffer.borrow().snapshot());
+    fn new(buffer: Entity<Buffer>, mode: EditorMode, cx: &mut Context<Self>) -> Self {
+        let display_map = DisplayMap::new(buffer.read(cx).snapshot());
+        cx.observe(&buffer, |editor, buffer, cx| {
+            editor.display_map.set_snapshot(buffer.read(cx).snapshot());
+            editor.input_layout = None;
+            cx.notify();
+        })
+        .detach();
         Self {
             buffer,
             display_map,
@@ -348,8 +352,8 @@ impl Editor {
         }
     }
 
-    fn selection_for_utf16_range(&self, range: Range<usize>) -> Option<SelectionSet> {
-        let snapshot = self.buffer.borrow().snapshot();
+    fn selection_for_utf16_range(&self, range: Range<usize>, cx: &App) -> Option<SelectionSet> {
+        let snapshot = self.buffer.read(cx).snapshot();
         let start = snapshot
             .utf16_cu_to_byte(Utf16Offset::new(range.start))
             .ok()?;
@@ -378,7 +382,7 @@ impl Editor {
                 composition.range.end(),
             )])
         } else if let Some(range) = range_utf16 {
-            let Some(selection) = self.selection_for_utf16_range(range) else {
+            let Some(selection) = self.selection_for_utf16_range(range, cx) else {
                 return;
             };
             selection
@@ -390,13 +394,11 @@ impl Editor {
         } else {
             text.to_owned()
         };
-        let outcome = {
-            self.buffer.borrow_mut().insert_at_selections(
-                &targets,
-                &text,
-                edit_metadata("输入文本"),
-            )
-        };
+        let outcome = self.buffer.update(cx, |buffer, cx| {
+            let outcome = buffer.insert_at_selections(&targets, &text, edit_metadata("输入文本"));
+            cx.notify();
+            outcome
+        });
         self.apply_edit_outcome(before_selections, outcome, cx);
     }
 
@@ -417,7 +419,7 @@ impl Editor {
                 }
                 self.selections = outcome.into_after_selections();
                 self.display_map
-                    .set_snapshot(self.buffer.borrow().snapshot());
+                    .set_snapshot(self.buffer.read(cx).snapshot());
                 self.request_autoscroll();
                 self.input_layout = None;
                 cx.notify();
@@ -435,7 +437,7 @@ impl Editor {
     ) {
         let outcome =
             self.buffer
-                .borrow()
+                .read(cx)
                 .move_selections(&self.selections, direction, motion, extend);
         match outcome {
             Ok(selections) => {
@@ -457,13 +459,15 @@ impl Editor {
     ) {
         self.composition = None;
         let before_selections = self.selections.clone();
-        let outcome = {
-            self.buffer.borrow_mut().delete_at_selections(
+        let outcome = self.buffer.update(cx, |buffer, cx| {
+            let outcome = buffer.delete_at_selections(
                 &before_selections,
                 Some((direction, MovementUnit::Grapheme)),
                 edit_metadata(description),
-            )
-        };
+            );
+            cx.notify();
+            outcome
+        });
         self.apply_edit_outcome(before_selections, outcome, cx);
     }
 
@@ -475,8 +479,8 @@ impl Editor {
         self.replace_text(None, "\n", cx);
     }
 
-    fn selected_text(&self) -> Option<String> {
-        let snapshot = self.buffer.borrow().snapshot();
+    fn selected_text(&self, cx: &App) -> Option<String> {
+        let snapshot = self.buffer.read(cx).snapshot();
         let mut parts = Vec::new();
         for selection in self.selections.as_slice() {
             if selection.is_caret() {
@@ -494,7 +498,11 @@ impl Editor {
     }
 
     fn undo(&mut self, cx: &mut Context<Self>) {
-        let outcome = { self.buffer.borrow_mut().undo() };
+        let outcome = self.buffer.update(cx, |buffer, cx| {
+            let outcome = buffer.undo();
+            cx.notify();
+            outcome
+        });
         match outcome {
             Ok(Some(outcome)) => {
                 if let Some(selections) = self
@@ -512,7 +520,11 @@ impl Editor {
     }
 
     fn redo(&mut self, cx: &mut Context<Self>) {
-        let outcome = { self.buffer.borrow_mut().redo() };
+        let outcome = self.buffer.update(cx, |buffer, cx| {
+            let outcome = buffer.redo();
+            cx.notify();
+            outcome
+        });
         match outcome {
             Ok(Some(outcome)) => {
                 if let Some(selections) = self
@@ -532,7 +544,7 @@ impl Editor {
     fn synchronize_after_history_edit(&mut self, cx: &mut Context<Self>) {
         self.composition = None;
         self.display_map
-            .set_snapshot(self.buffer.borrow().snapshot());
+            .set_snapshot(self.buffer.read(cx).snapshot());
         self.request_autoscroll();
         self.input_layout = None;
         cx.notify();
@@ -710,7 +722,7 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let end = self.buffer.borrow().len_bytes();
+        let end = self.buffer.read(cx).len_bytes();
         self.composition = None;
         self.selections = SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, end)]);
         self.request_autoscroll();
@@ -744,25 +756,24 @@ impl Editor {
     }
 
     pub(super) fn handle_copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = self.selected_text() {
+        if let Some(text) = self.selected_text(cx) {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
 
     pub(super) fn handle_cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(text) = self.selected_text() else {
+        let Some(text) = self.selected_text(cx) else {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         self.composition = None;
         let before_selections = self.selections.clone();
-        let outcome = {
-            self.buffer.borrow_mut().delete_at_selections(
-                &before_selections,
-                None,
-                edit_metadata("剪切"),
-            )
-        };
+        let outcome = self.buffer.update(cx, |buffer, cx| {
+            let outcome =
+                buffer.delete_at_selections(&before_selections, None, edit_metadata("剪切"));
+            cx.notify();
+            outcome
+        });
         self.apply_edit_outcome(before_selections, outcome, cx);
     }
 
@@ -786,7 +797,7 @@ fn edit_metadata(description: &'static str) -> TransactionMetadata {
 impl Render for Editor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.display_map
-            .set_snapshot(self.buffer.borrow().snapshot());
+            .set_snapshot(self.buffer.read(cx).snapshot());
 
         let line_height = typography::editor_line();
         let visible_lines = match self.mode {
@@ -904,7 +915,7 @@ impl EntityInputHandler for Editor {
         let range = if let Some(composition) = self.composition.as_ref() {
             composition.range
         } else if let Some(range) = range_utf16 {
-            let Some(selection) = self.selection_for_utf16_range(range) else {
+            let Some(selection) = self.selection_for_utf16_range(range, cx) else {
                 return;
             };
             selection.primary().range()
@@ -980,25 +991,29 @@ mod tests {
     use super::*;
     use crate::editor::display_map::{DisplayPoint, DisplayRow};
 
-    fn buffer_text(buffer: &Rc<RefCell<Buffer>>) -> String {
-        let buffer = buffer.borrow();
-        buffer
-            .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
-            .expect("完整测试 Buffer 应可读取")
-            .as_str()
-            .to_owned()
+    fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<Buffer> {
+        let buffer =
+            Buffer::scratch(text.into(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+        cx.new(|_| buffer)
+    }
+
+    fn buffer_text<C: AppContext>(buffer: &Entity<Buffer>, cx: &C) -> C::Result<String> {
+        cx.read_entity(buffer, |buffer, _| {
+            buffer
+                .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+                .expect("完整测试 Buffer 应可读取")
+                .as_str()
+                .to_owned()
+        })
     }
 
     #[gpui::test]
     fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext) {
-        let buffer = Rc::new(RefCell::new(
-            Buffer::scratch("abc".to_string(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建"),
-        ));
-        let first = cx.new(|cx| Editor::for_buffer(Rc::clone(&buffer), cx));
-        let second = cx.new(|cx| Editor::for_buffer(Rc::clone(&buffer), cx));
+        let buffer = test_buffer(cx, "abc");
+        let first = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
+        let second = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
 
-        cx.update_entity(&first, |editor, _| {
+        cx.update_entity(&first, |editor, cx| {
             editor.selections = SelectionSet::caret(ByteOffset::new(1));
             editor
                 .scroll_manager
@@ -1009,17 +1024,19 @@ mod tests {
                 SelectionSet::caret(ByteOffset::ZERO),
                 editor.selections.clone(),
             );
-            editor
-                .buffer
-                .borrow_mut()
-                .insert(ByteOffset::new(3), "d")
-                .expect("共享 Buffer 编辑应成功");
+            editor.buffer.update(cx, |buffer, cx| {
+                buffer
+                    .insert(ByteOffset::new(3), "d")
+                    .expect("共享 Buffer 编辑应成功");
+                cx.notify();
+            });
         });
 
-        cx.read_entity(&second, |editor, _| {
+        cx.read_entity(&second, |editor, cx| {
             assert_eq!(editor.mode, EditorMode::Full);
-            assert!(Rc::ptr_eq(&editor.buffer, &buffer));
-            assert_eq!(editor.buffer.borrow().len_bytes(), ByteOffset::new(4));
+            assert_eq!(editor.buffer, buffer);
+            assert_eq!(editor.buffer.read(cx).len_bytes(), ByteOffset::new(4));
+            assert_eq!(editor.render_snapshot().len_bytes(), ByteOffset::new(4));
             assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::ZERO));
             assert_eq!(editor.scroll_manager.anchor(), DisplayPoint::ZERO);
             assert_eq!(editor.scroll_manager.offset(), point(px(0.0), px(0.0)));
@@ -1050,15 +1067,15 @@ mod tests {
         let single_line = cx.new(Editor::single_line);
         let auto_height = cx.new(|cx| Editor::auto_height(2, Some(6), cx));
 
-        let single_buffer = cx.read_entity(&single_line, |editor, _| {
+        let single_buffer = cx.read_entity(&single_line, |editor, cx| {
             assert_eq!(editor.mode, EditorMode::SingleLine);
             assert_eq!(editor.selections, SelectionSet::default());
             assert_eq!(
                 editor.display_map.version(),
-                editor.buffer.borrow().version()
+                editor.buffer.read(cx).version()
             );
             let _focus = editor.focus_handle();
-            Rc::clone(&editor.buffer)
+            editor.buffer.clone()
         });
         let auto_height_buffer = cx.read_entity(&auto_height, |editor, _| {
             assert_eq!(
@@ -1068,20 +1085,17 @@ mod tests {
                     max_lines: Some(6),
                 }
             );
-            Rc::clone(&editor.buffer)
+            editor.buffer.clone()
         });
 
-        assert!(!Rc::ptr_eq(&single_buffer, &auto_height_buffer));
+        assert_ne!(single_buffer, auto_height_buffer);
     }
 
     #[gpui::test]
     fn editor_element_renders_multiline_unicode_text(cx: &mut TestAppContext) {
-        let buffer = Rc::new(RefCell::new(
-            Buffer::scratch("a你\n😀b".to_string(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建"),
-        ));
+        let buffer = test_buffer(cx, "a你\n😀b");
         let (editor, cx) = cx.add_window_view({
-            let buffer = Rc::clone(&buffer);
+            let buffer = buffer.clone();
             move |_, cx| Editor::for_buffer(buffer, cx)
         });
 
@@ -1095,18 +1109,16 @@ mod tests {
 
     #[gpui::test]
     fn committed_input_uses_element_input_handler_and_preserves_unicode(cx: &mut TestAppContext) {
-        let buffer = Rc::new(RefCell::new(
-            Buffer::scratch(String::new(), BufferConfig::default()).expect("测试 Buffer 应能创建"),
-        ));
+        let buffer = test_buffer(cx, "");
         let (editor, cx) = cx.add_window_view({
-            let buffer = Rc::clone(&buffer);
+            let buffer = buffer.clone();
             move |_, cx| Editor::for_buffer(buffer, cx)
         });
 
         cx.simulate_click(point(px(4.), px(12.)), gpui::Modifiers::default());
         cx.simulate_input("中😀e\u{301}");
 
-        assert_eq!(buffer_text(&buffer), "中😀e\u{301}");
+        assert_eq!(buffer_text(&buffer, cx), "中😀e\u{301}");
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(
                 editor.selections.primary().head(),
@@ -1118,12 +1130,9 @@ mod tests {
 
     #[gpui::test]
     fn editor_actions_move_extend_delete_and_restore_unicode_selection(cx: &mut TestAppContext) {
-        let buffer = Rc::new(RefCell::new(
-            Buffer::scratch("a😀b".to_owned(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建"),
-        ));
+        let buffer = test_buffer(cx, "a😀b");
         let (editor, cx) = cx.add_window_view({
-            let buffer = Rc::clone(&buffer);
+            let buffer = buffer.clone();
             move |_, cx| Editor::for_buffer(buffer, cx)
         });
 
@@ -1138,13 +1147,13 @@ mod tests {
         });
 
         cx.dispatch_action(Backspace);
-        assert_eq!(buffer_text(&buffer), "ab");
+        assert_eq!(buffer_text(&buffer, cx), "ab");
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(1)));
         });
 
         cx.dispatch_action(Undo);
-        assert_eq!(buffer_text(&buffer), "a😀b");
+        assert_eq!(buffer_text(&buffer, cx), "a😀b");
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(
                 editor.selections,
@@ -1153,7 +1162,7 @@ mod tests {
         });
 
         cx.dispatch_action(Redo);
-        assert_eq!(buffer_text(&buffer), "ab");
+        assert_eq!(buffer_text(&buffer, cx), "ab");
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(1)));
         });
@@ -1161,12 +1170,9 @@ mod tests {
 
     #[gpui::test]
     fn clipboard_actions_edit_selected_text_through_transactions(cx: &mut TestAppContext) {
-        let buffer = Rc::new(RefCell::new(
-            Buffer::scratch("hello".to_owned(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建"),
-        ));
+        let buffer = test_buffer(cx, "hello");
         let (editor, cx) = cx.add_window_view({
-            let buffer = Rc::clone(&buffer);
+            let buffer = buffer.clone();
             move |_, cx| Editor::for_buffer(buffer, cx)
         });
 
@@ -1184,16 +1190,16 @@ mod tests {
         });
 
         cx.dispatch_action(Cut);
-        assert_eq!(buffer_text(&buffer), "ho");
+        assert_eq!(buffer_text(&buffer, cx), "ho");
         cx.dispatch_action(Undo);
-        assert_eq!(buffer_text(&buffer), "hello");
+        assert_eq!(buffer_text(&buffer, cx), "hello");
 
         cx.update_entity(&editor, |editor, _| {
             editor.selections = SelectionSet::caret(ByteOffset::new(5));
         });
         cx.dispatch_action(Paste);
-        assert_eq!(buffer_text(&buffer), "helloell");
-        assert!(buffer.borrow().can_undo());
+        assert_eq!(buffer_text(&buffer, cx), "helloell");
+        assert!(cx.read_entity(&buffer, |buffer, _| buffer.can_undo()));
     }
 
     #[gpui::test]
@@ -1201,11 +1207,9 @@ mod tests {
         let text = (0..120)
             .map(|row| format!("line {row}\n"))
             .collect::<String>();
-        let buffer = Rc::new(RefCell::new(
-            Buffer::scratch(text, BufferConfig::default()).expect("测试 Buffer 应能创建"),
-        ));
+        let buffer = test_buffer(cx, text);
         let (editor, cx) = cx.add_window_view({
-            let buffer = Rc::clone(&buffer);
+            let buffer = buffer.clone();
             move |_, cx| Editor::for_buffer(buffer, cx)
         });
 
@@ -1234,11 +1238,9 @@ mod tests {
         let text = (0..120)
             .map(|row| format!("line {row}\n"))
             .collect::<String>();
-        let buffer = Rc::new(RefCell::new(
-            Buffer::scratch(text, BufferConfig::default()).expect("测试 Buffer 应能创建"),
-        ));
+        let buffer = test_buffer(cx, text);
         let (editor, cx) = cx.add_window_view({
-            let buffer = Rc::clone(&buffer);
+            let buffer = buffer.clone();
             move |_, cx| Editor::for_buffer(buffer, cx)
         });
 
@@ -1259,12 +1261,9 @@ mod tests {
 
     #[gpui::test]
     fn word_line_and_vertical_movement_use_engine_boundaries(cx: &mut TestAppContext) {
-        let buffer = Rc::new(RefCell::new(
-            Buffer::scratch("alpha 你好\nxy".to_owned(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建"),
-        ));
+        let buffer = test_buffer(cx, "alpha 你好\nxy");
         let editor = cx.new({
-            let buffer = Rc::clone(&buffer);
+            let buffer = buffer.clone();
             move |cx| {
                 let mut editor = Editor::for_buffer(buffer, cx);
                 editor.selections = SelectionSet::caret(ByteOffset::new("alpha 你好".len()));
@@ -1292,12 +1291,9 @@ mod tests {
 
     #[gpui::test]
     fn newline_is_a_transaction_and_undo_restores_selection(cx: &mut TestAppContext) {
-        let buffer = Rc::new(RefCell::new(
-            Buffer::scratch("ab".to_owned(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建"),
-        ));
+        let buffer = test_buffer(cx, "ab");
         let editor = cx.new({
-            let buffer = Rc::clone(&buffer);
+            let buffer = buffer.clone();
             move |cx| {
                 let mut editor = Editor::for_buffer(buffer, cx);
                 editor.selections = SelectionSet::caret(ByteOffset::new(1));
@@ -1306,14 +1302,14 @@ mod tests {
         });
 
         cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
-        assert_eq!(buffer_text(&buffer), "a\nb");
-        assert!(buffer.borrow().can_undo());
+        assert_eq!(buffer_text(&buffer, cx), "a\nb");
+        assert!(cx.read_entity(&buffer, |buffer, _| buffer.can_undo()));
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(2)));
         });
 
         cx.update_entity(&editor, |editor, cx| editor.undo(cx));
-        assert_eq!(buffer_text(&buffer), "ab");
+        assert_eq!(buffer_text(&buffer, cx), "ab");
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(1)));
         });
@@ -1321,12 +1317,9 @@ mod tests {
 
     #[gpui::test]
     fn marked_text_stays_out_of_buffer_and_unmark_commits_it(cx: &mut TestAppContext) {
-        let buffer = Rc::new(RefCell::new(
-            Buffer::scratch("ab".to_owned(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建"),
-        ));
+        let buffer = test_buffer(cx, "ab");
         let (editor, cx) = cx.add_window_view({
-            let buffer = Rc::clone(&buffer);
+            let buffer = buffer.clone();
             move |_, cx| {
                 let mut editor = Editor::for_buffer(buffer, cx);
                 editor.selections = SelectionSet::caret(ByteOffset::new(1));
@@ -1342,7 +1335,7 @@ mod tests {
         cx.refresh().expect("测试窗口应可刷新");
         cx.run_until_parked();
 
-        assert_eq!(buffer_text(&buffer), "ab");
+        assert_eq!(buffer_text(&buffer, cx), "ab");
         cx.update(|window, app| {
             editor.update(app, |editor, cx| {
                 let marked = editor
@@ -1362,7 +1355,7 @@ mod tests {
             });
         });
 
-        assert_eq!(buffer_text(&buffer), "a中文😀b");
+        assert_eq!(buffer_text(&buffer, cx), "a中文😀b");
         cx.read_entity(&editor, |editor, _| {
             assert!(editor.composition.is_none());
             assert_eq!(editor.selections.primary().head(), ByteOffset::new(11));
@@ -1371,12 +1364,9 @@ mod tests {
 
     #[gpui::test]
     fn marked_text_can_cancel_and_committed_range_uses_utf16_offsets(cx: &mut TestAppContext) {
-        let buffer = Rc::new(RefCell::new(
-            Buffer::scratch("a😀b".to_owned(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建"),
-        ));
+        let buffer = test_buffer(cx, "a😀b");
         let (editor, cx) = cx.add_window_view({
-            let buffer = Rc::clone(&buffer);
+            let buffer = buffer.clone();
             move |_, cx| Editor::for_buffer(buffer, cx)
         });
 
@@ -1389,7 +1379,7 @@ mod tests {
             });
         });
 
-        assert_eq!(buffer_text(&buffer), "a你b");
+        assert_eq!(buffer_text(&buffer, cx), "a你b");
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(editor.selections.primary().head(), ByteOffset::new(4));
         });
@@ -1402,11 +1392,9 @@ mod tests {
         let text = (0..40)
             .map(|row| format!("line {row}\n"))
             .collect::<String>();
-        let buffer = Rc::new(RefCell::new(
-            Buffer::scratch(text, BufferConfig::default()).expect("测试 Buffer 应能创建"),
-        ));
+        let buffer = test_buffer(cx, text);
         let (editor, cx) = cx.add_window_view({
-            let buffer = Rc::clone(&buffer);
+            let buffer = buffer.clone();
             move |_, cx| Editor::for_buffer(buffer, cx)
         });
         let element_bounds = Bounds::new(point(px(100.), px(200.)), size(px(500.), px(300.)));

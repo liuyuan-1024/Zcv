@@ -4,9 +4,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
-use gpui::Global;
+use gpui::{Entity, Global};
 use zcv_engine::Buffer;
 
 use crate::workbench::pane_group::ViewId;
@@ -14,7 +13,7 @@ use crate::workbench::pane_group::ViewId;
 /// 一个 View 对应一个 Buffer 的"打开实例"。
 pub(crate) struct View {
     pub path: PathBuf,
-    pub buffer: Rc<std::cell::RefCell<Buffer>>,
+    pub buffer: Entity<Buffer>,
 }
 
 /// View 全局注册表。
@@ -34,7 +33,7 @@ impl ViewRegistry {
     }
 
     /// 注册一个 View，返回分配的 ViewId。
-    pub fn register(&mut self, path: PathBuf, buffer: Rc<std::cell::RefCell<Buffer>>) -> ViewId {
+    pub fn register(&mut self, path: PathBuf, buffer: Entity<Buffer>) -> ViewId {
         let id = ViewId(self.next_id);
         self.next_id += 1;
         self.views.insert(id, View { path, buffer });

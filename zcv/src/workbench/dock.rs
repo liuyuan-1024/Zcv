@@ -309,7 +309,13 @@ pub(crate) fn handle_close_tab(_: &CloseTab, window: &mut Window, cx: &mut gpui:
         let pane_entity = ctrl.borrow().focus_pane.clone();
         if let Some(entity) = pane_entity {
             if let Some(view_id) = entity.read(cx).active {
-                entity.update(cx, |pane, _| pane.close_tab(view_id));
+                let editor = entity.update(cx, |pane, _| {
+                    pane.close_tab(view_id);
+                    pane.active_editor()
+                });
+                if let Some(editor) = editor {
+                    window.focus(&editor.read(cx).focus_handle());
+                }
                 window.refresh();
             }
         }

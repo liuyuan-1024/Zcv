@@ -3,12 +3,14 @@
 //! 持有自己的 FocusHandle、tabs、激活状态。
 //! 渲染标签栏和编辑器内容，处理键盘事件。
 
-use gpui::{Context, FocusHandle, Render, Window, actions, div, prelude::*};
-use zcv_engine::{ByteOffset, TextRange};
+use std::collections::HashMap;
+
+use gpui::{Context, Entity, FocusHandle, Render, Window, actions, div, prelude::*};
 
 use super::pane_group::{PaneId, TabItem, ViewId};
-use crate::editor::registry::{View, ViewRegistry};
-use crate::theme::{color, radius, space, typography};
+use crate::editor::editor::Editor;
+use crate::editor::registry::ViewRegistry;
+use crate::theme::{color, radius, space};
 use crate::ui::glyph::Glyph;
 use crate::ui::icon::SvgIcon;
 
@@ -22,6 +24,7 @@ pub(crate) struct Pane {
     pub id: PaneId,
     pub tabs: Vec<TabItem>,
     pub active: Option<ViewId>,
+    editors: HashMap<ViewId, Entity<Editor>>,
 }
 
 impl Pane {
@@ -31,17 +34,32 @@ impl Pane {
             id,
             tabs: Vec::new(),
             active: None,
+            editors: HashMap::new(),
         }
     }
 
     /// 添加一个 tab，若已存在则激活。
-    pub fn add_tab(&mut self, view_id: ViewId, title: &str) {
+    pub fn add_tab(
+        &mut self,
+        view_id: ViewId,
+        title: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<Editor>> {
+        if !self.editors.contains_key(&view_id) {
+            let buffer = cx
+                .global::<ViewRegistry>()
+                .get(view_id)
+                .map(|view| view.buffer.clone())?;
+            let editor = cx.new(|cx| Editor::for_buffer(buffer, cx));
+            self.editors.insert(view_id, editor);
+        }
         if let Some(_tab) = self.tabs.iter_mut().find(|t| t.view_id == view_id) {
             self.active = Some(view_id);
-            return;
+            return self.editors.get(&view_id).cloned();
         }
         self.tabs.push(TabItem::new(view_id, title));
         self.active = Some(view_id);
+        self.editors.get(&view_id).cloned()
     }
 
     /// 激活指定 tab。
@@ -87,9 +105,21 @@ impl Pane {
     pub fn close_tab(&mut self, view_id: ViewId) {
         if let Some(pos) = self.tabs.iter().position(|t| t.view_id == view_id) {
             self.tabs.remove(pos);
+            self.editors.remove(&view_id);
             if self.active == Some(view_id) {
                 self.active = self.tabs.last().map(|t| t.view_id);
             }
+        }
+    }
+
+    pub(crate) fn active_editor(&self) -> Option<Entity<Editor>> {
+        self.active
+            .and_then(|view_id| self.editors.get(&view_id).cloned())
+    }
+
+    fn focus_active_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor() {
+            window.focus(&editor.read(cx).focus_handle());
         }
     }
 }
@@ -97,13 +127,15 @@ impl Pane {
 // ═══ 2. Action handler ═════════════════════════════════════════════
 
 impl Pane {
-    fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, _cx: &mut Context<Self>) {
+    fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         self.next_tab();
+        self.focus_active_editor(window, cx);
         window.refresh();
     }
 
-    fn handle_prev_tab(&mut self, _: &PrevTab, window: &mut Window, _cx: &mut Context<Self>) {
+    fn handle_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
         self.prev_tab();
+        self.focus_active_editor(window, cx);
         window.refresh();
     }
 }
@@ -112,8 +144,8 @@ impl Pane {
 
 impl Render for Pane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let views = cx.global::<ViewRegistry>();
         let active_view = self.active;
+        let active_editor = self.active_editor();
         let pane_entity = cx.entity();
 
         div()
@@ -129,7 +161,7 @@ impl Render for Pane {
             .on_action(cx.listener(Self::handle_next_tab))
             .on_action(cx.listener(Self::handle_prev_tab))
             .child(render_tab_bar(&self.tabs, active_view, pane_entity))
-            .child(render_content(active_view, views))
+            .child(render_content(active_view, active_editor))
     }
 }
 
@@ -177,7 +209,13 @@ fn render_tab(tab: &TabItem, is_active: bool, pane_entity: &gpui::Entity<Pane>) 
         .rounded(radius::R2)
         .cursor_pointer()
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-            activate_entity.update(cx, |pane, _| pane.activate_tab(view_id));
+            let editor = activate_entity.update(cx, |pane, _| {
+                pane.activate_tab(view_id);
+                pane.active_editor()
+            });
+            if let Some(editor) = editor {
+                window.focus(&editor.read(cx).focus_handle());
+            }
             window.refresh();
             cx.stop_propagation();
         })
@@ -207,7 +245,13 @@ fn close_glyph(pane_entity: &gpui::Entity<Pane>, view_id: ViewId) -> impl gpui::
     Glyph::icon(("tab-close", view_id.0), "icons/actions/close.svg")
         .label("关闭标签")
         .on_click(move |window: &mut gpui::Window, cx: &mut gpui::App| {
-            entity.update(cx, |pane, _| pane.close_tab(view_id));
+            let editor = entity.update(cx, |pane, _| {
+                pane.close_tab(view_id);
+                pane.active_editor()
+            });
+            if let Some(editor) = editor {
+                window.focus(&editor.read(cx).focus_handle());
+            }
             window.refresh();
         })
 }
@@ -215,8 +259,11 @@ fn close_glyph(pane_entity: &gpui::Entity<Pane>, view_id: ViewId) -> impl gpui::
 // ── Editor Content ────────────────────────────────────────────────────
 
 /// 渲染 Pane 内容区（编辑器内容或占位文字）。
-fn render_content(active_view: Option<ViewId>, views: &ViewRegistry) -> impl gpui::IntoElement {
-    let Some(view_id) = active_view else {
+fn render_content(
+    active_view: Option<ViewId>,
+    active_editor: Option<Entity<Editor>>,
+) -> impl gpui::IntoElement {
+    if active_view.is_none() {
         return div()
             .flex_1()
             .flex()
@@ -225,8 +272,8 @@ fn render_content(active_view: Option<ViewId>, views: &ViewRegistry) -> impl gpu
             .text_color(color::current().gray.s[5])
             .child("无打开文件")
             .into_any_element();
-    };
-    let Some(view) = views.get(view_id) else {
+    }
+    let Some(editor) = active_editor else {
         return div()
             .flex_1()
             .flex()
@@ -237,90 +284,60 @@ fn render_content(active_view: Option<ViewId>, views: &ViewRegistry) -> impl gpu
             .into_any_element();
     };
 
-    render_editor_content(view).into_any_element()
-}
-
-/// 渲染编辑器内容（多行文本）。
-fn render_editor_content(view: &View) -> impl gpui::IntoElement {
-    let text = {
-        let buf = view.buffer.borrow();
-        let len = buf.len_bytes();
-        if len > ByteOffset::ZERO {
-            let range = TextRange::new(ByteOffset::ZERO, len);
-            match range {
-                Ok(r) => buf
-                    .snapshot()
-                    .slice_text(r)
-                    .ok()
-                    .map(|s| s.as_str().to_string())
-                    .unwrap_or_default(),
-                Err(_) => String::new(),
-            }
-        } else {
-            String::new()
-        }
-    };
-
-    let lines: Vec<&str> = text.split('\n').collect();
-    if lines.is_empty() {
-        return div()
-            .flex_1()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_color(color::current().gray.s[5])
-            .child("空文件")
-            .into_any_element();
-    }
-
-    let scroll = view.scroll_line.get() as usize;
-    let scroll_idx = scroll.min(lines.len() - 1);
-    const MAX_VISIBLE: usize = 200;
-    let end = (scroll_idx + MAX_VISIBLE).min(lines.len());
-    let view_id = view.id;
-
     div()
         .flex_1()
         .flex()
-        .flex_col()
         .overflow_hidden()
-        .font(typography::editor_font())
-        .text_size(typography::editor())
-        .line_height(typography::editor_line())
-        .on_key_down(move |event, window, cx| {
-            handle_editor_scroll(&event.keystroke, view_id, window, cx);
-        })
-        .children(lines[scroll_idx..end].iter().map(|line: &&str| {
-            div()
-                .h(typography::editor_line())
-                .px(space::S4)
-                .child(line.to_string())
-        }))
+        .px(space::S4)
+        .child(editor)
         .into_any_element()
 }
 
-/// 处理编辑器键盘滚动。
-fn handle_editor_scroll(
-    keystroke: &gpui::Keystroke,
-    view_id: ViewId,
-    window: &mut Window,
-    cx: &mut gpui::App,
-) {
-    let delta = match keystroke.key.as_str() {
-        "up" => -1i32,
-        "down" => 1,
-        "pageup" => -20,
-        "pagedown" => 20,
-        _ => return,
-    };
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+    use std::rc::Rc;
 
-    cx.update_global::<ViewRegistry, _>(|reg, _| {
-        if let Some(view) = reg.get_mut(view_id) {
-            let current = view.scroll_line.get() as i32;
-            let new = (current + delta).max(0) as u32;
-            view.scroll_line.set(new);
-        }
-    });
+    use gpui::{AppContext, TestAppContext};
+    use zcv_engine::{Buffer, BufferConfig};
 
-    window.refresh();
+    use super::*;
+
+    #[gpui::test]
+    fn pane_uses_an_editor_backed_by_the_registered_buffer(cx: &mut TestAppContext) {
+        let buffer = Rc::new(RefCell::new(
+            Buffer::scratch("真实编辑器".to_owned(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建"),
+        ));
+        let view_id = cx.update({
+            let buffer = Rc::clone(&buffer);
+            move |cx| {
+                let mut registry = ViewRegistry::new();
+                let view_id = registry.register(PathBuf::from("demo.txt"), buffer);
+                cx.set_global(registry);
+                view_id
+            }
+        });
+        let pane = cx.new(|cx| Pane::new(PaneId(1), cx));
+
+        let editor = cx
+            .update_entity(&pane, |pane, cx| pane.add_tab(view_id, "demo.txt", cx))
+            .expect("已注册的 View 应创建 Editor");
+        cx.update_entity(&editor, |editor, cx| editor.set_text("阶段七", cx));
+
+        assert_eq!(
+            buffer
+                .borrow()
+                .slice_byte_range(zcv_engine::ByteOffset::ZERO, buffer.borrow().len_bytes(),)
+                .expect("完整 Buffer 应可读取")
+                .as_str(),
+            "阶段七"
+        );
+        cx.read_entity(&pane, |pane, _| {
+            assert_eq!(pane.active, Some(view_id));
+            assert_eq!(pane.tabs.len(), 1);
+            assert!(pane.active_editor().is_some());
+        });
+    }
 }

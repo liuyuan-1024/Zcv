@@ -111,7 +111,12 @@ impl Workspace {
     /// 聚焦回编辑区。
     fn focus_center_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(pane_entity) = self.layout.borrow().focus_pane_entity() {
-            window.focus(&pane_entity.read(cx).focus);
+            let pane = pane_entity.read(cx);
+            if let Some(editor) = pane.active_editor() {
+                window.focus(&editor.read(cx).focus_handle());
+            } else {
+                window.focus(&pane.focus);
+            }
         }
     }
 

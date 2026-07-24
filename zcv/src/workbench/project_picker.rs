@@ -259,8 +259,8 @@ impl ProjectPicker {
             self.picker.update(cx, |picker, cx| {
                 picker.delegate_mut().reload_projects();
                 // 清空搜索框文字
-                picker.editor().update(cx, |editor, _| {
-                    editor.set_text("");
+                picker.editor().update(cx, |editor, cx| {
+                    editor.set_text("", cx);
                 });
                 cx.notify();
             });

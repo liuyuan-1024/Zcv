@@ -231,6 +231,37 @@ impl Editor {
         self.focus.clone()
     }
 
+    pub(crate) fn text(&self) -> String {
+        let snapshot = self.buffer.borrow().snapshot();
+        snapshot
+            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+            .expect("完整 Editor Snapshot 范围必须可读取")
+            .as_str()
+            .to_owned()
+    }
+
+    pub(crate) fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.composition = None;
+        let before_selections = self.selections.clone();
+        let targets = SelectionSet::new(vec![Selection::new(
+            ByteOffset::ZERO,
+            self.buffer.borrow().len_bytes(),
+        )]);
+        let text = if self.mode == EditorMode::SingleLine {
+            text.replace(['\r', '\n'], "")
+        } else {
+            text.to_owned()
+        };
+        let outcome = {
+            self.buffer.borrow_mut().insert_at_selections(
+                &targets,
+                &text,
+                edit_metadata("设置文本"),
+            )
+        };
+        self.apply_edit_outcome(before_selections, outcome, cx);
+    }
+
     pub(super) fn render_snapshot(&self) -> Snapshot {
         self.display_map.snapshot().clone()
     }

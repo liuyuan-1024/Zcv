@@ -84,7 +84,10 @@ fn open_file_in_editor(path: &Path, window: &mut Window, cx: &mut gpui::App) {
     if let Some(layout_ref) = cx.try_global::<LayoutRef>() {
         if let Some(ctrl) = layout_ref.0.upgrade() {
             if let Some(entity) = ctrl.borrow().focus_pane.clone() {
-                entity.update(cx, |pane, _| pane.add_tab(view_id, &file_name));
+                let editor = entity.update(cx, |pane, cx| pane.add_tab(view_id, &file_name, cx));
+                if let Some(editor) = editor {
+                    window.focus(&editor.read(cx).focus_handle());
+                }
                 window.refresh();
             }
         }

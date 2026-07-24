@@ -2,19 +2,16 @@
 //!
 //! 参考 zed `crates/picker/src/picker.rs` 架构：
 //! - `Picker<D: PickerDelegate>` 是 gpui Entity，自管生命周期
-//! - 内嵌 `EditableText` 作为搜索框（后续替换为 Editor）
+//! - 内嵌统一 `Editor::single_line` 作为搜索框
 //! - 搜索过滤、键盘导航、确认/取消均由 Picker 内部处理
 //! - 调用方只需要实现 `PickerDelegate` 并提供数据
-
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Pixels, Render, SharedString, Window, actions,
     div, prelude::*, px,
 };
 
-use crate::editor::editable::EditableText;
+use crate::editor::editor::Editor;
 use crate::theme::{color, space};
 
 actions!(
@@ -62,38 +59,38 @@ pub trait PickerDelegate: 'static {
 
 pub struct Picker<D: PickerDelegate> {
     delegate: D,
-    editor: Entity<EditableText>,
+    editor: Entity<Editor>,
     focus_handle: FocusHandle,
     width: Pixels,
-    pending_query: Rc<RefCell<String>>,
+    query: String,
     on_dismiss: Option<Box<dyn Fn(&mut Window, &mut App)>>,
 }
 
 impl<D: PickerDelegate> Picker<D> {
     pub fn new(delegate: D, width: Pixels, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
-        let editor = cx.new(|cx| EditableText::new("picker-search", cx));
+        let editor = cx.new(Editor::single_line);
         Self {
             delegate,
             editor,
             focus_handle: focus,
             width,
-            pending_query: Rc::new(RefCell::new(String::new())),
+            query: String::new(),
             on_dismiss: None,
         }
     }
 
     /// Entity 创建后调用，连接编辑器输入。
     pub fn init(&mut self, cx: &mut Context<Self>) {
-        let pending = self.pending_query.clone();
-        self.editor.update(cx, |editor, _cx| {
-            editor.set_on_change(Box::new(
-                move |text: &str, window: &mut Window, _app: &mut App| {
-                    *pending.borrow_mut() = text.to_string();
-                    window.refresh();
-                },
-            ));
-        });
+        cx.observe(&self.editor, |picker, editor, cx| {
+            let query = editor.read(cx).text();
+            if picker.query != query {
+                picker.query = query.clone();
+                picker.delegate.update_matches(query);
+                cx.notify();
+            }
+        })
+        .detach();
     }
 
     /// 设置关闭回调（由父 Entity 调用，例如关闭浮层）。
@@ -109,19 +106,8 @@ impl<D: PickerDelegate> Picker<D> {
         &mut self.delegate
     }
 
-    pub fn editor(&self) -> &Entity<EditableText> {
+    pub fn editor(&self) -> &Entity<Editor> {
         &self.editor
-    }
-
-    /// 处理挂起的查询。
-    fn flush_pending_query(&mut self) {
-        let query = self.pending_query.borrow_mut();
-        if !query.is_empty() {
-            let q = query.clone();
-            drop(query);
-            self.delegate.update_matches(q);
-            *self.pending_query.borrow_mut() = String::new();
-        }
     }
 
     // ══ 内部：action handler ════════════════════════════════════
@@ -161,9 +147,6 @@ impl<D: PickerDelegate> Picker<D> {
 
 impl<D: PickerDelegate> Render for Picker<D> {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 先消费挂起的查询
-        self.flush_pending_query();
-
         let count = self.delegate.match_count();
 
         // 无匹配提示
@@ -196,7 +179,12 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel));
 
-        root.child(picker_search_box(self.editor.clone()))
+        let placeholder = self
+            .query
+            .is_empty()
+            .then(|| SharedString::from(self.delegate.placeholder_text().to_owned()));
+
+        root.child(picker_search_box(self.editor.clone(), placeholder))
             .when_some(self.delegate.render_header(), |el, h| el.child(h))
             .when_some(no_match, |el, n| el.child(n))
             .children(items)
@@ -207,8 +195,12 @@ impl<D: PickerDelegate> Render for Picker<D> {
 }
 
 /// 搜索框容器：带回顶部边框和间距。
-pub fn picker_search_box(content: impl IntoElement) -> impl IntoElement {
+pub fn picker_search_box(
+    content: impl IntoElement,
+    placeholder: Option<SharedString>,
+) -> impl IntoElement {
     div()
+        .relative()
         .w_full()
         .flex()
         .flex_none()
@@ -218,10 +210,78 @@ pub fn picker_search_box(content: impl IntoElement) -> impl IntoElement {
         .h(px(27.0))
         .border_b_1()
         .border_color(color::current().gray.s[4])
+        .when_some(placeholder, |el, placeholder| {
+            el.child(
+                div()
+                    .absolute()
+                    .left(space::S4)
+                    .text_color(color::current().gray.s[5])
+                    .child(placeholder),
+            )
+        })
         .child(content)
 }
 
 /// 分隔线。
 pub fn picker_divider() -> impl IntoElement {
     div().w_full().h(px(1.0)).bg(color::current().gray.s[4])
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{AppContext, TestAppContext};
+
+    use super::*;
+
+    struct TestDelegate {
+        query: String,
+    }
+
+    impl PickerDelegate for TestDelegate {
+        fn match_count(&self) -> usize {
+            0
+        }
+
+        fn selected_index(&self) -> usize {
+            0
+        }
+
+        fn set_selected_index(&mut self, _: usize) {}
+
+        fn update_matches(&mut self, query: String) {
+            self.query = query;
+        }
+
+        fn confirm(&mut self, _: &mut Window, _: &mut App) {}
+
+        fn dismissed(&mut self) {}
+
+        fn render_match(&self, _: usize, _: bool) -> AnyElement {
+            div().into_any_element()
+        }
+    }
+
+    #[gpui::test]
+    fn single_line_editor_drives_picker_query(cx: &mut TestAppContext) {
+        let picker = cx.new(|cx| {
+            let mut picker = Picker::new(
+                TestDelegate {
+                    query: String::new(),
+                },
+                px(300.0),
+                cx,
+            );
+            picker.init(cx);
+            picker
+        });
+        let editor = cx.read_entity(&picker, |picker, _| picker.editor().clone());
+
+        cx.update_entity(&editor, |editor, cx| editor.set_text("zed\nstyle", cx));
+        cx.run_until_parked();
+
+        cx.read_entity(&picker, |picker, _| {
+            assert_eq!(picker.query, "zedstyle");
+            assert_eq!(picker.delegate().query, "zedstyle");
+        });
+    }
 }

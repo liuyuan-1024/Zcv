@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use gpui::{
     Bounds, ClipboardItem, Context, CursorStyle, EntityInputHandler, FocusHandle, IntoElement,
-    Pixels, Point, Render, Styled, UTF16Selection, Window, actions, div, prelude::*,
+    Pixels, Point, Render, Styled, UTF16Selection, Window, actions, div, point, prelude::*, px,
+    size,
 };
 use zcv_engine::{
     Buffer, BufferConfig, ByteOffset, EditOutcome, EngineResult, Motion, MovementDirection,
@@ -196,6 +197,9 @@ pub(crate) struct Editor {
     scroll_manager: ScrollManager,
     composition: Option<EditorComposition>,
     input_layout: Option<EditorInputLayout>,
+    pixel_position_of_newest_cursor: Option<Point<Pixels>>,
+    last_bounds: Option<Bounds<Pixels>>,
+    last_line_height: Option<Pixels>,
     focus: FocusHandle,
 }
 
@@ -292,6 +296,22 @@ impl Editor {
         self.input_layout = Some(layout);
     }
 
+    pub(super) fn set_ime_caret_geometry(
+        &mut self,
+        element_bounds: Bounds<Pixels>,
+        caret_bounds: Option<Bounds<Pixels>>,
+    ) {
+        let Some(caret_bounds) = caret_bounds else {
+            return;
+        };
+        self.pixel_position_of_newest_cursor = Some(point(
+            caret_bounds.origin.x - element_bounds.origin.x,
+            caret_bounds.origin.y - element_bounds.origin.y,
+        ));
+        self.last_bounds = Some(element_bounds);
+        self.last_line_height = Some(caret_bounds.size.height);
+    }
+
     pub(super) fn prepare_scroll_viewport(&mut self, viewport_height: Pixels, line_height: Pixels) {
         self.scroll_manager.update_viewport(
             self.display_map.snapshot().line_count(),
@@ -321,6 +341,9 @@ impl Editor {
             scroll_manager: ScrollManager::default(),
             composition: None,
             input_layout: None,
+            pixel_position_of_newest_cursor: None,
+            last_bounds: None,
+            last_line_height: None,
             focus: cx.focus_handle(),
         }
     }
@@ -908,14 +931,17 @@ impl EntityInputHandler for Editor {
 
     fn bounds_for_range(
         &mut self,
-        range_utf16: Range<usize>,
+        _range_utf16: Range<usize>,
         _element_bounds: Bounds<Pixels>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        self.input_layout
-            .as_ref()?
-            .bounds_for_utf16_range(range_utf16)
+        let cursor = self.pixel_position_of_newest_cursor?;
+        let bounds = self.last_bounds?;
+        Some(Bounds::new(
+            point(bounds.origin.x + cursor.x, bounds.origin.y + cursor.y),
+            size(px(2.), self.last_line_height?),
+        ))
     }
 
     fn character_index_for_point(
@@ -1366,6 +1392,43 @@ mod tests {
         assert_eq!(buffer_text(&buffer), "a你b");
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(editor.selections.primary().head(), ByteOffset::new(4));
+        });
+    }
+
+    #[gpui::test]
+    fn ime_candidate_bounds_survive_composition_and_scroll_layout_invalidation(
+        cx: &mut TestAppContext,
+    ) {
+        let text = (0..40)
+            .map(|row| format!("line {row}\n"))
+            .collect::<String>();
+        let buffer = Rc::new(RefCell::new(
+            Buffer::scratch(text, BufferConfig::default()).expect("测试 Buffer 应能创建"),
+        ));
+        let (editor, cx) = cx.add_window_view({
+            let buffer = Rc::clone(&buffer);
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+        let element_bounds = Bounds::new(point(px(100.), px(200.)), size(px(500.), px(300.)));
+        let caret_bounds = Bounds::new(point(px(124.), px(260.)), size(px(2.), px(20.)));
+
+        cx.update(|window, app| {
+            editor.update(app, |editor, cx| {
+                editor.set_ime_caret_geometry(element_bounds, Some(caret_bounds));
+                editor.replace_and_mark_text_in_range(None, "中文", Some(2..2), window, cx);
+                assert!(editor.input_layout.is_none());
+                assert_eq!(
+                    editor.bounds_for_range(2..2, element_bounds, window, cx),
+                    Some(caret_bounds)
+                );
+
+                editor.prepare_scroll_viewport(px(100.), px(20.));
+                assert!(editor.scroll_by(point(px(0.), px(-60.)), cx));
+                assert_eq!(
+                    editor.bounds_for_range(2..2, element_bounds, window, cx),
+                    Some(caret_bounds)
+                );
+            });
         });
     }
 }

@@ -163,6 +163,7 @@ pub(super) struct PrepaintState {
     layout: Arc<EditorLayout>,
     selections: Vec<PaintQuad>,
     carets: Vec<PaintQuad>,
+    ime_caret_bounds: Option<Bounds<Pixels>>,
     hitbox: gpui::Hitbox,
 }
 
@@ -231,12 +232,14 @@ impl Element for EditorElement {
             line_height,
             window,
         ));
+        let ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);
         let (selections, carets) = layout_selections(&selections, &layout, line_height);
 
         PrepaintState {
             layout,
             selections,
             carets,
+            ime_caret_bounds,
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
         }
     }
@@ -312,8 +315,10 @@ impl Element for EditorElement {
             }
         }
         let input_layout = prepaint.layout.input_layout();
-        self.editor
-            .update(cx, |editor, _| editor.set_input_layout(input_layout));
+        self.editor.update(cx, |editor, _| {
+            editor.set_input_layout(input_layout);
+            editor.set_ime_caret_geometry(bounds, prepaint.ime_caret_bounds);
+        });
     }
 }
 
@@ -417,6 +422,36 @@ fn layout_selections(
     }
 
     (selection_quads, caret_quads)
+}
+
+fn layout_primary_caret(
+    selections: &SelectionSet,
+    layout: &EditorLayout,
+    line_height: Pixels,
+) -> Option<Bounds<Pixels>> {
+    if let Some(range) = layout.presentation.selected_range_utf16() {
+        return layout
+            .input_layout()
+            .bounds_for_utf16_range(range.end..range.end);
+    }
+
+    let display_byte = layout
+        .presentation
+        .buffer_byte_to_display_byte(selections.primary().head());
+    let line = layout.lines.iter().find(|line| {
+        line.global_byte_start <= display_byte
+            && display_byte <= line.global_byte_start + line.shaped.len()
+    })?;
+    let local_byte = display_byte
+        .saturating_sub(line.global_byte_start)
+        .min(line.shaped.len());
+    Some(Bounds::new(
+        point(
+            line.origin.x + line.shaped.x_for_index(local_byte),
+            line.origin.y,
+        ),
+        size(px(2.), line_height),
+    ))
 }
 
 fn layout_display_range(

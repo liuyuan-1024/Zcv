@@ -21,6 +21,7 @@ const ASSETS: &[(&str, &[u8])] = &[
     asset!("icons/actions/preview.svg"),
     asset!("icons/actions/settings.svg"),
     asset!("icons/actions/close.svg"),
+    asset!("icons/actions/circle.svg"),
     asset!("icons/actions/check.svg"),
     asset!("icons/actions/case_sensitive.svg"),
     asset!("icons/actions/regex.svg"),

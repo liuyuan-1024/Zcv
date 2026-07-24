@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 
-use gpui::{Context, Entity, FocusHandle, Render, Window, actions, div, prelude::*};
+use gpui::{
+    AnyElement, App, Context, Entity, FocusHandle, Render, Window, actions, div, prelude::*,
+};
 
 use super::pane_group::{PaneId, TabItem, ViewId};
 use crate::editor::editor::Editor;
@@ -15,6 +17,8 @@ use crate::ui::glyph::Glyph;
 use crate::ui::icon::SvgIcon;
 
 actions!(pane, [CloseTab, NextTab, PrevTab]);
+
+const TAB_HOVER_GROUP: &str = "pane.tab";
 
 // ═══ 1. Struct + constructor ═══════════════════════════════════════
 
@@ -51,6 +55,7 @@ impl Pane {
                 .get(view_id)
                 .map(|view| view.buffer.clone())?;
             let editor = cx.new(|cx| Editor::for_buffer(buffer, cx));
+            cx.observe(&editor, |_, _, cx| cx.notify()).detach();
             self.editors.insert(view_id, editor);
         }
         if let Some(_tab) = self.tabs.iter_mut().find(|t| t.view_id == view_id) {
@@ -160,7 +165,13 @@ impl Render for Pane {
             .bg(color::current().gray.s[1])
             .on_action(cx.listener(Self::handle_next_tab))
             .on_action(cx.listener(Self::handle_prev_tab))
-            .child(render_tab_bar(&self.tabs, active_view, pane_entity))
+            .child(render_tab_bar(
+                &self.tabs,
+                &self.editors,
+                active_view,
+                pane_entity,
+                cx,
+            ))
             .child(render_content(active_view, active_editor))
     }
 }
@@ -172,8 +183,10 @@ impl Render for Pane {
 /// 标签栏：一组标签的容器。
 fn render_tab_bar(
     tabs: &[TabItem],
+    editors: &HashMap<ViewId, Entity<Editor>>,
     active_view: Option<ViewId>,
     pane_entity: gpui::Entity<Pane>,
+    cx: &App,
 ) -> gpui::Div {
     if tabs.is_empty() {
         return div().flex_shrink_0();
@@ -188,19 +201,34 @@ fn render_tab_bar(
         .bg(color::current().gray.s[2])
         .border_b_1()
         .border_color(color::current().gray.s[4])
-        .children(
-            tabs.iter()
-                .map(|tab| render_tab(tab, Some(tab.view_id) == active_view, &pane_entity)),
-        )
+        .children(tabs.iter().map(|tab| {
+            let is_dirty = editors
+                .get(&tab.view_id)
+                .is_some_and(|editor| editor.read(cx).is_dirty(cx));
+            render_tab(
+                tab,
+                Some(tab.view_id) == active_view,
+                is_dirty,
+                &pane_entity,
+                cx,
+            )
+        }))
 }
 
 /// 单个标签：文件图标 + 文件名 + 关闭按钮。
-fn render_tab(tab: &TabItem, is_active: bool, pane_entity: &gpui::Entity<Pane>) -> gpui::Div {
+fn render_tab(
+    tab: &TabItem,
+    is_active: bool,
+    is_dirty: bool,
+    pane_entity: &gpui::Entity<Pane>,
+    cx: &App,
+) -> gpui::Div {
     let view_id = tab.view_id;
     let activate_entity = pane_entity.clone();
     let close_entity = pane_entity.clone();
 
     div()
+        .group(TAB_HOVER_GROUP)
         .flex()
         .flex_row()
         .items_center()
@@ -231,7 +259,7 @@ fn render_tab(tab: &TabItem, is_active: bool, pane_entity: &gpui::Entity<Pane>) 
         })
         .child(file_icon())
         .child(tab.title.clone())
-        .child(close_glyph(&close_entity, view_id))
+        .child(tab_end_glyph(&close_entity, view_id, is_dirty, cx))
 }
 
 /// 文件类型图标。
@@ -240,10 +268,15 @@ fn file_icon() -> impl gpui::IntoElement {
 }
 
 /// 标签关闭按钮（叉 glyph）。
-fn close_glyph(pane_entity: &gpui::Entity<Pane>, view_id: ViewId) -> impl gpui::IntoElement {
+fn close_glyph(
+    pane_entity: &gpui::Entity<Pane>,
+    view_id: ViewId,
+    cx: &App,
+) -> impl gpui::IntoElement {
     let entity = pane_entity.clone();
     Glyph::icon(("tab-close", view_id.0), "icons/actions/close.svg")
         .label("关闭标签")
+        .shortcut(&CloseTab, cx)
         .on_click(move |window: &mut gpui::Window, cx: &mut gpui::App| {
             let editor = entity.update(cx, |pane, _| {
                 pane.close_tab(view_id);
@@ -254,6 +287,46 @@ fn close_glyph(pane_entity: &gpui::Entity<Pane>, view_id: ViewId) -> impl gpui::
             }
             window.refresh();
         })
+}
+
+/// 标签尾部状态槽：未保存时默认显示圆点，悬停标签后切换为关闭按钮。
+fn tab_end_glyph(
+    pane_entity: &gpui::Entity<Pane>,
+    view_id: ViewId,
+    is_dirty: bool,
+    cx: &App,
+) -> AnyElement {
+    if !is_dirty {
+        return close_glyph(pane_entity, view_id, cx).into_any_element();
+    }
+
+    let slot_size = crate::theme::typography::ui();
+    div()
+        .relative()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(slot_size)
+        .child(
+            div()
+                .group_hover(TAB_HOVER_GROUP, |style| style.opacity(0.0))
+                .child(
+                    Glyph::icon(("tab-dirty", view_id.0), "icons/actions/circle.svg")
+                        .color(color::highlight()),
+                ),
+        )
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .opacity(0.0)
+                .group_hover(TAB_HOVER_GROUP, |style| style.opacity(1.0))
+                .child(close_glyph(pane_entity, view_id, cx)),
+        )
+        .into_any_element()
 }
 
 // ── Editor Content ────────────────────────────────────────────────────
@@ -322,7 +395,9 @@ mod tests {
         let editor = cx
             .update_entity(&pane, |pane, cx| pane.add_tab(view_id, "demo.txt", cx))
             .expect("已注册的 View 应创建 Editor");
+        cx.read_entity(&editor, |editor, cx| assert!(!editor.is_dirty(cx)));
         cx.update_entity(&editor, |editor, cx| editor.set_text("阶段七", cx));
+        cx.read_entity(&editor, |editor, cx| assert!(editor.is_dirty(cx)));
 
         cx.read_entity(&buffer, |buffer, _| {
             assert_eq!(

@@ -41,7 +41,6 @@ pub(crate) enum Direction {
 pub(crate) struct TabItem {
     pub view_id: ViewId,
     pub title: String,
-    pub dirty: bool,
 }
 
 impl TabItem {
@@ -49,7 +48,6 @@ impl TabItem {
         Self {
             view_id,
             title: title.into(),
-            dirty: false,
         }
     }
 }

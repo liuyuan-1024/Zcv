@@ -244,6 +244,10 @@ impl Editor {
             .to_owned()
     }
 
+    pub(crate) fn is_dirty(&self, cx: &App) -> bool {
+        self.buffer.read(cx).is_dirty()
+    }
+
     pub(crate) fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.composition = None;
         let before_selections = self.selections.clone();

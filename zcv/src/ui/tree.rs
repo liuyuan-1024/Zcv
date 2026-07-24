@@ -12,67 +12,86 @@ const FILE: &str = "icons/files/file.svg";
 /// 树行完整渲染：行骨架 + 缩进竖线 + 图标 + 名称。
 pub(crate) fn render_row_base(depth: usize, is_dir: bool, expanded: bool, name: &str) -> gpui::Div {
     row_skeleton(depth)
-        .child(guide_lines(depth))
+        .children(guide_lines(depth))
         .child(icon(is_dir, expanded))
         .child(label(name))
 }
 
-/// 选中行蓝框——absolute 覆盖整行，不参与行布局。
-/// `.when(is_selected, |el| el.child(tree::selection_border()))`
+/// 选中框——absolute 覆盖整行，不参与行布局。
 pub(crate) fn selection_border() -> gpui::Div {
+    let m = metrics();
     div()
         .absolute()
         .top(px(0.))
         .left(px(0.))
         .right(px(0.))
-        .h(typography::ui())
+        .h(m.row_height)
         .rounded(radius::R2)
         .border_1()
-        .border_color(color::current().blue.s[6])
+        .border_color(color::highlight())
 }
 
 // ── 私有辅助函数 ─────────────────────────────────────────────────────
 
-fn indent_unit() -> gpui::Pixels {
-    typography::ui()
+/// 树行布局度量。
+struct TreeMetrics {
+    row_height: gpui::Pixels,
+    indent: gpui::Pixels,
+    padding: gpui::Pixels,
+}
+
+fn metrics() -> TreeMetrics {
+    let padding = space::S4;
+    let indent = typography::ui();
+    TreeMetrics {
+        row_height: indent + padding,
+        indent,
+        padding,
+    }
+}
+
+impl TreeMetrics {
+    fn indent_left(&self, depth: usize) -> gpui::Pixels {
+        self.indent * (depth as f32) + self.padding
+    }
+
+    fn guide_x(&self, depth: usize) -> gpui::Pixels {
+        self.indent * (depth as f32) + self.indent / 2.0 + self.padding
+    }
 }
 
 /// 树行骨架：relative + flex-row + items_center + 缩进 + 字型。
 fn row_skeleton(depth: usize) -> gpui::Div {
+    let m = metrics();
     div()
         .relative()
         .flex()
         .flex_row()
         .items_center()
         .w_full()
-        .h(typography::ui())
-        .gap(space::S4)
+        .h(m.row_height)
+        .pl(m.indent_left(depth))
         .rounded(radius::R2)
-        .pl(indent_unit() * (depth as f32))
 }
 
-/// 渲染缩进竖线——只画祖辈级，本级留给子行去画。
-fn guide_lines(depth: usize) -> impl IntoElement {
+/// 渲染缩进竖线——每条线直接 absolute 定位在行上。
+fn guide_lines(depth: usize) -> Vec<gpui::Div> {
+    let m = metrics();
     let line_color = color::current().gray.s[4];
     let line_w = px(1.0);
-    let row_h = typography::ui();
 
-    let mut container = div().absolute().top(px(0.)).left(px(0.)).w_full().h(row_h);
-    let icon_half = typography::ui() / 2.0;
-
-    for k in 0..depth {
-        let x_center = indent_unit() * (k as f32) + icon_half;
-        container = container.child(
+    (0..depth)
+        .map(|k| {
+            let x_center = m.guide_x(k);
             div()
                 .absolute()
                 .left(x_center - line_w / 2.0)
                 .top(px(0.))
                 .w(line_w)
-                .h(row_h)
-                .bg(line_color),
-        );
-    }
-    container
+                .h_full()
+                .bg(line_color)
+        })
+        .collect()
 }
 
 /// 根据条目类型和展开/折叠状态返回对应的图标元素。

@@ -197,9 +197,10 @@ impl ProjectTree {
 }
 
 impl gpui::Render for ProjectTree {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         self.state.borrow_mut().ensure_selected();
         let len = self.state.borrow().visible_rows().len();
+        let is_focused = self.focus.contains_focused(window, cx);
 
         div()
             .size_full()
@@ -211,7 +212,12 @@ impl gpui::Render for ProjectTree {
             .on_action(cx.listener(Self::handle_tree_collapse))
             .on_action(cx.listener(Self::handle_tree_expand))
             .on_action(cx.listener(Self::handle_tree_activate))
-            .child(render_list(&self.state, &self.scroll_handle, len))
+            .child(render_list(
+                &self.state,
+                &self.scroll_handle,
+                len,
+                is_focused,
+            ))
     }
 }
 
@@ -221,6 +227,7 @@ fn render_list(
     state: &Rc<RefCell<ProjectTreeState>>,
     scroll_handle: &UniformListScrollHandle,
     len: usize,
+    is_focused: bool,
 ) -> gpui::UniformList {
     let tree_rc = Rc::clone(state);
     let handle = scroll_handle.clone();
@@ -232,7 +239,7 @@ fn render_list(
             .filter_map(|i| rows.get(i))
             .map(|row| {
                 let sel = state.selected.as_ref() == Some(&row.path);
-                render_row(row, Rc::clone(&tree_rc), sel).into_any_element()
+                render_row(row, Rc::clone(&tree_rc), sel, is_focused).into_any_element()
             })
             .collect()
     })
@@ -240,7 +247,12 @@ fn render_list(
     .track_scroll(handle)
 }
 
-fn render_row(row: &ProjectTreeRow, state: Rc<RefCell<ProjectTreeState>>, sel: bool) -> Div {
+fn render_row(
+    row: &ProjectTreeRow,
+    state: Rc<RefCell<ProjectTreeState>>,
+    sel: bool,
+    focused: bool,
+) -> Div {
     let path = row.path.clone();
     let is_dir = row.is_dir;
     let depth = row.depth;
@@ -254,7 +266,7 @@ fn render_row(row: &ProjectTreeRow, state: Rc<RefCell<ProjectTreeState>>, sel: b
     tree::render_row_base(depth, is_dir, row.expanded, &name)
         .bg(bg)
         .cursor_pointer()
-        .when(sel, |el| el.child(tree::selection_border()))
+        .when(sel && focused, |el| el.child(tree::selection_border()))
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             activate_node(&state, &path, is_dir, window, cx);
             cx.stop_propagation();
@@ -299,11 +311,26 @@ impl ProjectTreeState {
 
     fn visible_rows(&self) -> Vec<ProjectTreeRow> {
         let mut rows = Vec::new();
-        self.collect_children(&self.root, 0, &mut rows);
-        // 无选中时自动选中第一行，让焦点进入时能看到选中蓝框
-        if self.selected.is_none() && !rows.is_empty() {
-            // 不能直接修改 self，由调用方处理
+
+        // 根目录本身作为 depth 0 行
+        let root_name = self
+            .root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| self.root.to_string_lossy().to_string());
+        let root_expanded = self.expanded.contains(&self.root);
+        rows.push(ProjectTreeRow {
+            path: self.root.clone(),
+            name: root_name,
+            depth: 0,
+            is_dir: true,
+            expanded: root_expanded,
+        });
+
+        if root_expanded {
+            self.collect_children(&self.root, 1, &mut rows);
         }
+
         rows
     }
 

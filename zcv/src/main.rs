@@ -40,7 +40,14 @@ fn main() {
                         }),
                         ..Default::default()
                     },
-                    |_, cx| cx.new(Workspace::new),
+                    |_window, cx| {
+                        let workspace = cx.new(Workspace::new);
+                        #[cfg(debug_assertions)]
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.open_development_project(_window, cx);
+                        });
+                        workspace
+                    },
                 )
                 .expect("主窗口应能创建");
         });

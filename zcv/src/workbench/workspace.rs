@@ -70,6 +70,14 @@ impl Workspace {
         }
     }
 
+    /// 开发构建启动时，沿用正式项目切换链路打开 zcv 工作区。
+    #[cfg(debug_assertions)]
+    pub(crate) fn open_development_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let project_root = crate_dir.parent().unwrap_or(&crate_dir);
+        self.switch_project(&project_root.to_string_lossy(), window, cx);
+    }
+
     fn handle_git_fetch(_: &top_bar::GitFetch, _: &mut Window, _: &mut gpui::App) {
         println!("fetch");
     }

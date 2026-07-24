@@ -6,7 +6,7 @@
 use gpui::{Context, FocusHandle, Render, Window, actions, div, prelude::*};
 use zcv_engine::{ByteOffset, TextRange};
 
-use super::layout::{PaneId, TabItem, ViewId};
+use super::pane_group::{PaneId, TabItem, ViewId};
 use crate::editor::registry::{View, ViewRegistry};
 use crate::theme::{color, radius, space, typography};
 use crate::ui::glyph::Glyph;

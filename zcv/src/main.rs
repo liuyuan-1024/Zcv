@@ -3,6 +3,7 @@
 mod assets;
 mod editor;
 mod keymap;
+mod project_tree;
 mod theme;
 mod ui;
 mod workbench;

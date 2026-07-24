@@ -9,11 +9,11 @@ use gpui::KeyBinding;
 use serde::Deserialize;
 
 use crate::editor::editable::{Copy, Cut, Paste, Redo, Undo};
+use crate::project_tree;
 use crate::ui::picker::{PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev};
-use crate::workbench::bars::project_picker::{OpenLocalProject, ToggleProjectPicker};
-use crate::workbench::bars::{bottom_bar, top_bar, window_controls};
 use crate::workbench::pane::{CloseTab, NextTab, PrevTab};
-use crate::workbench::project_tree;
+use crate::workbench::project_picker::{OpenLocalProject, ToggleProjectPicker};
+use crate::workbench::{bottom_bar, top_bar, window_controls};
 
 // ── 公开类型 ─────────────────────────────────────────────────────────
 

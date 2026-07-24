@@ -17,7 +17,7 @@ use zcv_engine::{Buffer, BufferConfig, BufferOrigin};
 use crate::editor::registry::ViewRegistry;
 use crate::theme::color;
 use crate::ui::tree;
-use crate::workbench::layout::LayoutRef;
+use crate::workbench::dock::LayoutRef;
 
 actions!(
     project_tree,

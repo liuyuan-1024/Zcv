@@ -4,22 +4,21 @@ use std::rc::Rc;
 
 use gpui::{Context, Div, Entity, FocusHandle, MouseButton, Render, Window, div, prelude::*};
 
-use super::bars::bottom_bar::{
-    ToggleDebug, ToggleKeyboardShortcuts, ToggleOutline, ToggleProjectTree, ToggleTerminal,
-    ToggleVersionControl,
-};
-use super::bars::{
-    bottom_bar::BottomBar, project_picker, project_picker::OnProjectSelected, top_bar,
-    top_bar::TopBar, window_controls,
-};
-use super::layout::{
-    LayoutController, LayoutRef, LayoutSnapshot, PaneId, PanelId, handle_close_tab,
+use super::dock::{
+    LayoutController, LayoutRef, LayoutSnapshot, PanelId, handle_close_tab,
     render_body as render_layout_body,
 };
-use super::project_tree::ProjectTree;
+use super::pane_group::PaneId;
 use super::recent_projects;
 use crate::editor::registry::ViewRegistry;
 use crate::keymap;
+use crate::project_tree::ProjectTree;
+use crate::workbench::bottom_bar::{
+    BottomBar, ToggleDebug, ToggleKeyboardShortcuts, ToggleOutline, ToggleProjectTree,
+    ToggleTerminal, ToggleVersionControl,
+};
+use crate::workbench::top_bar::{self, TopBar};
+use crate::workbench::{project_picker, project_picker::OnProjectSelected, window_controls};
 
 pub(crate) struct Workspace {
     layout: Rc<RefCell<LayoutController>>,

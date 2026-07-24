@@ -1,11 +1,11 @@
 //! TopBar —— 窗口级顶部外壳。
 
-use gpui::{AnyElement, Context, Div, Entity, Window, actions, div, prelude::*};
+use gpui::{AnyElement, Div, Entity, Window, actions, div, prelude::*};
 
-use super::frame::{BarEdge, bar_frame};
-use super::project_picker::{OnProjectSelected, ProjectPicker};
-use super::window_controls;
+use crate::theme::{color, space};
 use crate::ui::glyph::Glyph;
+use crate::workbench::project_picker::{OnProjectSelected, ProjectPicker};
+use crate::workbench::window_controls;
 
 actions!(top_bar, [OpenSettings, GitFetch, GitPull, GitPush,]);
 
@@ -20,9 +20,28 @@ impl TopBar {
     }
 }
 
+fn bar_frame() -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .w_full()
+        .px(space::S8)
+        .py(space::S6)
+        .gap(space::S8)
+        .bg(color::current().gray.s[2])
+        .text_color(color::current().gray.s[8])
+        .border_b_1()
+        .border_color(color::current().gray.s[4])
+}
+
 impl gpui::Render for TopBar {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        bar_frame(BarEdge::Top)
+    fn render(
+        &mut self,
+        window: &mut Window,
+        _cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        bar_frame()
             .id("top-bar")
             .child(cluster(leading_slots(window, &self.project_picker)))
             .child(drag_spacer())
@@ -38,7 +57,7 @@ fn drag_spacer() -> Div {
     div().flex_1().h_full()
 }
 
-fn leading_slots(window: &Window, project_picker: &Entity<ProjectPicker>) -> Vec<AnyElement> {
+fn leading_slots(window: &Window, project_picker: &gpui::Entity<ProjectPicker>) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();
 
     // 窗口控制

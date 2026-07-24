@@ -6,10 +6,8 @@ use gpui::{AnyElement, App, Context, Div, Window, actions, div, prelude::*};
 
 use crate::theme::color;
 use crate::ui::glyph::Glyph;
-use crate::workbench::layout::LayoutRef;
-use crate::workbench::layout::PanelId;
-
-use super::frame::{BarEdge, BarRegionAlign, align_bar_region, bar_divider, bar_frame};
+use crate::workbench::dock::LayoutRef;
+use crate::workbench::dock::PanelId;
 
 actions!(
     bottom_bar,
@@ -36,6 +34,30 @@ impl BottomBar {
     }
 }
 
+fn bar_frame() -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .w_full()
+        .px(space::S8)
+        .py(space::S6)
+        .gap(space::S8)
+        .bg(color::current().gray.s[2])
+        .text_color(color::current().gray.s[8])
+        .border_t_1()
+        .border_color(color::current().gray.s[4])
+}
+
+fn bar_divider() -> Div {
+    div()
+        .w(gpui::px(1.0))
+        .h_full()
+        .bg(color::current().gray.s[4])
+}
+
+use crate::theme::space;
+
 impl gpui::Render for BottomBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let is_active = |panel: PanelId| -> bool {
@@ -44,22 +66,21 @@ impl gpui::Render for BottomBar {
                 .map(|ctrl| ctrl.borrow().is_panel_active(panel))
                 .unwrap_or(false)
         };
-        bar_frame(BarEdge::Bottom)
+        bar_frame()
             .id("bottom-bar")
-            .child(region(
-                leading_slots(&is_active, cx),
-                BarRegionAlign::Leading,
-            ))
-            .child(region(
-                trailing_slots(&is_active, cx),
-                BarRegionAlign::Trailing,
-            ))
+            .child(leading_region(&is_active, cx))
+            .child(trailing_region(&is_active, cx))
     }
 }
 
-fn region(items: Vec<AnyElement>, align: BarRegionAlign) -> Div {
-    let inner = div().flex().items_center().gap_2().children(items);
-    align_bar_region(inner, align)
+fn region(items: Vec<AnyElement>, justify_start: bool) -> Div {
+    let wrapper = div().flex_1().flex().items_center().gap(space::S8);
+    let wrapper = if justify_start {
+        wrapper.justify_start()
+    } else {
+        wrapper.justify_end()
+    };
+    wrapper.children(items)
 }
 
 /// dispatch_action 封装：GPUI 要求 action 装箱。
@@ -67,6 +88,14 @@ macro_rules! dispatch {
     ($window:expr, $action:expr, $cx:expr) => {
         $window.dispatch_action(Box::new($action), $cx)
     };
+}
+
+fn leading_region(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Div {
+    region(leading_slots(is_active, cx), true)
+}
+
+fn trailing_region(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Div {
+    region(trailing_slots(is_active, cx), false)
 }
 
 fn leading_slots(is_active: &dyn Fn(PanelId) -> bool, cx: &App) -> Vec<AnyElement> {

@@ -208,7 +208,7 @@ fn render_tab_bar(
         .flex_row()
         .items_center()
         .flex_shrink_0()
-        .gap(space::S2)
+        .gap(space::S6)
         .bg(color::current().gray.s[2])
         .border_b_1()
         .border_color(color::current().gray.s[4])
@@ -241,8 +241,8 @@ fn render_tab(
         .flex()
         .flex_row()
         .items_center()
-        .gap(space::S4)
-        .p(space::S4)
+        .gap(space::S6)
+        .p(space::S6)
         .rounded(radius::R2)
         .cursor_pointer()
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
@@ -370,7 +370,6 @@ fn render_content(
         .flex_1()
         .flex()
         .overflow_hidden()
-        .px(space::S4)
         .child(editor)
         .into_any_element()
 }

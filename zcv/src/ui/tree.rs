@@ -41,7 +41,7 @@ struct TreeMetrics {
 }
 
 fn metrics() -> TreeMetrics {
-    let padding = space::S4;
+    let padding = space::S6;
     let indent = typography::ui();
     TreeMetrics {
         row_height: indent + padding,

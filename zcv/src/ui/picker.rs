@@ -237,14 +237,14 @@ pub fn picker_search_box(
         .flex_none()
         .items_center()
         .overflow_hidden()
-        .p(space::S4)
+        .p(space::S6)
         .border_b_1()
         .border_color(color::current().gray.s[4])
         .when_some(placeholder, |el, placeholder| {
             el.child(
                 div()
                     .absolute()
-                    .left(space::S4)
+                    .left(space::S6)
                     .text_color(color::current().gray.s[5])
                     .child(placeholder),
             )

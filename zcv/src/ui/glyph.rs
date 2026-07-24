@@ -162,9 +162,8 @@ impl Render for GlyphTooltip {
         let popup = div()
             .flex()
             .items_center()
-            .gap(space::S8)
-            .px(space::S6)
-            .py(space::S4)
+            .gap(space::S6)
+            .p(space::S6)
             .text_size(typography::ui())
             .line_height(typography::ui())
             .bg(color::current().gray.s[2])
@@ -185,6 +184,6 @@ impl Render for GlyphTooltip {
             }));
 
         // 外层 div(.p) 提供与光标之间的间距，防止 tooltip 气泡被鼠标遮挡
-        div().p(space::S8).child(popup)
+        div().p(space::S6).child(popup)
     }
 }

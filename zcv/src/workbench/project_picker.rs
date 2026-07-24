@@ -402,7 +402,7 @@ impl Render for ProjectPicker {
                             .anchor(Corner::TopLeft)
                             .position(point(px(0.0), px(0.0)))
                             .position_mode(gpui::AnchoredPositionMode::Local)
-                            .snap_to_window_with_margin(space::S8)
+                            .snap_to_window_with_margin(space::S6)
                             .child(
                                 div()
                                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {

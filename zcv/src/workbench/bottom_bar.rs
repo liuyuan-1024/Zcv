@@ -42,7 +42,7 @@ fn bar_frame() -> Div {
         .w_full()
         .px(space::S8)
         .py(space::S6)
-        .gap(space::S8)
+        .gap(space::S6)
         .bg(color::current().gray.s[2])
         .text_color(color::current().gray.s[8])
         .border_t_1()

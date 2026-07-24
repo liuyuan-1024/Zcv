@@ -85,10 +85,8 @@ impl Theme {
 pub mod space {
     use gpui::{Pixels, px};
     pub const S2: Pixels = px(2.0);
-    pub const S4: Pixels = px(4.0);
     pub const S6: Pixels = px(6.0);
     pub const S8: Pixels = px(8.0);
-    pub const S12: Pixels = px(12.0);
     pub const S16: Pixels = px(16.0);
     pub const GUTTER_BAR: Pixels = px(4.0);
 }

@@ -15,7 +15,7 @@
 - 事务化编辑、Delta、ChangeSet 和 PositionMap。
 - Undo / Redo、历史节点、事务记录和回放。
 - Snapshot、BufferVersion 和版本化结果承载。
-- SelectionSet、多光标、移动语义和 IME composition。
+- Selection / SelectionSet 原语、多光标编辑算法和移动语义。
 - Anchor、TrackedRange、MetadataLayer 等通用区间追踪。
 - Fold / Projection / Viewport slicing。
 - 单 Buffer 搜索、替换和 replace all。
@@ -34,12 +34,12 @@ docs/      能力边界和当前状态
 `src/` 按稳定能力域分层：
 
 ```text
-buffer/       Buffer 状态、编辑入口、事务管线、历史、生命周期
+buffer/       Buffer 文本状态、编辑入口、事务管线、历史、生命周期
 types/        offset、range、position、version 等强类型
 config/       Buffer、encoding、line ending、display、large file 等策略
 storage/      TextStorage 抽象与 RopeyStorage
 transaction/  Edit、Transaction、Delta、ChangeSet、record
-selection/    Cursor、Selection、SelectionSet、movement、composition
+selection/    Cursor、Selection、SelectionSet、编辑结果和移动语义
 tracking/     Anchor、Mark、TrackedRange 及跟随策略
 
 projection/   Fold 后的逻辑坐标、投影坐标和 viewport

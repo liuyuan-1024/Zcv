@@ -9,6 +9,7 @@ mod delta;
 mod edit;
 mod edit_list;
 mod metadata;
+mod outcome;
 mod source;
 mod transaction_record;
 
@@ -18,5 +19,6 @@ pub use delta::{Delta, DeltaEvent};
 pub use edit::Edit;
 pub use edit_list::EditList;
 pub use metadata::{TransactionMergePolicy, TransactionMetadata};
+pub use outcome::TransactionOutcome;
 pub use source::TransactionSource;
 pub use transaction_record::TransactionRecord;

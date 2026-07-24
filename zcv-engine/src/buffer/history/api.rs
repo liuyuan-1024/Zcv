@@ -5,14 +5,14 @@
 use std::sync::Arc;
 
 use crate::{
-    EngineError, EngineResult, LargeFilePolicy, SelectionSet, TransactionSource,
+    EngineError, EngineResult, LargeFilePolicy, TransactionId, TransactionSource,
     buffer::Buffer,
     transaction::{ChangeSet, Delta, Edit, EditList, TransactionMergePolicy, TransactionMetadata},
 };
 
 use super::{HistoryEntry, HistoryNodeId, HistoryStatus};
 
-/// 当前历史节点的只读视图，用于宿主感知节点身份、分支结构与选区。
+/// 当前历史节点的只读视图，用于宿主感知节点身份和分支结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryNodeView {
     /// 节点稳定身份。
@@ -23,13 +23,42 @@ pub struct HistoryNodeView {
     pub parent: Option<HistoryNodeId>,
     /// 子节点身份列表，按创建时间顺序排列，末尾为最近一次创建（默认 redo 目标）。
     pub children: Vec<HistoryNodeId>,
-    /// 进入节点前的选区。
-    pub before_selection: SelectionSet,
-    /// 离开节点后的选区。
-    pub after_selection: SelectionSet,
+    /// 宿主用于关联视图状态历史的规范事务身份。
+    pub transaction_id: TransactionId,
     /// 节点描述（来自 `TransactionMetadata::description`）。
     /// `Arc<str>` 让 host 端 clone 这个 view 时仍是 O(1) 引用计数。
     pub description: Option<Arc<str>>,
+}
+
+/// 一次 Undo / Redo 文本回放的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEditOutcome {
+    transaction_id: TransactionId,
+    delta: Delta,
+    changeset: ChangeSet,
+}
+
+impl HistoryEditOutcome {
+    fn new(transaction_id: TransactionId, delta: Delta, changeset: ChangeSet) -> Self {
+        Self {
+            transaction_id,
+            delta,
+            changeset,
+        }
+    }
+
+    /// 被回放历史节点的规范事务身份。
+    pub fn transaction_id(&self) -> TransactionId {
+        self.transaction_id
+    }
+
+    pub fn delta(&self) -> &Delta {
+        &self.delta
+    }
+
+    pub fn changeset(&self) -> &ChangeSet {
+        &self.changeset
+    }
 }
 
 impl Buffer {
@@ -57,8 +86,7 @@ impl Buffer {
             sequence_number: node.sequence_number,
             parent: node.parent,
             children: node.children.clone(),
-            before_selection: node.entry.before_selection.clone(),
-            after_selection: node.entry.after_selection.clone(),
+            transaction_id: node.entry.transaction_id,
             description: node.entry.description.clone(),
         })
     }
@@ -78,9 +106,8 @@ impl Buffer {
     /// 撤销最近一次历史节点。
     ///
     /// 没有可撤销历史时返回 `Ok(None)`，避免把空历史当作错误。
-    pub fn undo(&mut self) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    pub fn undo(&mut self) -> EngineResult<Option<HistoryEditOutcome>> {
         self.ensure_writable()?;
-        self.cancel_composition_before_text_edit()?;
 
         let undo_target = {
             let Some(node_id) = self.history.current() else {
@@ -100,8 +127,8 @@ impl Buffer {
                 });
             }
             UndoTarget {
+                transaction_id: node.entry.transaction_id,
                 undo_batches: node.entry.undo_batches.clone(),
-                before_selection: node.entry.before_selection.clone(),
             }
         };
         self.history
@@ -125,15 +152,17 @@ impl Buffer {
             location: "Buffer::undo",
             detail: "已验证的 undo 批次没有产生回放结果".to_string(),
         })?;
-        self.selection = undo_target.before_selection;
-
-        Ok(Some(result))
+        Ok(Some(HistoryEditOutcome::new(
+            undo_target.transaction_id,
+            result.0,
+            result.1,
+        )))
     }
 
     /// 重做沿默认分支（最近创建子节点链）的下一个节点。
     ///
     /// 没有可 redo 节点时返回 `Ok(None)`。
-    pub fn redo(&mut self) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    pub fn redo(&mut self) -> EngineResult<Option<HistoryEditOutcome>> {
         self.ensure_writable()?;
         let Some(target) = self.history.default_redo_target() else {
             return Ok(None);
@@ -144,16 +173,15 @@ impl Buffer {
     /// 重做到指定的 redo 分支节点。
     ///
     /// `node_id` 必须是 `redo_branches()` 之一，否则返回 `EngineError::InvalidHistoryBranch`。
-    pub fn redo_to_branch(&mut self, node_id: HistoryNodeId) -> EngineResult<(Delta, ChangeSet)> {
+    pub fn redo_to_branch(&mut self, node_id: HistoryNodeId) -> EngineResult<HistoryEditOutcome> {
         if !self.history.children_of_current().contains(&node_id) {
             return Err(EngineError::InvalidHistoryBranch(node_id));
         }
         self.redo_into_branch(node_id)
     }
 
-    fn redo_into_branch(&mut self, node_id: HistoryNodeId) -> EngineResult<(Delta, ChangeSet)> {
+    fn redo_into_branch(&mut self, node_id: HistoryNodeId) -> EngineResult<HistoryEditOutcome> {
         self.ensure_writable()?;
-        self.cancel_composition_before_text_edit()?;
 
         let target = {
             let node = self
@@ -170,8 +198,8 @@ impl Buffer {
                 });
             }
             RedoTarget {
+                transaction_id: node.entry.transaction_id,
                 redo_batches: node.entry.redo_batches.clone(),
-                after_selection: node.entry.after_selection.clone(),
             }
         };
         self.history
@@ -192,25 +220,48 @@ impl Buffer {
             location: "Buffer::redo_into_branch",
             detail: "已验证的 redo 批次没有产生回放结果".to_string(),
         })?;
-        self.selection = target.after_selection;
-        Ok(result)
+        Ok(HistoryEditOutcome::new(
+            target.transaction_id,
+            result.0,
+            result.1,
+        ))
     }
 
     pub(in crate::buffer) fn push_history(
         &mut self,
         entry: HistoryEntry,
         metadata: &TransactionMetadata,
-    ) -> EngineResult<()> {
+    ) -> EngineResult<Option<TransactionId>> {
         if metadata.merge_policy() == TransactionMergePolicy::MergeWithPrevious
             && self.history.merge_into_current(entry.clone())
         {
+            let transaction_id = self
+                .history
+                .current()
+                .and_then(|id| self.history.node(id))
+                .map(|node| node.entry.transaction_id)
+                .ok_or_else(|| EngineError::EngineBug {
+                    location: "Buffer::push_history",
+                    detail: "合并成功后当前历史节点缺失".to_string(),
+                })?;
             self.truncate_undo_history_to_budget();
-            return Ok(());
+            return Ok(self
+                .history
+                .current()
+                .and_then(|id| self.history.node(id))
+                .filter(|node| node.entry.transaction_id == transaction_id)
+                .map(|node| node.entry.transaction_id));
         }
 
+        let transaction_id = entry.transaction_id;
         self.history.push_child(entry)?;
         self.truncate_undo_history_to_budget();
-        Ok(())
+        Ok(self
+            .history
+            .current()
+            .and_then(|id| self.history.node(id))
+            .filter(|node| node.entry.transaction_id == transaction_id)
+            .map(|node| node.entry.transaction_id))
     }
 
     /// 当 `record_history=false` 提交后清掉当前节点下的所有 redo 分支：
@@ -219,7 +270,7 @@ impl Buffer {
         self.history.drop_children_of_current();
     }
 
-    /// 替换 `LargeFilePolicy` 并立即按新预算截断历史；不影响当前文本、版本或 selection。
+    /// 替换 `LargeFilePolicy` 并立即按新预算截断历史；不影响当前文本或版本。
     ///
     /// 调用时机典型场景：宿主在加载完文件 / 检测到大文件后需要把 Undo 预算调小，
     /// 引擎按新预算从最老的非 current 叶子开始丢弃节点，直到 ≤ 预算或没有可丢叶子。
@@ -277,12 +328,12 @@ impl Buffer {
 }
 
 struct UndoTarget {
+    transaction_id: TransactionId,
     /// `Arc::clone` 是 O(1)；批次本身复用历史节点拥有的存储。
     undo_batches: Arc<[EditList]>,
-    before_selection: SelectionSet,
 }
 
 struct RedoTarget {
+    transaction_id: TransactionId,
     redo_batches: Arc<[EditList]>,
-    after_selection: SelectionSet,
 }

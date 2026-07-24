@@ -22,8 +22,7 @@ pub enum SelectionMergePolicy {
 
 /// 归一化后的多选区 / 多光标集合。
 ///
-/// 内部 `Arc<[Selection]>`：`Clone` 是 O(1)，事务热路径（`before_selection.clone()` /
-/// `selection.clone()` 反复传递）零深拷贝。
+/// 内部 `Arc<[Selection]>`：`Clone` 是 O(1)，宿主在编辑事务前后传递时零深拷贝。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SelectionSet {
     selections: Arc<[Selection]>,

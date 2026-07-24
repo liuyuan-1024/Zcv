@@ -1,18 +1,16 @@
-//! TransactionRecord：成功提交后的事务事实快照，用于回放与外部审计。
+//! TransactionRecord：成功提交后的纯文本事务事实快照，用于回放与外部审计。
 //!
 //! `TransactionRecord` 不是事务管线的入口；它只是 `apply_transaction` 成功后产生的可重放事实。
-//! 重建 `Transaction` 时必然合法（已通过事务管线一次），但回放仍然走标准 `apply_transaction`，
-//! 不绕过任何边界校验。
+//! 重建 `Transaction` 时必然合法（已通过事务管线一次），但回放仍然走标准 `apply_transaction`，不绕过任何边界校验。
 
 use crate::{
     EngineResult,
-    selection::SelectionSet,
     types::{BufferVersion, TransactionId},
 };
 
 use super::{EditList, Transaction, TransactionMergePolicy, TransactionMetadata};
 
-/// 一次成功提交的事务事实，包含 forward edits、inverse edits、selection 与 metadata。
+/// 一次成功提交的事务事实，包含 forward edits、inverse edits 与 metadata。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransactionRecord {
     transaction_id: TransactionId,
@@ -20,8 +18,6 @@ pub struct TransactionRecord {
     new_version: BufferVersion,
     edits: EditList,
     inverse_edits: EditList,
-    before_selection: SelectionSet,
-    after_selection: SelectionSet,
     metadata: TransactionMetadata,
 }
 
@@ -32,8 +28,6 @@ impl TransactionRecord {
         new_version: BufferVersion,
         edits: EditList,
         inverse_edits: EditList,
-        before_selection: SelectionSet,
-        after_selection: SelectionSet,
         metadata: TransactionMetadata,
     ) -> Self {
         Self {
@@ -42,8 +36,6 @@ impl TransactionRecord {
             new_version,
             edits,
             inverse_edits,
-            before_selection,
-            after_selection,
             metadata,
         }
     }
@@ -68,14 +60,6 @@ impl TransactionRecord {
         &self.inverse_edits
     }
 
-    pub fn before_selection(&self) -> &SelectionSet {
-        &self.before_selection
-    }
-
-    pub fn after_selection(&self) -> &SelectionSet {
-        &self.after_selection
-    }
-
     pub fn metadata(&self) -> &TransactionMetadata {
         &self.metadata
     }
@@ -96,10 +80,6 @@ impl TransactionRecord {
     /// 重建可回放的 `Transaction`。回放后 `Buffer` 将从 `old_version` 推进到 `new_version`。
     pub fn to_transaction(&self) -> EngineResult<Transaction> {
         Ok(Transaction::new(self.old_version, self.edits.clone())?
-            .with_metadata(self.metadata.clone())
-            .with_selection(
-                Some(self.before_selection.clone()),
-                Some(self.after_selection.clone()),
-            ))
+            .with_metadata(self.metadata.clone()))
     }
 }

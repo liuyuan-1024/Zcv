@@ -324,10 +324,6 @@ pub enum EngineError {
     #[error("HistoryNodeId 溢出")]
     HistoryIdExhausted,
 
-    /// 输入法 / Composition 调用方违反了 start → update* → commit/cancel 的状态机协议。
-    #[error("Composition 状态机协议违反：{detail}")]
-    CompositionInvalidSequence { detail: &'static str },
-
     /// 引擎内部不变量被违反；这是 bug，不是可恢复的外部错误。
     /// 用 `location` 定位代码点，`detail` 携带最少诊断信息，便于宿主上报。
     #[error("引擎内部不变量违反：{location}：{detail}")]

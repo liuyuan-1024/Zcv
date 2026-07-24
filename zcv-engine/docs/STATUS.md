@@ -3,7 +3,7 @@
 ## 总览
 
 - 主线状态：M0-M19 编辑引擎主线已收口。
-- 当前方向：后续工作以增量修复、fuzz / property 扩展、可观测性改进和 API 语义收敛为主。
+- 当前方向：已完成统一 Editor 的阶段 0 前置拆分；后续工作以 Editor 接入所需的增量修复、fuzz / property 扩展、可观测性改进和 API 语义收敛为主。
 - 边界原则：继续保持工业级、纯粹编辑引擎底座；不把宿主层能力塞回 engine core。
 
 ## 已收口的大能力
@@ -12,7 +12,9 @@
 - Transaction、Delta、ChangeSet、PositionMap 和原子提交。
 - Undo / Redo、分支历史、历史预算、事务记录和回放。
 - Snapshot、BufferVersion、本地读写边界和版本化结果承载。
-- SelectionSet、多光标、word / subword / symbol movement、IME composition。
+- Selection / SelectionSet 纯数据与算法、多光标编辑、word / subword / symbol movement。
+- 显式 `EditOutcome` / `TransactionOutcome` 与纯文本 HistoryEntry / TransactionRecord。
+- engine 已移除 IME composition 类型、状态机和专用事务来源；输入法提交前的 marked text 完全留在宿主层。
 - Anchor、TrackedRange、MetadataLayer、VersionedRangeSet。
 - Fold、Projection、ProjectedViewport 和读取切片。
 - 单 Buffer literal / regex 搜索与 replace all。
@@ -42,12 +44,12 @@ docs/      项目文档
 `src/` 主要能力域：
 
 ```text
-buffer/       Buffer 聚合、编辑入口、事务管线、历史和生命周期
+buffer/       Buffer 文本聚合、显式选区编辑入口、事务管线、纯文本历史和生命周期
 types/        坐标、范围、版本、身份等强类型
 config/       Buffer、编码、换行、显示、大文件等策略
 storage/      文本存储抽象和生产 RopeyStorage
 transaction/  Edit、Transaction、Delta、ChangeSet、事务记录
-selection/    Cursor、Selection、SelectionSet、移动和组合输入
+selection/    Cursor、Selection、SelectionSet、编辑结果和移动语义
 tracking/     Anchor、Mark、TrackedRange
 metadata/     泛型外部区间承载
 projection/   Fold、投影坐标和 viewport

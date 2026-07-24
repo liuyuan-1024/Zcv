@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
     BufferConfig, BufferId, BufferLoadError, BufferOrigin, BufferState, BufferVersion, ByteOffset,
-    EngineResult, LoadedTextInfo, SelectionSet, TransactionId, Utf16Offset,
+    EngineResult, LoadedTextInfo, TransactionId, Utf16Offset,
     storage::{RopeyStorage, TextRead, TextStorage},
     text_loading::streaming_decoder::{StreamDecodeError, decode_stream},
 };
@@ -95,8 +95,6 @@ impl Buffer {
             pending_delta_events: Vec::new(),
             last_delta_event: None,
             history: history::HistoryState::new(),
-            selection: SelectionSet::default(),
-            composition: None,
         };
         buffer.apply_large_file_auto_read_only();
         buffer
@@ -213,7 +211,7 @@ impl Buffer {
     /// 度量包含：
     /// - 文本存储字节数（`len_bytes()`，不计 `ropey::Rope` 内部节点开销）
     /// - 历史图按 `HistoryStatus::memory_bytes` 累加的字符串占用
-    /// - selection / pending DeltaEvent 队列的固定大小估算
+    /// - pending DeltaEvent 队列的固定大小估算
     ///
     /// 仅作为粗估指标，用于宿主侧的内存观测与回归监控；不承诺等同于操作系统
     /// 实际驻留集 (RSS) 或 `ropey` 内部节点 / 缓存的精确字节数。
@@ -222,13 +220,10 @@ impl Buffer {
     pub fn approximate_memory_bytes(&self) -> usize {
         let text_bytes = self.storage.len_bytes().get();
         let history_bytes = self.history.status().memory_bytes;
-        let selection_bytes =
-            self.selection.len() * std::mem::size_of::<crate::selection::Selection>();
         let pending_events =
             self.pending_delta_events.len() * std::mem::size_of::<crate::transaction::DeltaEvent>();
         text_bytes
             .saturating_add(history_bytes)
-            .saturating_add(selection_bytes)
             .saturating_add(pending_events)
     }
 

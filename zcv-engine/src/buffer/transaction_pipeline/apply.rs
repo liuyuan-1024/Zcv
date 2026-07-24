@@ -1,9 +1,9 @@
-//! 事务应用管线：从 Transaction 校验、准备、提交到 selection 映射和 history 收尾的一站式执行路径。
+//! 事务应用管线：从 Transaction 校验、准备、提交到 history 收尾的一站式执行路径。
 //!
 //! 本文件守住失败原子性和版本推进边界；EditList 归一化、存储实现和 public 便利编辑入口不在这里定义。
 
 use crate::{
-    BufferVersion, EngineError, EngineResult, LargeTransactionPolicy, PositionMap, SelectionSet,
+    BufferVersion, EngineError, EngineResult, LargeTransactionPolicy, TransactionOutcome,
     errors::{EditError, StorageError, TransactionError},
     storage::TextStorage,
     transaction::{
@@ -32,8 +32,16 @@ impl Buffer {
     ///
     /// 成功将返回增量 Delta 和事务变更集合 ChangeSet，并记录 Undo 历史。
     pub fn apply_transaction(&mut self, tx: Transaction) -> EngineResult<(Delta, ChangeSet)> {
-        let (_, delta, changeset) = self.apply_transaction_inner(tx)?;
-        Ok((delta, changeset))
+        Ok(self.apply_transaction_outcome(tx)?.into_delta_changeset())
+    }
+
+    /// 提交并应用事务，返回事务身份、历史归属和增量事实。
+    pub fn apply_transaction_outcome(
+        &mut self,
+        tx: Transaction,
+    ) -> EngineResult<TransactionOutcome> {
+        let (_, outcome) = self.apply_transaction_inner(tx)?;
+        Ok(outcome)
     }
 
     /// 提交并应用事务，返回完整的可回放事实 `TransactionRecord`。
@@ -41,7 +49,7 @@ impl Buffer {
         &mut self,
         tx: Transaction,
     ) -> EngineResult<TransactionRecord> {
-        let (record, _, _) = self.apply_transaction_inner(tx)?;
+        let (record, _) = self.apply_transaction_inner(tx)?;
         Ok(record)
     }
 
@@ -67,7 +75,7 @@ impl Buffer {
     fn apply_transaction_inner(
         &mut self,
         tx: Transaction,
-    ) -> EngineResult<(TransactionRecord, Delta, ChangeSet)> {
+    ) -> EngineResult<(TransactionRecord, TransactionOutcome)> {
         self.ensure_writable()?;
         let mut prepared = self.prepare_transaction(tx)?;
         self.apply_large_transaction_policy(&mut prepared)?;
@@ -80,13 +88,6 @@ impl Buffer {
             prepared.metadata.source(),
         )?;
 
-        let position_map = changeset.position_map();
-        let after_selection = self.resolve_after_selection(
-            &prepared.before_selection,
-            prepared.explicit_after_selection.as_ref(),
-            &position_map,
-        );
-
         // 构造 TransactionRecord：所有字段都是 Arc-backed 或 Copy，clone 是 O(1)。
         let record = TransactionRecord::new(
             transaction_id,
@@ -94,28 +95,22 @@ impl Buffer {
             delta.new_version(),
             prepared.edits.clone(),
             prepared.undo_edits.clone(),
-            prepared.before_selection.clone(),
-            after_selection.clone(),
             prepared.metadata.clone(),
         );
 
-        // 推进 Buffer 选区状态；after_selection 在这里 move 进 Buffer。
-        self.selection = after_selection.clone();
-        self.finish_transaction(prepared, after_selection)?;
+        let history_transaction_id = self.finish_transaction(prepared, transaction_id)?;
+        let outcome =
+            TransactionOutcome::new(transaction_id, history_transaction_id, delta, changeset);
 
-        Ok((record, delta, changeset))
+        Ok((record, outcome))
     }
 
     fn prepare_transaction(&mut self, tx: Transaction) -> EngineResult<PreparedTransaction> {
-        self.cancel_composition_for_transaction(tx.metadata().source())?;
-
-        let (base_version, edits, metadata, before_selection, explicit_after_selection) =
-            tx.into_parts();
+        let (base_version, edits, metadata) = tx.into_parts();
 
         self.verify_transaction_base_version(base_version)?;
         self.validate_edit_list(&edits)?;
 
-        let before_selection = before_selection.unwrap_or_else(|| self.selection.clone());
         let undo_edits = self.build_inverse_edit_list(&edits)?;
         let redo_edits = edits.clone();
 
@@ -123,22 +118,9 @@ impl Buffer {
             base_version,
             edits,
             metadata,
-            before_selection,
-            explicit_after_selection,
             undo_edits,
             redo_edits,
         })
-    }
-
-    fn cancel_composition_for_transaction(
-        &mut self,
-        source: TransactionSource,
-    ) -> EngineResult<()> {
-        if source != TransactionSource::Composition {
-            self.cancel_composition_before_text_edit()?;
-        }
-
-        Ok(())
     }
 
     fn verify_transaction_base_version(&self, base_version: BufferVersion) -> EngineResult<()> {
@@ -153,40 +135,27 @@ impl Buffer {
         Ok(())
     }
 
-    fn resolve_after_selection(
-        &self,
-        before_selection: &SelectionSet,
-        explicit_after_selection: Option<&SelectionSet>,
-        position_map: &PositionMap,
-    ) -> SelectionSet {
-        explicit_after_selection
-            .cloned()
-            .unwrap_or_else(|| before_selection.map_through_position_map(position_map))
-    }
-
     fn finish_transaction(
         &mut self,
         prepared: PreparedTransaction,
-        after_selection: SelectionSet,
-    ) -> EngineResult<()> {
+        transaction_id: crate::TransactionId,
+    ) -> EngineResult<Option<crate::TransactionId>> {
         if prepared.metadata.record_history() {
             // Arc::clone：description 字符串只在历史节点持有一份共享
             let description = prepared.metadata.description_arc().cloned();
             let entry = HistoryEntry::new(
+                transaction_id,
                 prepared.undo_edits,
                 prepared.redo_edits,
-                prepared.before_selection,
-                after_selection,
                 description,
             );
-            self.push_history(entry, &prepared.metadata)?;
-            return Ok(());
+            return self.push_history(entry, &prepared.metadata);
         }
 
         // record_history=false 提交后，当前节点下的 redo 分支已经基于过期文本，
         // 整体丢弃以避免后续 redo 走到不一致状态；undo 路径保持不变。
         self.drop_unrecorded_redo_branches();
-        Ok(())
+        Ok(None)
     }
 
     /// 在 prepare 之后、commit 之前，按 `LargeFilePolicy` 处理超大事务。

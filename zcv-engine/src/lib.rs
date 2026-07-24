@@ -22,7 +22,7 @@ mod transaction;
 mod types;
 mod versioned;
 
-pub use buffer::{Buffer, HistoryNodeId, HistoryNodeView, HistoryStatus};
+pub use buffer::{Buffer, HistoryEditOutcome, HistoryNodeId, HistoryNodeView, HistoryStatus};
 pub use config::{
     BufferConfig, DisplayColumnAffinity, DisplayWidthPolicy, EncodingConfig, LargeFilePolicy,
     LargeTransactionPolicy, LineEndingConfig, PositionEncodingConfig, TabConfig,
@@ -44,8 +44,8 @@ pub use projection::{
 pub use search::{RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchResult};
 pub use search_async::{SearchHandle, SearchProgress};
 pub use selection::{
-    CompositionSelection, CompositionState, Cursor, Motion, MovementDirection, MovementUnit,
-    Selection, SelectionMergePolicy, SelectionSet,
+    Cursor, EditOutcome, Motion, MovementDirection, MovementUnit, Selection, SelectionMergePolicy,
+    SelectionSet,
 };
 pub use slicing::{LineSlice, TextSlice, Viewport, ViewportSlice, VisibleLine};
 pub use snapshot::Snapshot;
@@ -56,7 +56,7 @@ pub use tracking::{
 };
 pub use transaction::{
     ChangeSet, Delta, DeltaEvent, Edit, EditList, Transaction, TransactionMergePolicy,
-    TransactionMetadata, TransactionRecord, TransactionSource,
+    TransactionMetadata, TransactionOutcome, TransactionRecord, TransactionSource,
 };
 pub(crate) use types::BufferId;
 pub use types::{

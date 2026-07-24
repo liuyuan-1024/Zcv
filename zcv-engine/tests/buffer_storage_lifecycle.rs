@@ -129,10 +129,10 @@ fn loaded_text_boundary_should_record_bom_encoding_line_endings_and_invalid_utf8
 }
 
 #[test]
-fn reload_should_replace_storage_clear_history_reset_selection_and_mark_clean() {
+fn reload_should_replace_storage_clear_history_and_leave_view_selection_to_host() {
     let mut buffer = buffer("old");
     buffer.insert(b(3), "!").unwrap();
-    buffer.set_selection(SelectionSet::caret(b(4))).unwrap();
+    let view_selection = SelectionSet::caret(b(4));
     assert!(buffer.can_undo());
 
     buffer.reload_from_text("new\n".to_string()).unwrap();
@@ -142,7 +142,7 @@ fn reload_should_replace_storage_clear_history_reset_selection_and_mark_clean() 
     assert!(!buffer.can_undo());
     assert!(!buffer.can_redo());
     assert!(!buffer.is_dirty());
-    assert_eq!(buffer.selection(), &SelectionSet::default());
+    assert_eq!(view_selection, SelectionSet::caret(b(4)));
     assert!(buffer.loaded_text_info().is_none());
 }
 

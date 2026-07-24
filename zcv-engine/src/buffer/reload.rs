@@ -6,7 +6,7 @@ use std::io::{self, Write};
 
 use crate::{
     BufferSaveError, BufferVersion, ByteOffset, EngineError, EngineResult, LineEndingConfig,
-    SelectionSet, Snapshot, TextRange, TransactionError,
+    Snapshot, TextRange, TransactionError,
     storage::{RopeyStorage, TextRead},
 };
 
@@ -15,14 +15,12 @@ use super::Buffer;
 impl Buffer {
     /// 用外部文本重新加载 Buffer。
     ///
-    /// reload 表示外部文本源成为新的干净基线：文本存储重建、版本递增、history 清空、
-    /// composition 取消、selection 回到文档开头，dirty 状态恢复为 clean。
+    /// reload 表示外部文本源成为新的干净基线：文本存储重建、版本递增、
+    /// history 清空，dirty 状态恢复为 clean。视图选区由宿主管理。
     pub fn reload_from_text(&mut self, text: String) -> EngineResult<()> {
         self.storage = RopeyStorage::new(text);
         self.bump_version()?;
         self.history.clear();
-        self.selection = SelectionSet::default();
-        self.composition = None;
         self.loaded_text_info = None;
         self.mark_clean_internal();
         self.mark_synced_external();

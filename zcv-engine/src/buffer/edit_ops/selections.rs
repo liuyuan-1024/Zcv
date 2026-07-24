@@ -6,12 +6,12 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::{
-    ByteOffset, EngineError, EngineResult, Line, MovementDirection, MovementUnit, Selection,
-    SelectionSet, TextRange,
+    ByteOffset, EditOutcome, EngineError, EngineResult, Line, MovementDirection, MovementUnit,
+    Selection, SelectionSet,
     config::TabConfig,
     position_map::OffsetShift,
     storage::TextRead,
-    transaction::{ChangeSet, Delta, Edit, Transaction, TransactionMetadata, TransactionSource},
+    transaction::{Edit, Transaction, TransactionMetadata, TransactionSource},
 };
 
 use crate::buffer::Buffer;
@@ -20,20 +20,20 @@ impl Buffer {
     /// 在每个 selection 处插入文本；非空 selection 会被替换。
     pub fn insert_at_selections(
         &mut self,
-        selections: SelectionSet,
+        selections: &SelectionSet,
         text: &str,
         metadata: TransactionMetadata,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    ) -> EngineResult<EditOutcome> {
         self.replace_selection_ranges_with_metadata(selections, text, metadata)
     }
 
     /// 用同一段文本替换每个 selection。
     pub fn replace_selections(
         &mut self,
-        selections: SelectionSet,
+        selections: &SelectionSet,
         replacement: &str,
         metadata: TransactionMetadata,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    ) -> EngineResult<EditOutcome> {
         self.replace_selection_ranges_with_metadata(selections, replacement, metadata)
     }
 
@@ -44,12 +44,9 @@ impl Buffer {
     /// insert_spaces = false` 时插入一个 `'\t'`。
     /// - **存在任何非空 selection**：将选区涉及的所有行做行块缩进（不替换选中内容）。
     /// 多 selection 共占同一行只缩进一次。
-    pub fn indent_at_selections(
-        &mut self,
-        selections: SelectionSet,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    pub fn indent_at_selections(&mut self, selections: &SelectionSet) -> EngineResult<EditOutcome> {
         self.ensure_writable()?;
-        self.validate_selection_set(&selections)?;
+        self.validate_selection_set(selections)?;
 
         let selections = selections.normalized();
         let all_carets = selections.as_slice().iter().all(|s| s.is_caret());
@@ -62,7 +59,7 @@ impl Buffer {
                 let text = self.soft_tab_text_for_caret(selection.head())?;
                 targets.push((*selection, Arc::from(text)));
             }
-            return self.apply_targeted_edits_with_metadata(targets, selections, metadata);
+            return self.apply_targeted_edits_with_metadata(targets, &selections, metadata);
         }
 
         let lines = collect_touched_lines(&self.storage, &selections)?;
@@ -74,7 +71,7 @@ impl Buffer {
             targets.push((Selection::caret(line_start), Arc::clone(&indent_text)));
         }
 
-        self.apply_targeted_edits_with_metadata(targets, selections, metadata)
+        self.apply_targeted_edits_with_metadata(targets, &selections, metadata)
     }
 
     /// 计算 caret 处应该插入的"软 Tab"文本（依据 `BufferConfig.tab`）。
@@ -93,15 +90,15 @@ impl Buffer {
     /// 反向缩进：在每行行首移除最多一个缩进单位的前导空白。
     ///
     /// 规则：行首若以 `'\t'` 起头则只删除该 tab；否则按 `indent_width` 删除连续的前导空格。
-    /// 行首没有空白则跳过；所有行都没有可删空白时不产生事务，返回 `Ok(None)`。
+    /// 行首没有空白则跳过；所有行都没有可删空白时不产生事务。
     pub fn outdent_at_selections(
         &mut self,
-        selections: SelectionSet,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+        selections: &SelectionSet,
+    ) -> EngineResult<EditOutcome> {
         self.ensure_writable()?;
-        self.validate_selection_set(&selections)?;
+        self.validate_selection_set(selections)?;
 
-        let lines = collect_touched_lines(&self.storage, &selections)?;
+        let lines = collect_touched_lines(&self.storage, selections)?;
         let indent_width = self.config.tab.indent_width();
 
         let mut targets = Vec::new();
@@ -115,13 +112,15 @@ impl Buffer {
         }
 
         if targets.is_empty() {
-            // 没有可移除的前导空白：保持当前 selection 不变。
-            return Ok(None);
+            return Ok(EditOutcome::unchanged(selections.clone()));
         }
 
-        self.replace_selection_ranges_with_metadata(
-            SelectionSet::new(targets),
-            "",
+        self.apply_targeted_edits_with_metadata(
+            targets
+                .into_iter()
+                .map(|target| (target, Arc::<str>::from("")))
+                .collect(),
+            selections,
             TransactionMetadata::new(TransactionSource::Programmatic).with_description("减少缩进"),
         )
     }
@@ -135,12 +134,12 @@ impl Buffer {
     /// 事务描述按 `(dir, unit)` 落到 `(direction, unit)` 矩阵；`None` 时写「删除所选内容」。
     pub fn delete_at_selections(
         &mut self,
-        selections: SelectionSet,
+        selections: &SelectionSet,
         caret_motion: Option<(MovementDirection, MovementUnit)>,
         metadata: TransactionMetadata,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    ) -> EngineResult<EditOutcome> {
         self.ensure_writable()?;
-        self.validate_selection_set(&selections)?;
+        self.validate_selection_set(selections)?;
 
         let mut delete_targets = Vec::new();
 
@@ -170,29 +169,27 @@ impl Buffer {
         }
 
         if delete_targets.is_empty() {
-            self.set_selection(selections)?;
-            return Ok(None);
+            return Ok(EditOutcome::unchanged(selections.clone()));
         }
 
-        self.replace_selection_ranges_with_metadata(SelectionSet::new(delete_targets), "", metadata)
+        self.replace_selection_ranges_with_metadata(
+            &SelectionSet::new(delete_targets),
+            "",
+            metadata,
+        )
     }
 
     pub(in crate::buffer) fn replace_selection_ranges_with_metadata(
         &mut self,
-        selections: SelectionSet,
+        selections: &SelectionSet,
         replacement: &str,
         metadata: TransactionMetadata,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    ) -> EngineResult<EditOutcome> {
         self.ensure_writable()?;
-
-        if metadata.source() != TransactionSource::Composition {
-            self.cancel_composition_before_text_edit()?;
-        }
 
         let selections = selections.normalized();
         self.validate_selection_set(&selections)?;
 
-        let before_selection = selections.clone();
         // ByteOffset 深核：用 byte 长度
         let replacement_len = replacement.len();
         let replacement: Arc<str> = Arc::from(replacement);
@@ -244,15 +241,13 @@ impl Buffer {
         let after_selection = SelectionSet::new(after_selections);
 
         if edits.is_empty() {
-            self.selection = after_selection;
-            return Ok(None);
+            return Ok(EditOutcome::unchanged(after_selection));
         }
 
-        let tx = Transaction::from_edits(self.version, edits)?
-            .with_metadata(metadata)
-            .with_selection(Some(before_selection), Some(after_selection));
+        let tx = Transaction::from_edits(self.version, edits)?.with_metadata(metadata);
 
-        self.apply_transaction(tx).map(Some)
+        let transaction = self.apply_transaction_outcome(tx)?;
+        Ok(EditOutcome::edited(transaction, after_selection))
     }
 
     /// 按每条 edit 自带替换文本的方式提交一次事务。
@@ -263,80 +258,35 @@ impl Buffer {
     pub(in crate::buffer) fn apply_targeted_edits_with_metadata(
         &mut self,
         targets: Vec<(Selection, Arc<str>)>,
-        before_selection: SelectionSet,
+        before_selection: &SelectionSet,
         metadata: TransactionMetadata,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    ) -> EngineResult<EditOutcome> {
         self.ensure_writable()?;
-
-        if metadata.source() != TransactionSource::Composition {
-            self.cancel_composition_before_text_edit()?;
-        }
 
         for (selection, _) in &targets {
             self.validate_range(selection.range())?;
         }
 
         let mut edits = Vec::with_capacity(targets.len());
-        let mut after_selections = Vec::with_capacity(targets.len());
-        let mut shift = OffsetShift::ZERO;
-
         for (selection, text) in &targets {
             let range = selection.range();
-            let new_start = shift
-                .apply_old_to_new(range.start())
-                .ok_or_else(|| offset_arithmetic_bug("apply_targeted_edits_with_metadata"))?;
-            let new_head = new_start
-                .checked_add(text.len())
-                .ok_or_else(|| offset_arithmetic_bug("apply_targeted_edits_with_metadata"))?;
-
             if !(range.is_empty() && text.is_empty()) {
                 edits.push(Edit::replace(range, Arc::clone(text)));
-                shift = shift
-                    .after_edit(range.len(), text.len())
-                    .ok_or_else(|| offset_arithmetic_bug("apply_targeted_edits_with_metadata"))?;
             }
-            after_selections.push(Selection::caret(new_head));
         }
-
-        let after_selection = SelectionSet::new(after_selections);
 
         if edits.is_empty() {
-            self.selection = after_selection;
-            return Ok(None);
+            return Ok(EditOutcome::unchanged(before_selection.clone()));
         }
 
-        let tx = Transaction::from_edits(self.version, edits)?
-            .with_metadata(metadata)
-            .with_selection(Some(before_selection), Some(after_selection));
+        let tx = Transaction::from_edits(self.version, edits)?.with_metadata(metadata);
 
-        self.apply_transaction(tx).map(Some)
-    }
-
-    pub(in crate::buffer) fn replace_single_range_with_metadata(
-        &mut self,
-        range: TextRange,
-        replacement: &str,
-        after_selection: SelectionSet,
-        metadata: TransactionMetadata,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
-        self.ensure_writable()?;
-        self.validate_range(range)?;
-        self.validate_edit_boundary(range.start())?;
-        self.validate_edit_boundary(range.end())?;
-
-        if self.slice_text(range)?.as_ref() == replacement {
-            self.selection = after_selection;
-            return Ok(None);
-        }
-
-        let tx = Transaction::from_edits(
-            self.version,
-            vec![Edit::replace(range, Arc::<str>::from(replacement))],
-        )?
-        .with_metadata(metadata)
-        .with_selection(Some(self.selection.clone()), Some(after_selection));
-
-        self.apply_transaction(tx).map(Some)
+        let transaction = self.apply_transaction_outcome(tx)?;
+        let after_selection = transaction
+            .changeset()
+            .position_map()
+            .map_selection_set(before_selection);
+        Ok(EditOutcome::edited(transaction, after_selection))
     }
 }
 

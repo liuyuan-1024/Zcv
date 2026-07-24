@@ -144,7 +144,6 @@ impl Buffer {
         R: Into<Arc<str>>,
     {
         self.ensure_writable()?;
-        self.cancel_composition_before_text_edit()?;
 
         let mut tx_edits = Vec::new();
 

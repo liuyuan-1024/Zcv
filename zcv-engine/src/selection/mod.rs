@@ -1,15 +1,16 @@
 //! 光标、选区与多光标模型。
 //!
-//! `SelectionSet` 是编辑引擎里唯一的选区模型，承载多光标、IME composition 与移动语义。
+//! `SelectionSet` 是 engine 提供的唯一选区数据模型；当前视图选区由宿主持有，
+//! engine 只提供校验、映射、编辑和移动语义。
 
-mod composition;
 mod core;
 mod cursor;
+mod edit_outcome;
 mod movement;
 mod selection_set;
 
-pub use composition::{CompositionSelection, CompositionState};
 pub use core::Selection;
 pub use cursor::Cursor;
+pub use edit_outcome::EditOutcome;
 pub use movement::{Motion, MovementDirection, MovementUnit};
 pub use selection_set::{SelectionMergePolicy, SelectionSet};

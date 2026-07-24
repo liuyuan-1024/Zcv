@@ -25,7 +25,6 @@ impl Buffer {
     /// 该便利 API 内部走 Transaction，会进入 Undo 历史。
     pub fn replace(&mut self, range: TextRange, replacement: &str) -> EngineResult<()> {
         self.ensure_writable()?;
-        self.cancel_composition_before_text_edit()?;
         self.validate_range(range)?;
         self.validate_edit_boundary(range.start())?;
         self.validate_edit_boundary(range.end())?;

@@ -156,7 +156,7 @@ Public API：
 
 ```text
 小步改动。
-复用现有 Buffer / Transaction / Selection / Movement / Composition / History 管线。
+复用现有 Buffer / Transaction / Selection / Movement / History 管线。
 避免重复实现同一编辑语义。
 避免不必要的 clone / to_string / collect。
 避免过早抽象和过度 trait 化。
@@ -184,9 +184,9 @@ TransactionRecord / VersionedResult: 版本绑定明确
 是否混用 ByteOffset / CharOffset / Utf16Offset / Position。
 Unicode 边界是否正确：UTF-8、grapheme、word boundary、CRLF。
 多光标编辑是否有顺序依赖或重叠问题。
-selection after edit 是否由统一映射策略维护。
-undo / redo 是否同时恢复文本和 SelectionSet。
-composition 是否复用事务管线。
+selection after edit 是否由统一策略计算并显式返回宿主。
+undo / redo 是否恢复文本并返回宿主 SelectionHistory 所需的规范 TransactionId。
+宿主输入协议是否被错误引入 engine；engine 只接受已经形成的文本编辑。
 movement 是否复用统一策略，而不是散落在 UI / examples。
 history merge 是否属于历史系统，不被宿主输入语义反向塑形。
 snapshot 是否保持只读低成本视图，不暴露可变底层。
@@ -197,7 +197,10 @@ snapshot 是否保持只读低成本视图，不暴露可变底层。
 ```text
 不要恢复 public TextRange::new_unchecked。
 Transaction 必须绑定 base_version，Buffer::apply_transaction 必须检查版本。
-事务失败必须保持原子性，不部分修改 text / version / dirty / line_index / selection / history / event queue。
+事务失败必须保持原子性，不部分修改 text / version / dirty / line_index / history / event queue。
+Buffer 不持有当前 SelectionSet 或 SelectionHistory；这些状态属于具体 Editor view。
+IME composition / marked text 不是已提交文本，完全属于宿主输入层，不在 engine 定义类型、状态机或事务来源。
+HistoryEntry / TransactionRecord 是纯文本历史事实，不保存某个 Editor 的前后选区。
 生产文本存储使用 RopeyStorage，不自研 Rope / Piece Table / Piece Tree。
 StringStorage 只能作为测试 reference model，不放进 src/storage/ 生产核心模块。
 Snapshot 应保持只读、低成本、版本绑定，并支持跨线程读取。

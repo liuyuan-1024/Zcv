@@ -1,6 +1,6 @@
 //! 历史图：以单调 `HistoryNodeId` 维护节点 + parent/children 边，支撑撤销后的本地分支。
 //!
-//! 本文件只管理图的局部不变量；replay batches、selection 还原与版本推进由 history::api 负责。
+//! 本文件只管理图的局部不变量；replay batches 与版本推进由 history::api 负责。
 
 use std::collections::BTreeMap;
 

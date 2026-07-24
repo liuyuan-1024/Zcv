@@ -132,15 +132,15 @@ impl Buffer {
     /// `motion` 接 `impl Into<Motion>`：传 `Motion::LineStep` 走垂直；传任一 `MovementUnit`
     /// 自动包装为 `Motion::ByUnit(...)` 走粒度边界。`extend = false` 时移动后塌缩为 caret；
     /// `extend = true` 时保留 anchor，扩展/收缩选区。
-    /// 该 API 只更新 selection，不提交文本事务，因此不污染 Undo 历史。
+    /// 该 API 是纯计算：接收 SelectionSet 并返回移动结果，不提交文本事务。
     pub fn move_selections(
-        &mut self,
-        selections: SelectionSet,
+        &self,
+        selections: &SelectionSet,
         direction: MovementDirection,
         motion: impl Into<Motion>,
         extend: bool,
     ) -> EngineResult<SelectionSet> {
-        self.validate_selection_set(&selections)?;
+        self.validate_selection_set(selections)?;
         let motion = motion.into();
 
         let primary_index = selections.primary_index();
@@ -163,19 +163,7 @@ impl Buffer {
             .collect::<EngineResult<Vec<_>>>()?;
 
         let moved = SelectionSet::new_with_primary(moved, primary_index);
-        self.set_selection(moved.clone())?;
         Ok(moved)
-    }
-
-    /// 移动当前 Buffer selection 的便捷入口。
-    pub fn move_current_selection(
-        &mut self,
-        direction: MovementDirection,
-        motion: impl Into<Motion>,
-        extend: bool,
-    ) -> EngineResult<SelectionSet> {
-        let selections = self.selection.clone();
-        self.move_selections(selections, direction, motion, extend)
     }
 }
 

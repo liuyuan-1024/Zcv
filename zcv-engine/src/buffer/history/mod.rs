@@ -11,7 +11,7 @@ mod entry;
 mod node;
 mod state;
 
-pub use api::HistoryNodeView;
+pub use api::{HistoryEditOutcome, HistoryNodeView};
 pub use node::HistoryNodeId;
 pub use state::HistoryStatus;
 

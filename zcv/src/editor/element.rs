@@ -8,11 +8,13 @@ use gpui::{
     MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Style,
     TextRun, UnderlineStyle, Window, fill, point, px, relative, size,
 };
-use zcv_engine::{SelectionSet, Snapshot};
+use zcv_engine::{Line, SelectionSet, Snapshot};
 
 use super::display_map::{BufferPoint, DisplayRow};
 use super::editor::{Editor, EditorPresentation};
 use crate::theme::color;
+
+const CARET_WIDTH: Pixels = px(2.);
 
 pub(super) struct EditorElement {
     editor: Entity<Editor>,
@@ -210,29 +212,53 @@ impl Element for EditorElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let line_height = window.line_height();
-        self.editor.update(cx, |editor, _| {
-            editor.prepare_scroll_viewport(bounds.size.height, line_height);
-        });
-        let (snapshot, presentation, selections, start_row, scroll_offset) = {
+        let (snapshot, presentation, selections, longest_row) = {
             let editor = self.editor.read(cx);
             (
                 editor.render_snapshot(),
                 editor.presentation(),
                 editor.selections(),
-                editor.scroll_anchor().row(),
-                editor.scroll_offset(),
+                editor.longest_display_row(),
             )
         };
-        let layout = Arc::new(layout_visible_lines(
+        let content_width = layout_line_width(&snapshot, longest_row, window) + CARET_WIDTH;
+        self.editor.update(cx, |editor, _| {
+            editor.prepare_scroll_viewport(bounds.size, content_width, line_height);
+        });
+        let (start_row, scroll_offset) = {
+            let editor = self.editor.read(cx);
+            (editor.scroll_anchor().row(), editor.scroll_offset())
+        };
+        let mut layout = layout_visible_lines(
             &snapshot,
-            presentation,
+            presentation.clone(),
             bounds,
             start_row,
             scroll_offset,
             line_height,
             window,
-        ));
-        let ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);
+        );
+        let mut ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);
+        let autoscrolled = self.editor.update(cx, |editor, _| {
+            editor.complete_autoscroll(
+                ime_caret_bounds.map(|caret| caret.left() - bounds.left() + scroll_offset.x),
+                ime_caret_bounds.map(|caret| caret.right() - bounds.left() + scroll_offset.x),
+            )
+        });
+        if autoscrolled {
+            let editor = self.editor.read(cx);
+            layout = layout_visible_lines(
+                &snapshot,
+                presentation,
+                bounds,
+                editor.scroll_anchor().row(),
+                editor.scroll_offset(),
+                line_height,
+                window,
+            );
+            ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);
+        }
+        let layout = Arc::new(layout);
         let (selections, carets) = layout_selections(&selections, &layout, line_height);
 
         PrepaintState {
@@ -320,6 +346,27 @@ impl Element for EditorElement {
             editor.set_ime_caret_geometry(bounds, prepaint.ime_caret_bounds);
         });
     }
+}
+
+fn layout_line_width(snapshot: &Snapshot, row: DisplayRow, window: &mut Window) -> Pixels {
+    let Ok(line) = snapshot.slice_line(Line::new(row.get())) else {
+        return Pixels::ZERO;
+    };
+    let text = line.as_str().trim_end_matches(['\r', '\n']);
+    let text_style = window.text_style();
+    let font_size = text_style.font_size.to_pixels(window.rem_size());
+    let run = TextRun {
+        len: text.len(),
+        font: text_style.font(),
+        color: text_style.color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(text.to_owned().into(), font_size, &[run], None)
+        .width
 }
 
 fn layout_visible_lines(

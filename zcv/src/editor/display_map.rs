@@ -82,11 +82,16 @@ impl DisplayPoint {
 #[derive(Debug, Clone)]
 pub(crate) struct DisplayMap {
     snapshot: Snapshot,
+    longest_row: DisplayRow,
 }
 
 impl DisplayMap {
     pub(crate) fn new(snapshot: Snapshot) -> Self {
-        Self { snapshot }
+        let longest_row = longest_row(&snapshot);
+        Self {
+            snapshot,
+            longest_row,
+        }
     }
 
     pub(crate) fn snapshot(&self) -> &Snapshot {
@@ -97,7 +102,12 @@ impl DisplayMap {
         self.snapshot.version()
     }
 
+    pub(crate) fn longest_row(&self) -> DisplayRow {
+        self.longest_row
+    }
+
     pub(crate) fn set_snapshot(&mut self, snapshot: Snapshot) {
+        self.longest_row = longest_row(&snapshot);
         self.snapshot = snapshot;
     }
 
@@ -133,6 +143,26 @@ impl DisplayMap {
         self.snapshot.position_to_byte(buffer_point.position())?;
         Ok(buffer_point)
     }
+}
+
+fn longest_row(snapshot: &Snapshot) -> DisplayRow {
+    (0..snapshot.line_count())
+        .map(|row| {
+            let line = Line::new(row);
+            let display_width = snapshot
+                .slice_line(line)
+                .ok()
+                .and_then(|line_slice| {
+                    let text = line_slice.as_str().trim_end_matches(['\r', '\n']);
+                    snapshot
+                        .logical_to_display_column(line, LogicalColumn::new(text.chars().count()))
+                        .ok()
+                })
+                .unwrap_or(DisplayColumn::ZERO);
+            (display_width, DisplayRow::new(row))
+        })
+        .max_by_key(|(width, _)| width.get())
+        .map_or(DisplayRow::ZERO, |(_, row)| row)
 }
 
 #[cfg(test)]
@@ -234,5 +264,25 @@ mod tests {
         assert_eq!(map.version(), mapped_version);
         assert_eq!(map.snapshot().len_bytes(), ByteOffset::new(1));
         assert!(map.offset_to_display_point(ByteOffset::new(2)).is_err());
+    }
+
+    #[test]
+    fn longest_row_tracks_display_width_and_snapshot_updates() {
+        let mut buffer =
+            Buffer::scratch("short\n\twide\nmedium".to_string(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+
+        assert_eq!(map.longest_row(), DisplayRow::new(1));
+
+        buffer
+            .insert(
+                ByteOffset::new("short\n\twide\nmedium".len()),
+                " becomes longest",
+            )
+            .expect("测试编辑应成功");
+        map.set_snapshot(buffer.snapshot());
+
+        assert_eq!(map.longest_row(), DisplayRow::new(2));
     }
 }

@@ -14,7 +14,7 @@ use zcv_engine::{
     TransactionSource, Utf16Offset,
 };
 
-use super::display_map::{DisplayMap, DisplayPoint};
+use super::display_map::{DisplayMap, DisplayPoint, DisplayRow};
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::ScrollManager;
 use super::selection::SelectionHistory;
@@ -284,6 +284,10 @@ impl Editor {
         self.scroll_manager.offset()
     }
 
+    pub(super) fn longest_display_row(&self) -> DisplayRow {
+        self.display_map.longest_row()
+    }
+
     pub(super) fn set_caret(&mut self, offset: ByteOffset) {
         self.composition = None;
         self.selections = SelectionSet::caret(offset);
@@ -310,10 +314,17 @@ impl Editor {
         self.last_line_height = Some(caret_bounds.size.height);
     }
 
-    pub(super) fn prepare_scroll_viewport(&mut self, viewport_height: Pixels, line_height: Pixels) {
+    pub(super) fn prepare_scroll_viewport(
+        &mut self,
+        viewport_size: gpui::Size<Pixels>,
+        content_width: Pixels,
+        line_height: Pixels,
+    ) {
         self.scroll_manager.update_viewport(
             self.display_map.snapshot().line_count(),
-            viewport_height,
+            viewport_size.width,
+            viewport_size.height,
+            content_width,
             line_height,
         );
     }
@@ -326,6 +337,15 @@ impl Editor {
         } else {
             false
         }
+    }
+
+    pub(super) fn complete_autoscroll(
+        &mut self,
+        caret_left: Option<Pixels>,
+        caret_right: Option<Pixels>,
+    ) -> bool {
+        self.scroll_manager
+            .complete_autoscroll(caret_left, caret_right)
     }
 
     fn new(buffer: Entity<Buffer>, mode: EditorMode, cx: &mut Context<Self>) -> Self {
@@ -1268,6 +1288,51 @@ mod tests {
     }
 
     #[gpui::test]
+    fn horizontal_scroll_stops_at_content_edge_and_caret_autoscrolls(cx: &mut TestAppContext) {
+        let text = "修改 zcv 模块时，请先阅读 zcv/docs/下的所有文档规范。同时查阅**[zed编辑器](https://github.com/zed-industries/zed)**的源码，看看zed是如何实现的，参考zed的实现方式，甚至是直接照搬zed的实现方式。".repeat(4);
+        let buffer = test_buffer(cx, text.clone());
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+
+        cx.run_until_parked();
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(4.), px(4.)),
+            delta: ScrollDelta::Pixels(point(px(-100_000.), px(0.))),
+            ..Default::default()
+        });
+        let maximum = cx.read_entity(&editor, |editor, _| editor.scroll_manager.offset().x);
+        assert!(maximum > px(0.));
+
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(4.), px(4.)),
+            delta: ScrollDelta::Pixels(point(px(-100_000.), px(0.))),
+            ..Default::default()
+        });
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.scroll_manager.offset().x, maximum);
+        });
+
+        cx.update_entity(&editor, |editor, cx| {
+            editor.scroll_manager.set_offset(point(px(0.), px(0.)));
+            editor.set_caret(ByteOffset::new(text.len()));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.read_entity(&editor, |editor, _| {
+            let scroll_left = editor.scroll_manager.offset().x;
+            assert!(scroll_left > px(0.));
+            assert!(scroll_left <= maximum);
+            let cursor = editor
+                .pixel_position_of_newest_cursor
+                .expect("行尾光标应有布局位置");
+            let bounds = editor.last_bounds.expect("Editor 应保存最近布局范围");
+            assert!(cursor.x + px(2.) <= bounds.size.width);
+        });
+    }
+
+    #[gpui::test]
     fn word_line_and_vertical_movement_use_engine_boundaries(cx: &mut TestAppContext) {
         let buffer = test_buffer(cx, "alpha 你好\nxy");
         let editor = cx.new({
@@ -1418,7 +1483,7 @@ mod tests {
                     Some(caret_bounds)
                 );
 
-                editor.prepare_scroll_viewport(px(100.), px(20.));
+                editor.prepare_scroll_viewport(size(px(100.), px(100.)), px(200.), px(20.));
                 assert!(editor.scroll_by(point(px(0.), px(-60.)), cx));
                 assert_eq!(
                     editor.bounds_for_range(2..2, element_bounds, window, cx),

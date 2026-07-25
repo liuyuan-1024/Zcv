@@ -4,6 +4,7 @@ pub(crate) mod active_buffer_language;
 pub(crate) mod cursor_position;
 pub(crate) mod diagnostics_button;
 pub(crate) mod dock;
+pub(crate) mod item;
 pub(crate) mod lsp_button;
 pub(crate) mod pane;
 pub(crate) mod pane_group;
@@ -146,10 +147,13 @@ impl Workspace {
         };
         let (editor, path) = {
             let pane = pane.read(cx);
-            let Some(active_file) = pane.active_file() else {
+            let Some(editor) = pane.active_editor(cx) else {
                 return;
             };
-            active_file
+            let Some(path) = pane.active_path(cx) else {
+                return;
+            };
+            (editor, path)
         };
         let buffer = editor.read(cx).buffer();
 
@@ -198,7 +202,7 @@ impl Workspace {
     fn focus_center_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(pane_entity) = self.layout.borrow().focus_pane_entity() {
             let pane = pane_entity.read(cx);
-            if let Some(editor) = pane.active_editor() {
+            if let Some(editor) = pane.active_editor(cx) {
                 window.focus(&editor.read(cx).focus_handle());
             } else {
                 window.focus(&pane.focus);

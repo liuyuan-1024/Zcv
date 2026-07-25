@@ -2,8 +2,9 @@
 //!
 //! 持有自己的 FocusHandle、tabs、激活状态。
 //! 渲染标签栏和编辑器内容，处理键盘事件。
+//! Pane 通过 [`ItemHandle`] trait 统操作标签页，不依赖具体视图类型。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::{
@@ -11,6 +12,7 @@ use gpui::{
 };
 use zcv_engine::Buffer;
 
+use super::item::ItemHandle;
 use super::pane_group::{PaneId, ViewId};
 use crate::editor::editor::Editor;
 use crate::theme::{color, radius, space};
@@ -24,13 +26,16 @@ static NEXT_VIEW_ID: AtomicU64 = AtomicU64::new(1);
 
 // ═══ 1. Struct + constructor ═══════════════════════════════════════
 
-/// Pane 直接拥有的标签页；文件身份和 Editor 生命周期不再经由全局 Registry 中转。
-#[derive(Clone)]
+/// Pane 中的单个标签页，通过 [`ItemHandle`] 统一持视图。
 pub(crate) struct TabItem {
     pub view_id: ViewId,
-    pub title: String,
-    pub path: PathBuf,
-    pub editor: Entity<Editor>,
+    pub item: Box<dyn ItemHandle>,
+}
+
+impl TabItem {
+    fn matches_path(&self, path: &Path, cx: &App) -> bool {
+        self.item.file_path(cx).as_deref() == Some(path)
+    }
 }
 
 /// 单个编辑区 Pane。
@@ -52,33 +57,33 @@ impl Pane {
     }
 
     /// 打开文件；当前 Pane 已有同一路径时只激活已有 Editor。
+    /// 返回新标签的焦点句柄，供调用方聚焦。
     pub fn open_file(
         &mut self,
         path: PathBuf,
-        title: impl Into<String>,
+        _title: impl Into<String>,
         buffer: Entity<Buffer>,
         cx: &mut Context<Self>,
-    ) -> Entity<Editor> {
-        if let Some(tab) = self.tabs.iter().find(|tab| tab.path == path) {
+    ) -> FocusHandle {
+        // 已有此文件时只激活
+        if let Some(tab) = self.tabs.iter().find(|tab| tab.matches_path(&path, cx)) {
             self.active = Some(tab.view_id);
             cx.notify();
-            return tab.editor.clone();
+            return tab.item.focus_handle(cx);
         }
 
         let view_id = ViewId(NEXT_VIEW_ID.fetch_add(1, Ordering::Relaxed));
-        let path_clone = path.clone();
         let editor = cx.new(|cx| Editor::for_buffer(buffer, cx));
-        editor.update(cx, |editor, _| editor.set_file_path(path_clone));
+        editor.update(cx, |editor, _| editor.set_file_path(path));
+        let focus = editor.read(cx).focus_handle();
+        // Pane 观察 Editor 变化，变化时触发自身重绘（如 dirty 状态）
         cx.observe(&editor, |_, _, cx| cx.notify()).detach();
-        self.tabs.push(TabItem {
-            view_id,
-            title: title.into(),
-            path,
-            editor: editor.clone(),
-        });
+
+        let item: Box<dyn ItemHandle> = Box::new(editor);
+        self.tabs.push(TabItem { view_id, item });
         self.active = Some(view_id);
         cx.notify();
-        editor
+        focus
     }
 
     /// 激活指定 tab。
@@ -130,13 +135,21 @@ impl Pane {
         }
     }
 
-    pub(crate) fn active_editor(&self) -> Option<Entity<Editor>> {
-        self.active_tab().map(|tab| tab.editor.clone())
+    /// 当前活动标签的 ItemHandle。
+    pub(crate) fn active_item(&self, _cx: &App) -> Option<&dyn ItemHandle> {
+        self.active_tab().map(|tab| &*tab.item)
     }
 
-    pub(crate) fn active_file(&self) -> Option<(Entity<Editor>, PathBuf)> {
+    /// 向下转型获取活动编辑器（仅供需要 Editor 的场合使用）。
+    pub(crate) fn active_editor(&self, _cx: &App) -> Option<Entity<Editor>> {
         self.active_tab()
-            .map(|tab| (tab.editor.clone(), tab.path.clone()))
+            .and_then(|tab| tab.item.as_any().downcast_ref::<Entity<Editor>>())
+            .cloned()
+    }
+
+    /// 活动编辑器的路径（如果有）。
+    pub(crate) fn active_path(&self, cx: &App) -> Option<PathBuf> {
+        self.active_tab()?.item.file_path(cx)
     }
 
     fn active_tab(&self) -> Option<&TabItem> {
@@ -145,7 +158,7 @@ impl Pane {
     }
 
     fn focus_active_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = self.active_editor() {
+        if let Some(editor) = self.active_editor(cx) {
             window.focus(&editor.read(cx).focus_handle());
         }
     }
@@ -174,7 +187,7 @@ impl Pane {
 impl Render for Pane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active_view = self.active;
-        let active_editor = self.active_editor();
+        let active_item = self.active_tab().map(|tab| &*tab.item);
         let pane_entity = cx.entity();
 
         div()
@@ -190,7 +203,7 @@ impl Render for Pane {
             .on_action(cx.listener(Self::handle_next_tab))
             .on_action(cx.listener(Self::handle_prev_tab))
             .child(render_tab_bar(&self.tabs, active_view, pane_entity, cx))
-            .child(render_content(active_view, active_editor))
+            .child(render_content(active_view, active_item))
     }
 }
 
@@ -219,7 +232,7 @@ fn render_tab_bar(
         .border_b_1()
         .border_color(color::current().gray.s[4])
         .children(tabs.iter().map(|tab| {
-            let is_dirty = tab.editor.read(cx).is_dirty(cx);
+            let is_dirty = tab.item.is_dirty(cx);
             render_tab(
                 tab,
                 Some(tab.view_id) == active_view,
@@ -252,13 +265,13 @@ fn render_tab(
         .rounded(radius::R2)
         .cursor_pointer()
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-            let editor = activate_entity.update(cx, |pane, cx| {
+            let focus = activate_entity.update(cx, |pane, cx| {
                 pane.activate_tab(view_id);
                 cx.notify();
-                pane.active_editor()
+                pane.active_item(cx).map(|item| item.focus_handle(cx))
             });
-            if let Some(editor) = editor {
-                window.focus(&editor.read(cx).focus_handle());
+            if let Some(focus) = focus {
+                window.focus(&focus);
             }
             window.refresh();
             cx.stop_propagation();
@@ -274,7 +287,7 @@ fn render_tab(
             gpui::rgba(0)
         })
         .child(file_icon())
-        .child(tab.title.clone())
+        .child(tab.item.title(cx))
         .child(tab_end_glyph(&close_entity, view_id, is_dirty, cx))
 }
 
@@ -294,13 +307,13 @@ fn close_glyph(
         .label("关闭")
         .shortcut(&CloseTab, cx)
         .on_click(move |window: &mut gpui::Window, cx: &mut gpui::App| {
-            let editor = entity.update(cx, |pane, cx| {
+            let focus = entity.update(cx, |pane, cx| {
                 pane.close_tab(view_id);
                 cx.notify();
-                pane.active_editor()
+                pane.active_item(cx).map(|item| item.focus_handle(cx))
             });
-            if let Some(editor) = editor {
-                window.focus(&editor.read(cx).focus_handle());
+            if let Some(focus) = focus {
+                window.focus(&focus);
             }
             window.refresh();
         })
@@ -351,7 +364,7 @@ fn tab_end_glyph(
 /// 渲染 Pane 内容区（编辑器内容或占位文字）。
 fn render_content(
     active_view: Option<ViewId>,
-    active_editor: Option<Entity<Editor>>,
+    active_item: Option<&dyn ItemHandle>,
 ) -> impl gpui::IntoElement {
     if active_view.is_none() {
         return div()
@@ -363,7 +376,7 @@ fn render_content(
             .child("无打开文件")
             .into_any_element();
     }
-    let Some(editor) = active_editor else {
+    let Some(item) = active_item else {
         return div()
             .flex_1()
             .flex()
@@ -378,7 +391,7 @@ fn render_content(
         .flex_1()
         .flex()
         .overflow_hidden()
-        .child(editor)
+        .child(item.to_any_element())
         .into_any_element()
 }
 
@@ -397,9 +410,10 @@ mod tests {
         });
         let pane = cx.new(|cx| Pane::new(PaneId(1), cx));
 
-        let editor = cx.update_entity(&pane, |pane, cx| {
+        let _focus = cx.update_entity(&pane, |pane, cx| {
             pane.open_file(PathBuf::from("demo.txt"), "demo.txt", buffer.clone(), cx)
         });
+        let editor = cx.read_entity(&pane, |pane, cx| pane.active_editor(cx).unwrap());
         cx.read_entity(&editor, |editor, cx| assert!(!editor.is_dirty(cx)));
         cx.update_entity(&editor, |editor, cx| editor.set_text("阶段七", cx));
         cx.read_entity(&editor, |editor, cx| assert!(editor.is_dirty(cx)));
@@ -413,11 +427,18 @@ mod tests {
                 "阶段七"
             );
         });
-        cx.read_entity(&pane, |pane, _| {
+        cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 1);
-            assert_eq!(pane.tabs[0].path, PathBuf::from("demo.txt"));
+            assert_eq!(
+                pane.tabs[0]
+                    .item
+                    .file_path(cx)
+                    .as_deref()
+                    .map(|p| p.to_string_lossy().to_string()),
+                Some("demo.txt".to_string())
+            );
             assert_eq!(pane.active, Some(pane.tabs[0].view_id));
-            assert!(pane.active_editor().is_some());
+            assert!(pane.active_editor(cx).is_some());
         });
     }
 
@@ -431,14 +452,14 @@ mod tests {
         });
         let pane = cx.new(|cx| Pane::new(PaneId(1), cx));
 
-        let first = cx.update_entity(&pane, |pane, cx| {
+        let _first = cx.update_entity(&pane, |pane, cx| {
             pane.open_file(PathBuf::from("demo.txt"), "demo.txt", first_buffer, cx)
         });
-        let second = cx.update_entity(&pane, |pane, cx| {
+        let _second = cx.update_entity(&pane, |pane, cx| {
             pane.open_file(PathBuf::from("demo.txt"), "demo.txt", second_buffer, cx)
         });
 
-        assert_eq!(first, second);
+        // 同一路径不应创建重复标签
         cx.read_entity(&pane, |pane, _| assert_eq!(pane.tabs.len(), 1));
     }
 }

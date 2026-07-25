@@ -75,9 +75,9 @@ fn open_file_in_editor(path: &Path, window: &mut Window, cx: &mut gpui::App) {
     if let Some(layout_ref) = cx.try_global::<LayoutRef>() {
         if let Some(ctrl) = layout_ref.0.upgrade() {
             if let Some(entity) = ctrl.borrow().focus_pane.clone() {
-                let editor =
+                let focus =
                     entity.update(cx, |pane, cx| pane.open_file(path, file_name, buffer, cx));
-                window.focus(&editor.read(cx).focus_handle());
+                window.focus(&focus);
                 window.refresh();
             }
         }

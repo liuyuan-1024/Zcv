@@ -86,12 +86,12 @@ impl StatusBar {
 
         // 替换订阅：drop 旧值 → 自动取消对旧 Pane 的观察
         self._pane_subscription = Some(cx.observe(pane, |this, pane, cx| {
-            let editor = pane.read(cx).active_editor();
+            let editor = pane.read(cx).active_editor(cx);
             this.broadcast_editor(editor.as_ref(), cx);
         }));
 
         // 立即广播当前编辑器和通知
-        let editor = pane.read(cx).active_editor();
+        let editor = pane.read(cx).active_editor(cx);
         self.broadcast_editor(editor.as_ref(), cx);
         cx.notify();
     }
@@ -106,7 +106,7 @@ impl StatusBar {
         let editor = self
             .active_pane
             .as_ref()
-            .and_then(|p| p.read(cx).active_editor());
+            .and_then(|p| p.read(cx).active_editor(cx));
         item.set_active_editor(editor.as_ref(), cx);
         self.left_items.push(Box::new(item));
         cx.notify();
@@ -120,7 +120,7 @@ impl StatusBar {
         let editor = self
             .active_pane
             .as_ref()
-            .and_then(|p| p.read(cx).active_editor());
+            .and_then(|p| p.read(cx).active_editor(cx));
         item.set_active_editor(editor.as_ref(), cx);
         self.right_items.push(Box::new(item));
         cx.notify();

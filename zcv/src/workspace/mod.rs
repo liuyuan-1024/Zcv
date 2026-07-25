@@ -324,9 +324,25 @@ impl Workspace {
         }
     }
 
-    fn handle_toggle_panel(&mut self, action_name: &str, window: &mut Window) {
+    fn handle_toggle_panel(
+        &mut self,
+        action_name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(i) = self.panel_index(action_name) {
+            let was_active = self.layout.borrow().is_panel_active(i);
             self.layout.borrow_mut().toggle_panel(i);
+            if was_active {
+                // 面板从打开→关闭，焦点回到编辑区
+                self.focus_center_pane(window, cx);
+            } else {
+                // 面板从关闭→打开，焦点移出编辑器（使光标消失）后续每个面板有真实内容后改为聚焦面板自身
+                if let Some(pane) = self.focus_pane.as_ref() {
+                    let pane_focus = pane.read(cx).focus.clone();
+                    window.focus(&pane_focus);
+                }
+            }
             window.refresh();
         }
     }
@@ -439,28 +455,28 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_save))
             .on_action(cx.listener(Self::handle_toggle_project_tree))
             .on_action(cx.listener(
-                |this: &mut Workspace, _: &ToggleVersionControl, window, _cx| {
-                    this.handle_toggle_panel("dock::ToggleVersionControl", window);
+                |this: &mut Workspace, _: &ToggleVersionControl, window, cx| {
+                    this.handle_toggle_panel("dock::ToggleVersionControl", window, cx);
                 },
             ))
             .on_action(
-                cx.listener(|this: &mut Workspace, _: &ToggleOutline, window, _cx| {
-                    this.handle_toggle_panel("dock::ToggleOutline", window);
+                cx.listener(|this: &mut Workspace, _: &ToggleOutline, window, cx| {
+                    this.handle_toggle_panel("dock::ToggleOutline", window, cx);
                 }),
             )
             .on_action(
-                cx.listener(|this: &mut Workspace, _: &ToggleTerminal, window, _cx| {
-                    this.handle_toggle_panel("dock::ToggleTerminal", window);
+                cx.listener(|this: &mut Workspace, _: &ToggleTerminal, window, cx| {
+                    this.handle_toggle_panel("dock::ToggleTerminal", window, cx);
                 }),
             )
             .on_action(
-                cx.listener(|this: &mut Workspace, _: &ToggleDebug, window, _cx| {
-                    this.handle_toggle_panel("dock::ToggleDebug", window);
+                cx.listener(|this: &mut Workspace, _: &ToggleDebug, window, cx| {
+                    this.handle_toggle_panel("dock::ToggleDebug", window, cx);
                 }),
             )
             .on_action(cx.listener(
-                |this: &mut Workspace, _: &ToggleKeyboardShortcuts, window, _cx| {
-                    this.handle_toggle_panel("dock::ToggleKeyboardShortcuts", window);
+                |this: &mut Workspace, _: &ToggleKeyboardShortcuts, window, cx| {
+                    this.handle_toggle_panel("dock::ToggleKeyboardShortcuts", window, cx);
                 },
             ))
             .on_action(cx.listener(Self::handle_toggle_project_picker))

@@ -156,6 +156,9 @@ macro_rules! make_placeholder_panel {
                     .flex()
                     .items_center()
                     .justify_center()
+                    .track_focus(&self.focus)
+                    .key_context($persistent)
+                    .tab_index(0)
                     .text_color(color::current().gray.s[5])
                     .child($label)
             }

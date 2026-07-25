@@ -3,18 +3,19 @@
 //! 布局控制分两类区域：
 //!
 //! - **Dock**（左/右/底）：可折叠，同一时间一个 panel 可见，用 PanelStack 切换。
+//!   每个 Dock 是独立 Entity，参考 Zed `crates/workspace/src/dock.rs`。
 //! - **中心编辑区**（PaneGroup）：递归分栏树，叶子是 Pane。
-//!
-//! 面板身份由 `LayoutController.panels` 中的 index 标识。
 
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui::{App, Entity, MouseButton, Pixels, Point, Window, actions, div, prelude::*, px};
+use gpui::{
+    Context, Entity, FocusHandle, Focusable, MouseButton, Pixels, Point, Render, Subscription,
+    WeakEntity, Window, actions, div, prelude::*, px,
+};
 
-use super::pane::Pane;
-use super::pane_group::{Axis, PaneGroup, PaneId};
+use super::pane_group::{Axis, PaneGroup};
 use super::panel::PanelHandle;
 use crate::theme::{color, space};
 
@@ -45,360 +46,281 @@ pub(crate) enum DockArea {
     Bottom,
 }
 
-/// Dock 运行时状态：同一时间只显示一个 panel。
-///
-/// 面板身份由 `LayoutController.panels` 中的 index 标识。
-#[derive(Debug, Clone)]
-pub(crate) struct DockState {
-    pub collapsed: bool,
-    pub size: Pixels,
-    /// 当前激活面板在 panels 中的 index。
-    pub active_panel: Option<usize>,
-}
-
-impl DockState {
-    pub(crate) fn is_visible(&self) -> bool {
-        !self.collapsed && self.active_panel.is_some()
-    }
-}
-
-/// 拖拽目标（当前仅支持 dock 分隔线）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DragTarget {
-    DockDivider(DockArea),
-}
-
-/// 正在进行的拖拽状态。
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DragState {
-    pub target: DragTarget,
-    pub start_cursor: gpui::Point<Pixels>,
-    pub start_size: Pixels,
-}
-
-// ═══ LayoutSnapshot ═══════════════════════════════════════════
-
-/// 渲染期只读布局快照。
-#[derive(Clone)]
-pub(crate) struct LayoutSnapshot {
-    pub left_dock: DockState,
-    pub right_dock: DockState,
-    pub bottom_dock: DockState,
-    pub center: PaneGroup,
-}
-
-// ═══ LayoutController ═════════════════════════════════════════
-
 /// dock 和编辑区的最小尺寸，防止 dock 拖拽完全挤占编辑区。
 const MIN_SIZE: Pixels = space::S16;
 
-/// 布局控制器：持有所有布局状态，提供唯一变更入口。
-/// 面板身份为 `panels` vec 中的 index，通过 `DockState.active_panel` 引用。
-pub(crate) struct LayoutController {
-    left_dock: DockState,
-    right_dock: DockState,
-    bottom_dock: DockState,
-    center: PaneGroup,
-    pub(crate) panels: Vec<(Arc<dyn PanelHandle>, DockArea)>,
-    next_pane_id: u32,
-    next_split_id: u32,
-    drag_state: Option<DragState>,
+/// 正在进行的拖拽状态（Dock 内部使用）。
+#[derive(Debug, Clone, Copy)]
+struct DragState {
+    start_cursor: gpui::Point<Pixels>,
+    start_size: Pixels,
 }
 
-impl LayoutController {
-    pub(crate) fn with_initial_pane(
-        pane: Entity<Pane>,
-        panels: Vec<(Arc<dyn PanelHandle>, DockArea)>,
+// ═══ Dock Entity ═════════════════════════════════════════════════
+
+/// Dock 容器：相邻窗口边缘，可折叠，同一时间只显示一个 panel。
+///
+/// 参考 Zed `crates/workspace/src/dock.rs` 中的 Dock 设计。
+pub(crate) struct Dock {
+    pub position: DockArea,
+    pub is_open: bool,
+    size: Pixels,
+    active_panel_index: Option<usize>,
+    pub panels: Vec<Arc<dyn PanelHandle>>,
+    pub focus: FocusHandle,
+    /// 左右 dock 互为 sibling，拖拽时协调尺寸。
+    sibling: Option<WeakEntity<Dock>>,
+    /// 拖拽进行中的状态。
+    drag_state: Option<DragState>,
+    /// 通知 Workspace 哪个 dock 正在被拖拽。
+    pub drag_notify: Rc<Cell<Option<DockArea>>>,
+    /// 生命周期相关订阅。
+    pub _subscriptions: Vec<Subscription>,
+}
+
+impl Dock {
+    /// 创建一个新 Dock，默认折叠。
+    pub(crate) fn new(
+        position: DockArea,
+        panels: Vec<Arc<dyn PanelHandle>>,
+        initial_size: Pixels,
+        drag_notify: Rc<Cell<Option<DockArea>>>,
+        cx: &mut Context<Self>,
     ) -> Self {
-        // 初始化时激活注册表中每个 dock area 的第一个面板
-        let first_index =
-            |area: DockArea| -> Option<usize> { panels.iter().position(|(_, a)| *a == area) };
+        // 激活第一个面板
+        let active_panel_index = if panels.is_empty() { None } else { Some(0) };
         Self {
-            left_dock: DockState {
-                collapsed: true,
-                size: px(240.0),
-                active_panel: first_index(DockArea::Left),
-            },
-            right_dock: DockState {
-                collapsed: true,
-                size: px(240.0),
-                active_panel: first_index(DockArea::Right),
-            },
-            bottom_dock: DockState {
-                collapsed: true,
-                size: px(200.0),
-                active_panel: first_index(DockArea::Bottom),
-            },
-            center: PaneGroup::Pane(PaneId(1), pane),
+            position,
+            is_open: false,
+            size: initial_size,
+            active_panel_index,
             panels,
-            next_pane_id: 2,
-            next_split_id: 1,
+            focus: cx.focus_handle(),
+            sibling: None,
             drag_state: None,
+            drag_notify,
+            _subscriptions: Vec::new(),
         }
     }
 
-    pub(crate) fn next_pane_id(&mut self) -> PaneId {
-        let id = PaneId(self.next_pane_id);
-        self.next_pane_id += 1;
-        id
+    /// 设置 sibling dock（左右耦合）。
+    pub(crate) fn set_sibling(&mut self, sibling: WeakEntity<Dock>) {
+        self.sibling = Some(sibling);
     }
 
-    pub(crate) fn snapshot(&self) -> LayoutSnapshot {
-        LayoutSnapshot {
-            left_dock: self.left_dock.clone(),
-            right_dock: self.right_dock.clone(),
-            bottom_dock: self.bottom_dock.clone(),
-            center: self.center.clone(),
+    // ── 状态查询 ─────────────────────────────────────────────────
+
+    /// Dock 是否展开且含有激活面板。
+    pub(crate) fn is_open(&self) -> bool {
+        self.is_open && self.active_panel_index.is_some()
+    }
+
+    /// 当前可见面板。
+    pub(crate) fn visible_panel(&self) -> Option<&Arc<dyn PanelHandle>> {
+        if self.is_open() {
+            self.active_panel_index.and_then(|i| self.panels.get(i))
+        } else {
+            None
         }
     }
 
-    // ── Dock 操作 ─────────────────────────────────────────────
+    /// 按 action_name 查找面板在 dock 内的 index。
+    pub(crate) fn panel_index_by_action(&self, action_name: &str) -> Option<usize> {
+        self.panels
+            .iter()
+            .position(|h| h.action_name() == action_name)
+    }
+
+    /// 当前激活面板的 index。
+    pub(crate) fn active_panel_index(&self) -> Option<usize> {
+        self.active_panel_index
+    }
+
+    /// 指定 index 的面板是否激活（展开且为当前面板）。
+    pub(crate) fn is_panel_active(&self, panel_index: usize) -> bool {
+        self.is_open && Some(panel_index) == self.active_panel_index
+    }
+
+    // ── 面板切换 ─────────────────────────────────────────────────
 
     /// 切换面板的展开/折叠，并在切换前后通知面板的 `set_active`。
-    pub(crate) fn toggle_panel(&mut self, index: usize, window: &mut Window, cx: &mut App) {
-        let (handle, area) = match self.panels.get(index) {
-            Some((h, a)) => (h.clone(), *a),
-            None => return,
+    pub(crate) fn toggle_panel(
+        &mut self,
+        panel_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(handle) = self.panels.get(panel_index) else {
+            return;
         };
-        let was_active = {
-            let dock = self.dock(area);
-            dock.active_panel == Some(index) && !dock.collapsed
-        };
+        let is_active = self.is_open && Some(panel_index) == self.active_panel_index;
 
-        if was_active {
-            self.dock_mut(area).collapsed = true;
+        if is_active {
+            // 隐藏 dock
+            self.is_open = false;
             handle.set_active(false, window, cx);
         } else {
-            // 停用旧面板
-            let old_handle = {
-                let dock = self.dock(area);
-                dock.active_panel
-                    .and_then(|old| self.panels.get(old).map(|(h, _)| h.clone()))
-            };
-            if let Some(ref old) = old_handle {
-                old.set_active(false, window, cx);
+            // 停用旧面板（如果切换面板）
+            if let Some(old_idx) = self.active_panel_index {
+                if old_idx != panel_index {
+                    if let Some(old_handle) = self.panels.get(old_idx) {
+                        old_handle.set_active(false, window, cx);
+                    }
+                }
             }
-            self.dock_mut(area).active_panel = Some(index);
-            self.dock_mut(area).collapsed = false;
+            self.active_panel_index = Some(panel_index);
+            self.is_open = true;
             handle.set_active(true, window, cx);
         }
+        cx.notify();
     }
 
-    pub(crate) fn resize_dock(
-        &mut self,
-        area: DockArea,
-        size: Pixels,
-        window_size: gpui::Size<Pixels>,
-    ) {
-        match area {
-            DockArea::Left => {
-                let new_left = size.clamp(MIN_SIZE, window_size.width - MIN_SIZE - MIN_SIZE);
-                if self.right_dock.is_visible() {
-                    self.right_dock.size = (window_size.width - new_left - MIN_SIZE).max(MIN_SIZE);
-                }
-                self.left_dock.size = new_left;
-            }
-            DockArea::Right => {
-                let new_right = size.clamp(MIN_SIZE, window_size.width - MIN_SIZE - MIN_SIZE);
-                if self.left_dock.is_visible() {
-                    self.left_dock.size = (window_size.width - new_right - MIN_SIZE).max(MIN_SIZE);
-                }
-                self.right_dock.size = new_right;
-            }
-            DockArea::Bottom => {
-                self.bottom_dock.size =
-                    size.clamp(MIN_SIZE, (window_size.height - MIN_SIZE).max(MIN_SIZE));
-            }
-        }
-    }
+    // ── 拖拽调整大小 ─────────────────────────────────────────────
 
-    // ── 拖拽操作 ──────────────────────────────────────────────
-
-    pub(crate) fn start_dock_drag(&mut self, area: DockArea, cursor: Point<Pixels>) {
-        let size = match area {
-            DockArea::Left => self.left_dock.size,
-            DockArea::Right => self.right_dock.size,
-            DockArea::Bottom => self.bottom_dock.size,
-        };
+    /// 开始拖拽调整大小。
+    pub(crate) fn start_resize(&mut self, cursor: Point<Pixels>) {
         self.drag_state = Some(DragState {
-            target: DragTarget::DockDivider(area),
             start_cursor: cursor,
-            start_size: size,
+            start_size: self.size,
         });
     }
 
-    pub(crate) fn drag_to(&mut self, cursor: Point<Pixels>, window_size: gpui::Size<Pixels>) {
+    /// 拖拽到指定光标位置，更新 dock 尺寸。
+    pub(crate) fn resize_to(
+        &mut self,
+        cursor: Point<Pixels>,
+        window_size: gpui::Size<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(state) = &self.drag_state else {
             return;
         };
-        let DragTarget::DockDivider(area) = state.target;
-        let delta = Point::new(
-            cursor.x - state.start_cursor.x,
-            cursor.y - state.start_cursor.y,
-        );
-        let new_size = match area {
-            DockArea::Left => state.start_size + delta.x,
-            DockArea::Right => state.start_size - delta.x,
-            DockArea::Bottom => state.start_size - delta.y,
+        let delta = match self.position {
+            DockArea::Left => cursor.x - state.start_cursor.x,
+            DockArea::Right => state.start_cursor.x - cursor.x,
+            DockArea::Bottom => state.start_cursor.y - cursor.y,
         };
-        self.resize_dock(area, new_size, window_size);
+        let raw = state.start_size + delta;
+        let max_size = match self.position {
+            DockArea::Left | DockArea::Right => window_size.width - MIN_SIZE - MIN_SIZE,
+            DockArea::Bottom => window_size.height - MIN_SIZE,
+        };
+        let new_size = raw.clamp(MIN_SIZE, max_size);
+        self.size = new_size;
+
+        // 左右 dock 耦合：调整 sibling 的尺寸
+        if self.position == DockArea::Left || self.position == DockArea::Right {
+            if let Some(sibling) = self.sibling.as_ref().and_then(|s| s.upgrade()) {
+                sibling.update(cx, |sib, _| {
+                    let other_max = window_size.width - new_size - MIN_SIZE;
+                    if sib.size > other_max {
+                        sib.size = other_max.max(MIN_SIZE);
+                    }
+                });
+            }
+        }
+
+        cx.notify();
     }
 
-    pub(crate) fn end_drag(&mut self) {
+    /// 结束拖拽。
+    pub(crate) fn end_resize(&mut self, _cx: &mut Context<Self>) {
         self.drag_state = None;
     }
+
+    /// 是否正在拖拽。
     pub(crate) fn is_dragging(&self) -> bool {
         self.drag_state.is_some()
     }
 
-    pub(crate) fn reset_dock_size(&mut self, area: DockArea, window_size: gpui::Size<Pixels>) {
-        let default = match area {
-            DockArea::Left => px(240.0),
-            DockArea::Right => px(240.0),
+    /// 重置为默认尺寸。
+    pub(crate) fn reset_size(&mut self, window_size: gpui::Size<Pixels>, cx: &mut Context<Self>) {
+        let default = match self.position {
+            DockArea::Left | DockArea::Right => px(240.0),
             DockArea::Bottom => px(200.0),
         };
-        self.resize_dock(area, default, window_size);
-    }
-
-    pub(crate) fn is_panel_active(&self, index: usize) -> bool {
-        let Some((_, area)) = self.panels.get(index) else {
-            return false;
+        let max_size = match self.position {
+            DockArea::Left | DockArea::Right => window_size.width - MIN_SIZE,
+            DockArea::Bottom => window_size.height - MIN_SIZE,
         };
-        let dock = self.dock(*area);
-        dock.active_panel == Some(index) && !dock.collapsed
-    }
-
-    // ── 内部辅助 ───────────────────────────────────────────────
-
-    fn dock(&self, area: DockArea) -> &DockState {
-        match area {
-            DockArea::Left => &self.left_dock,
-            DockArea::Right => &self.right_dock,
-            DockArea::Bottom => &self.bottom_dock,
-        }
-    }
-
-    fn dock_mut(&mut self, area: DockArea) -> &mut DockState {
-        match area {
-            DockArea::Left => &mut self.left_dock,
-            DockArea::Right => &mut self.right_dock,
-            DockArea::Bottom => &mut self.bottom_dock,
-        }
+        self.size = default.clamp(MIN_SIZE, max_size);
+        cx.notify();
     }
 }
 
-impl Default for LayoutController {
-    fn default() -> Self {
-        panic!("LayoutController 需要 cx 来创建初始 Pane Entity，请使用 with_initial_pane");
+impl Render for Dock {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let panel_view: gpui::AnyElement = match self.visible_panel() {
+            Some(handle) => handle.to_any_view().into_any_element(),
+            None => placeholder_div().into_any_element(),
+        };
+
+        let frame = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .overflow_hidden()
+            .bg(color::current().gray.s[1])
+            .text_color(color::current().gray.s[8]);
+
+        let frame = match self.position {
+            DockArea::Left => frame
+                .w(self.size)
+                .h_full()
+                .border_r_1()
+                .border_color(color::current().gray.s[4]),
+            DockArea::Right => frame
+                .w(self.size)
+                .h_full()
+                .border_l_1()
+                .border_color(color::current().gray.s[4]),
+            DockArea::Bottom => frame
+                .h(self.size)
+                .w_full()
+                .border_t_1()
+                .border_color(color::current().gray.s[4]),
+        };
+
+        let frame = frame.child(div().size_full().child(panel_view));
+
+        // 拖拽调整大小的热区
+        const HIT: Pixels = px(6.0);
+        let dock_entity = cx.entity().clone();
+        let notify = self.drag_notify.clone();
+        let area = self.position;
+
+        let handle = div()
+            .absolute()
+            .on_mouse_down(MouseButton::Left, {
+                let dock_entity = dock_entity.clone();
+                move |event, window, cx| {
+                    dock_entity.update(cx, |d, _| d.start_resize(event.position));
+                    notify.set(Some(area));
+                    window.refresh();
+                }
+            })
+            .on_mouse_up(MouseButton::Left, move |event, window, cx| {
+                if event.click_count >= 2 {
+                    let win_size = window.bounds().size;
+                    dock_entity.update(cx, |d, cx| d.reset_size(win_size, cx));
+                    window.refresh();
+                }
+            });
+
+        let handle = match self.position {
+            DockArea::Left => handle.right(px(0.0)).w(HIT).h_full().cursor_col_resize(),
+            DockArea::Right => handle.left(px(0.0)).w(HIT).h_full().cursor_col_resize(),
+            DockArea::Bottom => handle.top(px(0.0)).w_full().h(HIT).cursor_row_resize(),
+        };
+
+        frame.child(handle)
     }
 }
 
-// ═══ 布局渲染 ═════════════════════════════════════════════════
-
-/// 渲染 workbench 主体（不包含顶栏和底栏）。
-pub(crate) fn render_body(
-    layout: &LayoutSnapshot,
-    panels: &[(Arc<dyn PanelHandle>, DockArea)],
-    layout_ctrl: Rc<RefCell<LayoutController>>,
-) -> gpui::Div {
-    let mut row = div()
-        .flex_1()
-        .flex()
-        .flex_row()
-        .size_full()
-        .overflow_hidden()
-        .relative();
-
-    if layout.left_dock.is_visible() {
-        row = row.child(render_dock(
-            DockArea::Left,
-            &layout.left_dock,
-            panels,
-            Rc::clone(&layout_ctrl),
-        ));
-    }
-
-    let mut center_col = div()
-        .flex_1()
-        .flex()
-        .flex_col()
-        .size_full()
-        .overflow_hidden()
-        .relative()
-        .min_w(space::S16);
-    center_col = center_col.child(render_pane_group(&layout.center));
-
-    if layout.bottom_dock.is_visible() {
-        center_col = center_col.child(render_dock(
-            DockArea::Bottom,
-            &layout.bottom_dock,
-            panels,
-            Rc::clone(&layout_ctrl),
-        ));
-    }
-    row = row.child(center_col);
-
-    if layout.right_dock.is_visible() {
-        row = row.child(render_dock(
-            DockArea::Right,
-            &layout.right_dock,
-            panels,
-            layout_ctrl,
-        ));
-    }
-    row
-}
-
-// ── Dock 渲染 ─────────────────────────────────────────────────
-
-fn render_dock(
-    area: DockArea,
-    state: &DockState,
-    panels: &[(Arc<dyn PanelHandle>, DockArea)],
-    layout_ctrl: Rc<RefCell<LayoutController>>,
-) -> gpui::Div {
-    let frame = div()
-        .relative()
-        .flex()
-        .flex_col()
-        .flex_shrink_0()
-        .overflow_hidden()
-        .bg(color::current().gray.s[1])
-        .text_color(color::current().gray.s[8]);
-
-    let frame = match area {
-        DockArea::Left => frame
-            .w(state.size)
-            .h_full()
-            .border_r_1()
-            .border_color(color::current().gray.s[4]),
-        DockArea::Right => frame
-            .w(state.size)
-            .h_full()
-            .border_l_1()
-            .border_color(color::current().gray.s[4]),
-        DockArea::Bottom => frame
-            .h(state.size)
-            .w_full()
-            .border_t_1()
-            .border_color(color::current().gray.s[4]),
-    };
-
-    let body: gpui::Div = match state
-        .active_panel
-        .and_then(|i| panels.get(i).map(|(h, _)| h))
-    {
-        Some(panel) => div().size_full().child(panel.to_any_view()),
-        None => placeholder_div(),
-    };
-    let frame = frame.child(body);
-
-    const HIT: Pixels = space::S6;
-    let zone = dock_drag_zone(area, layout_ctrl);
-    match area {
-        DockArea::Left => frame.child(zone.right(px(0.0)).w(HIT)),
-        DockArea::Right => frame.child(zone.left(px(0.0)).w(HIT)),
-        DockArea::Bottom => frame.child(zone.top(px(0.0)).h(HIT)),
+impl Focusable for Dock {
+    fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
+        self.focus.clone()
     }
 }
 
@@ -412,27 +334,48 @@ fn placeholder_div() -> gpui::Div {
         .child("")
 }
 
-fn dock_drag_zone(area: DockArea, layout: Rc<RefCell<LayoutController>>) -> gpui::Div {
-    let layout2 = Rc::clone(&layout);
-    let base = div()
-        .absolute()
-        .on_mouse_down(MouseButton::Left, move |event, window, _cx| {
-            layout.borrow_mut().start_dock_drag(area, event.position);
-            window.refresh();
-        })
-        .on_mouse_up(MouseButton::Left, move |event, window, _cx| {
-            if event.click_count >= 2 {
-                layout2
-                    .borrow_mut()
-                    .reset_dock_size(area, window.bounds().size);
-                window.refresh();
-            }
-        });
+// ═══ 布局渲染 ═════════════════════════════════════════════════
 
-    match area {
-        DockArea::Left | DockArea::Right => base.h_full().cursor_col_resize(),
-        DockArea::Bottom => base.w_full().cursor_row_resize(),
+/// 渲染 workbench 主体（不包含顶栏和底栏）。
+///
+/// 三个 Dock 各自是独立 Entity，由调用方检查 `is_open()` 后决定是否传入。
+pub(crate) fn render_body(
+    center: &PaneGroup,
+    left_dock: Option<Entity<Dock>>,
+    right_dock: Option<Entity<Dock>>,
+    bottom_dock: Option<Entity<Dock>>,
+) -> gpui::Div {
+    let mut row = div()
+        .flex_1()
+        .flex()
+        .flex_row()
+        .size_full()
+        .overflow_hidden()
+        .relative();
+
+    if let Some(dock) = left_dock {
+        row = row.child(dock);
     }
+
+    let mut center_col = div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .size_full()
+        .overflow_hidden()
+        .relative()
+        .min_w(space::S16);
+    center_col = center_col.child(render_pane_group(center));
+
+    if let Some(dock) = bottom_dock {
+        center_col = center_col.child(dock);
+    }
+    row = row.child(center_col);
+
+    if let Some(dock) = right_dock {
+        row = row.child(dock);
+    }
+    row
 }
 
 // ── 中心编辑区渲染 ─────────────────────────────────────────────

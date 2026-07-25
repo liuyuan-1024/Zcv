@@ -1,37 +1,40 @@
 //! PanelButtons —— 底栏按钮组。
 //!
-//! 每个按钮绑定一个 PanelHandle + dispatch 函数指针。
+//! 每个 DockArea 一个按钮组，持有对应的 Dock Entity 来查询面板激活状态，激活时高亮显示。
+//! 参考 Zed `crates/workspace/src/dock.rs`。
 
-use std::sync::Arc;
-
-use gpui::{App, Context, ElementId, Entity, Render, Window, div, prelude::*};
+use gpui::{App, Context, ElementId, Entity, Render, Subscription, Window, div, prelude::*};
 
 use crate::editor::editor::Editor;
 use crate::theme::{color, space};
 use crate::ui::glyph::Glyph;
-use crate::workspace::dock::DockArea;
-use crate::workspace::panel::PanelHandle;
+use crate::workspace::dock::{Dock, DockArea};
 use crate::workspace::status_bar::StatusItemView;
 
+/// 面板点击调度函数：将点击转为 gpui action dispatch。
 pub(crate) type PanelDispatch = fn(&mut Window, &mut App);
 
-struct ButtonEntry {
-    handle: Arc<dyn PanelHandle>,
-    on_click: PanelDispatch,
-}
-
-/// 底栏按钮组。
+/// 底栏按钮组：绑定一个 Dock Entity，渲染其所有面板。
 pub(crate) struct PanelButtons {
-    entries: Vec<ButtonEntry>,
+    dock: Entity<Dock>,
+    /// 与 dock.panels 顺序一一对应的 dispatch 函数。
+    dispatches: Vec<PanelDispatch>,
+    _subscription: Subscription,
 }
 
 impl PanelButtons {
-    pub(crate) fn new(handles: Vec<(Arc<dyn PanelHandle>, PanelDispatch)>) -> Self {
-        let entries = handles
-            .into_iter()
-            .map(|(handle, on_click)| ButtonEntry { handle, on_click })
-            .collect();
-        Self { entries }
+    pub(crate) fn new(
+        dock: Entity<Dock>,
+        dispatches: Vec<PanelDispatch>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // Dock 状态变化时自动重绘
+        let sub = cx.observe(&dock, |_, _, cx| cx.notify());
+        Self {
+            dock,
+            dispatches,
+            _subscription: sub,
+        }
     }
 }
 
@@ -43,29 +46,36 @@ impl StatusItemView for PanelButtons {
 
 impl Render for PanelButtons {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        if self.entries.is_empty() {
+        let dock = self.dock.read(cx);
+        if dock.panels.is_empty() || self.dispatches.is_empty() {
             return div();
         }
 
-        // 用第一个 entry 的位置确定分隔线方向
-        let area = self
-            .entries
-            .first()
-            .map(|e| e.handle.position())
-            .unwrap_or(DockArea::Left);
+        let active_index = dock.active_panel_index();
+        let is_open = dock.is_open;
+        let area = dock.position;
 
-        let buttons: Vec<_> = self
-            .entries
+        let buttons: Vec<_> = dock
+            .panels
             .iter()
-            .map(|entry| {
-                let icon_path = entry.handle.icon();
-                let label = entry.handle.label();
-                let action = entry.handle.action_name();
-                let on_click = entry.on_click;
+            .enumerate()
+            .zip(&self.dispatches)
+            .map(|((i, handle), dispatch)| {
+                let icon_path = handle.icon();
+                let label = handle.label();
+                let action = handle.action_name();
+                let is_active = Some(i) == active_index && is_open;
+                let fg = if is_active {
+                    color::highlight()
+                } else {
+                    color::default()
+                };
+                let on_click = *dispatch;
+
                 Glyph::icon(ElementId::Name(icon_path.into()), icon_path)
                     .label(label)
                     .shortcut_by_name(action, cx)
-                    .color(color::default())
+                    .color(fg)
                     .on_click(move |window, cx| on_click(window, cx))
                     .into_any_element()
             })

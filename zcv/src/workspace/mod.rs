@@ -18,15 +18,15 @@ pub(crate) mod status_bar;
 pub(crate) mod top_bar;
 pub(crate) mod window_controls;
 
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    App, Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Window, actions,
-    div, prelude::*,
+    Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Window, actions, div,
+    prelude::*, px,
 };
 use zcv_engine::{Buffer, BufferSaveError};
 
@@ -34,15 +34,14 @@ use self::active_buffer_language::ActiveBufferLanguage;
 use self::cursor_position::CursorPosition;
 use self::diagnostics_button::DiagnosticsButton;
 use self::dock::{
-    DockArea, LayoutController, LayoutSnapshot, ToggleDebug, ToggleKeyboardShortcuts,
-    ToggleOutline, ToggleProjectTree, ToggleTerminal, ToggleVersionControl,
-    render_body as render_layout_body,
+    Dock, DockArea, ToggleDebug, ToggleKeyboardShortcuts, ToggleOutline, ToggleProjectTree,
+    ToggleTerminal, ToggleVersionControl, render_body as render_layout_body,
 };
 use self::lsp_button::LspButton;
 use self::pane::Pane;
-use self::pane_group::PaneId;
+use self::pane_group::{PaneGroup, PaneId};
 use self::panel::PanelHandle;
-use self::panel_buttons::PanelButtons;
+use self::panel_buttons::{PanelButtons, PanelDispatch};
 use self::project_picker::OnProjectSelected;
 use self::project_search_button::ProjectSearchButton;
 use self::project_tree::{OnOpenFile, ProjectTree};
@@ -56,13 +55,19 @@ actions!(workspace, [Save]);
 
 pub(crate) struct Workspace {
     pub(crate) focus: FocusHandle,
-    pub(crate) layout: Rc<RefCell<LayoutController>>,
+    pub(crate) center: PaneGroup,
     pub(crate) focus_pane: Option<Entity<Pane>>,
     top_bar: Entity<TopBar>,
     status_bar: Entity<StatusBar>,
     project_tree: Entity<ProjectTree>,
-    /// 面板 Entity 列表，与 LayoutController.panels index 对应。
-    panel_handles: Vec<Arc<dyn PanelHandle>>,
+    /// 独立 Entity 管理的三个 Dock 区域。
+    pub(crate) left_dock: Entity<Dock>,
+    pub(crate) right_dock: Entity<Dock>,
+    pub(crate) bottom_dock: Entity<Dock>,
+    /// action_name → (Dock Entity, panel_index_in_dock) 的查找表。
+    panel_action_map: Vec<(&'static str, Entity<Dock>, usize)>,
+    /// 拖拽协调：Dock 通过此 Cell 通知 Workspace 哪个 dock 正在被拖拽。
+    drag_notify: Rc<Cell<Option<DockArea>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -143,71 +148,144 @@ impl Workspace {
             tree
         });
 
-        let (all_handles, panel_pairs) = Self::make_panels(&project_tree, cx);
+        let (_all_handles, panel_pairs) = Self::make_panels(&project_tree, cx);
 
-        let layout = Rc::new(RefCell::new(LayoutController::with_initial_pane(
-            initial_pane.clone(),
-            panel_pairs,
-        )));
+        // ═══ 创建 Dock Entities ═══════════════════════════════════
 
-        // 创建 StatusBar 并注册按钮
+        let drag_notify: Rc<Cell<Option<DockArea>>> = Rc::new(Cell::new(None));
+
+        // 按 DockArea 分组并生成 dispatch 函数
+        let make_dispatch = |action_name: &str| -> PanelDispatch {
+            match action_name {
+                "dock::ToggleProjectTree" => {
+                    |w, cx| w.dispatch_action(Box::new(ToggleProjectTree), cx)
+                }
+                "dock::ToggleVersionControl" => {
+                    |w, cx| w.dispatch_action(Box::new(ToggleVersionControl), cx)
+                }
+                "dock::ToggleOutline" => |w, cx| w.dispatch_action(Box::new(ToggleOutline), cx),
+                "dock::ToggleTerminal" => |w, cx| w.dispatch_action(Box::new(ToggleTerminal), cx),
+                "dock::ToggleDebug" => |w, cx| w.dispatch_action(Box::new(ToggleDebug), cx),
+                "dock::ToggleKeyboardShortcuts" => {
+                    |w, cx| w.dispatch_action(Box::new(ToggleKeyboardShortcuts), cx)
+                }
+                _ => unreachable!(),
+            }
+        };
+
+        let mut left_handles: Vec<Arc<dyn PanelHandle>> = Vec::new();
+        let mut left_dispatches: Vec<PanelDispatch> = Vec::new();
+        let mut bottom_handles: Vec<Arc<dyn PanelHandle>> = Vec::new();
+        let mut bottom_dispatches: Vec<PanelDispatch> = Vec::new();
+        let mut right_handles: Vec<Arc<dyn PanelHandle>> = Vec::new();
+        let mut right_dispatches: Vec<PanelDispatch> = Vec::new();
+
+        for (handle, area) in &panel_pairs {
+            let dispatch = make_dispatch(handle.action_name());
+            match area {
+                DockArea::Left => {
+                    left_handles.push(handle.clone());
+                    left_dispatches.push(dispatch);
+                }
+                DockArea::Bottom => {
+                    bottom_handles.push(handle.clone());
+                    bottom_dispatches.push(dispatch);
+                }
+                DockArea::Right => {
+                    right_handles.push(handle.clone());
+                    right_dispatches.push(dispatch);
+                }
+            }
+        }
+
+        let left_dock = cx.new(|cx| {
+            Dock::new(
+                DockArea::Left,
+                left_handles,
+                px(240.0),
+                drag_notify.clone(),
+                cx,
+            )
+        });
+        let right_dock = cx.new(|cx| {
+            Dock::new(
+                DockArea::Right,
+                right_handles,
+                px(240.0),
+                drag_notify.clone(),
+                cx,
+            )
+        });
+        let bottom_dock = cx.new(|cx| {
+            Dock::new(
+                DockArea::Bottom,
+                bottom_handles,
+                px(200.0),
+                drag_notify.clone(),
+                cx,
+            )
+        });
+
+        // 左右 dock 耦合
+        left_dock.update(cx, |d, _| d.set_sibling(right_dock.downgrade()));
+        right_dock.update(cx, |d, _| d.set_sibling(left_dock.downgrade()));
+
+        // 构建 action_name → (Dock, local_index) 查找表
+        let mut panel_action_map: Vec<(&'static str, Entity<Dock>, usize)> = Vec::new();
+        for (action_name, dock) in [
+            ("dock::ToggleProjectTree", &left_dock),
+            ("dock::ToggleVersionControl", &left_dock),
+            ("dock::ToggleOutline", &left_dock),
+            ("dock::ToggleTerminal", &bottom_dock),
+            ("dock::ToggleDebug", &bottom_dock),
+            ("dock::ToggleKeyboardShortcuts", &right_dock),
+        ] {
+            if let Some(local_idx) = dock.read(cx).panel_index_by_action(action_name) {
+                panel_action_map.push((action_name, dock.clone(), local_idx));
+            }
+        }
+
+        // ═══ 中心编辑区 ══════════════════════════════════════════
+
+        let center = PaneGroup::Pane(PaneId(1), initial_pane.clone());
+
+        // ═══ StatusBar ═══════════════════════════════════════════
+
         let status_bar = cx.new(|cx| StatusBar::new(status_pane, cx));
         status_bar.update(cx, |bar, cx| {
-            let for_area =
-                |area: DockArea| -> Vec<(Arc<dyn PanelHandle>, fn(&mut Window, &mut App))> {
-                    all_handles
-                        .iter()
-                        .filter(|h| h.position() == area)
-                        .map(|h| {
-                            let dispatch: fn(&mut Window, &mut App) = match h.action_name() {
-                                "dock::ToggleProjectTree" => {
-                                    |w, cx| w.dispatch_action(Box::new(ToggleProjectTree), cx)
-                                }
-                                "dock::ToggleVersionControl" => {
-                                    |w, cx| w.dispatch_action(Box::new(ToggleVersionControl), cx)
-                                }
-                                "dock::ToggleOutline" => {
-                                    |w, cx| w.dispatch_action(Box::new(ToggleOutline), cx)
-                                }
-                                "dock::ToggleTerminal" => {
-                                    |w, cx| w.dispatch_action(Box::new(ToggleTerminal), cx)
-                                }
-                                "dock::ToggleDebug" => {
-                                    |w, cx| w.dispatch_action(Box::new(ToggleDebug), cx)
-                                }
-                                "dock::ToggleKeyboardShortcuts" => {
-                                    |w, cx| w.dispatch_action(Box::new(ToggleKeyboardShortcuts), cx)
-                                }
-                                _ => unreachable!(),
-                            };
-                            (h.clone(), dispatch)
-                        })
-                        .collect()
-                };
-
-            bar.add_left_item(cx.new(|_| PanelButtons::new(for_area(DockArea::Left))), cx);
+            bar.add_left_item(
+                cx.new(|cx| PanelButtons::new(left_dock.clone(), left_dispatches, cx)),
+                cx,
+            );
             bar.add_left_item(cx.new(|_| LspButton::new()), cx);
             bar.add_left_item(cx.new(|_| DiagnosticsButton::new()), cx);
             bar.add_left_item(cx.new(|_| ProjectSearchButton::new()), cx);
             bar.add_right_item(cx.new(|_| CursorPosition::new()), cx);
             bar.add_right_item(cx.new(|_| ActiveBufferLanguage::new()), cx);
             bar.add_right_item(
-                cx.new(|_| PanelButtons::new(for_area(DockArea::Bottom))),
+                cx.new(|cx| PanelButtons::new(bottom_dock.clone(), bottom_dispatches, cx)),
                 cx,
             );
-            bar.add_right_item(cx.new(|_| PanelButtons::new(for_area(DockArea::Right))), cx);
+            bar.add_right_item(
+                cx.new(|cx| PanelButtons::new(right_dock.clone(), right_dispatches, cx)),
+                cx,
+            );
         });
 
         cx.set_global(BufferStore::new());
 
         Self {
             focus,
-            layout,
+            center,
             focus_pane: Some(initial_pane),
             top_bar,
             status_bar,
             project_tree,
-            panel_handles: all_handles,
+            left_dock,
+            right_dock,
+            bottom_dock,
+            panel_action_map,
+            drag_notify,
             _subscriptions: Vec::new(),
         }
     }
@@ -295,27 +373,21 @@ impl Workspace {
         }
     }
 
-    /// 按 action 名查找面板在注册表中的 index。
-    fn panel_index(&self, action_name: &str) -> Option<usize> {
-        self.panel_handles
-            .iter()
-            .position(|h| h.action_name() == action_name)
-    }
-
-    /// 切换面板焦点：若面板已聚焦则隐藏并退焦到编辑区，否则显示并聚焦。
-    fn toggle_panel_focus(
+    /// 切换面板焦点：通过 panel_action_map 找到对应的 Dock 进行操作。
+    fn toggle_panel_focus_for_dock(
         &mut self,
-        index: usize,
+        dock: Entity<Dock>,
+        panel_idx: usize,
         focus_handle: &FocusHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if focus_handle.contains_focused(window, cx) {
-            self.layout.borrow_mut().toggle_panel(index, window, cx);
+            dock.update(cx, |d, cx| d.toggle_panel(panel_idx, window, cx));
             self.focus_center_pane(window, cx);
         } else {
-            if !self.layout.borrow().is_panel_active(index) {
-                self.layout.borrow_mut().toggle_panel(index, window, cx);
+            if !dock.read(cx).is_panel_active(panel_idx) {
+                dock.update(cx, |d, cx| d.toggle_panel(panel_idx, window, cx));
             }
             window.focus(focus_handle);
         }
@@ -394,8 +466,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let focus = self.project_tree.read(cx).focus.clone();
-        if let Some(i) = self.panel_index("dock::ToggleProjectTree") {
-            self.toggle_panel_focus(i, &focus, window, cx);
+        if let Some((_, dock, panel_idx)) = self
+            .panel_action_map
+            .iter()
+            .find(|(name, _, _)| *name == "dock::ToggleProjectTree")
+        {
+            self.toggle_panel_focus_for_dock(dock.clone(), *panel_idx, &focus, window, cx);
         }
     }
 
@@ -405,17 +481,26 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(i) = self.panel_index(action_name) {
-            let was_active = self.layout.borrow().is_panel_active(i);
-            self.layout.borrow_mut().toggle_panel(i, window, cx);
-            if was_active {
-                self.focus_center_pane(window, cx);
-            } else if let Some(handle) = self.panel_handles.get(i) {
-                let focus = handle.focus_handle(cx);
-                window.focus(&focus);
-            }
-            window.refresh();
+        let entry = match self
+            .panel_action_map
+            .iter()
+            .find(|(name, _, _)| *name == action_name)
+        {
+            Some(e) => (e.1.clone(), e.2),
+            None => return,
+        };
+        let (dock, panel_idx) = entry;
+
+        let was_active = dock.read(cx).is_panel_active(panel_idx);
+        dock.update(cx, |d, cx| d.toggle_panel(panel_idx, window, cx));
+
+        if was_active {
+            self.focus_center_pane(window, cx);
+        } else {
+            let focus = dock.read(cx).panels[panel_idx].focus_handle(cx);
+            window.focus(&focus);
         }
+        window.refresh();
     }
 
     fn handle_toggle_project_picker(
@@ -451,14 +536,10 @@ impl Workspace {
     }
 }
 
-/// 工作台顶层框架组装。
-fn render_frame(
-    top_bar: &Entity<TopBar>,
-    status_bar: &Entity<StatusBar>,
-    layout: &LayoutSnapshot,
-    panels: &[(Arc<dyn PanelHandle>, DockArea)],
-    layout_ctrl: Rc<RefCell<LayoutController>>,
-) -> Div {
+// ═══ 渲染 ═════════════════════════════════════════════════════════
+
+/// 工作台顶层框架组装（简化版：直接接收 body Div）。
+fn render_frame(top_bar: &Entity<TopBar>, status_bar: &Entity<StatusBar>, body: gpui::Div) -> Div {
     div()
         .relative()
         .flex()
@@ -471,25 +552,39 @@ fn render_frame(
         .line_height(typography::ui())
         .text_color(color::current().gray.s[8])
         .child(top_bar.clone())
-        .child(render_layout_body(layout, panels, layout_ctrl))
+        .child(body)
         .child(status_bar.clone())
 }
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let snapshot = self.layout.borrow().snapshot();
+        let center = self.center.clone();
 
-        let layout_clone1 = self.layout.clone();
-        let layout_clone2 = self.layout.clone();
+        let left_dock = if self.left_dock.read(cx).is_open() {
+            Some(self.left_dock.clone())
+        } else {
+            None
+        };
+        let right_dock = if self.right_dock.read(cx).is_open() {
+            Some(self.right_dock.clone())
+        } else {
+            None
+        };
+        let bottom_dock = if self.bottom_dock.read(cx).is_open() {
+            Some(self.bottom_dock.clone())
+        } else {
+            None
+        };
 
-        // 收集面板 pairs 供渲染
-        let pairs: Vec<(Arc<dyn PanelHandle>, DockArea)> = self
-            .layout
-            .borrow()
-            .panels
-            .iter()
-            .map(|(h, a)| (h.clone(), *a))
-            .collect();
+        let left_dock_entity = self.left_dock.clone();
+        let right_dock_entity = self.right_dock.clone();
+        let bottom_dock_entity = self.bottom_dock.clone();
+        let drag_notify = self.drag_notify.clone();
+
+        let left_dock_up = self.left_dock.clone();
+        let right_dock_up = self.right_dock.clone();
+        let bottom_dock_up = self.bottom_dock.clone();
+        let drag_notify_up = self.drag_notify.clone();
 
         div()
             .id("app-view")
@@ -500,9 +595,7 @@ impl Render for Workspace {
             .child(render_frame(
                 &self.top_bar,
                 &self.status_bar,
-                &snapshot,
-                &pairs,
-                self.layout.clone(),
+                render_layout_body(&center, left_dock, right_dock, bottom_dock),
             ))
             .on_action(window_controls::handle_quit)
             .on_action(window_controls::handle_minimize)
@@ -540,15 +633,26 @@ impl Render for Workspace {
                 },
             ))
             .on_action(cx.listener(Self::handle_toggle_project_picker))
-            .on_mouse_move(move |event, window, _cx| {
-                let mut ctrl = layout_clone1.borrow_mut();
-                if ctrl.is_dragging() {
-                    ctrl.drag_to(event.position, window.bounds().size);
+            .on_mouse_move(move |event, window, cx| {
+                if let Some(area) = drag_notify.get() {
+                    let dock = match area {
+                        DockArea::Left => &left_dock_entity,
+                        DockArea::Right => &right_dock_entity,
+                        DockArea::Bottom => &bottom_dock_entity,
+                    };
+                    dock.update(cx, |dock, cx| {
+                        if dock.is_dragging() {
+                            dock.resize_to(event.position, window.bounds().size, cx);
+                        }
+                    });
                     window.refresh();
                 }
             })
-            .on_mouse_up(MouseButton::Left, move |_event, window, _cx| {
-                layout_clone2.borrow_mut().end_drag();
+            .on_mouse_up(MouseButton::Left, move |_event, window, cx| {
+                for dock in [&left_dock_up, &right_dock_up, &bottom_dock_up] {
+                    dock.update(cx, |d, cx| d.end_resize(cx));
+                }
+                drag_notify_up.set(None);
                 window.refresh();
             })
     }

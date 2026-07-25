@@ -47,6 +47,34 @@ fn main() {
                             if let Some(pane) = workspace.focus_pane.clone() {
                                 workspace.register_pane_focus_listener(&pane, window, cx);
                             }
+                            // 为每个 Dock 注册焦点转发，与 Zed 做法一致
+                            for dock in [
+                                &workspace.left_dock,
+                                &workspace.right_dock,
+                                &workspace.bottom_dock,
+                            ] {
+                                dock.update(
+                                    cx,
+                                    |dock: &mut workspace::dock::Dock,
+                                     cx: &mut gpui::Context<workspace::dock::Dock>|
+                                     {
+                                        let focus = dock.focus.clone();
+                                        let sub = cx.on_focus(
+                                            &focus,
+                                            window,
+                                            |d: &mut workspace::dock::Dock,
+                                             w: &mut gpui::Window,
+                                             c: &mut gpui::Context<workspace::dock::Dock>|
+                                             {
+                                                if let Some(panel) = d.visible_panel() {
+                                                    w.focus(&panel.focus_handle(c));
+                                                }
+                                            },
+                                        );
+                                        dock._subscriptions.push(sub);
+                                    },
+                                );
+                            }
                         });
                         #[cfg(debug_assertions)]
                         workspace.update(cx, |workspace, cx| {

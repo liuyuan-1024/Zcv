@@ -335,7 +335,7 @@ impl Element for EditorElement {
                 .paint(line.origin, prepaint.layout.line_height, window, cx)
                 .expect("Editor 文本行绘制失败");
         }
-        if self.editor.read(cx).focus_handle().is_focused(window) {
+        if self.editor.read(cx).show_local_cursors(window, cx) {
             for caret in prepaint.carets.drain(..) {
                 window.paint_quad(caret);
             }

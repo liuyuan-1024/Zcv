@@ -15,6 +15,7 @@ use zcv_engine::{
     TransactionSource, Utf16Offset,
 };
 
+use super::blink_manager::BlinkManager;
 use super::display_map::{DisplayMap, DisplayPoint, DisplayRow};
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::ScrollManager;
@@ -201,6 +202,8 @@ pub(crate) struct Editor {
     last_bounds: Option<Bounds<Pixels>>,
     last_line_height: Option<Pixels>,
     focus: FocusHandle,
+    blink_manager: Entity<BlinkManager>,
+    blink_manager_initialized: bool,
 }
 
 impl Editor {
@@ -235,6 +238,13 @@ impl Editor {
 
     pub(crate) fn focus_handle(&self) -> FocusHandle {
         self.focus.clone()
+    }
+
+    /// 光标是否应当绘制。
+    ///
+    /// 编辑器未聚焦时不显示；聚焦时由 BlinkManager 控制闪烁。
+    pub(crate) fn show_local_cursors(&self, window: &Window, cx: &App) -> bool {
+        self.blink_manager.read(cx).visible() && self.focus.is_focused(window)
     }
 
     pub(crate) fn buffer(&self) -> Entity<Buffer> {
@@ -386,6 +396,10 @@ impl Editor {
             cx.notify();
         })
         .detach();
+
+        let blink_manager = cx.new(|_| BlinkManager::new());
+        cx.observe(&blink_manager, |_, _, cx| cx.notify()).detach();
+
         Self {
             buffer,
             display_map,
@@ -400,6 +414,8 @@ impl Editor {
             last_bounds: None,
             last_line_height: None,
             focus: cx.focus_handle(),
+            blink_manager,
+            blink_manager_initialized: false,
         }
     }
 
@@ -473,6 +489,9 @@ impl Editor {
                     .set_snapshot(self.buffer.read(cx).snapshot());
                 self.request_autoscroll();
                 self.input_layout = None;
+                self.blink_manager.update(cx, |blink, cx| {
+                    blink.pause_blinking(cx);
+                });
                 cx.notify();
             }
             Err(error) => eprintln!("Editor 编辑事务失败：{error}"),
@@ -496,6 +515,9 @@ impl Editor {
                 self.selections = selections;
                 self.request_autoscroll();
                 self.input_layout = None;
+                self.blink_manager.update(cx, |blink, cx| {
+                    blink.pause_blinking(cx);
+                });
                 cx.notify();
             }
             Err(error) => eprintln!("Editor 选区移动失败：{error}"),
@@ -854,7 +876,27 @@ fn edit_metadata(description: &'static str) -> TransactionMetadata {
 }
 
 impl Render for Editor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 首次渲染时注册焦点事件（构造函数中没有 Window）
+        if !self.blink_manager_initialized {
+            cx.on_focus(&self.focus, window, |editor, _window, cx| {
+                editor.blink_manager.update(cx, BlinkManager::enable);
+            })
+            .detach();
+            cx.on_blur(&self.focus, window, |editor, _window, cx| {
+                editor.blink_manager.update(cx, BlinkManager::disable);
+            })
+            .detach();
+            self.blink_manager_initialized = true;
+        }
+
+        // 同步当前焦点状态——弥补焦点先于首次 render 到达的时序缺口。
+        if self.focus.is_focused(window) {
+            self.blink_manager.update(cx, |b, cx| b.enable(cx));
+        } else {
+            self.blink_manager.update(cx, |b, cx| b.disable(cx));
+        }
+
         self.display_map
             .set_snapshot(self.buffer.read(cx).snapshot());
 

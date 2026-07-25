@@ -13,10 +13,8 @@ use gpui::{
     uniform_list,
 };
 
-use crate::editor::buffer_store::BufferStore;
 use crate::theme::color;
 use crate::ui::tree;
-use crate::workspace::dock::LayoutRef;
 
 actions!(
     project_tree,
@@ -29,59 +27,25 @@ actions!(
     ]
 );
 
-// ── 自由函数 handler ─────────────────────────────────────────────
+/// 打开文件回调
+pub(crate) type OnOpenFile = Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>;
 
 /// 选中并激活项目树中的节点（目录→展开/折叠，文件→打开）。
 fn activate_node(
     state: &Rc<RefCell<ProjectTreeState>>,
     path: &Path,
     is_dir: bool,
+    on_open_file: &Option<OnOpenFile>,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
     state.borrow_mut().select(path);
     if is_dir {
         state.borrow_mut().toggle_expand(path);
-    } else {
-        open_file_in_editor(path, window, cx);
+    } else if let Some(callback) = on_open_file {
+        callback(path.to_path_buf(), window, cx);
     }
     window.refresh();
-}
-
-/// 打开文件并在编辑器中显示。
-fn open_file_in_editor(path: &Path, window: &mut Window, cx: &mut gpui::App) {
-    let path = match path.canonicalize() {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("打开文件失败：{}：{error}", path.display());
-            return;
-        }
-    };
-    let buffer = match cx.update_global::<BufferStore, _>(|store, cx| store.open_buffer(&path, cx))
-    {
-        Ok(buffer) => buffer,
-        Err(error) => {
-            eprintln!("打开文件失败：{}：{error}", path.display());
-            return;
-        }
-    };
-
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    // 获取焦点 Pane Entity 并激活/添加 tab
-    if let Some(layout_ref) = cx.try_global::<LayoutRef>() {
-        if let Some(ctrl) = layout_ref.0.upgrade() {
-            if let Some(entity) = ctrl.borrow().focus_pane.clone() {
-                let focus =
-                    entity.update(cx, |pane, cx| pane.open_file(path, file_name, buffer, cx));
-                window.focus(&focus);
-                window.refresh();
-            }
-        }
-    }
 }
 
 // ── Entity ──────────────────────────────────────────────────────────
@@ -90,6 +54,7 @@ pub(crate) struct ProjectTree {
     pub focus: gpui::FocusHandle,
     state: Rc<RefCell<ProjectTreeState>>,
     scroll_handle: UniformListScrollHandle,
+    on_open_file: Option<OnOpenFile>,
 }
 
 impl ProjectTree {
@@ -99,7 +64,13 @@ impl ProjectTree {
             focus,
             state: Rc::new(RefCell::new(ProjectTreeState::new(root))),
             scroll_handle: UniformListScrollHandle::default(),
+            on_open_file: None,
         }
+    }
+
+    /// 设置打开文件的回调（由 Workspace 在创建后调用）。
+    pub(crate) fn set_on_open_file(&mut self, callback: OnOpenFile) {
+        self.on_open_file = Some(callback);
     }
 
     /// 更换项目根目录。
@@ -185,7 +156,7 @@ impl ProjectTree {
         let Some(path) = path else {
             return;
         };
-        activate_node(&self.state, &path, is_dir, window, cx);
+        activate_node(&self.state, &path, is_dir, &self.on_open_file, window, cx);
     }
 }
 
@@ -194,6 +165,7 @@ impl gpui::Render for ProjectTree {
         self.state.borrow_mut().ensure_selected();
         let len = self.state.borrow().visible_rows().len();
         let is_focused = self.focus.contains_focused(window, cx);
+        let on_open = self.on_open_file.clone();
 
         div()
             .size_full()
@@ -210,6 +182,7 @@ impl gpui::Render for ProjectTree {
                 &self.scroll_handle,
                 len,
                 is_focused,
+                on_open,
             ))
     }
 }
@@ -221,6 +194,7 @@ fn render_list(
     scroll_handle: &UniformListScrollHandle,
     len: usize,
     is_focused: bool,
+    on_open_file: Option<OnOpenFile>,
 ) -> gpui::UniformList {
     let tree_rc = Rc::clone(state);
     let handle = scroll_handle.clone();
@@ -232,7 +206,8 @@ fn render_list(
             .filter_map(|i| rows.get(i))
             .map(|row| {
                 let sel = state.selected.as_ref() == Some(&row.path);
-                render_row(row, Rc::clone(&tree_rc), sel, is_focused).into_any_element()
+                render_row(row, Rc::clone(&tree_rc), sel, is_focused, &on_open_file)
+                    .into_any_element()
             })
             .collect()
     })
@@ -245,6 +220,7 @@ fn render_row(
     state: Rc<RefCell<ProjectTreeState>>,
     sel: bool,
     focused: bool,
+    on_open_file: &Option<OnOpenFile>,
 ) -> Div {
     let path = row.path.clone();
     let is_dir = row.is_dir;
@@ -255,13 +231,14 @@ fn render_row(
     } else {
         gpui::rgba(0)
     };
+    let on_open = on_open_file.clone();
 
     tree::render_row_base(depth, is_dir, row.expanded, &name)
         .bg(bg)
         .cursor_pointer()
         .when(sel && focused, |el| el.child(tree::selection_border()))
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            activate_node(&state, &path, is_dir, window, cx);
+            activate_node(&state, &path, is_dir, &on_open, window, cx);
             cx.stop_propagation();
         })
 }

@@ -1,6 +1,6 @@
 # Entity 组件开发流程
 
-> 基于 zcv 现有组件实践（TopBar、BottomBar、ProjectTree、AppView）提炼的标准流程。
+> 基于 zcv 现有组件实践（Workspace、StatusBar、Pane、ProjectTree）提炼的标准流程。
 > 新 Entity 组件一律按此流程推进，不做推测性扩展。
 
 ---
@@ -8,7 +8,7 @@
 ## 一、文件组织规则
 
 ```
-src/workbench/xxx/
+src/workspace/xxx/
   mod.rs            ← 公开接口、struct 定义、Render 实现、action handler
   types.rs          ← 数据模型定义（可选：类型较多时抽出）
   controller.rs     ← 状态控制器（可选：状态逻辑复杂时抽出）
@@ -115,22 +115,12 @@ impl MyComponent {
 }
 ```
 
-自由函数 handler 用于不需要访问 `&mut self`、只操作全局状态的场景：
-
-```rust
-pub(crate) fn handle_global_action(_: &Action, _: &mut Window, cx: &mut gpui::App) {
-    if let Some(global) = cx.try_global::<SomeGlobal>() {
-        // 通过全局访问共享状态
-    }
-}
-```
-
 **选择：**
 
 | 绑定方式 | 适用场景 |
 |---|---|
 | `cx.listener(Self::method)` | handler 需要访问 `&mut self` |
-| 自由函数 `fn(...)` | handler 只通过全局或 window API 操作 |
+| 自由函数 `fn(...)` | handler 只通过 window API 操作，不访问组件状态 |
 
 ---
 
@@ -163,7 +153,7 @@ impl Render for ProjectTree {
 **模式 C：分离 Controller**（状态逻辑复杂，需要独立单元测试）
 
 ```
-src/workbench/xxx/
+src/workspace/xxx/
   controller.rs    ← MyController，不依赖 GPUI 类型，纯状态变换
   types.rs         ← 数据模型、渲染期快照
   mod.rs           ← Entity 定义，持有 Rc<RefCell<MyController>>
@@ -191,34 +181,92 @@ impl LayoutController {
 
 ---
 
-### 第 6 步：跨组件通信 —— Global 模式
+### 第 6 步：跨组件通信
 
-当 action handler 需要修改其他组件的状态时，使用 GPUI 全局状态：
+组件间通信按以下优先级选择，从高到低：
+
+#### 方式 A：事件订阅（推荐）
+
+子组件定义事件枚举，父组件订阅。适用于子→父的确定性通信。
 
 ```rust
-// 定义全局包装类型
-pub(crate) struct LayoutRef(pub(crate) Weak<RefCell<LayoutController>>);
-impl gpui::Global for LayoutRef {}
-
-// 在 root 组件中注册（AppView::new）
-let layout = Rc::new(RefCell::new(LayoutController::new()));
-cx.set_global(LayoutRef(Rc::downgrade(&layout)));
-
-// 在任意 action handler 中读取
-pub(crate) fn handle_toggle_panel(_: &Action, _: &mut Window, cx: &mut gpui::App) {
-    if let Some(layout) = cx.try_global::<LayoutRef>() {
-        if let Some(ctrl) = layout.0.upgrade() {
-            ctrl.borrow_mut().toggle_panel(PanelId::Xxx);
-            window.refresh();
-        }
-    }
+// 子组件定义事件
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaneEvent {
+    ActiveItemChanged,
+    ItemRemoved,
 }
+impl EventEmitter<PaneEvent> for Pane {}
+
+// 子组件在状态变更时发出事件
+fn handle_next_tab(&mut self, ...) {
+    self.next_tab();
+    cx.emit(PaneEvent::ActiveItemChanged);
+    cx.notify();
+}
+
+// 父组件订阅
+cx.subscribe_in(&pane, window, |this, _emitter, event, _window, _cx| {
+    match event {
+        PaneEvent::ActiveItemChanged => { /* 更新标题栏等 */ },
+        PaneEvent::ItemRemoved => { /* 更新状态 */ },
+    }
+});
 ```
 
-**适用场景：**
-- 底栏 toggle 按钮展开/折叠顶部布局面板
-- 状态栏显示编辑器的行号/语言信息
-- 命令面板发起命令影响编辑区
+#### 方式 B：回调注入
+
+父组件创建子组件时传入回调闭包，子组件在需要时调用。适用于子组件需要触发父组件特定行为的场景（如打开文件）。
+
+```rust
+/// 子组件持有回调
+pub(crate) struct ProjectTree {
+    on_open_file: Option<OnOpenFile>,  // Rc<dyn Fn(PathBuf, &mut Window, &mut App)>
+}
+
+// 父组件注入回调
+let on_open_file: OnOpenFile = Rc::new({
+    let weak = cx.weak_entity();
+    move |path, window, cx| {
+        if let Some(ws) = weak.upgrade() {
+            ws.update(cx, |ws, cx| ws.open_path_in_active_pane(path, window, cx));
+        }
+    }
+});
+project_tree.set_on_open_file(on_open_file);
+```
+
+#### 方式 C：焦点监听
+
+当需要感知焦点在组件间移动时，使用 `on_focus_in`：
+
+```rust
+cx.on_focus_in(&pane.focus, window, |this, _window, cx| {
+    this.handle_pane_focused(&pane_entity, cx);
+});
+```
+
+#### 方式 D：直接调用（最简）
+
+当两个组件有直接引用关系时，通过 Entity 方法直接调用：
+
+```rust
+self.status_bar.update(cx, |bar, cx| {
+    bar.set_active_pane(pane, cx);
+});
+```
+
+**选择速查：**
+
+| 场景 | 推荐方式 |
+|---|---|
+| 子→父通知状态变更 | 事件（方式 A） |
+| 子组件需触发父组件特定行为 | 回调（方式 B） |
+| 感知焦点移动 | 焦点监听（方式 C） |
+| 父子有直接引用关系 | 直接调用（方式 D） |
+| 散布在多个组件间的共享状态 | Rx / Global（慎用，仅限全局唯一数据如设置） |
+
+> **「Global 模式」已弃用。** 之前使用 `LayoutRef` Global + `Weak<RefCell<LayoutController>>` 的模式已被移除，改用事件和回调替代。新代码不允许新增 Global 共享可变状态。
 
 ---
 
@@ -250,7 +298,7 @@ mod tests {
 ### 第 8 步：在父级装配
 
 ```rust
-// 在 AppView::new 中创建
+// 在 Workspace::new 中创建
 let my_component = cx.new(|cx| MyComponent::new(cx));
 
 // 在 Render 中装配
@@ -350,7 +398,7 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
 需要把 action 类型导入 keymap.rs：
 
 ```rust
-use crate::workbench::{CloseTab, NextTab, PrevTab, ...};
+use crate::workspace::pane::{CloseTab, NextTab, PrevTab};
 ```
 
 ### 4.3 在 JSON 文件中定义键位
@@ -390,24 +438,24 @@ impl Render for MyComponent {
 | 需要键盘焦点吗？ | 声明 `FocusHandle` + `.track_focus()` |
 | 有快捷键吗？ | `actions!()` + `cx.bind_keys()` + `on_action()` |
 | handler 需要访问 `&mut self`？ | `cx.listener(Self::method)` |
-| handler 只读全局状态？ | 自由函数 `fn(...)` |
+| handler 只读 window API？ | 自由函数 `fn(...)` |
 | 状态只在本组件内用？ | 直接字段存 |
 | 状态被多个闭包共用？ | `Rc<RefCell<T>>` |
 | 状态逻辑复杂？ | 分离 Controller |
-| 需要跨组件通信？ | `impl Global` 包装 |
+| 子→父通信？ | 事件或回调 |
 | 列表很长（100+ 项）？ | `uniform_list()` |
 | 纯视觉无交互？ | 不做 Entity，函数式即可 |
 
----
-
-## 五、zcv 现有组件验证
+## 六、zcv 现有组件验证
 
 | 组件 | 类型 | 焦点 | 快捷键 | 内部状态 | 跨组件通信 |
 |---|---|---|---|---|---|
+| `Workspace` | Entity(root) | ✅ | — | `Rc<RefCell<LayoutController>>` | 事件订阅、回调注入、焦点监听 |
+| `Pane` | Entity | ✅ | ✅ | `Vec<TabItem>` | `cx.emit(PaneEvent)` |
+| `StatusBar` | Entity | ❌ | ❌ | 持有 StatusItemView 列表 | 父组件直接调用 `set_active_pane` |
+| `ProjectTree` | Entity | ✅ | ✅ | `Rc<RefCell<ProjectTreeState>>` | 回调（替代旧 Global 模式） |
 | `TopBar` | Entity | ❌ | ✅ | ❌ | ❌ |
-| `BottomBar` | Entity | ❌ | ✅ | ❌ | Global |
+| `Dock` | 函数式渲染 | ❌ | ✅（action） | `LayoutController`（父组件持有） | 显式参数传递 |
 | `WindowControls` | 函数式 | ❌ | ✅ | ❌ | ❌ |
-| `ProjectTree` | Entity | ✅ | ✅ | Rc<RefCell> | ❌ |
-| `AppView` | Entity(root) | ✅ | ✅ | Rc<RefCell> | Global |
 
 开发新 Entity 组件时，先对号入座这张表，确定需要哪些能力，再按八步流程推进。

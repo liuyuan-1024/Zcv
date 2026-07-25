@@ -6,13 +6,13 @@
 //! - **中心编辑区**（PaneGroup）：递归分栏树，叶子是 Pane。
 
 use std::cell::RefCell;
-use std::rc::Weak;
+use std::rc::Rc;
 
 use gpui::{App, Entity, MouseButton, Pixels, Point, Window, actions, div, prelude::*, px};
 
+use super::pane::Pane;
 use super::pane_group::{Axis, PaneGroup, PaneId};
 use crate::theme::{color, space};
-use crate::workspace::pane::{CloseTab, Pane};
 
 // ═══ Panel 通用 action ═══════════════════════════════════════════
 
@@ -171,11 +171,6 @@ pub(crate) struct LayoutSnapshot {
 /// dock 和编辑区的最小尺寸，防止 dock 拖拽完全挤占编辑区。
 const MIN_SIZE: Pixels = space::S16;
 
-/// 全局弱引用包装，供 `on_action` 自由函数访问布局控制器。
-pub(crate) struct LayoutRef(pub(crate) Weak<RefCell<LayoutController>>);
-
-impl gpui::Global for LayoutRef {}
-
 /// 布局控制器：持有所有布局状态，提供唯一变更入口。
 pub(crate) struct LayoutController {
     left_dock: DockState,
@@ -192,7 +187,6 @@ pub(crate) struct LayoutController {
 impl LayoutController {
     pub(crate) fn with_initial_pane(pane: Entity<Pane>) -> Self {
         let registry = default_panels();
-        let pane_id = PaneId(1);
         // 初始化时激活注册表中每个 dock area 的第一个面板
         let first_index =
             |area: DockArea| -> Option<usize> { registry.iter().position(|p| p.dock_area == area) };
@@ -212,7 +206,7 @@ impl LayoutController {
                 size: px(200.0),
                 active_panel: first_index(DockArea::Bottom),
             },
-            center: PaneGroup::Pane(pane_id, pane.clone()),
+            center: PaneGroup::Pane(PaneId(1), pane.clone()),
             focus_pane: Some(pane),
             panel_registry: registry,
             next_pane_id: 2,
@@ -221,14 +215,14 @@ impl LayoutController {
         }
     }
 
-    pub(crate) fn next_pane_id(&mut self) -> PaneId {
-        let id = PaneId(self.next_pane_id);
+    pub(crate) fn next_pane_id(&mut self) -> super::pane_group::PaneId {
+        let id = super::pane_group::PaneId(self.next_pane_id);
         self.next_pane_id += 1;
         id
     }
 
-    fn next_split_id(&mut self) -> SplitId {
-        let id = SplitId(self.next_split_id);
+    fn next_split_id(&mut self) -> super::pane_group::SplitId {
+        let id = super::pane_group::SplitId(self.next_split_id);
         self.next_split_id += 1;
         id
     }
@@ -392,36 +386,17 @@ impl Default for LayoutController {
     }
 }
 
-use super::pane_group::SplitId;
-
-/// 关闭当前焦点所在的 tab。
-pub(crate) fn handle_close_tab(_: &CloseTab, window: &mut Window, cx: &mut gpui::App) {
-    if let Some(layout_ref) = cx.try_global::<LayoutRef>()
-        && let Some(ctrl) = layout_ref.0.upgrade()
-    {
-        let pane_entity = ctrl.borrow().focus_pane.clone();
-        if let Some(entity) = pane_entity {
-            if let Some(view_id) = entity.read(cx).active {
-                let editor = entity.update(cx, |pane, cx| {
-                    pane.close_tab(view_id);
-                    pane.active_editor(cx)
-                });
-                if let Some(editor) = editor {
-                    window.focus(&editor.read(cx).focus_handle());
-                }
-                window.refresh();
-            }
-        }
-    }
-}
-
 // ═══ 布局渲染 ═══════════════════════════════════════════════════
 
 /// 面板内容提供者：布局不感知具体 panel 类型，通过此回调获取内容。
 pub(crate) type PanelContentFn<'a> = dyn Fn(usize) -> Option<gpui::Div> + 'a;
 
 /// 渲染 workbench 主体（不包含顶栏和底栏）。
-pub(crate) fn render_body(layout: &LayoutSnapshot, panel_content: &PanelContentFn) -> gpui::Div {
+pub(crate) fn render_body(
+    layout: &LayoutSnapshot,
+    panel_content: &PanelContentFn,
+    layout_ctrl: Rc<RefCell<LayoutController>>,
+) -> gpui::Div {
     let mut row = div()
         .flex_1()
         .flex()
@@ -435,6 +410,7 @@ pub(crate) fn render_body(layout: &LayoutSnapshot, panel_content: &PanelContentF
             DockArea::Left,
             &layout.left_dock,
             panel_content,
+            Rc::clone(&layout_ctrl),
         ));
     }
 
@@ -453,6 +429,7 @@ pub(crate) fn render_body(layout: &LayoutSnapshot, panel_content: &PanelContentF
             DockArea::Bottom,
             &layout.bottom_dock,
             panel_content,
+            Rc::clone(&layout_ctrl),
         ));
     }
     row = row.child(center_col);
@@ -462,6 +439,7 @@ pub(crate) fn render_body(layout: &LayoutSnapshot, panel_content: &PanelContentF
             DockArea::Right,
             &layout.right_dock,
             panel_content,
+            layout_ctrl,
         ));
     }
     row
@@ -469,7 +447,12 @@ pub(crate) fn render_body(layout: &LayoutSnapshot, panel_content: &PanelContentF
 
 // ── Dock 渲染 ────────────────────────────────────────────────────────
 
-fn render_dock(area: DockArea, state: &DockState, panel_content: &PanelContentFn) -> gpui::Div {
+fn render_dock(
+    area: DockArea,
+    state: &DockState,
+    panel_content: &PanelContentFn,
+    layout_ctrl: Rc<RefCell<LayoutController>>,
+) -> gpui::Div {
     let frame = div()
         .relative()
         .flex()
@@ -504,10 +487,11 @@ fn render_dock(area: DockArea, state: &DockState, panel_content: &PanelContentFn
     let frame = frame.child(body);
 
     const HIT: Pixels = space::S6;
+    let zone = dock_drag_zone(area, layout_ctrl);
     match area {
-        DockArea::Left => frame.child(dock_drag_zone(DockArea::Left).right(px(0.0)).w(HIT)),
-        DockArea::Right => frame.child(dock_drag_zone(DockArea::Right).left(px(0.0)).w(HIT)),
-        DockArea::Bottom => frame.child(dock_drag_zone(DockArea::Bottom).top(px(0.0)).h(HIT)),
+        DockArea::Left => frame.child(zone.right(px(0.0)).w(HIT)),
+        DockArea::Right => frame.child(zone.left(px(0.0)).w(HIT)),
+        DockArea::Bottom => frame.child(zone.top(px(0.0)).h(HIT)),
     }
 }
 
@@ -521,23 +505,18 @@ fn render_placeholder(label: &str) -> gpui::Div {
         .child(label.to_string())
 }
 
-fn dock_drag_zone(area: DockArea) -> gpui::Div {
+fn dock_drag_zone(area: DockArea, layout: Rc<RefCell<LayoutController>>) -> gpui::Div {
+    let layout2 = Rc::clone(&layout);
     let base = div()
         .absolute()
-        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
-            if let Some(layout_ref) = cx.try_global::<LayoutRef>()
-                && let Some(ctrl) = layout_ref.0.upgrade()
-            {
-                ctrl.borrow_mut().start_dock_drag(area, event.position);
-                window.refresh();
-            }
+        .on_mouse_down(MouseButton::Left, move |event, window, _cx| {
+            layout.borrow_mut().start_dock_drag(area, event.position);
+            window.refresh();
         })
-        .on_mouse_up(MouseButton::Left, move |event, window, cx| {
-            if event.click_count >= 2
-                && let Some(layout_ref) = cx.try_global::<LayoutRef>()
-                && let Some(ctrl) = layout_ref.0.upgrade()
-            {
-                ctrl.borrow_mut()
+        .on_mouse_up(MouseButton::Left, move |event, window, _cx| {
+            if event.click_count >= 2 {
+                layout2
+                    .borrow_mut()
                     .reset_dock_size(area, window.bounds().size);
                 window.refresh();
             }

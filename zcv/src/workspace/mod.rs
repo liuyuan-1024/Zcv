@@ -33,8 +33,8 @@ use self::active_buffer_language::ActiveBufferLanguage;
 use self::cursor_position::CursorPosition;
 use self::diagnostics_button::DiagnosticsButton;
 use self::dock::{
-    DockArea, LayoutController, LayoutRef, LayoutSnapshot, ToggleDebug, ToggleKeyboardShortcuts,
-    ToggleOutline, ToggleProjectTree, ToggleTerminal, ToggleVersionControl, handle_close_tab,
+    DockArea, LayoutController, LayoutSnapshot, ToggleDebug, ToggleKeyboardShortcuts,
+    ToggleOutline, ToggleProjectTree, ToggleTerminal, ToggleVersionControl, default_panels,
     render_body as render_layout_body,
 };
 use self::lsp_button::LspButton;
@@ -43,7 +43,7 @@ use self::pane_group::PaneId;
 use self::panel_buttons::PanelButtons;
 use self::project_picker::OnProjectSelected;
 use self::project_search_button::ProjectSearchButton;
-use self::project_tree::ProjectTree;
+use self::project_tree::{OnOpenFile, ProjectTree};
 use self::status_bar::StatusBar;
 use self::top_bar::TopBar;
 use crate::editor::buffer_store::BufferStore;
@@ -59,20 +59,24 @@ pub(crate) struct Workspace {
     status_bar: Entity<StatusBar>,
     project_tree: Entity<ProjectTree>,
     _subscriptions: Vec<Subscription>,
+    /// 项目树打开文件回调用到的弱引用。
+    weak_self: gpui::WeakEntity<Self>,
 }
 
 impl Workspace {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
+        let weak_self: gpui::WeakEntity<Self> = cx.weak_entity();
+        let weak_project_switcher = weak_self.clone(); // 项目切换回调用
+        let weak_open_file = weak_self.clone(); // 打开文件回调用
 
         let keybindings = keymap::load();
         cx.bind_keys(keybindings.bindings.clone());
         cx.set_global(keybindings);
 
         // 创建项目切换回调
-        let weak_self: gpui::WeakEntity<Self> = cx.weak_entity();
         let on_project_selected: OnProjectSelected = Rc::new(move |path, window, app| {
-            if let Some(ws) = weak_self.upgrade() {
+            if let Some(ws) = weak_project_switcher.upgrade() {
                 ws.update(app, |workspace, cx| {
                     workspace.switch_project(&path, window, cx);
                 });
@@ -88,8 +92,6 @@ impl Workspace {
         let layout = Rc::new(RefCell::new(LayoutController::with_initial_pane(
             initial_pane,
         )));
-        cx.set_global(LayoutRef(Rc::downgrade(&layout)));
-
         // StatusBar：容器，持有各 StatusItemView
         let status_bar = cx.new(|cx| StatusBar::new(status_pane, cx));
         status_bar.update(cx, |bar, cx| {
@@ -103,7 +105,21 @@ impl Workspace {
             bar.add_right_item(cx.new(|_| PanelButtons::new(DockArea::Right)), cx);
         });
 
-        let project_tree = cx.new(|cx| ProjectTree::new(root, cx));
+        // 项目树——打开文件的回调
+        let on_open_file: OnOpenFile = Rc::new(
+            move |path: PathBuf, window: &mut Window, cx: &mut gpui::App| {
+                if let Some(ws) = weak_open_file.upgrade() {
+                    ws.update(cx, |ws, cx| {
+                        ws.open_path_in_active_pane(path, window, cx);
+                    });
+                }
+            },
+        );
+        let project_tree = cx.new(|cx| {
+            let mut tree = ProjectTree::new(root, cx);
+            tree.set_on_open_file(on_open_file);
+            tree
+        });
 
         cx.set_global(BufferStore::new());
 
@@ -114,7 +130,39 @@ impl Workspace {
             layout,
             project_tree,
             _subscriptions: Vec::new(),
+            weak_self,
         }
+    }
+
+    /// 由项目树回调调用的文件打开逻辑。
+    fn open_path_in_active_pane(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = match path.canonicalize() {
+            Ok(p) => p,
+            Err(error) => {
+                eprintln!("打开文件失败：{}：{error}", path.display());
+                return;
+            }
+        };
+        let Ok(buffer) =
+            cx.update_global::<BufferStore, _>(|store, cx| store.open_buffer(&path, cx))
+        else {
+            return;
+        };
+        let Some(pane) = self.layout.borrow().focus_pane_entity().cloned() else {
+            return;
+        };
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let focus = pane.update(cx, |pane, cx| pane.open_file(path, file_name, buffer, cx));
+        window.focus(&focus);
+        window.refresh();
     }
 
     /// 开发构建启动时，沿用正式项目切换链路打开 zcv 工作区。
@@ -223,6 +271,13 @@ impl Workspace {
             this.handle_pane_focused(&pane_entity, cx);
         });
         self._subscriptions.push(sub);
+
+        // 订阅 Pane 事件
+        let sub = cx.subscribe_in(pane, window, |this, _emitter, event, _window, _cx| {
+            // 后续可在此处统一处理 Pane 事件（窗口标题、通知等）
+            let _ = event; // 暂时忽略具体事件
+        });
+        self._subscriptions.push(sub);
     }
 
     /// 当 Pane 获得焦点时更新 StatusBar 跟踪的目标 Pane。
@@ -230,6 +285,27 @@ impl Workspace {
         self.status_bar.update(cx, |bar, cx| {
             bar.set_active_pane(pane, cx);
         });
+    }
+
+    fn handle_close_tab(
+        &mut self,
+        _: &pane::CloseTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pane_entity) = self.layout.borrow().focus_pane_entity().cloned() else {
+            return;
+        };
+        if let Some(view_id) = pane_entity.read(cx).active {
+            let focus = pane_entity.update(cx, |pane, cx| {
+                pane.close_tab(view_id);
+                pane.active_editor(cx)
+            });
+            if let Some(editor) = focus {
+                window.focus(&editor.read(cx).focus_handle());
+            }
+            window.refresh();
+        }
     }
 
     fn handle_toggle_project_tree(
@@ -293,13 +369,22 @@ fn render_frame(
     status_bar: &Entity<StatusBar>,
     layout: &LayoutSnapshot,
     project_tree: &Entity<ProjectTree>,
+    layout_ctrl: Rc<RefCell<LayoutController>>,
 ) -> Div {
     let tree = project_tree.clone();
     let panel_content = move |index: usize| -> Option<Div> {
-        if index == 0 {
-            Some(div().size_full().child(tree.clone()))
-        } else {
-            None
+        match index {
+            0 => Some(div().size_full().child(tree.clone())),
+            // 尚未实装的面板显示占位文字
+            i => Some(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(color::current().gray.s[5])
+                    .child(default_panels().get(i).map(|p| p.label).unwrap_or("")),
+            ),
         }
     };
 
@@ -315,7 +400,7 @@ fn render_frame(
         .line_height(typography::ui())
         .text_color(color::current().gray.s[8])
         .child(top_bar.clone())
-        .child(render_layout_body(layout, &panel_content))
+        .child(render_layout_body(layout, &panel_content, layout_ctrl))
         .child(status_bar.clone())
 }
 
@@ -337,11 +422,12 @@ impl Render for Workspace {
                 &self.status_bar,
                 &snapshot,
                 &self.project_tree,
+                self.layout.clone(),
             ))
             .on_action(window_controls::handle_quit)
             .on_action(window_controls::handle_minimize)
             .on_action(window_controls::handle_toggle_maximize)
-            .on_action(handle_close_tab)
+            .on_action(cx.listener(Self::handle_close_tab))
             .on_action(Self::handle_git_fetch)
             .on_action(Self::handle_git_pull)
             .on_action(Self::handle_git_push)

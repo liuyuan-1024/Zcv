@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, Render, Window, actions, div, prelude::*,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Render, Window, actions, div,
+    prelude::*,
 };
 use zcv_engine::Buffer;
 
@@ -20,6 +21,19 @@ use crate::ui::glyph::Glyph;
 use crate::ui::icon::SvgIcon;
 
 actions!(pane, [CloseTab, NextTab, PrevTab]);
+
+// ═══ Pane 事件 ════════════════════════════════════════════════════════
+
+/// Pane 对外发出的事件，供 Workspace 等父组件订阅处理。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaneEvent {
+    /// 活动标签页切换。
+    ActiveItemChanged,
+    /// 标签页被关闭。
+    ItemRemoved,
+}
+
+impl EventEmitter<PaneEvent> for Pane {}
 
 const TAB_HOVER_GROUP: &str = "pane.tab";
 static NEXT_VIEW_ID: AtomicU64 = AtomicU64::new(1);
@@ -68,6 +82,7 @@ impl Pane {
         // 已有此文件时只激活
         if let Some(tab) = self.tabs.iter().find(|tab| tab.matches_path(&path, cx)) {
             self.active = Some(tab.view_id);
+            cx.emit(PaneEvent::ActiveItemChanged);
             cx.notify();
             return tab.item.focus_handle(cx);
         }
@@ -82,6 +97,7 @@ impl Pane {
         let item: Box<dyn ItemHandle> = Box::new(editor);
         self.tabs.push(TabItem { view_id, item });
         self.active = Some(view_id);
+        cx.emit(PaneEvent::ActiveItemChanged);
         cx.notify();
         focus
     }
@@ -170,6 +186,7 @@ impl Pane {
     fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         self.next_tab();
         self.focus_active_editor(window, cx);
+        cx.emit(PaneEvent::ActiveItemChanged);
         cx.notify();
         window.refresh();
     }
@@ -177,6 +194,7 @@ impl Pane {
     fn handle_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
         self.prev_tab();
         self.focus_active_editor(window, cx);
+        cx.emit(PaneEvent::ActiveItemChanged);
         cx.notify();
         window.refresh();
     }
@@ -267,6 +285,7 @@ fn render_tab(
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
             let focus = activate_entity.update(cx, |pane, cx| {
                 pane.activate_tab(view_id);
+                cx.emit(PaneEvent::ActiveItemChanged);
                 cx.notify();
                 pane.active_item(cx).map(|item| item.focus_handle(cx))
             });
@@ -309,6 +328,7 @@ fn close_glyph(
         .on_click(move |window: &mut gpui::Window, cx: &mut gpui::App| {
             let focus = entity.update(cx, |pane, cx| {
                 pane.close_tab(view_id);
+                cx.emit(PaneEvent::ItemRemoved);
                 cx.notify();
                 pane.active_item(cx).map(|item| item.focus_handle(cx))
             });

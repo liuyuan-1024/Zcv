@@ -76,7 +76,7 @@
       "cmd-shift-l": "dock::ToggleLanguageServer",
       "cmd-shift-m": "dock::ToggleDiagnostics",
       "cmd-shift-f": "dock::ToggleProjectSearch",
-      "cmd-j": "dock::ToggleTerminal",
+      "cmd-`": "dock::ToggleTerminal",
       "cmd-shift-d": "dock::ToggleDebug",
       "cmd-shift-k": "dock::ToggleKeyboardShortcuts"
     }

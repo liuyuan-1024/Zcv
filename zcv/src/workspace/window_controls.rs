@@ -1,8 +1,8 @@
 //! 窗口控制 —— 自绘 macOS 风格三色圆点。
 
-use gpui::{Window, actions, div, prelude::*, px, rgb, svg};
+use gpui::{Pixels, Window, actions, div, prelude::*, px, rgb, svg};
 
-use crate::theme::{color, radius, space};
+use crate::theme::{color, space};
 
 actions!(
     window_controls,
@@ -66,7 +66,7 @@ fn pip(pip: Pip, active: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .size(px(12.0))
-        .rounded(radius::FULL)
+        .rounded(Pixels::MAX)
         .bg(fill)
         .border_1()
         .border_color(border)

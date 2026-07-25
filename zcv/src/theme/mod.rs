@@ -87,8 +87,9 @@ pub mod space {
     pub const S2: Pixels = px(2.0);
     pub const S6: Pixels = px(6.0);
     pub const S8: Pixels = px(8.0);
+    pub const S10: Pixels = px(10.0);
+    pub const S12: Pixels = px(12.0);
     pub const S16: Pixels = px(16.0);
-    pub const GUTTER_BAR: Pixels = px(4.0);
 }
 
 // ── 圆角 ───────────────────────────────────────────────────────────
@@ -97,7 +98,6 @@ pub mod radius {
     use gpui::{Pixels, px};
     pub const R2: Pixels = px(2.0);
     pub const R4: Pixels = px(4.0);
-    pub const FULL: Pixels = px(999.0);
 }
 
 // ── 字号 ───────────────────────────────────────────────────────────

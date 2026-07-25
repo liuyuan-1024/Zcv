@@ -120,7 +120,7 @@ impl EditorInputLayout {
         let (start, start_row) = self.point_for_utf16(range.start)?;
         let (end, end_row) = self.point_for_utf16(range.end)?;
         if start_row != end_row {
-            return Some(Bounds::new(start, size(px(0.), self.line_height)));
+            return Some(Bounds::new(start, size(Pixels::ZERO, self.line_height)));
         }
         Some(Bounds::from_corners(
             start,

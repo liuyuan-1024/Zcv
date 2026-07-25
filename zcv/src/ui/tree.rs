@@ -1,6 +1,6 @@
 //! 树行渲染辅助函数 —— 缩进、图标、名称、选中框。
 
-use gpui::{div, prelude::*, px};
+use gpui::{Pixels, div, prelude::*, px};
 
 use crate::theme::{color, radius, space, typography};
 use crate::ui::icon::SvgIcon;
@@ -22,9 +22,9 @@ pub(crate) fn selection_border() -> gpui::Div {
     let m = metrics();
     div()
         .absolute()
-        .top(px(0.))
-        .left(px(0.))
-        .right(px(0.))
+        .top(Pixels::ZERO)
+        .left(Pixels::ZERO)
+        .right(Pixels::ZERO)
         .h(m.row_height)
         .rounded(radius::R2)
         .border_1()
@@ -86,7 +86,7 @@ fn guide_lines(depth: usize) -> Vec<gpui::Div> {
             div()
                 .absolute()
                 .left(x_center - line_w / 2.0)
-                .top(px(0.))
+                .top(Pixels::ZERO)
                 .w(line_w)
                 .h_full()
                 .bg(line_color)

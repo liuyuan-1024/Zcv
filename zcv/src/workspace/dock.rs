@@ -309,9 +309,17 @@ impl Render for Dock {
             });
 
         let handle = match self.position {
-            DockPosition::Left => handle.right(px(0.0)).w(HIT).h_full().cursor_col_resize(),
-            DockPosition::Right => handle.left(px(0.0)).w(HIT).h_full().cursor_col_resize(),
-            DockPosition::Bottom => handle.top(px(0.0)).w_full().h(HIT).cursor_row_resize(),
+            DockPosition::Left => handle
+                .right(Pixels::ZERO)
+                .w(HIT)
+                .h_full()
+                .cursor_col_resize(),
+            DockPosition::Right => handle
+                .left(Pixels::ZERO)
+                .w(HIT)
+                .h_full()
+                .cursor_col_resize(),
+            DockPosition::Bottom => handle.top(Pixels::ZERO).w_full().h(HIT).cursor_row_resize(),
         };
 
         frame.child(handle)

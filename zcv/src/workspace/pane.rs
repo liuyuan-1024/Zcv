@@ -8,18 +8,20 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Render, Window, actions, div,
-    prelude::*,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Render, ScrollHandle, Window,
+    actions, div, prelude::*, px,
 };
 use zcv_engine::Buffer;
 
 use super::item::ItemHandle;
 use super::pane_group::{PaneId, ViewId};
+use super::tab_bar::TabBar;
 use super::toolbar::Toolbar;
 use crate::editor::editor::Editor;
-use crate::theme::{color, radius, space};
+use crate::theme::color;
 use crate::ui::glyph::Glyph;
 use crate::ui::icon::SvgIcon;
+use crate::ui::tab::Tab;
 
 actions!(pane, [CloseTab, NextTab, PrevTab]);
 
@@ -40,6 +42,35 @@ impl EventEmitter<PaneEvent> for Pane {}
 
 const TAB_HOVER_GROUP: &str = "pane.tab";
 static NEXT_VIEW_ID: AtomicU64 = AtomicU64::new(1);
+
+// ═══ DraggedTab —— 拖拽载荷 + 幽灵视图 ═════════════════════════════
+
+/// 拖拽过程中传递的数据，同时也是拖拽时跟随鼠标的幽灵视图。
+#[derive(Clone)]
+pub(crate) struct DraggedTab {
+    pub pane: Entity<Pane>,
+    pub view_id: ViewId,
+    pub ix: usize,
+    pub is_active: bool,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (title, is_dirty) = self
+            .pane
+            .read(cx)
+            .tabs
+            .get(self.ix)
+            .map(|tab| (tab.item.title(cx), tab.item.is_dirty(cx)))
+            .unwrap_or_default();
+
+        Tab::new("")
+            .selected(self.is_active)
+            .start_slot(file_icon())
+            .end_slot(tab_end_glyph(&self.pane, self.view_id, is_dirty, cx))
+            .child(title)
+    }
+}
 
 // ═══ 1. Struct + constructor ═══════════════════════════════════════
 
@@ -62,6 +93,7 @@ pub(crate) struct Pane {
     pub tabs: Vec<TabItem>,
     pub active: Option<ViewId>,
     toolbar: Entity<Toolbar>,
+    scroll_handle: ScrollHandle,
 }
 
 impl Pane {
@@ -72,7 +104,13 @@ impl Pane {
             tabs: Vec::new(),
             active: None,
             toolbar: cx.new(|_| Toolbar::new()),
+            scroll_handle: ScrollHandle::new(),
         }
+    }
+
+    /// 滚动到指定索引的标签到可视区域。
+    fn scroll_to_tab(&self, ix: usize) {
+        self.scroll_handle.scroll_to_item(ix);
     }
 
     /// 打开文件；当前 Pane 已有同一路径时只激活已有 Editor。
@@ -107,6 +145,7 @@ impl Pane {
         let item: Box<dyn ItemHandle> = Box::new(editor);
         self.tabs.push(TabItem { view_id, item });
         self.active = Some(view_id);
+        self.scroll_to_tab(self.tabs.len() - 1);
         self.update_toolbar(window, cx);
         cx.emit(PaneEvent::AddItem { view_id });
         cx.emit(PaneEvent::ActivateItem { view_id });
@@ -114,15 +153,16 @@ impl Pane {
         focus
     }
 
-    /// 激活指定 tab。
+    /// 激活指定 tab，并滚入视图。
     pub fn activate_tab(&mut self, view_id: ViewId, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tabs.iter().any(|t| t.view_id == view_id) {
+        if let Some(pos) = self.tabs.iter().position(|t| t.view_id == view_id) {
             self.active = Some(view_id);
+            self.scroll_to_tab(pos);
             self.update_toolbar(window, cx);
         }
     }
 
-    /// 切换到下一个 tab。
+    /// 切换到下一个 tab，并滚入视图。
     pub fn next_tab(&mut self) {
         if self.tabs.is_empty() {
             return;
@@ -136,9 +176,10 @@ impl Pane {
             None => 0,
         };
         self.active = Some(self.tabs[next].view_id);
+        self.scroll_to_tab(next);
     }
 
-    /// 切换到上一个 tab。
+    /// 切换到上一个 tab，并滚入视图。
     pub fn prev_tab(&mut self) {
         if self.tabs.is_empty() {
             return;
@@ -152,6 +193,7 @@ impl Pane {
             None => 0,
         };
         self.active = Some(self.tabs[prev].view_id);
+        self.scroll_to_tab(prev);
     }
 
     /// 关闭指定 tab，自动切换到下一个。
@@ -207,6 +249,43 @@ impl Pane {
     }
 }
 
+// ═══ 拖拽重排序 ═══════════════════════════════════════════════════
+
+impl Pane {
+    /// 在同 Pane 内移动标签页从 `from_ix` 到 `to_ix`（`to_ix` 是最终数组位置）。
+    fn move_tab(&mut self, from_ix: usize, to_ix: usize) {
+        if from_ix == to_ix {
+            return;
+        }
+        let tab = self.tabs.remove(from_ix);
+        self.tabs.insert(to_ix.min(self.tabs.len()), tab);
+    }
+
+    /// 处理标签拖拽放置。
+    pub(crate) fn handle_tab_drop(
+        &mut self,
+        dragged: &DraggedTab,
+        target_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 暂只支持同 Pane 拖拽
+        if dragged.pane.entity_id() != cx.entity_id() {
+            return;
+        }
+        self.move_tab(dragged.ix, target_ix);
+        self.update_toolbar(window, cx);
+        // 保持或恢复激活状态
+        if let Some(tab) = self.tabs.iter().find(|t| t.view_id == dragged.view_id) {
+            self.active = Some(tab.view_id);
+        }
+        cx.emit(PaneEvent::ActivateItem {
+            view_id: self.active.unwrap_or(dragged.view_id),
+        });
+        cx.notify();
+    }
+}
+
 // ═══ 2. Action handler ═════════════════════════════════════════════
 
 impl Pane {
@@ -253,7 +332,13 @@ impl Render for Pane {
             .bg(color::current().gray.s[1])
             .on_action(cx.listener(Self::handle_next_tab))
             .on_action(cx.listener(Self::handle_prev_tab))
-            .child(render_tab_bar(&self.tabs, active_view, pane_entity, cx))
+            .child(render_tab_bar(
+                &self.tabs,
+                active_view,
+                pane_entity,
+                &self.scroll_handle,
+                cx,
+            ))
             .child(self.toolbar.clone())
             .child(render_content(active_view, active_item))
     }
@@ -263,59 +348,91 @@ impl Render for Pane {
 
 // ── Tab Bar ──────────────────────────────────────────────────────────
 
-/// 标签栏：一组标签的容器。
+/// 标签栏：一组标签的容器 + 末尾放置目标。
 fn render_tab_bar(
     tabs: &[TabItem],
     active_view: Option<ViewId>,
     pane_entity: gpui::Entity<Pane>,
+    scroll_handle: &ScrollHandle,
     cx: &App,
-) -> gpui::Div {
-    if tabs.is_empty() {
-        return div().flex_shrink_0();
-    }
-
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .flex_shrink_0()
-        .gap(space::S6)
-        .bg(color::current().gray.s[2])
-        .border_b_1()
-        .border_color(color::current().gray.s[4])
-        .children(tabs.iter().map(|tab| {
+) -> impl gpui::IntoElement {
+    let children: Vec<AnyElement> = tabs
+        .iter()
+        .enumerate()
+        .map(|(ix, tab)| {
             let is_dirty = tab.item.is_dirty(cx);
             render_tab(
                 tab,
+                ix,
                 Some(tab.view_id) == active_view,
                 is_dirty,
                 &pane_entity,
                 cx,
             )
-        }))
+            .into_any_element()
+        })
+        .chain(std::iter::once(
+            render_tab_bar_drop_target(&pane_entity, tabs.len(), cx).into_any_element(),
+        ))
+        .collect();
+
+    let handle = scroll_handle.clone();
+    let tab_bar = TabBar::new().track_scroll(scroll_handle).with_bar(
+        |bar| {
+            bar.flex()
+                .flex_row()
+                .items_center()
+                .flex_shrink_0()
+                .bg(color::current().gray.s[2])
+        },
+        children,
+    );
+
+    // 外层包裹 on_drag_move 实现拖拽到边缘自动滚动
+    // event.bounds 就是本 div 的边界，无需 Y 坐标判断
+    div()
+        .id("tab-bar-area")
+        .flex_shrink_0()
+        .child(tab_bar)
+        .on_drag_move::<DraggedTab>(move |event, window, _cx| {
+            let margin = px(30.0);
+            let mouse_x = event.event.position.x;
+            let left = event.bounds.left();
+            let right = event.bounds.right();
+
+            let mut offset = handle.offset();
+            if mouse_x < left + margin {
+                offset.x = (offset.x + px(8.0)).min(px(0.0));
+                handle.set_offset(offset);
+                window.refresh();
+            } else if mouse_x > right - margin {
+                let max_x = handle.max_offset().width;
+                offset.x = (offset.x - px(8.0)).max(-max_x);
+                handle.set_offset(offset);
+                window.refresh();
+            }
+        })
 }
 
-/// 单个标签：文件图标 + 文件名 + 关闭按钮。
+/// 单个标签：文件图标 + 文件名 + 关闭按钮，支持拖拽重排序。
 fn render_tab(
     tab: &TabItem,
+    ix: usize,
     is_active: bool,
     is_dirty: bool,
     pane_entity: &gpui::Entity<Pane>,
     cx: &App,
-) -> gpui::Div {
+) -> impl gpui::IntoElement {
     let view_id = tab.view_id;
     let activate_entity = pane_entity.clone();
     let close_entity = pane_entity.clone();
 
-    div()
+    Tab::new(("tab", view_id.0))
+        .selected(is_active)
+        .start_slot(file_icon())
+        .end_slot(tab_end_glyph(&close_entity, view_id, is_dirty, cx))
+        .child(tab.item.title(cx))
         .group(TAB_HOVER_GROUP)
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(space::S6)
-        .p(space::S6)
-        .rounded(radius::R2)
-        .cursor_pointer()
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
             let focus = activate_entity.update(cx, |pane, cx| {
                 pane.activate_tab(view_id, window, cx);
@@ -329,19 +446,54 @@ fn render_tab(
             window.refresh();
             cx.stop_propagation();
         })
-        .text_color(if is_active {
-            color::current().gray.s[8]
-        } else {
-            color::current().gray.s[6]
+        .on_drag(
+            DraggedTab {
+                pane: pane_entity.clone(),
+                view_id,
+                ix,
+                is_active,
+            },
+            |tab, _, _, cx| cx.new(|_| tab.clone()),
+        )
+        .drag_over::<DraggedTab>(
+            move |mut tab: gpui::StyleRefinement, dragged: &DraggedTab, _, _| {
+                if ix != dragged.ix {
+                    tab.background = Some(gpui::Fill::from(color::current().gray.s[3]));
+                }
+                tab
+            },
+        )
+        .on_drop({
+            let pane = pane_entity.clone();
+            move |dragged: &DraggedTab, window, cx| {
+                pane.update(cx, |this, cx| {
+                    this.handle_tab_drop(dragged, ix, window, cx);
+                });
+            }
         })
-        .bg(if is_active {
-            color::current().gray.s[1]
-        } else {
-            gpui::rgba(0)
+}
+
+/// 标签栏末尾的放置目标：将标签拖到所有标签末尾时接受放置。
+fn render_tab_bar_drop_target(
+    pane_entity: &gpui::Entity<Pane>,
+    tab_count: usize,
+    _cx: &App,
+) -> impl gpui::IntoElement {
+    let pane = pane_entity.clone();
+    div()
+        .id("tab-bar-drop-target")
+        .flex_grow()
+        .drag_over::<DraggedTab>(
+            |mut tab: gpui::StyleRefinement, _dragged: &DraggedTab, _, _| {
+                tab.background = Some(gpui::Fill::from(color::current().gray.s[3]));
+                tab
+            },
+        )
+        .on_drop(move |dragged: &DraggedTab, window, cx| {
+            pane.update(cx, |this, cx| {
+                this.handle_tab_drop(dragged, tab_count, window, cx);
+            });
         })
-        .child(file_icon())
-        .child(tab.item.title(cx))
-        .child(tab_end_glyph(&close_entity, view_id, is_dirty, cx))
 }
 
 /// 文件类型图标。
@@ -535,5 +687,77 @@ mod tests {
 
         // 同一路径不应创建重复标签
         cx.read_entity(&pane, |pane, _| assert_eq!(pane.tabs.len(), 1));
+    }
+
+    #[gpui::test]
+    fn move_tab_reorders_tabs_correctly(cx: &mut TestAppContext) {
+        let pane = cx.new(|cx| Pane::new(PaneId(1), cx));
+
+        // 用 scratch Buffer 模拟多个标签
+        for i in 0..4 {
+            let buffer = cx.new(|_| {
+                Buffer::scratch(format!("内容{i}"), BufferConfig::default()).expect("应创建 Buffer")
+            });
+            let path = PathBuf::from(format!("file{i}.txt"));
+            open_file_in_test(cx, &pane, path, buffer);
+        }
+
+        cx.read_entity(&pane, |pane, cx| {
+            assert_eq!(pane.tabs.len(), 4);
+            assert_eq!(pane.tabs[0].item.title(cx).as_ref(), "file0.txt");
+            assert_eq!(pane.tabs[1].item.title(cx).as_ref(), "file1.txt");
+            assert_eq!(pane.tabs[2].item.title(cx).as_ref(), "file2.txt");
+            assert_eq!(pane.tabs[3].item.title(cx).as_ref(), "file3.txt");
+        });
+
+        // 移动：将索引 2 移到索引 0
+        cx.update_entity(&pane, |pane, _| pane.move_tab(2, 0));
+        cx.read_entity(&pane, |pane, cx| {
+            assert_eq!(pane.tabs.len(), 4);
+            assert_eq!(pane.tabs[0].item.title(cx).as_ref(), "file2.txt");
+            assert_eq!(pane.tabs[1].item.title(cx).as_ref(), "file0.txt");
+            assert_eq!(pane.tabs[2].item.title(cx).as_ref(), "file1.txt");
+            assert_eq!(pane.tabs[3].item.title(cx).as_ref(), "file3.txt");
+        });
+
+        // 移动：将索引 0 移到索引 3（拖到末尾）
+        cx.update_entity(&pane, |pane, _| pane.move_tab(0, 3));
+        cx.read_entity(&pane, |pane, cx| {
+            assert_eq!(pane.tabs.len(), 4);
+            assert_eq!(pane.tabs[0].item.title(cx).as_ref(), "file0.txt");
+            assert_eq!(pane.tabs[1].item.title(cx).as_ref(), "file1.txt");
+            assert_eq!(pane.tabs[2].item.title(cx).as_ref(), "file3.txt");
+            assert_eq!(pane.tabs[3].item.title(cx).as_ref(), "file2.txt");
+        });
+
+        // 移动：不动（自身）
+        cx.update_entity(&pane, |pane, _| pane.move_tab(1, 1));
+        cx.read_entity(&pane, |pane, cx| {
+            assert_eq!(pane.tabs.len(), 4);
+            assert_eq!(pane.tabs[0].item.title(cx).as_ref(), "file0.txt");
+        });
+
+        // 移动：单标签拖到末尾 → 不应闪退
+        let single_pane = cx.new(|cx| Pane::new(PaneId(2), cx));
+        let buffer = cx.new(|_| {
+            Buffer::scratch("仅一个标签".to_owned(), BufferConfig::default())
+                .expect("应创建 Buffer")
+        });
+        open_file_in_test(cx, &single_pane, PathBuf::from("solo.txt"), buffer);
+        cx.read_entity(&single_pane, |pane, _cx| {
+            assert_eq!(pane.tabs.len(), 1);
+        });
+        // 拖到自身（from == to）— 无操作
+        cx.update_entity(&single_pane, |pane, _| pane.move_tab(0, 0));
+        cx.read_entity(&single_pane, |pane, cx| {
+            assert_eq!(pane.tabs.len(), 1);
+            assert_eq!(pane.tabs[0].item.title(cx).as_ref(), "solo.txt");
+        });
+        // 拖到末尾（to_ix 超出范围）— clamp 后不应闪退
+        cx.update_entity(&single_pane, |pane, _| pane.move_tab(0, 1));
+        cx.read_entity(&single_pane, |pane, cx| {
+            assert_eq!(pane.tabs.len(), 1);
+            assert_eq!(pane.tabs[0].item.title(cx).as_ref(), "solo.txt");
+        });
     }
 }

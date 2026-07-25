@@ -4,4 +4,5 @@ pub(crate) mod glyph;
 pub(crate) mod icon;
 pub(crate) mod list_item;
 pub(crate) mod picker;
+pub(crate) mod tab;
 pub(crate) mod tree;

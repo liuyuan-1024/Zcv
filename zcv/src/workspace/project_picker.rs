@@ -9,8 +9,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, Context, Corner, Entity, FocusHandle, MouseButton, PathPromptOptions, Render,
-    Window, actions, anchored, deferred, div, point, prelude::*, px,
+    Action, App, Context, Corner, Entity, FocusHandle, MouseButton, PathPromptOptions, Pixels,
+    Render, Window, actions, anchored, deferred, div, point, prelude::*, px,
 };
 
 use crate::keymap::KeyBindings;
@@ -19,6 +19,8 @@ use crate::ui::glyph::Glyph;
 use crate::ui::list_item::{ListItem, list_item_two_line};
 use crate::ui::picker::{Picker, PickerDelegate, picker_divider};
 use crate::workspace::recent_projects::{self, ProjectEntry};
+
+const PICKER_WIDTH: Pixels = px(360.0);
 
 actions!(project_picker, [ToggleProjectPicker, OpenLocalProject]);
 
@@ -221,7 +223,7 @@ impl ProjectPicker {
         let dismiss_flag = Rc::new(Cell::new(false));
         let pending_path = Rc::new(RefCell::new(None));
 
-        let picker = cx.new(|cx| Picker::new(delegate, px(360.0), cx));
+        let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, cx));
         let on_dismiss = {
             let df = dismiss_flag.clone();
             Box::new(move |window: &mut Window, _app: &mut App| {
@@ -384,8 +386,8 @@ impl Render for ProjectPicker {
                     deferred(
                         div()
                             .absolute()
-                            .top(px(0.0))
-                            .left(px(0.0))
+                            .top(Pixels::ZERO)
+                            .left(Pixels::ZERO)
                             .w(win_size.width)
                             .h(win_size.height)
                             .on_mouse_down(MouseButton::Left, move |_, window, _cx| {
@@ -400,7 +402,7 @@ impl Render for ProjectPicker {
                     deferred(
                         anchored()
                             .anchor(Corner::TopLeft)
-                            .position(point(px(0.0), px(0.0)))
+                            .position(point(Pixels::ZERO, Pixels::ZERO))
                             .position_mode(gpui::AnchoredPositionMode::Local)
                             .snap_to_window_with_margin(space::S6)
                             .child(

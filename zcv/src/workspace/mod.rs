@@ -17,6 +17,7 @@ pub(crate) mod project_search_button;
 pub(crate) mod project_tree;
 mod recent_projects;
 pub(crate) mod status_bar;
+pub(crate) mod tab_bar;
 pub(crate) mod toolbar;
 pub(crate) mod top_bar;
 pub(crate) mod window_controls;

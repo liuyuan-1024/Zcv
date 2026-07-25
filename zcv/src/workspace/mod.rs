@@ -4,6 +4,7 @@ pub(crate) mod active_buffer_language;
 pub(crate) mod cursor_position;
 pub(crate) mod diagnostics_button;
 pub(crate) mod dock;
+pub(crate) mod fs_watcher;
 pub(crate) mod item;
 pub(crate) mod lsp_button;
 pub(crate) mod pane;
@@ -22,11 +23,11 @@ use std::cell::Cell;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gpui::{
-    Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Window, actions, div,
-    prelude::*, px,
+    AsyncApp, Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Task,
+    WeakEntity, Window, actions, div, prelude::*, px,
 };
 use zcv_engine::{Buffer, BufferSaveError};
 
@@ -37,6 +38,7 @@ use self::dock::{
     Dock, DockArea, ToggleDebug, ToggleKeyboardShortcuts, ToggleOutline, ToggleProjectTree,
     ToggleTerminal, ToggleVersionControl, render_body as render_layout_body,
 };
+use self::fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use self::lsp_button::LspButton;
 use self::pane::Pane;
 use self::pane_group::{PaneGroup, PaneId};
@@ -68,6 +70,14 @@ pub(crate) struct Workspace {
     panel_action_map: Vec<(&'static str, Entity<Dock>, usize)>,
     /// 拖拽协调：Dock 通过此 Cell 通知 Workspace 哪个 dock 正在被拖拽。
     drag_notify: Rc<Cell<Option<DockArea>>>,
+    /// FsWatcher 实例。
+    fs_watcher: Option<Arc<dyn Watcher>>,
+    /// 待处理的 FS 事件缓冲区。
+    pending_fs_events: Arc<Mutex<Vec<PathEvent>>>,
+    /// FS 事件信号接收端（后台 task 持有 clone）。
+    event_signal: async_channel::Receiver<()>,
+    /// 前台 task（处理 FS 事件 → reload Buffer + 刷新 ProjectTree）。
+    _fs_bg_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -133,8 +143,9 @@ impl Workspace {
 
         // 先创建 ProjectTree（唯一实体），再创建面板
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let root_for_tree = root.clone();
         let project_tree: Entity<ProjectTree> = cx.new(|cx| {
-            let mut tree = ProjectTree::new(root, cx);
+            let mut tree = ProjectTree::new(root_for_tree, cx);
             let on_open_file: OnOpenFile = Rc::new(
                 move |path: PathBuf, window: &mut Window, cx: &mut gpui::App| {
                     if let Some(ws) = weak_open_file.upgrade() {
@@ -274,6 +285,52 @@ impl Workspace {
 
         cx.set_global(BufferStore::new());
 
+        // ═══ 文件系统监听（参考 Zed 架构：Workspace 统一管理） ═════
+
+        let (fs_signal_tx, fs_signal_rx) = async_channel::unbounded::<()>();
+        let fs_pending: Arc<Mutex<Vec<PathEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let fs_watcher: Arc<dyn Watcher> =
+            Arc::new(FsWatcher::new(fs_signal_tx, fs_pending.clone()));
+
+        if let Err(e) = fs_watcher.add(&root) {
+            log::warn!("无法监听项目目录 {:?}：{e}", root);
+        }
+
+        // 前台 task：处理 FS 事件 → reload Buffer + 刷新 ProjectTree
+        let bg_pending = fs_pending.clone();
+        let bg_signal = fs_signal_rx.clone();
+        let fs_bg_task: Task<()> =
+            cx.spawn(|ws: WeakEntity<Workspace>, async_cx: &mut AsyncApp| {
+                let mut cx = async_cx.clone();
+                async move {
+                    while let Ok(()) = bg_signal.recv().await {
+                        let events = std::mem::take(&mut *bg_pending.lock().unwrap());
+
+                        // 1. 外部修改文件 → 重新加载已打开的 Buffer
+                        for event in &events {
+                            if matches!(
+                                event.kind,
+                                Some(PathEventKind::Changed | PathEventKind::Created)
+                            ) {
+                                let path = event.path.clone();
+                                let _ = cx.update(|app| {
+                                    app.update_global::<BufferStore, _>(|store, app| {
+                                        store.reload_buffer_for_path(&path, app);
+                                    });
+                                });
+                            }
+                        }
+
+                        // 2. 通知 ProjectTree 刷新
+                        if !events.is_empty() {
+                            let _ = ws.update(&mut cx, |workspace, cx| {
+                                workspace.project_tree.update(cx, |_, cx| cx.notify());
+                            });
+                        }
+                    }
+                }
+            });
+
         Self {
             focus,
             center,
@@ -286,6 +343,10 @@ impl Workspace {
             bottom_dock,
             panel_action_map,
             drag_notify,
+            fs_watcher: Some(fs_watcher),
+            pending_fs_events: fs_pending,
+            event_signal: fs_signal_rx,
+            _fs_bg_task: Some(fs_bg_task),
             _subscriptions: Vec::new(),
         }
     }
@@ -516,13 +577,22 @@ impl Workspace {
         });
     }
 
-    /// 切换到指定目录作为项目根目录。
+    /// 切换到指定目录作为项目根目录，同时重启文件监听。
     fn switch_project(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
         let root = PathBuf::from(path);
         let label = root
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
+
+        // 重启 FsWatcher：移除旧根 → 监听新根
+        if let Some(watcher) = &self.fs_watcher {
+            let _ = watcher.remove(self.project_tree.read(cx).root());
+            if let Err(e) = watcher.add(&root) {
+                log::warn!("无法监听项目目录 {:?}：{e}", root);
+            }
+        }
+
         self.project_tree.update(cx, |tree, cx| {
             tree.set_root(root.clone(), cx);
         });

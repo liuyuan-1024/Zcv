@@ -4,6 +4,8 @@
 
 修改 zcv 模块时，请先阅读 zcv/docs/下的所有文档规范。同时查阅**本机的/Users/liuyuan/project/liuyuan/zed目录下的Zed编辑器的源码**，看看zed是如何实现的，参考zed的实现方式，甚至是直接照搬zed的实现方式。
 
+不要使用#[allow(dead_code)]等方式抑制警告。
+
 ## 称呼
 
 在每次回答问题的时候，请加上一个称呼：“伟大的开发者”。

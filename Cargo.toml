@@ -36,8 +36,10 @@ thiserror = "2.0.18"
 unicode-segmentation = "1.13.2"
 
 # ---- 工作区层（zcv-workspace） ----
-trash = "5"
+anyhow = "1.0"
 ignore = "0.4"
+log = "0.4"
+trash = "5"
 
 # ---- 语法高亮（tree-sitter 系） ----
 tree-sitter = "0.26.9"
@@ -66,6 +68,7 @@ gpui = "0.2.2"
 
 # ---- 文件监听 ----
 notify = "7"
+async-channel = "1.9"
 crossbeam-channel = "0.5"
 
 # ---- Markdown 渲染（zcv preview） ----

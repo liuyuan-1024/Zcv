@@ -42,6 +42,28 @@ impl BufferStore {
         self.opened_buffers.insert(path, buffer.downgrade());
         Ok(buffer)
     }
+
+    /// 如果路径对应某个已打开的 Buffer，从磁盘重新加载其内容。
+    ///
+    /// 由 FsWatcher 在检测到文件变更时调用。
+    pub(crate) fn reload_buffer_for_path(&mut self, path: &Path, cx: &mut App) {
+        let Ok(canonical) = path.canonicalize() else {
+            return;
+        };
+        let Some(buffer) = self
+            .opened_buffers
+            .get(&canonical)
+            .and_then(WeakEntity::upgrade)
+        else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(&canonical) else {
+            return;
+        };
+        let _ = buffer.update(cx, |b, _| {
+            let _ = b.reload_from_text(text);
+        });
+    }
 }
 
 impl Global for BufferStore {}

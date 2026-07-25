@@ -54,16 +54,24 @@ fn activate_node(
 
 pub(crate) struct ProjectTree {
     pub focus: gpui::FocusHandle,
+    /// 当前项目根目录路径。
+    root: PathBuf,
     state: Rc<RefCell<ProjectTreeState>>,
     scroll_handle: UniformListScrollHandle,
     on_open_file: Option<OnOpenFile>,
 }
 
 impl ProjectTree {
+    /// 当前项目根目录。
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub(crate) fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         Self {
             focus,
+            root: root.clone(),
             state: Rc::new(RefCell::new(ProjectTreeState::new(root))),
             scroll_handle: UniformListScrollHandle::default(),
             on_open_file: None,
@@ -77,7 +85,8 @@ impl ProjectTree {
 
     /// 更换项目根目录。
     pub(crate) fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
-        self.state.borrow_mut().set_root(root);
+        self.root = root.clone();
+        self.state.borrow_mut().set_root(root.clone());
         cx.notify();
     }
 

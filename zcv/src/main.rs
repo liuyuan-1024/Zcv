@@ -44,8 +44,7 @@ fn main() {
                         let workspace = cx.new(Workspace::new);
                         // 注册 Pane 焦点监听，使 StatusBar 能跟随 Pane 切换
                         workspace.update(cx, |workspace, cx| {
-                            let pane = workspace.layout.borrow().focus_pane_entity().cloned();
-                            if let Some(pane) = pane {
+                            if let Some(pane) = workspace.focus_pane.clone() {
                                 workspace.register_pane_focus_listener(&pane, window, cx);
                             }
                         });

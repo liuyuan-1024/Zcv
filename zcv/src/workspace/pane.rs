@@ -27,10 +27,12 @@ actions!(pane, [CloseTab, NextTab, PrevTab]);
 /// Pane 对外发出的事件，供 Workspace 等父组件订阅处理。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PaneEvent {
+    /// 新标签页添加。
+    AddItem { view_id: ViewId },
     /// 活动标签页切换。
-    ActiveItemChanged,
+    ActivateItem { view_id: ViewId },
     /// 标签页被关闭。
-    ItemRemoved,
+    RemovedItem { view_id: ViewId },
 }
 
 impl EventEmitter<PaneEvent> for Pane {}
@@ -82,7 +84,9 @@ impl Pane {
         // 已有此文件时只激活
         if let Some(tab) = self.tabs.iter().find(|tab| tab.matches_path(&path, cx)) {
             self.active = Some(tab.view_id);
-            cx.emit(PaneEvent::ActiveItemChanged);
+            cx.emit(PaneEvent::ActivateItem {
+                view_id: tab.view_id,
+            });
             cx.notify();
             return tab.item.focus_handle(cx);
         }
@@ -97,7 +101,8 @@ impl Pane {
         let item: Box<dyn ItemHandle> = Box::new(editor);
         self.tabs.push(TabItem { view_id, item });
         self.active = Some(view_id);
-        cx.emit(PaneEvent::ActiveItemChanged);
+        cx.emit(PaneEvent::AddItem { view_id });
+        cx.emit(PaneEvent::ActivateItem { view_id });
         cx.notify();
         focus
     }
@@ -186,7 +191,9 @@ impl Pane {
     fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         self.next_tab();
         self.focus_active_editor(window, cx);
-        cx.emit(PaneEvent::ActiveItemChanged);
+        cx.emit(PaneEvent::ActivateItem {
+            view_id: self.active.unwrap(),
+        });
         cx.notify();
         window.refresh();
     }
@@ -194,7 +201,9 @@ impl Pane {
     fn handle_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
         self.prev_tab();
         self.focus_active_editor(window, cx);
-        cx.emit(PaneEvent::ActiveItemChanged);
+        cx.emit(PaneEvent::ActivateItem {
+            view_id: self.active.unwrap(),
+        });
         cx.notify();
         window.refresh();
     }
@@ -285,7 +294,7 @@ fn render_tab(
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
             let focus = activate_entity.update(cx, |pane, cx| {
                 pane.activate_tab(view_id);
-                cx.emit(PaneEvent::ActiveItemChanged);
+                cx.emit(PaneEvent::ActivateItem { view_id });
                 cx.notify();
                 pane.active_item(cx).map(|item| item.focus_handle(cx))
             });
@@ -326,15 +335,14 @@ fn close_glyph(
         .label("关闭")
         .shortcut(&CloseTab, cx)
         .on_click(move |window: &mut gpui::Window, cx: &mut gpui::App| {
+            let pane_focus = entity.read(cx).focus.clone();
             let focus = entity.update(cx, |pane, cx| {
                 pane.close_tab(view_id);
-                cx.emit(PaneEvent::ItemRemoved);
+                cx.emit(PaneEvent::RemovedItem { view_id });
                 cx.notify();
                 pane.active_item(cx).map(|item| item.focus_handle(cx))
             });
-            if let Some(focus) = focus {
-                window.focus(&focus);
-            }
+            window.focus(&focus.unwrap_or(pane_focus));
             window.refresh();
         })
 }

@@ -9,7 +9,6 @@ pub(crate) mod lsp_button;
 pub(crate) mod pane;
 pub(crate) mod pane_group;
 pub(crate) mod panel_buttons;
-pub(crate) mod placeholders;
 pub(crate) mod project_picker;
 pub(crate) mod project_search_button;
 pub(crate) mod project_tree;
@@ -55,12 +54,11 @@ actions!(workspace, [Save]);
 pub(crate) struct Workspace {
     pub(crate) focus: FocusHandle,
     pub(crate) layout: Rc<RefCell<LayoutController>>,
+    pub(crate) focus_pane: Option<Entity<Pane>>,
     top_bar: Entity<TopBar>,
     status_bar: Entity<StatusBar>,
     project_tree: Entity<ProjectTree>,
     _subscriptions: Vec<Subscription>,
-    /// 项目树打开文件回调用到的弱引用。
-    weak_self: gpui::WeakEntity<Self>,
 }
 
 impl Workspace {
@@ -90,7 +88,7 @@ impl Workspace {
         let initial_pane = cx.new(|cx| Pane::new(PaneId(1), cx));
         let status_pane = initial_pane.clone();
         let layout = Rc::new(RefCell::new(LayoutController::with_initial_pane(
-            initial_pane,
+            initial_pane.clone(),
         )));
         // StatusBar：容器，持有各 StatusItemView
         let status_bar = cx.new(|cx| StatusBar::new(status_pane, cx));
@@ -125,12 +123,12 @@ impl Workspace {
 
         Self {
             focus,
+            layout,
+            focus_pane: Some(initial_pane),
             top_bar,
             status_bar,
-            layout,
             project_tree,
             _subscriptions: Vec::new(),
-            weak_self,
         }
     }
 
@@ -153,7 +151,7 @@ impl Workspace {
         else {
             return;
         };
-        let Some(pane) = self.layout.borrow().focus_pane_entity().cloned() else {
+        let Some(pane) = self.focus_pane.clone() else {
             return;
         };
         let file_name = path
@@ -190,7 +188,7 @@ impl Workspace {
     }
 
     fn handle_save(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(pane) = self.layout.borrow().focus_pane_entity().cloned() else {
+        let Some(pane) = self.focus_pane.clone() else {
             return;
         };
         let (editor, path) = {
@@ -248,7 +246,7 @@ impl Workspace {
 
     /// 聚焦回编辑区。
     fn focus_center_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(pane_entity) = self.layout.borrow().focus_pane_entity() {
+        if let Some(ref pane_entity) = self.focus_pane {
             let pane = pane_entity.read(cx);
             if let Some(editor) = pane.active_editor(cx) {
                 window.focus(&editor.read(cx).focus_handle());
@@ -273,15 +271,16 @@ impl Workspace {
         self._subscriptions.push(sub);
 
         // 订阅 Pane 事件
-        let sub = cx.subscribe_in(pane, window, |this, _emitter, event, _window, _cx| {
+        let sub = cx.subscribe_in(pane, window, |_this, _emitter, event, _window, _cx| {
             // 后续可在此处统一处理 Pane 事件（窗口标题、通知等）
             let _ = event; // 暂时忽略具体事件
         });
         self._subscriptions.push(sub);
     }
 
-    /// 当 Pane 获得焦点时更新 StatusBar 跟踪的目标 Pane。
+    /// 当 Pane 获得焦点时更新 Workspace 和 StatusBar 的焦点 Pane。
     fn handle_pane_focused(&mut self, pane: &Entity<Pane>, cx: &mut Context<Self>) {
+        self.focus_pane = Some(pane.clone());
         self.status_bar.update(cx, |bar, cx| {
             bar.set_active_pane(pane, cx);
         });
@@ -293,16 +292,21 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(pane_entity) = self.layout.borrow().focus_pane_entity().cloned() else {
+        let Some(pane_entity) = self.focus_pane.clone() else {
             return;
         };
+        let pane_focus = pane_entity.read(cx).focus.clone();
         if let Some(view_id) = pane_entity.read(cx).active {
-            let focus = pane_entity.update(cx, |pane, cx| {
+            pane_entity.update(cx, |pane, cx| {
                 pane.close_tab(view_id);
-                pane.active_editor(cx)
+                cx.emit(pane::PaneEvent::RemovedItem { view_id });
+                cx.notify();
             });
-            if let Some(editor) = focus {
+            // 关闭后聚焦到新活动编辑器或 Pane 自身
+            if let Some(editor) = pane_entity.read(cx).active_editor(cx) {
                 window.focus(&editor.read(cx).focus_handle());
+            } else {
+                window.focus(&pane_focus);
             }
             window.refresh();
         }

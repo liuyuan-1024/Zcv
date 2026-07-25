@@ -40,7 +40,6 @@ pub(crate) struct PanelEntry {
     pub label: &'static str,
     /// 快捷键查找名（如 "dock::ToggleProjectTree"）。
     pub action_name: &'static str,
-    pub requires_active_color: bool,
     pub dispatch: fn(&mut Window, &mut App),
 }
 
@@ -52,7 +51,6 @@ pub(crate) fn default_panels() -> Vec<PanelEntry> {
             icon: "icons/panels/project_tree.svg",
             label: "项目树",
             action_name: "dock::ToggleProjectTree",
-            requires_active_color: true,
             dispatch: |w: &mut Window, cx: &mut App| {
                 w.dispatch_action(Box::new(ToggleProjectTree), cx)
             },
@@ -62,7 +60,6 @@ pub(crate) fn default_panels() -> Vec<PanelEntry> {
             icon: "icons/panels/version_control.svg",
             label: "版本控制",
             action_name: "dock::ToggleVersionControl",
-            requires_active_color: true,
             dispatch: |w: &mut Window, cx: &mut App| {
                 w.dispatch_action(Box::new(ToggleVersionControl), cx)
             },
@@ -72,7 +69,6 @@ pub(crate) fn default_panels() -> Vec<PanelEntry> {
             icon: "icons/panels/outline.svg",
             label: "大纲",
             action_name: "dock::ToggleOutline",
-            requires_active_color: true,
             dispatch: |w: &mut Window, cx: &mut App| w.dispatch_action(Box::new(ToggleOutline), cx),
         },
         PanelEntry {
@@ -80,7 +76,6 @@ pub(crate) fn default_panels() -> Vec<PanelEntry> {
             icon: "icons/panels/terminal.svg",
             label: "终端",
             action_name: "dock::ToggleTerminal",
-            requires_active_color: true,
             dispatch: |w: &mut Window, cx: &mut App| {
                 w.dispatch_action(Box::new(ToggleTerminal), cx)
             },
@@ -90,7 +85,6 @@ pub(crate) fn default_panels() -> Vec<PanelEntry> {
             icon: "icons/panels/debug.svg",
             label: "调试",
             action_name: "dock::ToggleDebug",
-            requires_active_color: true,
             dispatch: |w: &mut Window, cx: &mut App| w.dispatch_action(Box::new(ToggleDebug), cx),
         },
         PanelEntry {
@@ -98,7 +92,6 @@ pub(crate) fn default_panels() -> Vec<PanelEntry> {
             icon: "icons/panels/keyboard_shortcuts.svg",
             label: "快捷键",
             action_name: "dock::ToggleKeyboardShortcuts",
-            requires_active_color: true,
             dispatch: |w: &mut Window, cx: &mut App| {
                 w.dispatch_action(Box::new(ToggleKeyboardShortcuts), cx)
             },
@@ -128,14 +121,6 @@ pub(crate) struct DockState {
 }
 
 impl DockState {
-    pub(crate) fn new(default_size: Pixels) -> Self {
-        Self {
-            collapsed: true,
-            size: default_size,
-            active_panel: None,
-        }
-    }
-
     pub(crate) fn is_visible(&self) -> bool {
         !self.collapsed && self.active_panel.is_some()
     }
@@ -177,7 +162,6 @@ pub(crate) struct LayoutController {
     right_dock: DockState,
     bottom_dock: DockState,
     center: PaneGroup,
-    pub(crate) focus_pane: Option<Entity<Pane>>,
     pub(crate) panel_registry: Vec<PanelEntry>,
     next_pane_id: u32,
     next_split_id: u32,
@@ -206,8 +190,7 @@ impl LayoutController {
                 size: px(200.0),
                 active_panel: first_index(DockArea::Bottom),
             },
-            center: PaneGroup::Pane(PaneId(1), pane.clone()),
-            focus_pane: Some(pane),
+            center: PaneGroup::Pane(PaneId(1), pane),
             panel_registry: registry,
             next_pane_id: 2,
             next_split_id: 1,
@@ -236,13 +219,6 @@ impl LayoutController {
         }
     }
 
-    pub(crate) fn focus_pane_entity(&self) -> Option<&Entity<Pane>> {
-        self.focus_pane.as_ref()
-    }
-    pub(crate) fn set_focus_pane(&mut self, entity: &Entity<Pane>) {
-        self.focus_pane = Some(entity.clone());
-    }
-
     // ── Dock 操作 ────────────────────────────────────────────────────
 
     pub(crate) fn toggle_panel(&mut self, index: usize) {
@@ -255,16 +231,6 @@ impl LayoutController {
         } else {
             dock.active_panel = Some(index);
             dock.collapsed = false;
-        }
-    }
-
-    pub(crate) fn hide_panel(&mut self, index: usize) {
-        let Some(entry) = self.panel_registry.get(index) else {
-            return;
-        };
-        let dock = self.dock_mut(entry.dock_area);
-        if dock.active_panel == Some(index) {
-            dock.collapsed = true;
         }
     }
 
@@ -342,15 +308,6 @@ impl LayoutController {
             DockArea::Bottom => px(200.0),
         };
         self.resize_dock(area, default, window_size);
-    }
-
-    pub(crate) fn panels_for_area(&self, area: DockArea) -> Vec<(usize, &PanelEntry)> {
-        self.panel_registry
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.dock_area == area)
-            .map(|(i, p)| (i, p))
-            .collect()
     }
 
     pub(crate) fn is_panel_active(&self, index: usize) -> bool {

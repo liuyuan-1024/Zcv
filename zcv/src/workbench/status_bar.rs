@@ -1,0 +1,182 @@
+//! StatusBar —— 底栏容器（Entity），按 StatusItemView 模式管理状态项。
+//!
+//! 持有左右两侧的 StatusItemView 列表，在 Pane 切换时向每个 item 广播 set_active_editor 消息。
+//! 每个 item 自行订阅 Editor 变化。
+
+use gpui::{
+    AnyElement, App, Context, Div, Entity, Render, Subscription, Window, actions, div, prelude::*,
+};
+
+actions!(
+    status_bar,
+    [
+        ToggleProjectTree,
+        ToggleVersionControl,
+        ToggleOutline,
+        ToggleLanguageServer,
+        ToggleDiagnostics,
+        ToggleProjectSearch,
+        ToggleTerminal,
+        ToggleDebug,
+        ToggleKeyboardShortcuts,
+    ]
+);
+
+use crate::editor::editor::Editor;
+use crate::theme::{color, space};
+use crate::workbench::pane::Pane;
+
+// ═══ StatusItemView trait ═══════════════════════════════════════════
+
+/// StatusItemView trait —— 底栏中一个可渲染的状态项。
+///
+/// 实现者收到 `set_active_editor` 通知后，应自行订阅 Editor 变化并更新内部状态。
+pub trait StatusItemView: Render + 'static {
+    /// 当活跃编辑器变化时回调。
+    fn set_active_editor(&mut self, editor: Option<&Entity<Editor>>, cx: &mut Context<Self>);
+}
+
+/// 类型擦除桥接，让 StatusBar 存储异构 item 列表。
+pub(crate) trait StatusItemViewHandle: Send {
+    fn element(&self, _cx: &App) -> AnyElement;
+    fn set_active_editor(&self, editor: Option<&Entity<Editor>>, cx: &mut App);
+}
+
+impl<T: StatusItemView> StatusItemViewHandle for Entity<T> {
+    fn element(&self, _cx: &App) -> AnyElement {
+        self.clone().into_any_element()
+    }
+
+    fn set_active_editor(&self, editor: Option<&Entity<Editor>>, cx: &mut App) {
+        self.update(cx, |this, cx| {
+            this.set_active_editor(editor, cx);
+        });
+    }
+}
+
+// ═══ StatusBar Entity ═══════════════════════════════════════════════
+
+pub(crate) struct StatusBar {
+    left_items: Vec<Box<dyn StatusItemViewHandle>>,
+    right_items: Vec<Box<dyn StatusItemViewHandle>>,
+    active_pane: Option<Entity<Pane>>,
+    _pane_subscription: Option<Subscription>,
+}
+
+impl StatusBar {
+    // ═══ 构造与生命周期 ═══════════════════════════════════════════
+
+    pub(crate) fn new(pane: Entity<Pane>, cx: &mut Context<Self>) -> Self {
+        let mut this = Self {
+            left_items: Vec::new(),
+            right_items: Vec::new(),
+            active_pane: Some(pane.clone()),
+            _pane_subscription: None,
+        };
+        // 初始订阅当前 Pane 并广播编辑器状态
+        this.set_active_pane(&pane, cx);
+        this
+    }
+
+    /// 切换 StatusBar 跟踪的目标 Pane。
+    ///
+    /// 重新订阅新 Pane 的变化（旧 Subscription 自动 drop 取消），同步广播编辑器状态。
+    pub(crate) fn set_active_pane(&mut self, pane: &Entity<Pane>, cx: &mut Context<Self>) {
+        self.active_pane = Some(pane.clone());
+
+        // 替换订阅：drop 旧值 → 自动取消对旧 Pane 的观察
+        self._pane_subscription = Some(cx.observe(pane, |this, pane, cx| {
+            let editor = pane.read(cx).active_editor();
+            this.broadcast_editor(editor.as_ref(), cx);
+        }));
+
+        // 立即广播当前编辑器和通知
+        let editor = pane.read(cx).active_editor();
+        self.broadcast_editor(editor.as_ref(), cx);
+        cx.notify();
+    }
+
+    // ═══ 注册 item ════════════════════════════════════════════════
+
+    pub(crate) fn add_left_item<T: StatusItemView>(
+        &mut self,
+        item: Entity<T>,
+        cx: &mut Context<Self>,
+    ) {
+        let editor = self
+            .active_pane
+            .as_ref()
+            .and_then(|p| p.read(cx).active_editor());
+        item.set_active_editor(editor.as_ref(), cx);
+        self.left_items.push(Box::new(item));
+        cx.notify();
+    }
+
+    pub(crate) fn add_right_item<T: StatusItemView>(
+        &mut self,
+        item: Entity<T>,
+        cx: &mut Context<Self>,
+    ) {
+        let editor = self
+            .active_pane
+            .as_ref()
+            .and_then(|p| p.read(cx).active_editor());
+        item.set_active_editor(editor.as_ref(), cx);
+        self.right_items.push(Box::new(item));
+        cx.notify();
+    }
+
+    // ═══ Pane 追踪 ════════════════════════════════════════════════
+
+    fn broadcast_editor(&self, editor: Option<&Entity<Editor>>, cx: &mut Context<Self>) {
+        for item in self.left_items.iter().chain(&self.right_items) {
+            item.set_active_editor(editor, cx);
+        }
+    }
+}
+
+// ═══ 渲染 ═════════════════════════════════════════════════════════
+
+fn bar_frame() -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .w_full()
+        .px(space::S8)
+        .py(space::S6)
+        .gap(space::S6)
+        .bg(color::current().gray.s[2])
+        .text_color(color::current().gray.s[8])
+        .border_t_1()
+        .border_color(color::current().gray.s[4])
+}
+
+fn region(items: Vec<AnyElement>, justify_start: bool) -> Div {
+    let wrapper = div().flex_1().flex().items_center().gap(space::S8);
+    let wrapper = if justify_start {
+        wrapper.justify_start()
+    } else {
+        wrapper.justify_end()
+    };
+    wrapper.children(items)
+}
+
+impl Render for StatusBar {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        bar_frame()
+            .id("status-bar")
+            .child(leading_region(&self.left_items, cx))
+            .child(trailing_region(&self.right_items, cx))
+    }
+}
+
+fn leading_region(items: &[Box<dyn StatusItemViewHandle>], cx: &App) -> Div {
+    let elements: Vec<AnyElement> = items.iter().map(|item| item.element(cx)).collect();
+    region(elements, true)
+}
+
+fn trailing_region(items: &[Box<dyn StatusItemViewHandle>], cx: &App) -> Div {
+    let elements: Vec<AnyElement> = items.iter().map(|item| item.element(cx)).collect();
+    region(elements, false)
+}

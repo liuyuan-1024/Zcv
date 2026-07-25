@@ -1,6 +1,7 @@
 //! 统一 Editor 的跨帧状态骨架。
 
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
@@ -190,6 +191,7 @@ pub(crate) struct Editor {
     buffer: Entity<Buffer>,
     display_map: DisplayMap,
     mode: EditorMode,
+    file_path: Option<PathBuf>,
     selections: SelectionSet,
     selection_history: SelectionHistory,
     scroll_manager: ScrollManager,
@@ -237,6 +239,14 @@ impl Editor {
 
     pub(crate) fn buffer(&self) -> Entity<Buffer> {
         self.buffer.clone()
+    }
+
+    pub(crate) fn file_path(&self) -> Option<&Path> {
+        self.file_path.as_deref()
+    }
+
+    pub(crate) fn set_file_path(&mut self, path: PathBuf) {
+        self.file_path = Some(path);
     }
 
     pub(crate) fn text(&self, cx: &App) -> String {
@@ -380,6 +390,7 @@ impl Editor {
             buffer,
             display_map,
             mode,
+            file_path: None,
             selections: SelectionSet::default(),
             selection_history: SelectionHistory::default(),
             scroll_manager: ScrollManager::default(),

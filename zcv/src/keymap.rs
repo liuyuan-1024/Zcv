@@ -14,12 +14,12 @@ use crate::editor::editor::{
     SelectDown, SelectLeft, SelectRight, SelectToBeginningOfLine, SelectToEndOfLine,
     SelectToNextWord, SelectToPreviousWord, SelectUp, Undo,
 };
-use crate::project_tree;
 use crate::ui::picker::{PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev};
 use crate::workbench::pane::{CloseTab, NextTab, PrevTab};
 use crate::workbench::project_picker::{OpenLocalProject, ToggleProjectPicker};
+use crate::workbench::project_tree;
 use crate::workbench::workspace::Save;
-use crate::workbench::{bottom_bar, top_bar, window_controls};
+use crate::workbench::{dock, top_bar, window_controls};
 
 // ── 公开类型 ─────────────────────────────────────────────────────────
 
@@ -242,16 +242,16 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
         "top_bar::GitFetch" => bind!(top_bar::GitFetch),
         "top_bar::GitPull" => bind!(top_bar::GitPull),
         "top_bar::GitPush" => bind!(top_bar::GitPush),
-        // bottom_bar
-        "bottom_bar::ToggleProjectTree" => bind!(bottom_bar::ToggleProjectTree),
-        "bottom_bar::ToggleVersionControl" => bind!(bottom_bar::ToggleVersionControl),
-        "bottom_bar::ToggleOutline" => bind!(bottom_bar::ToggleOutline),
-        "bottom_bar::ToggleLanguageServer" => bind!(bottom_bar::ToggleLanguageServer),
-        "bottom_bar::ToggleDiagnostics" => bind!(bottom_bar::ToggleDiagnostics),
-        "bottom_bar::ToggleProjectSearch" => bind!(bottom_bar::ToggleProjectSearch),
-        "bottom_bar::ToggleTerminal" => bind!(bottom_bar::ToggleTerminal),
-        "bottom_bar::ToggleDebug" => bind!(bottom_bar::ToggleDebug),
-        "bottom_bar::ToggleKeyboardShortcuts" => bind!(bottom_bar::ToggleKeyboardShortcuts),
+        // dock
+        "dock::ToggleProjectTree" => bind!(dock::ToggleProjectTree),
+        "dock::ToggleVersionControl" => bind!(dock::ToggleVersionControl),
+        "dock::ToggleOutline" => bind!(dock::ToggleOutline),
+        "dock::ToggleLanguageServer" => bind!(dock::ToggleLanguageServer),
+        "dock::ToggleDiagnostics" => bind!(dock::ToggleDiagnostics),
+        "dock::ToggleProjectSearch" => bind!(dock::ToggleProjectSearch),
+        "dock::ToggleTerminal" => bind!(dock::ToggleTerminal),
+        "dock::ToggleDebug" => bind!(dock::ToggleDebug),
+        "dock::ToggleKeyboardShortcuts" => bind!(dock::ToggleKeyboardShortcuts),
         // picker
         "picker::PickerSelectNext" => KeyBinding::new(keys, PickerSelectNext, context),
         "picker::PickerSelectPrev" => KeyBinding::new(keys, PickerSelectPrev, context),

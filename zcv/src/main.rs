@@ -1,10 +1,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod available_languages;
 mod assets;
+mod available_languages;
 mod editor;
 mod keymap;
-mod project_tree;
 mod theme;
 mod ui;
 mod workbench;
@@ -43,6 +42,13 @@ fn main() {
                     },
                     |window, cx| {
                         let workspace = cx.new(Workspace::new);
+                        // 注册 Pane 焦点监听，使 StatusBar 能跟随 Pane 切换
+                        workspace.update(cx, |workspace, cx| {
+                            let pane = workspace.layout.borrow().focus_pane_entity().cloned();
+                            if let Some(pane) = pane {
+                                workspace.register_pane_focus_listener(&pane, window, cx);
+                            }
+                        });
                         #[cfg(debug_assertions)]
                         workspace.update(cx, |workspace, cx| {
                             workspace.open_development_project(window, cx);

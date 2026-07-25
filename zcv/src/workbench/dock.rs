@@ -8,37 +8,105 @@
 use std::cell::RefCell;
 use std::rc::Weak;
 
-use gpui::{Entity, MouseButton, Pixels, Point, Window, div, prelude::*, px};
+use gpui::{App, Entity, MouseButton, Pixels, Point, Window, actions, div, prelude::*, px};
 
 use super::pane_group::{Axis, PaneGroup, PaneId};
 use crate::theme::{color, space};
 use crate::workbench::pane::{CloseTab, Pane};
 
+// ═══ Panel 通用 action ═══════════════════════════════════════════
+
+actions!(
+    dock,
+    [
+        ToggleProjectTree,
+        ToggleVersionControl,
+        ToggleOutline,
+        ToggleLanguageServer,
+        ToggleDiagnostics,
+        ToggleProjectSearch,
+        ToggleTerminal,
+        ToggleDebug,
+        ToggleKeyboardShortcuts,
+    ]
+);
+
+// ═══ PanelEntry 注册表项 ════════════════════════════════════════
+
+/// 单个面板的注册信息，供 PanelButtons 遍历生成按钮。
+pub(crate) struct PanelEntry {
+    pub dock_area: DockArea,
+    pub icon: &'static str,
+    pub label: &'static str,
+    /// 快捷键查找名（如 "dock::ToggleProjectTree"）。
+    pub action_name: &'static str,
+    pub requires_active_color: bool,
+    pub dispatch: fn(&mut Window, &mut App),
+}
+
+/// 默认面板注册表。面板在注册表中的 index 即为面板身份标识。
+pub(crate) fn default_panels() -> Vec<PanelEntry> {
+    vec![
+        PanelEntry {
+            dock_area: DockArea::Left,
+            icon: "icons/panels/project_tree.svg",
+            label: "项目树",
+            action_name: "dock::ToggleProjectTree",
+            requires_active_color: true,
+            dispatch: |w: &mut Window, cx: &mut App| {
+                w.dispatch_action(Box::new(ToggleProjectTree), cx)
+            },
+        },
+        PanelEntry {
+            dock_area: DockArea::Left,
+            icon: "icons/panels/version_control.svg",
+            label: "版本控制",
+            action_name: "dock::ToggleVersionControl",
+            requires_active_color: true,
+            dispatch: |w: &mut Window, cx: &mut App| {
+                w.dispatch_action(Box::new(ToggleVersionControl), cx)
+            },
+        },
+        PanelEntry {
+            dock_area: DockArea::Left,
+            icon: "icons/panels/outline.svg",
+            label: "大纲",
+            action_name: "dock::ToggleOutline",
+            requires_active_color: true,
+            dispatch: |w: &mut Window, cx: &mut App| w.dispatch_action(Box::new(ToggleOutline), cx),
+        },
+        PanelEntry {
+            dock_area: DockArea::Bottom,
+            icon: "icons/panels/terminal.svg",
+            label: "终端",
+            action_name: "dock::ToggleTerminal",
+            requires_active_color: true,
+            dispatch: |w: &mut Window, cx: &mut App| {
+                w.dispatch_action(Box::new(ToggleTerminal), cx)
+            },
+        },
+        PanelEntry {
+            dock_area: DockArea::Bottom,
+            icon: "icons/panels/debug.svg",
+            label: "调试",
+            action_name: "dock::ToggleDebug",
+            requires_active_color: true,
+            dispatch: |w: &mut Window, cx: &mut App| w.dispatch_action(Box::new(ToggleDebug), cx),
+        },
+        PanelEntry {
+            dock_area: DockArea::Right,
+            icon: "icons/panels/keyboard_shortcuts.svg",
+            label: "快捷键",
+            action_name: "dock::ToggleKeyboardShortcuts",
+            requires_active_color: true,
+            dispatch: |w: &mut Window, cx: &mut App| {
+                w.dispatch_action(Box::new(ToggleKeyboardShortcuts), cx)
+            },
+        },
+    ]
+}
+
 // ═══ 类型定义 ═══════════════════════════════════════════════════
-
-/// 面板标识（Dock 中的工具面板）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum PanelId {
-    ProjectTree,
-    VersionControl,
-    Outline,
-    Terminal,
-    Debug,
-    KeyboardShortcuts,
-}
-
-impl PanelId {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            PanelId::ProjectTree => "项目树",
-            PanelId::VersionControl => "版本控制",
-            PanelId::Outline => "大纲",
-            PanelId::Terminal => "终端",
-            PanelId::Debug => "调试",
-            PanelId::KeyboardShortcuts => "快捷键",
-        }
-    }
-}
 
 /// Dock 区域。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,29 +117,27 @@ pub(crate) enum DockArea {
 }
 
 /// Dock 运行时状态：同一时间只显示一个 panel。
+///
+/// 面板身份由 `LayoutController.panel_registry` 中的 index 标识。
 #[derive(Debug, Clone)]
 pub(crate) struct DockState {
     pub collapsed: bool,
     pub size: Pixels,
-    pub active_panel: Option<PanelId>,
-    pub panels: Vec<PanelId>,
+    /// 当前激活面板在 panel_registry 中的 index。
+    pub active_panel: Option<usize>,
 }
 
 impl DockState {
-    pub(crate) fn new(panels: Vec<PanelId>, default_size: Pixels) -> Self {
+    pub(crate) fn new(default_size: Pixels) -> Self {
         Self {
             collapsed: true,
             size: default_size,
-            active_panel: panels.first().copied(),
-            panels,
+            active_panel: None,
         }
     }
 
     pub(crate) fn is_visible(&self) -> bool {
         !self.collapsed && self.active_panel.is_some()
-    }
-    pub(crate) fn contains(&self, panel: PanelId) -> bool {
-        self.panels.contains(&panel)
     }
 }
 
@@ -117,6 +183,7 @@ pub(crate) struct LayoutController {
     bottom_dock: DockState,
     center: PaneGroup,
     pub(crate) focus_pane: Option<Entity<Pane>>,
+    pub(crate) panel_registry: Vec<PanelEntry>,
     next_pane_id: u32,
     next_split_id: u32,
     drag_state: Option<DragState>,
@@ -124,20 +191,30 @@ pub(crate) struct LayoutController {
 
 impl LayoutController {
     pub(crate) fn with_initial_pane(pane: Entity<Pane>) -> Self {
+        let registry = default_panels();
         let pane_id = PaneId(1);
+        // 初始化时激活注册表中每个 dock area 的第一个面板
+        let first_index =
+            |area: DockArea| -> Option<usize> { registry.iter().position(|p| p.dock_area == area) };
         Self {
-            left_dock: DockState::new(
-                vec![
-                    PanelId::ProjectTree,
-                    PanelId::VersionControl,
-                    PanelId::Outline,
-                ],
-                px(240.0),
-            ),
-            right_dock: DockState::new(vec![PanelId::KeyboardShortcuts], px(240.0)),
-            bottom_dock: DockState::new(vec![PanelId::Terminal, PanelId::Debug], px(200.0)),
+            left_dock: DockState {
+                collapsed: true,
+                size: px(240.0),
+                active_panel: first_index(DockArea::Left),
+            },
+            right_dock: DockState {
+                collapsed: true,
+                size: px(240.0),
+                active_panel: first_index(DockArea::Right),
+            },
+            bottom_dock: DockState {
+                collapsed: true,
+                size: px(200.0),
+                active_panel: first_index(DockArea::Bottom),
+            },
             center: PaneGroup::Pane(pane_id, pane.clone()),
             focus_pane: Some(pane),
+            panel_registry: registry,
             next_pane_id: 2,
             next_split_id: 1,
             drag_state: None,
@@ -174,23 +251,25 @@ impl LayoutController {
 
     // ── Dock 操作 ────────────────────────────────────────────────────
 
-    pub(crate) fn toggle_panel(&mut self, panel: PanelId) {
-        let Some(dock) = self.dock_for_panel_mut(panel) else {
+    pub(crate) fn toggle_panel(&mut self, index: usize) {
+        let Some(entry) = self.panel_registry.get(index) else {
             return;
         };
-        if dock.active_panel == Some(panel) && !dock.collapsed {
+        let dock = self.dock_mut(entry.dock_area);
+        if dock.active_panel == Some(index) && !dock.collapsed {
             dock.collapsed = true;
         } else {
-            dock.active_panel = Some(panel);
+            dock.active_panel = Some(index);
             dock.collapsed = false;
         }
     }
 
-    pub(crate) fn hide_panel(&mut self, panel: PanelId) {
-        let Some(dock) = self.dock_for_panel_mut(panel) else {
+    pub(crate) fn hide_panel(&mut self, index: usize) {
+        let Some(entry) = self.panel_registry.get(index) else {
             return;
         };
-        if dock.active_panel == Some(panel) {
+        let dock = self.dock_mut(entry.dock_area);
+        if dock.active_panel == Some(index) {
             dock.collapsed = true;
         }
     }
@@ -271,25 +350,39 @@ impl LayoutController {
         self.resize_dock(area, default, window_size);
     }
 
-    pub(crate) fn is_panel_active(&self, panel: PanelId) -> bool {
-        for dock in [&self.left_dock, &self.right_dock, &self.bottom_dock] {
-            if dock.contains(panel) {
-                return dock.active_panel == Some(panel) && !dock.collapsed;
-            }
-        }
-        false
+    pub(crate) fn panels_for_area(&self, area: DockArea) -> Vec<(usize, &PanelEntry)> {
+        self.panel_registry
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.dock_area == area)
+            .map(|(i, p)| (i, p))
+            .collect()
+    }
+
+    pub(crate) fn is_panel_active(&self, index: usize) -> bool {
+        let Some(entry) = self.panel_registry.get(index) else {
+            return false;
+        };
+        let dock = self.dock(entry.dock_area);
+        dock.active_panel == Some(index) && !dock.collapsed
     }
 
     // ── 内部辅助 ─────────────────────────────────────────────────────
 
-    fn dock_for_panel_mut(&mut self, panel: PanelId) -> Option<&mut DockState> {
-        [
-            &mut self.left_dock,
-            &mut self.right_dock,
-            &mut self.bottom_dock,
-        ]
-        .into_iter()
-        .find(|dock| dock.contains(panel))
+    fn dock(&self, area: DockArea) -> &DockState {
+        match area {
+            DockArea::Left => &self.left_dock,
+            DockArea::Right => &self.right_dock,
+            DockArea::Bottom => &self.bottom_dock,
+        }
+    }
+
+    fn dock_mut(&mut self, area: DockArea) -> &mut DockState {
+        match area {
+            DockArea::Left => &mut self.left_dock,
+            DockArea::Right => &mut self.right_dock,
+            DockArea::Bottom => &mut self.bottom_dock,
+        }
     }
 }
 
@@ -325,7 +418,7 @@ pub(crate) fn handle_close_tab(_: &CloseTab, window: &mut Window, cx: &mut gpui:
 // ═══ 布局渲染 ═══════════════════════════════════════════════════
 
 /// 面板内容提供者：布局不感知具体 panel 类型，通过此回调获取内容。
-pub(crate) type PanelContentFn<'a> = dyn Fn(PanelId) -> Option<gpui::Div> + 'a;
+pub(crate) type PanelContentFn<'a> = dyn Fn(usize) -> Option<gpui::Div> + 'a;
 
 /// 渲染 workbench 主体（不包含顶栏和底栏）。
 pub(crate) fn render_body(layout: &LayoutSnapshot, panel_content: &PanelContentFn) -> gpui::Div {
@@ -406,10 +499,7 @@ fn render_dock(area: DockArea, state: &DockState, panel_content: &PanelContentFn
 
     let body: gpui::Div = match state.active_panel.and_then(panel_content) {
         Some(content) => div().size_full().child(content),
-        None => {
-            let label = state.active_panel.map(|p| p.label()).unwrap_or("");
-            render_placeholder(label)
-        }
+        None => render_placeholder(""),
     };
     let frame = frame.child(body);
 

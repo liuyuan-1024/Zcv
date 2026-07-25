@@ -1,0 +1,32 @@
+//! DiagnosticsButton —— 底栏诊断状态按钮。
+//!
+//! 对标 Zed 的 `DiagnosticIndicator`。当前为占位，后续接入诊断计数。
+
+use gpui::{Context, Entity, Render, Window, prelude::*};
+
+use crate::editor::editor::Editor;
+use crate::ui::glyph::Glyph;
+use crate::workbench::dock::ToggleDiagnostics;
+use crate::workbench::status_bar::StatusItemView;
+
+pub(crate) struct DiagnosticsButton;
+
+impl DiagnosticsButton {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
+
+impl StatusItemView for DiagnosticsButton {
+    fn set_active_editor(&mut self, _editor: Option<&Entity<Editor>>, _cx: &mut Context<Self>) {}
+}
+
+impl Render for DiagnosticsButton {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        Glyph::icon_text("diagnostics-button", "icons/status/diagnostics.svg", "0")
+            .label("诊断")
+            .shortcut_by_name("dock::ToggleDiagnostics", cx)
+            .on_click(|window, cx| window.dispatch_action(Box::new(ToggleDiagnostics), cx))
+            .into_any_element()
+    }
+}

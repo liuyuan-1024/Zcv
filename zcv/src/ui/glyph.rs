@@ -83,6 +83,14 @@ impl Glyph {
         self
     }
 
+    /// 按 action 名称从 keymap 中查找快捷键并设为提示（不需要具体 action 类型）。
+    pub(crate) fn shortcut_by_name(mut self, action_name: &str, cx: &App) -> Self {
+        self.shortcut = cx
+            .try_global::<KeyBindings>()
+            .and_then(|kb| kb.display_shortcut(action_name));
+        self
+    }
+
     /// 设置颜色（覆盖默认色）。
     pub(crate) fn color(mut self, color: gpui::Rgba) -> Self {
         self.color = color;

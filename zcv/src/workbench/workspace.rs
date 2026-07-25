@@ -4,23 +4,31 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
-    Context, Div, Entity, FocusHandle, MouseButton, Render, Window, actions, div, prelude::*,
+    Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Window, actions, div,
+    prelude::*,
 };
 use zcv_engine::{Buffer, BufferSaveError};
 
 use super::dock::{
-    LayoutController, LayoutRef, LayoutSnapshot, PanelId, handle_close_tab,
+    DockArea, LayoutController, LayoutRef, LayoutSnapshot, handle_close_tab,
     render_body as render_layout_body,
 };
 use super::pane_group::PaneId;
 use super::recent_projects;
 use crate::editor::buffer_store::BufferStore;
 use crate::keymap;
-use crate::project_tree::ProjectTree;
-use crate::workbench::bottom_bar::{
-    BottomBar, ToggleDebug, ToggleKeyboardShortcuts, ToggleOutline, ToggleProjectTree,
-    ToggleTerminal, ToggleVersionControl,
+use crate::workbench::active_buffer_language::ActiveBufferLanguage;
+use crate::workbench::cursor_position::CursorPosition;
+use crate::workbench::diagnostics_button::DiagnosticsButton;
+use crate::workbench::dock::{
+    ToggleDebug, ToggleKeyboardShortcuts, ToggleOutline, ToggleProjectTree, ToggleTerminal,
+    ToggleVersionControl,
 };
+use crate::workbench::lsp_button::LspButton;
+use crate::workbench::panel_buttons::PanelButtons;
+use crate::workbench::project_tree::ProjectTree;
+use crate::workbench::search_button::SearchButton;
+use crate::workbench::status_bar::StatusBar;
 use crate::workbench::top_bar::{self, TopBar};
 use crate::workbench::{project_picker, project_picker::OnProjectSelected, window_controls};
 
@@ -28,10 +36,11 @@ actions!(workspace, [Save]);
 
 pub(crate) struct Workspace {
     pub(crate) focus: FocusHandle,
-    layout: Rc<RefCell<LayoutController>>,
+    pub(crate) layout: Rc<RefCell<LayoutController>>,
     top_bar: Entity<TopBar>,
-    bottom_bar: Entity<BottomBar>,
+    status_bar: Entity<StatusBar>,
     project_tree: Entity<ProjectTree>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
@@ -57,13 +66,24 @@ impl Workspace {
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         let initial_pane = cx.new(|cx| Pane::new(PaneId(1), cx));
+        let status_pane = initial_pane.clone();
         let layout = Rc::new(RefCell::new(LayoutController::with_initial_pane(
             initial_pane,
         )));
         cx.set_global(LayoutRef(Rc::downgrade(&layout)));
 
-        // BottomBar 需要 LayoutRef 已就绪才能跟踪活跃编辑器
-        let bottom_bar = cx.new(BottomBar::new);
+        // StatusBar：容器，持有各 StatusItemView
+        let status_bar = cx.new(|cx| StatusBar::new(status_pane, cx));
+        status_bar.update(cx, |bar, cx| {
+            bar.add_left_item(cx.new(|_| PanelButtons::new(DockArea::Left)), cx);
+            bar.add_left_item(cx.new(|_| LspButton::new()), cx);
+            bar.add_left_item(cx.new(|_| DiagnosticsButton::new()), cx);
+            bar.add_left_item(cx.new(|_| SearchButton::new()), cx);
+            bar.add_right_item(cx.new(|_| CursorPosition::new()), cx);
+            bar.add_right_item(cx.new(|_| ActiveBufferLanguage::new()), cx);
+            bar.add_right_item(cx.new(|_| PanelButtons::new(DockArea::Bottom)), cx);
+            bar.add_right_item(cx.new(|_| PanelButtons::new(DockArea::Right)), cx);
+        });
 
         let project_tree = cx.new(|cx| ProjectTree::new(root, cx));
 
@@ -72,9 +92,10 @@ impl Workspace {
         Self {
             focus,
             top_bar,
-            bottom_bar,
+            status_bar,
             layout,
             project_tree,
+            _subscriptions: Vec::new(),
         }
     }
 
@@ -127,22 +148,29 @@ impl Workspace {
         }
     }
 
+    /// 按 action 名查找面板在注册表中的 index。
+    fn panel_index(&self, action_name: &str) -> Option<usize> {
+        self.layout
+            .borrow()
+            .panel_registry
+            .iter()
+            .position(|p| p.action_name == action_name)
+    }
+
     /// 切换面板焦点：若面板已聚焦则隐藏并退焦到编辑区，否则显示并聚焦。
     fn toggle_panel_focus(
         &mut self,
-        panel: PanelId,
+        index: usize,
         focus_handle: &FocusHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if focus_handle.contains_focused(window, cx) {
-            // 面板已聚焦 → 隐藏面板，退焦到编辑区
-            self.layout.borrow_mut().toggle_panel(panel);
+            self.layout.borrow_mut().toggle_panel(index);
             self.focus_center_pane(window, cx);
         } else {
-            // 面板未聚焦 → 确保可见并聚焦
-            if !self.layout.borrow().is_panel_active(panel) {
-                self.layout.borrow_mut().toggle_panel(panel);
+            if !self.layout.borrow().is_panel_active(index) {
+                self.layout.borrow_mut().toggle_panel(index);
             }
             window.focus(focus_handle);
         }
@@ -161,6 +189,28 @@ impl Workspace {
         }
     }
 
+    /// 注册焦点监听：当指定 Pane 或其子元素获得焦点时更新 StatusBar。
+    pub(crate) fn register_pane_focus_listener(
+        &mut self,
+        pane: &Entity<Pane>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focus = pane.read(cx).focus.clone();
+        let pane_entity = pane.clone();
+        let sub = cx.on_focus_in(&focus, window, move |this, _window, cx| {
+            this.handle_pane_focused(&pane_entity, cx);
+        });
+        self._subscriptions.push(sub);
+    }
+
+    /// 当 Pane 获得焦点时更新 StatusBar 跟踪的目标 Pane。
+    fn handle_pane_focused(&mut self, pane: &Entity<Pane>, cx: &mut Context<Self>) {
+        self.status_bar.update(cx, |bar, cx| {
+            bar.set_active_pane(pane, cx);
+        });
+    }
+
     fn handle_toggle_project_tree(
         &mut self,
         _: &ToggleProjectTree,
@@ -168,61 +218,16 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let focus = self.project_tree.read(cx).focus.clone();
-        self.toggle_panel_focus(PanelId::ProjectTree, &focus, window, cx);
+        if let Some(i) = self.panel_index("dock::ToggleProjectTree") {
+            self.toggle_panel_focus(i, &focus, window, cx);
+        }
     }
 
-    fn handle_toggle_version_control(
-        &mut self,
-        _: &ToggleVersionControl,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-        self.layout
-            .borrow_mut()
-            .toggle_panel(PanelId::VersionControl);
-        window.refresh();
-    }
-
-    fn handle_toggle_outline(
-        &mut self,
-        _: &ToggleOutline,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-        self.layout.borrow_mut().toggle_panel(PanelId::Outline);
-        window.refresh();
-    }
-
-    fn handle_toggle_terminal(
-        &mut self,
-        _: &ToggleTerminal,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-        self.layout.borrow_mut().toggle_panel(PanelId::Terminal);
-        window.refresh();
-    }
-
-    fn handle_toggle_debug(
-        &mut self,
-        _: &ToggleDebug,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-        self.layout.borrow_mut().toggle_panel(PanelId::Debug);
-        window.refresh();
-    }
-
-    fn handle_toggle_keyboard_shortcuts(
-        &mut self,
-        _: &ToggleKeyboardShortcuts,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-        self.layout
-            .borrow_mut()
-            .toggle_panel(PanelId::KeyboardShortcuts);
-        window.refresh();
+    fn handle_toggle_panel(&mut self, action_name: &str, window: &mut Window) {
+        if let Some(i) = self.panel_index(action_name) {
+            self.layout.borrow_mut().toggle_panel(i);
+            window.refresh();
+        }
     }
 
     fn handle_toggle_project_picker(
@@ -267,15 +272,16 @@ use crate::workbench::pane::Pane;
 /// 工作台顶层框架组装。
 fn render_frame(
     top_bar: &Entity<TopBar>,
-    bottom_bar: &Entity<BottomBar>,
+    status_bar: &Entity<StatusBar>,
     layout: &LayoutSnapshot,
     project_tree: &Entity<ProjectTree>,
 ) -> Div {
     let tree = project_tree.clone();
-    let panel_content = move |panel: PanelId| -> Option<Div> {
-        match panel {
-            PanelId::ProjectTree => Some(div().size_full().child(tree.clone())),
-            _ => None,
+    let panel_content = move |index: usize| -> Option<Div> {
+        if index == 0 {
+            Some(div().size_full().child(tree.clone()))
+        } else {
+            None
         }
     };
 
@@ -292,7 +298,7 @@ fn render_frame(
         .text_color(color::current().gray.s[8])
         .child(top_bar.clone())
         .child(render_layout_body(layout, &panel_content))
-        .child(bottom_bar.clone())
+        .child(status_bar.clone())
 }
 
 impl Render for Workspace {
@@ -310,7 +316,7 @@ impl Render for Workspace {
             .relative()
             .child(render_frame(
                 &self.top_bar,
-                &self.bottom_bar,
+                &self.status_bar,
                 &snapshot,
                 &self.project_tree,
             ))
@@ -324,11 +330,31 @@ impl Render for Workspace {
             .on_action(Self::handle_open_settings)
             .on_action(cx.listener(Self::handle_save))
             .on_action(cx.listener(Self::handle_toggle_project_tree))
-            .on_action(cx.listener(Self::handle_toggle_version_control))
-            .on_action(cx.listener(Self::handle_toggle_outline))
-            .on_action(cx.listener(Self::handle_toggle_terminal))
-            .on_action(cx.listener(Self::handle_toggle_debug))
-            .on_action(cx.listener(Self::handle_toggle_keyboard_shortcuts))
+            .on_action(cx.listener(
+                |this: &mut Workspace, _: &ToggleVersionControl, window, _cx| {
+                    this.handle_toggle_panel("dock::ToggleVersionControl", window);
+                },
+            ))
+            .on_action(
+                cx.listener(|this: &mut Workspace, _: &ToggleOutline, window, _cx| {
+                    this.handle_toggle_panel("dock::ToggleOutline", window);
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut Workspace, _: &ToggleTerminal, window, _cx| {
+                    this.handle_toggle_panel("dock::ToggleTerminal", window);
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut Workspace, _: &ToggleDebug, window, _cx| {
+                    this.handle_toggle_panel("dock::ToggleDebug", window);
+                }),
+            )
+            .on_action(cx.listener(
+                |this: &mut Workspace, _: &ToggleKeyboardShortcuts, window, _cx| {
+                    this.handle_toggle_panel("dock::ToggleKeyboardShortcuts", window);
+                },
+            ))
             .on_action(cx.listener(Self::handle_toggle_project_picker))
             // 拖拽分隔线时：鼠标移动 → 更新 dock 尺寸
             .on_mouse_move(move |event, window, _cx| {

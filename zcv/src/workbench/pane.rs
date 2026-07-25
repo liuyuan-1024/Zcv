@@ -61,11 +61,14 @@ impl Pane {
     ) -> Entity<Editor> {
         if let Some(tab) = self.tabs.iter().find(|tab| tab.path == path) {
             self.active = Some(tab.view_id);
+            cx.notify();
             return tab.editor.clone();
         }
 
         let view_id = ViewId(NEXT_VIEW_ID.fetch_add(1, Ordering::Relaxed));
+        let path_clone = path.clone();
         let editor = cx.new(|cx| Editor::for_buffer(buffer, cx));
+        editor.update(cx, |editor, _| editor.set_file_path(path_clone));
         cx.observe(&editor, |_, _, cx| cx.notify()).detach();
         self.tabs.push(TabItem {
             view_id,
@@ -74,6 +77,7 @@ impl Pane {
             editor: editor.clone(),
         });
         self.active = Some(view_id);
+        cx.notify();
         editor
     }
 
@@ -153,12 +157,14 @@ impl Pane {
     fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         self.next_tab();
         self.focus_active_editor(window, cx);
+        cx.notify();
         window.refresh();
     }
 
     fn handle_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
         self.prev_tab();
         self.focus_active_editor(window, cx);
+        cx.notify();
         window.refresh();
     }
 }
@@ -246,8 +252,9 @@ fn render_tab(
         .rounded(radius::R2)
         .cursor_pointer()
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-            let editor = activate_entity.update(cx, |pane, _| {
+            let editor = activate_entity.update(cx, |pane, cx| {
                 pane.activate_tab(view_id);
+                cx.notify();
                 pane.active_editor()
             });
             if let Some(editor) = editor {
@@ -287,8 +294,9 @@ fn close_glyph(
         .label("关闭")
         .shortcut(&CloseTab, cx)
         .on_click(move |window: &mut gpui::Window, cx: &mut gpui::App| {
-            let editor = entity.update(cx, |pane, _| {
+            let editor = entity.update(cx, |pane, cx| {
                 pane.close_tab(view_id);
+                cx.notify();
                 pane.active_editor()
             });
             if let Some(editor) = editor {

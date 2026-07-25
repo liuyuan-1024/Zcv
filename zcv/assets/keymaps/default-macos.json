@@ -70,15 +70,15 @@
       "ctrl-cmd-f": "window_controls::ToggleMaximizeWindow",
       "cmd-shift-p": "project_picker::ToggleProjectPicker",
       "cmd-,": "top_bar::OpenSettings",
-      "cmd-shift-e": "bottom_bar::ToggleProjectTree",
-      "cmd-shift-g": "bottom_bar::ToggleVersionControl",
-      "cmd-shift-o": "bottom_bar::ToggleOutline",
-      "cmd-shift-l": "bottom_bar::ToggleLanguageServer",
-      "cmd-shift-m": "bottom_bar::ToggleDiagnostics",
-      "cmd-shift-f": "bottom_bar::ToggleProjectSearch",
-      "cmd-j": "bottom_bar::ToggleTerminal",
-      "cmd-shift-d": "bottom_bar::ToggleDebug",
-      "cmd-shift-k": "bottom_bar::ToggleKeyboardShortcuts"
+      "cmd-shift-e": "dock::ToggleProjectTree",
+      "cmd-shift-g": "dock::ToggleVersionControl",
+      "cmd-shift-o": "dock::ToggleOutline",
+      "cmd-shift-l": "dock::ToggleLanguageServer",
+      "cmd-shift-m": "dock::ToggleDiagnostics",
+      "cmd-shift-f": "dock::ToggleProjectSearch",
+      "cmd-j": "dock::ToggleTerminal",
+      "cmd-shift-d": "dock::ToggleDebug",
+      "cmd-shift-k": "dock::ToggleKeyboardShortcuts"
     }
   }
 ]

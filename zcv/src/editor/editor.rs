@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, Entity, EntityInputHandler, FocusHandle,
-    IntoElement, Pixels, Point, Render, Styled, UTF16Selection, Window, actions, div, point,
-    prelude::*, px, size,
+    App, Bounds, ClipboardItem, Context, CursorStyle, Entity, EntityInputHandler, EventEmitter,
+    FocusHandle, IntoElement, Pixels, Point, Render, Styled, UTF16Selection, Window, actions, div,
+    point, prelude::*, px, size,
 };
 use zcv_engine::{
     Buffer, BufferConfig, ByteOffset, EditOutcome, EngineResult, Motion, MovementDirection,
@@ -21,6 +21,7 @@ use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::ScrollManager;
 use super::selection::SelectionHistory;
 use crate::theme::{color, typography};
+use crate::workspace::item::ItemEvent;
 
 actions!(
     editor,
@@ -255,8 +256,9 @@ impl Editor {
         self.file_path.as_deref()
     }
 
-    pub(crate) fn set_file_path(&mut self, path: PathBuf) {
+    pub(crate) fn set_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.file_path = Some(path);
+        cx.emit(ItemEvent::UpdateBreadcrumbs);
     }
 
     pub(crate) fn text(&self, cx: &App) -> String {
@@ -874,6 +876,8 @@ impl Editor {
 fn edit_metadata(description: &'static str) -> TransactionMetadata {
     TransactionMetadata::new(TransactionSource::Programmatic).with_description(description)
 }
+
+impl EventEmitter<ItemEvent> for Editor {}
 
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

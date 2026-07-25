@@ -1,6 +1,6 @@
 //! PanelButtons —— 底栏按钮组。
 //!
-//! 每个 DockArea 一个按钮组，持有对应的 Dock Entity 来查询面板激活状态，激活时高亮显示。
+//! 每个 DockPosition 一个按钮组，持有对应的 Dock Entity 来查询面板激活状态，激活时高亮显示。
 //! 参考 Zed `crates/workspace/src/dock.rs`。
 
 use gpui::{App, Context, ElementId, Entity, Render, Subscription, Window, div, prelude::*};
@@ -8,7 +8,7 @@ use gpui::{App, Context, ElementId, Entity, Render, Subscription, Window, div, p
 use crate::editor::editor::Editor;
 use crate::theme::{color, space};
 use crate::ui::glyph::Glyph;
-use crate::workspace::dock::{Dock, DockArea};
+use crate::workspace::dock::{Dock, DockPosition};
 use crate::workspace::status_bar::StatusItemView;
 
 /// 面板点击调度函数：将点击转为 gpui action dispatch。
@@ -87,13 +87,13 @@ impl Render for PanelButtons {
             .bg(color::current().gray.s[4]);
 
         match area {
-            DockArea::Left => div()
+            DockPosition::Left => div()
                 .flex()
                 .items_center()
                 .gap(space::S6)
                 .children(buttons)
                 .child(divider),
-            DockArea::Right | DockArea::Bottom => div()
+            DockPosition::Right | DockPosition::Bottom => div()
                 .flex()
                 .items_center()
                 .gap(space::S6)

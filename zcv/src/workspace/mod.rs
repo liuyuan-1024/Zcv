@@ -1,6 +1,7 @@
 //! WorkbenchFrame —— 窗口顶层装配。
 
 pub(crate) mod active_buffer_language;
+pub(crate) mod breadcrumbs;
 pub(crate) mod cursor_position;
 pub(crate) mod diagnostics_button;
 pub(crate) mod dock;
@@ -16,6 +17,7 @@ pub(crate) mod project_search_button;
 pub(crate) mod project_tree;
 mod recent_projects;
 pub(crate) mod status_bar;
+pub(crate) mod toolbar;
 pub(crate) mod top_bar;
 pub(crate) mod window_controls;
 
@@ -26,7 +28,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    AsyncApp, Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Task,
+    AsyncApp, Context, Div, Entity, FocusHandle, Global, MouseButton, Render, Subscription, Task,
     WeakEntity, Window, actions, div, prelude::*, px,
 };
 use zcv_engine::{Buffer, BufferSaveError};
@@ -35,7 +37,7 @@ use self::active_buffer_language::ActiveBufferLanguage;
 use self::cursor_position::CursorPosition;
 use self::diagnostics_button::DiagnosticsButton;
 use self::dock::{
-    Dock, DockArea, ToggleDebug, ToggleKeyboardShortcuts, ToggleOutline, ToggleProjectTree,
+    Dock, DockPosition, ToggleDebug, ToggleKeyboardShortcuts, ToggleOutline, ToggleProjectTree,
     ToggleTerminal, ToggleVersionControl, render_body as render_layout_body,
 };
 use self::fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
@@ -53,6 +55,12 @@ use crate::editor::buffer_store::BufferStore;
 use crate::keymap;
 use crate::theme::{color, typography};
 
+/// 项目根目录全局，供 breadcrumbs 等组件读取相对路径。
+#[derive(Clone)]
+pub(crate) struct ProjectRoot(pub(crate) PathBuf);
+
+impl Global for ProjectRoot {}
+
 actions!(workspace, [Save]);
 
 pub(crate) struct Workspace {
@@ -69,7 +77,7 @@ pub(crate) struct Workspace {
     /// action_name → (Dock Entity, panel_index_in_dock) 的查找表。
     panel_action_map: Vec<(&'static str, Entity<Dock>, usize)>,
     /// 拖拽协调：Dock 通过此 Cell 通知 Workspace 哪个 dock 正在被拖拽。
-    drag_notify: Rc<Cell<Option<DockArea>>>,
+    drag_notify: Rc<Cell<Option<DockPosition>>>,
     /// FsWatcher 实例。
     fs_watcher: Option<Arc<dyn Watcher>>,
     /// 待处理的 FS 事件缓冲区。
@@ -89,7 +97,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> (
         Vec<Arc<dyn PanelHandle>>,
-        Vec<(Arc<dyn PanelHandle>, DockArea)>,
+        Vec<(Arc<dyn PanelHandle>, DockPosition)>,
     ) {
         let version_control = cx.new(|cx| panel::VersionControlPanel::new(cx));
         let outline = cx.new(|cx| panel::OutlinePanel::new(cx));
@@ -98,7 +106,7 @@ impl Workspace {
         let keyboard_shortcuts = cx.new(|cx| panel::KeyboardShortcutsPanel::new(cx));
 
         let mut handles: Vec<Arc<dyn PanelHandle>> = Vec::new();
-        let mut pairs: Vec<(Arc<dyn PanelHandle>, DockArea)> = Vec::new();
+        let mut pairs: Vec<(Arc<dyn PanelHandle>, DockPosition)> = Vec::new();
 
         macro_rules! reg {
             ($entity:expr, $area:expr) => {{
@@ -108,12 +116,12 @@ impl Workspace {
             }};
         }
 
-        reg!(project_tree.clone(), DockArea::Left);
-        reg!(version_control, DockArea::Left);
-        reg!(outline, DockArea::Left);
-        reg!(terminal, DockArea::Bottom);
-        reg!(debug, DockArea::Bottom);
-        reg!(keyboard_shortcuts, DockArea::Right);
+        reg!(project_tree.clone(), DockPosition::Left);
+        reg!(version_control, DockPosition::Left);
+        reg!(outline, DockPosition::Left);
+        reg!(terminal, DockPosition::Bottom);
+        reg!(debug, DockPosition::Bottom);
+        reg!(keyboard_shortcuts, DockPosition::Right);
 
         (handles, pairs)
     }
@@ -143,6 +151,7 @@ impl Workspace {
 
         // 先创建 ProjectTree（唯一实体），再创建面板
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        cx.set_global(ProjectRoot(root.clone()));
         let root_for_tree = root.clone();
         let project_tree: Entity<ProjectTree> = cx.new(|cx| {
             let mut tree = ProjectTree::new(root_for_tree, cx);
@@ -163,9 +172,9 @@ impl Workspace {
 
         // ═══ 创建 Dock Entities ═══════════════════════════════════
 
-        let drag_notify: Rc<Cell<Option<DockArea>>> = Rc::new(Cell::new(None));
+        let drag_notify: Rc<Cell<Option<DockPosition>>> = Rc::new(Cell::new(None));
 
-        // 按 DockArea 分组并生成 dispatch 函数
+        // 按 DockPosition 分组并生成 dispatch 函数
         let make_dispatch = |action_name: &str| -> PanelDispatch {
             match action_name {
                 "dock::ToggleProjectTree" => {
@@ -194,15 +203,15 @@ impl Workspace {
         for (handle, area) in &panel_pairs {
             let dispatch = make_dispatch(handle.action_name());
             match area {
-                DockArea::Left => {
+                DockPosition::Left => {
                     left_handles.push(handle.clone());
                     left_dispatches.push(dispatch);
                 }
-                DockArea::Bottom => {
+                DockPosition::Bottom => {
                     bottom_handles.push(handle.clone());
                     bottom_dispatches.push(dispatch);
                 }
-                DockArea::Right => {
+                DockPosition::Right => {
                     right_handles.push(handle.clone());
                     right_dispatches.push(dispatch);
                 }
@@ -211,7 +220,7 @@ impl Workspace {
 
         let left_dock = cx.new(|cx| {
             Dock::new(
-                DockArea::Left,
+                DockPosition::Left,
                 left_handles,
                 px(240.0),
                 drag_notify.clone(),
@@ -220,7 +229,7 @@ impl Workspace {
         });
         let right_dock = cx.new(|cx| {
             Dock::new(
-                DockArea::Right,
+                DockPosition::Right,
                 right_handles,
                 px(240.0),
                 drag_notify.clone(),
@@ -229,7 +238,7 @@ impl Workspace {
         });
         let bottom_dock = cx.new(|cx| {
             Dock::new(
-                DockArea::Bottom,
+                DockPosition::Bottom,
                 bottom_handles,
                 px(200.0),
                 drag_notify.clone(),
@@ -377,7 +386,9 @@ impl Workspace {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        let focus = pane.update(cx, |pane, cx| pane.open_file(path, file_name, buffer, cx));
+        let focus = pane.update(cx, |pane, cx| {
+            pane.open_file(path, file_name, buffer, window, cx)
+        });
         window.focus(&focus);
         window.refresh();
     }
@@ -507,7 +518,7 @@ impl Workspace {
         let pane_focus = pane_entity.read(cx).focus.clone();
         if let Some(view_id) = pane_entity.read(cx).active {
             pane_entity.update(cx, |pane, cx| {
-                pane.close_tab(view_id);
+                pane.close_tab(view_id, window, cx);
                 cx.emit(pane::PaneEvent::RemovedItem { view_id });
                 cx.notify();
             });
@@ -706,9 +717,9 @@ impl Render for Workspace {
             .on_mouse_move(move |event, window, cx| {
                 if let Some(area) = drag_notify.get() {
                     let dock = match area {
-                        DockArea::Left => &left_dock_entity,
-                        DockArea::Right => &right_dock_entity,
-                        DockArea::Bottom => &bottom_dock_entity,
+                        DockPosition::Left => &left_dock_entity,
+                        DockPosition::Right => &right_dock_entity,
+                        DockPosition::Bottom => &bottom_dock_entity,
                     };
                     dock.update(cx, |dock, cx| {
                         if dock.is_dragging() {

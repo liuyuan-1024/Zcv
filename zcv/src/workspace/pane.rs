@@ -15,6 +15,7 @@ use zcv_engine::Buffer;
 
 use super::item::ItemHandle;
 use super::pane_group::{PaneId, ViewId};
+use super::toolbar::Toolbar;
 use crate::editor::editor::Editor;
 use crate::theme::{color, radius, space};
 use crate::ui::glyph::Glyph;
@@ -60,6 +61,7 @@ pub(crate) struct Pane {
     pub id: PaneId,
     pub tabs: Vec<TabItem>,
     pub active: Option<ViewId>,
+    toolbar: Entity<Toolbar>,
 }
 
 impl Pane {
@@ -69,6 +71,7 @@ impl Pane {
             id,
             tabs: Vec::new(),
             active: None,
+            toolbar: cx.new(|_| Toolbar::new()),
         }
     }
 
@@ -79,6 +82,7 @@ impl Pane {
         path: PathBuf,
         _title: impl Into<String>,
         buffer: Entity<Buffer>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> FocusHandle {
         // 已有此文件时只激活
@@ -93,7 +97,9 @@ impl Pane {
 
         let view_id = ViewId(NEXT_VIEW_ID.fetch_add(1, Ordering::Relaxed));
         let editor = cx.new(|cx| Editor::for_buffer(buffer, cx));
-        editor.update(cx, |editor, _| editor.set_file_path(path));
+        editor.update(cx, |editor, cx| {
+            editor.set_file_path(path, cx);
+        });
         let focus = editor.read(cx).focus_handle();
         // Pane 观察 Editor 变化，变化时触发自身重绘（如 dirty 状态）
         cx.observe(&editor, |_, _, cx| cx.notify()).detach();
@@ -101,6 +107,7 @@ impl Pane {
         let item: Box<dyn ItemHandle> = Box::new(editor);
         self.tabs.push(TabItem { view_id, item });
         self.active = Some(view_id);
+        self.update_toolbar(window, cx);
         cx.emit(PaneEvent::AddItem { view_id });
         cx.emit(PaneEvent::ActivateItem { view_id });
         cx.notify();
@@ -108,9 +115,10 @@ impl Pane {
     }
 
     /// 激活指定 tab。
-    pub fn activate_tab(&mut self, view_id: ViewId) {
+    pub fn activate_tab(&mut self, view_id: ViewId, window: &mut Window, cx: &mut Context<Self>) {
         if self.tabs.iter().any(|t| t.view_id == view_id) {
             self.active = Some(view_id);
+            self.update_toolbar(window, cx);
         }
     }
 
@@ -147,11 +155,12 @@ impl Pane {
     }
 
     /// 关闭指定 tab，自动切换到下一个。
-    pub fn close_tab(&mut self, view_id: ViewId) {
+    pub fn close_tab(&mut self, view_id: ViewId, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(pos) = self.tabs.iter().position(|t| t.view_id == view_id) {
             self.tabs.remove(pos);
             if self.active == Some(view_id) {
                 self.active = self.tabs.last().map(|t| t.view_id);
+                self.update_toolbar(window, cx);
             }
         }
     }
@@ -183,6 +192,19 @@ impl Pane {
             window.focus(&editor.read(cx).focus_handle());
         }
     }
+
+    /// 返回 Toolbar Entity 的引用，供 Workspace 注册子项。
+    pub(crate) fn toolbar(&self) -> &Entity<Toolbar> {
+        &self.toolbar
+    }
+
+    /// 根据当前激活的 item 更新 Toolbar 内容。
+    fn update_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active_item = self.active_item(cx);
+        self.toolbar.update(cx, |toolbar, cx| {
+            toolbar.set_active_item(active_item, window, cx);
+        });
+    }
 }
 
 // ═══ 2. Action handler ═════════════════════════════════════════════
@@ -190,6 +212,7 @@ impl Pane {
 impl Pane {
     fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         self.next_tab();
+        self.update_toolbar(window, cx);
         self.focus_active_editor(window, cx);
         cx.emit(PaneEvent::ActivateItem {
             view_id: self.active.unwrap(),
@@ -200,6 +223,7 @@ impl Pane {
 
     fn handle_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
         self.prev_tab();
+        self.update_toolbar(window, cx);
         self.focus_active_editor(window, cx);
         cx.emit(PaneEvent::ActivateItem {
             view_id: self.active.unwrap(),
@@ -230,6 +254,7 @@ impl Render for Pane {
             .on_action(cx.listener(Self::handle_next_tab))
             .on_action(cx.listener(Self::handle_prev_tab))
             .child(render_tab_bar(&self.tabs, active_view, pane_entity, cx))
+            .child(self.toolbar.clone())
             .child(render_content(active_view, active_item))
     }
 }
@@ -293,7 +318,7 @@ fn render_tab(
         .cursor_pointer()
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
             let focus = activate_entity.update(cx, |pane, cx| {
-                pane.activate_tab(view_id);
+                pane.activate_tab(view_id, window, cx);
                 cx.emit(PaneEvent::ActivateItem { view_id });
                 cx.notify();
                 pane.active_item(cx).map(|item| item.focus_handle(cx))
@@ -337,7 +362,7 @@ fn close_glyph(
         .on_click(move |window: &mut gpui::Window, cx: &mut gpui::App| {
             let pane_focus = entity.read(cx).focus.clone();
             let focus = entity.update(cx, |pane, cx| {
-                pane.close_tab(view_id);
+                pane.close_tab(view_id, window, cx);
                 cx.emit(PaneEvent::RemovedItem { view_id });
                 cx.notify();
                 pane.active_item(cx).map(|item| item.focus_handle(cx))
@@ -425,10 +450,37 @@ fn render_content(
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext, TestAppContext};
+    use gpui::{Context, Render, TestAppContext, Window, div, prelude::*};
     use zcv_engine::{Buffer, BufferConfig};
 
     use super::*;
+
+    /// 辅助视图类型，仅用于测试中创建窗口。
+    struct TestView;
+    impl Render for TestView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    /// 辅助：在测试中用 add_window_view 提供 window 上下文打开文件。
+    fn open_file_in_test(
+        cx: &mut TestAppContext,
+        pane: &Entity<Pane>,
+        path: PathBuf,
+        buffer: Entity<Buffer>,
+    ) {
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        cx.add_window_view(|window, cx| {
+            pane.update(cx, |p, cx| {
+                p.open_file(path, file_name, buffer, window, cx);
+            });
+            TestView
+        });
+    }
 
     #[gpui::test]
     fn pane_owns_file_path_and_editor_backed_by_the_given_buffer(cx: &mut TestAppContext) {
@@ -437,10 +489,8 @@ mod tests {
                 .expect("测试 Buffer 应能创建")
         });
         let pane = cx.new(|cx| Pane::new(PaneId(1), cx));
+        open_file_in_test(cx, &pane, PathBuf::from("demo.txt"), buffer.clone());
 
-        let _focus = cx.update_entity(&pane, |pane, cx| {
-            pane.open_file(PathBuf::from("demo.txt"), "demo.txt", buffer.clone(), cx)
-        });
         let editor = cx.read_entity(&pane, |pane, cx| pane.active_editor(cx).unwrap());
         cx.read_entity(&editor, |editor, cx| assert!(!editor.is_dirty(cx)));
         cx.update_entity(&editor, |editor, cx| editor.set_text("阶段七", cx));
@@ -478,14 +528,10 @@ mod tests {
         let second_buffer = cx.new(|_| {
             Buffer::scratch("重复".to_owned(), BufferConfig::default()).expect("应创建 Buffer")
         });
-        let pane = cx.new(|cx| Pane::new(PaneId(1), cx));
 
-        let _first = cx.update_entity(&pane, |pane, cx| {
-            pane.open_file(PathBuf::from("demo.txt"), "demo.txt", first_buffer, cx)
-        });
-        let _second = cx.update_entity(&pane, |pane, cx| {
-            pane.open_file(PathBuf::from("demo.txt"), "demo.txt", second_buffer, cx)
-        });
+        let pane = cx.new(|cx| Pane::new(PaneId(1), cx));
+        open_file_in_test(cx, &pane, PathBuf::from("demo.txt"), first_buffer);
+        open_file_in_test(cx, &pane, PathBuf::from("demo.txt"), second_buffer);
 
         // 同一路径不应创建重复标签
         cx.read_entity(&pane, |pane, _| assert_eq!(pane.tabs.len(), 1));

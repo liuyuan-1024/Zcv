@@ -1,15 +1,15 @@
 //! Panel trait 系统 —— 每个面板是独立 Entity，拥有自己的生命周期、渲染和焦点。
 //!
-//! 参考 zed `crates/panel/src/panel.rs` 架构：
-//! - `Panel` trait 定义面板接口（所有方法均为静态或 &self）
+//! 参考 Zed `crates/panel/src/panel.rs` 架构：
+//! - `Panel` trait 定义面板接口
 //! - `PanelHandle` trait object 抹消具体类型，使 Dock 能统一管理异构面板
-//! - 空白占位面板类型集中在本文底部
+//! - `position()` / `default_size()` 为实例方法（对齐 Zed），面板可动态调整
 
 use gpui::{
-    AnyView, App, Context, Entity, FocusHandle, Pixels, Render, Window, div, prelude::*, px,
+    AnyView, App, Context, Entity, EntityId, FocusHandle, Pixels, Render, Window, div, prelude::*,
+    px,
 };
 
-use super::dock::DockArea;
 use crate::theme::color;
 
 // ═══ Panel trait ═══════════════════════════════════════════════════
@@ -19,11 +19,8 @@ pub(crate) trait Panel: Render + Sized {
     /// 面板唯一标识名，用于持久化和类型查询。
     fn persistent_name() -> &'static str;
 
-    /// 面板所在的 dock 区域（静态，但允许子类型读 &self 返回固定值）。
-    fn position() -> DockArea;
-
     /// 面板默认尺寸（左/右 dock 为宽度，底 dock 为高度）。
-    fn default_size() -> Pixels;
+    fn default_size(&self, cx: &App) -> Pixels;
 
     /// 面板图标 SVG 路径。
     fn icon() -> &'static str;
@@ -39,42 +36,36 @@ pub(crate) trait Panel: Render + Sized {
 
     /// 激活/停用回调。
     fn set_active(&mut self, _active: bool, _window: &mut Window, _cx: &mut Context<Self>) {}
-
-    /// 面板排序优先级（越小越靠前）。
-    fn activation_priority() -> u32 {
-        0
-    }
 }
 
 // ═══ PanelHandle trait object ══════════════════════════════════════
 
 /// 抹消具体类型的面板句柄，供 Dock 统一存储和管理异构面板。
 pub(crate) trait PanelHandle: Send + Sync {
+    fn panel_id(&self) -> EntityId;
     fn persistent_name(&self) -> &'static str;
-    fn position(&self) -> DockArea;
-    fn default_size(&self) -> Pixels;
+    fn default_size(&self, cx: &App) -> Pixels;
     fn icon(&self) -> &'static str;
     fn label(&self) -> &'static str;
     fn action_name(&self) -> &'static str;
     fn focus_handle(&self, cx: &App) -> FocusHandle;
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App);
-    fn activation_priority(&self) -> u32;
     /// 返回可渲染的 AnyView。
-    fn to_any_view(&self) -> AnyView;
+    fn to_any(&self) -> AnyView;
 }
 
 /// 桥接：任何 `Entity<T: Panel>` 自动实现 `PanelHandle`。
 impl<T: Panel + 'static> PanelHandle for Entity<T> {
+    fn panel_id(&self) -> EntityId {
+        self.entity_id()
+    }
+
     fn persistent_name(&self) -> &'static str {
         T::persistent_name()
     }
 
-    fn position(&self) -> DockArea {
-        T::position()
-    }
-
-    fn default_size(&self) -> Pixels {
-        T::default_size()
+    fn default_size(&self, cx: &App) -> Pixels {
+        self.read(cx).default_size(cx)
     }
 
     fn icon(&self) -> &'static str {
@@ -97,11 +88,7 @@ impl<T: Panel + 'static> PanelHandle for Entity<T> {
         self.update(cx, |this, cx| this.set_active(active, window, cx));
     }
 
-    fn activation_priority(&self) -> u32 {
-        T::activation_priority()
-    }
-
-    fn to_any_view(&self) -> AnyView {
+    fn to_any(&self) -> AnyView {
         AnyView::from(self.clone())
     }
 }
@@ -109,7 +96,7 @@ impl<T: Panel + 'static> PanelHandle for Entity<T> {
 // ═══ 占位面板 ═════════════════════════════════════════════════════
 
 macro_rules! make_placeholder_panel {
-    ($name:ident, $persistent:expr, $icon:expr, $label:expr, $action:expr, $area:expr, $size:expr, $priority:expr) => {
+    ($name:ident, $persistent:expr, $icon:expr, $label:expr, $action:expr, $size:expr) => {
         pub(crate) struct $name {
             focus: FocusHandle,
         }
@@ -126,10 +113,7 @@ macro_rules! make_placeholder_panel {
             fn persistent_name() -> &'static str {
                 $persistent
             }
-            fn position() -> DockArea {
-                $area
-            }
-            fn default_size() -> Pixels {
+            fn default_size(&self, _cx: &App) -> Pixels {
                 $size
             }
             fn icon() -> &'static str {
@@ -143,9 +127,6 @@ macro_rules! make_placeholder_panel {
             }
             fn focus_handle(&self, _cx: &App) -> FocusHandle {
                 self.focus.clone()
-            }
-            fn activation_priority() -> u32 {
-                $priority
             }
         }
 
@@ -172,9 +153,7 @@ make_placeholder_panel!(
     "icons/panels/version_control.svg",
     "版本控制",
     "dock::ToggleVersionControl",
-    DockArea::Left,
-    px(240.0),
-    10
+    px(240.0)
 );
 
 make_placeholder_panel!(
@@ -183,9 +162,7 @@ make_placeholder_panel!(
     "icons/panels/outline.svg",
     "大纲",
     "dock::ToggleOutline",
-    DockArea::Left,
-    px(240.0),
-    20
+    px(240.0)
 );
 
 make_placeholder_panel!(
@@ -194,9 +171,7 @@ make_placeholder_panel!(
     "icons/panels/terminal.svg",
     "终端",
     "dock::ToggleTerminal",
-    DockArea::Bottom,
-    px(200.0),
-    30
+    px(200.0)
 );
 
 make_placeholder_panel!(
@@ -205,9 +180,7 @@ make_placeholder_panel!(
     "icons/panels/debug.svg",
     "调试",
     "dock::ToggleDebug",
-    DockArea::Bottom,
-    px(200.0),
-    40
+    px(200.0)
 );
 
 make_placeholder_panel!(
@@ -216,7 +189,5 @@ make_placeholder_panel!(
     "icons/panels/keyboard_shortcuts.svg",
     "快捷键",
     "dock::ToggleKeyboardShortcuts",
-    DockArea::Right,
-    px(240.0),
-    50
+    px(240.0)
 );

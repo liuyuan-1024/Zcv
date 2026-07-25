@@ -9,13 +9,12 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
-    Context, Div, MouseButton, Pixels, UniformListScrollHandle, Window, actions, div, prelude::*,
-    px, uniform_list,
+    App, Context, Div, MouseButton, Pixels, UniformListScrollHandle, Window, actions, div,
+    prelude::*, px, uniform_list,
 };
 
 use crate::theme::color;
 use crate::ui::tree;
-use crate::workspace::dock::DockArea;
 use crate::workspace::panel::Panel;
 
 actions!(
@@ -399,10 +398,7 @@ impl Panel for ProjectTree {
     fn persistent_name() -> &'static str {
         "ProjectTree"
     }
-    fn position() -> DockArea {
-        DockArea::Left
-    }
-    fn default_size() -> Pixels {
+    fn default_size(&self, _cx: &App) -> Pixels {
         px(240.0)
     }
     fn icon() -> &'static str {
@@ -416,8 +412,5 @@ impl Panel for ProjectTree {
     }
     fn focus_handle(&self, _cx: &gpui::App) -> gpui::FocusHandle {
         self.focus.clone()
-    }
-    fn activation_priority() -> u32 {
-        0
     }
 }

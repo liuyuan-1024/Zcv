@@ -9,8 +9,8 @@ mod ui;
 mod workspace;
 
 use gpui::{
-    App, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, prelude::*, px,
-    size,
+    App, Application, Bounds, Context, Entity, TitlebarOptions, Window, WindowBounds,
+    WindowOptions, point, prelude::*, px, size,
 };
 
 use assets::{EmbeddedAssets, embedded_fonts};
@@ -46,6 +46,7 @@ fn main() {
                         workspace.update(cx, |workspace, cx| {
                             if let Some(pane) = workspace.focus_pane.clone() {
                                 workspace.register_pane_focus_listener(&pane, window, cx);
+                                initialize_pane(&pane, window, cx);
                             }
                             // 为每个 Dock 注册焦点转发，与 Zed 做法一致
                             for dock in [
@@ -88,4 +89,19 @@ fn main() {
 
             cx.activate(true);
         });
+}
+
+/// 参照 Zed：在应用层注册 Pane 的 Toolbar 子项。
+fn initialize_pane(
+    pane: &Entity<crate::workspace::pane::Pane>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    use workspace::breadcrumbs::Breadcrumbs;
+
+    pane.update(cx, |pane, cx| {
+        pane.toolbar().update(cx, |toolbar, cx| {
+            toolbar.add_item(cx.new(|_| Breadcrumbs::new()), window, cx);
+        });
+    });
 }

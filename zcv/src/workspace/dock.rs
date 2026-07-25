@@ -38,12 +38,12 @@ actions!(
 
 // ═══ 类型定义 ═══════════════════════════════════════════════════
 
-/// Dock 区域。
+/// Dock 位置，对应 Zed `DockPosition`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DockArea {
+pub(crate) enum DockPosition {
     Left,
-    Right,
     Bottom,
+    Right,
 }
 
 /// dock 和编辑区的最小尺寸，防止 dock 拖拽完全挤占编辑区。
@@ -62,7 +62,7 @@ struct DragState {
 ///
 /// 参考 Zed `crates/workspace/src/dock.rs` 中的 Dock 设计。
 pub(crate) struct Dock {
-    pub position: DockArea,
+    pub position: DockPosition,
     pub is_open: bool,
     size: Pixels,
     active_panel_index: Option<usize>,
@@ -73,7 +73,7 @@ pub(crate) struct Dock {
     /// 拖拽进行中的状态。
     drag_state: Option<DragState>,
     /// 通知 Workspace 哪个 dock 正在被拖拽。
-    pub drag_notify: Rc<Cell<Option<DockArea>>>,
+    pub drag_notify: Rc<Cell<Option<DockPosition>>>,
     /// 生命周期相关订阅。
     pub _subscriptions: Vec<Subscription>,
 }
@@ -81,10 +81,10 @@ pub(crate) struct Dock {
 impl Dock {
     /// 创建一个新 Dock，默认折叠。
     pub(crate) fn new(
-        position: DockArea,
+        position: DockPosition,
         panels: Vec<Arc<dyn PanelHandle>>,
         initial_size: Pixels,
-        drag_notify: Rc<Cell<Option<DockArea>>>,
+        drag_notify: Rc<Cell<Option<DockPosition>>>,
         cx: &mut Context<Self>,
     ) -> Self {
         // 激活第一个面板
@@ -196,20 +196,20 @@ impl Dock {
             return;
         };
         let delta = match self.position {
-            DockArea::Left => cursor.x - state.start_cursor.x,
-            DockArea::Right => state.start_cursor.x - cursor.x,
-            DockArea::Bottom => state.start_cursor.y - cursor.y,
+            DockPosition::Left => cursor.x - state.start_cursor.x,
+            DockPosition::Right => state.start_cursor.x - cursor.x,
+            DockPosition::Bottom => state.start_cursor.y - cursor.y,
         };
         let raw = state.start_size + delta;
         let max_size = match self.position {
-            DockArea::Left | DockArea::Right => window_size.width - MIN_SIZE - MIN_SIZE,
-            DockArea::Bottom => window_size.height - MIN_SIZE,
+            DockPosition::Left | DockPosition::Right => window_size.width - MIN_SIZE - MIN_SIZE,
+            DockPosition::Bottom => window_size.height - MIN_SIZE,
         };
         let new_size = raw.clamp(MIN_SIZE, max_size);
         self.size = new_size;
 
         // 左右 dock 耦合：调整 sibling 的尺寸
-        if self.position == DockArea::Left || self.position == DockArea::Right {
+        if self.position == DockPosition::Left || self.position == DockPosition::Right {
             if let Some(sibling) = self.sibling.as_ref().and_then(|s| s.upgrade()) {
                 sibling.update(cx, |sib, _| {
                     let other_max = window_size.width - new_size - MIN_SIZE;
@@ -236,12 +236,12 @@ impl Dock {
     /// 重置为默认尺寸。
     pub(crate) fn reset_size(&mut self, window_size: gpui::Size<Pixels>, cx: &mut Context<Self>) {
         let default = match self.position {
-            DockArea::Left | DockArea::Right => px(240.0),
-            DockArea::Bottom => px(200.0),
+            DockPosition::Left | DockPosition::Right => px(240.0),
+            DockPosition::Bottom => px(200.0),
         };
         let max_size = match self.position {
-            DockArea::Left | DockArea::Right => window_size.width - MIN_SIZE,
-            DockArea::Bottom => window_size.height - MIN_SIZE,
+            DockPosition::Left | DockPosition::Right => window_size.width - MIN_SIZE,
+            DockPosition::Bottom => window_size.height - MIN_SIZE,
         };
         self.size = default.clamp(MIN_SIZE, max_size);
         cx.notify();
@@ -251,7 +251,7 @@ impl Dock {
 impl Render for Dock {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let panel_view: gpui::AnyElement = match self.visible_panel() {
-            Some(handle) => handle.to_any_view().into_any_element(),
+            Some(handle) => handle.to_any().into_any_element(),
             None => placeholder_div().into_any_element(),
         };
 
@@ -265,17 +265,17 @@ impl Render for Dock {
             .text_color(color::current().gray.s[8]);
 
         let frame = match self.position {
-            DockArea::Left => frame
+            DockPosition::Left => frame
                 .w(self.size)
                 .h_full()
                 .border_r_1()
                 .border_color(color::current().gray.s[4]),
-            DockArea::Right => frame
+            DockPosition::Right => frame
                 .w(self.size)
                 .h_full()
                 .border_l_1()
                 .border_color(color::current().gray.s[4]),
-            DockArea::Bottom => frame
+            DockPosition::Bottom => frame
                 .h(self.size)
                 .w_full()
                 .border_t_1()
@@ -309,9 +309,9 @@ impl Render for Dock {
             });
 
         let handle = match self.position {
-            DockArea::Left => handle.right(px(0.0)).w(HIT).h_full().cursor_col_resize(),
-            DockArea::Right => handle.left(px(0.0)).w(HIT).h_full().cursor_col_resize(),
-            DockArea::Bottom => handle.top(px(0.0)).w_full().h(HIT).cursor_row_resize(),
+            DockPosition::Left => handle.right(px(0.0)).w(HIT).h_full().cursor_col_resize(),
+            DockPosition::Right => handle.left(px(0.0)).w(HIT).h_full().cursor_col_resize(),
+            DockPosition::Bottom => handle.top(px(0.0)).w_full().h(HIT).cursor_row_resize(),
         };
 
         frame.child(handle)

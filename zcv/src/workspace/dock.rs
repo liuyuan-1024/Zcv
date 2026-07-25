@@ -12,7 +12,7 @@ use gpui::{App, Entity, MouseButton, Pixels, Point, Window, actions, div, prelud
 
 use super::pane_group::{Axis, PaneGroup, PaneId};
 use crate::theme::{color, space};
-use crate::workbench::pane::{CloseTab, Pane};
+use crate::workspace::pane::{CloseTab, Pane};
 
 // ═══ Panel 通用 action ═══════════════════════════════════════════
 

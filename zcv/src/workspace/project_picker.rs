@@ -18,7 +18,7 @@ use crate::theme::{color, space, typography};
 use crate::ui::glyph::Glyph;
 use crate::ui::list_item::{ListItem, list_item_two_line};
 use crate::ui::picker::{Picker, PickerDelegate, picker_divider};
-use crate::workbench::recent_projects::{self, ProjectEntry};
+use crate::workspace::recent_projects::{self, ProjectEntry};
 
 actions!(project_picker, [ToggleProjectPicker, OpenLocalProject]);
 

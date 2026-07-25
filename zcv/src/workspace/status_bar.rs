@@ -24,7 +24,7 @@ actions!(
 
 use crate::editor::editor::Editor;
 use crate::theme::{color, space};
-use crate::workbench::pane::Pane;
+use crate::workspace::pane::Pane;
 
 // ═══ StatusItemView trait ═══════════════════════════════════════════
 

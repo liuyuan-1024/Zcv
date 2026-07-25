@@ -16,7 +16,7 @@ use gpui::{
 use crate::editor::buffer_store::BufferStore;
 use crate::theme::color;
 use crate::ui::tree;
-use crate::workbench::dock::LayoutRef;
+use crate::workspace::dock::LayoutRef;
 
 actions!(
     project_tree,

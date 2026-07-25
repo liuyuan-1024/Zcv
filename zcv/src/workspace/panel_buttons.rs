@@ -8,8 +8,8 @@ use gpui::{Context, Entity, Render, Window, div, prelude::*};
 use crate::editor::editor::Editor;
 use crate::theme::{color, space};
 use crate::ui::glyph::Glyph;
-use crate::workbench::dock::{DockArea, LayoutRef};
-use crate::workbench::status_bar::StatusItemView;
+use crate::workspace::dock::{DockArea, LayoutRef};
+use crate::workspace::status_bar::StatusItemView;
 
 /// 底栏按钮组 —— 绑定一个 Dock 区域，遍历该区域的 panel_entries 生成按钮。
 pub(crate) struct PanelButtons {

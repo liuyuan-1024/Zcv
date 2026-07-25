@@ -6,8 +6,8 @@ use gpui::{Context, Entity, Render, Window, prelude::*};
 
 use crate::editor::editor::Editor;
 use crate::ui::glyph::Glyph;
-use crate::workbench::dock::ToggleDiagnostics;
-use crate::workbench::status_bar::StatusItemView;
+use crate::workspace::dock::ToggleDiagnostics;
+use crate::workspace::status_bar::StatusItemView;
 
 pub(crate) struct DiagnosticsButton;
 

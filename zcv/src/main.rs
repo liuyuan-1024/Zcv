@@ -1,12 +1,12 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod assets;
-mod available_languages;
 mod editor;
 mod keymap;
+mod languages;
 mod theme;
 mod ui;
-mod workbench;
+mod workspace;
 
 use gpui::{
     App, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, prelude::*, px,
@@ -15,7 +15,7 @@ use gpui::{
 
 use assets::{EmbeddedAssets, embedded_fonts};
 use theme::Theme;
-use workbench::workspace::Workspace;
+use workspace::Workspace;
 
 fn main() {
     Application::new()

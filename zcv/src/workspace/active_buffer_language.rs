@@ -5,8 +5,9 @@
 use gpui::{Context, Entity, Render, Subscription, Window, prelude::*};
 
 use crate::editor::editor::Editor;
+use crate::languages;
 use crate::ui::glyph::Glyph;
-use crate::workbench::status_bar::StatusItemView;
+use crate::workspace::status_bar::StatusItemView;
 
 pub(crate) struct ActiveBufferLanguage {
     language: String,
@@ -59,7 +60,7 @@ impl ActiveBufferLanguage {
                     )
                     .ok()
                     .map(|s| s.as_str().lines().next().unwrap_or("").to_owned());
-                crate::available_languages::language_for_file(path, first_line.as_deref())
+                languages::language_for_file(path, first_line.as_deref())
             })
             .map(|name| name.to_owned())
             .unwrap_or_default();

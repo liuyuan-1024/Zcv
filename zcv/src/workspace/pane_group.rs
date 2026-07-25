@@ -4,7 +4,7 @@
 
 use gpui::Entity as GpuiEntity;
 
-use crate::workbench::pane::Pane;
+use crate::workspace::pane::Pane;
 
 // ═══ 类型定义 ═══════════════════════════════════════════════════
 

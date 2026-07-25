@@ -6,8 +6,8 @@ use gpui::{Context, Entity, Render, Window, prelude::*};
 
 use crate::editor::editor::Editor;
 use crate::ui::glyph::Glyph;
-use crate::workbench::dock::ToggleLanguageServer;
-use crate::workbench::status_bar::StatusItemView;
+use crate::workspace::dock::ToggleLanguageServer;
+use crate::workspace::status_bar::StatusItemView;
 
 pub(crate) struct LspButton;
 

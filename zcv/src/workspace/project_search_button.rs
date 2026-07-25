@@ -6,22 +6,22 @@ use gpui::{Context, Entity, Render, Window, prelude::*};
 
 use crate::editor::editor::Editor;
 use crate::ui::glyph::Glyph;
-use crate::workbench::dock::ToggleProjectSearch;
-use crate::workbench::status_bar::StatusItemView;
+use crate::workspace::dock::ToggleProjectSearch;
+use crate::workspace::status_bar::StatusItemView;
 
-pub(crate) struct SearchButton;
+pub(crate) struct ProjectSearchButton;
 
-impl SearchButton {
+impl ProjectSearchButton {
     pub(crate) fn new() -> Self {
         Self
     }
 }
 
-impl StatusItemView for SearchButton {
+impl StatusItemView for ProjectSearchButton {
     fn set_active_editor(&mut self, _editor: Option<&Entity<Editor>>, _cx: &mut Context<Self>) {}
 }
 
-impl Render for SearchButton {
+impl Render for ProjectSearchButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         Glyph::icon("search-button", "icons/panels/search.svg")
             .label("项目搜索")

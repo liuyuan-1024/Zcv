@@ -1,3 +1,22 @@
+//! WorkbenchFrame —— 窗口顶层装配。
+
+pub(crate) mod active_buffer_language;
+pub(crate) mod cursor_position;
+pub(crate) mod diagnostics_button;
+pub(crate) mod dock;
+pub(crate) mod lsp_button;
+pub(crate) mod pane;
+pub(crate) mod pane_group;
+pub(crate) mod panel_buttons;
+pub(crate) mod placeholders;
+pub(crate) mod project_picker;
+pub(crate) mod project_search_button;
+pub(crate) mod project_tree;
+mod recent_projects;
+pub(crate) mod status_bar;
+pub(crate) mod top_bar;
+pub(crate) mod window_controls;
+
 use std::cell::RefCell;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -9,28 +28,26 @@ use gpui::{
 };
 use zcv_engine::{Buffer, BufferSaveError};
 
-use super::dock::{
-    DockArea, LayoutController, LayoutRef, LayoutSnapshot, handle_close_tab,
+use self::active_buffer_language::ActiveBufferLanguage;
+use self::cursor_position::CursorPosition;
+use self::diagnostics_button::DiagnosticsButton;
+use self::dock::{
+    DockArea, LayoutController, LayoutRef, LayoutSnapshot, ToggleDebug, ToggleKeyboardShortcuts,
+    ToggleOutline, ToggleProjectTree, ToggleTerminal, ToggleVersionControl, handle_close_tab,
     render_body as render_layout_body,
 };
-use super::pane_group::PaneId;
-use super::recent_projects;
+use self::lsp_button::LspButton;
+use self::pane::Pane;
+use self::pane_group::PaneId;
+use self::panel_buttons::PanelButtons;
+use self::project_picker::OnProjectSelected;
+use self::project_search_button::ProjectSearchButton;
+use self::project_tree::ProjectTree;
+use self::status_bar::StatusBar;
+use self::top_bar::TopBar;
 use crate::editor::buffer_store::BufferStore;
 use crate::keymap;
-use crate::workbench::active_buffer_language::ActiveBufferLanguage;
-use crate::workbench::cursor_position::CursorPosition;
-use crate::workbench::diagnostics_button::DiagnosticsButton;
-use crate::workbench::dock::{
-    ToggleDebug, ToggleKeyboardShortcuts, ToggleOutline, ToggleProjectTree, ToggleTerminal,
-    ToggleVersionControl,
-};
-use crate::workbench::lsp_button::LspButton;
-use crate::workbench::panel_buttons::PanelButtons;
-use crate::workbench::project_tree::ProjectTree;
-use crate::workbench::search_button::SearchButton;
-use crate::workbench::status_bar::StatusBar;
-use crate::workbench::top_bar::{self, TopBar};
-use crate::workbench::{project_picker, project_picker::OnProjectSelected, window_controls};
+use crate::theme::{color, typography};
 
 actions!(workspace, [Save]);
 
@@ -78,7 +95,7 @@ impl Workspace {
             bar.add_left_item(cx.new(|_| PanelButtons::new(DockArea::Left)), cx);
             bar.add_left_item(cx.new(|_| LspButton::new()), cx);
             bar.add_left_item(cx.new(|_| DiagnosticsButton::new()), cx);
-            bar.add_left_item(cx.new(|_| SearchButton::new()), cx);
+            bar.add_left_item(cx.new(|_| ProjectSearchButton::new()), cx);
             bar.add_right_item(cx.new(|_| CursorPosition::new()), cx);
             bar.add_right_item(cx.new(|_| ActiveBufferLanguage::new()), cx);
             bar.add_right_item(cx.new(|_| PanelButtons::new(DockArea::Bottom)), cx);
@@ -265,9 +282,6 @@ impl Workspace {
         window.refresh();
     }
 }
-
-use crate::theme::{color, typography};
-use crate::workbench::pane::Pane;
 
 /// 工作台顶层框架组装。
 fn render_frame(

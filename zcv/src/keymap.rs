@@ -15,11 +15,11 @@ use crate::editor::editor::{
     SelectToNextWord, SelectToPreviousWord, SelectUp, Undo,
 };
 use crate::ui::picker::{PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev};
-use crate::workbench::pane::{CloseTab, NextTab, PrevTab};
-use crate::workbench::project_picker::{OpenLocalProject, ToggleProjectPicker};
-use crate::workbench::project_tree;
-use crate::workbench::workspace::Save;
-use crate::workbench::{dock, top_bar, window_controls};
+use crate::workspace::Save;
+use crate::workspace::pane::{CloseTab, NextTab, PrevTab};
+use crate::workspace::project_picker::{OpenLocalProject, ToggleProjectPicker};
+use crate::workspace::project_tree;
+use crate::workspace::{dock, top_bar, window_controls};
 
 // ── 公开类型 ─────────────────────────────────────────────────────────
 

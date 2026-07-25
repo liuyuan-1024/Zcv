@@ -8,6 +8,7 @@ pub(crate) mod item;
 pub(crate) mod lsp_button;
 pub(crate) mod pane;
 pub(crate) mod pane_group;
+pub(crate) mod panel;
 pub(crate) mod panel_buttons;
 pub(crate) mod project_picker;
 pub(crate) mod project_search_button;
@@ -21,10 +22,11 @@ use std::cell::RefCell;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
-    Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Window, actions, div,
-    prelude::*,
+    App, Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Window, actions,
+    div, prelude::*,
 };
 use zcv_engine::{Buffer, BufferSaveError};
 
@@ -33,12 +35,13 @@ use self::cursor_position::CursorPosition;
 use self::diagnostics_button::DiagnosticsButton;
 use self::dock::{
     DockArea, LayoutController, LayoutSnapshot, ToggleDebug, ToggleKeyboardShortcuts,
-    ToggleOutline, ToggleProjectTree, ToggleTerminal, ToggleVersionControl, default_panels,
+    ToggleOutline, ToggleProjectTree, ToggleTerminal, ToggleVersionControl,
     render_body as render_layout_body,
 };
 use self::lsp_button::LspButton;
 use self::pane::Pane;
 use self::pane_group::PaneId;
+use self::panel::PanelHandle;
 use self::panel_buttons::PanelButtons;
 use self::project_picker::OnProjectSelected;
 use self::project_search_button::ProjectSearchButton;
@@ -58,21 +61,58 @@ pub(crate) struct Workspace {
     top_bar: Entity<TopBar>,
     status_bar: Entity<StatusBar>,
     project_tree: Entity<ProjectTree>,
+    /// 面板 Entity 列表，与 LayoutController.panels index 对应。
+    panel_handles: Vec<Arc<dyn PanelHandle>>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
+    /// 创建所有面板 Entity，返回 (panel_handles, panel_pairs)。
+    /// `project_tree` 由调用方先创建并传入，确保只有一个实体。
+    fn make_panels(
+        project_tree: &Entity<ProjectTree>,
+        cx: &mut Context<Self>,
+    ) -> (
+        Vec<Arc<dyn PanelHandle>>,
+        Vec<(Arc<dyn PanelHandle>, DockArea)>,
+    ) {
+        let version_control = cx.new(|cx| panel::VersionControlPanel::new(cx));
+        let outline = cx.new(|cx| panel::OutlinePanel::new(cx));
+        let terminal = cx.new(|cx| panel::TerminalPanel::new(cx));
+        let debug = cx.new(|cx| panel::DebugPanel::new(cx));
+        let keyboard_shortcuts = cx.new(|cx| panel::KeyboardShortcutsPanel::new(cx));
+
+        let mut handles: Vec<Arc<dyn PanelHandle>> = Vec::new();
+        let mut pairs: Vec<(Arc<dyn PanelHandle>, DockArea)> = Vec::new();
+
+        macro_rules! reg {
+            ($entity:expr, $area:expr) => {{
+                let handle: Arc<dyn PanelHandle> = Arc::new($entity);
+                handles.push(handle.clone());
+                pairs.push((handle, $area));
+            }};
+        }
+
+        reg!(project_tree.clone(), DockArea::Left);
+        reg!(version_control, DockArea::Left);
+        reg!(outline, DockArea::Left);
+        reg!(terminal, DockArea::Bottom);
+        reg!(debug, DockArea::Bottom);
+        reg!(keyboard_shortcuts, DockArea::Right);
+
+        (handles, pairs)
+    }
+
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let weak_self: gpui::WeakEntity<Self> = cx.weak_entity();
-        let weak_project_switcher = weak_self.clone(); // 项目切换回调用
-        let weak_open_file = weak_self.clone(); // 打开文件回调用
+        let weak_project_switcher = weak_self.clone();
+        let weak_open_file = weak_self.clone();
 
         let keybindings = keymap::load();
         cx.bind_keys(keybindings.bindings.clone());
         cx.set_global(keybindings);
 
-        // 创建项目切换回调
         let on_project_selected: OnProjectSelected = Rc::new(move |path, window, app| {
             if let Some(ws) = weak_project_switcher.upgrade() {
                 ws.update(app, |workspace, cx| {
@@ -83,40 +123,79 @@ impl Workspace {
 
         let top_bar = cx.new(|cx| TopBar::new(on_project_selected, cx));
 
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-
         let initial_pane = cx.new(|cx| Pane::new(PaneId(1), cx));
         let status_pane = initial_pane.clone();
+
+        // 先创建 ProjectTree（唯一实体），再创建面板
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let project_tree: Entity<ProjectTree> = cx.new(|cx| {
+            let mut tree = ProjectTree::new(root, cx);
+            let on_open_file: OnOpenFile = Rc::new(
+                move |path: PathBuf, window: &mut Window, cx: &mut gpui::App| {
+                    if let Some(ws) = weak_open_file.upgrade() {
+                        ws.update(cx, |ws, cx| {
+                            ws.open_path_in_active_pane(path, window, cx);
+                        });
+                    }
+                },
+            );
+            tree.set_on_open_file(on_open_file);
+            tree
+        });
+
+        let (all_handles, panel_pairs) = Self::make_panels(&project_tree, cx);
+
         let layout = Rc::new(RefCell::new(LayoutController::with_initial_pane(
             initial_pane.clone(),
+            panel_pairs,
         )));
-        // StatusBar：容器，持有各 StatusItemView
+
+        // 创建 StatusBar 并注册按钮
         let status_bar = cx.new(|cx| StatusBar::new(status_pane, cx));
         status_bar.update(cx, |bar, cx| {
-            bar.add_left_item(cx.new(|_| PanelButtons::new(DockArea::Left)), cx);
+            let for_area =
+                |area: DockArea| -> Vec<(Arc<dyn PanelHandle>, fn(&mut Window, &mut App))> {
+                    all_handles
+                        .iter()
+                        .filter(|h| h.position() == area)
+                        .map(|h| {
+                            let dispatch: fn(&mut Window, &mut App) = match h.action_name() {
+                                "dock::ToggleProjectTree" => {
+                                    |w, cx| w.dispatch_action(Box::new(ToggleProjectTree), cx)
+                                }
+                                "dock::ToggleVersionControl" => {
+                                    |w, cx| w.dispatch_action(Box::new(ToggleVersionControl), cx)
+                                }
+                                "dock::ToggleOutline" => {
+                                    |w, cx| w.dispatch_action(Box::new(ToggleOutline), cx)
+                                }
+                                "dock::ToggleTerminal" => {
+                                    |w, cx| w.dispatch_action(Box::new(ToggleTerminal), cx)
+                                }
+                                "dock::ToggleDebug" => {
+                                    |w, cx| w.dispatch_action(Box::new(ToggleDebug), cx)
+                                }
+                                "dock::ToggleKeyboardShortcuts" => {
+                                    |w, cx| w.dispatch_action(Box::new(ToggleKeyboardShortcuts), cx)
+                                }
+                                _ => unreachable!(),
+                            };
+                            (h.clone(), dispatch)
+                        })
+                        .collect()
+                };
+
+            bar.add_left_item(cx.new(|_| PanelButtons::new(for_area(DockArea::Left))), cx);
             bar.add_left_item(cx.new(|_| LspButton::new()), cx);
             bar.add_left_item(cx.new(|_| DiagnosticsButton::new()), cx);
             bar.add_left_item(cx.new(|_| ProjectSearchButton::new()), cx);
             bar.add_right_item(cx.new(|_| CursorPosition::new()), cx);
             bar.add_right_item(cx.new(|_| ActiveBufferLanguage::new()), cx);
-            bar.add_right_item(cx.new(|_| PanelButtons::new(DockArea::Bottom)), cx);
-            bar.add_right_item(cx.new(|_| PanelButtons::new(DockArea::Right)), cx);
-        });
-
-        // 项目树——打开文件的回调
-        let on_open_file: OnOpenFile = Rc::new(
-            move |path: PathBuf, window: &mut Window, cx: &mut gpui::App| {
-                if let Some(ws) = weak_open_file.upgrade() {
-                    ws.update(cx, |ws, cx| {
-                        ws.open_path_in_active_pane(path, window, cx);
-                    });
-                }
-            },
-        );
-        let project_tree = cx.new(|cx| {
-            let mut tree = ProjectTree::new(root, cx);
-            tree.set_on_open_file(on_open_file);
-            tree
+            bar.add_right_item(
+                cx.new(|_| PanelButtons::new(for_area(DockArea::Bottom))),
+                cx,
+            );
+            bar.add_right_item(cx.new(|_| PanelButtons::new(for_area(DockArea::Right))), cx);
         });
 
         cx.set_global(BufferStore::new());
@@ -128,6 +207,7 @@ impl Workspace {
             top_bar,
             status_bar,
             project_tree,
+            panel_handles: all_handles,
             _subscriptions: Vec::new(),
         }
     }
@@ -217,11 +297,9 @@ impl Workspace {
 
     /// 按 action 名查找面板在注册表中的 index。
     fn panel_index(&self, action_name: &str) -> Option<usize> {
-        self.layout
-            .borrow()
-            .panel_registry
+        self.panel_handles
             .iter()
-            .position(|p| p.action_name == action_name)
+            .position(|h| h.action_name() == action_name)
     }
 
     /// 切换面板焦点：若面板已聚焦则隐藏并退焦到编辑区，否则显示并聚焦。
@@ -233,11 +311,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if focus_handle.contains_focused(window, cx) {
-            self.layout.borrow_mut().toggle_panel(index);
+            self.layout.borrow_mut().toggle_panel(index, window, cx);
             self.focus_center_pane(window, cx);
         } else {
             if !self.layout.borrow().is_panel_active(index) {
-                self.layout.borrow_mut().toggle_panel(index);
+                self.layout.borrow_mut().toggle_panel(index, window, cx);
             }
             window.focus(focus_handle);
         }
@@ -270,10 +348,8 @@ impl Workspace {
         });
         self._subscriptions.push(sub);
 
-        // 订阅 Pane 事件
         let sub = cx.subscribe_in(pane, window, |_this, _emitter, event, _window, _cx| {
-            // 后续可在此处统一处理 Pane 事件（窗口标题、通知等）
-            let _ = event; // 暂时忽略具体事件
+            let _ = event;
         });
         self._subscriptions.push(sub);
     }
@@ -302,7 +378,6 @@ impl Workspace {
                 cx.emit(pane::PaneEvent::RemovedItem { view_id });
                 cx.notify();
             });
-            // 关闭后聚焦到新活动编辑器或 Pane 自身
             if let Some(editor) = pane_entity.read(cx).active_editor(cx) {
                 window.focus(&editor.read(cx).focus_handle());
             } else {
@@ -332,16 +407,12 @@ impl Workspace {
     ) {
         if let Some(i) = self.panel_index(action_name) {
             let was_active = self.layout.borrow().is_panel_active(i);
-            self.layout.borrow_mut().toggle_panel(i);
+            self.layout.borrow_mut().toggle_panel(i, window, cx);
             if was_active {
-                // 面板从打开→关闭，焦点回到编辑区
                 self.focus_center_pane(window, cx);
-            } else {
-                // 面板从关闭→打开，焦点移出编辑器（使光标消失）后续每个面板有真实内容后改为聚焦面板自身
-                if let Some(pane) = self.focus_pane.as_ref() {
-                    let pane_focus = pane.read(cx).focus.clone();
-                    window.focus(&pane_focus);
-                }
+            } else if let Some(handle) = self.panel_handles.get(i) {
+                let focus = handle.focus_handle(cx);
+                window.focus(&focus);
             }
             window.refresh();
         }
@@ -367,17 +438,14 @@ impl Workspace {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        // 更新项目树
         self.project_tree.update(cx, |tree, cx| {
             tree.set_root(root.clone(), cx);
         });
-        // 更新项目选择器显示的名称
         self.top_bar.update(cx, |bar, cx| {
             bar.project_picker.update(cx, |picker, _cx| {
                 picker.set_current_label(label);
             });
         });
-        // 持久化到最近项目
         recent_projects::add_to_recent(path);
         window.refresh();
     }
@@ -388,26 +456,9 @@ fn render_frame(
     top_bar: &Entity<TopBar>,
     status_bar: &Entity<StatusBar>,
     layout: &LayoutSnapshot,
-    project_tree: &Entity<ProjectTree>,
+    panels: &[(Arc<dyn PanelHandle>, DockArea)],
     layout_ctrl: Rc<RefCell<LayoutController>>,
 ) -> Div {
-    let tree = project_tree.clone();
-    let panel_content = move |index: usize| -> Option<Div> {
-        match index {
-            0 => Some(div().size_full().child(tree.clone())),
-            // 尚未实装的面板显示占位文字
-            i => Some(
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(color::current().gray.s[5])
-                    .child(default_panels().get(i).map(|p| p.label).unwrap_or("")),
-            ),
-        }
-    };
-
     div()
         .relative()
         .flex()
@@ -420,7 +471,7 @@ fn render_frame(
         .line_height(typography::ui())
         .text_color(color::current().gray.s[8])
         .child(top_bar.clone())
-        .child(render_layout_body(layout, &panel_content, layout_ctrl))
+        .child(render_layout_body(layout, panels, layout_ctrl))
         .child(status_bar.clone())
 }
 
@@ -430,6 +481,15 @@ impl Render for Workspace {
 
         let layout_clone1 = self.layout.clone();
         let layout_clone2 = self.layout.clone();
+
+        // 收集面板 pairs 供渲染
+        let pairs: Vec<(Arc<dyn PanelHandle>, DockArea)> = self
+            .layout
+            .borrow()
+            .panels
+            .iter()
+            .map(|(h, a)| (h.clone(), *a))
+            .collect();
 
         div()
             .id("app-view")
@@ -441,7 +501,7 @@ impl Render for Workspace {
                 &self.top_bar,
                 &self.status_bar,
                 &snapshot,
-                &self.project_tree,
+                &pairs,
                 self.layout.clone(),
             ))
             .on_action(window_controls::handle_quit)
@@ -480,7 +540,6 @@ impl Render for Workspace {
                 },
             ))
             .on_action(cx.listener(Self::handle_toggle_project_picker))
-            // 拖拽分隔线时：鼠标移动 → 更新 dock 尺寸
             .on_mouse_move(move |event, window, _cx| {
                 let mut ctrl = layout_clone1.borrow_mut();
                 if ctrl.is_dragging() {
@@ -488,7 +547,6 @@ impl Render for Workspace {
                     window.refresh();
                 }
             })
-            // 拖拽结束 → 清理状态
             .on_mouse_up(MouseButton::Left, move |_event, window, _cx| {
                 layout_clone2.borrow_mut().end_drag();
                 window.refresh();

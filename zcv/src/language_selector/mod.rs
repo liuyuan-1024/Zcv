@@ -4,10 +4,10 @@
 
 use gpui::{Context, Entity, Render, Subscription, Window, prelude::*};
 
-use crate::editor::editor::Editor;
+use crate::editor::Editor;
 use crate::languages;
-use crate::ui::glyph::Glyph;
-use crate::workspace::status_bar::StatusItemView;
+use crate::ui::Glyph;
+use crate::workspace::StatusItemView;
 
 pub(crate) struct ActiveBufferLanguage {
     language: String,

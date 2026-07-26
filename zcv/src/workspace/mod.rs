@@ -1,26 +1,38 @@
 //! WorkbenchFrame —— 窗口顶层装配。
 
-pub(crate) mod active_buffer_language;
-pub(crate) mod breadcrumbs;
-pub(crate) mod cursor_position;
-pub(crate) mod diagnostics_button;
-pub(crate) mod dock;
-pub(crate) mod fs_watcher;
-pub(crate) mod item;
-pub(crate) mod lsp_button;
-pub(crate) mod pane;
-pub(crate) mod pane_group;
-pub(crate) mod panel;
-pub(crate) mod panel_buttons;
-pub(crate) mod project_picker;
-pub(crate) mod project_search_button;
-pub(crate) mod project_tree;
-mod recent_projects;
-pub(crate) mod status_bar;
-pub(crate) mod tab_bar;
-pub(crate) mod toolbar;
-pub(crate) mod top_bar;
-pub(crate) mod window_controls;
+mod dock;
+mod item;
+mod pane;
+mod pane_group;
+mod panel;
+mod panel_buttons;
+mod status_bar;
+mod tab_bar;
+mod toolbar;
+mod top_bar;
+mod window_controls;
+
+pub(crate) use dock::{
+    Dock, DockPosition, ToggleDebug, ToggleDiagnostics, ToggleKeyboardShortcuts,
+    ToggleLanguageServer, ToggleOutline, ToggleProjectSearch, ToggleProjectTree, ToggleTerminal,
+    ToggleVersionControl,
+};
+pub(crate) use item::{ItemEvent, ItemHandle};
+pub(crate) use pane::{CloseTab, NextTab, Pane, PaneEvent, PrevTab};
+pub(crate) use pane_group::{PaneGroup, PaneId};
+pub(crate) use panel::{
+    DebugPanel, KeyboardShortcutsPanel, OutlinePanel, Panel, PanelHandle, TerminalPanel,
+    VersionControlPanel,
+};
+pub(crate) use panel_buttons::{PanelButtons, PanelDispatch};
+pub(crate) use status_bar::{StatusBar, StatusItemView};
+pub(crate) use tab_bar::TabBar;
+pub(crate) use toolbar::{Toolbar, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
+pub(crate) use top_bar::{GitFetch, GitPull, GitPush, OpenSettings, TopBar};
+pub(crate) use window_controls::{
+    MinimizeWindow, QuitWindow, ToggleMaximizeWindow, handle_minimize, handle_quit,
+    handle_toggle_maximize, render,
+};
 
 use std::cell::Cell;
 use std::fs::File;
@@ -34,26 +46,17 @@ use gpui::{
 };
 use zcv_engine::{Buffer, BufferSaveError};
 
-use self::active_buffer_language::ActiveBufferLanguage;
-use self::cursor_position::CursorPosition;
-use self::diagnostics_button::DiagnosticsButton;
-use self::dock::{
-    Dock, DockPosition, ToggleDebug, ToggleKeyboardShortcuts, ToggleOutline, ToggleProjectTree,
-    ToggleTerminal, ToggleVersionControl, render_body as render_layout_body,
-};
-use self::fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
-use self::lsp_button::LspButton;
-use self::pane::Pane;
-use self::pane_group::{PaneGroup, PaneId};
-use self::panel::PanelHandle;
-use self::panel_buttons::{PanelButtons, PanelDispatch};
-use self::project_picker::OnProjectSelected;
-use self::project_search_button::ProjectSearchButton;
-use self::project_tree::{OnOpenFile, ProjectTree};
-use self::status_bar::StatusBar;
-use self::top_bar::TopBar;
-use crate::editor::buffer_store::BufferStore;
+use self::dock::render_body as render_layout_body;
+use crate::diagnostics::DiagnosticsButton;
+use crate::editor::BufferStore;
+use crate::fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
+use crate::go_to_line::CursorPosition;
 use crate::keymap;
+use crate::language_selector::ActiveBufferLanguage;
+use crate::language_tools::LspButton;
+use crate::project_search::ProjectSearchButton;
+use crate::project_tree::{OnOpenFile, ProjectTree};
+use crate::recent_projects::{self, OnProjectSelected, ToggleProjectPicker};
 use crate::theme::{color, typography};
 
 /// 项目根目录全局，供 breadcrumbs 等组件读取相对路径。
@@ -100,11 +103,11 @@ impl Workspace {
         Vec<Arc<dyn PanelHandle>>,
         Vec<(Arc<dyn PanelHandle>, DockPosition)>,
     ) {
-        let version_control = cx.new(|cx| panel::VersionControlPanel::new(cx));
-        let outline = cx.new(|cx| panel::OutlinePanel::new(cx));
-        let terminal = cx.new(|cx| panel::TerminalPanel::new(cx));
-        let debug = cx.new(|cx| panel::DebugPanel::new(cx));
-        let keyboard_shortcuts = cx.new(|cx| panel::KeyboardShortcutsPanel::new(cx));
+        let version_control = cx.new(|cx| VersionControlPanel::new(cx));
+        let outline = cx.new(|cx| OutlinePanel::new(cx));
+        let terminal = cx.new(|cx| TerminalPanel::new(cx));
+        let debug = cx.new(|cx| DebugPanel::new(cx));
+        let keyboard_shortcuts = cx.new(|cx| KeyboardShortcutsPanel::new(cx));
 
         let mut handles: Vec<Arc<dyn PanelHandle>> = Vec::new();
         let mut pairs: Vec<(Arc<dyn PanelHandle>, DockPosition)> = Vec::new();
@@ -578,7 +581,7 @@ impl Workspace {
 
     fn handle_toggle_project_picker(
         &mut self,
-        _: &project_picker::ToggleProjectPicker,
+        _: &ToggleProjectPicker,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -679,9 +682,9 @@ impl Render for Workspace {
                 &self.status_bar,
                 render_layout_body(&center, left_dock, right_dock, bottom_dock),
             ))
-            .on_action(window_controls::handle_quit)
-            .on_action(window_controls::handle_minimize)
-            .on_action(window_controls::handle_toggle_maximize)
+            .on_action(handle_quit)
+            .on_action(handle_minimize)
+            .on_action(handle_toggle_maximize)
             .on_action(cx.listener(Self::handle_close_tab))
             .on_action(Self::handle_git_fetch)
             .on_action(Self::handle_git_pull)

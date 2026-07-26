@@ -17,11 +17,11 @@ use super::item::ItemHandle;
 use super::pane_group::{PaneId, ViewId};
 use super::tab_bar::TabBar;
 use super::toolbar::Toolbar;
-use crate::editor::editor::Editor;
-use crate::theme::color;
-use crate::ui::glyph::Glyph;
-use crate::ui::icon::SvgIcon;
-use crate::ui::tab::Tab;
+use crate::editor::Editor;
+use crate::theme::{color, typography};
+use crate::ui::Glyph;
+use crate::ui::SvgIcon;
+use crate::ui::Tab;
 
 actions!(pane, [CloseTab, NextTab, PrevTab]);
 
@@ -535,7 +535,7 @@ fn tab_end_glyph(
         return close_glyph(pane_entity, view_id, cx).into_any_element();
     }
 
-    let slot_size = crate::theme::typography::ui();
+    let slot_size = typography::ui();
     div()
         .relative()
         .flex()

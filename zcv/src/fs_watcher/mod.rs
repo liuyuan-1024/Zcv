@@ -504,11 +504,10 @@ fn global_watcher() -> &'static GlobalWatcher {
 // FsWatcher —— 每实例 watcher
 // ═══════════════════════════════════════════════════════════════════
 
-/// 每调用方实例的文件系统监听器。
+/// 调用方实例的文件系统监听器。
 ///
-/// 包装 `GlobalWatcher` 单例，提供路径级 add/remove。每个 FsWatcher 实例
-/// 绑定到一个 `async_channel::Sender<()>`——当有新事件时发送信号，消费方可
-/// 在异步上下文中等待该信号。
+/// 包装 `GlobalWatcher` 单例，提供路径级 add/remove。
+/// 每个 FsWatcher 实例绑定到一个 `async_channel::Sender<()>`——当有新事件时发送信号，消费方可在异步上下文中等待该信号。
 pub struct FsWatcher {
     /// 信号通道：事件入队时发送 `()`，消费方（gpui 前台 task）等待此信号。
     signal_tx: async_channel::Sender<()>,

@@ -4,10 +4,10 @@
 
 use gpui::{Context, Entity, Render, Window, prelude::*};
 
-use crate::editor::editor::Editor;
-use crate::ui::glyph::Glyph;
-use crate::workspace::dock::ToggleProjectSearch;
-use crate::workspace::status_bar::StatusItemView;
+use crate::editor::Editor;
+use crate::ui::Glyph;
+use crate::workspace::StatusItemView;
+use crate::workspace::ToggleProjectSearch;
 
 pub(crate) struct ProjectSearchButton;
 

@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use super::toolbar::ToolbarItemLocation;
-use crate::editor::editor::Editor;
+use crate::editor::Editor;
 
 // ═══ ItemEvent ═══════════════════════════════════════════════════════
 

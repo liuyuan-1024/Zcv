@@ -15,7 +15,7 @@ use gpui::{
 
 use crate::theme::color;
 use crate::ui::tree;
-use crate::workspace::panel::Panel;
+use crate::workspace::Panel;
 
 actions!(
     project_tree,

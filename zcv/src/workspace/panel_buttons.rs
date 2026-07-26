@@ -5,11 +5,10 @@
 
 use gpui::{App, Context, ElementId, Entity, Render, Subscription, Window, div, prelude::*};
 
-use crate::editor::editor::Editor;
+use super::{Dock, DockPosition, StatusItemView};
+use crate::editor::Editor;
 use crate::theme::{color, space};
-use crate::ui::glyph::Glyph;
-use crate::workspace::dock::{Dock, DockPosition};
-use crate::workspace::status_bar::StatusItemView;
+use crate::ui::Glyph;
 
 /// 面板点击调度函数：将点击转为 gpui action dispatch。
 pub(crate) type PanelDispatch = fn(&mut Window, &mut App);

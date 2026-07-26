@@ -11,7 +11,7 @@ use gpui::{
     Window, actions, div, prelude::*, px,
 };
 
-use crate::editor::editor::{Editor, MoveDown, MoveUp};
+use crate::editor::{Editor, MoveDown, MoveUp};
 use crate::theme::{color, space};
 
 actions!(
@@ -265,7 +265,7 @@ mod tests {
     use gpui::{AppContext, KeyBinding, TestAppContext};
 
     use super::*;
-    use crate::editor::editor::Newline;
+    use crate::editor::Newline;
 
     struct TestDelegate {
         query: String,
@@ -359,7 +359,7 @@ mod tests {
             let selected_index = selected_index.clone();
             move |_, cx| {
                 cx.bind_keys([
-                    KeyBinding::new("down", crate::editor::editor::MoveDown, Some("Editor")),
+                    KeyBinding::new("down", crate::editor::MoveDown, Some("Editor")),
                     KeyBinding::new("down", PickerSelectNext, Some("Picker")),
                     KeyBinding::new("enter", Newline, Some("Editor")),
                     KeyBinding::new("enter", PickerConfirm, Some("Picker")),

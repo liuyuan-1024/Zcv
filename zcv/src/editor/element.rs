@@ -11,7 +11,7 @@ use gpui::{
 use zcv_engine::{Line, SelectionSet, Snapshot};
 
 use super::display_map::{BufferPoint, DisplayRow};
-use super::editor::{Editor, EditorPresentation};
+use super::view::{Editor, EditorPresentation};
 use crate::theme::color;
 
 const CARET_WIDTH: Pixels = px(2.);
@@ -662,7 +662,7 @@ fn column_to_byte(text: &str, column: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::display_map::DisplayPoint;
+    use crate::editor::DisplayPoint;
     use gpui::{Empty, TestAppContext, font};
     use zcv_engine::{Buffer, BufferConfig, ByteOffset, DisplayColumn, Line, LogicalColumn};
 

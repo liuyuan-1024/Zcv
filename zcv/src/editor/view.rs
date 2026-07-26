@@ -21,7 +21,7 @@ use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::ScrollManager;
 use super::selection::SelectionHistory;
 use crate::theme::{color, typography};
-use crate::workspace::item::ItemEvent;
+use crate::workspace::ItemEvent;
 
 actions!(
     editor,
@@ -1106,7 +1106,7 @@ mod tests {
     use zcv_engine::{BufferConfig, ByteOffset, DisplayColumn, SelectionSet, TransactionId};
 
     use super::*;
-    use crate::editor::display_map::{DisplayPoint, DisplayRow};
+    use crate::editor::{DisplayPoint, DisplayRow};
 
     fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<Buffer> {
         let buffer =

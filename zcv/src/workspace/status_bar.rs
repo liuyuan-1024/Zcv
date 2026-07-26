@@ -22,9 +22,9 @@ actions!(
     ]
 );
 
-use crate::editor::editor::Editor;
+use super::Pane;
+use crate::editor::Editor;
 use crate::theme::{color, space};
-use crate::workspace::pane::Pane;
 
 // ═══ StatusItemView trait ═══════════════════════════════════════════
 

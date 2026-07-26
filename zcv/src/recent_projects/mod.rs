@@ -2,6 +2,12 @@
 //!
 //! 数据存储在 `~/.zcv/recent_projects.json`，最多保留 20 条。
 
+pub(crate) mod project_picker;
+
+pub(crate) use project_picker::{
+    OnProjectSelected, OpenLocalProject, ProjectPicker, ToggleProjectPicker,
+};
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};

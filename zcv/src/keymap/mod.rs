@@ -8,18 +8,20 @@ use std::collections::{BTreeMap, HashMap};
 use gpui::KeyBinding;
 use serde::Deserialize;
 
-use crate::editor::editor::{
+use crate::editor::{
     Backspace, Copy, Cut, Delete, MoveDown, MoveLeft, MoveRight, MoveToBeginningOfLine,
     MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Paste, Redo, SelectAll,
     SelectDown, SelectLeft, SelectRight, SelectToBeginningOfLine, SelectToEndOfLine,
     SelectToNextWord, SelectToPreviousWord, SelectUp, Undo,
 };
-use crate::ui::picker::{PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev};
-use crate::workspace::Save;
-use crate::workspace::pane::{CloseTab, NextTab, PrevTab};
-use crate::workspace::project_picker::{OpenLocalProject, ToggleProjectPicker};
-use crate::workspace::project_tree;
-use crate::workspace::{dock, top_bar, window_controls};
+use crate::project_tree::{TreeActivate, TreeCollapse, TreeExpand, TreeSelectNext, TreeSelectPrev};
+use crate::recent_projects::{OpenLocalProject, ToggleProjectPicker};
+use crate::ui::{PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev};
+use crate::workspace::{
+    CloseTab, MinimizeWindow, NextTab, OpenSettings, PrevTab, QuitWindow, Save, ToggleDebug,
+    ToggleDiagnostics, ToggleKeyboardShortcuts, ToggleLanguageServer, ToggleMaximizeWindow,
+    ToggleOutline, ToggleProjectSearch, ToggleProjectTree, ToggleTerminal, ToggleVersionControl,
+};
 
 // ── 公开类型 ─────────────────────────────────────────────────────────
 
@@ -161,9 +163,9 @@ struct RawBindingGroup {
 /// 按当前平台编译对应的默认快捷键文件。
 fn platform_json() -> &'static str {
     if cfg!(target_os = "macos") {
-        include_str!("../assets/keymaps/default-macos.json")
+        include_str!("../../assets/keymaps/default-macos.json")
     } else {
-        include_str!("../assets/keymaps/default-linux.json")
+        include_str!("../../assets/keymaps/default-linux.json")
     }
 }
 
@@ -186,12 +188,6 @@ fn detect_conflicts(groups: &[RawBindingGroup]) {
 
 /// 根据 action 名称构建 KeyBinding。
 fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBinding> {
-    macro_rules! bind {
-        ($module:ident :: $action:ident) => {
-            KeyBinding::new(keys, $module::$action, context)
-        };
-    }
-
     let binding = match action_name {
         // editor
         "editor::Undo" => KeyBinding::new(keys, Undo, context),
@@ -221,46 +217,42 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
         "editor::Backspace" => KeyBinding::new(keys, Backspace, context),
         "editor::Delete" => KeyBinding::new(keys, Delete, context),
         "editor::Newline" => KeyBinding::new(keys, Newline, context),
-        // pane
-        "pane::CloseTab" => KeyBinding::new(keys, CloseTab, context),
-        "pane::NextTab" => KeyBinding::new(keys, NextTab, context),
-        "pane::PrevTab" => KeyBinding::new(keys, PrevTab, context),
-        // workspace
-        "workspace::Save" => KeyBinding::new(keys, Save, context),
         // project_tree
-        "project_tree::TreeSelectPrev" => bind!(project_tree::TreeSelectPrev),
-        "project_tree::TreeSelectNext" => bind!(project_tree::TreeSelectNext),
-        "project_tree::TreeCollapse" => bind!(project_tree::TreeCollapse),
-        "project_tree::TreeExpand" => bind!(project_tree::TreeExpand),
-        "project_tree::TreeActivate" => bind!(project_tree::TreeActivate),
-        // window_controls
-        "window_controls::QuitWindow" => bind!(window_controls::QuitWindow),
-        "window_controls::MinimizeWindow" => bind!(window_controls::MinimizeWindow),
-        "window_controls::ToggleMaximizeWindow" => bind!(window_controls::ToggleMaximizeWindow),
-        // top_bar
-        "top_bar::OpenSettings" => bind!(top_bar::OpenSettings),
-        "top_bar::GitFetch" => bind!(top_bar::GitFetch),
-        "top_bar::GitPull" => bind!(top_bar::GitPull),
-        "top_bar::GitPush" => bind!(top_bar::GitPush),
-        // dock
-        "dock::ToggleProjectTree" => bind!(dock::ToggleProjectTree),
-        "dock::ToggleVersionControl" => bind!(dock::ToggleVersionControl),
-        "dock::ToggleOutline" => bind!(dock::ToggleOutline),
-        "dock::ToggleLanguageServer" => bind!(dock::ToggleLanguageServer),
-        "dock::ToggleDiagnostics" => bind!(dock::ToggleDiagnostics),
-        "dock::ToggleProjectSearch" => bind!(dock::ToggleProjectSearch),
-        "dock::ToggleTerminal" => bind!(dock::ToggleTerminal),
-        "dock::ToggleDebug" => bind!(dock::ToggleDebug),
-        "dock::ToggleKeyboardShortcuts" => bind!(dock::ToggleKeyboardShortcuts),
+        "project_tree::TreeSelectPrev" => KeyBinding::new(keys, TreeSelectPrev, context),
+        "project_tree::TreeSelectNext" => KeyBinding::new(keys, TreeSelectNext, context),
+        "project_tree::TreeCollapse" => KeyBinding::new(keys, TreeCollapse, context),
+        "project_tree::TreeExpand" => KeyBinding::new(keys, TreeExpand, context),
+        "project_tree::TreeActivate" => KeyBinding::new(keys, TreeActivate, context),
         // picker
-        "picker::PickerSelectNext" => KeyBinding::new(keys, PickerSelectNext, context),
         "picker::PickerSelectPrev" => KeyBinding::new(keys, PickerSelectPrev, context),
+        "picker::PickerSelectNext" => KeyBinding::new(keys, PickerSelectNext, context),
         "picker::PickerConfirm" => KeyBinding::new(keys, PickerConfirm, context),
         "picker::PickerCancel" => KeyBinding::new(keys, PickerCancel, context),
+        "project_picker::OpenLocalProject" => KeyBinding::new(keys, OpenLocalProject, context),
+        // pane
+        "pane::PrevTab" => KeyBinding::new(keys, PrevTab, context),
+        "pane::NextTab" => KeyBinding::new(keys, NextTab, context),
+        "pane::CloseTab" => KeyBinding::new(keys, CloseTab, context),
+        // workspace (global, no context)
+        "workspace::QuitWindow" => KeyBinding::new(keys, QuitWindow, context),
+        "workspace::MinimizeWindow" => KeyBinding::new(keys, MinimizeWindow, context),
+        "workspace::ToggleMaximizeWindow" => KeyBinding::new(keys, ToggleMaximizeWindow, context),
         "project_picker::ToggleProjectPicker" => {
             KeyBinding::new(keys, ToggleProjectPicker, context)
         }
-        "project_picker::OpenLocalProject" => KeyBinding::new(keys, OpenLocalProject, context),
+        "workspace::OpenSettings" => KeyBinding::new(keys, OpenSettings, context),
+        "workspace::ToggleProjectTree" => KeyBinding::new(keys, ToggleProjectTree, context),
+        "workspace::ToggleVersionControl" => KeyBinding::new(keys, ToggleVersionControl, context),
+        "workspace::ToggleOutline" => KeyBinding::new(keys, ToggleOutline, context),
+        "workspace::ToggleLanguageServer" => KeyBinding::new(keys, ToggleLanguageServer, context),
+        "workspace::ToggleDiagnostics" => KeyBinding::new(keys, ToggleDiagnostics, context),
+        "workspace::ToggleProjectSearch" => KeyBinding::new(keys, ToggleProjectSearch, context),
+        "workspace::ToggleTerminal" => KeyBinding::new(keys, ToggleTerminal, context),
+        "workspace::ToggleDebug" => KeyBinding::new(keys, ToggleDebug, context),
+        "workspace::ToggleKeyboardShortcuts" => {
+            KeyBinding::new(keys, ToggleKeyboardShortcuts, context)
+        }
+        "workspace::Save" => KeyBinding::new(keys, Save, context),
         _ => {
             eprintln!("未知 action 名称: {action_name}");
             return None;
@@ -277,10 +269,10 @@ mod tests {
     fn default_macos_keymap_defines_workspace_save_shortcut() {
         let expected_keys = "cmd-s";
         let groups: Vec<RawBindingGroup> =
-            serde_json::from_str(include_str!("../assets/keymaps/default-macos.json"))
+            serde_json::from_str(include_str!("../../assets/keymaps/default-macos.json"))
                 .expect("macOS 默认 keymap JSON 应合法");
         assert!(groups.iter().any(|group| {
-            group.context.as_deref() == Some("Workspace")
+            group.context.is_none()
                 && group.bindings.get(expected_keys).map(String::as_str) == Some("workspace::Save")
         }));
         assert!(build(expected_keys, "workspace::Save", Some("Workspace")).is_some());

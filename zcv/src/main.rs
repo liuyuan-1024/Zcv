@@ -1,9 +1,18 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod assets;
+mod breadcrumbs;
+mod diagnostics;
 mod editor;
+mod fs_watcher;
+mod go_to_line;
 mod keymap;
+mod language_selector;
+mod language_tools;
 mod languages;
+mod project_search;
+mod project_tree;
+mod recent_projects;
 mod theme;
 mod ui;
 mod workspace;
@@ -16,6 +25,8 @@ use gpui::{
 use assets::{EmbeddedAssets, embedded_fonts};
 use theme::Theme;
 use workspace::Workspace;
+
+use crate::workspace::{Dock, Pane};
 
 fn main() {
     Application::new()
@@ -54,27 +65,22 @@ fn main() {
                                 &workspace.right_dock,
                                 &workspace.bottom_dock,
                             ] {
-                                dock.update(
-                                    cx,
-                                    |dock: &mut workspace::dock::Dock,
-                                     cx: &mut gpui::Context<workspace::dock::Dock>|
-                                     {
-                                        let focus = dock.focus.clone();
-                                        let sub = cx.on_focus(
+                                dock.update(cx, |dock: &mut Dock, cx: &mut gpui::Context<Dock>| {
+                                    let focus = dock.focus.clone();
+                                    let sub = cx.on_focus(
                                             &focus,
                                             window,
-                                            |d: &mut workspace::dock::Dock,
+                                            |d: &mut Dock,
                                              w: &mut gpui::Window,
-                                             c: &mut gpui::Context<workspace::dock::Dock>|
+                                             c: &mut gpui::Context<Dock>|
                                              {
                                                 if let Some(panel) = d.visible_panel() {
                                                     w.focus(&panel.focus_handle(c));
                                                 }
                                             },
                                         );
-                                        dock._subscriptions.push(sub);
-                                    },
-                                );
+                                    dock._subscriptions.push(sub);
+                                });
                             }
                         });
                         #[cfg(debug_assertions)]
@@ -92,12 +98,8 @@ fn main() {
 }
 
 /// 参照 Zed：在应用层注册 Pane 的 Toolbar 子项。
-fn initialize_pane(
-    pane: &Entity<crate::workspace::pane::Pane>,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
-    use workspace::breadcrumbs::Breadcrumbs;
+fn initialize_pane(pane: &Entity<Pane>, window: &mut Window, cx: &mut Context<Workspace>) {
+    use crate::breadcrumbs::Breadcrumbs;
 
     pane.update(cx, |pane, cx| {
         pane.toolbar().update(cx, |toolbar, cx| {

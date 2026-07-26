@@ -2,10 +2,10 @@
 
 use gpui::{AnyElement, Div, Entity, Window, actions, div, prelude::*};
 
+use super::window_controls;
+use crate::recent_projects::{OnProjectSelected, ProjectPicker};
 use crate::theme::{color, space};
-use crate::ui::glyph::Glyph;
-use crate::workspace::project_picker::{OnProjectSelected, ProjectPicker};
-use crate::workspace::window_controls;
+use crate::ui::Glyph;
 
 actions!(top_bar, [OpenSettings, GitFetch, GitPull, GitPush,]);
 

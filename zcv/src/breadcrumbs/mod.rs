@@ -6,9 +6,9 @@
 
 use gpui::{AnyElement, Context, EventEmitter, Render, Subscription, Window, div, prelude::*};
 
-use super::item::{ItemEvent, ItemHandle};
-use super::toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 use crate::theme::{color, space};
+use crate::workspace::{ItemEvent, ItemHandle};
+use crate::workspace::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 
 pub(crate) struct Breadcrumbs {
     pane_focused: bool,

@@ -75,7 +75,7 @@ impl Render for PanelButtons {
                     .label(label)
                     .shortcut_by_name(action, cx)
                     .color(fg)
-                    .on_click(move |window, cx| on_click(window, cx))
+                    .on_click(on_click)
                     .into_any_element()
             })
             .collect();

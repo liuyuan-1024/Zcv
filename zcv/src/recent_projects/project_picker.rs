@@ -194,19 +194,19 @@ impl ProjectPicker {
     fn load_projects() -> Vec<ProjectEntry> {
         let mut projects = recent_projects::load_recent_projects();
         // 最近列表为空时，将当前工作目录作为候选
-        if projects.is_empty() {
-            if let Ok(cwd) = std::env::current_dir() {
-                let label = cwd
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if !label.is_empty() {
-                    projects.push(ProjectEntry {
-                        label,
-                        path: cwd.to_string_lossy().to_string(),
-                        is_current: true,
-                    });
-                }
+        if projects.is_empty()
+            && let Ok(cwd) = std::env::current_dir()
+        {
+            let label = cwd
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !label.is_empty() {
+                projects.push(ProjectEntry {
+                    label,
+                    path: cwd.to_string_lossy().to_string(),
+                    is_current: true,
+                });
             }
         }
         projects
@@ -308,8 +308,8 @@ impl ProjectPicker {
         // 通过 foreground executor 处理异步结果
         cx.foreground_executor()
             .spawn(async move {
-                match rx.await {
-                    Ok(inner) => match inner {
+                if let Ok(inner) = rx.await {
+                    match inner {
                         Ok(Some(paths)) => {
                             if let Some(path) = paths.first() {
                                 *pending.borrow_mut() = Some(path.to_string_lossy().to_string());
@@ -319,9 +319,8 @@ impl ProjectPicker {
                         Err(e) => {
                             eprintln!("文件选择器出错: {e}");
                         }
-                    },
-                    Err(_) => {} // channel 被关闭（取消）
-                }
+                    }
+                } // Err(_) → channel 被关闭（取消），静默忽略
             })
             .detach();
     }

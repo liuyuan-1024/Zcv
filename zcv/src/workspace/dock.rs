@@ -161,12 +161,11 @@ impl Dock {
             handle.set_active(false, window, cx);
         } else {
             // 停用旧面板（如果切换面板）
-            if let Some(old_idx) = self.active_panel_index {
-                if old_idx != panel_index {
-                    if let Some(old_handle) = self.panels.get(old_idx) {
-                        old_handle.set_active(false, window, cx);
-                    }
-                }
+            if let Some(old_idx) = self.active_panel_index
+                && old_idx != panel_index
+                && let Some(old_handle) = self.panels.get(old_idx)
+            {
+                old_handle.set_active(false, window, cx);
             }
             self.active_panel_index = Some(panel_index);
             self.is_open = true;
@@ -209,15 +208,15 @@ impl Dock {
         self.size = new_size;
 
         // 左右 dock 耦合：调整 sibling 的尺寸
-        if self.position == DockPosition::Left || self.position == DockPosition::Right {
-            if let Some(sibling) = self.sibling.as_ref().and_then(|s| s.upgrade()) {
-                sibling.update(cx, |sib, _| {
-                    let other_max = window_size.width - new_size - MIN_SIZE;
-                    if sib.size > other_max {
-                        sib.size = other_max.max(MIN_SIZE);
-                    }
-                });
-            }
+        if (self.position == DockPosition::Left || self.position == DockPosition::Right)
+            && let Some(sibling) = self.sibling.as_ref().and_then(|s| s.upgrade())
+        {
+            sibling.update(cx, |sib, _| {
+                let other_max = window_size.width - new_size - MIN_SIZE;
+                if sib.size > other_max {
+                    sib.size = other_max.max(MIN_SIZE);
+                }
+            });
         }
 
         cx.notify();

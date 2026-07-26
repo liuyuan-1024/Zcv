@@ -126,13 +126,8 @@ impl ItemHandle for Entity<Editor> {
         })
     }
 
-    fn breadcrumb_location(&self, cx: &App) -> ToolbarItemLocation {
-        // 有文件路径时显示面包屑在左区
-        if self.read(cx).file_path().is_some() {
-            ToolbarItemLocation::PrimaryLeft
-        } else {
-            ToolbarItemLocation::PrimaryLeft
-        }
+    fn breadcrumb_location(&self, _cx: &App) -> ToolbarItemLocation {
+        ToolbarItemLocation::PrimaryLeft
     }
 
     fn breadcrumbs(&self, cx: &App) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
@@ -141,7 +136,7 @@ impl ItemHandle for Entity<Editor> {
         let relative = cx
             .try_global::<super::ProjectRoot>()
             .and_then(|root| path.strip_prefix(&root.0).ok())
-            .unwrap_or(&path);
+            .unwrap_or(path);
         let segments: Vec<SharedString> = relative
             .iter()
             .map(|component| component.to_string_lossy().into_owned().into())

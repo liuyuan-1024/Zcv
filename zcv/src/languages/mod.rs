@@ -205,7 +205,7 @@ pub fn language_for_file(path: &Path, first_line: Option<&str>) -> Option<&'stat
             // 检查文件名是否以 ".suffix" 结尾
             if filename.ends_with(&dot_suffix) || extension == Some(suffix) {
                 let len = suffix.len();
-                if best.map_or(true, |(_, best_len)| len > best_len) {
+                if best.is_none_or(|(_, best_len)| len > best_len) {
                     best = Some((entry.name, len));
                 }
             }
@@ -218,12 +218,11 @@ pub fn language_for_file(path: &Path, first_line: Option<&str>) -> Option<&'stat
     // ── 第 2 轮：首行正则匹配 ──
     if let Some(line) = first_line {
         for entry in LANGUAGES {
-            if let Some(pattern) = entry.matcher.first_line_pattern {
-                if let Ok(re) = regex::Regex::new(pattern) {
-                    if re.is_match(line) {
-                        return Some(entry.name);
-                    }
-                }
+            if let Some(pattern) = entry.matcher.first_line_pattern
+                && let Ok(re) = regex::Regex::new(pattern)
+                && re.is_match(line)
+            {
+                return Some(entry.name);
             }
         }
     }

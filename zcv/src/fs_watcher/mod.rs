@@ -747,15 +747,15 @@ fn path_covered_by_recursive_registration(
     path: &Path,
 ) -> bool {
     for ancestor in path.ancestors().skip(1) {
-        if let Some(reg) = registrations.get(&WatchKey::for_path(ancestor, false)) {
-            if reg.mode == WatcherMode::Poll || cfg!(target_os = "macos") {
-                return true;
-            }
+        if let Some(reg) = registrations.get(&WatchKey::for_path(ancestor, false))
+            && (reg.mode == WatcherMode::Poll || cfg!(target_os = "macos"))
+        {
+            return true;
         }
-        if let Some(reg) = registrations.get(&WatchKey::for_path(ancestor, true)) {
-            if reg.mode == WatcherMode::Poll || cfg!(target_os = "macos") {
-                return true;
-            }
+        if let Some(reg) = registrations.get(&WatchKey::for_path(ancestor, true))
+            && (reg.mode == WatcherMode::Poll || cfg!(target_os = "macos"))
+        {
+            return true;
         }
     }
     false
@@ -867,7 +867,7 @@ fn enqueue_path_events(
         let _ = signal_tx.try_send(());
     }
     coalesce_pending_rescans(&mut pending, &mut path_events);
-    extend_sorted(&mut *pending, path_events);
+    extend_sorted(&mut pending, path_events);
 }
 
 /// 合并 Rescan 事件。

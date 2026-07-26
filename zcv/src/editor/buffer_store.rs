@@ -60,7 +60,7 @@ impl BufferStore {
         let Ok(text) = std::fs::read_to_string(&canonical) else {
             return;
         };
-        let _ = buffer.update(cx, |b, _| {
+        buffer.update(cx, |b, _| {
             let _ = b.reload_from_text(text);
         });
     }

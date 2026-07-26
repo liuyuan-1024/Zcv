@@ -103,11 +103,11 @@ impl Workspace {
         Vec<Arc<dyn PanelHandle>>,
         Vec<(Arc<dyn PanelHandle>, DockPosition)>,
     ) {
-        let version_control = cx.new(|cx| VersionControlPanel::new(cx));
-        let outline = cx.new(|cx| OutlinePanel::new(cx));
-        let terminal = cx.new(|cx| TerminalPanel::new(cx));
-        let debug = cx.new(|cx| DebugPanel::new(cx));
-        let keyboard_shortcuts = cx.new(|cx| KeyboardShortcutsPanel::new(cx));
+        let version_control = cx.new(VersionControlPanel::new);
+        let outline = cx.new(OutlinePanel::new);
+        let terminal = cx.new(TerminalPanel::new);
+        let debug = cx.new(DebugPanel::new);
+        let keyboard_shortcuts = cx.new(KeyboardShortcutsPanel::new);
 
         let mut handles: Vec<Arc<dyn PanelHandle>> = Vec::new();
         let mut pairs: Vec<(Arc<dyn PanelHandle>, DockPosition)> = Vec::new();
@@ -523,7 +523,7 @@ impl Workspace {
         if let Some(view_id) = pane_entity.read(cx).active {
             pane_entity.update(cx, |pane, cx| {
                 pane.close_tab(view_id, window, cx);
-                cx.emit(pane::PaneEvent::RemovedItem { view_id });
+                cx.emit(pane::PaneEvent::Removed { view_id });
                 cx.notify();
             });
             if let Some(editor) = pane_entity.read(cx).active_editor(cx) {

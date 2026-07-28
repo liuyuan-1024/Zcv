@@ -10,6 +10,7 @@ mod keymap;
 mod language_selector;
 mod language_tools;
 mod languages;
+mod project;
 mod project_search;
 mod project_tree;
 mod recent_projects;

@@ -61,11 +61,6 @@ pub(crate) struct ProjectTree {
 }
 
 impl ProjectTree {
-    /// 当前项目根目录。
-    pub(crate) fn root(&self) -> &Path {
-        &self.root
-    }
-
     pub(crate) fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         Self {

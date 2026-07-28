@@ -84,8 +84,9 @@ Buffer 不负责：
 
 Buffer 与 Editor 必须分离。同一个 Buffer 可以被多个 Editor 共享，用于分屏等场景；每个 Editor 分别持有自己的选区和滚动状态。
 
-文件 Buffer 由宿主层的 BufferStore 创建和索引。BufferStore 按规范化路径复用
-`Entity<Buffer>`，只保留弱引用，不持有选区、滚动或 Editor 生命周期状态。
+文件 Buffer 由宿主层的 BufferStore 创建和索引。
+BufferStore 按规范化路径复用 `Entity<Buffer>`，只保留弱引用，不持有选区、滚动或 Editor 生命周期状态。
+BufferStore 由项目级 `Project` Entity 持有，不注册为 App Global；`Workspace` 通过 `Entity<Project>` 打开、保存和监听文件，避免多个窗口或项目共享同一个全局缓存。
 
 Buffer 不得持有 `selection` 字段，也不得通过 `selection()` / `set_selection()` 暴露全局当前选区。接受选区的编辑入口必须把 SelectionSet 作为参数，并把编辑后的 SelectionSet 作为结果返回。
 

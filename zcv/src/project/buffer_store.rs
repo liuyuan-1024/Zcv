@@ -1,13 +1,13 @@
-//! BufferStore —— 文件路径到共享 Buffer Entity 的索引。
+//! 文件路径到共享 Buffer Entity 的索引。
 //!
-//! Store 只保留弱引用；
-//! 只要还有 Editor 或 View 持有 Buffer，它就能按路径复用，最后一个使用者释放后，Buffer 的生命周期也随之结束。
+//! Store 只保留弱引用；只要还有 Editor 或 View 持有 Buffer，它就能按路径复用，
+//! 最后一个使用者释放后，Buffer 的生命周期也随之结束。
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use gpui::{App, AppContext, Entity, Global, WeakEntity};
+use gpui::{App, AppContext, Entity, WeakEntity};
 use zcv_engine::{Buffer, BufferConfig, BufferLoadError, BufferOrigin};
 
 pub(crate) struct BufferStore {
@@ -44,8 +44,6 @@ impl BufferStore {
     }
 
     /// 如果路径对应某个已打开的 Buffer，从磁盘重新加载其内容。
-    ///
-    /// 由 FsWatcher 在检测到文件变更时调用。
     pub(crate) fn reload_buffer_for_path(&mut self, path: &Path, cx: &mut App) {
         let Ok(canonical) = path.canonicalize() else {
             return;
@@ -60,22 +58,25 @@ impl BufferStore {
         let Ok(text) = std::fs::read_to_string(&canonical) else {
             return;
         };
-        buffer.update(cx, |b, _| {
-            let _ = b.reload_from_text(text);
+        buffer.update(cx, |buffer, cx| {
+            if buffer.reload_from_text(text).is_ok() {
+                cx.notify();
+            }
         });
     }
 }
 
-impl Global for BufferStore {}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use gpui::{AppContext, TestAppContext};
 
     use super::*;
+
+    static NEXT_TEST_FILE_ID: AtomicU64 = AtomicU64::new(1);
 
     #[gpui::test]
     fn opening_the_same_file_reuses_its_buffer(cx: &mut TestAppContext) {
@@ -90,6 +91,27 @@ mod tests {
         });
 
         assert_eq!(first, second);
+        fs::remove_file(path).expect("测试文件应可删除");
+    }
+
+    #[gpui::test]
+    fn separate_project_buffer_stores_do_not_share_buffers(cx: &mut TestAppContext) {
+        let path = test_file_path();
+        fs::write(&path, "项目隔离").expect("测试文件应可写入");
+
+        let (first, second) = cx.update(|cx| {
+            let mut first_store = BufferStore::new();
+            let mut second_store = BufferStore::new();
+            let first = first_store
+                .open_buffer(&path, cx)
+                .expect("第一项目应打开文件");
+            let second = second_store
+                .open_buffer(&path, cx)
+                .expect("第二项目应打开文件");
+            (first, second)
+        });
+
+        assert_ne!(first, second);
         fs::remove_file(path).expect("测试文件应可删除");
     }
 
@@ -127,8 +149,9 @@ mod tests {
             .expect("系统时间应晚于 Unix Epoch")
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "zcv-buffer-store-{}-{nonce}.txt",
-            std::process::id()
+            "zcv-buffer-store-{}-{nonce}-{}.txt",
+            std::process::id(),
+            NEXT_TEST_FILE_ID.fetch_add(1, Ordering::Relaxed)
         ))
     }
 }

@@ -118,6 +118,7 @@ impl Pane {
     pub fn open_file(
         &mut self,
         path: PathBuf,
+        project_root: PathBuf,
         _title: impl Into<String>,
         buffer: Entity<Buffer>,
         window: &mut Window,
@@ -136,7 +137,7 @@ impl Pane {
         let view_id = ViewId(NEXT_VIEW_ID.fetch_add(1, Ordering::Relaxed));
         let editor = cx.new(|cx| Editor::for_buffer(buffer, cx));
         editor.update(cx, |editor, cx| {
-            editor.set_file_path(path, cx);
+            editor.set_file_path(path, project_root, cx);
         });
         let focus = editor.read(cx).focus_handle();
         // Pane 观察 Editor 变化，变化时触发自身重绘（如 dirty 状态）
@@ -628,7 +629,14 @@ mod tests {
             .unwrap_or_default();
         cx.add_window_view(|window, cx| {
             pane.update(cx, |p, cx| {
-                p.open_file(path, file_name, buffer, window, cx);
+                p.open_file(
+                    path,
+                    std::env::current_dir().expect("测试项目根应可读取"),
+                    file_name,
+                    buffer,
+                    window,
+                    cx,
+                );
             });
             TestView
         });

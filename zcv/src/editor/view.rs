@@ -284,6 +284,7 @@ pub(crate) struct Editor {
     display_map: DisplayMap,
     mode: EditorMode,
     file_path: Option<PathBuf>,
+    project_root: Option<PathBuf>,
     selections: SelectionSet,
     selection_history: SelectionHistory,
     scroll_manager: ScrollManager,
@@ -346,8 +347,18 @@ impl Editor {
         self.file_path.as_deref()
     }
 
-    pub(crate) fn set_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    pub(crate) fn project_root(&self) -> Option<&Path> {
+        self.project_root.as_deref()
+    }
+
+    pub(crate) fn set_file_path(
+        &mut self,
+        path: PathBuf,
+        project_root: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
         self.file_path = Some(path);
+        self.project_root = Some(project_root);
         cx.emit(ItemEvent::UpdateBreadcrumbs);
     }
 
@@ -511,6 +522,7 @@ impl Editor {
             display_map,
             mode,
             file_path: None,
+            project_root: None,
             selections: SelectionSet::default(),
             selection_history: SelectionHistory::default(),
             scroll_manager: ScrollManager::default(),

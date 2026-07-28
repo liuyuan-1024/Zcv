@@ -131,11 +131,11 @@ impl ItemHandle for Entity<Editor> {
     }
 
     fn breadcrumbs(&self, cx: &App) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
-        let path = self.read(cx).file_path()?;
-        // 相对于项目根显示，从项目根开始剥掉前缀
-        let relative = cx
-            .try_global::<super::ProjectRoot>()
-            .and_then(|root| path.strip_prefix(&root.0).ok())
+        let editor = self.read(cx);
+        let path = editor.file_path()?;
+        let relative = editor
+            .project_root()
+            .and_then(|root| path.strip_prefix(root).ok())
             .unwrap_or(path);
         let segments: Vec<SharedString> = relative
             .iter()

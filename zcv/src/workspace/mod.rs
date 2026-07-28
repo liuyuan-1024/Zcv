@@ -35,35 +35,26 @@ pub(crate) use window_controls::{
 };
 
 use std::cell::Cell;
-use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use gpui::{
-    AsyncApp, Context, Div, Entity, FocusHandle, Global, MouseButton, Render, Subscription, Task,
-    WeakEntity, Window, actions, div, prelude::*, px,
+    Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Window, actions, div,
+    prelude::*, px,
 };
-use zcv_engine::{Buffer, BufferSaveError};
 
 use self::dock::render_body as render_layout_body;
 use crate::diagnostics::DiagnosticsButton;
-use crate::editor::BufferStore;
-use crate::fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use crate::go_to_line::CursorPosition;
 use crate::keymap;
 use crate::language_selector::ActiveBufferLanguage;
 use crate::language_tools::LspButton;
+use crate::project::{Project, ProjectEvent};
 use crate::project_search::ProjectSearchButton;
 use crate::project_tree::{OnOpenFile, ProjectTree};
 use crate::recent_projects::{self, OnProjectSelected, ToggleProjectPicker};
 use crate::theme::{color, typography};
-
-/// 项目根目录全局，供 breadcrumbs 等组件读取相对路径。
-#[derive(Clone)]
-pub(crate) struct ProjectRoot(pub(crate) PathBuf);
-
-impl Global for ProjectRoot {}
 
 actions!(workspace, [Save]);
 
@@ -73,6 +64,7 @@ pub(crate) struct Workspace {
     pub(crate) focus_pane: Option<Entity<Pane>>,
     top_bar: Entity<TopBar>,
     status_bar: Entity<StatusBar>,
+    project: Entity<Project>,
     project_tree: Entity<ProjectTree>,
     /// 独立 Entity 管理的三个 Dock 区域。
     pub(crate) left_dock: Entity<Dock>,
@@ -82,14 +74,6 @@ pub(crate) struct Workspace {
     panel_action_map: Vec<(&'static str, Entity<Dock>, usize)>,
     /// 拖拽协调：Dock 通过此 Cell 通知 Workspace 哪个 dock 正在被拖拽。
     drag_notify: Rc<Cell<Option<DockPosition>>>,
-    /// FsWatcher 实例。
-    fs_watcher: Option<Arc<dyn Watcher>>,
-    /// 待处理的 FS 事件缓冲区。
-    pending_fs_events: Arc<Mutex<Vec<PathEvent>>>,
-    /// FS 事件信号接收端（后台 task 持有 clone）。
-    event_signal: async_channel::Receiver<()>,
-    /// 前台 task（处理 FS 事件 → reload Buffer + 刷新 ProjectTree）。
-    _fs_bg_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -155,7 +139,7 @@ impl Workspace {
 
         // 先创建 ProjectTree（唯一实体），再创建面板
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        cx.set_global(ProjectRoot(root.clone()));
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
         let root_for_tree = root.clone();
         let project_tree: Entity<ProjectTree> = cx.new(|cx| {
             let mut tree = ProjectTree::new(root_for_tree, cx);
@@ -296,51 +280,15 @@ impl Workspace {
             );
         });
 
-        cx.set_global(BufferStore::new());
-
-        // ═══ 文件系统监听（参考 Zed 架构：Workspace 统一管理） ═════
-
-        let (fs_signal_tx, fs_signal_rx) = async_channel::unbounded::<()>();
-        let fs_pending: Arc<Mutex<Vec<PathEvent>>> = Arc::new(Mutex::new(Vec::new()));
-        let fs_watcher: Arc<dyn Watcher> =
-            Arc::new(FsWatcher::new(fs_signal_tx, fs_pending.clone()));
-
-        if let Err(e) = fs_watcher.add(&root) {
-            log::warn!("无法监听项目目录 {:?}：{e}", root);
-        }
-
-        // 前台 task：处理 FS 事件 → reload Buffer + 刷新 ProjectTree
-        let bg_pending = fs_pending.clone();
-        let bg_signal = fs_signal_rx.clone();
-        let fs_bg_task: Task<()> =
-            cx.spawn(|ws: WeakEntity<Workspace>, async_cx: &mut AsyncApp| {
-                let mut cx = async_cx.clone();
-                async move {
-                    while let Ok(()) = bg_signal.recv().await {
-                        let events = std::mem::take(&mut *bg_pending.lock().unwrap());
-
-                        // 1. 外部修改文件 → 重新加载已打开的 Buffer
-                        for event in &events {
-                            if matches!(
-                                event.kind,
-                                Some(PathEventKind::Changed | PathEventKind::Created)
-                            ) {
-                                let path = event.path.clone();
-                                let _ = cx.update(|app| {
-                                    app.update_global::<BufferStore, _>(|store, app| {
-                                        store.reload_buffer_for_path(&path, app);
-                                    });
-                                });
-                            }
-                        }
-
-                        // 2. 通知 ProjectTree 刷新
-                        if !events.is_empty() {
-                            let _ = ws.update(&mut cx, |workspace, cx| {
-                                workspace.project_tree.update(cx, |_, cx| cx.notify());
-                            });
-                        }
-                    }
+        let project_subscription =
+            cx.subscribe(&project, |workspace, _project, event, cx| match event {
+                ProjectEvent::RootChanged(root) => {
+                    workspace.project_tree.update(cx, |tree, cx| {
+                        tree.set_root(root.clone(), cx);
+                    });
+                }
+                ProjectEvent::EntriesChanged => {
+                    workspace.project_tree.update(cx, |_, cx| cx.notify());
                 }
             });
 
@@ -350,17 +298,14 @@ impl Workspace {
             focus_pane: Some(initial_pane),
             top_bar,
             status_bar,
+            project,
             project_tree,
             left_dock,
             right_dock,
             bottom_dock,
             panel_action_map,
             drag_notify,
-            fs_watcher: Some(fs_watcher),
-            pending_fs_events: fs_pending,
-            event_signal: fs_signal_rx,
-            _fs_bg_task: Some(fs_bg_task),
-            _subscriptions: Vec::new(),
+            _subscriptions: vec![project_subscription],
         }
     }
 
@@ -378,10 +323,15 @@ impl Workspace {
                 return;
             }
         };
-        let Ok(buffer) =
-            cx.update_global::<BufferStore, _>(|store, cx| store.open_buffer(&path, cx))
-        else {
-            return;
+        let (project_root, buffer) = self.project.update(cx, |project, cx| {
+            (project.root().to_path_buf(), project.open_buffer(&path, cx))
+        });
+        let buffer = match buffer {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                eprintln!("打开文件失败：{}：{error}", path.display());
+                return;
+            }
         };
         let Some(pane) = self.focus_pane.clone() else {
             return;
@@ -391,7 +341,7 @@ impl Workspace {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         let focus = pane.update(cx, |pane, cx| {
-            pane.open_file(path, file_name, buffer, window, cx)
+            pane.open_file(path, project_root, file_name, buffer, window, cx)
         });
         window.focus(&focus);
         window.refresh();
@@ -437,13 +387,9 @@ impl Workspace {
         };
         let buffer = editor.read(cx).buffer();
 
-        let result = buffer.update(cx, |buffer, cx| {
-            let result = write_buffer_to_path(buffer, &path);
-            if result.is_ok() {
-                cx.notify();
-            }
-            result
-        });
+        let result = self
+            .project
+            .update(cx, |project, cx| project.save_buffer(&buffer, &path, cx));
         if let Err(error) = result {
             eprintln!("保存文件失败（{}）：{error}", path.display());
         }
@@ -592,31 +538,28 @@ impl Workspace {
         });
     }
 
-    /// 切换到指定目录作为项目根目录，同时重启文件监听。
+    /// 切换到指定目录作为项目根目录。
     fn switch_project(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
         let root = PathBuf::from(path);
+        let result = self
+            .project
+            .update(cx, |project, cx| project.set_root(root, cx));
+        if let Err(error) = result {
+            eprintln!("切换项目失败（{path}）：{error}");
+            return;
+        }
+        let root = self.project.read(cx).root().to_path_buf();
         let label = root
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        // 重启 FsWatcher：移除旧根 → 监听新根
-        if let Some(watcher) = &self.fs_watcher {
-            let _ = watcher.remove(self.project_tree.read(cx).root());
-            if let Err(e) = watcher.add(&root) {
-                log::warn!("无法监听项目目录 {:?}：{e}", root);
-            }
-        }
-
-        self.project_tree.update(cx, |tree, cx| {
-            tree.set_root(root.clone(), cx);
-        });
         self.top_bar.update(cx, |bar, cx| {
             bar.project_picker.update(cx, |picker, _cx| {
                 picker.set_current_label(label);
             });
         });
-        recent_projects::add_to_recent(path);
+        recent_projects::add_to_recent(&root.to_string_lossy());
         window.refresh();
     }
 }
@@ -740,68 +683,5 @@ impl Render for Workspace {
                 drag_notify_up.set(None);
                 window.refresh();
             })
-    }
-}
-
-fn write_buffer_to_path(buffer: &mut Buffer, path: &Path) -> Result<(), BufferSaveError> {
-    let version = buffer.version();
-    let mut file = File::create(path)?;
-    buffer.write_to(version, &mut file)?;
-    file.sync_all()?;
-    buffer.mark_saved();
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    use zcv_engine::{BufferConfig, ByteOffset};
-
-    use super::*;
-
-    #[test]
-    fn saving_buffer_writes_current_version_and_marks_it_clean() {
-        let path = test_file_path();
-        let mut buffer =
-            Buffer::scratch("旧内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
-        buffer
-            .insert(buffer.len_bytes(), " + 新内容")
-            .expect("测试编辑应成功");
-        assert!(buffer.is_dirty());
-
-        write_buffer_to_path(&mut buffer, &path).expect("保存应成功");
-
-        assert_eq!(
-            fs::read_to_string(&path).expect("应读回文件"),
-            "旧内容 + 新内容"
-        );
-        assert!(!buffer.is_dirty());
-        fs::remove_file(path).expect("测试文件应可删除");
-    }
-
-    #[test]
-    fn failed_save_keeps_buffer_dirty() {
-        let path = test_file_path().join("missing.txt");
-        let mut buffer =
-            Buffer::scratch("内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
-        buffer
-            .insert(ByteOffset::ZERO, "未保存")
-            .expect("测试编辑应成功");
-
-        assert!(write_buffer_to_path(&mut buffer, &path).is_err());
-        assert!(buffer.is_dirty());
-    }
-
-    fn test_file_path() -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("系统时间应晚于 Unix Epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "zcv-workspace-save-{}-{nonce}.txt",
-            std::process::id()
-        ))
     }
 }

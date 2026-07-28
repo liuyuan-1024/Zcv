@@ -1,3 +1,5 @@
+//! DisplayMap 测试辅助函数。
+
 use zcv_engine::{
     Buffer, BufferConfig, ByteOffset, Edit, Line, LineRange, LogicalColumn, TextRange, Transaction,
 };

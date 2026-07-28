@@ -1,4 +1,4 @@
-//! 统一 Editor 的跨帧状态骨架。
+//! Editor View 的跨帧状态与交互。
 
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -21,7 +21,6 @@ use super::display_map::{DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::ScrollManager;
 use super::selection::{EditOutcome, SelectionHistory, apply_targeted_edits, replace_selections};
-use crate::workspace::ItemEvent;
 use zcv_theme::{color, typography};
 
 actions!(
@@ -56,6 +55,13 @@ actions!(
         Outdent,
     ]
 );
+
+/// Editor 自身的领域事件。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditorEvent {
+    /// 编辑器关联的文件路径发生变化。
+    PathChanged,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Motion {
@@ -279,7 +285,7 @@ fn index_presentation_lines(text: &str) -> Vec<(usize, usize)> {
     starts
 }
 
-pub(crate) struct Editor {
+pub struct Editor {
     buffer: Entity<Buffer>,
     buffer_subscription: TextSubscription,
     display_map: DisplayMap,
@@ -300,18 +306,14 @@ pub(crate) struct Editor {
 }
 
 impl Editor {
-    pub(crate) fn single_line(cx: &mut Context<Self>) -> Self {
+    pub fn single_line(cx: &mut Context<Self>) -> Self {
         let buffer = Buffer::scratch(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
         let buffer = cx.new(|_| buffer);
         Self::new(buffer, EditorMode::SingleLine, cx)
     }
 
-    pub(crate) fn auto_height(
-        min_lines: usize,
-        max_lines: Option<usize>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn auto_height(min_lines: usize, max_lines: Option<usize>, cx: &mut Context<Self>) -> Self {
         let buffer = Buffer::scratch(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
         let buffer = cx.new(|_| buffer);
@@ -325,11 +327,11 @@ impl Editor {
         )
     }
 
-    pub(crate) fn for_buffer(buffer: Entity<Buffer>, cx: &mut Context<Self>) -> Self {
+    pub fn for_buffer(buffer: Entity<Buffer>, cx: &mut Context<Self>) -> Self {
         Self::new(buffer, EditorMode::Full, cx)
     }
 
-    pub(crate) fn focus_handle(&self) -> FocusHandle {
+    pub fn focus_handle(&self) -> FocusHandle {
         self.focus.clone()
     }
 
@@ -340,30 +342,25 @@ impl Editor {
         self.blink_manager.read(cx).visible() && self.focus.is_focused(window)
     }
 
-    pub(crate) fn buffer(&self) -> Entity<Buffer> {
+    pub fn buffer(&self) -> Entity<Buffer> {
         self.buffer.clone()
     }
 
-    pub(crate) fn file_path(&self) -> Option<&Path> {
+    pub fn file_path(&self) -> Option<&Path> {
         self.file_path.as_deref()
     }
 
-    pub(crate) fn project_root(&self) -> Option<&Path> {
+    pub fn project_root(&self) -> Option<&Path> {
         self.project_root.as_deref()
     }
 
-    pub(crate) fn set_file_path(
-        &mut self,
-        path: PathBuf,
-        project_root: PathBuf,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_file_path(&mut self, path: PathBuf, project_root: PathBuf, cx: &mut Context<Self>) {
         self.file_path = Some(path);
         self.project_root = Some(project_root);
-        cx.emit(ItemEvent::UpdateBreadcrumbs);
+        cx.emit(EditorEvent::PathChanged);
     }
 
-    pub(crate) fn text(&self, cx: &App) -> String {
+    pub fn text(&self, cx: &App) -> String {
         let snapshot = self.buffer.read(cx).snapshot();
         snapshot
             .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
@@ -372,11 +369,11 @@ impl Editor {
             .to_owned()
     }
 
-    pub(crate) fn is_dirty(&self, cx: &App) -> bool {
+    pub fn is_dirty(&self, cx: &App) -> bool {
         self.buffer.read(cx).is_dirty()
     }
 
-    pub(crate) fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+    pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.composition = None;
         let before_selections = self.selections.clone();
         let targets = SelectionSet::new(vec![Selection::new(
@@ -396,7 +393,7 @@ impl Editor {
         self.apply_edit_outcome(before_selections, outcome, cx);
     }
 
-    pub(crate) fn render_snapshot(&self) -> Snapshot {
+    pub fn render_snapshot(&self) -> Snapshot {
         self.display_map.snapshot().clone()
     }
 
@@ -404,12 +401,12 @@ impl Editor {
         self.display_map.display_snapshot()
     }
 
-    pub(crate) fn selections(&self) -> SelectionSet {
+    pub fn selections(&self) -> SelectionSet {
         self.selections.clone()
     }
 
     /// 光标位置的 "行:列" 文本，行和列均从 1 开始计数。
-    pub(crate) fn cursor_text(&self) -> String {
+    pub fn cursor_text(&self) -> String {
         let point = self
             .display_map
             .snapshot()
@@ -1232,7 +1229,7 @@ fn edit_metadata(description: &'static str) -> TransactionMetadata {
     TransactionMetadata::new(TransactionSource::Programmatic).with_description(description)
 }
 
-impl EventEmitter<ItemEvent> for Editor {}
+impl EventEmitter<EditorEvent> for Editor {}
 
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1466,7 +1463,7 @@ mod tests {
     use zcv_engine::{BufferConfig, ByteOffset, SelectionSet, TransactionId};
 
     use super::*;
-    use crate::editor::display_map::{DisplayPoint, DisplayRow};
+    use crate::display_map::{DisplayPoint, DisplayRow};
 
     fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<Buffer> {
         let buffer =

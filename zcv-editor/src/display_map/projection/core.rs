@@ -17,7 +17,7 @@ use super::{
     ProjectedPointMapping, ProjectedRange, ProjectedViewport, ProjectedViewportRow,
     ProjectedViewportRowKind, ProjectedViewportSlice, TextLine, viewport::build_logical_spans,
 };
-use crate::editor::display_map::{
+use crate::display_map::{
     error::{DisplayMapResult, ProjectionError},
     fold::{FoldSet, HiddenSpan, HiddenSpanEnd},
 };

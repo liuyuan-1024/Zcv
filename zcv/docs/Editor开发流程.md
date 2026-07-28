@@ -1,7 +1,8 @@
 # Editor 开发流程
 
 > 本文规定 zcv 可嵌入文本编辑器的目标架构、模块边界与开发顺序。
-> Editor 在实现方法上对标 Zed，以 `zcv-engine` 为文本内核独立实现。
+> Editor 在实现方法上对标 Zed，以 `zcv-engine` 为文本内核，在独立
+> `zcv-editor` crate 中实现。
 
 ---
 
@@ -9,7 +10,7 @@
 
 zcv 只实现一个文本编辑核心：
 
-> 凡是修改普通文本的交互，都使用 `src/editor` 中的统一 `Editor`。
+> 凡是修改普通文本的交互，都使用 `zcv-editor` 中的统一 `Editor`。
 
 文件编辑、Picker 搜索、文件重命名、搜索替换、提交信息等场景，不分别实现输入逻辑，只使用同一个 `Editor` 的不同模式和业务包装。
 
@@ -56,6 +57,16 @@ EditorElement
 ```
 
 各层只能依赖它的下层数据，不允许业务组件绕过 Editor 直接实现文本输入、光标、选区或滚动。
+
+crate 依赖保持单向：
+
+```text
+zcv ──▶ zcv-editor ──▶ zcv-engine
+            └───────▶ zcv-theme
+```
+
+箭头表示“依赖”。`zcv-editor` 不依赖 Workspace；它发出自己的
+`EditorEvent`，宿主在 ItemHandle 适配层转换为 Workspace 事件。
 
 ---
 
@@ -131,7 +142,7 @@ Editor 持有：
 `Editor` 是 GPUI Entity，负责跨帧状态和编辑行为：
 
 ```rust
-pub(crate) struct Editor {
+pub struct Editor {
     buffer: Entity<Buffer>,
     mode: EditorMode,
     selections: SelectionSet,
@@ -644,26 +655,30 @@ Editor 生命周期。`ViewRegistry` 已删除，不再维护重复的路径、B
 
 ## 十一、文件组织
 
-初始目录建议：
+当前目录：
 
 ```text
-src/editor/
-  mod.rs
-  editor.rs
-  element.rs
-  display_map.rs
-  selection.rs
-  scroll.rs
+zcv-editor/
+  Cargo.toml
+  src/
+    lib.rs
+    view.rs
+    element.rs
+    display_map.rs
+    selection.rs
+    scroll.rs
 ```
 
 规则：
 
-- `editor.rs` 定义 Editor、EditorMode、事件和 Action handler。
+- `view.rs` 定义 Editor、EditorMode、事件和 Action handler。
 - `element.rs` 负责布局、绘制、命中测试和 InputHandler 桥接。
 - `display_map.rs` 负责坐标与显示变换。
 - `selection.rs` 负责 Editor 的 SelectionHistory、视图交互状态和依赖 DisplayMap 的选择变换；Selection、SelectionSet 原语继续来自 engine。
 - `scroll.rs` 负责 ScrollManager。
-- `mod.rs` 作为 Editor 能力域门面，声明私有实现模块，并选择性重导出跨能力域使用的主类型、事件和 Action；具体规则见《重导出规范》。
+- `lib.rs` 作为 Editor crate 门面，声明私有实现模块，并选择性重导出宿主使用的
+  主类型、事件和 Action；具体规则见《重导出规范》。
+- `zcv` 直接从 `zcv_editor` 导入，不建立 `crate::editor` 兼容门面。
 
 文件只在实现确实形成独立职责时建立，不预先复制 Zed 的全部目录结构。
 

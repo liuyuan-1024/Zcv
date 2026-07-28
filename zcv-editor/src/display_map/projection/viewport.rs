@@ -11,7 +11,7 @@
 use zcv_engine::{Line, LineRange, VisibleLine};
 
 use super::{FoldPlaceholder, ProjectedLineIndex};
-use crate::editor::display_map::error::DisplayMapResult;
+use crate::display_map::error::DisplayMapResult;
 
 /// 折叠后视口描述。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

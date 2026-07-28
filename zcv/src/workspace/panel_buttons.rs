@@ -6,8 +6,8 @@
 use gpui::{App, Context, ElementId, Entity, Render, Subscription, Window, div, prelude::*};
 
 use super::{Dock, DockPosition, StatusItemView};
-use crate::editor::Editor;
 use crate::ui::Glyph;
+use zcv_editor::Editor;
 use zcv_theme::{color, space};
 
 /// 面板点击调度函数：将点击转为 gpui action dispatch。

@@ -3,7 +3,6 @@
 mod assets;
 mod breadcrumbs;
 mod diagnostics;
-mod editor;
 mod fs_watcher;
 mod go_to_line;
 mod keymap;

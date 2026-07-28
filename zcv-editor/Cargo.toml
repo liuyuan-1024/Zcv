@@ -1,0 +1,19 @@
+[package]
+name = "zcv-editor"
+version.workspace = true
+edition.workspace = true
+description = "可嵌入文本编辑组件"
+
+[dependencies]
+gpui.workspace = true
+gpui-sum-tree.workspace = true
+thiserror.workspace = true
+unicode-segmentation.workspace = true
+zcv-engine.workspace = true
+zcv-theme.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

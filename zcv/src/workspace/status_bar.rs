@@ -23,7 +23,7 @@ actions!(
 );
 
 use super::Pane;
-use crate::editor::Editor;
+use zcv_editor::Editor;
 use zcv_theme::{color, space};
 
 // ═══ StatusItemView trait ═══════════════════════════════════════════

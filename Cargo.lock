@@ -7231,15 +7231,25 @@ dependencies = [
  "async-channel 1.9.0",
  "crossbeam-channel",
  "gpui",
- "gpui_sum_tree",
  "log",
  "notify",
  "regex",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.19",
  "toml 0.8.23",
+ "zcv-editor",
+ "zcv-engine",
+ "zcv-theme",
+]
+
+[[package]]
+name = "zcv-editor"
+version = "0.7.7"
+dependencies = [
+ "gpui",
+ "gpui_sum_tree",
+ "thiserror 2.0.19",
  "unicode-segmentation",
  "zcv-engine",
  "zcv-theme",

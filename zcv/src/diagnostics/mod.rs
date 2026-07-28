@@ -4,10 +4,10 @@
 
 use gpui::{Context, Entity, Render, Window, prelude::*};
 
-use crate::editor::Editor;
 use crate::ui::Glyph;
 use crate::workspace::StatusItemView;
 use crate::workspace::ToggleDiagnostics;
+use zcv_editor::Editor;
 
 pub(crate) struct DiagnosticsButton;
 

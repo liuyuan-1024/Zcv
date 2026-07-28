@@ -1,4 +1,4 @@
-//! `Projection::apply_patch` 的 differential 测试：每条编辑后
+//! `Projection::apply_patch` 的差分测试：每条编辑后
 //! 「增量推进的 Projection」必须与「按新版本重新 build 的 Projection」字段级相等。
 //!
 //! 同时验证 Tier 1 分类器的 outcome 是否符合预期：

@@ -8,12 +8,6 @@ use std::collections::{BTreeMap, HashMap};
 use gpui::KeyBinding;
 use serde::Deserialize;
 
-use crate::editor::{
-    Backspace, Copy, Cut, Delete, Indent, MoveDown, MoveLeft, MoveRight, MoveToBeginningOfLine,
-    MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Outdent, Paste, Redo,
-    SelectAll, SelectDown, SelectLeft, SelectRight, SelectToBeginningOfLine, SelectToEndOfLine,
-    SelectToNextWord, SelectToPreviousWord, SelectUp, Undo,
-};
 use crate::project_tree::{TreeActivate, TreeCollapse, TreeExpand, TreeSelectNext, TreeSelectPrev};
 use crate::recent_projects::{OpenLocalProject, ToggleProjectPicker};
 use crate::ui::{PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev};
@@ -21,6 +15,12 @@ use crate::workspace::{
     CloseTab, MinimizeWindow, NextTab, OpenSettings, PrevTab, QuitWindow, Save, ToggleDebug,
     ToggleDiagnostics, ToggleKeyboardShortcuts, ToggleLanguageServer, ToggleMaximizeWindow,
     ToggleOutline, ToggleProjectSearch, ToggleProjectTree, ToggleTerminal, ToggleVersionControl,
+};
+use zcv_editor::{
+    Backspace, Copy, Cut, Delete, Indent, MoveDown, MoveLeft, MoveRight, MoveToBeginningOfLine,
+    MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Outdent, Paste, Redo,
+    SelectAll, SelectDown, SelectLeft, SelectRight, SelectToBeginningOfLine, SelectToEndOfLine,
+    SelectToNextWord, SelectToPreviousWord, SelectUp, Undo,
 };
 
 // ── 公开类型 ─────────────────────────────────────────────────────────

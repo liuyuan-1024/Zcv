@@ -21,7 +21,7 @@ use super::{
     geometry::{char_range_for_line_range, fold_line_span, next_line},
     range::default_update_policy,
 };
-use crate::editor::display_map::error::{DisplayMapResult, FoldError};
+use crate::display_map::error::{DisplayMapResult, FoldError};
 
 /// 一次 toggle 操作的结果：判定是新增了 fold 还是移除了已有 fold。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

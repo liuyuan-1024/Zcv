@@ -1,3 +1,5 @@
+//! Editor 选区编辑行为测试。
+
 use gpui::{AppContext, TestAppContext};
 use zcv_engine::{Buffer, BufferConfig, ByteOffset, Selection, SelectionSet};
 

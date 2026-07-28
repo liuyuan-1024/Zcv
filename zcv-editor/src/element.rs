@@ -833,7 +833,7 @@ fn column_to_byte(text: &str, column: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::display_map::{DisplayMap, DisplayPoint};
+    use crate::display_map::{DisplayMap, DisplayPoint};
     use gpui::{Empty, TestAppContext, font};
     use zcv_engine::{
         Buffer, BufferConfig, ByteOffset, DisplayColumn, Line, LineRange, LogicalColumn,

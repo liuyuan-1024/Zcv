@@ -13,6 +13,8 @@ mod update;
 pub use hidden::HiddenRange;
 pub use id::FoldRangeId;
 pub use range::FoldRange;
-pub use set::{FoldSet, FoldToggleOutcome};
+pub use set::FoldSet;
+#[cfg(test)]
+pub use set::FoldToggleOutcome;
 pub(crate) use set::{HiddenSpan, HiddenSpanEnd};
 pub use update::FoldRangeUpdate;

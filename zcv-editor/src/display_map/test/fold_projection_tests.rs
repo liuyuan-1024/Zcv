@@ -1,3 +1,5 @@
+//! DisplayMap 的折叠与投影契约测试。
+
 use super::super::{
     error::{DisplayMapError, FoldError, ProjectionError},
     fold::*,

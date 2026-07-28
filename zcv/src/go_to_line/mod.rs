@@ -4,9 +4,9 @@
 
 use gpui::{Context, Entity, Render, Subscription, Window, prelude::*};
 
-use crate::editor::Editor;
 use crate::ui::Glyph;
 use crate::workspace::StatusItemView;
+use zcv_editor::Editor;
 
 pub(crate) struct CursorPosition {
     cursor_text: String,

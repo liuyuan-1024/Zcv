@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use super::toolbar::ToolbarItemLocation;
-use crate::editor::Editor;
+use zcv_editor::{Editor, EditorEvent};
 
 // ═══ ItemEvent ═══════════════════════════════════════════════════════
 
@@ -118,8 +118,8 @@ impl ItemHandle for Entity<Editor> {
     ) -> Subscription {
         let entity = self.clone();
         self.update(cx, |_this, cx| {
-            cx.subscribe::<Editor, ItemEvent>(&entity, move |_, _, event, cx| {
-                callback(event, cx);
+            cx.subscribe::<Editor, EditorEvent>(&entity, move |_, _, event, cx| match event {
+                EditorEvent::PathChanged => callback(&ItemEvent::UpdateBreadcrumbs, cx),
             })
         })
     }

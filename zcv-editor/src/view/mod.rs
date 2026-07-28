@@ -36,6 +36,8 @@ actions!(
         MoveToEndOfLine,
         MoveToBeginning,
         MoveToEnd,
+        MovePageUp,
+        MovePageDown,
         SelectLeft,
         SelectRight,
         SelectUp,
@@ -46,6 +48,8 @@ actions!(
         SelectToEndOfLine,
         SelectToBeginning,
         SelectToEnd,
+        SelectPageUp,
+        SelectPageDown,
         SelectAll,
         Backspace,
         Delete,
@@ -71,6 +75,7 @@ pub enum EditorEvent {
 enum Motion {
     ByUnit(MovementUnit),
     LineStep,
+    PageStep(usize),
     DocumentEdge,
 }
 
@@ -640,7 +645,11 @@ impl Editor {
                         let target = buffer.movement_boundary(head, direction, unit)?;
                         buffer.char_to_byte(target)?
                     }
-                    Motion::LineStep => {
+                    Motion::LineStep | Motion::PageStep(_) => {
+                        let row_step = match motion {
+                            Motion::PageStep(row_step) => row_step,
+                            _ => 1,
+                        };
                         let point = self
                             .display_map
                             .offset_to_display_point(selection.head())
@@ -667,9 +676,11 @@ impl Editor {
                             });
                         }
                         let target_row = match direction {
-                            MovementDirection::Previous => point.row().get().saturating_sub(1),
+                            MovementDirection::Previous => {
+                                point.row().get().saturating_sub(row_step)
+                            }
                             MovementDirection::Next => {
-                                point.row().get().saturating_add(1).min(last_row)
+                                point.row().get().saturating_add(row_step).min(last_row)
                             }
                         };
                         self.display_map
@@ -699,6 +710,10 @@ impl Editor {
             Ok(selections) => {
                 self.composition = None;
                 self.selections = selections;
+                if matches!(motion, Motion::PageStep(_)) {
+                    self.scroll_manager
+                        .scroll_page(direction == MovementDirection::Next);
+                }
                 self.request_autoscroll();
                 self.input_layout = None;
                 self.blink_manager.update(cx, |blink, cx| {
@@ -1064,6 +1079,48 @@ impl Editor {
         self.move_selections(MovementDirection::Next, Motion::DocumentEdge, false, cx);
     }
 
+    pub(super) fn handle_move_page_up(
+        &mut self,
+        _: &MovePageUp,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode == EditorMode::SingleLine {
+            cx.propagate();
+            return;
+        }
+        let Some(row_count) = self.scroll_manager.page_row_count() else {
+            return;
+        };
+        self.move_selections(
+            MovementDirection::Previous,
+            Motion::PageStep(row_count),
+            false,
+            cx,
+        );
+    }
+
+    pub(super) fn handle_move_page_down(
+        &mut self,
+        _: &MovePageDown,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode == EditorMode::SingleLine {
+            cx.propagate();
+            return;
+        }
+        let Some(row_count) = self.scroll_manager.page_row_count() else {
+            return;
+        };
+        self.move_selections(
+            MovementDirection::Next,
+            Motion::PageStep(row_count),
+            false,
+            cx,
+        );
+    }
+
     pub(super) fn handle_select_left(
         &mut self,
         _: &SelectLeft,
@@ -1162,6 +1219,40 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         self.move_selections(MovementDirection::Next, Motion::DocumentEdge, true, cx);
+    }
+
+    pub(super) fn handle_select_page_up(
+        &mut self,
+        _: &SelectPageUp,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(row_count) = self.scroll_manager.page_row_count() else {
+            return;
+        };
+        self.move_selections(
+            MovementDirection::Previous,
+            Motion::PageStep(row_count),
+            true,
+            cx,
+        );
+    }
+
+    pub(super) fn handle_select_page_down(
+        &mut self,
+        _: &SelectPageDown,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(row_count) = self.scroll_manager.page_row_count() else {
+            return;
+        };
+        self.move_selections(
+            MovementDirection::Next,
+            Motion::PageStep(row_count),
+            true,
+            cx,
+        );
     }
 
     pub(super) fn handle_select_all(
@@ -1734,6 +1825,85 @@ mod tests {
                 editor.selections,
                 SelectionSet::new(vec![Selection::new(anchor, ByteOffset::ZERO)])
             );
+        });
+    }
+
+    #[gpui::test]
+    fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
+        let text = (0..40).map(|row| format!("{row}\n")).collect::<String>();
+        let buffer = test_buffer(cx, text);
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+
+        cx.simulate_resize(size(px(100.), px(100.)));
+        cx.run_until_parked();
+        cx.simulate_click(point(px(0.), px(12.)), gpui::Modifiers::default());
+
+        let page_rows = cx.read_entity(&editor, |editor, _| {
+            editor
+                .scroll_manager
+                .page_row_count()
+                .expect("完成布局后应有可见页行数")
+        });
+        assert!(page_rows > 0);
+
+        cx.dispatch_action(MovePageDown);
+        cx.run_until_parked();
+        cx.read_entity(&editor, |editor, _| {
+            let caret_row = editor
+                .render_snapshot()
+                .byte_to_position(editor.selections.primary().head())
+                .expect("翻页后的光标应有效")
+                .line()
+                .get();
+            assert_eq!(caret_row, page_rows);
+            assert_eq!(
+                editor.scroll_manager.anchor().row(),
+                DisplayRow::new(page_rows)
+            );
+        });
+
+        let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.snapshot());
+        let first_page = snapshot
+            .line_start_byte(Line::new(page_rows))
+            .expect("第一页目标行应存在");
+        let second_page = snapshot
+            .line_start_byte(Line::new(page_rows * 2))
+            .expect("第二页目标行应存在");
+
+        cx.dispatch_action(SelectPageDown);
+        cx.run_until_parked();
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(
+                editor.selections,
+                SelectionSet::new(vec![Selection::new(first_page, second_page)])
+            );
+            assert_eq!(
+                editor.scroll_manager.anchor().row(),
+                DisplayRow::new(page_rows * 2)
+            );
+        });
+
+        cx.dispatch_action(MovePageUp);
+        cx.run_until_parked();
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections, SelectionSet::caret(first_page));
+            assert_eq!(
+                editor.scroll_manager.anchor().row(),
+                DisplayRow::new(page_rows)
+            );
+        });
+
+        cx.dispatch_action(SelectPageUp);
+        cx.run_until_parked();
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(
+                editor.selections,
+                SelectionSet::new(vec![Selection::new(first_page, ByteOffset::ZERO)])
+            );
+            assert_eq!(editor.scroll_manager.anchor().row(), DisplayRow::ZERO);
         });
     }
 

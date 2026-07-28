@@ -74,6 +74,26 @@ impl ScrollManager {
         self.pending_autoscroll = Some(point);
     }
 
+    pub(super) fn page_row_count(&self) -> Option<usize> {
+        let viewport = self.viewport?;
+        let visible_rows = (viewport.height / viewport.line_height).floor() as usize;
+        Some(visible_rows.saturating_sub(1).max(1))
+    }
+
+    pub(super) fn scroll_page(&mut self, down: bool) -> bool {
+        let viewport = match self.viewport {
+            Some(viewport) => viewport,
+            None => return false,
+        };
+        let distance = viewport.line_height * self.page_row_count().unwrap_or(1);
+        let delta = if down {
+            point(Pixels::ZERO, -distance)
+        } else {
+            point(Pixels::ZERO, distance)
+        };
+        self.scroll_by(delta)
+    }
+
     pub(super) fn complete_autoscroll(
         &mut self,
         caret_left: Option<Pixels>,
@@ -204,6 +224,18 @@ mod tests {
         manager.update_viewport(50, px(100.), px(100.), px(200.), px(20.));
         assert_eq!(manager.anchor().row(), DisplayRow::new(2));
         assert_eq!(manager.offset().y, px(0.));
+    }
+
+    #[test]
+    fn page_scroll_moves_one_visible_page_with_one_row_overlap() {
+        let mut manager = ScrollManager::default();
+        manager.update_viewport(100, px(100.), px(100.), px(200.), px(20.));
+
+        assert_eq!(manager.page_row_count(), Some(4));
+        assert!(manager.scroll_page(true));
+        assert_eq!(manager.anchor().row(), DisplayRow::new(4));
+        assert!(manager.scroll_page(false));
+        assert_eq!(manager.anchor().row(), DisplayRow::ZERO);
     }
 
     #[test]

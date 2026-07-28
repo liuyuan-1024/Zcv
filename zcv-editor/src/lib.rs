@@ -8,9 +8,10 @@ mod selection;
 mod view;
 
 pub use view::{
-    Backspace, Copy, Cut, Delete, Editor, EditorEvent, Indent, MoveDown, MoveLeft, MoveRight,
-    MoveToBeginning, MoveToBeginningOfLine, MoveToEnd, MoveToEndOfLine, MoveToNextWord,
-    MoveToPreviousWord, MoveUp, Newline, Outdent, Paste, Redo, SelectAll, SelectDown, SelectLeft,
-    SelectRight, SelectToBeginning, SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine,
-    SelectToNextWord, SelectToPreviousWord, SelectUp, Undo,
+    Backspace, Copy, Cut, Delete, Editor, EditorEvent, Indent, MoveDown, MoveLeft, MovePageDown,
+    MovePageUp, MoveRight, MoveToBeginning, MoveToBeginningOfLine, MoveToEnd, MoveToEndOfLine,
+    MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Outdent, Paste, Redo, SelectAll,
+    SelectDown, SelectLeft, SelectPageDown, SelectPageUp, SelectRight, SelectToBeginning,
+    SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine, SelectToNextWord,
+    SelectToPreviousWord, SelectUp, Undo,
 };

@@ -92,8 +92,7 @@ impl Buffer {
             last_synced_external_version: None,
             loaded_text_info,
             next_transaction_id: TransactionId::INITIAL,
-            pending_delta_events: Vec::new(),
-            last_delta_event: None,
+            text_changes: Default::default(),
             history: history::HistoryState::new(),
         };
         buffer.apply_large_file_auto_read_only();
@@ -211,7 +210,6 @@ impl Buffer {
     /// 度量包含：
     /// - 文本存储字节数（`len_bytes()`，不计 `ropey::Rope` 内部节点开销）
     /// - 历史图按 `HistoryStatus::memory_bytes` 累加的字符串占用
-    /// - pending DeltaEvent 队列的固定大小估算
     ///
     /// 仅作为粗估指标，用于宿主侧的内存观测与回归监控；不承诺等同于操作系统
     /// 实际驻留集 (RSS) 或 `ropey` 内部节点 / 缓存的精确字节数。
@@ -220,11 +218,7 @@ impl Buffer {
     pub fn approximate_memory_bytes(&self) -> usize {
         let text_bytes = self.storage.len_bytes().get();
         let history_bytes = self.history.status().memory_bytes;
-        let pending_events =
-            self.pending_delta_events.len() * std::mem::size_of::<crate::transaction::DeltaEvent>();
-        text_bytes
-            .saturating_add(history_bytes)
-            .saturating_add(pending_events)
+        text_bytes.saturating_add(history_bytes)
     }
 
     pub fn version(&self) -> BufferVersion {

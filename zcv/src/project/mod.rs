@@ -65,6 +65,7 @@ impl Project {
 
     pub(crate) fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) -> anyhow::Result<()> {
         let root = root.canonicalize()?;
+        anyhow::ensure!(root.is_dir(), "项目根必须是目录：{}", root.display());
         if root == self.root {
             return Ok(());
         }
@@ -74,6 +75,7 @@ impl Project {
             log::warn!("无法停止监听旧项目目录 {:?}：{error}", self.root);
         }
         self.root = root.clone();
+        self.buffer_store = BufferStore::new();
         cx.emit(ProjectEvent::RootChanged(root));
         Ok(())
     }

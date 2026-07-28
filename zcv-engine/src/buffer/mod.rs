@@ -12,7 +12,7 @@
 use crate::{
     BufferConfig, BufferId, BufferOrigin, BufferVersion, LoadedTextInfo, TransactionId,
     storage::{RopeySnapshot, RopeyStorage, TextFingerprint},
-    transaction::DeltaEvent,
+    text_changes::TextChangeTopic,
 };
 
 mod coordinates;
@@ -31,7 +31,7 @@ mod versioning;
 pub use history::{HistoryEditOutcome, HistoryNodeId, HistoryNodeView, HistoryStatus};
 
 /// 最小可编辑 Buffer。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Buffer {
     id: BufferId,
     origin: BufferOrigin,
@@ -46,7 +46,6 @@ pub struct Buffer {
     last_synced_external_version: Option<BufferVersion>,
     loaded_text_info: Option<LoadedTextInfo>,
     next_transaction_id: TransactionId,
-    pending_delta_events: Vec<DeltaEvent>,
-    last_delta_event: Option<DeltaEvent>,
+    text_changes: TextChangeTopic,
     history: history::HistoryState,
 }

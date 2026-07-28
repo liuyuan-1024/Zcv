@@ -6,7 +6,7 @@ use zcv_engine::{BufferVersion, TextRange, TrackedRangeUpdate};
 
 use super::FoldRangeId;
 
-/// 单条 FoldRange 通过一次 DeltaEvent 后的更新事实。
+/// 单条 FoldRange 通过一个组合 Patch 后的更新事实。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FoldRangeUpdate {
     /// 区间无删除触碰地推进到新版本，fold 可以原样保留。

@@ -10,6 +10,7 @@
 
 - 文本存储、基础编辑、强类型坐标和错误模型。
 - Transaction、Delta、ChangeSet、PositionMap 和原子提交。
+- 每订阅者独立累积的组合 TextPatch；Snapshot 作为当前文本真相。
 - Undo / Redo、分支历史、历史预算、事务记录和回放。
 - Snapshot、BufferVersion、本地读写边界和版本化结果承载。
 - Selection / SelectionSet 纯数据与 PositionMap 映射、word / subword / symbol 边界查询。
@@ -51,7 +52,8 @@ storage/      文本存储抽象和生产 RopeyStorage
 transaction/  Edit、Transaction、Delta、ChangeSet、事务记录
 selection/    Cursor、Selection、SelectionSet 与纯文本边界词汇
 tracking/     Anchor、Mark、TrackedRange
-metadata/     泛型外部区间承载
+versioned/    版本化结果与泛型外部区间集合
+text_changes.rs  连续 Patch 订阅
 ```
 
 ## 验证建议
@@ -63,4 +65,4 @@ cargo fmt
 cargo test
 ```
 
-需要定向排查时，按触及能力选择对应测试目标；测试组织遵循 workspace 测试策略（见 `../../agents.md`）。
+需要定向排查时，按触及能力选择对应测试目标；测试组织遵循 workspace 测试策略（见 `../../CODEX.md`）。

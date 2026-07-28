@@ -3,8 +3,9 @@ mod common;
 use common::*;
 
 #[test]
-fn apply_transaction_should_emit_delta_changeset_position_map_and_pending_event() {
+fn apply_transaction_should_emit_delta_changeset_position_map_and_subscription_patch() {
     let mut buffer = buffer("abc def");
+    let subscription = buffer.subscribe();
     let base = buffer.version();
     let transaction = tx(
         &buffer,
@@ -14,8 +15,11 @@ fn apply_transaction_should_emit_delta_changeset_position_map_and_pending_event(
         ],
     );
 
-    let (delta, changeset) = buffer.apply_transaction(transaction).unwrap();
-    let event = buffer.last_delta_event().unwrap();
+    let outcome = buffer.apply_transaction_outcome(transaction).unwrap();
+    let delta = outcome.delta();
+    let changeset = outcome.changeset();
+    let event = outcome.event();
+    let changes = subscription.consume();
 
     assert_eq!(buffer_text(&buffer), "abc! XYZ");
     assert_eq!(delta.old_version(), base);
@@ -33,14 +37,16 @@ fn apply_transaction_should_emit_delta_changeset_position_map_and_pending_event(
     assert_eq!(event.new_version(), buffer.version());
     assert_eq!(event.source(), TransactionSource::Programmatic);
     assert_eq!(event.position_map().map_old_position(b(7)).value(), b(8));
-    assert_eq!(buffer.pending_delta_event_count(), 1);
+    assert_eq!(changes.old_version(), Some(base));
+    assert_eq!(changes.new_version(), Some(buffer.version()));
+    assert_eq!(changes.patch().edits().len(), 2);
 }
 
 #[test]
-fn stale_base_version_should_fail_without_mutating_text_version_history_or_events() {
+fn stale_base_version_should_fail_without_mutating_text_version_history_or_subscription() {
     let mut buffer = buffer("abc");
     buffer.insert(b(3), "!").unwrap();
-    buffer.take_pending_events();
+    let subscription = buffer.subscribe();
     let text = buffer_text(&buffer);
     let version = buffer.version();
     let history = buffer.history_status();
@@ -59,7 +65,7 @@ fn stale_base_version_should_fail_without_mutating_text_version_history_or_event
     assert_eq!(buffer_text(&buffer), text);
     assert_eq!(buffer.version(), version);
     assert_eq!(buffer.history_status().undo_depth, history.undo_depth);
-    assert_eq!(buffer.pending_delta_event_count(), 0);
+    assert!(subscription.consume().is_empty());
 }
 
 #[test]

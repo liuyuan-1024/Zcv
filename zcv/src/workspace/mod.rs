@@ -288,7 +288,9 @@ impl Workspace {
                     });
                 }
                 ProjectEvent::EntriesChanged => {
-                    workspace.project_tree.update(cx, |_, cx| cx.notify());
+                    workspace
+                        .project_tree
+                        .update(cx, |tree, cx| tree.refresh(cx));
                 }
             });
 

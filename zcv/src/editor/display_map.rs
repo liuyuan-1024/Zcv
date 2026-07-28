@@ -11,7 +11,7 @@ mod test;
 use std::sync::Arc;
 
 use zcv_engine::{
-    ByteOffset, DeltaEvent, DisplayColumn, Line, LogicalColumn, Position, Snapshot, TextRange,
+    ByteOffset, DisplayColumn, Line, LogicalColumn, Position, Snapshot, TextChangeBatch, TextRange,
 };
 
 #[cfg(test)]
@@ -249,43 +249,48 @@ impl DisplayMap {
             .unwrap_or(DisplayRow::ZERO)
     }
 
-    /// 把 DisplayMap 推进到新的 Buffer Snapshot。
-    ///
-    /// 正常编辑路径通过同版本链的 `DeltaEvent` 增量更新。若宿主漏过事件，无法安全
-    /// 推进已有 fold 的 tracked range，只能清空 fold 并按新快照防御性重建。
-    pub(crate) fn sync_snapshot(
+    /// 用订阅者独立积累的组合 Patch，把整条显示管线直接推进到当前 Snapshot。
+    pub(crate) fn sync_changes(
         &mut self,
-        snapshot: Snapshot,
-        event: Option<&DeltaEvent>,
+        current_snapshot: Snapshot,
+        batch: TextChangeBatch,
     ) -> ApplyOutcome {
-        if snapshot.version() == self.snapshot.version() {
+        if current_snapshot.version() == self.snapshot.version() {
             return ApplyOutcome::Compatible;
         }
 
-        let can_apply = event.is_some_and(|event| {
-            event.old_version() == self.snapshot.version()
-                && event.new_version() == snapshot.version()
-        });
+        let old_version = self.snapshot.version();
+        let new_version = current_snapshot.version();
+        let can_apply = !batch.requires_reset()
+            && batch.old_version() == Some(old_version)
+            && batch.new_version() == Some(new_version);
         if !can_apply {
-            self.reset_for_snapshot(snapshot);
+            self.reset_for_snapshot(current_snapshot);
             return ApplyOutcome::Rebuilt;
         }
 
-        let event = event.expect("can_apply 已确认 DeltaEvent 存在");
+        let old_snapshot = self.snapshot.clone();
         if self
             .folds
-            .update_through_delta_event(event, &snapshot)
+            .update_through_patch(old_version, new_version, batch.patch(), &current_snapshot)
             .is_err()
         {
-            self.reset_for_snapshot(snapshot);
+            self.reset_for_snapshot(current_snapshot);
             return ApplyOutcome::Rebuilt;
         }
 
         let outcome = Arc::make_mut(&mut self.projection)
-            .apply_delta(&snapshot, &self.folds, event)
+            .apply_patch(
+                &old_snapshot,
+                &current_snapshot,
+                &self.folds,
+                old_version,
+                new_version,
+                batch.patch(),
+            )
             .unwrap_or(ApplyOutcome::Rebuilt);
-        self.snapshot = snapshot;
-        self.tab_map.sync(self.snapshot.clone(), Some(event));
+        self.snapshot = current_snapshot;
+        self.tab_map.sync(self.snapshot.clone(), Some(&batch));
 
         if self.projection.version() != self.snapshot.version() {
             self.projection = Arc::new(
@@ -565,14 +570,11 @@ mod tests {
         map.measure_rows(DisplayRow::ZERO, 2)
             .expect("测试显示行应能测量");
         assert_eq!(map.longest_measured_row(), DisplayRow::new(1));
+        let subscription = buffer.subscribe();
         buffer
             .insert(ByteOffset::new(5), " becomes longest")
             .expect("测试编辑应成功");
-        let event = buffer
-            .last_delta_event()
-            .expect("成功事务应产生 DeltaEvent")
-            .clone();
-        let outcome = map.sync_snapshot(buffer.snapshot(), Some(&event));
+        let outcome = map.sync_changes(buffer.snapshot(), subscription.consume());
 
         assert_eq!(outcome, ApplyOutcome::Compatible);
         assert_eq!(map.longest_measured_row(), DisplayRow::new(1));
@@ -588,16 +590,13 @@ mod tests {
         let mut map = DisplayMap::new(buffer.snapshot());
         map.measure_rows(DisplayRow::ZERO, 2)
             .expect("测试显示行应能测量");
+        let subscription = buffer.subscribe();
         buffer
             .insert(ByteOffset::new(5), "\nvery very wide")
             .expect("测试编辑应成功");
-        let event = buffer
-            .last_delta_event()
-            .expect("成功事务应产生 DeltaEvent")
-            .clone();
 
         assert_eq!(
-            map.sync_snapshot(buffer.snapshot(), Some(&event)),
+            map.sync_changes(buffer.snapshot(), subscription.consume()),
             ApplyOutcome::Spliced
         );
         assert_eq!(map.longest_measured_row(), DisplayRow::ZERO);

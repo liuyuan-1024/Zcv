@@ -53,9 +53,10 @@ fn search_result_should_remap_forward_and_drop_deleted_matches() {
     let mut buffer = buffer("aa bb aa");
     let result = buffer.snapshot().search_literal("aa").unwrap();
 
-    buffer.delete(range(0, 2)).unwrap();
-    let event = buffer.last_delta_event().unwrap().clone();
-    let remapped = result.try_remap(&event).unwrap();
+    let transaction =
+        Transaction::from_edits(buffer.version(), vec![Edit::delete(range(0, 2))]).unwrap();
+    let outcome = buffer.apply_transaction_outcome(transaction).unwrap();
+    let remapped = result.try_remap(outcome.event()).unwrap();
 
     assert_eq!(remapped.version(), buffer.version());
     assert_eq!(remapped.ranges().collect::<Vec<_>>(), vec![range(4, 6)]);

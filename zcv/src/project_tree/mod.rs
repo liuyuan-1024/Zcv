@@ -1,7 +1,7 @@
 //! ProjectTree —— 项目文件树 Entity 组件。
 //!
-//! 持有 `Rc<RefCell<ProjectTreeState>>` 管理展开/选中状态。
-//! 通过 `uniform_list` 实现虚拟滚动。
+//! 持有 `Rc<RefCell<ProjectTreeState>>` 管理展开/选中状态和缓存行模型。
+//! 文件系统只在刷新模型时读取；渲染与键盘导航只消费缓存。
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -84,8 +84,13 @@ impl ProjectTree {
         cx.notify();
     }
 
+    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.state.borrow_mut().refresh_rows();
+        cx.notify();
+    }
+
     fn rows_and_len(&self) -> Vec<ProjectTreeRow> {
-        self.state.borrow().visible_rows()
+        self.state.borrow().visible_rows().to_vec()
     }
 
     fn handle_tree_select_prev(
@@ -115,13 +120,14 @@ impl ProjectTree {
         _: &mut Context<Self>,
     ) {
         let mut state = self.state.borrow_mut();
-        let rows = state.visible_rows();
+        let rows = state.visible_rows().to_vec();
         let Some(idx) = state.selected_idx(&rows) else {
             return;
         };
         let row = &rows[idx];
         if row.is_dir && row.expanded {
             state.expanded.remove(&row.path);
+            state.refresh_rows();
         } else if row.depth > 0 {
             let pd = row.depth - 1;
             if let Some(pi) = rows[..idx].iter().rposition(|r| r.is_dir && r.depth == pd) {
@@ -132,13 +138,14 @@ impl ProjectTree {
     }
     fn handle_tree_expand(&mut self, _: &TreeExpand, window: &mut Window, _: &mut Context<Self>) {
         let mut state = self.state.borrow_mut();
-        let rows = state.visible_rows();
+        let rows = state.visible_rows().to_vec();
         let Some(idx) = state.selected_idx(&rows) else {
             return;
         };
         let row = &rows[idx];
         if row.is_dir && !row.expanded {
             state.expanded.insert(row.path.clone());
+            state.refresh_rows();
         } else {
             state.select_down(&rows);
         }
@@ -263,17 +270,21 @@ struct ProjectTreeState {
     root: PathBuf,
     expanded: HashSet<PathBuf>,
     selected: Option<PathBuf>,
+    rows: Vec<ProjectTreeRow>,
 }
 
 impl ProjectTreeState {
     fn new(root: PathBuf) -> Self {
         let mut expanded = HashSet::new();
         expanded.insert(root.clone());
-        Self {
+        let mut state = Self {
             root,
             expanded,
             selected: None,
-        }
+            rows: Vec::new(),
+        };
+        state.refresh_rows();
+        state
     }
 
     /// 更换根目录，重置展开和选中状态。
@@ -282,9 +293,14 @@ impl ProjectTreeState {
         self.expanded.clear();
         self.expanded.insert(self.root.clone());
         self.selected = None;
+        self.refresh_rows();
     }
 
-    fn visible_rows(&self) -> Vec<ProjectTreeRow> {
+    fn visible_rows(&self) -> &[ProjectTreeRow] {
+        &self.rows
+    }
+
+    fn refresh_rows(&mut self) {
         let mut rows = Vec::new();
 
         // 根目录本身作为 depth 0 行
@@ -306,7 +322,14 @@ impl ProjectTreeState {
             self.collect_children(&self.root, 1, &mut rows);
         }
 
-        rows
+        self.rows = rows;
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|selected| !self.rows.iter().any(|row| &row.path == selected))
+        {
+            self.selected = None;
+        }
     }
 
     /// 确保有选中行：无选中时选中第一行。
@@ -314,8 +337,7 @@ impl ProjectTreeState {
         if self.selected.is_some() {
             return;
         }
-        let rows = self.visible_rows();
-        if let Some(first) = rows.first() {
+        if let Some(first) = self.rows.first() {
             self.selected = Some(first.path.clone());
         }
     }
@@ -360,6 +382,7 @@ impl ProjectTreeState {
         } else {
             self.expanded.insert(path.to_path_buf());
         }
+        self.refresh_rows();
     }
 
     fn select(&mut self, path: &Path) {
@@ -407,5 +430,28 @@ impl Panel for ProjectTree {
     }
     fn focus_handle(&self, _cx: &gpui::App) -> gpui::FocusHandle {
         self.focus.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visible_rows_use_cached_filesystem_model_until_explicit_refresh() {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let file = directory.path().join("cached.txt");
+        std::fs::write(&file, "content").expect("应创建测试文件");
+        let mut state = ProjectTreeState::new(directory.path().to_path_buf());
+
+        assert!(state.visible_rows().iter().any(|row| row.path == file));
+        std::fs::remove_file(&file).expect("应删除测试文件");
+        assert!(
+            state.visible_rows().iter().any(|row| row.path == file),
+            "渲染读取缓存时不应自行扫描文件系统"
+        );
+
+        state.refresh_rows();
+        assert!(!state.visible_rows().iter().any(|row| row.path == file));
     }
 }

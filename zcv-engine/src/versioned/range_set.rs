@@ -716,9 +716,12 @@ mod tests {
 
     fn event_after(buffer: &mut Buffer, edit: Edit) -> DeltaEvent {
         buffer
-            .apply_transaction(Transaction::from_edits(buffer.version(), vec![edit]).unwrap())
-            .unwrap();
-        buffer.last_delta_event().unwrap().clone()
+            .apply_transaction_outcome(
+                Transaction::from_edits(buffer.version(), vec![edit]).unwrap(),
+            )
+            .unwrap()
+            .event()
+            .clone()
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! 不负责 Buffer 提交、事件分发、anchor 生命周期或 UI 选择策略。
 
 use crate::{
+    TextPatch,
     selection::{Selection, SelectionSet},
     tracking::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
     transaction::{ChangeSet, Edit},
@@ -78,16 +79,38 @@ impl<T: Copy> MappingResult<T> {
 /// 旧文本与新文本之间的 byte 坐标映射器。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PositionMap {
-    edits: Vec<Edit>,
+    edits: Vec<PositionMapEdit>,
 }
 
 impl PositionMap {
     pub(crate) fn from_edits(edits: Vec<Edit>) -> Self {
-        Self { edits }
+        Self {
+            edits: edits
+                .into_iter()
+                .map(|edit| PositionMapEdit {
+                    old: edit.range(),
+                    new_len: edit.replacement().len(),
+                })
+                .collect(),
+        }
     }
 
     pub fn from_change_set(changeset: &ChangeSet) -> Self {
         Self::from_edits(changeset.edits().to_vec())
+    }
+
+    /// 从跨多个连续版本组合后的 Patch 构造坐标映射。
+    pub fn from_text_patch(patch: &TextPatch) -> Self {
+        Self {
+            edits: patch
+                .edits()
+                .iter()
+                .map(|edit| PositionMapEdit {
+                    old: edit.old_range(),
+                    new_len: edit.new_range().len(),
+                })
+                .collect(),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -112,10 +135,10 @@ impl PositionMap {
         let mut shift = OffsetShift::ZERO;
 
         for edit in &self.edits {
-            let range = edit.range();
+            let range = edit.old;
             let old_start = range.start();
             let old_end = range.end();
-            let replacement_len = edit.replacement().len();
+            let replacement_len = edit.new_len;
             let new_start = shift
                 .apply_old_to_new(old_start)
                 .expect("内部不变量：old start 映射不会发生字节偏移溢出");
@@ -165,11 +188,11 @@ impl PositionMap {
         let mut shift = OffsetShift::ZERO;
 
         for edit in &self.edits {
-            let range = edit.range();
+            let range = edit.old;
             let old_start = range.start();
             let old_end = range.end();
             let old_len = range.len();
-            let replacement_len = edit.replacement().len();
+            let replacement_len = edit.new_len;
             let new_start = shift
                 .apply_old_to_new(old_start)
                 .expect("内部不变量：old start 映射不会发生字节偏移溢出");
@@ -332,11 +355,11 @@ impl PositionMap {
         let mut shift = OffsetShift::ZERO;
 
         for edit in &self.edits {
-            let range = edit.range();
+            let range = edit.old;
             let old_start = range.start();
             let old_end = range.end();
             let old_len = range.len();
-            let replacement_len = edit.replacement().len();
+            let replacement_len = edit.new_len;
             let new_start = shift
                 .apply_old_to_new(old_start)
                 .expect("内部不变量：old start 映射不会发生字节偏移溢出");
@@ -372,8 +395,8 @@ impl PositionMap {
 
     fn old_range_intersects_deleted_content(&self, range: TextRange) -> bool {
         self.edits.iter().any(|edit| {
-            let old_start = edit.range().start();
-            let old_end = edit.range().end();
+            let old_start = edit.old.start();
+            let old_end = edit.old.end();
 
             old_start < old_end && ranges_overlap(range.start(), range.end(), old_start, old_end)
         })
@@ -383,9 +406,9 @@ impl PositionMap {
         let mut shift = OffsetShift::ZERO;
 
         for edit in &self.edits {
-            let edit_range = edit.range();
+            let edit_range = edit.old;
             let old_len = edit_range.len();
-            let replacement_len = edit.replacement().len();
+            let replacement_len = edit.new_len;
             let new_start = shift
                 .apply_old_to_new(edit_range.start())
                 .expect("内部不变量：old start 映射不会发生字节偏移溢出");
@@ -414,6 +437,12 @@ impl PositionMap {
 
         false
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PositionMapEdit {
+    old: TextRange,
+    new_len: usize,
 }
 
 /// 已应用编辑造成的 byte 坐标位移。

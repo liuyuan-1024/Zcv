@@ -13,6 +13,7 @@ mod selection;
 mod slicing;
 mod snapshot;
 mod storage;
+mod text_changes;
 mod text_loading;
 mod tracking;
 mod transaction;
@@ -36,6 +37,7 @@ pub use selection::{
 };
 pub use slicing::{LineSlice, TextSlice, Viewport, ViewportSlice, VisibleLine};
 pub use snapshot::Snapshot;
+pub use text_changes::{PatchEdit, TextChangeBatch, TextPatch, TextSubscription};
 pub use text_loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
 pub use tracking::{
     Anchor, AnchorDeletedPolicy, AnchorUpdate, Mark, TrackedRange, TrackedRangeCollapsePolicy,

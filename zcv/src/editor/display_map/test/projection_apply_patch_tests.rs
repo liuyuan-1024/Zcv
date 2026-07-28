@@ -1,4 +1,4 @@
-//! `Projection::apply_delta` 的 differential 测试：每条编辑后
+//! `Projection::apply_patch` 的 differential 测试：每条编辑后
 //! 「增量推进的 Projection」必须与「按新版本重新 build 的 Projection」字段级相等。
 //!
 //! 同时验证 Tier 1 分类器的 outcome 是否符合预期：
@@ -21,13 +21,27 @@ fn step_and_diff(
     incremental: &mut Projection,
     edit: impl FnOnce(&mut Buffer),
 ) -> ApplyOutcome {
+    let subscription = buffer.subscribe();
+    let old_snapshot = buffer.snapshot();
+    let old_version = buffer.version();
     edit(buffer);
-    let event = buffer.last_delta_event().unwrap().clone();
+    let changes = subscription.consume();
     let snapshot = buffer.snapshot();
 
-    folds.update_through_delta_event(&event, &snapshot).unwrap();
+    folds
+        .update_through_patch(old_version, buffer.version(), changes.patch(), &snapshot)
+        .unwrap();
 
-    let outcome = incremental.apply_delta(&snapshot, folds, &event).unwrap();
+    let outcome = incremental
+        .apply_patch(
+            &old_snapshot,
+            &snapshot,
+            folds,
+            old_version,
+            buffer.version(),
+            changes.patch(),
+        )
+        .unwrap();
 
     let fresh = Projection::build(&snapshot, folds).unwrap();
     assert_eq!(
@@ -168,7 +182,7 @@ fn newline_edit_inside_fold_should_expand_splice_to_placeholder_boundaries() {
 }
 
 #[test]
-fn fold_dropped_by_delta_should_splice_projection_rows() {
+fn fold_dropped_by_patch_should_splice_projection_rows() {
     let mut buffer = buffer("alpha\nbravo\ncharlie\ndelta\n");
     let snapshot = buffer.snapshot();
     let mut folds = FoldSet::new(snapshot.version());
@@ -186,7 +200,7 @@ fn fold_dropped_by_delta_should_splice_projection_rows() {
     });
 
     assert!(matches!(outcome, ApplyOutcome::Spliced));
-    assert_eq!(folds.len(), 0, "fold 应该已被 delta 失效");
+    assert_eq!(folds.len(), 0, "fold 应该已被 Patch 失效");
 }
 
 #[test]
@@ -196,16 +210,31 @@ fn unrelated_manual_fold_change_should_conservatively_rebuild() {
     let mut folds = FoldSet::new(snapshot.version());
     let mut projection = Projection::build(&snapshot, &folds).unwrap();
 
+    let subscription = buffer.subscribe();
+    let old_snapshot = buffer.snapshot();
+    let old_version = buffer.version();
     buffer.insert(b(21), "X").unwrap();
-    let event = buffer.last_delta_event().unwrap().clone();
+    let changes = subscription.consume();
     let new_snapshot = buffer.snapshot();
     folds
-        .update_through_delta_event(&event, &new_snapshot)
+        .update_through_patch(
+            old_version,
+            buffer.version(),
+            changes.patch(),
+            &new_snapshot,
+        )
         .unwrap();
     folds.fold_lines(&new_snapshot, line_range(0, 2)).unwrap();
 
     let outcome = projection
-        .apply_delta(&new_snapshot, &folds, &event)
+        .apply_patch(
+            &old_snapshot,
+            &new_snapshot,
+            &folds,
+            old_version,
+            buffer.version(),
+            changes.patch(),
+        )
         .unwrap();
     let fresh = Projection::build(&new_snapshot, &folds).unwrap();
 
@@ -274,17 +303,26 @@ fn version_mismatch_should_be_reported_atomically() {
     let mut projection = Projection::build(&snapshot, &folds).unwrap();
 
     // 推进一次 buffer，但 *不* 推进 folds：让三者版本不一致。
+    let subscription = buffer.subscribe();
+    let old_version = buffer.version();
     buffer.insert(b(0), "X").unwrap();
-    let event = buffer.last_delta_event().unwrap().clone();
+    let changes = subscription.consume();
     let new_snapshot = buffer.snapshot();
 
-    // folds 还停在旧版本 → 应该报 ApplyDeltaStale
+    // folds 还停在旧版本 → 应该报 ApplyPatchStale
     let err = projection
-        .apply_delta(&new_snapshot, &folds, &event)
+        .apply_patch(
+            &snapshot,
+            &new_snapshot,
+            &folds,
+            old_version,
+            buffer.version(),
+            changes.patch(),
+        )
         .unwrap_err();
     assert!(matches!(
         err,
-        DisplayMapError::Projection(ProjectionError::ApplyDeltaStale { .. })
+        DisplayMapError::Projection(ProjectionError::ApplyPatchStale { .. })
     ));
 
     // 错误是原子的：projection 状态未被修改

@@ -3,7 +3,7 @@
 //! FoldSet 维护折叠集合自身的不变量：
 //! - id 单 FoldSet 内单调递增；
 //! - 任意两个 fold 之间必须满足「互不相交」或「严格嵌套」，禁止部分重叠；
-//! - 当通过 `DeltaEvent` 推进版本时，每条 fold 按其 `TrackedRangeUpdatePolicy` 决定保留 / 塌缩 / 失效。
+//! - 当通过组合 `TextPatch` 推进版本时，每条 fold 按其 `TrackedRangeUpdatePolicy` 决定保留 / 塌缩 / 失效。
 //! - fold 与合并后的隐藏行段分别存入持久化摘要树，快照 clone 和局部增删共享未变化节点。
 //!
 //! 折叠占位符样式、投影坐标和 viewport 切片由 `projection` 模块承载，不在本文件承诺。
@@ -12,7 +12,7 @@ use std::{cmp::Reverse, collections::BTreeMap};
 
 use gpui_sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Item, SumTree};
 use zcv_engine::{
-    BufferVersion, ByteOffset, DeltaEvent, Line, LineRange, Snapshot, TextRange,
+    BufferVersion, ByteOffset, Line, LineRange, PositionMap, Snapshot, TextPatch, TextRange,
     TrackedRangeUpdatePolicy,
 };
 
@@ -41,8 +41,8 @@ pub struct FoldSet {
     ranges: SumTree<FoldRange>,
     keys_by_id: BTreeMap<FoldRangeId, FoldOrder>,
     hidden_spans: SumTree<HiddenSpan>,
-    last_delta: Option<(BufferVersion, BufferVersion)>,
-    last_delta_changed_hidden_spans: bool,
+    last_patch: Option<(BufferVersion, BufferVersion)>,
+    last_patch_changed_hidden_spans: bool,
 }
 
 impl FoldSet {
@@ -54,8 +54,8 @@ impl FoldSet {
             ranges: SumTree::new(()),
             keys_by_id: BTreeMap::new(),
             hidden_spans: SumTree::new(()),
-            last_delta: None,
-            last_delta_changed_hidden_spans: false,
+            last_patch: None,
+            last_patch_changed_hidden_spans: false,
         }
     }
 
@@ -118,8 +118,8 @@ impl FoldSet {
         let id = self.reserve_id()?;
         let fold = FoldRange::with_policy(id, self.version, range, update_policy, line_span);
         self.insert_fold(fold);
-        self.last_delta = None;
-        self.last_delta_changed_hidden_spans = false;
+        self.last_patch = None;
+        self.last_patch_changed_hidden_spans = false;
         self.insert_hidden_span_for_fold(fold);
         Ok(id)
     }
@@ -161,8 +161,8 @@ impl FoldSet {
         ranges.append(cursor.suffix(), ());
         self.ranges = ranges;
         self.keys_by_id.remove(&id);
-        self.last_delta = None;
-        self.last_delta_changed_hidden_spans = false;
+        self.last_patch = None;
+        self.last_patch_changed_hidden_spans = false;
         if let Some(affected) = affected_hidden_span {
             self.refresh_hidden_span_after_removal(affected);
         }
@@ -186,8 +186,8 @@ impl FoldSet {
         self.ranges = SumTree::new(());
         self.keys_by_id.clear();
         self.hidden_spans = SumTree::new(());
-        self.last_delta = None;
-        self.last_delta_changed_hidden_spans = false;
+        self.last_patch = None;
+        self.last_patch_changed_hidden_spans = false;
     }
 
     /// 切换 fold 状态：若精确 range 已存在则移除并返回 `Unfolded(id)`，否则新增并返回 `Folded(id)`。
@@ -218,8 +218,8 @@ impl FoldSet {
             line_span,
         );
         self.insert_fold(fold);
-        self.last_delta = None;
-        self.last_delta_changed_hidden_spans = false;
+        self.last_patch = None;
+        self.last_patch_changed_hidden_spans = false;
         self.insert_hidden_span_for_fold(fold);
         Ok(FoldToggleOutcome::Folded(id))
     }
@@ -256,30 +256,33 @@ impl FoldSet {
             .map_err(Into::into)
     }
 
-    /// 通过一次 DeltaEvent 把所有 fold range 推进到新版本，并返回每条 fold 的 update 事实。
+    /// 通过一个组合 Patch 把所有 fold range 推进到新版本，并返回每条 fold 的 update 事实。
     ///
-    /// `snapshot` 必须为应用 delta 后的快照（版本等于 `event.new_version()`）：
+    /// `snapshot` 必须为应用 Patch 后的当前快照：
     /// 用它重算每条保留下来的 fold 的 `line_span` 缓存，保持「fold 元数据与文本同版本」不变量。
-    pub fn update_through_delta_event(
+    pub fn update_through_patch(
         &mut self,
-        event: &DeltaEvent,
+        old_version: BufferVersion,
+        new_version: BufferVersion,
+        patch: &TextPatch,
         snapshot: &Snapshot,
     ) -> DisplayMapResult<Vec<FoldRangeUpdate>> {
-        if self.version != event.old_version() {
+        if self.version != old_version {
             return Err(FoldError::VersionMismatch {
-                expected: event.old_version(),
+                expected: old_version,
                 actual: self.version,
             }
             .into());
         }
-        if snapshot.version() != event.new_version() {
+        if snapshot.version() != new_version {
             return Err(FoldError::VersionMismatch {
-                expected: event.new_version(),
+                expected: new_version,
                 actual: snapshot.version(),
             }
             .into());
         }
 
+        let position_map = PositionMap::from_text_patch(patch);
         let mut updates = Vec::with_capacity(self.len());
         let mut retained = Vec::with_capacity(self.len());
         let mut hidden_spans_changed = false;
@@ -288,8 +291,8 @@ impl FoldSet {
             let id = fold.id();
             let old_line_span = fold.line_span();
             let tracked_update = fold.tracked_range().map_through_position_map_with_policy(
-                event.new_version(),
-                event.position_map(),
+                new_version,
+                &position_map,
                 fold.update_policy(),
             );
             let update = FoldRangeUpdate::from_tracked(id, tracked_update);
@@ -308,13 +311,13 @@ impl FoldSet {
         }
 
         self.ranges = SumTree::from_iter(retained, ());
-        self.version = event.new_version();
+        self.version = new_version;
         self.sort_ranges_and_rebuild_keys();
         if hidden_spans_changed {
             self.rebuild_hidden_spans();
         }
-        self.last_delta = Some((event.old_version(), event.new_version()));
-        self.last_delta_changed_hidden_spans = hidden_spans_changed;
+        self.last_patch = Some((old_version, new_version));
+        self.last_patch_changed_hidden_spans = hidden_spans_changed;
         Ok(updates)
     }
 
@@ -359,13 +362,21 @@ impl FoldSet {
         &self.hidden_spans
     }
 
-    pub(crate) fn was_updated_by(&self, event: &DeltaEvent) -> bool {
-        self.last_delta == Some((event.old_version(), event.new_version()))
+    pub(crate) fn was_updated_between(
+        &self,
+        old_version: BufferVersion,
+        new_version: BufferVersion,
+    ) -> bool {
+        self.last_patch == Some((old_version, new_version))
     }
 
-    pub(crate) fn hidden_spans_changed_by(&self, event: &DeltaEvent) -> Option<bool> {
-        self.was_updated_by(event)
-            .then_some(self.last_delta_changed_hidden_spans)
+    pub(crate) fn hidden_spans_changed_between(
+        &self,
+        old_version: BufferVersion,
+        new_version: BufferVersion,
+    ) -> Option<bool> {
+        self.was_updated_between(old_version, new_version)
+            .then_some(self.last_patch_changed_hidden_spans)
     }
 
     fn insert_fold(&mut self, fold: FoldRange) {

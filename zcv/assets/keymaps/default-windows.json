@@ -1,0 +1,81 @@
+[
+  {
+    "context": "Editor",
+    "bindings": {
+      "ctrl-left": "editor::MoveToPreviousWord",
+      "ctrl-right": "editor::MoveToNextWord",
+      "ctrl-shift-left": "editor::SelectToPreviousWord",
+      "ctrl-shift-right": "editor::SelectToNextWord",
+      "home": "editor::MoveToBeginningOfLine",
+      "end": "editor::MoveToEndOfLine",
+      "shift-home": "editor::SelectToBeginningOfLine",
+      "shift-end": "editor::SelectToEndOfLine",
+      "ctrl-a": "editor::SelectAll",
+      "ctrl-c": "editor::Copy",
+      "ctrl-v": "editor::Paste",
+      "ctrl-x": "editor::Cut",
+      "ctrl-z": "editor::Undo",
+      "ctrl-y": "editor::Redo",
+      "backspace": "editor::Backspace",
+      "delete": "editor::Delete",
+      "enter": "editor::Newline",
+      "left": "editor::MoveLeft",
+      "right": "editor::MoveRight",
+      "up": "editor::MoveUp",
+      "down": "editor::MoveDown",
+      "shift-left": "editor::SelectLeft",
+      "shift-right": "editor::SelectRight",
+      "shift-up": "editor::SelectUp",
+      "shift-down": "editor::SelectDown",
+      "tab": "editor::Indent",
+      "shift-tab": "editor::Outdent"
+    }
+  },
+  {
+    "context": "ProjectTree",
+    "bindings": {
+      "up": "project_tree::TreeSelectPrev",
+      "down": "project_tree::TreeSelectNext",
+      "left": "project_tree::TreeCollapse",
+      "right": "project_tree::TreeExpand",
+      "space": "project_tree::TreeActivate"
+    }
+  },
+  {
+    "context": "Picker",
+    "bindings": {
+      "up": "picker::PickerSelectPrev",
+      "down": "picker::PickerSelectNext",
+      "enter": "picker::PickerConfirm",
+      "escape": "picker::PickerCancel",
+      "ctrl-o": "project_picker::OpenLocalProject"
+    }
+  },
+  {
+    "context": "Pane",
+    "bindings": {
+      "ctrl-pageup": "pane::PrevTab",
+      "ctrl-pagedown": "pane::NextTab",
+      "ctrl-w": "pane::CloseTab"
+    }
+  },
+  {
+    "bindings": {
+      "alt-f4": "workspace::QuitWindow",
+      "ctrl-m": "workspace::MinimizeWindow",
+      "f11": "workspace::ToggleMaximizeWindow",
+      "ctrl-shift-p": "project_picker::ToggleProjectPicker",
+      "ctrl-,": "workspace::OpenSettings",
+      "ctrl-shift-e": "workspace::ToggleProjectTree",
+      "ctrl-shift-g": "workspace::ToggleVersionControl",
+      "ctrl-shift-o": "workspace::ToggleOutline",
+      "ctrl-shift-l": "workspace::ToggleLanguageServer",
+      "ctrl-shift-m": "workspace::ToggleDiagnostics",
+      "ctrl-shift-f": "workspace::ToggleProjectSearch",
+      "ctrl-`": "workspace::ToggleTerminal",
+      "ctrl-shift-d": "workspace::ToggleDebug",
+      "ctrl-shift-k": "workspace::ToggleKeyboardShortcuts",
+      "ctrl-s": "workspace::Save"
+    }
+  }
+]

@@ -6,13 +6,14 @@
 
 `zcv-engine` 只做编辑引擎底座：文本存储、编辑、坐标、事务、历史、快照、通用区间追踪、读取切片、文件文本边界和错误防御。
 
-它不做 UI 渲染、Editor 折叠与显示投影、LSP / Tree-sitter provider、diagnostics 生成、项目索引、命令系统、宏录制、后台任务调度或实时多人协作。折叠与 Projection 由宿主 Editor 的 DisplayMap 组合 `Snapshot`、`Anchor` / `TrackedRange` 和 `DeltaEvent` 实现。
+它不做 UI 渲染、Editor 折叠与显示投影、LSP / Tree-sitter provider、diagnostics 生成、项目索引、命令系统、宏录制、后台任务调度或实时多人协作。折叠与 Projection 由宿主 Editor 的 DisplayMap 组合当前 `Snapshot` 与每个订阅者独立累积的 `TextPatch` 实现。
 
 ## 核心能力
 
 - 基于 `ByteOffset` / `TextRange` 的强类型编辑坐标。
 - 基于 `RopeyStorage` 的生产文本存储。
 - 事务化编辑、Delta、ChangeSet 和 PositionMap。
+- 独立 `TextSubscription`：事件只负责唤醒，Snapshot 表达当前真相，组合 TextPatch 保证连续编辑不丢失。
 - Undo / Redo、历史节点、事务记录和回放。
 - Snapshot、BufferVersion 和版本化结果承载。
 - Selection / SelectionSet 原语、PositionMap 映射和纯文本 word / grapheme 边界查询。
@@ -39,6 +40,7 @@ types/        offset、range、position、version 等强类型
 config/       Buffer、encoding、line ending、display、large file 等策略
 storage/      TextStorage 抽象与 RopeyStorage
 transaction/  Edit、Transaction、Delta、ChangeSet、record
+text_changes.rs  独立订阅、连续 Patch 合成与消费
 selection/    Cursor、Selection、SelectionSet 与纯文本边界词汇
 tracking/     Anchor、Mark、TrackedRange 及跟随策略
 ```
@@ -50,7 +52,7 @@ tracking/     Anchor、Mark、TrackedRange 及跟随策略
 - `AGENTS.md`：AI 协作规则与稳定工程约束。
 - `docs/引擎能力.md`：能力边界与长期方向。
 - `docs/STATUS.md`：当前状态、结构概览和建议验证命令。
-- `../agents.md`：workspace 项目结构。
+- `../CODEX.md`：workspace 项目结构与协作规则。
 
 ## 文档维护
 

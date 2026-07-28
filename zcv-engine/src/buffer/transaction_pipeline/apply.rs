@@ -82,7 +82,7 @@ impl Buffer {
 
         // `Arc<[T]>` 让以下所有 clone 都是 O(1) 引用计数递增，无堆分配。
         // 仍然显式列出便于读者理解所有权流动；编译器不会自动 elide 这些 Arc::clone。
-        let (transaction_id, delta, changeset) = self.apply_edit_list(
+        let (transaction_id, delta, changeset, event) = self.apply_edit_list(
             prepared.base_version,
             prepared.edits.clone(),
             prepared.metadata.source(),
@@ -99,8 +99,13 @@ impl Buffer {
         );
 
         let history_transaction_id = self.finish_transaction(prepared, transaction_id)?;
-        let outcome =
-            TransactionOutcome::new(transaction_id, history_transaction_id, delta, changeset);
+        let outcome = TransactionOutcome::new(
+            transaction_id,
+            history_transaction_id,
+            delta,
+            changeset,
+            event,
+        );
 
         Ok((record, outcome))
     }
@@ -196,9 +201,9 @@ impl Buffer {
     ///
     /// **半提交修复**：在 Buffer 本体变异**之前**完成所有可失败步骤（version 检查、
     /// validate、事务 id 溢出检查、`version.next()` 算溢出、prepared replace 容量预约、
-    /// 后端边界预检与坐标换算、事件队列容量预约、Delta/ChangeSet 构造）。
+    /// 后端边界预检与坐标换算、Delta/ChangeSet/Patch 构造）。
     /// 文本内容先在 cloned storage 上完整构造；真正提交时只做 move assignment、
-    /// 标量状态推进和已预留 Vec slot 写入，事务管线不再允许
+    /// 标量状态推进和订阅发布，事务管线不再允许
     /// "Buffer 文本已经改了一半才返回 Result" 的状态机形态。
     ///
     /// `RopeyStorage::clone()` 是低成本共享底层结构；这里把它作为两阶段提交的
@@ -208,7 +213,7 @@ impl Buffer {
         base_version: BufferVersion,
         tx_edits: EditList,
         source: TransactionSource,
-    ) -> EngineResult<(crate::TransactionId, Delta, ChangeSet)> {
+    ) -> EngineResult<(crate::TransactionId, Delta, ChangeSet, DeltaEvent)> {
         // ===== Fallible 段：在 Buffer 本体变异前完成全部可失败检查 =====
         self.ensure_writable()?;
 
@@ -225,8 +230,6 @@ impl Buffer {
         let old_version = self.version;
         let new_version = old_version.next().ok_or(EngineError::VersionOverflow)?;
         let prepared_replaces = self.prepare_storage_replaces(&tx_edits)?;
-        self.reserve_delta_event_slot()?;
-
         let mut next_storage = self.storage.clone();
         for (edit, prepared_replace) in tx_edits
             .as_slice()
@@ -240,22 +243,21 @@ impl Buffer {
         let changeset = ChangeSet::from_edit_list(&tx_edits);
         let position_map = changeset.position_map();
         let delta = Delta::new(old_version, new_version, tx_edits);
-        let pending_event = DeltaEvent::new(
+        let event = DeltaEvent::new(
             transaction_id,
             source,
             delta.clone(),
             changeset.clone(),
             position_map,
         );
-        let last_event = pending_event.clone();
 
-        // ===== Infallible 段：从这里起 Buffer 本体变异不允许失败 =====
-        // 文本已经在 clone storage 上完整构造；真正提交只做 move assignment 与已预留队列写入。
+        // ===== Commit 段：从这里起 Buffer 本体变异不允许失败 =====
+        // 文本已经在 clone storage 上完整构造；真正提交只做 move assignment 与订阅发布。
         self.storage = next_storage;
         self.version = new_version;
-        self.commit_delta_event(next_transaction_id, last_event, pending_event);
+        self.commit_delta_event(next_transaction_id, &event);
 
-        Ok((transaction_id, delta, changeset))
+        Ok((transaction_id, delta, changeset, event))
     }
 
     fn prepare_storage_replaces(

@@ -48,25 +48,37 @@ fn fold_lines_hidden_ranges_should_hide_lines_after_anchor_until_fold_end() {
 }
 
 #[test]
-fn fold_set_update_through_delta_should_advance_version_or_reject_mismatch_atomically() {
+fn fold_set_update_through_patch_should_advance_version_or_reject_mismatch_atomically() {
     let mut buffer = buffer("abcdef");
     let snapshot = buffer.snapshot();
     let mut folds = FoldSet::new(buffer.version());
     folds.fold(&snapshot, range(2, 5)).unwrap();
 
+    let subscription = buffer.subscribe();
+    let old_version = buffer.version();
     buffer.insert(b(0), "X").unwrap();
-    let event = buffer.last_delta_event().unwrap().clone();
+    let changes = subscription.consume();
     let new_snapshot = buffer.snapshot();
     let updates = folds
-        .update_through_delta_event(&event, &new_snapshot)
+        .update_through_patch(
+            old_version,
+            buffer.version(),
+            changes.patch(),
+            &new_snapshot,
+        )
         .unwrap();
 
     assert_eq!(updates.len(), 1);
-    assert_eq!(folds.version(), event.new_version());
+    assert_eq!(folds.version(), buffer.version());
     assert_eq!(folds.iter().next().unwrap().range(), range(3, 6));
 
     let stale = folds
-        .update_through_delta_event(&event, &new_snapshot)
+        .update_through_patch(
+            old_version,
+            buffer.version(),
+            changes.patch(),
+            &new_snapshot,
+        )
         .unwrap_err();
     assert!(matches!(
         stale,

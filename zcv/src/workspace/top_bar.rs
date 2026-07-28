@@ -60,7 +60,8 @@ fn drag_spacer() -> Div {
 fn leading_slots(window: &Window, project_picker: &gpui::Entity<ProjectPicker>) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();
 
-    // 窗口控制
+    // macOS 使用无标题栏窗口，因此在应用顶栏提供原生习惯的三色控制。
+    #[cfg(target_os = "macos")]
     out.push(window_controls::render(window).into_any_element());
 
     // 项目选择器

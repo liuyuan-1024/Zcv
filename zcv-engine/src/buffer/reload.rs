@@ -18,13 +18,24 @@ impl Buffer {
     /// reload 表示外部文本源成为新的干净基线：文本存储重建、版本递增、
     /// history 清空，dirty 状态恢复为 clean。视图选区由宿主管理。
     pub fn reload_from_text(&mut self, text: String) -> EngineResult<()> {
-        self.storage = RopeyStorage::new(text);
-        self.bump_version()?;
+        let old_len = self.storage.len_bytes().get();
+        let old_version = self.version;
+        let new_storage = RopeyStorage::new(text);
+        let new_len = new_storage.len_bytes().get();
+        let new_version = self.version.next().ok_or(EngineError::VersionOverflow)?;
+        self.storage = new_storage;
+        self.version = new_version;
         self.history.clear();
         self.loaded_text_info = None;
         self.mark_clean_internal();
         self.mark_synced_external();
         self.apply_large_file_auto_read_only();
+        self.text_changes.publish(
+            old_version,
+            self.version,
+            crate::TextPatch::replace_all(old_len, new_len),
+            true,
+        );
         Ok(())
     }
 
@@ -69,11 +80,6 @@ impl Buffer {
             }
         }
         writer.flush()?;
-        Ok(())
-    }
-
-    pub(in crate::buffer) fn bump_version(&mut self) -> EngineResult<()> {
-        self.version = self.version.next().ok_or(EngineError::VersionOverflow)?;
         Ok(())
     }
 }

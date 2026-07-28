@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_engine::{
-    ByteOffset, DeltaEvent, DisplayColumn, DisplayColumnAffinity, Line, LogicalColumn, Position,
-    Snapshot,
+    ByteOffset, DisplayColumn, DisplayColumnAffinity, Line, LogicalColumn, Position, Snapshot,
+    TextChangeBatch,
 };
 
 use super::error::DisplayMapResult;
@@ -101,12 +101,13 @@ impl TabMap {
         self.snapshot.clone()
     }
 
-    pub(super) fn sync(&mut self, snapshot: Snapshot, event: Option<&DeltaEvent>) {
+    pub(super) fn sync(&mut self, snapshot: Snapshot, changes: Option<&TextChangeBatch>) {
         let same_configuration = self.snapshot.snapshot.config().tab == snapshot.config().tab
             && self.snapshot.snapshot.config().display_width == snapshot.config().display_width;
-        let compatible = event.is_some_and(|event| {
-            event.old_version() == self.snapshot.snapshot.version()
-                && event.new_version() == snapshot.version()
+        let compatible = changes.is_some_and(|changes| {
+            !changes.requires_reset()
+                && changes.old_version() == Some(self.snapshot.snapshot.version())
+                && changes.new_version() == Some(snapshot.version())
         });
 
         if !same_configuration || !compatible {
@@ -115,20 +116,23 @@ impl TabMap {
             return;
         }
 
-        let event = event.expect("compatible 已确认 DeltaEvent 存在");
-        let structural = event.delta().edits().as_slice().iter().any(|edit| {
-            edit.replacement().contains('\n')
+        let changes = changes.expect("compatible 已确认 TextChangeBatch 存在");
+        let structural = changes.patch().edits().iter().any(|edit| {
+            snapshot
+                .slice_text(edit.new_range())
+                .is_ok_and(|text| text.as_str().contains('\n'))
                 || self
                     .snapshot
                     .snapshot
-                    .slice_text(edit.range())
+                    .slice_text(edit.old_range())
                     .is_ok_and(|text| text.as_str().contains('\n'))
         });
         if structural {
             self.measured_line_widths.clear();
-        } else if let Ok(ranges) = event.changeset().changed_ranges() {
+        } else {
             let mut changed_lines = BTreeSet::new();
-            for range in ranges {
+            for edit in changes.patch().edits() {
+                let range = edit.new_range();
                 if let Ok(start) = snapshot.byte_to_line(range.start())
                     && let Ok(end) = snapshot.byte_to_line(range.end())
                 {
@@ -137,8 +141,6 @@ impl TabMap {
             }
             self.measured_line_widths
                 .retain(|line, _| !changed_lines.contains(line));
-        } else {
-            self.measured_line_widths.clear();
         }
         self.snapshot = TabSnapshot::new(snapshot);
     }

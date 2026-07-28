@@ -344,7 +344,7 @@ div().children(vec![
 
 | 组件 | 位置 | 内容变体 | 可选配置 |
 |---|---|---|---|
-| `Glyph` | `shared/glyph.rs` | icon / text / icon_text | color, tooltip, on_click |
+| `Glyph` | `ui/glyph.rs` | icon / text / icon_text | color, tooltip, on_click |
 
 ---
 

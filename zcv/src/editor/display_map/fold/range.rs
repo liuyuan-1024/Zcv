@@ -4,15 +4,14 @@
 //! 折叠区间使用 `Stickiness::Never`：用户显式折叠的范围不应该在两端插入时主动扩张。
 
 use zcv_engine::{
-    AnchorError, BufferVersion, DeltaEvent, Line, Stickiness, TextRange, TrackedRange,
-    TrackedRangeUpdate, TrackedRangeUpdatePolicy,
+    BufferVersion, Line, Stickiness, TextRange, TrackedRange, TrackedRangeUpdatePolicy,
 };
 
 use super::FoldRangeId;
 
 /// 单条折叠区间与其可跟随文本的内部 TrackedRange。
 ///
-/// `line_span` 是与 `tracked_range` 联动的缓存：fold 创建与 delta 应用后由 `FoldSet`
+/// `line_span` 是与 `tracked_range` 联动的缓存：fold 创建与组合 Patch 应用后由 `FoldSet`
 /// 统一刷新，使 `Projection::build` / 增量分类器在读取时不必再为每条 fold 做 byte→line
 /// 的 O(log N) 转换。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -60,7 +59,7 @@ impl FoldRange {
     }
 
     /// 折叠区间覆盖的逻辑行闭区间 `[start_line, end_line]`，语义与 `fold_line_span` 一致。
-    /// 由 `FoldSet` 在每次 fold 变更 / delta 应用后同步刷新。
+    /// 由 `FoldSet` 在每次 fold 变更 / Patch 应用后同步刷新。
     pub fn line_span(&self) -> (Line, Line) {
         self.line_span
     }
@@ -71,14 +70,6 @@ impl FoldRange {
 
     pub fn end_line(&self) -> Line {
         self.line_span.1
-    }
-
-    pub fn map_through_delta_event(
-        &self,
-        event: &DeltaEvent,
-    ) -> Result<TrackedRangeUpdate, AnchorError> {
-        self.tracked_range
-            .map_through_delta_event_with_policy(event, self.update_policy)
     }
 
     pub(super) fn set_tracked_range(&mut self, tracked_range: TrackedRange) {

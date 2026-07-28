@@ -140,7 +140,7 @@ impl Buffer {
 
         let mut result = None;
         for tx_edits in undo_target.undo_batches.iter() {
-            let (_, delta, changeset) = self.apply_edit_list(
+            let (_, delta, changeset, _) = self.apply_edit_list(
                 self.version,
                 tx_edits.clone(), // EditList::clone 是 O(1) Arc 递增
                 TransactionSource::Undo,
@@ -211,7 +211,7 @@ impl Buffer {
 
         let mut result = None;
         for tx_edits in target.redo_batches.iter() {
-            let (_, delta, changeset) =
+            let (_, delta, changeset, _) =
                 self.apply_edit_list(self.version, tx_edits.clone(), TransactionSource::Redo)?;
             result = Some((delta, changeset));
         }

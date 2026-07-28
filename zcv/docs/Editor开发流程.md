@@ -186,7 +186,9 @@ DisplayPoint
 - 像素坐标只在布局和命中测试阶段使用。
 
 DisplayMap 持有与 Buffer Snapshot 同版本的 Projection，按投影视口读取可见行，
-并通过 `DeltaEvent` 增量推进 Projection。Projection 只维护折叠后的行拓扑，不读取行文本。
+并通过订阅者独立累积的组合 `TextPatch` 一次推进 FoldSet、Projection 与 TabMap。
+事件只负责唤醒，当前 `Snapshot` 是文本真相；每层直接理解 Patch 的旧/新坐标，
+不缓存或逐条回放中间 Snapshot。Projection 只维护折叠后的行拓扑。
 TabMap 按实际投影视口惰性测量 display-column，并在编辑后只失效受影响的已测量行；
 初次构建不扫描全文。占位符文本、像素布局和命中测试由 DisplayMap / EditorElement 负责。
 Soft Wrap、Inlay 后续继续在此层扩展，不能散落到 Editor 或业务组件中。

@@ -43,12 +43,12 @@ pub(crate) enum ProjectionError {
         fold_version: BufferVersion,
     },
     #[error(
-        "Projection::apply_delta 版本不匹配：projection {projection_version:?}，event old/new {event_old_version:?}/{event_new_version:?}，snapshot {snapshot_version:?}，folds {fold_version:?}"
+        "Projection::apply_patch 版本不匹配：projection {projection_version:?}，patch old/new {patch_old_version:?}/{patch_new_version:?}，snapshot {snapshot_version:?}，folds {fold_version:?}"
     )]
-    ApplyDeltaStale {
+    ApplyPatchStale {
         projection_version: BufferVersion,
-        event_old_version: BufferVersion,
-        event_new_version: BufferVersion,
+        patch_old_version: BufferVersion,
+        patch_new_version: BufferVersion,
         snapshot_version: BufferVersion,
         fold_version: BufferVersion,
     },

@@ -162,11 +162,12 @@ struct RawBindingGroup {
 
 /// 按当前平台编译对应的默认快捷键文件。
 fn platform_json() -> &'static str {
-    if cfg!(target_os = "macos") {
-        include_str!("../../assets/keymaps/default-macos.json")
-    } else {
-        include_str!("../../assets/keymaps/default-linux.json")
-    }
+    #[cfg(target_os = "macos")]
+    return include_str!("../../assets/keymaps/default-macos.json");
+    #[cfg(target_os = "windows")]
+    return include_str!("../../assets/keymaps/default-windows.json");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    return include_str!("../../assets/keymaps/default-linux.json");
 }
 
 /// 检测同一 (键位, 上下文) 被映射到不同 action 的冲突并告警。
@@ -278,5 +279,24 @@ mod tests {
                 && group.bindings.get(expected_keys).map(String::as_str) == Some("workspace::Save")
         }));
         assert!(build(expected_keys, "workspace::Save", Some("Workspace")).is_some());
+    }
+
+    #[test]
+    fn every_platform_keymap_is_nonempty_valid_and_defines_save() {
+        for json in [
+            include_str!("../../assets/keymaps/default-macos.json"),
+            include_str!("../../assets/keymaps/default-linux.json"),
+            include_str!("../../assets/keymaps/default-windows.json"),
+        ] {
+            let groups: Vec<RawBindingGroup> =
+                serde_json::from_str(json).expect("平台 keymap 必须是合法 JSON");
+            assert!(!groups.is_empty());
+            assert!(groups.iter().any(|group| {
+                group
+                    .bindings
+                    .values()
+                    .any(|action| action == "workspace::Save")
+            }));
+        }
     }
 }

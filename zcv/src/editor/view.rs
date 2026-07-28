@@ -12,8 +12,8 @@ use gpui::{
 };
 use zcv_engine::{
     Buffer, BufferConfig, ByteOffset, EngineResult, Line, MovementDirection, MovementUnit,
-    Selection, SelectionSet, Snapshot, TextRange, TransactionMetadata, TransactionSource,
-    Utf16Offset,
+    Selection, SelectionSet, Snapshot, TextRange, TextSubscription, TransactionMetadata,
+    TransactionSource, Utf16Offset,
 };
 
 use super::blink_manager::BlinkManager;
@@ -281,6 +281,7 @@ fn index_presentation_lines(text: &str) -> Vec<(usize, usize)> {
 
 pub(crate) struct Editor {
     buffer: Entity<Buffer>,
+    buffer_subscription: TextSubscription,
     display_map: DisplayMap,
     mode: EditorMode,
     file_path: Option<PathBuf>,
@@ -502,13 +503,12 @@ impl Editor {
     }
 
     fn new(buffer: Entity<Buffer>, mode: EditorMode, cx: &mut Context<Self>) -> Self {
-        let display_map = DisplayMap::new(buffer.read(cx).snapshot());
-        cx.observe(&buffer, |editor, buffer, cx| {
-            let (snapshot, event) = {
-                let buffer = buffer.read(cx);
-                (buffer.snapshot(), buffer.last_delta_event().cloned())
-            };
-            editor.display_map.sync_snapshot(snapshot, event.as_ref());
+        // 在一次 Entity 更新中建立订阅并取得同版本 Snapshot，关闭初始化期间的漏读窗口。
+        let (buffer_subscription, snapshot) =
+            buffer.update(cx, |buffer, _| (buffer.subscribe(), buffer.snapshot()));
+        let display_map = DisplayMap::new(snapshot);
+        cx.observe(&buffer, |editor, _, cx| {
+            editor.sync_display_map(cx);
             editor.input_layout = None;
             cx.notify();
         })
@@ -519,6 +519,7 @@ impl Editor {
 
         Self {
             buffer,
+            buffer_subscription,
             display_map,
             mode,
             file_path: None,
@@ -941,11 +942,9 @@ impl Editor {
     }
 
     fn sync_display_map(&mut self, cx: &App) {
-        let (snapshot, event) = {
-            let buffer = self.buffer.read(cx);
-            (buffer.snapshot(), buffer.last_delta_event().cloned())
-        };
-        self.display_map.sync_snapshot(snapshot, event.as_ref());
+        let snapshot = self.buffer.read(cx).snapshot();
+        let changes = self.buffer_subscription.consume();
+        self.display_map.sync_changes(snapshot, changes);
     }
 
     pub(super) fn handle_move_left(

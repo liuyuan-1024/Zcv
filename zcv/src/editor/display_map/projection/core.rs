@@ -9,9 +9,7 @@
 //! 占位符样式与像素绘制不在本类型承诺范围内。
 
 use gpui_sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
-use zcv_engine::{
-    BufferVersion, CoordinateError, DeltaEvent, Line, LineRange, Snapshot, TextRange,
-};
+use zcv_engine::{BufferVersion, CoordinateError, Line, LineRange, Snapshot, TextPatch, TextRange};
 
 use super::{
     FoldPlaceholder, LogicalPoint, LogicalPointProjection, LogicalProjection, LogicalRange,
@@ -31,11 +29,11 @@ pub struct Projection {
     /// 投影行拓扑摘要。SumTree clone 只共享未变化节点。
     rows: SumTree<ProjectedRowItem>,
     /// 上次 build 用到的（已排序合并）隐藏行段集合，作为增量分类器的对比基准。
-    /// 不暴露：只参与 `apply_delta` 的「fold 结构是否变化」判定。
+    /// 不暴露：只参与 `apply_patch` 的「fold 结构是否变化」判定。
     hidden_spans: SumTree<HiddenSpan>,
 }
 
-/// `Projection::apply_delta` 推进结果。语义详见对应方法文档。
+/// `Projection::apply_patch` 推进结果。语义详见对应方法文档。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyOutcome {
     /// 编辑既不改变逻辑行数也不改变 fold 结构；
@@ -77,12 +75,12 @@ impl Projection {
         Ok(projection)
     }
 
-    /// 尝试就地推进 Projection 到 `event.new_version()`。
+    /// 尝试用跨多个连续版本组合后的 Patch 就地推进 Projection。
     ///
     /// 调用契约：
     /// - `self.version` 必须等于 `event.old_version()`；
     /// - `new_snapshot.version()` 与 `new_folds.version()` 必须等于 `event.new_version()`；
-    /// - 三者任一违反契约即返回 `ProjectionError::ApplyDeltaStale`，本方法不会留下半坏态。
+    /// - 三者任一违反契约即返回 `ProjectionError::ApplyPatchStale`，本方法不会留下半坏态。
     ///
     /// 分类策略：
     /// - **Compatible**：编辑前后 `snapshot.line_count()` 与 `hidden_spans` 都不变，
@@ -93,20 +91,24 @@ impl Projection {
     ///
     /// **关键正确性性质**：分类降级到 `Rebuilt` 只是性能损失，不会产生错误投影。
     /// 故分类器允许任意保守，但绝不能把「实际不兼容」误判为 `Compatible`。
-    pub fn apply_delta(
+    pub fn apply_patch(
         &mut self,
+        old_snapshot: &Snapshot,
         new_snapshot: &Snapshot,
         new_folds: &FoldSet,
-        event: &DeltaEvent,
+        old_version: BufferVersion,
+        new_version: BufferVersion,
+        patch: &TextPatch,
     ) -> DisplayMapResult<ApplyOutcome> {
-        if self.version != event.old_version()
-            || new_snapshot.version() != event.new_version()
-            || new_folds.version() != event.new_version()
+        if self.version != old_version
+            || old_snapshot.version() != old_version
+            || new_snapshot.version() != new_version
+            || new_folds.version() != new_version
         {
-            return Err(ProjectionError::ApplyDeltaStale {
+            return Err(ProjectionError::ApplyPatchStale {
                 projection_version: self.version,
-                event_old_version: event.old_version(),
-                event_new_version: event.new_version(),
+                patch_old_version: old_version,
+                patch_new_version: new_version,
                 snapshot_version: new_snapshot.version(),
                 fold_version: new_folds.version(),
             }
@@ -116,35 +118,37 @@ impl Projection {
         let old_line_count = self.logical_line_count();
         let line_count_unchanged = new_snapshot.line_count() == old_line_count;
         let text_topology_unchanged = line_count_unchanged
-            && event
-                .delta()
-                .edits()
-                .as_slice()
-                .iter()
-                .all(|edit| !edit.replacement().contains('\n'));
+            && patch.edits().iter().all(|edit| {
+                old_snapshot
+                    .slice_text(edit.old_range())
+                    .is_ok_and(|text| !text.as_str().contains('\n'))
+                    && new_snapshot
+                        .slice_text(edit.new_range())
+                        .is_ok_and(|text| !text.as_str().contains('\n'))
+            });
         let new_spans = new_folds.hidden_spans().clone();
         let hidden_topology_unchanged = new_folds
-            .hidden_spans_changed_by(event)
+            .hidden_spans_changed_between(old_version, new_version)
             .map_or_else(|| new_spans == self.hidden_spans, |changed| !changed);
         if text_topology_unchanged && hidden_topology_unchanged {
-            self.version = event.new_version();
+            self.version = new_version;
             return Ok(ApplyOutcome::Compatible);
         }
 
-        if !new_folds.was_updated_by(event) {
+        if !new_folds.was_updated_between(old_version, new_version) {
             let rebuilt = Self::build(new_snapshot, new_folds)?;
             *self = rebuilt;
             return Ok(ApplyOutcome::Rebuilt);
         }
 
-        if let Some(window) = self.splice_window(new_snapshot, &new_spans, event)? {
+        if let Some(window) = self.splice_window(new_snapshot, &new_spans, patch)? {
             let _ = window;
             self.rows = SumTree::from_iter(
                 build_row_items(&new_spans, 0, new_snapshot.line_count()),
                 (),
             );
             self.hidden_spans = new_spans;
-            self.version = event.new_version();
+            self.version = new_version;
             debug_assert_eq!(self.logical_line_count(), new_snapshot.line_count());
             return Ok(ApplyOutcome::Spliced);
         }
@@ -446,15 +450,12 @@ impl Projection {
         &self,
         new_snapshot: &Snapshot,
         new_spans: &SumTree<HiddenSpan>,
-        event: &DeltaEvent,
+        patch: &TextPatch,
     ) -> DisplayMapResult<Option<SpliceWindow>> {
-        let changed_ranges = event.changeset().changed_ranges()?;
-        let Some(first) = changed_ranges.first() else {
+        let Some(first) = patch.edits().first() else {
             return Ok(None);
         };
-        let last = changed_ranges
-            .last()
-            .expect("非空 changed ranges 必须存在末项");
+        let last = patch.edits().last().expect("非空 Patch 必须存在末项");
 
         let old_line_count = self.logical_line_count();
         let new_line_count = new_snapshot.line_count();
@@ -463,11 +464,11 @@ impl Projection {
         };
 
         // 第一个 edit 之前没有字节变化，因此首个受影响逻辑行在新旧版本中相同。
-        let mut new_start = new_snapshot.byte_to_line(first.start())?.get();
+        let mut new_start = new_snapshot.byte_to_line(first.new_range().start())?.get();
         let mut old_start = new_start;
 
         // 取最后 changed range 所在行的下一行作为稳定后缀边界。
-        let changed_end_line = new_snapshot.byte_to_line(last.end())?.get();
+        let changed_end_line = new_snapshot.byte_to_line(last.new_range().end())?.get();
         let mut new_end = changed_end_line.saturating_add(1).min(new_line_count);
         let Some(mut old_end) = new_end.checked_add_signed(-line_delta) else {
             return Ok(None);

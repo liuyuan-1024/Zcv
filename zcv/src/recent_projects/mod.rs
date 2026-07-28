@@ -1,6 +1,6 @@
 //! 最近项目列表持久化。
 //!
-//! 数据存储在 `~/.zcv/recent_projects.json`，最多保留 20 条。
+//! 数据存储在各平台标准配置目录的 `zcv/recent_projects.json`，最多保留 20 条。
 
 pub(crate) mod project_picker;
 
@@ -29,8 +29,30 @@ struct RecentProjects {
 // ═══ 路径 ════════════════════════════════════════════════════════
 
 fn config_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".zcv")
+    #[cfg(target_os = "windows")]
+    if let Some(path) = std::env::var_os("APPDATA") {
+        return PathBuf::from(path).join("zcv");
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Some(path) = std::env::var_os("HOME") {
+        return PathBuf::from(path)
+            .join("Library")
+            .join("Application Support")
+            .join("zcv");
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
+            return PathBuf::from(path).join("zcv");
+        }
+        if let Some(path) = std::env::var_os("HOME") {
+            return PathBuf::from(path).join(".config").join("zcv");
+        }
+    }
+
+    PathBuf::from(".zcv")
 }
 
 fn recent_path() -> PathBuf {

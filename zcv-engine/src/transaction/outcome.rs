@@ -1,6 +1,6 @@
 //! 事务结果：把一次已提交文本变更的身份、历史归属和增量事实返回给宿主。
 
-use crate::{ChangeSet, Delta, TransactionId};
+use crate::{ChangeSet, Delta, DeltaEvent, TransactionId};
 
 /// 一次实际文本提交的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,6 +9,7 @@ pub struct TransactionOutcome {
     history_transaction_id: Option<TransactionId>,
     delta: Delta,
     changeset: ChangeSet,
+    event: DeltaEvent,
 }
 
 impl TransactionOutcome {
@@ -17,12 +18,14 @@ impl TransactionOutcome {
         history_transaction_id: Option<TransactionId>,
         delta: Delta,
         changeset: ChangeSet,
+        event: DeltaEvent,
     ) -> Self {
         Self {
             transaction_id,
             history_transaction_id,
             delta,
             changeset,
+            event,
         }
     }
 
@@ -44,6 +47,11 @@ impl TransactionOutcome {
 
     pub fn changeset(&self) -> &ChangeSet {
         &self.changeset
+    }
+
+    /// 本次提交对应的单步事件事实；跨多次提交的观察者应使用 `Buffer::subscribe`。
+    pub fn event(&self) -> &DeltaEvent {
+        &self.event
     }
 
     pub fn into_delta_changeset(self) -> (Delta, ChangeSet) {

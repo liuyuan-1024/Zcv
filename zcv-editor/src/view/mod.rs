@@ -34,6 +34,8 @@ actions!(
         MoveToNextWord,
         MoveToBeginningOfLine,
         MoveToEndOfLine,
+        MoveToBeginning,
+        MoveToEnd,
         SelectLeft,
         SelectRight,
         SelectUp,
@@ -42,6 +44,8 @@ actions!(
         SelectToNextWord,
         SelectToBeginningOfLine,
         SelectToEndOfLine,
+        SelectToBeginning,
+        SelectToEnd,
         SelectAll,
         Backspace,
         Delete,
@@ -67,6 +71,7 @@ pub enum EditorEvent {
 enum Motion {
     ByUnit(MovementUnit),
     LineStep,
+    DocumentEdge,
 }
 
 impl From<MovementUnit> for Motion {
@@ -677,6 +682,10 @@ impl Editor {
                                 detail: error.to_string(),
                             })?
                     }
+                    Motion::DocumentEdge => match direction {
+                        MovementDirection::Previous => ByteOffset::ZERO,
+                        MovementDirection::Next => self.buffer.read(cx).len_bytes(),
+                    },
                 };
                 Ok(if extend {
                     selection.with_head(new_head)
@@ -1029,6 +1038,32 @@ impl Editor {
         self.move_selections(MovementDirection::Next, MovementUnit::LineEdge, false, cx);
     }
 
+    pub(super) fn handle_move_to_beginning(
+        &mut self,
+        _: &MoveToBeginning,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode == EditorMode::SingleLine {
+            cx.propagate();
+            return;
+        }
+        self.move_selections(MovementDirection::Previous, Motion::DocumentEdge, false, cx);
+    }
+
+    pub(super) fn handle_move_to_end(
+        &mut self,
+        _: &MoveToEnd,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode == EditorMode::SingleLine {
+            cx.propagate();
+            return;
+        }
+        self.move_selections(MovementDirection::Next, Motion::DocumentEdge, false, cx);
+    }
+
     pub(super) fn handle_select_left(
         &mut self,
         _: &SelectLeft,
@@ -1109,6 +1144,24 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         self.move_selections(MovementDirection::Next, MovementUnit::LineEdge, true, cx);
+    }
+
+    pub(super) fn handle_select_to_beginning(
+        &mut self,
+        _: &SelectToBeginning,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(MovementDirection::Previous, Motion::DocumentEdge, true, cx);
+    }
+
+    pub(super) fn handle_select_to_end(
+        &mut self,
+        _: &SelectToEnd,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selections(MovementDirection::Next, Motion::DocumentEdge, true, cx);
     }
 
     pub(super) fn handle_select_all(
@@ -1636,6 +1689,51 @@ mod tests {
         assert_eq!(buffer_text(&buffer, cx), "ab");
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(1)));
+        });
+    }
+
+    #[gpui::test]
+    fn document_boundary_actions_move_and_extend_selection(cx: &mut TestAppContext) {
+        let text = "ab\n中😀z";
+        let buffer = test_buffer(cx, text);
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+        let end = ByteOffset::new(text.len());
+
+        cx.simulate_click(point(px(0.), px(12.)), gpui::Modifiers::default());
+        cx.dispatch_action(MoveToEnd);
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections, SelectionSet::caret(end));
+        });
+
+        cx.dispatch_action(MoveToBeginning);
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::ZERO));
+        });
+
+        let anchor = ByteOffset::new(2);
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::caret(anchor);
+        });
+        cx.dispatch_action(SelectToEnd);
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(
+                editor.selections,
+                SelectionSet::new(vec![Selection::new(anchor, end)])
+            );
+        });
+
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::caret(anchor);
+        });
+        cx.dispatch_action(SelectToBeginning);
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(
+                editor.selections,
+                SelectionSet::new(vec![Selection::new(anchor, ByteOffset::ZERO)])
+            );
         });
     }
 

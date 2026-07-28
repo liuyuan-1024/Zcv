@@ -53,6 +53,10 @@ actions!(
         SelectAll,
         Backspace,
         Delete,
+        DeleteToPreviousWordStart,
+        DeleteToNextWordEnd,
+        DeleteToBeginningOfLine,
+        DeleteToEndOfLine,
         Newline,
         Undo,
         Redo,
@@ -728,16 +732,63 @@ impl Editor {
     fn delete(
         &mut self,
         direction: MovementDirection,
+        unit: MovementUnit,
         description: &'static str,
         cx: &mut Context<Self>,
     ) {
         self.composition = None;
         let before_selections = self.selections.clone();
-        let targets = self.delete_targets(
-            &before_selections,
-            Some((direction, MovementUnit::Grapheme)),
-            cx,
-        );
+        let targets = self.delete_targets(&before_selections, Some((direction, unit)), cx);
+        let outcome = targets.and_then(|targets| {
+            self.buffer.update(cx, |buffer, cx| {
+                let outcome = replace_selections(buffer, &targets, "", edit_metadata(description));
+                cx.notify();
+                outcome
+            })
+        });
+        self.apply_edit_outcome(before_selections, outcome, cx);
+    }
+
+    fn delete_to_line_edge(
+        &mut self,
+        direction: MovementDirection,
+        description: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        self.composition = None;
+        let before_selections = self.selections.clone();
+        let targets = {
+            let buffer = self.buffer.read(cx);
+            before_selections
+                .as_slice()
+                .iter()
+                .map(|selection| {
+                    let range = selection.range();
+                    let pivot = match direction {
+                        MovementDirection::Previous => range.start(),
+                        MovementDirection::Next => range.end(),
+                    };
+                    let pivot_char = buffer.byte_to_char(pivot)?;
+                    let mut boundary = buffer.char_to_byte(buffer.movement_boundary(
+                        pivot_char,
+                        direction,
+                        MovementUnit::LineEdge,
+                    )?)?;
+                    if selection.is_caret() && boundary == pivot {
+                        boundary = buffer.char_to_byte(buffer.movement_boundary(
+                            pivot_char,
+                            direction,
+                            MovementUnit::Grapheme,
+                        )?)?;
+                    }
+                    Ok(match direction {
+                        MovementDirection::Previous => Selection::new(boundary, range.end()),
+                        MovementDirection::Next => Selection::new(range.start(), boundary),
+                    })
+                })
+                .collect::<EngineResult<Vec<_>>>()
+                .map(SelectionSet::new)
+        };
         let outcome = targets.and_then(|targets| {
             self.buffer.update(cx, |buffer, cx| {
                 let outcome = replace_selections(buffer, &targets, "", edit_metadata(description));
@@ -1275,11 +1326,67 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.delete(MovementDirection::Previous, "向后删除", cx);
+        self.delete(
+            MovementDirection::Previous,
+            MovementUnit::Grapheme,
+            "向后删除",
+            cx,
+        );
     }
 
     pub(super) fn handle_delete(&mut self, _: &Delete, _: &mut Window, cx: &mut Context<Self>) {
-        self.delete(MovementDirection::Next, "向前删除", cx);
+        self.delete(
+            MovementDirection::Next,
+            MovementUnit::Grapheme,
+            "向前删除",
+            cx,
+        );
+    }
+
+    pub(super) fn handle_delete_to_previous_word_start(
+        &mut self,
+        _: &DeleteToPreviousWordStart,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete(
+            MovementDirection::Previous,
+            MovementUnit::Word,
+            "删除到前一个词",
+            cx,
+        );
+    }
+
+    pub(super) fn handle_delete_to_next_word_end(
+        &mut self,
+        _: &DeleteToNextWordEnd,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete(
+            MovementDirection::Next,
+            MovementUnit::Word,
+            "删除到后一个词",
+            cx,
+        );
+    }
+
+    pub(super) fn handle_delete_to_beginning_of_line(
+        &mut self,
+        _: &DeleteToBeginningOfLine,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_to_line_edge(MovementDirection::Previous, "删除到行首", cx);
+    }
+
+    pub(super) fn handle_delete_to_end_of_line(
+        &mut self,
+        _: &DeleteToEndOfLine,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_to_line_edge(MovementDirection::Next, "删除到行尾", cx);
     }
 
     pub(super) fn handle_newline(&mut self, _: &Newline, _: &mut Window, cx: &mut Context<Self>) {
@@ -1781,6 +1888,56 @@ mod tests {
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(1)));
         });
+    }
+
+    #[gpui::test]
+    fn word_and_line_delete_actions_follow_editor_boundaries(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "alpha beta gamma");
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+        cx.simulate_click(point(px(0.), px(12.)), gpui::Modifiers::default());
+
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::caret(ByteOffset::new(10));
+        });
+        cx.dispatch_action(DeleteToPreviousWordStart);
+        assert_eq!(buffer_text(&buffer, cx), "alpha  gamma");
+
+        cx.update_entity(&editor, |editor, cx| {
+            editor.set_text("alpha beta gamma", cx);
+            editor.selections = SelectionSet::caret(ByteOffset::new(6));
+        });
+        cx.dispatch_action(DeleteToNextWordEnd);
+        assert_eq!(buffer_text(&buffer, cx), "alpha  gamma");
+
+        cx.update_entity(&editor, |editor, cx| {
+            editor.set_text("one two three four", cx);
+            editor.selections = SelectionSet::new(vec![Selection::new(
+                ByteOffset::new(4),
+                ByteOffset::new(13),
+            )]);
+        });
+        cx.dispatch_action(DeleteToBeginningOfLine);
+        assert_eq!(buffer_text(&buffer, cx), " four");
+
+        cx.update_entity(&editor, |editor, cx| {
+            editor.set_text("one two three four", cx);
+            editor.selections = SelectionSet::new(vec![Selection::new(
+                ByteOffset::new(4),
+                ByteOffset::new(13),
+            )]);
+        });
+        cx.dispatch_action(DeleteToEndOfLine);
+        assert_eq!(buffer_text(&buffer, cx), "one ");
+
+        cx.update_entity(&editor, |editor, cx| {
+            editor.set_text("one\ntwo", cx);
+            editor.selections = SelectionSet::caret(ByteOffset::new(4));
+        });
+        cx.dispatch_action(DeleteToBeginningOfLine);
+        assert_eq!(buffer_text(&buffer, cx), "onetwo");
     }
 
     #[gpui::test]

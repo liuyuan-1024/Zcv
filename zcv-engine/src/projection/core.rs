@@ -7,8 +7,11 @@
 //! 多条互相嵌套或邻接的 fold 在投影空间里只产出一条占位符（与 `HiddenRange` 合并语义保持一致）。
 //! 占位符样式与像素绘制不在本类型承诺范围内。
 
+use std::collections::BTreeSet;
+
 use crate::{
-    EngineResult, FoldSet,
+    DisplayColumn, EngineResult, FoldSet,
+    coordinates::core::display_width_of_text,
     errors::ProjectionError,
     fold::geometry::{next_line, previous_line},
     snapshot::Snapshot,
@@ -33,6 +36,8 @@ pub struct Projection {
     logical_to_projection: Vec<LogicalProjection>,
     /// 文本来源中的逻辑行总数（不受折叠影响）。
     logical_line_count: usize,
+    /// 可见文本投影行的显示列摘要。占位符宽度由宿主决定，不进入该索引。
+    width_index: ProjectedWidthIndex,
     /// 上次 build 用到的（已排序合并）隐藏行段集合，作为增量分类器的对比基准。
     /// 不暴露：只参与 `apply_delta` 的「fold 结构是否变化」判定。
     hidden_spans: Vec<HiddenSpan>,
@@ -42,7 +47,7 @@ pub struct Projection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyOutcome {
     /// 编辑既不改变逻辑行数也不改变 fold 结构；`Projection` 仅推进 `version`，
-    /// `rows` 与 `logical_to_projection` 全程未改写。
+    /// 增量更新受影响投影行的宽度摘要，`rows` 与 `logical_to_projection` 不改写。
     Compatible,
     /// 全量重建：`Projection` 已就地被新版本替换，调用方应假设所有投影行都失效。
     Rebuilt,
@@ -65,6 +70,7 @@ impl Projection {
         let hidden_spans = collect_merged_hidden_spans(folds);
 
         let mut rows: Vec<ProjectedLineKind> = Vec::new();
+        let mut width_index = ProjectedWidthIndex::default();
         let mut logical_to_projection: Vec<LogicalProjection> =
             Vec::with_capacity(logical_line_count);
         let mut span_cursor = 0usize;
@@ -95,6 +101,7 @@ impl Projection {
 
             let projected_index = ProjectedLineIndex::new(rows.len());
             rows.push(ProjectedLineKind::Text(TextLine::new(logical_line)));
+            width_index.push_text(text_line_display_width(snapshot, logical_line)?);
             anchor_indices[line_value] = Some(projected_index);
             logical_to_projection.push(LogicalProjection::Visible(projected_index));
 
@@ -106,6 +113,7 @@ impl Projection {
                         LineRange::new(next_span.start, next_span.end)?,
                     );
                     rows.push(ProjectedLineKind::Placeholder(placeholder));
+                    width_index.push_placeholder();
                 }
             }
         }
@@ -115,6 +123,7 @@ impl Projection {
             rows,
             logical_to_projection,
             logical_line_count,
+            width_index,
             hidden_spans,
         })
     }
@@ -128,7 +137,7 @@ impl Projection {
     ///
     /// 分类策略：
     /// - **Compatible**：编辑前后 `snapshot.line_count()` 与 `hidden_spans` 都不变，
-    ///   只推进 `version`，其余字段零改写。
+    ///   增量更新宽度摘要并推进 `version`，行映射字段不改写。
     /// - **Rebuilt**：其它一切情况都直接走 `Projection::build` 原地替换。
     ///
     /// **关键正确性性质**：分类降级到 `Rebuilt` 只是性能损失，不会产生错误投影。
@@ -158,6 +167,10 @@ impl Projection {
             // O(F)：用 fold.line_span() 缓存重拼，与 self.hidden_spans 字段级对比。
             let new_spans = collect_merged_hidden_spans(new_folds);
             if new_spans == self.hidden_spans {
+                let width_updates = self.width_updates(new_snapshot, event)?;
+                for (projected_line, width) in width_updates {
+                    self.width_index.update_text(projected_line, width);
+                }
                 self.version = event.new_version();
                 return Ok(ApplyOutcome::Compatible);
             }
@@ -185,6 +198,15 @@ impl Projection {
 
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
+    }
+
+    /// 最宽的可见文本投影行及其显示列宽度。
+    ///
+    /// 折叠占位符的文本和像素样式由宿主决定，因此不参与该摘要。
+    /// 宽度使用 Snapshot 的 tab 与 Unicode display-width 策略计算；
+    /// 宿主只需对返回的候选行做一次字体塑形。
+    pub fn longest_text_row(&self) -> Option<(ProjectedLineIndex, DisplayColumn)> {
+        self.width_index.longest_text_row()
     }
 
     /// 按投影行索引读取行视图；越界返回 None。
@@ -421,6 +443,39 @@ impl Projection {
         Ok(())
     }
 
+    fn width_updates(
+        &self,
+        snapshot: &Snapshot,
+        event: &DeltaEvent,
+    ) -> EngineResult<Vec<(ProjectedLineIndex, DisplayColumn)>> {
+        let mut projected_lines = BTreeSet::new();
+        for range in event.changeset().changed_ranges()? {
+            let start = snapshot.byte_to_line(range.start())?;
+            let end = snapshot.byte_to_line(range.end())?;
+            for logical_line in start.get()..=end.get() {
+                if let LogicalProjection::Visible(projected_line) =
+                    self.logical_to_projected(Line::new(logical_line))?
+                {
+                    projected_lines.insert(projected_line);
+                }
+            }
+        }
+
+        projected_lines
+            .into_iter()
+            .map(|projected_line| {
+                let logical_line = match self.projected_line_kind(projected_line) {
+                    Some(ProjectedLineKind::Text(text_line)) => text_line.logical_line(),
+                    _ => unreachable!("Visible 映射必须指向文本投影行"),
+                };
+                Ok((
+                    projected_line,
+                    text_line_display_width(snapshot, logical_line)?,
+                ))
+            })
+            .collect()
+    }
+
     /// 折叠后视口切片：把 `ProjectedViewport` 翻译成投影行序列 + 命中逻辑行 spans + placeholder 列表。
     ///
     /// `snapshot` 必须与本 Projection 同版本；版本不一致返回 `ProjectionError::VersionMismatch`。
@@ -482,6 +537,55 @@ impl Projection {
             placeholders,
         ))
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ProjectedWidthIndex {
+    by_row: Vec<Option<DisplayColumn>>,
+    ordered: BTreeSet<(usize, usize)>,
+}
+
+impl ProjectedWidthIndex {
+    fn push_text(&mut self, width: DisplayColumn) {
+        let row = self.by_row.len();
+        self.by_row.push(Some(width));
+        self.ordered.insert((width.get(), row));
+    }
+
+    fn push_placeholder(&mut self) {
+        self.by_row.push(None);
+    }
+
+    fn update_text(&mut self, row: ProjectedLineIndex, width: DisplayColumn) {
+        let row = row.get();
+        let old_width = self
+            .by_row
+            .get_mut(row)
+            .and_then(Option::as_mut)
+            .expect("文本投影行必须在宽度索引中存在");
+        self.ordered.remove(&(old_width.get(), row));
+        *old_width = width;
+        self.ordered.insert((width.get(), row));
+    }
+
+    fn longest_text_row(&self) -> Option<(ProjectedLineIndex, DisplayColumn)> {
+        self.ordered
+            .last()
+            .map(|(width, row)| (ProjectedLineIndex::new(*row), DisplayColumn::new(*width)))
+    }
+}
+
+fn text_line_display_width(snapshot: &Snapshot, line: Line) -> EngineResult<DisplayColumn> {
+    let line = snapshot.slice_line(line)?;
+    let text = line
+        .as_str()
+        .strip_suffix("\r\n")
+        .or_else(|| line.as_str().strip_suffix('\n'))
+        .unwrap_or_else(|| line.as_str());
+    Ok(DisplayColumn::new(display_width_of_text(
+        text,
+        snapshot.config(),
+    )))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

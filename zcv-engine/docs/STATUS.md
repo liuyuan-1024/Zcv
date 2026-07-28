@@ -16,7 +16,7 @@
 - 显式 `EditOutcome` / `TransactionOutcome` 与纯文本 HistoryEntry / TransactionRecord。
 - engine 已移除 IME composition 类型、状态机和专用事务来源；输入法提交前的 marked text 完全留在宿主层。
 - Anchor、TrackedRange、MetadataLayer、VersionedRangeSet。
-- Fold、Projection、ProjectedViewport 和读取切片。
+- Fold、Projection、最长可见投影行增量摘要、ProjectedViewport 和读取切片。
 - 单 Buffer literal / regex 搜索与 replace all。
 - 文件文本加载、reload、保存文本边界、大文件和超大事务防御。
 - property 回归和粗粒度内存观测入口。

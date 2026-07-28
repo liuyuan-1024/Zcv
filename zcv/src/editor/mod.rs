@@ -9,7 +9,6 @@ mod selection;
 pub(crate) mod view;
 
 pub(crate) use buffer_store::BufferStore;
-pub(crate) use display_map::{DisplayPoint, DisplayRow};
 pub(crate) use view::{
     Backspace, Copy, Cut, Delete, Editor, MoveDown, MoveLeft, MoveRight, MoveToBeginningOfLine,
     MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Paste, Redo, SelectAll,

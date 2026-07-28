@@ -8,9 +8,11 @@ use gpui::{
     MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Style,
     TextRun, UnderlineStyle, Window, fill, point, px, relative, size,
 };
-use zcv_engine::{Line, SelectionSet, Snapshot};
+use zcv_engine::{
+    ByteOffset, DisplayColumn, Line, ProjectedViewportRowKind, SelectionSet, Snapshot,
+};
 
-use super::display_map::{BufferPoint, DisplayRow};
+use super::display_map::{BufferPoint, DisplayPoint, DisplayRow, DisplaySnapshot};
 use super::view::{Editor, EditorPresentation};
 use crate::theme::color;
 
@@ -61,6 +63,7 @@ impl EditorElement {
 #[derive(Clone)]
 struct LayoutLine {
     row: DisplayRow,
+    logical_line: Option<Line>,
     origin: Point<Pixels>,
     shaped: ShapedLine,
     global_byte_start: usize,
@@ -70,7 +73,7 @@ struct LayoutLine {
 struct EditorLayout {
     lines: Vec<LayoutLine>,
     line_height: Pixels,
-    snapshot: Snapshot,
+    display_snapshot: DisplaySnapshot,
     presentation: EditorPresentation,
 }
 
@@ -90,10 +93,29 @@ impl EditorLayout {
         };
 
         let byte_index = line.shaped.closest_index_for_x(position.x - line.origin.x);
-        let display_byte = line.global_byte_start + byte_index;
-        let buffer_byte = self.presentation.display_byte_to_buffer_byte(display_byte);
-        self.snapshot
-            .byte_to_position(buffer_byte)
+        if self.presentation.is_composing() {
+            let display_byte = line.global_byte_start + byte_index;
+            let buffer_byte = self.presentation.display_byte_to_buffer_byte(display_byte);
+            return self
+                .display_snapshot
+                .snapshot()
+                .byte_to_position(buffer_byte)
+                .ok()
+                .map(BufferPoint::from);
+        }
+        if let Some(logical_line) = line.logical_line {
+            return Some(BufferPoint::new(
+                logical_line,
+                zcv_engine::LogicalColumn::new(line.shaped.text[..byte_index].chars().count()),
+            ));
+        }
+        let offset = self
+            .display_snapshot
+            .display_point_to_offset(DisplayPoint::new(line.row, DisplayColumn::ZERO))
+            .ok()?;
+        self.display_snapshot
+            .snapshot()
+            .byte_to_position(offset)
             .ok()
             .map(BufferPoint::from)
     }
@@ -212,16 +234,16 @@ impl Element for EditorElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let line_height = window.line_height();
-        let (snapshot, presentation, selections, longest_row) = {
+        let (display_snapshot, presentation, selections, longest_row) = {
             let editor = self.editor.read(cx);
             (
-                editor.render_snapshot(),
+                editor.display_snapshot(),
                 editor.presentation(),
                 editor.selections(),
                 editor.longest_display_row(),
             )
         };
-        let content_width = layout_line_width(&snapshot, longest_row, window) + CARET_WIDTH;
+        let content_width = layout_line_width(&display_snapshot, longest_row, window) + CARET_WIDTH;
         self.editor.update(cx, |editor, _| {
             editor.prepare_scroll_viewport(bounds.size, content_width, line_height);
         });
@@ -230,7 +252,7 @@ impl Element for EditorElement {
             (editor.scroll_anchor().row(), editor.scroll_offset())
         };
         let mut layout = layout_visible_lines(
-            &snapshot,
+            display_snapshot.clone(),
             presentation.clone(),
             bounds,
             start_row,
@@ -248,7 +270,7 @@ impl Element for EditorElement {
         if autoscrolled {
             let editor = self.editor.read(cx);
             layout = layout_visible_lines(
-                &snapshot,
+                display_snapshot,
                 presentation,
                 bounds,
                 editor.scroll_anchor().row(),
@@ -348,11 +370,21 @@ impl Element for EditorElement {
     }
 }
 
-fn layout_line_width(snapshot: &Snapshot, row: DisplayRow, window: &mut Window) -> Pixels {
-    let Ok(line) = snapshot.slice_line(Line::new(row.get())) else {
+fn layout_line_width(
+    display_snapshot: &DisplaySnapshot,
+    row: DisplayRow,
+    window: &mut Window,
+) -> Pixels {
+    let Ok(viewport) = display_snapshot.slice_viewport(row, 1) else {
         return Pixels::ZERO;
     };
-    let text = line.as_str().trim_end_matches(['\r', '\n']);
+    let Some(row) = viewport.rows().first() else {
+        return Pixels::ZERO;
+    };
+    let text = match row.kind() {
+        ProjectedViewportRowKind::Text { visible, .. } => visible.as_str(),
+        ProjectedViewportRowKind::Placeholder(_) => "…",
+    };
     let text_style = window.text_style();
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let run = TextRun {
@@ -370,7 +402,7 @@ fn layout_line_width(snapshot: &Snapshot, row: DisplayRow, window: &mut Window) 
 }
 
 fn layout_visible_lines(
-    snapshot: &Snapshot,
+    display_snapshot: DisplaySnapshot,
     presentation: EditorPresentation,
     bounds: Bounds<Pixels>,
     start_row: DisplayRow,
@@ -378,7 +410,9 @@ fn layout_visible_lines(
     line_height: Pixels,
     window: &mut Window,
 ) -> EditorLayout {
-    let line_count = presentation_lines(presentation.text()).count();
+    let line_count = presentation
+        .composed_line_count()
+        .unwrap_or_else(|| display_snapshot.line_count());
     let start = start_row.get().min(line_count.saturating_sub(1));
     let visible_count = ((bounds.size.height + scroll_offset.y) / line_height).ceil() as usize + 1;
     let end = (start + visible_count).min(line_count);
@@ -386,15 +420,14 @@ fn layout_visible_lines(
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let mut lines = Vec::with_capacity(end.saturating_sub(start));
 
-    for (row, presentation_line) in presentation_lines(presentation.text())
-        .enumerate()
-        .take(end)
-        .skip(start)
-    {
-        let text = presentation_line.text;
+    let mut push_line = |row: usize,
+                         logical_line: Option<Line>,
+                         text: &str,
+                         byte_start: usize,
+                         utf16_start: usize| {
         let runs = text_runs(
             text,
-            presentation_line.byte_start,
+            byte_start,
             presentation.marked_byte_range(),
             TextRun {
                 len: text.len(),
@@ -411,20 +444,65 @@ fn layout_visible_lines(
                 .shape_line(text.to_owned().into(), font_size, &runs, None);
         lines.push(LayoutLine {
             row: DisplayRow::new(row),
+            logical_line,
             origin: point(
                 bounds.left() - scroll_offset.x,
                 bounds.top() + line_height * (row - start) - scroll_offset.y,
             ),
             shaped,
-            global_byte_start: presentation_line.byte_start,
-            global_utf16_start: presentation_line.utf16_start,
+            global_byte_start: byte_start,
+            global_utf16_start: utf16_start,
         });
+    };
+
+    if presentation.is_composing() {
+        for row in start..end {
+            let Some(line) = presentation.composed_line(row) else {
+                continue;
+            };
+            push_line(row, None, line.text, line.byte_start, line.utf16_start);
+        }
+    } else if let Ok(viewport) =
+        display_snapshot.slice_viewport(DisplayRow::new(start), end.saturating_sub(start))
+    {
+        for row in viewport.rows() {
+            match row.kind() {
+                ProjectedViewportRowKind::Text {
+                    logical_line,
+                    visible,
+                } => {
+                    let byte_start = visible.visible_range().start().get();
+                    let utf16_start = display_snapshot
+                        .snapshot()
+                        .byte_to_utf16_cu(ByteOffset::new(byte_start))
+                        .map_or(0, |offset| offset.get());
+                    push_line(
+                        row.index().get(),
+                        Some(*logical_line),
+                        visible.as_str(),
+                        byte_start,
+                        utf16_start,
+                    );
+                }
+                ProjectedViewportRowKind::Placeholder(placeholder) => {
+                    let byte_start = display_snapshot
+                        .snapshot()
+                        .line_start_byte(placeholder.hidden_lines().start())
+                        .map_or(0, ByteOffset::get);
+                    let utf16_start = display_snapshot
+                        .snapshot()
+                        .byte_to_utf16_cu(ByteOffset::new(byte_start))
+                        .map_or(0, |offset| offset.get());
+                    push_line(row.index().get(), None, "…", byte_start, utf16_start);
+                }
+            }
+        }
     }
 
     EditorLayout {
         lines,
         line_height,
-        snapshot: snapshot.clone(),
+        display_snapshot,
         presentation,
     }
 }
@@ -438,7 +516,8 @@ fn layout_selections(
     let mut caret_quads = Vec::new();
 
     if let Some(range_utf16) = layout.presentation.selected_range_utf16()
-        && let Some(range) = byte_range_for_utf16(layout.presentation.text(), range_utf16)
+        && let Some(text) = layout.presentation.composed_text()
+        && let Some(range) = byte_range_for_utf16(text, range_utf16)
     {
         layout_display_range(
             range.clone(),
@@ -452,6 +531,24 @@ fn layout_selections(
     }
 
     for selection in selections.as_slice().iter().copied() {
+        if selection.is_caret() {
+            if let Some(caret) =
+                layout_caret_at_buffer_offset(selection.head(), layout, line_height)
+            {
+                caret_quads.push(caret);
+            }
+            continue;
+        }
+        if !layout.presentation.is_composing()
+            && let Ok(ranges) = layout
+                .display_snapshot
+                .project_text_range(selection.range())
+        {
+            for range in ranges {
+                layout_projected_range(range, layout, line_height, &mut selection_quads);
+            }
+            continue;
+        }
         let start = layout
             .presentation
             .buffer_byte_to_display_byte(selection.start());
@@ -471,6 +568,63 @@ fn layout_selections(
     (selection_quads, caret_quads)
 }
 
+fn layout_projected_range(
+    range: zcv_engine::ProjectedRange,
+    layout: &EditorLayout,
+    line_height: Pixels,
+    selection_quads: &mut Vec<PaintQuad>,
+) {
+    let start = range.start();
+    let end = range.end();
+    for line in &layout.lines {
+        let row = zcv_engine::ProjectedLineIndex::new(line.row.get());
+        if row < start.line() || row > end.line() {
+            continue;
+        }
+        if row == end.line()
+            && row != start.line()
+            && end.column() == zcv_engine::LogicalColumn::ZERO
+        {
+            continue;
+        }
+
+        let line_columns = line.shaped.text.chars().count();
+        let start_column = if row == start.line() {
+            start.column().get().min(line_columns)
+        } else {
+            0
+        };
+        let end_column = if row == end.line() {
+            end.column().get().min(line_columns)
+        } else {
+            line_columns
+        };
+        let (local_start, local_end) = if line.logical_line.is_none() {
+            (0, line.shaped.len())
+        } else {
+            (
+                column_to_byte(&line.shaped.text, start_column),
+                column_to_byte(&line.shaped.text, end_column),
+            )
+        };
+        let start_x = line.shaped.x_for_index(local_start);
+        let mut end_x = line.shaped.x_for_index(local_end);
+        if end_x <= start_x && row != end.line() {
+            end_x = start_x + px(8.);
+        }
+        if end_x <= start_x {
+            continue;
+        }
+        selection_quads.push(fill(
+            Bounds::from_corners(
+                point(line.origin.x + start_x, line.origin.y),
+                point(line.origin.x + end_x, line.origin.y + line_height),
+            ),
+            color::current().blue.a[2],
+        ));
+    }
+}
+
 fn layout_primary_caret(
     selections: &SelectionSet,
     layout: &EditorLayout,
@@ -482,16 +636,14 @@ fn layout_primary_caret(
             .bounds_for_utf16_range(range.end..range.end);
     }
 
-    let display_byte = layout
-        .presentation
-        .buffer_byte_to_display_byte(selections.primary().head());
-    let line = layout.lines.iter().find(|line| {
-        line.global_byte_start <= display_byte
-            && display_byte <= line.global_byte_start + line.shaped.len()
-    })?;
-    let local_byte = display_byte
-        .saturating_sub(line.global_byte_start)
-        .min(line.shaped.len());
+    let head = selections.primary().head();
+    let display_point = layout.display_snapshot.offset_to_display_point(head).ok()?;
+    let line = layout
+        .lines
+        .iter()
+        .find(|line| line.row == display_point.row())?;
+    let local_byte =
+        local_byte_for_display_point(line, display_point, layout.display_snapshot.snapshot());
     Some(Bounds::new(
         point(
             line.origin.x + line.shaped.x_for_index(local_byte),
@@ -499,6 +651,49 @@ fn layout_primary_caret(
         ),
         size(px(2.), line_height),
     ))
+}
+
+fn layout_caret_at_buffer_offset(
+    offset: ByteOffset,
+    layout: &EditorLayout,
+    line_height: Pixels,
+) -> Option<PaintQuad> {
+    let display_point = layout
+        .display_snapshot
+        .offset_to_display_point(offset)
+        .ok()?;
+    let line = layout
+        .lines
+        .iter()
+        .find(|line| line.row == display_point.row())?;
+    let local_byte =
+        local_byte_for_display_point(line, display_point, layout.display_snapshot.snapshot());
+    Some(fill(
+        Bounds::new(
+            point(
+                line.origin.x + line.shaped.x_for_index(local_byte),
+                line.origin.y,
+            ),
+            size(px(2.), line_height),
+        ),
+        color::current().blue.s[6],
+    ))
+}
+
+fn local_byte_for_display_point(
+    line: &LayoutLine,
+    point: DisplayPoint,
+    snapshot: &Snapshot,
+) -> usize {
+    let logical_column = line
+        .logical_line
+        .and_then(|logical_line| {
+            snapshot
+                .display_to_logical_column(logical_line, point.column())
+                .ok()
+        })
+        .map_or(0, zcv_engine::LogicalColumn::get);
+    column_to_byte(&line.shaped.text, logical_column)
 }
 
 fn layout_display_range(
@@ -560,34 +755,6 @@ fn layout_display_range(
             color::current().blue.a[2],
         ));
     }
-}
-
-struct PresentationLine<'a> {
-    text: &'a str,
-    byte_start: usize,
-    utf16_start: usize,
-}
-
-fn presentation_lines(text: &str) -> impl Iterator<Item = PresentationLine<'_>> {
-    let mut byte_start = 0;
-    let mut utf16_start = 0;
-    let lines = text.split_inclusive('\n').map(move |part| {
-        let visible = part.trim_end_matches(['\r', '\n']);
-        let line = PresentationLine {
-            text: visible,
-            byte_start,
-            utf16_start,
-        };
-        byte_start += part.len();
-        utf16_start += part.encode_utf16().count();
-        line
-    });
-    let trailing_line = (text.is_empty() || text.ends_with('\n')).then(|| PresentationLine {
-        text: "",
-        byte_start: text.len(),
-        utf16_start: text.encode_utf16().count(),
-    });
-    lines.chain(trailing_line)
 }
 
 fn text_runs(
@@ -652,7 +819,6 @@ fn byte_for_utf16_offset(text: &str, target: usize) -> Option<usize> {
     (utf16_offset == target).then_some(text.len())
 }
 
-#[cfg(test)]
 fn column_to_byte(text: &str, column: usize) -> usize {
     text.char_indices()
         .nth(column)
@@ -662,9 +828,11 @@ fn column_to_byte(text: &str, column: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::DisplayPoint;
+    use crate::editor::display_map::{DisplayMap, DisplayPoint};
     use gpui::{Empty, TestAppContext, font};
-    use zcv_engine::{Buffer, BufferConfig, ByteOffset, DisplayColumn, Line, LogicalColumn};
+    use zcv_engine::{
+        Buffer, BufferConfig, ByteOffset, DisplayColumn, Line, LineRange, LogicalColumn,
+    };
 
     #[test]
     fn logical_columns_map_to_utf8_boundaries() {
@@ -723,9 +891,11 @@ mod tests {
                 let snapshot = Buffer::scratch(text.to_owned(), BufferConfig::default())
                     .expect("测试 Buffer 应能创建")
                     .snapshot();
+                let display_snapshot = DisplayMap::new(snapshot.clone()).display_snapshot();
                 let layout = EditorLayout {
                     lines: vec![LayoutLine {
                         row: DisplayRow::new(3),
+                        logical_line: Some(Line::ZERO),
                         origin: point(px(10.), px(20.)),
                         shaped,
                         global_byte_start: 0,
@@ -733,7 +903,7 @@ mod tests {
                     }],
                     line_height: px(24.),
                     presentation: EditorPresentation::new(&snapshot, None),
-                    snapshot,
+                    display_snapshot,
                 };
 
                 assert_eq!(
@@ -760,8 +930,9 @@ mod tests {
                     .expect("大文本测试 Buffer 应能创建")
                     .snapshot();
                 let presentation = EditorPresentation::new(&snapshot, None);
+                let display_snapshot = DisplayMap::new(snapshot.clone()).display_snapshot();
                 let layout = layout_visible_lines(
-                    &snapshot,
+                    display_snapshot,
                     presentation,
                     Bounds::new(point(px(0.), px(0.)), size(px(800.), px(100.))),
                     DisplayRow::new(5_000),
@@ -784,6 +955,42 @@ mod tests {
     }
 
     #[gpui::test]
+    fn folded_projection_rows_drive_layout_and_placeholder_hit_testing(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, _| {
+                let snapshot = Buffer::scratch(
+                    "anchor\nhidden one\nhidden two\nafter".to_owned(),
+                    BufferConfig::default(),
+                )
+                .expect("测试 Buffer 应能创建")
+                .snapshot();
+                let mut map = DisplayMap::new(snapshot.clone());
+                map.fold_lines(LineRange::new(Line::ZERO, Line::new(3)).expect("测试行区间应合法"))
+                    .expect("折叠应成功");
+                let layout = layout_visible_lines(
+                    map.display_snapshot(),
+                    EditorPresentation::new(&snapshot, None),
+                    Bounds::new(point(px(0.), px(0.)), size(px(400.), px(100.))),
+                    DisplayRow::ZERO,
+                    point(px(0.), px(0.)),
+                    px(20.),
+                    window,
+                );
+
+                assert_eq!(layout.lines.len(), 3);
+                assert_eq!(layout.lines[0].shaped.text.as_ref(), "anchor");
+                assert_eq!(layout.lines[1].shaped.text.as_ref(), "…");
+                assert_eq!(layout.lines[2].shaped.text.as_ref(), "after");
+                assert_eq!(
+                    layout.buffer_point_for_position(point(px(1.), px(25.))),
+                    Some(BufferPoint::new(Line::ZERO, LogicalColumn::ZERO))
+                );
+            })
+            .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
     fn caret_outside_visible_rows_is_not_painted_on_viewport_edge(cx: &mut TestAppContext) {
         let window = cx.add_window(|_, _| Empty);
         window
@@ -795,8 +1002,9 @@ mod tests {
                 .expect("测试 Buffer 应能创建")
                 .snapshot();
                 let presentation = EditorPresentation::new(&snapshot, None);
+                let display_snapshot = DisplayMap::new(snapshot.clone()).display_snapshot();
                 let layout = layout_visible_lines(
-                    &snapshot,
+                    display_snapshot,
                     presentation,
                     Bounds::new(point(px(0.), px(0.)), size(px(200.), px(40.))),
                     DisplayRow::new(10),

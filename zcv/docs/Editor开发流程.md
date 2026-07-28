@@ -183,7 +183,11 @@ DisplayPoint
 - `DisplayPoint` 表示经过软换行、折叠和 Inlay 变换后的显示位置。
 - 像素坐标只在布局和命中测试阶段使用。
 
-第一阶段的 DisplayMap 可以只做恒等映射，但模块边界必须从一开始存在。Soft Wrap、Fold、Inlay 后续都在此层扩展，不能散落到 Editor 或业务组件中。
+DisplayMap 持有与 Buffer Snapshot 同版本的 `zcv-engine::Projection`，按投影视口读取可见行，
+并通过 `DeltaEvent` 增量推进 Projection。最长投影文本行及其显示列宽度由 Projection
+增量维护，EditorElement 只额外塑形这一条候选行以取得像素宽度。Fold 的数学事实来自
+engine；占位符文本、像素布局和命中测试由 DisplayMap / EditorElement 负责。
+Soft Wrap、Inlay 后续继续在此层扩展，不能散落到 Editor 或业务组件中。
 
 ### 3.5 EditorElement
 

@@ -145,7 +145,7 @@ fn line_content_end_for_storage<T: TextRead>(
 ///
 /// 与按 char 累加相比，**合成字符、ZWJ emoji 序列、国旗 emoji** 等多 codepoint 的字素簇
 /// 按一个可见单位计算宽度，避免「光标停在 emoji 中间」「合成字符占两列」之类的经典 bug。
-fn display_width_of_text(text: &str, config: &BufferConfig) -> usize {
+pub(crate) fn display_width_of_text(text: &str, config: &BufferConfig) -> usize {
     text.graphemes(true)
         .fold(0usize, |display_column, grapheme| {
             advance_display_column_for_grapheme(display_column, grapheme, config)

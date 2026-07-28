@@ -16,7 +16,7 @@ use zcv_engine::{
 };
 
 use super::blink_manager::BlinkManager;
-use super::display_map::{DisplayMap, DisplayPoint, DisplayRow};
+use super::display_map::{DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::ScrollManager;
 use super::selection::SelectionHistory;
@@ -69,6 +69,8 @@ pub(super) struct EditorComposition {
     range: TextRange,
     text: Arc<str>,
     selected_range_utf16: Range<usize>,
+    presentation_text: Arc<str>,
+    line_starts: Arc<[(usize, usize)]>,
 }
 
 impl EditorComposition {
@@ -76,18 +78,37 @@ impl EditorComposition {
         range: TextRange,
         text: impl Into<Arc<str>>,
         selected_range_utf16: Range<usize>,
+        snapshot: &Snapshot,
     ) -> Self {
+        let text = text.into();
+        let buffer_text = snapshot
+            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+            .expect("完整 Snapshot 范围必须可读取");
+        let start = range.start().get();
+        let end = range.end().get();
+        let mut presentation_text = String::with_capacity(
+            buffer_text
+                .len_bytes()
+                .saturating_sub(end.saturating_sub(start))
+                .saturating_add(text.len()),
+        );
+        presentation_text.push_str(&buffer_text.as_str()[..start]);
+        presentation_text.push_str(&text);
+        presentation_text.push_str(&buffer_text.as_str()[end..]);
         Self {
             range,
-            text: text.into(),
+            text,
             selected_range_utf16,
+            line_starts: index_presentation_lines(&presentation_text).into(),
+            presentation_text: presentation_text.into(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct EditorPresentation {
-    text: Arc<str>,
+    snapshot: Snapshot,
+    composition: Option<EditorComposition>,
     marked_byte_range: Option<Range<usize>>,
     replaced_buffer_range: Option<TextRange>,
     selected_range_utf16: Option<Range<usize>>,
@@ -95,12 +116,10 @@ pub(super) struct EditorPresentation {
 
 impl EditorPresentation {
     pub(super) fn new(snapshot: &Snapshot, composition: Option<&EditorComposition>) -> Self {
-        let buffer_text = snapshot
-            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
-            .expect("完整 Snapshot 范围必须可读取");
         let Some(composition) = composition else {
             return Self {
-                text: Arc::from(buffer_text.as_str()),
+                snapshot: snapshot.clone(),
+                composition: None,
                 marked_byte_range: None,
                 replaced_buffer_range: None,
                 selected_range_utf16: None,
@@ -108,18 +127,9 @@ impl EditorPresentation {
         };
 
         let start = composition.range.start().get();
-        let end = composition.range.end().get();
-        let mut text = String::with_capacity(
-            buffer_text
-                .len_bytes()
-                .saturating_sub(end.saturating_sub(start))
-                .saturating_add(composition.text.len()),
-        );
-        text.push_str(&buffer_text.as_str()[..start]);
-        text.push_str(&composition.text);
-        text.push_str(&buffer_text.as_str()[end..]);
         let marked_byte_range = start..start + composition.text.len();
-        let marked_start_utf16 = utf16_len(&text[..marked_byte_range.start]);
+        let marked_start_utf16 =
+            utf16_len(&composition.presentation_text[..marked_byte_range.start]);
         let marked_len_utf16 = utf16_len(&composition.text);
         let selected_range_utf16 = Some(
             marked_start_utf16 + composition.selected_range_utf16.start.min(marked_len_utf16)
@@ -127,15 +137,44 @@ impl EditorPresentation {
         );
 
         Self {
-            text: Arc::from(text),
+            snapshot: snapshot.clone(),
+            composition: Some(composition.clone()),
             marked_byte_range: Some(marked_byte_range),
             replaced_buffer_range: Some(composition.range),
             selected_range_utf16,
         }
     }
 
-    pub(super) fn text(&self) -> &Arc<str> {
-        &self.text
+    pub(super) fn is_composing(&self) -> bool {
+        self.composition.is_some()
+    }
+
+    pub(super) fn composed_line_count(&self) -> Option<usize> {
+        self.composition
+            .as_ref()
+            .map(|composition| composition.line_starts.len())
+    }
+
+    pub(super) fn composed_text(&self) -> Option<&str> {
+        self.composition
+            .as_ref()
+            .map(|composition| composition.presentation_text.as_ref())
+    }
+
+    pub(super) fn composed_line(&self, row: usize) -> Option<PresentationLine<'_>> {
+        let composition = self.composition.as_ref()?;
+        let (byte_start, utf16_start) = *composition.line_starts.get(row)?;
+        let byte_end = composition
+            .line_starts
+            .get(row + 1)
+            .map_or(composition.presentation_text.len(), |(start, _)| *start);
+        let text =
+            composition.presentation_text[byte_start..byte_end].trim_end_matches(['\r', '\n']);
+        Some(PresentationLine {
+            text,
+            byte_start,
+            utf16_start,
+        })
     }
 
     pub(super) fn marked_byte_range(&self) -> Option<Range<usize>> {
@@ -144,7 +183,8 @@ impl EditorPresentation {
 
     pub(super) fn marked_utf16_range(&self) -> Option<Range<usize>> {
         let range = self.marked_byte_range.as_ref()?;
-        Some(utf16_len(&self.text[..range.start])..utf16_len(&self.text[..range.end]))
+        let text = &self.composition.as_ref()?.presentation_text;
+        Some(utf16_len(&text[..range.start])..utf16_len(&text[..range.end]))
     }
 
     pub(super) fn selected_range_utf16(&self) -> Option<Range<usize>> {
@@ -182,11 +222,46 @@ impl EditorPresentation {
     }
 
     fn byte_range_from_utf16(&self, range: Range<usize>) -> Option<Range<usize>> {
-        Some(
-            byte_for_utf16_offset(&self.text, range.start)?
-                ..byte_for_utf16_offset(&self.text, range.end)?,
-        )
+        let text = &self.composition.as_ref()?.presentation_text;
+        Some(byte_for_utf16_offset(text, range.start)?..byte_for_utf16_offset(text, range.end)?)
     }
+
+    fn text_for_utf16_range(&self, range: Range<usize>) -> Option<String> {
+        if let Some(composition) = self.composition.as_ref() {
+            let bytes = self.byte_range_from_utf16(range)?;
+            return Some(composition.presentation_text[bytes].to_owned());
+        }
+        let start = self
+            .snapshot
+            .utf16_cu_to_byte(Utf16Offset::new(range.start))
+            .ok()?;
+        let end = self
+            .snapshot
+            .utf16_cu_to_byte(Utf16Offset::new(range.end))
+            .ok()?;
+        self.snapshot
+            .slice_byte_range(start, end)
+            .ok()
+            .map(|text| text.as_str().to_owned())
+    }
+}
+
+pub(super) struct PresentationLine<'a> {
+    pub(super) text: &'a str,
+    pub(super) byte_start: usize,
+    pub(super) utf16_start: usize,
+}
+
+fn index_presentation_lines(text: &str) -> Vec<(usize, usize)> {
+    let mut starts = vec![(0, 0)];
+    let mut utf16_offset = 0;
+    for (byte, ch) in text.char_indices() {
+        utf16_offset += ch.len_utf16();
+        if ch == '\n' {
+            starts.push((byte + ch.len_utf8(), utf16_offset));
+        }
+    }
+    starts
 }
 
 pub(crate) struct Editor {
@@ -298,6 +373,10 @@ impl Editor {
         self.display_map.snapshot().clone()
     }
 
+    pub(super) fn display_snapshot(&self) -> DisplaySnapshot {
+        self.display_map.display_snapshot()
+    }
+
     pub(crate) fn selections(&self) -> SelectionSet {
         self.selections.clone()
     }
@@ -363,7 +442,7 @@ impl Editor {
         line_height: Pixels,
     ) {
         self.scroll_manager.update_viewport(
-            self.display_map.snapshot().line_count(),
+            self.display_map.line_count(),
             viewport_size.width,
             viewport_size.height,
             content_width,
@@ -393,7 +472,11 @@ impl Editor {
     fn new(buffer: Entity<Buffer>, mode: EditorMode, cx: &mut Context<Self>) -> Self {
         let display_map = DisplayMap::new(buffer.read(cx).snapshot());
         cx.observe(&buffer, |editor, buffer, cx| {
-            editor.display_map.set_snapshot(buffer.read(cx).snapshot());
+            let (snapshot, event) = {
+                let buffer = buffer.read(cx);
+                (buffer.snapshot(), buffer.last_delta_event().cloned())
+            };
+            editor.display_map.sync_snapshot(snapshot, event.as_ref());
             editor.input_layout = None;
             cx.notify();
         })
@@ -487,8 +570,7 @@ impl Editor {
                     );
                 }
                 self.selections = outcome.into_after_selections();
-                self.display_map
-                    .set_snapshot(self.buffer.read(cx).snapshot());
+                self.sync_display_map(cx);
                 self.request_autoscroll();
                 self.input_layout = None;
                 self.blink_manager.update(cx, |blink, cx| {
@@ -618,8 +700,7 @@ impl Editor {
 
     fn synchronize_after_history_edit(&mut self, cx: &mut Context<Self>) {
         self.composition = None;
-        self.display_map
-            .set_snapshot(self.buffer.read(cx).snapshot());
+        self.sync_display_map(cx);
         self.request_autoscroll();
         self.input_layout = None;
         cx.notify();
@@ -630,6 +711,14 @@ impl Editor {
         if let Ok(point) = self.display_map.offset_to_display_point(head) {
             self.scroll_manager.request_autoscroll(point);
         }
+    }
+
+    fn sync_display_map(&mut self, cx: &App) {
+        let (snapshot, event) = {
+            let buffer = self.buffer.read(cx);
+            (buffer.snapshot(), buffer.last_delta_event().cloned())
+        };
+        self.display_map.sync_snapshot(snapshot, event.as_ref());
     }
 
     pub(super) fn handle_move_left(
@@ -901,8 +990,7 @@ impl Render for Editor {
             self.blink_manager.update(cx, |b, cx| b.disable(cx));
         }
 
-        self.display_map
-            .set_snapshot(self.buffer.read(cx).snapshot());
+        self.sync_display_map(cx);
 
         // SingleLine / AutoHeight 用于搜索框等 UI 场景，应使用 UI 字号而非编辑器字号
         let (font, text_size, line_height) = match self.mode {
@@ -925,11 +1013,8 @@ impl Render for Editor {
             } => {
                 let line_count = self
                     .presentation()
-                    .text()
-                    .bytes()
-                    .filter(|byte| *byte == b'\n')
-                    .count()
-                    .saturating_add(1)
+                    .composed_line_count()
+                    .unwrap_or_else(|| self.display_map.line_count())
                     .max(min_lines);
                 Some(max_lines.map_or(line_count, |maximum| line_count.min(maximum)))
             }
@@ -967,9 +1052,8 @@ impl EntityInputHandler for Editor {
         _cx: &mut Context<Self>,
     ) -> Option<String> {
         let presentation = self.presentation();
-        let range = presentation.byte_range_from_utf16(range_utf16.clone())?;
-        actual_range.replace(range_utf16);
-        Some(presentation.text()[range].to_owned())
+        actual_range.replace(range_utf16.clone());
+        presentation.text_for_utf16_range(range_utf16)
     }
 
     fn selected_text_range(
@@ -1052,7 +1136,13 @@ impl EntityInputHandler for Editor {
         }
         let text_utf16_len = utf16_len(&text);
         let selected_range = new_selected_range_utf16.unwrap_or(text_utf16_len..text_utf16_len);
-        self.composition = Some(EditorComposition::new(range, text, selected_range));
+        let snapshot = self.display_map.snapshot().clone();
+        self.composition = Some(EditorComposition::new(
+            range,
+            text,
+            selected_range,
+            &snapshot,
+        ));
         self.input_layout = None;
         cx.notify();
     }
@@ -1106,7 +1196,7 @@ mod tests {
     use zcv_engine::{BufferConfig, ByteOffset, DisplayColumn, SelectionSet, TransactionId};
 
     use super::*;
-    use crate::editor::{DisplayPoint, DisplayRow};
+    use crate::editor::display_map::{DisplayPoint, DisplayRow};
 
     fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<Buffer> {
         let buffer =

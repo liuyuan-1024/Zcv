@@ -120,6 +120,17 @@ fn projection_line_map_should_distinguish_text_rows_hidden_rows_and_placeholder_
 }
 
 #[test]
+fn projection_longest_text_row_should_use_display_columns_and_ignore_hidden_lines() {
+    let buffer = buffer("a\nbb\nthis hidden line is longest\n\tz");
+    let snapshot = buffer.snapshot();
+    let mut folds = FoldSet::new(snapshot.version());
+    folds.fold_lines(&snapshot, line_range(1, 3)).unwrap();
+    let projection = Projection::build(&snapshot, &folds).unwrap();
+
+    assert_eq!(projection.longest_text_row(), Some((projected(3), dcol(5))));
+}
+
+#[test]
 fn projection_point_and_range_mapping_should_return_typed_hidden_and_placeholder_facts() {
     let buffer = buffer("a\nb\nc\nd");
     let snapshot = buffer.snapshot();

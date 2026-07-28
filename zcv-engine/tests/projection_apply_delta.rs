@@ -67,6 +67,22 @@ fn inline_delete_in_no_fold_region_should_be_compatible() {
 }
 
 #[test]
+fn inline_edit_should_update_longest_text_row_without_rebuilding_projection() {
+    let mut buffer = buffer("longest\nshort\n");
+    let snapshot = buffer.snapshot();
+    let mut folds = FoldSet::new(snapshot.version());
+    let mut projection = Projection::build(&snapshot, &folds).unwrap();
+    assert_eq!(projection.longest_text_row(), Some((projected(0), dcol(7))));
+
+    let outcome = step_and_diff(&mut buffer, &mut folds, &mut projection, |buf| {
+        buf.delete(range(1, 7)).unwrap();
+    });
+
+    assert_eq!(outcome, ApplyOutcome::Compatible);
+    assert_eq!(projection.longest_text_row(), Some((projected(1), dcol(5))));
+}
+
+#[test]
 fn newline_insertion_should_trigger_rebuilt() {
     let mut buffer = buffer("hello world\nlorem ipsum\n");
     let snapshot = buffer.snapshot();
@@ -97,6 +113,23 @@ fn inline_edit_with_static_fold_should_be_compatible() {
     });
 
     assert!(matches!(outcome, ApplyOutcome::Compatible));
+}
+
+#[test]
+fn inline_edit_inside_fold_should_leave_visible_width_summary_unchanged() {
+    let mut buffer = buffer("anchor\nhidden line\nvisible\n");
+    let snapshot = buffer.snapshot();
+    let mut folds = FoldSet::new(snapshot.version());
+    folds.fold_lines(&snapshot, line_range(0, 2)).unwrap();
+    let mut projection = Projection::build(&snapshot, &folds).unwrap();
+    let before = projection.longest_text_row();
+
+    let outcome = step_and_diff(&mut buffer, &mut folds, &mut projection, |buf| {
+        buf.insert(b(8), "much wider ").unwrap();
+    });
+
+    assert_eq!(outcome, ApplyOutcome::Compatible);
+    assert_eq!(projection.longest_text_row(), before);
 }
 
 #[test]

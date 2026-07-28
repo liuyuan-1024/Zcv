@@ -4,9 +4,9 @@
 
 ## 定位
 
-`zcv-engine` 只做编辑引擎底座：文本存储、编辑、坐标、事务、历史、快照、区间追踪、投影、读取切片、文件文本边界和错误防御。
+`zcv-engine` 只做编辑引擎底座：文本存储、编辑、坐标、事务、历史、快照、通用区间追踪、读取切片、文件文本边界和错误防御。
 
-它不做 UI 渲染、LSP / Tree-sitter provider、diagnostics 生成、项目索引、命令系统、宏录制、后台任务调度或实时多人协作。
+它不做 UI 渲染、Editor 折叠与显示投影、LSP / Tree-sitter provider、diagnostics 生成、项目索引、命令系统、宏录制、后台任务调度或实时多人协作。折叠与 Projection 由宿主 Editor 的 DisplayMap 组合 `Snapshot`、`Anchor` / `TrackedRange` 和 `DeltaEvent` 实现。
 
 ## 核心能力
 
@@ -15,10 +15,10 @@
 - 事务化编辑、Delta、ChangeSet 和 PositionMap。
 - Undo / Redo、历史节点、事务记录和回放。
 - Snapshot、BufferVersion 和版本化结果承载。
-- Selection / SelectionSet 原语、多光标编辑算法和移动语义。
+- Selection / SelectionSet 原语、PositionMap 映射和纯文本 word / grapheme 边界查询。
 - Anchor、TrackedRange、MetadataLayer 等通用区间追踪。
-- Fold / Projection / Viewport slicing。
-- 单 Buffer 搜索、替换和 replace all。
+- 逻辑文本 Viewport slicing；显示投影由宿主 Editor 负责。
+- 单 Buffer 同步匹配、替换和 replace all；后台调度与取消由宿主负责。
 - 文件加载、保存文本边界、大文件策略和防御式错误处理。
 - 机器契约测试和 property 回归。
 
@@ -39,10 +39,8 @@ types/        offset、range、position、version 等强类型
 config/       Buffer、encoding、line ending、display、large file 等策略
 storage/      TextStorage 抽象与 RopeyStorage
 transaction/  Edit、Transaction、Delta、ChangeSet、record
-selection/    Cursor、Selection、SelectionSet、编辑结果和移动语义
+selection/    Cursor、Selection、SelectionSet 与纯文本边界词汇
 tracking/     Anchor、Mark、TrackedRange 及跟随策略
-
-projection/   Fold 后的逻辑坐标、投影坐标和 viewport
 ```
 
 目录模块是实现分层，不承诺长期 import path；外部使用者优先从 crate root 导入 public API。

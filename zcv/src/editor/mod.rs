@@ -10,8 +10,8 @@ pub(crate) mod view;
 
 pub(crate) use buffer_store::BufferStore;
 pub(crate) use view::{
-    Backspace, Copy, Cut, Delete, Editor, MoveDown, MoveLeft, MoveRight, MoveToBeginningOfLine,
-    MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Paste, Redo, SelectAll,
-    SelectDown, SelectLeft, SelectRight, SelectToBeginningOfLine, SelectToEndOfLine,
-    SelectToNextWord, SelectToPreviousWord, SelectUp, Undo,
+    Backspace, Copy, Cut, Delete, Editor, Indent, MoveDown, MoveLeft, MoveRight,
+    MoveToBeginningOfLine, MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline,
+    Outdent, Paste, Redo, SelectAll, SelectDown, SelectLeft, SelectRight, SelectToBeginningOfLine,
+    SelectToEndOfLine, SelectToNextWord, SelectToPreviousWord, SelectUp, Undo,
 };

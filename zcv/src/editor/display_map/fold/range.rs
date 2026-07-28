@@ -1,14 +1,11 @@
-//! 单条 FoldRange：把折叠区间绑定到可跟随文本变化的 TrackedRange。
+//! 单条 Editor FoldRange：把折叠区间绑定到可跟随文本变化的 TrackedRange。
 //!
 //! Fold 只表达「这一段文本被折叠」事实；占位符样式、绘制和投影由 `projection` 模块承载。
 //! 折叠区间使用 `Stickiness::Never`：用户显式折叠的范围不应该在两端插入时主动扩张。
 
-use crate::{
-    errors::AnchorError,
-    position_map::Stickiness,
-    tracking::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
-    transaction::DeltaEvent,
-    types::{BufferVersion, Line, TextRange},
+use zcv_engine::{
+    AnchorError, BufferVersion, DeltaEvent, Line, Stickiness, TextRange, TrackedRange,
+    TrackedRangeUpdate, TrackedRangeUpdatePolicy,
 };
 
 use super::FoldRangeId;

@@ -1,22 +1,16 @@
-//! Projection：基于 Snapshot + FoldSet 构建的不可变投影行映射快照。
+//! Editor Projection：基于 Snapshot + FoldSet 构建的不可变投影行映射快照。
 //!
-//! Projection 把「逻辑行」与「投影行」之间的双向映射固化成一组只读数组：
+//! Projection 把「逻辑行」与「投影行」之间的双向映射固化成持久化摘要树：
 //! - 每条投影行要么是某条可见逻辑行（`TextLine`），要么是合并后的折叠占位符（`FoldPlaceholder`）。
 //! - 每条逻辑行要么可见（指向自己的投影行），要么被某段 fold 隐藏（指向 fold anchor 的投影行）。
+//! - 树节点同时汇总消费的逻辑行数和产出的投影行数，双向查询由前缀摘要定位。
 //!
 //! 多条互相嵌套或邻接的 fold 在投影空间里只产出一条占位符（与 `HiddenRange` 合并语义保持一致）。
 //! 占位符样式与像素绘制不在本类型承诺范围内。
 
-use std::collections::BTreeSet;
-
-use crate::{
-    DisplayColumn, EngineResult, FoldSet,
-    coordinates::core::display_width_of_text,
-    errors::ProjectionError,
-    fold::geometry::{next_line, previous_line},
-    snapshot::Snapshot,
-    transaction::DeltaEvent,
-    types::{BufferVersion, Line, LineRange},
+use gpui_sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
+use zcv_engine::{
+    BufferVersion, CoordinateError, DeltaEvent, Line, LineRange, Snapshot, TextRange,
 };
 
 use super::{
@@ -25,31 +19,31 @@ use super::{
     ProjectedPointMapping, ProjectedRange, ProjectedViewport, ProjectedViewportRow,
     ProjectedViewportRowKind, ProjectedViewportSlice, TextLine, viewport::build_logical_spans,
 };
+use crate::editor::display_map::{
+    error::{DisplayMapResult, ProjectionError},
+    fold::{FoldSet, HiddenSpan, HiddenSpanEnd},
+};
 
 /// 不可变投影行映射快照。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Projection {
     version: BufferVersion,
-    /// 投影行索引 -> 投影行种类。
-    rows: Vec<ProjectedLineKind>,
-    /// 逻辑行索引 -> 投影空间状态。长度等于 `logical_line_count`。
-    logical_to_projection: Vec<LogicalProjection>,
-    /// 文本来源中的逻辑行总数（不受折叠影响）。
-    logical_line_count: usize,
-    /// 可见文本投影行的显示列摘要。占位符宽度由宿主决定，不进入该索引。
-    width_index: ProjectedWidthIndex,
+    /// 投影行拓扑摘要。SumTree clone 只共享未变化节点。
+    rows: SumTree<ProjectedRowItem>,
     /// 上次 build 用到的（已排序合并）隐藏行段集合，作为增量分类器的对比基准。
     /// 不暴露：只参与 `apply_delta` 的「fold 结构是否变化」判定。
-    hidden_spans: Vec<HiddenSpan>,
+    hidden_spans: SumTree<HiddenSpan>,
 }
 
 /// `Projection::apply_delta` 推进结果。语义详见对应方法文档。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyOutcome {
-    /// 编辑既不改变逻辑行数也不改变 fold 结构；`Projection` 仅推进 `version`，
-    /// 增量更新受影响投影行的宽度摘要，`rows` 与 `logical_to_projection` 不改写。
+    /// 编辑既不改变逻辑行数也不改变 fold 结构；
+    /// `Projection` 仅推进 `version`，投影拓扑不改写。
     Compatible,
-    /// 全量重建：`Projection` 已就地被新版本替换，调用方应假设所有投影行都失效。
+    /// 结构变化已定位到安全窗口，并从增量 HiddenSpan 摘要生成新的紧凑拓扑。
+    Spliced,
+    /// 无法安全确定局部窗口时的保守全量重建。
     Rebuilt,
 }
 
@@ -57,7 +51,7 @@ impl Projection {
     /// 基于 `Snapshot` 与 `FoldSet` 构建一份新的投影。
     ///
     /// 要求两者版本一致；版本不匹配时返回 `ProjectionError::VersionMismatch`。
-    pub fn build(snapshot: &Snapshot, folds: &FoldSet) -> EngineResult<Self> {
+    pub fn build(snapshot: &Snapshot, folds: &FoldSet) -> DisplayMapResult<Self> {
         if snapshot.version() != folds.version() {
             return Err(ProjectionError::VersionMismatch {
                 snapshot_version: snapshot.version(),
@@ -66,66 +60,21 @@ impl Projection {
             .into());
         }
 
+        let hidden_spans = folds.hidden_spans().clone();
         let logical_line_count = snapshot.line_count();
-        let hidden_spans = collect_merged_hidden_spans(folds);
+        let rows = build_row_items(&hidden_spans, 0, logical_line_count);
 
-        let mut rows: Vec<ProjectedLineKind> = Vec::new();
-        let mut width_index = ProjectedWidthIndex::default();
-        let mut logical_to_projection: Vec<LogicalProjection> =
-            Vec::with_capacity(logical_line_count);
-        let mut span_cursor = 0usize;
-        let mut anchor_indices: Vec<Option<ProjectedLineIndex>> = vec![None; logical_line_count];
-
-        for line_value in 0..logical_line_count {
-            let logical_line = Line::new(line_value);
-
-            while span_cursor < hidden_spans.len() && hidden_spans[span_cursor].end <= logical_line
-            {
-                span_cursor += 1;
-            }
-
-            let inside_hidden = span_cursor < hidden_spans.len()
-                && hidden_spans[span_cursor].contains_line(logical_line);
-
-            if inside_hidden {
-                let span = hidden_spans[span_cursor];
-                let anchor_logical_line = previous_line(span.start);
-                let anchor_projected_line = anchor_indices[anchor_logical_line.get()]
-                    .expect("hidden span 的 anchor 必须先于隐藏行被访问");
-                logical_to_projection.push(LogicalProjection::Hidden {
-                    anchor_logical_line,
-                    anchor_projected_line,
-                });
-                continue;
-            }
-
-            let projected_index = ProjectedLineIndex::new(rows.len());
-            rows.push(ProjectedLineKind::Text(TextLine::new(logical_line)));
-            width_index.push_text(text_line_display_width(snapshot, logical_line)?);
-            anchor_indices[line_value] = Some(projected_index);
-            logical_to_projection.push(LogicalProjection::Visible(projected_index));
-
-            if span_cursor < hidden_spans.len() {
-                let next_span = hidden_spans[span_cursor];
-                if next_span.start == next_line(logical_line) {
-                    let placeholder = FoldPlaceholder::new(
-                        logical_line,
-                        LineRange::new(next_span.start, next_span.end)?,
-                    );
-                    rows.push(ProjectedLineKind::Placeholder(placeholder));
-                    width_index.push_placeholder();
-                }
-            }
-        }
-
-        Ok(Self {
+        let projection = Self {
             version: snapshot.version(),
-            rows,
-            logical_to_projection,
-            logical_line_count,
-            width_index,
+            rows: SumTree::from_iter(rows, ()),
             hidden_spans,
-        })
+        };
+        debug_assert_eq!(
+            projection.logical_line_count(),
+            logical_line_count,
+            "Projection 输入逻辑行摘要必须覆盖整个 Snapshot"
+        );
+        Ok(projection)
     }
 
     /// 尝试就地推进 Projection 到 `event.new_version()`。
@@ -137,8 +86,10 @@ impl Projection {
     ///
     /// 分类策略：
     /// - **Compatible**：编辑前后 `snapshot.line_count()` 与 `hidden_spans` 都不变，
-    ///   增量更新宽度摘要并推进 `version`，行映射字段不改写。
-    /// - **Rebuilt**：其它一切情况都直接走 `Projection::build` 原地替换。
+    ///   仅推进 `version`，行映射字段不改写。
+    /// - **Spliced**：结构发生变化，但可从新版本 changed ranges 推导出安全的逻辑行窗口；
+    ///   从增量 HiddenSpan 摘要重建紧凑拓扑，成本随 fold 段数而不是逻辑行数增长。
+    /// - **Rebuilt**：fold 在变更窗口之外出现非 Delta 映射产生的拓扑变化等无法安全局部化的情况。
     ///
     /// **关键正确性性质**：分类降级到 `Rebuilt` 只是性能损失，不会产生错误投影。
     /// 故分类器允许任意保守，但绝不能把「实际不兼容」误判为 `Compatible`。
@@ -147,7 +98,7 @@ impl Projection {
         new_snapshot: &Snapshot,
         new_folds: &FoldSet,
         event: &DeltaEvent,
-    ) -> EngineResult<ApplyOutcome> {
+    ) -> DisplayMapResult<ApplyOutcome> {
         if self.version != event.old_version()
             || new_snapshot.version() != event.new_version()
             || new_folds.version() != event.new_version()
@@ -162,21 +113,43 @@ impl Projection {
             .into());
         }
 
-        let line_count_unchanged = new_snapshot.line_count() == self.logical_line_count;
-        if line_count_unchanged {
-            // O(F)：用 fold.line_span() 缓存重拼，与 self.hidden_spans 字段级对比。
-            let new_spans = collect_merged_hidden_spans(new_folds);
-            if new_spans == self.hidden_spans {
-                let width_updates = self.width_updates(new_snapshot, event)?;
-                for (projected_line, width) in width_updates {
-                    self.width_index.update_text(projected_line, width);
-                }
-                self.version = event.new_version();
-                return Ok(ApplyOutcome::Compatible);
-            }
+        let old_line_count = self.logical_line_count();
+        let line_count_unchanged = new_snapshot.line_count() == old_line_count;
+        let text_topology_unchanged = line_count_unchanged
+            && event
+                .delta()
+                .edits()
+                .as_slice()
+                .iter()
+                .all(|edit| !edit.replacement().contains('\n'));
+        let new_spans = new_folds.hidden_spans().clone();
+        let hidden_topology_unchanged = new_folds
+            .hidden_spans_changed_by(event)
+            .map_or_else(|| new_spans == self.hidden_spans, |changed| !changed);
+        if text_topology_unchanged && hidden_topology_unchanged {
+            self.version = event.new_version();
+            return Ok(ApplyOutcome::Compatible);
         }
 
-        // 保守降级：全量重建并原地替换。
+        if !new_folds.was_updated_by(event) {
+            let rebuilt = Self::build(new_snapshot, new_folds)?;
+            *self = rebuilt;
+            return Ok(ApplyOutcome::Rebuilt);
+        }
+
+        if let Some(window) = self.splice_window(new_snapshot, &new_spans, event)? {
+            let _ = window;
+            self.rows = SumTree::from_iter(
+                build_row_items(&new_spans, 0, new_snapshot.line_count()),
+                (),
+            );
+            self.hidden_spans = new_spans;
+            self.version = event.new_version();
+            debug_assert_eq!(self.logical_line_count(), new_snapshot.line_count());
+            return Ok(ApplyOutcome::Spliced);
+        }
+
+        // 保守降级：无法证明窗口外拓扑可复用时全量重建。
         let rebuilt = Self::build(new_snapshot, new_folds)?;
         *self = rebuilt;
         Ok(ApplyOutcome::Rebuilt)
@@ -188,32 +161,26 @@ impl Projection {
 
     /// 投影行总数；等价于 `text line 数 + fold placeholder 数`。
     pub fn line_count(&self) -> usize {
-        self.rows.len()
+        self.rows.summary().rows
     }
 
     /// 来源文本的逻辑行总数。
     pub fn logical_line_count(&self) -> usize {
-        self.logical_line_count
+        self.rows.summary().logical_lines
     }
 
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
 
-    /// 最宽的可见文本投影行及其显示列宽度。
-    ///
-    /// 折叠占位符的文本和像素样式由宿主决定，因此不参与该摘要。
-    /// 宽度使用 Snapshot 的 tab 与 Unicode display-width 策略计算；
-    /// 宿主只需对返回的候选行做一次字体塑形。
-    pub fn longest_text_row(&self) -> Option<(ProjectedLineIndex, DisplayColumn)> {
-        self.width_index.longest_text_row()
+    #[cfg(test)]
+    pub(crate) fn summary_item_count(&self) -> usize {
+        self.rows.iter().count()
     }
 
     /// 按投影行索引读取行视图；越界返回 None。
     pub fn projected_line(&self, index: ProjectedLineIndex) -> Option<ProjectedLine> {
-        self.rows
-            .get(index.get())
-            .copied()
+        self.projected_line_kind(index)
             .map(|kind| ProjectedLine::new(index, kind))
     }
 
@@ -221,30 +188,61 @@ impl Projection {
     pub fn iter(&self) -> impl Iterator<Item = ProjectedLine> + '_ {
         self.rows
             .iter()
-            .copied()
-            .enumerate()
-            .map(|(idx, kind)| ProjectedLine::new(ProjectedLineIndex::new(idx), kind))
+            .scan((0usize, 0usize), |state, row| {
+                let (logical_start, projected_start) = *state;
+                let lines = (0..row.projected_rows())
+                    .map(|offset| {
+                        ProjectedLine::new(
+                            ProjectedLineIndex::new(projected_start + offset),
+                            row.projected_kind(logical_start, offset),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                state.0 += row.logical_lines;
+                state.1 += row.projected_rows();
+                Some(lines.into_iter())
+            })
+            .flatten()
     }
 
     /// 投影行索引 -> 投影行种类（不带索引包裹）。
     pub fn projected_line_kind(&self, index: ProjectedLineIndex) -> Option<ProjectedLineKind> {
-        self.rows.get(index.get()).copied()
+        let (start, _, row) = self.rows.find::<ProjectedDimensions, _>(
+            (),
+            &ProjectedRowCount(index.get()),
+            TreeBias::Right,
+        );
+        row.map(|row| row.projected_kind(start.1.0, index.get() - start.0.0))
     }
 
     /// 逻辑行 -> 投影空间状态。
-    pub fn logical_to_projected(&self, line: Line) -> EngineResult<LogicalProjection> {
-        self.logical_to_projection
-            .get(line.get())
-            .copied()
-            .ok_or_else(|| crate::CoordinateError::LineOutOfBounds(line).into())
+    pub fn logical_to_projected(&self, line: Line) -> DisplayMapResult<LogicalProjection> {
+        if line.get() >= self.logical_line_count() {
+            return Err(CoordinateError::LineOutOfBounds(line).into());
+        }
+        let (start, _, row) = self.rows.find::<ProjectionDimensions, _>(
+            (),
+            &LogicalLineCount(line.get()),
+            TreeBias::Right,
+        );
+        let row = row.expect("合法逻辑行必须命中 Projection 变换项");
+        Ok(match row.kind {
+            ProjectedRowItemKind::Text => LogicalProjection::Visible(ProjectedLineIndex::new(
+                start.1.0 + line.get() - start.0.0,
+            )),
+            ProjectedRowItemKind::Placeholder => LogicalProjection::Hidden {
+                anchor_logical_line: Line::new(start.0.0 - 1),
+                anchor_projected_line: ProjectedLineIndex::new(start.1.0 - 1),
+            },
+        })
     }
 
-    pub fn is_logical_line_hidden(&self, line: Line) -> EngineResult<bool> {
+    pub fn is_logical_line_hidden(&self, line: Line) -> DisplayMapResult<bool> {
         Ok(self.logical_to_projected(line)?.is_hidden())
     }
 
     /// hidden 逻辑行 -> 其所在 fold 的 anchor 逻辑行。可见行返回自身。
-    pub fn fold_anchor_for_logical_line(&self, line: Line) -> EngineResult<Line> {
+    pub fn fold_anchor_for_logical_line(&self, line: Line) -> DisplayMapResult<Line> {
         match self.logical_to_projected(line)? {
             LogicalProjection::Visible(_) => Ok(line),
             LogicalProjection::Hidden {
@@ -270,7 +268,7 @@ impl Projection {
     pub fn logical_to_projected_point(
         &self,
         point: LogicalPoint,
-    ) -> EngineResult<LogicalPointProjection> {
+    ) -> DisplayMapResult<LogicalPointProjection> {
         match self.logical_to_projected(point.line)? {
             LogicalProjection::Visible(projected_line) => Ok(LogicalPointProjection::Visible(
                 ProjectedPoint::new(projected_line, point.column),
@@ -289,10 +287,10 @@ impl Projection {
     pub fn projected_to_logical_point(
         &self,
         point: ProjectedPoint,
-    ) -> EngineResult<ProjectedPointMapping> {
+    ) -> DisplayMapResult<ProjectedPointMapping> {
         let kind = self
             .projected_line_kind(point.line)
-            .ok_or_else(|| crate::CoordinateError::LineOutOfBounds(Line::new(point.line.get())))?;
+            .ok_or_else(|| CoordinateError::LineOutOfBounds(Line::new(point.line.get())))?;
 
         match kind {
             ProjectedLineKind::Text(text_line) => Ok(ProjectedPointMapping::Text(
@@ -317,7 +315,7 @@ impl Projection {
     pub fn logical_to_projected_range_segments(
         &self,
         range: LogicalRange,
-    ) -> EngineResult<Vec<ProjectedRange>> {
+    ) -> DisplayMapResult<Vec<ProjectedRange>> {
         if range.is_empty() {
             return Ok(Vec::new());
         }
@@ -353,15 +351,13 @@ impl Projection {
         let mut breakpoints: Vec<ProjectedPoint> = vec![start_proj];
         let mut prev_is_placeholder = self
             .projected_line_kind(start_proj.line())
-            .map(|kind| kind.is_placeholder())
-            .unwrap_or(false);
+            .is_some_and(|kind| kind.is_placeholder());
 
         for row_value in (start_proj.line().get() + 1)..=end_proj.line().get() {
             let row_idx = ProjectedLineIndex::new(row_value);
             let row_is_placeholder = self
                 .projected_line_kind(row_idx)
-                .map(|kind| kind.is_placeholder())
-                .unwrap_or(false);
+                .is_some_and(|kind| kind.is_placeholder());
             if row_is_placeholder != prev_is_placeholder {
                 breakpoints.push(ProjectedPoint::line_start(row_idx));
                 prev_is_placeholder = row_is_placeholder;
@@ -385,7 +381,10 @@ impl Projection {
     /// 投影范围 -> 逻辑范围。Placeholder 端按 `ProjectedPointMapping::Placeholder` 的 anchor 决定逻辑端点：
     /// 起点放到 fold anchor 的行起点；终点放到 placeholder 覆盖隐藏行后的第一条逻辑行起点（即 `hidden_lines.end`），
     /// 这样投影空间的「跨 placeholder 选区」就能在逻辑空间无歧义地展开为「fold anchor 起点 -> 隐藏区间结束」。
-    pub fn projected_to_logical_range(&self, range: ProjectedRange) -> EngineResult<LogicalRange> {
+    pub fn projected_to_logical_range(
+        &self,
+        range: ProjectedRange,
+    ) -> DisplayMapResult<LogicalRange> {
         let start_logical = self.projected_point_to_logical_range_endpoint(range.start(), true)?;
         let end_logical = self.projected_point_to_logical_range_endpoint(range.end(), false)?;
         Ok(LogicalRange::new(start_logical, end_logical)?)
@@ -395,7 +394,7 @@ impl Projection {
         &self,
         point: ProjectedPoint,
         is_start: bool,
-    ) -> EngineResult<LogicalPoint> {
+    ) -> DisplayMapResult<LogicalPoint> {
         match self.projected_to_logical_point(point)? {
             ProjectedPointMapping::Text(logical) => Ok(logical),
             ProjectedPointMapping::Placeholder {
@@ -420,8 +419,8 @@ impl Projection {
     pub fn project_text_range(
         &self,
         snapshot: &Snapshot,
-        range: crate::types::TextRange,
-    ) -> EngineResult<Vec<ProjectedRange>> {
+        range: TextRange,
+    ) -> DisplayMapResult<Vec<ProjectedRange>> {
         self.verify_snapshot_version(snapshot)?;
         let start_position = snapshot.byte_to_position(range.start())?;
         let end_position = snapshot.byte_to_position(range.end())?;
@@ -432,7 +431,7 @@ impl Projection {
         self.logical_to_projected_range_segments(logical_range)
     }
 
-    fn verify_snapshot_version(&self, snapshot: &Snapshot) -> EngineResult<()> {
+    fn verify_snapshot_version(&self, snapshot: &Snapshot) -> DisplayMapResult<()> {
         if snapshot.version() != self.version {
             return Err(ProjectionError::VersionMismatch {
                 snapshot_version: snapshot.version(),
@@ -443,37 +442,89 @@ impl Projection {
         Ok(())
     }
 
-    fn width_updates(
+    fn splice_window(
         &self,
-        snapshot: &Snapshot,
+        new_snapshot: &Snapshot,
+        new_spans: &SumTree<HiddenSpan>,
         event: &DeltaEvent,
-    ) -> EngineResult<Vec<(ProjectedLineIndex, DisplayColumn)>> {
-        let mut projected_lines = BTreeSet::new();
-        for range in event.changeset().changed_ranges()? {
-            let start = snapshot.byte_to_line(range.start())?;
-            let end = snapshot.byte_to_line(range.end())?;
-            for logical_line in start.get()..=end.get() {
-                if let LogicalProjection::Visible(projected_line) =
-                    self.logical_to_projected(Line::new(logical_line))?
-                {
-                    projected_lines.insert(projected_line);
-                }
+    ) -> DisplayMapResult<Option<SpliceWindow>> {
+        let changed_ranges = event.changeset().changed_ranges()?;
+        let Some(first) = changed_ranges.first() else {
+            return Ok(None);
+        };
+        let last = changed_ranges
+            .last()
+            .expect("非空 changed ranges 必须存在末项");
+
+        let old_line_count = self.logical_line_count();
+        let new_line_count = new_snapshot.line_count();
+        let Some(line_delta) = signed_difference(new_line_count, old_line_count) else {
+            return Ok(None);
+        };
+
+        // 第一个 edit 之前没有字节变化，因此首个受影响逻辑行在新旧版本中相同。
+        let mut new_start = new_snapshot.byte_to_line(first.start())?.get();
+        let mut old_start = new_start;
+
+        // 取最后 changed range 所在行的下一行作为稳定后缀边界。
+        let changed_end_line = new_snapshot.byte_to_line(last.end())?.get();
+        let mut new_end = changed_end_line.saturating_add(1).min(new_line_count);
+        let Some(mut old_end) = new_end.checked_add_signed(-line_delta) else {
+            return Ok(None);
+        };
+        if old_end > old_line_count {
+            return Ok(None);
+        }
+
+        // splice 不能切开 placeholder。两端在新旧隐藏段中反复扩张到完整边界。
+        loop {
+            let previous = (old_start, new_start);
+            if let Some(span) = containing_span(&self.hidden_spans, old_start) {
+                old_start = span.start.get();
+                new_start = old_start;
+            }
+            if let Some(span) = containing_span(new_spans, new_start) {
+                new_start = span.start.get();
+                old_start = new_start;
+            }
+            if previous == (old_start, new_start) {
+                break;
             }
         }
 
-        projected_lines
-            .into_iter()
-            .map(|projected_line| {
-                let logical_line = match self.projected_line_kind(projected_line) {
-                    Some(ProjectedLineKind::Text(text_line)) => text_line.logical_line(),
-                    _ => unreachable!("Visible 映射必须指向文本投影行"),
+        loop {
+            let previous = (old_end, new_end);
+            if let Some(span) = containing_span(&self.hidden_spans, old_end) {
+                old_end = span.end.get();
+                let Some(mapped) = old_end.checked_add_signed(line_delta) else {
+                    return Ok(None);
                 };
-                Ok((
-                    projected_line,
-                    text_line_display_width(snapshot, logical_line)?,
-                ))
-            })
-            .collect()
+                new_end = mapped;
+            }
+            if let Some(span) = containing_span(new_spans, new_end) {
+                new_end = span.end.get();
+                let Some(mapped) = new_end.checked_add_signed(-line_delta) else {
+                    return Ok(None);
+                };
+                old_end = mapped;
+            }
+            if old_end > old_line_count || new_end > new_line_count {
+                return Ok(None);
+            }
+            if previous == (old_end, new_end) {
+                break;
+            }
+        }
+
+        if old_start > old_end || new_start > new_end {
+            return Ok(None);
+        }
+        Ok(Some(SpliceWindow {
+            old_start,
+            old_end,
+            new_start,
+            new_end,
+        }))
     }
 
     /// 折叠后视口切片：把 `ProjectedViewport` 翻译成投影行序列 + 命中逻辑行 spans + placeholder 列表。
@@ -485,13 +536,13 @@ impl Projection {
         &self,
         snapshot: &'a Snapshot,
         viewport: ProjectedViewport,
-    ) -> EngineResult<ProjectedViewportSlice<'a>> {
+    ) -> DisplayMapResult<ProjectedViewportSlice<'a>> {
         self.verify_snapshot_version(snapshot)?;
 
         let total = self.line_count();
         let start = viewport.start_line().get();
         if start > total {
-            return Err(crate::CoordinateError::LineOutOfBounds(Line::new(start)).into());
+            return Err(CoordinateError::LineOutOfBounds(Line::new(start)).into());
         }
         let end = start.saturating_add(viewport.line_count()).min(total);
         let projected_line_range =
@@ -499,7 +550,6 @@ impl Projection {
 
         let mut rows: Vec<ProjectedViewportRow<'a>> = Vec::with_capacity(end - start);
         let mut placeholders: Vec<FoldPlaceholder> = Vec::new();
-
         for row_value in start..end {
             let index = ProjectedLineIndex::new(row_value);
             let kind = self
@@ -539,90 +589,169 @@ impl Projection {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ProjectedWidthIndex {
-    by_row: Vec<Option<DisplayColumn>>,
-    ordered: BTreeSet<(usize, usize)>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectedRowItem {
+    kind: ProjectedRowItemKind,
+    logical_lines: usize,
 }
 
-impl ProjectedWidthIndex {
-    fn push_text(&mut self, width: DisplayColumn) {
-        let row = self.by_row.len();
-        self.by_row.push(Some(width));
-        self.ordered.insert((width.get(), row));
+impl ProjectedRowItem {
+    fn text_run(line_count: usize) -> Self {
+        debug_assert!(line_count > 0);
+        Self {
+            kind: ProjectedRowItemKind::Text,
+            logical_lines: line_count,
+        }
     }
 
-    fn push_placeholder(&mut self) {
-        self.by_row.push(None);
+    fn placeholder(hidden_line_count: usize) -> Self {
+        debug_assert!(hidden_line_count > 0);
+        Self {
+            kind: ProjectedRowItemKind::Placeholder,
+            logical_lines: hidden_line_count,
+        }
     }
 
-    fn update_text(&mut self, row: ProjectedLineIndex, width: DisplayColumn) {
-        let row = row.get();
-        let old_width = self
-            .by_row
-            .get_mut(row)
-            .and_then(Option::as_mut)
-            .expect("文本投影行必须在宽度索引中存在");
-        self.ordered.remove(&(old_width.get(), row));
-        *old_width = width;
-        self.ordered.insert((width.get(), row));
+    fn projected_rows(&self) -> usize {
+        match self.kind {
+            ProjectedRowItemKind::Text => self.logical_lines,
+            ProjectedRowItemKind::Placeholder => 1,
+        }
     }
 
-    fn longest_text_row(&self) -> Option<(ProjectedLineIndex, DisplayColumn)> {
-        self.ordered
-            .last()
-            .map(|(width, row)| (ProjectedLineIndex::new(*row), DisplayColumn::new(*width)))
+    fn projected_kind(&self, logical_start: usize, offset: usize) -> ProjectedLineKind {
+        match self.kind {
+            ProjectedRowItemKind::Text => {
+                debug_assert!(offset < self.logical_lines);
+                ProjectedLineKind::Text(TextLine::new(Line::new(logical_start + offset)))
+            }
+            ProjectedRowItemKind::Placeholder => {
+                debug_assert_eq!(offset, 0);
+                let hidden_start = Line::new(logical_start);
+                let hidden_end = Line::new(logical_start + self.logical_lines);
+                ProjectedLineKind::Placeholder(FoldPlaceholder::new(
+                    Line::new(logical_start - 1),
+                    LineRange::new(hidden_start, hidden_end)
+                        .expect("placeholder 必须覆盖非空且有序的隐藏行区间"),
+                ))
+            }
+        }
     }
-}
-
-fn text_line_display_width(snapshot: &Snapshot, line: Line) -> EngineResult<DisplayColumn> {
-    let line = snapshot.slice_line(line)?;
-    let text = line
-        .as_str()
-        .strip_suffix("\r\n")
-        .or_else(|| line.as_str().strip_suffix('\n'))
-        .unwrap_or_else(|| line.as_str());
-    Ok(DisplayColumn::new(display_width_of_text(
-        text,
-        snapshot.config(),
-    )))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct HiddenSpan {
-    start: Line,
-    end: Line,
+enum ProjectedRowItemKind {
+    Text,
+    Placeholder,
 }
 
-impl HiddenSpan {
-    fn contains_line(self, line: Line) -> bool {
-        self.start <= line && line < self.end
+impl Item for ProjectedRowItem {
+    type Summary = ProjectedRowSummary;
+
+    fn summary(&self, (): ()) -> Self::Summary {
+        ProjectedRowSummary {
+            rows: self.projected_rows(),
+            logical_lines: self.logical_lines,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ProjectedRowSummary {
+    rows: usize,
+    logical_lines: usize,
+}
+
+impl ContextLessSummary for ProjectedRowSummary {
+    fn zero() -> Self {
+        Self::default()
+    }
+
+    fn add_summary(&mut self, summary: &Self) {
+        self.rows += summary.rows;
+        self.logical_lines += summary.logical_lines;
     }
 }
 
-fn collect_merged_hidden_spans(folds: &FoldSet) -> Vec<HiddenSpan> {
-    // `FoldSet::normalize` 已让 `ranges` 按 `range.start()` 字节升序；字节升序 → 缓存的 `line_span.0` 非降序。
-    // 直接读 FoldRange 上的 `line_span` 缓存即可，省掉对每条 fold 的 byte→line O(log N) 转换。
-    // 同时边收集边合并。
-    let mut merged: Vec<HiddenSpan> = Vec::with_capacity(folds.len());
-    for fold in folds.iter() {
-        let (start_line, end_line) = fold.line_span();
-        if start_line >= end_line {
-            continue;
-        }
-        let span = HiddenSpan {
-            start: next_line(start_line),
-            end: next_line(end_line),
-        };
-        match merged.last_mut() {
-            Some(last) if span.start <= last.end => {
-                if span.end > last.end {
-                    last.end = span.end;
-                }
-            }
-            _ => merged.push(span),
-        }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct LogicalLineCount(usize);
+
+impl<'a> Dimension<'a, ProjectedRowSummary> for LogicalLineCount {
+    fn zero((): ()) -> Self {
+        Self(0)
     }
 
-    merged
+    fn add_summary(&mut self, summary: &'a ProjectedRowSummary, (): ()) {
+        self.0 += summary.logical_lines;
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct ProjectedRowCount(usize);
+
+impl<'a> Dimension<'a, ProjectedRowSummary> for ProjectedRowCount {
+    fn zero((): ()) -> Self {
+        Self(0)
+    }
+
+    fn add_summary(&mut self, summary: &'a ProjectedRowSummary, (): ()) {
+        self.0 += summary.rows;
+    }
+}
+
+type ProjectionDimensions = Dimensions<LogicalLineCount, ProjectedRowCount>;
+type ProjectedDimensions = Dimensions<ProjectedRowCount, LogicalLineCount>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpliceWindow {
+    old_start: usize,
+    old_end: usize,
+    new_start: usize,
+    new_end: usize,
+}
+
+fn build_row_items(
+    hidden_spans: &SumTree<HiddenSpan>,
+    start: usize,
+    end: usize,
+) -> Vec<ProjectedRowItem> {
+    debug_assert!(start <= end);
+
+    let mut rows = Vec::new();
+    let mut spans = hidden_spans.cursor::<HiddenSpanEnd>(());
+    spans.seek(&HiddenSpanEnd(start), TreeBias::Right);
+    let mut line_value = start;
+    while let Some(span) = spans.item().copied() {
+        if span.start.get() >= end {
+            break;
+        }
+        if span.start.get() > line_value {
+            rows.push(ProjectedRowItem::text_run(span.start.get() - line_value));
+        }
+        debug_assert!(span.end.get() <= end);
+        rows.push(ProjectedRowItem::placeholder(
+            span.end.get() - span.start.get(),
+        ));
+        line_value = span.end.get();
+        spans.next();
+    }
+    if line_value < end {
+        rows.push(ProjectedRowItem::text_run(end - line_value));
+    }
+    rows
+}
+
+fn containing_span(spans: &SumTree<HiddenSpan>, boundary: usize) -> Option<HiddenSpan> {
+    let (_, _, span) =
+        spans.find::<HiddenSpanEnd, _>((), &HiddenSpanEnd(boundary), TreeBias::Right);
+    span.copied()
+        .filter(|span| span.start.get() < boundary && boundary < span.end.get())
+}
+
+fn signed_difference(left: usize, right: usize) -> Option<isize> {
+    if left >= right {
+        isize::try_from(left - right).ok()
+    } else {
+        isize::try_from(right - left).ok().map(|value| -value)
+    }
 }

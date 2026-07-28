@@ -3,13 +3,8 @@
 //! 本文件绑定 BufferConfig 并处理 CRLF、grapheme、DisplayColumn 等策略，不直接修改文本或历史。
 
 use crate::{
-    ByteOffset, CharOffset, CoordinateError, DisplayColumn, DisplayColumnAffinity, EngineResult,
-    Line, LineEndingStyle, LogicalColumn, Position, Utf16Offset, Utf16Position,
-    coordinates::core::{
-        char_to_display_column_in_text, display_to_logical_column_in_text,
-        logical_to_display_column_in_text, next_tab_stop,
-    },
-    storage::TextRead,
+    ByteOffset, CharOffset, CoordinateError, EngineResult, Line, LineEndingStyle, Position,
+    Utf16Offset, Utf16Position, storage::TextRead,
 };
 
 use super::Buffer;
@@ -30,7 +25,7 @@ impl Buffer {
         self.storage.byte_to_position(offset)
     }
 
-    /// `byte_to_position` 的省列变体。`Projection::build` / fold 几何里只关心行号时，
+    /// `byte_to_position` 的省列变体。宿主 DisplayMap 的投影 / fold 几何只关心行号时，
     /// 走这条路径避免后端额外的 char/column 投影 O(log N)。
     pub fn byte_to_line(&self, offset: ByteOffset) -> EngineResult<Line> {
         self.storage.byte_to_line(offset)
@@ -128,64 +123,6 @@ impl Buffer {
 
     pub fn line_ending_style(&self) -> LineEndingStyle {
         self.storage.line_ending_style()
-    }
-
-    pub fn next_tab_stop(&self, display_column: DisplayColumn) -> DisplayColumn {
-        next_tab_stop(display_column, self.config.tab.tab_width())
-    }
-
-    pub fn char_to_display_column(&self, offset: CharOffset) -> EngineResult<DisplayColumn> {
-        char_to_display_column_in_text(&self.storage, &self.config, offset)
-    }
-
-    pub fn logical_to_display_column(
-        &self,
-        line: Line,
-        column: LogicalColumn,
-    ) -> EngineResult<DisplayColumn> {
-        logical_to_display_column_in_text(&self.storage, &self.config, line, column)
-    }
-
-    pub fn display_to_logical_column(
-        &self,
-        line: Line,
-        column: DisplayColumn,
-    ) -> EngineResult<LogicalColumn> {
-        display_to_logical_column_in_text(
-            &self.storage,
-            &self.config,
-            line,
-            column,
-            self.config.display_width.affinity,
-        )
-    }
-
-    pub fn display_to_logical_column_with_affinity(
-        &self,
-        line: Line,
-        column: DisplayColumn,
-        affinity: DisplayColumnAffinity,
-    ) -> EngineResult<LogicalColumn> {
-        display_to_logical_column_in_text(&self.storage, &self.config, line, column, affinity)
-    }
-
-    pub fn display_column_to_char(
-        &self,
-        line: Line,
-        column: DisplayColumn,
-    ) -> EngineResult<CharOffset> {
-        let logical = self.display_to_logical_column(line, column)?;
-        self.storage.position_to_char(Position::new(line, logical))
-    }
-
-    pub fn display_column_to_char_with_affinity(
-        &self,
-        line: Line,
-        column: DisplayColumn,
-        affinity: DisplayColumnAffinity,
-    ) -> EngineResult<CharOffset> {
-        let logical = self.display_to_logical_column_with_affinity(line, column, affinity)?;
-        self.storage.position_to_char(Position::new(line, logical))
     }
 }
 

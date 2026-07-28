@@ -9,9 +9,9 @@ use gpui::KeyBinding;
 use serde::Deserialize;
 
 use crate::editor::{
-    Backspace, Copy, Cut, Delete, MoveDown, MoveLeft, MoveRight, MoveToBeginningOfLine,
-    MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Paste, Redo, SelectAll,
-    SelectDown, SelectLeft, SelectRight, SelectToBeginningOfLine, SelectToEndOfLine,
+    Backspace, Copy, Cut, Delete, Indent, MoveDown, MoveLeft, MoveRight, MoveToBeginningOfLine,
+    MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Outdent, Paste, Redo,
+    SelectAll, SelectDown, SelectLeft, SelectRight, SelectToBeginningOfLine, SelectToEndOfLine,
     SelectToNextWord, SelectToPreviousWord, SelectUp, Undo,
 };
 use crate::project_tree::{TreeActivate, TreeCollapse, TreeExpand, TreeSelectNext, TreeSelectPrev};
@@ -217,6 +217,8 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
         "editor::Backspace" => KeyBinding::new(keys, Backspace, context),
         "editor::Delete" => KeyBinding::new(keys, Delete, context),
         "editor::Newline" => KeyBinding::new(keys, Newline, context),
+        "editor::Indent" => KeyBinding::new(keys, Indent, context),
+        "editor::Outdent" => KeyBinding::new(keys, Outdent, context),
         // project_tree
         "project_tree::TreeSelectPrev" => KeyBinding::new(keys, TreeSelectPrev, context),
         "project_tree::TreeSelectNext" => KeyBinding::new(keys, TreeSelectNext, context),

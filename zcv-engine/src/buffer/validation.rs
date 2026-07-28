@@ -3,7 +3,7 @@
 //! 本文件只做防线判断并返回明确错误，不修正调用方输入，也不直接改变 Buffer 状态。
 
 use crate::{
-    ByteOffset, CoordinateError, EditError, EngineResult, SelectionSet, StorageError, TextRange,
+    ByteOffset, CoordinateError, EditError, EngineResult, StorageError, TextRange,
     storage::{TextRead, TextStorage},
     transaction::EditList,
 };
@@ -32,23 +32,6 @@ impl Buffer {
             self.validate_edit_boundary(edit.range().end())?;
         }
 
-        Ok(())
-    }
-
-    pub(super) fn validate_selection_set(&self, selections: &SelectionSet) -> EngineResult<()> {
-        for selection in selections.as_slice() {
-            self.validate_selection_boundary(selection.anchor())?;
-            self.validate_selection_boundary(selection.head())?;
-        }
-
-        Ok(())
-    }
-
-    pub(super) fn validate_selection_boundary(&self, offset: ByteOffset) -> EngineResult<()> {
-        self.validate_edit_boundary(offset)?;
-        if !self.storage.is_grapheme_boundary(offset)? {
-            return Err(CoordinateError::InvalidGraphemeBoundary(offset).into());
-        }
         Ok(())
     }
 

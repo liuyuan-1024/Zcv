@@ -26,7 +26,9 @@
       "shift-down": "editor::SelectDown",
       "shift-left": "editor::SelectLeft",
       "shift-right": "editor::SelectRight",
-      "shift-up": "editor::SelectUp"
+      "shift-up": "editor::SelectUp",
+      "tab": "editor::Indent",
+      "shift-tab": "editor::Outdent"
     }
   },
   {

@@ -156,7 +156,7 @@ Public API：
 
 ```text
 小步改动。
-复用现有 Buffer / Transaction / Selection / Movement / History 管线。
+复用现有 Buffer / Transaction / Selection / History 管线；依赖 DisplayMap 的编辑语义留在宿主 Editor。
 避免重复实现同一编辑语义。
 避免不必要的 clone / to_string / collect。
 避免过早抽象和过度 trait 化。
@@ -183,11 +183,10 @@ TransactionRecord / VersionedResult: 版本绑定明确
 ```text
 是否混用 ByteOffset / CharOffset / Utf16Offset / Position。
 Unicode 边界是否正确：UTF-8、grapheme、word boundary、CRLF。
-多光标编辑是否有顺序依赖或重叠问题。
-selection after edit 是否由统一策略计算并显式返回宿主。
+宿主提交的多 edit 事务是否保持排序、不重叠和原子性。
 undo / redo 是否恢复文本并返回宿主 SelectionHistory 所需的规范 TransactionId。
 宿主输入协议是否被错误引入 engine；engine 只接受已经形成的文本编辑。
-movement 是否复用统一策略，而不是散落在 UI / examples。
+纯文本边界是否复用统一策略；selection movement 是否集中在 Editor，而不是散落在 UI / examples。
 history merge 是否属于历史系统，不被宿主输入语义反向塑形。
 snapshot 是否保持只读低成本视图，不暴露可变底层。
 ```

@@ -1,6 +1,6 @@
 //! 基于一次搜索结果在 Buffer 上做事务化替换。
 //!
-//! 替换路径与 [`super::search`] 分开：search 是只读的、可异步；replace 必须持有 `&mut Buffer`、走事务，永远同步。
+//! 替换路径与 [`super::search`] 分开：search 是只读匹配；replace 必须持有 `&mut Buffer`、走事务。
 //! 本模块只承担"把 SearchResult / RegexSearchResult 翻成一个原子 Transaction"，匹配生成在 [`crate::search`]。
 
 use std::sync::Arc;

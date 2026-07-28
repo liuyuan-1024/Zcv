@@ -1,11 +1,11 @@
-//! Projection point 与映射结果类型。
+//! Editor Projection point 与映射结果类型。
 //!
 //! `LogicalPoint` / `ProjectedPoint` 分别是逻辑文档与投影空间内的 (line, column) 强类型；
 //! 与 `Position` 的区别在于显式区分两套行号语义，避免坐标混用。
 //! 映射结果用 typed enum 表达可见 / 隐藏（逻辑→投影）和 Text / Placeholder（投影→逻辑），
 //! 把「fold anchor 行 / hidden 行 / placeholder 行」三个事实直接暴露给调用方。
 
-use crate::types::{Line, LineRange, LogicalColumn, Position};
+use zcv_engine::{Line, LineRange, LogicalColumn, Position};
 
 use super::ProjectedLineIndex;
 

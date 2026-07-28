@@ -3,15 +3,10 @@
 //! 本文件保证后台读取可脱离可变 Buffer；它不提交编辑、不维护历史，也不暴露 Ropey 内部类型。
 
 use crate::{
-    BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, DisplayColumn,
-    DisplayColumnAffinity, EngineResult, Line, LineEndingStyle, LineRange, LineSlice,
-    LogicalColumn, Position, RegexSearchOptions, RegexSearchResult, SearchHandle, SearchOptions,
-    SearchResult, TextRange, TextSlice, Utf16Offset, Utf16Position, Viewport, ViewportSlice,
-    VisibleLine,
-    coordinates::core::{
-        char_to_display_column_in_text, display_to_logical_column_in_text,
-        logical_to_display_column_in_text, next_tab_stop,
-    },
+    BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, EngineResult, Line,
+    LineEndingStyle, LineRange, LineSlice, Position, RegexSearchOptions, RegexSearchResult,
+    SearchOptions, SearchResult, TextRange, TextSlice, Utf16Offset, Utf16Position, Viewport,
+    ViewportSlice, VisibleLine,
     slicing::{
         text_range_for_byte_range, text_range_for_line, text_range_for_line_range,
         viewport_slice_for_text, visible_line_for_text,
@@ -142,7 +137,7 @@ impl Snapshot {
         viewport_slice_for_text(&self.storage, viewport)
     }
 
-    pub(crate) fn visible_line(
+    pub fn visible_line(
         &self,
         line: Line,
         max_line_chars: Option<usize>,
@@ -230,98 +225,28 @@ impl Snapshot {
         self.storage.line_ending_style()
     }
 
-    pub fn next_tab_stop(&self, display_column: DisplayColumn) -> DisplayColumn {
-        next_tab_stop(display_column, self.config.tab.tab_width())
-    }
-
-    pub fn char_to_display_column(&self, offset: CharOffset) -> EngineResult<DisplayColumn> {
-        char_to_display_column_in_text(&self.storage, &self.config, offset)
-    }
-
-    pub fn logical_to_display_column(
-        &self,
-        line: Line,
-        column: LogicalColumn,
-    ) -> EngineResult<DisplayColumn> {
-        logical_to_display_column_in_text(&self.storage, &self.config, line, column)
-    }
-
-    pub fn display_to_logical_column(
-        &self,
-        line: Line,
-        column: DisplayColumn,
-    ) -> EngineResult<LogicalColumn> {
-        display_to_logical_column_in_text(
-            &self.storage,
-            &self.config,
-            line,
-            column,
-            self.config.display_width.affinity,
-        )
-    }
-
-    pub fn display_to_logical_column_with_affinity(
-        &self,
-        line: Line,
-        column: DisplayColumn,
-        affinity: DisplayColumnAffinity,
-    ) -> EngineResult<LogicalColumn> {
-        display_to_logical_column_in_text(&self.storage, &self.config, line, column, affinity)
-    }
-
-    pub fn display_column_to_char(
-        &self,
-        line: Line,
-        column: DisplayColumn,
-    ) -> EngineResult<CharOffset> {
-        let logical = self.display_to_logical_column(line, column)?;
-        self.storage.position_to_char(Position::new(line, logical))
-    }
-
-    pub fn display_column_to_char_with_affinity(
-        &self,
-        line: Line,
-        column: DisplayColumn,
-        affinity: DisplayColumnAffinity,
-    ) -> EngineResult<CharOffset> {
-        let logical = self.display_to_logical_column_with_affinity(line, column, affinity)?;
-        self.storage.position_to_char(Position::new(line, logical))
-    }
-
     pub fn is_stale_for_version(&self, version: BufferVersion) -> bool {
         self.version != version
     }
 
-    /// 在该不可变快照中启动一次 literal 搜索，结果绑定快照版本。
+    /// 在该不可变快照中执行 literal 搜索，结果绑定快照版本。
     ///
-    /// 后台线程持有当前快照的克隆，因此调用方可以立即继续使用 Buffer 或丢弃
-    /// snapshot——线程拥有独立数据。
-    pub fn search(&self, query: &str, options: SearchOptions) -> SearchHandle<SearchResult> {
-        crate::search_async::spawn_literal_search(
-            self.storage.clone(),
-            self.version,
-            self.config.clone(),
-            query.to_string(),
-            options,
-        )
+    /// 本方法只执行同步匹配；后台调度、取消和进度由宿主搜索层负责。
+    pub fn search(&self, query: &str, options: SearchOptions) -> EngineResult<SearchResult> {
+        crate::search::search_in_text(&self.storage, self.version, &self.config, query, options)
     }
 
-    /// 使用默认选项启动大小写敏感的全文 literal 搜索。
-    pub fn search_literal(&self, query: &str) -> SearchHandle<SearchResult> {
+    /// 使用默认选项执行大小写敏感的全文 literal 搜索。
+    pub fn search_literal(&self, query: &str) -> EngineResult<SearchResult> {
         self.search(query, SearchOptions::default())
     }
 
-    /// 在该不可变快照中启动一次 regex 搜索，结果绑定快照版本。
+    /// 在该不可变快照中执行 regex 搜索，结果绑定快照版本。
     pub fn search_regex(
         &self,
         pattern: &str,
         options: RegexSearchOptions,
-    ) -> SearchHandle<RegexSearchResult> {
-        crate::search_async::spawn_regex_search(
-            self.storage.clone(),
-            self.version,
-            pattern.to_string(),
-            options,
-        )
+    ) -> EngineResult<RegexSearchResult> {
+        crate::search::search_regex_in_text(&self.storage, self.version, pattern, options)
     }
 }

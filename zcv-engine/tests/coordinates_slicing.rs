@@ -153,43 +153,6 @@ fn grapheme_boundary_should_reject_combining_mark_middle_and_map_to_nearest_boun
 }
 
 #[test]
-fn display_column_mapping_should_expand_tabs_and_width_policy_without_line_ending_columns() {
-    let buffer = Buffer::from_text(
-        "\t你a\nb".to_string(),
-        BufferConfig {
-            tab: TabConfig::new(
-                std::num::NonZeroUsize::new(4).unwrap(),
-                std::num::NonZeroUsize::new(4).unwrap(),
-                true,
-            ),
-            ..BufferConfig::default()
-        },
-    )
-    .unwrap();
-
-    assert_eq!(buffer.next_tab_stop(dcol(1)), dcol(4));
-    assert_eq!(
-        buffer.logical_to_display_column(line(0), col(1)).unwrap(),
-        dcol(4)
-    );
-    assert_eq!(
-        buffer.logical_to_display_column(line(0), col(2)).unwrap(),
-        dcol(6)
-    );
-    assert_eq!(buffer.char_to_display_column(c(2)).unwrap(), dcol(6));
-    assert_eq!(
-        buffer
-            .display_to_logical_column_with_affinity(
-                line(0),
-                dcol(5),
-                DisplayColumnAffinity::Previous
-            )
-            .unwrap(),
-        col(1)
-    );
-}
-
-#[test]
 fn text_and_line_slices_should_preserve_byte_ranges_and_newline_boundaries() {
     let buffer = buffer("one\n二三\nlast");
     let slice = buffer.slice_text(range(4, 10)).unwrap();

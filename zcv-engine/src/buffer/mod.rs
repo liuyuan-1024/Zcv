@@ -2,9 +2,9 @@
 //!
 //! `buffer` 模块按能力域拆分，`Buffer` 的 public API 不依赖这些目录路径：
 //! - `versioning`：BufferVersion、低成本 Snapshot 创建与过期判断
-//! - `coordinates`：坐标转换、grapheme、CRLF、DisplayColumn 数学
+//! - `coordinates`：byte / char / UTF-16 / line 坐标转换、grapheme 与 CRLF 边界
 //! - `movement`：Word / Identifier / Subword / Symbol 移动
-//! - `edit_ops`：文本变异、多光标编辑入口
+//! - `edit_ops`：单范围文本变异入口
 //! - `history`：Undo / Redo、历史合并与本地分支
 //! - `transaction_pipeline`：事务准备、提交和 history 收尾
 //! - `validation`：Buffer 级边界校验

@@ -7,11 +7,8 @@ mod buffer;
 mod config;
 mod coordinates;
 mod errors;
-mod fold;
 mod position_map;
-mod projection;
 mod search;
-mod search_async;
 mod selection;
 mod slicing;
 mod snapshot;
@@ -30,22 +27,12 @@ pub use config::{
 };
 pub use errors::{
     AnchorError, BufferLoadError, BufferSaveError, CoordinateError, EditError, EngineError,
-    EngineResult, FoldError, ProjectionError, SearchError, StorageError, TransactionError,
-    VersionedResultError,
+    EngineResult, SearchError, StorageError, TransactionError, VersionedResultError,
 };
-pub use fold::{FoldRange, FoldRangeId, FoldRangeUpdate, FoldSet, FoldToggleOutcome, HiddenRange};
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
-pub use projection::{
-    ApplyOutcome, FoldPlaceholder, LogicalPoint, LogicalPointProjection, LogicalProjection,
-    LogicalRange, ProjectedLine, ProjectedLineIndex, ProjectedLineKind, ProjectedLineRange,
-    ProjectedPoint, ProjectedPointMapping, ProjectedRange, ProjectedViewport, ProjectedViewportRow,
-    ProjectedViewportRowKind, ProjectedViewportSlice, Projection, TextLine,
-};
 pub use search::{RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchResult};
-pub use search_async::{SearchHandle, SearchProgress};
 pub use selection::{
-    Cursor, EditOutcome, Motion, MovementDirection, MovementUnit, Selection, SelectionMergePolicy,
-    SelectionSet,
+    Cursor, MovementDirection, MovementUnit, Selection, SelectionMergePolicy, SelectionSet,
 };
 pub use slicing::{LineSlice, TextSlice, Viewport, ViewportSlice, VisibleLine};
 pub use snapshot::Snapshot;

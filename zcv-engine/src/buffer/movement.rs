@@ -3,9 +3,8 @@
 //! 本文件只移动 selection/head 并尊重 BufferConfig 策略，不绑定快捷键，也不承担 UI 渲染或命令层语义。
 
 use crate::{
-    CharOffset, CoordinateError, EditError, EngineResult, Line, Motion, MovementDirection,
-    MovementUnit, Selection, SelectionSet, WordBoundaryPolicy, config::WordBoundaryClassifier,
-    storage::TextRead,
+    CharOffset, CoordinateError, EditError, EngineResult, Line, MovementDirection, MovementUnit,
+    WordBoundaryPolicy, config::WordBoundaryClassifier, storage::TextRead,
 };
 
 use super::{Buffer, coordinates::is_crlf_middle};
@@ -17,7 +16,7 @@ impl Buffer {
         offset: CharOffset,
         unit: MovementUnit,
     ) -> EngineResult<CharOffset> {
-        self.movement_boundary(offset, MovementDirection::Previous, Motion::ByUnit(unit))
+        self.movement_boundary(offset, MovementDirection::Previous, unit)
     }
 
     /// 按给定移动粒度寻找后一个边界。
@@ -26,73 +25,23 @@ impl Buffer {
         offset: CharOffset,
         unit: MovementUnit,
     ) -> EngineResult<CharOffset> {
-        self.movement_boundary(offset, MovementDirection::Next, Motion::ByUnit(unit))
+        self.movement_boundary(offset, MovementDirection::Next, unit)
     }
 
-    /// 统一光标运动入口。
-    ///
-    /// `motion` 接受 `impl Into<Motion>`，所以调用方既可传 `Motion::LineStep`，
-    /// 也可直接传任一 `MovementUnit`（自动包装为 `Motion::ByUnit(...)`）。
+    /// 按纯文本粒度查找相邻边界。垂直移动与 selection 变换由宿主 Editor 负责。
     pub fn movement_boundary(
         &self,
         offset: CharOffset,
         direction: MovementDirection,
-        motion: impl Into<Motion>,
+        unit: MovementUnit,
     ) -> EngineResult<CharOffset> {
-        match motion.into() {
-            Motion::ByUnit(unit) => movement_boundary_in_text(
-                &self.storage,
-                self.config.word_boundary,
-                offset,
-                direction,
-                unit,
-            ),
-            // LineStep / PageStep 需要 DisplayColumn / TabConfig 等完整 Buffer 配置，
-            // 不属于 storage-only 的 movement_boundary_in_text 契约。
-            Motion::LineStep => self.line_step_target(offset, direction, 1),
-            Motion::PageStep { lines } => {
-                self.line_step_target(offset, direction, lines.max(1) as usize)
-            }
-        }
-    }
-
-    /// 上下移动 `step` 行的列位投影，供 LineStep / PageStep 共用。
-    ///
-    /// 边界规则与 LineStep 对称：当前已经在首行再向上 → 文档开头；当前已经在末行再向下 → 文档末尾。
-    /// 否则按 `step` 截断到 `[0, line_count − 1]` 范围内，落到目标行同 display column。
-    ///
-    /// v1 无 sticky column —— 列位每次都用当前 caret 的 display column 重新取，跨长短行时可能"卡列"。
-    /// 完整体验需要把 sticky column 加到 selection 状态或外部维护，留作后续迭代。
-    fn line_step_target(
-        &self,
-        offset: CharOffset,
-        direction: MovementDirection,
-        step: usize,
-    ) -> EngineResult<CharOffset> {
-        let byte = self.storage.char_to_byte(offset)?;
-        let current_line = self.storage.byte_to_position(byte)?.line().get();
-        let line_count = self.storage.line_count();
-        let last_line = line_count.saturating_sub(1);
-
-        let target_line = match direction {
-            MovementDirection::Previous => {
-                if current_line == 0 {
-                    // 已在首行：再向上 → 文档开头。
-                    return Ok(CharOffset::ZERO);
-                }
-                Line::new(current_line.saturating_sub(step))
-            }
-            MovementDirection::Next => {
-                if current_line >= last_line {
-                    // 已在末行：再向下 → 文档末尾。
-                    return self.storage.byte_to_char(self.storage.len_bytes());
-                }
-                Line::new(current_line.saturating_add(step).min(last_line))
-            }
-        };
-
-        let target_col = self.char_to_display_column(offset)?;
-        self.display_column_to_char(target_line, target_col)
+        movement_boundary_in_text(
+            &self.storage,
+            self.config.word_boundary,
+            offset,
+            direction,
+            unit,
+        )
     }
 
     pub fn previous_word_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
@@ -125,45 +74,6 @@ impl Buffer {
 
     pub fn next_symbol_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
         self.next_movement_boundary(offset, MovementUnit::Symbol)
-    }
-
-    /// 移动一组选区的 head。
-    ///
-    /// `motion` 接 `impl Into<Motion>`：传 `Motion::LineStep` 走垂直；传任一 `MovementUnit`
-    /// 自动包装为 `Motion::ByUnit(...)` 走粒度边界。`extend = false` 时移动后塌缩为 caret；
-    /// `extend = true` 时保留 anchor，扩展/收缩选区。
-    /// 该 API 是纯计算：接收 SelectionSet 并返回移动结果，不提交文本事务。
-    pub fn move_selections(
-        &self,
-        selections: &SelectionSet,
-        direction: MovementDirection,
-        motion: impl Into<Motion>,
-        extend: bool,
-    ) -> EngineResult<SelectionSet> {
-        self.validate_selection_set(selections)?;
-        let motion = motion.into();
-
-        let primary_index = selections.primary_index();
-        let moved = selections
-            .as_slice()
-            .iter()
-            .copied()
-            .map(|selection| {
-                // Selection.head 是 ByteOffset 深核坐标；movement 边界按 grapheme/char 投影扫描。
-                let head_char = self.storage.byte_to_char(selection.head())?;
-                let new_head_char = self.movement_boundary(head_char, direction, motion)?;
-                let new_head = self.storage.char_to_byte(new_head_char)?;
-
-                Ok(if extend {
-                    selection.with_head(new_head)
-                } else {
-                    Selection::caret(new_head)
-                })
-            })
-            .collect::<EngineResult<Vec<_>>>()?;
-
-        let moved = SelectionSet::new_with_primary(moved, primary_index);
-        Ok(moved)
     }
 }
 

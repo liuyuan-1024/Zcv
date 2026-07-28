@@ -5,12 +5,10 @@
 
 mod core;
 mod cursor;
-mod edit_outcome;
 mod movement;
 mod selection_set;
 
 pub use core::Selection;
 pub use cursor::Cursor;
-pub use edit_outcome::EditOutcome;
-pub use movement::{Motion, MovementDirection, MovementUnit};
+pub use movement::{MovementDirection, MovementUnit};
 pub use selection_set::{SelectionMergePolicy, SelectionSet};

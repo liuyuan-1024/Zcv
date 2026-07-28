@@ -114,7 +114,11 @@ fn transaction_record_should_replay_only_on_matching_base_version() {
 fn undo_redo_should_restore_text_and_dirty_state_and_return_history_identity() {
     let mut buffer = buffer("abc");
     let outcome = buffer
-        .insert_at_selections(&SelectionSet::caret(b(1)), "X", metadata("insert"))
+        .apply_transaction_outcome(
+            Transaction::from_edits(buffer.version(), vec![Edit::insert(b(1), "X").unwrap()])
+                .unwrap()
+                .with_metadata(metadata("insert")),
+        )
         .unwrap();
     let selection_transaction_id = outcome.history_transaction_id().unwrap();
     buffer.mark_saved();
@@ -138,7 +142,6 @@ fn undo_redo_should_restore_text_and_dirty_state_and_return_history_identity() {
 #[test]
 fn explicit_history_merge_should_return_one_canonical_identity_for_editor_selection_history() {
     let mut buffer = buffer("");
-    let mut selections = SelectionSet::default();
     let mut canonical_transaction_id = None;
 
     for (index, text) in ["a", "b", "c"].into_iter().enumerate() {
@@ -148,7 +151,14 @@ fn explicit_history_merge_should_return_one_canonical_identity_for_editor_select
             merge_metadata("insert")
         };
         let outcome = buffer
-            .insert_at_selections(&selections, text, metadata)
+            .apply_transaction_outcome(
+                Transaction::from_edits(
+                    buffer.version(),
+                    vec![Edit::insert(buffer.len_bytes(), text).unwrap()],
+                )
+                .unwrap()
+                .with_metadata(metadata),
+            )
             .unwrap();
         let history_transaction_id = outcome.history_transaction_id().unwrap();
         if let Some(expected) = canonical_transaction_id {
@@ -156,12 +166,10 @@ fn explicit_history_merge_should_return_one_canonical_identity_for_editor_select
         } else {
             canonical_transaction_id = Some(history_transaction_id);
         }
-        selections = outcome.into_after_selections();
     }
 
     assert_eq!(buffer_text(&buffer), "abc");
     assert_eq!(buffer.history_status().undo_depth, 1);
-    assert_eq!(selections.ranges(), vec![range(3, 3)]);
 
     let undo = buffer.undo().unwrap().unwrap();
     assert_eq!(buffer_text(&buffer), "");
@@ -173,26 +181,28 @@ fn explicit_history_merge_should_return_one_canonical_identity_for_editor_select
 }
 
 #[test]
-fn default_selection_edits_should_stay_separate() {
+fn default_transactions_should_stay_separate() {
     let mut buffer = buffer("");
-    let mut selections = SelectionSet::default();
-
-    let outcome = buffer
-        .insert_at_selections(&selections, "a", metadata("insert"))
-        .unwrap();
-    selections = outcome.into_after_selections();
-    let outcome = buffer
-        .delete_at_selections(
-            &selections,
-            Some((MovementDirection::Previous, MovementUnit::Grapheme)),
-            metadata("delete"),
+    buffer
+        .apply_transaction_outcome(
+            Transaction::from_edits(
+                buffer.version(),
+                vec![Edit::insert(ByteOffset::ZERO, "a").unwrap()],
+            )
+            .unwrap()
+            .with_metadata(metadata("insert")),
         )
         .unwrap();
-    selections = outcome.into_after_selections();
+    buffer
+        .apply_transaction_outcome(
+            Transaction::from_edits(buffer.version(), vec![Edit::delete(range(0, 1))])
+                .unwrap()
+                .with_metadata(metadata("delete")),
+        )
+        .unwrap();
 
     assert_eq!(buffer_text(&buffer), "");
     assert_eq!(buffer.history_status().undo_depth, 2);
-    assert_eq!(selections.ranges(), vec![range(0, 0)]);
 
     buffer.undo().unwrap().unwrap();
     assert_eq!(buffer_text(&buffer), "a");
@@ -202,7 +212,7 @@ fn default_selection_edits_should_stay_separate() {
 }
 
 #[test]
-fn selection_edit_should_not_report_history_identity_when_history_is_disabled() {
+fn transaction_should_not_report_history_identity_when_history_is_disabled() {
     let mut buffer = Buffer::from_text(
         String::new(),
         BufferConfig {
@@ -216,10 +226,17 @@ fn selection_edit_should_not_report_history_identity_when_history_is_disabled() 
     .unwrap();
 
     let outcome = buffer
-        .insert_at_selections(&SelectionSet::default(), "a", metadata("insert"))
+        .apply_transaction_outcome(
+            Transaction::from_edits(
+                buffer.version(),
+                vec![Edit::insert(ByteOffset::ZERO, "a").unwrap()],
+            )
+            .unwrap()
+            .with_metadata(metadata("insert")),
+        )
         .unwrap();
 
-    assert!(outcome.transaction_id().is_some());
+    assert_eq!(outcome.transaction_id(), TransactionId::INITIAL);
     assert!(outcome.history_transaction_id().is_none());
     assert!(!buffer.can_undo());
 }

@@ -3,14 +3,18 @@
 //!
 //! 同时验证 Tier 1 分类器的 outcome 是否符合预期：
 //! - 行内字节编辑（不改变行数、不改变 fold 结构）→ `Compatible`
-//! - 改变行数 / 改变 fold 结构 → `Rebuilt`
+//! - 改变行数 / 改变 fold 结构 → `Spliced`
 
 use zcv_engine::*;
-mod common;
-use common::*;
 
-/// 在 `buffer` 上施加一次编辑，同步推进 folds 与 incremental projection，
-/// 并对比"增量推进结果"与"按新版本全量 build"是否字段级相等。
+use super::super::{
+    error::{DisplayMapError, ProjectionError},
+    fold::FoldSet,
+    projection::{ApplyOutcome, Projection},
+};
+use super::test_helpers::*;
+
+/// 在 `buffer` 上施加一次编辑，同步推进 folds 与 incremental projection，并对比"增量推进结果"与"按新版本全量 build"是否字段级相等。
 fn step_and_diff(
     buffer: &mut Buffer,
     folds: &mut FoldSet,
@@ -67,23 +71,7 @@ fn inline_delete_in_no_fold_region_should_be_compatible() {
 }
 
 #[test]
-fn inline_edit_should_update_longest_text_row_without_rebuilding_projection() {
-    let mut buffer = buffer("longest\nshort\n");
-    let snapshot = buffer.snapshot();
-    let mut folds = FoldSet::new(snapshot.version());
-    let mut projection = Projection::build(&snapshot, &folds).unwrap();
-    assert_eq!(projection.longest_text_row(), Some((projected(0), dcol(7))));
-
-    let outcome = step_and_diff(&mut buffer, &mut folds, &mut projection, |buf| {
-        buf.delete(range(1, 7)).unwrap();
-    });
-
-    assert_eq!(outcome, ApplyOutcome::Compatible);
-    assert_eq!(projection.longest_text_row(), Some((projected(1), dcol(5))));
-}
-
-#[test]
-fn newline_insertion_should_trigger_rebuilt() {
+fn newline_insertion_should_splice_projection_rows() {
     let mut buffer = buffer("hello world\nlorem ipsum\n");
     let snapshot = buffer.snapshot();
     let mut folds = FoldSet::new(snapshot.version());
@@ -94,7 +82,42 @@ fn newline_insertion_should_trigger_rebuilt() {
         buf.insert(b(5), "\n").unwrap();
     });
 
-    assert!(matches!(outcome, ApplyOutcome::Rebuilt));
+    assert!(matches!(outcome, ApplyOutcome::Spliced));
+}
+
+#[test]
+fn newline_deletion_should_splice_projection_rows() {
+    let mut buffer = buffer("alpha\nbravo\ncharlie\ndelta");
+    let snapshot = buffer.snapshot();
+    let mut folds = FoldSet::new(snapshot.version());
+    let mut projection = Projection::build(&snapshot, &folds).unwrap();
+
+    let outcome = step_and_diff(&mut buffer, &mut folds, &mut projection, |buf| {
+        buf.delete(range(11, 12)).unwrap();
+    });
+
+    assert_eq!(outcome, ApplyOutcome::Spliced);
+}
+
+#[test]
+fn net_zero_line_delta_with_two_structural_edits_should_still_splice() {
+    let mut buffer = buffer("aa\nbb\ncc\ndd\nee\nff");
+    let snapshot = buffer.snapshot();
+    let mut folds = FoldSet::new(snapshot.version());
+    let mut projection = Projection::build(&snapshot, &folds).unwrap();
+
+    let outcome = step_and_diff(&mut buffer, &mut folds, &mut projection, |buf| {
+        let transaction = tx(
+            buf,
+            vec![
+                Edit::insert(b(1), "\n").unwrap(),
+                Edit::delete(range(11, 12)),
+            ],
+        );
+        buf.apply_transaction(transaction).unwrap();
+    });
+
+    assert_eq!(outcome, ApplyOutcome::Spliced);
 }
 
 #[test]
@@ -116,32 +139,45 @@ fn inline_edit_with_static_fold_should_be_compatible() {
 }
 
 #[test]
-fn inline_edit_inside_fold_should_leave_visible_width_summary_unchanged() {
+fn inline_edit_inside_fold_should_keep_projection_topology_compatible() {
     let mut buffer = buffer("anchor\nhidden line\nvisible\n");
     let snapshot = buffer.snapshot();
     let mut folds = FoldSet::new(snapshot.version());
     folds.fold_lines(&snapshot, line_range(0, 2)).unwrap();
     let mut projection = Projection::build(&snapshot, &folds).unwrap();
-    let before = projection.longest_text_row();
-
     let outcome = step_and_diff(&mut buffer, &mut folds, &mut projection, |buf| {
         buf.insert(b(8), "much wider ").unwrap();
     });
 
     assert_eq!(outcome, ApplyOutcome::Compatible);
-    assert_eq!(projection.longest_text_row(), before);
 }
 
 #[test]
-fn fold_dropped_by_delta_should_trigger_rebuilt() {
+fn newline_edit_inside_fold_should_expand_splice_to_placeholder_boundaries() {
+    let mut buffer = buffer("anchor\nhidden one\nhidden two\nvisible\n");
+    let snapshot = buffer.snapshot();
+    let mut folds = FoldSet::new(snapshot.version());
+    folds.fold_lines(&snapshot, line_range(0, 3)).unwrap();
+    let mut projection = Projection::build(&snapshot, &folds).unwrap();
+
+    let outcome = step_and_diff(&mut buffer, &mut folds, &mut projection, |buf| {
+        buf.insert(b(13), "\nnew hidden").unwrap();
+    });
+
+    assert_eq!(outcome, ApplyOutcome::Spliced);
+}
+
+#[test]
+fn fold_dropped_by_delta_should_splice_projection_rows() {
     let mut buffer = buffer("alpha\nbravo\ncharlie\ndelta\n");
     let snapshot = buffer.snapshot();
     let mut folds = FoldSet::new(snapshot.version());
     // 折叠 line 1..3。
     folds.fold_lines(&snapshot, line_range(1, 3)).unwrap();
     let mut projection = Projection::build(&snapshot, &folds).unwrap();
-    assert_eq!(folds.as_slice()[0].range().start().get(), 6);
-    assert_eq!(folds.as_slice()[0].range().end().get(), 20);
+    let fold = folds.iter().next().unwrap();
+    assert_eq!(fold.range().start().get(), 6);
+    assert_eq!(fold.range().end().get(), 20);
 
     // 把整个 fold 字节范围删掉 → 默认 policy `invalidate_when_fully_deleted` 让 fold 失效。
     let outcome = step_and_diff(&mut buffer, &mut folds, &mut projection, |buf| {
@@ -149,8 +185,32 @@ fn fold_dropped_by_delta_should_trigger_rebuilt() {
         buf.delete(r).unwrap();
     });
 
-    assert!(matches!(outcome, ApplyOutcome::Rebuilt));
+    assert!(matches!(outcome, ApplyOutcome::Spliced));
     assert_eq!(folds.len(), 0, "fold 应该已被 delta 失效");
+}
+
+#[test]
+fn unrelated_manual_fold_change_should_conservatively_rebuild() {
+    let mut buffer = buffer("zero\none\ntwo\nthree\nfour\n");
+    let snapshot = buffer.snapshot();
+    let mut folds = FoldSet::new(snapshot.version());
+    let mut projection = Projection::build(&snapshot, &folds).unwrap();
+
+    buffer.insert(b(21), "X").unwrap();
+    let event = buffer.last_delta_event().unwrap().clone();
+    let new_snapshot = buffer.snapshot();
+    folds
+        .update_through_delta_event(&event, &new_snapshot)
+        .unwrap();
+    folds.fold_lines(&new_snapshot, line_range(0, 2)).unwrap();
+
+    let outcome = projection
+        .apply_delta(&new_snapshot, &folds, &event)
+        .unwrap();
+    let fresh = Projection::build(&new_snapshot, &folds).unwrap();
+
+    assert_eq!(outcome, ApplyOutcome::Rebuilt);
+    assert_eq!(projection, fresh);
 }
 
 #[test]
@@ -179,7 +239,7 @@ fn sequence_of_inline_edits_should_stay_compatible() {
 }
 
 #[test]
-fn mixed_compatible_and_rebuilt_sequence_should_keep_projections_aligned() {
+fn mixed_compatible_and_spliced_sequence_should_keep_projections_aligned() {
     let mut buffer = buffer("alpha\nbravo\ncharlie\ndelta\necho\n");
     let snapshot = buffer.snapshot();
     let mut folds = FoldSet::new(snapshot.version());
@@ -192,11 +252,11 @@ fn mixed_compatible_and_rebuilt_sequence_should_keep_projections_aligned() {
     });
     assert!(matches!(o1, ApplyOutcome::Compatible));
 
-    // 2. 在开头插入换行 → 行数 +1 → Rebuilt
+    // 2. 在开头插入换行 → 行数 +1 → Spliced
     let o2 = step_and_diff(&mut buffer, &mut folds, &mut projection, |buf| {
         buf.insert(b(0), "\n").unwrap();
     });
-    assert!(matches!(o2, ApplyOutcome::Rebuilt));
+    assert!(matches!(o2, ApplyOutcome::Spliced));
 
     // 3. 行内删除：不跨行 → Compatible
     let o3 = step_and_diff(&mut buffer, &mut folds, &mut projection, |buf| {
@@ -224,7 +284,7 @@ fn version_mismatch_should_be_reported_atomically() {
         .unwrap_err();
     assert!(matches!(
         err,
-        EngineError::Projection(ProjectionError::ApplyDeltaStale { .. })
+        DisplayMapError::Projection(ProjectionError::ApplyDeltaStale { .. })
     ));
 
     // 错误是原子的：projection 状态未被修改

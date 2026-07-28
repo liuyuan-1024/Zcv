@@ -1,4 +1,4 @@
-//! Fold range 身份：为单个 FoldSet 内的 fold 分配稳定递增 ID。
+//! Editor fold range 身份：为单个 FoldSet 内的 fold 分配稳定递增 ID。
 //!
 //! ID 只在 FoldSet 生命周期内稳定，不跨 FoldSet 表达全局身份。
 //! 构造与初始值是引擎内部分配契约，不向 crate 外部暴露——外部代码只能持有 FoldSet 颁发的 ID

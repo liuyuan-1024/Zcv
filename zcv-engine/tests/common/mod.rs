@@ -33,10 +33,6 @@ pub fn line_range(start: usize, end: usize) -> LineRange {
     LineRange::new(line(start), line(end)).unwrap()
 }
 
-pub fn projected(value: usize) -> ProjectedLineIndex {
-    ProjectedLineIndex::new(value)
-}
-
 // ---- 缓冲区构造器 ----
 
 pub fn buffer(text: &str) -> Buffer {

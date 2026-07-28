@@ -1,5 +1,6 @@
 //! 统一 Editor 的跨帧状态骨架。
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,16 +11,16 @@ use gpui::{
     point, prelude::*, px, size,
 };
 use zcv_engine::{
-    Buffer, BufferConfig, ByteOffset, EditOutcome, EngineResult, Motion, MovementDirection,
-    MovementUnit, Selection, SelectionSet, Snapshot, TextRange, TransactionMetadata,
-    TransactionSource, Utf16Offset,
+    Buffer, BufferConfig, ByteOffset, EngineResult, Line, MovementDirection, MovementUnit,
+    Selection, SelectionSet, Snapshot, TextRange, TransactionMetadata, TransactionSource,
+    Utf16Offset,
 };
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::ScrollManager;
-use super::selection::SelectionHistory;
+use super::selection::{EditOutcome, SelectionHistory, apply_targeted_edits, replace_selections};
 use crate::theme::{color, typography};
 use crate::workspace::ItemEvent;
 
@@ -51,8 +52,22 @@ actions!(
         Cut,
         Copy,
         Paste,
+        Indent,
+        Outdent,
     ]
 );
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Motion {
+    ByUnit(MovementUnit),
+    LineStep,
+}
+
+impl From<MovementUnit> for Motion {
+    fn from(unit: MovementUnit) -> Self {
+        Self::ByUnit(unit)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EditorMode {
@@ -362,7 +377,7 @@ impl Editor {
             text.to_owned()
         };
         let outcome = self.buffer.update(cx, |buffer, cx| {
-            let outcome = buffer.insert_at_selections(&targets, &text, edit_metadata("设置文本"));
+            let outcome = replace_selections(buffer, &targets, &text, edit_metadata("设置文本"));
             cx.notify();
             outcome
         });
@@ -406,7 +421,13 @@ impl Editor {
     }
 
     pub(super) fn longest_display_row(&self) -> DisplayRow {
-        self.display_map.longest_row()
+        self.display_map.longest_measured_row()
+    }
+
+    pub(super) fn measure_display_rows(&mut self, start: DisplayRow, line_count: usize) {
+        if let Err(error) = self.display_map.measure_rows(start, line_count) {
+            eprintln!("Editor 测量显示行失败：{error}");
+        }
     }
 
     pub(super) fn set_caret(&mut self, offset: ByteOffset) {
@@ -547,7 +568,7 @@ impl Editor {
             text.to_owned()
         };
         let outcome = self.buffer.update(cx, |buffer, cx| {
-            let outcome = buffer.insert_at_selections(&targets, &text, edit_metadata("输入文本"));
+            let outcome = replace_selections(buffer, &targets, &text, edit_metadata("输入文本"));
             cx.notify();
             outcome
         });
@@ -589,10 +610,72 @@ impl Editor {
         extend: bool,
         cx: &mut Context<Self>,
     ) {
-        let outcome =
-            self.buffer
-                .read(cx)
-                .move_selections(&self.selections, direction, motion, extend);
+        let motion = motion.into();
+        let primary_index = self.selections.primary_index();
+        let outcome = self
+            .selections
+            .as_slice()
+            .iter()
+            .copied()
+            .map(|selection| {
+                let new_head = match motion {
+                    Motion::ByUnit(unit) => {
+                        let buffer = self.buffer.read(cx);
+                        let head = buffer.byte_to_char(selection.head())?;
+                        let target = buffer.movement_boundary(head, direction, unit)?;
+                        buffer.char_to_byte(target)?
+                    }
+                    Motion::LineStep => {
+                        let point = self
+                            .display_map
+                            .offset_to_display_point(selection.head())
+                            .map_err(|error| zcv_engine::EngineError::EngineBug {
+                                location: "Editor::move_selections",
+                                detail: error.to_string(),
+                            })?;
+                        let last_row = self.display_map.line_count().saturating_sub(1);
+                        if direction == MovementDirection::Previous
+                            && point.row() == DisplayRow::ZERO
+                        {
+                            return Ok(if extend {
+                                selection.with_head(ByteOffset::ZERO)
+                            } else {
+                                Selection::caret(ByteOffset::ZERO)
+                            });
+                        }
+                        if direction == MovementDirection::Next && point.row().get() >= last_row {
+                            let new_head = self.display_map.snapshot().len_bytes();
+                            return Ok(if extend {
+                                selection.with_head(new_head)
+                            } else {
+                                Selection::caret(new_head)
+                            });
+                        }
+                        let target_row = match direction {
+                            MovementDirection::Previous => point.row().get().saturating_sub(1),
+                            MovementDirection::Next => {
+                                point.row().get().saturating_add(1).min(last_row)
+                            }
+                        };
+                        self.display_map
+                            .display_point_to_offset(DisplayPoint::new(
+                                DisplayRow::new(target_row),
+                                point.column(),
+                            ))
+                            .map_err(|error| zcv_engine::EngineError::EngineBug {
+                                location: "Editor::move_selections",
+                                detail: error.to_string(),
+                            })?
+                    }
+                };
+                Ok(if extend {
+                    selection.with_head(new_head)
+                } else {
+                    Selection::caret(new_head)
+                })
+            })
+            .collect::<EngineResult<Vec<_>>>()
+            .map(|selections| SelectionSet::new_with_primary(selections, primary_index));
         match outcome {
             Ok(selections) => {
                 self.composition = None;
@@ -616,16 +699,148 @@ impl Editor {
     ) {
         self.composition = None;
         let before_selections = self.selections.clone();
-        let outcome = self.buffer.update(cx, |buffer, cx| {
-            let outcome = buffer.delete_at_selections(
-                &before_selections,
-                Some((direction, MovementUnit::Grapheme)),
-                edit_metadata(description),
-            );
-            cx.notify();
-            outcome
+        let targets = self.delete_targets(
+            &before_selections,
+            Some((direction, MovementUnit::Grapheme)),
+            cx,
+        );
+        let outcome = targets.and_then(|targets| {
+            self.buffer.update(cx, |buffer, cx| {
+                let outcome = replace_selections(buffer, &targets, "", edit_metadata(description));
+                cx.notify();
+                outcome
+            })
         });
         self.apply_edit_outcome(before_selections, outcome, cx);
+    }
+
+    fn delete_targets(
+        &self,
+        selections: &SelectionSet,
+        caret_motion: Option<(MovementDirection, MovementUnit)>,
+        cx: &App,
+    ) -> EngineResult<SelectionSet> {
+        let buffer = self.buffer.read(cx);
+        let mut targets = Vec::new();
+        for selection in selections.as_slice() {
+            if !selection.is_caret() {
+                targets.push(*selection);
+                continue;
+            }
+            let Some((direction, unit)) = caret_motion else {
+                continue;
+            };
+            let head_char = buffer.byte_to_char(selection.head())?;
+            let boundary =
+                buffer.char_to_byte(buffer.movement_boundary(head_char, direction, unit)?)?;
+            if boundary != selection.head() {
+                targets.push(match direction {
+                    MovementDirection::Previous => Selection::new(boundary, selection.head()),
+                    MovementDirection::Next => Selection::new(selection.head(), boundary),
+                });
+            }
+        }
+        if targets.is_empty() {
+            Ok(selections.clone())
+        } else {
+            Ok(SelectionSet::new(targets))
+        }
+    }
+
+    fn indent(&mut self, cx: &mut Context<Self>) {
+        if self.mode == EditorMode::SingleLine {
+            cx.propagate();
+            return;
+        }
+        let before = self.selections.normalized();
+        let snapshot = self.buffer.read(cx).snapshot();
+        let tab = snapshot.config().tab;
+        let all_carets = before
+            .as_slice()
+            .iter()
+            .all(|selection| selection.is_caret());
+        let targets = if all_carets {
+            before
+                .as_slice()
+                .iter()
+                .map(|selection| {
+                    let text: Arc<str> = if tab.insert_spaces {
+                        let column = self
+                            .display_map
+                            .offset_to_display_point(selection.head())
+                            .map_err(|error| zcv_engine::EngineError::EngineBug {
+                                location: "Editor::indent",
+                                detail: error.to_string(),
+                            })?
+                            .column()
+                            .get();
+                        let width = tab.indent_width();
+                        Arc::from(" ".repeat(width - column % width))
+                    } else {
+                        Arc::from("\t")
+                    };
+                    Ok((*selection, text))
+                })
+                .collect::<EngineResult<Vec<_>>>()
+        } else {
+            touched_lines(&snapshot, &before).map(|lines| {
+                let text: Arc<str> = if tab.insert_spaces {
+                    Arc::from(" ".repeat(tab.indent_width()))
+                } else {
+                    Arc::from("\t")
+                };
+                lines
+                    .into_iter()
+                    .map(|line| {
+                        (
+                            Selection::caret(
+                                snapshot
+                                    .line_start_byte(line)
+                                    .expect("已验证逻辑行必须有行首"),
+                            ),
+                            Arc::clone(&text),
+                        )
+                    })
+                    .collect()
+            })
+        };
+        let outcome = targets.and_then(|targets| {
+            self.buffer.update(cx, |buffer, cx| {
+                let outcome =
+                    apply_targeted_edits(buffer, targets, &before, edit_metadata("增加缩进"));
+                cx.notify();
+                outcome
+            })
+        });
+        self.apply_edit_outcome(before, outcome, cx);
+    }
+
+    fn outdent(&mut self, cx: &mut Context<Self>) {
+        if self.mode == EditorMode::SingleLine {
+            cx.propagate();
+            return;
+        }
+        let before = self.selections.clone();
+        let snapshot = self.buffer.read(cx).snapshot();
+        let targets = touched_lines(&snapshot, &before).and_then(|lines| {
+            lines
+                .into_iter()
+                .filter_map(|line| match leading_indent_range(&snapshot, line) {
+                    Ok(Some(selection)) => Some(Ok((selection, Arc::from("")))),
+                    Ok(None) => None,
+                    Err(error) => Some(Err(error)),
+                })
+                .collect::<EngineResult<Vec<_>>>()
+        });
+        let outcome = targets.and_then(|targets| {
+            self.buffer.update(cx, |buffer, cx| {
+                let outcome =
+                    apply_targeted_edits(buffer, targets, &before, edit_metadata("减少缩进"));
+                cx.notify();
+                outcome
+            })
+        });
+        self.apply_edit_outcome(before, outcome, cx);
     }
 
     fn insert_newline(&mut self, cx: &mut Context<Self>) {
@@ -941,8 +1156,7 @@ impl Editor {
         self.composition = None;
         let before_selections = self.selections.clone();
         let outcome = self.buffer.update(cx, |buffer, cx| {
-            let outcome =
-                buffer.delete_at_selections(&before_selections, None, edit_metadata("剪切"));
+            let outcome = replace_selections(buffer, &before_selections, "", edit_metadata("剪切"));
             cx.notify();
             outcome
         });
@@ -960,6 +1174,47 @@ impl Editor {
             self.replace_text(None, &text, cx);
         }
     }
+
+    pub(super) fn handle_indent(&mut self, _: &Indent, _: &mut Window, cx: &mut Context<Self>) {
+        self.indent(cx);
+    }
+
+    pub(super) fn handle_outdent(&mut self, _: &Outdent, _: &mut Window, cx: &mut Context<Self>) {
+        self.outdent(cx);
+    }
+}
+
+fn touched_lines(snapshot: &Snapshot, selections: &SelectionSet) -> EngineResult<Vec<Line>> {
+    let mut lines = BTreeSet::new();
+    for selection in selections.as_slice() {
+        let range = selection.range();
+        let start = snapshot.byte_to_line(range.start())?;
+        let mut end = snapshot.byte_to_line(range.end())?;
+        if !range.is_empty() && end > start && snapshot.line_start_byte(end)? == range.end() {
+            end = Line::new(end.get() - 1);
+        }
+        lines.extend((start.get()..=end.get()).map(Line::new));
+    }
+    Ok(lines.into_iter().collect())
+}
+
+fn leading_indent_range(snapshot: &Snapshot, line: Line) -> EngineResult<Option<Selection>> {
+    let start = snapshot.line_start_byte(line)?;
+    let text = snapshot.slice_line(line)?;
+    let content = text.as_str();
+    let end = if content.starts_with('\t') {
+        start.checked_add(1)
+    } else {
+        let spaces = content
+            .bytes()
+            .take(snapshot.config().tab.indent_width())
+            .take_while(|byte| *byte == b' ')
+            .count();
+        start.checked_add(spaces)
+    };
+    Ok(end
+        .filter(|end| *end > start)
+        .map(|end| Selection::new(start, end)))
 }
 
 fn edit_metadata(description: &'static str) -> TransactionMetadata {
@@ -1171,6 +1426,10 @@ impl EntityInputHandler for Editor {
         self.input_layout.as_ref()?.utf16_index_for_point(point)
     }
 }
+
+#[cfg(test)]
+#[path = "test/selection_edit_tests.rs"]
+mod selection_edit_tests;
 
 fn utf16_len(text: &str) -> usize {
     text.encode_utf16().count()

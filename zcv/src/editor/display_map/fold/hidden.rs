@@ -1,8 +1,8 @@
-//! HiddenRange：FoldSet 投影出的「被折叠隐藏」逻辑行区间。
+//! HiddenRange：Editor FoldSet 投影出的「被折叠隐藏」逻辑行区间。
 //!
 //! HiddenRange 只表达「哪些逻辑行不可见」事实；fold 占位符样式与投影坐标属于 `projection` 模块。
 
-use crate::types::{Line, LineRange};
+use zcv_engine::{Line, LineRange};
 
 /// 一段连续被隐藏的逻辑行区间。
 ///

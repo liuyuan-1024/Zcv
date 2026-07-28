@@ -1,0 +1,58 @@
+use gpui::{AppContext, TestAppContext};
+use zcv_engine::{Buffer, BufferConfig, ByteOffset, Selection, SelectionSet};
+
+use super::Editor;
+
+fn editor_with_text(
+    cx: &mut TestAppContext,
+    text: &str,
+    selections: SelectionSet,
+) -> (gpui::Entity<Buffer>, gpui::Entity<Editor>) {
+    let buffer = cx.new(|_| {
+        Buffer::scratch(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+    });
+    let editor = cx.new({
+        let buffer = buffer.clone();
+        move |cx| {
+            let mut editor = Editor::for_buffer(buffer, cx);
+            editor.selections = selections;
+            editor
+        }
+    });
+    (buffer, editor)
+}
+
+fn buffer_text(buffer: &gpui::Entity<Buffer>, cx: &TestAppContext) -> String {
+    cx.read_entity(buffer, |buffer, _| {
+        buffer
+            .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+            .expect("完整测试范围应可读取")
+            .as_str()
+            .to_string()
+    })
+}
+
+#[gpui::test]
+fn indent_and_outdent_are_editor_owned_selection_edits(cx: &mut TestAppContext) {
+    let selections =
+        SelectionSet::new(vec![Selection::new(ByteOffset::new(0), ByteOffset::new(3))]);
+    let (buffer, editor) = editor_with_text(cx, "a\nb", selections);
+
+    cx.update_entity(&editor, |editor, cx| editor.indent(cx));
+    assert_eq!(buffer_text(&buffer, cx), "    a\n    b");
+
+    cx.update_entity(&editor, |editor, cx| editor.outdent(cx));
+    assert_eq!(buffer_text(&buffer, cx), "a\nb");
+}
+
+#[gpui::test]
+fn caret_indent_uses_display_map_tab_column(cx: &mut TestAppContext) {
+    let (buffer, editor) = editor_with_text(cx, "\tx", SelectionSet::caret(ByteOffset::new(1)));
+
+    cx.update_entity(&editor, |editor, cx| editor.indent(cx));
+
+    assert_eq!(buffer_text(&buffer, cx), "\t    x");
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(editor.selections.primary().head(), ByteOffset::new(5));
+    });
+}

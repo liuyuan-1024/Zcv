@@ -1,11 +1,8 @@
-//! FoldRangeUpdate：把 TrackedRangeUpdate 转换成带 FoldRangeId 的折叠更新事实。
+//! Editor FoldRangeUpdate：把 TrackedRangeUpdate 转换成带 FoldRangeId 的折叠更新事实。
 //!
 //! 这层结果服务宿主清理、UI 同步与日志，不改变 fold 集合的归属语义。
 
-use crate::{
-    tracking::TrackedRangeUpdate,
-    types::{BufferVersion, TextRange},
-};
+use zcv_engine::{BufferVersion, TextRange, TrackedRangeUpdate};
 
 use super::FoldRangeId;
 

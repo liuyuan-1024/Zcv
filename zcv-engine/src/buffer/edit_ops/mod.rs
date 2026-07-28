@@ -6,4 +6,3 @@
 //! - no-op 变更不递增版本、不污染历史。
 
 mod basic;
-mod selections;

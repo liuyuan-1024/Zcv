@@ -149,57 +149,6 @@ pub enum AnchorError {
     },
 }
 
-/// FoldSet 折叠集合相关错误。
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum FoldError {
-    /// FoldSet 内 fold range id 计数器耗尽；调用方应重建 FoldSet。
-    #[error("FoldSet fold range id 溢出")]
-    IdOverflow,
-
-    /// FoldSet 只能应用同一 base_version 的 DeltaEvent，过期结果应由宿主丢弃。
-    #[error("FoldSet 版本不匹配：预期版本 {expected:?}，实际版本 {actual:?}")]
-    VersionMismatch {
-        expected: BufferVersion,
-        actual: BufferVersion,
-    },
-
-    /// 候选 fold 与已有 fold 部分重叠（既非互不相交，也非完全嵌套）；引擎拒绝该状态。
-    #[error("折叠区间与已有折叠部分重叠：已有 {existing:?}，候选 {candidate:?}")]
-    OverlapWithoutNesting {
-        existing: TextRange,
-        candidate: TextRange,
-    },
-
-    /// fold 的 byte range 必须是非空区间（start < end）。
-    #[error("折叠区间不能为空：{range:?}")]
-    EmptyRange { range: TextRange },
-}
-
-/// Projection 构建与查询相关错误。
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum ProjectionError {
-    /// Projection 必须基于版本一致的 Snapshot 与 FoldSet 构建。
-    #[error(
-        "Projection 版本不匹配：snapshot 版本 {snapshot_version:?}，fold 版本 {fold_version:?}"
-    )]
-    VersionMismatch {
-        snapshot_version: BufferVersion,
-        fold_version: BufferVersion,
-    },
-    /// `Projection::apply_delta` 入口的版本闭环失败：调用方必须保证 self、snapshot、folds
-    /// 三者都已对齐到 `event.old_version()`/`event.new_version()`。
-    #[error(
-        "Projection::apply_delta 版本不匹配：projection {projection_version:?}，event old/new {event_old_version:?}/{event_new_version:?}，snapshot {snapshot_version:?}，folds {fold_version:?}"
-    )]
-    ApplyDeltaStale {
-        projection_version: BufferVersion,
-        event_old_version: BufferVersion,
-        event_new_version: BufferVersion,
-        snapshot_version: BufferVersion,
-        fold_version: BufferVersion,
-    },
-}
-
 /// VersionedRangeSet / VersionedResult 版本绑定与 remap 相关错误。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VersionedResultError {
@@ -240,10 +189,6 @@ pub enum SearchError {
     /// 正则表达式无法编译。
     #[error("非法正则表达式：pattern {pattern:?}，message {message}")]
     InvalidRegex { pattern: String, message: String },
-
-    /// 调用方通过 `SearchHandle::cancel` 主动撤销，或 handle 已被 drop。
-    #[error("搜索已取消")]
-    Cancelled,
 }
 
 /// 底层存储相关的错误（存储后端做不了）。
@@ -287,14 +232,6 @@ pub enum EngineError {
     /// Anchor 或 TrackedRange 的版本推进失败。
     #[error(transparent)]
     Anchor(#[from] AnchorError),
-
-    /// FoldSet 折叠集合的版本、嵌套或边界不变量被破坏。
-    #[error(transparent)]
-    Fold(#[from] FoldError),
-
-    /// Projection 构建或查询的版本绑定不一致。
-    #[error(transparent)]
-    Projection(#[from] ProjectionError),
 
     /// 当前 Buffer 内搜索请求不合法。
     #[error(transparent)]

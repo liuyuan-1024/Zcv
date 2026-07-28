@@ -1,7 +1,7 @@
-//! Projection：从 `Snapshot + FoldSet` 投影出可见行序列、逻辑行映射、point/range
+//! Editor Projection：从 `Snapshot + FoldSet` 投影出可见行序列、逻辑行映射、point/range
 //! 双向映射与折叠后视口切片。
 //!
-//! - 投影行索引与逻辑行号之间的双向映射；
+//! - 基于逻辑输入行数 / 投影输出行数双维摘要的双向映射；
 //! - 折叠占位符行（`FoldPlaceholder`）的位置与覆盖的隐藏行区间；
 //! - 最宽可见文本投影行的增量显示列摘要；
 //! - `LogicalPoint` ↔ `ProjectedPoint`、`LogicalRange` ↔ `ProjectedRange` 双向映射；

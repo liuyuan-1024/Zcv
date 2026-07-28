@@ -12,12 +12,12 @@
 - Transaction、Delta、ChangeSet、PositionMap 和原子提交。
 - Undo / Redo、分支历史、历史预算、事务记录和回放。
 - Snapshot、BufferVersion、本地读写边界和版本化结果承载。
-- Selection / SelectionSet 纯数据与算法、多光标编辑、word / subword / symbol movement。
-- 显式 `EditOutcome` / `TransactionOutcome` 与纯文本 HistoryEntry / TransactionRecord。
+- Selection / SelectionSet 纯数据与 PositionMap 映射、word / subword / symbol 边界查询。
+- 显式 `TransactionOutcome` 与纯文本 HistoryEntry / TransactionRecord。
 - engine 已移除 IME composition 类型、状态机和专用事务来源；输入法提交前的 marked text 完全留在宿主层。
 - Anchor、TrackedRange、MetadataLayer、VersionedRangeSet。
-- Fold、Projection、最长可见投影行增量摘要、ProjectedViewport 和读取切片。
-- 单 Buffer literal / regex 搜索与 replace all。
+- 逻辑文本 viewport slicing；Tab/display-column、FoldSet、合并隐藏区间和 Projection 已迁移到宿主 Editor DisplayMap。
+- 单 Buffer 同步 literal / regex 匹配与 replace all；异步调度、取消和进度不进入 engine。
 - 文件文本加载、reload、保存文本边界、大文件和超大事务防御。
 - property 回归和粗粒度内存观测入口。
 
@@ -49,10 +49,9 @@ types/        坐标、范围、版本、身份等强类型
 config/       Buffer、编码、换行、显示、大文件等策略
 storage/      文本存储抽象和生产 RopeyStorage
 transaction/  Edit、Transaction、Delta、ChangeSet、事务记录
-selection/    Cursor、Selection、SelectionSet、编辑结果和移动语义
+selection/    Cursor、Selection、SelectionSet 与纯文本边界词汇
 tracking/     Anchor、Mark、TrackedRange
 metadata/     泛型外部区间承载
-projection/   Fold、投影坐标和 viewport
 ```
 
 ## 验证建议

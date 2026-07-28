@@ -1,4 +1,4 @@
-//! ProjectedViewport：基于 Projection 的折叠后视口切片。
+//! Editor ProjectedViewport：基于 Projection 的折叠后视口切片。
 //!
 //! `ProjectedViewport` 与 `Viewport` 形态一致，只是 `start_line` 是 `ProjectedLineIndex`，
 //! 表达折叠后视口中第一条投影行的位置。`ProjectedViewportSlice` 把切片结果分解为：
@@ -8,13 +8,10 @@
 //! - 视口内可见的逻辑行 spans（连续逻辑行合并成 `LineRange`）；
 //! - 视口内被命中的 fold placeholder 列表。
 
-use crate::{
-    EngineResult,
-    slicing::VisibleLine,
-    types::{Line, LineRange},
-};
+use zcv_engine::{Line, LineRange, VisibleLine};
 
 use super::{FoldPlaceholder, ProjectedLineIndex};
+use crate::editor::display_map::error::DisplayMapResult;
 
 /// 折叠后视口描述。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -228,7 +225,7 @@ impl ProjectedLineRange {
 /// 内部 helper：合并 ProjectedViewport 切片得到的连续逻辑行 -> `LineRange` spans。
 pub(super) fn build_logical_spans<'a>(
     rows: &[ProjectedViewportRow<'a>],
-) -> EngineResult<Vec<LineRange>> {
+) -> DisplayMapResult<Vec<LineRange>> {
     let mut spans: Vec<LineRange> = Vec::new();
     let mut current: Option<(Line, Line)> = None;
 

@@ -1,9 +1,9 @@
-//! Projection range 类型。
+//! Editor Projection range 类型。
 //!
 //! `LogicalRange` 与 `ProjectedRange` 用 `(start, end)` 强类型 point 对表达半开区间，
 //! 构造器拒绝反向区间，避免恢复 unchecked range 入口。
 
-use crate::CoordinateError;
+use zcv_engine::{CoordinateError, Line};
 
 use super::{LogicalPoint, ProjectedPoint};
 
@@ -62,8 +62,8 @@ impl ProjectedRange {
     pub fn new(start: ProjectedPoint, end: ProjectedPoint) -> Result<Self, CoordinateError> {
         if !is_ordered_projected(start, end) {
             return Err(CoordinateError::InvalidLineRange {
-                start: crate::types::Line::new(start.line.get()),
-                end: crate::types::Line::new(end.line.get()),
+                start: Line::new(start.line.get()),
+                end: Line::new(end.line.get()),
             });
         }
         Ok(Self { start, end })

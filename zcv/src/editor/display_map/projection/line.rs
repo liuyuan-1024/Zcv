@@ -1,10 +1,10 @@
-//! Projection 中单条投影行的类型：可见文本行 + 折叠占位符行。
+//! Editor Projection 中单条投影行的类型：可见文本行 + 折叠占位符行。
 //!
 //! `ProjectedLine` 把行的索引与种类捆绑成一个值；`ProjectedLineKind` 区分
 //! 「该行展示的是某条逻辑行」还是「该行是一段被折叠隐藏的占位符」。
 //! 占位符样式（如 `…`）和绘制属于宿主，引擎只承诺数学事实。
 
-use crate::types::{Line, LineRange};
+use zcv_engine::{Line, LineRange};
 
 use super::ProjectedLineIndex;
 

@@ -8,11 +8,12 @@ use gpui::{
     MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Style,
     TextRun, UnderlineStyle, Window, fill, point, px, relative, size,
 };
-use zcv_engine::{
-    ByteOffset, DisplayColumn, Line, ProjectedViewportRowKind, SelectionSet, Snapshot,
-};
+use zcv_engine::{ByteOffset, DisplayColumn, Line, SelectionSet};
 
-use super::display_map::{BufferPoint, DisplayPoint, DisplayRow, DisplaySnapshot};
+use super::display_map::{
+    BufferPoint, DisplayPoint, DisplayRow, DisplaySnapshot, ProjectedRange,
+    ProjectedViewportRowKind,
+};
 use super::view::{Editor, EditorPresentation};
 use crate::theme::color;
 
@@ -57,6 +58,8 @@ impl EditorElement {
             .on_action(cx.listener(Editor::handle_cut))
             .on_action(cx.listener(Editor::handle_copy))
             .on_action(cx.listener(Editor::handle_paste))
+            .on_action(cx.listener(Editor::handle_indent))
+            .on_action(cx.listener(Editor::handle_outdent))
     }
 }
 
@@ -234,6 +237,10 @@ impl Element for EditorElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let line_height = window.line_height();
+        let visible_line_count = (bounds.size.height / line_height).ceil() as usize + 2;
+        self.editor.update(cx, |editor, _| {
+            editor.measure_display_rows(editor.scroll_anchor().row(), visible_line_count);
+        });
         let (display_snapshot, presentation, selections, longest_row) = {
             let editor = self.editor.read(cx);
             (
@@ -569,7 +576,7 @@ fn layout_selections(
 }
 
 fn layout_projected_range(
-    range: zcv_engine::ProjectedRange,
+    range: ProjectedRange,
     layout: &EditorLayout,
     line_height: Pixels,
     selection_quads: &mut Vec<PaintQuad>,
@@ -577,7 +584,7 @@ fn layout_projected_range(
     let start = range.start();
     let end = range.end();
     for line in &layout.lines {
-        let row = zcv_engine::ProjectedLineIndex::new(line.row.get());
+        let row = super::display_map::ProjectedLineIndex::new(line.row.get());
         if row < start.line() || row > end.line() {
             continue;
         }
@@ -642,8 +649,7 @@ fn layout_primary_caret(
         .lines
         .iter()
         .find(|line| line.row == display_point.row())?;
-    let local_byte =
-        local_byte_for_display_point(line, display_point, layout.display_snapshot.snapshot());
+    let local_byte = local_byte_for_display_point(line, display_point, &layout.display_snapshot);
     Some(Bounds::new(
         point(
             line.origin.x + line.shaped.x_for_index(local_byte),
@@ -666,8 +672,7 @@ fn layout_caret_at_buffer_offset(
         .lines
         .iter()
         .find(|line| line.row == display_point.row())?;
-    let local_byte =
-        local_byte_for_display_point(line, display_point, layout.display_snapshot.snapshot());
+    let local_byte = local_byte_for_display_point(line, display_point, &layout.display_snapshot);
     Some(fill(
         Bounds::new(
             point(
@@ -683,12 +688,12 @@ fn layout_caret_at_buffer_offset(
 fn local_byte_for_display_point(
     line: &LayoutLine,
     point: DisplayPoint,
-    snapshot: &Snapshot,
+    display_snapshot: &DisplaySnapshot,
 ) -> usize {
     let logical_column = line
         .logical_line
         .and_then(|logical_line| {
-            snapshot
+            display_snapshot
                 .display_to_logical_column(logical_line, point.column())
                 .ok()
         })

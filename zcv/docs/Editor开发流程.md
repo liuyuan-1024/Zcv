@@ -109,8 +109,7 @@ Editor
 - 通过 PositionMap 映射选区。
 - grapheme、word、subword、symbol 等纯文本边界算法。
 - 选区合法性校验。
-- 根据 SelectionSet 生成文本 edits。
-- 计算编辑后的 SelectionSet。
+- 提供可由 Transaction 使用的文本编辑原语。
 
 Editor 持有：
 
@@ -120,6 +119,8 @@ Editor 持有：
 - SelectionHistory。
 - 鼠标拖选、列选择等交互状态。
 - 依赖 DisplayMap 的移动语义。
+- 根据 SelectionSet 生成事务 edits，并计算编辑后的 SelectionSet。
+- indent / outdent、删除与多光标替换语义。
 - 当前输入焦点的 IME composition 会话。
 
 不得为了迁移把选区实现复制或移动到临时源码目录。Git 历史已经提供回溯能力；临时目录只会制造 engine selection、临时 selection、Editor selection 三套边界。
@@ -183,10 +184,10 @@ DisplayPoint
 - `DisplayPoint` 表示经过软换行、折叠和 Inlay 变换后的显示位置。
 - 像素坐标只在布局和命中测试阶段使用。
 
-DisplayMap 持有与 Buffer Snapshot 同版本的 `zcv-engine::Projection`，按投影视口读取可见行，
-并通过 `DeltaEvent` 增量推进 Projection。最长投影文本行及其显示列宽度由 Projection
-增量维护，EditorElement 只额外塑形这一条候选行以取得像素宽度。Fold 的数学事实来自
-engine；占位符文本、像素布局和命中测试由 DisplayMap / EditorElement 负责。
+DisplayMap 持有与 Buffer Snapshot 同版本的 Projection，按投影视口读取可见行，
+并通过 `DeltaEvent` 增量推进 Projection。Projection 只维护折叠后的行拓扑，不读取行文本。
+TabMap 按实际投影视口惰性测量 display-column，并在编辑后只失效受影响的已测量行；
+初次构建不扫描全文。占位符文本、像素布局和命中测试由 DisplayMap / EditorElement 负责。
 Soft Wrap、Inlay 后续继续在此层扩展，不能散落到 Editor 或业务组件中。
 
 ### 3.5 EditorElement
@@ -390,7 +391,7 @@ Editor Transaction
 一组 TextEdit
     │
     ▼
-Buffer
+Editor 提交 Buffer Transaction
     │
     ▼
 EditOutcome + after_selections
@@ -404,7 +405,7 @@ EditOutcome + after_selections
 - BufferEdited 事件只在事务提交后发送。
 - 业务组件不直接修改 Buffer 并自行修正光标。
 
-接受选区的 Buffer 编辑 API 使用以下形态：
+Editor 的选区编辑层使用以下形态：
 
 ```rust
 pub struct EditOutcome {
@@ -412,7 +413,8 @@ pub struct EditOutcome {
     after_selections: SelectionSet,
 }
 
-buffer.insert_at_selections(
+editor.replace_selections(
+    &mut buffer,
     &editor.selections,
     text,
     metadata,
@@ -515,7 +517,7 @@ Editor 生命周期。`ViewRegistry` 已删除，不再维护重复的路径、B
 状态：已完成。
 
 - 保留 engine 的 Selection、SelectionSet 和纯文本算法。
-- 把 selection 编辑入口改为输入 SelectionSet、返回 EditOutcome。
+- 把 selection 编辑入口迁入 Editor，输入 SelectionSet、返回 Editor 私有的 EditOutcome。
 - 从 Buffer 删除当前 `selection` 字段。
 - 删除 `Buffer::selection()` 和 `Buffer::set_selection()`。
 - 删除普通事务对 Buffer 当前选区的隐式映射。
@@ -527,8 +529,8 @@ Editor 生命周期。`ViewRegistry` 已删除，不再维护重复的路径、B
 验证：
 
 - Buffer 不保存任何当前视图选区。
-- 同一个 Buffer 可以依次接受来自不同 Editor 的 SelectionSet。
-- selection 编辑返回正确的 after_selections。
+- 多个 Editor 可以基于同一个 Buffer 分别生成独立 selection 事务。
+- Editor selection 编辑返回正确的 after_selections。
 - Undo / Redo 能返回供 Editor 恢复选区的 transaction_id。
 - engine 的选区归一化、Unicode 边界和映射测试继续通过。
 

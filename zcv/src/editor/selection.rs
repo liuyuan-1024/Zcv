@@ -89,7 +89,7 @@ pub(super) fn replace_selections(
     if edits.is_empty() {
         return Ok(EditOutcome::unchanged(after));
     }
-    let transaction = buffer.apply_transaction_outcome(
+    let transaction = buffer.apply_transaction(
         Transaction::from_edits(buffer.version(), edits)?.with_metadata(metadata),
     )?;
     Ok(EditOutcome::edited(transaction, after))
@@ -113,7 +113,7 @@ pub(super) fn apply_targeted_edits(
     if edits.is_empty() {
         return Ok(EditOutcome::unchanged(before.clone()));
     }
-    let transaction = buffer.apply_transaction_outcome(
+    let transaction = buffer.apply_transaction(
         Transaction::from_edits(buffer.version(), edits)?.with_metadata(metadata),
     )?;
     let after = transaction

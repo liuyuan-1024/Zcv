@@ -14,7 +14,6 @@ use gpui::{
 use zcv_engine::Buffer;
 
 use super::item::ItemHandle;
-use super::pane_group::{PaneId, ViewId};
 use super::tab_bar::TabBar;
 use super::toolbar::Toolbar;
 use crate::editor::Editor;
@@ -27,7 +26,11 @@ actions!(pane, [CloseTab, NextTab, PrevTab]);
 
 // ═══ Pane 事件 ════════════════════════════════════════════════════════
 
-/// Pane 对外发出的事件，供 Workspace 等父组件订阅处理。
+/// 视图标识（某个打开文档的编辑视图）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ViewId(u64);
+
+/// Pane 对外发出的标签页事件。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PaneEvent {
     /// 新标签页添加。
@@ -89,7 +92,6 @@ impl TabItem {
 /// 单个编辑区 Pane。
 pub(crate) struct Pane {
     pub focus: FocusHandle,
-    pub id: PaneId,
     pub tabs: Vec<TabItem>,
     pub active: Option<ViewId>,
     toolbar: Entity<Toolbar>,
@@ -97,10 +99,9 @@ pub(crate) struct Pane {
 }
 
 impl Pane {
-    pub fn new(id: PaneId, cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             focus: cx.focus_handle(),
-            id,
             tabs: Vec::new(),
             active: None,
             toolbar: cx.new(|_| Toolbar::new()),
@@ -648,7 +649,7 @@ mod tests {
             Buffer::scratch("真实编辑器".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建")
         });
-        let pane = cx.new(|cx| Pane::new(PaneId(1), cx));
+        let pane = cx.new(Pane::new);
         open_file_in_test(cx, &pane, PathBuf::from("demo.txt"), buffer.clone());
 
         let editor = cx.read_entity(&pane, |pane, cx| pane.active_editor(cx).unwrap());
@@ -689,7 +690,7 @@ mod tests {
             Buffer::scratch("重复".to_owned(), BufferConfig::default()).expect("应创建 Buffer")
         });
 
-        let pane = cx.new(|cx| Pane::new(PaneId(1), cx));
+        let pane = cx.new(Pane::new);
         open_file_in_test(cx, &pane, PathBuf::from("demo.txt"), first_buffer);
         open_file_in_test(cx, &pane, PathBuf::from("demo.txt"), second_buffer);
 
@@ -699,7 +700,7 @@ mod tests {
 
     #[gpui::test]
     fn move_tab_reorders_tabs_correctly(cx: &mut TestAppContext) {
-        let pane = cx.new(|cx| Pane::new(PaneId(1), cx));
+        let pane = cx.new(Pane::new);
 
         // 用 scratch Buffer 模拟多个标签
         for i in 0..4 {
@@ -746,7 +747,7 @@ mod tests {
         });
 
         // 移动：单标签拖到末尾 → 不应闪退
-        let single_pane = cx.new(|cx| Pane::new(PaneId(2), cx));
+        let single_pane = cx.new(Pane::new);
         let buffer = cx.new(|_| {
             Buffer::scratch("仅一个标签".to_owned(), BufferConfig::default())
                 .expect("应创建 Buffer")

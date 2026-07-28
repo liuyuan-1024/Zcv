@@ -55,7 +55,7 @@ fn search_result_should_remap_forward_and_drop_deleted_matches() {
 
     let transaction =
         Transaction::from_edits(buffer.version(), vec![Edit::delete(range(0, 2))]).unwrap();
-    let outcome = buffer.apply_transaction_outcome(transaction).unwrap();
+    let outcome = buffer.apply_transaction(transaction).unwrap();
     let remapped = result.try_remap(outcome.event()).unwrap();
 
     assert_eq!(remapped.version(), buffer.version());
@@ -84,9 +84,13 @@ fn replace_all_literal_matches_should_apply_single_atomic_transaction_and_restor
     let mut buffer = buffer("red blue red");
     let result = buffer.snapshot().search_literal("red").unwrap();
 
-    let applied = buffer.replace_all_search_matches(&result, "green").unwrap();
+    let outcome = buffer
+        .replace_all_search_matches(&result, "green")
+        .unwrap()
+        .unwrap();
 
-    assert!(applied.is_some());
+    assert_eq!(outcome.delta().edits().as_slice().len(), 2);
+    assert!(outcome.history_transaction_id().is_some());
     assert_eq!(buffer_text(&buffer), "green blue green");
     assert_eq!(buffer.history_status().undo_depth, 1);
 

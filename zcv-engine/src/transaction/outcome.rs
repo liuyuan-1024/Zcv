@@ -53,8 +53,4 @@ impl TransactionOutcome {
     pub fn event(&self) -> &DeltaEvent {
         &self.event
     }
-
-    pub fn into_delta_changeset(self) -> (Delta, ChangeSet) {
-        (self.delta, self.changeset)
-    }
 }

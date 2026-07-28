@@ -229,30 +229,20 @@ let on_open_file: OnOpenFile = Rc::new({
     let weak = cx.weak_entity();
     move |path, window, cx| {
         if let Some(ws) = weak.upgrade() {
-            ws.update(cx, |ws, cx| ws.open_path_in_active_pane(path, window, cx));
+            ws.update(cx, |ws, cx| ws.open_path(path, window, cx));
         }
     }
 });
 project_tree.set_on_open_file(on_open_file);
 ```
 
-#### 方式 C：焦点监听
-
-当需要感知焦点在组件间移动时，使用 `on_focus_in`：
-
-```rust
-cx.on_focus_in(&pane.focus, window, |this, _window, cx| {
-    this.handle_pane_focused(&pane_entity, cx);
-});
-```
-
-#### 方式 D：直接调用（最简）
+#### 方式 C：直接调用（最简）
 
 当两个组件有直接引用关系时，通过 Entity 方法直接调用：
 
 ```rust
-self.status_bar.update(cx, |bar, cx| {
-    bar.set_active_pane(pane, cx);
+self.pane.update(cx, |pane, cx| {
+    pane.close_tab(view_id, window, cx);
 });
 ```
 
@@ -262,7 +252,7 @@ self.status_bar.update(cx, |bar, cx| {
 |---|---|
 | 子→父通知状态变更 | 事件（方式 A） |
 | 子组件需触发父组件特定行为 | 回调（方式 B） |
-| 感知焦点移动 | 焦点监听（方式 C） |
+| 父组件操作已持有的子组件 | 直接调用（方式 C） |
 | 父子有直接引用关系 | 直接调用（方式 D） |
 | 散布在多个组件间的共享状态 | Rx / Global（慎用，仅限全局唯一数据如设置） |
 
@@ -398,7 +388,7 @@ fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBind
 需要把 action 类型导入 keymap.rs：
 
 ```rust
-use crate::workspace::pane::{CloseTab, NextTab, PrevTab};
+use crate::workspace::{CloseTab, NextTab, PrevTab};
 ```
 
 ### 4.3 在 JSON 文件中定义键位
@@ -450,12 +440,12 @@ impl Render for MyComponent {
 
 | 组件 | 类型 | 焦点 | 快捷键 | 内部状态 | 跨组件通信 |
 |---|---|---|---|---|---|
-| `Workspace` | Entity(root) | ✅ | — | `Rc<RefCell<LayoutController>>` | 事件订阅、回调注入、焦点监听 |
+| `Workspace` | Entity(root) | ✅ | — | 单一 `Pane` + 三个 `Dock` Entity | 回调注入、直接调用 |
 | `Pane` | Entity | ✅ | ✅ | `Vec<TabItem>` | `cx.emit(PaneEvent)` |
-| `StatusBar` | Entity | ❌ | ❌ | 持有 StatusItemView 列表 | 父组件直接调用 `set_active_pane` |
+| `StatusBar` | Entity | ❌ | ❌ | 持有 StatusItemView 列表 | 观察中心 `Pane` |
 | `ProjectTree` | Entity | ✅ | ✅ | `Rc<RefCell<ProjectTreeState>>` | 回调（替代旧 Global 模式） |
 | `TopBar` | Entity | ❌ | ✅ | ❌ | ❌ |
-| `Dock` | 函数式渲染 | ❌ | ✅（action） | `LayoutController`（父组件持有） | 显式参数传递 |
+| `Dock` | Entity | ✅ | ✅（action） | 面板列表、展开状态、尺寸 | 父组件直接调用 |
 | `WindowControls` | 函数式 | ❌ | ✅ | ❌ | ❌ |
 
 开发新 Entity 组件时，先对号入座这张表，确定需要哪些能力，再按八步流程推进。

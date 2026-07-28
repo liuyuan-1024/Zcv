@@ -5,7 +5,6 @@
 
 mod buffer;
 mod config;
-mod coordinates;
 mod errors;
 mod position_map;
 mod search;

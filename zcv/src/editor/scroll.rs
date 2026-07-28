@@ -26,16 +26,8 @@ impl ScrollManager {
         self.anchor
     }
 
-    pub(super) fn set_anchor(&mut self, anchor: DisplayPoint) {
-        self.anchor = anchor;
-    }
-
     pub(super) fn offset(&self) -> Point<Pixels> {
         self.offset
-    }
-
-    pub(super) fn set_offset(&mut self, offset: Point<Pixels>) {
-        self.offset = offset;
     }
 
     pub(super) fn update_viewport(
@@ -239,7 +231,7 @@ mod tests {
         manager.scroll_by(point(px(10_000.), px(0.)));
         assert_eq!(manager.offset().x, px(0.));
 
-        manager.set_offset(point(px(200.), px(0.)));
+        manager.scroll_by(point(px(-10_000.), px(0.)));
         manager.update_viewport(1, px(180.), px(40.), px(220.), px(20.));
         assert_eq!(manager.offset().x, px(40.));
     }

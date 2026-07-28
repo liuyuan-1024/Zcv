@@ -1,10 +1,10 @@
-//! 布局系统 —— Dock + PaneGroup 分治。
+//! 布局系统 —— Dock + 单一中心 Pane。
 //!
 //! 布局控制分两类区域：
 //!
 //! - **Dock**（左/右/底）：可折叠，同一时间一个 panel 可见，用 PanelStack 切换。
 //!   每个 Dock 是独立 Entity，参考 Zed `crates/workspace/src/dock.rs`。
-//! - **中心编辑区**（PaneGroup）：递归分栏树，叶子是 Pane。
+//! - **中心编辑区**：单一 Pane。
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -15,7 +15,7 @@ use gpui::{
     WeakEntity, Window, actions, div, prelude::*, px,
 };
 
-use super::pane_group::{Axis, PaneGroup};
+use super::Pane;
 use super::panel::PanelHandle;
 use crate::theme::{color, space};
 
@@ -347,7 +347,7 @@ fn placeholder_div() -> gpui::Div {
 ///
 /// 三个 Dock 各自是独立 Entity，由调用方检查 `is_open()` 后决定是否传入。
 pub(crate) fn render_body(
-    center: &PaneGroup,
+    center: &Entity<Pane>,
     left_dock: Option<Entity<Dock>>,
     right_dock: Option<Entity<Dock>>,
     bottom_dock: Option<Entity<Dock>>,
@@ -372,7 +372,7 @@ pub(crate) fn render_body(
         .overflow_hidden()
         .relative()
         .min_w(space::S16);
-    center_col = center_col.child(render_pane_group(center));
+    center_col = center_col.child(div().flex_1().min_h(space::S16).child(center.clone()));
 
     if let Some(dock) = bottom_dock {
         center_col = center_col.child(dock);
@@ -383,49 +383,4 @@ pub(crate) fn render_body(
         row = row.child(dock);
     }
     row
-}
-
-// ── 中心编辑区渲染 ─────────────────────────────────────────────
-
-fn render_pane_group(group: &PaneGroup) -> gpui::Div {
-    match group {
-        PaneGroup::Pane(_, entity) => div().flex_1().min_h(space::S16).child(entity.clone()),
-        PaneGroup::Split { axis, children, .. } => render_split(*axis, children),
-    }
-}
-
-fn render_split(axis: Axis, children: &[Box<PaneGroup>; 2]) -> gpui::Div {
-    let child_a = render_pane_group(&children[0]);
-    let child_b = render_pane_group(&children[1]);
-
-    match axis {
-        Axis::Horizontal => div()
-            .flex()
-            .flex_row()
-            .size_full()
-            .overflow_hidden()
-            .child(div().flex_1().min_w_0().child(child_a))
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .w(px(1.0))
-                    .h_full()
-                    .bg(color::current().gray.s[4]),
-            )
-            .child(div().flex_1().min_w_0().child(child_b)),
-        Axis::Vertical => div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .overflow_hidden()
-            .child(div().flex_1().min_h_0().child(child_a))
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .h(px(1.0))
-                    .w_full()
-                    .bg(color::current().gray.s[4]),
-            )
-            .child(div().flex_1().min_h_0().child(child_b)),
-    }
 }

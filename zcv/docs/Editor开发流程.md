@@ -82,7 +82,7 @@ Buffer 不负责：
 - SelectionHistory。
 - 当前输入焦点的 IME composition 会话。
 
-Buffer 与 Editor 必须分离。同一个 Buffer 可以被多个 Editor 共享，用于分屏等场景；每个 Editor 分别持有自己的选区和滚动状态。
+Buffer 与 Editor 必须分离。同一个 Buffer 可以被多个 Editor 共享；每个 Editor 分别持有自己的选区和滚动状态。当前工作区只装配一个中心 Pane，不预置分栏结构。
 
 文件 Buffer 由宿主层的 BufferStore 创建和索引。
 BufferStore 按规范化路径复用 `Entity<Buffer>`，只保留弱引用，不持有选区、滚动或 Editor 生命周期状态。
@@ -663,7 +663,7 @@ src/editor/
 - `display_map.rs` 负责坐标与显示变换。
 - `selection.rs` 负责 Editor 的 SelectionHistory、视图交互状态和依赖 DisplayMap 的选择变换；Selection、SelectionSet 原语继续来自 engine。
 - `scroll.rs` 负责 ScrollManager。
-- `mod.rs` 只声明模块，不做重导出。
+- `mod.rs` 作为 Editor 能力域门面，声明私有实现模块，并选择性重导出跨能力域使用的主类型、事件和 Action；具体规则见《重导出规范》。
 
 文件只在实现确实形成独立职责时建立，不预先复制 Zed 的全部目录结构。
 

@@ -30,16 +30,8 @@ pub(in crate::buffer) fn edit_list_replacement_bytes(edits: &EditList) -> usize 
 impl Buffer {
     /// 提交并应用事务。
     ///
-    /// 成功将返回增量 Delta 和事务变更集合 ChangeSet，并记录 Undo 历史。
-    pub fn apply_transaction(&mut self, tx: Transaction) -> EngineResult<(Delta, ChangeSet)> {
-        Ok(self.apply_transaction_outcome(tx)?.into_delta_changeset())
-    }
-
-    /// 提交并应用事务，返回事务身份、历史归属和增量事实。
-    pub fn apply_transaction_outcome(
-        &mut self,
-        tx: Transaction,
-    ) -> EngineResult<TransactionOutcome> {
+    /// 成功返回事务身份、历史归属和增量事实，并按事务元数据记录 Undo 历史。
+    pub fn apply_transaction(&mut self, tx: Transaction) -> EngineResult<TransactionOutcome> {
         let (_, outcome) = self.apply_transaction_inner(tx)?;
         Ok(outcome)
     }

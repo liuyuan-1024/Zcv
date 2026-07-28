@@ -538,11 +538,6 @@ impl FsWatcher {
         }
     }
 
-    /// 获取 pending 事件的共享引用（供消费方检查/测试）。
-    pub fn pending_events(&self) -> Arc<Mutex<Vec<PathEvent>>> {
-        self.pending_path_events.clone()
-    }
-
     /// 注册一个尚不存在的路径——后台轮询直至路径出现。
     fn add_pending_path(&self, path: Arc<Path>) {
         let mut pending = self.pending_registrations.lock().unwrap();

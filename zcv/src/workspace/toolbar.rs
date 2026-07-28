@@ -37,22 +37,13 @@ pub(crate) enum ToolbarItemEvent {
 
 /// Toolbar 子项需实现的接口。
 pub(crate) trait ToolbarItemView: Render + EventEmitter<ToolbarItemEvent> {
-    /// 当前 Pane 激活的 item 切换时调用，返回此子项应显示的位置。
-    fn set_active_pane_item(
+    /// 当前激活的 item 切换时调用，返回此子项应显示的位置。
+    fn set_active_item(
         &mut self,
-        active_pane_item: Option<&dyn ItemHandle>,
+        active_item: Option<&dyn ItemHandle>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation;
-
-    /// Pane 焦点变化时通知。
-    fn pane_focus_update(
-        &mut self,
-        _pane_focused: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-    }
 }
 
 // ═══ ToolbarItemViewHandle trait object ═══════════════════════════════
@@ -61,13 +52,12 @@ pub(crate) trait ToolbarItemView: Render + EventEmitter<ToolbarItemEvent> {
 pub(crate) trait ToolbarItemViewHandle: Send {
     fn id(&self) -> EntityId;
     fn to_any(&self) -> AnyView;
-    fn set_active_pane_item(
+    fn set_active_item(
         &self,
-        active_pane_item: Option<&dyn ItemHandle>,
+        active_item: Option<&dyn ItemHandle>,
         window: &mut Window,
         cx: &mut App,
     ) -> ToolbarItemLocation;
-    fn focus_changed(&mut self, pane_focused: bool, window: &mut Window, cx: &mut App);
 }
 
 /// 桥接：任何 `Entity<T: ToolbarItemView>` 自动实现 `ToolbarItemViewHandle`。
@@ -80,22 +70,13 @@ impl<T: ToolbarItemView + 'static> ToolbarItemViewHandle for Entity<T> {
         self.clone().into()
     }
 
-    fn set_active_pane_item(
+    fn set_active_item(
         &self,
-        active_pane_item: Option<&dyn ItemHandle>,
+        active_item: Option<&dyn ItemHandle>,
         window: &mut Window,
         cx: &mut App,
     ) -> ToolbarItemLocation {
-        self.update(cx, |this, cx| {
-            this.set_active_pane_item(active_pane_item, window, cx)
-        })
-    }
-
-    fn focus_changed(&mut self, pane_focused: bool, window: &mut Window, cx: &mut App) {
-        self.update(cx, |this, cx| {
-            this.pane_focus_update(pane_focused, window, cx);
-            cx.notify();
-        });
+        self.update(cx, |this, cx| this.set_active_item(active_item, window, cx))
     }
 }
 
@@ -123,12 +104,13 @@ impl Toolbar {
 
     /// 注册一个子项。
     ///
-    /// 注册时立即调用子项的 `set_active_pane_item` 让其确定初始位置，同时订阅子项的 `ChangeLocation` 事件以便位置变更时重绘。
+    /// 注册时立即传入当前 item 让子项确定初始位置，同时订阅子项的
+    /// `ChangeLocation` 事件以便位置变更时重绘。
     pub fn add_item<T>(&mut self, item: Entity<T>, window: &mut Window, cx: &mut Context<Self>)
     where
         T: 'static + ToolbarItemView,
     {
-        let location = item.set_active_pane_item(self.active_item.as_deref(), window, cx);
+        let location = item.set_active_item(self.active_item.as_deref(), window, cx);
         cx.subscribe(&item, |this, item, event, cx| {
             if let Some((_, current_location)) = this
                 .items
@@ -160,18 +142,11 @@ impl Toolbar {
         self.active_item = item.map(|item| item.boxed_clone());
 
         for (toolbar_item, current_location) in self.items.iter_mut() {
-            let new_location = toolbar_item.set_active_pane_item(item, window, cx);
+            let new_location = toolbar_item.set_active_item(item, window, cx);
             if new_location != *current_location {
                 *current_location = new_location;
                 cx.notify();
             }
-        }
-    }
-
-    /// Pane 焦点变化时通知所有子项。
-    pub fn focus_changed(&mut self, focused: bool, window: &mut Window, cx: &mut Context<Self>) {
-        for (toolbar_item, _) in self.items.iter_mut() {
-            toolbar_item.focus_changed(focused, window, cx);
         }
     }
 }

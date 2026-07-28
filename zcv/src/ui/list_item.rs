@@ -11,7 +11,6 @@ use crate::theme::{color, space, typography};
 pub struct ListItem {
     id: ElementId,
     toggle_state: bool,
-    disabled: bool,
     child: Option<AnyElement>,
     end_slot: Option<AnyElement>,
 }
@@ -21,7 +20,6 @@ impl ListItem {
         Self {
             id: id.into(),
             toggle_state: false,
-            disabled: false,
             child: None,
             end_slot: None,
         }
@@ -30,12 +28,6 @@ impl ListItem {
     /// 选中态（高亮背景）。
     pub fn toggle_state(mut self, selected: bool) -> Self {
         self.toggle_state = selected;
-        self
-    }
-
-    /// 禁用态（灰色文字、无交互）。
-    pub fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
         self
     }
 
@@ -63,14 +55,11 @@ impl IntoElement for ListItem {
             .items_center()
             .justify_between()
             .p(space::S6)
-            .cursor_pointer();
+            .cursor_pointer()
+            .hover(|style| style.bg(color::current().gray.s[3]));
 
         if self.toggle_state {
             row = row.bg(color::current().gray.s[3]);
-        }
-
-        if !self.disabled {
-            row = row.hover(|style| style.bg(color::current().gray.s[3]));
         }
 
         // 主内容
@@ -81,10 +70,6 @@ impl IntoElement for ListItem {
         // 尾部插槽
         if let Some(slot) = self.end_slot {
             row = row.child(slot);
-        }
-
-        if self.disabled {
-            row = row.opacity(0.4).cursor_default();
         }
 
         row.into_any_element()

@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use crate::{
-    ChangeSet, Delta, Edit, EngineResult, RegexSearchResult, SearchError, SearchResult, TextRange,
-    Transaction, TransactionMetadata, TransactionSource,
+    Edit, EngineResult, RegexSearchResult, SearchError, SearchResult, TextRange, Transaction,
+    TransactionMetadata, TransactionOutcome, TransactionSource,
     search::{regex_replacement_for_match, regex_replacements_in_text},
 };
 
@@ -22,7 +22,7 @@ impl Buffer {
         result: &SearchResult,
         ordinal: usize,
         replacement: &str,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    ) -> EngineResult<Option<TransactionOutcome>> {
         self.ensure_search_result_current(result)?;
 
         let search_match = result
@@ -40,7 +40,7 @@ impl Buffer {
         &mut self,
         result: &SearchResult,
         replacement: &str,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    ) -> EngineResult<Option<TransactionOutcome>> {
         self.ensure_search_result_current(result)?;
         self.replace_search_ranges(
             result
@@ -58,7 +58,7 @@ impl Buffer {
         result: &RegexSearchResult,
         ordinal: usize,
         replacement: &str,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    ) -> EngineResult<Option<TransactionOutcome>> {
         self.ensure_regex_search_result_current(result)?;
 
         let Some((range, replacement)) =
@@ -77,7 +77,7 @@ impl Buffer {
         &mut self,
         result: &RegexSearchResult,
         replacement: &str,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    ) -> EngineResult<Option<TransactionOutcome>> {
         self.ensure_regex_search_result_current(result)?;
         self.replace_search_edits_fallible(
             regex_replacements_in_text(&self.storage, result, replacement)?,
@@ -114,7 +114,7 @@ impl Buffer {
         ranges: impl IntoIterator<Item = TextRange>,
         replacement: &str,
         description: &'static str,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>> {
+    ) -> EngineResult<Option<TransactionOutcome>> {
         let replacement: Arc<str> = Arc::from(replacement);
         self.replace_search_edits(
             ranges
@@ -128,7 +128,7 @@ impl Buffer {
         &mut self,
         edits: impl IntoIterator<Item = (TextRange, R)>,
         description: &'static str,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>>
+    ) -> EngineResult<Option<TransactionOutcome>>
     where
         R: Into<Arc<str>>,
     {
@@ -139,7 +139,7 @@ impl Buffer {
         &mut self,
         edits: impl IntoIterator<Item = EngineResult<(TextRange, R)>>,
         description: &'static str,
-    ) -> EngineResult<Option<(Delta, ChangeSet)>>
+    ) -> EngineResult<Option<TransactionOutcome>>
     where
         R: Into<Arc<str>>,
     {

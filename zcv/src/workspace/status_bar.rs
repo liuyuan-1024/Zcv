@@ -1,6 +1,6 @@
 //! StatusBar —— 底栏容器（Entity），按 StatusItemView 模式管理状态项。
 //!
-//! 持有左右两侧的 StatusItemView 列表，在 Pane 切换时向每个 item 广播 set_active_editor 消息。
+//! 持有左右两侧的 StatusItemView 列表，在中心 Pane 变化时向每个 item 广播 set_active_editor 消息。
 //! 每个 item 自行订阅 Editor 变化。
 
 use gpui::{
@@ -59,41 +59,24 @@ impl<T: StatusItemView> StatusItemViewHandle for Entity<T> {
 pub(crate) struct StatusBar {
     left_items: Vec<Box<dyn StatusItemViewHandle>>,
     right_items: Vec<Box<dyn StatusItemViewHandle>>,
-    active_pane: Option<Entity<Pane>>,
-    _pane_subscription: Option<Subscription>,
+    pane: Entity<Pane>,
+    _pane_subscription: Subscription,
 }
 
 impl StatusBar {
     // ═══ 构造与生命周期 ═══════════════════════════════════════════
 
     pub(crate) fn new(pane: Entity<Pane>, cx: &mut Context<Self>) -> Self {
-        let mut this = Self {
-            left_items: Vec::new(),
-            right_items: Vec::new(),
-            active_pane: Some(pane.clone()),
-            _pane_subscription: None,
-        };
-        // 初始订阅当前 Pane 并广播编辑器状态
-        this.set_active_pane(&pane, cx);
-        this
-    }
-
-    /// 切换 StatusBar 跟踪的目标 Pane。
-    ///
-    /// 重新订阅新 Pane 的变化（旧 Subscription 自动 drop 取消），同步广播编辑器状态。
-    pub(crate) fn set_active_pane(&mut self, pane: &Entity<Pane>, cx: &mut Context<Self>) {
-        self.active_pane = Some(pane.clone());
-
-        // 替换订阅：drop 旧值 → 自动取消对旧 Pane 的观察
-        self._pane_subscription = Some(cx.observe(pane, |this, pane, cx| {
+        let pane_subscription = cx.observe(&pane, |this, pane, cx| {
             let editor = pane.read(cx).active_editor(cx);
             this.broadcast_editor(editor.as_ref(), cx);
-        }));
-
-        // 立即广播当前编辑器和通知
-        let editor = pane.read(cx).active_editor(cx);
-        self.broadcast_editor(editor.as_ref(), cx);
-        cx.notify();
+        });
+        Self {
+            left_items: Vec::new(),
+            right_items: Vec::new(),
+            pane,
+            _pane_subscription: pane_subscription,
+        }
     }
 
     // ═══ 注册 item ════════════════════════════════════════════════
@@ -103,10 +86,7 @@ impl StatusBar {
         item: Entity<T>,
         cx: &mut Context<Self>,
     ) {
-        let editor = self
-            .active_pane
-            .as_ref()
-            .and_then(|p| p.read(cx).active_editor(cx));
+        let editor = self.pane.read(cx).active_editor(cx);
         item.set_active_editor(editor.as_ref(), cx);
         self.left_items.push(Box::new(item));
         cx.notify();
@@ -117,10 +97,7 @@ impl StatusBar {
         item: Entity<T>,
         cx: &mut Context<Self>,
     ) {
-        let editor = self
-            .active_pane
-            .as_ref()
-            .and_then(|p| p.read(cx).active_editor(cx));
+        let editor = self.pane.read(cx).active_editor(cx);
         item.set_active_editor(editor.as_ref(), cx);
         self.right_items.push(Box::new(item));
         cx.notify();

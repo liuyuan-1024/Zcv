@@ -3,7 +3,6 @@
 mod dock;
 mod item;
 mod pane;
-mod pane_group;
 mod panel;
 mod panel_buttons;
 mod status_bar;
@@ -18,8 +17,7 @@ pub(crate) use dock::{
     ToggleVersionControl,
 };
 pub(crate) use item::{ItemEvent, ItemHandle};
-pub(crate) use pane::{CloseTab, NextTab, Pane, PaneEvent, PrevTab};
-pub(crate) use pane_group::{PaneGroup, PaneId};
+pub(crate) use pane::{CloseTab, NextTab, Pane, PrevTab};
 pub(crate) use panel::{
     DebugPanel, KeyboardShortcutsPanel, OutlinePanel, Panel, PanelHandle, TerminalPanel,
     VersionControlPanel,
@@ -60,8 +58,7 @@ actions!(workspace, [Save]);
 
 pub(crate) struct Workspace {
     pub(crate) focus: FocusHandle,
-    pub(crate) center: PaneGroup,
-    pub(crate) focus_pane: Option<Entity<Pane>>,
+    pub(crate) pane: Entity<Pane>,
     top_bar: Entity<TopBar>,
     status_bar: Entity<StatusBar>,
     project: Entity<Project>,
@@ -134,8 +131,7 @@ impl Workspace {
 
         let top_bar = cx.new(|cx| TopBar::new(on_project_selected, cx));
 
-        let initial_pane = cx.new(|cx| Pane::new(PaneId(1), cx));
-        let status_pane = initial_pane.clone();
+        let pane = cx.new(Pane::new);
 
         // 先创建 ProjectTree（唯一实体），再创建面板
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -147,7 +143,7 @@ impl Workspace {
                 move |path: PathBuf, window: &mut Window, cx: &mut gpui::App| {
                     if let Some(ws) = weak_open_file.upgrade() {
                         ws.update(cx, |ws, cx| {
-                            ws.open_path_in_active_pane(path, window, cx);
+                            ws.open_path(path, window, cx);
                         });
                     }
                 },
@@ -253,13 +249,9 @@ impl Workspace {
             }
         }
 
-        // ═══ 中心编辑区 ══════════════════════════════════════════
-
-        let center = PaneGroup::Pane(PaneId(1), initial_pane.clone());
-
         // ═══ StatusBar ═══════════════════════════════════════════
 
-        let status_bar = cx.new(|cx| StatusBar::new(status_pane, cx));
+        let status_bar = cx.new(|cx| StatusBar::new(pane.clone(), cx));
         status_bar.update(cx, |bar, cx| {
             bar.add_left_item(
                 cx.new(|cx| PanelButtons::new(left_dock.clone(), left_dispatches, cx)),
@@ -296,8 +288,7 @@ impl Workspace {
 
         Self {
             focus,
-            center,
-            focus_pane: Some(initial_pane),
+            pane,
             top_bar,
             status_bar,
             project,
@@ -312,12 +303,7 @@ impl Workspace {
     }
 
     /// 由项目树回调调用的文件打开逻辑。
-    fn open_path_in_active_pane(
-        &mut self,
-        path: PathBuf,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let path = match path.canonicalize() {
             Ok(p) => p,
             Err(error) => {
@@ -335,9 +321,7 @@ impl Workspace {
                 return;
             }
         };
-        let Some(pane) = self.focus_pane.clone() else {
-            return;
-        };
+        let pane = self.pane.clone();
         let file_name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -374,9 +358,7 @@ impl Workspace {
     }
 
     fn handle_save(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(pane) = self.focus_pane.clone() else {
-            return;
-        };
+        let pane = self.pane.clone();
         let (editor, path) = {
             let pane = pane.read(cx);
             let Some(editor) = pane.active_editor(cx) else {
@@ -420,42 +402,12 @@ impl Workspace {
 
     /// 聚焦回编辑区。
     fn focus_center_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ref pane_entity) = self.focus_pane {
-            let pane = pane_entity.read(cx);
-            if let Some(editor) = pane.active_editor(cx) {
-                window.focus(&editor.read(cx).focus_handle());
-            } else {
-                window.focus(&pane.focus);
-            }
+        let pane = self.pane.read(cx);
+        if let Some(editor) = pane.active_editor(cx) {
+            window.focus(&editor.read(cx).focus_handle());
+        } else {
+            window.focus(&pane.focus);
         }
-    }
-
-    /// 注册焦点监听：当指定 Pane 或其子元素获得焦点时更新 StatusBar。
-    pub(crate) fn register_pane_focus_listener(
-        &mut self,
-        pane: &Entity<Pane>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let focus = pane.read(cx).focus.clone();
-        let pane_entity = pane.clone();
-        let sub = cx.on_focus_in(&focus, window, move |this, _window, cx| {
-            this.handle_pane_focused(&pane_entity, cx);
-        });
-        self._subscriptions.push(sub);
-
-        let sub = cx.subscribe_in(pane, window, |_this, _emitter, event, _window, _cx| {
-            let _ = event;
-        });
-        self._subscriptions.push(sub);
-    }
-
-    /// 当 Pane 获得焦点时更新 Workspace 和 StatusBar 的焦点 Pane。
-    fn handle_pane_focused(&mut self, pane: &Entity<Pane>, cx: &mut Context<Self>) {
-        self.focus_pane = Some(pane.clone());
-        self.status_bar.update(cx, |bar, cx| {
-            bar.set_active_pane(pane, cx);
-        });
     }
 
     fn handle_close_tab(
@@ -464,9 +416,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(pane_entity) = self.focus_pane.clone() else {
-            return;
-        };
+        let pane_entity = self.pane.clone();
         let pane_focus = pane_entity.read(cx).focus.clone();
         if let Some(view_id) = pane_entity.read(cx).active {
             pane_entity.update(cx, |pane, cx| {
@@ -588,7 +538,7 @@ fn render_frame(top_bar: &Entity<TopBar>, status_bar: &Entity<StatusBar>, body: 
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let center = self.center.clone();
+        let pane = self.pane.clone();
 
         let left_dock = if self.left_dock.read(cx).is_open() {
             Some(self.left_dock.clone())
@@ -625,7 +575,7 @@ impl Render for Workspace {
             .child(render_frame(
                 &self.top_bar,
                 &self.status_bar,
-                render_layout_body(&center, left_dock, right_dock, bottom_dock),
+                render_layout_body(&pane, left_dock, right_dock, bottom_dock),
             ))
             .on_action(handle_quit)
             .on_action(handle_minimize)

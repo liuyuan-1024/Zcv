@@ -1463,7 +1463,7 @@ fn byte_for_utf16_offset(text: &str, target: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use gpui::{AppContext, Bounds, ScrollDelta, ScrollWheelEvent, TestAppContext, point, px};
-    use zcv_engine::{BufferConfig, ByteOffset, DisplayColumn, SelectionSet, TransactionId};
+    use zcv_engine::{BufferConfig, ByteOffset, SelectionSet, TransactionId};
 
     use super::*;
     use crate::editor::display_map::{DisplayPoint, DisplayRow};
@@ -1494,8 +1494,8 @@ mod tests {
             editor.selections = SelectionSet::caret(ByteOffset::new(1));
             editor
                 .scroll_manager
-                .set_anchor(DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(2)));
-            editor.scroll_manager.set_offset(point(px(4.0), px(12.0)));
+                .update_viewport(1, px(100.0), px(40.0), px(200.0), px(20.0));
+            editor.scroll_manager.scroll_by(point(px(-4.0), px(0.0)));
             editor.selection_history.record_transaction(
                 TransactionId::new(1),
                 SelectionSet::caret(ByteOffset::ZERO),
@@ -1526,10 +1526,7 @@ mod tests {
         });
 
         cx.read_entity(&first, |editor, _| {
-            assert_eq!(
-                editor.scroll_manager.anchor(),
-                DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(2))
-            );
+            assert_eq!(editor.scroll_manager.offset().x, px(4.0));
             let history = editor
                 .selection_history
                 .transaction(TransactionId::new(1))
@@ -1764,7 +1761,7 @@ mod tests {
         });
 
         cx.update_entity(&editor, |editor, cx| {
-            editor.scroll_manager.set_offset(point(px(0.), px(0.)));
+            editor.scroll_manager.scroll_by(point(px(100_000.), px(0.)));
             editor.set_caret(ByteOffset::new(text.len()));
             cx.notify();
         });

@@ -54,12 +54,9 @@ fn main() {
                     },
                     |window, cx| {
                         let workspace = cx.new(Workspace::new);
-                        // 注册 Pane 焦点监听，使 StatusBar 能跟随 Pane 切换
                         workspace.update(cx, |workspace, cx| {
-                            if let Some(pane) = workspace.focus_pane.clone() {
-                                workspace.register_pane_focus_listener(&pane, window, cx);
-                                initialize_pane(&pane, window, cx);
-                            }
+                            let pane = workspace.pane.clone();
+                            initialize_pane(&pane, window, cx);
                             // 为每个 Dock 注册焦点转发，与 Zed 做法一致
                             for dock in [
                                 &workspace.left_dock,

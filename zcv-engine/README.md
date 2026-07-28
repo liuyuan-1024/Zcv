@@ -12,7 +12,7 @@
 
 - 基于 `ByteOffset` / `TextRange` 的强类型编辑坐标。
 - 基于 `RopeyStorage` 的生产文本存储。
-- 事务化编辑、Delta、ChangeSet 和 PositionMap。
+- 事务化编辑，以及统一承载事务身份、历史归属、Delta 和 ChangeSet 的 `TransactionOutcome`。
 - 独立 `TextSubscription`：事件只负责唤醒，Snapshot 表达当前真相，组合 TextPatch 保证连续编辑不丢失。
 - Undo / Redo、历史节点、事务记录和回放。
 - Snapshot、BufferVersion 和版本化结果承载。

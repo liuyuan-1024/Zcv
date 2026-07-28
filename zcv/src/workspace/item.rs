@@ -19,8 +19,6 @@ use crate::editor::Editor;
 pub(crate) enum ItemEvent {
     /// 面包屑文本发生变化，需要刷新。
     UpdateBreadcrumbs,
-    /// 脏状态发生变化（用于标签指示器）。
-    DirtyChanged,
 }
 
 // ═══ ItemHandle trait ════════════════════════════════════════════════

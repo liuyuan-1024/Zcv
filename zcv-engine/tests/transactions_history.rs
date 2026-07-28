@@ -15,7 +15,7 @@ fn apply_transaction_should_emit_delta_changeset_position_map_and_subscription_p
         ],
     );
 
-    let outcome = buffer.apply_transaction_outcome(transaction).unwrap();
+    let outcome = buffer.apply_transaction(transaction).unwrap();
     let delta = outcome.delta();
     let changeset = outcome.changeset();
     let event = outcome.event();
@@ -120,7 +120,7 @@ fn transaction_record_should_replay_only_on_matching_base_version() {
 fn undo_redo_should_restore_text_and_dirty_state_and_return_history_identity() {
     let mut buffer = buffer("abc");
     let outcome = buffer
-        .apply_transaction_outcome(
+        .apply_transaction(
             Transaction::from_edits(buffer.version(), vec![Edit::insert(b(1), "X").unwrap()])
                 .unwrap()
                 .with_metadata(metadata("insert")),
@@ -157,7 +157,7 @@ fn explicit_history_merge_should_return_one_canonical_identity_for_editor_select
             merge_metadata("insert")
         };
         let outcome = buffer
-            .apply_transaction_outcome(
+            .apply_transaction(
                 Transaction::from_edits(
                     buffer.version(),
                     vec![Edit::insert(buffer.len_bytes(), text).unwrap()],
@@ -190,7 +190,7 @@ fn explicit_history_merge_should_return_one_canonical_identity_for_editor_select
 fn default_transactions_should_stay_separate() {
     let mut buffer = buffer("");
     buffer
-        .apply_transaction_outcome(
+        .apply_transaction(
             Transaction::from_edits(
                 buffer.version(),
                 vec![Edit::insert(ByteOffset::ZERO, "a").unwrap()],
@@ -200,7 +200,7 @@ fn default_transactions_should_stay_separate() {
         )
         .unwrap();
     buffer
-        .apply_transaction_outcome(
+        .apply_transaction(
             Transaction::from_edits(buffer.version(), vec![Edit::delete(range(0, 1))])
                 .unwrap()
                 .with_metadata(metadata("delete")),
@@ -232,7 +232,7 @@ fn transaction_should_not_report_history_identity_when_history_is_disabled() {
     .unwrap();
 
     let outcome = buffer
-        .apply_transaction_outcome(
+        .apply_transaction(
             Transaction::from_edits(
                 buffer.version(),
                 vec![Edit::insert(ByteOffset::ZERO, "a").unwrap()],

@@ -11,7 +11,6 @@ use crate::workspace::{ItemEvent, ItemHandle};
 use crate::workspace::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 
 pub(crate) struct Breadcrumbs {
-    pane_focused: bool,
     active_item: Option<Box<dyn ItemHandle>>,
     subscription: Option<Subscription>,
 }
@@ -25,7 +24,6 @@ impl Default for Breadcrumbs {
 impl Breadcrumbs {
     pub fn new() -> Self {
         Self {
-            pane_focused: false,
             active_item: None,
             subscription: None,
         }
@@ -77,9 +75,9 @@ impl Render for Breadcrumbs {
 }
 
 impl ToolbarItemView for Breadcrumbs {
-    fn set_active_pane_item(
+    fn set_active_item(
         &mut self,
-        active_pane_item: Option<&dyn ItemHandle>,
+        active_item: Option<&dyn ItemHandle>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
@@ -87,7 +85,7 @@ impl ToolbarItemView for Breadcrumbs {
         self.active_item = None;
         self.subscription = None;
 
-        let Some(item) = active_pane_item else {
+        let Some(item) = active_item else {
             return ToolbarItemLocation::Hidden;
         };
 
@@ -95,30 +93,19 @@ impl ToolbarItemView for Breadcrumbs {
         self.subscription = Some(item.subscribe_to_item_events(
             _window,
             cx,
-            Box::new(move |event, cx| {
-                if let ItemEvent::UpdateBreadcrumbs = event {
-                    this.update(cx, |this, cx| {
-                        cx.notify();
-                        if let Some(active_item) = this.active_item.as_ref() {
-                            cx.emit(ToolbarItemEvent::ChangeLocation(
-                                active_item.breadcrumb_location(cx),
-                            ))
-                        }
-                    })
-                    .ok();
-                }
+            Box::new(move |ItemEvent::UpdateBreadcrumbs, cx| {
+                this.update(cx, |this, cx| {
+                    cx.notify();
+                    if let Some(active_item) = this.active_item.as_ref() {
+                        cx.emit(ToolbarItemEvent::ChangeLocation(
+                            active_item.breadcrumb_location(cx),
+                        ))
+                    }
+                })
+                .ok();
             }),
         ));
         self.active_item = Some(item.boxed_clone());
         item.breadcrumb_location(cx)
-    }
-
-    fn pane_focus_update(
-        &mut self,
-        pane_focused: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-        self.pane_focused = pane_focused;
     }
 }

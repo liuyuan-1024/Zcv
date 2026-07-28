@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
-    App, Context, Div, MouseButton, Pixels, UniformListScrollHandle, Window, actions, div,
-    prelude::*, px, uniform_list,
+    Context, Div, MouseButton, UniformListScrollHandle, Window, actions, div, prelude::*,
+    uniform_list,
 };
 
 use crate::ui::tree;
@@ -415,9 +415,6 @@ impl ProjectTreeState {
 impl Panel for ProjectTree {
     fn persistent_name() -> &'static str {
         "ProjectTree"
-    }
-    fn default_size(&self, _cx: &App) -> Pixels {
-        px(240.0)
     }
     fn icon() -> &'static str {
         "icons/panels/project_tree.svg"

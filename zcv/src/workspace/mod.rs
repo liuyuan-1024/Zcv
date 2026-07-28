@@ -24,8 +24,7 @@ pub(crate) use panel::{
 };
 pub(crate) use panel_buttons::{PanelButtons, PanelDispatch};
 pub(crate) use status_bar::{StatusBar, StatusItemView};
-pub(crate) use tab_bar::TabBar;
-pub(crate) use toolbar::{Toolbar, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
+pub(crate) use toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 use top_bar::TopBar;
 use window_controls::{handle_minimize, handle_quit, handle_toggle_maximize};
 
@@ -36,7 +35,7 @@ use std::sync::Arc;
 
 use gpui::{
     Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Window, actions, div,
-    prelude::*, px,
+    prelude::*,
 };
 
 use self::dock::render_body as render_layout_body;
@@ -203,7 +202,7 @@ impl Workspace {
             Dock::new(
                 DockPosition::Left,
                 left_handles,
-                px(240.0),
+                DockPosition::Left.default_size(),
                 drag_notify.clone(),
                 cx,
             )
@@ -212,7 +211,7 @@ impl Workspace {
             Dock::new(
                 DockPosition::Right,
                 right_handles,
-                px(240.0),
+                DockPosition::Right.default_size(),
                 drag_notify.clone(),
                 cx,
             )
@@ -221,7 +220,7 @@ impl Workspace {
             Dock::new(
                 DockPosition::Bottom,
                 bottom_handles,
-                px(200.0),
+                DockPosition::Bottom.default_size(),
                 drag_notify.clone(),
                 cx,
             )

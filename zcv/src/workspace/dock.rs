@@ -46,6 +46,16 @@ pub(crate) enum DockPosition {
     Right,
 }
 
+impl DockPosition {
+    /// 未恢复持久化状态时采用的 Dock 单一默认尺寸。
+    pub(crate) fn default_size(self) -> Pixels {
+        match self {
+            Self::Left | Self::Right => px(240.0),
+            Self::Bottom => px(200.0),
+        }
+    }
+}
+
 /// dock 和编辑区的最小尺寸，防止 dock 拖拽完全挤占编辑区。
 const MIN_SIZE: Pixels = space::S16;
 
@@ -234,10 +244,7 @@ impl Dock {
 
     /// 重置为默认尺寸。
     pub(crate) fn reset_size(&mut self, window_size: gpui::Size<Pixels>, cx: &mut Context<Self>) {
-        let default = match self.position {
-            DockPosition::Left | DockPosition::Right => px(240.0),
-            DockPosition::Bottom => px(200.0),
-        };
+        let default = self.position.default_size();
         let max_size = match self.position {
             DockPosition::Left | DockPosition::Right => window_size.width - MIN_SIZE,
             DockPosition::Bottom => window_size.height - MIN_SIZE,

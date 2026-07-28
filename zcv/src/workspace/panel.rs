@@ -3,12 +3,8 @@
 //! 参考 Zed `crates/panel/src/panel.rs` 架构：
 //! - `Panel` trait 定义面板接口
 //! - `PanelHandle` trait object 抹消具体类型，使 Dock 能统一管理异构面板
-//! - `position()` / `default_size()` 为实例方法（对齐 Zed），面板可动态调整
 
-use gpui::{
-    AnyView, App, Context, Entity, EntityId, FocusHandle, Pixels, Render, Window, div, prelude::*,
-    px,
-};
+use gpui::{AnyView, App, Context, Entity, EntityId, FocusHandle, Render, Window, div, prelude::*};
 
 use zcv_theme::color;
 
@@ -18,9 +14,6 @@ use zcv_theme::color;
 pub(crate) trait Panel: Render + Sized {
     /// 面板唯一标识名，用于持久化和类型查询。
     fn persistent_name() -> &'static str;
-
-    /// 面板默认尺寸（左/右 dock 为宽度，底 dock 为高度）。
-    fn default_size(&self, cx: &App) -> Pixels;
 
     /// 面板图标 SVG 路径。
     fn icon() -> &'static str;
@@ -44,7 +37,6 @@ pub(crate) trait Panel: Render + Sized {
 pub(crate) trait PanelHandle: Send + Sync {
     fn panel_id(&self) -> EntityId;
     fn persistent_name(&self) -> &'static str;
-    fn default_size(&self, cx: &App) -> Pixels;
     fn icon(&self) -> &'static str;
     fn label(&self) -> &'static str;
     fn action_name(&self) -> &'static str;
@@ -62,10 +54,6 @@ impl<T: Panel + 'static> PanelHandle for Entity<T> {
 
     fn persistent_name(&self) -> &'static str {
         T::persistent_name()
-    }
-
-    fn default_size(&self, cx: &App) -> Pixels {
-        self.read(cx).default_size(cx)
     }
 
     fn icon(&self) -> &'static str {
@@ -96,7 +84,7 @@ impl<T: Panel + 'static> PanelHandle for Entity<T> {
 // ═══ 占位面板 ═════════════════════════════════════════════════════
 
 macro_rules! make_placeholder_panel {
-    ($name:ident, $persistent:expr, $icon:expr, $label:expr, $action:expr, $size:expr) => {
+    ($name:ident, $persistent:expr, $icon:expr, $label:expr, $action:expr) => {
         pub(crate) struct $name {
             focus: FocusHandle,
         }
@@ -112,9 +100,6 @@ macro_rules! make_placeholder_panel {
         impl Panel for $name {
             fn persistent_name() -> &'static str {
                 $persistent
-            }
-            fn default_size(&self, _cx: &App) -> Pixels {
-                $size
             }
             fn icon() -> &'static str {
                 $icon
@@ -152,8 +137,7 @@ make_placeholder_panel!(
     "VersionControl",
     "icons/panels/version_control.svg",
     "版本控制",
-    "dock::ToggleVersionControl",
-    px(240.0)
+    "dock::ToggleVersionControl"
 );
 
 make_placeholder_panel!(
@@ -161,8 +145,7 @@ make_placeholder_panel!(
     "Outline",
     "icons/panels/outline.svg",
     "大纲",
-    "dock::ToggleOutline",
-    px(240.0)
+    "dock::ToggleOutline"
 );
 
 make_placeholder_panel!(
@@ -170,8 +153,7 @@ make_placeholder_panel!(
     "Terminal",
     "icons/panels/terminal.svg",
     "终端",
-    "dock::ToggleTerminal",
-    px(200.0)
+    "dock::ToggleTerminal"
 );
 
 make_placeholder_panel!(
@@ -179,8 +161,7 @@ make_placeholder_panel!(
     "Debug",
     "icons/panels/debug.svg",
     "调试",
-    "dock::ToggleDebug",
-    px(200.0)
+    "dock::ToggleDebug"
 );
 
 make_placeholder_panel!(
@@ -188,6 +169,5 @@ make_placeholder_panel!(
     "KeyboardShortcuts",
     "icons/panels/keyboard_shortcuts.svg",
     "快捷键",
-    "dock::ToggleKeyboardShortcuts",
-    px(240.0)
+    "dock::ToggleKeyboardShortcuts"
 );

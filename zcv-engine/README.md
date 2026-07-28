@@ -1,12 +1,12 @@
 # zcv-engine
 
-`zcv-engine` 是一个独立的 Rust 纯文本编辑引擎 crate，为编辑器宿主提供工业级底层文本编辑能力。
+`zcv-engine` 是一个独立的 Rust 纯文本编辑引擎 crate，提供工业级底层文本编辑能力。
 
 ## 定位
 
 `zcv-engine` 只做编辑引擎底座：文本存储、编辑、坐标、事务、历史、快照、通用区间追踪、读取切片、文件文本边界和错误防御。
 
-它不做 UI 渲染、Editor 折叠与显示投影、LSP / Tree-sitter provider、diagnostics 生成、项目索引、命令系统、宏录制、后台任务调度或实时多人协作。折叠与 Projection 由宿主 Editor 的 DisplayMap 组合当前 `Snapshot` 与每个订阅者独立累积的 `TextPatch` 实现。
+UI、产品业务、项目编排、协议集成、任务调度和网络协作不属于本 crate。
 
 ## 核心能力
 
@@ -17,11 +17,11 @@
 - Undo / Redo、历史节点、事务记录和回放。
 - Snapshot、BufferVersion 和版本化结果承载。
 - Selection / SelectionSet 原语、PositionMap 映射和纯文本 word / grapheme 边界查询。
-- Anchor、TrackedRange、MetadataLayer 等通用区间追踪。
-- 逻辑文本 Viewport slicing；显示投影由宿主 Editor 负责。
-- 单 Buffer 同步匹配、替换和 replace all；后台调度与取消由宿主负责。
+- Anchor、TrackedRange、VersionedResult、VersionedRangeSet 等通用区间追踪。
+- 逻辑文本 Viewport slicing。
+- 单 Buffer 同步匹配、替换和 replace all。
 - 文件加载、保存文本边界、大文件策略和防御式错误处理。
-- 机器契约测试和 property 回归。
+- 机器契约测试和差分回归。
 
 ## 目录概览
 
@@ -49,7 +49,6 @@ tracking/     Anchor、Mark、TrackedRange 及跟随策略
 
 ## 相关文档
 
-- `AGENTS.md`：AI 协作规则与稳定工程约束。
 - `docs/引擎能力.md`：能力边界与长期方向。
 - `docs/STATUS.md`：当前状态、结构概览和建议验证命令。
 - `../CODEX.md`：workspace 项目结构与协作规则。

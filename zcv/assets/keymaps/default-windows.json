@@ -61,20 +61,20 @@
   },
   {
     "bindings": {
-      "alt-f4": "workspace::QuitWindow",
-      "ctrl-m": "workspace::MinimizeWindow",
-      "f11": "workspace::ToggleMaximizeWindow",
+      "alt-f4": "window_controls::QuitWindow",
+      "ctrl-m": "window_controls::MinimizeWindow",
+      "f11": "window_controls::ToggleMaximizeWindow",
       "ctrl-shift-p": "project_picker::ToggleProjectPicker",
-      "ctrl-,": "workspace::OpenSettings",
-      "ctrl-shift-e": "workspace::ToggleProjectTree",
-      "ctrl-shift-g": "workspace::ToggleVersionControl",
-      "ctrl-shift-o": "workspace::ToggleOutline",
-      "ctrl-shift-l": "workspace::ToggleLanguageServer",
-      "ctrl-shift-m": "workspace::ToggleDiagnostics",
-      "ctrl-shift-f": "workspace::ToggleProjectSearch",
-      "ctrl-`": "workspace::ToggleTerminal",
-      "ctrl-shift-d": "workspace::ToggleDebug",
-      "ctrl-shift-k": "workspace::ToggleKeyboardShortcuts",
+      "ctrl-,": "top_bar::OpenSettings",
+      "ctrl-shift-e": "dock::ToggleProjectTree",
+      "ctrl-shift-g": "dock::ToggleVersionControl",
+      "ctrl-shift-o": "dock::ToggleOutline",
+      "ctrl-shift-l": "dock::ToggleLanguageServer",
+      "ctrl-shift-m": "dock::ToggleDiagnostics",
+      "ctrl-shift-f": "dock::ToggleProjectSearch",
+      "ctrl-`": "dock::ToggleTerminal",
+      "ctrl-shift-d": "dock::ToggleDebug",
+      "ctrl-shift-k": "dock::ToggleKeyboardShortcuts",
       "ctrl-s": "workspace::Save"
     }
   }

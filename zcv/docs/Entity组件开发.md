@@ -369,27 +369,15 @@ use gpui::actions;
 actions!(pane, [CloseTab, NextTab, PrevTab]);
 ```
 
-### 4.2 在 keymap.rs build 函数中添加映射
+### 4.2 Action 自动进入 GPUI 注册表
 
-```rust
-// src/keymap.rs — 把 action 名称字符串映射到 Rust 类型
-fn build(keys: &str, action_name: &str, context: Option<&str>) -> Option<KeyBinding> {
-    let binding = match action_name {
-        // 已有绑定...
-        "pane::CloseTab" => KeyBinding::new(keys, CloseTab, context),
-        "pane::NextTab"  => KeyBinding::new(keys, NextTab, context),
-        "pane::PrevTab"  => KeyBinding::new(keys, PrevTab, context),
-        _ => return None,
-    };
-    Some(binding)
-}
-```
+`actions!` 定义的 action 会进入 GPUI 的 action registry。keymap 加载器通过
+`App::build_action` 按 JSON 中的名称构建 action，不需要在 keymap 模块中导入 action
+类型，也不需要维护名称到 Rust 类型的手写 `match`。
 
-需要把 action 类型导入 keymap.rs：
-
-```rust
-use crate::workspace::{CloseTab, NextTab, PrevTab};
-```
+内置 keymap 采用严格加载：action 名称不存在、参数无效、上下文表达式错误或键位非法时，
+应用会直接报告配置错误，不会跳过绑定后继续启动。因此新增 action 时，只需要定义 action、
+在 JSON 中使用其真实注册名称，并在组件中绑定 handler。
 
 ### 4.3 在 JSON 文件中定义键位
 

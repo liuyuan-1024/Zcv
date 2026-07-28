@@ -17,7 +17,7 @@ pub(crate) use dock::{
     ToggleVersionControl,
 };
 pub(crate) use item::{ItemEvent, ItemHandle};
-pub(crate) use pane::{CloseTab, NextTab, Pane, PrevTab};
+pub(crate) use pane::Pane;
 pub(crate) use panel::{
     DebugPanel, KeyboardShortcutsPanel, OutlinePanel, Panel, PanelHandle, TerminalPanel,
     VersionControlPanel,
@@ -26,11 +26,8 @@ pub(crate) use panel_buttons::{PanelButtons, PanelDispatch};
 pub(crate) use status_bar::{StatusBar, StatusItemView};
 pub(crate) use tab_bar::TabBar;
 pub(crate) use toolbar::{Toolbar, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
-pub(crate) use top_bar::{GitFetch, GitPull, GitPush, OpenSettings, TopBar};
-pub(crate) use window_controls::{
-    MinimizeWindow, QuitWindow, ToggleMaximizeWindow, handle_minimize, handle_quit,
-    handle_toggle_maximize, render,
-};
+use top_bar::TopBar;
+use window_controls::{handle_minimize, handle_quit, handle_toggle_maximize};
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -117,7 +114,7 @@ impl Workspace {
         let weak_project_switcher = weak_self.clone();
         let weak_open_file = weak_self.clone();
 
-        let keybindings = keymap::load();
+        let keybindings = keymap::load(cx).expect("内置 keymap 应完整有效");
         cx.bind_keys(keybindings.bindings.clone());
         cx.set_global(keybindings);
 

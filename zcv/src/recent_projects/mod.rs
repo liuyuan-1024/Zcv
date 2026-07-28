@@ -4,9 +4,7 @@
 
 pub(crate) mod project_picker;
 
-pub(crate) use project_picker::{
-    OnProjectSelected, OpenLocalProject, ProjectPicker, ToggleProjectPicker,
-};
+pub(crate) use project_picker::{OnProjectSelected, ProjectPicker, ToggleProjectPicker};
 
 use std::path::{Path, PathBuf};
 

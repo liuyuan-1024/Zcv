@@ -7,8 +7,8 @@ use gpui::{App, Context, ElementId, Entity, Render, Subscription, Window, div, p
 
 use super::{Dock, DockPosition, StatusItemView};
 use crate::editor::Editor;
-use crate::theme::{color, space};
 use crate::ui::Glyph;
+use zcv_theme::{color, space};
 
 /// 面板点击调度函数：将点击转为 gpui action dispatch。
 pub(crate) type PanelDispatch = fn(&mut Window, &mut App);

@@ -4,7 +4,7 @@
 
 use gpui::{IntoElement, Pixels, Rgba, Svg, prelude::*, svg};
 
-use crate::theme::{color, typography};
+use zcv_theme::{color, typography};
 
 /// 图标，自带统一默认样式（字体大小灰度色 + UI 字型尺寸）。
 ///

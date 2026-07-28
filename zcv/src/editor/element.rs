@@ -15,7 +15,7 @@ use super::display_map::{
     ProjectedViewportRowKind,
 };
 use super::view::{Editor, EditorPresentation};
-use crate::theme::color;
+use zcv_theme::color;
 
 const CARET_WIDTH: Pixels = px(2.);
 

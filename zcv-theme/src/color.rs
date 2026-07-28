@@ -16,7 +16,7 @@ use std::sync::{OnceLock, RwLock};
 
 use gpui::{Rgba, rgb, rgba};
 
-use crate::theme::ConcreteTheme;
+use crate::ConcreteTheme;
 
 /// 单个色相的 solid + alpha 双阶梯。索引 0–8 对应语义 01–09。
 #[derive(Clone, Copy, Debug)]

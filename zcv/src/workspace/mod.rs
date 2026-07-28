@@ -52,7 +52,7 @@ use crate::project::{Project, ProjectEvent};
 use crate::project_search::ProjectSearchButton;
 use crate::project_tree::{OnOpenFile, ProjectTree};
 use crate::recent_projects::{self, OnProjectSelected, ToggleProjectPicker};
-use crate::theme::{color, typography};
+use zcv_theme::{color, typography};
 
 actions!(workspace, [Save]);
 

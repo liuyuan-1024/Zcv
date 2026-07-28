@@ -6,9 +6,9 @@
 
 use gpui::{AnyElement, Context, EventEmitter, Render, Subscription, Window, div, prelude::*};
 
-use crate::theme::{color, space};
 use crate::workspace::{ItemEvent, ItemHandle};
 use crate::workspace::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
+use zcv_theme::{color, space};
 
 pub(crate) struct Breadcrumbs {
     active_item: Option<Box<dyn ItemHandle>>,

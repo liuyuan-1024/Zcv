@@ -21,8 +21,8 @@ use super::display_map::{DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::ScrollManager;
 use super::selection::{EditOutcome, SelectionHistory, apply_targeted_edits, replace_selections};
-use crate::theme::{color, typography};
 use crate::workspace::ItemEvent;
+use zcv_theme::{color, typography};
 
 actions!(
     editor,

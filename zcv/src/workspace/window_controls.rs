@@ -2,7 +2,7 @@
 
 use gpui::{Pixels, Window, actions, div, prelude::*, px, rgb, svg};
 
-use crate::theme::{color, space};
+use zcv_theme::{color, space};
 
 actions!(
     window_controls,

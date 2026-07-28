@@ -9,10 +9,10 @@ use std::sync::{OnceLock, RwLock};
 use gpui::{Hsla, Rgba, rgb, rgba};
 
 use super::color;
-use crate::theme::ConcreteTheme;
+use crate::ConcreteTheme;
 
-const THEME_ONE_DARK_TOML: &str = include_str!("../../assets/themes/onedark.toml");
-const THEME_ONE_LIGHT_TOML: &str = include_str!("../../assets/themes/onelight.toml");
+const THEME_ONE_DARK_TOML: &str = include_str!("../assets/themes/onedark.toml");
+const THEME_ONE_LIGHT_TOML: &str = include_str!("../assets/themes/onelight.toml");
 
 pub fn default_fg() -> Hsla {
     color::current().gray.s[8].into()

@@ -10,20 +10,20 @@ pub mod color;
 pub mod syntax;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Theme {
+pub enum Theme {
     System,
     OneDark,
     OneLight,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ConcreteTheme {
+pub enum ConcreteTheme {
     Dark,
     Light,
 }
 
 impl Theme {
-    pub(crate) fn from_config(s: &str) -> Self {
+    pub fn from_config(s: &str) -> Self {
         match s {
             "one-dark" => Self::OneDark,
             "one-light" => Self::OneLight,
@@ -31,7 +31,7 @@ impl Theme {
         }
     }
 
-    pub(crate) fn as_config(self) -> &'static str {
+    pub fn as_config(self) -> &'static str {
         match self {
             Self::System => "system",
             Self::OneDark => "one-dark",
@@ -39,7 +39,7 @@ impl Theme {
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::System => "跟随系统",
             Self::OneDark => "One Dark",
@@ -47,7 +47,7 @@ impl Theme {
         }
     }
 
-    pub(crate) fn next(self) -> Self {
+    pub fn next(self) -> Self {
         match self {
             Self::System => Self::OneDark,
             Self::OneDark => Self::OneLight,
@@ -55,11 +55,11 @@ impl Theme {
         }
     }
 
-    pub(crate) fn is_system(self) -> bool {
+    pub fn is_system(self) -> bool {
         self == Self::System
     }
 
-    pub(crate) fn effective(self, window: Option<&Window>) -> ConcreteTheme {
+    pub fn effective(self, window: Option<&Window>) -> ConcreteTheme {
         match self {
             Self::System => match window.map(|w| w.appearance()) {
                 Some(WindowAppearance::Dark | WindowAppearance::VibrantDark) => ConcreteTheme::Dark,
@@ -73,7 +73,7 @@ impl Theme {
         }
     }
 
-    pub(crate) fn apply(self, window: Option<&Window>) {
+    pub fn apply(self, window: Option<&Window>) {
         let concrete = self.effective(window);
         color::set_palette(concrete);
         syntax::set_theme(concrete);
@@ -108,7 +108,7 @@ pub mod typography {
     static UI_FONT_SIZE: AtomicU16 = AtomicU16::new(13);
     static EDITOR_FONT_SIZE: AtomicU16 = AtomicU16::new(16);
 
-    pub(crate) fn set_sizes(ui: u16, editor: u16) {
+    pub fn set_sizes(ui: u16, editor: u16) {
         UI_FONT_SIZE.store(ui, Ordering::Relaxed);
         EDITOR_FONT_SIZE.store(editor, Ordering::Relaxed);
     }

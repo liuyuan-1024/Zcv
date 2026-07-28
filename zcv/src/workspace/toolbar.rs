@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use super::item::ItemHandle;
-use crate::theme::{color, space};
+use zcv_theme::{color, space};
 
 // ═══ ToolbarItemLocation ═════════════════════════════════════════════
 

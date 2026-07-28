@@ -15,10 +15,10 @@ use gpui::{
 
 use crate::keymap::KeyBindings;
 use crate::recent_projects::{self, ProjectEntry};
-use crate::theme::{color, space, typography};
 use crate::ui::Glyph;
 use crate::ui::{ListItem, list_item_two_line};
 use crate::ui::{Picker, PickerDelegate, picker_divider};
+use zcv_theme::{color, space, typography};
 
 const PICKER_WIDTH: Pixels = px(360.0);
 

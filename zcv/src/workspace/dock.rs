@@ -17,7 +17,7 @@ use gpui::{
 
 use super::Pane;
 use super::panel::PanelHandle;
-use crate::theme::{color, space};
+use zcv_theme::{color, space};
 
 // ═══ Panel 通用 action ═══════════════════════════════════════════
 

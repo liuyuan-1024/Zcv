@@ -5,7 +5,7 @@
 
 use gpui::{AnyElement, ElementId, IntoElement, div, prelude::*};
 
-use crate::theme::{color, space, typography};
+use zcv_theme::{color, space, typography};
 
 /// 通用列表项。
 pub struct ListItem {

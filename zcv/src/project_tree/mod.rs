@@ -13,9 +13,9 @@ use gpui::{
     prelude::*, px, uniform_list,
 };
 
-use crate::theme::color;
 use crate::ui::tree;
 use crate::workspace::Panel;
+use zcv_theme::color;
 
 actions!(
     project_tree,

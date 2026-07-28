@@ -8,7 +8,7 @@ use gpui::{
     Stateful, StatefulInteractiveElement, Window, div, prelude::*, px,
 };
 
-use crate::theme::{color, radius, space};
+use zcv_theme::{color, radius, space};
 
 /// 标签页组件。
 pub(crate) struct Tab {

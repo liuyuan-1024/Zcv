@@ -1,6 +1,6 @@
 //! `EmbeddedAssets` —— GPUI `AssetSource` 的 embedded 实现。
 //!
-//! 编译时将全部 SVG / 主题文件嵌入二进制。
+//! 编译时将全部 SVG 嵌入二进制。
 
 use std::borrow::Cow;
 
@@ -60,8 +60,6 @@ const ASSETS: &[(&str, &[u8])] = &[
     asset!("icons/actions/arrow_circle.svg"),
     asset!("icons/actions/arrow_down.svg"),
     asset!("icons/actions/arrow_up.svg"),
-    asset!("themes/onedark.toml"),
-    asset!("themes/onelight.toml"),
 ];
 
 impl AssetSource for EmbeddedAssets {

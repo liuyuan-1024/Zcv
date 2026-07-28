@@ -14,7 +14,6 @@ mod project;
 mod project_search;
 mod project_tree;
 mod recent_projects;
-mod theme;
 mod ui;
 mod workspace;
 
@@ -24,8 +23,8 @@ use gpui::{
 };
 
 use assets::{EmbeddedAssets, embedded_fonts};
-use theme::Theme;
 use workspace::Workspace;
+use zcv_theme::Theme;
 
 use crate::workspace::{Dock, Pane};
 

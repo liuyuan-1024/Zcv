@@ -24,7 +24,7 @@ actions!(
 
 use super::Pane;
 use crate::editor::Editor;
-use crate::theme::{color, space};
+use zcv_theme::{color, space};
 
 // ═══ StatusItemView trait ═══════════════════════════════════════════
 

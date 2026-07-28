@@ -10,7 +10,7 @@ use gpui::{
     px,
 };
 
-use crate::theme::color;
+use zcv_theme::color;
 
 // ═══ Panel trait ═══════════════════════════════════════════════════
 

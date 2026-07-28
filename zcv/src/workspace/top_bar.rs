@@ -4,8 +4,8 @@ use gpui::{AnyElement, Div, Entity, Window, actions, div, prelude::*};
 
 use super::window_controls;
 use crate::recent_projects::{OnProjectSelected, ProjectPicker};
-use crate::theme::{color, space};
 use crate::ui::Glyph;
+use zcv_theme::{color, space};
 
 actions!(top_bar, [OpenSettings, GitFetch, GitPull, GitPush,]);
 

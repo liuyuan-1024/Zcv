@@ -7242,6 +7242,7 @@ dependencies = [
  "toml 0.8.23",
  "unicode-segmentation",
  "zcv-engine",
+ "zcv-theme",
 ]
 
 [[package]]
@@ -7254,6 +7255,14 @@ dependencies = [
  "ropey",
  "thiserror 2.0.19",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "zcv-theme"
+version = "0.7.7"
+dependencies = [
+ "gpui",
+ "toml 0.8.23",
 ]
 
 [[package]]

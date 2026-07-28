@@ -17,10 +17,10 @@ use super::item::ItemHandle;
 use super::tab_bar::TabBar;
 use super::toolbar::Toolbar;
 use crate::editor::Editor;
-use crate::theme::{color, typography};
 use crate::ui::Glyph;
 use crate::ui::SvgIcon;
 use crate::ui::Tab;
+use zcv_theme::{color, typography};
 
 actions!(pane, [CloseTab, NextTab, PrevTab]);
 

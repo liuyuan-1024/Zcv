@@ -12,7 +12,7 @@ use gpui::{
 };
 
 use crate::editor::{Editor, MoveDown, MoveUp};
-use crate::theme::{color, space};
+use zcv_theme::{color, space};
 
 actions!(
     picker,

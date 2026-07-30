@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
-    Context, Div, MouseButton, UniformListScrollHandle, Window, actions, div, prelude::*,
-    uniform_list,
+    Context, Div, MouseButton, ScrollStrategy, UniformListScrollHandle, Window, actions, div,
+    prelude::*, uniform_list,
 };
 
 use crate::ui::tree;
@@ -29,13 +29,14 @@ actions!(
 );
 
 /// 打开文件回调
-pub(crate) type OnOpenFile = Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App)>;
+pub(crate) type OnOpenFile = Rc<dyn Fn(PathBuf, bool, &mut Window, &mut gpui::App)>;
 
 /// 选中并激活项目树中的节点（目录→展开/折叠，文件→打开）。
 fn activate_node(
     state: &Rc<RefCell<ProjectTreeState>>,
     path: &Path,
     is_dir: bool,
+    focus_opened_item: bool,
     on_open_file: &Option<OnOpenFile>,
     window: &mut Window,
     cx: &mut gpui::App,
@@ -44,7 +45,7 @@ fn activate_node(
     if is_dir {
         state.borrow_mut().toggle_expand(path);
     } else if let Some(callback) = on_open_file {
-        callback(path.to_path_buf(), window, cx);
+        callback(path.to_path_buf(), focus_opened_item, window, cx);
     }
     window.refresh();
 }
@@ -86,6 +87,16 @@ impl ProjectTree {
 
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         self.state.borrow_mut().refresh_rows();
+        cx.notify();
+    }
+
+    /// 将活动文件标记并强制滚动到项目树中央。
+    pub(crate) fn reveal_active_path(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        let index = self.state.borrow_mut().reveal_active_path(path.as_deref());
+        if let Some(index) = index {
+            self.scroll_handle
+                .scroll_to_item_strict(index, ScrollStrategy::Center);
+        }
         cx.notify();
     }
 
@@ -168,7 +179,15 @@ impl ProjectTree {
         let Some(path) = path else {
             return;
         };
-        activate_node(&self.state, &path, is_dir, &self.on_open_file, window, cx);
+        activate_node(
+            &self.state,
+            &path,
+            is_dir,
+            true,
+            &self.on_open_file,
+            window,
+            cx,
+        );
     }
 }
 
@@ -177,6 +196,7 @@ impl gpui::Render for ProjectTree {
         self.state.borrow_mut().ensure_selected();
         let len = self.state.borrow().visible_rows().len();
         let is_focused = self.focus.contains_focused(window, cx);
+        let focus = self.focus.clone();
         let on_open = self.on_open_file.clone();
 
         div()
@@ -194,6 +214,7 @@ impl gpui::Render for ProjectTree {
                 &self.scroll_handle,
                 len,
                 is_focused,
+                focus,
                 on_open,
             ))
     }
@@ -206,6 +227,7 @@ fn render_list(
     scroll_handle: &UniformListScrollHandle,
     len: usize,
     is_focused: bool,
+    focus: gpui::FocusHandle,
     on_open_file: Option<OnOpenFile>,
 ) -> gpui::UniformList {
     let tree_rc = Rc::clone(state);
@@ -218,8 +240,17 @@ fn render_list(
             .filter_map(|i| rows.get(i))
             .map(|row| {
                 let sel = state.selected.as_ref() == Some(&row.path);
-                render_row(row, Rc::clone(&tree_rc), sel, is_focused, &on_open_file)
-                    .into_any_element()
+                let marked = state.active_path.as_ref() == Some(&row.path);
+                render_row(
+                    row,
+                    Rc::clone(&tree_rc),
+                    sel,
+                    marked,
+                    is_focused,
+                    focus.clone(),
+                    &on_open_file,
+                )
+                .into_any_element()
             })
             .collect()
     })
@@ -231,26 +262,35 @@ fn render_row(
     row: &ProjectTreeRow,
     state: Rc<RefCell<ProjectTreeState>>,
     sel: bool,
+    marked: bool,
     focused: bool,
+    focus: gpui::FocusHandle,
     on_open_file: &Option<OnOpenFile>,
 ) -> Div {
     let path = row.path.clone();
     let is_dir = row.is_dir;
     let depth = row.depth;
     let name = row.name.clone();
-    let bg = if sel {
-        color::current().gray.s[3]
-    } else {
-        gpui::rgba(0)
-    };
     let on_open = on_open_file.clone();
 
     tree::render_row_base(depth, is_dir, row.expanded, &name)
-        .bg(bg)
         .cursor_pointer()
+        .when(marked, |el| el.bg(color::current().gray.s[3]))
+        .hover(|style| style.bg(color::current().gray.s[3]))
         .when(sel && focused, |el| el.child(tree::selection_border()))
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            activate_node(&state, &path, is_dir, &on_open, window, cx);
+        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+            if is_dir {
+                window.focus(&focus);
+            }
+            activate_node(
+                &state,
+                &path,
+                is_dir,
+                event.click_count > 1,
+                &on_open,
+                window,
+                cx,
+            );
             cx.stop_propagation();
         })
 }
@@ -270,6 +310,7 @@ struct ProjectTreeState {
     root: PathBuf,
     expanded: HashSet<PathBuf>,
     selected: Option<PathBuf>,
+    active_path: Option<PathBuf>,
     rows: Vec<ProjectTreeRow>,
 }
 
@@ -281,6 +322,7 @@ impl ProjectTreeState {
             root,
             expanded,
             selected: None,
+            active_path: None,
             rows: Vec::new(),
         };
         state.refresh_rows();
@@ -293,6 +335,7 @@ impl ProjectTreeState {
         self.expanded.clear();
         self.expanded.insert(self.root.clone());
         self.selected = None;
+        self.active_path = None;
         self.refresh_rows();
     }
 
@@ -389,6 +432,28 @@ impl ProjectTreeState {
         self.selected = Some(path.to_path_buf());
     }
 
+    /// 对齐 Zed 的 reveal_entry：展开祖先目录，同时更新 selection 与 marked 状态。
+    fn reveal_active_path(&mut self, path: Option<&Path>) -> Option<usize> {
+        let Some(path) = path.filter(|path| path.starts_with(&self.root)) else {
+            self.active_path = None;
+            return None;
+        };
+
+        let mut ancestor = path.parent();
+        while let Some(directory) = ancestor.filter(|directory| directory.starts_with(&self.root)) {
+            self.expanded.insert(directory.to_path_buf());
+            if directory == self.root {
+                break;
+            }
+            ancestor = directory.parent();
+        }
+
+        self.active_path = Some(path.to_path_buf());
+        self.selected = Some(path.to_path_buf());
+        self.refresh_rows();
+        self.rows.iter().position(|row| row.path == path)
+    }
+
     fn selected_idx(&self, rows: &[ProjectTreeRow]) -> Option<usize> {
         self.selected
             .as_ref()
@@ -450,5 +515,50 @@ mod tests {
 
         state.refresh_rows();
         assert!(!state.visible_rows().iter().any(|row| row.path == file));
+    }
+
+    #[test]
+    fn revealing_active_file_expands_ancestors_and_keeps_mark_separate_from_selection() {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let nested = directory.path().join("src").join("feature");
+        std::fs::create_dir_all(&nested).expect("应创建嵌套目录");
+        let file = nested.join("mod.rs");
+        std::fs::write(&file, "content").expect("应创建测试文件");
+        let mut state = ProjectTreeState::new(directory.path().to_path_buf());
+
+        let index = state
+            .reveal_active_path(Some(&file))
+            .expect("活动文件应出现在可见行中");
+
+        assert_eq!(state.active_path.as_deref(), Some(file.as_path()));
+        assert_eq!(state.selected.as_deref(), Some(file.as_path()));
+        assert_eq!(state.visible_rows()[index].path, file);
+        assert!(state.expanded.contains(&directory.path().join("src")));
+        assert!(state.expanded.contains(&nested));
+
+        let rows = state.visible_rows().to_vec();
+        state.select_up(&rows);
+        assert_ne!(state.selected.as_deref(), Some(file.as_path()));
+        assert_eq!(
+            state.active_path.as_deref(),
+            Some(file.as_path()),
+            "键盘游标移动不应改变活动文件标记"
+        );
+    }
+
+    #[test]
+    fn revealing_path_outside_project_clears_active_mark() {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let file = directory.path().join("active.txt");
+        std::fs::write(&file, "content").expect("应创建测试文件");
+        let mut state = ProjectTreeState::new(directory.path().to_path_buf());
+        state.reveal_active_path(Some(&file));
+
+        assert!(
+            state
+                .reveal_active_path(Some(Path::new("/outside/project.txt")))
+                .is_none()
+        );
+        assert!(state.active_path.is_none());
     }
 }

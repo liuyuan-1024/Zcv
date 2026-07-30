@@ -136,10 +136,13 @@ impl Workspace {
         let project_tree: Entity<ProjectTree> = cx.new(|cx| {
             let mut tree = ProjectTree::new(root_for_tree, cx);
             let on_open_file: OnOpenFile = Rc::new(
-                move |path: PathBuf, window: &mut Window, cx: &mut gpui::App| {
+                move |path: PathBuf,
+                      focus_opened_item: bool,
+                      window: &mut Window,
+                      cx: &mut gpui::App| {
                     if let Some(ws) = weak_open_file.upgrade() {
                         ws.update(cx, |ws, cx| {
-                            ws.open_path(path, window, cx);
+                            ws.open_path(path, focus_opened_item, window, cx);
                         });
                     }
                 },
@@ -282,6 +285,18 @@ impl Workspace {
                 }
             });
 
+        let pane_subscription = cx.subscribe(&pane, |workspace, pane, event, cx| {
+            if matches!(
+                event,
+                pane::PaneEvent::Activate { .. } | pane::PaneEvent::Removed { .. }
+            ) {
+                let active_path = pane.read(cx).active_path(cx);
+                workspace.project_tree.update(cx, |tree, cx| {
+                    tree.reveal_active_path(active_path, cx);
+                });
+            }
+        });
+
         Self {
             focus,
             pane,
@@ -294,12 +309,18 @@ impl Workspace {
             bottom_dock,
             panel_action_map,
             drag_notify,
-            _subscriptions: vec![project_subscription],
+            _subscriptions: vec![project_subscription, pane_subscription],
         }
     }
 
     /// 由项目树回调调用的文件打开逻辑。
-    fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_path(
+        &mut self,
+        path: PathBuf,
+        focus_opened_item: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let path = match path.canonicalize() {
             Ok(p) => p,
             Err(error) => {
@@ -325,7 +346,11 @@ impl Workspace {
         let focus = pane.update(cx, |pane, cx| {
             pane.open_file(path, project_root, file_name, buffer, window, cx)
         });
-        window.focus(&focus);
+        if focus_opened_item {
+            window.focus(&focus);
+        } else {
+            window.focus(&self.project_tree.read(cx).focus);
+        }
         window.refresh();
     }
 

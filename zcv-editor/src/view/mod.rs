@@ -1482,6 +1482,12 @@ fn edit_metadata(description: &'static str) -> TransactionMetadata {
 
 impl EventEmitter<EditorEvent> for Editor {}
 
+impl gpui::Focusable for Editor {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 首次渲染时注册焦点事件（构造函数中没有 Window）

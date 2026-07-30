@@ -4,16 +4,15 @@
 //! 渲染标签栏和编辑器内容，处理键盘事件。
 //! Pane 通过 [`ItemHandle`] trait 统操作标签页，不依赖具体视图类型。
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
 
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Render, ScrollHandle, Window,
-    actions, div, prelude::*, px,
+    AnyElement, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Render, ScrollHandle,
+    Window, actions, div, prelude::*, px,
 };
 use zcv_engine::Buffer;
 
-use super::item::ItemHandle;
+use super::item::{Item, ItemHandle};
 use super::tab_bar::TabBar;
 use super::toolbar::Toolbar;
 use crate::ui::Glyph;
@@ -26,25 +25,20 @@ actions!(pane, [CloseTab, NextTab, PrevTab]);
 
 // ═══ Pane 事件 ════════════════════════════════════════════════════════
 
-/// 视图标识（某个打开文档的编辑视图）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct ViewId(u64);
-
 /// Pane 对外发出的标签页事件。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PaneEvent {
     /// 新标签页添加。
-    Add { view_id: ViewId },
+    Add { item_id: EntityId },
     /// 活动标签页切换。
-    Activate { view_id: ViewId },
+    Activate { item_id: EntityId },
     /// 标签页被关闭。
-    Removed { view_id: ViewId },
+    Removed { item_id: EntityId },
 }
 
 impl EventEmitter<PaneEvent> for Pane {}
 
 const TAB_HOVER_GROUP: &str = "pane.tab";
-static NEXT_VIEW_ID: AtomicU64 = AtomicU64::new(1);
 
 // ═══ DraggedTab —— 拖拽载荷 + 幽灵视图 ═════════════════════════════
 
@@ -52,7 +46,7 @@ static NEXT_VIEW_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone)]
 pub(crate) struct DraggedTab {
     pub pane: Entity<Pane>,
-    pub view_id: ViewId,
+    pub item_id: EntityId,
     pub ix: usize,
     pub is_active: bool,
 }
@@ -64,36 +58,24 @@ impl Render for DraggedTab {
             .read(cx)
             .tabs
             .get(self.ix)
-            .map(|tab| (tab.item.title(cx), tab.item.is_dirty(cx)))
+            .map(|item| (item.tab_content_text(cx), item.is_dirty(cx)))
             .unwrap_or_default();
 
         Tab::new("")
             .selected(self.is_active)
             .start_slot(file_icon())
-            .end_slot(tab_end_glyph(&self.pane, self.view_id, is_dirty, cx))
+            .end_slot(tab_end_glyph(&self.pane, self.item_id, is_dirty, cx))
             .child(title)
     }
 }
 
 // ═══ 1. Struct + constructor ═══════════════════════════════════════
 
-/// Pane 中的单个标签页，通过 [`ItemHandle`] 统一持视图。
-pub(crate) struct TabItem {
-    pub view_id: ViewId,
-    pub item: Box<dyn ItemHandle>,
-}
-
-impl TabItem {
-    fn matches_path(&self, path: &Path, cx: &App) -> bool {
-        self.item.file_path(cx).as_deref() == Some(path)
-    }
-}
-
 /// 单个编辑区 Pane。
 pub(crate) struct Pane {
     pub focus: FocusHandle,
-    pub tabs: Vec<TabItem>,
-    pub active: Option<ViewId>,
+    pub tabs: Vec<Box<dyn ItemHandle>>,
+    pub active: Option<EntityId>,
     toolbar: Entity<Toolbar>,
     scroll_handle: ScrollHandle,
 }
@@ -114,6 +96,28 @@ impl Pane {
         self.scroll_handle.scroll_to_item(ix);
     }
 
+    /// 把任意 Item Entity 加入 Pane 并激活。
+    pub(crate) fn add_item<T: Item>(
+        &mut self,
+        item: Entity<T>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> FocusHandle {
+        cx.observe(&item, |_, _, cx| cx.notify()).detach();
+
+        let item: Box<dyn ItemHandle> = Box::new(item);
+        let item_id = item.item_id();
+        let focus = item.item_focus_handle(cx);
+        self.tabs.push(item);
+        self.active = Some(item_id);
+        self.scroll_to_tab(self.tabs.len() - 1);
+        self.update_toolbar(window, cx);
+        cx.emit(PaneEvent::Add { item_id });
+        cx.emit(PaneEvent::Activate { item_id });
+        cx.notify();
+        focus
+    }
+
     /// 打开文件；当前 Pane 已有同一路径时只激活已有 Editor。
     /// 返回新标签的焦点句柄，供调用方聚焦。
     pub fn open_file(
@@ -126,39 +130,29 @@ impl Pane {
         cx: &mut Context<Self>,
     ) -> FocusHandle {
         // 已有此文件时只激活
-        if let Some(tab) = self.tabs.iter().find(|tab| tab.matches_path(&path, cx)) {
-            self.active = Some(tab.view_id);
-            cx.emit(PaneEvent::Activate {
-                view_id: tab.view_id,
-            });
+        if let Some(item) = self
+            .tabs
+            .iter()
+            .find(|item| item.file_path(cx).as_deref() == Some(path.as_path()))
+        {
+            let item_id = item.item_id();
+            self.active = Some(item_id);
+            cx.emit(PaneEvent::Activate { item_id });
             cx.notify();
-            return tab.item.focus_handle(cx);
+            return item.item_focus_handle(cx);
         }
 
-        let view_id = ViewId(NEXT_VIEW_ID.fetch_add(1, Ordering::Relaxed));
         let editor = cx.new(|cx| Editor::for_buffer(buffer, cx));
         editor.update(cx, |editor, cx| {
             editor.set_file_path(path, project_root, cx);
         });
-        let focus = editor.read(cx).focus_handle();
-        // Pane 观察 Editor 变化，变化时触发自身重绘（如 dirty 状态）
-        cx.observe(&editor, |_, _, cx| cx.notify()).detach();
-
-        let item: Box<dyn ItemHandle> = Box::new(editor);
-        self.tabs.push(TabItem { view_id, item });
-        self.active = Some(view_id);
-        self.scroll_to_tab(self.tabs.len() - 1);
-        self.update_toolbar(window, cx);
-        cx.emit(PaneEvent::Add { view_id });
-        cx.emit(PaneEvent::Activate { view_id });
-        cx.notify();
-        focus
+        self.add_item(editor, window, cx)
     }
 
     /// 激活指定 tab，并滚入视图。
-    pub fn activate_tab(&mut self, view_id: ViewId, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(pos) = self.tabs.iter().position(|t| t.view_id == view_id) {
-            self.active = Some(view_id);
+    pub fn activate_tab(&mut self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pos) = self.tabs.iter().position(|item| item.item_id() == item_id) {
+            self.active = Some(item_id);
             self.scroll_to_tab(pos);
             self.update_toolbar(window, cx);
         }
@@ -171,13 +165,13 @@ impl Pane {
         }
         let pos = self
             .active
-            .and_then(|id| self.tabs.iter().position(|t| t.view_id == id));
+            .and_then(|id| self.tabs.iter().position(|item| item.item_id() == id));
         let next = match pos {
             Some(i) if i + 1 < self.tabs.len() => i + 1,
             Some(_) => 0,
             None => 0,
         };
-        self.active = Some(self.tabs[next].view_id);
+        self.active = Some(self.tabs[next].item_id());
         self.scroll_to_tab(next);
     }
 
@@ -188,22 +182,22 @@ impl Pane {
         }
         let pos = self
             .active
-            .and_then(|id| self.tabs.iter().position(|t| t.view_id == id));
+            .and_then(|id| self.tabs.iter().position(|item| item.item_id() == id));
         let prev = match pos {
             Some(0) => self.tabs.len() - 1,
             Some(i) => i - 1,
             None => 0,
         };
-        self.active = Some(self.tabs[prev].view_id);
+        self.active = Some(self.tabs[prev].item_id());
         self.scroll_to_tab(prev);
     }
 
     /// 关闭指定 tab，自动切换到下一个。
-    pub fn close_tab(&mut self, view_id: ViewId, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(pos) = self.tabs.iter().position(|t| t.view_id == view_id) {
+    pub fn close_tab(&mut self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pos) = self.tabs.iter().position(|item| item.item_id() == item_id) {
             self.tabs.remove(pos);
-            if self.active == Some(view_id) {
-                self.active = self.tabs.last().map(|t| t.view_id);
+            if self.active == Some(item_id) {
+                self.active = self.tabs.last().map(|item| item.item_id());
                 self.update_toolbar(window, cx);
             }
         }
@@ -211,29 +205,35 @@ impl Pane {
 
     /// 当前活动标签的 ItemHandle。
     pub(crate) fn active_item(&self, _cx: &App) -> Option<&dyn ItemHandle> {
-        self.active_tab().map(|tab| &*tab.item)
+        self.active_tab()
+    }
+
+    /// 按具体 Item 类型获取活动标签。
+    pub(crate) fn active_item_as<T: Render + 'static>(&self) -> Option<Entity<T>> {
+        self.active_tab()?.downcast()
     }
 
     /// 向下转型获取活动编辑器（仅供需要 Editor 的场合使用）。
     pub(crate) fn active_editor(&self, _cx: &App) -> Option<Entity<Editor>> {
-        self.active_tab()
-            .and_then(|tab| tab.item.as_any().downcast_ref::<Entity<Editor>>())
-            .cloned()
+        self.active_item_as()
     }
 
     /// 活动编辑器的路径（如果有）。
     pub(crate) fn active_path(&self, cx: &App) -> Option<PathBuf> {
-        self.active_tab()?.item.file_path(cx)
+        self.active_tab()?.file_path(cx)
     }
 
-    fn active_tab(&self) -> Option<&TabItem> {
-        let view_id = self.active?;
-        self.tabs.iter().find(|tab| tab.view_id == view_id)
+    fn active_tab(&self) -> Option<&dyn ItemHandle> {
+        let item_id = self.active?;
+        self.tabs
+            .iter()
+            .find(|item| item.item_id() == item_id)
+            .map(|item| item.as_ref())
     }
 
-    fn focus_active_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = self.active_editor(cx) {
-            window.focus(&editor.read(cx).focus_handle());
+    fn focus_active_item(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(item) = self.active_item(cx) {
+            window.focus(&item.item_focus_handle(cx));
         }
     }
 
@@ -278,11 +278,15 @@ impl Pane {
         self.move_tab(dragged.ix, target_ix);
         self.update_toolbar(window, cx);
         // 保持或恢复激活状态
-        if let Some(tab) = self.tabs.iter().find(|t| t.view_id == dragged.view_id) {
-            self.active = Some(tab.view_id);
+        if let Some(item) = self
+            .tabs
+            .iter()
+            .find(|item| item.item_id() == dragged.item_id)
+        {
+            self.active = Some(item.item_id());
         }
         cx.emit(PaneEvent::Activate {
-            view_id: self.active.unwrap_or(dragged.view_id),
+            item_id: self.active.unwrap_or(dragged.item_id),
         });
         cx.notify();
     }
@@ -294,9 +298,9 @@ impl Pane {
     fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         self.next_tab();
         self.update_toolbar(window, cx);
-        self.focus_active_editor(window, cx);
+        self.focus_active_item(window, cx);
         cx.emit(PaneEvent::Activate {
-            view_id: self.active.unwrap(),
+            item_id: self.active.unwrap(),
         });
         cx.notify();
         window.refresh();
@@ -305,9 +309,9 @@ impl Pane {
     fn handle_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
         self.prev_tab();
         self.update_toolbar(window, cx);
-        self.focus_active_editor(window, cx);
+        self.focus_active_item(window, cx);
         cx.emit(PaneEvent::Activate {
-            view_id: self.active.unwrap(),
+            item_id: self.active.unwrap(),
         });
         cx.notify();
         window.refresh();
@@ -318,8 +322,8 @@ impl Pane {
 
 impl Render for Pane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let active_view = self.active;
-        let active_item = self.active_tab().map(|tab| &*tab.item);
+        let active_item_id = self.active;
+        let active_item = self.active_tab();
         let pane_entity = cx.entity();
 
         div()
@@ -336,13 +340,13 @@ impl Render for Pane {
             .on_action(cx.listener(Self::handle_prev_tab))
             .child(render_tab_bar(
                 &self.tabs,
-                active_view,
+                active_item_id,
                 pane_entity,
                 &self.scroll_handle,
                 cx,
             ))
             .child(self.toolbar.clone())
-            .child(render_content(active_view, active_item))
+            .child(render_content(active_item_id, active_item))
     }
 }
 
@@ -352,8 +356,8 @@ impl Render for Pane {
 
 /// 标签栏：一组标签的容器 + 末尾放置目标。
 fn render_tab_bar(
-    tabs: &[TabItem],
-    active_view: Option<ViewId>,
+    tabs: &[Box<dyn ItemHandle>],
+    active_item_id: Option<EntityId>,
     pane_entity: gpui::Entity<Pane>,
     scroll_handle: &ScrollHandle,
     cx: &App,
@@ -361,12 +365,12 @@ fn render_tab_bar(
     let children: Vec<AnyElement> = tabs
         .iter()
         .enumerate()
-        .map(|(ix, tab)| {
-            let is_dirty = tab.item.is_dirty(cx);
+        .map(|(ix, item)| {
+            let is_dirty = item.is_dirty(cx);
             render_tab(
-                tab,
+                item.as_ref(),
                 ix,
-                Some(tab.view_id) == active_view,
+                Some(item.item_id()) == active_item_id,
                 is_dirty,
                 &pane_entity,
                 cx,
@@ -390,8 +394,7 @@ fn render_tab_bar(
         children,
     );
 
-    // 外层包裹 on_drag_move 实现拖拽到边缘自动滚动
-    // event.bounds 就是本 div 的边界，无需 Y 坐标判断
+    // 外层包裹 on_drag_move 实现拖拽到边缘自动滚动 event.bounds 就是本 div 的边界，无需 Y 坐标判断
     div()
         .id("tab-bar-area")
         .flex_shrink_0()
@@ -418,29 +421,29 @@ fn render_tab_bar(
 
 /// 单个标签：文件图标 + 文件名 + 关闭按钮，支持拖拽重排序。
 fn render_tab(
-    tab: &TabItem,
+    item: &dyn ItemHandle,
     ix: usize,
     is_active: bool,
     is_dirty: bool,
     pane_entity: &gpui::Entity<Pane>,
     cx: &App,
 ) -> impl gpui::IntoElement {
-    let view_id = tab.view_id;
+    let item_id = item.item_id();
     let activate_entity = pane_entity.clone();
     let close_entity = pane_entity.clone();
 
-    Tab::new(("tab", view_id.0))
+    Tab::new(("tab", item_id))
         .selected(is_active)
         .start_slot(file_icon())
-        .end_slot(tab_end_glyph(&close_entity, view_id, is_dirty, cx))
-        .child(tab.item.title(cx))
+        .end_slot(tab_end_glyph(&close_entity, item_id, is_dirty, cx))
+        .child(item.tab_content_text(cx))
         .group(TAB_HOVER_GROUP)
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
             let focus = activate_entity.update(cx, |pane, cx| {
-                pane.activate_tab(view_id, window, cx);
-                cx.emit(PaneEvent::Activate { view_id });
+                pane.activate_tab(item_id, window, cx);
+                cx.emit(PaneEvent::Activate { item_id });
                 cx.notify();
-                pane.active_item(cx).map(|item| item.focus_handle(cx))
+                pane.active_item(cx).map(|item| item.item_focus_handle(cx))
             });
             if let Some(focus) = focus {
                 window.focus(&focus);
@@ -451,7 +454,7 @@ fn render_tab(
         .on_drag(
             DraggedTab {
                 pane: pane_entity.clone(),
-                view_id,
+                item_id,
                 ix,
                 is_active,
             },
@@ -506,20 +509,20 @@ fn file_icon() -> impl gpui::IntoElement {
 /// 标签关闭按钮（叉 glyph）。
 fn close_glyph(
     pane_entity: &gpui::Entity<Pane>,
-    view_id: ViewId,
+    item_id: EntityId,
     cx: &App,
 ) -> impl gpui::IntoElement {
     let entity = pane_entity.clone();
-    Glyph::icon(("tab-close", view_id.0), "icons/actions/close.svg")
+    Glyph::icon(("tab-close", item_id), "icons/actions/close.svg")
         .label("关闭")
         .shortcut(&CloseTab, cx)
         .on_click(move |window: &mut gpui::Window, cx: &mut gpui::App| {
             let pane_focus = entity.read(cx).focus.clone();
             let focus = entity.update(cx, |pane, cx| {
-                pane.close_tab(view_id, window, cx);
-                cx.emit(PaneEvent::Removed { view_id });
+                pane.close_tab(item_id, window, cx);
+                cx.emit(PaneEvent::Removed { item_id });
                 cx.notify();
-                pane.active_item(cx).map(|item| item.focus_handle(cx))
+                pane.active_item(cx).map(|item| item.item_focus_handle(cx))
             });
             window.focus(&focus.unwrap_or(pane_focus));
             window.refresh();
@@ -529,12 +532,12 @@ fn close_glyph(
 /// 标签尾部状态槽：未保存时默认显示圆点，悬停标签后切换为关闭按钮。
 fn tab_end_glyph(
     pane_entity: &gpui::Entity<Pane>,
-    view_id: ViewId,
+    item_id: EntityId,
     is_dirty: bool,
     cx: &App,
 ) -> AnyElement {
     if !is_dirty {
-        return close_glyph(pane_entity, view_id, cx).into_any_element();
+        return close_glyph(pane_entity, item_id, cx).into_any_element();
     }
 
     let slot_size = typography::ui();
@@ -548,7 +551,7 @@ fn tab_end_glyph(
             div()
                 .group_hover(TAB_HOVER_GROUP, |style| style.opacity(0.0))
                 .child(
-                    Glyph::icon(("tab-dirty", view_id.0), "icons/actions/circle.svg")
+                    Glyph::icon(("tab-dirty", item_id), "icons/actions/circle.svg")
                         .color(color::highlight()),
                 ),
         )
@@ -561,7 +564,7 @@ fn tab_end_glyph(
                 .justify_center()
                 .opacity(0.0)
                 .group_hover(TAB_HOVER_GROUP, |style| style.opacity(1.0))
-                .child(close_glyph(pane_entity, view_id, cx)),
+                .child(close_glyph(pane_entity, item_id, cx)),
         )
         .into_any_element()
 }
@@ -570,10 +573,10 @@ fn tab_end_glyph(
 
 /// 渲染 Pane 内容区（编辑器内容或占位文字）。
 fn render_content(
-    active_view: Option<ViewId>,
+    active_item_id: Option<EntityId>,
     active_item: Option<&dyn ItemHandle>,
 ) -> impl gpui::IntoElement {
-    if active_view.is_none() {
+    if active_item_id.is_none() {
         return div()
             .flex_1()
             .flex()
@@ -598,7 +601,7 @@ fn render_content(
         .flex_1()
         .flex()
         .overflow_hidden()
-        .child(item.to_any_element())
+        .child(item.to_any_view())
         .into_any_element()
 }
 
@@ -670,13 +673,12 @@ mod tests {
             assert_eq!(pane.tabs.len(), 1);
             assert_eq!(
                 pane.tabs[0]
-                    .item
                     .file_path(cx)
                     .as_deref()
                     .map(|p| p.to_string_lossy().to_string()),
                 Some("demo.txt".to_string())
             );
-            assert_eq!(pane.active, Some(pane.tabs[0].view_id));
+            assert_eq!(pane.active, Some(pane.tabs[0].item_id()));
             assert!(pane.active_editor(cx).is_some());
         });
     }
@@ -713,37 +715,37 @@ mod tests {
 
         cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 4);
-            assert_eq!(pane.tabs[0].item.title(cx).as_ref(), "file0.txt");
-            assert_eq!(pane.tabs[1].item.title(cx).as_ref(), "file1.txt");
-            assert_eq!(pane.tabs[2].item.title(cx).as_ref(), "file2.txt");
-            assert_eq!(pane.tabs[3].item.title(cx).as_ref(), "file3.txt");
+            assert_eq!(pane.tabs[0].tab_content_text(cx).as_ref(), "file0.txt");
+            assert_eq!(pane.tabs[1].tab_content_text(cx).as_ref(), "file1.txt");
+            assert_eq!(pane.tabs[2].tab_content_text(cx).as_ref(), "file2.txt");
+            assert_eq!(pane.tabs[3].tab_content_text(cx).as_ref(), "file3.txt");
         });
 
         // 移动：将索引 2 移到索引 0
         cx.update_entity(&pane, |pane, _| pane.move_tab(2, 0));
         cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 4);
-            assert_eq!(pane.tabs[0].item.title(cx).as_ref(), "file2.txt");
-            assert_eq!(pane.tabs[1].item.title(cx).as_ref(), "file0.txt");
-            assert_eq!(pane.tabs[2].item.title(cx).as_ref(), "file1.txt");
-            assert_eq!(pane.tabs[3].item.title(cx).as_ref(), "file3.txt");
+            assert_eq!(pane.tabs[0].tab_content_text(cx).as_ref(), "file2.txt");
+            assert_eq!(pane.tabs[1].tab_content_text(cx).as_ref(), "file0.txt");
+            assert_eq!(pane.tabs[2].tab_content_text(cx).as_ref(), "file1.txt");
+            assert_eq!(pane.tabs[3].tab_content_text(cx).as_ref(), "file3.txt");
         });
 
         // 移动：将索引 0 移到索引 3（拖到末尾）
         cx.update_entity(&pane, |pane, _| pane.move_tab(0, 3));
         cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 4);
-            assert_eq!(pane.tabs[0].item.title(cx).as_ref(), "file0.txt");
-            assert_eq!(pane.tabs[1].item.title(cx).as_ref(), "file1.txt");
-            assert_eq!(pane.tabs[2].item.title(cx).as_ref(), "file3.txt");
-            assert_eq!(pane.tabs[3].item.title(cx).as_ref(), "file2.txt");
+            assert_eq!(pane.tabs[0].tab_content_text(cx).as_ref(), "file0.txt");
+            assert_eq!(pane.tabs[1].tab_content_text(cx).as_ref(), "file1.txt");
+            assert_eq!(pane.tabs[2].tab_content_text(cx).as_ref(), "file3.txt");
+            assert_eq!(pane.tabs[3].tab_content_text(cx).as_ref(), "file2.txt");
         });
 
         // 移动：不动（自身）
         cx.update_entity(&pane, |pane, _| pane.move_tab(1, 1));
         cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 4);
-            assert_eq!(pane.tabs[0].item.title(cx).as_ref(), "file0.txt");
+            assert_eq!(pane.tabs[0].tab_content_text(cx).as_ref(), "file0.txt");
         });
 
         // 移动：单标签拖到末尾 → 不应闪退
@@ -760,13 +762,13 @@ mod tests {
         cx.update_entity(&single_pane, |pane, _| pane.move_tab(0, 0));
         cx.read_entity(&single_pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 1);
-            assert_eq!(pane.tabs[0].item.title(cx).as_ref(), "solo.txt");
+            assert_eq!(pane.tabs[0].tab_content_text(cx).as_ref(), "solo.txt");
         });
         // 拖到末尾（to_ix 超出范围）— clamp 后不应闪退
         cx.update_entity(&single_pane, |pane, _| pane.move_tab(0, 1));
         cx.read_entity(&single_pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 1);
-            assert_eq!(pane.tabs[0].item.title(cx).as_ref(), "solo.txt");
+            assert_eq!(pane.tabs[0].tab_content_text(cx).as_ref(), "solo.txt");
         });
     }
 }

@@ -242,7 +242,7 @@ project_tree.set_on_open_file(on_open_file);
 
 ```rust
 self.pane.update(cx, |pane, cx| {
-    pane.close_tab(view_id, window, cx);
+    pane.close_tab(item_id, window, cx);
 });
 ```
 
@@ -429,7 +429,7 @@ impl Render for MyComponent {
 | 组件 | 类型 | 焦点 | 快捷键 | 内部状态 | 跨组件通信 |
 |---|---|---|---|---|---|
 | `Workspace` | Entity(root) | ✅ | — | 单一 `Pane` + 三个 `Dock` Entity | 回调注入、直接调用 |
-| `Pane` | Entity | ✅ | ✅ | `Vec<TabItem>` | `cx.emit(PaneEvent)` |
+| `Pane` | Entity | ✅ | ✅ | `Vec<Box<dyn ItemHandle>>` | `cx.emit(PaneEvent)` |
 | `StatusBar` | Entity | ❌ | ❌ | 持有 StatusItemView 列表 | 观察中心 `Pane` |
 | `ProjectTree` | Entity | ✅ | ✅ | `Rc<RefCell<ProjectTreeState>>` | 回调（替代旧 Global 模式） |
 | `TopBar` | Entity | ❌ | ✅ | ❌ | ❌ |

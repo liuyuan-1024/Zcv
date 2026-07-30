@@ -486,22 +486,27 @@ Picker 不实现：
 
 ### Pane
 
-Pane 的活动标签对应一个完整 Editor Entity：
+Pane 通过对象安全的 ItemHandle 持有异构 Item，当前文件标签对应一个完整 Editor
+Entity：
 
 ```text
 Pane
-  └── Active ViewId
-        └── Entity<Editor>
+  └── Active EntityId
+        └── Box<dyn ItemHandle>
+              └── Entity<Editor>
 ```
 
-Pane 负责标签切换和容器布局，Editor 负责内容编辑与绘制。
+具体视图实现强类型 `Item`，`Entity<T: Item>` 通过统一桥接实现 `ItemHandle`。
+Pane 负责标签切换和容器布局，Editor 负责内容编辑与绘制。业务确实需要 Editor
+能力时，通过统一的 `active_item_as::<Editor>()` 受控向下转型。
 
 多个 Editor 可以共享同一个 Buffer，但不能共享 Selection 和 ScrollManager。
 
 ### 文件视图生命周期
 
-Pane 的 Tab 直接持有文件路径和 `Entity<Editor>`，负责当前 Pane 内的文件去重与
-Editor 生命周期。`ViewRegistry` 已删除，不再维护重复的路径、Buffer 或 Editor 映射。
+Pane 直接持有 `Box<dyn ItemHandle>`，以 EntityId 作为唯一 Item 身份，并通过 Item
+暴露的文件路径负责当前 Pane 内的文件去重与 Editor 生命周期。`ViewRegistry` 和独立
+`ViewId` 已删除，不再维护重复的身份、路径、Buffer 或 Editor 映射。
 
 跨 Pane 打开同一文件时，由 BufferStore 按规范化路径复用 `Entity<Buffer>`，各 Pane
 分别创建并持有独立 Editor，从而共享文本内容但保持 Selection 和 ScrollManager 独立。

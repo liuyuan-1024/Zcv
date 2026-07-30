@@ -399,8 +399,8 @@ impl Workspace {
     /// 聚焦回编辑区。
     fn focus_center_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pane = self.pane.read(cx);
-        if let Some(editor) = pane.active_editor(cx) {
-            window.focus(&editor.read(cx).focus_handle());
+        if let Some(item) = pane.active_item(cx) {
+            window.focus(&item.item_focus_handle(cx));
         } else {
             window.focus(&pane.focus);
         }
@@ -414,14 +414,14 @@ impl Workspace {
     ) {
         let pane_entity = self.pane.clone();
         let pane_focus = pane_entity.read(cx).focus.clone();
-        if let Some(view_id) = pane_entity.read(cx).active {
+        if let Some(item_id) = pane_entity.read(cx).active {
             pane_entity.update(cx, |pane, cx| {
-                pane.close_tab(view_id, window, cx);
-                cx.emit(pane::PaneEvent::Removed { view_id });
+                pane.close_tab(item_id, window, cx);
+                cx.emit(pane::PaneEvent::Removed { item_id });
                 cx.notify();
             });
-            if let Some(editor) = pane_entity.read(cx).active_editor(cx) {
-                window.focus(&editor.read(cx).focus_handle());
+            if let Some(item) = pane_entity.read(cx).active_item(cx) {
+                window.focus(&item.item_focus_handle(cx));
             } else {
                 window.focus(&pane_focus);
             }

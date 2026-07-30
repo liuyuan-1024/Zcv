@@ -667,18 +667,25 @@ zcv-editor/
   Cargo.toml
   src/
     lib.rs
-    view.rs
+    view/
+      mod.rs
+      test/
     element.rs
-    display_map.rs
+    display_map/
+      mod.rs
+      fold/
+      projection/
+      tab_map.rs
     selection.rs
     scroll.rs
 ```
 
 规则：
 
-- `view.rs` 定义 Editor、EditorMode、事件和 Action handler。
+- `view/mod.rs` 定义 Editor、EditorMode、事件和 Action handler，相关交互测试放在
+  `view/test/`。
 - `element.rs` 负责布局、绘制、命中测试和 InputHandler 桥接。
-- `display_map.rs` 负责坐标与显示变换。
+- `display_map/mod.rs` 负责坐标与显示变换，具体投影能力继续放在其子模块中。
 - `selection.rs` 负责 Editor 的 SelectionHistory、视图交互状态和依赖 DisplayMap 的选择变换；Selection、SelectionSet 原语继续来自 engine。
 - `scroll.rs` 负责 ScrollManager。
 - `lib.rs` 作为 Editor crate 门面，声明私有实现模块，并选择性重导出宿主使用的

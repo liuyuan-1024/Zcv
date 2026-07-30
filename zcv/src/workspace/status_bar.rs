@@ -3,24 +3,7 @@
 //! 持有左右两侧的 StatusItemView 列表，在中心 Pane 变化时向每个 item 广播 set_active_editor 消息。
 //! 每个 item 自行订阅 Editor 变化。
 
-use gpui::{
-    AnyElement, App, Context, Div, Entity, Render, Subscription, Window, actions, div, prelude::*,
-};
-
-actions!(
-    status_bar,
-    [
-        ToggleProjectTree,
-        ToggleVersionControl,
-        ToggleOutline,
-        ToggleLanguageServer,
-        ToggleDiagnostics,
-        ToggleProjectSearch,
-        ToggleTerminal,
-        ToggleDebug,
-        ToggleKeyboardShortcuts,
-    ]
-);
+use gpui::{AnyElement, App, Context, Div, Entity, Render, Subscription, Window, div, prelude::*};
 
 use super::Pane;
 use zcv_editor::Editor;

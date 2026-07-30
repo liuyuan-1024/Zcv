@@ -251,4 +251,27 @@ mod tests {
         });
         assert!(error.to_string().contains("missing::Action"));
     }
+
+    #[gpui::test]
+    fn panel_toggle_actions_are_owned_only_by_dock(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            for action in [
+                "ToggleProjectTree",
+                "ToggleVersionControl",
+                "ToggleOutline",
+                "ToggleLanguageServer",
+                "ToggleDiagnostics",
+                "ToggleProjectSearch",
+                "ToggleTerminal",
+                "ToggleDebug",
+                "ToggleKeyboardShortcuts",
+            ] {
+                assert!(cx.build_action(&format!("dock::{action}"), None).is_ok());
+                assert!(
+                    cx.build_action(&format!("status_bar::{action}"), None)
+                        .is_err()
+                );
+            }
+        });
+    }
 }

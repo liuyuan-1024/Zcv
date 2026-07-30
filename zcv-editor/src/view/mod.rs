@@ -317,6 +317,7 @@ pub struct Editor {
     focus: FocusHandle,
     blink_manager: Entity<BlinkManager>,
     blink_manager_initialized: bool,
+    soft_wrap: bool,
 }
 
 impl Editor {
@@ -358,6 +359,14 @@ impl Editor {
 
     pub fn buffer(&self) -> Entity<Buffer> {
         self.buffer.clone()
+    }
+
+    pub fn set_soft_wrap(&mut self, soft_wrap: bool, cx: &mut Context<Self>) {
+        if self.soft_wrap == soft_wrap {
+            return;
+        }
+        self.soft_wrap = soft_wrap;
+        cx.notify();
     }
 
     pub fn file_path(&self) -> Option<&Path> {
@@ -579,6 +588,7 @@ impl Editor {
             focus: cx.focus_handle(),
             blink_manager,
             blink_manager_initialized: false,
+            soft_wrap: false,
         }
     }
 

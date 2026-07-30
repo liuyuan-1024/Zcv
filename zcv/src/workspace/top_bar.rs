@@ -102,7 +102,7 @@ fn trailing_slots() -> Vec<AnyElement> {
     vec![
         Glyph::icon("top-bar.settings", "icons/actions/settings.svg")
             .label("设置")
-            .on_click(|_, _| println!("点击设置"))
+            .on_click(|window, cx| window.dispatch_action(Box::new(OpenSettings), cx))
             .into_any_element(),
     ]
 }

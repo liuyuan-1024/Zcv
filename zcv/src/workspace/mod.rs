@@ -48,6 +48,7 @@ use crate::project::{Project, ProjectEvent};
 use crate::project_search::ProjectSearchButton;
 use crate::project_tree::{OnOpenFile, ProjectTree};
 use crate::recent_projects::{self, OnProjectSelected, ToggleProjectPicker};
+use crate::settings::SettingsStore;
 use zcv_theme::{color, typography};
 
 actions!(workspace, [Save]);
@@ -297,6 +298,15 @@ impl Workspace {
             }
         });
 
+        let settings_subscription = cx.observe_global::<SettingsStore>(|workspace, cx| {
+            let settings = SettingsStore::get(cx);
+            settings.theme.apply(None);
+            workspace
+                .pane
+                .update(cx, |pane, cx| pane.set_soft_wrap(settings.soft_wrap, cx));
+            cx.notify();
+        });
+
         Self {
             focus,
             pane,
@@ -309,7 +319,11 @@ impl Workspace {
             bottom_dock,
             panel_action_map,
             drag_notify,
-            _subscriptions: vec![project_subscription, pane_subscription],
+            _subscriptions: vec![
+                project_subscription,
+                pane_subscription,
+                settings_subscription,
+            ],
         }
     }
 
@@ -346,6 +360,8 @@ impl Workspace {
         let focus = pane.update(cx, |pane, cx| {
             pane.open_file(path, project_root, file_name, buffer, window, cx)
         });
+        let soft_wrap = SettingsStore::get(cx).soft_wrap;
+        pane.update(cx, |pane, cx| pane.set_soft_wrap(soft_wrap, cx));
         if focus_opened_item {
             window.focus(&focus);
         } else {
@@ -374,8 +390,16 @@ impl Workspace {
         println!("push");
     }
 
-    fn handle_open_settings(_: &top_bar::OpenSettings, _: &mut Window, _: &mut gpui::App) {
-        println!("设置");
+    fn handle_open_settings(
+        &mut self,
+        _: &top_bar::OpenSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match crate::settings::ensure_user_settings_file() {
+            Ok(path) => self.open_path(path.to_path_buf(), true, window, cx),
+            Err(error) => eprintln!("无法打开设置文件：{error}"),
+        }
     }
 
     fn handle_save(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
@@ -605,7 +629,7 @@ impl Render for Workspace {
             .on_action(Self::handle_git_fetch)
             .on_action(Self::handle_git_pull)
             .on_action(Self::handle_git_push)
-            .on_action(Self::handle_open_settings)
+            .on_action(cx.listener(Self::handle_open_settings))
             .on_action(cx.listener(Self::handle_save))
             .on_action(cx.listener(Self::handle_toggle_project_tree))
             .on_action(cx.listener(

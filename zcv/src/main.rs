@@ -9,10 +9,12 @@ mod keymap;
 mod language_selector;
 mod language_tools;
 mod languages;
+mod paths;
 mod project;
 mod project_search;
 mod project_tree;
 mod recent_projects;
+mod settings;
 mod ui;
 mod workspace;
 
@@ -22,10 +24,7 @@ use gpui::{
 };
 
 use assets::{EmbeddedAssets, embedded_fonts};
-use workspace::Workspace;
-use zcv_theme::Theme;
-
-use crate::workspace::{Dock, Pane};
+use workspace::{Dock, Pane, Workspace};
 
 fn main() {
     Application::new()
@@ -35,7 +34,7 @@ fn main() {
                 .add_fonts(embedded_fonts())
                 .expect("内置字体应能注册");
 
-            Theme::OneDark.apply(None);
+            settings::init(cx);
 
             let bounds = Bounds::centered(None, size(px(1200.0), px(900.0)), cx);
 
@@ -51,6 +50,7 @@ fn main() {
                         ..Default::default()
                     },
                     |window, cx| {
+                        settings::SettingsStore::get(cx).theme.apply(Some(window));
                         let workspace = cx.new(Workspace::new);
                         workspace.update(cx, |workspace, cx| {
                             let pane = workspace.pane.clone();

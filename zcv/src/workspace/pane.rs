@@ -149,6 +149,14 @@ impl Pane {
         self.add_item(editor, window, cx)
     }
 
+    pub(crate) fn set_soft_wrap(&mut self, soft_wrap: bool, cx: &mut Context<Self>) {
+        for item in &self.tabs {
+            if let Some(editor) = item.downcast::<Editor>() {
+                editor.update(cx, |editor, cx| editor.set_soft_wrap(soft_wrap, cx));
+            }
+        }
+    }
+
     /// 激活指定 tab，并滚入视图。
     pub fn activate_tab(&mut self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(pos) = self.tabs.iter().position(|item| item.item_id() == item_id) {

@@ -3,6 +3,7 @@
 mod blink_manager;
 mod display_map;
 mod element;
+mod gutter;
 mod scroll;
 mod selection;
 mod view;

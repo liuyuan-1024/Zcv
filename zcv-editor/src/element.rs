@@ -1,12 +1,13 @@
 //! Editor 的逐帧文本布局、绘制与像素命中测试。
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, Context, DispatchPhase, Element, ElementId, ElementInputHandler, Entity,
-    GlobalElementId, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
-    MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Style,
-    TextRun, UnderlineStyle, Window, fill, point, px, relative, size,
+    App, Bounds, ContentMask, Context, DispatchPhase, Element, ElementId, ElementInputHandler,
+    Entity, GlobalElementId, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
+    LayoutId, MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine,
+    Style, TextRun, UnderlineStyle, Window, fill, point, px, relative, size,
 };
 use zcv_engine::{ByteOffset, DisplayColumn, Line, SelectionSet};
 
@@ -14,6 +15,7 @@ use super::display_map::{
     BufferPoint, DisplayPoint, DisplayRow, DisplaySnapshot, ProjectedRange,
     ProjectedViewportRowKind,
 };
+use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::view::{Editor, EditorPresentation};
 use zcv_theme::color;
 
@@ -87,9 +89,26 @@ struct LayoutLine {
 
 struct EditorLayout {
     lines: Vec<LayoutLine>,
+    gutter: Option<GutterLayout>,
+    text_clip_bounds: Bounds<Pixels>,
     line_height: Pixels,
     display_snapshot: DisplaySnapshot,
     presentation: EditorPresentation,
+}
+
+#[derive(Clone, Copy)]
+struct EditorGeometry {
+    text_bounds: Bounds<Pixels>,
+    text_clip_bounds: Bounds<Pixels>,
+    gutter: Option<(Bounds<Pixels>, GutterDimensions)>,
+}
+
+struct VisibleLineLayoutParams<'a> {
+    geometry: EditorGeometry,
+    active_lines: &'a BTreeSet<Line>,
+    start_row: DisplayRow,
+    scroll_offset: Point<Pixels>,
+    line_height: Pixels,
 }
 
 impl EditorLayout {
@@ -204,6 +223,7 @@ pub(super) struct PrepaintState {
     carets: Vec<PaintQuad>,
     ime_caret_bounds: Option<Bounds<Pixels>>,
     hitbox: gpui::Hitbox,
+    gutter_hitbox: Option<gpui::Hitbox>,
 }
 
 impl IntoElement for EditorElement {
@@ -253,18 +273,47 @@ impl Element for EditorElement {
         self.editor.update(cx, |editor, _| {
             editor.measure_display_rows(editor.scroll_anchor().row(), visible_line_count);
         });
-        let (display_snapshot, presentation, selections, longest_row) = {
+        let (display_snapshot, presentation, selections, longest_row, shows_gutter, active_lines) = {
             let editor = self.editor.read(cx);
             (
                 editor.display_snapshot(),
                 editor.presentation(),
                 editor.selections(),
                 editor.longest_display_row(),
+                editor.shows_gutter(),
+                editor.active_lines().into_iter().collect::<BTreeSet<_>>(),
             )
+        };
+        let gutter_dimensions = shows_gutter.then(|| gutter_dimensions(&display_snapshot, window));
+        let gutter_bounds = gutter_dimensions.map(|dimensions| Bounds {
+            origin: bounds.origin,
+            size: size(dimensions.width, bounds.size.height),
+        });
+        let text_left =
+            bounds.left() + gutter_dimensions.map_or(Pixels::ZERO, GutterDimensions::full_width);
+        let text_clip_left =
+            bounds.left() + gutter_dimensions.map_or(Pixels::ZERO, |dimensions| dimensions.width);
+        let text_bounds = Bounds {
+            origin: point(text_left, bounds.top()),
+            size: size(
+                (bounds.right() - text_left).max(Pixels::ZERO),
+                bounds.size.height,
+            ),
+        };
+        let geometry = EditorGeometry {
+            text_bounds,
+            text_clip_bounds: Bounds {
+                origin: point(text_clip_left, bounds.top()),
+                size: size(
+                    (bounds.right() - text_clip_left).max(Pixels::ZERO),
+                    bounds.size.height,
+                ),
+            },
+            gutter: gutter_bounds.zip(gutter_dimensions),
         };
         let content_width = layout_line_width(&display_snapshot, longest_row, window) + CARET_WIDTH;
         self.editor.update(cx, |editor, _| {
-            editor.prepare_scroll_viewport(bounds.size, content_width, line_height);
+            editor.prepare_scroll_viewport(text_bounds.size, content_width, line_height);
         });
         let (start_row, scroll_offset) = {
             let editor = self.editor.read(cx);
@@ -273,17 +322,20 @@ impl Element for EditorElement {
         let mut layout = layout_visible_lines(
             display_snapshot.clone(),
             presentation.clone(),
-            bounds,
-            start_row,
-            scroll_offset,
-            line_height,
+            VisibleLineLayoutParams {
+                geometry,
+                active_lines: &active_lines,
+                start_row,
+                scroll_offset,
+                line_height,
+            },
             window,
         );
         let mut ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);
         let autoscrolled = self.editor.update(cx, |editor, _| {
             editor.complete_autoscroll(
-                ime_caret_bounds.map(|caret| caret.left() - bounds.left() + scroll_offset.x),
-                ime_caret_bounds.map(|caret| caret.right() - bounds.left() + scroll_offset.x),
+                ime_caret_bounds.map(|caret| caret.left() - text_bounds.left() + scroll_offset.x),
+                ime_caret_bounds.map(|caret| caret.right() - text_bounds.left() + scroll_offset.x),
             )
         });
         if autoscrolled {
@@ -291,16 +343,23 @@ impl Element for EditorElement {
             layout = layout_visible_lines(
                 display_snapshot,
                 presentation,
-                bounds,
-                editor.scroll_anchor().row(),
-                editor.scroll_offset(),
-                line_height,
+                VisibleLineLayoutParams {
+                    geometry,
+                    active_lines: &active_lines,
+                    start_row: editor.scroll_anchor().row(),
+                    scroll_offset: editor.scroll_offset(),
+                    line_height,
+                },
                 window,
             );
             ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);
         }
         let layout = Arc::new(layout);
         let (selections, carets) = layout_selections(&selections, &layout, line_height);
+        let gutter_hitbox = layout
+            .gutter
+            .as_ref()
+            .map(|gutter| window.insert_hitbox(gutter.bounds, HitboxBehavior::Normal));
 
         PrepaintState {
             layout,
@@ -308,6 +367,7 @@ impl Element for EditorElement {
             carets,
             ime_caret_bounds,
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            gutter_hitbox,
         }
     }
 
@@ -337,6 +397,20 @@ impl Element for EditorElement {
                 || !hitbox.is_hovered(window)
             {
                 return;
+            }
+            if let Some(gutter) = &event_layout.gutter {
+                if let Some(line) = gutter.logical_line_for_position(event.position) {
+                    editor.update(cx, |editor, cx| {
+                        editor.select_line(line, event.modifiers.shift);
+                        cx.notify();
+                    });
+                    window.focus(&mouse_focus);
+                    cx.stop_propagation();
+                    return;
+                }
+                if gutter.bounds.contains(&event.position) {
+                    return;
+                }
             }
             let Some(point) = event_layout.buffer_point_for_position(event.position) else {
                 return;
@@ -368,19 +442,43 @@ impl Element for EditorElement {
             }
         });
 
-        for selection in prepaint.selections.drain(..) {
-            window.paint_quad(selection);
-        }
-        for line in &prepaint.layout.lines {
-            line.shaped
-                .paint(line.origin, prepaint.layout.line_height, window, cx)
-                .expect("Editor 文本行绘制失败");
-        }
-        if self.editor.read(cx).show_local_cursors(window, cx) {
-            for caret in prepaint.carets.drain(..) {
-                window.paint_quad(caret);
+        if let Some(gutter) = &prepaint.layout.gutter {
+            window.paint_quad(fill(gutter.bounds, color::current().gray.s[1]));
+            for bounds in gutter.active_row_bounds(prepaint.layout.text_clip_bounds.right()) {
+                window.paint_quad(fill(bounds, color::current().gray.s[3]));
+            }
+            if let Some(hitbox) = &prepaint.gutter_hitbox {
+                window.set_cursor_style(gpui::CursorStyle::IBeam, hitbox);
             }
         }
+        if let Some(gutter) = &prepaint.layout.gutter {
+            for row in &gutter.rows {
+                row.shaped_line_number
+                    .paint(row.origin, gutter.line_height, window, cx)
+                    .expect("Editor gutter 行号绘制失败");
+            }
+        }
+        let show_local_cursors = self.editor.read(cx).show_local_cursors(window, cx);
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds: prepaint.layout.text_clip_bounds,
+            }),
+            |window| {
+                for selection in prepaint.selections.drain(..) {
+                    window.paint_quad(selection);
+                }
+                for line in &prepaint.layout.lines {
+                    line.shaped
+                        .paint(line.origin, prepaint.layout.line_height, window, cx)
+                        .expect("Editor 文本行绘制失败");
+                }
+                if show_local_cursors {
+                    for caret in prepaint.carets.drain(..) {
+                        window.paint_quad(caret);
+                    }
+                }
+            },
+        );
         let input_layout = prepaint.layout.input_layout();
         self.editor.update(cx, |editor, _| {
             editor.set_input_layout(input_layout);
@@ -423,24 +521,36 @@ fn layout_line_width(
 fn layout_visible_lines(
     display_snapshot: DisplaySnapshot,
     presentation: EditorPresentation,
-    bounds: Bounds<Pixels>,
-    start_row: DisplayRow,
-    scroll_offset: Point<Pixels>,
-    line_height: Pixels,
+    params: VisibleLineLayoutParams<'_>,
     window: &mut Window,
 ) -> EditorLayout {
+    let VisibleLineLayoutParams {
+        geometry:
+            EditorGeometry {
+                text_bounds,
+                text_clip_bounds,
+                gutter: gutter_geometry,
+            },
+        active_lines,
+        start_row,
+        scroll_offset,
+        line_height,
+    } = params;
     let line_count = presentation
         .composed_line_count()
         .unwrap_or_else(|| display_snapshot.line_count());
     let start = start_row.get().min(line_count.saturating_sub(1));
-    let visible_count = ((bounds.size.height + scroll_offset.y) / line_height).ceil() as usize + 1;
+    let visible_count =
+        ((text_bounds.size.height + scroll_offset.y) / line_height).ceil() as usize + 1;
     let end = (start + visible_count).min(line_count);
     let text_style = window.text_style();
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let mut lines = Vec::with_capacity(end.saturating_sub(start));
+    let mut gutter_rows = Vec::with_capacity(end.saturating_sub(start));
 
     let mut push_line = |row: usize,
                          logical_line: Option<Line>,
+                         gutter_line: Option<Line>,
                          text: &str,
                          byte_start: usize,
                          utf16_start: usize| {
@@ -465,13 +575,44 @@ fn layout_visible_lines(
             row: DisplayRow::new(row),
             logical_line,
             origin: point(
-                bounds.left() - scroll_offset.x,
-                bounds.top() + line_height * (row - start) - scroll_offset.y,
+                text_bounds.left() - scroll_offset.x,
+                text_bounds.top() + line_height * (row - start) - scroll_offset.y,
             ),
             shaped,
             global_byte_start: byte_start,
             global_utf16_start: utf16_start,
         });
+        if let (Some(logical_line), Some((gutter_bounds, dimensions))) =
+            (gutter_line, gutter_geometry)
+        {
+            let number = (logical_line.get() + 1).to_string();
+            let active = active_lines.contains(&logical_line);
+            let run = TextRun {
+                len: number.len(),
+                font: text_style.font(),
+                color: if active {
+                    color::current().gray.s[8].into()
+                } else {
+                    color::current().gray.s[6].into()
+                },
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped_line_number =
+                window
+                    .text_system()
+                    .shape_line(number.into(), font_size, &[run], None);
+            gutter_rows.push(GutterRow {
+                logical_line,
+                origin: point(
+                    gutter_bounds.right() - dimensions.right_padding - shaped_line_number.width,
+                    text_bounds.top() + line_height * (row - start) - scroll_offset.y,
+                ),
+                shaped_line_number,
+                active,
+            });
+        }
     };
 
     if presentation.is_composing() {
@@ -479,7 +620,18 @@ fn layout_visible_lines(
             let Some(line) = presentation.composed_line(row) else {
                 continue;
             };
-            push_line(row, None, line.text, line.byte_start, line.utf16_start);
+            let gutter_line = display_snapshot
+                .snapshot()
+                .byte_to_line(presentation.display_byte_to_buffer_byte(line.byte_start))
+                .ok();
+            push_line(
+                row,
+                None,
+                gutter_line,
+                line.text,
+                line.byte_start,
+                line.utf16_start,
+            );
         }
     } else if let Ok(viewport) =
         display_snapshot.slice_viewport(DisplayRow::new(start), end.saturating_sub(start))
@@ -498,6 +650,7 @@ fn layout_visible_lines(
                     push_line(
                         row.index().get(),
                         Some(*logical_line),
+                        Some(*logical_line),
                         visible.as_str(),
                         byte_start,
                         utf16_start,
@@ -512,7 +665,14 @@ fn layout_visible_lines(
                         .snapshot()
                         .byte_to_utf16_cu(ByteOffset::new(byte_start))
                         .map_or(0, |offset| offset.get());
-                    push_line(row.index().get(), None, "…", byte_start, utf16_start);
+                    push_line(
+                        row.index().get(),
+                        None,
+                        Some(placeholder.hidden_lines().start()),
+                        "…",
+                        byte_start,
+                        utf16_start,
+                    );
                 }
             }
         }
@@ -520,10 +680,38 @@ fn layout_visible_lines(
 
     EditorLayout {
         lines,
+        gutter: gutter_geometry.map(|(bounds, _)| GutterLayout {
+            bounds,
+            line_height,
+            rows: gutter_rows,
+        }),
+        text_clip_bounds,
         line_height,
         display_snapshot,
         presentation,
     }
+}
+
+fn gutter_dimensions(display_snapshot: &DisplaySnapshot, window: &mut Window) -> GutterDimensions {
+    let text_style = window.text_style();
+    let font_size = text_style.font_size.to_pixels(window.rem_size());
+    let digits = "0000000000";
+    let run = TextRun {
+        len: digits.len(),
+        font: text_style.font(),
+        color: text_style.color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let shaped_digits = window
+        .text_system()
+        .shape_line(digits.into(), font_size, &[run], None);
+    GutterDimensions::line_numbers_only(
+        display_snapshot.snapshot().line_count(),
+        shaped_digits.width / digits.len() as f32,
+        shaped_digits.descent,
+    )
 }
 
 fn layout_selections(
@@ -918,6 +1106,8 @@ mod tests {
                         global_byte_start: 0,
                         global_utf16_start: 0,
                     }],
+                    gutter: None,
+                    text_clip_bounds: Bounds::new(point(px(0.), px(0.)), size(px(400.), px(100.))),
                     line_height: px(24.),
                     presentation: EditorPresentation::new(&snapshot, None),
                     display_snapshot,
@@ -951,10 +1141,23 @@ mod tests {
                 let layout = layout_visible_lines(
                     display_snapshot,
                     presentation,
-                    Bounds::new(point(px(0.), px(0.)), size(px(800.), px(100.))),
-                    DisplayRow::new(5_000),
-                    point(px(0.), px(10.)),
-                    px(20.),
+                    VisibleLineLayoutParams {
+                        geometry: EditorGeometry {
+                            text_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(800.), px(100.)),
+                            ),
+                            text_clip_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(800.), px(100.)),
+                            ),
+                            gutter: None,
+                        },
+                        active_lines: &BTreeSet::new(),
+                        start_row: DisplayRow::new(5_000),
+                        scroll_offset: point(px(0.), px(10.)),
+                        line_height: px(20.),
+                    },
                     window,
                 );
 
@@ -967,6 +1170,59 @@ mod tests {
                     Some(DisplayRow::new(5_006))
                 );
                 assert_eq!(layout.lines.len(), 7);
+            })
+            .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
+    fn gutter_and_text_share_vertical_rows_but_only_text_scrolls_horizontally(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, _| {
+                let snapshot =
+                    Buffer::scratch("one\ntwo\nthree".to_owned(), BufferConfig::default())
+                        .expect("测试 Buffer 应能创建")
+                        .snapshot();
+                let dimensions = GutterDimensions {
+                    left_padding: px(8.),
+                    right_padding: px(8.),
+                    width: px(48.),
+                    margin: px(3.),
+                };
+                let gutter_bounds =
+                    Bounds::new(point(px(0.), px(0.)), size(dimensions.width, px(100.)));
+                let text_bounds = Bounds::new(point(px(51.), px(0.)), size(px(349.), px(100.)));
+                let layout = layout_visible_lines(
+                    DisplayMap::new(snapshot.clone()).display_snapshot(),
+                    EditorPresentation::new(&snapshot, None),
+                    VisibleLineLayoutParams {
+                        geometry: EditorGeometry {
+                            text_bounds,
+                            text_clip_bounds: Bounds::new(
+                                point(px(48.), px(0.)),
+                                size(px(352.), px(100.)),
+                            ),
+                            gutter: Some((gutter_bounds, dimensions)),
+                        },
+                        active_lines: &BTreeSet::from([Line::new(1)]),
+                        start_row: DisplayRow::ZERO,
+                        scroll_offset: point(px(20.), px(0.)),
+                        line_height: px(20.),
+                    },
+                    window,
+                );
+                let gutter = layout.gutter.as_ref().expect("Full Editor 应布局 gutter");
+
+                assert_eq!(layout.lines[0].origin.x, px(31.));
+                assert_eq!(gutter.rows[0].shaped_line_number.text.as_ref(), "1");
+                assert_eq!(gutter.rows[1].shaped_line_number.text.as_ref(), "2");
+                assert!(!gutter.rows[0].active);
+                assert!(gutter.rows[1].active);
+                assert_eq!(gutter.rows[0].origin.y, layout.lines[0].origin.y);
+                assert!(gutter.rows[0].origin.x > gutter_bounds.left());
+                assert_eq!(layout.text_clip_bounds.left(), gutter_bounds.right());
             })
             .expect("测试窗口应保持可用");
     }
@@ -988,10 +1244,23 @@ mod tests {
                 let layout = layout_visible_lines(
                     map.display_snapshot(),
                     EditorPresentation::new(&snapshot, None),
-                    Bounds::new(point(px(0.), px(0.)), size(px(400.), px(100.))),
-                    DisplayRow::ZERO,
-                    point(px(0.), px(0.)),
-                    px(20.),
+                    VisibleLineLayoutParams {
+                        geometry: EditorGeometry {
+                            text_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(400.), px(100.)),
+                            ),
+                            text_clip_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(400.), px(100.)),
+                            ),
+                            gutter: None,
+                        },
+                        active_lines: &BTreeSet::new(),
+                        start_row: DisplayRow::ZERO,
+                        scroll_offset: point(px(0.), px(0.)),
+                        line_height: px(20.),
+                    },
                     window,
                 );
 
@@ -1023,10 +1292,23 @@ mod tests {
                 let layout = layout_visible_lines(
                     display_snapshot,
                     presentation,
-                    Bounds::new(point(px(0.), px(0.)), size(px(200.), px(40.))),
-                    DisplayRow::new(10),
-                    point(px(0.), px(0.)),
-                    px(20.),
+                    VisibleLineLayoutParams {
+                        geometry: EditorGeometry {
+                            text_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(200.), px(40.)),
+                            ),
+                            text_clip_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(200.), px(40.)),
+                            ),
+                            gutter: None,
+                        },
+                        active_lines: &BTreeSet::new(),
+                        start_row: DisplayRow::new(10),
+                        scroll_offset: point(px(0.), px(0.)),
+                        line_height: px(20.),
+                    },
                     window,
                 );
                 let (_, carets) =

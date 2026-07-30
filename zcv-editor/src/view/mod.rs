@@ -435,6 +435,14 @@ impl Editor {
         EditorPresentation::new(self.display_map.snapshot(), self.composition.as_ref())
     }
 
+    pub(super) fn shows_gutter(&self) -> bool {
+        self.mode == EditorMode::Full
+    }
+
+    pub(super) fn active_lines(&self) -> Vec<Line> {
+        touched_lines(self.display_map.snapshot(), &self.selections).unwrap_or_default()
+    }
+
     pub(super) fn scroll_anchor(&self) -> DisplayPoint {
         self.scroll_manager.anchor()
     }
@@ -456,6 +464,31 @@ impl Editor {
     pub(super) fn set_caret(&mut self, offset: ByteOffset) {
         self.composition = None;
         self.selections = SelectionSet::caret(offset);
+        self.request_autoscroll();
+    }
+
+    pub(super) fn select_line(&mut self, line: Line, extend: bool) {
+        let snapshot = self.render_snapshot();
+        let Ok(start) = snapshot.line_start_byte(line) else {
+            return;
+        };
+        let end = snapshot
+            .line_start_byte(Line::new(line.get() + 1))
+            .unwrap_or_else(|_| snapshot.len_bytes());
+        let selection = if extend {
+            let current = *self.selections.primary();
+            if end <= current.start() {
+                Selection::new(current.end(), start)
+            } else if start >= current.end() {
+                Selection::new(current.start(), end)
+            } else {
+                current
+            }
+        } else {
+            Selection::new(start, end)
+        };
+        self.composition = None;
+        self.selections = SelectionSet::new(vec![selection]);
         self.request_autoscroll();
     }
 
@@ -1836,6 +1869,45 @@ mod tests {
     }
 
     #[gpui::test]
+    fn clicking_the_gutter_selects_a_logical_line(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "first\nsecond\nthird");
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+
+        cx.run_until_parked();
+        cx.simulate_click(point(px(4.), px(32.)), gpui::Modifiers::default());
+
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(
+                editor.selections,
+                SelectionSet::new(vec![Selection::new(
+                    ByteOffset::new(6),
+                    ByteOffset::new(13)
+                )])
+            );
+        });
+
+        cx.simulate_click(
+            point(px(4.), px(58.)),
+            gpui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(
+                editor.selections,
+                SelectionSet::new(vec![Selection::new(
+                    ByteOffset::new(6),
+                    ByteOffset::new(18)
+                )])
+            );
+        });
+    }
+
+    #[gpui::test]
     fn committed_input_uses_element_input_handler_and_preserves_unicode(cx: &mut TestAppContext) {
         let buffer = test_buffer(cx, "");
         let (editor, cx) = cx.add_window_view({
@@ -1864,7 +1936,7 @@ mod tests {
             move |_, cx| Editor::for_buffer(buffer, cx)
         });
 
-        cx.simulate_click(point(px(0.), px(12.)), gpui::Modifiers::default());
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
         cx.dispatch_action(MoveRight);
         cx.dispatch_action(SelectRight);
         cx.read_entity(&editor, |editor, _| {
@@ -1903,7 +1975,7 @@ mod tests {
             let buffer = buffer.clone();
             move |_, cx| Editor::for_buffer(buffer, cx)
         });
-        cx.simulate_click(point(px(0.), px(12.)), gpui::Modifiers::default());
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
 
         cx.update_entity(&editor, |editor, _| {
             editor.selections = SelectionSet::caret(ByteOffset::new(10));
@@ -1956,7 +2028,7 @@ mod tests {
         });
         let end = ByteOffset::new(text.len());
 
-        cx.simulate_click(point(px(0.), px(12.)), gpui::Modifiers::default());
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
         cx.dispatch_action(MoveToEnd);
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(editor.selections, SelectionSet::caret(end));
@@ -2002,7 +2074,7 @@ mod tests {
 
         cx.simulate_resize(size(px(100.), px(100.)));
         cx.run_until_parked();
-        cx.simulate_click(point(px(0.), px(12.)), gpui::Modifiers::default());
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
 
         let page_rows = cx.read_entity(&editor, |editor, _| {
             editor
@@ -2078,7 +2150,7 @@ mod tests {
             move |_, cx| Editor::for_buffer(buffer, cx)
         });
 
-        cx.simulate_click(point(px(0.), px(12.)), gpui::Modifiers::default());
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
         cx.update_entity(&editor, |editor, _| {
             editor.selections =
                 SelectionSet::new(vec![Selection::new(ByteOffset::new(1), ByteOffset::new(4))]);
@@ -2115,7 +2187,7 @@ mod tests {
             move |_, cx| Editor::for_buffer(buffer, cx)
         });
 
-        cx.simulate_click(point(px(0.), px(12.)), gpui::Modifiers::default());
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
         for _ in 0..80 {
             cx.dispatch_action(MoveDown);
         }

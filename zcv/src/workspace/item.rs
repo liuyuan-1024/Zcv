@@ -194,11 +194,7 @@ impl Item for Editor {
             .project_root()
             .and_then(|root| path.strip_prefix(root).ok())
             .unwrap_or(path);
-        let segments = relative
-            .iter()
-            .map(|component| component.to_string_lossy().into_owned().into())
-            .collect();
-        Some((segments, None))
+        Some((vec![relative.to_string_lossy().into_owned().into()], None))
     }
 }
 

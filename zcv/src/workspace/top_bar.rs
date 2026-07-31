@@ -39,13 +39,13 @@ impl gpui::Render for TopBar {
     fn render(
         &mut self,
         window: &mut Window,
-        _cx: &mut gpui::Context<Self>,
+        cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
         bar_frame()
             .id("top-bar")
             .child(cluster(leading_slots(window, &self.project_picker)))
             .child(drag_spacer())
-            .child(cluster(trailing_slots()))
+            .child(cluster(trailing_slots(cx)))
     }
 }
 
@@ -98,11 +98,14 @@ fn leading_slots(window: &Window, project_picker: &gpui::Entity<ProjectPicker>) 
     out
 }
 
-fn trailing_slots() -> Vec<AnyElement> {
+fn trailing_slots(cx: &gpui::App) -> Vec<AnyElement> {
     vec![
         Glyph::icon("top-bar.settings", "icons/actions/settings.svg")
             .label("设置")
-            .on_click(|window, cx| window.dispatch_action(Box::new(OpenSettings), cx))
+            .shortcut(&OpenSettings, cx)
+            .on_click(|window, cx| {
+                window.dispatch_action(Box::new(OpenSettings), cx);
+            })
             .into_any_element(),
     ]
 }

@@ -29,10 +29,10 @@ fn bar_frame() -> Div {
         .px(space::S8)
         .py(space::S6)
         .gap(space::S6)
-        .bg(color::current().gray.s[2])
-        .text_color(color::current().gray.s[8])
+        .bg(color::current().title_bar_background)
+        .text_color(color::current().text)
         .border_b_1()
-        .border_color(color::current().gray.s[4])
+        .border_color(color::current().border_variant)
 }
 
 impl gpui::Render for TopBar {

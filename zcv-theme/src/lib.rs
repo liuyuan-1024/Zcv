@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use gpui::{Font, FontFallbacks, Pixels, Window, WindowAppearance, font, px};
 
 pub mod color;
+mod palette;
 pub mod syntax;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,7 +76,7 @@ impl Theme {
 
     pub fn apply(self, window: Option<&Window>) {
         let concrete = self.effective(window);
-        color::set_palette(concrete);
+        palette::set_palette(concrete);
         syntax::set_theme(concrete);
     }
 }

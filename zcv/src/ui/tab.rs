@@ -73,17 +73,17 @@ impl ParentElement for Tab {
 impl RenderOnce for Tab {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let text_color = if self.selected {
-            color::current().gray.s[8]
+            color::current().text
         } else {
-            color::current().gray.s[6]
+            color::current().text_disabled
         };
         let bg = if self.selected {
-            color::current().gray.s[1]
+            color::current().tab_active_background
         } else {
             gpui::rgba(0)
         };
 
-        let border_color = color::current().gray.s[4];
+        let border_color = color::current().border_variant;
 
         self.div
             .flex()

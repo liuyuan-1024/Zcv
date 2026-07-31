@@ -343,7 +343,7 @@ impl Render for Pane {
             .flex_col()
             .overflow_hidden()
             .size_full()
-            .bg(color::current().gray.s[1])
+            .bg(color::current().editor_background)
             .on_action(cx.listener(Self::handle_next_tab))
             .on_action(cx.listener(Self::handle_prev_tab))
             .child(render_tab_bar(
@@ -397,7 +397,7 @@ fn render_tab_bar(
                 .flex_row()
                 .items_center()
                 .flex_shrink_0()
-                .bg(color::current().gray.s[2])
+                .bg(color::current().tab_bar_background)
         },
         children,
     );
@@ -471,7 +471,7 @@ fn render_tab(
         .drag_over::<DraggedTab>(
             move |mut tab: gpui::StyleRefinement, dragged: &DraggedTab, _, _| {
                 if ix != dragged.ix {
-                    tab.background = Some(gpui::Fill::from(color::current().gray.s[3]));
+                    tab.background = Some(gpui::Fill::from(color::current().element_hover));
                 }
                 tab
             },
@@ -498,7 +498,7 @@ fn render_tab_bar_drop_target(
         .flex_grow()
         .drag_over::<DraggedTab>(
             |mut tab: gpui::StyleRefinement, _dragged: &DraggedTab, _, _| {
-                tab.background = Some(gpui::Fill::from(color::current().gray.s[3]));
+                tab.background = Some(gpui::Fill::from(color::current().element_hover));
                 tab
             },
         )
@@ -560,7 +560,7 @@ fn tab_end_glyph(
                 .group_hover(TAB_HOVER_GROUP, |style| style.opacity(0.0))
                 .child(
                     Glyph::icon(("tab-dirty", item_id), "icons/actions/circle.svg")
-                        .color(color::highlight()),
+                        .color(color::current().icon_accent),
                 ),
         )
         .child(
@@ -590,7 +590,7 @@ fn render_content(
             .flex()
             .items_center()
             .justify_center()
-            .text_color(color::current().gray.s[5])
+            .text_color(color::current().text_placeholder)
             .child("无打开文件")
             .into_any_element();
     }
@@ -600,7 +600,7 @@ fn render_content(
             .flex()
             .items_center()
             .justify_center()
-            .text_color(color::current().gray.s[5])
+            .text_color(color::current().text_placeholder)
             .child("视图已关闭")
             .into_any_element();
     };

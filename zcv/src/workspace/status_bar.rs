@@ -106,10 +106,10 @@ fn bar_frame() -> Div {
         .px(space::S8)
         .py(space::S6)
         .gap(space::S6)
-        .bg(color::current().gray.s[2])
-        .text_color(color::current().gray.s[8])
+        .bg(color::current().status_bar_background)
+        .text_color(color::current().text)
         .border_t_1()
-        .border_color(color::current().gray.s[4])
+        .border_color(color::current().border_variant)
 }
 
 fn region(items: Vec<AnyElement>, justify_start: bool) -> Div {

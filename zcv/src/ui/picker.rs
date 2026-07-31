@@ -171,7 +171,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .map(|text| {
                 div()
                     .text_center()
-                    .text_color(color::current().gray.s[5])
+                    .text_color(color::current().text_placeholder)
                     .child(text)
             });
 
@@ -239,13 +239,13 @@ pub fn picker_search_box(
         .overflow_hidden()
         .p(space::S6)
         .border_b_1()
-        .border_color(color::current().gray.s[4])
+        .border_color(color::current().border_variant)
         .when_some(placeholder, |el, placeholder| {
             el.child(
                 div()
                     .absolute()
                     .left(space::S6)
-                    .text_color(color::current().gray.s[5])
+                    .text_color(color::current().text_placeholder)
                     .child(placeholder),
             )
         })
@@ -254,7 +254,10 @@ pub fn picker_search_box(
 
 /// 分隔线。
 pub fn picker_divider() -> impl IntoElement {
-    div().w_full().h(px(1.0)).bg(color::current().gray.s[4])
+    div()
+        .w_full()
+        .h(px(1.0))
+        .bg(color::current().border_variant)
 }
 
 #[cfg(test)]

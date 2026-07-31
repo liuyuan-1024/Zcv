@@ -267,25 +267,25 @@ impl Render for Dock {
             .flex_col()
             .flex_shrink_0()
             .overflow_hidden()
-            .bg(color::current().gray.s[1])
-            .text_color(color::current().gray.s[8]);
+            .bg(color::current().panel_background)
+            .text_color(color::current().text);
 
         let frame = match self.position {
             DockPosition::Left => frame
                 .w(self.size)
                 .h_full()
                 .border_r_1()
-                .border_color(color::current().gray.s[4]),
+                .border_color(color::current().border_variant),
             DockPosition::Right => frame
                 .w(self.size)
                 .h_full()
                 .border_l_1()
-                .border_color(color::current().gray.s[4]),
+                .border_color(color::current().border_variant),
             DockPosition::Bottom => frame
                 .h(self.size)
                 .w_full()
                 .border_t_1()
-                .border_color(color::current().gray.s[4]),
+                .border_color(color::current().border_variant),
         };
 
         let frame = frame.child(div().size_full().child(panel_view));
@@ -344,7 +344,7 @@ fn placeholder_div() -> gpui::Div {
         .flex()
         .items_center()
         .justify_center()
-        .text_color(color::current().gray.s[5])
+        .text_color(color::current().text_placeholder)
         .child("")
 }
 

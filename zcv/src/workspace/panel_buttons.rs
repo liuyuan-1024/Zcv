@@ -65,9 +65,9 @@ impl Render for PanelButtons {
                 let action = handle.action_name();
                 let is_active = Some(i) == active_index && is_open;
                 let fg = if is_active {
-                    color::highlight()
+                    color::current().icon_accent
                 } else {
-                    color::default()
+                    color::current().text
                 };
                 let on_click = *dispatch;
 
@@ -83,7 +83,7 @@ impl Render for PanelButtons {
         let divider = div()
             .w(gpui::px(1.0))
             .h_full()
-            .bg(color::current().gray.s[4]);
+            .bg(color::current().border_variant);
 
         match area {
             DockPosition::Left => div()

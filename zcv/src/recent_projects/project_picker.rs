@@ -134,7 +134,7 @@ impl PickerDelegate for ProjectPickerDelegate {
             .toggle_state(is_selected)
             .child(list_item_two_line(
                 div()
-                    .text_color(color::current().gray.s[8])
+                    .text_color(color::current().text)
                     .child(entry.label.clone()),
                 entry.path.clone(),
             ))
@@ -152,7 +152,7 @@ impl PickerDelegate for ProjectPickerDelegate {
         let item = if let Some(s) = shortcut {
             item.end_slot(
                 div()
-                    .text_color(color::current().gray.s[5])
+                    .text_color(color::current().text_placeholder)
                     .text_size(typography::ui())
                     .child(s),
             )
@@ -347,9 +347,9 @@ impl Render for ProjectPicker {
         }
 
         let color_value = if self.is_open {
-            color::highlight()
+            color::current().icon_accent
         } else {
-            color::default()
+            color::current().text
         };
 
         // glyph 上显示当前项目名称，没有时显示「选择项目」
@@ -411,11 +411,11 @@ impl Render for ProjectPicker {
                                     })
                                     .child(
                                         div()
-                                            .bg(color::current().gray.s[2])
+                                            .bg(color::current().elevated_surface_background)
                                             .border_l_3()
-                                            .border_color(color::highlight())
+                                            .border_color(color::current().border_focused)
                                             .border_1()
-                                            .border_color(color::current().gray.s[4])
+                                            .border_color(color::current().border_variant)
                                             .rounded(px(8.0))
                                             .overflow_hidden()
                                             .child(self.picker.clone()),

@@ -184,8 +184,8 @@ impl Render for Toolbar {
             .py(space::S6)
             .px(space::S8)
             .border_b_1()
-            .border_color(color::current().gray.s[4])
-            .bg(color::current().gray.s[1])
+            .border_color(color::current().border_variant)
+            .bg(color::current().toolbar_background)
             .when(has_left || has_right, |this| {
                 this.child(
                     div()

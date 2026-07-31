@@ -62,7 +62,7 @@ impl Glyph {
         Self {
             id: id.into(),
             content,
-            color: color::default(),
+            color: color::current().text,
             label: None,
             shortcut: None,
             on_click: None,
@@ -174,19 +174,19 @@ impl Render for GlyphTooltip {
             .p(space::S6)
             .text_size(typography::ui())
             .line_height(typography::ui())
-            .bg(color::current().gray.s[2])
+            .bg(color::current().elevated_surface_background)
             .border_1()
-            .border_color(color::current().gray.s[4])
+            .border_color(color::current().border_variant)
             .rounded(radius::R4)
             .children(self.label.as_ref().map(|l| {
                 div()
-                    .text_color(color::current().gray.s[8])
+                    .text_color(color::current().text)
                     .child(l.clone())
                     .into_any_element()
             }))
             .children(self.shortcut.as_ref().map(|s| {
                 div()
-                    .text_color(color::current().gray.s[5])
+                    .text_color(color::current().text_placeholder)
                     .child(s.clone())
                     .into_any_element()
             }));

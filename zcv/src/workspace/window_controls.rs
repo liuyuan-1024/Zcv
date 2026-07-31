@@ -85,7 +85,7 @@ fn pip(pip: Pip, active: bool) -> gpui::Stateful<gpui::Div> {
             svg()
                 .path(pip.svg_path())
                 .size(px(10.0))
-                .text_color(color::current().gray.s[0])
+                .text_color(color::current().icon_on_accent)
                 .opacity(0.0)
                 .group_hover(PIP_GROUP, |style| style.opacity(1.0)),
         )

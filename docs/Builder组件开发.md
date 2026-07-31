@@ -213,12 +213,12 @@ impl Render for GlyphTooltip {
         div().p(space::S6).child(
             div()
                 .px(space::S6).py(space::S4)
-                .bg(color::current().gray.s[2])
-                .border_1().border_color(color::current().gray.s[4])
+                .bg(color::current().elevated_surface_background)
+                .border_1().border_color(color::current().border_variant)
                 .rounded(radius::R4)
                 .child(div()
                     .text_size(typography::ui())
-                    .text_color(color::current().gray.s[8])
+                    .text_color(color::current().text)
                     .child(self.label.clone()),
                 ),
         )

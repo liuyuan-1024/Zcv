@@ -56,10 +56,10 @@ impl IntoElement for ListItem {
             .justify_between()
             .p(space::S6)
             .cursor_pointer()
-            .hover(|style| style.bg(color::current().gray.s[3]));
+            .hover(|style| style.bg(color::current().element_hover));
 
         if self.toggle_state {
-            row = row.bg(color::current().gray.s[3]);
+            row = row.bg(color::current().element_selected);
         }
 
         // 主内容
@@ -80,7 +80,7 @@ impl IntoElement for ListItem {
 pub fn list_item_two_line(title: impl IntoElement, subtitle: impl IntoElement) -> impl IntoElement {
     div().flex_1().min_w_0().child(title).child(
         div()
-            .text_color(color::current().gray.s[5])
+            .text_color(color::current().text_placeholder)
             .text_size(typography::ui())
             .line_height(typography::ui())
             .child(subtitle),

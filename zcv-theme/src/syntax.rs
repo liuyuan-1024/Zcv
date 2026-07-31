@@ -15,7 +15,7 @@ const THEME_ONE_DARK_TOML: &str = include_str!("../assets/themes/onedark.toml");
 const THEME_ONE_LIGHT_TOML: &str = include_str!("../assets/themes/onelight.toml");
 
 pub fn default_fg() -> Hsla {
-    color::current().gray.s[8].into()
+    color::current().text.into()
 }
 
 /// 按 highlight name 解析字色，走点分前缀回退链。

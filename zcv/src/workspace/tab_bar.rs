@@ -33,7 +33,7 @@ impl TabBar {
         f: impl FnOnce(Div) -> Div,
         children: impl IntoIterator<Item = AnyElement>,
     ) -> impl gpui::IntoElement {
-        let border_color = color::current().gray.s[4];
+        let border_color = color::current().border_variant;
 
         let outer = f(div());
 

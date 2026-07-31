@@ -12,7 +12,7 @@ use zcv_theme::{color, typography};
 /// ```ignore
 /// SvgIcon::new("icons/files/file.svg")
 ///     .size(px(10.0))
-///     .color(color::current().gray.s[6])
+///     .color(color::current().icon_muted)
 /// ```
 pub(crate) struct SvgIcon {
     path: &'static str,
@@ -24,7 +24,7 @@ impl SvgIcon {
     pub(crate) fn new(path: &'static str) -> Self {
         Self {
             path,
-            color: color::current().gray.s[7],
+            color: color::current().icon,
             size: typography::ui(),
         }
     }

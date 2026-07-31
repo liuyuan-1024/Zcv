@@ -443,9 +443,12 @@ impl Element for EditorElement {
         });
 
         if let Some(gutter) = &prepaint.layout.gutter {
-            window.paint_quad(fill(gutter.bounds, color::current().gray.s[1]));
+            window.paint_quad(fill(
+                gutter.bounds,
+                color::current().editor_gutter_background,
+            ));
             for bounds in gutter.active_row_bounds(prepaint.layout.text_clip_bounds.right()) {
-                window.paint_quad(fill(bounds, color::current().gray.s[3]));
+                window.paint_quad(fill(bounds, color::current().editor_active_line_background));
             }
             if let Some(hitbox) = &prepaint.gutter_hitbox {
                 window.set_cursor_style(gpui::CursorStyle::IBeam, hitbox);
@@ -591,9 +594,9 @@ fn layout_visible_lines(
                 len: number.len(),
                 font: text_style.font(),
                 color: if active {
-                    color::current().gray.s[8].into()
+                    color::current().editor_active_line_number.into()
                 } else {
-                    color::current().gray.s[6].into()
+                    color::current().editor_line_number.into()
                 },
                 background_color: None,
                 underline: None,
@@ -827,7 +830,7 @@ fn layout_projected_range(
                 point(line.origin.x + start_x, line.origin.y),
                 point(line.origin.x + end_x, line.origin.y + line_height),
             ),
-            color::current().blue.a[2],
+            color::current().editor_selection_background,
         ));
     }
 }
@@ -881,7 +884,7 @@ fn layout_caret_at_buffer_offset(
             ),
             size(px(2.), line_height),
         ),
-        color::current().blue.s[6],
+        color::current().editor_cursor,
     ))
 }
 
@@ -928,7 +931,7 @@ fn layout_display_range(
                 ),
                 size(px(2.), line_height),
             ),
-            color::current().blue.s[6],
+            color::current().editor_cursor,
         ));
         return;
     }
@@ -957,7 +960,7 @@ fn layout_display_range(
                 point(line.origin.x + start_x, line.origin.y),
                 point(line.origin.x + end_x, line.origin.y + line_height),
             ),
-            color::current().blue.a[2],
+            color::current().editor_selection_background,
         ));
     }
 }

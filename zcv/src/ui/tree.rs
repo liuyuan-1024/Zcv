@@ -28,7 +28,7 @@ pub(crate) fn selection_border() -> gpui::Div {
         .h(m.row_height)
         .rounded(radius::R2)
         .border_1()
-        .border_color(color::highlight())
+        .border_color(color::current().border_focused)
 }
 
 // ── 私有辅助函数 ─────────────────────────────────────────────────────
@@ -77,7 +77,7 @@ fn row_skeleton(depth: usize) -> gpui::Div {
 /// 渲染缩进竖线——每条线直接 absolute 定位在行上。
 fn guide_lines(depth: usize) -> Vec<gpui::Div> {
     let m = metrics();
-    let line_color = color::current().gray.s[4];
+    let line_color = color::current().border_variant;
     let line_w = px(1.0);
 
     (0..depth)

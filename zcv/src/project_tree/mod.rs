@@ -275,8 +275,8 @@ fn render_row(
 
     tree::render_row_base(depth, is_dir, row.expanded, &name)
         .cursor_pointer()
-        .when(marked, |el| el.bg(color::current().gray.s[3]))
-        .hover(|style| style.bg(color::current().gray.s[3]))
+        .when(marked, |el| el.bg(color::current().element_selected))
+        .hover(|style| style.bg(color::current().element_hover))
         .when(sel && focused, |el| el.child(tree::selection_border()))
         .on_mouse_down(MouseButton::Left, move |event, window, cx| {
             if is_dir {

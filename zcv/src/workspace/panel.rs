@@ -125,7 +125,7 @@ macro_rules! make_placeholder_panel {
                     .track_focus(&self.focus)
                     .key_context($persistent)
                     .tab_index(0)
-                    .text_color(color::current().gray.s[5])
+                    .text_color(color::current().text_placeholder)
                     .child($label)
             }
         }

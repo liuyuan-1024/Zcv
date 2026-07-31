@@ -1599,7 +1599,7 @@ impl Render for Editor {
                 .font(font)
                 .text_size(text_size)
                 .line_height(line_height)
-                .text_color(color::current().gray.s[8]),
+                .text_color(color::current().text),
             cx,
         )
         .child(EditorElement::new(cx.entity()))

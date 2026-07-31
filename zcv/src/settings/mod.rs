@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use gpui::{App, Global, Task};
@@ -11,6 +12,8 @@ use crate::fs_watcher::{FsWatcher, Watcher};
 
 const INITIAL_USER_SETTINGS: &str =
     include_str!("../../assets/settings/initial_user_settings.json");
+const SETTINGS_RELOAD_DEBOUNCE: Duration = Duration::from_millis(75);
+const SETTINGS_RELOAD_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -80,10 +83,10 @@ impl SettingsStore {
         if self.last_user_settings_content.as_deref() == Some(content) {
             return Ok(false);
         }
-        self.last_user_settings_content = Some(content.to_owned());
 
         let parsed = parse_user_settings(content)?;
         let settings = UserSettings::merge(parsed);
+        self.last_user_settings_content = Some(content.to_owned());
         let changed = settings != self.settings;
         if changed {
             self.settings = settings;
@@ -104,7 +107,7 @@ pub(crate) fn init(cx: &mut App) {
                 settings = UserSettings::merge(parsed);
             }
             Err(error) => {
-                eprintln!("无法加载设置文件 {}：{error}", settings_path.display());
+                eprintln!("无法加载设置文件 {}：{error:#}", settings_path.display());
             }
         }
     }
@@ -122,10 +125,63 @@ pub(crate) fn init(cx: &mut App) {
 
     let watch_task = cx.spawn(async move |cx| {
         while signal_rx.recv().await.is_ok() {
+            // 编辑器保存文件时通常会产生一组连续事件。等待事件安静下来再读取，
+            // 避免在 truncate/write 或临时文件替换的中间状态解析设置。
+            loop {
+                cx.background_executor()
+                    .timer(SETTINGS_RELOAD_DEBOUNCE)
+                    .await;
+                let mut received_more_events = false;
+                while signal_rx.try_recv().is_ok() {
+                    received_more_events = true;
+                }
+                if !received_more_events {
+                    break;
+                }
+            }
             std::mem::take(&mut *pending_events.lock().unwrap());
-            let content = fs::read_to_string(crate::paths::settings_file()).unwrap_or_default();
-            let result =
+
+            let settings_path = crate::paths::settings_file();
+            let content = match fs::read_to_string(settings_path) {
+                Ok(content) => content,
+                Err(first_error) => {
+                    cx.background_executor()
+                        .timer(SETTINGS_RELOAD_RETRY_DELAY)
+                        .await;
+                    match fs::read_to_string(settings_path) {
+                        Ok(content) => content,
+                        Err(error) => {
+                            eprintln!(
+                                "无法读取设置文件 {}：{error}（首次读取错误：{first_error}）",
+                                settings_path.display()
+                            );
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            let mut result =
                 cx.update_global::<SettingsStore, _>(|store, _| store.set_user_settings(&content));
+            if matches!(result, Ok(Err(_))) {
+                // 防抖后仍可能撞上非原子写入的极短窗口，再读取一次；真正的配置
+                // 错误只在第二次解析仍失败时报告。
+                cx.background_executor()
+                    .timer(SETTINGS_RELOAD_RETRY_DELAY)
+                    .await;
+                match fs::read_to_string(settings_path) {
+                    Ok(content) => {
+                        result = cx.update_global::<SettingsStore, _>(|store, _| {
+                            store.set_user_settings(&content)
+                        });
+                    }
+                    Err(error) => {
+                        eprintln!("无法读取设置文件 {}：{error}", settings_path.display());
+                        continue;
+                    }
+                }
+            }
+
             match result {
                 Ok(Ok(true)) => {
                     let _ = cx.update(|cx| cx.refresh_windows());
@@ -133,7 +189,7 @@ pub(crate) fn init(cx: &mut App) {
                 Ok(Ok(false)) => {}
                 Ok(Err(error)) => {
                     eprintln!(
-                        "无法加载设置文件 {}：{error}",
+                        "无法加载设置文件 {}：{error:#}",
                         crate::paths::settings_file().display()
                     );
                 }
@@ -200,8 +256,22 @@ mod tests {
     }
 
     #[test]
+    fn bundled_initial_settings_are_valid() {
+        let content = parse_user_settings(INITIAL_USER_SETTINGS).unwrap();
+        assert_eq!(UserSettings::merge(content), UserSettings::default());
+    }
+
+    #[test]
     fn invalid_theme_is_rejected() {
         let error = parse_user_settings(r#"{"theme":"unknown"}"#).unwrap_err();
         assert!(error.to_string().contains("不是合法的 ZCV settings JSON"));
+        assert!(format!("{error:#}").contains("unknown variant"));
+    }
+
+    #[test]
+    fn invalid_json_reports_location() {
+        let error = parse_user_settings(r#"{"theme":}"#).unwrap_err();
+        let detailed = format!("{error:#}");
+        assert!(detailed.contains("line 1 column"));
     }
 }

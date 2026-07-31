@@ -51,7 +51,7 @@ fn main() {
                     },
                     |window, cx| {
                         settings::SettingsStore::get(cx).theme.apply(Some(window));
-                        let workspace = cx.new(Workspace::new);
+                        let workspace = cx.new(|cx| Workspace::new(window, cx));
                         workspace.update(cx, |workspace, cx| {
                             let pane = workspace.pane.clone();
                             initialize_pane(&pane, window, cx);

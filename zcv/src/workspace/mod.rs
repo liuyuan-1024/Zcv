@@ -108,7 +108,7 @@ impl Workspace {
         (handles, pairs)
     }
 
-    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(window: &Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let weak_self: gpui::WeakEntity<Self> = cx.weak_entity();
         let weak_project_switcher = weak_self.clone();
@@ -298,14 +298,15 @@ impl Workspace {
             }
         });
 
-        let settings_subscription = cx.observe_global::<SettingsStore>(|workspace, cx| {
-            let settings = SettingsStore::get(cx);
-            settings.theme.apply(None);
-            workspace
-                .pane
-                .update(cx, |pane, cx| pane.set_soft_wrap(settings.soft_wrap, cx));
-            cx.notify();
-        });
+        let settings_subscription =
+            cx.observe_global_in::<SettingsStore>(window, |workspace, window, cx| {
+                let settings = SettingsStore::get(cx);
+                settings.theme.apply(Some(window));
+                workspace
+                    .pane
+                    .update(cx, |pane, cx| pane.set_soft_wrap(settings.soft_wrap, cx));
+                cx.notify();
+            });
 
         Self {
             focus,

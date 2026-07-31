@@ -233,7 +233,7 @@ impl Dock {
     }
 
     /// 结束拖拽。
-    pub(crate) fn end_resize(&mut self, _cx: &mut Context<Self>) {
+    pub(crate) fn end_resize(&mut self) {
         self.drag_state = None;
     }
 

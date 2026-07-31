@@ -1,10 +1,10 @@
 //! shell 共享基础设施。
 
-pub(crate) mod glyph;
-pub(crate) mod icon;
-pub(crate) mod list_item;
-pub(crate) mod picker;
-pub(crate) mod tab;
+mod glyph;
+mod icon;
+mod list_item;
+mod picker;
+mod tab;
 pub(crate) mod tree;
 
 pub(crate) use glyph::Glyph;

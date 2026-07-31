@@ -124,7 +124,6 @@ impl Pane {
         &mut self,
         path: PathBuf,
         project_root: PathBuf,
-        _title: impl Into<String>,
         buffer: Entity<Buffer>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -212,26 +211,7 @@ impl Pane {
     }
 
     /// 当前活动标签的 ItemHandle。
-    pub(crate) fn active_item(&self, _cx: &App) -> Option<&dyn ItemHandle> {
-        self.active_tab()
-    }
-
-    /// 按具体 Item 类型获取活动标签。
-    pub(crate) fn active_item_as<T: Render + 'static>(&self) -> Option<Entity<T>> {
-        self.active_tab()?.downcast()
-    }
-
-    /// 向下转型获取活动编辑器（仅供需要 Editor 的场合使用）。
-    pub(crate) fn active_editor(&self, _cx: &App) -> Option<Entity<Editor>> {
-        self.active_item_as()
-    }
-
-    /// 活动编辑器的路径（如果有）。
-    pub(crate) fn active_path(&self, cx: &App) -> Option<PathBuf> {
-        self.active_tab()?.file_path(cx)
-    }
-
-    fn active_tab(&self) -> Option<&dyn ItemHandle> {
+    pub(crate) fn active_item(&self) -> Option<&dyn ItemHandle> {
         let item_id = self.active?;
         self.tabs
             .iter()
@@ -239,8 +219,23 @@ impl Pane {
             .map(|item| item.as_ref())
     }
 
+    /// 按具体 Item 类型获取活动标签。
+    pub(crate) fn active_item_as<T: Render + 'static>(&self) -> Option<Entity<T>> {
+        self.active_item()?.downcast()
+    }
+
+    /// 向下转型获取活动编辑器（仅供需要 Editor 的场合使用）。
+    pub(crate) fn active_editor(&self) -> Option<Entity<Editor>> {
+        self.active_item_as()
+    }
+
+    /// 活动编辑器的路径（如果有）。
+    pub(crate) fn active_path(&self, cx: &App) -> Option<PathBuf> {
+        self.active_item()?.file_path(cx)
+    }
+
     fn focus_active_item(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(item) = self.active_item(cx) {
+        if let Some(item) = self.active_item() {
             window.focus(&item.item_focus_handle(cx));
         }
     }
@@ -252,7 +247,7 @@ impl Pane {
 
     /// 根据当前激活的 item 更新 Toolbar 内容。
     fn update_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let active_item = self.active_item(cx);
+        let active_item = self.active_item();
         self.toolbar.update(cx, |toolbar, cx| {
             toolbar.set_active_item(active_item, window, cx);
         });
@@ -331,7 +326,7 @@ impl Pane {
 impl Render for Pane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active_item_id = self.active;
-        let active_item = self.active_tab();
+        let active_item = self.active_item();
         let pane_entity = cx.entity();
 
         div()
@@ -451,7 +446,7 @@ fn render_tab(
                 pane.activate_tab(item_id, window, cx);
                 cx.emit(PaneEvent::Activate { item_id });
                 cx.notify();
-                pane.active_item(cx).map(|item| item.item_focus_handle(cx))
+                pane.active_item().map(|item| item.item_focus_handle(cx))
             });
             if let Some(focus) = focus {
                 window.focus(&focus);
@@ -530,7 +525,7 @@ fn close_glyph(
                 pane.close_tab(item_id, window, cx);
                 cx.emit(PaneEvent::Removed { item_id });
                 cx.notify();
-                pane.active_item(cx).map(|item| item.item_focus_handle(cx))
+                pane.active_item().map(|item| item.item_focus_handle(cx))
             });
             window.focus(&focus.unwrap_or(pane_focus));
             window.refresh();
@@ -635,16 +630,11 @@ mod tests {
         path: PathBuf,
         buffer: Entity<Buffer>,
     ) {
-        let file_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
         cx.add_window_view(|window, cx| {
             pane.update(cx, |p, cx| {
                 p.open_file(
                     path,
                     std::env::current_dir().expect("测试项目根应可读取"),
-                    file_name,
                     buffer,
                     window,
                     cx,
@@ -663,7 +653,7 @@ mod tests {
         let pane = cx.new(Pane::new);
         open_file_in_test(cx, &pane, PathBuf::from("demo.txt"), buffer.clone());
 
-        let editor = cx.read_entity(&pane, |pane, cx| pane.active_editor(cx).unwrap());
+        let editor = cx.read_entity(&pane, |pane, _| pane.active_editor().unwrap());
         cx.read_entity(&editor, |editor, cx| assert!(!editor.is_dirty(cx)));
         cx.update_entity(&editor, |editor, cx| editor.set_text("阶段七", cx));
         cx.read_entity(&editor, |editor, cx| assert!(editor.is_dirty(cx)));
@@ -687,7 +677,7 @@ mod tests {
                 Some("demo.txt".to_string())
             );
             assert_eq!(pane.active, Some(pane.tabs[0].item_id()));
-            assert!(pane.active_editor(cx).is_some());
+            assert!(pane.active_editor().is_some());
         });
     }
 

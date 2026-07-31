@@ -31,33 +31,3 @@ pub struct LoadedTextInfo {
     /// 按 `LargeFilePolicy::long_line_threshold_chars` 判定是否含超长行的快照值。
     pub has_long_line: bool,
 }
-
-impl LoadedTextInfo {
-    pub const fn new(
-        encoding: TextEncoding,
-        bom_policy: BomPolicy,
-        invalid_utf8_policy: InvalidUtf8Policy,
-        had_bom: bool,
-        had_invalid_utf8: bool,
-        line_ending_style: LineEndingStyle,
-        has_final_newline: bool,
-        loaded_byte_size: ByteOffset,
-        is_large: bool,
-        longest_line_chars: usize,
-        has_long_line: bool,
-    ) -> Self {
-        Self {
-            encoding,
-            bom_policy,
-            invalid_utf8_policy,
-            had_bom,
-            had_invalid_utf8,
-            line_ending_style,
-            has_final_newline,
-            loaded_byte_size,
-            is_large,
-            longest_line_chars,
-            has_long_line,
-        }
-    }
-}

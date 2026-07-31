@@ -180,19 +180,19 @@ pub(crate) fn decode_stream<R: io::Read>(
 
     stats.finalize();
 
-    let info = LoadedTextInfo::new(
-        TextEncoding::Utf8,
+    let info = LoadedTextInfo {
+        encoding: TextEncoding::Utf8,
         bom_policy,
-        invalid_policy,
+        invalid_utf8_policy: invalid_policy,
         had_bom,
         had_invalid_utf8,
-        stats.line_ending_style(),
-        stats.has_final_newline(),
-        ByteOffset::new(consumed_bytes),
-        large_file_policy.is_large_byte_size(consumed_bytes),
-        stats.longest_line_chars,
-        large_file_policy.is_long_line(stats.longest_line_chars),
-    );
+        line_ending_style: stats.line_ending_style(),
+        has_final_newline: stats.has_final_newline(),
+        loaded_byte_size: ByteOffset::new(consumed_bytes),
+        is_large: large_file_policy.is_large_byte_size(consumed_bytes),
+        longest_line_chars: stats.longest_line_chars,
+        has_long_line: large_file_policy.is_long_line(stats.longest_line_chars),
+    };
     Ok(StreamingDecodeResult {
         rope: builder.finish(),
         info,

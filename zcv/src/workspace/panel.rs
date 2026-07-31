@@ -4,7 +4,7 @@
 //! - `Panel` trait 定义面板接口
 //! - `PanelHandle` trait object 抹消具体类型，使 Dock 能统一管理异构面板
 
-use gpui::{AnyView, App, Context, Entity, EntityId, FocusHandle, Render, Window, div, prelude::*};
+use gpui::{AnyView, App, Context, Entity, FocusHandle, Render, Window, div, prelude::*};
 
 use zcv_theme::color;
 
@@ -12,9 +12,6 @@ use zcv_theme::color;
 
 /// 面板核心接口。每个面板是一个独立 Entity<T: Panel>。
 pub(crate) trait Panel: Render + Sized {
-    /// 面板唯一标识名，用于持久化和类型查询。
-    fn persistent_name() -> &'static str;
-
     /// 面板图标 SVG 路径。
     fn icon() -> &'static str;
 
@@ -35,8 +32,6 @@ pub(crate) trait Panel: Render + Sized {
 
 /// 抹消具体类型的面板句柄，供 Dock 统一存储和管理异构面板。
 pub(crate) trait PanelHandle: Send + Sync {
-    fn panel_id(&self) -> EntityId;
-    fn persistent_name(&self) -> &'static str;
     fn icon(&self) -> &'static str;
     fn label(&self) -> &'static str;
     fn action_name(&self) -> &'static str;
@@ -48,14 +43,6 @@ pub(crate) trait PanelHandle: Send + Sync {
 
 /// 桥接：任何 `Entity<T: Panel>` 自动实现 `PanelHandle`。
 impl<T: Panel + 'static> PanelHandle for Entity<T> {
-    fn panel_id(&self) -> EntityId {
-        self.entity_id()
-    }
-
-    fn persistent_name(&self) -> &'static str {
-        T::persistent_name()
-    }
-
     fn icon(&self) -> &'static str {
         T::icon()
     }
@@ -98,9 +85,6 @@ macro_rules! make_placeholder_panel {
         }
 
         impl Panel for $name {
-            fn persistent_name() -> &'static str {
-                $persistent
-            }
             fn icon() -> &'static str {
                 $icon
             }

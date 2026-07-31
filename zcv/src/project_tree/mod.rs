@@ -171,7 +171,7 @@ impl ProjectTree {
         let (path, is_dir) = {
             let state = self.state.borrow_mut();
             let rows = state.visible_rows();
-            match state.selected_idx(&rows) {
+            match state.selected_idx(rows) {
                 Some(idx) => (Some(rows[idx].path.clone()), rows[idx].is_dir),
                 None => (None, false),
             }
@@ -293,6 +293,21 @@ fn render_row(
             );
             cx.stop_propagation();
         })
+}
+
+impl Panel for ProjectTree {
+    fn icon() -> &'static str {
+        "icons/panels/project_tree.svg"
+    }
+    fn label() -> &'static str {
+        "项目树"
+    }
+    fn action_name() -> &'static str {
+        "dock::ToggleProjectTree"
+    }
+    fn focus_handle(&self, _cx: &gpui::App) -> gpui::FocusHandle {
+        self.focus.clone()
+    }
 }
 
 // ── 内部类型 ────────────────────────────────────────────────────────
@@ -474,24 +489,6 @@ impl ProjectTreeState {
         } else if self.selected.is_none() && !rows.is_empty() {
             self.selected = Some(rows[0].path.clone());
         }
-    }
-}
-
-impl Panel for ProjectTree {
-    fn persistent_name() -> &'static str {
-        "ProjectTree"
-    }
-    fn icon() -> &'static str {
-        "icons/panels/project_tree.svg"
-    }
-    fn label() -> &'static str {
-        "项目树"
-    }
-    fn action_name() -> &'static str {
-        "dock::ToggleProjectTree"
-    }
-    fn focus_handle(&self, _cx: &gpui::App) -> gpui::FocusHandle {
-        self.focus.clone()
     }
 }
 

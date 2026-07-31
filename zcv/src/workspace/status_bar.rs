@@ -21,12 +21,12 @@ pub trait StatusItemView: Render + 'static {
 
 /// 类型擦除桥接，让 StatusBar 存储异构 item 列表。
 pub(crate) trait StatusItemViewHandle: Send {
-    fn element(&self, _cx: &App) -> AnyElement;
+    fn element(&self) -> AnyElement;
     fn set_active_editor(&self, editor: Option<&Entity<Editor>>, cx: &mut App);
 }
 
 impl<T: StatusItemView> StatusItemViewHandle for Entity<T> {
-    fn element(&self, _cx: &App) -> AnyElement {
+    fn element(&self) -> AnyElement {
         self.clone().into_any_element()
     }
 
@@ -51,7 +51,7 @@ impl StatusBar {
 
     pub(crate) fn new(pane: Entity<Pane>, cx: &mut Context<Self>) -> Self {
         let pane_subscription = cx.observe(&pane, |this, pane, cx| {
-            let editor = pane.read(cx).active_editor(cx);
+            let editor = pane.read(cx).active_editor();
             this.broadcast_editor(editor.as_ref(), cx);
         });
         Self {
@@ -69,7 +69,7 @@ impl StatusBar {
         item: Entity<T>,
         cx: &mut Context<Self>,
     ) {
-        let editor = self.pane.read(cx).active_editor(cx);
+        let editor = self.pane.read(cx).active_editor();
         item.set_active_editor(editor.as_ref(), cx);
         self.left_items.push(Box::new(item));
         cx.notify();
@@ -80,7 +80,7 @@ impl StatusBar {
         item: Entity<T>,
         cx: &mut Context<Self>,
     ) {
-        let editor = self.pane.read(cx).active_editor(cx);
+        let editor = self.pane.read(cx).active_editor();
         item.set_active_editor(editor.as_ref(), cx);
         self.right_items.push(Box::new(item));
         cx.notify();
@@ -123,20 +123,20 @@ fn region(items: Vec<AnyElement>, justify_start: bool) -> Div {
 }
 
 impl Render for StatusBar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
         bar_frame()
             .id("status-bar")
-            .child(leading_region(&self.left_items, cx))
-            .child(trailing_region(&self.right_items, cx))
+            .child(leading_region(&self.left_items))
+            .child(trailing_region(&self.right_items))
     }
 }
 
-fn leading_region(items: &[Box<dyn StatusItemViewHandle>], cx: &App) -> Div {
-    let elements: Vec<AnyElement> = items.iter().map(|item| item.element(cx)).collect();
+fn leading_region(items: &[Box<dyn StatusItemViewHandle>]) -> Div {
+    let elements: Vec<AnyElement> = items.iter().map(|item| item.element()).collect();
     region(elements, true)
 }
 
-fn trailing_region(items: &[Box<dyn StatusItemViewHandle>], cx: &App) -> Div {
-    let elements: Vec<AnyElement> = items.iter().map(|item| item.element(cx)).collect();
+fn trailing_region(items: &[Box<dyn StatusItemViewHandle>]) -> Div {
+    let elements: Vec<AnyElement> = items.iter().map(|item| item.element()).collect();
     region(elements, false)
 }

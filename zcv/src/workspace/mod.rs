@@ -11,19 +11,21 @@ mod toolbar;
 mod top_bar;
 mod window_controls;
 
+use dock::DockPosition;
 pub(crate) use dock::{
-    Dock, DockPosition, ToggleDebug, ToggleDiagnostics, ToggleKeyboardShortcuts,
-    ToggleLanguageServer, ToggleOutline, ToggleProjectSearch, ToggleProjectTree, ToggleTerminal,
-    ToggleVersionControl,
+    Dock, ToggleDebug, ToggleDiagnostics, ToggleKeyboardShortcuts, ToggleLanguageServer,
+    ToggleOutline, ToggleProjectSearch, ToggleProjectTree, ToggleTerminal, ToggleVersionControl,
 };
 pub(crate) use item::{ItemEvent, ItemHandle};
 pub(crate) use pane::Pane;
-pub(crate) use panel::{
-    DebugPanel, KeyboardShortcutsPanel, OutlinePanel, Panel, PanelHandle, TerminalPanel,
+pub(crate) use panel::Panel;
+use panel::{
+    DebugPanel, KeyboardShortcutsPanel, OutlinePanel, PanelHandle, TerminalPanel,
     VersionControlPanel,
 };
-pub(crate) use panel_buttons::{PanelButtons, PanelDispatch};
-pub(crate) use status_bar::{StatusBar, StatusItemView};
+use panel_buttons::{PanelButtons, PanelDispatch};
+use status_bar::StatusBar;
+pub(crate) use status_bar::StatusItemView;
 pub(crate) use toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 use top_bar::TopBar;
 use window_controls::{handle_minimize, handle_quit, handle_toggle_maximize};
@@ -354,12 +356,8 @@ impl Workspace {
             }
         };
         let pane = self.pane.clone();
-        let file_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
         let focus = pane.update(cx, |pane, cx| {
-            pane.open_file(path, project_root, file_name, buffer, window, cx)
+            pane.open_file(path, project_root, buffer, window, cx)
         });
         let soft_wrap = SettingsStore::get(cx).soft_wrap;
         pane.update(cx, |pane, cx| pane.set_soft_wrap(soft_wrap, cx));
@@ -407,7 +405,7 @@ impl Workspace {
         let pane = self.pane.clone();
         let (editor, path) = {
             let pane = pane.read(cx);
-            let Some(editor) = pane.active_editor(cx) else {
+            let Some(editor) = pane.active_editor() else {
                 return;
             };
             let Some(path) = pane.active_path(cx) else {
@@ -449,7 +447,7 @@ impl Workspace {
     /// 聚焦回编辑区。
     fn focus_center_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pane = self.pane.read(cx);
-        if let Some(item) = pane.active_item(cx) {
+        if let Some(item) = pane.active_item() {
             window.focus(&item.item_focus_handle(cx));
         } else {
             window.focus(&pane.focus);
@@ -470,7 +468,7 @@ impl Workspace {
                 cx.emit(pane::PaneEvent::Removed { item_id });
                 cx.notify();
             });
-            if let Some(item) = pane_entity.read(cx).active_item(cx) {
+            if let Some(item) = pane_entity.read(cx).active_item() {
                 window.focus(&item.item_focus_handle(cx));
             } else {
                 window.focus(&pane_focus);
@@ -676,7 +674,7 @@ impl Render for Workspace {
             })
             .on_mouse_up(MouseButton::Left, move |_event, window, cx| {
                 for dock in [&left_dock_up, &right_dock_up, &bottom_dock_up] {
-                    dock.update(cx, |d, cx| d.end_resize(cx));
+                    dock.update(cx, |d, _| d.end_resize());
                 }
                 drag_notify_up.set(None);
                 window.refresh();

@@ -1,6 +1,6 @@
 //! Toolbar —— Pane 内容区顶部的工具条。
 //!
-//! 包含面包屑导航、搜索栏、诊断控件等，按 PrimaryLeft / PrimaryRight / Secondary 布局。
+//! 当前只承载活动 Item 的左侧主工具项；其他布局位等出现真实消费者后再扩展。
 
 use gpui::{
     AnyView, App, Context, Entity, EntityId, EventEmitter, Render, Window, div, prelude::*,
@@ -18,10 +18,6 @@ pub(crate) enum ToolbarItemLocation {
     Hidden,
     /// 左区（面包屑等）。
     PrimaryLeft,
-    /// 右区（搜索栏、控件按钮等）。
-    PrimaryRight,
-    /// 底部整行（横幅提示等）。
-    Secondary,
 }
 
 // ═══ ToolbarItemEvent ════════════════════════════════════════════════
@@ -155,24 +151,16 @@ impl Toolbar {
 
 impl Render for Toolbar {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        // 按位置分组（用显式循环避免复杂迭代器链的类型推断问题）
         let mut left_elements: Vec<AnyView> = Vec::new();
-        let mut right_elements: Vec<AnyView> = Vec::new();
-        let mut secondary_elements: Vec<AnyView> = Vec::new();
 
         for (item, location) in &self.items {
             match location {
                 ToolbarItemLocation::Hidden => {}
                 ToolbarItemLocation::PrimaryLeft => left_elements.push(item.to_any()),
-                ToolbarItemLocation::PrimaryRight => right_elements.push(item.to_any()),
-                ToolbarItemLocation::Secondary => secondary_elements.push(item.to_any()),
             }
         }
 
-        let has_left = !left_elements.is_empty();
-        let has_right = !right_elements.is_empty();
-
-        if !has_left && !has_right && secondary_elements.is_empty() {
+        if left_elements.is_empty() {
             return div();
         }
 
@@ -186,35 +174,15 @@ impl Render for Toolbar {
             .border_b_1()
             .border_color(color::current().border_variant)
             .bg(color::current().toolbar_background)
-            .when(has_left || has_right, |this| {
-                this.child(
+            .child(
+                div().flex().items_start().gap(space::S6).child(
                     div()
+                        .flex_1()
                         .flex()
-                        .items_start()
-                        .justify_between()
-                        .gap(space::S6)
-                        .when(has_left, |this| {
-                            this.child(
-                                div()
-                                    .flex_1()
-                                    .flex()
-                                    .justify_start()
-                                    .overflow_x_hidden()
-                                    .children(left_elements),
-                            )
-                        })
-                        .when(has_right, |this| {
-                            this.child(
-                                div()
-                                    .flex()
-                                    .flex_row_reverse()
-                                    .when(has_left, |this| this.flex_none())
-                                    .justify_end()
-                                    .children(right_elements),
-                            )
-                        }),
-                )
-            })
-            .children(secondary_elements)
+                        .justify_start()
+                        .overflow_x_hidden()
+                        .children(left_elements),
+                ),
+            )
     }
 }

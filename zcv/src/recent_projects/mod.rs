@@ -2,7 +2,7 @@
 //!
 //! 数据存储在各平台标准配置目录的 `zcv/recent_projects.json`，最多保留 20 条。
 
-pub(crate) mod project_picker;
+mod project_picker;
 
 pub(crate) use project_picker::{OnProjectSelected, ProjectPicker, ToggleProjectPicker};
 

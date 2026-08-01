@@ -12,11 +12,11 @@ use gpui::{
 use zcv_engine::{ByteOffset, DisplayColumn, Line, SelectionSet};
 
 use super::display_map::{
-    BufferPoint, DisplayPoint, DisplayRow, DisplaySnapshot, ProjectedRange,
-    ProjectedViewportRowKind,
+    BufferPoint, DisplayPoint, DisplayRow, DisplaySnapshot, ProjectedRange, WrapViewportRowKind,
+    byte_for_display_column,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
-use super::view::{Editor, EditorPresentation};
+use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap};
 use zcv_theme::color;
 
 const CARET_WIDTH: Pixels = px(2.);
@@ -85,6 +85,17 @@ struct LayoutLine {
     shaped: ShapedLine,
     global_byte_start: usize,
     global_utf16_start: usize,
+    wrap_info: Option<WrapRowInfo>,
+}
+
+/// 软换行续行信息：片段所属逻辑行、假空格缩进数与片段起始逻辑字符列。
+///
+/// 命中测试与光标定位都通过它把"显示行内位置"换算回逻辑行坐标。
+#[derive(Clone, Copy)]
+struct WrapRowInfo {
+    line: Line,
+    indent: usize,
+    column_base: usize,
 }
 
 struct EditorLayout {
@@ -136,6 +147,19 @@ impl EditorLayout {
                 .byte_to_position(buffer_byte)
                 .ok()
                 .map(BufferPoint::from);
+        }
+        // 软换行续行：命中假空格区落在片段起点，其余按"片段起始列 + 段内字符数"换算。
+        if let Some(info) = line.wrap_info {
+            let local_chars = line.shaped.text[..byte_index].chars().count();
+            let column = if local_chars <= info.indent {
+                info.column_base
+            } else {
+                info.column_base + local_chars - info.indent
+            };
+            return Some(BufferPoint::new(
+                info.line,
+                zcv_engine::LogicalColumn::new(column),
+            ));
         }
         if let Some(logical_line) = line.logical_line {
             return Some(BufferPoint::new(
@@ -270,10 +294,22 @@ impl Element for EditorElement {
     ) -> Self::PrepaintState {
         let line_height = window.line_height();
         let visible_line_count = (bounds.size.height / line_height).ceil() as usize + 2;
-        self.editor.update(cx, |editor, _| {
-            editor.measure_display_rows(editor.scroll_anchor().row(), visible_line_count);
-        });
-        let (display_snapshot, presentation, selections, longest_row, shows_gutter, active_lines) = {
+        let text_style = window.text_style();
+        let font = text_style.font();
+        let font_size = text_style.font_size.to_pixels(window.rem_size());
+        // 用上一帧的 snapshot 计算文本区域宽度；wrap 生效后行数变化会让 gutter
+        // 位数在下一帧自动修正，不影响正确性。
+        let (
+            display_snapshot,
+            presentation,
+            selections,
+            longest_row,
+            shows_gutter,
+            active_lines,
+            soft_wrap,
+            mode,
+            preferred_line_length,
+        ) = {
             let editor = self.editor.read(cx);
             (
                 editor.display_snapshot(),
@@ -282,6 +318,9 @@ impl Element for EditorElement {
                 editor.longest_display_row(),
                 editor.shows_gutter(),
                 editor.active_lines().into_iter().collect::<BTreeSet<_>>(),
+                editor.soft_wrap(),
+                editor.mode(),
+                editor.preferred_line_length(),
             )
         };
         let gutter_dimensions = shows_gutter.then(|| gutter_dimensions(&display_snapshot, window));
@@ -311,7 +350,49 @@ impl Element for EditorElement {
             },
             gutter: gutter_bounds.zip(gutter_dimensions),
         };
-        let content_width = layout_line_width(&display_snapshot, longest_row, window) + CARET_WIDTH;
+        let wrap_width = match (soft_wrap, mode) {
+            (SoftWrap::None, _) | (_, EditorMode::SingleLine | EditorMode::AutoHeight { .. }) => {
+                None
+            }
+            (SoftWrap::EditorWidth, _) => Some(text_bounds.size.width),
+            (SoftWrap::Bounded, _) => {
+                // em 宽用 'm' 的字形 advance 近似，与 Zed 的 wrap_width_for 一致。
+                let run = TextRun {
+                    len: 1,
+                    font: font.clone(),
+                    color: text_style.color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let em_width = window
+                    .text_system()
+                    .shape_line("m".into(), font_size, &[run], None)
+                    .width;
+                Some(
+                    text_bounds
+                        .size
+                        .width
+                        .min(em_width * preferred_line_length as f32),
+                )
+            }
+        };
+        // 设置换行宽度（变化才重排），随后读取最新 snapshot 供本帧布局使用。
+        let display_snapshot = self.editor.update(cx, |editor, cx| {
+            editor.set_wrap_width(wrap_width, font, font_size, cx);
+            editor.display_snapshot()
+        });
+        // 软换行模式下显示行不再由 TabMap 测量（水平滚动收敛到视口宽度）。
+        if !display_snapshot.is_wrapped() {
+            self.editor.update(cx, |editor, _| {
+                editor.measure_display_rows(editor.scroll_anchor().row(), visible_line_count);
+            });
+        }
+        let content_width = if display_snapshot.is_wrapped() {
+            text_bounds.size.width
+        } else {
+            layout_line_width(&display_snapshot, longest_row, window) + CARET_WIDTH
+        };
         self.editor.update(cx, |editor, _| {
             editor.prepare_scroll_viewport(text_bounds.size, content_width, line_height);
         });
@@ -502,8 +583,12 @@ fn layout_line_width(
         return Pixels::ZERO;
     };
     let text = match row.kind() {
-        ProjectedViewportRowKind::Text { visible, .. } => visible.as_str(),
-        ProjectedViewportRowKind::Placeholder(_) => "…",
+        WrapViewportRowKind::Text {
+            visible,
+            byte_range,
+            ..
+        } => &visible.as_str()[byte_range.clone()],
+        WrapViewportRowKind::Placeholder(_) => "…",
     };
     let text_style = window.text_style();
     let font_size = text_style.font_size.to_pixels(window.rem_size());
@@ -556,7 +641,8 @@ fn layout_visible_lines(
                          gutter_line: Option<Line>,
                          text: &str,
                          byte_start: usize,
-                         utf16_start: usize| {
+                         utf16_start: usize,
+                         wrap_info: Option<WrapRowInfo>| {
         let runs = text_runs(
             text,
             byte_start,
@@ -584,6 +670,7 @@ fn layout_visible_lines(
             shaped,
             global_byte_start: byte_start,
             global_utf16_start: utf16_start,
+            wrap_info,
         });
         if let (Some(logical_line), Some((gutter_bounds, dimensions))) =
             (gutter_line, gutter_geometry)
@@ -634,6 +721,7 @@ fn layout_visible_lines(
                 line.text,
                 line.byte_start,
                 line.utf16_start,
+                None,
             );
         }
     } else if let Ok(viewport) =
@@ -641,25 +729,43 @@ fn layout_visible_lines(
     {
         for row in viewport.rows() {
             match row.kind() {
-                ProjectedViewportRowKind::Text {
+                WrapViewportRowKind::Text {
                     logical_line,
                     visible,
+                    byte_range,
+                    global_byte_start,
+                    fragment_index,
+                    indent,
+                    column_base,
                 } => {
-                    let byte_start = visible.visible_range().start().get();
+                    // 续行的假空格是显示文本的一部分，坐标与命中测试都把它算进列。
+                    let text = &visible.as_str()[byte_range.clone()];
+                    let display_text = if *indent > 0 {
+                        format!("{}{}", " ".repeat(*indent), text)
+                    } else {
+                        text.to_owned()
+                    };
                     let utf16_start = display_snapshot
                         .buffer_snapshot()
-                        .byte_to_utf16_cu(ByteOffset::new(byte_start))
+                        .byte_to_utf16_cu(ByteOffset::new(*global_byte_start))
                         .map_or(0, |offset| offset.get());
+                    let wrap_info = (*fragment_index > 0).then_some(WrapRowInfo {
+                        line: *logical_line,
+                        indent: *indent,
+                        column_base: *column_base,
+                    });
                     push_line(
                         row.index().get(),
                         Some(*logical_line),
-                        Some(*logical_line),
-                        visible.as_str(),
-                        byte_start,
+                        // 行号只在逻辑行首显示行出现。
+                        (*fragment_index == 0).then_some(*logical_line),
+                        &display_text,
+                        *global_byte_start,
                         utf16_start,
+                        wrap_info,
                     );
                 }
-                ProjectedViewportRowKind::Placeholder(placeholder) => {
+                WrapViewportRowKind::Placeholder(placeholder) => {
                     let byte_start = display_snapshot
                         .buffer_snapshot()
                         .line_start_byte(placeholder.hidden_lines().start())
@@ -675,6 +781,7 @@ fn layout_visible_lines(
                         "…",
                         byte_start,
                         utf16_start,
+                        None,
                     );
                 }
             }
@@ -893,6 +1000,23 @@ fn local_byte_for_display_point(
     point: DisplayPoint,
     display_snapshot: &DisplaySnapshot,
 ) -> usize {
+    if let Some(info) = line.wrap_info {
+        // 显示行文本 = 假空格 + 片段；目标列落在缩进区内时返回片段起点。
+        let fragment = &line.shaped.text[info.indent..];
+        let affinity = display_snapshot
+            .buffer_snapshot()
+            .config()
+            .display_width
+            .affinity;
+        let local = byte_for_display_column(
+            fragment,
+            info.indent,
+            point.column().get(),
+            affinity,
+            display_snapshot.buffer_snapshot(),
+        );
+        return info.indent + local;
+    }
     let logical_column = line
         .logical_line
         .and_then(|logical_line| {
@@ -1108,6 +1232,7 @@ mod tests {
                         shaped,
                         global_byte_start: 0,
                         global_utf16_start: 0,
+                        wrap_info: None,
                     }],
                     gutter: None,
                     text_clip_bounds: Bounds::new(point(px(0.), px(0.)), size(px(400.), px(100.))),

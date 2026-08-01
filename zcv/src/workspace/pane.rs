@@ -18,7 +18,7 @@ use super::toolbar::Toolbar;
 use crate::ui::Glyph;
 use crate::ui::SvgIcon;
 use crate::ui::Tab;
-use zcv_editor::Editor;
+use zcv_editor::{Editor, SoftWrap};
 use zcv_theme::{color, typography};
 
 actions!(pane, [CloseTab, NextTab, PrevTab]);
@@ -148,10 +148,17 @@ impl Pane {
         self.add_item(editor, window, cx)
     }
 
-    pub(crate) fn set_soft_wrap(&mut self, soft_wrap: bool, cx: &mut Context<Self>) {
+    pub(crate) fn set_soft_wrap(
+        &mut self,
+        soft_wrap: SoftWrap,
+        preferred_line_length: usize,
+        cx: &mut Context<Self>,
+    ) {
         for item in &self.tabs {
             if let Some(editor) = item.downcast::<Editor>() {
-                editor.update(cx, |editor, cx| editor.set_soft_wrap(soft_wrap, cx));
+                editor.update(cx, |editor, cx| {
+                    editor.set_soft_wrap(soft_wrap, preferred_line_length, cx)
+                });
             }
         }
     }

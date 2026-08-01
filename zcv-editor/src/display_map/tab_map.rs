@@ -7,9 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 
 use unicode_segmentation::UnicodeSegmentation;
-use zcv_engine::{
-    ByteOffset, DisplayColumn, DisplayColumnAffinity, Line, LogicalColumn, Position, Snapshot,
-};
+use zcv_engine::{DisplayColumn, DisplayColumnAffinity, Line, LogicalColumn, Snapshot};
 
 use super::{
     error::DisplayMapResult,
@@ -41,18 +39,6 @@ impl TabSnapshot {
     #[cfg(test)]
     pub(super) const fn version(&self) -> u64 {
         self.version
-    }
-
-    pub(super) fn logical_to_display_column(
-        &self,
-        line: Line,
-        column: LogicalColumn,
-    ) -> DisplayMapResult<DisplayColumn> {
-        let snapshot = self.buffer_snapshot();
-        let end = snapshot.position_to_byte(Position::new(line, column))?;
-        let start = snapshot.line_start_byte(line)?;
-        let text = snapshot.slice_byte_range(start, end)?;
-        Ok(DisplayColumn::new(display_width(text.as_str(), snapshot)))
     }
 
     pub(super) fn display_to_logical_column(
@@ -124,10 +110,6 @@ impl TabMap {
             },
             snapshot,
         )
-    }
-
-    pub(super) fn snapshot(&self) -> TabSnapshot {
-        self.snapshot.clone()
     }
 
     pub(super) fn sync(
@@ -204,19 +186,19 @@ impl TabMap {
     }
 }
 
-fn line_content(text: &str) -> &str {
+pub(super) fn line_content(text: &str) -> &str {
     text.strip_suffix("\r\n")
         .or_else(|| text.strip_suffix('\n'))
         .unwrap_or(text)
 }
 
-fn display_width(text: &str, snapshot: &Snapshot) -> usize {
+pub(super) fn display_width(text: &str, snapshot: &Snapshot) -> usize {
     text.graphemes(true).fold(0, |column, grapheme| {
         advance_display_column(column, grapheme, snapshot)
     })
 }
 
-fn advance_display_column(column: usize, grapheme: &str, snapshot: &Snapshot) -> usize {
+pub(super) fn advance_display_column(column: usize, grapheme: &str, snapshot: &Snapshot) -> usize {
     if grapheme == "\t" {
         let tab_width = snapshot.config().tab.tab_width();
         return column + tab_width - column % tab_width;
@@ -227,12 +209,46 @@ fn advance_display_column(column: usize, grapheme: &str, snapshot: &Snapshot) ->
     column + snapshot.config().display_width.char_width(first)
 }
 
-pub(super) fn display_column_to_byte(
-    tab_snapshot: &TabSnapshot,
-    line: Line,
-    column: DisplayColumn,
-) -> DisplayMapResult<ByteOffset> {
-    let snapshot = tab_snapshot.buffer_snapshot();
-    let logical = tab_snapshot.display_to_logical_column(line, column)?;
-    Ok(snapshot.position_to_byte(Position::new(line, logical))?)
+/// 在给定文本内把 display-column 映射回字节位置。
+///
+/// `start_column` 是文本首字符所处的显示列（软换行续行从假空格缩进后的列开始，tab 对齐必须基于行内绝对列而非片段内相对列）。
+/// 目标列落在某个 grapheme 中间时按 affinity 吸附到相邻边界；超出文本末尾返回 `text.len()`。
+pub fn byte_for_display_column(
+    text: &str,
+    start_column: usize,
+    target_column: usize,
+    affinity: DisplayColumnAffinity,
+    snapshot: &Snapshot,
+) -> usize {
+    if target_column <= start_column {
+        return 0;
+    }
+    let mut display = start_column;
+    let mut byte = 0;
+    for grapheme in text.graphemes(true) {
+        if target_column == display {
+            return byte;
+        }
+        let next_display = advance_display_column(display, grapheme, snapshot);
+        let next_byte = byte + grapheme.len();
+        if target_column == next_display {
+            return next_byte;
+        }
+        if target_column > display && target_column < next_display {
+            return match affinity {
+                DisplayColumnAffinity::Previous => byte,
+                DisplayColumnAffinity::Next => next_byte,
+                DisplayColumnAffinity::Nearest => {
+                    if target_column - display <= next_display - target_column {
+                        byte
+                    } else {
+                        next_byte
+                    }
+                }
+            };
+        }
+        display = next_display;
+        byte = next_byte;
+    }
+    text.len()
 }

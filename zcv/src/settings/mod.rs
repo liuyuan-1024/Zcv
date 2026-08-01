@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use gpui::{App, Global, Task};
 use serde::Deserialize;
+use zcv_editor::SoftWrap;
 use zcv_theme::Theme;
 
 use crate::fs_watcher::{FsWatcher, Watcher};
@@ -33,24 +34,50 @@ impl From<ThemeContent> for Theme {
     }
 }
 
+/// 软换行模式的设置值，语义与 Zed 的 `soft_wrap` 一致。
+///
+/// - `none`：不换行，超长行靠水平滚动查看；
+/// - `editor-width`：行宽超过编辑器文本区宽度时换行，窗口 resize 实时重排；
+/// - `bounded`：在 `preferred_line_length`（列数 × em 宽）与编辑器宽度（取小者）处换行。
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum SoftWrapMode {
+    None,
+    EditorWidth,
+    Bounded,
+}
+
+impl From<SoftWrapMode> for SoftWrap {
+    fn from(mode: SoftWrapMode) -> Self {
+        match mode {
+            SoftWrapMode::None => SoftWrap::None,
+            SoftWrapMode::EditorWidth => SoftWrap::EditorWidth,
+            SoftWrapMode::Bounded => SoftWrap::Bounded,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 struct UserSettingsContent {
     theme: Option<ThemeContent>,
-    soft_wrap: Option<bool>,
+    soft_wrap: Option<SoftWrapMode>,
+    preferred_line_length: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct UserSettings {
     pub(crate) theme: Theme,
-    pub(crate) soft_wrap: bool,
+    pub(crate) soft_wrap: SoftWrap,
+    pub(crate) preferred_line_length: usize,
 }
 
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
             theme: Theme::System,
-            soft_wrap: false,
+            soft_wrap: SoftWrap::None,
+            preferred_line_length: 80,
         }
     }
 }
@@ -60,7 +87,13 @@ impl UserSettings {
         let defaults = Self::default();
         Self {
             theme: content.theme.map(Theme::from).unwrap_or(defaults.theme),
-            soft_wrap: content.soft_wrap.unwrap_or(defaults.soft_wrap),
+            soft_wrap: content
+                .soft_wrap
+                .map(SoftWrap::from)
+                .unwrap_or(defaults.soft_wrap),
+            preferred_line_length: content
+                .preferred_line_length
+                .unwrap_or(defaults.preferred_line_length),
         }
     }
 }
@@ -237,7 +270,8 @@ mod tests {
             UserSettings::merge(content),
             UserSettings {
                 theme: Theme::OneLight,
-                soft_wrap: false,
+                soft_wrap: SoftWrap::None,
+                preferred_line_length: 80,
             }
         );
     }
@@ -248,11 +282,42 @@ mod tests {
             r#"{
                 // 与 Zed 一致，settings.json 使用 JSONC 语义。
                 "theme": "one-dark",
-                "soft_wrap": true,
+                "soft_wrap": "editor-width",
             }"#,
         )
         .unwrap();
-        assert!(UserSettings::merge(content).soft_wrap);
+        assert_eq!(
+            UserSettings::merge(content).soft_wrap,
+            SoftWrap::EditorWidth
+        );
+    }
+
+    #[test]
+    fn legacy_bool_soft_wrap_is_rejected() {
+        // 旧格式 bool 不再兼容，解析直接失败。
+        assert!(parse_user_settings(r#"{"soft_wrap": true}"#).is_err());
+    }
+
+    #[test]
+    fn soft_wrap_modes_and_preferred_line_length_parse() {
+        let content = parse_user_settings(
+            r#"{
+                "soft_wrap": "bounded",
+                "preferred_line_length": 100,
+            }"#,
+        )
+        .unwrap();
+        let settings = UserSettings::merge(content);
+        assert_eq!(settings.soft_wrap, SoftWrap::Bounded);
+        assert_eq!(settings.preferred_line_length, 100);
+
+        let content = parse_user_settings(r#"{"soft_wrap": "editor-width"}"#).unwrap();
+        let settings = UserSettings::merge(content);
+        assert_eq!(settings.soft_wrap, SoftWrap::EditorWidth);
+        assert_eq!(settings.preferred_line_length, 80);
+
+        let content = parse_user_settings(r#"{"soft_wrap": "none"}"#).unwrap();
+        assert_eq!(UserSettings::merge(content).soft_wrap, SoftWrap::None);
     }
 
     #[test]

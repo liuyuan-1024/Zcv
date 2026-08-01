@@ -320,9 +320,9 @@ impl Workspace {
             cx.observe_global_in::<SettingsStore>(window, |workspace, window, cx| {
                 let settings = SettingsStore::get(cx);
                 settings.theme.apply(Some(window));
-                workspace
-                    .pane
-                    .update(cx, |pane, cx| pane.set_soft_wrap(settings.soft_wrap, cx));
+                workspace.pane.update(cx, |pane, cx| {
+                    pane.set_soft_wrap(settings.soft_wrap, settings.preferred_line_length, cx)
+                });
                 cx.notify();
             });
 
@@ -375,8 +375,10 @@ impl Workspace {
         let focus = pane.update(cx, |pane, cx| {
             pane.open_file(path, project_root, buffer, window, cx)
         });
-        let soft_wrap = SettingsStore::get(cx).soft_wrap;
-        pane.update(cx, |pane, cx| pane.set_soft_wrap(soft_wrap, cx));
+        let settings = SettingsStore::get(cx);
+        pane.update(cx, |pane, cx| {
+            pane.set_soft_wrap(settings.soft_wrap, settings.preferred_line_length, cx)
+        });
         if focus_opened_item {
             window.focus(&focus);
         } else {

@@ -2,15 +2,17 @@
 //!
 //! DisplayMap 由一组自底向上的变换层组成。当前已实现：
 //! - FoldMap：维护折叠范围和折叠后的文本拓扑；
-//! - TabMap：在 FoldSnapshot 之上处理硬 Tab 的显示列。
+//! - TabMap：在 FoldSnapshot 之上处理硬 Tab 的显示列；
+//! - WrapMap：在 TabSnapshot 之上按像素宽度软换行。
 //!
 //! 每一层都持有自己的 Map 和不可变 Snapshot；
 //! 上一层 Snapshot 固化下一层 Snapshot，从而让一次渲染只能看到一条内部一致的显示状态。
-//! 后续 InlayMap、WrapMap 与 BlockMap 继续按相同约定接入。
+//! 后续 InlayMap 与 BlockMap 继续按相同约定接入。
 
 mod error;
 mod fold_map;
 mod tab_map;
+mod wrap_map;
 
 use zcv_engine::{
     ByteOffset, DisplayColumn, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch,
@@ -21,12 +23,12 @@ use zcv_engine::{
 use zcv_engine::BufferVersion;
 
 use error::DisplayMapResult;
-use fold_map::{
-    ApplyOutcome, FoldMap, FoldSnapshot, LogicalPoint, LogicalPointProjection, ProjectedPoint,
-    ProjectedPointMapping, ProjectedViewport, ProjectedViewportSlice,
-};
-pub(crate) use fold_map::{ProjectedLineIndex, ProjectedRange, ProjectedViewportRowKind};
-use tab_map::{TabMap, TabSnapshot, display_column_to_byte};
+use fold_map::{ApplyOutcome, FoldMap, LogicalProjection};
+pub(crate) use fold_map::{ProjectedLineIndex, ProjectedRange};
+use tab_map::TabMap;
+pub(crate) use tab_map::byte_for_display_column;
+use wrap_map::{WrapMap, WrapSnapshot};
+pub(crate) use wrap_map::{WrapViewportRowKind, WrapViewportSlice};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub(crate) struct BufferPoint {
@@ -78,10 +80,6 @@ impl DisplayRow {
     pub(crate) const fn get(self) -> usize {
         self.0
     }
-
-    const fn projected(self) -> ProjectedLineIndex {
-        ProjectedLineIndex::new(self.0)
-    }
 }
 
 impl From<ProjectedLineIndex> for DisplayRow {
@@ -117,63 +115,58 @@ impl DisplayPoint {
 
 /// 一帧渲染使用的只读显示快照。
 ///
-/// FoldSnapshot 与 TabSnapshot 都是低成本克隆；渲染持有此值时不会阻塞 Editor
-/// 接收后续 Buffer 更新。
+/// FoldSnapshot、TabSnapshot 与 WrapSnapshot 都是低成本克隆；渲染持有此值时
+/// 不会阻塞 Editor 接收后续 Buffer 更新。
 #[derive(Debug, Clone)]
 pub(super) struct DisplaySnapshot {
-    tab_snapshot: TabSnapshot,
+    wrap_snapshot: WrapSnapshot,
 }
 
 impl DisplaySnapshot {
-    pub(super) fn tab_snapshot(&self) -> &TabSnapshot {
-        &self.tab_snapshot
-    }
-
-    pub(super) fn fold_snapshot(&self) -> &FoldSnapshot {
-        self.tab_snapshot.fold_snapshot()
-    }
-
     pub(super) fn buffer_snapshot(&self) -> &Snapshot {
-        self.tab_snapshot.buffer_snapshot()
+        self.wrap_snapshot.buffer_snapshot()
     }
 
     #[cfg(test)]
     pub(super) const fn version(&self) -> u64 {
-        self.tab_snapshot.version()
+        self.wrap_snapshot.version()
     }
 
     pub(super) fn line_count(&self) -> usize {
-        self.fold_snapshot().line_count()
+        self.wrap_snapshot.line_count()
+    }
+
+    pub(super) fn is_wrapped(&self) -> bool {
+        self.wrap_snapshot.is_wrapped()
     }
 
     pub(super) fn slice_viewport(
         &self,
         start_row: DisplayRow,
         line_count: usize,
-    ) -> DisplayMapResult<ProjectedViewportSlice<'_>> {
-        self.fold_snapshot()
-            .slice_viewport(ProjectedViewport::new(start_row.projected(), line_count))
+    ) -> DisplayMapResult<WrapViewportSlice<'_>> {
+        self.wrap_snapshot.slice_viewport(start_row, line_count)
     }
 
     pub(super) fn project_text_range(
         &self,
         range: TextRange,
     ) -> DisplayMapResult<Vec<ProjectedRange>> {
-        self.fold_snapshot().project_text_range(range)
+        self.wrap_snapshot.project_text_range(range)
     }
 
     pub(super) fn offset_to_display_point(
         &self,
         offset: ByteOffset,
     ) -> DisplayMapResult<DisplayPoint> {
-        offset_to_display_point(self.tab_snapshot(), offset)
+        self.wrap_snapshot.offset_to_display_point(offset)
     }
 
     pub(super) fn display_point_to_offset(
         &self,
         point: DisplayPoint,
     ) -> DisplayMapResult<ByteOffset> {
-        display_point_to_offset(self.tab_snapshot(), point)
+        self.wrap_snapshot.display_point_to_offset(point)
     }
 
     pub(super) fn display_to_logical_column(
@@ -181,7 +174,9 @@ impl DisplaySnapshot {
         line: Line,
         column: DisplayColumn,
     ) -> DisplayMapResult<LogicalColumn> {
-        self.tab_snapshot().display_to_logical_column(line, column)
+        self.wrap_snapshot
+            .tab_snapshot()
+            .display_to_logical_column(line, column)
     }
 }
 
@@ -189,13 +184,19 @@ impl DisplaySnapshot {
 pub(crate) struct DisplayMap {
     fold_map: FoldMap,
     tab_map: TabMap,
+    wrap_map: WrapMap,
 }
 
 impl DisplayMap {
     pub(crate) fn new(snapshot: Snapshot) -> Self {
         let (fold_map, fold_snapshot) = FoldMap::new(snapshot);
-        let (tab_map, _) = TabMap::new(fold_snapshot);
-        Self { tab_map, fold_map }
+        let (tab_map, tab_snapshot) = TabMap::new(fold_snapshot);
+        let (wrap_map, _) = WrapMap::new(tab_snapshot);
+        Self {
+            fold_map,
+            tab_map,
+            wrap_map,
+        }
     }
 
     pub(crate) fn buffer_snapshot(&self) -> &Snapshot {
@@ -204,7 +205,7 @@ impl DisplayMap {
 
     pub(super) fn snapshot(&self) -> DisplaySnapshot {
         DisplaySnapshot {
-            tab_snapshot: self.tab_map.snapshot(),
+            wrap_snapshot: self.wrap_map.snapshot().clone(),
         }
     }
 
@@ -214,7 +215,23 @@ impl DisplayMap {
     }
 
     pub(crate) fn line_count(&self) -> usize {
-        self.fold_map.snapshot().line_count()
+        self.wrap_map.snapshot().line_count()
+    }
+
+    pub(crate) fn is_wrapped(&self) -> bool {
+        self.wrap_map.snapshot().is_wrapped()
+    }
+
+    /// 设置软换行宽度与字体；宽度/字体变化时内部重建，返回是否发生变化。
+    pub(crate) fn set_wrap_width(
+        &mut self,
+        wrap_width: Option<gpui::Pixels>,
+        font: gpui::Font,
+        font_size: gpui::Pixels,
+        text_system: &std::sync::Arc<gpui::TextSystem>,
+    ) -> bool {
+        self.wrap_map
+            .set_wrap_width(wrap_width, font, font_size, text_system.clone())
     }
 
     pub(crate) fn measure_rows(
@@ -244,8 +261,8 @@ impl DisplayMap {
             .measured_lines()
             .filter_map(|(line, width)| {
                 match self.fold_map.snapshot().logical_to_projected(line).ok()? {
-                    fold_map::LogicalProjection::Visible(row) => Some((row, width)),
-                    fold_map::LogicalProjection::Hidden { .. } => None,
+                    LogicalProjection::Visible(row) => Some((row, width)),
+                    LogicalProjection::Hidden { .. } => None,
                 }
             })
             .max_by_key(|(_, width)| *width)
@@ -260,13 +277,15 @@ impl DisplayMap {
         batch: TextChangeBatch,
     ) -> ApplyOutcome {
         let (fold_snapshot, fold_edits, outcome) = self.fold_map.read(current_snapshot, &batch);
-        self.tab_map.sync(fold_snapshot, &fold_edits);
+        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
+        self.wrap_map.sync(tab_snapshot, &fold_edits);
         outcome
     }
 
     pub(crate) fn fold_lines(&mut self, line_range: LineRange) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().fold_lines(line_range)?;
-        self.tab_map.sync(fold_snapshot, &fold_edits);
+        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
+        self.wrap_map.sync(tab_snapshot, &fold_edits);
         Ok(())
     }
 
@@ -274,14 +293,22 @@ impl DisplayMap {
         &self,
         offset: ByteOffset,
     ) -> DisplayMapResult<DisplayPoint> {
-        offset_to_display_point(&self.tab_map.snapshot(), offset)
+        self.wrap_map.snapshot().offset_to_display_point(offset)
     }
 
     pub(crate) fn display_point_to_offset(
         &self,
         point: DisplayPoint,
     ) -> DisplayMapResult<ByteOffset> {
-        display_point_to_offset(&self.tab_map.snapshot(), point)
+        self.wrap_map.snapshot().display_point_to_offset(point)
+    }
+
+    pub(crate) fn beginning_of_row(&self, offset: ByteOffset) -> DisplayMapResult<ByteOffset> {
+        self.wrap_map.snapshot().beginning_of_row(offset)
+    }
+
+    pub(crate) fn end_of_row(&self, offset: ByteOffset) -> DisplayMapResult<ByteOffset> {
+        self.wrap_map.snapshot().end_of_row(offset)
     }
 
     #[cfg(test)]
@@ -289,8 +316,8 @@ impl DisplayMap {
         &self,
         point: BufferPoint,
     ) -> DisplayMapResult<DisplayPoint> {
-        self.buffer_snapshot().position_to_byte(point.position())?;
-        logical_point_to_display_point(&self.tab_map.snapshot(), point.into())
+        let offset = self.buffer_snapshot().position_to_byte(point.position())?;
+        self.offset_to_display_point(offset)
     }
 
     #[cfg(test)]
@@ -306,64 +333,11 @@ impl DisplayMap {
     }
 }
 
-impl From<BufferPoint> for LogicalPoint {
-    fn from(point: BufferPoint) -> Self {
-        Self::new(point.line(), point.column())
-    }
-}
-
-fn offset_to_display_point(
-    tab_snapshot: &TabSnapshot,
-    offset: ByteOffset,
-) -> DisplayMapResult<DisplayPoint> {
-    logical_point_to_display_point(
-        tab_snapshot,
-        BufferPoint::from(tab_snapshot.buffer_snapshot().byte_to_position(offset)?).into(),
-    )
-}
-
-fn display_point_to_offset(
-    tab_snapshot: &TabSnapshot,
-    point: DisplayPoint,
-) -> DisplayMapResult<ByteOffset> {
-    let fold_snapshot = tab_snapshot.fold_snapshot();
-    let projected = ProjectedPoint::new(point.row().projected(), LogicalColumn::ZERO);
-    let logical = match fold_snapshot.projected_to_logical_point(projected)? {
-        ProjectedPointMapping::Text(logical) => {
-            return display_column_to_byte(tab_snapshot, logical.line(), point.column());
-        }
-        ProjectedPointMapping::Placeholder { anchor, .. } => anchor,
-    };
-    Ok(fold_snapshot
-        .buffer_snapshot()
-        .position_to_byte(logical.into())?)
-}
-
-fn logical_point_to_display_point(
-    tab_snapshot: &TabSnapshot,
-    point: LogicalPoint,
-) -> DisplayMapResult<DisplayPoint> {
-    let fold_snapshot = tab_snapshot.fold_snapshot();
-    let logical_line = point.line();
-    let projected = fold_snapshot.logical_to_projected_point(point)?;
-    match projected {
-        LogicalPointProjection::Visible(point) => Ok(DisplayPoint::new(
-            DisplayRow::from(point.line()),
-            tab_snapshot.logical_to_display_column(logical_line, point.column())?,
-        )),
-        LogicalPointProjection::Hidden {
-            anchor_projected, ..
-        } => Ok(DisplayPoint::new(
-            DisplayRow::from(anchor_projected.line()),
-            DisplayColumn::ZERO,
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroUsize;
 
+    use gpui::{TestAppContext, font, px};
     use zcv_engine::{Buffer, BufferConfig, LineRange};
 
     use super::*;
@@ -502,8 +476,11 @@ mod tests {
         let viewport = snapshot
             .slice_viewport(DisplayRow::ZERO, 8)
             .expect("投影视口应可读取");
-        assert_eq!(viewport.len(), 3);
-        assert!(viewport.rows()[1].is_placeholder());
+        assert_eq!(viewport.rows().len(), 3);
+        assert!(matches!(
+            viewport.rows()[1].kind(),
+            WrapViewportRowKind::Placeholder(_)
+        ));
     }
 
     #[test]
@@ -578,5 +555,248 @@ mod tests {
         map.measure_rows(DisplayRow::new(1), 1)
             .expect("结构编辑后的行应能惰性测量");
         assert_eq!(map.longest_measured_row(), DisplayRow::new(1));
+    }
+
+    fn wrap_map(text: &str, width: f32, cx: &TestAppContext) -> DisplayMap {
+        let buffer = Buffer::scratch(text.to_owned(), BufferConfig::default())
+            .expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        map.set_wrap_width(
+            Some(px(width)),
+            font("Helvetica"),
+            px(16.),
+            cx.text_system(),
+        );
+        map
+    }
+
+    /// 对每个字符边界做 offset ↔ display point 双向 roundtrip。
+    fn assert_offset_roundtrip(map: &DisplayMap) {
+        let snapshot = map.snapshot();
+        let len = snapshot.buffer_snapshot().len_bytes().get();
+        let mut offset = 0;
+        while offset < len {
+            let point = snapshot
+                .offset_to_display_point(ByteOffset::new(offset))
+                .expect("合法偏移应能映射");
+            assert_eq!(
+                snapshot
+                    .display_point_to_offset(point)
+                    .expect("显示点应能还原"),
+                ByteOffset::new(offset),
+                "offset {offset} roundtrip 失败"
+            );
+            offset += snapshot
+                .buffer_snapshot()
+                .slice_text(
+                    zcv_engine::TextRange::new(ByteOffset::new(offset), ByteOffset::new(len))
+                        .expect("测试范围应合法"),
+                )
+                .expect("文本应可读取")
+                .as_str()
+                .chars()
+                .next()
+                .map_or(1, char::len_utf8);
+        }
+        let _ = len;
+    }
+
+    #[gpui::test]
+    fn soft_wrap_splits_wide_lines_into_display_rows(cx: &mut TestAppContext) {
+        // 前导空白产生续行缩进（对齐 Zed 的 Boundary.next_indent 语义）。
+        let map = wrap_map("    aa bbb cccc ddddd eeee\nshort", 72., cx);
+        assert!(map.is_wrapped());
+        assert!(map.line_count() > 2, "宽行应拆成多个显示行");
+
+        let snapshot = map.snapshot();
+        let viewport = snapshot
+            .slice_viewport(DisplayRow::ZERO, map.line_count())
+            .expect("显示行视口应可读取");
+        let rows = viewport.rows();
+        assert_eq!(rows.len(), map.line_count());
+        assert_eq!(rows[0].index(), DisplayRow::ZERO);
+
+        // 首段行号从 0 开始，续行片段起点大于 0 且带假空格缩进。
+        let WrapViewportRowKind::Text {
+            fragment_index,
+            byte_range,
+            indent,
+            column_base,
+            ..
+        } = rows[1].kind()
+        else {
+            panic!("第二行应为文本行");
+        };
+        assert_eq!(*fragment_index, 1);
+        assert!(*indent > 0, "前导空白应产生续行缩进");
+        assert!(byte_range.start > 0, "续行应从行中某字节开始");
+        assert!(*column_base > 0, "续行片段起始字符列应大于 0");
+    }
+
+    #[gpui::test]
+    fn soft_wrap_without_leading_whitespace_has_zero_indent(cx: &mut TestAppContext) {
+        let map = wrap_map("aa bbb cccc ddddd eeee\nshort", 72., cx);
+        let snapshot = map.snapshot();
+        let viewport = snapshot
+            .slice_viewport(DisplayRow::ZERO, map.line_count())
+            .expect("显示行视口应可读取");
+        let WrapViewportRowKind::Text { indent, .. } = viewport.rows()[1].kind() else {
+            panic!("第二行应为文本行");
+        };
+        assert_eq!(*indent, 0, "无前导空白的行不应产生缩进");
+    }
+
+    #[gpui::test]
+    fn soft_wrap_passthrough_when_disabled(cx: &mut TestAppContext) {
+        let buffer = Buffer::scratch(
+            "aa bbb cccc ddddd eeee\nshort".to_string(),
+            BufferConfig::default(),
+        )
+        .expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        map.set_wrap_width(None, font("Helvetica"), px(16.), cx.text_system());
+        assert!(!map.is_wrapped());
+        assert_eq!(map.line_count(), 2);
+        assert_offset_roundtrip(&map);
+    }
+
+    #[gpui::test]
+    fn soft_wrap_coordinates_roundtrip_through_fragments(cx: &mut TestAppContext) {
+        // 含 CJK 与 tab 的行，验证片段内列换算与字节映射一致。
+        let map = wrap_map("aa bbb\tccc 你好世界 ddddd eeee\nshort", 72., cx);
+        assert_offset_roundtrip(&map);
+    }
+
+    #[gpui::test]
+    fn soft_wrap_inline_edit_rewraps_affected_line(cx: &mut TestAppContext) {
+        let mut buffer = Buffer::scratch(
+            "aa bbb cccc ddddd eeee\nshort".to_string(),
+            BufferConfig::default(),
+        )
+        .expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        map.set_wrap_width(Some(px(72.)), font("Helvetica"), px(16.), cx.text_system());
+        let before = map.snapshot();
+        let wrapped_rows = before.line_count();
+
+        let subscription = buffer.subscribe();
+        buffer
+            .insert(ByteOffset::new("aa bbb ".len()), "xxxx")
+            .expect("测试编辑应成功");
+        map.sync(buffer.snapshot(), subscription.consume());
+
+        let after = map.snapshot();
+        assert_ne!(before.version(), after.version());
+        assert!(after.line_count() >= wrapped_rows, "编辑后行数应重新计算");
+        assert_offset_roundtrip(&map);
+    }
+
+    #[gpui::test]
+    fn soft_wrap_structural_edit_rewraps_all_rows(cx: &mut TestAppContext) {
+        let mut buffer = Buffer::scratch(
+            "aa bbb cccc ddddd eeee\nshort".to_string(),
+            BufferConfig::default(),
+        )
+        .expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        map.set_wrap_width(Some(px(72.)), font("Helvetica"), px(16.), cx.text_system());
+
+        let subscription = buffer.subscribe();
+        buffer
+            .insert(ByteOffset::new(3), "\n")
+            .expect("测试编辑应成功");
+        assert_eq!(
+            map.sync(buffer.snapshot(), subscription.consume()),
+            ApplyOutcome::Spliced
+        );
+        assert_offset_roundtrip(&map);
+    }
+
+    #[gpui::test]
+    fn soft_wrap_with_fold_keeps_placeholder_rows(cx: &mut TestAppContext) {
+        let buffer = Buffer::scratch(
+            "anchor\nhidden one\nhidden two\nafter".to_string(),
+            BufferConfig::default(),
+        )
+        .expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        map.fold_lines(LineRange::new(Line::ZERO, Line::new(3)).expect("测试行区间应合法"))
+            .expect("折叠应成功");
+        map.set_wrap_width(Some(px(72.)), font("Helvetica"), px(16.), cx.text_system());
+
+        let snapshot = map.snapshot();
+        let viewport = snapshot
+            .slice_viewport(DisplayRow::ZERO, 10)
+            .expect("显示行视口应可读取");
+        assert!(
+            viewport
+                .rows()
+                .iter()
+                .any(|row| matches!(row.kind(), WrapViewportRowKind::Placeholder(_))),
+            "折叠占位符行应保留"
+        );
+        // 折叠隐藏区域的位置映射到 anchor 是现状语义（roundtrip 不可逆），
+        // 只对可见文本字节做双向验证。
+        for offset in [
+            0usize,
+            "anchor".len(),
+            "anchor\nhidden one\nhidden two\nafter".len() - 1,
+        ] {
+            let point = snapshot
+                .offset_to_display_point(ByteOffset::new(offset))
+                .expect("可见偏移应能映射");
+            assert_eq!(
+                snapshot
+                    .display_point_to_offset(point)
+                    .expect("显示点应能还原"),
+                ByteOffset::new(offset)
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn soft_wrap_row_boundaries_follow_fragments(cx: &mut TestAppContext) {
+        let buffer = Buffer::scratch(
+            "aa bbb cccc ddddd eeee".to_string(),
+            BufferConfig::default(),
+        )
+        .expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        map.set_wrap_width(Some(px(72.)), font("Helvetica"), px(16.), cx.text_system());
+        assert!(map.line_count() > 1);
+
+        let snapshot = map.snapshot();
+        // 第二行（首个续行）行首 = 片段起点字节，行尾 = 片段终点字节。
+        let continuation_offset = snapshot
+            .display_point_to_offset(DisplayPoint::new(DisplayRow::new(1), DisplayColumn::ZERO))
+            .expect("续行行首应可映射");
+        assert_eq!(
+            map.beginning_of_row(continuation_offset)
+                .expect("行首应可定位"),
+            continuation_offset
+        );
+        let end = map.end_of_row(continuation_offset).expect("行尾应可定位");
+        assert!(end.get() > continuation_offset.get(), "行尾应在片段终点");
+        assert_eq!(
+            snapshot
+                .display_point_to_offset(DisplayPoint::new(
+                    DisplayRow::new(1),
+                    DisplayColumn::new(200),
+                ))
+                .expect("越界列应钳制到行尾"),
+            end
+        );
+        // 片段终点即下一片段起点（前闭后开）：从终点再行首停在下一片段起点。
+        assert_eq!(
+            map.beginning_of_row(end).expect("行尾再行首应回到片段起点"),
+            end
+        );
+        // 片段中间的任意位置行首都回到片段起点。
+        let middle = ByteOffset::new((continuation_offset.get() + end.get()) / 2);
+        assert_eq!(
+            map.beginning_of_row(middle)
+                .expect("片段中间行首应回到片段起点"),
+            continuation_offset
+        );
     }
 }

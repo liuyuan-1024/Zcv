@@ -99,6 +99,23 @@ pub(crate) enum EditorMode {
     Full,
 }
 
+/// 软换行模式，与 Zed 的 soft_wrap 设置语义一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoftWrap {
+    /// 不换行（超长行横向滚动）。
+    None,
+    /// 超过编辑器文本区宽度换行。
+    EditorWidth,
+    /// 在 `preferred_line_length` 与编辑器宽度（取小者）处换行。
+    Bounded,
+}
+
+impl Default for SoftWrap {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct EditorComposition {
     range: TextRange,
@@ -317,7 +334,8 @@ pub struct Editor {
     focus: FocusHandle,
     blink_manager: Entity<BlinkManager>,
     blink_manager_initialized: bool,
-    soft_wrap: bool,
+    soft_wrap: SoftWrap,
+    preferred_line_length: usize,
 }
 
 impl Editor {
@@ -361,12 +379,45 @@ impl Editor {
         self.buffer.clone()
     }
 
-    pub fn set_soft_wrap(&mut self, soft_wrap: bool, cx: &mut Context<Self>) {
-        if self.soft_wrap == soft_wrap {
+    /// 设置软换行模式与 preferred_line_length；实际换行在下一帧 prepaint
+    /// 计算 wrap 宽度时生效。
+    pub fn set_soft_wrap(
+        &mut self,
+        soft_wrap: SoftWrap,
+        preferred_line_length: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.soft_wrap == soft_wrap && self.preferred_line_length == preferred_line_length {
             return;
         }
         self.soft_wrap = soft_wrap;
+        self.preferred_line_length = preferred_line_length;
         cx.notify();
+    }
+
+    pub(crate) fn soft_wrap(&self) -> SoftWrap {
+        self.soft_wrap
+    }
+
+    pub(crate) fn preferred_line_length(&self) -> usize {
+        self.preferred_line_length
+    }
+
+    pub(crate) fn mode(&self) -> &EditorMode {
+        &self.mode
+    }
+
+    /// 由渲染层每帧调用：把文本区宽度与当前字体交给 DisplayMap，变化时重建换行点。
+    pub(crate) fn set_wrap_width(
+        &mut self,
+        wrap_width: Option<gpui::Pixels>,
+        font: gpui::Font,
+        font_size: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        let text_system = cx.text_system();
+        self.display_map
+            .set_wrap_width(wrap_width, font, font_size, &text_system);
     }
 
     pub fn file_path(&self) -> Option<&Path> {
@@ -605,7 +656,8 @@ impl Editor {
             focus: cx.focus_handle(),
             blink_manager,
             blink_manager_initialized: false,
-            soft_wrap: false,
+            soft_wrap: SoftWrap::default(),
+            preferred_line_length: 80,
         }
     }
 
@@ -704,6 +756,34 @@ impl Editor {
             .map(|selection| {
                 let new_head = match motion {
                     Motion::ByUnit(unit) => {
+                        // 软换行模式下行首/行尾按显示行边界移动（对齐 Zed 的
+                        // prev/next_row_boundary 语义），其余单位走文本边界。
+                        if unit == MovementUnit::LineEdge && self.display_map.is_wrapped() {
+                            let head = selection.head();
+                            return match direction {
+                                MovementDirection::Previous => self
+                                    .display_map
+                                    .beginning_of_row(head)
+                                    .map_err(|error| zcv_engine::EngineError::EngineBug {
+                                        location: "Editor::move_selections",
+                                        detail: error.to_string(),
+                                    }),
+                                MovementDirection::Next => self
+                                    .display_map
+                                    .end_of_row(head)
+                                    .map_err(|error| zcv_engine::EngineError::EngineBug {
+                                        location: "Editor::move_selections",
+                                        detail: error.to_string(),
+                                    }),
+                            }
+                            .map(|new_head| {
+                                if extend {
+                                    selection.with_head(new_head)
+                                } else {
+                                    Selection::caret(new_head)
+                                }
+                            });
+                        }
                         let buffer = self.buffer.read(cx);
                         let head = buffer.byte_to_char(selection.head())?;
                         let target = buffer.movement_boundary(head, direction, unit)?;
@@ -2464,5 +2544,44 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[gpui::test]
+    fn soft_wrap_renders_continuation_rows_and_click_hits_fragment(cx: &mut TestAppContext) {
+        // 超长行（超出测试窗口宽度）在 editor-width 模式下拆成多个显示行。
+        let buffer = test_buffer(cx, "    aaaa bbbb cccc dddd eeee ".repeat(10));
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+        editor.update(cx, |editor, cx| {
+            editor.set_soft_wrap(SoftWrap::EditorWidth, 80, cx);
+        });
+        cx.run_until_parked();
+
+        let (line_count, continuation_offset) = cx.read_entity(&editor, |editor, _| {
+            let line_count = editor.display_map.line_count();
+            assert!(line_count > 1, "宽行应拆成多个显示行");
+            let continuation = editor
+                .display_map
+                .display_point_to_offset(DisplayPoint::new(
+                    DisplayRow::new(1),
+                    zcv_engine::DisplayColumn::ZERO,
+                ))
+                .expect("续行行首应可映射");
+            (line_count, continuation)
+        });
+
+        // 点击第二个显示行（行高约 26px），光标应落在续行片段起点。
+        // x 越过 gutter（约 60px）进入文本区，落在第二个显示行内。
+        cx.simulate_click(point(px(80.), px(30.)), gpui::Modifiers::default());
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(
+                editor.selections.primary().head(),
+                continuation_offset,
+                "点击续行应把光标放到片段起点"
+            );
+        });
+        assert!(line_count > 0);
     }
 }

@@ -1,4 +1,4 @@
 {
   "theme": "system",
-  "soft_wrap": false
+  "soft_wrap": "editor-width"
 }

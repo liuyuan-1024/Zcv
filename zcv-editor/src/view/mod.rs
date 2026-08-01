@@ -431,11 +431,11 @@ impl Editor {
     }
 
     pub fn render_snapshot(&self) -> Snapshot {
-        self.display_map.snapshot().clone()
+        self.display_map.buffer_snapshot().clone()
     }
 
     pub(super) fn display_snapshot(&self) -> DisplaySnapshot {
-        self.display_map.display_snapshot()
+        self.display_map.snapshot()
     }
 
     pub fn selections(&self) -> SelectionSet {
@@ -446,7 +446,7 @@ impl Editor {
     pub fn cursor_text(&self) -> String {
         let point = self
             .display_map
-            .snapshot()
+            .buffer_snapshot()
             .byte_to_position(self.selections.primary().head());
         match point {
             Ok(p) => format!("{}:{}", p.line().get() + 1, p.column().get() + 1),
@@ -455,7 +455,10 @@ impl Editor {
     }
 
     pub(super) fn presentation(&self) -> EditorPresentation {
-        EditorPresentation::new(self.display_map.snapshot(), self.composition.as_ref())
+        EditorPresentation::new(
+            self.display_map.buffer_snapshot(),
+            self.composition.as_ref(),
+        )
     }
 
     pub(super) fn shows_gutter(&self) -> bool {
@@ -463,7 +466,7 @@ impl Editor {
     }
 
     pub(super) fn active_lines(&self) -> Vec<Line> {
-        touched_lines(self.display_map.snapshot(), &self.selections).unwrap_or_default()
+        touched_lines(self.display_map.buffer_snapshot(), &self.selections).unwrap_or_default()
     }
 
     pub(super) fn scroll_anchor(&self) -> DisplayPoint {
@@ -729,7 +732,7 @@ impl Editor {
                             });
                         }
                         if direction == MovementDirection::Next && point.row().get() >= last_row {
-                            let new_head = self.display_map.snapshot().len_bytes();
+                            let new_head = self.display_map.buffer_snapshot().len_bytes();
                             return Ok(if extend {
                                 selection.with_head(new_head)
                             } else {
@@ -1073,7 +1076,7 @@ impl Editor {
     fn sync_display_map(&mut self, cx: &App) {
         let snapshot = self.buffer.read(cx).snapshot();
         let changes = self.buffer_subscription.consume();
-        self.display_map.sync_changes(snapshot, changes);
+        self.display_map.sync(snapshot, changes);
     }
 
     pub(super) fn handle_move_left(
@@ -1647,7 +1650,7 @@ impl EntityInputHandler for Editor {
             });
         }
 
-        let snapshot = self.display_map.snapshot();
+        let snapshot = self.display_map.buffer_snapshot();
         let selection = *self.selections.primary();
         Some(UTF16Selection {
             range: snapshot.byte_to_utf16_cu(selection.start()).ok()?.get()
@@ -1713,7 +1716,7 @@ impl EntityInputHandler for Editor {
         }
         let text_utf16_len = utf16_len(&text);
         let selected_range = new_selected_range_utf16.unwrap_or(text_utf16_len..text_utf16_len);
-        let snapshot = self.display_map.snapshot().clone();
+        let snapshot = self.display_map.buffer_snapshot().clone();
         self.composition = Some(EditorComposition::new(
             range,
             text,

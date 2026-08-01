@@ -1,29 +1,31 @@
-//! Buffer 逻辑坐标到 Editor 显示坐标的投影。
+//! 决定 Buffer 文本如何映射到 Editor 的显示坐标。
+//!
+//! DisplayMap 由一组自底向上的变换层组成。当前已实现：
+//! - FoldMap：维护折叠范围和折叠后的文本拓扑；
+//! - TabMap：在 FoldSnapshot 之上处理硬 Tab 的显示列。
+//!
+//! 每一层都持有自己的 Map 和不可变 Snapshot；
+//! 上一层 Snapshot 固化下一层 Snapshot，从而让一次渲染只能看到一条内部一致的显示状态。
+//! 后续 InlayMap、WrapMap 与 BlockMap 继续按相同约定接入。
 
 mod error;
-mod fold;
-mod projection;
+mod fold_map;
 mod tab_map;
 
-#[cfg(test)]
-mod test;
-
-use std::sync::Arc;
-
 use zcv_engine::{
-    ByteOffset, DisplayColumn, Line, LogicalColumn, Position, Snapshot, TextChangeBatch, TextRange,
+    ByteOffset, DisplayColumn, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch,
+    TextRange,
 };
 
 #[cfg(test)]
-use zcv_engine::{BufferVersion, LineRange};
+use zcv_engine::BufferVersion;
 
 use error::DisplayMapResult;
-use fold::FoldSet;
-use projection::{
-    ApplyOutcome, LogicalPoint, LogicalPointProjection, ProjectedPoint, ProjectedPointMapping,
-    ProjectedViewport, ProjectedViewportSlice, Projection,
+use fold_map::{
+    ApplyOutcome, FoldMap, FoldSnapshot, LogicalPoint, LogicalPointProjection, ProjectedPoint,
+    ProjectedPointMapping, ProjectedViewport, ProjectedViewportSlice,
 };
-pub(crate) use projection::{ProjectedLineIndex, ProjectedRange, ProjectedViewportRowKind};
+pub(crate) use fold_map::{ProjectedLineIndex, ProjectedRange, ProjectedViewportRowKind};
 use tab_map::{TabMap, TabSnapshot, display_column_to_byte};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -115,22 +117,33 @@ impl DisplayPoint {
 
 /// 一帧渲染使用的只读显示快照。
 ///
-/// `Snapshot` 与 `Projection` 都是低成本克隆；渲染持有此值时不会阻塞 Editor
+/// FoldSnapshot 与 TabSnapshot 都是低成本克隆；渲染持有此值时不会阻塞 Editor
 /// 接收后续 Buffer 更新。
 #[derive(Debug, Clone)]
 pub(super) struct DisplaySnapshot {
-    snapshot: Snapshot,
-    projection: Arc<Projection>,
     tab_snapshot: TabSnapshot,
 }
 
 impl DisplaySnapshot {
-    pub(super) fn snapshot(&self) -> &Snapshot {
-        &self.snapshot
+    pub(super) fn tab_snapshot(&self) -> &TabSnapshot {
+        &self.tab_snapshot
+    }
+
+    pub(super) fn fold_snapshot(&self) -> &FoldSnapshot {
+        self.tab_snapshot.fold_snapshot()
+    }
+
+    pub(super) fn buffer_snapshot(&self) -> &Snapshot {
+        self.tab_snapshot.buffer_snapshot()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn version(&self) -> u64 {
+        self.tab_snapshot.version()
     }
 
     pub(super) fn line_count(&self) -> usize {
-        self.projection.line_count()
+        self.fold_snapshot().line_count()
     }
 
     pub(super) fn slice_viewport(
@@ -138,31 +151,29 @@ impl DisplaySnapshot {
         start_row: DisplayRow,
         line_count: usize,
     ) -> DisplayMapResult<ProjectedViewportSlice<'_>> {
-        self.projection.slice_viewport(
-            &self.snapshot,
-            ProjectedViewport::new(start_row.projected(), line_count),
-        )
+        self.fold_snapshot()
+            .slice_viewport(ProjectedViewport::new(start_row.projected(), line_count))
     }
 
     pub(super) fn project_text_range(
         &self,
         range: TextRange,
     ) -> DisplayMapResult<Vec<ProjectedRange>> {
-        self.projection.project_text_range(&self.snapshot, range)
+        self.fold_snapshot().project_text_range(range)
     }
 
     pub(super) fn offset_to_display_point(
         &self,
         offset: ByteOffset,
     ) -> DisplayMapResult<DisplayPoint> {
-        offset_to_display_point(&self.snapshot, &self.projection, offset)
+        offset_to_display_point(self.tab_snapshot(), offset)
     }
 
     pub(super) fn display_point_to_offset(
         &self,
         point: DisplayPoint,
     ) -> DisplayMapResult<ByteOffset> {
-        display_point_to_offset(&self.snapshot, &self.projection, &self.tab_snapshot, point)
+        display_point_to_offset(self.tab_snapshot(), point)
     }
 
     pub(super) fn display_to_logical_column(
@@ -170,50 +181,40 @@ impl DisplaySnapshot {
         line: Line,
         column: DisplayColumn,
     ) -> DisplayMapResult<LogicalColumn> {
-        self.tab_snapshot.display_to_logical_column(line, column)
+        self.tab_snapshot().display_to_logical_column(line, column)
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct DisplayMap {
-    snapshot: Snapshot,
-    folds: FoldSet,
-    projection: Arc<Projection>,
+    fold_map: FoldMap,
     tab_map: TabMap,
 }
 
 impl DisplayMap {
     pub(crate) fn new(snapshot: Snapshot) -> Self {
-        let folds = FoldSet::new(snapshot.version());
-        let projection = Projection::build(&snapshot, &folds)
-            .expect("空 FoldSet 与同版本 Snapshot 必须能建立 Projection");
-        Self {
-            tab_map: TabMap::new(snapshot.clone()),
-            snapshot,
-            folds,
-            projection: Arc::new(projection),
-        }
+        let (fold_map, fold_snapshot) = FoldMap::new(snapshot);
+        let (tab_map, _) = TabMap::new(fold_snapshot);
+        Self { tab_map, fold_map }
     }
 
-    pub(crate) fn snapshot(&self) -> &Snapshot {
-        &self.snapshot
+    pub(crate) fn buffer_snapshot(&self) -> &Snapshot {
+        self.fold_map.snapshot().buffer_snapshot()
     }
 
-    pub(super) fn display_snapshot(&self) -> DisplaySnapshot {
+    pub(super) fn snapshot(&self) -> DisplaySnapshot {
         DisplaySnapshot {
-            snapshot: self.snapshot.clone(),
-            projection: Arc::clone(&self.projection),
             tab_snapshot: self.tab_map.snapshot(),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn version(&self) -> BufferVersion {
-        self.snapshot.version()
+        self.fold_map.snapshot().buffer_snapshot().version()
     }
 
     pub(crate) fn line_count(&self) -> usize {
-        self.projection.line_count()
+        self.fold_map.snapshot().line_count()
     }
 
     pub(crate) fn measure_rows(
@@ -224,9 +225,12 @@ impl DisplayMap {
         let end = start_row
             .get()
             .saturating_add(line_count)
-            .min(self.projection.line_count());
+            .min(self.fold_map.snapshot().line_count());
         for row in start_row.get()..end {
-            if let Some(projected) = self.projection.projected_line(ProjectedLineIndex::new(row))
+            if let Some(projected) = self
+                .fold_map
+                .snapshot()
+                .projected_line(ProjectedLineIndex::new(row))
                 && let Some(line) = projected.kind().text_line()
             {
                 self.tab_map.measure_line(line.logical_line())?;
@@ -238,73 +242,31 @@ impl DisplayMap {
     pub(crate) fn longest_measured_row(&self) -> DisplayRow {
         self.tab_map
             .measured_lines()
-            .filter_map(
-                |(line, width)| match self.projection.logical_to_projected(line).ok()? {
-                    projection::LogicalProjection::Visible(row) => Some((row, width)),
-                    projection::LogicalProjection::Hidden { .. } => None,
-                },
-            )
+            .filter_map(|(line, width)| {
+                match self.fold_map.snapshot().logical_to_projected(line).ok()? {
+                    fold_map::LogicalProjection::Visible(row) => Some((row, width)),
+                    fold_map::LogicalProjection::Hidden { .. } => None,
+                }
+            })
             .max_by_key(|(_, width)| *width)
             .map(|(row, _)| DisplayRow::from(row))
             .unwrap_or(DisplayRow::ZERO)
     }
 
     /// 用订阅者独立积累的组合 Patch，把整条显示管线直接推进到当前 Snapshot。
-    pub(crate) fn sync_changes(
+    pub(crate) fn sync(
         &mut self,
         current_snapshot: Snapshot,
         batch: TextChangeBatch,
     ) -> ApplyOutcome {
-        if current_snapshot.version() == self.snapshot.version() {
-            return ApplyOutcome::Compatible;
-        }
-
-        let old_version = self.snapshot.version();
-        let new_version = current_snapshot.version();
-        let can_apply = !batch.requires_reset()
-            && batch.old_version() == Some(old_version)
-            && batch.new_version() == Some(new_version);
-        if !can_apply {
-            self.reset_for_snapshot(current_snapshot);
-            return ApplyOutcome::Rebuilt;
-        }
-
-        let old_snapshot = self.snapshot.clone();
-        if self
-            .folds
-            .update_through_patch(old_version, new_version, batch.patch(), &current_snapshot)
-            .is_err()
-        {
-            self.reset_for_snapshot(current_snapshot);
-            return ApplyOutcome::Rebuilt;
-        }
-
-        let outcome = Arc::make_mut(&mut self.projection)
-            .apply_patch(
-                &old_snapshot,
-                &current_snapshot,
-                &self.folds,
-                old_version,
-                new_version,
-                batch.patch(),
-            )
-            .unwrap_or(ApplyOutcome::Rebuilt);
-        self.snapshot = current_snapshot;
-        self.tab_map.sync(self.snapshot.clone(), Some(&batch));
-
-        if self.projection.version() != self.snapshot.version() {
-            self.projection = Arc::new(
-                Projection::build(&self.snapshot, &self.folds)
-                    .expect("同版本 FoldSet 与 Snapshot 必须能重建 Projection"),
-            );
-        }
+        let (fold_snapshot, fold_edits, outcome) = self.fold_map.read(current_snapshot, &batch);
+        self.tab_map.sync(fold_snapshot, &fold_edits);
         outcome
     }
 
-    #[cfg(test)]
     pub(crate) fn fold_lines(&mut self, line_range: LineRange) -> DisplayMapResult<()> {
-        self.folds.fold_lines(&self.snapshot, line_range)?;
-        self.rebuild_projection();
+        let (fold_snapshot, fold_edits) = self.fold_map.write().fold_lines(line_range)?;
+        self.tab_map.sync(fold_snapshot, &fold_edits);
         Ok(())
     }
 
@@ -312,19 +274,14 @@ impl DisplayMap {
         &self,
         offset: ByteOffset,
     ) -> DisplayMapResult<DisplayPoint> {
-        offset_to_display_point(&self.snapshot, &self.projection, offset)
+        offset_to_display_point(&self.tab_map.snapshot(), offset)
     }
 
     pub(crate) fn display_point_to_offset(
         &self,
         point: DisplayPoint,
     ) -> DisplayMapResult<ByteOffset> {
-        display_point_to_offset(
-            &self.snapshot,
-            &self.projection,
-            &self.tab_map.snapshot(),
-            point,
-        )
+        display_point_to_offset(&self.tab_map.snapshot(), point)
     }
 
     #[cfg(test)]
@@ -332,8 +289,8 @@ impl DisplayMap {
         &self,
         point: BufferPoint,
     ) -> DisplayMapResult<DisplayPoint> {
-        self.snapshot.position_to_byte(point.position())?;
-        logical_point_to_display_point(&self.snapshot, &self.projection, point.into())
+        self.buffer_snapshot().position_to_byte(point.position())?;
+        logical_point_to_display_point(&self.tab_map.snapshot(), point.into())
     }
 
     #[cfg(test)]
@@ -343,27 +300,9 @@ impl DisplayMap {
     ) -> DisplayMapResult<BufferPoint> {
         let offset = self.display_point_to_offset(point)?;
         Ok(self
-            .snapshot
+            .buffer_snapshot()
             .byte_to_position(offset)
             .map(BufferPoint::from)?)
-    }
-
-    fn reset_for_snapshot(&mut self, snapshot: Snapshot) {
-        self.folds = FoldSet::new(snapshot.version());
-        self.snapshot = snapshot;
-        self.tab_map.sync(self.snapshot.clone(), None);
-        self.projection = Arc::new(
-            Projection::build(&self.snapshot, &self.folds)
-                .expect("空 FoldSet 与同版本 Snapshot 必须能重建 Projection"),
-        );
-    }
-
-    #[cfg(test)]
-    fn rebuild_projection(&mut self) {
-        self.projection = Arc::new(
-            Projection::build(&self.snapshot, &self.folds)
-                .expect("同版本 FoldSet 与 Snapshot 必须能重建 Projection"),
-        );
     }
 }
 
@@ -374,45 +313,43 @@ impl From<BufferPoint> for LogicalPoint {
 }
 
 fn offset_to_display_point(
-    snapshot: &Snapshot,
-    projection: &Projection,
+    tab_snapshot: &TabSnapshot,
     offset: ByteOffset,
 ) -> DisplayMapResult<DisplayPoint> {
     logical_point_to_display_point(
-        snapshot,
-        projection,
-        BufferPoint::from(snapshot.byte_to_position(offset)?).into(),
+        tab_snapshot,
+        BufferPoint::from(tab_snapshot.buffer_snapshot().byte_to_position(offset)?).into(),
     )
 }
 
 fn display_point_to_offset(
-    snapshot: &Snapshot,
-    projection: &Projection,
     tab_snapshot: &TabSnapshot,
     point: DisplayPoint,
 ) -> DisplayMapResult<ByteOffset> {
+    let fold_snapshot = tab_snapshot.fold_snapshot();
     let projected = ProjectedPoint::new(point.row().projected(), LogicalColumn::ZERO);
-    let logical = match projection.projected_to_logical_point(projected)? {
+    let logical = match fold_snapshot.projected_to_logical_point(projected)? {
         ProjectedPointMapping::Text(logical) => {
-            return display_column_to_byte(snapshot, tab_snapshot, logical.line(), point.column());
+            return display_column_to_byte(tab_snapshot, logical.line(), point.column());
         }
         ProjectedPointMapping::Placeholder { anchor, .. } => anchor,
     };
-    Ok(snapshot.position_to_byte(logical.into())?)
+    Ok(fold_snapshot
+        .buffer_snapshot()
+        .position_to_byte(logical.into())?)
 }
 
 fn logical_point_to_display_point(
-    snapshot: &Snapshot,
-    projection: &Projection,
+    tab_snapshot: &TabSnapshot,
     point: LogicalPoint,
 ) -> DisplayMapResult<DisplayPoint> {
+    let fold_snapshot = tab_snapshot.fold_snapshot();
     let logical_line = point.line();
-    let projected = projection.logical_to_projected_point(point)?;
+    let projected = fold_snapshot.logical_to_projected_point(point)?;
     match projected {
         LogicalPointProjection::Visible(point) => Ok(DisplayPoint::new(
             DisplayRow::from(point.line()),
-            TabSnapshot::new(snapshot.clone())
-                .logical_to_display_column(logical_line, point.column())?,
+            tab_snapshot.logical_to_display_column(logical_line, point.column())?,
         )),
         LogicalPointProjection::Hidden {
             anchor_projected, ..
@@ -425,6 +362,8 @@ fn logical_point_to_display_point(
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use zcv_engine::{Buffer, BufferConfig, LineRange};
 
     use super::*;
@@ -530,7 +469,7 @@ mod tests {
 
         assert_ne!(mapped_version, buffer.version());
         assert_eq!(map.version(), mapped_version);
-        assert_eq!(map.snapshot().len_bytes(), ByteOffset::new(1));
+        assert_eq!(map.buffer_snapshot().len_bytes(), ByteOffset::new(1));
         assert!(map.offset_to_display_point(ByteOffset::new(2)).is_err());
     }
 
@@ -542,6 +481,7 @@ mod tests {
         )
         .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
+        let before = map.snapshot();
         map.fold_lines(LineRange::new(Line::ZERO, Line::new(3)).expect("测试行区间应合法"))
             .expect("折叠应成功");
 
@@ -553,7 +493,12 @@ mod tests {
             DisplayRow::ZERO
         );
 
-        let snapshot = map.display_snapshot();
+        let snapshot = map.snapshot();
+        assert_ne!(before.version(), snapshot.version());
+        assert_eq!(
+            before.buffer_snapshot().version(),
+            snapshot.buffer_snapshot().version()
+        );
         let viewport = snapshot
             .slice_viewport(DisplayRow::ZERO, 8)
             .expect("投影视口应可读取");
@@ -574,13 +519,43 @@ mod tests {
         buffer
             .insert(ByteOffset::new(5), " becomes longest")
             .expect("测试编辑应成功");
-        let outcome = map.sync_changes(buffer.snapshot(), subscription.consume());
+        let outcome = map.sync(buffer.snapshot(), subscription.consume());
 
         assert_eq!(outcome, ApplyOutcome::Compatible);
         assert_eq!(map.longest_measured_row(), DisplayRow::new(1));
         map.measure_rows(DisplayRow::ZERO, 1)
             .expect("变更行应能按需重新测量");
         assert_eq!(map.longest_measured_row(), DisplayRow::ZERO);
+    }
+
+    #[test]
+    fn tab_snapshot_advances_when_configuration_changes_without_a_buffer_edit() {
+        let mut buffer = Buffer::scratch("\t".to_string(), BufferConfig::default())
+            .expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        map.measure_rows(DisplayRow::ZERO, 1)
+            .expect("初始 Tab 行应能测量");
+        assert_eq!(
+            map.tab_map.measured_lines().next().map(|(_, width)| width),
+            Some(DisplayColumn::new(4))
+        );
+
+        let before = map.snapshot();
+        let subscription = buffer.subscribe();
+        let mut config = buffer.config().clone();
+        config.tab.tab_width = NonZeroUsize::new(2).expect("测试 Tab 宽度必须非零");
+        buffer.set_config(config);
+        map.sync(buffer.snapshot(), subscription.consume());
+
+        let after = map.snapshot();
+        assert_ne!(before.version(), after.version());
+        assert_eq!(map.tab_map.measured_lines().count(), 0);
+        map.measure_rows(DisplayRow::ZERO, 1)
+            .expect("配置变化后的 Tab 行应能重新测量");
+        assert_eq!(
+            map.tab_map.measured_lines().next().map(|(_, width)| width),
+            Some(DisplayColumn::new(2))
+        );
     }
 
     #[test]
@@ -596,7 +571,7 @@ mod tests {
             .expect("测试编辑应成功");
 
         assert_eq!(
-            map.sync_changes(buffer.snapshot(), subscription.consume()),
+            map.sync(buffer.snapshot(), subscription.consume()),
             ApplyOutcome::Spliced
         );
         assert_eq!(map.longest_measured_row(), DisplayRow::ZERO);

@@ -196,10 +196,18 @@ DisplayPoint
 - `DisplayPoint` 表示经过软换行、折叠和 Inlay 变换后的显示位置。
 - 像素坐标只在布局和命中测试阶段使用。
 
-DisplayMap 持有与 Buffer Snapshot 同版本的 Projection，按投影视口读取可见行，
-并通过订阅者独立累积的组合 `TextPatch` 一次推进 FoldSet、Projection 与 TabMap。
-事件只负责唤醒，当前 `Snapshot` 是文本真相；每层直接理解 Patch 的旧/新坐标，
-不缓存或逐条回放中间 Snapshot。Projection 只维护折叠后的行拓扑。
+DisplayMap 持有 FoldMap；FoldMap 发布不可变 FoldSnapshot。
+FoldSnapshot 同时持有输入
+Buffer Snapshot、折叠范围树和输入/输出变换树，保证三者始终属于同一版本。
+Fold 与 Transform 直接作为 SumTree item；不存在 FoldSet 或 Projection 状态容器。
+FoldMap 通过 `read` 同步 Buffer 变化，通过 `write` 返回 FoldMapWriter 处理折叠操作，
+并把 FoldSnapshot 与 FoldEdit 一起交给上层。
+TabMap 以上一层 FoldSnapshot 为输入，并把它继续固化在 TabSnapshot 中。
+与 Zed 一样，每层 `new` 同时返回 Map 与初始 Snapshot，每层 `sync` 接收下层
+Snapshot 并返回本层 Snapshot。FoldSnapshot 与 TabSnapshot 各自维护独立的显示层
+版本，因此不修改 Buffer 的折叠操作也能可靠地向上传播。
+订阅事件只负责唤醒，当前 `Snapshot` 是文本真相；每层直接理解组合 `TextPatch` 的
+旧/新坐标，不缓存或逐条回放中间 Snapshot。
 TabMap 按实际投影视口惰性测量 display-column，并在编辑后只失效受影响的已测量行；
 初次构建不扫描全文。占位符文本、像素布局和命中测试由 DisplayMap / EditorElement 负责。
 Soft Wrap、Inlay 后续继续在此层扩展，不能散落到 Editor 或业务组件中。
@@ -671,10 +679,10 @@ zcv-editor/
       mod.rs
       test/
     element.rs
+    display_map.rs
     display_map/
-      mod.rs
-      fold/
-      projection/
+      error.rs
+      fold_map.rs
       tab_map.rs
     selection.rs
     scroll.rs
@@ -685,7 +693,7 @@ zcv-editor/
 - `view/mod.rs` 定义 Editor、EditorMode、事件和 Action handler，相关交互测试放在
   `view/test/`。
 - `element.rs` 负责布局、绘制、命中测试和 InputHandler 桥接。
-- `display_map/mod.rs` 负责坐标与显示变换，具体投影能力继续放在其子模块中。
+- `display_map.rs` 负责编排显示变换层；具体能力放在 `display_map/` 下对应的 Map 模块中。
 - `selection.rs` 负责 Editor 的 SelectionHistory、视图交互状态和依赖 DisplayMap 的选择变换；Selection、SelectionSet 原语继续来自 engine。
 - `scroll.rs` 负责 ScrollManager。
 - `lib.rs` 作为 Editor crate 门面，声明私有实现模块，并选择性重导出宿主使用的

@@ -132,7 +132,7 @@ impl EditorLayout {
             let buffer_byte = self.presentation.display_byte_to_buffer_byte(display_byte);
             return self
                 .display_snapshot
-                .snapshot()
+                .buffer_snapshot()
                 .byte_to_position(buffer_byte)
                 .ok()
                 .map(BufferPoint::from);
@@ -148,7 +148,7 @@ impl EditorLayout {
             .display_point_to_offset(DisplayPoint::new(line.row, DisplayColumn::ZERO))
             .ok()?;
         self.display_snapshot
-            .snapshot()
+            .buffer_snapshot()
             .byte_to_position(offset)
             .ok()
             .map(BufferPoint::from)
@@ -624,7 +624,7 @@ fn layout_visible_lines(
                 continue;
             };
             let gutter_line = display_snapshot
-                .snapshot()
+                .buffer_snapshot()
                 .byte_to_line(presentation.display_byte_to_buffer_byte(line.byte_start))
                 .ok();
             push_line(
@@ -647,7 +647,7 @@ fn layout_visible_lines(
                 } => {
                     let byte_start = visible.visible_range().start().get();
                     let utf16_start = display_snapshot
-                        .snapshot()
+                        .buffer_snapshot()
                         .byte_to_utf16_cu(ByteOffset::new(byte_start))
                         .map_or(0, |offset| offset.get());
                     push_line(
@@ -661,11 +661,11 @@ fn layout_visible_lines(
                 }
                 ProjectedViewportRowKind::Placeholder(placeholder) => {
                     let byte_start = display_snapshot
-                        .snapshot()
+                        .buffer_snapshot()
                         .line_start_byte(placeholder.hidden_lines().start())
                         .map_or(0, ByteOffset::get);
                     let utf16_start = display_snapshot
-                        .snapshot()
+                        .buffer_snapshot()
                         .byte_to_utf16_cu(ByteOffset::new(byte_start))
                         .map_or(0, |offset| offset.get());
                     push_line(
@@ -711,7 +711,7 @@ fn gutter_dimensions(display_snapshot: &DisplaySnapshot, window: &mut Window) ->
         .text_system()
         .shape_line(digits.into(), font_size, &[run], None);
     GutterDimensions::line_numbers_only(
-        display_snapshot.snapshot().line_count(),
+        display_snapshot.buffer_snapshot().line_count(),
         shaped_digits.width / digits.len() as f32,
         shaped_digits.descent,
     )
@@ -1099,7 +1099,7 @@ mod tests {
                 let snapshot = Buffer::scratch(text.to_owned(), BufferConfig::default())
                     .expect("测试 Buffer 应能创建")
                     .snapshot();
-                let display_snapshot = DisplayMap::new(snapshot.clone()).display_snapshot();
+                let display_snapshot = DisplayMap::new(snapshot.clone()).snapshot();
                 let layout = EditorLayout {
                     lines: vec![LayoutLine {
                         row: DisplayRow::new(3),
@@ -1140,7 +1140,7 @@ mod tests {
                     .expect("大文本测试 Buffer 应能创建")
                     .snapshot();
                 let presentation = EditorPresentation::new(&snapshot, None);
-                let display_snapshot = DisplayMap::new(snapshot.clone()).display_snapshot();
+                let display_snapshot = DisplayMap::new(snapshot.clone()).snapshot();
                 let layout = layout_visible_lines(
                     display_snapshot,
                     presentation,
@@ -1198,7 +1198,7 @@ mod tests {
                     Bounds::new(point(px(0.), px(0.)), size(dimensions.width, px(100.)));
                 let text_bounds = Bounds::new(point(px(51.), px(0.)), size(px(349.), px(100.)));
                 let layout = layout_visible_lines(
-                    DisplayMap::new(snapshot.clone()).display_snapshot(),
+                    DisplayMap::new(snapshot.clone()).snapshot(),
                     EditorPresentation::new(&snapshot, None),
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -1245,7 +1245,7 @@ mod tests {
                 map.fold_lines(LineRange::new(Line::ZERO, Line::new(3)).expect("测试行区间应合法"))
                     .expect("折叠应成功");
                 let layout = layout_visible_lines(
-                    map.display_snapshot(),
+                    map.snapshot(),
                     EditorPresentation::new(&snapshot, None),
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -1291,7 +1291,7 @@ mod tests {
                 .expect("测试 Buffer 应能创建")
                 .snapshot();
                 let presentation = EditorPresentation::new(&snapshot, None);
-                let display_snapshot = DisplayMap::new(snapshot.clone()).display_snapshot();
+                let display_snapshot = DisplayMap::new(snapshot.clone()).snapshot();
                 let layout = layout_visible_lines(
                     display_snapshot,
                     presentation,

@@ -1,0 +1,26 @@
+[package]
+name = "zcv-language"
+version.workspace = true
+edition.workspace = true
+description = "语言注册、tree-sitter 解析与语法高亮"
+
+[dependencies]
+gpui.workspace = true
+regex.workspace = true
+tree-sitter.workspace = true
+tree-sitter-bash.workspace = true
+tree-sitter-css.workspace = true
+tree-sitter-html.workspace = true
+tree-sitter-java.workspace = true
+tree-sitter-javascript.workspace = true
+tree-sitter-json.workspace = true
+tree-sitter-md.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-rust.workspace = true
+tree-sitter-toml-ng.workspace = true
+tree-sitter-typescript.workspace = true
+tree-sitter-yaml.workspace = true
+zcv-engine.workspace = true
+
+[lints]
+workspace = true

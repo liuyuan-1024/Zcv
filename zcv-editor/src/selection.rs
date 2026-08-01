@@ -85,7 +85,7 @@ pub(super) fn replace_selections(
         after.push(Selection::caret(ByteOffset::new(new_head)));
     }
 
-    let after = SelectionSet::new(after);
+    let after = SelectionSet::new_with_primary(after, selections.primary_index());
     if edits.is_empty() {
         return Ok(EditOutcome::unchanged(after));
     }

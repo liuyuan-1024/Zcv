@@ -10,6 +10,7 @@ gpui-sum-tree.workspace = true
 thiserror.workspace = true
 unicode-segmentation.workspace = true
 zcv-engine.workspace = true
+zcv-language.workspace = true
 zcv-theme.workspace = true
 
 [dev-dependencies]

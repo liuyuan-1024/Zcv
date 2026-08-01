@@ -2,6 +2,7 @@
 
 use gpui::{AppContext, TestAppContext};
 use zcv_engine::{Buffer, BufferConfig, ByteOffset, Selection, SelectionSet};
+use zcv_language::LanguageBuffer;
 
 use super::Editor;
 
@@ -13,10 +14,14 @@ fn editor_with_text(
     let buffer = cx.new(|_| {
         Buffer::scratch(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
-    let editor = cx.new({
+    let language_buffer = cx.new({
         let buffer = buffer.clone();
+        move |cx| LanguageBuffer::new(buffer, None, cx)
+    });
+    let editor = cx.new({
+        let language_buffer = language_buffer.clone();
         move |cx| {
-            let mut editor = Editor::for_buffer(buffer, cx);
+            let mut editor = Editor::for_buffer(language_buffer, cx);
             editor.selections = selections;
             editor
         }

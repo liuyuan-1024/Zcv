@@ -27,7 +27,13 @@ Editor 采用与 Zed 相同的核心分层：
 ```text
 zcv-engine::Buffer
   │
-  │ 文件 Buffer 由 BufferStore 按规范化路径复用
+  ▼
+zcv-language::LanguageBuffer
+  ├── Language / SyntaxMap
+  ├── 前台语法树插值
+  └── single-flight 后台增量解析
+  │
+  │ 文件 LanguageBuffer 由 BufferStore 按规范化路径复用
   ▼
 Editor Entity
   ├── EditorMode
@@ -62,7 +68,9 @@ crate 依赖保持单向：
 
 ```text
 zcv ──▶ zcv-editor ──▶ zcv-engine
-            └───────▶ zcv-theme
+  │          ├───────▶ zcv-language ──▶ zcv-engine
+  │          └───────▶ zcv-theme
+  └──────────────────▶ zcv-language
 ```
 
 箭头表示“依赖”。`zcv-editor` 不依赖 Workspace；它发出自己的
@@ -95,8 +103,9 @@ Buffer 不负责：
 
 Buffer 与 Editor 必须分离。同一个 Buffer 可以被多个 Editor 共享；每个 Editor 分别持有自己的选区和滚动状态。当前工作区只装配一个中心 Pane，不预置分栏结构。
 
-文件 Buffer 由宿主层的 BufferStore 创建和索引。
-BufferStore 按规范化路径复用 `Entity<Buffer>`，只保留弱引用，不持有选区、滚动或 Editor 生命周期状态。
+文件 Buffer 由 `LanguageBuffer` 持有，宿主层的 BufferStore 创建并索引
+`Entity<LanguageBuffer>`。BufferStore 按规范化路径复用仍然存活的 LanguageBuffer，
+只保留弱引用，不持有选区、滚动或 Editor 生命周期状态。
 BufferStore 由项目级 `Project` Entity 持有，不注册为 App Global；`Workspace` 通过 `Entity<Project>` 打开、保存和监听文件，避免多个窗口或项目共享同一个全局缓存。
 
 Buffer 不得持有 `selection` 字段，也不得通过 `selection()` / `set_selection()` 暴露全局当前选区。接受选区的编辑入口必须把 SelectionSet 作为参数，并把编辑后的 SelectionSet 作为结果返回。
@@ -174,7 +183,21 @@ Editor 不负责：
 - 文件标签管理。
 - 提交、搜索等业务行为。
 
-### 3.4 DisplayMap
+### 3.4 Language 与 SyntaxMap
+
+`zcv-language` 对齐 Zed 的 language crate，集中维护语言注册、tree-sitter grammar、
+highlight query 与增量语法树。`LanguageBuffer` 持有文本 Buffer、SyntaxMap 和唯一的
+后台解析任务；多个 Editor 必须共享同一个 LanguageBuffer，不允许各自创建 SyntaxMap。
+SyntaxMap 分别记录真正完成解析的 `parsed_version` 和仅通过 `InputEdit` 推进坐标的
+`interpolated_version`。渲染端只能消费绑定 `BufferVersion` 的不可变
+`SyntaxSnapshot`，并对整个可见字节范围执行一次 capture 查询。
+主题解析和 GPUI `TextRun` 不进入语言 crate。
+
+`zcv-engine` 继续保持纯文本内核。LanguageBuffer 独立订阅文本变化并推进 SyntaxMap；
+Editor 的独立订阅只推进 DisplayMap。语言状态更新后由 LanguageBuffer 通知所有共享
+Editor，避免解析任务和语法树跟随视图重复创建。
+
+### 3.5 DisplayMap
 
 DisplayMap 负责把 Buffer 中的逻辑文本映射为屏幕上的显示文本。
 
@@ -212,7 +235,7 @@ TabMap 按实际投影视口惰性测量 display-column，并在编辑后只失�
 初次构建不扫描全文。占位符文本、像素布局和命中测试由 DisplayMap / EditorElement 负责。
 Soft Wrap、Inlay 后续继续在此层扩展，不能散落到 Editor 或业务组件中。
 
-### 3.5 EditorElement
+### 3.6 EditorElement
 
 EditorElement 是 Editor 的 GPUI 渲染与输入桥接层，负责：
 
@@ -332,9 +355,11 @@ zcv-engine::Buffer
 - 正确定位输入法候选框。
 - 正确处理 marked text 和文本替换范围。
 
-IME composition 的会话状态属于当前获得输入焦点的 Editor，不能进入 engine。GPUI 把操作系统的 marked text、相对选区、替换范围和提交事件交给 Editor；Editor 负责 start、update、commit、cancel 生命周期以及候选框定位。
+IME composition 的会话身份与 marked ranges 属于当前获得输入焦点的 Editor，不能作为 engine 的全局状态。GPUI 把操作系统的 marked text、相对选区、替换范围和提交事件交给 Editor；Editor 负责 start、update、commit、cancel 生命周期以及候选框定位。多光标场景为每个 selection 保存一个 marked range，系统输入协议只暴露 primary range。
 
-marked text 在输入法提交前不是 Buffer 文本。Editor 应在显示层组合 Buffer Snapshot 与 marked text 完成布局和绘制，不得为每次 preedit update 修改 Buffer。只有 committed text 才转换为普通 Selection 编辑事务进入 `zcv-engine::Buffer`。因此 engine 不定义 `CompositionState`、`CompositionSelection`、IME 状态机或 `TransactionSource::Composition`。
+对齐 Zed，marked text 从第一次 preedit update 起就通过普通文本事务进入 Buffer。连续候选更新与第一次输入合并为同一个历史节点，提交只结束 composition 会话，不再次写入文本；取消或空 replacement 也走同一个事务。这样 Buffer Snapshot、SyntaxMap、DisplayMap、命中测试和绘制始终共享同一份文本，组合区域只在语法样式之上额外叠加下划线。
+
+engine 仍不定义 `CompositionState`、`CompositionSelection`、IME 状态机或 `TransactionSource::Composition`。它只提供普通事务和确定性的历史合并；Editor 保存 marked range 与 IME 历史事务身份，并负责选择合并策略。
 
 ### 5.2 命令输入
 
@@ -551,7 +576,7 @@ Pane 直接持有 `Box<dyn ItemHandle>`，以 EntityId 作为唯一 Item 身份�
 - 从 Buffer HistoryEntry 和 TransactionRecord 删除前后选区。
 - 让 Buffer Undo / Redo 返回 `transaction_id`。
 - 从 engine 删除 IME composition 类型、状态机和专用事务来源。
-- 保证 marked text 在提交前不进入 Buffer；engine 只处理 committed text。
+- 保证 engine 不持有 IME 会话状态；marked text 由 Editor 作为普通可合并事务写入 Buffer。
 
 验证：
 
@@ -604,8 +629,10 @@ Pane 直接持有 `Box<dyn ItemHandle>`，以 EntityId 作为唯一 Item 身份�
 - 在 EditorElement 中注册 `ElementInputHandler`。
 - 在 Editor 中定义并持有 `EditorComposition` 会话状态。
 - 使用 GPUI 输入协议维护 marked text、相对选区和替换范围。
-- 在显示层渲染 marked text，不修改 Buffer。
-- 收到 committed text 后调用普通 Selection 编辑事务。
+- 从第一次 preedit update 起用普通 Selection 编辑事务更新 Buffer。
+- 将连续候选更新合并为同一个 Undo / Redo 历史节点。
+- 在正常语法高亮之上为所有 marked ranges 叠加下划线。
+- 收到 committed text 或 unmark 后结束会话，不重复写入已在 Buffer 中的文本。
 - 实现 committed text、marked text 和替换范围。
 - 提供 IME 候选框坐标。
 
@@ -613,6 +640,9 @@ Pane 直接持有 `Box<dyn ItemHandle>`，以 EntityId 作为唯一 Item 身份�
 
 - 中文输入法可以输入、组合、确认和取消。
 - emoji、组合字符和多字节字符不会破坏 Buffer。
+- 组合期间 Buffer、SyntaxMap、DisplayMap 与绘制文本版本一致，语法高亮不中断。
+- 一次完整的候选更新序列只产生一个 Undo 步骤。
+- 多光标的每次候选更新覆盖所有 marked ranges，primary range 与系统输入协议一致。
 
 ### 阶段 5：选择与编辑命令
 

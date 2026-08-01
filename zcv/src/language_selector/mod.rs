@@ -4,7 +4,6 @@
 
 use gpui::{Context, Entity, Render, Subscription, Window, prelude::*};
 
-use crate::languages;
 use crate::ui::Glyph;
 use crate::workspace::StatusItemView;
 use zcv_editor::Editor;
@@ -60,7 +59,7 @@ impl ActiveBufferLanguage {
                     )
                     .ok()
                     .map(|s| s.as_str().lines().next().unwrap_or("").to_owned());
-                languages::language_for_file(path, first_line.as_deref())
+                zcv_language::language_name_for_file(path, first_line.as_deref())
             })
             .map(|name| name.to_owned())
             .unwrap_or_default();

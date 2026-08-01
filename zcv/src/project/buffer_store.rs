@@ -9,9 +9,10 @@ use std::path::{Path, PathBuf};
 
 use gpui::{App, AppContext, Entity, WeakEntity};
 use zcv_engine::{Buffer, BufferConfig, BufferLoadError, BufferOrigin};
+use zcv_language::LanguageBuffer;
 
 pub(crate) struct BufferStore {
-    opened_buffers: HashMap<PathBuf, WeakEntity<Buffer>>,
+    opened_buffers: HashMap<PathBuf, WeakEntity<LanguageBuffer>>,
 }
 
 impl BufferStore {
@@ -26,7 +27,7 @@ impl BufferStore {
         &mut self,
         path: &Path,
         cx: &mut App,
-    ) -> Result<Entity<Buffer>, BufferLoadError> {
+    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
         let path = path.canonicalize().map_err(BufferLoadError::Io)?;
         if let Some(buffer) = self.opened_buffers.get(&path).and_then(WeakEntity::upgrade) {
             return Ok(buffer);
@@ -39,8 +40,10 @@ impl BufferStore {
             BufferConfig::default(),
         )?;
         let buffer = cx.new(|_| buffer);
-        self.opened_buffers.insert(path, buffer.downgrade());
-        Ok(buffer)
+        let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(path.clone()), cx));
+        self.opened_buffers
+            .insert(path, language_buffer.downgrade());
+        Ok(language_buffer)
     }
 
     /// 如果路径对应某个已打开的 Buffer，从磁盘重新加载其内容。
@@ -48,7 +51,7 @@ impl BufferStore {
         let Ok(canonical) = path.canonicalize() else {
             return;
         };
-        let Some(buffer) = self
+        let Some(language_buffer) = self
             .opened_buffers
             .get(&canonical)
             .and_then(WeakEntity::upgrade)
@@ -58,6 +61,7 @@ impl BufferStore {
         let Ok(text) = std::fs::read_to_string(&canonical) else {
             return;
         };
+        let buffer = language_buffer.read(cx).buffer();
         buffer.update(cx, |buffer, cx| {
             if buffer.reload_from_text(text).is_ok() {
                 cx.notify();
@@ -145,7 +149,8 @@ mod tests {
         let second = cx.update(|cx| store.open_buffer(&path, cx).expect("重新打开应成功"));
 
         assert_ne!(first_id, second.entity_id());
-        cx.read_entity(&second, |buffer, _| {
+        let buffer = cx.read_entity(&second, |language_buffer, _| language_buffer.buffer());
+        cx.read_entity(&buffer, |buffer, _| {
             assert_eq!(
                 buffer
                     .slice_byte_range(zcv_engine::ByteOffset::ZERO, buffer.len_bytes())

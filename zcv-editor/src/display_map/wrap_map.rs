@@ -764,44 +764,44 @@ impl WrapMap {
         if rows.is_empty() {
             return;
         }
-        let mut row_edits = merge_ranges(&rows).into_iter().peekable();
-        // cursor 借用旧 transforms，拼接结果在一个块内完成，避免与后续赋值冲突。
-        let new_transforms = {
-            let mut old_cursor = self.snapshot.transforms.cursor::<InputLines>(());
-            let mut new_transforms =
-                old_cursor.slice(&InputLines(row_edits.peek().unwrap().start), Bias::Right);
-            while let Some(edit) = row_edits.next() {
-                // 前缀补齐：编辑区间之前未被旧树覆盖的 gap 行（未来行数变化时可能非空）。
-                let input_so_far = new_transforms.summary().input_lines;
-                for tab_row in input_so_far..edit.start {
-                    self.push_wrap_transform_to_tree(
-                        &mut new_transforms,
-                        tab_row,
-                        wrap_width,
-                        wrapper,
-                    );
+        let row_edits = merge_ranges(&rows);
+        let old_transforms: Vec<_> = self.snapshot.transforms.iter().cloned().collect();
+        let mut new_transforms = Vec::new();
+        let mut edit_index = 0;
+        let mut input_start = 0;
+        for transform in &old_transforms {
+            let input_end = input_start + transform.input_lines;
+            while row_edits
+                .get(edit_index)
+                .is_some_and(|edit| edit.end <= input_start)
+            {
+                edit_index += 1;
+            }
+
+            let mut position = input_start;
+            while let Some(edit) = row_edits.get(edit_index) {
+                if edit.start >= input_end {
+                    break;
                 }
-                for tab_row in edit.clone() {
-                    self.push_wrap_transform_to_tree(
-                        &mut new_transforms,
-                        tab_row,
-                        wrap_width,
-                        wrapper,
-                    );
+                let unchanged_end = edit.start.max(position).min(input_end);
+                push_transform_slice(&mut new_transforms, transform, unchanged_end - position);
+
+                let changed_start = edit.start.max(position);
+                let changed_end = edit.end.min(input_end);
+                for tab_row in changed_start..changed_end {
+                    self.push_wrap_transform(&mut new_transforms, tab_row, wrap_width, wrapper);
                 }
-                old_cursor.seek_forward(&InputLines(edit.end), Bias::Right);
-                if let Some(next) = row_edits.peek() {
-                    if next.start > old_cursor.end().0 {
-                        new_transforms
-                            .append(old_cursor.slice(&InputLines(next.start), Bias::Right), ());
-                    }
+                position = changed_end;
+                if edit.end <= input_end {
+                    edit_index += 1;
                 } else {
-                    new_transforms.append(old_cursor.suffix(), ());
+                    break;
                 }
             }
-            new_transforms
-        };
-        self.snapshot.transforms = new_transforms;
+            push_transform_slice(&mut new_transforms, transform, input_end - position);
+            input_start = input_end;
+        }
+        self.snapshot.transforms = SumTree::from_iter(new_transforms, ());
         self.snapshot.wrapped = true;
         self.check_invariants();
     }
@@ -840,21 +840,6 @@ impl WrapMap {
                     });
                 }
             }
-        }
-    }
-
-    /// 行级增量的单行版本（用于 SumTree 直接 push）。
-    fn push_wrap_transform_to_tree(
-        &self,
-        transforms: &mut SumTree<Transform>,
-        tab_row: usize,
-        wrap_width: Pixels,
-        wrapper: &mut LineWrapper,
-    ) {
-        let mut single: Vec<Transform> = Vec::new();
-        self.push_wrap_transform(&mut single, tab_row, wrap_width, wrapper);
-        for transform in single {
-            push_or_extend(transforms, transform);
         }
     }
 
@@ -900,15 +885,22 @@ fn push_isomorphic(transforms: &mut Vec<Transform>, lines: usize) {
     transforms.push(Transform::isomorphic(lines));
 }
 
-fn push_or_extend(transforms: &mut SumTree<Transform>, transform: Transform) {
-    if transform.kind == TransformKind::Isomorphic
-        && transforms
-            .last()
-            .is_some_and(|last| last.kind == TransformKind::Isomorphic)
-    {
-        transforms.update_last(|last| last.input_lines += transform.input_lines, ());
-    } else {
-        transforms.push(transform, ());
+/// 复制旧变换的一段输入行。Isomorphic item 可以合并很多行，不能直接用
+/// SumTree cursor 在 item 中间切片，否则 Bias 会把整个 item 复制到结果中。
+fn push_transform_slice(
+    transforms: &mut Vec<Transform>,
+    transform: &Transform,
+    input_lines: usize,
+) {
+    if input_lines == 0 {
+        return;
+    }
+    match transform.kind {
+        TransformKind::Isomorphic => push_isomorphic(transforms, input_lines),
+        TransformKind::Wrap => {
+            debug_assert_eq!(input_lines, 1);
+            transforms.push(transform.clone());
+        }
     }
 }
 

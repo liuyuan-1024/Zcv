@@ -12,9 +12,10 @@ use gpui::{
 };
 use zcv_engine::{
     Buffer, BufferConfig, ByteOffset, EngineResult, Line, MovementDirection, MovementUnit,
-    Selection, SelectionSet, Snapshot, TextRange, TextSubscription, TransactionMetadata,
-    TransactionSource, Utf16Offset,
+    Selection, SelectionSet, Snapshot, TextRange, TextSubscription, TransactionId,
+    TransactionMergePolicy, TransactionMetadata, TransactionSource, Utf16Offset,
 };
+use zcv_language::{LanguageBuffer, SyntaxSnapshot};
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
@@ -118,171 +119,41 @@ impl Default for SoftWrap {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct EditorComposition {
-    range: TextRange,
-    text: Arc<str>,
-    selected_range_utf16: Range<usize>,
-    presentation_text: Arc<str>,
-    line_starts: Arc<[(usize, usize)]>,
-}
-
-impl EditorComposition {
-    fn new(
-        range: TextRange,
-        text: impl Into<Arc<str>>,
-        selected_range_utf16: Range<usize>,
-        snapshot: &Snapshot,
-    ) -> Self {
-        let text = text.into();
-        let buffer_text = snapshot
-            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
-            .expect("完整 Snapshot 范围必须可读取");
-        let start = range.start().get();
-        let end = range.end().get();
-        let mut presentation_text = String::with_capacity(
-            buffer_text
-                .len_bytes()
-                .saturating_sub(end.saturating_sub(start))
-                .saturating_add(text.len()),
-        );
-        presentation_text.push_str(&buffer_text.as_str()[..start]);
-        presentation_text.push_str(&text);
-        presentation_text.push_str(&buffer_text.as_str()[end..]);
-        Self {
-            range,
-            text,
-            selected_range_utf16,
-            line_starts: index_presentation_lines(&presentation_text).into(),
-            presentation_text: presentation_text.into(),
-        }
-    }
+    ranges: Arc<[TextRange]>,
+    primary_index: usize,
+    history_transaction_id: Option<TransactionId>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct EditorPresentation {
     snapshot: Snapshot,
     composition: Option<EditorComposition>,
-    marked_byte_range: Option<Range<usize>>,
-    replaced_buffer_range: Option<TextRange>,
-    selected_range_utf16: Option<Range<usize>>,
 }
 
 impl EditorPresentation {
     pub(super) fn new(snapshot: &Snapshot, composition: Option<&EditorComposition>) -> Self {
-        let Some(composition) = composition else {
-            return Self {
-                snapshot: snapshot.clone(),
-                composition: None,
-                marked_byte_range: None,
-                replaced_buffer_range: None,
-                selected_range_utf16: None,
-            };
-        };
-
-        let start = composition.range.start().get();
-        let marked_byte_range = start..start + composition.text.len();
-        let marked_start_utf16 =
-            utf16_len(&composition.presentation_text[..marked_byte_range.start]);
-        let marked_len_utf16 = utf16_len(&composition.text);
-        let selected_range_utf16 = Some(
-            marked_start_utf16 + composition.selected_range_utf16.start.min(marked_len_utf16)
-                ..marked_start_utf16 + composition.selected_range_utf16.end.min(marked_len_utf16),
-        );
-
         Self {
             snapshot: snapshot.clone(),
-            composition: Some(composition.clone()),
-            marked_byte_range: Some(marked_byte_range),
-            replaced_buffer_range: Some(composition.range),
-            selected_range_utf16,
+            composition: composition.cloned(),
         }
     }
 
-    pub(super) fn is_composing(&self) -> bool {
-        self.composition.is_some()
-    }
-
-    pub(super) fn composed_line_count(&self) -> Option<usize> {
+    pub(super) fn marked_ranges(&self) -> &[TextRange] {
         self.composition
             .as_ref()
-            .map(|composition| composition.line_starts.len())
-    }
-
-    pub(super) fn composed_text(&self) -> Option<&str> {
-        self.composition
-            .as_ref()
-            .map(|composition| composition.presentation_text.as_ref())
-    }
-
-    pub(super) fn composed_line(&self, row: usize) -> Option<PresentationLine<'_>> {
-        let composition = self.composition.as_ref()?;
-        let (byte_start, utf16_start) = *composition.line_starts.get(row)?;
-        let byte_end = composition
-            .line_starts
-            .get(row + 1)
-            .map_or(composition.presentation_text.len(), |(start, _)| *start);
-        let text =
-            composition.presentation_text[byte_start..byte_end].trim_end_matches(['\r', '\n']);
-        Some(PresentationLine {
-            text,
-            byte_start,
-            utf16_start,
-        })
-    }
-
-    pub(super) fn marked_byte_range(&self) -> Option<Range<usize>> {
-        self.marked_byte_range.clone()
+            .map_or(&[], |composition| composition.ranges.as_ref())
     }
 
     pub(super) fn marked_utf16_range(&self) -> Option<Range<usize>> {
-        let range = self.marked_byte_range.as_ref()?;
-        let text = &self.composition.as_ref()?.presentation_text;
-        Some(utf16_len(&text[..range.start])..utf16_len(&text[..range.end]))
-    }
-
-    pub(super) fn selected_range_utf16(&self) -> Option<Range<usize>> {
-        self.selected_range_utf16.clone()
-    }
-
-    pub(super) fn display_byte_to_buffer_byte(&self, display_byte: usize) -> ByteOffset {
-        let (Some(marked), Some(replaced)) =
-            (self.marked_byte_range.as_ref(), self.replaced_buffer_range)
-        else {
-            return ByteOffset::new(display_byte);
-        };
-        if display_byte <= marked.start {
-            return ByteOffset::new(display_byte);
-        }
-        if display_byte < marked.end {
-            return replaced.end();
-        }
-        ByteOffset::new(display_byte - marked.end + replaced.end().get())
-    }
-
-    pub(super) fn buffer_byte_to_display_byte(&self, buffer_byte: ByteOffset) -> usize {
-        let (Some(marked), Some(replaced)) =
-            (self.marked_byte_range.as_ref(), self.replaced_buffer_range)
-        else {
-            return buffer_byte.get();
-        };
-        if buffer_byte <= replaced.start() {
-            return buffer_byte.get();
-        }
-        if buffer_byte < replaced.end() {
-            return marked.start;
-        }
-        buffer_byte.get() - replaced.end().get() + marked.end
-    }
-
-    fn byte_range_from_utf16(&self, range: Range<usize>) -> Option<Range<usize>> {
-        let text = &self.composition.as_ref()?.presentation_text;
-        Some(byte_for_utf16_offset(text, range.start)?..byte_for_utf16_offset(text, range.end)?)
+        let composition = self.composition.as_ref()?;
+        let range = composition.ranges.get(composition.primary_index)?;
+        Some(
+            self.snapshot.byte_to_utf16_cu(range.start()).ok()?.get()
+                ..self.snapshot.byte_to_utf16_cu(range.end()).ok()?.get(),
+        )
     }
 
     fn text_for_utf16_range(&self, range: Range<usize>) -> Option<String> {
-        if let Some(composition) = self.composition.as_ref() {
-            let bytes = self.byte_range_from_utf16(range)?;
-            return Some(composition.presentation_text[bytes].to_owned());
-        }
         let start = self
             .snapshot
             .utf16_cu_to_byte(Utf16Offset::new(range.start))
@@ -298,28 +169,12 @@ impl EditorPresentation {
     }
 }
 
-pub(super) struct PresentationLine<'a> {
-    pub(super) text: &'a str,
-    pub(super) byte_start: usize,
-    pub(super) utf16_start: usize,
-}
-
-fn index_presentation_lines(text: &str) -> Vec<(usize, usize)> {
-    let mut starts = vec![(0, 0)];
-    let mut utf16_offset = 0;
-    for (byte, ch) in text.char_indices() {
-        utf16_offset += ch.len_utf16();
-        if ch == '\n' {
-            starts.push((byte + ch.len_utf8(), utf16_offset));
-        }
-    }
-    starts
-}
-
 pub struct Editor {
+    language_buffer: Entity<LanguageBuffer>,
     buffer: Entity<Buffer>,
     buffer_subscription: TextSubscription,
     display_map: DisplayMap,
+    syntax_snapshot: SyntaxSnapshot,
     mode: EditorMode,
     file_path: Option<PathBuf>,
     project_root: Option<PathBuf>,
@@ -343,15 +198,17 @@ impl Editor {
         let buffer = Buffer::scratch(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
         let buffer = cx.new(|_| buffer);
-        Self::new(buffer, EditorMode::SingleLine, cx)
+        let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, cx));
+        Self::new(language_buffer, EditorMode::SingleLine, cx)
     }
 
     pub fn auto_height(min_lines: usize, max_lines: Option<usize>, cx: &mut Context<Self>) -> Self {
         let buffer = Buffer::scratch(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
         let buffer = cx.new(|_| buffer);
+        let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, cx));
         Self::new(
-            buffer,
+            language_buffer,
             EditorMode::AutoHeight {
                 min_lines,
                 max_lines,
@@ -360,8 +217,8 @@ impl Editor {
         )
     }
 
-    pub fn for_buffer(buffer: Entity<Buffer>, cx: &mut Context<Self>) -> Self {
-        Self::new(buffer, EditorMode::Full, cx)
+    pub fn for_buffer(language_buffer: Entity<LanguageBuffer>, cx: &mut Context<Self>) -> Self {
+        Self::new(language_buffer, EditorMode::Full, cx)
     }
 
     pub fn focus_handle(&self) -> FocusHandle {
@@ -429,6 +286,9 @@ impl Editor {
     }
 
     pub fn set_file_path(&mut self, path: PathBuf, project_root: PathBuf, cx: &mut Context<Self>) {
+        self.language_buffer.update(cx, |language_buffer, cx| {
+            language_buffer.set_file_path(path.clone(), cx)
+        });
         self.file_path = Some(path);
         self.project_root = Some(project_root);
         cx.emit(EditorEvent::PathChanged);
@@ -487,6 +347,10 @@ impl Editor {
 
     pub(super) fn display_snapshot(&self) -> DisplaySnapshot {
         self.display_map.snapshot()
+    }
+
+    pub(super) fn syntax_snapshot(&self) -> SyntaxSnapshot {
+        self.syntax_snapshot.clone()
     }
 
     pub fn selections(&self) -> SelectionSet {
@@ -623,12 +487,19 @@ impl Editor {
             .complete_autoscroll(caret_left, caret_right)
     }
 
-    fn new(buffer: Entity<Buffer>, mode: EditorMode, cx: &mut Context<Self>) -> Self {
+    fn new(
+        language_buffer: Entity<LanguageBuffer>,
+        mode: EditorMode,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let buffer = language_buffer.read(cx).buffer();
         // 在一次 Entity 更新中建立订阅并取得同版本 Snapshot，关闭初始化期间的漏读窗口。
         let (buffer_subscription, snapshot) =
             buffer.update(cx, |buffer, _| (buffer.subscribe(), buffer.snapshot()));
+        let syntax_snapshot = language_buffer.read(cx).syntax_snapshot();
         let display_map = DisplayMap::new(snapshot);
-        cx.observe(&buffer, |editor, _, cx| {
+        cx.observe(&language_buffer, |editor, language_buffer, cx| {
+            editor.syntax_snapshot = language_buffer.read(cx).syntax_snapshot();
             editor.sync_display_map(cx);
             editor.input_layout = None;
             cx.notify();
@@ -639,9 +510,11 @@ impl Editor {
         cx.observe(&blink_manager, |_, _, cx| cx.notify()).detach();
 
         Self {
+            language_buffer,
             buffer,
             buffer_subscription,
             display_map,
+            syntax_snapshot,
             mode,
             file_path: None,
             project_root: None,
@@ -678,37 +551,97 @@ impl Editor {
         text: &str,
         cx: &mut Context<Self>,
     ) {
-        if self.composition.is_some() && text.is_empty() {
-            self.composition = None;
-            self.input_layout = None;
-            cx.notify();
-            return;
-        }
         let before_selections = self.selections.clone();
-        let targets = if let Some(composition) = self.composition.take() {
-            SelectionSet::new(vec![Selection::new(
-                composition.range.start(),
-                composition.range.end(),
-            )])
-        } else if let Some(range) = range_utf16 {
-            let Some(selection) = self.selection_for_utf16_range(range, cx) else {
+        let composition = self.composition.take();
+        let targets = match self.replacement_targets(composition.as_ref(), range_utf16, cx) {
+            Some(targets) => targets,
+            None => {
+                self.composition = composition;
                 return;
-            };
-            selection
-        } else {
-            self.selections.clone()
+            }
         };
         let text = if self.mode == EditorMode::SingleLine {
             text.replace(['\r', '\n'], "")
         } else {
             text.to_owned()
         };
+        let merge_with_composition = composition
+            .as_ref()
+            .and_then(|composition| composition.history_transaction_id)
+            .is_some_and(|transaction_id| self.is_current_history_transaction(transaction_id, cx));
         let outcome = self.buffer.update(cx, |buffer, cx| {
-            let outcome = replace_selections(buffer, &targets, &text, edit_metadata("输入文本"));
+            let outcome = replace_selections(
+                buffer,
+                &targets,
+                &text,
+                input_metadata("输入文本", merge_with_composition),
+            );
             cx.notify();
             outcome
         });
+        let succeeded = outcome.is_ok();
         self.apply_edit_outcome(before_selections, outcome, cx);
+        if !succeeded {
+            self.composition = composition;
+        }
+    }
+
+    fn replacement_targets(
+        &self,
+        composition: Option<&EditorComposition>,
+        range_utf16: Option<Range<usize>>,
+        cx: &App,
+    ) -> Option<SelectionSet> {
+        if let Some(composition) = composition {
+            let ranges = composition
+                .ranges
+                .iter()
+                .copied()
+                .map(|range| {
+                    range_utf16.clone().map_or(Some(range), |relative_range| {
+                        self.relative_utf16_range(range, relative_range, cx)
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            return Some(SelectionSet::new_with_primary(
+                ranges
+                    .into_iter()
+                    .map(|range| Selection::new(range.start(), range.end()))
+                    .collect(),
+                composition.primary_index,
+            ));
+        }
+        if let Some(range) = range_utf16 {
+            return self.selection_for_utf16_range(range, cx);
+        }
+        Some(self.selections.clone())
+    }
+
+    fn relative_utf16_range(
+        &self,
+        containing_range: TextRange,
+        relative_range: Range<usize>,
+        cx: &App,
+    ) -> Option<TextRange> {
+        let snapshot = self.buffer.read(cx).snapshot();
+        let text = snapshot.slice_text(containing_range).ok()?;
+        let text = text.as_str();
+        let utf16_len = utf16_len(text);
+        let start = byte_for_utf16_offset(text, relative_range.start.min(utf16_len))?;
+        let end = byte_for_utf16_offset(text, relative_range.end.min(utf16_len))?;
+        TextRange::new(
+            ByteOffset::new(containing_range.start().get() + start),
+            ByteOffset::new(containing_range.start().get() + end),
+        )
+        .ok()
+    }
+
+    fn is_current_history_transaction(&self, transaction_id: TransactionId, cx: &App) -> bool {
+        let buffer = self.buffer.read(cx);
+        buffer
+            .current_history_node()
+            .and_then(|node| buffer.history_node(node))
+            .is_some_and(|node| node.transaction_id == transaction_id)
     }
 
     fn apply_edit_outcome(
@@ -1620,6 +1553,15 @@ fn edit_metadata(description: &'static str) -> TransactionMetadata {
     TransactionMetadata::new(TransactionSource::Programmatic).with_description(description)
 }
 
+fn input_metadata(description: &'static str, merge_with_previous: bool) -> TransactionMetadata {
+    let metadata = edit_metadata(description);
+    if merge_with_previous {
+        metadata.with_merge_policy(TransactionMergePolicy::MergeWithPrevious)
+    } else {
+        metadata
+    }
+}
+
 impl EventEmitter<EditorEvent> for Editor {}
 
 impl gpui::Focusable for Editor {
@@ -1671,11 +1613,7 @@ impl Render for Editor {
                 min_lines,
                 max_lines,
             } => {
-                let line_count = self
-                    .presentation()
-                    .composed_line_count()
-                    .unwrap_or_else(|| self.display_map.line_count())
-                    .max(min_lines);
+                let line_count = self.display_map.line_count().max(min_lines);
                 Some(max_lines.map_or(line_count, |maximum| line_count.min(maximum)))
             }
             EditorMode::Full => None,
@@ -1722,14 +1660,6 @@ impl EntityInputHandler for Editor {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let presentation = self.presentation();
-        if let Some(range) = presentation.selected_range_utf16() {
-            return Some(UTF16Selection {
-                range,
-                reversed: false,
-            });
-        }
-
         let snapshot = self.display_map.buffer_snapshot();
         let selection = *self.selections.primary();
         Some(UTF16Selection {
@@ -1748,11 +1678,9 @@ impl EntityInputHandler for Editor {
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(composition) = self.composition.as_ref() else {
-            return;
-        };
-        let text = composition.text.to_string();
-        self.replace_text(None, &text, cx);
+        self.composition = None;
+        self.input_layout = None;
+        cx.notify();
     }
 
     fn replace_text_in_range(
@@ -1773,36 +1701,94 @@ impl EntityInputHandler for Editor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = if let Some(composition) = self.composition.as_ref() {
-            composition.range
-        } else if let Some(range) = range_utf16 {
-            let Some(selection) = self.selection_for_utf16_range(range, cx) else {
-                return;
-            };
-            selection.primary().range()
-        } else {
-            self.selections.primary().range()
+        let previous_composition = self.composition.take();
+        let Some(targets) =
+            self.replacement_targets(previous_composition.as_ref(), range_utf16, cx)
+        else {
+            self.composition = previous_composition;
+            return;
         };
         let text = if self.mode == EditorMode::SingleLine {
             new_text.replace(['\r', '\n'], "")
         } else {
             new_text.to_owned()
         };
-        if text.is_empty() {
-            self.composition = None;
-            self.input_layout = None;
+        let previous_history_transaction = previous_composition
+            .as_ref()
+            .and_then(|composition| composition.history_transaction_id);
+        let merge_with_composition = previous_history_transaction
+            .is_some_and(|transaction_id| self.is_current_history_transaction(transaction_id, cx));
+        let before_selections = self.selections.clone();
+        let outcome = self.buffer.update(cx, |buffer, cx| {
+            let outcome = replace_selections(
+                buffer,
+                &targets,
+                &text,
+                input_metadata("输入法组合", merge_with_composition),
+            );
             cx.notify();
+            outcome
+        });
+        let history_transaction_id = outcome
+            .as_ref()
+            .ok()
+            .and_then(EditOutcome::history_transaction_id)
+            .or(previous_history_transaction);
+        if outcome.is_err() {
+            self.composition = previous_composition;
+            self.apply_edit_outcome(before_selections, outcome, cx);
             return;
         }
+        self.apply_edit_outcome(before_selections.clone(), outcome, cx);
+        if text.is_empty() {
+            self.composition = None;
+            return;
+        }
+
+        let inserted_selections = self.selections.clone();
+        let marked_ranges = inserted_selections
+            .as_slice()
+            .iter()
+            .map(|selection| {
+                let end = selection.head();
+                let start = ByteOffset::new(end.get().saturating_sub(text.len()));
+                TextRange::new(start, end).expect("替换后的选区必须能够还原出 marked text 范围")
+            })
+            .collect::<Vec<_>>();
         let text_utf16_len = utf16_len(&text);
-        let selected_range = new_selected_range_utf16.unwrap_or(text_utf16_len..text_utf16_len);
-        let snapshot = self.display_map.buffer_snapshot().clone();
-        self.composition = Some(EditorComposition::new(
-            range,
-            text,
-            selected_range,
-            &snapshot,
-        ));
+        let selected_range_utf16 =
+            new_selected_range_utf16.unwrap_or(text_utf16_len..text_utf16_len);
+        let selected_start =
+            byte_for_utf16_offset(&text, selected_range_utf16.start.min(text_utf16_len))
+                .unwrap_or(text.len());
+        let selected_end =
+            byte_for_utf16_offset(&text, selected_range_utf16.end.min(text_utf16_len))
+                .unwrap_or(text.len());
+        self.selections = SelectionSet::new_with_primary(
+            marked_ranges
+                .iter()
+                .map(|marked_range| {
+                    Selection::new(
+                        ByteOffset::new(marked_range.start().get() + selected_start),
+                        ByteOffset::new(marked_range.start().get() + selected_end),
+                    )
+                })
+                .collect(),
+            inserted_selections.primary_index(),
+        );
+        if let Some(transaction_id) = history_transaction_id {
+            self.selection_history.record_transaction(
+                transaction_id,
+                before_selections,
+                self.selections.clone(),
+            );
+        }
+        self.composition = Some(EditorComposition {
+            ranges: marked_ranges.into(),
+            primary_index: inserted_selections.primary_index(),
+            history_transaction_id,
+        });
+        self.request_autoscroll();
         self.input_layout = None;
         cx.notify();
     }
@@ -1862,14 +1848,20 @@ mod tests {
     use super::*;
     use crate::display_map::{DisplayPoint, DisplayRow};
 
-    fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<Buffer> {
+    fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<LanguageBuffer> {
         let buffer =
             Buffer::scratch(text.into(), BufferConfig::default()).expect("测试 Buffer 应能创建");
-        cx.new(|_| buffer)
+        let buffer = cx.new(|_| buffer);
+        cx.new(|cx| LanguageBuffer::new(buffer, None, cx))
     }
 
-    fn buffer_text<C: AppContext>(buffer: &Entity<Buffer>, cx: &C) -> C::Result<String> {
-        cx.read_entity(buffer, |buffer, _| {
+    fn engine_buffer(buffer: &Entity<LanguageBuffer>, cx: &TestAppContext) -> Entity<Buffer> {
+        cx.read_entity(buffer, |buffer, _| buffer.buffer())
+    }
+
+    fn buffer_text(buffer: &Entity<LanguageBuffer>, cx: &TestAppContext) -> String {
+        let buffer = engine_buffer(buffer, cx);
+        cx.read_entity(&buffer, |buffer, _| {
             buffer
                 .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
                 .expect("完整测试 Buffer 应可读取")
@@ -1905,7 +1897,7 @@ mod tests {
 
         cx.read_entity(&second, |editor, cx| {
             assert_eq!(editor.mode, EditorMode::Full);
-            assert_eq!(editor.buffer, buffer);
+            assert_eq!(editor.language_buffer, buffer);
             assert_eq!(editor.buffer.read(cx).len_bytes(), ByteOffset::new(4));
             assert_eq!(editor.render_snapshot().len_bytes(), ByteOffset::new(4));
             assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::ZERO));
@@ -2207,7 +2199,8 @@ mod tests {
             );
         });
 
-        let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.snapshot());
+        let raw_buffer = engine_buffer(&buffer, cx);
+        let snapshot = cx.read_entity(&raw_buffer, |buffer, _| buffer.snapshot());
         let first_page = snapshot
             .line_start_byte(Line::new(page_rows))
             .expect("第一页目标行应存在");
@@ -2280,7 +2273,8 @@ mod tests {
         });
         cx.dispatch_action(Paste);
         assert_eq!(buffer_text(&buffer, cx), "helloell");
-        assert!(cx.read_entity(&buffer, |buffer, _| buffer.can_undo()));
+        let raw_buffer = engine_buffer(&buffer, cx);
+        assert!(cx.read_entity(&raw_buffer, |buffer, _| buffer.can_undo()));
     }
 
     #[gpui::test]
@@ -2429,7 +2423,8 @@ mod tests {
 
         cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
         assert_eq!(buffer_text(&buffer, cx), "a\nb");
-        assert!(cx.read_entity(&buffer, |buffer, _| buffer.can_undo()));
+        let raw_buffer = engine_buffer(&buffer, cx);
+        assert!(cx.read_entity(&raw_buffer, |buffer, _| buffer.can_undo()));
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(2)));
         });
@@ -2442,7 +2437,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn marked_text_stays_out_of_buffer_and_unmark_commits_it(cx: &mut TestAppContext) {
+    fn marked_text_updates_buffer_and_unmark_finishes_composition(cx: &mut TestAppContext) {
         let buffer = test_buffer(cx, "ab");
         let (editor, cx) = cx.add_window_view({
             let buffer = buffer.clone();
@@ -2461,7 +2456,7 @@ mod tests {
         cx.refresh().expect("测试窗口应可刷新");
         cx.run_until_parked();
 
-        assert_eq!(buffer_text(&buffer, cx), "ab");
+        assert_eq!(buffer_text(&buffer, cx), "a中文😀b");
         cx.update(|window, app| {
             editor.update(app, |editor, cx| {
                 let marked = editor
@@ -2484,8 +2479,150 @@ mod tests {
         assert_eq!(buffer_text(&buffer, cx), "a中文😀b");
         cx.read_entity(&editor, |editor, _| {
             assert!(editor.composition.is_none());
-            assert_eq!(editor.selections.primary().head(), ByteOffset::new(11));
+            assert_eq!(editor.selections.primary().head(), ByteOffset::new(7));
         });
+    }
+
+    #[gpui::test]
+    fn ime_candidate_updates_merge_into_one_undo_step(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "ab");
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| {
+                let mut editor = Editor::for_buffer(buffer, cx);
+                editor.selections = SelectionSet::caret(ByteOffset::new(1));
+                editor
+            }
+        });
+
+        cx.update(|window, app| {
+            editor.update(app, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "z", None, window, cx);
+                editor.replace_and_mark_text_in_range(None, "zh", None, window, cx);
+                editor.replace_and_mark_text_in_range(None, "中", None, window, cx);
+                editor.unmark_text(window, cx);
+            });
+        });
+        assert_eq!(buffer_text(&buffer, cx), "a中b");
+
+        cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+        assert_eq!(buffer_text(&buffer, cx), "ab");
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(1)));
+        });
+
+        cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+        assert_eq!(buffer_text(&buffer, cx), "a中b");
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(4)));
+        });
+    }
+
+    #[gpui::test]
+    fn ime_updates_every_cursor_and_tracks_the_primary_marked_range(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "ab cd");
+        let initial_selections = SelectionSet::new_with_primary(
+            vec![
+                Selection::caret(ByteOffset::new(1)),
+                Selection::caret(ByteOffset::new(4)),
+            ],
+            1,
+        );
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            let initial_selections = initial_selections.clone();
+            move |_, cx| {
+                let mut editor = Editor::for_buffer(buffer, cx);
+                editor.selections = initial_selections;
+                editor
+            }
+        });
+
+        cx.update(|window, app| {
+            editor.update(app, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "中", None, window, cx);
+                assert_eq!(editor.composition.as_ref().unwrap().ranges.len(), 2);
+                assert_eq!(editor.marked_text_range(window, cx), Some(5..6));
+                editor.replace_and_mark_text_in_range(None, "文", None, window, cx);
+                editor.unmark_text(window, cx);
+            });
+        });
+
+        assert_eq!(buffer_text(&buffer, cx), "a文b c文d");
+        cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+        assert_eq!(buffer_text(&buffer, cx), "ab cd");
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections, initial_selections);
+        });
+    }
+
+    #[gpui::test]
+    fn ime_candidate_remains_in_the_syntax_highlight_pipeline(cx: &mut TestAppContext) {
+        let source = "fn main() { let value = \"\"; }";
+        let insertion = source.find("\"\"").unwrap() + 1;
+        let raw_buffer = Buffer::scratch(source.to_owned(), BufferConfig::default())
+            .expect("Rust 测试 Buffer 应能创建");
+        let raw_buffer = cx.new(|_| raw_buffer);
+        let language_buffer = cx.new({
+            let raw_buffer = raw_buffer.clone();
+            move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        });
+        let (editor, cx) = cx.add_window_view({
+            let language_buffer = language_buffer.clone();
+            move |_, cx| {
+                let mut editor = Editor::for_buffer(language_buffer, cx);
+                editor.selections = SelectionSet::caret(ByteOffset::new(insertion));
+                editor
+            }
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, app| {
+            editor.update(app, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "中文", None, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        cx.read_entity(&editor, |editor, cx| {
+            let snapshot = editor.buffer.read(cx).snapshot();
+            let composition = editor.composition.as_ref().unwrap();
+            let marked = composition.ranges[composition.primary_index];
+            let highlights = editor
+                .syntax_snapshot
+                .highlights(0..snapshot.len_bytes().get(), &snapshot);
+            assert!(highlights.iter().any(|highlight| {
+                highlight.capture.as_ref() == "string"
+                    && highlight.range.start <= marked.start().get()
+                    && highlight.range.end >= marked.end().get()
+            }));
+        });
+    }
+
+    #[gpui::test]
+    fn ime_relative_utf16_range_replaces_the_marked_subrange(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "");
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+
+        cx.update(|window, app| {
+            editor.update(app, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "a😀b", None, window, cx);
+                editor.replace_and_mark_text_in_range(Some(1..3), "中", None, window, cx);
+            });
+        });
+
+        assert_eq!(buffer_text(&buffer, cx), "a中b");
+        cx.update(|window, app| {
+            editor.update(app, |editor, cx| {
+                assert_eq!(editor.marked_text_range(window, cx), Some(1..2));
+                editor.unmark_text(window, cx);
+            });
+        });
+        cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+        assert_eq!(buffer_text(&buffer, cx), "");
     }
 
     #[gpui::test]

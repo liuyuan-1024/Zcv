@@ -692,6 +692,29 @@ mod tests {
     }
 
     #[gpui::test]
+    fn soft_wrap_inline_edit_inside_merged_isomorphic_segment_keeps_line_count(
+        cx: &mut TestAppContext,
+    ) {
+        let text = (0..106)
+            .map(|row| format!("let value_{row} = {row};\n"))
+            .collect::<String>();
+        let mut buffer =
+            Buffer::scratch(text, BufferConfig::default()).expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        map.set_wrap_width(Some(px(800.)), font("Helvetica"), px(16.), cx.text_system());
+        let expected_lines = buffer.line_count();
+
+        let subscription = buffer.subscribe();
+        let edit_offset = buffer.line_start_byte(Line::new(28)).expect("测试行应存在");
+        buffer.insert(edit_offset, "#").expect("行内插入 # 应成功");
+        map.sync(buffer.snapshot(), subscription.consume());
+
+        assert_eq!(map.buffer_snapshot().line_count(), expected_lines);
+        assert_eq!(map.snapshot().line_count(), expected_lines);
+        assert_offset_roundtrip(&map);
+    }
+
+    #[gpui::test]
     fn soft_wrap_structural_edit_rewraps_all_rows(cx: &mut TestAppContext) {
         let mut buffer = Buffer::scratch(
             "aa bbb cccc ddddd eeee\nshort".to_string(),

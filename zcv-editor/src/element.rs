@@ -9,7 +9,8 @@ use gpui::{
     LayoutId, MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine,
     Style, TextRun, UnderlineStyle, Window, fill, point, px, relative, size,
 };
-use zcv_engine::{ByteOffset, DisplayColumn, Line, SelectionSet};
+use zcv_engine::{ByteOffset, DisplayColumn, Line, SelectionSet, TextRange};
+use zcv_language::{HighlightSpan, SyntaxSnapshot};
 
 use super::display_map::{
     BufferPoint, DisplayPoint, DisplayRow, DisplaySnapshot, ProjectedRange, WrapViewportRowKind,
@@ -17,7 +18,7 @@ use super::display_map::{
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap};
-use zcv_theme::color;
+use zcv_theme::{color, syntax};
 
 const CARET_WIDTH: Pixels = px(2.);
 
@@ -83,7 +84,6 @@ struct LayoutLine {
     logical_line: Option<Line>,
     origin: Point<Pixels>,
     shaped: ShapedLine,
-    global_byte_start: usize,
     global_utf16_start: usize,
     wrap_info: Option<WrapRowInfo>,
 }
@@ -104,7 +104,6 @@ struct EditorLayout {
     text_clip_bounds: Bounds<Pixels>,
     line_height: Pixels,
     display_snapshot: DisplaySnapshot,
-    presentation: EditorPresentation,
 }
 
 #[derive(Clone, Copy)]
@@ -138,16 +137,6 @@ impl EditorLayout {
         };
 
         let byte_index = line.shaped.closest_index_for_x(position.x - line.origin.x);
-        if self.presentation.is_composing() {
-            let display_byte = line.global_byte_start + byte_index;
-            let buffer_byte = self.presentation.display_byte_to_buffer_byte(display_byte);
-            return self
-                .display_snapshot
-                .buffer_snapshot()
-                .byte_to_position(buffer_byte)
-                .ok()
-                .map(BufferPoint::from);
-        }
         // 软换行续行：命中假空格区落在片段起点，其余按"片段起始列 + 段内字符数"换算。
         if let Some(info) = line.wrap_info {
             let local_chars = line.shaped.text[..byte_index].chars().count();
@@ -193,21 +182,6 @@ pub(super) struct EditorInputLayout {
 }
 
 impl EditorInputLayout {
-    pub(super) fn bounds_for_utf16_range(
-        &self,
-        range: std::ops::Range<usize>,
-    ) -> Option<Bounds<Pixels>> {
-        let (start, start_row) = self.point_for_utf16(range.start)?;
-        let (end, end_row) = self.point_for_utf16(range.end)?;
-        if start_row != end_row {
-            return Some(Bounds::new(start, size(Pixels::ZERO, self.line_height)));
-        }
-        Some(Bounds::from_corners(
-            start,
-            point(end.x, end.y + self.line_height),
-        ))
-    }
-
     pub(super) fn utf16_index_for_point(&self, point: Point<Pixels>) -> Option<usize> {
         let first = self.lines.first()?;
         let last = self.lines.last()?;
@@ -223,21 +197,6 @@ impl EditorInputLayout {
         };
         let byte = line.shaped.closest_index_for_x(point.x - line.origin.x);
         Some(line.global_utf16_start + line.shaped.text[..byte].encode_utf16().count())
-    }
-
-    fn point_for_utf16(&self, index: usize) -> Option<(Point<Pixels>, DisplayRow)> {
-        let line = self
-            .lines
-            .iter()
-            .rev()
-            .find(|line| line.global_utf16_start <= index)?;
-        let local_utf16 = index.saturating_sub(line.global_utf16_start);
-        let byte = byte_for_utf16_offset(&line.shaped.text, local_utf16)
-            .unwrap_or_else(|| line.shaped.text.len());
-        Some((
-            point(line.origin.x + line.shaped.x_for_index(byte), line.origin.y),
-            line.row,
-        ))
     }
 }
 
@@ -309,6 +268,7 @@ impl Element for EditorElement {
             soft_wrap,
             mode,
             preferred_line_length,
+            syntax_snapshot,
         ) = {
             let editor = self.editor.read(cx);
             (
@@ -321,6 +281,7 @@ impl Element for EditorElement {
                 editor.soft_wrap(),
                 editor.mode(),
                 editor.preferred_line_length(),
+                editor.syntax_snapshot(),
             )
         };
         let gutter_dimensions = shows_gutter.then(|| gutter_dimensions(&display_snapshot, window));
@@ -402,6 +363,7 @@ impl Element for EditorElement {
         };
         let mut layout = layout_visible_lines(
             display_snapshot.clone(),
+            syntax_snapshot.clone(),
             presentation.clone(),
             VisibleLineLayoutParams {
                 geometry,
@@ -423,6 +385,7 @@ impl Element for EditorElement {
             let editor = self.editor.read(cx);
             layout = layout_visible_lines(
                 display_snapshot,
+                syntax_snapshot,
                 presentation,
                 VisibleLineLayoutParams {
                     geometry,
@@ -608,6 +571,7 @@ fn layout_line_width(
 
 fn layout_visible_lines(
     display_snapshot: DisplaySnapshot,
+    syntax_snapshot: SyntaxSnapshot,
     presentation: EditorPresentation,
     params: VisibleLineLayoutParams<'_>,
     window: &mut Window,
@@ -624,9 +588,7 @@ fn layout_visible_lines(
         scroll_offset,
         line_height,
     } = params;
-    let line_count = presentation
-        .composed_line_count()
-        .unwrap_or_else(|| display_snapshot.line_count());
+    let line_count = display_snapshot.line_count();
     let start = start_row.get().min(line_count.saturating_sub(1));
     let visible_count =
         ((text_bounds.size.height + scroll_offset.y) / line_height).ceil() as usize + 1;
@@ -635,6 +597,32 @@ fn layout_visible_lines(
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let mut lines = Vec::with_capacity(end.saturating_sub(start));
     let mut gutter_rows = Vec::with_capacity(end.saturating_sub(start));
+    let buffer_snapshot = display_snapshot.buffer_snapshot().clone();
+    let visible_highlights = display_snapshot
+        .slice_viewport(DisplayRow::new(start), end.saturating_sub(start))
+        .ok()
+        .and_then(|viewport| {
+            let mut range: Option<std::ops::Range<usize>> = None;
+            for row in viewport.rows() {
+                let WrapViewportRowKind::Text {
+                    byte_range,
+                    global_byte_start,
+                    ..
+                } = row.kind()
+                else {
+                    continue;
+                };
+                let row_range = *global_byte_start..*global_byte_start + byte_range.len();
+                range = Some(match range {
+                    Some(range) => range.start.min(row_range.start)..range.end.max(row_range.end),
+                    None => row_range,
+                });
+            }
+            range
+        })
+        .map_or_else(Vec::new, |range| {
+            syntax_snapshot.highlights(range, &buffer_snapshot)
+        });
 
     let mut push_line = |row: usize,
                          logical_line: Option<Line>,
@@ -643,10 +631,22 @@ fn layout_visible_lines(
                          byte_start: usize,
                          utf16_start: usize,
                          wrap_info: Option<WrapRowInfo>| {
+        let display_prefix_len = wrap_info.as_ref().map_or(0, |info| info.indent);
+        let highlights = if logical_line.is_none() {
+            &[][..]
+        } else {
+            let source_len = text.len().saturating_sub(display_prefix_len);
+            let byte_end = byte_start + source_len;
+            let start = visible_highlights.partition_point(|span| span.range.end <= byte_start);
+            let end = visible_highlights.partition_point(|span| span.range.start < byte_end);
+            &visible_highlights[start..end]
+        };
         let runs = text_runs(
             text,
             byte_start,
-            presentation.marked_byte_range(),
+            display_prefix_len,
+            highlights,
+            presentation.marked_ranges(),
             TextRun {
                 len: text.len(),
                 font: text_style.font(),
@@ -668,7 +668,6 @@ fn layout_visible_lines(
                 text_bounds.top() + line_height * (row - start) - scroll_offset.y,
             ),
             shaped,
-            global_byte_start: byte_start,
             global_utf16_start: utf16_start,
             wrap_info,
         });
@@ -705,26 +704,7 @@ fn layout_visible_lines(
         }
     };
 
-    if presentation.is_composing() {
-        for row in start..end {
-            let Some(line) = presentation.composed_line(row) else {
-                continue;
-            };
-            let gutter_line = display_snapshot
-                .buffer_snapshot()
-                .byte_to_line(presentation.display_byte_to_buffer_byte(line.byte_start))
-                .ok();
-            push_line(
-                row,
-                None,
-                gutter_line,
-                line.text,
-                line.byte_start,
-                line.utf16_start,
-                None,
-            );
-        }
-    } else if let Ok(viewport) =
+    if let Ok(viewport) =
         display_snapshot.slice_viewport(DisplayRow::new(start), end.saturating_sub(start))
     {
         for row in viewport.rows() {
@@ -798,7 +778,6 @@ fn layout_visible_lines(
         text_clip_bounds,
         line_height,
         display_snapshot,
-        presentation,
     }
 }
 
@@ -832,21 +811,6 @@ fn layout_selections(
     let mut selection_quads = Vec::new();
     let mut caret_quads = Vec::new();
 
-    if let Some(range_utf16) = layout.presentation.selected_range_utf16()
-        && let Some(text) = layout.presentation.composed_text()
-        && let Some(range) = byte_range_for_utf16(text, range_utf16)
-    {
-        layout_display_range(
-            range.clone(),
-            range.is_empty(),
-            layout,
-            line_height,
-            &mut selection_quads,
-            &mut caret_quads,
-        );
-        return (selection_quads, caret_quads);
-    }
-
     for selection in selections.as_slice().iter().copied() {
         if selection.is_caret() {
             if let Some(caret) =
@@ -856,30 +820,15 @@ fn layout_selections(
             }
             continue;
         }
-        if !layout.presentation.is_composing()
-            && let Ok(ranges) = layout
-                .display_snapshot
-                .project_text_range(selection.range())
+        if let Ok(ranges) = layout
+            .display_snapshot
+            .project_text_range(selection.range())
         {
             for range in ranges {
                 layout_projected_range(range, layout, line_height, &mut selection_quads);
             }
             continue;
         }
-        let start = layout
-            .presentation
-            .buffer_byte_to_display_byte(selection.start());
-        let end = layout
-            .presentation
-            .buffer_byte_to_display_byte(selection.end());
-        layout_display_range(
-            start..end,
-            selection.is_caret(),
-            layout,
-            line_height,
-            &mut selection_quads,
-            &mut caret_quads,
-        );
     }
 
     (selection_quads, caret_quads)
@@ -947,12 +896,6 @@ fn layout_primary_caret(
     layout: &EditorLayout,
     line_height: Pixels,
 ) -> Option<Bounds<Pixels>> {
-    if let Some(range) = layout.presentation.selected_range_utf16() {
-        return layout
-            .input_layout()
-            .bounds_for_utf16_range(range.end..range.end);
-    }
-
     let head = selections.primary().head();
     let display_point = layout.display_snapshot.offset_to_display_point(head).ok()?;
     let line = layout
@@ -1028,127 +971,109 @@ fn local_byte_for_display_point(
     column_to_byte(&line.shaped.text, logical_column)
 }
 
-fn layout_display_range(
-    range: std::ops::Range<usize>,
-    is_caret: bool,
-    layout: &EditorLayout,
-    line_height: Pixels,
-    selection_quads: &mut Vec<PaintQuad>,
-    caret_quads: &mut Vec<PaintQuad>,
-) {
-    if is_caret {
-        let Some(line) = layout.lines.iter().find(|line| {
-            line.global_byte_start <= range.start
-                && range.start <= line.global_byte_start + line.shaped.len()
-        }) else {
-            return;
-        };
-        let local_byte = range
-            .start
-            .saturating_sub(line.global_byte_start)
-            .min(line.shaped.len());
-        caret_quads.push(fill(
-            Bounds::new(
-                point(
-                    line.origin.x + line.shaped.x_for_index(local_byte),
-                    line.origin.y,
-                ),
-                size(px(2.), line_height),
-            ),
-            color::current().editor_cursor,
-        ));
-        return;
-    }
-
-    for line in &layout.lines {
-        let line_start = line.global_byte_start;
-        let line_end = line_start + line.shaped.len();
-        if range.end <= line_start || range.start > line_end {
-            continue;
-        }
-        let local_start = range
-            .start
-            .saturating_sub(line_start)
-            .min(line.shaped.len());
-        let local_end = range.end.saturating_sub(line_start).min(line.shaped.len());
-        let start_x = line.shaped.x_for_index(local_start);
-        let mut end_x = line.shaped.x_for_index(local_end);
-        if range.end > line_end && end_x <= start_x {
-            end_x = start_x + px(8.);
-        }
-        if start_x == end_x {
-            continue;
-        }
-        selection_quads.push(fill(
-            Bounds::from_corners(
-                point(line.origin.x + start_x, line.origin.y),
-                point(line.origin.x + end_x, line.origin.y + line_height),
-            ),
-            color::current().editor_selection_background,
-        ));
-    }
-}
-
 fn text_runs(
     text: &str,
     global_byte_start: usize,
-    marked_range: Option<std::ops::Range<usize>>,
+    display_prefix_len: usize,
+    highlights: &[HighlightSpan],
+    marked_ranges: &[TextRange],
     base: TextRun,
 ) -> Vec<TextRun> {
-    let Some(marked) = marked_range else {
-        return vec![base];
-    };
-    let line_end = global_byte_start + text.len();
-    let marked_start = marked.start.max(global_byte_start).min(line_end) - global_byte_start;
-    let marked_end = marked.end.max(global_byte_start).min(line_end) - global_byte_start;
-    if marked_start >= marked_end {
+    if highlights.is_empty() && marked_ranges.is_empty() {
         return vec![base];
     }
 
-    let mut runs = Vec::with_capacity(3);
-    if marked_start > 0 {
-        runs.push(TextRun {
-            len: marked_start,
-            ..base.clone()
-        });
+    let source_len = text.len().saturating_sub(display_prefix_len);
+    let global_byte_end = global_byte_start + source_len;
+    let mut boundaries = vec![0, text.len()];
+    for highlight in highlights {
+        let start = highlight
+            .range
+            .start
+            .max(global_byte_start)
+            .min(global_byte_end);
+        let end = highlight
+            .range
+            .end
+            .max(global_byte_start)
+            .min(global_byte_end);
+        if start < end {
+            boundaries.push(display_prefix_len + start - global_byte_start);
+            boundaries.push(display_prefix_len + end - global_byte_start);
+        }
     }
-    runs.push(TextRun {
-        len: marked_end - marked_start,
-        underline: Some(UnderlineStyle {
-            color: Some(base.color),
-            thickness: px(1.),
-            wavy: false,
-        }),
-        ..base.clone()
-    });
-    if marked_end < text.len() {
-        runs.push(TextRun {
-            len: text.len() - marked_end,
-            ..base
-        });
+    for marked in marked_ranges {
+        let start = marked
+            .start()
+            .get()
+            .max(global_byte_start)
+            .min(global_byte_end);
+        let end = marked
+            .end()
+            .get()
+            .max(global_byte_start)
+            .min(global_byte_end);
+        if start < end {
+            boundaries.push(display_prefix_len + start - global_byte_start);
+            boundaries.push(display_prefix_len + end - global_byte_start);
+        }
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let mut runs = Vec::with_capacity(boundaries.len().saturating_sub(1));
+    let mut highlight_index = 0;
+    for boundary in boundaries.windows(2) {
+        let local_start = boundary[0];
+        let local_end = boundary[1];
+        if local_start == local_end {
+            continue;
+        }
+        let global_offset = local_start
+            .checked_sub(display_prefix_len)
+            .map(|offset| global_byte_start + offset);
+        let mut run = TextRun {
+            len: local_end - local_start,
+            ..base.clone()
+        };
+        if let Some(global_offset) = global_offset {
+            while highlights
+                .get(highlight_index)
+                .is_some_and(|span| span.range.end <= global_offset)
+            {
+                highlight_index += 1;
+            }
+            if let Some(highlight) = highlights
+                .get(highlight_index)
+                .filter(|span| span.range.contains(&global_offset))
+            {
+                let style = syntax::style_for(&highlight.capture);
+                if let Some(color) = style.color {
+                    run.color = color;
+                }
+                if let Some(weight) = style.font_weight {
+                    run.font.weight = weight;
+                }
+                if let Some(font_style) = style.font_style {
+                    run.font.style = font_style;
+                }
+                run.background_color = style.background_color;
+                run.underline = style.underline;
+                run.strikethrough = style.strikethrough;
+            }
+            if marked_ranges.iter().any(|marked| {
+                marked.start().get() <= global_offset && global_offset < marked.end().get()
+            }) {
+                run.underline = Some(UnderlineStyle {
+                    color: Some(run.color),
+                    thickness: px(1.),
+                    wavy: false,
+                });
+            }
+        }
+        runs.push(run);
     }
     runs
-}
-
-fn byte_range_for_utf16(
-    text: &str,
-    range: std::ops::Range<usize>,
-) -> Option<std::ops::Range<usize>> {
-    Some(byte_for_utf16_offset(text, range.start)?..byte_for_utf16_offset(text, range.end)?)
-}
-
-fn byte_for_utf16_offset(text: &str, target: usize) -> Option<usize> {
-    let mut utf16_offset = 0;
-    for (byte_offset, character) in text.char_indices() {
-        if utf16_offset == target {
-            return Some(byte_offset);
-        }
-        utf16_offset += character.len_utf16();
-        if utf16_offset > target {
-            return None;
-        }
-    }
-    (utf16_offset == target).then_some(text.len())
 }
 
 fn column_to_byte(text: &str, column: usize) -> usize {
@@ -1182,7 +1107,9 @@ mod tests {
         let runs = text_runs(
             text,
             0,
-            Some(1..7),
+            0,
+            &[],
+            &[TextRange::new(ByteOffset::new(1), ByteOffset::new(7)).unwrap()],
             TextRun {
                 len: text.len(),
                 font: font("Helvetica"),
@@ -1198,6 +1125,40 @@ mod tests {
         assert!(runs[0].underline.is_none());
         assert!(runs[1].underline.is_some());
         assert!(runs[2].underline.is_none());
+    }
+
+    #[test]
+    fn syntax_captures_apply_color_and_font_modifiers() {
+        let text = "fn strong";
+        let base = TextRun {
+            len: text.len(),
+            font: font("Helvetica"),
+            color: Default::default(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let runs = text_runs(
+            text,
+            100,
+            0,
+            &[
+                HighlightSpan {
+                    range: 100..102,
+                    capture: "keyword".into(),
+                },
+                HighlightSpan {
+                    range: 103..109,
+                    capture: "text.strong".into(),
+                },
+            ],
+            &[],
+            base.clone(),
+        );
+
+        assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
+        assert_ne!(runs[0].color, base.color);
+        assert_eq!(runs[2].font.weight, gpui::FontWeight::BOLD);
     }
 
     #[gpui::test]
@@ -1230,14 +1191,12 @@ mod tests {
                         logical_line: Some(Line::ZERO),
                         origin: point(px(10.), px(20.)),
                         shaped,
-                        global_byte_start: 0,
                         global_utf16_start: 0,
                         wrap_info: None,
                     }],
                     gutter: None,
                     text_clip_bounds: Bounds::new(point(px(0.), px(0.)), size(px(400.), px(100.))),
                     line_height: px(24.),
-                    presentation: EditorPresentation::new(&snapshot, None),
                     display_snapshot,
                 };
 
@@ -1268,6 +1227,7 @@ mod tests {
                 let display_snapshot = DisplayMap::new(snapshot.clone()).snapshot();
                 let layout = layout_visible_lines(
                     display_snapshot,
+                    zcv_language::SyntaxMap::new(&snapshot).snapshot(),
                     presentation,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -1324,6 +1284,7 @@ mod tests {
                 let text_bounds = Bounds::new(point(px(51.), px(0.)), size(px(349.), px(100.)));
                 let layout = layout_visible_lines(
                     DisplayMap::new(snapshot.clone()).snapshot(),
+                    zcv_language::SyntaxMap::new(&snapshot).snapshot(),
                     EditorPresentation::new(&snapshot, None),
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -1371,6 +1332,7 @@ mod tests {
                     .expect("折叠应成功");
                 let layout = layout_visible_lines(
                     map.snapshot(),
+                    zcv_language::SyntaxMap::new(&snapshot).snapshot(),
                     EditorPresentation::new(&snapshot, None),
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -1419,6 +1381,7 @@ mod tests {
                 let display_snapshot = DisplayMap::new(snapshot.clone()).snapshot();
                 let layout = layout_visible_lines(
                     display_snapshot,
+                    zcv_language::SyntaxMap::new(&snapshot).snapshot(),
                     presentation,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {

@@ -10,7 +10,7 @@ use gpui::{
     AnyElement, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Render, ScrollHandle,
     Window, actions, div, prelude::*, px,
 };
-use zcv_engine::Buffer;
+use zcv_language::LanguageBuffer;
 
 use super::item::{Item, ItemHandle};
 use super::tab_bar::TabBar;
@@ -124,7 +124,7 @@ impl Pane {
         &mut self,
         path: PathBuf,
         project_root: PathBuf,
-        buffer: Entity<Buffer>,
+        buffer: Entity<LanguageBuffer>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> FocusHandle {
@@ -664,7 +664,7 @@ mod tests {
         cx: &mut TestAppContext,
         pane: &Entity<Pane>,
         path: PathBuf,
-        buffer: Entity<Buffer>,
+        buffer: Entity<LanguageBuffer>,
     ) {
         cx.add_window_view(|window, cx| {
             pane.update(cx, |p, cx| {
@@ -680,12 +680,20 @@ mod tests {
         });
     }
 
+    fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<LanguageBuffer> {
+        let buffer = cx.new(|_| {
+            Buffer::scratch(text.into(), BufferConfig::default()).expect("应创建测试 Buffer")
+        });
+        cx.new(|cx| LanguageBuffer::new(buffer, None, cx))
+    }
+
     #[gpui::test]
     fn pane_owns_file_path_and_editor_backed_by_the_given_buffer(cx: &mut TestAppContext) {
-        let buffer = cx.new(|_| {
+        let raw_buffer = cx.new(|_| {
             Buffer::scratch("真实编辑器".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建")
         });
+        let buffer = cx.new(|cx| LanguageBuffer::new(raw_buffer.clone(), None, cx));
         let pane = cx.new(Pane::new);
         open_file_in_test(cx, &pane, PathBuf::from("demo.txt"), buffer.clone());
 
@@ -694,7 +702,7 @@ mod tests {
         cx.update_entity(&editor, |editor, cx| editor.set_text("阶段七", cx));
         cx.read_entity(&editor, |editor, cx| assert!(editor.is_dirty(cx)));
 
-        cx.read_entity(&buffer, |buffer, _| {
+        cx.read_entity(&raw_buffer, |buffer, _| {
             assert_eq!(
                 buffer
                     .slice_byte_range(zcv_engine::ByteOffset::ZERO, buffer.len_bytes())
@@ -719,12 +727,8 @@ mod tests {
 
     #[gpui::test]
     fn opening_the_same_path_reuses_the_pane_editor(cx: &mut TestAppContext) {
-        let first_buffer = cx.new(|_| {
-            Buffer::scratch("首次".to_owned(), BufferConfig::default()).expect("应创建 Buffer")
-        });
-        let second_buffer = cx.new(|_| {
-            Buffer::scratch("重复".to_owned(), BufferConfig::default()).expect("应创建 Buffer")
-        });
+        let first_buffer = test_buffer(cx, "首次");
+        let second_buffer = test_buffer(cx, "重复");
 
         let pane = cx.new(Pane::new);
         open_file_in_test(cx, &pane, PathBuf::from("demo.txt"), first_buffer);
@@ -740,9 +744,7 @@ mod tests {
 
         // 用 scratch Buffer 模拟多个标签
         for i in 0..4 {
-            let buffer = cx.new(|_| {
-                Buffer::scratch(format!("内容{i}"), BufferConfig::default()).expect("应创建 Buffer")
-            });
+            let buffer = test_buffer(cx, format!("内容{i}"));
             let path = PathBuf::from(format!("file{i}.txt"));
             open_file_in_test(cx, &pane, path, buffer);
         }
@@ -784,10 +786,7 @@ mod tests {
 
         // 移动：单标签拖到末尾 → 不应闪退
         let single_pane = cx.new(Pane::new);
-        let buffer = cx.new(|_| {
-            Buffer::scratch("仅一个标签".to_owned(), BufferConfig::default())
-                .expect("应创建 Buffer")
-        });
+        let buffer = test_buffer(cx, "仅一个标签");
         open_file_in_test(cx, &single_pane, PathBuf::from("solo.txt"), buffer);
         cx.read_entity(&single_pane, |pane, _cx| {
             assert_eq!(pane.tabs.len(), 1);

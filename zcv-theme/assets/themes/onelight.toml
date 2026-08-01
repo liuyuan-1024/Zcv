@@ -1,6 +1,6 @@
 # One Light 主题 —— 浅色背景语法高亮配色，由 zcv-theme 内嵌。
 #
-# 与 onedark.toml 保持同一 Helix 兼容格式；我们只消费 fg 字段。
+# 与 onedark.toml 保持同一 Helix 兼容格式；消费 fg 与 modifiers 字段。
 # palette 色值在浅色底色上保证 WCAG AA 级对比度（正文 ≥4.5:1）。
 
 "tag" = { fg = "red" }

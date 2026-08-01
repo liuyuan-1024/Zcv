@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use gpui::{AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use zcv_engine::{Buffer, BufferLoadError, BufferSaveError};
+use zcv_language::LanguageBuffer;
 
 use self::buffer_store::BufferStore;
 use crate::fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
@@ -84,7 +85,7 @@ impl Project {
         &mut self,
         path: &Path,
         cx: &mut Context<Self>,
-    ) -> Result<Entity<Buffer>, BufferLoadError> {
+    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
         self.buffer_store.open_buffer(path, cx)
     }
 

@@ -8,7 +8,6 @@ mod go_to_line;
 mod keymap;
 mod language_selector;
 mod language_tools;
-mod languages;
 mod paths;
 mod project;
 mod project_search;

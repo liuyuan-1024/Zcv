@@ -1,12 +1,4 @@
-# Vendor 自 Helix One Dark 主题：https://github.com/helix-editor/helix/blob/master/runtime/themes/onedark.toml
-# Author : Gokul Soumya <gokulps15@gmail.com>
-#
-# License: Mozilla Public License 2.0 (https://www.mozilla.org/en-US/MPL/2.0/)
-# MPL-2.0 是文件级 copyleft：本文件需保持原内容 + 本注释；对其的修改也必须以
-# MPL-2.0 开放。本仓其余代码不受 MPL-2.0 影响。
-#
-# 我们的 syntax::theme loader 当前只消费每条规则的 fg 字段；modifiers /
-# underline / bg 等字段先保留给后续字重、下划线与背景渲染。
+# syntax theme loader 消费 fg 与 modifiers；独立 underline / bg 规则保留给后续诊断样式。
 
 "tag" = { fg = "red" }
 "attribute" = { fg = "yellow" }

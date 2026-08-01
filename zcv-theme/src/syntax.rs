@@ -1,4 +1,4 @@
-//! 语法高亮：tree-sitter highlight name → 字色。
+//! 语法高亮：tree-sitter capture name → GPUI HighlightStyle。
 //!
 //! 本模块只提供查询机制，不定义色值。色值来自 vendor 的主题文件（`assets/themes/*.toml`）。
 //! 查询走点分前缀回退：`keyword.control.import` 未命中 → `keyword.control` → `keyword` → [`default_fg`]。
@@ -6,7 +6,10 @@
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
-use gpui::{Hsla, Rgba, rgb, rgba};
+use gpui::{
+    FontStyle, FontWeight, HighlightStyle, Hsla, Rgba, StrikethroughStyle, UnderlineStyle, px, rgb,
+    rgba,
+};
 
 use super::color;
 use crate::ConcreteTheme;
@@ -20,15 +23,35 @@ pub fn default_fg() -> Hsla {
 
 /// 按 highlight name 解析字色，走点分前缀回退链。
 pub fn color_for(name: &str) -> Hsla {
+    style_for(name).color.unwrap_or_else(default_fg)
+}
+
+/// 按 capture name 解析完整样式，并兼容 tree-sitter 通用查询中的旧 `text.*` 命名。
+pub fn style_for(name: &str) -> HighlightStyle {
+    let name = capture_alias(name);
     let mut current = name;
     loop {
-        if let Some(hsla) = lookup_in_theme(current) {
-            return hsla;
+        if let Some(style) = lookup_in_theme(current) {
+            return style;
         }
         match current.rfind('.') {
             Some(dot) => current = &current[..dot],
-            None => return default_fg(),
+            None => return HighlightStyle::default(),
         }
+    }
+}
+
+fn capture_alias(name: &str) -> &str {
+    match name {
+        "text.title" => "markup.heading",
+        "text.literal" => "markup.raw.inline",
+        "text.uri" => "markup.link.url",
+        "text.reference" => "markup.link.text",
+        "text.emphasis" => "markup.italic",
+        "text.strong" => "markup.bold",
+        "text.strike" => "markup.strikethrough",
+        "punctuation.special" | "punctuation.delimiter" => "special",
+        _ => name,
     }
 }
 
@@ -45,15 +68,15 @@ pub(crate) fn set_theme(theme: ConcreteTheme) {
     }
 }
 
-fn lookup_in_theme(name: &str) -> Option<Hsla> {
+fn lookup_in_theme(name: &str) -> Option<HighlightStyle> {
     let lock = ACTIVE_THEME.get_or_init(|| RwLock::new(default_theme_table()));
     lock.read().ok().and_then(|theme| theme.get(name).copied())
 }
 
 /// 解析后主题表。解析失败则空表，所有 name 落 default_fg。
-static ACTIVE_THEME: OnceLock<RwLock<HashMap<&'static str, Hsla>>> = OnceLock::new();
+static ACTIVE_THEME: OnceLock<RwLock<HashMap<&'static str, HighlightStyle>>> = OnceLock::new();
 
-fn default_theme_table() -> HashMap<&'static str, Hsla> {
+fn default_theme_table() -> HashMap<&'static str, HighlightStyle> {
     parse_helix_theme(THEME_ONE_DARK_TOML).unwrap_or_default()
 }
 
@@ -62,7 +85,7 @@ fn default_theme_table() -> HashMap<&'static str, Hsla> {
 /// 支持 `"name" = "color"` 和 `"name" = { fg = "color" }` 两种格式。
 /// 不含 `fg` 的条目跳过，`[palette]` 用于解析颜色名引用。
 /// 解析失败不阻断渲染，所有未命中 name 落 default_fg。
-fn parse_helix_theme(src: &str) -> Option<HashMap<&'static str, Hsla>> {
+fn parse_helix_theme(src: &str) -> Option<HashMap<&'static str, HighlightStyle>> {
     let root: toml::Table = toml::from_str(src).ok()?;
 
     let palette: HashMap<String, Rgba> = root
@@ -87,20 +110,46 @@ fn parse_helix_theme(src: &str) -> Option<HashMap<&'static str, Hsla>> {
         }
     };
 
-    let mut out: HashMap<&'static str, Hsla> = HashMap::new();
+    let mut out: HashMap<&'static str, HighlightStyle> = HashMap::new();
     for (key, value) in &root {
         if key == "palette" {
             continue;
         }
-        let color_token: Option<&str> = match value {
-            toml::Value::String(s) => Some(s.as_str()),
-            toml::Value::Table(t) => t.get("fg").and_then(|v| v.as_str()),
-            _ => None,
+        let (color_token, modifiers): (Option<&str>, &[toml::Value]) = match value {
+            toml::Value::String(s) => (Some(s.as_str()), &[]),
+            toml::Value::Table(t) => (
+                t.get("fg").and_then(|v| v.as_str()),
+                t.get("modifiers")
+                    .and_then(|v| v.as_array())
+                    .map_or(&[], Vec::as_slice),
+            ),
+            _ => (None, &[]),
         };
-        let Some(token) = color_token else { continue };
-        let Some(rgba) = resolve(token) else { continue };
+        let color = color_token.and_then(resolve).map(Hsla::from);
+        if color_token.is_some() && color.is_none() {
+            continue;
+        }
+        let has_modifier = |name: &str| modifiers.iter().any(|value| value.as_str() == Some(name));
+        let style = HighlightStyle {
+            color,
+            font_weight: has_modifier("bold").then_some(FontWeight::BOLD),
+            font_style: has_modifier("italic").then_some(FontStyle::Italic),
+            underline: has_modifier("underlined").then_some(UnderlineStyle {
+                thickness: px(1.),
+                color,
+                wavy: false,
+            }),
+            strikethrough: has_modifier("crossed_out").then_some(StrikethroughStyle {
+                thickness: px(1.),
+                color,
+            }),
+            ..HighlightStyle::default()
+        };
+        if style == HighlightStyle::default() {
+            continue;
+        }
         let static_key: &'static str = Box::leak(key.clone().into_boxed_str());
-        out.insert(static_key, rgba.into());
+        out.insert(static_key, style);
     }
     Some(out)
 }
@@ -151,9 +200,18 @@ mod tests {
             green = "#00ff00"
         "##;
         let table = parse_helix_theme(src).expect("应能解析主题");
-        assert_eq!(*table.get("keyword").unwrap(), Hsla::from(rgb(0xff0000)));
-        assert_eq!(*table.get("string").unwrap(), Hsla::from(rgb(0x00ff00)));
-        assert_eq!(*table.get("comment").unwrap(), Hsla::from(rgb(0xabcdef)));
+        assert_eq!(
+            table.get("keyword").unwrap().color,
+            Some(Hsla::from(rgb(0xff0000)))
+        );
+        assert_eq!(
+            table.get("string").unwrap().color,
+            Some(Hsla::from(rgb(0x00ff00)))
+        );
+        assert_eq!(
+            table.get("comment").unwrap().color,
+            Some(Hsla::from(rgb(0xabcdef)))
+        );
     }
 
     #[test]
@@ -208,5 +266,15 @@ mod tests {
     #[test]
     fn lsp_macro_resolves_via_function_dot_macro() {
         assert_ne!(color_for("function.macro"), default_fg());
+    }
+
+    #[test]
+    fn markdown_capture_aliases_keep_theme_modifiers() {
+        assert_eq!(style_for("text.strong").font_weight, Some(FontWeight::BOLD));
+        assert_eq!(
+            style_for("text.emphasis").font_style,
+            Some(FontStyle::Italic)
+        );
+        assert_ne!(color_for("text.title"), default_fg());
     }
 }

@@ -176,7 +176,6 @@ pub struct Editor {
     display_map: DisplayMap,
     syntax_snapshot: SyntaxSnapshot,
     mode: EditorMode,
-    file_path: Option<PathBuf>,
     project_root: Option<PathBuf>,
     selections: SelectionSet,
     selection_history: SelectionHistory,
@@ -277,8 +276,15 @@ impl Editor {
             .set_wrap_width(wrap_width, font, font_size, &text_system);
     }
 
-    pub fn file_path(&self) -> Option<&Path> {
-        self.file_path.as_deref()
+    pub fn file_path(&self, cx: &App) -> Option<PathBuf> {
+        self.language_buffer
+            .read(cx)
+            .file_path()
+            .map(Path::to_path_buf)
+    }
+
+    pub fn language_name(&self, cx: &App) -> Option<&'static str> {
+        self.language_buffer.read(cx).language_name()
     }
 
     pub fn project_root(&self) -> Option<&Path> {
@@ -287,9 +293,8 @@ impl Editor {
 
     pub fn set_file_path(&mut self, path: PathBuf, project_root: PathBuf, cx: &mut Context<Self>) {
         self.language_buffer.update(cx, |language_buffer, cx| {
-            language_buffer.set_file_path(path.clone(), cx)
+            language_buffer.set_file_path(path, cx)
         });
-        self.file_path = Some(path);
         self.project_root = Some(project_root);
         cx.emit(EditorEvent::PathChanged);
     }
@@ -516,7 +521,6 @@ impl Editor {
             display_map,
             syntax_snapshot,
             mode,
-            file_path: None,
             project_root: None,
             selections: SelectionSet::default(),
             selection_history: SelectionHistory::default(),

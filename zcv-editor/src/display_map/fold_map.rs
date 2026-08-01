@@ -5,13 +5,16 @@
 use std::{cmp::Reverse, collections::BTreeMap, ops::Range};
 
 use gpui_sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
+#[cfg(test)]
+use zcv_engine::{BufferVersion, ByteOffset, Stickiness};
 use zcv_engine::{
-    BufferVersion, ByteOffset, CoordinateError, Line, LineRange, LogicalColumn, Position,
-    PositionMap, Snapshot, Stickiness, TextChangeBatch, TextRange, TrackedRange,
-    TrackedRangeUpdatePolicy,
+    CoordinateError, Line, LineRange, LogicalColumn, Position, PositionMap, Snapshot,
+    TextChangeBatch, TextRange, TrackedRange, TrackedRangeUpdatePolicy,
 };
 
-use super::error::{DisplayMapResult, FoldError};
+use super::error::DisplayMapResult;
+#[cfg(test)]
+use super::error::FoldError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ApplyOutcome {
@@ -24,6 +27,7 @@ pub(crate) enum ApplyOutcome {
 pub(crate) struct FoldId(u64);
 
 impl FoldId {
+    #[cfg(test)]
     const INITIAL: Self = Self(1);
 }
 
@@ -36,6 +40,7 @@ struct Fold {
 }
 
 impl Fold {
+    #[cfg(test)]
     fn new(
         id: FoldId,
         version: BufferVersion,
@@ -352,7 +357,9 @@ impl FoldSnapshot {
 #[derive(Debug, Clone)]
 pub(super) struct FoldMap {
     snapshot: FoldSnapshot,
+    #[cfg(test)]
     next_fold_id: FoldId,
+    #[cfg(test)]
     default_update_policy: TrackedRangeUpdatePolicy,
 }
 
@@ -369,7 +376,9 @@ impl FoldMap {
         (
             Self {
                 snapshot: snapshot.clone(),
+                #[cfg(test)]
                 next_fold_id: FoldId::INITIAL,
+                #[cfg(test)]
                 default_update_policy: TrackedRangeUpdatePolicy::invalidate_when_fully_deleted(),
             },
             snapshot,
@@ -472,13 +481,16 @@ impl FoldMap {
         (self.snapshot.clone(), edits, outcome)
     }
 
+    #[cfg(test)]
     pub(super) fn write(&mut self) -> FoldMapWriter<'_> {
         FoldMapWriter(self)
     }
 }
 
+#[cfg(test)]
 pub(super) struct FoldMapWriter<'a>(&'a mut FoldMap);
 
+#[cfg(test)]
 impl FoldMapWriter<'_> {
     pub(super) fn fold_lines(
         &mut self,
@@ -627,12 +639,14 @@ fn inline_fold_edits(batch: &TextChangeBatch, snapshot: &Snapshot) -> Vec<FoldEd
         .collect()
 }
 
+#[cfg(test)]
 fn text_range_for_lines(snapshot: &Snapshot, lines: LineRange) -> DisplayMapResult<TextRange> {
     let start = line_boundary(snapshot, lines.start())?;
     let end = line_boundary(snapshot, lines.end())?;
     Ok(TextRange::new(start, end)?)
 }
 
+#[cfg(test)]
 fn line_boundary(snapshot: &Snapshot, line: Line) -> DisplayMapResult<ByteOffset> {
     if line.get() > snapshot.line_count() {
         return Err(CoordinateError::LineOutOfBounds(line).into());
@@ -652,6 +666,7 @@ fn fold_line_span(snapshot: &Snapshot, range: TextRange) -> DisplayMapResult<(Li
     Ok((start, end))
 }
 
+#[cfg(test)]
 fn ranges_disjoint_or_nested(left: TextRange, right: TextRange) -> bool {
     left.end() <= right.start()
         || right.end() <= left.start()
@@ -833,25 +848,10 @@ pub enum ProjectedLineKind {
 }
 
 impl ProjectedLineKind {
-    pub fn is_placeholder(&self) -> bool {
-        matches!(self, Self::Placeholder(_))
-    }
-
-    pub fn is_text(&self) -> bool {
-        matches!(self, Self::Text(_))
-    }
-
     pub fn text_line(&self) -> Option<TextLine> {
         match self {
             Self::Text(text_line) => Some(*text_line),
             Self::Placeholder(_) => None,
-        }
-    }
-
-    pub fn placeholder(&self) -> Option<FoldPlaceholder> {
-        match self {
-            Self::Placeholder(placeholder) => Some(*placeholder),
-            Self::Text(_) => None,
         }
     }
 }
@@ -868,20 +868,8 @@ impl ProjectedLine {
         Self { index, kind }
     }
 
-    pub fn index(self) -> ProjectedLineIndex {
-        self.index
-    }
-
     pub fn kind(self) -> ProjectedLineKind {
         self.kind
-    }
-
-    pub fn is_placeholder(self) -> bool {
-        self.kind.is_placeholder()
-    }
-
-    pub fn is_text(self) -> bool {
-        self.kind.is_text()
     }
 }
 
@@ -927,10 +915,6 @@ impl FoldPlaceholder {
     pub fn hidden_lines(self) -> LineRange {
         self.hidden_lines
     }
-
-    pub fn hidden_line_count(self) -> usize {
-        self.hidden_lines.len()
-    }
 }
 
 /// 逻辑行 -> 投影空间的查询结果。
@@ -945,26 +929,6 @@ pub enum LogicalProjection {
         /// anchor 在投影空间的索引；可作为「跳到 fold 起点」的目标。
         anchor_projected_line: ProjectedLineIndex,
     },
-}
-
-impl LogicalProjection {
-    pub fn is_hidden(&self) -> bool {
-        matches!(self, Self::Hidden { .. })
-    }
-
-    pub fn is_visible(&self) -> bool {
-        matches!(self, Self::Visible(_))
-    }
-
-    pub fn projected_line(&self) -> ProjectedLineIndex {
-        match self {
-            Self::Visible(index) => *index,
-            Self::Hidden {
-                anchor_projected_line,
-                ..
-            } => *anchor_projected_line,
-        }
-    }
 }
 
 /// 逻辑文档内的 (line, column) 点。
@@ -1057,26 +1021,6 @@ pub enum LogicalPointProjection {
     },
 }
 
-impl LogicalPointProjection {
-    pub fn is_hidden(&self) -> bool {
-        matches!(self, Self::Hidden { .. })
-    }
-
-    pub fn is_visible(&self) -> bool {
-        matches!(self, Self::Visible(_))
-    }
-
-    /// 返回该逻辑点最终落在投影空间的 `ProjectedPoint`：可见行返回自身，隐藏行返回 fold anchor。
-    pub fn projected_point(&self) -> ProjectedPoint {
-        match self {
-            Self::Visible(point) => *point,
-            Self::Hidden {
-                anchor_projected, ..
-            } => *anchor_projected,
-        }
-    }
-}
-
 /// `ProjectedPoint` -> 逻辑空间的查询结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProjectedPointMapping {
@@ -1087,24 +1031,6 @@ pub enum ProjectedPointMapping {
         anchor: LogicalPoint,
         hidden_lines: LineRange,
     },
-}
-
-impl ProjectedPointMapping {
-    pub fn is_placeholder(&self) -> bool {
-        matches!(self, Self::Placeholder { .. })
-    }
-
-    pub fn is_text(&self) -> bool {
-        matches!(self, Self::Text(_))
-    }
-
-    /// 返回该投影点对应的逻辑点：text 行返回自身，placeholder 行返回 fold anchor。
-    pub fn logical_point(&self) -> LogicalPoint {
-        match self {
-            Self::Text(point) => *point,
-            Self::Placeholder { anchor, .. } => *anchor,
-        }
-    }
 }
 
 /// 逻辑文档内的有序点对范围。
@@ -1126,13 +1052,6 @@ impl LogicalRange {
         Ok(Self { start, end })
     }
 
-    pub fn caret(point: LogicalPoint) -> Self {
-        Self {
-            start: point,
-            end: point,
-        }
-    }
-
     pub const fn start(self) -> LogicalPoint {
         self.start
     }
@@ -1143,10 +1062,6 @@ impl LogicalRange {
 
     pub fn is_empty(self) -> bool {
         self.start == self.end
-    }
-
-    pub fn is_single_line(self) -> bool {
-        self.start.line == self.end.line
     }
 }
 
@@ -1169,27 +1084,12 @@ impl ProjectedRange {
         Ok(Self { start, end })
     }
 
-    pub fn caret(point: ProjectedPoint) -> Self {
-        Self {
-            start: point,
-            end: point,
-        }
-    }
-
     pub const fn start(self) -> ProjectedPoint {
         self.start
     }
 
     pub const fn end(self) -> ProjectedPoint {
         self.end
-    }
-
-    pub fn is_empty(self) -> bool {
-        self.start == self.end
-    }
-
-    pub fn is_single_line(self) -> bool {
-        self.start.line == self.end.line
     }
 }
 

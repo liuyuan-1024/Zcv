@@ -325,12 +325,15 @@ static LANGUAGES: &[LanguageSpec] = &[
 ];
 
 /// 根据文件名和首行内容选择已注册且可高亮的语言。
-pub fn language_for_file(path: &Path, first_line: Option<&str>) -> Option<Language> {
+pub(crate) fn language_for_file(path: &Path, first_line: Option<&str>) -> Option<Language> {
     matched_language(path, first_line).and_then(|(spec, suffix)| spec.load(suffix))
 }
 
 /// 返回语言显示名；即使暂未注册 grammar，也保留文件类型识别能力。
-pub fn language_name_for_file(path: &Path, first_line: Option<&str>) -> Option<&'static str> {
+pub(crate) fn language_name_for_file(
+    path: &Path,
+    first_line: Option<&str>,
+) -> Option<&'static str> {
     matched_language(path, first_line).map(|(spec, _)| spec.name)
 }
 

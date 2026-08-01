@@ -172,7 +172,7 @@ impl Pane {
             let (Some(path), Some(project_root)) = ({
                 let editor = editor.read(cx);
                 (
-                    editor.file_path().map(Path::to_path_buf),
+                    editor.file_path(cx),
                     editor.project_root().map(Path::to_path_buf),
                 )
             }) else {

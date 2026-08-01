@@ -47,20 +47,7 @@ impl ActiveBufferLanguage {
         let editor_ref = editor.read(cx);
 
         self.language = editor_ref
-            .file_path()
-            .and_then(|path| {
-                let first_line = editor_ref
-                    .render_snapshot()
-                    .slice_byte_range(
-                        zcv_engine::ByteOffset::ZERO,
-                        zcv_engine::ByteOffset::new(
-                            256.min(editor_ref.render_snapshot().len_bytes().get()),
-                        ),
-                    )
-                    .ok()
-                    .map(|s| s.as_str().lines().next().unwrap_or("").to_owned());
-                zcv_language::language_name_for_file(path, first_line.as_deref())
-            })
+            .language_name(cx)
             .map(|name| name.to_owned())
             .unwrap_or_default();
     }

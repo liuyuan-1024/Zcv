@@ -14,9 +14,10 @@ mod fold_map;
 mod tab_map;
 mod wrap_map;
 
+#[cfg(test)]
+use zcv_engine::LineRange;
 use zcv_engine::{
-    ByteOffset, DisplayColumn, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch,
-    TextRange,
+    ByteOffset, DisplayColumn, Line, LogicalColumn, Position, Snapshot, TextChangeBatch, TextRange,
 };
 
 #[cfg(test)]
@@ -282,6 +283,7 @@ impl DisplayMap {
         outcome
     }
 
+    #[cfg(test)]
     pub(crate) fn fold_lines(&mut self, line_range: LineRange) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().fold_lines(line_range)?;
         let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);

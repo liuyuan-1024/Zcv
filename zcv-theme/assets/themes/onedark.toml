@@ -21,6 +21,8 @@
 "operator" = { fg = "purple" }
 "keyword.operator" = { fg = "purple" }
 "special" = { fg = "blue" }
+"punctuation.special" = { fg = "blue" }
+"punctuation.delimiter" = { fg = "blue" }
 "string" = { fg = "green" }
 "type" = { fg = "yellow" }
 # "variable" = { fg = "blue" }
@@ -38,6 +40,13 @@
 "markup.quote" = { fg = "yellow" }
 "markup.link.url" = { fg = "cyan", modifiers = ["underlined"]}
 "markup.link.text" = { fg = "purple" }
+"text.title" = { fg = "red" }
+"text.literal" = { fg = "green" }
+"text.uri" = { fg = "cyan", modifiers = ["underlined"]}
+"text.reference" = { fg = "purple" }
+"text.emphasis" = { fg = "purple", modifiers = ["italic"] }
+"text.strong" = { fg = "gold", modifiers = ["bold"] }
+"text.strike" = { modifiers = ["crossed_out"] }
 
 "diff.plus" = "green"
 "diff.delta" = "gold"

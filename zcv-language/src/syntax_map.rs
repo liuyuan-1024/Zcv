@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tree_sitter::{InputEdit, Parser, Point, QueryCursor, StreamingIterator};
 use zcv_engine::{BufferVersion, ByteOffset, Snapshot, TextChangeBatch};
 
-use crate::language::language_for_injection;
-use crate::{Language, language_for_file};
+use crate::Language;
+use crate::language::{language_for_file, language_for_injection};
 
 /// 一个非重叠的 tree-sitter capture 区间。
 #[derive(Clone, Debug, PartialEq, Eq)]

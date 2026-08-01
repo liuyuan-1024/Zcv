@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use gpui::{AppContext, Context, Entity, Task};
 use zcv_engine::{Buffer, Snapshot, TextSubscription};
 
+use crate::language::language_name_for_file;
 use crate::{SyntaxMap, SyntaxSnapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +63,16 @@ impl LanguageBuffer {
         self.file_path.as_deref()
     }
 
+    pub fn language_name(&self) -> Option<&'static str> {
+        let path = self.file_path.as_deref()?;
+        let first_line = self
+            .text_snapshot
+            .slice_line(zcv_engine::Line::ZERO)
+            .ok()
+            .map(|line| line.as_str().trim_end_matches(['\r', '\n']).to_owned());
+        language_name_for_file(path, first_line.as_deref())
+    }
+
     pub fn set_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.sync(cx);
         let language_changed = self
@@ -91,6 +102,10 @@ impl LanguageBuffer {
         self.syntax_map
             .interpolate(&self.text_snapshot, &new_snapshot, &changes);
         self.text_snapshot = new_snapshot;
+        if let Some(path) = self.file_path.as_deref() {
+            self.syntax_map
+                .set_language_for_file(path, &self.text_snapshot);
+        }
         self.start_reparse(cx);
         cx.notify();
     }
@@ -161,6 +176,31 @@ mod tests {
             let syntax = language_buffer.syntax_snapshot();
             assert_eq!(syntax.version(), buffer_version);
             assert_eq!(language_buffer.parse_status(), ParseStatus::Idle);
+        });
+    }
+
+    #[gpui::test]
+    fn language_name_and_syntax_follow_first_line_changes(cx: &mut TestAppContext) {
+        let buffer = cx.new(|_| {
+            Buffer::scratch(String::new(), BufferConfig::default()).expect("应创建测试 Buffer")
+        });
+        let language_buffer =
+            cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("script")), cx));
+
+        cx.read_entity(&language_buffer, |language_buffer, _| {
+            assert_eq!(language_buffer.language_name(), None)
+        });
+        buffer.update(cx, |buffer, cx| {
+            buffer
+                .insert(ByteOffset::ZERO, "#!/usr/bin/env python\nprint('ok')\n")
+                .expect("测试编辑应成功");
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        language_buffer.read_with(cx, |language_buffer, _| {
+            assert_eq!(language_buffer.language_name(), Some("Python"));
+            assert!(language_buffer.syntax_snapshot().has_language());
         });
     }
 }

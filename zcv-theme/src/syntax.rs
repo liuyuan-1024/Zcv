@@ -26,9 +26,8 @@ pub fn color_for(name: &str) -> Hsla {
     style_for(name).color.unwrap_or_else(default_fg)
 }
 
-/// 按 capture name 解析完整样式，并兼容 tree-sitter 通用查询中的旧 `text.*` 命名。
+/// 按 capture name 解析完整样式。
 pub fn style_for(name: &str) -> HighlightStyle {
-    let name = capture_alias(name);
     let mut current = name;
     loop {
         if let Some(style) = lookup_in_theme(current) {
@@ -38,20 +37,6 @@ pub fn style_for(name: &str) -> HighlightStyle {
             Some(dot) => current = &current[..dot],
             None => return HighlightStyle::default(),
         }
-    }
-}
-
-fn capture_alias(name: &str) -> &str {
-    match name {
-        "text.title" => "markup.heading",
-        "text.literal" => "markup.raw.inline",
-        "text.uri" => "markup.link.url",
-        "text.reference" => "markup.link.text",
-        "text.emphasis" => "markup.italic",
-        "text.strong" => "markup.bold",
-        "text.strike" => "markup.strikethrough",
-        "punctuation.special" | "punctuation.delimiter" => "special",
-        _ => name,
     }
 }
 
@@ -269,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn markdown_capture_aliases_keep_theme_modifiers() {
+    fn markdown_capture_rules_keep_theme_modifiers() {
         assert_eq!(style_for("text.strong").font_weight, Some(FontWeight::BOLD));
         assert_eq!(
             style_for("text.emphasis").font_style,

@@ -186,7 +186,10 @@ Editor 不负责：
 ### 3.4 Language 与 SyntaxMap
 
 `zcv-language` 对齐 Zed 的 language crate，集中维护语言注册、tree-sitter grammar、
-highlight query 与增量语法树。`LanguageBuffer` 持有文本 Buffer、SyntaxMap 和唯一的
+highlight、brackets、indents、outline、textobjects、injections query 与增量语法树。
+`SyntaxSnapshot` 是统一的版本化语法查询门面；高亮、嵌套语言识别、括号匹配、语法
+选择扩展、自动缩进、大纲和文本对象不得各自解析文本或创建第二棵语法树。
+`LanguageBuffer` 持有文本 Buffer、SyntaxMap 和唯一的
 后台解析任务；多个 Editor 必须共享同一个 LanguageBuffer，不允许各自创建 SyntaxMap。
 SyntaxMap 分别记录真正完成解析的 `parsed_version` 和仅通过 `InputEdit` 推进坐标的
 `interpolated_version`。渲染端只能消费绑定 `BufferVersion` 的不可变

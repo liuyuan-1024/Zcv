@@ -10,10 +10,10 @@ mod view;
 
 pub use view::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
-    DeleteToPreviousWordStart, Editor, EditorEvent, Indent, MoveDown, MoveLeft, MovePageDown,
-    MovePageUp, MoveRight, MoveToBeginning, MoveToBeginningOfLine, MoveToEnd, MoveToEndOfLine,
-    MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Outdent, Paste, Redo, SelectAll,
-    SelectDown, SelectLeft, SelectPageDown, SelectPageUp, SelectRight, SelectToBeginning,
-    SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine, SelectToNextWord,
+    DeleteToPreviousWordStart, Editor, EditorEvent, ExpandSelection, Indent, MoveDown, MoveLeft,
+    MovePageDown, MovePageUp, MoveRight, MoveToBeginning, MoveToBeginningOfLine, MoveToEnd,
+    MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Outdent, Paste, Redo,
+    SelectAll, SelectDown, SelectLeft, SelectPageDown, SelectPageUp, SelectRight,
+    SelectToBeginning, SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine, SelectToNextWord,
     SelectToPreviousWord, SelectUp, SoftWrap, Undo,
 };

@@ -17,6 +17,39 @@ pub struct HighlightSpan {
     pub capture: Arc<str>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyntaxLayerInfo {
+    pub language: &'static str,
+    pub range: Range<usize>,
+    pub depth: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BracketPair {
+    pub open: Range<usize>,
+    pub close: Range<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutlineItem {
+    pub range: Range<usize>,
+    pub name_ranges: Vec<Range<usize>>,
+    pub context_ranges: Vec<Range<usize>>,
+    pub body_range: Option<Range<usize>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndentRange {
+    pub range: Range<usize>,
+    pub end: Option<Range<usize>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextObjectRange {
+    pub kind: Arc<str>,
+    pub range: Range<usize>,
+}
+
 /// 可增量更新的语法状态。
 ///
 /// `parsed_version` 表示 Tree 真正完成解析的版本；
@@ -164,6 +197,233 @@ impl SyntaxSnapshot {
         self.language.is_some()
     }
 
+    pub fn syntax_layers(&self, range: Range<usize>, text: &Snapshot) -> Vec<SyntaxLayerInfo> {
+        if !self.can_query(&range, text) {
+            return Vec::new();
+        }
+        self.layers_for_range(&range)
+            .into_iter()
+            .map(|layer| SyntaxLayerInfo {
+                language: layer.language.name(),
+                range: layer.range,
+                depth: layer.depth,
+            })
+            .collect()
+    }
+
+    pub fn language_at(&self, offset: usize, text: &Snapshot) -> Option<&'static str> {
+        let range = offset..offset;
+        self.can_query(&range, text).then_some(())?;
+        self.layers_for_range(&range)
+            .into_iter()
+            .max_by_key(|layer| (layer.depth, std::cmp::Reverse(layer.range.len())))
+            .map(|layer| layer.language.name())
+    }
+
+    /// 返回严格包围当前范围的最小语法节点，对齐 Zed `syntax_ancestor` 的选择扩展语义。
+    pub fn ancestor_range(&self, range: Range<usize>, text: &Snapshot) -> Option<Range<usize>> {
+        self.can_query(&range, text).then_some(())?;
+        let mut best: Option<(Range<usize>, u32)> = None;
+        for layer in self.layers_for_range(&range) {
+            let Some(mut node) = layer
+                .tree
+                .root_node()
+                .descendant_for_byte_range(range.start, range.end)
+            else {
+                continue;
+            };
+            loop {
+                let candidate = node.byte_range();
+                if encloses(&candidate, &range) && candidate.len() > range.len() {
+                    let replace = best.as_ref().is_none_or(|(current, depth)| {
+                        candidate.len() < current.len()
+                            || (candidate.len() == current.len() && layer.depth > *depth)
+                    });
+                    if replace {
+                        best = Some((candidate, layer.depth));
+                    }
+                    break;
+                }
+                let Some(parent) = node.parent() else {
+                    break;
+                };
+                node = parent;
+            }
+        }
+        best.map(|(range, _)| range)
+    }
+
+    pub fn bracket_pairs(&self, range: Range<usize>, text: &Snapshot) -> Vec<BracketPair> {
+        if !self.can_query(&range, text) {
+            return Vec::new();
+        }
+        let mut pairs = Vec::new();
+        for layer in self.layers_for_range(&range) {
+            let Some(query) = layer.language.brackets() else {
+                continue;
+            };
+            let names = query.capture_names();
+            let mut cursor = QueryCursorHandle::new();
+            cursor.set_byte_range(range.clone());
+            let mut matches =
+                cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
+            while let Some(query_match) = matches.next() {
+                let mut open = None;
+                let mut close = None;
+                for capture in query_match.captures {
+                    match names.get(capture.index as usize).copied() {
+                        Some("open") => open = Some(capture.node.byte_range()),
+                        Some("close") => close = Some(capture.node.byte_range()),
+                        _ => {}
+                    }
+                }
+                if let (Some(open), Some(close)) = (open, close) {
+                    pairs.push(BracketPair { open, close });
+                }
+            }
+        }
+        pairs.sort_unstable_by_key(|pair| (pair.open.start, pair.close.end));
+        pairs
+    }
+
+    pub fn outline_items(&self, range: Range<usize>, text: &Snapshot) -> Vec<OutlineItem> {
+        if !self.can_query(&range, text) {
+            return Vec::new();
+        }
+        let mut items = Vec::new();
+        for layer in self.layers_for_range(&range) {
+            let Some(query) = layer.language.outline() else {
+                continue;
+            };
+            let names = query.capture_names();
+            let mut cursor = QueryCursorHandle::new();
+            cursor.set_byte_range(range.clone());
+            let mut matches =
+                cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
+            while let Some(query_match) = matches.next() {
+                let mut item = None;
+                let mut names_ranges = Vec::new();
+                let mut contexts = Vec::new();
+                let mut open = None;
+                let mut close = None;
+                for capture in query_match.captures {
+                    let capture_range = capture.node.byte_range();
+                    match names.get(capture.index as usize).copied() {
+                        Some("item") => item = Some(capture_range),
+                        Some("name") => names_ranges.push(capture_range),
+                        Some("context") => contexts.push(capture_range),
+                        Some("open") => open = Some(capture_range.end),
+                        Some("close") => close = Some(capture_range.start),
+                        _ => {}
+                    }
+                }
+                let Some(item) = item else { continue };
+                items.push(OutlineItem {
+                    range: item,
+                    name_ranges: names_ranges,
+                    context_ranges: contexts,
+                    body_range: open
+                        .zip(close)
+                        .and_then(|(start, end)| (start <= end).then_some(start..end)),
+                });
+            }
+        }
+        items.sort_unstable_by_key(|item| (item.range.start, item.range.end));
+        items
+    }
+
+    pub fn indent_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<IndentRange> {
+        if !self.can_query(&range, text) {
+            return Vec::new();
+        }
+        let mut ranges = Vec::new();
+        for layer in self.layers_for_range(&range) {
+            let Some(query) = layer.language.indents() else {
+                continue;
+            };
+            let names = query.capture_names();
+            let mut cursor = QueryCursorHandle::new();
+            cursor.set_byte_range(range.clone());
+            let mut matches =
+                cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
+            while let Some(query_match) = matches.next() {
+                let mut indent = None;
+                let mut end = None;
+                for capture in query_match.captures {
+                    match names.get(capture.index as usize).copied() {
+                        Some("indent") => indent = Some(capture.node.byte_range()),
+                        Some("end") => end = Some(capture.node.byte_range()),
+                        _ => {}
+                    }
+                }
+                if let Some(range) = indent {
+                    ranges.push(IndentRange { range, end });
+                }
+            }
+        }
+        ranges.sort_unstable_by_key(|range| (range.range.start, range.range.end));
+        ranges
+    }
+
+    pub fn text_object_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<TextObjectRange> {
+        if !self.can_query(&range, text) {
+            return Vec::new();
+        }
+        let mut ranges = Vec::new();
+        for layer in self.layers_for_range(&range) {
+            let Some(query) = layer.language.text_objects() else {
+                continue;
+            };
+            let names = query.capture_names();
+            let mut cursor = QueryCursorHandle::new();
+            cursor.set_byte_range(range.clone());
+            let mut captures =
+                cursor.captures(query, layer.tree.root_node(), SnapshotTextProvider(text));
+            while let Some((query_match, capture_index)) = captures.next() {
+                let capture = query_match.captures[*capture_index];
+                let Some(kind) = names.get(capture.index as usize) else {
+                    continue;
+                };
+                ranges.push(TextObjectRange {
+                    kind: Arc::from(*kind),
+                    range: capture.node.byte_range(),
+                });
+            }
+        }
+        ranges.sort_unstable_by_key(|range| (range.range.start, range.range.end));
+        ranges
+    }
+
+    fn can_query(&self, range: &Range<usize>, text: &Snapshot) -> bool {
+        text.version() == self.version
+            && range.start <= range.end
+            && range.end <= text.len_bytes().get()
+    }
+
+    fn layers_for_range<'a>(&'a self, range: &Range<usize>) -> Vec<SyntaxLayerRef<'a>> {
+        let mut layers = Vec::new();
+        if let (Some(language), Some(tree)) = (&self.language, &self.tree) {
+            layers.push(SyntaxLayerRef {
+                language,
+                tree,
+                range: tree.root_node().byte_range(),
+                depth: 0,
+            });
+        }
+        layers.extend(
+            self.injections
+                .iter()
+                .filter(|layer| range_touches(&layer.range, range))
+                .map(|layer| SyntaxLayerRef {
+                    language: &layer.language,
+                    tree: &layer.tree,
+                    range: layer.range.clone(),
+                    depth: layer.depth,
+                }),
+        );
+        layers
+    }
+
     /// 在调用线程完成真正的 tree-sitter 增量解析。
     /// 调用方应把该方法放到后台执行，再通过 `SyntaxMap::did_parse` 安装结果。
     pub fn reparse(mut self, snapshot: &Snapshot) -> Self {
@@ -267,6 +527,13 @@ impl SyntaxSnapshot {
         }
         spans
     }
+}
+
+struct SyntaxLayerRef<'a> {
+    language: &'a Language,
+    tree: &'a tree_sitter::Tree,
+    range: Range<usize>,
+    depth: u32,
 }
 
 #[derive(Clone)]
@@ -510,6 +777,18 @@ fn ranges_overlap(left: &Range<usize>, right: &Range<usize>) -> bool {
     left.start < right.end && right.start < left.end
 }
 
+fn range_touches(layer: &Range<usize>, query: &Range<usize>) -> bool {
+    if query.is_empty() {
+        layer.start <= query.start && query.start < layer.end
+    } else {
+        ranges_overlap(layer, query)
+    }
+}
+
+fn encloses(outer: &Range<usize>, inner: &Range<usize>) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
+}
+
 struct QueryCursorHandle(Option<QueryCursor>);
 
 impl QueryCursorHandle {
@@ -667,6 +946,64 @@ mod tests {
             spans
                 .iter()
                 .all(|span| span.range.end <= snapshot.len_bytes().get())
+        );
+    }
+
+    #[test]
+    fn rust_syntax_snapshot_exposes_zed_structure_queries() {
+        let source = "struct Demo { value: i32 }\nfn main() { let x = (1 + 2); }\n";
+        let (buffer, syntax) = rust_buffer(source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let full = 0..snapshot.len_bytes().get();
+
+        let brackets = syntax.bracket_pairs(full.clone(), &snapshot);
+        assert!(brackets.iter().any(|pair| {
+            &source[pair.open.clone()] == "(" && &source[pair.close.clone()] == ")"
+        }));
+
+        let outline = syntax.outline_items(full.clone(), &snapshot);
+        let names: Vec<_> = outline
+            .iter()
+            .flat_map(|item| item.name_ranges.iter())
+            .map(|range| &source[range.clone()])
+            .collect();
+        assert!(names.contains(&"Demo"));
+        assert!(names.contains(&"main"));
+        assert!(outline.iter().any(|item| item.body_range.is_some()));
+
+        assert!(!syntax.indent_ranges(full.clone(), &snapshot).is_empty());
+        assert!(
+            syntax
+                .text_object_ranges(full, &snapshot)
+                .iter()
+                .any(|range| range.kind.as_ref() == "function.around")
+        );
+    }
+
+    #[test]
+    fn syntax_ancestor_and_injected_language_use_the_smallest_layer() {
+        let source = "fn main() { let value = 1; }\n";
+        let (buffer, syntax) = rust_buffer(source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let caret = source.find("value").unwrap();
+        let identifier = syntax
+            .ancestor_range(caret..caret, &snapshot)
+            .expect("光标应扩展到 identifier");
+        assert_eq!(&source[identifier.clone()], "value");
+        let parent = syntax
+            .ancestor_range(identifier, &snapshot)
+            .expect("identifier 应继续扩展到父语法节点");
+        assert!(parent.len() > "value".len());
+
+        let html = "<style>.item { color: red; }</style>";
+        let (buffer, syntax) = parsed_syntax("index.html", html);
+        let snapshot = buffer.snapshot();
+        let offset = html.find("color").unwrap();
+        assert_eq!(
+            syntax.snapshot().language_at(offset, &snapshot),
+            Some("CSS")
         );
     }
 

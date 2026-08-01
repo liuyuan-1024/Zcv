@@ -10,7 +10,16 @@ pub struct Language {
     grammar: tree_sitter::Language,
     highlights: Arc<Query>,
     injections: Option<Arc<Query>>,
+    queries: LanguageQueries,
     capture_names: Arc<[Arc<str>]>,
+}
+
+#[derive(Clone, Default)]
+struct LanguageQueries {
+    brackets: Option<Arc<Query>>,
+    indents: Option<Arc<Query>>,
+    outline: Option<Arc<Query>>,
+    text_objects: Option<Arc<Query>>,
 }
 
 impl Language {
@@ -28,6 +37,22 @@ impl Language {
 
     pub(crate) fn injections(&self) -> Option<&Arc<Query>> {
         self.injections.as_ref()
+    }
+
+    pub(crate) fn brackets(&self) -> Option<&Arc<Query>> {
+        self.queries.brackets.as_ref()
+    }
+
+    pub(crate) fn indents(&self) -> Option<&Arc<Query>> {
+        self.queries.indents.as_ref()
+    }
+
+    pub(crate) fn outline(&self) -> Option<&Arc<Query>> {
+        self.queries.outline.as_ref()
+    }
+
+    pub(crate) fn text_objects(&self) -> Option<&Arc<Query>> {
+        self.queries.text_objects.as_ref()
     }
 
     pub(crate) fn capture_name(&self, index: u32) -> Option<Arc<str>> {
@@ -69,6 +94,7 @@ impl LanguageSpec {
             .map(|source| source.compile(&grammar))
             .transpose()
             .ok()?;
+        let queries = language_queries(self.name, &grammar)?;
         let capture_names = highlights
             .capture_names()
             .iter()
@@ -79,6 +105,7 @@ impl LanguageSpec {
             grammar,
             highlights: Arc::new(highlights),
             injections: injections.map(Arc::new),
+            queries,
             capture_names,
         })
     }
@@ -100,6 +127,7 @@ pub(crate) fn language_for_injection(name: &str) -> Option<Language> {
             grammar,
             highlights: Arc::new(highlights),
             injections: Some(Arc::new(injections)),
+            queries: LanguageQueries::default(),
             capture_names,
         });
     }
@@ -111,6 +139,136 @@ pub(crate) fn language_for_injection(name: &str) -> Option<Language> {
                 || spec.suffixes.iter().any(|suffix| *suffix == name)
         })
         .and_then(|spec| spec.load(&name))
+}
+
+fn language_queries(name: &str, grammar: &tree_sitter::Language) -> Option<LanguageQueries> {
+    let sources = match name {
+        "Rust" => LanguageQuerySources::all("rust"),
+        "Python" => LanguageQuerySources::all("python"),
+        "JavaScript" => LanguageQuerySources::all("javascript"),
+        "JSX" | "TSX" => LanguageQuerySources::all("tsx"),
+        "TypeScript" => LanguageQuerySources::all("typescript"),
+        "Shell" => Some(LanguageQuerySources {
+            brackets: Some(include_str!("../queries/bash/brackets.scm")),
+            indents: Some(include_str!("../queries/bash/indents.scm")),
+            outline: None,
+            text_objects: Some(include_str!("../queries/bash/textobjects.scm")),
+        }),
+        "Markdown" => LanguageQuerySources::all("markdown"),
+        "HTML" => Some(LanguageQuerySources {
+            brackets: Some(include_str!("../queries/html/brackets.scm")),
+            indents: Some(include_str!("../queries/html/indents.scm")),
+            outline: Some(include_str!("../queries/html/outline.scm")),
+            text_objects: None,
+        }),
+        "CSS" => LanguageQuerySources::all("css"),
+        "JSON" => LanguageQuerySources::all("json"),
+        "YAML" => Some(LanguageQuerySources {
+            brackets: Some(include_str!("../queries/yaml/brackets.scm")),
+            indents: None,
+            outline: Some(include_str!("../queries/yaml/outline.scm")),
+            text_objects: Some(include_str!("../queries/yaml/textobjects.scm")),
+        }),
+        _ => None,
+    };
+    let Some(sources) = sources else {
+        return Some(LanguageQueries::default());
+    };
+    Some(LanguageQueries {
+        brackets: compile_query(grammar, sources.brackets)?,
+        indents: compile_query(grammar, sources.indents)?,
+        outline: compile_query(grammar, sources.outline)?,
+        text_objects: compile_query(grammar, sources.text_objects)?,
+    })
+}
+
+struct LanguageQuerySources {
+    brackets: Option<&'static str>,
+    indents: Option<&'static str>,
+    outline: Option<&'static str>,
+    text_objects: Option<&'static str>,
+}
+
+impl LanguageQuerySources {
+    fn all(language: &str) -> Option<Self> {
+        Some(match language {
+            "rust" => Self::from_sources(
+                include_str!("../queries/rust/brackets.scm"),
+                include_str!("../queries/rust/indents.scm"),
+                include_str!("../queries/rust/outline.scm"),
+                include_str!("../queries/rust/textobjects.scm"),
+            ),
+            "python" => Self::from_sources(
+                include_str!("../queries/python/brackets.scm"),
+                include_str!("../queries/python/indents.scm"),
+                include_str!("../queries/python/outline.scm"),
+                include_str!("../queries/python/textobjects.scm"),
+            ),
+            "javascript" => Self::from_sources(
+                include_str!("../queries/javascript/brackets.scm"),
+                include_str!("../queries/javascript/indents.scm"),
+                include_str!("../queries/javascript/outline.scm"),
+                include_str!("../queries/javascript/textobjects.scm"),
+            ),
+            "typescript" => Self::from_sources(
+                include_str!("../queries/typescript/brackets.scm"),
+                include_str!("../queries/typescript/indents.scm"),
+                include_str!("../queries/typescript/outline.scm"),
+                include_str!("../queries/typescript/textobjects.scm"),
+            ),
+            "tsx" => Self::from_sources(
+                include_str!("../queries/tsx/brackets.scm"),
+                include_str!("../queries/tsx/indents.scm"),
+                include_str!("../queries/tsx/outline.scm"),
+                include_str!("../queries/tsx/textobjects.scm"),
+            ),
+            "markdown" => Self::from_sources(
+                include_str!("../queries/markdown/brackets.scm"),
+                include_str!("../queries/markdown/indents.scm"),
+                include_str!("../queries/markdown/outline.scm"),
+                include_str!("../queries/markdown/textobjects.scm"),
+            ),
+            "css" => Self::from_sources(
+                include_str!("../queries/css/brackets.scm"),
+                include_str!("../queries/css/indents.scm"),
+                include_str!("../queries/css/outline.scm"),
+                include_str!("../queries/css/textobjects.scm"),
+            ),
+            "json" => Self::from_sources(
+                include_str!("../queries/json/brackets.scm"),
+                include_str!("../queries/json/indents.scm"),
+                include_str!("../queries/json/outline.scm"),
+                include_str!("../queries/json/textobjects.scm"),
+            ),
+            _ => return None,
+        })
+    }
+
+    fn from_sources(
+        brackets: &'static str,
+        indents: &'static str,
+        outline: &'static str,
+        text_objects: &'static str,
+    ) -> Self {
+        Self {
+            brackets: Some(brackets),
+            indents: Some(indents),
+            outline: Some(outline),
+            text_objects: Some(text_objects),
+        }
+    }
+}
+
+fn compile_query(
+    grammar: &tree_sitter::Language,
+    source: Option<&str>,
+) -> Option<Option<Arc<Query>>> {
+    match source {
+        Some(source) => Some(Some(Arc::new(Query::new(grammar, source).unwrap_or_else(
+            |error| panic!("Zed tree-sitter 查询与 grammar 不匹配：{error}"),
+        )))),
+        None => Some(None),
+    }
 }
 
 static LANGUAGES: &[LanguageSpec] = &[
@@ -415,5 +573,38 @@ mod tests {
         assert!(tsx.highlights.capture_names().contains(&"tag"));
         assert!(tsx.highlights.capture_names().contains(&"type"));
         assert!(tsx.injections.is_some());
+    }
+
+    #[test]
+    fn zed_structure_queries_compile_for_supported_grammars() {
+        for path in [
+            "main.rs",
+            "main.py",
+            "main.js",
+            "view.ts",
+            "view.tsx",
+            "script.sh",
+            "README.md",
+            "index.html",
+            "style.css",
+            "data.json",
+            "data.yaml",
+        ] {
+            let language = language_for_file(Path::new(path), None)
+                .unwrap_or_else(|| panic!("{path} 的 Zed 结构查询应与 grammar 匹配"));
+            assert!(language.brackets().is_some(), "{path} 应提供括号查询");
+            assert!(
+                language.indents().is_some() || path.ends_with(".yaml"),
+                "{path} 应提供缩进查询"
+            );
+            assert!(
+                language.outline().is_some() || path.ends_with(".sh"),
+                "{path} 应提供大纲查询"
+            );
+            assert!(
+                language.text_objects().is_some() || path.ends_with(".html"),
+                "{path} 应提供文本对象查询"
+            );
+        }
     }
 }

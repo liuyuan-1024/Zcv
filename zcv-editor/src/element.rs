@@ -10,7 +10,7 @@ use gpui::{
     Style, TextRun, UnderlineStyle, Window, fill, point, px, relative, size,
 };
 use zcv_engine::{ByteOffset, DisplayColumn, Line, SelectionSet, TextRange};
-use zcv_language::{HighlightSpan, SyntaxSnapshot};
+use zcv_language::{BracketPair, HighlightSpan, SyntaxSnapshot};
 
 use super::display_map::{
     BufferPoint, DisplayPoint, DisplayRow, DisplaySnapshot, ProjectedRange, WrapViewportRowKind,
@@ -61,6 +61,7 @@ impl EditorElement {
             .on_action(cx.listener(Editor::handle_select_page_up))
             .on_action(cx.listener(Editor::handle_select_page_down))
             .on_action(cx.listener(Editor::handle_select_all))
+            .on_action(cx.listener(Editor::handle_expand_selection))
             .on_action(cx.listener(Editor::handle_backspace))
             .on_action(cx.listener(Editor::handle_delete))
             .on_action(cx.listener(Editor::handle_delete_to_previous_word_start))
@@ -269,6 +270,7 @@ impl Element for EditorElement {
             mode,
             preferred_line_length,
             syntax_snapshot,
+            matching_bracket_pair,
         ) = {
             let editor = self.editor.read(cx);
             (
@@ -282,6 +284,7 @@ impl Element for EditorElement {
                 editor.mode(),
                 editor.preferred_line_length(),
                 editor.syntax_snapshot(),
+                editor.matching_bracket_pair(),
             )
         };
         let gutter_dimensions = shows_gutter.then(|| gutter_dimensions(&display_snapshot, window));
@@ -399,7 +402,10 @@ impl Element for EditorElement {
             ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);
         }
         let layout = Arc::new(layout);
-        let (selections, carets) = layout_selections(&selections, &layout, line_height);
+        let (mut selections, carets) = layout_selections(&selections, &layout, line_height);
+        if let Some(pair) = matching_bracket_pair {
+            layout_bracket_pair(pair, &layout, line_height, &mut selections);
+        }
         let gutter_hitbox = layout
             .gutter
             .as_ref()
@@ -832,6 +838,26 @@ fn layout_selections(
     }
 
     (selection_quads, caret_quads)
+}
+
+fn layout_bracket_pair(
+    pair: BracketPair,
+    layout: &EditorLayout,
+    line_height: Pixels,
+    quads: &mut Vec<PaintQuad>,
+) {
+    for range in [pair.open, pair.close] {
+        let Ok(range) = TextRange::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
+        else {
+            continue;
+        };
+        let Ok(projected) = layout.display_snapshot.project_text_range(range) else {
+            continue;
+        };
+        for range in projected {
+            layout_projected_range(range, layout, line_height, quads);
+        }
+    }
 }
 
 fn layout_projected_range(

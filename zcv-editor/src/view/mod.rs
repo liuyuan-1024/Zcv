@@ -15,7 +15,7 @@ use zcv_engine::{
     Selection, SelectionSet, Snapshot, TextRange, TextSubscription, TransactionId,
     TransactionMergePolicy, TransactionMetadata, TransactionSource, Utf16Offset,
 };
-use zcv_language::{LanguageBuffer, SyntaxSnapshot};
+use zcv_language::{BracketPair, LanguageBuffer, SyntaxSnapshot};
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
@@ -52,6 +52,7 @@ actions!(
         SelectPageUp,
         SelectPageDown,
         SelectAll,
+        ExpandSelection,
         Backspace,
         Delete,
         DeleteToPreviousWordStart,
@@ -356,6 +357,25 @@ impl Editor {
 
     pub(super) fn syntax_snapshot(&self) -> SyntaxSnapshot {
         self.syntax_snapshot.clone()
+    }
+
+    pub(super) fn matching_bracket_pair(&self) -> Option<BracketPair> {
+        let snapshot = self.display_map.buffer_snapshot();
+        let caret = self.selections.primary().head().get();
+        let start = caret.saturating_sub(1);
+        let end = caret.saturating_add(1).min(snapshot.len_bytes().get());
+        self.syntax_snapshot
+            .bracket_pairs(start..end, snapshot)
+            .into_iter()
+            .find(|pair| {
+                [
+                    pair.open.start,
+                    pair.open.end,
+                    pair.close.start,
+                    pair.close.end,
+                ]
+                .contains(&caret)
+            })
     }
 
     pub fn selections(&self) -> SelectionSet {
@@ -1010,7 +1030,60 @@ impl Editor {
             cx.propagate();
             return;
         }
-        self.replace_text(None, "\n", cx);
+        self.composition = None;
+        let before = self.selections.normalized();
+        let snapshot = self.buffer.read(cx).snapshot();
+        let targets = before
+            .as_slice()
+            .iter()
+            .map(|selection| {
+                let offset = selection.start();
+                let line = snapshot.byte_to_line(offset)?;
+                let line_start = snapshot.line_start_byte(line)?;
+                let prefix = snapshot.slice_byte_range(line_start, offset)?;
+                let leading: String = prefix
+                    .as_str()
+                    .chars()
+                    .take_while(|character| matches!(character, ' ' | '\t'))
+                    .collect();
+                let query_start = offset.get().saturating_sub(1);
+                let query_end = offset
+                    .get()
+                    .saturating_add(1)
+                    .min(snapshot.len_bytes().get());
+                let should_indent = self
+                    .syntax_snapshot
+                    .indent_ranges(query_start..query_end, &snapshot)
+                    .into_iter()
+                    .any(|range| {
+                        range.range.start < offset.get()
+                            && offset.get() <= range.range.end
+                            && range
+                                .end
+                                .as_ref()
+                                .is_none_or(|end| offset.get() <= end.start)
+                    });
+                let indent = if should_indent {
+                    if snapshot.config().tab.insert_spaces {
+                        " ".repeat(snapshot.config().tab.indent_width())
+                    } else {
+                        "\t".to_owned()
+                    }
+                } else {
+                    String::new()
+                };
+                Ok((*selection, Arc::from(format!("\n{leading}{indent}"))))
+            })
+            .collect::<EngineResult<Vec<_>>>();
+        let outcome = targets.and_then(|targets| {
+            self.buffer.update(cx, |buffer, cx| {
+                let outcome =
+                    apply_targeted_edits(buffer, targets, &before, edit_metadata("插入换行"));
+                cx.notify();
+                outcome
+            })
+        });
+        self.apply_edit_outcome(before, outcome, cx);
     }
 
     fn selected_text(&self, cx: &App) -> Option<String> {
@@ -1392,6 +1465,34 @@ impl Editor {
         let end = self.buffer.read(cx).len_bytes();
         self.composition = None;
         self.selections = SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, end)]);
+        self.request_autoscroll();
+        self.input_layout = None;
+        cx.notify();
+    }
+
+    pub(super) fn handle_expand_selection(
+        &mut self,
+        _: &ExpandSelection,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.buffer.read(cx).snapshot();
+        let expanded = self
+            .selections
+            .as_slice()
+            .iter()
+            .map(|selection| {
+                let range = selection.start().get()..selection.end().get();
+                self.syntax_snapshot
+                    .ancestor_range(range, &snapshot)
+                    .map(|range| {
+                        Selection::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
+                    })
+                    .unwrap_or(*selection)
+            })
+            .collect();
+        self.composition = None;
+        self.selections = SelectionSet::new_with_primary(expanded, self.selections.primary_index());
         self.request_autoscroll();
         self.input_layout = None;
         cx.notify();
@@ -2072,6 +2173,73 @@ mod tests {
     }
 
     #[gpui::test]
+    fn expand_selection_uses_tree_sitter_ancestors(cx: &mut TestAppContext) {
+        let source = "fn main() { let value = 1; }\n";
+        let raw_buffer = cx.new(|_| {
+            Buffer::scratch(source.to_owned(), BufferConfig::default())
+                .expect("Rust 测试 Buffer 应能创建")
+        });
+        let language_buffer = cx.new({
+            let raw_buffer = raw_buffer.clone();
+            move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        });
+        cx.run_until_parked();
+        let (editor, cx) = cx.add_window_view({
+            let language_buffer = language_buffer.clone();
+            move |_, cx| Editor::for_buffer(language_buffer, cx)
+        });
+        cx.run_until_parked();
+        let value = source.find("value").unwrap();
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::caret(ByteOffset::new(value));
+        });
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+
+        cx.dispatch_action(ExpandSelection);
+        cx.read_entity(&editor, |editor, _| {
+            let selection = editor.selections.primary().range();
+            assert_eq!(
+                &source[selection.start().get()..selection.end().get()],
+                "value"
+            );
+        });
+        cx.dispatch_action(ExpandSelection);
+        cx.read_entity(&editor, |editor, _| {
+            assert!(editor.selections.primary().range().len() > "value".len());
+        });
+    }
+
+    #[gpui::test]
+    fn matching_brackets_come_from_tree_sitter_query(cx: &mut TestAppContext) {
+        let source = "fn main() { call(); }\n";
+        let raw_buffer = cx.new(|_| {
+            Buffer::scratch(source.to_owned(), BufferConfig::default())
+                .expect("Rust 测试 Buffer 应能创建")
+        });
+        let language_buffer = cx.new({
+            let raw_buffer = raw_buffer.clone();
+            move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        });
+        let editor = cx.new({
+            let language_buffer = language_buffer.clone();
+            move |cx| Editor::for_buffer(language_buffer, cx)
+        });
+        cx.run_until_parked();
+        let open = source.find("()").unwrap();
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::caret(ByteOffset::new(open + 1));
+        });
+
+        cx.read_entity(&editor, |editor, _| {
+            let pair = editor
+                .matching_bracket_pair()
+                .expect("光标旁的括号应由 tree-sitter query 匹配");
+            assert_eq!(&source[pair.open], "(");
+            assert_eq!(&source[pair.close], ")");
+        });
+    }
+
+    #[gpui::test]
     fn word_and_line_delete_actions_follow_editor_boundaries(cx: &mut TestAppContext) {
         let buffer = test_buffer(cx, "alpha beta gamma");
         let (editor, cx) = cx.add_window_view({
@@ -2438,6 +2606,32 @@ mod tests {
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(editor.selections, SelectionSet::caret(ByteOffset::new(1)));
         });
+    }
+
+    #[gpui::test]
+    fn newline_uses_tree_sitter_indent_query(cx: &mut TestAppContext) {
+        let source = "fn main() {}\n";
+        let caret = source.find('{').unwrap() + 1;
+        let raw_buffer = cx.new(|_| {
+            Buffer::scratch(source.to_owned(), BufferConfig::default())
+                .expect("Rust 测试 Buffer 应能创建")
+        });
+        let language_buffer = cx.new({
+            let raw_buffer = raw_buffer.clone();
+            move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        });
+        let editor = cx.new({
+            let language_buffer = language_buffer.clone();
+            move |cx| {
+                let mut editor = Editor::for_buffer(language_buffer, cx);
+                editor.selections = SelectionSet::caret(ByteOffset::new(caret));
+                editor
+            }
+        });
+        cx.run_until_parked();
+
+        cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+        assert_eq!(buffer_text(&language_buffer, cx), "fn main() {\n    }\n");
     }
 
     #[gpui::test]

@@ -44,13 +44,22 @@
     }
   },
   {
-    "context": "ProjectTree",
+    "context": "ProjectTree && not_editing",
     "bindings": {
       "down": "project_tree::TreeSelectNext",
       "left": "project_tree::TreeCollapse",
       "right": "project_tree::TreeExpand",
       "space": "project_tree::TreeActivate",
-      "up": "project_tree::TreeSelectPrev"
+      "up": "project_tree::TreeSelectPrev",
+      "enter": "project_tree::TreeRename",
+      "cmd-n": "project_tree::TreeNewEntry"
+    }
+  },
+  {
+    "context": "ProjectTreeEdit > Editor",
+    "bindings": {
+      "enter": "project_tree::TreeConfirmEdit",
+      "escape": "project_tree::TreeCancelEdit"
     }
   },
   {

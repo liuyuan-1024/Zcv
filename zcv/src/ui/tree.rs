@@ -9,12 +9,17 @@ const FOLDER: &str = "icons/files/folder.svg";
 const FOLDER_OPEN: &str = "icons/files/folder_open.svg";
 const FILE: &str = "icons/files/file.svg";
 
-/// 树行完整渲染：行骨架 + 缩进竖线 + 图标 + 名称。
-pub(crate) fn render_row_base(depth: usize, is_dir: bool, expanded: bool, name: &str) -> gpui::Div {
+/// 树行完整渲染：行骨架 + 缩进竖线 + 图标 + 行内容。
+pub(crate) fn render_row_base(
+    depth: usize,
+    is_dir: bool,
+    expanded: bool,
+    content: impl IntoElement,
+) -> gpui::Div {
     row_skeleton(depth)
         .children(guide_lines(depth))
         .child(icon(is_dir, expanded))
-        .child(label(name))
+        .child(label(content))
 }
 
 /// 选中框——absolute 覆盖整行，不参与行布局。
@@ -38,15 +43,15 @@ struct TreeMetrics {
     row_height: gpui::Pixels,
     indent: gpui::Pixels,
     padding: gpui::Pixels,
+    icon_size: gpui::Pixels,
 }
 
 fn metrics() -> TreeMetrics {
-    let padding = space::S6;
-    let indent = typography::ui();
     TreeMetrics {
-        row_height: indent + padding,
-        indent,
-        padding,
+        row_height: typography::ui_line(),
+        indent: typography::ui(),
+        padding: space::S6,
+        icon_size: typography::ui(),
     }
 }
 
@@ -56,7 +61,7 @@ impl TreeMetrics {
     }
 
     fn guide_x(&self, depth: usize) -> gpui::Pixels {
-        self.indent * (depth as f32) + self.indent / 2.0 + self.padding
+        self.indent * (depth as f32) + self.icon_size / 2.0 + self.padding
     }
 }
 
@@ -96,19 +101,18 @@ fn guide_lines(depth: usize) -> Vec<gpui::Div> {
 
 /// 根据条目类型和展开/折叠状态返回对应的图标元素。
 fn icon(is_dir: bool, expanded: bool) -> impl IntoElement {
+    let m = metrics();
     let path = if is_dir {
         if expanded { FOLDER_OPEN } else { FOLDER }
     } else {
         FILE
     };
-    div().flex_shrink_0().child(SvgIcon::new(path))
+    div()
+        .flex_shrink_0()
+        .child(SvgIcon::new(path).size(m.icon_size))
 }
 
-/// 条目名称文本，尾部溢出截断。
-fn label(name: &str) -> gpui::Div {
-    div()
-        .flex_1()
-        .overflow_hidden()
-        .truncate()
-        .child(name.to_string())
+/// 条目名称内容，尾部溢出截断。
+fn label(content: impl IntoElement) -> gpui::Div {
+    div().flex_1().overflow_hidden().truncate().child(content)
 }

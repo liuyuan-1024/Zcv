@@ -4,7 +4,7 @@
 //! 渲染标签栏和编辑器内容，处理键盘事件。
 //! Pane 通过 [`ItemHandle`] trait 统操作标签页，不依赖具体视图类型。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::{
     AnyElement, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Render, ScrollHandle,
@@ -154,6 +154,35 @@ impl Pane {
                 editor.update(cx, |editor, cx| editor.set_soft_wrap(soft_wrap, cx));
             }
         }
+    }
+
+    /// 将已打开编辑器的文件路径随文件或目录重命名一起迁移。
+    pub(crate) fn rename_path(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
+        for item in &self.tabs {
+            let Some(editor) = item.downcast::<Editor>() else {
+                continue;
+            };
+            let (Some(path), Some(project_root)) = ({
+                let editor = editor.read(cx);
+                (
+                    editor.file_path().map(Path::to_path_buf),
+                    editor.project_root().map(Path::to_path_buf),
+                )
+            }) else {
+                continue;
+            };
+            let Ok(suffix) = path.strip_prefix(from) else {
+                continue;
+            };
+            let renamed_path = to.join(suffix);
+            let renamed_root = project_root
+                .strip_prefix(from)
+                .map_or(project_root.clone(), |suffix| to.join(suffix));
+            editor.update(cx, |editor, cx| {
+                editor.set_file_path(renamed_path, renamed_root, cx);
+            });
+        }
+        cx.notify();
     }
 
     /// 激活指定 tab，并滚入视图。

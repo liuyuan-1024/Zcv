@@ -389,6 +389,7 @@ impl Render for ProjectPicker {
                             .left(Pixels::ZERO)
                             .w(win_size.width)
                             .h(win_size.height)
+                            .occlude()
                             .on_mouse_down(MouseButton::Left, move |_, window, _cx| {
                                 dismiss.set(true);
                                 window.refresh();
@@ -406,6 +407,7 @@ impl Render for ProjectPicker {
                             .snap_to_window_with_margin(space::S6)
                             .child(
                                 div()
+                                    .occlude()
                                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                         cx.stop_propagation();
                                     })

@@ -64,6 +64,20 @@ impl BufferStore {
             }
         });
     }
+
+    /// 将已打开 Buffer 的路径索引随文件或目录重命名一起迁移。
+    pub(crate) fn rename_path(&mut self, from: &Path, to: &Path) {
+        self.opened_buffers = self
+            .opened_buffers
+            .drain()
+            .map(|(path, buffer)| {
+                let path = path
+                    .strip_prefix(from)
+                    .map_or(path.clone(), |suffix| to.join(suffix));
+                (path, buffer)
+            })
+            .collect();
+    }
 }
 
 #[cfg(test)]

@@ -416,6 +416,20 @@ impl Editor {
         self.apply_edit_outcome(before_selections, outcome, cx);
     }
 
+    /// 将单个选择区设置为给定的 UTF-8 字节范围。
+    pub fn select_byte_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        let end = self.buffer.read(cx).len_bytes();
+        assert!(range.start <= range.end && ByteOffset::new(range.end) <= end);
+        self.composition = None;
+        self.selections = SelectionSet::new(vec![Selection::new(
+            ByteOffset::new(range.start),
+            ByteOffset::new(range.end),
+        )]);
+        self.request_autoscroll();
+        self.input_layout = None;
+        cx.notify();
+    }
+
     pub fn render_snapshot(&self) -> Snapshot {
         self.display_map.snapshot().clone()
     }

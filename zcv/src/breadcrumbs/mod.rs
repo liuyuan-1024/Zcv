@@ -87,7 +87,20 @@ fn collapse_middle_segments(mut segments: Vec<gpui::SharedString>) -> Vec<gpui::
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use gpui::{AppContext, TestAppContext};
+    use zcv_editor::Editor;
+
     use super::*;
+
+    struct TestView;
+
+    impl Render for TestView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
 
     #[test]
     fn long_breadcrumbs_keep_the_same_prefix_and_suffix_as_zed() {
@@ -106,6 +119,27 @@ mod tests {
             ]
         );
     }
+
+    #[gpui::test]
+    fn path_change_does_not_read_editor_during_its_update(cx: &mut TestAppContext) {
+        let editor = cx.new(Editor::single_line);
+        let breadcrumbs = cx.new(|_| Breadcrumbs::new());
+
+        cx.add_window_view(|window, cx| {
+            breadcrumbs.update(cx, |breadcrumbs, cx| {
+                let item: &dyn ItemHandle = &editor;
+                breadcrumbs.set_active_item(Some(item), window, cx);
+            });
+            editor.update(cx, |editor, cx| {
+                editor.set_file_path(
+                    PathBuf::from("/project/new.rs"),
+                    PathBuf::from("/project"),
+                    cx,
+                );
+            });
+            TestView
+        });
+    }
 }
 
 impl ToolbarItemView for Breadcrumbs {
@@ -123,23 +157,20 @@ impl ToolbarItemView for Breadcrumbs {
             return ToolbarItemLocation::Hidden;
         };
 
+        let location = item.breadcrumb_location(cx);
         let this = cx.entity().downgrade();
         self.subscription = Some(item.subscribe_to_item_events(
             _window,
             cx,
             Box::new(move |ItemEvent::UpdateBreadcrumbs, cx| {
-                this.update(cx, |this, cx| {
+                this.update(cx, |_, cx| {
                     cx.notify();
-                    if let Some(active_item) = this.active_item.as_ref() {
-                        cx.emit(ToolbarItemEvent::ChangeLocation(
-                            active_item.breadcrumb_location(cx),
-                        ))
-                    }
+                    cx.emit(ToolbarItemEvent::ChangeLocation(location));
                 })
                 .ok();
             }),
         ));
         self.active_item = Some(item.boxed_clone());
-        item.breadcrumb_location(cx)
+        location
     }
 }

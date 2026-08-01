@@ -31,7 +31,7 @@ use top_bar::TopBar;
 use window_controls::{handle_minimize, handle_quit, handle_toggle_maximize};
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -48,7 +48,7 @@ use crate::language_selector::ActiveBufferLanguage;
 use crate::language_tools::LspButton;
 use crate::project::{Project, ProjectEvent};
 use crate::project_search::ProjectSearchButton;
-use crate::project_tree::{OnOpenFile, ProjectTree};
+use crate::project_tree::{OnCreate, OnOpenFile, OnRename, ProjectTree};
 use crate::recent_projects::{self, OnProjectSelected, ToggleProjectPicker};
 use crate::settings::SettingsStore;
 use zcv_theme::{color, typography};
@@ -115,6 +115,8 @@ impl Workspace {
         let weak_self: gpui::WeakEntity<Self> = cx.weak_entity();
         let weak_project_switcher = weak_self.clone();
         let weak_open_file = weak_self.clone();
+        let weak_rename = weak_self.clone();
+        let weak_create = weak_self.clone();
 
         let keybindings = keymap::load(cx).expect("内置 keymap 应完整有效");
         cx.bind_keys(keybindings.bindings.clone());
@@ -151,6 +153,20 @@ impl Workspace {
                 },
             );
             tree.set_on_open_file(on_open_file);
+            let on_rename: OnRename = Rc::new(move |from, to, cx| {
+                let Some(workspace) = weak_rename.upgrade() else {
+                    anyhow::bail!("工作区已关闭");
+                };
+                workspace.update(cx, |workspace, cx| workspace.rename_path(&from, &to, cx))
+            });
+            tree.set_on_rename(on_rename);
+            let on_create: OnCreate = Rc::new(move |path, is_dir, cx| {
+                let Some(workspace) = weak_create.upgrade() else {
+                    anyhow::bail!("工作区已关闭");
+                };
+                workspace.update(cx, |workspace, cx| workspace.create_path(&path, is_dir, cx))
+            });
+            tree.set_on_create(on_create);
             tree
         });
 
@@ -421,6 +437,29 @@ impl Workspace {
         if let Err(error) = result {
             eprintln!("保存文件失败（{}）：{error}", path.display());
         }
+    }
+
+    fn rename_path(
+        &mut self,
+        from: &Path,
+        to: &Path,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        self.project
+            .update(cx, |project, cx| project.rename_path(from, to, cx))?;
+        self.pane
+            .update(cx, |pane, cx| pane.rename_path(from, to, cx));
+        Ok(())
+    }
+
+    fn create_path(
+        &mut self,
+        path: &Path,
+        is_dir: bool,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        self.project
+            .update(cx, |project, cx| project.create_path(path, is_dir, cx))
     }
 
     /// 切换面板焦点：通过 panel_action_map 找到对应的 Dock 进行操作。

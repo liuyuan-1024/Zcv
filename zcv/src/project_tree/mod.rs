@@ -7,12 +7,16 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use gpui::{
     Context, Div, Entity, KeyContext, MouseButton, ScrollStrategy, UniformListScrollHandle, Window,
     actions, div, prelude::*, uniform_list,
 };
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
+use crate::settings::SettingsStore;
 use crate::ui::tree;
 use crate::workspace::Panel;
 use zcv_editor::Editor;
@@ -89,10 +93,13 @@ impl ProjectTree {
         let entry_name_editor = cx.new(Editor::single_line);
         cx.observe(&entry_name_editor, |_, _, cx| cx.notify())
             .detach();
+        let exclusions = SettingsStore::file_scan_exclusions(cx);
+        let mut state = ProjectTreeState::new(root.clone());
+        state.set_filter(&exclusions);
         Self {
             focus,
-            root: root.clone(),
-            state: Rc::new(RefCell::new(ProjectTreeState::new(root))),
+            root,
+            state: Rc::new(RefCell::new(state)),
             scroll_handle: UniformListScrollHandle::default(),
             entry_name_editor,
             edit_state: None,
@@ -129,11 +136,17 @@ impl ProjectTree {
             return;
         }
         self.root = root.clone();
+        let exclusions = SettingsStore::file_scan_exclusions(cx);
         self.state.borrow_mut().set_root(root.clone());
+        self.state.borrow_mut().set_filter(&exclusions);
+        self.state.borrow_mut().refresh_rows();
         cx.notify();
     }
 
+    /// 刷新行模型；同时从设置读取最新的扫描排除名单并重建过滤规则。
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        let exclusions = SettingsStore::file_scan_exclusions(cx);
+        self.state.borrow_mut().set_filter(&exclusions);
         self.state.borrow_mut().refresh_rows();
         cx.notify();
     }
@@ -178,6 +191,7 @@ impl ProjectTree {
                 is_dir: self.entry_name_editor.read(cx).text(cx).ends_with('/'),
                 expanded: false,
                 is_new: true,
+                is_ignored: false,
             },
         );
         rows
@@ -640,7 +654,15 @@ fn render_row(
             })
             .child(render_context.entry_name_editor.clone())
     } else {
-        div().flex_1().overflow_hidden().truncate().child(name)
+        // gitignored 条目淡显。
+        div()
+            .flex_1()
+            .overflow_hidden()
+            .truncate()
+            .when(row.is_ignored, |element| {
+                element.text_color(color::current().text_muted)
+            })
+            .child(name)
     };
 
     tree::render_row_base(depth, is_dir, row.expanded, content)
@@ -725,6 +747,64 @@ struct ProjectTreeRow {
     is_dir: bool,
     expanded: bool,
     is_new: bool,
+    /// 命中 gitignore 规则（目录不展开内容、文件淡显）。
+    is_ignored: bool,
+}
+
+/// 项目树的过滤规则：扫描排除（glob 名单）+ gitignore。
+///
+/// file_scan_exclusions 命中的条目根本不在树中加载；
+/// gitignore 命中的条目显示但标记为忽略。
+struct TreeFilter {
+    /// 用户配置的扫描排除 glob。
+    exclusions: GlobSet,
+    /// 项目根及子目录链上的 .gitignore 匹配器。
+    gitignore: Option<Arc<Gitignore>>,
+}
+
+impl TreeFilter {
+    fn new(root: &Path, exclusions: &[String]) -> Self {
+        let mut builder = GlobSetBuilder::new();
+        for glob in exclusions {
+            if let Ok(glob) = Glob::new(glob) {
+                builder.add(glob);
+            }
+        }
+        let root_ignore = root.join(".gitignore");
+        let root_files = if root_ignore.is_file() {
+            vec![root_ignore]
+        } else {
+            Vec::new()
+        };
+        Self {
+            exclusions: builder.build().unwrap_or_default(),
+            gitignore: Self::build_gitignore(root, &root_files),
+        }
+    }
+
+    /// 用从项目根到目标目录链上的全部 .gitignore 构建匹配器。
+    ///
+    /// 每遇到一个目录的 .gitignore 就重建一次；
+    /// 链上文件数通常只有 1-2 个，且只在刷新行模型时调用，成本可控。
+    fn build_gitignore(root: &Path, ignore_files: &[PathBuf]) -> Option<Arc<Gitignore>> {
+        if ignore_files.is_empty() {
+            return None;
+        }
+        let mut builder = GitignoreBuilder::new(root);
+        for file in ignore_files {
+            if let Some(error) = builder.add(file) {
+                log::warn!("无法加载 .gitignore {:?}：{error}", file);
+            }
+        }
+        builder.build().ok().map(Arc::new)
+    }
+
+    /// 路径的任一祖先命中排除名单即排除。
+    fn is_excluded(&self, rel_path: &Path) -> bool {
+        rel_path
+            .ancestors()
+            .any(|ancestor| self.exclusions.is_match(ancestor))
+    }
 }
 
 struct ProjectTreeState {
@@ -733,21 +813,33 @@ struct ProjectTreeState {
     selected: Option<PathBuf>,
     active_path: Option<PathBuf>,
     rows: Vec<ProjectTreeRow>,
+    /// 扫描排除 glob（由 ProjectTree 注入），根目录变化时用于重建过滤。
+    exclusions: Vec<String>,
+    filter: TreeFilter,
 }
 
 impl ProjectTreeState {
     fn new(root: PathBuf) -> Self {
         let mut expanded = HashSet::new();
         expanded.insert(root.clone());
+        let filter = TreeFilter::new(&root, &[]);
         let mut state = Self {
             root,
             expanded,
             selected: None,
             active_path: None,
             rows: Vec::new(),
+            exclusions: Vec::new(),
+            filter,
         };
         state.refresh_rows();
         state
+    }
+
+    /// 注入扫描排除规则并重建过滤（由 ProjectTree 在创建或设置变化时调用）。
+    fn set_filter(&mut self, exclusions: &[String]) {
+        self.exclusions = exclusions.to_vec();
+        self.filter = TreeFilter::new(&self.root, exclusions);
     }
 
     /// 更换根目录，重置展开和选中状态。
@@ -757,6 +849,7 @@ impl ProjectTreeState {
         self.expanded.insert(self.root.clone());
         self.selected = None;
         self.active_path = None;
+        self.filter = TreeFilter::new(&self.root, &self.exclusions);
         self.refresh_rows();
     }
 
@@ -781,10 +874,13 @@ impl ProjectTreeState {
             is_dir: true,
             expanded: root_expanded,
             is_new: false,
+            is_ignored: false,
         });
 
         if root_expanded {
-            self.collect_children(&self.root, 1, &mut rows);
+            let root = self.root.clone();
+            let gitignore = self.filter.gitignore.clone();
+            self.collect_children(&root, 1, &mut rows, gitignore, Vec::new(), false);
         }
 
         self.rows = rows;
@@ -807,7 +903,29 @@ impl ProjectTreeState {
         }
     }
 
-    fn collect_children(&self, dir: &Path, depth: usize, rows: &mut Vec<ProjectTreeRow>) {
+    /// 递归收集目录子项；`gitignore` 是父链上传下来的匹配器，
+    /// `ignore_files` 是已发现的 .gitignore 文件链，`inherited_ignored` 表示父目录已被 gitignore 命中（子项全部继承忽略）。
+    fn collect_children(
+        &mut self,
+        dir: &Path,
+        depth: usize,
+        rows: &mut Vec<ProjectTreeRow>,
+        gitignore: Option<Arc<Gitignore>>,
+        ignore_files: Vec<PathBuf>,
+        inherited_ignored: bool,
+    ) {
+        // 该目录自己的 .gitignore 存在时，加入链并重建匹配器。
+        let (gitignore, ignore_files) = {
+            let dir_ignore = dir.join(".gitignore");
+            if dir_ignore.is_file() {
+                let mut files = ignore_files;
+                files.push(dir_ignore);
+                (TreeFilter::build_gitignore(&self.root, &files), files)
+            } else {
+                (gitignore, ignore_files)
+            }
+        };
+
         let mut entries: Vec<_> = match std::fs::read_dir(dir) {
             Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| e.path()).collect(),
             Err(_) => return,
@@ -827,6 +945,17 @@ impl ProjectTreeState {
                 None => continue,
             };
             let is_dir = entry.is_dir();
+            // 扫描排除名单命中的条目根本不加载。
+            let Ok(rel) = entry.strip_prefix(&self.root) else {
+                continue;
+            };
+            if self.filter.is_excluded(rel) {
+                continue;
+            }
+            let is_ignored = inherited_ignored
+                || gitignore
+                    .as_ref()
+                    .is_some_and(|g| g.matched(rel, is_dir).is_ignore());
             let is_expanded = self.expanded.contains(&entry);
             rows.push(ProjectTreeRow {
                 path: entry.clone(),
@@ -835,9 +964,18 @@ impl ProjectTreeState {
                 is_dir,
                 expanded: is_expanded,
                 is_new: false,
+                is_ignored,
             });
-            if is_dir && is_expanded {
-                self.collect_children(&entry, depth + 1, rows);
+            // gitignored 目录不展开内容，避免 node_modules 这类目录撑爆行模型。
+            if is_dir && is_expanded && !is_ignored {
+                self.collect_children(
+                    &entry,
+                    depth + 1,
+                    rows,
+                    gitignore.clone(),
+                    ignore_files.clone(),
+                    is_ignored,
+                );
             }
         }
     }
@@ -932,6 +1070,110 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+
+    #[test]
+    fn file_scan_exclusions_hide_entries_and_their_children() {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let target = directory.path().join("target");
+        std::fs::create_dir_all(target.join("debug")).expect("应创建排除目录");
+        std::fs::write(target.join("debug").join("app"), "binary").expect("应创建排除文件");
+        let visible = directory.path().join("main.rs");
+        std::fs::write(&visible, "fn main() {}").expect("应创建可见文件");
+
+        let mut state = ProjectTreeState::new(directory.path().to_path_buf());
+        state.set_filter(&["**/target".to_string()]);
+        state.expanded.insert(target.clone());
+        state.refresh_rows();
+
+        let rows = state.visible_rows().to_vec();
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.path == target || row.path.starts_with(&target)),
+            "排除名单命中的目录及其子项都不应出现"
+        );
+        assert!(rows.iter().any(|row| row.path == visible));
+    }
+
+    #[test]
+    fn gitignored_directories_do_not_expand_and_files_are_marked() {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let node_modules = directory.path().join("node_modules");
+        std::fs::create_dir_all(node_modules.join("pkg")).expect("应创建被忽略目录");
+        std::fs::write(node_modules.join("pkg").join("index.js"), "// ignored")
+            .expect("应创建被忽略文件");
+        std::fs::write(
+            directory.path().join(".gitignore"),
+            "node_modules/\n*.log\n",
+        )
+        .expect("应写 .gitignore");
+        std::fs::write(directory.path().join("app.log"), "log").expect("应创建日志文件");
+        let visible = directory.path().join("main.js");
+        std::fs::write(&visible, "console.log(1)").expect("应创建可见文件");
+
+        let mut state = ProjectTreeState::new(directory.path().to_path_buf());
+        state.expanded.insert(node_modules.clone());
+        state.refresh_rows();
+
+        let rows = state.visible_rows().to_vec();
+        let nm = rows
+            .iter()
+            .find(|row| row.path == node_modules)
+            .expect("node_modules 行应存在");
+        assert!(nm.is_ignored);
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.path.starts_with(&node_modules.join("pkg"))),
+            "被忽略目录不应展开内容"
+        );
+        assert!(
+            rows.iter()
+                .find(|row| row.path == directory.path().join("app.log"))
+                .is_some_and(|row| row.is_ignored),
+            "*.log 文件应被标记为忽略"
+        );
+        assert!(
+            !rows
+                .iter()
+                .find(|row| row.path == visible)
+                .expect("可见文件行应存在")
+                .is_ignored
+        );
+    }
+
+    #[test]
+    fn nested_gitignore_applies_within_its_directory() {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let sub = directory.path().join("sub");
+        let nested = sub.join("secret.txt");
+        std::fs::create_dir_all(&sub).expect("应创建子目录");
+        std::fs::write(sub.join(".gitignore"), "secret.txt\n").expect("应写嵌套 .gitignore");
+        std::fs::write(&nested, "secret").expect("应创建被忽略文件");
+        let visible = sub.join("visible.txt");
+        std::fs::write(&visible, "visible").expect("应创建可见文件");
+        std::fs::write(directory.path().join(".gitignore"), "*.log\n").expect("应写根 .gitignore");
+
+        let mut state = ProjectTreeState::new(directory.path().to_path_buf());
+        state.expanded.insert(sub.clone());
+        state.refresh_rows();
+
+        let rows = state.visible_rows().to_vec();
+        assert!(
+            rows.iter()
+                .find(|row| row.path == nested)
+                .expect("secret.txt 行应存在")
+                .is_ignored,
+            "嵌套 .gitignore 的规则应生效"
+        );
+        assert!(
+            !rows
+                .iter()
+                .find(|row| row.path == visible)
+                .expect("visible.txt 行应存在")
+                .is_ignored
+        );
     }
 
     #[test]

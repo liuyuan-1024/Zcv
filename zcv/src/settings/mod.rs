@@ -57,43 +57,77 @@ impl From<SoftWrapMode> for SoftWrap {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-struct UserSettingsContent {
-    theme: Option<ThemeContent>,
-    soft_wrap: Option<SoftWrapMode>,
-    preferred_line_length: Option<usize>,
+/// 字段级容错：该字段值非法时解析为「未配置」（`None`），
+/// 由 merge 层用内置默认补齐，不影响其他字段。
+/// JSON 语法错误仍整体失败。
+///
+/// 先解析成 `Value` 再转换：serde_json_lenient 对 enum 字段的非法值走 `peek_error` 路径且不消费 token，直接 `T::deserialize(...).ok()`会让后续字段错位；`Value` 解析总是消费完整 token。
+fn fallible<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = serde_json_lenient::Value::deserialize(deserializer)?;
+    Ok(serde_json_lenient::from_value(value).ok())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+struct UserSettingsContent {
+    #[serde(deserialize_with = "fallible")]
+    theme: Option<ThemeContent>,
+    #[serde(deserialize_with = "fallible")]
+    soft_wrap: Option<SoftWrapMode>,
+    #[serde(deserialize_with = "fallible")]
+    preferred_line_length: Option<usize>,
+    #[serde(deserialize_with = "fallible")]
+    file_scan_exclusions: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct UserSettings {
     pub(crate) theme: Theme,
     pub(crate) soft_wrap: SoftWrap,
     pub(crate) preferred_line_length: usize,
+    /// 项目树扫描时完全排除的 glob 名单。
+    pub(crate) file_scan_exclusions: Vec<String>,
+}
+
+/// 解析内置初始设置作为默认层（单一数据源：`initial_user_settings.json`）。
+fn default_content() -> UserSettingsContent {
+    serde_json_lenient::from_str(INITIAL_USER_SETTINGS).expect("内置初始设置应合法")
 }
 
 impl Default for UserSettings {
     fn default() -> Self {
-        Self {
-            theme: Theme::System,
-            soft_wrap: SoftWrap::None,
-            preferred_line_length: 80,
-        }
+        Self::merge(UserSettingsContent::default())
     }
 }
 
 impl UserSettings {
+    /// 将用户配置合并到内置默认层：用户显式配置的字段覆盖默认，
+    /// 未配置的字段（`None`）回退到内置初始设置。
     fn merge(content: UserSettingsContent) -> Self {
-        let defaults = Self::default();
+        let defaults = default_content();
         Self {
-            theme: content.theme.map(Theme::from).unwrap_or(defaults.theme),
+            theme: content
+                .theme
+                .or(defaults.theme)
+                .map(Theme::from)
+                .unwrap_or(Theme::System),
             soft_wrap: content
                 .soft_wrap
+                .or(defaults.soft_wrap)
                 .map(SoftWrap::from)
-                .unwrap_or(defaults.soft_wrap),
+                .unwrap_or(SoftWrap::None),
             preferred_line_length: content
                 .preferred_line_length
-                .unwrap_or(defaults.preferred_line_length),
+                .or(defaults.preferred_line_length)
+                .unwrap_or(80),
+            file_scan_exclusions: content
+                .file_scan_exclusions
+                .or(defaults.file_scan_exclusions)
+                .unwrap_or_default(),
         }
     }
 }
@@ -109,7 +143,14 @@ impl Global for SettingsStore {}
 
 impl SettingsStore {
     pub(crate) fn get(cx: &App) -> UserSettings {
-        cx.global::<Self>().settings
+        cx.global::<Self>().settings.clone()
+    }
+
+    /// 读取扫描排除名单；SettingsStore 未初始化（如单元测试）时回退到默认名单。
+    pub(crate) fn file_scan_exclusions(cx: &App) -> Vec<String> {
+        cx.try_global::<Self>()
+            .map(|store| store.settings.file_scan_exclusions.clone())
+            .unwrap_or_else(|| UserSettings::default().file_scan_exclusions)
     }
 
     fn set_user_settings(&mut self, content: &str) -> Result<bool> {
@@ -266,13 +307,38 @@ mod tests {
     #[test]
     fn missing_fields_use_defaults() {
         let content = parse_user_settings(r#"{"theme":"one-light"}"#).unwrap();
+        let settings = UserSettings::merge(content);
+        assert_eq!(settings.theme, Theme::OneLight);
+        assert_eq!(settings.soft_wrap, SoftWrap::None);
+        assert_eq!(settings.preferred_line_length, 80);
+        assert!(
+            settings
+                .file_scan_exclusions
+                .iter()
+                .any(|glob| glob == "**/.git"),
+            "默认排除名单应包含 VCS 目录"
+        );
+    }
+
+    #[test]
+    fn file_scan_exclusions_override_the_default_list() {
+        let content =
+            parse_user_settings(r#"{"file_scan_exclusions":["**/target","**/.cache"]}"#).unwrap();
+        let settings = UserSettings::merge(content);
         assert_eq!(
-            UserSettings::merge(content),
-            UserSettings {
-                theme: Theme::OneLight,
-                soft_wrap: SoftWrap::None,
-                preferred_line_length: 80,
-            }
+            settings.file_scan_exclusions,
+            vec!["**/target".to_string(), "**/.cache".to_string()]
+        );
+    }
+
+    #[test]
+    fn explicit_empty_exclusions_do_not_fall_back_to_defaults() {
+        // 显式写空名单表示用户想清空排除，不应回退到内置默认名单。
+        let content = parse_user_settings(r#"{"file_scan_exclusions":[]}"#).unwrap();
+        let settings = UserSettings::merge(content);
+        assert!(
+            settings.file_scan_exclusions.is_empty(),
+            "显式空名单应保持为空"
         );
     }
 
@@ -293,9 +359,38 @@ mod tests {
     }
 
     #[test]
-    fn legacy_bool_soft_wrap_is_rejected() {
-        // 旧格式 bool 不再兼容，解析直接失败。
-        assert!(parse_user_settings(r#"{"soft_wrap": true}"#).is_err());
+    fn invalid_field_value_falls_back_to_default() {
+        // 非法值字段回退为未配置，由 merge 层用内置默认补齐。
+        let settings = UserSettings::merge(parse_user_settings(r#"{"soft_wrap": true}"#).unwrap());
+        assert_eq!(settings.soft_wrap, SoftWrap::None);
+
+        let settings = UserSettings::merge(parse_user_settings(r#"{"theme":"unknown"}"#).unwrap());
+        assert_eq!(settings.theme, Theme::System);
+
+        let settings = UserSettings::merge(
+            parse_user_settings(r#"{"file_scan_exclusions":"not-a-list"}"#).unwrap(),
+        );
+        assert!(
+            settings
+                .file_scan_exclusions
+                .iter()
+                .any(|glob| glob == "**/.git"),
+            "非数组名单应回退到内置默认名单"
+        );
+    }
+
+    #[test]
+    fn invalid_field_does_not_affect_other_fields() {
+        // 对齐 Zed 的 fallible_options：坏字段单独回退默认，好字段照常生效。
+        let settings = UserSettings::merge(
+            parse_user_settings(
+                r#"{"soft_wrap":"bogus","theme":"one-dark","file_scan_exclusions":["**/target"]}"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(settings.soft_wrap, SoftWrap::None);
+        assert_eq!(settings.theme, Theme::OneDark);
+        assert_eq!(settings.file_scan_exclusions, vec!["**/target".to_string()]);
     }
 
     #[test]
@@ -324,13 +419,6 @@ mod tests {
     fn bundled_initial_settings_are_valid() {
         let content = parse_user_settings(INITIAL_USER_SETTINGS).unwrap();
         assert_eq!(UserSettings::merge(content), UserSettings::default());
-    }
-
-    #[test]
-    fn invalid_theme_is_rejected() {
-        let error = parse_user_settings(r#"{"theme":"unknown"}"#).unwrap_err();
-        assert!(error.to_string().contains("不是合法的 ZCV settings JSON"));
-        assert!(format!("{error:#}").contains("unknown variant"));
     }
 
     #[test]

@@ -331,6 +331,10 @@ impl Workspace {
                 workspace.pane.update(cx, |pane, cx| {
                     pane.set_soft_wrap(settings.soft_wrap, settings.preferred_line_length, cx)
                 });
+                // 扫描排除名单变化时重建项目树行模型。
+                workspace
+                    .project_tree
+                    .update(cx, |tree, cx| tree.refresh(cx));
                 cx.notify();
             });
 

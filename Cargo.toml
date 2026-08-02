@@ -47,6 +47,7 @@ unicode-segmentation = "1.13.2"
 
 # ---- 工作区层（zcv-workspace） ----
 anyhow = "1.0"
+globset = "0.4"
 ignore = "0.4"
 log = "0.4"
 trash = "5"

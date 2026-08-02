@@ -140,7 +140,7 @@ impl Workspace {
         let project = cx.new(|cx| Project::new(root.clone(), cx));
         let root_for_tree = root.clone();
         let project_tree: Entity<ProjectTree> = cx.new(|cx| {
-            let mut tree = ProjectTree::new(root_for_tree, cx);
+            let mut tree = ProjectTree::new(root_for_tree, project.clone(), cx);
             let on_open_file: OnOpenFile = Rc::new(
                 move |path: PathBuf,
                       focus_opened_item: bool,

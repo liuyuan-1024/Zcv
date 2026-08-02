@@ -1,0 +1,14 @@
+[package]
+name = "zcv-git"
+version.workspace = true
+edition.workspace = true
+description = "zcv —— git 命令行后端（仓库发现、status/numstat/cat-file 解析）"
+
+[dependencies]
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

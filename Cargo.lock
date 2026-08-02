@@ -2860,22 +2860,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ignore"
-version = "0.4.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f8a7b8211e695a1d0cd91cace480d4d0bd57667ab10277cc412c5f7f4884f83"
-dependencies = [
- "crossbeam-deque",
- "globset",
- "log",
- "memchr",
- "regex-automata",
- "same-file",
- "walkdir",
- "winapi-util",
-]
-
-[[package]]
 name = "image"
 version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7503,7 +7487,6 @@ dependencies = [
  "crossbeam-channel",
  "globset",
  "gpui",
- "ignore",
  "log",
  "notify",
  "regex",
@@ -7515,6 +7498,7 @@ dependencies = [
  "trash",
  "zcv-editor",
  "zcv-engine",
+ "zcv-git",
  "zcv-language",
  "zcv-theme",
 ]
@@ -7542,6 +7526,14 @@ dependencies = [
  "ropey",
  "thiserror 2.0.19",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "zcv-git"
+version = "0.7.7"
+dependencies = [
+ "anyhow",
+ "tempfile",
 ]
 
 [[package]]

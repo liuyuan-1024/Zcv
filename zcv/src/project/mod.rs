@@ -4,16 +4,19 @@
 //! 窗口布局、Pane、Dock 与其他界面状态仍由 `Workspace` 管理。
 
 mod buffer_store;
+mod git_store;
 
 use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use gpui::{AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
+use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use zcv_engine::{Buffer, BufferLoadError, BufferSaveError};
+use zcv_git::FileStatus;
 use zcv_language::LanguageBuffer;
 
 use self::buffer_store::BufferStore;
+use self::git_store::{GitStore, StatusEntry};
 use crate::fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,6 +28,7 @@ pub(crate) enum ProjectEvent {
 pub(crate) struct Project {
     root: PathBuf,
     buffer_store: BufferStore,
+    git_store: Entity<GitStore>,
     fs_watcher: Arc<dyn Watcher>,
     _fs_task: Task<()>,
 }
@@ -52,9 +56,13 @@ impl Project {
             }
         });
 
+        let git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
+        git_store.update(cx, |store, cx| store.schedule_scan(cx));
+
         Self {
             root,
             buffer_store: BufferStore::new(),
+            git_store,
             fs_watcher,
             _fs_task: fs_task,
         }
@@ -62,6 +70,10 @@ impl Project {
 
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(crate) fn git_store(&self) -> Entity<GitStore> {
+        self.git_store.clone()
     }
 
     pub(crate) fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) -> anyhow::Result<()> {
@@ -77,6 +89,9 @@ impl Project {
         }
         self.root = root.clone();
         self.buffer_store = BufferStore::new();
+        self.git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
+        self.git_store
+            .update(cx, |store, cx| store.schedule_scan(cx));
         cx.emit(ProjectEvent::RootChanged(root));
         Ok(())
     }
@@ -95,13 +110,21 @@ impl Project {
         path: &Path,
         cx: &mut Context<Self>,
     ) -> Result<(), BufferSaveError> {
-        buffer.update(cx, |buffer, cx| {
+        let result = buffer.update(cx, |buffer, cx| {
             let result = write_buffer_to_path(buffer, path);
             if result.is_ok() {
                 cx.notify();
             }
             result
-        })
+        });
+        // 保存成功后立即刷新 git 状态（快路径，不等 fs 事件；
+        // fs 事件晚到会被 job 去重吸收）。
+        if result.is_ok() {
+            self.git_store.update(cx, |store, cx| {
+                store.refresh_statuses_for_paths(std::slice::from_ref(&path.to_path_buf()), cx);
+            });
+        }
+        result
     }
 
     /// 在同一父目录内重命名文件或目录，并迁移项目持有的路径状态。
@@ -206,7 +229,52 @@ impl Project {
                 self.buffer_store.reload_buffer_for_path(&event.path, cx);
             }
         }
+
+        // git 状态刷新：删除/失步走全量扫描（涉及条目消失），文件变化走增量。
+        // `.git/` 内路径不过滤：进入增量 job 无输出、无害，且 `.git/HEAD` 变化借此触发 head 重读（兜底外部 checkout）。
+        let structural = events.iter().any(|event| {
+            matches!(
+                event.kind,
+                Some(PathEventKind::Removed | PathEventKind::Rescan)
+            )
+        });
+        let changed: Vec<PathBuf> = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    Some(PathEventKind::Changed | PathEventKind::Created)
+                )
+            })
+            .map(|event| event.path.clone())
+            .collect();
+        self.git_store.update(cx, |store, cx| {
+            if structural {
+                store.schedule_scan(cx);
+            } else if !changed.is_empty() {
+                store.refresh_statuses_for_paths(&changed, cx);
+            }
+        });
+
         cx.emit(ProjectEvent::EntriesChanged);
+    }
+
+    /// 查询文件的 git 状态（不在任何仓库或未跟踪时对应状态）。
+    pub(crate) fn git_status_for_path(
+        &self,
+        path: &Path,
+        cx: &Context<Self>,
+    ) -> Option<StatusEntry> {
+        self.git_store.read(cx).status_for_path(path).copied()
+    }
+
+    /// 查询目录的聚合 git 状态（子项中优先级最高的状态）。
+    pub(crate) fn git_status_for_directory(
+        &self,
+        path: &Path,
+        cx: &Context<Self>,
+    ) -> Option<FileStatus> {
+        self.git_store.read(cx).status_for_directory(path)
     }
 }
 
@@ -369,6 +437,183 @@ mod tests {
         });
 
         assert!(!file.exists(), "被删除文件应不再位于原路径");
+    }
+
+    /// 创建带一个初始提交的临时 git 仓库，返回 (仓库根, 目录句柄)。
+    fn test_git_repo() -> (PathBuf, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+        let root = temp_dir.path().to_path_buf();
+        run_git(&root, &["init", "-q", "-b", "master"]);
+        run_git(&root, &["config", "user.email", "test@example.com"]);
+        run_git(&root, &["config", "user.name", "Test User"]);
+        fs::write(root.join("tracked.txt"), "第一行\n第二行\n").expect("应写入初始文件");
+        run_git(&root, &["add", "tracked.txt"]);
+        run_git(&root, &["commit", "-q", "-m", "initial"]);
+        (root, temp_dir)
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("应执行成功");
+        assert!(
+            output.status.success(),
+            "git {:?} 失败：{}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[gpui::test]
+    fn fs_events_trigger_incremental_git_status_refresh(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        cx.run_until_parked();
+
+        // 初始扫描后文件干净，无 git 状态。
+        let file = root.join("tracked.txt");
+        assert!(
+            project
+                .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+                .is_none()
+        );
+
+        // 文件被外部修改 → fs 事件 → 增量刷新。
+        fs::write(&file, "已修改\n").expect("应修改文件");
+        project.update(cx, |project, cx| {
+            project.process_fs_events(
+                vec![PathEvent {
+                    path: file.clone(),
+                    kind: Some(PathEventKind::Changed),
+                }],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let entry = project
+            .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+            .expect("应有 git 状态");
+        assert!(entry.status.is_modified());
+    }
+
+    #[gpui::test]
+    fn fs_removal_events_trigger_full_rescan(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        cx.run_until_parked();
+
+        // 未跟踪文件出现，随后被删除：Removed 事件应触发全量扫描，
+        // 状态表不再包含该路径。
+        let file = root.join("scratch.txt");
+        fs::write(&file, "临时\n").expect("应创建文件");
+        project.update(cx, |project, cx| {
+            project.process_fs_events(
+                vec![PathEvent {
+                    path: file.clone(),
+                    kind: Some(PathEventKind::Created),
+                }],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert!(
+            project
+                .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+                .is_some()
+        );
+
+        fs::remove_file(&file).expect("应删除文件");
+        project.update(cx, |project, cx| {
+            project.process_fs_events(
+                vec![PathEvent {
+                    path: file.clone(),
+                    kind: Some(PathEventKind::Removed),
+                }],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert!(
+            project
+                .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+                .is_none()
+        );
+    }
+
+    // 依赖真实 FSEvents 事件：并行测试下系统会合并/延迟事件导致偶发超时，
+    // 串行（--test-threads=1）或单独运行时稳定。用 `cargo test -- --ignored` 显式验证。
+    #[gpui::test]
+    #[ignore]
+    fn real_fs_watcher_triggers_git_refresh(cx: &mut gpui::TestAppContext) {
+        // 模拟生产的 Project root：set_root 会 canonicalize（macOS 上
+        // /var → /private/var），否则 FSEvents 返回的实际路径与注册路径
+        // 前缀不匹配，事件会被 fs_watcher 过滤掉。
+        let (root, _temp) = test_git_repo();
+        let root = root.canonicalize().expect("应可 canonicalize");
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        cx.run_until_parked();
+
+        // 等 notify 在后台线程建立 watch，避免写入事件丢失。
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        // 真实写文件 → notify 监听 → process_fs_events → git 增量刷新。
+        fs::write(root.join("tracked.txt"), "外部修改\n").expect("应写入文件");
+        let file = root.join("tracked.txt");
+        // FSEvents 事件在并行测试负载下可能延迟数秒，放宽超时。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            cx.run_until_parked();
+            if project
+                .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+                .is_some()
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "等待 fs 事件驱动的 git 刷新超时"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[gpui::test]
+    fn saving_buffer_refreshes_git_status(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        cx.run_until_parked();
+
+        // 打开并修改 buffer（未保存），git 状态应仍为干净（status 反映磁盘）。
+        let file = root.join("tracked.txt");
+        let buffer = project
+            .update(cx, |project, cx| project.open_buffer(&file, cx))
+            .expect("应打开文件");
+        let engine_buffer = cx.read_entity(&buffer, |language_buffer, _| language_buffer.buffer());
+        engine_buffer
+            .update(cx, |buffer, _| {
+                buffer.insert(buffer.len_bytes(), "新增行\n")
+            })
+            .expect("编辑应成功");
+        cx.run_until_parked();
+        assert!(
+            project
+                .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+                .is_none()
+        );
+
+        // 保存后 git 状态应变为已修改。
+        project
+            .update(cx, |project, cx| {
+                project.save_buffer(&engine_buffer, &file, cx)
+            })
+            .expect("保存应成功");
+        cx.run_until_parked();
+        let entry = project
+            .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+            .expect("保存后应有 git 状态");
+        assert!(entry.status.is_modified());
     }
 
     fn test_file_path() -> PathBuf {

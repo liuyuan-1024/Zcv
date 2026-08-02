@@ -4,22 +4,22 @@
 //! 文件系统只在刷新模型时读取；渲染与键盘导航只消费缓存。
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use gpui::{
     Context, Div, Entity, KeyContext, MouseButton, ScrollStrategy, UniformListScrollHandle, Window,
     actions, div, prelude::*, uniform_list,
 };
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
+use crate::project::Project;
 use crate::settings::SettingsStore;
 use crate::ui::tree;
 use crate::workspace::Panel;
 use zcv_editor::Editor;
+use zcv_git::{FileStatus, StatusCode};
 use zcv_theme::color;
 
 actions!(
@@ -52,23 +52,36 @@ pub(crate) type OnCreate = Rc<dyn Fn(PathBuf, bool, &mut gpui::App) -> anyhow::R
 /// 带 `Window`：删除文件后需要关闭打开它的 tab，工具栏更新需要 window。
 pub(crate) type OnTrash = Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App) -> anyhow::Result<()>>;
 
-/// 选中并激活项目树中的节点（目录→展开/折叠，文件→打开）。
-fn activate_node(
+/// 查询当前可见行的 git 状态并更新行模型（目录行聚合、文件行精确）。
+///
+/// 由行集合变化的入口调用：展开/折叠、换根、git 事件。`cx` 只要求
+/// `App`——鼠标点击闭包与 Entity 方法都可调用。
+fn refresh_git_statuses_for_rows(
     state: &Rc<RefCell<ProjectTreeState>>,
-    path: &Path,
-    is_dir: bool,
-    focus_opened_item: bool,
-    on_open_file: &Option<OnOpenFile>,
-    window: &mut Window,
+    project: &Entity<Project>,
     cx: &mut gpui::App,
 ) {
-    state.borrow_mut().select(path);
-    if is_dir {
-        state.borrow_mut().toggle_expand(path);
-    } else if let Some(callback) = on_open_file {
-        callback(path.to_path_buf(), focus_opened_item, window, cx);
-    }
-    window.refresh();
+    let rows: Vec<(PathBuf, bool)> = state
+        .borrow()
+        .rows
+        .iter()
+        .map(|row| (row.path.clone(), row.is_dir))
+        .collect();
+    let statuses = project.update(cx, |project, cx| {
+        rows.iter()
+            .filter_map(|(path, is_dir)| {
+                let status = if *is_dir {
+                    project.git_status_for_directory(path, cx)
+                } else {
+                    project
+                        .git_status_for_path(path, cx)
+                        .map(|entry| entry.status)
+                };
+                status.map(|status| (path.clone(), status))
+            })
+            .collect()
+    });
+    state.borrow_mut().update_git_statuses(statuses);
 }
 
 // ── Entity ──────────────────────────────────────────────────────────
@@ -77,6 +90,8 @@ pub(crate) struct ProjectTree {
     pub focus: gpui::FocusHandle,
     /// 当前项目根目录路径。
     root: PathBuf,
+    /// git 状态查询（状态变化事件触发行颜色刷新）。
+    project: Entity<Project>,
     state: Rc<RefCell<ProjectTreeState>>,
     scroll_handle: UniformListScrollHandle,
     entry_name_editor: Entity<Editor>,
@@ -88,7 +103,7 @@ pub(crate) struct ProjectTree {
 }
 
 impl ProjectTree {
-    pub(crate) fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(root: PathBuf, project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let entry_name_editor = cx.new(Editor::single_line);
         cx.observe(&entry_name_editor, |_, _, cx| cx.notify())
@@ -96,9 +111,18 @@ impl ProjectTree {
         let exclusions = SettingsStore::file_scan_exclusions(cx);
         let mut state = ProjectTreeState::new(root.clone());
         state.set_filter(&exclusions);
+        // state::new 用空排除名单构建了初始行，按真实名单重建，
+        state.refresh_rows();
+        // git 状态变化（含忽略集变化）时刷新行颜色，不重扫目录。
+        let git_store = project.read(cx).git_store();
+        cx.subscribe(&git_store, |tree, _, _event, cx| {
+            tree.refresh_git_statuses(cx);
+        })
+        .detach();
         Self {
             focus,
             root,
+            project,
             state: Rc::new(RefCell::new(state)),
             scroll_handle: UniformListScrollHandle::default(),
             entry_name_editor,
@@ -108,6 +132,14 @@ impl ProjectTree {
             on_create: None,
             on_trash: None,
         }
+    }
+
+    /// 从 git 状态刷新行的忽略/颜色信息（git 事件驱动，不重扫目录）。
+    ///
+    /// 目录行取聚合状态（子项中优先级最高），文件行取精确状态。
+    fn refresh_git_statuses(&mut self, cx: &mut Context<Self>) {
+        refresh_git_statuses_for_rows(&self.state, &self.project, cx);
+        cx.notify();
     }
 
     /// 设置打开文件的回调（由 Workspace 在创建后调用）。
@@ -140,6 +172,8 @@ impl ProjectTree {
         self.state.borrow_mut().set_root(root.clone());
         self.state.borrow_mut().set_filter(&exclusions);
         self.state.borrow_mut().refresh_rows();
+        // 行集合全变，git 状态缓存一并补齐（换根后缓存已清空）。
+        self.refresh_git_statuses(cx);
         cx.notify();
     }
 
@@ -148,12 +182,15 @@ impl ProjectTree {
         let exclusions = SettingsStore::file_scan_exclusions(cx);
         self.state.borrow_mut().set_filter(&exclusions);
         self.state.borrow_mut().refresh_rows();
+        self.refresh_git_statuses(cx);
         cx.notify();
     }
 
     /// 将活动文件标记并强制滚动到项目树中央。
     pub(crate) fn reveal_active_path(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
         let index = self.state.borrow_mut().reveal_active_path(path.as_deref());
+        // reveal 会展开祖先目录产生新行，git 状态缓存需补齐。
+        self.refresh_git_statuses(cx);
         if let Some(index) = index {
             self.scroll_handle
                 .scroll_to_item_strict(index, ScrollStrategy::Center);
@@ -191,7 +228,7 @@ impl ProjectTree {
                 is_dir: self.entry_name_editor.read(cx).text(cx).ends_with('/'),
                 expanded: false,
                 is_new: true,
-                is_ignored: false,
+                git_status: None,
             },
         );
         rows
@@ -258,7 +295,7 @@ impl ProjectTree {
         }
         window.refresh();
     }
-    fn handle_tree_expand(&mut self, _: &TreeExpand, window: &mut Window, _: &mut Context<Self>) {
+    fn handle_tree_expand(&mut self, _: &TreeExpand, window: &mut Window, cx: &mut Context<Self>) {
         let mut state = self.state.borrow_mut();
         let rows = state.visible_rows().to_vec();
         let Some(idx) = state.selected_idx(&rows) else {
@@ -268,11 +305,17 @@ impl ProjectTree {
         if row.is_dir && !row.expanded {
             state.expanded.insert(row.path.clone());
             state.refresh_rows();
+            // 展开产生新行：git 状态缓存需补齐（新行此前未查询过）。
+            drop(state);
+            self.refresh_git_statuses(cx);
+            return;
         } else {
             state.select_down(&rows);
         }
         window.refresh();
     }
+    /// 激活选中行：目录→展开/折叠，文件→打开。键盘 enter 与鼠标点击
+    /// 合流的唯一入口（交互架构规范：同一行为不允许两套实现）。
     fn handle_tree_activate(
         &mut self,
         _: &TreeActivate,
@@ -290,15 +333,15 @@ impl ProjectTree {
         let Some(path) = path else {
             return;
         };
-        activate_node(
-            &self.state,
-            &path,
-            is_dir,
-            true,
-            &self.on_open_file,
-            window,
-            cx,
-        );
+        self.state.borrow_mut().select(&path);
+        if is_dir {
+            self.state.borrow_mut().toggle_expand(&path);
+            // 展开/折叠后行集合变化，git 状态缓存需补齐。
+            refresh_git_statuses_for_rows(&self.state, &self.project, cx);
+        } else if let Some(callback) = self.on_open_file.clone() {
+            callback(path, true, window, cx);
+        }
+        window.refresh();
     }
 
     fn handle_tree_rename(&mut self, _: &TreeRename, window: &mut Window, cx: &mut Context<Self>) {
@@ -386,9 +429,13 @@ impl ProjectTree {
             return;
         };
         let parent = if row.is_dir {
-            let mut state = self.state.borrow_mut();
-            state.expanded.insert(row.path.clone());
-            state.refresh_rows();
+            {
+                let mut state = self.state.borrow_mut();
+                state.expanded.insert(row.path.clone());
+                state.refresh_rows();
+            }
+            // 展开父目录产生新行，git 状态缓存需补齐。
+            self.refresh_git_statuses(cx);
             row.path
         } else {
             let Some(parent) = row.path.parent() else {
@@ -518,7 +565,6 @@ impl gpui::Render for ProjectTree {
             state: Rc::clone(&self.state),
             rows: display_rows.into(),
             focus: self.focus.clone(),
-            on_open_file: self.on_open_file.clone(),
             edit_state: self.edit_state.clone(),
             entry_name_editor: self.entry_name_editor.clone(),
         };
@@ -654,12 +700,17 @@ fn render_row(
             })
             .child(render_context.entry_name_editor.clone())
     } else {
-        // gitignored 条目淡显。
+        // git 状态决定文件名颜色（对齐 Zed 优先级），忽略条目淡显。
+        let status_color = row.git_status.and_then(git_status_color);
+        let is_ignored = matches!(row.git_status, Some(FileStatus::Ignored));
         div()
             .flex_1()
             .overflow_hidden()
             .truncate()
-            .when(row.is_ignored, |element| {
+            .when_some(status_color, |element, status_color| {
+                element.text_color(status_color)
+            })
+            .when(is_ignored && status_color.is_none(), |element| {
                 element.text_color(color::current().text_muted)
             })
             .child(name)
@@ -675,18 +726,51 @@ fn render_row(
                 if is_dir {
                     window.focus(&render_context.focus);
                 }
-                activate_node(
-                    &render_context.state,
-                    &path,
-                    is_dir,
-                    event.click_count > 1,
-                    &render_context.on_open_file,
-                    window,
-                    cx,
-                );
+                // 选中该行后 dispatch TreeActivate，与键盘 enter 走同一 handler
+                // （交互架构规范：同一行为不允许两套实现）。
+                // 双击的第二次 down 不再 dispatch，避免目录"展开→折叠"抵消。
+                render_context.state.borrow_mut().select(&path);
+                if event.click_count == 1 {
+                    window.dispatch_action(Box::new(TreeActivate), cx);
+                }
                 cx.stop_propagation();
             })
         })
+}
+
+/// git 状态 → 文件名颜色（对齐 Zed `entry_git_aware_label_color` 的优先级）。
+///
+/// conflict > deleted > modified > added/untracked > ignored（渲染层淡显）。
+fn git_status_color(status: FileStatus) -> Option<gpui::Rgba> {
+    let colors = color::current();
+    match status {
+        FileStatus::Unmerged => Some(colors.status_conflict),
+        FileStatus::Untracked => Some(colors.status_created),
+        FileStatus::Ignored => None,
+        FileStatus::Tracked {
+            index_status,
+            worktree_status,
+        } => {
+            let deleted = matches!(index_status, StatusCode::Deleted)
+                || matches!(worktree_status, StatusCode::Deleted);
+            let modified = matches!(index_status, StatusCode::Modified | StatusCode::TypeChanged)
+                || matches!(
+                    worktree_status,
+                    StatusCode::Modified | StatusCode::TypeChanged
+                );
+            let added = matches!(index_status, StatusCode::Added)
+                || matches!(worktree_status, StatusCode::Added);
+            if deleted {
+                Some(colors.status_deleted)
+            } else if modified {
+                Some(colors.status_modified)
+            } else if added {
+                Some(colors.status_created)
+            } else {
+                None
+            }
+        }
+    }
 }
 
 impl Panel for ProjectTree {
@@ -711,7 +795,6 @@ struct ProjectTreeRenderContext {
     state: Rc<RefCell<ProjectTreeState>>,
     rows: Rc<[ProjectTreeRow]>,
     focus: gpui::FocusHandle,
-    on_open_file: Option<OnOpenFile>,
     edit_state: Option<EditState>,
     entry_name_editor: Entity<Editor>,
 }
@@ -747,56 +830,30 @@ struct ProjectTreeRow {
     is_dir: bool,
     expanded: bool,
     is_new: bool,
-    /// 命中 gitignore 规则（目录不展开内容、文件淡显）。
-    is_ignored: bool,
+    /// git 状态（决定文件名颜色与忽略淡显；None 表示无状态）。
+    git_status: Option<FileStatus>,
 }
 
-/// 项目树的过滤规则：扫描排除（glob 名单）+ gitignore。
+/// 项目树的过滤规则：扫描排除（glob 名单）。
 ///
 /// file_scan_exclusions 命中的条目根本不在树中加载；
-/// gitignore 命中的条目显示但标记为忽略。
+/// 忽略（gitignore/info/exclude）由 git 状态统一判定（`FileStatus::Ignored`）。
 struct TreeFilter {
     /// 用户配置的扫描排除 glob。
     exclusions: GlobSet,
-    /// 项目根及子目录链上的 .gitignore 匹配器。
-    gitignore: Option<Arc<Gitignore>>,
 }
 
 impl TreeFilter {
-    fn new(root: &Path, exclusions: &[String]) -> Self {
+    fn new(exclusions: &[String]) -> Self {
         let mut builder = GlobSetBuilder::new();
         for glob in exclusions {
             if let Ok(glob) = Glob::new(glob) {
                 builder.add(glob);
             }
         }
-        let root_ignore = root.join(".gitignore");
-        let root_files = if root_ignore.is_file() {
-            vec![root_ignore]
-        } else {
-            Vec::new()
-        };
         Self {
             exclusions: builder.build().unwrap_or_default(),
-            gitignore: Self::build_gitignore(root, &root_files),
         }
-    }
-
-    /// 用从项目根到目标目录链上的全部 .gitignore 构建匹配器。
-    ///
-    /// 每遇到一个目录的 .gitignore 就重建一次；
-    /// 链上文件数通常只有 1-2 个，且只在刷新行模型时调用，成本可控。
-    fn build_gitignore(root: &Path, ignore_files: &[PathBuf]) -> Option<Arc<Gitignore>> {
-        if ignore_files.is_empty() {
-            return None;
-        }
-        let mut builder = GitignoreBuilder::new(root);
-        for file in ignore_files {
-            if let Some(error) = builder.add(file) {
-                log::warn!("无法加载 .gitignore {:?}：{error}", file);
-            }
-        }
-        builder.build().ok().map(Arc::new)
     }
 
     /// 路径的任一祖先命中排除名单即排除。
@@ -816,13 +873,15 @@ struct ProjectTreeState {
     /// 扫描排除 glob（由 ProjectTree 注入），根目录变化时用于重建过滤。
     exclusions: Vec<String>,
     filter: TreeFilter,
+    /// 路径 → git 状态（由 ProjectTree 经 project 查询注入）。
+    git_statuses: HashMap<PathBuf, FileStatus>,
 }
 
 impl ProjectTreeState {
     fn new(root: PathBuf) -> Self {
         let mut expanded = HashSet::new();
         expanded.insert(root.clone());
-        let filter = TreeFilter::new(&root, &[]);
+        let filter = TreeFilter::new(&[]);
         let mut state = Self {
             root,
             expanded,
@@ -831,6 +890,7 @@ impl ProjectTreeState {
             rows: Vec::new(),
             exclusions: Vec::new(),
             filter,
+            git_statuses: HashMap::new(),
         };
         state.refresh_rows();
         state
@@ -839,7 +899,7 @@ impl ProjectTreeState {
     /// 注入扫描排除规则并重建过滤（由 ProjectTree 在创建或设置变化时调用）。
     fn set_filter(&mut self, exclusions: &[String]) {
         self.exclusions = exclusions.to_vec();
-        self.filter = TreeFilter::new(&self.root, exclusions);
+        self.filter = TreeFilter::new(exclusions);
     }
 
     /// 更换根目录，重置展开和选中状态。
@@ -849,8 +909,17 @@ impl ProjectTreeState {
         self.expanded.insert(self.root.clone());
         self.selected = None;
         self.active_path = None;
-        self.filter = TreeFilter::new(&self.root, &self.exclusions);
+        self.git_statuses.clear();
+        self.filter = TreeFilter::new(&self.exclusions);
         self.refresh_rows();
+    }
+
+    /// 替换 git 状态表并逐行更新（git 事件驱动，不重扫目录）。
+    fn update_git_statuses(&mut self, statuses: HashMap<PathBuf, FileStatus>) {
+        self.git_statuses = statuses;
+        for row in &mut self.rows {
+            row.git_status = self.git_statuses.get(&row.path).copied();
+        }
     }
 
     fn visible_rows(&self) -> &[ProjectTreeRow] {
@@ -874,13 +943,12 @@ impl ProjectTreeState {
             is_dir: true,
             expanded: root_expanded,
             is_new: false,
-            is_ignored: false,
+            git_status: None,
         });
 
         if root_expanded {
             let root = self.root.clone();
-            let gitignore = self.filter.gitignore.clone();
-            self.collect_children(&root, 1, &mut rows, gitignore, Vec::new(), false);
+            self.collect_children(&root, 1, &mut rows);
         }
 
         self.rows = rows;
@@ -903,29 +971,8 @@ impl ProjectTreeState {
         }
     }
 
-    /// 递归收集目录子项；`gitignore` 是父链上传下来的匹配器，
-    /// `ignore_files` 是已发现的 .gitignore 文件链，`inherited_ignored` 表示父目录已被 gitignore 命中（子项全部继承忽略）。
-    fn collect_children(
-        &mut self,
-        dir: &Path,
-        depth: usize,
-        rows: &mut Vec<ProjectTreeRow>,
-        gitignore: Option<Arc<Gitignore>>,
-        ignore_files: Vec<PathBuf>,
-        inherited_ignored: bool,
-    ) {
-        // 该目录自己的 .gitignore 存在时，加入链并重建匹配器。
-        let (gitignore, ignore_files) = {
-            let dir_ignore = dir.join(".gitignore");
-            if dir_ignore.is_file() {
-                let mut files = ignore_files;
-                files.push(dir_ignore);
-                (TreeFilter::build_gitignore(&self.root, &files), files)
-            } else {
-                (gitignore, ignore_files)
-            }
-        };
-
+    /// 递归收集目录子项；忽略（gitignored 目录不展开）由 git 状态统一判定。
+    fn collect_children(&mut self, dir: &Path, depth: usize, rows: &mut Vec<ProjectTreeRow>) {
         let mut entries: Vec<_> = match std::fs::read_dir(dir) {
             Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| e.path()).collect(),
             Err(_) => return,
@@ -952,10 +999,7 @@ impl ProjectTreeState {
             if self.filter.is_excluded(rel) {
                 continue;
             }
-            let is_ignored = inherited_ignored
-                || gitignore
-                    .as_ref()
-                    .is_some_and(|g| g.matched(rel, is_dir).is_ignore());
+            let git_status = self.git_statuses.get(&entry).copied();
             let is_expanded = self.expanded.contains(&entry);
             rows.push(ProjectTreeRow {
                 path: entry.clone(),
@@ -964,18 +1008,11 @@ impl ProjectTreeState {
                 is_dir,
                 expanded: is_expanded,
                 is_new: false,
-                is_ignored,
+                git_status,
             });
-            // gitignored 目录不展开内容，避免 node_modules 这类目录撑爆行模型。
-            if is_dir && is_expanded && !is_ignored {
-                self.collect_children(
-                    &entry,
-                    depth + 1,
-                    rows,
-                    gitignore.clone(),
-                    ignore_files.clone(),
-                    is_ignored,
-                );
+            // 被忽略的目录不展开内容，避免 node_modules 这类目录撑爆行模型。
+            if is_dir && is_expanded && !matches!(git_status, Some(FileStatus::Ignored)) {
+                self.collect_children(&entry, depth + 1, rows);
             }
         }
     }
@@ -1097,22 +1134,22 @@ mod tests {
     }
 
     #[test]
-    fn gitignored_directories_do_not_expand_and_files_are_marked() {
+    fn ignored_directories_do_not_expand_and_files_are_marked() {
+        // 忽略信息来自 git 状态（FileStatus::Ignored），由外部注入。
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
         let node_modules = directory.path().join("node_modules");
         std::fs::create_dir_all(node_modules.join("pkg")).expect("应创建被忽略目录");
         std::fs::write(node_modules.join("pkg").join("index.js"), "// ignored")
             .expect("应创建被忽略文件");
-        std::fs::write(
-            directory.path().join(".gitignore"),
-            "node_modules/\n*.log\n",
-        )
-        .expect("应写 .gitignore");
         std::fs::write(directory.path().join("app.log"), "log").expect("应创建日志文件");
         let visible = directory.path().join("main.js");
         std::fs::write(&visible, "console.log(1)").expect("应创建可见文件");
 
         let mut state = ProjectTreeState::new(directory.path().to_path_buf());
+        state.update_git_statuses(HashMap::from([
+            (node_modules.clone(), FileStatus::Ignored),
+            (directory.path().join("app.log"), FileStatus::Ignored),
+        ]));
         state.expanded.insert(node_modules.clone());
         state.refresh_rows();
 
@@ -1121,7 +1158,7 @@ mod tests {
             .iter()
             .find(|row| row.path == node_modules)
             .expect("node_modules 行应存在");
-        assert!(nm.is_ignored);
+        assert!(matches!(nm.git_status, Some(FileStatus::Ignored)));
         assert!(
             !rows
                 .iter()
@@ -1131,7 +1168,7 @@ mod tests {
         assert!(
             rows.iter()
                 .find(|row| row.path == directory.path().join("app.log"))
-                .is_some_and(|row| row.is_ignored),
+                .is_some_and(|row| matches!(row.git_status, Some(FileStatus::Ignored))),
             "*.log 文件应被标记为忽略"
         );
         assert!(
@@ -1139,7 +1176,53 @@ mod tests {
                 .iter()
                 .find(|row| row.path == visible)
                 .expect("可见文件行应存在")
-                .is_ignored
+                .git_status
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn git_status_color_follows_zed_priority() {
+        // palette 未初始化时默认 one_dark，语义色可直接取。
+        let colors = color::current();
+        let color = |status| git_status_color(status);
+        // 特殊态。
+        assert_eq!(color(FileStatus::Untracked), Some(colors.status_created));
+        assert_eq!(color(FileStatus::Unmerged), Some(colors.status_conflict));
+        assert_eq!(color(FileStatus::Ignored), None);
+        // 已跟踪：deleted > modified > added 优先级。
+        let tracked = |index, worktree| FileStatus::Tracked {
+            index_status: index,
+            worktree_status: worktree,
+        };
+        assert_eq!(
+            color(tracked(StatusCode::Unmodified, StatusCode::Modified)),
+            Some(colors.status_modified)
+        );
+        assert_eq!(
+            color(tracked(StatusCode::Modified, StatusCode::Unmodified)),
+            Some(colors.status_modified)
+        );
+        assert_eq!(
+            color(tracked(StatusCode::Unmodified, StatusCode::TypeChanged)),
+            Some(colors.status_modified)
+        );
+        assert_eq!(
+            color(tracked(StatusCode::Unmodified, StatusCode::Added)),
+            Some(colors.status_created)
+        );
+        assert_eq!(
+            color(tracked(StatusCode::Unmodified, StatusCode::Deleted)),
+            Some(colors.status_deleted)
+        );
+        // 部分暂存：modified 优先于 added。
+        assert_eq!(
+            color(tracked(StatusCode::Added, StatusCode::Modified)),
+            Some(colors.status_modified)
+        );
+        assert_eq!(
+            color(tracked(StatusCode::Unmodified, StatusCode::Unmodified)),
+            None
         );
     }
 
@@ -1156,6 +1239,10 @@ mod tests {
         std::fs::write(directory.path().join(".gitignore"), "*.log\n").expect("应写根 .gitignore");
 
         let mut state = ProjectTreeState::new(directory.path().to_path_buf());
+        state.update_git_statuses(HashMap::from([
+            (nested.clone(), FileStatus::Ignored),
+            (visible.clone(), FileStatus::Untracked),
+        ]));
         state.expanded.insert(sub.clone());
         state.refresh_rows();
 
@@ -1164,15 +1251,17 @@ mod tests {
             rows.iter()
                 .find(|row| row.path == nested)
                 .expect("secret.txt 行应存在")
-                .is_ignored,
-            "嵌套 .gitignore 的规则应生效"
+                .git_status
+                .is_some_and(|status| matches!(status, FileStatus::Ignored)),
+            "嵌套目录的忽略规则应生效"
         );
         assert!(
             !rows
                 .iter()
                 .find(|row| row.path == visible)
                 .expect("visible.txt 行应存在")
-                .is_ignored
+                .git_status
+                .is_some_and(|status| matches!(status, FileStatus::Ignored))
         );
     }
 
@@ -1315,12 +1404,13 @@ mod tests {
         let open_count = Rc::new(Cell::new(0));
         let callback_count = Rc::clone(&open_count);
 
+        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (tree, cx) = cx.add_window_view(move |_, cx| {
             cx.bind_keys([
                 KeyBinding::new("enter", TreeRename, Some("ProjectTree && not_editing")),
                 KeyBinding::new("space", TreeActivate, Some("ProjectTree && not_editing")),
             ]);
-            let mut tree = ProjectTree::new(project_root, cx);
+            let mut tree = ProjectTree::new(project_root, project.clone(), cx);
             tree.set_on_open_file(Rc::new(move |_, _, _, _| {
                 callback_count.set(callback_count.get() + 1);
             }));
@@ -1352,7 +1442,9 @@ mod tests {
         let old_path = directory.path().join("old.txt");
         let new_path = directory.path().join("new.txt");
         std::fs::write(&old_path, "content").expect("应创建测试文件");
-        let tree = cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), cx));
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let tree =
+            cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), project.clone(), cx));
         tree.update(cx, |tree, _| {
             tree.set_on_rename(Rc::new(|from, to, _| {
                 std::fs::rename(from, to)?;
@@ -1389,7 +1481,9 @@ mod tests {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
         let file = directory.path().join("src/components/button.rs");
         let folder = directory.path().join("assets/icons");
-        let tree = cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), cx));
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let tree =
+            cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), project.clone(), cx));
         tree.update(cx, |tree, _| {
             tree.set_on_create(Rc::new(|path, is_dir, _| {
                 std::fs::create_dir_all(path.parent().unwrap())?;
@@ -1450,7 +1544,9 @@ mod tests {
         let kept_file = directory.path().join("keep.txt");
         std::fs::write(&trashed_file, "content").expect("应创建测试文件");
         std::fs::write(&kept_file, "content").expect("应创建测试文件");
-        let tree = cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), cx));
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let tree =
+            cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), project.clone(), cx));
         let trashed = Rc::new(RefCell::new(None));
         let trashed_path = Rc::clone(&trashed);
         tree.update(cx, |tree, _| {
@@ -1484,7 +1580,9 @@ mod tests {
     #[gpui::test]
     fn trash_action_ignores_the_root_row(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
-        let tree = cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), cx));
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let tree =
+            cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), project.clone(), cx));
         let called = Rc::new(Cell::new(false));
         let callback_called = Rc::clone(&called);
         tree.update(cx, |tree, _| {
@@ -1511,7 +1609,9 @@ mod tests {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
         let only_file = directory.path().join("only.txt");
         std::fs::write(&only_file, "content").expect("应创建测试文件");
-        let tree = cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), cx));
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let tree =
+            cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), project.clone(), cx));
         tree.update(cx, |tree, _| {
             tree.set_on_trash(Rc::new(|path, _, _| {
                 std::fs::remove_file(path)?;
@@ -1534,5 +1634,182 @@ mod tests {
                 "删除最后一项后应选中新的最后一行（根目录）"
             );
         });
+    }
+
+    #[gpui::test]
+    fn git_status_events_update_row_colors(cx: &mut TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let tree = cx.new(|cx| ProjectTree::new(root.clone(), project.clone(), cx));
+        cx.run_until_parked();
+
+        // 修改文件 → git 增量刷新 → StatusesChanged 事件 → 行颜色更新。
+        let file = root.join("tracked.txt");
+        std::fs::write(&file, "已修改\n").expect("应修改文件");
+        project.update(cx, |project, cx| {
+            project.git_store().update(cx, |store, cx| {
+                store.refresh_statuses_for_paths(&[file.clone()], cx);
+            });
+        });
+        cx.run_until_parked();
+
+        let status = cx.read_entity(&tree, |tree, _| {
+            tree.state
+                .borrow()
+                .rows
+                .iter()
+                .find(|row| row.path == file)
+                .and_then(|row| row.git_status)
+        });
+        assert!(
+            status.is_some_and(|status| status.is_modified()),
+            "行应携带 modified 状态"
+        );
+    }
+
+    #[gpui::test]
+    fn git_status_events_color_directories_with_changed_children(cx: &mut TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        // 建子目录并提交一个文件。
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).expect("应创建目录");
+        let src_file = src.join("main.rs");
+        std::fs::write(&src_file, "fn main() {}\n").expect("应创建文件");
+        let run = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("应执行成功");
+            assert!(output.status.success(), "git {:?} 失败", args);
+        };
+        run(&["add", "src/main.rs"]);
+        run(&["commit", "-q", "-m", "add src"]);
+
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let tree = cx.new(|cx| ProjectTree::new(root.clone(), project.clone(), cx));
+        cx.run_until_parked();
+
+        // 修改目录内文件 → 增量刷新 → 目录行聚合为 modified。
+        std::fs::write(&src_file, "fn main() { println!(); }\n").expect("应修改文件");
+        project.update(cx, |project, cx| {
+            project.git_store().update(cx, |store, cx| {
+                store.refresh_statuses_for_paths(&[src_file.clone()], cx);
+            });
+        });
+        cx.run_until_parked();
+
+        let status = cx.read_entity(&tree, |tree, _| {
+            tree.state
+                .borrow()
+                .rows
+                .iter()
+                .find(|row| row.path == src)
+                .and_then(|row| row.git_status)
+        });
+        assert!(
+            status.is_some_and(|status| status.is_modified()),
+            "目录行应聚合子项状态"
+        );
+    }
+
+    #[gpui::test]
+    fn expanding_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
+        // 回归：展开目录产生的新行此前未查询过，git 状态缓存需在展开时补齐。
+        let (root, _temp) = test_git_repo();
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).expect("应创建目录");
+        let sub_file = sub.join("untracked.txt");
+        std::fs::write(&sub_file, "x\n").expect("应创建文件");
+
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let tree = cx.new(|cx| ProjectTree::new(root.clone(), project.clone(), cx));
+        cx.run_until_parked();
+
+        // 展开 sub 目录（模拟 handle_tree_expand 的行重建路径）。
+        tree.update(cx, |tree, _| {
+            tree.state.borrow_mut().expanded.insert(sub.clone());
+            tree.state.borrow_mut().refresh_rows();
+        });
+        tree.update(cx, |tree, cx| tree.refresh_git_statuses(cx));
+        cx.run_until_parked();
+
+        let status = cx.read_entity(&tree, |tree, _| {
+            tree.state
+                .borrow()
+                .rows
+                .iter()
+                .find(|row| row.path == sub_file)
+                .and_then(|row| row.git_status)
+        });
+        assert!(
+            status.is_some_and(|status| status.is_untracked()),
+            "展开后新出现的文件行应补齐 git 状态"
+        );
+    }
+
+    #[gpui::test]
+    fn activating_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
+        // 回归：鼠标点击/键盘激活目录统一走 TreeActivate handler（toggle_expand），
+        // 展开后的新行 git 状态需在激活时补齐。
+        let (root, _temp) = test_git_repo();
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).expect("应创建目录");
+        let sub_file = sub.join("untracked.txt");
+        std::fs::write(&sub_file, "x\n").expect("应创建文件");
+
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let tree = cx.new(|cx| ProjectTree::new(root.clone(), project.clone(), cx));
+        cx.run_until_parked();
+
+        // 模拟鼠标点击：选中行后激活（与键盘 enter 同一 handler）。
+        cx.add_window_view(|window, cx| {
+            tree.update(cx, |tree, _| {
+                tree.state.borrow_mut().select(&sub);
+            });
+            tree.update(cx, |tree, cx| {
+                tree.handle_tree_activate(&TreeActivate, window, cx);
+            });
+            TestView
+        });
+
+        let status = cx.read_entity(&tree, |tree, _| {
+            tree.state
+                .borrow()
+                .rows
+                .iter()
+                .find(|row| row.path == sub_file)
+                .and_then(|row| row.git_status)
+        });
+        assert!(
+            status.is_some_and(|status| status.is_untracked()),
+            "激活展开后新出现的文件行应补齐 git 状态"
+        );
+    }
+
+    /// 创建带一个初始提交的临时 git 仓库，返回 (仓库根, 目录句柄)。
+    fn test_git_repo() -> (PathBuf, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+        let root = temp_dir.path().to_path_buf();
+        let run = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("应执行成功");
+            assert!(
+                output.status.success(),
+                "git {:?} 失败：{}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run(&["init", "-q", "-b", "master"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test User"]);
+        std::fs::write(root.join("tracked.txt"), "第一行\n第二行\n").expect("应写入初始文件");
+        run(&["add", "tracked.txt"]);
+        run(&["commit", "-q", "-m", "initial"]);
+        (root, temp_dir)
     }
 }

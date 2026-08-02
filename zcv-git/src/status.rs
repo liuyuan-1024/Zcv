@@ -1,0 +1,417 @@
+//! git 输出解析：`git status --porcelain=v1` 与 `git diff --numstat`。
+
+use anyhow::{Context as _, Result};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// 单项的索引（index）/工作区（worktree）状态码，对应 porcelain 输出中的单个字符。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StatusCode {
+    #[default]
+    Unmodified,
+    Modified,
+    TypeChanged,
+    Added,
+    Deleted,
+    Renamed,
+    Copied,
+}
+
+impl StatusCode {
+    /// 解析 porcelain 状态字符（`M`/`T`/`A`/`D`/`R`/`C`/空格）。
+    ///
+    /// `--no-renames` 下不会出现 `R`/`C`，这里仍保留解析以兼容意外输入。
+    fn from_byte(byte: u8) -> Result<Self> {
+        match byte {
+            b'M' => Ok(StatusCode::Modified),
+            b'T' => Ok(StatusCode::TypeChanged),
+            b'A' => Ok(StatusCode::Added),
+            b'D' => Ok(StatusCode::Deleted),
+            b'R' => Ok(StatusCode::Renamed),
+            b'C' => Ok(StatusCode::Copied),
+            b' ' => Ok(StatusCode::Unmodified),
+            _ => anyhow::bail!("无效的 git 状态码：{byte}"),
+        }
+    }
+}
+
+/// 文件的完整 git 状态：索引 × 工作区 二维，外加未跟踪/忽略/冲突特殊态。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FileStatus {
+    #[default]
+    Untracked,
+    Ignored,
+    Unmerged,
+    Tracked {
+        index_status: StatusCode,
+        worktree_status: StatusCode,
+    },
+}
+
+impl FileStatus {
+    /// 从 porcelain 输出的两位状态码生成 FileStatus。
+    ///
+    /// 参考 https://git-scm.com/docs/git-status#_output
+    /// 注意：git 输出里"无变化"是空白字符，这里按惯例用空格 ` ` 表示。
+    fn from_bytes(bytes: [u8; 2]) -> Result<Self> {
+        let status = match bytes {
+            [b'?', b'?'] => FileStatus::Untracked,
+            [b'!', b'!'] => FileStatus::Ignored,
+            // 冲突的所有组合（AA/DD/UU/AU/UA/DU/UD）统一记为 Unmerged。
+            [b'A', b'A']
+            | [b'D', b'D']
+            | [b'U', b'U']
+            | [b'A', b'U']
+            | [b'U', b'A']
+            | [b'D', b'U']
+            | [b'U', b'D'] => FileStatus::Unmerged,
+            [x, y] => FileStatus::Tracked {
+                index_status: StatusCode::from_byte(x)?,
+                worktree_status: StatusCode::from_byte(y)?,
+            },
+        };
+        Ok(status)
+    }
+
+    pub fn is_modified(self) -> bool {
+        match self {
+            FileStatus::Tracked {
+                index_status,
+                worktree_status,
+            } => {
+                matches!(index_status, StatusCode::Modified)
+                    || matches!(worktree_status, StatusCode::Modified)
+            }
+            _ => false,
+        }
+    }
+
+    pub fn is_created(self) -> bool {
+        match self {
+            FileStatus::Tracked {
+                index_status,
+                worktree_status,
+            } => {
+                matches!(index_status, StatusCode::Added)
+                    || matches!(worktree_status, StatusCode::Added)
+            }
+            FileStatus::Untracked => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_deleted(self) -> bool {
+        match self {
+            FileStatus::Tracked {
+                index_status,
+                worktree_status,
+            } => {
+                matches!(index_status, StatusCode::Deleted)
+                    || matches!(worktree_status, StatusCode::Deleted)
+            }
+            _ => false,
+        }
+    }
+
+    pub fn is_conflicted(self) -> bool {
+        matches!(self, FileStatus::Unmerged)
+    }
+
+    pub fn is_untracked(self) -> bool {
+        matches!(self, FileStatus::Untracked)
+    }
+
+    pub fn is_ignored(self) -> bool {
+        matches!(self, FileStatus::Ignored)
+    }
+
+    /// 目录聚合优先级：conflict > deleted > modified > added/untracked > ignored > 无状态。
+    ///
+    /// 对齐 Zed `entry_git_aware_label_color` 的判定顺序（editor/items.rs:2200）；
+    /// 目录聚合时取子项中优先级最高的状态。
+    pub fn priority(self) -> u8 {
+        match self {
+            FileStatus::Unmerged => 5,
+            FileStatus::Tracked {
+                index_status,
+                worktree_status,
+            } => {
+                let deleted = matches!(index_status, StatusCode::Deleted)
+                    || matches!(worktree_status, StatusCode::Deleted);
+                let modified =
+                    matches!(index_status, StatusCode::Modified | StatusCode::TypeChanged)
+                        || matches!(
+                            worktree_status,
+                            StatusCode::Modified | StatusCode::TypeChanged
+                        );
+                let added = matches!(index_status, StatusCode::Added)
+                    || matches!(worktree_status, StatusCode::Added);
+                if deleted {
+                    4
+                } else if modified {
+                    3
+                } else if added {
+                    2
+                } else {
+                    0
+                }
+            }
+            FileStatus::Untracked => 2,
+            FileStatus::Ignored => 1,
+        }
+    }
+}
+
+/// `git status --porcelain=v1 -z` 的解析结果。
+///
+/// 路径按仓库根的相对路径存储（unix 分隔符），由调用方拼接工作目录转绝对路径。
+#[derive(Debug, Default)]
+pub struct GitStatus {
+    pub statuses: Vec<(PathBuf, FileStatus)>,
+}
+
+impl GitStatus {
+    /// 解析 porcelain v1 -z 的原始输出。
+    ///
+    /// `-z` 模式下路径按原始字节输出（不转义），这里按 bytes 切分以兼容
+    /// 非 UTF-8 路径；`--no-renames` 保证每项恰好两位状态码 + 空格 + 路径。
+    pub fn from_bytes(output: &[u8]) -> Result<Self> {
+        let mut statuses = Vec::new();
+        for entry in output.split(|&byte| byte == b'\0') {
+            if entry.len() < 3 || entry[2] != b' ' {
+                // 跳过空项与格式异常项（重命名输出会带 `-> 目标` 段，--no-renames 下不应出现）。
+                continue;
+            }
+            let mut path = &entry[3..];
+            let is_dir = path.ends_with(b"/");
+            // untracked 目录（`?? dir/`）跳过：目录汇总由消费方自行计算，
+            // 且嵌套仓库的输出会干扰状态表；`--ignored=matching` 的忽略目录
+            // （`!! dir/`）保留，路径去掉尾部 `/`（目录不展开的依据）。
+            if is_dir && !entry.starts_with(b"!! ") {
+                continue;
+            }
+            if is_dir {
+                path = &path[..path.len() - 1];
+            }
+            let status = FileStatus::from_bytes([entry[0], entry[1]])?;
+            statuses.push((path_from_bytes(path), status));
+        }
+        statuses.sort_by(|(a, _), (b, _)| a.cmp(b));
+        Ok(Self { statuses })
+    }
+}
+
+/// 单文件的行数统计（`git diff --numstat`）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiffStat {
+    pub added: u64,
+    pub deleted: u64,
+}
+
+impl DiffStat {
+    pub fn is_empty(self) -> bool {
+        self.added == 0 && self.deleted == 0
+    }
+}
+
+/// 解析 `git diff --numstat -z` 输出，每项形如 `added\tdeleted\tpath\0`。
+///
+/// 二进制文件的行数计为 `-`，解析失败时跳过该行（与 Zed 行为一致）。
+/// 路径按原始字节解析，兼容非 UTF-8。
+pub fn parse_numstat(output: &[u8]) -> HashMap<PathBuf, DiffStat> {
+    let mut entries = HashMap::new();
+    for entry in output.split(|&byte| byte == b'\0') {
+        if entry.is_empty() {
+            continue;
+        }
+        let mut parts = entry.split(|&byte| byte == b'\t');
+        let (Some(added), Some(deleted), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        let Ok(added) = parse_count(added) else {
+            continue;
+        };
+        let Ok(deleted) = parse_count(deleted) else {
+            continue;
+        };
+        entries.insert(path_from_bytes(path), DiffStat { added, deleted });
+    }
+    entries
+}
+
+/// numstat 的计数可能是 `-`（二进制文件），此时按 0 处理。
+fn parse_count(bytes: &[u8]) -> Result<u64> {
+    let text = std::str::from_utf8(bytes).context("numstat 计数非 UTF-8")?;
+    if text == "-" {
+        Ok(0)
+    } else {
+        text.parse::<u64>().context("numstat 计数非法")
+    }
+}
+
+/// 由原始字节构造路径（git 输出为 unix 风格相对路径）。
+#[cfg(unix)]
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    PathBuf::from(OsStr::from_bytes(bytes))
+}
+
+#[cfg(not(unix))]
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use FileStatus::*;
+
+    fn parse(output: &str) -> Vec<(PathBuf, FileStatus)> {
+        GitStatus::from_bytes(output.as_bytes())
+            .expect("解析应成功")
+            .statuses
+    }
+
+    #[test]
+    fn parses_all_status_code_combinations() {
+        let output = [
+            " M src/main.rs",
+            "M  staged.rs",
+            "MM both.rs",
+            "A  added.txt",
+            " D deleted.txt",
+            "D  index_deleted.txt",
+            "?? untracked.txt",
+            "!! ignored.log",
+            "UU conflicted.txt",
+        ]
+        .join("\0");
+
+        // from_bytes 按路径排序，断言用路径索引而非输入顺序。
+        let statuses = parse(&output);
+        assert_eq!(statuses.len(), 9);
+        let by_path: HashMap<&str, FileStatus> = statuses
+            .iter()
+            .map(|(path, status)| (path.to_str().expect("路径应可转 str"), *status))
+            .collect();
+        assert!(matches!(
+            by_path["src/main.rs"],
+            Tracked {
+                index_status: StatusCode::Unmodified,
+                worktree_status: StatusCode::Modified
+            }
+        ));
+        assert!(matches!(
+            by_path["staged.rs"],
+            Tracked {
+                index_status: StatusCode::Modified,
+                worktree_status: StatusCode::Unmodified
+            }
+        ));
+        assert!(matches!(
+            by_path["both.rs"],
+            Tracked {
+                index_status: StatusCode::Modified,
+                worktree_status: StatusCode::Modified
+            }
+        ));
+        assert!(by_path["added.txt"].is_created());
+        assert!(by_path["deleted.txt"].is_deleted());
+        assert!(by_path["index_deleted.txt"].is_deleted());
+        assert!(by_path["untracked.txt"].is_untracked());
+        assert!(by_path["ignored.log"].is_ignored());
+        assert!(by_path["conflicted.txt"].is_conflicted());
+    }
+
+    #[test]
+    fn skips_untracked_directories_and_renames() {
+        let output = ["?? new-dir/", "?? dir/file.txt"].join("\0");
+        let statuses = parse(&output);
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].0, PathBuf::from("dir/file.txt"));
+    }
+
+    #[test]
+    fn keeps_ignored_directories_without_trailing_slash() {
+        // --ignored=matching 下被忽略目录输出为 `!! dir/`，需要保留
+        // （目录不展开的依据），路径去掉尾部斜杠。
+        let output = ["!! node_modules/", "!! ignored.log", "?? src/new.rs"].join("\0");
+        let statuses = parse(&output);
+        assert_eq!(statuses.len(), 3);
+        assert_eq!(statuses[0].0, PathBuf::from("ignored.log"));
+        assert!(statuses[0].1.is_ignored());
+        assert_eq!(statuses[1].0, PathBuf::from("node_modules"));
+        assert!(statuses[1].1.is_ignored());
+        assert_eq!(statuses[2].0, PathBuf::from("src/new.rs"));
+        assert!(statuses[2].1.is_untracked());
+    }
+
+    #[test]
+    fn preserves_paths_with_spaces_and_unicode() {
+        let output = "?? 带 空格 的文件.txt\0".to_owned();
+        let statuses = parse(&output);
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].0, PathBuf::from("带 空格 的文件.txt"));
+    }
+
+    #[test]
+    fn rejects_invalid_status_code() {
+        let output = "Z  invalid.txt";
+        assert!(GitStatus::from_bytes(output.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn sorts_entries_by_path() {
+        let output = ["?? b.txt", "?? a.txt", "?? c.txt"].join("\0");
+        let statuses = parse(&output);
+        let paths: Vec<_> = statuses.iter().map(|(path, _)| path).collect();
+        assert_eq!(
+            paths,
+            vec![
+                &PathBuf::from("a.txt"),
+                &PathBuf::from("b.txt"),
+                &PathBuf::from("c.txt")
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_numstat() {
+        let output = "5\t2\tsrc/main.rs\0-\t-\timage.png\0";
+        let entries = parse_numstat(output.as_bytes());
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries.get(&PathBuf::from("src/main.rs")),
+            Some(&DiffStat {
+                added: 5,
+                deleted: 2
+            })
+        );
+        // 二进制文件计数为 0。
+        assert_eq!(
+            entries.get(&PathBuf::from("image.png")),
+            Some(&DiffStat {
+                added: 0,
+                deleted: 0
+            })
+        );
+    }
+
+    #[test]
+    fn parses_numstat_with_unicode_paths() {
+        let output = "1\t0\t中文 路径.rs\0";
+        let entries = parse_numstat(output.as_bytes());
+        assert_eq!(
+            entries.get(&PathBuf::from("中文 路径.rs")),
+            Some(&DiffStat {
+                added: 1,
+                deleted: 0
+            })
+        );
+    }
+}

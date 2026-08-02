@@ -47,6 +47,14 @@ pub struct ThemeColors {
     pub status_warning: Rgba,
     /// 错误状态颜色。
     pub status_error: Rgba,
+    /// 新建/未跟踪条目颜色。
+    pub status_created: Rgba,
+    /// 已修改条目颜色。
+    pub status_modified: Rgba,
+    /// 已删除条目颜色。
+    pub status_deleted: Rgba,
+    /// 冲突条目颜色。
+    pub status_conflict: Rgba,
     /// 顶栏背景。
     pub title_bar_background: Rgba,
     /// 状态栏背景。
@@ -97,6 +105,10 @@ impl ThemeColors {
             status_success: palette.green.s[6],
             status_warning: palette.yellow.s[6],
             status_error: palette.red.s[6],
+            status_created: palette.green.s[6],
+            status_modified: palette.yellow.s[6],
+            status_deleted: palette.red.s[6],
+            status_conflict: palette.red.s[6],
             title_bar_background: palette.gray.s[2],
             status_bar_background: palette.gray.s[2],
             tab_bar_background: palette.gray.s[2],

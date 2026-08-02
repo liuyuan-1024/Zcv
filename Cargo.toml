@@ -12,6 +12,7 @@ members = [
     "zcv",
     "zcv-editor",
     "zcv-engine",
+    "zcv-git",
     "zcv-language",
     "zcv-theme",
 ]
@@ -19,6 +20,7 @@ default-members = [
     "zcv",
     "zcv-editor",
     "zcv-engine",
+    "zcv-git",
     "zcv-language",
     "zcv-theme",
 ]
@@ -34,6 +36,7 @@ doc_lazy_continuation = "allow"
 # ---- 内部 crate ----
 zcv-engine = { path = "zcv-engine" }
 zcv-editor = { path = "zcv-editor" }
+zcv-git = { path = "zcv-git" }
 zcv-theme = { path = "zcv-theme" }
 zcv-language = { path = "zcv-language" }
 
@@ -48,7 +51,6 @@ unicode-segmentation = "1.13.2"
 # ---- 工作区层（zcv-workspace） ----
 anyhow = "1.0"
 globset = "0.4"
-ignore = "0.4"
 log = "0.4"
 trash = "5"
 
@@ -104,3 +106,4 @@ windows = { version = "0.57.0", features = [
 
 # ---- 开发工具（dev-dependencies 引用） ----
 criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"

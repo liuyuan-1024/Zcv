@@ -28,6 +28,7 @@ actions!(
         TreeActivate,
         TreeRename,
         TreeNewEntry,
+        TreeTrash,
         TreeConfirmEdit,
         TreeCancelEdit
     ]
@@ -41,6 +42,11 @@ pub(crate) type OnRename = Rc<dyn Fn(PathBuf, PathBuf, &mut gpui::App) -> anyhow
 
 /// 新建文件或目录回调。
 pub(crate) type OnCreate = Rc<dyn Fn(PathBuf, bool, &mut gpui::App) -> anyhow::Result<()>>;
+
+/// 将文件或目录移到系统废纸篓回调。
+///
+/// 带 `Window`：删除文件后需要关闭打开它的 tab，工具栏更新需要 window。
+pub(crate) type OnTrash = Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App) -> anyhow::Result<()>>;
 
 /// 选中并激活项目树中的节点（目录→展开/折叠，文件→打开）。
 fn activate_node(
@@ -74,6 +80,7 @@ pub(crate) struct ProjectTree {
     on_open_file: Option<OnOpenFile>,
     on_rename: Option<OnRename>,
     on_create: Option<OnCreate>,
+    on_trash: Option<OnTrash>,
 }
 
 impl ProjectTree {
@@ -92,6 +99,7 @@ impl ProjectTree {
             on_open_file: None,
             on_rename: None,
             on_create: None,
+            on_trash: None,
         }
     }
 
@@ -108,6 +116,11 @@ impl ProjectTree {
     /// 设置新建条目回调（由 Workspace 在创建后调用）。
     pub(crate) fn set_on_create(&mut self, callback: OnCreate) {
         self.on_create = Some(callback);
+    }
+
+    /// 设置删除（移到废纸篓）回调（由 Workspace 在创建后调用）。
+    pub(crate) fn set_on_trash(&mut self, callback: OnTrash) {
+        self.on_trash = Some(callback);
     }
 
     /// 更换项目根目录。
@@ -316,6 +329,36 @@ impl ProjectTree {
         self.begin_create(window, cx);
     }
 
+    /// 将选中条目移到系统废纸篓；根目录行不可删除。
+    fn handle_tree_trash(&mut self, _: &TreeTrash, window: &mut Window, cx: &mut Context<Self>) {
+        let (path, index) = {
+            let state = self.state.borrow();
+            let rows = state.visible_rows();
+            let Some(index) = state.selected_idx(rows) else {
+                return;
+            };
+            (rows[index].path.clone(), index)
+        };
+        if path == self.root {
+            return;
+        }
+        let Some(on_trash) = self.on_trash.clone() else {
+            eprintln!("项目树删除失败：未配置项目删除服务");
+            return;
+        };
+        if let Err(error) = on_trash(path, window, cx) {
+            eprintln!("项目树删除失败：{error}");
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        state.refresh_rows();
+        // 删除后选中原位置的下一个条目；删除的是最后一项时落在新的最后一项。
+        let rows = state.visible_rows();
+        if !rows.is_empty() {
+            state.selected = Some(rows[index.min(rows.len() - 1)].path.clone());
+        }
+    }
+
     fn begin_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.edit_state.is_some() {
             return;
@@ -478,6 +521,7 @@ impl gpui::Render for ProjectTree {
             .on_action(cx.listener(Self::handle_tree_activate))
             .on_action(cx.listener(Self::handle_tree_rename))
             .on_action(cx.listener(Self::handle_tree_new_entry))
+            .on_action(cx.listener(Self::handle_tree_trash))
             .on_action(cx.listener(Self::handle_tree_confirm_edit))
             .on_action(cx.listener(Self::handle_tree_cancel_edit))
             .child(render_list(
@@ -1151,6 +1195,101 @@ mod tests {
             assert_eq!(
                 tree.state.borrow().selected.as_deref(),
                 Some(folder.as_path())
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn trash_action_moves_the_selected_row_to_trash_and_selects_the_next_row(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let trashed_file = directory.path().join("trash-me.txt");
+        let kept_file = directory.path().join("keep.txt");
+        std::fs::write(&trashed_file, "content").expect("应创建测试文件");
+        std::fs::write(&kept_file, "content").expect("应创建测试文件");
+        let tree = cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), cx));
+        let trashed = Rc::new(RefCell::new(None));
+        let trashed_path = Rc::clone(&trashed);
+        tree.update(cx, |tree, _| {
+            tree.set_on_trash(Rc::new(move |path, _, _| {
+                std::fs::remove_file(&path)?;
+                *trashed_path.borrow_mut() = Some(path);
+                Ok(())
+            }));
+            tree.state.borrow_mut().select(&trashed_file);
+        });
+
+        cx.add_window_view(|window, cx| {
+            tree.update(cx, |tree, cx| {
+                tree.handle_tree_trash(&TreeTrash, window, cx);
+            });
+            TestView
+        });
+
+        assert_eq!(trashed.borrow().as_deref(), Some(trashed_file.as_path()));
+        assert!(!trashed_file.exists());
+        assert!(kept_file.exists());
+        cx.read_entity(&tree, |tree, _| {
+            assert_eq!(
+                tree.state.borrow().selected.as_deref(),
+                Some(kept_file.as_path()),
+                "删除后应选中原位置的下一个条目"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn trash_action_ignores_the_root_row(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let tree = cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), cx));
+        let called = Rc::new(Cell::new(false));
+        let callback_called = Rc::clone(&called);
+        tree.update(cx, |tree, _| {
+            tree.set_on_trash(Rc::new(move |_, _, _| {
+                callback_called.set(true);
+                Ok(())
+            }));
+            tree.state.borrow_mut().select(directory.path());
+        });
+
+        cx.add_window_view(|window, cx| {
+            tree.update(cx, |tree, cx| {
+                tree.handle_tree_trash(&TreeTrash, window, cx);
+            });
+            TestView
+        });
+
+        assert!(!called.get(), "根目录行不应触发删除");
+        assert!(directory.path().exists());
+    }
+
+    #[gpui::test]
+    fn trash_action_selects_the_last_row_after_deleting_the_final_entry(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let only_file = directory.path().join("only.txt");
+        std::fs::write(&only_file, "content").expect("应创建测试文件");
+        let tree = cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), cx));
+        tree.update(cx, |tree, _| {
+            tree.set_on_trash(Rc::new(|path, _, _| {
+                std::fs::remove_file(path)?;
+                Ok(())
+            }));
+            tree.state.borrow_mut().select(&only_file);
+        });
+
+        cx.add_window_view(|window, cx| {
+            tree.update(cx, |tree, cx| {
+                tree.handle_tree_trash(&TreeTrash, window, cx);
+            });
+            TestView
+        });
+
+        cx.read_entity(&tree, |tree, _| {
+            assert_eq!(
+                tree.state.borrow().selected.as_deref(),
+                Some(directory.path()),
+                "删除最后一项后应选中新的最后一行（根目录）"
             );
         });
     }

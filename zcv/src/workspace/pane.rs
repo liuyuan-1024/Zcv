@@ -192,6 +192,23 @@ impl Pane {
         cx.notify();
     }
 
+    /// 关闭已删除条目对应的标签页；目录删除时连同其中打开的文件一起关闭。
+    pub(crate) fn remove_path(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let closed: Vec<EntityId> = self
+            .tabs
+            .iter()
+            .filter_map(|item| {
+                let editor = item.downcast::<Editor>()?;
+                let open_path = editor.read(cx).file_path(cx)?;
+                open_path.strip_prefix(path).is_ok().then(|| item.item_id())
+            })
+            .collect();
+        for item_id in closed {
+            self.close_tab(item_id, window, cx);
+        }
+        cx.notify();
+    }
+
     /// 激活指定 tab，并滚入视图。
     pub fn activate_tab(&mut self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(pos) = self.tabs.iter().position(|item| item.item_id() == item_id) {

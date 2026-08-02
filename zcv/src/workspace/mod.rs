@@ -48,7 +48,7 @@ use crate::language_selector::ActiveBufferLanguage;
 use crate::language_tools::LspButton;
 use crate::project::{Project, ProjectEvent};
 use crate::project_search::ProjectSearchButton;
-use crate::project_tree::{OnCreate, OnOpenFile, OnRename, ProjectTree};
+use crate::project_tree::{OnCreate, OnOpenFile, OnRename, OnTrash, ProjectTree};
 use crate::recent_projects::{self, OnProjectSelected, ToggleProjectPicker};
 use crate::settings::SettingsStore;
 use zcv_theme::{color, typography};
@@ -117,6 +117,7 @@ impl Workspace {
         let weak_open_file = weak_self.clone();
         let weak_rename = weak_self.clone();
         let weak_create = weak_self.clone();
+        let weak_trash = weak_self.clone();
 
         let keybindings = keymap::load(cx).expect("内置 keymap 应完整有效");
         cx.bind_keys(keybindings.bindings.clone());
@@ -167,6 +168,13 @@ impl Workspace {
                 workspace.update(cx, |workspace, cx| workspace.create_path(&path, is_dir, cx))
             });
             tree.set_on_create(on_create);
+            let on_trash: OnTrash = Rc::new(move |path, window, cx| {
+                let Some(workspace) = weak_trash.upgrade() else {
+                    anyhow::bail!("工作区已关闭");
+                };
+                workspace.update(cx, |workspace, cx| workspace.trash_path(&path, window, cx))
+            });
+            tree.set_on_trash(on_trash);
             tree
         });
 
@@ -462,6 +470,20 @@ impl Workspace {
     ) -> anyhow::Result<()> {
         self.project
             .update(cx, |project, cx| project.create_path(path, is_dir, cx))
+    }
+
+    /// 将文件或目录移到系统废纸篓，并关闭打开它的标签页。
+    fn trash_path(
+        &mut self,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        self.project
+            .update(cx, |project, cx| project.trash_path(path, cx))?;
+        self.pane
+            .update(cx, |pane, cx| pane.remove_path(path, window, cx));
+        Ok(())
     }
 
     /// 切换面板焦点：通过 panel_action_map 找到对应的 Dock 进行操作。

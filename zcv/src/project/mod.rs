@@ -1,7 +1,7 @@
 //! 项目级状态与服务协调。
 //!
-//! `Project` 管理项目根、文件 Buffer 生命周期和文件系统监听。窗口布局、Pane、
-//! Dock 与其他界面状态仍由 `Workspace` 管理。
+//! `Project` 管理项目根、文件 Buffer 生命周期和文件系统监听。
+//! 窗口布局、Pane、Dock 与其他界面状态仍由 `Workspace` 管理。
 
 mod buffer_store;
 
@@ -179,6 +179,16 @@ impl Project {
         Ok(())
     }
 
+    /// 将文件或目录移到系统废纸篓（可恢复），并清掉项目持有的路径状态。
+    pub(crate) fn trash_path(&mut self, path: &Path, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        anyhow::ensure!(path != self.root, "不能删除项目根目录");
+        anyhow::ensure!(path.starts_with(&self.root), "条目不在当前项目中");
+        trash::delete(path)?;
+        self.buffer_store.remove_path(path);
+        cx.emit(ProjectEvent::EntriesChanged);
+        Ok(())
+    }
+
     fn process_fs_events(&mut self, events: Vec<PathEvent>, cx: &mut Context<Self>) {
         let events: Vec<_> = events
             .into_iter()
@@ -326,6 +336,39 @@ mod tests {
                 .is_err(),
             "不应允许父目录逃逸"
         );
+    }
+
+    #[gpui::test]
+    fn trashing_path_rejects_project_root_and_outside_entries(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+
+        for path in [
+            directory.path().to_path_buf(),
+            PathBuf::from("/outside/file.txt"),
+        ] {
+            assert!(
+                project
+                    .update(cx, |project, cx| project.trash_path(&path, cx))
+                    .is_err(),
+                "不应允许删除 {}",
+                path.display()
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn trashing_path_moves_file_to_system_trash(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let file = directory.path().join("to-trash.txt");
+        fs::write(&file, "content").expect("应创建测试文件");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+
+        project.update(cx, |project, cx| {
+            project.trash_path(&file, cx).expect("应移到系统废纸篓")
+        });
+
+        assert!(!file.exists(), "被删除文件应不再位于原路径");
     }
 
     fn test_file_path() -> PathBuf {

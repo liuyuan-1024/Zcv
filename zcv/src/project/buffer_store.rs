@@ -1,7 +1,7 @@
 //! 文件路径到共享 Buffer Entity 的索引。
 //!
-//! Store 只保留弱引用；只要还有 Editor 或 View 持有 Buffer，它就能按路径复用，
-//! 最后一个使用者释放后，Buffer 的生命周期也随之结束。
+//! Store 只保留弱引用；
+//! 只要还有 Editor 或 View 持有 Buffer，它就能按路径复用，最后一个使用者释放后，Buffer 的生命周期也随之结束。
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -82,6 +82,12 @@ impl BufferStore {
             })
             .collect();
     }
+
+    /// 移除被删除文件或目录对应的路径索引；目录删除时连同其中已打开的 Buffer 一起移除。
+    pub(crate) fn remove_path(&mut self, path: &Path) {
+        self.opened_buffers
+            .retain(|indexed, _| indexed.strip_prefix(path).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -131,6 +137,49 @@ mod tests {
 
         assert_ne!(first, second);
         fs::remove_file(path).expect("测试文件应可删除");
+    }
+
+    #[gpui::test]
+    fn remove_path_drops_matching_indexes_and_keeps_others(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let directory = directory.path().canonicalize().expect("临时目录应可规范化");
+        let file = directory.join("file.txt");
+        let nested = directory.join("sub").join("nested.txt");
+        let sibling = directory.join("sibling.txt");
+        fs::create_dir_all(directory.join("sub")).expect("应创建子目录");
+        fs::write(&file, "文件").expect("应创建测试文件");
+        fs::write(&nested, "嵌套").expect("应创建测试文件");
+        fs::write(&sibling, "同级").expect("应创建测试文件");
+
+        let mut store = BufferStore::new();
+        let (file_buffer, nested_buffer, sibling_buffer) = cx.update(|cx| {
+            (
+                store.open_buffer(&file, cx).expect("应打开测试文件"),
+                store.open_buffer(&nested, cx).expect("应打开测试文件"),
+                store.open_buffer(&sibling, cx).expect("应打开测试文件"),
+            )
+        });
+
+        // 精确文件删除只移除该文件的索引；目录删除连同其中已打开的 Buffer 一起移除。
+        store.remove_path(&file);
+        store.remove_path(&directory.join("sub"));
+
+        let (reloaded_file, reloaded_nested, kept_sibling) = cx.update(|cx| {
+            (
+                store.open_buffer(&file, cx).expect("应重新加载测试文件"),
+                store.open_buffer(&nested, cx).expect("应重新加载测试文件"),
+                store.open_buffer(&sibling, cx).expect("应重新打开测试文件"),
+            )
+        });
+        assert_ne!(file_buffer, reloaded_file, "被删文件的索引应被移除");
+        assert_ne!(
+            nested_buffer, reloaded_nested,
+            "被删目录内 Buffer 的索引应被移除"
+        );
+        assert_eq!(sibling_buffer, kept_sibling, "未匹配的索引应保留并复用");
+        fs::remove_file(file).expect("测试文件应可删除");
+        fs::remove_file(nested).expect("测试文件应可删除");
+        fs::remove_file(sibling).expect("测试文件应可删除");
     }
 
     #[gpui::test]

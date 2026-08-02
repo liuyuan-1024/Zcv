@@ -52,7 +52,9 @@
       "space": "project_tree::TreeActivate",
       "up": "project_tree::TreeSelectPrev",
       "enter": "project_tree::TreeRename",
-      "cmd-n": "project_tree::TreeNewEntry"
+      "cmd-n": "project_tree::TreeNewEntry",
+      "cmd-backspace": "project_tree::TreeTrash",
+      "cmd-delete": "project_tree::TreeTrash"
     }
   },
   {

@@ -48,7 +48,9 @@
       "right": "project_tree::TreeExpand",
       "space": "project_tree::TreeActivate",
       "enter": "project_tree::TreeRename",
-      "ctrl-n": "project_tree::TreeNewEntry"
+      "ctrl-n": "project_tree::TreeNewEntry",
+      "ctrl-backspace": "project_tree::TreeTrash",
+      "ctrl-delete": "project_tree::TreeTrash"
     }
   },
   {

@@ -108,3 +108,28 @@ windows = { version = "0.57.0", features = [
 # ---- 开发工具（dev-dependencies 引用） ----
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
+
+[profile.dev]
+opt-level = 1
+debug = "limited"
+
+[profile.dev.package]
+zcv-engine = { opt-level = 3 }
+zcv-editor = { opt-level = 3 }
+zcv-language = { opt-level = 3 }
+zcv-theme = { opt-level = 3 }
+tree-sitter = { opt-level = 3 }
+tree-sitter-bash = { opt-level = 3 }
+tree-sitter-css = { opt-level = 3 }
+tree-sitter-html = { opt-level = 3 }
+tree-sitter-java = { opt-level = 3 }
+tree-sitter-javascript = { opt-level = 3 }
+tree-sitter-json = { opt-level = 3 }
+tree-sitter-md = { opt-level = 3 }
+tree-sitter-python = { opt-level = 3 }
+tree-sitter-rust = { opt-level = 3 }
+tree-sitter-toml-ng = { opt-level = 3 }
+tree-sitter-typescript = { opt-level = 3 }
+tree-sitter-yaml = { opt-level = 3 }
+ropey = { opt-level = 3 }
+serde_json = { opt-level = 3 }

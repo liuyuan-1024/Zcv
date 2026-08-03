@@ -58,6 +58,9 @@ pub(crate) trait Item:
 
 // ═══ ItemHandle trait ════════════════════════════════════════════════
 
+/// item 事件订阅回调。
+pub(crate) type ItemEventHandler = Box<dyn Fn(ItemEvent, &mut App) + Send>;
+
 /// [`Item`] 的对象安全句柄，供 Pane 统一存储异构视图。
 pub(crate) trait ItemHandle: Send + 'static {
     /// 实体 ID。
@@ -80,7 +83,7 @@ pub(crate) trait ItemHandle: Send + 'static {
         &self,
         _window: &mut Window,
         cx: &mut App,
-        handler: Box<dyn Fn(ItemEvent, &mut App) + Send>,
+        handler: ItemEventHandler,
     ) -> Subscription;
 
     /// 面包屑在 Toolbar 中的位置。

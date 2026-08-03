@@ -24,11 +24,11 @@ const MAX_INCREMENTAL_PATHS: usize = 500;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GitStoreEvent {
     /// 仓库集合发生变化（发现/消失）。
-    RepositoriesChanged,
+    Repositories,
     /// 文件状态或 diff 统计发生变化。
-    StatusesChanged,
+    Statuses,
     /// 当前分支或 HEAD 发生变化。
-    HeadChanged,
+    Head,
 }
 
 /// 单个文件在某个仓库中的状态快照。
@@ -199,10 +199,10 @@ impl GitStore {
         let relative = repo_relative_path(repository.repository.working_directory(), &path)?;
         let statuses = &repository.snapshot.statuses_by_path;
         // 目录自身条目（--ignored=matching 下仅忽略目录会有目录级条目）。
-        if let Some(entry) = statuses.get(&relative) {
-            if entry.status.is_ignored() {
-                return Some(FileStatus::Ignored);
-            }
+        if let Some(entry) = statuses.get(&relative)
+            && entry.status.is_ignored()
+        {
+            return Some(FileStatus::Ignored);
         }
         // 聚合子项：BTreeMap 有序，以目录为前缀的键连续排列在 range(..) 中。
         let mut best: Option<FileStatus> = None;
@@ -321,13 +321,13 @@ impl GitStore {
                 }
 
                 if old_work_dirs != new_work_dirs {
-                    cx.emit(GitStoreEvent::RepositoriesChanged);
+                    cx.emit(GitStoreEvent::Repositories);
                 }
                 if head_changed {
-                    cx.emit(GitStoreEvent::HeadChanged);
+                    cx.emit(GitStoreEvent::Head);
                 }
                 if statuses_changed {
-                    cx.emit(GitStoreEvent::StatusesChanged);
+                    cx.emit(GitStoreEvent::Statuses);
                 }
                 self.repositories = scans
                     .into_iter()
@@ -351,10 +351,10 @@ impl GitStore {
                     repository.snapshot = snapshot;
                 }
                 if head_changed {
-                    cx.emit(GitStoreEvent::HeadChanged);
+                    cx.emit(GitStoreEvent::Head);
                 }
                 if statuses_changed {
-                    cx.emit(GitStoreEvent::StatusesChanged);
+                    cx.emit(GitStoreEvent::Statuses);
                 }
             }
             _ => {}

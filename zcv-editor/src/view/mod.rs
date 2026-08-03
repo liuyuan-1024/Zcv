@@ -102,20 +102,15 @@ pub(crate) enum EditorMode {
 }
 
 /// 软换行模式，与 Zed 的 soft_wrap 设置语义一致。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SoftWrap {
     /// 不换行（超长行横向滚动）。
+    #[default]
     None,
     /// 超过编辑器文本区宽度换行。
     EditorWidth,
     /// 在 `preferred_line_length` 与编辑器宽度（取小者）处换行。
     Bounded,
-}
-
-impl Default for SoftWrap {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,7 +269,7 @@ impl Editor {
     ) {
         let text_system = cx.text_system();
         self.display_map
-            .set_wrap_width(wrap_width, font, font_size, &text_system);
+            .set_wrap_width(wrap_width, font, font_size, text_system);
     }
 
     pub fn file_path(&self, cx: &App) -> Option<PathBuf> {

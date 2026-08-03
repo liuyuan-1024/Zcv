@@ -55,6 +55,9 @@ use zcv_theme::{color, typography};
 
 actions!(workspace, [Save]);
 
+/// 面板句柄与其停靠位置的配对列表。
+type PanelPairs = Vec<(Arc<dyn PanelHandle>, DockPosition)>;
+
 pub(crate) struct Workspace {
     pub(crate) focus: FocusHandle,
     pub(crate) pane: Entity<Pane>,
@@ -80,10 +83,7 @@ impl Workspace {
     fn make_panels(
         project_tree: &Entity<ProjectTree>,
         cx: &mut Context<Self>,
-    ) -> (
-        Vec<Arc<dyn PanelHandle>>,
-        Vec<(Arc<dyn PanelHandle>, DockPosition)>,
-    ) {
+    ) -> (Vec<Arc<dyn PanelHandle>>, PanelPairs) {
         let version_control = cx.new(VersionControlPanel::new);
         let outline = cx.new(OutlinePanel::new);
         let terminal = cx.new(TerminalPanel::new);

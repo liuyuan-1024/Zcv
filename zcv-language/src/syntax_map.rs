@@ -854,7 +854,7 @@ impl QueryCursorHandle {
             .lock()
             .expect("QueryCursor 池不应在持锁期间 panic")
             .pop()
-            .unwrap_or_else(QueryCursor::new);
+            .unwrap_or_default();
         cursor.set_match_limit(64);
         Self(Some(cursor))
     }

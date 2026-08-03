@@ -876,11 +876,11 @@ fn fragment_index_for_byte(points: &[WrapPointInfo], byte: usize) -> usize {
 }
 
 fn push_isomorphic(transforms: &mut Vec<Transform>, lines: usize) {
-    if let Some(last) = transforms.last_mut() {
-        if last.kind == TransformKind::Isomorphic {
-            last.input_lines += lines;
-            return;
-        }
+    if let Some(last) = transforms.last_mut()
+        && last.kind == TransformKind::Isomorphic
+    {
+        last.input_lines += lines;
+        return;
     }
     transforms.push(Transform::isomorphic(lines));
 }

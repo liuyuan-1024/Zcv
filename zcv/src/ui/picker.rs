@@ -57,13 +57,16 @@ pub trait PickerDelegate: 'static {
 
 // ═══ Picker Entity ══════════════════════════════════════════════
 
+/// 浮层关闭回调。
+pub(crate) type OnDismiss = Box<dyn Fn(&mut Window, &mut App)>;
+
 pub struct Picker<D: PickerDelegate> {
     delegate: D,
     editor: Entity<Editor>,
     focus_handle: FocusHandle,
     width: Pixels,
     query: String,
-    on_dismiss: Option<Box<dyn Fn(&mut Window, &mut App)>>,
+    on_dismiss: Option<OnDismiss>,
 }
 
 impl<D: PickerDelegate> Picker<D> {
@@ -94,7 +97,7 @@ impl<D: PickerDelegate> Picker<D> {
     }
 
     /// 设置关闭回调（由父 Entity 调用，例如关闭浮层）。
-    pub fn set_on_dismiss(&mut self, f: Box<dyn Fn(&mut Window, &mut App)>) {
+    pub fn set_on_dismiss(&mut self, f: OnDismiss) {
         self.on_dismiss = Some(f);
     }
 

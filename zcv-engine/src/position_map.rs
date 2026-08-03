@@ -78,15 +78,9 @@ impl<T: Copy> MappingResult<T> {
 }
 
 /// 旧文本与新文本之间的 byte 坐标映射器。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PositionMap {
     edits: Vec<PositionMapEdit>,
-}
-
-impl Default for PositionMap {
-    fn default() -> Self {
-        Self { edits: Vec::new() }
-    }
 }
 
 impl PositionMap {

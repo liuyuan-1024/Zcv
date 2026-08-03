@@ -111,7 +111,7 @@ impl Workspace {
         (handles, pairs)
     }
 
-    pub(crate) fn new(window: &Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(root: PathBuf, window: &Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let weak_self: gpui::WeakEntity<Self> = cx.weak_entity();
         let weak_project_switcher = weak_self.clone();
@@ -133,11 +133,19 @@ impl Workspace {
         });
 
         let top_bar = cx.new(|cx| TopBar::new(on_project_selected, cx));
+        top_bar.update(cx, |bar, cx| {
+            let label = root
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            bar.project_picker.update(cx, |picker, _| {
+                picker.set_current_label(label);
+            });
+        });
 
         let pane = cx.new(Pane::new);
 
         // 先创建 ProjectTree（唯一实体），再创建面板
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let project = cx.new(|cx| Project::new(root.clone(), cx));
         let root_for_tree = root.clone();
         let project_tree: Entity<ProjectTree> = cx.new(|cx| {
@@ -252,6 +260,7 @@ impl Workspace {
             bar.add_right_item(cx.new(|cx| PanelButtons::new(right_dock.clone(), cx)), cx);
         });
 
+        // 项目根只在「项目根被外部重命名」时变化（切换项目 = 新窗口，不再动态换根）。
         let project_subscription =
             cx.subscribe(&project, |workspace, _project, event, cx| match event {
                 ProjectEvent::RootChanged(root) => {
@@ -351,16 +360,39 @@ impl Workspace {
         window.refresh();
     }
 
-    /// 开发构建启动时，沿用正式项目切换链路打开 zcv 工作区。
-    #[cfg(debug_assertions)]
-    pub(crate) fn open_development_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let project_root = crate_dir.parent().unwrap_or(&crate_dir);
-        self.switch_project(&project_root.to_string_lossy(), window, cx);
-    }
-
     fn handle_git_fetch(_: &top_bar::GitFetch, _: &mut Window, _: &mut gpui::App) {
         println!("fetch");
+    }
+
+    /// 在当前窗口切换到指定项目。
+    pub(crate) fn switch_project(
+        &mut self,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let root = PathBuf::from(path);
+        let result = self
+            .project
+            .update(cx, |project, cx| project.set_root(root, cx));
+        if let Err(error) = result {
+            eprintln!("切换项目失败（{path}）：{error}");
+            return;
+        }
+        // 关闭旧项目遗留的标签，旧 buffer 随 Item 释放。
+        self.pane.update(cx, |pane, cx| pane.close_all(window, cx));
+        let root = self.project.read(cx).root().to_path_buf();
+        let label = root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.top_bar.update(cx, |bar, cx| {
+            bar.project_picker.update(cx, |picker, _cx| {
+                picker.set_current_label(label);
+            });
+        });
+        recent_projects::add_to_recent(&root.to_string_lossy());
+        window.refresh();
     }
 
     fn handle_git_pull(_: &top_bar::GitPull, _: &mut Window, _: &mut gpui::App) {
@@ -552,31 +584,6 @@ impl Workspace {
                 picker.toggle(window, cx);
             });
         });
-    }
-
-    /// 切换到指定目录作为项目根目录。
-    fn switch_project(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let root = PathBuf::from(path);
-        let result = self
-            .project
-            .update(cx, |project, cx| project.set_root(root, cx));
-        if let Err(error) = result {
-            eprintln!("切换项目失败（{path}）：{error}");
-            return;
-        }
-        let root = self.project.read(cx).root().to_path_buf();
-        let label = root
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        self.top_bar.update(cx, |bar, cx| {
-            bar.project_picker.update(cx, |picker, _cx| {
-                picker.set_current_label(label);
-            });
-        });
-        recent_projects::add_to_recent(&root.to_string_lossy());
-        window.refresh();
     }
 }
 

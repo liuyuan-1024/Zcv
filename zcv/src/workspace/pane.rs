@@ -263,6 +263,14 @@ impl Pane {
         }
     }
 
+    /// 关闭全部标签（切换项目时调用，旧项目的 Editor 随 Item 释放）。
+    pub(crate) fn close_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.tabs.clear();
+        self.active = None;
+        self.update_toolbar(window, cx);
+        cx.notify();
+    }
+
     /// 当前活动标签的 ItemHandle。
     pub(crate) fn active_item(&self) -> Option<&dyn ItemHandle> {
         let item_id = self.active?;

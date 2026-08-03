@@ -76,6 +76,7 @@ impl Project {
         self.git_store.clone()
     }
 
+    /// 在当前窗口内切换到指定项目根。
     pub(crate) fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) -> anyhow::Result<()> {
         let root = root.canonicalize()?;
         anyhow::ensure!(root.is_dir(), "项目根必须是目录：{}", root.display());

@@ -353,22 +353,25 @@ impl Pane {
 impl Pane {
     fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         self.next_tab();
+        // 关闭最后一个 tab 后按快捷键会走到这里：next_tab 对空 tabs 早退，active 可能为 None。
+        let Some(item_id) = self.active else {
+            return;
+        };
         self.update_toolbar(window, cx);
         self.focus_active_item(window, cx);
-        cx.emit(PaneEvent::Activate {
-            item_id: self.active.unwrap(),
-        });
+        cx.emit(PaneEvent::Activate { item_id });
         cx.notify();
         window.refresh();
     }
 
     fn handle_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
         self.prev_tab();
+        let Some(item_id) = self.active else {
+            return;
+        };
         self.update_toolbar(window, cx);
         self.focus_active_item(window, cx);
-        cx.emit(PaneEvent::Activate {
-            item_id: self.active.unwrap(),
-        });
+        cx.emit(PaneEvent::Activate { item_id });
         cx.notify();
         window.refresh();
     }
@@ -391,7 +394,7 @@ impl Render for Pane {
             .flex_col()
             .overflow_hidden()
             .size_full()
-            .bg(color::current().editor_background)
+            .bg(color::current(cx).editor_background)
             .on_action(cx.listener(Self::handle_next_tab))
             .on_action(cx.listener(Self::handle_prev_tab))
             .child(render_tab_bar(
@@ -402,7 +405,7 @@ impl Render for Pane {
                 cx,
             ))
             .child(self.toolbar.clone())
-            .child(render_content(active_item_id, active_item))
+            .child(render_content(active_item_id, active_item, cx))
     }
 }
 
@@ -440,12 +443,13 @@ fn render_tab_bar(
 
     let handle = scroll_handle.clone();
     let tab_bar = TabBar::new().track_scroll(scroll_handle).with_bar(
+        cx,
         |bar| {
             bar.flex()
                 .flex_row()
                 .items_center()
                 .flex_shrink_0()
-                .bg(color::current().tab_bar_background)
+                .bg(color::current(cx).tab_bar_background)
         },
         children,
     );
@@ -517,9 +521,9 @@ fn render_tab(
             |tab, _, _, cx| cx.new(|_| tab.clone()),
         )
         .drag_over::<DraggedTab>(
-            move |mut tab: gpui::StyleRefinement, dragged: &DraggedTab, _, _| {
+            move |mut tab: gpui::StyleRefinement, dragged: &DraggedTab, _, cx| {
                 if ix != dragged.ix {
-                    tab.background = Some(gpui::Fill::from(color::current().element_hover));
+                    tab.background = Some(gpui::Fill::from(color::current(cx).element_hover));
                 }
                 tab
             },
@@ -545,8 +549,8 @@ fn render_tab_bar_drop_target(
         .id("tab-bar-drop-target")
         .flex_grow()
         .drag_over::<DraggedTab>(
-            |mut tab: gpui::StyleRefinement, _dragged: &DraggedTab, _, _| {
-                tab.background = Some(gpui::Fill::from(color::current().element_hover));
+            |mut tab: gpui::StyleRefinement, _dragged: &DraggedTab, _, cx| {
+                tab.background = Some(gpui::Fill::from(color::current(cx).element_hover));
                 tab
             },
         )
@@ -608,7 +612,7 @@ fn tab_end_glyph(
                 .group_hover(TAB_HOVER_GROUP, |style| style.opacity(0.0))
                 .child(
                     Glyph::icon(("tab-dirty", item_id), "icons/actions/circle.svg")
-                        .color(color::current().icon_accent),
+                        .color(color::current(cx).icon_accent),
                 ),
         )
         .child(
@@ -631,6 +635,7 @@ fn tab_end_glyph(
 fn render_content(
     active_item_id: Option<EntityId>,
     active_item: Option<&dyn ItemHandle>,
+    cx: &App,
 ) -> impl gpui::IntoElement {
     if active_item_id.is_none() {
         return div()
@@ -638,7 +643,7 @@ fn render_content(
             .flex()
             .items_center()
             .justify_center()
-            .text_color(color::current().text_placeholder)
+            .text_color(color::current(cx).text_placeholder)
             .child("无打开文件")
             .into_any_element();
     }
@@ -648,7 +653,7 @@ fn render_content(
             .flex()
             .items_center()
             .justify_center()
-            .text_color(color::current().text_placeholder)
+            .text_color(color::current(cx).text_placeholder)
             .child("视图已关闭")
             .into_any_element();
     };

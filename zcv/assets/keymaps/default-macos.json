@@ -71,7 +71,7 @@
       "down": "picker::PickerSelectNext",
       "enter": "picker::PickerConfirm",
       "escape": "picker::PickerCancel",
-      "cmd-o": "project_picker::OpenLocalProject"
+      "cmd-l": "project_picker::OpenLocalProject"
     }
   },
   {

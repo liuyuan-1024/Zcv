@@ -3,15 +3,14 @@
 //! 本文件保证后台读取可脱离可变 Buffer；它不提交编辑、不维护历史，也不暴露 Ropey 内部类型。
 
 use crate::{
-    BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError, EngineResult, Line,
-    LineEndingStyle, LineRange, LineSlice, Position, RegexSearchOptions, RegexSearchResult,
-    SearchOptions, SearchResult, TextRange, TextSlice, Utf16Offset, Utf16Position, Viewport,
-    ViewportSlice, VisibleLine,
+    BufferConfig, BufferVersion, ByteOffset, EngineResult, Line, LineRange, LineSlice,
+    RegexSearchOptions, RegexSearchResult, SearchOptions, SearchResult, TextRange, TextSlice,
+    Viewport, ViewportSlice, VisibleLine,
     slicing::{
         text_range_for_byte_range, text_range_for_line, text_range_for_line_range,
         viewport_slice_for_text, visible_line_for_text,
     },
-    storage::{RopeySnapshot, TextRead},
+    storage::{RopeySnapshot, TextRead, text_coordinate_gateway},
 };
 
 /// 不可变文本快照。
@@ -43,44 +42,8 @@ impl Snapshot {
         &self.config
     }
 
-    pub fn len_chars(&self) -> CharOffset {
-        self.storage.len_chars()
-    }
-
-    /// 文本 UTF-8 字节末端位置；等价于全文末尾的 `ByteOffset`。
-    pub fn len_bytes(&self) -> ByteOffset {
-        self.storage.len_bytes()
-    }
-
-    /// 文本 UTF-16 code unit 末端位置；等价于全文末尾的 `Utf16Offset`，
-    /// 用于与 LSP / 外部协议的坐标边界对齐。
-    pub fn len_utf16_cu(&self) -> Utf16Offset {
-        self.storage.len_utf16_cu()
-    }
-
-    pub fn line_count(&self) -> usize {
-        self.storage.line_count()
-    }
-
-    /// 指定行的起始 ByteOffset（深核接口）。
-    pub fn line_start_byte(&self, line: Line) -> EngineResult<ByteOffset> {
-        self.storage.line_start(line)
-    }
-
-    /// 指定行的起始 CharOffset（边界投影）。
-    pub fn line_start(&self, line: Line) -> EngineResult<CharOffset> {
-        let byte = self.storage.line_start(line)?;
-        self.storage.byte_to_char(byte)
-    }
-
-    pub fn byte_to_position(&self, offset: ByteOffset) -> EngineResult<Position> {
-        self.storage.byte_to_position(offset)
-    }
-
-    /// `byte_to_position` 的省列变体；详见 `Buffer::byte_to_line`。
-    pub fn byte_to_line(&self, offset: ByteOffset) -> EngineResult<Line> {
-        self.storage.byte_to_line(offset)
-    }
+    // 坐标查询门面（len / byte / char / UTF-16 / grapheme 系列）与 Buffer 共用一份实现。
+    text_coordinate_gateway!();
 
     /// `(行号, 行内 UTF-8 字节列)` 派生坐标。
     ///
@@ -99,10 +62,6 @@ impl Snapshot {
     /// chunk 边界落在 UTF-8 char boundary（不保证 grapheme boundary），parser 内部已能处理跨 chunk 拼接。端点必须落在合法字符边界。
     pub fn chunk_at_byte(&self, offset: ByteOffset) -> EngineResult<(&str, ByteOffset)> {
         self.storage.chunk_at_byte(offset)
-    }
-
-    pub fn position_to_byte(&self, position: Position) -> EngineResult<ByteOffset> {
-        self.storage.position_to_byte(position)
     }
 
     /// 按 byte range 读取快照文本。
@@ -143,86 +102,6 @@ impl Snapshot {
         max_line_chars: Option<usize>,
     ) -> EngineResult<VisibleLine<'_>> {
         visible_line_for_text(&self.storage, line, max_line_chars)
-    }
-
-    pub fn char_to_position(&self, offset: CharOffset) -> EngineResult<Position> {
-        self.storage.char_to_position(offset)
-    }
-
-    pub fn position_to_char(&self, position: Position) -> EngineResult<CharOffset> {
-        self.storage.position_to_char(position)
-    }
-
-    pub fn byte_to_char(&self, offset: ByteOffset) -> EngineResult<CharOffset> {
-        self.storage.byte_to_char(offset)
-    }
-
-    pub fn char_to_byte(&self, offset: CharOffset) -> EngineResult<ByteOffset> {
-        self.storage.char_to_byte(offset)
-    }
-
-    pub fn char_to_utf16_position(&self, offset: CharOffset) -> EngineResult<Utf16Position> {
-        self.storage.char_to_utf16_position(offset)
-    }
-
-    pub fn utf16_position_to_char(&self, position: Utf16Position) -> EngineResult<CharOffset> {
-        self.storage.utf16_position_to_char(position)
-    }
-
-    pub fn byte_to_utf16_position(&self, offset: ByteOffset) -> EngineResult<Utf16Position> {
-        self.storage.byte_to_utf16_position(offset)
-    }
-
-    pub fn utf16_position_to_byte(&self, position: Utf16Position) -> EngineResult<ByteOffset> {
-        self.storage.utf16_position_to_byte(position)
-    }
-
-    /// 全文 flat UTF-16 code unit 偏移：byte → utf16 cu。详见
-    /// [`crate::Buffer::byte_to_utf16_cu`]。
-    pub fn byte_to_utf16_cu(&self, offset: ByteOffset) -> EngineResult<Utf16Offset> {
-        self.storage.byte_to_utf16_cu(offset)
-    }
-
-    /// 全文 flat UTF-16 code unit 偏移：utf16 cu → byte。
-    pub fn utf16_cu_to_byte(&self, offset: Utf16Offset) -> EngineResult<ByteOffset> {
-        self.storage.utf16_cu_to_byte(offset)
-    }
-
-    pub fn is_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<bool> {
-        self.storage.is_grapheme_boundary_char(offset)
-    }
-
-    pub fn is_grapheme_boundary_byte(&self, offset: ByteOffset) -> EngineResult<bool> {
-        self.storage.is_grapheme_boundary(offset)
-    }
-
-    pub fn validate_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<()> {
-        if self.storage.is_grapheme_boundary_char(offset)? {
-            Ok(())
-        } else {
-            let byte = self.storage.char_to_byte(offset)?;
-            Err(CoordinateError::InvalidGraphemeBoundary(byte).into())
-        }
-    }
-
-    pub fn previous_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
-        self.storage.previous_grapheme_boundary_char(offset)
-    }
-
-    pub fn next_grapheme_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
-        self.storage.next_grapheme_boundary_char(offset)
-    }
-
-    pub fn previous_grapheme_boundary_byte(&self, offset: ByteOffset) -> EngineResult<ByteOffset> {
-        self.storage.previous_grapheme_boundary(offset)
-    }
-
-    pub fn next_grapheme_boundary_byte(&self, offset: ByteOffset) -> EngineResult<ByteOffset> {
-        self.storage.next_grapheme_boundary(offset)
-    }
-
-    pub fn line_ending_style(&self) -> LineEndingStyle {
-        self.storage.line_ending_style()
     }
 
     pub fn is_stale_for_version(&self, version: BufferVersion) -> bool {

@@ -7509,6 +7509,7 @@ version = "0.7.7"
 dependencies = [
  "gpui",
  "gpui_sum_tree",
+ "log",
  "thiserror 2.0.19",
  "unicode-segmentation",
  "zcv-engine",
@@ -7526,6 +7527,7 @@ dependencies = [
  "ropey",
  "thiserror 2.0.19",
  "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

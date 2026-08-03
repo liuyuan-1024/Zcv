@@ -97,7 +97,7 @@ impl StatusBar {
 
 // ═══ 渲染 ═════════════════════════════════════════════════════════
 
-fn bar_frame() -> Div {
+fn bar_frame(cx: &App) -> Div {
     div()
         .flex()
         .flex_row()
@@ -106,10 +106,10 @@ fn bar_frame() -> Div {
         .px(space::S8)
         .py(space::S6)
         .gap(space::S6)
-        .bg(color::current().status_bar_background)
-        .text_color(color::current().text)
+        .bg(color::current(cx).status_bar_background)
+        .text_color(color::current(cx).text)
         .border_t_1()
-        .border_color(color::current().border_variant)
+        .border_color(color::current(cx).border_variant)
 }
 
 fn region(items: Vec<AnyElement>, justify_start: bool) -> Div {
@@ -123,8 +123,8 @@ fn region(items: Vec<AnyElement>, justify_start: bool) -> Div {
 }
 
 impl Render for StatusBar {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        bar_frame()
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        bar_frame(cx)
             .id("status-bar")
             .child(leading_region(&self.left_items))
             .child(trailing_region(&self.right_items))

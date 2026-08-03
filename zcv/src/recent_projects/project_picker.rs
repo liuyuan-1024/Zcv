@@ -128,13 +128,14 @@ impl PickerDelegate for ProjectPickerDelegate {
     }
 
     fn dismissed(&mut self) {}
-    fn render_match(&self, index: usize, is_selected: bool) -> gpui::AnyElement {
+
+    fn render_match(&self, index: usize, is_selected: bool, cx: &App) -> gpui::AnyElement {
         let entry = &self.projects[self.filtered[index]];
         ListItem::new(index)
             .toggle_state(is_selected)
             .child(list_item_two_line(
                 div()
-                    .text_color(color::current().text)
+                    .text_color(color::current(cx).text)
                     .child(entry.label.clone()),
                 entry.path.clone(),
             ))
@@ -152,7 +153,7 @@ impl PickerDelegate for ProjectPickerDelegate {
         let item = if let Some(s) = shortcut {
             item.end_slot(
                 div()
-                    .text_color(color::current().text_placeholder)
+                    .text_color(color::current(cx).text_placeholder)
                     .text_size(typography::ui())
                     .child(s),
             )
@@ -162,7 +163,7 @@ impl PickerDelegate for ProjectPickerDelegate {
         // 整个 footer 区域可点击，派发 OpenLocalProject action
         Some(
             div()
-                .child(picker_divider())
+                .child(picker_divider(cx))
                 .child(item)
                 .on_mouse_down(MouseButton::Left, |_, window, cx| {
                     window.dispatch_action(Box::new(OpenLocalProject), cx);
@@ -347,9 +348,9 @@ impl Render for ProjectPicker {
         }
 
         let color_value = if self.is_open {
-            color::current().icon_accent
+            color::current(cx).icon_accent
         } else {
-            color::current().text
+            color::current(cx).text
         };
 
         // glyph 上显示当前项目名称，没有时显示「选择项目」
@@ -413,11 +414,11 @@ impl Render for ProjectPicker {
                                     })
                                     .child(
                                         div()
-                                            .bg(color::current().elevated_surface_background)
+                                            .bg(color::current(cx).elevated_surface_background)
                                             .border_l_3()
-                                            .border_color(color::current().border_focused)
+                                            .border_color(color::current(cx).border_focused)
                                             .border_1()
-                                            .border_color(color::current().border_variant)
+                                            .border_color(color::current(cx).border_variant)
                                             .rounded(px(8.0))
                                             .overflow_hidden()
                                             .child(self.picker.clone()),

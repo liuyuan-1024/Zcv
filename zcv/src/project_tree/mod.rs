@@ -10,14 +10,14 @@ use std::rc::Rc;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use gpui::{
-    Context, Div, Entity, KeyContext, MouseButton, ScrollStrategy, UniformListScrollHandle, Window,
-    actions, div, prelude::*, uniform_list,
+    App, Context, Div, Entity, KeyContext, MouseButton, ScrollStrategy, UniformListScrollHandle,
+    WeakEntity, Window, actions, div, prelude::*, uniform_list,
 };
 
 use crate::project::Project;
 use crate::settings::SettingsStore;
 use crate::ui::tree;
-use crate::workspace::Panel;
+use crate::workspace::{Panel, ToggleProjectTree};
 use zcv_editor::Editor;
 use zcv_git::{FileStatus, StatusCode};
 use zcv_theme::color;
@@ -314,11 +314,12 @@ impl ProjectTree {
         }
         window.refresh();
     }
-    /// 激活选中行：目录→展开/折叠，文件→打开。键盘 enter 与鼠标点击
-    /// 合流的唯一入口（交互架构规范：同一行为不允许两套实现）。
-    fn handle_tree_activate(
+    /// 激活/预览选中行的共享逻辑：目录→展开/折叠；文件→打开。
+    ///
+    /// `focus_opened_item` 决定打开文件后是否把焦点交给编辑器：双击/键盘 enter 为 `true`（激活），鼠标单击为 `false`（预览，焦点留在项目树）。
+    fn activate_selected(
         &mut self,
-        _: &TreeActivate,
+        focus_opened_item: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -339,9 +340,19 @@ impl ProjectTree {
             // 展开/折叠后行集合变化，git 状态缓存需补齐。
             refresh_git_statuses_for_rows(&self.state, &self.project, cx);
         } else if let Some(callback) = self.on_open_file.clone() {
-            callback(path, true, window, cx);
+            callback(path, focus_opened_item, window, cx);
         }
         window.refresh();
+    }
+
+    /// 激活选中行（打开文件并聚焦编辑器）。键盘 enter 与鼠标双击走这里。
+    fn handle_tree_activate(
+        &mut self,
+        _: &TreeActivate,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.activate_selected(true, window, cx);
     }
 
     fn handle_tree_rename(&mut self, _: &TreeRename, window: &mut Window, cx: &mut Context<Self>) {
@@ -565,6 +576,7 @@ impl gpui::Render for ProjectTree {
             state: Rc::clone(&self.state),
             rows: display_rows.into(),
             focus: self.focus.clone(),
+            weak: cx.weak_entity(),
             edit_state: self.edit_state.clone(),
             entry_name_editor: self.entry_name_editor.clone(),
         };
@@ -652,7 +664,7 @@ fn render_list(
 ) -> gpui::UniformList {
     let handle = scroll_handle.clone();
 
-    uniform_list("project-tree-list", len, move |range, _, _| {
+    uniform_list("project-tree-list", len, move |range, _, cx| {
         let state = render_context.state.borrow();
         let rows = &render_context.rows;
         range
@@ -660,7 +672,8 @@ fn render_list(
             .map(|row| {
                 let sel = row.is_new || state.selected.as_ref() == Some(&row.path);
                 let marked = !row.is_new && state.active_path.as_ref() == Some(&row.path);
-                render_row(row, sel, marked, is_focused, render_context.clone()).into_any_element()
+                render_row(row, sel, marked, is_focused, render_context.clone(), cx)
+                    .into_any_element()
             })
             .collect()
     })
@@ -674,6 +687,7 @@ fn render_row(
     marked: bool,
     focused: bool,
     render_context: ProjectTreeRenderContext,
+    cx: &mut App,
 ) -> Div {
     let path = row.path.clone();
     let is_dir = row.is_dir;
@@ -696,12 +710,14 @@ fn render_row(
             .when(has_error, |element| {
                 element
                     .border_1()
-                    .border_color(color::current().status_error)
+                    .border_color(color::current(cx).status_error)
             })
             .child(render_context.entry_name_editor.clone())
     } else {
         // git 状态决定文件名颜色（对齐 Zed 优先级），忽略条目淡显。
-        let status_color = row.git_status.and_then(git_status_color);
+        let status_color = row
+            .git_status
+            .and_then(|status| git_status_color(status, cx));
         let is_ignored = matches!(row.git_status, Some(FileStatus::Ignored));
         div()
             .flex_1()
@@ -711,29 +727,39 @@ fn render_row(
                 element.text_color(status_color)
             })
             .when(is_ignored && status_color.is_none(), |element| {
-                element.text_color(color::current().text_muted)
+                element.text_color(color::current(cx).text_muted)
             })
             .child(name)
     };
 
-    tree::render_row_base(depth, is_dir, row.expanded, content)
+    tree::render_row_base(depth, is_dir, row.expanded, content, cx)
         .cursor_pointer()
-        .when(marked, |el| el.bg(color::current().element_selected))
-        .hover(|style| style.bg(color::current().element_hover))
-        .when(sel && focused, |el| el.child(tree::selection_border()))
+        .when(marked, |el| el.bg(color::current(cx).element_selected))
+        .hover(|style| style.bg(color::current(cx).element_hover))
+        .when(sel && focused, |el| el.child(tree::selection_border(cx)))
         .when(!is_editing, |row| {
-            row.on_mouse_down(MouseButton::Left, move |event, window, cx| {
-                if is_dir {
-                    window.focus(&render_context.focus);
+            row.on_mouse_down(MouseButton::Left, {
+                // 焦点句柄与 weak 引用先取出，避免 move 整个 render_context。
+                let focus = render_context.focus.clone();
+                let weak = render_context.weak.clone();
+                move |event, window, cx| {
+                    // 单击/双击都把焦点收到项目树（交互规范：单击后焦点留在项目树；
+                    // 对齐 Zed 的 cx.listener 路径，直接调用 Entity 方法，不走 action 分派）。
+                    window.focus(&focus);
+                    if let Some(tree) = weak.upgrade() {
+                        tree.update(cx, |tree, cx| {
+                            tree.state.borrow_mut().select(&path);
+                            match event.click_count {
+                                // 单击：目录展开/折叠、文件预览（焦点留在项目树）；
+                                // 双击：文件打开并聚焦编辑器；目录不重复，避免"展开→折叠"抵消。
+                                1 => tree.activate_selected(false, window, cx),
+                                _ if is_dir => {}
+                                _ => tree.activate_selected(true, window, cx),
+                            }
+                        });
+                    }
+                    cx.stop_propagation();
                 }
-                // 选中该行后 dispatch TreeActivate，与键盘 enter 走同一 handler
-                // （交互架构规范：同一行为不允许两套实现）。
-                // 双击的第二次 down 不再 dispatch，避免目录"展开→折叠"抵消。
-                render_context.state.borrow_mut().select(&path);
-                if event.click_count == 1 {
-                    window.dispatch_action(Box::new(TreeActivate), cx);
-                }
-                cx.stop_propagation();
             })
         })
 }
@@ -741,8 +767,8 @@ fn render_row(
 /// git 状态 → 文件名颜色（对齐 Zed `entry_git_aware_label_color` 的优先级）。
 ///
 /// conflict > deleted > modified > added/untracked > ignored（渲染层淡显）。
-fn git_status_color(status: FileStatus) -> Option<gpui::Rgba> {
-    let colors = color::current();
+fn git_status_color(status: FileStatus, cx: &App) -> Option<gpui::Rgba> {
+    let colors = color::current(cx);
     match status {
         FileStatus::Unmerged => Some(colors.status_conflict),
         FileStatus::Untracked => Some(colors.status_created),
@@ -774,14 +800,13 @@ fn git_status_color(status: FileStatus) -> Option<gpui::Rgba> {
 }
 
 impl Panel for ProjectTree {
+    type ToggleAction = ToggleProjectTree;
+
     fn icon() -> &'static str {
         "icons/panels/project_tree.svg"
     }
     fn label() -> &'static str {
         "项目树"
-    }
-    fn action_name() -> &'static str {
-        "dock::ToggleProjectTree"
     }
     fn focus_handle(&self, _cx: &gpui::App) -> gpui::FocusHandle {
         self.focus.clone()
@@ -795,6 +820,9 @@ struct ProjectTreeRenderContext {
     state: Rc<RefCell<ProjectTreeState>>,
     rows: Rc<[ProjectTreeRow]>,
     focus: gpui::FocusHandle,
+    /// 条目点击直接调用 Entity 方法（对齐 Zed 的 `cx.listener` 路径），
+    /// 不依赖 dispatch_action 的焦点链分发。
+    weak: WeakEntity<ProjectTree>,
     edit_state: Option<EditState>,
     entry_name_editor: Entity<Editor>,
 }
@@ -1097,7 +1125,7 @@ impl ProjectTreeState {
 mod tests {
     use std::cell::Cell;
 
-    use gpui::{AppContext, KeyBinding, Render, TestAppContext};
+    use gpui::{AppContext, KeyBinding, Render, TestAppContext, point, px};
 
     use super::*;
 
@@ -1181,49 +1209,51 @@ mod tests {
         );
     }
 
-    #[test]
-    fn git_status_color_follows_zed_priority() {
-        // palette 未初始化时默认 one_dark，语义色可直接取。
-        let colors = color::current();
-        let color = |status| git_status_color(status);
-        // 特殊态。
-        assert_eq!(color(FileStatus::Untracked), Some(colors.status_created));
-        assert_eq!(color(FileStatus::Unmerged), Some(colors.status_conflict));
-        assert_eq!(color(FileStatus::Ignored), None);
-        // 已跟踪：deleted > modified > added 优先级。
-        let tracked = |index, worktree| FileStatus::Tracked {
-            index_status: index,
-            worktree_status: worktree,
-        };
-        assert_eq!(
-            color(tracked(StatusCode::Unmodified, StatusCode::Modified)),
-            Some(colors.status_modified)
-        );
-        assert_eq!(
-            color(tracked(StatusCode::Modified, StatusCode::Unmodified)),
-            Some(colors.status_modified)
-        );
-        assert_eq!(
-            color(tracked(StatusCode::Unmodified, StatusCode::TypeChanged)),
-            Some(colors.status_modified)
-        );
-        assert_eq!(
-            color(tracked(StatusCode::Unmodified, StatusCode::Added)),
-            Some(colors.status_created)
-        );
-        assert_eq!(
-            color(tracked(StatusCode::Unmodified, StatusCode::Deleted)),
-            Some(colors.status_deleted)
-        );
-        // 部分暂存：modified 优先于 added。
-        assert_eq!(
-            color(tracked(StatusCode::Added, StatusCode::Modified)),
-            Some(colors.status_modified)
-        );
-        assert_eq!(
-            color(tracked(StatusCode::Unmodified, StatusCode::Unmodified)),
-            None
-        );
+    #[gpui::test]
+    fn git_status_color_follows_zed_priority(cx: &mut TestAppContext) {
+        cx.read(|cx| {
+            // palette 未初始化时默认 one_dark，语义色可直接取。
+            let colors = color::current(cx);
+            let color = |status| git_status_color(status, cx);
+            // 特殊态。
+            assert_eq!(color(FileStatus::Untracked), Some(colors.status_created));
+            assert_eq!(color(FileStatus::Unmerged), Some(colors.status_conflict));
+            assert_eq!(color(FileStatus::Ignored), None);
+            // 已跟踪：deleted > modified > added 优先级。
+            let tracked = |index, worktree| FileStatus::Tracked {
+                index_status: index,
+                worktree_status: worktree,
+            };
+            assert_eq!(
+                color(tracked(StatusCode::Unmodified, StatusCode::Modified)),
+                Some(colors.status_modified)
+            );
+            assert_eq!(
+                color(tracked(StatusCode::Modified, StatusCode::Unmodified)),
+                Some(colors.status_modified)
+            );
+            assert_eq!(
+                color(tracked(StatusCode::Unmodified, StatusCode::TypeChanged)),
+                Some(colors.status_modified)
+            );
+            assert_eq!(
+                color(tracked(StatusCode::Unmodified, StatusCode::Added)),
+                Some(colors.status_created)
+            );
+            assert_eq!(
+                color(tracked(StatusCode::Unmodified, StatusCode::Deleted)),
+                Some(colors.status_deleted)
+            );
+            // 部分暂存：modified 优先于 added。
+            assert_eq!(
+                color(tracked(StatusCode::Added, StatusCode::Modified)),
+                Some(colors.status_modified)
+            );
+            assert_eq!(
+                color(tracked(StatusCode::Unmodified, StatusCode::Unmodified)),
+                None
+            );
+        });
     }
 
     #[test]
@@ -1434,6 +1464,52 @@ mod tests {
         cx.read_entity(&entry_name_editor, |editor, cx| {
             assert_eq!(editor.text(cx), " .txt");
         });
+    }
+
+    #[gpui::test]
+    fn mouse_click_opens_file_even_when_tree_not_focused(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let file = directory.path().join("a.txt");
+        std::fs::write(&file, "hello").expect("应创建测试文件");
+        let project_root = directory.path().to_path_buf();
+
+        // 记录每次打开回调的 focus_opened_item：单击应为 false（预览），双击应为 true（激活）。
+        let open_count = Rc::new(Cell::new(0));
+        let last_focus_opened = Rc::new(Cell::new(true));
+        let callback_count = Rc::clone(&open_count);
+        let callback_focus = Rc::clone(&last_focus_opened);
+
+        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let (_tree, cx) = cx.add_window_view(move |_, cx| {
+            let mut tree = ProjectTree::new(project_root, project.clone(), cx);
+            tree.set_on_open_file(Rc::new(move |_, focus_opened_item, _, _| {
+                callback_count.set(callback_count.get() + 1);
+                callback_focus.set(focus_opened_item);
+            }));
+            // 展开根目录使文件行可见；不聚焦项目树（模拟焦点在别处）。
+            tree.state.borrow_mut().expanded.insert(tree.root.clone());
+            tree.state.borrow_mut().refresh_rows();
+            tree
+        });
+        cx.run_until_parked();
+
+        // 单击第二行（a.txt，depth 1）：行高为 ui_line()。
+        let row_height = zcv_theme::typography::ui_line();
+        cx.simulate_click(
+            point(px(10.), px(f32::from(row_height) + 1.)),
+            gpui::Modifiers::default(),
+        );
+        cx.run_until_parked();
+
+        assert_eq!(
+            open_count.get(),
+            1,
+            "焦点不在项目树时单击文件也应打开（action 沿焦点链分发，点击需先聚焦项目树）"
+        );
+        assert!(
+            !last_focus_opened.get(),
+            "单击文件应为预览：打开文件但焦点留在项目树（focus_opened_item=false）"
+        );
     }
 
     #[gpui::test]

@@ -158,6 +158,222 @@ pub(crate) trait TextSnapshot: TextRead + Clone + Send + Sync + 'static {}
 
 impl<T> TextSnapshot for T where T: TextRead + Clone + Send + Sync + 'static {}
 
+/// Buffer / Snapshot 共用的坐标门面批量转发宏。
+///
+/// 两份门面（`Buffer::storage` 与 `Snapshot::storage` 都实现 `TextRead`）的方法签名与转发体逐行相同。
+/// 在这里把签名与实现写一次，两个 impl 各自展开，行为修复只需改这一处。
+macro_rules! text_coordinate_gateway {
+    () => {
+        /// 总 Unicode scalar 数（边界投影）。
+        pub fn len_chars(&self) -> $crate::CharOffset {
+            self.storage.len_chars()
+        }
+
+        /// 文本 UTF-8 字节末端位置；等价于全文末尾的 `ByteOffset`。
+        pub fn len_bytes(&self) -> $crate::ByteOffset {
+            self.storage.len_bytes()
+        }
+
+        /// 文本 UTF-16 code unit 末端位置；等价于全文末尾的 `Utf16Offset`。
+        pub fn len_utf16_cu(&self) -> $crate::Utf16Offset {
+            self.storage.len_utf16_cu()
+        }
+
+        /// 总行数。空文档也视为 1 行。
+        pub fn line_count(&self) -> usize {
+            self.storage.line_count()
+        }
+
+        /// 指定行的起始 ByteOffset（深核接口）。
+        pub fn line_start_byte(
+            &self,
+            line: $crate::Line,
+        ) -> $crate::EngineResult<$crate::ByteOffset> {
+            self.storage.line_start(line)
+        }
+
+        /// 指定行的起始 CharOffset（边界投影）。
+        pub fn line_start(&self, line: $crate::Line) -> $crate::EngineResult<$crate::CharOffset> {
+            let byte = self.storage.line_start(line)?;
+            self.storage.byte_to_char(byte)
+        }
+
+        /// ByteOffset -> line / logical column。
+        pub fn byte_to_position(
+            &self,
+            offset: $crate::ByteOffset,
+        ) -> $crate::EngineResult<$crate::Position> {
+            self.storage.byte_to_position(offset)
+        }
+
+        /// `byte_to_position` 的省列变体（宿主投影几何只关心行号时走这条路径）。
+        pub fn byte_to_line(
+            &self,
+            offset: $crate::ByteOffset,
+        ) -> $crate::EngineResult<$crate::Line> {
+            self.storage.byte_to_line(offset)
+        }
+
+        /// line / logical column -> ByteOffset。
+        pub fn position_to_byte(
+            &self,
+            position: $crate::Position,
+        ) -> $crate::EngineResult<$crate::ByteOffset> {
+            self.storage.position_to_byte(position)
+        }
+
+        /// CharOffset -> line / logical column（边界投影）。
+        pub fn char_to_position(
+            &self,
+            offset: $crate::CharOffset,
+        ) -> $crate::EngineResult<$crate::Position> {
+            self.storage.char_to_position(offset)
+        }
+
+        /// line / logical column -> CharOffset（边界投影）。
+        pub fn position_to_char(
+            &self,
+            position: $crate::Position,
+        ) -> $crate::EngineResult<$crate::CharOffset> {
+            self.storage.position_to_char(position)
+        }
+
+        /// CharOffset -> ByteOffset（边界投影）。
+        pub fn char_to_byte(
+            &self,
+            offset: $crate::CharOffset,
+        ) -> $crate::EngineResult<$crate::ByteOffset> {
+            self.storage.char_to_byte(offset)
+        }
+
+        /// ByteOffset -> CharOffset（边界投影）。
+        pub fn byte_to_char(
+            &self,
+            offset: $crate::ByteOffset,
+        ) -> $crate::EngineResult<$crate::CharOffset> {
+            self.storage.byte_to_char(offset)
+        }
+
+        /// CharOffset -> UTF-16 行列（LSP 等外部协议）。
+        pub fn char_to_utf16_position(
+            &self,
+            offset: $crate::CharOffset,
+        ) -> $crate::EngineResult<$crate::Utf16Position> {
+            self.storage.char_to_utf16_position(offset)
+        }
+
+        /// UTF-16 行列 -> CharOffset（LSP 等外部协议）。
+        pub fn utf16_position_to_char(
+            &self,
+            position: $crate::Utf16Position,
+        ) -> $crate::EngineResult<$crate::CharOffset> {
+            self.storage.utf16_position_to_char(position)
+        }
+
+        /// ByteOffset -> UTF-16 行列（LSP 等外部协议）。
+        pub fn byte_to_utf16_position(
+            &self,
+            offset: $crate::ByteOffset,
+        ) -> $crate::EngineResult<$crate::Utf16Position> {
+            self.storage.byte_to_utf16_position(offset)
+        }
+
+        /// UTF-16 行列 -> ByteOffset（LSP 等外部协议）。
+        pub fn utf16_position_to_byte(
+            &self,
+            position: $crate::Utf16Position,
+        ) -> $crate::EngineResult<$crate::ByteOffset> {
+            self.storage.utf16_position_to_byte(position)
+        }
+
+        /// 全文 flat UTF-16 code unit 偏移：byte → utf16 cu。
+        ///
+        /// 给系统 IME 的扁平 UTF-16 offset 语义用，不要走 `byte_to_utf16_position`
+        /// （那是 LSP 协议的行/列）。
+        pub fn byte_to_utf16_cu(
+            &self,
+            offset: $crate::ByteOffset,
+        ) -> $crate::EngineResult<$crate::Utf16Offset> {
+            self.storage.byte_to_utf16_cu(offset)
+        }
+
+        /// 全文 flat UTF-16 code unit 偏移：utf16 cu → byte。
+        pub fn utf16_cu_to_byte(
+            &self,
+            offset: $crate::Utf16Offset,
+        ) -> $crate::EngineResult<$crate::ByteOffset> {
+            self.storage.utf16_cu_to_byte(offset)
+        }
+
+        /// 判断 ByteOffset 是否处在合法 grapheme cluster 边界。
+        pub fn is_grapheme_boundary_byte(
+            &self,
+            offset: $crate::ByteOffset,
+        ) -> $crate::EngineResult<bool> {
+            self.storage.is_grapheme_boundary(offset)
+        }
+
+        /// 判断 CharOffset 是否处在合法 grapheme cluster 边界。
+        pub fn is_grapheme_boundary(
+            &self,
+            offset: $crate::CharOffset,
+        ) -> $crate::EngineResult<bool> {
+            self.storage.is_grapheme_boundary_char(offset)
+        }
+
+        /// 校验 CharOffset 是否处在合法 grapheme cluster 边界，否则返回错误。
+        pub fn validate_grapheme_boundary(
+            &self,
+            offset: $crate::CharOffset,
+        ) -> $crate::EngineResult<()> {
+            if self.storage.is_grapheme_boundary_char(offset)? {
+                Ok(())
+            } else {
+                let byte = self.storage.char_to_byte(offset)?;
+                Err($crate::CoordinateError::InvalidGraphemeBoundary(byte).into())
+            }
+        }
+
+        /// 返回小于当前 CharOffset 的最近 grapheme cluster 边界。
+        pub fn previous_grapheme_boundary(
+            &self,
+            offset: $crate::CharOffset,
+        ) -> $crate::EngineResult<$crate::CharOffset> {
+            self.storage.previous_grapheme_boundary_char(offset)
+        }
+
+        /// 返回大于当前 CharOffset 的最近 grapheme cluster 边界。
+        pub fn next_grapheme_boundary(
+            &self,
+            offset: $crate::CharOffset,
+        ) -> $crate::EngineResult<$crate::CharOffset> {
+            self.storage.next_grapheme_boundary_char(offset)
+        }
+
+        /// 返回小于当前 ByteOffset 的最近 grapheme cluster 边界。
+        pub fn previous_grapheme_boundary_byte(
+            &self,
+            offset: $crate::ByteOffset,
+        ) -> $crate::EngineResult<$crate::ByteOffset> {
+            self.storage.previous_grapheme_boundary(offset)
+        }
+
+        /// 返回大于当前 ByteOffset 的最近 grapheme cluster 边界。
+        pub fn next_grapheme_boundary_byte(
+            &self,
+            offset: $crate::ByteOffset,
+        ) -> $crate::EngineResult<$crate::ByteOffset> {
+            self.storage.next_grapheme_boundary(offset)
+        }
+
+        /// 检测文本中实际出现的换行风格。
+        pub fn line_ending_style(&self) -> $crate::LineEndingStyle {
+            self.storage.line_ending_style()
+        }
+    };
+}
+pub(crate) use text_coordinate_gateway;
+
 /// 可变文本存储后端。
 pub(crate) trait TextStorage: TextRead + Clone {
     type Snapshot: TextSnapshot;

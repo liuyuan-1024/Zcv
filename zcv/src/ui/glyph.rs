@@ -6,13 +6,13 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, AnyElement, AnyView, App, Context, ElementId, IntoElement, Render, Window, div,
-    prelude::*,
+    Action, AnyView, App, Component, Context, ElementId, IntoElement, Render, RenderOnce, Window,
+    div, prelude::*,
 };
 
 use crate::keymap::KeyBindings;
 use crate::ui::SvgIcon;
-use zcv_theme::{color, radius, space, typography};
+use zcv_theme::{color, space, typography};
 
 type ClickHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
@@ -29,7 +29,7 @@ enum GlyphContent {
 pub(crate) struct Glyph {
     id: ElementId,
     content: GlyphContent,
-    color: gpui::Rgba,
+    color: Option<gpui::Rgba>,
     label: Option<String>,
     shortcut: Option<String>,
     on_click: Option<ClickHandler>,
@@ -62,7 +62,8 @@ impl Glyph {
         Self {
             id: id.into(),
             content,
-            color: color::current().text,
+            // 默认色延迟到 render（有 cx）解析
+            color: None,
             label: None,
             shortcut: None,
             on_click: None,
@@ -93,7 +94,7 @@ impl Glyph {
 
     /// 设置颜色（覆盖默认色）。
     pub(crate) fn color(mut self, color: gpui::Rgba) -> Self {
-        self.color = color;
+        self.color = Some(color);
         self
     }
 
@@ -105,9 +106,17 @@ impl Glyph {
 }
 
 impl IntoElement for Glyph {
-    type Element = AnyElement;
+    type Element = Component<Self>;
 
     fn into_element(self) -> Self::Element {
+        Component::new(self)
+    }
+}
+
+impl RenderOnce for Glyph {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // 默认色依赖主题，只能在有 cx 的 render 中解析
+        let color = self.color.unwrap_or_else(|| color::current(cx).text);
         let icon_size = typography::ui();
         let label = self.label;
         let shortcut = self.shortcut;
@@ -131,14 +140,14 @@ impl IntoElement for Glyph {
         };
 
         match self.content {
-            GlyphContent::Text(text) => base(div().id(self.id).text_color(self.color).child(text)),
+            GlyphContent::Text(text) => base(div().id(self.id).text_color(color).child(text)),
             GlyphContent::Icon(path) => base(
                 div()
                     .id(self.id)
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(SvgIcon::new(path).size(icon_size).color(self.color)),
+                    .child(SvgIcon::new(path).size(icon_size).color(color)),
             ),
             GlyphContent::IconText { icon: path, text } => base(
                 div()
@@ -147,8 +156,8 @@ impl IntoElement for Glyph {
                     .flex_row()
                     .items_center()
                     .gap(space::S2)
-                    .child(SvgIcon::new(path).size(icon_size).color(self.color))
-                    .child(div().text_color(self.color).child(text)),
+                    .child(SvgIcon::new(path).size(icon_size).color(color))
+                    .child(div().text_color(color).child(text)),
             ),
         }
     }
@@ -166,7 +175,7 @@ struct GlyphTooltip {
 }
 
 impl Render for GlyphTooltip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let popup = div()
             .flex()
             .items_center()
@@ -174,19 +183,19 @@ impl Render for GlyphTooltip {
             .p(space::S6)
             .text_size(typography::ui())
             .line_height(typography::ui())
-            .bg(color::current().elevated_surface_background)
+            .bg(color::current(cx).elevated_surface_background)
             .border_1()
-            .border_color(color::current().border_variant)
-            .rounded(radius::R4)
+            .border_color(color::current(cx).border_variant)
+            .rounded_sm()
             .children(self.label.as_ref().map(|l| {
                 div()
-                    .text_color(color::current().text)
+                    .text_color(color::current(cx).text)
                     .child(l.clone())
                     .into_any_element()
             }))
             .children(self.shortcut.as_ref().map(|s| {
                 div()
-                    .text_color(color::current().text_placeholder)
+                    .text_color(color::current(cx).text_placeholder)
                     .child(s.clone())
                     .into_any_element()
             }));

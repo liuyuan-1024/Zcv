@@ -4,7 +4,7 @@
 
 use std::sync::atomic::{AtomicU16, Ordering};
 
-use gpui::{Font, FontFallbacks, Pixels, Window, WindowAppearance, font, px};
+use gpui::{App, Font, FontFallbacks, Pixels, Window, WindowAppearance, font, px};
 
 pub mod color;
 mod palette;
@@ -15,12 +15,6 @@ pub enum Theme {
     System,
     OneDark,
     OneLight,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConcreteTheme {
-    Dark,
-    Light,
 }
 
 impl Theme {
@@ -60,24 +54,22 @@ impl Theme {
         self == Self::System
     }
 
-    pub fn effective(self, window: Option<&Window>) -> ConcreteTheme {
+    /// 把用户配置解析为具体主题：`System` 按窗口外观选择，无窗口时默认深色。
+    pub fn effective(self, window: Option<&Window>) -> Theme {
         match self {
             Self::System => match window.map(|w| w.appearance()) {
-                Some(WindowAppearance::Dark | WindowAppearance::VibrantDark) => ConcreteTheme::Dark,
-                Some(WindowAppearance::Light | WindowAppearance::VibrantLight) => {
-                    ConcreteTheme::Light
-                }
-                None => ConcreteTheme::Dark,
+                Some(WindowAppearance::Dark | WindowAppearance::VibrantDark) => Theme::OneDark,
+                Some(WindowAppearance::Light | WindowAppearance::VibrantLight) => Theme::OneLight,
+                None => Theme::OneDark,
             },
-            Self::OneDark => ConcreteTheme::Dark,
-            Self::OneLight => ConcreteTheme::Light,
+            Self::OneDark | Self::OneLight => self,
         }
     }
 
-    pub fn apply(self, window: Option<&Window>) {
-        let concrete = self.effective(window);
-        palette::set_palette(concrete);
-        syntax::set_theme(concrete);
+    pub fn apply(self, cx: &mut App, window: Option<&Window>) {
+        let theme = self.effective(window);
+        color::set_theme(theme, cx);
+        syntax::set_theme(theme);
     }
 }
 
@@ -91,14 +83,6 @@ pub mod space {
     pub const S10: Pixels = px(10.0);
     pub const S12: Pixels = px(12.0);
     pub const S16: Pixels = px(16.0);
-}
-
-// ── 圆角 ───────────────────────────────────────────────────────────
-
-pub mod radius {
-    use gpui::{Pixels, px};
-    pub const R2: Pixels = px(2.0);
-    pub const R4: Pixels = px(4.0);
 }
 
 // ── 字号 ───────────────────────────────────────────────────────────

@@ -49,7 +49,7 @@ impl Render for Breadcrumbs {
                 if i > 0 {
                     children.push(
                         div()
-                            .text_color(color::current().text_disabled)
+                            .text_color(color::current(cx).text_disabled)
                             .child("›")
                             .into_any_element(),
                     );
@@ -57,7 +57,7 @@ impl Render for Breadcrumbs {
 
                 children.push(
                     div()
-                        .text_color(color::current().text_muted)
+                        .text_color(color::current(cx).text_muted)
                         .child(segment.replace('\n', " "))
                         .into_any_element(),
                 );

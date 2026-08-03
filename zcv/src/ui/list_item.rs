@@ -3,7 +3,9 @@
 //! 对标 zed `ui/src/components/list_item.rs`，统一 hover、选中、间距样式。
 //! 可用于 picker 列表、菜单列表等。
 
-use gpui::{AnyElement, ElementId, IntoElement, div, prelude::*};
+use gpui::{
+    AnyElement, App, Component, ElementId, IntoElement, RenderOnce, Window, div, prelude::*,
+};
 
 use zcv_theme::{color, space, typography};
 
@@ -45,9 +47,17 @@ impl ListItem {
 }
 
 impl IntoElement for ListItem {
-    type Element = AnyElement;
+    type Element = Component<Self>;
 
     fn into_element(self) -> Self::Element {
+        Component::new(self)
+    }
+}
+
+impl RenderOnce for ListItem {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // hover 闭包只有 style 参数，先取色再 move 进闭包
+        let hover_bg = color::current(cx).element_hover;
         let mut row = div()
             .id(self.id)
             .flex()
@@ -56,10 +66,10 @@ impl IntoElement for ListItem {
             .justify_between()
             .p(space::S6)
             .cursor_pointer()
-            .hover(|style| style.bg(color::current().element_hover));
+            .hover(move |style| style.bg(hover_bg));
 
         if self.toggle_state {
-            row = row.bg(color::current().element_selected);
+            row = row.bg(color::current(cx).element_selected);
         }
 
         // 主内容
@@ -78,11 +88,27 @@ impl IntoElement for ListItem {
 
 /// 标准两行标签：主标题 + 灰色副标题。
 pub fn list_item_two_line(title: impl IntoElement, subtitle: impl IntoElement) -> impl IntoElement {
-    div().flex_1().min_w_0().child(title).child(
-        div()
-            .text_color(color::current().text_placeholder)
-            .text_size(typography::ui())
-            .line_height(typography::ui())
-            .child(subtitle),
-    )
+    // 主题色依赖 cx，通过 Component 延迟到 render 解析
+    Component::new(TwoLine {
+        title: title.into_any_element(),
+        subtitle: subtitle.into_any_element(),
+    })
+}
+
+/// 两行标签的渲染载体。
+struct TwoLine {
+    title: AnyElement,
+    subtitle: AnyElement,
+}
+
+impl RenderOnce for TwoLine {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        div().flex_1().min_w_0().child(self.title).child(
+            div()
+                .text_color(color::current(cx).text_placeholder)
+                .text_size(typography::ui())
+                .line_height(typography::ui())
+                .child(self.subtitle),
+        )
+    }
 }

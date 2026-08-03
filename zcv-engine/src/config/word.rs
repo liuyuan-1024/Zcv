@@ -2,7 +2,7 @@
 //!
 //! 本文件不实现移动扫描，只集中维护可配置的字符类别和边界规则。
 
-use super::display::is_combining_mark;
+use super::display::is_zero_width;
 use crate::selection::MovementUnit;
 
 /// 词边界策略。
@@ -47,7 +47,7 @@ impl WordBoundaryPolicy {
 
     pub(crate) fn is_identifier_continue(self, ch: char) -> bool {
         ch.is_alphanumeric()
-            || is_combining_mark(ch)
+            || is_zero_width(ch)
             || (self.underscore_is_identifier && ch == '_')
             || (self.dollar_is_identifier && ch == '$')
     }
@@ -89,7 +89,7 @@ impl WordBoundaryClassifier {
     ) -> bool {
         debug_assert!(self.is_subword());
 
-        if is_combining_mark(current) || is_combining_mark(previous) {
+        if is_zero_width(current) || is_zero_width(previous) {
             return false;
         }
 
@@ -103,7 +103,7 @@ impl WordBoundaryClassifier {
 }
 
 fn is_natural_word_body(ch: char) -> bool {
-    ch.is_alphanumeric() || is_combining_mark(ch)
+    ch.is_alphanumeric() || is_zero_width(ch)
 }
 
 impl Default for WordBoundaryPolicy {

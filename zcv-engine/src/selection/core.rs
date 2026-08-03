@@ -2,29 +2,47 @@
 //!
 //! 本文件只维护单个 selection 的方向、范围和映射；排序、合并和 primary 归属在 SelectionSet。
 
-use crate::{ByteOffset, PositionMap, TextRange};
+use crate::{ByteOffset, DisplayColumn, PositionMap, TextRange};
 
 use super::Cursor;
 
 /// 一个选区，使用 anchor/head 模型。
 ///
 /// `anchor` 是固定端，`head` 是活动端。两者相等时表示 caret。
+/// `goal` 是垂直移动时持久保留的目标显示列：目标行比目标列短时光标被钳制到行尾，但 goal 保留，下一次垂直移动仍回到原目标列。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Selection {
     anchor: ByteOffset,
     head: ByteOffset,
+    goal: Option<DisplayColumn>,
 }
 
 impl Selection {
     pub const fn new(anchor: ByteOffset, head: ByteOffset) -> Self {
-        Self { anchor, head }
+        Self {
+            anchor,
+            head,
+            goal: None,
+        }
     }
 
     pub const fn caret(offset: ByteOffset) -> Self {
         Self {
             anchor: offset,
             head: offset,
+            goal: None,
         }
+    }
+
+    /// 设置垂直移动持久保留的目标列；`None` 表示从当前位置推导。
+    pub const fn with_goal(mut self, goal: Option<DisplayColumn>) -> Self {
+        self.goal = goal;
+        self
+    }
+
+    /// 垂直移动持久保留的目标列；`None` 表示未设置（对齐 Zed `SelectionGoal::None`）。
+    pub const fn goal(self) -> Option<DisplayColumn> {
+        self.goal
     }
 
     pub const fn anchor(self) -> ByteOffset {
@@ -72,17 +90,21 @@ impl Selection {
         Self::caret(self.end())
     }
 
+    /// 移动 head 到新位置；垂直扩展选区时保留 goal。
     pub fn with_head(self, head: ByteOffset) -> Self {
         Self {
             anchor: self.anchor,
             head,
+            goal: self.goal,
         }
     }
 
+    /// 编辑后按 PositionMap 映射坐标；goal 随选区保留，等待下一次移动决策。
     pub fn map_through_position_map(self, position_map: &PositionMap) -> Self {
         Self {
             anchor: position_map.map_old_position(self.anchor).value(),
             head: position_map.map_old_position(self.head).value(),
+            goal: self.goal,
         }
     }
 }

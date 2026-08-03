@@ -8,7 +8,7 @@ use gpui::{
     Stateful, StatefulInteractiveElement, Window, div, prelude::*, px,
 };
 
-use zcv_theme::{color, radius, space};
+use zcv_theme::{color, space};
 
 /// 标签页组件。
 pub(crate) struct Tab {
@@ -71,19 +71,19 @@ impl ParentElement for Tab {
 }
 
 impl RenderOnce for Tab {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let text_color = if self.selected {
-            color::current().text
+            color::current(cx).text
         } else {
-            color::current().text_disabled
+            color::current(cx).text_disabled
         };
         let bg = if self.selected {
-            color::current().tab_active_background
+            color::current(cx).tab_active_background
         } else {
             gpui::rgba(0)
         };
 
-        let border_color = color::current().border_variant;
+        let border_color = color::current(cx).border_variant;
 
         self.div
             .flex()
@@ -91,7 +91,6 @@ impl RenderOnce for Tab {
             .items_center()
             .gap(space::S6)
             .p(space::S6)
-            .rounded(radius::R2)
             .cursor_pointer()
             .text_color(text_color)
             .bg(bg)

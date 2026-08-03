@@ -11,12 +11,16 @@
 //! | 6 | solid 强调 |
 //! | 7 | text-muted |
 //! | 8 | text |
+//!
+//! **色值数据源**：`assets/themes/*.toml` 的 `[ui]` 段（与语法色同一主题文件，主题自包含）。
+//! 代码内不持有任何色值；alpha 阶梯由各色相强调色 `s[6]`叠加统一透明度序列派生，不再逐值书写。
+//!
+//! 本模块只做「TOML → 调色板」的纯解析，不持有运行期状态；
+//! 语义色快照的缓存与切换由 [`crate::color`] 承担。
 
-use std::sync::{OnceLock, RwLock};
+use gpui::{Rgba, rgba};
 
-use gpui::{Rgba, rgb, rgba};
-
-use crate::ConcreteTheme;
+use crate::Theme;
 
 /// 单个色相的 solid + alpha 双阶梯。索引 0–8 对应语义 01–09。
 #[derive(Clone, Copy, Debug)]
@@ -34,276 +38,105 @@ pub(crate) struct Palette {
     pub(crate) red: HuePalette,
 }
 
-static ACTIVE: OnceLock<RwLock<Palette>> = OnceLock::new();
+const ONE_DARK_TOML: &str = include_str!("../assets/themes/onedark.toml");
+const ONE_LIGHT_TOML: &str = include_str!("../assets/themes/onelight.toml");
 
 impl Palette {
-    fn one_dark() -> Self {
-        Self {
-            gray: HuePalette {
-                s: [
-                    rgb(0x0d0f12),
-                    rgb(0x13161b),
-                    rgb(0x1b1f26),
-                    rgb(0x252a33),
-                    rgb(0x3a4050),
-                    rgb(0x4d5468),
-                    rgb(0x5e6678),
-                    rgb(0x6e7689),
-                    rgb(0xa8b0c0),
-                ],
-                a: [
-                    rgba(0xffffff1a),
-                    rgba(0xffffff26),
-                    rgba(0xffffff3d),
-                    rgba(0xffffff66),
-                    rgba(0xffffff80),
-                    rgba(0xffffffb3),
-                    rgba(0xffffffcc),
-                    rgba(0xffffffe6),
-                    rgba(0xfffffff5),
-                ],
-            },
-            blue: HuePalette {
-                s: [
-                    rgb(0x0e1a2e),
-                    rgb(0x122544),
-                    rgb(0x173159),
-                    rgb(0x1c3d6e),
-                    rgb(0x284a85),
-                    rgb(0x5a8fd6),
-                    rgb(0x74ade8),
-                    rgb(0x94c1f0),
-                    rgb(0xc8def7),
-                ],
-                a: [
-                    rgba(0x74ade81a),
-                    rgba(0x74ade826),
-                    rgba(0x74ade83d),
-                    rgba(0x74ade848),
-                    rgba(0x74ade84d),
-                    rgba(0x74ade8b3),
-                    rgba(0x74ade8cc),
-                    rgba(0x74ade8e6),
-                    rgba(0x74ade8f5),
-                ],
-            },
-            green: HuePalette {
-                s: [
-                    rgb(0x0a2b1b),
-                    rgb(0x103e28),
-                    rgb(0x155235),
-                    rgb(0x1a6541),
-                    rgb(0x20784e),
-                    rgb(0x2cab69),
-                    rgb(0x3ddc84),
-                    rgb(0x79e8a8),
-                    rgb(0xb5f0c8),
-                ],
-                a: [
-                    rgba(0x3ddc841a),
-                    rgba(0x3ddc8426),
-                    rgba(0x3ddc843d),
-                    rgba(0x3ddc8440),
-                    rgba(0x3ddc844d),
-                    rgba(0x3ddc84b3),
-                    rgba(0x3ddc84cc),
-                    rgba(0x3ddc84e6),
-                    rgba(0x3ddc84f5),
-                ],
-            },
-            yellow: HuePalette {
-                s: [
-                    rgb(0x2d2410),
-                    rgb(0x43361a),
-                    rgb(0x5c4824),
-                    rgb(0x715a2c),
-                    rgb(0x8a6d36),
-                    rgb(0xb0934d),
-                    rgb(0xe8cf74),
-                    rgb(0xf0dc99),
-                    rgb(0xf7ebbf),
-                ],
-                a: [
-                    rgba(0xe8cf741a),
-                    rgba(0xe8cf7426),
-                    rgba(0xe8cf743d),
-                    rgba(0xe8cf7440),
-                    rgba(0xe8cf744d),
-                    rgba(0xe8cf74b3),
-                    rgba(0xe8cf74cc),
-                    rgba(0xe8cf74e6),
-                    rgba(0xe8cf74f5),
-                ],
-            },
-            red: HuePalette {
-                s: [
-                    rgb(0x2e0e0e),
-                    rgb(0x441616),
-                    rgb(0x5b2020),
-                    rgb(0x732a2a),
-                    rgb(0x8b3434),
-                    rgb(0xbf4949),
-                    rgb(0xff6b6b),
-                    rgb(0xff9595),
-                    rgb(0xffc2c2),
-                ],
-                a: [
-                    rgba(0xff6b6b1a),
-                    rgba(0xff6b6b26),
-                    rgba(0xff6b6b3d),
-                    rgba(0xff6b6b40),
-                    rgba(0xff6b6b4d),
-                    rgba(0xff6b6bb3),
-                    rgba(0xff6b6bcc),
-                    rgba(0xff6b6be6),
-                    rgba(0xff6b6bf5),
-                ],
-            },
-        }
+    /// 解析指定主题的调色板；解析失败返回 `None`（内嵌数据错误，调用方决定降级策略）。
+    pub(crate) fn for_theme(theme: Theme) -> Option<Self> {
+        let source = match theme {
+            Theme::OneDark => ONE_DARK_TOML,
+            Theme::OneLight => ONE_LIGHT_TOML,
+            // System 未解析时按深色默认。
+            Theme::System => ONE_DARK_TOML,
+        };
+        Self::from_toml(source)
     }
 
-    fn one_light() -> Self {
-        Self {
-            gray: HuePalette {
-                s: [
-                    rgb(0xfafafa),
-                    rgb(0xebebeb),
-                    rgb(0xdfdfdf),
-                    rgb(0xd3d3d3),
-                    rgb(0xbcbcbc),
-                    rgb(0xa6a6a6),
-                    rgb(0x919191),
-                    rgb(0x838383),
-                    rgb(0x1e1e1e),
-                ],
-                a: [
-                    rgba(0x0000001a),
-                    rgba(0x00000026),
-                    rgba(0x0000003d),
-                    rgba(0x00000066),
-                    rgba(0x00000080),
-                    rgba(0x000000b3),
-                    rgba(0x000000cc),
-                    rgba(0x000000e6),
-                    rgba(0x000000f5),
-                ],
-            },
-            blue: HuePalette {
-                s: [
-                    rgb(0xeef3fe),
-                    rgb(0xdce7fd),
-                    rgb(0xc6d8fb),
-                    rgb(0xacc6f8),
-                    rgb(0x8baef3),
-                    rgb(0x6293ed),
-                    rgb(0x2563eb),
-                    rgb(0x1d4ab8),
-                    rgb(0x162e7a),
-                ],
-                a: [
-                    rgba(0x2563eb1a),
-                    rgba(0x2563eb26),
-                    rgba(0x2563eb3d),
-                    rgba(0x2563eb40),
-                    rgba(0x2563eb4d),
-                    rgba(0x2563ebb3),
-                    rgba(0x2563ebcc),
-                    rgba(0x2563ebe6),
-                    rgba(0x2563ebf5),
-                ],
-            },
-            green: HuePalette {
-                s: [
-                    rgb(0xecf8ef),
-                    rgb(0xd8f0dd),
-                    rgb(0xc0e6c7),
-                    rgb(0xa3daae),
-                    rgb(0x7ec98f),
-                    rgb(0x4eb56a),
-                    rgb(0x16a34a),
-                    rgb(0x0f7a35),
-                    rgb(0x0a4d21),
-                ],
-                a: [
-                    rgba(0x16a34a1a),
-                    rgba(0x16a34a26),
-                    rgba(0x16a34a3d),
-                    rgba(0x16a34a40),
-                    rgba(0x16a34a4d),
-                    rgba(0x16a34ab3),
-                    rgba(0x16a34acc),
-                    rgba(0x16a34ae6),
-                    rgba(0x16a34af5),
-                ],
-            },
-            yellow: HuePalette {
-                s: [
-                    rgb(0xfffef4),
-                    rgb(0xfefada),
-                    rgb(0xfdf0a8),
-                    rgb(0xfce776),
-                    rgb(0xfad644),
-                    rgb(0xe8c01a),
-                    rgb(0xca8a04),
-                    rgb(0x9e6c04),
-                    rgb(0x6b4808),
-                ],
-                a: [
-                    rgba(0xca8a041a),
-                    rgba(0xca8a0426),
-                    rgba(0xca8a043d),
-                    rgba(0xca8a0440),
-                    rgba(0xca8a044d),
-                    rgba(0xca8a04b3),
-                    rgba(0xca8a04cc),
-                    rgba(0xca8a04e6),
-                    rgba(0xca8a04f5),
-                ],
-            },
-            red: HuePalette {
-                s: [
-                    rgb(0xfef4f4),
-                    rgb(0xfde4e4),
-                    rgb(0xfccccc),
-                    rgb(0xf9adad),
-                    rgb(0xf58686),
-                    rgb(0xee5555),
-                    rgb(0xdc2626),
-                    rgb(0xb91c1c),
-                    rgb(0x7f1d1d),
-                ],
-                a: [
-                    rgba(0xdc26261a),
-                    rgba(0xdc262626),
-                    rgba(0xdc26263d),
-                    rgba(0xdc262640),
-                    rgba(0xdc26264d),
-                    rgba(0xdc2626b3),
-                    rgba(0xdc2626cc),
-                    rgba(0xdc2626e6),
-                    rgba(0xdc2626f5),
-                ],
-            },
-        }
+    /// 从主题文件的 `[ui]` 段解析调色板。
+    ///
+    /// 每个色相的 `s` 数组是 9 级 solid 色值；
+    /// alpha 阶梯由该色相强调色 `s[6]` 叠加 `alpha -steps` 透明度序列派生。
+    fn from_toml(source: &str) -> Option<Self> {
+        let root: toml::Table = toml::from_str(source).ok()?;
+        let ui = root.get("ui")?.as_table()?;
+        let alpha_steps = ui.get("alpha-steps")?.as_array()?;
+        let alpha_steps: [u8; 9] = alpha_steps
+            .iter()
+            .map(|value| {
+                let hex = value.as_str()?;
+                let body = hex.strip_prefix("0x").unwrap_or(hex);
+                u8::from_str_radix(body, 16).ok()
+            })
+            .collect::<Option<Vec<_>>>()?
+            .try_into()
+            .ok()?;
+
+        let hue = |name: &str| -> Option<HuePalette> {
+            let table = ui.get(name)?.as_table()?;
+            let s = table.get("s")?.as_array()?;
+            // 先解析为 0xRRGGBB 整数：alpha 派生在整数域组合，避免 f32 回转换丢精度。
+            let s: [u32; 9] = s
+                .iter()
+                .map(|value| parse_hex_u32(value.as_str()?))
+                .collect::<Option<Vec<_>>>()?
+                .try_into()
+                .ok()?;
+            let a = alpha_steps.map(|step| rgba((s[6] << 8) | step as u32));
+            let s = s.map(gpui::rgb);
+            Some(HuePalette { s, a })
+        };
+
+        Some(Self {
+            gray: hue("gray")?,
+            blue: hue("blue")?,
+            green: hue("green")?,
+            yellow: hue("yellow")?,
+            red: hue("red")?,
+        })
     }
 }
 
-pub(crate) fn set_palette(theme: ConcreteTheme) {
-    let palette = match theme {
-        ConcreteTheme::Dark => Palette::one_dark(),
-        ConcreteTheme::Light => Palette::one_light(),
-    };
-    let lock = ACTIVE.get_or_init(|| RwLock::new(Palette::one_dark()));
-    match lock.write() {
-        Ok(mut active) => *active = palette,
-        Err(error) => eprintln!("更新调色板失败：{error}"),
-    }
+/// 解析 `#RRGGBB`（或 `#RRGGBBAA`）为 0xRRGGBB（8 位时丢弃 alpha）的整数。
+fn parse_hex_u32(s: &str) -> Option<u32> {
+    let body = s.strip_prefix('#')?;
+    let value = u32::from_str_radix(body, 16).ok()?;
+    Some(value >> if body.len() == 8 { 8 } else { 0 })
 }
 
-pub(crate) fn current() -> Palette {
-    ACTIVE
-        .get_or_init(|| RwLock::new(Palette::one_dark()))
-        .read()
-        .map(|p| *p)
-        .unwrap_or_else(|_| Palette::one_dark())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rgba(hex: u32) -> Rgba {
+        gpui::rgba(hex)
+    }
+
+    #[test]
+    fn dark_palette_matches_historical_values() {
+        let dark = Palette::from_toml(ONE_DARK_TOML).expect("onedark [ui] 段应可解析");
+        // solid 阶梯与历史硬编码逐字节一致（抽查每色相边界与强调色）。
+        assert_eq!(dark.gray.s[0], rgba(0x0d0f12ff));
+        assert_eq!(dark.gray.s[8], rgba(0xa8b0c0ff));
+        assert_eq!(dark.blue.s[0], rgba(0x0e1a2eff));
+        assert_eq!(dark.blue.s[6], rgba(0x74ade8ff));
+        assert_eq!(dark.green.s[6], rgba(0x3ddc84ff));
+        assert_eq!(dark.yellow.s[6], rgba(0xe8cf74ff));
+        assert_eq!(dark.red.s[6], rgba(0xff6b6bff));
+        // 被消费的 alpha 值（选区背景）与历史逐字节一致：blue.a[2] = s[6] + 0x3d。
+        assert_eq!(dark.blue.a[2], rgba(0x74ade83d));
+    }
+
+    #[test]
+    fn light_palette_matches_historical_values() {
+        let light = Palette::from_toml(ONE_LIGHT_TOML).expect("onelight [ui] 段应可解析");
+        assert_eq!(light.gray.s[0], rgba(0xfafafaff));
+        assert_eq!(light.gray.s[8], rgba(0x1e1e1eff));
+        assert_eq!(light.blue.s[6], rgba(0x2563ebff));
+        assert_eq!(light.green.s[6], rgba(0x16a34aff));
+        assert_eq!(light.yellow.s[6], rgba(0xca8a04ff));
+        assert_eq!(light.red.s[6], rgba(0xdc2626ff));
+        // light 主题的选区背景同样与历史一致：blue.a[2] = s[6] + 0x3d。
+        assert_eq!(light.blue.a[2], rgba(0x2563eb3d));
+    }
 }

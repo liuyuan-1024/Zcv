@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
@@ -11,10 +11,13 @@ use crate::Language;
 use crate::language::{language_for_file, language_for_injection};
 
 /// 一个非重叠的 tree-sitter capture 区间。
+///
+/// `capture` 是快照全局 capture 名字表的索引（跨主语言与注入语言唯一），
+/// 渲染侧按索引查预展开的样式表，不再携带并逐 run 解析 capture 名。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HighlightSpan {
     pub range: Range<usize>,
-    pub capture: Arc<str>,
+    pub capture: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +65,9 @@ pub struct SyntaxMap {
     parsed_version: BufferVersion,
     interpolated_version: BufferVersion,
     update_count: u64,
+    /// 最近一次解析安装的 capture 全局表（见 `SyntaxSnapshot::rebuild_capture_table`）。
+    capture_names: Arc<[Arc<str>]>,
+    capture_index_by_name: Arc<HashMap<Arc<str>, u32>>,
 }
 
 /// 与一个 Buffer 版本绑定的不可变语法快照。
@@ -72,6 +78,10 @@ pub struct SyntaxSnapshot {
     injections: Vec<SyntaxLayer>,
     version: BufferVersion,
     update_count: u64,
+    /// 主语言与全部注入语言的 capture 名字全局表；index 跨语言唯一。
+    capture_names: Arc<[Arc<str>]>,
+    /// capture 名 -> 全局索引的反查表。
+    capture_index_by_name: Arc<HashMap<Arc<str>, u32>>,
 }
 
 #[derive(Clone)]
@@ -91,6 +101,8 @@ impl SyntaxMap {
             parsed_version: snapshot.version(),
             interpolated_version: snapshot.version(),
             update_count: 0,
+            capture_names: Arc::from([]),
+            capture_index_by_name: Arc::new(HashMap::new()),
         }
     }
 
@@ -111,6 +123,8 @@ impl SyntaxMap {
         self.language = language;
         self.tree = None;
         self.injections.clear();
+        self.capture_names = Arc::from([]);
+        self.capture_index_by_name = Arc::new(HashMap::new());
         self.parsed_version = snapshot.version();
         self.interpolated_version = snapshot.version();
         self.update_count += 1;
@@ -166,6 +180,8 @@ impl SyntaxMap {
             injections: self.injections.clone(),
             version: self.interpolated_version,
             update_count: self.update_count,
+            capture_names: Arc::clone(&self.capture_names),
+            capture_index_by_name: Arc::clone(&self.capture_index_by_name),
         }
     }
 
@@ -178,6 +194,8 @@ impl SyntaxMap {
         }
         self.tree = parsed.tree;
         self.injections = parsed.injections;
+        self.capture_names = parsed.capture_names;
+        self.capture_index_by_name = parsed.capture_index_by_name;
         self.parsed_version = parsed.version;
         self.update_count += 1;
         true
@@ -446,7 +464,38 @@ impl SyntaxSnapshot {
             );
         }
         self.version = snapshot.version();
+        self.rebuild_capture_table();
         self
+    }
+
+    /// 当前快照的 capture 名字全局表（capture index -> 名字）。
+    ///
+    /// 渲染侧用它对每个 capture index 做一次数组索引取样式，不再逐 run 做字符串回退查找。
+    pub fn capture_names(&self) -> Arc<[Arc<str>]> {
+        Arc::clone(&self.capture_names)
+    }
+
+    /// 重建跨语言 capture 名字全局表：主语言与注入语言的名字合并去重，
+    /// 使 `HighlightSpan::capture` 在快照内跨语言唯一。
+    fn rebuild_capture_table(&mut self) {
+        let mut names: Vec<Arc<str>> = Vec::new();
+        let mut index_by_name: HashMap<Arc<str>, u32> = HashMap::new();
+        let mut add_language = |language: &Language| {
+            for name in language.capture_names() {
+                if !index_by_name.contains_key(name) {
+                    index_by_name.insert(Arc::clone(name), names.len() as u32);
+                    names.push(Arc::clone(name));
+                }
+            }
+        };
+        if let Some(language) = &self.language {
+            add_language(language);
+        }
+        for layer in &self.injections {
+            add_language(&layer.language);
+        }
+        self.capture_names = Arc::from(names);
+        self.capture_index_by_name = Arc::new(index_by_name);
     }
 
     /// 查询指定字节范围，并像 Zed 的 BufferChunks 一样让更内层、后出现的 capture 覆盖外层。
@@ -465,6 +514,7 @@ impl SyntaxSnapshot {
             tree,
             range.clone(),
             text,
+            self,
             &mut ordinal,
             &mut events,
         );
@@ -481,6 +531,7 @@ impl SyntaxSnapshot {
                 &layer.tree,
                 layer_range,
                 text,
+                self,
                 &mut ordinal,
                 &mut events,
             );
@@ -497,7 +548,7 @@ impl SyntaxSnapshot {
                     HighlightEvent::Start {
                         ordinal, capture, ..
                     } => {
-                        active.insert(*ordinal, capture.clone());
+                        active.insert(*ordinal, *capture);
                     }
                     HighlightEvent::End { ordinal, .. } => {
                         active.remove(ordinal);
@@ -520,7 +571,7 @@ impl SyntaxSnapshot {
                 } else {
                     spans.push(HighlightSpan {
                         range: offset..next_offset,
-                        capture: capture.clone(),
+                        capture: *capture,
                     });
                 }
             }
@@ -541,7 +592,8 @@ enum HighlightEvent {
     Start {
         offset: usize,
         ordinal: usize,
-        capture: Arc<str>,
+        /// 快照全局 capture 名字表的索引。
+        capture: u32,
     },
     End {
         offset: usize,
@@ -573,6 +625,7 @@ fn collect_highlight_events(
     tree: &tree_sitter::Tree,
     range: Range<usize>,
     text: &Snapshot,
+    snapshot: &SyntaxSnapshot,
     ordinal: &mut usize,
     events: &mut Vec<HighlightEvent>,
 ) {
@@ -594,11 +647,15 @@ fn collect_highlight_events(
         let Some(capture_name) = language.capture_name(capture.index) else {
             continue;
         };
+        // 语言内 index → 快照全局 index：注入层的 capture 也要能由渲染侧统一查表。
+        let Some(&global_capture) = snapshot.capture_index_by_name.get(&capture_name) else {
+            continue;
+        };
         if start < end {
             events.push(HighlightEvent::Start {
                 offset: start,
                 ordinal: *ordinal,
-                capture: capture_name,
+                capture: global_capture,
             });
             events.push(HighlightEvent::End {
                 offset: end,
@@ -935,13 +992,25 @@ mod tests {
     fn highlights_rust_captures_in_unicode_text() {
         let (buffer, syntax) = rust_buffer("fn 问候() { let 文本 = \"你好\"; }\n");
         let snapshot = buffer.snapshot();
-        let spans = syntax
-            .snapshot()
-            .highlights(0..snapshot.len_bytes().get(), &snapshot);
+        let syntax_snapshot = syntax.snapshot();
+        let names = syntax_snapshot.capture_names();
+        let spans = syntax_snapshot.highlights(0..snapshot.len_bytes().get(), &snapshot);
 
-        assert!(spans.iter().any(|span| span.capture.as_ref() == "keyword"));
-        assert!(spans.iter().any(|span| span.capture.as_ref() == "function"));
-        assert!(spans.iter().any(|span| span.capture.as_ref() == "string"));
+        assert!(
+            spans
+                .iter()
+                .any(|span| names[span.capture as usize].as_ref() == "keyword")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|span| names[span.capture as usize].as_ref() == "function")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|span| names[span.capture as usize].as_ref() == "string")
+        );
         assert!(
             spans
                 .iter()
@@ -1024,10 +1093,14 @@ mod tests {
         let parsed = syntax.snapshot().reparse(&new_snapshot);
         assert!(syntax.did_parse(parsed));
 
-        let spans = syntax
-            .snapshot()
-            .highlights(0..new_snapshot.len_bytes().get(), &new_snapshot);
-        assert!(spans.iter().any(|span| span.capture.as_ref() == "string"));
+        let syntax_snapshot = syntax.snapshot();
+        let names = syntax_snapshot.capture_names();
+        let spans = syntax_snapshot.highlights(0..new_snapshot.len_bytes().get(), &new_snapshot);
+        assert!(
+            spans
+                .iter()
+                .any(|span| names[span.capture as usize].as_ref() == "string")
+        );
         assert_eq!(syntax.snapshot().version(), new_snapshot.version());
     }
 
@@ -1061,11 +1134,12 @@ mod tests {
         let parsed = syntax.snapshot().reparse(&new_snapshot);
         assert!(syntax.did_parse(parsed));
 
-        let string_count = syntax
-            .snapshot()
+        let syntax_snapshot = syntax.snapshot();
+        let names = syntax_snapshot.capture_names();
+        let string_count = syntax_snapshot
             .highlights(0..new_snapshot.len_bytes().get(), &new_snapshot)
             .iter()
-            .filter(|span| span.capture.as_ref() == "string")
+            .filter(|span| names[span.capture as usize].as_ref() == "string")
             .count();
         assert_eq!(string_count, 2);
     }
@@ -1081,16 +1155,17 @@ mod tests {
                 .iter()
                 .any(|layer| layer.language.name() == "Markdown Inline")
         );
+        let names = syntax.capture_names();
         let spans = syntax.highlights(0..snapshot.len_bytes().get(), &snapshot);
         assert!(
             spans
                 .iter()
-                .any(|span| span.capture.as_ref() == "text.emphasis")
+                .any(|span| names[span.capture as usize].as_ref() == "text.emphasis")
         );
         assert!(
             spans
                 .iter()
-                .any(|span| span.capture.as_ref() == "text.strong")
+                .any(|span| names[span.capture as usize].as_ref() == "text.strong")
         );
     }
 
@@ -1112,9 +1187,18 @@ mod tests {
                 .iter()
                 .any(|layer| layer.language.name() == "JavaScript")
         );
+        let names = syntax.capture_names();
         let spans = syntax.highlights(0..snapshot.len_bytes().get(), &snapshot);
-        assert!(spans.iter().any(|span| span.capture.as_ref() == "property"));
-        assert!(spans.iter().any(|span| span.capture.as_ref() == "keyword"));
+        assert!(
+            spans
+                .iter()
+                .any(|span| names[span.capture as usize].as_ref() == "property")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|span| names[span.capture as usize].as_ref() == "keyword")
+        );
     }
 
     #[test]

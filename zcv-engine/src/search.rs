@@ -191,20 +191,25 @@ impl SearchMatch {
 ///
 /// 版本绑定与过期判断由内部 `VersionedResult<Vec<SearchMatch>>` 承担；本类型本身只保留
 /// query / options 等业务输入，避免与 `VersionedResult` 重复维护版本守卫语义。
+///
+/// literal 与 regex 搜索共用这一份结构，只以 options 类型区分：
+/// [`SearchResult`] = `SearchResultSet<SearchOptions>`，
+/// [`RegexSearchResult`] = `SearchResultSet<RegexSearchOptions>`。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchResult {
+pub struct SearchResultSet<O: Copy> {
     matches: VersionedResult<Vec<SearchMatch>>,
     query: String,
-    options: SearchOptions,
+    options: O,
 }
 
-impl SearchResult {
-    fn new(
-        version: BufferVersion,
-        query: String,
-        options: SearchOptions,
-        matches: Vec<SearchMatch>,
-    ) -> Self {
+/// literal 搜索结果（见 [`SearchResultSet`]）。
+pub type SearchResult = SearchResultSet<SearchOptions>;
+
+/// 正则搜索结果（见 [`SearchResultSet`]）。
+pub type RegexSearchResult = SearchResultSet<RegexSearchOptions>;
+
+impl<O: Copy> SearchResultSet<O> {
+    fn new(version: BufferVersion, query: String, options: O, matches: Vec<SearchMatch>) -> Self {
         Self {
             matches: VersionedResult::new(version, matches),
             query,
@@ -216,11 +221,12 @@ impl SearchResult {
         self.matches.version()
     }
 
+    /// 本次搜索的查询输入（literal query 或 regex pattern）。
     pub fn query(&self) -> &str {
         &self.query
     }
 
-    pub fn options(&self) -> SearchOptions {
+    pub fn options(&self) -> O {
         self.options
     }
 
@@ -265,7 +271,8 @@ impl SearchResult {
     /// `event.old_version()` 必须与当前结果版本一致，否则原子拒绝；
     /// 命中映射 `Mapped` 的匹配按新坐标保留并连续重排 ordinal，
     /// `Deleted` / `Collapsed` 的匹配（被删除或塌缩为零宽）整条丢弃。
-    /// query / options 由调用方自行决定是否需要在新版本上重新搜索。
+    /// query / options 由调用方自行决定是否需要在新版本上重新搜索；
+    /// regex 替换 / capture 展开必须基于同版本上的新结果，不应基于 remap 后的结果。
     pub fn try_remap(self, event: &DeltaEvent) -> EngineResult<Self> {
         let Self {
             matches,
@@ -278,103 +285,6 @@ impl SearchResult {
         Ok(Self {
             matches,
             query,
-            options,
-        })
-    }
-}
-
-/// 一次正则搜索结果，绑定被搜索文本的 `BufferVersion`。
-///
-/// 版本绑定与过期判断由内部 `VersionedResult<Vec<SearchMatch>>` 承担；本类型本身只保留
-/// pattern / options 等业务输入，避免与 `VersionedResult` 重复维护版本守卫语义。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegexSearchResult {
-    matches: VersionedResult<Vec<SearchMatch>>,
-    pattern: String,
-    options: RegexSearchOptions,
-}
-
-impl RegexSearchResult {
-    fn new(
-        version: BufferVersion,
-        pattern: String,
-        options: RegexSearchOptions,
-        matches: Vec<SearchMatch>,
-    ) -> Self {
-        Self {
-            matches: VersionedResult::new(version, matches),
-            pattern,
-            options,
-        }
-    }
-
-    pub fn version(&self) -> BufferVersion {
-        self.matches.version()
-    }
-
-    pub fn pattern(&self) -> &str {
-        &self.pattern
-    }
-
-    pub fn options(&self) -> RegexSearchOptions {
-        self.options
-    }
-
-    pub fn matches(&self) -> &[SearchMatch] {
-        self.matches.value()
-    }
-
-    pub fn match_at(&self, ordinal: usize) -> Option<SearchMatch> {
-        self.matches.value().get(ordinal).copied()
-    }
-
-    pub fn ranges(&self) -> impl Iterator<Item = TextRange> + '_ {
-        self.matches
-            .value()
-            .iter()
-            .map(|search_match| search_match.range())
-    }
-
-    pub fn len(&self) -> usize {
-        self.matches.value().len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.matches.value().is_empty()
-    }
-
-    pub fn is_stale(&self, current_version: BufferVersion) -> bool {
-        self.matches.is_stale(current_version)
-    }
-
-    /// 已过期时丢弃，未过期时保留。
-    pub fn discard_if_stale(self, current_version: BufferVersion) -> Option<Self> {
-        if self.is_stale(current_version) {
-            None
-        } else {
-            Some(self)
-        }
-    }
-
-    /// 通过一次 `DeltaEvent` 把正则搜索结果推进到新版本。
-    ///
-    /// `event.old_version()` 必须与当前结果版本一致，否则原子拒绝；
-    /// 命中映射 `Mapped` 的匹配按新坐标保留并连续重排 ordinal，
-    /// `Deleted` / `Collapsed` 的匹配整条丢弃。pattern / options 由调用方
-    /// 自行决定是否需要在新版本上重新搜索；regex 替换 / capture 展开必须基于
-    /// 同版本上的新结果，不应基于 remap 后的结果。
-    pub fn try_remap(self, event: &DeltaEvent) -> EngineResult<Self> {
-        let Self {
-            matches,
-            pattern,
-            options,
-        } = self;
-        let matches = matches.try_remap(event, |old_matches, position_map| {
-            Ok(remap_search_matches(old_matches, position_map))
-        })?;
-        Ok(Self {
-            matches,
-            pattern,
             options,
         })
     }
@@ -565,7 +475,7 @@ pub(crate) fn regex_replacements_in_text<'a, T: TextRead>(
     result: &RegexSearchResult,
     replacement: &'a str,
 ) -> EngineResult<impl Iterator<Item = EngineResult<(TextRange, String)>> + 'a> {
-    let regex = build_regex(result.pattern(), result.options())?;
+    let regex = build_regex(result.query(), result.options())?;
     let search_range = resolve_search_range(storage, result.options().range())?;
     validate_search_range(storage, search_range)?;
 

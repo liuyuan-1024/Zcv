@@ -4,7 +4,7 @@
 //! 查询走点分前缀回退：`keyword.control.import` 未命中 → `keyword.control` → `keyword` → [`default_fg`]。
 
 use std::collections::HashMap;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use gpui::{
     FontStyle, FontWeight, HighlightStyle, Hsla, Rgba, StrikethroughStyle, UnderlineStyle, px, rgb,
@@ -12,18 +12,26 @@ use gpui::{
 };
 
 use super::color;
-use crate::ConcreteTheme;
+use crate::Theme;
 
 const THEME_ONE_DARK_TOML: &str = include_str!("../assets/themes/onedark.toml");
 const THEME_ONE_LIGHT_TOML: &str = include_str!("../assets/themes/onelight.toml");
 
-pub fn default_fg() -> Hsla {
-    color::current().text.into()
+pub fn default_fg(cx: &gpui::App) -> Hsla {
+    color::current(cx).text.into()
 }
 
 /// 按 highlight name 解析字色，走点分前缀回退链。
-pub fn color_for(name: &str) -> Hsla {
-    style_for(name).color.unwrap_or_else(default_fg)
+pub fn color_for(name: &str, cx: &gpui::App) -> Hsla {
+    style_for(name).color.unwrap_or_else(|| default_fg(cx))
+}
+
+/// 预展开 capture 名字表为按索引直接取用的样式表。
+///
+/// 每个名字做一次点分前缀回退；
+/// 渲染侧按 capture index 一次数组索引，不再逐 run 做字符串查找与回退。
+pub fn style_table(names: &[Arc<str>]) -> Vec<HighlightStyle> {
+    names.iter().map(|name| style_for(name)).collect()
 }
 
 /// 按 capture name 解析完整样式。
@@ -40,10 +48,12 @@ pub fn style_for(name: &str) -> HighlightStyle {
     }
 }
 
-pub(crate) fn set_theme(theme: ConcreteTheme) {
+pub(crate) fn set_theme(theme: Theme) {
     let source = match theme {
-        ConcreteTheme::Dark => THEME_ONE_DARK_TOML,
-        ConcreteTheme::Light => THEME_ONE_LIGHT_TOML,
+        Theme::OneDark => THEME_ONE_DARK_TOML,
+        Theme::OneLight => THEME_ONE_LIGHT_TOML,
+        // System 未解析时按深色默认。
+        Theme::System => THEME_ONE_DARK_TOML,
     };
     let table = parse_helix_theme(source).unwrap_or_default();
     let lock = ACTIVE_THEME.get_or_init(|| RwLock::new(default_theme_table()));
@@ -154,24 +164,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fallback_chain_terminates_at_default_fg() {
-        assert_eq!(color_for("totally.unknown"), default_fg());
-        assert_eq!(color_for("nope"), default_fg());
+    fn fallback_chain_terminates_at_default_style() {
+        assert_eq!(style_for("totally.unknown"), HighlightStyle::default());
+        assert_eq!(style_for("nope"), HighlightStyle::default());
     }
 
     #[test]
     fn onedark_provides_color_for_common_rust_names() {
         for name in &["keyword", "string", "comment", "function", "type"] {
-            let c = color_for(name);
-            assert_ne!(c, default_fg(), "onedark 必须给 `{name}` 上色");
+            assert!(
+                style_for(name).color.is_some(),
+                "onedark 必须给 `{name}` 上色"
+            );
         }
     }
 
     #[test]
     fn dot_prefix_fallback_uses_parent_rule() {
-        assert_eq!(color_for("function.method"), color_for("function"));
-        assert_eq!(color_for("type.builtin"), color_for("type"));
-        assert_eq!(color_for("comment.documentation"), color_for("comment"));
+        assert_eq!(
+            style_for("function.method").color,
+            style_for("function").color
+        );
+        assert_eq!(style_for("type.builtin").color, style_for("type").color);
+        assert_eq!(
+            style_for("comment.documentation").color,
+            style_for("comment").color
+        );
     }
 
     #[test]
@@ -235,22 +253,25 @@ mod tests {
 
     #[test]
     fn lsp_parameter_resolves_to_color_via_variable_parameter() {
-        assert_ne!(color_for("variable.parameter"), default_fg());
+        assert!(style_for("variable.parameter").color.is_some());
     }
 
     #[test]
     fn lsp_method_falls_back_to_function() {
-        assert_eq!(color_for("function.method"), color_for("function"));
+        assert_eq!(
+            style_for("function.method").color,
+            style_for("function").color
+        );
     }
 
     #[test]
     fn lsp_enum_member_resolves_via_variable_other_member() {
-        assert_ne!(color_for("variable.other.member"), default_fg());
+        assert!(style_for("variable.other.member").color.is_some());
     }
 
     #[test]
     fn lsp_macro_resolves_via_function_dot_macro() {
-        assert_ne!(color_for("function.macro"), default_fg());
+        assert!(style_for("function.macro").color.is_some());
     }
 
     #[test]
@@ -260,6 +281,6 @@ mod tests {
             style_for("text.emphasis").font_style,
             Some(FontStyle::Italic)
         );
-        assert_ne!(color_for("text.title"), default_fg());
+        assert!(style_for("text.title").color.is_some());
     }
 }

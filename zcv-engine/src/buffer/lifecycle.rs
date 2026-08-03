@@ -8,8 +8,8 @@ use std::{
 };
 
 use crate::{
-    BufferConfig, BufferId, BufferLoadError, BufferOrigin, BufferState, BufferVersion, ByteOffset,
-    EngineResult, LoadedTextInfo, TransactionId, Utf16Offset,
+    BufferConfig, BufferId, BufferLoadError, BufferOrigin, BufferState, BufferVersion,
+    EngineResult, LoadedTextInfo, TransactionId,
     storage::{RopeyStorage, TextRead, TextStorage},
     text_loading::streaming_decoder::{StreamDecodeError, decode_stream},
 };
@@ -177,21 +177,6 @@ impl Buffer {
 
     pub fn set_config(&mut self, config: BufferConfig) {
         self.config = config;
-    }
-
-    pub fn len_chars(&self) -> crate::CharOffset {
-        self.storage.len_chars()
-    }
-
-    /// 文本 UTF-8 字节末端位置；等价于全文末尾的 `ByteOffset`。
-    pub fn len_bytes(&self) -> ByteOffset {
-        self.storage.len_bytes()
-    }
-
-    /// 文本 UTF-16 code unit 末端位置；等价于全文末尾的 `Utf16Offset`，
-    /// 用于与 LSP / 外部协议的坐标边界对齐。
-    pub fn len_utf16_cu(&self) -> Utf16Offset {
-        self.storage.len_utf16_cu()
     }
 
     /// 当前 Buffer 文本字节数是否被 `LargeFilePolicy::large_file_threshold_bytes`

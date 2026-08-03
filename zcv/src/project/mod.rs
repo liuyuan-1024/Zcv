@@ -44,8 +44,8 @@ impl Project {
             log::warn!("无法监听项目目录 {:?}：{error}", root);
         }
 
-        let fs_task = cx.spawn(|project: WeakEntity<Project>, async_cx: &mut AsyncApp| {
-            let mut cx = async_cx.clone();
+        let fs_task = cx.spawn(|project: WeakEntity<Project>, asynccx: &mut AsyncApp| {
+            let mut cx = asynccx.clone();
             async move {
                 while signal_rx.recv().await.is_ok() {
                     let events = std::mem::take(&mut *pending_events.lock().unwrap());

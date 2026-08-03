@@ -5,8 +5,8 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use zcv_engine::{
-    Buffer, ByteOffset, CoordinateError, Edit, EngineError, EngineResult, Selection, SelectionSet,
-    Snapshot, Transaction, TransactionId, TransactionMetadata, TransactionOutcome,
+    Buffer, CoordinateError, Edit, EngineResult, PositionMap, Selection, SelectionSet, Snapshot,
+    Transaction, TransactionId, TransactionMetadata, TransactionOutcome,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,53 +45,90 @@ impl EditOutcome {
     }
 }
 
+/// 校验并应用一组目标编辑，返回事务结果。
+///
+/// 目标区间为空且替换文本也为空时不产生编辑；全部无编辑时返回 `None`。
+fn apply_edits(
+    buffer: &mut Buffer,
+    targets: &[(Selection, Arc<str>)],
+    metadata: TransactionMetadata,
+) -> EngineResult<Option<TransactionOutcome>> {
+    let snapshot = buffer.snapshot();
+    let mut edits = Vec::with_capacity(targets.len());
+    for (selection, replacement) in targets {
+        validate_selection(&snapshot, *selection)?;
+        let range = selection.range();
+        if !(range.is_empty() && replacement.is_empty()) {
+            edits.push(Edit::replace(range, Arc::clone(replacement)));
+        }
+    }
+    if edits.is_empty() {
+        return Ok(None);
+    }
+    buffer
+        .apply_transaction(
+            Transaction::from_edits(buffer.version(), edits)?.with_metadata(metadata),
+        )
+        .map(Some)
+}
+
+/// 把替换后的选区集合映射为「光标落在替换文本之后」的 caret 集合。
+///
+/// 空选区（光标）靠 PositionMap 的 `Affinity::After` 天然吸附到插入文本之后，
+/// 无需再加长度；非空选区被替换后，光标在选区起点映射值之后追加替换文本长度。
+fn after_carets(
+    position_map: &PositionMap,
+    selections: &SelectionSet,
+    replacement_len: usize,
+) -> SelectionSet {
+    let after = selections
+        .as_slice()
+        .iter()
+        .map(|selection| {
+            let start = position_map.map_old_position(selection.start()).value();
+            let offset = if selection.range().is_empty() {
+                start
+            } else {
+                start
+                    .checked_add(replacement_len)
+                    .expect("内部不变量：替换后光标偏移不会溢出")
+            };
+            Selection::caret(offset)
+        })
+        .collect();
+    SelectionSet::new_with_primary(after, selections.primary_index())
+}
+
 pub(super) fn replace_selections(
     buffer: &mut Buffer,
     selections: &SelectionSet,
     replacement: &str,
     metadata: TransactionMetadata,
 ) -> EngineResult<EditOutcome> {
+    let replacement: Arc<str> = Arc::from(replacement);
     let selections = selections.normalized();
     let snapshot = buffer.snapshot();
-    let replacement_len = replacement.len();
-    let replacement: Arc<str> = Arc::from(replacement);
-    let mut edits = Vec::new();
-    let mut after = Vec::with_capacity(selections.len());
-    let mut shift = 0isize;
 
+    // 替换为相同文本或双方均为空时不产生编辑，光标仍按替换后的落点计算。
+    let mut targets = Vec::with_capacity(selections.len());
     for selection in selections.as_slice() {
-        validate_selection(&snapshot, *selection)?;
         let range = selection.range();
-        let new_start = range
-            .start()
-            .get()
-            .checked_add_signed(shift)
-            .ok_or_else(offset_arithmetic_bug)?;
-        let new_head = new_start
-            .checked_add(replacement_len)
-            .ok_or_else(offset_arithmetic_bug)?;
-        let old_text = snapshot.slice_text(range)?;
-        let changed = !(range.is_empty() && replacement.is_empty())
-            && old_text.as_str() != replacement.as_ref();
-        if changed {
-            edits.push(Edit::replace(range, Arc::clone(&replacement)));
-            let replacement_len =
-                isize::try_from(replacement_len).map_err(|_| offset_arithmetic_bug())?;
-            let range_len = isize::try_from(range.len()).map_err(|_| offset_arithmetic_bug())?;
-            shift = shift
-                .checked_add(replacement_len - range_len)
-                .ok_or_else(offset_arithmetic_bug)?;
+        if !(range.is_empty() && replacement.is_empty())
+            && snapshot.slice_text(range)?.as_str() != replacement.as_ref()
+        {
+            targets.push((*selection, Arc::clone(&replacement)));
         }
-        after.push(Selection::caret(ByteOffset::new(new_head)));
     }
 
-    let after = SelectionSet::new_with_primary(after, selections.primary_index());
-    if edits.is_empty() {
+    let Some(transaction) = apply_edits(buffer, &targets, metadata)? else {
+        let after = after_carets(&PositionMap::default(), &selections, replacement.len());
         return Ok(EditOutcome::unchanged(after));
-    }
-    let transaction = buffer.apply_transaction(
-        Transaction::from_edits(buffer.version(), edits)?.with_metadata(metadata),
-    )?;
+    };
+    let after = after_carets(
+        &transaction.changeset().position_map(),
+        &selections,
+        replacement.len(),
+    );
     Ok(EditOutcome::edited(transaction, after))
 }
 
@@ -101,26 +138,16 @@ pub(super) fn apply_targeted_edits(
     before: &SelectionSet,
     metadata: TransactionMetadata,
 ) -> EngineResult<EditOutcome> {
-    let snapshot = buffer.snapshot();
-    let mut edits = Vec::with_capacity(targets.len());
-    for (selection, replacement) in targets {
-        validate_selection(&snapshot, selection)?;
-        let range = selection.range();
-        if !(range.is_empty() && replacement.is_empty()) {
-            edits.push(Edit::replace(range, replacement));
+    match apply_edits(buffer, &targets, metadata)? {
+        None => Ok(EditOutcome::unchanged(before.clone())),
+        Some(transaction) => {
+            let after = transaction
+                .changeset()
+                .position_map()
+                .map_selection_set(before);
+            Ok(EditOutcome::edited(transaction, after))
         }
     }
-    if edits.is_empty() {
-        return Ok(EditOutcome::unchanged(before.clone()));
-    }
-    let transaction = buffer.apply_transaction(
-        Transaction::from_edits(buffer.version(), edits)?.with_metadata(metadata),
-    )?;
-    let after = transaction
-        .changeset()
-        .position_map()
-        .map_selection_set(before);
-    Ok(EditOutcome::edited(transaction, after))
 }
 
 fn validate_selection(snapshot: &Snapshot, selection: Selection) -> EngineResult<()> {
@@ -131,13 +158,6 @@ fn validate_selection(snapshot: &Snapshot, selection: Selection) -> EngineResult
         }
     }
     Ok(())
-}
-
-fn offset_arithmetic_bug() -> EngineError {
-    EngineError::EngineBug {
-        location: "Editor::replace_selections",
-        detail: "映射 selection 编辑时字节偏移溢出".to_string(),
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

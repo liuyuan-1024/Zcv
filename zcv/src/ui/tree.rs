@@ -1,9 +1,9 @@
 //! 树行渲染辅助函数 —— 缩进、图标、名称、选中框。
 
-use gpui::{Pixels, div, prelude::*, px};
+use gpui::{App, Pixels, div, prelude::*, px};
 
 use crate::ui::SvgIcon;
-use zcv_theme::{color, radius, space, typography};
+use zcv_theme::{color, space, typography};
 
 const FOLDER: &str = "icons/files/folder.svg";
 const FOLDER_OPEN: &str = "icons/files/folder_open.svg";
@@ -15,15 +15,16 @@ pub(crate) fn render_row_base(
     is_dir: bool,
     expanded: bool,
     content: impl IntoElement,
+    cx: &App,
 ) -> gpui::Div {
     row_skeleton(depth)
-        .children(guide_lines(depth))
+        .children(guide_lines(depth, cx))
         .child(icon(is_dir, expanded))
         .child(label(content))
 }
 
 /// 选中框——absolute 覆盖整行，不参与行布局。
-pub(crate) fn selection_border() -> gpui::Div {
+pub(crate) fn selection_border(cx: &App) -> gpui::Div {
     let m = metrics();
     div()
         .absolute()
@@ -31,9 +32,9 @@ pub(crate) fn selection_border() -> gpui::Div {
         .left(Pixels::ZERO)
         .right(Pixels::ZERO)
         .h(m.row_height)
-        .rounded(radius::R2)
+        .rounded_xs()
         .border_1()
-        .border_color(color::current().border_focused)
+        .border_color(color::current(cx).border_focused)
 }
 
 // ── 私有辅助函数 ─────────────────────────────────────────────────────
@@ -76,13 +77,13 @@ fn row_skeleton(depth: usize) -> gpui::Div {
         .w_full()
         .h(m.row_height)
         .pl(m.indent_left(depth))
-        .rounded(radius::R2)
+        .rounded_xs()
 }
 
 /// 渲染缩进竖线——每条线直接 absolute 定位在行上。
-fn guide_lines(depth: usize) -> Vec<gpui::Div> {
+fn guide_lines(depth: usize, cx: &App) -> Vec<gpui::Div> {
     let m = metrics();
-    let line_color = color::current().border_variant;
+    let line_color = color::current(cx).border_variant;
     let line_w = px(1.0);
 
     (0..depth)

@@ -23,7 +23,7 @@ use panel::{
     DebugPanel, KeyboardShortcutsPanel, OutlinePanel, PanelHandle, TerminalPanel,
     VersionControlPanel,
 };
-use panel_buttons::{PanelButtons, PanelDispatch};
+use panel_buttons::PanelButtons;
 use status_bar::StatusBar;
 pub(crate) use status_bar::StatusItemView;
 pub(crate) use toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
@@ -36,8 +36,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Window, actions, div,
-    prelude::*,
+    Action, Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Window, actions,
+    div, prelude::*,
 };
 
 use self::dock::render_body as render_layout_body;
@@ -66,8 +66,9 @@ pub(crate) struct Workspace {
     pub(crate) left_dock: Entity<Dock>,
     pub(crate) right_dock: Entity<Dock>,
     pub(crate) bottom_dock: Entity<Dock>,
-    /// action_name → (Dock Entity, panel_index_in_dock) 的查找表。
-    panel_action_map: Vec<(&'static str, Entity<Dock>, usize)>,
+    /// toggle action → (Dock Entity, panel_index_in_dock) 的查找表。
+    /// 条目由各面板自身的 `toggle_action` 派生，快捷键、按钮与分派共用同一来源。
+    panel_actions: Vec<(Box<dyn Action>, Entity<Dock>, usize)>,
     /// 拖拽协调：Dock 通过此 Cell 通知 Workspace 哪个 dock 正在被拖拽。
     drag_notify: Rc<Cell<Option<DockPosition>>>,
     _subscriptions: Vec<Subscription>,
@@ -184,47 +185,16 @@ impl Workspace {
 
         let drag_notify: Rc<Cell<Option<DockPosition>>> = Rc::new(Cell::new(None));
 
-        // 按 DockPosition 分组并生成 dispatch 函数
-        let make_dispatch = |action_name: &str| -> PanelDispatch {
-            match action_name {
-                "dock::ToggleProjectTree" => {
-                    |w, cx| w.dispatch_action(Box::new(ToggleProjectTree), cx)
-                }
-                "dock::ToggleVersionControl" => {
-                    |w, cx| w.dispatch_action(Box::new(ToggleVersionControl), cx)
-                }
-                "dock::ToggleOutline" => |w, cx| w.dispatch_action(Box::new(ToggleOutline), cx),
-                "dock::ToggleTerminal" => |w, cx| w.dispatch_action(Box::new(ToggleTerminal), cx),
-                "dock::ToggleDebug" => |w, cx| w.dispatch_action(Box::new(ToggleDebug), cx),
-                "dock::ToggleKeyboardShortcuts" => {
-                    |w, cx| w.dispatch_action(Box::new(ToggleKeyboardShortcuts), cx)
-                }
-                _ => unreachable!(),
-            }
-        };
-
+        // 按 DockPosition 分组
         let mut left_handles: Vec<Arc<dyn PanelHandle>> = Vec::new();
-        let mut left_dispatches: Vec<PanelDispatch> = Vec::new();
         let mut bottom_handles: Vec<Arc<dyn PanelHandle>> = Vec::new();
-        let mut bottom_dispatches: Vec<PanelDispatch> = Vec::new();
         let mut right_handles: Vec<Arc<dyn PanelHandle>> = Vec::new();
-        let mut right_dispatches: Vec<PanelDispatch> = Vec::new();
 
         for (handle, area) in &panel_pairs {
-            let dispatch = make_dispatch(handle.action_name());
             match area {
-                DockPosition::Left => {
-                    left_handles.push(handle.clone());
-                    left_dispatches.push(dispatch);
-                }
-                DockPosition::Bottom => {
-                    bottom_handles.push(handle.clone());
-                    bottom_dispatches.push(dispatch);
-                }
-                DockPosition::Right => {
-                    right_handles.push(handle.clone());
-                    right_dispatches.push(dispatch);
-                }
+                DockPosition::Left => left_handles.push(handle.clone()),
+                DockPosition::Bottom => bottom_handles.push(handle.clone()),
+                DockPosition::Right => right_handles.push(handle.clone()),
             }
         }
 
@@ -260,18 +230,11 @@ impl Workspace {
         left_dock.update(cx, |d, _| d.set_sibling(right_dock.downgrade()));
         right_dock.update(cx, |d, _| d.set_sibling(left_dock.downgrade()));
 
-        // 构建 action_name → (Dock, local_index) 查找表
-        let mut panel_action_map: Vec<(&'static str, Entity<Dock>, usize)> = Vec::new();
-        for (action_name, dock) in [
-            ("dock::ToggleProjectTree", &left_dock),
-            ("dock::ToggleVersionControl", &left_dock),
-            ("dock::ToggleOutline", &left_dock),
-            ("dock::ToggleTerminal", &bottom_dock),
-            ("dock::ToggleDebug", &bottom_dock),
-            ("dock::ToggleKeyboardShortcuts", &right_dock),
-        ] {
-            if let Some(local_idx) = dock.read(cx).panel_index_by_action(action_name) {
-                panel_action_map.push((action_name, dock.clone(), local_idx));
+        // 构建 toggle action → (Dock, local_index) 查找表，action 由面板自身派生。
+        let mut panel_actions: Vec<(Box<dyn Action>, Entity<Dock>, usize)> = Vec::new();
+        for dock in [&left_dock, &bottom_dock, &right_dock] {
+            for (idx, handle) in dock.read(cx).panels.iter().enumerate() {
+                panel_actions.push((handle.toggle_action(cx), dock.clone(), idx));
             }
         }
 
@@ -279,23 +242,14 @@ impl Workspace {
 
         let status_bar = cx.new(|cx| StatusBar::new(pane.clone(), cx));
         status_bar.update(cx, |bar, cx| {
-            bar.add_left_item(
-                cx.new(|cx| PanelButtons::new(left_dock.clone(), left_dispatches, cx)),
-                cx,
-            );
+            bar.add_left_item(cx.new(|cx| PanelButtons::new(left_dock.clone(), cx)), cx);
             bar.add_left_item(cx.new(|_| LspButton::new()), cx);
             bar.add_left_item(cx.new(|_| DiagnosticsButton::new()), cx);
             bar.add_left_item(cx.new(|_| ProjectSearchButton::new()), cx);
             bar.add_right_item(cx.new(|_| CursorPosition::new()), cx);
             bar.add_right_item(cx.new(|_| ActiveBufferLanguage::new()), cx);
-            bar.add_right_item(
-                cx.new(|cx| PanelButtons::new(bottom_dock.clone(), bottom_dispatches, cx)),
-                cx,
-            );
-            bar.add_right_item(
-                cx.new(|cx| PanelButtons::new(right_dock.clone(), right_dispatches, cx)),
-                cx,
-            );
+            bar.add_right_item(cx.new(|cx| PanelButtons::new(bottom_dock.clone(), cx)), cx);
+            bar.add_right_item(cx.new(|cx| PanelButtons::new(right_dock.clone(), cx)), cx);
         });
 
         let project_subscription =
@@ -327,7 +281,7 @@ impl Workspace {
         let settings_subscription =
             cx.observe_global_in::<SettingsStore>(window, |workspace, window, cx| {
                 let settings = SettingsStore::get(cx);
-                settings.theme.apply(Some(window));
+                settings.theme.apply(cx, Some(window));
                 workspace.pane.update(cx, |pane, cx| {
                     pane.set_soft_wrap(settings.soft_wrap, settings.preferred_line_length, cx)
                 });
@@ -348,7 +302,7 @@ impl Workspace {
             left_dock,
             right_dock,
             bottom_dock,
-            panel_action_map,
+            panel_actions,
             drag_notify,
             _subscriptions: vec![
                 project_subscription,
@@ -393,8 +347,6 @@ impl Workspace {
         });
         if focus_opened_item {
             window.focus(&focus);
-        } else {
-            window.focus(&self.project_tree.read(cx).focus);
         }
         window.refresh();
     }
@@ -551,30 +503,31 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let focus = self.project_tree.read(cx).focus.clone();
-        if let Some((_, dock, panel_idx)) = self
-            .panel_action_map
+        let Some((_, dock, panel_idx)) = self
+            .panel_actions
             .iter()
-            .find(|(name, _, _)| *name == "dock::ToggleProjectTree")
-        {
-            self.toggle_panel_focus_for_dock(dock.clone(), *panel_idx, &focus, window, cx);
-        }
+            .find(|(action, _, _)| action.partial_eq(&ToggleProjectTree))
+        else {
+            return;
+        };
+        self.toggle_panel_focus_for_dock(dock.clone(), *panel_idx, &focus, window, cx);
     }
 
-    fn handle_toggle_panel(
+    /// 通用面板 toggle handler：把面板自身的 toggle action 路由到对应 Dock。
+    fn handle_toggle_panel<A: Action>(
         &mut self,
-        action_name: &str,
+        action: &A,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let entry = match self
-            .panel_action_map
+        let Some((_, dock, panel_idx)) = self
+            .panel_actions
             .iter()
-            .find(|(name, _, _)| *name == action_name)
-        {
-            Some(e) => (e.1.clone(), e.2),
-            None => return,
+            .find(|(candidate, _, _)| candidate.partial_eq(action))
+        else {
+            return;
         };
-        let (dock, panel_idx) = entry;
+        let (dock, panel_idx) = (dock.clone(), *panel_idx);
 
         let was_active = dock.read(cx).is_panel_active(panel_idx);
         dock.update(cx, |d, cx| d.toggle_panel(panel_idx, window, cx));
@@ -630,18 +583,23 @@ impl Workspace {
 // ═══ 渲染 ═════════════════════════════════════════════════════════
 
 /// 工作台顶层框架组装（简化版：直接接收 body Div）。
-fn render_frame(top_bar: &Entity<TopBar>, status_bar: &Entity<StatusBar>, body: gpui::Div) -> Div {
+fn render_frame(
+    top_bar: &Entity<TopBar>,
+    status_bar: &Entity<StatusBar>,
+    body: gpui::Div,
+    cx: &gpui::App,
+) -> Div {
     div()
         .relative()
         .flex()
         .flex_col()
         .size_full()
         .overflow_hidden()
-        .bg(color::current().surface_background)
+        .bg(color::current(cx).surface_background)
         .font(typography::ui_font())
         .text_size(typography::ui())
         .line_height(typography::ui())
-        .text_color(color::current().text)
+        .text_color(color::current(cx).text)
         .child(top_bar.clone())
         .child(body)
         .child(status_bar.clone())
@@ -687,6 +645,7 @@ impl Render for Workspace {
                 &self.top_bar,
                 &self.status_bar,
                 render_layout_body(&pane, left_dock, right_dock, bottom_dock),
+                cx,
             ))
             .on_action(handle_quit)
             .on_action(handle_minimize)
@@ -698,31 +657,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_open_settings))
             .on_action(cx.listener(Self::handle_save))
             .on_action(cx.listener(Self::handle_toggle_project_tree))
-            .on_action(cx.listener(
-                |this: &mut Workspace, _: &ToggleVersionControl, window, cx| {
-                    this.handle_toggle_panel("dock::ToggleVersionControl", window, cx);
-                },
-            ))
-            .on_action(
-                cx.listener(|this: &mut Workspace, _: &ToggleOutline, window, cx| {
-                    this.handle_toggle_panel("dock::ToggleOutline", window, cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|this: &mut Workspace, _: &ToggleTerminal, window, cx| {
-                    this.handle_toggle_panel("dock::ToggleTerminal", window, cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|this: &mut Workspace, _: &ToggleDebug, window, cx| {
-                    this.handle_toggle_panel("dock::ToggleDebug", window, cx);
-                }),
-            )
-            .on_action(cx.listener(
-                |this: &mut Workspace, _: &ToggleKeyboardShortcuts, window, cx| {
-                    this.handle_toggle_panel("dock::ToggleKeyboardShortcuts", window, cx);
-                },
-            ))
+            .on_action(cx.listener(Self::handle_toggle_panel::<ToggleVersionControl>))
+            .on_action(cx.listener(Self::handle_toggle_panel::<ToggleOutline>))
+            .on_action(cx.listener(Self::handle_toggle_panel::<ToggleTerminal>))
+            .on_action(cx.listener(Self::handle_toggle_panel::<ToggleDebug>))
+            .on_action(cx.listener(Self::handle_toggle_panel::<ToggleKeyboardShortcuts>))
             .on_action(cx.listener(Self::handle_toggle_project_picker))
             .on_mouse_move(move |event, window, cx| {
                 if let Some(area) = drag_notify.get() {

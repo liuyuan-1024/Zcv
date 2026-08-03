@@ -134,13 +134,6 @@ impl Dock {
         }
     }
 
-    /// 按 action_name 查找面板在 dock 内的 index。
-    pub(crate) fn panel_index_by_action(&self, action_name: &str) -> Option<usize> {
-        self.panels
-            .iter()
-            .position(|h| h.action_name() == action_name)
-    }
-
     /// 当前激活面板的 index。
     pub(crate) fn active_panel_index(&self) -> Option<usize> {
         self.active_panel_index
@@ -258,7 +251,7 @@ impl Render for Dock {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let panel_view: gpui::AnyElement = match self.visible_panel() {
             Some(handle) => handle.to_any().into_any_element(),
-            None => placeholder_div().into_any_element(),
+            None => placeholder_div(cx).into_any_element(),
         };
 
         let frame = div()
@@ -267,25 +260,25 @@ impl Render for Dock {
             .flex_col()
             .flex_shrink_0()
             .overflow_hidden()
-            .bg(color::current().panel_background)
-            .text_color(color::current().text);
+            .bg(color::current(cx).panel_background)
+            .text_color(color::current(cx).text);
 
         let frame = match self.position {
             DockPosition::Left => frame
                 .w(self.size)
                 .h_full()
                 .border_r_1()
-                .border_color(color::current().border_variant),
+                .border_color(color::current(cx).border_variant),
             DockPosition::Right => frame
                 .w(self.size)
                 .h_full()
                 .border_l_1()
-                .border_color(color::current().border_variant),
+                .border_color(color::current(cx).border_variant),
             DockPosition::Bottom => frame
                 .h(self.size)
                 .w_full()
                 .border_t_1()
-                .border_color(color::current().border_variant),
+                .border_color(color::current(cx).border_variant),
         };
 
         let frame = frame.child(div().size_full().child(panel_view));
@@ -338,13 +331,13 @@ impl Focusable for Dock {
     }
 }
 
-fn placeholder_div() -> gpui::Div {
+fn placeholder_div(cx: &gpui::App) -> gpui::Div {
     div()
         .size_full()
         .flex()
         .items_center()
         .justify_center()
-        .text_color(color::current().text_placeholder)
+        .text_color(color::current(cx).text_placeholder)
         .child("")
 }
 

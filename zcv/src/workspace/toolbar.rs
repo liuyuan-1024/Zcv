@@ -150,7 +150,7 @@ impl Toolbar {
 // ═══ Render ═════════════════════════════════════════════════════════
 
 impl Render for Toolbar {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut left_elements: Vec<AnyView> = Vec::new();
 
         for (item, location) in &self.items {
@@ -172,8 +172,8 @@ impl Render for Toolbar {
             .py(space::S6)
             .px(space::S8)
             .border_b_1()
-            .border_color(color::current().border_variant)
-            .bg(color::current().toolbar_background)
+            .border_color(color::current(cx).border_variant)
+            .bg(color::current(cx).toolbar_background)
             .child(
                 div().flex().items_start().gap(space::S6).child(
                     div()

@@ -295,7 +295,7 @@ impl Buffer {
         &self,
         edits: &EditList,
     ) -> EngineResult<EditList> {
-        let position_map = crate::position_map::PositionMap::from_edits(edits.as_slice().to_vec());
+        let position_map = crate::position_map::PositionMap::from_edits(edits.as_slice());
 
         let mut inverse = Vec::with_capacity(edits.len());
 

@@ -20,7 +20,7 @@ impl TopBar {
     }
 }
 
-fn bar_frame() -> Div {
+fn bar_frame(cx: &gpui::App) -> Div {
     div()
         .flex()
         .flex_row()
@@ -29,10 +29,10 @@ fn bar_frame() -> Div {
         .px(space::S8)
         .py(space::S6)
         .gap(space::S6)
-        .bg(color::current().title_bar_background)
-        .text_color(color::current().text)
+        .bg(color::current(cx).title_bar_background)
+        .text_color(color::current(cx).text)
         .border_b_1()
-        .border_color(color::current().border_variant)
+        .border_color(color::current(cx).border_variant)
 }
 
 impl gpui::Render for TopBar {
@@ -41,9 +41,9 @@ impl gpui::Render for TopBar {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
-        bar_frame()
+        bar_frame(cx)
             .id("top-bar")
-            .child(cluster(leading_slots(window, &self.project_picker)))
+            .child(cluster(leading_slots(window, &self.project_picker, cx)))
             .child(drag_spacer())
             .child(cluster(trailing_slots(cx)))
     }
@@ -57,41 +57,50 @@ fn drag_spacer() -> Div {
     div().flex_1().h_full()
 }
 
-fn leading_slots(window: &Window, project_picker: &gpui::Entity<ProjectPicker>) -> Vec<AnyElement> {
+fn leading_slots(
+    window: &Window,
+    project_picker: &gpui::Entity<ProjectPicker>,
+    cx: &gpui::App,
+) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();
 
     // macOS 使用无标题栏窗口，因此在应用顶栏提供原生习惯的三色控制。
     #[cfg(target_os = "macos")]
-    out.push(window_controls::render(window).into_any_element());
+    out.push(window_controls::render(window, cx).into_any_element());
 
     // 项目选择器
     out.push(project_picker.clone().into_any_element());
-    // Git 分支
+    // Git 分支：显示当前分支名。
     out.push(
         Glyph::icon_text("top-bar.branch", "icons/panels/version_control.svg", "main")
             .label("分支")
-            .on_click(|_, _| println!("点击分支"))
             .into_any_element(),
     );
     // Git fetch
     out.push(
         Glyph::icon("top-bar.git-fetch", "icons/actions/arrow_circle.svg")
             .label("fetch")
-            .on_click(|_, _| println!("点击 fetch"))
+            .on_click(|window, cx| {
+                window.dispatch_action(Box::new(GitFetch), cx);
+            })
             .into_any_element(),
     );
     // Git pull
     out.push(
         Glyph::icon_text("top-bar.git-pull", "icons/actions/arrow_down.svg", "0")
             .label("pull")
-            .on_click(|_, _| println!("点击 pull"))
+            .on_click(|window, cx| {
+                window.dispatch_action(Box::new(GitPull), cx);
+            })
             .into_any_element(),
     );
     // Git push
     out.push(
         Glyph::icon_text("top-bar.git-push", "icons/actions/arrow_up.svg", "0")
             .label("push")
-            .on_click(|_, _| println!("点击 push"))
+            .on_click(|window, cx| {
+                window.dispatch_action(Box::new(GitPush), cx);
+            })
             .into_any_element(),
     );
 

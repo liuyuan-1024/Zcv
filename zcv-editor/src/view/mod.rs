@@ -711,6 +711,8 @@ impl Editor {
             .iter()
             .copied()
             .map(|selection| {
+                // 垂直移动本次使用的目标列；移动后持久化到选区。
+                let mut vertical_goal: Option<zcv_engine::DisplayColumn> = None;
                 let new_head = match motion {
                     Motion::ByUnit(unit) => {
                         // 软换行模式下行首/行尾按显示行边界移动（对齐 Zed 的
@@ -734,11 +736,13 @@ impl Editor {
                                     }),
                             }
                             .map(|new_head| {
-                                if extend {
+                                // 行内水平移动清除垂直移动遗留的目标列。
+                                (if extend {
                                     selection.with_head(new_head)
                                 } else {
                                     Selection::caret(new_head)
-                                }
+                                })
+                                .with_goal(None)
                             });
                         }
                         let buffer = self.buffer.read(cx);
@@ -758,22 +762,25 @@ impl Editor {
                                 location: "Editor::move_selections",
                                 detail: error.to_string(),
                             })?;
+                        // 目标列：优先使用持久化的 goal，否则从当前位置推导。
+                        let goal = selection.goal().unwrap_or(point.column());
+                        vertical_goal = Some(goal);
                         let last_row = self.display_map.line_count().saturating_sub(1);
                         if direction == MovementDirection::Previous
                             && point.row() == DisplayRow::ZERO
                         {
                             return Ok(if extend {
-                                selection.with_head(ByteOffset::ZERO)
+                                selection.with_head(ByteOffset::ZERO).with_goal(Some(goal))
                             } else {
-                                Selection::caret(ByteOffset::ZERO)
+                                Selection::caret(ByteOffset::ZERO).with_goal(Some(goal))
                             });
                         }
                         if direction == MovementDirection::Next && point.row().get() >= last_row {
                             let new_head = self.display_map.buffer_snapshot().len_bytes();
                             return Ok(if extend {
-                                selection.with_head(new_head)
+                                selection.with_head(new_head).with_goal(Some(goal))
                             } else {
-                                Selection::caret(new_head)
+                                Selection::caret(new_head).with_goal(Some(goal))
                             });
                         }
                         let target_row = match direction {
@@ -787,7 +794,7 @@ impl Editor {
                         self.display_map
                             .display_point_to_offset(DisplayPoint::new(
                                 DisplayRow::new(target_row),
-                                point.column(),
+                                goal,
                             ))
                             .map_err(|error| zcv_engine::EngineError::EngineBug {
                                 location: "Editor::move_selections",
@@ -799,11 +806,13 @@ impl Editor {
                         MovementDirection::Next => self.buffer.read(cx).len_bytes(),
                     },
                 };
-                Ok(if extend {
+                // 垂直移动持久保留本次使用的目标列（即使被行尾钳制）；其余移动清除 goal。
+                Ok((if extend {
                     selection.with_head(new_head)
                 } else {
                     Selection::caret(new_head)
                 })
+                .with_goal(vertical_goal))
             })
             .collect::<EngineResult<Vec<_>>>()
             .map(|selections| SelectionSet::new_with_primary(selections, primary_index));
@@ -1739,7 +1748,7 @@ impl Render for Editor {
                 .font(font)
                 .text_size(text_size)
                 .line_height(line_height)
-                .text_color(color::current().text),
+                .text_color(color::current(cx).text),
             cx,
         )
         .child(EditorElement::new(cx.entity()))
@@ -2383,9 +2392,13 @@ mod tests {
         cx.dispatch_action(SelectPageDown);
         cx.run_until_parked();
         cx.read_entity(&editor, |editor, _| {
+            // 垂直移动持久保留目标列（从列 0 起始，目标列仍为 0）。
             assert_eq!(
                 editor.selections,
-                SelectionSet::new(vec![Selection::new(first_page, second_page)])
+                SelectionSet::new(vec![
+                    Selection::new(first_page, second_page)
+                        .with_goal(Some(zcv_engine::DisplayColumn::ZERO))
+                ])
             );
             assert_eq!(
                 editor.scroll_manager.anchor().row(),
@@ -2396,7 +2409,12 @@ mod tests {
         cx.dispatch_action(MovePageUp);
         cx.run_until_parked();
         cx.read_entity(&editor, |editor, _| {
-            assert_eq!(editor.selections, SelectionSet::caret(first_page));
+            assert_eq!(
+                editor.selections,
+                SelectionSet::new(vec![
+                    Selection::caret(first_page).with_goal(Some(zcv_engine::DisplayColumn::ZERO))
+                ])
+            );
             assert_eq!(
                 editor.scroll_manager.anchor().row(),
                 DisplayRow::new(page_rows)
@@ -2408,7 +2426,10 @@ mod tests {
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(
                 editor.selections,
-                SelectionSet::new(vec![Selection::new(first_page, ByteOffset::ZERO)])
+                SelectionSet::new(vec![
+                    Selection::new(first_page, ByteOffset::ZERO)
+                        .with_goal(Some(zcv_engine::DisplayColumn::ZERO))
+                ])
             );
             assert_eq!(editor.scroll_manager.anchor().row(), DisplayRow::ZERO);
         });
@@ -2477,6 +2498,47 @@ mod tests {
             assert_eq!(caret_row, 80);
             assert!(editor.scroll_manager.anchor().row().get() > 0);
             assert!(editor.scroll_manager.anchor().row().get() <= caret_row);
+        });
+    }
+
+    #[gpui::test]
+    fn vertical_movement_preserves_goal_column_across_short_rows(cx: &mut TestAppContext) {
+        let text = "a long line with enough text\nshort\nanother long line here\n";
+        let buffer = test_buffer(cx, text);
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+
+        // 水平移动到列 10（水平移动清除 goal）。
+        for _ in 0..10 {
+            cx.dispatch_action(MoveRight);
+        }
+        cx.run_until_parked();
+
+        // 垂直移动到短行：列被钳制到行尾，但 goal 保留 10。
+        cx.dispatch_action(MoveDown);
+        cx.run_until_parked();
+        let (short_row_column, goal) = cx.read_entity(&editor, |editor, _| {
+            let position = editor
+                .render_snapshot()
+                .byte_to_position(editor.selections.primary().head())
+                .expect("caret 应有效");
+            (position.column().get(), editor.selections.primary().goal())
+        });
+        assert_eq!(short_row_column, "short".len());
+        assert_eq!(goal, Some(zcv_engine::DisplayColumn::new(10)));
+
+        // 再垂直移动到长行：光标回到持久化的目标列 10。
+        cx.dispatch_action(MoveDown);
+        cx.run_until_parked();
+        cx.read_entity(&editor, |editor, _| {
+            let position = editor
+                .render_snapshot()
+                .byte_to_position(editor.selections.primary().head())
+                .expect("caret 应有效");
+            assert_eq!(position.column().get(), 10);
         });
     }
 
@@ -2786,11 +2848,11 @@ mod tests {
             let snapshot = editor.buffer.read(cx).snapshot();
             let composition = editor.composition.as_ref().unwrap();
             let marked = composition.ranges[composition.primary_index];
-            let highlights = editor
-                .syntax_snapshot
-                .highlights(0..snapshot.len_bytes().get(), &snapshot);
+            let syntax_snapshot = editor.syntax_snapshot.clone();
+            let names = syntax_snapshot.capture_names();
+            let highlights = syntax_snapshot.highlights(0..snapshot.len_bytes().get(), &snapshot);
             assert!(highlights.iter().any(|highlight| {
-                highlight.capture.as_ref() == "string"
+                names[highlight.capture as usize].as_ref() == "string"
                     && highlight.range.start <= marked.start().get()
                     && highlight.range.end >= marked.end().get()
             }));

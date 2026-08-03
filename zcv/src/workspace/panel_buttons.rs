@@ -10,28 +10,18 @@ use crate::ui::Glyph;
 use zcv_editor::Editor;
 use zcv_theme::{color, space};
 
-/// 面板点击调度函数：将点击转为 gpui action dispatch。
-pub(crate) type PanelDispatch = fn(&mut Window, &mut App);
-
 /// 底栏按钮组：绑定一个 Dock Entity，渲染其所有面板。
 pub(crate) struct PanelButtons {
     dock: Entity<Dock>,
-    /// 与 dock.panels 顺序一一对应的 dispatch 函数。
-    dispatches: Vec<PanelDispatch>,
     _subscription: Subscription,
 }
 
 impl PanelButtons {
-    pub(crate) fn new(
-        dock: Entity<Dock>,
-        dispatches: Vec<PanelDispatch>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub(crate) fn new(dock: Entity<Dock>, cx: &mut Context<Self>) -> Self {
         // Dock 状态变化时自动重绘
         let sub = cx.observe(&dock, |_, _, cx| cx.notify());
         Self {
             dock,
-            dispatches,
             _subscription: sub,
         }
     }
@@ -46,7 +36,7 @@ impl StatusItemView for PanelButtons {
 impl Render for PanelButtons {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let dock = self.dock.read(cx);
-        if dock.panels.is_empty() || self.dispatches.is_empty() {
+        if dock.panels.is_empty() {
             return div();
         }
 
@@ -58,22 +48,26 @@ impl Render for PanelButtons {
             .panels
             .iter()
             .enumerate()
-            .zip(&self.dispatches)
-            .map(|((i, handle), dispatch)| {
+            .map(|(i, handle)| {
                 let icon_path = handle.icon();
                 let label = handle.label();
-                let action = handle.action_name();
                 let is_active = Some(i) == active_index && is_open;
                 let fg = if is_active {
-                    color::current().icon_accent
+                    color::current(cx).icon_accent
                 } else {
-                    color::current().text
+                    color::current(cx).text
                 };
-                let on_click = *dispatch;
+                let action_name = handle.toggle_action(cx).name();
+                let on_click = {
+                    let handle = handle.clone();
+                    move |window: &mut Window, cx: &mut App| {
+                        window.dispatch_action(handle.toggle_action(cx), cx);
+                    }
+                };
 
                 Glyph::icon(ElementId::Name(icon_path.into()), icon_path)
                     .label(label)
-                    .shortcut_by_name(action, cx)
+                    .shortcut_by_name(action_name, cx)
                     .color(fg)
                     .on_click(on_click)
                     .into_any_element()
@@ -83,7 +77,7 @@ impl Render for PanelButtons {
         let divider = div()
             .w(gpui::px(1.0))
             .h_full()
-            .bg(color::current().border_variant);
+            .bg(color::current(cx).border_variant);
 
         match area {
             DockPosition::Left => div()

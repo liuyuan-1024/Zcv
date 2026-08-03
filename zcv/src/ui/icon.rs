@@ -2,7 +2,7 @@
 //!
 //! 统一 size 和默认 color，外部可通过 builder 方法覆盖。
 
-use gpui::{IntoElement, Pixels, Rgba, Svg, prelude::*, svg};
+use gpui::{App, Component, IntoElement, Pixels, RenderOnce, Rgba, Window, prelude::*, svg};
 
 use zcv_theme::{color, typography};
 
@@ -12,11 +12,11 @@ use zcv_theme::{color, typography};
 /// ```ignore
 /// SvgIcon::new("icons/files/file.svg")
 ///     .size(px(10.0))
-///     .color(color::current().icon_muted)
+///     .color(color::current(cx).icon_muted)
 /// ```
 pub(crate) struct SvgIcon {
     path: &'static str,
-    color: Rgba,
+    color: Option<Rgba>,
     size: Pixels,
 }
 
@@ -24,13 +24,14 @@ impl SvgIcon {
     pub(crate) fn new(path: &'static str) -> Self {
         Self {
             path,
-            color: color::current().icon,
+            // 默认色延迟到 render（有 cx）解析
+            color: None,
             size: typography::ui(),
         }
     }
 
     pub(crate) fn color(mut self, color: Rgba) -> Self {
-        self.color = color;
+        self.color = Some(color);
         self
     }
 
@@ -41,9 +42,17 @@ impl SvgIcon {
 }
 
 impl IntoElement for SvgIcon {
-    type Element = Svg;
+    type Element = Component<Self>;
 
-    fn into_element(self) -> Svg {
-        svg().path(self.path).size(self.size).text_color(self.color)
+    fn into_element(self) -> Self::Element {
+        Component::new(self)
+    }
+}
+
+impl RenderOnce for SvgIcon {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // 默认色依赖主题，只能在有 cx 的 render 中解析
+        let color = self.color.unwrap_or_else(|| color::current(cx).icon);
+        svg().path(self.path).size(self.size).text_color(color)
     }
 }

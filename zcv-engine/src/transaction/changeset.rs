@@ -12,18 +12,20 @@ use super::{Edit, EditList};
 
 /// 事务变更集合。
 ///
-/// `ChangeSet` 记录一次事务提交的已验证编辑，用于计算 changed ranges，并可产出
-/// `PositionMap`。具体位置映射 API 统一由 `PositionMap` 承担。
+/// `ChangeSet` 记录一次事务提交的已验证编辑，用于计算 changed ranges，并可产出`PositionMap`。
+/// 具体位置映射 API 统一由 `PositionMap` 承担。
+///
+/// 内部直接持有 `EditList`（`Arc<[Edit]>`），`Clone` 与提交传递只递增引用计数，同一批编辑不再在 ChangeSet / DeltaEvent / PositionMap 之间逐元素拷贝。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeSet {
-    edits: Vec<Edit>,
+    edits: EditList,
 }
 
 impl ChangeSet {
-    /// 只能从已经排序、已经验证过的 EditList 构造。
+    /// 只能从已经排序、已经验证过的 EditList 构造；O(1) 共享底层编辑切片。
     pub(crate) fn from_edit_list(edits: &EditList) -> Self {
         Self {
-            edits: edits.as_slice().to_vec(),
+            edits: edits.clone(),
         }
     }
 
@@ -32,11 +34,11 @@ impl ChangeSet {
     /// 提供给 syntax / tracking 等 producer 自行翻译为外部协议所需的形态（例如 tree-sitter `InputEdit` 需要旧端 + 新端 Point）。
     /// 每条 `Edit` 暴露的 `range()` / `replacement()` 已是只读访问，外部无法越过 `EditList::new` 的排序与不重叠校验。
     pub fn edits(&self) -> &[Edit] {
-        &self.edits
+        self.edits.as_slice()
     }
 
     pub fn position_map(&self) -> PositionMap {
-        PositionMap::from_edits(self.edits.clone())
+        PositionMap::from_edits(self.edits.as_slice())
     }
 
     /// 获取本次事务应用后，在新文本中发生改变的范围列表。
@@ -48,7 +50,7 @@ impl ChangeSet {
         let mut ranges = Vec::new();
         let mut shift = OffsetShift::ZERO;
 
-        for edit in &self.edits {
+        for edit in self.edits.as_slice() {
             let range = edit.range();
             let replacement_len = edit.replacement().len();
 

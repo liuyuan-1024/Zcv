@@ -47,6 +47,7 @@ regex-automata = "0.4.14"
 ropey = "1.6.1"
 thiserror = "2.0.18"
 unicode-segmentation = "1.13.2"
+unicode-width = "0.2"
 
 # ---- 工作区层（zcv-workspace） ----
 anyhow = "1.0"

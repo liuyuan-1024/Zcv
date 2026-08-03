@@ -127,3 +127,22 @@ gray = "#D1D5DB"
 faint-gray = "#E8EBF0"
 light-gray = "#9CA3AF"
 linenr = "#C8CDD5"
+# ---- UI 调色板（palette.rs 数据源；代码内不再持有色值）----
+[ui]
+# alpha 阶梯：各色相强调色 s[6] 叠加的透明度序列
+alpha-steps = ["1a", "26", "3d", "40", "4d", "b3", "cc", "e6", "f5"]
+
+[ui.gray]
+s = ["#fafafa", "#ebebeb", "#dfdfdf", "#d3d3d3", "#bcbcbc", "#a6a6a6", "#919191", "#838383", "#1e1e1e"]
+
+[ui.blue]
+s = ["#eef3fe", "#dce7fd", "#c6d8fb", "#acc6f8", "#8baef3", "#6293ed", "#2563eb", "#1d4ab8", "#162e7a"]
+
+[ui.green]
+s = ["#ecf8ef", "#d8f0dd", "#c0e6c7", "#a3daae", "#7ec98f", "#4eb56a", "#16a34a", "#0f7a35", "#0a4d21"]
+
+[ui.yellow]
+s = ["#fffef4", "#fefada", "#fdf0a8", "#fce776", "#fad644", "#e8c01a", "#ca8a04", "#9e6c04", "#6b4808"]
+
+[ui.red]
+s = ["#fef4f4", "#fde4e4", "#fccccc", "#f9adad", "#f58686", "#ee5555", "#dc2626", "#b91c1c", "#7f1d1d"]

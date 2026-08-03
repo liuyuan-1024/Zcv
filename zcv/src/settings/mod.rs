@@ -185,7 +185,7 @@ pub(crate) fn init(cx: &mut App) {
             }
         }
     }
-    settings.theme.apply(None);
+    settings.theme.apply(cx, None);
 
     let (signal_tx, signal_rx) = async_channel::unbounded::<()>();
     let pending_events = Arc::new(Mutex::new(Vec::new()));

@@ -262,7 +262,7 @@ mod tests {
         let edit_list = EditList::new(edits).unwrap();
         let delta = Delta::new(old_version, new_version, edit_list.clone());
         let changeset = ChangeSet::from_edit_list(&edit_list);
-        let position_map = PositionMap::from_edits(edit_list.into_inner());
+        let position_map = PositionMap::from_edits(edit_list.as_slice());
 
         DeltaEvent::new(
             TransactionId::INITIAL,

@@ -58,6 +58,11 @@ impl Language {
     pub(crate) fn capture_name(&self, index: u32) -> Option<Arc<str>> {
         self.capture_names.get(index as usize).cloned()
     }
+
+    /// capture 名字表（capture index -> 名字），供跨语言全局表构建与渲染查表使用。
+    pub(crate) fn capture_names(&self) -> &[Arc<str>] {
+        &self.capture_names
+    }
 }
 
 struct LanguageSpec {

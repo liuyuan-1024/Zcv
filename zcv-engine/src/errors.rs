@@ -273,6 +273,24 @@ pub enum EngineError {
 /// 编辑引擎统一 Result 类型。
 pub type EngineResult<T> = Result<T, EngineError>;
 
+/// 引擎内部不变量断言：违反即 panic（这是 bug，不是可恢复的外部错误）。
+///
+/// 用法与 `Option::expect` 相同，但 panic 消息统一携带源码位置与明细，便于按文件名与行号检索引擎 bug 的触发点。
+macro_rules! invariant {
+    ($option:expr, $detail:expr) => {
+        match $option {
+            Some(value) => value,
+            None => panic!(
+                "引擎内部不变量违反（{}:{}）：{}",
+                file!(),
+                line!(),
+                $detail
+            ),
+        }
+    };
+}
+pub(crate) use invariant;
+
 /// 流式加载（`Buffer::from_reader`）失败的统一错误类型。
 ///
 /// 加载路径同时跨 `io::Read` 与引擎解码校验两个边界；任一侧失败都用本类型上抛。

@@ -30,10 +30,11 @@ impl TabBar {
     /// 内部自动添加一个 absolute 定位的 `border_b_1` overlay 作为连续底线，tabs 渲染在其上层，选中标签通过 `pb(1px)` 覆盖该线。
     pub fn with_bar(
         self,
+        cx: &gpui::App,
         f: impl FnOnce(Div) -> Div,
         children: impl IntoIterator<Item = AnyElement>,
     ) -> impl gpui::IntoElement {
-        let border_color = color::current().border_variant;
+        let border_color = color::current(cx).border_variant;
 
         let outer = f(div());
 

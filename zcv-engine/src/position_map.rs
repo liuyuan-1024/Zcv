@@ -5,6 +5,7 @@
 
 use crate::{
     TextPatch,
+    errors::invariant,
     selection::{Selection, SelectionSet},
     tracking::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
     transaction::{ChangeSet, Edit},
@@ -82,11 +83,18 @@ pub struct PositionMap {
     edits: Vec<PositionMapEdit>,
 }
 
+impl Default for PositionMap {
+    fn default() -> Self {
+        Self { edits: Vec::new() }
+    }
+}
+
 impl PositionMap {
-    pub(crate) fn from_edits(edits: Vec<Edit>) -> Self {
+    /// 从编辑切片构造映射，不持有编辑本身（只投影 range 与长度）。
+    pub(crate) fn from_edits(edits: &[Edit]) -> Self {
         Self {
             edits: edits
-                .into_iter()
+                .iter()
                 .map(|edit| PositionMapEdit {
                     old: edit.range(),
                     new_len: edit.replacement().len(),
@@ -96,7 +104,7 @@ impl PositionMap {
     }
 
     pub fn from_change_set(changeset: &ChangeSet) -> Self {
-        Self::from_edits(changeset.edits().to_vec())
+        Self::from_edits(changeset.edits())
     }
 
     /// 从跨多个连续版本组合后的 Patch 构造坐标映射。
@@ -139,9 +147,10 @@ impl PositionMap {
             let old_start = range.start();
             let old_end = range.end();
             let replacement_len = edit.new_len;
-            let new_start = shift
-                .apply_old_to_new(old_start)
-                .expect("内部不变量：old start 映射不会发生字节偏移溢出");
+            let new_start = invariant!(
+                shift.apply_old_to_new(old_start),
+                "old start 映射不会发生字节偏移溢出"
+            );
 
             if pos < old_start {
                 break;
@@ -151,8 +160,9 @@ impl PositionMap {
                 if pos == old_start {
                     let mapped = match affinity {
                         Affinity::Before => new_start,
-                        Affinity::After => checked_add_offset(new_start, replacement_len).expect(
-                            "内部不变量：在 map_old_position_with_affinity 映射时发生字节偏移溢出",
+                        Affinity::After => invariant!(
+                            checked_add_offset(new_start, replacement_len),
+                            "在 map_old_position_with_affinity 映射时发生字节偏移溢出"
                         ),
                     };
 
@@ -162,16 +172,16 @@ impl PositionMap {
                 return MappingResult::Deleted(new_start);
             }
 
-            shift = shift
-                .after_edit(range.len(), replacement_len)
-                .expect("内部不变量：累计编辑位移不会溢出");
+            shift = invariant!(
+                shift.after_edit(range.len(), replacement_len),
+                "累计编辑位移不会溢出"
+            );
         }
 
-        MappingResult::Mapped(
-            shift
-                .apply_old_to_new(pos)
-                .expect("内部不变量：old position 映射不会发生字节偏移溢出"),
-        )
+        MappingResult::Mapped(invariant!(
+            shift.apply_old_to_new(pos),
+            "old position 映射不会发生字节偏移溢出"
+        ))
     }
 
     /// new byte position -> old byte position。
@@ -193,11 +203,14 @@ impl PositionMap {
             let old_end = range.end();
             let old_len = range.len();
             let replacement_len = edit.new_len;
-            let new_start = shift
-                .apply_old_to_new(old_start)
-                .expect("内部不变量：old start 映射不会发生字节偏移溢出");
-            let new_end = checked_add_offset(new_start, replacement_len)
-                .expect("内部不变量：在 map_new_position_with_bias 映射时发生字节偏移溢出");
+            let new_start = invariant!(
+                shift.apply_old_to_new(old_start),
+                "old start 映射不会发生字节偏移溢出"
+            );
+            let new_end = invariant!(
+                checked_add_offset(new_start, replacement_len),
+                "在 map_new_position_with_bias 映射时发生字节偏移溢出"
+            );
 
             if pos < new_start {
                 break;
@@ -211,16 +224,16 @@ impl PositionMap {
                 return MappingResult::Ambiguous(biased_offset(old_start, old_end, bias));
             }
 
-            shift = shift
-                .after_edit(old_len, replacement_len)
-                .expect("内部不变量：累计编辑位移不会溢出");
+            shift = invariant!(
+                shift.after_edit(old_len, replacement_len),
+                "累计编辑位移不会溢出"
+            );
         }
 
-        MappingResult::Mapped(
-            shift
-                .apply_new_to_old(pos)
-                .expect("内部不变量：new position 映射不会发生字节偏移溢出"),
-        )
+        MappingResult::Mapped(invariant!(
+            shift.apply_new_to_old(pos),
+            "new position 映射不会发生字节偏移溢出"
+        ))
     }
 
     /// old byte range -> new byte range。
@@ -360,11 +373,13 @@ impl PositionMap {
             let old_end = range.end();
             let old_len = range.len();
             let replacement_len = edit.new_len;
-            let new_start = shift
-                .apply_old_to_new(old_start)
-                .expect("内部不变量：old start 映射不会发生字节偏移溢出");
-            let new_end = checked_add_offset(new_start, replacement_len).expect(
-                "内部不变量：在 map_new_position_for_range_boundary 映射时发生字节偏移溢出",
+            let new_start = invariant!(
+                shift.apply_old_to_new(old_start),
+                "old start 映射不会发生字节偏移溢出"
+            );
+            let new_end = invariant!(
+                checked_add_offset(new_start, replacement_len),
+                "在 map_new_position_for_range_boundary 映射时发生字节偏移溢出"
             );
 
             if pos < new_start {
@@ -383,14 +398,16 @@ impl PositionMap {
                 return old_start;
             }
 
-            shift = shift
-                .after_edit(old_len, replacement_len)
-                .expect("内部不变量：累计编辑位移不会溢出");
+            shift = invariant!(
+                shift.after_edit(old_len, replacement_len),
+                "累计编辑位移不会溢出"
+            );
         }
 
-        shift
-            .apply_new_to_old(pos)
-            .expect("内部不变量：new range 边界映射不会发生字节偏移溢出")
+        invariant!(
+            shift.apply_new_to_old(pos),
+            "new range 边界映射不会发生字节偏移溢出"
+        )
     }
 
     fn old_range_intersects_deleted_content(&self, range: TextRange) -> bool {
@@ -409,11 +426,13 @@ impl PositionMap {
             let edit_range = edit.old;
             let old_len = edit_range.len();
             let replacement_len = edit.new_len;
-            let new_start = shift
-                .apply_old_to_new(edit_range.start())
-                .expect("内部不变量：old start 映射不会发生字节偏移溢出");
-            let new_end = checked_add_offset(new_start, replacement_len).expect(
-                "内部不变量：在 new_range_touches_ambiguous_content 映射时发生字节偏移溢出",
+            let new_start = invariant!(
+                shift.apply_old_to_new(edit_range.start()),
+                "old start 映射不会发生字节偏移溢出"
+            );
+            let new_end = invariant!(
+                checked_add_offset(new_start, replacement_len),
+                "在 new_range_touches_ambiguous_content 映射时发生字节偏移溢出"
             );
 
             if replacement_len == 0 {
@@ -430,9 +449,10 @@ impl PositionMap {
                 return true;
             }
 
-            shift = shift
-                .after_edit(old_len, replacement_len)
-                .expect("内部不变量：累计编辑位移不会溢出");
+            shift = invariant!(
+                shift.after_edit(old_len, replacement_len),
+                "累计编辑位移不会溢出"
+            );
         }
 
         false
@@ -501,7 +521,10 @@ fn biased_offset(start: ByteOffset, end: ByteOffset, bias: Bias) -> ByteOffset {
 }
 
 fn text_range(start: ByteOffset, end: ByteOffset) -> TextRange {
-    TextRange::new(start, end).expect("PositionMap 生成的 range 必须满足 start <= end")
+    invariant!(
+        TextRange::new(start, end).ok(),
+        "PositionMap 生成的 range 必须满足 start <= end"
+    )
 }
 
 fn text_range_from_mapped_endpoints(start: ByteOffset, end: ByteOffset) -> (TextRange, bool) {
@@ -569,7 +592,7 @@ mod tests {
 
     #[test]
     fn position_map_should_expose_affinity_bias_stickiness_and_selection_mapping() {
-        let map = PositionMap::from_edits(vec![Edit::replace(range(1, 3), "XYZ".to_string())]);
+        let map = PositionMap::from_edits(&[Edit::replace(range(1, 3), "XYZ".to_string())]);
 
         assert_eq!(map.len(), 1);
         assert!(matches!(map.map_old_position(b(2)), MappingResult::Deleted(pos) if pos == b(1)));
@@ -590,7 +613,7 @@ mod tests {
 
     #[test]
     fn position_map_should_not_panic_when_mapped_range_endpoints_cross() {
-        let map = PositionMap::from_edits(vec![Edit::insert(b(0), "X".to_string()).unwrap()]);
+        let map = PositionMap::from_edits(&[Edit::insert(b(0), "X".to_string()).unwrap()]);
 
         assert_eq!(
             map.map_old_range_with_stickiness(range(0, 0), Stickiness::Never),

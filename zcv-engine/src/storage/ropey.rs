@@ -29,7 +29,9 @@ fn rope_byte_range_cow(rope: &Rope, range: TextRange) -> Cow<'_, str> {
     }
 }
 
-/// 共享字节区间校验（用于 Snapshot 实现，避免重复实现 validate_byte_range）。
+/// 共享字节区间校验：长度不越界 + 端点都落在 UTF-8 字符边界。
+///
+/// `RopeyStorage` 与 `RopeySnapshot` 的只读与预检路径共用，行为修复只改这一处。
 fn validate_byte_range_in_rope(rope: &Rope, range: TextRange) -> EngineResult<()> {
     if range.end().get() > rope.len_bytes() {
         return Err(EditError::RangeOutOfBounds { range }.into());
@@ -89,35 +91,16 @@ impl RopeyStorage {
     pub(crate) fn has_same_text(&self, snapshot: &RopeySnapshot) -> bool {
         ropes_have_same_text(&self.rope, &snapshot.rope)
     }
-
-    /// 校验字节区间：长度不越界 + 端点都落在 UTF-8 字符边界 + 不切 CRLF 中间。
-    fn validate_byte_range(&self, range: TextRange) -> EngineResult<()> {
-        let len_bytes = self.rope.len_bytes();
-
-        if range.end().get() > len_bytes {
-            return Err(EditError::RangeOutOfBounds { range }.into());
-        }
-
-        if !is_utf8_char_boundary_in_rope(&self.rope, range.start().get()) {
-            return Err(CoordinateError::InvalidByteBoundary(range.start()).into());
-        }
-
-        if !is_utf8_char_boundary_in_rope(&self.rope, range.end().get()) {
-            return Err(CoordinateError::InvalidByteBoundary(range.end()).into());
-        }
-
-        Ok(())
-    }
 }
 
 impl TextRead for RopeyStorage {
     fn slice_text(&self, range: TextRange) -> EngineResult<Cow<'_, str>> {
-        self.validate_byte_range(range)?;
+        validate_byte_range_in_rope(&self.rope, range)?;
         Ok(rope_byte_range_cow(&self.rope, range))
     }
 
     fn chunks(&self, range: TextRange) -> EngineResult<impl Iterator<Item = &str> + '_> {
-        self.validate_byte_range(range)?;
+        validate_byte_range_in_rope(&self.rope, range)?;
         Ok(self
             .rope
             .byte_slice(range.start().get()..range.end().get())
@@ -234,7 +217,7 @@ impl TextStorage for RopeyStorage {
         range: TextRange,
         _replacement: &str,
     ) -> EngineResult<Self::PreparedReplace> {
-        self.validate_byte_range(range)?;
+        validate_byte_range_in_rope(&self.rope, range)?;
 
         let start_byte = range.start().get();
         let end_byte = range.end().get();

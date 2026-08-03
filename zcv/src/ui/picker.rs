@@ -36,7 +36,7 @@ pub trait PickerDelegate: 'static {
     fn update_matches(&mut self, query: String);
     fn confirm(&mut self, window: &mut Window, cx: &mut App);
     fn dismissed(&mut self);
-    fn render_match(&self, ix: usize, selected: bool) -> AnyElement;
+    fn render_match(&self, ix: usize, selected: bool, cx: &App) -> AnyElement;
 
     fn placeholder_text(&self) -> &str {
         "搜索..."
@@ -171,7 +171,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .map(|text| {
                 div()
                     .text_center()
-                    .text_color(color::current().text_placeholder)
+                    .text_color(color::current(cx).text_placeholder)
                     .child(text)
             });
 
@@ -189,10 +189,11 @@ impl<D: PickerDelegate> Render for Picker<D> {
                         });
                         cx.stop_propagation();
                     })
-                    .child(
-                        self.delegate
-                            .render_match(index, index == self.delegate.selected_index()),
-                    )
+                    .child(self.delegate.render_match(
+                        index,
+                        index == self.delegate.selected_index(),
+                        cx,
+                    ))
                     .into_any_element()
             })
             .collect::<Vec<AnyElement>>();
@@ -215,7 +216,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .is_empty()
             .then(|| SharedString::from(self.delegate.placeholder_text().to_owned()));
 
-        root.child(picker_search_box(self.editor.clone(), placeholder))
+        root.child(picker_search_box(self.editor.clone(), placeholder, cx))
             .when_some(self.delegate.render_header(), |el, h| el.child(h))
             .when_some(no_match, |el, n| el.child(n))
             .children(items)
@@ -229,6 +230,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
 pub fn picker_search_box(
     content: impl IntoElement,
     placeholder: Option<SharedString>,
+    cx: &App,
 ) -> impl IntoElement {
     div()
         .relative()
@@ -239,13 +241,13 @@ pub fn picker_search_box(
         .overflow_hidden()
         .p(space::S6)
         .border_b_1()
-        .border_color(color::current().border_variant)
+        .border_color(color::current(cx).border_variant)
         .when_some(placeholder, |el, placeholder| {
             el.child(
                 div()
                     .absolute()
                     .left(space::S6)
-                    .text_color(color::current().text_placeholder)
+                    .text_color(color::current(cx).text_placeholder)
                     .child(placeholder),
             )
         })
@@ -253,11 +255,11 @@ pub fn picker_search_box(
 }
 
 /// 分隔线。
-pub fn picker_divider() -> impl IntoElement {
+pub fn picker_divider(cx: &App) -> impl IntoElement {
     div()
         .w_full()
         .h(px(1.0))
-        .bg(color::current().border_variant)
+        .bg(color::current(cx).border_variant)
 }
 
 #[cfg(test)]
@@ -293,7 +295,7 @@ mod tests {
 
         fn dismissed(&mut self) {}
 
-        fn render_match(&self, _: usize, _: bool) -> AnyElement {
+        fn render_match(&self, _: usize, _: bool, _: &App) -> AnyElement {
             div().into_any_element()
         }
     }
@@ -348,7 +350,7 @@ mod tests {
 
         fn dismissed(&mut self) {}
 
-        fn render_match(&self, _: usize, _: bool) -> AnyElement {
+        fn render_match(&self, _: usize, _: bool, _: &App) -> AnyElement {
             div().child("项目").into_any_element()
         }
     }

@@ -27,7 +27,7 @@ pub(crate) fn handle_toggle_maximize(
     window.zoom_window();
 }
 
-pub(crate) fn render(window: &Window) -> gpui::Stateful<gpui::Div> {
+pub(crate) fn render(window: &Window, cx: &gpui::App) -> gpui::Stateful<gpui::Div> {
     let active = window.is_window_active();
 
     div()
@@ -38,15 +38,15 @@ pub(crate) fn render(window: &Window) -> gpui::Stateful<gpui::Div> {
         .items_center()
         .gap(space::S8)
         .child(
-            pip(Pip::Close, active)
+            pip(Pip::Close, active, cx)
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(QuitWindow), cx)),
         )
         .child(
-            pip(Pip::Minimize, active)
+            pip(Pip::Minimize, active, cx)
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(MinimizeWindow), cx)),
         )
         .child(
-            pip(Pip::Maximize, active).on_click(|_, window, cx| {
+            pip(Pip::Maximize, active, cx).on_click(|_, window, cx| {
                 window.dispatch_action(Box::new(ToggleMaximizeWindow), cx)
             }),
         )
@@ -54,7 +54,7 @@ pub(crate) fn render(window: &Window) -> gpui::Stateful<gpui::Div> {
 
 // ── 私有渲染辅助函数 ─────────────────────────────────────────────────
 
-fn pip(pip: Pip, active: bool) -> gpui::Stateful<gpui::Div> {
+fn pip(pip: Pip, active: bool, cx: &gpui::App) -> gpui::Stateful<gpui::Div> {
     let id = match pip {
         Pip::Close => "window-controls.close",
         Pip::Minimize => "window-controls.minimize",
@@ -85,7 +85,7 @@ fn pip(pip: Pip, active: bool) -> gpui::Stateful<gpui::Div> {
             svg()
                 .path(pip.svg_path())
                 .size(px(10.0))
-                .text_color(color::current().icon_on_accent)
+                .text_color(color::current(cx).icon_on_accent)
                 .opacity(0.0)
                 .group_hover(PIP_GROUP, |style| style.opacity(1.0)),
         )

@@ -7,6 +7,7 @@ description = "可嵌入文本编辑组件"
 [dependencies]
 gpui.workspace = true
 gpui-sum-tree.workspace = true
+log.workspace = true
 thiserror.workspace = true
 unicode-segmentation.workspace = true
 zcv-engine.workspace = true

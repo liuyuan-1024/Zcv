@@ -67,7 +67,7 @@
       "down": "picker::PickerSelectNext",
       "enter": "picker::PickerConfirm",
       "escape": "picker::PickerCancel",
-      "ctrl-o": "project_picker::OpenLocalProject"
+      "ctrl-l": "project_picker::OpenLocalProject"
     }
   },
   {

@@ -9,4 +9,4 @@ mod traits;
 
 pub(crate) use fingerprint::TextFingerprint;
 pub(crate) use ropey::{RopeySnapshot, RopeyStorage};
-pub(crate) use traits::{TextRead, TextStorage};
+pub(crate) use traits::{TextRead, TextStorage, text_coordinate_gateway};

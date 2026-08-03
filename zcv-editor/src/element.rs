@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use gpui::{
     App, Bounds, ContentMask, Context, DispatchPhase, Element, ElementId, ElementInputHandler,
-    Entity, GlobalElementId, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
-    LayoutId, MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine,
-    Style, TextRun, UnderlineStyle, Window, fill, point, px, relative, size,
+    Entity, GlobalElementId, HighlightStyle, HitboxBehavior, InspectorElementId,
+    InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, PaintQuad, Pixels,
+    Point, ScrollWheelEvent, ShapedLine, Style, TextRun, UnderlineStyle, Window, fill, point, px,
+    relative, size,
 };
 use zcv_engine::{ByteOffset, DisplayColumn, Line, SelectionSet, TextRange};
 use zcv_language::{BracketPair, HighlightSpan, SyntaxSnapshot};
@@ -376,6 +377,7 @@ impl Element for EditorElement {
                 line_height,
             },
             window,
+            cx,
         );
         let mut ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);
         let autoscrolled = self.editor.update(cx, |editor, _| {
@@ -398,13 +400,14 @@ impl Element for EditorElement {
                     line_height,
                 },
                 window,
+                cx,
             );
             ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);
         }
         let layout = Arc::new(layout);
-        let (mut selections, carets) = layout_selections(&selections, &layout, line_height);
+        let (mut selections, carets) = layout_selections(&selections, &layout, line_height, cx);
         if let Some(pair) = matching_bracket_pair {
-            layout_bracket_pair(pair, &layout, line_height, &mut selections);
+            layout_bracket_pair(pair, &layout, line_height, &mut selections, cx);
         }
         let gutter_hitbox = layout
             .gutter
@@ -495,10 +498,13 @@ impl Element for EditorElement {
         if let Some(gutter) = &prepaint.layout.gutter {
             window.paint_quad(fill(
                 gutter.bounds,
-                color::current().editor_gutter_background,
+                color::current(cx).editor_gutter_background,
             ));
             for bounds in gutter.active_row_bounds(prepaint.layout.text_clip_bounds.right()) {
-                window.paint_quad(fill(bounds, color::current().editor_active_line_background));
+                window.paint_quad(fill(
+                    bounds,
+                    color::current(cx).editor_active_line_background,
+                ));
             }
             if let Some(hitbox) = &prepaint.gutter_hitbox {
                 window.set_cursor_style(gpui::CursorStyle::IBeam, hitbox);
@@ -506,9 +512,14 @@ impl Element for EditorElement {
         }
         if let Some(gutter) = &prepaint.layout.gutter {
             for row in &gutter.rows {
-                row.shaped_line_number
-                    .paint(row.origin, gutter.line_height, window, cx)
-                    .expect("Editor gutter 行号绘制失败");
+                if let Err(error) =
+                    row.shaped_line_number
+                        .paint(row.origin, gutter.line_height, window, cx)
+                {
+                    // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃（对齐 Zed 的降级策略）。
+                    log::error!("Editor gutter 行号绘制失败：{error}");
+                    continue;
+                }
             }
         }
         let show_local_cursors = self.editor.read(cx).show_local_cursors(window, cx);
@@ -521,9 +532,14 @@ impl Element for EditorElement {
                     window.paint_quad(selection);
                 }
                 for line in &prepaint.layout.lines {
-                    line.shaped
-                        .paint(line.origin, prepaint.layout.line_height, window, cx)
-                        .expect("Editor 文本行绘制失败");
+                    if let Err(error) =
+                        line.shaped
+                            .paint(line.origin, prepaint.layout.line_height, window, cx)
+                    {
+                        // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃（对齐 Zed 的降级策略）。
+                        log::error!("Editor 文本行绘制失败：{error}");
+                        continue;
+                    }
                 }
                 if show_local_cursors {
                     for caret in prepaint.carets.drain(..) {
@@ -581,6 +597,7 @@ fn layout_visible_lines(
     presentation: EditorPresentation,
     params: VisibleLineLayoutParams<'_>,
     window: &mut Window,
+    cx: &App,
 ) -> EditorLayout {
     let VisibleLineLayoutParams {
         geometry:
@@ -629,6 +646,8 @@ fn layout_visible_lines(
         .map_or_else(Vec::new, |range| {
             syntax_snapshot.highlights(range, &buffer_snapshot)
         });
+    // capture 索引 → 样式的预展开表：渲染每 run 一次数组索引，不再逐 run 做字符串回退查找。
+    let highlight_styles = syntax::style_table(syntax_snapshot.capture_names().as_ref());
 
     let mut push_line = |row: usize,
                          logical_line: Option<Line>,
@@ -652,6 +671,7 @@ fn layout_visible_lines(
             byte_start,
             display_prefix_len,
             highlights,
+            &highlight_styles,
             presentation.marked_ranges(),
             TextRun {
                 len: text.len(),
@@ -686,9 +706,9 @@ fn layout_visible_lines(
                 len: number.len(),
                 font: text_style.font(),
                 color: if active {
-                    color::current().editor_active_line_number.into()
+                    color::current(cx).editor_active_line_number.into()
                 } else {
-                    color::current().editor_line_number.into()
+                    color::current(cx).editor_line_number.into()
                 },
                 background_color: None,
                 underline: None,
@@ -813,6 +833,7 @@ fn layout_selections(
     selections: &SelectionSet,
     layout: &EditorLayout,
     line_height: Pixels,
+    cx: &App,
 ) -> (Vec<PaintQuad>, Vec<PaintQuad>) {
     let mut selection_quads = Vec::new();
     let mut caret_quads = Vec::new();
@@ -820,7 +841,7 @@ fn layout_selections(
     for selection in selections.as_slice().iter().copied() {
         if selection.is_caret() {
             if let Some(caret) =
-                layout_caret_at_buffer_offset(selection.head(), layout, line_height)
+                layout_caret_at_buffer_offset(selection.head(), layout, line_height, cx)
             {
                 caret_quads.push(caret);
             }
@@ -831,7 +852,7 @@ fn layout_selections(
             .project_text_range(selection.range())
         {
             for range in ranges {
-                layout_projected_range(range, layout, line_height, &mut selection_quads);
+                layout_projected_range(range, layout, line_height, &mut selection_quads, cx);
             }
             continue;
         }
@@ -845,6 +866,7 @@ fn layout_bracket_pair(
     layout: &EditorLayout,
     line_height: Pixels,
     quads: &mut Vec<PaintQuad>,
+    cx: &App,
 ) {
     for range in [pair.open, pair.close] {
         let Ok(range) = TextRange::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
@@ -855,7 +877,7 @@ fn layout_bracket_pair(
             continue;
         };
         for range in projected {
-            layout_projected_range(range, layout, line_height, quads);
+            layout_projected_range(range, layout, line_height, quads, cx);
         }
     }
 }
@@ -865,6 +887,7 @@ fn layout_projected_range(
     layout: &EditorLayout,
     line_height: Pixels,
     selection_quads: &mut Vec<PaintQuad>,
+    cx: &App,
 ) {
     let start = range.start();
     let end = range.end();
@@ -912,7 +935,7 @@ fn layout_projected_range(
                 point(line.origin.x + start_x, line.origin.y),
                 point(line.origin.x + end_x, line.origin.y + line_height),
             ),
-            color::current().editor_selection_background,
+            color::current(cx).editor_selection_background,
         ));
     }
 }
@@ -942,6 +965,7 @@ fn layout_caret_at_buffer_offset(
     offset: ByteOffset,
     layout: &EditorLayout,
     line_height: Pixels,
+    cx: &App,
 ) -> Option<PaintQuad> {
     let display_point = layout
         .display_snapshot
@@ -960,7 +984,7 @@ fn layout_caret_at_buffer_offset(
             ),
             size(px(2.), line_height),
         ),
-        color::current().editor_cursor,
+        color::current(cx).editor_cursor,
     ))
 }
 
@@ -1002,6 +1026,7 @@ fn text_runs(
     global_byte_start: usize,
     display_prefix_len: usize,
     highlights: &[HighlightSpan],
+    highlight_styles: &[HighlightStyle],
     marked_ranges: &[TextRange],
     base: TextRun,
 ) -> Vec<TextRun> {
@@ -1073,7 +1098,11 @@ fn text_runs(
                 .get(highlight_index)
                 .filter(|span| span.range.contains(&global_offset))
             {
-                let style = syntax::style_for(&highlight.capture);
+                // capture 索引查预展开样式表；索引越界视为无样式，不崩溃渲染。
+                let style = highlight_styles
+                    .get(highlight.capture as usize)
+                    .copied()
+                    .unwrap_or_default();
                 if let Some(color) = style.color {
                     run.color = color;
                 }
@@ -1135,6 +1164,7 @@ mod tests {
             0,
             0,
             &[],
+            &[],
             &[TextRange::new(ByteOffset::new(1), ByteOffset::new(7)).unwrap()],
             TextRun {
                 len: text.len(),
@@ -1164,6 +1194,8 @@ mod tests {
             underline: None,
             strikethrough: None,
         };
+        let highlight_styles =
+            syntax::style_table(&[Arc::from("keyword"), Arc::from("text.strong")]);
         let runs = text_runs(
             text,
             100,
@@ -1171,13 +1203,14 @@ mod tests {
             &[
                 HighlightSpan {
                     range: 100..102,
-                    capture: "keyword".into(),
+                    capture: 0,
                 },
                 HighlightSpan {
                     range: 103..109,
-                    capture: "text.strong".into(),
+                    capture: 1,
                 },
             ],
+            &highlight_styles,
             &[],
             base.clone(),
         );
@@ -1191,7 +1224,7 @@ mod tests {
     fn hit_test_uses_the_same_shaped_line_measurement_as_cursor_paint(cx: &mut TestAppContext) {
         let window = cx.add_window(|_, _| Empty);
         window
-            .update(cx, |_, window, _| {
+            .update(cx, |_, window, _cx| {
                 let text = "a你b";
                 let shaped = window.text_system().shape_line(
                     text.into(),
@@ -1242,7 +1275,7 @@ mod tests {
     fn large_buffer_layout_shapes_only_visible_rows(cx: &mut TestAppContext) {
         let window = cx.add_window(|_, _| Empty);
         window
-            .update(cx, |_, window, _| {
+            .update(cx, |_, window, cx| {
                 let text = (0..10_000)
                     .map(|row| format!("line {row}\n"))
                     .collect::<String>();
@@ -1273,6 +1306,7 @@ mod tests {
                         line_height: px(20.),
                     },
                     window,
+                    cx,
                 );
 
                 assert_eq!(
@@ -1294,7 +1328,7 @@ mod tests {
     ) {
         let window = cx.add_window(|_, _| Empty);
         window
-            .update(cx, |_, window, _| {
+            .update(cx, |_, window, cx| {
                 let snapshot =
                     Buffer::scratch("one\ntwo\nthree".to_owned(), BufferConfig::default())
                         .expect("测试 Buffer 应能创建")
@@ -1327,6 +1361,7 @@ mod tests {
                         line_height: px(20.),
                     },
                     window,
+                    cx,
                 );
                 let gutter = layout.gutter.as_ref().expect("Full Editor 应布局 gutter");
 
@@ -1346,7 +1381,7 @@ mod tests {
     fn folded_projection_rows_drive_layout_and_placeholder_hit_testing(cx: &mut TestAppContext) {
         let window = cx.add_window(|_, _| Empty);
         window
-            .update(cx, |_, window, _| {
+            .update(cx, |_, window, cx| {
                 let snapshot = Buffer::scratch(
                     "anchor\nhidden one\nhidden two\nafter".to_owned(),
                     BufferConfig::default(),
@@ -1378,6 +1413,7 @@ mod tests {
                         line_height: px(20.),
                     },
                     window,
+                    cx,
                 );
 
                 assert_eq!(layout.lines.len(), 3);
@@ -1396,7 +1432,7 @@ mod tests {
     fn caret_outside_visible_rows_is_not_painted_on_viewport_edge(cx: &mut TestAppContext) {
         let window = cx.add_window(|_, _| Empty);
         window
-            .update(cx, |_, window, _| {
+            .update(cx, |_, window, cx| {
                 let snapshot = Buffer::scratch(
                     (0..20).map(|_| "x\n").collect::<String>(),
                     BufferConfig::default(),
@@ -1427,9 +1463,10 @@ mod tests {
                         line_height: px(20.),
                     },
                     window,
+                    cx,
                 );
                 let (_, carets) =
-                    layout_selections(&SelectionSet::caret(ByteOffset::ZERO), &layout, px(20.));
+                    layout_selections(&SelectionSet::caret(ByteOffset::ZERO), &layout, px(20.), cx);
 
                 assert!(carets.is_empty());
             })

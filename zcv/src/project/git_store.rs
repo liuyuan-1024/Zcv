@@ -110,15 +110,13 @@ pub(crate) struct GitStore {
 
 impl GitStore {
     pub(crate) fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
-        // 仓库的 working_directory 来自 canonicalize（如 macOS 的 /var → /private/var），
-        // root 同样归一化，保证路径前缀匹配一致。
+        // 仓库的 working_directory 来自 canonicalize，root 同样归一化，保证路径前缀匹配一致。
         let root = canonicalize_path(&root);
         let background = cx.background_executor().clone();
         let (job_sender, job_receiver) = async_channel::unbounded::<GitJob>();
-        // 单 worker 循环（照 fs_task 先例）：顺序处理 job，每个 job 在后台
-        // 线程执行 git 命令，结果提交回 UI 线程。
-        let job_task = cx.spawn(|this: WeakEntity<Self>, async_cx: &mut AsyncApp| {
-            let mut cx = async_cx.clone();
+        // 单 worker 循环（照 fs_task 先例）：顺序处理 job，每个 job 在后台线程执行 git 命令，结果提交回 UI 线程。
+        let job_task = cx.spawn(|this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
+            let mut cx = asynccx.clone();
             async move {
                 while let Ok(job) = job_receiver.recv().await {
                     let Some(this) = this.upgrade() else {
@@ -163,13 +161,8 @@ impl GitStore {
     }
 
     /// 增量刷新：对变更路径重查状态（fs 事件、保存操作后调用）。
-    pub(crate) fn refresh_statuses_for_paths(
-        &mut self,
-        paths: &[PathBuf],
-        _cx: &mut Context<Self>,
-    ) {
-        // 调用方传入的路径可能未 canonicalize（如 macOS 的 /var → /private/var），
-        // 与归一化后的 root 比较前先归一化。
+    pub(crate) fn refresh_statuses_for_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        // 调用方传入的路径可能未 canonicalize，与归一化后的 root 比较前先归一化。
         let paths: Vec<PathBuf> = paths
             .iter()
             .map(|path| canonicalize_path(path))
@@ -181,7 +174,7 @@ impl GitStore {
         self.paths_needing_status_update.extend(paths);
         // 路径累积超过阈值时升级为全量扫描，避免单次增量 job 过大。
         if self.paths_needing_status_update.len() >= MAX_INCREMENTAL_PATHS {
-            self.schedule_scan(_cx);
+            self.schedule_scan(cx);
         } else {
             self.schedule_job(GitJob::RefreshStatuses);
         }
@@ -197,10 +190,9 @@ impl GitStore {
 
     /// 查询目录的聚合状态（对齐 Zed `git_traversal` 的目录摘要）。
     ///
-    /// 目录自身被忽略（`!! dir/` 条目）时直接返回；否则取子项中优先级
-    /// 最高的状态（conflict > deleted > modified > added/untracked）。
-    /// 被忽略的子项（如 `.DS_Store`）不参与聚合——目录不应因内部忽略
-    /// 文件而淡显。
+    /// 目录自身被忽略时直接返回；
+    /// 否则取子项中优先级最高的状态（conflict > deleted > modified > added/untracked）。
+    /// 被忽略的子项不参与聚合——目录不应因内部忽略文件而淡显。
     pub(crate) fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
         let path = canonicalize_path(path);
         let repository = self.repo_for_path(&path)?;

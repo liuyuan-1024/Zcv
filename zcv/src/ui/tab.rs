@@ -5,7 +5,7 @@
 
 use gpui::{
     AnyElement, App, Div, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    Stateful, StatefulInteractiveElement, Window, div, prelude::*, px,
+    Stateful, StatefulInteractiveElement, Window, div, prelude::*,
 };
 
 use zcv_theme::{color, space};
@@ -96,7 +96,6 @@ impl RenderOnce for Tab {
             .bg(bg)
             .border_color(border_color)
             .border_r_1()
-            .when(self.selected, |this| this.pb(px(1.0)))
             .children(self.start_slot)
             .children(self.children)
             .children(self.end_slot)

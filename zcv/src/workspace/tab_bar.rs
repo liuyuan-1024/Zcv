@@ -1,7 +1,6 @@
 //! TabBar —— 标签栏容器组件。
 //!
 //! 负责渲染横向滚动标签区，接受 [`ScrollHandle`] 实现程序化滚动。
-//! 底部始终有一条由 overlay `border_b_1` 绘制的连续底线，选中标签通过 `pb(1px)` 覆盖该线以形成与内容区连接的视觉效果。
 
 use gpui::{AnyElement, Div, ScrollHandle, div, prelude::*};
 
@@ -26,8 +25,6 @@ impl TabBar {
     }
 
     /// 设置外层容器样式并填入子元素，然后渲染。
-    ///
-    /// 内部自动添加一个 absolute 定位的 `border_b_1` overlay 作为连续底线，tabs 渲染在其上层，选中标签通过 `pb(1px)` 覆盖该线。
     pub fn with_bar(
         self,
         cx: &gpui::App,

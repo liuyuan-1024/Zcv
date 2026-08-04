@@ -134,7 +134,7 @@ Editor
 
 Editor 持有：
 
-- 当前 `SelectionSet`。
+- 当前 `SelectionSet`（视图层选区端点以引擎 `Anchor` 表达：任何文本变更——本编辑器编辑、共享 Buffer 的其他 Editor 编辑、外部加载——之后统一通过 PositionMap 批量映射端点，选区自动跟随；消费时按当前 Snapshot 解析为字节偏移。引擎 `Selection` / `SelectionSet` 仍是编辑算法与历史快照使用的纯数据原语）。
 - primary / newest selection 等当前视图状态。
 - 垂直移动的目标列或目标像素位置。
 - SelectionHistory。

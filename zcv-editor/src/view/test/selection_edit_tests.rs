@@ -22,7 +22,7 @@ fn editor_with_text(
         let language_buffer = language_buffer.clone();
         move |cx| {
             let mut editor = Editor::for_buffer(language_buffer, cx);
-            editor.selections = selections;
+            editor.set_selections(selections);
             editor
         }
     });
@@ -60,6 +60,6 @@ fn caret_indent_uses_display_map_tab_column(cx: &mut TestAppContext) {
 
     assert_eq!(buffer_text(&buffer, cx), "\t    x");
     cx.read_entity(&editor, |editor, _| {
-        assert_eq!(editor.selections.primary().head(), ByteOffset::new(5));
+        assert_eq!(editor.selections().primary().head(), ByteOffset::new(5));
     });
 }

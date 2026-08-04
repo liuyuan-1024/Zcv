@@ -13,9 +13,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
-use zcv_git::{
-    DiffStat, FileStatus, GitRepository, discover_git_repository, find_git_repositories,
-};
+use zcv_git::{DiffStat, FileStatus, GitRepository};
+
+use super::worktree::{discover_git_repository, find_git_repositories};
 
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
 const MAX_INCREMENTAL_PATHS: usize = 500;
@@ -59,12 +59,22 @@ pub(crate) struct Repository {
 enum GitJobKey {
     ReloadGitState,
     RefreshStatuses,
+    GitOperation(GitOperationKind),
+}
+
+/// 用户触发的 git 操作（由 top_bar 按钮发起，后台执行）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum GitOperationKind {
+    Fetch,
+    Pull,
+    Push,
 }
 
 #[derive(Clone, Copy)]
 enum GitJob {
     ReloadGitState,
     RefreshStatuses,
+    GitOperation(GitOperationKind),
 }
 
 impl GitJob {
@@ -72,6 +82,7 @@ impl GitJob {
         match self {
             GitJob::ReloadGitState => GitJobKey::ReloadGitState,
             GitJob::RefreshStatuses => GitJobKey::RefreshStatuses,
+            GitJob::GitOperation(operation) => GitJobKey::GitOperation(*operation),
         }
     }
 }
@@ -96,6 +107,7 @@ struct RefreshData {
 enum JobResult {
     Reload(Vec<ReloadScan>),
     Refresh(Vec<(usize, RefreshData)>),
+    GitOperation(anyhow::Result<()>),
 }
 
 pub(crate) struct GitStore {
@@ -158,6 +170,21 @@ impl GitStore {
     pub(crate) fn schedule_scan(&mut self, _cx: &mut Context<Self>) {
         self.paths_needing_status_update.clear();
         self.schedule_job(GitJob::ReloadGitState);
+    }
+
+    /// 后台执行用户触发的 git 操作（fetch/pull/push），完成后重新扫描。
+    ///
+    /// 仓库尚未扫描完成（首次打开项目）时只触发扫描，操作由用户稍后重试。
+    pub(crate) fn run_operation(&mut self, operation: GitOperationKind, cx: &mut Context<Self>) {
+        if self.repositories.is_empty() {
+            log::warn!(
+                "git 仓库尚未就绪，跳过 {:?}（等待首次扫描完成后重试）",
+                operation
+            );
+            self.schedule_scan(cx);
+            return;
+        }
+        self.schedule_job(GitJob::GitOperation(operation));
     }
 
     /// 增量刷新：对变更路径重查状态（fs 事件、保存操作后调用）。
@@ -288,6 +315,21 @@ impl GitStore {
                     grouped_paths,
                 })
             }
+            GitJob::GitOperation(_) => {
+                // 对当前活动仓库执行（与 current_branch 同一选择逻辑）。
+                let repository = self
+                    .repositories
+                    .iter()
+                    .find(|repository| repository.snapshot.branch.is_some())
+                    .or_else(|| self.repositories.first())?
+                    .repository
+                    .clone();
+                Some(JobPreparation {
+                    root,
+                    repositories: vec![repository],
+                    grouped_paths: Vec::new(),
+                })
+            }
         }
     }
 
@@ -355,6 +397,18 @@ impl GitStore {
                 }
                 if statuses_changed {
                     cx.emit(GitStoreEvent::Statuses);
+                }
+            }
+            (GitJob::GitOperation(operation), JobResult::GitOperation(result)) => {
+                match result {
+                    Ok(()) => {
+                        // 操作改变了引用/工作树：重新全量扫描，比对后发出 Head/Statuses 事件。
+                        log::info!("git {:?} 成功", operation);
+                        self.schedule_scan(cx);
+                    }
+                    Err(error) => {
+                        log::warn!("git {:?} 失败：{error:#}", operation);
+                    }
                 }
             }
             _ => {}
@@ -426,6 +480,17 @@ async fn execute_job(
                 refreshed.push((index, refresh_repository_data_sync(&repository, paths)));
             }
             JobResult::Refresh(refreshed)
+        }
+        GitJob::GitOperation(operation) => {
+            let result = repositories
+                .first()
+                .map(|repository| match operation {
+                    GitOperationKind::Fetch => repository.fetch(),
+                    GitOperationKind::Pull => repository.pull(),
+                    GitOperationKind::Push => repository.push(),
+                })
+                .unwrap_or(Ok(()));
+            JobResult::GitOperation(result)
         }
     }
 }
@@ -923,5 +988,65 @@ mod tests {
             store.status_for_directory(&root.join("assets"))
         });
         assert!(status.is_some_and(|status| status.is_modified()));
+    }
+
+    #[gpui::test]
+    fn run_operation_pushes_to_remote(cx: &mut gpui::TestAppContext) {
+        // 工作仓库与裸远程共用 temp_dir，保证测试期间目录存活。
+        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+        let remote = temp_dir.path().join("remote.git");
+        run_in(
+            temp_dir.path(),
+            &["git", "init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        let root = temp_dir.path().join("work");
+        fs::create_dir(&root).expect("应创建工作仓库目录");
+        run_in(&root, &["git", "init", "-q", "-b", "master"]);
+        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+        run_in(&root, &["git", "config", "user.name", "Test User"]);
+        fs::write(root.join("tracked.txt"), "内容\n").expect("应写入初始文件");
+        run_in(&root, &["git", "add", "tracked.txt"]);
+        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+        run_in(
+            &root,
+            &["git", "remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        run_in(&root, &["git", "push", "-q", "-u", "origin", "master"]);
+
+        let git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
+        git_store.update(cx, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked(); // 首次扫描完成，repositories 就绪。
+        let ready = cx.read_entity(&git_store, |store, _| !store.repositories.is_empty());
+        assert!(ready, "首次扫描后 repositories 应就绪");
+
+        // 本地新提交 → run_operation(Push) → 后台 job 推送。
+        fs::write(root.join("new.txt"), "新文件\n").expect("应写入文件");
+        run_in(&root, &["git", "add", "new.txt"]);
+        run_in(&root, &["git", "commit", "-q", "-m", "新提交"]);
+        git_store.update(cx, |store, cx| {
+            store.run_operation(GitOperationKind::Push, cx);
+        });
+        cx.run_until_parked();
+        let job_done = cx.read_entity(&git_store, |store, _| {
+            !store
+                .pending_jobs
+                .contains_key(&GitJobKey::GitOperation(GitOperationKind::Push))
+        });
+        assert!(job_done, "push job 应已完成");
+
+        // 远程应指向本地 HEAD。
+        let rev = |dir: &Path| {
+            String::from_utf8_lossy(
+                &std::process::Command::new("git")
+                    .args(["rev-parse", "master"])
+                    .current_dir(dir)
+                    .output()
+                    .expect("应能读取 HEAD")
+                    .stdout,
+            )
+            .trim()
+            .to_string()
+        };
+        assert_eq!(rev(&remote), rev(&root), "push 后远程应指向本地 HEAD");
     }
 }

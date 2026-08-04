@@ -1,23 +1,33 @@
 //! 项目级状态与服务协调。
 //!
-//! `Project` 管理项目根、文件 Buffer 生命周期和文件系统监听。
+//! `Project` 管理项目根、目录快照（Worktree）、文件 Buffer 生命周期和文件系统监听。
 //! 窗口布局、Pane、Dock 与其他界面状态仍由 `Workspace` 管理。
 
 mod buffer_store;
 mod git_store;
+mod worktree;
 
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
+use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use zcv_engine::{Buffer, BufferLoadError, BufferSaveError};
 use zcv_git::FileStatus;
 use zcv_language::LanguageBuffer;
 
 use self::buffer_store::BufferStore;
 use self::git_store::{GitStore, StatusEntry};
+use self::worktree::Worktree;
 use crate::fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
+
+// 项目树（UI）经 project 模块门面消费 worktree 的领域行模型与路径语义。
+pub(crate) use self::worktree::{
+    TreeRow, new_entry_destination, rename_destination, translate_path,
+};
+// git 操作（top_bar 按钮触发）经 project 门面访问 git_store 的后台执行入口。
+pub(crate) use self::git_store::GitOperationKind;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProjectEvent {
@@ -27,6 +37,8 @@ pub(crate) enum ProjectEvent {
 
 pub(crate) struct Project {
     root: PathBuf,
+    /// 项目目录快照层（遍历/排除规则/路径语义），供项目树消费。
+    worktree: Worktree,
     buffer_store: BufferStore,
     git_store: Entity<GitStore>,
     fs_watcher: Arc<dyn Watcher>,
@@ -60,7 +72,8 @@ impl Project {
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
 
         Self {
-            root,
+            root: root.clone(),
+            worktree: Worktree::new(root),
             buffer_store: BufferStore::new(),
             git_store,
             fs_watcher,
@@ -72,29 +85,46 @@ impl Project {
         &self.root
     }
 
-    pub(crate) fn git_store(&self) -> Entity<GitStore> {
-        self.git_store.clone()
+    /// 更新项目树的扫描排除规则（设置变化时由项目树调用）。
+    pub(crate) fn set_exclusions(&mut self, exclusions: &[String]) {
+        self.worktree.set_exclusions(exclusions);
     }
 
-    /// 在当前窗口内切换到指定项目根。
-    pub(crate) fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) -> anyhow::Result<()> {
-        let root = root.canonicalize()?;
-        anyhow::ensure!(root.is_dir(), "项目根必须是目录：{}", root.display());
-        if root == self.root {
-            return Ok(());
-        }
+    /// 构建项目文件树的可见行模型：worktree 遍历 + git 状态合并。
+    ///
+    /// git 状态在遍历时现查 `GitStore`（目录行聚合、文件行精确），展开产生的新行因此立即携带状态，无需二次补齐。
+    pub(crate) fn tree_rows(&self, expanded: &HashSet<PathBuf>, cx: &App) -> Vec<TreeRow> {
+        self.worktree.visible_entries(expanded, |path, is_dir| {
+            if is_dir {
+                self.git_status_for_directory(path, cx)
+            } else {
+                self.git_status_for_path(path, cx).map(|entry| entry.status)
+            }
+        })
+    }
 
-        self.fs_watcher.add(&root)?;
-        if let Err(error) = self.fs_watcher.remove(&self.root) {
-            log::warn!("无法停止监听旧项目目录 {:?}：{error}", self.root);
-        }
-        self.root = root.clone();
-        self.buffer_store = BufferStore::new();
-        self.git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
-        self.git_store
-            .update(cx, |store, cx| store.schedule_scan(cx));
-        cx.emit(ProjectEvent::RootChanged(root));
-        Ok(())
+    /// 批量查询可见行的 git 状态（git 事件驱动，不重扫目录）。
+    ///
+    /// `rows` 为 (路径, 是否目录) 对：目录行取聚合状态，文件行取精确状态。
+    pub(crate) fn git_statuses_for_rows(
+        &self,
+        rows: &[(PathBuf, bool)],
+        cx: &App,
+    ) -> HashMap<PathBuf, FileStatus> {
+        rows.iter()
+            .filter_map(|(path, is_dir)| {
+                let status = if *is_dir {
+                    self.git_status_for_directory(path, cx)
+                } else {
+                    self.git_status_for_path(path, cx).map(|entry| entry.status)
+                };
+                status.map(|status| (path.clone(), status))
+            })
+            .collect()
+    }
+
+    pub(crate) fn git_store(&self) -> Entity<GitStore> {
+        self.git_store.clone()
     }
 
     pub(crate) fn open_buffer(
@@ -164,6 +194,7 @@ impl Project {
                 log::warn!("无法停止监听旧项目目录 {:?}：{error}", from);
             }
             self.root = to.to_path_buf();
+            self.worktree.set_root(to.to_path_buf());
             cx.emit(ProjectEvent::RootChanged(to.to_path_buf()));
         } else {
             cx.emit(ProjectEvent::EntriesChanged);
@@ -261,20 +292,12 @@ impl Project {
     }
 
     /// 查询文件的 git 状态（不在任何仓库或未跟踪时对应状态）。
-    pub(crate) fn git_status_for_path(
-        &self,
-        path: &Path,
-        cx: &Context<Self>,
-    ) -> Option<StatusEntry> {
+    pub(crate) fn git_status_for_path(&self, path: &Path, cx: &App) -> Option<StatusEntry> {
         self.git_store.read(cx).status_for_path(path).copied()
     }
 
     /// 查询目录的聚合 git 状态（子项中优先级最高的状态）。
-    pub(crate) fn git_status_for_directory(
-        &self,
-        path: &Path,
-        cx: &Context<Self>,
-    ) -> Option<FileStatus> {
+    pub(crate) fn git_status_for_directory(&self, path: &Path, cx: &App) -> Option<FileStatus> {
         self.git_store.read(cx).status_for_directory(path)
     }
 }
@@ -549,7 +572,7 @@ mod tests {
     #[gpui::test]
     #[ignore]
     fn real_fs_watcher_triggers_git_refresh(cx: &mut gpui::TestAppContext) {
-        // 模拟生产的 Project root：set_root 会 canonicalize（macOS 上
+        // 模拟生产的 Project root：生产路径经 canonicalize 归一化（macOS 上
         // /var → /private/var），否则 FSEvents 返回的实际路径与注册路径
         // 前缀不匹配，事件会被 fs_watcher 过滤掉。
         let (root, _temp) = test_git_repo();

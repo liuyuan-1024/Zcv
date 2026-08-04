@@ -1,5 +1,6 @@
-//! git 命令行的同步封装：仓库发现、`.git` 目录解析与命令执行。
+//! git 命令行的同步封装：`.git` 目录解析与命令执行。
 //!
+//! 仓库发现（沿祖先查找 / 项目树内遍历）是项目管理层的决策，由 `zcv` 的 worktree 快照层负责（对齐 Zed：发现逻辑在 worktree crate，git crate 只做命令封装与输出解析）。
 //! 所有方法同步阻塞执行，由调用方负责移入后台线程。
 
 use crate::status::{DiffStat, GitStatus, parse_numstat};
@@ -8,8 +9,6 @@ use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-
-pub const DOT_GIT: &str = ".git";
 
 /// 对单个 git 仓库的命令行封装。
 ///
@@ -31,55 +30,15 @@ pub trait GitRepository: Send + Sync {
 
     /// 批量读取 revision（如 `HEAD:path`、`:path`）的 blob 内容，缺失的 revision 为 `None`。
     fn load_revisions(&self, revs: &[&str]) -> Result<Vec<Option<Vec<u8>>>>;
-}
 
-/// 在 `path` 自身或任一祖先目录中向上查找 `.git` 目录，命中则打开仓库。
-///
-/// 只认 `.git` 目录：worktree/子模块的 `.git` 是文件（`gitdir:` 指针），v1不支持这类布局，向上继续查找外层普通仓库。
-pub fn discover_git_repository(path: &Path) -> Result<Option<RealGitRepository>> {
-    for dir in path.ancestors() {
-        let dot_git = dir.join(DOT_GIT);
-        if dot_git.is_dir() {
-            return RealGitRepository::open(&dot_git).map(Some);
-        }
-    }
-    Ok(None)
-}
+    /// 拉取远程引用（`git fetch`，默认 remote/upstream）。
+    fn fetch(&self) -> Result<()>;
 
-/// 在 `root` 下遍历寻找所有 `.git` 目录，生成嵌套仓库列表。
-///
-/// 找到仓库后跳过其 `.git` 子树（objects/refs 等）不深入；跳过常见重型依赖目录（对齐 Zed 排除名单的行为，v1 内建简化），避免 node_modules、target 这类目录拖慢遍历。
-pub fn find_git_repositories(root: &Path) -> Result<Vec<RealGitRepository>> {
-    fn visit(dir: &Path, repositories: &mut Vec<RealGitRepository>) -> Result<()> {
-        let dot_git = dir.join(DOT_GIT);
-        if dot_git.is_dir() {
-            repositories.push(RealGitRepository::open(&dot_git)?);
-        }
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            // 找到仓库后不再深入其 .git 子树（objects/refs 等）。
-            if path.is_dir()
-                && entry.file_name() != DOT_GIT
-                && !is_heavy_dependency_dir(entry.file_name().as_encoded_bytes())
-            {
-                visit(&path, repositories)?;
-            }
-        }
-        Ok(())
-    }
+    /// 拉取并合并当前分支（`git pull`，默认 upstream）。
+    fn pull(&self) -> Result<()>;
 
-    let mut repositories = Vec::new();
-    visit(root, &mut repositories)?;
-    Ok(repositories)
-}
-
-/// 常见重型依赖目录，其内部的 `.git` 不视为独立仓库。
-fn is_heavy_dependency_dir(name: &[u8]) -> bool {
-    matches!(
-        name,
-        b"node_modules" | b"target" | b"dist" | b"build" | b".venv" | b"venv" | b"__pycache__"
-    )
+    /// 推送当前分支到上游（`git push`，默认 upstream）。
+    fn push(&self) -> Result<()>;
 }
 
 pub struct RealGitRepository {
@@ -223,6 +182,21 @@ impl GitRepository for RealGitRepository {
         Ok(parse_numstat(&output.stdout))
     }
 
+    fn fetch(&self) -> Result<()> {
+        self.run_command(&mut self.build_command(&["fetch"]), "git fetch")?;
+        Ok(())
+    }
+
+    fn pull(&self) -> Result<()> {
+        self.run_command(&mut self.build_command(&["pull"]), "git pull")?;
+        Ok(())
+    }
+
+    fn push(&self) -> Result<()> {
+        self.run_command(&mut self.build_command(&["push"]), "git push")?;
+        Ok(())
+    }
+
     fn load_revisions(&self, revs: &[&str]) -> Result<Vec<Option<Vec<u8>>>> {
         // 单进程批量读取（对齐 Zed repository.rs:1820 的 cat-file --batch）：
         // stdin 逐行写 revision，按 header（`<oid> <type> <size>` 或 `<oid> missing`）读取对应大小的 blob。
@@ -315,7 +289,9 @@ mod tests {
             .args(&args[1..])
             .current_dir(dir)
             .output()
-            .expect("应执行成功");
+            .unwrap_or_else(|error| {
+                panic!("命令 {:?} 在 {:?} 执行失败：{error}", args, dir);
+            });
         assert!(
             output.status.success(),
             "命令 {:?} 失败：{}",
@@ -326,55 +302,7 @@ mod tests {
     }
 
     fn open_repo(root: &Path) -> RealGitRepository {
-        discover_git_repository(root)
-            .expect("discover 应成功")
-            .expect("应发现仓库")
-    }
-
-    #[test]
-    fn discovers_repository_from_any_ancestor() {
-        let (root, _temp) = test_repo();
-        let nested = root.join("src/deep/nested");
-        fs::create_dir_all(&nested).expect("应创建嵌套目录");
-
-        let repo = discover_git_repository(&nested)
-            .expect("discover 应成功")
-            .expect("应发现外层仓库");
-        // open() 会 canonicalize，macOS 上 /var 是 /private/var 的符号链接。
-        assert_eq!(
-            repo.working_directory(),
-            root.canonicalize().expect("应可 canonicalize")
-        );
-    }
-
-    #[test]
-    fn discover_returns_none_outside_repository() {
-        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
-        assert!(
-            discover_git_repository(temp_dir.path())
-                .expect("discover 应成功")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn discover_skips_submodule_git_file() {
-        let (root, _temp) = test_repo();
-        let submodule = root.join("submodule");
-        fs::create_dir_all(&submodule).expect("应创建子模块目录");
-        fs::write(
-            submodule.join(".git"),
-            "gitdir: ../.git/modules/submodule\n",
-        )
-        .expect("应写入 .git 文件");
-
-        let repo = discover_git_repository(&submodule)
-            .expect("discover 应成功")
-            .expect("应向上找到外层仓库");
-        assert_eq!(
-            repo.working_directory(),
-            root.canonicalize().expect("应可 canonicalize")
-        );
+        RealGitRepository::open(&root.join(".git")).expect("open 应成功")
     }
 
     #[test]
@@ -512,31 +440,6 @@ mod tests {
     }
 
     #[test]
-    fn find_git_repositories_finds_nested_repos_and_skips_heavy_dirs() {
-        let (root, _temp) = test_repo();
-        fs::create_dir_all(root.join("nested")).expect("应创建嵌套目录");
-        run_in(&root.join("nested"), &["git", "init", "-q"]);
-        fs::create_dir_all(root.join("node_modules/pkg")).expect("应创建依赖目录");
-        run_in(&root.join("node_modules/pkg"), &["git", "init", "-q"]);
-
-        let repos = find_git_repositories(&root).expect("find 应成功");
-        // 根仓库 + 嵌套仓库；node_modules 内的仓库被排除。
-        assert_eq!(repos.len(), 2);
-        let work_dirs: Vec<_> = repos.iter().map(|repo| repo.working_directory()).collect();
-        // open() 会 canonicalize（macOS 上 /var 是 /private/var 的符号链接）。
-        assert!(work_dirs.contains(&root.canonicalize().expect("应可 canonicalize").as_path()));
-        assert!(
-            work_dirs.contains(
-                &root
-                    .join("nested")
-                    .canonicalize()
-                    .expect("应可 canonicalize")
-                    .as_path()
-            )
-        );
-    }
-
-    #[test]
     fn status_does_not_touch_index_mtime() {
         // --no-optional-locks 生效：扫描不应回写 index（racy-git 写回），
         // 否则会产生"扫描 → fs 事件 → 再扫描"的自触发循环。
@@ -652,6 +555,87 @@ mod tests {
                 .get(Path::new("ignored.log"))
                 .expect("路径参数下忽略文件应有条目")
                 .is_ignored()
+        );
+    }
+
+    /// 创建「本地裸远程 + 已推送初始提交的工作仓库」对，返回 (工作仓库根, 裸远程根, 临时目录句柄)。
+    ///
+    /// 工作仓库与裸远程共用同一个 temp_dir，保证返回后目录仍存活。
+    fn test_repo_with_remote() -> (PathBuf, PathBuf, TempDir) {
+        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+        let remote = temp_dir.path().join("remote.git");
+        run_in(
+            temp_dir.path(),
+            &["git", "init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        let root = temp_dir.path().join("work");
+        std::fs::create_dir(&root).expect("应创建工作仓库目录");
+        run_in(&root, &["git", "init", "-q", "-b", "master"]);
+        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+        run_in(&root, &["git", "config", "user.name", "Test User"]);
+        std::fs::write(root.join("tracked.txt"), "第一行\n第二行\n").expect("应写入初始文件");
+        run_in(&root, &["git", "add", "tracked.txt"]);
+        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+        run_in(
+            &root,
+            &["git", "remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        run_in(&root, &["git", "push", "-q", "-u", "origin", "master"]);
+        (root, remote, temp_dir)
+    }
+
+    #[test]
+    fn fetch_pull_push_work_against_remote() {
+        let (root, remote, _temp) = test_repo_with_remote();
+        let repo = open_repo(&root);
+
+        // 制造"本地领先远程一个提交"：提交后 push，再回退本地 HEAD。
+        std::fs::write(root.join("pushed.txt"), "推送内容\n").expect("应写入文件");
+        run_in(&root, &["git", "add", "pushed.txt"]);
+        run_in(&root, &["git", "commit", "-q", "-m", "待推送提交"]);
+        run_in(&root, &["git", "push", "-q", "origin", "master"]);
+        run_in(&root, &["git", "reset", "-q", "--hard", "HEAD~1"]);
+
+        // fetch：本地引用更新为远程状态，工作树不动。
+        repo.fetch().expect("fetch 应成功");
+        let ahead = run_in(
+            &root,
+            &["git", "rev-list", "--count", "HEAD..origin/master"],
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&ahead.stdout).trim(),
+            "1",
+            "fetch 后本地应落后远程一个提交"
+        );
+
+        // pull：合并远程提交，本地追上远程。
+        repo.pull().expect("pull 应成功");
+        let behind = run_in(
+            &root,
+            &["git", "rev-list", "--count", "HEAD..origin/master"],
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&behind.stdout).trim(),
+            "0",
+            "pull 后本地应追上远程"
+        );
+        assert!(
+            root.join("pushed.txt").exists(),
+            "pull 应带下远程提交的文件"
+        );
+
+        // push：把新提交推送到远程。
+        std::fs::write(root.join("again.txt"), "再推一次\n").expect("应写入文件");
+        run_in(&root, &["git", "add", "again.txt"]);
+        run_in(&root, &["git", "commit", "-q", "-m", "再推一次"]);
+        repo.push().expect("push 应成功");
+        // 从远程裸仓库验证提交已到达（bare 仓库 HEAD 指向 master）。
+        let remote_head = run_in(&remote, &["git", "rev-parse", "master"]);
+        let local_head = run_in(&root, &["git", "rev-parse", "HEAD"]);
+        assert_eq!(
+            String::from_utf8_lossy(&remote_head.stdout).trim(),
+            String::from_utf8_lossy(&local_head.stdout).trim(),
+            "push 后远程应指向本地 HEAD"
         );
     }
 }

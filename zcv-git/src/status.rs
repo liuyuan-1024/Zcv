@@ -218,7 +218,7 @@ impl DiffStat {
 ///
 /// 二进制文件的行数计为 `-`，解析失败时跳过该行（与 Zed 行为一致）。
 /// 路径按原始字节解析，兼容非 UTF-8。
-pub fn parse_numstat(output: &[u8]) -> HashMap<PathBuf, DiffStat> {
+pub(crate) fn parse_numstat(output: &[u8]) -> HashMap<PathBuf, DiffStat> {
     let mut entries = HashMap::new();
     for entry in output.split(|&byte| byte == b'\0') {
         if entry.is_empty() {

@@ -2,15 +2,16 @@
 //!
 //! 具体视图实现 [`Item`]，`Entity<T>` 通过统一桥接获得 [`ItemHandle`]，Pane 因而可以持有编辑器、欢迎页等异构视图。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::{
-    AnyView, App, Entity, EntityId, EventEmitter, FocusHandle, Focusable, Render, SharedString,
-    Subscription, Window,
+    AnyView, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable, Render,
+    SharedString, Subscription, Window,
 };
+use zcv_engine::Buffer;
 
 use super::toolbar::ToolbarItemLocation;
-use zcv_editor::{Editor, EditorEvent};
+use zcv_editor::{Editor, EditorEvent, SoftWrap};
 
 // ═══ ItemEvent ═══════════════════════════════════════════════════════
 
@@ -54,6 +55,23 @@ pub(crate) trait Item:
     fn breadcrumbs(&self, _cx: &App) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
         None
     }
+
+    /// 设置软换行策略（Editor 实现；其他 item 忽略）。
+    fn set_soft_wrap(
+        &mut self,
+        _soft_wrap: SoftWrap,
+        _preferred_line_length: usize,
+        _cx: &mut Context<Self>,
+    ) {
+    }
+
+    /// 文件/目录重命名后迁移自身路径状态（Editor 实现；其他 item 忽略）。
+    fn rename_path(&mut self, _from: &Path, _to: &Path, _cx: &mut Context<Self>) {}
+
+    /// 底层文本 Buffer（Editor 实现；保存等需要文本模型的场景使用）。
+    fn buffer(&self, _cx: &App) -> Option<Entity<Buffer>> {
+        None
+    }
 }
 
 // ═══ ItemHandle trait ════════════════════════════════════════════════
@@ -77,6 +95,15 @@ pub(crate) trait ItemHandle: Send + 'static {
     fn is_dirty(&self, cx: &App) -> bool;
     /// 关联文件路径（如果有）。
     fn file_path(&self, cx: &App) -> Option<PathBuf>;
+
+    /// 设置软换行策略（Editor 实现；其他 item 忽略）。
+    fn set_soft_wrap(&self, soft_wrap: SoftWrap, preferred_line_length: usize, cx: &mut App);
+
+    /// 文件/目录重命名后迁移自身路径状态（Editor 实现；其他 item 忽略）。
+    fn rename_path(&self, from: &Path, to: &Path, cx: &mut App);
+
+    /// 底层文本 Buffer（Editor 实现；保存等需要文本模型的场景使用）。
+    fn buffer(&self, cx: &App) -> Option<Entity<Buffer>>;
 
     /// 订阅 item 发出的 [`ItemEvent`]。
     fn subscribe_to_item_events(
@@ -158,6 +185,20 @@ impl<T: Item> ItemHandle for Entity<T> {
     fn breadcrumbs(&self, cx: &App) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
         self.read(cx).breadcrumbs(cx)
     }
+
+    fn set_soft_wrap(&self, soft_wrap: SoftWrap, preferred_line_length: usize, cx: &mut App) {
+        self.update(cx, |item, cx| {
+            item.set_soft_wrap(soft_wrap, preferred_line_length, cx)
+        });
+    }
+
+    fn rename_path(&self, from: &Path, to: &Path, cx: &mut App) {
+        self.update(cx, |item, cx| item.rename_path(from, to, cx));
+    }
+
+    fn buffer(&self, cx: &App) -> Option<Entity<Buffer>> {
+        self.read(cx).buffer(cx)
+    }
 }
 
 // ═══ Editor Item 实现 ═══════════════════════════════════════════════
@@ -200,6 +241,37 @@ impl Item for Editor {
             .and_then(|root| path.strip_prefix(root).ok())
             .unwrap_or(&path);
         Some((vec![relative.to_string_lossy().into_owned().into()], None))
+    }
+
+    fn set_soft_wrap(
+        &mut self,
+        soft_wrap: SoftWrap,
+        preferred_line_length: usize,
+        cx: &mut Context<Self>,
+    ) {
+        // 全限定调用 inherent 方法，避免与 Item::set_soft_wrap 同名歧义。
+        Editor::set_soft_wrap(self, soft_wrap, preferred_line_length, cx);
+    }
+
+    fn rename_path(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
+        let (Some(path), Some(project_root)) = (
+            self.file_path(cx),
+            self.project_root().map(Path::to_path_buf),
+        ) else {
+            return;
+        };
+        let Ok(suffix) = path.strip_prefix(from) else {
+            return;
+        };
+        let renamed_path = to.join(suffix);
+        let renamed_root = project_root
+            .strip_prefix(from)
+            .map_or(project_root.clone(), |suffix| to.join(suffix));
+        self.set_file_path(renamed_path, renamed_root, cx);
+    }
+
+    fn buffer(&self, _cx: &App) -> Option<Entity<Buffer>> {
+        Some(self.buffer())
     }
 }
 

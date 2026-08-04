@@ -41,15 +41,16 @@ use gpui::{
 };
 
 use self::dock::render_body as render_layout_body;
+use crate::active_buffer_language::ActiveBufferLanguage;
+use crate::cursor_position::CursorPosition;
 use crate::diagnostics::DiagnosticsButton;
-use crate::go_to_line::CursorPosition;
 use crate::keymap;
-use crate::language_selector::ActiveBufferLanguage;
 use crate::language_tools::LspButton;
-use crate::project::{Project, ProjectEvent};
+use crate::open_project_window;
+use crate::project::{GitOperationKind, Project, ProjectEvent};
 use crate::project_search::ProjectSearchButton;
 use crate::project_tree::{OnCreate, OnOpenFile, OnRename, OnTrash, ProjectTree};
-use crate::recent_projects::{self, OnProjectSelected, ToggleProjectPicker};
+use crate::recent_projects::{OnProjectSelected, ToggleProjectPicker};
 use crate::settings::SettingsStore;
 use zcv_theme::{color, typography};
 
@@ -275,6 +276,16 @@ impl Workspace {
                 }
             });
 
+        // git 分支显示：GitStore 事件（首次扫描、外部 checkout、拉取操作）到达时刷新 top_bar。
+        let git_store = project.read(cx).git_store();
+        let git_subscription = cx.subscribe(&git_store, |workspace, store, _event, cx| {
+            let branch = store.read(cx).current_branch().map(str::to_string);
+            workspace.top_bar.update(cx, |bar, cx| {
+                bar.set_branch(branch);
+                cx.notify();
+            });
+        });
+
         let pane_subscription = cx.subscribe(&pane, |workspace, pane, event, cx| {
             if matches!(
                 event,
@@ -322,6 +333,7 @@ impl Workspace {
             drag_notify,
             _subscriptions: vec![
                 project_subscription,
+                git_subscription,
                 pane_subscription,
                 settings_subscription,
                 appearance_subscription,
@@ -368,11 +380,24 @@ impl Workspace {
         window.refresh();
     }
 
-    fn handle_git_fetch(_: &top_bar::GitFetch, _: &mut Window, _: &mut gpui::App) {
-        println!("fetch");
+    /// 后台执行 git 操作（fetch/pull/push），完成后 git_store 自动重新扫描。
+    fn run_git_operation(&mut self, operation: GitOperationKind, cx: &mut Context<Self>) {
+        self.project.update(cx, |project, cx| {
+            project.git_store().update(cx, |store, cx| {
+                store.run_operation(operation, cx);
+            });
+        });
+    }
+
+    fn handle_git_fetch(&mut self, _: &top_bar::GitFetch, _: &mut Window, cx: &mut Context<Self>) {
+        self.run_git_operation(GitOperationKind::Fetch, cx);
     }
 
     /// 在当前窗口切换到指定项目。
+    /// 切换项目：以新窗口打开目标项目并关闭当前窗口（替换语义，不保留旧项目窗口）。
+    ///
+    /// 先开新窗口、成功后关旧窗口：打开失败时当前窗口原样保留。
+    /// 项目与窗口生命周期绑定，旧项目随窗口释放，无需在当前窗口内换根。
     pub(crate) fn switch_project(
         &mut self,
         path: &str,
@@ -380,35 +405,19 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let root = PathBuf::from(path);
-        let result = self
-            .project
-            .update(cx, |project, cx| project.set_root(root, cx));
-        if let Err(error) = result {
-            eprintln!("切换项目失败（{path}）：{error}");
+        if let Err(error) = open_project_window(root, cx) {
+            eprintln!("打开项目失败（{path}）：{error}");
             return;
         }
-        // 关闭旧项目遗留的标签，旧 buffer 随 Item 释放。
-        self.pane.update(cx, |pane, cx| pane.close_all(window, cx));
-        let root = self.project.read(cx).root().to_path_buf();
-        let label = root
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        self.top_bar.update(cx, |bar, cx| {
-            bar.project_picker.update(cx, |picker, _cx| {
-                picker.set_current_label(label);
-            });
-        });
-        recent_projects::add_to_recent(&root.to_string_lossy());
-        window.refresh();
+        window.remove_window();
     }
 
-    fn handle_git_pull(_: &top_bar::GitPull, _: &mut Window, _: &mut gpui::App) {
-        println!("pull");
+    fn handle_git_pull(&mut self, _: &top_bar::GitPull, _: &mut Window, cx: &mut Context<Self>) {
+        self.run_git_operation(GitOperationKind::Pull, cx);
     }
 
-    fn handle_git_push(_: &top_bar::GitPush, _: &mut Window, _: &mut gpui::App) {
-        println!("push");
+    fn handle_git_push(&mut self, _: &top_bar::GitPush, _: &mut Window, cx: &mut Context<Self>) {
+        self.run_git_operation(GitOperationKind::Push, cx);
     }
 
     fn handle_open_settings(
@@ -425,17 +434,19 @@ impl Workspace {
 
     fn handle_save(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
         let pane = self.pane.clone();
-        let (editor, path) = {
+        let (buffer, path) = {
             let pane = pane.read(cx);
-            let Some(editor) = pane.active_editor() else {
+            let Some(item) = pane.active_item() else {
+                return;
+            };
+            let Some(buffer) = item.buffer(cx) else {
                 return;
             };
             let Some(path) = pane.active_path(cx) else {
                 return;
             };
-            (editor, path)
+            (buffer, path)
         };
-        let buffer = editor.read(cx).buffer();
 
         let result = self
             .project
@@ -524,8 +535,6 @@ impl Workspace {
         if let Some(item_id) = pane_entity.read(cx).active {
             pane_entity.update(cx, |pane, cx| {
                 pane.close_tab(item_id, window, cx);
-                cx.emit(pane::PaneEvent::Removed { item_id });
-                cx.notify();
             });
             if let Some(item) = pane_entity.read(cx).active_item() {
                 window.focus(&item.item_focus_handle(cx));
@@ -666,9 +675,9 @@ impl Render for Workspace {
             .on_action(handle_minimize)
             .on_action(handle_toggle_maximize)
             .on_action(cx.listener(Self::handle_close_tab))
-            .on_action(Self::handle_git_fetch)
-            .on_action(Self::handle_git_pull)
-            .on_action(Self::handle_git_push)
+            .on_action(cx.listener(Self::handle_git_fetch))
+            .on_action(cx.listener(Self::handle_git_pull))
+            .on_action(cx.listener(Self::handle_git_push))
             .on_action(cx.listener(Self::handle_open_settings))
             .on_action(cx.listener(Self::handle_save))
             .on_action(cx.listener(Self::handle_toggle_project_tree))

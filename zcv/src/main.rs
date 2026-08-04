@@ -1,12 +1,12 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod active_buffer_language;
 mod assets;
 mod breadcrumbs;
+mod cursor_position;
 mod diagnostics;
 mod fs_watcher;
-mod go_to_line;
 mod keymap;
-mod language_selector;
 mod language_tools;
 mod paths;
 mod project;
@@ -52,8 +52,8 @@ fn main() {
         });
 }
 
-/// 打开一个项目窗口（主窗口与未来的「新窗口打开」入口共用）。
-fn open_project_window(root: PathBuf, cx: &mut App) -> anyhow::Result<()> {
+/// 打开一个项目窗口（主窗口与「切换项目」的新窗口入口共用）。
+pub(crate) fn open_project_window(root: PathBuf, cx: &mut App) -> anyhow::Result<()> {
     recent_projects::add_to_recent(&root.to_string_lossy());
 
     let bounds = Bounds::centered(None, size(px(1200.0), px(900.0)), cx);

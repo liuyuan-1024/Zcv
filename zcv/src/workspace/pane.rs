@@ -43,6 +43,9 @@ const TAB_HOVER_GROUP: &str = "pane.tab";
 // ═══ DraggedTab —— 拖拽载荷 + 幽灵视图 ═════════════════════════════
 
 /// 拖拽过程中传递的数据，同时也是拖拽时跟随鼠标的幽灵视图。
+///
+/// 仅支持同 Pane 内拖拽（drop 目标绑定在当前 Pane 的标签容器上）。
+/// `pane` 引用只用于幽灵视图读取标签数据，不参与 drop 的跨 Pane 判断（跨 Pane 拖拽在 v1 不支持）。
 #[derive(Clone)]
 pub(crate) struct DraggedTab {
     pub pane: Entity<Pane>,
@@ -53,17 +56,23 @@ pub(crate) struct DraggedTab {
 
 impl Render for DraggedTab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (title, is_dirty) = self
+        let (title, is_dirty, icon_path) = self
             .pane
             .read(cx)
             .tabs
             .get(self.ix)
-            .map(|item| (item.tab_content_text(cx), item.is_dirty(cx)))
+            .map(|item| {
+                (
+                    item.tab_content_text(cx),
+                    item.is_dirty(cx),
+                    item.file_path(cx),
+                )
+            })
             .unwrap_or_default();
 
         Tab::new("")
             .selected(self.is_active)
-            .start_slot(file_icon())
+            .start_slot(file_icon(icon_path.as_deref()))
             .end_slot(tab_end_glyph(&self.pane, self.item_id, is_dirty, cx))
             .child(title)
     }
@@ -154,40 +163,16 @@ impl Pane {
         preferred_line_length: usize,
         cx: &mut Context<Self>,
     ) {
+        // 软换行是 Editor 能力，经 ItemHandle 接口分发，Pane 不感知具体 item 类型。
         for item in &self.tabs {
-            if let Some(editor) = item.downcast::<Editor>() {
-                editor.update(cx, |editor, cx| {
-                    editor.set_soft_wrap(soft_wrap, preferred_line_length, cx)
-                });
-            }
+            item.set_soft_wrap(soft_wrap, preferred_line_length, cx);
         }
     }
 
     /// 将已打开编辑器的文件路径随文件或目录重命名一起迁移。
     pub(crate) fn rename_path(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
         for item in &self.tabs {
-            let Some(editor) = item.downcast::<Editor>() else {
-                continue;
-            };
-            let (Some(path), Some(project_root)) = ({
-                let editor = editor.read(cx);
-                (
-                    editor.file_path(cx),
-                    editor.project_root().map(Path::to_path_buf),
-                )
-            }) else {
-                continue;
-            };
-            let Ok(suffix) = path.strip_prefix(from) else {
-                continue;
-            };
-            let renamed_path = to.join(suffix);
-            let renamed_root = project_root
-                .strip_prefix(from)
-                .map_or(project_root.clone(), |suffix| to.join(suffix));
-            editor.update(cx, |editor, cx| {
-                editor.set_file_path(renamed_path, renamed_root, cx);
-            });
+            item.rename_path(from, to, cx);
         }
         cx.notify();
     }
@@ -198,15 +183,14 @@ impl Pane {
             .tabs
             .iter()
             .filter_map(|item| {
-                let editor = item.downcast::<Editor>()?;
-                let open_path = editor.read(cx).file_path(cx)?;
+                let open_path = item.file_path(cx)?;
                 open_path.strip_prefix(path).is_ok().then(|| item.item_id())
             })
             .collect();
+        // close_tab 逐个发射 Removed，订阅方（项目树高亮）自动刷新。
         for item_id in closed {
             self.close_tab(item_id, window, cx);
         }
-        cx.notify();
     }
 
     /// 激活指定 tab，并滚入视图。
@@ -252,23 +236,24 @@ impl Pane {
         self.scroll_to_tab(prev);
     }
 
-    /// 关闭指定 tab，自动切换到下一个。
+    /// 关闭指定 tab，激活原位置的下一个；统一在此发射 `Removed` 事件。
+    ///
+    /// 关闭的是最后一项时激活新的最后一项；
+    /// 所有关闭路径（快捷键、关闭按钮、删除文件）都收敛到本方法，订阅方只需监听 Pane 事件。
     pub fn close_tab(&mut self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(pos) = self.tabs.iter().position(|item| item.item_id() == item_id) {
             self.tabs.remove(pos);
             if self.active == Some(item_id) {
-                self.active = self.tabs.last().map(|item| item.item_id());
+                self.active = self
+                    .tabs
+                    .get(pos)
+                    .map(|item| item.item_id())
+                    .or_else(|| self.tabs.last().map(|item| item.item_id()));
                 self.update_toolbar(window, cx);
             }
+            cx.emit(PaneEvent::Removed { item_id });
+            cx.notify();
         }
-    }
-
-    /// 关闭全部标签（切换项目时调用，旧项目的 Editor 随 Item 释放）。
-    pub(crate) fn close_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.tabs.clear();
-        self.active = None;
-        self.update_toolbar(window, cx);
-        cx.notify();
     }
 
     /// 当前活动标签的 ItemHandle。
@@ -327,7 +312,7 @@ impl Pane {
         self.tabs.insert(to_ix.min(self.tabs.len()), tab);
     }
 
-    /// 处理标签拖拽放置。
+    /// 处理标签拖拽放置（drop 目标在本 Pane 内，天然同 Pane）。
     pub(crate) fn handle_tab_drop(
         &mut self,
         dragged: &DraggedTab,
@@ -335,10 +320,6 @@ impl Pane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // 暂只支持同 Pane 拖拽
-        if dragged.pane.entity_id() != cx.entity_id() {
-            return;
-        }
         self.move_tab(dragged.ix, target_ix);
         self.update_toolbar(window, cx);
         // 保持或恢复激活状态
@@ -502,7 +483,7 @@ fn render_tab(
 
     Tab::new(("tab", item_id))
         .selected(is_active)
-        .start_slot(file_icon())
+        .start_slot(file_icon(item.file_path(cx).as_deref()))
         .end_slot(tab_end_glyph(&close_entity, item_id, is_dirty, cx))
         .child(item.tab_content_text(cx))
         .group(TAB_HOVER_GROUP)
@@ -569,9 +550,15 @@ fn render_tab_bar_drop_target(
         })
 }
 
-/// 文件类型图标。
-fn file_icon() -> impl gpui::IntoElement {
-    SvgIcon::new("icons/files/file.svg")
+/// 按路径渲染文件类型图标：目录用 folder 图标，文件用通用 file 图标。
+///
+/// 未来扩展按扩展名区分的图标库时，在本函数内追加映射即可。
+fn file_icon(path: Option<&Path>) -> impl gpui::IntoElement {
+    let icon = match path {
+        Some(path) if path.is_dir() => "icons/files/folder.svg",
+        _ => "icons/files/file.svg",
+    };
+    SvgIcon::new(icon)
 }
 
 /// 标签关闭按钮（叉 glyph）。
@@ -588,8 +575,6 @@ fn close_glyph(
             let pane_focus = entity.read(cx).focus.clone();
             let focus = entity.update(cx, |pane, cx| {
                 pane.close_tab(item_id, window, cx);
-                cx.emit(PaneEvent::Removed { item_id });
-                cx.notify();
                 pane.active_item().map(|item| item.item_focus_handle(cx))
             });
             window.focus(&focus.unwrap_or(pane_focus));
@@ -676,6 +661,9 @@ fn render_content(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use gpui::{Context, Render, TestAppContext, Window, div, prelude::*};
     use zcv_engine::{Buffer, BufferConfig};
 
@@ -833,5 +821,50 @@ mod tests {
             assert_eq!(pane.tabs.len(), 1);
             assert_eq!(pane.tabs[0].tab_content_text(cx).as_ref(), "solo.txt");
         });
+    }
+
+    #[gpui::test]
+    fn every_close_path_emits_removed(cx: &mut TestAppContext) {
+        // 回归：三条关闭路径（close_tab 直接关闭、删除文件触发）都必须发射 Removed，
+        // 订阅方（项目树高亮）才能刷新。
+        let buffer = test_buffer(cx, "内容");
+        let pane = cx.new(Pane::new);
+        open_file_in_test(cx, &pane, PathBuf::from("a.txt"), buffer);
+        let item_id = cx.read_entity(&pane, |pane, _| pane.active.unwrap());
+
+        let removed = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&removed);
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&pane, move |_, event, _| {
+                if matches!(event, PaneEvent::Removed { .. }) {
+                    observed.borrow_mut().push(*event);
+                }
+            })
+        });
+
+        // 路径 1：close_tab 直接关闭 → Removed。
+        cx.add_window_view(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.close_tab(item_id, window, cx);
+            });
+            TestView
+        });
+        assert_eq!(removed.borrow().len(), 1, "close_tab 应发射 Removed");
+
+        // 路径 2：删除文件触发 remove_path 关闭 → Removed。
+        let buffer = test_buffer(cx, "内容");
+        open_file_in_test(cx, &pane, PathBuf::from("b.txt"), buffer);
+        cx.add_window_view(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.remove_path(Path::new("b.txt"), window, cx);
+            });
+            TestView
+        });
+        assert_eq!(
+            removed.borrow().len(),
+            2,
+            "remove_path 关闭 tab 应发射 Removed"
+        );
+        cx.read_entity(&pane, |pane, _| assert!(pane.tabs.is_empty()));
     }
 }

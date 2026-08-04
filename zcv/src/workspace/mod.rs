@@ -301,6 +301,13 @@ impl Workspace {
                 cx.notify();
             });
 
+        // 系统外观（深色/浅色）变化时重新应用主题。
+        let appearance_subscription = window.observe_window_appearance(|window, cx| {
+            let settings = SettingsStore::get(cx);
+            settings.theme.apply(cx, Some(window));
+            window.refresh();
+        });
+
         Self {
             focus,
             pane,
@@ -317,6 +324,7 @@ impl Workspace {
                 project_subscription,
                 pane_subscription,
                 settings_subscription,
+                appearance_subscription,
             ],
         }
     }

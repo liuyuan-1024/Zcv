@@ -4,7 +4,7 @@ use gpui::{AppContext, Context, Entity, Task};
 use zcv_engine::{Buffer, Snapshot, TextSubscription};
 
 use crate::language::language_name_for_file;
-use crate::{SyntaxMap, SyntaxSnapshot};
+use crate::syntax_map::{SyntaxMap, SyntaxSnapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParseStatus {

@@ -68,6 +68,10 @@ pub struct SyntaxMap {
     /// 最近一次解析安装的 capture 全局表（见 `SyntaxSnapshot::rebuild_capture_table`）。
     capture_names: Arc<[Arc<str>]>,
     capture_index_by_name: Arc<HashMap<Arc<str>, u32>>,
+    /// 全量语法高亮（reparse 时后台构建；渲染侧只做范围切片，不再树遍历）。
+    highlighted_spans: Arc<[HighlightSpan]>,
+    /// 全量高亮对应的 buffer 版本（插值推进后旧缓存失效，由渲染侧检查）。
+    highlighted_version: BufferVersion,
 }
 
 /// 与一个 Buffer 版本绑定的不可变语法快照。
@@ -82,6 +86,10 @@ pub struct SyntaxSnapshot {
     capture_names: Arc<[Arc<str>]>,
     /// capture 名 -> 全局索引的反查表。
     capture_index_by_name: Arc<HashMap<Arc<str>, u32>>,
+    /// 全量语法高亮（reparse 时后台构建；渲染侧只做范围切片，不再树遍历）。
+    highlighted_spans: Arc<[HighlightSpan]>,
+    /// 全量高亮对应的 buffer 版本（插值推进后旧缓存失效，由渲染侧检查）。
+    highlighted_version: BufferVersion,
 }
 
 #[derive(Clone)]
@@ -103,6 +111,8 @@ impl SyntaxMap {
             update_count: 0,
             capture_names: Arc::from([]),
             capture_index_by_name: Arc::new(HashMap::new()),
+            highlighted_spans: Arc::from([]),
+            highlighted_version: snapshot.version(),
         }
     }
 
@@ -125,6 +135,8 @@ impl SyntaxMap {
         self.injections.clear();
         self.capture_names = Arc::from([]);
         self.capture_index_by_name = Arc::new(HashMap::new());
+        self.highlighted_spans = Arc::from([]);
+        self.highlighted_version = snapshot.version();
         self.parsed_version = snapshot.version();
         self.interpolated_version = snapshot.version();
         self.update_count += 1;
@@ -182,6 +194,8 @@ impl SyntaxMap {
             update_count: self.update_count,
             capture_names: Arc::clone(&self.capture_names),
             capture_index_by_name: Arc::clone(&self.capture_index_by_name),
+            highlighted_spans: Arc::clone(&self.highlighted_spans),
+            highlighted_version: self.highlighted_version,
         }
     }
 
@@ -196,6 +210,8 @@ impl SyntaxMap {
         self.injections = parsed.injections;
         self.capture_names = parsed.capture_names;
         self.capture_index_by_name = parsed.capture_index_by_name;
+        self.highlighted_spans = parsed.highlighted_spans;
+        self.highlighted_version = parsed.highlighted_version;
         self.parsed_version = parsed.version;
         self.update_count += 1;
         true
@@ -448,6 +464,8 @@ impl SyntaxSnapshot {
         let Some(language) = self.language.as_ref() else {
             self.tree = None;
             self.injections.clear();
+            self.highlighted_spans = Arc::from([]);
+            self.highlighted_version = snapshot.version();
             self.version = snapshot.version();
             return self;
         };
@@ -465,6 +483,10 @@ impl SyntaxSnapshot {
         }
         self.version = snapshot.version();
         self.rebuild_capture_table();
+        // 全量高亮在解析线程构建：渲染侧只做范围切片，不再树遍历。
+        self.highlighted_spans =
+            Arc::from(self.highlights(0..snapshot.len_bytes().get(), snapshot));
+        self.highlighted_version = self.version;
         self
     }
 
@@ -473,6 +495,16 @@ impl SyntaxSnapshot {
     /// 渲染侧用它对每个 capture index 做一次数组索引取样式，不再逐 run 做字符串回退查找。
     pub fn capture_names(&self) -> Arc<[Arc<str>]> {
         Arc::clone(&self.capture_names)
+    }
+
+    /// 全量语法高亮（版本绑定：与 buffer 版本一致时渲染侧可直接切片）。
+    pub fn highlighted_spans(&self) -> Arc<[HighlightSpan]> {
+        Arc::clone(&self.highlighted_spans)
+    }
+
+    /// 全量高亮对应的 buffer 版本（插值推进后旧缓存失效，由渲染侧检查）。
+    pub fn highlighted_version(&self) -> BufferVersion {
+        self.highlighted_version
     }
 
     /// 重建跨语言 capture 名字全局表：主语言与注入语言的名字合并去重，

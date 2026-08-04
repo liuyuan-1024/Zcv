@@ -149,7 +149,7 @@ pub enum AnchorError {
     },
 }
 
-/// VersionedRangeSet / VersionedResult 版本绑定与 remap 相关错误。
+/// VersionedResult 版本绑定与 remap 相关错误。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VersionedResultError {
     /// 调用方传入的 DeltaEvent::old_version() 与 VersionedResult 当前绑定版本不一致。
@@ -162,10 +162,6 @@ pub enum VersionedResultError {
     /// remap 闭包判定 payload 无法在新版本上保持语义；reason 由调用方填写。
     #[error("VersionedResult remap 失败：{reason}")]
     RemapFailed { reason: String },
-
-    /// 单个 VersionedRangeSet 的 entry id 计数器耗尽；调用方应重建 set。
-    #[error("VersionedRangeSet entry id 溢出")]
-    IdOverflow,
 }
 
 /// 当前 Buffer 内搜索相关错误。

@@ -3,12 +3,8 @@
 //! 只提供 Buffer 当前版本上的只读读取能力，不参与编辑、历史或折叠投影。
 
 use crate::{
-    ByteOffset, EngineResult, Line, LineRange, LineSlice, TextRange, TextSlice, Viewport,
-    ViewportSlice,
-    slicing::{
-        text_range_for_byte_range, text_range_for_line, text_range_for_line_range,
-        viewport_slice_for_text,
-    },
+    ByteOffset, EngineResult, Line, LineRange, LineSlice, TextRange, TextSlice,
+    slicing::{text_range_for_byte_range, text_range_for_line, text_range_for_line_range},
     storage::TextRead,
 };
 
@@ -40,21 +36,5 @@ impl Buffer {
     pub fn slice_line_range(&self, line_range: LineRange) -> EngineResult<TextSlice<'_>> {
         let range = text_range_for_line_range(&self.storage, line_range)?;
         self.slice_text(range)
-    }
-
-    /// 按逻辑行 viewport 读取可见行。
-    pub fn slice_viewport(&self, viewport: Viewport) -> EngineResult<ViewportSlice<'_>> {
-        viewport_slice_for_text(&self.storage, viewport)
-    }
-
-    /// 把 `LineRange` 转换为 `TextRange`（字节区间）。
-    ///
-    /// 本方法与 `crate::slicing::text_range_for_line_range` 共享同一实现，仅以 `&self`
-    /// 形式暴露给 `versioned` 等不能直接访问 `storage` 的模块，避免跨模块重复定义。
-    pub(crate) fn text_range_for_line_range(
-        &self,
-        line_range: LineRange,
-    ) -> EngineResult<TextRange> {
-        text_range_for_line_range(&self.storage, line_range)
     }
 }

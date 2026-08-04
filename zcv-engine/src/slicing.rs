@@ -8,49 +8,6 @@ use crate::{
     ByteOffset, CoordinateError, EngineResult, Line, LineRange, TextRange, storage::TextRead,
 };
 
-/// 逻辑行视口。
-///
-/// `Viewport` 只表达按逻辑行读取的文本窗口，不包含像素滚动、字体测量或折叠投影。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Viewport {
-    start_line: Line,
-    line_count: usize,
-    max_line_chars: Option<usize>,
-}
-
-impl Viewport {
-    pub const fn new(start_line: Line, line_count: usize) -> Self {
-        Self {
-            start_line,
-            line_count,
-            max_line_chars: None,
-        }
-    }
-
-    /// 设置单行最大读取 char 数，用于避免 viewport 读取被超长行拖成整行读取。
-    pub const fn with_max_line_chars(mut self, max_line_chars: usize) -> Self {
-        self.max_line_chars = Some(max_line_chars);
-        self
-    }
-
-    pub const fn without_line_limit(mut self) -> Self {
-        self.max_line_chars = None;
-        self
-    }
-
-    pub const fn start_line(self) -> Line {
-        self.start_line
-    }
-
-    pub const fn line_count(self) -> usize {
-        self.line_count
-    }
-
-    pub const fn max_line_chars(self) -> Option<usize> {
-        self.max_line_chars
-    }
-}
-
 /// 只读文本切片。
 ///
 /// `TextSlice` 绑定原文中的 `TextRange`，文本内容按需由存储后端借用或拼接。
@@ -165,29 +122,29 @@ impl fmt::Display for LineSlice<'_> {
     }
 }
 
-/// viewport 中的一条可见逻辑行。
+/// 单行文本内容（剥掉行尾换行符）。
 ///
-/// `full_range` 是整行范围，包含行尾换行符；`visible_range` 是实际返回的可见文本范围，
-/// 会去掉行尾换行符，并按 `Viewport::max_line_chars` 截断。
+/// `full_range` 是整行范围，包含行尾换行符；`text` 是实际内容，去掉行尾换行符，并按传入的 `max_line_chars` 截断（`None` 表示不截断）。
+/// 供软换行片段切分等读取行内容的场景使用。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VisibleLine<'a> {
+pub struct LineContent<'a> {
     line: Line,
     full_range: TextRange,
-    visible_text: TextSlice<'a>,
+    text: TextSlice<'a>,
     is_truncated: bool,
 }
 
-impl<'a> VisibleLine<'a> {
+impl<'a> LineContent<'a> {
     pub(crate) fn new(
         line: Line,
         full_range: TextRange,
-        visible_text: TextSlice<'a>,
+        text: TextSlice<'a>,
         is_truncated: bool,
     ) -> Self {
         Self {
             line,
             full_range,
-            visible_text,
+            text,
             is_truncated,
         }
     }
@@ -200,32 +157,20 @@ impl<'a> VisibleLine<'a> {
         self.full_range
     }
 
-    pub fn visible_range(&self) -> TextRange {
-        self.visible_text.range()
-    }
-
-    pub fn text_slice(&self) -> &TextSlice<'a> {
-        &self.visible_text
-    }
-
-    pub fn into_text_slice(self) -> TextSlice<'a> {
-        self.visible_text
+    pub fn text_range(&self) -> TextRange {
+        self.text.range()
     }
 
     pub fn as_str(&self) -> &str {
-        self.visible_text.as_str()
+        self.text.as_str()
     }
 
-    pub fn visible_len_chars(&self) -> usize {
-        self.visible_text.len_chars()
+    pub fn len_chars(&self) -> usize {
+        self.text.len_chars()
     }
 
-    pub fn visible_len_bytes(&self) -> usize {
-        self.visible_text.len_bytes()
-    }
-
-    pub fn full_len_bytes(&self) -> usize {
-        self.full_range.len()
+    pub fn len_bytes(&self) -> usize {
+        self.text.len_bytes()
     }
 
     pub fn is_truncated(&self) -> bool {
@@ -233,166 +178,32 @@ impl<'a> VisibleLine<'a> {
     }
 }
 
-impl AsRef<str> for VisibleLine<'_> {
+impl AsRef<str> for LineContent<'_> {
     fn as_ref(&self) -> &str {
         self.as_str()
     }
 }
 
-impl fmt::Display for VisibleLine<'_> {
+impl fmt::Display for LineContent<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-/// 一次 viewport 读取结果。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ViewportSlice<'a> {
-    viewport: Viewport,
-    line_range: LineRange,
-    lines: Vec<VisibleLine<'a>>,
-}
-
-impl<'a> ViewportSlice<'a> {
-    pub(crate) fn new(
-        viewport: Viewport,
-        line_range: LineRange,
-        lines: Vec<VisibleLine<'a>>,
-    ) -> Self {
-        Self {
-            viewport,
-            line_range,
-            lines,
-        }
-    }
-
-    pub fn viewport(&self) -> Viewport {
-        self.viewport
-    }
-
-    pub fn line_range(&self) -> LineRange {
-        self.line_range
-    }
-
-    pub fn lines(&self) -> &[VisibleLine<'a>] {
-        &self.lines
-    }
-
-    pub fn into_lines(self) -> Vec<VisibleLine<'a>> {
-        self.lines
-    }
-
-    pub fn len(&self) -> usize {
-        self.lines.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.lines.is_empty()
-    }
-}
-
-pub(crate) fn text_range_for_byte_range<T: TextRead>(
-    _text: &T,
-    start: ByteOffset,
-    end: ByteOffset,
-) -> EngineResult<TextRange> {
-    if start > end {
-        return Err(CoordinateError::InvalidRange { start, end }.into());
-    }
-
-    // TextRange 内核就是字节区间；端点是否落在字符边界由 Storage 在 slice/replace 时校验。
-    Ok(TextRange::new(start, end)?)
-}
-
-pub(crate) fn text_range_for_line<T: TextRead>(text: &T, line: Line) -> EngineResult<TextRange> {
-    let start = text.line_start(line)?;
-    let next_line = line
-        .get()
-        .checked_add(1)
-        .map(Line::new)
-        .ok_or(CoordinateError::LineOutOfBounds(line))?;
-    let end = byte_offset_for_line_boundary(text, next_line)?;
-
-    Ok(TextRange::new(start, end)?)
-}
-
-pub(crate) fn text_range_for_line_range<T: TextRead>(
-    text: &T,
-    line_range: LineRange,
-) -> EngineResult<TextRange> {
-    let start = byte_offset_for_line_boundary(text, line_range.start())?;
-    let end = byte_offset_for_line_boundary(text, line_range.end())?;
-    Ok(TextRange::new(start, end)?)
-}
-
-fn byte_offset_for_line_boundary<T: TextRead>(text: &T, line: Line) -> EngineResult<ByteOffset> {
-    let line_value = line.get();
-    let line_count = text.line_count();
-
-    if line_value > line_count {
-        return Err(CoordinateError::LineOutOfBounds(line).into());
-    }
-
-    if line_value == line_count {
-        return Ok(text.len_bytes());
-    }
-
-    text.line_start(line)
-}
-
-pub(crate) fn viewport_slice_for_text<T: TextRead>(
-    text: &T,
-    viewport: Viewport,
-) -> EngineResult<ViewportSlice<'_>> {
-    let line_range = line_range_for_viewport(text, viewport)?;
-    let mut lines = Vec::with_capacity(line_range.len());
-
-    for line_value in line_range.start().get()..line_range.end().get() {
-        let line = Line::new(line_value);
-        lines.push(visible_line_for_text(
-            text,
-            line,
-            viewport.max_line_chars(),
-        )?);
-    }
-
-    Ok(ViewportSlice::new(viewport, line_range, lines))
-}
-
-pub(crate) fn visible_line_for_text<T: TextRead>(
+pub(crate) fn line_content_for_text<T: TextRead>(
     text: &T,
     line: Line,
     max_line_chars: Option<usize>,
-) -> EngineResult<VisibleLine<'_>> {
+) -> EngineResult<LineContent<'_>> {
     let full_range = text_range_for_line(text, line)?;
-    let visible_range = visible_range_for_line(text, full_range, max_line_chars)?;
-    let is_truncated = visible_range.end() < line_content_end(text, full_range)?;
-    let visible_text = TextSlice::new(visible_range, text.slice_text(visible_range)?);
+    let content_range = content_range_for_line(text, full_range, max_line_chars)?;
+    let is_truncated = content_range.end() < line_content_end(text, full_range)?;
+    let content = TextSlice::new(content_range, text.slice_text(content_range)?);
 
-    Ok(VisibleLine::new(
-        line,
-        full_range,
-        visible_text,
-        is_truncated,
-    ))
+    Ok(LineContent::new(line, full_range, content, is_truncated))
 }
 
-fn line_range_for_viewport<T: TextRead>(text: &T, viewport: Viewport) -> EngineResult<LineRange> {
-    let start = viewport.start_line();
-    let line_count = text.line_count();
-
-    if start.get() > line_count {
-        return Err(CoordinateError::LineOutOfBounds(start).into());
-    }
-
-    let end = start
-        .get()
-        .saturating_add(viewport.line_count())
-        .min(line_count);
-    Ok(LineRange::new(start, Line::new(end))?)
-}
-
-fn visible_range_for_line<T: TextRead>(
+fn content_range_for_line<T: TextRead>(
     text: &T,
     full_range: TextRange,
     max_line_chars: Option<usize>,
@@ -461,4 +272,53 @@ fn line_content_end<T: TextRead>(text: &T, full_range: TextRange) -> EngineResul
     } else {
         Ok(ByteOffset::new(without_lf))
     }
+}
+
+pub(crate) fn text_range_for_byte_range<T: TextRead>(
+    _text: &T,
+    start: ByteOffset,
+    end: ByteOffset,
+) -> EngineResult<TextRange> {
+    if start > end {
+        return Err(CoordinateError::InvalidRange { start, end }.into());
+    }
+
+    // TextRange 内核就是字节区间；端点是否落在字符边界由 Storage 在 slice/replace 时校验。
+    Ok(TextRange::new(start, end)?)
+}
+
+pub(crate) fn text_range_for_line<T: TextRead>(text: &T, line: Line) -> EngineResult<TextRange> {
+    let start = text.line_start(line)?;
+    let next_line = line
+        .get()
+        .checked_add(1)
+        .map(Line::new)
+        .ok_or(CoordinateError::LineOutOfBounds(line))?;
+    let end = byte_offset_for_line_boundary(text, next_line)?;
+
+    Ok(TextRange::new(start, end)?)
+}
+
+pub(crate) fn text_range_for_line_range<T: TextRead>(
+    text: &T,
+    line_range: LineRange,
+) -> EngineResult<TextRange> {
+    let start = byte_offset_for_line_boundary(text, line_range.start())?;
+    let end = byte_offset_for_line_boundary(text, line_range.end())?;
+    Ok(TextRange::new(start, end)?)
+}
+
+fn byte_offset_for_line_boundary<T: TextRead>(text: &T, line: Line) -> EngineResult<ByteOffset> {
+    let line_value = line.get();
+    let line_count = text.line_count();
+
+    if line_value > line_count {
+        return Err(CoordinateError::LineOutOfBounds(line).into());
+    }
+
+    if line_value == line_count {
+        return Ok(text.len_bytes());
+    }
+
+    text.line_start(line)
 }

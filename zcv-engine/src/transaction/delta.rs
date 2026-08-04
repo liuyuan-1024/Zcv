@@ -3,10 +3,8 @@
 //! Delta 只携带文本增量；DeltaEvent 额外绑定事务 ID、来源、ChangeSet 和 PositionMap。
 
 use crate::{
-    EngineResult,
     position_map::PositionMap,
-    types::{BufferVersion, TextRange, TransactionId},
-    versioned::VersionedResult,
+    types::{BufferVersion, TransactionId},
 };
 
 use super::{ChangeSet, EditList, TransactionSource};
@@ -115,13 +113,5 @@ impl DeltaEvent {
 
     pub fn position_map(&self) -> &PositionMap {
         &self.position_map
-    }
-
-    /// 在新版本上的 changed ranges 只读结果，已绑定 `new_version` 供宿主版本对齐。
-    pub fn changed_ranges_result(&self) -> EngineResult<VersionedResult<Vec<TextRange>>> {
-        Ok(VersionedResult::new(
-            self.new_version,
-            self.changeset.changed_ranges()?,
-        ))
     }
 }

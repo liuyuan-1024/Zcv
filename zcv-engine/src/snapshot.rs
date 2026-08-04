@@ -3,12 +3,11 @@
 //! 本文件保证后台读取可脱离可变 Buffer；它不提交编辑、不维护历史，也不暴露 Ropey 内部类型。
 
 use crate::{
-    BufferConfig, BufferVersion, ByteOffset, EngineResult, Line, LineRange, LineSlice,
+    BufferConfig, BufferVersion, ByteOffset, EngineResult, Line, LineContent, LineRange, LineSlice,
     RegexSearchOptions, RegexSearchResult, SearchOptions, SearchResult, TextRange, TextSlice,
-    Viewport, ViewportSlice, VisibleLine,
     slicing::{
-        text_range_for_byte_range, text_range_for_line, text_range_for_line_range,
-        viewport_slice_for_text, visible_line_for_text,
+        line_content_for_text, text_range_for_byte_range, text_range_for_line,
+        text_range_for_line_range,
     },
     storage::{RopeySnapshot, TextRead, text_coordinate_gateway},
 };
@@ -91,19 +90,18 @@ impl Snapshot {
         self.slice_text(range)
     }
 
-    /// 按逻辑行 viewport 读取快照中的可见行。
-    pub fn slice_viewport(&self, viewport: Viewport) -> EngineResult<ViewportSlice<'_>> {
-        viewport_slice_for_text(&self.storage, viewport)
-    }
-
-    pub fn visible_line(
+    /// 读取快照中的单行文本内容（剥掉行尾换行符，可按 `max_line_chars` 截断）。
+    ///
+    /// 供软换行片段切分等读取行内容的场景使用；`None` 表示不截断。
+    pub fn line_content(
         &self,
         line: Line,
         max_line_chars: Option<usize>,
-    ) -> EngineResult<VisibleLine<'_>> {
-        visible_line_for_text(&self.storage, line, max_line_chars)
+    ) -> EngineResult<LineContent<'_>> {
+        line_content_for_text(&self.storage, line, max_line_chars)
     }
 
+    /// 按逻辑行 viewport 读取快照中的可见行。
     pub fn is_stale_for_version(&self, version: BufferVersion) -> bool {
         self.version != version
     }

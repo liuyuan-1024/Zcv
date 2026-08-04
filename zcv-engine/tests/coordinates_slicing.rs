@@ -167,20 +167,6 @@ fn text_and_line_slices_should_preserve_byte_ranges_and_newline_boundaries() {
 }
 
 #[test]
-fn viewport_slice_should_clamp_end_and_truncate_by_unicode_scalar_count() {
-    let buffer = buffer("short\n你好吗\nlast");
-    let viewport = Viewport::new(line(1), 8).with_max_line_chars(2);
-    let slice = buffer.slice_viewport(viewport).unwrap();
-
-    assert_eq!(slice.line_range(), line_range(1, 3));
-    assert_eq!(slice.len(), 2);
-    assert_eq!(slice.lines()[0].as_str(), "你好");
-    assert!(slice.lines()[0].is_truncated());
-    assert_eq!(slice.lines()[0].visible_len_chars(), 2);
-    assert_eq!(slice.lines()[1].as_str(), "la");
-}
-
-#[test]
 fn snapshot_coordinate_and_slicing_queries_should_read_old_version_after_state_transition() {
     let mut buffer = buffer("alpha\nbeta");
     let snapshot = buffer.snapshot();

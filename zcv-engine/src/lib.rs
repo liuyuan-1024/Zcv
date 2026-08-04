@@ -34,7 +34,7 @@ pub use search::{RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptio
 pub use selection::{
     Cursor, MovementDirection, MovementUnit, Selection, SelectionMergePolicy, SelectionSet,
 };
-pub use slicing::{LineSlice, TextSlice, Viewport, ViewportSlice, VisibleLine};
+pub use slicing::{LineContent, LineSlice, TextSlice};
 pub use snapshot::Snapshot;
 pub use text_changes::{PatchEdit, TextChangeBatch, TextPatch, TextSubscription};
 pub use text_loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
@@ -52,7 +52,4 @@ pub use types::{
     LineEndingStyle, LineRange, LogicalColumn, OriginKind, Position, TextRange, TransactionId,
     Utf16Offset, Utf16Position,
 };
-pub use versioned::{
-    VersionedRangeEntry, VersionedRangeEntryId, VersionedRangeSet, VersionedRangeSpec,
-    VersionedRangeUpdate, VersionedResult,
-};
+pub use versioned::VersionedResult;

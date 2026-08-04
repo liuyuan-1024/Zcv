@@ -148,7 +148,8 @@ impl WatchPaths {
     }
 
     /// 检查是否有祖先的递归注册已覆盖该路径。
-    /// 轮询（PollWatcher）总是递归的；macOS 的原生 FSEvents 也是递归的。
+    ///
+    /// 轮询（PollWatcher）总是递归的；
     fn covered_by_recursive_ancestor(&self, path: &Path, mode: WatcherMode) -> bool {
         if mode != WatcherMode::Poll && !cfg!(target_os = "macos") {
             return false;
@@ -441,8 +442,8 @@ impl GlobalWatcher {
 fn ensure_native_watcher(lock: &Mutex<Option<Box<dyn WatchBackend>>>) -> anyhow::Result<()> {
     let mut guard = lock.lock().unwrap();
     if guard.is_none() {
-        // notify v7 使用 recommended_watcher（v9 才支持 Config::with_event_kinds）
-        // Access 事件在 enqueue() 中统一过滤
+        // recommended_watcher 按平台选择后端；
+        // Access 事件不在此处过滤，统一在 enqueue() 中按事件类型过滤。
         let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             global_watcher().enqueue(WatcherMode::Native, event);
         })?;
@@ -515,8 +516,8 @@ pub struct FsWatcher {
     pending_path_events: Arc<Mutex<Vec<PathEvent>>>,
     /// 已向 GlobalWatcher 注册的路径。
     registrations: Arc<Mutex<HashMap<WatchKey, FsWatcherRegistration>>>,
-    /// 等待创建的路径（路径尚不存在时轮询等待）。
-    pending_registrations: Arc<Mutex<HashMap<Arc<Path>, thread::JoinHandle<()>>>>,
+    /// 等待创建的路径（路径尚不存在时由共享轮询线程等待）。
+    pending_registrations: Arc<Mutex<HashMap<Arc<Path>, ()>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -530,98 +531,107 @@ impl FsWatcher {
         signal_tx: async_channel::Sender<()>,
         pending_path_events: Arc<Mutex<Vec<PathEvent>>>,
     ) -> Self {
-        Self {
+        let watcher = Self {
             signal_tx,
             pending_path_events,
             registrations: Arc::new(Mutex::new(HashMap::new())),
             pending_registrations: Arc::new(Mutex::new(HashMap::new())),
-        }
+        };
+        watcher.spawn_pending_poller();
+        watcher
     }
 
-    /// 注册一个尚不存在的路径——后台轮询直至路径出现。
-    fn add_pending_path(&self, path: Arc<Path>) {
-        let mut pending = self.pending_registrations.lock().unwrap();
-        if pending.contains_key(&path) {
-            return;
-        }
-
+    /// 共享轮询线程：统一等待所有 pending 路径出现后注册。
+    ///
+    /// 每路径一个独立线程会随打开路径数线性增长（对齐 Zed 用执行器异步轮询的思路，这里保持纯 std 架构，用单个线程轮询全部 pending 路径）。
+    fn spawn_pending_poller(&self) {
         let registrations = self.registrations.clone();
         let pending_regs = self.pending_registrations.clone();
         let signal_tx = self.signal_tx.clone();
         let pending_events = self.pending_path_events.clone();
-        let poll_path = path.clone();
 
-        let handle = thread::Builder::new()
+        thread::Builder::new()
             .name("fs-watcher-pending".into())
             .spawn(move || {
                 let interval = Duration::from_millis(2000);
                 loop {
                     thread::sleep(interval);
 
-                    // 如果已被取消，退出
-                    if !pending_regs.lock().unwrap().contains_key(&poll_path) {
-                        return;
-                    }
+                    let paths: Vec<Arc<Path>> =
+                        pending_regs.lock().unwrap().keys().cloned().collect();
+                    for poll_path in paths {
+                        // 已被取消（add 后 remove/clear）：跳过，不再处理
+                        if !pending_regs.lock().unwrap().contains_key(&poll_path) {
+                            continue;
+                        }
 
-                    // 路径尚未出现则继续轮询
-                    if !poll_path.exists() {
-                        continue;
-                    }
+                        // 路径尚未出现则继续轮询
+                        if !poll_path.exists() {
+                            continue;
+                        }
 
-                    // 探测大小写敏感性
-                    let case_insensitive = cfg!(target_os = "macos");
-                    let key = WatchKey::for_path(&poll_path, case_insensitive);
+                        // macOS 文件系统不区分大小写（编译期判定，与 covered_by_recursive_ancestor 一致）。
+                        let case_insensitive = cfg!(target_os = "macos");
+                        let key = WatchKey::for_path(&poll_path, case_insensitive);
 
-                    if registrations.lock().unwrap().contains_key(&key) {
-                        pending_regs.lock().unwrap().remove(&poll_path);
-                        return;
-                    }
+                        if registrations.lock().unwrap().contains_key(&key) {
+                            pending_regs.lock().unwrap().remove(&poll_path);
+                            continue;
+                        }
 
-                    // 路径已创建，尝试注册到 GlobalWatcher
-                    match register_existing_path(
-                        poll_path.clone(),
-                        case_insensitive,
-                        signal_tx.clone(),
-                        pending_events.clone(),
-                    ) {
-                        Ok(Some(reg)) => {
-                            {
+                        // 路径已创建，尝试注册到 GlobalWatcher
+                        match register_existing_path(
+                            poll_path.clone(),
+                            case_insensitive,
+                            signal_tx.clone(),
+                            pending_events.clone(),
+                        ) {
+                            Ok(Some(reg)) => {
                                 let mut regs = registrations.lock().unwrap();
                                 if pending_regs.lock().unwrap().remove(&poll_path).is_none() {
                                     global_watcher().remove(reg.id);
-                                    return;
+                                    continue;
                                 }
                                 regs.insert(key, reg);
+                                // 发送 Created + Rescan 事件通知消费方
+                                enqueue_path_events(
+                                    &signal_tx,
+                                    &pending_events,
+                                    vec![
+                                        PathEvent {
+                                            path: poll_path.to_path_buf(),
+                                            kind: Some(PathEventKind::Created),
+                                        },
+                                        PathEvent {
+                                            path: poll_path.to_path_buf(),
+                                            kind: Some(PathEventKind::Rescan),
+                                        },
+                                    ],
+                                );
                             }
-                            // 发送 Created + Rescan 事件通知消费方
-                            enqueue_path_events(
-                                &signal_tx,
-                                &pending_events,
-                                vec![
-                                    PathEvent {
-                                        path: poll_path.to_path_buf(),
-                                        kind: Some(PathEventKind::Created),
-                                    },
-                                    PathEvent {
-                                        path: poll_path.to_path_buf(),
-                                        kind: Some(PathEventKind::Rescan),
-                                    },
-                                ],
-                            );
-                            return;
-                        }
-                        Ok(None) => {
-                            // 全局 watcher 拒绝注册（如 watch limit），继续重试
-                        }
-                        Err(error) => {
-                            log::warn!("为新建路径 {:?} 注册监听失败：{error}；重试中", poll_path);
+                            Ok(None) => {
+                                // 全局 watcher 拒绝注册（如 watch limit），继续重试
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    "为新建路径 {:?} 注册监听失败：{error}；重试中",
+                                    poll_path
+                                );
+                            }
                         }
                     }
                 }
             })
-            .expect("无法创建 pending 路径监听线程");
+            .expect("无法创建 pending 路径轮询线程");
+    }
 
-        pending.insert(path, handle);
+    /// 注册一个尚不存在的路径——由共享轮询线程等待其出现。
+    fn add_pending_path(&self, path: Arc<Path>) {
+        let mut pending = self.pending_registrations.lock().unwrap();
+        if pending.contains_key(&path) {
+            return;
+        }
+        pending.insert(path, ());
     }
 }
 
@@ -883,16 +893,11 @@ fn coalesce_pending_rescans(pending: &mut Vec<PathEvent>, events: &mut Vec<PathE
         .collect();
     new_rescan.sort();
 
-    // 手动去重：如果 A 是 B 的祖先，保留 A 移除 B
-    // （不能用 dedup_by + starts_with，因为 &mut PathBuf 不直接实现 AsRef<Path>）
-    let mut deduped: Vec<PathBuf> = Vec::with_capacity(new_rescan.len());
-    for path in new_rescan {
-        let already_covered = deduped.iter().any(|p| path != *p && path.starts_with(p));
-        if !already_covered {
-            deduped.push(path);
-        }
-    }
-    new_rescan = deduped;
+    // 去重：如果 A 是 B 的祖先，保留 A 移除 B。
+    // 字典序排序后祖先与后代相邻，dedup_by 链式比较即可；
+    // Path::starts_with 按组件前缀匹配（"ab" 不视为 "a" 的后代）。
+    // 注意 dedup_by 闭包参数顺序是 (当前元素, 前一个保留项)。
+    new_rescan.dedup_by(|current, previous| current.starts_with(previous));
 
     // 移除 pending 中被新 Rescan 覆盖的条目
     new_rescan.retain(|p| {

@@ -2436,14 +2436,38 @@ mod tests {
     }
 
     #[gpui::test]
-    fn external_reload_resets_selection_to_document_start(cx: &mut TestAppContext) {
+    fn external_reload_moves_selection_through_diff(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "alpha\nbravo\ncharlie");
+        let editor = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
+        // 光标在 "bravo" 行内 "br" 之后（行内第 2 字节）。
+        cx.update_entity(&editor, |editor, _| {
+            editor.set_selections(SelectionSet::caret(ByteOffset::new(8)));
+        });
+
+        // 外部在行内插入 "x"：diff patch 保留 "br" 与 "avo" 匹配段，端点映射到插入 "x" 之后。
+        let raw_buffer = engine_buffer(&buffer, cx);
+        cx.update_entity(&raw_buffer, |buffer, cx| {
+            buffer
+                .reload_from_text("alpha\nbrxavo\ncharlie".to_owned())
+                .expect("外部 reload 应成功");
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections().primary().head(), ByteOffset::new(9));
+        });
+    }
+
+    #[gpui::test]
+    fn external_reload_collapses_selection_when_text_is_rewritten(cx: &mut TestAppContext) {
         let buffer = test_buffer(cx, "abc");
         let editor = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
         cx.update_entity(&editor, |editor, _| {
             editor.set_selections(SelectionSet::caret(ByteOffset::new(2)));
         });
 
-        // 外部整体替换文本：端点锚点无法映射，选区回落到文档开头。
+        // 完全重写（无公共内容）：diff 回退为整体替换段，光标塌缩到文档开头。
         let raw_buffer = engine_buffer(&buffer, cx);
         cx.update_entity(&raw_buffer, |buffer, cx| {
             buffer

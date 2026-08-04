@@ -7,6 +7,7 @@ use std::io::{self, Write};
 use crate::{
     BufferSaveError, BufferVersion, ByteOffset, EngineError, EngineResult, LineEndingConfig,
     Snapshot, TextRange, TransactionError,
+    diff::diff_patch,
     storage::{RopeyStorage, TextRead},
 };
 
@@ -15,13 +16,17 @@ use super::Buffer;
 impl Buffer {
     /// 用外部文本重新加载 Buffer。
     ///
-    /// reload 表示外部文本源成为新的干净基线：文本存储重建、版本递增、
-    /// history 清空，dirty 状态恢复为 clean。视图选区由宿主管理。
+    /// reload 表示外部文本源成为新的干净基线：文本存储重建、版本递增、history 清空，dirty 状态恢复为 clean。
+    /// 对外发布旧文本 -> 新文本的 diff patch，使选区 / 折叠端点跟随外部变更后的具体位置。
     pub fn reload_from_text(&mut self, text: String) -> EngineResult<()> {
-        let old_len = self.storage.len_bytes().get();
         let old_version = self.version;
+        // 替换存储前取出旧文本，生成真实的坐标映射 patch。
+        let old_text = self.storage.slice_to_string(
+            TextRange::new(ByteOffset::ZERO, self.storage.len_bytes())
+                .expect("全文范围必须满足 start <= end"),
+        )?;
+        let patch = diff_patch(&old_text, &text);
         let new_storage = RopeyStorage::new(text);
-        let new_len = new_storage.len_bytes().get();
         let new_version = self.version.next().ok_or(EngineError::VersionOverflow)?;
         self.storage = new_storage;
         self.version = new_version;
@@ -30,12 +35,8 @@ impl Buffer {
         self.mark_clean_internal();
         self.mark_synced_external();
         self.apply_large_file_auto_read_only();
-        self.text_changes.publish(
-            old_version,
-            self.version,
-            crate::TextPatch::replace_all(old_len, new_len),
-            true,
-        );
+        self.text_changes
+            .publish(old_version, self.version, patch, false);
         Ok(())
     }
 
@@ -53,8 +54,7 @@ impl Buffer {
 
     /// 流式输出待保存文本，并在输出前检查调用方持有的版本是否仍然新鲜。
     ///
-    /// 这里不修改 Buffer 状态；宿主完成真实写盘后再调用 `mark_saved()` /
-    /// `mark_synced_external()`。
+    /// 这里不修改 Buffer 状态；宿主完成真实写盘后再调用 `mark_saved()` / `mark_synced_external()`。
     pub fn write_to<W: Write>(
         &self,
         expected_version: BufferVersion,

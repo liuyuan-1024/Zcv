@@ -17,7 +17,7 @@ pub struct PatchEdit {
 }
 
 impl PatchEdit {
-    fn new(old: Range<usize>, new: Range<usize>) -> Self {
+    pub(crate) fn new(old: Range<usize>, new: Range<usize>) -> Self {
         Self {
             old: text_range(old),
             new: text_range(new),
@@ -90,10 +90,8 @@ impl TextPatch {
         Self { edits }
     }
 
-    pub(crate) fn replace_all(old_len: usize, new_len: usize) -> Self {
-        Self {
-            edits: vec![PatchEdit::new(0..old_len, 0..new_len)],
-        }
+    pub(crate) fn from_edits(edits: Vec<PatchEdit>) -> Self {
+        Self { edits }
     }
 }
 

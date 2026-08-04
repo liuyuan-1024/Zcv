@@ -5,6 +5,7 @@
 
 mod buffer;
 mod config;
+mod diff;
 mod errors;
 mod position_map;
 mod search;

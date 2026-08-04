@@ -16,14 +16,14 @@ pub(super) struct EditOutcome {
 }
 
 impl EditOutcome {
-    fn unchanged(after_selections: SelectionSet) -> Self {
+    pub(super) fn unchanged(after_selections: SelectionSet) -> Self {
         Self {
             transaction: None,
             after_selections,
         }
     }
 
-    fn edited(transaction: TransactionOutcome, after_selections: SelectionSet) -> Self {
+    pub(super) fn edited(transaction: TransactionOutcome, after_selections: SelectionSet) -> Self {
         Self {
             transaction: Some(transaction),
             after_selections,
@@ -147,6 +147,24 @@ pub(super) fn apply_targeted_edits(
                 .map_selection_set(before);
             Ok(EditOutcome::edited(transaction, after))
         }
+    }
+}
+
+/// 应用编辑目标，并用编辑后的快照计算编辑后选区。
+///
+/// 行移动等场景的选区需要基于编辑后的行位置重新定位端点， position_map 的默认映射会把删除范围内的点吸附到删除起点，无法跟随整体移动的行块。
+pub(super) fn apply_edits_with_after_mapping(
+    buffer: &mut Buffer,
+    targets: Vec<(Selection, Arc<str>)>,
+    metadata: TransactionMetadata,
+    map_after: impl FnOnce(&Snapshot) -> EngineResult<SelectionSet>,
+) -> EngineResult<EditOutcome> {
+    match apply_edits(buffer, &targets, metadata)? {
+        None => Ok(EditOutcome::unchanged(map_after(&buffer.snapshot())?)),
+        Some(transaction) => Ok(EditOutcome::edited(
+            transaction,
+            map_after(&buffer.snapshot())?,
+        )),
     }
 }
 

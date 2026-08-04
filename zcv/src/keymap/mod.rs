@@ -252,6 +252,40 @@ mod tests {
         assert!(error.to_string().contains("missing::Action"));
     }
 
+    /// Editor 上下文必须始终覆盖行首尾选择绑定，防止 keymap 编辑时被意外删除。
+    #[gpui::test]
+    fn editor_keymap_covers_line_selection_extensions(cx: &mut TestAppContext) {
+        cx.update(|_cx| {
+            for source in [
+                "default-macos.json",
+                "default-linux.json",
+                "default-windows.json",
+            ] {
+                let json = match source {
+                    "default-macos.json" => include_str!("../../assets/keymaps/default-macos.json"),
+                    "default-linux.json" => include_str!("../../assets/keymaps/default-linux.json"),
+                    _ => include_str!("../../assets/keymaps/default-windows.json"),
+                };
+                let groups: Vec<RawBindingGroup> =
+                    serde_json::from_str(json).expect("keymap 必须是合法 JSON");
+                let editor = groups
+                    .iter()
+                    .find(|group| group.context.as_deref() == Some("Editor"))
+                    .unwrap_or_else(|| panic!("{source} 缺少 Editor 上下文"));
+                for (keys, action) in [
+                    ("shift-home", "editor::SelectToBeginningOfLine"),
+                    ("shift-end", "editor::SelectToEndOfLine"),
+                ] {
+                    assert_eq!(
+                        editor.bindings.get(keys).map(String::as_str),
+                        Some(action),
+                        "{source} 的 {keys} 应绑定 {action}"
+                    );
+                }
+            }
+        });
+    }
+
     #[gpui::test]
     fn panel_toggle_actions_are_owned_only_by_dock(cx: &mut TestAppContext) {
         cx.update(|cx| {

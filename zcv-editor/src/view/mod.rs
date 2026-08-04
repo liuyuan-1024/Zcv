@@ -21,7 +21,10 @@ use super::blink_manager::BlinkManager;
 use super::display_map::{DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::ScrollManager;
-use super::selection::{EditOutcome, SelectionHistory, apply_targeted_edits, replace_selections};
+use super::selection::{
+    EditOutcome, SelectionHistory, apply_edits_with_after_mapping, apply_targeted_edits,
+    replace_selections,
+};
 use zcv_theme::{color, typography};
 
 actions!(
@@ -60,6 +63,8 @@ actions!(
         DeleteToBeginningOfLine,
         DeleteToEndOfLine,
         Newline,
+        MoveLineUp,
+        MoveLineDown,
         Undo,
         Redo,
         Cut,
@@ -1623,6 +1628,221 @@ impl Editor {
     pub(super) fn handle_outdent(&mut self, _: &Outdent, _: &mut Window, cx: &mut Context<Self>) {
         self.outdent(cx);
     }
+
+    pub(super) fn handle_move_line_up(
+        &mut self,
+        _: &MoveLineUp,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_lines(MovementDirection::Previous, cx);
+    }
+
+    pub(super) fn handle_move_line_down(
+        &mut self,
+        _: &MoveLineDown,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_lines(MovementDirection::Next, cx);
+    }
+
+    /// 把选区所在行块整体上移或下移一行。
+    ///
+    /// 上移：把行块前面一行的文本（含换行符）移到行块之后；
+    /// 下移：把行块文本（含换行符）移到后面一行之后。
+    /// 所有行块在同一个事务内完成，选区由 position_map 自动映射跟随行块。
+    fn move_lines(&mut self, direction: MovementDirection, cx: &mut Context<Self>) {
+        if self.mode == EditorMode::SingleLine {
+            cx.propagate();
+            return;
+        }
+        self.composition = None;
+        let before = self.selections.clone();
+        let description = match direction {
+            MovementDirection::Previous => "移动行到上方",
+            MovementDirection::Next => "移动行到下方",
+        };
+        let snapshot = self.buffer.read(cx).snapshot();
+        let outcome = line_blocks(&snapshot, &before)
+            .and_then(|blocks| {
+                let targets = move_line_targets(&snapshot, &blocks, direction)?;
+                let plans = pending_selection_shift(&snapshot, &before, &blocks, direction)?;
+                Ok((targets, plans))
+            })
+            .and_then(|(targets, plans)| {
+                self.buffer.update(cx, |buffer, cx| {
+                    let outcome = apply_edits_with_after_mapping(
+                        buffer,
+                        targets,
+                        edit_metadata(description),
+                        |snapshot| resolve_selection_shift(snapshot, &before, &plans),
+                    );
+                    cx.notify();
+                    outcome
+                })
+            });
+        self.apply_edit_outcome(before, outcome, cx);
+    }
+}
+
+/// 选区涉及的行合并为不相邻的行块（相邻行并成一块），返回 (起始行, 末行)。
+fn line_blocks(
+    snapshot: &Snapshot,
+    selections: &SelectionSet,
+) -> EngineResult<Vec<(usize, usize)>> {
+    let mut blocks: Vec<(usize, usize)> = Vec::new();
+    for line in touched_lines(snapshot, selections)? {
+        let row = line.get();
+        if let Some((_, end)) = blocks.last_mut()
+            && row == *end + 1
+        {
+            *end = row;
+        } else {
+            blocks.push((row, row));
+        }
+    }
+    Ok(blocks)
+}
+
+/// 行块末行行尾的字节偏移（含换行符；最后一行无换行则到文档末尾）。
+fn line_block_end(snapshot: &Snapshot, end: usize) -> EngineResult<ByteOffset> {
+    let line_count = snapshot.line_count();
+    if end + 1 < line_count {
+        snapshot.line_start_byte(Line::new(end + 1))
+    } else {
+        Ok(ByteOffset::new(snapshot.len_bytes().get()))
+    }
+}
+
+/// 行内容末尾的字节偏移（不含换行符）。
+fn line_content_end(snapshot: &Snapshot, line: usize) -> EngineResult<ByteOffset> {
+    let end = line_block_end(snapshot, line)?;
+    if line + 1 < snapshot.line_count() {
+        Ok(ByteOffset::new(end.get().saturating_sub(1)))
+    } else {
+        Ok(end)
+    }
+}
+
+/// 生成行移动的编辑目标。
+///
+/// 上移把前面一行移到行块后，下移把行块移到后面一行后。
+fn move_line_targets(
+    snapshot: &Snapshot,
+    blocks: &[(usize, usize)],
+    direction: MovementDirection,
+) -> EngineResult<Vec<(Selection, Arc<str>)>> {
+    let line_count = snapshot.line_count();
+    // 只处理实际会移动的行块：首行不能上移、末行不能下移。
+    // 选区平移也必须基于这份子集，否则 no-op 行块的端点会越界。
+    let movable = blocks
+        .iter()
+        .copied()
+        .filter(|&(start, end)| match direction {
+            MovementDirection::Previous => start > 0,
+            MovementDirection::Next => end + 1 < line_count,
+        })
+        .collect::<Vec<_>>();
+    let mut targets = Vec::new();
+    for (start, end) in &movable {
+        let (start, end) = (*start, *end);
+        // 删除交换方整行（含换行符），在对方行尾（不含换行）插入前导换行 + 交换方内容：末行没有换行符，只能靠前导换行分隔。
+        match direction {
+            MovementDirection::Previous => {
+                let previous_start = snapshot.line_start_byte(Line::new(start - 1))?;
+                let previous_end = snapshot.line_start_byte(Line::new(start))?;
+                let content = snapshot
+                    .slice_byte_range(previous_start, line_content_end(snapshot, start - 1)?)?;
+                let insertion = line_content_end(snapshot, end)?;
+                targets.push((Selection::new(previous_start, previous_end), Arc::from("")));
+                targets.push((
+                    Selection::caret(insertion),
+                    Arc::from(format!("\n{}", content.as_str())),
+                ));
+            }
+            MovementDirection::Next => {
+                let block_start = snapshot.line_start_byte(Line::new(start))?;
+                let block_end = line_block_end(snapshot, end)?;
+                let content =
+                    snapshot.slice_byte_range(block_start, line_content_end(snapshot, end)?)?;
+                let insertion = line_content_end(snapshot, end + 1)?;
+                targets.push((Selection::new(block_start, block_end), Arc::from("")));
+                targets.push((
+                    Selection::caret(insertion),
+                    Arc::from(format!("\n{}", content.as_str())),
+                ));
+            }
+        }
+    }
+    Ok(targets)
+}
+
+/// 编辑前记录每个选区端点的 (行内字节偏移, 目标行号)，供编辑后定位。
+///
+/// 行内容整体移动，行内字节偏移编辑前后一致；
+/// 行号平移只在端点行属于实际移动的行块时发生（选区端点所在行必有选区，理论上一概在行块内）。
+fn pending_selection_shift(
+    snapshot: &Snapshot,
+    selections: &SelectionSet,
+    blocks: &[(usize, usize)],
+    direction: MovementDirection,
+) -> EngineResult<Vec<(usize, usize)>> {
+    let delta = match direction {
+        MovementDirection::Previous => -1i64,
+        MovementDirection::Next => 1i64,
+    };
+    selections
+        .as_slice()
+        .iter()
+        .flat_map(|selection| [selection.anchor(), selection.head()])
+        .map(|offset| {
+            let line = snapshot.byte_to_line(offset)?.get();
+            let line_start = snapshot.line_start_byte(Line::new(line))?.get();
+            let target_line = if blocks
+                .iter()
+                .any(|(start, end)| line >= *start && line <= *end)
+            {
+                (line as i64 + delta) as usize
+            } else {
+                line
+            };
+            Ok((offset.get() - line_start, target_line))
+        })
+        .collect()
+}
+
+/// 按编辑后的快照把 (行内偏移, 目标行) 还原为字节偏移；新行较短时钳制到行尾。
+fn resolve_selection_shift(
+    snapshot: &Snapshot,
+    selections: &SelectionSet,
+    plans: &[(usize, usize)],
+) -> EngineResult<SelectionSet> {
+    let shifted = selections
+        .as_slice()
+        .iter()
+        .zip(plans.chunks(2))
+        .map(|(selection, plan)| {
+            let anchor = resolve_point(snapshot, plan[0])?;
+            let head = resolve_point(snapshot, plan[1])?;
+            Ok(Selection::new(anchor, head).with_goal(selection.goal()))
+        })
+        .collect::<EngineResult<Vec<_>>>()?;
+    Ok(SelectionSet::new_with_primary(
+        shifted,
+        selections.primary_index(),
+    ))
+}
+
+fn resolve_point(
+    snapshot: &Snapshot,
+    (offset_in_line, target_line): (usize, usize),
+) -> EngineResult<ByteOffset> {
+    let line_start = snapshot.line_start_byte(Line::new(target_line))?.get();
+    let content_len = line_content_end(snapshot, target_line)?.get() - line_start;
+    Ok(ByteOffset::new(
+        line_start + offset_in_line.min(content_len),
+    ))
 }
 
 fn touched_lines(snapshot: &Snapshot, selections: &SelectionSet) -> EngineResult<Vec<Line>> {
@@ -2463,6 +2683,150 @@ mod tests {
         assert_eq!(buffer_text(&buffer, cx), "helloell");
         let raw_buffer = engine_buffer(&buffer, cx);
         assert!(cx.read_entity(&raw_buffer, |buffer, _| buffer.can_undo()));
+    }
+
+    #[gpui::test]
+    fn move_line_up_and_down_reorders_lines_and_follows_selection(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+
+        // 光标在第二行上移：整行移动，光标保持行内相对位置
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::caret(ByteOffset::new(9));
+        });
+        cx.dispatch_action(MoveLineUp);
+        assert_eq!(buffer_text(&buffer, cx), "bravo\nalpha\ncharlie\ndelta");
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections.as_slice()[0].head(), ByteOffset::new(3));
+        });
+
+        // 光标在第二行下移：与下一行交换
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::caret(ByteOffset::new(8));
+        });
+        cx.dispatch_action(MoveLineDown);
+        assert_eq!(buffer_text(&buffer, cx), "bravo\ncharlie\nalpha\ndelta");
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections.as_slice()[0].head(), ByteOffset::new(16));
+        });
+
+        // 撤销恢复
+        cx.dispatch_action(Undo);
+        assert_eq!(buffer_text(&buffer, cx), "bravo\nalpha\ncharlie\ndelta");
+    }
+
+    #[gpui::test]
+    fn move_line_skips_document_edges_and_moves_multi_line_selection(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+
+        // 首行不能上移：文本不变
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::caret(ByteOffset::new(2));
+        });
+        cx.dispatch_action(MoveLineUp);
+        assert_eq!(buffer_text(&buffer, cx), "alpha\nbravo\ncharlie\ndelta");
+
+        // 末行不能下移：文本不变
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::caret(ByteOffset::new(22));
+        });
+        cx.dispatch_action(MoveLineDown);
+        assert_eq!(buffer_text(&buffer, cx), "alpha\nbravo\ncharlie\ndelta");
+
+        // 多行选区（bravo + charlie 两行）整体上移
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::new(vec![Selection::new(
+                ByteOffset::new(6),
+                ByteOffset::new(19),
+            )]);
+        });
+        cx.dispatch_action(MoveLineUp);
+        assert_eq!(buffer_text(&buffer, cx), "bravo\ncharlie\nalpha\ndelta");
+    }
+
+    #[gpui::test]
+    fn move_line_keeps_newline_separation_at_document_edge(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+
+        // 倒数第二行下移到末行：行块与无换行的末行交换，换行必须保持
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::caret(ByteOffset::new(15)); // charlie 行
+        });
+        cx.dispatch_action(MoveLineDown);
+        assert_eq!(buffer_text(&buffer, cx), "alpha\nbravo\ndelta\ncharlie");
+
+        // 末行上移到倒数第二行
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::caret(ByteOffset::new(20)); // charlie（末行）
+        });
+        cx.dispatch_action(MoveLineUp);
+        assert_eq!(buffer_text(&buffer, cx), "alpha\nbravo\ncharlie\ndelta");
+
+        // 从首行连续下移三次，行块沉到文档末尾，光标始终跟随
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::caret(ByteOffset::new(2)); // alpha 行
+        });
+        for _ in 0..3 {
+            cx.dispatch_action(MoveLineDown);
+        }
+        assert_eq!(buffer_text(&buffer, cx), "bravo\ncharlie\ndelta\nalpha");
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.selections.as_slice()[0].head(), ByteOffset::new(22));
+        });
+    }
+
+    #[gpui::test]
+    fn move_line_moves_rows_of_partial_selection_and_keeps_shape(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+
+        // 选中 bravo 行内部分文本（非整行选区）上移：所在行块移动，选区形状保持
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections =
+                SelectionSet::new(vec![Selection::new(ByteOffset::new(7), ByteOffset::new(9))]);
+        });
+        cx.dispatch_action(MoveLineUp);
+        assert_eq!(buffer_text(&buffer, cx), "bravo\nalpha\ncharlie\ndelta");
+        cx.read_entity(&editor, |editor, _| {
+            let selection = editor.selections.as_slice()[0];
+            assert_eq!(selection.start(), ByteOffset::new(1));
+            assert_eq!(selection.end(), ByteOffset::new(3));
+        });
+
+        // 跨行选区（alpha 行首到 charlie 行内）下移：两个整行块移动，选区形状保持
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::new(vec![Selection::new(
+                ByteOffset::new(6),
+                ByteOffset::new(17),
+            )]);
+        });
+        cx.dispatch_action(MoveLineDown);
+        assert_eq!(buffer_text(&buffer, cx), "bravo\ndelta\nalpha\ncharlie");
+        cx.read_entity(&editor, |editor, _| {
+            let selection = editor.selections.as_slice()[0];
+            assert_eq!(selection.start(), ByteOffset::new(12));
+            assert_eq!(selection.end(), ByteOffset::new(23));
+        });
     }
 
     #[gpui::test]

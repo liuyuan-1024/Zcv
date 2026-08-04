@@ -2,41 +2,56 @@
   {
     "context": "Editor",
     "bindings": {
+      "enter": "editor::Newline",
+
+      "tab": "editor::Indent",
+      "shift-tab": "editor::Outdent",
+
+      "delete": "editor::Delete",
+      "backspace": "editor::Backspace",
+      "alt-delete": "editor::DeleteToNextWordEnd",
+      "alt-backspace": "editor::DeleteToPreviousWordStart",
+      "ctrl-delete": "editor::DeleteToEndOfLine",
+      "ctrl-backspace": "editor::DeleteToBeginningOfLine",
+
+      "up": "editor::MoveUp",
+      "down": "editor::MoveDown",
+      "left": "editor::MoveLeft",
+      "right": "editor::MoveRight",
+      "shift-up": "editor::SelectUp",
+      "shift-down": "editor::SelectDown",
+      "shift-left": "editor::SelectLeft",
+      "shift-right": "editor::SelectRight",
+
+      "pageup": "editor::MovePageUp",
+      "pagedown": "editor::MovePageDown",
+      "shift-pageup": "editor::SelectPageUp",
+      "shift-pagedown": "editor::SelectPageDown",
+
       "ctrl-left": "editor::MoveToPreviousWord",
       "ctrl-right": "editor::MoveToNextWord",
       "ctrl-shift-left": "editor::SelectToPreviousWord",
       "ctrl-shift-right": "editor::SelectToNextWord",
+
       "ctrl-home": "editor::MoveToBeginning",
       "ctrl-end": "editor::MoveToEnd",
       "ctrl-shift-home": "editor::SelectToBeginning",
       "ctrl-shift-end": "editor::SelectToEnd",
+
       "home": "editor::MoveToBeginningOfLine",
       "end": "editor::MoveToEndOfLine",
       "shift-home": "editor::SelectToBeginningOfLine",
       "shift-end": "editor::SelectToEndOfLine",
+
       "ctrl-a": "editor::SelectAll",
       "ctrl-c": "editor::Copy",
       "ctrl-v": "editor::Paste",
       "ctrl-x": "editor::Cut",
       "ctrl-z": "editor::Undo",
       "ctrl-y": "editor::Redo",
-      "backspace": "editor::Backspace",
-      "delete": "editor::Delete",
-      "enter": "editor::Newline",
-      "left": "editor::MoveLeft",
-      "right": "editor::MoveRight",
-      "up": "editor::MoveUp",
-      "down": "editor::MoveDown",
-      "pageup": "editor::MovePageUp",
-      "pagedown": "editor::MovePageDown",
-      "shift-pageup": "editor::SelectPageUp",
-      "shift-pagedown": "editor::SelectPageDown",
-      "shift-left": "editor::SelectLeft",
-      "shift-right": "editor::SelectRight",
-      "shift-up": "editor::SelectUp",
-      "shift-down": "editor::SelectDown",
-      "tab": "editor::Indent",
-      "shift-tab": "editor::Outdent"
+
+      "alt-up": "editor::MoveLineUp",
+      "alt-down": "editor::MoveLineDown"
     }
   },
   {

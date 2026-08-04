@@ -77,6 +77,8 @@ impl EditorElement {
             .on_action(cx.listener(Editor::handle_paste))
             .on_action(cx.listener(Editor::handle_indent))
             .on_action(cx.listener(Editor::handle_outdent))
+            .on_action(cx.listener(Editor::handle_move_line_up))
+            .on_action(cx.listener(Editor::handle_move_line_down))
     }
 }
 

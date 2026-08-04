@@ -841,10 +841,10 @@ fn layout_selections(
     let mut caret_quads = Vec::new();
 
     for selection in selections.as_slice().iter().copied() {
+        // 选区存在时也在 head（活动端）绘制光标，表示输入插入点。
+        let caret = layout_caret_at_buffer_offset(selection.head(), layout, line_height, cx);
         if selection.is_caret() {
-            if let Some(caret) =
-                layout_caret_at_buffer_offset(selection.head(), layout, line_height, cx)
-            {
+            if let Some(caret) = caret {
                 caret_quads.push(caret);
             }
             continue;
@@ -855,6 +855,9 @@ fn layout_selections(
         {
             for range in ranges {
                 layout_projected_range(range, layout, line_height, &mut selection_quads, cx);
+            }
+            if let Some(caret) = caret {
+                caret_quads.push(caret);
             }
             continue;
         }

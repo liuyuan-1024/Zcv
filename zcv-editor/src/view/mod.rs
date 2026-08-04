@@ -711,12 +711,33 @@ impl Editor {
             .iter()
             .copied()
             .map(|selection| {
+                // 非空选区按方向键移动时折叠到选区边缘：左右落在选区两端，上下从两端出发；
+                // 词移动、行首尾等仍从 head 出发。
+                let base = if extend || selection.is_caret() {
+                    selection.head()
+                } else {
+                    match motion {
+                        // 左右方向键与单行上下移动：从选区两端出发。
+                        Motion::ByUnit(MovementUnit::Grapheme) | Motion::LineStep => {
+                            match direction {
+                                MovementDirection::Previous => selection.start(),
+                                MovementDirection::Next => selection.end(),
+                            }
+                        }
+                        // 翻页从选区底端出发（对齐 Zed：move_page_up/down 都基于 end）。
+                        Motion::PageStep(_) => selection.end(),
+                        _ => selection.head(),
+                    }
+                };
                 // 垂直移动本次使用的目标列；移动后持久化到选区。
                 let mut vertical_goal: Option<zcv_engine::DisplayColumn> = None;
                 let new_head = match motion {
                     Motion::ByUnit(unit) => {
-                        // 软换行模式下行首/行尾按显示行边界移动（对齐 Zed 的
-                        // prev/next_row_boundary 语义），其余单位走文本边界。
+                        // 左右方向键（grapheme 级）移动非空选区：折叠到选区端，不移动。
+                        if !extend && !selection.is_caret() && unit == MovementUnit::Grapheme {
+                            return Ok(Selection::caret(base).with_goal(None));
+                        }
+                        // 软换行模式下行首/行尾按显示行边界移动，其余单位走文本边界。
                         if unit == MovementUnit::LineEdge && self.display_map.is_wrapped() {
                             let head = selection.head();
                             return match direction {
@@ -746,7 +767,7 @@ impl Editor {
                             });
                         }
                         let buffer = self.buffer.read(cx);
-                        let head = buffer.byte_to_char(selection.head())?;
+                        let head = buffer.byte_to_char(base)?;
                         let target = buffer.movement_boundary(head, direction, unit)?;
                         buffer.char_to_byte(target)?
                     }
@@ -755,13 +776,13 @@ impl Editor {
                             Motion::PageStep(row_step) => row_step,
                             _ => 1,
                         };
-                        let point = self
-                            .display_map
-                            .offset_to_display_point(selection.head())
-                            .map_err(|error| zcv_engine::EngineError::EngineBug {
-                                location: "Editor::move_selections",
-                                detail: error.to_string(),
-                            })?;
+                        let point =
+                            self.display_map
+                                .offset_to_display_point(base)
+                                .map_err(|error| zcv_engine::EngineError::EngineBug {
+                                    location: "Editor::move_selections",
+                                    detail: error.to_string(),
+                                })?;
                         // 目标列：优先使用持久化的 goal，否则从当前位置推导。
                         let goal = selection.goal().unwrap_or(point.column());
                         vertical_goal = Some(goal);
@@ -2826,6 +2847,73 @@ mod tests {
             let selection = editor.selections.as_slice()[0];
             assert_eq!(selection.start(), ByteOffset::new(12));
             assert_eq!(selection.end(), ByteOffset::new(23));
+        });
+    }
+
+    #[gpui::test]
+    fn directional_moves_collapse_selection_to_its_edges(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
+        let (editor, cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+
+        // 选区按 ←：光标折叠到选区左端（不移动）
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::new(vec![Selection::new(
+                ByteOffset::new(7),
+                ByteOffset::new(11),
+            )]);
+        });
+        cx.dispatch_action(MoveLeft);
+        cx.read_entity(&editor, |editor, _| {
+            let selection = editor.selections.as_slice()[0];
+            assert!(selection.is_caret());
+            assert_eq!(selection.head(), ByteOffset::new(7));
+        });
+
+        // 选区按 →：光标折叠到选区右端
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::new(vec![Selection::new(
+                ByteOffset::new(7),
+                ByteOffset::new(11),
+            )]);
+        });
+        cx.dispatch_action(MoveRight);
+        cx.read_entity(&editor, |editor, _| {
+            let selection = editor.selections.as_slice()[0];
+            assert!(selection.is_caret());
+            assert_eq!(selection.head(), ByteOffset::new(11));
+        });
+
+        // 跨行选区按 ↑：光标从选区顶端出发向上移动一行
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::new(vec![Selection::new(
+                ByteOffset::new(7),
+                ByteOffset::new(18),
+            )]);
+        });
+        cx.dispatch_action(MoveUp);
+        cx.read_entity(&editor, |editor, _| {
+            let selection = editor.selections.as_slice()[0];
+            assert!(selection.is_caret());
+            assert_eq!(selection.head(), ByteOffset::new(1));
+        });
+
+        // 跨行选区按 ↓：光标从选区底端出发向下移动一行（列越界钳制到行尾）
+        cx.update_entity(&editor, |editor, _| {
+            editor.selections = SelectionSet::new(vec![Selection::new(
+                ByteOffset::new(7),
+                ByteOffset::new(18),
+            )]);
+        });
+        cx.dispatch_action(MoveDown);
+        cx.read_entity(&editor, |editor, _| {
+            let selection = editor.selections.as_slice()[0];
+            assert!(selection.is_caret());
+            // 列 6 越界钳制到末行行尾（delta 无换行，行尾即文档末尾）。
+            assert_eq!(selection.head(), ByteOffset::new(25));
         });
     }
 

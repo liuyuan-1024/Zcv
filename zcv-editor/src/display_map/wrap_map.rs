@@ -14,8 +14,8 @@ use gpui::{Font, LineFragment, LineWrapper, Pixels, TextSystem};
 use gpui_sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_engine::{
-    ByteOffset, CoordinateError, DisplayColumn, Line, LogicalColumn, Position, Snapshot, TextRange,
-    VisibleLine,
+    ByteOffset, CoordinateError, DisplayColumn, Line, LineContent, LogicalColumn, Position,
+    Snapshot, TextRange,
 };
 
 use super::error::DisplayMapResult;
@@ -169,14 +169,14 @@ impl<'a> WrapViewportRow<'a> {
 
 /// 视口显示行内容种类。
 ///
-/// Text 行携带整行可见文本（`visible`，已剥行尾换行）与本段字节范围；渲染端在 `indent` > 0 时把假空格拼在段文本前面。
+/// Text 行携带整行文本内容（`content`，已剥行尾换行）与本段字节范围；渲染端在 `indent` > 0 时把假空格拼在段文本前面。
 /// `column_base` 是该段起始的逻辑字符列，
 /// 用于命中测试与选区列换算。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapViewportRowKind<'a> {
     Text {
         logical_line: Line,
-        visible: VisibleLine<'a>,
+        content: LineContent<'a>,
         byte_range: Range<usize>,
         global_byte_start: usize,
         fragment_index: usize,
@@ -301,16 +301,16 @@ impl WrapSnapshot {
                     WrapViewportRowKind::Placeholder(placeholder)
                 }
                 WrapFragmentKind::Text(line) => {
-                    // visible_line 与 line_content 一样剥掉行尾换行，片段字节范围可直接切片。
-                    let visible = buffer.visible_line(line, None)?;
+                    // line_content 剥掉行尾换行，片段字节范围可直接切片。
+                    let content = buffer.line_content(line, None)?;
                     let global_byte_start =
-                        visible.visible_range().start().get() + fragment.byte_range.start;
+                        content.text_range().start().get() + fragment.byte_range.start;
                     let column_base = buffer
                         .byte_to_position(ByteOffset::new(global_byte_start))
                         .map_or(0, |position| position.column().get());
                     WrapViewportRowKind::Text {
                         logical_line: line,
-                        visible,
+                        content,
                         byte_range: fragment.byte_range,
                         global_byte_start,
                         fragment_index: fragment.fragment_index,

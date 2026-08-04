@@ -11,7 +11,7 @@ use gpui::{
     relative, size,
 };
 use zcv_engine::{ByteOffset, DisplayColumn, Line, SelectionSet, TextRange};
-use zcv_language::{BracketPair, HighlightSpan, SyntaxSnapshot};
+use zcv_language::{BracketPair, HighlightSpan};
 
 use super::display_map::{
     BufferPoint, DisplayPoint, DisplayRow, DisplaySnapshot, ProjectedRange, WrapViewportRowKind,
@@ -19,7 +19,7 @@ use super::display_map::{
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap};
-use zcv_theme::{color, syntax};
+use zcv_theme::color;
 
 const CARET_WIDTH: Pixels = px(2.);
 
@@ -272,7 +272,6 @@ impl Element for EditorElement {
             soft_wrap,
             mode,
             preferred_line_length,
-            syntax_snapshot,
             matching_bracket_pair,
         ) = {
             let editor = self.editor.read(cx);
@@ -286,7 +285,6 @@ impl Element for EditorElement {
                 editor.soft_wrap(),
                 editor.mode(),
                 editor.preferred_line_length(),
-                editor.syntax_snapshot(),
                 editor.matching_bracket_pair(),
             )
         };
@@ -369,7 +367,6 @@ impl Element for EditorElement {
         };
         let mut layout = layout_visible_lines(
             display_snapshot.clone(),
-            syntax_snapshot.clone(),
             presentation.clone(),
             VisibleLineLayoutParams {
                 geometry,
@@ -392,7 +389,6 @@ impl Element for EditorElement {
             let editor = self.editor.read(cx);
             layout = layout_visible_lines(
                 display_snapshot,
-                syntax_snapshot,
                 presentation,
                 VisibleLineLayoutParams {
                     geometry,
@@ -571,10 +567,10 @@ fn layout_line_width(
     };
     let text = match row.kind() {
         WrapViewportRowKind::Text {
-            visible,
+            content,
             byte_range,
             ..
-        } => &visible.as_str()[byte_range.clone()],
+        } => &content.as_str()[byte_range.clone()],
         WrapViewportRowKind::Placeholder(_) => "…",
     };
     let text_style = window.text_style();
@@ -595,7 +591,6 @@ fn layout_line_width(
 
 fn layout_visible_lines(
     display_snapshot: DisplaySnapshot,
-    syntax_snapshot: SyntaxSnapshot,
     presentation: EditorPresentation,
     params: VisibleLineLayoutParams<'_>,
     window: &mut Window,
@@ -622,7 +617,8 @@ fn layout_visible_lines(
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let mut lines = Vec::with_capacity(end.saturating_sub(start));
     let mut gutter_rows = Vec::with_capacity(end.saturating_sub(start));
-    let buffer_snapshot = display_snapshot.buffer_snapshot().clone();
+    // 可见范围的语法高亮来自 display_map 注入的全量缓存（解析完成时构建），渲染侧只做有序切片，不再每帧树遍历；
+    // 缓存版本与 buffer 不一致时返回空。
     let visible_highlights = display_snapshot
         .slice_viewport(DisplayRow::new(start), end.saturating_sub(start))
         .ok()
@@ -645,11 +641,10 @@ fn layout_visible_lines(
             }
             range
         })
-        .map_or_else(Vec::new, |range| {
-            syntax_snapshot.highlights(range, &buffer_snapshot)
-        });
+        .unwrap_or_default();
+    let visible_highlights = display_snapshot.highlighted_spans(&visible_highlights);
     // capture 索引 → 样式的预展开表：渲染每 run 一次数组索引，不再逐 run 做字符串回退查找。
-    let highlight_styles = syntax::style_table(syntax_snapshot.capture_names().as_ref());
+    let highlight_styles = display_snapshot.highlight_styles();
 
     let mut push_line = |row: usize,
                          logical_line: Option<Line>,
@@ -673,7 +668,7 @@ fn layout_visible_lines(
             byte_start,
             display_prefix_len,
             highlights,
-            &highlight_styles,
+            highlight_styles,
             presentation.marked_ranges(),
             TextRun {
                 len: text.len(),
@@ -739,7 +734,7 @@ fn layout_visible_lines(
             match row.kind() {
                 WrapViewportRowKind::Text {
                     logical_line,
-                    visible,
+                    content,
                     byte_range,
                     global_byte_start,
                     fragment_index,
@@ -747,7 +742,7 @@ fn layout_visible_lines(
                     column_base,
                 } => {
                     // 续行的假空格是显示文本的一部分，坐标与命中测试都把它算进列。
-                    let text = &visible.as_str()[byte_range.clone()];
+                    let text = &content.as_str()[byte_range.clone()];
                     let display_text = if *indent > 0 {
                         format!("{}{}", " ".repeat(*indent), text)
                     } else {
@@ -1150,6 +1145,7 @@ mod tests {
     use zcv_engine::{
         Buffer, BufferConfig, ByteOffset, DisplayColumn, Line, LineRange, LogicalColumn,
     };
+    use zcv_theme::syntax;
 
     #[test]
     fn logical_columns_map_to_utf8_boundaries() {
@@ -1188,8 +1184,13 @@ mod tests {
         assert!(runs[2].underline.is_none());
     }
 
-    #[test]
-    fn syntax_captures_apply_color_and_font_modifiers() {
+    #[gpui::test]
+    fn syntax_captures_apply_color_and_font_modifiers(cx: &mut TestAppContext) {
+        // 显式挂载内置深色主题：capture 样式表来自 zcv-theme 的静态状态，
+        // 不依赖其他测试的执行顺序。
+        cx.update(|cx| {
+            zcv_theme::ThemeChoice::Named("one-dark").apply(cx, None);
+        });
         let text = "fn strong";
         let base = TextRun {
             len: text.len(),
@@ -1291,7 +1292,6 @@ mod tests {
                 let display_snapshot = DisplayMap::new(snapshot.clone()).snapshot();
                 let layout = layout_visible_lines(
                     display_snapshot,
-                    zcv_language::SyntaxMap::new(&snapshot).snapshot(),
                     presentation,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -1349,7 +1349,6 @@ mod tests {
                 let text_bounds = Bounds::new(point(px(51.), px(0.)), size(px(349.), px(100.)));
                 let layout = layout_visible_lines(
                     DisplayMap::new(snapshot.clone()).snapshot(),
-                    zcv_language::SyntaxMap::new(&snapshot).snapshot(),
                     EditorPresentation::new(&snapshot, None),
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -1398,7 +1397,6 @@ mod tests {
                     .expect("折叠应成功");
                 let layout = layout_visible_lines(
                     map.snapshot(),
-                    zcv_language::SyntaxMap::new(&snapshot).snapshot(),
                     EditorPresentation::new(&snapshot, None),
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -1448,7 +1446,6 @@ mod tests {
                 let display_snapshot = DisplayMap::new(snapshot.clone()).snapshot();
                 let layout = layout_visible_lines(
                     display_snapshot,
-                    zcv_language::SyntaxMap::new(&snapshot).snapshot(),
                     presentation,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {

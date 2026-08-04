@@ -14,14 +14,15 @@ mod fold_map;
 mod tab_map;
 mod wrap_map;
 
+use gpui::HighlightStyle;
 #[cfg(test)]
 use zcv_engine::LineRange;
 use zcv_engine::{
-    ByteOffset, DisplayColumn, Line, LogicalColumn, Position, Snapshot, TextChangeBatch, TextRange,
+    BufferVersion, ByteOffset, DisplayColumn, Line, LogicalColumn, Position, Snapshot,
+    TextChangeBatch, TextRange,
 };
-
-#[cfg(test)]
-use zcv_engine::BufferVersion;
+use zcv_language::HighlightSpan;
+use zcv_theme::syntax;
 
 use error::DisplayMapResult;
 use fold_map::{ApplyOutcome, FoldMap, LogicalProjection};
@@ -117,15 +118,42 @@ impl DisplayPoint {
 /// 一帧渲染使用的只读显示快照。
 ///
 /// FoldSnapshot、TabSnapshot 与 WrapSnapshot 都是低成本克隆；渲染持有此值时
-/// 不会阻塞 Editor 接收后续 Buffer 更新。
+/// 不会阻塞 Editor 接收后续 Buffer 更新。语法高亮缓存同样以 Arc 携带。
 #[derive(Debug, Clone)]
 pub(super) struct DisplaySnapshot {
     wrap_snapshot: WrapSnapshot,
+    /// 全量语法高亮（Editor 在语法解析完成时经 `DisplayMap::set_highlights` 注入）。
+    highlights: std::sync::Arc<[HighlightSpan]>,
+    /// 高亮缓存对应的 buffer 版本；与当前 buffer 不一致时渲染侧拒绝使用。
+    highlights_version: BufferVersion,
+    /// capture 索引 → 样式的预展开表（capture 名表变化时重建）。
+    highlight_styles: std::sync::Arc<[HighlightStyle]>,
 }
 
 impl DisplaySnapshot {
     pub(super) fn buffer_snapshot(&self) -> &Snapshot {
         self.wrap_snapshot.buffer_snapshot()
+    }
+
+    /// 与当前 buffer 版本匹配的可见范围高亮（有序切片，零树遍历）。
+    ///
+    /// 语法插值推进后缓存版本落后于 buffer，此时返回空（等待下一次解析安装）。
+    pub(super) fn highlighted_spans(&self, range: &std::ops::Range<usize>) -> &[HighlightSpan] {
+        if self.buffer_snapshot().version() != self.highlights_version {
+            return &[];
+        }
+        let start = self
+            .highlights
+            .partition_point(|span| span.range.end <= range.start);
+        let end = self
+            .highlights
+            .partition_point(|span| span.range.start < range.end);
+        &self.highlights[start..end]
+    }
+
+    /// capture 索引 → 样式的预展开表（渲染每 run 一次数组索引）。
+    pub(super) fn highlight_styles(&self) -> &[HighlightStyle] {
+        &self.highlight_styles
     }
 
     #[cfg(test)]
@@ -186,17 +214,47 @@ pub(crate) struct DisplayMap {
     fold_map: FoldMap,
     tab_map: TabMap,
     wrap_map: WrapMap,
+    /// 全量语法高亮（Editor 在语法解析完成时注入，对齐 Zed 的 push_highlights）。
+    highlights: std::sync::Arc<[HighlightSpan]>,
+    /// 高亮缓存对应的 buffer 版本。
+    highlights_version: BufferVersion,
+    /// capture 名字表（与 `highlight_styles` 的构建输入，变化时重建样式表）。
+    capture_names: std::sync::Arc<[std::sync::Arc<str>]>,
+    /// capture 索引 → 样式的预展开表（渲染每 run 一次数组索引）。
+    highlight_styles: std::sync::Arc<[HighlightStyle]>,
 }
 
 impl DisplayMap {
     pub(crate) fn new(snapshot: Snapshot) -> Self {
-        let (fold_map, fold_snapshot) = FoldMap::new(snapshot);
+        let (fold_map, fold_snapshot) = FoldMap::new(snapshot.clone());
         let (tab_map, tab_snapshot) = TabMap::new(fold_snapshot);
         let (wrap_map, _) = WrapMap::new(tab_snapshot);
+        let version = fold_map.snapshot().buffer_snapshot().version();
         Self {
             fold_map,
             tab_map,
             wrap_map,
+            highlights: std::sync::Arc::from([]),
+            highlights_version: version,
+            capture_names: std::sync::Arc::from([]),
+            highlight_styles: std::sync::Arc::from([]),
+        }
+    }
+
+    /// 注入全量语法高亮与 capture 样式表（语法解析完成时由 Editor 调用）。
+    ///
+    /// capture 名字表未变化时复用已展开的样式表，避免每帧重建。
+    pub(crate) fn set_highlights(
+        &mut self,
+        highlights: std::sync::Arc<[HighlightSpan]>,
+        version: BufferVersion,
+        capture_names: std::sync::Arc<[std::sync::Arc<str>]>,
+    ) {
+        self.highlights = highlights;
+        self.highlights_version = version;
+        if self.capture_names != capture_names {
+            self.capture_names = capture_names;
+            self.highlight_styles = std::sync::Arc::from(syntax::style_table(&self.capture_names));
         }
     }
 
@@ -207,6 +265,9 @@ impl DisplayMap {
     pub(super) fn snapshot(&self) -> DisplaySnapshot {
         DisplaySnapshot {
             wrap_snapshot: self.wrap_map.snapshot().clone(),
+            highlights: std::sync::Arc::clone(&self.highlights),
+            highlights_version: self.highlights_version,
+            highlight_styles: std::sync::Arc::clone(&self.highlight_styles),
         }
     }
 

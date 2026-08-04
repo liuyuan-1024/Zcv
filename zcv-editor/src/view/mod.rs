@@ -355,10 +355,6 @@ impl Editor {
         self.display_map.snapshot()
     }
 
-    pub(super) fn syntax_snapshot(&self) -> SyntaxSnapshot {
-        self.syntax_snapshot.clone()
-    }
-
     pub(super) fn matching_bracket_pair(&self) -> Option<BracketPair> {
         let snapshot = self.display_map.buffer_snapshot();
         let caret = self.selections.primary().head().get();
@@ -525,6 +521,7 @@ impl Editor {
         let display_map = DisplayMap::new(snapshot);
         cx.observe(&language_buffer, |editor, language_buffer, cx| {
             editor.syntax_snapshot = language_buffer.read(cx).syntax_snapshot();
+            editor.push_highlights();
             editor.sync_display_map(cx);
             editor.input_layout = None;
             cx.notify();
@@ -534,7 +531,7 @@ impl Editor {
         let blink_manager = cx.new(|_| BlinkManager::new());
         cx.observe(&blink_manager, |_, _, cx| cx.notify()).detach();
 
-        Self {
+        let mut this = Self {
             language_buffer,
             buffer,
             buffer_subscription,
@@ -555,7 +552,9 @@ impl Editor {
             blink_manager_initialized: false,
             soft_wrap: SoftWrap::default(),
             preferred_line_length: 80,
-        }
+        };
+        this.push_highlights();
+        this
     }
 
     fn selection_for_utf16_range(&self, range: Range<usize>, cx: &App) -> Option<SelectionSet> {
@@ -1197,6 +1196,17 @@ impl Editor {
         let snapshot = self.buffer.read(cx).snapshot();
         let changes = self.buffer_subscription.consume();
         self.display_map.sync(snapshot, changes);
+    }
+
+    /// 把语法高亮与 capture 样式表注入显示管线（对齐 Zed 的 push_highlights）。
+    ///
+    /// 在语法快照更新（解析安装）时调用一次；渲染侧只做范围切片。
+    fn push_highlights(&mut self) {
+        self.display_map.set_highlights(
+            self.syntax_snapshot.highlighted_spans(),
+            self.syntax_snapshot.highlighted_version(),
+            self.syntax_snapshot.capture_names(),
+        );
     }
 
     pub(super) fn handle_move_left(

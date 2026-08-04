@@ -56,7 +56,7 @@ impl ActiveBufferLanguage {
 impl Render for ActiveBufferLanguage {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
         Glyph::text("status-bar.language", self.language.clone())
-            .label("选择语言")
+            .label("当前语言")
             .into_any_element()
     }
 }

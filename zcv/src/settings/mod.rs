@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result};
 use gpui::{App, Global, Task};
 use serde::Deserialize;
 use zcv_editor::SoftWrap;
-use zcv_theme::Theme;
+use zcv_theme::ThemeChoice;
 
 use crate::fs_watcher::{FsWatcher, Watcher};
 
@@ -15,24 +15,6 @@ const INITIAL_USER_SETTINGS: &str =
     include_str!("../../assets/settings/initial_user_settings.json");
 const SETTINGS_RELOAD_DEBOUNCE: Duration = Duration::from_millis(75);
 const SETTINGS_RELOAD_RETRY_DELAY: Duration = Duration::from_millis(50);
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-enum ThemeContent {
-    System,
-    OneDark,
-    OneLight,
-}
-
-impl From<ThemeContent> for Theme {
-    fn from(value: ThemeContent) -> Self {
-        match value {
-            ThemeContent::System => Theme::System,
-            ThemeContent::OneDark => Theme::OneDark,
-            ThemeContent::OneLight => Theme::OneLight,
-        }
-    }
-}
 
 /// 软换行模式的设置值，语义与 Zed 的 `soft_wrap` 一致。
 ///
@@ -75,7 +57,7 @@ where
 #[serde(default)]
 struct UserSettingsContent {
     #[serde(deserialize_with = "fallible")]
-    theme: Option<ThemeContent>,
+    theme: Option<String>,
     #[serde(deserialize_with = "fallible")]
     soft_wrap: Option<SoftWrapMode>,
     #[serde(deserialize_with = "fallible")]
@@ -86,7 +68,7 @@ struct UserSettingsContent {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct UserSettings {
-    pub(crate) theme: Theme,
+    pub(crate) theme: ThemeChoice,
     pub(crate) soft_wrap: SoftWrap,
     pub(crate) preferred_line_length: usize,
     /// 项目树扫描时完全排除的 glob 名单。
@@ -113,8 +95,8 @@ impl UserSettings {
             theme: content
                 .theme
                 .or(defaults.theme)
-                .map(Theme::from)
-                .unwrap_or(Theme::System),
+                .map(|s| ThemeChoice::from_config(&s))
+                .unwrap_or(ThemeChoice::System),
             soft_wrap: content
                 .soft_wrap
                 .or(defaults.soft_wrap)
@@ -308,7 +290,7 @@ mod tests {
     fn missing_fields_use_defaults() {
         let content = parse_user_settings(r#"{"theme":"one-light"}"#).unwrap();
         let settings = UserSettings::merge(content);
-        assert_eq!(settings.theme, Theme::OneLight);
+        assert_eq!(settings.theme, ThemeChoice::Named("one-light"));
         assert_eq!(settings.soft_wrap, SoftWrap::None);
         assert_eq!(settings.preferred_line_length, 80);
         assert!(
@@ -365,7 +347,7 @@ mod tests {
         assert_eq!(settings.soft_wrap, SoftWrap::None);
 
         let settings = UserSettings::merge(parse_user_settings(r#"{"theme":"unknown"}"#).unwrap());
-        assert_eq!(settings.theme, Theme::System);
+        assert_eq!(settings.theme, ThemeChoice::System);
 
         let settings = UserSettings::merge(
             parse_user_settings(r#"{"file_scan_exclusions":"not-a-list"}"#).unwrap(),
@@ -389,7 +371,7 @@ mod tests {
             .unwrap(),
         );
         assert_eq!(settings.soft_wrap, SoftWrap::None);
-        assert_eq!(settings.theme, Theme::OneDark);
+        assert_eq!(settings.theme, ThemeChoice::Named("one-dark"));
         assert_eq!(settings.file_scan_exclusions, vec!["**/target".to_string()]);
     }
 

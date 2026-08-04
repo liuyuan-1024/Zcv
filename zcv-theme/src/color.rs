@@ -9,8 +9,8 @@ use std::sync::OnceLock;
 
 use gpui::{App, Global, Rgba};
 
-use crate::Theme;
 use crate::palette::Palette;
+use crate::theme_data::ThemeData;
 
 /// 当前主题语义色的 gpui global 载体（对齐 Zed 的 ThemeRegistry）。
 struct ThemeColorsGlobal(ThemeColors);
@@ -137,30 +137,24 @@ impl ThemeColors {
     }
 }
 
-/// 切换主题：解析调色板 → 构建语义色快照 → 写入 gpui global（整体替换）。
-///
-/// 解析失败是内嵌数据错误：保留当前主题并记录，不让界面崩溃。
-pub(crate) fn set_theme(theme: Theme, cx: &mut App) {
-    let Some(palette) = Palette::for_theme(theme) else {
-        eprintln!("更新主题失败：主题 TOML 的 [ui] 段无法解析");
-        return;
-    };
-    cx.set_global(ThemeColorsGlobal(ThemeColors::from_palette(palette)));
+/// 切换主题：从注册表主题数据构建语义色快照 → 写入 gpui global（整体替换）。
+pub(crate) fn set_theme(theme: &ThemeData, cx: &mut App) {
+    cx.set_global(ThemeColorsGlobal(ThemeColors::from_palette(theme.palette)));
 }
 
 /// 返回当前主题的语义色（对齐 Zed `cx.theme()` 的借引用语义）。
 ///
-/// 主题尚未设置（窗口构建前）时返回内置 onedark 默认快照。
+/// 主题尚未设置（窗口构建前）时返回注册表首个主题的默认快照。
 pub fn current(cx: &App) -> &ThemeColors {
     cx.try_global::<ThemeColorsGlobal>()
         .map(|global| &global.0)
         .unwrap_or_else(|| {
             static DEFAULT: OnceLock<ThemeColors> = OnceLock::new();
             DEFAULT.get_or_init(|| {
-                ThemeColors::from_palette(
-                    Palette::for_theme(Theme::OneDark)
-                        .expect("内置 onedark 主题的 [ui] 段应可解析"),
-                )
+                let theme = crate::theme_data::themes()
+                    .first()
+                    .expect("主题注册表不应为空（至少包含内置主题）");
+                ThemeColors::from_palette(theme.palette)
             })
         })
 }

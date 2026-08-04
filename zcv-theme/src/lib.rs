@@ -1,68 +1,61 @@
 //! 视觉 token：色彩、间距、字号、圆角。
 //!
-//! [`Theme`] 是主题的唯一入口，配置字符串 ↔ 枚举 ↔ 调色板/语法高亮 在此映射。
+//! [`ThemeChoice`] 是主题配置入口：`System` 或注册表中的主题 id。
+//! 主题数据（调色板 + 语法高亮）由 [`theme_data`] 注册表统一持有，新增主题只需添加 TOML 文件并在注册表登记，无需改动本模块逻辑。
 
 use std::sync::atomic::{AtomicU16, Ordering};
 
-use gpui::{App, Font, FontFallbacks, Pixels, Window, WindowAppearance, font, px};
+use gpui::{App, Font, FontFallbacks, Pixels, Window, font, px};
 
 pub mod color;
 mod palette;
 pub mod syntax;
+mod theme_data;
 
+use theme_data::{ThemeData, theme_by_id, themes};
+
+/// 主题配置：跟随系统外观，或显式指定注册表中的主题。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Theme {
+pub enum ThemeChoice {
     System,
-    OneDark,
-    OneLight,
+    /// 注册表中的主题 id（如 `"one-dark"`）。
+    Named(&'static str),
 }
 
-impl Theme {
+impl ThemeChoice {
+    /// 从设置字符串解析；未知 id 回退到 `System`。
     pub fn from_config(s: &str) -> Self {
         match s {
-            "one-dark" => Self::OneDark,
-            "one-light" => Self::OneLight,
-            _ => Self::System,
+            "system" => Self::System,
+            _ => theme_by_id(s).map_or(Self::System, |theme| Self::Named(theme.id)),
         }
     }
 
+    /// 写回设置文件的字符串。
     pub fn as_config(self) -> &'static str {
         match self {
             Self::System => "system",
-            Self::OneDark => "one-dark",
-            Self::OneLight => "one-light",
+            Self::Named(id) => id,
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::System => "跟随系统",
-            Self::OneDark => "One Dark",
-            Self::OneLight => "One Light",
+            Self::System => "跟随系统".to_string(),
+            Self::Named(id) => {
+                theme_by_id(id).map_or_else(|| id.to_string(), |theme| theme.label.to_string())
+            }
         }
     }
 
-    pub fn next(self) -> Self {
+    /// 解析为具体主题：`System` 按窗口外观选择匹配的主题，无窗口时默认深色。
+    pub(crate) fn effective(self, window: Option<&Window>) -> &'static ThemeData {
         match self {
-            Self::System => Self::OneDark,
-            Self::OneDark => Self::OneLight,
-            Self::OneLight => Self::System,
-        }
-    }
-
-    pub fn is_system(self) -> bool {
-        self == Self::System
-    }
-
-    /// 把用户配置解析为具体主题：`System` 按窗口外观选择，无窗口时默认深色。
-    pub fn effective(self, window: Option<&Window>) -> Theme {
-        match self {
-            Self::System => match window.map(|w| w.appearance()) {
-                Some(WindowAppearance::Dark | WindowAppearance::VibrantDark) => Theme::OneDark,
-                Some(WindowAppearance::Light | WindowAppearance::VibrantLight) => Theme::OneLight,
-                None => Theme::OneDark,
-            },
-            Self::OneDark | Self::OneLight => self,
+            Self::Named(id) => theme_by_id(id).unwrap_or_else(|| first_theme()),
+            Self::System => window
+                .map(|w| w.appearance())
+                .and_then(|appearance| themes().iter().find(|theme| theme.appearance == appearance))
+                .unwrap_or_else(first_theme),
         }
     }
 
@@ -71,6 +64,13 @@ impl Theme {
         color::set_theme(theme, cx);
         syntax::set_theme(theme);
     }
+}
+
+/// 无窗口且注册表为空时的兜底（内置深色主题）。
+fn first_theme() -> &'static ThemeData {
+    themes()
+        .first()
+        .expect("主题注册表不应为空（至少包含内置主题）")
 }
 
 // ── 间距 ───────────────────────────────────────────────────────────

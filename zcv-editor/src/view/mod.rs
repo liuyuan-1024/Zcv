@@ -11,9 +11,9 @@ use gpui::{
     point, prelude::*, px, size,
 };
 use zcv_engine::{
-    Buffer, BufferConfig, ByteOffset, EngineResult, Line, MovementDirection, MovementUnit,
-    PositionMap, Selection, SelectionSet, Snapshot, TextRange, TextSubscription, TransactionId,
-    TransactionMergePolicy, TransactionMetadata, TransactionSource, Utf16Offset,
+    Buffer, BufferConfig, BufferVersion, ByteOffset, EngineResult, Line, MovementDirection,
+    MovementUnit, PositionMap, Selection, SelectionSet, Snapshot, TextRange, TextSubscription,
+    TransactionId, TransactionMergePolicy, TransactionMetadata, TransactionSource, Utf16Offset,
 };
 use zcv_language::{BracketPair, LanguageBuffer, SyntaxSnapshot};
 
@@ -81,6 +81,8 @@ pub enum EditorEvent {
     /// 编辑器关联的文件路径发生变化。
     PathChanged,
 }
+
+pub use zcv_buffer_diff::{DiffHunk, DiffHunkKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Motion {
@@ -191,6 +193,9 @@ pub struct Editor {
     blink_manager_initialized: bool,
     soft_wrap: SoftWrap,
     preferred_line_length: usize,
+    /// 注入的行级 diff hunks 与注入时的 buffer 版本（渲染门控用）。
+    diff_hunks: Vec<DiffHunk>,
+    diff_hunks_version: Option<BufferVersion>,
 }
 
 impl Editor {
@@ -298,6 +303,30 @@ impl Editor {
         });
         self.project_root = Some(project_root);
         cx.emit(EditorEvent::PathChanged);
+    }
+
+    /// 注入滚动轴 marker 的行级 diff hunks（git 状态刷新后由 bin 层调用）。
+    ///
+    /// 记录注入时的 buffer 版本：注入后发生的编辑会让行号失配，渲染侧（`diff_hunks`）按版本比对拒绝使用，等待下次刷新重新注入。
+    pub fn set_diff_hunks(&mut self, hunks: Vec<DiffHunk>, cx: &mut Context<Self>) {
+        let version = self.buffer.read(cx).snapshot().version();
+        if self.diff_hunks == hunks && self.diff_hunks_version == Some(version) {
+            return;
+        }
+        self.diff_hunks = hunks;
+        self.diff_hunks_version = Some(version);
+        cx.notify();
+    }
+
+    /// 与当前 buffer 版本匹配的 diff hunks；未注入或注入后发生编辑时返回空。
+    pub(crate) fn diff_hunks(&self, cx: &App) -> &[DiffHunk] {
+        if let Some(version) = self.diff_hunks_version
+            && version == self.buffer.read(cx).snapshot().version()
+        {
+            &self.diff_hunks
+        } else {
+            &[]
+        }
     }
 
     pub fn text(&self, cx: &App) -> String {
@@ -617,6 +646,8 @@ impl Editor {
             ),
             selection_history: SelectionHistory::default(),
             scroll_manager: ScrollManager::default(),
+            diff_hunks: Vec::new(),
+            diff_hunks_version: None,
             composition: None,
             input_layout: None,
             pixel_position_of_newest_cursor: None,
@@ -3631,6 +3662,40 @@ mod tests {
     }
 
     #[gpui::test]
+    fn diff_hunks_are_gated_by_buffer_version(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "line 0\nline 1\nline 2\n");
+        let editor = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
+
+        editor.update(cx, |editor, cx| {
+            editor.set_diff_hunks(
+                vec![DiffHunk {
+                    range: 1..2,
+                    kind: DiffHunkKind::Modified,
+                }],
+                cx,
+            );
+            assert_eq!(editor.diff_hunks(cx).len(), 1, "注入后应立即可见");
+
+            // 编辑 buffer 后版本推进，行号已失配，hunks 应被门控为不可见。
+            editor.set_text("changed\nline 1\nline 2\n", cx);
+            assert!(
+                editor.diff_hunks(cx).is_empty(),
+                "编辑后行号失配，应隐藏 hunks 等待重新注入"
+            );
+
+            // 重新注入（新版本）后恢复可见。
+            editor.set_diff_hunks(
+                vec![DiffHunk {
+                    range: 0..1,
+                    kind: DiffHunkKind::Added,
+                }],
+                cx,
+            );
+            assert_eq!(editor.diff_hunks(cx).len(), 1, "重新注入后应恢复");
+        });
+    }
+
+    #[gpui::test]
     fn ime_candidate_bounds_survive_composition_and_scroll_layout_invalidation(
         cx: &mut TestAppContext,
     ) {
@@ -3835,6 +3900,62 @@ mod tests {
             MouseButton::Left,
             Modifiers::default(),
         );
+    }
+
+    #[gpui::test]
+    fn dragging_thumb_to_marker_position_scrolls_to_that_row(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, scrolling_text());
+        let (editor, mut cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+        cx.run_until_parked();
+
+        // 注入行 50 的 diff hunk（行 50 内容 y = 50 × line_height）。
+        editor.update(cx, |editor, cx| {
+            editor.set_diff_hunks(
+                vec![DiffHunk {
+                    range: 50..51,
+                    kind: DiffHunkKind::Modified,
+                }],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let (track_bounds, thumb_bounds, per_pixel) = scrollbar_geometry(&editor, &mut cx);
+        let thumb_bounds = thumb_bounds.expect("内容超视口时应有 thumb");
+        // marker 的轨道位置（绝对定位：行 50 在文档中的位置）。
+        let markers = crate::scrollbar::marker_geometry(
+            [(50..51, DiffHunkKind::Modified)],
+            track_bounds,
+            per_pixel,
+            cx.update(|window, _| window.line_height()),
+        );
+        let marker_y = markers[0].y_range.start;
+        let track_x = track_bounds.origin.x + px(7.5);
+
+        // 从 thumb 顶（scroll_top=0）拖到 marker 位置：scroll_top 应精确等于 marker 行的内容 y。
+        cx.simulate_mouse_down(
+            point(track_x, thumb_bounds.origin.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.refresh().expect("测试窗口应可刷新");
+        cx.simulate_mouse_move(
+            point(track_x, marker_y),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.read_entity(&editor, |editor, _| {
+            let expected = marker_y * per_pixel;
+            let delta = (editor.scroll_top() - expected).abs() / px(1.);
+            assert!(
+                delta < 1.0,
+                "thumb 拖到 marker 处应精确滚动到该行（{}px），实际差 {delta}px",
+                expected,
+            );
+        });
     }
 
     #[gpui::test]

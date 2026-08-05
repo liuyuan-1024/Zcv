@@ -13,7 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
-use zcv_git::{DiffStat, FileStatus, GitRepository};
+use zcv_git::{DiffHunk, DiffStat, FileStatus, GitRepository};
 
 use super::worktree::{discover_git_repository, find_git_repositories};
 
@@ -32,13 +32,16 @@ pub(crate) enum GitStoreEvent {
 }
 
 /// 单个文件在某个仓库中的状态快照。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StatusEntry {
     pub(crate) status: FileStatus,
     /// 暂存 + 未暂存之和（面板展示改动计数用）。
     pub(crate) diff_stat: DiffStat,
     pub(crate) staged_diff_stat: DiffStat,
     pub(crate) unstaged_diff_stat: DiffStat,
+    /// 行级 diff hunks（None = 尚未查询；Some([]) = 已查询且无变化）。
+    /// 全量扫描不查，按需查询（打开文件 / 增量刷新时）。
+    pub(crate) hunks: Option<Arc<[DiffHunk]>>,
 }
 
 /// 单个仓库的状态快照。
@@ -59,6 +62,7 @@ pub(crate) struct Repository {
 enum GitJobKey {
     ReloadGitState,
     RefreshStatuses,
+    RefreshHunks,
     GitOperation(GitOperationKind),
 }
 
@@ -74,6 +78,7 @@ pub(crate) enum GitOperationKind {
 enum GitJob {
     ReloadGitState,
     RefreshStatuses,
+    RefreshHunks,
     GitOperation(GitOperationKind),
 }
 
@@ -82,6 +87,7 @@ impl GitJob {
         match self {
             GitJob::ReloadGitState => GitJobKey::ReloadGitState,
             GitJob::RefreshStatuses => GitJobKey::RefreshStatuses,
+            GitJob::RefreshHunks => GitJobKey::RefreshHunks,
             GitJob::GitOperation(operation) => GitJobKey::GitOperation(*operation),
         }
     }
@@ -102,11 +108,17 @@ struct RefreshData {
     statuses: zcv_git::GitStatus,
     staged: HashMap<PathBuf, DiffStat>,
     unstaged: HashMap<PathBuf, DiffStat>,
+    /// 已跟踪路径的行级 diff hunks（只查增量路径中状态为 Tracked 的文件）。
+    hunks: Vec<(PathBuf, Vec<DiffHunk>)>,
 }
+
+/// 按需 hunk 查询结果：仓库索引 → 路径 → hunks。
+type HunksByRepo = Vec<(usize, Vec<(PathBuf, Vec<DiffHunk>)>)>;
 
 enum JobResult {
     Reload(Vec<ReloadScan>),
     Refresh(Vec<(usize, RefreshData)>),
+    RefreshHunks(HunksByRepo),
     GitOperation(anyhow::Result<()>),
 }
 
@@ -117,6 +129,7 @@ pub(crate) struct GitStore {
     job_sender: async_channel::Sender<GitJob>,
     pending_jobs: HashMap<GitJobKey, ()>,
     paths_needing_status_update: BTreeSet<PathBuf>,
+    paths_needing_hunks: BTreeSet<PathBuf>,
     _job_task: Task<()>,
 }
 
@@ -162,6 +175,7 @@ impl GitStore {
             job_sender,
             pending_jobs: HashMap::new(),
             paths_needing_status_update: BTreeSet::new(),
+            paths_needing_hunks: BTreeSet::new(),
             _job_task: job_task,
         }
     }
@@ -213,6 +227,28 @@ impl GitStore {
         let repository = self.repo_for_path(&path)?;
         let relative = repo_relative_path(repository.repository.working_directory(), &path)?;
         repository.snapshot.statuses_by_path.get(&relative)
+    }
+
+    /// 文件的行级 diff hunks（None = 尚未查询；Some([]) = 已查询且无变化）。
+    pub(crate) fn hunks_for_path(&self, path: &Path) -> Option<Arc<[DiffHunk]>> {
+        self.status_for_path(path)?.hunks.clone()
+    }
+
+    /// 按需请求指定路径的 hunks（打开文件、或 Statuses 事件后补齐时调用）。
+    ///
+    /// prepare 阶段过滤：只对「已跟踪且尚未查询」的路径发起 diff，untracked/忽略/
+    /// 已查询路径直接丢弃（untracked 永不查询 → 永不画 marker，对齐 Zed）。
+    pub(crate) fn request_hunks(&mut self, paths: &[PathBuf], _cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = paths
+            .iter()
+            .map(|path| canonicalize_path(path))
+            .filter(|path| path.starts_with(&self.root))
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        self.paths_needing_hunks.extend(paths);
+        self.schedule_job(GitJob::RefreshHunks);
     }
 
     /// 查询目录的聚合状态（对齐 Zed `git_traversal` 的目录摘要）。
@@ -315,6 +351,33 @@ impl GitStore {
                     grouped_paths,
                 })
             }
+            GitJob::RefreshHunks => {
+                // 按需 hunk 查询：只对「已跟踪且尚未查询」的路径发起 diff，
+                // untracked/忽略/已查询路径直接丢弃（untracked 永不查询 → 永不画 marker）。
+                let paths = std::mem::take(&mut self.paths_needing_hunks);
+                let mut repositories = Vec::with_capacity(self.repositories.len());
+                let mut grouped_paths = vec![Vec::new(); self.repositories.len()];
+                for (index, repository) in self.repositories.iter().enumerate() {
+                    repositories.push(repository.repository.clone());
+                    let workdir = repository.repository.working_directory();
+                    grouped_paths[index].extend(paths.iter().filter_map(|path| {
+                        let path = canonicalize_path(path);
+                        let relative = path
+                            .starts_with(workdir)
+                            .then(|| repo_relative_path(workdir, &path))
+                            .flatten()?;
+                        let entry = repository.snapshot.statuses_by_path.get(&relative)?;
+                        (matches!(entry.status, FileStatus::Tracked { .. })
+                            && entry.hunks.is_none())
+                        .then_some(relative)
+                    }));
+                }
+                Some(JobPreparation {
+                    root,
+                    repositories,
+                    grouped_paths,
+                })
+            }
             GitJob::GitOperation(_) => {
                 // 对当前活动仓库执行（与 current_branch 同一选择逻辑）。
                 let repository = self
@@ -394,6 +457,24 @@ impl GitStore {
                 }
                 if head_changed {
                     cx.emit(GitStoreEvent::Head);
+                }
+                if statuses_changed {
+                    cx.emit(GitStoreEvent::Statuses);
+                }
+            }
+            (GitJob::RefreshHunks, JobResult::RefreshHunks(refreshed)) => {
+                let mut statuses_changed = false;
+                for (index, hunks_by_path) in refreshed {
+                    let Some(repository) = self.repositories.get_mut(index) else {
+                        continue;
+                    };
+                    for (path, hunks) in hunks_by_path {
+                        // get_mut 守卫：prepare → commit 间隙条目可能已消失（如外部删除），不复活。
+                        if let Some(entry) = repository.snapshot.statuses_by_path.get_mut(&path) {
+                            entry.hunks = Some(Arc::from(hunks));
+                            statuses_changed = true;
+                        }
+                    }
                 }
                 if statuses_changed {
                     cx.emit(GitStoreEvent::Statuses);
@@ -481,6 +562,17 @@ async fn execute_job(
             }
             JobResult::Refresh(refreshed)
         }
+        GitJob::RefreshHunks => {
+            let mut refreshed = Vec::new();
+            for (index, repository) in repositories.into_iter().enumerate() {
+                let paths = &grouped_paths[index];
+                if paths.is_empty() {
+                    continue;
+                }
+                refreshed.push((index, fetch_hunks_sync(&repository, paths)));
+            }
+            JobResult::RefreshHunks(refreshed)
+        }
         GitJob::GitOperation(operation) => {
             let result = repositories
                 .first()
@@ -493,6 +585,25 @@ async fn execute_job(
             JobResult::GitOperation(result)
         }
     }
+}
+
+/// 后台线程：逐路径查询行级 diff hunks（每路径一个 git 进程）。
+///
+/// 单路径失败仅跳过该路径（保留 None 等待下次事件重试，自愈），不中断整批。
+fn fetch_hunks_sync(
+    repository: &Arc<dyn GitRepository>,
+    paths: &[PathBuf],
+) -> Vec<(PathBuf, Vec<DiffHunk>)> {
+    paths
+        .iter()
+        .filter_map(|path| match repository.diff_hunks(path) {
+            Ok(hunks) => Some((path.clone(), hunks)),
+            Err(error) => {
+                log::warn!("读取 diff hunks 失败（{path:?}）：{error}");
+                None
+            }
+        })
+        .collect()
 }
 
 /// 后台线程：全量扫描一个仓库（head + status + 双 diff_stat）。
@@ -533,6 +644,8 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
                 diff_stat: add_diff_stats(staged_diff_stat, unstaged_diff_stat),
                 staged_diff_stat,
                 unstaged_diff_stat,
+                // 全量扫描不查 hunks，打开文件时按需查询。
+                hunks: None,
             };
             (path, entry)
         })
@@ -563,6 +676,23 @@ fn refresh_repository_data_sync(
         HashMap::new()
     };
     let unstaged = repository.diff_stat(false, paths).unwrap_or_default();
+    // hunks 与 status 同批次：只对「已跟踪」路径查 diff（untracked/忽略/干净路径跳过）。
+    let hunks = statuses
+        .statuses
+        .iter()
+        .filter_map(|(path, status)| {
+            if !matches!(status, FileStatus::Tracked { .. }) {
+                return None;
+            }
+            match repository.diff_hunks(path) {
+                Ok(hunks) => Some((path.clone(), hunks)),
+                Err(error) => {
+                    log::warn!("读取 diff hunks 失败（{path:?}）：{error}");
+                    None
+                }
+            }
+        })
+        .collect();
     RefreshData {
         paths: paths.to_vec(),
         branch,
@@ -570,6 +700,7 @@ fn refresh_repository_data_sync(
         statuses,
         staged,
         unstaged,
+        hunks,
     }
 }
 
@@ -600,13 +731,20 @@ fn merge_refresh(prev: &RepositorySnapshot, data: RefreshData) -> (RepositorySna
     for (path, status) in data.statuses.statuses {
         let staged_diff_stat = data.staged.get(&path).copied().unwrap_or_default();
         let unstaged_diff_stat = data.unstaged.get(&path).copied().unwrap_or_default();
+        let hunks = data
+            .hunks
+            .iter()
+            .find(|(hunk_path, _)| hunk_path == &path)
+            .map(|(_, hunks)| Arc::from(hunks.as_slice()));
         let entry = StatusEntry {
             status,
             diff_stat: add_diff_stats(staged_diff_stat, unstaged_diff_stat),
             staged_diff_stat,
             unstaged_diff_stat,
+            hunks,
         };
-        statuses_changed |= statuses_by_path.insert(path, entry) != Some(entry);
+        let replaced = statuses_by_path.insert(path.clone(), entry.clone());
+        statuses_changed |= replaced != Some(entry);
     }
 
     let head_changed = prev.head != data.head || prev.branch != data.branch;
@@ -690,6 +828,7 @@ mod tests {
                         diff_stat: DiffStat::default(),
                         staged_diff_stat: DiffStat::default(),
                         unstaged_diff_stat: DiffStat::default(),
+                        hunks: None,
                     },
                 ),
                 (
@@ -699,6 +838,7 @@ mod tests {
                         diff_stat: DiffStat::default(),
                         staged_diff_stat: DiffStat::default(),
                         unstaged_diff_stat: DiffStat::default(),
+                        hunks: None,
                     },
                 ),
             ]),
@@ -714,6 +854,7 @@ mod tests {
             },
             staged: HashMap::new(),
             unstaged: HashMap::new(),
+            hunks: Vec::new(),
         };
 
         let (snapshot, statuses_changed, head_changed) = merge_refresh(&prev, data);
@@ -746,6 +887,7 @@ mod tests {
             statuses: zcv_git::GitStatus::default(),
             staged: HashMap::new(),
             unstaged: HashMap::new(),
+            hunks: Vec::new(),
         };
 
         let (_, statuses_changed, head_changed) = merge_refresh(&prev, data);
@@ -775,7 +917,7 @@ mod tests {
         cx.run_until_parked();
 
         let entry = cx.read_entity(&git_store, |store, _| {
-            store.status_for_path(&root.join("tracked.txt")).copied()
+            store.status_for_path(&root.join("tracked.txt")).cloned()
         });
         let entry = entry.expect("应有 tracked.txt 的状态");
         assert!(entry.status.is_modified());
@@ -818,7 +960,7 @@ mod tests {
         cx.run_until_parked();
 
         let (status, head) = cx.read_entity(&git_store, |store, _| {
-            let entry = store.status_for_path(&root.join("tracked.txt")).copied();
+            let entry = store.status_for_path(&root.join("tracked.txt")).cloned();
             (entry, store.current_branch().map(str::to_string))
         });
         let entry = status.expect("应有刷新后的状态");
@@ -834,7 +976,7 @@ mod tests {
         cx.run_until_parked();
         assert!(
             cx.read_entity(&git_store, |store, _| {
-                store.status_for_path(&root.join("tracked.txt")).copied()
+                store.status_for_path(&root.join("tracked.txt")).cloned()
             })
             .is_none()
         );
@@ -1048,5 +1190,63 @@ mod tests {
             .to_string()
         };
         assert_eq!(rev(&remote), rev(&root), "push 后远程应指向本地 HEAD");
+    }
+
+    #[gpui::test]
+    fn request_hunks_fills_hunks_on_demand(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_repo();
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        let tracked = root.join("tracked.txt");
+        // 全量扫描不查 hunks：初始为 None。
+        assert!(
+            cx.read_entity(&git_store, |store, _| store.hunks_for_path(&tracked))
+                .is_none()
+        );
+
+        // 外部修改第 2 行 → 按需请求 hunks。
+        fs::write(&tracked, "第一行\n改了第二行\n").expect("应修改文件");
+        cx.update_entity(&git_store, |store, cx| {
+            store.refresh_statuses_for_paths(&[tracked.clone()], cx)
+        });
+        cx.run_until_parked();
+        cx.update_entity(&git_store, |store, cx| {
+            store.request_hunks(&[tracked.clone()], cx)
+        });
+        cx.run_until_parked();
+
+        let hunks = cx
+            .read_entity(&git_store, |store, _| store.hunks_for_path(&tracked))
+            .expect("请求后应有 hunks");
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].range, 1..2);
+        assert_eq!(hunks[0].kind, zcv_git::DiffHunkKind::Modified);
+    }
+
+    #[gpui::test]
+    fn request_hunks_skips_untracked_files(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_repo();
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        // 未跟踪文件：请求后仍为 None（永不查询，对齐 Zed 不画 untracked marker）。
+        let untracked = root.join("untracked.txt");
+        fs::write(&untracked, "新的\n").expect("应写入文件");
+        cx.update_entity(&git_store, |store, cx| {
+            store.refresh_statuses_for_paths(&[untracked.clone()], cx)
+        });
+        cx.run_until_parked();
+        cx.update_entity(&git_store, |store, cx| {
+            store.request_hunks(&[untracked.clone()], cx)
+        });
+        cx.run_until_parked();
+
+        assert!(
+            cx.read_entity(&git_store, |store, _| store.hunks_for_path(&untracked))
+                .is_none()
+        );
     }
 }

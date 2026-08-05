@@ -293,7 +293,7 @@ impl Project {
 
     /// 查询文件的 git 状态（不在任何仓库或未跟踪时对应状态）。
     pub(crate) fn git_status_for_path(&self, path: &Path, cx: &App) -> Option<StatusEntry> {
-        self.git_store.read(cx).status_for_path(path).copied()
+        self.git_store.read(cx).status_for_path(path).cloned()
     }
 
     /// 查询目录的聚合 git 状态（子项中优先级最高的状态）。

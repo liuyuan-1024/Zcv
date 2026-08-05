@@ -165,6 +165,19 @@ impl DisplaySnapshot {
         self.wrap_snapshot.line_count()
     }
 
+    /// 逻辑行 → 该行首个显示行（wrap 下行首）；行号越界返回 None。
+    ///
+    /// 组合 position_to_byte + offset_to_display_point（滚动轴 diff marker 用）。
+    pub(super) fn line_to_display_row(&self, line: Line) -> Option<DisplayRow> {
+        let offset = self
+            .buffer_snapshot()
+            .position_to_byte(Position::new(line, LogicalColumn::ZERO))
+            .ok()?;
+        self.offset_to_display_point(offset)
+            .ok()
+            .map(DisplayPoint::row)
+    }
+
     pub(super) fn is_wrapped(&self) -> bool {
         self.wrap_snapshot.is_wrapped()
     }

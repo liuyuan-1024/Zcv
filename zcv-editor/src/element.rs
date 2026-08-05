@@ -1,6 +1,7 @@
 //! Editor 的逐帧文本布局、绘制与像素命中测试。
 
 use std::collections::BTreeSet;
+use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{
@@ -19,8 +20,8 @@ use super::display_map::{
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
-use super::scrollbar::{SCROLLBAR_WIDTH, ScrollbarLayout};
-use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap};
+use super::scrollbar::{SCROLLBAR_WIDTH, ScrollbarLayout, marker_column_x_range, marker_geometry};
+use super::view::{DiffHunk, DiffHunkKind, Editor, EditorMode, EditorPresentation, SoftWrap};
 use zcv_theme::color;
 
 const CARET_WIDTH: Pixels = px(2.);
@@ -92,6 +93,8 @@ struct LayoutLine {
     shaped: ShapedLine,
     global_utf16_start: usize,
     wrap_info: Option<WrapRowInfo>,
+    /// 该显示行所属的 git diff 类型（内容背景用；wrap 续行同样标注）。
+    git_diff: Option<DiffHunkKind>,
 }
 
 /// 软换行续行信息：片段所属逻辑行、假空格缩进数与片段起始逻辑字符列。
@@ -125,6 +128,8 @@ struct VisibleLineLayoutParams<'a> {
     start_row: DisplayRow,
     scroll_offset: Point<Pixels>,
     line_height: Pixels,
+    /// git diff 显示行区间（prepaint 从 `diff_hunk_rows` 计算，gutter/内容共用）。
+    diff_rows: &'a [(Range<usize>, DiffHunkKind)],
 }
 
 impl EditorLayout {
@@ -380,6 +385,11 @@ impl Element for EditorElement {
             let editor = self.editor.read(cx);
             (editor.scroll_anchor().row(), editor.scroll_offset())
         };
+        // git diff 显示行区间：gutter 指示、内容背景与滚动轴 marker 共用（只依赖 snapshot 与注入 hunks，与滚动位置无关，autoscroll 重排可复用）。
+        let diff_rows = {
+            let editor = self.editor.read(cx);
+            diff_hunk_rows(&display_snapshot, editor.diff_hunks(cx))
+        };
         let mut layout = layout_visible_lines(
             display_snapshot.clone(),
             presentation.clone(),
@@ -389,6 +399,7 @@ impl Element for EditorElement {
                 start_row,
                 scroll_offset,
                 line_height,
+                diff_rows: &diff_rows,
             },
             window,
             cx,
@@ -411,6 +422,7 @@ impl Element for EditorElement {
                     start_row: editor.scroll_anchor().row(),
                     scroll_offset: editor.scroll_offset(),
                     line_height,
+                    diff_rows: &diff_rows,
                 },
                 window,
                 cx,
@@ -428,13 +440,22 @@ impl Element for EditorElement {
             .map(|gutter| window.insert_hitbox(gutter.bounds, HitboxBehavior::Normal));
         let scrollbar = (mode == EditorMode::Full).then(|| {
             let editor = self.editor.read(cx);
-            ScrollbarLayout::new(
+            let mut scrollbar_layout = ScrollbarLayout::new(
                 scrollbar_bounds,
                 editor.max_scroll_top(),
                 editor.scroll_top(),
                 editor.scrollbar_thumb_state(),
                 window,
-            )
+            );
+            // marker 每帧计算（hunks 数量级小；滚动中实时跟随，无需缓存/后台任务）。
+            // scroll_per_pixel 取 layout 自身算好的值，与 thumb 换算严格一致。
+            scrollbar_layout.markers = marker_geometry(
+                diff_rows.iter().cloned(),
+                scrollbar_layout.hitbox.bounds,
+                scrollbar_layout.scroll_per_pixel,
+                line_height,
+            );
+            scrollbar_layout
         });
 
         PrepaintState {
@@ -539,6 +560,45 @@ impl Element for EditorElement {
             }
         }
         if let Some(gutter) = &prepaint.layout.gutter {
+            let colors = color::current(cx);
+            // diff 行 gutter 背景（与内容区同色，整行贯通避免割裂）。
+            for row in &gutter.rows {
+                if let Some(kind) = row.git_diff {
+                    let background = match kind {
+                        DiffHunkKind::Added => colors.editor_diff_added_background,
+                        DiffHunkKind::Modified => colors.editor_diff_modified_background,
+                        DiffHunkKind::Deleted => colors.editor_diff_deleted_background,
+                    };
+                    window.paint_quad(fill(
+                        Bounds::from_corners(
+                            point(gutter.bounds.left(), row.origin.y),
+                            point(gutter.bounds.right(), row.origin.y + gutter.line_height),
+                        ),
+                        background,
+                    ));
+                }
+            }
+            // git diff 色条（对齐 Zed paint_gutter_diff_hunks：行号左侧竖条，状态色）。
+            let strip_width = gutter_strip_width(gutter.line_height);
+            for row in &gutter.rows {
+                if let Some(kind) = row.git_diff {
+                    let strip_color = match kind {
+                        DiffHunkKind::Added => colors.status_created,
+                        DiffHunkKind::Modified => colors.status_modified,
+                        DiffHunkKind::Deleted => colors.status_deleted,
+                    };
+                    window.paint_quad(fill(
+                        Bounds::from_corners(
+                            point(gutter.bounds.left(), row.origin.y),
+                            point(
+                                gutter.bounds.left() + strip_width,
+                                row.origin.y + gutter.line_height,
+                            ),
+                        ),
+                        strip_color,
+                    ));
+                }
+            }
             for row in &gutter.rows {
                 if let Err(error) =
                     row.shaped_line_number
@@ -556,6 +616,27 @@ impl Element for EditorElement {
                 bounds: prepaint.layout.text_clip_bounds,
             }),
             |window| {
+                // git diff 整行淡背景（diff 行在 selection 之下、文本之上）。
+                let diff_colors = color::current(cx);
+                for line in &prepaint.layout.lines {
+                    if let Some(kind) = line.git_diff {
+                        let background = match kind {
+                            DiffHunkKind::Added => diff_colors.editor_diff_added_background,
+                            DiffHunkKind::Modified => diff_colors.editor_diff_modified_background,
+                            DiffHunkKind::Deleted => diff_colors.editor_diff_deleted_background,
+                        };
+                        window.paint_quad(fill(
+                            Bounds::from_corners(
+                                point(prepaint.layout.text_clip_bounds.left(), line.origin.y),
+                                point(
+                                    prepaint.layout.text_clip_bounds.right(),
+                                    line.origin.y + prepaint.layout.line_height,
+                                ),
+                            ),
+                            background,
+                        ));
+                    }
+                }
                 for selection in prepaint.selections.drain(..) {
                     window.paint_quad(selection);
                 }
@@ -583,6 +664,22 @@ impl Element for EditorElement {
                 scrollbar.hitbox.bounds,
                 colors.scrollbar_track_background,
             ));
+            // git diff marker 列（track 之上、thumb 之下绘制；颜色对齐项目树 git 状态色）。
+            let column_x = marker_column_x_range(scrollbar.hitbox.bounds);
+            for marker in &scrollbar.markers {
+                let marker_color = match marker.kind {
+                    DiffHunkKind::Added => colors.status_created,
+                    DiffHunkKind::Modified => colors.status_modified,
+                    DiffHunkKind::Deleted => colors.status_deleted,
+                };
+                window.paint_quad(fill(
+                    Bounds::from_corners(
+                        point(column_x.start, marker.y_range.start),
+                        point(column_x.end, marker.y_range.end),
+                    ),
+                    marker_color,
+                ));
+            }
             if let Some(thumb_bounds) = scrollbar.thumb_bounds {
                 let thumb_color = match scrollbar.thumb_state {
                     ScrollbarThumbState::Dragging => colors.scrollbar_thumb_active_background,
@@ -707,6 +804,51 @@ impl EditorElement {
     }
 }
 
+/// hunks（逻辑行）→ 显示行区间：wrap 下行映射出的全部显示行都覆盖。
+///
+/// 覆盖终点取 hunk 之后第一行的行首显示行（对齐 Zed：end 行首显示行 − 1 即 hunk 最后一个显示行，左闭右开区间 [start, end) 恰好盖住全部 wrap 片段）；
+/// hunk 到达文件末尾时以显示快照行数为终点。
+/// 纯删除 hunk（空范围）锚定到所在显示行。
+/// 映射失败（越界等）跳过该 hunk。
+fn diff_hunk_rows(
+    snapshot: &DisplaySnapshot,
+    hunks: &[DiffHunk],
+) -> Vec<(Range<usize>, DiffHunkKind)> {
+    hunks
+        .iter()
+        .filter_map(|hunk| {
+            let start = snapshot
+                .line_to_display_row(Line::new(hunk.range.start))?
+                .get();
+            let end = if hunk.range.end > hunk.range.start {
+                match snapshot.line_to_display_row(Line::new(hunk.range.end)) {
+                    Some(row) => row.get(),
+                    None => snapshot.line_count(),
+                }
+            } else {
+                start + 1
+            };
+            Some((start..end.max(start + 1), hunk.kind))
+        })
+        .collect()
+}
+
+/// 查询显示行所属的 diff 类型（gutter 与内容背景共用；线性扫描，hunks 数量级小）。
+fn diff_kind_for_row(
+    diff_rows: &[(Range<usize>, DiffHunkKind)],
+    row: usize,
+) -> Option<DiffHunkKind> {
+    diff_rows
+        .iter()
+        .find(|(range, _)| range.contains(&row))
+        .map(|(_, kind)| *kind)
+}
+
+/// gutter diff 色条宽度（对齐 Zed `gutter_strip_width`：0.275 × 行高）。
+fn gutter_strip_width(line_height: Pixels) -> Pixels {
+    (line_height * 0.275).floor()
+}
+
 fn layout_line_width(
     display_snapshot: &DisplaySnapshot,
     row: DisplayRow,
@@ -760,6 +902,7 @@ fn layout_visible_lines(
         start_row,
         scroll_offset,
         line_height,
+        diff_rows,
     } = params;
     let line_count = display_snapshot.line_count();
     let start = start_row.get().min(line_count.saturating_sub(1));
@@ -836,6 +979,7 @@ fn layout_visible_lines(
             window
                 .text_system()
                 .shape_line(text.to_owned().into(), font_size, &runs, None);
+        let git_diff = diff_kind_for_row(diff_rows, row);
         lines.push(LayoutLine {
             row: DisplayRow::new(row),
             logical_line,
@@ -846,20 +990,26 @@ fn layout_visible_lines(
             shaped,
             global_utf16_start: utf16_start,
             wrap_info,
+            git_diff,
         });
         if let (Some(logical_line), Some((gutter_bounds, dimensions))) =
             (gutter_line, gutter_geometry)
         {
             let number = (logical_line.get() + 1).to_string();
             let active = active_lines.contains(&logical_line);
+            let colors = color::current(cx);
+            // 行号按 diff 状态着色（对齐 Zed：DiffAdded → version_control_added）。
+            let number_color = match (active, git_diff) {
+                (_, Some(DiffHunkKind::Added)) => colors.status_created,
+                (_, Some(DiffHunkKind::Deleted)) => colors.status_deleted,
+                (_, Some(DiffHunkKind::Modified)) => colors.status_modified,
+                (true, None) => colors.editor_active_line_number,
+                (false, None) => colors.editor_line_number,
+            };
             let run = TextRun {
                 len: number.len(),
                 font: text_style.font(),
-                color: if active {
-                    color::current(cx).editor_active_line_number.into()
-                } else {
-                    color::current(cx).editor_line_number.into()
-                },
+                color: number_color.into(),
                 background_color: None,
                 underline: None,
                 strikethrough: None,
@@ -876,6 +1026,7 @@ fn layout_visible_lines(
                 ),
                 shaped_line_number,
                 active,
+                git_diff,
             });
         }
     };
@@ -1311,6 +1462,32 @@ mod tests {
     }
 
     #[test]
+    fn diff_kind_for_row_matches_display_row_ranges() {
+        // 输入是 diff_hunk_rows 的输出：Deleted 已从空区间展开为锚定行的单行区间。
+        let diff_rows = vec![
+            (2..5, DiffHunkKind::Modified),
+            (7..8, DiffHunkKind::Deleted),
+        ];
+
+        assert_eq!(diff_kind_for_row(&diff_rows, 1), None);
+        assert_eq!(
+            diff_kind_for_row(&diff_rows, 2),
+            Some(DiffHunkKind::Modified)
+        );
+        assert_eq!(
+            diff_kind_for_row(&diff_rows, 4),
+            Some(DiffHunkKind::Modified)
+        );
+        assert_eq!(diff_kind_for_row(&diff_rows, 5), None);
+        assert_eq!(
+            diff_kind_for_row(&diff_rows, 7),
+            Some(DiffHunkKind::Deleted)
+        );
+        assert_eq!(diff_kind_for_row(&diff_rows, 8), None);
+        assert_eq!(diff_kind_for_row(&[], 0), None);
+    }
+
+    #[test]
     fn marked_text_is_a_separate_underlined_text_run() {
         let text = "a中文b";
         let runs = text_runs(
@@ -1411,6 +1588,7 @@ mod tests {
                         shaped,
                         global_utf16_start: 0,
                         wrap_info: None,
+                        git_diff: None,
                     }],
                     gutter: None,
                     text_clip_bounds: Bounds::new(point(px(0.), px(0.)), size(px(400.), px(100.))),
@@ -1462,6 +1640,7 @@ mod tests {
                         start_row: DisplayRow::new(5_000),
                         scroll_offset: point(px(0.), px(10.)),
                         line_height: px(20.),
+                        diff_rows: &[],
                     },
                     window,
                     cx,
@@ -1516,6 +1695,7 @@ mod tests {
                         start_row: DisplayRow::ZERO,
                         scroll_offset: point(px(20.), px(0.)),
                         line_height: px(20.),
+                        diff_rows: &[],
                     },
                     window,
                     cx,
@@ -1567,6 +1747,7 @@ mod tests {
                         start_row: DisplayRow::ZERO,
                         scroll_offset: point(px(0.), px(0.)),
                         line_height: px(20.),
+                        diff_rows: &[],
                     },
                     window,
                     cx,
@@ -1616,6 +1797,7 @@ mod tests {
                         start_row: DisplayRow::new(10),
                         scroll_offset: point(px(0.), px(0.)),
                         line_height: px(20.),
+                        diff_rows: &[],
                     },
                     window,
                     cx,
@@ -1624,6 +1806,93 @@ mod tests {
                     layout_selections(&SelectionSet::caret(ByteOffset::ZERO), &layout, px(20.), cx);
 
                 assert!(carets.is_empty());
+            })
+            .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
+    fn diff_hunk_rows_maps_logical_rows_to_display_rows(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, _cx| {
+                let text_system = window.text_system().clone();
+                let font = window.text_style().font();
+                let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+
+                // 无 wrap：逻辑行 == 显示行；纯删除空范围锚定一个显示行。
+                let buffer = Buffer::scratch(
+                    "line 0\nline 1\nline 2\nline 3\nline 4\n".to_owned(),
+                    BufferConfig::default(),
+                )
+                .expect("应创建 Buffer");
+                let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
+                assert_eq!(
+                    diff_hunk_rows(
+                        &snapshot,
+                        &[
+                            DiffHunk {
+                                range: 1..2,
+                                kind: DiffHunkKind::Modified,
+                            },
+                            DiffHunk {
+                                range: 3..3,
+                                kind: DiffHunkKind::Deleted,
+                            },
+                            DiffHunk {
+                                range: 4..5,
+                                kind: DiffHunkKind::Added,
+                            },
+                        ],
+                    ),
+                    vec![
+                        (1..2, DiffHunkKind::Modified),
+                        (3..4, DiffHunkKind::Deleted),
+                        (4..5, DiffHunkKind::Added),
+                    ]
+                );
+
+                // wrap：宽行拆成多个显示行，marker 覆盖全部片段。
+                let buffer = Buffer::scratch(
+                    "aaaa bbbb cccc dddd eeee ".repeat(10) + "\nline 1\n",
+                    BufferConfig::default(),
+                )
+                .expect("应创建 Buffer");
+                let mut map = DisplayMap::new(buffer.snapshot());
+                assert!(
+                    map.set_wrap_width(Some(px(100.)), font.clone(), font_size, &text_system),
+                    "宽行应产生换行"
+                );
+                let snapshot = map.snapshot();
+                let line_count = snapshot.line_count();
+                assert!(line_count > 2, "宽行应拆成多个显示行");
+                let row_1 = snapshot
+                    .line_to_display_row(Line::new(1))
+                    .expect("行 1 应可映射")
+                    .get();
+
+                // 行 0 wrap 成 N 段：marker 覆盖 [0, N)，N = 行 1 的行首显示行。
+                assert_eq!(
+                    diff_hunk_rows(
+                        &snapshot,
+                        &[DiffHunk {
+                            range: 0..1,
+                            kind: DiffHunkKind::Modified,
+                        }],
+                    ),
+                    vec![(0..row_1, DiffHunkKind::Modified)]
+                );
+
+                // 越界 hunk（超出文件末尾）用 line_count 收尾。
+                assert_eq!(
+                    diff_hunk_rows(
+                        &snapshot,
+                        &[DiffHunk {
+                            range: 1..10,
+                            kind: DiffHunkKind::Modified,
+                        }],
+                    ),
+                    vec![(row_1..line_count, DiffHunkKind::Modified)]
+                );
             })
             .expect("测试窗口应保持可用");
     }

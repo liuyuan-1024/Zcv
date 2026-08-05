@@ -283,7 +283,7 @@ mod tests {
     fn git_status_from(
         statuses: &HashMap<PathBuf, FileStatus>,
     ) -> impl Fn(&Path, bool) -> Option<FileStatus> + '_ {
-        |path, _| statuses.get(path).copied()
+        |path, _| statuses.get(path).cloned()
     }
 
     #[test]

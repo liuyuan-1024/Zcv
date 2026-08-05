@@ -3,12 +3,14 @@
 //! 仓库发现（沿祖先查找 / 项目树内遍历）是项目管理层的决策，由 `zcv` 的 worktree 快照层负责（对齐 Zed：发现逻辑在 worktree crate，git crate 只做命令封装与输出解析）。
 //! 所有方法同步阻塞执行，由调用方负责移入后台线程。
 
+use crate::diff::parse_diff_hunks;
 use crate::status::{DiffStat, GitStatus, parse_numstat};
 use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use zcv_buffer_diff::DiffHunk;
 
 /// 对单个 git 仓库的命令行封装。
 ///
@@ -27,6 +29,12 @@ pub trait GitRepository: Send + Sync {
 
     /// 查询 diff 行数统计：`staged` 为 index↔HEAD（`--cached`），否则为 worktree↔index。
     fn diff_stat(&self, staged: bool, paths: &[PathBuf]) -> Result<HashMap<PathBuf, DiffStat>>;
+
+    /// 查询单文件相对 HEAD 的行级 diff hunks（`git diff --unified=0 HEAD -- <path>`）。
+    ///
+    /// 未跟踪/干净/二进制文件输出为空；空仓库（无 HEAD 提交）时返回空。
+    /// base 取 HEAD（对齐 Zed 的 diff base：`HEAD:path` blob），staged + unstaged 合并显示。
+    fn diff_hunks(&self, path: &Path) -> Result<Vec<DiffHunk>>;
 
     /// 批量读取 revision（如 `HEAD:path`、`:path`）的 blob 内容，缺失的 revision 为 `None`。
     fn load_revisions(&self, revs: &[&str]) -> Result<Vec<Option<Vec<u8>>>>;
@@ -180,6 +188,21 @@ impl GitRepository for RealGitRepository {
         }
         let output = self.run_command(&mut command, "git diff --numstat")?;
         Ok(parse_numstat(&output.stdout))
+    }
+
+    fn diff_hunks(&self, path: &Path) -> Result<Vec<DiffHunk>> {
+        let mut command = self.build_command(&["diff", "--unified=0", "HEAD", "--"]);
+        // 单参数传 Path（与 diff_stat 同模式），含空格/非 UTF-8 路径安全。
+        command.arg(path);
+        let output = command
+            .stdin(Stdio::null())
+            .output()
+            .context("执行 git diff --unified=0 失败")?;
+        if !output.status.success() {
+            // 空仓库（无 HEAD 提交）等"无结果"场景返回空，不报错。
+            return Ok(Vec::new());
+        }
+        Ok(parse_diff_hunks(&output.stdout))
     }
 
     fn fetch(&self) -> Result<()> {
@@ -636,6 +659,87 @@ mod tests {
             String::from_utf8_lossy(&remote_head.stdout).trim(),
             String::from_utf8_lossy(&local_head.stdout).trim(),
             "push 后远程应指向本地 HEAD"
+        );
+    }
+
+    #[test]
+    fn diff_hunks_reports_worktree_changes() {
+        use zcv_buffer_diff::DiffHunkKind::*;
+
+        let (root, _temp) = test_repo();
+        let repository = open_repo(&root);
+        let tracked = Path::new("tracked.txt");
+
+        // 干净文件：无 hunks。
+        assert_eq!(repository.diff_hunks(tracked).unwrap(), vec![]);
+
+        // 修改第 2 行 → Modified（range 1..2）。
+        fs::write(root.join("tracked.txt"), "第一行\n改了第二行\n").expect("应写入文件");
+        assert_eq!(
+            repository.diff_hunks(tracked).unwrap(),
+            vec![DiffHunk {
+                range: 1..2,
+                kind: Modified,
+            }]
+        );
+
+        // 末尾追加 → Added。
+        fs::write(root.join("tracked.txt"), "第一行\n第二行\n新增行\n").expect("应写入文件");
+        assert_eq!(
+            repository.diff_hunks(tracked).unwrap(),
+            vec![DiffHunk {
+                range: 2..3,
+                kind: Added,
+            }]
+        );
+
+        // 删除第一行 → Deleted（锚定删除点行 0）。
+        fs::write(root.join("tracked.txt"), "第二行\n").expect("应写入文件");
+        assert_eq!(
+            repository.diff_hunks(tracked).unwrap(),
+            vec![DiffHunk {
+                range: 0..0,
+                kind: Deleted,
+            }]
+        );
+    }
+
+    #[test]
+    fn diff_hunks_empty_for_untracked_clean_and_binary() {
+        let (root, _temp) = test_repo();
+        let repository = open_repo(&root);
+
+        // 未跟踪文件：git diff HEAD 无输出。
+        fs::write(root.join("untracked.txt"), "新的\n").expect("应写入文件");
+        assert_eq!(
+            repository.diff_hunks(Path::new("untracked.txt")).unwrap(),
+            vec![]
+        );
+
+        // 干净文件：无 hunks。
+        assert_eq!(
+            repository.diff_hunks(Path::new("tracked.txt")).unwrap(),
+            vec![]
+        );
+
+        // 已跟踪二进制文件：Binary files differ → 空。
+        fs::write(root.join("img.png"), [0x89u8, 0x50, 0x4e, 0x47]).expect("应写入文件");
+        run_in(&root, &["git", "add", "img.png"]);
+        run_in(&root, &["git", "commit", "-q", "-m", "add png"]);
+        fs::write(root.join("img.png"), [0x89u8, 0x50, 0x4e, 0x47, 0x00]).expect("应写入文件");
+        assert_eq!(repository.diff_hunks(Path::new("img.png")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn diff_hunks_empty_without_head() {
+        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+        let root = temp_dir.path().to_path_buf();
+        run_in(&root, &["git", "init", "-q", "-b", "master"]);
+
+        let repository = open_repo(&root);
+        assert_eq!(
+            repository.diff_hunks(Path::new("tracked.txt")).unwrap(),
+            vec![]
         );
     }
 }

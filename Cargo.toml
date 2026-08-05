@@ -10,6 +10,7 @@
 [workspace]
 members = [
     "zcv",
+    "zcv-buffer-diff",
     "zcv-editor",
     "zcv-engine",
     "zcv-git",
@@ -18,6 +19,7 @@ members = [
 ]
 default-members = [
     "zcv",
+    "zcv-buffer-diff",
     "zcv-editor",
     "zcv-engine",
     "zcv-git",
@@ -34,6 +36,7 @@ doc_lazy_continuation = "allow"
 
 [workspace.dependencies]
 # ---- 内部 crate ----
+zcv-buffer-diff = { path = "zcv-buffer-diff" }
 zcv-engine = { path = "zcv-engine" }
 zcv-editor = { path = "zcv-editor" }
 zcv-git = { path = "zcv-git" }

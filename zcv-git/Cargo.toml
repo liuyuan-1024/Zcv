@@ -6,6 +6,7 @@ description = "zcv —— git 命令行后端（仓库发现、status/numstat/ca
 
 [dependencies]
 anyhow.workspace = true
+zcv-buffer-diff.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

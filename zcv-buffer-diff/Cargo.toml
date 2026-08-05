@@ -1,0 +1,10 @@
+[package]
+name = "zcv-buffer-diff"
+version.workspace = true
+edition.workspace = true
+description = "zcv —— 行级 diff 数据模型（对齐 Zed buffer_diff 的类型归属层）"
+
+[dependencies]
+
+[lints]
+workspace = true

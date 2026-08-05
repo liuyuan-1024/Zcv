@@ -5,6 +5,8 @@
 use gpui::{Bounds, Pixels, Point, ShapedLine, point};
 use zcv_engine::Line;
 
+use super::view::DiffHunkKind;
+
 /// 与 Zed 默认设置一致：至少预留四位行号，避免小文件增行时 gutter 频繁抖动。
 pub(super) const MIN_LINE_NUMBER_DIGITS: usize = 4;
 
@@ -44,6 +46,8 @@ pub(super) struct GutterRow {
     pub(super) origin: Point<Pixels>,
     pub(super) shaped_line_number: ShapedLine,
     pub(super) active: bool,
+    /// 该显示行所属的 git diff 类型（无 diff 时为 None，用于行号着色与色条）。
+    pub(super) git_diff: Option<DiffHunkKind>,
 }
 
 pub(super) struct GutterLayout {
@@ -127,12 +131,14 @@ mod tests {
                     origin: point(px(20.), px(-5.)),
                     shaped_line_number: ShapedLine::default(),
                     active: false,
+                    git_diff: None,
                 },
                 GutterRow {
                     logical_line: Line::new(11),
                     origin: point(px(20.), px(15.)),
                     shaped_line_number: ShapedLine::default(),
                     active: true,
+                    git_diff: Some(DiffHunkKind::Modified),
                 },
             ],
         };

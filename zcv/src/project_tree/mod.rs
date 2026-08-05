@@ -894,7 +894,7 @@ impl ProjectTreeState {
     /// 逐行更新 git 状态（git 事件驱动，不重扫目录）。
     fn update_git_statuses(&mut self, statuses: HashMap<PathBuf, FileStatus>) {
         for row in &mut self.rows {
-            row.git_status = statuses.get(&row.path).copied();
+            row.git_status = statuses.get(&row.path).cloned();
         }
     }
 

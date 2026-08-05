@@ -92,6 +92,12 @@ pub struct ThemeColors {
     pub editor_selection_background: Rgba,
     /// 编辑器光标颜色。
     pub editor_cursor: Rgba,
+    /// 编辑器 diff 新增行背景（status_created 的低透明版本）。
+    pub editor_diff_added_background: Rgba,
+    /// 编辑器 diff 修改行背景（status_modified 的低透明版本）。
+    pub editor_diff_modified_background: Rgba,
+    /// 编辑器 diff 删除行背景（status_deleted 的低透明版本）。
+    pub editor_diff_deleted_background: Rgba,
     /// 滚动轴轨道背景（默认透明，轨道只为占位与后续 marker 绘制）。
     pub scrollbar_track_background: Rgba,
     /// 滚动轴 thumb 静止色。
@@ -141,6 +147,19 @@ impl ThemeColors {
             editor_active_line_number: palette.gray.s[8],
             editor_selection_background: palette.blue.a[2],
             editor_cursor: palette.blue.s[6],
+            // diff 背景 = 状态色 30% 透明度（深色/浅色主题下都成立）。
+            editor_diff_added_background: Rgba {
+                a: 0.3,
+                ..palette.green.s[6]
+            },
+            editor_diff_modified_background: Rgba {
+                a: 0.3,
+                ..palette.yellow.s[6]
+            },
+            editor_diff_deleted_background: Rgba {
+                a: 0.3,
+                ..palette.red.s[6]
+            },
             // 对齐 Zed 默认值：thumb 用中性色 alpha 3/4/5 级，track 透明。
             scrollbar_track_background: Rgba {
                 r: 0.,

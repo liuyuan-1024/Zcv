@@ -52,6 +52,7 @@ use crate::project_search::ProjectSearchButton;
 use crate::project_tree::{OnCreate, OnOpenFile, OnRename, OnTrash, ProjectTree};
 use crate::recent_projects::{OnProjectSelected, ToggleProjectPicker};
 use crate::settings::SettingsStore;
+use zcv_editor::Editor;
 use zcv_theme::{color, typography};
 
 actions!(workspace, [Save]);
@@ -284,6 +285,8 @@ impl Workspace {
                 bar.set_branch(branch);
                 cx.notify();
             });
+            // hunks 查询完成（Statuses 事件）后补推给打开的编辑器；缺失路径按需请求。
+            workspace.push_diff_hunks(cx);
         });
 
         let pane_subscription = cx.subscribe(&pane, |workspace, pane, event, cx| {
@@ -296,6 +299,8 @@ impl Workspace {
                     tree.reveal_active_path(active_path, cx);
                 });
             }
+            // 打开/激活编辑器时推送 git diff hunks（打开即有快照里的现成数据）。
+            workspace.push_diff_hunks(cx);
         });
 
         let settings_subscription =
@@ -429,6 +434,38 @@ impl Workspace {
         match crate::settings::ensure_user_settings_file() {
             Ok(path) => self.open_path(path.to_path_buf(), true, window, cx),
             Err(error) => eprintln!("无法打开设置文件：{error}"),
+        }
+    }
+
+    /// 把 GitStore 快照中的行级 diff hunks 推送给打开的 Editor。
+    ///
+    /// 路径尚未查询（打开文件后首次、或全量扫描后）时按需发起后台查询，完成后经 GitStoreEvent::Statuses 回到本函数补齐（无死循环：查询完成即 Some）。
+    fn push_diff_hunks(&mut self, cx: &mut Context<Self>) {
+        let store = self.project.read(cx).git_store();
+        // 先收集打开的编辑器 (editor, path)，避免持 pane 借用时再可变借用 cx。
+        let opened: Vec<(Entity<Editor>, PathBuf)> = self
+            .pane
+            .read(cx)
+            .tabs
+            .iter()
+            .filter_map(|item| {
+                let editor = item.downcast::<Editor>()?;
+                let path = item.file_path(cx)?;
+                Some((editor, path))
+            })
+            .collect();
+        let mut missing = Vec::new();
+        for (editor, path) in opened {
+            let Some(hunks) = store.read(cx).hunks_for_path(&path) else {
+                // 尚未查询：按需请求，事件回来再补。
+                missing.push(path);
+                continue;
+            };
+            let hunks: Vec<zcv_editor::DiffHunk> = hunks.to_vec();
+            editor.update(cx, |editor, cx| editor.set_diff_hunks(hunks, cx));
+        }
+        if !missing.is_empty() {
+            store.update(cx, |store, cx| store.request_hunks(&missing, cx));
         }
     }
 

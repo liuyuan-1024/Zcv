@@ -13,6 +13,8 @@ pub(crate) struct TopBar {
     pub(crate) project_picker: Entity<ProjectPicker>,
     /// 当前 git 分支名（由 Workspace 订阅 GitStore 的 Head 事件刷新）。
     branch: Option<String>,
+    /// 项目是否已发现 git 仓库（非 git 项目不显示分支与同步/推送/拉取按钮）。
+    has_repositories: bool,
 }
 
 impl TopBar {
@@ -21,11 +23,16 @@ impl TopBar {
         Self {
             project_picker,
             branch: None,
+            has_repositories: false,
         }
     }
 
     pub(crate) fn set_branch(&mut self, branch: Option<String>) {
         self.branch = branch;
+    }
+
+    pub(crate) fn set_has_repositories(&mut self, has_repositories: bool) {
+        self.has_repositories = has_repositories;
     }
 }
 
@@ -56,6 +63,7 @@ impl gpui::Render for TopBar {
                 window,
                 &self.project_picker,
                 self.branch.as_deref(),
+                self.has_repositories,
                 cx,
             )))
             .child(drag_spacer())
@@ -75,6 +83,7 @@ fn leading_slots(
     window: &Window,
     project_picker: &gpui::Entity<ProjectPicker>,
     branch: Option<&str>,
+    has_repositories: bool,
     cx: &gpui::App,
 ) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();
@@ -85,42 +94,46 @@ fn leading_slots(
 
     // 项目选择器
     out.push(project_picker.clone().into_any_element());
-    // Git 分支：显示当前分支名（扫描未完成时显示占位）。
-    out.push(
-        Glyph::icon_text(
-            "top-bar.branch",
-            "icons/panels/version_control.svg",
-            branch.unwrap_or("--"),
-        )
-        .label("分支")
-        .into_any_element(),
-    );
-    // Git fetch
-    out.push(
-        Glyph::icon("top-bar.git-fetch", "icons/actions/arrow_circle.svg")
-            .label("同步")
-            .on_click(|window, cx| {
-                window.dispatch_action(Box::new(GitFetch), cx);
-            })
+
+    // Git 分支与同步/推送/拉取操作：项目不是 git 仓库时不显示（对齐 Zed 静默降级）。
+    if has_repositories {
+        // Git 分支：显示当前分支名（扫描未完成时显示占位）。
+        out.push(
+            Glyph::icon_text(
+                "top-bar.branch",
+                "icons/panels/version_control.svg",
+                branch.unwrap_or("--"),
+            )
+            .label("分支")
             .into_any_element(),
-    );
-    // Git pull / push：计数徽标待 git panel 提供 ahead/behind 数据后接入。
-    out.push(
-        Glyph::icon("top-bar.git-pull", "icons/actions/arrow_down.svg")
-            .label("推送")
-            .on_click(|window, cx| {
-                window.dispatch_action(Box::new(GitPull), cx);
-            })
-            .into_any_element(),
-    );
-    out.push(
-        Glyph::icon("top-bar.git-push", "icons/actions/arrow_up.svg")
-            .label("拉取")
-            .on_click(|window, cx| {
-                window.dispatch_action(Box::new(GitPush), cx);
-            })
-            .into_any_element(),
-    );
+        );
+        // Git fetch
+        out.push(
+            Glyph::icon("top-bar.git-fetch", "icons/actions/arrow_circle.svg")
+                .label("同步")
+                .on_click(|window, cx| {
+                    window.dispatch_action(Box::new(GitFetch), cx);
+                })
+                .into_any_element(),
+        );
+        // Git pull / push：计数徽标待 git panel 提供 ahead/behind 数据后接入。
+        out.push(
+            Glyph::icon("top-bar.git-pull", "icons/actions/arrow_down.svg")
+                .label("推送")
+                .on_click(|window, cx| {
+                    window.dispatch_action(Box::new(GitPull), cx);
+                })
+                .into_any_element(),
+        );
+        out.push(
+            Glyph::icon("top-bar.git-push", "icons/actions/arrow_up.svg")
+                .label("拉取")
+                .on_click(|window, cx| {
+                    window.dispatch_action(Box::new(GitPush), cx);
+                })
+                .into_any_element(),
+        );
+    }
 
     out
 }

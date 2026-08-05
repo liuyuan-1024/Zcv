@@ -15,7 +15,7 @@ use std::sync::Arc;
 use gpui::{AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
 use zcv_git::{DiffHunk, DiffStat, FileStatus, GitRepository};
 
-use super::worktree::{discover_git_repository, find_git_repositories};
+use super::worktree::discover_repositories;
 
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
 const MAX_INCREMENTAL_PATHS: usize = 500;
@@ -29,6 +29,8 @@ pub(crate) enum GitStoreEvent {
     Statuses,
     /// 当前分支或 HEAD 发生变化。
     Head,
+    /// 活动仓库变化（跟随焦点文件切换；订阅方重读 `current_branch()`，无需 payload）。
+    ActiveRepositoryChanged,
 }
 
 /// 单个文件在某个仓库中的状态快照。
@@ -125,6 +127,9 @@ enum JobResult {
 pub(crate) struct GitStore {
     root: PathBuf,
     repositories: Vec<Repository>,
+    /// 活动仓库（按 working_directory 标识）：top_bar 分支显示与 fetch/pull/push 的目标。
+    /// 用 working_directory 而非索引：全量扫描重建 Vec，索引不稳定。
+    active_workdir: Option<PathBuf>,
     background: BackgroundExecutor,
     job_sender: async_channel::Sender<GitJob>,
     pending_jobs: HashMap<GitJobKey, ()>,
@@ -171,6 +176,7 @@ impl GitStore {
         Self {
             root,
             repositories: Vec::new(),
+            active_workdir: None,
             background,
             job_sender,
             pending_jobs: HashMap::new(),
@@ -283,12 +289,40 @@ impl GitStore {
         best
     }
 
-    /// 当前活动仓库的分支名（无仓库或空仓库时为 None）。
+    /// 当前活动仓库的分支名（无仓库、active 未建立或活动仓库为空仓库时为 None）。
     pub(crate) fn current_branch(&self) -> Option<&str> {
+        self.active_workdir
+            .as_ref()
+            .and_then(|workdir| self.repo_by_workdir(workdir))
+            .and_then(|repository| repository.snapshot.branch.as_deref())
+    }
+
+    /// 按 working_directory 查找仓库。
+    fn repo_by_workdir(&self, workdir: &Path) -> Option<&Repository> {
         self.repositories
             .iter()
-            .find(|repository| repository.snapshot.branch.is_some())
-            .and_then(|repository| repository.snapshot.branch.as_deref())
+            .find(|repository| repository.repository.working_directory() == workdir)
+    }
+
+    /// 按路径更新活动仓库（最长前缀匹配；焦点文件切换时由 Workspace 调用）。
+    ///
+    /// 路径可能未 canonicalize（如设置文件入口），先归一化再匹配；
+    /// 路径不在任何仓库中（如已删除）时保持当前活动仓库不变。
+    pub(crate) fn set_active_repository_for_path(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let path = canonicalize_path(path);
+        let Some(repository) = self.repo_for_path(&path) else {
+            return;
+        };
+        let workdir = repository.repository.working_directory().to_path_buf();
+        if self.active_workdir.as_deref() != Some(workdir.as_path()) {
+            self.active_workdir = Some(workdir);
+            cx.emit(GitStoreEvent::ActiveRepositoryChanged);
+        }
+    }
+
+    /// 是否已发现至少一个 git 仓库（决定 git 相关 UI 是否可见）。
+    pub(crate) fn has_repositories(&self) -> bool {
+        !self.repositories.is_empty()
     }
 
     /// 读取 HEAD 中 `path` 的文本（diff base），不在仓库/无 HEAD 时为 None。
@@ -379,11 +413,17 @@ impl GitStore {
                 })
             }
             GitJob::GitOperation(_) => {
-                // 对当前活动仓库执行（与 current_branch 同一选择逻辑）。
+                // 作用于活动仓库（对齐 Zed：fetch/pull/push 以 active 仓库为目标，空仓库也执行）；
+                // active 尚未建立（首次扫描前）时回退原有选择逻辑。
                 let repository = self
-                    .repositories
-                    .iter()
-                    .find(|repository| repository.snapshot.branch.is_some())
+                    .active_workdir
+                    .as_ref()
+                    .and_then(|workdir| self.repo_by_workdir(workdir))
+                    .or_else(|| {
+                        self.repositories
+                            .iter()
+                            .find(|repository| repository.snapshot.branch.is_some())
+                    })
                     .or_else(|| self.repositories.first())?
                     .repository
                     .clone();
@@ -441,6 +481,23 @@ impl GitStore {
                         snapshot: scan.snapshot,
                     })
                     .collect();
+                // 活动仓库维护：仍在集合中则保持；否则回退新集合第一个（Vec 序 = 祖先在前，与默认候选一致）；
+                // 集合为空 → None。注意用 repositories 而非 new_work_dirs：BTreeSet 按字典序迭代，取不到发现顺序。
+                // emit 是 deferred（pending_effects），订阅方永远读到赋值后的完整状态，首次扫描 None → Some(第一个) 恰好触发一次。
+                let new_active = self
+                    .active_workdir
+                    .as_ref()
+                    .filter(|workdir| new_work_dirs.contains(*workdir))
+                    .cloned()
+                    .or_else(|| {
+                        self.repositories.first().map(|repository| {
+                            repository.repository.working_directory().to_path_buf()
+                        })
+                    });
+                if self.active_workdir != new_active {
+                    self.active_workdir = new_active;
+                    cx.emit(GitStoreEvent::ActiveRepositoryChanged);
+                }
                 log::info!("git 状态已刷新：{} 个仓库", self.repositories.len());
             }
             (GitJob::RefreshStatuses, JobResult::Refresh(refreshed)) => {
@@ -528,14 +585,8 @@ async fn execute_job(
 ) -> JobResult {
     match job {
         GitJob::ReloadGitState => {
-            // 仓库发现（同步文件系统遍历，放后台）：项目根是仓库 → 只用它，
-            // 否则在根下找嵌套仓库。
-            let discovered = discover_git_repository(&root)
-                .ok()
-                .flatten()
-                .map(|repository| vec![repository])
-                .or_else(|| find_git_repositories(&root).ok())
-                .unwrap_or_default();
+            // 仓库发现（同步文件系统遍历，放后台）：总是递归发现嵌套仓库，再合并 root 所在的外层仓库。
+            let discovered = discover_repositories(&root).unwrap_or_default();
             let scans = discovered
                 .into_iter()
                 .map(|repository| {
@@ -1223,6 +1274,147 @@ mod tests {
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].range, 1..2);
         assert_eq!(hunks[0].kind, zcv_git::DiffHunkKind::Modified);
+    }
+
+    #[gpui::test]
+    fn active_repository_follows_focused_path(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_repo();
+        let nested = root.join("nested");
+        fs::create_dir(&nested).expect("应创建嵌套目录");
+        run_in(&nested, &["git", "init", "-q", "-b", "feature"]);
+        run_in(
+            &nested,
+            &["git", "config", "user.email", "test@example.com"],
+        );
+        run_in(&nested, &["git", "config", "user.name", "Test User"]);
+        fs::write(nested.join("n.txt"), "嵌套\n").expect("应写入嵌套文件");
+        run_in(&nested, &["git", "add", "n.txt"]);
+        run_in(&nested, &["git", "commit", "-q", "-m", "nested initial"]);
+
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        // 初始 active = 第一个发现的仓库（root，分支 master）。
+        let branch = |cx: &mut gpui::TestAppContext, store: &gpui::Entity<GitStore>| {
+            cx.read_entity(store, |store, _| store.current_branch().map(str::to_string))
+        };
+        assert_eq!(branch(cx, &git_store).as_deref(), Some("master"));
+
+        // 焦点切到嵌套仓库内文件 → active 跟随，分支变 feature。
+        cx.update_entity(&git_store, |store, cx| {
+            store.set_active_repository_for_path(&nested.join("n.txt"), cx);
+        });
+        assert_eq!(branch(cx, &git_store).as_deref(), Some("feature"));
+
+        // 焦点切回 root 仓库文件 → 回到 master。
+        cx.update_entity(&git_store, |store, cx| {
+            store.set_active_repository_for_path(&root.join("tracked.txt"), cx);
+        });
+        assert_eq!(branch(cx, &git_store).as_deref(), Some("master"));
+
+        // 不在任何仓库中的路径（如已删除文件）→ active 保持不变。
+        cx.update_entity(&git_store, |store, cx| {
+            store.set_active_repository_for_path(&root.join(".."), cx);
+        });
+        assert_eq!(branch(cx, &git_store).as_deref(), Some("master"));
+    }
+
+    #[gpui::test]
+    fn git_operation_targets_active_repository(cx: &mut gpui::TestAppContext) {
+        // 根仓库无 remote；嵌套仓库有 remote。active 切到嵌套后 push 应作用于嵌套。
+        let (root, _temp) = test_repo();
+        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+        let remote = temp_dir.path().join("remote.git");
+        run_in(
+            temp_dir.path(),
+            &["git", "init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        let nested = root.join("nested");
+        fs::create_dir(&nested).expect("应创建嵌套目录");
+        run_in(&nested, &["git", "init", "-q", "-b", "master"]);
+        run_in(
+            &nested,
+            &["git", "config", "user.email", "test@example.com"],
+        );
+        run_in(&nested, &["git", "config", "user.name", "Test User"]);
+        fs::write(nested.join("n.txt"), "嵌套\n").expect("应写入嵌套文件");
+        run_in(&nested, &["git", "add", "n.txt"]);
+        run_in(&nested, &["git", "commit", "-q", "-m", "nested initial"]);
+        run_in(
+            &nested,
+            &["git", "remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        run_in(&nested, &["git", "push", "-q", "-u", "origin", "master"]);
+
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        // active 切到嵌套仓库，本地新提交后 push。
+        cx.update_entity(&git_store, |store, cx| {
+            store.set_active_repository_for_path(&nested.join("n.txt"), cx);
+        });
+        fs::write(nested.join("new.txt"), "新提交\n").expect("应写入文件");
+        run_in(&nested, &["git", "add", "new.txt"]);
+        run_in(&nested, &["git", "commit", "-q", "-m", "新提交"]);
+        cx.update_entity(&git_store, |store, cx| {
+            store.run_operation(GitOperationKind::Push, cx);
+        });
+        cx.run_until_parked();
+        let job_done = cx.read_entity(&git_store, |store, _| {
+            !store
+                .pending_jobs
+                .contains_key(&GitJobKey::GitOperation(GitOperationKind::Push))
+        });
+        assert!(job_done, "push job 应已完成");
+
+        // 远端应指向嵌套仓库 HEAD（而非根仓库）。
+        let rev = |dir: &Path| {
+            String::from_utf8_lossy(
+                &std::process::Command::new("git")
+                    .args(["rev-parse", "master"])
+                    .current_dir(dir)
+                    .output()
+                    .expect("应能读取 HEAD")
+                    .stdout,
+            )
+            .trim()
+            .to_string()
+        };
+        assert_eq!(rev(&remote), rev(&nested), "push 应作用于活动仓库（嵌套）");
+    }
+
+    #[gpui::test]
+    fn initial_scan_sets_active_to_first_repository(cx: &mut gpui::TestAppContext) {
+        // root 位于外层仓库内且包含嵌套仓库：祖先前置 → 初始 active = 外层仓库。
+        let (outer, _temp) = test_repo();
+        let root = outer.join("proj");
+        fs::create_dir(&root).expect("应创建项目目录");
+        let nested = root.join("nested");
+        fs::create_dir(&nested).expect("应创建嵌套目录");
+        run_in(&nested, &["git", "init", "-q", "-b", "feature"]);
+        run_in(
+            &nested,
+            &["git", "config", "user.email", "test@example.com"],
+        );
+        run_in(&nested, &["git", "config", "user.name", "Test User"]);
+        fs::write(nested.join("n.txt"), "嵌套\n").expect("应写入嵌套文件");
+        run_in(&nested, &["git", "add", "n.txt"]);
+        run_in(&nested, &["git", "commit", "-q", "-m", "nested initial"]);
+
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        let branch = cx.read_entity(&git_store, |store, _| {
+            store.current_branch().map(str::to_string)
+        });
+        assert_eq!(
+            branch.as_deref(),
+            Some("master"),
+            "初始 active 应为外层仓库"
+        );
     }
 
     #[gpui::test]

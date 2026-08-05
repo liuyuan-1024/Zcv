@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use zcv_git::{FileStatus, RealGitRepository};
+use zcv_git::{FileStatus, GitRepository, RealGitRepository};
 
 /// `.git` 目录名（仓库发现用）。
 const DOT_GIT: &str = ".git";
@@ -203,6 +203,26 @@ pub(crate) fn find_git_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRe
 
     let mut repositories = Vec::new();
     visit(root, &mut repositories)?;
+    Ok(repositories)
+}
+
+/// 合并发现 root 相关的全部仓库：root 下的所有嵌套仓库（含 root 自身）+ root 所在的外层仓库（若有）。
+///
+/// 返回顺序：外层仓库（若存在且未在嵌套集合中）在最前，其余按 `find_git_repositories` 的 DFS 顺序。
+///
+/// 外层仓库必须前置：root 在外层仓库内时 find 只返回嵌套仓库，不补上祖先会导致 root 直下文件匹配不到任何仓库（状态/hunks 全部丢失）。
+/// 去重依据 working_directory：两条发现路径都经 `RealGitRepository::open` 的 canonicalize，比较天然一致。
+pub(crate) fn discover_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRepository>> {
+    let mut repositories = find_git_repositories(root)?;
+    let known: HashSet<&Path> = repositories
+        .iter()
+        .map(|repository| repository.working_directory())
+        .collect();
+    if let Some(ancestor) = discover_git_repository(root)? {
+        if !known.contains(ancestor.working_directory()) {
+            repositories.insert(0, ancestor);
+        }
+    }
     Ok(repositories)
 }
 
@@ -534,5 +554,59 @@ mod tests {
                     .as_path()
             )
         );
+    }
+
+    #[test]
+    fn discover_repositories_finds_root_and_nested() {
+        let (root, _temp) = test_repo();
+        std::fs::create_dir_all(root.join("nested")).expect("应创建嵌套目录");
+        run_in(&root.join("nested"), &["git", "init", "-q"]);
+        std::fs::create_dir_all(root.join("node_modules/pkg")).expect("应创建依赖目录");
+        run_in(&root.join("node_modules/pkg"), &["git", "init", "-q"]);
+
+        let repos = discover_repositories(&root).expect("discover 应成功");
+        // 根仓库 + 嵌套仓库；node_modules 内的仓库被排除；root 仓库不重复。
+        assert_eq!(repos.len(), 2);
+        assert_eq!(
+            repos[0].working_directory(),
+            root.canonicalize().expect("应可 canonicalize").as_path()
+        );
+    }
+
+    #[test]
+    fn discover_repositories_prepends_ancestor() {
+        // root 不是仓库，但位于外层仓库内，且自身包含嵌套仓库。
+        let (outer, _temp) = test_repo();
+        let root = outer.join("proj");
+        std::fs::create_dir_all(&root).expect("应创建项目目录");
+        std::fs::create_dir_all(root.join("nested")).expect("应创建嵌套目录");
+        run_in(&root.join("nested"), &["git", "init", "-q"]);
+
+        let repos = discover_repositories(&root).expect("discover 应成功");
+        // 外层仓库（祖先前置）+ 嵌套仓库。
+        assert_eq!(repos.len(), 2);
+        assert_eq!(
+            repos[0].working_directory(),
+            outer.canonicalize().expect("应可 canonicalize").as_path()
+        );
+    }
+
+    #[test]
+    fn discover_repositories_dedups_root() {
+        let (root, _temp) = test_repo();
+        let repos = discover_repositories(&root).expect("discover 应成功");
+        // discover 与 find 命中同一仓库，去重后不重复。
+        assert_eq!(repos.len(), 1);
+        assert_eq!(
+            repos[0].working_directory(),
+            root.canonicalize().expect("应可 canonicalize").as_path()
+        );
+    }
+
+    #[test]
+    fn discover_repositories_none_outside_any_repo() {
+        let directory = tempfile::tempdir().expect("应创建临时目录");
+        let repos = discover_repositories(directory.path()).expect("discover 应成功");
+        assert!(repos.is_empty());
     }
 }

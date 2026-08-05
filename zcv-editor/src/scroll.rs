@@ -13,12 +13,24 @@ struct ScrollViewport {
     line_height: Pixels,
 }
 
+/// 垂直滚动轴 thumb 的三态。
+///
+/// 状态跨帧持久存于 ScrollManager（滚动状态归属 Editor），每帧由EditorElement 读取决定绘制颜色与事件分支（对齐 Zed 的 ScrollbarThumbState）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum ScrollbarThumbState {
+    #[default]
+    Idle,
+    Hovered,
+    Dragging,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct ScrollManager {
     anchor: DisplayPoint,
     offset: Point<Pixels>,
     viewport: Option<ScrollViewport>,
     pending_autoscroll: Option<DisplayPoint>,
+    thumb_state: ScrollbarThumbState,
 }
 
 impl ScrollManager {
@@ -94,6 +106,51 @@ impl ScrollManager {
         self.scroll_by(delta)
     }
 
+    /// 可见区顶部滚动量（像素）。
+    pub(super) fn scroll_top(&self) -> Pixels {
+        let Some(viewport) = self.viewport else {
+            return self.offset.y;
+        };
+        viewport.line_height * self.anchor.row().get() + self.offset.y
+    }
+
+    /// 可滚动上界：内容总高 − 视口高；未设置视口时为 0。
+    pub(super) fn max_scroll_top(&self) -> Pixels {
+        self.viewport.map_or(Pixels::ZERO, |viewport| {
+            (viewport.line_height * viewport.line_count - viewport.height).max(Pixels::ZERO)
+        })
+    }
+
+    /// 绝对滚动到指定顶部位置：清除待自动滚动，钳制到 [0, max_scroll_top]。
+    /// 返回是否发生变化（供 Editor 包装层决定是否 notify）。
+    pub(super) fn scroll_to(&mut self, scroll_top: Pixels) -> bool {
+        let old_anchor = self.anchor;
+        let old_offset = self.offset;
+        self.pending_autoscroll = None;
+        self.set_scroll_top(scroll_top);
+        self.anchor != old_anchor || self.offset != old_offset
+    }
+
+    /// 滚动轴 thumb 当前三态。
+    pub(super) fn thumb_state(&self) -> ScrollbarThumbState {
+        self.thumb_state
+    }
+
+    /// 置悬停态，返回是否发生变化。
+    pub(super) fn set_thumb_hovered(&mut self) -> bool {
+        self.update_thumb_state(ScrollbarThumbState::Hovered)
+    }
+
+    /// 置拖动态，返回是否发生变化。
+    pub(super) fn set_thumb_dragged(&mut self) -> bool {
+        self.update_thumb_state(ScrollbarThumbState::Dragging)
+    }
+
+    /// 复位为 Idle，返回是否发生变化。
+    pub(super) fn reset_thumb_state(&mut self) -> bool {
+        self.update_thumb_state(ScrollbarThumbState::Idle)
+    }
+
     pub(super) fn complete_autoscroll(
         &mut self,
         caret_left: Option<Pixels>,
@@ -137,13 +194,6 @@ impl ScrollManager {
         }
     }
 
-    fn scroll_top(&self) -> Pixels {
-        let Some(viewport) = self.viewport else {
-            return self.offset.y;
-        };
-        viewport.line_height * self.anchor.row().get() + self.offset.y
-    }
-
     fn set_scroll_left(&mut self, scroll_left: Pixels) {
         let maximum = self
             .viewport
@@ -168,6 +218,15 @@ impl ScrollManager {
         self.anchor = DisplayPoint::new(DisplayRow::new(row), self.anchor.column());
         self.offset.y = scroll_top - viewport.line_height * row;
     }
+
+    fn update_thumb_state(&mut self, state: ScrollbarThumbState) -> bool {
+        if self.thumb_state != state {
+            self.thumb_state = state;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl Default for ScrollManager {
@@ -177,6 +236,7 @@ impl Default for ScrollManager {
             offset: point(px(0.0), px(0.0)),
             viewport: None,
             pending_autoscroll: None,
+            thumb_state: ScrollbarThumbState::Idle,
         }
     }
 }
@@ -281,5 +341,53 @@ mod tests {
         assert_eq!(manager.offset().x, px(102.));
         assert!(!manager.complete_autoscroll(Some(px(180.)), Some(px(182.))));
         assert_eq!(manager.offset().x, px(102.));
+    }
+
+    #[test]
+    fn scroll_to_clamps_and_normalizes_anchor_and_offset() {
+        let mut manager = ScrollManager::default();
+        manager.update_viewport(100, px(100.), px(100.), px(200.), px(20.));
+
+        assert!(manager.scroll_to(px(35.)));
+        assert_eq!(manager.anchor().row(), DisplayRow::new(1));
+        assert_eq!(manager.offset().y, px(15.));
+        assert_eq!(manager.scroll_top(), px(35.));
+
+        assert!(manager.scroll_to(px(10_000.)));
+        assert_eq!(manager.scroll_top(), px(1_900.));
+        assert_eq!(manager.anchor().row(), DisplayRow::new(95));
+        assert_eq!(manager.offset().y, px(0.));
+
+        assert!(manager.scroll_to(px(-100.)));
+        assert_eq!(manager.scroll_top(), px(0.));
+        assert_eq!(manager.anchor(), DisplayPoint::ZERO);
+
+        assert!(!manager.scroll_to(px(0.)));
+    }
+
+    #[test]
+    fn scroll_to_without_viewport_writes_subpixel_offset() {
+        let mut manager = ScrollManager::default();
+
+        assert_eq!(manager.max_scroll_top(), px(0.));
+        assert!(manager.scroll_to(px(42.)));
+        assert_eq!(manager.offset().y, px(42.));
+        assert_eq!(manager.scroll_top(), px(42.));
+        assert!(!manager.scroll_to(px(42.)));
+    }
+
+    #[test]
+    fn thumb_state_transitions_are_dirty_checked() {
+        let mut manager = ScrollManager::default();
+
+        assert_eq!(manager.thumb_state(), ScrollbarThumbState::Idle);
+        assert!(manager.set_thumb_hovered());
+        assert!(!manager.set_thumb_hovered());
+        assert_eq!(manager.thumb_state(), ScrollbarThumbState::Hovered);
+        assert!(manager.set_thumb_dragged());
+        assert_eq!(manager.thumb_state(), ScrollbarThumbState::Dragging);
+        assert!(manager.reset_thumb_state());
+        assert_eq!(manager.thumb_state(), ScrollbarThumbState::Idle);
+        assert!(!manager.reset_thumb_state());
     }
 }

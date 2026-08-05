@@ -6,9 +6,9 @@ use std::sync::Arc;
 use gpui::{
     App, Bounds, ContentMask, Context, DispatchPhase, Element, ElementId, ElementInputHandler,
     Entity, GlobalElementId, HighlightStyle, HitboxBehavior, InspectorElementId,
-    InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, PaintQuad, Pixels,
-    Point, ScrollWheelEvent, ShapedLine, Style, TextRun, UnderlineStyle, Window, fill, point, px,
-    relative, size,
+    InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Style, TextRun,
+    UnderlineStyle, Window, fill, point, px, relative, size,
 };
 use zcv_engine::{ByteOffset, DisplayColumn, Line, SelectionSet, TextRange};
 use zcv_language::{BracketPair, HighlightSpan};
@@ -18,6 +18,8 @@ use super::display_map::{
     byte_for_display_column,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
+use super::scroll::ScrollbarThumbState;
+use super::scrollbar::{SCROLLBAR_WIDTH, ScrollbarLayout};
 use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap};
 use zcv_theme::color;
 
@@ -211,6 +213,7 @@ pub(super) struct PrepaintState {
     ime_caret_bounds: Option<Bounds<Pixels>>,
     hitbox: gpui::Hitbox,
     gutter_hitbox: Option<gpui::Hitbox>,
+    scrollbar: Option<ScrollbarLayout>,
 }
 
 impl IntoElement for EditorElement {
@@ -288,6 +291,7 @@ impl Element for EditorElement {
                 editor.matching_bracket_pair(),
             )
         };
+        let mode = mode.clone();
         let gutter_dimensions = shows_gutter.then(|| gutter_dimensions(&display_snapshot, window));
         let gutter_bounds = gutter_dimensions.map(|dimensions| Bounds {
             origin: bounds.origin,
@@ -297,25 +301,36 @@ impl Element for EditorElement {
             bounds.left() + gutter_dimensions.map_or(Pixels::ZERO, GutterDimensions::full_width);
         let text_clip_left =
             bounds.left() + gutter_dimensions.map_or(Pixels::ZERO, |dimensions| dimensions.width);
+        // 滚动轴让位：Full 模式下文本区右缘收窄一个滚动轴宽度。
+        let scrollbar_width = if mode == EditorMode::Full {
+            SCROLLBAR_WIDTH
+        } else {
+            Pixels::ZERO
+        };
+        let text_right = bounds.right() - scrollbar_width;
         let text_bounds = Bounds {
             origin: point(text_left, bounds.top()),
             size: size(
-                (bounds.right() - text_left).max(Pixels::ZERO),
+                (text_right - text_left).max(Pixels::ZERO),
                 bounds.size.height,
             ),
+        };
+        let scrollbar_bounds = Bounds {
+            origin: point(text_right, bounds.top()),
+            size: size(scrollbar_width, bounds.size.height),
         };
         let geometry = EditorGeometry {
             text_bounds,
             text_clip_bounds: Bounds {
                 origin: point(text_clip_left, bounds.top()),
                 size: size(
-                    (bounds.right() - text_clip_left).max(Pixels::ZERO),
+                    (text_right - text_clip_left).max(Pixels::ZERO),
                     bounds.size.height,
                 ),
             },
             gutter: gutter_bounds.zip(gutter_dimensions),
         };
-        let wrap_width = match (soft_wrap, mode) {
+        let wrap_width = match (soft_wrap, &mode) {
             (SoftWrap::None, _) | (_, EditorMode::SingleLine | EditorMode::AutoHeight { .. }) => {
                 None
             }
@@ -411,6 +426,16 @@ impl Element for EditorElement {
             .gutter
             .as_ref()
             .map(|gutter| window.insert_hitbox(gutter.bounds, HitboxBehavior::Normal));
+        let scrollbar = (mode == EditorMode::Full).then(|| {
+            let editor = self.editor.read(cx);
+            ScrollbarLayout::new(
+                scrollbar_bounds,
+                editor.max_scroll_top(),
+                editor.scroll_top(),
+                editor.scrollbar_thumb_state(),
+                window,
+            )
+        });
 
         PrepaintState {
             layout,
@@ -419,6 +444,7 @@ impl Element for EditorElement {
             ime_caret_bounds,
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
             gutter_hitbox,
+            scrollbar,
         }
     }
 
@@ -493,6 +519,10 @@ impl Element for EditorElement {
             }
         });
 
+        if let Some(scrollbar_layout) = &prepaint.scrollbar {
+            self.register_scrollbar_handlers(scrollbar_layout, window, cx);
+        }
+
         if let Some(gutter) = &prepaint.layout.gutter {
             window.paint_quad(fill(
                 gutter.bounds,
@@ -546,11 +576,134 @@ impl Element for EditorElement {
                 }
             },
         );
+        if let Some(scrollbar) = &prepaint.scrollbar {
+            let colors = color::current(cx);
+            // 轨道背景透明，只画一个占位 quad（后续 marker 会叠加在这一层）。
+            window.paint_quad(fill(
+                scrollbar.hitbox.bounds,
+                colors.scrollbar_track_background,
+            ));
+            if let Some(thumb_bounds) = scrollbar.thumb_bounds {
+                let thumb_color = match scrollbar.thumb_state {
+                    ScrollbarThumbState::Dragging => colors.scrollbar_thumb_active_background,
+                    ScrollbarThumbState::Hovered => colors.scrollbar_thumb_hover_background,
+                    ScrollbarThumbState::Idle => colors.scrollbar_thumb_background,
+                };
+                window.paint_quad(fill(thumb_bounds, thumb_color));
+                // 拖动中整窗用 Arrow（指针可能已移出轨道），否则仅轨道内 Arrow。
+                if scrollbar.thumb_state == ScrollbarThumbState::Dragging {
+                    window.set_window_cursor_style(gpui::CursorStyle::Arrow);
+                } else {
+                    window.set_cursor_style(gpui::CursorStyle::Arrow, &scrollbar.hitbox);
+                }
+            }
+        }
         let input_layout = prepaint.layout.input_layout();
         self.editor.update(cx, |editor, _| {
             editor.set_input_layout(input_layout);
             editor.set_ime_caret_geometry(bounds, prepaint.ime_caret_bounds);
         });
+    }
+}
+
+impl EditorElement {
+    /// 注册滚动轴鼠标交互：悬停三态、拖动滚动、点击轨道跳页。
+    ///
+    /// 三个 handler 都在文本 MouseDown / ScrollWheel handler 之后注册，gpui 的 Bubble 阶段逆序分发保证滚动轴优先处理并 stop_propagation；
+    /// 点击轨道时用 hitbox.is_hovered 门控，文本区点击不会被误判为跳页。
+    /// 按下/松开按上一帧状态条件注册（对齐 Zed）：未拖动时注册 MouseDown，拖动中注册 MouseUp，松开后的兜底由无按键 MouseMove 复位。
+    fn register_scrollbar_handlers(
+        &self,
+        scrollbar_layout: &ScrollbarLayout,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // 悬停与拖动共用 MouseMove：无按键时更新三态，按住左键且处于拖动态时以上一事件位置为基准做增量滚动（移出轨道即停、移回继续）。
+        window.on_mouse_event({
+            let editor = self.editor.clone();
+            let scrollbar_layout = scrollbar_layout.clone();
+            let mut mouse_position = window.mouse_position();
+            move |event: &MouseMoveEvent, phase, _window, cx| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                editor.update(cx, |editor, cx| {
+                    if event.dragging()
+                        && editor.scrollbar_thumb_state() == ScrollbarThumbState::Dragging
+                    {
+                        let old_position = mouse_position.y;
+                        let new_position = event.position.y;
+                        if (scrollbar_layout.hitbox.bounds.top()
+                            ..scrollbar_layout.hitbox.bounds.bottom())
+                            .contains(&old_position)
+                        {
+                            let delta = new_position - old_position;
+                            let scroll_top =
+                                editor.scroll_top() + delta * scrollbar_layout.scroll_per_pixel;
+                            editor.scroll_to(scroll_top.max(Pixels::ZERO), cx);
+                        }
+                        cx.stop_propagation();
+                    } else if !event.dragging() && scrollbar_layout.thumb_hovered(&event.position) {
+                        editor.set_scrollbar_thumb_hovered(cx);
+                    } else if !event.dragging() {
+                        // 兜底：无按键移动也会复位（覆盖"窗口外释放后移回"等漏网场景）。
+                        editor.reset_scrollbar_thumb_state(cx);
+                    }
+                    mouse_position = event.position;
+                });
+            }
+        });
+
+        let dragging =
+            self.editor.read(cx).scrollbar_thumb_state() == ScrollbarThumbState::Dragging;
+        if !dragging {
+            // 按下：点击轨道（thumb 外）以点击处为中心跳页，点中 thumb 则进入拖动态。
+            window.on_mouse_event({
+                let editor = self.editor.clone();
+                let scrollbar_layout = scrollbar_layout.clone();
+                move |event: &MouseDownEvent, phase, _window, cx| {
+                    if phase != DispatchPhase::Bubble
+                        || event.button != MouseButton::Left
+                        || !scrollbar_layout.hitbox.is_hovered(_window)
+                    {
+                        return;
+                    }
+                    editor.update(cx, |editor, cx| {
+                        editor.set_scrollbar_thumb_dragged(cx);
+                        if let Some(thumb_bounds) = scrollbar_layout.thumb_bounds
+                            && (event.position.y < thumb_bounds.top()
+                                || thumb_bounds.bottom() < event.position.y)
+                        {
+                            // 点击轨道（thumb 外）：以点击处为中心跳页，钳制由 scroll_to 完成。
+                            let click_px = event.position.y - scrollbar_layout.hitbox.bounds.top();
+                            let target = click_px * scrollbar_layout.scroll_per_pixel
+                                - scrollbar_layout.hitbox.bounds.size.height * 0.5;
+                            editor.scroll_to(target.max(Pixels::ZERO), cx);
+                        }
+                        cx.stop_propagation();
+                    });
+                }
+            });
+        } else {
+            // 松开：鼠标仍在轨道内 → Hovered，否则 → Idle。
+            window.on_mouse_event({
+                let editor = self.editor.clone();
+                let scrollbar_layout = scrollbar_layout.clone();
+                move |_: &MouseUpEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble {
+                        return;
+                    }
+                    editor.update(cx, |editor, cx| {
+                        if scrollbar_layout.hitbox.is_hovered(window) {
+                            editor.set_scrollbar_thumb_hovered(cx);
+                        } else {
+                            editor.reset_scrollbar_thumb_state(cx);
+                        }
+                        cx.stop_propagation();
+                    });
+                }
+            });
+        }
     }
 }
 

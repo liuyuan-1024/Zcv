@@ -20,7 +20,7 @@ use zcv_language::{BracketPair, LanguageBuffer, SyntaxSnapshot};
 use super::blink_manager::BlinkManager;
 use super::display_map::{DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
 use super::element::{EditorElement, EditorInputLayout};
-use super::scroll::ScrollManager;
+use super::scroll::{ScrollManager, ScrollbarThumbState};
 use super::selection::{
     EditOutcome, EditorSelections, SelectionHistory, apply_edits_with_after_mapping,
     apply_targeted_edits, replace_selections,
@@ -523,6 +523,53 @@ impl Editor {
     ) -> bool {
         self.scroll_manager
             .complete_autoscroll(caret_left, caret_right)
+    }
+
+    /// 可见区顶部滚动量（像素）。
+    pub(super) fn scroll_top(&self) -> Pixels {
+        self.scroll_manager.scroll_top()
+    }
+
+    /// 可滚动上界（像素）。
+    pub(super) fn max_scroll_top(&self) -> Pixels {
+        self.scroll_manager.max_scroll_top()
+    }
+
+    /// 绝对滚动到指定顶部位置（滚动轴拖动/跳页入口）。
+    pub(super) fn scroll_to(&mut self, scroll_top: Pixels, cx: &mut Context<Self>) -> bool {
+        if self.scroll_manager.scroll_to(scroll_top) {
+            self.input_layout = None;
+            cx.notify();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 滚动轴 thumb 当前三态。
+    pub(super) fn scrollbar_thumb_state(&self) -> ScrollbarThumbState {
+        self.scroll_manager.thumb_state()
+    }
+
+    /// 置滚动轴 thumb 悬停态。
+    pub(super) fn set_scrollbar_thumb_hovered(&mut self, cx: &mut Context<Self>) {
+        if self.scroll_manager.set_thumb_hovered() {
+            cx.notify();
+        }
+    }
+
+    /// 置滚动轴 thumb 拖动态。
+    pub(super) fn set_scrollbar_thumb_dragged(&mut self, cx: &mut Context<Self>) {
+        if self.scroll_manager.set_thumb_dragged() {
+            cx.notify();
+        }
+    }
+
+    /// 复位滚动轴 thumb 为 Idle。
+    pub(super) fn reset_scrollbar_thumb_state(&mut self, cx: &mut Context<Self>) {
+        if self.scroll_manager.reset_thumb_state() {
+            cx.notify();
+        }
     }
 
     fn new(
@@ -2325,11 +2372,16 @@ fn byte_for_utf16_offset(text: &str, target: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext, Bounds, ScrollDelta, ScrollWheelEvent, TestAppContext, point, px};
+    use gpui::{
+        AppContext, Bounds, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
+        TestAppContext, VisualTestContext, point, px, size,
+    };
     use zcv_engine::{BufferConfig, ByteOffset, SelectionSet, TransactionId};
 
     use super::*;
     use crate::display_map::{DisplayPoint, DisplayRow};
+    use crate::scroll::ScrollbarThumbState;
+    use crate::scrollbar::{SCROLLBAR_WIDTH, thumb_geometry};
 
     fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<LanguageBuffer> {
         let buffer =
@@ -3650,5 +3702,181 @@ mod tests {
             );
         });
         assert!(line_count > 0);
+    }
+
+    /// 读取滚动轴几何：返回 (track_bounds, thumb_bounds, scroll_per_pixel)。
+    /// thumb 几何与渲染侧共用 thumb_geometry，保证断言与真实几何一致。
+    fn scrollbar_geometry(
+        editor: &Entity<Editor>,
+        cx: &mut VisualTestContext,
+    ) -> (Bounds<Pixels>, Option<Bounds<Pixels>>, f32) {
+        let window_bounds = cx.update(|window, _| window.bounds());
+        let track_bounds = Bounds {
+            origin: point(window_bounds.right() - SCROLLBAR_WIDTH, window_bounds.top()),
+            size: size(SCROLLBAR_WIDTH, window_bounds.size.height),
+        };
+        cx.read_entity(editor, |editor, _| {
+            let (thumb_bounds, per_pixel) =
+                thumb_geometry(track_bounds, editor.max_scroll_top(), editor.scroll_top())
+                    .map_or((None, 0.0), |(bounds, scale)| (Some(bounds), scale));
+            (track_bounds, thumb_bounds, per_pixel)
+        })
+    }
+
+    fn scrolling_text() -> String {
+        (0..100)
+            .map(|row| format!("line {row}\n"))
+            .collect::<String>()
+    }
+
+    #[gpui::test]
+    fn clicking_scrollbar_track_pages_and_enters_dragging(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, scrolling_text());
+        let (editor, mut cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+        cx.run_until_parked();
+
+        let (track_bounds, _, _) = scrollbar_geometry(&editor, &mut cx);
+        assert!(
+            cx.read_entity(&editor, |editor, _| editor.max_scroll_top()) > Pixels::ZERO,
+            "100 行应超过视口高度"
+        );
+        let click_y = track_bounds.origin.y + track_bounds.size.height * 0.75;
+
+        // 点击 thumb 下方轨道：应以点击处为中心跳页，并进入拖动态。
+        cx.simulate_mouse_down(
+            point(track_bounds.origin.x + px(7.5), click_y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(
+                editor.scrollbar_thumb_state(),
+                ScrollbarThumbState::Dragging,
+                "点击轨道应进入拖动态"
+            );
+            let scroll_top = editor.scroll_top();
+            assert!(scroll_top > Pixels::ZERO, "点击轨道应产生滚动");
+            assert!(scroll_top <= editor.max_scroll_top());
+            assert_eq!(
+                editor.selections().primary().head(),
+                ByteOffset::ZERO,
+                "点击滚动轴不应移动光标"
+            );
+        });
+
+        // 重绘后注册 MouseUp handler，在轨道内松开应回到 Hovered。
+        cx.refresh().expect("测试窗口应可刷新");
+        cx.simulate_mouse_up(
+            point(track_bounds.origin.x + px(7.5), click_y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(
+                editor.scrollbar_thumb_state(),
+                ScrollbarThumbState::Hovered,
+                "在轨道内松开应回到 Hovered"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn dragging_scrollbar_thumb_moves_content_by_delta(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, scrolling_text());
+        let (editor, mut cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+        cx.run_until_parked();
+
+        let (_, thumb_bounds, per_pixel) = scrollbar_geometry(&editor, &mut cx);
+        let thumb_bounds = thumb_bounds.expect("内容超视口时应有 thumb");
+        let thumb_center = point(
+            thumb_bounds.origin.x + thumb_bounds.size.width * 0.5,
+            thumb_bounds.origin.y + thumb_bounds.size.height * 0.5,
+        );
+
+        // 悬停 → Hovered。
+        cx.simulate_mouse_move(thumb_center, None, Modifiers::default());
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.scrollbar_thumb_state(), ScrollbarThumbState::Hovered);
+        });
+
+        // 按下 thumb 中心 → 重绘注册 MouseUp → 向下拖动 50px。
+        cx.simulate_mouse_down(thumb_center, MouseButton::Left, Modifiers::default());
+        cx.refresh().expect("测试窗口应可刷新");
+        let scroll_before = cx.read_entity(&editor, |editor, _| editor.scroll_top());
+        cx.simulate_mouse_move(
+            point(thumb_center.x, thumb_center.y + px(50.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.read_entity(&editor, |editor, _| {
+            let expected = scroll_before + px(50.) * per_pixel;
+            let delta = (editor.scroll_top() - expected).abs() / px(1.);
+            assert!(
+                delta < 1.0,
+                "拖动 50px 应滚动约 {}px，实际差 {delta}px",
+                px(50.) * per_pixel,
+            );
+            assert_eq!(
+                editor.scrollbar_thumb_state(),
+                ScrollbarThumbState::Dragging
+            );
+        });
+
+        // 松开结束拖动。
+        cx.refresh().expect("测试窗口应可刷新");
+        cx.simulate_mouse_up(
+            point(thumb_center.x, thumb_center.y + px(50.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+    }
+
+    #[gpui::test]
+    fn hovering_thumb_cycles_three_states(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, scrolling_text());
+        let (editor, mut cx) = cx.add_window_view({
+            let buffer = buffer.clone();
+            move |_, cx| Editor::for_buffer(buffer, cx)
+        });
+        cx.run_until_parked();
+
+        let (_, thumb_bounds, _) = scrollbar_geometry(&editor, &mut cx);
+        let thumb_bounds = thumb_bounds.expect("内容超视口时应有 thumb");
+        let thumb_center = point(
+            thumb_bounds.origin.x + thumb_bounds.size.width * 0.5,
+            thumb_bounds.origin.y + thumb_bounds.size.height * 0.5,
+        );
+
+        // 移到 thumb 上 → Hovered。
+        cx.simulate_mouse_move(thumb_center, None, Modifiers::default());
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.scrollbar_thumb_state(), ScrollbarThumbState::Hovered);
+        });
+
+        // 移到文本区 → 兜底复位为 Idle。
+        cx.simulate_mouse_move(point(px(100.), px(100.)), None, Modifiers::default());
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.scrollbar_thumb_state(), ScrollbarThumbState::Idle);
+        });
+
+        // 按下 → Dragging；重绘后松开（仍在 thumb 上）→ Hovered。
+        cx.simulate_mouse_down(thumb_center, MouseButton::Left, Modifiers::default());
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(
+                editor.scrollbar_thumb_state(),
+                ScrollbarThumbState::Dragging
+            );
+        });
+        cx.refresh().expect("测试窗口应可刷新");
+        cx.simulate_mouse_up(thumb_center, MouseButton::Left, Modifiers::default());
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(editor.scrollbar_thumb_state(), ScrollbarThumbState::Hovered);
+        });
     }
 }

@@ -5,6 +5,7 @@ mod display_map;
 mod element;
 mod gutter;
 mod scroll;
+mod scrollbar;
 mod selection;
 mod view;
 

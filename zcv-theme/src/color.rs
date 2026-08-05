@@ -92,6 +92,14 @@ pub struct ThemeColors {
     pub editor_selection_background: Rgba,
     /// 编辑器光标颜色。
     pub editor_cursor: Rgba,
+    /// 滚动轴轨道背景（默认透明，轨道只为占位与后续 marker 绘制）。
+    pub scrollbar_track_background: Rgba,
+    /// 滚动轴 thumb 静止色。
+    pub scrollbar_thumb_background: Rgba,
+    /// 滚动轴 thumb 悬停色。
+    pub scrollbar_thumb_hover_background: Rgba,
+    /// 滚动轴 thumb 拖动色。
+    pub scrollbar_thumb_active_background: Rgba,
 }
 
 impl ThemeColors {
@@ -133,6 +141,16 @@ impl ThemeColors {
             editor_active_line_number: palette.gray.s[8],
             editor_selection_background: palette.blue.a[2],
             editor_cursor: palette.blue.s[6],
+            // 对齐 Zed 默认值：thumb 用中性色 alpha 3/4/5 级，track 透明。
+            scrollbar_track_background: Rgba {
+                r: 0.,
+                g: 0.,
+                b: 0.,
+                a: 0.,
+            },
+            scrollbar_thumb_background: palette.gray.a[3],
+            scrollbar_thumb_hover_background: palette.gray.a[4],
+            scrollbar_thumb_active_background: palette.gray.a[5],
         }
     }
 }

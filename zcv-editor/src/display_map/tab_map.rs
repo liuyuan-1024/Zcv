@@ -76,9 +76,10 @@ impl TabSnapshot {
                 super::line_stream::StreamLineSource::Buffer(buffer_line) => {
                     Some(inlay.stream().buffer_to_stream(Line::new(buffer_line)))
                 }
-                super::line_stream::StreamLineSource::Inserted { anchor, index } => Some(
-                    Line::new(inlay.stream().buffer_to_stream(anchor).get() + 1 + index),
-                ),
+                super::line_stream::StreamLineSource::Inserted { anchor, index } => {
+                    let start = inlay.stream().inserted_block_start(anchor)?;
+                    Some(Line::new(start.get() + index))
+                }
             },
             StreamProjectedKind::Placeholder(_) => None,
         }

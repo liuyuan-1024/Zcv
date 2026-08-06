@@ -241,7 +241,9 @@ impl WrapSnapshot {
             .tab_snapshot
             .buffer_snapshot()
             .byte_to_position(offset)?;
-        self.logical_point_to_display_point(position.line(), position.column())
+        // fold 拓扑的输入坐标是流行号（合成行插入后与 buffer 行号错位）。
+        let stream_line = self.tab_snapshot.stream().buffer_to_stream(position.line());
+        self.logical_point_to_display_point(stream_line, position.column())
     }
 
     pub(super) fn display_point_to_offset(
@@ -476,8 +478,7 @@ impl WrapSnapshot {
         let (start, _, transform) =
             self.transforms
                 .find::<OutputToInput, _>((), &OutputRows(row.get()), Bias::Right);
-        let transform =
-            transform.ok_or(CoordinateError::LineOutOfBounds(Line::new(row.get())))?;
+        let transform = transform.ok_or(CoordinateError::LineOutOfBounds(Line::new(row.get())))?;
         let input_start = start.1.0;
         let output_start = start.0.0;
         match transform.kind {
@@ -638,8 +639,7 @@ impl WrapSnapshot {
         let (start, _, transform) =
             self.transforms
                 .find::<InputToOutput, _>((), &InputLines(tab_row), Bias::Right);
-        let transform =
-            transform.ok_or(CoordinateError::LineOutOfBounds(Line::new(tab_row)))?;
+        let transform = transform.ok_or(CoordinateError::LineOutOfBounds(Line::new(tab_row)))?;
         Ok((start.0.0, start.1.0, transform))
     }
 

@@ -994,7 +994,7 @@ mod tests {
             .expect("视口应可读取");
         let rows = viewport.rows();
         assert_eq!(rows.len(), 4);
-        // 行序交错：buffer 行 0 → 合成行 → buffer 行 1/2。
+        // 行序交错：buffer 行 0 → 合成行（锚定行 0 之后）→ buffer 行 1/2。
         match rows[0].kind() {
             WrapViewportRowKind::Text { text, .. } => assert_eq!(text.as_ref(), "a\n"),
             other => panic!("行 0 应为 buffer 文本行，实际 {other:?}"),
@@ -1046,16 +1046,17 @@ mod tests {
     #[test]
     fn inserted_lines_inside_fold_range_are_collapsed() {
         // 阶段 1 核心：合成行在 fold 输入（文本流层），可被折叠区间一起收起。
+        // 合成行插在锚定行（行 2）之前：折叠 0..3 隐藏行 1-2（首行保留），块随行 2 一起收起。
         let mut map = map_with_inserted(
             "a\nb\nc\nd",
             InsertedLines::from([(
-                Line::new(1),
+                Line::new(2),
                 vec![std::sync::Arc::from("DEL1"), std::sync::Arc::from("DEL2")],
             )]),
         );
         assert_eq!(map.line_count(), 6, "4 个 buffer 行 + 2 个合成行");
 
-        // 折叠 buffer 行 0..3（含锚定行 1 与其后的合成行）。
+        // 折叠 buffer 行 0..3（隐藏行 1-2，含块锚定行 2）。
         let (fold_snapshot, fold_edits) = map
             .fold_map
             .write()

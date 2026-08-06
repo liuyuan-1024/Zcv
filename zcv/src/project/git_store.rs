@@ -149,6 +149,8 @@ pub(crate) struct GitStore {
     /// 活动仓库（按 working_directory 标识）：分支显示与 fetch/pull/push 等 git 操作的目标。
     /// 用 working_directory 而非索引：全量扫描重建 Vec，索引不稳定。
     active_workdir: Option<PathBuf>,
+    /// HEAD 文本缓存（删除块展开的被删除行来源；HEAD 变化时清空）。
+    committed_text_cache: HashMap<PathBuf, Arc<str>>,
     background: BackgroundExecutor,
     job_sender: async_channel::Sender<GitJob>,
     pending_jobs: HashMap<GitJobKey, ()>,
@@ -196,6 +198,7 @@ impl GitStore {
             root,
             repositories: Vec::new(),
             active_workdir: None,
+            committed_text_cache: HashMap::new(),
             background,
             job_sender,
             pending_jobs: HashMap::new(),
@@ -376,9 +379,21 @@ impl GitStore {
         })
     }
 
+    /// 读取缓存的 HEAD 文本（删除块展开用；未预取时为 None）。
+    pub(crate) fn committed_text(&self, path: &Path) -> Option<Arc<str>> {
+        self.committed_text_cache
+            .get(&canonicalize_path(path))
+            .cloned()
+    }
+
+    /// 缓存 HEAD 文本（HEAD 变化时由 commit_job 清空）。
+    pub(crate) fn cache_committed_text(&mut self, path: &Path, text: Arc<str>) {
+        self.committed_text_cache
+            .insert(canonicalize_path(path), text);
+    }
+
     fn schedule_job(&mut self, job: GitJob) {
-        // 同 key 的 job 已在队列/执行中时，丢弃新 job（路径已累积在
-        // paths_needing_status_update，由正在执行的 job 统一消费）。
+        // 同 key 的 job 已在队列/执行中时，丢弃新 job（路径已累积在paths_needing_status_update，由正在执行的 job 统一消费）。
         let key = job.key();
         if self.pending_jobs.contains_key(&key) {
             return;
@@ -504,6 +519,8 @@ impl GitStore {
                     cx.emit(GitStoreEvent::Repositories);
                 }
                 if head_changed {
+                    // HEAD 变化 → 旧 HEAD 文本失效。
+                    self.committed_text_cache.clear();
                     cx.emit(GitStoreEvent::Head);
                 }
                 if statuses_changed {
@@ -548,6 +565,8 @@ impl GitStore {
                     repository.snapshot = snapshot;
                 }
                 if head_changed {
+                    // HEAD 变化 → 旧 HEAD 文本失效。
+                    self.committed_text_cache.clear();
                     cx.emit(GitStoreEvent::Head);
                 }
                 if statuses_changed {

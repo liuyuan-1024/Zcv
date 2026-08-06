@@ -336,9 +336,7 @@ impl ProjectTree {
         if row.is_dir && !row.expanded {
             state.expanded.insert(row.path.clone());
             drop(state);
-            // 展开产生的新行在重建时现查 git 状态，无需单独补齐。
             self.rebuild_rows(cx);
-            return;
         } else {
             state.select_down(&rows);
         }

@@ -22,9 +22,8 @@ mod versioned;
 
 pub use buffer::{Buffer, HistoryEditOutcome, HistoryNodeId, HistoryNodeView, HistoryStatus};
 pub use config::{
-    BufferConfig, DisplayColumnAffinity, DisplayWidthPolicy, EncodingConfig, LargeFilePolicy,
-    LargeTransactionPolicy, LineEndingConfig, PositionEncodingConfig, TabConfig,
-    WordBoundaryPolicy,
+    BufferConfig, EncodingConfig, LargeFilePolicy, LargeTransactionPolicy, LineEndingConfig,
+    PositionEncodingConfig, TabConfig, WordBoundaryPolicy,
 };
 pub use errors::{
     AnchorError, BufferLoadError, BufferSaveError, CoordinateError, EditError, EngineError,
@@ -49,8 +48,8 @@ pub use transaction::{
 };
 pub(crate) use types::BufferId;
 pub use types::{
-    BufferOrigin, BufferState, BufferVersion, ByteOffset, CharOffset, DisplayColumn, Line,
-    LineEndingStyle, LineRange, LogicalColumn, OriginKind, Position, TextRange, TransactionId,
-    Utf16Offset, Utf16Position,
+    BufferOrigin, BufferState, BufferVersion, ByteOffset, CharOffset, Line, LineEndingStyle,
+    LineRange, LogicalColumn, OriginKind, Position, TextRange, TransactionId, Utf16Offset,
+    Utf16Position,
 };
 pub use versioned::VersionedResult;

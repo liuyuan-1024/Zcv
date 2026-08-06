@@ -7516,6 +7516,7 @@ dependencies = [
  "log",
  "thiserror 2.0.19",
  "unicode-segmentation",
+ "unicode-width",
  "zcv-buffer-diff",
  "zcv-engine",
  "zcv-language",

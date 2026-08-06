@@ -2,19 +2,19 @@
 //!
 //! 本文件只维护单个 selection 的方向、范围和映射；排序、合并和 primary 归属在 SelectionSet。
 
-use crate::{ByteOffset, DisplayColumn, PositionMap, TextRange};
+use crate::{ByteOffset, PositionMap, TextRange};
 
 use super::Cursor;
 
 /// 一个选区，使用 anchor/head 模型。
 ///
 /// `anchor` 是固定端，`head` 是活动端。两者相等时表示 caret。
-/// `goal` 是垂直移动时持久保留的目标显示列：目标行比目标列短时光标被钳制到行尾，但 goal 保留，下一次垂直移动仍回到原目标列。
+/// `goal` 是垂直移动时持久保留的目标显示列数值：目标行比目标列短时光标被钳制到行尾，但 goal 保留，下一次垂直移动仍回到原目标列。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Selection {
     anchor: ByteOffset,
     head: ByteOffset,
-    goal: Option<DisplayColumn>,
+    goal: Option<usize>,
 }
 
 impl Selection {
@@ -34,14 +34,14 @@ impl Selection {
         }
     }
 
-    /// 设置垂直移动持久保留的目标列；`None` 表示从当前位置推导。
-    pub const fn with_goal(mut self, goal: Option<DisplayColumn>) -> Self {
+    /// 设置垂直移动持久保留的目标显示列数值；`None` 表示从当前位置推导。
+    pub const fn with_goal(mut self, goal: Option<usize>) -> Self {
         self.goal = goal;
         self
     }
 
-    /// 垂直移动持久保留的目标列；`None` 表示未设置（对齐 Zed `SelectionGoal::None`）。
-    pub const fn goal(self) -> Option<DisplayColumn> {
+    /// 垂直移动持久保留的目标显示列数值；`None` 表示未设置（对齐 Zed `SelectionGoal::None`）。
+    pub const fn goal(self) -> Option<usize> {
         self.goal
     }
 

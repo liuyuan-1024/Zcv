@@ -9,6 +9,7 @@
 //! 上一层 Snapshot 固化下一层 Snapshot，从而让一次渲染只能看到一条内部一致的显示状态。
 //! 后续 InlayMap 与 BlockMap 继续按相同约定接入。
 
+mod display_width;
 mod error;
 mod fold_map;
 mod tab_map;
@@ -18,12 +19,12 @@ use gpui::HighlightStyle;
 #[cfg(test)]
 use zcv_engine::LineRange;
 use zcv_engine::{
-    BufferVersion, ByteOffset, DisplayColumn, Line, LogicalColumn, Position, Snapshot,
-    TextChangeBatch, TextRange,
+    BufferVersion, ByteOffset, Line, LogicalColumn, Position, Snapshot, TextChangeBatch, TextRange,
 };
 use zcv_language::HighlightSpan;
 use zcv_theme::syntax;
 
+pub(crate) use display_width::DisplayColumn;
 use error::DisplayMapResult;
 use fold_map::{ApplyOutcome, FoldMap, LogicalProjection};
 pub(crate) use fold_map::{ProjectedLineIndex, ProjectedRange};

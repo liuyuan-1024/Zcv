@@ -11,12 +11,12 @@ use gpui::{
     MouseUpEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Style, TextRun,
     UnderlineStyle, Window, fill, point, px, relative, size,
 };
-use zcv_engine::{ByteOffset, DisplayColumn, Line, SelectionSet, TextRange};
+use zcv_engine::{ByteOffset, Line, SelectionSet, TextRange};
 use zcv_language::{BracketPair, HighlightSpan};
 
 use super::display_map::{
-    BufferPoint, DisplayPoint, DisplayRow, DisplaySnapshot, ProjectedRange, WrapViewportRowKind,
-    byte_for_display_column,
+    BufferPoint, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot, ProjectedRange,
+    WrapViewportRowKind, byte_for_display_column,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -1300,16 +1300,10 @@ fn local_byte_for_display_point(
     if let Some(info) = line.wrap_info {
         // 显示行文本 = 假空格 + 片段；目标列落在缩进区内时返回片段起点。
         let fragment = &line.shaped.text[info.indent..];
-        let affinity = display_snapshot
-            .buffer_snapshot()
-            .config()
-            .display_width
-            .affinity;
         let local = byte_for_display_column(
             fragment,
             info.indent,
             point.column().get(),
-            affinity,
             display_snapshot.buffer_snapshot(),
         );
         return info.indent + local;
@@ -1446,10 +1440,10 @@ mod tests {
     use super::*;
     use crate::display_map::{DisplayMap, DisplayPoint};
     use gpui::{Empty, TestAppContext, font};
-    use zcv_engine::{
-        Buffer, BufferConfig, ByteOffset, DisplayColumn, Line, LineRange, LogicalColumn,
-    };
+    use zcv_engine::{Buffer, BufferConfig, ByteOffset, Line, LineRange, LogicalColumn};
     use zcv_theme::syntax;
+
+    use crate::display_map::DisplayColumn;
 
     #[test]
     fn logical_columns_map_to_utf8_boundaries() {

@@ -21,10 +21,6 @@ pub fn col(value: usize) -> LogicalColumn {
     LogicalColumn::new(value)
 }
 
-pub fn dcol(value: usize) -> DisplayColumn {
-    DisplayColumn::new(value)
-}
-
 pub fn range(start: usize, end: usize) -> TextRange {
     TextRange::new(b(start), b(end)).unwrap()
 }

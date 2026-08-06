@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
+use crate::display_map::DisplayColumn;
 use zcv_engine::{
     Affinity, Anchor, Buffer, BufferVersion, CoordinateError, Edit, EngineResult, PositionMap,
     Selection, SelectionSet, Snapshot, Transaction, TransactionId, TransactionMetadata,
@@ -146,7 +147,7 @@ pub(crate) struct EditorSelection {
     /// 方向：anchor 在右端、head 在左端时为 true。
     reversed: bool,
     /// 垂直移动持久保留的目标显示列，对齐引擎 `Selection::goal`。
-    goal: Option<zcv_engine::DisplayColumn>,
+    goal: Option<DisplayColumn>,
 }
 
 impl EditorSelection {
@@ -164,7 +165,7 @@ impl EditorSelection {
             start: Anchor::new(version, start).with_affinity(start_affinity),
             end: Anchor::new(version, end).with_affinity(Affinity::After),
             reversed: selection.is_reversed(),
-            goal: selection.goal(),
+            goal: selection.goal().map(DisplayColumn::new),
         }
     }
 
@@ -176,7 +177,7 @@ impl EditorSelection {
         } else {
             (start, end)
         };
-        Selection::new(anchor, head).with_goal(self.goal)
+        Selection::new(anchor, head).with_goal(self.goal.map(DisplayColumn::get))
     }
 }
 

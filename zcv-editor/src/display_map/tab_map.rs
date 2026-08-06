@@ -6,8 +6,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 
+use super::display_width::{DisplayColumn, char_width};
 use unicode_segmentation::UnicodeSegmentation;
-use zcv_engine::{DisplayColumn, DisplayColumnAffinity, Line, LogicalColumn, Snapshot};
+use zcv_engine::{Line, LogicalColumn, Snapshot};
 
 use super::{
     error::DisplayMapResult,
@@ -50,7 +51,7 @@ impl TabSnapshot {
         let text = snapshot.slice_line(line)?;
         let text = line_content(text.as_str());
         let target = column.get();
-        let affinity = snapshot.config().display_width.affinity;
+        // 吸附固定为最近边界（目标列落在多列字符中间时取更近的一端；距离相等取前）。
         let mut display = 0usize;
         let mut logical = 0usize;
 
@@ -65,17 +66,13 @@ impl TabSnapshot {
                 return Ok(LogicalColumn::new(next_logical));
             }
             if target > display && target < next_display {
-                return Ok(LogicalColumn::new(match affinity {
-                    DisplayColumnAffinity::Previous => logical,
-                    DisplayColumnAffinity::Next => next_logical,
-                    DisplayColumnAffinity::Nearest => {
-                        if target - display <= next_display - target {
-                            logical
-                        } else {
-                            next_logical
-                        }
-                    }
-                }));
+                return Ok(LogicalColumn::new(
+                    if target - display <= next_display - target {
+                        logical
+                    } else {
+                        next_logical
+                    },
+                ));
             }
 
             display = next_display;
@@ -119,8 +116,8 @@ impl TabMap {
     ) -> TabSnapshot {
         let snapshot = fold_snapshot.buffer_snapshot();
         let previous_snapshot = self.snapshot.buffer_snapshot();
-        let same_configuration = previous_snapshot.config().tab == snapshot.config().tab
-            && previous_snapshot.config().display_width == snapshot.config().display_width;
+        // display 策略随 BufferConfig 移除，缓存失效只以 tab 配置变化为键。
+        let same_configuration = previous_snapshot.config().tab == snapshot.config().tab;
         let same_buffer_version = previous_snapshot.version() == snapshot.version();
         let same_fold_version = self.snapshot.fold_snapshot.version() == fold_snapshot.version();
 
@@ -206,18 +203,17 @@ pub(super) fn advance_display_column(column: usize, grapheme: &str, snapshot: &S
     let Some(first) = grapheme.chars().next() else {
         return column;
     };
-    column + snapshot.config().display_width.char_width(first)
+    column + char_width(first)
 }
 
 /// 在给定文本内把 display-column 映射回字节位置。
 ///
 /// `start_column` 是文本首字符所处的显示列（软换行续行从假空格缩进后的列开始，tab 对齐必须基于行内绝对列而非片段内相对列）。
-/// 目标列落在某个 grapheme 中间时按 affinity 吸附到相邻边界；超出文本末尾返回 `text.len()`。
+/// 目标列落在某个 grapheme 中间时吸附到最近边界（距离相等取前）；超出文本末尾返回 `text.len()`。
 pub fn byte_for_display_column(
     text: &str,
     start_column: usize,
     target_column: usize,
-    affinity: DisplayColumnAffinity,
     snapshot: &Snapshot,
 ) -> usize {
     if target_column <= start_column {
@@ -235,16 +231,10 @@ pub fn byte_for_display_column(
             return next_byte;
         }
         if target_column > display && target_column < next_display {
-            return match affinity {
-                DisplayColumnAffinity::Previous => byte,
-                DisplayColumnAffinity::Next => next_byte,
-                DisplayColumnAffinity::Nearest => {
-                    if target_column - display <= next_display - target_column {
-                        byte
-                    } else {
-                        next_byte
-                    }
-                }
+            return if target_column - display <= next_display - target_column {
+                byte
+            } else {
+                next_byte
             };
         }
         display = next_display;

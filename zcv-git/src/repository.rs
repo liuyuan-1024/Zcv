@@ -734,6 +734,7 @@ mod tests {
             repository.diff_hunks(tracked).unwrap(),
             vec![DiffHunk {
                 range: 1..2,
+                old_range: 1..2,
                 kind: Modified,
             }]
         );
@@ -744,6 +745,7 @@ mod tests {
             repository.diff_hunks(tracked).unwrap(),
             vec![DiffHunk {
                 range: 2..3,
+                old_range: 1..1,
                 kind: Added,
             }]
         );
@@ -754,6 +756,7 @@ mod tests {
             repository.diff_hunks(tracked).unwrap(),
             vec![DiffHunk {
                 range: 0..0,
+                old_range: 0..1,
                 kind: Deleted,
             }]
         );

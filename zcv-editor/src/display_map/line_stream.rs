@@ -13,7 +13,10 @@ use std::sync::Arc;
 
 use zcv_engine::{ByteOffset, Line, Snapshot};
 
-/// 合成行表：锚定 buffer 逻辑行 → 其后插入的文本行（自持，无行尾换行）。
+/// 合成行表：锚定 buffer 逻辑行 → 插入在其**之后**的文本行（自持，无行尾换行）。
+///
+/// 删除块展开的合成行显示在被删行的原位置（删除点 = 锚定行之后）；
+/// 锚定行 0 的块插在行 0 之后。
 pub(crate) type InsertedLines = BTreeMap<Line, Vec<Arc<str>>>;
 
 /// 统一行空间中一行的文本来源。
@@ -88,11 +91,11 @@ impl LineStream {
             return None;
         }
         // 块按锚定行序（buffer 行序）；块少，线性扫描。
-        // 锚定行自身的流行号 = 锚定行号 + 其前（锚定行更早的）块的合成行数。
+        // 锚定行自身的流行号 = 锚定行号 + 其前（锚定行更早的）块的合成行数；
+        // 块插在锚定行之后，起始流行号 = 锚定行流行号 + 1。
         let mut inserted_before = 0usize;
         for (anchor, lines) in &self.inserted {
             let anchor_stream = anchor.get() + inserted_before;
-            // 块插在锚定行之后。
             let block_stream_start = anchor_stream + 1;
             if line >= block_stream_start && line < block_stream_start + lines.len() {
                 return Some(StreamLineSource::Inserted {
@@ -113,7 +116,7 @@ impl LineStream {
         }
     }
 
-    /// buffer 逻辑行 → 流行号。
+    /// buffer 逻辑行 → 流行号（锚定行严格在前的块计入前缀）。
     pub(crate) fn buffer_to_stream(&self, line: Line) -> Line {
         let before: usize = self
             .inserted
@@ -121,6 +124,18 @@ impl LineStream {
             .map(|(_, lines)| lines.len())
             .sum();
         Line::new(line.get() + before)
+    }
+
+    /// 锚定行的块起始流行号（块插在锚定行之后；无块返回 None）。
+    pub(crate) fn inserted_block_start(&self, anchor: Line) -> Option<Line> {
+        let before: usize = self
+            .inserted
+            .range(..anchor)
+            .map(|(_, lines)| lines.len())
+            .sum();
+        self.inserted
+            .get(&anchor)
+            .map(|_| Line::new(anchor.get() + before + 1))
     }
 
     /// 行文本（统一行号；越界返回 None）。

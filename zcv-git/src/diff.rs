@@ -34,7 +34,7 @@ fn parse_hunk_header(line: &[u8]) -> Option<DiffHunk> {
     if tokens.next()? != b"@@".as_slice() {
         return None;
     }
-    let (_, old_count) = parse_range_part(old)?;
+    let (old_start, old_count) = parse_range_part(old)?;
     let (new_start, new_count) = parse_range_part(new)?;
     let old_count = old_count.unwrap_or(1);
     let new_count = new_count.unwrap_or(1);
@@ -46,13 +46,19 @@ fn parse_hunk_header(line: &[u8]) -> Option<DiffHunk> {
     } else {
         DiffHunkKind::Modified
     };
+    let old_start = old_start.saturating_sub(1) as usize;
+    let old_range = old_start..old_start + old_count as usize;
     let new_start = new_start.saturating_sub(1) as usize;
     let range = if new_count == 0 {
         new_start..new_start
     } else {
         new_start..new_start + new_count as usize
     };
-    Some(DiffHunk { range, kind })
+    Some(DiffHunk {
+        range,
+        old_range,
+        kind,
+    })
 }
 
 /// 解析 `start[,count]`；count 缺省返回 None（git 对 count==1 省略 `,1`）。
@@ -86,6 +92,7 @@ mod tests {
             parse(output),
             vec![DiffHunk {
                 range: 12..15,
+                old_range: 11..11,
                 kind: Added,
             }]
         );
@@ -98,6 +105,7 @@ mod tests {
             parse(output),
             vec![DiffHunk {
                 range: 32..32,
+                old_range: 29..31,
                 kind: Deleted,
             }]
         );
@@ -110,6 +118,7 @@ mod tests {
             parse(output),
             vec![DiffHunk {
                 range: 4..7,
+                old_range: 4..7,
                 kind: Modified,
             }]
         );
@@ -122,6 +131,7 @@ mod tests {
             parse(output),
             vec![DiffHunk {
                 range: 3..4,
+                old_range: 2..3,
                 kind: Modified,
             }]
         );
@@ -135,10 +145,12 @@ mod tests {
             vec![
                 DiffHunk {
                     range: 0..2,
+                    old_range: 0..0,
                     kind: Added,
                 },
                 DiffHunk {
                     range: 12..12,
+                    old_range: 9..11,
                     kind: Deleted,
                 },
             ]
@@ -152,6 +164,7 @@ mod tests {
             parse(output),
             vec![DiffHunk {
                 range: 0..1,
+                old_range: 0..1,
                 kind: Modified,
             }]
         );
@@ -175,6 +188,7 @@ mod tests {
             parse(output),
             vec![DiffHunk {
                 range: 32..32,
+                old_range: 29..31,
                 kind: Deleted,
             }]
         );
@@ -187,6 +201,7 @@ mod tests {
             parse(output),
             vec![DiffHunk {
                 range: 0..5,
+                old_range: 0..0,
                 kind: Added,
             }]
         );
@@ -199,6 +214,7 @@ mod tests {
             parse(output),
             vec![DiffHunk {
                 range: 4..7,
+                old_range: 4..7,
                 kind: Modified,
             }]
         );
@@ -218,6 +234,7 @@ mod tests {
             parse(output),
             vec![DiffHunk {
                 range: 0..1,
+                old_range: 0..1,
                 kind: Modified,
             }]
         );

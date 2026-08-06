@@ -198,10 +198,12 @@ pub struct Editor {
     /// 注入的行级 diff hunks 与注入时的 buffer 版本（渲染门控用）。
     diff_hunks: Vec<DiffHunk>,
     diff_hunks_version: Option<BufferVersion>,
-    /// HEAD 全文（删除块展开显示被删除行的来源；由上层预取后注入）。
+    /// HEAD 全文（删除块/修改块展开显示旧行的来源；由上层预取后注入）。
     deleted_text: Option<Arc<str>>,
     /// 已展开的删除 hunk（按 old_range 标识；展开时从 HEAD 文本切片显示）。
     expanded_deleted_hunks: Vec<Range<usize>>,
+    /// 已展开的修改 hunk（按 old_range 标识；展开时显示修改前的 HEAD 旧行）。
+    expanded_modified_hunks: Vec<Range<usize>>,
 }
 
 impl Editor {
@@ -325,6 +327,16 @@ impl Editor {
         cx.notify();
     }
 
+    /// 已展开的删除 hunk（按 old_range 标识；渲染背景色用）。
+    pub(crate) fn expanded_deleted_hunks(&self) -> &[Range<usize>] {
+        &self.expanded_deleted_hunks
+    }
+
+    /// 已展开的修改 hunk（按 old_range 标识；渲染背景色用）。
+    pub(crate) fn expanded_modified_hunks(&self) -> &[Range<usize>] {
+        &self.expanded_modified_hunks
+    }
+
     /// 注入 HEAD 全文（删除块展开的数据源）；到达后重建删除块。
     pub fn set_deleted_hunk_text(&mut self, text: Option<Arc<str>>, cx: &mut Context<Self>) {
         if self.deleted_text == text {
@@ -354,21 +366,46 @@ impl Editor {
         cx.notify();
     }
 
+    /// 展开/折叠修改块：展开显示修改前的 HEAD 旧行（对齐 Zed：base 旧行插在修改行上方）。
+    pub fn toggle_modified_hunk(&mut self, old_range: Range<usize>, cx: &mut Context<Self>) {
+        let is_expanded = self.expanded_modified_hunks.contains(&old_range);
+        if is_expanded {
+            self.expanded_modified_hunks
+                .retain(|range| range != &old_range);
+        } else {
+            self.expanded_modified_hunks.push(old_range);
+        }
+        self.rebuild_inserted(cx);
+        cx.notify();
+    }
+
     /// 从"已展开的删除 hunk × HEAD 文本"重建合成行配置（锚定新侧行，文本按旧行范围切片）。
     fn rebuild_inserted(&mut self, cx: &App) {
         let mut inserted = InsertedLines::new();
         if let Some(text) = &self.deleted_text {
             for hunk in self.diff_hunks(cx) {
-                if hunk.kind != DiffHunkKind::Deleted
-                    || !self.expanded_deleted_hunks.contains(&hunk.old_range)
-                {
+                // 删除块展开：HEAD 中被删行作为合成行；修改块展开：HEAD 中被修改行的旧版。
+                let expanded = match hunk.kind {
+                    DiffHunkKind::Deleted => self.expanded_deleted_hunks.contains(&hunk.old_range),
+                    DiffHunkKind::Modified => {
+                        self.expanded_modified_hunks.contains(&hunk.old_range)
+                    }
+                    DiffHunkKind::Added => false,
+                };
+                if !expanded {
                     continue;
                 }
                 let lines: Vec<Arc<str>> = slice_deleted_lines(text, hunk.old_range.clone())
                     .into_iter()
                     .map(Arc::from)
                     .collect();
-                inserted.insert(Line::new(hunk.range.start), lines);
+                // 删除块：旧行插在删除点（range.start）之后；修改块：旧行插在修改行上方
+                let anchor = match hunk.kind {
+                    DiffHunkKind::Deleted => hunk.range.start,
+                    DiffHunkKind::Modified => hunk.range.start.saturating_sub(1),
+                    DiffHunkKind::Added => unreachable!("Added 不展开"),
+                };
+                inserted.insert(Line::new(anchor), lines);
             }
         }
         self.display_map.set_inserted(inserted);
@@ -706,6 +743,7 @@ impl Editor {
             diff_hunks_version: None,
             deleted_text: None,
             expanded_deleted_hunks: Vec::new(),
+            expanded_modified_hunks: Vec::new(),
             composition: None,
             input_layout: None,
             pixel_position_of_newest_cursor: None,

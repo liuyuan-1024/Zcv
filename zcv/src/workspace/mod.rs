@@ -467,10 +467,10 @@ impl Workspace {
             })
             .collect();
         let mut missing = Vec::new();
-        for (editor, path) in opened {
-            let Some(hunks) = store.read(cx).hunks_for_path(&path) else {
+        for (editor, path) in &opened {
+            let Some(hunks) = store.read(cx).hunks_for_path(path) else {
                 // 尚未查询：按需请求，事件回来再补。
-                missing.push(path);
+                missing.push(path.clone());
                 continue;
             };
             let hunks: Vec<zcv_editor::DiffHunk> = hunks.to_vec();
@@ -478,6 +478,45 @@ impl Workspace {
         }
         if !missing.is_empty() {
             store.update(cx, |store, cx| store.request_hunks(&missing, cx));
+        }
+        // 预取 HEAD 文本：含 Deleted hunk 的文件展开删除块需要（每路径每 HEAD 一次，缓存命中后不再重复加载；
+        // HEAD 变化时 git_store 自动清缓存）。
+        for (editor, path) in &opened {
+            // 删除块与修改块展开都需要 HEAD 文本（被删行/旧行来源）。
+            let needs_head_text = store.read(cx).hunks_for_path(path).is_some_and(|hunks| {
+                hunks.iter().any(|hunk| {
+                    matches!(
+                        hunk.kind,
+                        zcv_editor::DiffHunkKind::Deleted | zcv_editor::DiffHunkKind::Modified
+                    )
+                })
+            });
+            if needs_head_text && store.read(cx).committed_text(path).is_none() {
+                let task = store.read(cx).load_committed_text(path);
+                let editor = editor.clone();
+                let path = path.clone();
+                cx.spawn(async move |this, cx| {
+                    if let Some(text) = task.await {
+                        cx.update(|app| {
+                            this.update(app, |workspace, cx| {
+                                let store = workspace.project.read(cx).git_store();
+                                store.update(cx, |store, _| {
+                                    store.cache_committed_text(&path, Arc::from(text));
+                                });
+                                editor.update(cx, |editor, cx| {
+                                    editor.set_deleted_hunk_text(
+                                        store.read(cx).committed_text(&path),
+                                        cx,
+                                    );
+                                });
+                            })
+                            .ok();
+                        })
+                        .ok();
+                    }
+                })
+                .detach();
+            }
         }
     }
 

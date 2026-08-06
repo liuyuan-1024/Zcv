@@ -14,9 +14,10 @@ use gpui::{Font, LineFragment, LineWrapper, Pixels, TextSystem};
 use gpui_sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_engine::{
-    ByteOffset, CoordinateError, DisplayColumn, Line, LineContent, LogicalColumn, Position,
-    Snapshot, TextRange,
+    ByteOffset, CoordinateError, Line, LineContent, LogicalColumn, Position, Snapshot, TextRange,
 };
+
+use super::display_width::DisplayColumn;
 
 use super::error::DisplayMapResult;
 use super::fold_map::{
@@ -267,13 +268,11 @@ impl WrapSnapshot {
                 let line_start = buffer.line_start_byte(line)?.get();
                 let line_slice = buffer.slice_line(line)?;
                 let content = line_content(line_slice.as_str());
-                let affinity = buffer.config().display_width.affinity;
                 let byte_range = fragment.byte_range;
                 let local = byte_for_display_column(
                     &content[byte_range.clone()],
                     fragment.indent,
                     point.column().get(),
-                    affinity,
                     buffer,
                 );
                 Ok(ByteOffset::new(line_start + byte_range.start + local))

@@ -18,7 +18,7 @@ use zcv_engine::{
 use zcv_language::{BracketPair, LanguageBuffer, SyntaxSnapshot};
 
 use super::blink_manager::BlinkManager;
-use super::display_map::{DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
+use super::display_map::{DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
 use super::selection::{
@@ -883,7 +883,7 @@ impl Editor {
                     }
                 };
                 // 垂直移动本次使用的目标列；移动后持久化到选区。
-                let mut vertical_goal: Option<zcv_engine::DisplayColumn> = None;
+                let mut vertical_goal: Option<DisplayColumn> = None;
                 let new_head = match motion {
                     Motion::ByUnit(unit) => {
                         // 左右方向键（grapheme 级）移动非空选区：折叠到选区端，不移动。
@@ -937,24 +937,29 @@ impl Editor {
                                     detail: error.to_string(),
                                 })?;
                         // 目标列：优先使用持久化的 goal，否则从当前位置推导。
-                        let goal = selection.goal().unwrap_or(point.column());
+                        let goal = selection
+                            .goal()
+                            .map(DisplayColumn::new)
+                            .unwrap_or(point.column());
                         vertical_goal = Some(goal);
                         let last_row = self.display_map.line_count().saturating_sub(1);
                         if direction == MovementDirection::Previous
                             && point.row() == DisplayRow::ZERO
                         {
                             return Ok(if extend {
-                                selection.with_head(ByteOffset::ZERO).with_goal(Some(goal))
+                                selection
+                                    .with_head(ByteOffset::ZERO)
+                                    .with_goal(Some(goal.get()))
                             } else {
-                                Selection::caret(ByteOffset::ZERO).with_goal(Some(goal))
+                                Selection::caret(ByteOffset::ZERO).with_goal(Some(goal.get()))
                             });
                         }
                         if direction == MovementDirection::Next && point.row().get() >= last_row {
                             let new_head = self.display_map.buffer_snapshot().len_bytes();
                             return Ok(if extend {
-                                selection.with_head(new_head).with_goal(Some(goal))
+                                selection.with_head(new_head).with_goal(Some(goal.get()))
                             } else {
-                                Selection::caret(new_head).with_goal(Some(goal))
+                                Selection::caret(new_head).with_goal(Some(goal.get()))
                             });
                         }
                         let target_row = match direction {
@@ -986,7 +991,7 @@ impl Editor {
                 } else {
                     Selection::caret(new_head)
                 })
-                .with_goal(vertical_goal))
+                .with_goal(vertical_goal.map(DisplayColumn::get)))
             })
             .collect::<EngineResult<Vec<_>>>()
             .map(|selections| SelectionSet::new_with_primary(selections, primary_index));
@@ -2925,8 +2930,7 @@ mod tests {
             assert_eq!(
                 editor.selections(),
                 SelectionSet::new(vec![
-                    Selection::new(first_page, second_page)
-                        .with_goal(Some(zcv_engine::DisplayColumn::ZERO))
+                    Selection::new(first_page, second_page).with_goal(Some(0))
                 ])
             );
             assert_eq!(
@@ -2940,9 +2944,7 @@ mod tests {
         cx.read_entity(&editor, |editor, _| {
             assert_eq!(
                 editor.selections(),
-                SelectionSet::new(vec![
-                    Selection::caret(first_page).with_goal(Some(zcv_engine::DisplayColumn::ZERO))
-                ])
+                SelectionSet::new(vec![Selection::caret(first_page).with_goal(Some(0))])
             );
             assert_eq!(
                 editor.scroll_manager.anchor().row(),
@@ -2956,8 +2958,7 @@ mod tests {
             assert_eq!(
                 editor.selections(),
                 SelectionSet::new(vec![
-                    Selection::new(first_page, ByteOffset::ZERO)
-                        .with_goal(Some(zcv_engine::DisplayColumn::ZERO))
+                    Selection::new(first_page, ByteOffset::ZERO).with_goal(Some(0))
                 ])
             );
             assert_eq!(editor.scroll_manager.anchor().row(), DisplayRow::ZERO);
@@ -3281,7 +3282,7 @@ mod tests {
             )
         });
         assert_eq!(short_row_column, "short".len());
-        assert_eq!(goal, Some(zcv_engine::DisplayColumn::new(10)));
+        assert_eq!(goal, Some(10));
 
         // 再垂直移动到长行：光标回到持久化的目标列 10。
         cx.dispatch_action(MoveDown);
@@ -3748,10 +3749,7 @@ mod tests {
             assert!(line_count > 1, "宽行应拆成多个显示行");
             let continuation = editor
                 .display_map
-                .display_point_to_offset(DisplayPoint::new(
-                    DisplayRow::new(1),
-                    zcv_engine::DisplayColumn::ZERO,
-                ))
+                .display_point_to_offset(DisplayPoint::new(DisplayRow::new(1), DisplayColumn::ZERO))
                 .expect("续行行首应可映射");
             (line_count, continuation)
         });

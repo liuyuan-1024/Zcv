@@ -5,8 +5,7 @@
 use std::num::NonZeroUsize;
 
 use super::{
-    DisplayWidthPolicy, EncodingConfig, LargeFilePolicy, LineEndingConfig, PositionEncodingConfig,
-    WordBoundaryPolicy,
+    EncodingConfig, LargeFilePolicy, LineEndingConfig, PositionEncodingConfig, WordBoundaryPolicy,
 };
 
 /// Buffer 级别的综合配置。
@@ -22,8 +21,6 @@ pub struct BufferConfig {
     pub position_encoding: PositionEncodingConfig,
     /// 大文件、长行和历史保留相关的降级阈值。
     pub large_file: LargeFilePolicy,
-    /// 纯文本 display column 数学使用的字符宽度策略。
-    pub display_width: DisplayWidthPolicy,
     /// Word / Identifier / Symbol movement 使用的字符分类策略。
     pub word_boundary: WordBoundaryPolicy,
 }
@@ -36,7 +33,6 @@ impl Default for BufferConfig {
             encoding: EncodingConfig::default(),
             position_encoding: PositionEncodingConfig::Utf8,
             large_file: LargeFilePolicy::default(),
-            display_width: DisplayWidthPolicy::default(),
             word_boundary: WordBoundaryPolicy::default(),
         }
     }

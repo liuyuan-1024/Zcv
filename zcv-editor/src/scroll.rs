@@ -243,7 +243,7 @@ impl Default for ScrollManager {
 
 #[cfg(test)]
 mod tests {
-    use zcv_engine::DisplayColumn;
+    use crate::display_map::DisplayColumn;
 
     use super::*;
 

@@ -10,6 +10,7 @@ gpui-sum-tree.workspace = true
 log.workspace = true
 thiserror.workspace = true
 unicode-segmentation.workspace = true
+unicode-width.workspace = true
 zcv-buffer-diff.workspace = true
 zcv-engine.workspace = true
 zcv-language.workspace = true

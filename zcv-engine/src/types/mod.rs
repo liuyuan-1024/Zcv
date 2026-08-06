@@ -12,7 +12,7 @@ mod versions;
 pub use buffer_identity::{BufferOrigin, BufferState, OriginKind};
 pub use line_endings::LineEndingStyle;
 pub use offsets::{ByteOffset, CharOffset, Utf16Offset};
-pub use positions::{DisplayColumn, Line, LogicalColumn, Position, Utf16Position};
+pub use positions::{Line, LogicalColumn, Position, Utf16Position};
 pub use ranges::{LineRange, TextRange};
 pub(crate) use versions::BufferId;
 pub use versions::{BufferVersion, TransactionId};

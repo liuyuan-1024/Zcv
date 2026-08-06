@@ -38,24 +38,6 @@ impl LogicalColumn {
     }
 }
 
-/// 视觉列号，0-indexed。
-///
-/// 表示考虑 Tab 展开、CJK 宽度、emoji 宽度等策略后的显示列。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct DisplayColumn(usize);
-
-impl DisplayColumn {
-    pub const ZERO: Self = Self(0);
-
-    pub const fn new(value: usize) -> Self {
-        Self(value)
-    }
-
-    pub const fn get(self) -> usize {
-        self.0
-    }
-}
-
 /// 逻辑文本位置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Position {

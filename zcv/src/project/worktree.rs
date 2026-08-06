@@ -218,10 +218,10 @@ pub(crate) fn discover_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRe
         .iter()
         .map(|repository| repository.working_directory())
         .collect();
-    if let Some(ancestor) = discover_git_repository(root)? {
-        if !known.contains(ancestor.working_directory()) {
-            repositories.insert(0, ancestor);
-        }
+    if let Some(ancestor) = discover_git_repository(root)?
+        && !known.contains(ancestor.working_directory())
+    {
+        repositories.insert(0, ancestor);
     }
     Ok(repositories)
 }

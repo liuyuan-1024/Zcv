@@ -2,8 +2,16 @@
 //!
 //! 本文件不实现移动扫描，只集中维护可配置的字符类别和边界规则。
 
-use super::display::is_zero_width;
 use crate::selection::MovementUnit;
+use unicode_width::UnicodeWidthChar;
+
+/// 零宽字符（组合音标、ZWJ、变体选择符等）判定。
+///
+/// 这类字符不占显示列宽，并应与其前后字符保持为一个词。
+/// 控制字符宽度未定义（返回 `None`），不属于零宽字符，由调用方按控制字符处理。
+fn is_zero_width(ch: char) -> bool {
+    UnicodeWidthChar::width(ch) == Some(0)
+}
 
 /// 词边界策略。
 ///

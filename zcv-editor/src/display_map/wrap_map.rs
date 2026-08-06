@@ -13,17 +13,17 @@ use std::sync::Arc;
 use gpui::{Font, LineFragment, LineWrapper, Pixels, TextSystem};
 use gpui_sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
-use zcv_engine::{
-    ByteOffset, CoordinateError, Line, LineContent, LogicalColumn, Position, Snapshot, TextRange,
-};
+use zcv_engine::{ByteOffset, CoordinateError, Line, LogicalColumn, Position, Snapshot, TextRange};
 
 use super::display_width::DisplayColumn;
 
 use super::error::DisplayMapResult;
+use super::fold_map::StreamProjectedKind;
 use super::fold_map::{
     FoldEdit, FoldPlaceholder, LogicalPoint, LogicalPointProjection, LogicalRange,
-    ProjectedLineIndex, ProjectedLineKind, ProjectedPoint, ProjectedPointMapping, ProjectedRange,
+    ProjectedLineIndex, ProjectedPoint, ProjectedPointMapping, ProjectedRange,
 };
+use super::line_stream::StreamLineSource;
 use super::tab_map::{TabSnapshot, advance_display_column, byte_for_display_column, line_content};
 use super::{DisplayPoint, DisplayRow};
 
@@ -143,7 +143,8 @@ pub(super) struct WrapFragment {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WrapFragmentKind {
-    Text(Line),
+    /// 文本行（携带流来源：buffer 行或合成行）。
+    Text(StreamLineSource),
     Placeholder(FoldPlaceholder),
 }
 
@@ -170,14 +171,16 @@ impl<'a> WrapViewportRow<'a> {
 
 /// 视口显示行内容种类。
 ///
-/// Text 行携带整行文本内容（`content`，已剥行尾换行）与本段字节范围；渲染端在 `indent` > 0 时把假空格拼在段文本前面。
-/// `column_base` 是该段起始的逻辑字符列，
-/// 用于命中测试与选区列换算。
+/// Text 行携带整行投影文本（`text`，含行内提示注入，行尾换行未剥）与本段投影字节范围；
+/// 渲染端在 `indent` > 0 时把假空格拼在段文本前面。
+/// `source` 是行的文本来源（buffer 行 / 合成行，渲染端据此区分行号与可命中性；
+/// 合成行无 buffer 坐标，`global_byte_start` 为锚定行行首）。
+/// `column_base` 是该段起始的逻辑字符列，用于命中测试与选区列换算。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapViewportRowKind<'a> {
     Text {
-        logical_line: Line,
-        content: LineContent<'a>,
+        source: StreamLineSource,
+        text: std::borrow::Cow<'a, str>,
         byte_range: Range<usize>,
         global_byte_start: usize,
         fragment_index: usize,
@@ -200,7 +203,7 @@ impl<'a> WrapViewportSlice<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct WrapSnapshot {
+pub(crate) struct WrapSnapshot {
     tab_snapshot: TabSnapshot,
     transforms: SumTree<Transform>,
     /// 是否处于软换行模式（false = 透传，显示行 == tab 行）。
@@ -209,7 +212,7 @@ pub(super) struct WrapSnapshot {
 }
 
 impl WrapSnapshot {
-    pub(super) fn tab_snapshot(&self) -> &TabSnapshot {
+    pub(crate) fn tab_snapshot(&self) -> &TabSnapshot {
         &self.tab_snapshot
     }
 
@@ -263,11 +266,24 @@ impl WrapSnapshot {
                     .buffer_snapshot()
                     .position_to_byte(logical.into())?)
             }
-            WrapFragmentKind::Text(line) => {
+            WrapFragmentKind::Text(source) => {
                 let buffer = self.tab_snapshot.buffer_snapshot();
-                let line_start = buffer.line_start_byte(line)?.get();
-                let line_slice = buffer.slice_line(line)?;
-                let content = line_content(line_slice.as_str());
+                let tab_row = Line::new(fragment.tab_row);
+                // 合成行的字节范围是锚定行行首的伪坐标：映射到锚定行行首（与占位符同语义）。
+                let line_start = self
+                    .tab_snapshot
+                    .line_byte_range(tab_row)
+                    .ok_or(CoordinateError::LineOutOfBounds(tab_row))?
+                    .start
+                    .get();
+                let StreamLineSource::Buffer(_) = source else {
+                    return Ok(ByteOffset::new(line_start));
+                };
+                let text = self
+                    .tab_snapshot
+                    .line_text(tab_row)
+                    .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
+                let content = line_content(text.as_ref());
                 let byte_range = fragment.byte_range;
                 let local = byte_for_display_column(
                     &content[byte_range.clone()],
@@ -275,7 +291,15 @@ impl WrapSnapshot {
                     point.column().get(),
                     buffer,
                 );
-                Ok(ByteOffset::new(line_start + byte_range.start + local))
+                // 投影行内偏移逆投影回原始行内偏移（注入段内吸附到锚定后）。
+                let stream_line = self
+                    .tab_snapshot
+                    .stream_line_for_projected(tab_row)
+                    .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
+                let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
+                let projected_byte = byte_range.start + local;
+                let original_byte = inlay.to_original_offset(stream_line, projected_byte);
+                Ok(ByteOffset::new(line_start + original_byte))
             }
         }
     }
@@ -299,19 +323,33 @@ impl WrapSnapshot {
                 WrapFragmentKind::Placeholder(placeholder) => {
                     WrapViewportRowKind::Placeholder(placeholder)
                 }
-                WrapFragmentKind::Text(line) => {
-                    // line_content 剥掉行尾换行，片段字节范围可直接切片。
-                    let content = buffer.line_content(line, None)?;
-                    let global_byte_start =
-                        content.text_range().start().get() + fragment.byte_range.start;
+                WrapFragmentKind::Text(source) => {
+                    // 投影文本（含行内提示注入；合成行无注入直接借用）；行首为原始 buffer 字节。
+                    let tab_row = Line::new(fragment.tab_row);
+                    let line_range = self
+                        .tab_snapshot
+                        .line_byte_range(tab_row)
+                        .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
+                    let text = self
+                        .tab_snapshot
+                        .line_text(tab_row)
+                        .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
+                    // 片段起点原始字节（投影偏移逆投影）→ 起始逻辑列。
+                    let stream_line = self
+                        .tab_snapshot
+                        .stream_line_for_projected(tab_row)
+                        .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
+                    let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
+                    let original_start =
+                        inlay.to_original_offset(stream_line, fragment.byte_range.start);
                     let column_base = buffer
-                        .byte_to_position(ByteOffset::new(global_byte_start))
+                        .byte_to_position(ByteOffset::new(line_range.start.get() + original_start))
                         .map_or(0, |position| position.column().get());
                     WrapViewportRowKind::Text {
-                        logical_line: line,
-                        content,
+                        source,
+                        text,
                         byte_range: fragment.byte_range,
-                        global_byte_start,
+                        global_byte_start: line_range.start.get(),
                         fragment_index: fragment.fragment_index,
                         indent: fragment.indent,
                         column_base,
@@ -400,10 +438,26 @@ impl WrapSnapshot {
         let point = self.offset_to_display_point(offset)?;
         let fragment = self.display_row_to_fragment(point.row())?;
         match fragment.kind {
-            WrapFragmentKind::Text(line) => {
-                let buffer = self.tab_snapshot.buffer_snapshot();
-                let line_start = buffer.line_start_byte(line)?.get();
-                Ok(ByteOffset::new(line_start + fragment.byte_range.end))
+            WrapFragmentKind::Text(source) => {
+                let tab_row = Line::new(fragment.tab_row);
+                // 合成行的字节范围是锚定行行首的伪坐标：映射到锚定行行首。
+                let line_start = self
+                    .tab_snapshot
+                    .line_byte_range(tab_row)
+                    .ok_or(CoordinateError::LineOutOfBounds(tab_row))?
+                    .start
+                    .get();
+                let StreamLineSource::Buffer(_) = source else {
+                    return Ok(ByteOffset::new(line_start));
+                };
+                // 片段终点（投影偏移）逆投影回原始行内偏移。
+                let stream_line = self
+                    .tab_snapshot
+                    .stream_line_for_projected(tab_row)
+                    .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
+                let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
+                let original_end = inlay.to_original_offset(stream_line, fragment.byte_range.end);
+                Ok(ByteOffset::new(line_start + original_end))
             }
             WrapFragmentKind::Placeholder(placeholder) => {
                 let buffer = self.tab_snapshot.buffer_snapshot();
@@ -423,7 +477,7 @@ impl WrapSnapshot {
             self.transforms
                 .find::<OutputToInput, _>((), &OutputRows(row.get()), Bias::Right);
         let transform =
-            transform.ok_or_else(|| CoordinateError::LineOutOfBounds(Line::new(row.get())))?;
+            transform.ok_or(CoordinateError::LineOutOfBounds(Line::new(row.get())))?;
         let input_start = start.1.0;
         let output_start = start.0.0;
         match transform.kind {
@@ -432,11 +486,11 @@ impl WrapSnapshot {
                 let kind = self.projected_kind(tab_row)?;
                 let content_len = match kind {
                     WrapFragmentKind::Placeholder(_) => 0,
-                    WrapFragmentKind::Text(line) => line_content(
+                    _ => line_content(
                         self.tab_snapshot
-                            .buffer_snapshot()
-                            .slice_line(line)?
-                            .as_str(),
+                            .line_text(Line::new(tab_row))
+                            .expect("可见行必须可解析")
+                            .as_ref(),
                     )
                     .len(),
                 };
@@ -449,20 +503,21 @@ impl WrapSnapshot {
                 })
             }
             TransformKind::Wrap => {
-                let WrapFragmentKind::Text(line) = self.projected_kind(input_start)? else {
-                    unreachable!("wrap transform 必须对应文本行");
+                let kind = self.projected_kind(input_start)?;
+                let content_len = match kind {
+                    WrapFragmentKind::Placeholder(_) => 0,
+                    _ => line_content(
+                        self.tab_snapshot
+                            .line_text(Line::new(input_start))
+                            .expect("可见行必须可解析")
+                            .as_ref(),
+                    )
+                    .len(),
                 };
-                let content_len = line_content(
-                    self.tab_snapshot
-                        .buffer_snapshot()
-                        .slice_line(line)?
-                        .as_str(),
-                )
-                .len();
                 let fragment_index = row.get() - output_start;
                 Ok(WrapFragment {
                     tab_row: input_start,
-                    kind: WrapFragmentKind::Text(line),
+                    kind,
                     byte_range: fragment_byte_range(
                         &transform.wrap_points,
                         fragment_index,
@@ -478,15 +533,10 @@ impl WrapSnapshot {
     }
 
     fn projected_kind(&self, tab_row: usize) -> DisplayMapResult<WrapFragmentKind> {
-        match self
-            .tab_snapshot
-            .projected_line(ProjectedLineIndex::new(tab_row))
-        {
-            Some(line) => Ok(match line.kind() {
-                ProjectedLineKind::Text(text_line) => {
-                    WrapFragmentKind::Text(text_line.logical_line())
-                }
-                ProjectedLineKind::Placeholder(placeholder) => {
+        match self.tab_snapshot.projected_kind(Line::new(tab_row)) {
+            Some(kind) => Ok(match kind {
+                StreamProjectedKind::Text(source) => WrapFragmentKind::Text(source),
+                StreamProjectedKind::Placeholder(placeholder) => {
                     WrapFragmentKind::Placeholder(placeholder)
                 }
             }),
@@ -525,18 +575,39 @@ impl WrapSnapshot {
         let tab_row = point.line().get();
         let line = Line::new(tab_row);
         let buffer = self.tab_snapshot.buffer_snapshot();
-        let line_slice = buffer.slice_line(line)?;
-        let content = line_content(line_slice.as_str());
-        let line_start = buffer.line_start_byte(line)?.get();
+        // 投影文本（含行内提示注入）；目标列对应的原始字节经注入前缀映射为投影偏移。
+        let text = self
+            .tab_snapshot
+            .line_text(line)
+            .ok_or(CoordinateError::LineOutOfBounds(line))?;
+        let content = line_content(text.as_ref());
+        let line_start = self
+            .tab_snapshot
+            .line_byte_range(line)
+            .ok_or(CoordinateError::LineOutOfBounds(line))?
+            .start
+            .get();
+        // 逻辑列 → 原始行内字节：position_to_byte 需要 buffer 行号（投影行号经流解析回 buffer 行）。
+        let stream_line = self
+            .tab_snapshot
+            .stream_line_for_projected(line)
+            .ok_or(CoordinateError::LineOutOfBounds(line))?;
+        let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
+        let buffer_line = match inlay.source(stream_line) {
+            Some(StreamLineSource::Buffer(buffer_line)) => Line::new(buffer_line),
+            _ => return Err(CoordinateError::LineOutOfBounds(line).into()),
+        };
         let target_byte = buffer
-            .position_to_byte(Position::new(line, point.column()))?
+            .position_to_byte(Position::new(buffer_line, point.column()))?
             .get()
             - line_start;
+        let target_projected = inlay.to_projected_offset(stream_line, target_byte);
         let (input_start, output_start, transform) = self.transform_for_tab_row(tab_row)?;
         let (fragment_index, fragment_start, indent) = match transform.kind {
             TransformKind::Isomorphic => (tab_row - input_start, 0, 0),
             TransformKind::Wrap => {
-                let fragment_index = fragment_index_for_byte(&transform.wrap_points, target_byte);
+                let fragment_index =
+                    fragment_index_for_byte(&transform.wrap_points, target_projected);
                 (
                     fragment_index,
                     fragment_index
@@ -549,7 +620,7 @@ impl WrapSnapshot {
             }
         };
         // 片段内的显示列从缩进后的列开始累加，tab 对齐基于显示行内列。
-        let column = content[fragment_start..target_byte]
+        let column = content[fragment_start..target_projected]
             .graphemes(true)
             .fold(indent, |column, grapheme| {
                 advance_display_column(column, grapheme, buffer)
@@ -568,7 +639,7 @@ impl WrapSnapshot {
             self.transforms
                 .find::<InputToOutput, _>((), &InputLines(tab_row), Bias::Right);
         let transform =
-            transform.ok_or_else(|| CoordinateError::LineOutOfBounds(Line::new(tab_row)))?;
+            transform.ok_or(CoordinateError::LineOutOfBounds(Line::new(tab_row)))?;
         Ok((start.0.0, start.1.0, transform))
     }
 
@@ -581,16 +652,33 @@ impl WrapSnapshot {
         let tab_row = point.line().get();
         let line = Line::new(tab_row);
         let buffer = self.tab_snapshot.buffer_snapshot();
-        let line_start = buffer.line_start_byte(line)?.get();
+        let line_start = self
+            .tab_snapshot
+            .line_byte_range(line)
+            .ok_or(CoordinateError::LineOutOfBounds(line))?
+            .start
+            .get();
+        // 逻辑列 → 原始行内字节：position_to_byte 需要 buffer 行号（投影行号经流解析回 buffer 行）。
+        let stream_line = self
+            .tab_snapshot
+            .stream_line_for_projected(line)
+            .ok_or(CoordinateError::LineOutOfBounds(line))?;
+        let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
+        let buffer_line = match inlay.source(stream_line) {
+            Some(StreamLineSource::Buffer(buffer_line)) => Line::new(buffer_line),
+            _ => return Err(CoordinateError::LineOutOfBounds(line).into()),
+        };
         let target_byte = buffer
-            .position_to_byte(Position::new(line, point.column()))?
+            .position_to_byte(Position::new(buffer_line, point.column()))?
             .get()
             - line_start;
+        let target_projected = inlay.to_projected_offset(stream_line, target_byte);
         let (input_start, output_start, transform) = self.transform_for_tab_row(tab_row)?;
         let (fragment_index, fragment_start, indent) = match transform.kind {
             TransformKind::Isomorphic => (tab_row - input_start, 0, 0),
             TransformKind::Wrap => {
-                let fragment_index = fragment_index_for_byte(&transform.wrap_points, target_byte);
+                let fragment_index =
+                    fragment_index_for_byte(&transform.wrap_points, target_projected);
                 (
                     fragment_index,
                     fragment_index
@@ -602,8 +690,10 @@ impl WrapSnapshot {
                 )
             }
         };
+        // 片段起点逆投影回原始字节 → 起始逻辑列。
+        let original_start = inlay.to_original_offset(stream_line, fragment_start);
         let column_base = buffer
-            .byte_to_position(ByteOffset::new(line_start + fragment_start))
+            .byte_to_position(ByteOffset::new(line_start + original_start))
             .map_or(0, |position| position.column().get());
         Ok((
             DisplayRow::new(output_start + fragment_index),
@@ -672,6 +762,7 @@ impl WrapMap {
                 .as_ref()
                 .expect("换行开启时必须先通过 set_wrap_width 缓存 text system");
             let mut wrapper = text_system.line_wrapper(font.clone(), *font_size);
+            // 合成行/行内提示变化由 fold 发 structural edit（单一信号）。
             if fold_edits.iter().any(FoldEdit::is_structural) {
                 self.rewrap_all(wrap_width, &mut wrapper);
             } else {
@@ -816,10 +907,14 @@ impl WrapMap {
         match self.snapshot.projected_kind(tab_row) {
             Err(_) => push_isomorphic(transforms, 1),
             Ok(WrapFragmentKind::Placeholder(_)) => push_isomorphic(transforms, 1),
-            Ok(WrapFragmentKind::Text(line)) => {
-                let buffer = self.snapshot.tab_snapshot.buffer_snapshot();
-                let line_slice = buffer.slice_line(line).expect("可见逻辑行必须存在");
-                let content = line_content(line_slice.as_str());
+            Ok(WrapFragmentKind::Text(_)) => {
+                // 文本统一走流：buffer 行与合成行（外部文本）共用换行计算，软换行免费。
+                let text = self
+                    .snapshot
+                    .tab_snapshot
+                    .line_text(Line::new(tab_row))
+                    .expect("可见行必须可解析");
+                let content = line_content(text.as_ref());
                 let boundaries: Vec<_> = wrapper
                     .wrap_line(&[LineFragment::text(content)], wrap_width)
                     .collect();

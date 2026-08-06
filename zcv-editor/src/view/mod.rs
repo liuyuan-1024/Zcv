@@ -18,7 +18,9 @@ use zcv_engine::{
 use zcv_language::{BracketPair, LanguageBuffer, SyntaxSnapshot};
 
 use super::blink_manager::BlinkManager;
-use super::display_map::{DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
+use super::display_map::{
+    DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, Inlay, InsertedLines,
+};
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
 use super::selection::{
@@ -196,6 +198,10 @@ pub struct Editor {
     /// 注入的行级 diff hunks 与注入时的 buffer 版本（渲染门控用）。
     diff_hunks: Vec<DiffHunk>,
     diff_hunks_version: Option<BufferVersion>,
+    /// HEAD 全文（删除块展开显示被删除行的来源；由上层预取后注入）。
+    deleted_text: Option<Arc<str>>,
+    /// 已展开的删除 hunk（按 old_range 标识；展开时从 HEAD 文本切片显示）。
+    expanded_deleted_hunks: Vec<Range<usize>>,
 }
 
 impl Editor {
@@ -315,7 +321,57 @@ impl Editor {
         }
         self.diff_hunks = hunks;
         self.diff_hunks_version = Some(version);
+        self.rebuild_inserted(cx);
         cx.notify();
+    }
+
+    /// 注入 HEAD 全文（删除块展开的数据源）；到达后重建删除块。
+    pub fn set_deleted_hunk_text(&mut self, text: Option<Arc<str>>, cx: &mut Context<Self>) {
+        if self.deleted_text == text {
+            return;
+        }
+        self.deleted_text = text;
+        self.rebuild_inserted(cx);
+        cx.notify();
+    }
+
+    /// 注入行内提示（inlay hint）配置；数据面入口（LSP 后续接入）。
+    pub(crate) fn set_inlays(&mut self, inlays: Vec<Inlay>, cx: &mut Context<Self>) {
+        self.display_map.set_inlays(inlays);
+        cx.notify();
+    }
+
+    /// 展开/折叠删除块（按 hunk 的 old_range 标识）。
+    pub fn toggle_deleted_hunk(&mut self, old_range: Range<usize>, cx: &mut Context<Self>) {
+        let is_expanded = self.expanded_deleted_hunks.contains(&old_range);
+        if is_expanded {
+            self.expanded_deleted_hunks
+                .retain(|range| range != &old_range);
+        } else {
+            self.expanded_deleted_hunks.push(old_range);
+        }
+        self.rebuild_inserted(cx);
+        cx.notify();
+    }
+
+    /// 从"已展开的删除 hunk × HEAD 文本"重建合成行配置（锚定新侧行，文本按旧行范围切片）。
+    fn rebuild_inserted(&mut self, cx: &App) {
+        let mut inserted = InsertedLines::new();
+        if let Some(text) = &self.deleted_text {
+            for hunk in self.diff_hunks(cx) {
+                if hunk.kind != DiffHunkKind::Deleted
+                    || !self.expanded_deleted_hunks.contains(&hunk.old_range)
+                {
+                    continue;
+                }
+                let lines: Vec<Arc<str>> = slice_deleted_lines(text, hunk.old_range.clone())
+                    .into_iter()
+                    .map(Arc::from)
+                    .collect();
+                inserted.insert(Line::new(hunk.range.start), lines);
+            }
+        }
+        self.display_map.set_inserted(inserted);
     }
 
     /// 与当前 buffer 版本匹配的 diff hunks；未注入或注入后发生编辑时返回空。
@@ -648,6 +704,8 @@ impl Editor {
             scroll_manager: ScrollManager::default(),
             diff_hunks: Vec::new(),
             diff_hunks_version: None,
+            deleted_text: None,
+            expanded_deleted_hunks: Vec::new(),
             composition: None,
             input_layout: None,
             pixel_position_of_newest_cursor: None,
@@ -1389,6 +1447,8 @@ impl Editor {
             }
         }
         self.display_map.sync(snapshot, changes);
+        // 编辑后 diff hunks 门控失效（返回空）：删除块随行号失配清空，等待重新注入。
+        self.rebuild_inserted(cx);
     }
 
     /// 把语法高亮与 capture 样式表注入显示管线（对齐 Zed 的 push_highlights）。
@@ -2418,6 +2478,81 @@ mod tests {
     use crate::display_map::{DisplayPoint, DisplayRow};
     use crate::scroll::ScrollbarThumbState;
     use crate::scrollbar::{SCROLLBAR_WIDTH, thumb_geometry};
+
+    #[gpui::test]
+    fn deleted_hunk_expands_and_collapses_inserted_lines(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "a\nb\nc");
+        let editor = cx.new(|cx| Editor::new(buffer, EditorMode::Full, cx));
+        cx.run_until_parked();
+        let base_rows = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());
+        assert_eq!(base_rows, 3);
+
+        // 注入 Deleted hunk（新侧行 1 处删除了 HEAD 的 1..3 行）+ HEAD 全文。
+        editor.update(cx, |editor, cx| {
+            editor.set_diff_hunks(
+                vec![DiffHunk {
+                    range: 1..1,
+                    old_range: 1..3,
+                    kind: DiffHunkKind::Deleted,
+                }],
+                cx,
+            );
+            editor.set_deleted_hunk_text(Some(Arc::from("a\nold1\nold2\nc")), cx);
+        });
+        // 未展开：行数不变。
+        assert_eq!(
+            cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+            3
+        );
+
+        // 展开删除块：HEAD 的 1..3 行（old1/old2）作为合成行插入。
+        editor.update(cx, |editor, cx| editor.toggle_deleted_hunk(1..3, cx));
+        assert_eq!(
+            cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+            5,
+            "展开后应增加 2 个被删除行"
+        );
+
+        // 再折叠：回到 3 行。
+        editor.update(cx, |editor, cx| editor.toggle_deleted_hunk(1..3, cx));
+        assert_eq!(
+            cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+            3,
+            "折叠后应回到 3 行"
+        );
+    }
+
+    #[gpui::test]
+    fn inlays_project_through_editor_display_pipeline(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "ab\ncd\n");
+        let editor = cx.new(|cx| Editor::new(buffer, EditorMode::Full, cx));
+        cx.run_until_parked();
+        editor.update(cx, |editor, cx| {
+            editor.set_inlays(
+                vec![Inlay {
+                    position: ByteOffset::new(1),
+                    text: ": hint".to_owned(),
+                }],
+                cx,
+            );
+        });
+        // 行内提示不占行数（"ab\ncd\n" = 3 行）。
+        assert_eq!(
+            cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+            3
+        );
+        // 经消费链投影：视口行文本含注入文本。
+        let snapshot = cx.read_entity(&editor, |editor, _| editor.display_map.snapshot());
+        let viewport = snapshot
+            .slice_viewport(DisplayRow::ZERO, 1)
+            .expect("视口应可读取");
+        match viewport.rows()[0].kind() {
+            crate::display_map::WrapViewportRowKind::Text { text, .. } => {
+                assert_eq!(text.as_ref(), "a: hintb\n")
+            }
+            other => panic!("行 0 应为含注入的文本行，实际 {other:?}"),
+        }
+    }
 
     fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<LanguageBuffer> {
         let buffer =
@@ -3671,6 +3806,7 @@ mod tests {
             editor.set_diff_hunks(
                 vec![DiffHunk {
                     range: 1..2,
+                    old_range: 1..2,
                     kind: DiffHunkKind::Modified,
                 }],
                 cx,
@@ -3688,6 +3824,7 @@ mod tests {
             editor.set_diff_hunks(
                 vec![DiffHunk {
                     range: 0..1,
+                    old_range: 0..0,
                     kind: DiffHunkKind::Added,
                 }],
                 cx,
@@ -3914,6 +4051,7 @@ mod tests {
             editor.set_diff_hunks(
                 vec![DiffHunk {
                     range: 50..51,
+                    old_range: 50..51,
                     kind: DiffHunkKind::Modified,
                 }],
                 cx,
@@ -3998,4 +4136,16 @@ mod tests {
             assert_eq!(editor.scrollbar_thumb_state(), ScrollbarThumbState::Hovered);
         });
     }
+}
+
+/// 从 HEAD 全文按行范围切片（删除块展开显示被删除行；结尾换行的空尾段丢弃）。
+fn slice_deleted_lines(text: &str, range: Range<usize>) -> Vec<&str> {
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    if text.ends_with('\n') {
+        lines.pop();
+    }
+    lines
+        .get(range)
+        .map(|slice| slice.to_vec())
+        .unwrap_or_default()
 }

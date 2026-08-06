@@ -24,6 +24,9 @@ pub trait GitRepository: Send + Sync {
     /// `paths` 为空时查询全仓库；路径相对仓库根（unix 分隔符），空字符串表示整棵工作树。
     fn status(&self, paths: &[PathBuf]) -> Result<GitStatus>;
 
+    /// 是否配置了至少一个 remote（`git remote` 输出非空）。
+    fn has_remote(&self) -> Result<bool>;
+
     /// 当前分支名与 HEAD 提交 id；空仓库或 detached HEAD 时对应项为 `None`。
     fn head(&self) -> Result<(Option<String>, Option<String>)>;
 
@@ -127,6 +130,13 @@ impl GitRepository for RealGitRepository {
         &self.working_directory
     }
 
+    fn has_remote(&self) -> Result<bool> {
+        // `git remote` 无 remote 时退出码仍为 0（输出为空），须按输出内容判定。
+        Ok(self
+            .run_optional(&["remote"])?
+            .is_some_and(|output| output.stdout.iter().any(|byte| !byte.is_ascii_whitespace())))
+    }
+
     fn status(&self, paths: &[PathBuf]) -> Result<GitStatus> {
         // 对齐 Zed `git_status_args`（repository.rs:3516），另加 `--ignored=matching`：
         // `--untracked-files=all` 让未跟踪文件逐条输出（非目录汇总）；
@@ -135,6 +145,7 @@ impl GitRepository for RealGitRepository {
         let mut command = self.build_command(&[
             "status",
             "--porcelain=v1",
+            "-b",
             "--ignored=matching",
             "--untracked-files=all",
             "--no-renames",
@@ -660,6 +671,50 @@ mod tests {
             String::from_utf8_lossy(&local_head.stdout).trim(),
             "push 后远程应指向本地 HEAD"
         );
+    }
+
+    #[test]
+    fn has_remote_reports_true_and_false() {
+        let (root, _temp) = test_repo();
+        assert!(!open_repo(&root).has_remote().expect("has_remote 应成功"));
+
+        let (root, _remote, _temp) = test_repo_with_remote();
+        assert!(open_repo(&root).has_remote().expect("has_remote 应成功"));
+    }
+
+    #[test]
+    fn status_reports_branch_tracking() {
+        let (root, _remote, _temp) = test_repo_with_remote();
+        let repo = open_repo(&root);
+
+        // 与远程同步：无 ahead/behind。
+        let branch = repo
+            .status(&[])
+            .expect("status 应成功")
+            .branch
+            .expect("应有头行");
+        assert_eq!(branch.upstream.as_deref(), Some("origin/master"));
+        assert_eq!((branch.ahead, branch.behind), (0, 0));
+
+        // 本地新提交 → ahead 1（可推送）。
+        std::fs::write(root.join("new.txt"), "新提交\n").expect("应写入文件");
+        run_in(&root, &["git", "add", "new.txt"]);
+        run_in(&root, &["git", "commit", "-q", "-m", "本地提交"]);
+        let branch = repo
+            .status(&[])
+            .expect("status 应成功")
+            .branch
+            .expect("应有头行");
+        assert_eq!((branch.ahead, branch.behind), (1, 0));
+
+        // push 后回到同步（徽标消失的依据）。
+        repo.push().expect("push 应成功");
+        let branch = repo
+            .status(&[])
+            .expect("status 应成功")
+            .branch
+            .expect("应有头行");
+        assert_eq!((branch.ahead, branch.behind), (0, 0));
     }
 
     #[test]

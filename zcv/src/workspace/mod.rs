@@ -277,14 +277,16 @@ impl Workspace {
                 }
             });
 
-        // git 分支显示：GitStore 事件（首次扫描、外部 checkout、拉取操作）到达时刷新 top_bar。
+        // git 分支显示：GitStore 事件（首次扫描、外部 checkout、拉取操作）到达时刷新。
         let git_store = project.read(cx).git_store();
         let git_subscription = cx.subscribe(&git_store, |workspace, store, _event, cx| {
             let branch = store.read(cx).current_branch().map(str::to_string);
             let has_repositories = store.read(cx).has_repositories();
+            let remote_operation_state = store.read(cx).remote_operation_state();
             workspace.top_bar.update(cx, |bar, cx| {
                 bar.set_branch(branch);
                 bar.set_has_repositories(has_repositories);
+                bar.set_remote_operation_state(remote_operation_state);
                 cx.notify();
             });
             // hunks 查询完成（Statuses 事件）后补推给打开的编辑器；缺失路径按需请求。
@@ -297,7 +299,7 @@ impl Workspace {
                 pane::PaneEvent::Activate { .. } | pane::PaneEvent::Removed { .. }
             ) {
                 let active_path = pane.read(cx).active_path(cx);
-                // 活动仓库跟随焦点文件（最长前缀匹配）：打开/切换子项目文件后，top_bar 分支与 fetch/pull/push 自动指向其所属仓库。
+                // 活动仓库跟随焦点文件（最长前缀匹配）：打开/切换子项目文件后，分支显示与 fetch/pull/push 自动指向其所属仓库。
                 if let Some(path) = &active_path {
                     workspace.project.update(cx, |project, cx| {
                         project.git_store().update(cx, |store, cx| {

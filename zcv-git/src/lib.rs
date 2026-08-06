@@ -6,5 +6,5 @@ mod status;
 
 pub use diff::parse_diff_hunks;
 pub use repository::{GitRepository, RealGitRepository};
-pub use status::{DiffStat, FileStatus, GitStatus, StatusCode};
+pub use status::{BranchStatus, DiffStat, FileStatus, GitStatus, StatusCode};
 pub use zcv_buffer_diff::{DiffHunk, DiffHunkKind};

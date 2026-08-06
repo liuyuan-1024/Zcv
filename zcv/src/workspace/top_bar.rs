@@ -3,6 +3,7 @@
 use gpui::{AnyElement, Div, Entity, Window, actions, div, prelude::*};
 
 use super::window_controls;
+use crate::project::RemoteOperationState;
 use crate::recent_projects::{OnProjectSelected, ProjectPicker};
 use crate::ui::Glyph;
 use zcv_theme::{color, space};
@@ -15,6 +16,8 @@ pub(crate) struct TopBar {
     branch: Option<String>,
     /// 项目是否已发现 git 仓库（非 git 项目不显示分支与同步/推送/拉取按钮）。
     has_repositories: bool,
+    /// 活动仓库的远程操作状态（无 remote 时同步/推送/拉取按钮都不显示）。
+    remote_operation_state: RemoteOperationState,
 }
 
 impl TopBar {
@@ -24,6 +27,7 @@ impl TopBar {
             project_picker,
             branch: None,
             has_repositories: false,
+            remote_operation_state: RemoteOperationState::default(),
         }
     }
 
@@ -33,6 +37,10 @@ impl TopBar {
 
     pub(crate) fn set_has_repositories(&mut self, has_repositories: bool) {
         self.has_repositories = has_repositories;
+    }
+
+    pub(crate) fn set_remote_operation_state(&mut self, state: RemoteOperationState) {
+        self.remote_operation_state = state;
     }
 }
 
@@ -64,6 +72,7 @@ impl gpui::Render for TopBar {
                 &self.project_picker,
                 self.branch.as_deref(),
                 self.has_repositories,
+                self.remote_operation_state,
                 cx,
             )))
             .child(drag_spacer())
@@ -84,6 +93,7 @@ fn leading_slots(
     project_picker: &gpui::Entity<ProjectPicker>,
     branch: Option<&str>,
     has_repositories: bool,
+    state: RemoteOperationState,
     cx: &gpui::App,
 ) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();
@@ -107,32 +117,46 @@ fn leading_slots(
             .label("分支")
             .into_any_element(),
         );
-        // Git fetch
-        out.push(
-            Glyph::icon("top-bar.git-fetch", "icons/actions/arrow_circle.svg")
-                .label("同步")
-                .on_click(|window, cx| {
-                    window.dispatch_action(Box::new(GitFetch), cx);
-                })
-                .into_any_element(),
-        );
-        // Git pull / push：计数徽标待 git panel 提供 ahead/behind 数据后接入。
-        out.push(
-            Glyph::icon("top-bar.git-pull", "icons/actions/arrow_down.svg")
-                .label("推送")
-                .on_click(|window, cx| {
-                    window.dispatch_action(Box::new(GitPull), cx);
-                })
-                .into_any_element(),
-        );
-        out.push(
-            Glyph::icon("top-bar.git-push", "icons/actions/arrow_up.svg")
-                .label("拉取")
-                .on_click(|window, cx| {
-                    window.dispatch_action(Box::new(GitPush), cx);
-                })
-                .into_any_element(),
-        );
+        // 无 remote 时 fetch/pull/push 都会报错，不给出入口；有 remote 时同步常显
+        // （主动检查更新的兜底），推送/拉取仅在可推/可拉时出现（icon_text 复用为计数徽标）。
+        if state.has_remote {
+            out.push(
+                Glyph::icon("top-bar.git-fetch", "icons/actions/arrow_circle.svg")
+                    .label("同步")
+                    .on_click(|window, cx| {
+                        window.dispatch_action(Box::new(GitFetch), cx);
+                    })
+                    .into_any_element(),
+            );
+            if state.behind > 0 {
+                out.push(
+                    Glyph::icon_text(
+                        "top-bar.git-pull",
+                        "icons/actions/arrow_down.svg",
+                        state.behind.to_string(),
+                    )
+                    .label("拉取")
+                    .on_click(|window, cx| {
+                        window.dispatch_action(Box::new(GitPull), cx);
+                    })
+                    .into_any_element(),
+                );
+            }
+            if state.ahead > 0 {
+                out.push(
+                    Glyph::icon_text(
+                        "top-bar.git-push",
+                        "icons/actions/arrow_up.svg",
+                        state.ahead.to_string(),
+                    )
+                    .label("推送")
+                    .on_click(|window, cx| {
+                        window.dispatch_action(Box::new(GitPush), cx);
+                    })
+                    .into_any_element(),
+                );
+            }
+        }
     }
 
     out

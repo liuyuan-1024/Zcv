@@ -46,11 +46,27 @@ pub(crate) struct StatusEntry {
     pub(crate) hunks: Option<Arc<[DiffHunk]>>,
 }
 
+/// 活动仓库的远程操作状态（remote 配置与 upstream 领先/落后计数）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RemoteOperationState {
+    /// 是否配置了 remote（无 remote 时 fetch/pull/push 均不可用）。
+    pub(crate) has_remote: bool,
+    /// 本地领先 upstream 的提交数（可推送数）。
+    pub(crate) ahead: usize,
+    /// 本地落后 upstream 的提交数（可拉取数）。
+    pub(crate) behind: usize,
+}
+
 /// 单个仓库的状态快照。
 #[derive(Debug)]
 pub(crate) struct RepositorySnapshot {
     pub(crate) branch: Option<String>,
     pub(crate) head: Option<String>,
+    /// 是否配置了 remote。
+    pub(crate) has_remote: bool,
+    /// 当前分支相对 upstream 的领先/落后计数（无 upstream 时为 0）。
+    pub(crate) ahead: usize,
+    pub(crate) behind: usize,
     /// 相对仓库根的路径 → 状态。
     pub(crate) statuses_by_path: BTreeMap<PathBuf, StatusEntry>,
 }
@@ -68,7 +84,7 @@ enum GitJobKey {
     GitOperation(GitOperationKind),
 }
 
-/// 用户触发的 git 操作（由 top_bar 按钮发起，后台执行）。
+/// 用户触发的 git 操作（fetch/pull/push，由 UI 发起，后台执行）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum GitOperationKind {
     Fetch,
@@ -107,6 +123,9 @@ struct RefreshData {
     paths: Vec<PathBuf>,
     branch: Option<String>,
     head: Option<String>,
+    has_remote: bool,
+    ahead: usize,
+    behind: usize,
     statuses: zcv_git::GitStatus,
     staged: HashMap<PathBuf, DiffStat>,
     unstaged: HashMap<PathBuf, DiffStat>,
@@ -127,7 +146,7 @@ enum JobResult {
 pub(crate) struct GitStore {
     root: PathBuf,
     repositories: Vec<Repository>,
-    /// 活动仓库（按 working_directory 标识）：top_bar 分支显示与 fetch/pull/push 的目标。
+    /// 活动仓库（按 working_directory 标识）：分支显示与 fetch/pull/push 等 git 操作的目标。
     /// 用 working_directory 而非索引：全量扫描重建 Vec，索引不稳定。
     active_workdir: Option<PathBuf>,
     background: BackgroundExecutor,
@@ -304,6 +323,19 @@ impl GitStore {
             .find(|repository| repository.repository.working_directory() == workdir)
     }
 
+    /// 活动仓库的远程操作状态（可推送/可拉取判定依据）。
+    pub(crate) fn remote_operation_state(&self) -> RemoteOperationState {
+        self.active_workdir
+            .as_ref()
+            .and_then(|workdir| self.repo_by_workdir(workdir))
+            .map(|repository| RemoteOperationState {
+                has_remote: repository.snapshot.has_remote,
+                ahead: repository.snapshot.ahead,
+                behind: repository.snapshot.behind,
+            })
+            .unwrap_or_default()
+    }
+
     /// 按路径更新活动仓库（最长前缀匹配；焦点文件切换时由 Workspace 调用）。
     ///
     /// 路径可能未 canonicalize（如设置文件入口），先归一化再匹配；
@@ -459,6 +491,9 @@ impl GitStore {
                     head_changed |= prev.is_none_or(|prev| {
                         prev.snapshot.head != scan.snapshot.head
                             || prev.snapshot.branch != scan.snapshot.branch
+                            || prev.snapshot.has_remote != scan.snapshot.has_remote
+                            || prev.snapshot.ahead != scan.snapshot.ahead
+                            || prev.snapshot.behind != scan.snapshot.behind
                     });
                     statuses_changed |= prev.is_none_or(|prev| {
                         prev.snapshot.statuses_by_path != scan.snapshot.statuses_by_path
@@ -673,6 +708,9 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
             return RepositorySnapshot {
                 branch,
                 head,
+                has_remote: false,
+                ahead: 0,
+                behind: 0,
                 statuses_by_path: BTreeMap::new(),
             };
         }
@@ -704,6 +742,9 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
     RepositorySnapshot {
         branch,
         head,
+        has_remote: repository.has_remote().unwrap_or(false),
+        ahead: statuses.branch.as_ref().map_or(0, |branch| branch.ahead),
+        behind: statuses.branch.as_ref().map_or(0, |branch| branch.behind),
         statuses_by_path,
     }
 }
@@ -748,6 +789,10 @@ fn refresh_repository_data_sync(
         paths: paths.to_vec(),
         branch,
         head,
+        // status 失败归零与 head 失败语义一致（瞬态，下次成功刷新自愈）。
+        has_remote: repository.has_remote().unwrap_or(false),
+        ahead: statuses.branch.as_ref().map_or(0, |branch| branch.ahead),
+        behind: statuses.branch.as_ref().map_or(0, |branch| branch.behind),
         statuses,
         staged,
         unstaged,
@@ -798,11 +843,19 @@ fn merge_refresh(prev: &RepositorySnapshot, data: RefreshData) -> (RepositorySna
         statuses_changed |= replaced != Some(entry);
     }
 
-    let head_changed = prev.head != data.head || prev.branch != data.branch;
+    // ahead/behind/has_remote 纳入比对：fetch/push 后计数变化必须触发事件，否则订阅方无法感知。
+    let head_changed = prev.head != data.head
+        || prev.branch != data.branch
+        || prev.has_remote != data.has_remote
+        || prev.ahead != data.ahead
+        || prev.behind != data.behind;
     (
         RepositorySnapshot {
             branch: data.branch,
             head: data.head,
+            has_remote: data.has_remote,
+            ahead: data.ahead,
+            behind: data.behind,
             statuses_by_path,
         },
         statuses_changed,
@@ -871,6 +924,9 @@ mod tests {
         let prev = RepositorySnapshot {
             branch: Some("master".into()),
             head: Some("old".into()),
+            has_remote: true,
+            ahead: 1,
+            behind: 0,
             statuses_by_path: BTreeMap::from([
                 (
                     PathBuf::from("a.txt"),
@@ -899,9 +955,13 @@ mod tests {
             paths: vec![PathBuf::from("a.txt"), PathBuf::from("sub")],
             branch: Some("master".into()),
             head: Some("old".into()),
+            has_remote: true,
+            ahead: 1,
+            behind: 0,
             // a.txt 变干净（无输出 → 移除）；sub/c.txt 新增。
             statuses: zcv_git::GitStatus {
                 statuses: vec![(PathBuf::from("sub/c.txt"), FileStatus::Untracked)],
+                branch: None,
             },
             staged: HashMap::new(),
             unstaged: HashMap::new(),
@@ -929,12 +989,18 @@ mod tests {
         let prev = RepositorySnapshot {
             branch: Some("master".into()),
             head: Some("old".into()),
+            has_remote: false,
+            ahead: 0,
+            behind: 0,
             statuses_by_path: BTreeMap::new(),
         };
         let data = RefreshData {
             paths: vec![PathBuf::from("a.txt")],
             branch: Some("master".into()),
             head: Some("new".into()),
+            has_remote: false,
+            ahead: 0,
+            behind: 0,
             statuses: zcv_git::GitStatus::default(),
             staged: HashMap::new(),
             unstaged: HashMap::new(),
@@ -1415,6 +1481,82 @@ mod tests {
             Some("master"),
             "初始 active 应为外层仓库"
         );
+    }
+
+    #[gpui::test]
+    fn remote_operation_state_reflects_push(cx: &mut gpui::TestAppContext) {
+        // 工作仓库与裸远程共用 temp_dir，保证测试期间目录存活。
+        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+        let remote = temp_dir.path().join("remote.git");
+        run_in(
+            temp_dir.path(),
+            &["git", "init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        let root = temp_dir.path().join("work");
+        fs::create_dir(&root).expect("应创建工作仓库目录");
+        run_in(&root, &["git", "init", "-q", "-b", "master"]);
+        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+        run_in(&root, &["git", "config", "user.name", "Test User"]);
+        fs::write(root.join("tracked.txt"), "内容\n").expect("应写入初始文件");
+        run_in(&root, &["git", "add", "tracked.txt"]);
+        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+        run_in(
+            &root,
+            &["git", "remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        run_in(&root, &["git", "push", "-q", "-u", "origin", "master"]);
+
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        // 与远程同步：有 remote，无 ahead/behind。
+        let state = cx.read_entity(&git_store, |store, _| store.remote_operation_state());
+        assert_eq!(
+            state,
+            RemoteOperationState {
+                has_remote: true,
+                ahead: 0,
+                behind: 0
+            }
+        );
+
+        // 本地新提交 → ahead 1（可推送数）。
+        fs::write(root.join("new.txt"), "新提交\n").expect("应写入文件");
+        run_in(&root, &["git", "add", "new.txt"]);
+        run_in(&root, &["git", "commit", "-q", "-m", "本地提交"]);
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+        let state = cx.read_entity(&git_store, |store, _| store.remote_operation_state());
+        assert_eq!(state.ahead, 1);
+
+        // push 后回到同步（徽标消失链路：ahead 变化必须触发事件）。
+        cx.update_entity(&git_store, |store, cx| {
+            store.run_operation(GitOperationKind::Push, cx);
+        });
+        cx.run_until_parked();
+        cx.run_until_parked(); // 等 push 完成后触发的重新扫描落地。
+        let state = cx.read_entity(&git_store, |store, _| store.remote_operation_state());
+        assert_eq!(
+            state,
+            RemoteOperationState {
+                has_remote: true,
+                ahead: 0,
+                behind: 0
+            },
+            "push 后 ahead 应归零"
+        );
+    }
+
+    #[gpui::test]
+    fn remote_operation_state_defaults_without_remote(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_repo();
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        let state = cx.read_entity(&git_store, |store, _| store.remote_operation_state());
+        assert_eq!(state, RemoteOperationState::default());
     }
 
     #[gpui::test]

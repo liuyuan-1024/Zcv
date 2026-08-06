@@ -26,8 +26,8 @@ use crate::fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
 pub(crate) use self::worktree::{
     TreeRow, new_entry_destination, rename_destination, translate_path,
 };
-// git 操作（top_bar 按钮触发）经 project 门面访问 git_store 的后台执行入口。
-pub(crate) use self::git_store::GitOperationKind;
+// git 操作（fetch/pull/push）经 project 门面访问 git_store 的后台执行入口。
+pub(crate) use self::git_store::{GitOperationKind, RemoteOperationState};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProjectEvent {

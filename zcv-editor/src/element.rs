@@ -6,17 +6,17 @@ use std::sync::Arc;
 
 use gpui::{
     App, Bounds, ContentMask, Context, DispatchPhase, Element, ElementId, ElementInputHandler,
-    Entity, GlobalElementId, HighlightStyle, HitboxBehavior, InspectorElementId,
-    InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Style, TextRun,
-    UnderlineStyle, Window, fill, point, px, relative, size,
+    Entity, GlobalElementId, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
+    ScrollWheelEvent, ShapedLine, Style, TextRun, Window, fill, point, px, relative, size,
 };
 use zcv_engine::{ByteOffset, Line, SelectionSet, TextRange};
-use zcv_language::{BracketPair, HighlightSpan};
+use zcv_language::BracketPair;
 
 use super::display_map::{
-    BufferPoint, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot, ProjectedRange,
-    WrapViewportRowKind, byte_for_display_column,
+    BufferPoint, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot, LineStyles,
+    ProjectedRange, StreamLineSource, WrapViewportRowKind, byte_for_display_column, chunks_to_runs,
+    synthesize_line_chunks,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -862,10 +862,8 @@ fn layout_line_width(
     };
     let text = match row.kind() {
         WrapViewportRowKind::Text {
-            content,
-            byte_range,
-            ..
-        } => &content.as_str()[byte_range.clone()],
+            text, byte_range, ..
+        } => &text.as_ref()[byte_range.clone()],
         WrapViewportRowKind::Placeholder(_) => "…",
     };
     let text_style = window.text_style();
@@ -942,39 +940,23 @@ fn layout_visible_lines(
     // capture 索引 → 样式的预展开表：渲染每 run 一次数组索引，不再逐 run 做字符串回退查找。
     let highlight_styles = display_snapshot.highlight_styles();
 
+    // 基础 run：样式段在其上合并（对齐 Zed from_chunks 的 base 合并）。
+    let base = TextRun {
+        len: 0,
+        font: text_style.font(),
+        color: text_style.color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+
     let mut push_line = |row: usize,
                          logical_line: Option<Line>,
                          gutter_line: Option<Line>,
                          text: &str,
-                         byte_start: usize,
                          utf16_start: usize,
-                         wrap_info: Option<WrapRowInfo>| {
-        let display_prefix_len = wrap_info.as_ref().map_or(0, |info| info.indent);
-        let highlights = if logical_line.is_none() {
-            &[][..]
-        } else {
-            let source_len = text.len().saturating_sub(display_prefix_len);
-            let byte_end = byte_start + source_len;
-            let start = visible_highlights.partition_point(|span| span.range.end <= byte_start);
-            let end = visible_highlights.partition_point(|span| span.range.start < byte_end);
-            &visible_highlights[start..end]
-        };
-        let runs = text_runs(
-            text,
-            byte_start,
-            display_prefix_len,
-            highlights,
-            highlight_styles,
-            presentation.marked_ranges(),
-            TextRun {
-                len: text.len(),
-                font: text_style.font(),
-                color: text_style.color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            },
-        );
+                         wrap_info: Option<WrapRowInfo>,
+                         runs: Vec<TextRun>| {
         let shaped =
             window
                 .text_system()
@@ -1037,39 +1019,92 @@ fn layout_visible_lines(
         for row in viewport.rows() {
             match row.kind() {
                 WrapViewportRowKind::Text {
-                    logical_line,
-                    content,
+                    source,
+                    text,
                     byte_range,
                     global_byte_start,
                     fragment_index,
                     indent,
                     column_base,
+                    ..
                 } => {
-                    // 续行的假空格是显示文本的一部分，坐标与命中测试都把它算进列。
-                    let text = &content.as_str()[byte_range.clone()];
-                    let display_text = if *indent > 0 {
-                        format!("{}{}", " ".repeat(*indent), text)
-                    } else {
-                        text.to_owned()
+                    // 对齐 Zed highlighted_chunks：
+                    // 整行合成 chunk 流（inlay 注入 + 样式切分 + tab 展开），软换行片段按投影范围裁剪；
+                    // 展开后字符列 = 显示列。
+                    let tab_width = display_snapshot.buffer_snapshot().config().tab.tab_width();
+                    // 行内提示（inlay）：经消费链查询行的注入段（投影偏移已含此前注入前缀）。
+                    let inlay_snapshot = display_snapshot
+                        .wrap_snapshot()
+                        .tab_snapshot()
+                        .fold_snapshot()
+                        .inlay_snapshot();
+                    let stream_line = match source {
+                        StreamLineSource::Buffer(buffer_line) => inlay_snapshot
+                            .stream()
+                            .buffer_to_stream(Line::new(*buffer_line)),
+                        StreamLineSource::Inserted { anchor, index } => Line::new(
+                            inlay_snapshot.stream().buffer_to_stream(*anchor).get() + 1 + index,
+                        ),
                     };
-                    let utf16_start = display_snapshot
-                        .buffer_snapshot()
-                        .byte_to_utf16_cu(ByteOffset::new(*global_byte_start))
-                        .map_or(0, |offset| offset.get());
+                    let inlays = inlay_snapshot.line_inlays(stream_line);
+                    let synthesized = synthesize_line_chunks(
+                        text.as_ref(),
+                        tab_width,
+                        *global_byte_start,
+                        &inlays,
+                        LineStyles {
+                            spans: visible_highlights,
+                            styles: highlight_styles,
+                            marked: presentation.marked_ranges(),
+                        },
+                        byte_range.clone(),
+                    );
+                    // 显示文本：wrap 假空格 + 展开 chunk 文本拼接（对齐 Zed from_chunks）。
+                    let display_len: usize = *indent
+                        + synthesized
+                            .chunks
+                            .iter()
+                            .map(|chunk| chunk.text.len())
+                            .sum::<usize>();
+                    let mut display_text = String::with_capacity(display_len);
+                    if *indent > 0 {
+                        display_text.push_str(&" ".repeat(*indent));
+                    }
+                    for chunk in &synthesized.chunks {
+                        display_text.push_str(chunk.text);
+                    }
+                    let mut runs = Vec::with_capacity(synthesized.chunks.len() + 1);
+                    if *indent > 0 {
+                        runs.push(TextRun {
+                            len: *indent,
+                            ..base.clone()
+                        });
+                    }
+                    runs.extend(chunks_to_runs(&synthesized.chunks, base.clone()));
+                    let utf16_start = synthesized.utf16_start;
+                    let logical_line = match source {
+                        StreamLineSource::Buffer(buffer_line) => Some(Line::new(*buffer_line)),
+                        StreamLineSource::Inserted { .. } => None,
+                    };
                     let wrap_info = (*fragment_index > 0).then_some(WrapRowInfo {
-                        line: *logical_line,
+                        line: logical_line.unwrap_or(Line::ZERO),
                         indent: *indent,
                         column_base: *column_base,
                     });
                     push_line(
                         row.index().get(),
-                        Some(*logical_line),
+                        logical_line,
                         // 行号只在逻辑行首显示行出现。
-                        (*fragment_index == 0).then_some(*logical_line),
+                        match source {
+                            StreamLineSource::Buffer(buffer_line) if *fragment_index == 0 => {
+                                Some(Line::new(*buffer_line))
+                            }
+                            _ => None,
+                        },
                         &display_text,
-                        *global_byte_start,
                         utf16_start,
                         wrap_info,
+                        runs,
                     );
                 }
                 WrapViewportRowKind::Placeholder(placeholder) => {
@@ -1086,9 +1121,9 @@ fn layout_visible_lines(
                         None,
                         Some(placeholder.hidden_lines().start()),
                         "…",
-                        byte_start,
                         utf16_start,
                         None,
+                        vec![base.clone()],
                     );
                 }
             }
@@ -1319,116 +1354,6 @@ fn local_byte_for_display_point(
     column_to_byte(&line.shaped.text, logical_column)
 }
 
-fn text_runs(
-    text: &str,
-    global_byte_start: usize,
-    display_prefix_len: usize,
-    highlights: &[HighlightSpan],
-    highlight_styles: &[HighlightStyle],
-    marked_ranges: &[TextRange],
-    base: TextRun,
-) -> Vec<TextRun> {
-    if highlights.is_empty() && marked_ranges.is_empty() {
-        return vec![base];
-    }
-
-    let source_len = text.len().saturating_sub(display_prefix_len);
-    let global_byte_end = global_byte_start + source_len;
-    let mut boundaries = vec![0, text.len()];
-    for highlight in highlights {
-        let start = highlight
-            .range
-            .start
-            .max(global_byte_start)
-            .min(global_byte_end);
-        let end = highlight
-            .range
-            .end
-            .max(global_byte_start)
-            .min(global_byte_end);
-        if start < end {
-            boundaries.push(display_prefix_len + start - global_byte_start);
-            boundaries.push(display_prefix_len + end - global_byte_start);
-        }
-    }
-    for marked in marked_ranges {
-        let start = marked
-            .start()
-            .get()
-            .max(global_byte_start)
-            .min(global_byte_end);
-        let end = marked
-            .end()
-            .get()
-            .max(global_byte_start)
-            .min(global_byte_end);
-        if start < end {
-            boundaries.push(display_prefix_len + start - global_byte_start);
-            boundaries.push(display_prefix_len + end - global_byte_start);
-        }
-    }
-    boundaries.sort_unstable();
-    boundaries.dedup();
-
-    let mut runs = Vec::with_capacity(boundaries.len().saturating_sub(1));
-    let mut highlight_index = 0;
-    for boundary in boundaries.windows(2) {
-        let local_start = boundary[0];
-        let local_end = boundary[1];
-        if local_start == local_end {
-            continue;
-        }
-        let global_offset = local_start
-            .checked_sub(display_prefix_len)
-            .map(|offset| global_byte_start + offset);
-        let mut run = TextRun {
-            len: local_end - local_start,
-            ..base.clone()
-        };
-        if let Some(global_offset) = global_offset {
-            while highlights
-                .get(highlight_index)
-                .is_some_and(|span| span.range.end <= global_offset)
-            {
-                highlight_index += 1;
-            }
-            if let Some(highlight) = highlights
-                .get(highlight_index)
-                .filter(|span| span.range.contains(&global_offset))
-            {
-                // capture 索引查预展开样式表；索引越界视为无样式，不崩溃渲染。
-                let style = highlight_styles
-                    .get(highlight.capture as usize)
-                    .copied()
-                    .unwrap_or_default();
-                if let Some(color) = style.color {
-                    run.color = color;
-                }
-                if let Some(weight) = style.font_weight {
-                    run.font.weight = weight;
-                }
-                if let Some(font_style) = style.font_style {
-                    run.font.style = font_style;
-                }
-                run.background_color = style.background_color;
-                run.underline = style.underline;
-                run.strikethrough = style.strikethrough;
-            }
-            if marked_ranges.iter().any(|marked| {
-                marked.start().get() <= global_offset && global_offset < marked.end().get()
-            }) {
-                run.underline = Some(UnderlineStyle {
-                    color: Some(run.color),
-                    thickness: px(1.),
-                    wavy: false,
-                });
-            }
-        }
-        runs.push(run);
-    }
-    runs
-}
-
 fn column_to_byte(text: &str, column: usize) -> usize {
     text.char_indices()
         .nth(column)
@@ -1441,6 +1366,7 @@ mod tests {
     use crate::display_map::{DisplayMap, DisplayPoint};
     use gpui::{Empty, TestAppContext, font};
     use zcv_engine::{Buffer, BufferConfig, ByteOffset, Line, LineRange, LogicalColumn};
+    use zcv_language::HighlightSpan;
     use zcv_theme::syntax;
 
     use crate::display_map::DisplayColumn;
@@ -1484,22 +1410,27 @@ mod tests {
     #[test]
     fn marked_text_is_a_separate_underlined_text_run() {
         let text = "a中文b";
-        let runs = text_runs(
+        let base = TextRun {
+            len: 0,
+            font: font("Helvetica"),
+            color: Default::default(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let synthesized = synthesize_line_chunks(
             text,
-            0,
+            4,
             0,
             &[],
-            &[],
-            &[TextRange::new(ByteOffset::new(1), ByteOffset::new(7)).unwrap()],
-            TextRun {
-                len: text.len(),
-                font: font("Helvetica"),
-                color: Default::default(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
+            LineStyles {
+                spans: &[],
+                styles: &[],
+                marked: &[TextRange::new(ByteOffset::new(1), ByteOffset::new(7)).unwrap()],
             },
+            0..text.len(),
         );
+        let runs = chunks_to_runs(&synthesized.chunks, base);
 
         assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
         assert_eq!(runs.len(), 3);
@@ -1517,7 +1448,7 @@ mod tests {
         });
         let text = "fn strong";
         let base = TextRun {
-            len: text.len(),
+            len: 0,
             font: font("Helvetica"),
             color: Default::default(),
             background_color: None,
@@ -1526,24 +1457,28 @@ mod tests {
         };
         let highlight_styles =
             syntax::style_table(&[Arc::from("keyword"), Arc::from("text.strong")]);
-        let runs = text_runs(
+        let synthesized = synthesize_line_chunks(
             text,
+            4,
             100,
-            0,
-            &[
-                HighlightSpan {
-                    range: 100..102,
-                    capture: 0,
-                },
-                HighlightSpan {
-                    range: 103..109,
-                    capture: 1,
-                },
-            ],
-            &highlight_styles,
             &[],
-            base.clone(),
+            LineStyles {
+                spans: &[
+                    HighlightSpan {
+                        range: 100..102,
+                        capture: 0,
+                    },
+                    HighlightSpan {
+                        range: 103..109,
+                        capture: 1,
+                    },
+                ],
+                styles: &highlight_styles,
+                marked: &[],
+            },
+            0..text.len(),
         );
+        let runs = chunks_to_runs(&synthesized.chunks, base.clone());
 
         assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
         assert_ne!(runs[0].color, base.color);
@@ -1826,14 +1761,17 @@ mod tests {
                         &[
                             DiffHunk {
                                 range: 1..2,
+                                old_range: 1..2,
                                 kind: DiffHunkKind::Modified,
                             },
                             DiffHunk {
                                 range: 3..3,
+                                old_range: 2..3,
                                 kind: DiffHunkKind::Deleted,
                             },
                             DiffHunk {
                                 range: 4..5,
+                                old_range: 4..4,
                                 kind: DiffHunkKind::Added,
                             },
                         ],
@@ -1870,6 +1808,7 @@ mod tests {
                         &snapshot,
                         &[DiffHunk {
                             range: 0..1,
+                            old_range: 0..1,
                             kind: DiffHunkKind::Modified,
                         }],
                     ),
@@ -1882,6 +1821,7 @@ mod tests {
                         &snapshot,
                         &[DiffHunk {
                             range: 1..10,
+                            old_range: 1..10,
                             kind: DiffHunkKind::Modified,
                         }],
                     ),

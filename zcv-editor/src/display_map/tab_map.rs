@@ -3,16 +3,18 @@
 //! `TabMap` 只测量实际进入投影视口的逻辑行，并在同行编辑后精确失效对应缓存。
 //! 初次构建不遍历全文；结构编辑会清空已测量行，但后续仍按需重新填充。
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Deref;
+use std::ops::Range;
 
 use super::display_width::{DisplayColumn, char_width};
 use unicode_segmentation::UnicodeSegmentation;
-use zcv_engine::{Line, LogicalColumn, Snapshot};
+use zcv_engine::{ByteOffset, CoordinateError, Line, LogicalColumn, Snapshot};
 
 use super::{
     error::DisplayMapResult,
-    fold_map::{FoldEdit, FoldSnapshot},
+    fold_map::{FoldEdit, FoldSnapshot, ProjectedLineIndex, StreamProjectedKind},
+    line_stream::LineStream,
 };
 
 #[derive(Debug, Clone)]
@@ -29,15 +31,59 @@ impl TabSnapshot {
         }
     }
 
-    pub(super) fn fold_snapshot(&self) -> &FoldSnapshot {
-        &self.fold_snapshot
+    pub(crate) fn stream(&self) -> &LineStream {
+        self.fold_snapshot.stream()
     }
 
     pub(super) fn buffer_snapshot(&self) -> &Snapshot {
         self.fold_snapshot.buffer_snapshot()
     }
 
-    #[cfg(test)]
+    pub(crate) fn fold_snapshot(&self) -> &FoldSnapshot {
+        &self.fold_snapshot
+    }
+
+    /// 投影行总数（fold 输出）。
+    pub(super) fn line_count(&self) -> usize {
+        self.fold_snapshot.line_count()
+    }
+
+    /// 投影行 → 内容来源（经流行解析：buffer 行 / 占位符 / 合成行）。
+    pub(super) fn projected_kind(&self, line: Line) -> Option<StreamProjectedKind> {
+        self.fold_snapshot
+            .projected_kind(ProjectedLineIndex::new(line.get()))
+    }
+
+    /// 投影行 → 行文本（经流行解析与行内提示注入）。
+    pub(super) fn line_text(&self, line: Line) -> Option<Cow<'_, str>> {
+        let inlay = self.fold_snapshot.inlay_snapshot();
+        let stream_line = self.stream_line_for_projected(line)?;
+        inlay.line_text(stream_line)
+    }
+
+    /// 投影行 → 字节范围（合成行为锚定行行首的伪坐标）。
+    pub(super) fn line_byte_range(&self, line: Line) -> Option<Range<ByteOffset>> {
+        let inlay = self.fold_snapshot.inlay_snapshot();
+        let stream_line = self.stream_line_for_projected(line)?;
+        inlay.line_byte_range(stream_line)
+    }
+
+    /// 投影行 → 流行号（坐标换算用；占位符无流行号）。
+    pub(super) fn stream_line_for_projected(&self, line: Line) -> Option<Line> {
+        let inlay = self.fold_snapshot.inlay_snapshot();
+        match self.projected_kind(line)? {
+            StreamProjectedKind::Text(source) => match source {
+                super::line_stream::StreamLineSource::Buffer(buffer_line) => {
+                    Some(inlay.stream().buffer_to_stream(Line::new(buffer_line)))
+                }
+                super::line_stream::StreamLineSource::Inserted { anchor, index } => Some(
+                    Line::new(inlay.stream().buffer_to_stream(anchor).get() + 1 + index),
+                ),
+            },
+            StreamProjectedKind::Placeholder(_) => None,
+        }
+    }
+
     pub(super) const fn version(&self) -> u64 {
         self.version
     }
@@ -47,47 +93,64 @@ impl TabSnapshot {
         line: Line,
         column: DisplayColumn,
     ) -> DisplayMapResult<LogicalColumn> {
-        let snapshot = self.buffer_snapshot();
-        let text = snapshot.slice_line(line)?;
-        let text = line_content(text.as_str());
+        // line 是投影行；合成行无逻辑列语义（命中测试映射到锚定行，正常不会到达这里）。
+        let Some(text) = self.line_text(line) else {
+            return Err(CoordinateError::LineOutOfBounds(line).into());
+        };
+        let snapshot = self.stream().buffer_snapshot();
+        let text = line_content(text.as_ref());
         let target = column.get();
         // 吸附固定为最近边界（目标列落在多列字符中间时取更近的一端；距离相等取前）。
         let mut display = 0usize;
-        let mut logical = 0usize;
+        let mut projected_byte = 0usize;
 
         for grapheme in text.graphemes(true) {
             let next_display = advance_display_column(display, grapheme, snapshot);
-            let next_logical = logical + grapheme.chars().count();
+            let next_byte = projected_byte + grapheme.len();
 
             if target == display {
-                return Ok(LogicalColumn::new(logical));
+                return self.logical_column_at(line, projected_byte);
             }
             if target == next_display {
-                return Ok(LogicalColumn::new(next_logical));
+                return self.logical_column_at(line, next_byte);
             }
             if target > display && target < next_display {
-                return Ok(LogicalColumn::new(
+                return self.logical_column_at(
+                    line,
                     if target - display <= next_display - target {
-                        logical
+                        projected_byte
                     } else {
-                        next_logical
+                        next_byte
                     },
-                ));
+                );
             }
 
             display = next_display;
-            logical = next_logical;
+            projected_byte = next_byte;
         }
 
-        Ok(LogicalColumn::new(logical))
+        self.logical_column_at(line, projected_byte)
     }
-}
 
-impl Deref for TabSnapshot {
-    type Target = FoldSnapshot;
-
-    fn deref(&self) -> &Self::Target {
-        &self.fold_snapshot
+    /// 投影行内字节 → 逻辑列（原始文本前缀字符数；注入段内吸附到锚定后）。
+    fn logical_column_at(
+        &self,
+        line: Line,
+        projected_byte: usize,
+    ) -> DisplayMapResult<LogicalColumn> {
+        let inlay = self.fold_snapshot.inlay_snapshot();
+        let Some(stream_line) = self.stream_line_for_projected(line) else {
+            return Err(CoordinateError::LineOutOfBounds(line).into());
+        };
+        let original_byte = inlay.to_original_offset(stream_line, projected_byte);
+        let Some(text) = inlay.stream().line_text(stream_line) else {
+            return Err(CoordinateError::LineOutOfBounds(line).into());
+        };
+        Ok(LogicalColumn::new(
+            text.as_str()[..original_byte.min(text.as_str().len())]
+                .chars()
+                .count(),
+        ))
     }
 }
 
@@ -118,37 +181,22 @@ impl TabMap {
         let previous_snapshot = self.snapshot.buffer_snapshot();
         // display 策略随 BufferConfig 移除，缓存失效只以 tab 配置变化为键。
         let same_configuration = previous_snapshot.config().tab == snapshot.config().tab;
-        let same_buffer_version = previous_snapshot.version() == snapshot.version();
+        // fold 拓扑（折叠/合成行/行内提示变化都会使 fold 版本前进）。
         let same_fold_version = self.snapshot.fold_snapshot.version() == fold_snapshot.version();
 
         if same_configuration && same_fold_version {
-            self.snapshot.fold_snapshot = fold_snapshot;
+            self.snapshot = TabSnapshot {
+                fold_snapshot,
+                version: self.snapshot.version,
+            };
             return self.snapshot.clone();
         }
 
         let new_version = self.snapshot.version + 1;
-
-        // 折叠状态可以在 Buffer 版本不变时发布新的 FoldSnapshot。此时逻辑行宽
-        // 仍然有效，但 TabSnapshot 自己的版本必须前进。
-        if same_configuration && same_buffer_version {
-            self.snapshot = TabSnapshot {
-                fold_snapshot,
-                version: new_version,
-            };
-            return self.snapshot.clone();
-        }
-
-        if !same_configuration {
-            self.measured_line_widths.clear();
-            self.snapshot = TabSnapshot {
-                fold_snapshot,
-                version: new_version,
-            };
-            return self.snapshot.clone();
-        }
-
+        // 折叠/合成行/行内提示等结构变化会位移投影行号，宽度缓存键随之错位，必须清空；
+        // 行内编辑按 changed_lines 精确失效。
         let structural = fold_edits.iter().any(FoldEdit::is_structural);
-        if structural {
+        if !same_configuration || structural {
             self.measured_line_widths.clear();
         } else {
             let mut changed_lines = BTreeSet::new();
@@ -169,9 +217,12 @@ impl TabMap {
         if let Some(width) = self.measured_line_widths.get(&line) {
             return Ok(*width);
         }
-        let snapshot = self.snapshot.buffer_snapshot();
-        let text = snapshot.slice_line(line)?;
-        let width = DisplayColumn::new(display_width(line_content(text.as_str()), snapshot));
+        // line 是投影行；合成行同样按文本测量（tab 展开/宽度数学不变）。
+        let Some(text) = self.snapshot.line_text(line) else {
+            return Err(CoordinateError::LineOutOfBounds(line).into());
+        };
+        let snapshot = self.snapshot.stream().buffer_snapshot();
+        let width = DisplayColumn::new(display_width(line_content(text.as_ref()), snapshot));
         self.measured_line_widths.insert(line, width);
         Ok(width)
     }

@@ -9,9 +9,12 @@
 //! 上一层 Snapshot 固化下一层 Snapshot，从而让一次渲染只能看到一条内部一致的显示状态。
 //! 后续 InlayMap 与 BlockMap 继续按相同约定接入。
 
+mod chunk;
 mod display_width;
 mod error;
 mod fold_map;
+mod inlay_map;
+mod line_stream;
 mod tab_map;
 mod wrap_map;
 
@@ -24,10 +27,15 @@ use zcv_engine::{
 use zcv_language::HighlightSpan;
 use zcv_theme::syntax;
 
+pub(crate) use chunk::{LineStyles, chunks_to_runs, synthesize_line_chunks};
 pub(crate) use display_width::DisplayColumn;
 use error::DisplayMapResult;
 use fold_map::{ApplyOutcome, FoldMap, LogicalProjection};
 pub(crate) use fold_map::{ProjectedLineIndex, ProjectedRange};
+pub(crate) use inlay_map::Inlay;
+use inlay_map::InlayMap;
+use line_stream::LineStream;
+pub(crate) use line_stream::{InsertedLines, StreamLineSource};
 use tab_map::TabMap;
 pub(crate) use tab_map::byte_for_display_column;
 use wrap_map::{WrapMap, WrapSnapshot};
@@ -132,6 +140,10 @@ pub(super) struct DisplaySnapshot {
 }
 
 impl DisplaySnapshot {
+    pub(super) fn wrap_snapshot(&self) -> &WrapSnapshot {
+        &self.wrap_snapshot
+    }
+
     pub(super) fn buffer_snapshot(&self) -> &Snapshot {
         self.wrap_snapshot.buffer_snapshot()
     }
@@ -225,9 +237,14 @@ impl DisplaySnapshot {
 
 #[derive(Debug, Clone)]
 pub(crate) struct DisplayMap {
+    inlay_map: InlayMap,
     fold_map: FoldMap,
     tab_map: TabMap,
     wrap_map: WrapMap,
+    /// 合成行配置（删除块展开的被删除行等外部文本；变化时整链重建）。
+    inserted: InsertedLines,
+    /// 行内提示配置（inlay 注入；变化时整链重建）。
+    inlays: Vec<Inlay>,
     /// 全量语法高亮（Editor 在语法解析完成时注入，对齐 Zed 的 push_highlights）。
     highlights: std::sync::Arc<[HighlightSpan]>,
     /// 高亮缓存对应的 buffer 版本。
@@ -240,14 +257,19 @@ pub(crate) struct DisplayMap {
 
 impl DisplayMap {
     pub(crate) fn new(snapshot: Snapshot) -> Self {
-        let (fold_map, fold_snapshot) = FoldMap::new(snapshot.clone());
+        let stream = LineStream::new(snapshot);
+        let (inlay_map, inlay_snapshot) = InlayMap::new(stream);
+        let (fold_map, fold_snapshot) = FoldMap::new(inlay_snapshot);
         let (tab_map, tab_snapshot) = TabMap::new(fold_snapshot);
         let (wrap_map, _) = WrapMap::new(tab_snapshot);
         let version = fold_map.snapshot().buffer_snapshot().version();
         Self {
+            inlay_map,
             fold_map,
             tab_map,
             wrap_map,
+            inserted: InsertedLines::new(),
+            inlays: Vec::new(),
             highlights: std::sync::Arc::from([]),
             highlights_version: version,
             capture_names: std::sync::Arc::from([]),
@@ -352,10 +374,50 @@ impl DisplayMap {
         current_snapshot: Snapshot,
         batch: TextChangeBatch,
     ) -> ApplyOutcome {
-        let (fold_snapshot, fold_edits, outcome) = self.fold_map.read(current_snapshot, &batch);
+        let mut stream = LineStream::new(current_snapshot);
+        // 空配置不注入：避免每次 sync 都推进合成行版本导致增量路径失效。
+        if !self.inserted.is_empty() {
+            stream.set_inserted(self.inserted.clone());
+        }
+        let (inlay_snapshot, _) = self.inlay_map.read(stream, self.inlays.clone());
+        let (fold_snapshot, fold_edits, outcome) = self.fold_map.read(inlay_snapshot, &batch);
         let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
         self.wrap_map.sync(tab_snapshot, &fold_edits);
         outcome
+    }
+
+    /// 替换合成行配置（删除块展开的被删除行等）并推进整条管线。
+    pub(crate) fn set_inserted(&mut self, inserted: InsertedLines) {
+        if self.inserted == inserted {
+            return;
+        }
+        self.inserted = inserted;
+        // 重建输入流（含新合成行）→ inlay → fold → tab → wrap 逐层推进。
+        let fold_snapshot = self.fold_map.snapshot().clone();
+        let mut stream = fold_snapshot.stream().clone();
+        stream.set_inserted(self.inserted.clone());
+        let (inlay_snapshot, _) = self.inlay_map.read(stream, self.inlays.clone());
+        let (fold_snapshot, fold_edits, _) = self
+            .fold_map
+            .read(inlay_snapshot, &TextChangeBatch::default());
+        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
+        self.wrap_map.sync(tab_snapshot, &fold_edits);
+    }
+
+    /// 替换行内提示配置并推进整条管线。
+    pub(crate) fn set_inlays(&mut self, inlays: Vec<Inlay>) {
+        if self.inlays == inlays {
+            return;
+        }
+        self.inlays = inlays;
+        let fold_snapshot = self.fold_map.snapshot().clone();
+        let stream = fold_snapshot.stream().clone();
+        let (inlay_snapshot, _) = self.inlay_map.read(stream, self.inlays.clone());
+        let (fold_snapshot, fold_edits, _) = self
+            .fold_map
+            .read(inlay_snapshot, &TextChangeBatch::default());
+        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
+        self.wrap_map.sync(tab_snapshot, &fold_edits);
     }
 
     #[cfg(test)]
@@ -417,6 +479,7 @@ mod tests {
     use gpui::{TestAppContext, font, px};
     use zcv_engine::{Buffer, BufferConfig, LineRange};
 
+    use super::line_stream::InsertedLines;
     use super::*;
 
     #[test]
@@ -898,5 +961,240 @@ mod tests {
                 .expect("片段中间行首应回到片段起点"),
             continuation_offset
         );
+    }
+
+    /// 构造带合成行的 DisplayMap（锚定 buffer 逻辑行 → 其后插入的文本行）。
+    fn map_with_inserted(text: &str, inserted: InsertedLines) -> DisplayMap {
+        let buffer = Buffer::scratch(text.to_owned(), BufferConfig::default())
+            .expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        let fold_snapshot = map.fold_map.snapshot().clone();
+        let mut stream = fold_snapshot.stream().clone();
+        stream.set_inserted(inserted);
+        let (inlay_snapshot, _) = map.inlay_map.read(stream, map.inlays.clone());
+        let (fold_snapshot, fold_edits, _) = map
+            .fold_map
+            .read(inlay_snapshot, &TextChangeBatch::default());
+        let tab_snapshot = map.tab_map.sync(fold_snapshot, &fold_edits);
+        map.wrap_map.sync(tab_snapshot, &fold_edits);
+        map
+    }
+
+    #[test]
+    fn inserted_lines_extend_stream_and_interleave_with_buffer_rows() {
+        let map = map_with_inserted(
+            "a\nb\nc",
+            InsertedLines::from([(Line::ZERO, vec![std::sync::Arc::from("DEL")])]),
+        );
+        assert_eq!(map.line_count(), 4, "3 个 buffer 行 + 1 个合成行");
+
+        let snapshot = map.snapshot();
+        let viewport = snapshot
+            .slice_viewport(DisplayRow::ZERO, 4)
+            .expect("视口应可读取");
+        let rows = viewport.rows();
+        assert_eq!(rows.len(), 4);
+        // 行序交错：buffer 行 0 → 合成行 → buffer 行 1/2。
+        match rows[0].kind() {
+            WrapViewportRowKind::Text { text, .. } => assert_eq!(text.as_ref(), "a\n"),
+            other => panic!("行 0 应为 buffer 文本行，实际 {other:?}"),
+        }
+        match rows[1].kind() {
+            WrapViewportRowKind::Text {
+                source: StreamLineSource::Inserted { .. },
+                text,
+                ..
+            } => assert_eq!(text.as_ref(), "DEL"),
+            other => panic!("行 1 应为合成行，实际 {other:?}"),
+        }
+        match rows[2].kind() {
+            WrapViewportRowKind::Text { text, .. } => assert_eq!(text.as_ref(), "b\n"),
+            other => panic!("行 2 应为 buffer 文本行，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inserted_line_maps_to_anchor_byte_offset() {
+        let map = map_with_inserted(
+            "a\nb",
+            InsertedLines::from([(Line::ZERO, vec![std::sync::Arc::from("DEL")])]),
+        );
+        let snapshot = map.snapshot();
+        // 合成行无 buffer 坐标，映射到锚定行（行 0）行首。
+        let offset = snapshot
+            .display_point_to_offset(DisplayPoint::new(DisplayRow::new(1), DisplayColumn::ZERO))
+            .expect("合成行应映射到锚定行行首");
+        assert_eq!(offset, ByteOffset::new(0));
+    }
+
+    #[gpui::test]
+    fn inserted_lines_participate_in_soft_wrap(cx: &mut TestAppContext) {
+        let mut map = map_with_inserted(
+            "short",
+            InsertedLines::from([(
+                Line::ZERO,
+                vec![std::sync::Arc::from("aaaa bbbb cccc dddd eeee")],
+            )]),
+        );
+        map.set_wrap_width(Some(px(72.)), font("Helvetica"), px(16.), cx.text_system());
+        assert!(
+            map.line_count() > 2,
+            "超宽合成行应像普通行一样软换行拆成多个显示行"
+        );
+    }
+
+    #[test]
+    fn inserted_lines_inside_fold_range_are_collapsed() {
+        // 阶段 1 核心：合成行在 fold 输入（文本流层），可被折叠区间一起收起。
+        let mut map = map_with_inserted(
+            "a\nb\nc\nd",
+            InsertedLines::from([(
+                Line::new(1),
+                vec![std::sync::Arc::from("DEL1"), std::sync::Arc::from("DEL2")],
+            )]),
+        );
+        assert_eq!(map.line_count(), 6, "4 个 buffer 行 + 2 个合成行");
+
+        // 折叠 buffer 行 0..3（含锚定行 1 与其后的合成行）。
+        let (fold_snapshot, fold_edits) = map
+            .fold_map
+            .write()
+            .fold_lines(LineRange::new(Line::ZERO, Line::new(3)).unwrap())
+            .expect("折叠应成功");
+        let tab_snapshot = map.tab_map.sync(fold_snapshot, &fold_edits);
+        map.wrap_map.sync(tab_snapshot, &fold_edits);
+
+        // 显示行 = 行 0 + 占位符 + 行 3：合成行被折叠进占位符。
+        assert_eq!(map.line_count(), 3, "合成行应随折叠区间一起收起");
+
+        // 占位符行后紧接 buffer 行 3（合成行不再占显示行）。
+        let snapshot = map.snapshot();
+        let viewport = snapshot
+            .slice_viewport(DisplayRow::ZERO, 3)
+            .expect("视口应可读取");
+        let rows = viewport.rows();
+        match rows[0].kind() {
+            WrapViewportRowKind::Text { text, .. } => assert_eq!(text.as_ref(), "a\n"),
+            other => panic!("行 0 应为 buffer 文本行，实际 {other:?}"),
+        }
+        match rows[1].kind() {
+            WrapViewportRowKind::Placeholder(_) => {}
+            other => panic!("行 1 应为折叠占位符，实际 {other:?}"),
+        }
+        match rows[2].kind() {
+            WrapViewportRowKind::Text { text, .. } => assert_eq!(text.as_ref(), "d"),
+            other => panic!("行 2 应为折叠后的 buffer 文本行，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_inlays_preserves_line_count_and_projects_text() {
+        let mut map = DisplayMap::new(
+            Buffer::scratch("ab\ncd".to_owned(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建")
+                .snapshot(),
+        );
+        map.set_inlays(vec![Inlay {
+            position: ByteOffset::new(1),
+            text: ": hint".to_owned(),
+        }]);
+        assert_eq!(map.line_count(), 2, "行内提示不占行数");
+        let snapshot = map.snapshot();
+        let viewport = snapshot
+            .slice_viewport(DisplayRow::ZERO, 1)
+            .expect("视口应可读取");
+        match viewport.rows()[0].kind() {
+            WrapViewportRowKind::Text { text, .. } => {
+                assert_eq!(text.as_ref(), "a: hintb\n")
+            }
+            other => panic!("行 0 应为含注入的文本行，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inlay_hit_test_maps_through_projection() {
+        let mut map = DisplayMap::new(
+            Buffer::scratch("abc\n".to_owned(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建")
+                .snapshot(),
+        );
+        map.set_inlays(vec![Inlay {
+            position: ByteOffset::new(1),
+            text: "XY".to_owned(),
+        }]);
+        let snapshot = map.snapshot();
+        // 投影文本 "aXYbc"：'b' 的显示列 3 → 原始偏移 1（锚定后）。
+        let offset = snapshot
+            .display_point_to_offset(DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(3)))
+            .expect("锚定后的字符应映射回原始偏移");
+        assert_eq!(offset, ByteOffset::new(1));
+        // 注入段内（列 1-2）吸附到锚定后（不可逆）。
+        let offset = snapshot
+            .display_point_to_offset(DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(1)))
+            .expect("注入段内应吸附到锚定后");
+        assert_eq!(offset, ByteOffset::new(1));
+    }
+
+    #[test]
+    fn inlay_changes_trigger_rebuild_but_edits_stay_incremental() {
+        let mut buffer = Buffer::scratch("ab\ncd\n".to_owned(), BufferConfig::default())
+            .expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        let subscription = buffer.subscribe();
+        map.set_inlays(vec![Inlay {
+            position: ByteOffset::new(1),
+            text: "x".to_owned(),
+        }]);
+        // 注入配置变化后，行内编辑仍走增量路径（Compatible）。
+        buffer
+            .replace(
+                TextRange::new(ByteOffset::ZERO, ByteOffset::new(1)).unwrap(),
+                "AB",
+            )
+            .expect("测试编辑应成功");
+        let outcome = map.sync(buffer.snapshot(), subscription.consume());
+        assert_eq!(outcome, ApplyOutcome::Compatible);
+        // inlay 锚定是静态偏移（编辑后由数据源更新）：replace [0,1) 后偏移 1 落在 'B' 后。
+        let snapshot = map.snapshot();
+        match snapshot
+            .slice_viewport(DisplayRow::ZERO, 1)
+            .expect("视口应可读取")
+            .rows()[0]
+            .kind()
+        {
+            WrapViewportRowKind::Text { text, .. } => assert_eq!(text.as_ref(), "AxBb\n"),
+            other => panic!("行 0 应为注入后的文本行，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_inserted_lines_match_plain_map() {
+        // 回归：无合成行时消费链与现状逐行等价。
+        let plain = DisplayMap::new(
+            Buffer::scratch("a\nb\nc".to_string(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建")
+                .snapshot(),
+        );
+        let with_inserted = map_with_inserted("a\nb\nc", InsertedLines::new());
+        assert_eq!(plain.line_count(), with_inserted.line_count());
+        let plain_snapshot = plain.snapshot();
+        let with_snapshot = with_inserted.snapshot();
+        for row in 0..plain.line_count() {
+            let plain_row = plain_snapshot
+                .slice_viewport(DisplayRow::new(row), 1)
+                .expect("视口应可读取")
+                .rows()
+                .first()
+                .expect("应有行")
+                .clone();
+            let with_row = with_snapshot
+                .slice_viewport(DisplayRow::new(row), 1)
+                .expect("视口应可读取")
+                .rows()
+                .first()
+                .expect("应有行")
+                .clone();
+            assert_eq!(plain_row, with_row, "行 {row} 应等价");
+        }
     }
 }

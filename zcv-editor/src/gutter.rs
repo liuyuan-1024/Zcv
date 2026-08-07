@@ -10,6 +10,8 @@ pub(super) const MIN_LINE_NUMBER_DIGITS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct GutterDimensions {
+    /// 折叠指示列宽（crease 绘制在行号右侧；gutter 左侧留给 git 状态竖条）。
+    pub(super) crease_width: Pixels,
     pub(super) left_padding: Pixels,
     pub(super) right_padding: Pixels,
     pub(super) width: Pixels,
@@ -23,12 +25,14 @@ impl GutterDimensions {
         font_descent: Pixels,
     ) -> Self {
         let digit_count = decimal_digit_count(line_count.max(1)).max(MIN_LINE_NUMBER_DIGITS);
+        let crease_width = digit_advance;
         let left_padding = digit_advance;
         let right_padding = digit_advance;
         Self {
+            crease_width,
             left_padding,
             right_padding,
-            width: left_padding + digit_advance * digit_count + right_padding,
+            width: left_padding + digit_advance * digit_count + right_padding + crease_width,
             // GPUI 不同后端对 descent 的符号约定不同，这里取其视觉距离。
             margin: font_descent.abs(),
         }
@@ -44,12 +48,16 @@ pub(super) struct GutterRow {
     pub(super) origin: Point<Pixels>,
     pub(super) shaped_line_number: ShapedLine,
     pub(super) active: bool,
+    /// 折叠指示：None 不可折叠；Some(folded) 可折叠（已折叠时显示展开箭头）。
+    pub(super) crease: Option<bool>,
 }
 
 pub(super) struct GutterLayout {
     pub(super) bounds: Bounds<Pixels>,
     pub(super) line_height: Pixels,
     pub(super) rows: Vec<GutterRow>,
+    /// 折叠指示列宽（crease 箭头绘制与点击 hitbox 使用）。
+    pub(super) crease_width: Pixels,
 }
 
 impl GutterLayout {
@@ -100,11 +108,12 @@ mod tests {
     fn reserves_at_least_four_line_number_digits() {
         let dimensions = GutterDimensions::line_numbers_only(9, px(8.), px(3.));
 
+        assert_eq!(dimensions.crease_width, px(8.));
         assert_eq!(dimensions.left_padding, px(8.));
         assert_eq!(dimensions.right_padding, px(8.));
-        assert_eq!(dimensions.width, px(48.));
+        assert_eq!(dimensions.width, px(56.));
         assert_eq!(dimensions.margin, px(3.));
-        assert_eq!(dimensions.full_width(), px(51.));
+        assert_eq!(dimensions.full_width(), px(59.));
     }
 
     #[test]
@@ -127,14 +136,17 @@ mod tests {
                     origin: point(px(20.), px(-5.)),
                     shaped_line_number: ShapedLine::default(),
                     active: false,
+                    crease: None,
                 },
                 GutterRow {
                     logical_line: Line::new(11),
                     origin: point(px(20.), px(15.)),
                     shaped_line_number: ShapedLine::default(),
                     active: true,
+                    crease: None,
                 },
             ],
+            crease_width: px(8.),
         };
 
         assert_eq!(

@@ -4,7 +4,7 @@
 //! 换行点由 gpui 的 LineWrapper 计算（与 Zed 同源算法：词边界优先、长词硬断、首行缩进继承）。
 //! 续行的视觉缩进是一段"假空格"，作为显示文本的前缀参与布局、命中测试与坐标换算，因此渲染端无需为续行做任何特殊定位。
 //!
-//! 与 FoldMap 一样，WrapMap 用 SumTree<Transform> 维护"输入 tab 行 → 输出显示行"的拓扑：Isomorphic 段把连续不换行行合并（含 fold 占位符行），Wrap 段把单个宽行拆成 `wrap_points.len() + 1` 个显示行。
+//! 与 FoldMap 一样，WrapMap 用 SumTree<Transform> 维护"输入 tab 行 → 输出显示行"的拓扑：Isomorphic 段把连续不换行行合并，Wrap 段把单个宽行拆成 `wrap_points.len() + 1` 个显示行。
 //! 折叠与换行是正交的两层变换：折叠先塌缩文本，换行再按像素宽度切分。
 
 use std::ops::Range;
@@ -20,8 +20,8 @@ use super::display_width::DisplayColumn;
 use super::error::DisplayMapResult;
 use super::fold_map::StreamProjectedKind;
 use super::fold_map::{
-    FoldEdit, FoldPlaceholder, LogicalPoint, LogicalPointProjection, LogicalRange,
-    ProjectedLineIndex, ProjectedPoint, ProjectedPointMapping, ProjectedRange,
+    FoldEdit, LogicalPoint, LogicalPointProjection, LogicalRange, ProjectedLineIndex,
+    ProjectedPoint, ProjectedRange,
 };
 use super::line_stream::StreamLineSource;
 use super::tab_map::{TabSnapshot, advance_display_column, byte_for_display_column, line_content};
@@ -45,7 +45,7 @@ enum TransformKind {
 
 /// 输入 tab 行 → 输出显示行的变换。
 ///
-/// - Isomorphic：n 个 tab 行 → n 个显示行（连续不换行行合并；fold 占位符行必为此形态）；
+/// - Isomorphic：n 个 tab 行 → n 个显示行（连续不换行行合并）；
 /// - Wrap：1 个 tab 行 → `wrap_points.len() + 1` 个显示行。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Transform {
@@ -145,7 +145,6 @@ pub(super) struct WrapFragment {
 pub(super) enum WrapFragmentKind {
     /// 文本行（携带流来源：buffer 行或合成行）。
     Text(StreamLineSource),
-    Placeholder(FoldPlaceholder),
 }
 
 /// 视口内单条显示行。
@@ -187,7 +186,6 @@ pub enum WrapViewportRowKind<'a> {
         indent: usize,
         column_base: usize,
     },
-    Placeholder(FoldPlaceholder),
 }
 
 /// 一次显示行视口读取结果。
@@ -252,26 +250,10 @@ impl WrapSnapshot {
     ) -> DisplayMapResult<ByteOffset> {
         let fragment = self.display_row_to_fragment(point.row())?;
         match fragment.kind {
-            WrapFragmentKind::Placeholder(_) => {
-                // 现状语义：占位符行的任意位置都映射到 anchor 行首。
-                let fold = self.tab_snapshot.fold_snapshot();
-                let projected = ProjectedPoint::new(
-                    ProjectedLineIndex::new(point.row().get()),
-                    LogicalColumn::ZERO,
-                );
-                let logical = match fold.projected_to_logical_point(projected)? {
-                    ProjectedPointMapping::Text(logical) => logical,
-                    ProjectedPointMapping::Placeholder { anchor, .. } => anchor,
-                };
-                Ok(self
-                    .tab_snapshot
-                    .buffer_snapshot()
-                    .position_to_byte(logical.into())?)
-            }
             WrapFragmentKind::Text(source) => {
                 let buffer = self.tab_snapshot.buffer_snapshot();
                 let tab_row = Line::new(fragment.tab_row);
-                // 合成行的字节范围是锚定行行首的伪坐标：映射到锚定行行首（与占位符同语义）。
+                // 合成行的字节范围是锚定行行首的伪坐标：映射到锚定行行首。
                 let line_start = self
                     .tab_snapshot
                     .line_byte_range(tab_row)
@@ -322,9 +304,6 @@ impl WrapSnapshot {
         for row in start..end {
             let fragment = self.display_row_to_fragment(DisplayRow::new(row))?;
             let kind = match fragment.kind {
-                WrapFragmentKind::Placeholder(placeholder) => {
-                    WrapViewportRowKind::Placeholder(placeholder)
-                }
                 WrapFragmentKind::Text(source) => {
                     // 投影文本（含行内提示注入；合成行无注入直接借用）；行首为原始 buffer 字节。
                     let tab_row = Line::new(fragment.tab_row);
@@ -397,18 +376,7 @@ impl WrapSnapshot {
             return Ok(Vec::new());
         }
 
-        // 文本行与折叠占位符使用不同的绘制路径。跨过二者边界的范围必须拆成
-        // 最大连续段，否则 selection 会把占位符误当成普通文本行。
-        let mut breakpoints = vec![start];
-        let mut previous_is_placeholder = self.display_row_is_placeholder(start.0);
-        for row in (start.0.get() + 1)..=end.0.get() {
-            let is_placeholder = self.display_row_is_placeholder(DisplayRow::new(row));
-            if is_placeholder != previous_is_placeholder {
-                breakpoints.push((DisplayRow::new(row), 0));
-                previous_is_placeholder = is_placeholder;
-            }
-        }
-        breakpoints.push(end);
+        let breakpoints = vec![start, end];
 
         breakpoints
             .windows(2)
@@ -461,15 +429,6 @@ impl WrapSnapshot {
                 let original_end = inlay.to_original_offset(stream_line, fragment.byte_range.end);
                 Ok(ByteOffset::new(line_start + original_end))
             }
-            WrapFragmentKind::Placeholder(placeholder) => {
-                let buffer = self.tab_snapshot.buffer_snapshot();
-                let anchor = placeholder.anchor_line();
-                let line_slice = buffer.slice_line(anchor)?;
-                let content = line_content(line_slice.as_str());
-                Ok(ByteOffset::new(
-                    buffer.line_start_byte(anchor)?.get() + content.len(),
-                ))
-            }
         }
     }
 
@@ -485,16 +444,13 @@ impl WrapSnapshot {
             TransformKind::Isomorphic => {
                 let tab_row = input_start + (row.get() - output_start);
                 let kind = self.projected_kind(tab_row)?;
-                let content_len = match kind {
-                    WrapFragmentKind::Placeholder(_) => 0,
-                    _ => line_content(
-                        self.tab_snapshot
-                            .line_text(Line::new(tab_row))
-                            .expect("可见行必须可解析")
-                            .as_ref(),
-                    )
-                    .len(),
-                };
+                let content_len = line_content(
+                    self.tab_snapshot
+                        .line_text(Line::new(tab_row))
+                        .expect("可见行必须可解析")
+                        .as_ref(),
+                )
+                .len();
                 Ok(WrapFragment {
                     tab_row,
                     kind,
@@ -505,16 +461,13 @@ impl WrapSnapshot {
             }
             TransformKind::Wrap => {
                 let kind = self.projected_kind(input_start)?;
-                let content_len = match kind {
-                    WrapFragmentKind::Placeholder(_) => 0,
-                    _ => line_content(
-                        self.tab_snapshot
-                            .line_text(Line::new(input_start))
-                            .expect("可见行必须可解析")
-                            .as_ref(),
-                    )
-                    .len(),
-                };
+                let content_len = line_content(
+                    self.tab_snapshot
+                        .line_text(Line::new(input_start))
+                        .expect("可见行必须可解析")
+                        .as_ref(),
+                )
+                .len();
                 let fragment_index = row.get() - output_start;
                 Ok(WrapFragment {
                     tab_row: input_start,
@@ -535,19 +488,9 @@ impl WrapSnapshot {
 
     fn projected_kind(&self, tab_row: usize) -> DisplayMapResult<WrapFragmentKind> {
         match self.tab_snapshot.projected_kind(Line::new(tab_row)) {
-            Some(kind) => Ok(match kind {
-                StreamProjectedKind::Text(source) => WrapFragmentKind::Text(source),
-                StreamProjectedKind::Placeholder(placeholder) => {
-                    WrapFragmentKind::Placeholder(placeholder)
-                }
-            }),
+            Some(StreamProjectedKind::Text(source)) => Ok(WrapFragmentKind::Text(source)),
             None => Err(CoordinateError::LineOutOfBounds(Line::new(tab_row)).into()),
         }
-    }
-
-    fn display_row_is_placeholder(&self, row: DisplayRow) -> bool {
-        self.display_row_to_fragment(row)
-            .is_ok_and(|fragment| matches!(fragment.kind, WrapFragmentKind::Placeholder(_)))
     }
 
     /// 逻辑行内的点 → 显示点；列 = 显示行内 display column（含假空格缩进）。
@@ -906,7 +849,6 @@ impl WrapMap {
     ) {
         match self.snapshot.projected_kind(tab_row) {
             Err(_) => push_isomorphic(transforms, 1),
-            Ok(WrapFragmentKind::Placeholder(_)) => push_isomorphic(transforms, 1),
             Ok(WrapFragmentKind::Text(_)) => {
                 // 文本统一走流：buffer 行与合成行（外部文本）共用换行计算，软换行免费。
                 let text = self

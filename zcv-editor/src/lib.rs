@@ -16,5 +16,5 @@ pub use view::{
     MoveToBeginningOfLine, MoveToEnd, MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp,
     Newline, Outdent, Paste, Redo, SelectAll, SelectDown, SelectLeft, SelectPageDown, SelectPageUp,
     SelectRight, SelectToBeginning, SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine,
-    SelectToNextWord, SelectToPreviousWord, SelectUp, SoftWrap, Undo,
+    SelectToNextWord, SelectToPreviousWord, SelectUp, SoftWrap, ToggleFold, Undo, UnfoldAll,
 };

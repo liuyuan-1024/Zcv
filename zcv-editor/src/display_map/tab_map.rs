@@ -48,7 +48,7 @@ impl TabSnapshot {
         self.fold_snapshot.line_count()
     }
 
-    /// 投影行 → 内容来源（经流行解析：buffer 行 / 占位符 / 合成行）。
+    /// 投影行 → 内容来源（经流行解析：buffer 行 / 合成行）。
     pub(super) fn projected_kind(&self, line: Line) -> Option<StreamProjectedKind> {
         self.fold_snapshot
             .projected_kind(ProjectedLineIndex::new(line.get()))
@@ -68,7 +68,7 @@ impl TabSnapshot {
         inlay.line_byte_range(stream_line)
     }
 
-    /// 投影行 → 流行号（坐标换算用；占位符无流行号）。
+    /// 投影行 → 流行号（坐标换算用）。
     pub(super) fn stream_line_for_projected(&self, line: Line) -> Option<Line> {
         let inlay = self.fold_snapshot.inlay_snapshot();
         match self.projected_kind(line)? {
@@ -81,7 +81,6 @@ impl TabSnapshot {
                     Some(Line::new(start.get() + index))
                 }
             },
-            StreamProjectedKind::Placeholder(_) => None,
         }
     }
 

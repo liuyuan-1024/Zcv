@@ -7,6 +7,6 @@ mod syntax_map;
 pub use language::Language;
 pub use language_buffer::{LanguageBuffer, ParseStatus};
 pub use syntax_map::{
-    BracketPair, HighlightSpan, IndentRange, OutlineItem, SyntaxLayerInfo, SyntaxSnapshot,
-    TextObjectRange,
+    BracketPair, FoldRange, HighlightSpan, IndentRange, OutlineItem, SyntaxLayerInfo,
+    SyntaxSnapshot, TextObjectRange,
 };

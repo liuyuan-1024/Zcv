@@ -11,11 +11,12 @@ use gpui::{
     point, prelude::*, px, size,
 };
 use zcv_engine::{
-    Buffer, BufferConfig, BufferVersion, ByteOffset, EngineResult, Line, MovementDirection,
-    MovementUnit, PositionMap, Selection, SelectionSet, Snapshot, TextRange, TextSubscription,
-    TransactionId, TransactionMergePolicy, TransactionMetadata, TransactionSource, Utf16Offset,
+    Buffer, BufferConfig, BufferVersion, ByteOffset, EngineResult, Line, LineRange,
+    MovementDirection, MovementUnit, PositionMap, Selection, SelectionSet, Snapshot, TextRange,
+    TextSubscription, TransactionId, TransactionMergePolicy, TransactionMetadata,
+    TransactionSource, Utf16Offset,
 };
-use zcv_language::{BracketPair, LanguageBuffer, SyntaxSnapshot};
+use zcv_language::{BracketPair, FoldRange, LanguageBuffer, SyntaxSnapshot};
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{
@@ -74,6 +75,8 @@ actions!(
         Paste,
         Indent,
         Outdent,
+        ToggleFold,
+        UnfoldAll,
     ]
 );
 
@@ -204,6 +207,9 @@ pub struct Editor {
     expanded_deleted_hunks: Vec<Range<usize>>,
     /// 已展开的修改 hunk（按 old_range 标识；展开时显示修改前的 HEAD 旧行）。
     expanded_modified_hunks: Vec<Range<usize>>,
+    /// 语言层提供的可折叠范围（crease 显示与折叠命令的数据源；
+    /// 在 buffer 编辑或语法快照更新时刷新）。
+    fold_ranges: Vec<FoldRange>,
 }
 
 impl Editor {
@@ -348,6 +354,11 @@ impl Editor {
     }
 
     /// 注入行内提示（inlay hint）配置；数据面入口（LSP 后续接入）。
+    /// 语言层可折叠范围（crease 渲染与折叠命令共用）。
+    pub(crate) fn fold_ranges(&self) -> &[FoldRange] {
+        &self.fold_ranges
+    }
+
     pub(crate) fn set_inlays(&mut self, inlays: Vec<Inlay>, cx: &mut Context<Self>) {
         self.display_map.set_inlays(inlays);
         cx.notify();
@@ -376,6 +387,41 @@ impl Editor {
             self.expanded_modified_hunks.push(old_range);
         }
         self.rebuild_inserted(cx);
+        cx.notify();
+    }
+
+    /// 折叠/展开指定逻辑行（crease 点击与 ToggleFold 命令的共享实现）。
+    ///
+    /// 该行处于折叠中则展开覆盖它的折叠；否则若该行是可折叠范围起点则折叠整个范围。
+    pub(crate) fn toggle_fold_at_line(&mut self, line: Line, cx: &mut Context<Self>) {
+        let display_snapshot = self.display_map.snapshot();
+        if display_snapshot.is_line_folded(line) {
+            let line_range =
+                LineRange::new(line, Line::new(line.get() + 1)).expect("光标行 +1 应合法");
+            if let Err(error) = self.display_map.unfold_lines(line_range) {
+                log::error!("展开折叠失败：{error}");
+            }
+        } else {
+            let snapshot = self.render_snapshot();
+            let range = self.fold_ranges.iter().find(|range| {
+                snapshot
+                    .byte_to_line(ByteOffset::new(range.range.start))
+                    .is_ok_and(|start| start == line)
+            });
+            if let Some(range) = range
+                && let (Ok(start), Ok(end)) = (
+                    snapshot.byte_to_line(ByteOffset::new(range.range.start)),
+                    snapshot.byte_to_line(ByteOffset::new(range.range.end)),
+                )
+                && end > start
+            {
+                let line_range = LineRange::new(start, Line::new(end.get() + 1))
+                    .expect("折叠范围转行范围应合法");
+                if let Err(error) = self.display_map.fold_lines(line_range) {
+                    log::error!("折叠失败：{error}");
+                }
+            }
+        }
         cx.notify();
     }
 
@@ -710,6 +756,7 @@ impl Editor {
             editor.syntax_snapshot = language_buffer.read(cx).syntax_snapshot();
             editor.push_highlights();
             editor.sync_display_map(cx);
+            editor.refresh_fold_ranges(cx);
             editor.input_layout = None;
             cx.notify();
         })
@@ -738,6 +785,7 @@ impl Editor {
                 &SelectionSet::default(),
             ),
             selection_history: SelectionHistory::default(),
+            fold_ranges: Vec::new(),
             scroll_manager: ScrollManager::default(),
             diff_hunks: Vec::new(),
             diff_hunks_version: None,
@@ -1487,6 +1535,20 @@ impl Editor {
         self.display_map.sync(snapshot, changes);
         // 编辑后 diff hunks 门控失效（返回空）：删除块随行号失配清空，等待重新注入。
         self.rebuild_inserted(cx);
+        // 编辑改变了语法树坐标，折叠范围随之刷新。
+        self.refresh_fold_ranges(cx);
+    }
+
+    /// 重算语言层折叠范围；语法快照与 buffer 版本不一致时置空（等待语法更新后由 observe 刷新）。
+    fn refresh_fold_ranges(&mut self, cx: &App) {
+        let snapshot = self.buffer.read(cx).snapshot();
+        if self.syntax_snapshot.version() != snapshot.version() {
+            self.fold_ranges = Vec::new();
+            return;
+        }
+        self.fold_ranges = self
+            .syntax_snapshot
+            .fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
     }
 
     /// 把语法高亮与 capture 样式表注入显示管线（对齐 Zed 的 push_highlights）。
@@ -1498,6 +1560,39 @@ impl Editor {
             self.syntax_snapshot.highlighted_version(),
             self.syntax_snapshot.capture_names(),
         );
+    }
+
+    pub(super) fn handle_toggle_fold(
+        &mut self,
+        _: &ToggleFold,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.render_snapshot();
+        let head = self.resolved_selections().primary().head();
+        if let Ok(position) = snapshot.byte_to_position(head) {
+            self.toggle_fold_at_line(position.line(), cx);
+        }
+    }
+
+    pub(super) fn handle_unfold_all(
+        &mut self,
+        _: &UnfoldAll,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.unfold_all_ranges(cx);
+    }
+
+    /// 展开全部折叠。
+    fn unfold_all_ranges(&mut self, cx: &mut Context<Self>) {
+        let line_count = self.display_map.buffer_snapshot().line_count();
+        if let Ok(line_range) = LineRange::new(Line::ZERO, Line::new(line_count))
+            && let Err(error) = self.display_map.unfold_lines(line_range)
+        {
+            log::error!("展开折叠失败：{error}");
+        }
+        cx.notify();
     }
 
     pub(super) fn handle_move_left(
@@ -2584,12 +2679,80 @@ mod tests {
         let viewport = snapshot
             .slice_viewport(DisplayRow::ZERO, 1)
             .expect("视口应可读取");
-        match viewport.rows()[0].kind() {
-            crate::display_map::WrapViewportRowKind::Text { text, .. } => {
-                assert_eq!(text.as_ref(), "a: hintb\n")
-            }
-            other => panic!("行 0 应为含注入的文本行，实际 {other:?}"),
-        }
+        let crate::display_map::WrapViewportRowKind::Text { text, .. } = viewport.rows()[0].kind();
+        assert_eq!(text.as_ref(), "a: hintb\n");
+    }
+
+    #[gpui::test]
+    fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
+        let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
+        let buffer = cx.new(|_| {
+            Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        });
+        let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+        let editor = cx.new(|cx| Editor::new(buffer, EditorMode::Full, cx));
+        cx.run_until_parked();
+        // 语法解析完成后语言层提供两个折叠范围（fn main 与 fn other 的块体）。
+        let fold_ranges = cx.read_entity(&editor, |editor, _| {
+            editor
+                .fold_ranges()
+                .iter()
+                .map(|range| range.range.clone())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(fold_ranges.len(), 2);
+        eprintln!("fold_ranges: {:?}", fold_ranges);
+
+        // 折叠 fn main（入口行 0）：隐藏块内 2 行，无占位行，总行数 6 → 4。
+        editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
+        assert_eq!(
+            cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+            4
+        );
+        assert!(cx.read_entity(&editor, |editor, _| {
+            editor.display_map.snapshot().is_line_folded(Line::ZERO)
+        }));
+
+        // 再次切换：展开，恢复 6 行。
+        editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
+        assert_eq!(
+            cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+            6
+        );
+        assert!(!cx.read_entity(&editor, |editor, _| {
+            editor.display_map.snapshot().is_line_folded(Line::ZERO)
+        }));
+    }
+
+    #[gpui::test]
+    fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
+        let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
+        let buffer = cx.new(|_| {
+            Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        });
+        let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+        let editor = cx.new(|cx| Editor::new(buffer, EditorMode::Full, cx));
+        cx.run_until_parked();
+
+        // 手动折叠两个块体（各自隐藏 2 行，无占位行）：总行数 6 → 2。
+        editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
+        editor.update(cx, |editor, cx| {
+            editor.toggle_fold_at_line(Line::new(3), cx)
+        });
+        assert_eq!(
+            cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+            2
+        );
+
+        // 全部展开：恢复 6 行。
+        editor.update(cx, |editor, cx| editor.unfold_all_ranges(cx));
+        assert_eq!(
+            cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+            6
+        );
+        assert!(!cx.read_entity(&editor, |editor, _| {
+            editor.display_map.snapshot().is_line_folded(Line::ZERO)
+        }));
     }
 
     fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<LanguageBuffer> {

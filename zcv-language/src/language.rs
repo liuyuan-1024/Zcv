@@ -20,6 +20,7 @@ struct LanguageQueries {
     indents: Option<Arc<Query>>,
     outline: Option<Arc<Query>>,
     text_objects: Option<Arc<Query>>,
+    folds: Option<Arc<Query>>,
 }
 
 impl Language {
@@ -53,6 +54,10 @@ impl Language {
 
     pub(crate) fn text_objects(&self) -> Option<&Arc<Query>> {
         self.queries.text_objects.as_ref()
+    }
+
+    pub(crate) fn folds(&self) -> Option<&Arc<Query>> {
+        self.queries.folds.as_ref()
     }
 
     pub(crate) fn capture_name(&self, index: u32) -> Option<Arc<str>> {
@@ -228,6 +233,7 @@ fn language_queries(name: &str, grammar: &tree_sitter::Language) -> Option<Langu
             indents: Some(include_str!("../queries/bash/indents.scm")),
             outline: None,
             text_objects: Some(include_str!("../queries/bash/textobjects.scm")),
+            fold: None,
         }),
         "Markdown" => LanguageQuerySources::all("markdown"),
         "HTML" => Some(LanguageQuerySources {
@@ -235,6 +241,7 @@ fn language_queries(name: &str, grammar: &tree_sitter::Language) -> Option<Langu
             indents: Some(include_str!("../queries/html/indents.scm")),
             outline: Some(include_str!("../queries/html/outline.scm")),
             text_objects: None,
+            fold: None,
         }),
         "CSS" => LanguageQuerySources::all("css"),
         "JSON" => LanguageQuerySources::all("json"),
@@ -243,6 +250,7 @@ fn language_queries(name: &str, grammar: &tree_sitter::Language) -> Option<Langu
             indents: None,
             outline: Some(include_str!("../queries/yaml/outline.scm")),
             text_objects: Some(include_str!("../queries/yaml/textobjects.scm")),
+            fold: None,
         }),
         _ => None,
     };
@@ -254,6 +262,7 @@ fn language_queries(name: &str, grammar: &tree_sitter::Language) -> Option<Langu
         indents: compile_query(grammar, sources.indents)?,
         outline: compile_query(grammar, sources.outline)?,
         text_objects: compile_query(grammar, sources.text_objects)?,
+        folds: compile_query(grammar, sources.fold)?,
     })
 }
 
@@ -262,6 +271,7 @@ struct LanguageQuerySources {
     indents: Option<&'static str>,
     outline: Option<&'static str>,
     text_objects: Option<&'static str>,
+    fold: Option<&'static str>,
 }
 
 impl LanguageQuerySources {
@@ -272,48 +282,56 @@ impl LanguageQuerySources {
                 include_str!("../queries/rust/indents.scm"),
                 include_str!("../queries/rust/outline.scm"),
                 include_str!("../queries/rust/textobjects.scm"),
+                Some(include_str!("../queries/rust/fold.scm")),
             ),
             "python" => Self::from_sources(
                 include_str!("../queries/python/brackets.scm"),
                 include_str!("../queries/python/indents.scm"),
                 include_str!("../queries/python/outline.scm"),
                 include_str!("../queries/python/textobjects.scm"),
+                None,
             ),
             "javascript" => Self::from_sources(
                 include_str!("../queries/javascript/brackets.scm"),
                 include_str!("../queries/javascript/indents.scm"),
                 include_str!("../queries/javascript/outline.scm"),
                 include_str!("../queries/javascript/textobjects.scm"),
+                None,
             ),
             "typescript" => Self::from_sources(
                 include_str!("../queries/typescript/brackets.scm"),
                 include_str!("../queries/typescript/indents.scm"),
                 include_str!("../queries/typescript/outline.scm"),
                 include_str!("../queries/typescript/textobjects.scm"),
+                None,
             ),
             "tsx" => Self::from_sources(
                 include_str!("../queries/tsx/brackets.scm"),
                 include_str!("../queries/tsx/indents.scm"),
                 include_str!("../queries/tsx/outline.scm"),
                 include_str!("../queries/tsx/textobjects.scm"),
+                None,
             ),
             "markdown" => Self::from_sources(
                 include_str!("../queries/markdown/brackets.scm"),
                 include_str!("../queries/markdown/indents.scm"),
                 include_str!("../queries/markdown/outline.scm"),
                 include_str!("../queries/markdown/textobjects.scm"),
+                None,
             ),
             "css" => Self::from_sources(
                 include_str!("../queries/css/brackets.scm"),
                 include_str!("../queries/css/indents.scm"),
                 include_str!("../queries/css/outline.scm"),
                 include_str!("../queries/css/textobjects.scm"),
+                None,
             ),
             "json" => Self::from_sources(
                 include_str!("../queries/json/brackets.scm"),
                 include_str!("../queries/json/indents.scm"),
                 include_str!("../queries/json/outline.scm"),
                 include_str!("../queries/json/textobjects.scm"),
+                None,
             ),
             _ => return None,
         })
@@ -324,12 +342,14 @@ impl LanguageQuerySources {
         indents: &'static str,
         outline: &'static str,
         text_objects: &'static str,
+        fold: Option<&'static str>,
     ) -> Self {
         Self {
             brackets: Some(brackets),
             indents: Some(indents),
             outline: Some(outline),
             text_objects: Some(text_objects),
+            fold,
         }
     }
 }
@@ -744,6 +764,10 @@ mod tests {
             assert!(
                 language.text_objects().is_some() || path.ends_with(".html"),
                 "{path} 应提供文本对象查询"
+            );
+            assert!(
+                language.folds().is_some() || !path.ends_with(".rs"),
+                "{path} 应提供折叠查询"
             );
         }
     }

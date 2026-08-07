@@ -1,7 +1,5 @@
 use thiserror::Error;
-#[cfg(test)]
-use zcv_engine::TextRange;
-use zcv_engine::{CoordinateError, EngineError};
+use zcv_engine::{CoordinateError, EngineError, TextRange};
 
 pub(crate) type DisplayMapResult<T> = Result<T, DisplayMapError>;
 
@@ -11,12 +9,10 @@ pub(crate) enum DisplayMapError {
     Engine(#[from] EngineError),
     #[error(transparent)]
     Coordinate(#[from] CoordinateError),
-    #[cfg(test)]
     #[error(transparent)]
     Fold(#[from] FoldError),
 }
 
-#[cfg(test)]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub(crate) enum FoldError {
     #[error("FoldMap fold id 溢出")]

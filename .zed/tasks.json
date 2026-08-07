@@ -29,7 +29,7 @@
   {
     "label": "4. macOS 调试启动",
     "command": "cargo",
-    "args": ["run -p zcv"],
+    "args": ["run", "-p", "zcv"],
     "cwd": "$ZED_WORKTREE_ROOT",
     "save": "all",
     "reveal": "always",

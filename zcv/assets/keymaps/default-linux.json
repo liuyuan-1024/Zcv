@@ -42,7 +42,9 @@
       "ctrl-z": "editor::Undo",
       "ctrl-shift-z": "editor::Redo",
       "alt-up": "editor::MoveLineUp",
-      "alt-down": "editor::MoveLineDown"
+      "alt-down": "editor::MoveLineDown",
+      "alt-ctrl-[": "editor::ToggleFold",
+      "alt-ctrl-]": "editor::UnfoldAll"
     }
   },
   {

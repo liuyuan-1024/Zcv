@@ -582,14 +582,9 @@ fn render_row(
                 .child(
                     Checkbox::new(
                         ElementId::Name(
-                            // id 带分组：部分暂存文件同时在两组出现时，
-                            // 两个复选框共享元素 state 会互相干扰（tooltip 失效）。
-                            format!(
-                                "version-control-checkbox-{:?}-{}",
-                                section,
-                                path.display()
-                            )
-                            .into(),
+                            // id 带分组：部分暂存文件同时在两组出现时，两个复选框共享元素 state 会互相干扰。
+                            format!("version-control-checkbox-{:?}-{}", section, path.display())
+                                .into(),
                         ),
                         section == GitSection::Staged,
                     )

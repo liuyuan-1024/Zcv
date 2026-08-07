@@ -38,6 +38,8 @@ const ASSETS: &[(&str, &[u8])] = &[
     asset!("icons/window/maximize.svg"),
     asset!("icons/panels/project_tree.svg"),
     asset!("icons/panels/version_control.svg"),
+    asset!("icons/editor/chevron_right.svg"),
+    asset!("icons/editor/chevron_down.svg"),
     asset!("icons/panels/outline.svg"),
     asset!("icons/panels/search.svg"),
     asset!("icons/panels/terminal.svg"),

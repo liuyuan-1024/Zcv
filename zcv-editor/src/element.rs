@@ -1,6 +1,6 @@
 //! Editor 的逐帧文本布局、绘制与像素命中测试。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -8,7 +8,8 @@ use gpui::{
     App, Bounds, ContentMask, Context, DispatchPhase, Element, ElementId, ElementInputHandler,
     Entity, GlobalElementId, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ScrollWheelEvent, ShapedLine, Style, TextRun, Window, fill, point, px, relative, size,
+    ScrollWheelEvent, ShapedLine, SharedString, Style, TextRun, TransformationMatrix, Window, fill,
+    point, px, relative, size,
 };
 use zcv_engine::{ByteOffset, Line, SelectionSet, TextRange};
 use zcv_language::BracketPair;
@@ -82,6 +83,8 @@ impl EditorElement {
             .on_action(cx.listener(Editor::handle_outdent))
             .on_action(cx.listener(Editor::handle_move_line_up))
             .on_action(cx.listener(Editor::handle_move_line_down))
+            .on_action(cx.listener(Editor::handle_toggle_fold))
+            .on_action(cx.listener(Editor::handle_unfold_all))
     }
 }
 
@@ -125,6 +128,8 @@ struct EditorGeometry {
 struct VisibleLineLayoutParams<'a> {
     geometry: EditorGeometry,
     active_lines: &'a BTreeSet<Line>,
+    /// 可折叠行集合（crease 显示判断；prepaint 从语言层折叠范围计算）。
+    foldable_lines: &'a BTreeSet<Line>,
     start_row: DisplayRow,
     scroll_offset: Point<Pixels>,
     line_height: Pixels,
@@ -220,6 +225,12 @@ pub(super) struct PrepaintState {
     gutter_hitbox: Option<gpui::Hitbox>,
     /// hunk 色带 hitbox（起点行可见时插入；点击切换折叠/展开；类型 + 展开态标志）。
     deleted_hunk_hitboxes: Arc<Vec<HunkHitbox>>,
+    /// crease 点击 hitbox（可折叠行的 gutter 指示区；点击切换折叠/展开）。
+    crease_hitboxes: Arc<Vec<(gpui::Hitbox, Line)>>,
+    /// 折叠省略号点击 hitbox（anchor 行行尾；点击展开）。
+    ellipsis_hitboxes: Arc<Vec<(gpui::Hitbox, Line)>>,
+    /// 折叠入口行 → 结尾闭合符（如 `}`；无闭合符的折叠为 None）：行尾省略号样式用。
+    fold_anchor_end_chars: Arc<BTreeMap<Line, Option<char>>>,
     /// hunk 竖条范围与状态色（竖条色不随展开变化；行背景按行状态另行绘制）。
     hunk_strips: Arc<Vec<(Range<usize>, DiffHunkKind)>>,
     scrollbar: Option<ScrollbarLayout>,
@@ -392,6 +403,28 @@ impl Element for EditorElement {
             let editor = self.editor.read(cx);
             (editor.scroll_anchor().row(), editor.scroll_offset())
         };
+        // 折叠入口行集合（anchor 行行尾绘制省略号；display_snapshot 后续被 autoscroll 分支移动）。
+        let fold_anchor_end_chars: Arc<BTreeMap<Line, Option<char>>> = Arc::new(
+            display_snapshot
+                .fold_anchor_lines()
+                .into_iter()
+                .map(|line| (line, display_snapshot.fold_end_char(line)))
+                .collect(),
+        );
+        // 可折叠行集合（crease 显示判断：折叠范围起点行即折叠入口行）。
+        let foldable_lines: BTreeSet<Line> = {
+            let editor = self.editor.read(cx);
+            let snapshot = display_snapshot.buffer_snapshot();
+            editor
+                .fold_ranges()
+                .iter()
+                .filter_map(|range| {
+                    snapshot
+                        .byte_to_line(ByteOffset::new(range.range.start))
+                        .ok()
+                })
+                .collect()
+        };
         // git diff 显示行区间：gutter 指示、内容背景与滚动轴 marker 共用（只依赖 snapshot 与注入 hunks，与滚动位置无关，autoscroll 重排可复用）。
         let diff_rows = {
             let editor = self.editor.read(cx);
@@ -408,6 +441,7 @@ impl Element for EditorElement {
             VisibleLineLayoutParams {
                 geometry,
                 active_lines: &active_lines,
+                foldable_lines: &foldable_lines,
                 start_row,
                 scroll_offset,
                 line_height,
@@ -431,6 +465,7 @@ impl Element for EditorElement {
                 VisibleLineLayoutParams {
                     geometry,
                     active_lines: &active_lines,
+                    foldable_lines: &foldable_lines,
                     start_row: editor.scroll_anchor().row(),
                     scroll_offset: editor.scroll_offset(),
                     line_height,
@@ -511,6 +546,91 @@ impl Element for EditorElement {
             }
             hitboxes
         });
+        // 折叠省略号点击 hitbox：anchor 行行尾的省略号区域（点击展开；交互型直接调 Entity 方法）。
+        let ellipsis_hitboxes = Arc::new({
+            let mut hitboxes = Vec::new();
+            if !fold_anchor_end_chars.is_empty() {
+                let text_style = window.text_style();
+                let font_size = text_style.font_size.to_pixels(window.rem_size());
+                let run = TextRun {
+                    len: 0,
+                    font: text_style.font(),
+                    color: text_style.color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                for (index, line) in layout.lines.iter().enumerate() {
+                    let Some(logical_line) = line.logical_line else {
+                        continue;
+                    };
+                    // 软换行下省略号只落在逻辑行的最后显示行行尾。
+                    let is_last_fragment = layout
+                        .lines
+                        .get(index + 1)
+                        .is_none_or(|next| next.logical_line != line.logical_line);
+                    if !is_last_fragment {
+                        continue;
+                    }
+                    let Some(end_char) = fold_anchor_end_chars.get(&logical_line) else {
+                        continue;
+                    };
+                    let suffix = match end_char {
+                        Some(end_char) => format!("…{end_char}"),
+                        None => "…".to_owned(),
+                    };
+                    let suffix_run = TextRun {
+                        len: suffix.len(),
+                        ..run.clone()
+                    };
+                    let suffix_width = window
+                        .text_system()
+                        .shape_line(suffix.into(), font_size, &[suffix_run], None)
+                        .width;
+                    hitboxes.push((
+                        window.insert_hitbox(
+                            Bounds::from_corners(
+                                point(line.origin.x + line.shaped.width, line.origin.y),
+                                point(
+                                    line.origin.x + line.shaped.width + suffix_width,
+                                    line.origin.y + line_height,
+                                ),
+                            ),
+                            HitboxBehavior::BlockMouse,
+                        ),
+                        logical_line,
+                    ));
+                }
+            }
+            hitboxes
+        });
+        // crease 点击 hitbox：可折叠行的 gutter 左侧指示区（对齐 Zed：交互型点击直接调 Entity 方法）。
+        let crease_hitboxes = Arc::new({
+            let mut hitboxes = Vec::new();
+            if let (Some(gutter), Some((gutter_bounds, dimensions))) =
+                (&layout.gutter, geometry.gutter)
+            {
+                for row in &gutter.rows {
+                    if row.crease.is_none() {
+                        continue;
+                    }
+                    hitboxes.push((
+                        window.insert_hitbox(
+                            Bounds::from_corners(
+                                point(
+                                    gutter_bounds.right() - dimensions.crease_width,
+                                    row.origin.y,
+                                ),
+                                point(gutter_bounds.right(), row.origin.y + line_height),
+                            ),
+                            HitboxBehavior::BlockMouse,
+                        ),
+                        row.logical_line,
+                    ));
+                }
+            }
+            hitboxes
+        });
         let scrollbar = (mode == EditorMode::Full).then(|| {
             let editor = self.editor.read(cx);
             let mut scrollbar_layout = ScrollbarLayout::new(
@@ -556,6 +676,9 @@ impl Element for EditorElement {
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
             gutter_hitbox,
             deleted_hunk_hitboxes,
+            crease_hitboxes,
+            ellipsis_hitboxes,
+            fold_anchor_end_chars,
             hunk_strips,
             scrollbar,
         }
@@ -581,6 +704,8 @@ impl Element for EditorElement {
         let event_layout = Arc::clone(&prepaint.layout);
         let hitbox = prepaint.hitbox.clone();
         let deleted_hunk_hitboxes = prepaint.deleted_hunk_hitboxes.clone();
+        let crease_hitboxes = prepaint.crease_hitboxes.clone();
+        let ellipsis_hitboxes = prepaint.ellipsis_hitboxes.clone();
         let mouse_focus = focus.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble
@@ -604,6 +729,18 @@ impl Element for EditorElement {
                     }
                     cx.notify();
                 });
+                window.focus(&mouse_focus);
+                cx.stop_propagation();
+                return;
+            }
+            // 折叠省略号 / crease 点击：切换该行折叠/展开（交互型，直接调 Entity 方法；
+            // 省略号更具体，先命中；两者都先于 gutter 行号选行）。
+            if let Some((_, line)) = ellipsis_hitboxes
+                .iter()
+                .chain(crease_hitboxes.iter())
+                .find(|(hitbox, _)| hitbox.is_hovered(window))
+            {
+                editor.update(cx, |editor, cx| editor.toggle_fold_at_line(*line, cx));
                 window.focus(&mouse_focus);
                 cx.stop_propagation();
                 return;
@@ -676,6 +813,16 @@ impl Element for EditorElement {
                     window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
                 }
             }
+            // 折叠省略号与折叠箭头可点击：hover 时手型光标。
+            for (hitbox, _) in prepaint
+                .ellipsis_hitboxes
+                .iter()
+                .chain(prepaint.crease_hitboxes.iter())
+            {
+                if hitbox.is_hovered(window) {
+                    window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
+                }
+            }
         }
         if let Some(gutter) = &prepaint.layout.gutter {
             let colors = color::current(cx);
@@ -740,6 +887,42 @@ impl Element for EditorElement {
                     }
                 }
             }
+            // crease 箭头：未折叠显示向下箭头（点击折叠），已折叠显示向右箭头（点击展开）。
+            // 用 SVG 资源而非 unicode 字形：多字节字符在 TextRun 的字节索引语义下会越界。
+            let crease_size = (gutter.line_height * 0.75).min(gutter.crease_width);
+            let crease_icon_color = colors.icon;
+            for row in &gutter.rows {
+                let Some(folded) = row.crease else {
+                    continue;
+                };
+                let path: SharedString = if folded {
+                    "icons/editor/chevron_right.svg".into()
+                } else {
+                    "icons/editor/chevron_down.svg".into()
+                };
+                let crease_left = gutter.bounds.right() - gutter.crease_width;
+                let bounds = Bounds::from_corners(
+                    point(
+                        crease_left + (gutter.crease_width - crease_size) / 2.0,
+                        row.origin.y + (gutter.line_height - crease_size) / 2.0,
+                    ),
+                    point(
+                        crease_left + (gutter.crease_width + crease_size) / 2.0,
+                        row.origin.y + (gutter.line_height + crease_size) / 2.0,
+                    ),
+                );
+                if let Err(error) = window.paint_svg(
+                    bounds,
+                    path,
+                    TransformationMatrix::default(),
+                    crease_icon_color.into(),
+                    cx,
+                ) {
+                    // 单个图标绘制失败只跳过该行，不能让整个窗口崩溃（对齐 Zed 的降级策略）。
+                    log::error!("Editor crease 绘制失败：{error}");
+                    continue;
+                }
+            }
             for row in &gutter.rows {
                 if let Err(error) =
                     row.shaped_line_number
@@ -788,6 +971,57 @@ impl Element for EditorElement {
                     {
                         // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃（对齐 Zed 的降级策略）。
                         log::error!("Editor 文本行绘制失败：{error}");
+                        continue;
+                    }
+                }
+                // 折叠省略号：绘制在折叠入口行的最后显示行行尾（对齐 Zed 行内占位样式）。
+                // 不进入文本流，命中测试与光标定位不受影响。
+                let text_style = window.text_style();
+                let ellipsis_font_size = text_style.font_size.to_pixels(window.rem_size());
+                let ellipsis_run = TextRun {
+                    len: 0,
+                    font: text_style.font(),
+                    color: color::current(cx).text_placeholder.into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let fold_anchor_end_chars = &prepaint.fold_anchor_end_chars;
+                for (index, line) in prepaint.layout.lines.iter().enumerate() {
+                    let Some(logical_line) = line.logical_line else {
+                        continue;
+                    };
+                    // 软换行下省略号只落在逻辑行的最后显示行行尾。
+                    let is_last_fragment = prepaint
+                        .layout
+                        .lines
+                        .get(index + 1)
+                        .is_none_or(|next| next.logical_line != line.logical_line);
+                    if !is_last_fragment {
+                        continue;
+                    }
+                    // 块折叠在省略号后补闭合符（如 `}`），呈现 `{...}`；注释组等只有省略号。
+                    let suffix = match fold_anchor_end_chars.get(&logical_line) {
+                        Some(Some(end_char)) => format!("…{end_char}"),
+                        Some(None) => "…".to_owned(),
+                        None => continue,
+                    };
+                    let suffix_run = TextRun {
+                        len: suffix.len(),
+                        ..ellipsis_run.clone()
+                    };
+                    let shaped = window.text_system().shape_line(
+                        suffix.into(),
+                        ellipsis_font_size,
+                        &[suffix_run],
+                        None,
+                    );
+                    let origin = point(line.origin.x + line.shaped.width, line.origin.y);
+                    if let Err(error) =
+                        shaped.paint(origin, prepaint.layout.line_height, window, cx)
+                    {
+                        // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃（对齐 Zed 的降级策略）。
+                        log::error!("Editor 折叠省略号绘制失败：{error}");
                         continue;
                     }
                 }
@@ -1181,12 +1415,10 @@ fn layout_line_width(
     let Some(row) = viewport.rows().first() else {
         return Pixels::ZERO;
     };
-    let text = match row.kind() {
-        WrapViewportRowKind::Text {
-            text, byte_range, ..
-        } => &text.as_ref()[byte_range.clone()],
-        WrapViewportRowKind::Placeholder(_) => "…",
-    };
+    let WrapViewportRowKind::Text {
+        text, byte_range, ..
+    } = row.kind();
+    let text = &text.as_ref()[byte_range.clone()];
     let text_style = window.text_style();
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let run = TextRun {
@@ -1218,6 +1450,7 @@ fn layout_visible_lines(
                 gutter: gutter_geometry,
             },
         active_lines,
+        foldable_lines,
         start_row,
         scroll_offset,
         line_height,
@@ -1244,10 +1477,7 @@ fn layout_visible_lines(
                     byte_range,
                     global_byte_start,
                     ..
-                } = row.kind()
-                else {
-                    continue;
-                };
+                } = row.kind();
                 let row_range = *global_byte_start..*global_byte_start + byte_range.len();
                 range = Some(match range {
                     Some(range) => range.start.min(row_range.start)..range.end.max(row_range.end),
@@ -1321,14 +1551,26 @@ fn layout_visible_lines(
                 window
                     .text_system()
                     .shape_line(number.into(), font_size, &[run], None);
+            // 折叠指示：已折叠常显，可折叠行常显（不依赖光标位置）。
+            let crease = if display_snapshot.is_line_folded(logical_line) {
+                Some(true)
+            } else if foldable_lines.contains(&logical_line) {
+                Some(false)
+            } else {
+                None
+            };
             gutter_rows.push(GutterRow {
                 logical_line,
                 origin: point(
-                    gutter_bounds.right() - dimensions.right_padding - shaped_line_number.width,
+                    gutter_bounds.right()
+                        - dimensions.right_padding
+                        - dimensions.crease_width
+                        - shaped_line_number.width,
                     text_bounds.top() + line_height * (row - start) - scroll_offset.y,
                 ),
                 shaped_line_number,
                 active,
+                crease,
             });
         }
     };
@@ -1436,35 +1678,17 @@ fn layout_visible_lines(
                         runs,
                     );
                 }
-                WrapViewportRowKind::Placeholder(placeholder) => {
-                    let byte_start = display_snapshot
-                        .buffer_snapshot()
-                        .line_start_byte(placeholder.hidden_lines().start())
-                        .map_or(0, ByteOffset::get);
-                    let utf16_start = display_snapshot
-                        .buffer_snapshot()
-                        .byte_to_utf16_cu(ByteOffset::new(byte_start))
-                        .map_or(0, |offset| offset.get());
-                    push_line(
-                        row.index().get(),
-                        None,
-                        Some(placeholder.hidden_lines().start()),
-                        "…",
-                        utf16_start,
-                        None,
-                        vec![base.clone()],
-                    );
-                }
             }
         }
     }
 
     EditorLayout {
         lines,
-        gutter: gutter_geometry.map(|(bounds, _)| GutterLayout {
+        gutter: gutter_geometry.map(|(bounds, dimensions)| GutterLayout {
             bounds,
             line_height,
             rows: gutter_rows,
+            crease_width: dimensions.crease_width,
         }),
         text_clip_bounds,
         line_height,
@@ -1694,7 +1918,7 @@ mod tests {
     use super::*;
     use crate::display_map::DisplayMap;
     use gpui::{Empty, TestAppContext, font};
-    use zcv_engine::{Buffer, BufferConfig, ByteOffset, Line, LineRange, LogicalColumn};
+    use zcv_engine::{Buffer, BufferConfig, ByteOffset, Line, LineRange};
     use zcv_language::HighlightSpan;
     use zcv_theme::syntax;
 
@@ -1855,6 +2079,7 @@ mod tests {
                             gutter: None,
                         },
                         active_lines: &BTreeSet::new(),
+                        foldable_lines: &BTreeSet::new(),
                         start_row: DisplayRow::ZERO,
                         scroll_offset: point(px(0.), px(0.)),
                         line_height: px(20.),
@@ -1906,6 +2131,7 @@ mod tests {
                             gutter: None,
                         },
                         active_lines: &BTreeSet::new(),
+                        foldable_lines: &BTreeSet::new(),
                         start_row: DisplayRow::new(5_000),
                         scroll_offset: point(px(0.), px(10.)),
                         line_height: px(20.),
@@ -1940,14 +2166,15 @@ mod tests {
                         .expect("测试 Buffer 应能创建")
                         .snapshot();
                 let dimensions = GutterDimensions {
+                    crease_width: px(8.),
                     left_padding: px(8.),
                     right_padding: px(8.),
-                    width: px(48.),
+                    width: px(56.),
                     margin: px(3.),
                 };
                 let gutter_bounds =
                     Bounds::new(point(px(0.), px(0.)), size(dimensions.width, px(100.)));
-                let text_bounds = Bounds::new(point(px(51.), px(0.)), size(px(349.), px(100.)));
+                let text_bounds = Bounds::new(point(px(59.), px(0.)), size(px(341.), px(100.)));
                 let layout = layout_visible_lines(
                     DisplayMap::new(snapshot.clone()).snapshot(),
                     EditorPresentation::new(&snapshot, None),
@@ -1955,12 +2182,13 @@ mod tests {
                         geometry: EditorGeometry {
                             text_bounds,
                             text_clip_bounds: Bounds::new(
-                                point(px(48.), px(0.)),
-                                size(px(352.), px(100.)),
+                                point(px(56.), px(0.)),
+                                size(px(344.), px(100.)),
                             ),
                             gutter: Some((gutter_bounds, dimensions)),
                         },
                         active_lines: &BTreeSet::from([Line::new(1)]),
+                        foldable_lines: &BTreeSet::new(),
                         start_row: DisplayRow::ZERO,
                         scroll_offset: point(px(20.), px(0.)),
                         line_height: px(20.),
@@ -1971,7 +2199,7 @@ mod tests {
                 );
                 let gutter = layout.gutter.as_ref().expect("Full Editor 应布局 gutter");
 
-                assert_eq!(layout.lines[0].origin.x, px(31.));
+                assert_eq!(layout.lines[0].origin.x, px(39.));
                 assert_eq!(gutter.rows[0].shaped_line_number.text.as_ref(), "1");
                 assert_eq!(gutter.rows[1].shaped_line_number.text.as_ref(), "2");
                 assert!(!gutter.rows[0].active);
@@ -1984,7 +2212,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn folded_projection_rows_drive_layout_and_placeholder_hit_testing(cx: &mut TestAppContext) {
+    fn folded_projection_rows_drive_layout_and_hit_testing(cx: &mut TestAppContext) {
         let window = cx.add_window(|_, _| Empty);
         window
             .update(cx, |_, window, cx| {
@@ -2013,6 +2241,7 @@ mod tests {
                             gutter: None,
                         },
                         active_lines: &BTreeSet::new(),
+                        foldable_lines: &BTreeSet::new(),
                         start_row: DisplayRow::ZERO,
                         scroll_offset: point(px(0.), px(0.)),
                         line_height: px(20.),
@@ -2022,14 +2251,9 @@ mod tests {
                     cx,
                 );
 
-                assert_eq!(layout.lines.len(), 3);
+                assert_eq!(layout.lines.len(), 2);
                 assert_eq!(layout.lines[0].shaped.text.as_ref(), "anchor");
-                assert_eq!(layout.lines[1].shaped.text.as_ref(), "…");
-                assert_eq!(layout.lines[2].shaped.text.as_ref(), "after");
-                assert_eq!(
-                    layout.buffer_point_for_position(point(px(1.), px(25.))),
-                    Some(BufferPoint::new(Line::ZERO, LogicalColumn::ZERO))
-                );
+                assert_eq!(layout.lines[1].shaped.text.as_ref(), "after");
             })
             .expect("测试窗口应保持可用");
     }
@@ -2063,6 +2287,7 @@ mod tests {
                             gutter: None,
                         },
                         active_lines: &BTreeSet::new(),
+                        foldable_lines: &BTreeSet::new(),
                         start_row: DisplayRow::new(10),
                         scroll_offset: point(px(0.), px(0.)),
                         line_height: px(20.),

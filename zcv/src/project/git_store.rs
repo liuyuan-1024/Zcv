@@ -62,6 +62,9 @@ pub(crate) struct RemoteOperationState {
 pub(crate) struct RepositorySnapshot {
     pub(crate) branch: Option<String>,
     pub(crate) head: Option<String>,
+    /// 最近一次提交的 subject（首行；无提交时为 None）。
+    /// 底部提交区显示用，status 扫描时顺手读取（对齐 Zed branch scan 的 `%(contents:subject)`）。
+    pub(crate) last_commit_message: Option<String>,
     /// 是否配置了 remote。
     pub(crate) has_remote: bool,
     /// 当前分支相对 upstream 的领先/落后计数（无 upstream 时为 0）。
@@ -89,6 +92,12 @@ enum GitJobKey {
         stage: bool,
         paths: Vec<PathBuf>,
     },
+    /// 提交（消息参与 key：同消息双击去重，改消息重试不被去重跳过）。
+    Commit {
+        message: String,
+    },
+    /// 撤销最近一次提交（无参：同一时间只允许一个 uncommit 在途）。
+    Uncommit,
 }
 
 /// 用户触发的 git 操作（fetch/pull/push，由 UI 发起，后台执行）。
@@ -107,6 +116,8 @@ enum GitJob {
     GitOperation(GitOperationKind),
     GitInit,
     StageFiles { stage: bool, paths: Vec<PathBuf> },
+    Commit { message: String },
+    Uncommit,
 }
 
 impl GitJob {
@@ -121,6 +132,10 @@ impl GitJob {
                 stage: *stage,
                 paths: paths.clone(),
             },
+            GitJob::Commit { message } => GitJobKey::Commit {
+                message: message.clone(),
+            },
+            GitJob::Uncommit => GitJobKey::Uncommit,
         }
     }
 }
@@ -137,6 +152,7 @@ struct RefreshData {
     paths: Vec<PathBuf>,
     branch: Option<String>,
     head: Option<String>,
+    last_commit_message: Option<String>,
     has_remote: bool,
     ahead: usize,
     behind: usize,
@@ -155,6 +171,8 @@ enum JobResult {
     Refresh(Vec<(usize, RefreshData)>),
     RefreshHunks(HunksByRepo),
     GitOperation(anyhow::Result<()>),
+    /// uncommit 的结果（被撤销提交的完整消息，供填回提交信息编辑器）。
+    Uncommit(anyhow::Result<Option<String>>),
 }
 
 pub(crate) struct GitStore {
@@ -165,6 +183,8 @@ pub(crate) struct GitStore {
     active_workdir: Option<PathBuf>,
     /// HEAD 文本缓存（删除块展开的被删除行来源；HEAD 变化时清空）。
     committed_text_cache: HashMap<PathBuf, Arc<str>>,
+    /// uncommit 成功后暂存的被撤销消息（Head 事件后由面板读取填回提交信息编辑器）。
+    pending_uncommitted_message: Option<String>,
     background: BackgroundExecutor,
     job_sender: async_channel::Sender<GitJob>,
     pending_jobs: HashMap<GitJobKey, ()>,
@@ -213,6 +233,7 @@ impl GitStore {
             repositories: Vec::new(),
             active_workdir: None,
             committed_text_cache: HashMap::new(),
+            pending_uncommitted_message: None,
             background,
             job_sender,
             pending_jobs: HashMap::new(),
@@ -259,6 +280,28 @@ impl GitStore {
             stage: false,
             paths,
         });
+    }
+
+    /// 提交暂存内容（消息来自面板提交信息编辑器）；无已暂存改动时自动暂存全部已跟踪改动。
+    ///
+    /// 成功后重扫，Head/Statuses 事件驱动面板清空编辑器并刷新上次提交信息。
+    pub(crate) fn commit(&mut self, message: String, cx: &mut Context<Self>) {
+        if self.repositories.is_empty() {
+            log::warn!("git 仓库尚未就绪，跳过 commit（等待首次扫描完成后重试）");
+            self.schedule_scan(cx);
+            return;
+        }
+        self.schedule_job(GitJob::Commit { message });
+    }
+
+    /// 撤销最近一次提交（`git reset --soft HEAD^`），被撤销消息填回提交信息编辑器。
+    pub(crate) fn uncommit(&mut self, cx: &mut Context<Self>) {
+        if self.repositories.is_empty() {
+            log::warn!("git 仓库尚未就绪，跳过 uncommit（等待首次扫描完成后重试）");
+            self.schedule_scan(cx);
+            return;
+        }
+        self.schedule_job(GitJob::Uncommit);
     }
 
     /// 枚举所有仓库（working_directory → 快照），顺序 = 发现顺序（祖先前置）。
@@ -361,6 +404,27 @@ impl GitStore {
             .as_ref()
             .and_then(|workdir| self.repo_by_workdir(workdir))
             .and_then(|repository| repository.snapshot.branch.as_deref())
+    }
+
+    /// 活动仓库最近一次提交的 subject（底部提交区显示）。
+    ///
+    /// 仓库选择逻辑与 prepare_job 的 Commit 分支一致，保证"显示的提交信息"与"提交目标仓库"对齐。
+    pub(crate) fn last_commit_message(&self) -> Option<&str> {
+        self.active_workdir
+            .as_ref()
+            .and_then(|workdir| self.repo_by_workdir(workdir))
+            .or_else(|| {
+                self.repositories
+                    .iter()
+                    .find(|repository| repository.snapshot.branch.is_some())
+            })
+            .or_else(|| self.repositories.first())
+            .and_then(|repository| repository.snapshot.last_commit_message.as_deref())
+    }
+
+    /// 取出 uncommit 成功后被撤销的提交消息（面板在 Head 事件后调用填回编辑器）。
+    pub(crate) fn take_pending_uncommitted_message(&mut self) -> Option<String> {
+        self.pending_uncommitted_message.take()
     }
 
     /// 按 working_directory 查找仓库。
@@ -561,6 +625,43 @@ impl GitStore {
                     grouped_paths,
                 })
             }
+            // 提交/撤销提交：作用于活动仓库（与 GitOperation 同选择策略）；
+            // commit 时无已暂存改动则自动暂存全部已跟踪改动（对齐 Zed，未跟踪文件须手动暂存）。
+            GitJob::Commit { .. } | GitJob::Uncommit => {
+                let repository = self
+                    .active_workdir
+                    .as_ref()
+                    .and_then(|workdir| self.repo_by_workdir(workdir))
+                    .or_else(|| {
+                        self.repositories
+                            .iter()
+                            .find(|repository| repository.snapshot.branch.is_some())
+                    })
+                    .or_else(|| self.repositories.first())?;
+                let has_staged = repository
+                    .snapshot
+                    .statuses_by_path
+                    .values()
+                    .any(|entry| entry.status.has_staged());
+                let paths_to_stage = if matches!(job, GitJob::Uncommit) || has_staged {
+                    Vec::new()
+                } else {
+                    repository
+                        .snapshot
+                        .statuses_by_path
+                        .iter()
+                        .filter(|(_, entry)| {
+                            !entry.status.is_created() && entry.status.has_unstaged()
+                        })
+                        .map(|(path, _)| path.clone())
+                        .collect()
+                };
+                Some(JobPreparation {
+                    root,
+                    repositories: vec![repository.repository.clone()],
+                    grouped_paths: vec![paths_to_stage],
+                })
+            }
         }
     }
 
@@ -673,7 +774,10 @@ impl GitStore {
                 }
             }
             (
-                job @ (GitJob::GitOperation(_) | GitJob::GitInit | GitJob::StageFiles { .. }),
+                job @ (GitJob::GitOperation(_)
+                | GitJob::GitInit
+                | GitJob::StageFiles { .. }
+                | GitJob::Commit { .. }),
                 JobResult::GitOperation(result),
             ) => {
                 match result {
@@ -687,6 +791,17 @@ impl GitStore {
                     }
                 }
             }
+            (GitJob::Uncommit, JobResult::Uncommit(result)) => match result {
+                Ok(message) => {
+                    // 被撤销消息暂存，Head 事件后由面板读取填回提交信息编辑器。
+                    self.pending_uncommitted_message = message;
+                    log::info!("git uncommit 成功");
+                    self.schedule_scan(cx);
+                }
+                Err(error) => {
+                    log::warn!("git uncommit 失败：{error:#}");
+                }
+            },
             _ => {}
         }
         self.pending_jobs.remove(&job.key());
@@ -818,6 +933,27 @@ async fn execute_job(
             }
             JobResult::GitOperation(result)
         }
+        // 提交：prepare 已算好需要先暂存的路径（无已暂存改动时 = 全部已跟踪改动），随后 commit。
+        GitJob::Commit { message } => {
+            let result = repositories.first().map(|repository| {
+                let paths = grouped_paths
+                    .first()
+                    .map_or(&[][..], |paths| paths.as_slice());
+                if !paths.is_empty() {
+                    repository.stage_paths(paths)?;
+                }
+                repository.commit(&message)
+            });
+            JobResult::GitOperation(result.unwrap_or(Ok(())))
+        }
+        // 撤销提交：被撤销消息随结果回传，UI 线程暂存供面板填回编辑器。
+        GitJob::Uncommit => {
+            let result = repositories
+                .first()
+                .map(|repository| repository.uncommit())
+                .unwrap_or(Ok(None));
+            JobResult::Uncommit(result)
+        }
     }
 }
 
@@ -856,6 +992,7 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
             return RepositorySnapshot {
                 branch,
                 head,
+                last_commit_message: repository.last_commit_message().unwrap_or(None),
                 has_remote: false,
                 ahead: 0,
                 behind: 0,
@@ -890,6 +1027,7 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
     RepositorySnapshot {
         branch,
         head,
+        last_commit_message: repository.last_commit_message().unwrap_or(None),
         has_remote: repository.has_remote().unwrap_or(false),
         ahead: statuses.branch.as_ref().map_or(0, |branch| branch.ahead),
         behind: statuses.branch.as_ref().map_or(0, |branch| branch.behind),
@@ -937,6 +1075,7 @@ fn refresh_repository_data_sync(
         paths: paths.to_vec(),
         branch,
         head,
+        last_commit_message: repository.last_commit_message().unwrap_or(None),
         // status 失败归零与 head 失败语义一致（瞬态，下次成功刷新自愈）。
         has_remote: repository.has_remote().unwrap_or(false),
         ahead: statuses.branch.as_ref().map_or(0, |branch| branch.ahead),
@@ -991,9 +1130,10 @@ fn merge_refresh(prev: &RepositorySnapshot, data: RefreshData) -> (RepositorySna
         statuses_changed |= replaced != Some(entry);
     }
 
-    // ahead/behind/has_remote 纳入比对：fetch/push 后计数变化必须触发事件，否则订阅方无法感知。
+    // ahead/behind/has_remote 与提交信息纳入比对：fetch/push/外部提交后变化必须触发事件，否则订阅方无法感知。
     let head_changed = prev.head != data.head
         || prev.branch != data.branch
+        || prev.last_commit_message != data.last_commit_message
         || prev.has_remote != data.has_remote
         || prev.ahead != data.ahead
         || prev.behind != data.behind;
@@ -1001,6 +1141,7 @@ fn merge_refresh(prev: &RepositorySnapshot, data: RefreshData) -> (RepositorySna
         RepositorySnapshot {
             branch: data.branch,
             head: data.head,
+            last_commit_message: data.last_commit_message,
             has_remote: data.has_remote,
             ahead: data.ahead,
             behind: data.behind,
@@ -1073,6 +1214,7 @@ mod tests {
         let prev = RepositorySnapshot {
             branch: Some("master".into()),
             head: Some("old".into()),
+            last_commit_message: None,
             has_remote: true,
             ahead: 1,
             behind: 0,
@@ -1104,6 +1246,7 @@ mod tests {
             paths: vec![PathBuf::from("a.txt"), PathBuf::from("sub")],
             branch: Some("master".into()),
             head: Some("old".into()),
+            last_commit_message: None,
             has_remote: true,
             ahead: 1,
             behind: 0,
@@ -1138,6 +1281,7 @@ mod tests {
         let prev = RepositorySnapshot {
             branch: Some("master".into()),
             head: Some("old".into()),
+            last_commit_message: None,
             has_remote: false,
             ahead: 0,
             behind: 0,
@@ -1147,6 +1291,7 @@ mod tests {
             paths: vec![PathBuf::from("a.txt")],
             branch: Some("master".into()),
             head: Some("new".into()),
+            last_commit_message: None,
             has_remote: false,
             ahead: 0,
             behind: 0,

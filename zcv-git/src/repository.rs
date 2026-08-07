@@ -60,6 +60,23 @@ pub trait GitRepository: Send + Sync {
     ///
     /// 重置 index 到 HEAD；此前已暂存但 HEAD 中不存在的路径（新建后暂存）会移出 index。
     fn unstage_paths(&self, paths: &[PathBuf]) -> Result<()>;
+
+    /// 提交暂存内容（`git commit --quiet -m <msg> --cleanup=strip`，对齐 Zed）。
+    ///
+    /// 消息经 `-m` 单参数原样传入（多行消息允许）；空消息 git 会报错，由调用方先校验。
+    /// `--cleanup=strip` 丢弃消息注释行与行尾空白（对齐 Zed repository.rs:2532）。
+    fn commit(&self, message: &str) -> Result<()>;
+
+    /// 最近一次提交的 subject（首行，`git log -1 --pretty=format:%s`）。
+    ///
+    /// 无提交（空仓库）时为 `None`；对齐 Zed branch scan 的 `%(contents:subject)`。
+    fn last_commit_message(&self) -> Result<Option<String>>;
+
+    /// 撤销最近一次提交（先取完整消息，再 `git reset --soft HEAD^`，对齐 Zed uncommit）。
+    ///
+    /// 返回被撤销提交的完整消息（含 body，`%B`），供调用方填回提交信息编辑器；
+    /// 无提交或撤销失败（如单提交仓库 `HEAD^` 不存在）时返回错误。
+    fn uncommit(&self) -> Result<Option<String>>;
 }
 
 pub struct RealGitRepository {
@@ -263,6 +280,38 @@ impl GitRepository for RealGitRepository {
         }
         self.run_command(&mut command, "git reset")?;
         Ok(())
+    }
+
+    fn commit(&self, message: &str) -> Result<()> {
+        // `-m` 单参数：多行消息整体作为一个参数传给 git。
+        self.run_command(
+            &mut self.build_command(&["commit", "--quiet", "-m", message, "--cleanup=strip"]),
+            "git commit",
+        )?;
+        Ok(())
+    }
+
+    fn last_commit_message(&self) -> Result<Option<String>> {
+        // 空仓库（无提交）时 git log 非零退出，run_optional 置 None，不报错。
+        let subject = self
+            .run_optional(&["log", "-1", "--pretty=format:%s"])?
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|subject| !subject.is_empty());
+        Ok(subject)
+    }
+
+    fn uncommit(&self) -> Result<Option<String>> {
+        // 先取完整消息再 reset：reset 后旧提交对象不再可达，消息须先落袋。
+        let message = self
+            .run_optional(&["log", "-1", "--pretty=format:%B"])?
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|message| !message.is_empty());
+        // `--soft` 只回退 HEAD 指针，index 与工作树保留（对齐 Zed uncommit：`git reset HEAD^ --soft`）。
+        self.run_command(
+            &mut self.build_command(&["reset", "--soft", "HEAD^"]),
+            "git reset --soft HEAD^",
+        )?;
+        Ok(message)
     }
 
     fn load_revisions(&self, revs: &[&str]) -> Result<Vec<Option<Vec<u8>>>> {
@@ -969,5 +1018,85 @@ mod tests {
         assert_eq!(resolve_branch(None, "main"), "main");
         assert_eq!(resolve_branch(Some("dev"), "main"), "dev");
         assert_eq!(resolve_branch(Some("  "), "main"), "main");
+    }
+
+    #[test]
+    fn commit_creates_commit_and_reports_subject() {
+        let (root, _temp) = test_repo();
+        let repository = open_repo(&root);
+
+        fs::write(root.join("tracked.txt"), "修改后的内容\n").expect("应修改文件");
+        repository
+            .stage_paths(&[PathBuf::from("tracked.txt")])
+            .expect("stage 应成功");
+        // 标准提交消息：subject + 空行 + body；%s 只取首行。
+        repository
+            .commit("首行提交\n\n第二行详细说明")
+            .expect("commit 应成功");
+
+        // subject 只取首行（对齐 Zed 的 %(contents:subject)）。
+        assert_eq!(
+            repository
+                .last_commit_message()
+                .expect("查询应成功")
+                .as_deref(),
+            Some("首行提交")
+        );
+        // 与直接执行 git 对照。
+        let log = run_in(&root, &["git", "log", "-1", "--pretty=format:%s"]);
+        assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "首行提交");
+    }
+
+    #[test]
+    fn last_commit_message_none_without_head() {
+        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+        run_in(temp_dir.path(), &["git", "init", "-q", "-b", "master"]);
+        let repository = open_repo(temp_dir.path());
+
+        assert_eq!(repository.last_commit_message().expect("查询应成功"), None);
+    }
+
+    #[test]
+    fn commit_fails_without_changes() {
+        let (root, _temp) = test_repo();
+        let repository = open_repo(&root);
+
+        // 干净工作树：git 报 nothing to commit，run_command 带 stderr 返回错误。
+        assert!(repository.commit("无改动提交").is_err());
+    }
+
+    #[test]
+    fn uncommit_returns_full_message_and_rewinds_head() {
+        let (root, _temp) = test_repo();
+        let repository = open_repo(&root);
+
+        fs::write(root.join("tracked.txt"), "第二次修改\n").expect("应修改文件");
+        repository
+            .stage_paths(&[PathBuf::from("tracked.txt")])
+            .expect("stage 应成功");
+        repository
+            .commit("第二次提交\n\n详细说明")
+            .expect("commit 应成功");
+
+        // uncommit 返回被撤销提交的完整消息（含 body，%B 保留空行），HEAD 回退到 initial。
+        let message = repository
+            .uncommit()
+            .expect("uncommit 应成功")
+            .expect("应返回被撤销提交的消息");
+        assert_eq!(message, "第二次提交\n\n详细说明");
+        let log = run_in(&root, &["git", "log", "-1", "--pretty=format:%s"]);
+        assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "initial");
+
+        // --soft：改动保留在 index（staged）。
+        let status = repository.status(&[]).expect("status 应成功");
+        let by_path: HashMap<_, _> = status
+            .statuses
+            .iter()
+            .map(|(path, status)| (path.as_path(), status))
+            .collect();
+        assert_eq!(
+            index_status(by_path[Path::new("tracked.txt")]),
+            StatusCode::Modified
+        );
     }
 }

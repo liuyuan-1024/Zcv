@@ -12,7 +12,7 @@ use gpui::{
     point, px, relative, size,
 };
 use zcv_buffer_diff::{DiffHunk, DiffHunkKind};
-use zcv_engine::{ByteOffset, Line, SelectionSet, TextRange};
+use zcv_engine::{ByteOffset, Line, LogicalColumn, SelectionSet, TextRange};
 use zcv_language::BracketPair;
 use zcv_theme::color;
 
@@ -99,6 +99,8 @@ struct LayoutLine {
     wrap_info: Option<WrapRowInfo>,
     /// 该显示行所属的 git diff 类型（内容背景用；wrap 续行同样标注）。
     git_diff: Option<DiffHunkKind>,
+    /// placeholder 提示行：命中测试不映射到 placeholder buffer（空 buffer 唯一合法坐标是 0）。
+    is_placeholder: bool,
 }
 
 /// 软换行续行信息：片段所属逻辑行、假空格缩进数与片段起始逻辑字符列。
@@ -152,6 +154,11 @@ impl EditorLayout {
                 .find(|line| position.y < line.origin.y + self.line_height)
                 .unwrap_or(last)
         };
+
+        // placeholder 提示行：不映射到 placeholder buffer（空 buffer 唯一合法坐标是 0）。
+        if line.is_placeholder {
+            return Some(BufferPoint::new(Line::ZERO, LogicalColumn::ZERO));
+        }
 
         let byte_index = line.shaped.closest_index_for_x(position.x - line.origin.x);
         // 软换行续行：命中假空格区落在片段起点，其余按"片段起始列 + 段内字符数"换算。
@@ -436,8 +443,11 @@ impl Element for EditorElement {
                 editor.expanded_modified_hunks(),
             )
         };
+        // placeholder 模式：空 buffer 时行数据源替换为 placeholder 快照（折行/行高一致）。
+        let placeholder = self.editor.read(cx).placeholder_snapshot_if_empty(cx);
         let mut layout = layout_visible_lines(
             display_snapshot.clone(),
+            placeholder.clone(),
             presentation.clone(),
             VisibleLineLayoutParams {
                 geometry,
@@ -462,6 +472,7 @@ impl Element for EditorElement {
             let editor = self.editor.read(cx);
             layout = layout_visible_lines(
                 display_snapshot,
+                placeholder,
                 presentation,
                 VisibleLineLayoutParams {
                     geometry,
@@ -1438,6 +1449,7 @@ fn layout_line_width(
 
 fn layout_visible_lines(
     display_snapshot: DisplaySnapshot,
+    placeholder: Option<DisplaySnapshot>,
     presentation: EditorPresentation,
     params: VisibleLineLayoutParams<'_>,
     window: &mut Window,
@@ -1457,6 +1469,10 @@ fn layout_visible_lines(
         line_height,
         diff_rows,
     } = params;
+    // placeholder 模式：行数据源替换为 placeholder 快照（折行/行高与真实文本同一管线，
+    // 对齐 Zed 的行层替换）；无高亮/折叠的查询对 placeholder 快照自然返回空。
+    let placeholder_mode = placeholder.is_some();
+    let display_snapshot = placeholder.as_ref().unwrap_or(&display_snapshot);
     let line_count = display_snapshot.line_count();
     let start = start_row.get().min(line_count.saturating_sub(1));
     let visible_count =
@@ -1496,7 +1512,12 @@ fn layout_visible_lines(
     let base = TextRun {
         len: 0,
         font: text_style.font(),
-        color: text_style.color,
+        // placeholder 行用提示色（对齐 Zed element.rs 的 placeholder_color）。
+        color: if placeholder_mode {
+            color::current(cx).text_placeholder.into()
+        } else {
+            text_style.color
+        },
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -1525,6 +1546,7 @@ fn layout_visible_lines(
             global_utf16_start: utf16_start,
             wrap_info,
             git_diff,
+            is_placeholder: placeholder_mode,
         });
         if let (Some(logical_line), Some((gutter_bounds, dimensions))) =
             (gutter_line, gutter_geometry)
@@ -1693,7 +1715,8 @@ fn layout_visible_lines(
         }),
         text_clip_bounds,
         line_height,
-        display_snapshot,
+        // 命中测试用真实 buffer 的快照（placeholder 行的映射已单独拦截）。
+        display_snapshot: display_snapshot.clone(),
     }
 }
 
@@ -2066,6 +2089,7 @@ mod tests {
                 );
                 let layout = layout_visible_lines(
                     map.snapshot(),
+                    None,
                     EditorPresentation::new(&snapshot, None),
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -2118,6 +2142,7 @@ mod tests {
                 let display_snapshot = DisplayMap::new(snapshot.clone()).snapshot();
                 let layout = layout_visible_lines(
                     display_snapshot,
+                    None,
                     presentation,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -2178,6 +2203,7 @@ mod tests {
                 let text_bounds = Bounds::new(point(px(59.), px(0.)), size(px(341.), px(100.)));
                 let layout = layout_visible_lines(
                     DisplayMap::new(snapshot.clone()).snapshot(),
+                    None,
                     EditorPresentation::new(&snapshot, None),
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -2228,6 +2254,7 @@ mod tests {
                     .expect("折叠应成功");
                 let layout = layout_visible_lines(
                     map.snapshot(),
+                    None,
                     EditorPresentation::new(&snapshot, None),
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -2274,6 +2301,7 @@ mod tests {
                 let display_snapshot = DisplayMap::new(snapshot.clone()).snapshot();
                 let layout = layout_visible_lines(
                     display_snapshot,
+                    None,
                     presentation,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {

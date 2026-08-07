@@ -62,6 +62,7 @@ const ASSETS: &[(&str, &[u8])] = &[
     asset!("icons/actions/arrow_circle.svg"),
     asset!("icons/actions/arrow_down.svg"),
     asset!("icons/actions/arrow_up.svg"),
+    asset!("icons/actions/undo.svg"),
 ];
 
 impl AssetSource for EmbeddedAssets {

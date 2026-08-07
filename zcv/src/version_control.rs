@@ -18,8 +18,9 @@ use gpui::{
 
 use crate::project::{GitStoreEvent, Project, RepositorySnapshot};
 use crate::project_tree::OnOpenFile;
-use crate::ui::{Checkbox, tree};
+use crate::ui::{Checkbox, Glyph, tree};
 use crate::workspace::{Panel, ToggleVersionControl};
+use zcv_editor::Editor;
 use zcv_git::{DiffStat, FileStatus, StatusCode};
 use zcv_theme::{color, space, typography};
 
@@ -32,7 +33,9 @@ actions!(
         Expand,
         Activate,
         InitRepository,
-        ToggleStaged
+        ToggleStaged,
+        Commit,
+        Uncommit
     ]
 );
 
@@ -263,6 +266,14 @@ pub(crate) struct VersionControlPanel {
     project: Entity<Project>,
     state: Rc<RefCell<GitPanelState>>,
     scroll_handle: UniformListScrollHandle,
+    /// 底部提交信息编辑器。
+    commit_editor: Entity<Editor>,
+    /// 活动仓库最近一次提交的 subject（订阅 Repositories/Statuses/Head 时刷新）。
+    last_commit_message: Option<String>,
+    /// 自己发起的提交在途：Head 事件时清空编辑器并复位（外部 checkout/commit 不清草稿）。
+    pending_commit: bool,
+    /// 自己发起的 uncommit 在途：Head 事件时把被撤销消息填回编辑器并复位。
+    pending_uncommit: bool,
     on_open_file: Option<OnOpenFile>,
 }
 
@@ -271,10 +282,42 @@ impl VersionControlPanel {
         let focus = cx.focus_handle();
         let root = root.canonicalize().unwrap_or(root);
         let git_store = project.read(cx).git_store();
-        // Head/ActiveRepositoryChanged 不影响变更树展示，只订阅集合与条目变化。
+        let commit_editor = cx.new(|cx| {
+            let mut editor = Editor::auto_height(4, Some(6), cx);
+            editor.set_placeholder_text("输入提交信息…", cx);
+            editor
+        });
+        // 编辑器内容变化即时重绘（按钮可提交态随文本刷新）。
+        cx.observe(&commit_editor, |_, _, cx| cx.notify()).detach();
         cx.subscribe(&git_store, |panel, _, event, cx| {
-            if matches!(event, GitStoreEvent::Repositories | GitStoreEvent::Statuses) {
-                panel.rebuild_rows(cx);
+            match event {
+                GitStoreEvent::Repositories | GitStoreEvent::Statuses => {
+                    panel.rebuild_rows(cx);
+                    panel.refresh_last_commit_message(cx);
+                }
+                GitStoreEvent::Head => {
+                    // HEAD 变化（提交/撤销提交/外部 checkout）：提交信息随之刷新；
+                    // 只清空/填回自己发起的操作，外部变更保留草稿。
+                    panel.refresh_last_commit_message(cx);
+                    if panel.pending_commit {
+                        panel
+                            .commit_editor
+                            .update(cx, |editor, cx| editor.set_text("", cx));
+                        panel.pending_commit = false;
+                    }
+                    if panel.pending_uncommit {
+                        let store = panel.project.read(cx).git_store();
+                        if let Some(message) =
+                            store.update(cx, |store, _| store.take_pending_uncommitted_message())
+                        {
+                            panel
+                                .commit_editor
+                                .update(cx, |editor, cx| editor.set_text(&message, cx));
+                        }
+                        panel.pending_uncommit = false;
+                    }
+                }
+                GitStoreEvent::ActiveRepositoryChanged => {}
             }
         })
         .detach();
@@ -284,6 +327,10 @@ impl VersionControlPanel {
             project,
             state: Rc::new(RefCell::new(GitPanelState::new())),
             scroll_handle: UniformListScrollHandle::default(),
+            commit_editor,
+            last_commit_message: None,
+            pending_commit: false,
+            pending_uncommit: false,
             on_open_file: None,
         };
         panel.rebuild_rows(cx);
@@ -455,6 +502,32 @@ impl VersionControlPanel {
         };
         self.toggle_staged_for(entry.section, &entry.path, cx);
     }
+
+    /// 从 GitStore 读取活动仓库的最近提交 subject 更新显示（订阅事件时调用）。
+    fn refresh_last_commit_message(&mut self, cx: &mut Context<Self>) {
+        let store = self.project.read(cx).git_store();
+        self.last_commit_message = store.read(cx).last_commit_message().map(str::to_string);
+    }
+
+    /// cmd-enter 或提交按钮：读编辑器文本提交；空消息时焦点回到编辑器（对齐 Zed）。
+    fn handle_commit(&mut self, _: &Commit, window: &mut Window, cx: &mut Context<Self>) {
+        let message = self.commit_editor.read(cx).text(cx);
+        if message.trim().is_empty() {
+            let focus = self.commit_editor.read(cx).focus_handle();
+            window.focus(&focus);
+            return;
+        }
+        self.pending_commit = true;
+        let store = self.project.read(cx).git_store();
+        store.update(cx, |store, cx| store.commit(message, cx));
+    }
+
+    /// 撤销最近一次提交（上次提交行右侧按钮）：成功后 Head 事件把消息填回编辑器。
+    fn handle_uncommit(&mut self, _: &Uncommit, _window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_uncommit = true;
+        let store = self.project.read(cx).git_store();
+        store.update(cx, |store, cx| store.uncommit(cx));
+    }
 }
 
 impl Render for VersionControlPanel {
@@ -474,11 +547,37 @@ impl Render for VersionControlPanel {
                 focus: self.focus.clone(),
                 weak: cx.weak_entity(),
             };
-            render_list(&self.scroll_handle, render_context, is_focused).into_any_element()
+            // 列表占满剩余高度；底部提交区存在时收缩。
+            div()
+                .flex_1()
+                .min_h_0()
+                .overflow_hidden()
+                .child(
+                    render_list(&self.scroll_handle, render_context, is_focused).into_any_element(),
+                )
+                .into_any_element()
         } else {
             render_empty_state(self.focus.clone(), cx).into_any_element()
         };
 
+        // 字段先提出局部变量（闭包借用与 listener 的 cx 互不冲突）。
+        let commit_editor = self.commit_editor.clone();
+        let last_commit_message = self.last_commit_message.clone();
+        let footer = if has_repositories {
+            Some(render_commit_footer(
+                &commit_editor,
+                last_commit_message.as_deref(),
+                cx,
+            ))
+        } else {
+            None
+        };
+
+        // 列表与提交区必须放进同一个 flex_col 容器（列表 flex_1 占满剩余高度）。
+        let mut body = div().size_full().flex().flex_col().child(content);
+        if let Some(footer) = footer {
+            body = body.child(footer);
+        }
         div()
             .size_full()
             .track_focus(&self.focus)
@@ -491,7 +590,9 @@ impl Render for VersionControlPanel {
             .on_action(cx.listener(Self::handle_activate))
             .on_action(cx.listener(Self::handle_init_repository))
             .on_action(cx.listener(Self::handle_toggle_staged))
-            .child(content)
+            .on_action(cx.listener(Self::handle_commit))
+            .on_action(cx.listener(Self::handle_uncommit))
+            .child(body)
     }
 }
 
@@ -544,7 +645,8 @@ fn render_row(
             let status_color = entry
                 .status
                 .and_then(|status| tree::git_status_color(status, cx));
-            let is_deleted = entry.status.is_some_and(|status| status.is_deleted());
+            // 删除线只作用于文件行。
+            let is_deleted = !is_dir && entry.status.is_some_and(|status| status.is_deleted());
             // 文件名按 git 状态着色（对齐项目树；删除文件加删除线）。
             let content = div()
                 .when_some(status_color, |label, label_color| {
@@ -644,6 +746,92 @@ fn render_row(
 ///
 /// 按钮是命令载体，走 dispatch_action 合流；
 /// 先收焦点保证 action 沿焦点链命中面板自身的 `InitRepository` handler。
+/// 底部提交区：上次提交信息（含撤销按钮）→ 提交信息编辑器 → 提交按钮（仅在有仓库时渲染）。
+fn render_commit_footer(
+    editor: &Entity<Editor>,
+    last_commit_message: Option<&str>,
+    cx: &App,
+) -> Div {
+    let colors = color::current(cx);
+    let message = editor.read(cx).text(cx);
+    // is_some 提前提取：when 闭包是 'static，不能捕获 &str 借用。
+    let has_last_commit = last_commit_message.is_some();
+    // child 接受 'static 内容，&str 借用先转为 owned。
+    let last_commit_text = last_commit_message.unwrap_or("暂无提交").to_string();
+    // 根容器不做统一 padding：两条分隔线（顶部 / 上次提交行上方）都要全宽，
+    // 内边距由各区块自己管理，避免线被缩窄。
+    div()
+        .border_t_1()
+        .border_color(colors.border_variant)
+        .flex()
+        .flex_col()
+        // 提交信息编辑器（AutoHeight 2..6 行；observe 已让按键即时触发重绘）。
+        .child(div().p(space::S8).child(editor.clone()))
+        // 提交按钮（空消息时淡显，点击由 handler 兜底聚焦回编辑器）。
+        .child(
+            div()
+                .px(space::S8)
+                .pb(space::S8)
+                .flex()
+                .justify_end()
+                .child(
+                    div()
+                        .id("version-control-commit")
+                        .px(space::S12)
+                        .py(space::S6)
+                        .rounded_md()
+                        .border_1()
+                        .border_color(colors.border_variant)
+                        .bg(colors.panel_background)
+                        .text_color(if message.trim().is_empty() {
+                            colors.text_muted
+                        } else {
+                            colors.text
+                        })
+                        .cursor_pointer()
+                        .hover(|style| style.bg(colors.element_hover))
+                        .child("提交")
+                        .on_click(move |_, window, cx| {
+                            window.dispatch_action(Box::new(Commit), cx);
+                        }),
+                ),
+        )
+        // 上次提交信息。
+        .child(
+            div()
+                .border_t_1()
+                .border_color(colors.border_variant)
+                .px(space::S8)
+                .py(space::S6)
+                .flex()
+                .items_center()
+                .gap(space::S6)
+                .child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .truncate()
+                        .text_color(if has_last_commit {
+                            colors.text
+                        } else {
+                            colors.text_muted
+                        })
+                        .child(last_commit_text),
+                )
+                // 撤销按钮：仅在有提交时显示（无提交时 uncommit 无意义）。
+                // 图标对齐 Zed（IconName::Undo / undo.svg），hover 提示"撤销提交"。
+                .when(has_last_commit, |element| {
+                    element.child(
+                        Glyph::icon("version-control-uncommit", "icons/actions/undo.svg")
+                            .label("撤销提交")
+                            .on_click(move |window, cx| {
+                                window.dispatch_action(Box::new(Uncommit), cx);
+                            }),
+                    )
+                }),
+        )
+}
+
 fn render_empty_state(focus: FocusHandle, cx: &App) -> Div {
     let colors = color::current(cx);
     div()
@@ -873,6 +1061,7 @@ mod tests {
         RepositorySnapshot {
             branch: None,
             head: None,
+            last_commit_message: None,
             has_remote: false,
             ahead: 0,
             behind: 0,
@@ -1572,5 +1761,152 @@ mod tests {
             0,
             "点击复选框不应触发行的打开逻辑（stop_propagation）"
         );
+    }
+
+    #[gpui::test]
+    fn commit_flow_clears_editor_and_refreshes_last_commit(cx: &mut TestAppContext) {
+        let (root, _temp) = test_repo();
+        let project_root = root.clone();
+        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let (panel, cx) =
+            cx.add_window_view(move |_, cx| VersionControlPanel::new(project_root, project, cx));
+        cx.run_until_parked(); // 首次扫描完成（test_repo 的 tracked.txt 已有未暂存修改）
+        cx.run_until_parked();
+
+        // 底部提交区显示初始提交的 subject。
+        let initial = cx.read_entity(&panel, |panel, _| panel.last_commit_message.clone());
+        assert_eq!(
+            initial.as_deref(),
+            Some("initial"),
+            "应显示初始提交 subject"
+        );
+
+        // 写提交消息并提交（等价于 cmd-enter / 提交按钮的 handler 行为）。
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel
+                    .commit_editor
+                    .update(cx, |editor, cx| editor.set_text("改动提交", cx));
+                panel.handle_commit(&Commit, window, cx);
+            });
+        });
+        cx.run_until_parked(); // commit job 完成
+        cx.run_until_parked(); // 重扫落地 → Head/Statuses 事件
+
+        // 编辑器清空、上次提交信息更新、工作树干净。
+        cx.update(|_, cx| {
+            let text = panel.read(cx).commit_editor.read(cx).text(cx);
+            assert!(text.is_empty(), "提交成功后编辑器应清空，实际：{text:?}");
+            assert_eq!(
+                panel.read(cx).last_commit_message.as_deref(),
+                Some("改动提交"),
+                "上次提交信息应刷新为新提交 subject"
+            );
+            let statuses = panel
+                .read(cx)
+                .project
+                .read(cx)
+                .git_store()
+                .read(cx)
+                .repositories()
+                .next()
+                .map(|(_, snapshot)| snapshot.statuses_by_path.len());
+            assert_eq!(statuses, Some(0), "未暂存改动应随提交清空");
+        });
+    }
+
+    #[gpui::test]
+    fn commit_without_staged_changes_stages_tracked_first(cx: &mut TestAppContext) {
+        let (root, _temp) = test_repo();
+        // 未跟踪文件：不应被自动暂存/提交（对齐 Zed：只自动暂存已跟踪改动）。
+        std::fs::write(root.join("untracked.txt"), "新文件\n").expect("应创建未跟踪文件");
+
+        let project_root = root.clone();
+        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let (panel, cx) =
+            cx.add_window_view(move |_, cx| VersionControlPanel::new(project_root, project, cx));
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel
+                    .commit_editor
+                    .update(cx, |editor, cx| editor.set_text("改动提交", cx));
+                panel.handle_commit(&Commit, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        // untracked.txt 未入库；快照中仍为未跟踪。
+        let output = std::process::Command::new("git")
+            .args(["ls-files"])
+            .current_dir(&root)
+            .output()
+            .expect("应执行 git ls-files");
+        let listed = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !listed.contains("untracked.txt"),
+            "未跟踪文件不应被自动提交，实际跟踪列表：{listed}"
+        );
+        cx.update(|_, cx| {
+            let untracked_remaining = panel
+                .read(cx)
+                .project
+                .read(cx)
+                .git_store()
+                .read(cx)
+                .repositories()
+                .next()
+                .is_some_and(|(_, snapshot)| {
+                    snapshot
+                        .statuses_by_path
+                        .get(Path::new("untracked.txt"))
+                        .is_some_and(|entry| entry.status.is_untracked())
+                });
+            assert!(untracked_remaining, "未跟踪文件应保留在快照中");
+        });
+    }
+
+    #[gpui::test]
+    fn uncommit_restores_previous_message_into_editor(cx: &mut TestAppContext) {
+        let (root, _temp) = test_repo();
+        // 第二次提交：多行消息（subject + 空行 + body），随后制造未暂存改动。
+        std::fs::write(root.join("tracked.txt"), "第二次内容\n").expect("应修改文件");
+        run_in(&root, &["git", "add", "tracked.txt"]);
+        run_in(
+            &root,
+            &["git", "commit", "-q", "-m", "第二次提交", "-m", "详细说明"],
+        );
+        std::fs::write(root.join("tracked.txt"), "第三次内容\n").expect("应再次修改文件");
+
+        let project_root = root.clone();
+        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let (panel, cx) =
+            cx.add_window_view(move |_, cx| VersionControlPanel::new(project_root, project, cx));
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        // 触发 uncommit（等价于"撤销"按钮的 handler 行为）。
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.handle_uncommit(&Uncommit, window, cx));
+        });
+        cx.run_until_parked(); // uncommit job 完成
+        cx.run_until_parked(); // 重扫落地 → Head 事件
+
+        // 被撤销提交的完整消息（含 body）填回编辑器；上次提交信息回到 initial。
+        cx.update(|_, cx| {
+            let text = panel.read(cx).commit_editor.read(cx).text(cx);
+            assert_eq!(
+                text, "第二次提交\n\n详细说明",
+                "uncommit 后应把被撤销提交的完整消息填回编辑器"
+            );
+            assert_eq!(
+                panel.read(cx).last_commit_message.as_deref(),
+                Some("initial"),
+                "上次提交信息应回到被撤销提交之前的提交"
+            );
+        });
     }
 }

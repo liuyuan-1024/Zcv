@@ -72,7 +72,12 @@ pub struct Picker<D: PickerDelegate> {
 impl<D: PickerDelegate> Picker<D> {
     pub fn new(delegate: D, width: Pixels, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
-        let editor = cx.new(Editor::single_line);
+        let placeholder = delegate.placeholder_text().to_owned();
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(cx);
+            editor.set_placeholder_text(placeholder, cx);
+            editor
+        });
         Self {
             delegate,
             editor,
@@ -214,12 +219,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel));
 
-        let placeholder = self
-            .query
-            .is_empty()
-            .then(|| SharedString::from(self.delegate.placeholder_text().to_owned()));
-
-        root.child(picker_search_box(self.editor.clone(), placeholder, cx))
+        root.child(picker_search_box(self.editor.clone(), cx))
             .when_some(self.delegate.render_header(), |el, h| el.child(h))
             .when_some(no_match, |el, n| el.child(n))
             .children(items)
@@ -230,13 +230,8 @@ impl<D: PickerDelegate> Render for Picker<D> {
 }
 
 /// 搜索框容器：带回顶部边框和间距。
-pub fn picker_search_box(
-    content: impl IntoElement,
-    placeholder: Option<SharedString>,
-    cx: &App,
-) -> impl IntoElement {
+pub fn picker_search_box(content: impl IntoElement, cx: &App) -> impl IntoElement {
     div()
-        .relative()
         .w_full()
         .flex()
         .flex_none()
@@ -245,15 +240,6 @@ pub fn picker_search_box(
         .p(space::S6)
         .border_b_1()
         .border_color(color::current(cx).border_variant)
-        .when_some(placeholder, |el, placeholder| {
-            el.child(
-                div()
-                    .absolute()
-                    .left(space::S6)
-                    .text_color(color::current(cx).text_placeholder)
-                    .child(placeholder),
-            )
-        })
         .child(content)
 }
 

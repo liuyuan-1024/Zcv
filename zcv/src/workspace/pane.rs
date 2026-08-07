@@ -571,15 +571,17 @@ fn close_glyph(
     Glyph::icon(("tab-close", item_id), "icons/close.svg")
         .label("关闭")
         .shortcut(&CloseTab, cx)
-        .on_click(move |window: &mut gpui::Window, cx: &mut gpui::App| {
-            let pane_focus = entity.read(cx).focus.clone();
-            let focus = entity.update(cx, |pane, cx| {
-                pane.close_tab(item_id, window, cx);
-                pane.active_item().map(|item| item.item_focus_handle(cx))
-            });
-            window.focus(&focus.unwrap_or(pane_focus));
-            window.refresh();
-        })
+        .on_click(
+            move |_: &gpui::ClickEvent, window: &mut gpui::Window, cx: &mut gpui::App| {
+                let pane_focus = entity.read(cx).focus.clone();
+                let focus = entity.update(cx, |pane, cx| {
+                    pane.close_tab(item_id, window, cx);
+                    pane.active_item().map(|item| item.item_focus_handle(cx))
+                });
+                window.focus(&focus.unwrap_or(pane_focus));
+                window.refresh();
+            },
+        )
 }
 
 /// 标签尾部状态槽：未保存时默认显示圆点，悬停标签后切换为关闭按钮。

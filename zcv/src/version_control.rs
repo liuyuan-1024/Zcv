@@ -824,7 +824,7 @@ fn render_commit_footer(
                     element.child(
                         Glyph::icon("version-control-uncommit", "icons/undo.svg")
                             .label("撤销提交")
-                            .on_click(move |window, cx| {
+                            .on_click(move |_, window, cx| {
                                 window.dispatch_action(Box::new(Uncommit), cx);
                             }),
                     )

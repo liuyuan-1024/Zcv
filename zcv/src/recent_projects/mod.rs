@@ -85,6 +85,17 @@ pub(crate) fn save_recent_projects(projects: &[ProjectEntry]) {
     }
 }
 
+/// 从最近项目列表移除一条路径（幂等，不存在时无副作用）。
+pub(crate) fn remove_from_recent(path: &str) {
+    let mut projects = load_recent_projects();
+    let before = projects.len();
+    projects.retain(|p| p.path != path);
+    // 列表未变化时不写盘，避免无谓 IO
+    if projects.len() != before {
+        save_recent_projects(&projects);
+    }
+}
+
 /// 把一条路径添加到最近项目列表前端（去重），并标记为当前项目。
 pub(crate) fn add_to_recent(path: &str) {
     let label = Path::new(path)

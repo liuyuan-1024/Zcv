@@ -9,8 +9,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, Context, Corner, Entity, FocusHandle, MouseButton, PathPromptOptions, Pixels,
-    Render, Window, actions, anchored, deferred, div, point, prelude::*, px,
+    Action, App, ClickEvent, Context, Corner, Entity, FocusHandle, MouseButton, PathPromptOptions,
+    Pixels, Render, Window, actions, anchored, deferred, div, point, prelude::*, px,
 };
 
 use crate::recent_projects::{self, ProjectEntry};
@@ -22,7 +22,10 @@ use zcv_ui::{Picker, PickerDelegate, picker_divider};
 
 const PICKER_WIDTH: Pixels = px(360.0);
 
-actions!(project_picker, [ToggleProjectPicker, OpenLocalProject]);
+actions!(
+    project_picker,
+    [ToggleProjectPicker, OpenLocalProject, DeleteRecentProject]
+);
 
 // ═══ 回调 ════════════════════════════════════════════════════════
 
@@ -71,6 +74,20 @@ impl ProjectPickerDelegate {
         self.selected_index = self
             .selected_index
             .min(self.filtered.len().saturating_sub(1));
+    }
+
+    /// 删除 filtered 索引对应的最近项目（落盘 + 内存）。
+    fn remove_project(&mut self, ix: usize) {
+        let project_ix = self.filtered[ix];
+        let path = self.projects[project_ix].path.clone();
+        recent_projects::remove_from_recent(&path);
+        self.remove_project_in_memory(project_ix);
+    }
+
+    /// 从内存列表移除一个项目，并重算过滤结果与选中项。
+    fn remove_project_in_memory(&mut self, project_ix: usize) {
+        self.projects.remove(project_ix);
+        self.do_filter();
     }
 
     /// 从磁盘重新加载最近项目列表，保留当前搜索 query。
@@ -129,8 +146,21 @@ impl PickerDelegate for ProjectPickerDelegate {
 
     fn dismissed(&mut self) {}
 
-    fn render_match(&self, index: usize, is_selected: bool, cx: &App) -> gpui::AnyElement {
+    fn render_match(
+        &self,
+        index: usize,
+        is_selected: bool,
+        cx: &mut Context<Picker<Self>>,
+    ) -> gpui::AnyElement {
         let entry = &self.projects[self.filtered[index]];
+        let icon_color = color::current(cx).icon_muted;
+        let remove = cx.listener(move |this, _: &ClickEvent, window, cx| {
+            // 阻止冒泡，避免触发所在行的打开项目行为
+            cx.stop_propagation();
+            this.delegate_mut().remove_project(index);
+            cx.notify();
+            window.refresh();
+        });
         ListItem::new(index)
             .toggle_state(is_selected)
             .child(list_item_two_line(
@@ -139,6 +169,13 @@ impl PickerDelegate for ProjectPickerDelegate {
                     .child(entry.label.clone()),
                 entry.path.clone(),
             ))
+            .end_slot(
+                Glyph::icon(("delete-project", index), "icons/trash.svg")
+                    .color(icon_color)
+                    .label("移除")
+                    .shortcut(&DeleteRecentProject, cx)
+                    .on_click(remove),
+            )
             .into_any_element()
     }
 
@@ -163,9 +200,10 @@ impl PickerDelegate for ProjectPickerDelegate {
         // 整个 footer 区域可点击，派发 OpenLocalProject action
         Some(
             div()
+                .id("open-local-footer")
                 .child(picker_divider(cx))
                 .child(item)
-                .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                .on_click(|_, window, cx| {
                     window.dispatch_action(Box::new(OpenLocalProject), cx);
                 })
                 .into_any_element(),
@@ -290,6 +328,24 @@ impl ProjectPicker {
         self.toggle(window, cx);
     }
 
+    /// 删除当前选中的最近项目（快捷键 cmd-backspace，仅 picker 打开时绑定生效）。
+    fn handle_delete_recent(
+        &mut self,
+        _: &DeleteRecentProject,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.picker.update(cx, |picker, cx| {
+            if picker.delegate().match_count() == 0 {
+                return;
+            }
+            let ix = picker.delegate().selected_index();
+            picker.delegate_mut().remove_project(ix);
+            cx.notify();
+        });
+        window.refresh();
+    }
+
     fn handle_open_local_project(
         &mut self,
         _: &OpenLocalProject,
@@ -364,13 +420,16 @@ impl Render for ProjectPicker {
             .label("项目选择器")
             .shortcut(&ToggleProjectPicker, cx)
             .color(color_value)
-            .on_click(|window, cx| {
+            .on_click(|_, window, cx| {
                 window.dispatch_action(Box::new(ToggleProjectPicker), cx);
             });
 
         let mut root = div()
             .track_focus(&self.focus)
+            // 复合 context 让 Picker 分组的快捷键与 Editor 同深度竞争
+            .key_context("ProjectPicker")
             .on_action(cx.listener(Self::handle_toggle))
+            .on_action(cx.listener(Self::handle_delete_recent))
             .on_action(cx.listener(Self::handle_open_local_project))
             .relative()
             .child(glyph);
@@ -470,5 +529,58 @@ mod tests {
             delegate.confirm(window, cx);
         });
         assert_eq!(triggered.take().as_deref(), Some("/tmp/test-project"));
+    }
+
+    /// 构造 3 个项目的数据源，第 2 个是当前项目。
+    fn test_delegate() -> ProjectPickerDelegate {
+        let on_selected: OnProjectSelected = Rc::new(|_, _, _| {});
+        ProjectPickerDelegate::new(
+            vec![
+                ProjectEntry {
+                    label: "项目A".into(),
+                    path: "/tmp/a".into(),
+                    is_current: false,
+                },
+                ProjectEntry {
+                    label: "项目B".into(),
+                    path: "/tmp/b".into(),
+                    is_current: true,
+                },
+                ProjectEntry {
+                    label: "项目C".into(),
+                    path: "/tmp/c".into(),
+                    is_current: false,
+                },
+            ],
+            on_selected,
+        )
+    }
+
+    #[test]
+    fn remove_project_drops_entry_and_keeps_filter() {
+        let mut delegate = test_delegate();
+        delegate.update_matches("项目".into());
+        delegate.remove_project_in_memory(2);
+        assert_eq!(delegate.projects.len(), 2);
+        assert!(delegate.projects.iter().all(|p| p.path != "/tmp/c"));
+        assert_eq!(delegate.filtered, vec![0, 1]);
+    }
+
+    #[test]
+    fn remove_selected_project_selects_the_next_entry() {
+        let mut delegate = test_delegate();
+        assert_eq!(delegate.selected_index, 1);
+        delegate.remove_project_in_memory(1);
+        assert_eq!(delegate.projects.len(), 2);
+        assert_eq!(delegate.selected_index, 1);
+        assert_eq!(delegate.projects[delegate.selected_index].label, "项目C");
+    }
+
+    #[test]
+    fn remove_last_project_clamps_selection() {
+        let mut delegate = test_delegate();
+        delegate.remove_project_in_memory(2);
+        assert_eq!(delegate.selected_index, 1);
+        assert_eq!(delegate.projects[delegate.selected_index].label, "项目B");
     }
 }

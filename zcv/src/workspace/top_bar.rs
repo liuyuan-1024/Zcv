@@ -123,7 +123,7 @@ fn leading_slots(
             out.push(
                 Glyph::icon("top-bar.git-fetch", "icons/arrow_circle.svg")
                     .label("同步")
-                    .on_click(|window, cx| {
+                    .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(GitFetch), cx);
                     })
                     .into_any_element(),
@@ -136,7 +136,7 @@ fn leading_slots(
                         state.behind.to_string(),
                     )
                     .label("拉取")
-                    .on_click(|window, cx| {
+                    .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(GitPull), cx);
                     })
                     .into_any_element(),
@@ -150,7 +150,7 @@ fn leading_slots(
                         state.ahead.to_string(),
                     )
                     .label("推送")
-                    .on_click(|window, cx| {
+                    .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(GitPush), cx);
                     })
                     .into_any_element(),
@@ -167,7 +167,7 @@ fn trailing_slots(cx: &gpui::App) -> Vec<AnyElement> {
         Glyph::icon("top-bar.settings", "icons/settings.svg")
             .label("设置")
             .shortcut(&OpenSettings, cx)
-            .on_click(|window, cx| {
+            .on_click(|_, window, cx| {
                 window.dispatch_action(Box::new(OpenSettings), cx);
             })
             .into_any_element(),

@@ -7,8 +7,8 @@
 //! - 调用方只需要实现 `PickerDelegate` 并提供数据
 
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, MouseButton, Pixels, Render, SharedString,
-    Window, actions, div, prelude::*, px,
+    AnyElement, App, Context, Entity, FocusHandle, Pixels, Render, SharedString, Window, actions,
+    div, prelude::*, px,
 };
 
 use zcv_editor::{Editor, MoveDown, MoveUp};
@@ -29,14 +29,20 @@ actions!(
 /// Picker 数据源接口。
 ///
 /// 调用方实现此 trait 提供数据、匹配逻辑和行渲染。
-pub trait PickerDelegate: 'static {
+/// `Sized` 约束来自 `render_match` 中的 `Context<Picker<Self>>`，行内交互通过它绑定到 Picker 访问 delegate。
+pub trait PickerDelegate: 'static + Sized {
     fn match_count(&self) -> usize;
     fn selected_index(&self) -> usize;
     fn set_selected_index(&mut self, ix: usize);
     fn update_matches(&mut self, query: String);
     fn confirm(&mut self, window: &mut Window, cx: &mut App);
     fn dismissed(&mut self);
-    fn render_match(&self, ix: usize, selected: bool, cx: &App) -> AnyElement;
+
+    /// 渲染第 `ix` 行。
+    ///
+    /// `cx` 是 Picker 自身的 context：行内需要回调 delegate 的交互（例如删除按钮）通过 `cx.listener` 绑定到 Picker 再访问 delegate。
+    fn render_match(&self, ix: usize, selected: bool, cx: &mut Context<Picker<Self>>)
+    -> AnyElement;
 
     fn placeholder_text(&self) -> &str {
         "搜索..."
@@ -190,7 +196,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
                 let picker = picker.clone();
                 div()
                     .id(("picker-match", index))
-                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    .on_click(move |_, window, cx| {
                         picker.update(cx, |picker, cx| {
                             picker.delegate.set_selected_index(index);
                             picker.confirm_selection(window, cx);
@@ -256,10 +262,61 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    use gpui::{AppContext, KeyBinding, TestAppContext};
+    use gpui::{AppContext, FocusHandle, KeyBinding, TestAppContext};
 
     use super::*;
     use zcv_editor::Newline;
+
+    actions!(picker_tests, [EditorDelete, PickerDelete]);
+
+    /// 模拟 ProjectPicker 根节点：提供 "ProjectPicker" key context，并挂两个测试 action 的 handler，用于观察哪个 action 被 keymap 匹配派发。
+    struct PickerWithContext {
+        focus: FocusHandle,
+        picker: Entity<Picker<ConfirmDelegate>>,
+        editor_fired: Rc<Cell<bool>>,
+        picker_fired: Rc<Cell<bool>>,
+    }
+
+    impl PickerWithContext {
+        fn new(
+            editor_fired: Rc<Cell<bool>>,
+            picker_fired: Rc<Cell<bool>>,
+            cx: &mut Context<Self>,
+        ) -> Self {
+            Self {
+                focus: cx.focus_handle(),
+                picker: cx.new(|cx| {
+                    let mut picker = Picker::new(
+                        ConfirmDelegate {
+                            confirmed: Rc::new(Cell::new(false)),
+                            selected_index: Rc::new(Cell::new(0)),
+                        },
+                        px(300.0),
+                        cx,
+                    );
+                    picker.init(cx);
+                    picker
+                }),
+                editor_fired,
+                picker_fired,
+            }
+        }
+    }
+
+    impl Render for PickerWithContext {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .track_focus(&self.focus)
+                .key_context("ProjectPicker")
+                .on_action(cx.listener(|this, _: &EditorDelete, _, _| {
+                    this.editor_fired.set(true);
+                }))
+                .on_action(cx.listener(|this, _: &PickerDelete, _, _| {
+                    this.picker_fired.set(true);
+                }))
+                .child(self.picker.clone())
+        }
+    }
 
     struct TestDelegate {
         query: String,
@@ -284,7 +341,7 @@ mod tests {
 
         fn dismissed(&mut self) {}
 
-        fn render_match(&self, _: usize, _: bool, _: &App) -> AnyElement {
+        fn render_match(&self, _: usize, _: bool, _: &mut Context<Picker<Self>>) -> AnyElement {
             div().into_any_element()
         }
     }
@@ -339,7 +396,7 @@ mod tests {
 
         fn dismissed(&mut self) {}
 
-        fn render_match(&self, _: usize, _: bool, _: &App) -> AnyElement {
+        fn render_match(&self, _: usize, _: bool, _: &mut Context<Picker<Self>>) -> AnyElement {
             div().child("项目").into_any_element()
         }
     }
@@ -376,5 +433,65 @@ mod tests {
 
         cx.simulate_keystrokes("enter");
         assert!(confirmed.get());
+    }
+
+    /// 焦点在搜索框（Editor context）时，同一按键在 Editor 的绑定
+    /// 优先于普通 "Picker" context 绑定 —— 这是最近项目删除快捷键
+    /// 被 DeleteToBeginningOfLine 抢占的原因。
+    #[gpui::test]
+    fn editor_binding_wins_over_plain_picker_context(cx: &mut TestAppContext) {
+        let editor_fired = Rc::new(Cell::new(false));
+        let picker_fired = Rc::new(Cell::new(false));
+        let (view, cx) = cx.add_window_view({
+            let editor_fired = editor_fired.clone();
+            let picker_fired = picker_fired.clone();
+            move |_, cx| {
+                cx.bind_keys([
+                    KeyBinding::new("cmd-backspace", EditorDelete, Some("Editor")),
+                    KeyBinding::new("cmd-backspace", PickerDelete, Some("Picker")),
+                ]);
+                PickerWithContext::new(editor_fired, picker_fired, cx)
+            }
+        });
+        let editor = cx.read_entity(&view, |view, cx| view.picker.read(cx).editor().clone());
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+
+        cx.simulate_keystrokes("cmd-backspace");
+
+        assert!(editor_fired.get());
+        assert!(!picker_fired.get());
+    }
+
+    /// 复合 context（ProjectPicker > Picker > Editor）与 Editor 绑定同深度，
+    /// 后注册优先 —— 项目选择器打开时删除快捷键覆盖 Editor 的 cmd-backspace。
+    #[gpui::test]
+    fn composite_context_binding_wins_over_editor(cx: &mut TestAppContext) {
+        let editor_fired = Rc::new(Cell::new(false));
+        let picker_fired = Rc::new(Cell::new(false));
+        let (view, cx) = cx.add_window_view({
+            let editor_fired = editor_fired.clone();
+            let picker_fired = picker_fired.clone();
+            move |_, cx| {
+                cx.bind_keys([
+                    KeyBinding::new("cmd-backspace", EditorDelete, Some("Editor")),
+                    KeyBinding::new(
+                        "cmd-backspace",
+                        PickerDelete,
+                        Some("Picker || (ProjectPicker > Picker > Editor)"),
+                    ),
+                ]);
+                PickerWithContext::new(editor_fired, picker_fired, cx)
+            }
+        });
+        let editor = cx.read_entity(&view, |view, cx| view.picker.read(cx).editor().clone());
+        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+
+        cx.simulate_keystrokes("cmd-backspace");
+
+        assert!(
+            picker_fired.get(),
+            "复合 context 应优先于 Editor 的 cmd-backspace 绑定"
+        );
+        assert!(!editor_fired.get());
     }
 }

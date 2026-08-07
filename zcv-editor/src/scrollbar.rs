@@ -6,9 +6,9 @@
 use std::ops::Range;
 
 use gpui::{Bounds, Hitbox, HitboxBehavior, Pixels, Point, Window, point, px, size};
+use zcv_buffer_diff::DiffHunkKind;
 
 use super::scroll::ScrollbarThumbState;
-use super::view::DiffHunkKind;
 
 /// 滚动轴宽度，与 Zed 的 `ui::EDITOR_SCROLLBAR_WIDTH` 一致。
 pub(super) const SCROLLBAR_WIDTH: Pixels = px(15.);

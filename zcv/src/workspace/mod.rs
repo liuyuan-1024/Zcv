@@ -11,6 +11,31 @@ mod toolbar;
 mod top_bar;
 mod window_controls;
 
+use std::cell::Cell;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
+
+use gpui::{
+    Action, Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Window, actions,
+    div, prelude::*,
+};
+use zcv_editor::Editor;
+use zcv_theme::{color, typography};
+
+use self::dock::render_body as render_layout_body;
+use crate::active_buffer_language::ActiveBufferLanguage;
+use crate::cursor_position::CursorPosition;
+use crate::diagnostics::DiagnosticsButton;
+use crate::keymap;
+use crate::language_tools::LspButton;
+use crate::open_project_window;
+use crate::project::{GitOperationKind, Project, ProjectEvent};
+use crate::project_search::ProjectSearchButton;
+use crate::project_tree::{OnCreate, OnOpenFile, OnRename, OnTrash, ProjectTree};
+use crate::recent_projects::{OnProjectSelected, ToggleProjectPicker};
+use crate::settings::SettingsStore;
+use crate::version_control::VersionControlPanel;
 use dock::DockPosition;
 pub(crate) use dock::{
     Dock, ToggleDebug, ToggleDiagnostics, ToggleKeyboardShortcuts, ToggleLanguageServer,
@@ -26,32 +51,6 @@ pub(crate) use status_bar::StatusItemView;
 pub(crate) use toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 use top_bar::TopBar;
 use window_controls::{handle_minimize, handle_quit, handle_toggle_maximize};
-
-use std::cell::Cell;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::Arc;
-
-use gpui::{
-    Action, Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Window, actions,
-    div, prelude::*,
-};
-
-use self::dock::render_body as render_layout_body;
-use crate::active_buffer_language::ActiveBufferLanguage;
-use crate::cursor_position::CursorPosition;
-use crate::diagnostics::DiagnosticsButton;
-use crate::keymap;
-use crate::language_tools::LspButton;
-use crate::open_project_window;
-use crate::project::{GitOperationKind, Project, ProjectEvent};
-use crate::project_search::ProjectSearchButton;
-use crate::project_tree::{OnCreate, OnOpenFile, OnRename, OnTrash, ProjectTree};
-use crate::recent_projects::{OnProjectSelected, ToggleProjectPicker};
-use crate::settings::SettingsStore;
-use crate::version_control::VersionControlPanel;
-use zcv_editor::Editor;
-use zcv_theme::{color, typography};
 
 actions!(workspace, [Save]);
 
@@ -491,7 +490,7 @@ impl Workspace {
                 missing.push(path.clone());
                 continue;
             };
-            let hunks: Vec<zcv_editor::DiffHunk> = hunks.to_vec();
+            let hunks: Vec<zcv_git::DiffHunk> = hunks.to_vec();
             editor.update(cx, |editor, cx| editor.set_diff_hunks(hunks, cx));
         }
         if !missing.is_empty() {
@@ -505,7 +504,7 @@ impl Workspace {
                 hunks.iter().any(|hunk| {
                     matches!(
                         hunk.kind,
-                        zcv_editor::DiffHunkKind::Deleted | zcv_editor::DiffHunkKind::Modified
+                        zcv_git::DiffHunkKind::Deleted | zcv_git::DiffHunkKind::Modified
                     )
                 })
             });

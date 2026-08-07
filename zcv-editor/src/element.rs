@@ -11,8 +11,10 @@ use gpui::{
     ScrollWheelEvent, ShapedLine, SharedString, Style, TextRun, TransformationMatrix, Window, fill,
     point, px, relative, size,
 };
+use zcv_buffer_diff::{DiffHunk, DiffHunkKind};
 use zcv_engine::{ByteOffset, Line, SelectionSet, TextRange};
 use zcv_language::BracketPair;
+use zcv_theme::color;
 
 use super::display_map::{
     BufferPoint, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot, LineStyles,
@@ -22,8 +24,7 @@ use super::display_map::{
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
 use super::scrollbar::{SCROLLBAR_WIDTH, ScrollbarLayout, marker_column_x_range, marker_geometry};
-use super::view::{DiffHunk, DiffHunkKind, Editor, EditorMode, EditorPresentation, SoftWrap};
-use zcv_theme::color;
+use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap};
 
 const CARET_WIDTH: Pixels = px(2.);
 

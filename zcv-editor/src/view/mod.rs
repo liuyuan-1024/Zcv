@@ -183,6 +183,9 @@ pub struct Editor {
     display_map: DisplayMap,
     syntax_snapshot: SyntaxSnapshot,
     mode: EditorMode,
+    /// 空 buffer 时显示的提示文本（如提交信息编辑器的"输入提交信息…"）。
+    /// 独立 DisplayMap 承载（对齐 Zed：placeholder 走真实渲染管线，折行/行高一致）。
+    placeholder_display_map: Option<DisplayMap>,
     project_root: Option<PathBuf>,
     selections: EditorSelections,
     selection_history: SelectionHistory,
@@ -478,6 +481,31 @@ impl Editor {
 
     pub fn is_dirty(&self, cx: &App) -> bool {
         self.buffer.read(cx).is_dirty()
+    }
+
+    /// 设置空 buffer 时显示的提示文本（对齐 Zed `set_placeholder_text`）。
+    ///
+    /// 文本放进独立 DisplayMap：渲染层在空 buffer 时把它的快照接入行管线，
+    /// 折行/行高/滚动与真实文本一致；空文本清除 placeholder。
+    pub fn set_placeholder_text(&mut self, text: impl Into<String>, _cx: &mut Context<Self>) {
+        let text = text.into();
+        self.placeholder_display_map = if text.is_empty() {
+            None
+        } else {
+            let buffer = Buffer::scratch(text, BufferConfig::default())
+                .expect("placeholder Buffer 应能创建");
+            Some(DisplayMap::new(buffer.snapshot()))
+        };
+    }
+
+    /// 空 buffer 且有 placeholder 时返回其快照（渲染层行数据源替换用）。
+    pub(super) fn placeholder_snapshot_if_empty(&self, cx: &App) -> Option<DisplaySnapshot> {
+        if !self.text(cx).is_empty() {
+            return None;
+        }
+        self.placeholder_display_map
+            .as_ref()
+            .map(|map| map.snapshot())
     }
 
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -778,6 +806,7 @@ impl Editor {
             display_map,
             syntax_snapshot,
             mode,
+            placeholder_display_map: None,
             project_root: None,
             selections: EditorSelections::from_selection_set(
                 initial_version,

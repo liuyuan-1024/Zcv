@@ -76,7 +76,8 @@
       "left": "version_control::Collapse",
       "right": "version_control::Expand",
       "enter": "version_control::Activate",
-      "space": "version_control::ToggleStaged"
+      "space": "version_control::ToggleStaged",
+      "cmd-enter": "version_control::Commit"
     }
   },
   {

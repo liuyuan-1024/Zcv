@@ -19,10 +19,9 @@ mod tab_map;
 mod wrap_map;
 
 use gpui::HighlightStyle;
-#[cfg(test)]
-use zcv_engine::LineRange;
 use zcv_engine::{
-    BufferVersion, ByteOffset, Line, LogicalColumn, Position, Snapshot, TextChangeBatch, TextRange,
+    BufferVersion, ByteOffset, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch,
+    TextRange,
 };
 use zcv_language::HighlightSpan;
 use zcv_theme::syntax;
@@ -30,7 +29,7 @@ use zcv_theme::syntax;
 pub(crate) use chunk::{LineStyles, chunks_to_runs, synthesize_line_chunks};
 pub(crate) use display_width::DisplayColumn;
 use error::DisplayMapResult;
-use fold_map::{ApplyOutcome, FoldMap, LogicalProjection};
+use fold_map::{ApplyOutcome, FoldMap, FoldSnapshot, LogicalProjection};
 pub(crate) use fold_map::{ProjectedLineIndex, ProjectedRange};
 pub(crate) use inlay_map::Inlay;
 use inlay_map::InlayMap;
@@ -131,6 +130,8 @@ impl DisplayPoint {
 #[derive(Debug, Clone)]
 pub(super) struct DisplaySnapshot {
     wrap_snapshot: WrapSnapshot,
+    /// 折叠拓扑快照（渲染侧查询行折叠状态与省略号样式）。
+    fold_snapshot: FoldSnapshot,
     /// 全量语法高亮（Editor 在语法解析完成时经 `DisplayMap::set_highlights` 注入）。
     highlights: std::sync::Arc<[HighlightSpan]>,
     /// 高亮缓存对应的 buffer 版本；与当前 buffer 不一致时渲染侧拒绝使用。
@@ -176,6 +177,22 @@ impl DisplaySnapshot {
 
     pub(super) fn line_count(&self) -> usize {
         self.wrap_snapshot.line_count()
+    }
+
+    /// 该逻辑行是否处于折叠中（含折叠入口行）。
+    pub(super) fn is_line_folded(&self, line: Line) -> bool {
+        self.fold_snapshot.is_line_folded(line)
+    }
+
+    /// 折叠入口行集合（anchor 行行尾绘制折叠省略号）。
+    pub(super) fn fold_anchor_lines(&self) -> Vec<Line> {
+        self.fold_snapshot.fold_anchor_lines()
+    }
+
+    /// 折叠起点括号对应的另一半闭合符（`{`→`}`、`(`→`)`、`[`→`]`），anchor 行行尾省略号后绘制成 `{...}` 样式。
+    pub(super) fn fold_end_char(&self, anchor: Line) -> Option<char> {
+        self.fold_snapshot
+            .fold_end_char(anchor, self.buffer_snapshot())
     }
 
     /// 逻辑行 → 该行首个显示行（wrap 下行首）；行号越界返回 None。
@@ -301,6 +318,7 @@ impl DisplayMap {
     pub(super) fn snapshot(&self) -> DisplaySnapshot {
         DisplaySnapshot {
             wrap_snapshot: self.wrap_map.snapshot().clone(),
+            fold_snapshot: self.fold_map.snapshot().clone(),
             highlights: std::sync::Arc::clone(&self.highlights),
             highlights_version: self.highlights_version,
             highlight_styles: std::sync::Arc::clone(&self.highlight_styles),
@@ -342,11 +360,10 @@ impl DisplayMap {
             .saturating_add(line_count)
             .min(self.fold_map.snapshot().line_count());
         for row in start_row.get()..end {
-            if let Some(projected) = self
+            if let Some(line) = self
                 .fold_map
                 .snapshot()
-                .projected_line(ProjectedLineIndex::new(row))
-                && let Some(line) = projected.kind().text_line()
+                .projected_line_kind(ProjectedLineIndex::new(row))
             {
                 self.tab_map.measure_line(line.logical_line())?;
             }
@@ -420,9 +437,17 @@ impl DisplayMap {
         self.wrap_map.sync(tab_snapshot, &fold_edits);
     }
 
-    #[cfg(test)]
+    /// 折叠行范围（半开区间：起点行保留，其余行隐藏）。
     pub(crate) fn fold_lines(&mut self, line_range: LineRange) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().fold_lines(line_range)?;
+        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
+        self.wrap_map.sync(tab_snapshot, &fold_edits);
+        Ok(())
+    }
+
+    /// 展开与行范围交叠的全部折叠（半开区间，约定同 `fold_lines`）。
+    pub(crate) fn unfold_lines(&mut self, line_range: LineRange) -> DisplayMapResult<()> {
+        let (fold_snapshot, fold_edits) = self.fold_map.write().unfold_lines(line_range)?;
         let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
         self.wrap_map.sync(tab_snapshot, &fold_edits);
         Ok(())
@@ -599,7 +624,7 @@ mod tests {
         map.fold_lines(LineRange::new(Line::ZERO, Line::new(3)).expect("测试行区间应合法"))
             .expect("折叠应成功");
 
-        assert_eq!(map.line_count(), 3);
+        assert_eq!(map.line_count(), 2);
         assert_eq!(
             map.offset_to_display_point(ByteOffset::new("anchor\nhidden ".len()))
                 .expect("隐藏位置应能投影")
@@ -616,10 +641,10 @@ mod tests {
         let viewport = snapshot
             .slice_viewport(DisplayRow::ZERO, 8)
             .expect("投影视口应可读取");
-        assert_eq!(viewport.rows().len(), 3);
+        assert_eq!(viewport.rows().len(), 2);
         assert!(matches!(
             viewport.rows()[1].kind(),
-            WrapViewportRowKind::Placeholder(_)
+            WrapViewportRowKind::Text { .. }
         ));
     }
 
@@ -763,10 +788,7 @@ mod tests {
             indent,
             column_base,
             ..
-        } = rows[1].kind()
-        else {
-            panic!("第二行应为文本行");
-        };
+        } = rows[1].kind();
         assert_eq!(*fragment_index, 1);
         assert!(*indent > 0, "前导空白应产生续行缩进");
         assert!(byte_range.start > 0, "续行应从行中某字节开始");
@@ -780,9 +802,7 @@ mod tests {
         let viewport = snapshot
             .slice_viewport(DisplayRow::ZERO, map.line_count())
             .expect("显示行视口应可读取");
-        let WrapViewportRowKind::Text { indent, .. } = viewport.rows()[1].kind() else {
-            panic!("第二行应为文本行");
-        };
+        let WrapViewportRowKind::Text { indent, .. } = viewport.rows()[1].kind();
         assert_eq!(*indent, 0, "无前导空白的行不应产生缩进");
     }
 
@@ -876,7 +896,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn soft_wrap_with_fold_keeps_placeholder_rows(cx: &mut TestAppContext) {
+    fn soft_wrap_with_fold_collapses_hidden_rows(cx: &mut TestAppContext) {
         let buffer = Buffer::scratch(
             "anchor\nhidden one\nhidden two\nafter".to_string(),
             BufferConfig::default(),
@@ -891,13 +911,7 @@ mod tests {
         let viewport = snapshot
             .slice_viewport(DisplayRow::ZERO, 10)
             .expect("显示行视口应可读取");
-        assert!(
-            viewport
-                .rows()
-                .iter()
-                .any(|row| matches!(row.kind(), WrapViewportRowKind::Placeholder(_))),
-            "折叠占位符行应保留"
-        );
+        assert_eq!(viewport.rows().len(), 2, "折叠后仅剩 anchor 与 after 两行");
         // 折叠隐藏区域的位置映射到 anchor 是现状语义（roundtrip 不可逆），
         // 只对可见文本字节做双向验证。
         for offset in [
@@ -995,10 +1009,8 @@ mod tests {
         let rows = viewport.rows();
         assert_eq!(rows.len(), 4);
         // 行序交错：buffer 行 0 → 合成行（锚定行 0 之后）→ buffer 行 1/2。
-        match rows[0].kind() {
-            WrapViewportRowKind::Text { text, .. } => assert_eq!(text.as_ref(), "a\n"),
-            other => panic!("行 0 应为 buffer 文本行，实际 {other:?}"),
-        }
+        let WrapViewportRowKind::Text { text, .. } = rows[0].kind();
+        assert_eq!(text.as_ref(), "a\n");
         match rows[1].kind() {
             WrapViewportRowKind::Text {
                 source: StreamLineSource::Inserted { .. },
@@ -1007,10 +1019,8 @@ mod tests {
             } => assert_eq!(text.as_ref(), "DEL"),
             other => panic!("行 1 应为合成行，实际 {other:?}"),
         }
-        match rows[2].kind() {
-            WrapViewportRowKind::Text { text, .. } => assert_eq!(text.as_ref(), "b\n"),
-            other => panic!("行 2 应为 buffer 文本行，实际 {other:?}"),
-        }
+        let WrapViewportRowKind::Text { text, .. } = rows[2].kind();
+        assert_eq!(text.as_ref(), "b\n");
     }
 
     #[test]
@@ -1065,27 +1075,18 @@ mod tests {
         let tab_snapshot = map.tab_map.sync(fold_snapshot, &fold_edits);
         map.wrap_map.sync(tab_snapshot, &fold_edits);
 
-        // 显示行 = 行 0 + 占位符 + 行 3：合成行被折叠进占位符。
-        assert_eq!(map.line_count(), 3, "合成行应随折叠区间一起收起");
+        // 显示行 = 行 0 + 行 3（折叠区间含合成行，无占位行）。
+        assert_eq!(map.line_count(), 2, "6 个流行 - 4 个隐藏");
 
-        // 占位符行后紧接 buffer 行 3（合成行不再占显示行）。
         let snapshot = map.snapshot();
         let viewport = snapshot
-            .slice_viewport(DisplayRow::ZERO, 3)
+            .slice_viewport(DisplayRow::ZERO, 2)
             .expect("视口应可读取");
         let rows = viewport.rows();
-        match rows[0].kind() {
-            WrapViewportRowKind::Text { text, .. } => assert_eq!(text.as_ref(), "a\n"),
-            other => panic!("行 0 应为 buffer 文本行，实际 {other:?}"),
-        }
-        match rows[1].kind() {
-            WrapViewportRowKind::Placeholder(_) => {}
-            other => panic!("行 1 应为折叠占位符，实际 {other:?}"),
-        }
-        match rows[2].kind() {
-            WrapViewportRowKind::Text { text, .. } => assert_eq!(text.as_ref(), "d"),
-            other => panic!("行 2 应为折叠后的 buffer 文本行，实际 {other:?}"),
-        }
+        let WrapViewportRowKind::Text { text, .. } = rows[0].kind();
+        assert_eq!(text.as_ref(), "a\n");
+        let WrapViewportRowKind::Text { text, .. } = rows[1].kind();
+        assert_eq!(text.as_ref(), "d");
     }
 
     #[test]
@@ -1104,12 +1105,8 @@ mod tests {
         let viewport = snapshot
             .slice_viewport(DisplayRow::ZERO, 1)
             .expect("视口应可读取");
-        match viewport.rows()[0].kind() {
-            WrapViewportRowKind::Text { text, .. } => {
-                assert_eq!(text.as_ref(), "a: hintb\n")
-            }
-            other => panic!("行 0 应为含注入的文本行，实际 {other:?}"),
-        }
+        let WrapViewportRowKind::Text { text, .. } = viewport.rows()[0].kind();
+        assert_eq!(text.as_ref(), "a: hintb\n");
     }
 
     #[test]
@@ -1157,15 +1154,11 @@ mod tests {
         assert_eq!(outcome, ApplyOutcome::Compatible);
         // inlay 锚定是静态偏移（编辑后由数据源更新）：replace [0,1) 后偏移 1 落在 'B' 后。
         let snapshot = map.snapshot();
-        match snapshot
+        let viewport = snapshot
             .slice_viewport(DisplayRow::ZERO, 1)
-            .expect("视口应可读取")
-            .rows()[0]
-            .kind()
-        {
-            WrapViewportRowKind::Text { text, .. } => assert_eq!(text.as_ref(), "AxBb\n"),
-            other => panic!("行 0 应为注入后的文本行，实际 {other:?}"),
-        }
+            .expect("视口应可读取");
+        let WrapViewportRowKind::Text { text, .. } = viewport.rows()[0].kind();
+        assert_eq!(text.as_ref(), "AxBb\n");
     }
 
     #[test]

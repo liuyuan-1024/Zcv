@@ -5,16 +5,13 @@
 use std::{cmp::Reverse, collections::BTreeMap, ops::Range};
 
 use gpui_sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
-#[cfg(test)]
-use zcv_engine::{BufferVersion, ByteOffset, Stickiness};
 use zcv_engine::{
-    CoordinateError, Line, LineRange, LogicalColumn, Position, PositionMap, Snapshot,
-    TextChangeBatch, TextRange, TrackedRange, TrackedRangeUpdatePolicy,
+    BufferVersion, ByteOffset, CoordinateError, Line, LineRange, LogicalColumn, Position,
+    PositionMap, Snapshot, Stickiness, TextChangeBatch, TextRange, TrackedRange,
+    TrackedRangeUpdatePolicy,
 };
 
-use super::error::DisplayMapResult;
-#[cfg(test)]
-use super::error::FoldError;
+use super::error::{DisplayMapResult, FoldError};
 use super::inlay_map::InlaySnapshot;
 use super::line_stream::{LineStream, StreamLineSource};
 
@@ -29,7 +26,6 @@ pub(crate) enum ApplyOutcome {
 pub(crate) struct FoldId(u64);
 
 impl FoldId {
-    #[cfg(test)]
     const INITIAL: Self = Self(1);
 }
 
@@ -42,7 +38,6 @@ struct Fold {
 }
 
 impl Fold {
-    #[cfg(test)]
     fn new(
         id: FoldId,
         version: BufferVersion,
@@ -161,25 +156,15 @@ impl Transform {
     fn output_rows(self) -> usize {
         match self.kind {
             TransformKind::Isomorphic => self.input_lines,
-            TransformKind::Fold => 1,
+            // 折叠段完全吞掉输入行，不产生投影行；折叠省略号绘制在 anchor 行行尾。
+            TransformKind::Fold => 0,
         }
     }
 
-    fn projected_kind(self, logical_start: usize, offset: usize) -> ProjectedLineKind {
+    fn projected_kind(self, logical_start: usize, offset: usize) -> TextLine {
         match self.kind {
-            TransformKind::Isomorphic => {
-                ProjectedLineKind::Text(TextLine::new(Line::new(logical_start + offset)))
-            }
-            TransformKind::Fold => {
-                debug_assert_eq!(offset, 0);
-                let hidden_start = Line::new(logical_start);
-                let hidden_end = Line::new(logical_start + self.input_lines);
-                ProjectedLineKind::Placeholder(FoldPlaceholder::new(
-                    Line::new(logical_start - 1),
-                    LineRange::new(hidden_start, hidden_end)
-                        .expect("fold transform 必须覆盖非空隐藏行"),
-                ))
-            }
+            TransformKind::Isomorphic => TextLine::new(Line::new(logical_start + offset)),
+            TransformKind::Fold => unreachable!("fold 段不产生投影行"),
         }
     }
 }
@@ -290,20 +275,54 @@ impl FoldSnapshot {
         self.transforms.summary().output_rows
     }
 
+    /// 该逻辑行是否处于折叠中（含折叠入口行）。
+    pub(crate) fn is_line_folded(&self, line: Line) -> bool {
+        self.folds.iter().any(|fold| {
+            let (start, end) = fold.line_span;
+            start < end && start <= line && line <= end
+        })
+    }
+
+    /// 折叠入口行（anchor 行行尾绘制折叠省略号；无隐藏行的 fold 不计）。
+    pub(crate) fn fold_anchor_lines(&self) -> Vec<Line> {
+        self.folds
+            .iter()
+            .filter_map(|fold| {
+                let (start, end) = fold.line_span;
+                (start < end).then_some(start)
+            })
+            .collect()
+    }
+
+    /// 折叠起点括号对应的另一半闭合符（`{`→`}`、`(`→`)`、`[`→`]`），anchor 行行尾省略号后绘制成 `{...}` 样式。
+    ///
+    /// 从折叠范围起点行的最后一个非空白字符推导配对；注释组等无括号折叠返回 None。
+    pub(crate) fn fold_end_char(&self, anchor: Line, snapshot: &Snapshot) -> Option<char> {
+        let fold = self.folds.iter().find(|fold| {
+            let (start, end) = fold.line_span;
+            start == anchor && start < end
+        })?;
+        let line_text = snapshot.slice_line(fold.line_span.0).ok()?;
+        let open = line_text
+            .as_str()
+            .trim_end_matches(['\r', '\n'])
+            .chars()
+            .rev()
+            .find(|c| !c.is_whitespace())?;
+        match open {
+            '{' => Some('}'),
+            '(' => Some(')'),
+            '[' => Some(']'),
+            _ => None,
+        }
+    }
+
     fn logical_line_count(&self) -> usize {
         // fold 拓扑的输入行 = 流行（buffer + 合成）。
         self.transforms.summary().input_lines
     }
 
-    pub(super) fn projected_line(&self, index: ProjectedLineIndex) -> Option<ProjectedLine> {
-        self.projected_line_kind(index)
-            .map(|kind| ProjectedLine::new(index, kind))
-    }
-
-    pub(crate) fn projected_line_kind(
-        &self,
-        index: ProjectedLineIndex,
-    ) -> Option<ProjectedLineKind> {
+    pub(crate) fn projected_line_kind(&self, index: ProjectedLineIndex) -> Option<TextLine> {
         let (start, _, transform) =
             self.transforms
                 .find::<OutputToInput, _>((), &OutputRows(index.get()), TreeBias::Right);
@@ -349,26 +368,7 @@ impl FoldSnapshot {
         }
     }
 
-    pub(super) fn projected_to_logical_point(
-        &self,
-        point: ProjectedPoint,
-    ) -> DisplayMapResult<ProjectedPointMapping> {
-        match self
-            .projected_line_kind(point.line())
-            .ok_or_else(|| CoordinateError::LineOutOfBounds(Line::new(point.line().get())))?
-        {
-            ProjectedLineKind::Text(text) => Ok(ProjectedPointMapping::Text(LogicalPoint::new(
-                text.logical_line(),
-                point.column(),
-            ))),
-            ProjectedLineKind::Placeholder(placeholder) => Ok(ProjectedPointMapping::Placeholder {
-                anchor: LogicalPoint::line_start(placeholder.anchor_line()),
-                hidden_lines: placeholder.hidden_lines(),
-            }),
-        }
-    }
-
-    /// 投影行的内容来源：fold 投影（Text/Placeholder）叠加流行解析。
+    /// 投影行的内容来源：fold 投影（Text）叠加流行解析。
     ///
     /// 文本行统一携带流来源（buffer 行 / 合成行），fold/tab/wrap 层不感知"合成行"概念；
     /// 删除块展开的外部文本就是普通行，渲染端按来源区分行号与可命中性。
@@ -376,35 +376,26 @@ impl FoldSnapshot {
         &self,
         projected: ProjectedLineIndex,
     ) -> Option<StreamProjectedKind> {
-        let kind = self.projected_line_kind(projected)?;
-        Some(match kind {
-            ProjectedLineKind::Text(text) => StreamProjectedKind::Text(
-                self.input
-                    .source(text.logical_line())
-                    .expect("可见投影行必须落在流内"),
-            ),
-            ProjectedLineKind::Placeholder(placeholder) => {
-                StreamProjectedKind::Placeholder(placeholder)
-            }
-        })
+        let text = self.projected_line_kind(projected)?;
+        Some(StreamProjectedKind::Text(
+            self.input
+                .source(text.logical_line())
+                .expect("可见投影行必须落在流内"),
+        ))
     }
 }
 
-/// 投影行（fold 输出）的内容来源：文本行（携带流来源）或折叠占位符。
+/// 投影行（fold 输出）的内容来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamProjectedKind {
     /// 可见文本行（buffer 行或合成行，经流解析）。
     Text(StreamLineSource),
-    /// fold 占位符（无文本）。
-    Placeholder(FoldPlaceholder),
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct FoldMap {
     snapshot: FoldSnapshot,
-    #[cfg(test)]
     next_fold_id: FoldId,
-    #[cfg(test)]
     default_update_policy: TrackedRangeUpdatePolicy,
 }
 
@@ -421,9 +412,7 @@ impl FoldMap {
         (
             Self {
                 snapshot: snapshot.clone(),
-                #[cfg(test)]
                 next_fold_id: FoldId::INITIAL,
-                #[cfg(test)]
                 default_update_policy: TrackedRangeUpdatePolicy::invalidate_when_fully_deleted(),
             },
             snapshot,
@@ -545,16 +534,13 @@ impl FoldMap {
         (self.snapshot.clone(), edits, outcome)
     }
 
-    #[cfg(test)]
     pub(super) fn write(&mut self) -> FoldMapWriter<'_> {
         FoldMapWriter(self)
     }
 }
 
-#[cfg(test)]
 pub(super) struct FoldMapWriter<'a>(&'a mut FoldMap);
 
-#[cfg(test)]
 impl FoldMapWriter<'_> {
     pub(super) fn fold_lines(
         &mut self,
@@ -562,6 +548,35 @@ impl FoldMapWriter<'_> {
     ) -> DisplayMapResult<(FoldSnapshot, Vec<FoldEdit>)> {
         let range = text_range_for_lines(self.0.snapshot.buffer_snapshot(), line_range)?;
         self.fold(range)
+    }
+
+    /// 展开与行范围交叠的全部折叠（半开区间，约定同 `fold_lines`）。
+    pub(super) fn unfold_lines(
+        &mut self,
+        line_range: LineRange,
+    ) -> DisplayMapResult<(FoldSnapshot, Vec<FoldEdit>)> {
+        let ids: Vec<_> = self
+            .0
+            .snapshot
+            .folds
+            .iter()
+            .filter(|fold| {
+                let (start, end) = fold.line_span;
+                start.get() < line_range.end().get() && end.get() >= line_range.start().get()
+            })
+            .map(|fold| fold.id)
+            .collect();
+        if ids.is_empty() {
+            return Ok((self.0.snapshot.clone(), Vec::new()));
+        }
+        let mut snapshot = self.0.snapshot.clone();
+        let mut edits = Vec::new();
+        for id in ids {
+            let (next, edit) = self.unfold(id);
+            snapshot = next;
+            edits.extend(edit);
+        }
+        Ok((snapshot, edits))
     }
 
     fn fold(&mut self, range: TextRange) -> DisplayMapResult<(FoldSnapshot, Vec<FoldEdit>)> {
@@ -718,14 +733,12 @@ fn inline_fold_edits(batch: &TextChangeBatch, stream: &LineStream) -> Vec<FoldEd
         .collect()
 }
 
-#[cfg(test)]
 fn text_range_for_lines(snapshot: &Snapshot, lines: LineRange) -> DisplayMapResult<TextRange> {
     let start = line_boundary(snapshot, lines.start())?;
     let end = line_boundary(snapshot, lines.end())?;
     Ok(TextRange::new(start, end)?)
 }
 
-#[cfg(test)]
 fn line_boundary(snapshot: &Snapshot, line: Line) -> DisplayMapResult<ByteOffset> {
     if line.get() > snapshot.line_count() {
         return Err(CoordinateError::LineOutOfBounds(line).into());
@@ -745,7 +758,6 @@ fn fold_line_span(snapshot: &Snapshot, range: TextRange) -> DisplayMapResult<(Li
     Ok((start, end))
 }
 
-#[cfg(test)]
 fn ranges_disjoint_or_nested(left: TextRange, right: TextRange) -> bool {
     left.end() <= right.start()
         || right.end() <= left.start()
@@ -782,7 +794,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(before.line_count(), 4);
-        assert_eq!(after.line_count(), 3);
+        assert_eq!(after.line_count(), 2);
         assert_eq!(
             before.buffer_snapshot().version(),
             after.buffer_snapshot().version()
@@ -821,10 +833,10 @@ mod tests {
             .unwrap()
             .id;
 
-        assert_eq!(map.snapshot.line_count(), 3);
+        assert_eq!(map.snapshot.line_count(), 2);
         let (snapshot, edits) = map.write().unfold(outer);
         assert_eq!(snapshot.folds.summary().count, 1);
-        assert_eq!(snapshot.line_count(), 5);
+        assert_eq!(snapshot.line_count(), 4);
         assert!(edits[0].is_structural());
     }
 
@@ -892,22 +904,23 @@ mod tests {
     }
 
     #[test]
-    fn folded_points_map_through_placeholder_in_both_directions() {
+    fn folded_points_map_through_anchor_in_both_directions() {
         let buffer = Buffer::scratch("a\nb\nc\nd".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         let (snapshot, _) = map.write().fold_lines(line_range(0, 3)).unwrap();
 
+        // 折叠段不产生投影行：行数 = 4 - 2 隐藏 = 2。
+        assert_eq!(snapshot.line_count(), 2);
+        // 隐藏行映射到 anchor（行 0）。
         let hidden = snapshot
             .logical_to_projected_point(LogicalPoint::line_start(Line::new(1)))
             .unwrap();
         assert!(matches!(hidden, LogicalPointProjection::Hidden { .. }));
-        let placeholder = snapshot
-            .projected_to_logical_point(ProjectedPoint::line_start(ProjectedLineIndex::new(1)))
+        // 投影行 1 是可见文本行（"d"）。
+        let text = snapshot
+            .projected_line_kind(ProjectedLineIndex::new(1))
             .unwrap();
-        assert!(matches!(
-            placeholder,
-            ProjectedPointMapping::Placeholder { .. }
-        ));
+        assert_eq!(text.logical_line(), Line::new(3));
     }
 }
 
@@ -927,41 +940,6 @@ impl ProjectedLineIndex {
     }
 }
 
-/// 投影行的种类。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ProjectedLineKind {
-    /// 投影行展示的是某条可见逻辑行。
-    Text(TextLine),
-    /// 投影行是一段被折叠隐藏内容的占位符。
-    Placeholder(FoldPlaceholder),
-}
-
-impl ProjectedLineKind {
-    pub fn text_line(&self) -> Option<TextLine> {
-        match self {
-            Self::Text(text_line) => Some(*text_line),
-            Self::Placeholder(_) => None,
-        }
-    }
-}
-
-/// FoldSnapshot 中携带索引信息的投影行视图。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ProjectedLine {
-    index: ProjectedLineIndex,
-    kind: ProjectedLineKind,
-}
-
-impl ProjectedLine {
-    pub(crate) fn new(index: ProjectedLineIndex, kind: ProjectedLineKind) -> Self {
-        Self { index, kind }
-    }
-
-    pub fn kind(self) -> ProjectedLineKind {
-        self.kind
-    }
-}
-
 /// 可见逻辑行投影。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextLine {
@@ -975,34 +953,6 @@ impl TextLine {
 
     pub fn logical_line(self) -> Line {
         self.logical_line
-    }
-}
-
-/// 折叠占位符投影行。
-///
-/// `anchor_line` 是该占位符紧跟其后的可见 anchor 逻辑行；`hidden_lines` 是被折叠隐藏的
-/// 半开行区间 `[first_hidden, end_exclusive)`。当多个 fold 折叠的逻辑行区间合并为一段连续
-/// 的隐藏区间时，引擎只产出一条占位符。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FoldPlaceholder {
-    anchor_line: Line,
-    hidden_lines: LineRange,
-}
-
-impl FoldPlaceholder {
-    pub(crate) fn new(anchor_line: Line, hidden_lines: LineRange) -> Self {
-        Self {
-            anchor_line,
-            hidden_lines,
-        }
-    }
-
-    pub fn anchor_line(self) -> Line {
-        self.anchor_line
-    }
-
-    pub fn hidden_lines(self) -> LineRange {
-        self.hidden_lines
     }
 }
 
@@ -1069,8 +1019,7 @@ impl From<LogicalPoint> for Position {
 
 /// 投影空间内的 (projected_line, column) 点。
 ///
-/// 当 `line` 指向一条 `TextLine` 时 `column` 与对应逻辑行的 `LogicalColumn` 同义；
-/// 当 `line` 指向一条 `FoldPlaceholder` 时 `column` 没有逻辑文本意义，由宿主决定如何使用。
+/// `column` 与对应逻辑行的 `LogicalColumn` 同义（投影行均为可见文本行）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct ProjectedPoint {
     pub line: ProjectedLineIndex,
@@ -1107,18 +1056,6 @@ pub enum LogicalPointProjection {
     Hidden {
         anchor_logical: LogicalPoint,
         anchor_projected: ProjectedPoint,
-    },
-}
-
-/// `ProjectedPoint` -> 逻辑空间的查询结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ProjectedPointMapping {
-    /// 投影点所在行是 `TextLine`，对应单一逻辑点。
-    Text(LogicalPoint),
-    /// 投影点所在行是 `FoldPlaceholder`，返回 fold anchor 与该 placeholder 覆盖的隐藏行区间。
-    Placeholder {
-        anchor: LogicalPoint,
-        hidden_lines: LineRange,
     },
 }
 

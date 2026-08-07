@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tree_sitter::{InputEdit, Parser, Point, QueryCursor, StreamingIterator};
-use zcv_engine::{BufferVersion, ByteOffset, Snapshot, TextChangeBatch};
+use zcv_engine::{BufferVersion, ByteOffset, Line, Snapshot, TextChangeBatch};
 
 use crate::Language;
 use crate::language::{language_for_file, language_for_injection};
@@ -45,6 +45,14 @@ pub struct OutlineItem {
 pub struct IndentRange {
     pub range: Range<usize>,
     pub end: Option<Range<usize>>,
+}
+
+/// 一个可折叠范围。
+///
+/// 起点行在折叠后保留（折叠箭头显示在该行），范围内其余行隐藏。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FoldRange {
+    pub range: Range<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -392,6 +400,79 @@ impl SyntaxSnapshot {
                 }
                 if let Some(range) = indent {
                     ranges.push(IndentRange { range, end });
+                }
+            }
+        }
+        ranges.sort_unstable_by_key(|range| (range.range.start, range.range.end));
+        ranges
+    }
+
+    pub fn fold_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<FoldRange> {
+        if !self.can_query(&range, text) {
+            return Vec::new();
+        }
+        let mut ranges = Vec::new();
+        for layer in self.layers_for_range(&range) {
+            let Some(query) = layer.language.folds() else {
+                continue;
+            };
+            let names = query.capture_names();
+            let mut cursor = QueryCursorHandle::new();
+            cursor.set_byte_range(range.clone());
+            let mut matches =
+                cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
+            while let Some(query_match) = matches.next() {
+                // 同一个 match 命中多个节点时（如 `+` 组捕获的连续注释），行相邻则合并成一个折叠范围。
+                let mut nodes: Vec<_> = query_match
+                    .captures
+                    .iter()
+                    .filter(|capture| {
+                        names
+                            .get(capture.index as usize)
+                            .is_some_and(|name| &**name == "fold")
+                    })
+                    .map(|capture| capture.node)
+                    .collect();
+                nodes.sort_unstable_by_key(|node| node.byte_range().start);
+                let mut merged: Vec<(Range<usize>, usize, usize)> = Vec::new();
+                for node in nodes {
+                    let byte_range = node.byte_range();
+                    match merged.last_mut() {
+                        Some((range, _, end_row)) if node.start_position().row <= *end_row + 1 => {
+                            range.end = range.end.max(byte_range.end);
+                            *end_row = node.end_position().row;
+                        }
+                        _ => {
+                            merged.push((
+                                byte_range,
+                                node.start_position().row,
+                                node.end_position().row,
+                            ));
+                        }
+                    }
+                }
+                for (byte_range, _, _) in merged {
+                    // 单行范围没有可隐藏的行，折叠无意义。
+                    //
+                    // 行判断用 buffer 行语义：line_comment 等节点含尾随换行（end 落在下一行行首），按"结束恰在行首则回退一行"换算真实末行。
+                    let Ok(start_line) = text.byte_to_line(ByteOffset::new(byte_range.start))
+                    else {
+                        continue;
+                    };
+                    let mut end_line = text
+                        .byte_to_line(ByteOffset::new(byte_range.end))
+                        .unwrap_or(start_line);
+                    if end_line > start_line
+                        && text
+                            .line_start_byte(end_line)
+                            .is_ok_and(|start| start.get() == byte_range.end)
+                    {
+                        end_line = Line::new(end_line.get() - 1);
+                    }
+                    if start_line == end_line {
+                        continue;
+                    }
+                    ranges.push(FoldRange { range: byte_range });
                 }
             }
         }
@@ -1080,6 +1161,153 @@ mod tests {
                 .iter()
                 .any(|range| range.kind.as_ref() == "function.around")
         );
+    }
+
+    #[test]
+    fn rust_fold_ranges_cover_blocks_and_skip_single_lines() {
+        let source = "\
+struct Demo {
+    value: i32,
+}
+
+impl Demo {
+    fn new() -> Self {
+        // 单行注释不产生折叠。
+        let value = 1;
+        // 连续注释折叠为一个组。
+        // 第二行注释。
+        Self { value }
+    }
+}
+
+fn main() {
+    let x = 1;
+}
+";
+        let (buffer, syntax) = rust_buffer(source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let folds = syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+        let texts: Vec<&str> = folds
+            .iter()
+            .map(|fold| &source[fold.range.clone()])
+            .collect();
+
+        // 各块体（field_declaration_list / declaration_list / block）都被覆盖。
+        assert!(texts.contains(&"{\n    value: i32,\n}"));
+        assert!(texts.contains(&"{\n    fn new() -> Self {\n        // 单行注释不产生折叠。\n        let value = 1;\n        // 连续注释折叠为一个组。\n        // 第二行注释。\n        Self { value }\n    }\n}"));
+        assert!(texts.contains(&"{\n        // 单行注释不产生折叠。\n        let value = 1;\n        // 连续注释折叠为一个组。\n        // 第二行注释。\n        Self { value }\n    }"));
+        // 连续注释组折叠为一个范围。
+        assert!(texts.contains(&"// 连续注释折叠为一个组。\n        // 第二行注释。"));
+
+        // 嵌套结构：外层范围完整包含内层范围。
+        let outer = folds
+            .iter()
+            .find(|fold| &source[fold.range.clone()] == "{\n    fn new() -> Self {\n        // 单行注释不产生折叠。\n        let value = 1;\n        // 连续注释折叠为一个组。\n        // 第二行注释。\n        Self { value }\n    }\n}")
+            .unwrap();
+        let inner = folds
+            .iter()
+            .find(|fold| {
+                fold.range.start >= outer.range.start
+                    && fold.range.end <= outer.range.end
+                    && fold.range != outer.range
+            })
+            .expect("impl 块内应存在嵌套折叠范围");
+
+        assert!(inner.range.start > outer.range.start && inner.range.end < outer.range.end);
+    }
+
+    #[test]
+    fn use_declarations_fold_independently_and_skip_single_lines() {
+        let source = "\
+use std::collections::BTreeMap;
+use std::ops::{
+    Range,
+    Deref,
+};
+use std::sync::Arc;
+
+use zcv_engine::{
+    Buffer,
+    Snapshot,
+};
+";
+        let (buffer, syntax) = rust_buffer(source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let folds = syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+        let texts: Vec<&str> = folds
+            .iter()
+            .map(|fold| &source[fold.range.clone()])
+            .collect();
+
+        // 两个多行 use 各自独立成折叠范围（覆盖整个声明，不与相邻 use 合并）。
+        assert!(texts.contains(&"use std::ops::{\n    Range,\n    Deref,\n};"));
+        assert!(texts.contains(&"use zcv_engine::{\n    Buffer,\n    Snapshot,\n};"));
+        // 单行 use 不产生折叠。
+        assert!(!texts.contains(&"use std::collections::BTreeMap;"));
+    }
+
+    #[test]
+    fn single_line_doc_comments_do_not_fold() {
+        // 回归：tree-sitter-rust 的 line_comment 节点含尾随换行（end 落在下一行行首），
+        // 单行过滤必须用 buffer 行语义，否则单行注释会误判为可折叠。
+        let source = "\
+/// Editor 自身的领域事件。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditorEvent {
+    /// 编辑器关联的文件路径发生变化。
+    PathChanged,
+}
+";
+        let (buffer, syntax) = rust_buffer(source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let folds = syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+        let texts: Vec<&str> = folds
+            .iter()
+            .map(|fold| &source[fold.range.clone()])
+            .collect();
+
+        // 只有 enum 块体可折叠；单行 doc 注释不产生折叠。
+        assert!(texts.contains(&"{\n    /// 编辑器关联的文件路径发生变化。\n    PathChanged,\n}"));
+        assert!(!texts.iter().any(|text| text.starts_with("///")));
+    }
+
+    #[test]
+    fn multi_line_macro_invocation_folds_but_single_line_does_not() {
+        let source = "\
+fn main() {
+    let x = vec![
+        1,
+        2,
+    ];
+    println!(\"ok\");
+    actions!(
+        editor,
+        [
+            MoveLeft,
+            MoveRight,
+        ],
+    );
+    let y = format!(\"{}: {}\", 1, 2);
+}
+";
+        let (buffer, syntax) = rust_buffer(source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let folds = syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+        let texts: Vec<&str> = folds
+            .iter()
+            .map(|fold| &source[fold.range.clone()])
+            .collect();
+
+        // 跨行宏调用整体成折叠范围（从宏名到分号）。
+        assert!(texts.contains(&"vec![\n        1,\n        2,\n    ]"));
+        assert!(texts.contains(&"actions!(\n        editor,\n        [\n            MoveLeft,\n            MoveRight,\n        ],\n    )"));
+        // 单行宏调用不产生折叠。
+        assert!(!texts.contains(&"println!(\"ok\")"));
+        assert!(!texts.contains(&"format!(\"{}: {}\", 1, 2)"));
     }
 
     #[test]

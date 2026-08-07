@@ -5,7 +5,7 @@
 //!
 //! 合成行自持文本（Arc<str>，如 git 删除块展开后的 HEAD 内容），不占用 buffer 字节坐标：
 //! 行内偏移 = 文本字节偏移；
-//! 跨行坐标映射到锚定 buffer 行的行首（与 fold 占位符同语义，roundtrip 不可逆）。
+//! 跨行坐标映射到锚定 buffer 行的行首（与折叠区间同语义，roundtrip 不可逆）。
 
 use std::collections::BTreeMap;
 use std::ops::Range;

@@ -125,6 +125,28 @@ impl FileStatus {
         matches!(self, FileStatus::Ignored)
     }
 
+    /// 是否有已暂存的变更（index 相对 HEAD 有差异）。
+    ///
+    /// 面板目录暂存时按此过滤展开的文件集合；冲突条目恒为 false（须先解决冲突）。
+    pub fn has_staged(self) -> bool {
+        matches!(
+            self,
+            FileStatus::Tracked { index_status, .. } if index_status != StatusCode::Unmodified
+        )
+    }
+
+    /// 是否有未暂存的变更（工作区相对 index 有差异，含未跟踪文件）。
+    ///
+    /// 冲突条目恒为 false（不参与暂存/取消暂存）。
+    pub fn has_unstaged(self) -> bool {
+        matches!(self, FileStatus::Untracked)
+            || matches!(
+                self,
+                FileStatus::Tracked { worktree_status, .. }
+                    if worktree_status != StatusCode::Unmodified
+            )
+    }
+
     /// 目录聚合优先级：conflict > deleted > modified > added/untracked > ignored > 无状态。
     ///
     /// 对齐 Zed `entry_git_aware_label_color` 的判定顺序（editor/items.rs:2200）；
@@ -340,6 +362,41 @@ mod tests {
         GitStatus::from_bytes(output.as_bytes())
             .expect("解析应成功")
             .statuses
+    }
+
+    #[test]
+    fn has_staged_and_has_unstaged_split_index_and_worktree() {
+        // 未暂存修改：index 干净、worktree 有差异。
+        let unstaged = Tracked {
+            index_status: StatusCode::Unmodified,
+            worktree_status: StatusCode::Modified,
+        };
+        assert!(!unstaged.has_staged());
+        assert!(unstaged.has_unstaged());
+
+        // 已暂存修改：index 有差异、worktree 干净。
+        let staged = Tracked {
+            index_status: StatusCode::Modified,
+            worktree_status: StatusCode::Unmodified,
+        };
+        assert!(staged.has_staged());
+        assert!(!staged.has_unstaged());
+
+        // 部分暂存：两侧都有。
+        let partial = Tracked {
+            index_status: StatusCode::Added,
+            worktree_status: StatusCode::Deleted,
+        };
+        assert!(partial.has_staged());
+        assert!(partial.has_unstaged());
+
+        // 未跟踪归入未暂存；忽略与冲突不参与暂存。
+        assert!(Untracked.has_unstaged());
+        assert!(!Untracked.has_staged());
+        assert!(!Ignored.has_staged());
+        assert!(!Ignored.has_unstaged());
+        assert!(!Unmerged.has_staged());
+        assert!(!Unmerged.has_unstaged());
     }
 
     #[test]

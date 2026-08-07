@@ -15,6 +15,7 @@ mod project_tree;
 mod recent_projects;
 mod settings;
 mod ui;
+mod version_control;
 mod workspace;
 
 use std::path::PathBuf;

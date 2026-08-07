@@ -3,17 +3,14 @@
     "context": "Editor",
     "bindings": {
       "enter": "editor::Newline",
-
       "tab": "editor::Indent",
       "shift-tab": "editor::Outdent",
-
       "delete": "editor::Delete",
       "backspace": "editor::Backspace",
       "alt-delete": "editor::DeleteToNextWordEnd",
       "alt-backspace": "editor::DeleteToPreviousWordStart",
       "cmd-delete": "editor::DeleteToEndOfLine",
       "cmd-backspace": "editor::DeleteToBeginningOfLine",
-
       "up": "editor::MoveUp",
       "down": "editor::MoveDown",
       "left": "editor::MoveLeft",
@@ -22,34 +19,28 @@
       "shift-down": "editor::SelectDown",
       "shift-left": "editor::SelectLeft",
       "shift-right": "editor::SelectRight",
-
       "pageup": "editor::MovePageUp",
       "pagedown": "editor::MovePageDown",
       "shift-pageup": "editor::SelectPageUp",
       "shift-pagedown": "editor::SelectPageDown",
-
       "alt-left": "editor::MoveToPreviousWord",
       "alt-right": "editor::MoveToNextWord",
       "alt-shift-left": "editor::SelectToPreviousWord",
       "alt-shift-right": "editor::SelectToNextWord",
-
       "cmd-up": "editor::MoveToBeginning",
       "cmd-down": "editor::MoveToEnd",
       "cmd-shift-up": "editor::SelectToBeginning",
       "cmd-shift-down": "editor::SelectToEnd",
-
       "home": "editor::MoveToBeginningOfLine",
       "end": "editor::MoveToEndOfLine",
       "shift-home": "editor::SelectToBeginningOfLine",
       "shift-end": "editor::SelectToEndOfLine",
-
       "cmd-a": "editor::SelectAll",
       "cmd-c": "editor::Copy",
       "cmd-v": "editor::Paste",
       "cmd-x": "editor::Cut",
       "cmd-z": "editor::Undo",
       "cmd-shift-z": "editor::Redo",
-
       "alt-up": "editor::MoveLineUp",
       "alt-down": "editor::MoveLineDown"
     }
@@ -73,6 +64,17 @@
     "bindings": {
       "enter": "project_tree::TreeConfirmEdit",
       "escape": "project_tree::TreeCancelEdit"
+    }
+  },
+  {
+    "context": "VersionControl",
+    "bindings": {
+      "up": "version_control::SelectPrev",
+      "down": "version_control::SelectNext",
+      "left": "version_control::Collapse",
+      "right": "version_control::Expand",
+      "enter": "version_control::Activate",
+      "space": "version_control::ToggleStaged"
     }
   },
   {

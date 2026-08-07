@@ -19,10 +19,7 @@ pub(crate) use dock::{
 pub(crate) use item::{ItemEvent, ItemHandle};
 pub(crate) use pane::Pane;
 pub(crate) use panel::Panel;
-use panel::{
-    DebugPanel, KeyboardShortcutsPanel, OutlinePanel, PanelHandle, TerminalPanel,
-    VersionControlPanel,
-};
+use panel::{DebugPanel, KeyboardShortcutsPanel, OutlinePanel, PanelHandle, TerminalPanel};
 use panel_buttons::PanelButtons;
 use status_bar::StatusBar;
 pub(crate) use status_bar::StatusItemView;
@@ -52,6 +49,7 @@ use crate::project_search::ProjectSearchButton;
 use crate::project_tree::{OnCreate, OnOpenFile, OnRename, OnTrash, ProjectTree};
 use crate::recent_projects::{OnProjectSelected, ToggleProjectPicker};
 use crate::settings::SettingsStore;
+use crate::version_control::VersionControlPanel;
 use zcv_editor::Editor;
 use zcv_theme::{color, typography};
 
@@ -81,12 +79,12 @@ pub(crate) struct Workspace {
 
 impl Workspace {
     /// 创建所有面板 Entity，返回 (panel_handles, panel_pairs)。
-    /// `project_tree` 由调用方先创建并传入，确保只有一个实体。
+    /// `project_tree` 与 `version_control` 由调用方先创建并传入，确保只有一个实体。
     fn make_panels(
         project_tree: &Entity<ProjectTree>,
+        version_control: Entity<VersionControlPanel>,
         cx: &mut Context<Self>,
     ) -> (Vec<Arc<dyn PanelHandle>>, PanelPairs) {
-        let version_control = cx.new(VersionControlPanel::new);
         let outline = cx.new(OutlinePanel::new);
         let terminal = cx.new(TerminalPanel::new);
         let debug = cx.new(DebugPanel::new);
@@ -189,7 +187,27 @@ impl Workspace {
             tree
         });
 
-        let (_all_handles, panel_pairs) = Self::make_panels(&project_tree, cx);
+        // 版本管理面板：行模型来自 GitStore 快照（经 project 门面），打开回调复用项目树同一路径。
+        let weak_open_file_vc = weak_self.clone();
+        let version_control: Entity<VersionControlPanel> = cx.new(|cx| {
+            let mut panel = VersionControlPanel::new(root.clone(), project.clone(), cx);
+            let on_open_file: OnOpenFile = Rc::new(
+                move |path: PathBuf,
+                      focus_opened_item: bool,
+                      window: &mut Window,
+                      cx: &mut gpui::App| {
+                    if let Some(ws) = weak_open_file_vc.upgrade() {
+                        ws.update(cx, |ws, cx| {
+                            ws.open_path(path, focus_opened_item, window, cx);
+                        });
+                    }
+                },
+            );
+            panel.set_on_open_file(on_open_file);
+            panel
+        });
+
+        let (_all_handles, panel_pairs) = Self::make_panels(&project_tree, version_control, cx);
 
         // ═══ 创建 Dock Entities ═══════════════════════════════════
 

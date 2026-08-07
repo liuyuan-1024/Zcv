@@ -76,12 +76,19 @@ pub(crate) struct Repository {
     snapshot: RepositorySnapshot,
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 enum GitJobKey {
     ReloadGitState,
     RefreshStatuses,
     RefreshHunks,
     GitOperation(GitOperationKind),
+    GitInit,
+    /// 暂存/取消暂存（路径集合参与 key：不同路径集互不合并，同路径重复点击在
+    /// 队列中自动去重，避免一次操作被意外丢弃）。
+    StageFiles {
+        stage: bool,
+        paths: Vec<PathBuf>,
+    },
 }
 
 /// 用户触发的 git 操作（fetch/pull/push，由 UI 发起，后台执行）。
@@ -92,12 +99,14 @@ pub(crate) enum GitOperationKind {
     Push,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 enum GitJob {
     ReloadGitState,
     RefreshStatuses,
     RefreshHunks,
     GitOperation(GitOperationKind),
+    GitInit,
+    StageFiles { stage: bool, paths: Vec<PathBuf> },
 }
 
 impl GitJob {
@@ -107,6 +116,11 @@ impl GitJob {
             GitJob::RefreshStatuses => GitJobKey::RefreshStatuses,
             GitJob::RefreshHunks => GitJobKey::RefreshHunks,
             GitJob::GitOperation(operation) => GitJobKey::GitOperation(*operation),
+            GitJob::GitInit => GitJobKey::GitInit,
+            GitJob::StageFiles { stage, paths } => GitJobKey::StageFiles {
+                stage: *stage,
+                paths: paths.clone(),
+            },
         }
     }
 }
@@ -184,7 +198,7 @@ impl GitStore {
                         .background_executor()
                         .spawn(execute_job(
                             prepared.root,
-                            job,
+                            job.clone(),
                             prepared.repositories,
                             prepared.grouped_paths,
                         ))
@@ -227,6 +241,36 @@ impl GitStore {
             return;
         }
         self.schedule_job(GitJob::GitOperation(operation));
+    }
+
+    /// 在项目根初始化 git 仓库（空态面板按钮触发），完成后重新扫描以发现新仓库。
+    pub(crate) fn git_init(&mut self, _cx: &mut Context<Self>) {
+        self.schedule_job(GitJob::GitInit);
+    }
+
+    /// 暂存路径（面板复选框勾选触发；`git update-index`），完成后自动重新扫描。
+    pub(crate) fn stage_paths(&mut self, paths: Vec<PathBuf>, _cx: &mut Context<Self>) {
+        self.schedule_job(GitJob::StageFiles { stage: true, paths });
+    }
+
+    /// 取消暂存路径（面板复选框取消勾选触发；`git reset`），完成后自动重新扫描。
+    pub(crate) fn unstage_paths(&mut self, paths: Vec<PathBuf>, _cx: &mut Context<Self>) {
+        self.schedule_job(GitJob::StageFiles {
+            stage: false,
+            paths,
+        });
+    }
+
+    /// 枚举所有仓库（working_directory → 快照），顺序 = 发现顺序（祖先前置）。
+    ///
+    /// 返回借用，调用方按需读取字段；面板行模型构建的直接数据源。
+    pub(crate) fn repositories(&self) -> impl Iterator<Item = (&Path, &RepositorySnapshot)> {
+        self.repositories.iter().map(|repository| {
+            (
+                repository.repository.working_directory(),
+                &repository.snapshot,
+            )
+        })
     }
 
     /// 增量刷新：对变更路径重查状态（fs 事件、保存操作后调用）。
@@ -412,20 +456,10 @@ impl GitStore {
                 grouped_paths: Vec::new(),
             }),
             GitJob::RefreshStatuses => {
-                let paths = std::mem::take(&mut self.paths_needing_status_update);
-                let mut repositories = Vec::with_capacity(self.repositories.len());
-                let mut grouped_paths = vec![Vec::new(); self.repositories.len()];
-                for (index, repository) in self.repositories.iter().enumerate() {
-                    repositories.push(repository.repository.clone());
-                    let workdir = repository.repository.working_directory();
-                    grouped_paths[index].extend(paths.iter().filter_map(|path| {
-                        // fs 事件路径可能未 canonicalize（如 macOS 的 /var → /private/var）。
-                        let path = canonicalize_path(path);
-                        path.starts_with(workdir)
-                            .then(|| repo_relative_path(workdir, &path))
-                            .flatten()
-                    }));
-                }
+                let paths: Vec<PathBuf> = std::mem::take(&mut self.paths_needing_status_update)
+                    .into_iter()
+                    .collect();
+                let (repositories, grouped_paths) = self.group_paths_by_repo(&paths);
                 Some(JobPreparation {
                     root,
                     repositories,
@@ -478,6 +512,53 @@ impl GitStore {
                     root,
                     repositories: vec![repository],
                     grouped_paths: Vec::new(),
+                })
+            }
+            // init 作用于项目根，不依赖既有仓库集合。
+            GitJob::GitInit => Some(JobPreparation {
+                root,
+                repositories: Vec::new(),
+                grouped_paths: Vec::new(),
+            }),
+            GitJob::StageFiles { stage, paths } => {
+                let (repositories, grouped_paths) = self.group_paths_by_repo(paths);
+                // 目录路径展开为该仓库快照内状态匹配的文件（git update-index 不递归目录，直接传目录会失败；
+                // 对齐 Zed：目录勾选收集其下文件路径逐个暂存）。
+                // 只保留与操作方向一致的文件：reset 命中未跟踪路径会报错，且避免误暂存无关文件。
+                let grouped_paths = grouped_paths
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, rel_paths)| {
+                        let statuses = &self.repositories[index].snapshot.statuses_by_path;
+                        let mut expanded = Vec::new();
+                        for rel in rel_paths {
+                            let matches = |entry: &StatusEntry| {
+                                if *stage {
+                                    entry.status.has_unstaged()
+                                } else {
+                                    entry.status.has_staged()
+                                }
+                            };
+                            match statuses.get(&rel) {
+                                Some(entry) if matches(entry) => expanded.push(rel),
+                                Some(_) => {}
+                                None => expanded.extend(
+                                    statuses
+                                        .iter()
+                                        .filter(|(path, entry)| {
+                                            path.starts_with(&rel) && matches(entry)
+                                        })
+                                        .map(|(path, _)| path.clone()),
+                                ),
+                            }
+                        }
+                        expanded
+                    })
+                    .collect();
+                Some(JobPreparation {
+                    root,
+                    repositories,
+                    grouped_paths,
                 })
             }
         }
@@ -591,15 +672,18 @@ impl GitStore {
                     cx.emit(GitStoreEvent::Statuses);
                 }
             }
-            (GitJob::GitOperation(operation), JobResult::GitOperation(result)) => {
+            (
+                job @ (GitJob::GitOperation(_) | GitJob::GitInit | GitJob::StageFiles { .. }),
+                JobResult::GitOperation(result),
+            ) => {
                 match result {
                     Ok(()) => {
-                        // 操作改变了引用/工作树：重新全量扫描，比对后发出 Head/Statuses 事件。
-                        log::info!("git {:?} 成功", operation);
+                        // 操作改变了引用/工作树：重新全量扫描，比对后发出 Repositories/Head/Statuses 事件。
+                        log::info!("git {job:?} 成功");
                         self.schedule_scan(cx);
                     }
                     Err(error) => {
-                        log::warn!("git {:?} 失败：{error:#}", operation);
+                        log::warn!("git {job:?} 失败：{error:#}");
                     }
                 }
             }
@@ -614,6 +698,29 @@ impl GitStore {
             .iter()
             .filter(|repository| path.starts_with(repository.repository.working_directory()))
             .max_by_key(|repository| repository.repository.working_directory().as_os_str().len())
+    }
+
+    /// 按仓库分组路径（最长前缀匹配），返回 (仓库列表, 每仓库的相对路径组)。
+    ///
+    /// 路径与仓库根都先归一化，保证前缀比较一致；不在任何仓库内的路径丢弃。
+    fn group_paths_by_repo(
+        &self,
+        paths: &[PathBuf],
+    ) -> (Vec<Arc<dyn GitRepository>>, Vec<Vec<PathBuf>>) {
+        let mut repositories = Vec::with_capacity(self.repositories.len());
+        let mut grouped_paths = vec![Vec::new(); self.repositories.len()];
+        for (index, repository) in self.repositories.iter().enumerate() {
+            repositories.push(repository.repository.clone());
+            let workdir = repository.repository.working_directory();
+            grouped_paths[index].extend(paths.iter().filter_map(|path| {
+                // fs 事件路径可能未 canonicalize（如 macOS 的 /var → /private/var）。
+                let path = canonicalize_path(path);
+                path.starts_with(workdir)
+                    .then(|| repo_relative_path(workdir, &path))
+                    .flatten()
+            }));
+        }
+        (repositories, grouped_paths)
     }
 }
 
@@ -687,6 +794,28 @@ async fn execute_job(
                     GitOperationKind::Push => repository.push(),
                 })
                 .unwrap_or(Ok(()));
+            JobResult::GitOperation(result)
+        }
+        // 项目根无仓库时初始化；fallback 分支名对齐 Zed 的 "main"。
+        GitJob::GitInit => JobResult::GitOperation(zcv_git::init(&root, "main")),
+        // 暂存/取消暂存：按仓库分组执行；任一仓库失败即中断并上报。
+        GitJob::StageFiles { stage, .. } => {
+            let mut result = Ok(());
+            for (index, repository) in repositories.into_iter().enumerate() {
+                let paths = &grouped_paths[index];
+                if paths.is_empty() {
+                    continue;
+                }
+                let outcome = if stage {
+                    repository.stage_paths(paths)
+                } else {
+                    repository.unstage_paths(paths)
+                };
+                if let Err(error) = outcome {
+                    result = Err(error);
+                    break;
+                }
+            }
             JobResult::GitOperation(result)
         }
     }
@@ -908,6 +1037,7 @@ mod tests {
     use std::fs;
 
     use gpui::AppContext;
+    use zcv_git::StatusCode;
 
     use tempfile::TempDir;
 
@@ -1326,6 +1456,139 @@ mod tests {
             .to_string()
         };
         assert_eq!(rev(&remote), rev(&root), "push 后远程应指向本地 HEAD");
+    }
+
+    #[gpui::test]
+    fn git_init_then_scan_discovers_repository(cx: &mut gpui::TestAppContext) {
+        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+        let root = temp_dir.path().to_path_buf();
+
+        let git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
+        git_store.update(cx, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+        let empty = cx.read_entity(&git_store, |store, _| !store.has_repositories());
+        assert!(empty, "无仓库目录首次扫描后应无仓库");
+
+        // git init → 后台 job 完成后触发重扫 → 新仓库被发现。
+        git_store.update(cx, |store, cx| store.git_init(cx));
+        cx.run_until_parked(); // init job 完成
+        cx.run_until_parked(); // 其触发的全量重扫落地
+
+        let ready = cx.read_entity(&git_store, |store, _| store.has_repositories());
+        assert!(ready, "git init 后应发现新仓库");
+        // init 后为空仓库（无提交），branch/head 按设计为 None，这里只验证仓库被发现。
+        let count = cx.read_entity(&git_store, |store, _| store.repositories().count());
+        assert_eq!(count, 1, "应恰好发现一个仓库");
+    }
+
+    #[gpui::test]
+    fn stage_paths_moves_file_between_sections(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_repo();
+        fs::write(root.join("tracked.txt"), "修改后的内容\n").expect("应修改文件");
+
+        let git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
+        git_store.update(cx, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        // 修改文件初始为未暂存（index Unmodified、worktree Modified）。
+        let unstaged = cx.read_entity(&git_store, |store, _| {
+            matches!(
+                store
+                    .status_for_path(&root.join("tracked.txt"))
+                    .map(|entry| entry.status),
+                Some(FileStatus::Tracked {
+                    index_status: StatusCode::Unmodified,
+                    worktree_status: StatusCode::Modified
+                })
+            )
+        });
+        assert!(unstaged, "修改后应为未暂存状态");
+
+        // 暂存 → 后台 job + 重扫 → index 变为 Modified。
+        git_store.update(cx, |store, cx| {
+            store.stage_paths(vec![root.join("tracked.txt")], cx);
+        });
+        cx.run_until_parked(); // stage job 完成
+        cx.run_until_parked(); // 其触发的重扫落地
+        let staged = cx.read_entity(&git_store, |store, _| {
+            matches!(
+                store
+                    .status_for_path(&root.join("tracked.txt"))
+                    .map(|entry| entry.status),
+                Some(FileStatus::Tracked {
+                    index_status: StatusCode::Modified,
+                    worktree_status: StatusCode::Unmodified
+                })
+            )
+        });
+        assert!(staged, "暂存后 index 应为 Modified、worktree 干净");
+
+        // 取消暂存 → 回到未暂存。
+        git_store.update(cx, |store, cx| {
+            store.unstage_paths(vec![root.join("tracked.txt")], cx);
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+        let unstaged_again = cx.read_entity(&git_store, |store, _| {
+            matches!(
+                store
+                    .status_for_path(&root.join("tracked.txt"))
+                    .map(|entry| entry.status),
+                Some(FileStatus::Tracked {
+                    index_status: StatusCode::Unmodified,
+                    worktree_status: StatusCode::Modified
+                })
+            )
+        });
+        assert!(unstaged_again, "取消暂存后应回到未暂存状态");
+    }
+
+    #[gpui::test]
+    fn stage_paths_expands_directory_to_matching_files(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_repo();
+        // src 下的已跟踪修改 + 未跟踪新文件 + 子目录文件。
+        std::fs::create_dir_all(root.join("src/sub")).expect("应创建目录");
+        fs::write(root.join("src/a.txt"), "改动的 a\n").expect("应写入文件");
+        fs::write(root.join("src/new.txt"), "新文件\n").expect("应写入文件");
+        fs::write(root.join("src/sub/b.txt"), "改动的 b\n").expect("应写入文件");
+
+        let git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
+        git_store.update(cx, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        // 暂存整个 src 目录：修改 + 未跟踪 + 子目录文件一并进入 index。
+        git_store.update(cx, |store, cx| {
+            store.stage_paths(vec![root.join("src")], cx);
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+        let staged = cx.read_entity(&git_store, |store, _| {
+            ["src/a.txt", "src/new.txt", "src/sub/b.txt"]
+                .into_iter()
+                .all(|relative| {
+                    store
+                        .status_for_path(&root.join(relative))
+                        .is_some_and(|entry| entry.status.has_staged())
+                })
+        });
+        assert!(staged, "目录暂存后其下所有变更文件都应已暂存");
+
+        // 取消暂存整个目录：全部回到未暂存（新文件回到未跟踪）。
+        git_store.update(cx, |store, cx| {
+            store.unstage_paths(vec![root.join("src")], cx);
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+        let unstaged = cx.read_entity(&git_store, |store, _| {
+            ["src/a.txt", "src/new.txt", "src/sub/b.txt"]
+                .into_iter()
+                .all(|relative| {
+                    store
+                        .status_for_path(&root.join(relative))
+                        .is_some_and(|entry| entry.status.has_unstaged())
+                })
+        });
+        assert!(unstaged, "目录取消暂存后其下所有文件都应回到未暂存");
     }
 
     #[gpui::test]

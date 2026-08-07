@@ -10,18 +10,18 @@ use zcv_theme::{color, typography};
 ///
 /// 需要自定义 color/size 时链式调用覆盖：
 /// ```ignore
-/// SvgIcon::new("icons/files/file.svg")
+/// SvgIcon::new("icons/file.svg")
 ///     .size(px(10.0))
 ///     .color(color::current(cx).icon_muted)
 /// ```
-pub(crate) struct SvgIcon {
+pub struct SvgIcon {
     path: &'static str,
     color: Option<Rgba>,
     size: Pixels,
 }
 
 impl SvgIcon {
-    pub(crate) fn new(path: &'static str) -> Self {
+    pub fn new(path: &'static str) -> Self {
         Self {
             path,
             // 默认色延迟到 render（有 cx）解析
@@ -30,12 +30,12 @@ impl SvgIcon {
         }
     }
 
-    pub(crate) fn color(mut self, color: Rgba) -> Self {
+    pub fn color(mut self, color: Rgba) -> Self {
         self.color = Some(color);
         self
     }
 
-    pub(crate) fn size(mut self, size: Pixels) -> Self {
+    pub fn size(mut self, size: Pixels) -> Self {
         self.size = size;
         self
     }

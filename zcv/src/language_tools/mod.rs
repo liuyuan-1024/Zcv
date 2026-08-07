@@ -4,10 +4,10 @@
 
 use gpui::{Context, Entity, Render, Window, prelude::*};
 
-use crate::ui::Glyph;
 use crate::workspace::StatusItemView;
 use crate::workspace::ToggleLanguageServer;
 use zcv_editor::Editor;
+use zcv_ui::Glyph;
 
 pub(crate) struct LspButton;
 
@@ -23,7 +23,7 @@ impl StatusItemView for LspButton {
 
 impl Render for LspButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        Glyph::icon("lsp-button", "icons/status/language_server.svg")
+        Glyph::icon("lsp-button", "icons/language_server.svg")
             .label("语言服务器")
             .shortcut_by_name("dock::ToggleLanguageServer", cx)
             .on_click(|window, cx| window.dispatch_action(Box::new(ToggleLanguageServer), cx))

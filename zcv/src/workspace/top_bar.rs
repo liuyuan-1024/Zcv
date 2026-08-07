@@ -3,10 +3,10 @@
 use gpui::{AnyElement, Div, Entity, Window, actions, div, prelude::*};
 
 use super::window_controls;
-use crate::project::RemoteOperationState;
 use crate::recent_projects::{OnProjectSelected, ProjectPicker};
-use crate::ui::Glyph;
+use zcv_project::RemoteOperationState;
 use zcv_theme::{color, space};
+use zcv_ui::Glyph;
 
 actions!(top_bar, [OpenSettings, GitFetch, GitPull, GitPush,]);
 
@@ -111,7 +111,7 @@ fn leading_slots(
         out.push(
             Glyph::icon_text(
                 "top-bar.branch",
-                "icons/panels/version_control.svg",
+                "icons/version_control.svg",
                 branch.unwrap_or("--"),
             )
             .label("分支")
@@ -121,7 +121,7 @@ fn leading_slots(
         // （主动检查更新的兜底），推送/拉取仅在可推/可拉时出现（icon_text 复用为计数徽标）。
         if state.has_remote {
             out.push(
-                Glyph::icon("top-bar.git-fetch", "icons/actions/arrow_circle.svg")
+                Glyph::icon("top-bar.git-fetch", "icons/arrow_circle.svg")
                     .label("同步")
                     .on_click(|window, cx| {
                         window.dispatch_action(Box::new(GitFetch), cx);
@@ -132,7 +132,7 @@ fn leading_slots(
                 out.push(
                     Glyph::icon_text(
                         "top-bar.git-pull",
-                        "icons/actions/arrow_down.svg",
+                        "icons/arrow_down.svg",
                         state.behind.to_string(),
                     )
                     .label("拉取")
@@ -146,7 +146,7 @@ fn leading_slots(
                 out.push(
                     Glyph::icon_text(
                         "top-bar.git-push",
-                        "icons/actions/arrow_up.svg",
+                        "icons/arrow_up.svg",
                         state.ahead.to_string(),
                     )
                     .label("推送")
@@ -164,7 +164,7 @@ fn leading_slots(
 
 fn trailing_slots(cx: &gpui::App) -> Vec<AnyElement> {
     vec![
-        Glyph::icon("top-bar.settings", "icons/actions/settings.svg")
+        Glyph::icon("top-bar.settings", "icons/settings.svg")
             .label("设置")
             .shortcut(&OpenSettings, cx)
             .on_click(|window, cx| {

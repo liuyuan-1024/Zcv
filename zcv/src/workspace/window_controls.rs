@@ -114,9 +114,9 @@ impl Pip {
 
     fn svg_path(self) -> &'static str {
         match self {
-            Pip::Close => "icons/window/close.svg",
-            Pip::Minimize => "icons/window/minimize.svg",
-            Pip::Maximize => "icons/window/maximize.svg",
+            Pip::Close => "icons/generic_close.svg",
+            Pip::Minimize => "icons/minimize.svg",
+            Pip::Maximize => "icons/maximize.svg",
         }
     }
 }

@@ -16,13 +16,13 @@ use gpui::{
     WeakEntity, Window, actions, div, prelude::*, uniform_list,
 };
 
-use crate::project::{GitStoreEvent, Project, RepositorySnapshot};
 use crate::project_tree::OnOpenFile;
-use crate::ui::{Checkbox, Glyph, tree};
 use crate::workspace::{Panel, ToggleVersionControl};
 use zcv_editor::Editor;
 use zcv_git::{DiffStat, FileStatus, StatusCode};
+use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space, typography};
+use zcv_ui::{Checkbox, Glyph, tree};
 
 actions!(
     version_control,
@@ -822,7 +822,7 @@ fn render_commit_footer(
                 // 图标对齐 Zed（IconName::Undo / undo.svg），hover 提示"撤销提交"。
                 .when(has_last_commit, |element| {
                     element.child(
-                        Glyph::icon("version-control-uncommit", "icons/actions/undo.svg")
+                        Glyph::icon("version-control-uncommit", "icons/undo.svg")
                             .label("撤销提交")
                             .on_click(move |window, cx| {
                                 window.dispatch_action(Box::new(Uncommit), cx);
@@ -867,7 +867,7 @@ impl Panel for VersionControlPanel {
     type ToggleAction = ToggleVersionControl;
 
     fn icon() -> &'static str {
-        "icons/panels/version_control.svg"
+        "icons/version_control.svg"
     }
     fn label() -> &'static str {
         "版本控制"
@@ -1054,7 +1054,7 @@ mod tests {
     use gpui::{KeyBinding, TestAppContext, point, px};
     use tempfile::TempDir;
 
-    use crate::project::{Project, StatusEntry};
+    use zcv_project::{Project, StatusEntry};
 
     /// 构造快照：路径 → 状态；diff 统计取固定样例值（staged/unstaged 可区分）。
     fn snapshot(entries: &[(&str, FileStatus)]) -> RepositorySnapshot {

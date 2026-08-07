@@ -4,10 +4,10 @@
 
 use gpui::{Context, Entity, Render, Window, prelude::*};
 
-use crate::ui::Glyph;
 use crate::workspace::StatusItemView;
 use crate::workspace::ToggleProjectSearch;
 use zcv_editor::Editor;
+use zcv_ui::Glyph;
 
 pub(crate) struct ProjectSearchButton;
 
@@ -23,7 +23,7 @@ impl StatusItemView for ProjectSearchButton {
 
 impl Render for ProjectSearchButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        Glyph::icon("search-button", "icons/panels/search.svg")
+        Glyph::icon("search-button", "icons/search.svg")
             .label("项目搜索")
             .shortcut_by_name("dock::ToggleProjectSearch", cx)
             .on_click(|window, cx| window.dispatch_action(Box::new(ToggleProjectSearch), cx))

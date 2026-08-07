@@ -22,7 +22,7 @@ const MAX_INCREMENTAL_PATHS: usize = 500;
 
 /// 仓库状态变化的通知。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum GitStoreEvent {
+pub enum GitStoreEvent {
     /// 仓库集合发生变化（发现/消失）。
     Repositories,
     /// 文件状态或 diff 统计发生变化。
@@ -35,47 +35,47 @@ pub(crate) enum GitStoreEvent {
 
 /// 单个文件在某个仓库中的状态快照。
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct StatusEntry {
-    pub(crate) status: FileStatus,
+pub struct StatusEntry {
+    pub status: FileStatus,
     /// 暂存 + 未暂存之和（面板展示改动计数用）。
-    pub(crate) diff_stat: DiffStat,
-    pub(crate) staged_diff_stat: DiffStat,
-    pub(crate) unstaged_diff_stat: DiffStat,
+    pub diff_stat: DiffStat,
+    pub staged_diff_stat: DiffStat,
+    pub unstaged_diff_stat: DiffStat,
     /// 行级 diff hunks（None = 尚未查询；Some([]) = 已查询且无变化）。
     /// 全量扫描不查，按需查询（打开文件 / 增量刷新时）。
-    pub(crate) hunks: Option<Arc<[DiffHunk]>>,
+    pub hunks: Option<Arc<[DiffHunk]>>,
 }
 
 /// 活动仓库的远程操作状态（remote 配置与 upstream 领先/落后计数）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RemoteOperationState {
+pub struct RemoteOperationState {
     /// 是否配置了 remote（无 remote 时 fetch/pull/push 均不可用）。
-    pub(crate) has_remote: bool,
+    pub has_remote: bool,
     /// 本地领先 upstream 的提交数（可推送数）。
-    pub(crate) ahead: usize,
+    pub ahead: usize,
     /// 本地落后 upstream 的提交数（可拉取数）。
-    pub(crate) behind: usize,
+    pub behind: usize,
 }
 
 /// 单个仓库的状态快照。
 #[derive(Debug)]
-pub(crate) struct RepositorySnapshot {
-    pub(crate) branch: Option<String>,
-    pub(crate) head: Option<String>,
+pub struct RepositorySnapshot {
+    pub branch: Option<String>,
+    pub head: Option<String>,
     /// 最近一次提交的 subject（首行；无提交时为 None）。
     /// 底部提交区显示用，status 扫描时顺手读取（对齐 Zed branch scan 的 `%(contents:subject)`）。
-    pub(crate) last_commit_message: Option<String>,
+    pub last_commit_message: Option<String>,
     /// 是否配置了 remote。
-    pub(crate) has_remote: bool,
+    pub has_remote: bool,
     /// 当前分支相对 upstream 的领先/落后计数（无 upstream 时为 0）。
-    pub(crate) ahead: usize,
-    pub(crate) behind: usize,
+    pub ahead: usize,
+    pub behind: usize,
     /// 相对仓库根的路径 → 状态。
-    pub(crate) statuses_by_path: BTreeMap<PathBuf, StatusEntry>,
+    pub statuses_by_path: BTreeMap<PathBuf, StatusEntry>,
 }
 
-pub(crate) struct Repository {
-    pub(crate) repository: Arc<dyn GitRepository>,
+pub struct Repository {
+    pub repository: Arc<dyn GitRepository>,
     snapshot: RepositorySnapshot,
 }
 
@@ -102,7 +102,7 @@ enum GitJobKey {
 
 /// 用户触发的 git 操作（fetch/pull/push，由 UI 发起，后台执行）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum GitOperationKind {
+pub enum GitOperationKind {
     Fetch,
     Pull,
     Push,
@@ -175,7 +175,7 @@ enum JobResult {
     Uncommit(anyhow::Result<Option<String>>),
 }
 
-pub(crate) struct GitStore {
+pub struct GitStore {
     root: PathBuf,
     repositories: Vec<Repository>,
     /// 活动仓库（按 working_directory 标识）：分支显示与 fetch/pull/push 等 git 操作的目标。
@@ -194,7 +194,7 @@ pub(crate) struct GitStore {
 }
 
 impl GitStore {
-    pub(crate) fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
+    pub fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
         // 仓库的 working_directory 来自 canonicalize，root 同样归一化，保证路径前缀匹配一致。
         let root = canonicalize_path(&root);
         let background = cx.background_executor().clone();
@@ -244,7 +244,7 @@ impl GitStore {
     }
 
     /// 全量扫描：重新发现仓库并重扫所有状态（初始扫描与结构性变化时调用）。
-    pub(crate) fn schedule_scan(&mut self, _cx: &mut Context<Self>) {
+    pub fn schedule_scan(&mut self, _cx: &mut Context<Self>) {
         self.paths_needing_status_update.clear();
         self.schedule_job(GitJob::ReloadGitState);
     }
@@ -252,7 +252,7 @@ impl GitStore {
     /// 后台执行用户触发的 git 操作（fetch/pull/push），完成后重新扫描。
     ///
     /// 仓库尚未扫描完成（首次打开项目）时只触发扫描，操作由用户稍后重试。
-    pub(crate) fn run_operation(&mut self, operation: GitOperationKind, cx: &mut Context<Self>) {
+    pub fn run_operation(&mut self, operation: GitOperationKind, cx: &mut Context<Self>) {
         if self.repositories.is_empty() {
             log::warn!(
                 "git 仓库尚未就绪，跳过 {:?}（等待首次扫描完成后重试）",
@@ -265,17 +265,17 @@ impl GitStore {
     }
 
     /// 在项目根初始化 git 仓库（空态面板按钮触发），完成后重新扫描以发现新仓库。
-    pub(crate) fn git_init(&mut self, _cx: &mut Context<Self>) {
+    pub fn git_init(&mut self, _cx: &mut Context<Self>) {
         self.schedule_job(GitJob::GitInit);
     }
 
     /// 暂存路径（面板复选框勾选触发；`git update-index`），完成后自动重新扫描。
-    pub(crate) fn stage_paths(&mut self, paths: Vec<PathBuf>, _cx: &mut Context<Self>) {
+    pub fn stage_paths(&mut self, paths: Vec<PathBuf>, _cx: &mut Context<Self>) {
         self.schedule_job(GitJob::StageFiles { stage: true, paths });
     }
 
     /// 取消暂存路径（面板复选框取消勾选触发；`git reset`），完成后自动重新扫描。
-    pub(crate) fn unstage_paths(&mut self, paths: Vec<PathBuf>, _cx: &mut Context<Self>) {
+    pub fn unstage_paths(&mut self, paths: Vec<PathBuf>, _cx: &mut Context<Self>) {
         self.schedule_job(GitJob::StageFiles {
             stage: false,
             paths,
@@ -285,7 +285,7 @@ impl GitStore {
     /// 提交暂存内容（消息来自面板提交信息编辑器）；无已暂存改动时自动暂存全部已跟踪改动。
     ///
     /// 成功后重扫，Head/Statuses 事件驱动面板清空编辑器并刷新上次提交信息。
-    pub(crate) fn commit(&mut self, message: String, cx: &mut Context<Self>) {
+    pub fn commit(&mut self, message: String, cx: &mut Context<Self>) {
         if self.repositories.is_empty() {
             log::warn!("git 仓库尚未就绪，跳过 commit（等待首次扫描完成后重试）");
             self.schedule_scan(cx);
@@ -295,7 +295,7 @@ impl GitStore {
     }
 
     /// 撤销最近一次提交（`git reset --soft HEAD^`），被撤销消息填回提交信息编辑器。
-    pub(crate) fn uncommit(&mut self, cx: &mut Context<Self>) {
+    pub fn uncommit(&mut self, cx: &mut Context<Self>) {
         if self.repositories.is_empty() {
             log::warn!("git 仓库尚未就绪，跳过 uncommit（等待首次扫描完成后重试）");
             self.schedule_scan(cx);
@@ -307,7 +307,7 @@ impl GitStore {
     /// 枚举所有仓库（working_directory → 快照），顺序 = 发现顺序（祖先前置）。
     ///
     /// 返回借用，调用方按需读取字段；面板行模型构建的直接数据源。
-    pub(crate) fn repositories(&self) -> impl Iterator<Item = (&Path, &RepositorySnapshot)> {
+    pub fn repositories(&self) -> impl Iterator<Item = (&Path, &RepositorySnapshot)> {
         self.repositories.iter().map(|repository| {
             (
                 repository.repository.working_directory(),
@@ -317,7 +317,7 @@ impl GitStore {
     }
 
     /// 增量刷新：对变更路径重查状态（fs 事件、保存操作后调用）。
-    pub(crate) fn refresh_statuses_for_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+    pub fn refresh_statuses_for_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         // 调用方传入的路径可能未 canonicalize，与归一化后的 root 比较前先归一化。
         let paths: Vec<PathBuf> = paths
             .iter()
@@ -337,7 +337,7 @@ impl GitStore {
     }
 
     /// 查询文件状态（最长前缀匹配仓库；不在任何仓库中时为 None）。
-    pub(crate) fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
+    pub fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
         let path = canonicalize_path(path);
         let repository = self.repo_for_path(&path)?;
         let relative = repo_relative_path(repository.repository.working_directory(), &path)?;
@@ -345,7 +345,7 @@ impl GitStore {
     }
 
     /// 文件的行级 diff hunks（None = 尚未查询；Some([]) = 已查询且无变化）。
-    pub(crate) fn hunks_for_path(&self, path: &Path) -> Option<Arc<[DiffHunk]>> {
+    pub fn hunks_for_path(&self, path: &Path) -> Option<Arc<[DiffHunk]>> {
         self.status_for_path(path)?.hunks.clone()
     }
 
@@ -353,7 +353,7 @@ impl GitStore {
     ///
     /// prepare 阶段过滤：只对「已跟踪且尚未查询」的路径发起 diff，untracked/忽略/
     /// 已查询路径直接丢弃（untracked 永不查询 → 永不画 marker，对齐 Zed）。
-    pub(crate) fn request_hunks(&mut self, paths: &[PathBuf], _cx: &mut Context<Self>) {
+    pub fn request_hunks(&mut self, paths: &[PathBuf], _cx: &mut Context<Self>) {
         let paths: Vec<PathBuf> = paths
             .iter()
             .map(|path| canonicalize_path(path))
@@ -371,7 +371,7 @@ impl GitStore {
     /// 目录自身被忽略时直接返回；
     /// 否则取子项中优先级最高的状态（conflict > deleted > modified > added/untracked）。
     /// 被忽略的子项不参与聚合——目录不应因内部忽略文件而淡显。
-    pub(crate) fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
+    pub fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
         let path = canonicalize_path(path);
         let repository = self.repo_for_path(&path)?;
         let relative = repo_relative_path(repository.repository.working_directory(), &path)?;
@@ -399,7 +399,7 @@ impl GitStore {
     }
 
     /// 当前活动仓库的分支名（无仓库、active 未建立或活动仓库为空仓库时为 None）。
-    pub(crate) fn current_branch(&self) -> Option<&str> {
+    pub fn current_branch(&self) -> Option<&str> {
         self.active_workdir
             .as_ref()
             .and_then(|workdir| self.repo_by_workdir(workdir))
@@ -409,7 +409,7 @@ impl GitStore {
     /// 活动仓库最近一次提交的 subject（底部提交区显示）。
     ///
     /// 仓库选择逻辑与 prepare_job 的 Commit 分支一致，保证"显示的提交信息"与"提交目标仓库"对齐。
-    pub(crate) fn last_commit_message(&self) -> Option<&str> {
+    pub fn last_commit_message(&self) -> Option<&str> {
         self.active_workdir
             .as_ref()
             .and_then(|workdir| self.repo_by_workdir(workdir))
@@ -423,7 +423,7 @@ impl GitStore {
     }
 
     /// 取出 uncommit 成功后被撤销的提交消息（面板在 Head 事件后调用填回编辑器）。
-    pub(crate) fn take_pending_uncommitted_message(&mut self) -> Option<String> {
+    pub fn take_pending_uncommitted_message(&mut self) -> Option<String> {
         self.pending_uncommitted_message.take()
     }
 
@@ -435,7 +435,7 @@ impl GitStore {
     }
 
     /// 活动仓库的远程操作状态（可推送/可拉取判定依据）。
-    pub(crate) fn remote_operation_state(&self) -> RemoteOperationState {
+    pub fn remote_operation_state(&self) -> RemoteOperationState {
         self.active_workdir
             .as_ref()
             .and_then(|workdir| self.repo_by_workdir(workdir))
@@ -451,7 +451,7 @@ impl GitStore {
     ///
     /// 路径可能未 canonicalize（如设置文件入口），先归一化再匹配；
     /// 路径不在任何仓库中（如已删除）时保持当前活动仓库不变。
-    pub(crate) fn set_active_repository_for_path(&mut self, path: &Path, cx: &mut Context<Self>) {
+    pub fn set_active_repository_for_path(&mut self, path: &Path, cx: &mut Context<Self>) {
         let path = canonicalize_path(path);
         let Some(repository) = self.repo_for_path(&path) else {
             return;
@@ -464,12 +464,12 @@ impl GitStore {
     }
 
     /// 是否已发现至少一个 git 仓库（决定 git 相关 UI 是否可见）。
-    pub(crate) fn has_repositories(&self) -> bool {
+    pub fn has_repositories(&self) -> bool {
         !self.repositories.is_empty()
     }
 
     /// 读取 HEAD 中 `path` 的文本（diff base），不在仓库/无 HEAD 时为 None。
-    pub(crate) fn load_committed_text(&self, path: &Path) -> Task<Option<String>> {
+    pub fn load_committed_text(&self, path: &Path) -> Task<Option<String>> {
         let background = self.background.clone();
         let path = canonicalize_path(path);
         let Some(repository) = self.repo_for_path(&path) else {
@@ -488,14 +488,14 @@ impl GitStore {
     }
 
     /// 读取缓存的 HEAD 文本（删除块展开用；未预取时为 None）。
-    pub(crate) fn committed_text(&self, path: &Path) -> Option<Arc<str>> {
+    pub fn committed_text(&self, path: &Path) -> Option<Arc<str>> {
         self.committed_text_cache
             .get(&canonicalize_path(path))
             .cloned()
     }
 
     /// 缓存 HEAD 文本（HEAD 变化时由 commit_job 清空）。
-    pub(crate) fn cache_committed_text(&mut self, path: &Path, text: Arc<str>) {
+    pub fn cache_committed_text(&mut self, path: &Path, text: Arc<str>) {
         self.committed_text_cache
             .insert(canonicalize_path(path), text);
     }

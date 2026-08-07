@@ -1,8 +1,7 @@
 [package]
-name = "zcv"
+name = "zcv-project"
 version.workspace = true
 edition.workspace = true
-description = "zcv —— 新一代 GPUI 桌面编辑器"
 
 [dependencies]
 anyhow.workspace = true
@@ -12,20 +11,10 @@ globset.workspace = true
 gpui.workspace = true
 log.workspace = true
 notify.workspace = true
-regex.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-serde_json_lenient.workspace = true
-toml.workspace = true
 trash.workspace = true
-zcv-editor.workspace = true
 zcv-engine.workspace = true
 zcv-git.workspace = true
-zcv-keymap.workspace = true
 zcv-language.workspace = true
-zcv-project.workspace = true
-zcv-theme.workspace = true
-zcv-ui.workspace = true
 
 [dev-dependencies]
 gpui.workspace = true

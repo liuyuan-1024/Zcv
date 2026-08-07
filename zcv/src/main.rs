@@ -5,16 +5,12 @@ mod assets;
 mod breadcrumbs;
 mod cursor_position;
 mod diagnostics;
-mod fs_watcher;
-mod keymap;
 mod language_tools;
 mod paths;
-mod project;
 mod project_search;
 mod project_tree;
 mod recent_projects;
 mod settings;
-mod ui;
 mod version_control;
 mod workspace;
 
@@ -114,4 +110,63 @@ fn initialize_pane(pane: &Entity<Pane>, window: &mut Window, cx: &mut Context<Wo
             toolbar.add_item(cx.new(|_| Breadcrumbs::new()), window, cx);
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+    use zcv_keymap::load_json;
+
+    /// keymap JSON 引用的所有 action 必须已注册（集成校验：注册来自本 crate 与 zcv-editor）。
+    #[gpui::test]
+    fn every_platform_keymap_builds_every_registered_action(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            for (source, json) in [
+                (
+                    "default-macos.json",
+                    include_str!("../../zcv-keymap/assets/keymaps/default-macos.json"),
+                ),
+                (
+                    "default-linux.json",
+                    include_str!("../../zcv-keymap/assets/keymaps/default-linux.json"),
+                ),
+                (
+                    "default-windows.json",
+                    include_str!("../../zcv-keymap/assets/keymaps/default-windows.json"),
+                ),
+            ] {
+                let keybindings =
+                    load_json(source, json, cx).expect("每个平台的全部内置绑定都应能构建");
+                assert!(!keybindings.bindings.is_empty());
+                assert!(
+                    cx.build_action("workspace::Save", None).is_ok(),
+                    "workspace::Save 应已注册且 keymap 可引用"
+                );
+            }
+        });
+    }
+
+    /// 面板切换 action 只能由 dock 持有（防止 status_bar 等重复注册导致快捷键歧义）。
+    #[gpui::test]
+    fn panel_toggle_actions_are_owned_only_by_dock(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            for action in [
+                "ToggleProjectTree",
+                "ToggleVersionControl",
+                "ToggleOutline",
+                "ToggleLanguageServer",
+                "ToggleDiagnostics",
+                "ToggleProjectSearch",
+                "ToggleTerminal",
+                "ToggleDebug",
+                "ToggleKeyboardShortcuts",
+            ] {
+                assert!(cx.build_action(&format!("dock::{action}"), None).is_ok());
+                assert!(
+                    cx.build_action(&format!("status_bar::{action}"), None)
+                        .is_err()
+                );
+            }
+        });
+    }
 }

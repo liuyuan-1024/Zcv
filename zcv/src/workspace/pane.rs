@@ -15,11 +15,11 @@ use zcv_language::LanguageBuffer;
 use super::item::{Item, ItemHandle};
 use super::tab_bar::TabBar;
 use super::toolbar::Toolbar;
-use crate::ui::Glyph;
-use crate::ui::SvgIcon;
-use crate::ui::Tab;
 use zcv_editor::{Editor, SoftWrap};
 use zcv_theme::{color, typography};
+use zcv_ui::Glyph;
+use zcv_ui::SvgIcon;
+use zcv_ui::Tab;
 
 actions!(pane, [CloseTab, NextTab, PrevTab]);
 
@@ -555,8 +555,8 @@ fn render_tab_bar_drop_target(
 /// 未来扩展按扩展名区分的图标库时，在本函数内追加映射即可。
 fn file_icon(path: Option<&Path>) -> impl gpui::IntoElement {
     let icon = match path {
-        Some(path) if path.is_dir() => "icons/files/folder.svg",
-        _ => "icons/files/file.svg",
+        Some(path) if path.is_dir() => "icons/folder.svg",
+        _ => "icons/file.svg",
     };
     SvgIcon::new(icon)
 }
@@ -568,7 +568,7 @@ fn close_glyph(
     cx: &App,
 ) -> impl gpui::IntoElement {
     let entity = pane_entity.clone();
-    Glyph::icon(("tab-close", item_id), "icons/actions/close.svg")
+    Glyph::icon(("tab-close", item_id), "icons/close.svg")
         .label("关闭")
         .shortcut(&CloseTab, cx)
         .on_click(move |window: &mut gpui::Window, cx: &mut gpui::App| {
@@ -604,7 +604,7 @@ fn tab_end_glyph(
             div()
                 .group_hover(TAB_HOVER_GROUP, |style| style.opacity(0.0))
                 .child(
-                    Glyph::icon(("tab-dirty", item_id), "icons/actions/circle.svg")
+                    Glyph::icon(("tab-dirty", item_id), "icons/circle.svg")
                         .color(color::current(cx).icon_accent),
                 ),
         )

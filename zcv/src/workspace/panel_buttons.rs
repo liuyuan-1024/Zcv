@@ -6,9 +6,9 @@
 use gpui::{App, Context, ElementId, Entity, Render, Subscription, Window, div, prelude::*};
 
 use super::{Dock, DockPosition, StatusItemView};
-use crate::ui::Glyph;
 use zcv_editor::Editor;
 use zcv_theme::{color, space};
+use zcv_ui::Glyph;
 
 /// 底栏按钮组：绑定一个 Dock Entity，渲染其所有面板。
 pub(crate) struct PanelButtons {

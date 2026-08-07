@@ -6,12 +6,12 @@ use crate::ui::SvgIcon;
 use zcv_git::{FileStatus, StatusCode};
 use zcv_theme::{color, space, typography};
 
-const FOLDER: &str = "icons/files/folder.svg";
-const FOLDER_OPEN: &str = "icons/files/folder_open.svg";
-const FILE: &str = "icons/files/file.svg";
+const FOLDER: &str = "icons/folder.svg";
+const FOLDER_OPEN: &str = "icons/folder_open.svg";
+const FILE: &str = "icons/file.svg";
 
 /// 树行完整渲染：行骨架 + 缩进竖线 + 图标 + 行内容。
-pub(crate) fn render_row_base(
+pub fn render_row_base(
     depth: usize,
     is_dir: bool,
     expanded: bool,
@@ -25,7 +25,7 @@ pub(crate) fn render_row_base(
 }
 
 /// 选中框——absolute 覆盖整行，不参与行布局。
-pub(crate) fn selection_border(cx: &App) -> gpui::Div {
+pub fn selection_border(cx: &App) -> gpui::Div {
     let m = metrics();
     div()
         .absolute()
@@ -41,7 +41,7 @@ pub(crate) fn selection_border(cx: &App) -> gpui::Div {
 /// git 状态 → 文本颜色（对齐 Zed `entry_git_aware_label_color` 的优先级）。
 ///
 /// conflict > deleted > modified > added/untracked > ignored（渲染层淡显）。
-pub(crate) fn git_status_color(status: FileStatus, cx: &App) -> Option<gpui::Rgba> {
+pub fn git_status_color(status: FileStatus, cx: &App) -> Option<gpui::Rgba> {
     let colors = color::current(cx);
     match status {
         FileStatus::Unmerged => Some(colors.status_conflict),

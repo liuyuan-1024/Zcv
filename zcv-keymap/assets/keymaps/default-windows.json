@@ -81,13 +81,14 @@
     }
   },
   {
-    "context": "Picker",
+    "context": "Picker || (ProjectPicker > Picker > Editor)",
     "bindings": {
       "up": "picker::PickerSelectPrev",
       "down": "picker::PickerSelectNext",
       "enter": "picker::PickerConfirm",
       "escape": "picker::PickerCancel",
-      "ctrl-l": "project_picker::OpenLocalProject"
+      "ctrl-l": "project_picker::OpenLocalProject",
+      "ctrl-backspace": "project_picker::DeleteRecentProject"
     }
   },
   {

@@ -44,23 +44,47 @@ fn display_format(raw: &str) -> String {
 fn macos_display(raw: &str) -> String {
     fn modifier(key: &str) -> Option<&'static str> {
         match key {
-            "cmd" | "command" => Some("⌘"),
             "ctrl" | "control" => Some("⌃"),
             "shift" => Some("⇧"),
             "option" | "alt" => Some("⌥"),
+            "cmd" | "command" => Some("⌘"),
+            _ => None,
+        }
+    }
+
+    /// 功能键的 macOS 键帽符号（对齐 Apple 官方键盘符号表）。
+    fn key_symbol(key: &str) -> Option<&'static str> {
+        match key {
+            "backspace" => Some("⌫"),
+            "delete" => Some("⌦"),
+            "enter" | "return" => Some("↩"),
+            "escape" => Some("⎋"),
+            "tab" => Some("⇥"),
+            "capslock" => Some("⇪"),
+            "up" => Some("↑"),
+            "down" => Some("↓"),
+            "left" => Some("←"),
+            "right" => Some("→"),
+            "home" => Some("↖"),
+            "end" => Some("↘"),
+            "pageup" => Some("⇞"),
+            "pagedown" => Some("⇟"),
             _ => None,
         }
     }
 
     raw.split('-')
         .map(|part| {
-            modifier(part).map(|s| s.to_string()).unwrap_or_else(|| {
-                if part.len() == 1 {
-                    part.to_uppercase()
-                } else {
-                    part.to_string()
-                }
-            })
+            modifier(part)
+                .map(|s| s.to_string())
+                .or_else(|| key_symbol(part).map(|s| s.to_string()))
+                .unwrap_or_else(|| {
+                    if part.len() == 1 {
+                        part.to_uppercase()
+                    } else {
+                        part.to_string()
+                    }
+                })
         })
         .collect::<Vec<_>>()
         .join("")
@@ -74,7 +98,8 @@ fn text_display(raw: &str) -> String {
             "cmd" | "ctrl" => Some("Ctrl"),
             "shift" => Some("Shift"),
             "alt" | "option" => Some("Alt"),
-            "super" | "win" => Some("Win"),
+            "super" => Some("Super"),
+            "win" => Some("Win"),
             _ => None,
         }
     }
@@ -225,6 +250,27 @@ mod tests {
             .expect("未知 action 必须使内置 keymap 加载失败")
         });
         assert!(error.to_string().contains("missing::Action"));
+    }
+
+    /// 项目选择器分组使用的复合 context 必须可解析。
+    #[test]
+    fn composite_context_parses() {
+        KeyBindingContextPredicate::parse("Picker || (ProjectPicker > Picker > Editor)")
+            .expect("复合 context 必须可解析");
+    }
+
+    /// macOS 显示格式：修饰键与功能键都使用键帽符号。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_display_uses_key_cap_symbols() {
+        assert_eq!(macos_display("cmd-backspace"), "⌘⌫");
+        assert_eq!(macos_display("cmd-shift-e"), "⌘⇧E");
+        assert_eq!(macos_display("ctrl-alt-delete"), "⌃⌥⌦");
+        assert_eq!(macos_display("shift-pageup"), "⇧⇞");
+        assert_eq!(macos_display("cmd-enter"), "⌘↩");
+        assert_eq!(macos_display("alt-left"), "⌥←");
+        assert_eq!(macos_display("shift-tab"), "⇧⇥");
+        assert_eq!(macos_display("cmd-a"), "⌘A");
     }
 
     /// Editor 上下文必须始终覆盖行首尾选择绑定，防止 keymap 编辑时被意外删除。

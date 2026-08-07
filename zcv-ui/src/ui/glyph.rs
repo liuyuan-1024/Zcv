@@ -6,14 +6,15 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, AnyView, App, Component, ElementId, IntoElement, RenderOnce, Window, div, prelude::*,
+    Action, AnyView, App, ClickEvent, Component, ElementId, IntoElement, RenderOnce, Window, div,
+    prelude::*,
 };
 
 use crate::ui::{SvgIcon, tooltip_view};
 use zcv_keymap::KeyBindings;
 use zcv_theme::{color, space, typography};
 
-type ClickHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 #[derive(Clone)]
 enum GlyphContent {
@@ -76,18 +77,10 @@ impl Glyph {
     }
 
     /// 从当前 keymap 中获取 action 对应的快捷键并设为提示。
-    pub fn shortcut(mut self, action: &impl Action, cx: &App) -> Self {
+    pub fn shortcut(mut self, action: &dyn Action, cx: &App) -> Self {
         self.shortcut = cx
             .try_global::<KeyBindings>()
             .and_then(|kb| kb.display_shortcut(action.name()));
-        self
-    }
-
-    /// 按 action 名称从 keymap 中查找快捷键并设为提示（不需要具体 action 类型）。
-    pub fn shortcut_by_name(mut self, action_name: &str, cx: &App) -> Self {
-        self.shortcut = cx
-            .try_global::<KeyBindings>()
-            .and_then(|kb| kb.display_shortcut(action_name));
         self
     }
 
@@ -98,7 +91,12 @@ impl Glyph {
     }
 
     /// 设置点击回调。
-    pub fn on_click(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+    ///
+    /// 回调携带完整点击事件：行内使用时可在回调内 `cx.stop_propagation()`阻止所在行的点击行为（例如 picker 行的打开项目）。
+    pub fn on_click(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.on_click = Some(Rc::new(handler));
         self
     }
@@ -133,7 +131,7 @@ impl RenderOnce for Glyph {
             }
             if let Some(ref handler) = on_click {
                 let h = Rc::clone(handler);
-                el = el.on_click(move |_, window, cx| h(window, cx));
+                el = el.on_click(move |event, window, cx| h(event, window, cx));
             }
             el.into_any_element()
         };

@@ -3,7 +3,9 @@
 //! 每个 DockPosition 一个按钮组，持有对应的 Dock Entity 来查询面板激活状态，激活时高亮显示。
 //! 参考 Zed `crates/workspace/src/dock.rs`。
 
-use gpui::{App, Context, ElementId, Entity, Render, Subscription, Window, div, prelude::*};
+use gpui::{
+    App, ClickEvent, Context, ElementId, Entity, Render, Subscription, Window, div, prelude::*,
+};
 
 use super::{Dock, DockPosition, StatusItemView};
 use zcv_editor::Editor;
@@ -57,17 +59,17 @@ impl Render for PanelButtons {
                 } else {
                     color::current(cx).text
                 };
-                let action_name = handle.toggle_action(cx).name();
+                let action = handle.toggle_action(cx);
                 let on_click = {
                     let handle = handle.clone();
-                    move |window: &mut Window, cx: &mut App| {
+                    move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                         window.dispatch_action(handle.toggle_action(cx), cx);
                     }
                 };
 
                 Glyph::icon(ElementId::Name(icon_path.into()), icon_path)
                     .label(label)
-                    .shortcut_by_name(action_name, cx)
+                    .shortcut(action.as_ref(), cx)
                     .color(fg)
                     .on_click(on_click)
                     .into_any_element()

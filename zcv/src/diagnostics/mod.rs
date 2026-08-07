@@ -25,8 +25,8 @@ impl Render for DiagnosticsButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         Glyph::icon_text("diagnostics-button", "icons/diagnostics.svg", "0")
             .label("诊断")
-            .shortcut_by_name("dock::ToggleDiagnostics", cx)
-            .on_click(|window, cx| window.dispatch_action(Box::new(ToggleDiagnostics), cx))
+            .shortcut(&ToggleDiagnostics, cx)
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleDiagnostics), cx))
             .into_any_element()
     }
 }

@@ -37,11 +37,11 @@ doc_lazy_continuation = "allow"
 [workspace.dependencies]
 # ---- 内部 crate ----
 zcv-buffer-diff = { path = "zcv-buffer-diff" }
-zcv-engine = { path = "zcv-engine" }
 zcv-editor = { path = "zcv-editor" }
+zcv-engine = { path = "zcv-engine" }
 zcv-git = { path = "zcv-git" }
-zcv-theme = { path = "zcv-theme" }
 zcv-language = { path = "zcv-language" }
+zcv-theme = { path = "zcv-theme" }
 
 # ---- 引擎底层（zcv-engine） ----
 gpui-sum-tree = { package = "gpui_sum_tree", version = "0.2.2" }

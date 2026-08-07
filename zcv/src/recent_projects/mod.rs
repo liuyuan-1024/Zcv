@@ -4,11 +4,11 @@
 
 mod project_picker;
 
-pub(crate) use project_picker::{OnProjectSelected, ProjectPicker, ToggleProjectPicker};
-
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+pub(crate) use project_picker::{OnProjectSelected, ProjectPicker, ToggleProjectPicker};
 
 // ═══ 数据 ════════════════════════════════════════════════════════
 

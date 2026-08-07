@@ -10,6 +10,7 @@ use gpui::{
     FocusHandle, IntoElement, Pixels, Point, Render, Styled, UTF16Selection, Window, actions, div,
     point, prelude::*, px, size,
 };
+use zcv_buffer_diff::{DiffHunk, DiffHunkKind};
 use zcv_engine::{
     Buffer, BufferConfig, BufferVersion, ByteOffset, EngineResult, Line, LineRange,
     MovementDirection, MovementUnit, PositionMap, Selection, SelectionSet, Snapshot, TextRange,
@@ -86,8 +87,6 @@ pub enum EditorEvent {
     /// 编辑器关联的文件路径发生变化。
     PathChanged,
 }
-
-pub use zcv_buffer_diff::{DiffHunk, DiffHunkKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Motion {

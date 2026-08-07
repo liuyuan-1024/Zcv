@@ -50,6 +50,16 @@ pub trait GitRepository: Send + Sync {
 
     /// 推送当前分支到上游（`git push`，默认 upstream）。
     fn push(&self) -> Result<()>;
+
+    /// 暂存路径（`git update-index --add --remove -- <paths>`，对齐 Zed）。
+    ///
+    /// 路径相对仓库根；空列表为无操作。`--remove` 让已删除文件的删除进入 index。
+    fn stage_paths(&self, paths: &[PathBuf]) -> Result<()>;
+
+    /// 取消暂存路径（`git reset --quiet -- <paths>`，对齐 Zed）。
+    ///
+    /// 重置 index 到 HEAD；此前已暂存但 HEAD 中不存在的路径（新建后暂存）会移出 index。
+    fn unstage_paths(&self, paths: &[PathBuf]) -> Result<()>;
 }
 
 pub struct RealGitRepository {
@@ -231,6 +241,30 @@ impl GitRepository for RealGitRepository {
         Ok(())
     }
 
+    fn stage_paths(&self, paths: &[PathBuf]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut command = self.build_command(&["update-index", "--add", "--remove", "--"]);
+        for path in paths {
+            command.arg(path);
+        }
+        self.run_command(&mut command, "git update-index")?;
+        Ok(())
+    }
+
+    fn unstage_paths(&self, paths: &[PathBuf]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut command = self.build_command(&["reset", "--quiet", "--"]);
+        for path in paths {
+            command.arg(path);
+        }
+        self.run_command(&mut command, "git reset")?;
+        Ok(())
+    }
+
     fn load_revisions(&self, revs: &[&str]) -> Result<Vec<Option<Vec<u8>>>> {
         // 单进程批量读取（对齐 Zed repository.rs:1820 的 cat-file --batch）：
         // stdin 逐行写 revision，按 header（`<oid> <type> <size>` 或 `<oid> missing`）读取对应大小的 blob。
@@ -296,11 +330,59 @@ impl GitRepository for RealGitRepository {
     }
 }
 
+/// 在 `working_directory` 初始化 git 仓库（`git init -b <branch>`）。
+///
+/// 分支名先读 `git config --global init.defaultBranch`，未配置则用 `fallback_branch`（对齐 Zed fs.rs 的 git_init）。
+/// `-b` 参数会覆盖 init.defaultBranch 的默认分支选择，因此必须显式传入。
+/// init 前不存在仓库对象，故为自由函数而非 trait 方法；
+/// 同步阻塞，由调用方负责移入后台线程。
+pub fn init(working_directory: &Path, fallback_branch: &str) -> Result<()> {
+    std::fs::create_dir_all(working_directory)?;
+    let branch = resolve_branch(configured_default_branch()?.as_deref(), fallback_branch);
+    let output = std::process::Command::new("git")
+        .current_dir(working_directory)
+        .args(["init", "-b", &branch])
+        .stdin(Stdio::null())
+        .output()
+        .context("执行 git init 失败")?;
+    if !output.status.success() {
+        bail!(
+            "git init 失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// 读取全局 `init.defaultBranch`；未配置（非零退出）或输出空白视为无配置。
+fn configured_default_branch() -> Result<Option<String>> {
+    let output = std::process::Command::new("git")
+        .args(["config", "--global", "--get", "init.defaultBranch"])
+        .stdin(Stdio::null())
+        .output()
+        .context("读取 init.defaultBranch 失败")?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!branch.is_empty()).then_some(branch))
+}
+
+/// 纯函数：配置的分支名（空白视为无）→ 实际使用的分支名。
+fn resolve_branch(configured: Option<&str>, fallback: &str) -> String {
+    configured
+        .filter(|branch| !branch.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| fallback.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
 
+    use crate::FileStatus;
+    use crate::status::StatusCode;
     use tempfile::TempDir;
 
     /// 创建带一个初始提交的临时 git 仓库，返回 (仓库根, 目录句柄)。
@@ -799,5 +881,93 @@ mod tests {
             repository.diff_hunks(Path::new("tracked.txt")).unwrap(),
             vec![]
         );
+    }
+
+    /// 提取 FileStatus 的 index 状态（非 Tracked 视为 Unmodified）。
+    fn index_status(status: &FileStatus) -> StatusCode {
+        match status {
+            FileStatus::Tracked { index_status, .. } => *index_status,
+            _ => StatusCode::Unmodified,
+        }
+    }
+
+    #[test]
+    fn stage_and_unstage_paths_move_index_state() {
+        let (root, _temp) = test_repo();
+        let repository = open_repo(&root);
+        let tracked = Path::new("tracked.txt");
+        let new_file = Path::new("new.txt");
+
+        // 修改已跟踪文件 + 新建文件。
+        fs::write(root.join("tracked.txt"), "修改后的内容\n").expect("应修改文件");
+        fs::write(root.join("new.txt"), "新文件\n").expect("应新建文件");
+
+        // 初始：均已未暂存（index 未动）。
+        let status = repository.status(&[]).expect("status 应成功");
+        let by_path: HashMap<_, _> = status
+            .statuses
+            .iter()
+            .map(|(path, status)| (path.as_path(), status))
+            .collect();
+        assert_eq!(index_status(by_path[tracked]), StatusCode::Unmodified);
+        assert!(by_path[tracked].is_modified());
+        assert!(by_path[new_file].is_untracked());
+
+        // 暂存两个路径 → index 出现对应状态（修改 + 新增）。
+        repository
+            .stage_paths(&[tracked.to_path_buf(), new_file.to_path_buf()])
+            .expect("stage 应成功");
+        let status = repository.status(&[]).expect("status 应成功");
+        let by_path: HashMap<_, _> = status
+            .statuses
+            .iter()
+            .map(|(path, status)| (path.as_path(), status))
+            .collect();
+        assert_eq!(index_status(by_path[tracked]), StatusCode::Modified);
+        assert_eq!(index_status(by_path[new_file]), StatusCode::Added);
+
+        // 取消暂存 → 回到未暂存/未跟踪（新建文件移出 index）。
+        repository
+            .unstage_paths(&[tracked.to_path_buf(), new_file.to_path_buf()])
+            .expect("unstage 应成功");
+        let status = repository.status(&[]).expect("status 应成功");
+        let by_path: HashMap<_, _> = status
+            .statuses
+            .iter()
+            .map(|(path, status)| (path.as_path(), status))
+            .collect();
+        assert_eq!(index_status(by_path[tracked]), StatusCode::Unmodified);
+        assert!(by_path[new_file].is_untracked());
+    }
+
+    #[test]
+    fn init_creates_repository_with_configured_branch() {
+        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+        let root = temp_dir.path().to_path_buf();
+
+        init(&root, "main").expect("init 应成功");
+        assert!(root.join(".git").is_dir(), "应创建 .git 目录");
+
+        // 期望分支由本机全局 init.defaultBranch 决定（未配置则用 fallback），
+        // 与实现同路径计算，避免测试依赖具体机器配置。
+        let expected = resolve_branch(
+            configured_default_branch()
+                .expect("读取配置应成功")
+                .as_deref(),
+            "main",
+        );
+        let head = run_in(&root, &["git", "symbolic-ref", "--short", "HEAD"]);
+        assert_eq!(
+            String::from_utf8_lossy(&head.stdout).trim(),
+            expected,
+            "初始分支应使用 init.defaultBranch 或 fallback"
+        );
+    }
+
+    #[test]
+    fn resolve_branch_uses_configured_or_fallback() {
+        assert_eq!(resolve_branch(None, "main"), "main");
+        assert_eq!(resolve_branch(Some("dev"), "main"), "dev");
+        assert_eq!(resolve_branch(Some("  "), "main"), "main");
     }
 }

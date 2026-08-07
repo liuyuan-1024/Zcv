@@ -6,12 +6,11 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, AnyView, App, Component, Context, ElementId, IntoElement, Render, RenderOnce, Window,
-    div, prelude::*,
+    Action, AnyView, App, Component, ElementId, IntoElement, RenderOnce, Window, div, prelude::*,
 };
 
 use crate::keymap::KeyBindings;
-use crate::ui::SvgIcon;
+use crate::ui::{SvgIcon, tooltip_view};
 use zcv_theme::{color, space, typography};
 
 type ClickHandler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -160,47 +159,5 @@ impl RenderOnce for Glyph {
                     .child(div().text_color(color).child(text)),
             ),
         }
-    }
-}
-
-/// 构造 Glyph 共用的 tooltip 视图。
-fn tooltip_view(cx: &mut App, label: Option<String>, shortcut: Option<String>) -> AnyView {
-    cx.new(|_| GlyphTooltip { label, shortcut }).into()
-}
-
-/// Glyph 悬停时呈现的小视图。
-struct GlyphTooltip {
-    label: Option<String>,
-    shortcut: Option<String>,
-}
-
-impl Render for GlyphTooltip {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let popup = div()
-            .flex()
-            .items_center()
-            .gap(space::S6)
-            .p(space::S6)
-            .text_size(typography::ui())
-            .line_height(typography::ui())
-            .bg(color::current(cx).elevated_surface_background)
-            .border_1()
-            .border_color(color::current(cx).border_variant)
-            .rounded_sm()
-            .children(self.label.as_ref().map(|l| {
-                div()
-                    .text_color(color::current(cx).text)
-                    .child(l.clone())
-                    .into_any_element()
-            }))
-            .children(self.shortcut.as_ref().map(|s| {
-                div()
-                    .text_color(color::current(cx).text_placeholder)
-                    .child(s.clone())
-                    .into_any_element()
-            }));
-
-        // 外层 div(.p) 提供与光标之间的间距，防止 tooltip 气泡被鼠标遮挡
-        div().p(space::S6).child(popup)
     }
 }

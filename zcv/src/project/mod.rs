@@ -18,7 +18,6 @@ use zcv_git::FileStatus;
 use zcv_language::LanguageBuffer;
 
 use self::buffer_store::BufferStore;
-use self::git_store::{GitStore, StatusEntry};
 use self::worktree::Worktree;
 use crate::fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
 
@@ -26,8 +25,12 @@ use crate::fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
 pub(crate) use self::worktree::{
     TreeRow, new_entry_destination, rename_destination, translate_path,
 };
-// git 操作（fetch/pull/push）经 project 门面访问 git_store 的后台执行入口。
-pub(crate) use self::git_store::{GitOperationKind, RemoteOperationState};
+// git 操作（fetch/pull/push）经 project 门面访问 git_store 的后台执行入口；
+// 快照与事件类型供版本管理面板消费。
+pub(crate) use self::git_store::{
+    GitOperationKind, GitStore, GitStoreEvent, RemoteOperationState, RepositorySnapshot,
+    StatusEntry,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProjectEvent {

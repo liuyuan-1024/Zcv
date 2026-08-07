@@ -123,14 +123,6 @@ macro_rules! make_placeholder_panel {
 }
 
 make_placeholder_panel!(
-    VersionControlPanel,
-    super::dock::ToggleVersionControl,
-    "VersionControl",
-    "icons/panels/version_control.svg",
-    "版本控制"
-);
-
-make_placeholder_panel!(
     OutlinePanel,
     super::dock::ToggleOutline,
     "Outline",

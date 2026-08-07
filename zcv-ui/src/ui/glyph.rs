@@ -9,8 +9,8 @@ use gpui::{
     Action, AnyView, App, Component, ElementId, IntoElement, RenderOnce, Window, div, prelude::*,
 };
 
-use crate::keymap::KeyBindings;
 use crate::ui::{SvgIcon, tooltip_view};
+use zcv_keymap::KeyBindings;
 use zcv_theme::{color, space, typography};
 
 type ClickHandler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -25,7 +25,7 @@ enum GlyphContent {
 /// 一个基础视觉标记。
 ///
 /// 通过 builder 设置 label/shortcut/color 来控制展示内容。
-pub(crate) struct Glyph {
+pub struct Glyph {
     id: ElementId,
     content: GlyphContent,
     color: Option<gpui::Rgba>,
@@ -35,15 +35,15 @@ pub(crate) struct Glyph {
 }
 
 impl Glyph {
-    pub(crate) fn icon(id: impl Into<ElementId>, path: &'static str) -> Self {
+    pub fn icon(id: impl Into<ElementId>, path: &'static str) -> Self {
         Self::new(id, GlyphContent::Icon(path))
     }
 
-    pub(crate) fn text(id: impl Into<ElementId>, text: impl Into<String>) -> Self {
+    pub fn text(id: impl Into<ElementId>, text: impl Into<String>) -> Self {
         Self::new(id, GlyphContent::Text(text.into()))
     }
 
-    pub(crate) fn icon_text(
+    pub fn icon_text(
         id: impl Into<ElementId>,
         path: &'static str,
         text: impl Into<String>,
@@ -70,13 +70,13 @@ impl Glyph {
     }
 
     /// 设置 tooltip 标签文字。
-    pub(crate) fn label(mut self, label: impl Into<String>) -> Self {
+    pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
     }
 
     /// 从当前 keymap 中获取 action 对应的快捷键并设为提示。
-    pub(crate) fn shortcut(mut self, action: &impl Action, cx: &App) -> Self {
+    pub fn shortcut(mut self, action: &impl Action, cx: &App) -> Self {
         self.shortcut = cx
             .try_global::<KeyBindings>()
             .and_then(|kb| kb.display_shortcut(action.name()));
@@ -84,7 +84,7 @@ impl Glyph {
     }
 
     /// 按 action 名称从 keymap 中查找快捷键并设为提示（不需要具体 action 类型）。
-    pub(crate) fn shortcut_by_name(mut self, action_name: &str, cx: &App) -> Self {
+    pub fn shortcut_by_name(mut self, action_name: &str, cx: &App) -> Self {
         self.shortcut = cx
             .try_global::<KeyBindings>()
             .and_then(|kb| kb.display_shortcut(action_name));
@@ -92,13 +92,13 @@ impl Glyph {
     }
 
     /// 设置颜色（覆盖默认色）。
-    pub(crate) fn color(mut self, color: gpui::Rgba) -> Self {
+    pub fn color(mut self, color: gpui::Rgba) -> Self {
         self.color = Some(color);
         self
     }
 
     /// 设置点击回调。
-    pub(crate) fn on_click(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+    pub fn on_click(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Rc::new(handler));
         self
     }

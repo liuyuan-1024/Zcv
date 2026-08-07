@@ -23,7 +23,7 @@ tree-sitter-yaml.workspace = true
 zcv-engine.workspace = true
 
 [dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }
+gpui.workspace = true
 
 [lints]
 workspace = true

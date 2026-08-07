@@ -126,7 +126,7 @@ make_placeholder_panel!(
     OutlinePanel,
     super::dock::ToggleOutline,
     "Outline",
-    "icons/panels/outline.svg",
+    "icons/outline.svg",
     "大纲"
 );
 
@@ -134,7 +134,7 @@ make_placeholder_panel!(
     TerminalPanel,
     super::dock::ToggleTerminal,
     "Terminal",
-    "icons/panels/terminal.svg",
+    "icons/terminal.svg",
     "终端"
 );
 
@@ -142,7 +142,7 @@ make_placeholder_panel!(
     DebugPanel,
     super::dock::ToggleDebug,
     "Debug",
-    "icons/panels/debug.svg",
+    "icons/debug.svg",
     "调试"
 );
 
@@ -150,6 +150,6 @@ make_placeholder_panel!(
     KeyboardShortcutsPanel,
     super::dock::ToggleKeyboardShortcuts,
     "KeyboardShortcuts",
-    "icons/panels/keyboard_shortcuts.svg",
+    "icons/keyboard_shortcuts.svg",
     "快捷键"
 );

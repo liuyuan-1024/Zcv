@@ -15,7 +15,7 @@ use zcv_theme::{color, typography};
 
 type ClickHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
-pub(crate) struct Checkbox {
+pub struct Checkbox {
     id: ElementId,
     checked: bool,
     tooltip_text: Option<String>,
@@ -26,7 +26,7 @@ pub(crate) struct Checkbox {
 
 impl Checkbox {
     /// 构造复选框。`id` 需在所在作用域内唯一；`checked` 决定勾选状态。
-    pub(crate) fn new(id: impl Into<ElementId>, checked: bool) -> Self {
+    pub fn new(id: impl Into<ElementId>, checked: bool) -> Self {
         Self {
             id: id.into(),
             checked,
@@ -37,19 +37,19 @@ impl Checkbox {
     }
 
     /// 设置悬停提示文字。
-    pub(crate) fn tooltip(mut self, text: impl Into<String>) -> Self {
+    pub fn tooltip(mut self, text: impl Into<String>) -> Self {
         self.tooltip_text = Some(text.into());
         self
     }
 
     /// 关联 action：悬停提示里由 Tooltip 查询并显示对应快捷键。
-    pub(crate) fn shortcut(mut self, action_name: &'static str) -> Self {
+    pub fn shortcut(mut self, action_name: &'static str) -> Self {
         self.tooltip_action = Some(action_name);
         self
     }
 
     /// 设置单击回调。
-    pub(crate) fn on_click(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+    pub fn on_click(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Rc::new(handler));
         self
     }
@@ -88,7 +88,7 @@ impl RenderOnce for Checkbox {
             })
             .when(self.checked, |el| {
                 el.child(
-                    SvgIcon::new("icons/actions/check.svg")
+                    SvgIcon::new("icons/check.svg")
                         .size(typography::ui())
                         .color(colors.icon_accent)
                         .into_any_element(),

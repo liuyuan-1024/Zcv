@@ -14,8 +14,11 @@ members = [
     "zcv-editor",
     "zcv-engine",
     "zcv-git",
+    "zcv-keymap",
     "zcv-language",
+    "zcv-project",
     "zcv-theme",
+    "zcv-ui",
 ]
 default-members = [
     "zcv",
@@ -23,8 +26,11 @@ default-members = [
     "zcv-editor",
     "zcv-engine",
     "zcv-git",
+    "zcv-keymap",
     "zcv-language",
+    "zcv-project",
     "zcv-theme",
+    "zcv-ui",
 ]
 resolver = "3"
 [workspace.package]
@@ -40,8 +46,11 @@ zcv-buffer-diff = { path = "zcv-buffer-diff" }
 zcv-editor = { path = "zcv-editor" }
 zcv-engine = { path = "zcv-engine" }
 zcv-git = { path = "zcv-git" }
+zcv-keymap = { path = "zcv-keymap" }
 zcv-language = { path = "zcv-language" }
+zcv-project = { path = "zcv-project" }
 zcv-theme = { path = "zcv-theme" }
+zcv-ui = { path = "zcv-ui" }
 
 # ---- 引擎底层（zcv-engine） ----
 gpui-sum-tree = { package = "gpui_sum_tree", version = "0.2.2" }
@@ -83,7 +92,7 @@ toml = "0.8.23"
 lsp-types = "0.97"
 
 # ---- 桌面 UI ----
-gpui = "0.2.2"
+gpui = { version = "0.2.2", features = ["test-support"] }
 
 # ---- 文件监听 ----
 notify = "7"

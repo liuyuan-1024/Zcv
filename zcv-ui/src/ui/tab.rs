@@ -11,7 +11,7 @@ use gpui::{
 use zcv_theme::{color, space};
 
 /// 标签页组件。
-pub(crate) struct Tab {
+pub struct Tab {
     pub div: Stateful<Div>,
     pub selected: bool,
     pub start_slot: Option<AnyElement>,

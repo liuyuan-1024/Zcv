@@ -13,12 +13,12 @@ use gpui::{
     Render, Window, actions, anchored, deferred, div, point, prelude::*, px,
 };
 
-use crate::keymap::KeyBindings;
 use crate::recent_projects::{self, ProjectEntry};
-use crate::ui::Glyph;
-use crate::ui::{ListItem, list_item_two_line};
-use crate::ui::{Picker, PickerDelegate, picker_divider};
+use zcv_keymap::KeyBindings;
 use zcv_theme::{color, space, typography};
+use zcv_ui::Glyph;
+use zcv_ui::{ListItem, list_item_two_line};
+use zcv_ui::{Picker, PickerDelegate, picker_divider};
 
 const PICKER_WIDTH: Pixels = px(360.0);
 

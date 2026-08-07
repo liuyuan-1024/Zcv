@@ -27,10 +27,8 @@ use self::dock::render_body as render_layout_body;
 use crate::active_buffer_language::ActiveBufferLanguage;
 use crate::cursor_position::CursorPosition;
 use crate::diagnostics::DiagnosticsButton;
-use crate::keymap;
 use crate::language_tools::LspButton;
 use crate::open_project_window;
-use crate::project::{GitOperationKind, Project, ProjectEvent};
 use crate::project_search::ProjectSearchButton;
 use crate::project_tree::{OnCreate, OnOpenFile, OnRename, OnTrash, ProjectTree};
 use crate::recent_projects::{OnProjectSelected, ToggleProjectPicker};
@@ -51,6 +49,8 @@ pub(crate) use status_bar::StatusItemView;
 pub(crate) use toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 use top_bar::TopBar;
 use window_controls::{handle_minimize, handle_quit, handle_toggle_maximize};
+use zcv_keymap;
+use zcv_project::{GitOperationKind, Project, ProjectEvent};
 
 actions!(workspace, [Save]);
 
@@ -119,7 +119,7 @@ impl Workspace {
         let weak_create = weak_self.clone();
         let weak_trash = weak_self.clone();
 
-        let keybindings = keymap::load(cx).expect("内置 keymap 应完整有效");
+        let keybindings = zcv_keymap::load(cx).expect("内置 keymap 应完整有效");
         cx.bind_keys(keybindings.bindings.clone());
         cx.set_global(keybindings);
 

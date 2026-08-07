@@ -22,23 +22,21 @@ use self::worktree::Worktree;
 use crate::fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
 
 // 项目树（UI）经 project 模块门面消费 worktree 的领域行模型与路径语义。
-pub(crate) use self::worktree::{
-    TreeRow, new_entry_destination, rename_destination, translate_path,
-};
+pub use self::worktree::{TreeRow, new_entry_destination, rename_destination, translate_path};
 // git 操作（fetch/pull/push）经 project 门面访问 git_store 的后台执行入口；
 // 快照与事件类型供版本管理面板消费。
-pub(crate) use self::git_store::{
+pub use self::git_store::{
     GitOperationKind, GitStore, GitStoreEvent, RemoteOperationState, RepositorySnapshot,
     StatusEntry,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ProjectEvent {
+pub enum ProjectEvent {
     RootChanged(PathBuf),
     EntriesChanged,
 }
 
-pub(crate) struct Project {
+pub struct Project {
     root: PathBuf,
     /// 项目目录快照层（遍历/排除规则/路径语义），供项目树消费。
     worktree: Worktree,
@@ -49,7 +47,7 @@ pub(crate) struct Project {
 }
 
 impl Project {
-    pub(crate) fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
+    pub fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
         let (signal_tx, signal_rx) = async_channel::unbounded::<()>();
         let pending_events = Arc::new(Mutex::new(Vec::new()));
         let fs_watcher: Arc<dyn Watcher> =
@@ -84,19 +82,19 @@ impl Project {
         }
     }
 
-    pub(crate) fn root(&self) -> &Path {
+    pub fn root(&self) -> &Path {
         &self.root
     }
 
     /// 更新项目树的扫描排除规则（设置变化时由项目树调用）。
-    pub(crate) fn set_exclusions(&mut self, exclusions: &[String]) {
+    pub fn set_exclusions(&mut self, exclusions: &[String]) {
         self.worktree.set_exclusions(exclusions);
     }
 
     /// 构建项目文件树的可见行模型：worktree 遍历 + git 状态合并。
     ///
     /// git 状态在遍历时现查 `GitStore`（目录行聚合、文件行精确），展开产生的新行因此立即携带状态，无需二次补齐。
-    pub(crate) fn tree_rows(&self, expanded: &HashSet<PathBuf>, cx: &App) -> Vec<TreeRow> {
+    pub fn tree_rows(&self, expanded: &HashSet<PathBuf>, cx: &App) -> Vec<TreeRow> {
         self.worktree.visible_entries(expanded, |path, is_dir| {
             if is_dir {
                 self.git_status_for_directory(path, cx)
@@ -109,7 +107,7 @@ impl Project {
     /// 批量查询可见行的 git 状态（git 事件驱动，不重扫目录）。
     ///
     /// `rows` 为 (路径, 是否目录) 对：目录行取聚合状态，文件行取精确状态。
-    pub(crate) fn git_statuses_for_rows(
+    pub fn git_statuses_for_rows(
         &self,
         rows: &[(PathBuf, bool)],
         cx: &App,
@@ -126,11 +124,11 @@ impl Project {
             .collect()
     }
 
-    pub(crate) fn git_store(&self) -> Entity<GitStore> {
+    pub fn git_store(&self) -> Entity<GitStore> {
         self.git_store.clone()
     }
 
-    pub(crate) fn open_buffer(
+    pub fn open_buffer(
         &mut self,
         path: &Path,
         cx: &mut Context<Self>,
@@ -138,7 +136,7 @@ impl Project {
         self.buffer_store.open_buffer(path, cx)
     }
 
-    pub(crate) fn save_buffer(
+    pub fn save_buffer(
         &mut self,
         buffer: &Entity<Buffer>,
         path: &Path,
@@ -162,7 +160,7 @@ impl Project {
     }
 
     /// 在同一父目录内重命名文件或目录，并迁移项目持有的路径状态。
-    pub(crate) fn rename_path(
+    pub fn rename_path(
         &mut self,
         from: &Path,
         to: &Path,
@@ -206,7 +204,7 @@ impl Project {
     }
 
     /// 在项目内新建一个空文件或目录，并补齐缺失的父目录。
-    pub(crate) fn create_path(
+    pub fn create_path(
         &mut self,
         path: &Path,
         is_dir: bool,
@@ -238,7 +236,7 @@ impl Project {
     }
 
     /// 将文件或目录移到系统废纸篓（可恢复），并清掉项目持有的路径状态。
-    pub(crate) fn trash_path(&mut self, path: &Path, cx: &mut Context<Self>) -> anyhow::Result<()> {
+    pub fn trash_path(&mut self, path: &Path, cx: &mut Context<Self>) -> anyhow::Result<()> {
         anyhow::ensure!(path != self.root, "不能删除项目根目录");
         anyhow::ensure!(path.starts_with(&self.root), "条目不在当前项目中");
         trash::delete(path)?;
@@ -295,12 +293,12 @@ impl Project {
     }
 
     /// 查询文件的 git 状态（不在任何仓库或未跟踪时对应状态）。
-    pub(crate) fn git_status_for_path(&self, path: &Path, cx: &App) -> Option<StatusEntry> {
+    pub fn git_status_for_path(&self, path: &Path, cx: &App) -> Option<StatusEntry> {
         self.git_store.read(cx).status_for_path(path).cloned()
     }
 
     /// 查询目录的聚合 git 状态（子项中优先级最高的状态）。
-    pub(crate) fn git_status_for_directory(&self, path: &Path, cx: &App) -> Option<FileStatus> {
+    pub fn git_status_for_directory(&self, path: &Path, cx: &App) -> Option<FileStatus> {
         self.git_store.read(cx).status_for_directory(path)
     }
 }

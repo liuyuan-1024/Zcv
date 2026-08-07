@@ -4,10 +4,10 @@
 
 use gpui::{Context, Entity, Render, Window, prelude::*};
 
-use crate::ui::Glyph;
 use crate::workspace::StatusItemView;
 use crate::workspace::ToggleDiagnostics;
 use zcv_editor::Editor;
+use zcv_ui::Glyph;
 
 pub(crate) struct DiagnosticsButton;
 
@@ -23,7 +23,7 @@ impl StatusItemView for DiagnosticsButton {
 
 impl Render for DiagnosticsButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        Glyph::icon_text("diagnostics-button", "icons/status/diagnostics.svg", "0")
+        Glyph::icon_text("diagnostics-button", "icons/diagnostics.svg", "0")
             .label("诊断")
             .shortcut_by_name("dock::ToggleDiagnostics", cx)
             .on_click(|window, cx| window.dispatch_action(Box::new(ToggleDiagnostics), cx))

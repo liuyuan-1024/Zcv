@@ -1,0 +1,17 @@
+[package]
+name = "zcv-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gpui.workspace = true
+zcv-editor.workspace = true
+zcv-git.workspace = true
+zcv-keymap.workspace = true
+zcv-theme.workspace = true
+
+[dev-dependencies]
+gpui.workspace = true
+
+[lints]
+workspace = true

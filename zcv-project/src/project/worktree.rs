@@ -14,24 +14,24 @@ const DOT_GIT: &str = ".git";
 
 /// 项目树的一行（领域行模型）：由 Worktree 遍历产出。
 #[derive(Debug, Clone)]
-pub(crate) struct TreeRow {
-    pub(crate) path: PathBuf,
-    pub(crate) name: String,
-    pub(crate) depth: usize,
-    pub(crate) is_dir: bool,
-    pub(crate) expanded: bool,
+pub struct TreeRow {
+    pub path: PathBuf,
+    pub name: String,
+    pub depth: usize,
+    pub is_dir: bool,
+    pub expanded: bool,
     /// git 状态（决定文件名颜色与忽略淡显；None 表示无状态）。
-    pub(crate) git_status: Option<FileStatus>,
+    pub git_status: Option<FileStatus>,
 }
 
 /// 项目目录快照层：持有根路径与扫描排除规则，按展开状态产出可见行。
-pub(crate) struct Worktree {
+pub struct Worktree {
     root: PathBuf,
     filter: TreeFilter,
 }
 
 impl Worktree {
-    pub(crate) fn new(root: PathBuf) -> Self {
+    pub fn new(root: PathBuf) -> Self {
         Self {
             root,
             filter: TreeFilter::new(&[]),
@@ -39,12 +39,12 @@ impl Worktree {
     }
 
     /// 更换项目根目录（展开与选中状态由 UI 层重置，本层只换根）。
-    pub(crate) fn set_root(&mut self, root: PathBuf) {
+    pub fn set_root(&mut self, root: PathBuf) {
         self.root = root;
     }
 
     /// 更新扫描排除规则（设置变化时由 Project 调用）。
-    pub(crate) fn set_exclusions(&mut self, exclusions: &[String]) {
+    pub fn set_exclusions(&mut self, exclusions: &[String]) {
         self.filter = TreeFilter::new(exclusions);
     }
 
@@ -52,7 +52,7 @@ impl Worktree {
     ///
     /// `git_status` 在遍历时查询（由 Project 注入 GitStore 查询）：
     /// 命中忽略的目录不展开内容，避免 node_modules 这类目录撑爆行模型。
-    pub(crate) fn visible_entries(
+    pub fn visible_entries(
         &self,
         expanded: &HashSet<PathBuf>,
         git_status: impl Fn(&Path, bool) -> Option<FileStatus>,
@@ -167,7 +167,7 @@ impl TreeFilter {
 /// 在 `path` 自身或任一祖先目录中向上查找 `.git` 目录，命中则打开仓库。
 ///
 /// 只认 `.git` 目录：worktree/子模块的 `.git` 是文件（`gitdir:` 指针），v1 不支持这类布局，向上继续查找外层普通仓库。
-pub(crate) fn discover_git_repository(path: &Path) -> anyhow::Result<Option<RealGitRepository>> {
+pub fn discover_git_repository(path: &Path) -> anyhow::Result<Option<RealGitRepository>> {
     for dir in path.ancestors() {
         let dot_git = dir.join(DOT_GIT);
         if dot_git.is_dir() {
@@ -181,7 +181,7 @@ pub(crate) fn discover_git_repository(path: &Path) -> anyhow::Result<Option<Real
 ///
 /// 找到仓库后跳过其 `.git` 子树（objects/refs 等）不深入；
 /// 跳过常见重型依赖目录，避免 node_modules、target 这类目录拖慢遍历。
-pub(crate) fn find_git_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRepository>> {
+pub fn find_git_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRepository>> {
     fn visit(dir: &Path, repositories: &mut Vec<RealGitRepository>) -> anyhow::Result<()> {
         let dot_git = dir.join(DOT_GIT);
         if dot_git.is_dir() {
@@ -212,7 +212,7 @@ pub(crate) fn find_git_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRe
 ///
 /// 外层仓库必须前置：root 在外层仓库内时 find 只返回嵌套仓库，不补上祖先会导致 root 直下文件匹配不到任何仓库（状态/hunks 全部丢失）。
 /// 去重依据 working_directory：两条发现路径都经 `RealGitRepository::open` 的 canonicalize，比较天然一致。
-pub(crate) fn discover_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRepository>> {
+pub fn discover_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRepository>> {
     let mut repositories = find_git_repositories(root)?;
     let known: HashSet<&Path> = repositories
         .iter()
@@ -237,7 +237,7 @@ fn is_heavy_dependency_dir(name: &[u8]) -> bool {
 // ── 路径命名语义 ────────────────────────────────────────────────────
 
 /// 重命名目标：条目必须与原名在同一父目录内（只改名称，不允许改路径）。
-pub(crate) fn rename_destination(from: &Path, name: &str) -> anyhow::Result<PathBuf> {
+pub fn rename_destination(from: &Path, name: &str) -> anyhow::Result<PathBuf> {
     let parent = from
         .parent()
         .ok_or_else(|| anyhow::anyhow!("条目没有父目录"))?;
@@ -256,15 +256,12 @@ fn entry_destination(parent: &Path, name: &str) -> anyhow::Result<PathBuf> {
 
 /// 新建条目目标：`/` 结尾表示目录，支持 `src/components/button.rs` 这类嵌套相对路径。
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct NewEntryDestination {
-    pub(crate) path: PathBuf,
-    pub(crate) is_dir: bool,
+pub struct NewEntryDestination {
+    pub path: PathBuf,
+    pub is_dir: bool,
 }
 
-pub(crate) fn new_entry_destination(
-    parent: &Path,
-    input: &str,
-) -> anyhow::Result<NewEntryDestination> {
+pub fn new_entry_destination(parent: &Path, input: &str) -> anyhow::Result<NewEntryDestination> {
     anyhow::ensure!(!input.trim().is_empty(), "名称不能为空");
     anyhow::ensure!(!input.starts_with('/'), "新条目必须使用相对路径");
     anyhow::ensure!(!input.contains(['\\', '\0']), "名称不能包含反斜杠或空字符");
@@ -286,7 +283,7 @@ pub(crate) fn new_entry_destination(
 }
 
 /// 把路径按 `from → to` 的重命名迁移（条目自身与祖先路径都换新前缀）。
-pub(crate) fn translate_path(path: &Path, from: &Path, to: &Path) -> PathBuf {
+pub fn translate_path(path: &Path, from: &Path, to: &Path) -> PathBuf {
     path.strip_prefix(from)
         .map_or_else(|_| path.to_path_buf(), |suffix| to.join(suffix))
 }

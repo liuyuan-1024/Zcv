@@ -6,24 +6,16 @@
 
 use gpui::{AnyView, App, Context, Render, Window, div, prelude::*};
 
-use crate::keymap::KeyBindings;
+use zcv_keymap::KeyBindings;
 use zcv_theme::{color, space, typography};
 
 /// 构造提示气泡视图（label + 可选快捷键两段式，与 Glyph 原有提示一致）。
-pub(crate) fn tooltip_view(
-    cx: &mut App,
-    label: Option<String>,
-    shortcut: Option<String>,
-) -> AnyView {
+pub fn tooltip_view(cx: &mut App, label: Option<String>, shortcut: Option<String>) -> AnyView {
     cx.new(|_| TooltipView { label, shortcut }).into()
 }
 
 /// 构造带快捷键的提示气泡：快捷键从 keymap 按 action 名称查询并显示。
-pub(crate) fn tooltip_for_action(
-    text: impl Into<String>,
-    action_name: &str,
-    cx: &mut App,
-) -> AnyView {
+pub fn tooltip_for_action(text: impl Into<String>, action_name: &str, cx: &mut App) -> AnyView {
     let shortcut = cx
         .try_global::<KeyBindings>()
         .and_then(|bindings| bindings.display_shortcut(action_name));

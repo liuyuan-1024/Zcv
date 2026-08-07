@@ -9,7 +9,7 @@ use serde::Deserialize;
 use zcv_editor::SoftWrap;
 use zcv_theme::ThemeChoice;
 
-use crate::fs_watcher::{FsWatcher, Watcher};
+use zcv_project::{FsWatcher, Watcher};
 
 const INITIAL_USER_SETTINGS: &str =
     include_str!("../../assets/settings/initial_user_settings.json");

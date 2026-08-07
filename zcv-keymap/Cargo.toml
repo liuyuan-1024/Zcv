@@ -1,0 +1,16 @@
+[package]
+name = "zcv-keymap"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+gpui.workspace = true
+
+[lints]
+workspace = true

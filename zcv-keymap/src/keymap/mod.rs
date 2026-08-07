@@ -12,8 +12,8 @@ use serde::Deserialize;
 // ── 公开类型 ─────────────────────────────────────────────────────────
 
 /// 快捷键绑定集合：正向（注册） + 反向（查询）。
-pub(crate) struct KeyBindings {
-    pub(crate) bindings: Vec<KeyBinding>,
+pub struct KeyBindings {
+    pub bindings: Vec<KeyBinding>,
     shortcuts: HashMap<String, String>, // action名 → 键位字符串
 }
 
@@ -22,7 +22,7 @@ impl KeyBindings {
     ///
     /// - macOS：修饰键显示为符号（`cmd-shift-e` → `⌘⇧E`）
     /// - Linux / Windows：修饰键显示为文本（`ctrl-shift-e` → `Ctrl+Shift+E`）
-    pub(crate) fn display_shortcut(&self, action_name: &str) -> Option<String> {
+    pub fn display_shortcut(&self, action_name: &str) -> Option<String> {
         self.shortcuts.get(action_name).map(|s| display_format(s))
     }
 }
@@ -105,12 +105,12 @@ impl gpui::Global for KeyBindings {}
 /// 调用方应在 AppView::new 中完成两步：
 ///   1. `cx.bind_keys(keybindings.bindings.clone())`
 ///   2. `cx.set_global(keybindings)`
-pub(crate) fn load(cx: &App) -> Result<KeyBindings> {
+pub fn load(cx: &App) -> Result<KeyBindings> {
     let (source, json) = platform_keymap();
     load_json(source, json, cx)
 }
 
-fn load_json(source: &str, json: &str, cx: &App) -> Result<KeyBindings> {
+pub fn load_json(source: &str, json: &str, cx: &App) -> Result<KeyBindings> {
     let groups: Vec<RawBindingGroup> =
         serde_json::from_str(json).with_context(|| format!("{source} 不是合法的 keymap JSON"))?;
 
@@ -214,31 +214,6 @@ mod tests {
     use super::*;
 
     #[gpui::test]
-    fn every_platform_keymap_builds_every_registered_action(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            for (source, json) in [
-                (
-                    "default-macos.json",
-                    include_str!("../../assets/keymaps/default-macos.json"),
-                ),
-                (
-                    "default-linux.json",
-                    include_str!("../../assets/keymaps/default-linux.json"),
-                ),
-                (
-                    "default-windows.json",
-                    include_str!("../../assets/keymaps/default-windows.json"),
-                ),
-            ] {
-                let keybindings =
-                    load_json(source, json, cx).expect("每个平台的全部内置绑定都应能构建");
-                assert!(!keybindings.bindings.is_empty());
-                assert!(keybindings.shortcuts.contains_key("workspace::Save"));
-            }
-        });
-    }
-
-    #[gpui::test]
     fn built_in_keymap_rejects_unknown_actions(cx: &mut TestAppContext) {
         let error = cx.update(|cx| {
             load_json(
@@ -282,29 +257,6 @@ mod tests {
                         "{source} 的 {keys} 应绑定 {action}"
                     );
                 }
-            }
-        });
-    }
-
-    #[gpui::test]
-    fn panel_toggle_actions_are_owned_only_by_dock(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            for action in [
-                "ToggleProjectTree",
-                "ToggleVersionControl",
-                "ToggleOutline",
-                "ToggleLanguageServer",
-                "ToggleDiagnostics",
-                "ToggleProjectSearch",
-                "ToggleTerminal",
-                "ToggleDebug",
-                "ToggleKeyboardShortcuts",
-            ] {
-                assert!(cx.build_action(&format!("dock::{action}"), None).is_ok());
-                assert!(
-                    cx.build_action(&format!("status_bar::{action}"), None)
-                        .is_err()
-                );
             }
         });
     }

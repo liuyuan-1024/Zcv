@@ -13,13 +13,13 @@ use gpui::{
     WeakEntity, Window, actions, div, prelude::*, uniform_list,
 };
 
-use crate::project::{Project, TreeRow, new_entry_destination, rename_destination, translate_path};
 use crate::settings::SettingsStore;
-use crate::ui::tree;
 use crate::workspace::{Panel, ToggleProjectTree};
 use zcv_editor::Editor;
 use zcv_git::FileStatus;
+use zcv_project::{Project, TreeRow, new_entry_destination, rename_destination, translate_path};
 use zcv_theme::color;
+use zcv_ui::tree;
 
 actions!(
     project_tree,
@@ -744,7 +744,7 @@ impl Panel for ProjectTree {
     type ToggleAction = ToggleProjectTree;
 
     fn icon() -> &'static str {
-        "icons/panels/project_tree.svg"
+        "icons/project_tree.svg"
     }
     fn label() -> &'static str {
         "项目树"

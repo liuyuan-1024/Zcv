@@ -148,6 +148,8 @@ struct VisibleLineLayoutParams<'a> {
     active_lines: &'a BTreeSet<Line>,
     /// 可折叠行集合（crease 显示判断；prepaint 从语言层折叠范围计算）。
     foldable_lines: &'a BTreeSet<Line>,
+    /// 折叠入口行集合（crease 折叠态判断：已折叠 anchor 行显示展开箭头）。
+    fold_anchor_lines: &'a BTreeSet<Line>,
     start_row: DisplayRow,
     scroll_offset: Point<Pixels>,
     line_height: Pixels,
@@ -530,6 +532,8 @@ impl Element for EditorElement {
                 .map(|line| (line, display_snapshot.fold_end_char(line)))
                 .collect(),
         );
+        // 折叠入口行集合（crease 折叠态判断：anchor 行已折叠常显展开箭头）。
+        let fold_anchor_lines: BTreeSet<Line> = fold_anchor_end_chars.keys().copied().collect();
         // 可折叠行集合（crease 显示判断：折叠范围起点行即折叠入口行）。
         let foldable_lines: BTreeSet<Line> = {
             let editor = self.editor.read(cx);
@@ -566,6 +570,7 @@ impl Element for EditorElement {
                 geometry,
                 active_lines: &active_lines,
                 foldable_lines: &foldable_lines,
+                fold_anchor_lines: &fold_anchor_lines,
                 start_row,
                 scroll_offset,
                 line_height,
@@ -1394,6 +1399,7 @@ fn layout_visible_lines(
             },
         active_lines,
         foldable_lines,
+        fold_anchor_lines,
         start_row,
         scroll_offset,
         line_height,
@@ -1504,8 +1510,8 @@ fn layout_visible_lines(
                 window
                     .text_system()
                     .shape_line(number.into(), font_size, &[run], None);
-            // 折叠指示：已折叠常显，可折叠行常显（不依赖光标位置）。
-            let crease = if display_snapshot.is_line_folded(logical_line) {
+            // 折叠指示：折叠入口行已折叠常显，可折叠行常显（不依赖光标位置）。
+            let crease = if fold_anchor_lines.contains(&logical_line) {
                 Some(true)
             } else if foldable_lines.contains(&logical_line) {
                 Some(false)
@@ -2063,6 +2069,7 @@ mod tests {
                         },
                         active_lines: &BTreeSet::new(),
                         foldable_lines: &BTreeSet::new(),
+                        fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::ZERO,
                         scroll_offset: point(px(0.), px(0.)),
                         line_height: px(20.),
@@ -2116,6 +2123,7 @@ mod tests {
                         },
                         active_lines: &BTreeSet::new(),
                         foldable_lines: &BTreeSet::new(),
+                        fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::new(5_000),
                         scroll_offset: point(px(0.), px(10.)),
                         line_height: px(20.),
@@ -2174,6 +2182,7 @@ mod tests {
                         },
                         active_lines: &BTreeSet::from([Line::new(1)]),
                         foldable_lines: &BTreeSet::new(),
+                        fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::ZERO,
                         scroll_offset: point(px(20.), px(0.)),
                         line_height: px(20.),
@@ -2228,6 +2237,7 @@ mod tests {
                         },
                         active_lines: &BTreeSet::new(),
                         foldable_lines: &BTreeSet::new(),
+                        fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::ZERO,
                         scroll_offset: point(px(0.), px(0.)),
                         line_height: px(20.),
@@ -2275,6 +2285,7 @@ mod tests {
                         },
                         active_lines: &BTreeSet::new(),
                         foldable_lines: &BTreeSet::new(),
+                        fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::new(10),
                         scroll_offset: point(px(0.), px(0.)),
                         line_height: px(20.),

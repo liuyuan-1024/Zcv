@@ -346,10 +346,10 @@ impl Editor {
 
     /// 折叠/展开指定逻辑行（crease 点击与 ToggleFold 命令的共享实现）。
     ///
-    /// 该行处于折叠中则展开覆盖它的折叠；否则若该行是可折叠范围起点则折叠整个范围。
+    /// 该行是折叠入口行则展开覆盖它的折叠；否则若该行是可折叠范围起点则折叠整个范围。
     pub(crate) fn toggle_fold_at_line(&mut self, line: Line, cx: &mut Context<Self>) {
         let display_snapshot = self.display_map.snapshot();
-        if display_snapshot.is_line_folded(line) {
+        if display_snapshot.fold_anchor_lines().contains(&line) {
             let line_range =
                 LineRange::new(line, Line::new(line.get() + 1)).expect("光标行 +1 应合法");
             if let Err(error) = self.display_map.unfold_lines(line_range) {

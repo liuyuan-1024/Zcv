@@ -18,10 +18,9 @@ use zcv_engine::{ByteOffset, CoordinateError, Line, LogicalColumn, Position, Sna
 use super::display_width::DisplayColumn;
 
 use super::error::DisplayMapResult;
-use super::fold_map::StreamProjectedKind;
+use super::fold_map::{FoldBias, StreamProjectedKind};
 use super::fold_map::{
-    FoldEdit, LogicalPoint, LogicalPointProjection, LogicalRange, ProjectedLineIndex,
-    ProjectedPoint, ProjectedRange,
+    FoldEdit, LogicalPoint, LogicalRange, ProjectedLineIndex, ProjectedPoint, ProjectedRange,
 };
 use super::line_stream::StreamLineSource;
 use super::tab_map::{TabSnapshot, advance_display_column, byte_for_display_column, line_content};
@@ -355,23 +354,13 @@ impl WrapSnapshot {
             return Ok(Vec::new());
         }
         let fold = self.tab_snapshot.fold_snapshot();
-        let start = match fold.logical_to_projected_point(logical.start())? {
-            LogicalPointProjection::Visible(point) => self.projected_point_to_range_point(point)?,
-            LogicalPointProjection::Hidden {
-                anchor_projected, ..
-            } => (DisplayRow::from(anchor_projected.line()), 0),
-        };
-        let end = match fold.logical_to_projected_point(logical.end())? {
-            LogicalPointProjection::Visible(point) => self.projected_point_to_range_point(point)?,
-            LogicalPointProjection::Hidden {
-                anchor_projected, ..
-            } => (
-                DisplayRow::new(
-                    (anchor_projected.line().get() + 2).min(self.line_count().saturating_sub(1)),
-                ),
-                0,
-            ),
-        };
+        // 折叠内端点按 bias 投影：起点吸附折叠起点列，终点吸附折叠终点列（对齐 Zed）。
+        let start = self.projected_point_to_range_point(
+            fold.logical_to_projected_point(logical.start(), FoldBias::Left)?,
+        )?;
+        let end = self.projected_point_to_range_point(
+            fold.logical_to_projected_point(logical.end(), FoldBias::Right)?,
+        )?;
         if start.0 > end.0 || (start.0 == end.0 && start.1 > end.1) {
             return Ok(Vec::new());
         }
@@ -500,15 +489,10 @@ impl WrapSnapshot {
         column: LogicalColumn,
     ) -> DisplayMapResult<DisplayPoint> {
         let fold = self.tab_snapshot.fold_snapshot();
-        match fold.logical_to_projected_point(LogicalPoint::new(line, column))? {
-            LogicalPointProjection::Visible(point) => self.projected_point_to_display_point(point),
-            LogicalPointProjection::Hidden {
-                anchor_projected, ..
-            } => Ok(DisplayPoint::new(
-                DisplayRow::from(anchor_projected.line()),
-                DisplayColumn::ZERO,
-            )),
-        }
+        // 隐藏点吸附折叠起点列（光标在折叠内的默认落点）。
+        let point =
+            fold.logical_to_projected_point(LogicalPoint::new(line, column), FoldBias::Left)?;
+        self.projected_point_to_display_point(point)
     }
 
     /// 投影点（tab 行 + 逻辑列）→ 显示点。

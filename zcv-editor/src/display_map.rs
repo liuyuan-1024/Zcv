@@ -168,11 +168,6 @@ impl DisplaySnapshot {
         self.wrap_snapshot.line_count()
     }
 
-    /// 该逻辑行是否处于折叠中（含折叠入口行）。
-    pub(super) fn is_line_folded(&self, line: Line) -> bool {
-        self.fold_snapshot.is_line_folded(line)
-    }
-
     /// 折叠入口行集合（anchor 行行尾绘制折叠省略号）。
     pub(super) fn fold_anchor_lines(&self) -> Vec<Line> {
         self.fold_snapshot.fold_anchor_lines()

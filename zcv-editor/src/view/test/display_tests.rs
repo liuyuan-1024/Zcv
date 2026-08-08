@@ -219,6 +219,45 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
+    // 折叠在显示上占一个字符：右箭头从折叠起点一步跨到闭合括号，左箭头回到折叠起点。
+    let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
+    let buffer = cx.new(|_| {
+        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+    });
+    let language_buffer =
+        cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let (editor, cx) = cx.add_window_view({
+        let language_buffer = language_buffer.clone();
+        move |_, cx| Editor::new(language_buffer, EditorMode::Full, cx)
+    });
+    cx.run_until_parked();
+    editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
+
+    // 光标在折叠起点（anchor 行行尾，字节 11）。
+    editor.update(cx, |editor, _| {
+        editor.set_selections(SelectionSet::caret(ByteOffset::new(11)));
+    });
+    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    cx.dispatch_action(MoveRight);
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.selections().primary().head(),
+            ByteOffset::new(27),
+            "右箭头应一步跨过折叠，落在闭合括号"
+        );
+    });
+    cx.dispatch_action(MoveLeft);
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.selections().primary().head(),
+            ByteOffset::new(11),
+            "左箭头应回到折叠起点"
+        );
+    });
+}
+
+#[gpui::test]
 fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer = cx.new(|_| {

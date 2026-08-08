@@ -292,6 +292,26 @@ impl FoldSnapshot {
         self.transforms.summary().output_rows
     }
 
+    /// 覆盖该字节偏移的最外层折叠的隐藏范围（`[入口行换行符, 闭合括号前)`）；无则 None。
+    ///
+    /// 水平移动用：目标落在折叠内时按方向吸附到折叠终点/起点（折叠在显示上占一个字符）。
+    pub(crate) fn fold_range_covering_offset(
+        &self,
+        offset: ByteOffset,
+    ) -> Option<(ByteOffset, ByteOffset)> {
+        self.folds
+            .iter()
+            .filter(|fold| {
+                let range = fold.text_range();
+                range.start() <= offset && offset < range.end()
+            })
+            .min_by_key(|fold| fold.text_range().start())
+            .map(|fold| {
+                let range = fold.text_range();
+                (range.start(), range.end())
+            })
+    }
+
     /// 折叠入口行（合并行占位符的挂靠行；无隐藏行的 fold 不计）。
     pub(crate) fn fold_anchor_lines(&self) -> Vec<Line> {
         self.folds
@@ -689,8 +709,8 @@ impl FoldMap {
         sort_folds(&mut retained);
         self.snapshot.folds = SumTree::from_iter(retained, ());
         let new_spans = hidden_spans(&self.snapshot.folds);
-        // 行数不变且折叠拓扑不变时，编辑只改变与 new_range 相交行的内容，
-        // `inline_fold_edits` 的 changed_lines 恰好覆盖；软换行的逐行重排（update_inline）
+        // 行数不变且折叠拓扑不变时，编辑只改变与 new_range 相交行的内容，`inline_fold_edits` 的 changed_lines 恰好覆盖；
+        // 软换行的逐行重排（update_inline）
         // 对行数不变的多行编辑同样正确，无需按"含换行"升级为全量重建。
         let structural = old_spans != new_spans || old_buffer.line_count() != buffer.line_count();
         self.snapshot.input = input;
@@ -719,15 +739,7 @@ impl FoldMap {
 pub(super) struct FoldMapWriter<'a>(&'a mut FoldMap);
 
 impl FoldMapWriter<'_> {
-    pub(super) fn fold_lines(
-        &mut self,
-        line_range: LineRange,
-    ) -> DisplayMapResult<(FoldSnapshot, Vec<FoldEdit>)> {
-        let range = text_range_for_folded_lines(self.0.snapshot.buffer_snapshot(), line_range)?;
-        self.fold(range)
-    }
-
-    /// 展开与行范围交叠的全部折叠（半开区间，约定同 `fold_lines`）。
+    /// 展开与行范围交叠的全部折叠（半开区间）。
     pub(super) fn unfold_lines(
         &mut self,
         line_range: LineRange,
@@ -933,40 +945,6 @@ fn inline_fold_edits(
         .collect()
 }
 
-/// 折叠行范围的折叠区间：从入口行行尾换行符到末行内容末尾（换行符除外）。
-///
-/// 对齐 Zed：入口行换行符被折叠吞掉（占位符与闭合尾段拼在同一显示行），末行换行符留在折叠外（占位符行以该换行符结束）。
-fn text_range_for_folded_lines(
-    snapshot: &Snapshot,
-    lines: LineRange,
-) -> DisplayMapResult<TextRange> {
-    let start = line_newline_position(snapshot, lines.start())?;
-    let end = line_content_end(snapshot, Line::new(lines.end().get() - 1))?;
-    if start >= end {
-        return Err(FoldError::EmptyRange {
-            range: TextRange::new(start, end)?,
-        }
-        .into());
-    }
-    Ok(TextRange::new(start, end)?)
-}
-
-/// 行终止换行符（`\n`）的字节位置；行尾无换行符时返回行尾。
-fn line_newline_position(snapshot: &Snapshot, line: Line) -> DisplayMapResult<ByteOffset> {
-    let content = snapshot.line_content(line, None)?;
-    if content.text_range().end() == content.full_range().end() {
-        Ok(content.full_range().end())
-    } else {
-        // 行含终止换行符：`\r?\n` 的 `\n` 位于行尾前一字节。
-        Ok(ByteOffset::new(content.full_range().end().get() - 1))
-    }
-}
-
-/// 行内容末尾（不含终止换行符）。
-fn line_content_end(snapshot: &Snapshot, line: Line) -> DisplayMapResult<ByteOffset> {
-    Ok(snapshot.line_content(line, None)?.text_range().end())
-}
-
 /// 折叠范围的逻辑行跨度：起点行（anchor）与终点所在行（close，含隐藏前缀）。
 ///
 /// 折叠范围是字节级的（终点在 close 行内），终点行即被折叠的 close 行，不再按"终点恰在行首"回退（行首终点只可能来自旧的整行折叠形状）。
@@ -990,10 +968,6 @@ mod tests {
     use super::super::inlay_map::InlayMap;
     use super::*;
 
-    fn line_range(start: usize, end: usize) -> LineRange {
-        LineRange::new(Line::new(start), Line::new(end)).unwrap()
-    }
-
     fn text_range(start: usize, end: usize) -> TextRange {
         TextRange::new(ByteOffset::new(start), ByteOffset::new(end)).unwrap()
     }
@@ -1006,10 +980,7 @@ mod tests {
         )
         .expect("测试 Buffer 应能创建");
         let (mut map, before) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
-        let (after, edits) = map
-            .write()
-            .fold_lines(LineRange::new(Line::ZERO, Line::new(3)).unwrap())
-            .unwrap();
+        let (after, edits) = map.write().fold(text_range(6, 21)).unwrap();
 
         assert_eq!(before.line_count(), 4);
         assert_eq!(after.line_count(), 2);
@@ -1041,8 +1012,8 @@ mod tests {
     fn unfolding_outer_fold_reveals_the_nested_transform() {
         let buffer = Buffer::scratch("a\nb\nc\nd\ne".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
-        map.write().fold_lines(line_range(0, 4)).unwrap();
-        map.write().fold_lines(line_range(1, 3)).unwrap();
+        map.write().fold(text_range(1, 7)).unwrap();
+        map.write().fold(text_range(3, 5)).unwrap();
         let outer = map
             .snapshot
             .folds
@@ -1063,7 +1034,7 @@ mod tests {
         let mut buffer =
             Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
-        map.write().fold_lines(line_range(0, 2)).unwrap();
+        map.write().fold(text_range(6, 13)).unwrap();
         let transforms = map.snapshot.transforms.clone();
         let subscription = buffer.subscribe();
         buffer.insert(ByteOffset::new(9), "!").unwrap();
@@ -1083,7 +1054,7 @@ mod tests {
         let mut buffer =
             Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
-        map.write().fold_lines(line_range(0, 2)).unwrap();
+        map.write().fold(text_range(6, 13)).unwrap();
         let subscription = buffer.subscribe();
         buffer.insert(ByteOffset::new(9), "new\n").unwrap();
 
@@ -1104,7 +1075,7 @@ mod tests {
         let mut buffer =
             Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
-        map.write().fold_lines(line_range(0, 2)).unwrap();
+        map.write().fold(text_range(6, 13)).unwrap();
         let subscription = buffer.subscribe();
         buffer
             .delete(text_range(0, "anchor\nhidden\n".len()))
@@ -1152,7 +1123,7 @@ mod tests {
         let mut buffer =
             Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
-        map.write().fold_lines(line_range(0, 2)).unwrap();
+        map.write().fold(text_range(6, 13)).unwrap();
         let fold_range = map.snapshot.folds.iter().next().unwrap().text_range();
         // 折叠起点 = anchor 行换行符位置（6）。
         assert_eq!(fold_range.start().get(), 6);
@@ -1174,7 +1145,7 @@ mod tests {
         let mut buffer =
             Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
-        map.write().fold_lines(line_range(0, 2)).unwrap();
+        map.write().fold(text_range(6, 13)).unwrap();
         // 编辑落在隐藏行（行 1）与 close 行（行 2）：changed_lines 都映射到 anchor 行（行 0）。
         let subscription = buffer.subscribe();
         buffer.insert(ByteOffset::new(9), "X").unwrap();
@@ -1190,7 +1161,7 @@ mod tests {
     fn folded_points_map_through_anchor_in_both_directions() {
         let buffer = Buffer::scratch("a\nb\nc\nd".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
-        let (snapshot, _) = map.write().fold_lines(line_range(0, 3)).unwrap();
+        let (snapshot, _) = map.write().fold(text_range(1, 5)).unwrap();
 
         // 折叠段不产生投影行：行数 = 4 - 2 隐藏 = 2。
         assert_eq!(snapshot.line_count(), 2);

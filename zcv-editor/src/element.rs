@@ -1863,7 +1863,7 @@ mod tests {
     use super::*;
     use crate::display_map::DisplayMap;
     use gpui::{Empty, TestAppContext, font};
-    use zcv_engine::{Buffer, BufferConfig, ByteOffset, Line, LineRange};
+    use zcv_engine::{Buffer, BufferConfig, ByteOffset, Line};
     use zcv_language::SyntaxSnapshot;
 
     /// 行级标记的显示行区间（`hunk_rendering` 的薄包装，测试专用）。
@@ -2199,8 +2199,11 @@ mod tests {
                 .expect("测试 Buffer 应能创建")
                 .snapshot();
                 let mut map = DisplayMap::new(snapshot.clone());
-                map.fold_lines(LineRange::new(Line::ZERO, Line::new(3)).expect("测试行区间应合法"))
-                    .expect("折叠应成功");
+                map.fold_range(
+                    TextRange::new(ByteOffset::new(6), ByteOffset::new(28))
+                        .expect("折叠范围应合法"),
+                )
+                .expect("折叠应成功");
                 let layout = layout_visible_lines(
                     map.snapshot(),
                     None,

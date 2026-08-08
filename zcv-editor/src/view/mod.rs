@@ -961,7 +961,20 @@ impl Editor {
                         let buffer = self.buffer.read(cx);
                         let head = buffer.byte_to_char(base)?;
                         let target = buffer.movement_boundary(head, direction, unit)?;
-                        buffer.char_to_byte(target)?
+                        let mut target = buffer.char_to_byte(target)?;
+                        // 折叠感知：目标落在折叠内时按方向吸附到折叠终点/起点。
+                        // 折叠在显示上占一个字符（合并行占位符），水平移动一步跨过（对齐 Zed）。
+                        if let Some((start, end)) = self
+                            .display_map
+                            .snapshot()
+                            .fold_range_covering_offset(target)
+                        {
+                            target = match direction {
+                                MovementDirection::Next => end,
+                                MovementDirection::Previous => start,
+                            };
+                        }
+                        target
                     }
                     Motion::LineStep | Motion::PageStep(_) => {
                         let row_step = match motion {

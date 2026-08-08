@@ -99,7 +99,11 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
         4
     );
     assert!(cx.read_entity(&editor, |editor, _| {
-        editor.display_map.snapshot().is_line_folded(Line::ZERO)
+        editor
+            .display_map
+            .snapshot()
+            .fold_anchor_lines()
+            .contains(&Line::ZERO)
     }));
 
     // 再次切换：展开，恢复 6 行。
@@ -109,13 +113,17 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
         6
     );
     assert!(!cx.read_entity(&editor, |editor, _| {
-        editor.display_map.snapshot().is_line_folded(Line::ZERO)
+        editor
+            .display_map
+            .snapshot()
+            .fold_anchor_lines()
+            .contains(&Line::ZERO)
     }));
 }
 
 #[gpui::test]
 fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
-    // 回归：编辑后折叠范围与折叠状态必须保持（crease 箭头显示依赖 fold_ranges / is_line_folded）。
+    // 回归：编辑后折叠范围与折叠状态必须保持（crease 箭头显示依赖 fold_ranges / fold_anchor_lines）。
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer = cx.new(|_| {
         Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
@@ -149,7 +157,11 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
         editor.toggle_fold_at_line(Line::new(1), cx)
     });
     assert!(cx.read_entity(&editor, |editor, _| {
-        editor.display_map.snapshot().is_line_folded(Line::new(1))
+        editor
+            .display_map
+            .snapshot()
+            .fold_anchor_lines()
+            .contains(&Line::new(1))
     }));
 }
 #[gpui::test]
@@ -179,7 +191,11 @@ fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
         6
     );
     assert!(!cx.read_entity(&editor, |editor, _| {
-        editor.display_map.snapshot().is_line_folded(Line::ZERO)
+        editor
+            .display_map
+            .snapshot()
+            .fold_anchor_lines()
+            .contains(&Line::ZERO)
     }));
 }
 #[gpui::test]

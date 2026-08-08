@@ -1,5 +1,6 @@
 //! WorkbenchFrame —— 窗口顶层装配。
 
+mod branch_picker;
 mod dock;
 mod item;
 mod pane;
@@ -23,6 +24,7 @@ use gpui::{
 use zcv_editor::Editor;
 use zcv_theme::{color, typography};
 
+use self::branch_picker::{GitBranchAction, OnSelectBranch, SelectGitBranch};
 use self::dock::render_body as render_layout_body;
 use crate::active_buffer_language::ActiveBufferLanguage;
 use crate::cursor_position::CursorPosition;
@@ -130,7 +132,25 @@ impl Workspace {
             }
         });
 
-        let top_bar = cx.new(|cx| TopBar::new(on_project_selected, cx));
+        // 分支操作（切换/创建）转发到 git_store 后台执行，完成后事件驱动刷新。
+        let weak_branch = weak_self.clone();
+        let on_branch: OnSelectBranch = Rc::new(move |action, _window, app| {
+            if let Some(ws) = weak_branch.upgrade() {
+                ws.update(app, |workspace, cx| {
+                    let store = workspace.project.read(cx).git_store();
+                    match action {
+                        GitBranchAction::Checkout(name) => {
+                            store.update(cx, |store, cx| store.checkout_branch(name, cx));
+                        }
+                        GitBranchAction::Create(name) => {
+                            store.update(cx, |store, cx| store.create_branch(name, cx));
+                        }
+                    }
+                });
+            }
+        });
+
+        let top_bar = cx.new(|cx| TopBar::new(on_project_selected, on_branch, cx));
         top_bar.update(cx, |bar, cx| {
             let label = root
                 .file_name()
@@ -299,8 +319,15 @@ impl Workspace {
             let branch = store.read(cx).current_branch().map(str::to_string);
             let has_repositories = store.read(cx).has_repositories();
             let remote_operation_state = store.read(cx).remote_operation_state();
+            // 分支列表随事件推送（活动仓库；选择器打开时同步渲染，无加载态）。
+            let branch_list = store
+                .read(cx)
+                .active_branch_list()
+                .map(|branches| branches.to_vec())
+                .unwrap_or_default();
             workspace.top_bar.update(cx, |bar, cx| {
-                bar.set_branch(branch);
+                bar.set_branch(branch, cx);
+                bar.set_branches(branch_list, cx);
                 bar.set_has_repositories(has_repositories);
                 bar.set_remote_operation_state(remote_operation_state);
                 cx.notify();
@@ -706,6 +733,19 @@ impl Workspace {
             });
         });
     }
+
+    fn handle_select_branch(
+        &mut self,
+        _: &SelectGitBranch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.top_bar.update(cx, |bar, cx| {
+            bar.branch_picker.update(cx, |picker, cx| {
+                picker.toggle(window, cx);
+            });
+        });
+    }
 }
 
 // ═══ 渲染 ═════════════════════════════════════════════════════════
@@ -791,6 +831,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_toggle_panel::<ToggleDebug>))
             .on_action(cx.listener(Self::handle_toggle_panel::<ToggleKeyboardShortcuts>))
             .on_action(cx.listener(Self::handle_toggle_project_picker))
+            .on_action(cx.listener(Self::handle_select_branch))
             .on_mouse_move(move |event, window, cx| {
                 if let Some(area) = drag_notify.get() {
                     let dock = match area {

@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use gpui::{AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
 use zcv_buffer_diff::DiffHunk;
-use zcv_git::{DiffStat, FileStatus, GitRepository};
+use zcv_git::{Branch, DiffStat, FileStatus, GitRepository};
 
 use background::{JobResult, execute_job, merge_refresh, repo_relative_path};
 
@@ -31,7 +31,7 @@ pub enum GitStoreEvent {
     Repositories,
     /// 文件状态或 diff 统计发生变化。
     Statuses,
-    /// 当前分支或 HEAD 发生变化。
+    /// 当前分支、HEAD 或分支列表发生变化。
     Head,
     /// 活动仓库变化（跟随焦点文件切换；订阅方重读 `current_branch()`，无需 payload）。
     ActiveRepositoryChanged,
@@ -74,6 +74,8 @@ pub struct RepositorySnapshot {
     /// 当前分支相对 upstream 的领先/落后计数（无 upstream 时为 0）。
     pub ahead: usize,
     pub behind: usize,
+    /// 本地分支列表（分支选择器数据源；空仓库为空列表）。
+    pub branch_list: Vec<Branch>,
     /// 相对仓库根的路径 → 状态。
     pub statuses_by_path: BTreeMap<PathBuf, StatusEntry>,
 }
@@ -101,6 +103,14 @@ pub(super) enum GitJobKey {
     },
     /// 撤销最近一次提交（无参：同一时间只允许一个 uncommit 在途）。
     Uncommit,
+    /// 切换分支（名字参与 key：同名双击去重，改目标不被去重跳过）。
+    CheckoutBranch {
+        name: String,
+    },
+    /// 创建并切换分支（同上）。
+    CreateBranch {
+        name: String,
+    },
 }
 
 /// 用户触发的 git 操作（fetch/pull/push，由 UI 发起，后台执行）。
@@ -121,6 +131,8 @@ pub(super) enum GitJob {
     StageFiles { stage: bool, paths: Vec<PathBuf> },
     Commit { message: String },
     Uncommit,
+    CheckoutBranch { name: String },
+    CreateBranch { name: String },
 }
 
 impl GitJob {
@@ -139,6 +151,8 @@ impl GitJob {
                 message: message.clone(),
             },
             GitJob::Uncommit => GitJobKey::Uncommit,
+            GitJob::CheckoutBranch { name } => GitJobKey::CheckoutBranch { name: name.clone() },
+            GitJob::CreateBranch { name } => GitJobKey::CreateBranch { name: name.clone() },
         }
     }
 }
@@ -272,6 +286,26 @@ impl GitStore {
         self.schedule_job(GitJob::Uncommit);
     }
 
+    /// 切换活动仓库到指定本地分支（分支选择器确认触发），完成后自动重扫。
+    pub fn checkout_branch(&mut self, name: String, cx: &mut Context<Self>) {
+        if self.repositories.is_empty() {
+            log::warn!("git 仓库尚未就绪，跳过 checkout（等待首次扫描完成后重试）");
+            self.schedule_scan(cx);
+            return;
+        }
+        self.schedule_job(GitJob::CheckoutBranch { name });
+    }
+
+    /// 以当前 HEAD 为基创建并切换分支（选择器"创建分支"行触发），完成后自动重扫。
+    pub fn create_branch(&mut self, name: String, cx: &mut Context<Self>) {
+        if self.repositories.is_empty() {
+            log::warn!("git 仓库尚未就绪，跳过 create_branch（等待首次扫描完成后重试）");
+            self.schedule_scan(cx);
+            return;
+        }
+        self.schedule_job(GitJob::CreateBranch { name });
+    }
+
     /// 枚举所有仓库（working_directory → 快照），顺序 = 发现顺序（祖先前置）。
     ///
     /// 返回借用，调用方按需读取字段；面板行模型构建的直接数据源。
@@ -371,6 +405,16 @@ impl GitStore {
             .as_ref()
             .and_then(|workdir| self.repo_by_workdir(workdir))
             .and_then(|repository| repository.snapshot.branch.as_deref())
+    }
+
+    /// 活动仓库的本地分支列表（无仓库、active 未建立时为 None；空仓库为空列表）。
+    ///
+    /// 与 current_branch 同仓库选择策略，保证分支 glyph 与列表一致。
+    pub fn active_branch_list(&self) -> Option<&[Branch]> {
+        self.active_workdir
+            .as_ref()
+            .and_then(|workdir| self.repo_by_workdir(workdir))
+            .map(|repository| repository.snapshot.branch_list.as_slice())
     }
 
     /// 活动仓库最近一次提交的 subject（底部提交区显示）。
@@ -530,8 +574,11 @@ impl GitStore {
                     grouped_paths,
                 })
             }
-            GitJob::GitOperation(_) => {
-                // 作用于活动仓库（对齐 Zed：fetch/pull/push 以 active 仓库为目标，空仓库也执行）。
+            GitJob::GitOperation(_)
+            | GitJob::CheckoutBranch { .. }
+            | GitJob::CreateBranch { .. } => {
+                // 作用于活动仓库（对齐 Zed：fetch/pull/push 以 active 仓库为目标，空仓库也执行；
+                // 分支操作与 top_bar 显示的分支同仓库）。
                 let repository = self.active_repository()?.repository.clone();
                 Some(JobPreparation {
                     root,
@@ -733,7 +780,9 @@ impl GitStore {
                 job @ (GitJob::GitOperation(_)
                 | GitJob::GitInit
                 | GitJob::StageFiles { .. }
-                | GitJob::Commit { .. }),
+                | GitJob::Commit { .. }
+                | GitJob::CheckoutBranch { .. }
+                | GitJob::CreateBranch { .. }),
                 JobResult::GitOperation(result),
             ) => {
                 match result {
@@ -1501,5 +1550,121 @@ mod tests {
             cx.read_entity(&git_store, |store, _| store.hunks_for_path(&untracked))
                 .is_none()
         );
+    }
+
+    #[gpui::test]
+    fn scan_reports_branch_list(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        run_git(&root, &["checkout", "-q", "-b", "feature"]);
+
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        let branches = cx.read_entity(&git_store, |store, _| {
+            store.active_branch_list().map(|branches| branches.to_vec())
+        });
+        let branches = branches.expect("应有分支列表");
+        let by_name: HashMap<_, _> = branches
+            .iter()
+            .map(|branch| (branch.name.as_str(), branch.is_head))
+            .collect();
+        assert_eq!(by_name.get("master"), Some(&false));
+        assert_eq!(by_name.get("feature"), Some(&true));
+    }
+
+    #[gpui::test]
+    fn checkout_branch_switches_and_refreshes(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        run_git(&root, &["checkout", "-q", "-b", "feature"]);
+
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        // 选择器确认切换到 master：job 完成后自动重扫，Head 事件驱动 UI 刷新。
+        cx.update_entity(&git_store, |store, cx| {
+            store.checkout_branch("master".into(), cx);
+        });
+        cx.run_until_parked();
+        cx.run_until_parked(); // 等 checkout 完成后触发的重新扫描落地。
+
+        let (branch, is_master_head) = cx.read_entity(&git_store, |store, _| {
+            let branch = store.current_branch().map(str::to_string);
+            let is_master_head = store.active_branch_list().is_some_and(|branches| {
+                branches
+                    .iter()
+                    .find(|branch| branch.name == "master")
+                    .is_some_and(|branch| branch.is_head)
+            });
+            (branch, is_master_head)
+        });
+        assert_eq!(branch.as_deref(), Some("master"));
+        assert!(is_master_head);
+    }
+
+    #[gpui::test]
+    fn create_branch_creates_and_refreshes(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        // 选择器"创建分支"行确认：以当前 HEAD 为基创建并切换。
+        cx.update_entity(&git_store, |store, cx| {
+            store.create_branch("new-branch".into(), cx);
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        let (branch, has_new) = cx.read_entity(&git_store, |store, _| {
+            let branch = store.current_branch().map(str::to_string);
+            let has_new = store
+                .active_branch_list()
+                .is_some_and(|branches| branches.iter().any(|branch| branch.name == "new-branch"));
+            (branch, has_new)
+        });
+        assert_eq!(branch.as_deref(), Some("new-branch"));
+        assert!(has_new);
+    }
+
+    #[gpui::test]
+    fn external_checkout_updates_branch_list(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        run_git(&root, &["checkout", "-q", "-b", "feature"]);
+
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        // 外部 checkout 回 master：增量刷新含 .git 路径 → 分支列表随 head 重读。
+        run_git(&root, &["checkout", "-q", "master"]);
+        cx.update_entity(&git_store, |store, cx| {
+            store.refresh_statuses_for_paths(&[root.join(".git/HEAD")], cx)
+        });
+        cx.run_until_parked();
+
+        let is_master_head = cx.read_entity(&git_store, |store, _| {
+            store.active_branch_list().is_some_and(|branches| {
+                branches
+                    .iter()
+                    .find(|branch| branch.name == "master")
+                    .is_some_and(|branch| branch.is_head)
+            })
+        });
+        assert!(is_master_head);
+    }
+
+    #[gpui::test]
+    fn branch_ops_skip_when_no_repository(cx: &mut gpui::TestAppContext) {
+        // 非 git 目录：checkout/create 入口不 panic，仅触发扫描后返回。
+        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(temp_dir.path().to_path_buf(), cx)));
+        cx.update_entity(&git_store, |store, cx| {
+            store.checkout_branch("master".into(), cx);
+            store.create_branch("feature".into(), cx);
+        });
+        cx.run_until_parked();
     }
 }

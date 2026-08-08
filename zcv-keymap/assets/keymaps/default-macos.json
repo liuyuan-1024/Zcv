@@ -81,7 +81,7 @@
     }
   },
   {
-    "context": "Picker || (ProjectPicker > Picker > Editor)",
+    "context": "Picker || (ProjectPicker > Picker > Editor) || (BranchPicker > Picker > Editor)",
     "bindings": {
       "up": "picker::PickerSelectPrev",
       "down": "picker::PickerSelectNext",
@@ -105,6 +105,7 @@
       "cmd-m": "window_controls::MinimizeWindow",
       "ctrl-cmd-f": "window_controls::ToggleMaximizeWindow",
       "cmd-shift-p": "project_picker::ToggleProjectPicker",
+      "cmd-shift-b": "branch_picker::SelectGitBranch",
       "cmd-,": "top_bar::OpenSettings",
       "cmd-shift-e": "dock::ToggleProjectTree",
       "cmd-shift-g": "dock::ToggleVersionControl",

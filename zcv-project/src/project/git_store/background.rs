@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use zcv_buffer_diff::DiffHunk;
-use zcv_git::{DiffStat, GitRepository};
+use zcv_git::{Branch, DiffStat, GitRepository};
 
 use super::{GitJob, GitOperationKind, RepositorySnapshot, StatusEntry};
 use crate::project::worktree::discover_repositories;
@@ -38,6 +38,8 @@ pub(super) struct RefreshData {
     pub(super) has_remote: bool,
     pub(super) ahead: usize,
     pub(super) behind: usize,
+    /// 本地分支列表（head_queried 为 false 时为空 vec，merge 不得误判变化）。
+    pub(super) branches: Vec<Branch>,
     pub(super) statuses: zcv_git::GitStatus,
     pub(super) staged: HashMap<PathBuf, DiffStat>,
     pub(super) unstaged: HashMap<PathBuf, DiffStat>,
@@ -106,6 +108,21 @@ pub(super) async fn execute_job(
                 .unwrap_or(Ok(()));
             JobResult::GitOperation(result)
         }
+        // 分支操作：切换分支 / 以当前 HEAD 为基创建并切换（作用于活动仓库）。
+        GitJob::CheckoutBranch { name } => {
+            let result = repositories
+                .first()
+                .map(|repository| repository.checkout(&name))
+                .unwrap_or(Ok(()));
+            JobResult::GitOperation(result)
+        }
+        GitJob::CreateBranch { name } => {
+            let result = repositories
+                .first()
+                .map(|repository| repository.create_branch(&name, None))
+                .unwrap_or(Ok(()));
+            JobResult::GitOperation(result)
+        }
         // 项目根无仓库时初始化；fallback 分支名对齐 Zed 的 "main"。
         GitJob::GitInit => JobResult::GitOperation(zcv_git::init(&root, "main")),
         // 暂存/取消暂存：按仓库分组执行；任一仓库失败即中断并上报。
@@ -168,9 +185,10 @@ fn fetch_hunks_sync(
     }
 }
 
-/// 后台线程：全量扫描一个仓库（head_commit + status + 双 diff_stat）。
+/// 后台线程：全量扫描一个仓库（head_commit + status + 双 diff_stat + 分支列表）。
 ///
-/// branch 名取自 status 头行（零附加进程）；head oid 与最近提交 subject 由 head_commit 一次查询。
+/// branch 名取自 status 头行（零附加进程）；head oid 与最近提交 subject 由 head_commit 一次查询；
+/// 分支列表单独 for-each-ref（分支选择器数据源）。
 fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapshot {
     let (head, last_commit_message) = match repository.head_commit() {
         Ok(commit) => commit,
@@ -191,6 +209,7 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
                 has_remote: false,
                 ahead: 0,
                 behind: 0,
+                branch_list: Vec::new(),
                 statuses_by_path: BTreeMap::new(),
             };
         }
@@ -202,6 +221,13 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
         HashMap::new()
     };
     let unstaged = repository.diff_stat(false, &[]).unwrap_or_default();
+    let branch_list = match repository.branches() {
+        Ok(branches) => branches,
+        Err(error) => {
+            log::warn!("读取 git 分支列表失败：{error}");
+            Vec::new()
+        }
+    };
     let statuses_by_path = statuses
         .statuses
         .into_iter()
@@ -229,6 +255,7 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
         has_remote: repository.has_remote().unwrap_or(false),
         ahead: statuses.branch.as_ref().map_or(0, |branch| branch.ahead),
         behind: statuses.branch.as_ref().map_or(0, |branch| branch.behind),
+        branch_list,
         statuses_by_path,
     }
 }
@@ -263,6 +290,18 @@ fn refresh_repository_data_sync(
                 .and_then(|branch| branch.branch.clone())
         })
         .flatten();
+    // 分支列表与 head 同批次重读：checkout/新建分支都落在 .git 路径上（fs 事件已过滤），外部操作经增量路径即可刷新选择器列表（对齐"外部 checkout 不重读会滞后"的既有语义）。
+    let branches = if touches_git {
+        match repository.branches() {
+            Ok(branches) => branches,
+            Err(error) => {
+                log::warn!("读取 git 分支列表失败：{error}");
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
     // diff_stat 不依赖 head 变量：无 HEAD 仓库 `--cached HEAD` 报错时按空处理（与 scan 语义一致）。
     let staged = repository.diff_stat(true, paths).unwrap_or_default();
     let unstaged = repository.diff_stat(false, paths).unwrap_or_default();
@@ -276,6 +315,7 @@ fn refresh_repository_data_sync(
         has_remote: touches_git && repository.has_remote().unwrap_or(false),
         ahead: statuses.branch.as_ref().map_or(0, |branch| branch.ahead),
         behind: statuses.branch.as_ref().map_or(0, |branch| branch.behind),
+        branches,
         statuses,
         staged,
         unstaged,
@@ -334,13 +374,15 @@ pub(super) fn merge_refresh(prev: &mut RepositorySnapshot, data: RefreshData) ->
     }
 
     // ahead/behind/has_remote 与提交信息纳入比对：fetch/push/外部提交后变化必须触发事件，否则订阅方无法感知。
+    // 分支列表只在 head_queried 时比对：快路径 data.branches 恒为空 vec，直接比对会误判"清空"。
     let head_changed = if data.head_queried {
         let changed = prev.head != data.head
             || prev.branch != data.branch
             || prev.last_commit_message != data.last_commit_message
             || prev.has_remote != data.has_remote
             || prev.ahead != data.ahead
-            || prev.behind != data.behind;
+            || prev.behind != data.behind
+            || prev.branch_list != data.branches;
         if changed {
             prev.branch = data.branch;
             prev.head = data.head;
@@ -348,6 +390,7 @@ pub(super) fn merge_refresh(prev: &mut RepositorySnapshot, data: RefreshData) ->
             prev.has_remote = data.has_remote;
             prev.ahead = data.ahead;
             prev.behind = data.behind;
+            prev.branch_list = data.branches;
         }
         changed
     } else {
@@ -395,6 +438,7 @@ mod tests {
             has_remote: true,
             ahead: 1,
             behind: 0,
+            branch_list: Vec::new(),
             statuses_by_path: BTreeMap::from([
                 (
                     PathBuf::from("a.txt"),
@@ -428,6 +472,7 @@ mod tests {
             has_remote: true,
             ahead: 1,
             behind: 0,
+            branches: Vec::new(),
             // a.txt 变干净（无输出 → 移除）；sub/c.txt 新增。
             statuses: zcv_git::GitStatus {
                 statuses: vec![(PathBuf::from("sub/c.txt"), FileStatus::Untracked)],
@@ -456,6 +501,7 @@ mod tests {
             has_remote: false,
             ahead: 0,
             behind: 0,
+            branch_list: Vec::new(),
             statuses_by_path: BTreeMap::new(),
         };
         let data = RefreshData {
@@ -467,6 +513,7 @@ mod tests {
             has_remote: false,
             ahead: 0,
             behind: 0,
+            branches: Vec::new(),
             statuses: zcv_git::GitStatus::default(),
             staged: HashMap::new(),
             unstaged: HashMap::new(),
@@ -489,6 +536,10 @@ mod tests {
             has_remote: true,
             ahead: 2,
             behind: 1,
+            branch_list: vec![Branch {
+                name: "master".into(),
+                is_head: true,
+            }],
             statuses_by_path: BTreeMap::new(),
         };
         let data = RefreshData {
@@ -501,6 +552,8 @@ mod tests {
             has_remote: false,
             ahead: 0,
             behind: 0,
+            // 快路径 branches 恒为空：不得覆盖既有列表，也不得误判"清空"变化。
+            branches: Vec::new(),
             statuses: zcv_git::GitStatus::default(),
             staged: HashMap::new(),
             unstaged: HashMap::new(),
@@ -516,6 +569,55 @@ mod tests {
         assert!(prev.has_remote);
         assert_eq!(prev.ahead, 2);
         assert_eq!(prev.behind, 1);
+        assert_eq!(prev.branch_list.len(), 1);
+    }
+
+    #[test]
+    fn merge_refresh_detects_branch_list_changes() {
+        let mut prev = RepositorySnapshot {
+            branch: Some("master".into()),
+            head: Some("old".into()),
+            last_commit_message: None,
+            has_remote: false,
+            ahead: 0,
+            behind: 0,
+            branch_list: vec![Branch {
+                name: "master".into(),
+                is_head: true,
+            }],
+            statuses_by_path: BTreeMap::new(),
+        };
+        let data = RefreshData {
+            paths: vec![PathBuf::from(".git/HEAD")],
+            head_queried: true,
+            branch: Some("feature".into()),
+            head: Some("new".into()),
+            last_commit_message: None,
+            has_remote: false,
+            ahead: 0,
+            behind: 0,
+            // 外部 checkout 后分支列表重读：is_head 迁移到 feature。
+            branches: vec![
+                Branch {
+                    name: "master".into(),
+                    is_head: false,
+                },
+                Branch {
+                    name: "feature".into(),
+                    is_head: true,
+                },
+            ],
+            statuses: zcv_git::GitStatus::default(),
+            staged: HashMap::new(),
+            unstaged: HashMap::new(),
+            hunks: Vec::new(),
+        };
+
+        let (statuses_changed, head_changed) = merge_refresh(&mut prev, data);
+        assert!(!statuses_changed);
+        assert!(head_changed);
+        assert_eq!(prev.branch_list.len(), 2);
+        assert!(prev.branch_list[1].is_head);
     }
 
     #[test]

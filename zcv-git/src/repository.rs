@@ -79,6 +79,29 @@ pub trait GitRepository: Send + Sync {
     /// 返回被撤销提交的完整消息（含 body，`%B`），供调用方填回提交信息编辑器；
     /// 无提交或撤销失败（如单提交仓库 `HEAD^` 不存在）时返回错误。
     fn uncommit(&self) -> Result<Option<String>>;
+
+    /// 列出全部本地分支（`git for-each-ref --format=%(HEAD)%00%(refname:short) refs/heads`）。
+    ///
+    /// `%(HEAD)` 为 `*` 表示当前分支；空仓库返回空列表。
+    fn branches(&self) -> Result<Vec<Branch>>;
+
+    /// 切换到本地分支（`git checkout <name>`）。
+    ///
+    /// 先 `git show-ref --verify --quiet refs/heads/{name}` 验证：
+    /// 防止列表生成到确认的窗口期分支被外部删除后，checkout 的 DWIM 意外创建远端跟踪分支（对齐 Zed change_branch）。
+    fn checkout(&self, name: &str) -> Result<()>;
+
+    /// 创建并切换到分支（`git switch -c <name> [base]`，对齐 Zed create_branch）。
+    ///
+    /// base 省略时从当前 HEAD 创建；空仓库（unborn HEAD）与 detached HEAD 均可用。
+    fn create_branch(&self, name: &str, base: Option<&str>) -> Result<()>;
+}
+
+/// 单个本地分支（`git for-each-ref refs/heads` 的一行）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Branch {
+    pub name: String,
+    pub is_head: bool,
 }
 
 pub struct RealGitRepository {
@@ -340,6 +363,57 @@ impl GitRepository for RealGitRepository {
             "git reset --soft HEAD^",
         )?;
         Ok(message)
+    }
+
+    fn branches(&self) -> Result<Vec<Branch>> {
+        // `refs/heads` 前缀匹配含嵌套分支（refs/heads/feature/x）；`refname:short` 直接给短名。
+        let output = self.run_command(
+            &mut self.build_command(&[
+                "for-each-ref",
+                "--format=%(HEAD)%00%(refname:short)",
+                "refs/heads",
+            ]),
+            "git for-each-ref",
+        )?;
+        let mut branches = Vec::new();
+        for line in output.stdout.split(|byte| *byte == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let mut parts = line.splitn(2, |byte| *byte == 0);
+            let is_head = parts.next().is_some_and(|head| head == b"*");
+            if let Some(name) = parts.next() {
+                let name = String::from_utf8_lossy(name);
+                if !name.is_empty() {
+                    branches.push(Branch {
+                        name: name.into_owned(),
+                        is_head,
+                    });
+                }
+            }
+        }
+        Ok(branches)
+    }
+
+    fn checkout(&self, name: &str) -> Result<()> {
+        let local_ref = format!("refs/heads/{name}");
+        if self
+            .run_optional(&["show-ref", "--verify", "--quiet", &local_ref])?
+            .is_none()
+        {
+            bail!("本地分支 {name} 不存在");
+        }
+        self.run_command(&mut self.build_command(&["checkout", name]), "git checkout")?;
+        Ok(())
+    }
+
+    fn create_branch(&self, name: &str, base: Option<&str>) -> Result<()> {
+        let mut args = vec!["switch", "-c", name];
+        if let Some(base) = base {
+            args.push(base);
+        }
+        self.run_command(&mut self.build_command(&args), "git switch -c")?;
+        Ok(())
     }
 
     fn load_revisions(&self, revs: &[&str]) -> Result<Vec<Option<Vec<u8>>>> {

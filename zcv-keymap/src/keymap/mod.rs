@@ -266,11 +266,13 @@ mod tests {
         assert!(error.to_string().contains("missing::Action"));
     }
 
-    /// 项目选择器分组使用的复合 context 必须可解析。
+    /// 项目/分支选择器分组使用的复合 context 必须可解析。
     #[test]
     fn composite_context_parses() {
-        KeyBindingContextPredicate::parse("Picker || (ProjectPicker > Picker > Editor)")
-            .expect("复合 context 必须可解析");
+        KeyBindingContextPredicate::parse(
+            "Picker || (ProjectPicker > Picker > Editor) || (BranchPicker > Picker > Editor)",
+        )
+        .expect("复合 context 必须可解析");
     }
 
     /// macOS 显示格式：修饰键与功能键都使用键帽符号。

@@ -1063,6 +1063,7 @@ mod tests {
             has_remote: false,
             ahead: 0,
             behind: 0,
+            branch_list: Vec::new(),
             statuses_by_path: entries
                 .iter()
                 .map(|(path, status)| {

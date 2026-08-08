@@ -696,3 +696,98 @@ fn uncommit_returns_full_message_and_rewinds_head() {
         StatusCode::Modified
     );
 }
+
+#[test]
+fn branches_lists_local_branches_with_head_marker() {
+    let (root, _temp) = test_repo();
+    let repository = open_repo(&root);
+    // for-each-ref 按 refname 字典序输出，断言按名字查找不依赖顺序。
+    // 切到新分支后 HEAD 标记应跟随。
+    run_in(&root, &["git", "checkout", "-q", "-b", "feature"]);
+    let branches = repository.branches().expect("branches 应成功");
+    let by_name: HashMap<_, _> = branches
+        .iter()
+        .map(|branch| (branch.name.as_str(), branch.is_head))
+        .collect();
+    assert_eq!(by_name["master"], false);
+    assert_eq!(by_name["feature"], true);
+
+    run_in(&root, &["git", "checkout", "-q", "master"]);
+    let branches = repository.branches().expect("branches 应成功");
+    assert_eq!(
+        branches
+            .iter()
+            .find(|branch| branch.is_head)
+            .expect("应有当前分支"),
+        &Branch {
+            name: "master".into(),
+            is_head: true,
+        }
+    );
+}
+
+#[test]
+fn branches_empty_in_empty_repository() {
+    let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+    run_in(temp_dir.path(), &["git", "init", "-q", "-b", "master"]);
+    let repository = open_repo(temp_dir.path());
+    assert_eq!(repository.branches().expect("branches 应成功"), vec![]);
+}
+
+#[test]
+fn branches_has_no_head_marker_when_detached() {
+    let (root, _temp) = test_repo();
+    let repository = open_repo(&root);
+    run_in(&root, &["git", "checkout", "-q", "--detach"]);
+    assert!(
+        repository
+            .branches()
+            .expect("branches 应成功")
+            .iter()
+            .all(|branch| !branch.is_head)
+    );
+}
+
+#[test]
+fn checkout_switches_branch() {
+    let (root, _temp) = test_repo();
+    let repository = open_repo(&root);
+    run_in(&root, &["git", "checkout", "-q", "-b", "feature"]);
+
+    repository.checkout("master").expect("checkout 应成功");
+    assert_eq!(
+        repository.head().expect("head 应成功").0.as_deref(),
+        Some("master")
+    );
+}
+
+#[test]
+fn checkout_fails_for_unknown_branch() {
+    let (root, _temp) = test_repo();
+    let repository = open_repo(&root);
+    assert!(repository.checkout("nope").is_err());
+}
+
+#[test]
+fn create_branch_creates_and_switches() {
+    let (root, _temp) = test_repo();
+    let repository = open_repo(&root);
+
+    // base 省略：从当前 HEAD 创建并切换。
+    repository
+        .create_branch("feature", None)
+        .expect("create_branch 应成功");
+    assert_eq!(
+        repository.head().expect("head 应成功").0.as_deref(),
+        Some("feature")
+    );
+
+    // 显式 base：从 master 创建并切换。
+    repository
+        .create_branch("from_master", Some("master"))
+        .expect("create_branch 应成功");
+    assert_eq!(
+        repository.head().expect("head 应成功").0.as_deref(),
+        Some("from_master")
+    );
+}

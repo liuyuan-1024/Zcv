@@ -15,6 +15,9 @@ use gpui::{HighlightStyle, UnderlineStyle, px};
 use zcv_engine::TextRange;
 use zcv_language::HighlightSpan;
 
+use super::fold_map::{FoldRowSegment, FoldRowSegmentKind};
+use super::inlay_map::InlaySnapshot;
+
 /// chunk 文本字节上限（与 Zed rope Chunk 的 MAX_BASE 一致）。
 pub(crate) const CHUNK_SIZE: usize = 128;
 
@@ -39,6 +42,8 @@ pub(crate) struct Chunk<'a> {
     pub(crate) is_tab: bool,
     /// 行内提示（inlay）文本（斜体 + 半透明渲染）。
     pub(crate) is_inlay: bool,
+    /// 折叠占位符文本（渲染端用占位色绘制）。
+    pub(crate) is_placeholder: bool,
     pub(crate) style: Option<HighlightStyle>,
     /// 选区标记（下划线渲染）。
     pub(crate) marked: bool,
@@ -372,6 +377,88 @@ pub(crate) fn synthesize_line_chunks<'a>(
     LineChunks {
         chunks,
         utf16_start: char_count_at(fragment_start),
+    }
+}
+
+/// 折叠合并行（anchor 文本 + 占位符 + 闭合行尾段）的 chunk 合成。
+///
+/// 合并行内的高亮坐标域是断开的（anchor 行与 close 行是两个字节窗口），
+/// 不能按单行窗口裁剪 spans，因此逐段调用行级合成：每段携带自己的行内提示
+/// （偏移相对段起点）与全局字节基准，占位符段单独产出。
+pub(crate) fn synthesize_folded_line_chunks<'a>(
+    merged: &'a str,
+    tab_width: usize,
+    segments: &[FoldRowSegment],
+    inlay: &'a InlaySnapshot,
+    styles: LineStyles<'_>,
+    fragment_range: Range<usize>,
+) -> LineChunks<'a> {
+    let mut chunks = Vec::new();
+    let mut utf16_start = 0usize;
+    for segment in segments {
+        let clipped_start = fragment_range
+            .start
+            .max(segment.merged_range.start)
+            .min(segment.merged_range.end);
+        let clipped_end = fragment_range
+            .end
+            .max(segment.merged_range.start)
+            .min(segment.merged_range.end);
+        if clipped_start >= clipped_end {
+            continue;
+        }
+        let segment_text = &merged[clipped_start..clipped_end];
+        if utf16_start == 0 && clipped_start > 0 {
+            utf16_start = merged[..clipped_start].chars().count();
+        }
+        match &segment.kind {
+            FoldRowSegmentKind::Placeholder => {
+                chunks.push(Chunk {
+                    is_placeholder: true,
+                    ..Chunk::from_text(segment_text)
+                });
+            }
+            FoldRowSegmentKind::Text {
+                stream_line,
+                projected_range,
+                global_start,
+            } => {
+                // 段内注入：偏移相对段起点（锚定偏移同样相对段的原始起点）。
+                let base_original = inlay.to_original_offset(*stream_line, projected_range.start);
+                let segment_inlays: Vec<InlayInfo<'_>> = inlay
+                    .line_inlays(*stream_line)
+                    .into_iter()
+                    .filter(|info| {
+                        info.projected >= projected_range.start
+                            && info.projected + info.text.len() <= projected_range.end
+                    })
+                    .map(|info| InlayInfo {
+                        anchor: info.anchor - base_original,
+                        projected: info.projected - projected_range.start,
+                        text: info.text,
+                    })
+                    .collect();
+                let local = Range {
+                    start: clipped_start - segment.merged_range.start,
+                    end: clipped_end - segment.merged_range.start,
+                };
+                chunks.extend(
+                    synthesize_line_chunks(
+                        segment_text,
+                        tab_width,
+                        *global_start,
+                        &segment_inlays,
+                        styles,
+                        local,
+                    )
+                    .chunks,
+                );
+            }
+        }
+    }
+    LineChunks {
+        chunks,
+        utf16_start,
     }
 }
 

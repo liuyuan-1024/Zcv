@@ -174,6 +174,7 @@ impl<'a> WrapViewportRow<'a> {
 /// `source` 是行的文本来源（buffer 行 / 合成行，渲染端据此区分行号与可命中性；
 /// 合成行无 buffer 坐标，`global_byte_start` 为锚定行行首）。
 /// `column_base` 是该段起始的逻辑字符列，用于命中测试与选区列换算。
+/// 折叠合并行（anchor 文本 + 占位符 + 闭合尾段）携带段表，渲染端按段合成高亮与命中。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapViewportRowKind<'a> {
     Text {
@@ -184,6 +185,7 @@ pub enum WrapViewportRowKind<'a> {
         fragment_index: usize,
         indent: usize,
         column_base: usize,
+        segments: Option<Vec<super::fold_map::FoldRowSegment>>,
     },
 }
 
@@ -266,6 +268,21 @@ impl WrapSnapshot {
                     .tab_snapshot
                     .line_text(tab_row)
                     .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
+                // 折叠合并行：按段映射显示列 → buffer 字节。
+                let fold = self.tab_snapshot.fold_snapshot();
+                if let Some(segments) =
+                    fold.fold_row_segments(ProjectedLineIndex::new(fragment.tab_row))
+                {
+                    let content = line_content(text.as_ref());
+                    let local = byte_for_display_column(
+                        &content[fragment.byte_range.clone()],
+                        fragment.indent,
+                        point.column().get(),
+                        buffer,
+                    );
+                    return self
+                        .merged_byte_to_offset(&segments, fragment.byte_range.start + local);
+                }
                 let content = line_content(text.as_ref());
                 let byte_range = fragment.byte_range;
                 let local = byte_for_display_column(
@@ -279,12 +296,66 @@ impl WrapSnapshot {
                     .tab_snapshot
                     .stream_line_for_projected(tab_row)
                     .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
-                let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
+                let inlay = fold.inlay_snapshot();
                 let projected_byte = byte_range.start + local;
                 let original_byte = inlay.to_original_offset(stream_line, projected_byte);
                 Ok(ByteOffset::new(line_start + original_byte))
             }
         }
+    }
+
+    /// 折叠合并行内合并字节 → buffer 字节。
+    ///
+    /// anchor 段经行内逆投影；占位符吸附折叠起点（右箭头一步跨过折叠，左箭头可回 anchor 行尾）；
+    /// 尾段映射到 close 行的真实字节。
+    fn merged_byte_to_offset(
+        &self,
+        segments: &[super::fold_map::FoldRowSegment],
+        merged_byte: usize,
+    ) -> DisplayMapResult<ByteOffset> {
+        let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
+        let anchor = &segments[0];
+        let placeholder = &segments[1];
+        let tail = &segments[2];
+        if merged_byte < anchor.merged_range.end {
+            let super::fold_map::FoldRowSegmentKind::Text {
+                stream_line,
+                global_start,
+                ..
+            } = &anchor.kind
+            else {
+                unreachable!("折叠合并行首段必须是 anchor 文本段");
+            };
+            let original = inlay.to_original_offset(*stream_line, merged_byte);
+            return Ok(ByteOffset::new(global_start + original));
+        }
+        if merged_byte < placeholder.merged_range.end {
+            // 占位符列吸附折叠起点：右箭头一步跨过折叠，左箭头从尾段可回到 anchor 行尾。
+            let super::fold_map::FoldRowSegmentKind::Text {
+                stream_line,
+                global_start,
+                ..
+            } = &anchor.kind
+            else {
+                unreachable!("折叠合并行首段必须是 anchor 文本段");
+            };
+            let anchor_end = inlay.to_original_offset(*stream_line, anchor.merged_range.end);
+            return Ok(ByteOffset::new(*global_start + anchor_end));
+        }
+        let super::fold_map::FoldRowSegmentKind::Text {
+            stream_line,
+            projected_range,
+            global_start,
+        } = &tail.kind
+        else {
+            unreachable!("折叠合并行尾段必须是 close 文本段");
+        };
+        let tail_projected = projected_range.start + (merged_byte - tail.merged_range.start);
+        let original = inlay.to_original_offset(*stream_line, tail_projected);
+        let tail_original_start = inlay.to_original_offset(*stream_line, projected_range.start);
+        Ok(ByteOffset::new(
+            *global_start + original - tail_original_start,
+        ))
     }
 
     pub(super) fn slice_viewport(
@@ -306,6 +377,9 @@ impl WrapSnapshot {
                 WrapFragmentKind::Text(source) => {
                     // 投影文本（含行内提示注入；合成行无注入直接借用）；行首为原始 buffer 字节。
                     let tab_row = Line::new(fragment.tab_row);
+                    let projected = ProjectedLineIndex::new(fragment.tab_row);
+                    let fold = self.tab_snapshot.fold_snapshot();
+                    let segments = fold.fold_row_segments(projected);
                     let line_range = self
                         .tab_snapshot
                         .line_byte_range(tab_row)
@@ -314,17 +388,27 @@ impl WrapSnapshot {
                         .tab_snapshot
                         .line_text(tab_row)
                         .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
-                    // 片段起点原始字节（投影偏移逆投影）→ 起始逻辑列。
-                    let stream_line = self
-                        .tab_snapshot
-                        .stream_line_for_projected(tab_row)
-                        .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
-                    let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
-                    let original_start =
-                        inlay.to_original_offset(stream_line, fragment.byte_range.start);
-                    let column_base = buffer
-                        .byte_to_position(ByteOffset::new(line_range.start.get() + original_start))
-                        .map_or(0, |position| position.column().get());
+                    // 片段起点列：合并行按合并文本字符数；普通行按原始字节逆投影后的逻辑列。
+                    let column_base = if segments.is_some() {
+                        // 合并行：片段起始列 = 合并文本字符数。
+                        let content = line_content(text.as_ref());
+                        content[..fragment.byte_range.start.min(content.len())]
+                            .chars()
+                            .count()
+                    } else {
+                        let stream_line = self
+                            .tab_snapshot
+                            .stream_line_for_projected(tab_row)
+                            .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
+                        let inlay = fold.inlay_snapshot();
+                        let original_start =
+                            inlay.to_original_offset(stream_line, fragment.byte_range.start);
+                        buffer
+                            .byte_to_position(ByteOffset::new(
+                                line_range.start.get() + original_start,
+                            ))
+                            .map_or(0, |position| position.column().get())
+                    };
                     WrapViewportRowKind::Text {
                         source,
                         text,
@@ -333,6 +417,7 @@ impl WrapSnapshot {
                         fragment_index: fragment.fragment_index,
                         indent: fragment.indent,
                         column_base,
+                        segments,
                     }
                 }
             };
@@ -409,12 +494,19 @@ impl WrapSnapshot {
                 let StreamLineSource::Buffer(_) = source else {
                     return Ok(ByteOffset::new(line_start));
                 };
+                // 折叠合并行：行尾 = 合并文本末尾（close 行内容末尾）。
+                let fold = self.tab_snapshot.fold_snapshot();
+                if let Some(segments) =
+                    fold.fold_row_segments(ProjectedLineIndex::new(fragment.tab_row))
+                {
+                    return self.merged_byte_to_offset(&segments, fragment.byte_range.end);
+                }
                 // 片段终点（投影偏移）逆投影回原始行内偏移。
                 let stream_line = self
                     .tab_snapshot
                     .stream_line_for_projected(tab_row)
                     .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
-                let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
+                let inlay = fold.inlay_snapshot();
                 let original_end = inlay.to_original_offset(stream_line, fragment.byte_range.end);
                 Ok(ByteOffset::new(line_start + original_end))
             }

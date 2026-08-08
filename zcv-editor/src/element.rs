@@ -1,6 +1,6 @@
 //! Editor 的逐帧文本布局、绘制与像素命中测试。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -18,9 +18,9 @@ use zcv_theme::color;
 use zcv_ui::Glyph;
 
 use super::display_map::{
-    BufferPoint, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot, LineStyles,
-    ProjectedRange, StreamLineSource, WrapViewportRowKind, byte_for_display_column, chunks_to_runs,
-    synthesize_line_chunks,
+    BufferPoint, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot, FoldRowSegment,
+    LineStyles, ProjectedRange, StreamLineSource, WrapViewportRowKind, byte_for_display_column,
+    chunks_to_runs, synthesize_folded_line_chunks, synthesize_line_chunks,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -98,6 +98,8 @@ struct LayoutLine {
     shaped: ShapedLine,
     global_utf16_start: usize,
     wrap_info: Option<WrapRowInfo>,
+    /// 折叠合并行的段表（anchor 文本 + 占位符 + 闭合尾段；命中测试与占位符点击用）。
+    fold_segments: Option<Vec<FoldRowSegment>>,
     /// 该显示行所属的 git diff 类型（内容背景用；wrap 续行同样标注）。
     git_diff: Option<DiffHunkKind>,
     /// placeholder 提示行：命中测试不映射到 placeholder buffer（空 buffer 唯一合法坐标是 0）。
@@ -158,7 +160,8 @@ struct VisibleLineLayoutParams<'a> {
 }
 
 impl EditorLayout {
-    fn buffer_point_for_position(&self, position: Point<Pixels>) -> Option<BufferPoint> {
+    /// 像素位置 → (布局行, 显示列)；显示列 = 行文本内字符数（含 wrap 假空格与折叠占位符）。
+    fn line_column_at(&self, position: Point<Pixels>) -> Option<(&LayoutLine, usize)> {
         let first = self.lines.first()?;
         let last = self.lines.last()?;
         let line = if position.y <= first.origin.y {
@@ -171,21 +174,41 @@ impl EditorLayout {
                 .find(|line| position.y < line.origin.y + self.line_height)
                 .unwrap_or(last)
         };
+        let byte_index = line.shaped.closest_index_for_x(position.x - line.origin.x);
+        let local_chars = line.shaped.text[..byte_index].chars().count();
+        // 软换行续行：命中假空格区落在片段起点，其余按"片段起始列 + 段内字符数"换算。
+        let column = if let Some(info) = line.wrap_info {
+            if local_chars <= info.indent {
+                info.column_base
+            } else {
+                info.column_base + local_chars - info.indent
+            }
+        } else {
+            local_chars
+        };
+        Some((line, column))
+    }
 
+    fn buffer_point_for_position(&self, position: Point<Pixels>) -> Option<BufferPoint> {
+        let (line, column) = self.line_column_at(position)?;
         // placeholder 提示行：不映射到 placeholder buffer（空 buffer 唯一合法坐标是 0）。
         if line.is_placeholder {
             return Some(BufferPoint::new(Line::ZERO, LogicalColumn::ZERO));
         }
-
-        let byte_index = line.shaped.closest_index_for_x(position.x - line.origin.x);
-        // 软换行续行：命中假空格区落在片段起点，其余按"片段起始列 + 段内字符数"换算。
+        // 折叠合并行：显示列 → buffer 字节走权威映射（占位符段吸附折叠终点，尾段映射到 close 行）。
+        if line.fold_segments.is_some() {
+            let offset = self
+                .display_snapshot
+                .display_point_to_offset(DisplayPoint::new(line.row, DisplayColumn::new(column)))
+                .ok()?;
+            return self
+                .display_snapshot
+                .buffer_snapshot()
+                .byte_to_position(offset)
+                .ok()
+                .map(BufferPoint::from);
+        }
         if let Some(info) = line.wrap_info {
-            let local_chars = line.shaped.text[..byte_index].chars().count();
-            let column = if local_chars <= info.indent {
-                info.column_base
-            } else {
-                info.column_base + local_chars - info.indent
-            };
             return Some(BufferPoint::new(
                 info.line,
                 zcv_engine::LogicalColumn::new(column),
@@ -194,7 +217,7 @@ impl EditorLayout {
         if let Some(logical_line) = line.logical_line {
             return Some(BufferPoint::new(
                 logical_line,
-                zcv_engine::LogicalColumn::new(line.shaped.text[..byte_index].chars().count()),
+                zcv_engine::LogicalColumn::new(column),
             ));
         }
         let offset = self
@@ -253,10 +276,8 @@ pub(super) struct PrepaintState {
     deleted_hunk_hitboxes: Arc<Vec<HunkHitbox>>,
     /// crease 折叠开关（Glyph 组件，已按 gutter 绝对坐标布局；自带点击与 tooltip）。
     crease_toggles: Vec<Option<AnyElement>>,
-    /// 折叠省略号点击 hitbox（anchor 行行尾；点击展开）。
-    ellipsis_hitboxes: Arc<Vec<(gpui::Hitbox, Line)>>,
-    /// 折叠省略号后缀（prepaint 已 shape，paint 直接查表绘制，避免重复 shaping）。
-    ellipsis_suffixes: Arc<BTreeMap<Line, ShapedLine>>,
+    /// 折叠占位符点击 hitbox（合并行占位符段；点击展开）。
+    placeholder_hitboxes: Arc<Vec<(gpui::Hitbox, Line)>>,
     /// hunk 竖条范围与状态色（竖条色不随展开变化；行背景按行状态另行绘制）。
     hunk_strips: Arc<Vec<(Range<usize>, DiffHunkKind)>>,
     scrollbar: Option<ScrollbarLayout>,
@@ -524,16 +545,9 @@ impl Element for EditorElement {
             let editor = self.editor.read(cx);
             (editor.scroll_anchor().row(), editor.scroll_offset())
         };
-        // 折叠入口行集合（anchor 行行尾绘制省略号；display_snapshot 后续被 autoscroll 分支移动）。
-        let fold_anchor_end_chars: Arc<BTreeMap<Line, Option<char>>> = Arc::new(
-            display_snapshot
-                .fold_anchor_lines()
-                .into_iter()
-                .map(|line| (line, display_snapshot.fold_end_char(line)))
-                .collect(),
-        );
         // 折叠入口行集合（crease 折叠态判断：anchor 行已折叠常显展开箭头）。
-        let fold_anchor_lines: BTreeSet<Line> = fold_anchor_end_chars.keys().copied().collect();
+        let fold_anchor_lines: BTreeSet<Line> =
+            display_snapshot.fold_anchor_lines().into_iter().collect();
         // 可折叠行集合（crease 显示判断：折叠范围起点行即折叠入口行）。
         let foldable_lines: BTreeSet<Line> = {
             let editor = self.editor.read(cx);
@@ -653,69 +667,39 @@ impl Element for EditorElement {
             }
             hitboxes
         });
-        // 折叠省略号点击 hitbox：anchor 行行尾的省略号区域（点击展开；交互型直接调 Entity 方法）。
-        // 后缀在此一次 shape 并存入 PrepaintState，paint 直接查表绘制（颜色用占位符色，与绘制一致）。
-        let (ellipsis_hitboxes, ellipsis_suffixes) = {
+        // 折叠占位符点击 hitbox：合并行占位符段区域（点击展开；交互型直接调 Entity 方法）。
+        let placeholder_hitboxes = {
             let mut hitboxes = Vec::new();
-            let mut suffixes = BTreeMap::new();
-            if !fold_anchor_end_chars.is_empty() {
-                let text_style = window.text_style();
-                let font_size = text_style.font_size.to_pixels(window.rem_size());
-                let run = TextRun {
-                    len: 0,
-                    font: text_style.font(),
-                    color: color::current(cx).text_placeholder.into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
+            for line in &layout.lines {
+                let Some(segments) = line.fold_segments.as_ref() else {
+                    continue;
                 };
-                for (index, line) in layout.lines.iter().enumerate() {
-                    let Some(logical_line) = line.logical_line else {
-                        continue;
-                    };
-                    // 软换行下省略号只落在逻辑行的最后显示行行尾。
-                    let is_last_fragment = layout
-                        .lines
-                        .get(index + 1)
-                        .is_none_or(|next| next.logical_line != line.logical_line);
-                    if !is_last_fragment {
-                        continue;
-                    }
-                    let Some(end_char) = fold_anchor_end_chars.get(&logical_line) else {
-                        continue;
-                    };
-                    // 块折叠在省略号后补闭合符（如 `}`），呈现 `{...}`；注释组等只有省略号。
-                    let suffix = match end_char {
-                        Some(end_char) => format!("…{end_char}"),
-                        None => "…".to_owned(),
-                    };
-                    let suffix_run = TextRun {
-                        len: suffix.len(),
-                        ..run.clone()
-                    };
-                    let shaped = window.text_system().shape_line(
-                        suffix.into(),
-                        font_size,
-                        &[suffix_run],
-                        None,
-                    );
-                    hitboxes.push((
-                        window.insert_hitbox(
-                            Bounds::from_corners(
-                                point(line.origin.x + line.shaped.width, line.origin.y),
-                                point(
-                                    line.origin.x + line.shaped.width + shaped.width,
-                                    line.origin.y + line_height,
-                                ),
-                            ),
-                            HitboxBehavior::BlockMouse,
-                        ),
-                        logical_line,
-                    ));
-                    suffixes.insert(logical_line, shaped);
+                let indent = line.wrap_info.map_or(0, |info| info.indent);
+                // 占位符段 = 合并文本中 anchor 段之后；显示文本 = 假空格 + 合并文本。
+                let start = indent + segments[0].merged_range.end;
+                let end = start + segments[1].merged_range.len();
+                if start >= line.shaped.text.len() {
+                    continue;
                 }
+                hitboxes.push((
+                    window.insert_hitbox(
+                        Bounds::from_corners(
+                            point(
+                                line.origin.x + line.shaped.x_for_index(start),
+                                line.origin.y,
+                            ),
+                            point(
+                                line.origin.x
+                                    + line.shaped.x_for_index(end.min(line.shaped.text.len())),
+                                line.origin.y + line_height,
+                            ),
+                        ),
+                        HitboxBehavior::BlockMouse,
+                    ),
+                    line.logical_line.expect("折叠合并行必须携带逻辑行"),
+                ));
             }
-            (Arc::new(hitboxes), Arc::new(suffixes))
+            Arc::new(hitboxes)
         };
         let crease_toggles = build_crease_toggles(&layout, &self.editor, window, cx);
         let scrollbar = layout_scrollbar(
@@ -737,8 +721,7 @@ impl Element for EditorElement {
             gutter_hitbox,
             deleted_hunk_hitboxes,
             crease_toggles,
-            ellipsis_hitboxes,
-            ellipsis_suffixes,
+            placeholder_hitboxes,
             hunk_strips,
             scrollbar,
         }
@@ -764,7 +747,7 @@ impl Element for EditorElement {
         let event_layout = Arc::clone(&prepaint.layout);
         let hitbox = prepaint.hitbox.clone();
         let deleted_hunk_hitboxes = prepaint.deleted_hunk_hitboxes.clone();
-        let ellipsis_hitboxes = prepaint.ellipsis_hitboxes.clone();
+        let placeholder_hitboxes = prepaint.placeholder_hitboxes.clone();
         let mouse_focus = focus.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble
@@ -792,9 +775,9 @@ impl Element for EditorElement {
                 cx.stop_propagation();
                 return;
             }
-            // 折叠省略号点击：展开该行（交互型，直接调 Entity 方法；先于 gutter 行号选行）。
+            // 折叠占位符点击：展开该行（交互型，直接调 Entity 方法；先于 gutter 行号选行）。
             // crease 箭头点击由 Glyph 组件自带的 on_click 处理。
-            if let Some((_, line)) = ellipsis_hitboxes
+            if let Some((_, line)) = placeholder_hitboxes
                 .iter()
                 .find(|(hitbox, _)| hitbox.is_hovered(window))
             {
@@ -871,8 +854,8 @@ impl Element for EditorElement {
                     window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
                 }
             }
-            // 折叠省略号可点击：hover 时手型光标（crease 箭头由 Glyph 自带 cursor_pointer）。
-            for (hitbox, _) in prepaint.ellipsis_hitboxes.iter() {
+            // 折叠占位符可点击：hover 时手型光标（crease 箭头由 Glyph 自带 cursor_pointer）。
+            for (hitbox, _) in prepaint.placeholder_hitboxes.iter() {
                 if hitbox.is_hovered(window) {
                     window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
                 }
@@ -996,33 +979,6 @@ impl Element for EditorElement {
                     {
                         // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃（对齐 Zed 的降级策略）。
                         log::error!("Editor 文本行绘制失败：{error}");
-                        continue;
-                    }
-                }
-                // 折叠省略号：绘制在折叠入口行的最后显示行行尾（对齐 Zed 行内占位样式）。
-                // 不进入文本流，命中测试与光标定位不受影响；后缀由 prepaint 预 shape，这里直接查表绘制。
-                for (index, line) in prepaint.layout.lines.iter().enumerate() {
-                    let Some(logical_line) = line.logical_line else {
-                        continue;
-                    };
-                    // 软换行下省略号只落在逻辑行的最后显示行行尾。
-                    let is_last_fragment = prepaint
-                        .layout
-                        .lines
-                        .get(index + 1)
-                        .is_none_or(|next| next.logical_line != line.logical_line);
-                    if !is_last_fragment {
-                        continue;
-                    }
-                    let Some(shaped) = prepaint.ellipsis_suffixes.get(&logical_line) else {
-                        continue;
-                    };
-                    let origin = point(line.origin.x + line.shaped.width, line.origin.y);
-                    if let Err(error) =
-                        shaped.paint(origin, prepaint.layout.line_height, window, cx)
-                    {
-                        // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃（对齐 Zed 的降级策略）。
-                        log::error!("Editor 折叠省略号绘制失败：{error}");
                         continue;
                     }
                 }
@@ -1465,6 +1421,7 @@ fn layout_visible_lines(
                          text: &str,
                          utf16_start: usize,
                          wrap_info: Option<WrapRowInfo>,
+                         fold_segments: Option<Vec<FoldRowSegment>>,
                          runs: Vec<TextRun>| {
         let shaped =
             window
@@ -1481,6 +1438,7 @@ fn layout_visible_lines(
             shaped,
             global_utf16_start: utf16_start,
             wrap_info,
+            fold_segments,
             git_diff,
             is_placeholder: placeholder_mode,
         });
@@ -1547,7 +1505,7 @@ fn layout_visible_lines(
                     fragment_index,
                     indent,
                     column_base,
-                    ..
+                    segments,
                 } => {
                     // 对齐 Zed highlighted_chunks：
                     // 整行合成 chunk 流（inlay 注入 + 样式切分 + tab 展开），软换行片段按投影范围裁剪；
@@ -1581,14 +1539,26 @@ fn layout_visible_lines(
                         },
                         StreamLineSource::Inserted { .. } => LineStyles::default(),
                     };
-                    let synthesized = synthesize_line_chunks(
-                        text.as_ref(),
-                        tab_width,
-                        *global_byte_start,
-                        &inlays,
-                        line_styles,
-                        byte_range.clone(),
-                    );
+                    let synthesized = if let Some(segments) = segments {
+                        // 折叠合并行：anchor 段与闭合尾段分别按各自的行窗口裁剪高亮。
+                        synthesize_folded_line_chunks(
+                            text.as_ref(),
+                            tab_width,
+                            segments,
+                            inlay_snapshot,
+                            line_styles,
+                            byte_range.clone(),
+                        )
+                    } else {
+                        synthesize_line_chunks(
+                            text.as_ref(),
+                            tab_width,
+                            *global_byte_start,
+                            &inlays,
+                            line_styles,
+                            byte_range.clone(),
+                        )
+                    };
                     // 显示文本：wrap 假空格 + 展开 chunk 文本拼接（对齐 Zed from_chunks）。
                     let display_len: usize = *indent
                         + synthesized
@@ -1610,7 +1580,14 @@ fn layout_visible_lines(
                             ..base.clone()
                         });
                     }
-                    runs.extend(chunks_to_runs(&synthesized.chunks, base.clone()));
+                    let mut chunk_runs = chunks_to_runs(&synthesized.chunks, base.clone());
+                    // 折叠占位符用占位色绘制。
+                    for (run, chunk) in chunk_runs.iter_mut().zip(&synthesized.chunks) {
+                        if chunk.is_placeholder {
+                            run.color = color::current(cx).text_placeholder.into();
+                        }
+                    }
+                    runs.extend(chunk_runs);
                     let utf16_start = synthesized.utf16_start;
                     let logical_line = match source {
                         StreamLineSource::Buffer(buffer_line) => Some(Line::new(*buffer_line)),
@@ -1634,6 +1611,7 @@ fn layout_visible_lines(
                         &display_text,
                         utf16_start,
                         wrap_info,
+                        segments.clone(),
                         runs,
                     );
                 }
@@ -1858,6 +1836,10 @@ fn local_byte_for_display_point(
             display_snapshot.buffer_snapshot(),
         );
         return info.indent + local;
+    }
+    if line.fold_segments.is_some() {
+        // 折叠合并行：显示列即合并文本字符列（占位符与尾段都在行文本内）。
+        return column_to_byte(&line.shaped.text, point.column().get());
     }
     let logical_column = line
         .logical_line
@@ -2248,7 +2230,8 @@ mod tests {
                 );
 
                 assert_eq!(layout.lines.len(), 2);
-                assert_eq!(layout.lines[0].shaped.text.as_ref(), "anchor");
+                // 折叠合并行：anchor 文本 + 占位符拼成同一显示行。
+                assert_eq!(layout.lines[0].shaped.text.as_ref(), "anchor…");
                 assert_eq!(layout.lines[1].shaped.text.as_ref(), "after");
             })
             .expect("测试窗口应保持可用");

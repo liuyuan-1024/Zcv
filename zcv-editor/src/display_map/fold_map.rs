@@ -2,7 +2,7 @@
 //!
 //! FoldMap 是唯一写入口，向上层发布 FoldSnapshot 与 FoldEdit。
 
-use std::{cmp::Reverse, collections::BTreeMap, ops::Range};
+use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, ops::Range};
 
 use gpui_sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use zcv_engine::{
@@ -300,29 +300,6 @@ impl FoldSnapshot {
             .collect()
     }
 
-    /// 折叠起点括号对应的另一半闭合符（`{`→`}`、`(`→`)`、`[`→`]`），anchor 行行尾省略号后绘制成 `{...}` 样式。
-    ///
-    /// 从折叠范围起点行的最后一个非空白字符推导配对；注释组等无括号折叠返回 None。
-    pub(crate) fn fold_end_char(&self, anchor: Line, snapshot: &Snapshot) -> Option<char> {
-        let fold = self.folds.iter().find(|fold| {
-            let (start, end) = fold.line_span;
-            start == anchor && start < end
-        })?;
-        let line_text = snapshot.slice_line(fold.line_span.0).ok()?;
-        let open = line_text
-            .as_str()
-            .trim_end_matches(['\r', '\n'])
-            .chars()
-            .rev()
-            .find(|c| !c.is_whitespace())?;
-        match open {
-            '{' => Some('}'),
-            '(' => Some(')'),
-            '[' => Some(']'),
-            _ => None,
-        }
-    }
-
     fn logical_line_count(&self) -> usize {
         // fold 拓扑的输入行 = 流行（buffer + 合成）。
         self.transforms.summary().input_lines
@@ -416,15 +393,29 @@ impl FoldSnapshot {
         let anchor_text = inlay
             .line_text(anchor_stream)
             .expect("折叠 anchor 行必须位于流内");
-        let anchor_chars = line_content(anchor_text.as_ref()).chars().count();
+        let anchor_content = line_content(anchor_text.as_ref());
+        let anchor_chars = anchor_content.chars().count();
+        let anchor_len = anchor_content.len();
         let close_line = fold.line_span.1;
         let close_stream = stream.buffer_to_stream(close_line);
         let close_start = self
             .buffer_snapshot()
             .line_start_byte(close_line)
             .expect("折叠 close 行必须位于当前 Snapshot 内");
-        let tail_byte = fold.text_range().end().get() - close_start.get();
-        let tail_projected = inlay.to_projected_offset(close_stream, tail_byte);
+        let tail_projected = inlay.to_projected_offset(
+            close_stream,
+            fold.text_range().end().get() - close_start.get(),
+        );
+        let content_end_projected = {
+            let content_end = self
+                .buffer_snapshot()
+                .line_content(close_line, None)
+                .expect("折叠 close 行必须位于当前 Snapshot 内")
+                .text_range()
+                .end()
+                .get();
+            inlay.to_projected_offset(close_stream, content_end - close_start.get())
+        };
         let tail_start_col = self
             .buffer_snapshot()
             .byte_to_position(fold.text_range().end())
@@ -432,12 +423,108 @@ impl FoldSnapshot {
             .map_or(0, |position| position.column().get());
         Ok(FoldMergedGeometry {
             row,
+            anchor_line: anchor,
+            anchor_stream,
             anchor_chars,
+            anchor_len,
             close_line,
-            tail_byte,
+            close_stream,
             tail_projected,
+            content_end_projected,
             tail_start_col,
         })
+    }
+
+    /// 投影行 → 是否折叠合并行（可见 anchor 行）。
+    pub(crate) fn is_fold_row(&self, row: ProjectedLineIndex) -> bool {
+        self.fold_for_row(row).is_some()
+    }
+
+    /// 投影行 → 折叠合并行的 anchor 行（流行号）。
+    pub(crate) fn fold_row_anchor_stream_line(&self, row: ProjectedLineIndex) -> Option<Line> {
+        self.fold_for_row(row)
+            .map(|fold| self.stream().buffer_to_stream(fold.line_span.0))
+    }
+
+    /// 投影行 → 折叠合并行的段表（合并文本字节空间的切分，文本顺序）。
+    pub(crate) fn fold_row_segments(&self, row: ProjectedLineIndex) -> Option<Vec<FoldRowSegment>> {
+        let fold = self.fold_for_row(row)?;
+        let geometry = self.fold_merged_geometry(fold).ok()?;
+        let placeholder_len = FOLD_PLACEHOLDER.len();
+        let tail_len = geometry.content_end_projected - geometry.tail_projected;
+        let tail_start = geometry.anchor_len + placeholder_len;
+        Some(vec![
+            FoldRowSegment {
+                merged_range: 0..geometry.anchor_len,
+                kind: FoldRowSegmentKind::Text {
+                    stream_line: geometry.anchor_stream,
+                    projected_range: 0..geometry.anchor_len,
+                    global_start: self
+                        .buffer_snapshot()
+                        .line_start_byte(geometry.anchor_line)
+                        .ok()?
+                        .get(),
+                },
+            },
+            FoldRowSegment {
+                merged_range: geometry.anchor_len..tail_start,
+                kind: FoldRowSegmentKind::Placeholder,
+            },
+            FoldRowSegment {
+                merged_range: tail_start..tail_start + tail_len,
+                kind: FoldRowSegmentKind::Text {
+                    stream_line: geometry.close_stream,
+                    projected_range: geometry.tail_projected..geometry.content_end_projected,
+                    global_start: fold.text_range().end().get(),
+                },
+            },
+        ])
+    }
+
+    /// 投影行 → 行文本；折叠合并行为 anchor 全文 + 占位符 + 闭合行尾段。
+    pub(crate) fn row_text(&self, row: ProjectedLineIndex) -> Option<Cow<'_, str>> {
+        if let Some(fold) = self.fold_for_row(row) {
+            return self.merged_row_text(fold);
+        }
+        let line = self.projected_line_kind(row)?.logical_line();
+        self.input.line_text(line)
+    }
+
+    /// 折叠对应的可见 anchor 行（未被外层折叠覆盖），供合并行查询。
+    fn fold_for_row(&self, row: ProjectedLineIndex) -> Option<&Fold> {
+        let text = self.projected_line_kind(row)?;
+        let StreamLineSource::Buffer(buffer_line) = self.input.source(text.logical_line())? else {
+            return None;
+        };
+        self.folds.iter().find(|fold| {
+            let (start, end) = fold.line_span;
+            start == Line::new(buffer_line)
+                && start < end
+                && !self.folds.iter().any(|other| {
+                    let (other_start, other_end) = other.line_span;
+                    other_start < start && start <= other_end
+                })
+        })
+    }
+
+    /// 折叠合并行文本：anchor 内容 + 占位符 + 闭合行尾段（以闭合行换行符结尾）。
+    fn merged_row_text(&self, fold: &Fold) -> Option<Cow<'_, str>> {
+        let geometry = self.fold_merged_geometry(fold).ok()?;
+        let inlay = self.inlay_snapshot();
+        let anchor_text = inlay.line_text(geometry.anchor_stream)?;
+        let close_text = inlay.line_text(geometry.close_stream)?;
+        let mut merged = String::with_capacity(
+            geometry.anchor_len + FOLD_PLACEHOLDER.len() + geometry.content_end_projected
+                - geometry.tail_projected
+                + 1,
+        );
+        merged.push_str(line_content(anchor_text.as_ref()));
+        merged.push_str(FOLD_PLACEHOLDER);
+        merged.push_str(
+            &close_text.as_ref()[geometry.tail_projected..geometry.content_end_projected],
+        );
+        merged.push('\n');
+        Some(Cow::Owned(merged))
     }
 
     /// close 行尾段内逻辑列 → 合并行内的投影列（尾段起点之后，含注入）。
@@ -1167,13 +1254,6 @@ impl ProjectedPoint {
         Self { line, column }
     }
 
-    pub const fn line_start(line: ProjectedLineIndex) -> Self {
-        Self {
-            line,
-            column: LogicalColumn::ZERO,
-        }
-    }
-
     pub const fn line(self) -> ProjectedLineIndex {
         self.line
     }
@@ -1183,19 +1263,48 @@ impl ProjectedPoint {
     }
 }
 
+/// 折叠合并行文本的段：合并文本字节空间的切分（只服务列↔字节映射与高亮坐标域，不参与行数）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FoldRowSegment {
+    /// 段在合并文本中的投影字节范围。
+    pub merged_range: Range<usize>,
+    pub kind: FoldRowSegmentKind,
+}
+
+/// 折叠合并行段的来源。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FoldRowSegmentKind {
+    /// 行内容段：流行号 + 行内投影字节范围 + 行首全局字节（spans 换算）。
+    Text {
+        stream_line: Line,
+        projected_range: Range<usize>,
+        global_start: usize,
+    },
+    /// 折叠占位符段（无源坐标）。
+    Placeholder,
+}
+
 /// 折叠合并行（anchor 行文本 + 占位符 + 闭合行尾段）的投影几何。
 #[derive(Debug, Clone, Copy)]
 struct FoldMergedGeometry {
     /// 合并行的投影行号（anchor 行）。
     row: ProjectedLineIndex,
+    /// anchor 行（buffer 行号）。
+    anchor_line: Line,
+    /// anchor 行流行号。
+    anchor_stream: Line,
     /// anchor 段字符数（含行内提示注入，不含行尾换行）。
     anchor_chars: usize,
+    /// anchor 段投影字节数（合并文本内前缀长度）。
+    anchor_len: usize,
     /// 闭合行（折叠范围终点所在行）。
     close_line: Line,
-    /// 尾段起点：闭合行内原始字节偏移（折叠范围终点 - 行首）。
-    tail_byte: usize,
+    /// 闭合行流行号。
+    close_stream: Line,
     /// 尾段起点：闭合行内投影偏移（含行内提示注入）。
     tail_projected: usize,
+    /// 尾段终点：闭合行内投影偏移（行内容末尾）。
+    content_end_projected: usize,
     /// 尾段起点：闭合行原始列（隐藏前缀的字符数）。
     tail_start_col: usize,
 }

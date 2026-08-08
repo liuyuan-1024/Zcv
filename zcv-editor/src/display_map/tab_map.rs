@@ -14,7 +14,7 @@ use zcv_engine::{ByteOffset, CoordinateError, Line, LogicalColumn, Snapshot};
 use super::{
     error::DisplayMapResult,
     fold_map::{FoldEdit, FoldSnapshot, ProjectedLineIndex, StreamProjectedKind},
-    line_stream::LineStream,
+    line_stream::{LineStream, StreamLineSource},
 };
 
 #[derive(Debug, Clone)]
@@ -54,16 +54,36 @@ impl TabSnapshot {
             .projected_kind(ProjectedLineIndex::new(line.get()))
     }
 
-    /// 投影行 → 行文本（经流行解析与行内提示注入）。
+    /// 投影行 → 行文本（经流行解析与行内提示注入；折叠合并行为合成文本）。
     pub(super) fn line_text(&self, line: Line) -> Option<Cow<'_, str>> {
-        let inlay = self.fold_snapshot.inlay_snapshot();
+        let fold = self.fold_snapshot();
+        let projected = ProjectedLineIndex::new(line.get());
+        if fold.is_fold_row(projected) {
+            return fold.row_text(projected);
+        }
+        let inlay = fold.inlay_snapshot();
         let stream_line = self.stream_line_for_projected(line)?;
         inlay.line_text(stream_line)
     }
 
-    /// 投影行 → 字节范围（合成行为锚定行行首的伪坐标）。
+    /// 投影行 → 字节范围（合成行与折叠合并行为锚定行行首的伪坐标）。
     pub(super) fn line_byte_range(&self, line: Line) -> Option<Range<ByteOffset>> {
-        let inlay = self.fold_snapshot.inlay_snapshot();
+        let fold = self.fold_snapshot();
+        let projected = ProjectedLineIndex::new(line.get());
+        if let Some(anchor_stream) = fold.fold_row_anchor_stream_line(projected) {
+            // 合并行：anchor 行行首的伪坐标（与合成行同语义，roundtrip 不可逆）。
+            let StreamLineSource::Buffer(buffer_line) =
+                fold.inlay_snapshot().source(anchor_stream)?
+            else {
+                return None;
+            };
+            let start = fold
+                .buffer_snapshot()
+                .line_start_byte(Line::new(buffer_line))
+                .ok()?;
+            return Some(start..start);
+        }
+        let inlay = fold.inlay_snapshot();
         let stream_line = self.stream_line_for_projected(line)?;
         inlay.line_byte_range(stream_line)
     }

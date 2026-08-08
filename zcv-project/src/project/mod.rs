@@ -7,6 +7,10 @@ mod buffer_store;
 mod git_store;
 mod worktree;
 
+#[cfg(test)]
+#[path = "test/test_support.rs"]
+pub(crate) mod test_support;
+
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
@@ -264,7 +268,8 @@ impl Project {
         }
 
         // git 状态刷新：删除/失步走全量扫描（涉及条目消失），文件变化走增量。
-        // `.git/` 内路径不过滤：进入增量 job 无输出、无害，且 `.git/HEAD` 变化借此触发 head 重读（兜底外部 checkout）。
+        // `.git/` 内只放行影响 git 状态的路径（HEAD/refs/index/packed-refs）：
+        // 保住外部 checkout 兜底（HEAD/refs 变化触发 head 重读），砍掉 git 操作期间的对象/日志噪声风暴。
         let structural = events.iter().any(|event| {
             matches!(
                 event.kind,
@@ -280,6 +285,7 @@ impl Project {
                 )
             })
             .map(|event| event.path.clone())
+            .filter(|path| keep_git_state_event(path))
             .collect();
         self.git_store.update(cx, |store, cx| {
             if structural {
@@ -305,6 +311,25 @@ impl Project {
 
 impl EventEmitter<ProjectEvent> for Project {}
 
+/// `.git` 内路径只放行影响 git 状态的（HEAD/refs/index/packed-refs），其余丢弃。
+///
+/// git fetch/pull/push 期间 `.git` 下有大量对象/日志写入，全量进入增量 job 会触发无谓的 git 进程风暴；
+/// HEAD/refs 变化仍放行，外部 checkout 的兜底语义不丢。
+fn keep_git_state_event(path: &Path) -> bool {
+    let mut components = path.components();
+    while let Some(component) = components.next() {
+        if component.as_os_str() == ".git" {
+            let rest = components.as_path();
+            return rest == Path::new("HEAD")
+                || rest.starts_with("refs")
+                || rest == Path::new("index")
+                || rest == Path::new("packed-refs");
+        }
+    }
+    // 非 .git 内路径一律放行。
+    true
+}
+
 fn write_buffer_to_path(buffer: &mut Buffer, path: &Path) -> Result<(), BufferSaveError> {
     let version = buffer.version();
     let mut file = File::create(path)?;
@@ -322,6 +347,7 @@ mod tests {
     use gpui::AppContext;
     use zcv_engine::{BufferConfig, ByteOffset};
 
+    use super::test_support::test_git_repo;
     use super::*;
 
     #[test]
@@ -462,33 +488,6 @@ mod tests {
         });
 
         assert!(!file.exists(), "被删除文件应不再位于原路径");
-    }
-
-    /// 创建带一个初始提交的临时 git 仓库，返回 (仓库根, 目录句柄)。
-    fn test_git_repo() -> (PathBuf, tempfile::TempDir) {
-        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
-        let root = temp_dir.path().to_path_buf();
-        run_git(&root, &["init", "-q", "-b", "master"]);
-        run_git(&root, &["config", "user.email", "test@example.com"]);
-        run_git(&root, &["config", "user.name", "Test User"]);
-        fs::write(root.join("tracked.txt"), "第一行\n第二行\n").expect("应写入初始文件");
-        run_git(&root, &["add", "tracked.txt"]);
-        run_git(&root, &["commit", "-q", "-m", "initial"]);
-        (root, temp_dir)
-    }
-
-    fn run_git(dir: &Path, args: &[&str]) {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("应执行成功");
-        assert!(
-            output.status.success(),
-            "git {:?} 失败：{}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
 
     #[gpui::test]

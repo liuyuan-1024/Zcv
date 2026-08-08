@@ -53,6 +53,10 @@ impl RenderOnce for SvgIcon {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         // 默认色依赖主题，只能在有 cx 的 render 中解析
         let color = self.color.unwrap_or_else(|| color::current(cx).icon);
-        svg().path(self.path).size(self.size).text_color(color)
+        svg()
+            .path(self.path)
+            .size(self.size)
+            .text_color(color)
+            .flex_none()
     }
 }

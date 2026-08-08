@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::{
     Edit, EngineResult, RegexSearchResult, SearchError, SearchResult, TextRange, Transaction,
     TransactionMetadata, TransactionOutcome, TransactionSource,
-    search::{regex_replacement_for_match, regex_replacements_in_text},
+    search::{SearchResultSet, regex_replacement_for_match, regex_replacements_in_text},
 };
 
 use super::Buffer;
@@ -59,7 +59,7 @@ impl Buffer {
         ordinal: usize,
         replacement: &str,
     ) -> EngineResult<Option<TransactionOutcome>> {
-        self.ensure_regex_search_result_current(result)?;
+        self.ensure_search_result_current(result)?;
 
         let Some((range, replacement)) =
             regex_replacement_for_match(&self.storage, result, ordinal, replacement)?
@@ -78,26 +78,18 @@ impl Buffer {
         result: &RegexSearchResult,
         replacement: &str,
     ) -> EngineResult<Option<TransactionOutcome>> {
-        self.ensure_regex_search_result_current(result)?;
+        self.ensure_search_result_current(result)?;
         self.replace_search_edits_fallible(
             regex_replacements_in_text(&self.storage, result, replacement)?,
             "替换全部正则匹配",
         )
     }
 
-    fn ensure_search_result_current(&self, result: &SearchResult) -> EngineResult<()> {
-        if result.version() != self.version {
-            return Err(SearchError::VersionMismatch {
-                expected: self.version,
-                actual: result.version(),
-            }
-            .into());
-        }
-
-        Ok(())
-    }
-
-    fn ensure_regex_search_result_current(&self, result: &RegexSearchResult) -> EngineResult<()> {
+    /// 校验搜索结果绑定当前版本，过期时拒绝替换。
+    fn ensure_search_result_current<O: Copy>(
+        &self,
+        result: &SearchResultSet<O>,
+    ) -> EngineResult<()> {
         if result.version() != self.version {
             return Err(SearchError::VersionMismatch {
                 expected: self.version,

@@ -85,6 +85,39 @@ fn collapse_middle_segments(mut segments: Vec<gpui::SharedString>) -> Vec<gpui::
     segments
 }
 
+impl ToolbarItemView for Breadcrumbs {
+    fn set_active_item(
+        &mut self,
+        active_item: Option<&dyn ItemHandle>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ToolbarItemLocation {
+        cx.notify();
+        self.active_item = None;
+        self.subscription = None;
+
+        let Some(item) = active_item else {
+            return ToolbarItemLocation::Hidden;
+        };
+
+        let location = item.breadcrumb_location(cx);
+        let this = cx.entity().downgrade();
+        self.subscription = Some(item.subscribe_to_item_events(
+            _window,
+            cx,
+            Box::new(move |ItemEvent::UpdateBreadcrumbs, cx| {
+                this.update(cx, |_, cx| {
+                    cx.notify();
+                    cx.emit(ToolbarItemEvent::ChangeLocation(location));
+                })
+                .ok();
+            }),
+        ));
+        self.active_item = Some(item.boxed_clone());
+        location
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -139,38 +172,5 @@ mod tests {
             });
             TestView
         });
-    }
-}
-
-impl ToolbarItemView for Breadcrumbs {
-    fn set_active_item(
-        &mut self,
-        active_item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> ToolbarItemLocation {
-        cx.notify();
-        self.active_item = None;
-        self.subscription = None;
-
-        let Some(item) = active_item else {
-            return ToolbarItemLocation::Hidden;
-        };
-
-        let location = item.breadcrumb_location(cx);
-        let this = cx.entity().downgrade();
-        self.subscription = Some(item.subscribe_to_item_events(
-            _window,
-            cx,
-            Box::new(move |ItemEvent::UpdateBreadcrumbs, cx| {
-                this.update(cx, |_, cx| {
-                    cx.notify();
-                    cx.emit(ToolbarItemEvent::ChangeLocation(location));
-                })
-                .ok();
-            }),
-        ));
-        self.active_item = Some(item.boxed_clone());
-        location
     }
 }

@@ -3,8 +3,9 @@
 //! 本模块只提供查询机制，不定义色值。色值来自主题 TOML，由 [`crate::theme_data`] 单一解析器解析后经 `set_theme` 注入。
 //! 查询走点分前缀回退：`keyword.control.import` 未命中 → `keyword.control` → `keyword` → [`default_fg`]。
 
-use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::collections::BTreeMap;
+use std::ops::Bound;
+use std::sync::{Arc, LazyLock, RwLock};
 
 use gpui::{HighlightStyle, Hsla};
 
@@ -28,36 +29,34 @@ pub fn style_table(names: &[Arc<str>]) -> Vec<HighlightStyle> {
     names.iter().map(|name| style_for(name)).collect()
 }
 
-/// 按 capture name 解析完整样式。
+/// 按 capture name 解析完整样式，走点分前缀回退（一次 BTreeMap range 查询，对齐 zed）。
 pub fn style_for(name: &str) -> HighlightStyle {
-    let mut current = name;
-    loop {
-        if let Some(style) = lookup_in_theme(current) {
-            return style;
-        }
-        match current.rfind('.') {
-            Some(dot) => current = &current[..dot],
-            None => return HighlightStyle::default(),
-        }
-    }
+    // range 覆盖「首段 … 全名」：命中候选都是 name 的前缀，rfind 取最长（最深）的一条。
+    let first_segment = name.split('.').next().unwrap_or(name);
+    let Ok(theme) = ACTIVE_THEME.read() else {
+        return HighlightStyle::default();
+    };
+    theme
+        .range::<str, _>((Bound::Included(first_segment), Bound::Included(name)))
+        .rfind(|(prefix, _)| {
+            name.strip_prefix(*prefix)
+                .is_some_and(|remainder| remainder.is_empty() || remainder.starts_with('.'))
+        })
+        .map(|(_, style)| *style)
+        .unwrap_or_default()
 }
 
 /// 注入主题的语法高亮表（主题切换时由 [`ThemeChoice::apply`] 调用）。
 pub(crate) fn set_theme(theme: &ThemeData) {
-    let lock = ACTIVE_THEME.get_or_init(|| RwLock::new(Arc::new(HashMap::new())));
-    match lock.write() {
+    match ACTIVE_THEME.write() {
         Ok(mut active) => *active = Arc::clone(&theme.syntax_table),
         Err(error) => eprintln!("更新语法主题失败：{error}"),
     }
 }
 
-fn lookup_in_theme(name: &str) -> Option<HighlightStyle> {
-    let lock = ACTIVE_THEME.get_or_init(|| RwLock::new(Arc::new(HashMap::new())));
-    lock.read().ok().and_then(|theme| theme.get(name).copied())
-}
-
 /// 当前主题的高亮表（由 [`crate::theme_data`] 解析，主题切换时整体替换）。
-static ACTIVE_THEME: OnceLock<RwLock<Arc<HashMap<&'static str, HighlightStyle>>>> = OnceLock::new();
+static ACTIVE_THEME: LazyLock<RwLock<Arc<BTreeMap<&'static str, HighlightStyle>>>> =
+    LazyLock::new(|| RwLock::new(Arc::new(BTreeMap::new())));
 
 #[cfg(test)]
 mod tests {

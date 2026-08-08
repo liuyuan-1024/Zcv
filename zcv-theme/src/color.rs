@@ -142,7 +142,11 @@ impl ThemeColors {
             panel_background: palette.gray.s[1],
             editor_background: palette.gray.s[1],
             editor_gutter_background: palette.gray.s[1],
-            editor_active_line_background: palette.gray.s[3],
+            // 当前行背景用半透明版本：滚动轴 thumb 同为 gray 色相，实色会与其在同一行处视觉融合。
+            editor_active_line_background: Rgba {
+                a: 0.5,
+                ..palette.gray.s[3]
+            },
             editor_line_number: palette.gray.s[6],
             editor_active_line_number: palette.gray.s[8],
             editor_selection_background: palette.blue.a[2],
@@ -160,16 +164,26 @@ impl ThemeColors {
                 a: 0.3,
                 ..palette.red.s[6]
             },
-            // 对齐 Zed 默认值：thumb 用中性色 alpha 3/4/5 级，track 透明。
+            // 滚动轴 track 透明；thumb 用中性色 s[6] 叠加 45/55/65% 不透明度：
+            // 原 a 阶梯 3/4/5 级（24/25/30%）过浅，与当前行背景同色相时难以区分。
             scrollbar_track_background: Rgba {
                 r: 0.,
                 g: 0.,
                 b: 0.,
                 a: 0.,
             },
-            scrollbar_thumb_background: palette.gray.a[3],
-            scrollbar_thumb_hover_background: palette.gray.a[4],
-            scrollbar_thumb_active_background: palette.gray.a[5],
+            scrollbar_thumb_background: Rgba {
+                a: 0.45,
+                ..palette.gray.s[6]
+            },
+            scrollbar_thumb_hover_background: Rgba {
+                a: 0.55,
+                ..palette.gray.s[6]
+            },
+            scrollbar_thumb_active_background: Rgba {
+                a: 0.65,
+                ..palette.gray.s[6]
+            },
         }
     }
 }

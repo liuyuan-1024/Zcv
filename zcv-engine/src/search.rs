@@ -390,8 +390,10 @@ fn search_regex_streaming<T: TextRead>(
             break;
         }
 
-        // 搜索当前 buffer，若命中末端且还有更多数据则扩展 buffer 重搜。
-        // 用于处理极长匹配（rare case），正常匹配不会触发。
+        let new_data_boundary = if first_window { 0 } else { overlap };
+
+        // 单遍收割：扫描中命中 buffer 末端且还有更多数据时，扩展 buffer 后重新扫描（极长匹配的 rare case）；
+        // 已上报命中靠 last_reported_end 去重。
         loop {
             let mut boundary_hit = false;
             for m in regex.find_iter(&buf[..]) {
@@ -399,6 +401,24 @@ fn search_regex_streaming<T: TextRead>(
                     boundary_hit = true;
                     break;
                 }
+
+                let abs_end = buf_start + m.end();
+                // 去重：跳过已上报的命中
+                if abs_end <= last_reported_end {
+                    continue;
+                }
+                // 跳过完全落在重叠区的命中（已被前序窗口上报）
+                if !first_window && m.end() <= new_data_boundary {
+                    continue;
+                }
+
+                let abs_start = buf_start + m.start();
+                matches.push(SearchMatch::new(
+                    ordinal,
+                    text_range(ByteOffset::new(abs_start), ByteOffset::new(abs_end))?,
+                ));
+                ordinal += 1;
+                last_reported_end = abs_end;
             }
 
             if !boundary_hit {
@@ -413,29 +433,6 @@ fn search_regex_streaming<T: TextRead>(
                     break;
                 }
             }
-        }
-
-        let new_data_boundary = if first_window { 0 } else { overlap };
-
-        // 收割结果
-        for m in regex.find_iter(&buf[..]) {
-            let abs_end = buf_start + m.end();
-            // 去重：跳过已上报的命中
-            if abs_end <= last_reported_end {
-                continue;
-            }
-            // 跳过完全落在重叠区的命中（已被前序窗口上报）
-            if !first_window && m.end() <= new_data_boundary {
-                continue;
-            }
-
-            let abs_start = buf_start + m.start();
-            matches.push(SearchMatch::new(
-                ordinal,
-                text_range(ByteOffset::new(abs_start), ByteOffset::new(abs_end))?,
-            ));
-            ordinal += 1;
-            last_reported_end = abs_end;
         }
 
         if chunks_exhausted {
@@ -681,7 +678,7 @@ fn find_case_sensitive_matches_streaming<T: TextRead>(
 /// 1. 折叠查询串一次（`query.chars().flat_map(char::to_lowercase)`）
 /// 2. 逐 chunk + 逐 char 推进，把每个字符的折叠结果追加到滑动 byte 窗口
 /// 3. 每个折叠 byte 同步记录"它来自原文哪个 byte 起点"
-/// 4. 窗口尾巴等于折叠查询时即匹配；非重叠：清空窗口继续
+/// 4. 窗口尾部滚动哈希等于折叠查询哈希且精确比较通过时即匹配；非重叠：清空窗口继续（匹配检查摊平为 O(1)）
 /// 5. 窗口超过 `q_len * 8` 时批量裁剪到 `q_len * 2`（amortized O(N) total）
 fn find_case_insensitive_matches_streaming<T: TextRead>(
     storage: &T,
@@ -697,11 +694,26 @@ fn find_case_insensitive_matches_streaming<T: TextRead>(
     let folded_query_bytes = folded_query.as_bytes();
     let q_len = folded_query_bytes.len();
 
+    // 滚动哈希：每 push 一个折叠 byte 用 O(1) 更新窗口哈希，命中哈希值后才做 O(q) 精确比较（碰撞概率 2^-64 量级，几乎不触发），把逐字符 O(q) 尾部比较摊平成 O(1)。
+    const HASH_BASE: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut query_hash = 0u64;
+    // 窗口滚出系数：q 字节窗口的最高次是 B^(q-1)。
+    let mut pow_q = 1u64;
+    for (index, &b) in folded_query_bytes.iter().enumerate() {
+        query_hash = query_hash
+            .wrapping_mul(HASH_BASE)
+            .wrapping_add(u64::from(b));
+        if index + 1 < q_len {
+            pow_q = pow_q.wrapping_mul(HASH_BASE);
+        }
+    }
+
     let base_offset = search_range.start().get();
 
     // 滑动窗口：折叠 byte + 每个 byte 对应的"在 search_range 内的原文 byte 起点"
     let mut folded_buf: Vec<u8> = Vec::with_capacity(q_len * 4);
     let mut origs: Vec<usize> = Vec::with_capacity(q_len * 4);
+    let mut tail_hash = 0u64;
     let mut matches: Vec<SearchMatch> = Vec::new();
 
     // 跨 chunk 时累计已遍历的 byte 数，用来推算每个 char 在 search_range 内部的 byte 偏移。
@@ -717,13 +729,24 @@ fn find_case_insensitive_matches_streaming<T: TextRead>(
             for folded_ch in ch.to_lowercase() {
                 let folded_str = folded_ch.encode_utf8(&mut encode_buf);
                 for &b in folded_str.as_bytes() {
+                    // 窗口 = folded_buf 尾部 min(len, q_len) 字节：
+                    // 满窗后每 push 一个新 byte 同时滚出最旧的一个。
+                    if folded_buf.len() >= q_len {
+                        let oldest = folded_buf[folded_buf.len() - q_len];
+                        tail_hash = tail_hash
+                            .wrapping_sub(u64::from(oldest).wrapping_mul(pow_q))
+                            .wrapping_mul(HASH_BASE)
+                            .wrapping_add(u64::from(b));
+                    } else {
+                        tail_hash = tail_hash.wrapping_mul(HASH_BASE).wrapping_add(u64::from(b));
+                    }
                     folded_buf.push(b);
                     origs.push(orig_byte_in_range);
                 }
             }
 
-            // 尾部匹配检查
-            if folded_buf.len() >= q_len {
+            // 尾部匹配检查：哈希命中后做精确比较确认
+            if folded_buf.len() >= q_len && tail_hash == query_hash {
                 let tail_start = folded_buf.len() - q_len;
                 if &folded_buf[tail_start..] == folded_query_bytes {
                     let match_orig_start = base_offset + origs[tail_start];
@@ -738,15 +761,21 @@ fn find_case_insensitive_matches_streaming<T: TextRead>(
                         // 非重叠：清空窗口，从下一字符开始重新累积
                         folded_buf.clear();
                         origs.clear();
+                        tail_hash = 0;
                     }
                 }
             }
 
-            // 周期性裁剪窗口，保持有界内存
+            // 周期性裁剪窗口，保持有界内存；
+            // 裁剪后窗口哈希重算 O(q)，频率与 q 成反比，整体摊销仍是 O(N)。
             if folded_buf.len() > q_len * 8 {
                 let to_drop = folded_buf.len() - q_len * 2;
                 folded_buf.drain(..to_drop);
                 origs.drain(..to_drop);
+                tail_hash = 0;
+                for &b in &folded_buf[folded_buf.len().saturating_sub(q_len)..] {
+                    tail_hash = tail_hash.wrapping_mul(HASH_BASE).wrapping_add(u64::from(b));
+                }
             }
         }
         bytes_consumed_in_range += chunk.len();

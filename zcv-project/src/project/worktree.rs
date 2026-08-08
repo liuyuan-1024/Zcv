@@ -294,6 +294,7 @@ mod tests {
 
     use zcv_git::GitRepository;
 
+    use super::super::test_support::{run_git, test_git_repo};
     use super::*;
 
     /// 构造按注入表查询的 git 状态闭包（测试替身）。
@@ -354,7 +355,7 @@ mod tests {
         assert!(
             !rows
                 .iter()
-                .any(|row| row.path.starts_with(&node_modules.join("pkg"))),
+                .any(|row| row.path.starts_with(node_modules.join("pkg"))),
             "被忽略目录不应展开内容"
         );
         assert!(
@@ -364,12 +365,11 @@ mod tests {
             "*.log 文件应被标记为忽略"
         );
         assert!(
-            !rows
-                .iter()
+            rows.iter()
                 .find(|row| row.path == visible)
                 .expect("可见文件行应存在")
                 .git_status
-                .is_some()
+                .is_none()
         );
     }
 
@@ -453,38 +453,9 @@ mod tests {
         }
     }
 
-    // ── git 仓库发现 ─────────────────────────────────────────────
-
-    /// 创建带一个初始提交的临时 git 仓库，返回 (仓库根, 目录句柄)。
-    fn test_repo() -> (PathBuf, tempfile::TempDir) {
-        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
-        let root = temp_dir.path().to_path_buf();
-        run_in(&root, &["git", "init", "-q", "-b", "master"]);
-        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
-        run_in(&root, &["git", "config", "user.name", "Test User"]);
-        std::fs::write(root.join("tracked.txt"), "第一行\n第二行\n").expect("应写入初始文件");
-        run_in(&root, &["git", "add", "tracked.txt"]);
-        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-        (root, temp_dir)
-    }
-
-    fn run_in(dir: &Path, args: &[&str]) {
-        let output = std::process::Command::new(args[0])
-            .args(&args[1..])
-            .current_dir(dir)
-            .output()
-            .expect("应执行成功");
-        assert!(
-            output.status.success(),
-            "命令 {:?} 失败：{}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
     #[test]
     fn discovers_repository_from_any_ancestor() {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         let nested = root.join("src/deep/nested");
         std::fs::create_dir_all(&nested).expect("应创建嵌套目录");
 
@@ -510,7 +481,7 @@ mod tests {
 
     #[test]
     fn discover_skips_submodule_git_file() {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         let submodule = root.join("submodule");
         std::fs::create_dir_all(&submodule).expect("应创建子模块目录");
         std::fs::write(
@@ -530,11 +501,11 @@ mod tests {
 
     #[test]
     fn find_git_repositories_finds_nested_repos_and_skips_heavy_dirs() {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         std::fs::create_dir_all(root.join("nested")).expect("应创建嵌套目录");
-        run_in(&root.join("nested"), &["git", "init", "-q"]);
+        run_git(&root.join("nested"), &["init", "-q"]);
         std::fs::create_dir_all(root.join("node_modules/pkg")).expect("应创建依赖目录");
-        run_in(&root.join("node_modules/pkg"), &["git", "init", "-q"]);
+        run_git(&root.join("node_modules/pkg"), &["init", "-q"]);
 
         let repos = find_git_repositories(&root).expect("find 应成功");
         // 根仓库 + 嵌套仓库；node_modules 内的仓库被排除。
@@ -555,11 +526,11 @@ mod tests {
 
     #[test]
     fn discover_repositories_finds_root_and_nested() {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         std::fs::create_dir_all(root.join("nested")).expect("应创建嵌套目录");
-        run_in(&root.join("nested"), &["git", "init", "-q"]);
+        run_git(&root.join("nested"), &["init", "-q"]);
         std::fs::create_dir_all(root.join("node_modules/pkg")).expect("应创建依赖目录");
-        run_in(&root.join("node_modules/pkg"), &["git", "init", "-q"]);
+        run_git(&root.join("node_modules/pkg"), &["init", "-q"]);
 
         let repos = discover_repositories(&root).expect("discover 应成功");
         // 根仓库 + 嵌套仓库；node_modules 内的仓库被排除；root 仓库不重复。
@@ -573,11 +544,11 @@ mod tests {
     #[test]
     fn discover_repositories_prepends_ancestor() {
         // root 不是仓库，但位于外层仓库内，且自身包含嵌套仓库。
-        let (outer, _temp) = test_repo();
+        let (outer, _temp) = test_git_repo();
         let root = outer.join("proj");
         std::fs::create_dir_all(&root).expect("应创建项目目录");
         std::fs::create_dir_all(root.join("nested")).expect("应创建嵌套目录");
-        run_in(&root.join("nested"), &["git", "init", "-q"]);
+        run_git(&root.join("nested"), &["init", "-q"]);
 
         let repos = discover_repositories(&root).expect("discover 应成功");
         // 外层仓库（祖先前置）+ 嵌套仓库。
@@ -590,7 +561,7 @@ mod tests {
 
     #[test]
     fn discover_repositories_dedups_root() {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         let repos = discover_repositories(&root).expect("discover 应成功");
         // discover 与 find 命中同一仓库，去重后不重复。
         assert_eq!(repos.len(), 1);

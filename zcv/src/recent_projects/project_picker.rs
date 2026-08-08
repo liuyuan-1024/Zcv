@@ -15,10 +15,10 @@ use gpui::{
 
 use crate::recent_projects::{self, ProjectEntry};
 use zcv_keymap::KeyBindings;
+use zcv_picker::{Picker, PickerDelegate, picker_divider};
 use zcv_theme::{color, space, typography};
 use zcv_ui::Glyph;
-use zcv_ui::{ListItem, list_item_two_line};
-use zcv_ui::{Picker, PickerDelegate, picker_divider};
+use zcv_ui::ListItem;
 
 const PICKER_WIDTH: Pixels = px(360.0);
 
@@ -163,12 +163,12 @@ impl PickerDelegate for ProjectPickerDelegate {
         });
         ListItem::new(index)
             .toggle_state(is_selected)
-            .child(list_item_two_line(
+            .child(
                 div()
                     .text_color(color::current(cx).text)
                     .child(entry.label.clone()),
-                entry.path.clone(),
-            ))
+            )
+            .subtitle(entry.path.clone())
             .end_slot(
                 Glyph::icon(("delete-project", index), "icons/trash.svg")
                     .color(icon_color)
@@ -524,7 +524,7 @@ mod tests {
             }],
             on_selected,
         );
-        let window = cx.add_window(|_window, _cx| TestView::default());
+        let window = cx.add_window(|_window, _cx| TestView);
         let _ = window.update(cx, |_, window, cx| {
             delegate.confirm(window, cx);
         });

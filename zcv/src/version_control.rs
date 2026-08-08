@@ -425,10 +425,9 @@ impl VersionControlPanel {
             if let Some(parent_idx) = rows[..idx]
                 .iter()
                 .rposition(|r| matches!(r, GitRow::Entry(e) if e.is_dir && e.depth == parent_depth))
+                && let Some(key) = row_entry_key(&rows[parent_idx])
             {
-                if let Some(key) = row_entry_key(&rows[parent_idx]) {
-                    state.selected = Some(key);
-                }
+                state.selected = Some(key);
             }
         }
         window.refresh();
@@ -695,10 +694,9 @@ fn render_row(
                     } else {
                         "暂存"
                     })
-                    .shortcut("version_control::ToggleStaged")
+                    .shortcut(&ToggleStaged, cx)
                     .on_click({
                         let weak = render_context.weak.clone();
-                        let section = section;
                         let path = path.clone();
                         move |_window, cx| {
                             if let Some(panel) = weak.upgrade() {

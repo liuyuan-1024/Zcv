@@ -6,11 +6,10 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, AnyView, App, ClickEvent, Component, ElementId, IntoElement, RenderOnce, Window, div,
-    prelude::*,
+    Action, App, ClickEvent, Component, ElementId, IntoElement, RenderOnce, Window, div, prelude::*,
 };
 
-use crate::ui::{SvgIcon, tooltip_view};
+use crate::ui::{SvgIcon, TooltipSpec};
 use zcv_keymap::KeyBindings;
 use zcv_theme::{color, space, typography};
 
@@ -30,8 +29,7 @@ pub struct Glyph {
     id: ElementId,
     content: GlyphContent,
     color: Option<gpui::Rgba>,
-    label: Option<String>,
-    shortcut: Option<String>,
+    tooltip: TooltipSpec,
     on_click: Option<ClickHandler>,
 }
 
@@ -64,23 +62,25 @@ impl Glyph {
             content,
             // 默认色延迟到 render（有 cx）解析
             color: None,
-            label: None,
-            shortcut: None,
+            tooltip: TooltipSpec::default(),
             on_click: None,
         }
     }
 
     /// 设置 tooltip 标签文字。
     pub fn label(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
+        self.tooltip = TooltipSpec::new(label);
         self
     }
 
     /// 从当前 keymap 中获取 action 对应的快捷键并设为提示。
     pub fn shortcut(mut self, action: &dyn Action, cx: &App) -> Self {
-        self.shortcut = cx
+        if let Some(s) = cx
             .try_global::<KeyBindings>()
-            .and_then(|kb| kb.display_shortcut(action.name()));
+            .and_then(|kb| kb.display_shortcut(action.name()))
+        {
+            self.tooltip = self.tooltip.shortcut(s);
+        }
         self
     }
 
@@ -115,19 +115,16 @@ impl RenderOnce for Glyph {
         // 默认色依赖主题，只能在有 cx 的 render 中解析
         let color = self.color.unwrap_or_else(|| color::current(cx).text);
         let icon_size = typography::ui();
-        let label = self.label;
-        let shortcut = self.shortcut;
+        let tooltip = self.tooltip;
         let on_click = self.on_click;
-        let has_tooltip = label.is_some() || shortcut.is_some();
-
-        let build_tooltip = move |_: &mut Window, cx: &mut App| -> AnyView {
-            tooltip_view(cx, label.clone(), shortcut.clone())
-        };
 
         let base = |mut el: gpui::Stateful<gpui::Div>| {
-            el = el.cursor_pointer();
-            if has_tooltip {
-                el = el.tooltip(build_tooltip);
+            // 只有可点击的 glyph 才显示手型光标
+            if on_click.is_some() {
+                el = el.cursor_pointer();
+            }
+            if let Some(build) = tooltip.build() {
+                el = el.tooltip(build);
             }
             if let Some(ref handler) = on_click {
                 let h = Rc::clone(handler);

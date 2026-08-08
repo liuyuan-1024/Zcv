@@ -3,8 +3,10 @@ use std::sync::{Arc, OnceLock};
 
 use tree_sitter::Query;
 
+use crate::available_languages::{QuerySource, builtin_languages, language_queries};
+
 /// 一门可由 tree-sitter 解析和高亮的语言。
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Language {
     name: &'static str,
     grammar: tree_sitter::Language,
@@ -14,13 +16,13 @@ pub struct Language {
     capture_names: Arc<[Arc<str>]>,
 }
 
-#[derive(Clone, Default)]
-struct LanguageQueries {
-    brackets: Option<Arc<Query>>,
-    indents: Option<Arc<Query>>,
-    outline: Option<Arc<Query>>,
-    text_objects: Option<Arc<Query>>,
-    folds: Option<Arc<Query>>,
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LanguageQueries {
+    pub(crate) brackets: Option<Arc<Query>>,
+    pub(crate) indents: Option<Arc<Query>>,
+    pub(crate) outline: Option<Arc<Query>>,
+    pub(crate) text_objects: Option<Arc<Query>>,
+    pub(crate) folds: Option<Arc<Query>>,
 }
 
 impl Language {
@@ -60,10 +62,6 @@ impl Language {
         self.queries.folds.as_ref()
     }
 
-    pub(crate) fn capture_name(&self, index: u32) -> Option<Arc<str>> {
-        self.capture_names.get(index as usize).cloned()
-    }
-
     /// capture 名字表（capture index -> 名字），供跨语言全局表构建与渲染查表使用。
     pub(crate) fn capture_names(&self) -> &[Arc<str>] {
         &self.capture_names
@@ -71,39 +69,26 @@ impl Language {
 }
 
 /// 文件识别规则（对齐 Zed `LanguageMatcher`）：扩展名 + 首行模式。
-struct LanguageMatcher {
-    suffixes: &'static [&'static str],
-    first_line_pattern: Option<&'static str>,
+///
+/// 首行模式在注册表构建时一次性编译（内置模式静态正确，编译失败直接 panic），
+/// 文件匹配热路径不再每次重新编译正则。
+pub(crate) struct LanguageMatcher {
+    pub(crate) suffixes: &'static [&'static str],
+    pub(crate) first_line_pattern: Option<regex::Regex>,
 }
 
 /// 语言注册条目（对齐 Zed `AvailableLanguage`）：声明 + 惰性加载。
 ///
 /// 声明（名称/matcher）在注册表构建时登记，文件识别不依赖语言已加载；
 /// `load` 在真正需要语法解析/高亮时才编译 grammar 与查询。
-struct LanguageEntry {
-    name: &'static str,
-    matcher: LanguageMatcher,
-    grammar: Option<fn() -> tree_sitter::Language>,
-    highlights: Option<QuerySource>,
-    injections: Option<QuerySource>,
+pub(crate) struct LanguageEntry {
+    pub(crate) name: &'static str,
+    pub(crate) matcher: LanguageMatcher,
+    pub(crate) grammar: Option<fn() -> tree_sitter::Language>,
+    pub(crate) highlights: Option<QuerySource>,
+    pub(crate) injections: Option<QuerySource>,
     /// 注入查询使用的别名（如 markdown 的 `markdown_inline`）；仅注入查找用，不参与文件识别。
-    injection_alias: Option<&'static str>,
-}
-
-/// tree-sitter 本身不提供查询继承；语言规格在加载时将基础查询与扩展查询合并编译。
-#[derive(Clone, Copy)]
-enum QuerySource {
-    Single(&'static str),
-    Combined(&'static [&'static str]),
-}
-
-impl QuerySource {
-    fn compile(self, grammar: &tree_sitter::Language) -> Result<Query, tree_sitter::QueryError> {
-        match self {
-            Self::Single(source) => Query::new(grammar, source),
-            Self::Combined(sources) => Query::new(grammar, &sources.join("\n")),
-        }
-    }
+    pub(crate) injection_alias: Option<&'static str>,
 }
 
 impl LanguageEntry {
@@ -131,8 +116,17 @@ impl LanguageEntry {
         })
     }
 
-    fn matches_name_or_suffix(&self, name: &str) -> bool {
-        self.name.eq_ignore_ascii_case(name) || self.matcher.suffixes.contains(&name)
+    /// 注入名匹配：别名（如 `markdown_inline`）、语言名与后缀均忽略大小写。
+    fn matches_injection_name(&self, name: &str) -> bool {
+        let name = name.trim();
+        self.injection_alias
+            .is_some_and(|alias| alias.eq_ignore_ascii_case(name))
+            || self.name.eq_ignore_ascii_case(name)
+            || self
+                .matcher
+                .suffixes
+                .iter()
+                .any(|suffix| suffix.eq_ignore_ascii_case(name))
     }
 }
 
@@ -156,17 +150,11 @@ impl LanguageRegistry {
         }
     }
 
-    /// 按注入名查语言：优先匹配注入别名（如 `markdown_inline`），再按名称/后缀。
+    /// 按注入名查语言（语法树注入层使用）。
     pub(crate) fn language_for_injection(&self, name: &str) -> Option<Language> {
-        let name = name.trim().to_ascii_lowercase();
         self.languages
             .iter()
-            .find(|entry| entry.injection_alias.is_some_and(|alias| alias == name))
-            .or_else(|| {
-                self.languages
-                    .iter()
-                    .find(|entry| entry.matches_name_or_suffix(&name))
-            })
+            .find(|entry| entry.matches_injection_name(name))
             .and_then(LanguageEntry::load)
     }
 
@@ -200,7 +188,7 @@ impl LanguageRegistry {
                     .matcher
                     .suffixes
                     .iter()
-                    .filter(move |suffix| filename.ends_with(&format!(".{suffix}")))
+                    .filter(move |suffix| ends_with_dot_suffix(filename, suffix))
                     .map(move |_| entry)
             })
             .max_by_key(|entry| entry.matcher.suffixes.iter().map(|s| s.len()).max());
@@ -209,9 +197,10 @@ impl LanguageRegistry {
             && let Some(first_line) = first_line
         {
             matched = self.languages.iter().find_map(|entry| {
-                let pattern = entry.matcher.first_line_pattern?;
-                regex::Regex::new(pattern)
-                    .ok()?
+                entry
+                    .matcher
+                    .first_line_pattern
+                    .as_ref()?
                     .is_match(first_line)
                     .then_some(entry)
             });
@@ -221,449 +210,11 @@ impl LanguageRegistry {
     }
 }
 
-fn language_queries(name: &str, grammar: &tree_sitter::Language) -> Option<LanguageQueries> {
-    let sources = match name {
-        "Rust" => LanguageQuerySources::all("rust"),
-        "Python" => LanguageQuerySources::all("python"),
-        "JavaScript" => LanguageQuerySources::all("javascript"),
-        "JSX" | "TSX" => LanguageQuerySources::all("tsx"),
-        "TypeScript" => LanguageQuerySources::all("typescript"),
-        "Shell" => Some(LanguageQuerySources {
-            brackets: Some(include_str!("../queries/bash/brackets.scm")),
-            indents: Some(include_str!("../queries/bash/indents.scm")),
-            outline: None,
-            text_objects: Some(include_str!("../queries/bash/textobjects.scm")),
-            fold: None,
-        }),
-        "Markdown" => LanguageQuerySources::all("markdown"),
-        "HTML" => Some(LanguageQuerySources {
-            brackets: Some(include_str!("../queries/html/brackets.scm")),
-            indents: Some(include_str!("../queries/html/indents.scm")),
-            outline: Some(include_str!("../queries/html/outline.scm")),
-            text_objects: None,
-            fold: None,
-        }),
-        "CSS" => LanguageQuerySources::all("css"),
-        "JSON" => LanguageQuerySources::all("json"),
-        "YAML" => Some(LanguageQuerySources {
-            brackets: Some(include_str!("../queries/yaml/brackets.scm")),
-            indents: None,
-            outline: Some(include_str!("../queries/yaml/outline.scm")),
-            text_objects: Some(include_str!("../queries/yaml/textobjects.scm")),
-            fold: None,
-        }),
-        _ => None,
-    };
-    let Some(sources) = sources else {
-        return Some(LanguageQueries::default());
-    };
-    Some(LanguageQueries {
-        brackets: compile_query(grammar, sources.brackets)?,
-        indents: compile_query(grammar, sources.indents)?,
-        outline: compile_query(grammar, sources.outline)?,
-        text_objects: compile_query(grammar, sources.text_objects)?,
-        folds: compile_query(grammar, sources.fold)?,
-    })
-}
-
-struct LanguageQuerySources {
-    brackets: Option<&'static str>,
-    indents: Option<&'static str>,
-    outline: Option<&'static str>,
-    text_objects: Option<&'static str>,
-    fold: Option<&'static str>,
-}
-
-impl LanguageQuerySources {
-    fn all(language: &str) -> Option<Self> {
-        Some(match language {
-            "rust" => Self::from_sources(
-                include_str!("../queries/rust/brackets.scm"),
-                include_str!("../queries/rust/indents.scm"),
-                include_str!("../queries/rust/outline.scm"),
-                include_str!("../queries/rust/textobjects.scm"),
-                Some(include_str!("../queries/rust/fold.scm")),
-            ),
-            "python" => Self::from_sources(
-                include_str!("../queries/python/brackets.scm"),
-                include_str!("../queries/python/indents.scm"),
-                include_str!("../queries/python/outline.scm"),
-                include_str!("../queries/python/textobjects.scm"),
-                None,
-            ),
-            "javascript" => Self::from_sources(
-                include_str!("../queries/javascript/brackets.scm"),
-                include_str!("../queries/javascript/indents.scm"),
-                include_str!("../queries/javascript/outline.scm"),
-                include_str!("../queries/javascript/textobjects.scm"),
-                None,
-            ),
-            "typescript" => Self::from_sources(
-                include_str!("../queries/typescript/brackets.scm"),
-                include_str!("../queries/typescript/indents.scm"),
-                include_str!("../queries/typescript/outline.scm"),
-                include_str!("../queries/typescript/textobjects.scm"),
-                None,
-            ),
-            "tsx" => Self::from_sources(
-                include_str!("../queries/tsx/brackets.scm"),
-                include_str!("../queries/tsx/indents.scm"),
-                include_str!("../queries/tsx/outline.scm"),
-                include_str!("../queries/tsx/textobjects.scm"),
-                None,
-            ),
-            "markdown" => Self::from_sources(
-                include_str!("../queries/markdown/brackets.scm"),
-                include_str!("../queries/markdown/indents.scm"),
-                include_str!("../queries/markdown/outline.scm"),
-                include_str!("../queries/markdown/textobjects.scm"),
-                None,
-            ),
-            "css" => Self::from_sources(
-                include_str!("../queries/css/brackets.scm"),
-                include_str!("../queries/css/indents.scm"),
-                include_str!("../queries/css/outline.scm"),
-                include_str!("../queries/css/textobjects.scm"),
-                None,
-            ),
-            "json" => Self::from_sources(
-                include_str!("../queries/json/brackets.scm"),
-                include_str!("../queries/json/indents.scm"),
-                include_str!("../queries/json/outline.scm"),
-                include_str!("../queries/json/textobjects.scm"),
-                None,
-            ),
-            _ => return None,
-        })
-    }
-
-    fn from_sources(
-        brackets: &'static str,
-        indents: &'static str,
-        outline: &'static str,
-        text_objects: &'static str,
-        fold: Option<&'static str>,
-    ) -> Self {
-        Self {
-            brackets: Some(brackets),
-            indents: Some(indents),
-            outline: Some(outline),
-            text_objects: Some(text_objects),
-            fold,
-        }
-    }
-}
-
-fn compile_query(
-    grammar: &tree_sitter::Language,
-    source: Option<&str>,
-) -> Option<Option<Arc<Query>>> {
-    match source {
-        Some(source) => Some(Some(Arc::new(Query::new(grammar, source).unwrap_or_else(
-            |error| panic!("Zed tree-sitter 查询与 grammar 不匹配：{error}"),
-        )))),
-        None => Some(None),
-    }
-}
-
-/// 内置语言数据：注册表初始化来源（新增语言在此加一条即可）。
-fn builtin_languages() -> Vec<LanguageEntry> {
-    use LanguageMatcher as M;
-    vec![
-        LanguageEntry {
-            name: "Rust",
-            matcher: M {
-                suffixes: &["rs", "rlib"],
-                first_line_pattern: None,
-            },
-            grammar: Some(|| tree_sitter_rust::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_rust::HIGHLIGHTS_QUERY)),
-            injections: Some(QuerySource::Single(tree_sitter_rust::INJECTIONS_QUERY)),
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "Python",
-            matcher: M {
-                suffixes: &["py", "pyw", "pyx"],
-                first_line_pattern: Some(
-                    r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?python[\d.]*",
-                ),
-            },
-            grammar: Some(|| tree_sitter_python::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_python::HIGHLIGHTS_QUERY)),
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "JavaScript",
-            matcher: M {
-                suffixes: &["js", "mjs", "cjs"],
-                first_line_pattern: Some(
-                    r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?(?:node|bun|deno)",
-                ),
-            },
-            grammar: Some(|| tree_sitter_javascript::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_javascript::HIGHLIGHT_QUERY)),
-            injections: Some(QuerySource::Single(
-                tree_sitter_javascript::INJECTIONS_QUERY,
-            )),
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "JSX",
-            matcher: M {
-                suffixes: &["jsx"],
-                first_line_pattern: None,
-            },
-            grammar: Some(|| tree_sitter_typescript::LANGUAGE_TSX.into()),
-            highlights: Some(QuerySource::Combined(&[
-                tree_sitter_javascript::HIGHLIGHT_QUERY,
-                tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
-            ])),
-            injections: Some(QuerySource::Single(
-                tree_sitter_javascript::INJECTIONS_QUERY,
-            )),
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "TypeScript",
-            matcher: M {
-                suffixes: &["ts", "mts", "cts"],
-                first_line_pattern: None,
-            },
-            grammar: Some(|| tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-            highlights: Some(QuerySource::Combined(&[
-                tree_sitter_javascript::HIGHLIGHT_QUERY,
-                tree_sitter_typescript::HIGHLIGHTS_QUERY,
-            ])),
-            injections: Some(QuerySource::Single(
-                tree_sitter_javascript::INJECTIONS_QUERY,
-            )),
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "TSX",
-            matcher: M {
-                suffixes: &["tsx"],
-                first_line_pattern: None,
-            },
-            grammar: Some(|| tree_sitter_typescript::LANGUAGE_TSX.into()),
-            highlights: Some(QuerySource::Combined(&[
-                tree_sitter_javascript::HIGHLIGHT_QUERY,
-                tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
-                tree_sitter_typescript::HIGHLIGHTS_QUERY,
-            ])),
-            injections: Some(QuerySource::Single(
-                tree_sitter_javascript::INJECTIONS_QUERY,
-            )),
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "Go",
-            matcher: M {
-                suffixes: &["go"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "Java",
-            matcher: M {
-                suffixes: &["java"],
-                first_line_pattern: None,
-            },
-            grammar: Some(|| tree_sitter_java::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_java::HIGHLIGHTS_QUERY)),
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "Ruby",
-            matcher: M {
-                suffixes: &["rb", "erb"],
-                first_line_pattern: Some(
-                    r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?ruby",
-                ),
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "C",
-            matcher: M {
-                suffixes: &["c", "h"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "C++",
-            matcher: M {
-                suffixes: &["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "Zig",
-            matcher: M {
-                suffixes: &["zig"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "Shell",
-            matcher: M {
-                suffixes: &["sh", "bash", "zsh", "ksh"],
-                first_line_pattern: Some(
-                    r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?(?:bash|sh|zsh|ksh|dash)",
-                ),
-            },
-            grammar: Some(|| tree_sitter_bash::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_bash::HIGHLIGHT_QUERY)),
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "Lua",
-            matcher: M {
-                suffixes: &["lua"],
-                first_line_pattern: Some(
-                    r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?lua",
-                ),
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "TOML",
-            matcher: M {
-                suffixes: &["toml"],
-                first_line_pattern: None,
-            },
-            grammar: Some(|| tree_sitter_toml_ng::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_toml_ng::HIGHLIGHTS_QUERY)),
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "JSON",
-            matcher: M {
-                suffixes: &["json"],
-                first_line_pattern: None,
-            },
-            grammar: Some(|| tree_sitter_json::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_json::HIGHLIGHTS_QUERY)),
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "YAML",
-            matcher: M {
-                suffixes: &["yaml", "yml"],
-                first_line_pattern: None,
-            },
-            grammar: Some(|| tree_sitter_yaml::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_yaml::HIGHLIGHTS_QUERY)),
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "Markdown",
-            matcher: M {
-                suffixes: &["md", "markdown"],
-                first_line_pattern: None,
-            },
-            grammar: Some(|| tree_sitter_md::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_md::HIGHLIGHT_QUERY_BLOCK)),
-            injections: Some(QuerySource::Single(tree_sitter_md::INJECTION_QUERY_BLOCK)),
-            injection_alias: None,
-        },
-        // markdown 行内注入：仅注入查询引用（`markdown_inline`），不参与文件识别。
-        LanguageEntry {
-            name: "Markdown Inline",
-            matcher: M {
-                suffixes: &[],
-                first_line_pattern: None,
-            },
-            grammar: Some(|| tree_sitter_md::INLINE_LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_md::HIGHLIGHT_QUERY_INLINE)),
-            injections: Some(QuerySource::Single(tree_sitter_md::INJECTION_QUERY_INLINE)),
-            injection_alias: Some("markdown_inline"),
-        },
-        LanguageEntry {
-            name: "HTML",
-            matcher: M {
-                suffixes: &["html", "htm", "xhtml"],
-                first_line_pattern: None,
-            },
-            grammar: Some(|| tree_sitter_html::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_html::HIGHLIGHTS_QUERY)),
-            injections: Some(QuerySource::Single(tree_sitter_html::INJECTIONS_QUERY)),
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "CSS",
-            matcher: M {
-                suffixes: &["css", "scss", "less", "sass"],
-                first_line_pattern: None,
-            },
-            grammar: Some(|| tree_sitter_css::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_css::HIGHLIGHTS_QUERY)),
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "SQL",
-            matcher: M {
-                suffixes: &["sql"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "LaTeX",
-            matcher: M {
-                suffixes: &["tex", "latex", "sty", "cls", "bib"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-        },
-        LanguageEntry {
-            name: "XML",
-            matcher: M {
-                suffixes: &["xml", "xsd", "xsl", "plist", "svg"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-        },
-    ]
+/// 文件名以 `.suffix` 结尾（零分配判断，避免 `format!` 拼接临时字符串）。
+fn ends_with_dot_suffix(filename: &str, suffix: &str) -> bool {
+    filename
+        .strip_suffix(suffix)
+        .is_some_and(|stem| stem.ends_with('.'))
 }
 
 // ── 顶层查询入口（调用方经此处访问注册表）────────────────────────────

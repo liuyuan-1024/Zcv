@@ -1,64 +1,24 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::ops::Range;
-use std::ops::{Deref, DerefMut};
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
-use tree_sitter::{InputEdit, Parser, Point, QueryCursor, StreamingIterator};
-use zcv_engine::{BufferVersion, ByteOffset, Line, Snapshot, TextChangeBatch};
+use tree_sitter::StreamingIterator;
+use zcv_engine::{BufferVersion, Snapshot, TextChangeBatch};
 
 use crate::Language;
 use crate::language::{language_for_file, language_for_injection};
+use crate::tree_sitter_utils::{
+    QueryCursorHandle, SnapshotTextProvider, drop_offloaded, edit_tree, encloses,
+    map_range_through_changes, node_text, parse_tree, range_touches,
+};
 
-/// 一个非重叠的 tree-sitter capture 区间。
-///
-/// `capture` 是快照全局 capture 名字表的索引（跨主语言与注入语言唯一），
-/// 渲染侧按索引查预展开的样式表，不再携带并逐 run 解析 capture 名。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HighlightSpan {
-    pub range: Range<usize>,
-    pub capture: u32,
-}
-
+/// 语法层的公开信息（供外部识别某范围的注入语言）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyntaxLayerInfo {
     pub language: &'static str,
     pub range: Range<usize>,
     pub depth: u32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BracketPair {
-    pub open: Range<usize>,
-    pub close: Range<usize>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OutlineItem {
-    pub range: Range<usize>,
-    pub name_ranges: Vec<Range<usize>>,
-    pub context_ranges: Vec<Range<usize>>,
-    pub body_range: Option<Range<usize>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IndentRange {
-    pub range: Range<usize>,
-    pub end: Option<Range<usize>>,
-}
-
-/// 一个可折叠范围。
-///
-/// 起点行在折叠后保留（折叠箭头显示在该行），范围内其余行隐藏。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FoldRange {
-    pub range: Range<usize>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TextObjectRange {
-    pub kind: Arc<str>,
-    pub range: Range<usize>,
 }
 
 /// 可增量更新的语法状态。
@@ -75,37 +35,40 @@ pub struct SyntaxMap {
     update_count: u64,
     /// 最近一次解析安装的 capture 全局表（见 `SyntaxSnapshot::rebuild_capture_table`）。
     capture_names: Arc<[Arc<str>]>,
-    capture_index_by_name: Arc<HashMap<Arc<str>, u32>>,
-    /// 全量语法高亮（reparse 时后台构建；渲染侧只做范围切片，不再树遍历）。
-    highlighted_spans: Arc<[HighlightSpan]>,
-    /// 全量高亮对应的 buffer 版本（插值推进后旧缓存失效，由渲染侧检查）。
-    highlighted_version: BufferVersion,
+    capture_index_by_language: Arc<HashMap<&'static str, Arc<[u32]>>>,
 }
 
 /// 与一个 Buffer 版本绑定的不可变语法快照。
-#[derive(Clone)]
+///
+/// 字段对 crate 内可见：高亮与结构查询模块以 `impl SyntaxSnapshot` 扩展查询方法。
+#[derive(Clone, Debug)]
 pub struct SyntaxSnapshot {
-    language: Option<Language>,
-    tree: Option<tree_sitter::Tree>,
-    injections: Vec<SyntaxLayer>,
-    version: BufferVersion,
+    pub(crate) language: Option<Language>,
+    pub(crate) tree: Option<tree_sitter::Tree>,
+    pub(crate) injections: Vec<SyntaxLayer>,
+    pub(crate) version: BufferVersion,
     update_count: u64,
     /// 主语言与全部注入语言的 capture 名字全局表；index 跨语言唯一。
     capture_names: Arc<[Arc<str>]>,
-    /// capture 名 -> 全局索引的反查表。
-    capture_index_by_name: Arc<HashMap<Arc<str>, u32>>,
-    /// 全量语法高亮（reparse 时后台构建；渲染侧只做范围切片，不再树遍历）。
-    highlighted_spans: Arc<[HighlightSpan]>,
-    /// 全量高亮对应的 buffer 版本（插值推进后旧缓存失效，由渲染侧检查）。
-    highlighted_version: BufferVersion,
+    /// 语言名 -> 该语言局部 capture index 到全局 index 的映射（高亮收集时数组索引，零分配）。
+    pub(crate) capture_index_by_language: Arc<HashMap<&'static str, Arc<[u32]>>>,
 }
 
-#[derive(Clone)]
-struct SyntaxLayer {
-    language: Language,
-    tree: tree_sitter::Tree,
-    range: Range<usize>,
-    depth: u32,
+impl Drop for SyntaxSnapshot {
+    fn drop(&mut self) {
+        // 树与注入层是主要内存占用；最后一个引用消失时移交给后台线程释放，否则深树 dealloc 会卡住主线程（对齐 Zed）。
+        if self.tree.is_some() || !self.injections.is_empty() {
+            drop_offloaded((self.tree.take(), std::mem::take(&mut self.injections)));
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SyntaxLayer {
+    pub(crate) language: Language,
+    pub(crate) tree: tree_sitter::Tree,
+    pub(crate) range: Range<usize>,
+    pub(crate) depth: u32,
 }
 
 impl SyntaxMap {
@@ -118,9 +81,7 @@ impl SyntaxMap {
             interpolated_version: snapshot.version(),
             update_count: 0,
             capture_names: Arc::from([]),
-            capture_index_by_name: Arc::new(HashMap::new()),
-            highlighted_spans: Arc::from([]),
-            highlighted_version: snapshot.version(),
+            capture_index_by_language: Arc::new(HashMap::new()),
         }
     }
 
@@ -139,12 +100,16 @@ impl SyntaxMap {
             return false;
         }
         self.language = language;
-        self.tree = None;
-        self.injections.clear();
+        // 语言切换时旧树/旧注入层同样移交给后台线程释放。
+        if let Some(old_tree) = self.tree.take() {
+            drop_offloaded(old_tree);
+        }
+        let old_layers = std::mem::take(&mut self.injections);
+        if !old_layers.is_empty() {
+            drop_offloaded(old_layers);
+        }
         self.capture_names = Arc::from([]);
-        self.capture_index_by_name = Arc::new(HashMap::new());
-        self.highlighted_spans = Arc::from([]);
-        self.highlighted_version = snapshot.version();
+        self.capture_index_by_language = Arc::new(HashMap::new());
         self.parsed_version = snapshot.version();
         self.interpolated_version = snapshot.version();
         self.update_count += 1;
@@ -175,7 +140,10 @@ impl SyntaxMap {
                 .as_mut()
                 .is_some_and(|tree| !edit_tree(tree, old_snapshot, new_snapshot, changes))
             {
-                tree = None;
+                // 坐标换算失败的树无法继续插值，移交给后台线程释放。
+                if let Some(old_tree) = tree.take() {
+                    drop_offloaded(old_tree);
+                }
             }
             self.injections.retain_mut(|layer| {
                 if !edit_tree(&mut layer.tree, old_snapshot, new_snapshot, changes) {
@@ -185,8 +153,14 @@ impl SyntaxMap {
                 layer.range.start < layer.range.end
             });
         } else {
-            tree = None;
-            self.injections.clear();
+            // 编辑不满足增量条件时整树重置：旧树与旧注入层移交给后台线程释放。
+            if let Some(old_tree) = tree.take() {
+                drop_offloaded(old_tree);
+            }
+            let old_layers = std::mem::take(&mut self.injections);
+            if !old_layers.is_empty() {
+                drop_offloaded(old_layers);
+            }
         }
 
         self.tree = tree;
@@ -201,25 +175,28 @@ impl SyntaxMap {
             version: self.interpolated_version,
             update_count: self.update_count,
             capture_names: Arc::clone(&self.capture_names),
-            capture_index_by_name: Arc::clone(&self.capture_index_by_name),
-            highlighted_spans: Arc::clone(&self.highlighted_spans),
-            highlighted_version: self.highlighted_version,
+            capture_index_by_language: Arc::clone(&self.capture_index_by_language),
         }
     }
 
-    pub fn did_parse(&mut self, parsed: SyntaxSnapshot) -> bool {
+    pub fn did_parse(&mut self, mut parsed: SyntaxSnapshot) -> bool {
         if parsed.version != self.interpolated_version
             || parsed.language.as_ref().map(Language::name)
                 != self.language.as_ref().map(Language::name)
         {
             return false;
         }
-        self.tree = parsed.tree;
-        self.injections = parsed.injections;
-        self.capture_names = parsed.capture_names;
-        self.capture_index_by_name = parsed.capture_index_by_name;
-        self.highlighted_spans = parsed.highlighted_spans;
-        self.highlighted_version = parsed.highlighted_version;
+        // 被替换的旧树/旧注入层移交给后台线程释放，避免每次解析完成时主线程卡顿。
+        if let Some(old_tree) = std::mem::replace(&mut self.tree, parsed.tree.take()) {
+            drop_offloaded(old_tree);
+        }
+        let old_layers =
+            std::mem::replace(&mut self.injections, std::mem::take(&mut parsed.injections));
+        if !old_layers.is_empty() {
+            drop_offloaded(old_layers);
+        }
+        self.capture_names = std::mem::take(&mut parsed.capture_names);
+        self.capture_index_by_language = std::mem::take(&mut parsed.capture_index_by_language);
         self.parsed_version = parsed.version;
         self.update_count += 1;
         true
@@ -227,6 +204,19 @@ impl SyntaxMap {
 }
 
 impl SyntaxSnapshot {
+    /// 空语法快照（无语言、无树）：语言匹配前或未安装语法时的占位，查询一律返回空。
+    pub fn empty(version: BufferVersion) -> Self {
+        Self {
+            language: None,
+            tree: None,
+            injections: Vec::new(),
+            version,
+            update_count: 0,
+            capture_names: Arc::from([]),
+            capture_index_by_language: Arc::new(HashMap::new()),
+        }
+    }
+
     pub fn version(&self) -> BufferVersion {
         self.version
     }
@@ -244,7 +234,6 @@ impl SyntaxSnapshot {
             return Vec::new();
         }
         self.layers_for_range(&range)
-            .into_iter()
             .map(|layer| SyntaxLayerInfo {
                 language: layer.language.name(),
                 range: layer.range,
@@ -257,7 +246,6 @@ impl SyntaxSnapshot {
         let range = offset..offset;
         self.can_query(&range, text).then_some(())?;
         self.layers_for_range(&range)
-            .into_iter()
             .max_by_key(|layer| (layer.depth, std::cmp::Reverse(layer.range.len())))
             .map(|layer| layer.language.name())
     }
@@ -295,248 +283,37 @@ impl SyntaxSnapshot {
         best.map(|(range, _)| range)
     }
 
-    pub fn bracket_pairs(&self, range: Range<usize>, text: &Snapshot) -> Vec<BracketPair> {
-        if !self.can_query(&range, text) {
-            return Vec::new();
-        }
-        let mut pairs = Vec::new();
-        for layer in self.layers_for_range(&range) {
-            let Some(query) = layer.language.brackets() else {
-                continue;
-            };
-            let names = query.capture_names();
-            let mut cursor = QueryCursorHandle::new();
-            cursor.set_byte_range(range.clone());
-            let mut matches =
-                cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
-            while let Some(query_match) = matches.next() {
-                let mut open = None;
-                let mut close = None;
-                for capture in query_match.captures {
-                    match names.get(capture.index as usize).copied() {
-                        Some("open") => open = Some(capture.node.byte_range()),
-                        Some("close") => close = Some(capture.node.byte_range()),
-                        _ => {}
-                    }
-                }
-                if let (Some(open), Some(close)) = (open, close) {
-                    pairs.push(BracketPair { open, close });
-                }
-            }
-        }
-        pairs.sort_unstable_by_key(|pair| (pair.open.start, pair.close.end));
-        pairs
-    }
-
-    pub fn outline_items(&self, range: Range<usize>, text: &Snapshot) -> Vec<OutlineItem> {
-        if !self.can_query(&range, text) {
-            return Vec::new();
-        }
-        let mut items = Vec::new();
-        for layer in self.layers_for_range(&range) {
-            let Some(query) = layer.language.outline() else {
-                continue;
-            };
-            let names = query.capture_names();
-            let mut cursor = QueryCursorHandle::new();
-            cursor.set_byte_range(range.clone());
-            let mut matches =
-                cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
-            while let Some(query_match) = matches.next() {
-                let mut item = None;
-                let mut names_ranges = Vec::new();
-                let mut contexts = Vec::new();
-                let mut open = None;
-                let mut close = None;
-                for capture in query_match.captures {
-                    let capture_range = capture.node.byte_range();
-                    match names.get(capture.index as usize).copied() {
-                        Some("item") => item = Some(capture_range),
-                        Some("name") => names_ranges.push(capture_range),
-                        Some("context") => contexts.push(capture_range),
-                        Some("open") => open = Some(capture_range.end),
-                        Some("close") => close = Some(capture_range.start),
-                        _ => {}
-                    }
-                }
-                let Some(item) = item else { continue };
-                items.push(OutlineItem {
-                    range: item,
-                    name_ranges: names_ranges,
-                    context_ranges: contexts,
-                    body_range: open
-                        .zip(close)
-                        .and_then(|(start, end)| (start <= end).then_some(start..end)),
-                });
-            }
-        }
-        items.sort_unstable_by_key(|item| (item.range.start, item.range.end));
-        items
-    }
-
-    pub fn indent_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<IndentRange> {
-        if !self.can_query(&range, text) {
-            return Vec::new();
-        }
-        let mut ranges = Vec::new();
-        for layer in self.layers_for_range(&range) {
-            let Some(query) = layer.language.indents() else {
-                continue;
-            };
-            let names = query.capture_names();
-            let mut cursor = QueryCursorHandle::new();
-            cursor.set_byte_range(range.clone());
-            let mut matches =
-                cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
-            while let Some(query_match) = matches.next() {
-                let mut indent = None;
-                let mut end = None;
-                for capture in query_match.captures {
-                    match names.get(capture.index as usize).copied() {
-                        Some("indent") => indent = Some(capture.node.byte_range()),
-                        Some("end") => end = Some(capture.node.byte_range()),
-                        _ => {}
-                    }
-                }
-                if let Some(range) = indent {
-                    ranges.push(IndentRange { range, end });
-                }
-            }
-        }
-        ranges.sort_unstable_by_key(|range| (range.range.start, range.range.end));
-        ranges
-    }
-
-    pub fn fold_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<FoldRange> {
-        if !self.can_query(&range, text) {
-            return Vec::new();
-        }
-        let mut ranges = Vec::new();
-        for layer in self.layers_for_range(&range) {
-            let Some(query) = layer.language.folds() else {
-                continue;
-            };
-            let names = query.capture_names();
-            let mut cursor = QueryCursorHandle::new();
-            cursor.set_byte_range(range.clone());
-            let mut matches =
-                cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
-            while let Some(query_match) = matches.next() {
-                // 同一个 match 命中多个节点时（如 `+` 组捕获的连续注释），行相邻则合并成一个折叠范围。
-                let mut nodes: Vec<_> = query_match
-                    .captures
-                    .iter()
-                    .filter(|capture| {
-                        names
-                            .get(capture.index as usize)
-                            .is_some_and(|name| &**name == "fold")
-                    })
-                    .map(|capture| capture.node)
-                    .collect();
-                nodes.sort_unstable_by_key(|node| node.byte_range().start);
-                let mut merged: Vec<(Range<usize>, usize, usize)> = Vec::new();
-                for node in nodes {
-                    let byte_range = node.byte_range();
-                    match merged.last_mut() {
-                        Some((range, _, end_row)) if node.start_position().row <= *end_row + 1 => {
-                            range.end = range.end.max(byte_range.end);
-                            *end_row = node.end_position().row;
-                        }
-                        _ => {
-                            merged.push((
-                                byte_range,
-                                node.start_position().row,
-                                node.end_position().row,
-                            ));
-                        }
-                    }
-                }
-                for (byte_range, _, _) in merged {
-                    // 单行范围没有可隐藏的行，折叠无意义。
-                    //
-                    // 行判断用 buffer 行语义：line_comment 等节点含尾随换行（end 落在下一行行首），按"结束恰在行首则回退一行"换算真实末行。
-                    let Ok(start_line) = text.byte_to_line(ByteOffset::new(byte_range.start))
-                    else {
-                        continue;
-                    };
-                    let mut end_line = text
-                        .byte_to_line(ByteOffset::new(byte_range.end))
-                        .unwrap_or(start_line);
-                    if end_line > start_line
-                        && text
-                            .line_start_byte(end_line)
-                            .is_ok_and(|start| start.get() == byte_range.end)
-                    {
-                        end_line = Line::new(end_line.get() - 1);
-                    }
-                    if start_line == end_line {
-                        continue;
-                    }
-                    ranges.push(FoldRange { range: byte_range });
-                }
-            }
-        }
-        ranges.sort_unstable_by_key(|range| (range.range.start, range.range.end));
-        ranges
-    }
-
-    pub fn text_object_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<TextObjectRange> {
-        if !self.can_query(&range, text) {
-            return Vec::new();
-        }
-        let mut ranges = Vec::new();
-        for layer in self.layers_for_range(&range) {
-            let Some(query) = layer.language.text_objects() else {
-                continue;
-            };
-            let names = query.capture_names();
-            let mut cursor = QueryCursorHandle::new();
-            cursor.set_byte_range(range.clone());
-            let mut captures =
-                cursor.captures(query, layer.tree.root_node(), SnapshotTextProvider(text));
-            while let Some((query_match, capture_index)) = captures.next() {
-                let capture = query_match.captures[*capture_index];
-                let Some(kind) = names.get(capture.index as usize) else {
-                    continue;
-                };
-                ranges.push(TextObjectRange {
-                    kind: Arc::from(*kind),
-                    range: capture.node.byte_range(),
-                });
-            }
-        }
-        ranges.sort_unstable_by_key(|range| (range.range.start, range.range.end));
-        ranges
-    }
-
-    fn can_query(&self, range: &Range<usize>, text: &Snapshot) -> bool {
+    pub(crate) fn can_query(&self, range: &Range<usize>, text: &Snapshot) -> bool {
         text.version() == self.version
             && range.start <= range.end
             && range.end <= text.len_bytes().get()
     }
 
-    fn layers_for_range<'a>(&'a self, range: &Range<usize>) -> Vec<SyntaxLayerRef<'a>> {
-        let mut layers = Vec::new();
-        if let (Some(language), Some(tree)) = (&self.language, &self.tree) {
-            layers.push(SyntaxLayerRef {
+    /// 返回与范围相交的语法层（主语言层 + 注入层），零堆分配。
+    pub(crate) fn layers_for_range<'a>(
+        &'a self,
+        range: &'a Range<usize>,
+    ) -> impl Iterator<Item = SyntaxLayerRef<'a>> + 'a {
+        let main = match (&self.language, &self.tree) {
+            (Some(language), Some(tree)) => Some(SyntaxLayerRef {
                 language,
                 tree,
                 range: tree.root_node().byte_range(),
                 depth: 0,
-            });
-        }
-        layers.extend(
+            }),
+            _ => None,
+        };
+        main.into_iter().chain(
             self.injections
                 .iter()
-                .filter(|layer| range_touches(&layer.range, range))
+                .filter(move |layer| range_touches(&layer.range, range))
                 .map(|layer| SyntaxLayerRef {
                     language: &layer.language,
                     tree: &layer.tree,
                     range: layer.range.clone(),
                     depth: layer.depth,
                 }),
-        );
-        layers
+        )
     }
 
     /// 在调用线程完成真正的 tree-sitter 增量解析。
@@ -545,8 +322,6 @@ impl SyntaxSnapshot {
         let Some(language) = self.language.as_ref() else {
             self.tree = None;
             self.injections.clear();
-            self.highlighted_spans = Arc::from([]);
-            self.highlighted_version = snapshot.version();
             self.version = snapshot.version();
             return self;
         };
@@ -564,10 +339,6 @@ impl SyntaxSnapshot {
         }
         self.version = snapshot.version();
         self.rebuild_capture_table();
-        // 全量高亮在解析线程构建：渲染侧只做范围切片，不再树遍历。
-        self.highlighted_spans =
-            Arc::from(self.highlights(0..snapshot.len_bytes().get(), snapshot));
-        self.highlighted_version = self.version;
         self
     }
 
@@ -578,28 +349,27 @@ impl SyntaxSnapshot {
         Arc::clone(&self.capture_names)
     }
 
-    /// 全量语法高亮（版本绑定：与 buffer 版本一致时渲染侧可直接切片）。
-    pub fn highlighted_spans(&self) -> Arc<[HighlightSpan]> {
-        Arc::clone(&self.highlighted_spans)
-    }
-
-    /// 全量高亮对应的 buffer 版本（插值推进后旧缓存失效，由渲染侧检查）。
-    pub fn highlighted_version(&self) -> BufferVersion {
-        self.highlighted_version
-    }
-
     /// 重建跨语言 capture 名字全局表：主语言与注入语言的名字合并去重，
-    /// 使 `HighlightSpan::capture` 在快照内跨语言唯一。
+    /// 使 `HighlightSpan::capture` 在快照内跨语言唯一；同时构建每语言的
+    /// 局部 index -> 全局 index 映射，高亮收集时直接数组索引、零哈希查找。
     fn rebuild_capture_table(&mut self) {
         let mut names: Vec<Arc<str>> = Vec::new();
         let mut index_by_name: HashMap<Arc<str>, u32> = HashMap::new();
+        let mut index_by_language: HashMap<&'static str, Arc<[u32]>> = HashMap::new();
         let mut add_language = |language: &Language| {
+            let mut local = Vec::with_capacity(language.capture_names().len());
             for name in language.capture_names() {
-                if !index_by_name.contains_key(name) {
-                    index_by_name.insert(Arc::clone(name), names.len() as u32);
+                let global = if let Some(&index) = index_by_name.get(name) {
+                    index
+                } else {
+                    let index = names.len() as u32;
+                    index_by_name.insert(Arc::clone(name), index);
                     names.push(Arc::clone(name));
-                }
+                    index
+                };
+                local.push(global);
             }
+            index_by_language.insert(language.name(), Arc::from(local));
         };
         if let Some(language) = &self.language {
             add_language(language);
@@ -608,202 +378,20 @@ impl SyntaxSnapshot {
             add_language(&layer.language);
         }
         self.capture_names = Arc::from(names);
-        self.capture_index_by_name = Arc::new(index_by_name);
+        self.capture_index_by_language = Arc::new(index_by_language);
     }
 
-    /// 查询指定字节范围，并像 Zed 的 BufferChunks 一样让更内层、后出现的 capture 覆盖外层。
-    pub fn highlights(&self, range: Range<usize>, text: &Snapshot) -> Vec<HighlightSpan> {
-        if text.version() != self.version || range.start >= range.end {
-            return Vec::new();
-        }
-        let (Some(language), Some(tree)) = (&self.language, &self.tree) else {
-            return Vec::new();
-        };
-
-        let mut events = Vec::new();
-        let mut ordinal = 0usize;
-        collect_highlight_events(
-            language,
-            tree,
-            range.clone(),
-            text,
-            self,
-            &mut ordinal,
-            &mut events,
-        );
-        let mut injections: Vec<_> = self
-            .injections
-            .iter()
-            .filter(|layer| ranges_overlap(&layer.range, &range))
-            .collect();
-        injections.sort_unstable_by_key(|layer| layer.depth);
-        for layer in injections {
-            let layer_range = layer.range.start.max(range.start)..layer.range.end.min(range.end);
-            collect_highlight_events(
-                &layer.language,
-                &layer.tree,
-                layer_range,
-                text,
-                self,
-                &mut ordinal,
-                &mut events,
-            );
-        }
-        events.sort_unstable_by_key(HighlightEvent::sort_key);
-
-        let mut active = BTreeMap::new();
-        let mut spans: Vec<HighlightSpan> = Vec::new();
-        let mut index = 0;
-        while index < events.len() {
-            let offset = events[index].offset();
-            while index < events.len() && events[index].offset() == offset {
-                match &events[index] {
-                    HighlightEvent::Start {
-                        ordinal, capture, ..
-                    } => {
-                        active.insert(*ordinal, *capture);
-                    }
-                    HighlightEvent::End { ordinal, .. } => {
-                        active.remove(ordinal);
-                    }
-                }
-                index += 1;
-            }
-            let Some(next_offset) = events.get(index).map(HighlightEvent::offset) else {
-                break;
-            };
-            let Some((_, capture)) = active.last_key_value() else {
-                continue;
-            };
-            if offset < next_offset {
-                if let Some(last) = spans.last_mut()
-                    && last.range.end == offset
-                    && last.capture == *capture
-                {
-                    last.range.end = next_offset;
-                } else {
-                    spans.push(HighlightSpan {
-                        range: offset..next_offset,
-                        capture: *capture,
-                    });
-                }
-            }
-        }
-        spans
+    /// 语言局部 capture index -> 快照全局 index 的映射（高亮收集用）。
+    pub(crate) fn capture_index_table(&self, language: &Language) -> Option<&Arc<[u32]>> {
+        self.capture_index_by_language.get(language.name())
     }
 }
 
-struct SyntaxLayerRef<'a> {
-    language: &'a Language,
-    tree: &'a tree_sitter::Tree,
-    range: Range<usize>,
-    depth: u32,
-}
-
-#[derive(Clone)]
-enum HighlightEvent {
-    Start {
-        offset: usize,
-        ordinal: usize,
-        /// 快照全局 capture 名字表的索引。
-        capture: u32,
-    },
-    End {
-        offset: usize,
-        ordinal: usize,
-    },
-}
-
-impl HighlightEvent {
-    fn offset(&self) -> usize {
-        match self {
-            Self::Start { offset, .. } | Self::End { offset, .. } => *offset,
-        }
-    }
-
-    fn sort_key(&self) -> (usize, bool, usize) {
-        match self {
-            Self::End {
-                offset, ordinal, ..
-            } => (*offset, false, *ordinal),
-            Self::Start {
-                offset, ordinal, ..
-            } => (*offset, true, *ordinal),
-        }
-    }
-}
-
-fn collect_highlight_events(
-    language: &Language,
-    tree: &tree_sitter::Tree,
-    range: Range<usize>,
-    text: &Snapshot,
-    snapshot: &SyntaxSnapshot,
-    ordinal: &mut usize,
-    events: &mut Vec<HighlightEvent>,
-) {
-    if range.start >= range.end {
-        return;
-    }
-    let mut cursor = QueryCursorHandle::new();
-    cursor.set_byte_range(range.clone());
-    let mut captures = cursor.captures(
-        language.highlights(),
-        tree.root_node(),
-        SnapshotTextProvider(text),
-    );
-    while let Some((query_match, capture_index)) = captures.next() {
-        let capture = query_match.captures[*capture_index];
-        let capture_range = capture.node.byte_range();
-        let start = capture_range.start.max(range.start);
-        let end = capture_range.end.min(range.end);
-        let Some(capture_name) = language.capture_name(capture.index) else {
-            continue;
-        };
-        // 语言内 index → 快照全局 index：注入层的 capture 也要能由渲染侧统一查表。
-        let Some(&global_capture) = snapshot.capture_index_by_name.get(&capture_name) else {
-            continue;
-        };
-        if start < end {
-            events.push(HighlightEvent::Start {
-                offset: start,
-                ordinal: *ordinal,
-                capture: global_capture,
-            });
-            events.push(HighlightEvent::End {
-                offset: end,
-                ordinal: *ordinal,
-            });
-            *ordinal += 1;
-        }
-    }
-}
-
-fn parse_tree(
-    language: &Language,
-    snapshot: &Snapshot,
-    old_tree: Option<&tree_sitter::Tree>,
-    included_range: Option<Range<usize>>,
-) -> Option<tree_sitter::Tree> {
-    let mut parser = Parser::new();
-    parser.set_language(language.grammar()).ok()?;
-    if let Some(range) = included_range {
-        let start = point_at(snapshot, ByteOffset::new(range.start)).ok()?;
-        let end = point_at(snapshot, ByteOffset::new(range.end)).ok()?;
-        parser
-            .set_included_ranges(&[tree_sitter::Range {
-                start_byte: range.start,
-                end_byte: range.end,
-                start_point: start,
-                end_point: end,
-            }])
-            .ok()?;
-    }
-    parser.parse_with_options(
-        &mut |offset, _| chunk_from(snapshot, offset),
-        old_tree,
-        None,
-    )
+pub(crate) struct SyntaxLayerRef<'a> {
+    pub(crate) language: &'a Language,
+    pub(crate) tree: &'a tree_sitter::Tree,
+    pub(crate) range: Range<usize>,
+    pub(crate) depth: u32,
 }
 
 fn collect_injections(
@@ -884,431 +472,31 @@ fn collect_injections(
     }
 }
 
-fn node_text(snapshot: &Snapshot, range: Range<usize>) -> Option<String> {
-    snapshot
-        .slice_byte_range(ByteOffset::new(range.start), ByteOffset::new(range.end))
-        .ok()
-        .map(|text| text.as_str().trim().to_owned())
+/// 测试共用：按 Rust 文件解析文本，返回 buffer 与已安装解析结果的语法映射。
+#[cfg(test)]
+pub(crate) fn rust_buffer(text: &str) -> (zcv_engine::Buffer, SyntaxMap) {
+    parsed_syntax("main.rs", text)
 }
 
-fn edit_tree(
-    tree: &mut tree_sitter::Tree,
-    old_snapshot: &Snapshot,
-    new_snapshot: &Snapshot,
-    changes: &TextChangeBatch,
-) -> bool {
-    for edit in changes.patch().edits().iter().rev() {
-        let old = edit.old_range();
-        let new = edit.new_range();
-        let (Ok(start_position), Ok(old_end_position), Ok(inserted)) = (
-            point_at(old_snapshot, old.start()),
-            point_at(old_snapshot, old.end()),
-            new_snapshot.slice_text(new),
-        ) else {
-            return false;
-        };
-        tree.edit(&InputEdit {
-            start_byte: old.start().get(),
-            old_end_byte: old.end().get(),
-            new_end_byte: old.start().get() + new.len(),
-            start_position,
-            old_end_position,
-            new_end_position: advance_point(start_position, inserted.as_str()),
-        });
-    }
-    true
-}
-
-fn map_range_through_changes(range: Range<usize>, changes: &TextChangeBatch) -> Range<usize> {
-    map_offset(range.start, true, changes)..map_offset(range.end, false, changes)
-}
-
-fn map_offset(offset: usize, before: bool, changes: &TextChangeBatch) -> usize {
-    let mut delta = 0isize;
-    for edit in changes.patch().edits() {
-        let old = edit.old_range();
-        let new = edit.new_range();
-        if offset < old.start().get() || (before && offset == old.start().get()) {
-            break;
-        }
-        if offset <= old.end().get() {
-            return if before {
-                new.start().get()
-            } else {
-                new.end().get()
-            };
-        }
-        delta += new.len() as isize - old.len() as isize;
-    }
-    offset.saturating_add_signed(delta)
-}
-
-fn ranges_overlap(left: &Range<usize>, right: &Range<usize>) -> bool {
-    left.start < right.end && right.start < left.end
-}
-
-fn range_touches(layer: &Range<usize>, query: &Range<usize>) -> bool {
-    if query.is_empty() {
-        layer.start <= query.start && query.start < layer.end
-    } else {
-        ranges_overlap(layer, query)
-    }
-}
-
-fn encloses(outer: &Range<usize>, inner: &Range<usize>) -> bool {
-    outer.start <= inner.start && inner.end <= outer.end
-}
-
-struct QueryCursorHandle(Option<QueryCursor>);
-
-impl QueryCursorHandle {
-    fn new() -> Self {
-        let mut cursor = query_cursor_pool()
-            .lock()
-            .expect("QueryCursor 池不应在持锁期间 panic")
-            .pop()
-            .unwrap_or_default();
-        cursor.set_match_limit(64);
-        Self(Some(cursor))
-    }
-}
-
-impl Deref for QueryCursorHandle {
-    type Target = QueryCursor;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref().expect("QueryCursorHandle 持有有效 cursor")
-    }
-}
-
-impl DerefMut for QueryCursorHandle {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.as_mut().expect("QueryCursorHandle 持有有效 cursor")
-    }
-}
-
-impl Drop for QueryCursorHandle {
-    fn drop(&mut self) {
-        if let Some(cursor) = self.0.take() {
-            query_cursor_pool()
-                .lock()
-                .expect("QueryCursor 池不应在持锁期间 panic")
-                .push(cursor);
-        }
-    }
-}
-
-fn query_cursor_pool() -> &'static Mutex<Vec<QueryCursor>> {
-    static QUERY_CURSORS: OnceLock<Mutex<Vec<QueryCursor>>> = OnceLock::new();
-    QUERY_CURSORS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-struct SnapshotTextProvider<'a>(&'a Snapshot);
-
-impl<'a> tree_sitter::TextProvider<&'a [u8]> for SnapshotTextProvider<'a> {
-    type I = SnapshotByteChunks<'a>;
-
-    fn text(&mut self, node: tree_sitter::Node) -> Self::I {
-        SnapshotByteChunks {
-            snapshot: self.0,
-            next: node.start_byte(),
-            end: node.end_byte(),
-        }
-    }
-}
-
-struct SnapshotByteChunks<'a> {
-    snapshot: &'a Snapshot,
-    next: usize,
-    end: usize,
-}
-
-impl<'a> Iterator for SnapshotByteChunks<'a> {
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.next >= self.end {
-            return None;
-        }
-        let (chunk, chunk_start) = self
-            .snapshot
-            .chunk_at_byte(ByteOffset::new(self.next))
-            .ok()?;
-        let local_start = self.next - chunk_start.get();
-        let local_end = (self.end - chunk_start.get()).min(chunk.len());
-        let bytes = &chunk.as_bytes()[local_start..local_end];
-        self.next += bytes.len();
-        Some(bytes)
-    }
-}
-
-fn chunk_from(snapshot: &Snapshot, offset: usize) -> &[u8] {
-    if offset >= snapshot.len_bytes().get() {
-        return &[];
-    }
-    let Ok((chunk, chunk_start)) = snapshot.chunk_at_byte(ByteOffset::new(offset)) else {
-        return &[];
-    };
-    &chunk.as_bytes()[offset - chunk_start.get()..]
-}
-
-fn point_at(snapshot: &Snapshot, offset: ByteOffset) -> zcv_engine::EngineResult<Point> {
-    let (line, column) = snapshot.byte_to_point(offset)?;
-    Ok(Point::new(line.get(), column))
-}
-
-fn advance_point(start: Point, text: &str) -> Point {
-    let mut rows = 0;
-    let mut last_line_bytes = 0;
-    for part in text.split_inclusive('\n') {
-        if part.ends_with('\n') {
-            rows += 1;
-            last_line_bytes = 0;
-        } else {
-            last_line_bytes = part.len();
-        }
-    }
-    if rows == 0 {
-        Point::new(start.row, start.column + text.len())
-    } else {
-        Point::new(start.row + rows, last_line_bytes)
-    }
+/// 测试共用：按给定路径解析文本，返回 buffer 与已安装解析结果的语法映射。
+#[cfg(test)]
+pub(crate) fn parsed_syntax(path: &str, text: &str) -> (zcv_engine::Buffer, SyntaxMap) {
+    let buffer =
+        zcv_engine::Buffer::from_text(text.to_owned(), zcv_engine::BufferConfig::default())
+            .unwrap();
+    let snapshot = buffer.snapshot();
+    let mut syntax = SyntaxMap::new(&snapshot);
+    syntax.set_language_for_file(Path::new(path), &snapshot);
+    let parsed = syntax.snapshot().reparse(&snapshot);
+    assert!(syntax.did_parse(parsed));
+    (buffer, syntax)
 }
 
 #[cfg(test)]
 mod tests {
-    use zcv_engine::{Buffer, BufferConfig, Edit, TextRange, Transaction};
+    use zcv_engine::{ByteOffset, Edit, TextRange, Transaction};
 
     use super::*;
-
-    fn rust_buffer(text: &str) -> (Buffer, SyntaxMap) {
-        let buffer = Buffer::from_text(text.to_owned(), BufferConfig::default()).unwrap();
-        let snapshot = buffer.snapshot();
-        let mut syntax = SyntaxMap::new(&snapshot);
-        syntax.set_language_for_file(Path::new("main.rs"), &snapshot);
-        let parsed = syntax.snapshot().reparse(&snapshot);
-        assert!(syntax.did_parse(parsed));
-        (buffer, syntax)
-    }
-
-    fn parsed_syntax(path: &str, text: &str) -> (Buffer, SyntaxMap) {
-        let buffer = Buffer::from_text(text.to_owned(), BufferConfig::default()).unwrap();
-        let snapshot = buffer.snapshot();
-        let mut syntax = SyntaxMap::new(&snapshot);
-        syntax.set_language_for_file(Path::new(path), &snapshot);
-        let parsed = syntax.snapshot().reparse(&snapshot);
-        assert!(syntax.did_parse(parsed));
-        (buffer, syntax)
-    }
-
-    #[test]
-    fn highlights_rust_captures_in_unicode_text() {
-        let (buffer, syntax) = rust_buffer("fn 问候() { let 文本 = \"你好\"; }\n");
-        let snapshot = buffer.snapshot();
-        let syntax_snapshot = syntax.snapshot();
-        let names = syntax_snapshot.capture_names();
-        let spans = syntax_snapshot.highlights(0..snapshot.len_bytes().get(), &snapshot);
-
-        assert!(
-            spans
-                .iter()
-                .any(|span| names[span.capture as usize].as_ref() == "keyword")
-        );
-        assert!(
-            spans
-                .iter()
-                .any(|span| names[span.capture as usize].as_ref() == "function")
-        );
-        assert!(
-            spans
-                .iter()
-                .any(|span| names[span.capture as usize].as_ref() == "string")
-        );
-        assert!(
-            spans
-                .iter()
-                .all(|span| span.range.end <= snapshot.len_bytes().get())
-        );
-    }
-
-    #[test]
-    fn rust_syntax_snapshot_exposes_zed_structure_queries() {
-        let source = "struct Demo { value: i32 }\nfn main() { let x = (1 + 2); }\n";
-        let (buffer, syntax) = rust_buffer(source);
-        let snapshot = buffer.snapshot();
-        let syntax = syntax.snapshot();
-        let full = 0..snapshot.len_bytes().get();
-
-        let brackets = syntax.bracket_pairs(full.clone(), &snapshot);
-        assert!(brackets.iter().any(|pair| {
-            &source[pair.open.clone()] == "(" && &source[pair.close.clone()] == ")"
-        }));
-
-        let outline = syntax.outline_items(full.clone(), &snapshot);
-        let names: Vec<_> = outline
-            .iter()
-            .flat_map(|item| item.name_ranges.iter())
-            .map(|range| &source[range.clone()])
-            .collect();
-        assert!(names.contains(&"Demo"));
-        assert!(names.contains(&"main"));
-        assert!(outline.iter().any(|item| item.body_range.is_some()));
-
-        assert!(!syntax.indent_ranges(full.clone(), &snapshot).is_empty());
-        assert!(
-            syntax
-                .text_object_ranges(full, &snapshot)
-                .iter()
-                .any(|range| range.kind.as_ref() == "function.around")
-        );
-    }
-
-    #[test]
-    fn rust_fold_ranges_cover_blocks_and_skip_single_lines() {
-        let source = "\
-struct Demo {
-    value: i32,
-}
-
-impl Demo {
-    fn new() -> Self {
-        // 单行注释不产生折叠。
-        let value = 1;
-        // 连续注释折叠为一个组。
-        // 第二行注释。
-        Self { value }
-    }
-}
-
-fn main() {
-    let x = 1;
-}
-";
-        let (buffer, syntax) = rust_buffer(source);
-        let snapshot = buffer.snapshot();
-        let syntax = syntax.snapshot();
-        let folds = syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
-        let texts: Vec<&str> = folds
-            .iter()
-            .map(|fold| &source[fold.range.clone()])
-            .collect();
-
-        // 各块体（field_declaration_list / declaration_list / block）都被覆盖。
-        assert!(texts.contains(&"{\n    value: i32,\n}"));
-        assert!(texts.contains(&"{\n    fn new() -> Self {\n        // 单行注释不产生折叠。\n        let value = 1;\n        // 连续注释折叠为一个组。\n        // 第二行注释。\n        Self { value }\n    }\n}"));
-        assert!(texts.contains(&"{\n        // 单行注释不产生折叠。\n        let value = 1;\n        // 连续注释折叠为一个组。\n        // 第二行注释。\n        Self { value }\n    }"));
-        // 连续注释组折叠为一个范围。
-        assert!(texts.contains(&"// 连续注释折叠为一个组。\n        // 第二行注释。"));
-
-        // 嵌套结构：外层范围完整包含内层范围。
-        let outer = folds
-            .iter()
-            .find(|fold| &source[fold.range.clone()] == "{\n    fn new() -> Self {\n        // 单行注释不产生折叠。\n        let value = 1;\n        // 连续注释折叠为一个组。\n        // 第二行注释。\n        Self { value }\n    }\n}")
-            .unwrap();
-        let inner = folds
-            .iter()
-            .find(|fold| {
-                fold.range.start >= outer.range.start
-                    && fold.range.end <= outer.range.end
-                    && fold.range != outer.range
-            })
-            .expect("impl 块内应存在嵌套折叠范围");
-
-        assert!(inner.range.start > outer.range.start && inner.range.end < outer.range.end);
-    }
-
-    #[test]
-    fn use_declarations_fold_independently_and_skip_single_lines() {
-        let source = "\
-use std::collections::BTreeMap;
-use std::ops::{
-    Range,
-    Deref,
-};
-use std::sync::Arc;
-
-use zcv_engine::{
-    Buffer,
-    Snapshot,
-};
-";
-        let (buffer, syntax) = rust_buffer(source);
-        let snapshot = buffer.snapshot();
-        let syntax = syntax.snapshot();
-        let folds = syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
-        let texts: Vec<&str> = folds
-            .iter()
-            .map(|fold| &source[fold.range.clone()])
-            .collect();
-
-        // 两个多行 use 各自独立成折叠范围（覆盖整个声明，不与相邻 use 合并）。
-        assert!(texts.contains(&"use std::ops::{\n    Range,\n    Deref,\n};"));
-        assert!(texts.contains(&"use zcv_engine::{\n    Buffer,\n    Snapshot,\n};"));
-        // 单行 use 不产生折叠。
-        assert!(!texts.contains(&"use std::collections::BTreeMap;"));
-    }
-
-    #[test]
-    fn single_line_doc_comments_do_not_fold() {
-        // 回归：tree-sitter-rust 的 line_comment 节点含尾随换行（end 落在下一行行首），
-        // 单行过滤必须用 buffer 行语义，否则单行注释会误判为可折叠。
-        let source = "\
-/// Editor 自身的领域事件。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EditorEvent {
-    /// 编辑器关联的文件路径发生变化。
-    PathChanged,
-}
-";
-        let (buffer, syntax) = rust_buffer(source);
-        let snapshot = buffer.snapshot();
-        let syntax = syntax.snapshot();
-        let folds = syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
-        let texts: Vec<&str> = folds
-            .iter()
-            .map(|fold| &source[fold.range.clone()])
-            .collect();
-
-        // 只有 enum 块体可折叠；单行 doc 注释不产生折叠。
-        assert!(texts.contains(&"{\n    /// 编辑器关联的文件路径发生变化。\n    PathChanged,\n}"));
-        assert!(!texts.iter().any(|text| text.starts_with("///")));
-    }
-
-    #[test]
-    fn multi_line_macro_invocation_folds_but_single_line_does_not() {
-        let source = "\
-fn main() {
-    let x = vec![
-        1,
-        2,
-    ];
-    println!(\"ok\");
-    actions!(
-        editor,
-        [
-            MoveLeft,
-            MoveRight,
-        ],
-    );
-    let y = format!(\"{}: {}\", 1, 2);
-}
-";
-        let (buffer, syntax) = rust_buffer(source);
-        let snapshot = buffer.snapshot();
-        let syntax = syntax.snapshot();
-        let folds = syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
-        let texts: Vec<&str> = folds
-            .iter()
-            .map(|fold| &source[fold.range.clone()])
-            .collect();
-
-        // 跨行宏调用整体成折叠范围（从宏名到分号）。
-        assert!(texts.contains(&"vec![\n        1,\n        2,\n    ]"));
-        assert!(texts.contains(&"actions!(\n        editor,\n        [\n            MoveLeft,\n            MoveRight,\n        ],\n    )"));
-        // 单行宏调用不产生折叠。
-        assert!(!texts.contains(&"println!(\"ok\")"));
-        assert!(!texts.contains(&"format!(\"{}: {}\", 1, 2)"));
-    }
 
     #[test]
     fn syntax_ancestor_and_injected_language_use_the_smallest_layer() {
@@ -1402,63 +590,6 @@ fn main() {
             .filter(|span| names[span.capture as usize].as_ref() == "string")
             .count();
         assert_eq!(string_count, 2);
-    }
-
-    #[test]
-    fn markdown_inline_layer_overrides_block_highlights() {
-        let (buffer, syntax) = parsed_syntax("README.md", "普通 *强调* 和 **加粗**\n");
-        let snapshot = buffer.snapshot();
-        let syntax = syntax.snapshot();
-        assert!(
-            syntax
-                .injections
-                .iter()
-                .any(|layer| layer.language.name() == "Markdown Inline")
-        );
-        let names = syntax.capture_names();
-        let spans = syntax.highlights(0..snapshot.len_bytes().get(), &snapshot);
-        assert!(
-            spans
-                .iter()
-                .any(|span| names[span.capture as usize].as_ref() == "text.emphasis")
-        );
-        assert!(
-            spans
-                .iter()
-                .any(|span| names[span.capture as usize].as_ref() == "text.strong")
-        );
-    }
-
-    #[test]
-    fn html_injects_css_and_javascript_layers() {
-        let source = "<style>.item { color: red; }</style><script>let value = 1;</script>";
-        let (buffer, syntax) = parsed_syntax("index.html", source);
-        let snapshot = buffer.snapshot();
-        let syntax = syntax.snapshot();
-        assert!(
-            syntax
-                .injections
-                .iter()
-                .any(|layer| layer.language.name() == "CSS")
-        );
-        assert!(
-            syntax
-                .injections
-                .iter()
-                .any(|layer| layer.language.name() == "JavaScript")
-        );
-        let names = syntax.capture_names();
-        let spans = syntax.highlights(0..snapshot.len_bytes().get(), &snapshot);
-        assert!(
-            spans
-                .iter()
-                .any(|span| names[span.capture as usize].as_ref() == "property")
-        );
-        assert!(
-            spans
-                .iter()
-                .any(|span| names[span.capture as usize].as_ref() == "keyword")
-        );
     }
 
     #[test]

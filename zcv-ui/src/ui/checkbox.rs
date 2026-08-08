@@ -7,10 +7,12 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, Component, ElementId, IntoElement, MouseButton, RenderOnce, Window, div, prelude::*, px,
+    Action, App, Component, ElementId, IntoElement, MouseButton, RenderOnce, Window, div,
+    prelude::*, px,
 };
 
-use crate::ui::{SvgIcon, tooltip_for_action, tooltip_view};
+use crate::ui::{SvgIcon, TooltipSpec};
+use zcv_keymap::KeyBindings;
 use zcv_theme::{color, typography};
 
 type ClickHandler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -18,9 +20,7 @@ type ClickHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 pub struct Checkbox {
     id: ElementId,
     checked: bool,
-    tooltip_text: Option<String>,
-    /// 关联的 action 名称：快捷键的查询与显示由 Tooltip 组件负责。
-    tooltip_action: Option<&'static str>,
+    tooltip: TooltipSpec,
     on_click: Option<ClickHandler>,
 }
 
@@ -30,21 +30,25 @@ impl Checkbox {
         Self {
             id: id.into(),
             checked,
-            tooltip_text: None,
-            tooltip_action: None,
+            tooltip: TooltipSpec::default(),
             on_click: None,
         }
     }
 
     /// 设置悬停提示文字。
     pub fn tooltip(mut self, text: impl Into<String>) -> Self {
-        self.tooltip_text = Some(text.into());
+        self.tooltip = TooltipSpec::new(text);
         self
     }
 
-    /// 关联 action：悬停提示里由 Tooltip 查询并显示对应快捷键。
-    pub fn shortcut(mut self, action_name: &'static str) -> Self {
-        self.tooltip_action = Some(action_name);
+    /// 关联 action：快捷键从 keymap 查询并显示在悬停提示里。
+    pub fn shortcut(mut self, action: &dyn Action, cx: &App) -> Self {
+        if let Some(s) = cx
+            .try_global::<KeyBindings>()
+            .and_then(|kb| kb.display_shortcut(action.name()))
+        {
+            self.tooltip = self.tooltip.shortcut(s);
+        }
         self
     }
 
@@ -66,8 +70,7 @@ impl IntoElement for Checkbox {
 impl RenderOnce for Checkbox {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = color::current(cx);
-        let tooltip_text = self.tooltip_text;
-        let tooltip_action = self.tooltip_action;
+        let tooltip = self.tooltip;
         let on_click = self.on_click;
         div()
             .id(self.id)
@@ -80,12 +83,7 @@ impl RenderOnce for Checkbox {
             .justify_center()
             .flex_shrink_0()
             .cursor_pointer()
-            .when_some(tooltip_text, |el, text| {
-                el.tooltip(move |_, cx| match tooltip_action {
-                    Some(action_name) => tooltip_for_action(text.clone(), action_name, cx),
-                    None => tooltip_view(cx, Some(text.clone()), None),
-                })
-            })
+            .when_some(tooltip.build(), |el, build| el.tooltip(build))
             .when(self.checked, |el| {
                 el.child(
                     SvgIcon::new("icons/check.svg")
@@ -95,10 +93,10 @@ impl RenderOnce for Checkbox {
                 )
             })
             .on_mouse_down(MouseButton::Left, move |event, window, cx| {
-                if event.click_count == 1 {
-                    if let Some(handler) = &on_click {
-                        handler(window, cx);
-                    }
+                if event.click_count == 1
+                    && let Some(handler) = &on_click
+                {
+                    handler(window, cx);
                 }
                 // 复选框是行内交互：阻止冒泡到行的选中/打开逻辑。
                 cx.stop_propagation();

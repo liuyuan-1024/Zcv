@@ -62,6 +62,18 @@ pub enum MappingResult<T> {
     Ambiguous(T),
 }
 
+impl<T> MappingResult<T> {
+    /// 保持变体语义不变，只变换承载值。
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> MappingResult<U> {
+        match self {
+            Self::Mapped(value) => MappingResult::Mapped(f(value)),
+            Self::Deleted(value) => MappingResult::Deleted(f(value)),
+            Self::Collapsed(value) => MappingResult::Collapsed(f(value)),
+            Self::Ambiguous(value) => MappingResult::Ambiguous(f(value)),
+        }
+    }
+}
+
 impl<T: Copy> MappingResult<T> {
     pub fn value(self) -> T {
         match self {
@@ -241,18 +253,97 @@ impl PositionMap {
         range: TextRange,
         stickiness: Stickiness,
     ) -> MappingResult<TextRange> {
-        let new_start = self
-            .map_old_position_with_affinity(
-                range.start(),
-                boundary_affinity(stickiness, BoundarySide::Start),
+        let start_affinity = boundary_affinity(stickiness, BoundarySide::Start);
+        let end_affinity = boundary_affinity(stickiness, BoundarySide::End);
+
+        // 单遍扫描：一次遍历同时完成起点映射、终点映射与删除区检测，替代原来的三次独立全扫描（map start / map end / intersects deleted）。
+        // 每个端点由第一个可能影响它的 edit 决定，语义与逐点映射完全一致。
+        let start = range.start();
+        let end = range.end();
+        let mut shift = OffsetShift::ZERO;
+        let mut new_start: Option<ByteOffset> = None;
+        let mut new_end: Option<ByteOffset> = None;
+        let mut deleted = false;
+
+        for edit in &self.edits {
+            let old_start = edit.old.start();
+            let old_end = edit.old.end();
+            let old_len = edit.old.len();
+            let replacement_len = edit.new_len;
+            let new_start_at = invariant!(
+                shift.apply_old_to_new(old_start),
+                "old start 映射不会发生字节偏移溢出"
+            );
+
+            if new_start.is_none() {
+                if start < old_start {
+                    new_start = Some(invariant!(
+                        shift.apply_old_to_new(start),
+                        "old position 映射不会发生字节偏移溢出"
+                    ));
+                } else if old_start == old_end {
+                    if start == old_start {
+                        new_start = Some(match start_affinity {
+                            Affinity::Before => new_start_at,
+                            Affinity::After => invariant!(
+                                checked_add_offset(new_start_at, replacement_len),
+                                "在 range 起点映射时发生字节偏移溢出"
+                            ),
+                        });
+                    }
+                } else if start < old_end {
+                    // 起点落在被删除 / 替换的旧内容中。
+                    new_start = Some(new_start_at);
+                    deleted = true;
+                }
+            }
+
+            if new_end.is_none() {
+                if end < old_start {
+                    new_end = Some(invariant!(
+                        shift.apply_old_to_new(end),
+                        "old position 映射不会发生字节偏移溢出"
+                    ));
+                } else if old_start == old_end {
+                    if end == old_start {
+                        new_end = Some(match end_affinity {
+                            Affinity::Before => new_start_at,
+                            Affinity::After => invariant!(
+                                checked_add_offset(new_start_at, replacement_len),
+                                "在 range 终点映射时发生字节偏移溢出"
+                            ),
+                        });
+                    }
+                } else if end < old_end {
+                    // 终点落在被删除 / 替换的旧内容中。
+                    new_end = Some(new_start_at);
+                    deleted = true;
+                }
+            }
+
+            // 删除区检测：非空 edit 的旧区间与目标区间重叠即视为触及删除内容。
+            if old_start < old_end && ranges_overlap(start, end, old_start, old_end) {
+                deleted = true;
+            }
+
+            shift = invariant!(
+                shift.after_edit(old_len, replacement_len),
+                "累计编辑位移不会溢出"
+            );
+        }
+
+        let new_start = new_start.unwrap_or_else(|| {
+            invariant!(
+                shift.apply_old_to_new(start),
+                "old position 映射不会发生字节偏移溢出"
             )
-            .value();
-        let new_end = self
-            .map_old_position_with_affinity(
-                range.end(),
-                boundary_affinity(stickiness, BoundarySide::End),
+        });
+        let new_end = new_end.unwrap_or_else(|| {
+            invariant!(
+                shift.apply_old_to_new(end),
+                "old position 映射不会发生字节偏移溢出"
             )
-            .value();
+        });
         let (mapped, endpoints_crossed) = text_range_from_mapped_endpoints(new_start, new_end);
 
         if endpoints_crossed {
@@ -263,7 +354,7 @@ impl PositionMap {
             return MappingResult::Collapsed(mapped);
         }
 
-        if self.old_range_intersects_deleted_content(range) {
+        if deleted {
             return MappingResult::Deleted(mapped);
         }
 
@@ -404,13 +495,77 @@ impl PositionMap {
         )
     }
 
-    fn old_range_intersects_deleted_content(&self, range: TextRange) -> bool {
-        self.edits.iter().any(|edit| {
+    /// 批量映射已排序的 old positions 到 new positions。
+    ///
+    /// `positions` 必须按非递减顺序排序（由调用方保证）；
+    /// 单遍遍历 edits 时用单调指针同时推进所有点，把逐点 O(E) 的映射降为 O(E + P)，用于选区、锚点等批量坐标推进。
+    pub(crate) fn map_old_positions(
+        &self,
+        positions: &[ByteOffset],
+        affinity: Affinity,
+    ) -> Vec<MappingResult<ByteOffset>> {
+        let mut results = Vec::with_capacity(positions.len());
+        let mut shift = OffsetShift::ZERO;
+        let mut next = 0;
+
+        for edit in &self.edits {
             let old_start = edit.old.start();
             let old_end = edit.old.end();
+            let old_len = edit.old.len();
+            let replacement_len = edit.new_len;
+            let new_start_at = invariant!(
+                shift.apply_old_to_new(old_start),
+                "old start 映射不会发生字节偏移溢出"
+            );
 
-            old_start < old_end && ranges_overlap(range.start(), range.end(), old_start, old_end)
-        })
+            // 当前 edit 之前的所有点：只受累计位移影响。
+            while next < positions.len() && positions[next] < old_start {
+                results.push(MappingResult::Mapped(invariant!(
+                    shift.apply_old_to_new(positions[next]),
+                    "old position 映射不会发生字节偏移溢出"
+                )));
+                next += 1;
+            }
+
+            // 落在 edit 起点上的点：同点插入按 affinity 吸附，替换/删除视为 Deleted。
+            while next < positions.len() && positions[next] == old_start {
+                let result = if old_start == old_end {
+                    MappingResult::Mapped(match affinity {
+                        Affinity::Before => new_start_at,
+                        Affinity::After => invariant!(
+                            checked_add_offset(new_start_at, replacement_len),
+                            "在批量映射时发生字节偏移溢出"
+                        ),
+                    })
+                } else {
+                    MappingResult::Deleted(new_start_at)
+                };
+                results.push(result);
+                next += 1;
+            }
+
+            // 落在删除 / 替换区间内部的点：吸附到替换起点。
+            while next < positions.len() && positions[next] < old_end {
+                results.push(MappingResult::Deleted(new_start_at));
+                next += 1;
+            }
+
+            shift = invariant!(
+                shift.after_edit(old_len, replacement_len),
+                "累计编辑位移不会溢出"
+            );
+        }
+
+        // 剩余点：全部位于最后一个 edit 之后。
+        while next < positions.len() {
+            results.push(MappingResult::Mapped(invariant!(
+                shift.apply_old_to_new(positions[next]),
+                "old position 映射不会发生字节偏移溢出"
+            )));
+            next += 1;
+        }
+
+        results
     }
 
     fn new_range_touches_ambiguous_content(&self, range: TextRange) -> bool {
@@ -533,14 +688,14 @@ fn text_range_from_mapped_endpoints(start: ByteOffset, end: ByteOffset) -> (Text
 ///
 /// 同一个 `Stickiness` 在起点和终点上的 affinity 往往相反，因此内部映射必须显式区分端点。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BoundarySide {
+pub(crate) enum BoundarySide {
     /// 区间左边界 / start offset。
     Start,
     /// 区间右边界 / end offset。
     End,
 }
 
-fn boundary_affinity(stickiness: Stickiness, side: BoundarySide) -> Affinity {
+pub(crate) fn boundary_affinity(stickiness: Stickiness, side: BoundarySide) -> Affinity {
     match stickiness {
         Stickiness::BeforeInsertion => Affinity::Before,
         Stickiness::AfterInsertion => Affinity::After,

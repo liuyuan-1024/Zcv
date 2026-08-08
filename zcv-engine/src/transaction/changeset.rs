@@ -41,13 +41,9 @@ impl ChangeSet {
         PositionMap::from_edits(self.edits.as_slice())
     }
 
-    /// 获取本次事务应用后，在新文本中发生改变的范围列表。
+    /// 获取本次事务应用后，在新文本中发生改变的范围列表（相邻范围已原地合并）。
     pub fn changed_ranges(&self) -> EngineResult<Vec<TextRange>> {
-        if self.edits.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut ranges = Vec::new();
+        let mut ranges: Vec<TextRange> = Vec::new();
         let mut shift = OffsetShift::ZERO;
 
         for edit in self.edits.as_slice() {
@@ -68,8 +64,20 @@ impl ChangeSet {
                         location: "ChangeSet::changed_ranges",
                         detail: "changed range 终点在字节偏移映射时溢出".to_string(),
                     })?;
+            let next = text_range(new_start, new_end, "ChangeSet::changed_ranges")?;
 
-            ranges.push(text_range(new_start, new_end, "ChangeSet::changed_ranges")?);
+            // 相邻范围原地合并：与上一段相接（end >= start）时直接扩尾，否则入列。
+            if let Some(current) = ranges.last_mut()
+                && current.end() >= next.start()
+            {
+                *current = text_range(
+                    current.start(),
+                    current.end().max(next.end()),
+                    "ChangeSet::changed_ranges",
+                )?;
+            } else {
+                ranges.push(next);
+            }
 
             shift = shift
                 .after_edit(range.len(), replacement_len)
@@ -79,32 +87,7 @@ impl ChangeSet {
                 })?;
         }
 
-        Self::merge_ranges(ranges)
-    }
-
-    fn merge_ranges(ranges: Vec<TextRange>) -> EngineResult<Vec<TextRange>> {
-        let mut merged = Vec::with_capacity(ranges.len());
-        let mut iter = ranges.into_iter();
-
-        let Some(mut current) = iter.next() else {
-            return Ok(merged);
-        };
-
-        for next in iter {
-            if current.end() >= next.start() {
-                current = text_range(
-                    current.start(),
-                    current.end().max(next.end()),
-                    "ChangeSet::merge_ranges",
-                )?;
-            } else {
-                merged.push(current);
-                current = next;
-            }
-        }
-
-        merged.push(current);
-        Ok(merged)
+        Ok(ranges)
     }
 }
 

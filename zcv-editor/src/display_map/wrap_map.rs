@@ -376,7 +376,7 @@ impl WrapSnapshot {
             return Ok(Vec::new());
         }
 
-        let breakpoints = vec![start, end];
+        let breakpoints = [start, end];
 
         breakpoints
             .windows(2)

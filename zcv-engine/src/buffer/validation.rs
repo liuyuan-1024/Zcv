@@ -57,8 +57,7 @@ impl Buffer {
             return Err(CoordinateError::OutOfBounds(offset).into());
         }
 
-        // 校验是否落在 UTF-8 字符边界
-        // is_grapheme_boundary 内部已经包含字符边界检查
+        // 校验是否落在 UTF-8 字符边界：byte_to_char 对非字符边界返回 InvalidByteBoundary
         if value < len_bytes && self.storage.byte_to_char(offset).is_err() {
             return Err(CoordinateError::InvalidByteBoundary(offset).into());
         }

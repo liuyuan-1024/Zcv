@@ -27,11 +27,6 @@ pub struct WordBoundaryPolicy {
     ///
     /// 默认开启，适配 JS / shell / 部分模板语言常见标识符。
     pub dollar_is_identifier: bool,
-    /// ASCII apostrophe 是否允许出现在自然语言 word 内。
-    ///
-    /// 当前 Unicode word movement 主要依赖 `unicode-segmentation`，该字段
-    /// 保留给更细的自然语言策略；identifier / subword / symbol 不使用它。
-    pub apostrophe_is_word: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,15 +36,10 @@ pub(crate) struct WordBoundaryClassifier {
 }
 
 impl WordBoundaryPolicy {
-    pub const fn new(
-        underscore_is_identifier: bool,
-        dollar_is_identifier: bool,
-        apostrophe_is_word: bool,
-    ) -> Self {
+    pub const fn new(underscore_is_identifier: bool, dollar_is_identifier: bool) -> Self {
         Self {
             underscore_is_identifier,
             dollar_is_identifier,
-            apostrophe_is_word,
         }
     }
 
@@ -119,7 +109,6 @@ impl Default for WordBoundaryPolicy {
         Self {
             underscore_is_identifier: true,
             dollar_is_identifier: true,
-            apostrophe_is_word: false,
         }
     }
 }

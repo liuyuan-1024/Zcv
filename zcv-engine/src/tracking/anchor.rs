@@ -154,35 +154,6 @@ impl Anchor {
         Ok(mapped)
     }
 
-    pub fn update_all_through_delta_event(
-        anchors: &mut [Self],
-        event: &DeltaEvent,
-    ) -> Result<Vec<MappingResult<Self>>, AnchorError> {
-        for anchor in anchors.iter().copied() {
-            anchor.verify_event_version(event)?;
-        }
-
-        let mut updates = Vec::with_capacity(anchors.len());
-        for anchor in anchors {
-            let mapped = anchor.map_through_position_map(event.new_version(), event.position_map());
-            *anchor = mapped.value();
-            updates.push(mapped);
-        }
-
-        Ok(updates)
-    }
-
-    pub fn map_all_through_delta_event_with_deleted_policy(
-        anchors: impl IntoIterator<Item = Self>,
-        event: &DeltaEvent,
-        deleted_policy: AnchorDeletedPolicy,
-    ) -> Result<Vec<AnchorUpdate>, AnchorError> {
-        anchors
-            .into_iter()
-            .map(|anchor| anchor.map_through_delta_event_with_deleted_policy(event, deleted_policy))
-            .collect()
-    }
-
     fn verify_event_version(self, event: &DeltaEvent) -> Result<(), AnchorError> {
         if self.version != event.old_version() {
             return Err(AnchorError::VersionMismatch {
@@ -202,20 +173,7 @@ impl Default for Anchor {
 }
 
 fn map_mark_result(result: MappingResult<ByteOffset>, affinity: Affinity) -> MappingResult<Mark> {
-    match result {
-        MappingResult::Mapped(offset) => {
-            MappingResult::Mapped(Mark::new(offset).with_affinity(affinity))
-        }
-        MappingResult::Deleted(offset) => {
-            MappingResult::Deleted(Mark::new(offset).with_affinity(affinity))
-        }
-        MappingResult::Collapsed(offset) => {
-            MappingResult::Collapsed(Mark::new(offset).with_affinity(affinity))
-        }
-        MappingResult::Ambiguous(offset) => {
-            MappingResult::Ambiguous(Mark::new(offset).with_affinity(affinity))
-        }
-    }
+    result.map(|offset| Mark::new(offset).with_affinity(affinity))
 }
 
 fn map_anchor_result(
@@ -223,20 +181,7 @@ fn map_anchor_result(
     version: BufferVersion,
     affinity: Affinity,
 ) -> MappingResult<Anchor> {
-    match result {
-        MappingResult::Mapped(offset) => {
-            MappingResult::Mapped(Anchor::new(version, offset).with_affinity(affinity))
-        }
-        MappingResult::Deleted(offset) => {
-            MappingResult::Deleted(Anchor::new(version, offset).with_affinity(affinity))
-        }
-        MappingResult::Collapsed(offset) => {
-            MappingResult::Collapsed(Anchor::new(version, offset).with_affinity(affinity))
-        }
-        MappingResult::Ambiguous(offset) => {
-            MappingResult::Ambiguous(Anchor::new(version, offset).with_affinity(affinity))
-        }
-    }
+    result.map(|offset| Anchor::new(version, offset).with_affinity(affinity))
 }
 
 #[cfg(test)]

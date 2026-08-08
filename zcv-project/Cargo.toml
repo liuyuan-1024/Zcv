@@ -12,6 +12,7 @@ gpui.workspace = true
 log.workspace = true
 notify.workspace = true
 trash.workspace = true
+zcv-buffer-diff.workspace = true
 zcv-engine.workspace = true
 zcv-git.workspace = true
 zcv-language.workspace = true

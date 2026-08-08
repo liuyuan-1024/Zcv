@@ -177,6 +177,14 @@ impl DisplaySnapshot {
         self.fold_snapshot.fold_anchor_lines()
     }
 
+    /// 覆盖该字节偏移的最外层折叠的隐藏范围（水平移动跨折叠吸附用）。
+    pub(super) fn fold_range_covering_offset(
+        &self,
+        offset: ByteOffset,
+    ) -> Option<(ByteOffset, ByteOffset)> {
+        self.fold_snapshot.fold_range_covering_offset(offset)
+    }
+
     /// 逻辑行 → 该行首个显示行（wrap 下行首）；行号越界返回 None。
     ///
     /// 组合 position_to_byte + offset_to_display_point（滚动轴 diff marker 用）。
@@ -421,15 +429,7 @@ impl DisplayMap {
         Ok(())
     }
 
-    /// 折叠行范围（半开区间：起点行保留，其余行隐藏）。
-    pub(crate) fn fold_lines(&mut self, line_range: LineRange) -> DisplayMapResult<()> {
-        let (fold_snapshot, fold_edits) = self.fold_map.write().fold_lines(line_range)?;
-        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
-        self.wrap_map.sync(tab_snapshot, &fold_edits);
-        Ok(())
-    }
-
-    /// 展开与行范围交叠的全部折叠（半开区间，约定同 `fold_lines`）。
+    /// 展开与行范围交叠的全部折叠（半开区间）。
     pub(crate) fn unfold_lines(&mut self, line_range: LineRange) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().unfold_lines(line_range)?;
         let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
@@ -486,7 +486,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use gpui::{TestAppContext, font, px};
-    use zcv_engine::{Buffer, BufferConfig, Edit, Line, LineRange, TextRange, Transaction};
+    use zcv_engine::{Buffer, BufferConfig, Edit, Line, TextRange, Transaction};
 
     use super::fold_map::ProjectedPoint;
     use super::line_stream::InsertedLines;
@@ -606,8 +606,10 @@ mod tests {
         .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
         let before = map.snapshot();
-        map.fold_lines(LineRange::new(Line::ZERO, Line::new(3)).expect("测试行区间应合法"))
-            .expect("折叠应成功");
+        map.fold_range(
+            TextRange::new(ByteOffset::new(6), ByteOffset::new(28)).expect("折叠范围应合法"),
+        )
+        .expect("折叠应成功");
 
         assert_eq!(map.line_count(), 2);
         assert_eq!(
@@ -1002,8 +1004,10 @@ mod tests {
         )
         .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
-        map.fold_lines(LineRange::new(Line::ZERO, Line::new(3)).expect("测试行区间应合法"))
-            .expect("折叠应成功");
+        map.fold_range(
+            TextRange::new(ByteOffset::new(6), ByteOffset::new(28)).expect("折叠范围应合法"),
+        )
+        .expect("折叠应成功");
         map.set_wrap_width(Some(px(72.)), font("Helvetica"), px(16.), cx.text_system());
 
         let snapshot = map.snapshot();
@@ -1169,7 +1173,7 @@ mod tests {
         let (fold_snapshot, fold_edits) = map
             .fold_map
             .write()
-            .fold_lines(LineRange::new(Line::ZERO, Line::new(3)).unwrap())
+            .fold(TextRange::new(ByteOffset::new(1), ByteOffset::new(5)).unwrap())
             .expect("折叠应成功");
         let tab_snapshot = map.tab_map.sync(fold_snapshot, &fold_edits);
         map.wrap_map.sync(tab_snapshot, &fold_edits);

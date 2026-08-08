@@ -2,8 +2,10 @@
 
 use gpui::{AnyElement, Div, Entity, Window, actions, div, prelude::*};
 
+use super::branch_picker::{BranchPicker, OnSelectBranch};
 use super::window_controls;
 use crate::recent_projects::{OnProjectSelected, ProjectPicker};
+use zcv_git::Branch;
 use zcv_project::RemoteOperationState;
 use zcv_theme::{color, space};
 use zcv_ui::Glyph;
@@ -12,8 +14,8 @@ actions!(top_bar, [OpenSettings, GitFetch, GitPull, GitPush,]);
 
 pub(crate) struct TopBar {
     pub(crate) project_picker: Entity<ProjectPicker>,
-    /// 当前 git 分支名（由 Workspace 订阅 GitStore 的 Head 事件刷新）。
-    branch: Option<String>,
+    /// 分支选择器（glyph 显示当前分支名；由 Workspace 订阅 GitStore 事件刷新）。
+    pub(crate) branch_picker: Entity<BranchPicker>,
     /// 项目是否已发现 git 仓库（非 git 项目不显示分支与同步/推送/拉取按钮）。
     has_repositories: bool,
     /// 活动仓库的远程操作状态（无 remote 时同步/推送/拉取按钮都不显示）。
@@ -21,18 +23,30 @@ pub(crate) struct TopBar {
 }
 
 impl TopBar {
-    pub(crate) fn new(on_selected: OnProjectSelected, cx: &mut gpui::Context<Self>) -> Self {
+    pub(crate) fn new(
+        on_selected: OnProjectSelected,
+        on_branch: OnSelectBranch,
+        cx: &mut gpui::Context<Self>,
+    ) -> Self {
         let project_picker = cx.new(|cx| ProjectPicker::new(on_selected, cx));
+        let branch_picker = cx.new(|cx| BranchPicker::new(on_branch, cx));
         Self {
             project_picker,
-            branch: None,
+            branch_picker,
             has_repositories: false,
             remote_operation_state: RemoteOperationState::default(),
         }
     }
 
-    pub(crate) fn set_branch(&mut self, branch: Option<String>) {
-        self.branch = branch;
+    /// 分支数据由 Workspace 订阅 GitStore 事件后推送（glyph 与列表同仓库）。
+    pub(crate) fn set_branch(&mut self, branch: Option<String>, cx: &mut gpui::Context<Self>) {
+        self.branch_picker
+            .update(cx, |picker, _| picker.set_branch(branch));
+    }
+
+    pub(crate) fn set_branches(&mut self, branches: Vec<Branch>, cx: &mut gpui::Context<Self>) {
+        self.branch_picker
+            .update(cx, |picker, _| picker.set_branches(branches));
     }
 
     pub(crate) fn set_has_repositories(&mut self, has_repositories: bool) {
@@ -70,7 +84,7 @@ impl gpui::Render for TopBar {
             .child(cluster(leading_slots(
                 window,
                 &self.project_picker,
-                self.branch.as_deref(),
+                &self.branch_picker,
                 self.has_repositories,
                 self.remote_operation_state,
                 cx,
@@ -91,7 +105,7 @@ fn drag_spacer() -> Div {
 fn leading_slots(
     window: &Window,
     project_picker: &gpui::Entity<ProjectPicker>,
-    branch: Option<&str>,
+    branch_picker: &gpui::Entity<BranchPicker>,
     has_repositories: bool,
     state: RemoteOperationState,
     cx: &gpui::App,
@@ -107,16 +121,8 @@ fn leading_slots(
 
     // Git 分支与同步/推送/拉取操作：项目不是 git 仓库时不显示（对齐 Zed 静默降级）。
     if has_repositories {
-        // Git 分支：显示当前分支名（扫描未完成时显示占位）。
-        out.push(
-            Glyph::icon_text(
-                "top-bar.branch",
-                "icons/version_control.svg",
-                branch.unwrap_or("--"),
-            )
-            .label("分支")
-            .into_any_element(),
-        );
+        // Git 分支：glyph 由分支选择器自含（点击弹出分支列表）。
+        out.push(branch_picker.clone().into_any_element());
         // 无 remote 时 fetch/pull/push 都会报错，不给出入口；有 remote 时同步常显
         // （主动检查更新的兜底），推送/拉取仅在可推/可拉时出现（icon_text 复用为计数徽标）。
         if state.has_remote {

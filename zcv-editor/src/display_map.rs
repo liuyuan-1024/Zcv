@@ -25,11 +25,13 @@ use zcv_engine::{
 use zcv_language::{HighlightSpan, SyntaxSnapshot};
 use zcv_theme::syntax;
 
-pub(crate) use chunk::{LineStyles, chunks_to_runs, synthesize_line_chunks};
+pub(crate) use chunk::{
+    LineStyles, chunks_to_runs, synthesize_folded_line_chunks, synthesize_line_chunks,
+};
 pub(crate) use display_width::DisplayColumn;
 use error::DisplayMapResult;
 use fold_map::{ApplyOutcome, FoldMap, FoldSnapshot, LogicalProjection};
-pub(crate) use fold_map::{ProjectedLineIndex, ProjectedRange};
+pub(crate) use fold_map::{FoldRowSegment, ProjectedLineIndex, ProjectedRange};
 pub(crate) use inlay_map::Inlay;
 use inlay_map::InlayMap;
 use line_stream::LineStream;
@@ -171,12 +173,6 @@ impl DisplaySnapshot {
     /// 折叠入口行集合（anchor 行行尾绘制折叠省略号）。
     pub(super) fn fold_anchor_lines(&self) -> Vec<Line> {
         self.fold_snapshot.fold_anchor_lines()
-    }
-
-    /// 折叠起点括号对应的另一半闭合符（`{`→`}`、`(`→`)`、`[`→`]`），anchor 行行尾省略号后绘制成 `{...}` 样式。
-    pub(super) fn fold_end_char(&self, anchor: Line) -> Option<char> {
-        self.fold_snapshot
-            .fold_end_char(anchor, self.buffer_snapshot())
     }
 
     /// 逻辑行 → 该行首个显示行（wrap 下行首）；行号越界返回 None。
@@ -1097,7 +1093,7 @@ mod tests {
         let tab_snapshot = map.tab_map.sync(fold_snapshot, &fold_edits);
         map.wrap_map.sync(tab_snapshot, &fold_edits);
 
-        // 显示行 = 行 0 + 行 3（折叠区间含合成行，无占位行）。
+        // 显示行 = 行 0（合并行）+ 行 3。
         assert_eq!(map.line_count(), 2, "6 个流行 - 4 个隐藏");
 
         let snapshot = map.snapshot();
@@ -1106,7 +1102,8 @@ mod tests {
             .expect("视口应可读取");
         let rows = viewport.rows();
         let WrapViewportRowKind::Text { text, .. } = rows[0].kind();
-        assert_eq!(text.as_ref(), "a\n");
+        // 合并行：anchor 文本 + 占位符。
+        assert_eq!(text.as_ref(), "a…\n");
         let WrapViewportRowKind::Text { text, .. } = rows[1].kind();
         assert_eq!(text.as_ref(), "d");
     }

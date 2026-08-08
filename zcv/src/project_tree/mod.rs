@@ -1384,7 +1384,7 @@ mod tests {
         std::fs::write(&file, "已修改\n").expect("应修改文件");
         project.update(cx, |project, cx| {
             project.git_store().update(cx, |store, cx| {
-                store.refresh_statuses_for_paths(&[file.clone()], cx);
+                store.refresh_statuses_for_paths(std::slice::from_ref(&file), cx);
             });
         });
         cx.run_until_parked();
@@ -1430,7 +1430,7 @@ mod tests {
         std::fs::write(&src_file, "fn main() { println!(); }\n").expect("应修改文件");
         project.update(cx, |project, cx| {
             project.git_store().update(cx, |store, cx| {
-                store.refresh_statuses_for_paths(&[src_file.clone()], cx);
+                store.refresh_statuses_for_paths(std::slice::from_ref(&src_file), cx);
             });
         });
         cx.run_until_parked();

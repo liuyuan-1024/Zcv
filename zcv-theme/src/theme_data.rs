@@ -4,7 +4,7 @@
 //!
 //! 新增主题：把主题 TOML 放入 `assets/themes/`，并在下方 `THEMES` 注册表加一行（`id`/`label`/`appearance` 由描述符声明），其余代码零改动。
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
 use gpui::{
@@ -21,7 +21,7 @@ pub(crate) struct ThemeData {
     /// 主题明暗（`System` 选择时按窗口外观匹配）。
     pub(crate) appearance: WindowAppearance,
     pub(crate) palette: Palette,
-    pub(crate) syntax_table: Arc<HashMap<&'static str, HighlightStyle>>,
+    pub(crate) syntax_table: Arc<BTreeMap<&'static str, HighlightStyle>>,
 }
 
 const ONE_DARK_TOML: &str = include_str!("../assets/themes/onedark.toml");
@@ -124,8 +124,8 @@ fn parse_palette(root: &toml::Table) -> Option<Palette> {
 ///
 /// 支持 `"name" = "color"` 和 `"name" = { fg = "color", modifiers = [...] }` 两种格式；
 /// 不含 `fg` 的条目跳过，颜色名引用解析自 `[palette]` 段。
-fn parse_syntax_table(root: &toml::Table) -> Option<HashMap<&'static str, HighlightStyle>> {
-    let palette: HashMap<String, Rgba> = root
+fn parse_syntax_table(root: &toml::Table) -> Option<BTreeMap<&'static str, HighlightStyle>> {
+    let palette: BTreeMap<String, Rgba> = root
         .get("palette")
         .and_then(|v| v.as_table())
         .map(|tbl| {
@@ -147,7 +147,7 @@ fn parse_syntax_table(root: &toml::Table) -> Option<HashMap<&'static str, Highli
         }
     };
 
-    let mut out: HashMap<&'static str, HighlightStyle> = HashMap::new();
+    let mut out: BTreeMap<&'static str, HighlightStyle> = BTreeMap::new();
     for (key, value) in root {
         if key == "palette" {
             continue;

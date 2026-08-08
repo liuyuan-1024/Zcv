@@ -190,6 +190,8 @@ impl FileStatus {
 /// 无 upstream 时 `...` 段与方括号段都不存在（含 detached HEAD、空仓库形态）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BranchStatus {
+    /// 当前分支名（短名）；detached HEAD 与空仓库（无提交）时为 None。
+    pub branch: Option<String>,
     /// upstream 跟踪名（如 `origin/main`）；无 upstream 时为 None。
     pub upstream: Option<String>,
     /// 本地领先 upstream 的提交数（可推送数）。
@@ -213,7 +215,10 @@ fn parse_branch_header(header: &[u8]) -> Option<BranchStatus> {
     let text = std::str::from_utf8(header).ok()?;
     // 无 `...` → 无 upstream（`## main`、`## HEAD (no branch)`、`## No commits yet on main`）。
     let Some(upstream) = text.split_once("...").map(|(_, upstream)| upstream) else {
-        return Some(BranchStatus::default());
+        return Some(BranchStatus {
+            branch: parse_branch_name(text),
+            ..Default::default()
+        });
     };
     // 方括号段只在有 upstream 时出现：`origin/main [ahead 1, behind 2]` / `origin/main [gone]`。
     let (name, counts) = match upstream.find('[') {
@@ -226,10 +231,26 @@ fn parse_branch_header(header: &[u8]) -> Option<BranchStatus> {
         None => (0, 0),
     };
     Some(BranchStatus {
+        branch: parse_branch_name(text),
         upstream: Some(name.trim().to_string()),
         ahead,
         behind,
     })
+}
+
+/// 提取分支名（`...` 前段；无 `...` 时取整段）。
+///
+/// detached HEAD（`HEAD (no branch)`）与空仓库（`No commits yet on <branch>`）无实际分支名，返回 None。
+fn parse_branch_name(text: &str) -> Option<String> {
+    let name = text
+        .split_once("...")
+        .map(|(name, _)| name)
+        .unwrap_or(text)
+        .trim();
+    if name.is_empty() || name == "HEAD (no branch)" || name.starts_with("No commits yet on ") {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 /// 解析 `[ahead N, behind M]` 段：逐个找 `ahead `/`behind ` 前缀后的数字，缺的计 0。
@@ -342,14 +363,14 @@ fn parse_count(bytes: &[u8]) -> Result<u64> {
 
 /// 由原始字节构造路径（git 输出为 unix 风格相对路径）。
 #[cfg(unix)]
-fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
     PathBuf::from(OsStr::from_bytes(bytes))
 }
 
 #[cfg(not(unix))]
-fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
@@ -542,6 +563,7 @@ mod tests {
         let output = "## master...origin/master [ahead 1, behind 2]\0";
         let status = GitStatus::from_bytes(output.as_bytes()).expect("应解析成功");
         let branch = status.branch.expect("应有分支头行");
+        assert_eq!(branch.branch.as_deref(), Some("master"));
         assert_eq!(branch.upstream.as_deref(), Some("origin/master"));
         assert_eq!(branch.ahead, 1);
         assert_eq!(branch.behind, 2);
@@ -560,6 +582,12 @@ mod tests {
             let branch = status.branch.expect("应有分支头行");
             assert_eq!(branch.upstream, None, "{header} 不应有 upstream");
             assert_eq!((branch.ahead, branch.behind), (0, 0));
+            // 普通分支名可识别；detached 与空仓库无分支名。
+            let expect_branch = header == "## main";
+            assert_eq!(branch.branch.is_some(), expect_branch, "{header}");
+            if let Some(name) = &branch.branch {
+                assert_eq!(name, "main");
+            }
         }
     }
 
@@ -568,6 +596,7 @@ mod tests {
         let output = "## main...origin/main [gone]\0";
         let status = GitStatus::from_bytes(output.as_bytes()).expect("应解析成功");
         let branch = status.branch.expect("应有分支头行");
+        assert_eq!(branch.branch.as_deref(), Some("main"));
         assert_eq!(branch.upstream.as_deref(), Some("origin/main"));
         assert_eq!((branch.ahead, branch.behind), (0, 0));
     }

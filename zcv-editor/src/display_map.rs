@@ -20,10 +20,9 @@ mod wrap_map;
 
 use gpui::HighlightStyle;
 use zcv_engine::{
-    BufferVersion, ByteOffset, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch,
-    TextRange,
+    ByteOffset, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch, TextRange,
 };
-use zcv_language::HighlightSpan;
+use zcv_language::{HighlightSpan, SyntaxSnapshot};
 use zcv_theme::syntax;
 
 pub(crate) use chunk::{LineStyles, chunks_to_runs, synthesize_line_chunks};
@@ -132,10 +131,8 @@ pub(super) struct DisplaySnapshot {
     wrap_snapshot: WrapSnapshot,
     /// 折叠拓扑快照（渲染侧查询行折叠状态与省略号样式）。
     fold_snapshot: FoldSnapshot,
-    /// 全量语法高亮（Editor 在语法解析完成时经 `DisplayMap::set_highlights` 注入）。
-    highlights: std::sync::Arc<[HighlightSpan]>,
-    /// 高亮缓存对应的 buffer 版本；与当前 buffer 不一致时渲染侧拒绝使用。
-    highlights_version: BufferVersion,
+    /// 语法快照（插值树与 buffer 版本同步；渲染按可见范围懒查询高亮）。
+    syntax_snapshot: SyntaxSnapshot,
     /// capture 索引 → 样式的预展开表（capture 名表变化时重建）。
     highlight_styles: std::sync::Arc<[HighlightStyle]>,
 }
@@ -149,20 +146,12 @@ impl DisplaySnapshot {
         self.wrap_snapshot.buffer_snapshot()
     }
 
-    /// 与当前 buffer 版本匹配的可见范围高亮（有序切片，零树遍历）。
+    /// 可见范围高亮（懒查询插值树；语法快照版本与 buffer 同步时结果可用）。
     ///
-    /// 语法插值推进后缓存版本落后于 buffer，此时返回空（等待下一次解析安装）。
-    pub(super) fn highlighted_spans(&self, range: &std::ops::Range<usize>) -> &[HighlightSpan] {
-        if self.buffer_snapshot().version() != self.highlights_version {
-            return &[];
-        }
-        let start = self
-            .highlights
-            .partition_point(|span| span.range.end <= range.start);
-        let end = self
-            .highlights
-            .partition_point(|span| span.range.start < range.end);
-        &self.highlights[start..end]
+    /// 高亮成本与可见范围成正比，不再随文件大小增长；语法插值推进后树坐标已跟随最新文本，编辑期间无需清空高亮等待解析。
+    pub(super) fn highlighted_spans(&self, range: &std::ops::Range<usize>) -> Vec<HighlightSpan> {
+        self.syntax_snapshot
+            .highlights(range.clone(), self.buffer_snapshot())
     }
 
     /// capture 索引 → 样式的预展开表（渲染每 run 一次数组索引）。
@@ -262,10 +251,8 @@ pub(crate) struct DisplayMap {
     inserted: InsertedLines,
     /// 行内提示配置（inlay 注入；变化时整链重建）。
     inlays: Vec<Inlay>,
-    /// 全量语法高亮（Editor 在语法解析完成时注入，对齐 Zed 的 push_highlights）。
-    highlights: std::sync::Arc<[HighlightSpan]>,
-    /// 高亮缓存对应的 buffer 版本。
-    highlights_version: BufferVersion,
+    /// 语法快照（Editor 在语法更新时注入；渲染按可见范围懒查询高亮，不再缓存全量 spans）。
+    syntax_snapshot: SyntaxSnapshot,
     /// capture 名字表（与 `highlight_styles` 的构建输入，变化时重建样式表）。
     capture_names: std::sync::Arc<[std::sync::Arc<str>]>,
     /// capture 索引 → 样式的预展开表（渲染每 run 一次数组索引）。
@@ -287,24 +274,18 @@ impl DisplayMap {
             wrap_map,
             inserted: InsertedLines::new(),
             inlays: Vec::new(),
-            highlights: std::sync::Arc::from([]),
-            highlights_version: version,
+            syntax_snapshot: SyntaxSnapshot::empty(version),
             capture_names: std::sync::Arc::from([]),
             highlight_styles: std::sync::Arc::from([]),
         }
     }
 
-    /// 注入全量语法高亮与 capture 样式表（语法解析完成时由 Editor 调用）。
+    /// 注入语法快照与 capture 样式表（语法更新时由 Editor 调用）。
     ///
-    /// capture 名字表未变化时复用已展开的样式表，避免每帧重建。
-    pub(crate) fn set_highlights(
-        &mut self,
-        highlights: std::sync::Arc<[HighlightSpan]>,
-        version: BufferVersion,
-        capture_names: std::sync::Arc<[std::sync::Arc<str>]>,
-    ) {
-        self.highlights = highlights;
-        self.highlights_version = version;
+    /// 渲染按可见范围懒查询高亮；capture 名字表未变化时复用已展开的样式表。
+    pub(crate) fn set_syntax_snapshot(&mut self, syntax_snapshot: SyntaxSnapshot) {
+        let capture_names = syntax_snapshot.capture_names();
+        self.syntax_snapshot = syntax_snapshot;
         if self.capture_names != capture_names {
             self.capture_names = capture_names;
             self.highlight_styles = std::sync::Arc::from(syntax::style_table(&self.capture_names));
@@ -319,14 +300,13 @@ impl DisplayMap {
         DisplaySnapshot {
             wrap_snapshot: self.wrap_map.snapshot().clone(),
             fold_snapshot: self.fold_map.snapshot().clone(),
-            highlights: std::sync::Arc::clone(&self.highlights),
-            highlights_version: self.highlights_version,
+            syntax_snapshot: self.syntax_snapshot.clone(),
             highlight_styles: std::sync::Arc::clone(&self.highlight_styles),
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn version(&self) -> BufferVersion {
+    pub(crate) fn version(&self) -> zcv_engine::BufferVersion {
         self.fold_map.snapshot().buffer_snapshot().version()
     }
 
@@ -422,6 +402,9 @@ impl DisplayMap {
     }
 
     /// 替换行内提示配置并推进整条管线。
+    ///
+    /// Inlay hints 显示为规划中能力（对齐 Zed：LSP inlay hints 注入行内提示），当前没有 UI 入口调用本方法，渲染端也未消费 Inlay 数据；
+    /// 管线保留以支持后续接入，`dead_code` 警告属于已知的预留例外。
     pub(crate) fn set_inlays(&mut self, inlays: Vec<Inlay>) {
         if self.inlays == inlays {
             return;
@@ -502,7 +485,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use gpui::{TestAppContext, font, px};
-    use zcv_engine::{Buffer, BufferConfig, LineRange};
+    use zcv_engine::{Buffer, BufferConfig, Edit, Line, LineRange, TextRange, Transaction};
 
     use super::line_stream::InsertedLines;
     use super::*;
@@ -893,6 +876,50 @@ mod tests {
             ApplyOutcome::Spliced
         );
         assert_offset_roundtrip(&map);
+    }
+
+    #[gpui::test]
+    fn soft_wrap_equal_row_multi_line_edit_stays_incremental(cx: &mut TestAppContext) {
+        // 等行数多行编辑（行数不变、折叠拓扑不变，如行移动/撤销回放）：
+        // 不再按"含换行"升级为全量重排，软换行逐行增量重排即可。
+        let text = (0..40)
+            .map(|row| format!("line number {row} content here\n"))
+            .collect::<String>();
+        let mut buffer =
+            Buffer::scratch(text, BufferConfig::default()).expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        map.set_wrap_width(Some(px(150.)), font("Helvetica"), px(16.), cx.text_system());
+        let expected_rows = map.snapshot().line_count();
+
+        let subscription = buffer.subscribe();
+        // 替换 3 行为 3 行更长的内容：行数不变、内容变化，增量路径应覆盖全部受影响行。
+        let transaction = Transaction::from_edits(
+            buffer.version(),
+            vec![Edit::replace(
+                TextRange::new(
+                    buffer.line_start_byte(Line::new(5)).expect("测试行应存在"),
+                    buffer.line_start_byte(Line::new(8)).expect("测试行应存在"),
+                )
+                .expect("测试行区间应合法"),
+                "replaced line aaaaaaaaaaaaaaaaaaaaa\nreplaced line bbbbbbbbbbbbbbbbbbbbbbb\nreplaced line ccccccccccccccccccccc\n",
+            )],
+        )
+        .expect("测试事务应合法");
+        buffer
+            .apply_transaction(transaction)
+            .expect("测试事务应成功");
+
+        assert_eq!(
+            map.sync(buffer.snapshot(), subscription.consume()),
+            ApplyOutcome::Compatible,
+            "等行数多行编辑应走增量路径而非全量重排"
+        );
+        assert_offset_roundtrip(&map);
+        // 变更行变长后软换行显示行数应增加（增量重排确实生效）。
+        assert!(
+            map.snapshot().line_count() > expected_rows,
+            "变长内容应产生更多显示行"
+        );
     }
 
     #[gpui::test]

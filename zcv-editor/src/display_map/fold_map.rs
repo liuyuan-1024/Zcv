@@ -506,16 +506,10 @@ impl FoldMap {
         sort_folds(&mut retained);
         self.snapshot.folds = SumTree::from_iter(retained, ());
         let new_spans = hidden_spans(&self.snapshot.folds);
-        let structural = old_spans != new_spans
-            || old_buffer.line_count() != buffer.line_count()
-            || batch.patch().edits().iter().any(|edit| {
-                old_buffer
-                    .slice_text(edit.old_range())
-                    .is_ok_and(|text| text.as_str().contains('\n'))
-                    || buffer
-                        .slice_text(edit.new_range())
-                        .is_ok_and(|text| text.as_str().contains('\n'))
-            });
+        // 行数不变且折叠拓扑不变时，编辑只改变与 new_range 相交行的内容，
+        // `inline_fold_edits` 的 changed_lines 恰好覆盖；软换行的逐行重排（update_inline）
+        // 对行数不变的多行编辑同样正确，无需按"含换行"升级为全量重建。
+        let structural = old_spans != new_spans || old_buffer.line_count() != buffer.line_count();
         self.snapshot.input = input;
         self.snapshot.version += 1;
         let outcome = if structural {

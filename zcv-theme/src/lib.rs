@@ -106,12 +106,15 @@ pub mod typography {
     }
 
     pub fn ui_font() -> Font {
-        let mut font = font("JetBrains Mono");
-        font.fallbacks = Some(cjk_fallback());
-        font
+        mono_font()
     }
 
     pub fn editor_font() -> Font {
+        mono_font()
+    }
+
+    /// 编辑器与 UI 共用同一等宽字体（含 CJK 回退）。
+    fn mono_font() -> Font {
         let mut font = font("JetBrains Mono");
         font.fallbacks = Some(cjk_fallback());
         font

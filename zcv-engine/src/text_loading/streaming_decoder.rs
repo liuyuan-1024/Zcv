@@ -374,8 +374,10 @@ mod tests {
     #[test]
     fn bom_preserved_when_policy_says_so() {
         use crate::EncodingConfig;
-        let mut cfg = BufferConfig::default();
-        cfg.encoding = EncodingConfig::new(BomPolicy::Preserve, InvalidUtf8Policy::Reject);
+        let cfg = BufferConfig {
+            encoding: EncodingConfig::new(BomPolicy::Preserve, InvalidUtf8Policy::Reject),
+            ..BufferConfig::default()
+        };
         let r = decode_stream(&b"\xEF\xBB\xBFhi"[..], &cfg).expect("decode");
         assert!(r.info.had_bom);
         assert_eq!(r.rope.to_string(), "\u{FEFF}hi");
@@ -426,8 +428,10 @@ mod tests {
     #[test]
     fn invalid_utf8_replaced_when_policy_says_so() {
         use crate::EncodingConfig;
-        let mut cfg = BufferConfig::default();
-        cfg.encoding = EncodingConfig::new(BomPolicy::Strip, InvalidUtf8Policy::Replace);
+        let cfg = BufferConfig {
+            encoding: EncodingConfig::new(BomPolicy::Strip, InvalidUtf8Policy::Replace),
+            ..BufferConfig::default()
+        };
         let r = decode_stream(&b"a\xFFb"[..], &cfg).expect("decode");
         assert!(r.info.had_invalid_utf8);
         assert_eq!(r.rope.to_string(), "a\u{FFFD}b");

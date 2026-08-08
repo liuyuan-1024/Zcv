@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::{EngineError, EngineResult};
+use crate::{EngineError, EngineResult, TransactionId};
 
 use super::{HistoryEntry, HistoryNode, HistoryNodeId};
 
@@ -31,6 +31,8 @@ pub(in crate::buffer) struct HistoryState {
     roots: Vec<HistoryNodeId>,
     current: Option<HistoryNodeId>,
     next_id: u64,
+    /// 所有节点 `entry_bytes` 的累计和；预算截断时避免每轮全量重算。
+    total_bytes: usize,
 }
 
 impl HistoryState {
@@ -50,6 +52,13 @@ impl HistoryState {
         self.current.is_some()
     }
 
+    /// 当前历史节点的事务身份；历史被预算清空（如 `max_undo_history=0`）时为 `None`。
+    pub(in crate::buffer) fn current_transaction_id(&self) -> Option<TransactionId> {
+        self.current
+            .and_then(|id| self.nodes.get(&id))
+            .map(|node| node.entry.transaction_id)
+    }
+
     pub(in crate::buffer) fn can_redo(&self) -> bool {
         self.children_of_current().last().is_some()
     }
@@ -59,7 +68,7 @@ impl HistoryState {
     }
 
     pub(in crate::buffer) fn total_bytes(&self) -> usize {
-        self.nodes.values().map(|node| node.entry_bytes).sum()
+        self.total_bytes
     }
 
     pub(in crate::buffer) fn status(&self) -> HistoryStatus {
@@ -106,6 +115,7 @@ impl HistoryState {
 
         let parent = self.current;
         let node = HistoryNode::new(id, sequence, parent, entry);
+        self.total_bytes += node.entry_bytes;
         self.nodes.insert(id, node);
 
         match parent {
@@ -132,7 +142,9 @@ impl HistoryState {
         if !current_node.children.is_empty() {
             return false;
         }
+        let old_bytes = current_node.entry_bytes;
         let merged = HistoryEntry::merge(current_node.entry.clone(), entry);
+        self.total_bytes = self.total_bytes - old_bytes + merged.byte_size();
         current_node.replace_entry(merged);
         true
     }
@@ -186,6 +198,7 @@ impl HistoryState {
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
             if let Some(node) = self.nodes.remove(&id) {
+                self.total_bytes -= node.entry_bytes;
                 stack.extend(node.children);
             }
         }
@@ -195,6 +208,7 @@ impl HistoryState {
         self.nodes.clear();
         self.roots.clear();
         self.current = None;
+        self.total_bytes = 0;
     }
 
     /// 双预算截断：节点数上限 + 历史字节上限。
@@ -211,9 +225,10 @@ impl HistoryState {
             return;
         }
 
+        // 预算内的常见路径 O(1) 早退：字节计数已缓存，不再每轮全量求和。
         loop {
             let over_count = self.nodes.len() > max_nodes;
-            let over_bytes = max_bytes != 0 && self.total_bytes() > max_bytes;
+            let over_bytes = max_bytes != 0 && self.total_bytes > max_bytes;
             if !over_count && !over_bytes {
                 break;
             }
@@ -224,12 +239,12 @@ impl HistoryState {
         }
     }
 
+    /// 最老的可淘汰节点：BTreeMap 按节点 id 升序（id 即创建序号），从最小 id 起找到的第一个非 current 节点即最老可淘汰者。
     fn find_oldest_disposable(&self) -> Option<HistoryNodeId> {
         self.nodes
-            .values()
-            .filter(|node| Some(node.id) != self.current)
-            .min_by_key(|node| node.sequence_number)
-            .map(|node| node.id)
+            .iter()
+            .find(|(_, node)| Some(node.id) != self.current)
+            .map(|(id, _)| *id)
     }
 
     /// 把 `id` 从图中移除，并把它的子节点 splice 到 `id` 原父节点（或 roots）的
@@ -238,6 +253,7 @@ impl HistoryState {
         let Some(node) = self.nodes.remove(&id) else {
             return;
         };
+        self.total_bytes -= node.entry_bytes;
         let children = node.children;
         let parent = node.parent;
 

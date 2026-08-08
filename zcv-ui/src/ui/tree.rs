@@ -144,9 +144,7 @@ fn icon(is_dir: bool, expanded: bool) -> impl IntoElement {
     } else {
         FILE
     };
-    div()
-        .flex_shrink_0()
-        .child(SvgIcon::new(path).size(m.icon_size))
+    div().child(SvgIcon::new(path).size(m.icon_size))
 }
 
 /// 条目名称内容，尾部溢出截断。

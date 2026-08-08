@@ -49,7 +49,7 @@ impl Buffer {
     /// 读缓冲（64 KiB）加上正在构建的 rope，不再出现 `bytes Vec` + `String`
     /// + `Rope` 三份全量内存同时活的局面。
     ///
-    /// 64 MiB 文本经此路径加载 peak RSS 从 218 MB 降至 ~100 MB 量级。`
+    /// 64 MiB 文本经此路径加载 peak RSS 从 218 MB 降至 ~100 MB 量级。
     ///
     /// 失败情形：见 [`BufferLoadError`]。
     pub fn from_reader<R: io::Read>(

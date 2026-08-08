@@ -16,6 +16,7 @@ members = [
     "zcv-git",
     "zcv-keymap",
     "zcv-language",
+    "zcv-picker",
     "zcv-project",
     "zcv-theme",
     "zcv-ui",
@@ -28,6 +29,7 @@ default-members = [
     "zcv-git",
     "zcv-keymap",
     "zcv-language",
+    "zcv-picker",
     "zcv-project",
     "zcv-theme",
     "zcv-ui",
@@ -48,6 +50,7 @@ zcv-engine = { path = "zcv-engine" }
 zcv-git = { path = "zcv-git" }
 zcv-keymap = { path = "zcv-keymap" }
 zcv-language = { path = "zcv-language" }
+zcv-picker = { path = "zcv-picker" }
 zcv-project = { path = "zcv-project" }
 zcv-theme = { path = "zcv-theme" }
 zcv-ui = { path = "zcv-ui" }

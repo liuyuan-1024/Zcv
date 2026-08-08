@@ -68,16 +68,20 @@ fn line_offsets(lines: &[&str]) -> Vec<usize> {
 }
 
 /// 中间区域的行级最长公共子序列匹配对（严格递增）。
+///
+/// 回溯需要任意 (i, j) 的 DP 值（滚动数组无法支撑），因此保留完整表；
+/// 这里用一维行主序数组替代 `Vec<Vec>`：单块分配、按列反向迭代时两行访问都连续。
 fn lcs_matches(old: &[&str], new: &[&str]) -> Vec<(usize, usize)> {
     let (n, m) = (old.len(), new.len());
     // dp[i][j] = old[i..] 与 new[j..] 的 LCS 长度。
-    let mut dp = vec![vec![0u32; m + 1]; n + 1];
+    let width = m + 1;
+    let mut dp = vec![0u32; (n + 1) * width];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
-            dp[i][j] = if old[i] == new[j] {
-                dp[i + 1][j + 1] + 1
+            dp[i * width + j] = if old[i] == new[j] {
+                dp[(i + 1) * width + j + 1] + 1
             } else {
-                dp[i + 1][j].max(dp[i][j + 1])
+                dp[(i + 1) * width + j].max(dp[i * width + j + 1])
             };
         }
     }
@@ -89,7 +93,7 @@ fn lcs_matches(old: &[&str], new: &[&str]) -> Vec<(usize, usize)> {
             matches.push((i, j));
             i += 1;
             j += 1;
-        } else if dp[i + 1][j] >= dp[i][j + 1] {
+        } else if dp[(i + 1) * width + j] >= dp[i * width + j + 1] {
             i += 1;
         } else {
             j += 1;

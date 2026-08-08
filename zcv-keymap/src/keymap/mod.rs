@@ -73,21 +73,28 @@ fn macos_display(raw: &str) -> String {
         }
     }
 
-    raw.split('-')
-        .map(|part| {
-            modifier(part)
-                .map(|s| s.to_string())
-                .or_else(|| key_symbol(part).map(|s| s.to_string()))
-                .unwrap_or_else(|| {
-                    if part.len() == 1 {
-                        part.to_uppercase()
-                    } else {
-                        part.to_string()
-                    }
+    // chord 段（如 `ctrl-k ctrl-s`）用空格分隔，段内按键直接拼接。
+    raw.split_whitespace()
+        .map(|chord| {
+            chord
+                .split('-')
+                .map(|part| {
+                    modifier(part)
+                        .map(|s| s.to_string())
+                        .or_else(|| key_symbol(part).map(|s| s.to_string()))
+                        .unwrap_or_else(|| {
+                            if part.len() == 1 {
+                                part.to_uppercase()
+                            } else {
+                                part.to_string()
+                            }
+                        })
                 })
+                .collect::<Vec<_>>()
+                .join("")
         })
         .collect::<Vec<_>>()
-        .join("")
+        .join(" ")
 }
 
 /// Linux / Windows：`ctrl-shift-e` → `Ctrl+Shift+E`
@@ -104,21 +111,28 @@ fn text_display(raw: &str) -> String {
         }
     }
 
-    raw.split('-')
-        .map(|part| {
-            if part == "," {
-                return ",".to_string();
-            }
-            modifier(part).map(|s| s.to_string()).unwrap_or_else(|| {
-                if part.len() == 1 {
-                    part.to_uppercase()
-                } else {
-                    part.to_string()
-                }
-            })
+    // chord 段（如 `ctrl-k ctrl-s`）用空格分隔，段内按键用 `+` 连接。
+    raw.split_whitespace()
+        .map(|chord| {
+            chord
+                .split('-')
+                .map(|part| {
+                    if part == "," {
+                        return ",".to_string();
+                    }
+                    modifier(part).map(|s| s.to_string()).unwrap_or_else(|| {
+                        if part.len() == 1 {
+                            part.to_uppercase()
+                        } else {
+                            part.to_string()
+                        }
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join("+")
         })
         .collect::<Vec<_>>()
-        .join("+")
+        .join(" ")
 }
 
 impl gpui::Global for KeyBindings {}
@@ -271,6 +285,8 @@ mod tests {
         assert_eq!(macos_display("alt-left"), "⌥←");
         assert_eq!(macos_display("shift-tab"), "⇧⇥");
         assert_eq!(macos_display("cmd-a"), "⌘A");
+        // chord 段用空格分隔，不粘连
+        assert_eq!(macos_display("ctrl-k ctrl-s"), "⌃K ⌃S");
     }
 
     /// Editor 上下文必须始终覆盖行首尾选择绑定，防止 keymap 编辑时被意外删除。

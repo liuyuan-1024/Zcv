@@ -6,7 +6,6 @@
 
 use gpui::{AnyView, App, Context, Render, Window, div, prelude::*};
 
-use zcv_keymap::KeyBindings;
 use zcv_theme::{color, space, typography};
 
 /// 构造提示气泡视图（label + 可选快捷键两段式，与 Glyph 原有提示一致）。
@@ -14,12 +13,44 @@ pub fn tooltip_view(cx: &mut App, label: Option<String>, shortcut: Option<String
     cx.new(|_| TooltipView { label, shortcut }).into()
 }
 
-/// 构造带快捷键的提示气泡：快捷键从 keymap 按 action 名称查询并显示。
-pub fn tooltip_for_action(text: impl Into<String>, action_name: &str, cx: &mut App) -> AnyView {
-    let shortcut = cx
-        .try_global::<KeyBindings>()
-        .and_then(|bindings| bindings.display_shortcut(action_name));
-    tooltip_view(cx, Some(text.into()), shortcut)
+/// Tooltip 规格：label 与可选快捷键文本。
+///
+/// 组件持有规格（而非视图），悬停时才构建气泡 Entity；
+/// 快捷键文本由构建方预先从 keymap 查好，保证不依赖悬停时机。
+#[derive(Clone, Default)]
+pub struct TooltipSpec {
+    label: Option<String>,
+    shortcut: Option<String>,
+}
+
+impl TooltipSpec {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: Some(label.into()),
+            shortcut: None,
+        }
+    }
+
+    /// 设置快捷键显示文本。
+    pub fn shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.shortcut = Some(shortcut.into());
+        self
+    }
+
+    /// 是否包含任何提示内容（无内容时不挂 tooltip）。
+    pub fn has_content(&self) -> bool {
+        self.label.is_some() || self.shortcut.is_some()
+    }
+
+    /// 构造悬停气泡视图闭包；无内容时返回 None。
+    pub fn build(&self) -> Option<impl Fn(&mut Window, &mut App) -> AnyView + 'static> {
+        if !self.has_content() {
+            return None;
+        }
+        let label = self.label.clone();
+        let shortcut = self.shortcut.clone();
+        Some(move |_: &mut Window, cx: &mut App| tooltip_view(cx, label.clone(), shortcut.clone()))
+    }
 }
 
 /// 提示气泡。

@@ -49,7 +49,6 @@ pub(crate) use status_bar::StatusItemView;
 pub(crate) use toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 use top_bar::TopBar;
 use window_controls::{handle_minimize, handle_quit, handle_toggle_maximize};
-use zcv_keymap;
 use zcv_project::{GitOperationKind, Project, ProjectEvent};
 
 actions!(workspace, [Save]);

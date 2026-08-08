@@ -59,12 +59,6 @@ impl EditList {
     pub fn as_slice(&self) -> &[Edit] {
         &self.edits
     }
-
-    /// 物化为 `Vec<Edit>`。命名让分配语义显眼；事务热路径应使用 `as_slice` / iter。
-    pub fn into_inner(self) -> Vec<Edit> {
-        // Arc<[T]> 无法直接 try_unwrap；只能逐元素拷贝（每个 Edit 内部 payload 仍是 Arc clone）。
-        self.edits.iter().cloned().collect()
-    }
 }
 
 fn share_repeated_replacements(edits: &mut [Edit]) {

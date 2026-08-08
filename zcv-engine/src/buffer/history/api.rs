@@ -109,54 +109,17 @@ impl Buffer {
     pub fn undo(&mut self) -> EngineResult<Option<HistoryEditOutcome>> {
         self.ensure_writable()?;
 
-        let undo_target = {
-            let Some(node_id) = self.history.current() else {
-                return Ok(None);
-            };
-            let node = self
-                .history
-                .node(node_id)
-                .ok_or_else(|| EngineError::EngineBug {
-                    location: "Buffer::undo",
-                    detail: format!("当前历史节点 {node_id:?} 缺失"),
-                })?;
-            if node.entry.undo_batches.is_empty() {
-                return Err(EngineError::EngineBug {
-                    location: "Buffer::undo",
-                    detail: format!("历史节点 {node_id:?} 没有 undo 批次"),
-                });
-            }
-            UndoTarget {
-                transaction_id: node.entry.transaction_id,
-                undo_batches: node.entry.undo_batches.clone(),
-            }
+        let Some(node_id) = self.history.current() else {
+            return Ok(None);
         };
+        let target = self.history_target(node_id, ReplayKind::Undo)?;
         self.history
             .step_undo()
             .ok_or_else(|| EngineError::EngineBug {
                 location: "Buffer::undo",
                 detail: "已验证的当前历史节点无法执行 undo 步进".to_string(),
             })?;
-
-        let mut result = None;
-        for tx_edits in undo_target.undo_batches.iter() {
-            let (_, delta, changeset, _) = self.apply_edit_list(
-                self.version,
-                tx_edits.clone(), // EditList::clone 是 O(1) Arc 递增
-                TransactionSource::Undo,
-            )?;
-            result = Some((delta, changeset));
-        }
-
-        let result = result.ok_or_else(|| EngineError::EngineBug {
-            location: "Buffer::undo",
-            detail: "已验证的 undo 批次没有产生回放结果".to_string(),
-        })?;
-        Ok(Some(HistoryEditOutcome::new(
-            undo_target.transaction_id,
-            result.0,
-            result.1,
-        )))
+        self.replay_history_batches(target).map(Some)
     }
 
     /// 重做沿默认分支（最近创建子节点链）的下一个节点。
@@ -183,42 +146,62 @@ impl Buffer {
     fn redo_into_branch(&mut self, node_id: HistoryNodeId) -> EngineResult<HistoryEditOutcome> {
         self.ensure_writable()?;
 
-        let target = {
-            let node = self
-                .history
-                .node(node_id)
-                .ok_or_else(|| EngineError::EngineBug {
-                    location: "Buffer::redo_into_branch",
-                    detail: format!("redo 目标节点 {node_id:?} 缺失"),
-                })?;
-            if node.entry.redo_batches.is_empty() {
-                return Err(EngineError::EngineBug {
-                    location: "Buffer::redo_into_branch",
-                    detail: format!("历史节点 {node_id:?} 没有 redo 批次"),
-                });
-            }
-            RedoTarget {
-                transaction_id: node.entry.transaction_id,
-                redo_batches: node.entry.redo_batches.clone(),
-            }
-        };
+        let target = self.history_target(node_id, ReplayKind::Redo)?;
         self.history
             .step_redo_into(node_id)
             .ok_or_else(|| EngineError::EngineBug {
                 location: "Buffer::redo_into_branch",
                 detail: format!("已验证的 redo 目标节点 {node_id:?} 不是当前历史节点的子节点"),
             })?;
+        self.replay_history_batches(target)
+    }
 
+    /// 取历史节点上待回放的批次与身份；undo / redo 只差一个批次方向。
+    fn history_target(
+        &self,
+        node_id: HistoryNodeId,
+        kind: ReplayKind,
+    ) -> EngineResult<ReplayTarget> {
+        let node = self
+            .history
+            .node(node_id)
+            .ok_or_else(|| EngineError::EngineBug {
+                location: "Buffer::history_target",
+                detail: format!("回放目标节点 {node_id:?} 缺失"),
+            })?;
+        let batches = match kind {
+            ReplayKind::Undo => &node.entry.undo_batches,
+            ReplayKind::Redo => &node.entry.redo_batches,
+        };
+        if batches.is_empty() {
+            return Err(EngineError::EngineBug {
+                location: "Buffer::history_target",
+                detail: format!("历史节点 {node_id:?} 没有 {:?} 批次", kind),
+            });
+        }
+
+        Ok(ReplayTarget {
+            transaction_id: node.entry.transaction_id,
+            batches: batches.clone(),
+            kind,
+        })
+    }
+
+    /// 按批次回放 undo / redo 编辑，返回规范事务身份与增量事实。
+    fn replay_history_batches(&mut self, target: ReplayTarget) -> EngineResult<HistoryEditOutcome> {
         let mut result = None;
-        for tx_edits in target.redo_batches.iter() {
-            let (_, delta, changeset, _) =
-                self.apply_edit_list(self.version, tx_edits.clone(), TransactionSource::Redo)?;
+        for tx_edits in target.batches.iter() {
+            let (_, delta, changeset, _) = self.apply_edit_list(
+                self.version,
+                tx_edits.clone(), // EditList::clone 是 O(1) Arc 递增
+                target.kind.source(),
+            )?;
             result = Some((delta, changeset));
         }
 
         let result = result.ok_or_else(|| EngineError::EngineBug {
-            location: "Buffer::redo_into_branch",
-            detail: "已验证的 redo 批次没有产生回放结果".to_string(),
+            location: "Buffer::replay_history_batches",
+            detail: "已验证的回放批次没有产生结果".to_string(),
         })?;
         Ok(HistoryEditOutcome::new(
             target.transaction_id,
@@ -235,33 +218,14 @@ impl Buffer {
         if metadata.merge_policy() == TransactionMergePolicy::MergeWithPrevious
             && self.history.merge_into_current(entry.clone())
         {
-            let transaction_id = self
-                .history
-                .current()
-                .and_then(|id| self.history.node(id))
-                .map(|node| node.entry.transaction_id)
-                .ok_or_else(|| EngineError::EngineBug {
-                    location: "Buffer::push_history",
-                    detail: "合并成功后当前历史节点缺失".to_string(),
-                })?;
+            // 合并入当前节点：节点身份与事务身份都不变，只追加批次。
             self.truncate_undo_history_to_budget();
-            return Ok(self
-                .history
-                .current()
-                .and_then(|id| self.history.node(id))
-                .filter(|node| node.entry.transaction_id == transaction_id)
-                .map(|node| node.entry.transaction_id));
+            return Ok(self.history.current_transaction_id());
         }
 
-        let transaction_id = entry.transaction_id;
         self.history.push_child(entry)?;
         self.truncate_undo_history_to_budget();
-        Ok(self
-            .history
-            .current()
-            .and_then(|id| self.history.node(id))
-            .filter(|node| node.entry.transaction_id == transaction_id)
-            .map(|node| node.entry.transaction_id))
+        Ok(self.history.current_transaction_id())
     }
 
     /// 当 `record_history=false` 提交后清掉当前节点下的所有 redo 分支：
@@ -303,7 +267,8 @@ impl Buffer {
             // 取出删除掉的旧文本（用作 Undo 时的回填内容）
             let deleted_text = self.slice_text(edit.range())?.to_string();
 
-            // 旧位置 → 新位置（与 ChangeSet::changed_ranges 用同一算法）
+            // 旧位置 → 新位置（与 ChangeSet::changed_ranges 用同一算法）。
+            // 单点映射在事务 edit 数很小时比批量映射更快（零临时分配）。
             let new_start = position_map
                 .map_old_position_with_affinity(
                     edit.range().start(),
@@ -327,13 +292,26 @@ impl Buffer {
     }
 }
 
-struct UndoTarget {
-    transaction_id: TransactionId,
-    /// `Arc::clone` 是 O(1)；批次本身复用历史节点拥有的存储。
-    undo_batches: Arc<[EditList]>,
+/// undo / redo 回放方向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayKind {
+    Undo,
+    Redo,
 }
 
-struct RedoTarget {
+impl ReplayKind {
+    fn source(self) -> TransactionSource {
+        match self {
+            Self::Undo => TransactionSource::Undo,
+            Self::Redo => TransactionSource::Redo,
+        }
+    }
+}
+
+/// 待回放的历史事实：规范事务身份 + 批次序列 + 回放方向。
+struct ReplayTarget {
     transaction_id: TransactionId,
-    redo_batches: Arc<[EditList]>,
+    /// `Arc::clone` 是 O(1)；批次本身复用历史节点拥有的存储。
+    batches: Arc<[EditList]>,
+    kind: ReplayKind,
 }

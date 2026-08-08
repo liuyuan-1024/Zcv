@@ -1,6 +1,7 @@
 //! git 状态编排：仓库发现、status 扫描与增量刷新、事件分发。
 //!
 //! zcv-git 层的命令全部同步阻塞，这里负责把它们调度到后台线程，并维护每个仓库的状态快照（对齐 Zed `RepositorySnapshot`）。
+//! 后台执行与扫描/合并纯函数在 [`background`] 子模块（可脱离 gpui 单测）。
 //!
 //! 刷新策略（对齐 Zed）：
 //! - 全量（`ReloadGitState`）：仓库发现 + 每个仓库 head/status/双 diff_stat 全扫；
@@ -8,14 +9,17 @@
 //!
 //! 同 key 的排队 job 直接丢弃（对齐 Zed `spawn_local_git_worker` 的 keyed job）。
 
+mod background;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
-use zcv_git::{DiffHunk, DiffStat, FileStatus, GitRepository};
+use zcv_buffer_diff::DiffHunk;
+use zcv_git::{DiffStat, FileStatus, GitRepository};
 
-use super::worktree::discover_repositories;
+use background::{JobResult, execute_job, merge_refresh, repo_relative_path};
 
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
 const MAX_INCREMENTAL_PATHS: usize = 500;
@@ -80,14 +84,13 @@ pub struct Repository {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-enum GitJobKey {
+pub(super) enum GitJobKey {
     ReloadGitState,
     RefreshStatuses,
     RefreshHunks,
     GitOperation(GitOperationKind),
     GitInit,
-    /// 暂存/取消暂存（路径集合参与 key：不同路径集互不合并，同路径重复点击在
-    /// 队列中自动去重，避免一次操作被意外丢弃）。
+    /// 暂存/取消暂存（路径集合参与 key：不同路径集互不合并，同路径重复点击在队列中自动去重，避免一次操作被意外丢弃）。
     StageFiles {
         stage: bool,
         paths: Vec<PathBuf>,
@@ -109,7 +112,7 @@ pub enum GitOperationKind {
 }
 
 #[derive(Clone, Debug)]
-enum GitJob {
+pub(super) enum GitJob {
     ReloadGitState,
     RefreshStatuses,
     RefreshHunks,
@@ -138,41 +141,6 @@ impl GitJob {
             GitJob::Uncommit => GitJobKey::Uncommit,
         }
     }
-}
-
-/// 全量扫描的产出（一个仓库）。
-struct ReloadScan {
-    working_directory: PathBuf,
-    repository: Arc<dyn GitRepository>,
-    snapshot: RepositorySnapshot,
-}
-
-/// 增量刷新的原始数据（后台查询结果）。
-struct RefreshData {
-    paths: Vec<PathBuf>,
-    branch: Option<String>,
-    head: Option<String>,
-    last_commit_message: Option<String>,
-    has_remote: bool,
-    ahead: usize,
-    behind: usize,
-    statuses: zcv_git::GitStatus,
-    staged: HashMap<PathBuf, DiffStat>,
-    unstaged: HashMap<PathBuf, DiffStat>,
-    /// 已跟踪路径的行级 diff hunks（只查增量路径中状态为 Tracked 的文件）。
-    hunks: Vec<(PathBuf, Vec<DiffHunk>)>,
-}
-
-/// 按需 hunk 查询结果：仓库索引 → 路径 → hunks。
-type HunksByRepo = Vec<(usize, Vec<(PathBuf, Vec<DiffHunk>)>)>;
-
-enum JobResult {
-    Reload(Vec<ReloadScan>),
-    Refresh(Vec<(usize, RefreshData)>),
-    RefreshHunks(HunksByRepo),
-    GitOperation(anyhow::Result<()>),
-    /// uncommit 的结果（被撤销提交的完整消息，供填回提交信息编辑器）。
-    Uncommit(anyhow::Result<Option<String>>),
 }
 
 pub struct GitStore {
@@ -351,8 +319,7 @@ impl GitStore {
 
     /// 按需请求指定路径的 hunks（打开文件、或 Statuses 事件后补齐时调用）。
     ///
-    /// prepare 阶段过滤：只对「已跟踪且尚未查询」的路径发起 diff，untracked/忽略/
-    /// 已查询路径直接丢弃（untracked 永不查询 → 永不画 marker，对齐 Zed）。
+    /// prepare 阶段过滤：只对「已跟踪且尚未查询」的路径发起 diff，untracked/忽略/已查询路径直接丢弃（untracked 永不查询 → 永不画 marker，对齐 Zed）。
     pub fn request_hunks(&mut self, paths: &[PathBuf], _cx: &mut Context<Self>) {
         let paths: Vec<PathBuf> = paths
             .iter()
@@ -408,17 +375,9 @@ impl GitStore {
 
     /// 活动仓库最近一次提交的 subject（底部提交区显示）。
     ///
-    /// 仓库选择逻辑与 prepare_job 的 Commit 分支一致，保证"显示的提交信息"与"提交目标仓库"对齐。
+    /// 仓库选择与 fetch/pull/push、提交目标一致（`active_repository`），保证"显示的提交信息"与"提交目标仓库"对齐。
     pub fn last_commit_message(&self) -> Option<&str> {
-        self.active_workdir
-            .as_ref()
-            .and_then(|workdir| self.repo_by_workdir(workdir))
-            .or_else(|| {
-                self.repositories
-                    .iter()
-                    .find(|repository| repository.snapshot.branch.is_some())
-            })
-            .or_else(|| self.repositories.first())
+        self.active_repository()
             .and_then(|repository| repository.snapshot.last_commit_message.as_deref())
     }
 
@@ -432,6 +391,21 @@ impl GitStore {
         self.repositories
             .iter()
             .find(|repository| repository.repository.working_directory() == workdir)
+    }
+
+    /// 操作目标仓库：active 已建立时用它，否则回退「首个有分支的仓库」→「首个」。
+    ///
+    /// fetch/pull/push、提交、uncommit 与底部提交信息显示共用此选择（对齐 Zed：操作以 active 仓库为目标，空仓库也执行）。
+    fn active_repository(&self) -> Option<&Repository> {
+        self.active_workdir
+            .as_ref()
+            .and_then(|workdir| self.repo_by_workdir(workdir))
+            .or_else(|| {
+                self.repositories
+                    .iter()
+                    .find(|repository| repository.snapshot.branch.is_some())
+            })
+            .or_else(|| self.repositories.first())
     }
 
     /// 活动仓库的远程操作状态（可推送/可拉取判定依据）。
@@ -531,8 +505,7 @@ impl GitStore {
                 })
             }
             GitJob::RefreshHunks => {
-                // 按需 hunk 查询：只对「已跟踪且尚未查询」的路径发起 diff，
-                // untracked/忽略/已查询路径直接丢弃（untracked 永不查询 → 永不画 marker）。
+                // 按需 hunk 查询：只对「已跟踪且尚未查询」的路径发起 diff，untracked/忽略/已查询路径直接丢弃（untracked 永不查询 → 永不画 marker）。
                 let paths = std::mem::take(&mut self.paths_needing_hunks);
                 let mut repositories = Vec::with_capacity(self.repositories.len());
                 let mut grouped_paths = vec![Vec::new(); self.repositories.len()];
@@ -558,20 +531,8 @@ impl GitStore {
                 })
             }
             GitJob::GitOperation(_) => {
-                // 作用于活动仓库（对齐 Zed：fetch/pull/push 以 active 仓库为目标，空仓库也执行）；
-                // active 尚未建立（首次扫描前）时回退原有选择逻辑。
-                let repository = self
-                    .active_workdir
-                    .as_ref()
-                    .and_then(|workdir| self.repo_by_workdir(workdir))
-                    .or_else(|| {
-                        self.repositories
-                            .iter()
-                            .find(|repository| repository.snapshot.branch.is_some())
-                    })
-                    .or_else(|| self.repositories.first())?
-                    .repository
-                    .clone();
+                // 作用于活动仓库（对齐 Zed：fetch/pull/push 以 active 仓库为目标，空仓库也执行）。
+                let repository = self.active_repository()?.repository.clone();
                 Some(JobPreparation {
                     root,
                     repositories: vec![repository],
@@ -628,16 +589,7 @@ impl GitStore {
             // 提交/撤销提交：作用于活动仓库（与 GitOperation 同选择策略）；
             // commit 时无已暂存改动则自动暂存全部已跟踪改动（对齐 Zed，未跟踪文件须手动暂存）。
             GitJob::Commit { .. } | GitJob::Uncommit => {
-                let repository = self
-                    .active_workdir
-                    .as_ref()
-                    .and_then(|workdir| self.repo_by_workdir(workdir))
-                    .or_else(|| {
-                        self.repositories
-                            .iter()
-                            .find(|repository| repository.snapshot.branch.is_some())
-                    })
-                    .or_else(|| self.repositories.first())?;
+                let repository = self.active_repository()?;
                 let has_staged = repository
                     .snapshot
                     .statuses_by_path
@@ -737,14 +689,16 @@ impl GitStore {
             (GitJob::RefreshStatuses, JobResult::Refresh(refreshed)) => {
                 let mut statuses_changed = false;
                 let mut head_changed = false;
+                // hunks 解耦：状态变化后统一排 RefreshHunks（job 队列同 key 去重，高频编辑合并），不再在状态刷新里内联计算。
+                let mut hunks_paths = Vec::new();
                 for (index, data) in refreshed {
                     let Some(repository) = self.repositories.get_mut(index) else {
                         continue;
                     };
-                    let (snapshot, statuses, head) = merge_refresh(&repository.snapshot, data);
+                    hunks_paths.extend(data.paths.iter().cloned());
+                    let (statuses, head) = merge_refresh(&mut repository.snapshot, data);
                     statuses_changed |= statuses;
                     head_changed |= head;
-                    repository.snapshot = snapshot;
                 }
                 if head_changed {
                     // HEAD 变化 → 旧 HEAD 文本失效。
@@ -752,6 +706,8 @@ impl GitStore {
                     cx.emit(GitStoreEvent::Head);
                 }
                 if statuses_changed {
+                    self.paths_needing_hunks.extend(hunks_paths);
+                    self.schedule_job(GitJob::RefreshHunks);
                     cx.emit(GitStoreEvent::Statuses);
                 }
             }
@@ -852,475 +808,18 @@ struct JobPreparation {
     grouped_paths: Vec<Vec<PathBuf>>,
 }
 
-/// 后台线程：执行一个 job（所有 git 命令在这里同步阻塞运行）。
-async fn execute_job(
-    root: PathBuf,
-    job: GitJob,
-    repositories: Vec<Arc<dyn GitRepository>>,
-    grouped_paths: Vec<Vec<PathBuf>>,
-) -> JobResult {
-    match job {
-        GitJob::ReloadGitState => {
-            // 仓库发现（同步文件系统遍历，放后台）：总是递归发现嵌套仓库，再合并 root 所在的外层仓库。
-            let discovered = discover_repositories(&root).unwrap_or_default();
-            let scans = discovered
-                .into_iter()
-                .map(|repository| {
-                    let working_directory = repository.working_directory().to_path_buf();
-                    let repository: Arc<dyn GitRepository> = Arc::new(repository);
-                    let snapshot = scan_repository_sync(&repository);
-                    ReloadScan {
-                        working_directory,
-                        repository,
-                        snapshot,
-                    }
-                })
-                .collect();
-            JobResult::Reload(scans)
-        }
-        GitJob::RefreshStatuses => {
-            let mut refreshed = Vec::new();
-            for (index, repository) in repositories.into_iter().enumerate() {
-                let paths = &grouped_paths[index];
-                if paths.is_empty() {
-                    continue;
-                }
-                refreshed.push((index, refresh_repository_data_sync(&repository, paths)));
-            }
-            JobResult::Refresh(refreshed)
-        }
-        GitJob::RefreshHunks => {
-            let mut refreshed = Vec::new();
-            for (index, repository) in repositories.into_iter().enumerate() {
-                let paths = &grouped_paths[index];
-                if paths.is_empty() {
-                    continue;
-                }
-                refreshed.push((index, fetch_hunks_sync(&repository, paths)));
-            }
-            JobResult::RefreshHunks(refreshed)
-        }
-        GitJob::GitOperation(operation) => {
-            let result = repositories
-                .first()
-                .map(|repository| match operation {
-                    GitOperationKind::Fetch => repository.fetch(),
-                    GitOperationKind::Pull => repository.pull(),
-                    GitOperationKind::Push => repository.push(),
-                })
-                .unwrap_or(Ok(()));
-            JobResult::GitOperation(result)
-        }
-        // 项目根无仓库时初始化；fallback 分支名对齐 Zed 的 "main"。
-        GitJob::GitInit => JobResult::GitOperation(zcv_git::init(&root, "main")),
-        // 暂存/取消暂存：按仓库分组执行；任一仓库失败即中断并上报。
-        GitJob::StageFiles { stage, .. } => {
-            let mut result = Ok(());
-            for (index, repository) in repositories.into_iter().enumerate() {
-                let paths = &grouped_paths[index];
-                if paths.is_empty() {
-                    continue;
-                }
-                let outcome = if stage {
-                    repository.stage_paths(paths)
-                } else {
-                    repository.unstage_paths(paths)
-                };
-                if let Err(error) = outcome {
-                    result = Err(error);
-                    break;
-                }
-            }
-            JobResult::GitOperation(result)
-        }
-        // 提交：prepare 已算好需要先暂存的路径（无已暂存改动时 = 全部已跟踪改动），随后 commit。
-        GitJob::Commit { message } => {
-            let result = repositories.first().map(|repository| {
-                let paths = grouped_paths
-                    .first()
-                    .map_or(&[][..], |paths| paths.as_slice());
-                if !paths.is_empty() {
-                    repository.stage_paths(paths)?;
-                }
-                repository.commit(&message)
-            });
-            JobResult::GitOperation(result.unwrap_or(Ok(())))
-        }
-        // 撤销提交：被撤销消息随结果回传，UI 线程暂存供面板填回编辑器。
-        GitJob::Uncommit => {
-            let result = repositories
-                .first()
-                .map(|repository| repository.uncommit())
-                .unwrap_or(Ok(None));
-            JobResult::Uncommit(result)
-        }
-    }
-}
-
-/// 后台线程：逐路径查询行级 diff hunks（每路径一个 git 进程）。
-///
-/// 单路径失败仅跳过该路径（保留 None 等待下次事件重试，自愈），不中断整批。
-fn fetch_hunks_sync(
-    repository: &Arc<dyn GitRepository>,
-    paths: &[PathBuf],
-) -> Vec<(PathBuf, Vec<DiffHunk>)> {
-    paths
-        .iter()
-        .filter_map(|path| match repository.diff_hunks(path) {
-            Ok(hunks) => Some((path.clone(), hunks)),
-            Err(error) => {
-                log::warn!("读取 diff hunks 失败（{path:?}）：{error}");
-                None
-            }
-        })
-        .collect()
-}
-
-/// 后台线程：全量扫描一个仓库（head + status + 双 diff_stat）。
-fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapshot {
-    let (branch, head) = match repository.head() {
-        Ok(head) => head,
-        Err(error) => {
-            log::warn!("读取 git head 失败：{error}");
-            (None, None)
-        }
-    };
-    let statuses = match repository.status(&[]) {
-        Ok(statuses) => statuses,
-        Err(error) => {
-            log::warn!("读取 git status 失败：{error}");
-            return RepositorySnapshot {
-                branch,
-                head,
-                last_commit_message: repository.last_commit_message().unwrap_or(None),
-                has_remote: false,
-                ahead: 0,
-                behind: 0,
-                statuses_by_path: BTreeMap::new(),
-            };
-        }
-    };
-    // 无 HEAD（空仓库）时 `--cached HEAD` 会报错，跳过暂存统计。
-    let staged = if head.is_some() {
-        repository.diff_stat(true, &[]).unwrap_or_default()
-    } else {
-        HashMap::new()
-    };
-    let unstaged = repository.diff_stat(false, &[]).unwrap_or_default();
-    let statuses_by_path = statuses
-        .statuses
-        .into_iter()
-        .map(|(path, status)| {
-            let staged_diff_stat = staged.get(&path).copied().unwrap_or_default();
-            let unstaged_diff_stat = unstaged.get(&path).copied().unwrap_or_default();
-            let entry = StatusEntry {
-                status,
-                diff_stat: add_diff_stats(staged_diff_stat, unstaged_diff_stat),
-                staged_diff_stat,
-                unstaged_diff_stat,
-                // 全量扫描不查 hunks，打开文件时按需查询。
-                hunks: None,
-            };
-            (path, entry)
-        })
-        .collect();
-    RepositorySnapshot {
-        branch,
-        head,
-        last_commit_message: repository.last_commit_message().unwrap_or(None),
-        has_remote: repository.has_remote().unwrap_or(false),
-        ahead: statuses.branch.as_ref().map_or(0, |branch| branch.ahead),
-        behind: statuses.branch.as_ref().map_or(0, |branch| branch.behind),
-        statuses_by_path,
-    }
-}
-
-/// 后台线程：对变更路径重查状态（head 一并重读，兜底外部 checkout）。
-fn refresh_repository_data_sync(
-    repository: &Arc<dyn GitRepository>,
-    paths: &[PathBuf],
-) -> RefreshData {
-    let (branch, head) = match repository.head() {
-        Ok(head) => head,
-        Err(error) => {
-            log::warn!("读取 git head 失败：{error}");
-            (None, None)
-        }
-    };
-    let statuses = repository.status(paths).unwrap_or_default();
-    let staged = if head.is_some() {
-        repository.diff_stat(true, paths).unwrap_or_default()
-    } else {
-        HashMap::new()
-    };
-    let unstaged = repository.diff_stat(false, paths).unwrap_or_default();
-    // hunks 与 status 同批次：只对「已跟踪」路径查 diff（untracked/忽略/干净路径跳过）。
-    let hunks = statuses
-        .statuses
-        .iter()
-        .filter_map(|(path, status)| {
-            if !matches!(status, FileStatus::Tracked { .. }) {
-                return None;
-            }
-            match repository.diff_hunks(path) {
-                Ok(hunks) => Some((path.clone(), hunks)),
-                Err(error) => {
-                    log::warn!("读取 diff hunks 失败（{path:?}）：{error}");
-                    None
-                }
-            }
-        })
-        .collect();
-    RefreshData {
-        paths: paths.to_vec(),
-        branch,
-        head,
-        last_commit_message: repository.last_commit_message().unwrap_or(None),
-        // status 失败归零与 head 失败语义一致（瞬态，下次成功刷新自愈）。
-        has_remote: repository.has_remote().unwrap_or(false),
-        ahead: statuses.branch.as_ref().map_or(0, |branch| branch.ahead),
-        behind: statuses.branch.as_ref().map_or(0, |branch| branch.behind),
-        statuses,
-        staged,
-        unstaged,
-        hunks,
-    }
-}
-
-/// 纯函数：把增量刷新数据合并进旧快照。
-///
-/// 只更新刷新路径覆盖的条目：新 status 中的路径插入/更新，旧快照中
-/// 不再变化的路径（本次 status 无输出）移除。返回（新快照，状态是否
-/// 变化，head 是否变化）。
-fn merge_refresh(prev: &RepositorySnapshot, data: RefreshData) -> (RepositorySnapshot, bool, bool) {
-    let mut statuses_by_path = prev.statuses_by_path.clone();
-    let mut statuses_changed = false;
-
-    // 移除旧条目：BTreeMap 有序，以 path 为前缀的键连续排列在 range(path..) 中。
-    for path in &data.paths {
-        let mut to_remove = Vec::new();
-        for (key, _) in statuses_by_path.range(path.clone()..) {
-            if key.starts_with(path) {
-                to_remove.push(key.clone());
-            } else {
-                break;
-            }
-        }
-        for key in to_remove {
-            statuses_changed |= statuses_by_path.remove(&key).is_some();
-        }
-    }
-
-    for (path, status) in data.statuses.statuses {
-        let staged_diff_stat = data.staged.get(&path).copied().unwrap_or_default();
-        let unstaged_diff_stat = data.unstaged.get(&path).copied().unwrap_or_default();
-        let hunks = data
-            .hunks
-            .iter()
-            .find(|(hunk_path, _)| hunk_path == &path)
-            .map(|(_, hunks)| Arc::from(hunks.as_slice()));
-        let entry = StatusEntry {
-            status,
-            diff_stat: add_diff_stats(staged_diff_stat, unstaged_diff_stat),
-            staged_diff_stat,
-            unstaged_diff_stat,
-            hunks,
-        };
-        let replaced = statuses_by_path.insert(path.clone(), entry.clone());
-        statuses_changed |= replaced != Some(entry);
-    }
-
-    // ahead/behind/has_remote 与提交信息纳入比对：fetch/push/外部提交后变化必须触发事件，否则订阅方无法感知。
-    let head_changed = prev.head != data.head
-        || prev.branch != data.branch
-        || prev.last_commit_message != data.last_commit_message
-        || prev.has_remote != data.has_remote
-        || prev.ahead != data.ahead
-        || prev.behind != data.behind;
-    (
-        RepositorySnapshot {
-            branch: data.branch,
-            head: data.head,
-            last_commit_message: data.last_commit_message,
-            has_remote: data.has_remote,
-            ahead: data.ahead,
-            behind: data.behind,
-            statuses_by_path,
-        },
-        statuses_changed,
-        head_changed,
-    )
-}
-
-fn add_diff_stats(a: DiffStat, b: DiffStat) -> DiffStat {
-    DiffStat {
-        added: a.added + b.added,
-        deleted: a.deleted + b.deleted,
-    }
-}
-
-/// 绝对路径 → 仓库相对路径（unix 分隔符，git 参数格式）。
-fn repo_relative_path(working_directory: &Path, path: &Path) -> Option<PathBuf> {
-    let relative = path.strip_prefix(working_directory).ok()?;
-    let mut unix = PathBuf::new();
-    for component in relative.components() {
-        match component {
-            Component::Normal(name) => unix.push(name),
-            _ => return None,
-        }
-    }
-    Some(unix)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::test_support::{run_git, test_git_repo};
     use super::*;
     use std::fs;
 
     use gpui::AppContext;
     use zcv_git::StatusCode;
 
-    use tempfile::TempDir;
-
-    /// 创建带一个初始提交的临时 git 仓库，返回 (仓库根, 目录句柄)。
-    fn test_repo() -> (PathBuf, TempDir) {
-        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
-        let root = temp_dir.path().to_path_buf();
-        run_in(&root, &["git", "init", "-q", "-b", "master"]);
-        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
-        run_in(&root, &["git", "config", "user.name", "Test User"]);
-        fs::write(root.join("tracked.txt"), "第一行\n第二行\n").expect("应写入初始文件");
-        run_in(&root, &["git", "add", "tracked.txt"]);
-        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-        (root, temp_dir)
-    }
-
-    fn run_in(dir: &Path, args: &[&str]) {
-        let output = std::process::Command::new(args[0])
-            .args(&args[1..])
-            .current_dir(dir)
-            .output()
-            .expect("应执行成功");
-        assert!(
-            output.status.success(),
-            "命令 {:?} 失败：{}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    #[test]
-    fn merge_refresh_replaces_changed_paths_and_keeps_rest() {
-        let prev = RepositorySnapshot {
-            branch: Some("master".into()),
-            head: Some("old".into()),
-            last_commit_message: None,
-            has_remote: true,
-            ahead: 1,
-            behind: 0,
-            statuses_by_path: BTreeMap::from([
-                (
-                    PathBuf::from("a.txt"),
-                    StatusEntry {
-                        status: FileStatus::Untracked,
-                        diff_stat: DiffStat::default(),
-                        staged_diff_stat: DiffStat::default(),
-                        unstaged_diff_stat: DiffStat::default(),
-                        hunks: None,
-                    },
-                ),
-                (
-                    PathBuf::from("sub/b.txt"),
-                    StatusEntry {
-                        status: FileStatus::Untracked,
-                        diff_stat: DiffStat::default(),
-                        staged_diff_stat: DiffStat::default(),
-                        unstaged_diff_stat: DiffStat::default(),
-                        hunks: None,
-                    },
-                ),
-            ]),
-        };
-
-        let data = RefreshData {
-            paths: vec![PathBuf::from("a.txt"), PathBuf::from("sub")],
-            branch: Some("master".into()),
-            head: Some("old".into()),
-            last_commit_message: None,
-            has_remote: true,
-            ahead: 1,
-            behind: 0,
-            // a.txt 变干净（无输出 → 移除）；sub/c.txt 新增。
-            statuses: zcv_git::GitStatus {
-                statuses: vec![(PathBuf::from("sub/c.txt"), FileStatus::Untracked)],
-                branch: None,
-            },
-            staged: HashMap::new(),
-            unstaged: HashMap::new(),
-            hunks: Vec::new(),
-        };
-
-        let (snapshot, statuses_changed, head_changed) = merge_refresh(&prev, data);
-        assert!(statuses_changed);
-        assert!(!head_changed);
-        assert!(!snapshot.statuses_by_path.contains_key(Path::new("a.txt")));
-        assert!(
-            !snapshot
-                .statuses_by_path
-                .contains_key(Path::new("sub/b.txt"))
-        );
-        assert!(
-            snapshot
-                .statuses_by_path
-                .contains_key(Path::new("sub/c.txt"))
-        );
-    }
-
-    #[test]
-    fn merge_refresh_detects_head_changes() {
-        let prev = RepositorySnapshot {
-            branch: Some("master".into()),
-            head: Some("old".into()),
-            last_commit_message: None,
-            has_remote: false,
-            ahead: 0,
-            behind: 0,
-            statuses_by_path: BTreeMap::new(),
-        };
-        let data = RefreshData {
-            paths: vec![PathBuf::from("a.txt")],
-            branch: Some("master".into()),
-            head: Some("new".into()),
-            last_commit_message: None,
-            has_remote: false,
-            ahead: 0,
-            behind: 0,
-            statuses: zcv_git::GitStatus::default(),
-            staged: HashMap::new(),
-            unstaged: HashMap::new(),
-            hunks: Vec::new(),
-        };
-
-        let (_, statuses_changed, head_changed) = merge_refresh(&prev, data);
-        assert!(!statuses_changed);
-        assert!(head_changed);
-    }
-
-    #[test]
-    fn relative_path_converts_to_unix_style() {
-        assert_eq!(
-            repo_relative_path(Path::new("/repo"), Path::new("/repo/src/main.rs")),
-            Some(PathBuf::from("src/main.rs"))
-        );
-        assert_eq!(
-            repo_relative_path(Path::new("/repo"), Path::new("/other/file.rs")),
-            None
-        );
-    }
-
     #[gpui::test]
     fn scan_discovers_repository_and_reports_status(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         fs::write(root.join("tracked.txt"), "已修改\n").expect("应修改文件");
 
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
@@ -1343,7 +842,7 @@ mod tests {
     #[gpui::test]
     fn empty_repository_reports_no_branch(cx: &mut gpui::TestAppContext) {
         let temp_dir = tempfile::tempdir().expect("应创建临时目录");
-        run_in(temp_dir.path(), &["git", "init", "-q", "-b", "master"]);
+        run_git(temp_dir.path(), &["init", "-q", "-b", "master"]);
 
         let git_store =
             cx.update(|cx| cx.new(|cx| GitStore::new(temp_dir.path().to_path_buf(), cx)));
@@ -1358,7 +857,7 @@ mod tests {
 
     #[gpui::test]
     fn incremental_refresh_updates_statuses(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
@@ -1395,20 +894,22 @@ mod tests {
 
     #[gpui::test]
     fn external_checkout_updates_head(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         // 第二个分支。
-        run_in(&root, &["git", "checkout", "-q", "-b", "feature"]);
+        run_git(&root, &["checkout", "-q", "-b", "feature"]);
         fs::write(root.join("tracked.txt"), "feature 内容\n").expect("应写入");
-        run_in(&root, &["git", "commit", "-q", "-am", "feature"]);
+        run_git(&root, &["commit", "-q", "-am", "feature"]);
 
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
-        // 外部 checkout 回 master：只触发 fs 事件 → 增量刷新应重读 head。
-        run_in(&root, &["git", "checkout", "-q", "master"]);
+        // 外部 checkout 回 master：fs 事件同时触发 .git/HEAD 与工作区文件，
+        // 增量刷新包含 .git 路径 → 重读 head（快路径只跳过纯文件变化批次）。
+        run_git(&root, &["checkout", "-q", "master"]);
         cx.update_entity(&git_store, |store, cx| {
-            store.refresh_statuses_for_paths(&[root.join("tracked.txt")], cx)
+            store
+                .refresh_statuses_for_paths(&[root.join("tracked.txt"), root.join(".git/HEAD")], cx)
         });
         cx.run_until_parked();
 
@@ -1420,7 +921,7 @@ mod tests {
 
     #[gpui::test]
     fn load_committed_text_returns_head_content(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
@@ -1435,11 +936,11 @@ mod tests {
 
     #[gpui::test]
     fn status_for_directory_aggregates_children(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         fs::create_dir_all(root.join("src")).expect("应创建目录");
         fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("应创建文件");
-        run_in(&root, &["git", "add", "src/main.rs"]);
-        run_in(&root, &["git", "commit", "-q", "-m", "add src"]);
+        run_git(&root, &["add", "src/main.rs"]);
+        run_git(&root, &["commit", "-q", "-m", "add src"]);
         fs::create_dir_all(root.join("docs")).expect("应创建目录");
         fs::create_dir_all(root.join("empty")).expect("应创建目录");
 
@@ -1492,7 +993,7 @@ mod tests {
 
     #[gpui::test]
     fn status_for_directory_returns_ignored_for_ignored_directory(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         fs::create_dir_all(root.join("node_modules/pkg")).expect("应创建目录");
         fs::write(root.join("node_modules/pkg/index.js"), "x\n").expect("应创建文件");
         fs::write(root.join(".gitignore"), "node_modules/\n").expect("应写入 .gitignore");
@@ -1510,13 +1011,13 @@ mod tests {
     #[gpui::test]
     fn ignored_children_do_not_taint_directory_status(cx: &mut gpui::TestAppContext) {
         // 回归：目录内的忽略文件（如 .DS_Store）不应让目录本身淡显。
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         fs::write(root.join(".gitignore"), ".DS_Store\n").expect("应写入 .gitignore");
         fs::create_dir_all(root.join("assets")).expect("应创建目录");
         fs::write(root.join("assets/.DS_Store"), "x").expect("应创建忽略文件");
         fs::write(root.join("assets/logo.png"), "x").expect("应创建文件");
-        run_in(&root, &["git", "add", "assets/logo.png"]);
-        run_in(&root, &["git", "commit", "-q", "-m", "add assets"]);
+        run_git(&root, &["add", "assets/logo.png"]);
+        run_git(&root, &["commit", "-q", "-m", "add assets"]);
 
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
@@ -1548,23 +1049,23 @@ mod tests {
         // 工作仓库与裸远程共用 temp_dir，保证测试期间目录存活。
         let temp_dir = tempfile::tempdir().expect("应创建临时目录");
         let remote = temp_dir.path().join("remote.git");
-        run_in(
+        run_git(
             temp_dir.path(),
-            &["git", "init", "-q", "--bare", remote.to_str().unwrap()],
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
         );
         let root = temp_dir.path().join("work");
         fs::create_dir(&root).expect("应创建工作仓库目录");
-        run_in(&root, &["git", "init", "-q", "-b", "master"]);
-        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
-        run_in(&root, &["git", "config", "user.name", "Test User"]);
+        run_git(&root, &["init", "-q", "-b", "master"]);
+        run_git(&root, &["config", "user.email", "test@example.com"]);
+        run_git(&root, &["config", "user.name", "Test User"]);
         fs::write(root.join("tracked.txt"), "内容\n").expect("应写入初始文件");
-        run_in(&root, &["git", "add", "tracked.txt"]);
-        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-        run_in(
+        run_git(&root, &["add", "tracked.txt"]);
+        run_git(&root, &["commit", "-q", "-m", "initial"]);
+        run_git(
             &root,
-            &["git", "remote", "add", "origin", remote.to_str().unwrap()],
+            &["remote", "add", "origin", remote.to_str().unwrap()],
         );
-        run_in(&root, &["git", "push", "-q", "-u", "origin", "master"]);
+        run_git(&root, &["push", "-q", "-u", "origin", "master"]);
 
         let git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
@@ -1574,8 +1075,8 @@ mod tests {
 
         // 本地新提交 → run_operation(Push) → 后台 job 推送。
         fs::write(root.join("new.txt"), "新文件\n").expect("应写入文件");
-        run_in(&root, &["git", "add", "new.txt"]);
-        run_in(&root, &["git", "commit", "-q", "-m", "新提交"]);
+        run_git(&root, &["add", "new.txt"]);
+        run_git(&root, &["commit", "-q", "-m", "新提交"]);
         git_store.update(cx, |store, cx| {
             store.run_operation(GitOperationKind::Push, cx);
         });
@@ -1628,7 +1129,7 @@ mod tests {
 
     #[gpui::test]
     fn stage_paths_moves_file_between_sections(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         fs::write(root.join("tracked.txt"), "修改后的内容\n").expect("应修改文件");
 
         let git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
@@ -1690,7 +1191,7 @@ mod tests {
 
     #[gpui::test]
     fn stage_paths_expands_directory_to_matching_files(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         // src 下的已跟踪修改 + 未跟踪新文件 + 子目录文件。
         std::fs::create_dir_all(root.join("src/sub")).expect("应创建目录");
         fs::write(root.join("src/a.txt"), "改动的 a\n").expect("应写入文件");
@@ -1738,7 +1239,7 @@ mod tests {
 
     #[gpui::test]
     fn request_hunks_fills_hunks_on_demand(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
@@ -1753,11 +1254,11 @@ mod tests {
         // 外部修改第 2 行 → 按需请求 hunks。
         fs::write(&tracked, "第一行\n改了第二行\n").expect("应修改文件");
         cx.update_entity(&git_store, |store, cx| {
-            store.refresh_statuses_for_paths(&[tracked.clone()], cx)
+            store.refresh_statuses_for_paths(std::slice::from_ref(&tracked), cx)
         });
         cx.run_until_parked();
         cx.update_entity(&git_store, |store, cx| {
-            store.request_hunks(&[tracked.clone()], cx)
+            store.request_hunks(std::slice::from_ref(&tracked), cx)
         });
         cx.run_until_parked();
 
@@ -1766,23 +1267,20 @@ mod tests {
             .expect("请求后应有 hunks");
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].range, 1..2);
-        assert_eq!(hunks[0].kind, zcv_git::DiffHunkKind::Modified);
+        assert_eq!(hunks[0].kind, zcv_buffer_diff::DiffHunkKind::Modified);
     }
 
     #[gpui::test]
     fn active_repository_follows_focused_path(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         let nested = root.join("nested");
         fs::create_dir(&nested).expect("应创建嵌套目录");
-        run_in(&nested, &["git", "init", "-q", "-b", "feature"]);
-        run_in(
-            &nested,
-            &["git", "config", "user.email", "test@example.com"],
-        );
-        run_in(&nested, &["git", "config", "user.name", "Test User"]);
+        run_git(&nested, &["init", "-q", "-b", "feature"]);
+        run_git(&nested, &["config", "user.email", "test@example.com"]);
+        run_git(&nested, &["config", "user.name", "Test User"]);
         fs::write(nested.join("n.txt"), "嵌套\n").expect("应写入嵌套文件");
-        run_in(&nested, &["git", "add", "n.txt"]);
-        run_in(&nested, &["git", "commit", "-q", "-m", "nested initial"]);
+        run_git(&nested, &["add", "n.txt"]);
+        run_git(&nested, &["commit", "-q", "-m", "nested initial"]);
 
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
@@ -1816,29 +1314,26 @@ mod tests {
     #[gpui::test]
     fn git_operation_targets_active_repository(cx: &mut gpui::TestAppContext) {
         // 根仓库无 remote；嵌套仓库有 remote。active 切到嵌套后 push 应作用于嵌套。
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         let temp_dir = tempfile::tempdir().expect("应创建临时目录");
         let remote = temp_dir.path().join("remote.git");
-        run_in(
+        run_git(
             temp_dir.path(),
-            &["git", "init", "-q", "--bare", remote.to_str().unwrap()],
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
         );
         let nested = root.join("nested");
         fs::create_dir(&nested).expect("应创建嵌套目录");
-        run_in(&nested, &["git", "init", "-q", "-b", "master"]);
-        run_in(
-            &nested,
-            &["git", "config", "user.email", "test@example.com"],
-        );
-        run_in(&nested, &["git", "config", "user.name", "Test User"]);
+        run_git(&nested, &["init", "-q", "-b", "master"]);
+        run_git(&nested, &["config", "user.email", "test@example.com"]);
+        run_git(&nested, &["config", "user.name", "Test User"]);
         fs::write(nested.join("n.txt"), "嵌套\n").expect("应写入嵌套文件");
-        run_in(&nested, &["git", "add", "n.txt"]);
-        run_in(&nested, &["git", "commit", "-q", "-m", "nested initial"]);
-        run_in(
+        run_git(&nested, &["add", "n.txt"]);
+        run_git(&nested, &["commit", "-q", "-m", "nested initial"]);
+        run_git(
             &nested,
-            &["git", "remote", "add", "origin", remote.to_str().unwrap()],
+            &["remote", "add", "origin", remote.to_str().unwrap()],
         );
-        run_in(&nested, &["git", "push", "-q", "-u", "origin", "master"]);
+        run_git(&nested, &["push", "-q", "-u", "origin", "master"]);
 
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
@@ -1849,8 +1344,8 @@ mod tests {
             store.set_active_repository_for_path(&nested.join("n.txt"), cx);
         });
         fs::write(nested.join("new.txt"), "新提交\n").expect("应写入文件");
-        run_in(&nested, &["git", "add", "new.txt"]);
-        run_in(&nested, &["git", "commit", "-q", "-m", "新提交"]);
+        run_git(&nested, &["add", "new.txt"]);
+        run_git(&nested, &["commit", "-q", "-m", "新提交"]);
         cx.update_entity(&git_store, |store, cx| {
             store.run_operation(GitOperationKind::Push, cx);
         });
@@ -1881,20 +1376,17 @@ mod tests {
     #[gpui::test]
     fn initial_scan_sets_active_to_first_repository(cx: &mut gpui::TestAppContext) {
         // root 位于外层仓库内且包含嵌套仓库：祖先前置 → 初始 active = 外层仓库。
-        let (outer, _temp) = test_repo();
+        let (outer, _temp) = test_git_repo();
         let root = outer.join("proj");
         fs::create_dir(&root).expect("应创建项目目录");
         let nested = root.join("nested");
         fs::create_dir(&nested).expect("应创建嵌套目录");
-        run_in(&nested, &["git", "init", "-q", "-b", "feature"]);
-        run_in(
-            &nested,
-            &["git", "config", "user.email", "test@example.com"],
-        );
-        run_in(&nested, &["git", "config", "user.name", "Test User"]);
+        run_git(&nested, &["init", "-q", "-b", "feature"]);
+        run_git(&nested, &["config", "user.email", "test@example.com"]);
+        run_git(&nested, &["config", "user.name", "Test User"]);
         fs::write(nested.join("n.txt"), "嵌套\n").expect("应写入嵌套文件");
-        run_in(&nested, &["git", "add", "n.txt"]);
-        run_in(&nested, &["git", "commit", "-q", "-m", "nested initial"]);
+        run_git(&nested, &["add", "n.txt"]);
+        run_git(&nested, &["commit", "-q", "-m", "nested initial"]);
 
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
@@ -1915,23 +1407,23 @@ mod tests {
         // 工作仓库与裸远程共用 temp_dir，保证测试期间目录存活。
         let temp_dir = tempfile::tempdir().expect("应创建临时目录");
         let remote = temp_dir.path().join("remote.git");
-        run_in(
+        run_git(
             temp_dir.path(),
-            &["git", "init", "-q", "--bare", remote.to_str().unwrap()],
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
         );
         let root = temp_dir.path().join("work");
         fs::create_dir(&root).expect("应创建工作仓库目录");
-        run_in(&root, &["git", "init", "-q", "-b", "master"]);
-        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
-        run_in(&root, &["git", "config", "user.name", "Test User"]);
+        run_git(&root, &["init", "-q", "-b", "master"]);
+        run_git(&root, &["config", "user.email", "test@example.com"]);
+        run_git(&root, &["config", "user.name", "Test User"]);
         fs::write(root.join("tracked.txt"), "内容\n").expect("应写入初始文件");
-        run_in(&root, &["git", "add", "tracked.txt"]);
-        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
-        run_in(
+        run_git(&root, &["add", "tracked.txt"]);
+        run_git(&root, &["commit", "-q", "-m", "initial"]);
+        run_git(
             &root,
-            &["git", "remote", "add", "origin", remote.to_str().unwrap()],
+            &["remote", "add", "origin", remote.to_str().unwrap()],
         );
-        run_in(&root, &["git", "push", "-q", "-u", "origin", "master"]);
+        run_git(&root, &["push", "-q", "-u", "origin", "master"]);
 
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
@@ -1950,8 +1442,8 @@ mod tests {
 
         // 本地新提交 → ahead 1（可推送数）。
         fs::write(root.join("new.txt"), "新提交\n").expect("应写入文件");
-        run_in(&root, &["git", "add", "new.txt"]);
-        run_in(&root, &["git", "commit", "-q", "-m", "本地提交"]);
+        run_git(&root, &["add", "new.txt"]);
+        run_git(&root, &["commit", "-q", "-m", "本地提交"]);
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
         let state = cx.read_entity(&git_store, |store, _| store.remote_operation_state());
@@ -1977,7 +1469,7 @@ mod tests {
 
     #[gpui::test]
     fn remote_operation_state_defaults_without_remote(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
@@ -1988,7 +1480,7 @@ mod tests {
 
     #[gpui::test]
     fn request_hunks_skips_untracked_files(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_repo();
+        let (root, _temp) = test_git_repo();
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
@@ -1997,11 +1489,11 @@ mod tests {
         let untracked = root.join("untracked.txt");
         fs::write(&untracked, "新的\n").expect("应写入文件");
         cx.update_entity(&git_store, |store, cx| {
-            store.refresh_statuses_for_paths(&[untracked.clone()], cx)
+            store.refresh_statuses_for_paths(std::slice::from_ref(&untracked), cx)
         });
         cx.run_until_parked();
         cx.update_entity(&git_store, |store, cx| {
-            store.request_hunks(&[untracked.clone()], cx)
+            store.request_hunks(std::slice::from_ref(&untracked), cx)
         });
         cx.run_until_parked();
 

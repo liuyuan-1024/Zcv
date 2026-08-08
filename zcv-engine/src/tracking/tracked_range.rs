@@ -6,7 +6,7 @@
 use crate::{
     EngineResult,
     errors::AnchorError,
-    position_map::{Affinity, MappingResult, PositionMap, Stickiness},
+    position_map::{MappingResult, PositionMap, Stickiness},
     transaction::DeltaEvent,
     types::{BufferVersion, TextRange},
 };
@@ -124,35 +124,6 @@ impl TrackedRange {
         Ok(mapped)
     }
 
-    pub fn update_all_through_delta_event(
-        ranges: &mut [Self],
-        event: &DeltaEvent,
-    ) -> Result<Vec<MappingResult<Self>>, AnchorError> {
-        for range in ranges.iter().copied() {
-            range.verify_event_version(event)?;
-        }
-
-        let mut updates = Vec::with_capacity(ranges.len());
-        for range in ranges {
-            let mapped = range.map_through_position_map(event.new_version(), event.position_map());
-            *range = mapped.value();
-            updates.push(mapped);
-        }
-
-        Ok(updates)
-    }
-
-    pub fn map_all_through_delta_event_with_policy(
-        ranges: impl IntoIterator<Item = Self>,
-        event: &DeltaEvent,
-        policy: TrackedRangeUpdatePolicy,
-    ) -> Result<Vec<TrackedRangeUpdate>, AnchorError> {
-        ranges
-            .into_iter()
-            .map(|range| range.map_through_delta_event_with_policy(event, policy))
-            .collect()
-    }
-
     fn update_from_mapping_result(
         self,
         mapped: MappingResult<Self>,
@@ -187,10 +158,18 @@ impl TrackedRange {
     }
 
     fn from_valid_range(version: BufferVersion, range: TextRange, stickiness: Stickiness) -> Self {
-        let start = Anchor::new(version, range.start())
-            .with_affinity(boundary_affinity(stickiness, BoundarySide::Start));
-        let end = Anchor::new(version, range.end())
-            .with_affinity(boundary_affinity(stickiness, BoundarySide::End));
+        let start = Anchor::new(version, range.start()).with_affinity(
+            crate::position_map::boundary_affinity(
+                stickiness,
+                crate::position_map::BoundarySide::Start,
+            ),
+        );
+        let end = Anchor::new(version, range.end()).with_affinity(
+            crate::position_map::boundary_affinity(
+                stickiness,
+                crate::position_map::BoundarySide::End,
+            ),
+        );
 
         Self {
             start,
@@ -205,20 +184,29 @@ fn map_range_result(
     version: BufferVersion,
     stickiness: Stickiness,
 ) -> MappingResult<TrackedRange> {
-    match result {
-        MappingResult::Mapped(range) => {
-            MappingResult::Mapped(TrackedRange::from_valid_range(version, range, stickiness))
+    result.map(|range| TrackedRange::from_valid_range(version, range, stickiness))
+}
+
+fn should_invalidate(
+    mapped: MappingResult<TrackedRange>,
+    policy: TrackedRangeUpdatePolicy,
+) -> bool {
+    let invalidated_by_deleted_content = match policy.invalidation() {
+        TrackedRangeInvalidationPolicy::Never => false,
+        TrackedRangeInvalidationPolicy::WhenFullyDeleted => {
+            matches!(mapped, MappingResult::Collapsed(_))
         }
-        MappingResult::Deleted(range) => {
-            MappingResult::Deleted(TrackedRange::from_valid_range(version, range, stickiness))
+        TrackedRangeInvalidationPolicy::WhenTouchedByDeletion => {
+            matches!(
+                mapped,
+                MappingResult::Deleted(_) | MappingResult::Collapsed(_)
+            )
         }
-        MappingResult::Collapsed(range) => {
-            MappingResult::Collapsed(TrackedRange::from_valid_range(version, range, stickiness))
-        }
-        MappingResult::Ambiguous(range) => {
-            MappingResult::Ambiguous(TrackedRange::from_valid_range(version, range, stickiness))
-        }
-    }
+    };
+
+    invalidated_by_deleted_content
+        || (policy.collapse() == TrackedRangeCollapsePolicy::Invalidate
+            && mapped.value().is_empty())
 }
 
 #[cfg(test)]
@@ -286,53 +274,5 @@ mod tests {
             TrackedRangeUpdate::Invalidated { range, version }
                 if range == TextRange::new(b(1), b(1)).unwrap() && version == event.new_version()
         ));
-    }
-}
-
-fn should_invalidate(
-    mapped: MappingResult<TrackedRange>,
-    policy: TrackedRangeUpdatePolicy,
-) -> bool {
-    let invalidated_by_deleted_content = match policy.invalidation() {
-        TrackedRangeInvalidationPolicy::Never => false,
-        TrackedRangeInvalidationPolicy::WhenFullyDeleted => {
-            matches!(mapped, MappingResult::Collapsed(_))
-        }
-        TrackedRangeInvalidationPolicy::WhenTouchedByDeletion => {
-            matches!(
-                mapped,
-                MappingResult::Deleted(_) | MappingResult::Collapsed(_)
-            )
-        }
-    };
-
-    invalidated_by_deleted_content
-        || (policy.collapse() == TrackedRangeCollapsePolicy::Invalidate
-            && mapped.value().is_empty())
-}
-
-/// 当前正在把 TrackedRange stickiness 翻译成 Anchor affinity 的端点。
-///
-/// 这是内部计算辅助类型，不是投影、fold 或 viewport 边界概念。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BoundarySide {
-    /// TrackedRange 起点 Anchor。
-    Start,
-    /// TrackedRange 终点 Anchor。
-    End,
-}
-
-fn boundary_affinity(stickiness: Stickiness, side: BoundarySide) -> Affinity {
-    match stickiness {
-        Stickiness::BeforeInsertion => Affinity::Before,
-        Stickiness::AfterInsertion => Affinity::After,
-        Stickiness::Expand => match side {
-            BoundarySide::Start => Affinity::Before,
-            BoundarySide::End => Affinity::After,
-        },
-        Stickiness::Never => match side {
-            BoundarySide::Start => Affinity::After,
-            BoundarySide::End => Affinity::Before,
-        },
     }
 }

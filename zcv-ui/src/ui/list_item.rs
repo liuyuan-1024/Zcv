@@ -14,6 +14,7 @@ pub struct ListItem {
     id: ElementId,
     toggle_state: bool,
     child: Option<AnyElement>,
+    subtitle: Option<AnyElement>,
     end_slot: Option<AnyElement>,
 }
 
@@ -23,6 +24,7 @@ impl ListItem {
             id: id.into(),
             toggle_state: false,
             child: None,
+            subtitle: None,
             end_slot: None,
         }
     }
@@ -36,6 +38,12 @@ impl ListItem {
     /// 主内容。
     pub fn child(mut self, child: impl IntoElement) -> Self {
         self.child = Some(child.into_any_element());
+        self
+    }
+
+    /// 次行内容（主内容下方，灰色小字）。
+    pub fn subtitle(mut self, subtitle: impl IntoElement) -> Self {
+        self.subtitle = Some(subtitle.into_any_element());
         self
     }
 
@@ -60,21 +68,36 @@ impl RenderOnce for ListItem {
         let hover_bg = color::current(cx).element_hover;
         let mut row = div()
             .id(self.id)
+            .w_full()
             .flex()
             .flex_row()
             .items_center()
             .justify_between()
             .p(space::S6)
             .cursor_pointer()
+            // test cfg 下注册 debug bounds，供行高断言使用。
+            .debug_selector(|| "list-item".into())
             .hover(move |style| style.bg(hover_bg));
 
         if self.toggle_state {
             row = row.bg(color::current(cx).element_selected);
         }
 
-        // 主内容
+        // 主内容（含次行时两行排列）。
+        // 文本允许自动换行，行高由内容决定；配合变高列表（picker 的 list 容器）可完整展示长文本。
         if let Some(child) = self.child {
-            row = row.child(div().flex_1().min_w_0().child(child));
+            let mut content = div().flex_1().min_w_0().child(child);
+            // 次行主题色依赖 cx，只能在 render 中解析
+            if let Some(subtitle) = self.subtitle {
+                content = content.child(
+                    div()
+                        .text_color(color::current(cx).text_placeholder)
+                        .text_size(typography::ui())
+                        .line_height(typography::ui())
+                        .child(subtitle),
+                );
+            }
+            row = row.child(content);
         }
 
         // 尾部插槽
@@ -86,29 +109,53 @@ impl RenderOnce for ListItem {
     }
 }
 
-/// 标准两行标签：主标题 + 灰色副标题。
-pub fn list_item_two_line(title: impl IntoElement, subtitle: impl IntoElement) -> impl IntoElement {
-    // 主题色依赖 cx，通过 Component 延迟到 render 解析
-    Component::new(TwoLine {
-        title: title.into_any_element(),
-        subtitle: subtitle.into_any_element(),
-    })
-}
+#[cfg(test)]
+mod tests {
+    use gpui::{Context, Render, TestAppContext, Window, prelude::*, px, size};
 
-/// 两行标签的渲染载体。
-struct TwoLine {
-    title: AnyElement,
-    subtitle: AnyElement,
-}
+    use super::*;
 
-impl RenderOnce for TwoLine {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        div().flex_1().min_w_0().child(self.title).child(
-            div()
-                .text_color(color::current(cx).text_placeholder)
-                .text_size(typography::ui())
-                .line_height(typography::ui())
-                .child(self.subtitle),
-        )
+    struct ShortRow;
+    impl Render for ShortRow {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            ListItem::new("short").child("标题").subtitle("短路径")
+        }
+    }
+
+    struct LongRow;
+    impl Render for LongRow {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            // 文本远超任何测试窗口宽度，必然换行
+            ListItem::new("long")
+                .child("标题")
+                .subtitle("这是一个非常长的路径，用来验证次行文本自动换行不会被截断：".repeat(500))
+        }
+    }
+
+    /// 次行文本允许自动换行：行高随内容增长（变高列表按实际高度布局），
+    /// 长路径完整展示而不被裁剪。
+    #[gpui::test]
+    fn long_subtitle_grows_row_height(cx: &mut TestAppContext) {
+        // 窗口调窄，保证长路径必然换行
+        let (_, cx) = cx.add_window_view(|_, _| ShortRow);
+        cx.simulate_window_resize(cx.windows()[0], size(px(360.0), px(400.0)));
+        let short_height = cx
+            .debug_bounds("list-item")
+            .expect("短路径行应参与布局")
+            .size
+            .height;
+
+        let (_, cx) = cx.add_window_view(|_, _| LongRow);
+        cx.simulate_window_resize(cx.windows()[1], size(px(360.0), px(400.0)));
+        let long_height = cx
+            .debug_bounds("list-item")
+            .expect("长路径行应参与布局")
+            .size
+            .height;
+
+        assert!(
+            long_height > short_height,
+            "长路径应换行撑高行（不被截断）：短行 {short_height}，长行 {long_height}"
+        );
     }
 }

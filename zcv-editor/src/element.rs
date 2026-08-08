@@ -5,16 +5,17 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, ContentMask, Context, DispatchPhase, Element, ElementId, ElementInputHandler,
-    Entity, GlobalElementId, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ScrollWheelEvent, ShapedLine, SharedString, Style, TextRun, TransformationMatrix, Window, fill,
-    point, px, relative, size,
+    AnyElement, App, AvailableSpace, Bounds, ContentMask, Context, DispatchPhase, Element,
+    ElementId, ElementInputHandler, Entity, GlobalElementId, HitboxBehavior, InspectorElementId,
+    InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Style, TextRun, Window,
+    fill, point, px, relative, size,
 };
 use zcv_buffer_diff::{DiffHunk, DiffHunkKind};
 use zcv_engine::{ByteOffset, Line, LogicalColumn, SelectionSet, TextRange};
 use zcv_language::BracketPair;
 use zcv_theme::color;
+use zcv_ui::Glyph;
 
 use super::display_map::{
     BufferPoint, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot, LineStyles,
@@ -24,7 +25,7 @@ use super::display_map::{
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
 use super::scrollbar::{SCROLLBAR_WIDTH, ScrollbarLayout, marker_column_x_range, marker_geometry};
-use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap};
+use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap, ToggleFold};
 
 const CARET_WIDTH: Pixels = px(2.);
 
@@ -121,6 +122,20 @@ struct EditorLayout {
     display_snapshot: DisplaySnapshot,
 }
 
+impl EditorLayout {
+    /// 平移所有行的原点（水平自动滚动时复用本帧布局，避免整帧重排）。
+    fn translate(&mut self, delta: Point<Pixels>) {
+        for line in &mut self.lines {
+            line.origin += delta;
+        }
+        if let Some(gutter) = &mut self.gutter {
+            for row in &mut gutter.rows {
+                row.origin += delta;
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct EditorGeometry {
     text_bounds: Bounds<Pixels>,
@@ -190,33 +205,34 @@ impl EditorLayout {
             .ok()
             .map(BufferPoint::from)
     }
-
-    fn input_layout(&self) -> EditorInputLayout {
-        EditorInputLayout {
-            lines: self.lines.clone(),
-            line_height: self.line_height,
-        }
-    }
 }
 
+/// IME 候选框命中测试：持有一帧布局的 Arc 引用，避免每帧深拷贝整表布局。
 #[derive(Clone)]
 pub(super) struct EditorInputLayout {
-    lines: Vec<LayoutLine>,
-    line_height: Pixels,
+    layout: Arc<EditorLayout>,
 }
 
 impl EditorInputLayout {
+    fn from_layout(layout: &Arc<EditorLayout>) -> Self {
+        Self {
+            layout: Arc::clone(layout),
+        }
+    }
+
     pub(super) fn utf16_index_for_point(&self, point: Point<Pixels>) -> Option<usize> {
-        let first = self.lines.first()?;
-        let last = self.lines.last()?;
+        let lines = &self.layout.lines;
+        let line_height = self.layout.line_height;
+        let first = lines.first()?;
+        let last = lines.last()?;
         let line = if point.y <= first.origin.y {
             first
-        } else if point.y >= last.origin.y + self.line_height {
+        } else if point.y >= last.origin.y + line_height {
             last
         } else {
-            self.lines
+            lines
                 .iter()
-                .find(|line| point.y < line.origin.y + self.line_height)
+                .find(|line| point.y < line.origin.y + line_height)
                 .unwrap_or(last)
         };
         let byte = line.shaped.closest_index_for_x(point.x - line.origin.x);
@@ -233,12 +249,12 @@ pub(super) struct PrepaintState {
     gutter_hitbox: Option<gpui::Hitbox>,
     /// hunk 色带 hitbox（起点行可见时插入；点击切换折叠/展开；类型 + 展开态标志）。
     deleted_hunk_hitboxes: Arc<Vec<HunkHitbox>>,
-    /// crease 点击 hitbox（可折叠行的 gutter 指示区；点击切换折叠/展开）。
-    crease_hitboxes: Arc<Vec<(gpui::Hitbox, Line)>>,
+    /// crease 折叠开关（Glyph 组件，已按 gutter 绝对坐标布局；自带点击与 tooltip）。
+    crease_toggles: Vec<Option<AnyElement>>,
     /// 折叠省略号点击 hitbox（anchor 行行尾；点击展开）。
     ellipsis_hitboxes: Arc<Vec<(gpui::Hitbox, Line)>>,
-    /// 折叠入口行 → 结尾闭合符（如 `}`；无闭合符的折叠为 None）：行尾省略号样式用。
-    fold_anchor_end_chars: Arc<BTreeMap<Line, Option<char>>>,
+    /// 折叠省略号后缀（prepaint 已 shape，paint 直接查表绘制，避免重复 shaping）。
+    ellipsis_suffixes: Arc<BTreeMap<Line, ShapedLine>>,
     /// hunk 竖条范围与状态色（竖条色不随展开变化；行背景按行状态另行绘制）。
     hunk_strips: Arc<Vec<(Range<usize>, DiffHunkKind)>>,
     scrollbar: Option<ScrollbarLayout>,
@@ -246,6 +262,96 @@ pub(super) struct PrepaintState {
 
 /// hunk 色带 hitbox：命中区域 + 点击目标范围 + 类型 + 展开态标志。
 type HunkHitbox = (gpui::Hitbox, Range<usize>, DiffHunkKind, bool);
+
+/// 构建 crease 折叠开关：Glyph 组件（chevron 图标 + tooltip + 点击），按 gutter 绝对坐标 as_root 独立布局（对齐 Zed 的 prepaint_crease_toggles）。
+fn build_crease_toggles(
+    layout: &EditorLayout,
+    editor: &Entity<Editor>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<Option<AnyElement>> {
+    let mut toggles = Vec::new();
+    let Some(gutter) = &layout.gutter else {
+        return toggles;
+    };
+    let available_space = size(
+        AvailableSpace::MinContent,
+        AvailableSpace::Definite(layout.line_height * 0.55),
+    );
+    for row in &gutter.rows {
+        let Some(folded) = row.crease else {
+            toggles.push(None);
+            continue;
+        };
+        let path = if folded {
+            "icons/chevron_right.svg"
+        } else {
+            "icons/chevron_down.svg"
+        };
+        let line = row.logical_line;
+        let editor = editor.clone();
+        let mut toggle = Glyph::icon(("gutter_crease", line.get()), path)
+            .label(if folded { "展开" } else { "折叠" })
+            .shortcut(&ToggleFold, cx)
+            .on_click(move |_event, _window, cx| {
+                editor.update(cx, |editor, cx| editor.toggle_fold_at_line(line, cx));
+            })
+            .into_any_element();
+        let toggle_size = toggle.layout_as_root(available_space, window, cx);
+        let crease_left = gutter.bounds.right() - gutter.crease_width;
+        let origin = point(
+            crease_left + (gutter.crease_width - toggle_size.width) / 2.0,
+            row.origin.y + (layout.line_height - toggle_size.height) / 2.0,
+        );
+        toggle.prepaint_as_root(origin, available_space, window, cx);
+        toggles.push(Some(toggle));
+    }
+    toggles
+}
+
+/// 滚动轴布局：thumb 几何 + diff marker（折叠的删除块行内无标记，滚动条 marker 仍指示删除位置）。
+fn layout_scrollbar(
+    mode: &EditorMode,
+    scrollbar_bounds: Bounds<Pixels>,
+    hunk_render: &HunkRendering,
+    line_height: Pixels,
+    editor: &Entity<Editor>,
+    cx: &App,
+    window: &mut Window,
+) -> Option<ScrollbarLayout> {
+    (*mode == EditorMode::Full).then(|| {
+        let editor = editor.read(cx);
+        let mut scrollbar_layout = ScrollbarLayout::new(
+            scrollbar_bounds,
+            editor.max_scroll_top(),
+            editor.scroll_top(),
+            editor.scrollbar_thumb_state(),
+            window,
+        );
+        // marker 每帧计算（hunks 数量级小；滚动中实时跟随，无需缓存/后台任务）。
+        // scroll_per_pixel 取 layout 自身算好的值，与 thumb 换算严格一致。
+        let folded_deleted_markers: Vec<(Range<usize>, DiffHunkKind)> = hunk_render
+            .hit_regions
+            .iter()
+            .filter(|(_, old_range, kind)| {
+                *kind == DiffHunkKind::Deleted
+                    && !editor.expanded_deleted_hunks().contains(old_range)
+            })
+            .map(|(rows, _, _)| (rows.clone(), DiffHunkKind::Deleted))
+            .collect();
+        scrollbar_layout.markers = marker_geometry(
+            hunk_render
+                .diff_rows
+                .iter()
+                .cloned()
+                .chain(folded_deleted_markers),
+            scrollbar_layout.hitbox.bounds,
+            scrollbar_layout.scroll_per_pixel,
+            line_height,
+        );
+        scrollbar_layout
+    })
+}
 
 impl IntoElement for EditorElement {
     type Element = Self;
@@ -306,7 +412,6 @@ impl Element for EditorElement {
             soft_wrap,
             mode,
             preferred_line_length,
-            matching_bracket_pair,
         ) = {
             let editor = self.editor.read(cx);
             (
@@ -317,12 +422,15 @@ impl Element for EditorElement {
                 editor.shows_gutter(),
                 editor.active_lines().into_iter().collect::<BTreeSet<_>>(),
                 editor.soft_wrap(),
-                editor.mode(),
+                editor.mode().clone(),
                 editor.preferred_line_length(),
-                editor.matching_bracket_pair(),
             )
         };
-        let mode = mode.clone();
+        // 匹配括号按 (光标, buffer 版本, 语法版本) 缓存，滚动/纯重绘帧不重跑 tree-sitter 查询。
+        // 在 read 块之后执行：缓存写入需要可变借用，read 块内的引用类型已在块内克隆。
+        let matching_bracket_pair = self
+            .editor
+            .update(cx, |editor, _| editor.matching_bracket_pair());
         let gutter_dimensions = shows_gutter.then(|| gutter_dimensions(&display_snapshot, window));
         let gutter_bounds = gutter_dimensions.map(|dimensions| Bounds {
             origin: bounds.origin,
@@ -406,6 +514,9 @@ impl Element for EditorElement {
         };
         self.editor.update(cx, |editor, _| {
             editor.prepare_scroll_viewport(text_bounds.size, content_width, line_height);
+            // 垂直自动滚动在布局前应用：光标行进出视口的锚点修正只依赖行与视口几何，
+            // 提前消费后首遍布局即为最终布局，光标移动帧不再整帧重排。
+            editor.apply_pending_autoscroll_vertical();
         });
         let (start_row, scroll_offset) = {
             let editor = self.editor.read(cx);
@@ -433,16 +544,18 @@ impl Element for EditorElement {
                 })
                 .collect()
         };
-        // git diff 显示行区间：gutter 指示、内容背景与滚动轴 marker 共用（只依赖 snapshot 与注入 hunks，与滚动位置无关，autoscroll 重排可复用）。
-        let diff_rows = {
+        // git diff 渲染数据：行标记、竖条与点击区域单遍计算共用（只依赖 snapshot 与注入 hunks，
+        // 与滚动位置无关，autoscroll 重排可复用）。
+        let hunk_render = {
             let editor = self.editor.read(cx);
-            diff_hunk_rows(
+            hunk_rendering(
                 &display_snapshot,
                 editor.diff_hunks(cx),
                 editor.expanded_deleted_hunks(),
                 editor.expanded_modified_hunks(),
             )
         };
+        let diff_rows = &hunk_render.diff_rows;
         // placeholder 模式：空 buffer 时行数据源替换为 placeholder 快照（折行/行高一致）。
         let placeholder = self.editor.read(cx).placeholder_snapshot_if_empty(cx);
         let mut layout = layout_visible_lines(
@@ -456,37 +569,27 @@ impl Element for EditorElement {
                 start_row,
                 scroll_offset,
                 line_height,
-                diff_rows: &diff_rows,
+                diff_rows,
             },
             window,
             cx,
         );
         let mut ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);
-        let autoscrolled = self.editor.update(cx, |editor, _| {
-            editor.complete_autoscroll(
+        // 水平自动滚动：光标 x 进出视口时只平移本帧布局（水平滚动是均匀平移），不再整帧重排。
+        let scrolled_horizontal = self.editor.update(cx, |editor, _| {
+            let scroll_offset = editor.scroll_offset();
+            editor.complete_autoscroll_horizontal(
                 ime_caret_bounds.map(|caret| caret.left() - text_bounds.left() + scroll_offset.x),
                 ime_caret_bounds.map(|caret| caret.right() - text_bounds.left() + scroll_offset.x),
             )
         });
-        if autoscrolled {
-            let editor = self.editor.read(cx);
-            layout = layout_visible_lines(
-                display_snapshot,
-                placeholder,
-                presentation,
-                VisibleLineLayoutParams {
-                    geometry,
-                    active_lines: &active_lines,
-                    foldable_lines: &foldable_lines,
-                    start_row: editor.scroll_anchor().row(),
-                    scroll_offset: editor.scroll_offset(),
-                    line_height,
-                    diff_rows: &diff_rows,
-                },
-                window,
-                cx,
-            );
-            ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);
+        if scrolled_horizontal {
+            let new_scroll_offset = self.editor.read(cx).scroll_offset();
+            // 内容原点 = text_left - scroll_offset.x：滚动增大时内容向左平移。
+            let delta = point(scroll_offset.x - new_scroll_offset.x, Pixels::ZERO);
+            layout.translate(delta);
+            ime_caret_bounds =
+                ime_caret_bounds.map(|bounds| Bounds::new(bounds.origin + delta, bounds.size));
         }
         let layout = Arc::new(layout);
         let (mut selections, carets) = layout_selections(&selections, &layout, line_height, cx);
@@ -498,27 +601,14 @@ impl Element for EditorElement {
             .as_ref()
             .map(|gutter| window.insert_hitbox(gutter.bounds, HitboxBehavior::Normal));
         // hunk 竖条范围与状态色（竖条不随展开变化；行背景按行状态另行绘制）。
-        let hunk_strips = Arc::new({
-            let editor = self.editor.read(cx);
-            hunk_strip_rows(
-                &layout.display_snapshot,
-                editor.diff_hunks(cx),
-                editor.expanded_deleted_hunks(),
-                editor.expanded_modified_hunks(),
-            )
-        });
+        let hunk_strips = Arc::new(hunk_render.strips.clone());
         // hunk 色带 hitbox：点击切换折叠/展开（对齐 Zed：hitbox 挂在色带区域，BlockMouse 不穿透）。
         let deleted_hunk_hitboxes = Arc::new({
             let editor = self.editor.read(cx);
             let mut hitboxes = Vec::new();
             if let Some(gutter) = &layout.gutter {
                 let strip_width = gutter_strip_width(line_height);
-                for (rows, old_range, kind) in hunk_hit_regions(
-                    &layout.display_snapshot,
-                    editor.diff_hunks(cx),
-                    editor.expanded_deleted_hunks(),
-                    editor.expanded_modified_hunks(),
-                ) {
+                for (rows, old_range, kind) in &hunk_render.hit_regions {
                     // 色带起点行可见才可点击（滚动后起点进入视口自然恢复）。
                     let Some(start_line) = layout
                         .lines
@@ -530,10 +620,10 @@ impl Element for EditorElement {
                     // 折叠的删除块是红色三角标记；其余是普通色带区域。
                     let expanded = match kind {
                         DiffHunkKind::Deleted => {
-                            editor.expanded_deleted_hunks().contains(&old_range)
+                            editor.expanded_deleted_hunks().contains(old_range)
                         }
                         DiffHunkKind::Modified => {
-                            editor.expanded_modified_hunks().contains(&old_range)
+                            editor.expanded_modified_hunks().contains(old_range)
                         }
                         DiffHunkKind::Added => false,
                     };
@@ -550,8 +640,8 @@ impl Element for EditorElement {
                             ),
                             HitboxBehavior::BlockMouse,
                         ),
-                        old_range,
-                        kind,
+                        old_range.clone(),
+                        *kind,
                         expanded,
                     ));
                 }
@@ -559,15 +649,17 @@ impl Element for EditorElement {
             hitboxes
         });
         // 折叠省略号点击 hitbox：anchor 行行尾的省略号区域（点击展开；交互型直接调 Entity 方法）。
-        let ellipsis_hitboxes = Arc::new({
+        // 后缀在此一次 shape 并存入 PrepaintState，paint 直接查表绘制（颜色用占位符色，与绘制一致）。
+        let (ellipsis_hitboxes, ellipsis_suffixes) = {
             let mut hitboxes = Vec::new();
+            let mut suffixes = BTreeMap::new();
             if !fold_anchor_end_chars.is_empty() {
                 let text_style = window.text_style();
                 let font_size = text_style.font_size.to_pixels(window.rem_size());
                 let run = TextRun {
                     len: 0,
                     font: text_style.font(),
-                    color: text_style.color,
+                    color: color::current(cx).text_placeholder.into(),
                     background_color: None,
                     underline: None,
                     strikethrough: None,
@@ -587,6 +679,7 @@ impl Element for EditorElement {
                     let Some(end_char) = fold_anchor_end_chars.get(&logical_line) else {
                         continue;
                     };
+                    // 块折叠在省略号后补闭合符（如 `}`），呈现 `{...}`；注释组等只有省略号。
                     let suffix = match end_char {
                         Some(end_char) => format!("…{end_char}"),
                         None => "…".to_owned(),
@@ -595,16 +688,18 @@ impl Element for EditorElement {
                         len: suffix.len(),
                         ..run.clone()
                     };
-                    let suffix_width = window
-                        .text_system()
-                        .shape_line(suffix.into(), font_size, &[suffix_run], None)
-                        .width;
+                    let shaped = window.text_system().shape_line(
+                        suffix.into(),
+                        font_size,
+                        &[suffix_run],
+                        None,
+                    );
                     hitboxes.push((
                         window.insert_hitbox(
                             Bounds::from_corners(
                                 point(line.origin.x + line.shaped.width, line.origin.y),
                                 point(
-                                    line.origin.x + line.shaped.width + suffix_width,
+                                    line.origin.x + line.shaped.width + shaped.width,
                                     line.origin.y + line_height,
                                 ),
                             ),
@@ -612,73 +707,21 @@ impl Element for EditorElement {
                         ),
                         logical_line,
                     ));
+                    suffixes.insert(logical_line, shaped);
                 }
             }
-            hitboxes
-        });
-        // crease 点击 hitbox：可折叠行的 gutter 左侧指示区（对齐 Zed：交互型点击直接调 Entity 方法）。
-        let crease_hitboxes = Arc::new({
-            let mut hitboxes = Vec::new();
-            if let (Some(gutter), Some((gutter_bounds, dimensions))) =
-                (&layout.gutter, geometry.gutter)
-            {
-                for row in &gutter.rows {
-                    if row.crease.is_none() {
-                        continue;
-                    }
-                    hitboxes.push((
-                        window.insert_hitbox(
-                            Bounds::from_corners(
-                                point(
-                                    gutter_bounds.right() - dimensions.crease_width,
-                                    row.origin.y,
-                                ),
-                                point(gutter_bounds.right(), row.origin.y + line_height),
-                            ),
-                            HitboxBehavior::BlockMouse,
-                        ),
-                        row.logical_line,
-                    ));
-                }
-            }
-            hitboxes
-        });
-        let scrollbar = (mode == EditorMode::Full).then(|| {
-            let editor = self.editor.read(cx);
-            let mut scrollbar_layout = ScrollbarLayout::new(
-                scrollbar_bounds,
-                editor.max_scroll_top(),
-                editor.scroll_top(),
-                editor.scrollbar_thumb_state(),
-                window,
-            );
-            // marker 每帧计算（hunks 数量级小；滚动中实时跟随，无需缓存/后台任务）。
-            // scroll_per_pixel 取 layout 自身算好的值，与 thumb 换算严格一致。
-            // 折叠的删除块行内无标记，滚动条 marker 仍指示删除位置。
-            let folded_deleted_markers: Vec<(Range<usize>, DiffHunkKind)> = {
-                let editor = self.editor.read(cx);
-                hunk_hit_regions(
-                    &layout.display_snapshot,
-                    editor.diff_hunks(cx),
-                    editor.expanded_deleted_hunks(),
-                    editor.expanded_modified_hunks(),
-                )
-                .iter()
-                .filter(|(_, old_range, kind)| {
-                    *kind == DiffHunkKind::Deleted
-                        && !editor.expanded_deleted_hunks().contains(old_range)
-                })
-                .map(|(rows, _, _)| (rows.clone(), DiffHunkKind::Deleted))
-                .collect()
-            };
-            scrollbar_layout.markers = marker_geometry(
-                diff_rows.iter().cloned().chain(folded_deleted_markers),
-                scrollbar_layout.hitbox.bounds,
-                scrollbar_layout.scroll_per_pixel,
-                line_height,
-            );
-            scrollbar_layout
-        });
+            (Arc::new(hitboxes), Arc::new(suffixes))
+        };
+        let crease_toggles = build_crease_toggles(&layout, &self.editor, window, cx);
+        let scrollbar = layout_scrollbar(
+            &mode,
+            scrollbar_bounds,
+            &hunk_render,
+            line_height,
+            &self.editor,
+            cx,
+            window,
+        );
 
         PrepaintState {
             layout,
@@ -688,9 +731,9 @@ impl Element for EditorElement {
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
             gutter_hitbox,
             deleted_hunk_hitboxes,
-            crease_hitboxes,
+            crease_toggles,
             ellipsis_hitboxes,
-            fold_anchor_end_chars,
+            ellipsis_suffixes,
             hunk_strips,
             scrollbar,
         }
@@ -716,7 +759,6 @@ impl Element for EditorElement {
         let event_layout = Arc::clone(&prepaint.layout);
         let hitbox = prepaint.hitbox.clone();
         let deleted_hunk_hitboxes = prepaint.deleted_hunk_hitboxes.clone();
-        let crease_hitboxes = prepaint.crease_hitboxes.clone();
         let ellipsis_hitboxes = prepaint.ellipsis_hitboxes.clone();
         let mouse_focus = focus.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
@@ -745,11 +787,10 @@ impl Element for EditorElement {
                 cx.stop_propagation();
                 return;
             }
-            // 折叠省略号 / crease 点击：切换该行折叠/展开（交互型，直接调 Entity 方法；
-            // 省略号更具体，先命中；两者都先于 gutter 行号选行）。
+            // 折叠省略号点击：展开该行（交互型，直接调 Entity 方法；先于 gutter 行号选行）。
+            // crease 箭头点击由 Glyph 组件自带的 on_click 处理。
             if let Some((_, line)) = ellipsis_hitboxes
                 .iter()
-                .chain(crease_hitboxes.iter())
                 .find(|(hitbox, _)| hitbox.is_hovered(window))
             {
                 editor.update(cx, |editor, cx| editor.toggle_fold_at_line(*line, cx));
@@ -825,12 +866,8 @@ impl Element for EditorElement {
                     window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
                 }
             }
-            // 折叠省略号与折叠箭头可点击：hover 时手型光标。
-            for (hitbox, _) in prepaint
-                .ellipsis_hitboxes
-                .iter()
-                .chain(prepaint.crease_hitboxes.iter())
-            {
+            // 折叠省略号可点击：hover 时手型光标（crease 箭头由 Glyph 自带 cursor_pointer）。
+            for (hitbox, _) in prepaint.ellipsis_hitboxes.iter() {
                 if hitbox.is_hovered(window) {
                     window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
                 }
@@ -899,42 +936,13 @@ impl Element for EditorElement {
                     }
                 }
             }
-            // crease 箭头：未折叠显示向下箭头（点击折叠），已折叠显示向右箭头（点击展开）。
-            // 用 SVG 资源而非 unicode 字形：多字节字符在 TextRun 的字节索引语义下会越界。
-            let crease_size = (gutter.line_height * 0.75).min(gutter.crease_width);
-            let crease_icon_color = colors.icon;
-            for row in &gutter.rows {
-                let Some(folded) = row.crease else {
-                    continue;
-                };
-                let path: SharedString = if folded {
-                    "icons/editor/chevron_right.svg".into()
-                } else {
-                    "icons/editor/chevron_down.svg".into()
-                };
-                let crease_left = gutter.bounds.right() - gutter.crease_width;
-                let bounds = Bounds::from_corners(
-                    point(
-                        crease_left + (gutter.crease_width - crease_size) / 2.0,
-                        row.origin.y + (gutter.line_height - crease_size) / 2.0,
-                    ),
-                    point(
-                        crease_left + (gutter.crease_width + crease_size) / 2.0,
-                        row.origin.y + (gutter.line_height + crease_size) / 2.0,
-                    ),
-                );
-                if let Err(error) = window.paint_svg(
-                    bounds,
-                    path,
-                    TransformationMatrix::default(),
-                    crease_icon_color.into(),
-                    cx,
-                ) {
-                    // 单个图标绘制失败只跳过该行，不能让整个窗口崩溃（对齐 Zed 的降级策略）。
-                    log::error!("Editor crease 绘制失败：{error}");
-                    continue;
+            // crease 折叠开关：Glyph 组件（chevron 图标 + tooltip + 点击），
+            // prepaint 已按 gutter 绝对坐标布局，这里在 gutter 区域内绘制。
+            window.paint_layer(gutter.bounds, |window| {
+                for toggle in prepaint.crease_toggles.iter_mut().flatten() {
+                    toggle.paint(window, cx);
                 }
-            }
+            });
             for row in &gutter.rows {
                 if let Err(error) =
                     row.shaped_line_number
@@ -987,18 +995,7 @@ impl Element for EditorElement {
                     }
                 }
                 // 折叠省略号：绘制在折叠入口行的最后显示行行尾（对齐 Zed 行内占位样式）。
-                // 不进入文本流，命中测试与光标定位不受影响。
-                let text_style = window.text_style();
-                let ellipsis_font_size = text_style.font_size.to_pixels(window.rem_size());
-                let ellipsis_run = TextRun {
-                    len: 0,
-                    font: text_style.font(),
-                    color: color::current(cx).text_placeholder.into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let fold_anchor_end_chars = &prepaint.fold_anchor_end_chars;
+                // 不进入文本流，命中测试与光标定位不受影响；后缀由 prepaint 预 shape，这里直接查表绘制。
                 for (index, line) in prepaint.layout.lines.iter().enumerate() {
                     let Some(logical_line) = line.logical_line else {
                         continue;
@@ -1012,22 +1009,9 @@ impl Element for EditorElement {
                     if !is_last_fragment {
                         continue;
                     }
-                    // 块折叠在省略号后补闭合符（如 `}`），呈现 `{...}`；注释组等只有省略号。
-                    let suffix = match fold_anchor_end_chars.get(&logical_line) {
-                        Some(Some(end_char)) => format!("…{end_char}"),
-                        Some(None) => "…".to_owned(),
-                        None => continue,
+                    let Some(shaped) = prepaint.ellipsis_suffixes.get(&logical_line) else {
+                        continue;
                     };
-                    let suffix_run = TextRun {
-                        len: suffix.len(),
-                        ..ellipsis_run.clone()
-                    };
-                    let shaped = window.text_system().shape_line(
-                        suffix.into(),
-                        ellipsis_font_size,
-                        &[suffix_run],
-                        None,
-                    );
                     let origin = point(line.origin.x + line.shaped.width, line.origin.y);
                     if let Err(error) =
                         shaped.paint(origin, prepaint.layout.line_height, window, cx)
@@ -1082,7 +1066,7 @@ impl Element for EditorElement {
                 }
             }
         }
-        let input_layout = prepaint.layout.input_layout();
+        let input_layout = EditorInputLayout::from_layout(&prepaint.layout);
         self.editor.update(cx, |editor, _| {
             editor.set_input_layout(input_layout);
             editor.set_ime_caret_geometry(bounds, prepaint.ime_caret_bounds);
@@ -1191,58 +1175,91 @@ impl EditorElement {
     }
 }
 
-/// hunks（逻辑行）→ 行级标记的显示行区间：wrap 下行映射出的全部显示行都覆盖。
+/// hunks 的单遍渲染数据：行标记 / 竖条 / 点击区域共用同一份行区间计算。
+struct HunkRendering {
+    diff_rows: Vec<(Range<usize>, DiffHunkKind)>,
+    strips: Vec<(Range<usize>, DiffHunkKind)>,
+    hit_regions: Vec<(Range<usize>, Range<usize>, DiffHunkKind)>,
+}
+
+/// hunks（逻辑行）→ 行级渲染数据，单遍遍历产出三份视图：
+///
+/// - `diff_rows`：行标记（gutter 指示与内容背景，wrap 下行映射出的全部显示行都覆盖）
+/// - `strips`：竖条范围与状态色（竖条颜色不随展开变化）
+/// - `hit_regions`：可点击色带区域（显示行范围 + 点击目标 old_range + 类型）
 ///
 /// 覆盖终点取 hunk 之后第一行的行首显示行（对齐 Zed：end 行首显示行 − 1 即 hunk 最后一个显示行，左闭右开区间 [start, end) 恰好盖住全部 wrap 片段）；
 /// hunk 到达文件末尾时以显示快照行数为终点。
-/// 纯删除 hunk（空范围）：折叠时行内不做标记（gutter 红色三角提示）；
-/// 展开后标记移到被删除的合成行上（锚定行之后的显示行），幸存的锚定行不被标记。
+/// 纯删除 hunk（空范围）：折叠时行内不做标记（gutter 红色三角提示），展开后标记移到被删除的合成行上；
 /// 修改 hunk 展开后：旧行（合成行）按删除色、修改行按新增色（对齐 Zed：base 旧行红、新行绿）。
 /// 映射失败（越界等）跳过该 hunk。
-fn diff_hunk_rows(
+fn hunk_rendering(
     snapshot: &DisplaySnapshot,
     hunks: &[DiffHunk],
     expanded_deleted: &[Range<usize>],
     expanded_modified: &[Range<usize>],
-) -> Vec<(Range<usize>, DiffHunkKind)> {
-    let mut rows = Vec::new();
+) -> HunkRendering {
+    let mut diff_rows = Vec::new();
+    let mut strips = Vec::new();
+    let mut hit_regions = Vec::new();
     for hunk in hunks {
-        if hunk.kind == DiffHunkKind::Added {
-            let Some(start) = snapshot.line_to_display_row(Line::new(hunk.range.start)) else {
-                continue;
-            };
-            let start = start.get();
-            let end = match snapshot.line_to_display_row(Line::new(hunk.range.end)) {
-                Some(row) => row.get(),
-                None => snapshot.line_count(),
-            };
-            rows.push((start..end.max(start + 1), DiffHunkKind::Added));
-            continue;
-        }
-        if hunk.kind == DiffHunkKind::Modified {
-            let expanded = expanded_modified.contains(&hunk.old_range);
-            if expanded {
-                // 展开：旧行（合成行，删除色）+ 修改行（新增色）。
-                if let Some(old_rows) = modified_hunk_rows(snapshot, hunk, true) {
-                    rows.push((old_rows, DiffHunkKind::Deleted));
-                }
-                if let Some(new_rows) = modified_hunk_rows(snapshot, hunk, false) {
-                    rows.push((new_rows, DiffHunkKind::Added));
-                }
-            } else if let Some(hunk_rows) = modified_hunk_rows(snapshot, hunk, false) {
-                rows.push((hunk_rows, DiffHunkKind::Modified));
+        match hunk.kind {
+            DiffHunkKind::Added => {
+                let Some(start) = snapshot.line_to_display_row(Line::new(hunk.range.start)) else {
+                    continue;
+                };
+                let start = start.get();
+                let end = match snapshot.line_to_display_row(Line::new(hunk.range.end)) {
+                    Some(row) => row.get(),
+                    None => snapshot.line_count(),
+                };
+                let rows = start..end.max(start + 1);
+                diff_rows.push((rows.clone(), DiffHunkKind::Added));
+                strips.push((rows, DiffHunkKind::Added));
             }
-            continue;
-        }
-        let expanded = expanded_deleted.contains(&hunk.old_range);
-        if !expanded {
-            continue;
-        }
-        if let Some(deleted_rows) = deleted_hunk_rows(snapshot, hunk, true) {
-            rows.push((deleted_rows, DiffHunkKind::Deleted));
+            DiffHunkKind::Modified => {
+                let expanded = expanded_modified.contains(&hunk.old_range);
+                if expanded {
+                    // 展开：旧行（合成行，删除色）+ 修改行（新增色）。
+                    let old_rows = modified_hunk_rows(snapshot, hunk, true);
+                    let new_rows = modified_hunk_rows(snapshot, hunk, false);
+                    if let Some(old_rows) = &old_rows {
+                        diff_rows.push((old_rows.clone(), DiffHunkKind::Deleted));
+                    }
+                    if let Some(new_rows) = &new_rows {
+                        diff_rows.push((new_rows.clone(), DiffHunkKind::Added));
+                    }
+                    if let (Some(old_rows), Some(new_rows)) = (&old_rows, &new_rows) {
+                        // 竖条与点击区域覆盖整个 hunk（旧行 + 修改行）。
+                        let rows = old_rows.start..new_rows.end;
+                        strips.push((rows.clone(), DiffHunkKind::Modified));
+                        hit_regions.push((rows, hunk.old_range.clone(), DiffHunkKind::Modified));
+                    }
+                } else if let Some(hunk_rows) = modified_hunk_rows(snapshot, hunk, false) {
+                    diff_rows.push((hunk_rows.clone(), DiffHunkKind::Modified));
+                    strips.push((hunk_rows.clone(), DiffHunkKind::Modified));
+                    hit_regions.push((hunk_rows, hunk.old_range.clone(), DiffHunkKind::Modified));
+                }
+            }
+            DiffHunkKind::Deleted => {
+                let expanded = expanded_deleted.contains(&hunk.old_range);
+                // 折叠态点击区域锚定在删除点行（gutter 三角提示）；展开态覆盖合成行。
+                let rows = deleted_hunk_rows(snapshot, hunk, expanded);
+                if expanded && let Some(rows) = &rows {
+                    diff_rows.push((rows.clone(), DiffHunkKind::Deleted));
+                    strips.push((rows.clone(), DiffHunkKind::Deleted));
+                }
+                if let Some(rows) = rows {
+                    hit_regions.push((rows, hunk.old_range.clone(), DiffHunkKind::Deleted));
+                }
+            }
         }
     }
-    rows
+    HunkRendering {
+        diff_rows,
+        strips,
+        hit_regions,
+    }
 }
 
 /// 纯删除 hunk 的显示行范围：未展开 = 锚定行（删除点所在显示行，色带顶部指向分界线）；
@@ -1311,93 +1328,6 @@ fn modified_hunk_rows(
         start -= 1;
     }
     (start < anchor).then_some(start..anchor)
-}
-
-/// hunk 竖条范围与状态色。
-///
-/// 竖条颜色不随展开变化（对齐 Zed：色带始终用 hunk 状态着色）；展开的修改块竖条覆盖
-/// 整个 hunk（旧行 + 修改行）；折叠的删除块无竖条（gutter 红色三角标记）。
-fn hunk_strip_rows(
-    snapshot: &DisplaySnapshot,
-    hunks: &[DiffHunk],
-    expanded_deleted: &[Range<usize>],
-    expanded_modified: &[Range<usize>],
-) -> Vec<(Range<usize>, DiffHunkKind)> {
-    let mut rows = Vec::new();
-    for hunk in hunks {
-        match hunk.kind {
-            DiffHunkKind::Added => {
-                let Some(start) = snapshot.line_to_display_row(Line::new(hunk.range.start)) else {
-                    continue;
-                };
-                let start = start.get();
-                let end = match snapshot.line_to_display_row(Line::new(hunk.range.end)) {
-                    Some(row) => row.get(),
-                    None => snapshot.line_count(),
-                };
-                rows.push((start..end.max(start + 1), DiffHunkKind::Added));
-            }
-            DiffHunkKind::Modified => {
-                let expanded = expanded_modified.contains(&hunk.old_range);
-                if expanded {
-                    // 覆盖整个 hunk：旧行合成行到修改行结束。
-                    let Some(old_rows) = modified_hunk_rows(snapshot, hunk, true) else {
-                        continue;
-                    };
-                    let Some(new_rows) = modified_hunk_rows(snapshot, hunk, false) else {
-                        continue;
-                    };
-                    rows.push((old_rows.start..new_rows.end, DiffHunkKind::Modified));
-                } else if let Some(hunk_rows) = modified_hunk_rows(snapshot, hunk, false) {
-                    rows.push((hunk_rows, DiffHunkKind::Modified));
-                }
-            }
-            DiffHunkKind::Deleted => {
-                if expanded_deleted.contains(&hunk.old_range)
-                    && let Some(deleted_rows) = deleted_hunk_rows(snapshot, hunk, true)
-                {
-                    rows.push((deleted_rows, DiffHunkKind::Deleted));
-                }
-            }
-        }
-    }
-    rows
-}
-
-/// 可点击的 hunk 色带区域（显示行范围 + 点击目标范围 + 类型）。
-///
-/// Deleted：折叠态在锚定行、展开态覆盖合成行；Modified：未展开覆盖修改行、展开覆盖旧行合成行；
-/// Added 不参与点击（保持原状）。
-fn hunk_hit_regions(
-    snapshot: &DisplaySnapshot,
-    hunks: &[DiffHunk],
-    expanded_deleted: &[Range<usize>],
-    expanded_modified: &[Range<usize>],
-) -> Vec<(Range<usize>, Range<usize>, DiffHunkKind)> {
-    hunks
-        .iter()
-        .filter_map(|hunk| {
-            let rows = match hunk.kind {
-                DiffHunkKind::Deleted => {
-                    let expanded = expanded_deleted.contains(&hunk.old_range);
-                    deleted_hunk_rows(snapshot, hunk, expanded)?
-                }
-                DiffHunkKind::Modified => {
-                    let expanded = expanded_modified.contains(&hunk.old_range);
-                    if expanded {
-                        // 覆盖整个 hunk（旧行 + 修改行，与竖条范围一致）。
-                        let old_rows = modified_hunk_rows(snapshot, hunk, true)?;
-                        let new_rows = modified_hunk_rows(snapshot, hunk, false)?;
-                        old_rows.start..new_rows.end
-                    } else {
-                        modified_hunk_rows(snapshot, hunk, false)?
-                    }
-                }
-                DiffHunkKind::Added => return None,
-            };
-            Some((rows, hunk.old_range.clone(), hunk.kind))
-        })
-        .collect()
 }
 
 /// 查询显示行所属的 diff 类型（gutter 与内容背景共用；线性扫描，hunks 数量级小）。
@@ -1639,7 +1569,7 @@ fn layout_visible_lines(
                     // 合成行是外部文本：无语法高亮、不可编辑/不可选（spans/marked 是锚定行的 buffer 坐标，套用到合成行文本会产生非字符边界切片）。
                     let line_styles = match source {
                         StreamLineSource::Buffer(_) => LineStyles {
-                            spans: visible_highlights,
+                            spans: &visible_highlights,
                             styles: highlight_styles,
                             marked: presentation.marked_ranges(),
                         },
@@ -1720,7 +1650,10 @@ fn layout_visible_lines(
     }
 }
 
-fn gutter_dimensions(display_snapshot: &DisplaySnapshot, window: &mut Window) -> GutterDimensions {
+pub(crate) fn gutter_dimensions(
+    display_snapshot: &DisplaySnapshot,
+    window: &mut Window,
+) -> GutterDimensions {
     let text_style = window.text_style();
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let digits = "0000000000";
@@ -1943,6 +1876,37 @@ mod tests {
     use crate::display_map::DisplayMap;
     use gpui::{Empty, TestAppContext, font};
     use zcv_engine::{Buffer, BufferConfig, ByteOffset, Line, LineRange};
+    use zcv_language::SyntaxSnapshot;
+
+    /// 行级标记的显示行区间（`hunk_rendering` 的薄包装，测试专用）。
+    fn diff_hunk_rows(
+        snapshot: &DisplaySnapshot,
+        hunks: &[DiffHunk],
+        expanded_deleted: &[Range<usize>],
+        expanded_modified: &[Range<usize>],
+    ) -> Vec<(Range<usize>, DiffHunkKind)> {
+        hunk_rendering(snapshot, hunks, expanded_deleted, expanded_modified).diff_rows
+    }
+
+    /// hunk 竖条范围与状态色（`hunk_rendering` 的薄包装，测试专用）。
+    fn hunk_strip_rows(
+        snapshot: &DisplaySnapshot,
+        hunks: &[DiffHunk],
+        expanded_deleted: &[Range<usize>],
+        expanded_modified: &[Range<usize>],
+    ) -> Vec<(Range<usize>, DiffHunkKind)> {
+        hunk_rendering(snapshot, hunks, expanded_deleted, expanded_modified).strips
+    }
+
+    /// 可点击的 hunk 色带区域（`hunk_rendering` 的薄包装，测试专用）。
+    fn hunk_hit_regions(
+        snapshot: &DisplaySnapshot,
+        hunks: &[DiffHunk],
+        expanded_deleted: &[Range<usize>],
+        expanded_modified: &[Range<usize>],
+    ) -> Vec<(Range<usize>, Range<usize>, DiffHunkKind)> {
+        hunk_rendering(snapshot, hunks, expanded_deleted, expanded_modified).hit_regions
+    }
     use zcv_language::HighlightSpan;
     use zcv_theme::syntax;
 
@@ -2079,14 +2043,8 @@ mod tests {
                         "// 展开产生的新行在重建时现查 git 状态，无需单独补齐。",
                     )],
                 )]));
-                map.set_highlights(
-                    std::sync::Arc::from([HighlightSpan {
-                        range: 0..16,
-                        capture: 0,
-                    }]),
-                    snapshot.version(),
-                    std::sync::Arc::from([]),
-                );
+                // 懒查询模式下渲染侧不再接收注入 spans：空语法快照使高亮查询为空，合成行（外部文本）仍走 LineStyles::default() 无高亮路径。
+                map.set_syntax_snapshot(SyntaxSnapshot::empty(snapshot.version()));
                 let layout = layout_visible_lines(
                     map.snapshot(),
                     None,
@@ -2452,19 +2410,27 @@ mod tests {
             kind: DiffHunkKind::Deleted,
         };
         // 未展开：行内无标记（删除点由 gutter 红色三角提示）。
-        assert_eq!(diff_hunk_rows(&snapshot, &[hunk.clone()], &[], &[]), vec![]);
+        assert_eq!(
+            diff_hunk_rows(&snapshot, std::slice::from_ref(&hunk), &[], &[]),
+            vec![]
+        );
         // 展开：背景覆盖被删除的合成行（锚定行 1 之后，显示行 2..4）。
         assert_eq!(
-            diff_hunk_rows(&snapshot, &[hunk.clone()], &[1..3], &[]),
+            diff_hunk_rows(
+                &snapshot,
+                std::slice::from_ref(&hunk),
+                std::slice::from_ref(&(1..3)),
+                &[]
+            ),
             vec![(2..4, DiffHunkKind::Deleted)]
         );
         // 点击区域：折叠态在锚定行（分界线在锚定行底部），展开态覆盖合成行。
         assert_eq!(
-            hunk_hit_regions(&snapshot, &[hunk.clone()], &[], &[]),
+            hunk_hit_regions(&snapshot, std::slice::from_ref(&hunk), &[], &[]),
             vec![(1..2, 1..3, DiffHunkKind::Deleted)]
         );
         assert_eq!(
-            hunk_hit_regions(&snapshot, &[hunk], &[1..3], &[]),
+            hunk_hit_regions(&snapshot, &[hunk], std::slice::from_ref(&(1..3)), &[]),
             vec![(2..4, 1..3, DiffHunkKind::Deleted)]
         );
     }
@@ -2490,22 +2456,27 @@ mod tests {
         };
         // 未展开：修改行（显示行 2..3）Modified 色。
         assert_eq!(
-            diff_hunk_rows(&snapshot, &[hunk.clone()], &[], &[]),
+            diff_hunk_rows(&snapshot, std::slice::from_ref(&hunk), &[], &[]),
             vec![(2..3, DiffHunkKind::Modified)]
         );
         // 展开：旧行合成行（显示行 1..2）删除色 + 修改行（显示行 2..3）新增色。
         assert_eq!(
-            diff_hunk_rows(&snapshot, &[hunk.clone()], &[], &[1..2]),
+            diff_hunk_rows(
+                &snapshot,
+                std::slice::from_ref(&hunk),
+                &[],
+                std::slice::from_ref(&(1..2))
+            ),
             vec![(1..2, DiffHunkKind::Deleted), (2..3, DiffHunkKind::Added),]
         );
         // 点击区域：未展开 = 修改行；展开 = 旧行合成行（都在修改行附近）。
         assert_eq!(
-            hunk_hit_regions(&snapshot, &[hunk.clone()], &[], &[]),
+            hunk_hit_regions(&snapshot, std::slice::from_ref(&hunk), &[], &[]),
             vec![(2..3, 1..2, DiffHunkKind::Modified)]
         );
         // 展开的点击区域覆盖整个 hunk（旧行 + 修改行，与竖条一致）。
         assert_eq!(
-            hunk_hit_regions(&snapshot, &[hunk], &[], &[1..2]),
+            hunk_hit_regions(&snapshot, &[hunk], &[], std::slice::from_ref(&(1..2))),
             vec![(1..3, 1..2, DiffHunkKind::Modified)]
         );
     }
@@ -2531,12 +2502,12 @@ mod tests {
         };
         // 未展开：竖条覆盖修改行（显示行 2..3），黄色。
         assert_eq!(
-            hunk_strip_rows(&snapshot, &[hunk.clone()], &[], &[]),
+            hunk_strip_rows(&snapshot, std::slice::from_ref(&hunk), &[], &[]),
             vec![(2..3, DiffHunkKind::Modified)]
         );
         // 展开：竖条仍黄，覆盖旧行 + 修改行（显示行 1..3）。
         assert_eq!(
-            hunk_strip_rows(&snapshot, &[hunk], &[], &[1..2]),
+            hunk_strip_rows(&snapshot, &[hunk], &[], std::slice::from_ref(&(1..2))),
             vec![(1..3, DiffHunkKind::Modified)]
         );
     }

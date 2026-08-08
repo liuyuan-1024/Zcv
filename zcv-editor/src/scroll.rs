@@ -30,6 +30,8 @@ pub(super) struct ScrollManager {
     offset: Point<Pixels>,
     viewport: Option<ScrollViewport>,
     pending_autoscroll: Option<DisplayPoint>,
+    /// 本次自动滚动请求的水平部分待布局后钳制（垂直部分已在布局前应用）。
+    pending_horizontal_autoscroll: bool,
     thumb_state: ScrollbarThumbState,
 }
 
@@ -75,6 +77,7 @@ impl ScrollManager {
         let old_anchor = self.anchor;
         let old_offset = self.offset;
         self.pending_autoscroll = None;
+        self.pending_horizontal_autoscroll = false;
 
         self.set_scroll_left(self.offset.x - delta.x);
         self.set_scroll_top(self.scroll_top() - delta.y);
@@ -127,6 +130,7 @@ impl ScrollManager {
         let old_anchor = self.anchor;
         let old_offset = self.offset;
         self.pending_autoscroll = None;
+        self.pending_horizontal_autoscroll = false;
         self.set_scroll_top(scroll_top);
         self.anchor != old_anchor || self.offset != old_offset
     }
@@ -151,18 +155,36 @@ impl ScrollManager {
         self.update_thumb_state(ScrollbarThumbState::Idle)
     }
 
-    pub(super) fn complete_autoscroll(
+    /// 布局前调用：消费待自动滚动点并只应用垂直部分（光标行进出视口的锚点修正）。
+    ///
+    /// 垂直部分只依赖光标行与视口几何，不依赖布局；
+    /// 在布局前应用可让首遍布局即为最终布局，避免光标移动帧的第二遍全量重排。
+    pub(super) fn apply_pending_autoscroll_vertical(&mut self) -> bool {
+        let Some(point) = self.pending_autoscroll.take() else {
+            return false;
+        };
+        // 本次请求的水平部分留给布局后钳制（需要光标像素坐标）。
+        self.pending_horizontal_autoscroll = true;
+        let old_anchor = self.anchor;
+        let old_offset = self.offset;
+        self.ensure_visible(point);
+        self.anchor != old_anchor || self.offset != old_offset
+    }
+
+    /// 布局后调用：若本次有自动滚动请求则做水平钳制（光标 x 进出视口时平移），返回是否变化。
+    ///
+    /// 水平滚动只改变 offset.x，调用方对已算好的布局做平移而非重排；
+    /// 手动滚动已清除请求，不会误触发。
+    pub(super) fn complete_autoscroll_horizontal(
         &mut self,
         caret_left: Option<Pixels>,
         caret_right: Option<Pixels>,
     ) -> bool {
-        let Some(point) = self.pending_autoscroll.take() else {
+        if !self.pending_horizontal_autoscroll {
             return false;
-        };
-        let old_anchor = self.anchor;
+        }
+        self.pending_horizontal_autoscroll = false;
         let old_offset = self.offset;
-        self.ensure_visible(point);
-
         if let (Some(viewport), Some(caret_left), Some(caret_right)) =
             (self.viewport, caret_left, caret_right)
         {
@@ -174,8 +196,7 @@ impl ScrollManager {
                 self.set_scroll_left(caret_right - viewport.width);
             }
         }
-
-        self.anchor != old_anchor || self.offset != old_offset
+        self.offset != old_offset
     }
 
     fn ensure_visible(&mut self, point: DisplayPoint) {
@@ -236,6 +257,7 @@ impl Default for ScrollManager {
             offset: point(px(0.0), px(0.0)),
             viewport: None,
             pending_autoscroll: None,
+            pending_horizontal_autoscroll: false,
             thumb_state: ScrollbarThumbState::Idle,
         }
     }
@@ -334,12 +356,15 @@ mod tests {
         manager.update_viewport(1, px(100.), px(40.), px(300.), px(20.));
         manager.request_autoscroll(DisplayPoint::ZERO);
 
-        assert!(manager.complete_autoscroll(Some(px(180.)), Some(px(182.))));
+        // 垂直部分布局前应用（光标行在视口内，无变化）；水平部分布局后钳制。
+        assert!(!manager.apply_pending_autoscroll_vertical());
+        assert!(manager.complete_autoscroll_horizontal(Some(px(180.)), Some(px(182.))));
         assert_eq!(manager.offset().x, px(82.));
 
+        // 手动滚动清除自动滚动请求，水平钳制不再触发。
         manager.scroll_by(point(px(-20.), px(0.)));
         assert_eq!(manager.offset().x, px(102.));
-        assert!(!manager.complete_autoscroll(Some(px(180.)), Some(px(182.))));
+        assert!(!manager.complete_autoscroll_horizontal(Some(px(180.)), Some(px(182.))));
         assert_eq!(manager.offset().x, px(102.));
     }
 

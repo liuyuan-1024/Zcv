@@ -1,0 +1,16 @@
+[package]
+name = "zcv-picker"
+version.workspace = true
+edition.workspace = true
+description = "通用搜索-选择器"
+
+[dependencies]
+gpui.workspace = true
+zcv-editor.workspace = true
+zcv-theme.workspace = true
+
+[dev-dependencies]
+zcv-ui.workspace = true
+
+[lints]
+workspace = true

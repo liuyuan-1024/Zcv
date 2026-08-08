@@ -1,6 +1,11 @@
 //! git diff 输出解析：`git diff --unified=0` 的行级 hunks。
 
+use std::collections::HashSet;
+use std::path::PathBuf;
+
 use zcv_buffer_diff::{DiffHunk, DiffHunkKind};
+
+use crate::status::path_from_bytes;
 
 /// 解析单个文件的 `git diff --unified=0` 输出（忽略全部路径头，按 hunk header 建块）。
 ///
@@ -74,6 +79,54 @@ fn parse_range_part(token: &[u8]) -> Option<(u64, Option<u64>)> {
         return None;
     }
     Some((start, count))
+}
+
+/// 按 `diff --git` 头切分多文件 diff 输出（配合 `core.quotepath=false`），返回 路径 → hunks。
+///
+/// `requested` 是命令传入的路径集合，用于核对解析出的路径；解析不出或不在集合中的段跳过，
+/// 该文件的 hunks 缺失但整批不中断（缺失项由下次 status 刷新后的 hunks 补齐自愈）。
+pub(crate) fn parse_diff_hunks_per_path(
+    output: &[u8],
+    requested: &[PathBuf],
+) -> Vec<(PathBuf, Vec<DiffHunk>)> {
+    let mut sections: Vec<(Option<PathBuf>, Vec<DiffHunk>)> = Vec::new();
+    for line in output.split(|byte| *byte == b'\n') {
+        if let Some(rest) = line.strip_prefix(b"diff --git ") {
+            sections.push((parse_diff_git_path(rest), Vec::new()));
+            continue;
+        }
+        let Some((_, hunks)) = sections.last_mut() else {
+            continue;
+        };
+        if line.starts_with(b"@@ -") {
+            if let Some(hunk) = parse_hunk_header(line) {
+                hunks.push(hunk);
+            }
+        } else if line.starts_with(b"Binary files ") {
+            // 二进制段无可显示的行差异（对齐 parse_diff_hunks 语义）。
+            hunks.clear();
+        }
+    }
+    let requested: HashSet<&std::path::Path> = requested.iter().map(PathBuf::as_path).collect();
+    sections
+        .into_iter()
+        .filter_map(|(path, hunks)| match path {
+            Some(path) if requested.contains(path.as_path()) => Some((path, hunks)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 解析 `diff --git a/X b/Y` 头中的 b 侧路径（当前工作树路径）。
+///
+/// 含 `"` 的路径是 C 引用格式（quotepath=false 下仅控制字符路径仍会引用），无法可靠解码，返回 None。
+fn parse_diff_git_path(rest: &[u8]) -> Option<PathBuf> {
+    if rest.contains(&b'"') {
+        return None;
+    }
+    // 取最后一个 ` b/` 之后的部分（a、b 路径相同时 b 侧即最后一个路径段）。
+    let index = rest.windows(3).rposition(|window| window == b" b/")?;
+    Some(path_from_bytes(&rest[index + 3..]))
 }
 
 #[cfg(test)]
@@ -238,5 +291,135 @@ mod tests {
                 kind: Modified,
             }]
         );
+    }
+
+    #[test]
+    fn parses_multiple_files_sections_in_order() {
+        let output = "\
+diff --git a/a.rs b/a.rs
+index 111..222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -1 +1 @@
+-old
++new
+diff --git a/b.rs b/b.rs
+index 333..444 100644
+--- a/b.rs
++++ b/b.rs
+@@ -2,0 +3,2 @@
++one
++two
+";
+        let requested = vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")];
+        let parsed = parse_diff_hunks_per_path(output.as_bytes(), &requested);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].0, PathBuf::from("a.rs"));
+        assert_eq!(parsed[1].0, PathBuf::from("b.rs"));
+        assert_eq!(parsed[1].1.len(), 1);
+    }
+
+    #[test]
+    fn parses_paths_with_spaces_and_unicode() {
+        let output = "\
+diff --git a/带 空格.txt b/带 空格.txt
+index 111..222 100644
+--- a/带 空格.txt
++++ b/带 空格.txt
+@@ -1 +1 @@
+-old
++new
+";
+        let requested = vec![PathBuf::from("带 空格.txt")];
+        let parsed = parse_diff_hunks_per_path(output.as_bytes(), &requested);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0, PathBuf::from("带 空格.txt"));
+        assert_eq!(parsed[0].1.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parses_non_utf8_paths_as_bytes() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = b"src/\xff\xfe.rs";
+        let mut output = b"diff --git a/".to_vec();
+        output.extend_from_slice(path);
+        output.extend_from_slice(b" b/");
+        output.extend_from_slice(path);
+        output.extend_from_slice(b"\n@@ -1 +1 @@\n-old\n+new\n");
+        let requested = vec![PathBuf::from(OsStr::from_bytes(path))];
+        let parsed = parse_diff_hunks_per_path(&output, &requested);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0, PathBuf::from(OsStr::from_bytes(path)));
+    }
+
+    #[test]
+    fn renamed_section_uses_b_side_path() {
+        // 重命名段的 a/b 路径不同：归属取 b 侧（当前工作树路径）。
+        let output = "\
+diff --git a/old.rs b/new.rs
+similarity index 90%
+rename from old.rs
+rename to new.rs
+index 111..222 100644
+--- a/old.rs
++++ b/new.rs
+@@ -1 +1 @@
+-old
++new
+";
+        let requested = vec![PathBuf::from("new.rs")];
+        let parsed = parse_diff_hunks_per_path(output.as_bytes(), &requested);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0, PathBuf::from("new.rs"));
+        assert_eq!(parsed[0].1.len(), 1);
+    }
+
+    #[test]
+    fn binary_section_produces_no_hunks() {
+        let output = "\
+diff --git a/img.png b/img.png
+index 111..222 100644
+Binary files a/img.png and b/img.png differ
+";
+        let requested = vec![PathBuf::from("img.png")];
+        let parsed = parse_diff_hunks_per_path(output.as_bytes(), &requested);
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].1.is_empty());
+    }
+
+    #[test]
+    fn quoted_path_section_is_skipped() {
+        // 控制字符路径即使 quotepath=false 也总是 C 引用，无法可靠解码 → 跳过该段。
+        let output = "\
+diff --git \"a/\\t\\303\\251.txt\" \"b/\\t\\303\\251.txt\"
+index 111..222 100644
+--- \"a/\\t\\303\\251.txt\"
++++ \"b/\\t\\303\\251.txt\"
+@@ -1 +1 @@
+-old
++new
+";
+        let requested = vec![PathBuf::from("x.txt")];
+        let parsed = parse_diff_hunks_per_path(output.as_bytes(), &requested);
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn section_not_in_requested_set_is_skipped() {
+        let output = "\
+diff --git a/other.rs b/other.rs
+index 111..222 100644
+--- a/other.rs
++++ b/other.rs
+@@ -1 +1 @@
+-old
++new
+";
+        let requested = vec![PathBuf::from("a.rs")];
+        let parsed = parse_diff_hunks_per_path(output.as_bytes(), &requested);
+        assert!(parsed.is_empty());
     }
 }

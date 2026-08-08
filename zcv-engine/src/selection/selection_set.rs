@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use crate::{ByteOffset, PositionMap, TextRange};
+use crate::{ByteOffset, PositionMap, TextRange, position_map::Affinity};
 
 use super::Selection;
 
@@ -105,19 +105,39 @@ impl SelectionSet {
     }
 
     pub fn map_through_position_map(&self, position_map: &PositionMap) -> Self {
+        // 批量映射：收集全部 anchor/head 点排序后单遍推进，替代逐 selection 各自线性扫描，映射成本从 O(A×E) 降为 O(A log A + E)。
+        let selection_count = self.selections.len();
+        let mut points: Vec<(ByteOffset, usize, bool)> = Vec::with_capacity(selection_count * 2);
+        for (index, selection) in self.selections.iter().copied().enumerate() {
+            points.push((selection.anchor(), index, true));
+            points.push((selection.head(), index, false));
+        }
+        points.sort_unstable_by_key(|(offset, ..)| *offset);
+        let offsets: Vec<ByteOffset> = points.iter().map(|(offset, ..)| *offset).collect();
+        let results = position_map.map_old_positions(&offsets, Affinity::After);
+
+        let mut anchors = vec![ByteOffset::ZERO; selection_count];
+        let mut heads = vec![ByteOffset::ZERO; selection_count];
+        for ((_, index, is_anchor), result) in points.iter().zip(results) {
+            let offset = result.value();
+            if *is_anchor {
+                anchors[*index] = offset;
+            } else {
+                heads[*index] = offset;
+            }
+        }
+
         Self::new_with_primary(
             self.selections
                 .iter()
                 .copied()
-                .map(|selection| selection.map_through_position_map(position_map))
+                .enumerate()
+                .map(|(index, selection)| {
+                    Selection::new(anchors[index], heads[index]).with_goal(selection.goal())
+                })
                 .collect(),
             self.primary_index,
         )
-    }
-
-    /// 物化为 `Vec<Selection>`。需要拥有 owned 数据时使用；命名让分配语义显眼。
-    pub fn into_vec(self) -> Vec<Selection> {
-        self.selections.iter().copied().collect()
     }
 }
 

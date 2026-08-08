@@ -1,6 +1,9 @@
 //! 折叠显示层。
 //!
 //! FoldMap 是唯一写入口，向上层发布 FoldSnapshot 与 FoldEdit。
+//!
+//! 折叠模型对齐 Zed：折叠范围是字节级的（入口行行尾换行符 → 闭合括号前），折叠段不产生投影行，占位符文本拼入 anchor 行的合并行（anchor 全文 + 占位符 +闭合行尾段），因此闭合括号保留为真实可见文本。
+//! 隐藏点投影遵循 bias 约定（Left 吸附折叠起点列，Right 吸附折叠终点列）。
 
 use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, ops::Range};
 
@@ -170,7 +173,7 @@ impl Transform {
     fn output_rows(self) -> usize {
         match self.kind {
             TransformKind::Isomorphic => self.input_lines,
-            // 折叠段完全吞掉输入行，不产生投影行；折叠省略号绘制在 anchor 行行尾。
+            // 折叠段完全吞掉输入行，不产生投影行；占位符拼入 anchor 行的合并行文本。
             TransformKind::Fold => 0,
         }
     }
@@ -289,7 +292,7 @@ impl FoldSnapshot {
         self.transforms.summary().output_rows
     }
 
-    /// 折叠入口行（anchor 行行尾绘制折叠省略号；无隐藏行的 fold 不计）。
+    /// 折叠入口行（合并行占位符的挂靠行；无隐藏行的 fold 不计）。
     pub(crate) fn fold_anchor_lines(&self) -> Vec<Line> {
         self.folds
             .iter()
@@ -753,7 +756,10 @@ impl FoldMapWriter<'_> {
         Ok((snapshot, edits))
     }
 
-    pub(super) fn fold(&mut self, range: TextRange) -> DisplayMapResult<(FoldSnapshot, Vec<FoldEdit>)> {
+    pub(super) fn fold(
+        &mut self,
+        range: TextRange,
+    ) -> DisplayMapResult<(FoldSnapshot, Vec<FoldEdit>)> {
         if range.is_empty() {
             return Err(FoldError::EmptyRange { range }.into());
         }
@@ -1113,6 +1119,71 @@ mod tests {
             snapshot.line_count(),
             snapshot.buffer_snapshot().line_count()
         );
+    }
+
+    #[test]
+    fn merged_row_text_joins_anchor_placeholder_and_close_tail() {
+        // 折叠范围 = [anchor 行换行符, 闭合括号前)：anchor 文本、占位符、真实 `}` 拼成同一行。
+        let buffer = Buffer::scratch(
+            "fn b() {\n    2\n}\nrest".to_string(),
+            BufferConfig::default(),
+        )
+        .unwrap();
+        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        // range = [行 0 换行符(8), `}`(15))。
+        let (snapshot, _) = map.write().fold(text_range(8, 15)).unwrap();
+
+        assert_eq!(snapshot.line_count(), 2);
+        let text = snapshot.row_text(ProjectedLineIndex::new(0)).unwrap();
+        assert_eq!(text.as_ref(), "fn b() {…}\n");
+        // 段表：anchor 文本段 + 占位符段 + 闭合尾段（`}` 是真实字节范围）。
+        let segments = snapshot
+            .fold_row_segments(ProjectedLineIndex::new(0))
+            .unwrap();
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0].merged_range, 0..8);
+        assert_eq!(segments[1].merged_range, 8..11);
+        assert_eq!(segments[2].merged_range, 11..12);
+    }
+
+    #[test]
+    fn fold_boundary_insertions_remain_visible() {
+        // Stickiness::Never：折叠起点插入的文本在折叠外（可见），折叠终点插入的文本在折叠内。
+        let mut buffer =
+            Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
+        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        map.write().fold_lines(line_range(0, 2)).unwrap();
+        let fold_range = map.snapshot.folds.iter().next().unwrap().text_range();
+        // 折叠起点 = anchor 行换行符位置（6）。
+        assert_eq!(fold_range.start().get(), 6);
+        let subscription = buffer.subscribe();
+        buffer.insert(fold_range.start(), "X").unwrap();
+        let (snapshot, _, _) = map.read(
+            InlayMap::new(LineStream::new(buffer.snapshot())).1,
+            &subscription.consume(),
+        );
+        // 起点插入在折叠外：折叠范围随插入右移，anchor 行文本变为 "anchorX"。
+        let moved = snapshot.folds.iter().next().unwrap().text_range();
+        assert_eq!(moved.start().get(), 7);
+        let text = snapshot.row_text(ProjectedLineIndex::new(0)).unwrap();
+        assert_eq!(text.as_ref(), "anchorX…\n");
+    }
+
+    #[test]
+    fn edits_on_folded_lines_map_to_anchor_row() {
+        let mut buffer =
+            Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
+        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        map.write().fold_lines(line_range(0, 2)).unwrap();
+        // 编辑落在隐藏行（行 1）与 close 行（行 2）：changed_lines 都映射到 anchor 行（行 0）。
+        let subscription = buffer.subscribe();
+        buffer.insert(ByteOffset::new(9), "X").unwrap();
+        let (_, edits, outcome) = map.read(
+            InlayMap::new(LineStream::new(buffer.snapshot())).1,
+            &subscription.consume(),
+        );
+        assert_eq!(outcome, ApplyOutcome::Compatible);
+        assert_eq!(edits[0].changed_lines(), &[Line::ZERO]);
     }
 
     #[test]

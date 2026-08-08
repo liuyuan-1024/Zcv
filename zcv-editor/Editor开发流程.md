@@ -235,8 +235,9 @@ Snapshot 并返回本层 Snapshot。FoldSnapshot 与 TabSnapshot 各自维护独
 订阅事件只负责唤醒，当前 `Snapshot` 是文本真相；每层直接理解组合 `TextPatch` 的
 旧/新坐标，不缓存或逐条回放中间 Snapshot。
 TabMap 按实际投影视口惰性测量 display-column，并在编辑后只失效受影响的已测量行；
-初次构建不扫描全文。占位符文本、像素布局和命中测试由 DisplayMap / EditorElement 负责。
-Soft Wrap、Inlay 后续继续在此层扩展，不能散落到 Editor 或业务组件中。
+初次构建不扫描全文。折叠占位符是 fold 模型内的文本（合并行 = anchor 全文 + 占位符 +
+闭合行尾段，闭合括号保留为真实可见文本），像素布局和命中测试由 DisplayMap /
+EditorElement 负责。Soft Wrap、Inlay 后续继续在此层扩展，不能散落到 Editor 或业务组件中。
 
 ### 3.6 EditorElement
 

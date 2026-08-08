@@ -588,6 +588,47 @@ impl WrapSnapshot {
     }
 
     /// 投影点（tab 行 + 逻辑列）→ 显示点。
+    /// 投影点列 → 行内投影字节。
+    ///
+    /// 折叠合并行按合并文本字符列换算（anchor/占位符/尾段都在行文本内）；
+    /// 普通行经原始字节逆投影（含行内提示注入前缀）。
+    fn projected_column_to_byte(
+        &self,
+        line: Line,
+        column: LogicalColumn,
+    ) -> DisplayMapResult<usize> {
+        let fold = self.tab_snapshot.fold_snapshot();
+        let text = self
+            .tab_snapshot
+            .line_text(line)
+            .ok_or(CoordinateError::LineOutOfBounds(line))?;
+        let content = line_content(text.as_ref());
+        if fold.is_fold_row(ProjectedLineIndex::new(line.get())) {
+            return Ok(byte_after_chars(content, column.get()));
+        }
+        let buffer = self.tab_snapshot.buffer_snapshot();
+        let line_start = self
+            .tab_snapshot
+            .line_byte_range(line)
+            .ok_or(CoordinateError::LineOutOfBounds(line))?
+            .start
+            .get();
+        let stream_line = self
+            .tab_snapshot
+            .stream_line_for_projected(line)
+            .ok_or(CoordinateError::LineOutOfBounds(line))?;
+        let inlay = fold.inlay_snapshot();
+        let buffer_line = match inlay.source(stream_line) {
+            Some(StreamLineSource::Buffer(buffer_line)) => Line::new(buffer_line),
+            _ => return Err(CoordinateError::LineOutOfBounds(line).into()),
+        };
+        let target_byte = buffer
+            .position_to_byte(Position::new(buffer_line, column))?
+            .get()
+            - line_start;
+        Ok(inlay.to_projected_offset(stream_line, target_byte))
+    }
+
     fn projected_point_to_display_point(
         &self,
         point: ProjectedPoint,
@@ -595,33 +636,13 @@ impl WrapSnapshot {
         let tab_row = point.line().get();
         let line = Line::new(tab_row);
         let buffer = self.tab_snapshot.buffer_snapshot();
-        // 投影文本（含行内提示注入）；目标列对应的原始字节经注入前缀映射为投影偏移。
+        // 投影文本（含行内提示注入）；目标列 → 行内投影字节。
         let text = self
             .tab_snapshot
             .line_text(line)
             .ok_or(CoordinateError::LineOutOfBounds(line))?;
         let content = line_content(text.as_ref());
-        let line_start = self
-            .tab_snapshot
-            .line_byte_range(line)
-            .ok_or(CoordinateError::LineOutOfBounds(line))?
-            .start
-            .get();
-        // 逻辑列 → 原始行内字节：position_to_byte 需要 buffer 行号（投影行号经流解析回 buffer 行）。
-        let stream_line = self
-            .tab_snapshot
-            .stream_line_for_projected(line)
-            .ok_or(CoordinateError::LineOutOfBounds(line))?;
-        let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
-        let buffer_line = match inlay.source(stream_line) {
-            Some(StreamLineSource::Buffer(buffer_line)) => Line::new(buffer_line),
-            _ => return Err(CoordinateError::LineOutOfBounds(line).into()),
-        };
-        let target_byte = buffer
-            .position_to_byte(Position::new(buffer_line, point.column()))?
-            .get()
-            - line_start;
-        let target_projected = inlay.to_projected_offset(stream_line, target_byte);
+        let target_projected = self.projected_column_to_byte(line, point.column())?;
         let (input_start, output_start, transform) = self.transform_for_tab_row(tab_row)?;
         let (fragment_index, fragment_start, indent) = match transform.kind {
             TransformKind::Isomorphic => (tab_row - input_start, 0, 0),
@@ -671,27 +692,9 @@ impl WrapSnapshot {
         let tab_row = point.line().get();
         let line = Line::new(tab_row);
         let buffer = self.tab_snapshot.buffer_snapshot();
-        let line_start = self
-            .tab_snapshot
-            .line_byte_range(line)
-            .ok_or(CoordinateError::LineOutOfBounds(line))?
-            .start
-            .get();
-        // 逻辑列 → 原始行内字节：position_to_byte 需要 buffer 行号（投影行号经流解析回 buffer 行）。
-        let stream_line = self
-            .tab_snapshot
-            .stream_line_for_projected(line)
-            .ok_or(CoordinateError::LineOutOfBounds(line))?;
-        let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
-        let buffer_line = match inlay.source(stream_line) {
-            Some(StreamLineSource::Buffer(buffer_line)) => Line::new(buffer_line),
-            _ => return Err(CoordinateError::LineOutOfBounds(line).into()),
-        };
-        let target_byte = buffer
-            .position_to_byte(Position::new(buffer_line, point.column()))?
-            .get()
-            - line_start;
-        let target_projected = inlay.to_projected_offset(stream_line, target_byte);
+        let fold = self.tab_snapshot.fold_snapshot();
+        let merged = fold.is_fold_row(ProjectedLineIndex::new(tab_row));
+        let target_projected = self.projected_column_to_byte(line, point.column())?;
         let (input_start, output_start, transform) = self.transform_for_tab_row(tab_row)?;
         let (fragment_index, fragment_start, indent) = match transform.kind {
             TransformKind::Isomorphic => (tab_row - input_start, 0, 0),
@@ -709,16 +712,44 @@ impl WrapSnapshot {
                 )
             }
         };
-        // 片段起点逆投影回原始字节 → 起始逻辑列。
-        let original_start = inlay.to_original_offset(stream_line, fragment_start);
-        let column_base = buffer
-            .byte_to_position(ByteOffset::new(line_start + original_start))
-            .map_or(0, |position| position.column().get());
+        // 片段起点列：合并行按合并文本字符数；普通行逆投影回原始字节 → 起始逻辑列。
+        let column_base = if merged {
+            let text = self
+                .tab_snapshot
+                .line_text(line)
+                .ok_or(CoordinateError::LineOutOfBounds(line))?;
+            line_content(text.as_ref())[..fragment_start]
+                .chars()
+                .count()
+        } else {
+            let line_start = self
+                .tab_snapshot
+                .line_byte_range(line)
+                .ok_or(CoordinateError::LineOutOfBounds(line))?
+                .start
+                .get();
+            let stream_line = self
+                .tab_snapshot
+                .stream_line_for_projected(line)
+                .ok_or(CoordinateError::LineOutOfBounds(line))?;
+            let inlay = fold.inlay_snapshot();
+            let original_start = inlay.to_original_offset(stream_line, fragment_start);
+            buffer
+                .byte_to_position(ByteOffset::new(line_start + original_start))
+                .map_or(0, |position| position.column().get())
+        };
         Ok((
             DisplayRow::new(output_start + fragment_index),
             indent + (point.column().get() - column_base),
         ))
     }
+}
+
+/// 文本中第 `chars` 个字符的字节偏移（超出末尾返回文本长度）。
+fn byte_after_chars(text: &str, chars: usize) -> usize {
+    text.char_indices()
+        .nth(chars)
+        .map_or(text.len(), |(byte, _)| byte)
 }
 
 #[derive(Clone)]

@@ -30,6 +30,8 @@ pub(crate) use chunk::{
 };
 pub(crate) use display_width::DisplayColumn;
 use error::DisplayMapResult;
+#[cfg(test)]
+pub(crate) use fold_map::ProjectedPoint;
 use fold_map::{ApplyOutcome, FoldMap, FoldSnapshot, LogicalProjection};
 pub(crate) use fold_map::{FoldRowSegment, ProjectedLineIndex, ProjectedRange};
 pub(crate) use inlay_map::Inlay;
@@ -131,7 +133,7 @@ impl DisplayPoint {
 #[derive(Debug, Clone)]
 pub(super) struct DisplaySnapshot {
     wrap_snapshot: WrapSnapshot,
-    /// 折叠拓扑快照（渲染侧查询行折叠状态与省略号样式）。
+    /// 折叠拓扑快照（渲染侧查询折叠状态与合并行段）。
     fold_snapshot: FoldSnapshot,
     /// 语法快照（插值树与 buffer 版本同步；渲染按可见范围懒查询高亮）。
     syntax_snapshot: SyntaxSnapshot,
@@ -170,7 +172,7 @@ impl DisplaySnapshot {
         self.wrap_snapshot.line_count()
     }
 
-    /// 折叠入口行集合（anchor 行行尾绘制折叠省略号）。
+    /// 折叠入口行集合（crease 折叠态与占位符命中判断）。
     pub(super) fn fold_anchor_lines(&self) -> Vec<Line> {
         self.fold_snapshot.fold_anchor_lines()
     }
@@ -486,6 +488,7 @@ mod tests {
     use gpui::{TestAppContext, font, px};
     use zcv_engine::{Buffer, BufferConfig, Edit, Line, LineRange, TextRange, Transaction};
 
+    use super::fold_map::ProjectedPoint;
     use super::line_stream::InsertedLines;
     use super::*;
 
@@ -628,6 +631,76 @@ mod tests {
             viewport.rows()[1].kind(),
             WrapViewportRowKind::Text { .. }
         ));
+    }
+
+    #[test]
+    fn folded_bracket_projects_close_to_merged_row() {
+        // 回归：折叠后闭合括号保留可见，光标在 `{` 上的括号高亮投影到合并行的真实 `}` 列。
+        let buffer = Buffer::scratch(
+            "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}".to_string(),
+            BufferConfig::default(),
+        )
+        .expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        // 折叠 fn main：范围 = [行 0 换行符(11), `}`(27))。
+        map.fold_range(
+            TextRange::new(ByteOffset::new(11), ByteOffset::new(27)).expect("折叠范围应合法"),
+        )
+        .expect("折叠应成功");
+        let snapshot = map.snapshot();
+
+        // 真实 `}` 的字节范围投影到合并行占位符之后的列（anchor 11 字符 + 占位符 1 列 = 12）。
+        let projected = snapshot
+            .project_text_range(
+                TextRange::new(ByteOffset::new(27), ByteOffset::new(28)).expect("`}` 范围应合法"),
+            )
+            .expect("投影应成功");
+        assert_eq!(projected.len(), 1);
+        assert_eq!(
+            projected[0].start(),
+            ProjectedPoint::new(ProjectedLineIndex::new(0), LogicalColumn::new(12))
+        );
+        assert_eq!(
+            projected[0].end(),
+            ProjectedPoint::new(ProjectedLineIndex::new(0), LogicalColumn::new(13))
+        );
+
+        // 占位符列（11）吸附折叠起点字节；尾段列（12）映射到 close 行字节（`}`）。
+        assert_eq!(
+            snapshot
+                .display_point_to_offset(DisplayPoint::new(
+                    DisplayRow::ZERO,
+                    DisplayColumn::new(11)
+                ))
+                .expect("占位符列应可映射"),
+            ByteOffset::new(11)
+        );
+        assert_eq!(
+            snapshot
+                .display_point_to_offset(DisplayPoint::new(
+                    DisplayRow::ZERO,
+                    DisplayColumn::new(12)
+                ))
+                .expect("尾段列应可映射"),
+            ByteOffset::new(27)
+        );
+        // 合并行行尾 = close 行内容末尾。
+        assert_eq!(
+            map.end_of_row(ByteOffset::new(11)).expect("行尾应可定位"),
+            ByteOffset::new(28)
+        );
+        // 可见字节全偏移 roundtrip（26 是折叠内隐藏字节，投影不可逆）。
+        for offset in [0usize, 11, 27, 28, 29, 57] {
+            let point = snapshot
+                .offset_to_display_point(ByteOffset::new(offset))
+                .expect("可见偏移应能映射");
+            assert_eq!(
+                snapshot
+                    .display_point_to_offset(point)
+                    .expect("显示点应能还原"),
+                ByteOffset::new(offset)
+            );
+        }
     }
 
     #[test]

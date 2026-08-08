@@ -753,7 +753,7 @@ impl FoldMapWriter<'_> {
         Ok((snapshot, edits))
     }
 
-    fn fold(&mut self, range: TextRange) -> DisplayMapResult<(FoldSnapshot, Vec<FoldEdit>)> {
+    pub(super) fn fold(&mut self, range: TextRange) -> DisplayMapResult<(FoldSnapshot, Vec<FoldEdit>)> {
         if range.is_empty() {
             return Err(FoldError::EmptyRange { range }.into());
         }

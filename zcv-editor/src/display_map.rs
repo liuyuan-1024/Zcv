@@ -411,6 +411,14 @@ impl DisplayMap {
         self.wrap_map.sync(tab_snapshot, &fold_edits);
     }
 
+    /// 折叠字节范围（入口行行尾换行符 → 闭合括号前；闭合括号保留可见）。
+    pub(crate) fn fold_range(&mut self, range: TextRange) -> DisplayMapResult<()> {
+        let (fold_snapshot, fold_edits) = self.fold_map.write().fold(range)?;
+        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
+        self.wrap_map.sync(tab_snapshot, &fold_edits);
+        Ok(())
+    }
+
     /// 折叠行范围（半开区间：起点行保留，其余行隐藏）。
     pub(crate) fn fold_lines(&mut self, line_range: LineRange) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().fold_lines(line_range)?;

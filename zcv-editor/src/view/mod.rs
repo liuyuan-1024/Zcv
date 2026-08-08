@@ -11,7 +11,7 @@ use gpui::{
 use zcv_buffer_diff::{DiffHunk, DiffHunkKind};
 use zcv_engine::{
     Buffer, BufferConfig, BufferVersion, ByteOffset, EngineResult, Line, LineRange,
-    MovementDirection, MovementUnit, PositionMap, Selection, SelectionSet, Snapshot,
+    MovementDirection, MovementUnit, PositionMap, Selection, SelectionSet, Snapshot, TextRange,
     TextSubscription, TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 use zcv_language::{BracketPair, FoldRange, LanguageBuffer, SyntaxSnapshot};
@@ -363,15 +363,17 @@ impl Editor {
                     .is_ok_and(|start| start == line)
             });
             if let Some(range) = range
-                && let (Ok(start), Ok(end)) = (
-                    snapshot.byte_to_line(ByteOffset::new(range.range.start)),
-                    snapshot.byte_to_line(ByteOffset::new(range.range.end)),
-                )
-                && end > start
+                && let Ok(start) = snapshot.byte_to_line(ByteOffset::new(range.range.start))
+                && start == line
             {
-                let line_range = LineRange::new(start, Line::new(end.get() + 1))
-                    .expect("折叠范围转行范围应合法");
-                if let Err(error) = self.display_map.fold_lines(line_range) {
+                // 折叠范围是字节级的（终点在闭合括号前）：直接按字节范围折叠。
+                if let Err(error) = self.display_map.fold_range(
+                    TextRange::new(
+                        ByteOffset::new(range.range.start),
+                        ByteOffset::new(range.range.end),
+                    )
+                    .expect("折叠范围应合法"),
+                ) {
                     log::error!("折叠失败：{error}");
                 }
             }

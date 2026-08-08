@@ -33,7 +33,8 @@ pub struct IndentRange {
 
 /// 一个可折叠范围。
 ///
-/// 起点行在折叠后保留（折叠箭头显示在该行），范围内其余行隐藏。
+/// 范围 = [入口行行尾换行符, 闭合括号前)：入口行全文与闭合括号保留可见，折叠后占位符与闭合尾段拼在同一显示行（对齐 Zed 的折叠显示语义）。
+/// 无括号对的折叠（注释组等）终点在末隐藏行内容末尾。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FoldRange {
     pub range: Range<usize>,
@@ -162,7 +163,8 @@ impl SyntaxSnapshot {
         if !self.can_query(&range, text) {
             return Vec::new();
         }
-        let mut ranges = Vec::new();
+        // 折叠节点：@fold 捕获（块体等），行相邻合并（`(line_comment)+` 组）。
+        let mut nodes = Vec::new();
         for layer in self.layers_for_range(&range) {
             let Some(query) = layer.language.folds() else {
                 continue;
@@ -174,7 +176,7 @@ impl SyntaxSnapshot {
                 cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
             while let Some(query_match) = matches.next() {
                 // 同一个 match 命中多个节点时（如 `+` 组捕获的连续注释），行相邻则合并成一个折叠范围。
-                let mut nodes: Vec<_> = query_match
+                let mut captured: Vec<_> = query_match
                     .captures
                     .iter()
                     .filter(|capture| {
@@ -184,9 +186,9 @@ impl SyntaxSnapshot {
                     })
                     .map(|capture| capture.node)
                     .collect();
-                nodes.sort_unstable_by_key(|node| node.byte_range().start);
+                captured.sort_unstable_by_key(|node| node.byte_range().start);
                 let mut merged: Vec<(Range<usize>, usize, usize)> = Vec::new();
-                for node in nodes {
+                for node in captured {
                     let byte_range = node.byte_range();
                     match merged.last_mut() {
                         Some((range, _, end_row)) if node.start_position().row <= *end_row + 1 => {
@@ -202,30 +204,49 @@ impl SyntaxSnapshot {
                         }
                     }
                 }
-                for (byte_range, _, _) in merged {
-                    // 单行范围没有可隐藏的行，折叠无意义。
-                    //
-                    // 行判断用 buffer 行语义：line_comment 等节点含尾随换行（end 落在下一行行首），按"结束恰在行首则回退一行"换算真实末行。
-                    let Ok(start_line) = text.byte_to_line(ByteOffset::new(byte_range.start))
-                    else {
-                        continue;
-                    };
-                    let mut end_line = text
-                        .byte_to_line(ByteOffset::new(byte_range.end))
-                        .unwrap_or(start_line);
-                    if end_line > start_line
-                        && text
-                            .line_start_byte(end_line)
-                            .is_ok_and(|start| start.get() == byte_range.end)
-                    {
-                        end_line = Line::new(end_line.get() - 1);
-                    }
-                    if start_line == end_line {
-                        continue;
-                    }
-                    ranges.push(FoldRange { range: byte_range });
-                }
+                nodes.extend(merged);
             }
+        }
+        // 括号对：把折叠范围重塑为 [入口行行尾换行符, 闭合括号前)，闭合括号保留可见。
+        let pairs = self.bracket_pairs(range.clone(), text);
+        let mut ranges = Vec::new();
+        for (byte_range, _, _) in nodes {
+            let Ok(anchor_line) = text.byte_to_line(ByteOffset::new(byte_range.start)) else {
+                continue;
+            };
+            let start = line_newline_position(text, anchor_line);
+            let end = pairs
+                .iter()
+                .filter(|pair| {
+                    pair.open.start >= byte_range.start && pair.close.end <= byte_range.end
+                })
+                .min_by_key(|pair| pair.open.start)
+                .map_or_else(
+                    || {
+                        // 无括号对（注释组等）：整行兜底，终点 = 末隐藏行内容末尾。
+                        //
+                        // line_comment 等节点含尾随换行（end 落在下一行行首），按"结束恰在行首则回退一行"换算真实末行。
+                        let mut end_line = text
+                            .byte_to_line(ByteOffset::new(byte_range.end))
+                            .unwrap_or(anchor_line);
+                        if end_line > anchor_line
+                            && text
+                                .line_start_byte(end_line)
+                                .is_ok_and(|start| start.get() == byte_range.end)
+                        {
+                            end_line = Line::new(end_line.get() - 1);
+                        }
+                        line_content_end(text, end_line)
+                    },
+                    |pair| ByteOffset::new(pair.close.start),
+                );
+            // 单行范围没有可隐藏的行，折叠无意义。
+            if start >= end || text.byte_to_line(end).is_ok_and(|line| line <= anchor_line) {
+                continue;
+            }
+            ranges.push(FoldRange {
+                range: start.get()..end.get(),
+            });
         }
         ranges.sort_unstable_by_key(|range| (range.range.start, range.range.end));
         ranges
@@ -259,6 +280,29 @@ impl SyntaxSnapshot {
         ranges.sort_unstable_by_key(|range| (range.range.start, range.range.end));
         ranges
     }
+}
+
+/// 行终止换行符（`\n`）的字节位置；行尾无换行符时返回行尾。
+///
+/// 折叠范围从该位置开始：入口行换行符被折叠吞掉，占位符与闭合尾段拼在同一显示行。
+fn line_newline_position(text: &Snapshot, line: Line) -> ByteOffset {
+    let content = text
+        .line_content(line, None)
+        .expect("折叠入口行必须位于当前 Snapshot 内");
+    if content.text_range().end() == content.full_range().end() {
+        content.full_range().end()
+    } else {
+        // 行含终止换行符：`\r?\n` 的 `\n` 位于行尾前一字节。
+        ByteOffset::new(content.full_range().end().get() - 1)
+    }
+}
+
+/// 行内容末尾（不含终止换行符）。
+fn line_content_end(text: &Snapshot, line: Line) -> ByteOffset {
+    text.line_content(line, None)
+        .expect("折叠末行必须位于当前 Snapshot 内")
+        .text_range()
+        .end()
 }
 
 #[cfg(test)]
@@ -327,17 +371,21 @@ fn main() {
             .map(|fold| &source[fold.range.clone()])
             .collect();
 
-        // 各块体（field_declaration_list / declaration_list / block）都被覆盖。
-        assert!(texts.contains(&"{\n    value: i32,\n}"));
-        assert!(texts.contains(&"{\n    fn new() -> Self {\n        // 单行注释不产生折叠。\n        let value = 1;\n        // 连续注释折叠为一个组。\n        // 第二行注释。\n        Self { value }\n    }\n}"));
-        assert!(texts.contains(&"{\n        // 单行注释不产生折叠。\n        let value = 1;\n        // 连续注释折叠为一个组。\n        // 第二行注释。\n        Self { value }\n    }"));
-        // 连续注释组折叠为一个范围。
-        assert!(texts.contains(&"// 连续注释折叠为一个组。\n        // 第二行注释。"));
+        // 各块体（field_declaration_list / declaration_list / block）都被覆盖，
+        // 范围 = [入口行换行符, 闭合括号前)：入口行与闭合括号不在范围内。
+        assert!(texts.contains(&"\n    value: i32,\n"));
+        assert!(texts.contains(&"\n    fn new() -> Self {\n        // 单行注释不产生折叠。\n        let value = 1;\n        // 连续注释折叠为一个组。\n        // 第二行注释。\n        Self { value }\n    }\n"));
+        assert!(texts.contains(&"\n        // 单行注释不产生折叠。\n        let value = 1;\n        // 连续注释折叠为一个组。\n        // 第二行注释。\n        Self { value }\n    "));
+        // 连续注释组折叠为一个范围（入口行保留，其余行隐藏）。
+        assert!(texts.contains(&"\n        // 第二行注释。"));
 
         // 嵌套结构：外层范围完整包含内层范围。
         let outer = folds
             .iter()
-            .find(|fold| &source[fold.range.clone()] == "{\n    fn new() -> Self {\n        // 单行注释不产生折叠。\n        let value = 1;\n        // 连续注释折叠为一个组。\n        // 第二行注释。\n        Self { value }\n    }\n}")
+            .find(|fold| {
+                &source[fold.range.clone()]
+                    == "\n    fn new() -> Self {\n        // 单行注释不产生折叠。\n        let value = 1;\n        // 连续注释折叠为一个组。\n        // 第二行注释。\n        Self { value }\n    }\n"
+            })
             .unwrap();
         let inner = folds
             .iter()
@@ -375,9 +423,9 @@ use zcv_engine::{
             .map(|fold| &source[fold.range.clone()])
             .collect();
 
-        // 两个多行 use 各自独立成折叠范围（覆盖整个声明，不与相邻 use 合并）。
-        assert!(texts.contains(&"use std::ops::{\n    Range,\n    Deref,\n};"));
-        assert!(texts.contains(&"use zcv_engine::{\n    Buffer,\n    Snapshot,\n};"));
+        // 两个多行 use 各自独立成折叠范围（入口行与闭合括号 `}` 保留，尾段 `;` 可见）。
+        assert!(texts.contains(&"\n    Range,\n    Deref,\n"));
+        assert!(texts.contains(&"\n    Buffer,\n    Snapshot,\n"));
         // 单行 use 不产生折叠。
         assert!(!texts.contains(&"use std::collections::BTreeMap;"));
     }
@@ -404,7 +452,7 @@ pub enum EditorEvent {
             .collect();
 
         // 只有 enum 块体可折叠；单行 doc 注释不产生折叠。
-        assert!(texts.contains(&"{\n    /// 编辑器关联的文件路径发生变化。\n    PathChanged,\n}"));
+        assert!(texts.contains(&"\n    /// 编辑器关联的文件路径发生变化。\n    PathChanged,\n"));
         assert!(!texts.iter().any(|text| text.starts_with("///")));
     }
 
@@ -436,9 +484,9 @@ fn main() {
             .map(|fold| &source[fold.range.clone()])
             .collect();
 
-        // 跨行宏调用整体成折叠范围（从宏名到分号）。
-        assert!(texts.contains(&"vec![\n        1,\n        2,\n    ]"));
-        assert!(texts.contains(&"actions!(\n        editor,\n        [\n            MoveLeft,\n            MoveRight,\n        ],\n    )"));
+        // 跨行宏调用整体成折叠范围（入口行保留，闭合括号前收口：`vec![...]` 收在 `]` 前）。
+        assert!(texts.contains(&"\n        1,\n        2,\n    "));
+        assert!(texts.contains(&"\n        editor,\n        [\n            MoveLeft,\n            MoveRight,\n        ],\n    "));
         // 单行宏调用不产生折叠。
         assert!(!texts.contains(&"println!(\"ok\")"));
         assert!(!texts.contains(&"format!(\"{}: {}\", 1, 2)"));

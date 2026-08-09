@@ -19,7 +19,7 @@ use zcv_editor::Editor;
 use zcv_git::FileStatus;
 use zcv_project::{Project, TreeRow, new_entry_destination, rename_destination, translate_path};
 use zcv_theme::color;
-use zcv_ui::tree;
+use zcv_ui::{Scrollbar, tree};
 
 actions!(
     project_tree,
@@ -61,6 +61,7 @@ pub(crate) struct ProjectTree {
     project: Entity<Project>,
     state: Rc<RefCell<ProjectTreeState>>,
     scroll_handle: UniformListScrollHandle,
+    scrollbar: Scrollbar<UniformListScrollHandle>,
     entry_name_editor: Entity<Editor>,
     edit_state: Option<EditState>,
     on_open_file: Option<OnOpenFile>,
@@ -90,12 +91,15 @@ impl ProjectTree {
             tree.refresh_git_statuses(cx);
         })
         .detach();
+        let scroll_handle = UniformListScrollHandle::default();
+        let scrollbar = Scrollbar::vertical(scroll_handle.clone());
         Self {
             focus,
             root,
             project,
             state: Rc::new(RefCell::new(state)),
-            scroll_handle: UniformListScrollHandle::default(),
+            scroll_handle,
+            scrollbar,
             entry_name_editor,
             edit_state: None,
             on_open_file: None,
@@ -232,6 +236,14 @@ impl ProjectTree {
         self.state.borrow().visible_rows().to_vec()
     }
 
+    /// 保持键盘选中项可见；仍在视口内时不改变当前滚动位置。
+    fn scroll_to_selection(&self, rows: &[ProjectTreeRow]) {
+        if let Some(index) = self.state.borrow().selected_idx(rows) {
+            self.scroll_handle
+                .scroll_to_item(index, ScrollStrategy::Center);
+        }
+    }
+
     fn display_rows(&self, cx: &gpui::App) -> Vec<ProjectTreeRow> {
         let mut rows = self.rows_and_len();
         let Some(EditState {
@@ -290,6 +302,7 @@ impl ProjectTree {
     ) {
         let rows = self.rows_and_len();
         self.state.borrow_mut().select_up(&rows);
+        self.scroll_to_selection(&rows);
         window.refresh();
     }
     fn handle_tree_select_next(
@@ -300,6 +313,7 @@ impl ProjectTree {
     ) {
         let rows = self.rows_and_len();
         self.state.borrow_mut().select_down(&rows);
+        self.scroll_to_selection(&rows);
         window.refresh();
     }
     fn handle_tree_collapse(
@@ -314,16 +328,24 @@ impl ProjectTree {
             return;
         };
         let row = &rows[idx];
-        if row.is_dir && row.expanded {
+        let rebuild = if row.is_dir && row.expanded {
             state.expanded.remove(&row.path);
-            drop(state);
-            self.rebuild_rows(cx);
+            true
         } else if row.depth > 0 {
             let pd = row.depth - 1;
             if let Some(pi) = rows[..idx].iter().rposition(|r| r.is_dir && r.depth == pd) {
                 state.selected = Some(rows[pi].path.clone());
             }
+            false
+        } else {
+            false
+        };
+        drop(state);
+        if rebuild {
+            self.rebuild_rows(cx);
         }
+        let rows = self.rows_and_len();
+        self.scroll_to_selection(&rows);
         window.refresh();
     }
     fn handle_tree_expand(&mut self, _: &TreeExpand, window: &mut Window, cx: &mut Context<Self>) {
@@ -333,13 +355,19 @@ impl ProjectTree {
             return;
         };
         let row = &rows[idx];
-        if row.is_dir && !row.expanded {
+        let rebuild = if row.is_dir && !row.expanded {
             state.expanded.insert(row.path.clone());
-            drop(state);
-            self.rebuild_rows(cx);
+            true
         } else {
             state.select_down(&rows);
+            false
+        };
+        drop(state);
+        if rebuild {
+            self.rebuild_rows(cx);
         }
+        let rows = self.rows_and_len();
+        self.scroll_to_selection(&rows);
         window.refresh();
     }
     /// 激活/预览选中行的共享逻辑：目录→展开/折叠；文件→打开。
@@ -623,6 +651,7 @@ impl gpui::Render for ProjectTree {
             .on_action(cx.listener(Self::handle_tree_cancel_edit))
             .child(render_list(
                 &self.scroll_handle,
+                &self.scrollbar,
                 len,
                 is_focused,
                 render_context,
@@ -634,6 +663,7 @@ impl gpui::Render for ProjectTree {
 
 fn render_list(
     scroll_handle: &UniformListScrollHandle,
+    scrollbar: &Scrollbar<UniformListScrollHandle>,
     len: usize,
     is_focused: bool,
     render_context: ProjectTreeRenderContext,
@@ -655,6 +685,7 @@ fn render_list(
     })
     .size_full()
     .track_scroll(handle)
+    .with_decoration(scrollbar.clone())
 }
 
 fn render_row(

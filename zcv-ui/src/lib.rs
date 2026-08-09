@@ -4,4 +4,6 @@ mod ui;
 
 pub use ui::tree;
 pub use ui::tree::{git_status_color, render_row_base, selection_border};
-pub use ui::{Checkbox, Glyph, ListItem, SvgIcon, Tab, TooltipSpec, tooltip_view};
+pub use ui::{
+    Checkbox, Glyph, ListItem, ScrollableHandle, Scrollbar, SvgIcon, Tab, TooltipSpec, tooltip_view,
+};

@@ -109,6 +109,7 @@ fn row_skeleton(depth: usize) -> gpui::Div {
         .flex()
         .flex_row()
         .items_center()
+        .gap(space::S6)
         .w_full()
         .h(m.row_height)
         .pl(m.indent_left(depth))

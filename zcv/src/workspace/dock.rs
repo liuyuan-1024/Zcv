@@ -284,7 +284,7 @@ impl Render for Dock {
         let frame = frame.child(div().size_full().child(panel_view));
 
         // 拖拽调整大小的热区
-        const HIT: Pixels = px(6.0);
+        const HIT: Pixels = px(3.0);
         let dock_entity = cx.entity().clone();
         let notify = self.drag_notify.clone();
         let area = self.position;

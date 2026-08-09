@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
-    App, Context, Div, ElementId, Entity, FocusHandle, MouseButton, UniformListScrollHandle,
-    WeakEntity, Window, actions, div, prelude::*, uniform_list,
+    App, Context, Div, ElementId, Entity, FocusHandle, MouseButton, ScrollStrategy,
+    UniformListScrollHandle, WeakEntity, Window, actions, div, prelude::*, uniform_list,
 };
 
 use crate::project_tree::OnOpenFile;
@@ -22,7 +22,7 @@ use zcv_editor::Editor;
 use zcv_git::{DiffStat, FileStatus, StatusCode};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space, typography};
-use zcv_ui::{Checkbox, Glyph, tree};
+use zcv_ui::{Checkbox, Glyph, Scrollbar, tree};
 
 actions!(
     version_control,
@@ -265,6 +265,7 @@ pub(crate) struct VersionControlPanel {
     project: Entity<Project>,
     state: Rc<RefCell<GitPanelState>>,
     scroll_handle: UniformListScrollHandle,
+    scrollbar: Scrollbar<UniformListScrollHandle>,
     /// 底部提交信息编辑器。
     commit_editor: Entity<Editor>,
     /// 活动仓库最近一次提交的 subject（订阅 Repositories/Statuses/Head 时刷新）。
@@ -320,12 +321,15 @@ impl VersionControlPanel {
             }
         })
         .detach();
+        let scroll_handle = UniformListScrollHandle::default();
+        let scrollbar = Scrollbar::vertical(scroll_handle.clone());
         let mut panel = Self {
             focus,
             root,
             project,
             state: Rc::new(RefCell::new(GitPanelState::new())),
-            scroll_handle: UniformListScrollHandle::default(),
+            scroll_handle,
+            scrollbar,
             commit_editor,
             last_commit_message: None,
             pending_commit: false,
@@ -397,12 +401,22 @@ impl VersionControlPanel {
 
     fn handle_select_prev(&mut self, _: &SelectPrev, window: &mut Window, _: &mut Context<Self>) {
         self.state.borrow_mut().select_up();
+        self.scroll_to_selection();
         window.refresh();
     }
 
     fn handle_select_next(&mut self, _: &SelectNext, window: &mut Window, _: &mut Context<Self>) {
         self.state.borrow_mut().select_down();
+        self.scroll_to_selection();
         window.refresh();
+    }
+
+    /// 保持键盘选中项可见；行索引直接对应当前渲染列表。
+    fn scroll_to_selection(&self) {
+        if let Some(index) = self.state.borrow().selected_idx() {
+            self.scroll_handle
+                .scroll_to_item(index, ScrollStrategy::Center);
+        }
     }
 
     fn handle_collapse(&mut self, _: &Collapse, window: &mut Window, cx: &mut Context<Self>) {
@@ -414,10 +428,9 @@ impl VersionControlPanel {
         let Some(GitRow::Entry(row)) = rows.get(idx) else {
             return;
         };
-        if row.is_dir && row.expanded {
+        let rebuild = if row.is_dir && row.expanded {
             state.expanded.remove(&(row.section, row.path.clone()));
-            drop(state);
-            self.rebuild_rows(cx);
+            true
         } else if row.depth > 0 {
             // 已折叠/叶子：把选中移到上层的祖先行（对齐项目树）。
             let parent_depth = row.depth - 1;
@@ -428,7 +441,15 @@ impl VersionControlPanel {
             {
                 state.selected = Some(key);
             }
+            false
+        } else {
+            false
+        };
+        drop(state);
+        if rebuild {
+            self.rebuild_rows(cx);
         }
+        self.scroll_to_selection();
         window.refresh();
     }
 
@@ -441,13 +462,18 @@ impl VersionControlPanel {
         let Some(GitRow::Entry(row)) = rows.get(idx) else {
             return;
         };
-        if row.is_dir && !row.expanded {
+        let rebuild = if row.is_dir && !row.expanded {
             state.expanded.insert((row.section, row.path.clone()));
-            drop(state);
-            self.rebuild_rows(cx);
+            true
         } else {
             state.select_down();
+            false
+        };
+        drop(state);
+        if rebuild {
+            self.rebuild_rows(cx);
         }
+        self.scroll_to_selection();
         window.refresh();
     }
 
@@ -551,7 +577,13 @@ impl Render for VersionControlPanel {
                 .min_h_0()
                 .overflow_hidden()
                 .child(
-                    render_list(&self.scroll_handle, render_context, is_focused).into_any_element(),
+                    render_list(
+                        &self.scroll_handle,
+                        &self.scrollbar,
+                        render_context,
+                        is_focused,
+                    )
+                    .into_any_element(),
                 )
                 .into_any_element()
         } else {
@@ -598,6 +630,7 @@ impl Render for VersionControlPanel {
 
 fn render_list(
     scroll_handle: &UniformListScrollHandle,
+    scrollbar: &Scrollbar<UniformListScrollHandle>,
     render_context: GitPanelRenderContext,
     is_focused: bool,
 ) -> gpui::UniformList {
@@ -617,6 +650,7 @@ fn render_list(
     })
     .size_full()
     .track_scroll(handle)
+    .with_decoration(scrollbar.clone())
 }
 
 fn render_row(

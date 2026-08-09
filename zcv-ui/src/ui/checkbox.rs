@@ -2,13 +2,12 @@
 //!
 //! 对齐 Zed `ui::Checkbox`（crates/ui/src/components/toggle.rs）的形态与用法：
 //! 组件自封装视觉与悬停提示，点击回调由调用方注入。
-//! 视觉：16px 圆角方框 + 边框，勾选时框内显示高亮色对勾。
 
 use std::rc::Rc;
 
 use gpui::{
     Action, App, Component, ElementId, IntoElement, MouseButton, RenderOnce, Window, div,
-    prelude::*, px,
+    prelude::*,
 };
 
 use crate::ui::{SvgIcon, TooltipSpec};
@@ -74,7 +73,7 @@ impl RenderOnce for Checkbox {
         let on_click = self.on_click;
         div()
             .id(self.id)
-            .size(px(16.0))
+            .size(typography::ui())
             .rounded_xs()
             .border_1()
             .border_color(colors.border_variant)

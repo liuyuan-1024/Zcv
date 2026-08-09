@@ -39,8 +39,7 @@ actions!(
     ]
 );
 
-// 快捷键在 assets/keymaps/default-{platform}.json 的 `VersionControl` 上下文分组声明，
-// 组件内不写 key_bindings()。
+// 版本控制快捷键归属于 `VersionControl` 上下文，由统一快捷键注册表加载；组件内不重复注册。
 
 // ═══ 分组与建树纯函数 ═══════════════════════════════════════════
 
@@ -709,33 +708,40 @@ fn render_row(
                     .into_any_element(),
                 )
                 .into_any_element();
-            tree::render_row_base(entry.depth, is_dir, entry.expanded, content, cx)
-                .cursor_pointer()
-                .child(tail)
-                .child(checkbox)
-                .hover(|style| style.bg(color::current(cx).element_hover))
-                .when(sel && focused, |el| el.child(tree::selection_border(cx)))
-                .on_mouse_down(MouseButton::Left, {
-                    let focus = render_context.focus.clone();
-                    let weak = render_context.weak.clone();
-                    move |event, window, cx| {
-                        // 单击/双击都把焦点收到面板（对齐项目树：交互直接调 Entity 方法）。
-                        window.focus(&focus);
-                        if let Some(panel) = weak.upgrade() {
-                            panel.update(cx, |panel, cx| {
-                                panel.state.borrow_mut().selected = Some((section, path.clone()));
-                                match event.click_count {
-                                    // 单击：目录展开/折叠、文件预览（焦点留在面板）；
-                                    // 双击：文件打开并聚焦编辑器；目录不重复，避免"展开→折叠"抵消。
-                                    1 => panel.activate_selected(false, window, cx),
-                                    _ if is_dir => {}
-                                    _ => panel.activate_selected(true, window, cx),
-                                }
-                            });
-                        }
-                        cx.stop_propagation();
+            tree::render_row_base(
+                entry.depth,
+                &entry.path,
+                is_dir,
+                entry.expanded,
+                content,
+                cx,
+            )
+            .cursor_pointer()
+            .child(tail)
+            .child(checkbox)
+            .hover(|style| style.bg(color::current(cx).element_hover))
+            .when(sel && focused, |el| el.child(tree::selection_border(cx)))
+            .on_mouse_down(MouseButton::Left, {
+                let focus = render_context.focus.clone();
+                let weak = render_context.weak.clone();
+                move |event, window, cx| {
+                    // 单击/双击都把焦点收到面板（对齐项目树：交互直接调 Entity 方法）。
+                    window.focus(&focus);
+                    if let Some(panel) = weak.upgrade() {
+                        panel.update(cx, |panel, cx| {
+                            panel.state.borrow_mut().selected = Some((section, path.clone()));
+                            match event.click_count {
+                                // 单击：目录展开/折叠、文件预览（焦点留在面板）；
+                                // 双击：文件打开并聚焦编辑器；目录不重复，避免"展开→折叠"抵消。
+                                1 => panel.activate_selected(false, window, cx),
+                                _ if is_dir => {}
+                                _ => panel.activate_selected(true, window, cx),
+                            }
+                        });
                     }
-                })
+                    cx.stop_propagation();
+                }
+            })
         }
     }
 }
@@ -865,7 +871,7 @@ impl Panel for VersionControlPanel {
     type ToggleAction = ToggleVersionControl;
 
     fn icon() -> &'static str {
-        "icons/version_control.svg"
+        "icons/git_branch.svg"
     }
     fn label() -> &'static str {
         "版本控制"

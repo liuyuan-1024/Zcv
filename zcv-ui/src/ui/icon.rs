@@ -2,7 +2,9 @@
 //!
 //! 统一 size 和默认 color，外部可通过 builder 方法覆盖。
 
-use gpui::{App, Component, IntoElement, Pixels, RenderOnce, Rgba, Window, prelude::*, svg};
+use gpui::{
+    App, Component, IntoElement, Pixels, RenderOnce, Rgba, SharedString, Window, prelude::*, svg,
+};
 
 use zcv_theme::{color, typography};
 
@@ -15,15 +17,15 @@ use zcv_theme::{color, typography};
 ///     .color(color::current(cx).icon_muted)
 /// ```
 pub struct SvgIcon {
-    path: &'static str,
+    path: SharedString,
     color: Option<Rgba>,
     size: Pixels,
 }
 
 impl SvgIcon {
-    pub fn new(path: &'static str) -> Self {
+    pub fn new(path: impl Into<SharedString>) -> Self {
         Self {
-            path,
+            path: path.into(),
             // 默认色延迟到 render（有 cx）解析
             color: None,
             size: typography::ui(),

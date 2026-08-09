@@ -23,7 +23,7 @@ impl StatusItemView for ProjectSearchButton {
 
 impl Render for ProjectSearchButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        Glyph::icon("search-button", "icons/search.svg")
+        Glyph::icon("search-button", "icons/magnifying_glass.svg")
             .label("项目搜索")
             .shortcut(&ToggleProjectSearch, cx)
             .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleProjectSearch), cx))

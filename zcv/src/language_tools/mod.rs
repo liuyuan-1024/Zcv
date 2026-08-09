@@ -23,7 +23,7 @@ impl StatusItemView for LspButton {
 
 impl Render for LspButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        Glyph::icon("lsp-button", "icons/language_server.svg")
+        Glyph::icon("lsp-button", "icons/bolt_outlined.svg")
             .label("语言服务器")
             .shortcut(&ToggleLanguageServer, cx)
             .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleLanguageServer), cx))

@@ -16,7 +16,7 @@ use super::item::{Item, ItemHandle};
 use super::tab_bar::TabBar;
 use super::toolbar::Toolbar;
 use zcv_editor::{Editor, SoftWrap};
-use zcv_theme::{color, typography};
+use zcv_theme::{FileIcons, color, typography};
 use zcv_ui::Glyph;
 use zcv_ui::SvgIcon;
 use zcv_ui::Tab;
@@ -550,13 +550,11 @@ fn render_tab_bar_drop_target(
         })
 }
 
-/// 按路径渲染文件类型图标：目录用 folder 图标，文件用通用 file 图标。
-///
-/// 未来扩展按扩展名区分的图标库时，在本函数内追加映射即可。
 fn file_icon(path: Option<&Path>) -> impl gpui::IntoElement {
     let icon = match path {
-        Some(path) if path.is_dir() => "icons/folder.svg",
-        _ => "icons/file.svg",
+        Some(path) if path.is_dir() => FileIcons::get_folder_icon(false, path),
+        Some(path) => FileIcons::get_icon(path),
+        None => FileIcons::get_icon(Path::new("")),
     };
     SvgIcon::new(icon)
 }

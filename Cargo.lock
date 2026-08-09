@@ -7496,6 +7496,7 @@ dependencies = [
  "tempfile",
  "toml 0.8.23",
  "trash",
+ "zcv-assets",
  "zcv-editor",
  "zcv-engine",
  "zcv-git",
@@ -7505,6 +7506,15 @@ dependencies = [
  "zcv-project",
  "zcv-theme",
  "zcv-ui",
+]
+
+[[package]]
+name = "zcv-assets"
+version = "0.7.7"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "rust-embed",
 ]
 
 [[package]]
@@ -7558,6 +7568,7 @@ dependencies = [
  "gpui",
  "serde",
  "serde_json",
+ "zcv-assets",
 ]
 
 [[package]]
@@ -7616,7 +7627,10 @@ name = "zcv-theme"
 version = "0.7.7"
 dependencies = [
  "gpui",
+ "serde",
+ "serde_json",
  "toml 0.8.23",
+ "zcv-assets",
 ]
 
 [[package]]

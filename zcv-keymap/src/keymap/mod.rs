@@ -1,7 +1,8 @@
 //! keymap —— 快捷键加载器。
 //!
-//! 编译时通过 `include_str!` 嵌入 JSON，运行时通过 GPUI action registry 解析为[`KeyBindings`]，供应用注册和 UI 反向查询。
+//! 内置平台快捷键经 GPUI action registry 解析为 [`KeyBindings`]，供应用注册和 UI 反向查询。
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
@@ -146,7 +147,7 @@ impl gpui::Global for KeyBindings {}
 ///   2. `cx.set_global(keybindings)`
 pub fn load(cx: &App) -> Result<KeyBindings> {
     let (source, json) = platform_keymap();
-    load_json(source, json, cx)
+    load_json(source, &json, cx)
 }
 
 pub fn load_json(source: &str, json: &str, cx: &App) -> Result<KeyBindings> {
@@ -210,22 +211,22 @@ struct RawBindingGroup {
     bindings: BTreeMap<String, String>,
 }
 
-/// 按当前平台编译对应的默认快捷键文件。
-fn platform_keymap() -> (&'static str, &'static str) {
+/// 读取当前平台的默认快捷键。
+fn platform_keymap() -> (&'static str, Cow<'static, str>) {
     #[cfg(target_os = "macos")]
     return (
         "default-macos.json",
-        include_str!("../../assets/keymaps/default-macos.json"),
+        zcv_assets::text("keymaps/default-macos.json").expect("内置 macOS 快捷键应存在"),
     );
     #[cfg(target_os = "windows")]
     return (
         "default-windows.json",
-        include_str!("../../assets/keymaps/default-windows.json"),
+        zcv_assets::text("keymaps/default-windows.json").expect("内置 Windows 快捷键应存在"),
     );
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     return (
         "default-linux.json",
-        include_str!("../../assets/keymaps/default-linux.json"),
+        zcv_assets::text("keymaps/default-linux.json").expect("内置 Linux 快捷键应存在"),
     );
 }
 
@@ -301,12 +302,13 @@ mod tests {
                 "default-windows.json",
             ] {
                 let json = match source {
-                    "default-macos.json" => include_str!("../../assets/keymaps/default-macos.json"),
-                    "default-linux.json" => include_str!("../../assets/keymaps/default-linux.json"),
-                    _ => include_str!("../../assets/keymaps/default-windows.json"),
+                    "default-macos.json" => zcv_assets::text("keymaps/default-macos.json"),
+                    "default-linux.json" => zcv_assets::text("keymaps/default-linux.json"),
+                    _ => zcv_assets::text("keymaps/default-windows.json"),
                 };
                 let groups: Vec<RawBindingGroup> =
-                    serde_json::from_str(json).expect("keymap 必须是合法 JSON");
+                    serde_json::from_str(&json.expect("内置快捷键应存在"))
+                        .expect("keymap 必须是合法 JSON");
                 let editor = groups
                     .iter()
                     .find(|group| group.context.as_deref() == Some("Editor"))

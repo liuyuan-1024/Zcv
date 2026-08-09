@@ -1,7 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod active_buffer_language;
-mod assets;
 mod breadcrumbs;
 mod cursor_position;
 mod diagnostics;
@@ -21,32 +20,28 @@ use gpui::{
     WindowOptions, point, prelude::*, px, size,
 };
 
-use assets::{EmbeddedAssets, embedded_fonts};
 use workspace::{Dock, Pane, Workspace};
+use zcv_assets::Assets;
 
 fn main() {
-    Application::new()
-        .with_assets(EmbeddedAssets)
-        .run(|cx: &mut App| {
-            cx.text_system()
-                .add_fonts(embedded_fonts())
-                .expect("内置字体应能注册");
+    Application::new().with_assets(Assets).run(|cx: &mut App| {
+        Assets.load_fonts(cx).expect("内置字体应能注册");
 
-            settings::init(cx);
+        settings::init(cx);
 
-            // 初始项目根：开发构建打开 zcv 工作区本身，正式构建打开启动目录。
-            #[cfg(debug_assertions)]
-            let initial_root = {
-                let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-                crate_dir.parent().unwrap_or(&crate_dir).to_path_buf()
-            };
-            #[cfg(not(debug_assertions))]
-            let initial_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // 初始项目根：开发构建打开 zcv 工作区本身，正式构建打开启动目录。
+        #[cfg(debug_assertions)]
+        let initial_root = {
+            let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            crate_dir.parent().unwrap_or(&crate_dir).to_path_buf()
+        };
+        #[cfg(not(debug_assertions))]
+        let initial_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-            open_project_window(initial_root, cx).expect("主窗口应能创建");
+        open_project_window(initial_root, cx).expect("主窗口应能创建");
 
-            cx.activate(true);
-        });
+        cx.activate(true);
+    });
 }
 
 /// 打开一个项目窗口（主窗口与「切换项目」的新窗口入口共用）。
@@ -124,19 +119,22 @@ mod tests {
             for (source, json) in [
                 (
                     "default-macos.json",
-                    include_str!("../../zcv-keymap/assets/keymaps/default-macos.json"),
+                    zcv_assets::text("keymaps/default-macos.json")
+                        .expect("内置 macOS 快捷键应存在"),
                 ),
                 (
                     "default-linux.json",
-                    include_str!("../../zcv-keymap/assets/keymaps/default-linux.json"),
+                    zcv_assets::text("keymaps/default-linux.json")
+                        .expect("内置 Linux 快捷键应存在"),
                 ),
                 (
                     "default-windows.json",
-                    include_str!("../../zcv-keymap/assets/keymaps/default-windows.json"),
+                    zcv_assets::text("keymaps/default-windows.json")
+                        .expect("内置 Windows 快捷键应存在"),
                 ),
             ] {
                 let keybindings =
-                    load_json(source, json, cx).expect("每个平台的全部内置绑定都应能构建");
+                    load_json(source, &json, cx).expect("每个平台的全部内置绑定都应能构建");
                 assert!(!keybindings.bindings.is_empty());
                 assert!(
                     cx.build_action("workspace::Save", None).is_ok(),

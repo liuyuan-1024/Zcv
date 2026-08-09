@@ -1298,7 +1298,7 @@ mod tests {
         );
     }
 
-    /// 创建带一个修改文件的临时 git 仓库（对齐 zcv-git 测试模式）。
+    /// 创建带一个修改文件的临时 git 仓库（对齐 git 层测试模式）。
     fn test_repo() -> (PathBuf, TempDir) {
         let temp_dir = tempfile::tempdir().expect("应创建临时目录");
         let root = temp_dir.path().to_path_buf();

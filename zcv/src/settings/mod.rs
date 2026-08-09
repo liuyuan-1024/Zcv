@@ -281,7 +281,7 @@ fn parse_user_settings(content: &str) -> Result<UserSettingsContent> {
     if content.trim().is_empty() {
         return Ok(UserSettingsContent::default());
     }
-    serde_json_lenient::from_str(content).context("不是合法的 ZCV settings JSON")
+    serde_json_lenient::from_str(content).context("不是合法的 settings JSON")
 }
 
 #[cfg(test)]

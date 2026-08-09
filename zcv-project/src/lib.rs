@@ -1,4 +1,4 @@
-//! zcv-project —— 项目数据层：仓库发现与 git 状态编排、文件系统监听、项目快照。
+//! 项目数据层：仓库发现与 git 状态编排、文件系统监听、项目快照。
 
 mod fs_watcher;
 mod project;

@@ -1,6 +1,6 @@
 //! git 命令行的同步封装：`.git` 目录解析与命令执行。
 //!
-//! 仓库发现（沿祖先查找 / 项目树内遍历）是项目管理层的决策，由 `zcv` 的 worktree 快照层负责（对齐 Zed：发现逻辑在 worktree crate，git crate 只做命令封装与输出解析）。
+//! 仓库发现（沿祖先查找 / 项目树内遍历）是项目管理层的决策，由 worktree 快照层负责（对齐 Zed：发现逻辑在 worktree crate，git crate 只做命令封装与输出解析）。
 //! 所有方法同步阻塞执行，由调用方负责移入后台线程。
 
 use crate::diff::parse_diff_hunks_per_path;

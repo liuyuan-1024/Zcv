@@ -16,7 +16,7 @@ pub(crate) fn drop_offloaded<T: Send + 'static>(value: T) {
     let tx = DROP_TX.get_or_init(|| {
         let (tx, rx) = mpsc::channel();
         thread::Builder::new()
-            .name("zcv-syntax-drop".into())
+            .name("syntax-drop".into())
             .spawn(move || {
                 // 收到的每个值在迭代末尾释放，即从池线程完成 dealloc。
                 while rx.recv().is_ok() {}

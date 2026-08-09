@@ -71,7 +71,7 @@ mod tests {
         for path in [
             "fonts/JetBrainsMono-Regular.ttf",
             "icons/settings.svg",
-            "icon_themes/zcv-default.json",
+            "icon_themes/default.json",
             "keymaps/default-linux.json",
             "settings/initial_user_settings.json",
             "themes/onedark.toml",

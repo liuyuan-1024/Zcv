@@ -217,7 +217,7 @@ mod tests {
             .expect("系统时间应晚于 Unix Epoch")
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "zcv-buffer-store-{}-{nonce}-{}.txt",
+            "buffer-store-test-{}-{nonce}-{}.txt",
             std::process::id(),
             NEXT_TEST_FILE_ID.fetch_add(1, Ordering::Relaxed)
         ))

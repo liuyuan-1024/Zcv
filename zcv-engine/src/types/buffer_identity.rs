@@ -1,8 +1,7 @@
 //! Buffer 身份与生命周期状态：表达 Buffer 来源和当前对宿主可见的状态。
 //!
 //! **领域防腐纪律**：引擎 **不认识 `PathBuf` / `Uri`** 这类宿主操作系统概念。
-//! 来源标识只是一个由宿主自由解释的不透明字符串句柄——可以是文件路径、
-//! URL、UUID、ROM 资源 ID、虚拟资源名称，引擎一概不解析、不规范化、不做 I/O。
+//! 来源标识只是一个由宿主自由解释的不透明字符串句柄——可以是文件路径、URL、UUID、ROM 资源 ID、虚拟资源名称，引擎一概不解析、不规范化、不做 I/O。
 //! 路径/URL 的解析与持久化策略留给宿主层。
 
 use std::sync::Arc;
@@ -19,8 +18,7 @@ pub enum OriginKind {
 
 /// Buffer 的来源句柄。
 ///
-/// **不透明且不可解析**：引擎只用它做相等性 / 哈希 / 调试展示，**不**根据它做 I/O、
-/// 不规范化、不在乎它是路径还是 URI 还是其他形态。
+/// **不透明且不可解析**：引擎只用它做相等性 / 哈希 / 调试展示，**不**根据它做 I/O、不规范化、不在乎它是路径还是 URI 还是其他形态。
 ///
 /// 句柄在内部以共享字符串存储，避免 `BufferOrigin` clone 时复制文本内容。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -70,8 +68,7 @@ impl Default for BufferOrigin {
 
 /// Buffer 当前对宿主可见的生命周期状态。
 ///
-/// 只暴露由 Buffer 状态机真实承载的状态；Loading / Reloading / Conflict 等
-/// 待对应生命周期语义实现后再进入 public API。
+/// 只暴露由 Buffer 状态机真实承载的状态；Loading / Reloading / Conflict 等待对应生命周期语义实现后再进入 public API。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BufferState {
     /// 当前文本与最近保存基线一致，且 Buffer 允许正常编辑。
@@ -89,13 +86,13 @@ mod tests {
     #[test]
     fn origin_handle_should_remain_host_opaque() {
         let anonymous = BufferOrigin::anonymous();
-        let external = BufferOrigin::external("zcv://opaque/path");
+        let external = BufferOrigin::external("test://opaque/path");
 
         assert_eq!(anonymous.kind(), OriginKind::Anonymous);
         assert_eq!(anonymous.handle(), None);
         assert!(anonymous.is_anonymous());
         assert_eq!(external.kind(), OriginKind::External);
-        assert_eq!(external.handle(), Some("zcv://opaque/path"));
+        assert_eq!(external.handle(), Some("test://opaque/path"));
         assert!(!external.is_anonymous());
     }
 }

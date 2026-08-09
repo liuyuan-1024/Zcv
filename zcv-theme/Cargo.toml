@@ -2,7 +2,7 @@
 name = "zcv-theme"
 version.workspace = true
 edition.workspace = true
-description = "zcv 共享主题、视觉 token 与语法高亮"
+description = "共享主题、视觉 token 与语法高亮"
 
 [dependencies]
 gpui.workspace = true

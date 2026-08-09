@@ -29,7 +29,7 @@ fn main() {
 
         settings::init(cx);
 
-        // 初始项目根：开发构建打开 zcv 工作区本身，正式构建打开启动目录。
+        // 初始项目根：开发构建打开当前工作区，正式构建打开启动目录。
         #[cfg(debug_assertions)]
         let initial_root = {
             let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

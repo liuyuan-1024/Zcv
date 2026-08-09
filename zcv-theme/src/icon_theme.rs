@@ -115,7 +115,7 @@ fn directory_icon(icons: &DirectoryIcons, expanded: bool) -> Option<&str> {
 }
 
 static DEFAULT_ICON_THEME: LazyLock<IconTheme> = LazyLock::new(|| {
-    let source = zcv_assets::text("icon_themes/zcv-default.json").expect("内置默认图标主题应存在");
+    let source = zcv_assets::text("icon_themes/default.json").expect("内置默认图标主题应存在");
     serde_json::from_str(&source).expect("内置默认图标主题应合法")
 });
 

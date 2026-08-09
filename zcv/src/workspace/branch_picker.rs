@@ -261,7 +261,7 @@ impl Render for BranchPicker {
         // glyph 上显示当前分支名，没有时显示占位。
         let glyph = Glyph::icon_text(
             "top-bar.branch",
-            "icons/version_control.svg",
+            "icons/git_branch.svg",
             self.current_branch.as_deref().unwrap_or("--"),
         )
         .label("分支")

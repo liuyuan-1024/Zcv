@@ -1,6 +1,7 @@
+use std::borrow::Cow;
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -11,8 +12,9 @@ use zcv_theme::ThemeChoice;
 
 use zcv_project::{FsWatcher, Watcher};
 
-const INITIAL_USER_SETTINGS: &str =
-    include_str!("../../assets/settings/initial_user_settings.json");
+static INITIAL_USER_SETTINGS: LazyLock<Cow<'static, str>> = LazyLock::new(|| {
+    zcv_assets::text("settings/initial_user_settings.json").expect("内置初始设置应存在")
+});
 const SETTINGS_RELOAD_DEBOUNCE: Duration = Duration::from_millis(75);
 const SETTINGS_RELOAD_RETRY_DELAY: Duration = Duration::from_millis(50);
 
@@ -75,9 +77,9 @@ pub(crate) struct UserSettings {
     pub(crate) file_scan_exclusions: Vec<String>,
 }
 
-/// 解析内置初始设置作为默认层（单一数据源：`initial_user_settings.json`）。
+/// 解析内置初始设置作为默认层，保证默认值只有一个数据源。
 fn default_content() -> UserSettingsContent {
-    serde_json_lenient::from_str(INITIAL_USER_SETTINGS).expect("内置初始设置应合法")
+    serde_json_lenient::from_str(&INITIAL_USER_SETTINGS).expect("内置初始设置应合法")
 }
 
 impl Default for UserSettings {
@@ -269,7 +271,7 @@ pub(crate) fn ensure_user_settings_file() -> Result<&'static Path> {
     let parent = path.parent().context("设置文件缺少父目录")?;
     fs::create_dir_all(parent).with_context(|| format!("无法创建设置目录 {}", parent.display()))?;
     if !path.exists() {
-        fs::write(path, INITIAL_USER_SETTINGS)
+        fs::write(path, INITIAL_USER_SETTINGS.as_bytes())
             .with_context(|| format!("无法创建设置文件 {}", path.display()))?;
     }
     Ok(path)
@@ -399,7 +401,7 @@ mod tests {
 
     #[test]
     fn bundled_initial_settings_are_valid() {
-        let content = parse_user_settings(INITIAL_USER_SETTINGS).unwrap();
+        let content = parse_user_settings(&INITIAL_USER_SETTINGS).unwrap();
         assert_eq!(UserSettings::merge(content), UserSettings::default());
     }
 

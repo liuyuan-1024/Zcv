@@ -10,6 +10,7 @@
 [workspace]
 members = [
     "zcv",
+    "zcv-assets",
     "zcv-buffer-diff",
     "zcv-editor",
     "zcv-engine",
@@ -23,6 +24,7 @@ members = [
 ]
 default-members = [
     "zcv",
+    "zcv-assets",
     "zcv-buffer-diff",
     "zcv-editor",
     "zcv-engine",
@@ -44,6 +46,7 @@ doc_lazy_continuation = "allow"
 
 [workspace.dependencies]
 # ---- 内部 crate ----
+zcv-assets = { path = "zcv-assets" }
 zcv-buffer-diff = { path = "zcv-buffer-diff" }
 zcv-editor = { path = "zcv-editor" }
 zcv-engine = { path = "zcv-engine" }
@@ -96,6 +99,7 @@ lsp-types = "0.97"
 
 # ---- 桌面 UI ----
 gpui = { version = "0.2.2", features = ["test-support"] }
+rust-embed = { version = "8.11", features = ["include-exclude"] }
 
 # ---- 文件监听 ----
 notify = "7"

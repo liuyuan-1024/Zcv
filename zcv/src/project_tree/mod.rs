@@ -708,7 +708,7 @@ fn render_row(
             .child(name)
     };
 
-    tree::render_row_base(depth, is_dir, row.expanded, content, cx)
+    tree::render_row_base(depth, &row.path, is_dir, row.expanded, content, cx)
         .cursor_pointer()
         .when(marked, |el| el.bg(color::current(cx).element_selected))
         .hover(|style| style.bg(color::current(cx).element_hover))
@@ -744,7 +744,7 @@ impl Panel for ProjectTree {
     type ToggleAction = ToggleProjectTree;
 
     fn icon() -> &'static str {
-        "icons/project_tree.svg"
+        "icons/file_tree.svg"
     }
     fn label() -> &'static str {
         "项目树"

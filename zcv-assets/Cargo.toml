@@ -1,0 +1,13 @@
+[package]
+name = "zcv-assets"
+version.workspace = true
+edition.workspace = true
+description = "内置资源入口"
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+rust-embed.workspace = true
+
+[lints]
+workspace = true

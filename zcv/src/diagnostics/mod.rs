@@ -23,7 +23,7 @@ impl StatusItemView for DiagnosticsButton {
 
 impl Render for DiagnosticsButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        Glyph::icon_text("diagnostics-button", "icons/diagnostics.svg", "0")
+        Glyph::icon_text("diagnostics-button", "icons/warning.svg", "0")
             .label("诊断")
             .shortcut(&ToggleDiagnostics, cx)
             .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleDiagnostics), cx))

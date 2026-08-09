@@ -6,7 +6,10 @@ description = "zcv 共享主题、视觉 token 与语法高亮"
 
 [dependencies]
 gpui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
+zcv-assets.workspace = true
 
 [lints]
 workspace = true

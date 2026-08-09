@@ -1,8 +1,9 @@
 //! 主题数据：单一解析器与主题注册表。
 //!
-//! 对齐 Zed 的 `ThemeRegistry`：一个主题文件一次解析出调色板与语法高亮表，palette / syntax / color 各模块只消费解析结果，不再各自解析 TOML。
+//! 对齐 Zed 的 `ThemeRegistry`：每个内置主题统一解析为调色板与语法高亮表，
+//! palette / syntax / color 各模块只消费解析结果。
 //!
-//! 新增主题：把主题 TOML 放入 `assets/themes/`，并在下方 `THEMES` 注册表加一行（`id`/`label`/`appearance` 由描述符声明），其余代码零改动。
+//! 新增内置主题只需提供主题描述符并登记到 `THEMES`，其余模块无需改动。
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -24,26 +25,20 @@ pub(crate) struct ThemeData {
     pub(crate) syntax_table: Arc<BTreeMap<&'static str, HighlightStyle>>,
 }
 
-const ONE_DARK_TOML: &str = include_str!("../assets/themes/onedark.toml");
-const ONE_LIGHT_TOML: &str = include_str!("../assets/themes/onelight.toml");
-
 /// 主题注册表（编译期内嵌）：新增主题在此登记一行。
 static THEMES: OnceLock<Vec<ThemeData>> = OnceLock::new();
 
 pub(crate) fn themes() -> &'static [ThemeData] {
     THEMES.get_or_init(|| {
+        let one_dark = zcv_assets::text("themes/onedark.toml").expect("内置深色主题应存在");
+        let one_light = zcv_assets::text("themes/onelight.toml").expect("内置浅色主题应存在");
         vec![
-            build_theme(
-                "one-dark",
-                "One Dark",
-                WindowAppearance::Dark,
-                ONE_DARK_TOML,
-            ),
+            build_theme("one-dark", "One Dark", WindowAppearance::Dark, &one_dark),
             build_theme(
                 "one-light",
                 "One Light",
                 WindowAppearance::Light,
-                ONE_LIGHT_TOML,
+                &one_light,
             ),
         ]
     })
@@ -58,7 +53,7 @@ fn build_theme(
     id: &'static str,
     label: &'static str,
     appearance: WindowAppearance,
-    source: &'static str,
+    source: &str,
 ) -> ThemeData {
     // 内嵌数据错误属于构建期缺陷：直接 panic 暴露，而不是运行时降级掩盖。
     parse_theme(id, label, appearance, source).expect("内嵌主题文件应可解析")

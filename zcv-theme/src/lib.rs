@@ -8,11 +8,14 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use gpui::{App, Font, FontFallbacks, Pixels, Window, font, px};
 
 pub mod color;
+mod icon_theme;
 mod palette;
 pub mod syntax;
 mod theme_data;
 
 use theme_data::{ThemeData, theme_by_id, themes};
+
+pub use icon_theme::{FileIcons, IconTheme, default_icon_theme};
 
 /// 主题配置：跟随系统外观，或显式指定注册表中的主题。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

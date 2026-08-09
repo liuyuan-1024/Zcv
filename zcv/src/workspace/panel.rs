@@ -126,7 +126,7 @@ make_placeholder_panel!(
     OutlinePanel,
     super::dock::ToggleOutline,
     "Outline",
-    "icons/outline.svg",
+    "icons/list_tree.svg",
     "大纲"
 );
 
@@ -150,6 +150,6 @@ make_placeholder_panel!(
     KeyboardShortcutsPanel,
     super::dock::ToggleKeyboardShortcuts,
     "KeyboardShortcuts",
-    "icons/keyboard_shortcuts.svg",
+    "icons/keyboard.svg",
     "快捷键"
 );

@@ -1,18 +1,17 @@
 //! 树行渲染辅助函数 —— 缩进、图标、名称、选中框、git 状态着色。
 
+use std::path::Path;
+
 use gpui::{App, Pixels, div, prelude::*, px};
 
 use crate::ui::SvgIcon;
 use zcv_git::{FileStatus, StatusCode};
-use zcv_theme::{color, space, typography};
-
-const FOLDER: &str = "icons/folder.svg";
-const FOLDER_OPEN: &str = "icons/folder_open.svg";
-const FILE: &str = "icons/file.svg";
+use zcv_theme::{FileIcons, color, space, typography};
 
 /// 树行完整渲染：行骨架 + 缩进竖线 + 图标 + 行内容。
 pub fn render_row_base(
     depth: usize,
+    path: &Path,
     is_dir: bool,
     expanded: bool,
     content: impl IntoElement,
@@ -20,7 +19,7 @@ pub fn render_row_base(
 ) -> gpui::Div {
     row_skeleton(depth)
         .children(guide_lines(depth, cx))
-        .child(icon(is_dir, expanded))
+        .child(icon(path, is_dir, expanded))
         .child(label(content))
 }
 
@@ -137,12 +136,12 @@ fn guide_lines(depth: usize, cx: &App) -> Vec<gpui::Div> {
 }
 
 /// 根据条目类型和展开/折叠状态返回对应的图标元素。
-fn icon(is_dir: bool, expanded: bool) -> impl IntoElement {
+fn icon(path: &Path, is_dir: bool, expanded: bool) -> impl IntoElement {
     let m = metrics();
     let path = if is_dir {
-        if expanded { FOLDER_OPEN } else { FOLDER }
+        FileIcons::get_folder_icon(expanded, path)
     } else {
-        FILE
+        FileIcons::get_icon(path)
     };
     div().child(SvgIcon::new(path).size(m.icon_size))
 }

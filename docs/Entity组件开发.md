@@ -1,6 +1,6 @@
 # Entity 组件开发流程
 
-> 基于 zcv 现有组件实践（Workspace、StatusBar、Pane、ProjectTree）提炼的标准流程。
+> 基于当前项目的组件实践（Workspace、StatusBar、Pane、ProjectTree）提炼的标准流程。
 > 新 Entity 组件一律按此流程推进，不做推测性扩展。
 
 ---
@@ -424,7 +424,7 @@ impl Render for MyComponent {
 | 列表很长（100+ 项）？ | `uniform_list()` |
 | 纯视觉无交互？ | 不做 Entity，函数式即可 |
 
-## 六、zcv 现有组件验证
+## 六、现有组件验证
 
 | 组件 | 类型 | 焦点 | 快捷键 | 内部状态 | 跨组件通信 |
 |---|---|---|---|---|---|

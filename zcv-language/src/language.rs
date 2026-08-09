@@ -132,7 +132,7 @@ impl LanguageEntry {
 
 /// 语言注册表（对齐 Zed `LanguageRegistry`）：语言声明 + 文件识别 + 惰性加载。
 ///
-/// zcv 无扩展系统，注册条目来自内置语言数据（`builtin_languages`）；
+/// 当前尚无扩展系统，注册条目来自内置语言数据（`builtin_languages`）；
 /// 若未来支持用户配置覆盖 matcher，在此注册表上扩展即可。
 pub(crate) struct LanguageRegistry {
     languages: Vec<LanguageEntry>,

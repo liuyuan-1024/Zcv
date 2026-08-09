@@ -4,8 +4,8 @@
 //! - `chars`：每个 UTF-8 字符的起始字节 bit=1（LSB 对应文本字节 0）；
 //! - `tabs`：每个 tab 字节 bit=1。
 //!
-//! zcv 渲染按行消费 chunk 流（128 字节对齐，与 Zed rope chunk 上限一致）；
-//! 跨行的换行位图在 Zed 中由 `newlines` 承担，zcv 行级渲染不需要，裁掉。
+//! 渲染层按行消费 chunk 流（128 字节对齐，与 Zed rope chunk 上限一致）；
+//! 跨行的换行位图在 Zed 中由 `newlines` 承担，当前行级渲染不需要，裁掉。
 //!
 //! 渲染对齐 Zed highlighted_chunks：行文本（含行内提示注入）按语法高亮与选区边界切段，段内由 `TabExpandedChunks` 位图驱动 tab 展开，产出带样式与 is_tab/is_inlay 标记的chunk 流（`synthesize_line_chunks`），渲染端逐 chunk 生成 TextRun 后统一 shape。
 

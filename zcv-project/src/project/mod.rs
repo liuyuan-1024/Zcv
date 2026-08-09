@@ -646,7 +646,7 @@ mod tests {
             .expect("系统时间应晚于 Unix Epoch")
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "zcv-project-save-{}-{nonce}.txt",
+            "project-save-test-{}-{nonce}.txt",
             std::process::id()
         ))
     }

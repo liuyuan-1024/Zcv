@@ -1968,7 +1968,7 @@ mod tests {
 
     #[gpui::test]
     fn syntax_captures_apply_color_and_font_modifiers(cx: &mut TestAppContext) {
-        // 显式挂载内置深色主题：capture 样式表来自 zcv-theme 的静态状态，
+        // 显式挂载内置深色主题：capture 样式表来自主题模块的静态状态，
         // 不依赖其他测试的执行顺序。
         cx.update(|cx| {
             zcv_theme::ThemeChoice::Named("one-dark").apply(cx, None);

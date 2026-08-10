@@ -2,11 +2,24 @@
 name = "zcv-workspace"
 version.workspace = true
 edition.workspace = true
-description = "Workspace Item 协议与类型擦除句柄"
+description = "工作区框架：Item 协议、Pane/Dock/StatusBar/Toolbar 与 Workspace 装配"
 
 [dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zcv-actions.workspace = true
 gpui.workspace = true
 zcv-engine.workspace = true
+zcv-git.workspace = true
+zcv-keymap.workspace = true
+zcv-picker.workspace = true
+zcv-project.workspace = true
+zcv-theme.workspace = true
+zcv-ui.workspace = true
+
+[dev-dependencies]
+gpui.workspace = true
 
 [lints]
 workspace = true

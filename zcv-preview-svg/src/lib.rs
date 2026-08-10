@@ -10,5 +10,5 @@ use provider::SvgPreviewProvider;
 
 /// 注册 SVG Preview Provider。可重复调用。
 pub fn init(cx: &mut App) {
-    zcv_preview::register(SvgPreviewProvider, cx);
+    zcv_workspace::register(SvgPreviewProvider, cx);
 }

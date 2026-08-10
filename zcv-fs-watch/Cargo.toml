@@ -1,0 +1,21 @@
+[package]
+name = "zcv-fs-watch"
+version.workspace = true
+edition.workspace = true
+description = "通用 OS 文件监听基础设施（对齐 Zed 的 fs watcher）"
+
+[dependencies]
+anyhow.workspace = true
+async-channel.workspace = true
+crossbeam-channel.workspace = true
+log.workspace = true
+notify.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -6,7 +6,16 @@ use std::sync::Arc;
 
 use gpui::{
     App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, IntoElement, Pixels,
-    Point, Render, Styled, Window, actions, div, point, prelude::*,
+    Point, Render, Styled, Window, div, point, prelude::*,
+};
+pub use zcv_actions::{
+    Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
+    DeleteToPreviousWordStart, ExpandSelection, Indent, MoveDown, MoveLeft, MoveLineDown,
+    MoveLineUp, MovePageDown, MovePageUp, MoveRight, MoveToBeginning, MoveToBeginningOfLine,
+    MoveToEnd, MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Outdent,
+    Paste, Redo, SelectAll, SelectDown, SelectLeft, SelectPageDown, SelectPageUp, SelectRight,
+    SelectToBeginning, SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine, SelectToNextWord,
+    SelectToPreviousWord, SelectUp, ToggleFold, Undo, UnfoldAll,
 };
 use zcv_buffer_diff::{DiffHunk, DiffHunkKind};
 use zcv_engine::{
@@ -25,61 +34,13 @@ use super::scroll::{ScrollManager, ScrollbarThumbState};
 use super::selection::{EditOutcome, EditorSelections, SelectionHistory, replace_selections};
 use zcv_theme::{color, typography};
 
-actions!(
-    editor,
-    [
-        MoveLeft,
-        MoveRight,
-        MoveUp,
-        MoveDown,
-        MoveToPreviousWord,
-        MoveToNextWord,
-        MoveToBeginningOfLine,
-        MoveToEndOfLine,
-        MoveToBeginning,
-        MoveToEnd,
-        MovePageUp,
-        MovePageDown,
-        SelectLeft,
-        SelectRight,
-        SelectUp,
-        SelectDown,
-        SelectToPreviousWord,
-        SelectToNextWord,
-        SelectToBeginningOfLine,
-        SelectToEndOfLine,
-        SelectToBeginning,
-        SelectToEnd,
-        SelectPageUp,
-        SelectPageDown,
-        SelectAll,
-        ExpandSelection,
-        Backspace,
-        Delete,
-        DeleteToPreviousWordStart,
-        DeleteToNextWordEnd,
-        DeleteToBeginningOfLine,
-        DeleteToEndOfLine,
-        Newline,
-        MoveLineUp,
-        MoveLineDown,
-        Undo,
-        Redo,
-        Cut,
-        Copy,
-        Paste,
-        Indent,
-        Outdent,
-        ToggleFold,
-        UnfoldAll,
-    ]
-);
-
 /// Editor 自身的领域事件。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditorEvent {
     /// 编辑器关联的文件路径发生变化。
     PathChanged,
+    /// 文档内容被编辑。
+    Edited,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -848,6 +809,7 @@ impl Editor {
                     }
                 }
                 self.finish_edit(cx);
+                cx.emit(EditorEvent::Edited);
             }
             Err(error) => eprintln!("Editor 编辑事务失败：{error}"),
         }
@@ -873,6 +835,7 @@ impl Editor {
                 let version = self.buffer.read(cx).snapshot().version();
                 self.selections = EditorSelections::from_selection_set(version, &after_selections);
                 self.finish_edit(cx);
+                cx.emit(EditorEvent::Edited);
             }
             Err(error) => eprintln!("Editor 编辑事务失败：{error}"),
         }

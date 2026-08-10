@@ -7,6 +7,7 @@ use gpui::{Context, Entity, Render, Subscription, Window, prelude::*};
 use crate::workspace::StatusItemView;
 use zcv_editor::Editor;
 use zcv_ui::Glyph;
+use zcv_workspace::ItemHandle;
 
 pub(crate) struct ActiveBufferLanguage {
     language: String,
@@ -23,17 +24,17 @@ impl ActiveBufferLanguage {
 }
 
 impl StatusItemView for ActiveBufferLanguage {
-    fn set_active_editor(&mut self, editor: Option<&Entity<Editor>>, cx: &mut Context<Self>) {
+    fn set_active_pane_item(&mut self, item: Option<&dyn ItemHandle>, cx: &mut Context<Self>) {
         // 取消旧订阅
         self._subscription = None;
 
-        if let Some(editor) = editor {
+        if let Some(editor) = item.and_then(|item| item.act_as::<Editor>(cx)) {
             // 订阅 Editor 变化（编辑可能改变首行 shebang，从而影响语言检测）
-            self._subscription = Some(cx.observe(editor, |this, ed, cx| {
+            self._subscription = Some(cx.observe(&editor, |this, ed, cx| {
                 this.sync_language(&ed, cx);
             }));
             // 立即检测
-            self.sync_language(editor, cx);
+            self.sync_language(&editor, cx);
         } else {
             self.language = String::new();
         }

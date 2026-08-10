@@ -4,16 +4,14 @@
 //! - `Panel` trait 定义面板接口
 //! - `PanelHandle` trait object 抹消具体类型，使 Dock 能统一管理异构面板
 
-use gpui::{Action, AnyView, App, Context, Entity, FocusHandle, Render, Window, div, prelude::*};
-
-use zcv_theme::color;
+use gpui::{Action, AnyView, App, Context, Entity, FocusHandle, Render, Window};
 
 // ═══ Panel trait ═══════════════════════════════════════════════════
 
 /// 面板核心接口。每个面板是一个独立 Entity<T: Panel>。
 ///
 /// toggle action 由面板类型自身声明，快捷键、底栏按钮与 Workspace 分派都从它派生，不再维护字符串映射表。
-pub(crate) trait Panel: Render + Sized {
+pub trait Panel: Render + Sized {
     /// 该面板的 toggle action 类型。
     type ToggleAction: Action + Default;
 
@@ -38,7 +36,7 @@ pub(crate) trait Panel: Render + Sized {
 // ═══ PanelHandle trait object ══════════════════════════════════════
 
 /// 抹消具体类型的面板句柄，供 Dock 统一存储和管理异构面板。
-pub(crate) trait PanelHandle: Send + Sync {
+pub trait PanelHandle: Send + Sync {
     fn icon(&self) -> &'static str;
     fn label(&self) -> &'static str;
     fn toggle_action(&self, cx: &App) -> Box<dyn Action>;
@@ -74,82 +72,3 @@ impl<T: Panel + 'static> PanelHandle for Entity<T> {
         AnyView::from(self.clone())
     }
 }
-
-// ═══ 占位面板 ═════════════════════════════════════════════════════
-
-macro_rules! make_placeholder_panel {
-    ($name:ident, $toggle_action:ty, $persistent:expr, $icon:expr, $label:expr) => {
-        pub(crate) struct $name {
-            focus: FocusHandle,
-        }
-
-        impl $name {
-            pub fn new(cx: &mut Context<Self>) -> Self {
-                Self {
-                    focus: cx.focus_handle(),
-                }
-            }
-        }
-
-        impl Panel for $name {
-            type ToggleAction = $toggle_action;
-
-            fn icon() -> &'static str {
-                $icon
-            }
-            fn label() -> &'static str {
-                $label
-            }
-            fn focus_handle(&self, _cx: &App) -> FocusHandle {
-                self.focus.clone()
-            }
-        }
-
-        impl Render for $name {
-            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .track_focus(&self.focus)
-                    .key_context($persistent)
-                    .tab_index(0)
-                    .text_color(color::current(cx).text_placeholder)
-                    .child($label)
-            }
-        }
-    };
-}
-
-make_placeholder_panel!(
-    OutlinePanel,
-    super::dock::ToggleOutline,
-    "Outline",
-    "icons/list_tree.svg",
-    "大纲"
-);
-
-make_placeholder_panel!(
-    TerminalPanel,
-    super::dock::ToggleTerminal,
-    "Terminal",
-    "icons/terminal.svg",
-    "终端"
-);
-
-make_placeholder_panel!(
-    DebugPanel,
-    super::dock::ToggleDebug,
-    "Debug",
-    "icons/debug.svg",
-    "调试"
-);
-
-make_placeholder_panel!(
-    KeyboardShortcutsPanel,
-    super::dock::ToggleKeyboardShortcuts,
-    "KeyboardShortcuts",
-    "icons/keyboard.svg",
-    "快捷键"
-);

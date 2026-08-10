@@ -294,8 +294,8 @@ mod tests {
 
     use zcv_git::GitRepository;
 
-    use super::super::test_support::{run_git, test_git_repo};
     use super::*;
+    use crate::project::test_support::{run_git, test_git_repo};
 
     /// 构造按注入表查询的 git 状态闭包（测试替身）。
     fn git_status_from(

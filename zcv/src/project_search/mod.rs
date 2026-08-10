@@ -2,12 +2,12 @@
 //!
 //! 对标 Zed 的 `SearchButton`。当前为占位，后续接入搜索状态。
 
-use gpui::{Context, Entity, Render, Window, prelude::*};
+use gpui::{Context, Render, Window, prelude::*};
 
 use crate::workspace::StatusItemView;
 use crate::workspace::ToggleProjectSearch;
-use zcv_editor::Editor;
 use zcv_ui::Glyph;
+use zcv_workspace::ItemHandle;
 
 pub(crate) struct ProjectSearchButton;
 
@@ -18,7 +18,7 @@ impl ProjectSearchButton {
 }
 
 impl StatusItemView for ProjectSearchButton {
-    fn set_active_editor(&mut self, _editor: Option<&Entity<Editor>>, _cx: &mut Context<Self>) {}
+    fn set_active_pane_item(&mut self, _item: Option<&dyn ItemHandle>, _cx: &mut Context<Self>) {}
 }
 
 impl Render for ProjectSearchButton {

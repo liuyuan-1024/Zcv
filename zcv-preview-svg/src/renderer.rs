@@ -11,9 +11,11 @@ pub(crate) fn rasterize_svg(
     bytes: &[u8],
     resources_dir: Option<PathBuf>,
 ) -> Result<RasterizedSvg, String> {
-    let mut options = resvg::usvg::Options::default();
-    options.resources_dir = resources_dir;
-    options.fontdb = system_font_database();
+    let options = resvg::usvg::Options {
+        resources_dir,
+        fontdb: system_font_database(),
+        ..Default::default()
+    };
     let tree = resvg::usvg::Tree::from_data(bytes, &options).map_err(|error| error.to_string())?;
     let svg_size = tree.size();
     let longest_edge = svg_size.width().max(svg_size.height());

@@ -3,10 +3,6 @@
 //! `Project` 管理项目根、目录快照（Worktree）、文件 Buffer 生命周期和文件系统监听。
 //! 窗口布局、Pane、Dock 与其他界面状态仍由 `Workspace` 管理。
 
-mod buffer_store;
-mod git_store;
-mod worktree;
-
 #[cfg(test)]
 #[path = "test/test_support.rs"]
 pub(crate) mod test_support;
@@ -21,15 +17,15 @@ use zcv_engine::{Buffer, BufferLoadError, BufferSaveError};
 use zcv_git::FileStatus;
 use zcv_language::LanguageBuffer;
 
-use self::buffer_store::BufferStore;
-use self::worktree::Worktree;
-use crate::fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
+use super::buffer_store::BufferStore;
+use super::worktree::Worktree;
+use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 
 // 项目树（UI）经 project 模块门面消费 worktree 的领域行模型与路径语义。
-pub use self::worktree::{TreeRow, new_entry_destination, rename_destination, translate_path};
+pub use super::worktree::{TreeRow, new_entry_destination, rename_destination, translate_path};
 // git 操作（fetch/pull/push）经 project 门面访问 git_store 的后台执行入口；
 // 快照与事件类型供版本管理面板消费。
-pub use self::git_store::{
+pub use super::git_store::{
     GitOperationKind, GitStore, GitStoreEvent, RemoteOperationState, RepositorySnapshot,
     StatusEntry,
 };

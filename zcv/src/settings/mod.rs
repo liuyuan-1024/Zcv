@@ -8,9 +8,8 @@ use anyhow::{Context as _, Result};
 use gpui::{App, Global, Task};
 use serde::Deserialize;
 use zcv_editor::SoftWrap;
+use zcv_fs_watch::{FsWatcher, Watcher};
 use zcv_theme::ThemeChoice;
-
-use zcv_project::{FsWatcher, Watcher};
 
 static INITIAL_USER_SETTINGS: LazyLock<Cow<'static, str>> = LazyLock::new(|| {
     zcv_assets::text("settings/initial_user_settings.json").expect("内置初始设置应存在")

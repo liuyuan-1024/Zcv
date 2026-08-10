@@ -9,11 +9,12 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, ClickEvent, Context, Corner, Entity, FocusHandle, MouseButton, PathPromptOptions,
-    Pixels, Render, Window, actions, anchored, deferred, div, point, prelude::*, px,
+    Action, App, ClickEvent, Context, Corner, Entity, FocusHandle, Focusable, MouseButton,
+    PathPromptOptions, Pixels, Render, Window, anchored, deferred, div, point, prelude::*, px,
 };
 
 use crate::recent_projects::{self, ProjectEntry};
+use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
 use zcv_keymap::KeyBindings;
 use zcv_picker::{Picker, PickerDelegate, picker_divider};
 use zcv_theme::{color, space, typography};
@@ -22,15 +23,10 @@ use zcv_ui::ListItem;
 
 const PICKER_WIDTH: Pixels = px(360.0);
 
-actions!(
-    project_picker,
-    [ToggleProjectPicker, OpenLocalProject, DeleteRecentProject]
-);
-
 // ═══ 回调 ════════════════════════════════════════════════════════
 
 /// 项目选中回调 —— 参数为项目路径。
-pub(crate) type OnProjectSelected = Rc<dyn Fn(String, &mut Window, &mut App)>;
+pub type OnProjectSelected = Rc<dyn Fn(String, &mut Window, &mut App)>;
 
 // ═══ 数据源 ═══════════════════════════════════════════════════════
 
@@ -216,7 +212,7 @@ impl PickerDelegate for ProjectPickerDelegate {
 /// 项目选择器 —— 自含 glyph 按钮 + 浮层。
 ///
 /// glyph 显示当前项目名称，无项目时显示「选择项目」。
-pub(crate) struct ProjectPicker {
+pub struct ProjectPicker {
     is_open: bool,
     dismiss_flag: Rc<Cell<bool>>,
     focus: FocusHandle,
@@ -251,7 +247,7 @@ impl ProjectPicker {
         projects
     }
 
-    pub(crate) fn new(on_selected: OnProjectSelected, cx: &mut Context<Self>) -> Self {
+    pub fn new(on_selected: OnProjectSelected, cx: &mut Context<Self>) -> Self {
         let projects = Self::load_projects();
         let current_label = projects
             .iter()
@@ -287,12 +283,12 @@ impl ProjectPicker {
     }
 
     /// 设置当前项目名称。
-    pub(crate) fn set_current_label(&mut self, label: impl Into<String>) {
+    pub fn set_current_label(&mut self, label: impl Into<String>) {
         self.current_label = label.into();
     }
 
     /// 外部切换（快捷键/按钮等）。
-    pub(crate) fn toggle(&mut self, window: &mut Window, cx: &mut App) {
+    pub fn toggle(&mut self, window: &mut Window, cx: &mut App) {
         self.dismiss_flag.set(false);
         self.is_open = !self.is_open;
         if self.is_open {
@@ -300,8 +296,8 @@ impl ProjectPicker {
             self.picker.update(cx, |picker, cx| {
                 picker.delegate_mut().reload_projects();
                 // 清空搜索框文字
-                picker.editor().update(cx, |editor, cx| {
-                    editor.set_text("", cx);
+                picker.search_input().update(cx, |input, cx| {
+                    input.set_text("", cx);
                 });
                 cx.notify();
             });
@@ -310,8 +306,8 @@ impl ProjectPicker {
             if let Some(entry) = delegate.projects.iter().find(|p| p.is_current) {
                 self.current_label = entry.label.clone();
             }
-            let editor = self.picker.read(cx).editor().clone();
-            let focus = editor.update(cx, |e, _| e.focus_handle());
+            let input = self.picker.read(cx).search_input().clone();
+            let focus = input.read(cx).focus_handle(cx);
             window.focus(&focus);
         } else {
             window.focus(&self.focus);

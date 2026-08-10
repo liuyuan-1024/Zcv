@@ -1,4 +1,9 @@
 //! 集成测试共享 helper——之前 7 个测试文件各写一份，现在收敛到这。
+//!
+//! 本模块被多个集成测试文件（tests/*.rs，各自独立编译）以 `mod common` 引入；
+//! 每个测试 binary 只用到部分 helper，未用到的 `pub fn` 在该 binary 内报 dead_code，属于共享测试模块的机制噪音，而非死代码。
+//! 故在此统一豁免 dead_code。
+
 #![allow(dead_code)]
 
 use zcv_engine::*;
@@ -77,16 +82,8 @@ pub fn buffer_text(text: &impl FullText) -> String {
 
 // ---- 选区构造器 ----
 
-pub fn selection(anchor: usize, head: usize) -> Selection {
-    Selection::new(b(anchor), b(head))
-}
-
 pub fn caret(offset: usize) -> Selection {
     Selection::caret(b(offset))
-}
-
-pub fn set_caret(offset: usize) -> SelectionSet {
-    SelectionSet::caret(b(offset))
 }
 
 // ---- 事务构造器 ----

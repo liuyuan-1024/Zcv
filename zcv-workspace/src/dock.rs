@@ -12,35 +12,22 @@ use std::sync::Arc;
 
 use gpui::{
     Context, Entity, FocusHandle, Focusable, MouseButton, Pixels, Point, Render, Subscription,
-    WeakEntity, Window, actions, div, prelude::*, px,
+    WeakEntity, Window, div, prelude::*, px,
 };
 
-use super::Pane;
-use super::panel::PanelHandle;
+use crate::pane::Pane;
+use crate::panel::PanelHandle;
+pub use zcv_actions::{
+    ToggleDebug, ToggleDiagnostics, ToggleKeyboardShortcuts, ToggleLanguageServer, ToggleOutline,
+    ToggleProjectSearch, ToggleProjectTree, ToggleTerminal, ToggleVersionControl,
+};
 use zcv_theme::{color, space};
-
-// ═══ Panel 通用 action ═══════════════════════════════════════════
-
-actions!(
-    dock,
-    [
-        ToggleProjectTree,
-        ToggleVersionControl,
-        ToggleOutline,
-        ToggleLanguageServer,
-        ToggleDiagnostics,
-        ToggleProjectSearch,
-        ToggleTerminal,
-        ToggleDebug,
-        ToggleKeyboardShortcuts,
-    ]
-);
 
 // ═══ 类型定义 ═══════════════════════════════════════════════════
 
 /// Dock 位置，对应 Zed `DockPosition`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DockPosition {
+pub enum DockPosition {
     Left,
     Bottom,
     Right,
@@ -48,7 +35,7 @@ pub(crate) enum DockPosition {
 
 impl DockPosition {
     /// 未恢复持久化状态时采用的 Dock 单一默认尺寸。
-    pub(crate) fn default_size(self) -> Pixels {
+    pub fn default_size(self) -> Pixels {
         match self {
             Self::Left | Self::Right => px(240.0),
             Self::Bottom => px(200.0),
@@ -71,7 +58,7 @@ struct DragState {
 /// Dock 容器：相邻窗口边缘，可折叠，同一时间只显示一个 panel。
 ///
 /// 参考 Zed `crates/workspace/src/dock.rs` 中的 Dock 设计。
-pub(crate) struct Dock {
+pub struct Dock {
     pub position: DockPosition,
     pub is_open: bool,
     size: Pixels,
@@ -90,7 +77,7 @@ pub(crate) struct Dock {
 
 impl Dock {
     /// 创建一个新 Dock，默认折叠。
-    pub(crate) fn new(
+    pub fn new(
         position: DockPosition,
         panels: Vec<Arc<dyn PanelHandle>>,
         initial_size: Pixels,
@@ -114,19 +101,28 @@ impl Dock {
     }
 
     /// 设置 sibling dock（左右耦合）。
-    pub(crate) fn set_sibling(&mut self, sibling: WeakEntity<Dock>) {
+    pub fn set_sibling(&mut self, sibling: WeakEntity<Dock>) {
         self.sibling = Some(sibling);
+    }
+
+    /// 追加面板；空 dock 自动激活第一个面板。
+    pub fn add_panel(&mut self, handle: Arc<dyn PanelHandle>, cx: &mut Context<Self>) {
+        if self.active_panel_index.is_none() {
+            self.active_panel_index = Some(0);
+        }
+        self.panels.push(handle);
+        cx.notify();
     }
 
     // ── 状态查询 ─────────────────────────────────────────────────
 
     /// Dock 是否展开且含有激活面板。
-    pub(crate) fn is_open(&self) -> bool {
+    pub fn is_open(&self) -> bool {
         self.is_open && self.active_panel_index.is_some()
     }
 
     /// 当前可见面板。
-    pub(crate) fn visible_panel(&self) -> Option<&Arc<dyn PanelHandle>> {
+    pub fn visible_panel(&self) -> Option<&Arc<dyn PanelHandle>> {
         if self.is_open() {
             self.active_panel_index.and_then(|i| self.panels.get(i))
         } else {
@@ -135,19 +131,19 @@ impl Dock {
     }
 
     /// 当前激活面板的 index。
-    pub(crate) fn active_panel_index(&self) -> Option<usize> {
+    pub fn active_panel_index(&self) -> Option<usize> {
         self.active_panel_index
     }
 
     /// 指定 index 的面板是否激活（展开且为当前面板）。
-    pub(crate) fn is_panel_active(&self, panel_index: usize) -> bool {
+    pub fn is_panel_active(&self, panel_index: usize) -> bool {
         self.is_open && Some(panel_index) == self.active_panel_index
     }
 
     // ── 面板切换 ─────────────────────────────────────────────────
 
     /// 切换面板的展开/折叠，并在切换前后通知面板的 `set_active`。
-    pub(crate) fn toggle_panel(
+    pub fn toggle_panel(
         &mut self,
         panel_index: usize,
         window: &mut Window,
@@ -180,7 +176,7 @@ impl Dock {
     // ── 拖拽调整大小 ─────────────────────────────────────────────
 
     /// 开始拖拽调整大小。
-    pub(crate) fn start_resize(&mut self, cursor: Point<Pixels>) {
+    pub fn start_resize(&mut self, cursor: Point<Pixels>) {
         self.drag_state = Some(DragState {
             start_cursor: cursor,
             start_size: self.size,
@@ -188,7 +184,7 @@ impl Dock {
     }
 
     /// 拖拽到指定光标位置，更新 dock 尺寸。
-    pub(crate) fn resize_to(
+    pub fn resize_to(
         &mut self,
         cursor: Point<Pixels>,
         window_size: gpui::Size<Pixels>,
@@ -226,17 +222,17 @@ impl Dock {
     }
 
     /// 结束拖拽。
-    pub(crate) fn end_resize(&mut self) {
+    pub fn end_resize(&mut self) {
         self.drag_state = None;
     }
 
     /// 是否正在拖拽。
-    pub(crate) fn is_dragging(&self) -> bool {
+    pub fn is_dragging(&self) -> bool {
         self.drag_state.is_some()
     }
 
     /// 重置为默认尺寸。
-    pub(crate) fn reset_size(&mut self, window_size: gpui::Size<Pixels>, cx: &mut Context<Self>) {
+    pub fn reset_size(&mut self, window_size: gpui::Size<Pixels>, cx: &mut Context<Self>) {
         let default = self.position.default_size();
         let max_size = match self.position {
             DockPosition::Left | DockPosition::Right => window_size.width - MIN_SIZE,
@@ -346,7 +342,7 @@ fn placeholder_div(cx: &gpui::App) -> gpui::Div {
 /// 渲染 workbench 主体（不包含顶栏和底栏）。
 ///
 /// 三个 Dock 各自是独立 Entity，由调用方检查 `is_open()` 后决定是否传入。
-pub(crate) fn render_body(
+pub fn render_body(
     center: &Entity<Pane>,
     left_dock: Option<Entity<Dock>>,
     right_dock: Option<Entity<Dock>>,

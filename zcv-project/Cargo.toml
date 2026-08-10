@@ -6,14 +6,13 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-channel.workspace = true
-crossbeam-channel.workspace = true
 globset.workspace = true
 gpui.workspace = true
 log.workspace = true
-notify.workspace = true
 trash.workspace = true
 zcv-buffer-diff.workspace = true
 zcv-engine.workspace = true
+zcv-fs-watch.workspace = true
 zcv-git.workspace = true
 zcv-language.workspace = true
 

@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    App, Context, Corner, Entity, FocusHandle, MouseButton, Pixels, Render, Window, actions,
+    App, Context, Corner, Entity, FocusHandle, Focusable, MouseButton, Pixels, Render, Window,
     anchored, deferred, div, point, prelude::*, px,
 };
 use zcv_git::Branch;
@@ -21,18 +21,18 @@ use zcv_ui::ListItem;
 
 const PICKER_WIDTH: Pixels = px(360.0);
 
-actions!(branch_picker, [SelectGitBranch]);
+use zcv_actions::SelectGitBranch;
 
 // ═══ 回调 ════════════════════════════════════════════════════════
 
 /// 分支操作请求：切换分支 / 以当前 HEAD 为基创建分支。
-pub(crate) enum GitBranchAction {
+pub enum GitBranchAction {
     Checkout(String),
     Create(String),
 }
 
 /// 分支操作回调 —— 参数为操作请求。
-pub(crate) type OnSelectBranch = Rc<dyn Fn(GitBranchAction, &mut Window, &mut App)>;
+pub type OnSelectBranch = Rc<dyn Fn(GitBranchAction, &mut Window, &mut App)>;
 
 // ═══ 数据源 ═══════════════════════════════════════════════════════
 
@@ -167,7 +167,7 @@ impl PickerDelegate for BranchPickerDelegate {
 /// 分支选择器 —— 自含 glyph 按钮 + 浮层。
 ///
 /// glyph 显示当前分支名，无分支（空仓库/detached）时显示占位 `--`。
-pub(crate) struct BranchPicker {
+pub struct BranchPicker {
     is_open: bool,
     dismiss_flag: Rc<Cell<bool>>,
     focus: FocusHandle,
@@ -179,7 +179,7 @@ pub(crate) struct BranchPicker {
 }
 
 impl BranchPicker {
-    pub(crate) fn new(on_select: OnSelectBranch, cx: &mut Context<Self>) -> Self {
+    pub fn new(on_select: OnSelectBranch, cx: &mut Context<Self>) -> Self {
         let delegate = BranchPickerDelegate::new(Vec::new(), on_select);
         let dismiss_flag = Rc::new(Cell::new(false));
 
@@ -207,17 +207,17 @@ impl BranchPicker {
     }
 
     /// 设置当前分支名（glyph 显示）。
-    pub(crate) fn set_branch(&mut self, branch: Option<String>) {
+    pub fn set_branch(&mut self, branch: Option<String>) {
         self.current_branch = branch;
     }
 
     /// 设置分支列表快照（打开时同步渲染，无加载态）。
-    pub(crate) fn set_branches(&mut self, branches: Vec<Branch>) {
+    pub fn set_branches(&mut self, branches: Vec<Branch>) {
         self.branches = branches;
     }
 
     /// 外部切换（快捷键/glyph 点击等）。
-    pub(crate) fn toggle(&mut self, window: &mut Window, cx: &mut App) {
+    pub fn toggle(&mut self, window: &mut Window, cx: &mut App) {
         self.dismiss_flag.set(false);
         self.is_open = !self.is_open;
         if self.is_open {
@@ -225,13 +225,13 @@ impl BranchPicker {
             let branches = self.branches.clone();
             self.picker.update(cx, |picker, cx| {
                 picker.delegate_mut().reload(branches);
-                picker.editor().update(cx, |editor, cx| {
-                    editor.set_text("", cx);
+                picker.search_input().update(cx, |input, cx| {
+                    input.set_text("", cx);
                 });
                 cx.notify();
             });
-            let editor = self.picker.read(cx).editor().clone();
-            let focus = editor.update(cx, |e, _| e.focus_handle());
+            let input = self.picker.read(cx).search_input().clone();
+            let focus = input.read(cx).focus_handle(cx);
             window.focus(&focus);
         } else {
             window.focus(&self.focus);

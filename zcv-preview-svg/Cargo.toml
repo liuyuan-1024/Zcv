@@ -5,16 +5,17 @@ edition.workspace = true
 description = "SVG 文件预览"
 
 [dependencies]
+anyhow.workspace = true
 gpui.workspace = true
 resvg.workspace = true
 zcv-engine.workspace = true
-zcv-editor.workspace = true
-zcv-preview.workspace = true
+zcv-project.workspace = true
 zcv-theme.workspace = true
 zcv-workspace.workspace = true
 
 [dev-dependencies]
 gpui.workspace = true
+zcv-editor.workspace = true
 
 [lints]
 workspace = true

@@ -2,21 +2,17 @@
 //!
 //! 数据存储在各平台标准配置目录的 `zcv/recent_projects.json`，最多保留 20 条。
 
-mod project_picker;
-
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) use project_picker::{OnProjectSelected, ProjectPicker, ToggleProjectPicker};
-
 // ═══ 数据 ════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct ProjectEntry {
-    pub(crate) label: String,
-    pub(crate) path: String,
-    pub(crate) is_current: bool,
+pub struct ProjectEntry {
+    pub label: String,
+    pub path: String,
+    pub is_current: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -60,7 +56,7 @@ fn recent_path() -> PathBuf {
 // ═══ 读写 ════════════════════════════════════════════════════════
 
 /// 从磁盘加载最近项目列表。
-pub(crate) fn load_recent_projects() -> Vec<ProjectEntry> {
+pub fn load_recent_projects() -> Vec<ProjectEntry> {
     let path = recent_path();
     if !path.exists() {
         return Vec::new();
@@ -74,7 +70,7 @@ pub(crate) fn load_recent_projects() -> Vec<ProjectEntry> {
 }
 
 /// 保存最近项目列表到磁盘。
-pub(crate) fn save_recent_projects(projects: &[ProjectEntry]) {
+pub fn save_recent_projects(projects: &[ProjectEntry]) {
     let dir = config_dir();
     let _ = std::fs::create_dir_all(&dir);
     let data = RecentProjects {
@@ -86,7 +82,7 @@ pub(crate) fn save_recent_projects(projects: &[ProjectEntry]) {
 }
 
 /// 从最近项目列表移除一条路径（幂等，不存在时无副作用）。
-pub(crate) fn remove_from_recent(path: &str) {
+pub fn remove_from_recent(path: &str) {
     let mut projects = load_recent_projects();
     let before = projects.len();
     projects.retain(|p| p.path != path);
@@ -97,7 +93,7 @@ pub(crate) fn remove_from_recent(path: &str) {
 }
 
 /// 把一条路径添加到最近项目列表前端（去重），并标记为当前项目。
-pub(crate) fn add_to_recent(path: &str) {
+pub fn add_to_recent(path: &str) {
     let label = Path::new(path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())

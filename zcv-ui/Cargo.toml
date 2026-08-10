@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 gpui.workspace = true
+zcv-actions.workspace = true
 zcv-git.workspace = true
 zcv-keymap.workspace = true
 zcv-theme.workspace = true

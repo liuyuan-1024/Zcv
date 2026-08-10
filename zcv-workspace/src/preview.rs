@@ -1,15 +1,15 @@
 //! 文件预览的公共协议与注册表。
 //!
-//! 该 crate 不包含具体格式实现。
-//! 格式 crate 实现 [`PreviewProvider`]，并创建一个直接实现 Workspace Item 协议的具体预览视图。
+//! 该模块不包含具体格式实现。
+//! 格式 crate 实现 [`PreviewProvider`]，并创建一个直接实现 Item 协议的具体预览视图。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{App, BorrowAppContext, Entity, Global};
-use zcv_editor::Editor;
 use zcv_engine::Buffer;
-use zcv_workspace::ItemHandle;
+
+use crate::item::ItemHandle;
 
 /// 稳定标识一种预览 Provider。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -22,23 +22,26 @@ pub struct PreviewDescriptor {
     pub display_name: &'static str,
 }
 
-/// 交给 Preview Provider 的文档输入。
+/// 交给 Preview Provider 的文档输入：预览视图的源码 Item 与展示路径。
 #[derive(Clone)]
 pub struct PreviewDocument {
     pub path: PathBuf,
-    pub source_editor: Entity<Editor>,
+    pub source_item: Box<dyn ItemHandle>,
 }
 
 impl PreviewDocument {
-    pub fn buffer(&self, cx: &App) -> Entity<Buffer> {
-        self.source_editor.read(cx).buffer()
+    /// 源码 Item 的底层 Buffer（预览渲染数据源）。
+    pub fn buffer(&self, cx: &App) -> Option<Entity<Buffer>> {
+        self.source_item.buffer(cx)
     }
 }
 
 /// 文件格式预览的工厂接口。
 pub trait PreviewProvider: Send + Sync + 'static {
     fn descriptor(&self) -> PreviewDescriptor;
+
     fn supports(&self, path: &Path, cx: &App) -> bool;
+
     fn create(&self, document: PreviewDocument, cx: &mut App) -> Box<dyn ItemHandle>;
 }
 
@@ -49,15 +52,11 @@ struct PreviewRegistry {
 
 impl Global for PreviewRegistry {}
 
-fn init_registry(cx: &mut App) {
+/// 注册格式预览 Provider。同一 PreviewProviderId 只注册一次。
+pub fn register(provider: impl PreviewProvider, cx: &mut App) {
     if !cx.has_global::<PreviewRegistry>() {
         cx.set_global(PreviewRegistry::default());
     }
-}
-
-/// 注册格式预览 Provider。同一 PreviewProviderId 只注册一次。
-pub fn register(provider: impl PreviewProvider, cx: &mut App) {
-    init_registry(cx);
     let id = provider.descriptor().id;
     cx.update_global::<PreviewRegistry, _>(|registry, _| {
         if registry

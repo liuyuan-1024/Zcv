@@ -1,21 +1,20 @@
 //! TopBar —— 窗口级顶部外壳。
 
-use gpui::{AnyElement, Div, Entity, Window, actions, div, prelude::*};
+use gpui::{AnyElement, Div, Entity, Window, div, prelude::*};
 
-use super::branch_picker::{BranchPicker, OnSelectBranch};
-use super::window_controls;
-use crate::recent_projects::{OnProjectSelected, ProjectPicker};
+use crate::branch_picker::{BranchPicker, OnSelectBranch};
+use crate::render_window_controls;
+use crate::{OnProjectSelected, ProjectPicker};
+use zcv_actions::{GitFetch, GitPull, GitPush, OpenSettings};
 use zcv_git::Branch;
 use zcv_project::RemoteOperationState;
 use zcv_theme::{color, space};
 use zcv_ui::Glyph;
 
-actions!(top_bar, [OpenSettings, GitFetch, GitPull, GitPush,]);
-
-pub(crate) struct TopBar {
-    pub(crate) project_picker: Entity<ProjectPicker>,
+pub struct TopBar {
+    pub project_picker: Entity<ProjectPicker>,
     /// 分支选择器（glyph 显示当前分支名；由 Workspace 订阅 GitStore 事件刷新）。
-    pub(crate) branch_picker: Entity<BranchPicker>,
+    pub branch_picker: Entity<BranchPicker>,
     /// 项目是否已发现 git 仓库（非 git 项目不显示分支与同步/推送/拉取按钮）。
     has_repositories: bool,
     /// 活动仓库的远程操作状态（无 remote 时同步/推送/拉取按钮都不显示）。
@@ -23,7 +22,7 @@ pub(crate) struct TopBar {
 }
 
 impl TopBar {
-    pub(crate) fn new(
+    pub fn new(
         on_selected: OnProjectSelected,
         on_branch: OnSelectBranch,
         cx: &mut gpui::Context<Self>,
@@ -39,21 +38,21 @@ impl TopBar {
     }
 
     /// 分支数据由 Workspace 订阅 GitStore 事件后推送（glyph 与列表同仓库）。
-    pub(crate) fn set_branch(&mut self, branch: Option<String>, cx: &mut gpui::Context<Self>) {
+    pub fn set_branch(&mut self, branch: Option<String>, cx: &mut gpui::Context<Self>) {
         self.branch_picker
             .update(cx, |picker, _| picker.set_branch(branch));
     }
 
-    pub(crate) fn set_branches(&mut self, branches: Vec<Branch>, cx: &mut gpui::Context<Self>) {
+    pub fn set_branches(&mut self, branches: Vec<Branch>, cx: &mut gpui::Context<Self>) {
         self.branch_picker
             .update(cx, |picker, _| picker.set_branches(branches));
     }
 
-    pub(crate) fn set_has_repositories(&mut self, has_repositories: bool) {
+    pub fn set_has_repositories(&mut self, has_repositories: bool) {
         self.has_repositories = has_repositories;
     }
 
-    pub(crate) fn set_remote_operation_state(&mut self, state: RemoteOperationState) {
+    pub fn set_remote_operation_state(&mut self, state: RemoteOperationState) {
         self.remote_operation_state = state;
     }
 }
@@ -114,7 +113,7 @@ fn leading_slots(
 
     // macOS 使用无标题栏窗口，因此在应用顶栏提供原生习惯的三色控制。
     #[cfg(target_os = "macos")]
-    out.push(window_controls::render(window, cx).into_any_element());
+    out.push(render_window_controls(window, cx).into_any_element());
 
     // 项目选择器
     out.push(project_picker.clone().into_any_element());

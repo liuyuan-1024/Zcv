@@ -1,33 +1,25 @@
 //! 窗口控制 —— 自绘 macOS 风格三色圆点。
 
-use gpui::{Pixels, Window, actions, div, prelude::*, px, rgb, svg};
+use gpui::{Pixels, Window, div, prelude::*, px, rgb, svg};
+pub use zcv_actions::{MinimizeWindow, QuitWindow, ToggleMaximizeWindow};
 
 use zcv_theme::{color, space};
-
-actions!(
-    window_controls,
-    [QuitWindow, MinimizeWindow, ToggleMaximizeWindow,]
-);
 
 const PIP_GROUP: &str = "window-controls.pips";
 
 // ── 按键经 action 路由至此（点击不走这里，在 render 中直调）────
 
-pub(crate) fn handle_quit(_: &QuitWindow, _: &mut Window, cx: &mut gpui::App) {
+pub fn handle_quit(_: &QuitWindow, _: &mut Window, cx: &mut gpui::App) {
     cx.quit();
 }
-pub(crate) fn handle_minimize(_: &MinimizeWindow, window: &mut Window, _: &mut gpui::App) {
+pub fn handle_minimize(_: &MinimizeWindow, window: &mut Window, _: &mut gpui::App) {
     window.minimize_window();
 }
-pub(crate) fn handle_toggle_maximize(
-    _: &ToggleMaximizeWindow,
-    window: &mut Window,
-    _: &mut gpui::App,
-) {
+pub fn handle_toggle_maximize(_: &ToggleMaximizeWindow, window: &mut Window, _: &mut gpui::App) {
     window.zoom_window();
 }
 
-pub(crate) fn render(window: &Window, cx: &gpui::App) -> gpui::Stateful<gpui::Div> {
+pub fn render(window: &Window, cx: &gpui::App) -> gpui::Stateful<gpui::Div> {
     let active = window.is_window_active();
 
     div()

@@ -7,7 +7,7 @@ use gpui::{AnyElement, Div, ScrollHandle, div, prelude::*};
 use zcv_theme::color;
 
 /// 标签栏容器，标签渲染由调用方提供子元素。
-pub(crate) struct TabBar {
+pub struct TabBar {
     scroll_handle: Option<ScrollHandle>,
 }
 

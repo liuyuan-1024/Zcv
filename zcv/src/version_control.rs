@@ -369,7 +369,7 @@ impl VersionControlPanel {
 
     /// 激活选中行的共享逻辑：目录→展开/折叠；文件→打开。
     ///
-    /// `focus_opened_item` 决定打开文件后是否把焦点交给编辑器：双击/键盘 enter 为 `true`（激活），鼠标单击为 `false`（预览，焦点留在面板）。
+    /// `focus_opened_item` 决定打开文件后是否把焦点交给编辑器：双击/键盘 enter 为 `true`（激活），鼠标单击为 `false`（临时标签，焦点留在面板）。
     fn activate_selected(
         &mut self,
         focus_opened_item: bool,
@@ -765,7 +765,7 @@ fn render_row(
                         panel.update(cx, |panel, cx| {
                             panel.state.borrow_mut().selected = Some((section, path.clone()));
                             match event.click_count {
-                                // 单击：目录展开/折叠、文件预览（焦点留在面板）；
+                                // 单击：目录展开/折叠、文件以临时标签打开（焦点留在面板）；
                                 // 双击：文件打开并聚焦编辑器；目录不重复，避免"展开→折叠"抵消。
                                 1 => panel.activate_selected(false, window, cx),
                                 _ if is_dir => {}
@@ -1394,7 +1394,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn clicking_entry_opens_file_as_preview(cx: &mut TestAppContext) {
+    fn clicking_entry_opens_file_as_transient_tab(cx: &mut TestAppContext) {
         let (root, _temp) = test_repo();
         let project_root = root.clone();
         let open_count = Rc::new(Cell::new(0));
@@ -1424,7 +1424,7 @@ mod tests {
         cx.run_until_parked();
 
         // 单击第 4 行（tracked.txt）行内容区（x=100 避开行首复选框）：
-        // 行高为 ui_line()，预览打开（focus_opened_item=false）。
+        // 行高为 ui_line()，以临时标签打开（focus_opened_item=false）。
         let row_height = typography::ui_line();
         cx.simulate_click(
             point(px(100.), px(f32::from(row_height) * 2.5)),
@@ -1435,7 +1435,7 @@ mod tests {
         assert_eq!(open_count.get(), 1, "单击文件行应打开文件");
         assert!(
             !last_focus_opened.get(),
-            "单击应为预览：打开文件但焦点留在面板（focus_opened_item=false）"
+            "单击应打开临时标签但焦点留在面板（focus_opened_item=false）"
         );
     }
 

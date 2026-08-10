@@ -6,9 +6,9 @@
 
 use gpui::{AnyElement, Context, EventEmitter, Render, Subscription, Window, div, prelude::*};
 
-use crate::workspace::{ItemEvent, ItemHandle};
 use crate::workspace::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 use zcv_theme::{color, typography};
+use zcv_workspace::{ItemEvent, ItemHandle};
 
 const MAX_SEGMENTS: usize = 12;
 
@@ -103,7 +103,6 @@ impl ToolbarItemView for Breadcrumbs {
         let location = item.breadcrumb_location(cx);
         let this = cx.entity().downgrade();
         self.subscription = Some(item.subscribe_to_item_events(
-            _window,
             cx,
             Box::new(move |ItemEvent::UpdateBreadcrumbs, cx| {
                 this.update(cx, |_, cx| {

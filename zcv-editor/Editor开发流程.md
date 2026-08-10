@@ -67,14 +67,16 @@ EditorElement
 crate 依赖保持单向：
 
 ```text
-zcv ──▶ zcv-editor ──▶ zcv-engine
+zcv ──▶ zcv-editor ──▶ zcv-workspace
+  │          ├───────▶ zcv-engine
   │          ├───────▶ zcv-language ──▶ zcv-engine
   │          └───────▶ zcv-theme
   └──────────────────▶ zcv-language
 ```
 
-箭头表示“依赖”。`zcv-editor` 不依赖 Workspace；它发出自己的
-`EditorEvent`，宿主在 ItemHandle 适配层转换为 Workspace 事件。
+箭头表示“依赖”。`zcv-editor` 只依赖 `zcv-workspace` 中不含 Pane、布局或业务编排的
+Item 协议，并直接实现 `Item`；它仍然不依赖具体 Workspace 界面。`EditorEvent` 在
+Editor 自身的 Item 实现中转换为通用 `ItemEvent`，不保留第二层 EditorItem 包装。
 
 ---
 

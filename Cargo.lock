@@ -7503,9 +7503,12 @@ dependencies = [
  "zcv-keymap",
  "zcv-language",
  "zcv-picker",
+ "zcv-preview",
+ "zcv-preview-svg",
  "zcv-project",
  "zcv-theme",
  "zcv-ui",
+ "zcv-workspace",
 ]
 
 [[package]]
@@ -7536,6 +7539,7 @@ dependencies = [
  "zcv-language",
  "zcv-theme",
  "zcv-ui",
+ "zcv-workspace",
 ]
 
 [[package]]
@@ -7604,6 +7608,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "zcv-preview"
+version = "0.7.7"
+dependencies = [
+ "gpui",
+ "zcv-editor",
+ "zcv-engine",
+ "zcv-workspace",
+]
+
+[[package]]
+name = "zcv-preview-svg"
+version = "0.7.7"
+dependencies = [
+ "gpui",
+ "resvg",
+ "zcv-editor",
+ "zcv-engine",
+ "zcv-preview",
+ "zcv-theme",
+ "zcv-workspace",
+]
+
+[[package]]
 name = "zcv-project"
 version = "0.7.7"
 dependencies = [
@@ -7641,6 +7668,14 @@ dependencies = [
  "zcv-git",
  "zcv-keymap",
  "zcv-theme",
+]
+
+[[package]]
+name = "zcv-workspace"
+version = "0.7.7"
+dependencies = [
+ "gpui",
+ "zcv-engine",
 ]
 
 [[package]]

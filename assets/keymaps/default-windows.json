@@ -96,7 +96,8 @@
     "bindings": {
       "ctrl-pageup": "pane::PrevTab",
       "ctrl-pagedown": "pane::NextTab",
-      "ctrl-w": "pane::CloseTab"
+      "ctrl-w": "pane::CloseTab",
+      "ctrl-f": "pane::ToggleFileSearch"
     }
   },
   {

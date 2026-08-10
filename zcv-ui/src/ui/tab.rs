@@ -14,6 +14,7 @@ use zcv_theme::{color, space};
 pub struct Tab {
     pub div: Stateful<Div>,
     pub selected: bool,
+    pub italic: bool,
     pub start_slot: Option<AnyElement>,
     pub end_slot: Option<AnyElement>,
     pub children: Vec<AnyElement>,
@@ -24,6 +25,7 @@ impl Tab {
         Self {
             div: div().id(id),
             selected: false,
+            italic: false,
             start_slot: None,
             end_slot: None,
             children: Vec::new(),
@@ -33,6 +35,12 @@ impl Tab {
     /// 设置选中状态。
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// 设置标签正文是否使用斜体；起止槽位中的图标不受影响。
+    pub fn italic(mut self, italic: bool) -> Self {
+        self.italic = italic;
         self
     }
 
@@ -85,7 +93,8 @@ impl RenderOnce for Tab {
 
         let border_color = color::current(cx).border_variant;
 
-        self.div
+        let tab = self
+            .div
             .flex()
             .flex_row()
             .items_center()
@@ -96,8 +105,18 @@ impl RenderOnce for Tab {
             .bg(bg)
             .border_color(border_color)
             .border_r_1()
-            .children(self.start_slot)
-            .children(self.children)
-            .children(self.end_slot)
+            .children(self.start_slot);
+        let tab = if self.italic {
+            tab.child(
+                div()
+                    .text_color(text_color)
+                    .italic()
+                    .children(self.children),
+            )
+        } else {
+            // 普通标签保持原来的直接子元素结构，避免新增容器改变文字颜色继承。
+            tab.children(self.children)
+        };
+        tab.children(self.end_slot)
     }
 }

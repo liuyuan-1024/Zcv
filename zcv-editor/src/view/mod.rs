@@ -1555,6 +1555,7 @@ impl Render for Editor {
             cx,
         )
         .child(EditorElement::new(cx.entity()))
+        .into_any_element()
     }
 }
 

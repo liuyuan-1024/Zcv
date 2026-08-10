@@ -8,6 +8,7 @@ mod scroll;
 mod scrollbar;
 mod selection;
 mod view;
+mod workspace_item;
 
 pub use view::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,

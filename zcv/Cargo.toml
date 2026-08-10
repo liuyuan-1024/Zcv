@@ -25,9 +25,12 @@ zcv-git.workspace = true
 zcv-keymap.workspace = true
 zcv-language.workspace = true
 zcv-picker.workspace = true
+zcv-preview.workspace = true
+zcv-preview-svg.workspace = true
 zcv-project.workspace = true
 zcv-theme.workspace = true
 zcv-ui.workspace = true
+zcv-workspace.workspace = true
 
 [dev-dependencies]
 gpui.workspace = true

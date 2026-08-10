@@ -16,6 +16,7 @@ zcv-engine.workspace = true
 zcv-language.workspace = true
 zcv-theme.workspace = true
 zcv-ui.workspace = true
+zcv-workspace.workspace = true
 
 [dev-dependencies]
 gpui.workspace = true

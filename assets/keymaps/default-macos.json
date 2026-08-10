@@ -96,7 +96,8 @@
     "bindings": {
       "cmd-h": "pane::PrevTab",
       "cmd-l": "pane::NextTab",
-      "cmd-w": "pane::CloseTab"
+      "cmd-w": "pane::CloseTab",
+      "cmd-f": "pane::ToggleFileSearch"
     }
   },
   {

@@ -6,6 +6,7 @@ mod cursor_position;
 mod diagnostics;
 mod language_tools;
 mod paths;
+mod preview;
 mod project_search;
 mod project_tree;
 mod recent_projects;
@@ -28,6 +29,7 @@ fn main() {
         Assets.load_fonts(cx).expect("内置字体应能注册");
 
         settings::init(cx);
+        preview::init(cx);
 
         // 初始项目根：开发构建打开当前工作区，正式构建打开启动目录。
         #[cfg(debug_assertions)]
@@ -99,10 +101,12 @@ pub(crate) fn open_project_window(root: PathBuf, cx: &mut App) -> anyhow::Result
 /// 参照 Zed：在应用层注册 Pane 的 Toolbar 子项。
 fn initialize_pane(pane: &Entity<Pane>, window: &mut Window, cx: &mut Context<Workspace>) {
     use crate::breadcrumbs::Breadcrumbs;
+    use crate::workspace::FileToolbarControls;
 
     pane.update(cx, |pane, cx| {
         pane.toolbar().update(cx, |toolbar, cx| {
             toolbar.add_item(cx.new(|_| Breadcrumbs::new()), window, cx);
+            toolbar.add_item(cx.new(|_| FileToolbarControls::new()), window, cx);
         });
     });
 }

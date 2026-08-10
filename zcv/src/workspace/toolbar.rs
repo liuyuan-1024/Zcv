@@ -1,24 +1,15 @@
 //! Toolbar —— Pane 内容区顶部的工具条。
 //!
-//! 当前只承载活动 Item 的左侧主工具项；其他布局位等出现真实消费者后再扩展。
+//! 左侧承载面包屑，右侧承载活动文件相关操作。
 
 use gpui::{
     AnyView, App, Context, Entity, EntityId, EventEmitter, Render, Window, div, prelude::*,
 };
 
-use super::item::ItemHandle;
+use super::{ToggleFileSearch, TogglePreview};
 use zcv_theme::{color, space};
-
-// ═══ ToolbarItemLocation ═════════════════════════════════════════════
-
-/// Toolbar 子项的布局位置。
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub(crate) enum ToolbarItemLocation {
-    /// 不显示。
-    Hidden,
-    /// 左区（面包屑等）。
-    PrimaryLeft,
-}
+use zcv_ui::Glyph;
+use zcv_workspace::{ItemHandle, ItemPresentation, ToolbarItemLocation};
 
 // ═══ ToolbarItemEvent ════════════════════════════════════════════════
 
@@ -147,20 +138,106 @@ impl Toolbar {
     }
 }
 
+// ═══ 活动文件右侧控件 ════════════════════════════════════════════
+
+pub(crate) struct FileToolbarControls {
+    visible: bool,
+    presentation: Option<ItemPresentation>,
+}
+
+impl FileToolbarControls {
+    pub(crate) fn new() -> Self {
+        Self {
+            visible: false,
+            presentation: None,
+        }
+    }
+}
+
+impl EventEmitter<ToolbarItemEvent> for FileToolbarControls {}
+
+impl ToolbarItemView for FileToolbarControls {
+    fn set_active_item(
+        &mut self,
+        active_item: Option<&dyn ItemHandle>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ToolbarItemLocation {
+        let path = active_item.and_then(|item| item.file_path(cx));
+        self.visible = path.is_some();
+        self.presentation = active_item
+            .and_then(|item| item.document_item_key(cx))
+            .map(|key| key.presentation)
+            .filter(|presentation| {
+                matches!(presentation, ItemPresentation::Preview(_))
+                    || path
+                        .as_deref()
+                        .is_some_and(|path| zcv_preview::provider_for(path, cx).is_some())
+            });
+        cx.notify();
+        if self.visible {
+            ToolbarItemLocation::PrimaryRight
+        } else {
+            ToolbarItemLocation::Hidden
+        }
+    }
+}
+
+impl Render for FileToolbarControls {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap(space::S6)
+            .when_some(self.presentation, |controls, presentation| {
+                let (icon, label, icon_color) = match presentation {
+                    ItemPresentation::Preview(_) => (
+                        "icons/eye_off.svg",
+                        "源码".to_string(),
+                        color::current(cx).text_muted,
+                    ),
+                    ItemPresentation::Source => (
+                        "icons/eye.svg",
+                        "预览".to_string(),
+                        color::current(cx).text_muted,
+                    ),
+                };
+                controls.child(
+                    Glyph::icon("toolbar-preview", icon)
+                        .label(label)
+                        .color(icon_color)
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(TogglePreview), cx)
+                        }),
+                )
+            })
+            .child(
+                Glyph::icon("toolbar-file-search", "icons/magnifying_glass.svg")
+                    .label("搜索")
+                    .shortcut(&ToggleFileSearch, cx)
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(ToggleFileSearch), cx)
+                    }),
+            )
+    }
+}
+
 // ═══ Render ═════════════════════════════════════════════════════════
 
 impl Render for Toolbar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut left_elements: Vec<AnyView> = Vec::new();
+        let mut right_elements: Vec<AnyView> = Vec::new();
 
         for (item, location) in &self.items {
             match location {
                 ToolbarItemLocation::Hidden => {}
                 ToolbarItemLocation::PrimaryLeft => left_elements.push(item.to_any()),
+                ToolbarItemLocation::PrimaryRight => right_elements.push(item.to_any()),
             }
         }
 
-        if left_elements.is_empty() {
+        if left_elements.is_empty() && right_elements.is_empty() {
             return div();
         }
 
@@ -175,14 +252,26 @@ impl Render for Toolbar {
             .border_color(color::current(cx).border_variant)
             .bg(color::current(cx).toolbar_background)
             .child(
-                div().flex().items_start().gap(space::S6).child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .justify_start()
-                        .overflow_x_hidden()
-                        .children(left_elements),
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S6)
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .justify_start()
+                            .overflow_x_hidden()
+                            .children(left_elements),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .children(right_elements),
+                    ),
             )
     }
 }

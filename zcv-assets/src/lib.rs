@@ -70,6 +70,8 @@ mod tests {
     fn embeds_each_resource_category() {
         for path in [
             "fonts/JetBrainsMono-Regular.ttf",
+            "fonts/JetBrainsMono-Italic.ttf",
+            "fonts/SarasaMonoSC-Italic.ttf",
             "icons/settings.svg",
             "icon_themes/default.json",
             "keymaps/default-linux.json",

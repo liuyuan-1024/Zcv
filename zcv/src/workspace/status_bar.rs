@@ -51,7 +51,7 @@ impl StatusBar {
 
     pub(crate) fn new(pane: Entity<Pane>, cx: &mut Context<Self>) -> Self {
         let pane_subscription = cx.observe(&pane, |this, pane, cx| {
-            let editor = pane.read(cx).active_editor();
+            let editor = pane.read(cx).active_editor(cx);
             this.broadcast_editor(editor.as_ref(), cx);
         });
         Self {
@@ -69,7 +69,7 @@ impl StatusBar {
         item: Entity<T>,
         cx: &mut Context<Self>,
     ) {
-        let editor = self.pane.read(cx).active_editor();
+        let editor = self.pane.read(cx).active_editor(cx);
         item.set_active_editor(editor.as_ref(), cx);
         self.left_items.push(Box::new(item));
         cx.notify();
@@ -80,7 +80,7 @@ impl StatusBar {
         item: Entity<T>,
         cx: &mut Context<Self>,
     ) {
-        let editor = self.pane.read(cx).active_editor();
+        let editor = self.pane.read(cx).active_editor(cx);
         item.set_active_editor(editor.as_ref(), cx);
         self.right_items.push(Box::new(item));
         cx.notify();

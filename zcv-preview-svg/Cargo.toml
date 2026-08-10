@@ -1,0 +1,20 @@
+[package]
+name = "zcv-preview-svg"
+version.workspace = true
+edition.workspace = true
+description = "SVG 文件预览"
+
+[dependencies]
+gpui.workspace = true
+resvg.workspace = true
+zcv-engine.workspace = true
+zcv-editor.workspace = true
+zcv-preview.workspace = true
+zcv-theme.workspace = true
+zcv-workspace.workspace = true
+
+[dev-dependencies]
+gpui.workspace = true
+
+[lints]
+workspace = true

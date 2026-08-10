@@ -1,0 +1,12 @@
+[package]
+name = "zcv-workspace"
+version.workspace = true
+edition.workspace = true
+description = "Workspace Item 协议与类型擦除句柄"
+
+[dependencies]
+gpui.workspace = true
+zcv-engine.workspace = true
+
+[lints]
+workspace = true

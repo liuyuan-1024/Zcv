@@ -2,7 +2,6 @@
 
 mod branch_picker;
 mod dock;
-mod item;
 mod pane;
 mod panel;
 mod panel_buttons;
@@ -16,6 +15,7 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
     Action, Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription, Window, actions,
@@ -41,22 +41,25 @@ pub(crate) use dock::{
     Dock, ToggleDebug, ToggleDiagnostics, ToggleKeyboardShortcuts, ToggleLanguageServer,
     ToggleOutline, ToggleProjectSearch, ToggleProjectTree, ToggleTerminal, ToggleVersionControl,
 };
-pub(crate) use item::{ItemEvent, ItemHandle};
-pub(crate) use pane::Pane;
+pub(crate) use pane::{Pane, ToggleFileSearch, TogglePreview};
 pub(crate) use panel::Panel;
 use panel::{DebugPanel, KeyboardShortcutsPanel, OutlinePanel, PanelHandle, TerminalPanel};
 use panel_buttons::PanelButtons;
 use status_bar::StatusBar;
 pub(crate) use status_bar::StatusItemView;
-pub(crate) use toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
+pub(crate) use toolbar::{FileToolbarControls, ToolbarItemEvent, ToolbarItemView};
 use top_bar::TopBar;
 use window_controls::{handle_minimize, handle_quit, handle_toggle_maximize};
 use zcv_project::{GitOperationKind, Project, ProjectEvent};
+pub(crate) use zcv_workspace::ToolbarItemLocation;
 
 actions!(workspace, [Save]);
 
 /// 面板句柄与其停靠位置的配对列表。
 type PanelPairs = Vec<(Arc<dyn PanelHandle>, DockPosition)>;
+
+/// 支持预览的文件需要等待双击判定，避免双击源码前短暂显示预览。
+const FILE_SINGLE_CLICK_DELAY: Duration = Duration::from_millis(300);
 
 pub(crate) struct Workspace {
     pub(crate) focus: FocusHandle,
@@ -74,6 +77,8 @@ pub(crate) struct Workspace {
     panel_actions: Vec<(Box<dyn Action>, Entity<Dock>, usize)>,
     /// 拖拽协调：Dock 通过此 Cell 通知 Workspace 哪个 dock 正在被拖拽。
     drag_notify: Rc<Cell<Option<DockPosition>>>,
+    /// 统一取消来自项目树、变更树等入口的待处理单击打开。
+    file_click_generation: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -391,6 +396,7 @@ impl Workspace {
             bottom_dock,
             panel_actions,
             drag_notify,
+            file_click_generation: 0,
             _subscriptions: vec![
                 project_subscription,
                 git_subscription,
@@ -401,8 +407,39 @@ impl Workspace {
         }
     }
 
-    /// 由项目树回调调用的文件打开逻辑。
+    /// 所有文件树入口共享的单击/双击协调逻辑。
     fn open_path(
+        &mut self,
+        path: PathBuf,
+        focus_opened_item: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.file_click_generation = self.file_click_generation.wrapping_add(1);
+        let generation = self.file_click_generation;
+
+        if focus_opened_item || zcv_preview::provider_for(&path, cx).is_none() {
+            self.open_path_now(path, focus_opened_item, window, cx);
+            return;
+        }
+
+        cx.spawn_in(window, async move |workspace, cx| {
+            cx.background_executor()
+                .timer(FILE_SINGLE_CLICK_DELAY)
+                .await;
+            workspace
+                .update_in(cx, |workspace, window, cx| {
+                    if workspace.file_click_generation == generation {
+                        workspace.open_path_now(path, false, window, cx);
+                    }
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// 已完成点击判定后的实际文件打开流程。
+    fn open_path_now(
         &mut self,
         path: PathBuf,
         focus_opened_item: bool,
@@ -428,7 +465,14 @@ impl Workspace {
         };
         let pane = self.pane.clone();
         let focus = pane.update(cx, |pane, cx| {
-            pane.open_file(path, project_root, buffer, window, cx)
+            pane.open_file_with_transient(
+                path,
+                project_root,
+                buffer,
+                !focus_opened_item,
+                window,
+                cx,
+            )
         });
         let settings = SettingsStore::get(cx);
         pane.update(cx, |pane, cx| {
@@ -504,7 +548,7 @@ impl Workspace {
             .tabs
             .iter()
             .filter_map(|item| {
-                let editor = item.downcast::<Editor>()?;
+                let editor = item.act_as::<Editor>(cx)?;
                 let path = item.file_path(cx)?;
                 Some((editor, path))
             })

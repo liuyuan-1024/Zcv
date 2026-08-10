@@ -370,9 +370,9 @@ impl ProjectTree {
         self.scroll_to_selection(&rows);
         window.refresh();
     }
-    /// 激活/预览选中行的共享逻辑：目录→展开/折叠；文件→打开。
+    /// 激活选中行或以临时标签打开的共享逻辑：目录→展开/折叠；文件→打开。
     ///
-    /// `focus_opened_item` 决定打开文件后是否把焦点交给编辑器：双击/键盘 enter 为 `true`（激活），鼠标单击为 `false`（预览，焦点留在项目树）。
+    /// `focus_opened_item` 决定打开文件后是否把焦点交给编辑器：双击/键盘 enter 为 `true`（激活），鼠标单击为 `false`（临时标签，焦点留在项目树）。
     fn activate_selected(
         &mut self,
         focus_opened_item: bool,
@@ -757,7 +757,7 @@ fn render_row(
                         tree.update(cx, |tree, cx| {
                             tree.state.borrow_mut().select(&path);
                             match event.click_count {
-                                // 单击：目录展开/折叠、文件预览（焦点留在项目树）；
+                                // 单击：目录展开/折叠、文件以临时标签打开（焦点留在项目树）；
                                 // 双击：文件打开并聚焦编辑器；目录不重复，避免"展开→折叠"抵消。
                                 1 => tree.activate_selected(false, window, cx),
                                 _ if is_dir => {}
@@ -1164,7 +1164,7 @@ mod tests {
         std::fs::write(&file, "hello").expect("应创建测试文件");
         let project_root = directory.path().to_path_buf();
 
-        // 记录每次打开回调的 focus_opened_item：单击应为 false（预览），双击应为 true（激活）。
+        // 记录每次打开回调的 focus_opened_item：单击临时打开应为 false，双击激活应为 true。
         let open_count = Rc::new(Cell::new(0));
         let last_focus_opened = Rc::new(Cell::new(true));
         let callback_count = Rc::clone(&open_count);
@@ -1199,7 +1199,7 @@ mod tests {
         );
         assert!(
             !last_focus_opened.get(),
-            "单击文件应为预览：打开文件但焦点留在项目树（focus_opened_item=false）"
+            "单击文件应打开临时标签但焦点留在项目树（focus_opened_item=false）"
         );
     }
 

@@ -5,7 +5,7 @@
 //! 1. `notify` crate —— 底层 OS 文件系统事件（FSEvents / inotify / ReadDirectoryChanges）
 //! 2. `GlobalWatcher` 单例 —— 管理原生和轮询两个后端，专用线程批量调度事件
 //! 3. `FsWatcher` 实例 —— 每项目根一个实例，包装 GlobalWatcher，提供 `Watcher` trait
-//! 4. 调用方（如 ProjectTree）通过 async-channel 接收事件并触发 cx.notify()
+//! 4. 调用方通过 async-channel 接收事件并触发界面刷新
 //!
 //! 参考：Zed crates/fs/src/fs_watcher.rs
 

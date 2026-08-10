@@ -107,7 +107,7 @@
       "ctrl-cmd-f": "window_controls::ToggleMaximizeWindow",
       "cmd-shift-p": "project_picker::ToggleProjectPicker",
       "cmd-shift-b": "branch_picker::SelectGitBranch",
-      "cmd-,": "top_bar::OpenSettings",
+      "cmd-,": "workspace::OpenSettings",
       "cmd-shift-e": "dock::ToggleProjectTree",
       "cmd-shift-g": "dock::ToggleVersionControl",
       "cmd-shift-o": "dock::ToggleOutline",

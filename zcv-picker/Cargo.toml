@@ -6,8 +6,9 @@ description = "通用搜索-选择器"
 
 [dependencies]
 gpui.workspace = true
-zcv-editor.workspace = true
+zcv-actions.workspace = true
 zcv-theme.workspace = true
+zcv-ui.workspace = true
 
 [dev-dependencies]
 zcv-ui.workspace = true

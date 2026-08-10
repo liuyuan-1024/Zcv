@@ -1,0 +1,11 @@
+[package]
+name = "zcv-actions"
+version.workspace = true
+edition.workspace = true
+description = "通用编辑/导航 action 声明（对齐 Zed 的 zed_actions）"
+
+[dependencies]
+gpui.workspace = true
+
+[lints]
+workspace = true

@@ -1,8 +1,9 @@
 use std::path::Path;
 
 use gpui::{App, AppContext};
-use zcv_preview::{PreviewDescriptor, PreviewDocument, PreviewProvider, PreviewProviderId};
-use zcv_workspace::ItemHandle;
+use zcv_workspace::{
+    ItemHandle, PreviewDescriptor, PreviewDocument, PreviewProvider, PreviewProviderId,
+};
 
 use crate::view::SvgPreviewView;
 

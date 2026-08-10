@@ -2,11 +2,12 @@
 //!
 //! 实现 StatusItemView，在 set_active_editor 中订阅 Editor 变化，读取 cursor_text 并更新显示。
 
-use gpui::{Context, Entity, Render, Subscription, Window, prelude::*};
+use gpui::{Context, Render, Subscription, Window, prelude::*};
 
 use crate::workspace::StatusItemView;
 use zcv_editor::Editor;
 use zcv_ui::Glyph;
+use zcv_workspace::ItemHandle;
 
 pub(crate) struct CursorPosition {
     cursor_text: String,
@@ -23,13 +24,13 @@ impl CursorPosition {
 }
 
 impl StatusItemView for CursorPosition {
-    fn set_active_editor(&mut self, editor: Option<&Entity<Editor>>, cx: &mut Context<Self>) {
+    fn set_active_pane_item(&mut self, item: Option<&dyn ItemHandle>, cx: &mut Context<Self>) {
         // 取消旧订阅
         self._subscription = None;
 
-        if let Some(editor) = editor {
+        if let Some(editor) = item.and_then(|item| item.act_as::<Editor>(cx)) {
             // 订阅 Editor 变化（选区移动、编辑等都会触发 notify）
-            self._subscription = Some(cx.observe(editor, |this, ed, cx| {
+            self._subscription = Some(cx.observe(&editor, |this, ed, cx| {
                 this.cursor_text = ed.read(cx).cursor_text();
                 cx.notify();
             }));

@@ -6,16 +6,17 @@ use gpui::{
     AnyView, App, Context, Entity, EntityId, EventEmitter, Render, Window, div, prelude::*,
 };
 
-use super::{ToggleFileSearch, TogglePreview};
+use crate::pane::{ToggleFileSearch, TogglePreview};
+use crate::preview::provider_for;
+use crate::{ItemHandle, ItemPresentation, ToolbarItemLocation};
 use zcv_theme::{color, space};
 use zcv_ui::Glyph;
-use zcv_workspace::{ItemHandle, ItemPresentation, ToolbarItemLocation};
 
 // ═══ ToolbarItemEvent ════════════════════════════════════════════════
 
 /// Toolbar 子项向 Toolbar 发出的事件。
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub(crate) enum ToolbarItemEvent {
+pub enum ToolbarItemEvent {
     /// 子项要求变更显示位置。
     ChangeLocation(ToolbarItemLocation),
 }
@@ -23,7 +24,7 @@ pub(crate) enum ToolbarItemEvent {
 // ═══ ToolbarItemView trait ═══════════════════════════════════════════
 
 /// Toolbar 子项需实现的接口。
-pub(crate) trait ToolbarItemView: Render + EventEmitter<ToolbarItemEvent> {
+pub trait ToolbarItemView: Render + EventEmitter<ToolbarItemEvent> {
     /// 当前激活的 item 切换时调用，返回此子项应显示的位置。
     fn set_active_item(
         &mut self,
@@ -36,7 +37,7 @@ pub(crate) trait ToolbarItemView: Render + EventEmitter<ToolbarItemEvent> {
 // ═══ ToolbarItemViewHandle trait object ═══════════════════════════════
 
 /// 抹消具体类型的 Toolbar 子项句柄。
-pub(crate) trait ToolbarItemViewHandle: Send {
+pub trait ToolbarItemViewHandle: Send {
     fn id(&self) -> EntityId;
     fn to_any(&self) -> AnyView;
     fn set_active_item(
@@ -70,7 +71,7 @@ impl<T: ToolbarItemView + 'static> ToolbarItemViewHandle for Entity<T> {
 // ═══ Toolbar struct ══════════════════════════════════════════════════
 
 /// Pane 内容区顶部的工具条 Entity。
-pub(crate) struct Toolbar {
+pub struct Toolbar {
     active_item: Option<Box<dyn ItemHandle>>,
     items: Vec<(Box<dyn ToolbarItemViewHandle>, ToolbarItemLocation)>,
 }
@@ -138,90 +139,6 @@ impl Toolbar {
     }
 }
 
-// ═══ 活动文件右侧控件 ════════════════════════════════════════════
-
-pub(crate) struct FileToolbarControls {
-    visible: bool,
-    presentation: Option<ItemPresentation>,
-}
-
-impl FileToolbarControls {
-    pub(crate) fn new() -> Self {
-        Self {
-            visible: false,
-            presentation: None,
-        }
-    }
-}
-
-impl EventEmitter<ToolbarItemEvent> for FileToolbarControls {}
-
-impl ToolbarItemView for FileToolbarControls {
-    fn set_active_item(
-        &mut self,
-        active_item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> ToolbarItemLocation {
-        let path = active_item.and_then(|item| item.file_path(cx));
-        self.visible = path.is_some();
-        self.presentation = active_item
-            .and_then(|item| item.document_item_key(cx))
-            .map(|key| key.presentation)
-            .filter(|presentation| {
-                matches!(presentation, ItemPresentation::Preview(_))
-                    || path
-                        .as_deref()
-                        .is_some_and(|path| zcv_preview::provider_for(path, cx).is_some())
-            });
-        cx.notify();
-        if self.visible {
-            ToolbarItemLocation::PrimaryRight
-        } else {
-            ToolbarItemLocation::Hidden
-        }
-    }
-}
-
-impl Render for FileToolbarControls {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .gap(space::S6)
-            .when_some(self.presentation, |controls, presentation| {
-                let (icon, label, icon_color) = match presentation {
-                    ItemPresentation::Preview(_) => (
-                        "icons/eye_off.svg",
-                        "源码".to_string(),
-                        color::current(cx).text_muted,
-                    ),
-                    ItemPresentation::Source => (
-                        "icons/eye.svg",
-                        "预览".to_string(),
-                        color::current(cx).text_muted,
-                    ),
-                };
-                controls.child(
-                    Glyph::icon("toolbar-preview", icon)
-                        .label(label)
-                        .color(icon_color)
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(TogglePreview), cx)
-                        }),
-                )
-            })
-            .child(
-                Glyph::icon("toolbar-file-search", "icons/magnifying_glass.svg")
-                    .label("搜索")
-                    .shortcut(&ToggleFileSearch, cx)
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(ToggleFileSearch), cx)
-                    }),
-            )
-    }
-}
-
 // ═══ Render ═════════════════════════════════════════════════════════
 
 impl Render for Toolbar {
@@ -272,6 +189,97 @@ impl Render for Toolbar {
                             .justify_end()
                             .children(right_elements),
                     ),
+            )
+    }
+}
+
+// ═══ 活动文件右侧控件 ════════════════════════════════════════════
+
+/// Toolbar 右侧的活动文件控件：预览/源码切换与文件内搜索入口。
+pub struct FileToolbarControls {
+    visible: bool,
+    presentation: Option<ItemPresentation>,
+}
+
+impl FileToolbarControls {
+    pub fn new() -> Self {
+        Self {
+            visible: false,
+            presentation: None,
+        }
+    }
+}
+
+impl Default for FileToolbarControls {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EventEmitter<ToolbarItemEvent> for FileToolbarControls {}
+
+impl ToolbarItemView for FileToolbarControls {
+    fn set_active_item(
+        &mut self,
+        active_item: Option<&dyn ItemHandle>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ToolbarItemLocation {
+        let path = active_item.and_then(|item| item.file_path(cx));
+        self.visible = path.is_some();
+        self.presentation = active_item
+            .and_then(|item| item.document_item_key(cx))
+            .map(|key| key.presentation)
+            .filter(|presentation| {
+                matches!(presentation, ItemPresentation::Preview(_))
+                    || path
+                        .as_deref()
+                        .is_some_and(|path| provider_for(path, cx).is_some())
+            });
+        cx.notify();
+        if self.visible {
+            ToolbarItemLocation::PrimaryRight
+        } else {
+            ToolbarItemLocation::Hidden
+        }
+    }
+}
+
+impl Render for FileToolbarControls {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap(space::S6)
+            .when_some(self.presentation, |controls, presentation| {
+                let (icon, label, icon_color) = match presentation {
+                    ItemPresentation::Preview(_) => (
+                        "icons/eye_off.svg",
+                        "源码".to_string(),
+                        color::current(cx).text_muted,
+                    ),
+                    ItemPresentation::Source => (
+                        "icons/eye.svg",
+                        "预览".to_string(),
+                        color::current(cx).text_muted,
+                    ),
+                };
+                controls.child(
+                    Glyph::icon("toolbar-preview", icon)
+                        .label(label)
+                        .color(icon_color)
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(TogglePreview), cx)
+                        }),
+                )
+            })
+            .child(
+                Glyph::icon("toolbar-file-search", "icons/magnifying_glass.svg")
+                    .label("搜索")
+                    .shortcut(&ToggleFileSearch, cx)
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(ToggleFileSearch), cx)
+                    }),
             )
     }
 }

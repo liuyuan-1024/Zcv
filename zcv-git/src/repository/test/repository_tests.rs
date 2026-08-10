@@ -709,8 +709,8 @@ fn branches_lists_local_branches_with_head_marker() {
         .iter()
         .map(|branch| (branch.name.as_str(), branch.is_head))
         .collect();
-    assert_eq!(by_name["master"], false);
-    assert_eq!(by_name["feature"], true);
+    assert!(!by_name["master"]);
+    assert!(by_name["feature"]);
 
     run_in(&root, &["git", "checkout", "-q", "master"]);
     let branches = repository.branches().expect("branches 应成功");

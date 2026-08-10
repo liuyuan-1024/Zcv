@@ -1,28 +1,28 @@
 //! StatusBar —— 底栏容器（Entity），按 StatusItemView 模式管理状态项。
 //!
-//! 持有左右两侧的 StatusItemView 列表，在中心 Pane 变化时向每个 item 广播 set_active_editor 消息。
-//! 每个 item 自行订阅 Editor 变化。
+//! 持有左右两侧的 StatusItemView 列表，在中心 Pane 变化时向每个 item 广播 set_active_pane_item 消息。
+//! 每个 item 自行订阅 Item 变化。
 
 use gpui::{AnyElement, App, Context, Div, Entity, Render, Subscription, Window, div, prelude::*};
 
-use super::Pane;
-use zcv_editor::Editor;
+use crate::ItemHandle;
+use crate::pane::Pane;
 use zcv_theme::{color, space};
 
 // ═══ StatusItemView trait ═══════════════════════════════════════════
 
 /// StatusItemView trait —— 底栏中一个可渲染的状态项。
 ///
-/// 实现者收到 `set_active_editor` 通知后，应自行订阅 Editor 变化并更新内部状态。
+/// 实现者收到 `set_active_pane_item` 通知后，应自行订阅 Item 变化并更新内部状态。
 pub trait StatusItemView: Render + 'static {
-    /// 当活跃编辑器变化时回调。
-    fn set_active_editor(&mut self, editor: Option<&Entity<Editor>>, cx: &mut Context<Self>);
+    /// 当活跃标签项变化时回调。
+    fn set_active_pane_item(&mut self, item: Option<&dyn ItemHandle>, cx: &mut Context<Self>);
 }
 
 /// 类型擦除桥接，让 StatusBar 存储异构 item 列表。
-pub(crate) trait StatusItemViewHandle: Send {
+pub trait StatusItemViewHandle: Send {
     fn element(&self) -> AnyElement;
-    fn set_active_editor(&self, editor: Option<&Entity<Editor>>, cx: &mut App);
+    fn set_active_pane_item(&self, item: Option<&dyn ItemHandle>, cx: &mut App);
 }
 
 impl<T: StatusItemView> StatusItemViewHandle for Entity<T> {
@@ -30,16 +30,16 @@ impl<T: StatusItemView> StatusItemViewHandle for Entity<T> {
         self.clone().into_any_element()
     }
 
-    fn set_active_editor(&self, editor: Option<&Entity<Editor>>, cx: &mut App) {
+    fn set_active_pane_item(&self, item: Option<&dyn ItemHandle>, cx: &mut App) {
         self.update(cx, |this, cx| {
-            this.set_active_editor(editor, cx);
+            this.set_active_pane_item(item, cx);
         });
     }
 }
 
 // ═══ StatusBar Entity ═══════════════════════════════════════════════
 
-pub(crate) struct StatusBar {
+pub struct StatusBar {
     left_items: Vec<Box<dyn StatusItemViewHandle>>,
     right_items: Vec<Box<dyn StatusItemViewHandle>>,
     pane: Entity<Pane>,
@@ -49,10 +49,12 @@ pub(crate) struct StatusBar {
 impl StatusBar {
     // ═══ 构造与生命周期 ═══════════════════════════════════════════
 
-    pub(crate) fn new(pane: Entity<Pane>, cx: &mut Context<Self>) -> Self {
+    pub fn new(pane: Entity<Pane>, cx: &mut Context<Self>) -> Self {
         let pane_subscription = cx.observe(&pane, |this, pane, cx| {
-            let editor = pane.read(cx).active_editor(cx);
-            this.broadcast_editor(editor.as_ref(), cx);
+            let item = pane.read(cx).active_item().map(|item| item.boxed_clone());
+            for view in this.left_items.iter().chain(&this.right_items) {
+                view.set_active_pane_item(item.as_deref(), cx);
+            }
         });
         Self {
             left_items: Vec::new(),
@@ -64,34 +66,26 @@ impl StatusBar {
 
     // ═══ 注册 item ════════════════════════════════════════════════
 
-    pub(crate) fn add_left_item<T: StatusItemView>(
-        &mut self,
-        item: Entity<T>,
-        cx: &mut Context<Self>,
-    ) {
-        let editor = self.pane.read(cx).active_editor(cx);
-        item.set_active_editor(editor.as_ref(), cx);
+    pub fn add_left_item<T: StatusItemView>(&mut self, item: Entity<T>, cx: &mut Context<Self>) {
+        let active_item = self
+            .pane
+            .read(cx)
+            .active_item()
+            .map(|item| item.boxed_clone());
+        item.set_active_pane_item(active_item.as_deref(), cx);
         self.left_items.push(Box::new(item));
         cx.notify();
     }
 
-    pub(crate) fn add_right_item<T: StatusItemView>(
-        &mut self,
-        item: Entity<T>,
-        cx: &mut Context<Self>,
-    ) {
-        let editor = self.pane.read(cx).active_editor(cx);
-        item.set_active_editor(editor.as_ref(), cx);
+    pub fn add_right_item<T: StatusItemView>(&mut self, item: Entity<T>, cx: &mut Context<Self>) {
+        let active_item = self
+            .pane
+            .read(cx)
+            .active_item()
+            .map(|item| item.boxed_clone());
+        item.set_active_pane_item(active_item.as_deref(), cx);
         self.right_items.push(Box::new(item));
         cx.notify();
-    }
-
-    // ═══ Pane 追踪 ════════════════════════════════════════════════
-
-    fn broadcast_editor(&self, editor: Option<&Entity<Editor>>, cx: &mut Context<Self>) {
-        for item in self.left_items.iter().chain(&self.right_items) {
-            item.set_active_editor(editor, cx);
-        }
     }
 }
 

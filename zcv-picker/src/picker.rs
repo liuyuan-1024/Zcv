@@ -7,22 +7,15 @@
 //! - 调用方只需要实现 `PickerDelegate` 并提供数据
 
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, Pixels, Render, SharedString, Window, actions,
-    div, prelude::*, px,
+    AnyElement, App, Context, Entity, FocusHandle, Pixels, Render, SharedString, Window, div,
+    prelude::*, px,
 };
 
-use zcv_editor::{Editor, MoveDown, MoveUp};
+pub use zcv_actions::{
+    MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev,
+};
 use zcv_theme::{color, space};
-
-actions!(
-    picker,
-    [
-        PickerSelectNext,
-        PickerSelectPrev,
-        PickerConfirm,
-        PickerCancel
-    ]
-);
+use zcv_ui::TextInput;
 
 // ═══ PickerDelegate ═════════════════════════════════════════════
 
@@ -68,7 +61,7 @@ pub(crate) type OnDismiss = Box<dyn Fn(&mut Window, &mut App)>;
 
 pub struct Picker<D: PickerDelegate> {
     delegate: D,
-    editor: Entity<Editor>,
+    search_input: Entity<TextInput>,
     focus_handle: FocusHandle,
     width: Pixels,
     query: String,
@@ -79,14 +72,14 @@ impl<D: PickerDelegate> Picker<D> {
     pub fn new(delegate: D, width: Pixels, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let placeholder = delegate.placeholder_text().to_owned();
-        let editor = cx.new(|cx| {
-            let mut editor = Editor::single_line(cx);
-            editor.set_placeholder_text(placeholder, cx);
-            editor
+        let search_input = cx.new(|cx| {
+            let mut input = TextInput::new(cx);
+            input.set_placeholder_text(placeholder, cx);
+            input
         });
         Self {
             delegate,
-            editor,
+            search_input,
             focus_handle: focus,
             width,
             query: String::new(),
@@ -94,10 +87,10 @@ impl<D: PickerDelegate> Picker<D> {
         }
     }
 
-    /// Entity 创建后调用，连接编辑器输入。
+    /// Entity 创建后调用，连接搜索框输入。
     pub fn init(&mut self, cx: &mut Context<Self>) {
-        cx.observe(&self.editor, |picker, editor, cx| {
-            let query = editor.read(cx).text(cx);
+        cx.observe(&self.search_input, |picker, input, cx| {
+            let query = input.read(cx).text().to_owned();
             if picker.query != query {
                 picker.query = query.clone();
                 picker.delegate.update_matches(query);
@@ -120,8 +113,8 @@ impl<D: PickerDelegate> Picker<D> {
         &mut self.delegate
     }
 
-    pub fn editor(&self) -> &Entity<Editor> {
-        &self.editor
+    pub fn search_input(&self) -> &Entity<TextInput> {
+        &self.search_input
     }
 
     // ══ 内部：action handler ════════════════════════════════════
@@ -235,7 +228,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel));
 
-        root.child(picker_search_box(self.editor.clone(), cx))
+        root.child(picker_search_box(self.search_input.clone(), cx))
             .when_some(self.delegate.render_header(), |el, h| el.child(h))
             .when_some(no_match, |el, n| el.child(n))
             .child(items)
@@ -273,11 +266,12 @@ mod tests {
     use std::rc::Rc;
 
     use gpui::{
-        AppContext, FocusHandle, KeyBinding, TestAppContext, anchored, deferred, point, size,
+        AppContext, FocusHandle, Focusable, KeyBinding, TestAppContext, actions, anchored,
+        deferred, point, size,
     };
 
     use super::*;
-    use zcv_editor::Newline;
+    use zcv_actions::Newline;
     use zcv_ui::ListItem;
 
     /// 行内含超长文本（换行后行高很大），用于验证列表高度受容器约束。
@@ -462,7 +456,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn single_line_editor_drives_picker_query(cx: &mut TestAppContext) {
+    fn search_input_drives_picker_query(cx: &mut TestAppContext) {
         let picker = cx.new(|cx| {
             let mut picker = Picker::new(
                 TestDelegate {
@@ -474,14 +468,14 @@ mod tests {
             picker.init(cx);
             picker
         });
-        let editor = cx.read_entity(&picker, |picker, _| picker.editor().clone());
+        let input = cx.read_entity(&picker, |picker, _| picker.search_input().clone());
 
-        cx.update_entity(&editor, |editor, cx| editor.set_text("zed\nstyle", cx));
+        cx.update_entity(&input, |input, cx| input.set_text("分支", cx));
         cx.run_until_parked();
 
         cx.read_entity(&picker, |picker, _| {
-            assert_eq!(picker.query, "zedstyle");
-            assert_eq!(picker.delegate().query, "zedstyle");
+            assert_eq!(picker.query, "分支");
+            assert_eq!(picker.delegate().query, "分支");
         });
     }
 
@@ -525,7 +519,7 @@ mod tests {
             let selected_index = selected_index.clone();
             move |_, cx| {
                 cx.bind_keys([
-                    KeyBinding::new("down", zcv_editor::MoveDown, Some("Editor")),
+                    KeyBinding::new("down", zcv_actions::MoveDown, Some("Editor")),
                     KeyBinding::new("down", PickerSelectNext, Some("Picker")),
                     KeyBinding::new("enter", Newline, Some("Editor")),
                     KeyBinding::new("enter", PickerConfirm, Some("Picker")),
@@ -540,8 +534,8 @@ mod tests {
                 )
             }
         });
-        let editor = cx.read_entity(&picker, |picker, _| picker.editor().clone());
-        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+        let input = cx.read_entity(&picker, |picker, _| picker.search_input().clone());
+        cx.update(|window, cx| window.focus(&input.read(cx).focus_handle(cx)));
 
         cx.simulate_keystrokes("down");
         assert_eq!(selected_index.get(), 1);
@@ -591,8 +585,10 @@ mod tests {
                 PickerWithContext::new(editor_fired, picker_fired, cx)
             }
         });
-        let editor = cx.read_entity(&view, |view, cx| view.picker.read(cx).editor().clone());
-        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+        let input = cx.read_entity(&view, |view, cx| {
+            view.picker.read(cx).search_input().clone()
+        });
+        cx.update(|window, cx| window.focus(&input.read(cx).focus_handle(cx)));
 
         cx.simulate_keystrokes("cmd-backspace");
 
@@ -621,8 +617,10 @@ mod tests {
                 PickerWithContext::new(editor_fired, picker_fired, cx)
             }
         });
-        let editor = cx.read_entity(&view, |view, cx| view.picker.read(cx).editor().clone());
-        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+        let input = cx.read_entity(&view, |view, cx| {
+            view.picker.read(cx).search_input().clone()
+        });
+        cx.update(|window, cx| window.focus(&input.read(cx).focus_handle(cx)));
 
         cx.simulate_keystrokes("cmd-backspace");
 

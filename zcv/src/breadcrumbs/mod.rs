@@ -104,12 +104,14 @@ impl ToolbarItemView for Breadcrumbs {
         let this = cx.entity().downgrade();
         self.subscription = Some(item.subscribe_to_item_events(
             cx,
-            Box::new(move |ItemEvent::UpdateBreadcrumbs, cx| {
-                this.update(cx, |_, cx| {
-                    cx.notify();
-                    cx.emit(ToolbarItemEvent::ChangeLocation(location));
-                })
-                .ok();
+            Box::new(move |event, cx| {
+                if matches!(event, ItemEvent::UpdateBreadcrumbs) {
+                    this.update(cx, |_, cx| {
+                        cx.notify();
+                        cx.emit(ToolbarItemEvent::ChangeLocation(location));
+                    })
+                    .ok();
+                }
             }),
         ));
         self.active_item = Some(item.boxed_clone());

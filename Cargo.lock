@@ -7484,11 +7484,9 @@ version = "0.7.7"
 dependencies = [
  "anyhow",
  "async-channel 1.9.0",
- "crossbeam-channel",
  "globset",
  "gpui",
  "log",
- "notify",
  "regex",
  "serde",
  "serde_json",
@@ -7496,19 +7494,27 @@ dependencies = [
  "tempfile",
  "toml 0.8.23",
  "trash",
+ "zcv-actions",
  "zcv-assets",
  "zcv-editor",
  "zcv-engine",
+ "zcv-fs-watch",
  "zcv-git",
  "zcv-keymap",
  "zcv-language",
  "zcv-picker",
- "zcv-preview",
  "zcv-preview-svg",
  "zcv-project",
  "zcv-theme",
  "zcv-ui",
  "zcv-workspace",
+]
+
+[[package]]
+name = "zcv-actions"
+version = "0.7.7"
+dependencies = [
+ "gpui",
 ]
 
 [[package]]
@@ -7528,15 +7534,18 @@ version = "0.7.7"
 name = "zcv-editor"
 version = "0.7.7"
 dependencies = [
+ "anyhow",
  "gpui",
  "gpui_sum_tree",
  "log",
  "thiserror 2.0.19",
  "unicode-segmentation",
  "unicode-width",
+ "zcv-actions",
  "zcv-buffer-diff",
  "zcv-engine",
  "zcv-language",
+ "zcv-project",
  "zcv-theme",
  "zcv-ui",
  "zcv-workspace",
@@ -7553,6 +7562,19 @@ dependencies = [
  "thiserror 2.0.19",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "zcv-fs-watch"
+version = "0.7.7"
+dependencies = [
+ "anyhow",
+ "async-channel 1.9.0",
+ "crossbeam-channel",
+ "libc",
+ "log",
+ "notify",
+ "tempfile",
 ]
 
 [[package]]
@@ -7602,30 +7624,21 @@ name = "zcv-picker"
 version = "0.7.7"
 dependencies = [
  "gpui",
- "zcv-editor",
+ "zcv-actions",
  "zcv-theme",
  "zcv-ui",
-]
-
-[[package]]
-name = "zcv-preview"
-version = "0.7.7"
-dependencies = [
- "gpui",
- "zcv-editor",
- "zcv-engine",
- "zcv-workspace",
 ]
 
 [[package]]
 name = "zcv-preview-svg"
 version = "0.7.7"
 dependencies = [
+ "anyhow",
  "gpui",
  "resvg",
  "zcv-editor",
  "zcv-engine",
- "zcv-preview",
+ "zcv-project",
  "zcv-theme",
  "zcv-workspace",
 ]
@@ -7636,15 +7649,14 @@ version = "0.7.7"
 dependencies = [
  "anyhow",
  "async-channel 1.9.0",
- "crossbeam-channel",
  "globset",
  "gpui",
  "log",
- "notify",
  "tempfile",
  "trash",
  "zcv-buffer-diff",
  "zcv-engine",
+ "zcv-fs-watch",
  "zcv-git",
  "zcv-language",
 ]
@@ -7665,6 +7677,7 @@ name = "zcv-ui"
 version = "0.7.7"
 dependencies = [
  "gpui",
+ "zcv-actions",
  "zcv-git",
  "zcv-keymap",
  "zcv-theme",
@@ -7674,8 +7687,18 @@ dependencies = [
 name = "zcv-workspace"
 version = "0.7.7"
 dependencies = [
+ "anyhow",
  "gpui",
+ "serde",
+ "serde_json",
+ "zcv-actions",
  "zcv-engine",
+ "zcv-git",
+ "zcv-keymap",
+ "zcv-picker",
+ "zcv-project",
+ "zcv-theme",
+ "zcv-ui",
 ]
 
 [[package]]

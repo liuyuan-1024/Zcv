@@ -859,8 +859,8 @@ struct JobPreparation {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{run_git, test_git_repo};
     use super::*;
+    use crate::project::test_support::{run_git, test_git_repo};
     use std::fs;
 
     use gpui::AppContext;

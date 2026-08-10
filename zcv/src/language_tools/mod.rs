@@ -2,12 +2,12 @@
 //!
 //! 对标 Zed 的 `LspButton`。当前为占位，后续接入 LSP 状态。
 
-use gpui::{Context, Entity, Render, Window, prelude::*};
+use gpui::{Context, Render, Window, prelude::*};
 
 use crate::workspace::StatusItemView;
 use crate::workspace::ToggleLanguageServer;
-use zcv_editor::Editor;
 use zcv_ui::Glyph;
+use zcv_workspace::ItemHandle;
 
 pub(crate) struct LspButton;
 
@@ -18,7 +18,7 @@ impl LspButton {
 }
 
 impl StatusItemView for LspButton {
-    fn set_active_editor(&mut self, _editor: Option<&Entity<Editor>>, _cx: &mut Context<Self>) {}
+    fn set_active_pane_item(&mut self, _item: Option<&dyn ItemHandle>, _cx: &mut Context<Self>) {}
 }
 
 impl Render for LspButton {

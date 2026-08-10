@@ -5,15 +5,18 @@ edition.workspace = true
 description = "可嵌入文本编辑组件"
 
 [dependencies]
+anyhow.workspace = true
 gpui.workspace = true
 gpui-sum-tree.workspace = true
 log.workspace = true
 thiserror.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
+zcv-actions.workspace = true
 zcv-buffer-diff.workspace = true
 zcv-engine.workspace = true
 zcv-language.workspace = true
+zcv-project.workspace = true
 zcv-theme.workspace = true
 zcv-ui.workspace = true
 zcv-workspace.workspace = true

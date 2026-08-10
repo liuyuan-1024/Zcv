@@ -4,18 +4,13 @@ mod blink_manager;
 mod display_map;
 mod element;
 mod gutter;
+mod item_provider;
 mod scroll;
 mod scrollbar;
 mod selection;
 mod view;
 mod workspace_item;
 
-pub use view::{
-    Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
-    DeleteToPreviousWordStart, Editor, EditorEvent, ExpandSelection, Indent, MoveDown, MoveLeft,
-    MovePageDown, MovePageUp, MoveRight, MoveToBeginning, MoveToBeginningOfLine, MoveToEnd,
-    MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Outdent, Paste, Redo,
-    SelectAll, SelectDown, SelectLeft, SelectPageDown, SelectPageUp, SelectRight,
-    SelectToBeginning, SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine, SelectToNextWord,
-    SelectToPreviousWord, SelectUp, SoftWrap, ToggleFold, Undo, UnfoldAll,
-};
+pub use item_provider::init as init_item_providers;
+
+pub use view::{Editor, EditorEvent, SoftWrap};

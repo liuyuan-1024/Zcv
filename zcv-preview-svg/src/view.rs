@@ -1,3 +1,8 @@
+//! SVG 预览视图：把源码 Item 的 Buffer 内容栅格化为图像展示。
+//!
+//! 标签元数据（标题、路径、脏状态等）全部转发给源码 Item；
+//! [`Item::source_item`] 让 Pane 能在预览与源码之间切换而不依赖具体视图类型。
+
 use std::any::TypeId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -7,11 +12,13 @@ use gpui::{
     IntoElement, ObjectFit, Render, RenderImage, SharedString, Styled, StyledImage, Subscription,
     Task, Window, div, img, prelude::*,
 };
-use zcv_editor::{Editor, EditorEvent};
 use zcv_engine::{Buffer, ByteOffset};
-use zcv_preview::PreviewDocument;
+use zcv_project::Project;
 use zcv_theme::color;
-use zcv_workspace::{DocumentItemKey, Item, ItemEvent, ItemPresentation, ToolbarItemLocation};
+use zcv_workspace::{
+    DocumentItemKey, Item, ItemEvent, ItemHandle, ItemPresentation, PreviewDocument,
+    ToolbarItemLocation,
+};
 
 use crate::renderer::rasterize_svg;
 
@@ -22,7 +29,8 @@ enum SvgPreviewState {
 }
 
 pub struct SvgPreviewView {
-    source_editor: Entity<Editor>,
+    /// 源码 Item（通常是编辑器），渲染数据源与标签元数据都转发给它。
+    source_item: Box<dyn ItemHandle>,
     buffer: Entity<Buffer>,
     resources_dir: Option<PathBuf>,
     focus: FocusHandle,
@@ -30,7 +38,7 @@ pub struct SvgPreviewView {
     render_generation: u64,
     render_task: Option<Task<()>>,
     _buffer_subscription: Subscription,
-    _editor_subscription: Subscription,
+    _item_subscription: Subscription,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,25 +48,32 @@ pub enum SvgPreviewEvent {
 
 impl SvgPreviewView {
     pub fn new(document: PreviewDocument, cx: &mut Context<Self>) -> Self {
-        let source_editor = document.source_editor;
-        let buffer = source_editor.read(cx).buffer();
+        let source_item = document.source_item;
+        let buffer = source_item.buffer(cx).expect("预览视图应共享源码 Buffer");
         let resources_dir = document.path.parent().map(PathBuf::from);
         let buffer_subscription = cx.observe(&buffer, |view, _, cx| {
             view.start_render(cx);
         });
-        let editor_subscription =
-            cx.subscribe(&source_editor, |view, editor, event, cx| match event {
-                EditorEvent::PathChanged => {
-                    view.resources_dir = editor
-                        .read(cx)
-                        .file_path(cx)
-                        .and_then(|path| path.parent().map(PathBuf::from));
-                    view.start_render(cx);
-                    cx.emit(SvgPreviewEvent::SourcePathChanged);
+        // 源码路径变化（UpdateBreadcrumbs）时刷新渲染资源目录并重新渲染。
+        let this = cx.entity().downgrade();
+        let item = source_item.boxed_clone();
+        let item_subscription = source_item.subscribe_to_item_events(
+            cx,
+            Box::new(move |event, cx| {
+                if matches!(event, ItemEvent::UpdateBreadcrumbs)
+                    && let Some(path) = item.file_path(cx)
+                {
+                    this.update(cx, |view, cx| {
+                        view.resources_dir = path.parent().map(PathBuf::from);
+                        view.start_render(cx);
+                        cx.emit(SvgPreviewEvent::SourcePathChanged);
+                    })
+                    .ok();
                 }
-            });
+            }),
+        );
         let mut view = Self {
-            source_editor,
+            source_item,
             buffer,
             resources_dir,
             focus: cx.focus_handle(),
@@ -66,7 +81,7 @@ impl SvgPreviewView {
             render_generation: 0,
             render_task: None,
             _buffer_subscription: buffer_subscription,
-            _editor_subscription: editor_subscription,
+            _item_subscription: item_subscription,
         };
         view.start_render(cx);
         view
@@ -167,9 +182,8 @@ impl Render for SvgPreviewView {
 impl Item for SvgPreviewView {
     type Event = SvgPreviewEvent;
 
-    fn tab_content_text(&self, cx: &App) -> SharedString {
-        self.source_editor
-            .read(cx)
+    fn tab_content_text(&self, _detail: usize, cx: &App) -> SharedString {
+        self.source_item
             .file_path(cx)
             .and_then(|path| {
                 path.file_name()
@@ -186,11 +200,11 @@ impl Item for SvgPreviewView {
     }
 
     fn is_dirty(&self, cx: &App) -> bool {
-        self.source_editor.read(cx).is_dirty(cx)
+        self.source_item.is_dirty(cx)
     }
 
     fn file_path(&self, cx: &App) -> Option<PathBuf> {
-        self.source_editor.read(cx).file_path(cx)
+        self.source_item.file_path(cx)
     }
 
     fn breadcrumb_location(&self, _cx: &App) -> ToolbarItemLocation {
@@ -198,38 +212,13 @@ impl Item for SvgPreviewView {
     }
 
     fn breadcrumbs(&self, cx: &App) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
-        let editor = self.source_editor.read(cx);
-        let path = editor.file_path(cx)?;
-        let relative = editor
-            .project_root()
-            .and_then(|root| path.strip_prefix(root).ok())
-            .unwrap_or(&path);
-        Some((
-            vec![
-                relative.to_string_lossy().into_owned().into(),
-                "Preview".into(),
-            ],
-            None,
-        ))
+        let (mut segments, font) = self.source_item.breadcrumbs(cx)?;
+        segments.push("Preview".into());
+        Some((segments, font))
     }
 
     fn rename_path(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
-        self.source_editor.update(cx, |editor, cx| {
-            let (Some(path), Some(project_root)) = (
-                editor.file_path(cx),
-                editor.project_root().map(Path::to_path_buf),
-            ) else {
-                return;
-            };
-            let Ok(suffix) = path.strip_prefix(from) else {
-                return;
-            };
-            let renamed_path = to.join(suffix);
-            let renamed_root = project_root
-                .strip_prefix(from)
-                .map_or(project_root.clone(), |suffix| to.join(suffix));
-            editor.set_file_path(renamed_path, renamed_root, cx);
-        });
+        self.source_item.rename_path(from, to, cx);
     }
 
     fn buffer(&self, _cx: &App) -> Option<Entity<Buffer>> {
@@ -243,18 +232,33 @@ impl Item for SvgPreviewView {
         })
     }
 
+    fn source_item(&self, _cx: &App) -> Option<Box<dyn ItemHandle>> {
+        Some(self.source_item.boxed_clone())
+    }
+
+    fn can_save(&self, cx: &App) -> bool {
+        self.source_item.can_save(cx)
+    }
+
+    fn save(
+        &mut self,
+        project: Entity<Project>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        self.source_item.save(project, window, cx)
+    }
+
     fn act_as_type(
         &self,
         type_id: TypeId,
         self_handle: &Entity<Self>,
-        _cx: &App,
+        cx: &App,
     ) -> Option<AnyEntity> {
         if type_id == TypeId::of::<Self>() {
             Some(self_handle.clone().into())
-        } else if type_id == TypeId::of::<Editor>() {
-            Some(self.source_editor.clone().into())
         } else {
-            None
+            self.source_item.act_as_type(type_id, cx)
         }
     }
 }
@@ -282,7 +286,7 @@ mod tests {
             SvgPreviewView::new(
                 PreviewDocument {
                     path: PathBuf::from("icon.svg"),
-                    source_editor: editor,
+                    source_item: Box::new(editor),
                 },
                 cx,
             )

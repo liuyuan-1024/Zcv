@@ -7,19 +7,22 @@ use gpui::{
     App, ClickEvent, Context, ElementId, Entity, Render, Subscription, Window, div, prelude::*,
 };
 
-use super::{Dock, DockPosition, StatusItemView};
-use zcv_editor::Editor;
+use crate::ItemHandle;
+use crate::{
+    dock::{Dock, DockPosition},
+    status_bar::StatusItemView,
+};
 use zcv_theme::{color, space};
 use zcv_ui::Glyph;
 
 /// 底栏按钮组：绑定一个 Dock Entity，渲染其所有面板。
-pub(crate) struct PanelButtons {
+pub struct PanelButtons {
     dock: Entity<Dock>,
     _subscription: Subscription,
 }
 
 impl PanelButtons {
-    pub(crate) fn new(dock: Entity<Dock>, cx: &mut Context<Self>) -> Self {
+    pub fn new(dock: Entity<Dock>, cx: &mut Context<Self>) -> Self {
         // Dock 状态变化时自动重绘
         let sub = cx.observe(&dock, |_, _, cx| cx.notify());
         Self {
@@ -30,7 +33,7 @@ impl PanelButtons {
 }
 
 impl StatusItemView for PanelButtons {
-    fn set_active_editor(&mut self, _editor: Option<&Entity<Editor>>, _cx: &mut Context<Self>) {
+    fn set_active_pane_item(&mut self, _item: Option<&dyn ItemHandle>, _cx: &mut Context<Self>) {
         // PanelButtons 不追踪 Editor 状态。
     }
 }

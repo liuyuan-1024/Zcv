@@ -8,7 +8,7 @@ use zcv_buffer_diff::DiffHunk;
 use zcv_git::{Branch, DiffStat, GitRepository};
 
 use super::{GitJob, GitOperationKind, RepositorySnapshot, StatusEntry};
-use crate::project::worktree::discover_repositories;
+use crate::worktree::discover_repositories;
 
 /// 后台 job 的执行结果。
 pub(super) enum JobResult {
@@ -427,7 +427,7 @@ mod tests {
     use zcv_git::{DiffStat, FileStatus};
 
     use super::*;
-    use crate::project::git_store::{RepositorySnapshot, StatusEntry};
+    use crate::git_store::{RepositorySnapshot, StatusEntry};
 
     #[test]
     fn merge_refresh_replaces_changed_paths_and_keeps_rest() {

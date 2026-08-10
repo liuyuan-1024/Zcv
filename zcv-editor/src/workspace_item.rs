@@ -11,7 +11,7 @@ use crate::{Editor, EditorEvent};
 impl Item for Editor {
     type Event = EditorEvent;
 
-    fn tab_content_text(&self, cx: &App) -> SharedString {
+    fn tab_content_text(&self, _detail: usize, cx: &App) -> SharedString {
         self.file_path(cx)
             .and_then(|path| {
                 path.file_name()
@@ -23,8 +23,17 @@ impl Item for Editor {
 
     fn to_item_events(event: &Self::Event, emit: &mut dyn FnMut(ItemEvent)) {
         match event {
-            EditorEvent::PathChanged => emit(ItemEvent::UpdateBreadcrumbs),
+            EditorEvent::PathChanged => {
+                // 路径变化同时刷新标签标题与面包屑。
+                emit(ItemEvent::UpdateTab);
+                emit(ItemEvent::UpdateBreadcrumbs);
+            }
+            EditorEvent::Edited => emit(ItemEvent::Edit),
         }
+    }
+
+    fn can_save(&self, cx: &App) -> bool {
+        self.file_path(cx).is_some()
     }
 
     fn is_dirty(&self, cx: &App) -> bool {
@@ -74,5 +83,25 @@ impl Item for Editor {
             buffer_id: self.buffer().entity_id(),
             presentation: ItemPresentation::Source,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 编辑与路径变化必须映射为对应的 ItemEvent，Pane 依赖它们刷新标签与提升临时标签。
+    #[test]
+    fn item_events_follow_zed_semantics() {
+        let mut events = Vec::new();
+        Editor::to_item_events(&EditorEvent::Edited, &mut |event| events.push(event));
+        assert_eq!(events, vec![ItemEvent::Edit]);
+
+        events.clear();
+        Editor::to_item_events(&EditorEvent::PathChanged, &mut |event| events.push(event));
+        assert_eq!(
+            events,
+            vec![ItemEvent::UpdateTab, ItemEvent::UpdateBreadcrumbs]
+        );
     }
 }

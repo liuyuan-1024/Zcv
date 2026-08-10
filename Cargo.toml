@@ -10,15 +10,16 @@
 [workspace]
 members = [
     "zcv",
+    "zcv-actions",
     "zcv-assets",
     "zcv-buffer-diff",
     "zcv-editor",
     "zcv-engine",
+    "zcv-fs-watch",
     "zcv-git",
     "zcv-keymap",
     "zcv-language",
     "zcv-picker",
-    "zcv-preview",
     "zcv-preview-svg",
     "zcv-project",
     "zcv-theme",
@@ -27,15 +28,16 @@ members = [
 ]
 default-members = [
     "zcv",
+    "zcv-actions",
     "zcv-assets",
     "zcv-buffer-diff",
     "zcv-editor",
     "zcv-engine",
+    "zcv-fs-watch",
     "zcv-git",
     "zcv-keymap",
     "zcv-language",
     "zcv-picker",
-    "zcv-preview",
     "zcv-preview-svg",
     "zcv-project",
     "zcv-theme",
@@ -52,15 +54,16 @@ doc_lazy_continuation = "allow"
 
 [workspace.dependencies]
 # ---- 内部 crate ----
+zcv-actions = { path = "zcv-actions" }
 zcv-assets = { path = "zcv-assets" }
 zcv-buffer-diff = { path = "zcv-buffer-diff" }
 zcv-editor = { path = "zcv-editor" }
 zcv-engine = { path = "zcv-engine" }
+zcv-fs-watch = { path = "zcv-fs-watch" }
 zcv-git = { path = "zcv-git" }
 zcv-keymap = { path = "zcv-keymap" }
 zcv-language = { path = "zcv-language" }
 zcv-picker = { path = "zcv-picker" }
-zcv-preview = { path = "zcv-preview" }
 zcv-preview-svg = { path = "zcv-preview-svg" }
 zcv-project = { path = "zcv-project" }
 zcv-theme = { path = "zcv-theme" }
@@ -126,6 +129,7 @@ ratex-types = "0.1.12"
 
 # ---- 平台特定 ----
 cocoa = "0.26.0"
+libc = "0.2"
 raw-window-handle = "0.6.2"
 # ---- SVG 预览 ----
 resvg = { version = "0.45.1", default-features = false }

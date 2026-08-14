@@ -7678,7 +7678,6 @@ version = "0.7.7"
 dependencies = [
  "gpui",
  "zcv-actions",
- "zcv-git",
  "zcv-keymap",
  "zcv-theme",
 ]

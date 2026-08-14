@@ -27,10 +27,7 @@ pub use dock::{
     ToggleLanguageServer, ToggleOutline, ToggleProjectSearch, ToggleProjectTree, ToggleTerminal,
     ToggleVersionControl, render_body,
 };
-pub use item::{
-    DocumentItemKey, Item, ItemEvent, ItemEventHandler, ItemHandle, ItemPresentation,
-    ToolbarItemLocation,
-};
+pub use item::{Item, ItemEvent, ItemEventHandler, ItemHandle, ToolbarItemLocation};
 pub use item_provider::{
     ItemProvider, ItemProviderDescriptor, item_provider_for_path, register_item_provider,
 };
@@ -38,7 +35,8 @@ pub use pane::{CloseTab, NextTab, Pane, PaneEvent, PrevTab, ToggleFileSearch, To
 pub use panel::{Panel, PanelHandle};
 pub use panel_buttons::PanelButtons;
 pub use preview::{
-    PreviewDescriptor, PreviewDocument, PreviewProvider, PreviewProviderId, provider_for, register,
+    PreviewDescriptor, PreviewDocument, PreviewItem, PreviewItemHandle, PreviewProvider,
+    PreviewProviderId, provider_for, register,
 };
 pub use project_picker::{OnProjectSelected, ProjectPicker};
 pub use recent_projects::{

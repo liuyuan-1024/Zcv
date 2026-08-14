@@ -4,6 +4,7 @@ mod active_buffer_language;
 mod breadcrumbs;
 mod cursor_position;
 mod diagnostics;
+mod git_status;
 mod language_tools;
 mod paths;
 mod preview;

@@ -16,7 +16,7 @@ use zcv_engine::{Buffer, ByteOffset};
 use zcv_project::Project;
 use zcv_theme::color;
 use zcv_workspace::{
-    DocumentItemKey, Item, ItemEvent, ItemHandle, ItemPresentation, PreviewDocument,
+    Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle,
     ToolbarItemLocation,
 };
 
@@ -225,15 +225,12 @@ impl Item for SvgPreviewView {
         Some(self.buffer.clone())
     }
 
-    fn document_item_key(&self, _cx: &App) -> Option<DocumentItemKey> {
-        Some(DocumentItemKey {
-            buffer_id: self.buffer.entity_id(),
-            presentation: ItemPresentation::Preview("svg"),
-        })
-    }
-
-    fn source_item(&self, _cx: &App) -> Option<Box<dyn ItemHandle>> {
-        Some(self.source_item.boxed_clone())
+    fn as_preview_item(
+        &self,
+        self_handle: &Entity<Self>,
+        _cx: &App,
+    ) -> Option<Box<dyn PreviewItemHandle>> {
+        Some(Box::new(self_handle.clone()))
     }
 
     fn can_save(&self, cx: &App) -> bool {
@@ -260,6 +257,12 @@ impl Item for SvgPreviewView {
         } else {
             self.source_item.act_as_type(type_id, cx)
         }
+    }
+}
+
+impl PreviewItem for SvgPreviewView {
+    fn source_item(&self, _cx: &App) -> Option<Box<dyn ItemHandle>> {
+        Some(self.source_item.boxed_clone())
     }
 }
 

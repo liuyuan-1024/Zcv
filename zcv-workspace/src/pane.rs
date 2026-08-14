@@ -15,7 +15,7 @@ pub use zcv_actions::{CloseTab, NextTab, PrevTab, ToggleFileSearch, TogglePrevie
 
 use crate::tab_bar::TabBar;
 use crate::toolbar::Toolbar;
-use crate::{ItemEvent, ItemHandle, ItemPresentation};
+use crate::{ItemEvent, ItemHandle};
 use zcv_theme::{FileIcons, color, typography};
 use zcv_ui::Glyph;
 use zcv_ui::SvgIcon;
@@ -194,7 +194,8 @@ impl Pane {
             // 双击文件永远打开固定源码；若单击阶段是渲染内容，就在原位换成源码 Item。
             if !allow_transient && is_preview {
                 let source = existing
-                    .source_item(cx)
+                    .as_preview_item(cx)
+                    .and_then(|preview| preview.source_item(cx))
                     .unwrap_or_else(|| item.boxed_clone());
                 self.promote_transient_tab(item_id, cx);
                 return self.replace_item_at(index, source, window, cx);
@@ -258,7 +259,8 @@ impl Pane {
         let next_item: Box<dyn ItemHandle> = if is_preview_item(active_item, cx) {
             // 预览 Item 暴露其源码 Item；无法暴露时保持当前展示。
             active_item
-                .source_item(cx)
+                .as_preview_item(cx)
+                .and_then(|preview| preview.source_item(cx))
                 .unwrap_or_else(|| active_item.boxed_clone())
         } else {
             let path = active_item.file_path(cx)?;
@@ -727,8 +729,7 @@ fn item_icon(item: Option<&dyn ItemHandle>, cx: &App) -> impl gpui::IntoElement 
 }
 
 fn is_preview_item(item: &dyn ItemHandle, cx: &App) -> bool {
-    item.document_item_key(cx)
-        .is_some_and(|key| matches!(key.presentation, ItemPresentation::Preview(_)))
+    item.as_preview_item(cx).is_some()
 }
 
 /// 标签关闭按钮（叉 glyph）。
@@ -840,7 +841,9 @@ mod tests {
     use zcv_engine::{Buffer, BufferConfig};
 
     use super::*;
-    use crate::{DocumentItemKey, Item, PreviewDescriptor, PreviewProvider, PreviewProviderId};
+    use crate::{
+        Item, PreviewDescriptor, PreviewItem, PreviewItemHandle, PreviewProvider, PreviewProviderId,
+    };
 
     /// 辅助视图类型，仅用于测试中创建窗口。
     struct TestView;
@@ -973,13 +976,6 @@ mod tests {
         fn buffer(&self, _cx: &App) -> Option<Entity<Buffer>> {
             Some(self.buffer.clone())
         }
-
-        fn document_item_key(&self, _cx: &App) -> Option<DocumentItemKey> {
-            Some(DocumentItemKey {
-                buffer_id: self.buffer.entity_id(),
-                presentation: ItemPresentation::Source,
-            })
-        }
     }
 
     /// 测试专用的假预览 Item：转发源码 Item 元数据，展示键为 Preview("fake")。
@@ -1029,13 +1025,16 @@ mod tests {
             self.source_item.buffer(cx)
         }
 
-        fn document_item_key(&self, cx: &App) -> Option<DocumentItemKey> {
-            Some(DocumentItemKey {
-                buffer_id: self.source_item.buffer(cx)?.entity_id(),
-                presentation: ItemPresentation::Preview("fake"),
-            })
+        fn as_preview_item(
+            &self,
+            self_handle: &Entity<Self>,
+            _cx: &App,
+        ) -> Option<Box<dyn PreviewItemHandle>> {
+            Some(Box::new(self_handle.clone()))
         }
+    }
 
+    impl PreviewItem for FakePreviewItem {
         fn source_item(&self, _cx: &App) -> Option<Box<dyn ItemHandle>> {
             Some(self.source_item.boxed_clone())
         }
@@ -1071,10 +1070,13 @@ mod tests {
         cx.update(|cx| crate::register(FakePreviewProvider, cx));
     }
 
-    fn presentation(item: &dyn ItemHandle, cx: &App) -> ItemPresentation {
-        item.document_item_key(cx)
-            .expect("文档标签应提供展示键")
-            .presentation
+    /// 断言辅助：当前活动标签是否预览视图。
+    fn assert_active_is_preview(pane: &Pane, cx: &App, expected: bool) {
+        assert_eq!(
+            pane.active_item().map(|item| is_preview_item(item, cx)),
+            Some(expected),
+            "活动标签的预览状态应一致"
+        );
     }
 
     #[gpui::test]
@@ -1198,10 +1200,7 @@ mod tests {
             let item_id = pane.active.unwrap();
             assert_eq!(pane.tabs.len(), 1);
             assert_eq!(pane.transient_item_id, Some(item_id));
-            assert!(matches!(
-                presentation(pane.active_item().unwrap(), cx),
-                ItemPresentation::Preview("fake")
-            ));
+            assert_active_is_preview(pane, cx, true);
             assert_eq!(
                 pane.active_item().unwrap().tab_content_text(0, cx),
                 "icon.svg"
@@ -1216,10 +1215,7 @@ mod tests {
             assert_eq!(pane.tabs.len(), 1);
         });
         cx.read_entity(&pane, |pane, cx| {
-            assert_eq!(
-                presentation(pane.active_item().unwrap(), cx),
-                ItemPresentation::Source
-            );
+            assert_active_is_preview(pane, cx, false);
         });
     }
 
@@ -1238,10 +1234,7 @@ mod tests {
             assert_eq!(pane.tabs[0].tab_content_text(0, cx), "toggle.svg");
             assert_eq!(pane.transient_item_id, Some(pane.tabs[0].item_id()));
             assert_eq!(pane.active, Some(pane.tabs[0].item_id()));
-            assert_eq!(
-                presentation(pane.active_item().unwrap(), cx),
-                ItemPresentation::Source,
-            );
+            assert_active_is_preview(pane, cx, false);
         });
     }
 
@@ -1257,20 +1250,14 @@ mod tests {
             permanent_svg,
         );
         cx.read_entity(&permanent_pane, |pane, cx| {
-            assert_eq!(
-                presentation(pane.active_item().unwrap(), cx),
-                ItemPresentation::Source
-            );
+            assert_active_is_preview(pane, cx, false);
         });
 
         let text_pane = cx.new(Pane::new);
         let text_buffer = test_buffer(cx, "普通文本");
         open_transient_file_in_test(cx, &text_pane, PathBuf::from("preview.txt"), text_buffer);
         cx.read_entity(&text_pane, |pane, cx| {
-            assert_eq!(
-                presentation(pane.active_item().unwrap(), cx),
-                ItemPresentation::Source
-            );
+            assert_active_is_preview(pane, cx, false);
         });
     }
 
@@ -1291,10 +1278,7 @@ mod tests {
             assert_eq!(pane.tabs.len(), 1, "切换只替换当前标签的展示 Item");
             let active_buffer = pane.tabs[0].buffer(cx).unwrap();
             assert_eq!(source_buffer.entity_id(), active_buffer.entity_id());
-            assert!(matches!(
-                presentation(pane.active_item().unwrap(), cx),
-                ItemPresentation::Preview("fake")
-            ));
+            assert_active_is_preview(pane, cx, true);
         });
     }
 
@@ -1358,10 +1342,7 @@ mod tests {
         cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.transient_item_id, None);
             assert_eq!(pane.active, Some(item_id));
-            assert!(matches!(
-                presentation(pane.active_item().unwrap(), cx),
-                ItemPresentation::Preview("fake")
-            ));
+            assert_active_is_preview(pane, cx, true);
         });
     }
 

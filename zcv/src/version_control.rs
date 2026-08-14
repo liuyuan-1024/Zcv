@@ -24,6 +24,8 @@ use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space, typography};
 use zcv_ui::{Checkbox, Glyph, Scrollbar, tree};
 
+use crate::git_status::git_status_color;
+
 actions!(
     version_control,
     [
@@ -674,9 +676,7 @@ fn render_row(
             let path = entry.path.clone();
             let is_dir = entry.is_dir;
             let name = entry.name.clone();
-            let status_color = entry
-                .status
-                .and_then(|status| tree::git_status_color(status, cx));
+            let status_color = entry.status.and_then(|status| git_status_color(status, cx));
             // 删除线只作用于文件行。
             let is_deleted = !is_dir && entry.status.is_some_and(|status| status.is_deleted());
             // 文件名按 git 状态着色（对齐项目树；删除文件加删除线）。

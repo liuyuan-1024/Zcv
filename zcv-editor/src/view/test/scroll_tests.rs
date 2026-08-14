@@ -4,7 +4,7 @@ use crate::scroll::ScrollbarThumbState;
 use gpui::{
     Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent, TestAppContext, point, px,
 };
-use zcv_engine::ByteOffset;
+use zcv_engine::{ByteOffset, SelectionSet};
 
 #[gpui::test]
 fn moving_caret_beyond_viewport_scrolls_it_back_into_view(cx: &mut TestAppContext) {
@@ -133,7 +133,8 @@ fn horizontal_scroll_stops_at_content_edge_and_caret_autoscrolls(cx: &mut TestAp
 
     cx.update_entity(&editor, |editor, cx| {
         editor.scroll_manager.scroll_by(point(px(100_000.), px(0.)));
-        editor.set_caret(ByteOffset::new(text.len()));
+        editor.set_selections(SelectionSet::caret(ByteOffset::new(text.len())));
+        editor.request_autoscroll();
         cx.notify();
     });
     cx.run_until_parked();

@@ -7,7 +7,7 @@
 #[path = "test/test_support.rs"]
 pub(crate) mod test_support;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -22,7 +22,9 @@ use super::worktree::Worktree;
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 
 // 项目树（UI）经 project 模块门面消费 worktree 的领域行模型与路径语义。
-pub use super::worktree::{TreeRow, new_entry_destination, rename_destination, translate_path};
+pub use super::worktree::{
+    WorktreeEntry, new_entry_destination, rename_destination, translate_path,
+};
 // git 操作（fetch/pull/push）经 project 门面访问 git_store 的后台执行入口；
 // 快照与事件类型供版本管理面板消费。
 pub use super::git_store::{
@@ -91,17 +93,23 @@ impl Project {
         self.worktree.set_exclusions(exclusions);
     }
 
-    /// 构建项目文件树的可见行模型：worktree 遍历 + git 状态合并。
+    /// 查询目录的直接子项：worktree 读取 + git 状态合并。
     ///
-    /// git 状态在遍历时现查 `GitStore`（目录行聚合、文件行精确），展开产生的新行因此立即携带状态，无需二次补齐。
-    pub fn tree_rows(&self, expanded: &HashSet<PathBuf>, cx: &App) -> Vec<TreeRow> {
-        self.worktree.visible_entries(expanded, |path, is_dir| {
-            if is_dir {
-                self.git_status_for_directory(path, cx)
-            } else {
-                self.git_status_for_path(path, cx).map(|entry| entry.status)
-            }
-        })
+    /// git 状态现查 `GitStore`（目录行聚合、文件行精确），展开产生的新行因此立即携带状态，无需二次补齐。
+    /// 展开、深度与可见行是视图状态，由项目树 UI 层自行构建。
+    pub fn children(&self, path: &Path, cx: &App) -> Vec<WorktreeEntry> {
+        self.worktree
+            .children(path)
+            .into_iter()
+            .map(|mut entry| {
+                entry.git_status = if entry.is_dir {
+                    self.git_status_for_directory(&entry.path, cx)
+                } else {
+                    self.git_status_for_path(&entry.path, cx).map(|e| e.status)
+                };
+                entry
+            })
+            .collect()
     }
 
     /// 批量查询可见行的 git 状态（git 事件驱动，不重扫目录）。

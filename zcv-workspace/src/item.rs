@@ -1,6 +1,7 @@
 //! Item 协议：Workspace 标签页中文档视图的通用能力。
 //!
 //! 只定义 Item 的通用能力，不依赖 Editor、具体预览格式或 Pane 实现。
+//! 预览视图等可选能力通过 [`Item::as_preview_item`] 桥接获取（对齐 Zed 的 `as_searchable` 模式），不占用 Item 主接口。
 
 use std::any::{Any, TypeId};
 use std::path::{Path, PathBuf};
@@ -12,26 +13,14 @@ use gpui::{
 use zcv_engine::Buffer;
 use zcv_project::Project;
 
+use crate::preview::PreviewItemHandle;
+
 /// Toolbar 子项的布局位置。
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ToolbarItemLocation {
     Hidden,
     PrimaryLeft,
     PrimaryRight,
-}
-
-/// 标签当前展示的文档表现。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ItemPresentation {
-    Source,
-    Preview(&'static str),
-}
-
-/// 文档及其展示形态的稳定键。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DocumentItemKey {
-    pub buffer_id: EntityId,
-    pub presentation: ItemPresentation,
 }
 
 /// Item 向 Pane/Workspace 上报的通用事件，对齐 Zed `workspace::item::ItemEvent`。
@@ -91,18 +80,14 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         None
     }
 
-    fn document_item_key(&self, _cx: &App) -> Option<DocumentItemKey> {
+    /// 预览视图 Item 把自己暴露给 Pane（对齐 Zed 的 `as_searchable` 桥接模式）。
+    /// 非预览视图返回 None，无需实现。
+    fn as_preview_item(
+        &self,
+        _self_handle: &Entity<Self>,
+        _cx: &App,
+    ) -> Option<Box<dyn PreviewItemHandle>> {
         None
-    }
-
-    /// 预览视图返回其对应的源码 Item；非预览视图返回 None。
-    fn source_item(&self, _cx: &App) -> Option<Box<dyn ItemHandle>> {
-        None
-    }
-
-    /// 编辑后是否保持预览状态；false 时 Pane 在文档编辑后提升为固定标签。
-    fn preserve_preview(&self, _cx: &App) -> bool {
-        false
     }
 
     fn can_save(&self, _cx: &App) -> bool {
@@ -160,9 +145,7 @@ pub trait ItemHandle: Send + 'static {
     fn file_path(&self, cx: &App) -> Option<PathBuf>;
     fn rename_path(&self, from: &Path, to: &Path, cx: &mut App);
     fn buffer(&self, cx: &App) -> Option<Entity<Buffer>>;
-    fn document_item_key(&self, cx: &App) -> Option<DocumentItemKey>;
-    fn source_item(&self, cx: &App) -> Option<Box<dyn ItemHandle>>;
-    fn preserve_preview(&self, cx: &App) -> bool;
+    fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>>;
     fn can_save(&self, cx: &App) -> bool;
     fn can_save_as(&self, cx: &App) -> bool;
     fn save(
@@ -251,16 +234,8 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.read(cx).buffer(cx)
     }
 
-    fn document_item_key(&self, cx: &App) -> Option<DocumentItemKey> {
-        self.read(cx).document_item_key(cx)
-    }
-
-    fn source_item(&self, cx: &App) -> Option<Box<dyn ItemHandle>> {
-        self.read(cx).source_item(cx)
-    }
-
-    fn preserve_preview(&self, cx: &App) -> bool {
-        self.read(cx).preserve_preview(cx)
+    fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>> {
+        self.read(cx).as_preview_item(self, cx)
     }
 
     fn can_save(&self, cx: &App) -> bool {

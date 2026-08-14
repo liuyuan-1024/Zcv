@@ -1,11 +1,10 @@
-//! 树行渲染辅助函数 —— 缩进、图标、名称、选中框、git 状态着色。
+//! 树行渲染辅助函数 —— 缩进、图标、名称、选中框。
 
 use std::path::Path;
 
 use gpui::{App, Pixels, div, prelude::*, px};
 
 use crate::ui::SvgIcon;
-use zcv_git::{FileStatus, StatusCode};
 use zcv_theme::{FileIcons, color, space, typography};
 
 /// 树行完整渲染：行骨架 + 缩进竖线 + 图标 + 行内容。
@@ -35,41 +34,6 @@ pub fn selection_border(cx: &App) -> gpui::Div {
         .rounded_xs()
         .border_1()
         .border_color(color::current(cx).border_focused)
-}
-
-/// git 状态 → 文本颜色（对齐 Zed `entry_git_aware_label_color` 的优先级）。
-///
-/// conflict > deleted > modified > added/untracked > ignored（渲染层淡显）。
-pub fn git_status_color(status: FileStatus, cx: &App) -> Option<gpui::Rgba> {
-    let colors = color::current(cx);
-    match status {
-        FileStatus::Unmerged => Some(colors.status_conflict),
-        FileStatus::Untracked => Some(colors.status_created),
-        FileStatus::Ignored => None,
-        FileStatus::Tracked {
-            index_status,
-            worktree_status,
-        } => {
-            let deleted = matches!(index_status, StatusCode::Deleted)
-                || matches!(worktree_status, StatusCode::Deleted);
-            let modified = matches!(index_status, StatusCode::Modified | StatusCode::TypeChanged)
-                || matches!(
-                    worktree_status,
-                    StatusCode::Modified | StatusCode::TypeChanged
-                );
-            let added = matches!(index_status, StatusCode::Added)
-                || matches!(worktree_status, StatusCode::Added);
-            if deleted {
-                Some(colors.status_deleted)
-            } else if modified {
-                Some(colors.status_modified)
-            } else if added {
-                Some(colors.status_created)
-            } else {
-                None
-            }
-        }
-    }
 }
 
 // ── 私有辅助函数 ─────────────────────────────────────────────────────
@@ -150,56 +114,4 @@ fn icon(path: &Path, is_dir: bool, expanded: bool) -> impl IntoElement {
 /// 条目名称内容，尾部溢出截断。
 fn label(content: impl IntoElement) -> gpui::Div {
     div().flex_1().overflow_hidden().truncate().child(content)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[gpui::test]
-    fn git_status_color_follows_zed_priority(cx: &mut gpui::TestAppContext) {
-        cx.read(|cx| {
-            // palette 未初始化时默认 one_dark，语义色可直接取。
-            let colors = color::current(cx);
-            let color = |status| git_status_color(status, cx);
-            // 特殊态。
-            assert_eq!(color(FileStatus::Untracked), Some(colors.status_created));
-            assert_eq!(color(FileStatus::Unmerged), Some(colors.status_conflict));
-            assert_eq!(color(FileStatus::Ignored), None);
-            // 已跟踪：deleted > modified > added 优先级。
-            let tracked = |index, worktree| FileStatus::Tracked {
-                index_status: index,
-                worktree_status: worktree,
-            };
-            assert_eq!(
-                color(tracked(StatusCode::Unmodified, StatusCode::Modified)),
-                Some(colors.status_modified)
-            );
-            assert_eq!(
-                color(tracked(StatusCode::Modified, StatusCode::Unmodified)),
-                Some(colors.status_modified)
-            );
-            assert_eq!(
-                color(tracked(StatusCode::Unmodified, StatusCode::TypeChanged)),
-                Some(colors.status_modified)
-            );
-            assert_eq!(
-                color(tracked(StatusCode::Unmodified, StatusCode::Added)),
-                Some(colors.status_created)
-            );
-            assert_eq!(
-                color(tracked(StatusCode::Unmodified, StatusCode::Deleted)),
-                Some(colors.status_deleted)
-            );
-            // 部分暂存：modified 优先于 added。
-            assert_eq!(
-                color(tracked(StatusCode::Added, StatusCode::Modified)),
-                Some(colors.status_modified)
-            );
-            assert_eq!(
-                color(tracked(StatusCode::Unmodified, StatusCode::Unmodified)),
-                None
-            );
-        });
-    }
 }

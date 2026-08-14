@@ -17,9 +17,11 @@ use crate::settings::SettingsStore;
 use crate::workspace::{Panel, ToggleProjectTree};
 use zcv_editor::Editor;
 use zcv_git::FileStatus;
-use zcv_project::{Project, TreeRow, new_entry_destination, rename_destination, translate_path};
+use zcv_project::{Project, new_entry_destination, rename_destination, translate_path};
 use zcv_theme::color;
 use zcv_ui::{Scrollbar, tree};
+
+use crate::git_status::git_status_color;
 
 actions!(
     project_tree,
@@ -78,13 +80,8 @@ impl ProjectTree {
             .detach();
         let exclusions = SettingsStore::file_scan_exclusions(cx);
         project.update(cx, |project, _| project.set_exclusions(&exclusions));
-        // 初始行模型：展开根目录，一次遍历带出 git 状态。
-        let mut expanded = HashSet::new();
-        expanded.insert(root.clone());
-        let rows = project.read(cx).tree_rows(&expanded, cx);
         let mut state = ProjectTreeState::new();
-        state.expanded = expanded;
-        state.set_rows(rows);
+        state.expanded.insert(root.clone());
         // git 状态变化（含忽略集变化）时刷新行颜色，不重扫目录。
         let git_store = project.read(cx).git_store();
         cx.subscribe(&git_store, |tree, _, _event, cx| {
@@ -93,7 +90,7 @@ impl ProjectTree {
         .detach();
         let scroll_handle = UniformListScrollHandle::default();
         let scrollbar = Scrollbar::vertical(scroll_handle.clone());
-        Self {
+        let mut this = Self {
             focus,
             root,
             project,
@@ -106,14 +103,63 @@ impl ProjectTree {
             on_rename: None,
             on_create: None,
             on_trash: None,
-        }
+        };
+        this.rebuild_rows(cx);
+        this
     }
 
-    /// 重建行模型：worktree 遍历 + git 状态合并（由 Project 产出，UI 只消费）。
+    /// 重建可见行：根行 + 按展开状态递归收集子项。
+    ///
+    /// git 状态由 `Project::children` 查询填充；
+    /// 展开、深度与可见行是本视图的状态，展开/折叠后调用本方法重建。
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
         let expanded = self.state.borrow().expanded.clone();
-        let rows = self.project.read(cx).tree_rows(&expanded, cx);
-        self.state.borrow_mut().set_rows(rows);
+        let mut rows = Vec::new();
+        let root_name = self
+            .root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| self.root.to_string_lossy().to_string());
+        let root_expanded = expanded.contains(&self.root);
+        rows.push(ProjectTreeRow {
+            path: self.root.clone(),
+            name: root_name,
+            depth: 0,
+            is_dir: true,
+            expanded: root_expanded,
+            is_new: false,
+            git_status: None,
+        });
+        if root_expanded {
+            self.collect_children(&self.root, 1, &expanded, &mut rows, cx);
+        }
+        self.state.borrow_mut().replace_rows(rows);
+    }
+
+    /// 递归收集目录子项；被忽略（gitignored）的目录不展开内容，避免 node_modules 这类目录撑爆行模型。
+    fn collect_children(
+        &self,
+        dir: &Path,
+        depth: usize,
+        expanded: &HashSet<PathBuf>,
+        rows: &mut Vec<ProjectTreeRow>,
+        cx: &App,
+    ) {
+        for entry in self.project.read(cx).children(dir, cx) {
+            let is_expanded = entry.is_dir && expanded.contains(&entry.path);
+            rows.push(ProjectTreeRow {
+                path: entry.path.clone(),
+                name: entry.name,
+                depth,
+                is_dir: entry.is_dir,
+                expanded: is_expanded,
+                is_new: false,
+                git_status: entry.git_status,
+            });
+            if is_expanded && !matches!(entry.git_status, Some(FileStatus::Ignored)) {
+                self.collect_children(&entry.path, depth + 1, expanded, rows, cx);
+            }
+        }
     }
 
     /// 从 git 状态刷新行的忽略/颜色信息（git 事件驱动，不重扫目录）。
@@ -724,7 +770,7 @@ fn render_row(
         // git 状态决定文件名颜色（对齐 Zed 优先级），忽略条目淡显。
         let status_color = row
             .git_status
-            .and_then(|status| tree::git_status_color(status, cx));
+            .and_then(|status| git_status_color(status, cx));
         let is_ignored = matches!(row.git_status, Some(FileStatus::Ignored));
         div()
             .flex_1()
@@ -834,24 +880,9 @@ struct ProjectTreeRow {
     git_status: Option<FileStatus>,
 }
 
-impl ProjectTreeRow {
-    /// 由 worktree 行模型转换（`is_new` 是编辑中的虚拟行标记，领域层无此概念）。
-    fn from_worktree(row: TreeRow) -> Self {
-        Self {
-            path: row.path,
-            name: row.name,
-            depth: row.depth,
-            is_dir: row.is_dir,
-            expanded: row.expanded,
-            is_new: false,
-            git_status: row.git_status,
-        }
-    }
-}
-
-/// 项目树的 UI 状态：展开/选中/活动路径 + 行模型缓存。
+/// 项目树的 UI 状态：展开/选中/活动路径 + 可见行缓存。
 ///
-/// 行模型由 `ProjectTree` 从 worktree 快照层重建后注入（`set_rows`），
+/// 可见行由 `ProjectTree` 按展开状态递归构建后注入（`replace_rows`），
 /// 本结构不触碰文件系统。
 struct ProjectTreeState {
     expanded: HashSet<PathBuf>,
@@ -870,12 +901,9 @@ impl ProjectTreeState {
         }
     }
 
-    /// 替换行模型（由 ProjectTree 重建后注入），选中行消失时清空选中。
-    fn set_rows(&mut self, rows: Vec<TreeRow>) {
-        self.rows = rows
-            .into_iter()
-            .map(ProjectTreeRow::from_worktree)
-            .collect();
+    /// 替换可见行（由 ProjectTree 重建后注入），选中行消失时清空选中。
+    fn replace_rows(&mut self, rows: Vec<ProjectTreeRow>) {
+        self.rows = rows;
         if self
             .selected
             .as_ref()
@@ -966,7 +994,7 @@ mod tests {
         let mut state = ProjectTreeState::new();
         let root = directory.path().to_path_buf();
         let rows = vec![
-            TreeRow {
+            ProjectTreeRow {
                 path: root.clone(),
                 name: root
                     .file_name()
@@ -975,30 +1003,33 @@ mod tests {
                 depth: 0,
                 is_dir: true,
                 expanded: true,
+                is_new: false,
                 git_status: None,
             },
-            TreeRow {
+            ProjectTreeRow {
                 path: file.clone(),
                 name: "cached.txt".to_string(),
                 depth: 1,
                 is_dir: false,
                 expanded: false,
+                is_new: false,
                 git_status: None,
             },
         ];
-        state.set_rows(rows);
+        state.replace_rows(rows);
 
         // 渲染读取的是注入的缓存：文件系统变化不影响行模型。
         std::fs::remove_file(&file).expect("应删除测试文件");
         assert!(state.visible_rows().iter().any(|row| row.path == file));
 
         // 只有显式重建（由 ProjectTree 调 worktree 遍历）才会反映文件系统。
-        state.set_rows(vec![TreeRow {
+        state.replace_rows(vec![ProjectTreeRow {
             path: root,
             name: "root".to_string(),
             depth: 0,
             is_dir: true,
             expanded: true,
+            is_new: false,
             git_status: None,
         }]);
         assert!(!state.visible_rows().iter().any(|row| row.path == file));

@@ -1,7 +1,8 @@
 //! Worktree —— 项目目录快照层。
 //!
-//! 对齐 Zed worktree crate 的职责边界：目录遍历、扫描排除规则、git 仓库发现与路径命名语义住在这一层；git 状态由 `Project` 从 `GitStore` 查询后合并进行模型。
-//! UI 组件只消费本层产出的行模型，不直接触碰文件系统。
+//! 对齐 Zed worktree crate 的职责边界：目录遍历、扫描排除规则、git 仓库发现与路径命名语义住在这一层；
+//! git 状态由 `Project` 从 `GitStore` 查询后填充到条目。
+//! 本层只提供静态目录查询（`children`），展开、深度与可见行是项目树视图状态，由 UI 层自行构建。
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -12,19 +13,17 @@ use zcv_git::{FileStatus, GitRepository, RealGitRepository};
 /// `.git` 目录名（仓库发现用）。
 const DOT_GIT: &str = ".git";
 
-/// 项目树的一行（领域行模型）：由 Worktree 遍历产出。
+/// 目录快照层的静态条目：由 Worktree 遍历产出，不含展开/深度等视图状态。
 #[derive(Debug, Clone)]
-pub struct TreeRow {
+pub struct WorktreeEntry {
     pub path: PathBuf,
     pub name: String,
-    pub depth: usize,
     pub is_dir: bool,
-    pub expanded: bool,
-    /// git 状态（决定文件名颜色与忽略淡显；None 表示无状态）。
+    /// git 状态（目录聚合/文件精确由 Project 查询填充；Worktree 产出时恒 None）。
     pub git_status: Option<FileStatus>,
 }
 
-/// 项目目录快照层：持有根路径与扫描排除规则，按展开状态产出可见行。
+/// 项目目录快照层：持有根路径与扫描排除规则，提供静态目录查询。
 pub struct Worktree {
     root: PathBuf,
     filter: TreeFilter,
@@ -48,48 +47,13 @@ impl Worktree {
         self.filter = TreeFilter::new(exclusions);
     }
 
-    /// 生成可见行：根行 + 按展开状态递归收集子项。
+    /// 读取 `dir` 的直接子项：目录优先、名称升序，扫描排除名单命中即过滤。
     ///
-    /// `git_status` 在遍历时查询（由 Project 注入 GitStore 查询）：
-    /// 命中忽略的目录不展开内容，避免 node_modules 这类目录撑爆行模型。
-    pub fn visible_entries(
-        &self,
-        expanded: &HashSet<PathBuf>,
-        git_status: impl Fn(&Path, bool) -> Option<FileStatus>,
-    ) -> Vec<TreeRow> {
-        let mut rows = Vec::new();
-        let root_name = self
-            .root
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| self.root.to_string_lossy().to_string());
-        let root_expanded = expanded.contains(&self.root);
-        rows.push(TreeRow {
-            path: self.root.clone(),
-            name: root_name,
-            depth: 0,
-            is_dir: true,
-            expanded: root_expanded,
-            git_status: None,
-        });
-        if root_expanded {
-            self.collect_children(&self.root, 1, expanded, &git_status, &mut rows);
-        }
-        rows
-    }
-
-    /// 递归收集目录子项；忽略（gitignored）目录不展开内容。
-    fn collect_children(
-        &self,
-        dir: &Path,
-        depth: usize,
-        expanded: &HashSet<PathBuf>,
-        git_status: &impl Fn(&Path, bool) -> Option<FileStatus>,
-        rows: &mut Vec<TreeRow>,
-    ) {
+    /// 只返回静态条目；git 状态由 Project 查询后填充，展开与深度由 UI 层决定。
+    pub fn children(&self, dir: &Path) -> Vec<WorktreeEntry> {
         let mut entries: Vec<_> = match std::fs::read_dir(dir) {
             Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| e.path()).collect(),
-            Err(_) => return,
+            Err(_) => return Vec::new(),
         };
         entries.sort_by(|a, b| {
             let a_dir = a.is_dir();
@@ -100,34 +64,24 @@ impl Worktree {
                 a.file_name().cmp(&b.file_name())
             }
         });
-        for entry in entries {
-            let name = match entry.file_name() {
-                Some(n) => n.to_string_lossy().to_string(),
-                None => continue,
-            };
-            let is_dir = entry.is_dir();
-            // 扫描排除名单命中的条目根本不加载。
-            let Ok(rel) = entry.strip_prefix(&self.root) else {
-                continue;
-            };
-            if self.filter.is_excluded(rel) {
-                continue;
-            }
-            let status = git_status(&entry, is_dir);
-            let is_expanded = expanded.contains(&entry);
-            rows.push(TreeRow {
-                path: entry.clone(),
-                name,
-                depth,
-                is_dir,
-                expanded: is_expanded,
-                git_status: status,
-            });
-            // 被忽略的目录不展开内容，避免 node_modules 这类目录撑爆行模型。
-            if is_dir && is_expanded && !matches!(status, Some(FileStatus::Ignored)) {
-                self.collect_children(&entry, depth + 1, expanded, git_status, rows);
-            }
-        }
+        entries
+            .into_iter()
+            .filter_map(|entry| {
+                let name = entry.file_name()?.to_string_lossy().to_string();
+                // 扫描排除名单命中的条目根本不加载。
+                let rel = entry.strip_prefix(&self.root).ok()?;
+                if self.filter.is_excluded(rel) {
+                    return None;
+                }
+                let is_dir = entry.is_dir();
+                Some(WorktreeEntry {
+                    path: entry,
+                    name,
+                    is_dir,
+                    git_status: None,
+                })
+            })
+            .collect()
     }
 }
 
@@ -290,18 +244,36 @@ pub fn translate_path(path: &Path, from: &Path, to: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use zcv_git::GitRepository;
 
     use super::*;
     use crate::project::test_support::{run_git, test_git_repo};
 
-    /// 构造按注入表查询的 git 状态闭包（测试替身）。
-    fn git_status_from(
-        statuses: &HashMap<PathBuf, FileStatus>,
-    ) -> impl Fn(&Path, bool) -> Option<FileStatus> + '_ {
-        |path, _| statuses.get(path).cloned()
+    #[test]
+    fn children_return_sorted_static_entries_without_git_status() {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        std::fs::create_dir_all(directory.path().join("zebra_dir")).expect("应创建目录");
+        std::fs::write(directory.path().join("apple.rs"), "fn main() {}").expect("应创建文件");
+        std::fs::write(directory.path().join("banana.rs"), "fn main() {}").expect("应创建文件");
+
+        let worktree = Worktree::new(directory.path().to_path_buf());
+        let entries = worktree.children(directory.path());
+
+        // 目录优先、名称升序；git 状态由 Project 注入，本层恒 None。
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["zebra_dir", "apple.rs", "banana.rs"]
+        );
+        assert!(entries.iter().all(|entry| entry.git_status.is_none()));
+        // 不存在或不可读目录返回空。
+        assert!(
+            worktree
+                .children(&directory.path().join("missing"))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -315,99 +287,23 @@ mod tests {
 
         let mut worktree = Worktree::new(directory.path().to_path_buf());
         worktree.set_exclusions(&["**/target".to_string()]);
-        let expanded = HashSet::from([directory.path().to_path_buf(), target.clone()]);
-        let rows = worktree.visible_entries(&expanded, git_status_from(&HashMap::new()));
 
         assert!(
-            !rows
+            !worktree
+                .children(directory.path())
                 .iter()
-                .any(|row| row.path == target || row.path.starts_with(&target)),
-            "排除名单命中的目录及其子项都不应出现"
+                .any(|entry| entry.path == target),
+            "排除名单命中的目录不应出现"
         );
-        assert!(rows.iter().any(|row| row.path == visible));
-    }
-
-    #[test]
-    fn ignored_directories_do_not_expand_and_files_are_marked() {
-        // 忽略信息来自 git 状态（FileStatus::Ignored），由 Project 注入。
-        let directory = tempfile::tempdir().expect("应创建临时项目目录");
-        let node_modules = directory.path().join("node_modules");
-        std::fs::create_dir_all(node_modules.join("pkg")).expect("应创建被忽略目录");
-        std::fs::write(node_modules.join("pkg").join("index.js"), "// ignored")
-            .expect("应创建被忽略文件");
-        std::fs::write(directory.path().join("app.log"), "log").expect("应创建日志文件");
-        let visible = directory.path().join("main.js");
-        std::fs::write(&visible, "console.log(1)").expect("应创建可见文件");
-
-        let worktree = Worktree::new(directory.path().to_path_buf());
-        let statuses = HashMap::from([
-            (node_modules.clone(), FileStatus::Ignored),
-            (directory.path().join("app.log"), FileStatus::Ignored),
-        ]);
-        let expanded = HashSet::from([directory.path().to_path_buf(), node_modules.clone()]);
-        let rows = worktree.visible_entries(&expanded, git_status_from(&statuses));
-
-        let nm = rows
-            .iter()
-            .find(|row| row.path == node_modules)
-            .expect("node_modules 行应存在");
-        assert!(matches!(nm.git_status, Some(FileStatus::Ignored)));
         assert!(
-            !rows
+            worktree.children(&target).is_empty(),
+            "被排除目录内部也不加载"
+        );
+        assert!(
+            worktree
+                .children(directory.path())
                 .iter()
-                .any(|row| row.path.starts_with(node_modules.join("pkg"))),
-            "被忽略目录不应展开内容"
-        );
-        assert!(
-            rows.iter()
-                .find(|row| row.path == directory.path().join("app.log"))
-                .is_some_and(|row| matches!(row.git_status, Some(FileStatus::Ignored))),
-            "*.log 文件应被标记为忽略"
-        );
-        assert!(
-            rows.iter()
-                .find(|row| row.path == visible)
-                .expect("可见文件行应存在")
-                .git_status
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn nested_gitignore_applies_within_its_directory() {
-        let directory = tempfile::tempdir().expect("应创建临时项目目录");
-        let sub = directory.path().join("sub");
-        let nested = sub.join("secret.txt");
-        std::fs::create_dir_all(&sub).expect("应创建子目录");
-        std::fs::write(sub.join(".gitignore"), "secret.txt\n").expect("应写嵌套 .gitignore");
-        std::fs::write(&nested, "secret").expect("应创建被忽略文件");
-        let visible = sub.join("visible.txt");
-        std::fs::write(&visible, "visible").expect("应创建可见文件");
-        std::fs::write(directory.path().join(".gitignore"), "*.log\n").expect("应写根 .gitignore");
-
-        let worktree = Worktree::new(directory.path().to_path_buf());
-        let statuses = HashMap::from([
-            (nested.clone(), FileStatus::Ignored),
-            (visible.clone(), FileStatus::Untracked),
-        ]);
-        let expanded = HashSet::from([directory.path().to_path_buf(), sub.clone()]);
-        let rows = worktree.visible_entries(&expanded, git_status_from(&statuses));
-
-        assert!(
-            rows.iter()
-                .find(|row| row.path == nested)
-                .expect("secret.txt 行应存在")
-                .git_status
-                .is_some_and(|status| matches!(status, FileStatus::Ignored)),
-            "嵌套目录的忽略规则应生效"
-        );
-        assert!(
-            !rows
-                .iter()
-                .find(|row| row.path == visible)
-                .expect("visible.txt 行应存在")
-                .git_status
-                .is_some_and(|status| matches!(status, FileStatus::Ignored))
+                .any(|entry| entry.path == visible)
         );
     }
 

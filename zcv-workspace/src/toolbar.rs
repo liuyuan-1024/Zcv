@@ -8,7 +8,7 @@ use gpui::{
 
 use crate::pane::{ToggleFileSearch, TogglePreview};
 use crate::preview::provider_for;
-use crate::{ItemHandle, ItemPresentation, ToolbarItemLocation};
+use crate::{ItemHandle, ToolbarItemLocation};
 use zcv_theme::{color, space};
 use zcv_ui::Glyph;
 
@@ -195,17 +195,26 @@ impl Render for Toolbar {
 
 // ═══ 活动文件右侧控件 ════════════════════════════════════════════
 
+/// 预览切换按钮的当前语义：决定图标与文案。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PreviewControl {
+    /// 当前是源码且文件支持预览：点击进入预览。
+    ShowPreview,
+    /// 当前是预览视图：点击回到源码。
+    ShowSource,
+}
+
 /// Toolbar 右侧的活动文件控件：预览/源码切换与文件内搜索入口。
 pub struct FileToolbarControls {
     visible: bool,
-    presentation: Option<ItemPresentation>,
+    preview_control: Option<PreviewControl>,
 }
 
 impl FileToolbarControls {
     pub fn new() -> Self {
         Self {
             visible: false,
-            presentation: None,
+            preview_control: None,
         }
     }
 }
@@ -227,15 +236,18 @@ impl ToolbarItemView for FileToolbarControls {
     ) -> ToolbarItemLocation {
         let path = active_item.and_then(|item| item.file_path(cx));
         self.visible = path.is_some();
-        self.presentation = active_item
-            .and_then(|item| item.document_item_key(cx))
-            .map(|key| key.presentation)
-            .filter(|presentation| {
-                matches!(presentation, ItemPresentation::Preview(_))
-                    || path
-                        .as_deref()
-                        .is_some_and(|path| provider_for(path, cx).is_some())
-            });
+        // 预览视图显示"回到源码"，源码且文件支持预览时显示"进入预览"。
+        self.preview_control = if active_item.is_some_and(|item| item.as_preview_item(cx).is_some())
+        {
+            Some(PreviewControl::ShowSource)
+        } else if path
+            .as_deref()
+            .is_some_and(|path| provider_for(path, cx).is_some())
+        {
+            Some(PreviewControl::ShowPreview)
+        } else {
+            None
+        };
         cx.notify();
         if self.visible {
             ToolbarItemLocation::PrimaryRight
@@ -251,14 +263,14 @@ impl Render for FileToolbarControls {
             .flex()
             .items_center()
             .gap(space::S6)
-            .when_some(self.presentation, |controls, presentation| {
-                let (icon, label, icon_color) = match presentation {
-                    ItemPresentation::Preview(_) => (
+            .when_some(self.preview_control, |controls, control| {
+                let (icon, label, icon_color) = match control {
+                    PreviewControl::ShowSource => (
                         "icons/eye_off.svg",
                         "源码".to_string(),
                         color::current(cx).text_muted,
                     ),
-                    ItemPresentation::Source => (
+                    PreviewControl::ShowPreview => (
                         "icons/eye.svg",
                         "预览".to_string(),
                         color::current(cx).text_muted,

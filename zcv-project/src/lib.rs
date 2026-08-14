@@ -7,6 +7,6 @@ mod worktree;
 
 pub use project::{
     GitOperationKind, GitStore, GitStoreEvent, Project, ProjectEvent, RemoteOperationState,
-    RepositorySnapshot, StatusEntry, TreeRow, new_entry_destination, rename_destination,
+    RepositorySnapshot, StatusEntry, WorktreeEntry, new_entry_destination, rename_destination,
     translate_path,
 };

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::{App, Context, Entity, SharedString};
 use zcv_engine::Buffer;
-use zcv_workspace::{DocumentItemKey, Item, ItemEvent, ItemPresentation, ToolbarItemLocation};
+use zcv_workspace::{Item, ItemEvent, ToolbarItemLocation};
 
 use crate::{Editor, EditorEvent};
 
@@ -76,13 +76,6 @@ impl Item for Editor {
 
     fn buffer(&self, _cx: &App) -> Option<Entity<Buffer>> {
         Some(self.buffer())
-    }
-
-    fn document_item_key(&self, _cx: &App) -> Option<DocumentItemKey> {
-        Some(DocumentItemKey {
-            buffer_id: self.buffer().entity_id(),
-            presentation: ItemPresentation::Source,
-        })
     }
 }
 

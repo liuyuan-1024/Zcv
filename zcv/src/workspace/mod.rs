@@ -1,6 +1,7 @@
 //! 装配层 —— 创建 Workspace，注入顶栏/面板/状态项，接线项目与设置订阅。
 //!
-//! Workspace 框架（Pane/Dock/命令分发）在 zcv-workspace；本模块只做 binary 侧的具体装配：面板（项目树/版本控制/占位面板）、状态栏按钮、git/settings 订阅与 diff hunks 推送。
+//! Workspace 框架（Pane/Dock/命令分发）在 zcv-workspace；
+//! 本模块只做 binary 侧的具体装配：面板（项目树/版本控制/占位面板）、状态栏按钮、git/settings 订阅与 diff hunks 推送。
 
 mod placeholder_panels;
 
@@ -83,8 +84,7 @@ pub(crate) fn open_project_window(root: PathBuf, cx: &mut App) -> anyhow::Result
 
 /// 装配 Workspace：顶栏注入、面板/状态项注册、订阅接线。
 ///
-/// 必须在 `Workspace::update` 闭包内调用（workspace 为 &mut），
-/// 内部不得再对同一实体嵌套 update。
+/// 必须在 `Workspace::update` 闭包内调用（workspace 为 &mut），内部不得再对同一实体嵌套 update。
 fn initialize_workspace(
     workspace: &mut Workspace,
     root: PathBuf,

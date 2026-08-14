@@ -808,12 +808,44 @@ impl Element for EditorElement {
                     .render_snapshot()
                     .position_to_byte(zcv_engine::Position::new(point.line(), point.column()))
                 {
-                    editor.set_caret(offset);
-                    cx.notify();
+                    editor.mouse_down(offset, event.click_count, event.modifiers.shift, cx);
                 }
             });
             window.focus(&mouse_focus);
             cx.stop_propagation();
+        });
+
+        // 拖拽扩展选区：按住左键移动时按点击粒度更新选区；
+        // 无按键移动时兜底结束拖拽（覆盖"窗口外释放后移回"等漏网场景，对齐滚动条复位策略）。
+        let drag_editor = self.editor.clone();
+        let drag_layout = Arc::clone(&prepaint.layout);
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            if !event.dragging() {
+                drag_editor.update(cx, |editor, _| editor.mouse_up());
+                return;
+            }
+            let Some(point) = drag_layout.buffer_point_for_position(event.position) else {
+                return;
+            };
+            drag_editor.update(cx, |editor, cx| {
+                if let Ok(offset) = editor
+                    .render_snapshot()
+                    .position_to_byte(zcv_engine::Position::new(point.line(), point.column()))
+                {
+                    editor.mouse_drag(offset, cx);
+                }
+            });
+        });
+
+        let up_editor = self.editor.clone();
+        window.on_mouse_event(move |_: &MouseUpEvent, phase, _window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            up_editor.update(cx, |editor, _| editor.mouse_up());
         });
 
         let scroll_editor = self.editor.clone();

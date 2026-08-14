@@ -57,6 +57,26 @@ impl From<MovementUnit> for Motion {
     }
 }
 
+/// 鼠标手势的选区粒度（对齐 Zed 的 SelectMode）。
+///
+/// Word/Line 携带手势起点时的锚定范围：拖拽扩展与 Shift+点击按粒度扩展时，选区以该范围的两端为基准做整词/整行吸附。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum MouseSelectMode {
+    Character,
+    Word(Range<ByteOffset>),
+    Line(Range<ByteOffset>),
+    All,
+}
+
+/// 拖拽中的选区状态：固定锚点 + 点击时的粒度。
+#[derive(Debug, Clone)]
+struct MouseDragSelection {
+    /// 按下点字节偏移，字符粒度拖拽的固定端。
+    anchor: ByteOffset,
+    /// 点击时的粒度与锚定范围。
+    mode: MouseSelectMode,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EditorMode {
     SingleLine,
@@ -124,6 +144,10 @@ pub struct Editor {
         BufferVersion,
         Option<BracketPair>,
     )>,
+    /// 最近一次鼠标手势的选区粒度；Shift+点击时按此粒度扩展（对齐 Zed 的 select_mode）。
+    mouse_select_mode: MouseSelectMode,
+    /// 拖拽中的选区锚点与粒度；None 表示没有进行中的鼠标选区手势。
+    mouse_drag: Option<MouseDragSelection>,
 }
 
 impl Editor {
@@ -573,12 +597,6 @@ impl Editor {
         }
     }
 
-    pub(super) fn set_caret(&mut self, offset: ByteOffset) {
-        self.composition = None;
-        self.set_selections(SelectionSet::caret(offset));
-        self.request_autoscroll();
-    }
-
     pub(super) fn select_line(&mut self, line: Line, extend: bool) {
         let snapshot = self.render_snapshot();
         let Ok(start) = snapshot.line_start_byte(line) else {
@@ -606,6 +624,181 @@ impl Editor {
 
     pub(super) fn set_input_layout(&mut self, layout: EditorInputLayout) {
         self.input_layout = Some(layout);
+    }
+
+    /// 鼠标左键按下：按点击次数开始选区手势，并记录拖拽起点。
+    ///
+    /// 单击定位光标、双击选中词、三击选中整行、四击及以上全选（对齐 Zed 的 begin_selection）；
+    /// `extend`（Shift 按下）时按上次手势粒度扩展选区（对齐 Zed 的 extend_selection）。
+    pub(super) fn mouse_down(
+        &mut self,
+        offset: ByteOffset,
+        click_count: usize,
+        extend: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let buffer = self.buffer.read(cx);
+        let Ok(char_offset) = buffer.byte_to_char(offset) else {
+            return;
+        };
+        // Shift 按下时按上次手势粒度提升点击次数：双击后 Shift+点按词扩展，三击后按行扩展。
+        let click_count = if extend {
+            click_count.max(match self.mouse_select_mode {
+                MouseSelectMode::Character => 1,
+                MouseSelectMode::Word(_) => 2,
+                MouseSelectMode::Line(_) => 3,
+                MouseSelectMode::All => 4,
+            })
+        } else {
+            click_count
+        };
+
+        // 本次点击粒度对应的候选范围；坐标计算失败时放弃手势。
+        let (start, end, mode) = match click_count {
+            1 => (offset, offset, MouseSelectMode::Character),
+            2 => {
+                let Ok((word_start, word_end)) = buffer.surrounding_word(char_offset) else {
+                    return;
+                };
+                let Ok(word_start) = buffer.char_to_byte(word_start) else {
+                    return;
+                };
+                let Ok(word_end) = buffer.char_to_byte(word_end) else {
+                    return;
+                };
+                (
+                    word_start,
+                    word_end,
+                    MouseSelectMode::Word(word_start..word_end),
+                )
+            }
+            3 => {
+                let Ok(line) = buffer.byte_to_line(offset) else {
+                    return;
+                };
+                let Ok(line_start) = buffer.line_start_byte(line) else {
+                    return;
+                };
+                let line_end = buffer
+                    .line_start_byte(Line::new(line.get() + 1))
+                    .unwrap_or(buffer.len_bytes());
+                (
+                    line_start,
+                    line_end,
+                    MouseSelectMode::Line(line_start..line_end),
+                )
+            }
+            _ => (ByteOffset::ZERO, buffer.len_bytes(), MouseSelectMode::All),
+        };
+
+        // Shift+点击：以上次选区锚点为固定端，按点击位置向两侧扩展；点击范围覆盖锚点时整段纳入（对齐 Zed 的 extend_selection 夹紧逻辑）。
+        let selection = if extend {
+            let tail = self.resolved_selections().primary().anchor();
+            let mut start = start;
+            let mut end = end;
+            let mut reversed = false;
+            if start > tail {
+                start = tail;
+            }
+            if end < tail {
+                end = tail;
+                reversed = true;
+            }
+            Selection::new(
+                if reversed { end } else { start },
+                if reversed { start } else { end },
+            )
+        } else {
+            self.mouse_select_mode = mode.clone();
+            Selection::new(start, end)
+        };
+
+        self.composition = None;
+        self.set_selections(SelectionSet::new(vec![selection]));
+        self.request_autoscroll();
+        self.input_layout = None;
+        self.mouse_drag = Some(MouseDragSelection {
+            anchor: offset,
+            mode,
+        });
+        cx.notify();
+    }
+
+    /// 鼠标拖动：按按下时的粒度把选区活动端更新到当前位置。
+    ///
+    /// 词/行粒度下按整词/整行边界吸附，避免半词截断（对齐 Zed 的 update_selection）。
+    pub(super) fn mouse_drag(&mut self, offset: ByteOffset, cx: &mut Context<Self>) {
+        let Some(drag) = self.mouse_drag.clone() else {
+            return;
+        };
+        let buffer = self.buffer.read(cx);
+        let Ok(char_offset) = buffer.byte_to_char(offset) else {
+            return;
+        };
+        let (head, tail) = match drag.mode {
+            MouseSelectMode::Character => (offset, drag.anchor),
+            MouseSelectMode::Word(original_range) => {
+                // 光标仍在词内（或落在原词范围内）时按整词边界吸附，head 取点击侧的词端。
+                let inside = buffer.is_inside_word(char_offset).unwrap_or(false)
+                    || original_range.contains(&offset);
+                let head = if inside {
+                    let Ok((word_start, word_end)) = buffer.surrounding_word(char_offset) else {
+                        return;
+                    };
+                    let Ok(word_start) = buffer.char_to_byte(word_start) else {
+                        return;
+                    };
+                    let Ok(word_end) = buffer.char_to_byte(word_end) else {
+                        return;
+                    };
+                    if word_start < original_range.start {
+                        word_start
+                    } else {
+                        word_end
+                    }
+                } else {
+                    offset
+                };
+                // 活动端在原词左侧时锚定原词右端，否则锚定左端。
+                if head <= original_range.start {
+                    (head, original_range.end)
+                } else {
+                    (head, original_range.start)
+                }
+            }
+            MouseSelectMode::Line(original_range) => {
+                // 行粒度：head 所在整行纳入（含行尾换行符）。
+                let Ok(line) = buffer.byte_to_line(offset) else {
+                    return;
+                };
+                let Ok(line_start) = buffer.line_start_byte(line) else {
+                    return;
+                };
+                let next_line_start = buffer
+                    .line_start_byte(Line::new(line.get() + 1))
+                    .unwrap_or(buffer.len_bytes());
+                let head = if line_start < original_range.start {
+                    line_start
+                } else {
+                    next_line_start
+                };
+                if head <= original_range.start {
+                    (head, original_range.end)
+                } else {
+                    (head, original_range.start)
+                }
+            }
+            MouseSelectMode::All => return,
+        };
+        self.composition = None;
+        self.set_selections(SelectionSet::new(vec![Selection::new(tail, head)]));
+        self.input_layout = None;
+        cx.notify();
+    }
+
+    /// 鼠标松开：结束选区手势，选区已随拖动落定。
+    pub(super) fn mouse_up(&mut self) {
+        self.mouse_drag = None;
     }
 
     pub(super) fn set_ime_caret_geometry(
@@ -775,6 +968,8 @@ impl Editor {
             blink_manager_initialized: false,
             soft_wrap: SoftWrap::default(),
             preferred_line_length: 80,
+            mouse_select_mode: MouseSelectMode::Character,
+            mouse_drag: None,
         };
         this.push_highlights();
         this
@@ -1552,6 +1747,10 @@ mod display_tests;
 #[cfg(test)]
 #[path = "test/scroll_tests.rs"]
 mod scroll_tests;
+
+#[cfg(test)]
+#[path = "test/mouse_selection_tests.rs"]
+mod mouse_selection_tests;
 
 /// 从 HEAD 全文按行范围切片（删除块展开显示被删除行；结尾换行的空尾段丢弃）。
 /// 编辑事务元数据（供编辑命令与输入共用）。

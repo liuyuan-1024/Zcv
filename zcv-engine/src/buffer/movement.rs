@@ -75,6 +75,33 @@ impl Buffer {
     pub fn next_symbol_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
         self.next_movement_boundary(offset, MovementUnit::Symbol)
     }
+
+    /// 以 offset 为中心取连续同类字符范围（双击选词语义）。
+    ///
+    /// 语义对齐 Zed 的 `surrounding_word`：目标类别取光标前后字符中"更词"的那一个（Word > Symbol > Space），随后向左右扫描吃掉连续同类字符；
+    /// 换行不参与任何类别的连续性。
+    /// 扫描按 grapheme 边界推进，零宽字符（组合音标等）随前导字符归属同一词。
+    pub fn surrounding_word(&self, offset: CharOffset) -> EngineResult<(CharOffset, CharOffset)> {
+        surrounding_word_in_text(&self.storage, self.config.word_boundary, offset)
+    }
+
+    /// 光标前后都是词字符时返回 true（对齐 Zed 的 `is_inside_word`）。
+    ///
+    /// 拖拽扩展选区时用于判断光标是否仍停留在某个词内部，决定是否按整词边界吸附。
+    pub fn is_inside_word(&self, offset: CharOffset) -> EngineResult<bool> {
+        let Some(classifier) = self
+            .config
+            .word_boundary
+            .classifier(MovementUnit::Identifier)
+        else {
+            return movement_unit_bug(MovementUnit::Identifier);
+        };
+        let previous = grapheme_before(&self.storage, offset)?
+            .is_some_and(|grapheme| classifier.is_body(grapheme.first));
+        let next = grapheme_at(&self.storage, offset)?
+            .is_some_and(|grapheme| classifier.is_body(grapheme.first));
+        Ok(previous && next)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,7 +199,7 @@ fn word_boundary<T: TextRead>(
     }
 }
 
-fn movement_unit_bug(unit: MovementUnit) -> EngineResult<CharOffset> {
+fn movement_unit_bug<T>(unit: MovementUnit) -> EngineResult<T> {
     Err(crate::EngineError::EngineBug {
         location: "word_boundary",
         detail: format!("非词类移动粒度不应进入词边界策略: {unit:?}"),
@@ -467,4 +494,73 @@ fn grapheme_before<T: TextRead>(
     };
 
     Ok(Some(MovementGrapheme { start, end, first }))
+}
+
+/// 双击选词的字符三态类别，排序对齐 Zed 的 CharKind（Whitespace < Punctuation < Word）。
+/// 换行单独一档且永不作目标，保证词/符号/空格的连续不会跨行。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SurroundingKind {
+    Newline,
+    Space,
+    Symbol,
+    Word,
+}
+
+fn surrounding_kind(classifier: WordBoundaryClassifier, ch: char) -> SurroundingKind {
+    if classifier.is_body(ch) {
+        SurroundingKind::Word
+    } else {
+        match separator_kind(ch) {
+            SeparatorKind::Space => SurroundingKind::Space,
+            SeparatorKind::Newline => SurroundingKind::Newline,
+            SeparatorKind::Symbol => SurroundingKind::Symbol,
+        }
+    }
+}
+
+fn surrounding_word_in_text<T: TextRead>(
+    storage: &T,
+    policy: WordBoundaryPolicy,
+    offset: CharOffset,
+) -> EngineResult<(CharOffset, CharOffset)> {
+    validate_movement_offset(storage, offset)?;
+    let Some(classifier) = policy.classifier(MovementUnit::Identifier) else {
+        return movement_unit_bug(MovementUnit::Identifier);
+    };
+
+    let previous = grapheme_before(storage, offset)?;
+    let next = grapheme_at(storage, offset)?;
+    // 目标类别：光标两侧"更词"的一侧；两侧都为空（空文档）时范围退化到 offset 本身。
+    let target = match (previous, next) {
+        (Some(prev), Some(next)) => {
+            surrounding_kind(classifier, prev.first).max(surrounding_kind(classifier, next.first))
+        }
+        (Some(prev), None) => surrounding_kind(classifier, prev.first),
+        (None, Some(next)) => surrounding_kind(classifier, next.first),
+        (None, None) => return Ok((offset, offset)),
+    };
+    // 光标夹在换行之间时无词可选，保持空范围。
+    if target == SurroundingKind::Newline {
+        return Ok((offset, offset));
+    }
+
+    let mut start = offset;
+    while let Some(grapheme) = grapheme_before(storage, start)? {
+        if surrounding_kind(classifier, grapheme.first) == target {
+            start = grapheme.start;
+        } else {
+            break;
+        }
+    }
+
+    let mut end = offset;
+    while let Some(grapheme) = grapheme_at(storage, end)? {
+        if surrounding_kind(classifier, grapheme.first) == target {
+            end = grapheme.end;
+        } else {
+            break;
+        }
+    }
+
+    Ok((start, end))
 }

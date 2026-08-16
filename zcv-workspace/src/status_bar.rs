@@ -52,9 +52,11 @@ impl StatusBar {
     pub fn new(pane: Entity<Pane>, cx: &mut Context<Self>) -> Self {
         let pane_subscription = cx.observe(&pane, |this, pane, cx| {
             let item = pane.read(cx).active_item().map(|item| item.boxed_clone());
-            for view in this.left_items.iter().chain(&this.right_items) {
-                view.set_active_pane_item(item.as_deref(), cx);
+            for handle in this.left_items.iter().chain(&this.right_items) {
+                handle.set_active_pane_item(item.as_deref(), cx);
             }
+            // 活动标签变化会改变各 item 的内容，必须重绘。
+            cx.notify();
         });
         Self {
             left_items: Vec::new(),
@@ -67,22 +69,16 @@ impl StatusBar {
     // ═══ 注册 item ════════════════════════════════════════════════
 
     pub fn add_left_item<T: StatusItemView>(&mut self, item: Entity<T>, cx: &mut Context<Self>) {
-        let active_item = self
-            .pane
-            .read(cx)
-            .active_item()
-            .map(|item| item.boxed_clone());
+        let pane = self.pane.clone();
+        let active_item = pane.read(cx).active_item().map(|item| item.boxed_clone());
         item.set_active_pane_item(active_item.as_deref(), cx);
         self.left_items.push(Box::new(item));
         cx.notify();
     }
 
     pub fn add_right_item<T: StatusItemView>(&mut self, item: Entity<T>, cx: &mut Context<Self>) {
-        let active_item = self
-            .pane
-            .read(cx)
-            .active_item()
-            .map(|item| item.boxed_clone());
+        let pane = self.pane.clone();
+        let active_item = pane.read(cx).active_item().map(|item| item.boxed_clone());
         item.set_active_pane_item(active_item.as_deref(), cx);
         self.right_items.push(Box::new(item));
         cx.notify();
@@ -106,31 +102,32 @@ fn bar_frame(cx: &App) -> Div {
         .border_color(color::current(cx).border_variant)
 }
 
-fn region(items: Vec<AnyElement>, justify_start: bool) -> Div {
+impl Render for StatusBar {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        let left: Vec<&dyn StatusItemViewHandle> = self
+            .left_items
+            .iter()
+            .map(|handle| handle.as_ref())
+            .collect();
+        let right: Vec<&dyn StatusItemViewHandle> = self
+            .right_items
+            .iter()
+            .map(|handle| handle.as_ref())
+            .collect();
+        bar_frame(cx)
+            .id("status-bar")
+            .child(region(left, true))
+            .child(region(right, false))
+    }
+}
+
+/// 渲染一侧的 item 序列；无内容时 item 自己渲染空元素，分隔线由 item 自己绘制。
+fn region(items: Vec<&dyn StatusItemViewHandle>, justify_start: bool) -> Div {
     let wrapper = div().flex_1().flex().items_center().gap(space::S8);
     let wrapper = if justify_start {
         wrapper.justify_start()
     } else {
         wrapper.justify_end()
     };
-    wrapper.children(items)
-}
-
-impl Render for StatusBar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        bar_frame(cx)
-            .id("status-bar")
-            .child(leading_region(&self.left_items))
-            .child(trailing_region(&self.right_items))
-    }
-}
-
-fn leading_region(items: &[Box<dyn StatusItemViewHandle>]) -> Div {
-    let elements: Vec<AnyElement> = items.iter().map(|item| item.element()).collect();
-    region(elements, true)
-}
-
-fn trailing_region(items: &[Box<dyn StatusItemViewHandle>]) -> Div {
-    let elements: Vec<AnyElement> = items.iter().map(|item| item.element()).collect();
-    region(elements, false)
+    wrapper.children(items.iter().map(|handle| handle.element()))
 }

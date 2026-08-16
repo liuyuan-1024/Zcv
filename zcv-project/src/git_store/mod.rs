@@ -11,7 +11,7 @@
 
 mod background;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -35,6 +35,8 @@ pub enum GitStoreEvent {
     Head,
     /// 活动仓库变化（跟随焦点文件切换；订阅方重读 `current_branch()`，无需 payload）。
     ActiveRepositoryChanged,
+    /// 后台任务集合变化（开始/完成/取消）；订阅方重读 `active_task()`。
+    Tasks,
 }
 
 /// 单个文件在某个仓库中的状态快照。
@@ -126,13 +128,26 @@ pub(super) enum GitJob {
     ReloadGitState,
     RefreshStatuses,
     RefreshHunks,
-    GitOperation(GitOperationKind),
+    GitOperation {
+        operation: GitOperationKind,
+        /// 操作结果回传通道（发起方 await 后弹提示）；内部调度时为 None。
+        on_done: Option<async_channel::Sender<Result<(), String>>>,
+    },
     GitInit,
-    StageFiles { stage: bool, paths: Vec<PathBuf> },
-    Commit { message: String },
+    StageFiles {
+        stage: bool,
+        paths: Vec<PathBuf>,
+    },
+    Commit {
+        message: String,
+    },
     Uncommit,
-    CheckoutBranch { name: String },
-    CreateBranch { name: String },
+    CheckoutBranch {
+        name: String,
+    },
+    CreateBranch {
+        name: String,
+    },
 }
 
 impl GitJob {
@@ -141,7 +156,7 @@ impl GitJob {
             GitJob::ReloadGitState => GitJobKey::ReloadGitState,
             GitJob::RefreshStatuses => GitJobKey::RefreshStatuses,
             GitJob::RefreshHunks => GitJobKey::RefreshHunks,
-            GitJob::GitOperation(operation) => GitJobKey::GitOperation(*operation),
+            GitJob::GitOperation { operation, .. } => GitJobKey::GitOperation(*operation),
             GitJob::GitInit => GitJobKey::GitInit,
             GitJob::StageFiles { stage, paths } => GitJobKey::StageFiles {
                 stage: *stage,
@@ -153,6 +168,34 @@ impl GitJob {
             GitJob::Uncommit => GitJobKey::Uncommit,
             GitJob::CheckoutBranch { name } => GitJobKey::CheckoutBranch { name: name.clone() },
             GitJob::CreateBranch { name } => GitJobKey::CreateBranch { name: name.clone() },
+        }
+    }
+
+    /// 状态栏展示用的任务名。
+    fn task_name(&self) -> Arc<str> {
+        match self {
+            GitJob::ReloadGitState => "扫描仓库状态".into(),
+            GitJob::RefreshStatuses => "刷新仓库状态".into(),
+            GitJob::RefreshHunks => "查询文件差异".into(),
+            GitJob::GitOperation {
+                operation: GitOperationKind::Fetch,
+                ..
+            } => "拉取".into(),
+            GitJob::GitOperation {
+                operation: GitOperationKind::Pull,
+                ..
+            } => "合并拉取".into(),
+            GitJob::GitOperation {
+                operation: GitOperationKind::Push,
+                ..
+            } => "推送".into(),
+            GitJob::GitInit => "初始化仓库".into(),
+            GitJob::StageFiles { stage: true, .. } => "暂存".into(),
+            GitJob::StageFiles { stage: false, .. } => "取消暂存".into(),
+            GitJob::Commit { .. } => "提交".into(),
+            GitJob::Uncommit => "撤销提交".into(),
+            GitJob::CheckoutBranch { .. } => "切换分支".into(),
+            GitJob::CreateBranch { .. } => "创建分支".into(),
         }
     }
 }
@@ -170,6 +213,11 @@ pub struct GitStore {
     background: BackgroundExecutor,
     job_sender: async_channel::Sender<GitJob>,
     pending_jobs: HashMap<GitJobKey, ()>,
+    /// 在途任务（worker 正在执行的 job）：显示名供状态栏展示，key 供右键取消定位。
+    in_flight_job_key: Option<GitJobKey>,
+    in_flight_task: Option<Arc<str>>,
+    /// 被取消的 job 键：worker 执行前/后消费，命中即丢弃（排队中不执行、执行中不落地结果）。
+    cancelled_jobs: HashSet<GitJobKey>,
     paths_needing_status_update: BTreeSet<PathBuf>,
     paths_needing_hunks: BTreeSet<PathBuf>,
     _job_task: Task<()>,
@@ -189,6 +237,14 @@ impl GitStore {
                     let Some(this) = this.upgrade() else {
                         break;
                     };
+                    // 排队期间被取消（右键取消）：直接丢弃，不执行。
+                    let cancelled = this
+                        .update(&mut cx, |store, _| store.take_cancelled_job(&job))
+                        .ok()
+                        .unwrap_or(true);
+                    if cancelled {
+                        continue;
+                    }
                     let Some(prepared) = this
                         .update(&mut cx, |store, _| store.prepare_job(&job))
                         .ok()
@@ -196,6 +252,8 @@ impl GitStore {
                     else {
                         continue;
                     };
+                    // 标记在途任务（状态栏开始显示）。
+                    let _ = this.update(&mut cx, |store, cx| store.set_in_flight(&job, cx));
                     let result = cx
                         .background_executor()
                         .spawn(execute_job(
@@ -205,6 +263,30 @@ impl GitStore {
                             prepared.grouped_paths,
                         ))
                         .await;
+                    // 执行期间被取消：丢弃结果，不落地。
+                    let discarded = this
+                        .update(&mut cx, |store, _| store.take_cancelled_job(&job))
+                        .ok()
+                        .unwrap_or(true);
+                    let _ = this.update(&mut cx, |store, cx| store.clear_in_flight(cx));
+                    if discarded {
+                        // 通道随 job 丢弃而关闭，发起方以"任务已取消"结束等待。
+                        continue;
+                    }
+                    // 操作结果回传发起方（Workspace await 后直接弹提示）。
+                    if let GitJob::GitOperation {
+                        on_done: Some(tx), ..
+                    } = &job
+                    {
+                        let outcome = match &result {
+                            JobResult::GitOperation(op_result) => op_result
+                                .as_ref()
+                                .map(|_| ())
+                                .map_err(|error| format!("{error:#}")),
+                            _ => Ok(()),
+                        };
+                        let _ = tx.send(outcome).await;
+                    }
                     let _ = this.update(&mut cx, |store, cx| store.commit_job(&job, result, cx));
                 }
             }
@@ -219,6 +301,9 @@ impl GitStore {
             background,
             job_sender,
             pending_jobs: HashMap::new(),
+            in_flight_job_key: None,
+            in_flight_task: None,
+            cancelled_jobs: HashSet::new(),
             paths_needing_status_update: BTreeSet::new(),
             paths_needing_hunks: BTreeSet::new(),
             _job_task: job_task,
@@ -233,17 +318,41 @@ impl GitStore {
 
     /// 后台执行用户触发的 git 操作（fetch/pull/push），完成后重新扫描。
     ///
-    /// 仓库尚未扫描完成（首次打开项目）时只触发扫描，操作由用户稍后重试。
-    pub fn run_operation(&mut self, operation: GitOperationKind, cx: &mut Context<Self>) {
+    /// 返回的结果由发起方 await 后自行提示（对齐 Zed：操作发起方持有结果）。
+    /// 仓库尚未扫描完成（首次打开项目）时只触发扫描，任务立即以错误结束。
+    pub fn run_operation(
+        &mut self,
+        operation: GitOperationKind,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
         if self.repositories.is_empty() {
             log::warn!(
                 "git 仓库尚未就绪，跳过 {:?}（等待首次扫描完成后重试）",
                 operation
             );
             self.schedule_scan(cx);
-            return;
+            return Task::ready(Err(anyhow::anyhow!("git 仓库尚未就绪")));
         }
-        self.schedule_job(GitJob::GitOperation(operation));
+        // 同 key 操作已在排队/执行中：不重复入队，立即告知发起方。
+        if self
+            .pending_jobs
+            .contains_key(&GitJobKey::GitOperation(operation))
+        {
+            return Task::ready(Err(anyhow::anyhow!("该操作已在进行中")));
+        }
+        let (result_tx, result_rx) = async_channel::unbounded::<Result<(), String>>();
+        self.schedule_job(GitJob::GitOperation {
+            operation,
+            on_done: Some(result_tx),
+        });
+        cx.spawn(|_this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+            // 通道被关闭（任务被取消/丢弃）等价于取消。
+            result_rx
+                .recv()
+                .await
+                .map_err(|_| anyhow::anyhow!("任务已取消"))?
+                .map_err(anyhow::Error::msg)
+        })
     }
 
     /// 在项目根初始化 git 仓库（空态面板按钮触发），完成后重新扫描以发现新仓库。
@@ -524,8 +633,46 @@ impl GitStore {
         if self.pending_jobs.contains_key(&key) {
             return;
         }
+        // 新任务的发起意愿优先于历史取消标记（取消只作用于当时在途/排队的任务）。
+        self.cancelled_jobs.remove(&key);
         self.pending_jobs.insert(key, ());
         let _ = self.job_sender.try_send(job);
+    }
+
+    /// 当前在途任务名（状态栏展示）；无任务时 None。
+    pub fn active_task(&self) -> Option<Arc<str>> {
+        self.in_flight_task.clone()
+    }
+
+    /// 取消当前在途任务（状态栏右键触发）：排队中同 key 任务不再执行，执行中的任务结果被丢弃。
+    pub fn cancel_active_task(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self.in_flight_job_key.clone() else {
+            return;
+        };
+        self.cancelled_jobs.insert(key.clone());
+        self.pending_jobs.remove(&key);
+        self.in_flight_job_key = None;
+        self.in_flight_task = None;
+        cx.emit(GitStoreEvent::Tasks);
+    }
+
+    /// worker 开始执行 job 前标记在途任务（状态栏显示入口）。
+    fn set_in_flight(&mut self, job: &GitJob, cx: &mut Context<Self>) {
+        self.in_flight_job_key = Some(job.key());
+        self.in_flight_task = Some(job.task_name());
+        cx.emit(GitStoreEvent::Tasks);
+    }
+
+    /// worker 结束一个 job 后清空在途标记（无论结果是否被取消丢弃）。
+    fn clear_in_flight(&mut self, cx: &mut Context<Self>) {
+        self.in_flight_job_key = None;
+        self.in_flight_task = None;
+        cx.emit(GitStoreEvent::Tasks);
+    }
+
+    /// 消费取消标记：命中说明该 job 已被取消（排队中或执行中被取消），返回 true。
+    fn take_cancelled_job(&mut self, job: &GitJob) -> bool {
+        self.cancelled_jobs.remove(&job.key())
     }
 
     /// UI 线程：取出 job 需要的共享数据（后台线程不能访问 Entity 状态）。
@@ -574,7 +721,7 @@ impl GitStore {
                     grouped_paths,
                 })
             }
-            GitJob::GitOperation(_)
+            GitJob::GitOperation { .. }
             | GitJob::CheckoutBranch { .. }
             | GitJob::CreateBranch { .. } => {
                 // 作用于活动仓库（对齐 Zed：fetch/pull/push 以 active 仓库为目标，空仓库也执行；
@@ -776,9 +923,22 @@ impl GitStore {
                     cx.emit(GitStoreEvent::Statuses);
                 }
             }
+            (GitJob::GitOperation { operation, .. }, JobResult::GitOperation(result)) => {
+                match &result {
+                    Ok(()) => {
+                        log::info!("git {operation:?} 成功");
+                    }
+                    Err(error) => {
+                        log::warn!("git {operation:?} 失败：{error:#}");
+                    }
+                }
+                // 操作改变了引用/工作树：重新全量扫描，比对后发出 Repositories/Head/Statuses 事件。
+                if result.is_ok() {
+                    self.schedule_scan(cx);
+                }
+            }
             (
-                job @ (GitJob::GitOperation(_)
-                | GitJob::GitInit
+                job @ (GitJob::GitInit
                 | GitJob::StageFiles { .. }
                 | GitJob::Commit { .. }
                 | GitJob::CheckoutBranch { .. }
@@ -1127,7 +1287,7 @@ mod tests {
         run_git(&root, &["add", "new.txt"]);
         run_git(&root, &["commit", "-q", "-m", "新提交"]);
         git_store.update(cx, |store, cx| {
-            store.run_operation(GitOperationKind::Push, cx);
+            let _ = store.run_operation(GitOperationKind::Push, cx);
         });
         cx.run_until_parked();
         let job_done = cx.read_entity(&git_store, |store, _| {
@@ -1396,7 +1556,7 @@ mod tests {
         run_git(&nested, &["add", "new.txt"]);
         run_git(&nested, &["commit", "-q", "-m", "新提交"]);
         cx.update_entity(&git_store, |store, cx| {
-            store.run_operation(GitOperationKind::Push, cx);
+            let _ = store.run_operation(GitOperationKind::Push, cx);
         });
         cx.run_until_parked();
         let job_done = cx.read_entity(&git_store, |store, _| {
@@ -1500,7 +1660,7 @@ mod tests {
 
         // push 后回到同步（徽标消失链路：ahead 变化必须触发事件）。
         cx.update_entity(&git_store, |store, cx| {
-            store.run_operation(GitOperationKind::Push, cx);
+            let _ = store.run_operation(GitOperationKind::Push, cx);
         });
         cx.run_until_parked();
         cx.run_until_parked(); // 等 push 完成后触发的重新扫描落地。

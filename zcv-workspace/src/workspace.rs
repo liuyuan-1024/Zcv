@@ -10,12 +10,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    Action, AnyView, App, Context, Div, Entity, FocusHandle, MouseButton, Render, Subscription,
-    Window, div, prelude::*,
+    Action, AnyView, App, AsyncApp, Context, Div, Entity, FocusHandle, MouseButton, Render,
+    SharedString, Subscription, WeakEntity, Window, div, prelude::*, rems,
 };
 pub use zcv_actions::{GitFetch, GitPull, GitPush, OpenSettings, Save};
 use zcv_project::{GitOperationKind, Project};
-
 use zcv_theme::{color, typography};
 
 use crate::dock::{Dock, DockPosition, render_body};
@@ -23,6 +22,7 @@ use crate::item_provider::item_provider_for_path;
 use crate::pane::Pane;
 use crate::panel::PanelHandle;
 use crate::status_bar::StatusBar;
+use crate::toast::{ToastAction, ToastKind, ToastLayer};
 use crate::window_controls::{handle_minimize, handle_quit, handle_toggle_maximize};
 
 /// 支持预览的文件需要等待双击判定，避免双击源码前短暂显示预览。
@@ -35,6 +35,7 @@ pub struct Workspace {
     pub focus: FocusHandle,
     pub pane: Entity<Pane>,
     status_bar: Entity<StatusBar>,
+    toast_layer: Entity<ToastLayer>,
     project: Entity<Project>,
     pub left_dock: Entity<Dock>,
     pub right_dock: Entity<Dock>,
@@ -103,11 +104,13 @@ impl Workspace {
         right_dock.update(cx, |d, _| d.set_sibling(left_dock.downgrade()));
 
         let status_bar = cx.new(|cx| StatusBar::new(pane.clone(), cx));
+        let toast_layer = cx.new(|_| ToastLayer::new());
 
         Self {
             focus,
             pane,
             status_bar,
+            toast_layer,
             project,
             left_dock,
             right_dock,
@@ -120,6 +123,20 @@ impl Workspace {
             _subscriptions: Vec::new(),
             workspace_actions: Vec::new(),
         }
+    }
+
+    /// 展示一条全局提示（成功/错误/信息）。
+    pub fn show_toast(
+        &self,
+        kind: ToastKind,
+        message: impl Into<SharedString>,
+        action: Option<ToastAction>,
+        dismiss_after: Option<Duration>,
+        cx: &mut App,
+    ) {
+        self.toast_layer.update(cx, |toast, cx| {
+            toast.show(kind, message, action, dismiss_after, cx)
+        });
     }
 
     // ═══ 访问器与宿主注入 ═════════════════════════════════════════
@@ -376,9 +393,24 @@ impl Workspace {
         }
         let project = self.project.clone();
         let task = item.boxed_clone().save(project, window, cx);
-        cx.spawn(async move |_, _cx| {
-            if let Err(error) = task.await {
-                eprintln!("保存文件失败：{error}");
+        cx.spawn(|this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
+            let mut cx = asynccx.clone();
+            async move {
+                if let Err(error) = task.await {
+                    eprintln!("保存文件失败：{error}");
+                    if let Some(this) = this.upgrade() {
+                        this.update(&mut cx, |workspace, cx| {
+                            workspace.show_toast(
+                                ToastKind::Error,
+                                format!("保存文件失败：{error}"),
+                                None,
+                                Some(Duration::from_secs(5)),
+                                cx,
+                            );
+                        })
+                        .ok();
+                    }
+                }
             }
         })
         .detach();
@@ -399,13 +431,31 @@ impl Workspace {
         self.open_path(path, true, window, cx);
     }
 
-    /// 后台执行 git 操作（fetch/pull/push），完成后 git_store 自动重新扫描。
+    /// 后台执行 git 操作（fetch/pull/push）：等待结果后直接弹提示（成功/失败+错误详情）。
     fn run_git_operation(&mut self, operation: GitOperationKind, cx: &mut Context<Self>) {
-        self.project.update(cx, |project, cx| {
-            project.git_store().update(cx, |store, cx| {
-                store.run_operation(operation, cx);
-            });
-        });
+        let git_store = self.project.read(cx).git_store();
+        let task = git_store.update(cx, |store, cx| store.run_operation(operation, cx));
+        let name = match operation {
+            GitOperationKind::Fetch => "拉取",
+            GitOperationKind::Pull => "合并拉取",
+            GitOperationKind::Push => "推送",
+        };
+        cx.spawn(move |this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
+            let mut cx = asynccx.clone();
+            async move {
+                let (kind, message) = match task.await {
+                    Ok(()) => (ToastKind::Success, format!("{name}完成")),
+                    Err(error) => (ToastKind::Error, format!("{name}失败：{error:#}")),
+                };
+                if let Some(this) = this.upgrade() {
+                    this.update(&mut cx, |workspace, cx| {
+                        workspace.show_toast(kind, message, None, Some(Duration::from_secs(5)), cx);
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
     }
 
     fn handle_git_fetch(&mut self, _: &GitFetch, _: &mut Window, cx: &mut Context<Self>) {
@@ -437,9 +487,6 @@ fn render_frame(
         .size_full()
         .overflow_hidden()
         .bg(color::current(cx).surface_background)
-        .font(typography::ui_font())
-        .text_size(typography::ui())
-        .line_height(typography::ui())
         .text_color(color::current(cx).text)
         .child(
             titlebar
@@ -484,6 +531,11 @@ impl Render for Workspace {
 
         let mut root = div()
             .id("app-view")
+            // 全局字号经 window rem 基准设置（open_window 时 set_rem_size）；
+            // 字体在此设置，行高 = 1rem（与字号同源，文字块上下 padding 与左右完全对称）；
+            // 全树（含挂载在根下的 toast）继承，子元素不再重复设置（需要其他字号时显式覆盖）。
+            .font(typography::ui_font())
+            .line_height(rems(1.0))
             .track_focus(&self.focus)
             .key_context("Workspace")
             .size_full()
@@ -497,6 +549,7 @@ impl Render for Workspace {
             render_body(&pane, left_dock, right_dock, bottom_dock),
             cx,
         ))
+        .child(self.toast_layer.clone())
         .on_action(handle_quit)
         .on_action(handle_minimize)
         .on_action(handle_toggle_maximize)

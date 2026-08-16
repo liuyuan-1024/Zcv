@@ -97,7 +97,7 @@ pub(super) async fn execute_job(
             }
             JobResult::RefreshHunks(refreshed)
         }
-        GitJob::GitOperation(operation) => {
+        GitJob::GitOperation { operation, .. } => {
             let result = repositories
                 .first()
                 .map(|repository| match operation {

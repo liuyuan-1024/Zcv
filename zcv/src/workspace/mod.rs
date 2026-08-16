@@ -16,9 +16,10 @@ use gpui::{
 use zcv_actions::{SelectGitBranch, ToggleProjectPicker};
 use zcv_editor::{Editor, SoftWrap};
 use zcv_project::Project;
+use zcv_theme::typography;
 use zcv_workspace::{
-    Dock, DockPosition, FileToolbarControls, GitBranchAction, OnProjectSelected, OnSelectBranch,
-    Pane, PaneEvent, PanelButtons, PanelHandle, TopBar, Workspace, add_to_recent,
+    ActivityIndicator, Dock, DockPosition, FileToolbarControls, GitBranchAction, OnProjectSelected,
+    OnSelectBranch, Pane, PaneEvent, PanelButtons, PanelHandle, TopBar, Workspace, add_to_recent,
 };
 
 use self::placeholder_panels::{DebugPanel, KeyboardShortcutsPanel, OutlinePanel, TerminalPanel};
@@ -67,6 +68,9 @@ pub(crate) fn open_project_window(root: PathBuf, cx: &mut App) -> anyhow::Result
         },
         |window, cx| {
             SettingsStore::get(cx).theme.apply(cx, Some(window));
+            // 全局字号经 window rem 基准设置（对齐 Zed setup_ui_font）：
+            // 字体与行高仍在元素上显式设置（见 Workspace 根元素与 tooltip）。
+            window.set_rem_size(typography::ui());
             let workspace = cx.new(|cx| Workspace::new(root.clone(), window, cx));
             workspace.update(cx, |workspace, cx| {
                 initialize_workspace(workspace, root, window, cx);
@@ -234,6 +238,10 @@ fn initialize_workspace(
         bar.add_left_item(cx.new(|_| LspButton::new()), cx);
         bar.add_left_item(cx.new(|_| DiagnosticsButton::new()), cx);
         bar.add_left_item(cx.new(|_| ProjectSearchButton::new()), cx);
+        bar.add_left_item(
+            cx.new(|cx| ActivityIndicator::new(project.read(cx).git_store(), cx)),
+            cx,
+        );
         bar.add_right_item(cx.new(|_| CursorPosition::new()), cx);
         bar.add_right_item(cx.new(|_| ActiveBufferLanguage::new()), cx);
         bar.add_right_item(cx.new(|cx| PanelButtons::new(bottom_dock.clone(), cx)), cx);

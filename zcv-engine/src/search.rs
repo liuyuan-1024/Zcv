@@ -2,13 +2,14 @@
 //!
 //! 本模块只实现单 Buffer 文本搜索结果模型、纯字符串匹配和正则匹配；不做跨文件索引，也不承担 UI 高亮语义。
 
+use regex::{Regex, RegexBuilder};
+use regex_automata::meta;
+
 use crate::{
     BufferConfig, BufferVersion, ByteOffset, CoordinateError, EngineError, EngineResult,
     SearchError, Stickiness, TextRange, VersionedResult, position_map::MappingResult,
     storage::TextRead, transaction::DeltaEvent,
 };
-use regex::{Regex, RegexBuilder};
-use regex_automata::meta;
 
 /// 普通字符串搜索选项。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

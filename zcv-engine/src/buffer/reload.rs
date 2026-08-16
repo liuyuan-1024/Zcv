@@ -4,14 +4,13 @@
 
 use std::io::{self, Write};
 
+use super::Buffer;
 use crate::{
     BufferSaveError, BufferVersion, ByteOffset, EngineError, EngineResult, LineEndingConfig,
     Snapshot, TextRange, TransactionError,
     diff::diff_patch,
     storage::{RopeyStorage, TextRead},
 };
-
-use super::Buffer;
 
 impl Buffer {
     /// 用外部文本重新加载 Buffer。

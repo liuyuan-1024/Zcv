@@ -5,13 +5,12 @@
 
 use std::sync::Arc;
 
+use super::Buffer;
 use crate::{
     Edit, EngineResult, RegexSearchResult, SearchError, SearchResult, TextRange, Transaction,
     TransactionMetadata, TransactionOutcome, TransactionSource,
     search::{SearchResultSet, regex_replacement_for_match, regex_replacements_in_text},
 };
-
-use super::Buffer;
 
 impl Buffer {
     /// 替换一次搜索结果中的指定匹配。

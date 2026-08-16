@@ -1,7 +1,8 @@
-use super::common::{buffer_text, test_buffer};
-use super::*;
 use gpui::{EntityInputHandler, TestAppContext, px, size};
 use zcv_engine::{ByteOffset, SelectionSet};
+
+use super::common::{buffer_text, test_buffer};
+use super::*;
 
 #[gpui::test]
 fn marked_text_updates_buffer_and_unmark_finishes_composition(cx: &mut TestAppContext) {

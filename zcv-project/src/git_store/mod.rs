@@ -15,16 +15,18 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui::{AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
-use zcv_buffer_diff::DiffHunk;
-use zcv_git::{Branch, DiffStat, FileStatus, GitRepository};
-
 use background::{JobResult, execute_job, merge_refresh, repo_relative_path};
+use gpui::{AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
+use zcv_git::{Branch, DiffHunk, DiffStat, FileStatus, GitRepository};
 
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
 const MAX_INCREMENTAL_PATHS: usize = 500;
 
 /// 仓库状态变化的通知。
+/// GitStore 通知事件。
+///
+/// 单窗口简化（对齐 Zed 的 per-repository payload 事件）：
+/// 事件均无 payload，订阅方收到后按需重读 GitStore 状态；hunks 查询完成同样并入 [`GitStoreEvent::Statuses`]。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GitStoreEvent {
     /// 仓库集合发生变化（发现/消失）。
@@ -35,8 +37,8 @@ pub enum GitStoreEvent {
     Head,
     /// 活动仓库变化（跟随焦点文件切换；订阅方重读 `current_branch()`，无需 payload）。
     ActiveRepositoryChanged,
-    /// 后台任务集合变化（开始/完成/取消）；订阅方重读 `active_task()`。
-    Tasks,
+    /// 后台 job 集合变化（开始/完成/取消）；订阅方重读 `current_job()`（对齐 Zed 的 JobsUpdated）。
+    JobsUpdated,
 }
 
 /// 单个文件在某个仓库中的状态快照。
@@ -82,8 +84,8 @@ pub struct RepositorySnapshot {
     pub statuses_by_path: BTreeMap<PathBuf, StatusEntry>,
 }
 
-pub struct Repository {
-    pub repository: Arc<dyn GitRepository>,
+struct Repository {
+    repository: Arc<dyn GitRepository>,
     snapshot: RepositorySnapshot,
 }
 
@@ -205,7 +207,7 @@ pub struct GitStore {
     repositories: Vec<Repository>,
     /// 活动仓库（按 working_directory 标识）：分支显示与 fetch/pull/push 等 git 操作的目标。
     /// 用 working_directory 而非索引：全量扫描重建 Vec，索引不稳定。
-    active_workdir: Option<PathBuf>,
+    active_repo_workdir: Option<PathBuf>,
     /// HEAD 文本缓存（删除块展开的被删除行来源；HEAD 变化时清空）。
     committed_text_cache: HashMap<PathBuf, Arc<str>>,
     /// uncommit 成功后暂存的被撤销消息（Head 事件后由面板读取填回提交信息编辑器）。
@@ -213,9 +215,8 @@ pub struct GitStore {
     background: BackgroundExecutor,
     job_sender: async_channel::Sender<GitJob>,
     pending_jobs: HashMap<GitJobKey, ()>,
-    /// 在途任务（worker 正在执行的 job）：显示名供状态栏展示，key 供右键取消定位。
-    in_flight_job_key: Option<GitJobKey>,
-    in_flight_task: Option<Arc<str>>,
+    /// 在途 job（key + 展示名）：key 供右键取消定位，显示名供状态栏展示；无任务时 None。
+    in_flight: Option<(GitJobKey, Arc<str>)>,
     /// 被取消的 job 键：worker 执行前/后消费，命中即丢弃（排队中不执行、执行中不落地结果）。
     cancelled_jobs: HashSet<GitJobKey>,
     paths_needing_status_update: BTreeSet<PathBuf>,
@@ -295,14 +296,13 @@ impl GitStore {
         Self {
             root,
             repositories: Vec::new(),
-            active_workdir: None,
+            active_repo_workdir: None,
             committed_text_cache: HashMap::new(),
             pending_uncommitted_message: None,
             background,
             job_sender,
             pending_jobs: HashMap::new(),
-            in_flight_job_key: None,
-            in_flight_task: None,
+            in_flight: None,
             cancelled_jobs: HashSet::new(),
             paths_needing_status_update: BTreeSet::new(),
             paths_needing_hunks: BTreeSet::new(),
@@ -510,7 +510,7 @@ impl GitStore {
 
     /// 当前活动仓库的分支名（无仓库、active 未建立或活动仓库为空仓库时为 None）。
     pub fn current_branch(&self) -> Option<&str> {
-        self.active_workdir
+        self.active_repo_workdir
             .as_ref()
             .and_then(|workdir| self.repo_by_workdir(workdir))
             .and_then(|repository| repository.snapshot.branch.as_deref())
@@ -520,7 +520,7 @@ impl GitStore {
     ///
     /// 与 current_branch 同仓库选择策略，保证分支 glyph 与列表一致。
     pub fn active_branch_list(&self) -> Option<&[Branch]> {
-        self.active_workdir
+        self.active_repo_workdir
             .as_ref()
             .and_then(|workdir| self.repo_by_workdir(workdir))
             .map(|repository| repository.snapshot.branch_list.as_slice())
@@ -550,7 +550,7 @@ impl GitStore {
     ///
     /// fetch/pull/push、提交、uncommit 与底部提交信息显示共用此选择（对齐 Zed：操作以 active 仓库为目标，空仓库也执行）。
     fn active_repository(&self) -> Option<&Repository> {
-        self.active_workdir
+        self.active_repo_workdir
             .as_ref()
             .and_then(|workdir| self.repo_by_workdir(workdir))
             .or_else(|| {
@@ -563,7 +563,7 @@ impl GitStore {
 
     /// 活动仓库的远程操作状态（可推送/可拉取判定依据）。
     pub fn remote_operation_state(&self) -> RemoteOperationState {
-        self.active_workdir
+        self.active_repo_workdir
             .as_ref()
             .and_then(|workdir| self.repo_by_workdir(workdir))
             .map(|repository| RemoteOperationState {
@@ -584,8 +584,8 @@ impl GitStore {
             return;
         };
         let workdir = repository.repository.working_directory().to_path_buf();
-        if self.active_workdir.as_deref() != Some(workdir.as_path()) {
-            self.active_workdir = Some(workdir);
+        if self.active_repo_workdir.as_deref() != Some(workdir.as_path()) {
+            self.active_repo_workdir = Some(workdir);
             cx.emit(GitStoreEvent::ActiveRepositoryChanged);
         }
     }
@@ -639,35 +639,31 @@ impl GitStore {
         let _ = self.job_sender.try_send(job);
     }
 
-    /// 当前在途任务名（状态栏展示）；无任务时 None。
-    pub fn active_task(&self) -> Option<Arc<str>> {
-        self.in_flight_task.clone()
+    /// 当前在途 job 展示名（状态栏指示器）；无任务时 None。
+    pub fn current_job(&self) -> Option<Arc<str>> {
+        self.in_flight.as_ref().map(|(_, name)| name.clone())
     }
 
-    /// 取消当前在途任务（状态栏右键触发）：排队中同 key 任务不再执行，执行中的任务结果被丢弃。
-    pub fn cancel_active_task(&mut self, cx: &mut Context<Self>) {
-        let Some(key) = self.in_flight_job_key.clone() else {
+    /// 取消当前在途 job（状态栏右键触发）：排队中同 key 任务不再执行，执行中的任务结果被丢弃。
+    pub fn cancel_current_job(&mut self, cx: &mut Context<Self>) {
+        let Some((key, _)) = self.in_flight.take() else {
             return;
         };
         self.cancelled_jobs.insert(key.clone());
         self.pending_jobs.remove(&key);
-        self.in_flight_job_key = None;
-        self.in_flight_task = None;
-        cx.emit(GitStoreEvent::Tasks);
+        cx.emit(GitStoreEvent::JobsUpdated);
     }
 
     /// worker 开始执行 job 前标记在途任务（状态栏显示入口）。
     fn set_in_flight(&mut self, job: &GitJob, cx: &mut Context<Self>) {
-        self.in_flight_job_key = Some(job.key());
-        self.in_flight_task = Some(job.task_name());
-        cx.emit(GitStoreEvent::Tasks);
+        self.in_flight = Some((job.key(), job.task_name()));
+        cx.emit(GitStoreEvent::JobsUpdated);
     }
 
     /// worker 结束一个 job 后清空在途标记（无论结果是否被取消丢弃）。
     fn clear_in_flight(&mut self, cx: &mut Context<Self>) {
-        self.in_flight_job_key = None;
-        self.in_flight_task = None;
-        cx.emit(GitStoreEvent::Tasks);
+        self.in_flight = None;
+        cx.emit(GitStoreEvent::JobsUpdated);
     }
 
     /// 消费取消标记：命中说明该 job 已被取消（排队中或执行中被取消），返回 true。
@@ -696,7 +692,8 @@ impl GitStore {
                 })
             }
             GitJob::RefreshHunks => {
-                // 按需 hunk 查询：只对「已跟踪且尚未查询」的路径发起 diff，untracked/忽略/已查询路径直接丢弃（untracked 永不查询 → 永不画 marker）。
+                // 只对已跟踪路径发起 diff，untracked/忽略直接丢弃（永不查询 → 永不画 marker）。
+                // 查询集由调度方维护：request_hunks 调用方已过滤未查询路径，状态刷新后全部刷新路径都必须重查（内容可能已变化）。
                 let paths = std::mem::take(&mut self.paths_needing_hunks);
                 let mut repositories = Vec::with_capacity(self.repositories.len());
                 let mut grouped_paths = vec![Vec::new(); self.repositories.len()];
@@ -710,9 +707,7 @@ impl GitStore {
                             .then(|| repo_relative_path(workdir, &path))
                             .flatten()?;
                         let entry = repository.snapshot.statuses_by_path.get(&relative)?;
-                        (matches!(entry.status, FileStatus::Tracked { .. })
-                            && entry.hunks.is_none())
-                        .then_some(relative)
+                        matches!(entry.status, FileStatus::Tracked { .. }).then_some(relative)
                     }));
                 }
                 Some(JobPreparation {
@@ -865,7 +860,7 @@ impl GitStore {
                 // 集合为空 → None。注意用 repositories 而非 new_work_dirs：BTreeSet 按字典序迭代，取不到发现顺序。
                 // emit 是 deferred（pending_effects），订阅方永远读到赋值后的完整状态，首次扫描 None → Some(第一个) 恰好触发一次。
                 let new_active = self
-                    .active_workdir
+                    .active_repo_workdir
                     .as_ref()
                     .filter(|workdir| new_work_dirs.contains(*workdir))
                     .cloned()
@@ -874,8 +869,8 @@ impl GitStore {
                             repository.repository.working_directory().to_path_buf()
                         })
                     });
-                if self.active_workdir != new_active {
-                    self.active_workdir = new_active;
+                if self.active_repo_workdir != new_active {
+                    self.active_repo_workdir = new_active;
                     cx.emit(GitStoreEvent::ActiveRepositoryChanged);
                 }
                 log::info!("git 状态已刷新：{} 个仓库", self.repositories.len());
@@ -1476,7 +1471,7 @@ mod tests {
             .expect("请求后应有 hunks");
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].range, 1..2);
-        assert_eq!(hunks[0].kind, zcv_buffer_diff::DiffHunkKind::Modified);
+        assert_eq!(hunks[0].kind, zcv_git::DiffHunkKind::Modified);
     }
 
     #[gpui::test]

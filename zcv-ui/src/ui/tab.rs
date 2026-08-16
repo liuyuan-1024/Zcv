@@ -7,17 +7,16 @@ use gpui::{
     AnyElement, App, Div, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
     Stateful, StatefulInteractiveElement, Window, div, prelude::*,
 };
-
 use zcv_theme::{color, space};
 
 /// 标签页组件。
 pub struct Tab {
-    pub div: Stateful<Div>,
-    pub selected: bool,
-    pub italic: bool,
-    pub start_slot: Option<AnyElement>,
-    pub end_slot: Option<AnyElement>,
-    pub children: Vec<AnyElement>,
+    div: Stateful<Div>,
+    selected: bool,
+    italic: bool,
+    start_slot: Option<AnyElement>,
+    end_slot: Option<AnyElement>,
+    children: Vec<AnyElement>,
 }
 
 impl Tab {

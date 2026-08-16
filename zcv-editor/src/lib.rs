@@ -12,5 +12,4 @@ mod view;
 mod workspace_item;
 
 pub use item_provider::init as init_item_providers;
-
 pub use view::{Editor, EditorEvent, SoftWrap};

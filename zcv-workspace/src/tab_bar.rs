@@ -3,7 +3,6 @@
 //! 负责渲染横向滚动标签区，接受 [`ScrollHandle`] 实现程序化滚动。
 
 use gpui::{AnyElement, Div, ScrollHandle, div, prelude::*};
-
 use zcv_theme::color;
 
 /// 标签栏容器，标签渲染由调用方提供子元素。

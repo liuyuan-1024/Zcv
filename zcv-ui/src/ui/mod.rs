@@ -1,4 +1,4 @@
-//! shell 共享基础设施。
+//! 设计系统原语模块。
 
 mod checkbox;
 mod glyph;

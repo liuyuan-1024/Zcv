@@ -12,14 +12,14 @@ use gpui::{
     Action, App, ClickEvent, Context, Corner, Entity, FocusHandle, Focusable, MouseButton,
     PathPromptOptions, Pixels, Render, Window, anchored, deferred, div, point, prelude::*, px,
 };
-
-use crate::recent_projects::{self, ProjectEntry};
 use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
 use zcv_keymap::KeyBindings;
 use zcv_picker::{Picker, PickerDelegate, picker_divider};
 use zcv_theme::{color, space, typography};
 use zcv_ui::Glyph;
 use zcv_ui::ListItem;
+
+use crate::recent_projects::{self, ProjectEntry};
 
 const PICKER_WIDTH: Pixels = px(360.0);
 

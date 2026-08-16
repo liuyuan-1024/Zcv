@@ -15,16 +15,15 @@ use gpui::{
     App, Context, Div, ElementId, Entity, FocusHandle, MouseButton, ScrollStrategy,
     UniformListScrollHandle, WeakEntity, Window, actions, div, prelude::*, uniform_list,
 };
-
-use crate::project_tree::OnOpenFile;
-use crate::workspace::{Panel, ToggleVersionControl};
 use zcv_editor::Editor;
 use zcv_git::{DiffStat, FileStatus, StatusCode};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space, typography};
 use zcv_ui::{Checkbox, Glyph, Scrollbar, tree};
+use zcv_workspace::{Panel, ToggleVersionControl};
 
 use crate::git_status::git_status_color;
+use crate::workspace::OnOpenFile;
 
 actions!(
     version_control,
@@ -122,8 +121,9 @@ fn insert_entry(
     diff_stat: DiffStat,
 ) {
     let absolute = workdir.join(relative);
+    // 树内路径键优先取项目根相对路径；仓库在项目根外时 strip_prefix 失败，退化为绝对路径。
+    let key_is_relative = absolute.strip_prefix(root).is_ok();
     let key = absolute.strip_prefix(root).unwrap_or(&absolute);
-    let key_is_relative = std::ptr::eq(key, absolute.strip_prefix(root).unwrap_or(&absolute));
     let mut current = nodes;
     let mut components = key.components().peekable();
     let mut prefix = PathBuf::new();
@@ -320,7 +320,7 @@ impl VersionControlPanel {
                     }
                 }
                 GitStoreEvent::ActiveRepositoryChanged => {}
-                GitStoreEvent::Tasks => {}
+                GitStoreEvent::JobsUpdated => {}
             }
         })
         .detach();

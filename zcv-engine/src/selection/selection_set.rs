@@ -6,9 +6,8 @@
 
 use std::sync::Arc;
 
-use crate::{ByteOffset, PositionMap, TextRange, position_map::Affinity};
-
 use super::Selection;
+use crate::{ByteOffset, PositionMap, TextRange, position_map::Affinity};
 
 /// 选区归一化时对相邻区间的处理策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

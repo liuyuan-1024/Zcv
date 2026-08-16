@@ -1,7 +1,8 @@
 use super::*;
-use crate::scrollbar::{SCROLLBAR_WIDTH, thumb_geometry};
 use gpui::{Bounds, Pixels, TestAppContext, VisualTestContext, point, size};
 use zcv_engine::{Buffer, BufferConfig, ByteOffset};
+
+use crate::scrollbar::{SCROLLBAR_WIDTH, thumb_geometry};
 
 pub(super) fn test_buffer(
     cx: &mut TestAppContext,

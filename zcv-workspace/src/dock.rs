@@ -14,14 +14,14 @@ use gpui::{
     Context, Entity, FocusHandle, Focusable, MouseButton, Pixels, Point, Render, Subscription,
     WeakEntity, Window, div, prelude::*, px,
 };
-
-use crate::pane::Pane;
-use crate::panel::PanelHandle;
 pub use zcv_actions::{
     ToggleDebug, ToggleDiagnostics, ToggleKeyboardShortcuts, ToggleLanguageServer, ToggleOutline,
     ToggleProjectSearch, ToggleProjectTree, ToggleTerminal, ToggleVersionControl,
 };
 use zcv_theme::{color, space};
+
+use crate::pane::Pane;
+use crate::panel::PanelHandle;
 
 // ═══ 类型定义 ═══════════════════════════════════════════════════
 

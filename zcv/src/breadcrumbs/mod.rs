@@ -5,10 +5,9 @@
 //! 订阅 item 的 `UpdateBreadcrumbs` 事件，路径变化时自动刷新。
 
 use gpui::{AnyElement, Context, EventEmitter, Render, Subscription, Window, div, prelude::*};
-
-use crate::workspace::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 use zcv_theme::{color, typography};
 use zcv_workspace::{ItemEvent, ItemHandle};
+use zcv_workspace::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 
 const MAX_SEGMENTS: usize = 12;
 
@@ -86,7 +85,7 @@ fn collapse_middle_segments(mut segments: Vec<gpui::SharedString>) -> Vec<gpui::
 }
 
 impl ToolbarItemView for Breadcrumbs {
-    fn set_active_item(
+    fn set_active_pane_item(
         &mut self,
         active_item: Option<&dyn ItemHandle>,
         _window: &mut Window,
@@ -162,7 +161,7 @@ mod tests {
         cx.add_window_view(|window, cx| {
             breadcrumbs.update(cx, |breadcrumbs, cx| {
                 let item: &dyn ItemHandle = &editor;
-                breadcrumbs.set_active_item(Some(item), window, cx);
+                breadcrumbs.set_active_pane_item(Some(item), window, cx);
             });
             editor.update(cx, |editor, cx| {
                 editor.set_file_path(

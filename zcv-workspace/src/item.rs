@@ -14,14 +14,7 @@ use zcv_engine::Buffer;
 use zcv_project::Project;
 
 use crate::preview::PreviewItemHandle;
-
-/// Toolbar 子项的布局位置。
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum ToolbarItemLocation {
-    Hidden,
-    PrimaryLeft,
-    PrimaryRight,
-}
+use crate::toolbar::ToolbarItemLocation;
 
 /// Item 向 Pane/Workspace 上报的通用事件，对齐 Zed `workspace::item::ItemEvent`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

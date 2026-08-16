@@ -2,8 +2,9 @@
 //!
 //! 本文件不实现移动扫描，只集中维护可配置的字符类别和边界规则。
 
-use crate::selection::MovementUnit;
 use unicode_width::UnicodeWidthChar;
+
+use crate::selection::MovementUnit;
 
 /// 零宽字符（组合音标、ZWJ、变体选择符等）判定。
 ///

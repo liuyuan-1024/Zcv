@@ -2,9 +2,8 @@
 //!
 //! 本文件只连接 BufferVersion 与存储快照，不参与事务提交、保存点策略或后台任务调度。
 
-use crate::{BufferVersion, Snapshot, storage::TextStorage};
-
 use super::Buffer;
+use crate::{BufferVersion, Snapshot, storage::TextStorage};
 
 impl Buffer {
     /// 创建绑定当前版本的不可变快照。

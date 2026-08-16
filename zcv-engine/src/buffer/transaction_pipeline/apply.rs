@@ -2,6 +2,8 @@
 //!
 //! 本文件守住失败原子性和版本推进边界；EditList 归一化、存储实现和 public 便利编辑入口不在这里定义。
 
+use super::prepared::PreparedTransaction;
+use crate::buffer::{Buffer, history::HistoryEntry};
 use crate::{
     BufferVersion, EngineError, EngineResult, LargeTransactionPolicy, TransactionOutcome,
     errors::{EditError, StorageError, TransactionError},
@@ -10,10 +12,6 @@ use crate::{
         ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionRecord, TransactionSource,
     },
 };
-
-use crate::buffer::{Buffer, history::HistoryEntry};
-
-use super::prepared::PreparedTransaction;
 
 /// 单个 `EditList` 内所有 `Edit::replacement` 的 UTF-8 字节和。
 ///

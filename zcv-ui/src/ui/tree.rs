@@ -3,9 +3,9 @@
 use std::path::Path;
 
 use gpui::{App, Pixels, div, prelude::*, px};
+use zcv_theme::{FileIcons, color, space, typography};
 
 use crate::ui::SvgIcon;
-use zcv_theme::{FileIcons, color, space, typography};
 
 /// 树行完整渲染：行骨架 + 缩进竖线 + 图标 + 行内容。
 pub fn render_row_base(
@@ -37,33 +37,6 @@ pub fn selection_border(cx: &App) -> gpui::Div {
 }
 
 // ── 私有辅助函数 ─────────────────────────────────────────────────────
-
-/// 树行布局度量。
-struct TreeMetrics {
-    row_height: gpui::Pixels,
-    indent: gpui::Pixels,
-    padding: gpui::Pixels,
-    icon_size: gpui::Pixels,
-}
-
-fn metrics() -> TreeMetrics {
-    TreeMetrics {
-        row_height: typography::ui_line(),
-        indent: typography::ui(),
-        padding: space::S6,
-        icon_size: typography::ui(),
-    }
-}
-
-impl TreeMetrics {
-    fn indent_left(&self, depth: usize) -> gpui::Pixels {
-        self.indent * (depth as f32) + self.padding
-    }
-
-    fn guide_x(&self, depth: usize) -> gpui::Pixels {
-        self.indent * (depth as f32) + self.icon_size / 2.0 + self.padding
-    }
-}
 
 /// 树行骨架：relative + flex-row + items_center + 缩进 + 字型。
 fn row_skeleton(depth: usize) -> gpui::Div {
@@ -114,4 +87,33 @@ fn icon(path: &Path, is_dir: bool, expanded: bool) -> impl IntoElement {
 /// 条目名称内容，尾部溢出截断。
 fn label(content: impl IntoElement) -> gpui::Div {
     div().flex_1().overflow_hidden().truncate().child(content)
+}
+
+// ── 内部类型 ─────────────────────────────────────────────────────────
+
+/// 树行布局度量。
+struct TreeMetrics {
+    row_height: gpui::Pixels,
+    indent: gpui::Pixels,
+    padding: gpui::Pixels,
+    icon_size: gpui::Pixels,
+}
+
+fn metrics() -> TreeMetrics {
+    TreeMetrics {
+        row_height: typography::ui_line(),
+        indent: typography::ui(),
+        padding: space::S6,
+        icon_size: typography::ui(),
+    }
+}
+
+impl TreeMetrics {
+    fn indent_left(&self, depth: usize) -> gpui::Pixels {
+        self.indent * (depth as f32) + self.padding
+    }
+
+    fn guide_x(&self, depth: usize) -> gpui::Pixels {
+        self.indent * (depth as f32) + self.icon_size / 2.0 + self.padding
+    }
 }

@@ -1,7 +1,8 @@
-//! 跨 crate 的 action 集中声明。
+//! 全局 action 集中声明。
 //!
-//! 对齐 Zed 的 `zed_actions`：所有被多个 crate 引用的 action 在此集中声明、零实现依赖，供编辑器、输入组件、选择器与工作区框架共用。
-//! 各命名空间与 keymap 保持一致，action 定义位置迁移不产生 keymap 改动。
+//! 对齐 Zed 的 `zed_actions`：全部 action 在此集中声明、零实现依赖，供各 crate 与 keymap 共用；
+//! 各命名空间与 keymap JSON 保持一致，action 定义位置迁移不产生 keymap 改动。
+//! （Zed 只集中跨 crate 的 action，其余定义在各自 crate；Zcv 单宿主简化，全部集中便于 keymap 统一引用。）
 
 use gpui::actions;
 

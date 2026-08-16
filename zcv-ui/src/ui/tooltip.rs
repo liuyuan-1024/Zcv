@@ -5,7 +5,7 @@
 //! 悬停延迟与触发由 gpui 的 `div.tooltip()` 机制承担，这里只负责气泡视觉与快捷键查询。
 
 use gpui::{AnyView, App, Context, Render, Window, div, prelude::*, rems};
-
+use zcv_keymap::KeyBindings;
 use zcv_theme::{color, space, typography};
 
 /// 构造提示气泡视图（label + 可选快捷键两段式，与 Glyph 原有提示一致）。
@@ -34,6 +34,17 @@ impl TooltipSpec {
     /// 设置快捷键显示文本。
     pub fn shortcut(mut self, shortcut: impl Into<String>) -> Self {
         self.shortcut = Some(shortcut.into());
+        self
+    }
+
+    /// 从当前 keymap 中查询 action 的快捷键并设为提示（Glyph/Checkbox 等共用）。
+    pub fn with_action(mut self, action: &dyn gpui::Action, cx: &App) -> Self {
+        if let Some(s) = cx
+            .try_global::<KeyBindings>()
+            .and_then(|kb| kb.display_shortcut(action.name()))
+        {
+            self.shortcut = Some(s);
+        }
         self
     }
 

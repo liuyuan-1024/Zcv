@@ -4,10 +4,10 @@
 //! 每个 item 自行订阅 Item 变化。
 
 use gpui::{AnyElement, App, Context, Div, Entity, Render, Subscription, Window, div, prelude::*};
+use zcv_theme::{color, space};
 
 use crate::ItemHandle;
 use crate::pane::Pane;
-use zcv_theme::{color, space};
 
 // ═══ StatusItemView trait ═══════════════════════════════════════════
 
@@ -87,21 +87,6 @@ impl StatusBar {
 
 // ═══ 渲染 ═════════════════════════════════════════════════════════
 
-fn bar_frame(cx: &App) -> Div {
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .w_full()
-        .px(space::S8)
-        .py(space::S6)
-        .gap(space::S6)
-        .bg(color::current(cx).status_bar_background)
-        .text_color(color::current(cx).text)
-        .border_t_1()
-        .border_color(color::current(cx).border_variant)
-}
-
 impl Render for StatusBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let left: Vec<&dyn StatusItemViewHandle> = self
@@ -119,6 +104,21 @@ impl Render for StatusBar {
             .child(region(left, true))
             .child(region(right, false))
     }
+}
+
+fn bar_frame(cx: &App) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .w_full()
+        .px(space::S8)
+        .py(space::S6)
+        .gap(space::S6)
+        .bg(color::current(cx).status_bar_background)
+        .text_color(color::current(cx).text)
+        .border_t_1()
+        .border_color(color::current(cx).border_variant)
 }
 
 /// 渲染一侧的 item 序列；无内容时 item 自己渲染空元素，分隔线由 item 自己绘制。

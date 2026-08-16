@@ -2,13 +2,12 @@
 //!
 //! 本文件只做防线判断并返回明确错误，不修正调用方输入，也不直接改变 Buffer 状态。
 
+use super::Buffer;
 use crate::{
     ByteOffset, CoordinateError, EditError, EngineResult, StorageError, TextRange,
     storage::{TextRead, TextStorage},
     transaction::EditList,
 };
-
-use super::Buffer;
 
 impl Buffer {
     pub(in crate::buffer) fn mark_clean_internal(&mut self) {

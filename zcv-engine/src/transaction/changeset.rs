@@ -2,13 +2,12 @@
 //!
 //! 它只能从 EditList 构造，不负责排序、重叠检测或 Buffer 版本推进。
 
+use super::{Edit, EditList};
 use crate::{
     EngineError, EngineResult,
     position_map::{OffsetShift, PositionMap},
     types::{ByteOffset, TextRange},
 };
-
-use super::{Edit, EditList};
 
 /// 事务变更集合。
 ///

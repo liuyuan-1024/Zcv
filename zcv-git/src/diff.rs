@@ -12,6 +12,9 @@ use crate::status::path_from_bytes;
 /// 容错风格对齐 `parse_numstat`：格式异常的行跳过而非报错。
 /// 只依赖 header 中的起止与计数，body 行（含 `\ No newline at end of file`）不参与统计；
 /// `Binary files ... differ` 与空输出均返回空。
+///
+/// 生产路径使用多段解析的 [`parse_diff_hunks_per_path`]（带路径核对），本函数仅测试用。
+#[cfg(test)]
 pub fn parse_diff_hunks(output: &[u8]) -> Vec<DiffHunk> {
     let mut hunks = Vec::new();
     for line in output.split(|byte| *byte == b'\n') {

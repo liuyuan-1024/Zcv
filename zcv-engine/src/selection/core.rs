@@ -2,9 +2,8 @@
 //!
 //! 本文件只维护单个 selection 的方向、范围和映射；排序、合并和 primary 归属在 SelectionSet。
 
-use crate::{ByteOffset, PositionMap, TextRange};
-
 use super::Cursor;
+use crate::{ByteOffset, PositionMap, TextRange};
 
 /// 一个选区，使用 anchor/head 模型。
 ///

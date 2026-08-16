@@ -1,10 +1,11 @@
-use super::common::{scrollbar_geometry, scrolling_text, test_buffer};
-use super::*;
-use crate::scroll::ScrollbarThumbState;
 use gpui::{
     Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent, TestAppContext, point, px,
 };
 use zcv_engine::{ByteOffset, SelectionSet};
+
+use super::common::{scrollbar_geometry, scrolling_text, test_buffer};
+use super::*;
+use crate::scroll::ScrollbarThumbState;
 
 #[gpui::test]
 fn moving_caret_beyond_viewport_scrolls_it_back_into_view(cx: &mut TestAppContext) {

@@ -6,20 +6,18 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::preview::PreviewDocument;
 use gpui::{
     AnyElement, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Render, ScrollHandle,
     Window, div, prelude::*, px,
 };
-pub use zcv_actions::{CloseTab, NextTab, PrevTab, ToggleFileSearch, TogglePreview};
+use zcv_actions::{CloseTab, NextTab, PrevTab, TogglePreview};
+use zcv_theme::{FileIcons, color, typography};
+use zcv_ui::{Glyph, SvgIcon, Tab};
 
+use crate::preview::{PreviewDocument, provider_for};
 use crate::tab_bar::TabBar;
 use crate::toolbar::Toolbar;
 use crate::{ItemEvent, ItemHandle};
-use zcv_theme::{FileIcons, color, typography};
-use zcv_ui::Glyph;
-use zcv_ui::SvgIcon;
-use zcv_ui::Tab;
 
 // ═══ Pane 事件 ════════════════════════════════════════════════════════
 
@@ -77,7 +75,7 @@ impl Render for DraggedTab {
     }
 }
 
-// ═══ 1. Struct + constructor ═══════════════════════════════════════
+// ═══ Pane 实体 ══════════════════════════════════════════════════
 
 /// 单个编辑区 Pane。
 pub struct Pane {
@@ -221,7 +219,7 @@ impl Pane {
         // 单击打开支持预览的格式时，用预览视图替换源码 Item 的展示。
         if allow_transient
             && let Some(path) = item.file_path(cx)
-            && let Some(provider) = crate::provider_for(&path, cx)
+            && let Some(provider) = provider_for(&path, cx)
         {
             let document = PreviewDocument {
                 path,
@@ -264,7 +262,7 @@ impl Pane {
                 .unwrap_or_else(|| active_item.boxed_clone())
         } else {
             let path = active_item.file_path(cx)?;
-            let provider = crate::provider_for(&path, cx)?;
+            let provider = provider_for(&path, cx)?;
             provider.create(
                 PreviewDocument {
                     path,
@@ -429,7 +427,7 @@ impl Pane {
     fn update_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let active_item = self.active_item();
         self.toolbar.update(cx, |toolbar, cx| {
-            toolbar.set_active_item(active_item, window, cx);
+            toolbar.set_active_pane_item(active_item, window, cx);
         });
     }
 }
@@ -471,7 +469,7 @@ impl Pane {
     }
 }
 
-// ═══ 2. Action handler ═════════════════════════════════════════════
+// ═══ Action handler ═════════════════════════════════════════════
 
 impl Pane {
     fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -507,21 +505,9 @@ impl Pane {
     ) {
         self.toggle_preview(window, cx);
     }
-
-    fn handle_toggle_file_search(
-        &mut self,
-        _: &ToggleFileSearch,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-        let Some(_item) = self.active_item() else {
-            return;
-        };
-        // 文件内搜索 UI 尚未实现；后续从这里向活动 Item 部署搜索栏。
-    }
 }
 
-// ═══ 3. Render ═════════════════════════════════════════════════════
+// ═══ Render ═════════════════════════════════════════════════════
 
 impl Render for Pane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -543,7 +529,6 @@ impl Render for Pane {
             .on_action(cx.listener(Self::handle_next_tab))
             .on_action(cx.listener(Self::handle_prev_tab))
             .on_action(cx.listener(Self::handle_toggle_preview))
-            .on_action(cx.listener(Self::handle_toggle_file_search))
             .child(render_tab_bar(
                 &self.tabs,
                 active_item_id,
@@ -557,7 +542,7 @@ impl Render for Pane {
     }
 }
 
-// ═══ 4. 私有渲染辅助函数 ═══════════════════════════════════════
+// ═══ 私有渲染辅助函数 ═════════════════════════════════════════
 
 // ── Tab Bar ──────────────────────────────────────────────────────────
 

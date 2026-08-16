@@ -5,12 +5,22 @@
 use gpui::{
     AnyView, App, Context, Entity, EntityId, EventEmitter, Render, Window, div, prelude::*,
 };
-
-use crate::pane::{ToggleFileSearch, TogglePreview};
-use crate::preview::provider_for;
-use crate::{ItemHandle, ToolbarItemLocation};
+use zcv_actions::{ToggleFileSearch, TogglePreview};
 use zcv_theme::{color, space};
 use zcv_ui::Glyph;
+
+use crate::ItemHandle;
+use crate::preview::provider_for;
+
+// ═══ ToolbarItemLocation ═════════════════════════════════════════════
+
+/// Toolbar 子项的布局位置。
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ToolbarItemLocation {
+    Hidden,
+    PrimaryLeft,
+    PrimaryRight,
+}
 
 // ═══ ToolbarItemEvent ════════════════════════════════════════════════
 
@@ -26,7 +36,7 @@ pub enum ToolbarItemEvent {
 /// Toolbar 子项需实现的接口。
 pub trait ToolbarItemView: Render + EventEmitter<ToolbarItemEvent> {
     /// 当前激活的 item 切换时调用，返回此子项应显示的位置。
-    fn set_active_item(
+    fn set_active_pane_item(
         &mut self,
         active_item: Option<&dyn ItemHandle>,
         window: &mut Window,
@@ -40,7 +50,7 @@ pub trait ToolbarItemView: Render + EventEmitter<ToolbarItemEvent> {
 pub trait ToolbarItemViewHandle: Send {
     fn id(&self) -> EntityId;
     fn to_any(&self) -> AnyView;
-    fn set_active_item(
+    fn set_active_pane_item(
         &self,
         active_item: Option<&dyn ItemHandle>,
         window: &mut Window,
@@ -58,13 +68,15 @@ impl<T: ToolbarItemView + 'static> ToolbarItemViewHandle for Entity<T> {
         self.clone().into()
     }
 
-    fn set_active_item(
+    fn set_active_pane_item(
         &self,
         active_item: Option<&dyn ItemHandle>,
         window: &mut Window,
         cx: &mut App,
     ) -> ToolbarItemLocation {
-        self.update(cx, |this, cx| this.set_active_item(active_item, window, cx))
+        self.update(cx, |this, cx| {
+            this.set_active_pane_item(active_item, window, cx)
+        })
     }
 }
 
@@ -98,7 +110,7 @@ impl Toolbar {
     where
         T: 'static + ToolbarItemView,
     {
-        let location = item.set_active_item(self.active_item.as_deref(), window, cx);
+        let location = item.set_active_pane_item(self.active_item.as_deref(), window, cx);
         cx.subscribe(&item, |this, item, event, cx| {
             if let Some((_, current_location)) = this
                 .items
@@ -121,7 +133,7 @@ impl Toolbar {
     }
 
     /// 设置当前激活的 item（Pane 切换 tab 时调用）。
-    pub fn set_active_item(
+    pub fn set_active_pane_item(
         &mut self,
         item: Option<&dyn ItemHandle>,
         window: &mut Window,
@@ -130,7 +142,7 @@ impl Toolbar {
         self.active_item = item.map(|item| item.boxed_clone());
 
         for (toolbar_item, current_location) in self.items.iter_mut() {
-            let new_location = toolbar_item.set_active_item(item, window, cx);
+            let new_location = toolbar_item.set_active_pane_item(item, window, cx);
             if new_location != *current_location {
                 *current_location = new_location;
                 cx.notify();
@@ -228,7 +240,7 @@ impl Default for FileToolbarControls {
 impl EventEmitter<ToolbarItemEvent> for FileToolbarControls {}
 
 impl ToolbarItemView for FileToolbarControls {
-    fn set_active_item(
+    fn set_active_pane_item(
         &mut self,
         active_item: Option<&dyn ItemHandle>,
         _window: &mut Window,

@@ -4,8 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use zcv_buffer_diff::DiffHunk;
-use zcv_git::{Branch, DiffStat, GitRepository};
+use zcv_git::{Branch, DiffHunk, DiffStat, GitRepository};
 
 use super::{GitJob, GitOperationKind, RepositorySnapshot, StatusEntry};
 use crate::worktree::discover_repositories;
@@ -43,7 +42,6 @@ pub(super) struct RefreshData {
     pub(super) statuses: zcv_git::GitStatus,
     pub(super) staged: HashMap<PathBuf, DiffStat>,
     pub(super) unstaged: HashMap<PathBuf, DiffStat>,
-    pub(super) hunks: Vec<(PathBuf, Vec<DiffHunk>)>,
 }
 
 /// 按需 hunk 查询结果：仓库索引 → 路径 → hunks。
@@ -319,7 +317,6 @@ fn refresh_repository_data_sync(
         statuses,
         staged,
         unstaged,
-        hunks: Vec::new(),
     }
 }
 
@@ -340,6 +337,8 @@ pub(super) fn merge_refresh(prev: &mut RepositorySnapshot, data: RefreshData) ->
     let mut statuses_changed = false;
 
     // 移除旧条目：BTreeMap 有序，以 path 为前缀的键连续排列在 range(path..) 中。
+    // 移除前保留旧 hunks：行级 diff 与状态刷新解耦，内容未变的路径不必清空缓存，否则已查询路径会在每次保存/fs 事件后被重复查询（diff marker 闪失）。
+    let mut old_hunks: HashMap<PathBuf, Arc<[DiffHunk]>> = HashMap::new();
     for path in &data.paths {
         let mut to_remove = Vec::new();
         for (key, _) in prev.statuses_by_path.range(path.clone()..) {
@@ -350,18 +349,20 @@ pub(super) fn merge_refresh(prev: &mut RepositorySnapshot, data: RefreshData) ->
             }
         }
         for key in to_remove {
-            statuses_changed |= prev.statuses_by_path.remove(&key).is_some();
+            let removed = prev.statuses_by_path.remove(&key);
+            if let Some(entry) = &removed
+                && let Some(hunks) = entry.hunks.clone()
+            {
+                old_hunks.insert(key.clone(), hunks);
+            }
+            statuses_changed |= removed.is_some();
         }
     }
 
     for (path, status) in data.statuses.statuses {
         let staged_diff_stat = data.staged.get(&path).copied().unwrap_or_default();
         let unstaged_diff_stat = data.unstaged.get(&path).copied().unwrap_or_default();
-        let hunks = data
-            .hunks
-            .iter()
-            .find(|(hunk_path, _)| hunk_path == &path)
-            .map(|(_, hunks)| Arc::from(hunks.as_slice()));
+        let hunks = old_hunks.get(&path).cloned();
         let entry = StatusEntry {
             status,
             diff_stat: add_diff_stats(staged_diff_stat, unstaged_diff_stat),
@@ -480,7 +481,6 @@ mod tests {
             },
             staged: HashMap::new(),
             unstaged: HashMap::new(),
-            hunks: Vec::new(),
         };
 
         let mut prev = prev;
@@ -490,6 +490,67 @@ mod tests {
         assert!(!prev.statuses_by_path.contains_key(Path::new("a.txt")));
         assert!(!prev.statuses_by_path.contains_key(Path::new("sub/b.txt")));
         assert!(prev.statuses_by_path.contains_key(Path::new("sub/c.txt")));
+    }
+
+    #[test]
+    fn merge_refresh_keeps_existing_hunks() {
+        let hunk: Arc<[zcv_git::DiffHunk]> = Arc::from([zcv_git::DiffHunk {
+            range: 0..2,
+            old_range: 0..2,
+            kind: zcv_git::DiffHunkKind::Modified,
+        }]);
+        let mut prev = RepositorySnapshot {
+            branch: None,
+            head: None,
+            last_commit_message: None,
+            has_remote: false,
+            ahead: 0,
+            behind: 0,
+            branch_list: Vec::new(),
+            statuses_by_path: BTreeMap::from([(
+                PathBuf::from("a.txt"),
+                StatusEntry {
+                    status: FileStatus::Tracked {
+                        index_status: zcv_git::StatusCode::default(),
+                        worktree_status: zcv_git::StatusCode::default(),
+                    },
+                    diff_stat: DiffStat::default(),
+                    staged_diff_stat: DiffStat::default(),
+                    unstaged_diff_stat: DiffStat::default(),
+                    hunks: Some(hunk.clone()),
+                },
+            )]),
+        };
+        let data = RefreshData {
+            paths: vec![PathBuf::from("a.txt")],
+            head_queried: false,
+            branch: None,
+            head: None,
+            last_commit_message: None,
+            has_remote: false,
+            ahead: 0,
+            behind: 0,
+            branches: Vec::new(),
+            statuses: zcv_git::GitStatus {
+                statuses: vec![(
+                    PathBuf::from("a.txt"),
+                    FileStatus::Tracked {
+                        index_status: zcv_git::StatusCode::default(),
+                        worktree_status: zcv_git::StatusCode::default(),
+                    },
+                )],
+                branch: None,
+            },
+            staged: HashMap::new(),
+            unstaged: HashMap::new(),
+        };
+
+        merge_refresh(&mut prev, data);
+        // 状态刷新不清空已查询的 hunks：内容未变的路径保留缓存，避免重复查询。
+        assert_eq!(
+            prev.statuses_by_path[Path::new("a.txt")].hunks.as_deref(),
+            Some(&*hunk)
+        );
     }
 
     #[test]
@@ -517,7 +578,6 @@ mod tests {
             statuses: zcv_git::GitStatus::default(),
             staged: HashMap::new(),
             unstaged: HashMap::new(),
-            hunks: Vec::new(),
         };
 
         let mut prev = prev;
@@ -557,7 +617,6 @@ mod tests {
             statuses: zcv_git::GitStatus::default(),
             staged: HashMap::new(),
             unstaged: HashMap::new(),
-            hunks: Vec::new(),
         };
 
         let (statuses_changed, head_changed) = merge_refresh(&mut prev, data);
@@ -610,7 +669,6 @@ mod tests {
             statuses: zcv_git::GitStatus::default(),
             staged: HashMap::new(),
             unstaged: HashMap::new(),
-            hunks: Vec::new(),
         };
 
         let (statuses_changed, head_changed) = merge_refresh(&mut prev, data);

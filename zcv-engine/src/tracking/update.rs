@@ -2,9 +2,8 @@
 //!
 //! Update 类型保留最后合法位置，方便宿主在失效时做 UI 清理或诊断记录。
 
-use crate::types::{BufferVersion, TextRange};
-
 use super::{Anchor, Mark, TrackedRange};
+use crate::types::{BufferVersion, TextRange};
 
 /// Anchor 通过一次文本变更后的更新结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

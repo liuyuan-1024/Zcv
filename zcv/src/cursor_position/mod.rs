@@ -1,13 +1,12 @@
 //! CursorPosition —— 底栏光标位置显示。
 //!
-//! 实现 StatusItemView，在 set_active_editor 中订阅 Editor 变化，读取 cursor_text 并更新显示。
+//! 实现 StatusItemView，在 set_active_pane_item 中订阅 Editor 变化，读取 cursor_text 并更新显示。
 
 use gpui::{Context, Render, Subscription, Window, prelude::*};
-
-use crate::workspace::StatusItemView;
 use zcv_editor::Editor;
 use zcv_ui::Glyph;
 use zcv_workspace::ItemHandle;
+use zcv_workspace::StatusItemView;
 
 pub(crate) struct CursorPosition {
     cursor_text: String,

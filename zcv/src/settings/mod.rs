@@ -1,3 +1,8 @@
+//! 设置系统：用户设置文件的解析、合并与变更监听。
+//!
+//! 用户设置 JSON 经 fs watcher 监听，变更防抖重载后写入 [`SettingsStore`] global；
+//! 默认值与主题/换行等应用设置由本模块统一下发。
+
 use std::borrow::Cow;
 use std::fs;
 use std::path::Path;

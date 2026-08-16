@@ -3,9 +3,8 @@
 //! 本文件绑定 BufferConfig 并处理 CRLF、grapheme 等策略，不直接修改文本或历史。
 //! 坐标方法由 [`crate::storage::text_coordinate_gateway`] 宏统一生成，与 `Snapshot` 共用一份实现。
 
-use crate::{CharOffset, storage::TextRead, storage::text_coordinate_gateway};
-
 use super::Buffer;
+use crate::{CharOffset, storage::TextRead, storage::text_coordinate_gateway};
 
 impl Buffer {
     text_coordinate_gateway!();

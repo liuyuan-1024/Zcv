@@ -5,7 +5,6 @@ mod renderer;
 mod view;
 
 use gpui::App;
-
 use provider::SvgPreviewProvider;
 
 /// 注册 SVG Preview Provider。可重复调用。

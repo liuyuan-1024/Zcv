@@ -320,6 +320,7 @@ impl VersionControlPanel {
                     }
                 }
                 GitStoreEvent::ActiveRepositoryChanged => {}
+                GitStoreEvent::Tasks => {}
             }
         })
         .detach();

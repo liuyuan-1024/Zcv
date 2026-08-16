@@ -79,24 +79,29 @@ impl Render for PanelButtons {
             })
             .collect();
 
+        // 分隔线由按钮组自己绘制，跟随自身可见性，不存在悬空线：
+        // 左侧面板按钮组的分隔线画在按钮组之后；
+        // 右侧面板按钮组的分隔线画在按钮组之前，承担与底栏按钮组之间的分隔；
+        // 底栏按钮组不画线——它在右侧区域中部，画前导线时一旦左侧状态项隐藏（如未打开文件）就会悬空。
         let divider = div()
             .w(gpui::px(1.0))
             .h_full()
             .bg(color::current(cx).border_variant);
-
+        let content = div().flex().items_center().gap(space::S6).children(buttons);
         match area {
             DockPosition::Left => div()
                 .flex()
                 .items_center()
-                .gap(space::S6)
-                .children(buttons)
+                .gap(space::S8)
+                .child(content)
                 .child(divider),
-            DockPosition::Right | DockPosition::Bottom => div()
+            DockPosition::Right => div()
                 .flex()
                 .items_center()
-                .gap(space::S6)
+                .gap(space::S8)
                 .child(divider)
-                .children(buttons),
+                .child(content),
+            DockPosition::Bottom => content,
         }
     }
 }

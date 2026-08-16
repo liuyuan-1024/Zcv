@@ -108,15 +108,19 @@ pub mod typography {
         EDITOR_FONT_SIZE.load(Ordering::Relaxed) as f32
     }
 
+    /// UI 字体：gpui 系统字体（比例，界面文案更圆润），非 ASCII 回退到项目字体资源。
     pub fn ui_font() -> Font {
-        mono_font()
+        let mut font = font(".SystemUIFont");
+        font.fallbacks = Some(cjk_fallback());
+        font
     }
 
+    /// 编辑器字体：等宽（代码缩进/列对齐依赖等宽），含 CJK 回退。
     pub fn editor_font() -> Font {
         mono_font()
     }
 
-    /// 编辑器与 UI 共用同一等宽字体（含 CJK 回退）。
+    /// 编辑器等宽字体（含 CJK 回退）。
     fn mono_font() -> Font {
         let mut font = font("JetBrains Mono");
         font.fallbacks = Some(cjk_fallback());

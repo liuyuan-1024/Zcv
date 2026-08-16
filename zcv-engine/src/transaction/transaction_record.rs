@@ -3,12 +3,11 @@
 //! `TransactionRecord` 不是事务管线的入口；它只是 `apply_transaction` 成功后产生的可重放事实。
 //! 重建 `Transaction` 时必然合法（已通过事务管线一次），但回放仍然走标准 `apply_transaction`，不绕过任何边界校验。
 
+use super::{EditList, Transaction, TransactionMergePolicy, TransactionMetadata};
 use crate::{
     EngineResult,
     types::{BufferVersion, TransactionId},
 };
-
-use super::{EditList, Transaction, TransactionMergePolicy, TransactionMetadata};
 
 /// 一次成功提交的事务事实，包含 forward edits、inverse edits 与 metadata。
 #[derive(Debug, Clone, PartialEq, Eq)]

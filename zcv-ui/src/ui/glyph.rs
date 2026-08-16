@@ -8,10 +8,9 @@ use std::rc::Rc;
 use gpui::{
     Action, App, ClickEvent, Component, ElementId, IntoElement, RenderOnce, Window, div, prelude::*,
 };
+use zcv_theme::{color, space, typography};
 
 use crate::ui::{SvgIcon, TooltipSpec};
-use zcv_keymap::KeyBindings;
-use zcv_theme::{color, space, typography};
 
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -75,12 +74,7 @@ impl Glyph {
 
     /// 从当前 keymap 中获取 action 对应的快捷键并设为提示。
     pub fn shortcut(mut self, action: &dyn Action, cx: &App) -> Self {
-        if let Some(s) = cx
-            .try_global::<KeyBindings>()
-            .and_then(|kb| kb.display_shortcut(action.name()))
-        {
-            self.tooltip = self.tooltip.shortcut(s);
-        }
+        self.tooltip = self.tooltip.with_action(action, cx);
         self
     }
 

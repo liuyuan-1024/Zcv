@@ -18,13 +18,6 @@ mod line_stream;
 mod tab_map;
 mod wrap_map;
 
-use gpui::HighlightStyle;
-use zcv_engine::{
-    ByteOffset, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch, TextRange,
-};
-use zcv_language::{HighlightSpan, SyntaxSnapshot};
-use zcv_theme::syntax;
-
 pub(crate) use chunk::{
     LineStyles, chunks_to_runs, synthesize_folded_line_chunks, synthesize_line_chunks,
 };
@@ -34,6 +27,7 @@ use error::DisplayMapResult;
 pub(crate) use fold_map::ProjectedPoint;
 use fold_map::{ApplyOutcome, FoldMap, FoldSnapshot, LogicalProjection};
 pub(crate) use fold_map::{FoldRowSegment, ProjectedLineIndex, ProjectedRange};
+use gpui::HighlightStyle;
 pub(crate) use inlay_map::Inlay;
 use inlay_map::InlayMap;
 use line_stream::LineStream;
@@ -42,6 +36,11 @@ use tab_map::TabMap;
 pub(crate) use tab_map::byte_for_display_column;
 use wrap_map::{WrapMap, WrapSnapshot};
 pub(crate) use wrap_map::{WrapViewportRowKind, WrapViewportSlice};
+use zcv_engine::{
+    ByteOffset, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch, TextRange,
+};
+use zcv_language::{HighlightSpan, SyntaxSnapshot};
+use zcv_theme::syntax;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub(crate) struct BufferPoint {

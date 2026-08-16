@@ -2,7 +2,6 @@
 
 use gpui::{Pixels, Window, div, prelude::*, px, rgb, svg};
 pub use zcv_actions::{MinimizeWindow, QuitWindow, ToggleMaximizeWindow};
-
 use zcv_theme::{color, space};
 
 const PIP_GROUP: &str = "window-controls.pips";

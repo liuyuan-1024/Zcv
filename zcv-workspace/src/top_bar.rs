@@ -1,15 +1,16 @@
 //! TopBar —— 窗口级顶部外壳。
 
 use gpui::{AnyElement, Div, Entity, Window, div, prelude::*};
-
-use crate::branch_picker::{BranchPicker, OnSelectBranch};
-use crate::render_window_controls;
-use crate::{OnProjectSelected, ProjectPicker};
 use zcv_actions::{GitFetch, GitPull, GitPush, OpenSettings};
 use zcv_git::Branch;
 use zcv_project::RemoteOperationState;
 use zcv_theme::{color, space};
 use zcv_ui::Glyph;
+
+use crate::OnProjectSelected;
+use crate::branch_picker::{BranchPicker, OnBranchSelected};
+use crate::project_picker::ProjectPicker;
+use crate::window_controls::render as render_window_controls;
 
 pub struct TopBar {
     pub project_picker: Entity<ProjectPicker>,
@@ -24,7 +25,7 @@ pub struct TopBar {
 impl TopBar {
     pub fn new(
         on_selected: OnProjectSelected,
-        on_branch: OnSelectBranch,
+        on_branch: OnBranchSelected,
         cx: &mut gpui::Context<Self>,
     ) -> Self {
         let project_picker = cx.new(|cx| ProjectPicker::new(on_selected, cx));
@@ -57,21 +58,6 @@ impl TopBar {
     }
 }
 
-fn bar_frame(cx: &gpui::App) -> Div {
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .w_full()
-        .px(space::S8)
-        .py(space::S6)
-        .gap(space::S6)
-        .bg(color::current(cx).title_bar_background)
-        .text_color(color::current(cx).text)
-        .border_b_1()
-        .border_color(color::current(cx).border_variant)
-}
-
 impl gpui::Render for TopBar {
     fn render(
         &mut self,
@@ -91,6 +77,21 @@ impl gpui::Render for TopBar {
             .child(drag_spacer())
             .child(cluster(trailing_slots(cx)))
     }
+}
+
+fn bar_frame(cx: &gpui::App) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .w_full()
+        .px(space::S8)
+        .py(space::S6)
+        .gap(space::S6)
+        .bg(color::current(cx).title_bar_background)
+        .text_color(color::current(cx).text)
+        .border_b_1()
+        .border_color(color::current(cx).border_variant)
 }
 
 fn cluster(items: Vec<AnyElement>) -> Div {

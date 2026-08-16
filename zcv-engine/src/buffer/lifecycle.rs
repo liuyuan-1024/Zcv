@@ -7,14 +7,13 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use super::{Buffer, history};
 use crate::{
     BufferConfig, BufferId, BufferLoadError, BufferOrigin, BufferState, BufferVersion,
     EngineResult, LoadedTextInfo, TransactionId,
     storage::{RopeyStorage, TextRead, TextStorage},
     text_loading::streaming_decoder::{StreamDecodeError, decode_stream},
 };
-
-use super::{Buffer, history};
 
 static NEXT_BUFFER_ID: AtomicU64 = AtomicU64::new(1);
 

@@ -1,8 +1,9 @@
 //! git 输出解析：`git status --porcelain=v1` 与 `git diff --numstat`。
 
-use anyhow::{Context as _, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+use anyhow::{Context as _, Result};
 
 /// 单项的索引（index）/工作区（worktree）状态码，对应 porcelain 输出中的单个字符。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

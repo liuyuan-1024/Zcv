@@ -24,6 +24,7 @@ use zcv_engine::{
     TextSubscription, TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 use zcv_language::{BracketPair, FoldRange, LanguageBuffer, SyntaxSnapshot};
+use zcv_theme::{color, typography};
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{
@@ -32,7 +33,6 @@ use super::display_map::{
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
 use super::selection::{EditOutcome, EditorSelections, SelectionHistory, replace_selections};
-use zcv_theme::{color, typography};
 
 /// Editor 自身的领域事件。
 #[derive(Clone, Debug, PartialEq, Eq)]

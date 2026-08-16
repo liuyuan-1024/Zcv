@@ -3,17 +3,16 @@
 //! TrackedRange 只表达区间数学和版本推进策略，不承载 diagnostics、fold、
 //! 搜索结果等业务含义。
 
+use super::{
+    Anchor, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdate,
+    TrackedRangeUpdatePolicy,
+};
 use crate::{
     EngineResult,
     errors::AnchorError,
     position_map::{MappingResult, PositionMap, Stickiness},
     transaction::DeltaEvent,
     types::{BufferVersion, TextRange},
-};
-
-use super::{
-    Anchor, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdate,
-    TrackedRangeUpdatePolicy,
 };
 
 /// 可跟随文本变化的区间。

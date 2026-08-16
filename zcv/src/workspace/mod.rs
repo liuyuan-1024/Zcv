@@ -10,16 +10,17 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, Context, Entity, TitlebarOptions, Window, WindowBounds, WindowOptions, point,
-    prelude::*, px, size,
+    App, Bounds, Context, Entity, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
+    point, prelude::*, px, size,
 };
 use zcv_actions::{SelectGitBranch, ToggleProjectPicker};
 use zcv_editor::{Editor, SoftWrap};
 use zcv_project::Project;
 use zcv_theme::typography;
 use zcv_workspace::{
-    ActivityIndicator, Dock, DockPosition, FileToolbarControls, GitBranchAction, OnProjectSelected,
-    OnSelectBranch, Pane, PaneEvent, PanelButtons, PanelHandle, TopBar, Workspace, add_to_recent,
+    ActivityIndicator, Dock, DockPosition, FileToolbarControls, GitBranchAction, OnBranchSelected,
+    OnProjectSelected, Pane, PaneEvent, Panel, PanelButtons, PanelHandle, TopBar, Workspace,
+    add_to_recent,
 };
 
 use self::placeholder_panels::{DebugPanel, KeyboardShortcutsPanel, OutlinePanel, TerminalPanel};
@@ -29,15 +30,37 @@ use crate::cursor_position::CursorPosition;
 use crate::diagnostics::DiagnosticsButton;
 use crate::language_tools::LspButton;
 use crate::project_search::ProjectSearchButton;
-use crate::project_tree::{OnCreate, OnOpenFile, OnRename, OnTrash, ProjectTree};
+use crate::project_tree::ProjectTreePanel;
 use crate::settings::SettingsStore;
 use crate::version_control::VersionControlPanel;
 
-pub(crate) use zcv_workspace::{
-    Panel, StatusItemView, ToggleDiagnostics, ToggleLanguageServer, ToggleProjectSearch,
-    ToggleProjectTree, ToggleVersionControl, ToolbarItemEvent, ToolbarItemLocation,
-    ToolbarItemView,
-};
+/// 打开文件回调：面板请求 Workspace 打开路径（弱引用防循环持有）。
+pub(crate) type OnOpenFile = Rc<dyn Fn(PathBuf, bool, &mut Window, &mut gpui::App)>;
+
+/// 重命名文件或目录回调。
+pub(crate) type OnRename = Rc<dyn Fn(PathBuf, PathBuf, &mut gpui::App) -> anyhow::Result<()>>;
+
+/// 新建文件或目录回调。
+pub(crate) type OnCreate = Rc<dyn Fn(PathBuf, bool, &mut gpui::App) -> anyhow::Result<()>>;
+
+/// 将文件或目录移到系统废纸篓回调。
+///
+/// 带 `Window`：删除文件后需要关闭打开它的 tab，工具栏更新需要 window。
+pub(crate) type OnTrash = Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App) -> anyhow::Result<()>>;
+
+/// 构造打开文件回调（两个面板共用同一契约）。
+fn on_open_file_callback(weak: &WeakEntity<Workspace>) -> OnOpenFile {
+    let weak = weak.clone();
+    Rc::new(
+        move |path: PathBuf, focus_opened_item: bool, window: &mut Window, cx: &mut gpui::App| {
+            if let Some(ws) = weak.upgrade() {
+                ws.update(cx, |ws, cx| {
+                    ws.open_path(path, focus_opened_item, window, cx);
+                });
+            }
+        },
+    )
+}
 
 /// 以类型擦除句柄注册面板。
 fn register_panel<P: Panel>(
@@ -107,7 +130,7 @@ fn initialize_workspace(
         window.remove_window();
     });
     let weak_branch = weak_self.clone();
-    let on_branch: OnSelectBranch = Rc::new(move |action, _window, app| {
+    let on_branch: OnBranchSelected = Rc::new(move |action, _window, app| {
         if let Some(ws) = weak_branch.upgrade() {
             ws.update(app, |workspace, cx| {
                 let store = workspace.project().read(cx).git_store();
@@ -153,22 +176,9 @@ fn initialize_workspace(
 
     let project = workspace.project().clone();
 
-    let project_tree: Entity<ProjectTree> = cx.new(|cx| {
-        let mut tree = ProjectTree::new(root.clone(), project.clone(), cx);
-        let weak_open = weak_self.clone();
-        let on_open_file: OnOpenFile = Rc::new(
-            move |path: PathBuf,
-                  focus_opened_item: bool,
-                  window: &mut Window,
-                  cx: &mut gpui::App| {
-                if let Some(ws) = weak_open.upgrade() {
-                    ws.update(cx, |ws, cx| {
-                        ws.open_path(path, focus_opened_item, window, cx);
-                    });
-                }
-            },
-        );
-        tree.set_on_open_file(on_open_file);
+    let project_tree: Entity<ProjectTreePanel> = cx.new(|cx| {
+        let mut tree = ProjectTreePanel::new(root.clone(), project.clone(), cx);
+        tree.set_on_open_file(on_open_file_callback(&weak_self));
         let weak_rename = weak_self.clone();
         let on_rename: OnRename = Rc::new(move |from, to, cx| {
             let Some(workspace) = weak_rename.upgrade() else {
@@ -198,20 +208,7 @@ fn initialize_workspace(
 
     let version_control: Entity<VersionControlPanel> = cx.new(|cx| {
         let mut panel = VersionControlPanel::new(root.clone(), project.clone(), cx);
-        let weak_open = weak_self.clone();
-        let on_open_file: OnOpenFile = Rc::new(
-            move |path: PathBuf,
-                  focus_opened_item: bool,
-                  window: &mut Window,
-                  cx: &mut gpui::App| {
-                if let Some(ws) = weak_open.upgrade() {
-                    ws.update(cx, |ws, cx| {
-                        ws.open_path(path, focus_opened_item, window, cx);
-                    });
-                }
-            },
-        );
-        panel.set_on_open_file(on_open_file);
+        panel.set_on_open_file(on_open_file_callback(&weak_self));
         panel
     });
 

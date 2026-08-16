@@ -14,23 +14,13 @@ use std::sync::{Arc, Mutex};
 
 use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use zcv_engine::{Buffer, BufferLoadError, BufferSaveError};
+use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::FileStatus;
 use zcv_language::LanguageBuffer;
 
 use super::buffer_store::BufferStore;
-use super::worktree::Worktree;
-use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
-
-// 项目树（UI）经 project 模块门面消费 worktree 的领域行模型与路径语义。
-pub use super::worktree::{
-    WorktreeEntry, new_entry_destination, rename_destination, translate_path,
-};
-// git 操作（fetch/pull/push）经 project 门面访问 git_store 的后台执行入口；
-// 快照与事件类型供版本管理面板消费。
-pub use super::git_store::{
-    GitOperationKind, GitStore, GitStoreEvent, RemoteOperationState, RepositorySnapshot,
-    StatusEntry,
-};
+use super::git_store::{GitStore, StatusEntry};
+use super::worktree::{Worktree, WorktreeEntry};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectEvent {
@@ -303,12 +293,12 @@ impl Project {
     }
 
     /// 查询文件的 git 状态（不在任何仓库或未跟踪时对应状态）。
-    pub fn git_status_for_path(&self, path: &Path, cx: &App) -> Option<StatusEntry> {
+    fn git_status_for_path(&self, path: &Path, cx: &App) -> Option<StatusEntry> {
         self.git_store.read(cx).status_for_path(path).cloned()
     }
 
     /// 查询目录的聚合 git 状态（子项中优先级最高的状态）。
-    pub fn git_status_for_directory(&self, path: &Path, cx: &App) -> Option<FileStatus> {
+    fn git_status_for_directory(&self, path: &Path, cx: &App) -> Option<FileStatus> {
         self.git_store.read(cx).status_for_directory(path)
     }
 }

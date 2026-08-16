@@ -3,10 +3,11 @@
 //! 主路径直接调用 Editor 的 mouse_down/mouse_drag/mouse_up（精确控制字节偏移），
 //! 另有两个事件级冒烟测试验证 element.rs 的事件接线。
 
-use super::common::test_buffer;
-use super::*;
 use gpui::{Modifiers, MouseButton, MouseDownEvent, TestAppContext, point, px};
 use zcv_engine::{ByteOffset, Selection, SelectionSet, TextRange};
+
+use super::common::test_buffer;
+use super::*;
 
 /// 字节偏移构造辅助（测试文本均为 ASCII，字节数即字符数）。
 fn b(value: usize) -> ByteOffset {

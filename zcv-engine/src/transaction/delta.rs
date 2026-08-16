@@ -2,12 +2,11 @@
 //!
 //! Delta 只携带文本增量；DeltaEvent 额外绑定事务 ID、来源、ChangeSet 和 PositionMap。
 
+use super::{ChangeSet, EditList, TransactionSource};
 use crate::{
     position_map::PositionMap,
     types::{BufferVersion, TransactionId},
 };
-
-use super::{ChangeSet, EditList, TransactionSource};
 
 /// 增量事件，事务提交后生成。
 #[derive(Debug, Clone, PartialEq, Eq)]

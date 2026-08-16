@@ -1,3 +1,5 @@
+//! 配置目录与设置文件路径解析（用户目录 → 配置目录 → 设置文件）。
+
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 

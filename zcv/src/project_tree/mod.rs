@@ -1,4 +1,4 @@
-//! ProjectTree —— 项目文件树 Entity 组件。
+//! ProjectTreePanel —— 项目文件树 Entity 组件。
 //!
 //! 持有 `Rc<RefCell<ProjectTreeState>>` 管理展开/选中状态和缓存行模型。
 //! 目录遍历、排除规则与 git 状态合并由 `Project`（worktree 快照层）产出，渲染与键盘导航只消费行模型缓存。
@@ -12,16 +12,16 @@ use gpui::{
     App, Context, Div, Entity, KeyContext, MouseButton, ScrollStrategy, UniformListScrollHandle,
     WeakEntity, Window, actions, div, prelude::*, uniform_list,
 };
-
-use crate::settings::SettingsStore;
-use crate::workspace::{Panel, ToggleProjectTree};
 use zcv_editor::Editor;
 use zcv_git::FileStatus;
 use zcv_project::{Project, new_entry_destination, rename_destination, translate_path};
 use zcv_theme::color;
 use zcv_ui::{Scrollbar, tree};
+use zcv_workspace::{Panel, ToggleProjectTree};
 
 use crate::git_status::git_status_color;
+use crate::settings::SettingsStore;
+use crate::workspace::{OnCreate, OnOpenFile, OnRename, OnTrash};
 
 actions!(
     project_tree,
@@ -39,23 +39,9 @@ actions!(
     ]
 );
 
-/// 打开文件回调
-pub(crate) type OnOpenFile = Rc<dyn Fn(PathBuf, bool, &mut Window, &mut gpui::App)>;
-
-/// 重命名文件或目录回调。
-pub(crate) type OnRename = Rc<dyn Fn(PathBuf, PathBuf, &mut gpui::App) -> anyhow::Result<()>>;
-
-/// 新建文件或目录回调。
-pub(crate) type OnCreate = Rc<dyn Fn(PathBuf, bool, &mut gpui::App) -> anyhow::Result<()>>;
-
-/// 将文件或目录移到系统废纸篓回调。
-///
-/// 带 `Window`：删除文件后需要关闭打开它的 tab，工具栏更新需要 window。
-pub(crate) type OnTrash = Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App) -> anyhow::Result<()>>;
-
 // ── Entity ──────────────────────────────────────────────────────────
 
-pub(crate) struct ProjectTree {
+pub(crate) struct ProjectTreePanel {
     pub focus: gpui::FocusHandle,
     /// 当前项目根目录路径。
     root: PathBuf,
@@ -72,7 +58,7 @@ pub(crate) struct ProjectTree {
     on_trash: Option<OnTrash>,
 }
 
-impl ProjectTree {
+impl ProjectTreePanel {
     pub(crate) fn new(root: PathBuf, project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let entry_name_editor = cx.new(Editor::single_line);
@@ -324,7 +310,7 @@ impl ProjectTree {
 
     fn dispatch_context(&self, window: &Window, cx: &Context<Self>) -> KeyContext {
         let mut context = KeyContext::new_with_defaults();
-        context.add("ProjectTree");
+        context.add("ProjectTreePanel");
         context.add(
             if self
                 .entry_name_editor
@@ -665,7 +651,7 @@ impl ProjectTree {
     }
 }
 
-impl gpui::Render for ProjectTree {
+impl gpui::Render for ProjectTreePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         self.state.borrow_mut().ensure_selected();
         let display_rows = self.display_rows(cx);
@@ -817,7 +803,7 @@ fn render_row(
         })
 }
 
-impl Panel for ProjectTree {
+impl Panel for ProjectTreePanel {
     type ToggleAction = ToggleProjectTree;
 
     fn icon() -> &'static str {
@@ -840,7 +826,7 @@ struct ProjectTreeRenderContext {
     focus: gpui::FocusHandle,
     /// 条目点击直接调用 Entity 方法（对齐 Zed 的 `cx.listener` 路径），
     /// 不依赖 dispatch_action 的焦点链分发。
-    weak: WeakEntity<ProjectTree>,
+    weak: WeakEntity<ProjectTreePanel>,
     edit_state: Option<EditState>,
     entry_name_editor: Entity<Editor>,
 }
@@ -882,7 +868,7 @@ struct ProjectTreeRow {
 
 /// 项目树的 UI 状态：展开/选中/活动路径 + 可见行缓存。
 ///
-/// 可见行由 `ProjectTree` 按展开状态递归构建后注入（`replace_rows`），
+/// 可见行由 `ProjectTreePanel` 按展开状态递归构建后注入（`replace_rows`），
 /// 本结构不触碰文件系统。
 struct ProjectTreeState {
     expanded: HashSet<PathBuf>,
@@ -901,7 +887,7 @@ impl ProjectTreeState {
         }
     }
 
-    /// 替换可见行（由 ProjectTree 重建后注入），选中行消失时清空选中。
+    /// 替换可见行（由 ProjectTreePanel 重建后注入），选中行消失时清空选中。
     fn replace_rows(&mut self, rows: Vec<ProjectTreeRow>) {
         self.rows = rows;
         if self
@@ -934,7 +920,7 @@ impl ProjectTreeState {
         }
     }
 
-    /// 仅切换展开标记；行模型重建由 `ProjectTree` 在调用后完成。
+    /// 仅切换展开标记；行模型重建由 `ProjectTreePanel` 在调用后完成。
     fn toggle_expand(&mut self, path: &Path) {
         if self.expanded.contains(path) {
             self.expanded.remove(path);
@@ -1022,7 +1008,7 @@ mod tests {
         std::fs::remove_file(&file).expect("应删除测试文件");
         assert!(state.visible_rows().iter().any(|row| row.path == file));
 
-        // 只有显式重建（由 ProjectTree 调 worktree 遍历）才会反映文件系统。
+        // 只有显式重建（由 ProjectTreePanel 调 worktree 遍历）才会反映文件系统。
         state.replace_rows(vec![ProjectTreeRow {
             path: root,
             name: "root".to_string(),
@@ -1046,7 +1032,7 @@ mod tests {
         std::fs::write(&file, "content").expect("应创建测试文件");
         let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
         let tree =
-            cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), project.clone(), cx));
+            cx.new(|cx| ProjectTreePanel::new(directory.path().to_path_buf(), project.clone(), cx));
 
         tree.update(cx, |tree, cx| {
             tree.reveal_active_path(Some(file.clone()), cx)
@@ -1090,7 +1076,7 @@ mod tests {
         std::fs::write(&file, "content").expect("应创建测试文件");
         let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
         let tree =
-            cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), project.clone(), cx));
+            cx.new(|cx| ProjectTreePanel::new(directory.path().to_path_buf(), project.clone(), cx));
 
         tree.update(cx, |tree, cx| {
             tree.reveal_active_path(Some(file.clone()), cx)
@@ -1112,7 +1098,7 @@ mod tests {
         std::fs::write(&old_file, "content").expect("应创建测试文件");
         let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
         let tree =
-            cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), project.clone(), cx));
+            cx.new(|cx| ProjectTreePanel::new(directory.path().to_path_buf(), project.clone(), cx));
 
         // reveal 展开祖先并标记活动文件。
         tree.update(cx, |tree, cx| {
@@ -1159,10 +1145,14 @@ mod tests {
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (tree, cx) = cx.add_window_view(move |_, cx| {
             cx.bind_keys([
-                KeyBinding::new("enter", TreeRename, Some("ProjectTree && not_editing")),
-                KeyBinding::new("space", TreeActivate, Some("ProjectTree && not_editing")),
+                KeyBinding::new("enter", TreeRename, Some("ProjectTreePanel && not_editing")),
+                KeyBinding::new(
+                    "space",
+                    TreeActivate,
+                    Some("ProjectTreePanel && not_editing"),
+                ),
             ]);
-            let mut tree = ProjectTree::new(project_root, project.clone(), cx);
+            let mut tree = ProjectTreePanel::new(project_root, project.clone(), cx);
             tree.set_on_open_file(Rc::new(move |_, _, _, _| {
                 callback_count.set(callback_count.get() + 1);
             }));
@@ -1203,7 +1193,7 @@ mod tests {
 
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (_tree, cx) = cx.add_window_view(move |_, cx| {
-            let mut tree = ProjectTree::new(project_root, project.clone(), cx);
+            let mut tree = ProjectTreePanel::new(project_root, project.clone(), cx);
             tree.set_on_open_file(Rc::new(move |_, focus_opened_item, _, _| {
                 callback_count.set(callback_count.get() + 1);
                 callback_focus.set(focus_opened_item);
@@ -1242,7 +1232,7 @@ mod tests {
         std::fs::write(&old_path, "content").expect("应创建测试文件");
         let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
         let tree =
-            cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), project.clone(), cx));
+            cx.new(|cx| ProjectTreePanel::new(directory.path().to_path_buf(), project.clone(), cx));
         tree.update(cx, |tree, _| {
             tree.set_on_rename(Rc::new(|from, to, _| {
                 std::fs::rename(from, to)?;
@@ -1281,7 +1271,7 @@ mod tests {
         let folder = directory.path().join("assets/icons");
         let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
         let tree =
-            cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), project.clone(), cx));
+            cx.new(|cx| ProjectTreePanel::new(directory.path().to_path_buf(), project.clone(), cx));
         tree.update(cx, |tree, _| {
             tree.set_on_create(Rc::new(|path, is_dir, _| {
                 std::fs::create_dir_all(path.parent().unwrap())?;
@@ -1344,7 +1334,7 @@ mod tests {
         std::fs::write(&kept_file, "content").expect("应创建测试文件");
         let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
         let tree =
-            cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), project.clone(), cx));
+            cx.new(|cx| ProjectTreePanel::new(directory.path().to_path_buf(), project.clone(), cx));
         let trashed = Rc::new(RefCell::new(None));
         let trashed_path = Rc::clone(&trashed);
         tree.update(cx, |tree, _| {
@@ -1380,7 +1370,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
         let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
         let tree =
-            cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), project.clone(), cx));
+            cx.new(|cx| ProjectTreePanel::new(directory.path().to_path_buf(), project.clone(), cx));
         let called = Rc::new(Cell::new(false));
         let callback_called = Rc::clone(&called);
         tree.update(cx, |tree, _| {
@@ -1409,7 +1399,7 @@ mod tests {
         std::fs::write(&only_file, "content").expect("应创建测试文件");
         let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
         let tree =
-            cx.new(|cx| ProjectTree::new(directory.path().to_path_buf(), project.clone(), cx));
+            cx.new(|cx| ProjectTreePanel::new(directory.path().to_path_buf(), project.clone(), cx));
         tree.update(cx, |tree, _| {
             tree.set_on_trash(Rc::new(|path, _, _| {
                 std::fs::remove_file(path)?;
@@ -1438,7 +1428,7 @@ mod tests {
     fn git_status_events_update_row_colors(cx: &mut TestAppContext) {
         let (root, _temp) = test_git_repo();
         let project = cx.new(|cx| Project::new(root.clone(), cx));
-        let tree = cx.new(|cx| ProjectTree::new(root.clone(), project.clone(), cx));
+        let tree = cx.new(|cx| ProjectTreePanel::new(root.clone(), project.clone(), cx));
         cx.run_until_parked();
 
         // 修改文件 → git 增量刷新 → StatusesChanged 事件 → 行颜色更新。
@@ -1485,7 +1475,7 @@ mod tests {
         run(&["commit", "-q", "-m", "add src"]);
 
         let project = cx.new(|cx| Project::new(root.clone(), cx));
-        let tree = cx.new(|cx| ProjectTree::new(root.clone(), project.clone(), cx));
+        let tree = cx.new(|cx| ProjectTreePanel::new(root.clone(), project.clone(), cx));
         cx.run_until_parked();
 
         // 修改目录内文件 → 增量刷新 → 目录行聚合为 modified。
@@ -1521,7 +1511,7 @@ mod tests {
         std::fs::write(&sub_file, "x\n").expect("应创建文件");
 
         let project = cx.new(|cx| Project::new(root.clone(), cx));
-        let tree = cx.new(|cx| ProjectTree::new(root.clone(), project.clone(), cx));
+        let tree = cx.new(|cx| ProjectTreePanel::new(root.clone(), project.clone(), cx));
         cx.run_until_parked();
 
         // 展开 sub 目录（模拟 handle_tree_expand 的行重建路径）。
@@ -1557,7 +1547,7 @@ mod tests {
         std::fs::write(&sub_file, "x\n").expect("应创建文件");
 
         let project = cx.new(|cx| Project::new(root.clone(), cx));
-        let tree = cx.new(|cx| ProjectTree::new(root.clone(), project.clone(), cx));
+        let tree = cx.new(|cx| ProjectTreePanel::new(root.clone(), project.clone(), cx));
         cx.run_until_parked();
 
         // 模拟鼠标点击：选中行后激活（与键盘 enter 同一 handler）。

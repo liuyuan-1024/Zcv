@@ -9,7 +9,6 @@ use gpui::{
     App, Bounds, Context, EventEmitter, FocusHandle, Pixels, Point, Render, TextRun,
     UTF16Selection, Window, div, point, prelude::*, px, size,
 };
-
 use zcv_actions::{Backspace, Delete, MoveLeft, MoveRight};
 use zcv_theme::{color, typography};
 

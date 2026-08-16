@@ -9,12 +9,13 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
-use crate::display_map::DisplayColumn;
 use zcv_engine::{
     Affinity, Anchor, Buffer, BufferVersion, CoordinateError, Edit, EngineResult, PositionMap,
     Selection, SelectionSet, Snapshot, Transaction, TransactionId, TransactionMetadata,
     TransactionOutcome,
 };
+
+use crate::display_map::DisplayColumn;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct EditOutcome {

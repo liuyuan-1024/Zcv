@@ -3,9 +3,8 @@
 //! **坐标系唯一真理**：`TextRange` 由 `ByteOffset` 构成，是引擎核心区间类型；
 //! `LineRange` 仍然按逻辑行号表达，但它是边界投影（只在边界 / 公共 API 出现）。
 
-use crate::CoordinateError;
-
 use super::{ByteOffset, Line};
+use crate::CoordinateError;
 
 /// 文本区间 —— 引擎核心区间类型。
 ///

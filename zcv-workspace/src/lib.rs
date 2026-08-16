@@ -11,8 +11,7 @@ mod item_provider;
 mod pane;
 mod panel;
 mod panel_buttons;
-/// 预览协议与注册表；格式 crate（如 zcv-preview-svg）实现该协议。
-pub mod preview;
+mod preview;
 mod project_picker;
 mod recent_projects;
 mod status_bar;
@@ -24,34 +23,24 @@ mod window_controls;
 mod workspace;
 
 pub use activity_indicator::ActivityIndicator;
-pub use branch_picker::{BranchPicker, GitBranchAction, OnSelectBranch};
+pub use branch_picker::{GitBranchAction, OnBranchSelected};
 pub use dock::{
     Dock, DockPosition, ToggleDebug, ToggleDiagnostics, ToggleKeyboardShortcuts,
     ToggleLanguageServer, ToggleOutline, ToggleProjectSearch, ToggleProjectTree, ToggleTerminal,
-    ToggleVersionControl, render_body,
+    ToggleVersionControl,
 };
-pub use item::{Item, ItemEvent, ItemEventHandler, ItemHandle, ToolbarItemLocation};
-pub use item_provider::{
-    ItemProvider, ItemProviderDescriptor, item_provider_for_path, register_item_provider,
-};
-pub use pane::{CloseTab, NextTab, Pane, PaneEvent, PrevTab, ToggleFileSearch, TogglePreview};
+pub use item::{Item, ItemEvent, ItemEventHandler, ItemHandle};
+pub use item_provider::{ItemProvider, ItemProviderDescriptor, register_item_provider};
+pub use pane::{Pane, PaneEvent};
 pub use panel::{Panel, PanelHandle};
 pub use panel_buttons::PanelButtons;
 pub use preview::{
     PreviewDescriptor, PreviewDocument, PreviewItem, PreviewItemHandle, PreviewProvider,
-    PreviewProviderId, provider_for, register,
+    PreviewProviderId, register,
 };
-pub use project_picker::{OnProjectSelected, ProjectPicker};
-pub use recent_projects::{
-    ProjectEntry, add_to_recent, load_recent_projects, remove_from_recent, save_recent_projects,
-};
-pub use status_bar::{StatusBar, StatusItemView, StatusItemViewHandle};
-pub use toast::{ToastAction, ToastKind, ToastLayer};
-pub use toolbar::{
-    FileToolbarControls, Toolbar, ToolbarItemEvent, ToolbarItemView, ToolbarItemViewHandle,
-};
+pub use project_picker::OnProjectSelected;
+pub use recent_projects::add_to_recent;
+pub use status_bar::StatusItemView;
+pub use toolbar::{FileToolbarControls, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 pub use top_bar::TopBar;
-pub use window_controls::{
-    handle_minimize, handle_quit, handle_toggle_maximize, render as render_window_controls,
-};
-pub use workspace::{GitFetch, GitPull, GitPush, OpenSettings, Save, Workspace};
+pub use workspace::Workspace;

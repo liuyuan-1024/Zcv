@@ -4,13 +4,14 @@
 
 use std::{sync::Arc, time::Duration};
 
-use crate::{ItemHandle, StatusItemView};
 use gpui::{
     Animation, AnimationExt, Entity, MouseButton, Render, Subscription, Window, div, prelude::*,
 };
 use zcv_project::{GitStore, GitStoreEvent};
 use zcv_theme::{color, space};
 use zcv_ui::TooltipSpec;
+
+use crate::{ItemHandle, StatusItemView};
 
 pub struct ActivityIndicator {
     /// 在途任务名；None 表示没有进行中的任务。
@@ -21,11 +22,11 @@ pub struct ActivityIndicator {
 
 impl ActivityIndicator {
     pub fn new(git_store: Entity<GitStore>, cx: &mut Context<Self>) -> Self {
-        let task = git_store.read(cx).active_task();
+        let task = git_store.read(cx).current_job();
         // 任务开始/完成/取消都会发 Tasks 事件：重读在途任务并重绘。
         let _git_subscription = cx.subscribe(&git_store, |item, store, event, cx| {
-            if matches!(event, GitStoreEvent::Tasks) {
-                item.task = store.read(cx).active_task();
+            if matches!(event, GitStoreEvent::JobsUpdated) {
+                item.task = store.read(cx).current_job();
                 cx.notify();
             }
         });
@@ -63,7 +64,7 @@ impl Render for ActivityIndicator {
         }
         item.on_mouse_up(MouseButton::Right, move |_event, _window, cx| {
             // 取消同步发 Tasks 事件，订阅回调已 notify，无需手动 refresh。
-            git_store.update(cx, |store, cx| store.cancel_active_task(cx));
+            git_store.update(cx, |store, cx| store.cancel_current_job(cx));
         })
         .into_any_element()
     }

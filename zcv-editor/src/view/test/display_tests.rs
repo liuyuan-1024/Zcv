@@ -1,7 +1,8 @@
-use super::common::test_buffer;
-use super::*;
 use gpui::{TestAppContext, point, px};
 use zcv_engine::ByteOffset;
+
+use super::common::test_buffer;
+use super::*;
 
 #[gpui::test]
 fn deleted_hunk_expands_and_collapses_inserted_lines(cx: &mut TestAppContext) {

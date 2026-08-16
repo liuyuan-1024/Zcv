@@ -1,9 +1,10 @@
 use super::*;
 use std::fs;
 
+use tempfile::TempDir;
+
 use crate::FileStatus;
 use crate::status::StatusCode;
-use tempfile::TempDir;
 
 /// 创建带一个初始提交的临时 git 仓库，返回 (仓库根, 目录句柄)。
 ///

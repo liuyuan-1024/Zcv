@@ -2,13 +2,12 @@
 //!
 //! 只提供 Buffer 当前版本上的只读读取能力，不参与编辑、历史或折叠投影。
 
+use super::Buffer;
 use crate::{
     ByteOffset, EngineResult, Line, LineRange, LineSlice, TextRange, TextSlice,
     slicing::{text_range_for_byte_range, text_range_for_line, text_range_for_line_range},
     storage::TextRead,
 };
-
-use super::Buffer;
 
 impl Buffer {
     /// 按 byte range 读取文本。

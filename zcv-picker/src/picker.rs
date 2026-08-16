@@ -10,7 +10,6 @@ use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Pixels, Render, SharedString, Window, div,
     prelude::*, px,
 };
-
 pub use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev,
 };

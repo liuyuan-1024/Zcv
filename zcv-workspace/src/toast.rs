@@ -24,12 +24,11 @@ const TOAST_MAX_WIDTH: f32 = 384.0;
 /// Toast 的语义类型（决定图标与颜色）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
-    Info,
     Success,
     Error,
 }
 
-/// Toast 上的操作按钮（如"重试"）。
+/// Toast 上的操作按钮（如"重试"）：点击执行后关闭当前 toast。
 #[derive(Clone)]
 pub struct ToastAction {
     pub label: SharedString,
@@ -184,7 +183,6 @@ impl Render for ToastLayer {
             return div().into_any_element();
         };
         let (icon, icon_color) = match toast.kind {
-            ToastKind::Info => ("icons/info.svg", color::current(cx).text_muted),
             ToastKind::Success => ("icons/check.svg", color::current(cx).status_success),
             ToastKind::Error => ("icons/warning.svg", color::current(cx).status_error),
         };
@@ -289,7 +287,7 @@ impl Render for ToastLayer {
                     .child(toast.message.clone()),
             );
 
-        // 第三部分：操作按钮。
+        // 第三部分：操作按钮（如"重试"），点击执行回调并关闭 toast。
         if let Some(action) = &toast.action {
             let label = action.label.clone();
             let on_click = action.on_click.clone();

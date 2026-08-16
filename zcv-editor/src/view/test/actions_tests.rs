@@ -1,8 +1,9 @@
+use gpui::{TestAppContext, point, px, size};
+use zcv_engine::{ByteOffset, SelectionSet, TransactionId};
+
 use super::common::{buffer_text, engine_buffer, test_buffer};
 use super::*;
 use crate::display_map::{DisplayPoint, DisplayRow};
-use gpui::{TestAppContext, point, px, size};
-use zcv_engine::{ByteOffset, SelectionSet, TransactionId};
 
 #[gpui::test]
 fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext) {

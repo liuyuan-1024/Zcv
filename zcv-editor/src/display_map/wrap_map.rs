@@ -16,7 +16,6 @@ use unicode_segmentation::UnicodeSegmentation;
 use zcv_engine::{ByteOffset, CoordinateError, Line, LogicalColumn, Position, Snapshot, TextRange};
 
 use super::display_width::DisplayColumn;
-
 use super::error::DisplayMapResult;
 use super::fold_map::{FoldBias, StreamProjectedKind};
 use super::fold_map::{

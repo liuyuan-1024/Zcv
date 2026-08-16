@@ -7,10 +7,10 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use super::display_width::{DisplayColumn, char_width};
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_engine::{ByteOffset, CoordinateError, Line, LogicalColumn, Snapshot};
 
+use super::display_width::{DisplayColumn, char_width};
 use super::{
     error::DisplayMapResult,
     fold_map::{FoldEdit, FoldSnapshot, ProjectedLineIndex, StreamProjectedKind},

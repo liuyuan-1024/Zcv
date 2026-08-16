@@ -3,14 +3,16 @@
 //! 仓库发现（沿祖先查找 / 项目树内遍历）是项目管理层的决策，由 worktree 快照层负责（对齐 Zed：发现逻辑在 worktree crate，git crate 只做命令封装与输出解析）。
 //! 所有方法同步阻塞执行，由调用方负责移入后台线程。
 
-use crate::diff::parse_diff_hunks_per_path;
-use crate::status::{DiffStat, GitStatus, parse_numstat};
-use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+
+use anyhow::{Context as _, Result, bail};
 use zcv_buffer_diff::DiffHunk;
+
+use crate::diff::parse_diff_hunks_per_path;
+use crate::status::{DiffStat, GitStatus, parse_numstat};
 
 /// 对单个 git 仓库的命令行封装。
 ///
@@ -27,7 +29,9 @@ pub trait GitRepository: Send + Sync {
     /// 是否配置了至少一个 remote（`git remote` 输出非空）。
     fn has_remote(&self) -> Result<bool>;
 
-    /// 当前分支名与 HEAD 提交 id；空仓库或 detached HEAD 时对应项为 `None`。
+    /// 当前分支名与 HEAD 提交 id，返回 `(branch, oid)`；空仓库或 detached HEAD 时对应项为 `None`。
+    ///
+    /// 注意与 [`head_commit`](Self::head_commit) 的元组顺序相反（后者返回 `(oid, subject)`）。
     fn head(&self) -> Result<(Option<String>, Option<String>)>;
 
     /// 查询 diff 行数统计：`staged` 为 index↔HEAD（`--cached`），否则为 worktree↔index。
@@ -105,7 +109,6 @@ pub struct Branch {
 }
 
 pub struct RealGitRepository {
-    git_dir: PathBuf,
     working_directory: PathBuf,
 }
 
@@ -113,8 +116,7 @@ impl RealGitRepository {
     /// 打开 `.git` 目录指向的仓库。
     ///
     /// `dot_git` 由调用方保证是目录（调用前已 `is_dir()` 检查）。
-    /// v1 只支持
-    /// 普通仓库布局：worktree/子模块的 `.git` 文件指针、分仓库（separate git dir，commondir 文件）均不支持。
+    /// v1 只支持普通仓库布局：worktree/子模块的 `.git` 文件指针、分仓库（separate git dir，commondir 文件）均不支持。
     pub fn open(dot_git: &Path) -> Result<Self> {
         let git_dir = dot_git
             .canonicalize()
@@ -123,14 +125,7 @@ impl RealGitRepository {
             .parent()
             .context(".git 目录没有父目录")?
             .to_path_buf();
-        Ok(Self {
-            git_dir,
-            working_directory,
-        })
-    }
-
-    pub fn git_dir(&self) -> &Path {
-        &self.git_dir
+        Ok(Self { working_directory })
     }
 
     /// 构造 git 命令。

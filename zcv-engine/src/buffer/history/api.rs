@@ -4,13 +4,12 @@
 
 use std::sync::Arc;
 
+use super::{HistoryEntry, HistoryNodeId, HistoryStatus};
 use crate::{
     EngineError, EngineResult, LargeFilePolicy, TransactionId, TransactionSource,
     buffer::Buffer,
     transaction::{ChangeSet, Delta, Edit, EditList, TransactionMergePolicy, TransactionMetadata},
 };
-
-use super::{HistoryEntry, HistoryNodeId, HistoryStatus};
 
 /// 当前历史节点的只读视图，用于宿主感知节点身份和分支结构。
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -3,14 +3,13 @@
 //! Anchor 是绑定 `BufferVersion` 的稳定位置；Mark 是不绑定版本的轻量位置标记。
 //! 两者都通过 `PositionMap` 更新，不持有 Buffer，也不参与事务提交。
 
+use super::{AnchorDeletedPolicy, AnchorUpdate};
 use crate::{
     errors::AnchorError,
     position_map::{Affinity, MappingResult, PositionMap},
     transaction::DeltaEvent,
     types::{BufferVersion, ByteOffset},
 };
-
-use super::{AnchorDeletedPolicy, AnchorUpdate};
 
 /// 不绑定 BufferVersion 的轻量位置标记。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

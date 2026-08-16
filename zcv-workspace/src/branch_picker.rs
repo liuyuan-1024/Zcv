@@ -32,7 +32,7 @@ pub enum GitBranchAction {
 }
 
 /// 分支操作回调 —— 参数为操作请求。
-pub type OnSelectBranch = Rc<dyn Fn(GitBranchAction, &mut Window, &mut App)>;
+pub type OnBranchSelected = Rc<dyn Fn(GitBranchAction, &mut Window, &mut App)>;
 
 // ═══ 数据源 ═══════════════════════════════════════════════════════
 
@@ -42,11 +42,11 @@ struct BranchPickerDelegate {
     branches: Vec<Branch>,
     filtered: Vec<usize>,
     selected_index: usize,
-    on_select: OnSelectBranch,
+    on_select: OnBranchSelected,
 }
 
 impl BranchPickerDelegate {
-    fn new(branches: Vec<Branch>, on_select: OnSelectBranch) -> Self {
+    fn new(branches: Vec<Branch>, on_select: OnBranchSelected) -> Self {
         let filtered: Vec<usize> = (0..branches.len()).collect();
         let selected_index = branches
             .iter()
@@ -179,7 +179,7 @@ pub struct BranchPicker {
 }
 
 impl BranchPicker {
-    pub fn new(on_select: OnSelectBranch, cx: &mut Context<Self>) -> Self {
+    pub fn new(on_select: OnBranchSelected, cx: &mut Context<Self>) -> Self {
         let delegate = BranchPickerDelegate::new(Vec::new(), on_select);
         let dismiss_flag = Rc::new(Cell::new(false));
 
@@ -356,7 +356,7 @@ mod tests {
 
     /// 构造三分支的数据源，第 2 个是当前分支。
     fn test_delegate() -> BranchPickerDelegate {
-        let on_select: OnSelectBranch = Rc::new(|_, _, _| {});
+        let on_select: OnBranchSelected = Rc::new(|_, _, _| {});
         BranchPickerDelegate::new(
             vec![
                 Branch {
@@ -405,7 +405,7 @@ mod tests {
     #[gpui::test]
     fn confirm_create_invokes_callback(cx: &mut gpui::TestAppContext) {
         let triggered = Rc::new(Cell::new(None::<GitBranchAction>));
-        let on_select: OnSelectBranch = {
+        let on_select: OnBranchSelected = {
             let triggered = triggered.clone();
             Rc::new(move |action, _window, _cx| triggered.set(Some(action)))
         };
@@ -425,7 +425,7 @@ mod tests {
     #[gpui::test]
     fn confirm_checkout_invokes_callback(cx: &mut gpui::TestAppContext) {
         let triggered = Rc::new(Cell::new(None::<GitBranchAction>));
-        let on_select: OnSelectBranch = {
+        let on_select: OnBranchSelected = {
             let triggered = triggered.clone();
             Rc::new(move |action, _window, _cx| triggered.set(Some(action)))
         };

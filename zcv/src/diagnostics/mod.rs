@@ -3,11 +3,9 @@
 //! 对标 Zed 的 `DiagnosticIndicator`。当前为占位，后续接入诊断计数。
 
 use gpui::{Context, Render, Window, prelude::*};
-
-use crate::workspace::StatusItemView;
-use crate::workspace::ToggleDiagnostics;
 use zcv_ui::Glyph;
 use zcv_workspace::ItemHandle;
+use zcv_workspace::{StatusItemView, ToggleDiagnostics};
 
 pub(crate) struct DiagnosticsButton;
 

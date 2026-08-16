@@ -17,9 +17,8 @@ mod workspace;
 use std::path::PathBuf;
 
 use gpui::{App, Application};
-use zcv_assets::Assets;
-
 use workspace::open_project_window;
+use zcv_assets::Assets;
 
 fn main() {
     Application::new().with_assets(Assets).run(|cx: &mut App| {

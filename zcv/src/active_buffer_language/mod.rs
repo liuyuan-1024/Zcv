@@ -1,13 +1,12 @@
 //! ActiveBufferLanguage —— 底栏语言显示。
 //!
-//! 实现 StatusItemView，在 set_active_editor 中订阅 Editor 变化，根据文件路径和 Buffer 首行检测语言并更新显示。
+//! 实现 StatusItemView，在 set_active_pane_item 中订阅 Editor 变化，显示当前编辑器语言名（当前仅取 Editor 的语言名；文件扩展名/首行检测为规划能力，见 Zed 的 active_buffer_language）。
 
 use gpui::{Context, Entity, Render, Subscription, Window, prelude::*};
-
-use crate::workspace::StatusItemView;
 use zcv_editor::Editor;
 use zcv_ui::Glyph;
 use zcv_workspace::ItemHandle;
+use zcv_workspace::StatusItemView;
 
 pub(crate) struct ActiveBufferLanguage {
     language: String,

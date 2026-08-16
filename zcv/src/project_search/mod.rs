@@ -3,11 +3,9 @@
 //! 对标 Zed 的 `SearchButton`。当前为占位，后续接入搜索状态。
 
 use gpui::{Context, Render, Window, prelude::*};
-
-use crate::workspace::StatusItemView;
-use crate::workspace::ToggleProjectSearch;
 use zcv_ui::Glyph;
 use zcv_workspace::ItemHandle;
+use zcv_workspace::{StatusItemView, ToggleProjectSearch};
 
 pub(crate) struct ProjectSearchButton;
 

@@ -3,7 +3,6 @@
 mod ui;
 
 pub use ui::tree;
-pub use ui::tree::{render_row_base, selection_border};
 pub use ui::{
     Checkbox, Glyph, ListItem, ScrollableHandle, Scrollbar, SvgIcon, Tab, TextInput,
     TextInputEvent, TooltipSpec, tooltip_view,

@@ -13,7 +13,7 @@ use gpui::{
     Action, AnyView, App, AsyncApp, Context, Div, Entity, FocusHandle, MouseButton, Render,
     SharedString, Subscription, WeakEntity, Window, div, prelude::*, rems,
 };
-pub use zcv_actions::{GitFetch, GitPull, GitPush, OpenSettings, Save};
+use zcv_actions::{CloseTab, GitFetch, GitPull, GitPush, OpenSettings, Save};
 use zcv_project::{GitOperationKind, Project};
 use zcv_theme::{color, typography};
 
@@ -21,6 +21,7 @@ use crate::dock::{Dock, DockPosition, render_body};
 use crate::item_provider::item_provider_for_path;
 use crate::pane::Pane;
 use crate::panel::PanelHandle;
+use crate::preview::provider_for;
 use crate::status_bar::StatusBar;
 use crate::toast::{ToastAction, ToastKind, ToastLayer};
 use crate::window_controls::{handle_minimize, handle_quit, handle_toggle_maximize};
@@ -125,8 +126,8 @@ impl Workspace {
         }
     }
 
-    /// 展示一条全局提示（成功/错误/信息）。
-    pub fn show_toast(
+    /// 展示一条全局提示（成功/错误）；`action` 提供可点击的操作按钮（如"重试"）。
+    pub(crate) fn show_toast(
         &self,
         kind: ToastKind,
         message: impl Into<SharedString>,
@@ -214,7 +215,7 @@ impl Workspace {
         self.file_click_generation = self.file_click_generation.wrapping_add(1);
         let generation = self.file_click_generation;
 
-        if focus_opened_item || crate::provider_for(&path, cx).is_none() {
+        if focus_opened_item || provider_for(&path, cx).is_none() {
             self.open_path_now(path, focus_opened_item, window, cx);
             return;
         }
@@ -333,12 +334,7 @@ impl Workspace {
         }
     }
 
-    fn handle_close_tab(
-        &mut self,
-        _: &crate::pane::CloseTab,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn handle_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         let pane_entity = self.pane.clone();
         let pane_focus = pane_entity.read(cx).focus.clone();
         if let Some(item_id) = pane_entity.read(cx).active {
@@ -443,13 +439,34 @@ impl Workspace {
         cx.spawn(move |this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
             let mut cx = asynccx.clone();
             async move {
-                let (kind, message) = match task.await {
-                    Ok(()) => (ToastKind::Success, format!("{name}完成")),
-                    Err(error) => (ToastKind::Error, format!("{name}失败：{error:#}")),
+                let (kind, message, action) = match task.await {
+                    Ok(()) => (ToastKind::Success, format!("{name}完成"), None),
+                    Err(error) => {
+                        // 失败提示带重试按钮：点击重新执行同一操作（弱引用，不持有 Workspace）。
+                        let weak = this.clone();
+                        (
+                            ToastKind::Error,
+                            format!("{name}失败：{error:#}"),
+                            Some(ToastAction::new("重试", move |_window, cx| {
+                                if let Some(workspace) = weak.upgrade() {
+                                    // App 上下文的 Entity::update 直接返回闭包结果（实体经 upgrade 已确认存在），无 Result 包装。
+                                    workspace.update(cx, |workspace, cx| {
+                                        workspace.run_git_operation(operation, cx);
+                                    });
+                                }
+                            })),
+                        )
+                    }
                 };
                 if let Some(this) = this.upgrade() {
                     this.update(&mut cx, |workspace, cx| {
-                        workspace.show_toast(kind, message, None, Some(Duration::from_secs(5)), cx);
+                        workspace.show_toast(
+                            kind,
+                            message,
+                            action,
+                            Some(Duration::from_secs(5)),
+                            cx,
+                        );
                     })
                     .ok();
                 }
@@ -472,30 +489,6 @@ impl Workspace {
 }
 
 // ═══ 渲染 ═════════════════════════════════════════════════════════
-
-/// 工作台顶层框架组装。
-fn render_frame(
-    titlebar: Option<&AnyView>,
-    status_bar: &Entity<StatusBar>,
-    body: gpui::Div,
-    cx: &gpui::App,
-) -> Div {
-    div()
-        .relative()
-        .flex()
-        .flex_col()
-        .size_full()
-        .overflow_hidden()
-        .bg(color::current(cx).surface_background)
-        .text_color(color::current(cx).text)
-        .child(
-            titlebar
-                .map(|view| view.clone().into_any_element())
-                .unwrap_or_else(|| gpui::div().into_any_element()),
-        )
-        .child(body)
-        .child(status_bar.clone())
-}
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -591,4 +584,28 @@ impl Render for Workspace {
             window.refresh();
         })
     }
+}
+
+/// 工作台顶层框架组装。
+fn render_frame(
+    titlebar: Option<&AnyView>,
+    status_bar: &Entity<StatusBar>,
+    body: gpui::Div,
+    cx: &gpui::App,
+) -> Div {
+    div()
+        .relative()
+        .flex()
+        .flex_col()
+        .size_full()
+        .overflow_hidden()
+        .bg(color::current(cx).surface_background)
+        .text_color(color::current(cx).text)
+        .child(
+            titlebar
+                .map(|view| view.clone().into_any_element())
+                .unwrap_or_else(|| gpui::div().into_any_element()),
+        )
+        .child(body)
+        .child(status_bar.clone())
 }

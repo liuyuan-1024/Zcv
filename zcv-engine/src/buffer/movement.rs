@@ -2,12 +2,11 @@
 //!
 //! 本文件只移动 selection/head 并尊重 BufferConfig 策略，不绑定快捷键，也不承担 UI 渲染或命令层语义。
 
+use super::{Buffer, coordinates::is_crlf_middle};
 use crate::{
     CharOffset, CoordinateError, EditError, EngineResult, Line, MovementDirection, MovementUnit,
     WordBoundaryPolicy, config::WordBoundaryClassifier, storage::TextRead,
 };
-
-use super::{Buffer, coordinates::is_crlf_middle};
 
 impl Buffer {
     /// 按给定移动粒度寻找前一个边界。

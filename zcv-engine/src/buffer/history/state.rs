@@ -4,9 +4,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::{EngineError, EngineResult, TransactionId};
-
 use super::{HistoryEntry, HistoryNode, HistoryNodeId};
+use crate::{EngineError, EngineResult, TransactionId};
 
 /// 历史摘要：与线性历史一致的 undo / redo 深度语义；`current_node` 暴露当前历史
 /// 节点身份；`node_count` / `memory_bytes` 暴露当前历史预算占用，便于宿主观测。

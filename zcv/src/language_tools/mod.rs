@@ -3,11 +3,9 @@
 //! 对标 Zed 的 `LspButton`。当前为占位，后续接入 LSP 状态。
 
 use gpui::{Context, Render, Window, prelude::*};
-
-use crate::workspace::StatusItemView;
-use crate::workspace::ToggleLanguageServer;
 use zcv_ui::Glyph;
 use zcv_workspace::ItemHandle;
+use zcv_workspace::{StatusItemView, ToggleLanguageServer};
 
 pub(crate) struct LspButton;
 

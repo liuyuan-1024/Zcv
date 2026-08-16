@@ -2,9 +2,8 @@
 //!
 //! Cursor 不单独承担多光标归一化；集合语义统一由 SelectionSet 处理。
 
-use crate::ByteOffset;
-
 use super::Selection;
+use crate::ByteOffset;
 
 /// 单个插入光标。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

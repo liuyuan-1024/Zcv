@@ -6,7 +6,6 @@
 use gpui::{
     AnyElement, App, Component, ElementId, IntoElement, RenderOnce, Window, div, prelude::*,
 };
-
 use zcv_theme::{color, space, typography};
 
 /// 通用列表项。

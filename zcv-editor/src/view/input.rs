@@ -93,15 +93,13 @@ impl Editor {
         else {
             return;
         };
-        let succeeded = outcome.is_ok();
-        self.apply_edit_outcome(before_selections.clone(), outcome, cx);
-        if succeeded {
-            // 输入语义：替换后光标落在插入文本末尾，选区折叠为光标。
-            self.selections.collapse_to_heads();
+        if outcome.is_ok() {
+            self.apply_edit_outcome_with_after(before_selections, outcome, cx);
         } else {
             let version = self.display_map.buffer_snapshot().version();
             self.selections = EditorSelections::from_selection_set(version, &before_selections);
             self.composition = composition;
+            self.apply_edit_outcome_with_after(before_selections, outcome, cx);
         }
     }
 
@@ -116,7 +114,7 @@ impl Editor {
         text: &str,
         description: &'static str,
         cx: &mut Context<Self>,
-    ) -> Option<(EngineResult<EditOutcome>, String)> {
+    ) -> Option<(EngineResult<(EditOutcome, SelectionSet)>, String)> {
         let targets = match self.replacement_targets(composition.as_ref(), range_utf16, cx) {
             Some(targets) => targets,
             None => {
@@ -133,8 +131,6 @@ impl Editor {
             .as_ref()
             .and_then(|composition| composition.history_transaction_id)
             .is_some_and(|transaction_id| self.is_current_history_transaction(transaction_id, cx));
-        // 替换目标即光标语义：编辑前把选区端点重锚到 targets，编辑后端点映射出"插入文本末尾"的光标位置。
-        self.set_selections(targets.clone());
         let outcome = self.buffer.update(cx, |buffer, cx| {
             let outcome = replace_selections(
                 buffer,
@@ -284,14 +280,14 @@ impl EntityInputHandler for Editor {
         let history_transaction_id = outcome
             .as_ref()
             .ok()
-            .and_then(EditOutcome::history_transaction_id)
+            .and_then(|(outcome, _)| outcome.history_transaction_id())
             .or(previous_history_transaction);
         if outcome.is_err() {
             self.composition = previous_composition;
-            self.apply_edit_outcome(before_selections, outcome, cx);
+            self.apply_edit_outcome_with_after(before_selections, outcome, cx);
             return;
         }
-        self.apply_edit_outcome(before_selections.clone(), outcome, cx);
+        self.apply_edit_outcome_with_after(before_selections.clone(), outcome, cx);
         if text.is_empty() {
             self.composition = None;
             return;

@@ -73,7 +73,7 @@ impl Editor {
         self.apply_deletion(before_selections, targets, description, cx);
     }
 
-    /// 删除命令尾部：删除目标即光标语义，编辑前重锚到 targets，编辑后端点塌缩到删除起点。
+    /// 删除命令尾部：替换层显式返回删除起点的 caret，不依赖旧选区端点映射。
     fn apply_deletion(
         &mut self,
         before_selections: SelectionSet,
@@ -82,14 +82,13 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         let outcome = targets.and_then(|targets| {
-            self.set_selections(targets.clone());
             self.buffer.update(cx, |buffer, cx| {
                 let outcome = replace_selections(buffer, &targets, "", edit_metadata(description));
                 cx.notify();
                 outcome
             })
         });
-        self.apply_edit_outcome(before_selections, outcome, cx);
+        self.apply_edit_outcome_with_after(before_selections, outcome, cx);
     }
 
     /// 单行模式下的命令守卫：换行/缩进等编辑在单行输入框内由外层处理。
@@ -433,13 +432,12 @@ impl Editor {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         self.composition = None;
         let before_selections = self.resolved_selections();
-        self.set_selections(before_selections.clone());
         let outcome = self.buffer.update(cx, |buffer, cx| {
             let outcome = replace_selections(buffer, &before_selections, "", edit_metadata("剪切"));
             cx.notify();
             outcome
         });
-        self.apply_edit_outcome(before_selections, outcome, cx);
+        self.apply_edit_outcome_with_after(before_selections, outcome, cx);
     }
 
     pub(crate) fn handle_paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {

@@ -10,9 +10,9 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use zcv_engine::{
-    Affinity, Anchor, Buffer, BufferVersion, CoordinateError, Edit, EngineResult, PositionMap,
-    Selection, SelectionSet, Snapshot, Transaction, TransactionId, TransactionMetadata,
-    TransactionOutcome,
+    Affinity, Anchor, Buffer, BufferVersion, ByteOffset, CoordinateError, Edit, EngineResult,
+    PositionMap, Selection, SelectionSet, Snapshot, Transaction, TransactionId,
+    TransactionMetadata, TransactionOutcome,
 };
 
 use crate::display_map::DisplayColumn;
@@ -76,7 +76,7 @@ pub(super) fn replace_selections(
     selections: &SelectionSet,
     replacement: &str,
     metadata: TransactionMetadata,
-) -> EngineResult<EditOutcome> {
+) -> EngineResult<(EditOutcome, SelectionSet)> {
     let replacement: Arc<str> = Arc::from(replacement);
     let selections = selections.normalized();
     let snapshot = buffer.snapshot();
@@ -92,10 +92,51 @@ pub(super) fn replace_selections(
         }
     }
 
-    match apply_edits(buffer, &targets, metadata)? {
-        None => Ok(EditOutcome::unchanged()),
-        Some(transaction) => Ok(EditOutcome::edited(transaction)),
-    }
+    // 对齐 Zed 的 `replace_selections`：替换命令的结果不是让旧选区端点被动跟随 PositionMap，而是显式成为每段插入文本末尾的 caret。
+    //
+    // 这尤其重要于删除非空选区：无论选区方向、端点 affinity 或同时存在的其他编辑如何，结果都必须是删除起点的单个 caret。
+    let (outcome, after_selections) = match apply_edits(buffer, &targets, metadata)? {
+        None => (
+            EditOutcome::unchanged(),
+            SelectionSet::new_with_primary(
+                selections
+                    .as_slice()
+                    .iter()
+                    .map(|selection| {
+                        Selection::caret(ByteOffset::new(
+                            selection.start().get() + replacement.len(),
+                        ))
+                    })
+                    .collect(),
+                selections.primary_index(),
+            ),
+        ),
+        Some(transaction) => {
+            let position_map = transaction.changeset().position_map();
+            (
+                EditOutcome::edited(transaction),
+                SelectionSet::new_with_primary(
+                    selections
+                        .as_slice()
+                        .iter()
+                        .map(|selection| {
+                            let start = position_map.map_old_position(selection.start()).value();
+                            // 插入到空选区时，PositionMap 已将 caret 吸附到插入文本之后；
+                            // 非空选区的起点则映射到替换起点，需要跨过替换文本。
+                            let end = if selection.is_caret() {
+                                start
+                            } else {
+                                ByteOffset::new(start.get() + replacement.len())
+                            };
+                            Selection::caret(end)
+                        })
+                        .collect(),
+                    selections.primary_index(),
+                ),
+            )
+        }
+    };
+    Ok((outcome, after_selections))
 }
 
 pub(super) fn apply_targeted_edits(
@@ -260,19 +301,6 @@ impl EditorSelections {
                 .value();
         }
         self.version = new_version;
-    }
-
-    /// 输入语义：替换后光标落在插入文本末尾，所有选区折叠为 head 光标。
-    pub(crate) fn collapse_to_heads(&mut self) {
-        for selection in &mut self.selections {
-            let head = if selection.reversed {
-                selection.start
-            } else {
-                selection.end
-            };
-            selection.start = head;
-            selection.end = head;
-        }
     }
 }
 

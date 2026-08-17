@@ -7,12 +7,12 @@
 //! 渲染层按行消费 chunk 流（128 字节对齐，与 Zed rope chunk 上限一致）；
 //! 跨行的换行位图在 Zed 中由 `newlines` 承担，当前行级渲染不需要，裁掉。
 //!
-//! 渲染对齐 Zed highlighted_chunks：行文本（含行内提示注入）按语法高亮与选区边界切段，段内由 `TabExpandedChunks` 位图驱动 tab 展开，产出带样式与 is_tab/is_inlay 标记的chunk 流（`synthesize_line_chunks`），渲染端逐 chunk 生成 TextRun 后统一 shape。
+//! 渲染对齐 Zed highlighted_chunks：基础文本 chunk 经 inlay、样式与 tab 变换，产出带样式与 is_tab/is_inlay 标记的渲染 chunk；渲染端逐 chunk 生成 TextRun 后统一 shape。
 
 use std::ops::Range;
 
 use gpui::{HighlightStyle, UnderlineStyle, px};
-use zcv_engine::TextRange;
+use zcv_engine::{Line, TextRange};
 use zcv_language::HighlightSpan;
 
 use super::fold_map::{FoldRowSegment, FoldRowSegmentKind};
@@ -68,39 +68,41 @@ impl<'a> Chunk<'a> {
         }
     }
 
-    /// 在文本中的字节偏移处切分（mid 修正到字符边界，位图随右移）。
+    /// 在文本中的字符边界处切分，位图与样式元数据随 chunk 一起变换。
+    ///
+    /// 与 Zed 的 `rope::ChunkSlice::split_at` 一样，本方法不修正调用者给出的坐标：
+    /// chunk 流的构造者负责保证边界，变换层只能在 `chars` 位图标记的位置切分。
     pub(crate) fn split_at(self, mid: usize) -> (Self, Self) {
-        let mid = ceil_char_boundary(self.text, mid);
-        let mask = (1u128 << mid).wrapping_sub(1);
-        (
-            Self {
-                text: &self.text[..mid],
-                chars: self.chars & mask,
-                tabs: self.tabs & mask,
-                ..Default::default()
-            },
-            Self {
-                text: &self.text[mid..],
-                chars: self.chars >> mid,
-                tabs: self.tabs >> mid,
-                ..Default::default()
-            },
-        )
+        assert!(
+            mid <= self.text.len() && self.text.is_char_boundary(mid),
+            "chunk transforms must split at a UTF-8 character boundary"
+        );
+        let mask = if mid == u128::BITS as usize {
+            u128::MAX
+        } else {
+            (1u128 << mid).wrapping_sub(1)
+        };
+        let (left_text, right_text) = self.text.split_at(mid);
+        let mut left = self.clone();
+        left.text = left_text;
+        left.chars &= mask;
+        left.tabs &= mask;
+        let mut right = self;
+        right.text = right_text;
+        if mid == u128::BITS as usize {
+            right.chars = 0;
+            right.tabs = 0;
+        } else {
+            right.chars >>= mid;
+            right.tabs >>= mid;
+        }
+        (left, right)
     }
 
     /// tab 前的字符数（tab 宽度取模用）。
     pub(crate) fn chars_before_tab(&self, tab_byte: usize) -> usize {
         (self.chars & ((1u128 << tab_byte).wrapping_sub(1))).count_ones() as usize
     }
-}
-
-/// 把 mid 修正到 UTF-8 字符边界（向左回退）。
-fn ceil_char_boundary(text: &str, mid: usize) -> usize {
-    let mut mid = mid.min(text.len());
-    while !text.is_char_boundary(mid) {
-        mid -= 1;
-    }
-    mid
 }
 
 /// 行文本的 chunk 迭代器（128 字节对齐）。
@@ -140,45 +142,50 @@ const SPACES: &str = "                                                          
 /// 展开与测量（`advance_display_column`）同规则：tab 宽度 = `tab_width - col % tab_width`；
 /// `start_column` 是展开前的起始列（片段内展开的列对齐基准）。
 /// 输出的 tab 段标记 `is_tab`，文本借用静态空格表。
-pub(crate) struct TabExpandedChunks<'a> {
-    source: TextChunks<'a>,
+struct TabExpandedChunks<'a, I>
+where
+    I: Iterator<Item = Chunk<'a>>,
+{
+    source: I,
     /// 当前 chunk（消费中；None = 取下一个）。
     current: Option<Chunk<'a>>,
     /// 上次 head 段之后待展开的 tab 宽度（tab 与文本段分两次输出）。
-    pending_tab: Option<usize>,
+    pending_tab: Option<(usize, Chunk<'a>)>,
     tab_width: usize,
     /// 展开后列（tab 对齐基准）。
     column: usize,
-    /// 展开前已消费的字符数（tab 段计数用）。
-    source_char: usize,
 }
 
-impl<'a> TabExpandedChunks<'a> {
-    pub(crate) fn new(text: &'a str, tab_width: usize, start_column: usize) -> Self {
+impl<'a, I> TabExpandedChunks<'a, I>
+where
+    I: Iterator<Item = Chunk<'a>>,
+{
+    fn from_chunks(source: I, tab_width: usize, start_column: usize) -> Self {
         Self {
-            source: TextChunks::new(text),
+            source,
             current: None,
             pending_tab: None,
             tab_width,
             column: start_column,
-            source_char: 0,
         }
     }
 }
 
-impl<'a> Iterator for TabExpandedChunks<'a> {
+impl<'a, I> Iterator for TabExpandedChunks<'a, I>
+where
+    I: Iterator<Item = Chunk<'a>>,
+{
     type Item = Chunk<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // 优先输出待展开的 tab（head 段之后）。
-        if let Some(width) = self.pending_tab.take() {
-            self.source_char += 1;
-            return Some(Chunk {
-                text: &SPACES[..width],
-                chars: (1u128 << width) - 1,
-                is_tab: true,
-                ..Default::default()
-            });
+        if let Some((width, mut tab)) = self.pending_tab.take() {
+            self.column += width;
+            tab.text = &SPACES[..width];
+            tab.chars = (1u128 << width) - 1;
+            tab.tabs = 0;
+            tab.is_tab = true;
+            return Some(tab);
         }
         let chunk = match self.current.take() {
             Some(chunk) => chunk,
@@ -188,7 +195,6 @@ impl<'a> Iterator for TabExpandedChunks<'a> {
             // 快速路径：无 tab，整段透传（列按字符数推进）。
             let chars = chunk.chars.count_ones() as usize;
             self.column += chars;
-            self.source_char += chars;
             self.current = None;
             if chunk.text.is_empty() {
                 // 段尾空残段（tab 后无文本）不输出。
@@ -203,14 +209,13 @@ impl<'a> Iterator for TabExpandedChunks<'a> {
         let tab_byte = chunk.tabs.trailing_zeros() as usize;
         let before = chunk.chars_before_tab(tab_byte);
         let (head, rest) = chunk.split_at(tab_byte);
-        let (_, after_tab) = rest.split_at(1);
+        let (tab, after_tab) = rest.split_at(1);
         self.current = Some(after_tab);
         self.column += before;
-        self.source_char += before;
         if !head.text.is_empty() {
             // tab 宽度在输出 head 后计算（列已推进）。
             let width = self.tab_width - self.column % self.tab_width;
-            self.pending_tab = Some(width);
+            self.pending_tab = Some((width, tab));
             return Some(Chunk {
                 is_tab: false,
                 ..head
@@ -219,17 +224,16 @@ impl<'a> Iterator for TabExpandedChunks<'a> {
         // tab 在段首：直接展开（宽度按当前列对齐）。
         let width = self.tab_width - self.column % self.tab_width;
         self.column += width;
-        self.source_char += 1;
-        Some(Chunk {
-            text: &SPACES[..width],
-            chars: (1u128 << width) - 1,
-            is_tab: true,
-            ..Default::default()
-        })
+        let mut tab = tab;
+        tab.text = &SPACES[..width];
+        tab.chars = (1u128 << width) - 1;
+        tab.tabs = 0;
+        tab.is_tab = true;
+        Some(tab)
     }
 }
 
-/// 合成一行的渲染产物：chunk 流（tab 已展开、inlay 已注入、样式已挂、已按片段裁剪）。
+/// 一次显示片段的渲染 chunk。
 ///
 /// `text` 是投影行文本（含行内提示注入的文本；行尾换行未剥时片段裁剪会排除）；
 /// `inlays` 是行内提示的注入信息（按锚定偏移排序）；
@@ -237,7 +241,7 @@ impl<'a> Iterator for TabExpandedChunks<'a> {
 /// `global_byte_start` 是行首的原始 buffer 字节（spans/marked 的坐标域）。
 /// 展开后的字符列 = 显示列（tab 展开成空格，shaping 宽度与测量一致）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LineChunks<'a> {
+pub(crate) struct RenderChunks<'a> {
     pub(crate) chunks: Vec<Chunk<'a>>,
     /// 片段起点前的投影字符数（光标/命中测试的 UTF-16 起点；不含 wrap 假空格）。
     pub(crate) utf16_start: usize,
@@ -251,132 +255,190 @@ pub(crate) struct LineStyles<'a> {
     pub(crate) marked: &'a [TextRange],
 }
 
-/// 合成一行的 chunk 流：投影文本按样式/选区/注入段/片段边界切段，段内位图驱动 tab 展开。
-pub(crate) fn synthesize_line_chunks<'a>(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChunkStyle {
+    is_inlay: bool,
+    style: Option<HighlightStyle>,
+    marked: bool,
+}
+
+/// Zed 式样式变换：输入只能是 `TextChunks` 产生的安全 chunk，输出也只能在输入 chunk 的字符位图边界处分段。
+/// 高亮、选区和 inlay 坐标只决定段的元数据，不直接作为 `str` 的切片下标。
+struct StyledChunks<'a, 'b> {
+    source: TextChunks<'a>,
+    current: Option<Chunk<'a>>,
+    projected_offset: usize,
+    global_byte_start: usize,
+    original_len: usize,
+    inlays: &'b [InlayInfo<'a>],
+    styles: LineStyles<'b>,
+    fragment_range: Range<usize>,
+}
+
+impl<'a, 'b> StyledChunks<'a, 'b> {
+    fn new(
+        text: &'a str,
+        global_byte_start: usize,
+        inlays: &'b [InlayInfo<'a>],
+        styles: LineStyles<'b>,
+        fragment_range: Range<usize>,
+    ) -> Self {
+        Self {
+            source: TextChunks::new(text),
+            current: None,
+            projected_offset: 0,
+            global_byte_start,
+            original_len: text.len() - inlays.iter().map(|inlay| inlay.text.len()).sum::<usize>(),
+            inlays,
+            styles,
+            fragment_range,
+        }
+    }
+
+    fn to_original(&self, projected: usize) -> usize {
+        for inlay in self.inlays {
+            if projected >= inlay.projected && projected < inlay.projected + inlay.text.len() {
+                return inlay.anchor;
+            }
+        }
+        projected
+            - self
+                .inlays
+                .iter()
+                .take_while(|inlay| inlay.projected + inlay.text.len() <= projected)
+                .map(|inlay| inlay.text.len())
+                .sum::<usize>()
+    }
+
+    fn chunk_style(&self, start: usize, end: usize) -> Option<ChunkStyle> {
+        if start < self.fragment_range.start || end > self.fragment_range.end {
+            return None;
+        }
+        let is_inlay = self
+            .inlays
+            .iter()
+            .any(|inlay| inlay.projected <= start && end <= inlay.projected + inlay.text.len());
+        let original_range = self.to_original(start)..self.to_original(end);
+        let style = (!is_inlay)
+            .then(|| {
+                self.styles.spans.iter().find_map(|span| {
+                    let span_start = span
+                        .range
+                        .start
+                        .saturating_sub(self.global_byte_start)
+                        .min(self.original_len);
+                    let span_end = span
+                        .range
+                        .end
+                        .saturating_sub(self.global_byte_start)
+                        .min(self.original_len);
+                    (span_start < original_range.end && span_end > original_range.start)
+                        .then(|| self.styles.styles.get(span.capture as usize).copied())
+                        .flatten()
+                })
+            })
+            .flatten();
+        let marked = !is_inlay
+            && self.styles.marked.iter().any(|range| {
+                let range_start = range
+                    .start()
+                    .get()
+                    .saturating_sub(self.global_byte_start)
+                    .min(self.original_len);
+                let range_end = range
+                    .end()
+                    .get()
+                    .saturating_sub(self.global_byte_start)
+                    .min(self.original_len);
+                range_start < original_range.end && range_end > original_range.start
+            });
+        Some(ChunkStyle {
+            is_inlay,
+            style,
+            marked,
+        })
+    }
+}
+
+impl<'a> Iterator for StyledChunks<'a, '_> {
+    type Item = Chunk<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let chunk = self.current.take().or_else(|| self.source.next())?;
+            let mut characters = chunk.text.char_indices().peekable();
+            characters.next()?;
+            let first_end = characters
+                .peek()
+                .map_or(chunk.text.len(), |(offset, _)| *offset);
+            let chunk_style =
+                self.chunk_style(self.projected_offset, self.projected_offset + first_end);
+            let split = characters.find_map(|(start, character)| {
+                let end = start + character.len_utf8();
+                (self.chunk_style(self.projected_offset + start, self.projected_offset + end)
+                    != chunk_style)
+                    .then_some(start)
+            });
+            let (mut head, tail) = if let Some(split) = split {
+                let (head, tail) = chunk.split_at(split);
+                (head, Some(tail))
+            } else {
+                (chunk, None)
+            };
+            self.projected_offset += head.text.len();
+            self.current = tail;
+            let Some(chunk_style) = chunk_style else {
+                continue;
+            };
+            head.is_inlay = chunk_style.is_inlay;
+            head.style = chunk_style.style;
+            head.marked = chunk_style.marked;
+            return Some(head);
+        }
+    }
+}
+
+fn utf16_units_before(text: &str, byte: usize) -> usize {
+    text.char_indices()
+        .take_while(|(offset, _)| *offset < byte)
+        .map(|(_, character)| character.len_utf16())
+        .sum()
+}
+
+fn chars_before(text: &str, byte: usize) -> usize {
+    text.char_indices()
+        .take_while(|(offset, _)| *offset < byte)
+        .count()
+}
+
+/// 从安全基础 chunk 构建一个显示片段的渲染 chunk。
+///
+/// 样式、选区与 inlay 只作为事件标记参与流的分段，不能直接对文本切片。
+fn render_line_chunks<'a>(
     text: &'a str,
     tab_width: usize,
     global_byte_start: usize,
     inlays: &[InlayInfo<'a>],
     styles: LineStyles<'_>,
     fragment_range: Range<usize>,
-) -> LineChunks<'a> {
-    let line_start = global_byte_start;
-    // 投影文本含注入文本；原始行长 = 投影长 − Σ注入长。
-    let original_len = text.len() - inlays.iter().map(|inlay| inlay.text.len()).sum::<usize>();
-    let line_end = line_start + original_len;
-    // 原始行内偏移 → 投影偏移（锚定偏移严格小于的注入文本计入前缀）。
-    let to_projected = |anchor: usize| {
-        anchor
-            + inlays
-                .iter()
-                .take_while(|inlay| inlay.anchor < anchor)
-                .map(|inlay| inlay.text.len())
-                .sum::<usize>()
-    };
-    // 投影偏移 → 行内原始偏移（落在注入段内时吸附到锚定之后，不可逆）。
-    let to_original = |projected: usize| -> usize {
-        for inlay in inlays {
-            if projected >= inlay.projected && projected < inlay.projected + inlay.text.len() {
-                return inlay.anchor;
-            }
-        }
-        projected
-            - inlays
-                .iter()
-                .take_while(|inlay| inlay.projected + inlay.text.len() <= projected)
-                .map(|inlay| inlay.text.len())
-                .sum::<usize>()
-    };
-
-    // 边界集：行首/行尾 + 片段端点 + spans/marked 端点（clip 行内转投影）+ 注入段边界。
-    let mut boundaries: Vec<usize> = vec![0, text.len()];
-    boundaries.push(fragment_range.start.min(text.len()));
-    boundaries.push(fragment_range.end.min(text.len()));
-    for boundary in styles
-        .spans
-        .iter()
-        .map(|span| span.range.clone())
-        .chain(
-            styles
-                .marked
-                .iter()
-                .map(|range| range.start().get()..range.end().get()),
-        )
-        .flat_map(|range| [range.start, range.end])
-    {
-        let clipped = boundary.max(line_start).min(line_end);
-        if clipped > line_start && clipped < line_end {
-            boundaries.push(to_projected(clipped - line_start));
-        }
-    }
-    for inlay in inlays {
-        boundaries.push(inlay.projected);
-        boundaries.push(inlay.projected + inlay.text.len());
-    }
-    boundaries.sort_unstable();
-    boundaries.dedup();
-
-    // 字符偏移表：投影字节偏移 → 字符数（tab 展开不增减字符数，展开列 = 字符数）。
-    let char_offsets: Vec<usize> = text.char_indices().map(|(byte, _)| byte).collect();
-    let char_count_at = |byte: usize| char_offsets.partition_point(|&offset| offset < byte);
-
+) -> RenderChunks<'a> {
     let fragment_start = fragment_range.start.min(text.len());
     let fragment_end = fragment_range.end.min(text.len());
-    let mut chunks = Vec::with_capacity(boundaries.len().saturating_sub(1));
-    for window in boundaries.windows(2) {
-        let start = window[0];
-        let end = window[1];
-        // 空段与片段外的段（fragment 端点在边界集内，段不会跨片段边界）不生成。
-        if start == end || end <= fragment_start || start >= fragment_end {
-            continue;
-        }
-        // 注入段判定：段完整落在某个 inlay 注入段内（提示文本独立渲染，不挂样式）。
-        let is_inlay = inlays
-            .iter()
-            .any(|inlay| inlay.projected <= start && end <= inlay.projected + inlay.text.len());
-        // 段样式：spans/marked 与段（逆投影为原始范围）相交判定。
-        let original_range = to_original(start)..to_original(end);
-        let mut style = None;
-        if !is_inlay
-            && let Some(span) = styles.spans.iter().find(|span| {
-                let span_start = span
-                    .range
-                    .start
-                    .saturating_sub(line_start)
-                    .min(original_len);
-                let span_end = span.range.end.saturating_sub(line_start).min(original_len);
-                span_start < original_range.end && span_end > original_range.start
-            })
-        {
-            style = styles.styles.get(span.capture as usize).copied();
-        }
-        let marked = !is_inlay
-            && styles.marked.iter().any(|range| {
-                let range_start = range
-                    .start()
-                    .get()
-                    .saturating_sub(line_start)
-                    .min(original_len);
-                let range_end = range
-                    .end()
-                    .get()
-                    .saturating_sub(line_start)
-                    .min(original_len);
-                range_start < original_range.end && range_end > original_range.start
-            });
-        // 段内 tab 展开（列对齐基准 = 段前投影字符数）。
-        for item in TabExpandedChunks::new(&text[start..end], tab_width, char_count_at(start)) {
-            chunks.push(Chunk {
-                is_inlay,
-                style,
-                marked,
-                ..item
-            });
-        }
-    }
-    LineChunks {
+    debug_assert!(text.is_char_boundary(fragment_start));
+    debug_assert!(text.is_char_boundary(fragment_end));
+    let styled = StyledChunks::new(
+        text,
+        global_byte_start,
+        inlays,
+        styles,
+        fragment_start..fragment_end,
+    );
+    let chunks =
+        TabExpandedChunks::from_chunks(styled, tab_width, chars_before(text, fragment_start))
+            .collect();
+    RenderChunks {
         chunks,
-        utf16_start: char_count_at(fragment_start),
+        utf16_start: utf16_units_before(text, fragment_start),
     }
 }
 
@@ -385,38 +447,42 @@ pub(crate) fn synthesize_line_chunks<'a>(
 /// 合并行内的高亮坐标域是断开的（anchor 行与 close 行是两个字节窗口），
 /// 不能按单行窗口裁剪 spans，因此逐段调用行级合成：每段携带自己的行内提示
 /// （偏移相对段起点）与全局字节基准，占位符段单独产出。
-pub(crate) fn synthesize_folded_line_chunks<'a>(
+fn render_folded_chunks<'a>(
     merged: &'a str,
     tab_width: usize,
     segments: &[FoldRowSegment],
     inlay: &'a InlaySnapshot,
     styles: LineStyles<'_>,
     fragment_range: Range<usize>,
-) -> LineChunks<'a> {
-    let mut chunks = Vec::new();
-    let mut utf16_start = 0usize;
+) -> RenderChunks<'a> {
+    let fragment_start = fragment_range.start.min(merged.len());
+    let fragment_end = fragment_range.end.min(merged.len());
+    debug_assert!(merged.is_char_boundary(fragment_start));
+    debug_assert!(merged.is_char_boundary(fragment_end));
+    let mut styled_chunks = Vec::new();
     for segment in segments {
-        let clipped_start = fragment_range
-            .start
+        let clipped_start = fragment_start
             .max(segment.merged_range.start)
             .min(segment.merged_range.end);
-        let clipped_end = fragment_range
-            .end
+        let clipped_end = fragment_end
             .max(segment.merged_range.start)
             .min(segment.merged_range.end);
         if clipped_start >= clipped_end {
             continue;
         }
-        let segment_text = &merged[clipped_start..clipped_end];
-        if utf16_start == 0 && clipped_start > 0 {
-            utf16_start = merged[..clipped_start].chars().count();
-        }
+        let segment_text = &merged[segment.merged_range.clone()];
+        let local =
+            clipped_start - segment.merged_range.start..clipped_end - segment.merged_range.start;
         match &segment.kind {
             FoldRowSegmentKind::Placeholder => {
-                chunks.push(Chunk {
-                    is_placeholder: true,
-                    ..Chunk::from_text(segment_text)
-                });
+                styled_chunks.extend(
+                    StyledChunks::new(segment_text, 0, &[], LineStyles::default(), local).map(
+                        |mut chunk| {
+                            chunk.is_placeholder = true;
+                            chunk
+                        },
+                    ),
+                );
             }
             FoldRowSegmentKind::Text {
                 stream_line,
@@ -438,27 +504,53 @@ pub(crate) fn synthesize_folded_line_chunks<'a>(
                         text: info.text,
                     })
                     .collect();
-                let local = Range {
-                    start: clipped_start - segment.merged_range.start,
-                    end: clipped_end - segment.merged_range.start,
-                };
-                chunks.extend(
-                    synthesize_line_chunks(
-                        segment_text,
-                        tab_width,
-                        *global_start,
-                        &segment_inlays,
-                        styles,
-                        local,
-                    )
-                    .chunks,
-                );
+                styled_chunks.extend(StyledChunks::new(
+                    segment_text,
+                    *global_start,
+                    &segment_inlays,
+                    styles,
+                    local,
+                ));
             }
         }
     }
-    LineChunks {
+    // Fold 先于 tab：anchor、占位符和 tail 的 chunk 合流后只做一次 tab 变换，因而 tab stop 不会在段边界重置。
+    let chunks = TabExpandedChunks::from_chunks(
+        styled_chunks.into_iter(),
+        tab_width,
+        chars_before(merged, fragment_start),
+    )
+    .collect();
+    RenderChunks {
         chunks,
-        utf16_start,
+        utf16_start: utf16_units_before(merged, fragment_start),
+    }
+}
+
+/// 单一 viewport chunk 入口。渲染端不区分普通行与折叠合并行；
+/// 两者都从 display-map 的 inlay/fold 快照取得输入，并在这里进入同一条 chunk 变换链。
+pub(crate) fn render_viewport_chunks<'a>(
+    text: &'a str,
+    tab_width: usize,
+    global_byte_start: usize,
+    stream_line: Line,
+    segments: Option<&[FoldRowSegment]>,
+    inlay: &'a InlaySnapshot,
+    styles: LineStyles<'_>,
+    fragment_range: Range<usize>,
+) -> RenderChunks<'a> {
+    if let Some(segments) = segments {
+        render_folded_chunks(text, tab_width, segments, inlay, styles, fragment_range)
+    } else {
+        let inlays = inlay.line_inlays(stream_line);
+        render_line_chunks(
+            text,
+            tab_width,
+            global_byte_start,
+            &inlays,
+            styles,
+            fragment_range,
+        )
     }
 }
 
@@ -508,6 +600,10 @@ mod tests {
     use super::*;
     use zcv_engine::ByteOffset;
 
+    fn expand_tabs(text: &str, tab_width: usize, start_column: usize) -> Vec<Chunk<'_>> {
+        TabExpandedChunks::from_chunks(TextChunks::new(text), tab_width, start_column).collect()
+    }
+
     #[test]
     fn from_text_marks_char_starts_and_tabs() {
         let chunk = Chunk::from_text("a\t你😀");
@@ -518,14 +614,29 @@ mod tests {
     }
 
     #[test]
-    fn split_at_shifts_bitmaps_and_aligns_char_boundary() {
+    fn split_at_shifts_bitmaps_at_a_char_boundary() {
         let chunk = Chunk::from_text("a你😀");
-        // mid=2 落在"你"中间 → 修正到 1。
-        let (left, right) = chunk.split_at(2);
+        let (left, right) = chunk.split_at(1);
         assert_eq!(left.text, "a");
         assert_eq!(left.chars, 0b1);
         assert_eq!(right.text, "你😀");
         assert_eq!(right.chars, 0b1001);
+    }
+
+    #[test]
+    #[should_panic(expected = "chunk transforms must split at a UTF-8 character boundary")]
+    fn split_at_rejects_a_non_boundary_instead_of_repairing_it() {
+        Chunk::from_text("a你😀").split_at(2);
+    }
+
+    #[test]
+    fn split_at_chunk_capacity_returns_an_empty_suffix() {
+        let text = "a".repeat(CHUNK_SIZE);
+        let (left, right) = Chunk::from_text(&text).split_at(CHUNK_SIZE);
+        assert_eq!(left.text, text);
+        assert_eq!(left.chars, u128::MAX);
+        assert!(right.text.is_empty());
+        assert_eq!(right.chars, 0);
     }
 
     #[test]
@@ -559,8 +670,40 @@ mod tests {
     }
 
     #[test]
+    fn style_coordinates_never_become_text_slice_offsets() {
+        let text = "abc机def";
+        let style = HighlightStyle {
+            color: Some(gpui::red()),
+            ..Default::default()
+        };
+        let line = render_line_chunks(
+            text,
+            4,
+            0,
+            &[],
+            LineStyles {
+                // 结束位置 4 落在“机”的 UTF-8 编码中间。
+                spans: &[HighlightSpan {
+                    range: 0..4,
+                    capture: 0,
+                }],
+                styles: &[style],
+                marked: &[],
+            },
+            0..text.len(),
+        );
+        assert_eq!(
+            line.chunks
+                .iter()
+                .map(|chunk| chunk.text)
+                .collect::<String>(),
+            text
+        );
+    }
+
+    #[test]
     fn tab_expanded_chunks_expand_tabs_with_is_tab_markers() {
-        let chunks: Vec<_> = TabExpandedChunks::new("a\tb", 4, 0).collect();
+        let chunks = expand_tabs("a\tb", 4, 0);
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].text, "a");
         assert!(!chunks[0].is_tab);
@@ -574,36 +717,36 @@ mod tests {
     #[test]
     fn tab_expanded_chunks_align_to_tab_stops_with_start_column() {
         // 行首 tab：列 0 对齐到 4 → 4 空格。
-        let chunks: Vec<_> = TabExpandedChunks::new("\ta", 4, 0).collect();
+        let chunks = expand_tabs("\ta", 4, 0);
         assert_eq!(chunks[0].text, "    ");
         assert!(chunks[0].is_tab);
         // 列 2 处的 tab → 2 空格（对齐到 4 的 tab stop）。
-        let chunks: Vec<_> = TabExpandedChunks::new("ab\tc", 4, 0).collect();
+        let chunks = expand_tabs("ab\tc", 4, 0);
         assert_eq!(chunks[1].text, "  ");
         assert!(chunks[1].is_tab);
         // 恰在 tab stop（列 4）处的 tab → 4 空格。
-        let chunks: Vec<_> = TabExpandedChunks::new("abcd\t", 4, 0).collect();
+        let chunks = expand_tabs("abcd\t", 4, 0);
         assert_eq!(chunks[1].text, "    ");
         // 起始列 1：tab 从列 1 对齐 → 3 空格。
-        let chunks: Vec<_> = TabExpandedChunks::new("\tx", 4, 1).collect();
+        let chunks = expand_tabs("\tx", 4, 1);
         assert_eq!(chunks[0].text, "   ");
     }
 
     #[test]
     fn tab_expanded_chunks_pass_through_without_tabs() {
-        let chunks: Vec<_> = TabExpandedChunks::new("hello", 4, 0).collect();
+        let chunks = expand_tabs("hello", 4, 0);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].text, "hello");
         assert!(!chunks[0].is_tab);
     }
 
     #[test]
-    fn synthesize_splits_styles_at_span_boundaries_after_tab_expansion() {
+    fn chunk_pipeline_splits_styles_before_tab_expansion() {
         let style = HighlightStyle {
             color: Some(gpui::red()),
             ..Default::default()
         };
-        let line = synthesize_line_chunks(
+        let line = render_line_chunks(
             "ab\tc",
             4,
             0,
@@ -630,8 +773,8 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_marks_marked_ranges() {
-        let line = synthesize_line_chunks(
+    fn chunk_pipeline_marks_selected_ranges() {
+        let line = render_line_chunks(
             "abcdef",
             4,
             0,
@@ -652,9 +795,43 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_inserts_inlays_after_anchor_characters() {
+    fn chunks_to_runs_preserves_unicode_lengths_and_marked_style() {
+        let text = "a中文b";
+        let line = render_line_chunks(
+            text,
+            4,
+            0,
+            &[],
+            LineStyles {
+                spans: &[],
+                styles: &[],
+                marked: &[TextRange::new(ByteOffset::new(1), ByteOffset::new(7)).unwrap()],
+            },
+            0..text.len(),
+        );
+        let runs = chunks_to_runs(
+            &line.chunks,
+            gpui::TextRun {
+                len: 0,
+                font: gpui::font("Helvetica"),
+                color: Default::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            },
+        );
+
+        assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
+        assert_eq!(runs.len(), 3);
+        assert!(runs[0].underline.is_none());
+        assert!(runs[1].underline.is_some());
+        assert!(runs[2].underline.is_none());
+    }
+
+    #[test]
+    fn chunk_pipeline_marks_inlays_after_anchor_characters() {
         // inlay（锚定偏移 1 处）注入 "ab" 的投影文本。
-        let line = synthesize_line_chunks(
+        let line = render_line_chunks(
             "a: hintb",
             4,
             0,
@@ -679,9 +856,9 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_fragment_crops_inlay_segments() {
+    fn chunk_pipeline_crops_inlay_segments_to_fragment() {
         // 片段裁剪：inlay 段被片段边界切开，样式判定按片段内范围。
-        let line = synthesize_line_chunks(
+        let line = render_line_chunks(
             "a: hintb",
             4,
             0,
@@ -700,13 +877,13 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_span_boundaries_map_through_inlay_prefix() {
+    fn chunk_pipeline_maps_span_boundaries_through_inlay_prefix() {
         // span 端点（原始坐标）经 inlay 前缀映射到投影偏移切分。
         let style = HighlightStyle {
             color: Some(gpui::red()),
             ..Default::default()
         };
-        let line = synthesize_line_chunks(
+        let line = render_line_chunks(
             "a: hintb",
             4,
             0,
@@ -734,13 +911,13 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_clips_span_boundaries_to_line() {
+    fn chunk_pipeline_clips_span_boundaries_to_line() {
         // span 端点 clip 到行内：行外 span 不产生额外切分。
         let style = HighlightStyle {
             color: Some(gpui::red()),
             ..Default::default()
         };
-        let line = synthesize_line_chunks(
+        let line = render_line_chunks(
             "abc",
             4,
             10,

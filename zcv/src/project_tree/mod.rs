@@ -310,7 +310,7 @@ impl ProjectTreePanel {
 
     fn dispatch_context(&self, window: &Window, cx: &Context<Self>) -> KeyContext {
         let mut context = KeyContext::new_with_defaults();
-        context.add("ProjectTreePanel");
+        context.add("ProjectTree");
         context.add(
             if self
                 .entry_name_editor
@@ -1145,12 +1145,8 @@ mod tests {
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (tree, cx) = cx.add_window_view(move |_, cx| {
             cx.bind_keys([
-                KeyBinding::new("enter", TreeRename, Some("ProjectTreePanel && not_editing")),
-                KeyBinding::new(
-                    "space",
-                    TreeActivate,
-                    Some("ProjectTreePanel && not_editing"),
-                ),
+                KeyBinding::new("enter", TreeRename, Some("ProjectTree && not_editing")),
+                KeyBinding::new("space", TreeActivate, Some("ProjectTree && not_editing")),
             ]);
             let mut tree = ProjectTreePanel::new(project_root, project.clone(), cx);
             tree.set_on_open_file(Rc::new(move |_, _, _, _| {

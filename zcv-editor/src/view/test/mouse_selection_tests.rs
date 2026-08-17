@@ -1,12 +1,12 @@
 //! 鼠标选区手势测试：双击选词、三击选行、拖拽扩展（词/行粒度）、Shift+点击按上次粒度扩展。
 //!
-//! 主路径直接调用 Editor 的 mouse_down/mouse_drag/mouse_up（精确控制字节偏移），
+//! 主路径直接调用 Editor 的 begin/update/end selection（精确控制字节偏移），
 //! 另有两个事件级冒烟测试验证 element.rs 的事件接线。
 
 use gpui::{Modifiers, MouseButton, MouseDownEvent, TestAppContext, point, px};
 use zcv_engine::{ByteOffset, Selection, SelectionSet, TextRange};
 
-use super::common::test_buffer;
+use super::common::{buffer_text, test_buffer};
 use super::*;
 
 /// 字节偏移构造辅助（测试文本均为 ASCII，字节数即字符数）。
@@ -27,7 +27,7 @@ fn single_click_places_a_caret(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    editor.update(cx, |editor, cx| editor.mouse_down(b(5), 1, false, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(5), 1, false, cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::caret(b(5))));
     });
@@ -43,14 +43,14 @@ fn double_click_selects_the_whole_word(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     // 双击词内部：选中整个标识符（下划线属于词字符）。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(3), 2, false, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(3), 2, false, cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(7))));
     });
-    editor.update(cx, |editor, _| editor.mouse_up());
+    editor.update(cx, |editor, _| editor.end_selection());
 
     // 双击词尾（紧贴空格）：仍选中整个词。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(7), 2, false, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(7), 2, false, cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(7))));
     });
@@ -66,13 +66,13 @@ fn triple_click_selects_the_whole_line(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     // 三击第一行：整行含行尾换行符（first line 共 10 字符 + \n）。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(5), 3, false, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(5), 3, false, cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(11))));
     });
 
     // 三击第二行：11..23。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(13), 3, false, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(13), 3, false, cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
             editor.selections(),
@@ -90,7 +90,7 @@ fn quadruple_click_selects_all(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    editor.update(cx, |editor, cx| editor.mouse_down(b(5), 4, false, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(5), 4, false, cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(13))));
     });
@@ -106,20 +106,46 @@ fn dragging_with_character_granularity_selects_a_range(cx: &mut TestAppContext) 
     cx.run_until_parked();
 
     // 单击后向右拖：anchor 固定在按下点，head 跟随鼠标。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(0), 1, false, cx));
-    editor.update(cx, |editor, cx| editor.mouse_drag(b(5), cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(0), 1, false, cx));
+    editor.update(cx, |editor, cx| editor.update_selection(b(5), cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(5))));
     });
     // 反向拖回：选区收缩，anchor 不变。
-    editor.update(cx, |editor, cx| editor.mouse_drag(b(2), cx));
+    editor.update(cx, |editor, cx| editor.update_selection(b(2), cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(2))));
     });
     // 松开后选区保持。
-    editor.update(cx, |editor, _| editor.mouse_up());
+    editor.update(cx, |editor, _| editor.end_selection());
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(2))));
+    });
+}
+
+#[gpui::test]
+fn editing_cancels_a_pending_mouse_selection(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "abcdef");
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::for_buffer(buffer, cx)
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(1), 1, false, cx));
+    editor.update(cx, |editor, cx| editor.update_selection(b(4), cx));
+    cx.dispatch_action(Backspace);
+
+    assert_eq!(buffer_text(&buffer, cx), "aef");
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(editor.selections(), selections(Selection::caret(b(1))));
+    });
+
+    // 即使 MouseUp 遗失，编辑后迟到的 dragging MouseMove 也不能用旧锚点复活选区。
+    editor.update(cx, |editor, cx| editor.update_selection(b(3), cx));
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(editor.selections(), selections(Selection::caret(b(1))));
     });
 }
 
@@ -133,19 +159,19 @@ fn double_click_drag_selects_whole_words(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     // 双击 "one"：选中 0..3。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(1), 2, false, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(1), 2, false, cx));
     // 拖到 "two" 内部：整词吸附，选区扩展到 0..7（含空格）。
-    editor.update(cx, |editor, cx| editor.mouse_drag(b(5), cx));
+    editor.update(cx, |editor, cx| editor.update_selection(b(5), cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(7))));
     });
     // 拖到 "three" 内部：0..13。
-    editor.update(cx, |editor, cx| editor.mouse_drag(b(11), cx));
+    editor.update(cx, |editor, cx| editor.update_selection(b(11), cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(13))));
     });
     // 反向拖回 "two"：选区收缩到词尾边界。
-    editor.update(cx, |editor, cx| editor.mouse_drag(b(6), cx));
+    editor.update(cx, |editor, cx| editor.update_selection(b(6), cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(7))));
     });
@@ -161,14 +187,14 @@ fn triple_click_drag_selects_whole_lines(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     // 三击第一行：0..4（含换行）。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(0), 3, false, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(0), 3, false, cx));
     // 拖到 "bbb"：整行纳入，0..8。
-    editor.update(cx, |editor, cx| editor.mouse_drag(b(6), cx));
+    editor.update(cx, |editor, cx| editor.update_selection(b(6), cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(8))));
     });
     // 拖到 "ccc"：0..12。
-    editor.update(cx, |editor, cx| editor.mouse_drag(b(9), cx));
+    editor.update(cx, |editor, cx| editor.update_selection(b(9), cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(12))));
     });
@@ -184,9 +210,9 @@ fn dragging_leftwards_anchors_against_the_original_word_end(cx: &mut TestAppCont
     cx.run_until_parked();
 
     // 双击 "three"：8..13，anchor 在词首。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(10), 2, false, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(10), 2, false, cx));
     // 向左拖到 "two"：选区锚定原词右端 13，head 在 "two" 词首 4。
-    editor.update(cx, |editor, cx| editor.mouse_drag(b(5), cx));
+    editor.update(cx, |editor, cx| editor.update_selection(b(5), cx));
     cx.read_entity(&editor, |editor, _| {
         let selections = editor.selections();
         let selection = selections.primary();
@@ -206,14 +232,14 @@ fn shift_click_extends_selection_from_the_anchor(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     // 单击 "one" 内部：caret 1。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(1), 1, false, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(1), 1, false, cx));
     // Shift+单击 "three" 内部：从锚点 1 扩展到 10。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(10), 1, true, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(10), 1, true, cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(1), b(10))));
     });
     // 再 Shift+单击回中间：head 移回，选区收缩。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(5), 1, true, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(5), 1, true, cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(1), b(5))));
     });
@@ -229,14 +255,14 @@ fn shift_double_click_extends_by_word_granularity(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     // 双击 "one"：0..3，记住词粒度。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(1), 2, false, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(1), 2, false, cx));
     // Shift+双击 "three"：按上次词粒度扩展，0..13。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(11), 2, true, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(11), 2, true, cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(13))));
     });
     // 词粒度仍在：Shift+单击 "two" 也按整词扩展。
-    editor.update(cx, |editor, cx| editor.mouse_down(b(5), 1, true, cx));
+    editor.update(cx, |editor, cx| editor.begin_selection(b(5), 1, true, cx));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), selections(Selection::new(b(0), b(7))));
     });

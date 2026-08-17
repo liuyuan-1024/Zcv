@@ -20,7 +20,7 @@ use zcv_ui::Glyph;
 use super::display_map::{
     BufferPoint, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot, FoldRowSegment,
     LineStyles, ProjectedRange, StreamLineSource, WrapViewportRowKind, byte_for_display_column,
-    chunks_to_runs, synthesize_folded_line_chunks, synthesize_line_chunks,
+    chunks_to_runs, render_viewport_chunks,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -808,7 +808,7 @@ impl Element for EditorElement {
                     .render_snapshot()
                     .position_to_byte(zcv_engine::Position::new(point.line(), point.column()))
                 {
-                    editor.mouse_down(offset, event.click_count, event.modifiers.shift, cx);
+                    editor.begin_selection(offset, event.click_count, event.modifiers.shift, cx);
                 }
             });
             window.focus(&mouse_focus);
@@ -824,7 +824,7 @@ impl Element for EditorElement {
                 return;
             }
             if !event.dragging() {
-                drag_editor.update(cx, |editor, _| editor.mouse_up());
+                drag_editor.update(cx, |editor, _| editor.end_selection());
                 return;
             }
             let Some(point) = drag_layout.buffer_point_for_position(event.position) else {
@@ -835,7 +835,7 @@ impl Element for EditorElement {
                     .render_snapshot()
                     .position_to_byte(zcv_engine::Position::new(point.line(), point.column()))
                 {
-                    editor.mouse_drag(offset, cx);
+                    editor.update_selection(offset, cx);
                 }
             });
         });
@@ -845,7 +845,7 @@ impl Element for EditorElement {
             if phase != DispatchPhase::Bubble {
                 return;
             }
-            up_editor.update(cx, |editor, _| editor.mouse_up());
+            up_editor.update(cx, |editor, _| editor.end_selection());
         });
 
         let scroll_editor = self.editor.clone();
@@ -1406,29 +1406,15 @@ fn layout_visible_lines(
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let mut lines = Vec::with_capacity(end.saturating_sub(start));
     let mut gutter_rows = Vec::with_capacity(end.saturating_sub(start));
-    // 可见范围的语法高亮来自 display_map 注入的全量缓存（解析完成时构建），渲染侧只做有序切片，不再每帧树遍历；
-    // 缓存版本与 buffer 不一致时返回空。
-    let visible_highlights = display_snapshot
+    let viewport = display_snapshot
         .slice_viewport(DisplayRow::new(start), end.saturating_sub(start))
-        .ok()
-        .and_then(|viewport| {
-            let mut range: Option<std::ops::Range<usize>> = None;
-            for row in viewport.rows() {
-                let WrapViewportRowKind::Text {
-                    byte_range,
-                    global_byte_start,
-                    ..
-                } = row.kind();
-                let row_range = *global_byte_start..*global_byte_start + byte_range.len();
-                range = Some(match range {
-                    Some(range) => range.start.min(row_range.start)..range.end.max(row_range.end),
-                    None => row_range,
-                });
-            }
-            range
-        })
+        .ok();
+    // 语法高亮只在基础 buffer chunk 的真实行范围内查询；
+    // inlay/fold/tab/wrap都是其后的 chunk 变换，不能用显示片段长度反推 buffer 字节坐标。
+    let visible_highlights = viewport
+        .as_ref()
+        .map(|viewport| display_snapshot.highlighted_spans_for_viewport(viewport))
         .unwrap_or_default();
-    let visible_highlights = display_snapshot.highlighted_spans(&visible_highlights);
     // capture 索引 → 样式的预展开表：渲染每 run 一次数组索引，不再逐 run 做字符串回退查找。
     let highlight_styles = display_snapshot.highlight_styles();
 
@@ -1524,9 +1510,7 @@ fn layout_visible_lines(
         }
     };
 
-    if let Ok(viewport) =
-        display_snapshot.slice_viewport(DisplayRow::new(start), end.saturating_sub(start))
-    {
+    if let Some(viewport) = viewport {
         for row in viewport.rows() {
             match row.kind() {
                 WrapViewportRowKind::Text {
@@ -1561,7 +1545,6 @@ fn layout_visible_lines(
                             Line::new(start.get() + index)
                         }
                     };
-                    let inlays = inlay_snapshot.line_inlays(stream_line);
                     // 合成行是外部文本：无语法高亮、不可编辑/不可选（spans/marked 是锚定行的 buffer 坐标，套用到合成行文本会产生非字符边界切片）。
                     let line_styles = match source {
                         StreamLineSource::Buffer(_) => LineStyles {
@@ -1571,29 +1554,19 @@ fn layout_visible_lines(
                         },
                         StreamLineSource::Inserted { .. } => LineStyles::default(),
                     };
-                    let synthesized = if let Some(segments) = segments {
-                        // 折叠合并行：anchor 段与闭合尾段分别按各自的行窗口裁剪高亮。
-                        synthesize_folded_line_chunks(
-                            text.as_ref(),
-                            tab_width,
-                            segments,
-                            inlay_snapshot,
-                            line_styles,
-                            byte_range.clone(),
-                        )
-                    } else {
-                        synthesize_line_chunks(
-                            text.as_ref(),
-                            tab_width,
-                            *global_byte_start,
-                            &inlays,
-                            line_styles,
-                            byte_range.clone(),
-                        )
-                    };
+                    let rendered = render_viewport_chunks(
+                        text.as_ref(),
+                        tab_width,
+                        *global_byte_start,
+                        stream_line,
+                        segments.as_deref(),
+                        inlay_snapshot,
+                        line_styles,
+                        byte_range.clone(),
+                    );
                     // 显示文本：wrap 假空格 + 展开 chunk 文本拼接（对齐 Zed from_chunks）。
                     let display_len: usize = *indent
-                        + synthesized
+                        + rendered
                             .chunks
                             .iter()
                             .map(|chunk| chunk.text.len())
@@ -1602,25 +1575,25 @@ fn layout_visible_lines(
                     if *indent > 0 {
                         display_text.push_str(&" ".repeat(*indent));
                     }
-                    for chunk in &synthesized.chunks {
+                    for chunk in &rendered.chunks {
                         display_text.push_str(chunk.text);
                     }
-                    let mut runs = Vec::with_capacity(synthesized.chunks.len() + 1);
+                    let mut runs = Vec::with_capacity(rendered.chunks.len() + 1);
                     if *indent > 0 {
                         runs.push(TextRun {
                             len: *indent,
                             ..base.clone()
                         });
                     }
-                    let mut chunk_runs = chunks_to_runs(&synthesized.chunks, base.clone());
+                    let mut chunk_runs = chunks_to_runs(&rendered.chunks, base.clone());
                     // 折叠占位符用占位色绘制。
-                    for (run, chunk) in chunk_runs.iter_mut().zip(&synthesized.chunks) {
+                    for (run, chunk) in chunk_runs.iter_mut().zip(&rendered.chunks) {
                         if chunk.is_placeholder {
                             run.color = color::current(cx).text_placeholder.into();
                         }
                     }
                     runs.extend(chunk_runs);
-                    let utf16_start = synthesized.utf16_start;
+                    let utf16_start = rendered.utf16_start;
                     let logical_line = match source {
                         StreamLineSource::Buffer(buffer_line) => Some(Line::new(*buffer_line)),
                         StreamLineSource::Inserted { .. } => None,
@@ -1894,9 +1867,10 @@ fn column_to_byte(text: &str, column: usize) -> usize {
 mod tests {
     use super::*;
     use crate::display_map::DisplayMap;
-    use gpui::{Empty, TestAppContext, font};
+    use gpui::{AppContext, Empty, TestAppContext};
+    use std::path::PathBuf;
     use zcv_engine::{Buffer, BufferConfig, ByteOffset, Line};
-    use zcv_language::SyntaxSnapshot;
+    use zcv_language::{LanguageBuffer, SyntaxSnapshot};
 
     /// 行级标记的显示行区间（`hunk_rendering` 的薄包装，测试专用）。
     fn diff_hunk_rows(
@@ -1927,9 +1901,6 @@ mod tests {
     ) -> Vec<(Range<usize>, Range<usize>, DiffHunkKind)> {
         hunk_rendering(snapshot, hunks, expanded_deleted, expanded_modified).hit_regions
     }
-    use zcv_language::HighlightSpan;
-    use zcv_theme::syntax;
-
     #[test]
     fn logical_columns_map_to_utf8_boundaries() {
         let text = "a你😀";
@@ -1966,85 +1937,6 @@ mod tests {
         assert_eq!(diff_kind_for_row(&[], 0), None);
     }
 
-    #[test]
-    fn marked_text_is_a_separate_underlined_text_run() {
-        let text = "a中文b";
-        let base = TextRun {
-            len: 0,
-            font: font("Helvetica"),
-            color: Default::default(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let synthesized = synthesize_line_chunks(
-            text,
-            4,
-            0,
-            &[],
-            LineStyles {
-                spans: &[],
-                styles: &[],
-                marked: &[TextRange::new(ByteOffset::new(1), ByteOffset::new(7)).unwrap()],
-            },
-            0..text.len(),
-        );
-        let runs = chunks_to_runs(&synthesized.chunks, base);
-
-        assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
-        assert_eq!(runs.len(), 3);
-        assert!(runs[0].underline.is_none());
-        assert!(runs[1].underline.is_some());
-        assert!(runs[2].underline.is_none());
-    }
-
-    #[gpui::test]
-    fn syntax_captures_apply_color_and_font_modifiers(cx: &mut TestAppContext) {
-        // 显式挂载内置深色主题：capture 样式表来自主题模块的静态状态，
-        // 不依赖其他测试的执行顺序。
-        cx.update(|cx| {
-            zcv_theme::ThemeChoice::Named("one-dark").apply(cx, None);
-        });
-        let text = "fn strong";
-        let base = TextRun {
-            len: 0,
-            font: font("Helvetica"),
-            color: Default::default(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let highlight_styles =
-            syntax::style_table(&[Arc::from("keyword"), Arc::from("text.strong")]);
-        let synthesized = synthesize_line_chunks(
-            text,
-            4,
-            100,
-            &[],
-            LineStyles {
-                spans: &[
-                    HighlightSpan {
-                        range: 100..102,
-                        capture: 0,
-                    },
-                    HighlightSpan {
-                        range: 103..109,
-                        capture: 1,
-                    },
-                ],
-                styles: &highlight_styles,
-                marked: &[],
-            },
-            0..text.len(),
-        );
-        let runs = chunks_to_runs(&synthesized.chunks, base.clone());
-
-        assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
-        assert_ne!(runs[0].color, base.color);
-        assert_eq!(runs[2].font.weight, gpui::FontWeight::BOLD);
-    }
-
-    #[gpui::test]
     #[gpui::test]
     fn inserted_lines_render_without_applying_anchor_spans(cx: &mut TestAppContext) {
         // 回归：合成行（外部文本）无语法高亮/选区——锚定行的 span 端点套用到合成行文本
@@ -2102,6 +1994,85 @@ mod tests {
                     inserted.shaped.text.as_ref(),
                     "// 展开产生的新行在重建时现查 git 状态，无需单独补齐。"
                 );
+            })
+            .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
+    fn wrapped_unicode_markdown_queries_highlights_from_source_chunks(cx: &mut TestAppContext) {
+        let text = "> **The reconstructed Functionally Equivalent Scene（功能等价场景）can be directly imported into ROS（机器人操作系统）to support interactive simulation（交互式仿真）and long-horizon robot task execution（长时序机器人任务执行）.**\n";
+        let buffer = cx.new(|_| {
+            Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer")
+        });
+        let language_buffer =
+            cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("README.md")), cx));
+        cx.run_until_parked();
+        let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.snapshot());
+        let syntax = cx.read_entity(&language_buffer, |buffer, _| buffer.syntax_snapshot());
+        assert!(syntax.has_language());
+
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, cx| {
+                let text_system = window.text_system().clone();
+                let font = window.text_style().font();
+                let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+                let mut map = DisplayMap::new(snapshot.clone());
+                map.set_syntax_snapshot(syntax);
+
+                // 选择一个“片段长度不是行首 UTF-8 边界”的续行。旧实现把这个长度
+                // 拼到行首上查询高亮，正好会制造落在中文编码内部的 capture 端点。
+                let mut offending_row = None;
+                for width in [px(320.), px(400.), px(480.), px(560.), px(640.)] {
+                    map.set_wrap_width(Some(width), font.clone(), font_size, &text_system);
+                    let display = map.snapshot();
+                    let viewport = display
+                        .slice_viewport(DisplayRow::ZERO, display.line_count())
+                        .expect("应读取完整视口");
+                    offending_row = viewport.rows().iter().find_map(|row| {
+                        let WrapViewportRowKind::Text {
+                            text, byte_range, ..
+                        } = row.kind();
+                        (!text.is_char_boundary(byte_range.len())).then_some(row.index())
+                    });
+                    if offending_row.is_some() {
+                        break;
+                    }
+                }
+                let offending_row = offending_row.expect("测试文本应产生目标 UTF-8 续行");
+                let display = map.snapshot();
+                let layout = layout_visible_lines(
+                    display,
+                    None,
+                    EditorPresentation::new(&snapshot, None),
+                    VisibleLineLayoutParams {
+                        geometry: EditorGeometry {
+                            text_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(700.), px(80.)),
+                            ),
+                            text_clip_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(700.), px(80.)),
+                            ),
+                            gutter: None,
+                        },
+                        active_lines: &BTreeSet::new(),
+                        foldable_lines: &BTreeSet::new(),
+                        fold_anchor_lines: &BTreeSet::new(),
+                        start_row: offending_row,
+                        scroll_offset: point(px(0.), px(0.)),
+                        line_height: px(20.),
+                        diff_rows: &[],
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    layout.lines.first().map(|line| line.row),
+                    Some(offending_row)
+                );
+                assert!(!layout.lines[0].shaped.text.is_empty());
             })
             .expect("测试窗口应保持可用");
     }

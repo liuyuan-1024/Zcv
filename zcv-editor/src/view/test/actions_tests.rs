@@ -1,5 +1,5 @@
 use gpui::{TestAppContext, point, px, size};
-use zcv_engine::{ByteOffset, SelectionSet, TransactionId};
+use zcv_engine::{ByteOffset, Selection, SelectionSet, TransactionId};
 
 use super::common::{buffer_text, engine_buffer, test_buffer};
 use super::*;
@@ -268,6 +268,48 @@ fn editor_actions_move_extend_delete_and_restore_unicode_selection(cx: &mut Test
     assert_eq!(buffer_text(&buffer, cx), "ab");
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), SelectionSet::caret(ByteOffset::new(1)));
+    });
+}
+
+#[gpui::test]
+fn deleting_a_reversed_selection_always_leaves_a_caret_at_its_start(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "abcdef");
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::for_buffer(buffer, cx)
+    });
+
+    cx.update_entity(&editor, |editor, _| {
+        editor.set_selections(SelectionSet::new(vec![Selection::new(
+            ByteOffset::new(5),
+            ByteOffset::new(2),
+        )]));
+    });
+    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    cx.dispatch_action(Backspace);
+
+    assert_eq!(buffer_text(&buffer, cx), "abf");
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(editor.selections(), SelectionSet::caret(ByteOffset::new(2)));
+    });
+}
+
+#[gpui::test]
+fn replacing_a_reversed_selection_places_the_caret_after_inserted_text(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "abcdef");
+    let editor = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
+
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::new(vec![Selection::new(
+            ByteOffset::new(5),
+            ByteOffset::new(2),
+        )]));
+        editor.replace_text(None, "XYZ", cx);
+    });
+
+    assert_eq!(buffer_text(&buffer, cx), "abXYZf");
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(editor.selections(), SelectionSet::caret(ByteOffset::new(5)));
     });
 }
 #[gpui::test]

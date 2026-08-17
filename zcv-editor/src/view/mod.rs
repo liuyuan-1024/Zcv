@@ -70,7 +70,7 @@ pub(super) enum MouseSelectMode {
 
 /// 拖拽中的选区状态：固定锚点 + 点击时的粒度。
 #[derive(Debug, Clone)]
-struct MouseDragSelection {
+struct PendingSelection {
     /// 按下点字节偏移，字符粒度拖拽的固定端。
     anchor: ByteOffset,
     /// 点击时的粒度与锚定范围。
@@ -146,8 +146,8 @@ pub struct Editor {
     )>,
     /// 最近一次鼠标手势的选区粒度；Shift+点击时按此粒度扩展（对齐 Zed 的 select_mode）。
     mouse_select_mode: MouseSelectMode,
-    /// 拖拽中的选区锚点与粒度；None 表示没有进行中的鼠标选区手势。
-    mouse_drag: Option<MouseDragSelection>,
+    /// 正在进行的鼠标选区手势；普通选区变更会终止它。
+    pending_selection: Option<PendingSelection>,
 }
 
 impl Editor {
@@ -459,14 +459,12 @@ impl Editor {
         } else {
             text.to_owned()
         };
-        self.set_selections(targets.clone());
         let outcome = self.buffer.update(cx, |buffer, cx| {
             let outcome = replace_selections(buffer, &targets, &text, edit_metadata("设置文本"));
             cx.notify();
             outcome
         });
-        self.apply_edit_outcome(before_selections, outcome, cx);
-        self.selections.collapse_to_heads();
+        self.apply_edit_outcome_with_after(before_selections, outcome, cx);
     }
 
     /// 将单个选择区设置为给定的 UTF-8 字节范围。
@@ -539,6 +537,14 @@ impl Editor {
 
     /// 把 offset 版选区集合重锚定到当前显示快照版本。
     pub(crate) fn set_selections(&mut self, selections: SelectionSet) {
+        // 对齐 Zed 的 MutableSelectionsCollection::select：任何普通选区替换都会终止 pending selection，避免旧鼠标锚点在之后复活。
+        self.pending_selection = None;
+        self.set_pending_selection(selections);
+    }
+
+    /// 更新 pending selection 显示出的当前选区。
+    /// 只有 begin/update selection 可以调用这个入口。
+    fn set_pending_selection(&mut self, selections: SelectionSet) {
         let version = self.display_map.buffer_snapshot().version();
         self.selections = EditorSelections::from_selection_set(version, &selections);
     }
@@ -630,7 +636,7 @@ impl Editor {
     ///
     /// 单击定位光标、双击选中词、三击选中整行、四击及以上全选（对齐 Zed 的 begin_selection）；
     /// `extend`（Shift 按下）时按上次手势粒度扩展选区（对齐 Zed 的 extend_selection）。
-    pub(super) fn mouse_down(
+    pub(super) fn begin_selection(
         &mut self,
         offset: ByteOffset,
         click_count: usize,
@@ -714,10 +720,10 @@ impl Editor {
         };
 
         self.composition = None;
-        self.set_selections(SelectionSet::new(vec![selection]));
+        self.set_pending_selection(SelectionSet::new(vec![selection]));
         self.request_autoscroll();
         self.input_layout = None;
-        self.mouse_drag = Some(MouseDragSelection {
+        self.pending_selection = Some(PendingSelection {
             anchor: offset,
             mode,
         });
@@ -727,16 +733,16 @@ impl Editor {
     /// 鼠标拖动：按按下时的粒度把选区活动端更新到当前位置。
     ///
     /// 词/行粒度下按整词/整行边界吸附，避免半词截断（对齐 Zed 的 update_selection）。
-    pub(super) fn mouse_drag(&mut self, offset: ByteOffset, cx: &mut Context<Self>) {
-        let Some(drag) = self.mouse_drag.clone() else {
+    pub(super) fn update_selection(&mut self, offset: ByteOffset, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_selection.clone() else {
             return;
         };
         let buffer = self.buffer.read(cx);
         let Ok(char_offset) = buffer.byte_to_char(offset) else {
             return;
         };
-        let (head, tail) = match drag.mode {
-            MouseSelectMode::Character => (offset, drag.anchor),
+        let (head, tail) = match pending.mode {
+            MouseSelectMode::Character => (offset, pending.anchor),
             MouseSelectMode::Word(original_range) => {
                 // 光标仍在词内（或落在原词范围内）时按整词边界吸附，head 取点击侧的词端。
                 let inside = buffer.is_inside_word(char_offset).unwrap_or(false)
@@ -791,14 +797,14 @@ impl Editor {
             MouseSelectMode::All => return,
         };
         self.composition = None;
-        self.set_selections(SelectionSet::new(vec![Selection::new(tail, head)]));
+        self.set_pending_selection(SelectionSet::new(vec![Selection::new(tail, head)]));
         self.input_layout = None;
         cx.notify();
     }
 
     /// 鼠标松开：结束选区手势，选区已随拖动落定。
-    pub(super) fn mouse_up(&mut self) {
-        self.mouse_drag = None;
+    pub(super) fn end_selection(&mut self) {
+        self.pending_selection = None;
     }
 
     pub(super) fn set_ime_caret_geometry(
@@ -969,7 +975,7 @@ impl Editor {
             soft_wrap: SoftWrap::default(),
             preferred_line_length: 80,
             mouse_select_mode: MouseSelectMode::Character,
-            mouse_drag: None,
+            pending_selection: None,
         };
         this.push_highlights();
         this
@@ -1037,6 +1043,7 @@ impl Editor {
     }
 
     fn finish_edit(&mut self, cx: &mut Context<Self>) {
+        self.pending_selection = None;
         self.sync_display_map(cx);
         self.request_autoscroll();
         self.input_layout = None;

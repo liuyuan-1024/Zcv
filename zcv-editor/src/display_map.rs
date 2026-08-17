@@ -18,9 +18,7 @@ mod line_stream;
 mod tab_map;
 mod wrap_map;
 
-pub(crate) use chunk::{
-    LineStyles, chunks_to_runs, synthesize_folded_line_chunks, synthesize_line_chunks,
-};
+pub(crate) use chunk::{LineStyles, chunks_to_runs, render_viewport_chunks};
 pub(crate) use display_width::DisplayColumn;
 use error::DisplayMapResult;
 #[cfg(test)]
@@ -149,12 +147,54 @@ impl DisplaySnapshot {
         self.wrap_snapshot.buffer_snapshot()
     }
 
-    /// 可见范围高亮（懒查询插值树；语法快照版本与 buffer 同步时结果可用）。
+    /// 从视口 chunk 的真实 buffer 来源查询高亮。
     ///
-    /// 高亮成本与可见范围成正比，不再随文件大小增长；语法插值推进后树坐标已跟随最新文本，编辑期间无需清空高亮等待解析。
-    pub(super) fn highlighted_spans(&self, range: &std::ops::Range<usize>) -> Vec<HighlightSpan> {
-        self.syntax_snapshot
-            .highlights(range.clone(), self.buffer_snapshot())
+    /// 和 Zed 的 `BufferChunks -> InlayChunks -> FoldChunks -> TabChunks -> WrapChunks` 顺序一致：语法坐标只存在于最底层 buffer 行。
+    /// 软换行片段的投影长度绝不能反推成 buffer 字节范围；
+    /// 折叠行则查询其每个有源段对应的真实 buffer 行。
+    pub(super) fn highlighted_spans_for_viewport(
+        &self,
+        viewport: &WrapViewportSlice<'_>,
+    ) -> Vec<HighlightSpan> {
+        let mut buffer_lines = std::collections::BTreeSet::new();
+        let stream = self.fold_snapshot.inlay_snapshot().stream();
+        for row in viewport.rows() {
+            let WrapViewportRowKind::Text {
+                source, segments, ..
+            } = row.kind();
+            if let Some(segments) = segments {
+                for segment in segments {
+                    if let fold_map::FoldRowSegmentKind::Text { stream_line, .. } = &segment.kind
+                        && let Some(StreamLineSource::Buffer(line)) = stream.source(*stream_line)
+                    {
+                        buffer_lines.insert(line);
+                    }
+                }
+            } else if let StreamLineSource::Buffer(line) = source {
+                buffer_lines.insert(*line);
+            }
+        }
+
+        let buffer = self.buffer_snapshot();
+        let mut spans = Vec::new();
+        for line in buffer_lines {
+            let Ok(start) = buffer.line_start_byte(Line::new(line)) else {
+                continue;
+            };
+            let end = if line + 1 < buffer.line_count() {
+                match buffer.line_start_byte(Line::new(line + 1)) {
+                    Ok(end) => end,
+                    Err(_) => continue,
+                }
+            } else {
+                buffer.len_bytes()
+            };
+            spans.extend(
+                self.syntax_snapshot
+                    .highlights(start.get()..end.get(), buffer),
+            );
+        }
+        spans
     }
 
     /// capture 索引 → 样式的预展开表（渲染每 run 一次数组索引）。

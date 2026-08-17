@@ -1,4 +1,5 @@
 //! SVG 文件预览。
+//! 此文件是 `zcv-preview-svg` crate 的公共入口。
 
 mod provider;
 mod renderer;

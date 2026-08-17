@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description = "通用 OS 文件监听基础设施（对齐 Zed 的 fs watcher）"
 
+[lib]
+path = "src/fs_watch.rs"
+
 [dependencies]
 anyhow.workspace = true
 async-channel.workspace = true

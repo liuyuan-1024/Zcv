@@ -7498,13 +7498,13 @@ dependencies = [
  "zcv-assets",
  "zcv-editor",
  "zcv-engine",
- "zcv-fs-watch",
  "zcv-git",
  "zcv-keymap",
  "zcv-language",
  "zcv-picker",
  "zcv-preview-svg",
  "zcv-project",
+ "zcv-settings",
  "zcv-theme",
  "zcv-ui",
  "zcv-workspace",
@@ -7659,6 +7659,20 @@ dependencies = [
  "zcv-fs-watch",
  "zcv-git",
  "zcv-language",
+]
+
+[[package]]
+name = "zcv-settings"
+version = "0.7.7"
+dependencies = [
+ "anyhow",
+ "async-channel 1.9.0",
+ "gpui",
+ "log",
+ "serde",
+ "serde_json_lenient",
+ "zcv-assets",
+ "zcv-fs-watch",
 ]
 
 [[package]]

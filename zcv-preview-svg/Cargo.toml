@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description = "SVG 文件预览"
 
+[lib]
+path = "src/preview_svg.rs"
+
 [dependencies]
 anyhow.workspace = true
 gpui.workspace = true

@@ -3,6 +3,9 @@ name = "zcv-keymap"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+path = "src/keymap.rs"
+
 [dependencies]
 anyhow.workspace = true
 gpui.workspace = true

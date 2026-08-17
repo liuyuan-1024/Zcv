@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description = "工业级纯粹文本编辑引擎底座"
 
+[lib]
+path = "src/engine.rs"
+
 [dependencies]
 regex.workspace = true
 regex-automata.workspace = true

@@ -3,6 +3,9 @@ name = "zcv-ui"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+path = "src/ui.rs"
+
 [dependencies]
 gpui.workspace = true
 zcv-actions.workspace = true

@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description = "内置资源入口"
 
+[lib]
+path = "src/assets.rs"
+
 [dependencies]
 anyhow.workspace = true
 gpui.workspace = true

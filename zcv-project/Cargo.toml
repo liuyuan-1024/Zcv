@@ -3,6 +3,9 @@ name = "zcv-project"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+path = "src/project.rs"
+
 [dependencies]
 anyhow.workspace = true
 async-channel.workspace = true

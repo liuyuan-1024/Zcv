@@ -1,7 +1,8 @@
 //! 设置系统：用户设置文件的解析、合并与变更监听。
+//! 此文件是 `zcv-settings` crate 的公共入口。
 //!
 //! 用户设置 JSON 经 fs watcher 监听，变更防抖重载后写入 [`SettingsStore`] global；
-//! 默认值与主题/换行等应用设置由本模块统一下发。
+//! 默认值与各领域设置由本模块统一提供；具体的运行时类型转换由消费方完成。
 
 use std::borrow::Cow;
 use std::fs;
@@ -12,9 +13,30 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use gpui::{App, Global, Task};
 use serde::Deserialize;
-use zcv_editor::SoftWrap;
 use zcv_fs_watch::{FsWatcher, Watcher};
-use zcv_theme::ThemeChoice;
+
+/// 配置目录与设置文件路径解析（用户目录 → 配置目录 → 设置文件）。
+pub fn config_dir() -> &'static Path {
+    static CONFIG_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    CONFIG_DIR.get_or_init(|| home_dir().join(".zcv")).as_path()
+}
+
+pub fn settings_file() -> &'static Path {
+    static SETTINGS_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    SETTINGS_FILE
+        .get_or_init(|| config_dir().join("settings.json"))
+        .as_path()
+}
+
+fn home_dir() -> std::path::PathBuf {
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME");
+
+    home.map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
+}
 
 static INITIAL_USER_SETTINGS: LazyLock<Cow<'static, str>> = LazyLock::new(|| {
     zcv_assets::text("settings/initial_user_settings.json").expect("内置初始设置应存在")
@@ -29,20 +51,10 @@ const SETTINGS_RELOAD_RETRY_DELAY: Duration = Duration::from_millis(50);
 /// - `bounded`：在 `preferred_line_length`（列数 × em 宽）与编辑器宽度（取小者）处换行。
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-enum SoftWrapMode {
+pub enum SoftWrapMode {
     None,
     EditorWidth,
     Bounded,
-}
-
-impl From<SoftWrapMode> for SoftWrap {
-    fn from(mode: SoftWrapMode) -> Self {
-        match mode {
-            SoftWrapMode::None => SoftWrap::None,
-            SoftWrapMode::EditorWidth => SoftWrap::EditorWidth,
-            SoftWrapMode::Bounded => SoftWrap::Bounded,
-        }
-    }
 }
 
 /// 字段级容错：该字段值非法时解析为「未配置」（`None`），
@@ -73,12 +85,13 @@ struct UserSettingsContent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct UserSettings {
-    pub(crate) theme: ThemeChoice,
-    pub(crate) soft_wrap: SoftWrap,
-    pub(crate) preferred_line_length: usize,
+pub struct UserSettings {
+    /// 主题配置 id；由主题模块解析为运行时主题。
+    pub theme: String,
+    pub soft_wrap: SoftWrapMode,
+    pub preferred_line_length: usize,
     /// 项目树扫描时完全排除的 glob 名单。
-    pub(crate) file_scan_exclusions: Vec<String>,
+    pub file_scan_exclusions: Vec<String>,
 }
 
 /// 解析内置初始设置作为默认层，保证默认值只有一个数据源。
@@ -101,13 +114,11 @@ impl UserSettings {
             theme: content
                 .theme
                 .or(defaults.theme)
-                .map(|s| ThemeChoice::from_config(&s))
-                .unwrap_or(ThemeChoice::System),
+                .unwrap_or_else(|| "system".to_string()),
             soft_wrap: content
                 .soft_wrap
                 .or(defaults.soft_wrap)
-                .map(SoftWrap::from)
-                .unwrap_or(SoftWrap::None),
+                .unwrap_or(SoftWrapMode::None),
             preferred_line_length: content
                 .preferred_line_length
                 .or(defaults.preferred_line_length)
@@ -120,7 +131,7 @@ impl UserSettings {
     }
 }
 
-pub(crate) struct SettingsStore {
+pub struct SettingsStore {
     settings: UserSettings,
     last_user_settings_content: Option<String>,
     _watcher: Arc<dyn Watcher>,
@@ -130,12 +141,12 @@ pub(crate) struct SettingsStore {
 impl Global for SettingsStore {}
 
 impl SettingsStore {
-    pub(crate) fn get(cx: &App) -> UserSettings {
+    pub fn get(cx: &App) -> UserSettings {
         cx.global::<Self>().settings.clone()
     }
 
     /// 读取扫描排除名单；SettingsStore 未初始化（如单元测试）时回退到默认名单。
-    pub(crate) fn file_scan_exclusions(cx: &App) -> Vec<String> {
+    pub fn file_scan_exclusions(cx: &App) -> Vec<String> {
         cx.try_global::<Self>()
             .map(|store| store.settings.file_scan_exclusions.clone())
             .unwrap_or_else(|| UserSettings::default().file_scan_exclusions)
@@ -157,8 +168,8 @@ impl SettingsStore {
     }
 }
 
-pub(crate) fn init(cx: &mut App) {
-    let settings_path = crate::paths::settings_file();
+pub fn init(cx: &mut App) {
+    let settings_path = settings_file();
     let content = fs::read_to_string(settings_path).unwrap_or_default();
     let mut settings = UserSettings::default();
     let mut last_user_settings_content = None;
@@ -173,16 +184,11 @@ pub(crate) fn init(cx: &mut App) {
             }
         }
     }
-    settings.theme.apply(cx, None);
-
     let (signal_tx, signal_rx) = async_channel::unbounded::<()>();
     let pending_events = Arc::new(Mutex::new(Vec::new()));
     let watcher: Arc<dyn Watcher> = Arc::new(FsWatcher::new(signal_tx, pending_events.clone()));
-    if let Err(error) = watcher.add(crate::paths::config_dir()) {
-        log::warn!(
-            "无法监听设置目录 {}：{error}",
-            crate::paths::config_dir().display()
-        );
+    if let Err(error) = watcher.add(config_dir()) {
+        log::warn!("无法监听设置目录 {}：{error}", config_dir().display());
     }
 
     let watch_task = cx.spawn(async move |cx| {
@@ -203,7 +209,7 @@ pub(crate) fn init(cx: &mut App) {
             }
             std::mem::take(&mut *pending_events.lock().unwrap());
 
-            let settings_path = crate::paths::settings_file();
+            let settings_path = settings_file();
             let content = match fs::read_to_string(settings_path) {
                 Ok(content) => content,
                 Err(first_error) => {
@@ -250,10 +256,7 @@ pub(crate) fn init(cx: &mut App) {
                 }
                 Ok(Ok(false)) => {}
                 Ok(Err(error)) => {
-                    eprintln!(
-                        "无法加载设置文件 {}：{error:#}",
-                        crate::paths::settings_file().display()
-                    );
+                    eprintln!("无法加载设置文件 {}：{error:#}", settings_file().display());
                 }
                 Err(error) => {
                     log::error!("更新设置失败：{error}");
@@ -270,8 +273,8 @@ pub(crate) fn init(cx: &mut App) {
     });
 }
 
-pub(crate) fn ensure_user_settings_file() -> Result<&'static Path> {
-    let path = crate::paths::settings_file();
+pub fn ensure_user_settings_file() -> Result<&'static Path> {
+    let path = settings_file();
     let parent = path.parent().context("设置文件缺少父目录")?;
     fs::create_dir_all(parent).with_context(|| format!("无法创建设置目录 {}", parent.display()))?;
     if !path.exists() {
@@ -296,8 +299,8 @@ mod tests {
     fn missing_fields_use_defaults() {
         let content = parse_user_settings(r#"{"theme":"one-light"}"#).unwrap();
         let settings = UserSettings::merge(content);
-        assert_eq!(settings.theme, ThemeChoice::Named("one-light"));
-        assert_eq!(settings.soft_wrap, SoftWrap::None);
+        assert_eq!(settings.theme, "one-light");
+        assert_eq!(settings.soft_wrap, SoftWrapMode::None);
         assert_eq!(settings.preferred_line_length, 80);
         assert!(
             settings
@@ -342,7 +345,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             UserSettings::merge(content).soft_wrap,
-            SoftWrap::EditorWidth
+            SoftWrapMode::EditorWidth
         );
     }
 
@@ -350,10 +353,10 @@ mod tests {
     fn invalid_field_value_falls_back_to_default() {
         // 非法值字段回退为未配置，由 merge 层用内置默认补齐。
         let settings = UserSettings::merge(parse_user_settings(r#"{"soft_wrap": true}"#).unwrap());
-        assert_eq!(settings.soft_wrap, SoftWrap::None);
+        assert_eq!(settings.soft_wrap, SoftWrapMode::None);
 
         let settings = UserSettings::merge(parse_user_settings(r#"{"theme":"unknown"}"#).unwrap());
-        assert_eq!(settings.theme, ThemeChoice::System);
+        assert_eq!(settings.theme, "unknown");
 
         let settings = UserSettings::merge(
             parse_user_settings(r#"{"file_scan_exclusions":"not-a-list"}"#).unwrap(),
@@ -376,8 +379,8 @@ mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(settings.soft_wrap, SoftWrap::None);
-        assert_eq!(settings.theme, ThemeChoice::Named("one-dark"));
+        assert_eq!(settings.soft_wrap, SoftWrapMode::None);
+        assert_eq!(settings.theme, "one-dark");
         assert_eq!(settings.file_scan_exclusions, vec!["**/target".to_string()]);
     }
 
@@ -391,16 +394,16 @@ mod tests {
         )
         .unwrap();
         let settings = UserSettings::merge(content);
-        assert_eq!(settings.soft_wrap, SoftWrap::Bounded);
+        assert_eq!(settings.soft_wrap, SoftWrapMode::Bounded);
         assert_eq!(settings.preferred_line_length, 100);
 
         let content = parse_user_settings(r#"{"soft_wrap": "editor-width"}"#).unwrap();
         let settings = UserSettings::merge(content);
-        assert_eq!(settings.soft_wrap, SoftWrap::EditorWidth);
+        assert_eq!(settings.soft_wrap, SoftWrapMode::EditorWidth);
         assert_eq!(settings.preferred_line_length, 80);
 
         let content = parse_user_settings(r#"{"soft_wrap": "none"}"#).unwrap();
-        assert_eq!(UserSettings::merge(content).soft_wrap, SoftWrap::None);
+        assert_eq!(UserSettings::merge(content).soft_wrap, SoftWrapMode::None);
     }
 
     #[test]

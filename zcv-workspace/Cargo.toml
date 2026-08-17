@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description = "工作区框架：Item 协议、Pane/Dock/StatusBar/Toolbar 与 Workspace 装配"
 
+[lib]
+path = "src/workspace.rs"
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true

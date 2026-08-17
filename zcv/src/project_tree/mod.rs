@@ -20,8 +20,8 @@ use zcv_ui::{Scrollbar, tree};
 use zcv_workspace::{Panel, ToggleProjectTree};
 
 use crate::git_status::git_status_color;
-use crate::settings::SettingsStore;
 use crate::workspace::{OnCreate, OnOpenFile, OnRename, OnTrash};
+use zcv_settings::SettingsStore;
 
 actions!(
     project_tree,
@@ -229,7 +229,7 @@ impl ProjectTreePanel {
         cx.notify();
     }
 
-    /// 将活动文件标记并强制滚动到项目树中央。
+    /// 将活动文件标记，并在它不在视口内时滚动到可见区域。
     pub(crate) fn reveal_active_path(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
         let index = {
             let Some(path) = path.filter(|path| path.starts_with(&self.root)) else {
@@ -259,7 +259,7 @@ impl ProjectTreePanel {
         };
         if let Some(index) = index {
             self.scroll_handle
-                .scroll_to_item_strict(index, ScrollStrategy::Center);
+                .scroll_to_item(index, ScrollStrategy::Center);
         }
         cx.notify();
     }

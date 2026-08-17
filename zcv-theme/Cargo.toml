@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description = "共享主题、视觉 token 与语法高亮"
 
+[lib]
+path = "src/theme.rs"
+
 [dependencies]
 gpui.workspace = true
 serde.workspace = true

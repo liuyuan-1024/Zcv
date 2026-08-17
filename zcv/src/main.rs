@@ -6,11 +6,9 @@ mod cursor_position;
 mod diagnostics;
 mod git_status;
 mod language_tools;
-mod paths;
 mod preview;
 mod project_search;
 mod project_tree;
-mod settings;
 mod version_control;
 mod workspace;
 
@@ -24,7 +22,7 @@ fn main() {
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         Assets.load_fonts(cx).expect("内置字体应能注册");
 
-        settings::init(cx);
+        zcv_settings::init(cx);
         preview::init(cx);
         // 注册文件 Item Provider（文本兜底：项目文件 → Editor）。
         zcv_editor::init_item_providers(cx);

@@ -1,0 +1,21 @@
+[package]
+name = "zcv-settings"
+version.workspace = true
+edition.workspace = true
+description = "设置存储、解析、合并与热重载基础设施"
+
+[lib]
+path = "src/settings.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-channel.workspace = true
+gpui.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json_lenient.workspace = true
+zcv-assets.workspace = true
+zcv-fs-watch.workspace = true
+
+[lints]
+workspace = true

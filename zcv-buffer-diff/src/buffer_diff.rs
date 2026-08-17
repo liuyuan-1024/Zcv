@@ -1,4 +1,5 @@
 //! 行级 diff 数据模型（对齐 Zed 的 `buffer_diff` crate 归属）。
+//! 此文件是 `zcv-buffer-diff` crate 的公共入口。
 //!
 //! 类型归属层：`zcv-git`（解析 git diff 输出）与 `zcv-editor`（渲染注入）共用，避免消费方各自定义同构类型再做转换。
 

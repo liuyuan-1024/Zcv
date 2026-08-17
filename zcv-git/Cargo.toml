@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description = "Git 命令行后端（仓库发现、status/numstat/cat-file 解析）"
 
+[lib]
+path = "src/git.rs"
+
 [dependencies]
 anyhow.workspace = true
 zcv-buffer-diff.workspace = true

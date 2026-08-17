@@ -1,4 +1,5 @@
 //! Editor —— 可嵌入文本编辑组件。
+//! 此文件是 `zcv-editor` crate 的公共入口。
 
 mod blink_manager;
 mod display_map;

@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description = "语言注册、tree-sitter 解析与语法高亮"
 
+[lib]
+path = "src/language.rs"
+
 [dependencies]
 gpui.workspace = true
 regex.workspace = true

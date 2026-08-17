@@ -16,7 +16,8 @@ use gpui::{
 use zcv_actions::{SelectGitBranch, ToggleProjectPicker};
 use zcv_editor::{Editor, SoftWrap};
 use zcv_project::Project;
-use zcv_theme::typography;
+use zcv_settings::{SettingsStore, SoftWrapMode};
+use zcv_theme::{ThemeChoice, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, FileToolbarControls, GitBranchAction, OnBranchSelected,
     OnProjectSelected, Pane, PaneEvent, Panel, PanelButtons, PanelHandle, TopBar, Workspace,
@@ -31,7 +32,6 @@ use crate::diagnostics::DiagnosticsButton;
 use crate::language_tools::LspButton;
 use crate::project_search::ProjectSearchButton;
 use crate::project_tree::ProjectTreePanel;
-use crate::settings::SettingsStore;
 use crate::version_control::VersionControlPanel;
 
 /// 打开文件回调：面板请求 Workspace 打开路径（弱引用防循环持有）。
@@ -90,7 +90,7 @@ pub(crate) fn open_project_window(root: PathBuf, cx: &mut App) -> anyhow::Result
             ..Default::default()
         },
         |window, cx| {
-            SettingsStore::get(cx).theme.apply(cx, Some(window));
+            apply_theme(&SettingsStore::get(cx).theme, cx, Some(window));
             // 全局字号经 window rem 基准设置（对齐 Zed setup_ui_font）：
             // 字体与行高仍在元素上显式设置（见 Workspace 根元素与 tooltip）。
             window.set_rem_size(typography::ui());
@@ -167,7 +167,7 @@ fn initialize_workspace(
         branch_picker.update(cx, |picker, cx| picker.toggle(window, cx));
     });
     workspace.set_open_settings_provider(Box::new(|_cx| {
-        crate::settings::ensure_user_settings_file()
+        zcv_settings::ensure_user_settings_file()
             .ok()
             .map(|path| path.to_path_buf())
     }));
@@ -329,7 +329,7 @@ fn initialize_workspace(
         let settings = SettingsStore::get(cx);
         apply_soft_wrap(
             workspace.pane(),
-            settings.soft_wrap,
+            soft_wrap(settings.soft_wrap),
             settings.preferred_line_length,
             cx,
         );
@@ -356,10 +356,10 @@ fn initialize_workspace(
     let settings_subscription =
         cx.observe_global_in::<SettingsStore>(window, move |workspace, window, cx| {
             let settings = SettingsStore::get(cx);
-            settings.theme.apply(cx, Some(window));
+            apply_theme(&settings.theme, cx, Some(window));
             apply_soft_wrap(
                 workspace.pane(),
-                settings.soft_wrap,
+                soft_wrap(settings.soft_wrap),
                 settings.preferred_line_length,
                 cx,
             );
@@ -370,7 +370,7 @@ fn initialize_workspace(
 
     let appearance_subscription = window.observe_window_appearance(|window, cx| {
         let settings = SettingsStore::get(cx);
-        settings.theme.apply(cx, Some(window));
+        apply_theme(&settings.theme, cx, Some(window));
         window.refresh();
     });
 
@@ -406,6 +406,20 @@ fn apply_soft_wrap(
         editor.update(cx, |editor, cx| {
             editor.set_soft_wrap(soft_wrap, preferred_line_length, cx)
         });
+    }
+}
+
+/// 将设置层的文本主题 id 解析并应用为主题运行时状态。
+fn apply_theme(theme: &str, cx: &mut App, window: Option<&Window>) {
+    ThemeChoice::from_config(theme).apply(cx, window);
+}
+
+/// 设置基础设施不依赖编辑器；在编辑器装配层转换为运行时换行模式。
+fn soft_wrap(mode: SoftWrapMode) -> SoftWrap {
+    match mode {
+        SoftWrapMode::None => SoftWrap::None,
+        SoftWrapMode::EditorWidth => SoftWrap::EditorWidth,
+        SoftWrapMode::Bounded => SoftWrap::Bounded,
     }
 }
 

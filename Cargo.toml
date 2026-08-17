@@ -22,6 +22,7 @@ members = [
     "zcv-picker",
     "zcv-preview-svg",
     "zcv-project",
+    "zcv-settings",
     "zcv-theme",
     "zcv-ui",
     "zcv-workspace",
@@ -40,6 +41,7 @@ default-members = [
     "zcv-picker",
     "zcv-preview-svg",
     "zcv-project",
+    "zcv-settings",
     "zcv-theme",
     "zcv-ui",
     "zcv-workspace",
@@ -66,6 +68,7 @@ zcv-language = { path = "zcv-language" }
 zcv-picker = { path = "zcv-picker" }
 zcv-preview-svg = { path = "zcv-preview-svg" }
 zcv-project = { path = "zcv-project" }
+zcv-settings = { path = "zcv-settings" }
 zcv-theme = { path = "zcv-theme" }
 zcv-ui = { path = "zcv-ui" }
 zcv-workspace = { path = "zcv-workspace" }

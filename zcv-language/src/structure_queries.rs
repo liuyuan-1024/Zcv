@@ -6,7 +6,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use tree_sitter::StreamingIterator;
-use zcv_engine::{ByteOffset, Line, Snapshot};
+use zcv_engine::{ByteOffset, EngineResult, Line, Snapshot};
 
 use crate::syntax_map::SyntaxSnapshot;
 use crate::tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider};
@@ -29,6 +29,15 @@ pub struct OutlineItem {
 pub struct IndentRange {
     pub range: Range<usize>,
     pub end: Option<Range<usize>>,
+}
+
+/// 在指定光标位置按 Enter 后，目标行应采用的缩进。
+///
+/// `base_indent` 从最近的代码行继承，`additional_levels` 则由语言的 Tree-sitter 缩进查询决定。编辑器只需按其自身的 Tab 配置将额外层级转为空白字符。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewlineIndent {
+    pub base_indent: String,
+    pub additional_levels: usize,
 }
 
 /// 一个可折叠范围。
@@ -159,6 +168,39 @@ impl SyntaxSnapshot {
         ranges
     }
 
+    /// 基于语言语法树计算在 `offset` 处换行时，下一行的建议缩进。
+    ///
+    /// 这与编辑器 UI 无关：语言层负责找到缩进基准和未闭合的语法结构，编辑器负责将结果应用到插入文本。
+    pub fn suggested_newline_indent(
+        &self,
+        offset: ByteOffset,
+        text: &Snapshot,
+    ) -> EngineResult<NewlineIndent> {
+        let current_line = text.byte_to_line(offset)?;
+        let line_start = text.line_start_byte(current_line)?;
+        let prefix = text.slice_byte_range(line_start, offset)?;
+        let (basis_line, base_indent) = newline_indent_basis(text, current_line, prefix.as_str())?;
+        let query_start = offset.get().saturating_sub(1);
+        let query_end = offset.get().saturating_add(1).min(text.len_bytes().get());
+        let additional_levels = usize::from(
+            self.indent_ranges(query_start..query_end, text)
+                .into_iter()
+                .any(|range| {
+                    text.byte_to_line(ByteOffset::new(range.range.start)) == Ok(basis_line)
+                        && range.range.start < offset.get()
+                        && offset.get() < range.range.end
+                        && range
+                            .end
+                            .as_ref()
+                            .is_none_or(|end| offset.get() <= end.start)
+                }),
+        );
+        Ok(NewlineIndent {
+            base_indent,
+            additional_levels,
+        })
+    }
+
     pub fn fold_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<FoldRange> {
         if !self.can_query(&range, text) {
             return Vec::new();
@@ -282,6 +324,39 @@ impl SyntaxSnapshot {
     }
 }
 
+fn newline_indent_basis(
+    text: &Snapshot,
+    current_line: Line,
+    prefix: &str,
+) -> EngineResult<(Line, String)> {
+    if prefix
+        .chars()
+        .any(|character| !matches!(character, ' ' | '\t'))
+    {
+        return Ok((current_line, leading_whitespace(prefix)));
+    }
+
+    for line_index in (0..current_line.get()).rev() {
+        let line = Line::new(line_index);
+        let content = text.line_content(line, None)?;
+        if content
+            .as_str()
+            .chars()
+            .any(|character| !matches!(character, ' ' | '\t'))
+        {
+            return Ok((line, leading_whitespace(content.as_str())));
+        }
+    }
+
+    Ok((current_line, leading_whitespace(prefix)))
+}
+
+fn leading_whitespace(text: &str) -> String {
+    text.chars()
+        .take_while(|character| matches!(character, ' ' | '\t'))
+        .collect()
+}
+
 /// 行终止换行符（`\n`）的字节位置；行尾无换行符时返回行尾。
 ///
 /// 折叠范围从该位置开始：入口行换行符被折叠吞掉，占位符与闭合尾段拼在同一显示行。
@@ -307,7 +382,9 @@ fn line_content_end(text: &Snapshot, line: Line) -> ByteOffset {
 
 #[cfg(test)]
 mod tests {
+    use super::NewlineIndent;
     use crate::syntax_map::rust_buffer;
+    use zcv_engine::ByteOffset;
 
     #[test]
     fn rust_syntax_snapshot_exposes_zed_structure_queries() {
@@ -338,6 +415,35 @@ mod tests {
                 .text_object_ranges(full, &snapshot)
                 .iter()
                 .any(|range| range.kind.as_ref() == "function.around")
+        );
+    }
+
+    #[test]
+    fn rust_newline_indent_is_computed_in_the_language_layer() {
+        let source = "fn main() {\n    build()\n}";
+        let (buffer, syntax) = rust_buffer(source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let after_open_paren = source.find("build(").unwrap() + "build(".len();
+        let after_closed_call = source.find("build()").unwrap() + "build()".len();
+
+        assert_eq!(
+            syntax
+                .suggested_newline_indent(ByteOffset::new(after_open_paren), &snapshot)
+                .unwrap(),
+            NewlineIndent {
+                base_indent: "    ".to_owned(),
+                additional_levels: 1,
+            }
+        );
+        assert_eq!(
+            syntax
+                .suggested_newline_indent(ByteOffset::new(after_closed_call), &snapshot)
+                .unwrap(),
+            NewlineIndent {
+                base_indent: "    ".to_owned(),
+                additional_levels: 0,
+            }
         );
     }
 

@@ -11,5 +11,7 @@ mod tree_sitter_utils;
 pub use highlighting::HighlightSpan;
 pub use language::Language;
 pub use language_buffer::{LanguageBuffer, ParseStatus};
-pub use structure_queries::{BracketPair, FoldRange, IndentRange, OutlineItem, TextObjectRange};
+pub use structure_queries::{
+    BracketPair, FoldRange, IndentRange, NewlineIndent, OutlineItem, TextObjectRange,
+};
 pub use syntax_map::{SyntaxLayerInfo, SyntaxSnapshot};

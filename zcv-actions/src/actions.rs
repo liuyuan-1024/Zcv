@@ -100,3 +100,34 @@ actions!(
     project_picker,
     [ToggleProjectPicker, OpenLocalProject, DeleteRecentProject]
 );
+
+actions!(
+    version_control,
+    [
+        SelectPrev,
+        SelectNext,
+        Collapse,
+        Expand,
+        Activate,
+        InitRepository,
+        ToggleStaged,
+        Commit,
+        Uncommit
+    ]
+);
+
+actions!(
+    project_tree,
+    [
+        TreeSelectPrev,
+        TreeSelectNext,
+        TreeCollapse,
+        TreeExpand,
+        TreeActivate,
+        TreeRename,
+        TreeNewEntry,
+        TreeTrash,
+        TreeConfirmEdit,
+        TreeCancelEdit
+    ]
+);

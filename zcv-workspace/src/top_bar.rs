@@ -26,10 +26,11 @@ impl TopBar {
     pub fn new(
         on_selected: OnProjectSelected,
         on_branch: OnBranchSelected,
+        window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> Self {
-        let project_picker = cx.new(|cx| ProjectPicker::new(on_selected, cx));
-        let branch_picker = cx.new(|cx| BranchPicker::new(on_branch, cx));
+        let project_picker = cx.new(|cx| ProjectPicker::new(on_selected, window, cx));
+        let branch_picker = cx.new(|cx| BranchPicker::new(on_branch, window, cx));
         Self {
             project_picker,
             branch_picker,

@@ -53,11 +53,6 @@ impl BufferOrigin {
     pub fn handle(&self) -> Option<&str> {
         self.handle.as_deref()
     }
-
-    /// 是否是匿名 / 临时来源（无 host 持久化句柄）。
-    pub fn is_anonymous(&self) -> bool {
-        matches!(self.kind, OriginKind::Anonymous)
-    }
 }
 
 impl Default for BufferOrigin {
@@ -90,9 +85,7 @@ mod tests {
 
         assert_eq!(anonymous.kind(), OriginKind::Anonymous);
         assert_eq!(anonymous.handle(), None);
-        assert!(anonymous.is_anonymous());
         assert_eq!(external.kind(), OriginKind::External);
         assert_eq!(external.handle(), Some("test://opaque/path"));
-        assert!(!external.is_anonymous());
     }
 }

@@ -13,7 +13,11 @@ use std::rc::Rc;
 
 use gpui::{
     App, Context, Div, ElementId, Entity, FocusHandle, MouseButton, ScrollStrategy,
-    UniformListScrollHandle, WeakEntity, Window, actions, div, prelude::*, uniform_list,
+    UniformListScrollHandle, WeakEntity, Window, div, prelude::*, uniform_list,
+};
+use zcv_actions::{
+    Activate, Collapse, Commit, Expand, InitRepository, SelectNext, SelectPrev, ToggleStaged,
+    Uncommit,
 };
 use zcv_editor::Editor;
 use zcv_git::{DiffStat, FileStatus, StatusCode};
@@ -24,21 +28,6 @@ use zcv_workspace::{Panel, ToggleVersionControl};
 
 use crate::git_status::git_status_color;
 use crate::workspace::OnOpenFile;
-
-actions!(
-    version_control,
-    [
-        SelectPrev,
-        SelectNext,
-        Collapse,
-        Expand,
-        Activate,
-        InitRepository,
-        ToggleStaged,
-        Commit,
-        Uncommit
-    ]
-);
 
 // 版本控制快捷键归属于 `VersionControl` 上下文，由统一快捷键注册表加载；组件内不重复注册。
 

@@ -1,14 +1,26 @@
 use zcv_engine::*;
-mod common;
+pub mod common;
 use common::*;
 
 #[test]
 fn create_edit_delete_replace_should_update_text_version_dirty_and_line_index() {
     let mut buffer = buffer("helo\n世界");
 
-    buffer.insert(b(2), "l").unwrap();
-    buffer.replace(range(6, 12), "Rust").unwrap();
-    buffer.delete(range(5, 6)).unwrap();
+    buffer
+        .edit(
+            [Edit::insert(b(2), "l").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    buffer
+        .edit(
+            [Edit::replace(range(6, 12), "Rust")],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    buffer
+        .edit([Edit::delete(range(5, 6))], TransactionMetadata::default())
+        .unwrap();
 
     assert_eq!(buffer_text(&buffer), "helloRust");
     assert_eq!(buffer.version(), BufferVersion::new(3));
@@ -24,7 +36,12 @@ fn apply_edit_at_invalid_utf8_boundary_should_fail_atomically() {
     let before_text = buffer_text(&buffer);
     let before_version = buffer.version();
 
-    let err = buffer.insert(b(1), "x").unwrap_err();
+    let err = buffer
+        .edit(
+            [Edit::insert(b(1), "x").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap_err();
 
     assert!(
         matches!(
@@ -47,9 +64,21 @@ fn read_only_state_should_reject_all_text_mutations_without_state_transition() {
     let mut buffer = buffer("abc").into_read_only();
     let version = buffer.version();
 
-    let insert = buffer.insert(b(3), "x").unwrap_err();
-    let delete = buffer.delete(range(0, 1)).unwrap_err();
-    let replace = buffer.replace(range(0, 1), "A").unwrap_err();
+    let insert = buffer
+        .edit(
+            [Edit::insert(b(3), "x").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap_err();
+    let delete = buffer
+        .edit([Edit::delete(range(0, 1))], TransactionMetadata::default())
+        .unwrap_err();
+    let replace = buffer
+        .edit(
+            [Edit::replace(range(0, 1), "A")],
+            TransactionMetadata::default(),
+        )
+        .unwrap_err();
 
     for err in [insert, delete, replace] {
         assert!(matches!(err, EngineError::Storage(StorageError::ReadOnly)));
@@ -61,14 +90,23 @@ fn read_only_state_should_reject_all_text_mutations_without_state_transition() {
 
 #[test]
 fn saved_and_external_sync_versions_should_track_independent_boundaries() {
-    let mut buffer =
-        Buffer::with_external("opaque://doc", "abc".to_string(), BufferConfig::default()).unwrap();
+    let mut buffer = Buffer::with_origin(
+        BufferOrigin::external("opaque://doc"),
+        "abc".to_string(),
+        BufferConfig::default(),
+    )
+    .unwrap();
 
     assert_eq!(buffer.origin().handle(), Some("opaque://doc"));
     assert!(!buffer.is_synced_with_external());
     assert!(!buffer.is_dirty());
 
-    buffer.insert(b(3), "!").unwrap();
+    buffer
+        .edit(
+            [Edit::insert(b(3), "!").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
     assert!(buffer.is_dirty());
     assert!(!buffer.is_synced_with_external());
 
@@ -86,12 +124,15 @@ fn snapshot_should_remain_version_bound_and_immutable_after_buffer_transition() 
     let mut buffer = buffer("one\ntwo");
     let snapshot = buffer.snapshot();
 
-    buffer.replace(range(4, 7), "TWO").unwrap();
+    buffer
+        .edit(
+            [Edit::replace(range(4, 7), "TWO")],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
 
     assert_eq!(buffer_text(&snapshot), "one\ntwo");
     assert_eq!(snapshot.version(), BufferVersion::INITIAL);
-    assert!(snapshot.is_stale_for_version(buffer.version()));
-    assert!(buffer.is_snapshot_stale(&snapshot));
     assert_eq!(buffer_text(&buffer), "one\nTWO");
 }
 
@@ -131,7 +172,12 @@ fn loaded_text_boundary_should_record_bom_encoding_line_endings_and_invalid_utf8
 #[test]
 fn reload_should_replace_storage_clear_history_and_leave_view_selection_to_host() {
     let mut buffer = buffer("old");
-    buffer.insert(b(3), "!").unwrap();
+    buffer
+        .edit(
+            [Edit::insert(b(3), "!").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
     let view_selection = SelectionSet::caret(b(4));
     assert!(buffer.can_undo());
 
@@ -150,7 +196,12 @@ fn reload_should_replace_storage_clear_history_and_leave_view_selection_to_host(
 fn write_to_should_reject_stale_version_and_normalize_configured_line_endings() {
     let mut buffer = buffer("a\nb");
     let stale = buffer.version();
-    buffer.insert(b(3), "\r\nc").unwrap();
+    buffer
+        .edit(
+            [Edit::insert(b(3), "\r\nc").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
 
     let err = buffer.write_to(stale, Vec::new()).unwrap_err();
     assert!(matches!(

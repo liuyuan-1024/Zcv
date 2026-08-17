@@ -87,27 +87,6 @@ fn status_accepts_path_prefixes() {
 }
 
 #[test]
-fn head_returns_branch_and_oid() {
-    let (root, _temp) = test_repo();
-    let repo = open_repo(&root);
-
-    let (branch, oid) = repo.head().expect("head 应成功");
-    assert_eq!(branch.as_deref(), Some("master"));
-    assert!(oid.is_some_and(|oid| !oid.is_empty()));
-}
-
-#[test]
-fn head_is_none_in_empty_repository() {
-    let temp_dir = tempfile::tempdir().expect("应创建临时目录");
-    run_in(temp_dir.path(), &["git", "init", "-q"]);
-    let repo = open_repo(temp_dir.path());
-
-    let (branch, oid) = repo.head().expect("head 应成功");
-    assert!(branch.is_none());
-    assert!(oid.is_none());
-}
-
-#[test]
 fn diff_stat_reports_staged_and_unstaged() {
     let (root, _temp) = test_repo();
     let repo = open_repo(&root);
@@ -157,7 +136,7 @@ fn load_revisions_reads_head_and_index_contents() {
     let (root, _temp) = test_repo();
     let repo = open_repo(&root);
 
-    let (_, head_oid) = repo.head().expect("head 应成功");
+    let (head_oid, _) = repo.head_commit().expect("head_commit 应成功");
     let head_oid = head_oid.expect("应有 HEAD");
 
     let contents = repo
@@ -756,10 +735,13 @@ fn checkout_switches_branch() {
     run_in(&root, &["git", "checkout", "-q", "-b", "feature"]);
 
     repository.checkout("master").expect("checkout 应成功");
-    assert_eq!(
-        repository.head().expect("head 应成功").0.as_deref(),
-        Some("master")
-    );
+    let current = repository
+        .branches()
+        .expect("branches 应成功")
+        .into_iter()
+        .find(|branch| branch.is_head)
+        .expect("应有当前分支");
+    assert_eq!(current.name, "master");
 }
 
 #[test]
@@ -778,17 +760,23 @@ fn create_branch_creates_and_switches() {
     repository
         .create_branch("feature", None)
         .expect("create_branch 应成功");
-    assert_eq!(
-        repository.head().expect("head 应成功").0.as_deref(),
-        Some("feature")
-    );
+    let current = repository
+        .branches()
+        .expect("branches 应成功")
+        .into_iter()
+        .find(|branch| branch.is_head)
+        .expect("应有当前分支");
+    assert_eq!(current.name, "feature");
 
     // 显式 base：从 master 创建并切换。
     repository
         .create_branch("from_master", Some("master"))
         .expect("create_branch 应成功");
-    assert_eq!(
-        repository.head().expect("head 应成功").0.as_deref(),
-        Some("from_master")
-    );
+    let current = repository
+        .branches()
+        .expect("branches 应成功")
+        .into_iter()
+        .find(|branch| branch.is_head)
+        .expect("应有当前分支");
+    assert_eq!(current.name, "from_master");
 }

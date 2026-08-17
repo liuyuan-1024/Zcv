@@ -10,8 +10,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    App, Context, Corner, Entity, FocusHandle, Focusable, MouseButton, Pixels, Render, Window,
-    anchored, deferred, div, point, prelude::*, px,
+    App, Context, Corner, Entity, FocusHandle, MouseButton, Pixels, Render, Window, anchored,
+    deferred, div, point, prelude::*, px,
 };
 use zcv_git::Branch;
 use zcv_picker::{Picker, PickerDelegate};
@@ -179,11 +179,11 @@ pub struct BranchPicker {
 }
 
 impl BranchPicker {
-    pub fn new(on_select: OnBranchSelected, cx: &mut Context<Self>) -> Self {
+    pub fn new(on_select: OnBranchSelected, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let delegate = BranchPickerDelegate::new(Vec::new(), on_select);
         let dismiss_flag = Rc::new(Cell::new(false));
 
-        let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, cx));
+        let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
         let on_dismiss = {
             let df = dismiss_flag.clone();
             Box::new(move |window: &mut Window, _app: &mut App| {
@@ -191,10 +191,7 @@ impl BranchPicker {
                 window.refresh();
             })
         };
-        picker.update(cx, |picker, cx| {
-            picker.init(cx);
-            picker.set_on_dismiss(on_dismiss);
-        });
+        picker.update(cx, |picker, _| picker.set_on_dismiss(on_dismiss));
 
         Self {
             is_open: false,
@@ -225,13 +222,11 @@ impl BranchPicker {
             let branches = self.branches.clone();
             self.picker.update(cx, |picker, cx| {
                 picker.delegate_mut().reload(branches);
-                picker.search_input().update(cx, |input, cx| {
-                    input.set_text("", cx);
-                });
+                picker.search_input().set_text("", cx);
                 cx.notify();
             });
             let input = self.picker.read(cx).search_input().clone();
-            let focus = input.read(cx).focus_handle(cx);
+            let focus = input.focus_handle(cx);
             window.focus(&focus);
         } else {
             window.focus(&self.focus);

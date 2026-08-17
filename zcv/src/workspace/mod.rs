@@ -146,7 +146,7 @@ fn initialize_workspace(
         }
     });
 
-    let top_bar = cx.new(|cx| TopBar::new(on_project_selected, on_branch, cx));
+    let top_bar = cx.new(|cx| TopBar::new(on_project_selected, on_branch, window, cx));
     top_bar.update(cx, |bar, cx| {
         let label = root
             .file_name()
@@ -450,7 +450,7 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
             missing.push(path.clone());
             continue;
         };
-        let hunks: Vec<zcv_git::DiffHunk> = hunks.to_vec();
+        let hunks: Vec<zcv_buffer_diff::DiffHunk> = hunks.to_vec();
         editor.update(cx, |editor, cx| editor.set_diff_hunks(hunks, cx));
     }
     if !missing.is_empty() {
@@ -466,7 +466,8 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
             hunks.iter().any(|hunk| {
                 matches!(
                     hunk.kind,
-                    zcv_git::DiffHunkKind::Deleted | zcv_git::DiffHunkKind::Modified
+                    zcv_buffer_diff::DiffHunkKind::Deleted
+                        | zcv_buffer_diff::DiffHunkKind::Modified
                 )
             })
         });

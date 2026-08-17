@@ -48,7 +48,7 @@ impl TextPatch {
         self.edits.is_empty()
     }
 
-    pub fn compose(&self, next: &Self) -> Self {
+    pub(crate) fn compose(&self, next: &Self) -> Self {
         let old = self.edits.iter().map(RawPatchEdit::from).collect();
         let next = next.edits.iter().map(RawPatchEdit::from).collect();
         Self {
@@ -62,9 +62,9 @@ impl TextPatch {
     pub(crate) fn from_delta(delta: &Delta) -> Self {
         let mut removed = 0usize;
         let mut inserted = 0usize;
-        let mut edits = Vec::with_capacity(delta.edits().as_slice().len());
+        let mut edits = Vec::with_capacity(delta.edits().len());
 
-        for edit in delta.edits().as_slice() {
+        for edit in delta.edits() {
             let old = edit.range();
             let new_start = old
                 .start()
@@ -380,7 +380,7 @@ fn text_range(range: Range<usize>) -> TextRange {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Buffer, BufferConfig, Edit, Transaction};
+    use crate::{Buffer, BufferConfig, Edit, TransactionMetadata};
 
     use super::*;
 
@@ -416,12 +416,12 @@ mod tests {
         let initial_version = buffer.version();
 
         for replacement in ["x", "yz"] {
-            let transaction = Transaction::from_edits(
-                buffer.version(),
-                vec![Edit::insert(buffer.len_bytes(), replacement).expect("插入应有效")],
-            )
-            .expect("事务应有效");
-            buffer.apply_transaction(transaction).expect("事务应成功");
+            buffer
+                .edit(
+                    [Edit::insert(buffer.len_bytes(), replacement).expect("插入应有效")],
+                    TransactionMetadata::default(),
+                )
+                .expect("事务应成功");
         }
 
         let first_batch = first.consume();

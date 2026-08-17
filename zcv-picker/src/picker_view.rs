@@ -6,15 +6,17 @@
 //! - 搜索过滤、键盘导航、确认/取消均由 Picker 内部处理
 //! - 调用方只需要实现 `PickerDelegate` 并提供数据
 
+use std::sync::Arc;
+
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, Pixels, Render, SharedString, Window, div,
-    prelude::*, px,
+    AnyElement, App, Context, FocusHandle, Pixels, Render, SharedString, Window, div, prelude::*,
+    px,
 };
 pub use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev,
 };
 use zcv_theme::{color, space};
-use zcv_ui::TextInput;
+use zcv_ui::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent};
 
 // ═══ PickerDelegate ═════════════════════════════════════════════
 
@@ -60,7 +62,7 @@ pub(crate) type OnDismiss = Box<dyn Fn(&mut Window, &mut App)>;
 
 pub struct Picker<D: PickerDelegate> {
     delegate: D,
-    search_input: Entity<TextInput>,
+    search_input: Arc<dyn ErasedEditor>,
     focus_handle: FocusHandle,
     width: Pixels,
     query: String,
@@ -68,35 +70,41 @@ pub struct Picker<D: PickerDelegate> {
 }
 
 impl<D: PickerDelegate> Picker<D> {
-    pub fn new(delegate: D, width: Pixels, cx: &mut Context<Self>) -> Self {
+    pub fn new(delegate: D, width: Pixels, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let placeholder = delegate.placeholder_text().to_owned();
-        let search_input = cx.new(|cx| {
-            let mut input = TextInput::new(cx);
-            input.set_placeholder_text(placeholder, cx);
-            input
-        });
-        Self {
+        let search_input = EDITOR_FACTORY
+            .get()
+            .expect("Picker 创建前必须初始化 Editor factory")(cx);
+        search_input.set_placeholder_text(&placeholder, cx);
+
+        let picker = Self {
             delegate,
-            search_input,
+            search_input: Arc::clone(&search_input),
             focus_handle: focus,
             width,
             query: String::new(),
             on_dismiss: None,
-        }
-    }
-
-    /// Entity 创建后调用，连接搜索框输入。
-    pub fn init(&mut self, cx: &mut Context<Self>) {
-        cx.observe(&self.search_input, |picker, input, cx| {
-            let query = input.read(cx).text().to_owned();
-            if picker.query != query {
-                picker.query = query.clone();
-                picker.delegate.update_matches(query);
-                cx.notify();
-            }
-        })
-        .detach();
+        };
+        let weak = cx.weak_entity();
+        search_input
+            .subscribe(
+                Box::new(move |ErasedEditorEvent::Edited, _, cx| {
+                    weak.update(cx, |picker, cx| {
+                        let query = picker.search_input.text(cx);
+                        if picker.query != query {
+                            picker.query = query.clone();
+                            picker.delegate.update_matches(query);
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }),
+                window,
+                cx,
+            )
+            .detach();
+        picker
     }
 
     /// 设置关闭回调（由父 Entity 调用，例如关闭浮层）。
@@ -112,7 +120,7 @@ impl<D: PickerDelegate> Picker<D> {
         &mut self.delegate
     }
 
-    pub fn search_input(&self) -> &Entity<TextInput> {
+    pub fn search_input(&self) -> &Arc<dyn ErasedEditor> {
         &self.search_input
     }
 
@@ -227,7 +235,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel));
 
-        root.child(picker_search_box(self.search_input.clone(), cx))
+        root.child(picker_search_box(self.search_input.render(), cx))
             .when_some(self.delegate.render_header(), |el, h| el.child(h))
             .when_some(no_match, |el, n| el.child(n))
             .child(items)
@@ -238,7 +246,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
 }
 
 /// 搜索框容器：带回顶部边框和间距。
-pub fn picker_search_box(content: impl IntoElement, cx: &App) -> impl IntoElement {
+fn picker_search_box(content: impl IntoElement, cx: &App) -> impl IntoElement {
     div()
         .w_full()
         .flex()
@@ -265,13 +273,17 @@ mod tests {
     use std::rc::Rc;
 
     use gpui::{
-        AppContext, FocusHandle, Focusable, KeyBinding, TestAppContext, actions, anchored,
-        deferred, point, size,
+        AppContext, Entity, FocusHandle, KeyBinding, TestAppContext, actions, anchored, deferred,
+        point, size,
     };
 
     use super::*;
     use zcv_actions::Newline;
     use zcv_ui::ListItem;
+
+    fn init(cx: &mut TestAppContext) {
+        cx.update(zcv_editor::init);
+    }
 
     /// 行内含超长文本（换行后行高很大），用于验证列表高度受容器约束。
     struct TallDelegate {
@@ -349,17 +361,17 @@ mod tests {
     /// 换行后列表内容高于容器时，列表必须收缩在可用空间内滚动，footer 保持可见且不被列表遮挡。
     #[gpui::test]
     fn footer_stays_visible_with_tall_rows(cx: &mut TestAppContext) {
-        let (_, cx) = cx.add_window_view(|_, cx| {
+        init(cx);
+        let (_, cx) = cx.add_window_view(|window, cx| {
             let picker = cx.new(|cx| {
-                let mut picker = Picker::new(
+                Picker::new(
                     TallDelegate {
                         selected: Rc::new(Cell::new(0)),
                     },
                     px(300.0),
+                    window,
                     cx,
-                );
-                picker.init(cx);
-                picker
+                )
             });
             PopoverWrapper { picker }
         });
@@ -389,21 +401,21 @@ mod tests {
         fn new(
             editor_fired: Rc<Cell<bool>>,
             picker_fired: Rc<Cell<bool>>,
+            window: &mut Window,
             cx: &mut Context<Self>,
         ) -> Self {
             Self {
                 focus: cx.focus_handle(),
                 picker: cx.new(|cx| {
-                    let mut picker = Picker::new(
+                    Picker::new(
                         ConfirmDelegate {
                             confirmed: Rc::new(Cell::new(false)),
                             selected_index: Rc::new(Cell::new(0)),
                         },
                         px(300.0),
+                        window,
                         cx,
-                    );
-                    picker.init(cx);
-                    picker
+                    )
                 }),
                 editor_fired,
                 picker_fired,
@@ -456,20 +468,20 @@ mod tests {
 
     #[gpui::test]
     fn search_input_drives_picker_query(cx: &mut TestAppContext) {
-        let picker = cx.new(|cx| {
-            let mut picker = Picker::new(
+        init(cx);
+        let (picker, cx) = cx.add_window_view(|window, cx| {
+            Picker::new(
                 TestDelegate {
                     query: String::new(),
                 },
                 px(300.0),
+                window,
                 cx,
-            );
-            picker.init(cx);
-            picker
+            )
         });
         let input = cx.read_entity(&picker, |picker, _| picker.search_input().clone());
 
-        cx.update_entity(&input, |input, cx| input.set_text("分支", cx));
+        cx.update(|_, cx| input.set_text("分支", cx));
         cx.run_until_parked();
 
         cx.read_entity(&picker, |picker, _| {
@@ -511,12 +523,13 @@ mod tests {
 
     #[gpui::test]
     fn navigation_and_confirm_work_while_search_editor_is_focused(cx: &mut TestAppContext) {
+        init(cx);
         let confirmed = Rc::new(Cell::new(false));
         let selected_index = Rc::new(Cell::new(0));
         let (picker, cx) = cx.add_window_view({
             let confirmed = confirmed.clone();
             let selected_index = selected_index.clone();
-            move |_, cx| {
+            move |window, cx| {
                 cx.bind_keys([
                     KeyBinding::new("down", zcv_actions::MoveDown, Some("Editor")),
                     KeyBinding::new("down", PickerSelectNext, Some("Picker")),
@@ -529,12 +542,13 @@ mod tests {
                         selected_index,
                     },
                     px(300.0),
+                    window,
                     cx,
                 )
             }
         });
         let input = cx.read_entity(&picker, |picker, _| picker.search_input().clone());
-        cx.update(|window, cx| window.focus(&input.read(cx).focus_handle(cx)));
+        cx.update(|window, cx| window.focus(&input.focus_handle(cx)));
 
         cx.simulate_keystrokes("down");
         assert_eq!(selected_index.get(), 1);
@@ -546,17 +560,17 @@ mod tests {
     /// 虚拟化列表必须获得确定高度，行才能被渲染出来。
     #[gpui::test]
     fn picker_list_has_visible_height(cx: &mut TestAppContext) {
-        let (view, cx) = cx.add_window_view(|_, cx| {
-            let mut picker = Picker::new(
+        init(cx);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            Picker::new(
                 ConfirmDelegate {
                     confirmed: Rc::new(Cell::new(false)),
                     selected_index: Rc::new(Cell::new(0)),
                 },
                 px(300.0),
+                window,
                 cx,
-            );
-            picker.init(cx);
-            picker
+            )
         });
         let _ = view;
         let list_bounds = cx.debug_bounds("picker-list").expect("列表容器应参与布局");
@@ -571,23 +585,24 @@ mod tests {
     /// 被 DeleteToBeginningOfLine 抢占的原因。
     #[gpui::test]
     fn editor_binding_wins_over_plain_picker_context(cx: &mut TestAppContext) {
+        init(cx);
         let editor_fired = Rc::new(Cell::new(false));
         let picker_fired = Rc::new(Cell::new(false));
         let (view, cx) = cx.add_window_view({
             let editor_fired = editor_fired.clone();
             let picker_fired = picker_fired.clone();
-            move |_, cx| {
+            move |window, cx| {
                 cx.bind_keys([
                     KeyBinding::new("cmd-backspace", EditorDelete, Some("Editor")),
                     KeyBinding::new("cmd-backspace", PickerDelete, Some("Picker")),
                 ]);
-                PickerWithContext::new(editor_fired, picker_fired, cx)
+                PickerWithContext::new(editor_fired, picker_fired, window, cx)
             }
         });
         let input = cx.read_entity(&view, |view, cx| {
             view.picker.read(cx).search_input().clone()
         });
-        cx.update(|window, cx| window.focus(&input.read(cx).focus_handle(cx)));
+        cx.update(|window, cx| window.focus(&input.focus_handle(cx)));
 
         cx.simulate_keystrokes("cmd-backspace");
 
@@ -599,12 +614,13 @@ mod tests {
     /// 后注册优先 —— 项目选择器打开时删除快捷键覆盖 Editor 的 cmd-backspace。
     #[gpui::test]
     fn composite_context_binding_wins_over_editor(cx: &mut TestAppContext) {
+        init(cx);
         let editor_fired = Rc::new(Cell::new(false));
         let picker_fired = Rc::new(Cell::new(false));
         let (view, cx) = cx.add_window_view({
             let editor_fired = editor_fired.clone();
             let picker_fired = picker_fired.clone();
-            move |_, cx| {
+            move |window, cx| {
                 cx.bind_keys([
                     KeyBinding::new("cmd-backspace", EditorDelete, Some("Editor")),
                     KeyBinding::new(
@@ -613,13 +629,13 @@ mod tests {
                         Some("Picker || (ProjectPicker > Picker > Editor)"),
                     ),
                 ]);
-                PickerWithContext::new(editor_fired, picker_fired, cx)
+                PickerWithContext::new(editor_fired, picker_fired, window, cx)
             }
         });
         let input = cx.read_entity(&view, |view, cx| {
             view.picker.read(cx).search_input().clone()
         });
-        cx.update(|window, cx| window.focus(&input.read(cx).focus_handle(cx)));
+        cx.update(|window, cx| window.focus(&input.focus_handle(cx)));
 
         cx.simulate_keystrokes("cmd-backspace");
 

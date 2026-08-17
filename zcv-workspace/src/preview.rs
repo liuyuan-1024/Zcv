@@ -4,6 +4,7 @@
 //! 格式 crate 实现 [`PreviewProvider`]，并创建一个直接实现 Item 协议的具体预览视图。
 //! 预览视图自身通过 [`PreviewItem`] 暴露与源码 Item 的关联，经 `Item::as_preview_item` 桥接获取（对齐 Zed 的 `as_searchable` 模式），不占用 Item 主接口。
 
+use std::any::TypeId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -11,17 +12,6 @@ use gpui::{App, BorrowAppContext, Entity, Global};
 use zcv_engine::Buffer;
 
 use crate::item::{Item, ItemHandle};
-
-/// 稳定标识一种预览 Provider。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PreviewProviderId(pub &'static str);
-
-/// Preview Provider 对宿主公开的元数据。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PreviewDescriptor {
-    pub id: PreviewProviderId,
-    pub display_name: &'static str,
-}
 
 /// 交给 Preview Provider 的文档输入：预览视图的源码 Item 与展示路径。
 #[derive(Clone)]
@@ -58,44 +48,51 @@ impl<T: PreviewItem> PreviewItemHandle for Entity<T> {
 
 /// 文件格式预览的工厂接口。
 pub trait PreviewProvider: Send + Sync + 'static {
-    fn descriptor(&self) -> PreviewDescriptor;
-
     fn supports(&self, path: &Path, cx: &App) -> bool;
 
     fn create(&self, document: PreviewDocument, cx: &mut App) -> Box<dyn ItemHandle>;
 }
 
+struct RegisteredPreviewProvider {
+    type_id: TypeId,
+    provider: Arc<dyn PreviewProvider>,
+}
+
 #[derive(Default)]
 struct PreviewRegistry {
-    providers: Vec<Arc<dyn PreviewProvider>>,
+    providers: Vec<RegisteredPreviewProvider>,
 }
 
 impl Global for PreviewRegistry {}
 
-/// 注册格式预览 Provider。同一 PreviewProviderId 只注册一次。
-pub fn register(provider: impl PreviewProvider, cx: &mut App) {
+/// 注册格式预览 Provider。同一具体 Provider 类型只注册一次。
+pub fn register<P: PreviewProvider>(provider: P, cx: &mut App) {
     if !cx.has_global::<PreviewRegistry>() {
         cx.set_global(PreviewRegistry::default());
     }
-    let id = provider.descriptor().id;
+    let type_id = TypeId::of::<P>();
     cx.update_global::<PreviewRegistry, _>(|registry, _| {
         if registry
             .providers
             .iter()
-            .all(|existing| existing.descriptor().id != id)
+            .all(|entry| entry.type_id != type_id)
         {
-            registry.providers.push(Arc::new(provider));
+            registry.providers.push(RegisteredPreviewProvider {
+                type_id,
+                provider: Arc::new(provider),
+            });
         }
     });
 }
 
-/// 返回第一个支持该路径的 Preview Provider。
+/// 返回最后注册且支持该路径的 Preview Provider。
 pub fn provider_for(path: &Path, cx: &App) -> Option<Arc<dyn PreviewProvider>> {
     cx.try_global::<PreviewRegistry>()?
         .providers
         .iter()
-        .find(|provider| provider.supports(path, cx))
-        .cloned()
+        .rev()
+        .find(|entry| entry.provider.supports(path, cx))
+        .map(|entry| Arc::clone(&entry.provider))
 }
 
 #[cfg(test)]
@@ -106,14 +103,9 @@ mod tests {
 
     struct DiagramProvider;
 
-    impl PreviewProvider for DiagramProvider {
-        fn descriptor(&self) -> PreviewDescriptor {
-            PreviewDescriptor {
-                id: PreviewProviderId("diagram"),
-                display_name: "Diagram",
-            }
-        }
+    struct LaterDiagramProvider;
 
+    impl PreviewProvider for DiagramProvider {
         fn supports(&self, path: &Path, _cx: &App) -> bool {
             path.extension()
                 .is_some_and(|extension| extension == "diagram")
@@ -121,6 +113,17 @@ mod tests {
 
         fn create(&self, _document: PreviewDocument, _cx: &mut App) -> Box<dyn ItemHandle> {
             panic!("注册表匹配测试不应创建视图")
+        }
+    }
+
+    impl PreviewProvider for LaterDiagramProvider {
+        fn supports(&self, path: &Path, _cx: &App) -> bool {
+            path.extension()
+                .is_some_and(|extension| extension == "diagram")
+        }
+
+        fn create(&self, _document: PreviewDocument, _cx: &mut App) -> Box<dyn ItemHandle> {
+            panic!("注册表优先级测试不应创建视图")
         }
     }
 
@@ -134,10 +137,26 @@ mod tests {
         cx.read(|cx| {
             let provider = provider_for(Path::new("architecture.diagram"), cx)
                 .expect("新格式应由注册的 Provider 匹配");
-            assert_eq!(provider.descriptor().id, PreviewProviderId("diagram"));
-            assert_eq!(provider.descriptor().display_name, "Diagram");
+            assert!(provider.supports(Path::new("architecture.diagram"), cx));
             assert!(provider_for(Path::new("architecture.txt"), cx).is_none());
             assert_eq!(cx.global::<PreviewRegistry>().providers.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn last_registered_matching_provider_takes_priority(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            register(DiagramProvider, cx);
+            register(LaterDiagramProvider, cx);
+        });
+
+        cx.read(|cx| {
+            let selected = provider_for(Path::new("architecture.diagram"), cx).unwrap();
+            let registry = cx.global::<PreviewRegistry>();
+            assert!(Arc::ptr_eq(
+                &selected,
+                &registry.providers.last().unwrap().provider
+            ));
         });
     }
 }

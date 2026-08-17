@@ -9,8 +9,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, ClickEvent, Context, Corner, Entity, FocusHandle, Focusable, MouseButton,
-    PathPromptOptions, Pixels, Render, Window, anchored, deferred, div, point, prelude::*, px,
+    Action, App, ClickEvent, Context, Corner, Entity, FocusHandle, MouseButton, PathPromptOptions,
+    Pixels, Render, Window, anchored, deferred, div, point, prelude::*, px,
 };
 use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
 use zcv_keymap::KeyBindings;
@@ -247,7 +247,11 @@ impl ProjectPicker {
         projects
     }
 
-    pub fn new(on_selected: OnProjectSelected, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        on_selected: OnProjectSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let projects = Self::load_projects();
         let current_label = projects
             .iter()
@@ -258,7 +262,7 @@ impl ProjectPicker {
         let dismiss_flag = Rc::new(Cell::new(false));
         let pending_path = Rc::new(RefCell::new(None));
 
-        let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, cx));
+        let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
         let on_dismiss = {
             let df = dismiss_flag.clone();
             Box::new(move |window: &mut Window, _app: &mut App| {
@@ -266,10 +270,7 @@ impl ProjectPicker {
                 window.refresh();
             })
         };
-        picker.update(cx, |picker, cx| {
-            picker.init(cx);
-            picker.set_on_dismiss(on_dismiss);
-        });
+        picker.update(cx, |picker, _| picker.set_on_dismiss(on_dismiss));
 
         Self {
             is_open: false,
@@ -296,9 +297,7 @@ impl ProjectPicker {
             self.picker.update(cx, |picker, cx| {
                 picker.delegate_mut().reload_projects();
                 // 清空搜索框文字
-                picker.search_input().update(cx, |input, cx| {
-                    input.set_text("", cx);
-                });
+                picker.search_input().set_text("", cx);
                 cx.notify();
             });
             // 同步 glyph 上显示的当前项目名
@@ -307,7 +306,7 @@ impl ProjectPicker {
                 self.current_label = entry.label.clone();
             }
             let input = self.picker.read(cx).search_input().clone();
-            let focus = input.read(cx).focus_handle(cx);
+            let focus = input.focus_handle(cx);
             window.focus(&focus);
         } else {
             window.focus(&self.focus);

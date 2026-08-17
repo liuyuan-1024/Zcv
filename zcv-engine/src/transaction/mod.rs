@@ -14,10 +14,10 @@ mod source;
 mod transaction_record;
 
 pub use changeset::ChangeSet;
-pub use core::Transaction;
+pub(crate) use core::Transaction;
 pub use delta::{Delta, DeltaEvent};
 pub use edit::Edit;
-pub use edit_list::EditList;
+pub(crate) use edit_list::EditList;
 pub use metadata::{TransactionMergePolicy, TransactionMetadata};
 pub use outcome::TransactionOutcome;
 pub use source::TransactionSource;

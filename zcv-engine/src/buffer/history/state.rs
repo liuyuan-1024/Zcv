@@ -80,13 +80,6 @@ impl HistoryState {
         }
     }
 
-    /// 当前节点的父节点；用于 undo 时定位。
-    pub(in crate::buffer) fn parent_of_current(&self) -> Option<HistoryNodeId> {
-        self.current
-            .and_then(|id| self.nodes.get(&id))
-            .and_then(|node| node.parent)
-    }
-
     /// 当前可选 redo 分支，按创建顺序排列（末尾为最近一次创建的子节点 = 默认 redo 目标）。
     pub(in crate::buffer) fn children_of_current(&self) -> &[HistoryNodeId] {
         match self.current {
@@ -214,10 +207,8 @@ impl HistoryState {
     ///
     /// - `max_nodes == 0` 直接清空整个历史图。
     /// - `max_bytes == 0` 表示不限制字节预算，仅按节点计数截断。
-    /// - 截断按 sequence_number 从最老的非 current 节点开始丢弃；被丢弃节点的
-    ///   子节点被 splice 到原父节点（或 roots）的同一位置，保持图连通。
-    /// - current 节点永远保留：即使仅存它一个时仍超字节预算也不丢（防止丢失编辑
-    ///   位置事实，调用方应通过 `set_large_file_policy` 选择更宽预算）。
+    /// - 截断按 sequence_number 从最老的非 current 节点开始丢弃；被丢弃节点的子节点被 splice 到原父节点（或 roots）的同一位置，保持图连通。
+    /// - current 节点永远保留：即使仅存它一个时仍超字节预算也不丢（防止丢失编辑位置事实，调用方应通过 `Buffer::set_config` 选择更宽预算）。
     pub(in crate::buffer) fn truncate_to_budget(&mut self, max_nodes: usize, max_bytes: usize) {
         if max_nodes == 0 {
             self.clear();

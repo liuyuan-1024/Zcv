@@ -3,10 +3,6 @@
 //! `Project` 管理项目根、目录快照（Worktree）、文件 Buffer 生命周期和文件系统监听。
 //! 窗口布局、Pane、Dock 与其他界面状态仍由 `Workspace` 管理。
 
-#[cfg(test)]
-#[path = "test/test_support.rs"]
-pub(crate) mod test_support;
-
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
@@ -339,10 +335,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use gpui::AppContext;
-    use zcv_engine::{BufferConfig, ByteOffset};
+    use zcv_engine::{BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
-    use super::test_support::test_git_repo;
     use super::*;
+    use crate::test_support::test_git_repo;
 
     #[test]
     fn saving_buffer_writes_current_version_and_marks_it_clean() {
@@ -350,7 +346,10 @@ mod tests {
         let mut buffer =
             Buffer::scratch("旧内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
         buffer
-            .insert(buffer.len_bytes(), " + 新内容")
+            .edit(
+                [Edit::insert(buffer.len_bytes(), " + 新内容").unwrap()],
+                TransactionMetadata::default(),
+            )
             .expect("测试编辑应成功");
         assert!(buffer.is_dirty());
 
@@ -370,7 +369,10 @@ mod tests {
         let mut buffer =
             Buffer::scratch("内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
         buffer
-            .insert(ByteOffset::ZERO, "未保存")
+            .edit(
+                [Edit::insert(ByteOffset::ZERO, "未保存").unwrap()],
+                TransactionMetadata::default(),
+            )
             .expect("测试编辑应成功");
 
         assert!(write_buffer_to_path(&mut buffer, &path).is_err());
@@ -611,7 +613,10 @@ mod tests {
         let engine_buffer = cx.read_entity(&buffer, |language_buffer, _| language_buffer.buffer());
         engine_buffer
             .update(cx, |buffer, _| {
-                buffer.insert(buffer.len_bytes(), "新增行\n")
+                buffer.edit(
+                    [Edit::insert(buffer.len_bytes(), "新增行\n").unwrap()],
+                    TransactionMetadata::default(),
+                )
             })
             .expect("编辑应成功");
         cx.run_until_parked();

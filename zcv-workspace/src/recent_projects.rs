@@ -1,10 +1,11 @@
 //! 最近项目列表持久化。
 //!
-//! 数据存储在各平台标准配置目录的 `zcv/recent_projects.json`，最多保留 20 条。
+//! 数据存储在统一配置目录（`~/.zcv`）的 `recent_projects.json`，最多保留 20 条。
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use zcv_settings::config_dir;
 
 // ═══ 数据 ════════════════════════════════════════════════════════
 
@@ -21,33 +22,6 @@ struct RecentProjects {
 }
 
 // ═══ 路径 ════════════════════════════════════════════════════════
-
-fn config_dir() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    if let Some(path) = std::env::var_os("APPDATA") {
-        return PathBuf::from(path).join("zcv");
-    }
-
-    #[cfg(target_os = "macos")]
-    if let Some(path) = std::env::var_os("HOME") {
-        return PathBuf::from(path)
-            .join("Library")
-            .join("Application Support")
-            .join("zcv");
-    }
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
-            return PathBuf::from(path).join("zcv");
-        }
-        if let Some(path) = std::env::var_os("HOME") {
-            return PathBuf::from(path).join(".config").join("zcv");
-        }
-    }
-
-    PathBuf::from(".zcv")
-}
 
 fn recent_path() -> PathBuf {
     config_dir().join("recent_projects.json")

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::Buffer;
 use crate::{
-    Edit, EngineResult, RegexSearchResult, SearchError, SearchResult, TextRange, Transaction,
+    Edit, EngineResult, RegexSearchResult, SearchError, SearchResult, TextRange,
     TransactionMetadata, TransactionOutcome, TransactionSource,
     search::{SearchResultSet, regex_replacement_for_match, regex_replacements_in_text},
 };
@@ -154,10 +154,10 @@ impl Buffer {
             return Ok(None);
         }
 
-        let tx = Transaction::from_edits(self.version, tx_edits)?.with_metadata(
+        self.edit(
+            tx_edits,
             TransactionMetadata::new(TransactionSource::Programmatic).with_description(description),
-        );
-
-        self.apply_transaction(tx).map(Some)
+        )
+        .map(Some)
     }
 }

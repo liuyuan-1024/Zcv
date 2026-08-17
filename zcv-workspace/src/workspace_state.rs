@@ -32,6 +32,9 @@ const FILE_SINGLE_CLICK_DELAY: Duration = Duration::from_millis(300);
 /// 打开设置文件的路径提供者：宿主注入，返回设置文件路径。
 pub type OpenSettingsPathProvider = Box<dyn Fn(&mut App) -> Option<PathBuf> + Send + Sync>;
 
+type WorkspaceAction =
+    Box<dyn Fn(gpui::Stateful<gpui::Div>, &mut Context<Workspace>) -> gpui::Stateful<gpui::Div>>;
+
 pub struct Workspace {
     pub focus: FocusHandle,
     pub pane: Entity<Pane>,
@@ -56,9 +59,7 @@ pub struct Workspace {
     pub _subscriptions: Vec<Subscription>,
     /// 经 register_action 注册的 action handler（render 时挂到根节点，焦点链全局可达）。
     /// 对齐 Zed `workspace_actions`：组件创建时注册自己的命令 handler。
-    workspace_actions: Vec<
-        Box<dyn Fn(gpui::Stateful<gpui::Div>, &mut Context<Self>) -> gpui::Stateful<gpui::Div>>,
-    >,
+    workspace_actions: Vec<WorkspaceAction>,
 }
 
 impl Workspace {

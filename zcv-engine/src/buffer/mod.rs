@@ -10,7 +10,7 @@
 //! - `validation`：Buffer 级边界校验
 
 use crate::{
-    BufferConfig, BufferId, BufferOrigin, BufferVersion, LoadedTextInfo, TransactionId,
+    BufferConfig, BufferOrigin, BufferVersion, LoadedTextInfo, TransactionId,
     storage::{RopeySnapshot, RopeyStorage, TextFingerprint},
     text_changes::TextChangeTopic,
 };
@@ -33,14 +33,12 @@ pub use history::{HistoryEditOutcome, HistoryNodeId, HistoryNodeView, HistorySta
 /// 最小可编辑 Buffer。
 #[derive(Debug)]
 pub struct Buffer {
-    id: BufferId,
     origin: BufferOrigin,
     read_only: bool,
     config: BufferConfig,
     storage: RopeyStorage,
     version: BufferVersion,
     saved_version: BufferVersion,
-    last_saved_version: BufferVersion,
     saved_snapshot: RopeySnapshot,
     saved_fingerprint: TextFingerprint,
     last_synced_external_version: Option<BufferVersion>,

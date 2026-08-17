@@ -5,7 +5,7 @@ use std::path::Path;
 use gpui::{App, Pixels, div, prelude::*, px};
 use zcv_theme::{FileIcons, color, space, typography};
 
-use crate::ui::SvgIcon;
+use crate::SvgIcon;
 
 /// 树行完整渲染：行骨架 + 缩进竖线 + 图标 + 行内容。
 pub fn render_row_base(

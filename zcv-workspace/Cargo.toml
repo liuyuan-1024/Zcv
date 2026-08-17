@@ -18,11 +18,12 @@ zcv-git.workspace = true
 zcv-keymap.workspace = true
 zcv-picker.workspace = true
 zcv-project.workspace = true
+zcv-settings.workspace = true
 zcv-theme.workspace = true
 zcv-ui.workspace = true
 
 [dev-dependencies]
-gpui.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

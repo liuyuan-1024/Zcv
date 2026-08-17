@@ -61,8 +61,8 @@ impl<T> VersionedResult<T> {
 mod tests {
     use super::*;
     use crate::{
-        ByteOffset, ChangeSet, Delta, Edit, EditList, EngineError, PositionMap, TextRange,
-        TransactionId, TransactionSource,
+        ByteOffset, ChangeSet, Delta, Edit, EngineError, PositionMap, TextRange, TransactionId,
+        TransactionSource, transaction::EditList,
     };
 
     fn b(value: usize) -> ByteOffset {
@@ -102,7 +102,11 @@ mod tests {
         let result = VersionedResult::new(BufferVersion::INITIAL, range(2, 5));
 
         let remapped = result
-            .try_remap(&event, |range, map| Ok(map.map_old_range(range).value()))
+            .try_remap(&event, |range, map| {
+                Ok(map
+                    .map_old_range_with_stickiness(range, crate::Stickiness::default())
+                    .value())
+            })
             .unwrap();
 
         assert_eq!(remapped.version(), event.new_version());
@@ -110,7 +114,11 @@ mod tests {
 
         let stale = VersionedResult::new(BufferVersion::new(42), range(0, 1));
         let err = stale
-            .try_remap(&event, |range, map| Ok(map.map_old_range(range).value()))
+            .try_remap(&event, |range, map| {
+                Ok(map
+                    .map_old_range_with_stickiness(range, crate::Stickiness::default())
+                    .value())
+            })
             .unwrap_err();
         assert!(matches!(
             err,

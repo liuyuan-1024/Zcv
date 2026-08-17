@@ -1,5 +1,5 @@
 use zcv_engine::*;
-mod common;
+pub mod common;
 use common::*;
 
 #[test]
@@ -53,9 +53,9 @@ fn search_result_should_remap_forward_and_drop_deleted_matches() {
     let mut buffer = buffer("aa bb aa");
     let result = buffer.snapshot().search_literal("aa").unwrap();
 
-    let transaction =
-        Transaction::from_edits(buffer.version(), vec![Edit::delete(range(0, 2))]).unwrap();
-    let outcome = buffer.apply_transaction(transaction).unwrap();
+    let outcome = buffer
+        .edit([Edit::delete(range(0, 2))], TransactionMetadata::default())
+        .unwrap();
     let remapped = result.try_remap(outcome.event()).unwrap();
 
     assert_eq!(remapped.version(), buffer.version());
@@ -89,7 +89,7 @@ fn replace_all_literal_matches_should_apply_single_atomic_transaction_and_restor
         .unwrap()
         .unwrap();
 
-    assert_eq!(outcome.delta().edits().as_slice().len(), 2);
+    assert_eq!(outcome.event().delta().edits().len(), 2);
     assert!(outcome.history_transaction_id().is_some());
     assert_eq!(buffer_text(&buffer), "green blue green");
     assert_eq!(buffer.history_status().undo_depth, 1);
@@ -104,7 +104,12 @@ fn replace_all_literal_matches_should_apply_single_atomic_transaction_and_restor
 fn stale_search_result_should_not_drive_replacement_after_state_transition() {
     let mut buffer = buffer("ab ab");
     let result = buffer.snapshot().search_literal("ab").unwrap();
-    buffer.insert(b(0), "x").unwrap();
+    buffer
+        .edit(
+            [Edit::insert(b(0), "x").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
     let version = buffer.version();
 
     let err = buffer

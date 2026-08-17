@@ -247,7 +247,7 @@ mod tests {
     use zcv_git::GitRepository;
 
     use super::*;
-    use crate::project::test_support::{run_git, test_git_repo};
+    use crate::test_support::{run_git, test_git_repo};
 
     #[test]
     fn children_return_sorted_static_entries_without_git_status() {

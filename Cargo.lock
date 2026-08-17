@@ -7496,6 +7496,7 @@ dependencies = [
  "trash",
  "zcv-actions",
  "zcv-assets",
+ "zcv-buffer-diff",
  "zcv-editor",
  "zcv-engine",
  "zcv-git",
@@ -7625,6 +7626,7 @@ version = "0.7.7"
 dependencies = [
  "gpui",
  "zcv-actions",
+ "zcv-editor",
  "zcv-theme",
  "zcv-ui",
 ]
@@ -7691,7 +7693,6 @@ name = "zcv-ui"
 version = "0.7.7"
 dependencies = [
  "gpui",
- "zcv-actions",
  "zcv-keymap",
  "zcv-theme",
 ]
@@ -7710,6 +7711,7 @@ dependencies = [
  "zcv-keymap",
  "zcv-picker",
  "zcv-project",
+ "zcv-settings",
  "zcv-theme",
  "zcv-ui",
 ]

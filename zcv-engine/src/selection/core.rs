@@ -81,14 +81,6 @@ impl Selection {
             .expect("Selection 的 start 和 end 由 min/max 生成，必须满足 start <= end")
     }
 
-    pub fn collapse_to_start(self) -> Self {
-        Self::caret(self.start())
-    }
-
-    pub fn collapse_to_end(self) -> Self {
-        Self::caret(self.end())
-    }
-
     /// 移动 head 到新位置；垂直扩展选区时保留 goal。
     pub fn with_head(self, head: ByteOffset) -> Self {
         Self {
@@ -139,7 +131,5 @@ mod tests {
         assert_eq!(reversed.head(), b(2));
         assert!(reversed.is_reversed());
         assert_eq!(reversed.range(), range(2, 7));
-        assert_eq!(reversed.collapse_to_start(), caret(2));
-        assert_eq!(reversed.collapse_to_end(), caret(7));
     }
 }

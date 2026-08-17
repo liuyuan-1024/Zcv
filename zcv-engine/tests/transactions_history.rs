@@ -1,38 +1,35 @@
 use zcv_engine::*;
-mod common;
+pub mod common;
 use common::*;
 
 #[test]
-fn apply_transaction_should_emit_delta_changeset_position_map_and_subscription_patch() {
+fn edit_should_emit_delta_changeset_position_map_and_subscription_patch() {
     let mut buffer = buffer("abc def");
     let subscription = buffer.subscribe();
     let base = buffer.version();
-    let transaction = tx(
-        &buffer,
-        vec![
-            Edit::insert(b(3), "!".to_string()).unwrap(),
-            Edit::replace(range(4, 7), "XYZ".to_string()),
-        ],
-    );
-
-    let outcome = buffer.apply_transaction(transaction).unwrap();
-    let delta = outcome.delta();
-    let changeset = outcome.changeset();
+    let outcome = buffer
+        .edit(
+            [
+                Edit::insert(b(3), "!".to_string()).unwrap(),
+                Edit::replace(range(4, 7), "XYZ".to_string()),
+            ],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
     let event = outcome.event();
+    let delta = event.delta();
+    let changeset = event.changeset();
     let changes = subscription.consume();
 
     assert_eq!(buffer_text(&buffer), "abc! XYZ");
     assert_eq!(delta.old_version(), base);
     assert_eq!(delta.new_version(), buffer.version());
-    assert_eq!(delta.edits().as_slice().len(), 2);
+    assert_eq!(delta.edits().len(), 2);
     assert_eq!(
         changeset.changed_ranges().unwrap(),
         vec![range(3, 4), range(5, 8)]
     );
-    assert_eq!(
-        changeset.position_map().map_old_position(b(7)).value(),
-        b(8)
-    );
+    assert_eq!(event.position_map().map_old_position(b(7)).value(), b(8));
     assert_eq!(event.old_version(), base);
     assert_eq!(event.new_version(), buffer.version());
     assert_eq!(event.source(), TransactionSource::Programmatic);
@@ -43,45 +40,19 @@ fn apply_transaction_should_emit_delta_changeset_position_map_and_subscription_p
 }
 
 #[test]
-fn stale_base_version_should_fail_without_mutating_text_version_history_or_subscription() {
-    let mut buffer = buffer("abc");
-    buffer.insert(b(3), "!").unwrap();
-    let subscription = buffer.subscribe();
-    let text = buffer_text(&buffer);
-    let version = buffer.version();
-    let history = buffer.history_status();
-    let stale = Transaction::from_edits(
-        BufferVersion::INITIAL,
-        vec![Edit::insert(b(0), "x".to_string()).unwrap()],
-    )
-    .unwrap();
-
-    let err = buffer.apply_transaction(stale).unwrap_err();
-
-    assert!(matches!(
-        err,
-        EngineError::Transaction(TransactionError::VersionMismatch { .. })
-    ));
-    assert_eq!(buffer_text(&buffer), text);
-    assert_eq!(buffer.version(), version);
-    assert_eq!(buffer.history_status().undo_depth, history.undo_depth);
-    assert!(subscription.consume().is_empty());
-}
-
-#[test]
 fn failed_multi_edit_boundary_should_keep_transaction_atomic() {
     let mut buffer = buffer("a\r\nb");
     let text = buffer_text(&buffer);
     let version = buffer.version();
-    let transaction = tx(
-        &buffer,
-        vec![
-            Edit::insert(buffer.len_bytes(), "!".to_string()).unwrap(),
-            Edit::insert(b(2), "x".to_string()).unwrap(),
-        ],
-    );
-
-    let err = buffer.apply_transaction(transaction).unwrap_err();
+    let err = buffer
+        .edit(
+            [
+                Edit::insert(buffer.len_bytes(), "!".to_string()).unwrap(),
+                Edit::insert(b(2), "x".to_string()).unwrap(),
+            ],
+            TransactionMetadata::default(),
+        )
+        .unwrap_err();
 
     assert!(matches!(
         err,
@@ -95,10 +66,10 @@ fn failed_multi_edit_boundary_should_keep_transaction_atomic() {
 fn transaction_record_should_replay_only_on_matching_base_version() {
     let mut source = buffer("abc");
     let record = source
-        .apply_transaction_recorded(tx(
-            &source,
-            vec![Edit::insert(b(3), "!".to_string()).unwrap()],
-        ))
+        .edit_recorded(
+            [Edit::insert(b(3), "!".to_string()).unwrap()],
+            TransactionMetadata::default(),
+        )
         .unwrap();
     let mut target = buffer("abc");
 
@@ -107,7 +78,7 @@ fn transaction_record_should_replay_only_on_matching_base_version() {
     assert_eq!(buffer_text(&target), "abc!");
     assert_eq!(replay.old_version(), BufferVersion::INITIAL);
     assert_eq!(replay.new_version(), target.version());
-    assert_eq!(replay.edits().as_slice(), record.edits().as_slice());
+    assert_eq!(replay.edits(), record.edits());
 
     let err = target.replay_transaction_record(&record).unwrap_err();
     assert!(matches!(
@@ -120,15 +91,16 @@ fn transaction_record_should_replay_only_on_matching_base_version() {
 fn undo_redo_should_restore_text_and_dirty_state_and_return_history_identity() {
     let mut buffer = buffer("abc");
     let outcome = buffer
-        .apply_transaction(
-            Transaction::from_edits(buffer.version(), vec![Edit::insert(b(1), "X").unwrap()])
-                .unwrap()
-                .with_metadata(metadata("insert")),
-        )
+        .edit([Edit::insert(b(1), "X").unwrap()], metadata("insert"))
         .unwrap();
     let selection_transaction_id = outcome.history_transaction_id().unwrap();
     buffer.mark_saved();
-    buffer.insert(b(4), "!").unwrap();
+    buffer
+        .edit(
+            [Edit::insert(b(4), "!").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
 
     assert_eq!(buffer_text(&buffer), "aXbc!");
     assert!(buffer.is_dirty());
@@ -157,14 +129,7 @@ fn explicit_history_merge_should_return_one_canonical_identity_for_editor_select
             merge_metadata("insert")
         };
         let outcome = buffer
-            .apply_transaction(
-                Transaction::from_edits(
-                    buffer.version(),
-                    vec![Edit::insert(buffer.len_bytes(), text).unwrap()],
-                )
-                .unwrap()
-                .with_metadata(metadata),
-            )
+            .edit([Edit::insert(buffer.len_bytes(), text).unwrap()], metadata)
             .unwrap();
         let history_transaction_id = outcome.history_transaction_id().unwrap();
         if let Some(expected) = canonical_transaction_id {
@@ -190,21 +155,13 @@ fn explicit_history_merge_should_return_one_canonical_identity_for_editor_select
 fn default_transactions_should_stay_separate() {
     let mut buffer = buffer("");
     buffer
-        .apply_transaction(
-            Transaction::from_edits(
-                buffer.version(),
-                vec![Edit::insert(ByteOffset::ZERO, "a").unwrap()],
-            )
-            .unwrap()
-            .with_metadata(metadata("insert")),
+        .edit(
+            [Edit::insert(ByteOffset::ZERO, "a").unwrap()],
+            metadata("insert"),
         )
         .unwrap();
     buffer
-        .apply_transaction(
-            Transaction::from_edits(buffer.version(), vec![Edit::delete(range(0, 1))])
-                .unwrap()
-                .with_metadata(metadata("delete")),
-        )
+        .edit([Edit::delete(range(0, 1))], metadata("delete"))
         .unwrap();
 
     assert_eq!(buffer_text(&buffer), "");
@@ -215,6 +172,25 @@ fn default_transactions_should_stay_separate() {
 
     buffer.undo().unwrap().unwrap();
     assert_eq!(buffer_text(&buffer), "");
+}
+
+#[test]
+fn set_config_should_apply_the_new_history_budget_immediately() {
+    let mut buffer = buffer("");
+    buffer
+        .edit(
+            [Edit::insert(ByteOffset::ZERO, "a").unwrap()],
+            metadata("insert"),
+        )
+        .unwrap();
+    assert!(buffer.can_undo());
+
+    let mut config = buffer.config().clone();
+    config.large_file.max_undo_history = 0;
+    buffer.set_config(config);
+
+    assert!(!buffer.can_undo());
+    assert_eq!(buffer.history_status().node_count, 0);
 }
 
 #[test]
@@ -232,17 +208,13 @@ fn transaction_should_not_report_history_identity_when_history_is_disabled() {
     .unwrap();
 
     let outcome = buffer
-        .apply_transaction(
-            Transaction::from_edits(
-                buffer.version(),
-                vec![Edit::insert(ByteOffset::ZERO, "a").unwrap()],
-            )
-            .unwrap()
-            .with_metadata(metadata("insert")),
+        .edit(
+            [Edit::insert(ByteOffset::ZERO, "a").unwrap()],
+            metadata("insert"),
         )
         .unwrap();
 
-    assert_eq!(outcome.transaction_id(), TransactionId::INITIAL);
+    assert_eq!(outcome.event().transaction_id(), TransactionId::INITIAL);
     assert!(outcome.history_transaction_id().is_none());
     assert!(!buffer.can_undo());
 }
@@ -251,9 +223,19 @@ fn transaction_should_not_report_history_identity_when_history_is_disabled() {
 fn branch_history_should_expose_redo_branches_and_replay_selected_branch() {
     let mut buffer = buffer("a");
 
-    buffer.insert(b(1), "b").unwrap();
+    buffer
+        .edit(
+            [Edit::insert(b(1), "b").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
     buffer.undo().unwrap().unwrap();
-    buffer.insert(b(1), "c").unwrap();
+    buffer
+        .edit(
+            [Edit::insert(b(1), "c").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
     buffer.undo().unwrap().unwrap();
 
     let branches = buffer.redo_branches();
@@ -279,7 +261,12 @@ fn large_transaction_reject_policy_should_preserve_history_and_state() {
     .unwrap();
     let version = buffer.version();
 
-    let err = buffer.insert(b(3), "long").unwrap_err();
+    let err = buffer
+        .edit(
+            [Edit::insert(b(3), "long").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap_err();
 
     assert!(matches!(
         err,

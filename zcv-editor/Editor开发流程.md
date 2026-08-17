@@ -72,6 +72,8 @@ zcv ──▶ zcv-editor ──▶ zcv-workspace
   │          ├───────▶ zcv-language ──▶ zcv-engine
   │          └───────▶ zcv-theme
   └──────────────────▶ zcv-language
+
+zcv-picker ──▶ zcv-ui::ErasedEditor ◀── zcv-editor
 ```
 
 箭头表示“依赖”。`zcv-editor` 只依赖 `zcv-workspace` 中不含 Pane、布局或业务编排的
@@ -514,7 +516,9 @@ Pane 只能提供 Editor 的可用尺寸，不得读取全文、手工切行或�
 
 ### Picker
 
-Picker 持有 `Entity<Editor>`，使用 `SingleLine` 模式。Picker 订阅 Editor 的 BufferEdited 事件并更新匹配项。
+Picker 通过 `zcv-ui` 的类型擦除门面持有由 `zcv-editor` 工厂创建的
+`Editor::single_line`。该门面不实现文本编辑，只用于打破 Picker 与 Workspace 的 crate 依赖环。
+Picker 订阅 Editor 的 Edited 事件并更新匹配项。
 
 Picker 不实现：
 

@@ -1,5 +1,5 @@
 use gpui::{TestAppContext, point, px};
-use zcv_engine::ByteOffset;
+use zcv_engine::{ByteOffset, Edit, TransactionMetadata};
 
 use super::common::test_buffer;
 use super::*;
@@ -45,33 +45,6 @@ fn deleted_hunk_expands_and_collapses_inserted_lines(cx: &mut TestAppContext) {
         3,
         "折叠后应回到 3 行"
     );
-}
-#[gpui::test]
-fn inlays_project_through_editor_display_pipeline(cx: &mut TestAppContext) {
-    let buffer = test_buffer(cx, "ab\ncd\n");
-    let editor = cx.new(|cx| Editor::new(buffer, EditorMode::Full, cx));
-    cx.run_until_parked();
-    editor.update(cx, |editor, cx| {
-        editor.set_inlays(
-            vec![Inlay {
-                position: ByteOffset::new(1),
-                text: ": hint".to_owned(),
-            }],
-            cx,
-        );
-    });
-    // 行内提示不占行数（"ab\ncd\n" = 3 行）。
-    assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
-        3
-    );
-    // 经消费链投影：视口行文本含注入文本。
-    let snapshot = cx.read_entity(&editor, |editor, _| editor.display_map.snapshot());
-    let viewport = snapshot
-        .slice_viewport(DisplayRow::ZERO, 1)
-        .expect("视口应可读取");
-    let crate::display_map::WrapViewportRowKind::Text { text, .. } = viewport.rows()[0].kind();
-    assert_eq!(text.as_ref(), "a: hintb\n");
 }
 #[gpui::test]
 fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
@@ -137,7 +110,10 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
     // 编辑 buffer：在首行后插入一行注释。
     cx.update_entity(&buffer, |buffer, cx| {
         buffer
-            .insert(ByteOffset::new(7), "// 注释\n")
+            .edit(
+                [Edit::insert(ByteOffset::new(7), "// 注释\n").unwrap()],
+                TransactionMetadata::default(),
+            )
             .expect("插入应成功");
         cx.notify();
     });

@@ -1,20 +1,21 @@
-//! 设计系统原语模块。
+//! 设计系统与基础展示组件。
+//! 此文件是 `zcv-ui` crate 的公共入口。
 
 mod checkbox;
 mod glyph;
 mod icon;
+mod input;
 mod list_item;
 mod scrollbar;
 mod tab;
-mod text_input;
 mod tooltip;
 pub mod tree;
 
 pub use checkbox::Checkbox;
 pub use glyph::Glyph;
 pub use icon::SvgIcon;
+pub use input::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent};
 pub use list_item::ListItem;
 pub use scrollbar::{ScrollableHandle, Scrollbar};
 pub use tab::Tab;
-pub use text_input::{TextInput, TextInputEvent};
 pub use tooltip::{TooltipSpec, tooltip_view};

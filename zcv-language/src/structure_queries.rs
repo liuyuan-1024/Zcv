@@ -3,7 +3,6 @@
 //! 各查询在同一模式的路径上执行：取与范围相交的语法层 → 在每层跑 tree-sitter 查询 → 收集结果并排序。
 
 use std::ops::Range;
-use std::sync::Arc;
 
 use tree_sitter::StreamingIterator;
 use zcv_engine::{ByteOffset, EngineResult, Line, Snapshot};
@@ -15,14 +14,6 @@ use crate::tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider};
 pub struct BracketPair {
     pub open: Range<usize>,
     pub close: Range<usize>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OutlineItem {
-    pub range: Range<usize>,
-    pub name_ranges: Vec<Range<usize>>,
-    pub context_ranges: Vec<Range<usize>>,
-    pub body_range: Option<Range<usize>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,12 +37,6 @@ pub struct NewlineIndent {
 /// 无括号对的折叠（注释组等）终点在末隐藏行内容末尾。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FoldRange {
-    pub range: Range<usize>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TextObjectRange {
-    pub kind: Arc<str>,
     pub range: Range<usize>,
 }
 
@@ -87,52 +72,6 @@ impl SyntaxSnapshot {
         }
         pairs.sort_unstable_by_key(|pair| (pair.open.start, pair.close.end));
         pairs
-    }
-
-    pub fn outline_items(&self, range: Range<usize>, text: &Snapshot) -> Vec<OutlineItem> {
-        if !self.can_query(&range, text) {
-            return Vec::new();
-        }
-        let mut items = Vec::new();
-        for layer in self.layers_for_range(&range) {
-            let Some(query) = layer.language.outline() else {
-                continue;
-            };
-            let names = query.capture_names();
-            let mut cursor = QueryCursorHandle::new();
-            cursor.set_byte_range(range.clone());
-            let mut matches =
-                cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
-            while let Some(query_match) = matches.next() {
-                let mut item = None;
-                let mut names_ranges = Vec::new();
-                let mut contexts = Vec::new();
-                let mut open = None;
-                let mut close = None;
-                for capture in query_match.captures {
-                    let capture_range = capture.node.byte_range();
-                    match names.get(capture.index as usize).copied() {
-                        Some("item") => item = Some(capture_range),
-                        Some("name") => names_ranges.push(capture_range),
-                        Some("context") => contexts.push(capture_range),
-                        Some("open") => open = Some(capture_range.end),
-                        Some("close") => close = Some(capture_range.start),
-                        _ => {}
-                    }
-                }
-                let Some(item) = item else { continue };
-                items.push(OutlineItem {
-                    range: item,
-                    name_ranges: names_ranges,
-                    context_ranges: contexts,
-                    body_range: open
-                        .zip(close)
-                        .and_then(|(start, end)| (start <= end).then_some(start..end)),
-                });
-            }
-        }
-        items.sort_unstable_by_key(|item| (item.range.start, item.range.end));
-        items
     }
 
     pub fn indent_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<IndentRange> {
@@ -293,35 +232,6 @@ impl SyntaxSnapshot {
         ranges.sort_unstable_by_key(|range| (range.range.start, range.range.end));
         ranges
     }
-
-    pub fn text_object_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<TextObjectRange> {
-        if !self.can_query(&range, text) {
-            return Vec::new();
-        }
-        let mut ranges = Vec::new();
-        for layer in self.layers_for_range(&range) {
-            let Some(query) = layer.language.text_objects() else {
-                continue;
-            };
-            let names = query.capture_names();
-            let mut cursor = QueryCursorHandle::new();
-            cursor.set_byte_range(range.clone());
-            let mut captures =
-                cursor.captures(query, layer.tree.root_node(), SnapshotTextProvider(text));
-            while let Some((query_match, capture_index)) = captures.next() {
-                let capture = query_match.captures[*capture_index];
-                let Some(kind) = names.get(capture.index as usize) else {
-                    continue;
-                };
-                ranges.push(TextObjectRange {
-                    kind: Arc::from(*kind),
-                    range: capture.node.byte_range(),
-                });
-            }
-        }
-        ranges.sort_unstable_by_key(|range| (range.range.start, range.range.end));
-        ranges
-    }
 }
 
 fn newline_indent_basis(
@@ -399,23 +309,7 @@ mod tests {
             &source[pair.open.clone()] == "(" && &source[pair.close.clone()] == ")"
         }));
 
-        let outline = syntax.outline_items(full.clone(), &snapshot);
-        let names: Vec<_> = outline
-            .iter()
-            .flat_map(|item| item.name_ranges.iter())
-            .map(|range| &source[range.clone()])
-            .collect();
-        assert!(names.contains(&"Demo"));
-        assert!(names.contains(&"main"));
-        assert!(outline.iter().any(|item| item.body_range.is_some()));
-
-        assert!(!syntax.indent_ranges(full.clone(), &snapshot).is_empty());
-        assert!(
-            syntax
-                .text_object_ranges(full, &snapshot)
-                .iter()
-                .any(|range| range.kind.as_ref() == "function.around")
-        );
+        assert!(!syntax.indent_ranges(full, &snapshot).is_empty());
     }
 
     #[test]

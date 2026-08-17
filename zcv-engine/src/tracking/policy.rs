@@ -59,20 +59,6 @@ impl TrackedRangeUpdatePolicy {
         )
     }
 
-    pub fn invalidate_when_touched_by_deletion() -> Self {
-        Self::new(
-            TrackedRangeInvalidationPolicy::WhenTouchedByDeletion,
-            TrackedRangeCollapsePolicy::Keep,
-        )
-    }
-
-    pub fn invalidate_when_collapsed() -> Self {
-        Self::new(
-            TrackedRangeInvalidationPolicy::Never,
-            TrackedRangeCollapsePolicy::Invalidate,
-        )
-    }
-
     pub fn invalidation(self) -> TrackedRangeInvalidationPolicy {
         self.invalidation
     }

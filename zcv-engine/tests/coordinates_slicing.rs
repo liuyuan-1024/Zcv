@@ -1,5 +1,5 @@
 use zcv_engine::*;
-mod common;
+pub mod common;
 use common::*;
 
 #[test]
@@ -100,7 +100,12 @@ fn crlf_middle_should_not_be_valid_line_position_or_edit_boundary() {
     let mut buffer = buffer("a\r\nb");
 
     let char_err = buffer.char_to_position(c(2)).unwrap_err();
-    let byte_err = buffer.insert(b(2), "x").unwrap_err();
+    let byte_err = buffer
+        .edit(
+            [Edit::insert(b(2), "x").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap_err();
 
     assert!(matches!(
         char_err,
@@ -171,7 +176,12 @@ fn snapshot_coordinate_and_slicing_queries_should_read_old_version_after_state_t
     let mut buffer = buffer("alpha\nbeta");
     let snapshot = buffer.snapshot();
 
-    buffer.replace(range(6, 10), "BETA").unwrap();
+    buffer
+        .edit(
+            [Edit::replace(range(6, 10), "BETA")],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
 
     assert_eq!(buffer_text(&snapshot), "alpha\nbeta");
     assert_eq!(snapshot.slice_line(line(1)).unwrap().as_str(), "beta");

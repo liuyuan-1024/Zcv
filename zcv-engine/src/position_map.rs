@@ -6,10 +6,8 @@
 use crate::{
     TextPatch,
     errors::invariant,
-    selection::{Selection, SelectionSet},
-    tracking::{TrackedRange, TrackedRangeUpdate, TrackedRangeUpdatePolicy},
-    transaction::{ChangeSet, Edit},
-    types::{BufferVersion, ByteOffset, TextRange},
+    transaction::Edit,
+    types::{ByteOffset, TextRange},
 };
 
 /// 同点插入时旧位置吸附到插入文本前还是插入文本后。
@@ -83,10 +81,6 @@ impl<T: Copy> MappingResult<T> {
             | Self::Ambiguous(value) => value,
         }
     }
-
-    pub fn is_mapped(self) -> bool {
-        matches!(self, Self::Mapped(_))
-    }
 }
 
 /// 旧文本与新文本之间的 byte 坐标映射器。
@@ -109,10 +103,6 @@ impl PositionMap {
         }
     }
 
-    pub fn from_change_set(changeset: &ChangeSet) -> Self {
-        Self::from_edits(changeset.edits())
-    }
-
     /// 从跨多个连续版本组合后的 Patch 构造坐标映射。
     pub fn from_text_patch(patch: &TextPatch) -> Self {
         Self {
@@ -125,14 +115,6 @@ impl PositionMap {
                 })
                 .collect(),
         }
-    }
-
-    pub fn len(&self) -> usize {
-        self.edits.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.edits.is_empty()
     }
 
     /// old byte position -> new byte position。
@@ -190,11 +172,6 @@ impl PositionMap {
         ))
     }
 
-    /// new byte position -> old byte position。
-    pub fn map_new_position(&self, pos: ByteOffset) -> MappingResult<ByteOffset> {
-        self.map_new_position_with_bias(pos, Bias::default())
-    }
-
     /// new byte position -> old byte position，显式指定歧义区域偏向。
     pub fn map_new_position_with_bias(
         &self,
@@ -240,11 +217,6 @@ impl PositionMap {
             shift.apply_new_to_old(pos),
             "new position 映射不会发生字节偏移溢出"
         ))
-    }
-
-    /// old byte range -> new byte range。
-    pub fn map_old_range(&self, range: TextRange) -> MappingResult<TextRange> {
-        self.map_old_range_with_stickiness(range, Stickiness::default())
     }
 
     /// old byte range -> new byte range，显式指定边界处插入文本的吸附 / 扩张策略。
@@ -361,140 +333,6 @@ impl PositionMap {
         MappingResult::Mapped(mapped)
     }
 
-    /// new byte range -> old byte range。
-    pub fn map_new_range(&self, range: TextRange) -> MappingResult<TextRange> {
-        let (old_start, old_end) = if range.is_empty() {
-            let position = self.map_new_position(range.start()).value();
-            (position, position)
-        } else {
-            (
-                self.map_new_position_for_range_boundary(range.start(), true),
-                self.map_new_position_for_range_boundary(range.end(), false),
-            )
-        };
-        let (mapped, endpoints_crossed) = text_range_from_mapped_endpoints(old_start, old_end);
-
-        if endpoints_crossed {
-            if self.new_range_touches_ambiguous_content(range) {
-                return MappingResult::Ambiguous(mapped);
-            }
-
-            return MappingResult::Collapsed(mapped);
-        }
-
-        if self.new_range_touches_ambiguous_content(range) {
-            return MappingResult::Ambiguous(mapped);
-        }
-
-        MappingResult::Mapped(mapped)
-    }
-
-    /// old Selection -> new Selection。
-    pub fn map_selection(&self, selection: Selection) -> Selection {
-        selection.map_through_position_map(self)
-    }
-
-    /// old SelectionSet -> new SelectionSet。
-    pub fn map_selection_set(&self, selection_set: &SelectionSet) -> SelectionSet {
-        selection_set.map_through_position_map(self)
-    }
-
-    /// old TrackedRange -> new TrackedRange。
-    pub fn map_tracked_range(
-        &self,
-        tracked_range: TrackedRange,
-        new_version: BufferVersion,
-    ) -> MappingResult<TrackedRange> {
-        tracked_range.map_through_position_map(new_version, self)
-    }
-
-    /// old TrackedRange -> new TrackedRange，并应用删除 / 塌缩失效策略。
-    pub fn map_tracked_range_with_policy(
-        &self,
-        tracked_range: TrackedRange,
-        new_version: BufferVersion,
-        policy: TrackedRangeUpdatePolicy,
-    ) -> TrackedRangeUpdate {
-        tracked_range.map_through_position_map_with_policy(new_version, self, policy)
-    }
-
-    /// 批量映射 TrackedRange。PositionMap 本身不绑定版本，调用方显式传入目标版本。
-    pub fn map_tracked_ranges(
-        &self,
-        tracked_ranges: impl IntoIterator<Item = TrackedRange>,
-        new_version: BufferVersion,
-    ) -> Vec<MappingResult<TrackedRange>> {
-        tracked_ranges
-            .into_iter()
-            .map(|tracked_range| self.map_tracked_range(tracked_range, new_version))
-            .collect()
-    }
-
-    /// 批量映射 TrackedRange，并应用同一删除 / 塌缩失效策略。
-    pub fn map_tracked_ranges_with_policy(
-        &self,
-        tracked_ranges: impl IntoIterator<Item = TrackedRange>,
-        new_version: BufferVersion,
-        policy: TrackedRangeUpdatePolicy,
-    ) -> Vec<TrackedRangeUpdate> {
-        tracked_ranges
-            .into_iter()
-            .map(|tracked_range| {
-                self.map_tracked_range_with_policy(tracked_range, new_version, policy)
-            })
-            .collect()
-    }
-
-    fn map_new_position_for_range_boundary(
-        &self,
-        pos: ByteOffset,
-        use_after_deleted_content: bool,
-    ) -> ByteOffset {
-        let mut shift = OffsetShift::ZERO;
-
-        for edit in &self.edits {
-            let range = edit.old;
-            let old_start = range.start();
-            let old_end = range.end();
-            let old_len = range.len();
-            let replacement_len = edit.new_len;
-            let new_start = invariant!(
-                shift.apply_old_to_new(old_start),
-                "old start 映射不会发生字节偏移溢出"
-            );
-            let new_end = invariant!(
-                checked_add_offset(new_start, replacement_len),
-                "在 map_new_position_for_range_boundary 映射时发生字节偏移溢出"
-            );
-
-            if pos < new_start {
-                break;
-            }
-
-            if replacement_len == 0 {
-                if old_len > 0 && pos == new_start {
-                    return if use_after_deleted_content {
-                        old_end
-                    } else {
-                        old_start
-                    };
-                }
-            } else if pos < new_end {
-                return old_start;
-            }
-
-            shift = invariant!(
-                shift.after_edit(old_len, replacement_len),
-                "累计编辑位移不会溢出"
-            );
-        }
-
-        invariant!(
-            shift.apply_new_to_old(pos),
-            "new range 边界映射不会发生字节偏移溢出"
-        )
-    }
-
     /// 批量映射已排序的 old positions 到 new positions。
     ///
     /// `positions` 必须按非递减顺序排序（由调用方保证）；
@@ -566,45 +404,6 @@ impl PositionMap {
         }
 
         results
-    }
-
-    fn new_range_touches_ambiguous_content(&self, range: TextRange) -> bool {
-        let mut shift = OffsetShift::ZERO;
-
-        for edit in &self.edits {
-            let edit_range = edit.old;
-            let old_len = edit_range.len();
-            let replacement_len = edit.new_len;
-            let new_start = invariant!(
-                shift.apply_old_to_new(edit_range.start()),
-                "old start 映射不会发生字节偏移溢出"
-            );
-            let new_end = invariant!(
-                checked_add_offset(new_start, replacement_len),
-                "在 new_range_touches_ambiguous_content 映射时发生字节偏移溢出"
-            );
-
-            if replacement_len == 0 {
-                let touches_deleted_point = if range.is_empty() {
-                    range.start() == new_start
-                } else {
-                    range.start() < new_start && new_start < range.end()
-                };
-
-                if old_len > 0 && touches_deleted_point {
-                    return true;
-                }
-            } else if range_touches_span(range, new_start, new_end) {
-                return true;
-            }
-
-            shift = invariant!(
-                shift.after_edit(old_len, replacement_len),
-                "累计编辑位移不会溢出"
-            );
-        }
-
-        false
     }
 }
 
@@ -719,17 +518,10 @@ fn ranges_overlap(
     first_start < second_end && second_start < first_end
 }
 
-fn range_touches_span(range: TextRange, span_start: ByteOffset, span_end: ByteOffset) -> bool {
-    if range.is_empty() {
-        span_start <= range.start() && range.start() < span_end
-    } else {
-        ranges_overlap(range.start(), range.end(), span_start, span_end)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Selection;
 
     fn b(value: usize) -> ByteOffset {
         ByteOffset::new(value)
@@ -743,7 +535,6 @@ mod tests {
     fn position_map_should_expose_affinity_bias_stickiness_and_selection_mapping() {
         let map = PositionMap::from_edits(&[Edit::replace(range(1, 3), "XYZ".to_string())]);
 
-        assert_eq!(map.len(), 1);
         assert!(matches!(map.map_old_position(b(2)), MappingResult::Deleted(pos) if pos == b(1)));
         assert!(matches!(
             map.map_new_position_with_bias(b(2), Bias::Right),

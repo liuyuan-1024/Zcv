@@ -4,16 +4,15 @@ version.workspace = true
 edition.workspace = true
 
 [lib]
-path = "src/ui.rs"
+path = "src/ui/mod.rs"
 
 [dependencies]
 gpui.workspace = true
-zcv-actions.workspace = true
 zcv-keymap.workspace = true
 zcv-theme.workspace = true
 
 [dev-dependencies]
-gpui.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

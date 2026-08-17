@@ -963,7 +963,7 @@ fn ranges_disjoint_or_nested(left: TextRange, right: TextRange) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use zcv_engine::{Buffer, BufferConfig};
+    use zcv_engine::{Buffer, BufferConfig, Edit, TransactionMetadata};
 
     use super::super::inlay_map::InlayMap;
     use super::*;
@@ -1037,7 +1037,12 @@ mod tests {
         map.write().fold(text_range(6, 13)).unwrap();
         let transforms = map.snapshot.transforms.clone();
         let subscription = buffer.subscribe();
-        buffer.insert(ByteOffset::new(9), "!").unwrap();
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(9), "!").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
 
         let (snapshot, edits, outcome) = map.read(
             InlayMap::new(LineStream::new(buffer.snapshot())).1,
@@ -1056,7 +1061,12 @@ mod tests {
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         map.write().fold(text_range(6, 13)).unwrap();
         let subscription = buffer.subscribe();
-        buffer.insert(ByteOffset::new(9), "new\n").unwrap();
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(9), "new\n").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
 
         let (snapshot, edits, outcome) = map.read(
             InlayMap::new(LineStream::new(buffer.snapshot())).1,
@@ -1078,7 +1088,10 @@ mod tests {
         map.write().fold(text_range(6, 13)).unwrap();
         let subscription = buffer.subscribe();
         buffer
-            .delete(text_range(0, "anchor\nhidden\n".len()))
+            .edit(
+                [Edit::delete(text_range(0, "anchor\nhidden\n".len()))],
+                TransactionMetadata::default(),
+            )
             .unwrap();
 
         let (snapshot, _, _) = map.read(
@@ -1128,7 +1141,12 @@ mod tests {
         // 折叠起点 = anchor 行换行符位置（6）。
         assert_eq!(fold_range.start().get(), 6);
         let subscription = buffer.subscribe();
-        buffer.insert(fold_range.start(), "X").unwrap();
+        buffer
+            .edit(
+                [Edit::insert(fold_range.start(), "X").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
         let (snapshot, _, _) = map.read(
             InlayMap::new(LineStream::new(buffer.snapshot())).1,
             &subscription.consume(),
@@ -1148,7 +1166,12 @@ mod tests {
         map.write().fold(text_range(6, 13)).unwrap();
         // 编辑落在隐藏行（行 1）与 close 行（行 2）：changed_lines 都映射到 anchor 行（行 0）。
         let subscription = buffer.subscribe();
-        buffer.insert(ByteOffset::new(9), "X").unwrap();
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(9), "X").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
         let (_, edits, outcome) = map.read(
             InlayMap::new(LineStream::new(buffer.snapshot())).1,
             &subscription.consume(),

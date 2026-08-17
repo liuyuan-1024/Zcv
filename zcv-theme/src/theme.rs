@@ -16,7 +16,7 @@ mod theme_data;
 
 use theme_data::{ThemeData, theme_by_id, themes};
 
-pub use icon_theme::{FileIcons, IconTheme, default_icon_theme};
+pub use icon_theme::FileIcons;
 
 /// 主题配置：跟随系统外观，或显式指定注册表中的主题。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,23 +32,6 @@ impl ThemeChoice {
         match s {
             "system" => Self::System,
             _ => theme_by_id(s).map_or(Self::System, |theme| Self::Named(theme.id)),
-        }
-    }
-
-    /// 写回设置文件的字符串。
-    pub fn as_config(self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::Named(id) => id,
-        }
-    }
-
-    pub fn label(self) -> String {
-        match self {
-            Self::System => "跟随系统".to_string(),
-            Self::Named(id) => {
-                theme_by_id(id).map_or_else(|| id.to_string(), |theme| theme.label.to_string())
-            }
         }
     }
 
@@ -97,11 +80,6 @@ pub mod typography {
     static UI_FONT_SIZE: AtomicU16 = AtomicU16::new(13);
     static EDITOR_FONT_SIZE: AtomicU16 = AtomicU16::new(16);
 
-    pub fn set_sizes(ui: u16, editor: u16) {
-        UI_FONT_SIZE.store(ui, Ordering::Relaxed);
-        EDITOR_FONT_SIZE.store(editor, Ordering::Relaxed);
-    }
-
     fn ui_size() -> f32 {
         UI_FONT_SIZE.load(Ordering::Relaxed) as f32
     }
@@ -144,9 +122,6 @@ pub mod typography {
     }
     pub fn editor() -> Pixels {
         px(editor_size())
-    }
-    pub fn editor_font_size() -> f32 {
-        editor_size()
     }
     /// 编辑器行高（黄金比例），与 Zed 一致：`round(font_size * 1.618034)`
     pub fn editor_line() -> Pixels {

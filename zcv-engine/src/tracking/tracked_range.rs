@@ -46,14 +46,6 @@ impl TrackedRange {
         self.start.version()
     }
 
-    pub fn start_anchor(self) -> Anchor {
-        self.start
-    }
-
-    pub fn end_anchor(self) -> Anchor {
-        self.end
-    }
-
     pub fn stickiness(self) -> Stickiness {
         self.stickiness
     }
@@ -65,10 +57,6 @@ impl TrackedRange {
 
     pub fn is_empty(self) -> bool {
         self.range().is_empty()
-    }
-
-    pub fn with_stickiness(self, stickiness: Stickiness) -> Self {
-        Self::from_valid_range(self.version(), self.range(), stickiness)
     }
 
     pub fn map_through_position_map(
@@ -91,19 +79,7 @@ impl TrackedRange {
         Ok(self.map_through_position_map(event.new_version(), event.position_map()))
     }
 
-    pub fn map_through_delta_event_with_policy(
-        self,
-        event: &DeltaEvent,
-        policy: TrackedRangeUpdatePolicy,
-    ) -> Result<TrackedRangeUpdate, AnchorError> {
-        self.verify_event_version(event)?;
-        Ok(self.map_through_position_map_with_policy(
-            event.new_version(),
-            event.position_map(),
-            policy,
-        ))
-    }
-
+    /// 按失效策略映射到新版本，返回区间更新结果（供折叠等宿主查询使用）。
     pub fn map_through_position_map_with_policy(
         self,
         new_version: BufferVersion,
@@ -211,67 +187,20 @@ fn should_invalidate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        AnchorError, ChangeSet, Delta, Edit, EditList, EngineError, PositionMap, TransactionId,
-        TransactionSource,
-    };
+    use crate::{AnchorError, EngineError};
 
     fn b(value: usize) -> crate::ByteOffset {
         crate::ByteOffset::new(value)
     }
 
-    fn range(start: usize, end: usize) -> TextRange {
-        TextRange::new(b(start), b(end)).unwrap()
-    }
-
-    fn event_for_edits(
-        old_version: BufferVersion,
-        new_version: BufferVersion,
-        edits: Vec<Edit>,
-    ) -> DeltaEvent {
-        let edit_list = EditList::new(edits).unwrap();
-        let delta = Delta::new(old_version, new_version, edit_list.clone());
-        let changeset = ChangeSet::from_edit_list(&edit_list);
-        let position_map = PositionMap::from_edits(edit_list.as_slice());
-
-        DeltaEvent::new(
-            TransactionId::INITIAL,
-            TransactionSource::Programmatic,
-            delta,
-            changeset,
-            position_map,
-        )
-    }
-
     #[test]
-    fn tracked_range_should_reject_mismatched_versions_and_invalidate_when_policy_matches_deletion()
-    {
+    fn tracked_range_should_reject_mismatched_versions() {
         let start = Anchor::new(BufferVersion::INITIAL, b(3));
         let end = Anchor::new(BufferVersion::new(1), b(6));
         let err = TrackedRange::new(start, end, Stickiness::Never).unwrap_err();
         assert!(matches!(
             err,
             EngineError::Anchor(AnchorError::RangeVersionMismatch { .. })
-        ));
-
-        let tracked =
-            TrackedRange::from_range(BufferVersion::INITIAL, range(1, 4), Stickiness::Never);
-        let event = event_for_edits(
-            BufferVersion::INITIAL,
-            BufferVersion::new(1),
-            vec![Edit::delete(range(1, 4))],
-        );
-        let update = tracked
-            .map_through_delta_event_with_policy(
-                &event,
-                TrackedRangeUpdatePolicy::invalidate_when_fully_deleted(),
-            )
-            .unwrap();
-
-        assert!(matches!(
-            update,
-            TrackedRangeUpdate::Invalidated { range, version }
-                if range == TextRange::new(b(1), b(1)).unwrap() && version == event.new_version()
         ));
     }
 }

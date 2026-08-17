@@ -18,6 +18,7 @@ toml.workspace = true
 trash.workspace = true
 zcv-actions.workspace = true
 zcv-assets.workspace = true
+zcv-buffer-diff.workspace = true
 zcv-editor.workspace = true
 zcv-engine.workspace = true
 zcv-git.workspace = true
@@ -32,7 +33,7 @@ zcv-ui.workspace = true
 zcv-workspace.workspace = true
 
 [dev-dependencies]
-gpui.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 
 [lints]

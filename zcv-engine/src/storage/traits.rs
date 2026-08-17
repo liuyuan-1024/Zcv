@@ -350,22 +350,6 @@ macro_rules! text_coordinate_gateway {
             self.storage.next_grapheme_boundary_char(offset)
         }
 
-        /// 返回小于当前 ByteOffset 的最近 grapheme cluster 边界。
-        pub fn previous_grapheme_boundary_byte(
-            &self,
-            offset: $crate::ByteOffset,
-        ) -> $crate::EngineResult<$crate::ByteOffset> {
-            self.storage.previous_grapheme_boundary(offset)
-        }
-
-        /// 返回大于当前 ByteOffset 的最近 grapheme cluster 边界。
-        pub fn next_grapheme_boundary_byte(
-            &self,
-            offset: $crate::ByteOffset,
-        ) -> $crate::EngineResult<$crate::ByteOffset> {
-            self.storage.next_grapheme_boundary(offset)
-        }
-
         /// 检测文本中实际出现的换行风格。
         pub fn line_ending_style(&self) -> $crate::LineEndingStyle {
             self.storage.line_ending_style()

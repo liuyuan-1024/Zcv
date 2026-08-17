@@ -258,15 +258,6 @@ impl<O: Copy> SearchResultSet<O> {
         self.matches.is_stale(current_version)
     }
 
-    /// 已过期时丢弃，未过期时保留。
-    pub fn discard_if_stale(self, current_version: BufferVersion) -> Option<Self> {
-        if self.is_stale(current_version) {
-            None
-        } else {
-            Some(self)
-        }
-    }
-
     /// 通过一次 `DeltaEvent` 把搜索结果推进到新版本。
     ///
     /// `event.old_version()` 必须与当前结果版本一致，否则原子拒绝；

@@ -1,13 +1,13 @@
 //! 决定 Buffer 文本如何映射到 Editor 的显示坐标。
 //!
-//! DisplayMap 由一组自底向上的变换层组成。当前已实现：
+//! DisplayMap 由一组自底向上的变换层组成：
+//! - InlayMap：在 Buffer 文本中投影行内提示；
 //! - FoldMap：维护折叠范围和折叠后的文本拓扑；
 //! - TabMap：在 FoldSnapshot 之上处理硬 Tab 的显示列；
 //! - WrapMap：在 TabSnapshot 之上按像素宽度软换行。
 //!
 //! 每一层都持有自己的 Map 和不可变 Snapshot；
 //! 上一层 Snapshot 固化下一层 Snapshot，从而让一次渲染只能看到一条内部一致的显示状态。
-//! 后续 InlayMap 与 BlockMap 继续按相同约定接入。
 
 mod chunk;
 mod display_width;
@@ -18,7 +18,7 @@ mod line_stream;
 mod tab_map;
 mod wrap_map;
 
-pub(crate) use chunk::{LineStyles, chunks_to_runs, render_viewport_chunks};
+pub(crate) use chunk::{LineStyles, ViewportChunkSource, chunks_to_runs, render_viewport_chunks};
 pub(crate) use display_width::DisplayColumn;
 use error::DisplayMapResult;
 #[cfg(test)]
@@ -441,10 +441,7 @@ impl DisplayMap {
         self.wrap_map.sync(tab_snapshot, &fold_edits);
     }
 
-    /// 替换行内提示配置并推进整条管线。
-    ///
-    /// Inlay hints 显示为规划中能力（对齐 Zed：LSP inlay hints 注入行内提示），当前没有 UI 入口调用本方法，渲染端也未消费 Inlay 数据；
-    /// 管线保留以支持后续接入，`dead_code` 警告属于已知的预留例外。
+    #[cfg(test)]
     pub(crate) fn set_inlays(&mut self, inlays: Vec<Inlay>) {
         if self.inlays == inlays {
             return;
@@ -525,7 +522,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use gpui::{TestAppContext, font, px};
-    use zcv_engine::{Buffer, BufferConfig, Edit, Line, TextRange, Transaction};
+    use zcv_engine::{Buffer, BufferConfig, Edit, Line, TextRange, TransactionMetadata};
 
     use super::fold_map::ProjectedPoint;
     use super::line_stream::InsertedLines;
@@ -627,7 +624,10 @@ mod tests {
         let mapped_version = map.version();
 
         buffer
-            .insert(ByteOffset::new(1), "b")
+            .edit(
+                [Edit::insert(ByteOffset::new(1), "b").unwrap()],
+                TransactionMetadata::default(),
+            )
             .expect("测试编辑应成功");
 
         assert_ne!(mapped_version, buffer.version());
@@ -755,7 +755,10 @@ mod tests {
         assert_eq!(map.longest_measured_row(), DisplayRow::new(1));
         let subscription = buffer.subscribe();
         buffer
-            .insert(ByteOffset::new(5), " becomes longest")
+            .edit(
+                [Edit::insert(ByteOffset::new(5), " becomes longest").unwrap()],
+                TransactionMetadata::default(),
+            )
             .expect("测试编辑应成功");
         let outcome = map.sync(buffer.snapshot(), subscription.consume());
 
@@ -805,7 +808,10 @@ mod tests {
             .expect("测试显示行应能测量");
         let subscription = buffer.subscribe();
         buffer
-            .insert(ByteOffset::new(5), "\nvery very wide")
+            .edit(
+                [Edit::insert(ByteOffset::new(5), "\nvery very wide").unwrap()],
+                TransactionMetadata::default(),
+            )
             .expect("测试编辑应成功");
 
         assert_eq!(
@@ -937,7 +943,10 @@ mod tests {
 
         let subscription = buffer.subscribe();
         buffer
-            .insert(ByteOffset::new("aa bbb ".len()), "xxxx")
+            .edit(
+                [Edit::insert(ByteOffset::new("aa bbb ".len()), "xxxx").unwrap()],
+                TransactionMetadata::default(),
+            )
             .expect("测试编辑应成功");
         map.sync(buffer.snapshot(), subscription.consume());
 
@@ -962,7 +971,12 @@ mod tests {
 
         let subscription = buffer.subscribe();
         let edit_offset = buffer.line_start_byte(Line::new(28)).expect("测试行应存在");
-        buffer.insert(edit_offset, "#").expect("行内插入 # 应成功");
+        buffer
+            .edit(
+                [Edit::insert(edit_offset, "#").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .expect("行内插入 # 应成功");
         map.sync(buffer.snapshot(), subscription.consume());
 
         assert_eq!(map.buffer_snapshot().line_count(), expected_lines);
@@ -982,7 +996,10 @@ mod tests {
 
         let subscription = buffer.subscribe();
         buffer
-            .insert(ByteOffset::new(3), "\n")
+            .edit(
+                [Edit::insert(ByteOffset::new(3), "\n").unwrap()],
+                TransactionMetadata::default(),
+            )
             .expect("测试编辑应成功");
         assert_eq!(
             map.sync(buffer.snapshot(), subscription.consume()),
@@ -1006,20 +1023,18 @@ mod tests {
 
         let subscription = buffer.subscribe();
         // 替换 3 行为 3 行更长的内容：行数不变、内容变化，增量路径应覆盖全部受影响行。
-        let transaction = Transaction::from_edits(
-            buffer.version(),
-            vec![Edit::replace(
+        buffer
+            .edit(
+                [Edit::replace(
                 TextRange::new(
                     buffer.line_start_byte(Line::new(5)).expect("测试行应存在"),
                     buffer.line_start_byte(Line::new(8)).expect("测试行应存在"),
                 )
                 .expect("测试行区间应合法"),
                 "replaced line aaaaaaaaaaaaaaaaaaaaa\nreplaced line bbbbbbbbbbbbbbbbbbbbbbb\nreplaced line ccccccccccccccccccccc\n",
-            )],
-        )
-        .expect("测试事务应合法");
-        buffer
-            .apply_transaction(transaction)
+                )],
+                TransactionMetadata::default(),
+            )
             .expect("测试事务应成功");
 
         assert_eq!(
@@ -1288,9 +1303,12 @@ mod tests {
         }]);
         // 注入配置变化后，行内编辑仍走增量路径（Compatible）。
         buffer
-            .replace(
-                TextRange::new(ByteOffset::ZERO, ByteOffset::new(1)).unwrap(),
-                "AB",
+            .edit(
+                [Edit::replace(
+                    TextRange::new(ByteOffset::ZERO, ByteOffset::new(1)).unwrap(),
+                    "AB",
+                )],
+                TransactionMetadata::default(),
             )
             .expect("测试编辑应成功");
         let outcome = map.sync(buffer.snapshot(), subscription.consume());

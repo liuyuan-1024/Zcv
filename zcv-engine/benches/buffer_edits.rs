@@ -1,13 +1,13 @@
 //! Buffer 编辑路径基线 benchmark。
 //!
-//! 覆盖最常回归的三条路径：单点 insert / delete / apply_transaction。
+//! 覆盖最常回归的批量 edit 插入与删除路径。
 //! 文本规模选 1MiB 与 10MiB；纯 ASCII，任意字节位置都是合法 UTF-8 边界。
 
 use std::time::{Duration, Instant};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use ropey::Rope;
-use zcv_engine::{Buffer, BufferConfig, ByteOffset, Edit, TextRange, Transaction};
+use zcv_engine::{Buffer, BufferConfig, ByteOffset, Edit, TextRange, TransactionMetadata};
 
 const SIZES: &[usize] = &[1 << 20, 10 << 20];
 
@@ -38,7 +38,11 @@ fn bench_insert_middle(c: &mut Criterion) {
                 for _ in 0..iters {
                     let mut buf = fresh_buffer(&text);
                     let start = Instant::now();
-                    buf.insert(mid, "x").unwrap();
+                    buf.edit(
+                        [Edit::insert(mid, "x").unwrap()],
+                        TransactionMetadata::default(),
+                    )
+                    .unwrap();
                     total += start.elapsed();
                     drop(buf);
                 }
@@ -62,31 +66,8 @@ fn bench_delete_middle(c: &mut Criterion) {
                 for _ in 0..iters {
                     let mut buf = fresh_buffer(&text);
                     let t0 = Instant::now();
-                    buf.delete(range).unwrap();
-                    total += t0.elapsed();
-                    drop(buf);
-                }
-                total
-            });
-        });
-    }
-    group.finish();
-}
-
-fn bench_apply_transaction_insert(c: &mut Criterion) {
-    let mut group = c.benchmark_group("buffer_apply_transaction_insert");
-    for &size in SIZES {
-        let text = make_text(size);
-        let mid = ByteOffset::new(size / 2);
-        group.bench_function(BenchmarkId::from_parameter(size), |b| {
-            b.iter_custom(|iters| {
-                let mut total = Duration::ZERO;
-                for _ in 0..iters {
-                    let mut buf = fresh_buffer(&text);
-                    let edit = Edit::insert(mid, "x").unwrap();
-                    let tx = Transaction::from_edits(buf.version(), vec![edit]).unwrap();
-                    let t0 = Instant::now();
-                    buf.apply_transaction(tx).unwrap();
+                    buf.edit([Edit::delete(range)], TransactionMetadata::default())
+                        .unwrap();
                     total += t0.elapsed();
                     drop(buf);
                 }
@@ -126,7 +107,6 @@ criterion_group!(
     benches,
     bench_insert_middle,
     bench_delete_middle,
-    bench_apply_transaction_insert,
     control_pure_rope_insert,
 );
 criterion_main!(benches);

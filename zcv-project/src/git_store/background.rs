@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use zcv_git::{Branch, DiffHunk, DiffStat, GitRepository};
+use zcv_buffer_diff::DiffHunk;
+use zcv_git::{Branch, DiffStat, GitRepository};
 
 use super::{GitJob, GitOperationKind, RepositorySnapshot, StatusEntry};
 use crate::worktree::discover_repositories;
@@ -494,10 +495,10 @@ mod tests {
 
     #[test]
     fn merge_refresh_keeps_existing_hunks() {
-        let hunk: Arc<[zcv_git::DiffHunk]> = Arc::from([zcv_git::DiffHunk {
+        let hunk: Arc<[zcv_buffer_diff::DiffHunk]> = Arc::from([zcv_buffer_diff::DiffHunk {
             range: 0..2,
             old_range: 0..2,
-            kind: zcv_git::DiffHunkKind::Modified,
+            kind: zcv_buffer_diff::DiffHunkKind::Modified,
         }]);
         let mut prev = RepositorySnapshot {
             branch: None,

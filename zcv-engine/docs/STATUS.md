@@ -16,7 +16,7 @@
 - Snapshot、BufferVersion、本地读写边界和版本化结果承载。
 - Selection / SelectionSet 纯数据与 PositionMap 映射、word / subword / symbol 边界查询。
 - 显式 `TransactionOutcome` 与纯文本 HistoryEntry / TransactionRecord。
-- Anchor、TrackedRange、VersionedResult、VersionedRangeSet。
+- Anchor、TrackedRange、VersionedResult。
 - 逻辑文本 viewport slicing。
 - 单 Buffer 同步 literal / regex 匹配、单次替换与 replace all。
 - 文件文本加载、reload、保存文本边界、大文件和超大事务防御。
@@ -33,7 +33,6 @@
 ```text
 src/       编辑引擎实现
 tests/     crate 级集成测试
-examples/  可选交互式 testbed
 docs/      项目文档
 ```
 
@@ -47,7 +46,7 @@ storage/      文本存储抽象和生产 RopeyStorage
 transaction/  Edit、Transaction、Delta、ChangeSet、事务记录
 selection/    Cursor、Selection、SelectionSet 与纯文本边界词汇
 tracking/     Anchor、Mark、TrackedRange
-versioned/    版本化结果与泛型外部区间集合
+versioned/    版本化结果
 text_changes.rs  连续 Patch 订阅
 ```
 

@@ -22,8 +22,6 @@ pub struct Language {
 pub(crate) struct LanguageQueries {
     pub(crate) brackets: Option<Arc<Query>>,
     pub(crate) indents: Option<Arc<Query>>,
-    pub(crate) outline: Option<Arc<Query>>,
-    pub(crate) text_objects: Option<Arc<Query>>,
     pub(crate) folds: Option<Arc<Query>>,
 }
 
@@ -50,14 +48,6 @@ impl Language {
 
     pub(crate) fn indents(&self) -> Option<&Arc<Query>> {
         self.queries.indents.as_ref()
-    }
-
-    pub(crate) fn outline(&self) -> Option<&Arc<Query>> {
-        self.queries.outline.as_ref()
-    }
-
-    pub(crate) fn text_objects(&self) -> Option<&Arc<Query>> {
-        self.queries.text_objects.as_ref()
     }
 
     pub(crate) fn folds(&self) -> Option<&Arc<Query>> {
@@ -309,14 +299,6 @@ mod tests {
             assert!(
                 language.indents().is_some() || path.ends_with(".yaml"),
                 "{path} 应提供缩进查询"
-            );
-            assert!(
-                language.outline().is_some() || path.ends_with(".sh"),
-                "{path} 应提供大纲查询"
-            );
-            assert!(
-                language.text_objects().is_some() || path.ends_with(".html"),
-                "{path} 应提供文本对象查询"
             );
             assert!(
                 language.folds().is_some() || !path.ends_with(".rs"),

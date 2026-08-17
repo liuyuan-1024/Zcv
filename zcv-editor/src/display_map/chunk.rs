@@ -33,7 +33,7 @@ pub(crate) struct InlayInfo<'a> {
 }
 
 /// 渲染 chunk：文本切片 + 字符/tab 位图 + 样式标记（对齐 Zed Chunk 的 is_tab/is_inlay/highlight_style）。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct Chunk<'a> {
     pub(crate) text: &'a str,
     pub(crate) chars: u128,
@@ -45,6 +45,8 @@ pub(crate) struct Chunk<'a> {
     /// 折叠占位符文本（渲染端用占位色绘制）。
     pub(crate) is_placeholder: bool,
     pub(crate) style: Option<HighlightStyle>,
+    /// 背景覆盖层命中色（搜索高亮等；优先于 style 的背景）。
+    pub(crate) background: Option<gpui::Rgba>,
     /// 选区标记（下划线渲染）。
     pub(crate) marked: bool,
 }
@@ -240,18 +242,23 @@ where
 /// `fragment_range` 是软换行片段在投影文本内的范围；
 /// `global_byte_start` 是行首的原始 buffer 字节（spans/marked 的坐标域）。
 /// 展开后的字符列 = 显示列（tab 展开成空格，shaping 宽度与测量一致）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RenderChunks<'a> {
     pub(crate) chunks: Vec<Chunk<'a>>,
     /// 片段起点前的投影字符数（光标/命中测试的 UTF-16 起点；不含 wrap 假空格）。
     pub(crate) utf16_start: usize,
 }
 
-/// 行的样式输入（语法高亮 + 选区标记）。
+/// 行的样式输入（语法高亮 + 搜索背景层 + 选区标记）。
+///
+/// `backgrounds` 是独立于语法前景色的背景覆盖层（对齐 Zed 的 background highlights）：
+/// 搜索匹配等只改背景、保留语法前景色的场景走这一层，不经过 spans 的 style 替换。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct LineStyles<'a> {
     pub(crate) spans: &'a [HighlightSpan],
     pub(crate) styles: &'a [HighlightStyle],
+    /// 背景覆盖层：命中区间优先于语法 style 的背景色。
+    pub(crate) backgrounds: &'a [(Range<usize>, gpui::Rgba)],
     pub(crate) marked: &'a [TextRange],
 }
 
@@ -263,10 +270,12 @@ pub(crate) struct ViewportChunkSource<'a> {
     pub inlay: &'a InlaySnapshot,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct ChunkStyle {
     is_inlay: bool,
     style: Option<HighlightStyle>,
+    /// 背景覆盖层命中色（搜索高亮等；优先于 style 的背景）。
+    background: Option<gpui::Rgba>,
     marked: bool,
 }
 
@@ -360,9 +369,27 @@ impl<'a, 'b> StyledChunks<'a, 'b> {
                     .min(self.original_len);
                 range_start < original_range.end && range_end > original_range.start
             });
+        // 背景覆盖层（搜索高亮）：仅当段完全位于命中区间内才着色。
+        // 段与区间部分相交时返回 None，使 StyledChunks 的样式切分扫描在区间边界处切分出精确的子段，避免整段着色吞掉区间外的相邻字符（如紧邻的引号）。
+        let background = (!is_inlay)
+            .then(|| {
+                self.styles.backgrounds.iter().find_map(|(range, color)| {
+                    let start = range
+                        .start
+                        .saturating_sub(self.global_byte_start)
+                        .min(self.original_len);
+                    let end = range
+                        .end
+                        .saturating_sub(self.global_byte_start)
+                        .min(self.original_len);
+                    (start <= original_range.start && original_range.end <= end).then_some(*color)
+                })
+            })
+            .flatten();
         Some(ChunkStyle {
             is_inlay,
             style,
+            background,
             marked,
         })
     }
@@ -400,6 +427,7 @@ impl<'a> Iterator for StyledChunks<'a, '_> {
             };
             head.is_inlay = chunk_style.is_inlay;
             head.style = chunk_style.style;
+            head.background = chunk_style.background;
             head.marked = chunk_style.marked;
             return Some(head);
         }
@@ -594,6 +622,9 @@ pub(crate) fn chunks_to_runs(chunks: &[Chunk<'_>], base: gpui::TextRun) -> Vec<g
                 run.underline = style.underline;
                 run.strikethrough = style.strikethrough;
             }
+            if let Some(background) = chunk.background {
+                run.background_color = Some(background.into());
+            }
             if chunk.marked {
                 run.underline = Some(UnderlineStyle {
                     color: Some(run.color),
@@ -694,6 +725,7 @@ mod tests {
             &[],
             LineStyles {
                 // 结束位置 4 落在“机”的 UTF-8 编码中间。
+                backgrounds: &[],
                 spans: &[HighlightSpan {
                     range: 0..4,
                     capture: 0,
@@ -763,6 +795,7 @@ mod tests {
             0,
             &[],
             LineStyles {
+                backgrounds: &[],
                 spans: &[HighlightSpan {
                     range: 0..3, // "ab\t"（3 个原字符）
                     capture: 0,
@@ -791,6 +824,7 @@ mod tests {
             0,
             &[],
             LineStyles {
+                backgrounds: &[],
                 spans: &[],
                 styles: &[],
                 marked: &[TextRange::new(ByteOffset::new(2), ByteOffset::new(4)).unwrap()],
@@ -814,6 +848,7 @@ mod tests {
             0,
             &[],
             LineStyles {
+                backgrounds: &[],
                 spans: &[],
                 styles: &[],
                 marked: &[TextRange::new(ByteOffset::new(1), ByteOffset::new(7)).unwrap()],
@@ -904,6 +939,7 @@ mod tests {
                 text: ": hint",
             }],
             LineStyles {
+                backgrounds: &[],
                 spans: &[HighlightSpan {
                     range: 1..2, // 原始 1..2 = "b"（inlay 注入后右移）
                     capture: 0,
@@ -934,6 +970,7 @@ mod tests {
             10,
             &[],
             LineStyles {
+                backgrounds: &[],
                 spans: &[HighlightSpan {
                     range: 0..100,
                     capture: 0,
@@ -946,5 +983,70 @@ mod tests {
         assert_eq!(line.chunks.len(), 1);
         assert_eq!(line.chunks[0].text, "abc");
         assert!(line.chunks[0].style.is_some());
+    }
+}
+
+#[cfg(test)]
+mod backgrounds_layer_tests {
+    use super::*;
+    use gpui::rgba;
+
+    /// 背景覆盖层：命中区间内所有 chunk 都带背景色（搜索高亮普通/活动匹配共用此层）。
+    #[test]
+    fn backgrounds_layer_colors_all_matching_chunks() {
+        let text = "abc abc";
+        let line = render_line_chunks(
+            text,
+            4,
+            0,
+            &[],
+            LineStyles {
+                spans: &[],
+                styles: &[],
+                backgrounds: &[(0..3, rgba(0x74ade83d)), (4..7, rgba(0x74ade8b3))],
+                marked: &[],
+            },
+            0..text.len(),
+        );
+        let chunks = line.chunks;
+        assert_eq!(chunks.len(), 3, "两个匹配 + 中间空格各自成段");
+        // 普通匹配（0-3）与活动匹配（4-7）背景色不同且都命中。
+        assert_eq!(chunks[0].background, Some(rgba(0x74ade83d)));
+        assert_eq!(chunks[1].background, None, "无背景区间不应被着色");
+        assert_eq!(chunks[2].background, Some(rgba(0x74ade8b3)));
+    }
+
+    /// 匹配紧邻引号（同一语法段）时，背景不得吞掉区间外的引号字符。
+    #[test]
+    fn backgrounds_do_not_spill_into_adjacent_quotes() {
+        let text = "\"abc\" abc";
+        // 匹配区间 1..4（abc），引号在 0 与 4。
+        let line = render_line_chunks(
+            text,
+            4,
+            0,
+            &[],
+            LineStyles {
+                spans: &[],
+                styles: &[],
+                backgrounds: &[(1..4, rgba(0x74ade83d))],
+                marked: &[],
+            },
+            0..text.len(),
+        );
+        let chunks = line.chunks;
+        assert_eq!(
+            chunks.len(),
+            3,
+            "引号 / 匹配 / 空格后文本应切分为三段的精确子段"
+        );
+        assert_eq!(chunks[0].text, "\"", "左引号单独成段");
+        assert_eq!(chunks[0].background, None, "左引号不应着色");
+        assert_eq!(chunks[1].text, "abc");
+        assert_eq!(
+            chunks[1].background,
+            Some(rgba(0x74ade83d)),
+            "匹配词本身着色"
+        );
     }
 }

@@ -5,12 +5,13 @@
 use gpui::{
     AnyView, App, Context, Entity, EntityId, EventEmitter, Render, Window, div, prelude::*,
 };
-use zcv_actions::{ToggleFileSearch, TogglePreview};
+use zcv_actions::{DeploySearch, TogglePreview};
 use zcv_theme::{color, space};
 use zcv_ui::Glyph;
 
 use crate::ItemHandle;
 use crate::preview::provider_for;
+use crate::search_bar::SearchBar;
 
 // ═══ ToolbarItemLocation ═════════════════════════════════════════════
 
@@ -86,6 +87,7 @@ impl<T: ToolbarItemView + 'static> ToolbarItemViewHandle for Entity<T> {
 pub struct Toolbar {
     active_item: Option<Box<dyn ItemHandle>>,
     items: Vec<(Box<dyn ToolbarItemViewHandle>, ToolbarItemLocation)>,
+    search_bar: Option<Entity<SearchBar>>,
 }
 
 impl Default for Toolbar {
@@ -99,7 +101,13 @@ impl Toolbar {
         Self {
             active_item: None,
             items: Vec::new(),
+            search_bar: None,
         }
+    }
+
+    /// 挂载文件内搜索条。
+    pub(crate) fn set_search_bar(&mut self, search_bar: Entity<SearchBar>) {
+        self.search_bar = Some(search_bar);
     }
 
     /// 注册一个子项。
@@ -202,6 +210,9 @@ impl Render for Toolbar {
                             .children(right_elements),
                     ),
             )
+            .when_some(self.search_bar.clone(), |this, search_bar| {
+                this.child(search_bar)
+            })
     }
 }
 
@@ -300,10 +311,8 @@ impl Render for FileToolbarControls {
             .child(
                 Glyph::icon("toolbar-file-search", "icons/magnifying_glass.svg")
                     .label("搜索")
-                    .shortcut(&ToggleFileSearch, cx)
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(ToggleFileSearch), cx)
-                    }),
+                    .shortcut(&DeploySearch, cx)
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(DeploySearch), cx)),
             )
     }
 }

@@ -34,6 +34,10 @@ use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
 use super::selection::{EditOutcome, EditorSelections, SelectionHistory, replace_selections};
 
+mod search;
+
+pub(crate) use search::EditorSearch;
+
 /// Editor 自身的领域事件。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditorEvent {
@@ -125,6 +129,8 @@ pub struct Editor {
     preferred_line_length: usize,
     /// 注入的行级 diff hunks 与注入时的 buffer 版本（渲染门控用）。
     diff_hunks: Vec<DiffHunk>,
+    /// 文件内搜索状态（搜索条执行过一次搜索后存在，编辑后自动重搜）。
+    search: Option<EditorSearch>,
     diff_hunks_version: Option<BufferVersion>,
     /// HEAD 全文（删除块/修改块展开显示旧行的来源；由上层预取后注入）。
     deleted_text: Option<Arc<str>>,
@@ -491,6 +497,11 @@ impl Editor {
     }
 
     pub(super) fn matching_bracket_pair(&mut self) -> Option<BracketPair> {
+        // 存在选区时不显示匹配括号高亮，避免选区与括号高亮同色时产生"括号被选中"的视觉混淆；
+        // 判断在缓存之前，选区状态变化不会命中陈旧缓存。
+        if !self.resolved_selections().primary().is_caret() {
+            return None;
+        }
         let snapshot = self.display_map.buffer_snapshot();
         let caret = self.resolved_selections().primary().head();
         let buffer_version = snapshot.version();
@@ -954,6 +965,7 @@ impl Editor {
             scroll_manager: ScrollManager::default(),
             diff_hunks: Vec::new(),
             diff_hunks_version: None,
+            search: None,
             deleted_text: None,
             expanded_deleted_hunks: Vec::new(),
             expanded_modified_hunks: Vec::new(),
@@ -1003,6 +1015,7 @@ impl Editor {
                     }
                 }
                 self.finish_edit(cx);
+                self.research_after_edit(cx);
                 cx.emit(EditorEvent::Edited);
             }
             Err(error) => eprintln!("Editor 编辑事务失败：{error}"),
@@ -1029,6 +1042,7 @@ impl Editor {
                 let version = self.buffer.read(cx).snapshot().version();
                 self.selections = EditorSelections::from_selection_set(version, &after_selections);
                 self.finish_edit(cx);
+                self.research_after_edit(cx);
                 cx.emit(EditorEvent::Edited);
             }
             Err(error) => eprintln!("Editor 编辑事务失败：{error}"),
@@ -1720,6 +1734,10 @@ impl Render for Editor {
 #[cfg(test)]
 #[path = "test/selection_edit_tests.rs"]
 mod selection_edit_tests;
+
+#[cfg(test)]
+#[path = "test/search_tests.rs"]
+mod search_tests;
 
 mod editing;
 mod input;

@@ -845,3 +845,65 @@ fn newline_uses_tree_sitter_indent_query(cx: &mut TestAppContext) {
     cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
     assert_eq!(buffer_text(&language_buffer, cx), "fn main() {\n    }\n");
 }
+
+#[gpui::test]
+fn newline_does_not_compound_indent_inside_an_outer_rust_block(cx: &mut TestAppContext) {
+    let source = "pub(crate) fn config_dir() -> &'static Path {\n    static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();\n    CONFIG_DIR.get_or_init(|| home_dir().join(\".zcv\")).as_path()\n}";
+    let caret = source.find(".as_path()").unwrap() + ".as_path()".len();
+    let raw_buffer = cx.new(|_| {
+        Buffer::scratch(source.to_owned(), BufferConfig::default())
+            .expect("Rust 测试 Buffer 应能创建")
+    });
+    let language_buffer = cx.new({
+        let raw_buffer = raw_buffer.clone();
+        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+    });
+    let editor = cx.new({
+        let language_buffer = language_buffer.clone();
+        move |cx| {
+            let mut editor = Editor::for_buffer(language_buffer, cx);
+            editor.set_selections(SelectionSet::caret(ByteOffset::new(caret)));
+            editor
+        }
+    });
+    cx.run_until_parked();
+
+    cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+    cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+
+    assert_eq!(
+        buffer_text(&language_buffer, cx),
+        "pub(crate) fn config_dir() -> &'static Path {\n    static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();\n    CONFIG_DIR.get_or_init(|| home_dir().join(\".zcv\")).as_path()\n    \n    \n}"
+    );
+}
+
+#[gpui::test]
+fn newline_uses_the_nearest_code_line_as_its_indent_basis(cx: &mut TestAppContext) {
+    let source = "fn main() {\n    build()\n}";
+    let caret = source.find("build(").unwrap() + "build(".len();
+    let raw_buffer = cx.new(|_| {
+        Buffer::scratch(source.to_owned(), BufferConfig::default())
+            .expect("Rust 测试 Buffer 应能创建")
+    });
+    let language_buffer = cx.new({
+        let raw_buffer = raw_buffer.clone();
+        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+    });
+    let editor = cx.new({
+        let language_buffer = language_buffer.clone();
+        move |cx| {
+            let mut editor = Editor::for_buffer(language_buffer, cx);
+            editor.set_selections(SelectionSet::caret(ByteOffset::new(caret)));
+            editor
+        }
+    });
+    cx.run_until_parked();
+
+    cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+    cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+
+    assert_eq!(
+        buffer_text(&language_buffer, cx),
+        "fn main() {\n    build(\n        \n        )\n}"
+    );
+}

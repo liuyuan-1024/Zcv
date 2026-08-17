@@ -246,41 +246,24 @@ impl Editor {
             .iter()
             .map(|selection| {
                 let offset = selection.start();
-                let line = snapshot.byte_to_line(offset)?;
-                let line_start = snapshot.line_start_byte(line)?;
-                let prefix = snapshot.slice_byte_range(line_start, offset)?;
-                let leading: String = prefix
-                    .as_str()
-                    .chars()
-                    .take_while(|character| matches!(character, ' ' | '\t'))
-                    .collect();
-                let query_start = offset.get().saturating_sub(1);
-                let query_end = offset
-                    .get()
-                    .saturating_add(1)
-                    .min(snapshot.len_bytes().get());
-                let should_indent = self
+                let suggestion = self
                     .syntax_snapshot
-                    .indent_ranges(query_start..query_end, &snapshot)
-                    .into_iter()
-                    .any(|range| {
-                        range.range.start < offset.get()
-                            && offset.get() <= range.range.end
-                            && range
-                                .end
-                                .as_ref()
-                                .is_none_or(|end| offset.get() <= end.start)
-                    });
-                let indent = if should_indent {
+                    .suggested_newline_indent(offset, &snapshot)?;
+                let indent = if suggestion.additional_levels > 0 {
                     if snapshot.config().tab.insert_spaces {
-                        " ".repeat(snapshot.config().tab.indent_width())
+                        " ".repeat(
+                            snapshot.config().tab.indent_width() * suggestion.additional_levels,
+                        )
                     } else {
-                        "\t".to_owned()
+                        "\t".repeat(suggestion.additional_levels)
                     }
                 } else {
                     String::new()
                 };
-                Ok((*selection, Arc::from(format!("\n{leading}{indent}"))))
+                Ok((
+                    *selection,
+                    Arc::from(format!("\n{}{indent}", suggestion.base_indent)),
+                ))
             })
             .collect::<EngineResult<Vec<_>>>();
         let outcome = targets.and_then(|targets| {

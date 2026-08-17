@@ -46,11 +46,6 @@ impl TextRange {
         self.start == self.end
     }
 
-    /// 与另一区间是否有重叠（半开区间相交）。
-    pub fn overlaps(self, other: TextRange) -> bool {
-        self.start < other.end && other.start < self.end
-    }
-
     /// `point` 是否落在 `[start, end)` 内。
     pub fn contains(self, point: ByteOffset) -> bool {
         self.start <= point && point < self.end
@@ -116,18 +111,14 @@ mod tests {
     }
 
     #[test]
-    fn text_range_half_open_boundary_should_report_len_empty_overlap_and_contains() {
+    fn text_range_half_open_boundary_should_report_len_empty_and_contains() {
         let empty = TextRange::new(b(4), b(4)).unwrap();
         let left = TextRange::new(b(2), b(5)).unwrap();
-        let adjacent = TextRange::new(b(5), b(9)).unwrap();
-        let overlapping = TextRange::new(b(4), b(8)).unwrap();
 
         assert!(empty.is_empty());
         assert_eq!(left.len(), 3);
         assert!(left.contains(b(2)));
         assert!(!left.contains(b(5)));
-        assert!(!left.overlaps(adjacent));
-        assert!(left.overlaps(overlapping));
     }
 
     #[test]

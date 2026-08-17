@@ -1,5 +1,5 @@
 use gpui::{TestAppContext, point, px, size};
-use zcv_engine::{ByteOffset, Selection, SelectionSet, TransactionId};
+use zcv_engine::{ByteOffset, Edit, Selection, SelectionSet, TransactionId, TransactionMetadata};
 
 use super::common::{buffer_text, engine_buffer, test_buffer};
 use super::*;
@@ -24,7 +24,10 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
         );
         editor.buffer.update(cx, |buffer, cx| {
             buffer
-                .insert(ByteOffset::new(3), "d")
+                .edit(
+                    [Edit::insert(ByteOffset::new(3), "d").unwrap()],
+                    TransactionMetadata::default(),
+                )
                 .expect("共享 Buffer 编辑应成功");
             cx.notify();
         });

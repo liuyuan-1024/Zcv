@@ -11,6 +11,7 @@ use gpui::{
     MouseUpEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Style, TextRun, Window,
     fill, point, px, relative, size,
 };
+use zcv_actions::ToggleFold;
 use zcv_buffer_diff::{DiffHunk, DiffHunkKind};
 use zcv_engine::{ByteOffset, Line, LogicalColumn, SelectionSet, TextRange};
 use zcv_language::BracketPair;
@@ -19,13 +20,13 @@ use zcv_ui::Glyph;
 
 use super::display_map::{
     BufferPoint, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot, FoldRowSegment,
-    LineStyles, ProjectedRange, StreamLineSource, WrapViewportRowKind, byte_for_display_column,
-    chunks_to_runs, render_viewport_chunks,
+    LineStyles, ProjectedRange, StreamLineSource, ViewportChunkSource, WrapViewportRowKind,
+    byte_for_display_column, chunks_to_runs, render_viewport_chunks,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
 use super::scrollbar::{SCROLLBAR_WIDTH, ScrollbarLayout, marker_column_x_range, marker_geometry};
-use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap, ToggleFold};
+use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap};
 
 const CARET_WIDTH: Pixels = px(2.);
 
@@ -1023,7 +1024,7 @@ impl Element for EditorElement {
         );
         if let Some(scrollbar) = &prepaint.scrollbar {
             let colors = color::current(cx);
-            // 轨道背景透明，只画一个占位 quad（后续 marker 会叠加在这一层）。
+            // 轨道背景位于 marker 与 thumb 下方；默认主题使用透明色。
             window.paint_quad(fill(
                 scrollbar.hitbox.bounds,
                 colors.scrollbar_track_background,
@@ -1555,12 +1556,14 @@ fn layout_visible_lines(
                         StreamLineSource::Inserted { .. } => LineStyles::default(),
                     };
                     let rendered = render_viewport_chunks(
-                        text.as_ref(),
+                        ViewportChunkSource {
+                            text: text.as_ref(),
+                            global_byte_start: *global_byte_start,
+                            stream_line,
+                            segments: segments.as_deref(),
+                            inlay: inlay_snapshot,
+                        },
                         tab_width,
-                        *global_byte_start,
-                        stream_line,
-                        segments.as_deref(),
-                        inlay_snapshot,
                         line_styles,
                         byte_range.clone(),
                     );

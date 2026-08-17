@@ -2,20 +2,15 @@
 //!
 //! 本文件只管理 Buffer 作为文档对象的外部可见状态，不执行具体编辑、坐标转换或历史回放。
 
-use std::{
-    io,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::io;
 
 use super::{Buffer, history};
 use crate::{
-    BufferConfig, BufferId, BufferLoadError, BufferOrigin, BufferState, BufferVersion,
-    EngineResult, LoadedTextInfo, TransactionId,
+    BufferConfig, BufferLoadError, BufferOrigin, BufferState, BufferVersion, EngineResult,
+    LoadedTextInfo, TransactionId,
     storage::{RopeyStorage, TextRead, TextStorage},
     text_loading::streaming_decoder::{StreamDecodeError, decode_stream},
 };
-
-static NEXT_BUFFER_ID: AtomicU64 = AtomicU64::new(1);
 
 impl Buffer {
     pub fn new(config: BufferConfig) -> EngineResult<Self> {
@@ -78,14 +73,12 @@ impl Buffer {
         let saved_snapshot = storage.snapshot();
         let saved_fingerprint = saved_snapshot.fingerprint();
         let mut buffer = Self {
-            id: next_buffer_id(),
             origin,
             read_only: false,
             config,
             storage,
             version: BufferVersion::INITIAL,
             saved_version: BufferVersion::INITIAL,
-            last_saved_version: BufferVersion::INITIAL,
             saved_snapshot,
             saved_fingerprint,
             last_synced_external_version: None,
@@ -107,26 +100,9 @@ impl Buffer {
         }
     }
 
-    /// 用外部资源句柄（宿主自定义的不透明字符串）创建 Buffer。
-    ///
-    /// 这是 `Buffer::with_origin(BufferOrigin::external(handle), text, config)` 的便利包装。
-    /// 引擎不解析 handle 内容、不做 I/O。
-    pub fn with_external(
-        handle: impl Into<String>,
-        text: String,
-        config: BufferConfig,
-    ) -> EngineResult<Self> {
-        Self::with_origin(BufferOrigin::external(handle), text, config)
-    }
-
     /// 语义等同 `from_text`。保留独立入口便于宿主语义清晰。
     pub fn scratch(text: String, config: BufferConfig) -> EngineResult<Self> {
         Self::with_origin(BufferOrigin::anonymous(), text, config)
-    }
-
-    /// 以 `u64` 返回 buffer 标识。
-    pub fn id_u64(&self) -> u64 {
-        self.id.get()
     }
 
     /// Buffer 来源句柄（宿主自解释，引擎不解析）。
@@ -134,17 +110,8 @@ impl Buffer {
         &self.origin
     }
 
-    /// 是否为匿名 / 临时来源（无 host 持久化句柄）。
-    pub fn is_anonymous(&self) -> bool {
-        self.origin.is_anonymous()
-    }
-
     pub fn is_read_only(&self) -> bool {
         self.read_only
-    }
-
-    pub fn set_read_only(&mut self, read_only: bool) {
-        self.read_only = read_only;
     }
 
     pub fn into_read_only(mut self) -> Self {
@@ -162,20 +129,13 @@ impl Buffer {
         }
     }
 
-    pub fn has_unsaved_changes(&self) -> bool {
-        self.is_dirty()
-    }
-
-    pub fn can_close_without_prompt(&self) -> bool {
-        !self.has_unsaved_changes()
-    }
-
     pub fn config(&self) -> &BufferConfig {
         &self.config
     }
 
     pub fn set_config(&mut self, config: BufferConfig) {
         self.config = config;
+        self.truncate_undo_history_to_budget();
     }
 
     /// 当前 Buffer 文本字节数是否被 `LargeFilePolicy::large_file_threshold_bytes`
@@ -189,36 +149,12 @@ impl Buffer {
             .is_large_byte_size(self.storage.len_bytes().get())
     }
 
-    /// 粗略内存占用估算（字节）。
-    ///
-    /// 度量包含：
-    /// - 文本存储字节数（`len_bytes()`，不计 `ropey::Rope` 内部节点开销）
-    /// - 历史图按 `HistoryStatus::memory_bytes` 累加的字符串占用
-    ///
-    /// 仅作为粗估指标，用于宿主侧的内存观测与回归监控；不承诺等同于操作系统
-    /// 实际驻留集 (RSS) 或 `ropey` 内部节点 / 缓存的精确字节数。
-    /// 这是宿主进程内存占用，与文本 `ByteOffset` 不是同一坐标系，故返回
-    /// raw `usize`。
-    pub fn approximate_memory_bytes(&self) -> usize {
-        let text_bytes = self.storage.len_bytes().get();
-        let history_bytes = self.history.status().memory_bytes;
-        text_bytes.saturating_add(history_bytes)
-    }
-
     pub fn version(&self) -> BufferVersion {
         self.version
     }
 
     pub fn saved_version(&self) -> BufferVersion {
         self.saved_version
-    }
-
-    pub fn last_saved_version(&self) -> BufferVersion {
-        self.last_saved_version
-    }
-
-    pub fn last_synced_external_version(&self) -> Option<BufferVersion> {
-        self.last_synced_external_version
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -237,7 +173,6 @@ impl Buffer {
 
     pub fn mark_saved(&mut self) {
         self.saved_version = self.version;
-        self.last_saved_version = self.version;
         self.saved_snapshot = self.storage.snapshot();
         self.saved_fingerprint = self.saved_snapshot.fingerprint();
     }
@@ -253,8 +188,4 @@ impl Buffer {
     pub fn loaded_text_info(&self) -> Option<&LoadedTextInfo> {
         self.loaded_text_info.as_ref()
     }
-}
-
-fn next_buffer_id() -> BufferId {
-    BufferId::new(NEXT_BUFFER_ID.fetch_add(1, Ordering::Relaxed))
 }

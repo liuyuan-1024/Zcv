@@ -2,7 +2,7 @@
 //!
 //! 语义对齐 Zed 的 `surrounding_word`：目标类别取光标两侧"更词"的一侧，再向左右扫描连续同类字符；换行不参与任何类别的连续性。
 
-mod common;
+pub mod common;
 
 use common::*;
 

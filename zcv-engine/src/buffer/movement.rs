@@ -9,24 +9,6 @@ use crate::{
 };
 
 impl Buffer {
-    /// 按给定移动粒度寻找前一个边界。
-    pub fn previous_movement_boundary(
-        &self,
-        offset: CharOffset,
-        unit: MovementUnit,
-    ) -> EngineResult<CharOffset> {
-        self.movement_boundary(offset, MovementDirection::Previous, unit)
-    }
-
-    /// 按给定移动粒度寻找后一个边界。
-    pub fn next_movement_boundary(
-        &self,
-        offset: CharOffset,
-        unit: MovementUnit,
-    ) -> EngineResult<CharOffset> {
-        self.movement_boundary(offset, MovementDirection::Next, unit)
-    }
-
     /// 按纯文本粒度查找相邻边界。垂直移动与 selection 变换由宿主 Editor 负责。
     pub fn movement_boundary(
         &self,
@@ -41,38 +23,6 @@ impl Buffer {
             direction,
             unit,
         )
-    }
-
-    pub fn previous_word_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
-        self.previous_movement_boundary(offset, MovementUnit::Word)
-    }
-
-    pub fn next_word_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
-        self.next_movement_boundary(offset, MovementUnit::Word)
-    }
-
-    pub fn previous_identifier_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
-        self.previous_movement_boundary(offset, MovementUnit::Identifier)
-    }
-
-    pub fn next_identifier_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
-        self.next_movement_boundary(offset, MovementUnit::Identifier)
-    }
-
-    pub fn previous_subword_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
-        self.previous_movement_boundary(offset, MovementUnit::Subword)
-    }
-
-    pub fn next_subword_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
-        self.next_movement_boundary(offset, MovementUnit::Subword)
-    }
-
-    pub fn previous_symbol_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
-        self.previous_movement_boundary(offset, MovementUnit::Symbol)
-    }
-
-    pub fn next_symbol_boundary(&self, offset: CharOffset) -> EngineResult<CharOffset> {
-        self.next_movement_boundary(offset, MovementUnit::Symbol)
     }
 
     /// 以 offset 为中心取连续同类字符范围（双击选词语义）。

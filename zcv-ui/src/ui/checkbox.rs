@@ -11,7 +11,7 @@ use gpui::{
 };
 use zcv_theme::{color, typography};
 
-use crate::ui::{SvgIcon, TooltipSpec};
+use crate::{SvgIcon, TooltipSpec};
 
 type ClickHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 

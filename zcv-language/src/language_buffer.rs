@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use gpui::{AppContext, Context, Entity, Task};
 use zcv_engine::{Buffer, Snapshot, TextSubscription};
 
-use crate::language::language_name_for_file;
+use crate::registry::language_name_for_file;
 use crate::syntax_map::{SyntaxMap, SyntaxSnapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,10 +89,6 @@ impl LanguageBuffer {
         self.syntax_map.snapshot()
     }
 
-    pub fn parse_status(&self) -> ParseStatus {
-        self.parse_status
-    }
-
     fn sync(&mut self, cx: &mut Context<Self>) {
         let changes = self.subscription.consume();
         if changes.is_empty() {
@@ -150,7 +146,7 @@ impl LanguageBuffer {
 #[cfg(test)]
 mod tests {
     use gpui::TestAppContext;
-    use zcv_engine::{BufferConfig, ByteOffset};
+    use zcv_engine::{BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
     use super::*;
 
@@ -165,7 +161,10 @@ mod tests {
 
         buffer.update(cx, |buffer, cx| {
             buffer
-                .insert(ByteOffset::new(3), "async ")
+                .edit(
+                    [Edit::insert(ByteOffset::new(3), "async ").unwrap()],
+                    TransactionMetadata::default(),
+                )
                 .expect("测试编辑应成功");
             cx.notify();
         });
@@ -175,7 +174,6 @@ mod tests {
         language_buffer.read_with(cx, |language_buffer, _| {
             let syntax = language_buffer.syntax_snapshot();
             assert_eq!(syntax.version(), buffer_version);
-            assert_eq!(language_buffer.parse_status(), ParseStatus::Idle);
         });
     }
 
@@ -192,7 +190,13 @@ mod tests {
         });
         buffer.update(cx, |buffer, cx| {
             buffer
-                .insert(ByteOffset::ZERO, "#!/usr/bin/env python\nprint('ok')\n")
+                .edit(
+                    [
+                        Edit::insert(ByteOffset::ZERO, "#!/usr/bin/env python\nprint('ok')\n")
+                            .unwrap(),
+                    ],
+                    TransactionMetadata::default(),
+                )
                 .expect("测试编辑应成功");
             cx.notify();
         });

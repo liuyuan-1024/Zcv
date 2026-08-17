@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use super::Buffer;
 use crate::{
     BufferSaveError, BufferVersion, ByteOffset, EngineError, EngineResult, LineEndingConfig,
-    Snapshot, TextRange, TransactionError,
+    TextRange, TransactionError,
     diff::diff_patch,
     storage::{RopeyStorage, TextRead},
 };
@@ -37,18 +37,6 @@ impl Buffer {
         self.text_changes
             .publish(old_version, self.version, patch, false);
         Ok(())
-    }
-
-    /// 用已有 Snapshot 重新加载 Buffer。
-    ///
-    /// 只读取 Snapshot 的文本内容；Buffer 身份、配置、只读状态和文件绑定保持不变。
-    pub fn reload_from_snapshot(&mut self, snapshot: &Snapshot) -> EngineResult<()> {
-        self.reload_from_text(
-            snapshot
-                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())?
-                .into_text()
-                .into_owned(),
-        )
     }
 
     /// 流式输出待保存文本，并在输出前检查调用方持有的版本是否仍然新鲜。

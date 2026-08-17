@@ -7,19 +7,11 @@ use tree_sitter::StreamingIterator;
 use zcv_engine::{BufferVersion, Snapshot, TextChangeBatch};
 
 use crate::Language;
-use crate::language::{language_for_file, language_for_injection};
+use crate::registry::{language_for_file, language_for_injection};
 use crate::tree_sitter_utils::{
     QueryCursorHandle, SnapshotTextProvider, drop_offloaded, edit_tree, encloses,
     map_range_through_changes, node_text, parse_tree, range_touches,
 };
-
-/// 语法层的公开信息（供外部识别某范围的注入语言）。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SyntaxLayerInfo {
-    pub language: &'static str,
-    pub range: Range<usize>,
-    pub depth: u32,
-}
 
 /// 可增量更新的语法状态。
 ///
@@ -32,7 +24,6 @@ pub struct SyntaxMap {
     injections: Vec<SyntaxLayer>,
     parsed_version: BufferVersion,
     interpolated_version: BufferVersion,
-    update_count: u64,
     /// 最近一次解析安装的 capture 全局表（见 `SyntaxSnapshot::rebuild_capture_table`）。
     capture_names: Arc<[Arc<str>]>,
     capture_index_by_language: Arc<HashMap<&'static str, Arc<[u32]>>>,
@@ -47,7 +38,6 @@ pub struct SyntaxSnapshot {
     pub(crate) tree: Option<tree_sitter::Tree>,
     pub(crate) injections: Vec<SyntaxLayer>,
     pub(crate) version: BufferVersion,
-    update_count: u64,
     /// 主语言与全部注入语言的 capture 名字全局表；index 跨语言唯一。
     capture_names: Arc<[Arc<str>]>,
     /// 语言名 -> 该语言局部 capture index 到全局 index 的映射（高亮收集时数组索引，零分配）。
@@ -79,7 +69,6 @@ impl SyntaxMap {
             injections: Vec::new(),
             parsed_version: snapshot.version(),
             interpolated_version: snapshot.version(),
-            update_count: 0,
             capture_names: Arc::from([]),
             capture_index_by_language: Arc::new(HashMap::new()),
         }
@@ -112,7 +101,6 @@ impl SyntaxMap {
         self.capture_index_by_language = Arc::new(HashMap::new());
         self.parsed_version = snapshot.version();
         self.interpolated_version = snapshot.version();
-        self.update_count += 1;
         true
     }
 
@@ -173,7 +161,6 @@ impl SyntaxMap {
             tree: self.tree.clone(),
             injections: self.injections.clone(),
             version: self.interpolated_version,
-            update_count: self.update_count,
             capture_names: Arc::clone(&self.capture_names),
             capture_index_by_language: Arc::clone(&self.capture_index_by_language),
         }
@@ -198,7 +185,6 @@ impl SyntaxMap {
         self.capture_names = std::mem::take(&mut parsed.capture_names);
         self.capture_index_by_language = std::mem::take(&mut parsed.capture_index_by_language);
         self.parsed_version = parsed.version;
-        self.update_count += 1;
         true
     }
 }
@@ -211,7 +197,6 @@ impl SyntaxSnapshot {
             tree: None,
             injections: Vec::new(),
             version,
-            update_count: 0,
             capture_names: Arc::from([]),
             capture_index_by_language: Arc::new(HashMap::new()),
         }
@@ -221,25 +206,8 @@ impl SyntaxSnapshot {
         self.version
     }
 
-    pub fn update_count(&self) -> u64 {
-        self.update_count
-    }
-
     pub fn has_language(&self) -> bool {
         self.language.is_some()
-    }
-
-    pub fn syntax_layers(&self, range: Range<usize>, text: &Snapshot) -> Vec<SyntaxLayerInfo> {
-        if !self.can_query(&range, text) {
-            return Vec::new();
-        }
-        self.layers_for_range(&range)
-            .map(|layer| SyntaxLayerInfo {
-                language: layer.language.name(),
-                range: layer.range,
-                depth: layer.depth,
-            })
-            .collect()
     }
 
     pub fn language_at(&self, offset: usize, text: &Snapshot) -> Option<&'static str> {
@@ -494,7 +462,7 @@ pub(crate) fn parsed_syntax(path: &str, text: &str) -> (zcv_engine::Buffer, Synt
 
 #[cfg(test)]
 mod tests {
-    use zcv_engine::{ByteOffset, Edit, TextRange, Transaction};
+    use zcv_engine::{ByteOffset, Edit, TextRange, TransactionMetadata};
 
     use super::*;
 
@@ -535,7 +503,12 @@ mod tests {
             .as_str()
             .find('1')
             .unwrap();
-        buffer.insert(ByteOffset::new(start), "\"文本\"").unwrap();
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(start), "\"文本\"").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
         let new_snapshot = buffer.snapshot();
         syntax.interpolate(&old_snapshot, &new_snapshot, &subscription.consume());
         let parsed = syntax.snapshot().reparse(&new_snapshot);
@@ -562,21 +535,22 @@ mod tests {
             .unwrap();
         let first = source.as_str().find('1').unwrap();
         let second = source.as_str().find('2').unwrap();
-        let transaction = Transaction::from_edits(
-            buffer.version(),
-            vec![
-                Edit::replace(
-                    TextRange::new(ByteOffset::new(first), ByteOffset::new(first + 1)).unwrap(),
-                    "\"一\"",
-                ),
-                Edit::replace(
-                    TextRange::new(ByteOffset::new(second), ByteOffset::new(second + 1)).unwrap(),
-                    "\"二\"",
-                ),
-            ],
-        )
-        .unwrap();
-        buffer.apply_transaction(transaction).unwrap();
+        buffer
+            .edit(
+                [
+                    Edit::replace(
+                        TextRange::new(ByteOffset::new(first), ByteOffset::new(first + 1)).unwrap(),
+                        "\"一\"",
+                    ),
+                    Edit::replace(
+                        TextRange::new(ByteOffset::new(second), ByteOffset::new(second + 1))
+                            .unwrap(),
+                        "\"二\"",
+                    ),
+                ],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
         let new_snapshot = buffer.snapshot();
         syntax.interpolate(&old_snapshot, &new_snapshot, &subscription.consume());
         let parsed = syntax.snapshot().reparse(&new_snapshot);
@@ -598,7 +572,12 @@ mod tests {
         let stale_parse = syntax.snapshot();
         let subscription = buffer.subscribe();
         let old_snapshot = buffer.snapshot();
-        buffer.insert(ByteOffset::new(3), "async ").unwrap();
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(3), "async ").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
         let new_snapshot = buffer.snapshot();
         syntax.interpolate(&old_snapshot, &new_snapshot, &subscription.consume());
 

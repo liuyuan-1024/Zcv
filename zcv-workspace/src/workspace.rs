@@ -31,14 +31,11 @@ pub use dock::{
     ToggleVersionControl,
 };
 pub use item::{Item, ItemEvent, ItemEventHandler, ItemHandle};
-pub use item_provider::{ItemProvider, ItemProviderDescriptor, register_item_provider};
+pub use item_provider::{ItemProvider, register_item_provider};
 pub use pane::{Pane, PaneEvent};
 pub use panel::{Panel, PanelHandle};
 pub use panel_buttons::PanelButtons;
-pub use preview::{
-    PreviewDescriptor, PreviewDocument, PreviewItem, PreviewItemHandle, PreviewProvider,
-    PreviewProviderId, register,
-};
+pub use preview::{PreviewDocument, PreviewItem, PreviewItemHandle, PreviewProvider, register};
 pub use project_picker::OnProjectSelected;
 pub use recent_projects::add_to_recent;
 pub use status_bar::StatusItemView;

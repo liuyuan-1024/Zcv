@@ -17,7 +17,7 @@ zcv-theme.workspace = true
 zcv-workspace.workspace = true
 
 [dev-dependencies]
-gpui.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
 zcv-editor.workspace = true
 
 [lints]

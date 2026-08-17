@@ -35,19 +35,11 @@ impl SelectionSet {
     }
 
     pub fn new_with_primary(selections: Vec<Selection>, primary_index: usize) -> Self {
-        Self::new_with_policy(
+        normalize_selections(
             selections,
             primary_index,
             SelectionMergePolicy::MergeOverlapping,
         )
-    }
-
-    pub fn new_with_policy(
-        selections: Vec<Selection>,
-        primary_index: usize,
-        policy: SelectionMergePolicy,
-    ) -> Self {
-        normalize_selections(selections, primary_index, policy)
     }
 
     pub fn caret(offset: ByteOffset) -> Self {
@@ -55,15 +47,6 @@ impl SelectionSet {
             selections: Arc::from(vec![Selection::caret(offset)]),
             primary_index: 0,
         }
-    }
-
-    pub fn from_ranges(ranges: Vec<TextRange>) -> Self {
-        Self::new(
-            ranges
-                .into_iter()
-                .map(|range| Selection::new(range.start(), range.end()))
-                .collect(),
-        )
     }
 
     pub fn as_slice(&self) -> &[Selection] {
@@ -250,12 +233,5 @@ mod tests {
         assert_eq!(set.ranges(), vec![range(1, 1), range(2, 6), range(8, 8)]);
         assert_eq!(set.primary_index(), 1);
         assert_eq!(set.primary().range(), range(2, 6));
-
-        let adjacent = SelectionSet::new_with_policy(
-            vec![selection(1, 3), selection(3, 5)],
-            0,
-            SelectionMergePolicy::MergeOverlappingOrAdjacent,
-        );
-        assert_eq!(adjacent.ranges(), vec![range(1, 5)]);
     }
 }

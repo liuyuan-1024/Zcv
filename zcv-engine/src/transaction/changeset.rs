@@ -1,4 +1,4 @@
-//! ChangeSet：保存一次已验证事务的编辑事实，并派生 changed ranges / PositionMap。
+//! ChangeSet：保存一次已验证事务的编辑事实，并派生 changed ranges。
 //!
 //! 它只能从 EditList 构造，不负责排序、重叠检测或 Buffer 版本推进。
 
@@ -11,8 +11,8 @@ use crate::{
 
 /// 事务变更集合。
 ///
-/// `ChangeSet` 记录一次事务提交的已验证编辑，用于计算 changed ranges，并可产出`PositionMap`。
-/// 具体位置映射 API 统一由 `PositionMap` 承担。
+/// `ChangeSet` 记录一次事务提交的已验证编辑，用于计算 changed ranges。
+/// 提交管线从中派生 `PositionMap` 并放入 `DeltaEvent`，外部消费者直接使用事件携带的映射。
 ///
 /// 内部直接持有 `EditList`（`Arc<[Edit]>`），`Clone` 与提交传递只递增引用计数，同一批编辑不再在 ChangeSet / DeltaEvent / PositionMap 之间逐元素拷贝。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +36,7 @@ impl ChangeSet {
         self.edits.as_slice()
     }
 
-    pub fn position_map(&self) -> PositionMap {
+    pub(crate) fn position_map(&self) -> PositionMap {
         PositionMap::from_edits(self.edits.as_slice())
     }
 

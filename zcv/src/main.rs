@@ -24,8 +24,7 @@ fn main() {
 
         zcv_settings::init(cx);
         preview::init(cx);
-        // 注册文件 Item Provider（文本兜底：项目文件 → Editor）。
-        zcv_editor::init_item_providers(cx);
+        zcv_editor::init(cx);
 
         // 初始项目根：开发构建打开当前工作区，正式构建打开启动目录。
         #[cfg(debug_assertions)]

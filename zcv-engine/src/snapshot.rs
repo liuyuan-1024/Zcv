@@ -101,11 +101,6 @@ impl Snapshot {
         line_content_for_text(&self.storage, line, max_line_chars)
     }
 
-    /// 按逻辑行 viewport 读取快照中的可见行。
-    pub fn is_stale_for_version(&self, version: BufferVersion) -> bool {
-        self.version != version
-    }
-
     /// 在该不可变快照中执行 literal 搜索，结果绑定快照版本。
     ///
     /// 本方法只执行同步匹配；后台调度、取消和进度由宿主搜索层负责。

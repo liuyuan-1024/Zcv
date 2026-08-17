@@ -13,7 +13,7 @@ use super::line_stream::{LineStream, StreamLineSource, StreamLineText};
 
 /// 行内提示：锚定 buffer 字节位置（插入在其后）+ 内容文本。
 ///
-/// 对齐 Zed `Inlay { position: Anchor, content }`；数据源（LSP）后续接入。
+/// 对齐 Zed `Inlay { position: Anchor, content }`；本层只负责显示投影，不绑定数据来源。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Inlay {
     pub(crate) position: ByteOffset,

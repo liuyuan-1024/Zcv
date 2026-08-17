@@ -29,11 +29,6 @@ pub trait GitRepository: Send + Sync {
     /// 是否配置了至少一个 remote（`git remote` 输出非空）。
     fn has_remote(&self) -> Result<bool>;
 
-    /// 当前分支名与 HEAD 提交 id，返回 `(branch, oid)`；空仓库或 detached HEAD 时对应项为 `None`。
-    ///
-    /// 注意与 [`head_commit`](Self::head_commit) 的元组顺序相反（后者返回 `(oid, subject)`）。
-    fn head(&self) -> Result<(Option<String>, Option<String>)>;
-
     /// 查询 diff 行数统计：`staged` 为 index↔HEAD（`--cached`），否则为 worktree↔index。
     fn diff_stat(&self, staged: bool, paths: &[PathBuf]) -> Result<HashMap<PathBuf, DiffStat>>;
 
@@ -74,8 +69,7 @@ pub trait GitRepository: Send + Sync {
 
     /// HEAD 提交的 oid 与 subject（首行）一次查询（`git log -1 --pretty=format:%H%x00%s`）。
     ///
-    /// 无提交（空仓库）时两项均为 `None`；oid 异常缺失时 subject 一并置 None（对齐 `head` 的空仓库语义）。
-    /// 合并了 head 的 oid 查询与 last_commit_message，减少全量扫描的进程数。
+    /// 无提交（空仓库）时两项均为 `None`；oid 异常缺失时 subject 一并置 None（空仓库语义）。
     fn head_commit(&self) -> Result<(Option<String>, Option<String>)>;
 
     /// 撤销最近一次提交（先取完整消息，再 `git reset --soft HEAD^`，对齐 Zed uncommit）。
@@ -210,22 +204,6 @@ impl GitRepository for RealGitRepository {
         }
         let output = self.run_command(&mut command, "git status")?;
         GitStatus::from_bytes(&output.stdout)
-    }
-
-    fn head(&self) -> Result<(Option<String>, Option<String>)> {
-        // symbolic-ref 在 detached HEAD 时非零退出；
-        // rev-parse --verify 在空仓库时非零退出（裸 rev-parse HEAD 会输出字面量 "HEAD"）。
-        let branch = self
-            .run_optional(&["symbolic-ref", "--short", "-q", "HEAD"])?
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-            .filter(|name| !name.is_empty());
-        let oid = self
-            .run_optional(&["rev-parse", "--verify", "HEAD"])?
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-            .filter(|oid| !oid.is_empty());
-        // 空仓库（无 HEAD 提交）时 symbolic-ref 仍输出分支名，但该分支尚不存在，没有实际意义，一并置 None。
-        let branch = if oid.is_some() { branch } else { None };
-        Ok((branch, oid))
     }
 
     fn diff_stat(&self, staged: bool, paths: &[PathBuf]) -> Result<HashMap<PathBuf, DiffStat>> {

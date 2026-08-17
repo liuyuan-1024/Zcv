@@ -13,19 +13,17 @@ use crate::errors::EditError;
 /// 归一化且验证后的编辑列表。
 ///
 /// 内部以 `Arc<[Edit]>` 存储；`Clone` / `apply_edit_list` 拷贝传递只递增引用计数。
-/// 每个 `Edit` 的 replacement 也是 `Arc<str>`；`EditList::new` 会把同一事务内
-/// 内容相同的 replacement 归一，避免多光标同文本编辑重复持有堆文本。
+/// 每个 `Edit` 的 replacement 也是 `Arc<str>`；`EditList::new` 会把同一事务内内容相同的 replacement 归一，避免多光标同文本编辑重复持有堆文本。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EditList {
+pub(crate) struct EditList {
     edits: Arc<[Edit]>,
 }
 
 impl EditList {
     /// 创建并验证编辑列表，自动排序并检测重叠。
     ///
-    /// 注意：这里允许空列表，因为「空事务」属于 Transaction 语义，
-    /// 由 Transaction::new 拒绝。
-    pub fn new(mut edits: Vec<Edit>) -> Result<Self, EditError> {
+    /// 注意：这里允许空列表，因为「空事务」属于 Transaction 语义，由 Transaction::new 拒绝。
+    pub(crate) fn new(mut edits: Vec<Edit>) -> Result<Self, EditError> {
         edits.sort_by_key(|edit| edit.range().start());
 
         for i in 1..edits.len() {
@@ -47,15 +45,15 @@ impl EditList {
         })
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.edits.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.edits.is_empty()
     }
 
-    pub fn as_slice(&self) -> &[Edit] {
+    pub(crate) fn as_slice(&self) -> &[Edit] {
         &self.edits
     }
 }

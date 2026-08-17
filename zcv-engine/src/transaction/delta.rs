@@ -40,8 +40,8 @@ impl Delta {
         self.new_version
     }
 
-    pub fn edits(&self) -> &EditList {
-        &self.edits
+    pub fn edits(&self) -> &[crate::Edit] {
+        self.edits.as_slice()
     }
 }
 

@@ -14,22 +14,16 @@ pub enum StatusCode {
     TypeChanged,
     Added,
     Deleted,
-    Renamed,
-    Copied,
 }
 
 impl StatusCode {
-    /// 解析 porcelain 状态字符（`M`/`T`/`A`/`D`/`R`/`C`/空格）。
-    ///
-    /// `--no-renames` 下不会出现 `R`/`C`，这里仍保留解析以兼容意外输入。
+    /// 解析 `--no-renames` porcelain 状态字符。
     fn from_byte(byte: u8) -> Result<Self> {
         match byte {
             b'M' => Ok(StatusCode::Modified),
             b'T' => Ok(StatusCode::TypeChanged),
             b'A' => Ok(StatusCode::Added),
             b'D' => Ok(StatusCode::Deleted),
-            b'R' => Ok(StatusCode::Renamed),
-            b'C' => Ok(StatusCode::Copied),
             b' ' => Ok(StatusCode::Unmodified),
             _ => anyhow::bail!("无效的 git 状态码：{byte}"),
         }
@@ -112,10 +106,6 @@ impl FileStatus {
             }
             _ => false,
         }
-    }
-
-    pub fn is_conflicted(self) -> bool {
-        matches!(self, FileStatus::Unmerged)
     }
 
     pub fn is_untracked(self) -> bool {
@@ -281,16 +271,19 @@ impl GitStatus {
         let mut statuses = Vec::new();
         let mut branch = None;
         for entry in output.split(|&byte| byte == b'\0') {
+            if entry.is_empty() {
+                continue;
+            }
             // `-b` 分支头行：`## ` 会通过下方 `entry[2] == b' '` 守卫后按状态码解析而报错，
             // 必须在守卫前特判；首个头行优先（多仓库嵌套时外层先行）。
             if let Some(header) = entry.strip_prefix(b"## ") {
                 branch = branch.or(parse_branch_header(header));
                 continue;
             }
-            if entry.len() < 3 || entry[2] != b' ' {
-                // 跳过空项与格式异常项（重命名输出会带 `-> 目标` 段，--no-renames 下不应出现）。
-                continue;
-            }
+            anyhow::ensure!(
+                entry.len() >= 3 && entry[2] == b' ',
+                "无效的 git status 记录"
+            );
             let mut path = &entry[3..];
             let is_dir = path.ends_with(b"/");
             // untracked 目录（`?? dir/`）跳过：目录汇总由消费方自行计算，
@@ -469,11 +462,10 @@ mod tests {
         assert!(by_path["index_deleted.txt"].is_deleted());
         assert!(by_path["untracked.txt"].is_untracked());
         assert!(by_path["ignored.log"].is_ignored());
-        assert!(by_path["conflicted.txt"].is_conflicted());
     }
 
     #[test]
-    fn skips_untracked_directories_and_renames() {
+    fn skips_untracked_directories() {
         let output = ["?? new-dir/", "?? dir/file.txt"].join("\0");
         let statuses = parse(&output);
         assert_eq!(statuses.len(), 1);

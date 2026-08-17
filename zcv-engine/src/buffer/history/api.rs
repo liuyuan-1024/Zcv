@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::{HistoryEntry, HistoryNodeId, HistoryStatus};
 use crate::{
-    EngineError, EngineResult, LargeFilePolicy, TransactionId, TransactionSource,
+    EngineError, EngineResult, TransactionId, TransactionSource,
     buffer::Buffer,
     transaction::{ChangeSet, Delta, Edit, EditList, TransactionMergePolicy, TransactionMetadata},
 };
@@ -88,11 +88,6 @@ impl Buffer {
             transaction_id: node.entry.transaction_id,
             description: node.entry.description.clone(),
         })
-    }
-
-    /// 当前节点的 undo 目标节点身份（即父节点）；`None` 表示已经在历史根。
-    pub fn parent_history_node(&self) -> Option<HistoryNodeId> {
-        self.history.parent_of_current()
     }
 
     /// 当前节点可选 redo 分支（即子节点列表），按最近创建优先排列。
@@ -231,15 +226,6 @@ impl Buffer {
     /// 未记录的文本变化已让这些分支的回放数据失效。
     pub(in crate::buffer) fn drop_unrecorded_redo_branches(&mut self) {
         self.history.drop_children_of_current();
-    }
-
-    /// 替换 `LargeFilePolicy` 并立即按新预算截断历史；不影响当前文本或版本。
-    ///
-    /// 调用时机典型场景：宿主在加载完文件 / 检测到大文件后需要把 Undo 预算调小，
-    /// 引擎按新预算从最老的非 current 叶子开始丢弃节点，直到 ≤ 预算或没有可丢叶子。
-    pub fn set_large_file_policy(&mut self, policy: LargeFilePolicy) {
-        self.config.large_file = policy;
-        self.truncate_undo_history_to_budget();
     }
 
     pub(in crate::buffer) fn truncate_undo_history_to_budget(&mut self) {

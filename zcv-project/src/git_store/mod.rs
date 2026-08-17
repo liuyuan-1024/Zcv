@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use background::{JobResult, execute_job, merge_refresh, repo_relative_path};
 use gpui::{AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
-use zcv_git::{Branch, DiffHunk, DiffStat, FileStatus, GitRepository};
+use zcv_buffer_diff::DiffHunk;
+use zcv_git::{Branch, DiffStat, FileStatus, GitRepository};
 
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
 const MAX_INCREMENTAL_PATHS: usize = 500;
@@ -1015,7 +1016,7 @@ struct JobPreparation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::test_support::{run_git, test_git_repo};
+    use crate::test_support::{run_git, test_git_repo};
     use std::fs;
 
     use gpui::AppContext;
@@ -1282,7 +1283,7 @@ mod tests {
         run_git(&root, &["add", "new.txt"]);
         run_git(&root, &["commit", "-q", "-m", "新提交"]);
         git_store.update(cx, |store, cx| {
-            let _ = store.run_operation(GitOperationKind::Push, cx);
+            drop(store.run_operation(GitOperationKind::Push, cx));
         });
         cx.run_until_parked();
         let job_done = cx.read_entity(&git_store, |store, _| {
@@ -1471,7 +1472,7 @@ mod tests {
             .expect("请求后应有 hunks");
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].range, 1..2);
-        assert_eq!(hunks[0].kind, zcv_git::DiffHunkKind::Modified);
+        assert_eq!(hunks[0].kind, zcv_buffer_diff::DiffHunkKind::Modified);
     }
 
     #[gpui::test]
@@ -1551,7 +1552,7 @@ mod tests {
         run_git(&nested, &["add", "new.txt"]);
         run_git(&nested, &["commit", "-q", "-m", "新提交"]);
         cx.update_entity(&git_store, |store, cx| {
-            let _ = store.run_operation(GitOperationKind::Push, cx);
+            drop(store.run_operation(GitOperationKind::Push, cx));
         });
         cx.run_until_parked();
         let job_done = cx.read_entity(&git_store, |store, _| {
@@ -1655,7 +1656,7 @@ mod tests {
 
         // push 后回到同步（徽标消失链路：ahead 变化必须触发事件）。
         cx.update_entity(&git_store, |store, cx| {
-            let _ = store.run_operation(GitOperationKind::Push, cx);
+            drop(store.run_operation(GitOperationKind::Push, cx));
         });
         cx.run_until_parked();
         cx.run_until_parked(); // 等 push 完成后触发的重新扫描落地。

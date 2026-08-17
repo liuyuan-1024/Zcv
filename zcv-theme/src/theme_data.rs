@@ -18,7 +18,6 @@ use crate::palette::{HuePalette, Palette};
 /// 单个已解析主题：元数据 + 调色板 + 语法高亮表。
 pub(crate) struct ThemeData {
     pub(crate) id: &'static str,
-    pub(crate) label: &'static str,
     /// 主题明暗（`System` 选择时按窗口外观匹配）。
     pub(crate) appearance: WindowAppearance,
     pub(crate) palette: Palette,
@@ -33,13 +32,8 @@ pub(crate) fn themes() -> &'static [ThemeData] {
         let one_dark = zcv_assets::text("themes/onedark.toml").expect("内置深色主题应存在");
         let one_light = zcv_assets::text("themes/onelight.toml").expect("内置浅色主题应存在");
         vec![
-            build_theme("one-dark", "One Dark", WindowAppearance::Dark, &one_dark),
-            build_theme(
-                "one-light",
-                "One Light",
-                WindowAppearance::Light,
-                &one_light,
-            ),
+            build_theme("one-dark", WindowAppearance::Dark, &one_dark),
+            build_theme("one-light", WindowAppearance::Light, &one_light),
         ]
     })
 }
@@ -49,27 +43,16 @@ pub(crate) fn theme_by_id(id: &str) -> Option<&'static ThemeData> {
     themes().iter().find(|theme| theme.id == id)
 }
 
-fn build_theme(
-    id: &'static str,
-    label: &'static str,
-    appearance: WindowAppearance,
-    source: &str,
-) -> ThemeData {
+fn build_theme(id: &'static str, appearance: WindowAppearance, source: &str) -> ThemeData {
     // 内嵌数据错误属于构建期缺陷：直接 panic 暴露，而不是运行时降级掩盖。
-    parse_theme(id, label, appearance, source).expect("内嵌主题文件应可解析")
+    parse_theme(id, appearance, source).expect("内嵌主题文件应可解析")
 }
 
 /// 单一解析器：一次 TOML 解析产出主题的全部数据。
-fn parse_theme(
-    id: &'static str,
-    label: &'static str,
-    appearance: WindowAppearance,
-    source: &str,
-) -> Option<ThemeData> {
+fn parse_theme(id: &'static str, appearance: WindowAppearance, source: &str) -> Option<ThemeData> {
     let root: toml::Table = toml::from_str(source).ok()?;
     Some(ThemeData {
         id,
-        label,
         appearance,
         palette: parse_palette(&root)?,
         syntax_table: Arc::new(parse_syntax_table(&root)?),

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::{App, AppContext, Entity, Task};
 use zcv_project::Project;
-use zcv_workspace::{ItemHandle, ItemProvider, ItemProviderDescriptor, PreviewProviderId};
+use zcv_workspace::{ItemHandle, ItemProvider};
 
 use crate::Editor;
 
@@ -14,13 +14,6 @@ use crate::Editor;
 pub struct TextFileProvider;
 
 impl ItemProvider for TextFileProvider {
-    fn descriptor(&self) -> ItemProviderDescriptor {
-        ItemProviderDescriptor {
-            id: PreviewProviderId("text-file"),
-            display_name: "文本文件",
-        }
-    }
-
     fn supports(&self, path: &Path, _cx: &App) -> bool {
         path.extension().is_some()
     }
@@ -44,7 +37,7 @@ impl ItemProvider for TextFileProvider {
     }
 }
 
-/// 注册文本文件 Provider；可重复调用（按 id 去重）。
+/// 注册文本文件 Provider；可重复调用（按具体 Provider 类型去重）。
 pub fn init(cx: &mut App) {
     zcv_workspace::register_item_provider(TextFileProvider, cx);
 }

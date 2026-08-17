@@ -3,7 +3,6 @@
 //! Anchor 是绑定 `BufferVersion` 的稳定位置；Mark 是不绑定版本的轻量位置标记。
 //! 两者都通过 `PositionMap` 更新，不持有 Buffer，也不参与事务提交。
 
-use super::{AnchorDeletedPolicy, AnchorUpdate};
 use crate::{
     errors::AnchorError,
     position_map::{Affinity, MappingResult, PositionMap},
@@ -111,39 +110,6 @@ impl Anchor {
         Ok(self.map_through_position_map(event.new_version(), event.position_map()))
     }
 
-    pub fn map_through_delta_event_with_deleted_policy(
-        self,
-        event: &DeltaEvent,
-        deleted_policy: AnchorDeletedPolicy,
-    ) -> Result<AnchorUpdate, AnchorError> {
-        self.verify_event_version(event)?;
-        Ok(self.map_through_position_map_with_deleted_policy(
-            event.new_version(),
-            event.position_map(),
-            deleted_policy,
-        ))
-    }
-
-    pub fn map_through_position_map_with_deleted_policy(
-        self,
-        new_version: BufferVersion,
-        position_map: &PositionMap,
-        deleted_policy: AnchorDeletedPolicy,
-    ) -> AnchorUpdate {
-        match self.map_through_position_map(new_version, position_map) {
-            MappingResult::Mapped(anchor) => AnchorUpdate::Mapped(anchor),
-            MappingResult::Deleted(anchor) => match deleted_policy {
-                AnchorDeletedPolicy::Collapse => AnchorUpdate::Deleted(anchor),
-                AnchorDeletedPolicy::Invalidate => AnchorUpdate::Invalidated {
-                    mark: anchor.to_mark(),
-                    version: new_version,
-                },
-            },
-            MappingResult::Collapsed(anchor) => AnchorUpdate::Deleted(anchor),
-            MappingResult::Ambiguous(anchor) => AnchorUpdate::Mapped(anchor),
-        }
-    }
-
     pub fn update_through_delta_event(
         &mut self,
         event: &DeltaEvent,
@@ -187,15 +153,12 @@ fn map_anchor_result(
 mod tests {
     use super::*;
     use crate::{
-        ChangeSet, Delta, Edit, EditList, PositionMap, TextRange, TransactionId, TransactionSource,
+        ChangeSet, Delta, Edit, PositionMap, TransactionId, TransactionSource,
+        transaction::EditList,
     };
 
     fn b(value: usize) -> ByteOffset {
         ByteOffset::new(value)
-    }
-
-    fn range(start: usize, end: usize) -> TextRange {
-        TextRange::new(b(start), b(end)).unwrap()
     }
 
     fn event_for_edits(
@@ -218,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn anchor_and_mark_should_map_through_delta_with_affinity_and_deleted_policy() {
+    fn anchor_and_mark_should_map_through_delta_with_affinity() {
         let insert_event = event_for_edits(
             BufferVersion::INITIAL,
             BufferVersion::new(1),
@@ -241,22 +204,5 @@ mod tests {
                 .offset(),
             b(4)
         );
-
-        let delete_event = event_for_edits(
-            BufferVersion::new(1),
-            BufferVersion::new(2),
-            vec![Edit::delete(range(1, 4))],
-        );
-        let deleted = Anchor::new(insert_event.new_version(), b(2));
-        assert!(matches!(
-            deleted
-                .map_through_delta_event_with_deleted_policy(
-                    &delete_event,
-                    AnchorDeletedPolicy::Invalidate
-                )
-                .unwrap(),
-            AnchorUpdate::Invalidated { mark, version }
-                if mark.offset() == b(1) && version == delete_event.new_version()
-        ));
     }
 }

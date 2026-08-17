@@ -54,7 +54,7 @@ impl TransactionMetadata {
     }
 
     /// 返回 `Arc<str>` 引用以便复用同一份共享字符串。
-    pub fn description_arc(&self) -> Option<&Arc<str>> {
+    pub(crate) fn description_arc(&self) -> Option<&Arc<str>> {
         self.description.as_ref()
     }
 

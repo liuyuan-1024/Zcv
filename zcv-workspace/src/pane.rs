@@ -826,9 +826,7 @@ mod tests {
     use zcv_engine::{Buffer, BufferConfig};
 
     use super::*;
-    use crate::{
-        Item, PreviewDescriptor, PreviewItem, PreviewItemHandle, PreviewProvider, PreviewProviderId,
-    };
+    use crate::{Item, PreviewItem, PreviewItemHandle, PreviewProvider};
 
     /// 辅助视图类型，仅用于测试中创建窗口。
     struct TestView;
@@ -1029,13 +1027,6 @@ mod tests {
     struct FakePreviewProvider;
 
     impl PreviewProvider for FakePreviewProvider {
-        fn descriptor(&self) -> PreviewDescriptor {
-            PreviewDescriptor {
-                id: PreviewProviderId("fake"),
-                display_name: "Fake",
-            }
-        }
-
         fn supports(&self, path: &Path, _cx: &App) -> bool {
             path.extension()
                 .and_then(|extension| extension.to_str())

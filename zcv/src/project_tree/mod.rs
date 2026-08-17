@@ -10,7 +10,11 @@ use std::rc::Rc;
 
 use gpui::{
     App, Context, Div, Entity, KeyContext, MouseButton, ScrollStrategy, UniformListScrollHandle,
-    WeakEntity, Window, actions, div, prelude::*, uniform_list,
+    WeakEntity, Window, div, prelude::*, uniform_list,
+};
+use zcv_actions::{
+    TreeActivate, TreeCancelEdit, TreeCollapse, TreeConfirmEdit, TreeExpand, TreeNewEntry,
+    TreeRename, TreeSelectNext, TreeSelectPrev, TreeTrash,
 };
 use zcv_editor::Editor;
 use zcv_git::FileStatus;
@@ -22,22 +26,6 @@ use zcv_workspace::{Panel, ToggleProjectTree};
 use crate::git_status::git_status_color;
 use crate::workspace::{OnCreate, OnOpenFile, OnRename, OnTrash};
 use zcv_settings::SettingsStore;
-
-actions!(
-    project_tree,
-    [
-        TreeSelectPrev,
-        TreeSelectNext,
-        TreeCollapse,
-        TreeExpand,
-        TreeActivate,
-        TreeRename,
-        TreeNewEntry,
-        TreeTrash,
-        TreeConfirmEdit,
-        TreeCancelEdit
-    ]
-);
 
 // ── Entity ──────────────────────────────────────────────────────────
 

@@ -8,7 +8,7 @@ use gpui::{
     App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, IntoElement, Pixels,
     Point, Render, Styled, Window, div, point, prelude::*,
 };
-pub use zcv_actions::{
+use zcv_actions::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
     DeleteToPreviousWordStart, ExpandSelection, Indent, MoveDown, MoveLeft, MoveLineDown,
     MoveLineUp, MovePageDown, MovePageUp, MoveRight, MoveToBeginning, MoveToBeginningOfLine,
@@ -28,7 +28,7 @@ use zcv_theme::{color, typography};
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{
-    DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, Inlay, InsertedLines,
+    DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, InsertedLines,
 };
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
@@ -291,16 +291,9 @@ impl Editor {
         cx.notify();
     }
 
-    /// 注入行内提示（inlay hint）配置；数据面入口（LSP 后续接入）。
     /// 语言层可折叠范围（crease 渲染与折叠命令共用）。
     pub(crate) fn fold_ranges(&self) -> &[FoldRange] {
         &self.fold_ranges
-    }
-
-    /// Inlay hints 显示为规划中能力，当前无调用方；见 [`super::display_map::DisplayMap::set_inlays`] 的预留说明。
-    pub(crate) fn set_inlays(&mut self, inlays: Vec<Inlay>, cx: &mut Context<Self>) {
-        self.display_map.set_inlays(inlays);
-        cx.notify();
     }
 
     /// 展开/折叠删除块（按 hunk 的 old_range 标识）。
@@ -993,11 +986,11 @@ impl Editor {
                     // 用本次事务的坐标映射批量推进选区端点锚点，选区自动跟随文本变化。
                     let snapshot = self.buffer.read(cx).snapshot();
                     let new_version = snapshot.version();
-                    let position_map = transaction.changeset().position_map();
+                    let position_map = transaction.event().position_map();
                     self.selections.map_through_position_map(
                         self.selections.version(),
                         new_version,
-                        &position_map,
+                        position_map,
                     );
                     if let Some(transaction_id) = transaction.history_transaction_id() {
                         // display_map 尚未同步到新版本，历史快照按 Buffer 快照解析。

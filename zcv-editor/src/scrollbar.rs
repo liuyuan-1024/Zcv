@@ -16,7 +16,7 @@ pub(super) const SCROLLBAR_WIDTH: Pixels = px(15.);
 /// thumb 最小高度，与 Zed 的 `ScrollbarLayout::MIN_THUMB_SIZE` 一致。
 pub(super) const MIN_THUMB_SIZE: Pixels = px(25.);
 
-/// 轨道宽 − 边框后等分的列数（对齐 Zed：第 0 列 git diff，预留诊断/搜索列）。
+/// 轨道宽 − 边框后等分的列数（对齐 Zed 的三列 marker 坐标系；第 0 列显示 git diff）。
 const MARKER_COLUMN_COUNT: f32 = 3.0;
 
 /// 轨道左右边框宽度（对齐 Zed `ScrollbarLayout::BORDER_WIDTH`）。

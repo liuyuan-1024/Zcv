@@ -1,10 +1,6 @@
 //! 集成测试共享 helper——之前 7 个测试文件各写一份，现在收敛到这。
 //!
-//! 本模块被多个集成测试文件（tests/*.rs，各自独立编译）以 `mod common` 引入；
-//! 每个测试 binary 只用到部分 helper，未用到的 `pub fn` 在该 binary 内报 dead_code，属于共享测试模块的机制噪音，而非死代码。
-//! 故在此统一豁免 dead_code。
-
-#![allow(dead_code)]
+//! 各集成测试将本模块作为公开测试支持边界引入。
 
 use zcv_engine::*;
 
@@ -84,12 +80,6 @@ pub fn buffer_text(text: &impl FullText) -> String {
 
 pub fn caret(offset: usize) -> Selection {
     Selection::caret(b(offset))
-}
-
-// ---- 事务构造器 ----
-
-pub fn tx(buffer: &Buffer, edits: Vec<Edit>) -> Transaction {
-    Transaction::from_edits(buffer.version(), edits).unwrap()
 }
 
 pub fn metadata(description: &str) -> TransactionMetadata {

@@ -81,14 +81,6 @@ impl<'a> LineSlice<'a> {
         self.text.range()
     }
 
-    pub fn text_slice(&self) -> &TextSlice<'a> {
-        &self.text
-    }
-
-    pub fn into_text_slice(self) -> TextSlice<'a> {
-        self.text
-    }
-
     pub fn as_str(&self) -> &str {
         self.text.as_str()
     }
@@ -131,21 +123,14 @@ pub struct LineContent<'a> {
     line: Line,
     full_range: TextRange,
     text: TextSlice<'a>,
-    is_truncated: bool,
 }
 
 impl<'a> LineContent<'a> {
-    pub(crate) fn new(
-        line: Line,
-        full_range: TextRange,
-        text: TextSlice<'a>,
-        is_truncated: bool,
-    ) -> Self {
+    pub(crate) fn new(line: Line, full_range: TextRange, text: TextSlice<'a>) -> Self {
         Self {
             line,
             full_range,
             text,
-            is_truncated,
         }
     }
 
@@ -172,10 +157,6 @@ impl<'a> LineContent<'a> {
     pub fn len_bytes(&self) -> usize {
         self.text.len_bytes()
     }
-
-    pub fn is_truncated(&self) -> bool {
-        self.is_truncated
-    }
 }
 
 impl AsRef<str> for LineContent<'_> {
@@ -197,10 +178,9 @@ pub(crate) fn line_content_for_text<T: TextRead>(
 ) -> EngineResult<LineContent<'_>> {
     let full_range = text_range_for_line(text, line)?;
     let content_range = content_range_for_line(text, full_range, max_line_chars)?;
-    let is_truncated = content_range.end() < line_content_end(text, full_range)?;
     let content = TextSlice::new(content_range, text.slice_text(content_range)?);
 
-    Ok(LineContent::new(line, full_range, content, is_truncated))
+    Ok(LineContent::new(line, full_range, content))
 }
 
 fn content_range_for_line<T: TextRead>(

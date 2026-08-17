@@ -1,4 +1,4 @@
-mod common;
+pub mod common;
 
 use common::*;
 use zcv_engine::{CoordinateError, EngineError, MovementDirection, MovementUnit};
@@ -7,17 +7,35 @@ use zcv_engine::{CoordinateError, EngineError, MovementDirection, MovementUnit};
 fn movement_boundaries_dispatch_by_unit_and_reject_invalid_offsets() {
     let buffer = buffer("foo_barBaz42 += 世界");
 
-    assert_eq!(buffer.next_word_boundary(c(0)).unwrap(), c(3));
-    assert_eq!(buffer.next_identifier_boundary(c(0)).unwrap(), c(12));
-    assert_eq!(buffer.next_subword_boundary(c(0)).unwrap(), c(3));
-    assert_eq!(buffer.next_symbol_boundary(c(13)).unwrap(), c(15));
+    assert_eq!(
+        buffer
+            .movement_boundary(c(0), MovementDirection::Next, MovementUnit::Word)
+            .unwrap(),
+        c(3)
+    );
+    assert_eq!(
+        buffer
+            .movement_boundary(c(0), MovementDirection::Next, MovementUnit::Identifier)
+            .unwrap(),
+        c(12)
+    );
     assert_eq!(
         buffer
             .movement_boundary(c(0), MovementDirection::Next, MovementUnit::Subword)
             .unwrap(),
         c(3)
     );
-    assert!(buffer.next_word_boundary(c(99)).is_err());
+    assert_eq!(
+        buffer
+            .movement_boundary(c(13), MovementDirection::Next, MovementUnit::Symbol)
+            .unwrap(),
+        c(15)
+    );
+    assert!(
+        buffer
+            .movement_boundary(c(99), MovementDirection::Next, MovementUnit::Word)
+            .is_err()
+    );
 }
 
 #[test]

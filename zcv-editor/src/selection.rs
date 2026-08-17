@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use zcv_engine::{
     Affinity, Anchor, Buffer, BufferVersion, ByteOffset, CoordinateError, Edit, EngineResult,
-    PositionMap, Selection, SelectionSet, Snapshot, Transaction, TransactionId,
-    TransactionMetadata, TransactionOutcome,
+    PositionMap, Selection, SelectionSet, Snapshot, TransactionId, TransactionMetadata,
+    TransactionOutcome,
 };
 
 use crate::display_map::DisplayColumn;
@@ -64,11 +64,7 @@ fn apply_edits(
     if edits.is_empty() {
         return Ok(None);
     }
-    buffer
-        .apply_transaction(
-            Transaction::from_edits(buffer.version(), edits)?.with_metadata(metadata),
-        )
-        .map(Some)
+    buffer.edit(edits, metadata).map(Some)
 }
 
 pub(super) fn replace_selections(
@@ -112,28 +108,26 @@ pub(super) fn replace_selections(
             ),
         ),
         Some(transaction) => {
-            let position_map = transaction.changeset().position_map();
-            (
-                EditOutcome::edited(transaction),
-                SelectionSet::new_with_primary(
-                    selections
-                        .as_slice()
-                        .iter()
-                        .map(|selection| {
-                            let start = position_map.map_old_position(selection.start()).value();
-                            // 插入到空选区时，PositionMap 已将 caret 吸附到插入文本之后；
-                            // 非空选区的起点则映射到替换起点，需要跨过替换文本。
-                            let end = if selection.is_caret() {
-                                start
-                            } else {
-                                ByteOffset::new(start.get() + replacement.len())
-                            };
-                            Selection::caret(end)
-                        })
-                        .collect(),
-                    selections.primary_index(),
-                ),
-            )
+            let position_map = transaction.event().position_map();
+            let after_selections = SelectionSet::new_with_primary(
+                selections
+                    .as_slice()
+                    .iter()
+                    .map(|selection| {
+                        let start = position_map.map_old_position(selection.start()).value();
+                        // 插入到空选区时，PositionMap 已将 caret 吸附到插入文本之后；
+                        // 非空选区的起点则映射到替换起点，需要跨过替换文本。
+                        let end = if selection.is_caret() {
+                            start
+                        } else {
+                            ByteOffset::new(start.get() + replacement.len())
+                        };
+                        Selection::caret(end)
+                    })
+                    .collect(),
+                selections.primary_index(),
+            );
+            (EditOutcome::edited(transaction), after_selections)
         }
     };
     Ok((outcome, after_selections))

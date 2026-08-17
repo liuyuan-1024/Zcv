@@ -8,14 +8,17 @@ use crate::{EngineResult, errors::TransactionError, types::BufferVersion};
 
 /// 批量编辑事务。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Transaction {
+pub(crate) struct Transaction {
     base_version: BufferVersion,
     edits: EditList,
     metadata: TransactionMetadata,
 }
 
 impl Transaction {
-    pub fn new(base_version: BufferVersion, edits: EditList) -> Result<Self, TransactionError> {
+    pub(crate) fn new(
+        base_version: BufferVersion,
+        edits: EditList,
+    ) -> Result<Self, TransactionError> {
         if edits.is_empty() {
             return Err(TransactionError::EmptyTransaction);
         }
@@ -27,29 +30,17 @@ impl Transaction {
         })
     }
 
-    pub fn from_edits(base_version: BufferVersion, edits: Vec<Edit>) -> EngineResult<Self> {
+    pub(crate) fn from_edits(base_version: BufferVersion, edits: Vec<Edit>) -> EngineResult<Self> {
         let edits = EditList::new(edits)?;
         Ok(Self::new(base_version, edits)?)
     }
 
-    pub fn with_metadata(mut self, metadata: TransactionMetadata) -> Self {
+    pub(crate) fn with_metadata(mut self, metadata: TransactionMetadata) -> Self {
         self.metadata = metadata;
         self
     }
 
-    pub fn base_version(&self) -> BufferVersion {
-        self.base_version
-    }
-
-    pub fn edits(&self) -> &EditList {
-        &self.edits
-    }
-
-    pub fn metadata(&self) -> &TransactionMetadata {
-        &self.metadata
-    }
-
-    pub fn into_parts(self) -> (BufferVersion, EditList, TransactionMetadata) {
+    pub(crate) fn into_parts(self) -> (BufferVersion, EditList, TransactionMetadata) {
         (self.base_version, self.edits, self.metadata)
     }
 }
@@ -57,7 +48,7 @@ impl Transaction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BufferVersion, EditList, TransactionError};
+    use crate::{BufferVersion, TransactionError, transaction::EditList};
 
     #[test]
     fn transaction_empty_edit_list_should_be_rejected_before_state_transition() {

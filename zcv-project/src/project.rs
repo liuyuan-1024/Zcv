@@ -5,9 +5,9 @@ mod buffer_store;
 mod git_store;
 mod project_store;
 
-// 保留原内部模块路径，供 git_store/worktree 的测试辅助模块引用。
-#[allow(unused_imports)]
-pub(crate) use project_store as project;
+#[cfg(test)]
+#[path = "test/test_support.rs"]
+mod test_support;
 
 mod worktree;
 

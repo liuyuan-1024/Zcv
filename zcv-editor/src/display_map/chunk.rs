@@ -255,6 +255,14 @@ pub(crate) struct LineStyles<'a> {
     pub(crate) marked: &'a [TextRange],
 }
 
+pub(crate) struct ViewportChunkSource<'a> {
+    pub text: &'a str,
+    pub global_byte_start: usize,
+    pub stream_line: Line,
+    pub segments: Option<&'a [FoldRowSegment]>,
+    pub inlay: &'a InlaySnapshot,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ChunkStyle {
     is_inlay: bool,
@@ -530,23 +538,26 @@ fn render_folded_chunks<'a>(
 /// 单一 viewport chunk 入口。渲染端不区分普通行与折叠合并行；
 /// 两者都从 display-map 的 inlay/fold 快照取得输入，并在这里进入同一条 chunk 变换链。
 pub(crate) fn render_viewport_chunks<'a>(
-    text: &'a str,
+    source: ViewportChunkSource<'a>,
     tab_width: usize,
-    global_byte_start: usize,
-    stream_line: Line,
-    segments: Option<&[FoldRowSegment]>,
-    inlay: &'a InlaySnapshot,
     styles: LineStyles<'_>,
     fragment_range: Range<usize>,
 ) -> RenderChunks<'a> {
-    if let Some(segments) = segments {
-        render_folded_chunks(text, tab_width, segments, inlay, styles, fragment_range)
-    } else {
-        let inlays = inlay.line_inlays(stream_line);
-        render_line_chunks(
-            text,
+    if let Some(segments) = source.segments {
+        render_folded_chunks(
+            source.text,
             tab_width,
-            global_byte_start,
+            segments,
+            source.inlay,
+            styles,
+            fragment_range,
+        )
+    } else {
+        let inlays = source.inlay.line_inlays(source.stream_line);
+        render_line_chunks(
+            source.text,
+            tab_width,
+            source.global_byte_start,
             &inlays,
             styles,
             fragment_range,

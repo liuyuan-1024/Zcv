@@ -44,10 +44,9 @@ pub use tracking::{
     TrackedRangeInvalidationPolicy, TrackedRangeUpdate, TrackedRangeUpdatePolicy,
 };
 pub use transaction::{
-    ChangeSet, Delta, DeltaEvent, Edit, EditList, Transaction, TransactionMergePolicy,
-    TransactionMetadata, TransactionOutcome, TransactionRecord, TransactionSource,
+    ChangeSet, Delta, DeltaEvent, Edit, TransactionMergePolicy, TransactionMetadata,
+    TransactionOutcome, TransactionRecord, TransactionSource,
 };
-pub(crate) use types::BufferId;
 pub use types::{
     BufferOrigin, BufferState, BufferVersion, ByteOffset, CharOffset, Line, LineEndingStyle,
     LineRange, LogicalColumn, OriginKind, Position, TextRange, TransactionId, Utf16Offset,

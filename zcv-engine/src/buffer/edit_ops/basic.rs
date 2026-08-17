@@ -1,61 +1,31 @@
-//! 基础编辑入口：为 Buffer 提供 insert/delete/replace 这组三个单范围便利 API。
-//!
-//! 本文件只把简单编辑统一转换成 Transaction 并进入历史链路；批量 selection 编辑和事务提交细节由相邻子系统承担。
+//! Buffer 本地编辑入口：一次接收完整编辑批次并进入事务与历史管线。
 
 use crate::buffer::Buffer;
 use crate::{
-    ByteOffset, EngineResult, TextRange,
-    storage::TextRead,
-    transaction::{Edit, Transaction},
+    EngineResult,
+    transaction::{Edit, Transaction, TransactionMetadata, TransactionOutcome},
 };
 
 impl Buffer {
-    pub fn insert(&mut self, offset: ByteOffset, text: &str) -> EngineResult<()> {
-        let range = TextRange::new(offset, offset)?;
-        self.replace(range, text)
+    /// 应用一个本地编辑批次。所有编辑共享同一事务身份、历史策略与版本推进。
+    pub fn edit(
+        &mut self,
+        edits: impl IntoIterator<Item = Edit>,
+        metadata: TransactionMetadata,
+    ) -> EngineResult<TransactionOutcome> {
+        let transaction = Transaction::from_edits(self.version, edits.into_iter().collect())?
+            .with_metadata(metadata);
+        self.apply_transaction(transaction)
     }
 
-    pub fn delete(&mut self, range: TextRange) -> EngineResult<()> {
-        self.replace(range, "")
+    /// 应用一个本地编辑批次，并返回可供外部同步或回放的事务记录。
+    pub fn edit_recorded(
+        &mut self,
+        edits: impl IntoIterator<Item = Edit>,
+        metadata: TransactionMetadata,
+    ) -> EngineResult<crate::TransactionRecord> {
+        let transaction = Transaction::from_edits(self.version, edits.into_iter().collect())?
+            .with_metadata(metadata);
+        self.apply_transaction_recorded(transaction)
     }
-
-    /// 替换指定字符范围的文本，支持插入和删除。
-    ///
-    /// 该便利 API 内部走 Transaction，会进入 Undo 历史。
-    pub fn replace(&mut self, range: TextRange, replacement: &str) -> EngineResult<()> {
-        self.ensure_writable()?;
-        self.validate_range(range)?;
-        self.validate_edit_boundary(range.start())?;
-        self.validate_edit_boundary(range.end())?;
-
-        // no-op 不递增版本，也不污染 dirty / history。流式比较，零拷贝。
-        if range_equals_str(&self.storage, range, replacement)? {
-            return Ok(());
-        }
-
-        let tx = Transaction::from_edits(self.version, vec![Edit::replace(range, replacement)])?;
-
-        self.apply_transaction(tx)?;
-        Ok(())
-    }
-}
-
-/// 流式比较一段字节区间与给定字符串是否字节相等；**永不分配**。
-fn range_equals_str<T: TextRead>(
-    storage: &T,
-    range: TextRange,
-    expected: &str,
-) -> EngineResult<bool> {
-    if range.len() != expected.len() {
-        return Ok(false);
-    }
-    let mut consumed = 0usize;
-    for chunk in storage.chunks(range)? {
-        let end = consumed + chunk.len();
-        if &expected.as_bytes()[consumed..end] != chunk.as_bytes() {
-            return Ok(false);
-        }
-        consumed = end;
-    }
-    Ok(consumed == expected.len())
 }

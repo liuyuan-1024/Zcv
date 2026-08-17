@@ -1,6 +1,6 @@
 //! 事务应用管线：从 Transaction 校验、准备、提交到 history 收尾的一站式执行路径。
 //!
-//! 本文件守住失败原子性和版本推进边界；EditList 归一化、存储实现和 public 便利编辑入口不在这里定义。
+//! 本文件守住失败原子性和版本推进边界；EditList 归一化、存储实现和 public edit 入口不在这里定义。
 
 use super::prepared::PreparedTransaction;
 use crate::buffer::{Buffer, history::HistoryEntry};
@@ -29,13 +29,16 @@ impl Buffer {
     /// 提交并应用事务。
     ///
     /// 成功返回事务身份、历史归属和增量事实，并按事务元数据记录 Undo 历史。
-    pub fn apply_transaction(&mut self, tx: Transaction) -> EngineResult<TransactionOutcome> {
+    pub(crate) fn apply_transaction(
+        &mut self,
+        tx: Transaction,
+    ) -> EngineResult<TransactionOutcome> {
         let (_, outcome) = self.apply_transaction_inner(tx)?;
         Ok(outcome)
     }
 
     /// 提交并应用事务，返回完整的可回放事实 `TransactionRecord`。
-    pub fn apply_transaction_recorded(
+    pub(crate) fn apply_transaction_recorded(
         &mut self,
         tx: Transaction,
     ) -> EngineResult<TransactionRecord> {
@@ -45,8 +48,7 @@ impl Buffer {
 
     /// 在当前 Buffer 上回放一条 `TransactionRecord`，必须 `record.old_version == self.version`。
     ///
-    /// 回放走标准 `apply_transaction` 管线，不绕过任何边界校验；返回新生成的
-    /// `TransactionRecord`（`transaction_id` 由当前 Buffer 重新分配）。
+    /// 回放走标准事务管线，不绕过任何边界校验；返回新生成的 `TransactionRecord`（`transaction_id` 由当前 Buffer 重新分配）。
     pub fn replay_transaction_record(
         &mut self,
         record: &TransactionRecord,
@@ -72,7 +74,7 @@ impl Buffer {
 
         // `Arc<[T]>` 让以下所有 clone 都是 O(1) 引用计数递增，无堆分配。
         // 仍然显式列出便于读者理解所有权流动；编译器不会自动 elide 这些 Arc::clone。
-        let (transaction_id, delta, changeset, event) = self.apply_edit_list(
+        let (transaction_id, delta, _changeset, event) = self.apply_edit_list(
             prepared.base_version,
             prepared.edits.clone(),
             prepared.metadata.source(),
@@ -89,13 +91,7 @@ impl Buffer {
         );
 
         let history_transaction_id = self.finish_transaction(prepared, transaction_id)?;
-        let outcome = TransactionOutcome::new(
-            transaction_id,
-            history_transaction_id,
-            delta,
-            changeset,
-            event,
-        );
+        let outcome = TransactionOutcome::new(history_transaction_id, event);
 
         Ok((record, outcome))
     }

@@ -109,11 +109,8 @@ serde_json = "1.0.140"
 serde_json_lenient = "0.2.4"
 toml = "0.8.23"
 
-# ---- LSP 协议层（zcv-lsp） ----
-lsp-types = "0.97"
-
 # ---- 桌面 UI ----
-gpui = { version = "0.2.2", features = ["test-support"] }
+gpui = "0.2.2"
 rust-embed = { version = "8.11", features = ["include-exclude"] }
 
 # ---- 文件监听 ----
@@ -130,16 +127,11 @@ ratex-layout = "0.1.12"
 ratex-svg = { version = "0.1.12", features = ["standalone", "embed-fonts"] }
 ratex-types = "0.1.12"
 
-# ---- 平台特定 ----
-cocoa = "0.26.0"
-libc = "0.2"
-raw-window-handle = "0.6.2"
 # ---- SVG 预览 ----
 resvg = { version = "0.45.1", default-features = false }
-windows = { version = "0.57.0", features = [
-    "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging",
-] }
+
+# ---- 平台特定 ----
+libc = "0.2"
 
 # ---- 开发工具（dev-dependencies 引用） ----
 criterion = { version = "0.5", features = ["html_reports"] }

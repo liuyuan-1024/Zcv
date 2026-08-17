@@ -21,6 +21,8 @@ const MINIMUM_RESUME_DURATION: Duration = Duration::from_millis(800);
 /// 内容主体的最大宽度，超长文本在此宽度内自动换行。
 const TOAST_MAX_WIDTH: f32 = 384.0;
 
+type ToastClickHandler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
+
 /// Toast 的语义类型（决定图标与颜色）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
@@ -32,7 +34,7 @@ pub enum ToastKind {
 #[derive(Clone)]
 pub struct ToastAction {
     pub label: SharedString,
-    pub on_click: Rc<dyn Fn(&mut Window, &mut App) + 'static>,
+    pub on_click: ToastClickHandler,
 }
 
 impl ToastAction {

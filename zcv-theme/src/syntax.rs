@@ -1,25 +1,15 @@
 //! 语法高亮：tree-sitter capture name → GPUI HighlightStyle。
 //!
 //! 本模块只提供查询机制，不定义色值。色值来自主题 TOML，由 [`crate::theme_data`] 单一解析器解析后经 `set_theme` 注入。
-//! 查询走点分前缀回退：`keyword.control.import` 未命中 → `keyword.control` → `keyword` → [`default_fg`]。
+//! 查询走点分前缀回退：`keyword.control.import` 未命中 → `keyword.control` → `keyword` → 默认样式。
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::{Arc, LazyLock, RwLock};
 
-use gpui::{HighlightStyle, Hsla};
+use gpui::HighlightStyle;
 
-use super::color;
 use crate::theme_data::ThemeData;
-
-pub fn default_fg(cx: &gpui::App) -> Hsla {
-    color::current(cx).text.into()
-}
-
-/// 按 highlight name 解析字色，走点分前缀回退链。
-pub fn color_for(name: &str, cx: &gpui::App) -> Hsla {
-    style_for(name).color.unwrap_or_else(|| default_fg(cx))
-}
 
 /// 预展开 capture 名字表为按索引直接取用的样式表。
 ///

@@ -30,8 +30,6 @@ pub struct ThemeColors {
     pub element_hover: Rgba,
     /// 普通元素的选中背景。
     pub element_selected: Rgba,
-    /// 文字或内容选区背景。
-    pub element_selection_background: Rgba,
     /// 弱分隔边框。
     pub border_variant: Rgba,
     /// 焦点或强调边框。
@@ -54,8 +52,6 @@ pub struct ThemeColors {
     pub icon_accent: Rgba,
     /// 成功状态颜色。
     pub status_success: Rgba,
-    /// 警告状态颜色。
-    pub status_warning: Rgba,
     /// 错误状态颜色。
     pub status_error: Rgba,
     /// 新建/未跟踪条目颜色。
@@ -98,7 +94,7 @@ pub struct ThemeColors {
     pub editor_diff_modified_background: Rgba,
     /// 编辑器 diff 删除行背景（status_deleted 的低透明版本）。
     pub editor_diff_deleted_background: Rgba,
-    /// 滚动轴轨道背景（默认透明，轨道只为占位与后续 marker 绘制）。
+    /// 滚动轴轨道背景（默认透明，marker 与 thumb 绘制在其上方）。
     pub scrollbar_track_background: Rgba,
     /// 滚动轴 thumb 静止色。
     pub scrollbar_thumb_background: Rgba,
@@ -116,7 +112,6 @@ impl ThemeColors {
             elevated_surface_background: palette.gray.s[2],
             element_hover: palette.gray.s[3],
             element_selected: palette.gray.s[3],
-            element_selection_background: palette.blue.a[2],
             border_variant: palette.gray.s[4],
             border_focused: palette.blue.s[6],
             text: palette.gray.s[8],
@@ -128,7 +123,6 @@ impl ThemeColors {
             icon_on_accent: palette.gray.s[0],
             icon_accent: palette.blue.s[6],
             status_success: palette.green.s[6],
-            status_warning: palette.yellow.s[6],
             status_error: palette.red.s[6],
             status_created: palette.green.s[6],
             status_modified: palette.yellow.s[6],
@@ -202,9 +196,7 @@ pub fn current(cx: &App) -> &ThemeColors {
         .unwrap_or_else(|| {
             static DEFAULT: OnceLock<ThemeColors> = OnceLock::new();
             DEFAULT.get_or_init(|| {
-                let theme = crate::theme_data::themes()
-                    .first()
-                    .expect("主题注册表不应为空（至少包含内置主题）");
+                let theme = super::first_theme();
                 ThemeColors::from_palette(theme.palette)
             })
         })

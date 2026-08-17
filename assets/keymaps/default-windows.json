@@ -97,7 +97,23 @@
       "ctrl-pageup": "pane::PrevTab",
       "ctrl-pagedown": "pane::NextTab",
       "ctrl-w": "pane::CloseTab",
-      "ctrl-f": "pane::ToggleFileSearch"
+      "ctrl-f": "pane::DeploySearch"
+    }
+  },
+  {
+    "context": "SearchBar",
+    "bindings": {
+      "alt-c": "search::ToggleCaseSensitive",
+      "alt-w": "search::ToggleWholeWord",
+      "alt-x": "search::ToggleRegex",
+      "enter": "search::FindNext",
+      "shift-enter": "search::FindPrevious",
+      "cmd-r": "search::ToggleReplace",
+      "cmd-enter": "search::ReplaceNext",
+      "cmd-shift-enter": "search::ReplaceAll",
+      "escape": "search::ClearSearch",
+      "tab": "search::Tab",
+      "shift-tab": "search::Backtab"
     }
   },
   {

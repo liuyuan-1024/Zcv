@@ -86,7 +86,26 @@ actions!(
 
 actions!(
     pane,
-    [CloseTab, NextTab, PrevTab, TogglePreview, ToggleFileSearch]
+    [CloseTab, NextTab, PrevTab, TogglePreview, DeploySearch]
+);
+
+// ── 文件内搜索（搜索条的全部动作；handler 由 SearchBar 统一持有）──
+
+actions!(
+    search,
+    [
+        FindNext,
+        FindPrevious,
+        ToggleReplace,
+        ReplaceNext,
+        ReplaceAll,
+        ClearSearch,
+        ToggleCaseSensitive,
+        ToggleWholeWord,
+        ToggleRegex,
+        Tab,
+        Backtab
+    ]
 );
 
 actions!(

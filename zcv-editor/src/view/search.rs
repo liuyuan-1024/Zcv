@@ -1,0 +1,249 @@
+//! Editor 的文件内搜索：持有引擎搜索结果（绑定 BufferVersion），编辑后自动重搜。
+
+use std::ops::Range;
+
+use zcv_engine::{RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchResult};
+use zcv_workspace::{Direction, SearchEvent, SearchQuery, SearchableItem};
+
+use super::Editor;
+
+impl gpui::EventEmitter<SearchEvent> for Editor {}
+
+/// 引擎搜索结果，literal 与 regex 二选一（均绑定搜索时的 BufferVersion）。
+pub(crate) enum SearchResultKind {
+    Literal(SearchResult),
+    Regex(RegexSearchResult),
+}
+
+/// Editor 的搜索状态（搜索条执行过一次搜索后存在）。
+pub(crate) struct EditorSearch {
+    query: SearchQuery,
+    result: Option<SearchResultKind>,
+    active_index: Option<usize>,
+}
+
+impl EditorSearch {
+    fn matches(&self) -> &[SearchMatch] {
+        match &self.result {
+            Some(SearchResultKind::Literal(result)) => result.matches(),
+            Some(SearchResultKind::Regex(result)) => result.matches(),
+            None => &[],
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.matches().len()
+    }
+
+    fn match_range(&self, index: usize) -> Range<usize> {
+        let range = self.matches()[index].range();
+        range.start().get()..range.end().get()
+    }
+
+    fn is_stale(&self, version: zcv_engine::BufferVersion) -> bool {
+        match &self.result {
+            Some(SearchResultKind::Literal(result)) => result.is_stale(version),
+            Some(SearchResultKind::Regex(result)) => result.is_stale(version),
+            None => false,
+        }
+    }
+}
+
+impl SearchableItem for Editor {
+    fn search(
+        &mut self,
+        query: &SearchQuery,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        self.search = self.execute_search(query, cx);
+        // 自动定位到第一个匹配（选区 + 视口滚动，对齐 Zed 搜索后的光标跟随）。
+        if let Some(search) = &self.search
+            && let Some(index) = search.active_index
+        {
+            let range = search.match_range(index);
+            self.select_byte_range(range, cx);
+        }
+        // 立即重绘：高亮与定位不等待下一次交互触发（对齐 Zed 输入即高亮）。
+        cx.notify();
+        cx.emit(SearchEvent::MatchesInvalidated);
+    }
+
+    fn clear_search(&mut self, _window: &mut gpui::Window, cx: &mut gpui::Context<Self>) {
+        self.search = None;
+        cx.notify();
+        cx.emit(SearchEvent::MatchesInvalidated);
+    }
+
+    fn search_count(&self, _cx: &gpui::App) -> (usize, Option<usize>) {
+        self.search
+            .as_ref()
+            .map_or((0, None), |search| (search.len(), search.active_index))
+    }
+
+    fn activate_match_in_direction(
+        &mut self,
+        direction: Direction,
+        count: usize,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let Some(search) = &mut self.search else {
+            return;
+        };
+        let len = search.len();
+        if len == 0 {
+            return;
+        }
+        let current = search.active_index.unwrap_or(0);
+        let next = match direction {
+            Direction::Next => (current + count) % len,
+            Direction::Prev => (current + len - count % len) % len,
+        };
+        search.active_index = Some(next);
+        let range = search.match_range(next);
+        self.select_byte_range(range, cx);
+        cx.emit(SearchEvent::ActiveMatchChanged);
+    }
+
+    fn replace_current(
+        &mut self,
+        replacement: &str,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> bool {
+        // 编辑链路会在事务后自动重搜，这里兜底拒绝过期结果。
+        let Some(search) = &self.search else {
+            return false;
+        };
+        let Some(index) = search.active_index else {
+            return false;
+        };
+        let buffer = &mut self.buffer;
+        let replaced = match &search.result {
+            Some(SearchResultKind::Literal(result)) => buffer
+                .update(cx, |buffer, _| {
+                    buffer.replace_search_match(result, index, replacement)
+                })
+                .ok()
+                .flatten(),
+            Some(SearchResultKind::Regex(result)) => buffer
+                .update(cx, |buffer, _| {
+                    buffer.replace_regex_match(result, index, replacement)
+                })
+                .ok()
+                .flatten(),
+            None => None,
+        };
+        if replaced.is_some() {
+            // 替换是外部编辑（buffer.update），不走 apply_edit_outcome 的重搜路径；
+            // 手动重搜让高亮/计数跟随新文本，避免过期 result 拒绝后续替换。
+            self.research_after_edit(cx);
+        }
+        replaced.is_some()
+    }
+
+    fn replace_all(
+        &mut self,
+        replacement: &str,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> usize {
+        let Some(search) = &self.search else { return 0 };
+        let count = search.len();
+        let buffer = &mut self.buffer;
+        let replaced = match &search.result {
+            Some(SearchResultKind::Literal(result)) => buffer
+                .update(cx, |buffer, _| {
+                    buffer.replace_all_search_matches(result, replacement)
+                })
+                .ok()
+                .flatten(),
+            Some(SearchResultKind::Regex(result)) => buffer
+                .update(cx, |buffer, _| {
+                    buffer.replace_all_regex_matches(result, replacement)
+                })
+                .ok()
+                .flatten(),
+            None => None,
+        };
+        if replaced.is_some() {
+            // 同上：替换后重搜，清掉已无匹配的过期结果。
+            self.research_after_edit(cx);
+        }
+        if replaced.is_some() { count } else { 0 }
+    }
+}
+
+impl Editor {
+    /// 执行引擎搜索并返回新的搜索状态；`None` 表示无结果（query 为空或引擎报错）。
+    fn execute_search(
+        &self,
+        query: &SearchQuery,
+        cx: &mut gpui::Context<Self>,
+    ) -> Option<EditorSearch> {
+        if query.query.is_empty() {
+            return None;
+        }
+        let snapshot = self.buffer.read(cx).snapshot();
+        let result = if query.regex {
+            let options = RegexSearchOptions::new().with_case_sensitive(query.case_sensitive);
+            snapshot
+                .search_regex(&query.query, options)
+                .ok()
+                .map(SearchResultKind::Regex)
+        } else {
+            let options = SearchOptions::new()
+                .with_case_sensitive(query.case_sensitive)
+                .with_whole_word(query.whole_word);
+            snapshot
+                .search(&query.query, options)
+                .ok()
+                .map(SearchResultKind::Literal)
+        }?;
+        let search = EditorSearch {
+            query: query.clone(),
+            result: Some(result),
+            active_index: None,
+        };
+        let search = if search.matches().is_empty() {
+            search
+        } else {
+            EditorSearch {
+                active_index: Some(0),
+                ..search
+            }
+        };
+        Some(search)
+    }
+
+    /// 编辑事务后调用：搜索结果过期时用保存的 query 重搜，活动匹配保持原序号。
+    pub(crate) fn research_after_edit(&mut self, cx: &mut gpui::Context<Self>) {
+        let Some(search) = &self.search else { return };
+        if search.query.query.is_empty() {
+            return;
+        }
+        let version = self.buffer.read(cx).snapshot().version();
+        if !search.is_stale(version) {
+            return;
+        }
+        let query = search.query.clone();
+        let active = search.active_index;
+        self.search = self.execute_search(&query, cx);
+        if let Some(search) = &mut self.search {
+            let len = search.len();
+            search.active_index = active.filter(|index| *index < len);
+        }
+        cx.notify();
+        cx.emit(SearchEvent::MatchesInvalidated);
+    }
+
+    /// 搜索状态存在且非空时的匹配高亮（供 element 渲染层读取）。
+    pub(crate) fn search_highlights(&self) -> Option<(&[SearchMatch], usize)> {
+        let search = self.search.as_ref()?;
+        if search.len() == 0 {
+            return None;
+        }
+        Some((search.matches(), search.active_index.unwrap_or(0)))
+    }
+}

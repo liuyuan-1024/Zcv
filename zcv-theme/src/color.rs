@@ -86,6 +86,10 @@ pub struct ThemeColors {
     pub editor_active_line_number: Rgba,
     /// 编辑器选区背景。
     pub editor_selection_background: Rgba,
+    /// 搜索匹配背景。
+    pub search_match_background: Rgba,
+    /// 搜索活动匹配背景。
+    pub search_active_match_background: Rgba,
     /// 编辑器光标颜色。
     pub editor_cursor: Rgba,
     /// 编辑器 diff 新增行背景（status_created 的低透明版本）。
@@ -144,6 +148,14 @@ impl ThemeColors {
             editor_line_number: palette.gray.s[6],
             editor_active_line_number: palette.gray.s[8],
             editor_selection_background: palette.blue.a[2],
+            search_match_background: Rgba {
+                a: 0.55,
+                ..palette.blue.a[2]
+            },
+            search_active_match_background: Rgba {
+                a: 0.4,
+                ..palette.yellow.s[6]
+            },
             editor_cursor: palette.blue.s[6],
             // diff 背景 = 状态色 30% 透明度（深色/浅色主题下都成立）。
             editor_diff_added_background: Rgba {

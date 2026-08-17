@@ -14,6 +14,7 @@ use zcv_engine::Buffer;
 use zcv_project::Project;
 
 use crate::preview::PreviewItemHandle;
+use crate::searchable::SearchableItemHandle;
 use crate::toolbar::ToolbarItemLocation;
 
 /// Item 向 Pane/Workspace 上报的通用事件，对齐 Zed `workspace::item::ItemEvent`。
@@ -83,6 +84,16 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         None
     }
 
+    /// 可搜索 Item 把自己暴露给搜索条（对齐 Zed 的 `as_searchable` 桥接模式）。
+    /// 不可搜索的 Item 返回 None，无需实现。
+    fn as_searchable(
+        &self,
+        _self_handle: &Entity<Self>,
+        _cx: &App,
+    ) -> Option<Box<dyn SearchableItemHandle>> {
+        None
+    }
+
     fn can_save(&self, _cx: &App) -> bool {
         false
     }
@@ -139,6 +150,7 @@ pub trait ItemHandle: Send + 'static {
     fn rename_path(&self, from: &Path, to: &Path, cx: &mut App);
     fn buffer(&self, cx: &App) -> Option<Entity<Buffer>>;
     fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>>;
+    fn as_searchable(&self, cx: &App) -> Option<Box<dyn SearchableItemHandle>>;
     fn can_save(&self, cx: &App) -> bool;
     fn can_save_as(&self, cx: &App) -> bool;
     fn save(
@@ -229,6 +241,10 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>> {
         self.read(cx).as_preview_item(self, cx)
+    }
+
+    fn as_searchable(&self, cx: &App) -> Option<Box<dyn SearchableItemHandle>> {
+        self.read(cx).as_searchable(self, cx)
     }
 
     fn can_save(&self, cx: &App) -> bool {

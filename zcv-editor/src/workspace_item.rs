@@ -77,6 +77,14 @@ impl Item for Editor {
     fn buffer(&self, _cx: &App) -> Option<Entity<Buffer>> {
         Some(self.buffer())
     }
+
+    fn as_searchable(
+        &self,
+        self_handle: &Entity<Self>,
+        _cx: &App,
+    ) -> Option<Box<dyn zcv_workspace::SearchableItemHandle>> {
+        Some(Box::new(self_handle.clone()))
+    }
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ use gpui::{
 };
 use zcv_actions::ToggleFold;
 use zcv_buffer_diff::{DiffHunk, DiffHunkKind};
-use zcv_engine::{ByteOffset, Line, LogicalColumn, SelectionSet, TextRange};
+use zcv_engine::{ByteOffset, Line, LogicalColumn, SearchMatch, SelectionSet, TextRange};
 use zcv_language::BracketPair;
 use zcv_theme::color;
 use zcv_ui::Glyph;
@@ -140,24 +140,24 @@ impl EditorLayout {
 }
 
 #[derive(Clone, Copy)]
-struct EditorGeometry {
-    text_bounds: Bounds<Pixels>,
-    text_clip_bounds: Bounds<Pixels>,
-    gutter: Option<(Bounds<Pixels>, GutterDimensions)>,
+pub(super) struct EditorGeometry {
+    pub(super) text_bounds: Bounds<Pixels>,
+    pub(super) text_clip_bounds: Bounds<Pixels>,
+    pub(super) gutter: Option<(Bounds<Pixels>, GutterDimensions)>,
 }
 
-struct VisibleLineLayoutParams<'a> {
-    geometry: EditorGeometry,
-    active_lines: &'a BTreeSet<Line>,
+pub(super) struct VisibleLineLayoutParams<'a> {
+    pub(super) geometry: EditorGeometry,
+    pub(super) active_lines: &'a BTreeSet<Line>,
     /// 可折叠行集合（crease 显示判断；prepaint 从语言层折叠范围计算）。
-    foldable_lines: &'a BTreeSet<Line>,
+    pub(super) foldable_lines: &'a BTreeSet<Line>,
     /// 折叠入口行集合（crease 折叠态判断：已折叠 anchor 行显示展开箭头）。
-    fold_anchor_lines: &'a BTreeSet<Line>,
-    start_row: DisplayRow,
-    scroll_offset: Point<Pixels>,
-    line_height: Pixels,
+    pub(super) fold_anchor_lines: &'a BTreeSet<Line>,
+    pub(super) start_row: DisplayRow,
+    pub(super) scroll_offset: Point<Pixels>,
+    pub(super) line_height: Pixels,
     /// git diff 显示行区间（prepaint 从 `diff_hunk_rows` 计算，gutter/内容共用）。
-    diff_rows: &'a [(Range<usize>, DiffHunkKind)],
+    pub(super) diff_rows: &'a [(Range<usize>, DiffHunkKind)],
 }
 
 impl EditorLayout {
@@ -581,6 +581,7 @@ impl Element for EditorElement {
             display_snapshot.clone(),
             placeholder.clone(),
             presentation.clone(),
+            self.editor.read(cx).search_highlights(),
             VisibleLineLayoutParams {
                 geometry,
                 active_lines: &active_lines,
@@ -1005,6 +1006,18 @@ impl Element for EditorElement {
                 for selection in prepaint.selections.drain(..) {
                     window.paint_quad(selection);
                 }
+                // run 背景（搜索高亮、语法背景等）：gpui 原生 paint_background
+                // 用 decoration_runs 精确绘制，覆盖在选区之上、文本之下（对齐 Zed）。
+                for line in &prepaint.layout.lines {
+                    if let Err(error) = line.shaped.paint_background(
+                        line.origin,
+                        prepaint.layout.line_height,
+                        window,
+                        cx,
+                    ) {
+                        log::error!("Editor 行背景绘制失败：{error}");
+                    }
+                }
                 for line in &prepaint.layout.lines {
                     if let Err(error) =
                         line.shaped
@@ -1375,6 +1388,7 @@ fn layout_visible_lines(
     display_snapshot: DisplaySnapshot,
     placeholder: Option<DisplaySnapshot>,
     presentation: EditorPresentation,
+    search_highlights: Option<(&[SearchMatch], usize)>,
     params: VisibleLineLayoutParams<'_>,
     window: &mut Window,
     cx: &App,
@@ -1418,6 +1432,28 @@ fn layout_visible_lines(
         .unwrap_or_default();
     // capture 索引 → 样式的预展开表：渲染每 run 一次数组索引，不再逐 run 做字符串回退查找。
     let highlight_styles = display_snapshot.highlight_styles();
+    // 搜索高亮：独立背景覆盖层（对齐 Zed 的 background highlights）。
+    let search_backgrounds: Vec<(Range<usize>, gpui::Rgba)> = match search_highlights {
+        Some((matches, active_index)) => {
+            let colors = color::current(cx);
+            matches
+                .iter()
+                .enumerate()
+                .map(|(index, search_match)| {
+                    let range = search_match.range();
+                    (
+                        range.start().get()..range.end().get(),
+                        if index == active_index {
+                            colors.search_active_match_background
+                        } else {
+                            colors.search_match_background
+                        },
+                    )
+                })
+                .collect()
+        }
+        None => Vec::new(),
+    };
 
     // 基础 run：样式段在其上合并（对齐 Zed from_chunks 的 base 合并）。
     let base = TextRun {
@@ -1550,7 +1586,8 @@ fn layout_visible_lines(
                     let line_styles = match source {
                         StreamLineSource::Buffer(_) => LineStyles {
                             spans: &visible_highlights,
-                            styles: highlight_styles,
+                            styles: &highlight_styles,
+                            backgrounds: &search_backgrounds,
                             marked: presentation.marked_ranges(),
                         },
                         StreamLineSource::Inserted { .. } => LineStyles::default(),
@@ -1964,6 +2001,7 @@ mod tests {
                     map.snapshot(),
                     None,
                     EditorPresentation::new(&snapshot, None),
+                    None,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
                             text_bounds: Bounds::new(
@@ -2048,6 +2086,7 @@ mod tests {
                     display,
                     None,
                     EditorPresentation::new(&snapshot, None),
+                    None,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
                             text_bounds: Bounds::new(
@@ -2097,6 +2136,7 @@ mod tests {
                     display_snapshot,
                     None,
                     presentation,
+                    None,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
                             text_bounds: Bounds::new(
@@ -2159,6 +2199,7 @@ mod tests {
                     DisplayMap::new(snapshot.clone()).snapshot(),
                     None,
                     EditorPresentation::new(&snapshot, None),
+                    None,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
                             text_bounds,
@@ -2214,6 +2255,7 @@ mod tests {
                     map.snapshot(),
                     None,
                     EditorPresentation::new(&snapshot, None),
+                    None,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
                             text_bounds: Bounds::new(
@@ -2263,6 +2305,7 @@ mod tests {
                     display_snapshot,
                     None,
                     presentation,
+                    None,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
                             text_bounds: Bounds::new(

@@ -692,9 +692,9 @@ impl Render for Workspace {
             titlebar,
             &self.status_bar,
             render_body(&pane, left_dock, right_dock, bottom_dock),
+            &self.toast_layer,
             cx,
         ))
-        .child(self.toast_layer.clone())
         .on_action(cx.listener(Self::handle_quit))
         .on_action(handle_minimize)
         .on_action(handle_toggle_maximize)
@@ -754,6 +754,7 @@ fn render_frame(
     titlebar: Option<&AnyView>,
     status_bar: &Entity<StatusBar>,
     body: gpui::Div,
+    toast_layer: &Entity<ToastLayer>,
     cx: &gpui::App,
 ) -> Div {
     div()
@@ -769,7 +770,16 @@ fn render_frame(
                 .map(|view| view.clone().into_any_element())
                 .unwrap_or_else(|| gpui::div().into_any_element()),
         )
-        .child(body)
+        // Toast 只覆盖主工作区，以主工作区底边为基准，始终位于状态栏上方。
+        .child(
+            div()
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .overflow_hidden()
+                .child(body)
+                .child(toast_layer.clone()),
+        )
         .child(status_bar.clone())
 }
 

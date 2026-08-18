@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     App, AsyncApp, BoxShadow, ClipboardItem, Context, MouseButton, Render, SharedString, Task,
-    WeakEntity, Window, div, hsla, point, prelude::*, px,
+    WeakEntity, Window, div, hsla, point, prelude::*, px, relative,
 };
 use zcv_theme::{color, space, typography};
 use zcv_ui::{Glyph, SvgIcon};
@@ -224,9 +224,13 @@ impl Render for ToastLayer {
             .id("toast-bubble")
             .flex()
             .flex_col()
+            .flex_shrink_0()
             .gap(space::S8)
             .p(space::S10)
+            .w_full()
             .max_w(px(TOAST_MAX_WIDTH))
+            .max_h(relative(1.0))
+            .overflow_hidden()
             .rounded_lg()
             .bg(color::current(cx).surface_background)
             .border_1()
@@ -270,6 +274,7 @@ impl Render for ToastLayer {
             // 第一部分：头部行（左侧语义图标，右侧复制/关闭，从左到右）。
             .child(
                 div()
+                    .flex_shrink_0()
                     .flex()
                     .flex_row()
                     .items_center()
@@ -287,6 +292,11 @@ impl Render for ToastLayer {
             // 第二部分：内容主体，继承根元素字体/字号，在固定最大宽度内自动换行。
             .child(
                 div()
+                    .id("toast-message")
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .text_color(color::current(cx).text)
                     .child(toast.message.clone()),
             );
@@ -298,6 +308,7 @@ impl Render for ToastLayer {
             let layer = cx.entity().clone();
             bubble = bubble.child(
                 div()
+                    .flex_shrink_0()
                     .text_color(color::current(cx).icon_accent)
                     .child(label)
                     .on_mouse_up(MouseButton::Left, move |_, window, cx| {

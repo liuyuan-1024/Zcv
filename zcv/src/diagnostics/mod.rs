@@ -5,7 +5,7 @@
 use gpui::{Context, Render, Window, prelude::*};
 use zcv_ui::Glyph;
 use zcv_workspace::ItemHandle;
-use zcv_workspace::{StatusItemView, ToggleDiagnostics};
+use zcv_workspace::{FocusOrHidePanel, StatusItemView};
 
 pub(crate) struct DiagnosticsButton;
 
@@ -21,10 +21,11 @@ impl StatusItemView for DiagnosticsButton {
 
 impl Render for DiagnosticsButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        let action = FocusOrHidePanel::new("diagnostics");
         Glyph::icon_text("diagnostics-button", "icons/warning.svg", "0")
             .label("诊断")
-            .shortcut(&ToggleDiagnostics, cx)
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleDiagnostics), cx))
+            .shortcut(&action, cx)
+            .on_click(move |_, window, cx| window.dispatch_action(Box::new(action.clone()), cx))
             .into_any_element()
     }
 }

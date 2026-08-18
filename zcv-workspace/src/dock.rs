@@ -14,10 +14,8 @@ use gpui::{
     Context, Entity, FocusHandle, Focusable, MouseButton, Pixels, Point, Render, Subscription,
     WeakEntity, Window, div, prelude::*, px,
 };
-pub use zcv_actions::{
-    ToggleDebug, ToggleDiagnostics, ToggleKeyboardShortcuts, ToggleLanguageServer, ToggleOutline,
-    ToggleProjectSearch, ToggleProjectTree, ToggleTerminal, ToggleVersionControl,
-};
+use serde::{Deserialize, Serialize};
+pub use zcv_actions::{FocusOrHidePanel, ToggleBottomDock, ToggleLeftDock, ToggleRightDock};
 use zcv_theme::{color, space};
 
 use crate::pane::Pane;
@@ -31,6 +29,23 @@ pub enum DockPosition {
     Left,
     Bottom,
     Right,
+}
+
+/// 可持久化的单个 Dock 状态。panel 使用稳定名称，不依赖注册顺序。
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DockData {
+    pub visible: bool,
+    pub active_panel: Option<String>,
+    #[serde(default)]
+    pub size: Option<f32>,
+}
+
+/// 工作区三个 Dock 的持久化快照。
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DockStructure {
+    pub left: DockData,
+    pub right: DockData,
+    pub bottom: DockData,
 }
 
 impl DockPosition {
@@ -64,6 +79,8 @@ pub struct Dock {
     size: Pixels,
     active_panel_index: Option<usize>,
     pub panels: Vec<Arc<dyn PanelHandle>>,
+    /// 允许布局先于具体 panel 注册载入；每次 add_panel 后重试恢复。
+    serialized_dock: Option<DockData>,
     pub focus: FocusHandle,
     /// 左右 dock 互为 sibling，拖拽时协调尺寸。
     sibling: Option<WeakEntity<Dock>>,
@@ -81,10 +98,10 @@ impl Dock {
         position: DockPosition,
         panels: Vec<Arc<dyn PanelHandle>>,
         initial_size: Pixels,
+        serialized_dock: Option<DockData>,
         drag_notify: Rc<Cell<Option<DockPosition>>>,
         cx: &mut Context<Self>,
     ) -> Self {
-        // 激活第一个面板
         let active_panel_index = if panels.is_empty() { None } else { Some(0) };
         Self {
             position,
@@ -92,6 +109,7 @@ impl Dock {
             size: initial_size,
             active_panel_index,
             panels,
+            serialized_dock,
             focus: cx.focus_handle(),
             sibling: None,
             drag_state: None,
@@ -106,11 +124,17 @@ impl Dock {
     }
 
     /// 追加面板；空 dock 自动激活第一个面板。
-    pub fn add_panel(&mut self, handle: Arc<dyn PanelHandle>, cx: &mut Context<Self>) {
+    pub fn add_panel(
+        &mut self,
+        handle: Arc<dyn PanelHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.active_panel_index.is_none() {
             self.active_panel_index = Some(0);
         }
         self.panels.push(handle);
+        self.restore_state(window, cx);
         cx.notify();
     }
 
@@ -130,6 +154,11 @@ impl Dock {
         }
     }
 
+    /// 当前选中的 panel；Dock 关闭时仍返回，供恢复与 action 使用。
+    pub fn active_panel(&self) -> Option<&Arc<dyn PanelHandle>> {
+        self.active_panel_index.and_then(|i| self.panels.get(i))
+    }
+
     /// 当前激活面板的 index。
     pub fn active_panel_index(&self) -> Option<usize> {
         self.active_panel_index
@@ -140,37 +169,110 @@ impl Dock {
         self.is_open && Some(panel_index) == self.active_panel_index
     }
 
+    /// 设置开关状态，并统一触发 panel 生命周期回调。
+    pub fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_open == open {
+            return;
+        }
+        self.is_open = open;
+        if let Some(panel) = self.active_panel().cloned() {
+            panel.set_active(open, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// 切换当前 panel，并统一停用旧 panel、激活新 panel。
+    pub fn activate_panel(
+        &mut self,
+        panel_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if panel_index >= self.panels.len() || self.active_panel_index == Some(panel_index) {
+            return false;
+        }
+        if let Some(old_panel) = self.active_panel().cloned() {
+            old_panel.set_active(false, window, cx);
+        }
+        self.active_panel_index = Some(panel_index);
+        if let Some(new_panel) = self.active_panel().cloned() {
+            new_panel.set_active(true, window, cx);
+        }
+        cx.notify();
+        true
+    }
+
+    /// 注入待恢复状态；panel 尚未注册时保留快照，后续 add_panel 会继续恢复。
+    pub fn set_serialized_state(
+        &mut self,
+        state: DockData,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.serialized_dock = Some(state);
+        self.restore_state(window, cx);
+    }
+
+    /// 根据当前已注册 panel 尝试恢复状态。
+    pub fn restore_state(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(state) = self.serialized_dock.clone() else {
+            return false;
+        };
+        if let Some(size) = state.size.filter(|size| size.is_finite() && *size > 0.0) {
+            let window_size = window.bounds().size;
+            let max_size = match self.position {
+                DockPosition::Left | DockPosition::Right => window_size.width - MIN_SIZE,
+                DockPosition::Bottom => window_size.height - MIN_SIZE,
+            }
+            .max(MIN_SIZE);
+            self.size = px(size).clamp(MIN_SIZE, max_size);
+        }
+
+        let restored_index = state.active_panel.as_deref().and_then(|name| {
+            self.panels
+                .iter()
+                .position(|panel| panel.persistent_name() == name)
+        });
+        if let Some(index) = restored_index {
+            self.activate_panel(index, window, cx);
+        }
+
+        let active_panel_available = state.active_panel.is_none() || restored_index.is_some();
+        self.set_open(state.visible && active_panel_available, window, cx);
+        active_panel_available
+    }
+
+    /// 捕获当前 Dock 的可持久化快照。
+    pub fn capture_state(&self) -> DockData {
+        DockData {
+            visible: self.is_open(),
+            active_panel: self
+                .active_panel()
+                .map(|panel| panel.persistent_name().to_owned()),
+            size: Some(f32::from(self.size)),
+        }
+    }
+
     // ── 面板切换 ─────────────────────────────────────────────────
 
     /// 切换面板的展开/折叠，并在切换前后通知面板的 `set_active`。
-    pub fn toggle_panel(
+    pub fn toggle_panel_visibility(
         &mut self,
         panel_index: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(handle) = self.panels.get(panel_index) else {
+        if panel_index >= self.panels.len() {
             return;
-        };
+        }
         let is_active = self.is_open && Some(panel_index) == self.active_panel_index;
 
         if is_active {
-            // 隐藏 dock
-            self.is_open = false;
-            handle.set_active(false, window, cx);
+            self.set_open(false, window, cx);
         } else {
-            // 停用旧面板（如果切换面板）
-            if let Some(old_idx) = self.active_panel_index
-                && old_idx != panel_index
-                && let Some(old_handle) = self.panels.get(old_idx)
-            {
-                old_handle.set_active(false, window, cx);
-            }
-            self.active_panel_index = Some(panel_index);
-            self.is_open = true;
-            handle.set_active(true, window, cx);
+            self.activate_panel(panel_index, window, cx);
+            self.set_open(true, window, cx);
         }
-        cx.notify();
     }
 
     // ── 拖拽调整大小 ─────────────────────────────────────────────
@@ -245,6 +347,7 @@ impl Dock {
 
 impl Render for Dock {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_open = self.is_open();
         let panel_view: gpui::AnyElement = match self.visible_panel() {
             Some(handle) => handle.to_any().into_any_element(),
             None => placeholder_div(cx).into_any_element(),
@@ -257,23 +360,24 @@ impl Render for Dock {
             .flex_shrink_0()
             .overflow_hidden()
             .bg(color::current(cx).panel_background)
-            .text_color(color::current(cx).text);
+            .text_color(color::current(cx).text)
+            .track_focus(&self.focus);
 
         let frame = match self.position {
             DockPosition::Left => frame
-                .w(self.size)
+                .w(if is_open { self.size } else { Pixels::ZERO })
                 .h_full()
-                .border_r_1()
+                .when(is_open, |this| this.border_r_1())
                 .border_color(color::current(cx).border_variant),
             DockPosition::Right => frame
-                .w(self.size)
+                .w(if is_open { self.size } else { Pixels::ZERO })
                 .h_full()
-                .border_l_1()
+                .when(is_open, |this| this.border_l_1())
                 .border_color(color::current(cx).border_variant),
             DockPosition::Bottom => frame
-                .h(self.size)
+                .h(if is_open { self.size } else { Pixels::ZERO })
                 .w_full()
-                .border_t_1()
+                .when(is_open, |this| this.border_t_1())
                 .border_color(color::current(cx).border_variant),
         };
 
@@ -341,12 +445,12 @@ fn placeholder_div(cx: &gpui::App) -> gpui::Div {
 
 /// 渲染 workbench 主体（不包含顶栏和底栏）。
 ///
-/// 三个 Dock 各自是独立 Entity，由调用方检查 `is_open()` 后决定是否传入。
+/// 三个 Dock 始终挂载；关闭时由 Dock 自身收缩为零，确保 focus/action 生命周期稳定。
 pub fn render_body(
     center: &Entity<Pane>,
-    left_dock: Option<Entity<Dock>>,
-    right_dock: Option<Entity<Dock>>,
-    bottom_dock: Option<Entity<Dock>>,
+    left_dock: Entity<Dock>,
+    right_dock: Entity<Dock>,
+    bottom_dock: Entity<Dock>,
 ) -> gpui::Div {
     let mut row = div()
         .flex_1()
@@ -356,9 +460,7 @@ pub fn render_body(
         .overflow_hidden()
         .relative();
 
-    if let Some(dock) = left_dock {
-        row = row.child(dock);
-    }
+    row = row.child(left_dock);
 
     let mut center_col = div()
         .flex_1()
@@ -370,13 +472,121 @@ pub fn render_body(
         .min_w(space::S16);
     center_col = center_col.child(div().flex_1().min_h(space::S16).child(center.clone()));
 
-    if let Some(dock) = bottom_dock {
-        center_col = center_col.child(dock);
-    }
+    center_col = center_col.child(bottom_dock);
     row = row.child(center_col);
 
-    if let Some(dock) = right_dock {
-        row = row.child(dock);
-    }
+    row = row.child(right_dock);
     row
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    use gpui::{App, Context, FocusHandle, Render, TestAppContext, Window, div, prelude::*, px};
+
+    use super::*;
+    use crate::{Panel, PanelHandle};
+
+    macro_rules! test_panel {
+        ($name:ident, $persistent_name:literal) => {
+            struct $name {
+                focus: FocusHandle,
+            }
+
+            impl Panel for $name {
+                fn icon() -> &'static str {
+                    "icons/list_tree.svg"
+                }
+
+                fn label() -> &'static str {
+                    $persistent_name
+                }
+
+                fn persistent_name() -> &'static str {
+                    $persistent_name
+                }
+
+                fn focus_handle(&self, _: &App) -> FocusHandle {
+                    self.focus.clone()
+                }
+            }
+
+            impl Render for $name {
+                fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                    div().track_focus(&self.focus)
+                }
+            }
+        };
+    }
+
+    test_panel!(FirstPanel, "first");
+    test_panel!(SecondPanel, "second");
+
+    #[gpui::test]
+    fn restores_active_panel_after_late_registration(cx: &mut TestAppContext) {
+        let first = cx.new(|cx| FirstPanel {
+            focus: cx.focus_handle(),
+        });
+        let second = cx.new(|cx| SecondPanel {
+            focus: cx.focus_handle(),
+        });
+        let first_handle: Arc<dyn PanelHandle> = Arc::new(first);
+        let second_handle: Arc<dyn PanelHandle> = Arc::new(second);
+        let state = DockData {
+            visible: true,
+            active_panel: Some("second".into()),
+            size: Some(333.0),
+        };
+        let notify = Rc::new(Cell::new(None));
+        let (dock, cx) = cx.add_window_view(move |window, cx| {
+            let mut dock = Dock::new(
+                DockPosition::Left,
+                Vec::new(),
+                px(240.0),
+                Some(state),
+                notify,
+                cx,
+            );
+            dock.add_panel(first_handle, window, cx);
+            assert!(!dock.is_open());
+            dock.add_panel(second_handle, window, cx);
+            dock
+        });
+
+        cx.read_entity(&dock, |dock, _| {
+            assert!(dock.is_open());
+            assert_eq!(dock.active_panel_index(), Some(1));
+            assert_eq!(dock.capture_state().active_panel.as_deref(), Some("second"));
+            assert_eq!(dock.capture_state().size, Some(333.0));
+        });
+    }
+
+    #[gpui::test]
+    fn capture_uses_stable_panel_name_not_index(cx: &mut TestAppContext) {
+        let panel = cx.new(|cx| SecondPanel {
+            focus: cx.focus_handle(),
+        });
+        let handle: Arc<dyn PanelHandle> = Arc::new(panel);
+        let notify = Rc::new(Cell::new(None));
+        let (dock, cx) = cx.add_window_view(move |window, cx| {
+            let mut dock = Dock::new(
+                DockPosition::Bottom,
+                Vec::new(),
+                px(200.0),
+                None,
+                notify,
+                cx,
+            );
+            dock.add_panel(handle, window, cx);
+            dock.set_open(true, window, cx);
+            dock
+        });
+
+        cx.read_entity(&dock, |dock, _| {
+            assert_eq!(dock.capture_state().active_panel.as_deref(), Some("second"));
+        });
+    }
 }

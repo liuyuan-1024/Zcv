@@ -7,24 +7,36 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use anyhow::{Context as _, Result, anyhow};
-use gpui::{App, KeyBinding, KeyBindingContextPredicate};
+use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate};
 use serde::Deserialize;
+use serde_json::Value;
 
 // ── 公开类型 ─────────────────────────────────────────────────────────
 
 /// 快捷键绑定集合：正向（注册） + 反向（查询）。
 pub struct KeyBindings {
     pub bindings: Vec<KeyBinding>,
-    shortcuts: HashMap<String, String>, // action名 → 键位字符串
+    shortcuts: Vec<(Box<dyn Action>, String)>,
 }
 
 impl KeyBindings {
-    /// 根据 action 名称查询当前平台的快捷键显示字符串。
+    /// 根据完整 action（包括参数）查询当前平台的快捷键显示字符串。
     ///
     /// - macOS：修饰键显示为符号（`cmd-shift-e` → `⌘⇧E`）
     /// - Linux / Windows：修饰键显示为文本（`ctrl-shift-e` → `Ctrl+Shift+E`）
-    pub fn display_shortcut(&self, action_name: &str) -> Option<String> {
-        self.shortcuts.get(action_name).map(|s| display_format(s))
+    pub fn display_shortcut(&self, action: &dyn Action) -> Option<String> {
+        self.shortcuts
+            .iter()
+            .find(|(candidate, _)| candidate.partial_eq(action))
+            .map(|(_, keys)| display_format(keys))
+    }
+
+    /// 仅在调用方没有 Action 实例时按名称查询。
+    pub fn display_shortcut_named(&self, action_name: &str) -> Option<String> {
+        self.shortcuts
+            .iter()
+            .find(|(action, _)| action.name() == action_name)
+            .map(|(_, keys)| display_format(keys))
     }
 }
 
@@ -158,7 +170,7 @@ pub fn load_json(source: &str, json: &str, cx: &App) -> Result<KeyBindings> {
     detect_conflicts(&groups);
 
     let mut bindings = Vec::new();
-    let mut shortcuts = HashMap::new();
+    let mut shortcuts: Vec<(Box<dyn Action>, String)> = Vec::new();
 
     for group in groups {
         let context = group
@@ -169,10 +181,14 @@ pub fn load_json(source: &str, json: &str, cx: &App) -> Result<KeyBindings> {
             .map_err(|error| anyhow!("{source} 包含非法快捷键上下文 {:?}：{error}", group.context))?
             .map(Rc::new);
 
-        for (keys, action_name) in &group.bindings {
-            let action = cx.build_action(action_name, None).with_context(|| {
-                format!("{source} 的快捷键 {keys:?} 引用了未知或无效 action {action_name:?}")
-            })?;
+        for (keys, raw_action) in &group.bindings {
+            let action_name = raw_action.name();
+            let action = cx
+                .build_action(action_name, raw_action.params().cloned())
+                .with_context(|| {
+                    format!("{source} 的快捷键 {keys:?} 引用了未知或无效 action {action_name:?}")
+                })?;
+            let shortcut_action = action.boxed_clone();
             let binding = KeyBinding::load(
                 keys,
                 action,
@@ -189,9 +205,12 @@ pub fn load_json(source: &str, json: &str, cx: &App) -> Result<KeyBindings> {
             })?;
 
             bindings.push(binding);
-            shortcuts
-                .entry(action_name.clone())
-                .or_insert_with(|| keys.clone());
+            if !shortcuts
+                .iter()
+                .any(|(candidate, _)| candidate.partial_eq(shortcut_action.as_ref()))
+            {
+                shortcuts.push((shortcut_action, keys.clone()));
+            }
         }
     }
 
@@ -209,7 +228,29 @@ struct RawBindingGroup {
     #[serde(default)]
     context: Option<String>,
     /// 键位字符串 → action 名称的映射
-    bindings: BTreeMap<String, String>,
+    bindings: BTreeMap<String, RawAction>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawAction {
+    Name(String),
+    WithParams((String, Value)),
+}
+
+impl RawAction {
+    fn name(&self) -> &str {
+        match self {
+            Self::Name(name) | Self::WithParams((name, _)) => name,
+        }
+    }
+
+    fn params(&self) -> Option<&Value> {
+        match self {
+            Self::Name(_) => None,
+            Self::WithParams((_, params)) => Some(params),
+        }
+    }
 }
 
 /// 读取当前平台的默认快捷键。
@@ -233,17 +274,19 @@ fn platform_keymap() -> (&'static str, Cow<'static, str>) {
 
 /// 检测同一 (键位, 上下文) 被映射到不同 action 的冲突并告警。
 fn detect_conflicts(groups: &[RawBindingGroup]) {
-    let mut seen: HashMap<(&str, Option<&str>), &str> = HashMap::new();
+    let mut seen: HashMap<(&str, Option<&str>), &RawAction> = HashMap::new();
     for group in groups {
         let context = group.context.as_deref();
-        for (keys, action_name) in &group.bindings {
+        for (keys, action) in &group.bindings {
             if let Some(prev) = seen.get(&(keys.as_str(), context)) {
                 eprintln!(
-                    "快捷键冲突: {keys:15} (ctx: {ctx:12}) → '{prev}' 和 '{action_name}'，后者覆盖前者",
+                    "快捷键冲突: {keys:15} (ctx: {ctx:12}) → '{}' 和 '{}'，后者覆盖前者",
+                    prev.name(),
+                    action.name(),
                     ctx = context.unwrap_or("(全局)"),
                 );
             }
-            seen.insert((keys, context), action_name);
+            seen.insert((keys, context), action);
         }
     }
 }
@@ -251,6 +294,7 @@ fn detect_conflicts(groups: &[RawBindingGroup]) {
 #[cfg(test)]
 mod tests {
     use gpui::TestAppContext;
+    use zcv_actions::FocusOrHidePanel;
 
     use super::*;
 
@@ -266,6 +310,30 @@ mod tests {
             .expect("未知 action 必须使内置 keymap 加载失败")
         });
         assert!(error.to_string().contains("missing::Action"));
+    }
+
+    #[gpui::test]
+    fn parameterized_actions_have_distinct_shortcuts(cx: &mut TestAppContext) {
+        let keybindings = cx.update(|cx| {
+            load_json(
+                "parameterized.json",
+                r#"[{"bindings":{
+                    "cmd-shift-e":["dock::FocusOrHidePanel",{"panel":"project-tree"}],
+                    "cmd-shift-g":["dock::FocusOrHidePanel",{"panel":"version-control"}]
+                }}]"#,
+                cx,
+            )
+            .unwrap()
+        });
+
+        assert_eq!(
+            keybindings.display_shortcut(&FocusOrHidePanel::new("project-tree")),
+            Some(display_format("cmd-shift-e"))
+        );
+        assert_eq!(
+            keybindings.display_shortcut(&FocusOrHidePanel::new("version-control")),
+            Some(display_format("cmd-shift-g"))
+        );
     }
 
     /// 项目/分支选择器分组使用的复合 context 必须可解析。
@@ -320,7 +388,7 @@ mod tests {
                     ("shift-end", "editor::SelectToEndOfLine"),
                 ] {
                     assert_eq!(
-                        editor.bindings.get(keys).map(String::as_str),
+                        editor.bindings.get(keys).map(RawAction::name),
                         Some(action),
                         "{source} 的 {keys} 应绑定 {action}"
                     );

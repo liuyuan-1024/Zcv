@@ -6,11 +6,8 @@ use zcv_theme::{color, space};
 
 const PIP_GROUP: &str = "window-controls.pips";
 
-// ── 按键经 action 路由至此（点击不走这里，在 render 中直调）────
+// ── 窗口 action handler；Quit 由 Workspace 在刷新布局状态后处理 ──
 
-pub fn handle_quit(_: &QuitWindow, _: &mut Window, cx: &mut gpui::App) {
-    cx.quit();
-}
 pub fn handle_minimize(_: &MinimizeWindow, window: &mut Window, _: &mut gpui::App) {
     window.minimize_window();
 }

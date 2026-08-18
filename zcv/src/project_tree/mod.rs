@@ -21,7 +21,7 @@ use zcv_git::FileStatus;
 use zcv_project::{Project, new_entry_destination, rename_destination, translate_path};
 use zcv_theme::color;
 use zcv_ui::{Scrollbar, tree};
-use zcv_workspace::{Panel, ToggleProjectTree};
+use zcv_workspace::Panel;
 
 use crate::git_status::git_status_color;
 use crate::workspace::{OnCreate, OnOpenFile, OnRename, OnTrash};
@@ -822,13 +822,14 @@ fn render_row(
 }
 
 impl Panel for ProjectTreePanel {
-    type ToggleAction = ToggleProjectTree;
-
     fn icon() -> &'static str {
         "icons/file_tree.svg"
     }
     fn label() -> &'static str {
         "项目树"
+    }
+    fn persistent_name() -> &'static str {
+        "project-tree"
     }
     fn focus_handle(&self, _cx: &gpui::App) -> gpui::FocusHandle {
         self.focus.clone()

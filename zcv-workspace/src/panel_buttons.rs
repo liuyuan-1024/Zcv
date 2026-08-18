@@ -4,12 +4,13 @@
 //! 参考 Zed `crates/workspace/src/dock.rs`。
 
 use gpui::{
-    App, ClickEvent, Context, ElementId, Entity, Render, Subscription, Window, div, prelude::*,
+    App, ClickEvent, Context, ElementId, Entity, Render, Subscription, WeakEntity, Window, div,
+    prelude::*,
 };
 use zcv_theme::{color, space};
 use zcv_ui::Glyph;
 
-use crate::ItemHandle;
+use crate::{FocusOrHidePanel, ItemHandle, Workspace};
 use crate::{
     dock::{Dock, DockPosition},
     status_bar::StatusItemView,
@@ -18,15 +19,21 @@ use crate::{
 /// 底栏按钮组：绑定一个 Dock Entity，渲染其所有面板。
 pub struct PanelButtons {
     dock: Entity<Dock>,
+    workspace: WeakEntity<Workspace>,
     _subscription: Subscription,
 }
 
 impl PanelButtons {
-    pub fn new(dock: Entity<Dock>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        dock: Entity<Dock>,
+        workspace: WeakEntity<Workspace>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         // Dock 状态变化时自动重绘
         let sub = cx.observe(&dock, |_, _, cx| cx.notify());
         Self {
             dock,
+            workspace,
             _subscription: sub,
         }
     }
@@ -62,17 +69,22 @@ impl Render for PanelButtons {
                 } else {
                     color::current(cx).text
                 };
-                let action = handle.toggle_action(cx);
+                // tooltip 始终描述 Panel 的键盘命令。
+                let shortcut_action = FocusOrHidePanel::new(handle.persistent_name());
                 let on_click = {
-                    let handle = handle.clone();
+                    let workspace = self.workspace.clone();
                     move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                        window.dispatch_action(handle.toggle_action(cx), cx);
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.toggle_panel_visibility_from_button(area, i, window, cx);
+                            })
+                            .ok();
                     }
                 };
 
                 Glyph::icon(ElementId::Name(icon_path.into()), icon_path)
                     .label(label)
-                    .shortcut(action.as_ref(), cx)
+                    .shortcut(&shortcut_action, cx)
                     .color(fg)
                     .on_click(on_click)
                     .into_any_element()

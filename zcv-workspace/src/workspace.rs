@@ -9,6 +9,7 @@ mod branch_picker;
 mod dock;
 mod item;
 mod item_provider;
+mod layout_state;
 mod pane;
 mod panel;
 mod panel_buttons;
@@ -28,9 +29,8 @@ mod workspace_state;
 pub use activity_indicator::ActivityIndicator;
 pub use branch_picker::{GitBranchAction, OnBranchSelected};
 pub use dock::{
-    Dock, DockPosition, ToggleDebug, ToggleDiagnostics, ToggleKeyboardShortcuts,
-    ToggleLanguageServer, ToggleOutline, ToggleProjectSearch, ToggleProjectTree, ToggleTerminal,
-    ToggleVersionControl,
+    Dock, DockData, DockPosition, DockStructure, FocusOrHidePanel, ToggleBottomDock,
+    ToggleLeftDock, ToggleRightDock,
 };
 pub use item::{Item, ItemEvent, ItemEventHandler, ItemHandle};
 pub use item_provider::{ItemProvider, register_item_provider};

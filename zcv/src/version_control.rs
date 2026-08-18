@@ -24,7 +24,7 @@ use zcv_git::{DiffStat, FileStatus, StatusCode};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space, typography};
 use zcv_ui::{Checkbox, Glyph, Scrollbar, tree};
-use zcv_workspace::{Panel, ToggleVersionControl};
+use zcv_workspace::Panel;
 
 use crate::git_status::git_status_color;
 use crate::workspace::OnOpenFile;
@@ -900,13 +900,14 @@ fn render_empty_state(focus: FocusHandle, cx: &App) -> Div {
 }
 
 impl Panel for VersionControlPanel {
-    type ToggleAction = ToggleVersionControl;
-
     fn icon() -> &'static str {
         "icons/git_branch.svg"
     }
     fn label() -> &'static str {
         "版本控制"
+    }
+    fn persistent_name() -> &'static str {
+        "version-control"
     }
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()

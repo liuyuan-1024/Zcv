@@ -39,7 +39,7 @@ pub use panel::{Panel, PanelHandle};
 pub use panel_buttons::PanelButtons;
 pub use preview::{PreviewDocument, PreviewItem, PreviewItemHandle, PreviewProvider, register};
 pub use project_picker::OnProjectSelected;
-pub use recent_projects::add_to_recent;
+pub use recent_projects::{add_to_recent, canonical_project_path, most_recent_valid_project};
 pub use searchable::{Direction, SearchEvent, SearchQuery, SearchableItem, SearchableItemHandle};
 pub use status_bar::StatusItemView;
 pub use toolbar::{FileToolbarControls, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};

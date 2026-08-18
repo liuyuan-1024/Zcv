@@ -11,9 +11,17 @@ use zcv_settings::config_dir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectEntry {
-    pub label: String,
     pub path: String,
-    pub is_current: bool,
+}
+
+impl ProjectEntry {
+    /// 显示名：从规范化的绝对路径取末段。
+    pub fn label(&self) -> String {
+        Path::new(&self.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -43,10 +51,36 @@ pub fn load_recent_projects() -> Vec<ProjectEntry> {
     }
 }
 
+/// 返回最近的有效项目。
+///
+/// 最近项目必须是带名称的绝对目录。这样不会把从 `.app` 启动时的 `/` 或旧版本曾写入的相对路径 `.` 当成项目重新打开。
+///
+/// 失效记录只在此处读取时跳过，不清理写回（对齐 Zed 读取时过滤失效路径的做法；
+/// 重新打开项目写盘时会以新格式覆盖，旧记录自然淘汰）。
+pub fn most_recent_valid_project() -> Option<PathBuf> {
+    first_valid_project(&load_recent_projects())
+}
+
+/// 跳过失效记录，返回第一个仍有效的项目路径。
+fn first_valid_project(projects: &[ProjectEntry]) -> Option<PathBuf> {
+    projects
+        .iter()
+        .find_map(|project| canonical_project_path(Path::new(&project.path)))
+}
+
+/// 项目根必须是带名称的绝对目录（canonicalize 失败即视为失效）。
+pub fn canonical_project_path(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let path = path.canonicalize().ok()?;
+    (path.is_dir() && path.file_name().is_some()).then_some(path)
+}
+
 /// 保存最近项目列表到磁盘。
 pub fn save_recent_projects(projects: &[ProjectEntry]) {
     let dir = config_dir();
-    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::create_dir_all(dir);
     let data = RecentProjects {
         recent: projects.to_vec(),
     };
@@ -66,29 +100,73 @@ pub fn remove_from_recent(path: &str) {
     }
 }
 
-/// 把一条路径添加到最近项目列表前端（去重），并标记为当前项目。
+/// 把一条路径添加到最近项目列表前端（去重，首位即最近打开的项目）。
 pub fn add_to_recent(path: &str) {
-    let label = Path::new(path)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string());
+    let Some(path) = canonical_project_path(Path::new(path)) else {
+        return;
+    };
+    let path = path.to_string_lossy().to_string();
 
     let mut projects = load_recent_projects();
-    // 移除旧记录
-    projects.retain(|p| p.path != path);
-    // 插入到最前
-    projects.insert(
-        0,
-        ProjectEntry {
-            label,
-            path: path.to_string(),
-            is_current: true,
-        },
-    );
-    // 标记其余为非当前
-    for p in projects.iter_mut().skip(1) {
-        p.is_current = false;
+    // 已在首位时不动，避免无谓写盘
+    if projects.first().is_some_and(|p| p.path == path) {
+        return;
     }
+    projects.retain(|p| p.path != path);
+    projects.insert(0, ProjectEntry { path });
     projects.truncate(20);
     save_recent_projects(&projects);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{ProjectEntry, canonical_project_path, first_valid_project};
+
+    #[test]
+    fn recent_project_rejects_root_relative_and_missing_paths() {
+        assert!(canonical_project_path(Path::new("/")).is_none());
+        assert!(canonical_project_path(Path::new(".")).is_none());
+        assert!(canonical_project_path(Path::new("/definitely/missing/zcv-project")).is_none());
+    }
+
+    #[test]
+    fn recent_project_canonicalizes_parent_components() {
+        let current = std::env::current_dir()
+            .expect("应有当前目录")
+            .canonicalize()
+            .expect("当前目录应可规范化");
+        let with_parent = current
+            .join("..")
+            .join(current.file_name().expect("当前目录应有名称"));
+        assert_eq!(canonical_project_path(&with_parent), Some(current));
+    }
+
+    #[test]
+    fn first_valid_project_skips_stale_entries() {
+        let current = std::env::current_dir().expect("应有当前目录");
+        let entries = vec![
+            ProjectEntry {
+                path: "/definitely/missing/zcv-project".into(),
+            },
+            ProjectEntry {
+                path: current.to_string_lossy().to_string(),
+            },
+        ];
+        assert_eq!(first_valid_project(&entries), Some(current));
+    }
+
+    #[test]
+    fn first_valid_project_returns_none_when_all_stale() {
+        let entries = vec![
+            ProjectEntry {
+                path: "/definitely/missing/a".into(),
+            },
+            ProjectEntry {
+                path: "/definitely/missing/b".into(),
+            },
+        ];
+        assert_eq!(first_valid_project(&entries), None);
+    }
 }

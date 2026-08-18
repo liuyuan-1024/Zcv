@@ -985,16 +985,18 @@ impl WrapMap {
         }
     }
 
-    #[cfg(debug_assertions)]
     fn check_invariants(&self) {
-        let tab_rows = self.snapshot.tab_snapshot.line_count();
-        assert_eq!(self.snapshot.transforms.summary().input_lines, tab_rows);
-        for transform in self.snapshot.transforms.iter() {
-            match transform.kind {
-                TransformKind::Isomorphic => assert!(transform.input_lines > 0),
-                TransformKind::Wrap => {
-                    assert_eq!(transform.input_lines, 1);
-                    assert!(!transform.wrap_points.is_empty());
+        #[cfg(debug_assertions)]
+        {
+            let tab_rows = self.snapshot.tab_snapshot.line_count();
+            assert_eq!(self.snapshot.transforms.summary().input_lines, tab_rows);
+            for transform in self.snapshot.transforms.iter() {
+                match transform.kind {
+                    TransformKind::Isomorphic => assert!(transform.input_lines > 0),
+                    TransformKind::Wrap => {
+                        assert_eq!(transform.input_lines, 1);
+                        assert!(!transform.wrap_points.is_empty());
+                    }
                 }
             }
         }

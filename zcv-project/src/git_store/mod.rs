@@ -204,7 +204,8 @@ impl GitJob {
 }
 
 pub struct GitStore {
-    root: PathBuf,
+    /// 项目根目录；无 worktree 的空项目为 None，此时所有 job 与仓库查询为空操作。
+    root: Option<PathBuf>,
     repositories: Vec<Repository>,
     /// 活动仓库（按 working_directory 标识）：分支显示与 fetch/pull/push 等 git 操作的目标。
     /// 用 working_directory 而非索引：全量扫描重建 Vec，索引不稳定。
@@ -226,9 +227,9 @@ pub struct GitStore {
 }
 
 impl GitStore {
-    pub fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
+    pub fn new(root: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         // 仓库的 working_directory 来自 canonicalize，root 同样归一化，保证路径前缀匹配一致。
-        let root = canonicalize_path(&root);
+        let root = root.map(|root| canonicalize_path(&root));
         let background = cx.background_executor().clone();
         let (job_sender, job_receiver) = async_channel::unbounded::<GitJob>();
         // 单 worker 循环（照 fs_task 先例）：顺序处理 job，每个 job 在后台线程执行 git 命令，结果提交回 UI 线程。
@@ -434,7 +435,11 @@ impl GitStore {
         let paths: Vec<PathBuf> = paths
             .iter()
             .map(|path| canonicalize_path(path))
-            .filter(|path| path.starts_with(&self.root))
+            .filter(|path| {
+                self.root
+                    .as_deref()
+                    .is_some_and(|root| path.starts_with(root))
+            })
             .collect();
         if paths.is_empty() {
             return;
@@ -468,7 +473,11 @@ impl GitStore {
         let paths: Vec<PathBuf> = paths
             .iter()
             .map(|path| canonicalize_path(path))
-            .filter(|path| path.starts_with(&self.root))
+            .filter(|path| {
+                self.root
+                    .as_deref()
+                    .is_some_and(|root| path.starts_with(root))
+            })
             .collect();
         if paths.is_empty() {
             return;
@@ -673,8 +682,10 @@ impl GitStore {
     }
 
     /// UI 线程：取出 job 需要的共享数据（后台线程不能访问 Entity 状态）。
+    ///
+    /// 无项目根（空工作区）时任何 git job 都无操作对象，直接丢弃。
     fn prepare_job(&mut self, job: &GitJob) -> Option<JobPreparation> {
-        let root = self.root.clone();
+        let root = self.root.clone()?;
         match job {
             GitJob::ReloadGitState => Some(JobPreparation {
                 root,
@@ -1027,7 +1038,7 @@ mod tests {
         let (root, _temp) = test_git_repo();
         fs::write(root.join("tracked.txt"), "已修改\n").expect("应修改文件");
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1050,7 +1061,7 @@ mod tests {
         run_git(temp_dir.path(), &["init", "-q", "-b", "master"]);
 
         let git_store =
-            cx.update(|cx| cx.new(|cx| GitStore::new(temp_dir.path().to_path_buf(), cx)));
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(temp_dir.path().to_path_buf()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1063,7 +1074,7 @@ mod tests {
     #[gpui::test]
     fn incremental_refresh_updates_statuses(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1105,7 +1116,7 @@ mod tests {
         fs::write(root.join("tracked.txt"), "feature 内容\n").expect("应写入");
         run_git(&root, &["commit", "-q", "-am", "feature"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1127,7 +1138,7 @@ mod tests {
     #[gpui::test]
     fn load_committed_text_returns_head_content(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1149,7 +1160,7 @@ mod tests {
         fs::create_dir_all(root.join("docs")).expect("应创建目录");
         fs::create_dir_all(root.join("empty")).expect("应创建目录");
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1203,7 +1214,7 @@ mod tests {
         fs::write(root.join("node_modules/pkg/index.js"), "x\n").expect("应创建文件");
         fs::write(root.join(".gitignore"), "node_modules/\n").expect("应写入 .gitignore");
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1224,7 +1235,7 @@ mod tests {
         run_git(&root, &["add", "assets/logo.png"]);
         run_git(&root, &["commit", "-q", "-m", "add assets"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1272,7 +1283,7 @@ mod tests {
         );
         run_git(&root, &["push", "-q", "-u", "origin", "master"]);
 
-        let git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
+        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked(); // 首次扫描完成，repositories 就绪。
         let ready = cx.read_entity(&git_store, |store, _| !store.repositories.is_empty());
@@ -1314,7 +1325,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("应创建临时目录");
         let root = temp_dir.path().to_path_buf();
 
-        let git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
+        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
         let empty = cx.read_entity(&git_store, |store, _| !store.has_repositories());
@@ -1337,7 +1348,7 @@ mod tests {
         let (root, _temp) = test_git_repo();
         fs::write(root.join("tracked.txt"), "修改后的内容\n").expect("应修改文件");
 
-        let git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
+        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1403,7 +1414,7 @@ mod tests {
         fs::write(root.join("src/new.txt"), "新文件\n").expect("应写入文件");
         fs::write(root.join("src/sub/b.txt"), "改动的 b\n").expect("应写入文件");
 
-        let git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
+        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1445,7 +1456,7 @@ mod tests {
     #[gpui::test]
     fn request_hunks_fills_hunks_on_demand(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1487,7 +1498,7 @@ mod tests {
         run_git(&nested, &["add", "n.txt"]);
         run_git(&nested, &["commit", "-q", "-m", "nested initial"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1540,7 +1551,7 @@ mod tests {
         );
         run_git(&nested, &["push", "-q", "-u", "origin", "master"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1593,7 +1604,7 @@ mod tests {
         run_git(&nested, &["add", "n.txt"]);
         run_git(&nested, &["commit", "-q", "-m", "nested initial"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1630,7 +1641,7 @@ mod tests {
         );
         run_git(&root, &["push", "-q", "-u", "origin", "master"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1675,7 +1686,7 @@ mod tests {
     #[gpui::test]
     fn remote_operation_state_defaults_without_remote(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1686,7 +1697,7 @@ mod tests {
     #[gpui::test]
     fn request_hunks_skips_untracked_files(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1713,7 +1724,7 @@ mod tests {
         let (root, _temp) = test_git_repo();
         run_git(&root, &["checkout", "-q", "-b", "feature"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1734,7 +1745,7 @@ mod tests {
         let (root, _temp) = test_git_repo();
         run_git(&root, &["checkout", "-q", "-b", "feature"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1762,7 +1773,7 @@ mod tests {
     #[gpui::test]
     fn create_branch_creates_and_refreshes(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1789,7 +1800,7 @@ mod tests {
         let (root, _temp) = test_git_repo();
         run_git(&root, &["checkout", "-q", "-b", "feature"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(root.clone(), cx)));
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1816,7 +1827,7 @@ mod tests {
         // 非 git 目录：checkout/create 入口不 panic，仅触发扫描后返回。
         let temp_dir = tempfile::tempdir().expect("应创建临时目录");
         let git_store =
-            cx.update(|cx| cx.new(|cx| GitStore::new(temp_dir.path().to_path_buf(), cx)));
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(temp_dir.path().to_path_buf()), cx)));
         cx.update_entity(&git_store, |store, cx| {
             store.checkout_branch("master".into(), cx);
             store.create_branch("feature".into(), cx);

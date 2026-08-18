@@ -73,10 +73,36 @@ fn register_panel<P: Panel>(
     workspace.register_panel(handle, position, cx);
 }
 
+/// 「切换项目」回调：新窗口打开目标项目，成功后关闭当前窗口。
+fn switch_project_callback() -> OnProjectSelected {
+    Rc::new(move |path, window, app| {
+        if let Err(error) = open_project_window(PathBuf::from(&path), app) {
+            eprintln!("打开项目失败（{path}）：{error}");
+            return;
+        }
+        window.remove_window();
+    })
+}
+
 /// 打开一个项目窗口（主窗口与「切换项目」的新窗口入口共用）。
 pub(crate) fn open_project_window(root: PathBuf, cx: &mut App) -> anyhow::Result<()> {
+    // CLI 传入的路径可能是相对路径（如 `zcv .`）：canonicalize 归一化为绝对路径（失败即无效）。
+    let root = root
+        .canonicalize()
+        .ok()
+        .filter(|path| path.is_dir() && path.file_name().is_some())
+        .ok_or_else(|| anyhow::anyhow!("项目路径不是有效目录：{}", root.display()))?;
     add_to_recent(&root.to_string_lossy());
+    open_workspace_window(Some(root), cx)
+}
 
+/// 打开不绑定任何目录的空工作区。
+pub(crate) fn open_empty_workspace(cx: &mut App) -> anyhow::Result<()> {
+    open_workspace_window(None, cx)
+}
+
+/// 项目与空工作区共用同一条窗口创建路径；差异只在 Project 是否含 worktree。
+fn open_workspace_window(root: Option<PathBuf>, cx: &mut App) -> anyhow::Result<()> {
     let bounds = Bounds::centered(None, size(px(1200.0), px(900.0)), cx);
 
     cx.open_window(
@@ -94,11 +120,15 @@ pub(crate) fn open_project_window(root: PathBuf, cx: &mut App) -> anyhow::Result
             // 全局字号经 window rem 基准设置（对齐 Zed setup_ui_font）：
             // 字体与行高仍在元素上显式设置（见 Workspace 根元素与 tooltip）。
             window.set_rem_size(typography::ui());
-            let workspace = cx.new(|cx| Workspace::new(root.clone(), window, cx));
+            let workspace = match &root {
+                Some(root) => cx.new(|cx| Workspace::new(root.clone(), window, cx)),
+                None => cx.new(|cx| Workspace::new_empty(window, cx)),
+            };
+            // 装配不区分空/项目工作区（对齐 Zed）：面板无条件注册，空态由各面板自行渲染。
             workspace.update(cx, |workspace, cx| {
-                initialize_workspace(workspace, root, window, cx);
+                initialize_workspace(workspace, window, cx);
             });
-            // 焦点延后到首帧渲染完成后：track_focus 元素未挂载前 focus 会静默丢失，导致启动后 keymap dispatch 无焦点链，快捷键（如 cmd-shift-p 打开项目选择器）不生效，直到用户点击界面（焦点链建立）才恢复。
+            // 焦点延后到首帧渲染完成后：track_focus 元素未挂载前 focus 会静默丢失，导致启动后 keymap dispatch 无焦点链，快捷键不生效，直到用户点击界面（焦点链建立）才恢复。
             let focus = workspace.read(cx).focus.clone();
             window.defer(cx, move |window, _cx| {
                 window.focus(&focus);
@@ -109,26 +139,81 @@ pub(crate) fn open_project_window(root: PathBuf, cx: &mut App) -> anyhow::Result
     Ok(())
 }
 
+/// 所有工作区共享的面板、状态栏和编辑器工具栏。
+///
+/// 与 Zed 一致，这些 UI 不以 worktree 是否存在为条件；各状态项在没有活动编辑器时自行显示空态。
+fn initialize_common_workspace(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let outline = cx.new(OutlinePanel::new);
+    let terminal = cx.new(TerminalPanel::new);
+    let debug = cx.new(DebugPanel::new);
+    let keyboard_shortcuts = cx.new(KeyboardShortcutsPanel::new);
+
+    register_panel(workspace, outline, DockPosition::Left, cx);
+    register_panel(workspace, terminal, DockPosition::Bottom, cx);
+    register_panel(workspace, debug, DockPosition::Bottom, cx);
+    register_panel(workspace, keyboard_shortcuts, DockPosition::Right, cx);
+
+    let status_bar = workspace.status_bar().clone();
+    let left_dock = workspace.left_dock.clone();
+    let bottom_dock = workspace.bottom_dock.clone();
+    let right_dock = workspace.right_dock.clone();
+    status_bar.update(cx, |bar, cx| {
+        bar.add_left_item(cx.new(|cx| PanelButtons::new(left_dock.clone(), cx)), cx);
+        bar.add_left_item(cx.new(|_| LspButton::new()), cx);
+        bar.add_left_item(cx.new(|_| DiagnosticsButton::new()), cx);
+        bar.add_left_item(cx.new(|_| ProjectSearchButton::new()), cx);
+        bar.add_right_item(cx.new(|_| CursorPosition::new()), cx);
+        bar.add_right_item(cx.new(|_| ActiveBufferLanguage::new()), cx);
+        bar.add_right_item(cx.new(|cx| PanelButtons::new(bottom_dock.clone(), cx)), cx);
+        bar.add_right_item(cx.new(|cx| PanelButtons::new(right_dock.clone(), cx)), cx);
+    });
+
+    let pane = workspace.pane().clone();
+    pane.update(cx, |pane, cx| {
+        let toolbar = pane.toolbar().clone();
+        toolbar.update(cx, |toolbar, cx| {
+            toolbar.add_item(cx.new(|_| Breadcrumbs::new()), window, cx);
+            toolbar.add_item(cx.new(|_| FileToolbarControls::new()), window, cx);
+        });
+    });
+
+    for dock in [
+        workspace.left_dock.clone(),
+        workspace.right_dock.clone(),
+        workspace.bottom_dock.clone(),
+    ] {
+        dock.update(cx, |dock: &mut Dock, cx: &mut Context<Dock>| {
+            let focus = dock.focus.clone();
+            let sub = cx.on_focus(
+                &focus,
+                window,
+                |dock: &mut Dock, window: &mut Window, cx: &mut Context<Dock>| {
+                    if let Some(panel) = dock.visible_panel() {
+                        window.focus(&panel.focus_handle(cx));
+                    }
+                },
+            );
+            dock._subscriptions.push(sub);
+        });
+    }
+}
+
 /// 装配 Workspace：顶栏注入、面板/状态项注册、订阅接线。
 ///
 /// 必须在 `Workspace::update` 闭包内调用（workspace 为 &mut），内部不得再对同一实体嵌套 update。
+/// 所有工作区（含无 worktree 的空工作区）走同一条装配路径（对齐 Zed）。
 fn initialize_workspace(
     workspace: &mut Workspace,
-    root: PathBuf,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
     // ═══ 顶栏注入 ═══════════════════════════════════════════════════
 
     let weak_self: gpui::WeakEntity<Workspace> = cx.weak_entity();
-    let on_project_selected: OnProjectSelected = Rc::new(move |path, window, app| {
-        // 切换项目：新窗口打开目标项目，成功后关闭当前窗口。
-        if let Err(error) = open_project_window(PathBuf::from(path.clone()), app) {
-            eprintln!("打开项目失败（{path}）：{error}");
-            return;
-        }
-        window.remove_window();
-    });
     let weak_branch = weak_self.clone();
     let on_branch: OnBranchSelected = Rc::new(move |action, _window, app| {
         if let Some(ws) = weak_branch.upgrade() {
@@ -146,16 +231,18 @@ fn initialize_workspace(
         }
     });
 
-    let top_bar = cx.new(|cx| TopBar::new(on_project_selected, on_branch, window, cx));
-    top_bar.update(cx, |bar, cx| {
+    let top_bar = cx.new(|cx| TopBar::new(switch_project_callback(), on_branch, window, cx));
+    if let Some(root) = workspace.project().read(cx).root() {
         let label = root
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        bar.project_picker.update(cx, |picker, _| {
-            picker.set_current_label(label);
+        top_bar.update(cx, |bar, cx| {
+            bar.project_picker.update(cx, |picker, _| {
+                picker.set_current_label(label);
+            });
         });
-    });
+    }
     workspace.set_titlebar(top_bar.clone().into(), cx);
     // TopBar 组件不在主焦点链上：把选择器的命令 handler 注册到 Workspace 根节点（对齐 Zed register_action），全局可达。
     let project_picker = top_bar.read(cx).project_picker.clone();
@@ -177,7 +264,7 @@ fn initialize_workspace(
     let project = workspace.project().clone();
 
     let project_tree: Entity<ProjectTreePanel> = cx.new(|cx| {
-        let mut tree = ProjectTreePanel::new(root.clone(), project.clone(), cx);
+        let mut tree = ProjectTreePanel::new(project.clone(), cx);
         tree.set_on_open_file(on_open_file_callback(&weak_self));
         let weak_rename = weak_self.clone();
         let on_rename: OnRename = Rc::new(move |from, to, cx| {
@@ -207,79 +294,28 @@ fn initialize_workspace(
     });
 
     let version_control: Entity<VersionControlPanel> = cx.new(|cx| {
-        let mut panel = VersionControlPanel::new(root.clone(), project.clone(), cx);
+        let mut panel = VersionControlPanel::new(project.clone(), cx);
         panel.set_on_open_file(on_open_file_callback(&weak_self));
         panel
     });
 
-    let outline = cx.new(OutlinePanel::new);
-    let terminal = cx.new(TerminalPanel::new);
-    let debug = cx.new(DebugPanel::new);
-    let keyboard_shortcuts = cx.new(KeyboardShortcutsPanel::new);
-
     register_panel(workspace, project_tree.clone(), DockPosition::Left, cx);
     register_panel(workspace, version_control, DockPosition::Left, cx);
-    register_panel(workspace, outline, DockPosition::Left, cx);
-    register_panel(workspace, terminal, DockPosition::Bottom, cx);
-    register_panel(workspace, debug, DockPosition::Bottom, cx);
-    register_panel(workspace, keyboard_shortcuts, DockPosition::Right, cx);
+    initialize_common_workspace(workspace, window, cx);
 
     // ═══ 状态栏注册 ═══════════════════════════════════════════════
 
     let status_bar = workspace.status_bar().clone();
-    let left_dock = workspace.left_dock.clone();
-    let bottom_dock = workspace.bottom_dock.clone();
-    let right_dock = workspace.right_dock.clone();
     status_bar.update(cx, |bar, cx| {
-        bar.add_left_item(cx.new(|cx| PanelButtons::new(left_dock.clone(), cx)), cx);
-        bar.add_left_item(cx.new(|_| LspButton::new()), cx);
-        bar.add_left_item(cx.new(|_| DiagnosticsButton::new()), cx);
-        bar.add_left_item(cx.new(|_| ProjectSearchButton::new()), cx);
         bar.add_left_item(
             cx.new(|cx| ActivityIndicator::new(project.read(cx).git_store(), cx)),
             cx,
         );
-        bar.add_right_item(cx.new(|_| CursorPosition::new()), cx);
-        bar.add_right_item(cx.new(|_| ActiveBufferLanguage::new()), cx);
-        bar.add_right_item(cx.new(|cx| PanelButtons::new(bottom_dock.clone(), cx)), cx);
-        bar.add_right_item(cx.new(|cx| PanelButtons::new(right_dock.clone(), cx)), cx);
     });
-
-    // ═══ Toolbar 子项 ═════════════════════════════════════════════
-
-    let pane = workspace.pane().clone();
-    pane.update(cx, |pane, cx| {
-        let toolbar = pane.toolbar().clone();
-        toolbar.update(cx, |toolbar, cx| {
-            toolbar.add_item(cx.new(|_| Breadcrumbs::new()), window, cx);
-            toolbar.add_item(cx.new(|_| FileToolbarControls::new()), window, cx);
-        });
-    });
-
-    // ═══ Dock 焦点转发（面板获得焦点时把焦点转发给面板内容）══════
-
-    let docks = [
-        workspace.left_dock.clone(),
-        workspace.right_dock.clone(),
-        workspace.bottom_dock.clone(),
-    ];
-    for dock in &docks {
-        dock.update(cx, |dock: &mut Dock, cx: &mut Context<Dock>| {
-            let focus = dock.focus.clone();
-            let sub = cx.on_focus(
-                &focus,
-                window,
-                |d: &mut Dock, w: &mut Window, c: &mut Context<Dock>| {
-                    if let Some(panel) = d.visible_panel() {
-                        w.focus(&panel.focus_handle(c));
-                    }
-                },
-            );
-            dock._subscriptions.push(sub);
-        });
-    }
 
     // ═══ 订阅接线 ═════════════════════════════════════════════════
+
+    let pane = workspace.pane().clone();
 
     let git_store = project.read(cx).git_store();
     let git_subscription = cx.subscribe(&git_store, move |workspace, store, _event, cx| {
@@ -491,5 +527,32 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
             })
             .detach();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{AppContext, TestAppContext};
+
+    use super::{Workspace, initialize_workspace};
+
+    /// 空工作区与项目工作区走同一条装配路径：全部面板无条件注册，空态由面板自行渲染（对齐 Zed）。
+    #[gpui::test]
+    fn empty_workspace_installs_all_panels(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            zcv_settings::init(cx);
+            zcv_editor::init(cx);
+        });
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::new_empty(window, cx);
+            initialize_workspace(&mut workspace, window, cx);
+            workspace
+        });
+
+        cx.read_entity(&workspace, |workspace, cx| {
+            assert_eq!(workspace.left_dock.read(cx).panels.len(), 3);
+            assert_eq!(workspace.bottom_dock.read(cx).panels.len(), 2);
+            assert_eq!(workspace.right_dock.read(cx).panels.len(), 1);
+        });
     }
 }

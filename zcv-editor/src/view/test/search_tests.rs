@@ -389,15 +389,34 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
     });
 }
 
-/// 真实场景：带语法高亮的文件搜索 "zcv"，匹配行必须渲染背景（spans 与背景层共存）。
+/// 真实场景：带语法高亮的 Markdown 搜索 "zcv"，匹配行必须渲染背景（spans 与背景层共存）。
 #[gpui::test]
-fn real_file_with_syntax_highlights_backgrounds_matches(cx: &mut TestAppContext) {
-    let text = std::fs::read_to_string("/Users/liuyuan/project/liuyuan/Zcv/测试文件.md")
-        .expect("测试文件.md 应可读");
-    let buffer = zcv_engine::Buffer::scratch(text.clone(), Default::default()).unwrap();
+fn markdown_with_syntax_highlights_backgrounds_matches(cx: &mut TestAppContext) {
+    let text = r#"# zcv editor
+
+- **zcv** search
+- `zcv` highlighting
+- [zcv](https://example.com/zcv)
+
+## zcv rendering
+
+> zcv backgrounds coexist with *zcv syntax spans*.
+
+```text
+zcv active
+zcv inactive
+zcv final
+```
+"#;
+    let expected = text.matches("zcv").count();
+    let buffer = zcv_engine::Buffer::scratch(text.to_owned(), Default::default()).unwrap();
     let buffer = cx.new(|_| buffer);
     let language_buffer = cx.new(|cx| {
-        zcv_language::LanguageBuffer::new(buffer, Some(std::path::PathBuf::from("测试文件.md")), cx)
+        zcv_language::LanguageBuffer::new(
+            buffer,
+            Some(std::path::PathBuf::from("search_fixture.md")),
+            cx,
+        )
     });
     let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_buffer(language_buffer, cx));
 
@@ -410,10 +429,10 @@ fn real_file_with_syntax_highlights_backgrounds_matches(cx: &mut TestAppContext)
         let display = crate::display_map::DisplayMap::new(engine_snapshot.clone()).snapshot();
         let line_count = display.line_count();
         let search_highlights = editor.read(cx).search_highlights().unwrap();
-        let expected = search_highlights.0.len();
-        assert!(
-            expected >= 10,
-            "测试文件.md 应有大量 zcv 匹配，实际 {expected}"
+        assert_eq!(
+            search_highlights.0.len(),
+            expected,
+            "Markdown 夹具中的 zcv 应全部匹配"
         );
         let colors = zcv_theme::color::current(cx);
         let search_backgrounds: Vec<(Range<usize>, gpui::Rgba)> = search_highlights

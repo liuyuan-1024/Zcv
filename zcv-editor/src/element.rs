@@ -1586,7 +1586,7 @@ fn layout_visible_lines(
                     let line_styles = match source {
                         StreamLineSource::Buffer(_) => LineStyles {
                             spans: &visible_highlights,
-                            styles: &highlight_styles,
+                            styles: highlight_styles,
                             backgrounds: &search_backgrounds,
                             marked: presentation.marked_ranges(),
                         },

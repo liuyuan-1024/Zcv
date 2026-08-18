@@ -354,6 +354,80 @@ fn fetch_pull_push_work_against_remote() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn cancelling_push_terminates_git_and_hook_process_tree() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{Duration, Instant};
+
+    let (root, _remote, _temp) = test_repo_with_remote();
+    fs::write(root.join("cancel.txt"), "等待取消\n").expect("应写入待推送文件");
+    run_in(&root, &["git", "add", "cancel.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "测试取消推送"]);
+
+    let pid_path = root.join("hook-child.pid");
+    let hook_path = root.join(".git/hooks/pre-push");
+    fs::write(
+        &hook_path,
+        format!(
+            "#!/bin/sh\nsleep 30 &\nchild=$!\necho $child > '{}'\necho '正在等待测试钩子' >&2\nwait $child\n",
+            pid_path.display()
+        ),
+    )
+    .expect("应写入 pre-push 钩子");
+    let mut permissions = fs::metadata(&hook_path)
+        .expect("应读取钩子权限")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&hook_path, permissions).expect("应设置钩子可执行权限");
+
+    let cancellation = GitCancellation::new();
+    let cancel_from_thread = cancellation.clone();
+    let child_pid = Arc::new(AtomicU32::new(0));
+    let child_pid_from_thread = Arc::clone(&child_pid);
+    let pid_path_from_thread = pid_path.clone();
+    let cancel_thread = std::thread::spawn(move || {
+        for _ in 0..200 {
+            if let Ok(pid) = fs::read_to_string(&pid_path_from_thread)
+                && let Ok(pid) = pid.trim().parse::<u32>()
+            {
+                child_pid_from_thread.store(pid, Ordering::Release);
+                cancel_from_thread.cancel();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("pre-push 子进程未在时限内启动");
+    });
+
+    let started = Instant::now();
+    let result = open_repo(&root).push_cancellable(&cancellation);
+    cancel_thread.join().expect("取消线程不应异常");
+    assert!(result.is_err(), "取消后的 push 应返回错误");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "取消不应长时间阻塞"
+    );
+    assert!(
+        cancellation
+            .progress()
+            .is_some_and(|progress| progress.contains("正在等待测试钩子")),
+        "应保留 git 最近一行进度"
+    );
+
+    let pid = child_pid.load(Ordering::Acquire);
+    for _ in 0..100 {
+        let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
+        if !alive {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("取消 push 后钩子子进程仍然存活");
+}
+
 #[test]
 fn has_remote_reports_true_and_false() {
     let (root, _temp) = test_repo();

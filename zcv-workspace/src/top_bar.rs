@@ -3,7 +3,7 @@
 use gpui::{AnyElement, Div, Entity, Window, div, prelude::*};
 use zcv_actions::{GitFetch, GitPull, GitPush, OpenSettings};
 use zcv_git::Branch;
-use zcv_project::RemoteOperationState;
+use zcv_project::{GitJobPhase, GitOperationKind, RemoteOperationState};
 use zcv_theme::{color, space};
 use zcv_ui::Glyph;
 
@@ -124,12 +124,15 @@ fn leading_slots(
     if has_repositories {
         // Git 分支：glyph 由分支选择器自含（点击弹出分支列表）。
         out.push(branch_picker.clone().into_any_element());
-        // 无 remote 时 fetch/pull/push 都会报错，不给出入口；有 remote 时同步常显
-        // （主动检查更新的兜底），推送/拉取仅在可推/可拉时出现（icon_text 复用为计数徽标）。
+        // 无 remote 时 fetch/pull/push 都会报错，不给出入口；
+        // 有 remote 时同步常显（主动检查更新的兜底），推送/拉取仅在可推/可拉时出现。
         if state.has_remote {
+            let busy = state.operation.is_some();
+            let operation_label = remote_operation_label(state);
             out.push(
                 Glyph::icon("top-bar.git-fetch", "icons/arrow_circle.svg")
-                    .label("同步")
+                    .label(operation_label.unwrap_or("同步"))
+                    .disabled(busy)
                     .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(GitFetch), cx);
                     })
@@ -142,7 +145,8 @@ fn leading_slots(
                         "icons/arrow_down.svg",
                         state.behind.to_string(),
                     )
-                    .label("拉取")
+                    .label(operation_label.unwrap_or("拉取"))
+                    .disabled(busy)
                     .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(GitPull), cx);
                     })
@@ -156,7 +160,8 @@ fn leading_slots(
                         "icons/arrow_up.svg",
                         state.ahead.to_string(),
                     )
-                    .label("推送")
+                    .label(operation_label.unwrap_or("推送"))
+                    .disabled(busy)
                     .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(GitPush), cx);
                     })
@@ -167,6 +172,24 @@ fn leading_slots(
     }
 
     out
+}
+
+fn remote_operation_label(state: RemoteOperationState) -> Option<&'static str> {
+    let operation = state.operation?;
+    Some(match state.phase.unwrap_or(GitJobPhase::Queued) {
+        GitJobPhase::Queued => match operation {
+            GitOperationKind::Fetch => "等待同步…",
+            GitOperationKind::Pull => "等待拉取…",
+            GitOperationKind::Push => "等待推送…",
+        },
+        GitJobPhase::Running => match operation {
+            GitOperationKind::Fetch => "正在同步…",
+            GitOperationKind::Pull => "正在拉取…",
+            GitOperationKind::Push => "正在推送…",
+        },
+        GitJobPhase::Cancelling => "正在取消远程操作…",
+        GitJobPhase::Reconciling => "正在确认远端状态…",
+    })
 }
 
 fn trailing_slots(cx: &gpui::App) -> Vec<AnyElement> {

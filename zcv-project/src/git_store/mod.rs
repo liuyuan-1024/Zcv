@@ -11,14 +11,14 @@
 
 mod background;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use background::{JobResult, execute_job, merge_refresh, repo_relative_path};
 use gpui::{AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
 use zcv_buffer_diff::DiffHunk;
-use zcv_git::{Branch, DiffStat, FileStatus, GitRepository};
+use zcv_git::{Branch, DiffStat, FileStatus, GitCancellation, GitRepository};
 
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
 const MAX_INCREMENTAL_PATHS: usize = 500;
@@ -40,6 +40,43 @@ pub enum GitStoreEvent {
     ActiveRepositoryChanged,
     /// 后台 job 集合变化（开始/完成/取消）；订阅方重读 `current_job()`（对齐 Zed 的 JobsUpdated）。
     JobsUpdated,
+}
+
+pub type GitJobId = u64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GitJobPhase {
+    Queued,
+    Running,
+    Cancelling,
+    Reconciling,
+}
+
+#[derive(Clone)]
+pub struct GitJobStatus {
+    pub id: GitJobId,
+    pub name: Arc<str>,
+    pub operation: Option<GitOperationKind>,
+    pub phase: GitJobPhase,
+    pub cancellable: bool,
+    progress_source: Option<GitCancellation>,
+}
+
+impl GitJobStatus {
+    pub fn progress(&self) -> Option<String> {
+        self.progress_source
+            .as_ref()
+            .and_then(GitCancellation::progress)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GitOperationOutcome {
+    Completed,
+    Cancelled,
+    CompletedBeforeCancellation,
+    CancellationUnconfirmed(String),
+    Failed(String),
 }
 
 /// 单个文件在某个仓库中的状态快照。
@@ -64,6 +101,9 @@ pub struct RemoteOperationState {
     pub ahead: usize,
     /// 本地落后 upstream 的提交数（可拉取数）。
     pub behind: usize,
+    /// 当前远程操作及其阶段；存在时同步、拉取、推送入口全部禁用。
+    pub operation: Option<GitOperationKind>,
+    pub phase: Option<GitJobPhase>,
 }
 
 /// 单个仓库的状态快照。
@@ -134,7 +174,7 @@ pub(super) enum GitJob {
     GitOperation {
         operation: GitOperationKind,
         /// 操作结果回传通道（发起方 await 后弹提示）；内部调度时为 None。
-        on_done: Option<async_channel::Sender<Result<(), String>>>,
+        on_done: Option<async_channel::Sender<GitOperationOutcome>>,
     },
     GitInit,
     StageFiles {
@@ -151,6 +191,22 @@ pub(super) enum GitJob {
     CreateBranch {
         name: String,
     },
+}
+
+#[derive(Clone)]
+struct ScheduledGitJob {
+    id: GitJobId,
+    job: GitJob,
+    cancellation: Option<GitCancellation>,
+}
+
+struct GitJobRecord {
+    id: GitJobId,
+    key: GitJobKey,
+    name: Arc<str>,
+    operation: Option<GitOperationKind>,
+    phase: GitJobPhase,
+    cancellation: Option<GitCancellation>,
 }
 
 impl GitJob {
@@ -215,12 +271,11 @@ pub struct GitStore {
     /// uncommit 成功后暂存的被撤销消息（Head 事件后由面板读取填回提交信息编辑器）。
     pending_uncommitted_message: Option<String>,
     background: BackgroundExecutor,
-    job_sender: async_channel::Sender<GitJob>,
-    pending_jobs: HashMap<GitJobKey, ()>,
-    /// 在途 job（key + 展示名）：key 供右键取消定位，显示名供状态栏展示；无任务时 None。
-    in_flight: Option<(GitJobKey, Arc<str>)>,
-    /// 被取消的 job 键：worker 执行前/后消费，命中即丢弃（排队中不执行、执行中不落地结果）。
-    cancelled_jobs: HashSet<GitJobKey>,
+    job_sender: async_channel::Sender<ScheduledGitJob>,
+    next_job_id: GitJobId,
+    pending_jobs: HashMap<GitJobKey, GitJobId>,
+    jobs: HashMap<GitJobId, GitJobRecord>,
+    in_flight: Option<GitJobId>,
     paths_needing_status_update: BTreeSet<PathBuf>,
     paths_needing_hunks: BTreeSet<PathBuf>,
     _job_task: Task<()>,
@@ -231,21 +286,30 @@ impl GitStore {
         // 仓库的 working_directory 来自 canonicalize，root 同样归一化，保证路径前缀匹配一致。
         let root = root.map(|root| canonicalize_path(&root));
         let background = cx.background_executor().clone();
-        let (job_sender, job_receiver) = async_channel::unbounded::<GitJob>();
+        let (job_sender, job_receiver) = async_channel::unbounded::<ScheduledGitJob>();
         // 单 worker 循环（照 fs_task 先例）：顺序处理 job，每个 job 在后台线程执行 git 命令，结果提交回 UI 线程。
         let job_task = cx.spawn(|this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
             let mut cx = asynccx.clone();
             async move {
-                while let Ok(job) = job_receiver.recv().await {
+                while let Ok(scheduled) = job_receiver.recv().await {
                     let Some(this) = this.upgrade() else {
                         break;
                     };
-                    // 排队期间被取消（右键取消）：直接丢弃，不执行。
-                    let cancelled = this
-                        .update(&mut cx, |store, _| store.take_cancelled_job(&job))
-                        .ok()
-                        .unwrap_or(true);
-                    if cancelled {
+                    let job = scheduled.job.clone();
+                    // 排队期间取消：不启动进程，直接完成这个具体任务编号。
+                    if scheduled
+                        .cancellation
+                        .as_ref()
+                        .is_some_and(GitCancellation::is_cancelled)
+                    {
+                        if let GitJob::GitOperation {
+                            on_done: Some(tx), ..
+                        } = &job
+                        {
+                            let _ = tx.send(GitOperationOutcome::Cancelled).await;
+                        }
+                        let _ =
+                            this.update(&mut cx, |store, cx| store.finish_job(scheduled.id, cx));
                         continue;
                     }
                     let Some(prepared) = this
@@ -253,10 +317,13 @@ impl GitStore {
                         .ok()
                         .flatten()
                     else {
+                        let _ =
+                            this.update(&mut cx, |store, cx| store.finish_job(scheduled.id, cx));
                         continue;
                     };
                     // 标记在途任务（状态栏开始显示）。
-                    let _ = this.update(&mut cx, |store, cx| store.set_in_flight(&job, cx));
+                    let _ = this.update(&mut cx, |store, cx| store.set_in_flight(scheduled.id, cx));
+                    let repositories_for_reconciliation = prepared.repositories.clone();
                     let result = cx
                         .background_executor()
                         .spawn(execute_job(
@@ -264,33 +331,58 @@ impl GitStore {
                             job.clone(),
                             prepared.repositories,
                             prepared.grouped_paths,
+                            scheduled.cancellation.clone(),
                         ))
                         .await;
-                    // 执行期间被取消：丢弃结果，不落地。
-                    let discarded = this
-                        .update(&mut cx, |store, _| store.take_cancelled_job(&job))
-                        .ok()
-                        .unwrap_or(true);
-                    let _ = this.update(&mut cx, |store, cx| store.clear_in_flight(cx));
-                    if discarded {
-                        // 通道随 job 丢弃而关闭，发起方以"任务已取消"结束等待。
-                        continue;
+
+                    let cancelled = scheduled
+                        .cancellation
+                        .as_ref()
+                        .is_some_and(GitCancellation::is_cancelled);
+                    let mut cancelled_outcome = None;
+                    if cancelled && let GitJob::GitOperation { operation, .. } = &job {
+                        let _ = this.update(&mut cx, |store, cx| {
+                            store.set_job_phase(scheduled.id, GitJobPhase::Reconciling, cx)
+                        });
+                        let repository = repositories_for_reconciliation.first().cloned();
+                        let operation = *operation;
+                        cancelled_outcome = Some(
+                            cx.background_executor()
+                                .spawn(async move {
+                                    background::reconcile_cancelled_operation(operation, repository)
+                                })
+                                .await,
+                        );
                     }
+                    let _ =
+                        this.update(&mut cx, |store, cx| store.clear_in_flight(scheduled.id, cx));
                     // 操作结果回传发起方（Workspace await 后直接弹提示）。
                     if let GitJob::GitOperation {
                         on_done: Some(tx), ..
                     } = &job
                     {
-                        let outcome = match &result {
-                            JobResult::GitOperation(op_result) => op_result
-                                .as_ref()
-                                .map(|_| ())
-                                .map_err(|error| format!("{error:#}")),
-                            _ => Ok(()),
+                        let outcome = if let Some(outcome) = cancelled_outcome {
+                            outcome
+                        } else {
+                            match &result {
+                                JobResult::GitOperation(op_result) => match op_result {
+                                    Ok(()) => GitOperationOutcome::Completed,
+                                    Err(error) => GitOperationOutcome::Failed(format!("{error:#}")),
+                                },
+                                _ => GitOperationOutcome::Completed,
+                            }
                         };
                         let _ = tx.send(outcome).await;
                     }
-                    let _ = this.update(&mut cx, |store, cx| store.commit_job(&job, result, cx));
+                    let _ = this.update(&mut cx, |store, cx| {
+                        // 不合并已取消命令的部分结果，后续确认与全量扫描才是状态真值来源。
+                        if cancelled {
+                            store.schedule_scan(cx);
+                        } else {
+                            store.commit_job(&job, result, cx);
+                        }
+                        store.finish_job(scheduled.id, cx);
+                    });
                 }
             }
         });
@@ -303,9 +395,10 @@ impl GitStore {
             pending_uncommitted_message: None,
             background,
             job_sender,
+            next_job_id: 1,
             pending_jobs: HashMap::new(),
+            jobs: HashMap::new(),
             in_flight: None,
-            cancelled_jobs: HashSet::new(),
             paths_needing_status_update: BTreeSet::new(),
             paths_needing_hunks: BTreeSet::new(),
             _job_task: job_task,
@@ -313,9 +406,9 @@ impl GitStore {
     }
 
     /// 全量扫描：重新发现仓库并重扫所有状态（初始扫描与结构性变化时调用）。
-    pub fn schedule_scan(&mut self, _cx: &mut Context<Self>) {
+    pub fn schedule_scan(&mut self, cx: &mut Context<Self>) {
         self.paths_needing_status_update.clear();
-        self.schedule_job(GitJob::ReloadGitState);
+        self.schedule_job(GitJob::ReloadGitState, cx);
     }
 
     /// 后台执行用户触发的 git 操作（fetch/pull/push），完成后重新扫描。
@@ -326,7 +419,7 @@ impl GitStore {
         &mut self,
         operation: GitOperationKind,
         cx: &mut Context<Self>,
-    ) -> Task<anyhow::Result<()>> {
+    ) -> Task<anyhow::Result<GitOperationOutcome>> {
         if self.repositories.is_empty() {
             log::warn!(
                 "git 仓库尚未就绪，跳过 {:?}（等待首次扫描完成后重试）",
@@ -335,44 +428,45 @@ impl GitStore {
             self.schedule_scan(cx);
             return Task::ready(Err(anyhow::anyhow!("git 仓库尚未就绪")));
         }
-        // 同 key 操作已在排队/执行中：不重复入队，立即告知发起方。
-        if self
-            .pending_jobs
-            .contains_key(&GitJobKey::GitOperation(operation))
-        {
-            return Task::ready(Err(anyhow::anyhow!("该操作已在进行中")));
+        // 所有远程操作共享一个闸门，避免凭据弹窗、ref 更新与重试互相竞争。
+        if self.jobs.values().any(|job| job.operation.is_some()) {
+            return Task::ready(Err(anyhow::anyhow!("已有远程操作正在进行")));
         }
-        let (result_tx, result_rx) = async_channel::unbounded::<Result<(), String>>();
-        self.schedule_job(GitJob::GitOperation {
-            operation,
-            on_done: Some(result_tx),
-        });
+        let (result_tx, result_rx) = async_channel::unbounded::<GitOperationOutcome>();
+        self.schedule_job(
+            GitJob::GitOperation {
+                operation,
+                on_done: Some(result_tx),
+            },
+            cx,
+        );
         cx.spawn(|_this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
-            // 通道被关闭（任务被取消/丢弃）等价于取消。
             result_rx
                 .recv()
                 .await
-                .map_err(|_| anyhow::anyhow!("任务已取消"))?
-                .map_err(anyhow::Error::msg)
+                .map_err(|_| anyhow::anyhow!("远程操作结果通道已关闭"))
         })
     }
 
     /// 在项目根初始化 git 仓库（空态面板按钮触发），完成后重新扫描以发现新仓库。
-    pub fn git_init(&mut self, _cx: &mut Context<Self>) {
-        self.schedule_job(GitJob::GitInit);
+    pub fn git_init(&mut self, cx: &mut Context<Self>) {
+        self.schedule_job(GitJob::GitInit, cx);
     }
 
     /// 暂存路径（面板复选框勾选触发；`git update-index`），完成后自动重新扫描。
-    pub fn stage_paths(&mut self, paths: Vec<PathBuf>, _cx: &mut Context<Self>) {
-        self.schedule_job(GitJob::StageFiles { stage: true, paths });
+    pub fn stage_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.schedule_job(GitJob::StageFiles { stage: true, paths }, cx);
     }
 
     /// 取消暂存路径（面板复选框取消勾选触发；`git reset`），完成后自动重新扫描。
-    pub fn unstage_paths(&mut self, paths: Vec<PathBuf>, _cx: &mut Context<Self>) {
-        self.schedule_job(GitJob::StageFiles {
-            stage: false,
-            paths,
-        });
+    pub fn unstage_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.schedule_job(
+            GitJob::StageFiles {
+                stage: false,
+                paths,
+            },
+            cx,
+        );
     }
 
     /// 提交暂存内容（消息来自面板提交信息编辑器）；无已暂存改动时自动暂存全部已跟踪改动。
@@ -384,7 +478,7 @@ impl GitStore {
             self.schedule_scan(cx);
             return;
         }
-        self.schedule_job(GitJob::Commit { message });
+        self.schedule_job(GitJob::Commit { message }, cx);
     }
 
     /// 撤销最近一次提交（`git reset --soft HEAD^`），被撤销消息填回提交信息编辑器。
@@ -394,7 +488,7 @@ impl GitStore {
             self.schedule_scan(cx);
             return;
         }
-        self.schedule_job(GitJob::Uncommit);
+        self.schedule_job(GitJob::Uncommit, cx);
     }
 
     /// 切换活动仓库到指定本地分支（分支选择器确认触发），完成后自动重扫。
@@ -404,7 +498,7 @@ impl GitStore {
             self.schedule_scan(cx);
             return;
         }
-        self.schedule_job(GitJob::CheckoutBranch { name });
+        self.schedule_job(GitJob::CheckoutBranch { name }, cx);
     }
 
     /// 以当前 HEAD 为基创建并切换分支（选择器"创建分支"行触发），完成后自动重扫。
@@ -414,7 +508,7 @@ impl GitStore {
             self.schedule_scan(cx);
             return;
         }
-        self.schedule_job(GitJob::CreateBranch { name });
+        self.schedule_job(GitJob::CreateBranch { name }, cx);
     }
 
     /// 枚举所有仓库（working_directory → 快照），顺序 = 发现顺序（祖先前置）。
@@ -449,7 +543,7 @@ impl GitStore {
         if self.paths_needing_status_update.len() >= MAX_INCREMENTAL_PATHS {
             self.schedule_scan(cx);
         } else {
-            self.schedule_job(GitJob::RefreshStatuses);
+            self.schedule_job(GitJob::RefreshStatuses, cx);
         }
     }
 
@@ -469,7 +563,7 @@ impl GitStore {
     /// 按需请求指定路径的 hunks（打开文件、或 Statuses 事件后补齐时调用）。
     ///
     /// prepare 阶段过滤：只对「已跟踪且尚未查询」的路径发起 diff，untracked/忽略/已查询路径直接丢弃（untracked 永不查询 → 永不画 marker，对齐 Zed）。
-    pub fn request_hunks(&mut self, paths: &[PathBuf], _cx: &mut Context<Self>) {
+    pub fn request_hunks(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         let paths: Vec<PathBuf> = paths
             .iter()
             .map(|path| canonicalize_path(path))
@@ -483,7 +577,7 @@ impl GitStore {
             return;
         }
         self.paths_needing_hunks.extend(paths);
-        self.schedule_job(GitJob::RefreshHunks);
+        self.schedule_job(GitJob::RefreshHunks, cx);
     }
 
     /// 查询目录的聚合状态（对齐 Zed `git_traversal` 的目录摘要）。
@@ -573,15 +667,31 @@ impl GitStore {
 
     /// 活动仓库的远程操作状态（可推送/可拉取判定依据）。
     pub fn remote_operation_state(&self) -> RemoteOperationState {
-        self.active_repo_workdir
+        let active_operation = self
+            .jobs
+            .values()
+            .filter_map(|job| {
+                job.operation
+                    .map(|operation| (job.id, operation, job.phase))
+            })
+            .min_by_key(|(id, _, _)| *id);
+        let mut state = self
+            .active_repo_workdir
             .as_ref()
             .and_then(|workdir| self.repo_by_workdir(workdir))
             .map(|repository| RemoteOperationState {
                 has_remote: repository.snapshot.has_remote,
                 ahead: repository.snapshot.ahead,
                 behind: repository.snapshot.behind,
+                operation: None,
+                phase: None,
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Some((_, operation, phase)) = active_operation {
+            state.operation = Some(operation);
+            state.phase = Some(phase);
+        }
+        state
     }
 
     /// 按路径更新活动仓库（最长前缀匹配；焦点文件切换时由 Workspace 调用）。
@@ -637,48 +747,134 @@ impl GitStore {
             .insert(canonicalize_path(path), text);
     }
 
-    fn schedule_job(&mut self, job: GitJob) {
+    fn schedule_job(&mut self, job: GitJob, cx: &mut Context<Self>) -> Option<GitJobId> {
         // 同 key 的 job 已在队列/执行中时，丢弃新 job（路径已累积在paths_needing_status_update，由正在执行的 job 统一消费）。
         let key = job.key();
         if self.pending_jobs.contains_key(&key) {
-            return;
+            return None;
         }
-        // 新任务的发起意愿优先于历史取消标记（取消只作用于当时在途/排队的任务）。
-        self.cancelled_jobs.remove(&key);
-        self.pending_jobs.insert(key, ());
-        let _ = self.job_sender.try_send(job);
+        let id = self.next_job_id;
+        self.next_job_id = self.next_job_id.wrapping_add(1).max(1);
+        let operation = match &job {
+            GitJob::GitOperation { operation, .. } => Some(*operation),
+            _ => None,
+        };
+        let cancellation = operation.map(|_| GitCancellation::new());
+        let name = job.task_name();
+        self.pending_jobs.insert(key.clone(), id);
+        self.jobs.insert(
+            id,
+            GitJobRecord {
+                id,
+                key: key.clone(),
+                name,
+                operation,
+                phase: GitJobPhase::Queued,
+                cancellation: cancellation.clone(),
+            },
+        );
+        if self
+            .job_sender
+            .try_send(ScheduledGitJob {
+                id,
+                job,
+                cancellation,
+            })
+            .is_err()
+        {
+            self.finish_job(id, cx);
+            return None;
+        }
+        cx.emit(GitStoreEvent::JobsUpdated);
+        Some(id)
     }
 
-    /// 当前在途 job 展示名（状态栏指示器）；无任务时 None。
-    pub fn current_job(&self) -> Option<Arc<str>> {
-        self.in_flight.as_ref().map(|(_, name)| name.clone())
+    /// 当前可见任务。远程操作（含排队、取消、确认阶段）优先，确保用户点击后立即获得反馈。
+    pub fn current_job(&self) -> Option<GitJobStatus> {
+        let record = self
+            .jobs
+            .values()
+            .filter(|job| job.operation.is_some())
+            .min_by_key(|job| job.id)
+            .or_else(|| self.in_flight.and_then(|id| self.jobs.get(&id)))?;
+        Some(GitJobStatus {
+            id: record.id,
+            name: record.name.clone(),
+            operation: record.operation,
+            phase: record.phase,
+            cancellable: record.operation.is_some()
+                && matches!(record.phase, GitJobPhase::Queued | GitJobPhase::Running),
+            progress_source: record.cancellation.clone(),
+        })
     }
 
-    /// 取消当前在途 job（状态栏右键触发）：排队中同 key 任务不再执行，执行中的任务结果被丢弃。
+    /// 取消当前远程任务。状态保持为取消中，直到进程退出并完成远端确认。
     pub fn cancel_current_job(&mut self, cx: &mut Context<Self>) {
-        let Some((key, _)) = self.in_flight.take() else {
+        let Some(id) = self
+            .jobs
+            .values()
+            .filter(|job| {
+                job.operation.is_some()
+                    && matches!(job.phase, GitJobPhase::Queued | GitJobPhase::Running)
+            })
+            .map(|job| job.id)
+            .min()
+        else {
             return;
         };
-        self.cancelled_jobs.insert(key.clone());
-        self.pending_jobs.remove(&key);
+        let Some(record) = self.jobs.get_mut(&id) else {
+            return;
+        };
+        record.phase = GitJobPhase::Cancelling;
+        if let Some(cancellation) = &record.cancellation {
+            cancellation.cancel();
+        }
         cx.emit(GitStoreEvent::JobsUpdated);
     }
 
     /// worker 开始执行 job 前标记在途任务（状态栏显示入口）。
-    fn set_in_flight(&mut self, job: &GitJob, cx: &mut Context<Self>) {
-        self.in_flight = Some((job.key(), job.task_name()));
+    fn set_in_flight(&mut self, id: GitJobId, cx: &mut Context<Self>) {
+        self.in_flight = Some(id);
+        if let Some(record) = self.jobs.get_mut(&id) {
+            record.phase = if record
+                .cancellation
+                .as_ref()
+                .is_some_and(GitCancellation::is_cancelled)
+            {
+                GitJobPhase::Cancelling
+            } else {
+                GitJobPhase::Running
+            };
+        }
         cx.emit(GitStoreEvent::JobsUpdated);
     }
 
-    /// worker 结束一个 job 后清空在途标记（无论结果是否被取消丢弃）。
-    fn clear_in_flight(&mut self, cx: &mut Context<Self>) {
-        self.in_flight = None;
+    fn set_job_phase(&mut self, id: GitJobId, phase: GitJobPhase, cx: &mut Context<Self>) {
+        if let Some(record) = self.jobs.get_mut(&id) {
+            record.phase = phase;
+            cx.emit(GitStoreEvent::JobsUpdated);
+        }
+    }
+
+    /// 后台执行器结束任务后清空在途标记；旧任务编号不能清掉后来任务的状态。
+    fn clear_in_flight(&mut self, id: GitJobId, cx: &mut Context<Self>) {
+        if self.in_flight == Some(id) {
+            self.in_flight = None;
+        }
         cx.emit(GitStoreEvent::JobsUpdated);
     }
 
-    /// 消费取消标记：命中说明该 job 已被取消（排队中或执行中被取消），返回 true。
-    fn take_cancelled_job(&mut self, job: &GitJob) -> bool {
-        self.cancelled_jobs.remove(&job.key())
+    fn finish_job(&mut self, id: GitJobId, cx: &mut Context<Self>) {
+        let Some(record) = self.jobs.remove(&id) else {
+            return;
+        };
+        if self.pending_jobs.get(&record.key) == Some(&id) {
+            self.pending_jobs.remove(&record.key);
+        }
+        if self.in_flight == Some(id) {
+            self.in_flight = None;
+        }
+        cx.emit(GitStoreEvent::JobsUpdated);
     }
 
     /// UI 线程：取出 job 需要的共享数据（后台线程不能访问 Entity 状态）。
@@ -908,7 +1104,7 @@ impl GitStore {
                 }
                 if statuses_changed {
                     self.paths_needing_hunks.extend(hunks_paths);
-                    self.schedule_job(GitJob::RefreshHunks);
+                    self.schedule_job(GitJob::RefreshHunks, cx);
                     cx.emit(GitStoreEvent::Statuses);
                 }
             }
@@ -976,7 +1172,6 @@ impl GitStore {
             },
             _ => {}
         }
-        self.pending_jobs.remove(&job.key());
     }
 
     /// 最长前缀匹配仓库（调用方保证路径已 canonicalize）。
@@ -1321,6 +1516,183 @@ mod tests {
     }
 
     #[gpui::test]
+    fn cancelling_queued_remote_operation_keeps_gate_closed_until_finished(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (root, _temp) = test_git_repo();
+        let git_store = cx.new(|cx| GitStore::new(Some(root), cx));
+        git_store.update(cx, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        git_store.update(cx, |store, cx| {
+            drop(store.run_operation(GitOperationKind::Push, cx));
+            let status = store.current_job().expect("推送应立即进入排队状态");
+            assert_eq!(status.phase, GitJobPhase::Queued);
+            assert_eq!(status.operation, Some(GitOperationKind::Push));
+
+            store.cancel_current_job(cx);
+            assert_eq!(
+                store.current_job().map(|status| status.phase),
+                Some(GitJobPhase::Cancelling)
+            );
+            let next_job_id = store.next_job_id;
+            drop(store.run_operation(GitOperationKind::Fetch, cx));
+            assert_eq!(
+                store.next_job_id, next_job_id,
+                "取消完成前不得启动新远程操作"
+            );
+            assert_eq!(
+                store
+                    .jobs
+                    .values()
+                    .filter(|job| job.operation.is_some())
+                    .count(),
+                1,
+                "取消期间只能保留原任务实例"
+            );
+        });
+
+        cx.run_until_parked();
+        assert!(
+            cx.read_entity(&git_store, |store, _| store
+                .jobs
+                .values()
+                .all(|job| job.operation.is_none())),
+            "排队任务被 worker 确认取消后应释放远程操作闸门"
+        );
+    }
+
+    #[gpui::test]
+    fn stale_job_completion_does_not_remove_newer_same_key(cx: &mut gpui::TestAppContext) {
+        let git_store = cx.new(|cx| GitStore::new(None, cx));
+        git_store.update(cx, |store, cx| {
+            let key = GitJobKey::GitOperation(GitOperationKind::Push);
+            let old_id = store
+                .schedule_job(
+                    GitJob::GitOperation {
+                        operation: GitOperationKind::Push,
+                        on_done: None,
+                    },
+                    cx,
+                )
+                .expect("旧任务应成功排队");
+            let new_id = old_id + 1;
+            store.jobs.insert(
+                new_id,
+                GitJobRecord {
+                    id: new_id,
+                    key: key.clone(),
+                    name: "新推送".into(),
+                    operation: Some(GitOperationKind::Push),
+                    phase: GitJobPhase::Queued,
+                    cancellation: Some(GitCancellation::new()),
+                },
+            );
+            store.pending_jobs.insert(key.clone(), new_id);
+
+            store.finish_job(old_id, cx);
+            assert_eq!(store.pending_jobs.get(&key), Some(&new_id));
+            assert!(store.jobs.contains_key(&new_id));
+        });
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn cancelling_running_push_allows_clean_retry_after_process_exit(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::time::{Duration, Instant};
+
+        let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+        let remote = temp_dir.path().join("remote.git");
+        run_git(
+            temp_dir.path(),
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        let root = temp_dir.path().join("work");
+        fs::create_dir(&root).expect("应创建工作仓库目录");
+        run_git(&root, &["init", "-q", "-b", "master"]);
+        run_git(&root, &["config", "user.email", "test@example.com"]);
+        run_git(&root, &["config", "user.name", "Test User"]);
+        fs::write(root.join("tracked.txt"), "初始内容\n").expect("应写入初始文件");
+        run_git(&root, &["add", "tracked.txt"]);
+        run_git(&root, &["commit", "-q", "-m", "initial"]);
+        run_git(
+            &root,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        run_git(&root, &["push", "-q", "-u", "origin", "master"]);
+        fs::write(root.join("new.txt"), "待推送内容\n").expect("应写入新文件");
+        run_git(&root, &["add", "new.txt"]);
+        run_git(&root, &["commit", "-q", "-m", "待取消推送"]);
+
+        let hook_path = root.join(".git/hooks/pre-push");
+        fs::write(
+            &hook_path,
+            "#!/bin/sh\necho '测试推送等待中' >&2\nsleep 30\n",
+        )
+        .expect("应写入 pre-push 钩子");
+        let mut permissions = fs::metadata(&hook_path)
+            .expect("应读取钩子权限")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&hook_path, permissions).expect("应设置钩子可执行权限");
+
+        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), cx));
+        git_store.update(cx, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        let started = Instant::now();
+        let cancellation = git_store.update(cx, |store, cx| {
+            drop(store.run_operation(GitOperationKind::Push, cx));
+            store
+                .jobs
+                .values()
+                .find_map(|job| job.cancellation.clone())
+                .expect("推送任务应持有取消句柄")
+        });
+        let cancel_thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            cancellation.cancel();
+        });
+        cx.run_until_parked();
+        cancel_thread.join().expect("取消线程不应异常");
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "运行中取消应及时结束"
+        );
+        assert!(
+            cx.read_entity(&git_store, |store, _| store
+                .jobs
+                .values()
+                .all(|job| job.operation.is_none())),
+            "进程退出并确认状态后应释放远程操作闸门"
+        );
+
+        let rev = |dir: &Path| {
+            String::from_utf8_lossy(
+                &std::process::Command::new("git")
+                    .args(["rev-parse", "master"])
+                    .current_dir(dir)
+                    .output()
+                    .expect("应读取提交")
+                    .stdout,
+            )
+            .trim()
+            .to_string()
+        };
+        assert_ne!(rev(&remote), rev(&root), "取消后远端不应包含待推送提交");
+
+        fs::remove_file(&hook_path).expect("应移除测试钩子");
+        git_store.update(cx, |store, cx| {
+            drop(store.run_operation(GitOperationKind::Push, cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(rev(&remote), rev(&root), "取消完成后再次推送应成功");
+    }
+
+    #[gpui::test]
     fn git_init_then_scan_discovers_repository(cx: &mut gpui::TestAppContext) {
         let temp_dir = tempfile::tempdir().expect("应创建临时目录");
         let root = temp_dir.path().to_path_buf();
@@ -1652,7 +2024,8 @@ mod tests {
             RemoteOperationState {
                 has_remote: true,
                 ahead: 0,
-                behind: 0
+                behind: 0,
+                ..Default::default()
             }
         );
 
@@ -1677,7 +2050,8 @@ mod tests {
             RemoteOperationState {
                 has_remote: true,
                 ahead: 0,
-                behind: 0
+                behind: 0,
+                ..Default::default()
             },
             "push 后 ahead 应归零"
         );

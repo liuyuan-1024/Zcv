@@ -17,7 +17,7 @@ use zcv_actions::{
     CloseTab, FocusOrHidePanel, GitFetch, GitPull, GitPush, OpenSettings, QuitWindow, Save,
     ToggleBottomDock, ToggleLeftDock, ToggleRightDock,
 };
-use zcv_project::{GitOperationKind, Project};
+use zcv_project::{GitOperationKind, GitOperationOutcome, Project};
 use zcv_theme::{color, typography};
 
 use crate::dock::{Dock, DockPosition, DockStructure, render_body};
@@ -581,23 +581,44 @@ impl Workspace {
         cx.spawn(move |this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
             let mut cx = asynccx.clone();
             async move {
-                let (kind, message, action) = match task.await {
-                    Ok(()) => (ToastKind::Success, format!("{name}完成"), None),
-                    Err(error) => {
-                        // 失败提示带重试按钮：点击重新执行同一操作（弱引用，不持有 Workspace）。
-                        let weak = this.clone();
-                        (
+                let result = task.await;
+                let failure = match &result {
+                    Ok(GitOperationOutcome::Failed(error)) => Some(error.clone()),
+                    Err(error) => Some(format!("{error:#}")),
+                    _ => None,
+                };
+                let (kind, message, action) = if let Some(error) = failure {
+                    // 失败提示带重试按钮：点击重新执行同一操作（弱引用，不持有 Workspace）。
+                    let weak = this.clone();
+                    (
+                        ToastKind::Error,
+                        format!("{name}失败：{error}"),
+                        Some(ToastAction::new("重试", move |_window, cx| {
+                            if let Some(workspace) = weak.upgrade() {
+                                // App 上下文的 Entity::update 直接返回闭包结果（实体经 upgrade 已确认存在），无 Result 包装。
+                                workspace.update(cx, |workspace, cx| {
+                                    workspace.run_git_operation(operation, cx);
+                                });
+                            }
+                        })),
+                    )
+                } else {
+                    match result.expect("失败分支已在上方处理") {
+                        GitOperationOutcome::Completed => {
+                            (ToastKind::Success, format!("{name}完成"), None)
+                        }
+                        GitOperationOutcome::Cancelled => {
+                            (ToastKind::Info, format!("{name}已取消"), None)
+                        }
+                        GitOperationOutcome::CompletedBeforeCancellation => {
+                            (ToastKind::Success, format!("{name}已在取消前完成"), None)
+                        }
+                        GitOperationOutcome::CancellationUnconfirmed(detail) => (
                             ToastKind::Error,
-                            format!("{name}失败：{error:#}"),
-                            Some(ToastAction::new("重试", move |_window, cx| {
-                                if let Some(workspace) = weak.upgrade() {
-                                    // App 上下文的 Entity::update 直接返回闭包结果（实体经 upgrade 已确认存在），无 Result 包装。
-                                    workspace.update(cx, |workspace, cx| {
-                                        workspace.run_git_operation(operation, cx);
-                                    });
-                                }
-                            })),
-                        )
+                            format!("{name}已停止，但暂时无法确认远端状态：{detail}"),
+                            None,
+                        ),
+                        GitOperationOutcome::Failed(_) => unreachable!(),
                     }
                 };
                 if let Some(this) = this.upgrade() {

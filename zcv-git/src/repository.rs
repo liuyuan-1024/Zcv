@@ -4,15 +4,167 @@
 //! 所有方法同步阻塞执行，由调用方负责移入后台线程。
 
 use std::collections::HashMap;
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::io::{BufRead as _, BufReader, Read, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use zcv_buffer_diff::DiffHunk;
 
 use crate::diff::parse_diff_hunks_per_path;
 use crate::status::{DiffStat, GitStatus, parse_numstat};
+
+/// 单个具体 git 进程的取消句柄。
+///
+/// 每次远程操作都持有全新句柄。进程编号与操作类型刻意分离，确保取消旧推送永远不会影响后续推送。
+#[derive(Clone, Default)]
+pub struct GitCancellation {
+    inner: Arc<GitCancellationInner>,
+}
+
+#[derive(Default)]
+struct GitCancellationInner {
+    requested: AtomicBool,
+    process_id: AtomicU32,
+    progress: Mutex<Option<String>>,
+}
+
+impl GitCancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.requested.load(Ordering::Acquire)
+    }
+
+    /// 中断整个 git 进程树；若未及时退出则强制终止。本方法不会阻塞界面线程。
+    pub fn cancel(&self) {
+        if self.inner.requested.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let process_id = self.inner.process_id.load(Ordering::Acquire);
+        if process_id == 0 {
+            return;
+        }
+        self.begin_termination(process_id);
+    }
+
+    pub fn progress(&self) -> Option<String> {
+        self.inner.progress.lock().ok()?.clone()
+    }
+
+    fn attach(&self, process_id: u32) {
+        self.inner.process_id.store(process_id, Ordering::Release);
+        if self.is_cancelled() {
+            self.begin_termination(process_id);
+        }
+    }
+
+    fn detach(&self, process_id: u32) {
+        let _ = self.inner.process_id.compare_exchange(
+            process_id,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    fn set_progress(&self, progress: String) {
+        if let Ok(mut current) = self.inner.progress.lock() {
+            *current = Some(progress);
+        }
+    }
+
+    fn begin_termination(&self, process_id: u32) {
+        interrupt_process_tree(process_id);
+        let inner = Arc::clone(&self.inner);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1500));
+            if inner.process_id.load(Ordering::Acquire) == process_id {
+                kill_process_tree(process_id);
+            }
+        });
+    }
+}
+
+fn read_stream<R: Read>(mut stream: R, progress: Option<GitCancellation>) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    let mut pending_line = Vec::new();
+    loop {
+        let read = stream.read(&mut chunk).context("读取 git 输出失败")?;
+        if read == 0 {
+            break;
+        }
+        output.extend_from_slice(&chunk[..read]);
+        if let Some(progress) = &progress {
+            for byte in &chunk[..read] {
+                if matches!(*byte, b'\r' | b'\n') {
+                    publish_progress(progress, &pending_line);
+                    pending_line.clear();
+                } else {
+                    pending_line.push(*byte);
+                }
+            }
+        }
+    }
+    if let Some(progress) = &progress {
+        publish_progress(progress, &pending_line);
+    }
+    Ok(output)
+}
+
+fn publish_progress(cancellation: &GitCancellation, line: &[u8]) {
+    let line = String::from_utf8_lossy(line);
+    let line = line.trim();
+    if !line.is_empty() {
+        cancellation.set_progress(line.to_string());
+    }
+}
+
+#[cfg(unix)]
+fn interrupt_process_tree(process_id: u32) {
+    // 远程命令运行在独立进程组中，负进程号可以同时覆盖 git、ssh、凭据助手与钩子。
+    unsafe {
+        libc::kill(-(process_id as i32), libc::SIGINT);
+    }
+}
+
+#[cfg(unix)]
+fn kill_process_tree(process_id: u32) {
+    unsafe {
+        libc::kill(-(process_id as i32), libc::SIGKILL);
+    }
+}
+
+#[cfg(windows)]
+fn interrupt_process_tree(process_id: u32) {
+    // Windows 后端接入作业对象前，以 taskkill /T 作为兼容方案；/F 仅留给强制终止阶段。
+    let _ = Command::new("taskkill")
+        .args(["/PID", &process_id.to_string(), "/T"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+#[cfg(windows)]
+fn kill_process_tree(process_id: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &process_id.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+#[cfg(not(any(unix, windows)))]
+fn interrupt_process_tree(_process_id: u32) {}
+
+#[cfg(not(any(unix, windows)))]
+fn kill_process_tree(_process_id: u32) {}
 
 /// 对单个 git 仓库的命令行封装。
 ///
@@ -45,11 +197,27 @@ pub trait GitRepository: Send + Sync {
     /// 拉取远程引用（`git fetch`，默认 remote/upstream）。
     fn fetch(&self) -> Result<()>;
 
+    /// 可取消的远端同步。实现可覆盖该方法来终止底层进程树。
+    fn fetch_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {
+        let _ = cancellation;
+        self.fetch()
+    }
+
     /// 拉取并合并当前分支（`git pull`，默认 upstream）。
     fn pull(&self) -> Result<()>;
 
+    fn pull_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {
+        let _ = cancellation;
+        self.pull()
+    }
+
     /// 推送当前分支到上游（`git push`，默认 upstream）。
     fn push(&self) -> Result<()>;
+
+    fn push_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {
+        let _ = cancellation;
+        self.push()
+    }
 
     /// 暂存路径（`git update-index --add --remove -- <paths>`，对齐 Zed）。
     ///
@@ -147,6 +315,61 @@ impl RealGitRepository {
             .output()
             .context("执行 git 命令失败")?;
         if !output.status.success() {
+            bail!(
+                "{description} 失败：{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(output)
+    }
+
+    /// 执行远程命令并保留进程身份，使界面线程发出的取消请求能够中断整个进程树。
+    fn run_cancellable_command(
+        &self,
+        command: &mut Command,
+        description: &str,
+        cancellation: &GitCancellation,
+    ) -> Result<Output> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
+
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("执行 git 命令失败")?;
+        let process_id = child.id();
+        cancellation.attach(process_id);
+
+        let stdout = child.stdout.take().context("无法读取 git 标准输出")?;
+        let stderr = child.stderr.take().context("无法读取 git 错误输出")?;
+        let stdout_reader = std::thread::spawn(move || read_stream(stdout, None));
+        let progress = cancellation.clone();
+        let stderr_reader = std::thread::spawn(move || read_stream(stderr, Some(progress)));
+
+        let status = child.wait().context("等待 git 命令结束失败")?;
+        let stdout = stdout_reader
+            .join()
+            .map_err(|_| anyhow::anyhow!("读取 git 标准输出的线程异常退出"))??;
+        let stderr = stderr_reader
+            .join()
+            .map_err(|_| anyhow::anyhow!("读取 git 错误输出的线程异常退出"))??;
+        // 读取线程结束意味着所有继承管道的子进程也已退出，此时才解除进程组绑定；
+        // 否则 git 主进程先退出时会导致强制终止阶段漏掉仍存活的钩子子进程。
+        cancellation.detach(process_id);
+        let output = Output {
+            status,
+            stdout,
+            stderr,
+        };
+        if !output.status.success() {
+            if cancellation.is_cancelled() {
+                bail!("{description} 已取消");
+            }
             bail!(
                 "{description} 失败：{}",
                 String::from_utf8_lossy(&output.stderr).trim()
@@ -255,17 +478,41 @@ impl GitRepository for RealGitRepository {
     }
 
     fn fetch(&self) -> Result<()> {
-        self.run_command(&mut self.build_command(&["fetch"]), "git fetch")?;
+        self.fetch_cancellable(&GitCancellation::new())
+    }
+
+    fn fetch_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {
+        self.run_cancellable_command(
+            &mut self.build_command(&["fetch", "--progress"]),
+            "git fetch",
+            cancellation,
+        )?;
         Ok(())
     }
 
     fn pull(&self) -> Result<()> {
-        self.run_command(&mut self.build_command(&["pull"]), "git pull")?;
+        self.pull_cancellable(&GitCancellation::new())
+    }
+
+    fn pull_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {
+        self.run_cancellable_command(
+            &mut self.build_command(&["pull", "--progress"]),
+            "git pull",
+            cancellation,
+        )?;
         Ok(())
     }
 
     fn push(&self) -> Result<()> {
-        self.run_command(&mut self.build_command(&["push"]), "git push")?;
+        self.push_cancellable(&GitCancellation::new())
+    }
+
+    fn push_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {
+        self.run_cancellable_command(
+            &mut self.build_command(&["push", "--progress"]),
+            "git push",
+            cancellation,
+        )?;
         Ok(())
     }
 

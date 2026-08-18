@@ -12,8 +12,8 @@ mod test_support;
 mod worktree;
 
 pub use git_store::{
-    GitOperationKind, GitStore, GitStoreEvent, RemoteOperationState, RepositorySnapshot,
-    StatusEntry,
+    GitJobPhase, GitJobStatus, GitOperationKind, GitOperationOutcome, GitStore, GitStoreEvent,
+    RemoteOperationState, RepositorySnapshot, StatusEntry,
 };
 pub use project_store::{Project, ProjectEvent};
 pub use worktree::{WorktreeEntry, new_entry_destination, rename_destination, translate_path};

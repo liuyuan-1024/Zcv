@@ -27,6 +27,7 @@ type ToastClickHandler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
     Success,
+    Info,
     Error,
 }
 
@@ -186,6 +187,7 @@ impl Render for ToastLayer {
         };
         let (icon, icon_color) = match toast.kind {
             ToastKind::Success => ("icons/check.svg", color::current(cx).status_success),
+            ToastKind::Info => ("icons/clock.svg", color::current(cx).text_muted),
             ToastKind::Error => ("icons/warning.svg", color::current(cx).status_error),
         };
 

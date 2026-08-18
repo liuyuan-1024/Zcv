@@ -9,6 +9,7 @@ path = "src/git.rs"
 
 [dependencies]
 anyhow.workspace = true
+libc.workspace = true
 zcv-buffer-diff.workspace = true
 
 [dev-dependencies]

@@ -3,11 +3,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use zcv_buffer_diff::DiffHunk;
-use zcv_git::{Branch, DiffStat, GitRepository};
+use zcv_git::{Branch, DiffStat, GitCancellation, GitRepository};
 
-use super::{GitJob, GitOperationKind, RepositorySnapshot, StatusEntry};
+use super::{GitJob, GitOperationKind, GitOperationOutcome, RepositorySnapshot, StatusEntry};
 use crate::worktree::discover_repositories;
 
 /// 后台 job 的执行结果。
@@ -54,6 +55,7 @@ pub(super) async fn execute_job(
     job: GitJob,
     repositories: Vec<Arc<dyn GitRepository>>,
     grouped_paths: Vec<Vec<PathBuf>>,
+    cancellation: Option<GitCancellation>,
 ) -> JobResult {
     match job {
         GitJob::ReloadGitState => {
@@ -97,12 +99,13 @@ pub(super) async fn execute_job(
             JobResult::RefreshHunks(refreshed)
         }
         GitJob::GitOperation { operation, .. } => {
+            let cancellation = cancellation.unwrap_or_default();
             let result = repositories
                 .first()
                 .map(|repository| match operation {
-                    GitOperationKind::Fetch => repository.fetch(),
-                    GitOperationKind::Pull => repository.pull(),
-                    GitOperationKind::Push => repository.push(),
+                    GitOperationKind::Fetch => repository.fetch_cancellable(&cancellation),
+                    GitOperationKind::Pull => repository.pull_cancellable(&cancellation),
+                    GitOperationKind::Push => repository.push_cancellable(&cancellation),
                 })
                 .unwrap_or(Ok(()));
             JobResult::GitOperation(result)
@@ -165,6 +168,58 @@ pub(super) async fn execute_job(
                 .unwrap_or(Ok(None));
             JobResult::Uncommit(result)
         }
+    }
+}
+
+/// 远程操作中断后的状态确认。推送需要执行有时限的远端同步，因为远端引用可能已更新，但本地进程尚未收到成功响应；
+/// 同步和合并拉取只需探测本地状态，随后由存储层安排全量扫描。
+pub(super) fn reconcile_cancelled_operation(
+    operation: GitOperationKind,
+    repository: Option<Arc<dyn GitRepository>>,
+) -> GitOperationOutcome {
+    let Some(repository) = repository else {
+        return GitOperationOutcome::CancellationUnconfirmed("活动仓库已不可用".into());
+    };
+
+    if operation != GitOperationKind::Push {
+        return match repository.status(&[]) {
+            Ok(_) => GitOperationOutcome::Cancelled,
+            Err(error) => GitOperationOutcome::CancellationUnconfirmed(format!(
+                "无法重新读取仓库状态：{error:#}"
+            )),
+        };
+    }
+
+    // 状态确认不能变成另一个无限期挂起的远程任务。
+    let confirmation = GitCancellation::new();
+    let timeout = confirmation.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(10));
+        timeout.cancel();
+    });
+    if let Err(error) = repository.fetch_cancellable(&confirmation) {
+        let detail = if confirmation.is_cancelled() {
+            "状态确认超时（10 秒）".to_string()
+        } else {
+            let error = format!("{error:#}");
+            let error = error.strip_prefix("git fetch 失败：").unwrap_or(&error);
+            format!("状态确认失败：{error}")
+        };
+        return GitOperationOutcome::CancellationUnconfirmed(detail);
+    }
+    match repository.status(&[]) {
+        Ok(status) => match status.branch {
+            Some(branch) if branch.upstream.is_some() && branch.ahead == 0 => {
+                GitOperationOutcome::CompletedBeforeCancellation
+            }
+            Some(branch) if branch.upstream.is_some() => GitOperationOutcome::Cancelled,
+            _ => GitOperationOutcome::CancellationUnconfirmed(
+                "当前分支没有可用于确认的 upstream".into(),
+            ),
+        },
+        Err(error) => GitOperationOutcome::CancellationUnconfirmed(format!(
+            "远端刷新后无法读取分支状态：{error:#}"
+        )),
     }
 }
 
@@ -426,10 +481,11 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::path::{Path, PathBuf};
 
-    use zcv_git::{DiffStat, FileStatus};
+    use zcv_git::{DiffStat, FileStatus, RealGitRepository};
 
     use super::*;
     use crate::git_store::{RepositorySnapshot, StatusEntry};
+    use crate::test_support::{run_git, test_git_repo};
 
     #[test]
     fn merge_refresh_replaces_changed_paths_and_keeps_rest() {
@@ -688,6 +744,39 @@ mod tests {
         assert_eq!(
             repo_relative_path(Path::new("/repo"), Path::new("/other/file.rs")),
             None
+        );
+    }
+
+    #[test]
+    fn cancelled_push_reconciliation_distinguishes_completed_and_not_pushed() {
+        let (root, _worktree_temp) = test_git_repo();
+        let remote_temp = tempfile::tempdir().expect("应创建远端临时目录");
+        let remote = remote_temp.path().join("remote.git");
+        run_git(
+            remote_temp.path(),
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        run_git(
+            &root,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        run_git(&root, &["push", "-q", "-u", "origin", "master"]);
+
+        let repository: Arc<dyn GitRepository> =
+            Arc::new(RealGitRepository::open(&root.join(".git")).expect("应打开工作仓库"));
+        assert_eq!(
+            reconcile_cancelled_operation(GitOperationKind::Push, Some(repository.clone())),
+            GitOperationOutcome::CompletedBeforeCancellation,
+            "远端已包含本地提交时应识别为取消前完成"
+        );
+
+        std::fs::write(root.join("not-pushed.txt"), "尚未推送\n").expect("应写入新文件");
+        run_git(&root, &["add", "not-pushed.txt"]);
+        run_git(&root, &["commit", "-q", "-m", "尚未推送"]);
+        assert_eq!(
+            reconcile_cancelled_operation(GitOperationKind::Push, Some(repository)),
+            GitOperationOutcome::Cancelled,
+            "本地仍领先远端时应确认推送已取消"
         );
     }
 }

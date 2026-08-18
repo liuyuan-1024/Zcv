@@ -5,5 +5,5 @@ mod diff;
 mod repository;
 mod status;
 
-pub use repository::{Branch, GitRepository, RealGitRepository, init};
+pub use repository::{Branch, GitCancellation, GitRepository, RealGitRepository, init};
 pub use status::{BranchStatus, DiffStat, FileStatus, GitStatus, StatusCode};

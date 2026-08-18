@@ -30,6 +30,7 @@ pub struct Glyph {
     color: Option<gpui::Rgba>,
     tooltip: TooltipSpec,
     on_click: Option<ClickHandler>,
+    disabled: bool,
 }
 
 impl Glyph {
@@ -63,6 +64,7 @@ impl Glyph {
             color: None,
             tooltip: TooltipSpec::default(),
             on_click: None,
+            disabled: false,
         }
     }
 
@@ -94,6 +96,12 @@ impl Glyph {
         self.on_click = Some(Rc::new(handler));
         self
     }
+
+    /// 禁用交互，但保留图形作为可见的操作反馈。
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
 }
 
 impl IntoElement for Glyph {
@@ -107,20 +115,25 @@ impl IntoElement for Glyph {
 impl RenderOnce for Glyph {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         // 默认色依赖主题，只能在有 cx 的 render 中解析
-        let color = self.color.unwrap_or_else(|| color::current(cx).text);
+        let disabled = self.disabled;
+        let color = if disabled {
+            color::current(cx).text_disabled
+        } else {
+            self.color.unwrap_or_else(|| color::current(cx).text)
+        };
         let icon_size = typography::ui();
         let tooltip = self.tooltip;
         let on_click = self.on_click;
 
         let base = |mut el: gpui::Stateful<gpui::Div>| {
             // 只有可点击的 glyph 才显示手型光标
-            if on_click.is_some() {
+            if on_click.is_some() && !disabled {
                 el = el.cursor_pointer();
             }
             if let Some(build) = tooltip.build() {
                 el = el.tooltip(build);
             }
-            if let Some(ref handler) = on_click {
+            if !disabled && let Some(ref handler) = on_click {
                 let h = Rc::clone(handler);
                 el = el.on_click(move |event, window, cx| h(event, window, cx));
             }

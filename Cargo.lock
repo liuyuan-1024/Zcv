@@ -7585,6 +7585,7 @@ name = "zcv-git"
 version = "0.7.7"
 dependencies = [
  "anyhow",
+ "libc",
  "tempfile",
  "zcv-buffer-diff",
 ]

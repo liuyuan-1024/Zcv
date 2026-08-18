@@ -64,6 +64,17 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(root: PathBuf, _window: &Window, cx: &mut Context<Self>) -> Self {
+        let project = cx.new(|cx| Project::new(root, cx));
+        Self::build(project, cx)
+    }
+
+    /// 创建不绑定项目目录的工作区。
+    pub fn new_empty(_window: &Window, cx: &mut Context<Self>) -> Self {
+        let project = cx.new(Project::empty);
+        Self::build(project, cx)
+    }
+
+    fn build(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
 
         let keybindings = zcv_keymap::load(cx).expect("内置 keymap 应完整有效");
@@ -71,8 +82,6 @@ impl Workspace {
         cx.set_global(keybindings);
 
         let pane = cx.new(Pane::new);
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
-
         // 三个空 Dock；面板由宿主经 register_panel 注册。
         let drag_notify: Rc<Cell<Option<DockPosition>>> = Rc::new(Cell::new(None));
         let left_dock = cx.new(|cx| {
@@ -430,7 +439,9 @@ impl Workspace {
 
     /// 后台执行 git 操作（fetch/pull/push）：等待结果后直接弹提示（成功/失败+错误详情）。
     fn run_git_operation(&mut self, operation: GitOperationKind, cx: &mut Context<Self>) {
-        let git_store = self.project.read(cx).git_store();
+        let Some(git_store) = self.project.read(cx).try_git_store() else {
+            return;
+        };
         let task = git_store.update(cx, |store, cx| store.run_operation(operation, cx));
         let name = match operation {
             GitOperationKind::Fetch => "拉取",
@@ -609,4 +620,18 @@ fn render_frame(
         )
         .child(body)
         .child(status_bar.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{AppContext, TestAppContext};
+
+    use super::Workspace;
+
+    #[gpui::test]
+    fn empty_workspace_has_a_project_without_a_worktree(cx: &mut TestAppContext) {
+        let (workspace, cx) = cx.add_window_view(|window, cx| Workspace::new_empty(window, cx));
+        let project = cx.read_entity(&workspace, |workspace, _| workspace.project().clone());
+        assert!(!cx.read_entity(&project, |project, _| project.has_worktree()));
+    }
 }

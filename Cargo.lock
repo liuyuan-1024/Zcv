@@ -3,6 +3,39 @@
 version = 4
 
 [[package]]
+name = "Zcv"
+version = "0.7.7"
+dependencies = [
+ "anyhow",
+ "async-channel 1.9.0",
+ "globset",
+ "gpui",
+ "log",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_json_lenient",
+ "tempfile",
+ "toml 0.8.23",
+ "trash",
+ "zcv-actions",
+ "zcv-assets",
+ "zcv-buffer-diff",
+ "zcv-editor",
+ "zcv-engine",
+ "zcv-git",
+ "zcv-keymap",
+ "zcv-language",
+ "zcv-picker",
+ "zcv-preview-svg",
+ "zcv-project",
+ "zcv-settings",
+ "zcv-theme",
+ "zcv-ui",
+ "zcv-workspace",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7476,39 +7509,6 @@ dependencies = [
  "serde",
  "winnow 1.0.4",
  "zvariant",
-]
-
-[[package]]
-name = "zcv"
-version = "0.7.7"
-dependencies = [
- "anyhow",
- "async-channel 1.9.0",
- "globset",
- "gpui",
- "log",
- "regex",
- "serde",
- "serde_json",
- "serde_json_lenient",
- "tempfile",
- "toml 0.8.23",
- "trash",
- "zcv-actions",
- "zcv-assets",
- "zcv-buffer-diff",
- "zcv-editor",
- "zcv-engine",
- "zcv-git",
- "zcv-keymap",
- "zcv-language",
- "zcv-picker",
- "zcv-preview-svg",
- "zcv-project",
- "zcv-settings",
- "zcv-theme",
- "zcv-ui",
- "zcv-workspace",
 ]
 
 [[package]]

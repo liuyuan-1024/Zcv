@@ -1,8 +1,8 @@
 [package]
-name = "zcv"
+name = "Zcv"
 version.workspace = true
 edition.workspace = true
-description = "zcv —— 新一代 GPUI 桌面编辑器"
+description = "Zcv —— 新一代 GPUI 桌面编辑器（Zed的忠实粉丝）"
 
 [dependencies]
 anyhow.workspace = true

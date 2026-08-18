@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+#
+# 打包 macOS .app（可选 .dmg）并生成 GitHub Release 风格 zip。
+# Release 资产命名: Zcv_xx.xx.xx_darwin_arm64.zip
+#
+# 用法:
+#   bash scripts/bundle-mac.txt                 # 输出 .app、zip 和 .dmg
+#   bash scripts/bundle-mac.txt --no-dmg        # 输出 .app 和 zip
+#   bash scripts/bundle-mac.txt --arch arm64    # Apple Silicon
+#   bash scripts/bundle-mac.txt --arch amd64    # Intel Mac
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+APP_NAME="Zcv"
+BUNDLE_ID="dev.liuyuan.zcv"
+BIN_NAME="Zcv"
+PACKAGE="Zcv"
+VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)"
+
+MAKE_DMG=1
+ARCH="arm64"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --arch)
+            ARCH="$2"; shift 2 ;;
+        --no-dmg)
+            MAKE_DMG=0; shift ;;
+        -h|--help)
+            sed -n '2,10p' "$0"; exit 0 ;;
+        *)
+            echo "未知参数: $1" >&2; exit 1 ;;
+    esac
+done
+
+case "$ARCH" in
+    arm64)
+        TARGET="aarch64-apple-darwin" ;;
+    amd64|x64|x86_64)
+        ARCH="amd64"
+        TARGET="x86_64-apple-darwin" ;;
+    *)
+        echo "未知架构: $ARCH，仅支持 arm64 或 amd64" >&2
+        exit 1 ;;
+esac
+
+OS="darwin"
+DIST_NAME="${APP_NAME}_${VERSION}_${OS}_${ARCH}"
+
+if ! xcrun metal -v >/dev/null 2>&1; then
+    echo "缺少 Xcode Metal Toolchain（GPUI 编译着色器需要）" >&2
+    echo "    xcodebuild -downloadComponent MetalToolchain" >&2
+    exit 1
+fi
+
+if [[ "$ARCH" == "arm64" && "$(uname -m)" != "arm64" ]]; then
+    echo "正在为 arm64 构建，但当前机器是 $(uname -m)。请确认已安装交叉编译环境。" >&2
+fi
+
+# ---------- 1. 构建 ----------
+echo "==> cargo build --release -p $PACKAGE --target $TARGET"
+cargo build --release -p "$PACKAGE" --target "$TARGET"
+BIN="target/$TARGET/release/$BIN_NAME"
+OUT_DIR="target/$TARGET/release"
+
+if [[ ! -f "$BIN" ]]; then
+    echo "构建产物不存在: $BIN" >&2; exit 1
+fi
+
+# ---------- 2. 组装 .app ----------
+APP="$OUT_DIR/$APP_NAME.app"
+echo "==> 组装 $APP"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS"
+
+cp "$BIN" "$APP/Contents/MacOS/$BIN_NAME"
+chmod +x "$APP/Contents/MacOS/$BIN_NAME"
+
+# ---------- 3. Info.plist ----------
+cat > "$APP/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>$APP_NAME</string>
+  <key>CFBundleDisplayName</key><string>$APP_NAME</string>
+  <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>$BIN_NAME</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+</dict></plist>
+EOF
+
+# ---------- 4. Ad-hoc 代码签名 ----------
+# 没有 Apple Developer 证书也至少签一下，arm64 必须签才能跑；
+# 但 Gatekeeper 仍会拦首次启动，朋友需 Finder 右键→打开。
+echo "==> codesign (ad-hoc)"
+codesign --force --deep --sign - "$APP"
+
+# ---------- 5. GitHub Release zip ----------
+ZIP="$OUT_DIR/$DIST_NAME.zip"
+echo "==> $ZIP"
+rm -f "$ZIP"
+
+# --keepParent 让 zip 解压后包含 Zcv.app 这个顶层目录；比 zip -r 更适合 .app bundle。
+ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+
+# ---------- 6. DMG ----------
+if [[ "$MAKE_DMG" == "1" ]]; then
+    DMG="$OUT_DIR/$DIST_NAME.dmg"
+    echo "==> $DMG"
+    rm -f "$DMG"
+    hdiutil create -volname "$APP_NAME" -srcfolder "$APP" \
+        -ov -format UDZO "$DMG" >/dev/null
+fi
+
+echo
+echo "完成:"
+echo "  $APP"
+echo "  $ZIP"
+[[ "$MAKE_DMG" == "1" ]] && echo "  $OUT_DIR/$DIST_NAME.dmg"
+echo
+echo "朋友首次打开提示「无法验证开发者」时，请右键→打开。"

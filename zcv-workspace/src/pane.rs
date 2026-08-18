@@ -92,7 +92,7 @@ pub struct Pane {
 
 impl Pane {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let search_bar = cx.new(|cx| SearchBar::new(cx));
+        let search_bar = cx.new(SearchBar::new);
         let toolbar = cx.new(|_| {
             let mut toolbar = Toolbar::new();
             toolbar.set_search_bar(search_bar.clone());

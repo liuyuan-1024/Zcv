@@ -25,11 +25,16 @@ pub enum ProjectEvent {
 }
 
 pub struct Project {
-    root: PathBuf,
-    /// 项目目录快照层（遍历/排除规则/路径语义），供项目树消费。
-    worktree: Worktree,
-    buffer_store: BufferStore,
+    /// 与 Zed 的空 WorktreeStore 语义一致：Project 始终存在，worktree 可以为空。
+    worktree: Option<ProjectWorktree>,
+    /// 与 Zed 一致：git store 属于 Project 而非 worktree，无 worktree 时以无根状态存在（仓库查询与 git job 为空操作）。
     git_store: Entity<GitStore>,
+    buffer_store: BufferStore,
+}
+
+struct ProjectWorktree {
+    root: PathBuf,
+    snapshot: Worktree,
     fs_watcher: Arc<dyn Watcher>,
     _fs_task: Task<()>,
 }
@@ -57,26 +62,46 @@ impl Project {
             }
         });
 
-        let git_store = cx.new(|cx| GitStore::new(root.clone(), cx));
+        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
 
         Self {
-            root: root.clone(),
-            worktree: Worktree::new(root),
-            buffer_store: BufferStore::new(),
+            worktree: Some(ProjectWorktree {
+                root: root.clone(),
+                snapshot: Worktree::new(root),
+                fs_watcher,
+                _fs_task: fs_task,
+            }),
             git_store,
-            fs_watcher,
-            _fs_task: fs_task,
+            buffer_store: BufferStore::new(),
         }
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
+    /// 创建没有 worktree 的本地项目，供空工作区使用。
+    pub fn empty(cx: &mut Context<Self>) -> Self {
+        let git_store = cx.new(|cx| GitStore::new(None, cx));
+        Self {
+            worktree: None,
+            git_store,
+            buffer_store: BufferStore::new(),
+        }
+    }
+
+    pub fn root(&self) -> Option<&Path> {
+        self.worktree
+            .as_ref()
+            .map(|worktree| worktree.root.as_path())
+    }
+
+    pub fn has_worktree(&self) -> bool {
+        self.worktree.is_some()
     }
 
     /// 更新项目树的扫描排除规则（设置变化时由项目树调用）。
     pub fn set_exclusions(&mut self, exclusions: &[String]) {
-        self.worktree.set_exclusions(exclusions);
+        if let Some(worktree) = &mut self.worktree {
+            worktree.snapshot.set_exclusions(exclusions);
+        }
     }
 
     /// 查询目录的直接子项：worktree 读取 + git 状态合并。
@@ -85,8 +110,9 @@ impl Project {
     /// 展开、深度与可见行是视图状态，由项目树 UI 层自行构建。
     pub fn children(&self, path: &Path, cx: &App) -> Vec<WorktreeEntry> {
         self.worktree
-            .children(path)
+            .as_ref()
             .into_iter()
+            .flat_map(|worktree| worktree.snapshot.children(path))
             .map(|mut entry| {
                 entry.git_status = if entry.is_dir {
                     self.git_status_for_directory(&entry.path, cx)
@@ -120,6 +146,11 @@ impl Project {
 
     pub fn git_store(&self) -> Entity<GitStore> {
         self.git_store.clone()
+    }
+
+    /// 仅在有 worktree 时返回 git store（无 worktree 的项目不做 git 操作）。
+    pub fn try_git_store(&self) -> Option<Entity<GitStore>> {
+        self.has_worktree().then_some(self.git_store.clone())
     }
 
     pub fn open_buffer(
@@ -162,8 +193,12 @@ impl Project {
     ) -> anyhow::Result<()> {
         anyhow::ensure!(from != to, "新旧路径不能相同");
         anyhow::ensure!(from.parent() == to.parent(), "重命名不能移动条目");
+        let worktree = self
+            .worktree
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?;
         anyhow::ensure!(
-            from == self.root || from.starts_with(&self.root),
+            from == worktree.root || from.starts_with(&worktree.root),
             "条目不在当前项目中"
         );
         let indexed_from = from.canonicalize()?;
@@ -181,15 +216,15 @@ impl Project {
         std::fs::rename(from, to)?;
         self.buffer_store.rename_path(&indexed_from, &indexed_to);
 
-        if from == self.root {
-            if let Err(error) = self.fs_watcher.add(to) {
+        if from == worktree.root {
+            if let Err(error) = worktree.fs_watcher.add(to) {
                 log::warn!("无法监听重命名后的项目目录 {:?}：{error}", to);
             }
-            if let Err(error) = self.fs_watcher.remove(from) {
+            if let Err(error) = worktree.fs_watcher.remove(from) {
                 log::warn!("无法停止监听旧项目目录 {:?}：{error}", from);
             }
-            self.root = to.to_path_buf();
-            self.worktree.set_root(to.to_path_buf());
+            worktree.root = to.to_path_buf();
+            worktree.snapshot.set_root(to.to_path_buf());
             cx.emit(ProjectEvent::RootChanged(to.to_path_buf()));
         } else {
             cx.emit(ProjectEvent::EntriesChanged);
@@ -204,8 +239,11 @@ impl Project {
         is_dir: bool,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
+        let root = self
+            .root()
+            .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?;
         let relative = path
-            .strip_prefix(&self.root)
+            .strip_prefix(root)
             .map_err(|_| anyhow::anyhow!("条目不在当前项目中"))?;
         anyhow::ensure!(
             relative
@@ -231,8 +269,11 @@ impl Project {
 
     /// 将文件或目录移到系统废纸篓（可恢复），并清掉项目持有的路径状态。
     pub fn trash_path(&mut self, path: &Path, cx: &mut Context<Self>) -> anyhow::Result<()> {
-        anyhow::ensure!(path != self.root, "不能删除项目根目录");
-        anyhow::ensure!(path.starts_with(&self.root), "条目不在当前项目中");
+        let root = self
+            .root()
+            .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?;
+        anyhow::ensure!(path != root, "不能删除项目根目录");
+        anyhow::ensure!(path.starts_with(root), "条目不在当前项目中");
         trash::delete(path)?;
         self.buffer_store.remove_path(path);
         cx.emit(ProjectEvent::EntriesChanged);
@@ -240,9 +281,12 @@ impl Project {
     }
 
     fn process_fs_events(&mut self, events: Vec<PathEvent>, cx: &mut Context<Self>) {
+        let Some(worktree) = &self.worktree else {
+            return;
+        };
         let events: Vec<_> = events
             .into_iter()
-            .filter(|event| event.path.starts_with(&self.root))
+            .filter(|event| event.path.starts_with(&worktree.root))
             .collect();
         if events.is_empty() {
             return;
@@ -334,11 +378,21 @@ mod tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use gpui::AppContext;
+    use gpui::{AppContext, TestAppContext};
     use zcv_engine::{BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
     use super::*;
     use crate::test_support::test_git_repo;
+
+    #[gpui::test]
+    fn empty_project_has_no_worktree_or_project_services(cx: &mut TestAppContext) {
+        let project = cx.update(|cx| cx.new(|cx| Project::empty(cx)));
+        cx.read_entity(&project, |project, _| {
+            assert!(!project.has_worktree());
+            assert!(project.root().is_none());
+            assert!(project.try_git_store().is_none());
+        });
+    }
 
     #[test]
     fn saving_buffer_writes_current_version_and_marks_it_clean() {

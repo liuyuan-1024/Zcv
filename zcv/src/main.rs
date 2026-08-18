@@ -12,11 +12,21 @@ mod project_tree;
 mod version_control;
 mod workspace;
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use gpui::{App, Application};
-use workspace::open_project_window;
+use workspace::{open_empty_workspace, open_project_window};
 use zcv_assets::Assets;
+use zcv_workspace::most_recent_valid_project;
+
+fn initial_project_root(
+    mut args: impl Iterator<Item = OsString>,
+    recent_project: Option<PathBuf>,
+) -> Option<PathBuf> {
+    // args 首项是可执行名，第二项起是命令行路径
+    args.nth(1).map(PathBuf::from).or(recent_project)
+}
 
 fn main() {
     Application::new().with_assets(Assets).run(|cx: &mut App| {
@@ -26,16 +36,18 @@ fn main() {
         preview::init(cx);
         zcv_editor::init(cx);
 
-        // 初始项目根：开发构建打开当前工作区，正式构建打开启动目录。
-        #[cfg(debug_assertions)]
-        let initial_root = {
-            let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            crate_dir.parent().unwrap_or(&crate_dir).to_path_buf()
-        };
-        #[cfg(not(debug_assertions))]
-        let initial_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-
-        open_project_window(initial_root, cx).expect("主窗口应能创建");
+        match initial_project_root(std::env::args_os(), most_recent_valid_project()) {
+            Some(root) => {
+                // 打开失败（路径已失效等）回退空工作区，不阻塞启动（对齐 Zed 恢复失败的兜底）。
+                if let Err(error) = open_project_window(root, cx) {
+                    eprintln!("打开项目失败：{error}");
+                    open_empty_workspace(cx).expect("空工作区窗口应能创建");
+                }
+            }
+            None => {
+                open_empty_workspace(cx).expect("空工作区窗口应能创建");
+            }
+        }
 
         cx.activate(true);
     });
@@ -43,8 +55,39 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
     use gpui::TestAppContext;
     use zcv_keymap::load_json;
+
+    use super::initial_project_root;
+
+    #[test]
+    fn startup_uses_explicit_command_line_project() {
+        assert_eq!(
+            initial_project_root(
+                [OsString::from("zcv"), OsString::from("/project")].into_iter(),
+                Some(PathBuf::from("/recent")),
+            ),
+            Some(PathBuf::from("/project"))
+        );
+    }
+
+    #[test]
+    fn startup_without_path_uses_recent_project_or_none() {
+        assert_eq!(
+            initial_project_root(
+                [OsString::from("zcv")].into_iter(),
+                Some(PathBuf::from("/recent")),
+            ),
+            Some(PathBuf::from("/recent"))
+        );
+        assert_eq!(
+            initial_project_root([OsString::from("zcv")].into_iter(), None),
+            None
+        );
+    }
 
     /// keymap JSON 引用的所有 action 必须已注册（集成校验：注册来自本 crate 与 zcv-editor）。
     #[gpui::test]

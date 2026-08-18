@@ -24,7 +24,9 @@ impl ItemProvider for TextFileProvider {
         project: Entity<Project>,
         cx: &mut App,
     ) -> Task<anyhow::Result<Box<dyn ItemHandle>>> {
-        let root = project.read(cx).root().to_path_buf();
+        let Some(root) = project.read(cx).root().map(Path::to_path_buf) else {
+            return Task::ready(Err(anyhow::anyhow!("当前工作区没有打开项目")));
+        };
         let buffer = match project.update(cx, |project, cx| project.open_buffer(&path, cx)) {
             Ok(buffer) => buffer,
             Err(error) => return Task::ready(Err(anyhow::anyhow!("{error}"))),

@@ -78,10 +78,10 @@ impl SearchBar {
                 }),
             ));
         }
-        let item_changed = new_item.as_ref().map_or(true, |new| {
+        let item_changed = new_item.as_ref().is_none_or(|new| {
             self.active_item
                 .as_ref()
-                .map_or(true, |old| old.item_id() != new.item_id())
+                .is_none_or(|old| old.item_id() != new.item_id())
         });
         self.active_item = new_item;
         if item_changed && self.visible {

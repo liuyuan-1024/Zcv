@@ -42,7 +42,8 @@ struct ProjectPickerDelegate {
 impl ProjectPickerDelegate {
     fn new(projects: Vec<ProjectEntry>, on_selected: OnProjectSelected) -> Self {
         let filtered: Vec<usize> = (0..projects.len()).collect();
-        let selected_index = projects.iter().position(|p| p.is_current).unwrap_or(0);
+        // 列表第一位即最近打开的项目，作为默认选中项
+        let selected_index = 0;
         Self {
             query: String::new(),
             projects,
@@ -62,7 +63,7 @@ impl ProjectPickerDelegate {
                 .iter()
                 .enumerate()
                 .filter(|(_, p)| {
-                    p.label.to_lowercase().contains(&q) || p.path.to_lowercase().contains(&q)
+                    p.label().to_lowercase().contains(&q) || p.path.to_lowercase().contains(&q)
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -89,24 +90,8 @@ impl ProjectPickerDelegate {
     /// 从磁盘重新加载最近项目列表，保留当前搜索 query。
     fn reload_projects(&mut self) {
         self.projects = recent_projects::load_recent_projects();
-        if self.projects.is_empty() {
-            // 回到退路：当前工作目录
-            if let Ok(cwd) = std::env::current_dir() {
-                let label = cwd
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if !label.is_empty() {
-                    self.projects.push(ProjectEntry {
-                        label,
-                        path: cwd.to_string_lossy().to_string(),
-                        is_current: true,
-                    });
-                }
-            }
-        }
-        // 选中当前项目
-        self.selected_index = self.projects.iter().position(|p| p.is_current).unwrap_or(0);
+        // 列表第一位即最近打开的项目，作为默认选中项
+        self.selected_index = 0;
         // 重新应用过滤
         self.do_filter();
     }
@@ -162,7 +147,7 @@ impl PickerDelegate for ProjectPickerDelegate {
             .child(
                 div()
                     .text_color(color::current(cx).text)
-                    .child(entry.label.clone()),
+                    .child(entry.label()),
             )
             .subtitle(entry.path.clone())
             .end_slot(
@@ -226,38 +211,14 @@ pub struct ProjectPicker {
 }
 
 impl ProjectPicker {
-    fn load_projects() -> Vec<ProjectEntry> {
-        let mut projects = recent_projects::load_recent_projects();
-        // 最近列表为空时，将当前工作目录作为候选
-        if projects.is_empty()
-            && let Ok(cwd) = std::env::current_dir()
-        {
-            let label = cwd
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if !label.is_empty() {
-                projects.push(ProjectEntry {
-                    label,
-                    path: cwd.to_string_lossy().to_string(),
-                    is_current: true,
-                });
-            }
-        }
-        projects
-    }
-
     pub fn new(
         on_selected: OnProjectSelected,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let projects = Self::load_projects();
-        let current_label = projects
-            .iter()
-            .find(|p| p.is_current)
-            .map(|p| p.label.clone())
-            .unwrap_or_default();
+        let projects = recent_projects::load_recent_projects();
+        // 列表第一位即最近打开的项目，作为顶栏显示名
+        let current_label = projects.first().map(|p| p.label()).unwrap_or_default();
         let delegate = ProjectPickerDelegate::new(projects, on_selected.clone());
         let dismiss_flag = Rc::new(Cell::new(false));
         let pending_path = Rc::new(RefCell::new(None));
@@ -302,8 +263,8 @@ impl ProjectPicker {
             });
             // 同步 glyph 上显示的当前项目名
             let delegate = self.picker.read(cx).delegate();
-            if let Some(entry) = delegate.projects.iter().find(|p| p.is_current) {
-                self.current_label = entry.label.clone();
+            if let Some(entry) = delegate.projects.first() {
+                self.current_label = entry.label();
             }
             let input = self.picker.read(cx).search_input().clone();
             let focus = input.focus_handle(cx);
@@ -513,9 +474,7 @@ mod tests {
         };
         let mut delegate = ProjectPickerDelegate::new(
             vec![ProjectEntry {
-                label: "测试项目".into(),
                 path: "/tmp/test-project".into(),
-                is_current: true,
             }],
             on_selected,
         );
@@ -526,25 +485,19 @@ mod tests {
         assert_eq!(triggered.take().as_deref(), Some("/tmp/test-project"));
     }
 
-    /// 构造 3 个项目的数据源，第 2 个是当前项目。
+    /// 构造 3 个项目的数据源，默认选中第一项。
     fn test_delegate() -> ProjectPickerDelegate {
         let on_selected: OnProjectSelected = Rc::new(|_, _, _| {});
         ProjectPickerDelegate::new(
             vec![
                 ProjectEntry {
-                    label: "项目A".into(),
                     path: "/tmp/a".into(),
-                    is_current: false,
                 },
                 ProjectEntry {
-                    label: "项目B".into(),
                     path: "/tmp/b".into(),
-                    is_current: true,
                 },
                 ProjectEntry {
-                    label: "项目C".into(),
                     path: "/tmp/c".into(),
-                    is_current: false,
                 },
             ],
             on_selected,
@@ -554,7 +507,7 @@ mod tests {
     #[test]
     fn remove_project_drops_entry_and_keeps_filter() {
         let mut delegate = test_delegate();
-        delegate.update_matches("项目".into());
+        delegate.update_matches("tmp".into());
         delegate.remove_project_in_memory(2);
         assert_eq!(delegate.projects.len(), 2);
         assert!(delegate.projects.iter().all(|p| p.path != "/tmp/c"));
@@ -564,18 +517,19 @@ mod tests {
     #[test]
     fn remove_selected_project_selects_the_next_entry() {
         let mut delegate = test_delegate();
-        assert_eq!(delegate.selected_index, 1);
+        delegate.selected_index = 1;
         delegate.remove_project_in_memory(1);
         assert_eq!(delegate.projects.len(), 2);
         assert_eq!(delegate.selected_index, 1);
-        assert_eq!(delegate.projects[delegate.selected_index].label, "项目C");
+        assert_eq!(delegate.projects[delegate.selected_index].label(), "c");
     }
 
     #[test]
     fn remove_last_project_clamps_selection() {
         let mut delegate = test_delegate();
+        delegate.selected_index = 1;
         delegate.remove_project_in_memory(2);
         assert_eq!(delegate.selected_index, 1);
-        assert_eq!(delegate.projects[delegate.selected_index].label, "项目B");
+        assert_eq!(delegate.projects[delegate.selected_index].label(), "b");
     }
 }

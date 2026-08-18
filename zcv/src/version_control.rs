@@ -251,8 +251,9 @@ fn collect_dirs(
 
 pub(crate) struct VersionControlPanel {
     focus: FocusHandle,
-    /// 项目根（树键相对它计算；GitStore 路径均 canonicalize，构造时归一化对齐）。
-    root: PathBuf,
+    /// 项目根（树键相对它计算；GitStore 路径均 canonicalize）。
+    /// 无 worktree 的空工作区为 None，面板渲染空态（对齐 Zed 无条件装配）。
+    root: Option<PathBuf>,
     project: Entity<Project>,
     state: Rc<RefCell<GitPanelState>>,
     scroll_handle: UniformListScrollHandle,
@@ -269,9 +270,13 @@ pub(crate) struct VersionControlPanel {
 }
 
 impl VersionControlPanel {
-    pub(crate) fn new(root: PathBuf, project: Entity<Project>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
-        let root = root.canonicalize().unwrap_or(root);
+        // 项目根从 Project 派生；GitStore 路径均 canonicalize，这里同样归一化保证前缀比较一致。
+        let root = project
+            .read(cx)
+            .root()
+            .map(|root| root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
         let git_store = project.read(cx).git_store();
         let commit_editor = cx.new(|cx| {
             let mut editor = Editor::auto_height(4, Some(6), cx);
@@ -338,10 +343,13 @@ impl VersionControlPanel {
 
     /// 从 GitStore 快照重建行模型（订阅事件 / 折叠展开后调用）。
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = &self.root else {
+            return;
+        };
         let git_store = self.project.read(cx).git_store();
         let trees = {
             let store = git_store.read(cx);
-            build_section_trees(&self.root, store.repositories())
+            build_section_trees(root, store.repositories())
         };
         let mut state = self.state.borrow_mut();
         let rows = flatten_rows(&trees, &state.expanded);
@@ -1356,9 +1364,8 @@ mod tests {
         let project_root = directory.path().to_path_buf();
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let project_for_panel = project.clone();
-        let (panel, cx) = cx.add_window_view(move |_, cx| {
-            VersionControlPanel::new(project_root.clone(), project_for_panel, cx)
-        });
+        let (panel, cx) =
+            cx.add_window_view(move |_, cx| VersionControlPanel::new(project_for_panel, cx));
         cx.run_until_parked(); // 首次扫描完成：无仓库，行模型为空。
 
         // 初始化仓库（等价于空态按钮 dispatch 后的 handler 行为）。
@@ -1394,7 +1401,7 @@ mod tests {
 
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (panel, cx) = cx.add_window_view(move |_, cx| {
-            let mut panel = VersionControlPanel::new(project_root, project, cx);
+            let mut panel = VersionControlPanel::new(project, cx);
             panel.set_on_open_file(Rc::new(move |_, focus_opened_item, _, _| {
                 callback_count.set(callback_count.get() + 1);
                 callback_focus.set(focus_opened_item);
@@ -1444,7 +1451,7 @@ mod tests {
                 KeyBinding::new("down", SelectNext, Some("VersionControl")),
                 KeyBinding::new("enter", Activate, Some("VersionControl")),
             ]);
-            let mut panel = VersionControlPanel::new(project_root, project, cx);
+            let mut panel = VersionControlPanel::new(project, cx);
             panel.set_on_open_file(Rc::new(move |_, focus_opened_item, _, _| {
                 callback_count.set(callback_count.get() + 1);
                 callback_focus.set(focus_opened_item);
@@ -1488,8 +1495,7 @@ mod tests {
 
         let project_root = root.clone();
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
-        let (panel, cx) =
-            cx.add_window_view(move |_, cx| VersionControlPanel::new(project_root, project, cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked(); // 扫描 + 重建 + 首次全展开
 
         let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
@@ -1514,7 +1520,7 @@ mod tests {
                 KeyBinding::new("down", SelectNext, Some("VersionControl")),
                 KeyBinding::new("space", ToggleStaged, Some("VersionControl")),
             ]);
-            VersionControlPanel::new(project_root, project, cx)
+            VersionControlPanel::new(project, cx)
         });
         cx.update(|window, cx| window.focus(&panel.read(cx).focus));
         cx.run_until_parked();
@@ -1569,8 +1575,7 @@ mod tests {
         let (root, _temp) = test_repo();
         let project_root = root.clone();
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
-        let (_panel, cx) =
-            cx.add_window_view(move |_, cx| VersionControlPanel::new(project_root, project, cx));
+        let (_panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         let _ = cx.refresh();
         cx.update(|_, _| {});
@@ -1593,8 +1598,7 @@ mod tests {
         }
         let project_root = root.clone();
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
-        let (_panel, cx) =
-            cx.add_window_view(move |_, cx| VersionControlPanel::new(project_root, project, cx));
+        let (_panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         let _ = cx.refresh();
         cx.update(|_, _| {});
@@ -1628,8 +1632,7 @@ mod tests {
         std::fs::write(root.join("second.txt"), "第二个文件\n").expect("应写入文件");
         let project_root = root.clone();
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
-        let (panel, cx) =
-            cx.add_window_view(move |_, cx| VersionControlPanel::new(project_root, project, cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         let _ = cx.refresh();
         cx.update(|_, _| {});
@@ -1698,8 +1701,7 @@ mod tests {
 
         let project_root = root.clone();
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
-        let (_panel, cx) =
-            cx.add_window_view(move |_, cx| VersionControlPanel::new(project_root, project, cx));
+        let (_panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         let _ = cx.refresh();
         cx.update(|_, _| {});
@@ -1730,8 +1732,7 @@ mod tests {
         let (root, _temp) = test_repo();
         let project_root = root.clone();
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
-        let (panel, cx) =
-            cx.add_window_view(move |_, cx| VersionControlPanel::new(project_root, project, cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         let _ = cx.refresh();
         cx.update(|_, _| {});
@@ -1759,7 +1760,7 @@ mod tests {
         let callback_count = Rc::clone(&open_count);
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (panel, cx) = cx.add_window_view(move |_, cx| {
-            let mut panel = VersionControlPanel::new(project_root, project, cx);
+            let mut panel = VersionControlPanel::new(project, cx);
             panel.set_on_open_file(Rc::new(move |_, _, _, _| {
                 callback_count.set(callback_count.get() + 1);
             }));
@@ -1797,8 +1798,7 @@ mod tests {
         let (root, _temp) = test_repo();
         let project_root = root.clone();
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
-        let (panel, cx) =
-            cx.add_window_view(move |_, cx| VersionControlPanel::new(project_root, project, cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked(); // 首次扫描完成（test_repo 的 tracked.txt 已有未暂存修改）
         cx.run_until_parked();
 
@@ -1852,8 +1852,7 @@ mod tests {
 
         let project_root = root.clone();
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
-        let (panel, cx) =
-            cx.add_window_view(move |_, cx| VersionControlPanel::new(project_root, project, cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         cx.run_until_parked();
 
@@ -1912,8 +1911,7 @@ mod tests {
 
         let project_root = root.clone();
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
-        let (panel, cx) =
-            cx.add_window_view(move |_, cx| VersionControlPanel::new(project_root, project, cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         cx.run_until_parked();
 

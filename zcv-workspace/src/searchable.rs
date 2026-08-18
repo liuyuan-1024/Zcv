@@ -15,6 +15,9 @@ pub enum SearchEvent {
     ActiveMatchChanged,
 }
 
+/// 类型擦除后的搜索事件回调。
+pub type SearchEventHandler = Box<dyn Fn(&SearchEvent, &mut Window, &mut App) + Send>;
+
 /// 跳转方向。
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Direction {
@@ -88,7 +91,7 @@ pub trait SearchableItemHandle: ItemHandle {
         &self,
         window: &mut Window,
         cx: &mut App,
-        handler: Box<dyn Fn(&SearchEvent, &mut Window, &mut App) + Send>,
+        handler: SearchEventHandler,
     ) -> Subscription;
     fn search(&self, query: &SearchQuery, window: &mut Window, cx: &mut App);
     fn clear_search(&self, window: &mut Window, cx: &mut App);
@@ -113,7 +116,7 @@ impl<T: SearchableItem> SearchableItemHandle for Entity<T> {
         &self,
         window: &mut Window,
         cx: &mut App,
-        handler: Box<dyn Fn(&SearchEvent, &mut Window, &mut App) + Send>,
+        handler: SearchEventHandler,
     ) -> Subscription {
         window.subscribe(self, cx, move |_, event: &SearchEvent, window, cx| {
             handler(event, window, cx)

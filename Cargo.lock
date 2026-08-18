@@ -7516,6 +7516,8 @@ name = "zcv-actions"
 version = "0.7.7"
 dependencies = [
  "gpui",
+ "schemars",
+ "serde",
 ]
 
 [[package]]
@@ -7595,6 +7597,7 @@ dependencies = [
  "gpui",
  "serde",
  "serde_json",
+ "zcv-actions",
  "zcv-assets",
 ]
 
@@ -7703,8 +7706,10 @@ version = "0.7.7"
 dependencies = [
  "anyhow",
  "gpui",
+ "log",
  "serde",
  "serde_json",
+ "tempfile",
  "zcv-actions",
  "zcv-engine",
  "zcv-git",

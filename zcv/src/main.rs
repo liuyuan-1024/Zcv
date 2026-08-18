@@ -121,27 +121,20 @@ mod tests {
         });
     }
 
-    /// 面板切换 action 只能由 dock 持有（防止 status_bar 等重复注册导致快捷键歧义）。
+    /// Panel 键盘命令使用单一带参 Action，不为每个 Panel 声明类型。
     #[gpui::test]
-    fn panel_toggle_actions_are_owned_only_by_dock(cx: &mut TestAppContext) {
+    fn panel_keyboard_action_uses_stable_panel_id(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            for action in [
-                "ToggleProjectTree",
-                "ToggleVersionControl",
-                "ToggleOutline",
-                "ToggleLanguageServer",
-                "ToggleDiagnostics",
-                "ToggleProjectSearch",
-                "ToggleTerminal",
-                "ToggleDebug",
-                "ToggleKeyboardShortcuts",
-            ] {
+            for action in ["ToggleLeftDock", "ToggleBottomDock", "ToggleRightDock"] {
                 assert!(cx.build_action(&format!("dock::{action}"), None).is_ok());
-                assert!(
-                    cx.build_action(&format!("status_bar::{action}"), None)
-                        .is_err()
-                );
             }
+            let action = cx
+                .build_action(
+                    "dock::FocusOrHidePanel",
+                    Some(serde_json::json!({ "panel": "project-tree" })),
+                )
+                .expect("带稳定 Panel ID 的通用 Action 应能构建");
+            assert_eq!(action.name(), "dock::FocusOrHidePanel");
         });
     }
 }

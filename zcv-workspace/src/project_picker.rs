@@ -166,7 +166,7 @@ impl PickerDelegate for ProjectPickerDelegate {
     fn render_footer(&self, _window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement> {
         let shortcut = cx
             .try_global::<KeyBindings>()
-            .and_then(|kb| kb.display_shortcut(OpenLocalProject.name()));
+            .and_then(|kb| kb.display_shortcut_named(OpenLocalProject.name()));
         let item = ListItem::new("open-local").child("打开本地项目");
         let item = if let Some(s) = shortcut {
             item.end_slot(

@@ -41,7 +41,7 @@ impl TooltipSpec {
     pub fn with_action(mut self, action: &dyn gpui::Action, cx: &App) -> Self {
         if let Some(s) = cx
             .try_global::<KeyBindings>()
-            .and_then(|kb| kb.display_shortcut(action.name()))
+            .and_then(|kb| kb.display_shortcut(action))
         {
             self.shortcut = Some(s);
         }

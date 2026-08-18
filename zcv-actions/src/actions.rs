@@ -5,7 +5,25 @@
 //! 各命名空间与 keymap JSON 保持一致，action 定义位置迁移不产生 keymap 改动。
 //! （Zed 只集中跨 crate 的 action，其余定义在各自 crate；Zcv 单宿主简化，全部集中便于 keymap 统一引用。）
 
-use gpui::actions;
+use gpui::{Action, actions};
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+/// 执行 Panel 的键盘三态命令，`panel` 是 Panel 的稳定 ID。
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, JsonSchema, Action)]
+#[action(namespace = dock)]
+#[serde(deny_unknown_fields)]
+pub struct FocusOrHidePanel {
+    pub panel: String,
+}
+
+impl FocusOrHidePanel {
+    pub fn new(panel: impl Into<String>) -> Self {
+        Self {
+            panel: panel.into(),
+        }
+    }
+}
 
 actions!(
     editor,
@@ -69,20 +87,7 @@ actions!(
 
 actions!(workspace, [Save, OpenSettings, GitFetch, GitPull, GitPush]);
 
-actions!(
-    dock,
-    [
-        ToggleProjectTree,
-        ToggleVersionControl,
-        ToggleOutline,
-        ToggleLanguageServer,
-        ToggleDiagnostics,
-        ToggleProjectSearch,
-        ToggleTerminal,
-        ToggleDebug,
-        ToggleKeyboardShortcuts,
-    ]
-);
+actions!(dock, [ToggleLeftDock, ToggleBottomDock, ToggleRightDock,]);
 
 actions!(
     pane,

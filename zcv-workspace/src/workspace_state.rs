@@ -11,20 +11,26 @@ use std::time::Duration;
 
 use gpui::{
     Action, AnyView, App, AsyncApp, Context, Div, Entity, FocusHandle, MouseButton, Render,
-    SharedString, Subscription, WeakEntity, Window, div, prelude::*, rems,
+    SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, rems,
 };
-use zcv_actions::{CloseTab, GitFetch, GitPull, GitPush, OpenSettings, Save};
+use zcv_actions::{
+    CloseTab, FocusOrHidePanel, GitFetch, GitPull, GitPush, OpenSettings, QuitWindow, Save,
+    ToggleBottomDock, ToggleLeftDock, ToggleRightDock,
+};
 use zcv_project::{GitOperationKind, Project};
 use zcv_theme::{color, typography};
 
-use crate::dock::{Dock, DockPosition, render_body};
+use crate::dock::{Dock, DockPosition, DockStructure, render_body};
 use crate::item_provider::item_provider_for_path;
+use crate::layout_state;
 use crate::pane::Pane;
 use crate::panel::PanelHandle;
 use crate::preview::provider_for;
 use crate::status_bar::StatusBar;
 use crate::toast::{ToastAction, ToastKind, ToastLayer};
-use crate::window_controls::{handle_minimize, handle_quit, handle_toggle_maximize};
+use crate::window_controls::{handle_minimize, handle_toggle_maximize};
+
+const LAYOUT_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 
 /// 支持预览的文件需要等待双击判定，避免双击源码前短暂显示预览。
 const FILE_SINGLE_CLICK_DELAY: Duration = Duration::from_millis(300);
@@ -44,9 +50,6 @@ pub struct Workspace {
     pub left_dock: Entity<Dock>,
     pub right_dock: Entity<Dock>,
     pub bottom_dock: Entity<Dock>,
-    /// toggle action → (Dock Entity, panel_index_in_dock) 的查找表。
-    /// 条目由各面板自身的 `toggle_action` 派生，快捷键、按钮与分派共用同一来源。
-    panel_actions: Vec<(Box<dyn Action>, Entity<Dock>, usize)>,
     /// 拖拽协调：Dock 通过此 Cell 通知 Workspace 哪个 dock 正在被拖拽。
     pub drag_notify: Rc<Cell<Option<DockPosition>>>,
     /// 统一取消来自项目树、变更树等入口的待处理单击打开。
@@ -60,21 +63,23 @@ pub struct Workspace {
     /// 经 register_action 注册的 action handler（render 时挂到根节点，焦点链全局可达）。
     /// 对齐 Zed `workspace_actions`：组件创建时注册自己的命令 handler。
     workspace_actions: Vec<WorkspaceAction>,
+    layout_path: PathBuf,
+    _layout_save_task: Option<Task<()>>,
 }
 
 impl Workspace {
-    pub fn new(root: PathBuf, _window: &Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(root: PathBuf, window: &Window, cx: &mut Context<Self>) -> Self {
         let project = cx.new(|cx| Project::new(root, cx));
-        Self::build(project, cx)
+        Self::build(project, window, cx)
     }
 
     /// 创建不绑定项目目录的工作区。
-    pub fn new_empty(_window: &Window, cx: &mut Context<Self>) -> Self {
+    pub fn new_empty(window: &Window, cx: &mut Context<Self>) -> Self {
         let project = cx.new(Project::empty);
-        Self::build(project, cx)
+        Self::build(project, window, cx)
     }
 
-    fn build(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
+    fn build(project: Entity<Project>, _window: &Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
 
         let keybindings = zcv_keymap::load(cx).expect("内置 keymap 应完整有效");
@@ -82,6 +87,8 @@ impl Workspace {
         cx.set_global(keybindings);
 
         let pane = cx.new(Pane::new);
+        let layout_path = layout_state::path_for_workspace(project.read(cx).root());
+        let restored_docks = layout_state::load(&layout_path).unwrap_or_default();
         // 三个空 Dock；面板由宿主经 register_panel 注册。
         let drag_notify: Rc<Cell<Option<DockPosition>>> = Rc::new(Cell::new(None));
         let left_dock = cx.new(|cx| {
@@ -89,6 +96,7 @@ impl Workspace {
                 DockPosition::Left,
                 Vec::new(),
                 DockPosition::Left.default_size(),
+                Some(restored_docks.left.clone()),
                 drag_notify.clone(),
                 cx,
             )
@@ -98,6 +106,7 @@ impl Workspace {
                 DockPosition::Right,
                 Vec::new(),
                 DockPosition::Right.default_size(),
+                Some(restored_docks.right.clone()),
                 drag_notify.clone(),
                 cx,
             )
@@ -107,6 +116,7 @@ impl Workspace {
                 DockPosition::Bottom,
                 Vec::new(),
                 DockPosition::Bottom.default_size(),
+                Some(restored_docks.bottom.clone()),
                 drag_notify.clone(),
                 cx,
             )
@@ -126,13 +136,14 @@ impl Workspace {
             left_dock,
             right_dock,
             bottom_dock,
-            panel_actions: Vec::new(),
             drag_notify,
             file_click_generation: 0,
             titlebar: None,
             open_settings_path_provider: None,
             _subscriptions: Vec::new(),
             workspace_actions: Vec::new(),
+            layout_path,
+            _layout_save_task: None,
         }
     }
 
@@ -164,11 +175,62 @@ impl Workspace {
         &self.status_bar
     }
 
-    /// 注册面板并建立 toggle action 查找表（对齐 Zed register_panel）。
+    /// 捕获三个 Dock 的当前布局状态。
+    pub fn capture_dock_state(&self, cx: &App) -> DockStructure {
+        DockStructure {
+            left: self.left_dock.read(cx).capture_state(),
+            right: self.right_dock.read(cx).capture_state(),
+            bottom: self.bottom_dock.read(cx).capture_state(),
+        }
+    }
+
+    /// 注入布局快照。具体 panel 尚未注册时，Dock 会保留状态并在注册后继续恢复。
+    pub fn set_dock_structure(
+        &mut self,
+        docks: DockStructure,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for (dock, state) in [
+            (&self.left_dock, docks.left),
+            (&self.right_dock, docks.right),
+            (&self.bottom_dock, docks.bottom),
+        ] {
+            dock.update(cx, |dock, cx| dock.set_serialized_state(state, window, cx));
+        }
+        cx.notify();
+    }
+
+    fn schedule_layout_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self._layout_save_task.is_some() {
+            return;
+        }
+        self._layout_save_task = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(LAYOUT_SAVE_THROTTLE).await;
+            this.update_in(cx, |this, _window, cx| {
+                this._layout_save_task.take();
+                let state = this.capture_dock_state(cx);
+                if let Err(error) = layout_state::save(&this.layout_path, state) {
+                    log::warn!("保存工作区布局失败：{error:#}");
+                }
+            })
+            .ok();
+        }));
+    }
+
+    fn flush_layout(&mut self, cx: &App) {
+        self._layout_save_task.take();
+        if let Err(error) = layout_state::save(&self.layout_path, self.capture_dock_state(cx)) {
+            log::warn!("保存工作区布局失败：{error:#}");
+        }
+    }
+
+    /// 注册面板（对齐 Zed register_panel）。
     pub fn register_panel(
         &mut self,
         handle: Arc<dyn PanelHandle>,
         position: DockPosition,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let dock = match position {
@@ -176,11 +238,7 @@ impl Workspace {
             DockPosition::Right => &self.right_dock,
             DockPosition::Bottom => &self.bottom_dock,
         };
-        let dock = dock.clone();
-        let idx = dock.read(cx).panels.len();
-        dock.update(cx, |dock, cx| dock.add_panel(handle, cx));
-        self.panel_actions
-            .push((dock.read(cx).panels[idx].toggle_action(cx), dock, idx));
+        dock.update(cx, |dock, cx| dock.add_panel(handle, window, cx));
         cx.notify();
     }
 
@@ -360,33 +418,105 @@ impl Workspace {
         }
     }
 
-    /// 通用面板 toggle：已聚焦时再按关闭并回到编辑区；可见未聚焦时先聚焦（Zed 语义）。
-    fn handle_toggle_panel<A: Action>(
+    /// Panel 键盘命令：已聚焦时关闭；可见未聚焦时聚焦；隐藏时显示并聚焦。
+    fn handle_panel_keyboard_action(
         &mut self,
-        action: &A,
+        action: &FocusOrHidePanel,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((_, dock, panel_idx)) = self
-            .panel_actions
-            .iter()
-            .find(|(candidate, _, _)| candidate.partial_eq(action))
-        else {
+        let target = [&self.left_dock, &self.bottom_dock, &self.right_dock]
+            .into_iter()
+            .find_map(|dock| {
+                dock.read(cx)
+                    .panels
+                    .iter()
+                    .position(|panel| panel.persistent_name() == action.panel)
+                    .map(|panel_index| (dock.clone(), panel_index))
+            });
+        let Some((dock, panel_idx)) = target else {
             return;
         };
-        let (dock, panel_idx) = (dock.clone(), *panel_idx);
         let focus = dock.read(cx).panels[panel_idx].focus_handle(cx);
 
         if focus.contains_focused(window, cx) {
-            dock.update(cx, |d, cx| d.toggle_panel(panel_idx, window, cx));
+            dock.update(cx, |d, cx| d.toggle_panel_visibility(panel_idx, window, cx));
             self.focus_center_pane(window, cx);
         } else {
             if !dock.read(cx).is_panel_active(panel_idx) {
-                dock.update(cx, |d, cx| d.toggle_panel(panel_idx, window, cx));
+                dock.update(cx, |d, cx| d.toggle_panel_visibility(panel_idx, window, cx));
             }
             window.focus(&focus);
         }
+        self.schedule_layout_save(window, cx);
         window.refresh();
+    }
+
+    /// 处理 Glyph 的鼠标意图：只切换指定 Panel 的可见性。
+    pub(crate) fn toggle_panel_visibility_from_button(
+        &mut self,
+        position: DockPosition,
+        panel_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dock = match position {
+            DockPosition::Left => self.left_dock.clone(),
+            DockPosition::Bottom => self.bottom_dock.clone(),
+            DockPosition::Right => self.right_dock.clone(),
+        };
+        let was_visible = dock.read(cx).is_panel_active(panel_index);
+        let panel_focus = dock
+            .read(cx)
+            .panels
+            .get(panel_index)
+            .map(|panel| panel.focus_handle(cx));
+        if panel_focus.is_none() {
+            return;
+        }
+
+        dock.update(cx, |dock, cx| {
+            dock.toggle_panel_visibility(panel_index, window, cx)
+        });
+        if was_visible {
+            self.focus_center_pane(window, cx);
+        } else if let Some(panel_focus) = panel_focus {
+            window.focus(&panel_focus);
+        }
+        self.schedule_layout_save(window, cx);
+        window.refresh();
+    }
+
+    fn toggle_dock(&mut self, position: DockPosition, window: &mut Window, cx: &mut Context<Self>) {
+        let dock = match position {
+            DockPosition::Left => self.left_dock.clone(),
+            DockPosition::Bottom => self.bottom_dock.clone(),
+            DockPosition::Right => self.right_dock.clone(),
+        };
+        let was_open = dock.read(cx).is_open();
+        let panel_focus = dock
+            .read(cx)
+            .active_panel()
+            .map(|panel| panel.focus_handle(cx));
+        let focus_center = was_open
+            && (dock.read(cx).focus.contains_focused(window, cx)
+                || panel_focus
+                    .as_ref()
+                    .is_some_and(|focus| focus.contains_focused(window, cx)));
+
+        dock.update(cx, |dock, cx| dock.set_open(!was_open, window, cx));
+        if focus_center {
+            self.focus_center_pane(window, cx);
+        } else if !was_open && let Some(focus) = panel_focus {
+            window.focus(&focus);
+        }
+        self.schedule_layout_save(window, cx);
+        window.refresh();
+    }
+
+    fn handle_quit(&mut self, _: &QuitWindow, _: &mut Window, cx: &mut Context<Self>) {
+        self.flush_layout(cx);
+        cx.quit();
     }
 
     fn handle_save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
@@ -506,21 +636,9 @@ impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pane = self.pane.clone();
 
-        let left_dock = if self.left_dock.read(cx).is_open() {
-            Some(self.left_dock.clone())
-        } else {
-            None
-        };
-        let right_dock = if self.right_dock.read(cx).is_open() {
-            Some(self.right_dock.clone())
-        } else {
-            None
-        };
-        let bottom_dock = if self.bottom_dock.read(cx).is_open() {
-            Some(self.bottom_dock.clone())
-        } else {
-            None
-        };
+        let left_dock = self.left_dock.clone();
+        let right_dock = self.right_dock.clone();
+        let bottom_dock = self.bottom_dock.clone();
 
         let left_dock_entity = self.left_dock.clone();
         let right_dock_entity = self.right_dock.clone();
@@ -531,6 +649,7 @@ impl Render for Workspace {
         let right_dock_up = self.right_dock.clone();
         let bottom_dock_up = self.bottom_dock.clone();
         let drag_notify_up = self.drag_notify.clone();
+        let workspace_after_resize = cx.entity().downgrade();
 
         let titlebar = self.titlebar.as_ref();
 
@@ -555,7 +674,7 @@ impl Render for Workspace {
             cx,
         ))
         .child(self.toast_layer.clone())
-        .on_action(handle_quit)
+        .on_action(cx.listener(Self::handle_quit))
         .on_action(handle_minimize)
         .on_action(handle_toggle_maximize)
         .on_action(cx.listener(Self::handle_close_tab))
@@ -564,15 +683,16 @@ impl Render for Workspace {
         .on_action(cx.listener(Self::handle_git_push))
         .on_action(cx.listener(Self::handle_open_settings))
         .on_action(cx.listener(Self::handle_save))
-        .on_action(cx.listener(Self::handle_toggle_panel::<crate::dock::ToggleProjectTree>))
-        .on_action(cx.listener(Self::handle_toggle_panel::<crate::dock::ToggleVersionControl>))
-        .on_action(cx.listener(Self::handle_toggle_panel::<crate::dock::ToggleOutline>))
-        .on_action(cx.listener(Self::handle_toggle_panel::<crate::dock::ToggleTerminal>))
-        .on_action(cx.listener(Self::handle_toggle_panel::<crate::dock::ToggleDebug>))
-        .on_action(cx.listener(Self::handle_toggle_panel::<crate::dock::ToggleKeyboardShortcuts>))
-        .on_action(cx.listener(Self::handle_toggle_panel::<crate::dock::ToggleLanguageServer>))
-        .on_action(cx.listener(Self::handle_toggle_panel::<crate::dock::ToggleDiagnostics>))
-        .on_action(cx.listener(Self::handle_toggle_panel::<crate::dock::ToggleProjectSearch>))
+        .on_action(cx.listener(|this, _: &ToggleLeftDock, window, cx| {
+            this.toggle_dock(DockPosition::Left, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &ToggleBottomDock, window, cx| {
+            this.toggle_dock(DockPosition::Bottom, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &ToggleRightDock, window, cx| {
+            this.toggle_dock(DockPosition::Right, window, cx)
+        }))
+        .on_action(cx.listener(Self::handle_panel_keyboard_action))
         .on_mouse_move(move |event, window, cx| {
             if let Some(area) = drag_notify.get() {
                 let dock = match area {
@@ -589,10 +709,20 @@ impl Render for Workspace {
             }
         })
         .on_mouse_up(MouseButton::Left, move |_event, window, cx| {
+            let resized = [&left_dock_up, &right_dock_up, &bottom_dock_up]
+                .iter()
+                .any(|dock| dock.read(cx).is_dragging());
             for dock in [&left_dock_up, &right_dock_up, &bottom_dock_up] {
                 dock.update(cx, |d, _| d.end_resize());
             }
             drag_notify_up.set(None);
+            if resized {
+                workspace_after_resize
+                    .update(cx, |workspace, cx| {
+                        workspace.schedule_layout_save(window, cx)
+                    })
+                    .ok();
+            }
             window.refresh();
         })
     }
@@ -624,14 +754,125 @@ fn render_frame(
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext, TestAppContext};
+    use std::sync::Arc;
 
-    use super::Workspace;
+    use gpui::{
+        App, AppContext, Context, FocusHandle, Render, TestAppContext, Window, div, prelude::*,
+    };
+
+    use super::{DockPosition, DockStructure, LAYOUT_SAVE_THROTTLE, Workspace};
+    use crate::{FocusOrHidePanel, Panel, PanelHandle};
+
+    struct TestPanel {
+        focus: FocusHandle,
+    }
+
+    impl Panel for TestPanel {
+        fn icon() -> &'static str {
+            "icons/list_tree.svg"
+        }
+
+        fn label() -> &'static str {
+            "测试面板"
+        }
+
+        fn persistent_name() -> &'static str {
+            "test-panel"
+        }
+
+        fn focus_handle(&self, _: &App) -> FocusHandle {
+            self.focus.clone()
+        }
+    }
+
+    impl Render for TestPanel {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().track_focus(&self.focus)
+        }
+    }
 
     #[gpui::test]
     fn empty_workspace_has_a_project_without_a_worktree(cx: &mut TestAppContext) {
         let (workspace, cx) = cx.add_window_view(|window, cx| Workspace::new_empty(window, cx));
         let project = cx.read_entity(&workspace, |workspace, _| workspace.project().clone());
         assert!(!cx.read_entity(&project, |project, _| project.has_worktree()));
+    }
+
+    #[gpui::test]
+    fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let layout_path = directory.path().join("layout.json");
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::new_empty(window, cx);
+            workspace.set_dock_structure(DockStructure::default(), window, cx);
+            let panel = cx.new(|cx| TestPanel {
+                focus: cx.focus_handle(),
+            });
+            let handle: Arc<dyn PanelHandle> = Arc::new(panel);
+            workspace.register_panel(handle, DockPosition::Left, window, cx);
+            workspace
+        });
+        workspace.update(cx, |workspace, _| {
+            workspace.layout_path = layout_path.clone();
+        });
+        let focus = cx.read_entity(&workspace, |workspace, _| workspace.focus.clone());
+        cx.update(|window, _| window.focus(&focus));
+
+        cx.dispatch_action(FocusOrHidePanel::new("test-panel"));
+        assert!(cx.read_entity(&workspace, |workspace, cx| {
+            workspace.left_dock.read(cx).is_open()
+        }));
+        cx.update(|window, cx| {
+            let panel_focus = workspace
+                .read(cx)
+                .left_dock
+                .read(cx)
+                .active_panel()
+                .unwrap()
+                .focus_handle(cx);
+            assert!(panel_focus.contains_focused(window, cx));
+        });
+
+        // 快捷键：panel 可见但未聚焦时，只聚焦，不隐藏。
+        let center_focus = cx.read_entity(&workspace, |workspace, cx| {
+            workspace.pane.read(cx).focus.clone()
+        });
+        cx.update(|window, _| window.focus(&center_focus));
+        cx.dispatch_action(FocusOrHidePanel::new("test-panel"));
+        assert!(cx.read_entity(&workspace, |workspace, cx| {
+            workspace.left_dock.read(cx).is_open()
+        }));
+
+        // 快捷键：panel 可见且已聚焦时隐藏。
+        cx.dispatch_action(FocusOrHidePanel::new("test-panel"));
+        assert!(!cx.read_entity(&workspace, |workspace, cx| {
+            workspace.left_dock.read(cx).is_open()
+        }));
+
+        // 鼠标按钮路径直接切换可见性，不分派键盘 Action。
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_panel_visibility_from_button(DockPosition::Left, 0, window, cx);
+        });
+        assert!(cx.read_entity(&workspace, |workspace, cx| {
+            workspace.left_dock.read(cx).is_open()
+        }));
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_panel_visibility_from_button(DockPosition::Left, 0, window, cx);
+        });
+        assert!(!cx.read_entity(&workspace, |workspace, cx| {
+            workspace.left_dock.read(cx).is_open()
+        }));
+
+        cx.dispatch_action(FocusOrHidePanel::new("test-panel"));
+        assert!(cx.read_entity(&workspace, |workspace, cx| {
+            workspace.left_dock.read(cx).is_open()
+        }));
+
+        cx.executor().advance_clock(LAYOUT_SAVE_THROTTLE);
+        cx.run_until_parked();
+        let saved = crate::layout_state::load(&layout_path).expect("应保存布局快照");
+        assert!(saved.left.visible);
+        assert_eq!(saved.left.active_panel.as_deref(), Some("test-panel"));
     }
 }

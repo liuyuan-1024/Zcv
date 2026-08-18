@@ -67,10 +67,11 @@ fn register_panel<P: Panel>(
     workspace: &mut Workspace,
     entity: Entity<P>,
     position: DockPosition,
+    window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
     let handle: Arc<dyn PanelHandle> = Arc::new(entity);
-    workspace.register_panel(handle, position, cx);
+    workspace.register_panel(handle, position, window, cx);
 }
 
 /// 「切换项目」回调：新窗口打开目标项目，成功后关闭当前窗口。
@@ -152,24 +153,40 @@ fn initialize_common_workspace(
     let debug = cx.new(DebugPanel::new);
     let keyboard_shortcuts = cx.new(KeyboardShortcutsPanel::new);
 
-    register_panel(workspace, outline, DockPosition::Left, cx);
-    register_panel(workspace, terminal, DockPosition::Bottom, cx);
-    register_panel(workspace, debug, DockPosition::Bottom, cx);
-    register_panel(workspace, keyboard_shortcuts, DockPosition::Right, cx);
+    register_panel(workspace, outline, DockPosition::Left, window, cx);
+    register_panel(workspace, terminal, DockPosition::Bottom, window, cx);
+    register_panel(workspace, debug, DockPosition::Bottom, window, cx);
+    register_panel(
+        workspace,
+        keyboard_shortcuts,
+        DockPosition::Right,
+        window,
+        cx,
+    );
 
     let status_bar = workspace.status_bar().clone();
     let left_dock = workspace.left_dock.clone();
     let bottom_dock = workspace.bottom_dock.clone();
     let right_dock = workspace.right_dock.clone();
+    let workspace_entity = cx.weak_entity();
     status_bar.update(cx, |bar, cx| {
-        bar.add_left_item(cx.new(|cx| PanelButtons::new(left_dock.clone(), cx)), cx);
+        bar.add_left_item(
+            cx.new(|cx| PanelButtons::new(left_dock.clone(), workspace_entity.clone(), cx)),
+            cx,
+        );
         bar.add_left_item(cx.new(|_| LspButton::new()), cx);
         bar.add_left_item(cx.new(|_| DiagnosticsButton::new()), cx);
         bar.add_left_item(cx.new(|_| ProjectSearchButton::new()), cx);
         bar.add_right_item(cx.new(|_| CursorPosition::new()), cx);
         bar.add_right_item(cx.new(|_| ActiveBufferLanguage::new()), cx);
-        bar.add_right_item(cx.new(|cx| PanelButtons::new(bottom_dock.clone(), cx)), cx);
-        bar.add_right_item(cx.new(|cx| PanelButtons::new(right_dock.clone(), cx)), cx);
+        bar.add_right_item(
+            cx.new(|cx| PanelButtons::new(bottom_dock.clone(), workspace_entity.clone(), cx)),
+            cx,
+        );
+        bar.add_right_item(
+            cx.new(|cx| PanelButtons::new(right_dock.clone(), workspace_entity.clone(), cx)),
+            cx,
+        );
     });
 
     let pane = workspace.pane().clone();
@@ -299,8 +316,14 @@ fn initialize_workspace(
         panel
     });
 
-    register_panel(workspace, project_tree.clone(), DockPosition::Left, cx);
-    register_panel(workspace, version_control, DockPosition::Left, cx);
+    register_panel(
+        workspace,
+        project_tree.clone(),
+        DockPosition::Left,
+        window,
+        cx,
+    );
+    register_panel(workspace, version_control, DockPosition::Left, window, cx);
     initialize_common_workspace(workspace, window, cx);
 
     // ═══ 状态栏注册 ═══════════════════════════════════════════════

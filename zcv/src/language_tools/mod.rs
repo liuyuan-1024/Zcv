@@ -5,7 +5,7 @@
 use gpui::{Context, Render, Window, prelude::*};
 use zcv_ui::Glyph;
 use zcv_workspace::ItemHandle;
-use zcv_workspace::{StatusItemView, ToggleLanguageServer};
+use zcv_workspace::{FocusOrHidePanel, StatusItemView};
 
 pub(crate) struct LspButton;
 
@@ -21,10 +21,11 @@ impl StatusItemView for LspButton {
 
 impl Render for LspButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        let action = FocusOrHidePanel::new("language-server");
         Glyph::icon("lsp-button", "icons/bolt_outlined.svg")
             .label("语言服务器")
-            .shortcut(&ToggleLanguageServer, cx)
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleLanguageServer), cx))
+            .shortcut(&action, cx)
+            .on_click(move |_, window, cx| window.dispatch_action(Box::new(action.clone()), cx))
             .into_any_element()
     }
 }

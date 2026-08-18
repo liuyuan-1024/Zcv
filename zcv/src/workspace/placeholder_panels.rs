@@ -1,13 +1,11 @@
 //! 占位面板：大纲/终端/调试/快捷键（后续接入真实功能）。
-//!
-//! 面板 toggle action 由 zcv-workspace 的 dock 模块声明，这里只绑定具体类型。
 
 use gpui::{App, Context, FocusHandle, Render, Window, div, prelude::*};
 use zcv_theme::color;
-use zcv_workspace::{Panel, ToggleDebug, ToggleKeyboardShortcuts, ToggleOutline, ToggleTerminal};
+use zcv_workspace::Panel;
 
 macro_rules! make_placeholder_panel {
-    ($name:ident, $toggle_action:ty, $persistent:expr, $icon:expr, $label:expr) => {
+    ($name:ident, $persistent:expr, $icon:expr, $label:expr) => {
         pub(crate) struct $name {
             focus: FocusHandle,
         }
@@ -21,13 +19,14 @@ macro_rules! make_placeholder_panel {
         }
 
         impl Panel for $name {
-            type ToggleAction = $toggle_action;
-
             fn icon() -> &'static str {
                 $icon
             }
             fn label() -> &'static str {
                 $label
+            }
+            fn persistent_name() -> &'static str {
+                $persistent
             }
             fn focus_handle(&self, _cx: &App) -> FocusHandle {
                 self.focus.clone()
@@ -51,28 +50,15 @@ macro_rules! make_placeholder_panel {
     };
 }
 
-make_placeholder_panel!(
-    OutlinePanel,
-    ToggleOutline,
-    "Outline",
-    "icons/list_tree.svg",
-    "大纲"
-);
+make_placeholder_panel!(OutlinePanel, "outline", "icons/list_tree.svg", "大纲");
 
-make_placeholder_panel!(
-    TerminalPanel,
-    ToggleTerminal,
-    "Terminal",
-    "icons/terminal.svg",
-    "终端"
-);
+make_placeholder_panel!(TerminalPanel, "terminal", "icons/terminal.svg", "终端");
 
-make_placeholder_panel!(DebugPanel, ToggleDebug, "Debug", "icons/debug.svg", "调试");
+make_placeholder_panel!(DebugPanel, "debug", "icons/debug.svg", "调试");
 
 make_placeholder_panel!(
     KeyboardShortcutsPanel,
-    ToggleKeyboardShortcuts,
-    "KeyboardShortcuts",
+    "keyboard-shortcuts",
     "icons/keyboard.svg",
     "快捷键"
 );

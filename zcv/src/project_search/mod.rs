@@ -5,7 +5,7 @@
 use gpui::{Context, Render, Window, prelude::*};
 use zcv_ui::Glyph;
 use zcv_workspace::ItemHandle;
-use zcv_workspace::{StatusItemView, ToggleProjectSearch};
+use zcv_workspace::{FocusOrHidePanel, StatusItemView};
 
 pub(crate) struct ProjectSearchButton;
 
@@ -21,10 +21,11 @@ impl StatusItemView for ProjectSearchButton {
 
 impl Render for ProjectSearchButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        let action = FocusOrHidePanel::new("project-search");
         Glyph::icon("search-button", "icons/magnifying_glass.svg")
             .label("项目搜索")
-            .shortcut(&ToggleProjectSearch, cx)
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleProjectSearch), cx))
+            .shortcut(&action, cx)
+            .on_click(move |_, window, cx| window.dispatch_action(Box::new(action.clone()), cx))
             .into_any_element()
     }
 }

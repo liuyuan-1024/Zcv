@@ -92,13 +92,22 @@ impl BlinkManager {
     }
 
     /// 禁用闪烁（编辑器失去焦点时调用）。
-    pub fn disable(&mut self, _cx: &mut Context<Self>) {
+    pub fn disable(&mut self, cx: &mut Context<Self>) {
+        let was_visible = self.visible;
         self.visible = false;
         self.enabled = false;
+        if was_visible {
+            cx.notify();
+        }
     }
 
     /// 光标当前应绘制。
     pub fn visible(&self) -> bool {
         self.visible
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enabled(&self) -> bool {
+        self.enabled
     }
 }

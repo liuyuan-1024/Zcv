@@ -190,9 +190,23 @@ impl Editor {
 
     /// 光标是否应当绘制。
     ///
-    /// 编辑器未聚焦时不显示；聚焦时由 BlinkManager 控制闪烁。
+    /// 窗口未激活或编辑器未聚焦时不显示；两者都满足时由 BlinkManager 控制闪烁。
     pub(crate) fn show_local_cursors(&self, window: &Window, cx: &App) -> bool {
-        self.blink_manager.read(cx).visible() && self.focus.is_focused(window)
+        window.is_window_active()
+            && self.focus.is_focused(window)
+            && self.blink_manager.read(cx).visible()
+    }
+
+    /// 窗口激活与编辑器焦点是两个独立条件，统一在这里决定闪烁生命周期。
+    fn sync_cursor_blinking(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let should_blink = window.is_window_active() && self.focus.is_focused(window);
+        self.blink_manager.update(cx, |manager, cx| {
+            if should_blink {
+                manager.enable(cx);
+            } else {
+                manager.disable(cx);
+            }
+        });
     }
 
     pub fn buffer(&self) -> Entity<Buffer> {
@@ -1663,23 +1677,23 @@ impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 首次渲染时注册焦点事件（构造函数中没有 Window）
         if !self.blink_manager_initialized {
-            cx.on_focus(&self.focus, window, |editor, _window, cx| {
-                editor.blink_manager.update(cx, BlinkManager::enable);
+            cx.on_focus(&self.focus, window, |editor, window, cx| {
+                editor.sync_cursor_blinking(window, cx);
             })
             .detach();
-            cx.on_blur(&self.focus, window, |editor, _window, cx| {
-                editor.blink_manager.update(cx, BlinkManager::disable);
+            cx.on_blur(&self.focus, window, |editor, window, cx| {
+                editor.sync_cursor_blinking(window, cx);
+            })
+            .detach();
+            cx.observe_window_activation(window, |editor, window, cx| {
+                editor.sync_cursor_blinking(window, cx);
             })
             .detach();
             self.blink_manager_initialized = true;
         }
 
-        // 同步当前焦点状态——弥补焦点先于首次 render 到达的时序缺口。
-        if self.focus.is_focused(window) {
-            self.blink_manager.update(cx, |b, cx| b.enable(cx));
-        } else {
-            self.blink_manager.update(cx, |b, cx| b.disable(cx));
-        }
+        // 弥补焦点或窗口激活先于首次 render 到达的时序缺口。
+        self.sync_cursor_blinking(window, cx);
 
         self.sync_display_map(cx);
 
@@ -1769,6 +1783,10 @@ mod scroll_tests;
 #[cfg(test)]
 #[path = "test/mouse_selection_tests.rs"]
 mod mouse_selection_tests;
+
+#[cfg(test)]
+#[path = "test/cursor_activation_tests.rs"]
+mod cursor_activation_tests;
 
 /// 从 HEAD 全文按行范围切片（删除块展开显示被删除行；结尾换行的空尾段丢弃）。
 /// 编辑事务元数据（供编辑命令与输入共用）。

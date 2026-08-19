@@ -275,10 +275,13 @@ impl EntityInputHandler for Editor {
         let outcome = self.change_with_after(before_selections.clone(), cx, |buffer| {
             replace_selections(buffer, &targets, &text, metadata)
         });
-        let history_transaction_id = outcome
-            .as_ref()
-            .ok()
-            .and_then(|(outcome, _)| outcome.history_transaction_id())
+        // 会话提交后当前历史节点即本次编辑的归属节点（MergeWithPrevious 时指向前节点），用它作为组合会话的事务身份：连续候选更新据此合并进同一撤销步。
+        // 不能用编辑 outcome 的 history_transaction_id——会话 id 在合并进前节点后不指向任何历史节点，后续合并判断会失败。
+        let buffer = self.buffer.read(cx);
+        let history_transaction_id = buffer
+            .current_history_node()
+            .and_then(|node| buffer.history_node(node))
+            .map(|node| node.transaction_id)
             .or(previous_history_transaction);
         if outcome.is_err() {
             self.composition = previous_composition;
@@ -324,12 +327,12 @@ impl EntityInputHandler for Editor {
                 inserted_selections.primary_index(),
             ),
         );
-        if let Some(transaction_id) = history_transaction_id {
-            self.selection_history.record_transaction(
-                transaction_id,
-                before_selections,
-                self.resolved_selections(),
-            );
+        let selections = self.resolved_selections();
+        if let Some(transaction_id) = history_transaction_id
+            && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
+        {
+            // IME 组合期间同一事务的 redo 选区随候选更新推进。
+            transaction.set_redo(selections);
         }
         self.composition = Some(EditorComposition {
             ranges: marked_ranges.into(),

@@ -154,7 +154,7 @@ impl HistoryState {
         self.children_of_current().last().copied()
     }
 
-    /// 把 current 移到指定子节点；调用方保证 `child_id` 是 `children_of_current()` 之一。
+    /// 把 current 移到指定子节点；调用方保证目标节点是当前节点的子节点之一。
     pub(in crate::buffer) fn step_redo_into(
         &mut self,
         child_id: HistoryNodeId,

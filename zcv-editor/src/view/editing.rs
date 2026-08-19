@@ -296,7 +296,7 @@ impl Editor {
 
     /// 回放文本历史（undo/redo）并恢复对应选区的共享实现。
     ///
-    /// 不走 `change` 编辑事务入口：回放后的选区从 SelectionHistory 恢复，若经编辑事务落位会再次 record_transaction 覆盖 undo/redo 的选区记录，破坏重做语义。
+    /// 对齐 Zed：历史回放不经过编辑事务会话（`change` 会开启新会话并记录选区），这里直接回放 Buffer 历史并以被回放事务的身份只读恢复 SelectionHistory。
     fn replay_history(&mut self, redo: bool, cx: &mut Context<Self>) {
         let action = if redo { "Redo" } else { "Undo" };
         let outcome = self.buffer.update(cx, |buffer, cx| {
@@ -310,7 +310,13 @@ impl Editor {
                 if let Some(selections) = self
                     .selection_history
                     .transaction(outcome.transaction_id())
-                    .map(|history| if redo { history.redo() } else { history.undo() }.clone())
+                    .and_then(|history| {
+                        if redo {
+                            history.redo().cloned()
+                        } else {
+                            Some(history.undo().clone())
+                        }
+                    })
                 {
                     let version = self.buffer.read(cx).snapshot().version();
                     self.selections = EditorSelections::from_selection_set(version, &selections);

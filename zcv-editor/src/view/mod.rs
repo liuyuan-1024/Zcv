@@ -19,9 +19,10 @@ use zcv_actions::{
 };
 use zcv_buffer_diff::{DiffHunk, DiffHunkKind};
 use zcv_engine::{
-    Buffer, BufferConfig, BufferVersion, ByteOffset, EngineResult, Line, LineRange,
+    Buffer, BufferConfig, BufferVersion, ByteOffset, EngineError, EngineResult, Line, LineRange,
     MovementDirection, MovementUnit, PositionMap, Selection, SelectionSet, Snapshot, TextRange,
-    TextSubscription, TransactionMergePolicy, TransactionMetadata, TransactionSource,
+    TextSubscription, TransactionId, TransactionMergePolicy, TransactionMetadata,
+    TransactionSource,
 };
 use zcv_language::{BracketPair, FoldRange, LanguageBuffer, SyntaxSnapshot};
 use zcv_theme::{color, typography};
@@ -1009,22 +1010,16 @@ impl Editor {
 
     /// 提交一次文本编辑事务的唯一入口。
     ///
-    /// 闭包内构造编辑目标并调用引擎编辑函数；入口统一负责 Buffer 通知、编辑后选区
-    /// 锚点映射、SelectionHistory 记录、display_map 同步与搜索重搜（`apply_edit_outcome` 全链路）。
-    /// 返回编辑结果供需要事务身份的调用方消费（如 IME 组合会话）；失败时错误已打印、
-    /// 选区已恢复，调用方只需处理自身特判状态。
+    /// 对齐 Zed 的 `transact` 会话模型：入口统一负责会话开启/提交（`start_transaction` / `end_transaction`）、Buffer 通知、编辑后选区锚点映射、SelectionHistory 记录、display_map 同步与搜索重搜（`apply_edit_outcome` 全链路）。
+    /// 返回编辑结果供需要事务身份的调用方消费（如 IME 组合会话）；失败时错误已打印、选区已恢复，调用方只需处理自身特判状态。
     pub(super) fn change(
         &mut self,
         before_selections: SelectionSet,
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Buffer) -> EngineResult<EditOutcome>,
     ) -> EngineResult<EditOutcome> {
-        let outcome = self.buffer.update(cx, |buffer, cx| {
-            let outcome = f(buffer)?;
-            cx.notify();
-            Ok(outcome)
-        });
-        self.apply_edit_outcome(before_selections, outcome, cx)
+        let (node_id, outcome) = self.commit_session(before_selections, cx, f)?;
+        self.apply_edit_outcome(node_id, outcome, cx)
     }
 
     /// 编辑后选区由闭包按编辑语义重算的变体（删除、剪切、行移动、输入等特判场景）。
@@ -1034,90 +1029,126 @@ impl Editor {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Buffer) -> EngineResult<(EditOutcome, SelectionSet)>,
     ) -> EngineResult<(EditOutcome, SelectionSet)> {
+        let (node_id, outcome) = self.commit_session(before_selections, cx, f)?;
+        self.apply_edit_outcome_with_after(node_id, outcome, cx)
+    }
+
+    /// 会话化编辑的共享骨架：开启会话并记录 undo 选区（对齐 Zed：事务开始时记录）→ 闭包编辑（统一 Buffer 通知）→ 提交会话，返回 (节点身份, 编辑结果)。
+    ///
+    /// 编辑失败时结束空会话（不产生历史节点）、恢复编辑前选区并回传错误；合并进前节点时清理会话自身的孤儿选区记录。
+    fn commit_session<T>(
+        &mut self,
+        before_selections: SelectionSet,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Buffer) -> EngineResult<T>,
+    ) -> EngineResult<(Option<TransactionId>, T)> {
+        let session_id = self.start_transaction(before_selections.clone(), cx)?;
         let outcome = self.buffer.update(cx, |buffer, cx| {
             let outcome = f(buffer)?;
             cx.notify();
             Ok(outcome)
         });
-        self.apply_edit_outcome_with_after(before_selections, outcome, cx)
-    }
-
-    /// 编辑事务结果落位：选区锚点映射、历史记录、display_map 同步与搜索重搜。
-    ///
-    /// 失败时文本未变，恢复编辑前选区（部分调用方在提交前调整过选区）并把错误回传。
-    fn apply_edit_outcome(
-        &mut self,
-        before_selections: SelectionSet,
-        outcome: EngineResult<EditOutcome>,
-        cx: &mut Context<Self>,
-    ) -> EngineResult<EditOutcome> {
-        match outcome {
-            Ok(outcome) => {
-                if let Some(transaction) = outcome.transaction() {
-                    // 用本次事务的坐标映射批量推进选区端点锚点，选区自动跟随文本变化。
-                    let snapshot = self.buffer.read(cx).snapshot();
-                    let new_version = snapshot.version();
-                    let position_map = transaction.event().position_map();
-                    self.selections.map_through_position_map(
-                        self.selections.version(),
-                        new_version,
-                        position_map,
-                    );
-                    if let Some(transaction_id) = transaction.history_transaction_id() {
-                        // display_map 尚未同步到新版本，历史快照按 Buffer 快照解析。
-                        let after_selections = self.selections.resolve(&snapshot);
-                        self.selection_history.record_transaction(
-                            transaction_id,
-                            before_selections,
-                            after_selections,
-                        );
-                    }
-                }
-                self.finish_edit(cx);
-                self.research_after_edit(cx);
-                cx.emit(EditorEvent::Edited);
-                Ok(outcome)
-            }
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
             Err(error) => {
+                self.end_transaction(cx);
                 eprintln!("Editor 编辑事务失败：{error}");
                 let version = self.buffer.read(cx).snapshot().version();
                 self.selections = EditorSelections::from_selection_set(version, &before_selections);
-                Err(error)
+                return Err(error);
+            }
+        };
+        let node_id = self.end_transaction(cx);
+        if node_id != Some(session_id) {
+            self.selection_history.remove_transaction(session_id);
+        }
+        Ok((node_id, outcome))
+    }
+
+    /// 开启编辑会话并记录 undo 选区（对齐 Zed 的 `start_transaction_at`；
+    /// zcv 无 Zed 的时间合并需求，故不提供 `now` 参数）。
+    ///
+    /// Editor 不嵌套会话：引擎会话已开启时视为内部错误。
+    fn start_transaction(
+        &mut self,
+        undo_selections: SelectionSet,
+        cx: &mut Context<Self>,
+    ) -> EngineResult<TransactionId> {
+        let transaction_id = self
+            .buffer
+            .update(cx, |buffer, _| buffer.start_transaction())?
+            .ok_or_else(|| EngineError::EngineBug {
+                location: "Editor::start_transaction",
+                detail: "编辑会话已开启，Editor 不允许嵌套会话".to_string(),
+            })?;
+        self.selection_history
+            .insert_transaction(transaction_id, undo_selections);
+        Ok(transaction_id)
+    }
+
+    /// 提交编辑会话；会话内无编辑时返回 `None`（编辑失败路径）。
+    fn end_transaction(&mut self, cx: &mut Context<Self>) -> Option<TransactionId> {
+        self.buffer
+            .update(cx, |buffer, _| buffer.end_transaction())
+            .ok()
+            .flatten()
+    }
+
+    /// 编辑事务结果落位：选区锚点映射、redo 选区记录、display_map 同步与搜索重搜。
+    ///
+    /// 会话提交后的历史节点身份（与本次编辑的事件身份分离，合并进前节点时指向被合并的既有节点）；
+    /// `None` 表示空会话或历史被预算清空，此时不记录选区历史。编辑失败路径由 `change` 统一处理，这里只消费成功结果。
+    fn apply_edit_outcome(
+        &mut self,
+        transaction_id: Option<TransactionId>,
+        outcome: EditOutcome,
+        cx: &mut Context<Self>,
+    ) -> EngineResult<EditOutcome> {
+        if let Some(transaction) = outcome.transaction() {
+            // 用本次事务的坐标映射批量推进选区端点锚点，选区自动跟随文本变化。
+            let snapshot = self.buffer.read(cx).snapshot();
+            let new_version = snapshot.version();
+            let position_map = transaction.event().position_map();
+            self.selections.map_through_position_map(
+                self.selections.version(),
+                new_version,
+                position_map,
+            );
+            if let Some(transaction_id) = transaction_id
+                && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
+            {
+                // display_map 尚未同步到新版本，历史快照按 Buffer 快照解析。
+                // 对齐 Zed：事务结束时记录 redo 选区。
+                let after_selections = self.selections.resolve(&snapshot);
+                transaction.set_redo(after_selections);
             }
         }
+        self.finish_edit(cx);
+        self.research_after_edit(cx);
+        cx.emit(EditorEvent::Edited);
+        Ok(outcome)
     }
 
     /// 行移动等特判场景：编辑后选区按行语义重算，直接重锚定结果，不走通用锚点映射。
     fn apply_edit_outcome_with_after(
         &mut self,
-        before_selections: SelectionSet,
-        outcome: EngineResult<(EditOutcome, SelectionSet)>,
+        transaction_id: Option<TransactionId>,
+        outcome: (EditOutcome, SelectionSet),
         cx: &mut Context<Self>,
     ) -> EngineResult<(EditOutcome, SelectionSet)> {
-        match outcome {
-            Ok((outcome, after_selections)) => {
-                if let Some(transaction_id) = outcome.history_transaction_id() {
-                    self.selection_history.record_transaction(
-                        transaction_id,
-                        before_selections,
-                        after_selections.clone(),
-                    );
-                }
-                // 编辑后 display_map 尚未同步，重锚定用 Buffer 快照的当前版本。
-                let version = self.buffer.read(cx).snapshot().version();
-                self.selections = EditorSelections::from_selection_set(version, &after_selections);
-                self.finish_edit(cx);
-                self.research_after_edit(cx);
-                cx.emit(EditorEvent::Edited);
-                Ok((outcome, after_selections))
-            }
-            Err(error) => {
-                eprintln!("Editor 编辑事务失败：{error}");
-                let version = self.buffer.read(cx).snapshot().version();
-                self.selections = EditorSelections::from_selection_set(version, &before_selections);
-                Err(error)
-            }
+        let (outcome, after_selections) = outcome;
+        if let Some(transaction_id) = transaction_id
+            && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
+        {
+            transaction.set_redo(after_selections.clone());
         }
+        // 编辑后 display_map 尚未同步，重锚定用 Buffer 快照的当前版本。
+        let version = self.buffer.read(cx).snapshot().version();
+        self.selections = EditorSelections::from_selection_set(version, &after_selections);
+        self.finish_edit(cx);
+        self.research_after_edit(cx);
+        cx.emit(EditorEvent::Edited);
+        Ok((outcome, after_selections))
     }
 
     fn finish_edit(&mut self, cx: &mut Context<Self>) {

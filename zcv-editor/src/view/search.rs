@@ -49,6 +49,15 @@ impl EditorSearch {
             None => false,
         }
     }
+
+    /// 拆分搜索结果中的 literal / regex 变体（编辑闭包按类型分派）。
+    fn cloned_result(&self) -> (Option<SearchResult>, Option<RegexSearchResult>) {
+        match &self.result {
+            Some(SearchResultKind::Literal(result)) => (Some(result.clone()), None),
+            Some(SearchResultKind::Regex(result)) => (None, Some(result.clone())),
+            None => (None, None),
+        }
+    }
 }
 
 impl SearchableItem for Editor {
@@ -121,11 +130,7 @@ impl SearchableItem for Editor {
         let Some(index) = search.active_index else {
             return false;
         };
-        let (literal, regex) = match &search.result {
-            Some(SearchResultKind::Literal(result)) => (Some(result.clone()), None),
-            Some(SearchResultKind::Regex(result)) => (None, Some(result.clone())),
-            None => (None, None),
-        };
+        let (literal, regex) = search.cloned_result();
         let before = self.resolved_selections();
         let outcome = self.change(before, cx, |buffer| {
             if let Some(result) = literal {
@@ -141,7 +146,7 @@ impl SearchableItem for Editor {
             }
         });
         // 只有真正发生替换（事务非空）才视为成功，避免 search_bar 无意义地前移活动匹配。
-        outcome.map_or(false, |outcome| outcome.transaction().is_some())
+        outcome.is_ok_and(|outcome| outcome.transaction().is_some())
     }
 
     fn replace_all(
@@ -152,11 +157,7 @@ impl SearchableItem for Editor {
     ) -> usize {
         let Some(search) = &self.search else { return 0 };
         let count = search.len();
-        let (literal, regex) = match &search.result {
-            Some(SearchResultKind::Literal(result)) => (Some(result.clone()), None),
-            Some(SearchResultKind::Regex(result)) => (None, Some(result.clone())),
-            None => (None, None),
-        };
+        let (literal, regex) = search.cloned_result();
         let before = self.resolved_selections();
         let outcome = self.change(before, cx, |buffer| {
             if let Some(result) = literal {
@@ -171,7 +172,7 @@ impl SearchableItem for Editor {
                 Ok(EditOutcome::unchanged())
             }
         });
-        let replaced = outcome.map_or(false, |outcome| outcome.transaction().is_some());
+        let replaced = outcome.is_ok_and(|outcome| outcome.transaction().is_some());
         if replaced { count } else { 0 }
     }
 }

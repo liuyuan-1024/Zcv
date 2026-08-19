@@ -6,7 +6,6 @@
 //! 引擎的 `Selection` / `SelectionSet` 仍是编辑算法与历史快照使用的纯数据原语。
 
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use zcv_engine::{
@@ -39,12 +38,6 @@ impl EditOutcome {
             Some(transaction) => Self::edited(transaction),
             None => Self::unchanged(),
         }
-    }
-
-    pub(super) fn history_transaction_id(&self) -> Option<TransactionId> {
-        self.transaction
-            .as_ref()
-            .and_then(TransactionOutcome::history_transaction_id)
     }
 
     pub(super) fn transaction(&self) -> Option<&TransactionOutcome> {
@@ -316,10 +309,11 @@ impl Default for EditorSelections {
     }
 }
 
+/// 一个事务的选区快照；`redo` 在事务提交时才填入。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TransactionSelections {
     undo: SelectionSet,
-    redo: SelectionSet,
+    redo: Option<SelectionSet>,
 }
 
 impl TransactionSelections {
@@ -327,8 +321,13 @@ impl TransactionSelections {
         &self.undo
     }
 
-    pub(super) fn redo(&self) -> &SelectionSet {
-        &self.redo
+    pub(super) fn redo(&self) -> Option<&SelectionSet> {
+        self.redo.as_ref()
+    }
+
+    /// 事务提交后填入 redo 选区（对齐 Zed：`end_transaction` 时更新）。
+    pub(super) fn set_redo(&mut self, redo: SelectionSet) {
+        self.redo = Some(redo);
     }
 }
 
@@ -338,18 +337,24 @@ pub(super) struct SelectionHistory {
 }
 
 impl SelectionHistory {
-    pub(super) fn record_transaction(
+    /// 事务开始时记录 undo 选区。
+    pub(super) fn insert_transaction(&mut self, transaction_id: TransactionId, undo: SelectionSet) {
+        self.selections_by_transaction
+            .entry(transaction_id)
+            .or_insert_with(|| TransactionSelections { undo, redo: None });
+    }
+
+    /// 取事务的选区记录，供提交时更新 redo 选区。
+    pub(super) fn transaction_mut(
         &mut self,
         transaction_id: TransactionId,
-        undo: SelectionSet,
-        redo: SelectionSet,
-    ) {
-        match self.selections_by_transaction.entry(transaction_id) {
-            Entry::Occupied(mut entry) => entry.get_mut().redo = redo,
-            Entry::Vacant(entry) => {
-                entry.insert(TransactionSelections { undo, redo });
-            }
-        }
+    ) -> Option<&mut TransactionSelections> {
+        self.selections_by_transaction.get_mut(&transaction_id)
+    }
+
+    /// 删除会话合并后留下的孤儿记录（会话并入前节点时自身不再对应历史节点）。
+    pub(super) fn remove_transaction(&mut self, transaction_id: TransactionId) {
+        self.selections_by_transaction.remove(&transaction_id);
     }
 
     pub(super) fn transaction(

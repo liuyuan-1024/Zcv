@@ -8,9 +8,7 @@ use crate::{
     BufferVersion, EngineError, EngineResult, LargeTransactionPolicy, TransactionOutcome,
     errors::{EditError, StorageError, TransactionError},
     storage::TextStorage,
-    transaction::{
-        ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionRecord, TransactionSource,
-    },
+    transaction::{ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionSource},
 };
 
 /// 单个 `EditList` 内所有 `Edit::replacement` 的 UTF-8 字节和。
@@ -33,67 +31,18 @@ impl Buffer {
         &mut self,
         tx: Transaction,
     ) -> EngineResult<TransactionOutcome> {
-        let (_, outcome) = self.apply_transaction_inner(tx)?;
-        Ok(outcome)
-    }
-
-    /// 提交并应用事务，返回完整的可回放事实 `TransactionRecord`。
-    pub(crate) fn apply_transaction_recorded(
-        &mut self,
-        tx: Transaction,
-    ) -> EngineResult<TransactionRecord> {
-        let (record, _) = self.apply_transaction_inner(tx)?;
-        Ok(record)
-    }
-
-    /// 在当前 Buffer 上回放一条 `TransactionRecord`，必须 `record.old_version == self.version`。
-    ///
-    /// 回放走标准事务管线，不绕过任何边界校验；返回新生成的 `TransactionRecord`（`transaction_id` 由当前 Buffer 重新分配）。
-    pub fn replay_transaction_record(
-        &mut self,
-        record: &TransactionRecord,
-    ) -> EngineResult<TransactionRecord> {
-        if record.old_version() != self.version {
-            return Err(TransactionError::VersionMismatch {
-                expected: self.version,
-                actual: record.old_version(),
-            }
-            .into());
-        }
-
-        self.apply_transaction_recorded(record.to_transaction()?)
-    }
-
-    fn apply_transaction_inner(
-        &mut self,
-        tx: Transaction,
-    ) -> EngineResult<(TransactionRecord, TransactionOutcome)> {
         self.ensure_writable()?;
         let mut prepared = self.prepare_transaction(tx)?;
         self.apply_large_transaction_policy(&mut prepared)?;
 
-        // `Arc<[T]>` 让以下所有 clone 都是 O(1) 引用计数递增，无堆分配。
-        // 仍然显式列出便于读者理解所有权流动；编译器不会自动 elide 这些 Arc::clone。
-        let (transaction_id, delta, _changeset, event) = self.apply_edit_list(
+        let (transaction_id, _delta, _changeset, event) = self.apply_edit_list(
             prepared.base_version,
             prepared.edits.clone(),
             prepared.metadata.source(),
         )?;
 
-        // 构造 TransactionRecord：所有字段都是 Arc-backed 或 Copy，clone 是 O(1)。
-        let record = TransactionRecord::new(
-            transaction_id,
-            delta.old_version(),
-            delta.new_version(),
-            prepared.edits.clone(),
-            prepared.undo_edits.clone(),
-            prepared.metadata.clone(),
-        );
-
         let history_transaction_id = self.finish_transaction(prepared, transaction_id)?;
-        let outcome = TransactionOutcome::new(history_transaction_id, event);
-
-        Ok((record, outcome))
+        Ok(TransactionOutcome::new(history_transaction_id, event))
     }
 
     fn prepare_transaction(&mut self, tx: Transaction) -> EngineResult<PreparedTransaction> {
@@ -131,6 +80,17 @@ impl Buffer {
         prepared: PreparedTransaction,
         transaction_id: crate::TransactionId,
     ) -> EngineResult<Option<crate::TransactionId>> {
+        if let Some(session) = &mut self.session {
+            // 会话内：只累积 undo/redo 批次，历史写入推迟到 `end_transaction`。
+            if prepared.metadata.record_history() {
+                session.append(prepared.undo_edits, prepared.redo_edits, &prepared.metadata);
+            } else {
+                // 超大事务放弃历史（SkipHistory）：整个会话的历史作废，否则 undo 回放会漏掉会话内的这些文本变化。
+                session.discard_history();
+            }
+            return Ok(Some(session.transaction_id));
+        }
+
         if prepared.metadata.record_history() {
             // Arc::clone：description 字符串只在历史节点持有一份共享
             let description = prepared.metadata.description_arc().cloned();

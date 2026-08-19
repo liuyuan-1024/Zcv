@@ -46,4 +46,6 @@ pub struct Buffer {
     next_transaction_id: TransactionId,
     text_changes: TextChangeTopic,
     history: history::HistoryState,
+    /// 进行中的编辑会话（`start_transaction` 开启，`end_transaction` 提交）。
+    session: Option<history::TransactionSession>,
 }

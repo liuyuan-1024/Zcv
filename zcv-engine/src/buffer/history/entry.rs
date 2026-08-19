@@ -34,6 +34,21 @@ impl HistoryEntry {
         }
     }
 
+    /// 以多批次构造历史条目（事务会话内多次编辑合并时使用）。
+    pub(in crate::buffer) fn from_batches(
+        transaction_id: TransactionId,
+        undo_batches: Vec<EditList>,
+        redo_batches: Vec<EditList>,
+        description: Option<Arc<str>>,
+    ) -> Self {
+        Self {
+            transaction_id,
+            undo_batches: Arc::from(undo_batches),
+            redo_batches: Arc::from(redo_batches),
+            description,
+        }
+    }
+
     /// `HistoryEntry` 在历史预算中的字节占用估算。
     ///
     /// 度量 = `undo_batches` 与 `redo_batches` 中所有 `Edit::replacement` 的 UTF-8

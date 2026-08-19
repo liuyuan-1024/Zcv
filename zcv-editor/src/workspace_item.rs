@@ -28,6 +28,7 @@ impl Item for Editor {
                 emit(ItemEvent::UpdateTab);
                 emit(ItemEvent::UpdateBreadcrumbs);
             }
+            EditorEvent::DirtyChanged => emit(ItemEvent::UpdateTab),
             EditorEvent::Edited => emit(ItemEvent::Edit),
         }
     }
@@ -89,6 +90,11 @@ impl Item for Editor {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use gpui::{AppContext as _, TestAppContext};
+
     use super::*;
 
     /// 编辑与路径变化必须映射为对应的 ItemEvent，Pane 依赖它们刷新标签与提升临时标签。
@@ -99,10 +105,39 @@ mod tests {
         assert_eq!(events, vec![ItemEvent::Edit]);
 
         events.clear();
+        Editor::to_item_events(&EditorEvent::DirtyChanged, &mut |event| events.push(event));
+        assert_eq!(events, vec![ItemEvent::UpdateTab]);
+
+        events.clear();
         Editor::to_item_events(&EditorEvent::PathChanged, &mut |event| events.push(event));
         assert_eq!(
             events,
             vec![ItemEvent::UpdateTab, ItemEvent::UpdateBreadcrumbs]
         );
+    }
+
+    #[gpui::test]
+    fn editor_emits_dirty_changes_after_edit_and_save(cx: &mut TestAppContext) {
+        let editor = cx.new(Editor::single_line);
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&events);
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&editor, move |_, event: &EditorEvent, _| {
+                observed.borrow_mut().push(event.clone());
+            })
+        });
+
+        cx.update_entity(&editor, |editor, cx| editor.set_text("未保存", cx));
+        cx.run_until_parked();
+        assert!(events.borrow().contains(&EditorEvent::DirtyChanged));
+
+        events.borrow_mut().clear();
+        let buffer = cx.read_entity(&editor, |editor, _| editor.buffer());
+        cx.update_entity(&buffer, |buffer, cx| {
+            buffer.mark_saved();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(events.borrow().contains(&EditorEvent::DirtyChanged));
     }
 }

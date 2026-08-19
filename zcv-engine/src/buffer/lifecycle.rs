@@ -86,6 +86,7 @@ impl Buffer {
             next_transaction_id: TransactionId::INITIAL,
             text_changes: Default::default(),
             history: history::HistoryState::new(),
+            session: None,
         };
         buffer.apply_large_file_auto_read_only();
         buffer

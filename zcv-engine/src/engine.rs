@@ -45,7 +45,7 @@ pub use tracking::{
 };
 pub use transaction::{
     ChangeSet, Delta, DeltaEvent, Edit, TransactionMergePolicy, TransactionMetadata,
-    TransactionOutcome, TransactionRecord, TransactionSource,
+    TransactionOutcome, TransactionSource,
 };
 pub use types::{
     BufferOrigin, BufferState, BufferVersion, ByteOffset, CharOffset, Line, LineEndingStyle,

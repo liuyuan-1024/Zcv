@@ -23,7 +23,7 @@ pub(crate) const CHUNK_SIZE: usize = 128;
 
 /// 行内提示（inlay）的显示信息：注入在投影文本中的一段文本。
 ///
-/// `anchor` 是锚定字符之后的原始行内字节偏移，`projected` 是注入后（含此前所有注入文本）的投影偏移；
+/// 锚定字符之后的原始行内字节偏移，与注入后（含此前所有注入文本）的投影偏移；
 /// 渲染合成与偏移换算共用同一信息。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InlayInfo<'a> {
@@ -142,7 +142,7 @@ const SPACES: &str = "                                                          
 /// 展开 tab 后的 chunk 流（tabs 位图驱动，对齐 Zed TabChunks）。
 ///
 /// 展开与测量（`advance_display_column`）同规则：tab 宽度 = `tab_width - col % tab_width`；
-/// `start_column` 是展开前的起始列（片段内展开的列对齐基准）。
+/// 展开前的起始列作为片段内展开的列对齐基准。
 /// 输出的 tab 段标记 `is_tab`，文本借用静态空格表。
 struct TabExpandedChunks<'a, I>
 where
@@ -237,10 +237,9 @@ where
 
 /// 一次显示片段的渲染 chunk。
 ///
-/// `text` 是投影行文本（含行内提示注入的文本；行尾换行未剥时片段裁剪会排除）；
-/// `inlays` 是行内提示的注入信息（按锚定偏移排序）；
-/// `fragment_range` 是软换行片段在投影文本内的范围；
-/// `global_byte_start` 是行首的原始 buffer 字节（spans/marked 的坐标域）。
+/// 投影行文本（含行内提示注入的文本；行尾换行未剥时片段裁剪会排除）；
+/// 行内提示的注入信息（按锚定偏移排序）；软换行片段在投影文本内的范围；
+/// 行首的原始 buffer 字节（spans/marked 的坐标域）。
 /// 展开后的字符列 = 显示列（tab 展开成空格，shaping 宽度与测量一致）。
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RenderChunks<'a> {
@@ -251,7 +250,7 @@ pub(crate) struct RenderChunks<'a> {
 
 /// 行的样式输入（语法高亮 + 搜索背景层 + 选区标记）。
 ///
-/// `backgrounds` 是独立于语法前景色的背景覆盖层（对齐 Zed 的 background highlights）：
+/// 独立于语法前景色的背景覆盖层（对齐 Zed 的 background highlights）：
 /// 搜索匹配等只改背景、保留语法前景色的场景走这一层，不经过 spans 的 style 替换。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct LineStyles<'a> {

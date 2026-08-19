@@ -279,7 +279,7 @@ pub(super) fn advance_display_column(column: usize, grapheme: &str, snapshot: &S
 
 /// 在给定文本内把 display-column 映射回字节位置。
 ///
-/// `start_column` 是文本首字符所处的显示列（软换行续行从假空格缩进后的列开始，tab 对齐必须基于行内绝对列而非片段内相对列）。
+/// 文本首字符所处的显示列（软换行续行从假空格缩进后的列开始，tab 对齐必须基于行内绝对列而非片段内相对列）。
 /// 目标列落在某个 grapheme 中间时吸附到最近边界（距离相等取前）；超出文本末尾返回 `text.len()`。
 pub fn byte_for_display_column(
     text: &str,

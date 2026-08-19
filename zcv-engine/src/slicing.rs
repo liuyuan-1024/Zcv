@@ -61,7 +61,7 @@ impl fmt::Display for TextSlice<'_> {
 
 /// 单行只读文本切片。
 ///
-/// `range` 是该逻辑行在全文中的精确 byte range；如果该行以换行符结束，切片会保留换行符。
+/// 对应逻辑行在全文中的精确 byte 范围；行以换行符结束时切片保留换行符。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineSlice<'a> {
     line: Line,
@@ -116,7 +116,7 @@ impl fmt::Display for LineSlice<'_> {
 
 /// 单行文本内容（剥掉行尾换行符）。
 ///
-/// `full_range` 是整行范围，包含行尾换行符；`text` 是实际内容，去掉行尾换行符，并按传入的 `max_line_chars` 截断（`None` 表示不截断）。
+/// 整行范围包含行尾换行符；内容本身去掉行尾换行符，并按 `max_line_chars` 截断（`None` 表示不截断）。
 /// 供软换行片段切分等读取行内容的场景使用。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineContent<'a> {

@@ -170,9 +170,9 @@ impl<'a> WrapViewportRow<'a> {
 ///
 /// Text 行携带整行投影文本（`text`，含行内提示注入，行尾换行未剥）与本段投影字节范围；
 /// 渲染端在 `indent` > 0 时把假空格拼在段文本前面。
-/// `source` 是行的文本来源（buffer 行 / 合成行，渲染端据此区分行号与可命中性；
-/// 合成行无 buffer 坐标，`global_byte_start` 为锚定行行首）。
-/// `column_base` 是该段起始的逻辑字符列，用于命中测试与选区列换算。
+/// 行的文本来源（buffer 行 / 合成行，渲染端据此区分行号与可命中性；
+/// 合成行无 buffer 坐标，行首字节为锚定行行首）。
+/// 该段起始的逻辑字符列用于命中测试与选区列换算。
 /// 折叠合并行（anchor 文本 + 占位符 + 闭合尾段）携带段表，渲染端按段合成高亮与命中。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WrapViewportRowKind<'a> {
@@ -1003,7 +1003,7 @@ impl WrapMap {
     }
 }
 
-/// 片段 k 的行内容字节区间；`content_len` 是行内容总长（剥 `\r\n`）。
+/// 片段 k 的行内容字节区间；行内容总长剥掉 `\r\n`。
 fn fragment_byte_range(points: &[WrapPointInfo], k: usize, content_len: usize) -> Range<usize> {
     let start = k.checked_sub(1).map_or(0, |i| points[i].byte_ix);
     let end = points.get(k).map_or(content_len, |point| point.byte_ix);

@@ -9,7 +9,10 @@
 mod api;
 mod entry;
 mod node;
+mod session;
 mod state;
+
+pub(in crate::buffer) use session::TransactionSession;
 
 pub use api::{HistoryEditOutcome, HistoryNodeView};
 pub use node::HistoryNodeId;

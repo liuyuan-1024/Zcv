@@ -7,8 +7,8 @@ use crate::{ByteOffset, PositionMap, TextRange};
 
 /// 一个选区，使用 anchor/head 模型。
 ///
-/// `anchor` 是固定端，`head` 是活动端。两者相等时表示 caret。
-/// `goal` 是垂直移动时持久保留的目标显示列数值：目标行比目标列短时光标被钳制到行尾，但 goal 保留，下一次垂直移动仍回到原目标列。
+/// 固定端与活动端；两者相等时表示 caret。
+/// 垂直移动时持久保留的目标显示列：目标行比目标列短时光标被钳制到行尾，但目标列保留，下一次垂直移动仍回到原目标列。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Selection {
     anchor: ByteOffset,

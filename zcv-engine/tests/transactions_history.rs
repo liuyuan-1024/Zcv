@@ -63,31 +63,6 @@ fn failed_multi_edit_boundary_should_keep_transaction_atomic() {
 }
 
 #[test]
-fn transaction_record_should_replay_only_on_matching_base_version() {
-    let mut source = buffer("abc");
-    let record = source
-        .edit_recorded(
-            [Edit::insert(b(3), "!".to_string()).unwrap()],
-            TransactionMetadata::default(),
-        )
-        .unwrap();
-    let mut target = buffer("abc");
-
-    let replay = target.replay_transaction_record(&record).unwrap();
-
-    assert_eq!(buffer_text(&target), "abc!");
-    assert_eq!(replay.old_version(), BufferVersion::INITIAL);
-    assert_eq!(replay.new_version(), target.version());
-    assert_eq!(replay.edits(), record.edits());
-
-    let err = target.replay_transaction_record(&record).unwrap_err();
-    assert!(matches!(
-        err,
-        EngineError::Transaction(TransactionError::VersionMismatch { .. })
-    ));
-}
-
-#[test]
 fn undo_redo_should_restore_text_and_dirty_state_and_return_history_identity() {
     let mut buffer = buffer("abc");
     let outcome = buffer

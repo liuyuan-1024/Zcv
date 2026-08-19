@@ -15,7 +15,7 @@ use gpui::{
 };
 use zcv_actions::{SelectGitBranch, ToggleProjectPicker};
 use zcv_editor::{Editor, SoftWrap};
-use zcv_project::Project;
+use zcv_project::{GitStoreEvent, Project};
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_theme::{ThemeChoice, typography};
 use zcv_workspace::{
@@ -341,7 +341,7 @@ fn initialize_workspace(
     let pane = workspace.pane().clone();
 
     let git_store = project.read(cx).git_store();
-    let git_subscription = cx.subscribe(&git_store, move |workspace, store, _event, cx| {
+    let git_subscription = cx.subscribe(&git_store, move |workspace, store, event, cx| {
         let branch = store.read(cx).current_branch().map(str::to_string);
         let has_repositories = store.read(cx).has_repositories();
         let remote_operation_state = store.read(cx).remote_operation_state();
@@ -358,8 +358,16 @@ fn initialize_workspace(
             bar.set_remote_operation_state(remote_operation_state);
             cx.notify();
         });
-        // hunks 查询完成（Statuses 事件）后补推给打开的编辑器；缺失路径按需请求。
-        push_diff_hunks(workspace.pane(), workspace.project(), cx);
+        // 任务事件只更新任务界面，不能反向触发差异业务；其余状态事件同步当前结果。
+        if matches!(
+            event,
+            GitStoreEvent::Repositories
+                | GitStoreEvent::Statuses
+                | GitStoreEvent::HunksChanged
+                | GitStoreEvent::Head
+        ) {
+            push_diff_hunks(workspace.pane(), workspace.project(), cx);
+        }
     });
 
     let project_tree_for_pane = project_tree.clone();
@@ -484,8 +492,7 @@ fn soft_wrap(mode: SoftWrapMode) -> SoftWrap {
 
 /// 把 GitStore 快照中的行级 diff hunks 推送给打开的 Editor。
 ///
-/// 路径尚未查询（打开文件后首次、或全量扫描后）时按需发起后台查询，
-/// 完成后经 GitStoreEvent::Statuses 回到本函数补齐（无死循环：查询完成即 Some）。
+/// 打开文件集合是差异协调器的唯一需求来源；本函数同时把当前终态结果推送给编辑器。
 ///
 /// 不接收 Workspace 实体：订阅注册时的初始回调发生在 Workspace 更新期间，
 /// 读取自身实体会触发 double-lease panic。
@@ -501,23 +508,21 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
             Some((editor, path))
         })
         .collect();
-    let mut missing = Vec::new();
+    let paths: Vec<PathBuf> = opened.iter().map(|(_, path)| path.clone()).collect();
+    let store = project.read(cx).git_store();
+    store.update(cx, |store, cx| store.set_hunk_interests(&paths, cx));
     for (editor, path) in &opened {
         let store = project.read(cx).git_store();
-        let Some(hunks) = store.read(cx).hunks_for_path(path) else {
-            // 尚未查询：按需请求，事件回来再补。
-            missing.push(path.clone());
-            continue;
-        };
-        let hunks: Vec<zcv_buffer_diff::DiffHunk> = hunks.to_vec();
+        // 等待态先清空旧标记；结果到达后由 HunksChanged 精确补回。
+        let hunks: Vec<zcv_buffer_diff::DiffHunk> = store
+            .read(cx)
+            .hunks_for_path(path)
+            .map(|hunks| hunks.to_vec())
+            .unwrap_or_default();
         editor.update(cx, |editor, cx| editor.set_diff_hunks(hunks, cx));
     }
-    if !missing.is_empty() {
-        let store = project.read(cx).git_store();
-        store.update(cx, |store, cx| store.request_hunks(&missing, cx));
-    }
-    // 预取 HEAD 文本：含 Deleted hunk 的文件展开删除块需要
-    // （每路径每 HEAD 一次，缓存命中后不再重复加载；HEAD 变化时 git_store 自动清缓存）。
+    // 预取 HEAD 文本：含 Deleted hunk 的文件展开删除块需要。
+    // 每路径每 HEAD 一次，缓存命中后不再重复加载；HEAD 变化时 git_store 自动清缓存。
     for (editor, path) in &opened {
         let store = project.read(cx).git_store();
         // 删除块与修改块展开都需要 HEAD 文本（被删行/旧行来源）。

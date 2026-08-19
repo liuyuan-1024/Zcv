@@ -314,6 +314,7 @@ impl VersionControlPanel {
                     }
                 }
                 GitStoreEvent::ActiveRepositoryChanged => {}
+                GitStoreEvent::HunksChanged => {}
                 GitStoreEvent::JobsUpdated => {}
             }
         })
@@ -1122,7 +1123,6 @@ mod tests {
                                 added: 0,
                                 deleted: 1,
                             },
-                            hunks: None,
                         },
                     )
                 })

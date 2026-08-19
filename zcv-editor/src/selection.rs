@@ -33,6 +33,14 @@ impl EditOutcome {
         }
     }
 
+    /// 折叠引擎事务结果：`None`（无实际编辑）视为未变化，`Some` 视为一次编辑。
+    pub(super) fn from_transaction(transaction: Option<TransactionOutcome>) -> Self {
+        match transaction {
+            Some(transaction) => Self::edited(transaction),
+            None => Self::unchanged(),
+        }
+    }
+
     pub(super) fn history_transaction_id(&self) -> Option<TransactionId> {
         self.transaction
             .as_ref()

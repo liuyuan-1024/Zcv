@@ -1,6 +1,6 @@
 //! 编辑命令与选区历史：删除、缩进、换行、行移动、剪贴板与 Undo/Redo。
 //!
-//! 所有文本修改统一走编辑事务管线（`apply_edit_outcome` 族），handler 仅做参数翻译。
+//! 所有文本修改统一经 `Editor::change` 族提交编辑事务，handler 仅做参数翻译。
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ impl Editor {
         self.composition = None;
         let before_selections = self.resolved_selections();
         let targets = self.delete_targets(&before_selections, Some((direction, unit)), cx);
-        self.apply_deletion(before_selections, targets, description, cx);
+        self.apply_deletion(targets, description, cx);
     }
 
     fn delete_to_line_edge(
@@ -70,25 +70,21 @@ impl Editor {
                 .collect::<EngineResult<Vec<_>>>()
                 .map(SelectionSet::new)
         };
-        self.apply_deletion(before_selections, targets, description, cx);
+        self.apply_deletion(targets, description, cx);
     }
 
     /// 删除命令尾部：替换层显式返回删除起点的 caret，不依赖旧选区端点映射。
     fn apply_deletion(
         &mut self,
-        before_selections: SelectionSet,
         targets: EngineResult<SelectionSet>,
         description: &'static str,
         cx: &mut Context<Self>,
     ) {
-        let outcome = targets.and_then(|targets| {
-            self.buffer.update(cx, |buffer, cx| {
-                let outcome = replace_selections(buffer, &targets, "", edit_metadata(description));
-                cx.notify();
-                outcome
-            })
+        let before_selections = self.resolved_selections();
+        let _ = self.change_with_after(before_selections, cx, |buffer| {
+            let targets = targets?;
+            replace_selections(buffer, &targets, "", edit_metadata(description))
         });
-        self.apply_edit_outcome_with_after(before_selections, outcome, cx);
     }
 
     /// 单行模式下的命令守卫：换行/缩进等编辑在单行输入框内由外层处理。
@@ -190,18 +186,16 @@ impl Editor {
                     .collect()
             })
         };
-        let outcome = targets.and_then(|targets| {
+        if let Ok(targets) = &targets {
             // 缩进目标即光标语义：编辑前把选区端点重锚到 targets。
             let target_selections =
                 SelectionSet::new(targets.iter().map(|(selection, _)| *selection).collect());
             self.set_selections(target_selections);
-            self.buffer.update(cx, |buffer, cx| {
-                let outcome = apply_targeted_edits(buffer, targets, edit_metadata("增加缩进"));
-                cx.notify();
-                outcome
-            })
+        }
+        let _ = self.change(before, cx, |buffer| {
+            let targets = targets?;
+            apply_targeted_edits(buffer, targets, edit_metadata("增加缩进"))
         });
-        self.apply_edit_outcome(before, outcome, cx);
     }
 
     pub(super) fn outdent(&mut self, cx: &mut Context<Self>) {
@@ -220,17 +214,15 @@ impl Editor {
                 })
                 .collect::<EngineResult<Vec<_>>>()
         });
-        let outcome = targets.and_then(|targets| {
+        if let Ok(targets) = &targets {
             let target_selections =
                 SelectionSet::new(targets.iter().map(|(selection, _)| *selection).collect());
             self.set_selections(target_selections);
-            self.buffer.update(cx, |buffer, cx| {
-                let outcome = apply_targeted_edits(buffer, targets, edit_metadata("减少缩进"));
-                cx.notify();
-                outcome
-            })
+        }
+        let _ = self.change(before, cx, |buffer| {
+            let targets = targets?;
+            apply_targeted_edits(buffer, targets, edit_metadata("减少缩进"))
         });
-        self.apply_edit_outcome(before, outcome, cx);
     }
 
     pub(super) fn insert_newline(&mut self, cx: &mut Context<Self>) {
@@ -265,17 +257,15 @@ impl Editor {
                 ))
             })
             .collect::<EngineResult<Vec<_>>>();
-        let outcome = targets.and_then(|targets| {
+        if let Ok(targets) = &targets {
             let target_selections =
                 SelectionSet::new(targets.iter().map(|(selection, _)| *selection).collect());
             self.set_selections(target_selections);
-            self.buffer.update(cx, |buffer, cx| {
-                let outcome = apply_targeted_edits(buffer, targets, edit_metadata("插入换行"));
-                cx.notify();
-                outcome
-            })
+        }
+        let _ = self.change(before, cx, |buffer| {
+            let targets = targets?;
+            apply_targeted_edits(buffer, targets, edit_metadata("插入换行"))
         });
-        self.apply_edit_outcome(before, outcome, cx);
     }
 
     fn selected_text(&self, cx: &App) -> Option<String> {
@@ -305,6 +295,8 @@ impl Editor {
     }
 
     /// 回放文本历史（undo/redo）并恢复对应选区的共享实现。
+    ///
+    /// 不走 `change` 编辑事务入口：回放后的选区从 SelectionHistory 恢复，若经编辑事务落位会再次 record_transaction 覆盖 undo/redo 的选区记录，破坏重做语义。
     fn replay_history(&mut self, redo: bool, cx: &mut Context<Self>) {
         let action = if redo { "Redo" } else { "Undo" };
         let outcome = self.buffer.update(cx, |buffer, cx| {
@@ -432,12 +424,9 @@ impl Editor {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         self.composition = None;
         let before_selections = self.resolved_selections();
-        let outcome = self.buffer.update(cx, |buffer, cx| {
-            let outcome = replace_selections(buffer, &before_selections, "", edit_metadata("剪切"));
-            cx.notify();
-            outcome
+        let _ = self.change_with_after(before_selections.clone(), cx, |buffer| {
+            replace_selections(buffer, &before_selections, "", edit_metadata("剪切"))
         });
-        self.apply_edit_outcome_with_after(before_selections, outcome, cx);
     }
 
     pub(crate) fn handle_paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
@@ -494,25 +483,19 @@ impl Editor {
             MovementDirection::Next => "移动行到下方",
         };
         let snapshot = self.buffer.read(cx).snapshot();
-        let outcome = line_blocks(&snapshot, &before)
-            .and_then(|blocks| {
+        let _ = self.change_with_after(before.clone(), cx, |buffer| {
+            let (targets, plans) = line_blocks(&snapshot, &before).and_then(|blocks| {
                 let targets = move_line_targets(&snapshot, &blocks, direction)?;
                 let plans = pending_selection_shift(&snapshot, &before, &blocks, direction)?;
                 Ok((targets, plans))
-            })
-            .and_then(|(targets, plans)| {
-                self.buffer.update(cx, |buffer, cx| {
-                    let outcome = apply_edits_with_after_mapping(
-                        buffer,
-                        targets,
-                        edit_metadata(description),
-                        |snapshot| resolve_selection_shift(snapshot, &before, &plans),
-                    );
-                    cx.notify();
-                    outcome
-                })
-            });
-        self.apply_edit_outcome_with_after(before, outcome, cx);
+            })?;
+            apply_edits_with_after_mapping(
+                buffer,
+                targets,
+                edit_metadata(description),
+                |snapshot| resolve_selection_shift(snapshot, &before, &plans),
+            )
+        });
     }
 }
 

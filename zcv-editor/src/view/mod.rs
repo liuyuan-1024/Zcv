@@ -475,12 +475,9 @@ impl Editor {
         } else {
             text.to_owned()
         };
-        let outcome = self.buffer.update(cx, |buffer, cx| {
-            let outcome = replace_selections(buffer, &targets, &text, edit_metadata("设置文本"));
-            cx.notify();
-            outcome
+        let _ = self.change_with_after(before_selections, cx, |buffer| {
+            replace_selections(buffer, &targets, &text, edit_metadata("设置文本"))
         });
-        self.apply_edit_outcome_with_after(before_selections, outcome, cx);
     }
 
     /// 将单个选择区设置为给定的 UTF-8 字节范围。
@@ -1010,12 +1007,50 @@ impl Editor {
         this
     }
 
+    /// 提交一次文本编辑事务的唯一入口。
+    ///
+    /// 闭包内构造编辑目标并调用引擎编辑函数；入口统一负责 Buffer 通知、编辑后选区
+    /// 锚点映射、SelectionHistory 记录、display_map 同步与搜索重搜（`apply_edit_outcome` 全链路）。
+    /// 返回编辑结果供需要事务身份的调用方消费（如 IME 组合会话）；失败时错误已打印、
+    /// 选区已恢复，调用方只需处理自身特判状态。
+    pub(super) fn change(
+        &mut self,
+        before_selections: SelectionSet,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Buffer) -> EngineResult<EditOutcome>,
+    ) -> EngineResult<EditOutcome> {
+        let outcome = self.buffer.update(cx, |buffer, cx| {
+            let outcome = f(buffer)?;
+            cx.notify();
+            Ok(outcome)
+        });
+        self.apply_edit_outcome(before_selections, outcome, cx)
+    }
+
+    /// 编辑后选区由闭包按编辑语义重算的变体（删除、剪切、行移动、输入等特判场景）。
+    pub(super) fn change_with_after(
+        &mut self,
+        before_selections: SelectionSet,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Buffer) -> EngineResult<(EditOutcome, SelectionSet)>,
+    ) -> EngineResult<(EditOutcome, SelectionSet)> {
+        let outcome = self.buffer.update(cx, |buffer, cx| {
+            let outcome = f(buffer)?;
+            cx.notify();
+            Ok(outcome)
+        });
+        self.apply_edit_outcome_with_after(before_selections, outcome, cx)
+    }
+
+    /// 编辑事务结果落位：选区锚点映射、历史记录、display_map 同步与搜索重搜。
+    ///
+    /// 失败时文本未变，恢复编辑前选区（部分调用方在提交前调整过选区）并把错误回传。
     fn apply_edit_outcome(
         &mut self,
         before_selections: SelectionSet,
         outcome: EngineResult<EditOutcome>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> EngineResult<EditOutcome> {
         match outcome {
             Ok(outcome) => {
                 if let Some(transaction) = outcome.transaction() {
@@ -1041,8 +1076,14 @@ impl Editor {
                 self.finish_edit(cx);
                 self.research_after_edit(cx);
                 cx.emit(EditorEvent::Edited);
+                Ok(outcome)
             }
-            Err(error) => eprintln!("Editor 编辑事务失败：{error}"),
+            Err(error) => {
+                eprintln!("Editor 编辑事务失败：{error}");
+                let version = self.buffer.read(cx).snapshot().version();
+                self.selections = EditorSelections::from_selection_set(version, &before_selections);
+                Err(error)
+            }
         }
     }
 
@@ -1052,7 +1093,7 @@ impl Editor {
         before_selections: SelectionSet,
         outcome: EngineResult<(EditOutcome, SelectionSet)>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> EngineResult<(EditOutcome, SelectionSet)> {
         match outcome {
             Ok((outcome, after_selections)) => {
                 if let Some(transaction_id) = outcome.history_transaction_id() {
@@ -1068,8 +1109,14 @@ impl Editor {
                 self.finish_edit(cx);
                 self.research_after_edit(cx);
                 cx.emit(EditorEvent::Edited);
+                Ok((outcome, after_selections))
             }
-            Err(error) => eprintln!("Editor 编辑事务失败：{error}"),
+            Err(error) => {
+                eprintln!("Editor 编辑事务失败：{error}");
+                let version = self.buffer.read(cx).snapshot().version();
+                self.selections = EditorSelections::from_selection_set(version, &before_selections);
+                Err(error)
+            }
         }
     }
 

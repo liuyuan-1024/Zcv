@@ -68,6 +68,7 @@ impl Render for DraggedTab {
             .end_slot(tab_end_glyph(
                 &self.pane,
                 self.item_id,
+                item.as_deref().is_some_and(|item| item.is_dirty(cx)),
                 item.as_deref()
                     .is_some_and(|item| is_preview_item(item, cx)),
                 cx,
@@ -136,8 +137,9 @@ impl Pane {
                     ItemEvent::Edit => {
                         if pane.transient_item_id == Some(item_id) {
                             pane.transient_item_id = None;
-                            cx.notify();
                         }
+                        // 固定标签同样需要立即重绘未保存标记。
+                        cx.notify();
                     }
                     ItemEvent::UpdateTab => cx.notify(),
                     _ => {}
@@ -656,6 +658,7 @@ fn render_tab(
         .end_slot(tab_end_glyph(
             &close_entity,
             item_id,
+            item.is_dirty(cx),
             is_preview_item(item, cx),
             cx,
         ))
@@ -764,18 +767,50 @@ fn close_glyph(
         )
 }
 
-/// 标签尾部状态槽：预览默认显示眼睛，悬停标签后切换为关闭按钮；源码直接显示关闭按钮。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabEndState {
+    Close,
+    Dirty,
+    Preview,
+}
+
+fn tab_end_state(is_dirty: bool, is_preview: bool) -> TabEndState {
+    if is_dirty {
+        TabEndState::Dirty
+    } else if is_preview {
+        TabEndState::Preview
+    } else {
+        TabEndState::Close
+    }
+}
+
+/// 标签尾部状态槽：未保存优先显示圆点，预览其次显示眼睛；悬停后都切换为关闭按钮。
 fn tab_end_glyph(
     pane_entity: &gpui::Entity<Pane>,
     item_id: EntityId,
+    is_dirty: bool,
     is_preview: bool,
     cx: &App,
 ) -> AnyElement {
-    if !is_preview {
+    let state = tab_end_state(is_dirty, is_preview);
+    if state == TabEndState::Close {
         return close_glyph(pane_entity, item_id, cx).into_any_element();
     }
 
     let slot_size = typography::ui();
+    let (id, icon, icon_color) = match state {
+        TabEndState::Dirty => (
+            ("tab-dirty", item_id),
+            "icons/circle.svg",
+            color::current(cx).icon_accent,
+        ),
+        TabEndState::Preview => (
+            ("tab-preview", item_id),
+            "icons/eye.svg",
+            color::current(cx).icon_muted,
+        ),
+        TabEndState::Close => unreachable!(),
+    };
     div()
         .relative()
         .flex()
@@ -785,10 +820,7 @@ fn tab_end_glyph(
         .child(
             div()
                 .group_hover(TAB_HOVER_GROUP, |style| style.opacity(0.0))
-                .child(
-                    Glyph::icon(("tab-preview", item_id), "icons/eye.svg")
-                        .color(color::current(cx).icon_muted),
-                ),
+                .child(Glyph::icon(id, icon).color(icon_color)),
         )
         .child(
             div()
@@ -858,6 +890,14 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+
+    #[test]
+    fn dirty_indicator_takes_priority_over_preview_indicator() {
+        assert_eq!(tab_end_state(false, false), TabEndState::Close);
+        assert_eq!(tab_end_state(false, true), TabEndState::Preview);
+        assert_eq!(tab_end_state(true, false), TabEndState::Dirty);
+        assert_eq!(tab_end_state(true, true), TabEndState::Dirty);
     }
 
     /// 辅助：用 add_window_view 提供 window 上下文，以源码 Item 打开文件。

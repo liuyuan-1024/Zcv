@@ -45,6 +45,8 @@ pub enum EditorEvent {
     PathChanged,
     /// 文档内容被编辑。
     Edited,
+    /// 文档是否包含未保存修改发生变化。
+    DirtyChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +109,7 @@ pub struct Editor {
     language_buffer: Entity<LanguageBuffer>,
     buffer: Entity<Buffer>,
     buffer_subscription: TextSubscription,
+    last_dirty: bool,
     display_map: DisplayMap,
     syntax_snapshot: SyntaxSnapshot,
     mode: EditorMode,
@@ -937,6 +940,7 @@ impl Editor {
         // 在一次 Entity 更新中建立订阅并取得同版本 Snapshot，关闭初始化期间的漏读窗口。
         let (buffer_subscription, snapshot) =
             buffer.update(cx, |buffer, _| (buffer.subscribe(), buffer.snapshot()));
+        let last_dirty = buffer.read(cx).is_dirty();
         let syntax_snapshot = language_buffer.read(cx).syntax_snapshot();
         let initial_version = snapshot.version();
         let display_map = DisplayMap::new(snapshot);
@@ -950,7 +954,12 @@ impl Editor {
         })
         .detach();
         // 订阅共享 Buffer 的文本变化：其他 Editor 编辑或外部加载后，在下一帧前把选区端点锚点批量映射到新版本。
-        cx.observe(&buffer, |editor, _buffer, cx| {
+        cx.observe(&buffer, |editor, buffer, cx| {
+            let dirty = buffer.read(cx).is_dirty();
+            if editor.last_dirty != dirty {
+                editor.last_dirty = dirty;
+                cx.emit(EditorEvent::DirtyChanged);
+            }
             editor.sync_display_map(cx);
             editor.input_layout = None;
             cx.notify();
@@ -964,6 +973,7 @@ impl Editor {
             language_buffer,
             buffer,
             buffer_subscription,
+            last_dirty,
             display_map,
             syntax_snapshot,
             mode,

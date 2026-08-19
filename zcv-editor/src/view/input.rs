@@ -14,7 +14,7 @@ use zcv_engine::{
 };
 
 use super::*;
-use crate::selection::{EditOutcome, EditorSelections, replace_selections};
+use crate::selection::{EditorSelections, replace_selections};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EditorComposition {
@@ -88,25 +88,26 @@ impl Editor {
     ) {
         let before_selections = self.resolved_selections();
         let composition = self.composition.take();
-        let Some((outcome, _)) =
+        let Some((targets, text, metadata)) =
             self.commit_input_edit(composition.clone(), range_utf16, text, "输入文本", cx)
         else {
             return;
         };
-        if outcome.is_ok() {
-            self.apply_edit_outcome_with_after(before_selections, outcome, cx);
-        } else {
-            let version = self.display_map.buffer_snapshot().version();
-            self.selections = EditorSelections::from_selection_set(version, &before_selections);
+        // 编辑统一入口负责提交与选区落位；失败时恢复组合会话（选区已由入口恢复）。
+        if self
+            .change_with_after(before_selections, cx, |buffer| {
+                replace_selections(buffer, &targets, &text, metadata)
+            })
+            .is_err()
+        {
             self.composition = composition;
-            self.apply_edit_outcome_with_after(before_selections, outcome, cx);
         }
     }
 
-    /// 输入编辑事务提交：替换目标计算、单行换行清洗与文本替换（普通输入与输入法组合共用）。
+    /// 输入编辑目标与元数据计算（普通输入与输入法组合共用）：替换目标、单行换行清洗与合并策略。
     ///
     /// `composition` 已在调用方 take；替换目标计算失败时原样恢复组合会话并返回 None。
-    /// 返回编辑结果与清洗后的文本（组合会话需要按插入文本还原 marked ranges）。
+    /// 文本编辑本身由调用方经 `Editor::change_with_after` 提交。
     fn commit_input_edit(
         &mut self,
         composition: Option<EditorComposition>,
@@ -114,7 +115,7 @@ impl Editor {
         text: &str,
         description: &'static str,
         cx: &mut Context<Self>,
-    ) -> Option<(EngineResult<(EditOutcome, SelectionSet)>, String)> {
+    ) -> Option<(SelectionSet, String, TransactionMetadata)> {
         let targets = match self.replacement_targets(composition.as_ref(), range_utf16, cx) {
             Some(targets) => targets,
             None => {
@@ -131,17 +132,11 @@ impl Editor {
             .as_ref()
             .and_then(|composition| composition.history_transaction_id)
             .is_some_and(|transaction_id| self.is_current_history_transaction(transaction_id, cx));
-        let outcome = self.buffer.update(cx, |buffer, cx| {
-            let outcome = replace_selections(
-                buffer,
-                &targets,
-                &text,
-                input_metadata(description, merge_with_composition),
-            );
-            cx.notify();
-            outcome
-        });
-        Some((outcome, text))
+        Some((
+            targets,
+            text,
+            input_metadata(description, merge_with_composition),
+        ))
     }
 
     fn replacement_targets(
@@ -265,7 +260,7 @@ impl EntityInputHandler for Editor {
     ) {
         let previous_composition = self.composition.take();
         let before_selections = self.resolved_selections();
-        let Some((outcome, text)) = self.commit_input_edit(
+        let Some((targets, text, metadata)) = self.commit_input_edit(
             previous_composition.clone(),
             range_utf16,
             new_text,
@@ -277,6 +272,9 @@ impl EntityInputHandler for Editor {
         let previous_history_transaction = previous_composition
             .as_ref()
             .and_then(|composition| composition.history_transaction_id);
+        let outcome = self.change_with_after(before_selections.clone(), cx, |buffer| {
+            replace_selections(buffer, &targets, &text, metadata)
+        });
         let history_transaction_id = outcome
             .as_ref()
             .ok()
@@ -284,10 +282,8 @@ impl EntityInputHandler for Editor {
             .or(previous_history_transaction);
         if outcome.is_err() {
             self.composition = previous_composition;
-            self.apply_edit_outcome_with_after(before_selections, outcome, cx);
             return;
         }
-        self.apply_edit_outcome_with_after(before_selections.clone(), outcome, cx);
         if text.is_empty() {
             self.composition = None;
             return;

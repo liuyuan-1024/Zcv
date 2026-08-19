@@ -5,6 +5,8 @@ use std::ops::Range;
 use zcv_engine::{RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchResult};
 use zcv_workspace::{Direction, SearchEvent, SearchQuery, SearchableItem};
 
+use crate::selection::EditOutcome;
+
 use super::Editor;
 
 impl gpui::EventEmitter<SearchEvent> for Editor {}
@@ -119,28 +121,27 @@ impl SearchableItem for Editor {
         let Some(index) = search.active_index else {
             return false;
         };
-        let buffer = &mut self.buffer;
-        let replaced = match &search.result {
-            Some(SearchResultKind::Literal(result)) => buffer
-                .update(cx, |buffer, _| {
-                    buffer.replace_search_match(result, index, replacement)
-                })
-                .ok()
-                .flatten(),
-            Some(SearchResultKind::Regex(result)) => buffer
-                .update(cx, |buffer, _| {
-                    buffer.replace_regex_match(result, index, replacement)
-                })
-                .ok()
-                .flatten(),
-            None => None,
+        let (literal, regex) = match &search.result {
+            Some(SearchResultKind::Literal(result)) => (Some(result.clone()), None),
+            Some(SearchResultKind::Regex(result)) => (None, Some(result.clone())),
+            None => (None, None),
         };
-        if replaced.is_some() {
-            // 替换是外部编辑（buffer.update），不走 apply_edit_outcome 的重搜路径；
-            // 手动重搜让高亮/计数跟随新文本，避免过期 result 拒绝后续替换。
-            self.research_after_edit(cx);
-        }
-        replaced.is_some()
+        let before = self.resolved_selections();
+        let outcome = self.change(before, cx, |buffer| {
+            if let Some(result) = literal {
+                buffer
+                    .replace_search_match(&result, index, replacement)
+                    .map(EditOutcome::from_transaction)
+            } else if let Some(result) = regex {
+                buffer
+                    .replace_regex_match(&result, index, replacement)
+                    .map(EditOutcome::from_transaction)
+            } else {
+                Ok(EditOutcome::unchanged())
+            }
+        });
+        // 只有真正发生替换（事务非空）才视为成功，避免 search_bar 无意义地前移活动匹配。
+        outcome.map_or(false, |outcome| outcome.transaction().is_some())
     }
 
     fn replace_all(
@@ -151,27 +152,27 @@ impl SearchableItem for Editor {
     ) -> usize {
         let Some(search) = &self.search else { return 0 };
         let count = search.len();
-        let buffer = &mut self.buffer;
-        let replaced = match &search.result {
-            Some(SearchResultKind::Literal(result)) => buffer
-                .update(cx, |buffer, _| {
-                    buffer.replace_all_search_matches(result, replacement)
-                })
-                .ok()
-                .flatten(),
-            Some(SearchResultKind::Regex(result)) => buffer
-                .update(cx, |buffer, _| {
-                    buffer.replace_all_regex_matches(result, replacement)
-                })
-                .ok()
-                .flatten(),
-            None => None,
+        let (literal, regex) = match &search.result {
+            Some(SearchResultKind::Literal(result)) => (Some(result.clone()), None),
+            Some(SearchResultKind::Regex(result)) => (None, Some(result.clone())),
+            None => (None, None),
         };
-        if replaced.is_some() {
-            // 同上：替换后重搜，清掉已无匹配的过期结果。
-            self.research_after_edit(cx);
-        }
-        if replaced.is_some() { count } else { 0 }
+        let before = self.resolved_selections();
+        let outcome = self.change(before, cx, |buffer| {
+            if let Some(result) = literal {
+                buffer
+                    .replace_all_search_matches(&result, replacement)
+                    .map(EditOutcome::from_transaction)
+            } else if let Some(result) = regex {
+                buffer
+                    .replace_all_regex_matches(&result, replacement)
+                    .map(EditOutcome::from_transaction)
+            } else {
+                Ok(EditOutcome::unchanged())
+            }
+        });
+        let replaced = outcome.map_or(false, |outcome| outcome.transaction().is_some());
+        if replaced { count } else { 0 }
     }
 }
 

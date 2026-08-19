@@ -224,6 +224,40 @@ fn replace_current_researches_and_keeps_remaining_matches(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+fn replace_keeps_syntax_snapshot_in_sync(cx: &mut TestAppContext) {
+    use std::path::PathBuf;
+
+    use zcv_engine::{Buffer, BufferConfig};
+    use zcv_language::LanguageBuffer;
+
+    // 带语言的 Buffer：替换必须通知 LanguageBuffer 同步语法树并重新解析，
+    // 否则语法快照停留在旧版本，渲染层按版本闸门清空全部高亮。
+    let text = "fn main() {\n    let x = 1;\n}\n";
+    let buffer =
+        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+    let buffer = cx.new(|_| buffer);
+    let language_buffer =
+        cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("main.rs")), cx));
+    cx.run_until_parked();
+    let (editor, cx) = cx.add_window_view(|_, cx| Editor::for_buffer(language_buffer.clone(), cx));
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.search(&query("fn main"), window, cx);
+            assert!(editor.replace_current("MAIN", window, cx));
+        });
+    });
+    cx.run_until_parked();
+    let buffer_version = cx.read_entity(&buffer, |buffer, _| buffer.version());
+    cx.read_entity(&language_buffer, |language_buffer, _| {
+        assert_eq!(
+            language_buffer.syntax_snapshot().version(),
+            buffer_version,
+            "替换后语法快照必须与文本版本同步"
+        );
+    });
+}
+
+#[gpui::test]
 fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
     use std::ops::Range;
 

@@ -15,8 +15,12 @@ use gpui::{HighlightStyle, UnderlineStyle, px};
 use zcv_engine::{Line, TextRange};
 use zcv_language::HighlightSpan;
 
+use super::DisplaySnapshot;
 use super::fold_map::{FoldRowSegment, FoldRowSegmentKind};
 use super::inlay_map::InlaySnapshot;
+use super::line_stream::StreamLineSource;
+use super::wrap_map::WrapViewportRowKind;
+use zcv_theme::color;
 
 /// chunk 文本字节上限（与 Zed rope Chunk 的 MAX_BASE 一致）。
 pub(crate) const CHUNK_SIZE: usize = 128;
@@ -589,6 +593,147 @@ pub(crate) fn render_viewport_chunks<'a>(
             styles,
             fragment_range,
         )
+    }
+}
+
+/// 软换行片段信息：后续 wrap 片段显示为缩进续行。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WrapRowInfo {
+    pub(crate) line: Line,
+    pub(crate) indent: usize,
+    pub(crate) column_base: usize,
+}
+
+/// 视口行的完整渲染数据（对齐 Zed highlighted_chunks 的封装目标）：
+/// 行解构、四层快照链穿透、chunk 合成与 run 映射都在管线侧完成，渲染端只消费结果交给 shaping。
+pub(crate) struct RenderedViewportRow {
+    pub(crate) display_text: String,
+    pub(crate) runs: Vec<gpui::TextRun>,
+    pub(crate) utf16_start: usize,
+    pub(crate) logical_line: Option<Line>,
+    pub(crate) gutter_line: Option<Line>,
+    pub(crate) wrap_info: Option<WrapRowInfo>,
+    pub(crate) fold_segments: Option<Vec<FoldRowSegment>>,
+}
+
+/// 渲染一行视口行。
+///
+/// 管线内完成行解构、inlay 快照穿透、stream 行换算、chunk 合成与 run 映射；样式输入（语法高亮/搜索背景/标记）与基础 run 由渲染端提供。
+pub(crate) fn render_viewport_row(
+    row: &WrapViewportRowKind<'_>,
+    display_snapshot: &DisplaySnapshot,
+    visible_highlights: &[HighlightSpan],
+    highlight_styles: &[HighlightStyle],
+    search_backgrounds: &[(Range<usize>, gpui::Rgba)],
+    marked_ranges: &[TextRange],
+    base: gpui::TextRun,
+    cx: &gpui::App,
+) -> RenderedViewportRow {
+    let WrapViewportRowKind::Text {
+        source,
+        text,
+        byte_range,
+        global_byte_start,
+        fragment_index,
+        indent,
+        column_base,
+        segments,
+    } = row;
+    // 行内提示（inlay）：经消费链查询行的注入段（投影偏移已含此前注入前缀）。
+    let inlay_snapshot = display_snapshot
+        .wrap_snapshot()
+        .tab_snapshot()
+        .fold_snapshot()
+        .inlay_snapshot();
+    let stream_line = match source {
+        StreamLineSource::Buffer(buffer_line) => inlay_snapshot
+            .stream()
+            .buffer_to_stream(Line::new(*buffer_line)),
+        StreamLineSource::Inserted { anchor, index } => {
+            let start = inlay_snapshot
+                .stream()
+                .inserted_block_start(*anchor)
+                .expect("合成行必须属于锚定块的插入表");
+            Line::new(start.get() + index)
+        }
+    };
+    // 合成行是外部文本：无语法高亮、不可编辑/不可选（spans/marked 是锚定行的 buffer 坐标，套用到合成行文本会产生非字符边界切片）。
+    let line_styles = match source {
+        StreamLineSource::Buffer(_) => LineStyles {
+            spans: visible_highlights,
+            styles: highlight_styles,
+            backgrounds: search_backgrounds,
+            marked: marked_ranges,
+        },
+        StreamLineSource::Inserted { .. } => LineStyles::default(),
+    };
+    let tab_width = display_snapshot.buffer_snapshot().config().tab.tab_width();
+    let rendered = render_viewport_chunks(
+        ViewportChunkSource {
+            text: text.as_ref(),
+            global_byte_start: *global_byte_start,
+            stream_line,
+            segments: segments.as_deref(),
+            inlay: inlay_snapshot,
+        },
+        tab_width,
+        line_styles,
+        byte_range.clone(),
+    );
+    // 显示文本：wrap 假空格 + 展开 chunk 文本拼接（对齐 Zed from_chunks）。
+    let display_len: usize = *indent
+        + rendered
+            .chunks
+            .iter()
+            .map(|chunk| chunk.text.len())
+            .sum::<usize>();
+    let mut display_text = String::with_capacity(display_len);
+    if *indent > 0 {
+        display_text.push_str(&" ".repeat(*indent));
+    }
+    for chunk in &rendered.chunks {
+        display_text.push_str(chunk.text);
+    }
+    let mut runs = Vec::with_capacity(rendered.chunks.len() + 1);
+    if *indent > 0 {
+        runs.push(gpui::TextRun {
+            len: *indent,
+            ..base.clone()
+        });
+    }
+    let mut chunk_runs = chunks_to_runs(&rendered.chunks, base);
+    // 折叠占位符用占位色绘制。
+    for (run, chunk) in chunk_runs.iter_mut().zip(&rendered.chunks) {
+        if chunk.is_placeholder {
+            run.color = color::current(cx).text_placeholder.into();
+        }
+    }
+    runs.extend(chunk_runs);
+    let utf16_start = rendered.utf16_start;
+    let logical_line = match source {
+        StreamLineSource::Buffer(buffer_line) => Some(Line::new(*buffer_line)),
+        StreamLineSource::Inserted { .. } => None,
+    };
+    let wrap_info = (*fragment_index > 0).then_some(WrapRowInfo {
+        line: logical_line.unwrap_or(Line::ZERO),
+        indent: *indent,
+        column_base: *column_base,
+    });
+    // 行号只在逻辑行首显示行出现。
+    let gutter_line = match source {
+        StreamLineSource::Buffer(buffer_line) if *fragment_index == 0 => {
+            Some(Line::new(*buffer_line))
+        }
+        _ => None,
+    };
+    RenderedViewportRow {
+        display_text,
+        runs,
+        utf16_start,
+        logical_line,
+        gutter_line,
+        wrap_info,
+        fold_segments: segments.clone(),
     }
 }
 

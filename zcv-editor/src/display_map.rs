@@ -18,7 +18,9 @@ mod line_stream;
 mod tab_map;
 mod wrap_map;
 
-pub(crate) use chunk::{LineStyles, ViewportChunkSource, chunks_to_runs, render_viewport_chunks};
+#[cfg(test)]
+pub(crate) use chunk::{LineStyles, ViewportChunkSource, render_viewport_chunks};
+pub(crate) use chunk::{WrapRowInfo, render_viewport_row};
 pub(crate) use display_width::DisplayColumn;
 use error::DisplayMapResult;
 #[cfg(test)]

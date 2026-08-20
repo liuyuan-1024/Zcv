@@ -48,16 +48,16 @@ impl StatusItemView for PanelButtons {
 impl Render for PanelButtons {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let dock = self.dock.read(cx);
-        if dock.panels.is_empty() {
+        if dock.panel_count() == 0 {
             return div();
         }
 
         let active_index = dock.active_panel_index();
-        let is_open = dock.is_open;
-        let area = dock.position;
+        let is_open = dock.is_open();
+        let area = dock.position();
 
         let buttons: Vec<_> = dock
-            .panels
+            .panels()
             .iter()
             .enumerate()
             .map(|(i, handle)| {

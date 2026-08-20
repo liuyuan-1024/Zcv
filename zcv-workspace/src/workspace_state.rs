@@ -3,15 +3,13 @@
 //! 对齐 Zed：Workspace 只管理工作区框架与通用命令，
 //! 面板、顶栏、状态项与项目相关订阅由宿主（binary 装配层）注入。
 
-use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    Action, AnyView, App, AsyncApp, Context, Div, Entity, FocusHandle, MouseButton, Render,
-    SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, rems,
+    Action, AnyView, App, AsyncApp, Context, Div, DragMoveEvent, Entity, FocusHandle, Focusable,
+    Render, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, rems,
 };
 use zcv_actions::{
     CloseTab, FocusOrHidePanel, GitFetch, GitPull, GitPush, OpenSettings, QuitWindow, Save,
@@ -20,7 +18,7 @@ use zcv_actions::{
 use zcv_project::{GitOperationKind, GitOperationOutcome, Project};
 use zcv_theme::{color, typography};
 
-use crate::dock::{Dock, DockPosition, DockStructure, render_body};
+use crate::dock::{Dock, DockPosition, DockStructure, DraggedDock, render_body};
 use crate::item_provider::item_provider_for_path;
 use crate::layout_state;
 use crate::pane::Pane;
@@ -50,8 +48,6 @@ pub struct Workspace {
     pub left_dock: Entity<Dock>,
     pub right_dock: Entity<Dock>,
     pub bottom_dock: Entity<Dock>,
-    /// 拖拽协调：Dock 通过此 Cell 通知 Workspace 哪个 dock 正在被拖拽。
-    pub drag_notify: Rc<Cell<Option<DockPosition>>>,
     /// 统一取消来自项目树、变更树等入口的待处理单击打开。
     file_click_generation: u64,
     /// 顶栏视图（对齐 Zed titlebar_item），由宿主注入。
@@ -59,7 +55,7 @@ pub struct Workspace {
     /// 打开设置文件的路径提供者（设置文件属于宿主配置，需注入）。
     open_settings_path_provider: Option<OpenSettingsPathProvider>,
     /// 宿主装配的订阅（git/settings/面板等）。
-    pub _subscriptions: Vec<Subscription>,
+    _subscriptions: Vec<Subscription>,
     /// 经 register_action 注册的 action handler（render 时挂到根节点，焦点链全局可达）。
     /// 对齐 Zed `workspace_actions`：组件创建时注册自己的命令 handler。
     workspace_actions: Vec<WorkspaceAction>,
@@ -68,6 +64,11 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// 登记宿主装配的订阅（git/settings/面板等）。
+    pub fn add_subscription(&mut self, sub: Subscription) {
+        self._subscriptions.push(sub);
+    }
+
     pub fn new(root: PathBuf, window: &Window, cx: &mut Context<Self>) -> Self {
         let project = cx.new(|cx| Project::new(root, cx));
         Self::build(project, window, cx)
@@ -90,14 +91,12 @@ impl Workspace {
         let layout_path = layout_state::path_for_workspace(project.read(cx).root());
         let restored_docks = layout_state::load(&layout_path).unwrap_or_default();
         // 三个空 Dock；面板由宿主经 register_panel 注册。
-        let drag_notify: Rc<Cell<Option<DockPosition>>> = Rc::new(Cell::new(None));
         let left_dock = cx.new(|cx| {
             Dock::new(
                 DockPosition::Left,
                 Vec::new(),
                 DockPosition::Left.default_size(),
                 Some(restored_docks.left.clone()),
-                drag_notify.clone(),
                 cx,
             )
         });
@@ -107,7 +106,6 @@ impl Workspace {
                 Vec::new(),
                 DockPosition::Right.default_size(),
                 Some(restored_docks.right.clone()),
-                drag_notify.clone(),
                 cx,
             )
         });
@@ -117,7 +115,6 @@ impl Workspace {
                 Vec::new(),
                 DockPosition::Bottom.default_size(),
                 Some(restored_docks.bottom.clone()),
-                drag_notify.clone(),
                 cx,
             )
         });
@@ -136,7 +133,6 @@ impl Workspace {
             left_dock,
             right_dock,
             bottom_dock,
-            drag_notify,
             file_click_generation: 0,
             titlebar: None,
             open_settings_path_provider: None,
@@ -398,14 +394,14 @@ impl Workspace {
         if let Some(item) = pane.active_item() {
             window.focus(&item.item_focus_handle(cx));
         } else {
-            window.focus(&pane.focus);
+            window.focus(&pane.focus_handle());
         }
     }
 
     fn handle_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         let pane_entity = self.pane.clone();
-        let pane_focus = pane_entity.read(cx).focus.clone();
-        if let Some(item_id) = pane_entity.read(cx).active {
+        let pane_focus = pane_entity.read(cx).focus_handle();
+        if let Some(item_id) = pane_entity.read(cx).active_id() {
             pane_entity.update(cx, |pane, cx| {
                 pane.close_tab(item_id, window, cx);
             });
@@ -429,15 +425,13 @@ impl Workspace {
             .into_iter()
             .find_map(|dock| {
                 dock.read(cx)
-                    .panels
-                    .iter()
-                    .position(|panel| panel.persistent_name() == action.panel)
+                    .panel_index_for_persistent_name(&action.panel)
                     .map(|panel_index| (dock.clone(), panel_index))
             });
         let Some((dock, panel_idx)) = target else {
             return;
         };
-        let focus = dock.read(cx).panels[panel_idx].focus_handle(cx);
+        let focus = dock.read(cx).panel_focus_handle(panel_idx, cx).unwrap();
 
         if focus.contains_focused(window, cx) {
             dock.update(cx, |d, cx| d.toggle_panel_visibility(panel_idx, window, cx));
@@ -466,11 +460,7 @@ impl Workspace {
             DockPosition::Right => self.right_dock.clone(),
         };
         let was_visible = dock.read(cx).is_panel_active(panel_index);
-        let panel_focus = dock
-            .read(cx)
-            .panels
-            .get(panel_index)
-            .map(|panel| panel.focus_handle(cx));
+        let panel_focus = dock.read(cx).panel_focus_handle(panel_index, cx);
         if panel_focus.is_none() {
             return;
         }
@@ -499,7 +489,7 @@ impl Workspace {
             .active_panel()
             .map(|panel| panel.focus_handle(cx));
         let focus_center = was_open
-            && (dock.read(cx).focus.contains_focused(window, cx)
+            && (dock.read(cx).focus_handle(cx).contains_focused(window, cx)
                 || panel_focus
                     .as_ref()
                     .is_some_and(|focus| focus.contains_focused(window, cx)));
@@ -664,12 +654,6 @@ impl Render for Workspace {
         let left_dock_entity = self.left_dock.clone();
         let right_dock_entity = self.right_dock.clone();
         let bottom_dock_entity = self.bottom_dock.clone();
-        let drag_notify = self.drag_notify.clone();
-
-        let left_dock_up = self.left_dock.clone();
-        let right_dock_up = self.right_dock.clone();
-        let bottom_dock_up = self.bottom_dock.clone();
-        let drag_notify_up = self.drag_notify.clone();
         let workspace_after_resize = cx.entity().downgrade();
 
         let titlebar = self.titlebar.as_ref();
@@ -714,36 +698,22 @@ impl Render for Workspace {
             this.toggle_dock(DockPosition::Right, window, cx)
         }))
         .on_action(cx.listener(Self::handle_panel_keyboard_action))
-        .on_mouse_move(move |event, window, cx| {
-            if let Some(area) = drag_notify.get() {
-                let dock = match area {
-                    DockPosition::Left => &left_dock_entity,
-                    DockPosition::Right => &right_dock_entity,
-                    DockPosition::Bottom => &bottom_dock_entity,
-                };
-                dock.update(cx, |dock, cx| {
-                    if dock.is_dragging() {
-                        dock.resize_to(event.position, window.bounds().size, cx);
-                    }
-                });
-                window.refresh();
-            }
-        })
-        .on_mouse_up(MouseButton::Left, move |_event, window, cx| {
-            let resized = [&left_dock_up, &right_dock_up, &bottom_dock_up]
-                .iter()
-                .any(|dock| dock.read(cx).is_dragging());
-            for dock in [&left_dock_up, &right_dock_up, &bottom_dock_up] {
-                dock.update(cx, |d, _| d.end_resize());
-            }
-            drag_notify_up.set(None);
-            if resized {
-                workspace_after_resize
-                    .update(cx, |workspace, cx| {
-                        workspace.schedule_layout_save(window, cx)
-                    })
-                    .ok();
-            }
+        // dock 尺寸拖拽：手势由 Dock 的 resize handle 发起（on_drag 承载 DraggedDock），这里在根节点接收拖动事件并按位置驱动对应 dock 尺寸；布局保存走既有节流。
+        .on_drag_move(move |event: &DragMoveEvent<DraggedDock>, window, cx| {
+            let area = event.drag(cx).0;
+            let dock = match area {
+                DockPosition::Left => &left_dock_entity,
+                DockPosition::Right => &right_dock_entity,
+                DockPosition::Bottom => &bottom_dock_entity,
+            };
+            dock.update(cx, |dock, cx| {
+                dock.resize_to(event.event.position, event.bounds, cx);
+            });
+            workspace_after_resize
+                .update(cx, |workspace, cx| {
+                    workspace.schedule_layout_save(window, cx)
+                })
+                .ok();
             window.refresh();
         })
     }
@@ -866,7 +836,7 @@ mod tests {
 
         // 快捷键：panel 可见但未聚焦时，只聚焦，不隐藏。
         let center_focus = cx.read_entity(&workspace, |workspace, cx| {
-            workspace.pane.read(cx).focus.clone()
+            workspace.pane.read(cx).focus_handle()
         });
         cx.update(|window, _| window.focus(&center_focus));
         cx.dispatch_action(FocusOrHidePanel::new("test-panel"));

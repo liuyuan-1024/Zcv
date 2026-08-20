@@ -27,61 +27,19 @@ impl QuerySource {
     }
 }
 
-/// 一门语言的五类结构查询源（不含高亮/注入，二者在语言规格声明中）。
-struct LanguageQuerySources {
+/// 一门语言的结构查询源（不含高亮/注入，二者在语言规格声明中）。
+///
+/// 与语言声明（[`LanguageEntry`]）同表维护：新增语言只改数据表一处；
+/// 查询源缺失的语言加载为空查询集。
+#[derive(Clone, Copy)]
+pub(crate) struct LanguageQuerySources {
     brackets: Option<&'static str>,
     indents: Option<&'static str>,
     fold: Option<&'static str>,
 }
 
 impl LanguageQuerySources {
-    fn all(language: &str) -> Option<Self> {
-        Some(match language {
-            "rust" => Self::from_sources(
-                include_str!("../queries/rust/brackets.scm"),
-                include_str!("../queries/rust/indents.scm"),
-                Some(include_str!("../queries/rust/fold.scm")),
-            ),
-            "python" => Self::from_sources(
-                include_str!("../queries/python/brackets.scm"),
-                include_str!("../queries/python/indents.scm"),
-                None,
-            ),
-            "javascript" => Self::from_sources(
-                include_str!("../queries/javascript/brackets.scm"),
-                include_str!("../queries/javascript/indents.scm"),
-                None,
-            ),
-            "typescript" => Self::from_sources(
-                include_str!("../queries/typescript/brackets.scm"),
-                include_str!("../queries/typescript/indents.scm"),
-                None,
-            ),
-            "tsx" => Self::from_sources(
-                include_str!("../queries/tsx/brackets.scm"),
-                include_str!("../queries/tsx/indents.scm"),
-                None,
-            ),
-            "markdown" => Self::from_sources(
-                include_str!("../queries/markdown/brackets.scm"),
-                include_str!("../queries/markdown/indents.scm"),
-                None,
-            ),
-            "css" => Self::from_sources(
-                include_str!("../queries/css/brackets.scm"),
-                include_str!("../queries/css/indents.scm"),
-                None,
-            ),
-            "json" => Self::from_sources(
-                include_str!("../queries/json/brackets.scm"),
-                include_str!("../queries/json/indents.scm"),
-                None,
-            ),
-            _ => return None,
-        })
-    }
-
-    fn from_sources(
+    pub(crate) fn from_sources(
         brackets: &'static str,
         indents: &'static str,
         fold: Option<&'static str>,
@@ -92,59 +50,25 @@ impl LanguageQuerySources {
             fold,
         }
     }
-}
 
-/// 按语言名取结构查询源；未声明语言时返回空查询集。
-pub(crate) fn language_queries(
-    name: &str,
-    grammar: &tree_sitter::Language,
-) -> Option<LanguageQueries> {
-    let sources = match name {
-        "Rust" => LanguageQuerySources::all("rust"),
-        "Python" => LanguageQuerySources::all("python"),
-        "JavaScript" => LanguageQuerySources::all("javascript"),
-        "JSX" | "TSX" => LanguageQuerySources::all("tsx"),
-        "TypeScript" => LanguageQuerySources::all("typescript"),
-        "Shell" => Some(LanguageQuerySources {
-            brackets: Some(include_str!("../queries/bash/brackets.scm")),
-            indents: Some(include_str!("../queries/bash/indents.scm")),
-            fold: None,
-        }),
-        "Markdown" => LanguageQuerySources::all("markdown"),
-        "HTML" => Some(LanguageQuerySources {
-            brackets: Some(include_str!("../queries/html/brackets.scm")),
-            indents: Some(include_str!("../queries/html/indents.scm")),
-            fold: None,
-        }),
-        "CSS" => LanguageQuerySources::all("css"),
-        "JSON" => LanguageQuerySources::all("json"),
-        "YAML" => Some(LanguageQuerySources {
-            brackets: Some(include_str!("../queries/yaml/brackets.scm")),
-            indents: None,
-            fold: None,
-        }),
-        _ => None,
-    };
-    let Some(sources) = sources else {
-        return Some(LanguageQueries::default());
-    };
-    Some(LanguageQueries {
-        brackets: compile_query(grammar, sources.brackets)?,
-        indents: compile_query(grammar, sources.indents)?,
-        folds: compile_query(grammar, sources.fold)?,
-    })
-}
-
-fn compile_query(
-    grammar: &tree_sitter::Language,
-    source: Option<&str>,
-) -> Option<Option<Arc<Query>>> {
-    match source {
-        Some(source) => Some(Some(Arc::new(Query::new(grammar, source).unwrap_or_else(
-            |error| panic!("Zed tree-sitter 查询与 grammar 不匹配：{error}"),
-        )))),
-        None => Some(None),
+    /// 编译为运行时查询集（语言加载时调用）。
+    pub(crate) fn compile_all(self, grammar: &tree_sitter::Language) -> LanguageQueries {
+        LanguageQueries {
+            brackets: compile_query(grammar, self.brackets),
+            indents: compile_query(grammar, self.indents),
+            folds: compile_query(grammar, self.fold),
+        }
     }
+}
+
+/// 编译单个结构查询；源缺失时为空（不参与该结构能力）。
+fn compile_query(grammar: &tree_sitter::Language, source: Option<&str>) -> Option<Arc<Query>> {
+    source.map(|source| {
+        Arc::new(
+            Query::new(grammar, source)
+                .unwrap_or_else(|error| panic!("Zed tree-sitter 查询与 grammar 不匹配：{error}")),
+        )
+    })
 }
 
 /// 首行识别模式（对齐 Zed `LanguageMatcher` 的 `Option<Regex>` 形态）。
@@ -168,6 +92,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: Some(QuerySource::Single(tree_sitter_rust::HIGHLIGHTS_QUERY)),
             injections: Some(QuerySource::Single(tree_sitter_rust::INJECTIONS_QUERY)),
             injection_alias: None,
+            queries: Some(LanguageQuerySources::from_sources(
+                include_str!("../queries/rust/brackets.scm"),
+                include_str!("../queries/rust/indents.scm"),
+                Some(include_str!("../queries/rust/fold.scm")),
+            )),
         },
         LanguageEntry {
             name: "Python",
@@ -181,6 +110,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: Some(QuerySource::Single(tree_sitter_python::HIGHLIGHTS_QUERY)),
             injections: None,
             injection_alias: None,
+            queries: Some(LanguageQuerySources::from_sources(
+                include_str!("../queries/python/brackets.scm"),
+                include_str!("../queries/python/indents.scm"),
+                None,
+            )),
         },
         LanguageEntry {
             name: "JavaScript",
@@ -196,6 +130,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 tree_sitter_javascript::INJECTIONS_QUERY,
             )),
             injection_alias: None,
+            queries: Some(LanguageQuerySources::from_sources(
+                include_str!("../queries/javascript/brackets.scm"),
+                include_str!("../queries/javascript/indents.scm"),
+                None,
+            )),
         },
         LanguageEntry {
             name: "JSX",
@@ -212,6 +151,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 tree_sitter_javascript::INJECTIONS_QUERY,
             )),
             injection_alias: None,
+            queries: Some(LanguageQuerySources::from_sources(
+                include_str!("../queries/tsx/brackets.scm"),
+                include_str!("../queries/tsx/indents.scm"),
+                None,
+            )),
         },
         LanguageEntry {
             name: "TypeScript",
@@ -228,6 +172,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 tree_sitter_javascript::INJECTIONS_QUERY,
             )),
             injection_alias: None,
+            queries: Some(LanguageQuerySources::from_sources(
+                include_str!("../queries/typescript/brackets.scm"),
+                include_str!("../queries/typescript/indents.scm"),
+                None,
+            )),
         },
         LanguageEntry {
             name: "TSX",
@@ -245,6 +194,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 tree_sitter_javascript::INJECTIONS_QUERY,
             )),
             injection_alias: None,
+            queries: Some(LanguageQuerySources::from_sources(
+                include_str!("../queries/tsx/brackets.scm"),
+                include_str!("../queries/tsx/indents.scm"),
+                None,
+            )),
         },
         LanguageEntry {
             name: "Go",
@@ -256,6 +210,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: None,
             injections: None,
             injection_alias: None,
+            queries: None,
         },
         LanguageEntry {
             name: "Java",
@@ -267,6 +222,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: Some(QuerySource::Single(tree_sitter_java::HIGHLIGHTS_QUERY)),
             injections: None,
             injection_alias: None,
+            queries: None,
         },
         LanguageEntry {
             name: "Ruby",
@@ -280,6 +236,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: None,
             injections: None,
             injection_alias: None,
+            queries: None,
         },
         LanguageEntry {
             name: "C",
@@ -291,6 +248,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: None,
             injections: None,
             injection_alias: None,
+            queries: None,
         },
         LanguageEntry {
             name: "C++",
@@ -302,6 +260,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: None,
             injections: None,
             injection_alias: None,
+            queries: None,
         },
         LanguageEntry {
             name: "Zig",
@@ -313,6 +272,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: None,
             injections: None,
             injection_alias: None,
+            queries: None,
         },
         LanguageEntry {
             name: "Shell",
@@ -326,6 +286,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: Some(QuerySource::Single(tree_sitter_bash::HIGHLIGHT_QUERY)),
             injections: None,
             injection_alias: None,
+            queries: Some(LanguageQuerySources::from_sources(
+                include_str!("../queries/bash/brackets.scm"),
+                include_str!("../queries/bash/indents.scm"),
+                None,
+            )),
         },
         LanguageEntry {
             name: "Lua",
@@ -339,6 +304,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: None,
             injections: None,
             injection_alias: None,
+            queries: None,
         },
         LanguageEntry {
             name: "TOML",
@@ -350,6 +316,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: Some(QuerySource::Single(tree_sitter_toml_ng::HIGHLIGHTS_QUERY)),
             injections: None,
             injection_alias: None,
+            queries: None,
         },
         LanguageEntry {
             name: "JSON",
@@ -361,6 +328,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: Some(QuerySource::Single(tree_sitter_json::HIGHLIGHTS_QUERY)),
             injections: None,
             injection_alias: None,
+            queries: Some(LanguageQuerySources::from_sources(
+                include_str!("../queries/json/brackets.scm"),
+                include_str!("../queries/json/indents.scm"),
+                None,
+            )),
         },
         LanguageEntry {
             name: "YAML",
@@ -372,6 +344,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: Some(QuerySource::Single(tree_sitter_yaml::HIGHLIGHTS_QUERY)),
             injections: None,
             injection_alias: None,
+            queries: Some(LanguageQuerySources {
+                brackets: Some(include_str!("../queries/yaml/brackets.scm")),
+                indents: None,
+                fold: None,
+            }),
         },
         LanguageEntry {
             name: "Markdown",
@@ -383,6 +360,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: Some(QuerySource::Single(tree_sitter_md::HIGHLIGHT_QUERY_BLOCK)),
             injections: Some(QuerySource::Single(tree_sitter_md::INJECTION_QUERY_BLOCK)),
             injection_alias: None,
+            queries: Some(LanguageQuerySources::from_sources(
+                include_str!("../queries/markdown/brackets.scm"),
+                include_str!("../queries/markdown/indents.scm"),
+                None,
+            )),
         },
         // markdown 行内注入：仅注入查询引用（`markdown_inline`），不参与文件识别。
         LanguageEntry {
@@ -395,6 +377,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: Some(QuerySource::Single(tree_sitter_md::HIGHLIGHT_QUERY_INLINE)),
             injections: Some(QuerySource::Single(tree_sitter_md::INJECTION_QUERY_INLINE)),
             injection_alias: Some("markdown_inline"),
+            queries: None,
         },
         LanguageEntry {
             name: "HTML",
@@ -406,6 +389,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: Some(QuerySource::Single(tree_sitter_html::HIGHLIGHTS_QUERY)),
             injections: Some(QuerySource::Single(tree_sitter_html::INJECTIONS_QUERY)),
             injection_alias: None,
+            queries: Some(LanguageQuerySources::from_sources(
+                include_str!("../queries/html/brackets.scm"),
+                include_str!("../queries/html/indents.scm"),
+                None,
+            )),
         },
         LanguageEntry {
             name: "CSS",
@@ -417,6 +405,11 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: Some(QuerySource::Single(tree_sitter_css::HIGHLIGHTS_QUERY)),
             injections: None,
             injection_alias: None,
+            queries: Some(LanguageQuerySources::from_sources(
+                include_str!("../queries/css/brackets.scm"),
+                include_str!("../queries/css/indents.scm"),
+                None,
+            )),
         },
         LanguageEntry {
             name: "SQL",
@@ -428,6 +421,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: None,
             injections: None,
             injection_alias: None,
+            queries: None,
         },
         LanguageEntry {
             name: "LaTeX",
@@ -439,6 +433,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: None,
             injections: None,
             injection_alias: None,
+            queries: None,
         },
         LanguageEntry {
             name: "XML",
@@ -450,6 +445,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             highlights: None,
             injections: None,
             injection_alias: None,
+            queries: None,
         },
     ]
 }

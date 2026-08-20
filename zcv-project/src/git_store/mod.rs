@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use background::{JobResult, execute_job, repo_relative_path};
-use gpui::{AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
+use gpui::{App, AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
 use zcv_git::DiffHunk;
 use zcv_git::{Branch, DiffStat, FileStatus, GitCancellation, GitRepository};
 
@@ -118,6 +118,8 @@ pub struct GitStore {
     /// uncommit 成功后暂存的被撤销消息（Head 事件后由面板读取填回提交信息编辑器）。
     pending_uncommitted_message: Option<String>,
     background: BackgroundExecutor,
+    /// 自身弱句柄：后台任务完成后回填缓存等状态用（构造时注入）。
+    self_handle: WeakEntity<Self>,
     job_sender: async_channel::Sender<ScheduledGitJob>,
     next_job_id: GitJobId,
     pending_jobs: HashMap<GitJobKey, GitJobId>,
@@ -238,6 +240,7 @@ impl GitStore {
             }
         });
 
+        let self_handle = cx.weak_entity();
         Self {
             root,
             repositories: Vec::new(),
@@ -245,6 +248,7 @@ impl GitStore {
             committed_text_cache: HashMap::new(),
             pending_uncommitted_message: None,
             background,
+            self_handle,
             job_sender,
             next_job_id: 1,
             pending_jobs: HashMap::new(),
@@ -563,8 +567,10 @@ impl GitStore {
         !self.repositories.is_empty()
     }
 
-    /// 读取 HEAD 中 `path` 的文本（diff base），不在仓库/无 HEAD 时为 None。
-    pub fn load_committed_text(&self, path: &Path) -> Task<Option<String>> {
+    /// 读取 HEAD 中 `path` 的文本（diff base），结果回填缓存；不在仓库/无 HEAD 时为 None。
+    ///
+    /// 缓存生命周期全部由 GitStore 管理：加载即回填，HEAD 变化时 commit_job 清空。
+    pub fn load_committed_text(&self, path: &Path, cx: &App) -> Task<Option<String>> {
         let background = self.background.clone();
         let path = canonicalize_path(path);
         let Some(repository) = self.repo_for_path(&path) else {
@@ -575,10 +581,23 @@ impl GitStore {
             return background.spawn(async { None });
         };
         let revision = format!("HEAD:{}", relative.to_string_lossy());
-        background.spawn(async move {
+        let loaded = background.spawn(async move {
             let contents = repository.load_revisions(&[&revision]).ok()?;
             let content = contents.into_iter().next()??;
             Some(String::from_utf8_lossy(&content).into_owned())
+        });
+        let this = self.self_handle.clone();
+        cx.spawn(async move |cx| {
+            let text = loaded.await;
+            if let Some(text) = &text {
+                this.update(cx, |store, _| {
+                    store
+                        .committed_text_cache
+                        .insert(path.clone(), Arc::from(text.clone()));
+                })
+                .ok();
+            }
+            text
         })
     }
 
@@ -587,12 +606,6 @@ impl GitStore {
         self.committed_text_cache
             .get(&canonicalize_path(path))
             .cloned()
-    }
-
-    /// 缓存 HEAD 文本（HEAD 变化时由 commit_job 清空）。
-    pub fn cache_committed_text(&mut self, path: &Path, text: Arc<str>) {
-        self.committed_text_cache
-            .insert(canonicalize_path(path), text);
     }
 
     /// UI 线程：取出 job 需要的共享数据（后台线程不能访问 Entity 状态）。
@@ -928,9 +941,13 @@ mod tests {
 
         // 修改工作区文件，HEAD 内容应仍是初始版本。
         fs::write(root.join("tracked.txt"), "已修改\n").expect("应修改文件");
-        let text = cx.executor().block(cx.read_entity(&git_store, |store, _| {
-            store.load_committed_text(&root.join("tracked.txt"))
-        }));
+        let path = root.join("tracked.txt");
+        // 前台任务由测试调度器驱动（block 只跑后台任务，无法推进）。
+        cx.read_entity(&git_store, |store, cx| store.load_committed_text(&path, cx))
+            .detach();
+        cx.run_until_parked();
+        // 加载结果已由 GitStore 自行回填缓存。
+        let text = cx.read_entity(&git_store, |store, _| store.committed_text(&path));
         assert_eq!(text.as_deref(), Some("第一行\n第二行\n"));
     }
 

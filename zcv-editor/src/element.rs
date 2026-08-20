@@ -20,8 +20,8 @@ use zcv_ui::Glyph;
 
 use super::display_map::{
     BufferPoint, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot, FoldRowSegment,
-    LineStyles, ProjectedRange, StreamLineSource, ViewportChunkSource, WrapViewportRowKind,
-    byte_for_display_column, chunks_to_runs, render_viewport_chunks,
+    ProjectedRange, StreamLineSource, WrapRowInfo, WrapViewportRowKind, byte_for_display_column,
+    render_viewport_row,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -105,16 +105,6 @@ struct LayoutLine {
     git_diff: Option<DiffHunkKind>,
     /// placeholder 提示行：命中测试不映射到 placeholder buffer（空 buffer 唯一合法坐标是 0）。
     is_placeholder: bool,
-}
-
-/// 软换行续行信息：片段所属逻辑行、假空格缩进数与片段起始逻辑字符列。
-///
-/// 命中测试与光标定位都通过它把"显示行内位置"换算回逻辑行坐标。
-#[derive(Clone, Copy)]
-struct WrapRowInfo {
-    line: Line,
-    indent: usize,
-    column_base: usize,
 }
 
 struct EditorLayout {
@@ -1550,114 +1540,27 @@ fn layout_visible_lines(
     if let Some(viewport) = viewport {
         for row in viewport.rows() {
             match row.kind() {
-                WrapViewportRowKind::Text {
-                    source,
-                    text,
-                    byte_range,
-                    global_byte_start,
-                    fragment_index,
-                    indent,
-                    column_base,
-                    segments,
-                } => {
-                    // 对齐 Zed highlighted_chunks：
-                    // 整行合成 chunk 流（inlay 注入 + 样式切分 + tab 展开），软换行片段按投影范围裁剪；
-                    // 展开后字符列 = 显示列。
-                    let tab_width = display_snapshot.buffer_snapshot().config().tab.tab_width();
-                    // 行内提示（inlay）：经消费链查询行的注入段（投影偏移已含此前注入前缀）。
-                    let inlay_snapshot = display_snapshot
-                        .wrap_snapshot()
-                        .tab_snapshot()
-                        .fold_snapshot()
-                        .inlay_snapshot();
-                    let stream_line = match source {
-                        StreamLineSource::Buffer(buffer_line) => inlay_snapshot
-                            .stream()
-                            .buffer_to_stream(Line::new(*buffer_line)),
-                        StreamLineSource::Inserted { anchor, index } => {
-                            let start = inlay_snapshot
-                                .stream()
-                                .inserted_block_start(*anchor)
-                                .expect("合成行必须属于锚定块的插入表");
-                            Line::new(start.get() + index)
-                        }
-                    };
-                    // 合成行是外部文本：无语法高亮、不可编辑/不可选（spans/marked 是锚定行的 buffer 坐标，套用到合成行文本会产生非字符边界切片）。
-                    let line_styles = match source {
-                        StreamLineSource::Buffer(_) => LineStyles {
-                            spans: &visible_highlights,
-                            styles: highlight_styles,
-                            backgrounds: &search_backgrounds,
-                            marked: presentation.marked_ranges(),
-                        },
-                        StreamLineSource::Inserted { .. } => LineStyles::default(),
-                    };
-                    let rendered = render_viewport_chunks(
-                        ViewportChunkSource {
-                            text: text.as_ref(),
-                            global_byte_start: *global_byte_start,
-                            stream_line,
-                            segments: segments.as_deref(),
-                            inlay: inlay_snapshot,
-                        },
-                        tab_width,
-                        line_styles,
-                        byte_range.clone(),
+                WrapViewportRowKind::Text { .. } => {
+                    // 对齐 Zed highlighted_chunks：行解构、四层快照链穿透、chunk 合成与 run 映射都在管线侧完成，这里只消费渲染结果。
+                    let rendered = render_viewport_row(
+                        row.kind(),
+                        display_snapshot,
+                        &visible_highlights,
+                        highlight_styles,
+                        &search_backgrounds,
+                        presentation.marked_ranges(),
+                        base.clone(),
+                        cx,
                     );
-                    // 显示文本：wrap 假空格 + 展开 chunk 文本拼接（对齐 Zed from_chunks）。
-                    let display_len: usize = *indent
-                        + rendered
-                            .chunks
-                            .iter()
-                            .map(|chunk| chunk.text.len())
-                            .sum::<usize>();
-                    let mut display_text = String::with_capacity(display_len);
-                    if *indent > 0 {
-                        display_text.push_str(&" ".repeat(*indent));
-                    }
-                    for chunk in &rendered.chunks {
-                        display_text.push_str(chunk.text);
-                    }
-                    let mut runs = Vec::with_capacity(rendered.chunks.len() + 1);
-                    if *indent > 0 {
-                        runs.push(TextRun {
-                            len: *indent,
-                            ..base.clone()
-                        });
-                    }
-                    let mut chunk_runs = chunks_to_runs(&rendered.chunks, base.clone());
-                    // 折叠占位符用占位色绘制。
-                    for (run, chunk) in chunk_runs.iter_mut().zip(&rendered.chunks) {
-                        if chunk.is_placeholder {
-                            run.color = color::current(cx).text_placeholder.into();
-                        }
-                    }
-                    runs.extend(chunk_runs);
-                    let utf16_start = rendered.utf16_start;
-                    let logical_line = match source {
-                        StreamLineSource::Buffer(buffer_line) => Some(Line::new(*buffer_line)),
-                        StreamLineSource::Inserted { .. } => None,
-                    };
-                    let wrap_info = (*fragment_index > 0).then_some(WrapRowInfo {
-                        line: logical_line.unwrap_or(Line::ZERO),
-                        indent: *indent,
-                        column_base: *column_base,
-                    });
                     push_line(
                         row.index().get(),
-                        logical_line,
-                        // 行号只在逻辑行首显示行出现。
-                        match source {
-                            StreamLineSource::Buffer(buffer_line) if *fragment_index == 0 => {
-                                Some(Line::new(*buffer_line))
-                            }
-                            _ => None,
-                        },
-                        &display_text,
-                        utf16_start,
-                        wrap_info,
-                        segments.clone(),
-                        runs,
+                        rendered.logical_line,
+                        rendered.gutter_line,
+                        &rendered.display_text,
+                        rendered.utf16_start,
+                        rendered.wrap_info,
+                        rendered.fold_segments,
+                        rendered.runs,
                     );
                 }
             }

@@ -3,8 +3,6 @@
 //! Workspace 框架（Pane/Dock/命令分发）在 zcv-workspace；
 //! 本模块只做 binary 侧的具体装配：面板（项目树/版本控制/占位面板）、状态栏按钮、git/settings 订阅与 diff hunks 推送。
 
-mod placeholder_panels;
-
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -12,8 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, AsyncApp, Bounds, Context, Entity, Focusable, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowOptions, point, prelude::*, px, size,
+    App, AsyncApp, Bounds, Context, Entity, FocusHandle, Focusable, Render, TitlebarOptions,
+    WeakEntity, Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
 };
 use zcv_actions::{GitFetch, GitPull, GitPush, SelectGitBranch, ToggleProjectPicker};
 use zcv_editor::{Editor, SoftWrap};
@@ -21,14 +19,13 @@ use zcv_project::{
     ActiveProjectRoot, GitOperationKind, GitOperationOutcome, GitStoreEvent, Project,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
-use zcv_theme::{ThemeChoice, typography};
+use zcv_theme::{ThemeChoice, color, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, FileToolbarControls, GitBranchAction, OnBranchSelected,
     OnProjectSelected, Pane, PaneEvent, Panel, PanelButtons, PanelHandle, ToastAction, ToastKind,
     TopBar, Workspace, add_to_recent,
 };
 
-use self::placeholder_panels::{DebugPanel, KeyboardShortcutsPanel, OutlinePanel, TerminalPanel};
 use crate::active_buffer_language::ActiveBufferLanguage;
 use crate::breadcrumbs::Breadcrumbs;
 use crate::cursor_position::CursorPosition;
@@ -180,9 +177,9 @@ fn initialize_common_workspace(
             cx.new(|cx| PanelButtons::new(left_dock.clone(), workspace_entity.clone(), cx)),
             cx,
         );
+        bar.add_left_item(cx.new(|_| ProjectSearchButton::new()), cx);
         bar.add_left_item(cx.new(|_| LspButton::new()), cx);
         bar.add_left_item(cx.new(|_| DiagnosticsButton::new()), cx);
-        bar.add_left_item(cx.new(|_| ProjectSearchButton::new()), cx);
         bar.add_right_item(cx.new(|_| CursorPosition::new()), cx);
         bar.add_right_item(cx.new(|_| ActiveBufferLanguage::new()), cx);
         bar.add_right_item(
@@ -643,6 +640,68 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
         }
     }
 }
+
+// ── 内部类型 ────────────────────────────────────────────────────────
+
+/// 占位面板：大纲/终端/调试/快捷键（后续接入真实功能）。
+macro_rules! make_placeholder_panel {
+    ($name:ident, $persistent:expr, $icon:expr, $label:expr) => {
+        pub(crate) struct $name {
+            focus: FocusHandle,
+        }
+
+        impl $name {
+            pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+                Self {
+                    focus: cx.focus_handle(),
+                }
+            }
+        }
+
+        impl Panel for $name {
+            fn icon() -> &'static str {
+                $icon
+            }
+            fn label() -> &'static str {
+                $label
+            }
+            fn persistent_name() -> &'static str {
+                $persistent
+            }
+            fn focus_handle(&self, _cx: &App) -> FocusHandle {
+                self.focus.clone()
+            }
+        }
+
+        impl Render for $name {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .track_focus(&self.focus)
+                    .key_context($persistent)
+                    .tab_index(0)
+                    .text_color(color::current(cx).text_placeholder)
+                    .child($label)
+            }
+        }
+    };
+}
+
+make_placeholder_panel!(OutlinePanel, "outline", "icons/list_tree.svg", "大纲");
+
+make_placeholder_panel!(TerminalPanel, "terminal", "icons/terminal.svg", "终端");
+
+make_placeholder_panel!(DebugPanel, "debug", "icons/debug.svg", "调试");
+
+make_placeholder_panel!(
+    KeyboardShortcutsPanel,
+    "keyboard-shortcuts",
+    "icons/keyboard.svg",
+    "快捷键"
+);
 
 #[cfg(test)]
 mod tests {

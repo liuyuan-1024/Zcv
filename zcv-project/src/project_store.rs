@@ -24,6 +24,14 @@ pub enum ProjectEvent {
     EntriesChanged,
 }
 
+/// 当前活动项目根（装配层注册：打开项目时设置、RootChanged 时更新）。
+///
+/// 供 breadcrumbs 等显示层做根相对化查询，避免把项目根概念渗入可嵌入组件状态。
+#[derive(Clone, Debug)]
+pub struct ActiveProjectRoot(pub Option<PathBuf>);
+
+impl gpui::Global for ActiveProjectRoot {}
+
 pub struct Project {
     /// 与 Zed 的空 WorktreeStore 语义一致：Project 始终存在，worktree 可以为空。
     worktree: Option<ProjectWorktree>,

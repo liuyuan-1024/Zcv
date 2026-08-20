@@ -283,7 +283,7 @@ mod tests {
                 r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="8"/>"#,
                 cx,
             );
-            editor.set_file_path(PathBuf::from("icon.svg"), PathBuf::from("."), cx);
+            editor.set_file_path(PathBuf::from("icon.svg"), cx);
         });
         let view = cx.new(|cx| {
             SvgPreviewView::new(

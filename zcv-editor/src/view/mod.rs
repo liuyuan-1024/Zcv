@@ -119,7 +119,6 @@ pub struct Editor {
     /// 空 buffer 时显示的提示文本（如提交信息编辑器的"输入提交信息…"）。
     /// 独立 DisplayMap 承载（对齐 Zed：placeholder 走真实渲染管线，折行/行高一致）。
     placeholder_display_map: Option<DisplayMap>,
-    project_root: Option<PathBuf>,
     selections: EditorSelections,
     selection_history: SelectionHistory,
     scroll_manager: ScrollManager,
@@ -271,15 +270,10 @@ impl Editor {
         self.language_buffer.read(cx).language_name()
     }
 
-    pub fn project_root(&self) -> Option<&Path> {
-        self.project_root.as_deref()
-    }
-
-    pub fn set_file_path(&mut self, path: PathBuf, project_root: PathBuf, cx: &mut Context<Self>) {
+    pub fn set_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.language_buffer.update(cx, |language_buffer, cx| {
             language_buffer.set_file_path(path, cx)
         });
-        self.project_root = Some(project_root);
         cx.emit(EditorEvent::PathChanged);
     }
 
@@ -978,7 +972,6 @@ impl Editor {
             syntax_snapshot,
             mode,
             placeholder_display_map: None,
-            project_root: None,
             selections: EditorSelections::from_selection_set(
                 initial_version,
                 &SelectionSet::default(),

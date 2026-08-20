@@ -24,16 +24,13 @@ impl ItemProvider for TextFileProvider {
         project: Entity<Project>,
         cx: &mut App,
     ) -> Task<anyhow::Result<Box<dyn ItemHandle>>> {
-        let Some(root) = project.read(cx).root().map(Path::to_path_buf) else {
-            return Task::ready(Err(anyhow::anyhow!("当前工作区没有打开项目")));
-        };
         let buffer = match project.update(cx, |project, cx| project.open_buffer(&path, cx)) {
             Ok(buffer) => buffer,
             Err(error) => return Task::ready(Err(anyhow::anyhow!("{error}"))),
         };
         let editor = cx.new(|cx| Editor::for_buffer(buffer, cx));
         editor.update(cx, |editor, cx| {
-            editor.set_file_path(path, root, cx);
+            editor.set_file_path(path, cx);
         });
         Task::ready(Ok(Box::new(editor) as Box<dyn ItemHandle>))
     }

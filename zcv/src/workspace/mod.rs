@@ -17,7 +17,9 @@ use gpui::{
 };
 use zcv_actions::{GitFetch, GitPull, GitPush, SelectGitBranch, ToggleProjectPicker};
 use zcv_editor::{Editor, SoftWrap};
-use zcv_project::{GitOperationKind, GitOperationOutcome, GitStoreEvent, Project};
+use zcv_project::{
+    ActiveProjectRoot, GitOperationKind, GitOperationOutcome, GitStoreEvent, Project,
+};
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_theme::{ThemeChoice, typography};
 use zcv_workspace::{
@@ -106,6 +108,8 @@ pub(crate) fn open_empty_workspace(cx: &mut App) -> anyhow::Result<()> {
 
 /// 项目与空工作区共用同一条窗口创建路径；差异只在 Project 是否含 worktree。
 fn open_workspace_window(root: Option<PathBuf>, cx: &mut App) -> anyhow::Result<()> {
+    // 项目根作为全局显示基准注册（breadcrumbs 相对化查询；RootChanged 时更新）。
+    cx.set_global(ActiveProjectRoot(root.clone()));
     let bounds = Bounds::centered(None, size(px(1200.0), px(900.0)), cx);
 
     cx.open_window(
@@ -482,6 +486,7 @@ fn initialize_workspace(
             &project,
             move |_workspace, _project, event, cx| match event {
                 zcv_project::ProjectEvent::RootChanged(root) => {
+                    cx.set_global(ActiveProjectRoot(Some(root.clone())));
                     project_tree_for_project.update(cx, |tree, cx| {
                         tree.set_root(root.clone(), cx);
                     });

@@ -51,28 +51,24 @@ impl Item for Editor {
 
     fn breadcrumbs(&self, cx: &App) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
         let path = self.file_path(cx)?;
-        let relative = self
-            .project_root()
+        // 根相对化查询宿主注册的活动项目根（RootChanged 时由装配层更新）。
+        let relative = cx
+            .try_global::<zcv_project::ActiveProjectRoot>()
+            .and_then(|root| root.0.as_deref())
             .and_then(|root| path.strip_prefix(root).ok())
             .unwrap_or(&path);
         Some((vec![relative.to_string_lossy().into_owned().into()], None))
     }
 
     fn rename_path(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
-        let (Some(path), Some(project_root)) = (
-            self.file_path(cx),
-            self.project_root().map(Path::to_path_buf),
-        ) else {
+        let Some(path) = self.file_path(cx) else {
             return;
         };
         let Ok(suffix) = path.strip_prefix(from) else {
             return;
         };
         let renamed_path = to.join(suffix);
-        let renamed_root = project_root
-            .strip_prefix(from)
-            .map_or(project_root.clone(), |suffix| to.join(suffix));
-        self.set_file_path(renamed_path, renamed_root, cx);
+        self.set_file_path(renamed_path, cx);
     }
 
     fn buffer(&self, _cx: &App) -> Option<Entity<Buffer>> {

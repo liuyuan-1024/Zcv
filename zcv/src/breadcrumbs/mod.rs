@@ -164,11 +164,7 @@ mod tests {
                 breadcrumbs.set_active_pane_item(Some(item), window, cx);
             });
             editor.update(cx, |editor, cx| {
-                editor.set_file_path(
-                    PathBuf::from("/project/new.rs"),
-                    PathBuf::from("/project"),
-                    cx,
-                );
+                editor.set_file_path(PathBuf::from("/project/new.rs"), cx);
             });
             TestView
         });

@@ -626,18 +626,14 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
             })
         });
         if needs_head_text && store.read(cx).committed_text(path).is_none() {
-            let task = store.read(cx).load_committed_text(path);
+            // 加载结果由 GitStore 自行回填缓存，这里只消费返回值。
+            let task = store.read(cx).load_committed_text(path, cx);
             let editor = editor.clone();
-            let path = path.clone();
-            let store = store.clone();
             cx.spawn(async move |cx| {
                 if let Some(text) = task.await {
                     cx.update(|app| {
-                        store.update(app, |store, _| {
-                            store.cache_committed_text(&path, Arc::from(text));
-                        });
                         editor.update(app, |editor, cx| {
-                            editor.set_deleted_hunk_text(store.read(cx).committed_text(&path), cx);
+                            editor.set_deleted_hunk_text(Some(Arc::from(text)), cx);
                         });
                     })
                     .ok();

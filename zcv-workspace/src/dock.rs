@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, MouseButton, Pixels, Point, Render, Subscription,
-    WeakEntity, Window, div, prelude::*, px,
+    WeakEntity, Window, deferred, div, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
 pub use zcv_actions::{FocusOrHidePanel, ToggleBottomDock, ToggleLeftDock, ToggleRightDock};
@@ -393,9 +393,9 @@ impl Render for Dock {
 
         let frame = frame.child(div().size_full().child(panel_view));
 
-        // 拖拽调整大小的热区；手势由 gpui 拖拽系统承载，
-        // 位置信息随 DraggedDock 传递，Workspace 根节点经 on_drag_move 驱动尺寸。
-        const HIT: Pixels = px(3.0);
+        // 拖拽调整大小的热区；手势由 gpui 拖拽系统承载，位置信息随 DraggedDock 传递，Workspace 根节点经 on_drag_move 驱动尺寸。
+        // 手柄中心压在 dock 边界线上，两侧各占一半宽度，从 dock 内侧或编辑区一侧都能拖拽；deferred 提升渲染层，避免负偏移部分被 frame 溢出裁剪。
+        const HIT: Pixels = px(6.0);
         let dock_entity = cx.entity().clone();
         let area = self.position;
 
@@ -406,6 +406,10 @@ impl Render for Dock {
                 cx.stop_propagation();
                 cx.new(|_| DraggedDock(area))
             })
+            // 按住手柄时阻断事件穿透，编辑区内容不响应落在手柄外伸区域的点击。
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+            })
             .on_mouse_up(MouseButton::Left, {
                 let dock_entity = dock_entity.clone();
                 move |event, window, cx| {
@@ -414,21 +418,21 @@ impl Render for Dock {
                         dock_entity.update(cx, |d, cx| d.reset_size(win_size, cx));
                         window.refresh();
                     }
+                    cx.stop_propagation();
                 }
-            });
+            })
+            .occlude();
 
         let handle = match self.position {
-            DockPosition::Left => handle
-                .right(Pixels::ZERO)
-                .w(HIT)
-                .h_full()
-                .cursor_col_resize(),
-            DockPosition::Right => handle
-                .left(Pixels::ZERO)
-                .w(HIT)
-                .h_full()
-                .cursor_col_resize(),
-            DockPosition::Bottom => handle.top(Pixels::ZERO).w_full().h(HIT).cursor_row_resize(),
+            DockPosition::Left => {
+                deferred(handle.right(HIT * -0.5).w(HIT).h_full().cursor_col_resize())
+            }
+            DockPosition::Right => {
+                deferred(handle.left(HIT * -0.5).w(HIT).h_full().cursor_col_resize())
+            }
+            DockPosition::Bottom => {
+                deferred(handle.top(HIT * -0.5).w_full().h(HIT).cursor_row_resize())
+            }
         };
 
         frame.child(handle)

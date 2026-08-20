@@ -23,7 +23,8 @@ use zcv_editor::Editor;
 use zcv_git::{DiffStat, FileStatus, StatusCode};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space, typography};
-use zcv_ui::{Checkbox, Glyph, Scrollbar, tree};
+use zcv_ui::tree::{self, TreeRow, TreeState};
+use zcv_ui::{Checkbox, Glyph, Scrollbar};
 use zcv_workspace::Panel;
 
 use crate::git_status::git_status_color;
@@ -252,7 +253,9 @@ fn collect_dirs(
 pub(crate) struct VersionControlPanel {
     focus: FocusHandle,
     project: Entity<Project>,
-    state: Rc<RefCell<GitPanelState>>,
+    state: Rc<RefCell<TreeState<(GitSection, PathBuf), GitRow>>>,
+    /// 是否已执行过"首次全展开"（见 `rebuild_rows`；空态不置位）。
+    initialized: bool,
     scroll_handle: UniformListScrollHandle,
     scrollbar: Scrollbar<UniformListScrollHandle>,
     /// 底部提交信息编辑器。
@@ -316,7 +319,8 @@ impl VersionControlPanel {
         let mut panel = Self {
             focus,
             project,
-            state: Rc::new(RefCell::new(GitPanelState::new())),
+            state: Rc::new(RefCell::new(TreeState::new(row_entry_key))),
+            initialized: false,
             scroll_handle,
             scrollbar,
             commit_editor,
@@ -353,16 +357,16 @@ impl VersionControlPanel {
         };
         let mut state = self.state.borrow_mut();
         let rows = flatten_rows(&trees, &state.expanded);
-        state.set_rows(rows);
+        state.replace_rows(rows);
         // 首次见到目录时默认全部展开（空仓库/空态不置位，init 后仍会展开）；
         // 之后用户折叠状态保持，git 事件触发的重建不重置。
-        if !state.initialized {
+        if !self.initialized {
             let directories = collect_directory_keys(&trees);
             if !directories.is_empty() {
-                state.initialized = true;
+                self.initialized = true;
                 state.expanded.extend(directories);
                 let rows = flatten_rows(&trees, &state.expanded);
-                state.set_rows(rows);
+                state.replace_rows(rows);
             }
         }
     }
@@ -384,14 +388,8 @@ impl VersionControlPanel {
             return;
         };
         if entry.is_dir {
-            let mut state = self.state.borrow_mut();
-            let key = (entry.section, entry.path);
-            if state.expanded.contains(&key) {
-                state.expanded.remove(&key);
-            } else {
-                state.expanded.insert(key);
-            }
-            drop(state);
+            let key = (entry.section, entry.path.clone());
+            self.state.borrow_mut().toggle_expand(&key);
             self.rebuild_rows(cx);
         } else if let Some(callback) = self.on_open_file.clone() {
             callback(entry.path, focus_opened_item, window, cx);
@@ -420,32 +418,7 @@ impl VersionControlPanel {
     }
 
     fn handle_collapse(&mut self, _: &Collapse, window: &mut Window, cx: &mut Context<Self>) {
-        let mut state = self.state.borrow_mut();
-        let rows = state.rows.clone();
-        let Some(idx) = state.selected_idx() else {
-            return;
-        };
-        let Some(GitRow::Entry(row)) = rows.get(idx) else {
-            return;
-        };
-        let rebuild = if row.is_dir && row.expanded {
-            state.expanded.remove(&(row.section, row.path.clone()));
-            true
-        } else if row.depth > 0 {
-            // 已折叠/叶子：把选中移到上层的祖先行（对齐项目树）。
-            let parent_depth = row.depth - 1;
-            if let Some(parent_idx) = rows[..idx]
-                .iter()
-                .rposition(|r| matches!(r, GitRow::Entry(e) if e.is_dir && e.depth == parent_depth))
-                && let Some(key) = row_entry_key(&rows[parent_idx])
-            {
-                state.selected = Some(key);
-            }
-            false
-        } else {
-            false
-        };
-        drop(state);
+        let rebuild = self.state.borrow_mut().collapse_selection();
         if rebuild {
             self.rebuild_rows(cx);
         }
@@ -454,22 +427,7 @@ impl VersionControlPanel {
     }
 
     fn handle_expand(&mut self, _: &Expand, window: &mut Window, cx: &mut Context<Self>) {
-        let mut state = self.state.borrow_mut();
-        let rows = state.rows.clone();
-        let Some(idx) = state.selected_idx() else {
-            return;
-        };
-        let Some(GitRow::Entry(row)) = rows.get(idx) else {
-            return;
-        };
-        let rebuild = if row.is_dir && !row.expanded {
-            state.expanded.insert((row.section, row.path.clone()));
-            true
-        } else {
-            state.select_down();
-            false
-        };
-        drop(state);
+        let rebuild = self.state.borrow_mut().expand_selection();
         if rebuild {
             self.rebuild_rows(cx);
         }
@@ -970,99 +928,18 @@ struct GitTreeNode {
     children: Vec<GitTreeNode>,
 }
 
-struct GitPanelState {
-    expanded: HashSet<(GitSection, PathBuf)>,
-    selected: Option<(GitSection, PathBuf)>,
-    rows: Vec<GitRow>,
-    /// 是否已执行过"首次全展开"（见 `rebuild_rows`；空态不置位）。
-    initialized: bool,
-}
-
-impl GitPanelState {
-    fn new() -> Self {
-        Self {
-            expanded: HashSet::new(),
-            selected: None,
-            rows: Vec::new(),
-            initialized: false,
+impl TreeRow for GitRow {
+    fn is_dir(&self) -> bool {
+        matches!(self, GitRow::Entry(entry) if entry.is_dir)
+    }
+    fn depth(&self) -> usize {
+        match self {
+            GitRow::Entry(entry) => entry.depth,
+            GitRow::Header(_) => 0,
         }
     }
-
-    /// 替换行模型；选中条目消失时清空选中。
-    fn set_rows(&mut self, rows: Vec<GitRow>) {
-        self.rows = rows;
-        let selected = self.selected.clone();
-        if selected.as_ref().is_some_and(|sel| {
-            !self
-                .rows
-                .iter()
-                .any(|row| row_entry_key(row).as_ref() == Some(sel))
-        }) {
-            self.selected = None;
-        }
-    }
-
-    /// 无选中时选中第一个条目行（Header 不可选）。
-    fn ensure_selected(&mut self) {
-        if self.selected.is_some() {
-            return;
-        }
-        if let Some(key) = self.rows.iter().find_map(row_entry_key) {
-            self.selected = Some(key);
-        }
-    }
-
-    fn selected_idx(&self) -> Option<usize> {
-        let selected = self.selected.clone()?;
-        self.rows
-            .iter()
-            .position(|row| row_entry_key(row).as_ref() == Some(&selected))
-    }
-
-    /// 上移选择，跳过分组头；无选中时选中最后一个条目行。
-    fn select_up(&mut self) {
-        match self.selected_idx() {
-            None => {
-                if let Some(idx) = self
-                    .rows
-                    .iter()
-                    .rposition(|row| matches!(row, GitRow::Entry(_)))
-                {
-                    self.selected = row_entry_key(&self.rows[idx]);
-                }
-            }
-            Some(idx) => {
-                if let Some(prev) = self.rows[..idx]
-                    .iter()
-                    .rposition(|row| matches!(row, GitRow::Entry(_)))
-                {
-                    self.selected = row_entry_key(&self.rows[prev]);
-                }
-            }
-        }
-    }
-
-    /// 下移选择，跳过分组头；无选中时选中第一个条目行。
-    fn select_down(&mut self) {
-        match self.selected_idx() {
-            None => {
-                if let Some(idx) = self
-                    .rows
-                    .iter()
-                    .position(|row| matches!(row, GitRow::Entry(_)))
-                {
-                    self.selected = row_entry_key(&self.rows[idx]);
-                }
-            }
-            Some(idx) => {
-                if let Some(offset) = self.rows[idx + 1..]
-                    .iter()
-                    .position(|row| matches!(row, GitRow::Entry(_)))
-                {
-                    self.selected = row_entry_key(&self.rows[idx + 1 + offset]);
-                }
-            }
-        }
+    fn expanded(&self) -> bool {
+        matches!(self, GitRow::Entry(entry) if entry.expanded)
     }
 }
 
@@ -1076,7 +953,7 @@ fn row_entry_key(row: &GitRow) -> Option<(GitSection, PathBuf)> {
 
 #[derive(Clone)]
 struct GitPanelRenderContext {
-    state: Rc<RefCell<GitPanelState>>,
+    state: Rc<RefCell<TreeState<(GitSection, PathBuf), GitRow>>>,
     rows: Rc<[GitRow]>,
     focus: FocusHandle,
     /// 条目点击直接调用 Entity 方法（对齐 Zed 的 `cx.listener` 路径）。

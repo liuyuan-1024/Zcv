@@ -7,7 +7,7 @@ use crate::buffer::{Buffer, history::HistoryEntry};
 use crate::{
     BufferVersion, EngineError, EngineResult, LargeTransactionPolicy, TransactionOutcome,
     errors::{EditError, StorageError, TransactionError},
-    storage::TextStorage,
+    storage::{RopeyPreparedReplace, TextStorage},
     transaction::{ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionSource},
 };
 
@@ -209,7 +209,7 @@ impl Buffer {
     fn prepare_storage_replaces(
         &self,
         tx_edits: &EditList,
-    ) -> EngineResult<Vec<<crate::storage::RopeyStorage as TextStorage>::PreparedReplace>> {
+    ) -> EngineResult<Vec<RopeyPreparedReplace>> {
         let mut prepared_replaces = Vec::new();
         prepared_replaces
             .try_reserve(tx_edits.len())

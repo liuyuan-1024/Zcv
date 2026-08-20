@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 
 use tree_sitter::Query;
 
-use crate::available_languages::{QuerySource, builtin_languages, language_queries};
+use crate::available_languages::{LanguageQuerySources, QuerySource, builtin_languages};
 
 /// 一门可由 tree-sitter 解析和高亮的语言。
 #[derive(Clone, Debug)]
@@ -81,6 +81,8 @@ pub(crate) struct LanguageEntry {
     pub(crate) injections: Option<QuerySource>,
     /// 注入查询使用的别名（如 markdown 的 `markdown_inline`）；仅注入查找用，不参与文件识别。
     pub(crate) injection_alias: Option<&'static str>,
+    /// 结构查询源（括号/缩进/折叠）；缺失时语言加载为空查询集。
+    pub(crate) queries: Option<LanguageQuerySources>,
 }
 
 impl LanguageEntry {
@@ -92,7 +94,10 @@ impl LanguageEntry {
             .map(|source| source.compile(&grammar))
             .transpose()
             .ok()?;
-        let queries = language_queries(self.name, &grammar)?;
+        let queries = self
+            .queries
+            .map(|sources| sources.compile_all(&grammar))
+            .unwrap_or_default();
         let capture_names = highlights
             .capture_names()
             .iter()

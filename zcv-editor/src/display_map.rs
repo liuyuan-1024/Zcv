@@ -20,7 +20,7 @@ mod wrap_map;
 
 #[cfg(test)]
 pub(crate) use chunk::{LineStyles, ViewportChunkSource, render_viewport_chunks};
-pub(crate) use chunk::{WrapRowInfo, render_viewport_row};
+pub(crate) use chunk::{RowStyleInput, WrapRowInfo, render_viewport_row};
 pub(crate) use display_width::DisplayColumn;
 use error::DisplayMapResult;
 #[cfg(test)]

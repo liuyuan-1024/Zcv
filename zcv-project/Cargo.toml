@@ -13,7 +13,6 @@ globset.workspace = true
 gpui.workspace = true
 log.workspace = true
 trash.workspace = true
-zcv-buffer-diff.workspace = true
 zcv-engine.workspace = true
 zcv-fs-watch.workspace = true
 zcv-git.workspace = true

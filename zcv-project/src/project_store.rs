@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use zcv_engine::{Buffer, BufferLoadError, BufferSaveError};
@@ -41,10 +41,9 @@ struct ProjectWorktree {
 
 impl Project {
     pub fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
-        let (signal_tx, signal_rx) = async_channel::unbounded::<()>();
-        let pending_events = Arc::new(Mutex::new(Vec::new()));
-        let fs_watcher: Arc<dyn Watcher> =
-            Arc::new(FsWatcher::new(signal_tx, pending_events.clone()));
+        let fs_watcher = Arc::new(FsWatcher::new());
+        let fs_events = fs_watcher.events();
+        let fs_watcher: Arc<dyn Watcher> = fs_watcher;
 
         if let Err(error) = fs_watcher.add(&root) {
             log::warn!("无法监听项目目录 {:?}：{error}", root);
@@ -53,8 +52,7 @@ impl Project {
         let fs_task = cx.spawn(|project: WeakEntity<Project>, asynccx: &mut AsyncApp| {
             let mut cx = asynccx.clone();
             async move {
-                while signal_rx.recv().await.is_ok() {
-                    let events = std::mem::take(&mut *pending_events.lock().unwrap());
+                while let Some(events) = fs_events.next_batch().await {
                     let _ = project.update(&mut cx, |project, cx| {
                         project.process_fs_events(events, cx);
                     });

@@ -222,12 +222,15 @@ impl BranchPicker {
             let branches = self.branches.clone();
             self.picker.update(cx, |picker, cx| {
                 picker.delegate_mut().reload(branches);
-                picker.search_input().set_text("", cx);
+                if let Some(input) = picker.search_input() {
+                    input.set_text("", cx);
+                }
                 cx.notify();
             });
-            let input = self.picker.read(cx).search_input().clone();
-            let focus = input.focus_handle(cx);
-            window.focus(&focus);
+            if let Some(input) = self.picker.read(cx).search_input().cloned() {
+                let focus = input.focus_handle(cx);
+                window.focus(&focus);
+            }
         } else {
             window.focus(&self.focus);
         }

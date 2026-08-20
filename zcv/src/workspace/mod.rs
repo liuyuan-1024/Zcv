@@ -9,19 +9,21 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use std::time::Duration;
+
 use gpui::{
-    App, Bounds, Context, Entity, Focusable, TitlebarOptions, WeakEntity, Window, WindowBounds,
-    WindowOptions, point, prelude::*, px, size,
+    App, AsyncApp, Bounds, Context, Entity, Focusable, TitlebarOptions, WeakEntity, Window,
+    WindowBounds, WindowOptions, point, prelude::*, px, size,
 };
-use zcv_actions::{SelectGitBranch, ToggleProjectPicker};
+use zcv_actions::{GitFetch, GitPull, GitPush, SelectGitBranch, ToggleProjectPicker};
 use zcv_editor::{Editor, SoftWrap};
-use zcv_project::{GitStoreEvent, Project};
+use zcv_project::{GitOperationKind, GitOperationOutcome, GitStoreEvent, Project};
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_theme::{ThemeChoice, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, FileToolbarControls, GitBranchAction, OnBranchSelected,
-    OnProjectSelected, Pane, PaneEvent, Panel, PanelButtons, PanelHandle, TopBar, Workspace,
-    add_to_recent,
+    OnProjectSelected, Pane, PaneEvent, Panel, PanelButtons, PanelHandle, ToastAction, ToastKind,
+    TopBar, Workspace, add_to_recent,
 };
 
 use self::placeholder_panels::{DebugPanel, KeyboardShortcutsPanel, OutlinePanel, TerminalPanel};
@@ -223,6 +225,77 @@ fn initialize_common_workspace(
 ///
 /// 必须在 `Workspace::update` 闭包内调用（workspace 为 &mut），内部不得再对同一实体嵌套 update。
 /// 所有工作区（含无 worktree 的空工作区）走同一条装配路径（对齐 Zed）。
+/// 后台执行 git 操作（fetch/pull/push）：等待结果后直接弹提示（成功/失败+错误详情）。
+///
+/// 命令编排与结果文案属于产品层（对齐 Zed：git_ui 处理 RemoteAction 并展示结果），框架 workspace 不解释 git 领域语义，因此这里在装配层统一注册。
+fn run_git_operation(
+    workspace: &mut Workspace,
+    operation: GitOperationKind,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(git_store) = workspace.project().read(cx).try_git_store() else {
+        return;
+    };
+    let task = git_store.update(cx, |store, cx| store.run_operation(operation, cx));
+    let name = match operation {
+        GitOperationKind::Fetch => "拉取",
+        GitOperationKind::Pull => "合并拉取",
+        GitOperationKind::Push => "推送",
+    };
+    cx.spawn(move |this: WeakEntity<Workspace>, asynccx: &mut AsyncApp| {
+        let mut cx = asynccx.clone();
+        async move {
+            let result = task.await;
+            let failure = match &result {
+                Ok(GitOperationOutcome::Failed(error)) => Some(error.clone()),
+                Err(error) => Some(format!("{error:#}")),
+                _ => None,
+            };
+            let (kind, message, action) = if let Some(error) = failure {
+                // 失败提示带重试按钮：点击重新执行同一操作（弱引用，不持有 Workspace）。
+                let weak = this.clone();
+                (
+                    ToastKind::Error,
+                    format!("{name}失败：{error}"),
+                    Some(ToastAction::new("重试", move |_window, cx| {
+                        if let Some(workspace) = weak.upgrade() {
+                            // App 上下文的 Entity::update 直接返回闭包结果（实体经 upgrade 已确认存在），无 Result 包装。
+                            workspace.update(cx, |workspace, cx| {
+                                run_git_operation(workspace, operation, cx);
+                            });
+                        }
+                    })),
+                )
+            } else {
+                match result.expect("失败分支已在上方处理") {
+                    GitOperationOutcome::Completed => {
+                        (ToastKind::Success, format!("{name}完成"), None)
+                    }
+                    GitOperationOutcome::Cancelled => {
+                        (ToastKind::Info, format!("{name}已取消"), None)
+                    }
+                    GitOperationOutcome::CompletedBeforeCancellation => {
+                        (ToastKind::Success, format!("{name}已在取消前完成"), None)
+                    }
+                    GitOperationOutcome::CancellationUnconfirmed(detail) => (
+                        ToastKind::Error,
+                        format!("{name}已停止，但暂时无法确认远端状态：{detail}"),
+                        None,
+                    ),
+                    GitOperationOutcome::Failed(_) => unreachable!(),
+                }
+            };
+            if let Some(this) = this.upgrade() {
+                this.update(&mut cx, |workspace, cx| {
+                    workspace.show_toast(kind, message, action, Some(Duration::from_secs(5)), cx);
+                })
+                .ok();
+            }
+        }
+    })
+    .detach();
+}
+
 fn initialize_workspace(
     workspace: &mut Workspace,
     window: &mut Window,
@@ -441,6 +514,17 @@ fn initialize_workspace(
         window.refresh();
     });
 
+    // git 操作（fetch/pull/push）：编排与文案在装配层（对齐 Zed git_ui 的 RemoteAction 处理）。
+    workspace.register_action(move |workspace, _: &GitFetch, _window, cx| {
+        run_git_operation(workspace, GitOperationKind::Fetch, cx);
+    });
+    workspace.register_action(move |workspace, _: &GitPull, _window, cx| {
+        run_git_operation(workspace, GitOperationKind::Pull, cx);
+    });
+    workspace.register_action(move |workspace, _: &GitPush, _window, cx| {
+        run_git_operation(workspace, GitOperationKind::Push, cx);
+    });
+
     for subscription in [
         git_subscription,
         pane_subscription,
@@ -516,7 +600,7 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
     for (editor, path) in &opened {
         let store = project.read(cx).git_store();
         // 等待态先清空旧标记；结果到达后由 HunksChanged 精确补回。
-        let hunks: Vec<zcv_buffer_diff::DiffHunk> = store
+        let hunks: Vec<zcv_git::DiffHunk> = store
             .read(cx)
             .hunks_for_path(path)
             .map(|hunks| hunks.to_vec())
@@ -532,8 +616,7 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
             hunks.iter().any(|hunk| {
                 matches!(
                     hunk.kind,
-                    zcv_buffer_diff::DiffHunkKind::Deleted
-                        | zcv_buffer_diff::DiffHunkKind::Modified
+                    zcv_git::DiffHunkKind::Deleted | zcv_git::DiffHunkKind::Modified
                 )
             })
         });

@@ -18,7 +18,6 @@ toml.workspace = true
 trash.workspace = true
 zcv-actions.workspace = true
 zcv-assets.workspace = true
-zcv-buffer-diff.workspace = true
 zcv-editor.workspace = true
 zcv-engine.workspace = true
 zcv-git.workspace = true

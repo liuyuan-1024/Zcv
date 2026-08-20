@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::Context;
-use zcv_buffer_diff::DiffHunk;
+use zcv_git::DiffHunk;
 use zcv_git::FileStatus;
 
 use super::{GitJob, GitStore, GitStoreEvent, canonicalize_path};

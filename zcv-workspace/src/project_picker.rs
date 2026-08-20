@@ -258,7 +258,9 @@ impl ProjectPicker {
             self.picker.update(cx, |picker, cx| {
                 picker.delegate_mut().reload_projects();
                 // 清空搜索框文字
-                picker.search_input().set_text("", cx);
+                if let Some(input) = picker.search_input() {
+                    input.set_text("", cx);
+                }
                 cx.notify();
             });
             // 同步 glyph 上显示的当前项目名
@@ -266,9 +268,10 @@ impl ProjectPicker {
             if let Some(entry) = delegate.projects.first() {
                 self.current_label = entry.label();
             }
-            let input = self.picker.read(cx).search_input().clone();
-            let focus = input.focus_handle(cx);
-            window.focus(&focus);
+            if let Some(input) = self.picker.read(cx).search_input().cloned() {
+                let focus = input.focus_handle(cx);
+                window.focus(&focus);
+            }
         } else {
             window.focus(&self.focus);
         }

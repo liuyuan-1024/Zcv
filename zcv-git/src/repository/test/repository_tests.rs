@@ -484,7 +484,7 @@ fn hunks_for(repository: &RealGitRepository, path: &Path) -> Vec<DiffHunk> {
 
 #[test]
 fn diff_hunks_reports_worktree_changes() {
-    use zcv_buffer_diff::DiffHunkKind::*;
+    use crate::diff::DiffHunkKind::*;
 
     let (root, _temp) = test_repo();
     let repository = open_repo(&root);

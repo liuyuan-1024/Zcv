@@ -42,6 +42,7 @@ pub use project_picker::OnProjectSelected;
 pub use recent_projects::{add_to_recent, canonical_project_path, most_recent_valid_project};
 pub use searchable::{Direction, SearchEvent, SearchQuery, SearchableItem, SearchableItemHandle};
 pub use status_bar::StatusItemView;
+pub use toast::{ToastAction, ToastKind};
 pub use toolbar::{FileToolbarControls, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 pub use top_bar::TopBar;
 pub use workspace_state::Workspace;

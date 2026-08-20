@@ -62,7 +62,8 @@ pub(crate) type OnDismiss = Box<dyn Fn(&mut Window, &mut App)>;
 
 pub struct Picker<D: PickerDelegate> {
     delegate: D,
-    search_input: Arc<dyn ErasedEditor>,
+    /// 单行输入控件（EDITOR_FACTORY 未初始化时缺席，Picker 降级为无过滤输入）。
+    search_input: Option<Arc<dyn ErasedEditor>>,
     focus_handle: FocusHandle,
     width: Pixels,
     query: String,
@@ -73,37 +74,45 @@ impl<D: PickerDelegate> Picker<D> {
     pub fn new(delegate: D, width: Pixels, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let placeholder = delegate.placeholder_text().to_owned();
-        let search_input = EDITOR_FACTORY
-            .get()
-            .expect("Picker 创建前必须初始化 Editor factory")(cx);
-        search_input.set_placeholder_text(&placeholder, cx);
+        // 工厂未初始化（无装配环境）时输入框缺席，Picker 保持可创建（纯列表降级）。
+        let search_input = EDITOR_FACTORY.get().map(|factory| {
+            let input = factory(cx);
+            input.set_placeholder_text(&placeholder, cx);
+            input
+        });
 
         let picker = Self {
             delegate,
-            search_input: Arc::clone(&search_input),
+            search_input,
             focus_handle: focus,
             width,
             query: String::new(),
             on_dismiss: None,
         };
-        let weak = cx.weak_entity();
-        search_input
-            .subscribe(
-                Box::new(move |ErasedEditorEvent::Edited, _, cx| {
-                    weak.update(cx, |picker, cx| {
-                        let query = picker.search_input.text(cx);
-                        if picker.query != query {
-                            picker.query = query.clone();
-                            picker.delegate.update_matches(query);
-                            cx.notify();
-                        }
-                    })
-                    .ok();
-                }),
-                window,
-                cx,
-            )
-            .detach();
+        if let Some(search_input) = &picker.search_input {
+            let weak = cx.weak_entity();
+            search_input
+                .subscribe(
+                    Box::new(move |ErasedEditorEvent::Edited, _, cx| {
+                        weak.update(cx, |picker, cx| {
+                            let query = picker
+                                .search_input
+                                .as_ref()
+                                .map(|input| input.text(cx))
+                                .unwrap_or_default();
+                            if picker.query != query {
+                                picker.query = query.clone();
+                                picker.delegate.update_matches(query);
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    }),
+                    window,
+                    cx,
+                )
+                .detach();
+        }
         picker
     }
 
@@ -120,8 +129,8 @@ impl<D: PickerDelegate> Picker<D> {
         &mut self.delegate
     }
 
-    pub fn search_input(&self) -> &Arc<dyn ErasedEditor> {
-        &self.search_input
+    pub fn search_input(&self) -> Option<&Arc<dyn ErasedEditor>> {
+        self.search_input.as_ref()
     }
 
     // ══ 内部：action handler ════════════════════════════════════
@@ -235,13 +244,15 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel));
 
-        root.child(picker_search_box(self.search_input.render(), cx))
-            .when_some(self.delegate.render_header(), |el, h| el.child(h))
-            .when_some(no_match, |el, n| el.child(n))
-            .child(items)
-            .when_some(self.delegate.render_footer(_window, cx), |el, f| {
-                el.child(f)
-            })
+        root.when_some(self.search_input.as_ref(), |el, input| {
+            el.child(picker_search_box(input.render(), cx))
+        })
+        .when_some(self.delegate.render_header(), |el, h| el.child(h))
+        .when_some(no_match, |el, n| el.child(n))
+        .child(items)
+        .when_some(self.delegate.render_footer(_window, cx), |el, f| {
+            el.child(f)
+        })
     }
 }
 
@@ -479,7 +490,7 @@ mod tests {
                 cx,
             )
         });
-        let input = cx.read_entity(&picker, |picker, _| picker.search_input().clone());
+        let input = cx.read_entity(&picker, |picker, _| picker.search_input().unwrap().clone());
 
         cx.update(|_, cx| input.set_text("分支", cx));
         cx.run_until_parked();
@@ -547,7 +558,7 @@ mod tests {
                 )
             }
         });
-        let input = cx.read_entity(&picker, |picker, _| picker.search_input().clone());
+        let input = cx.read_entity(&picker, |picker, _| picker.search_input().unwrap().clone());
         cx.update(|window, cx| window.focus(&input.focus_handle(cx)));
 
         cx.simulate_keystrokes("down");
@@ -600,7 +611,7 @@ mod tests {
             }
         });
         let input = cx.read_entity(&view, |view, cx| {
-            view.picker.read(cx).search_input().clone()
+            view.picker.read(cx).search_input().unwrap().clone()
         });
         cx.update(|window, cx| window.focus(&input.focus_handle(cx)));
 
@@ -633,7 +644,7 @@ mod tests {
             }
         });
         let input = cx.read_entity(&view, |view, cx| {
-            view.picker.read(cx).search_input().clone()
+            view.picker.read(cx).search_input().unwrap().clone()
         });
         cx.update(|window, cx| window.focus(&input.focus_handle(cx)));
 

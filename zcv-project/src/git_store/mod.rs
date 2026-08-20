@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use background::{JobResult, execute_job, repo_relative_path};
 use gpui::{AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
-use zcv_buffer_diff::DiffHunk;
+use zcv_git::DiffHunk;
 use zcv_git::{Branch, DiffStat, FileStatus, GitCancellation, GitRepository};
 
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
@@ -1459,7 +1459,7 @@ mod tests {
             .expect("请求后应有 hunks");
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].range, 1..2);
-        assert_eq!(hunks[0].kind, zcv_buffer_diff::DiffHunkKind::Modified);
+        assert_eq!(hunks[0].kind, zcv_git::DiffHunkKind::Modified);
     }
 
     #[gpui::test]
@@ -1519,10 +1519,10 @@ mod tests {
                     0,
                     vec![(
                         PathBuf::from("tracked.txt"),
-                        Ok(vec![zcv_buffer_diff::DiffHunk {
+                        Ok(vec![zcv_git::DiffHunk {
                             range: 0..1,
                             old_range: 0..1,
-                            kind: zcv_buffer_diff::DiffHunkKind::Modified,
+                            kind: zcv_git::DiffHunkKind::Modified,
                         }]),
                     )],
                 )]),

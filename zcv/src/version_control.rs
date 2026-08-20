@@ -251,9 +251,6 @@ fn collect_dirs(
 
 pub(crate) struct VersionControlPanel {
     focus: FocusHandle,
-    /// 项目根（树键相对它计算；GitStore 路径均 canonicalize）。
-    /// 无 worktree 的空工作区为 None，面板渲染空态（对齐 Zed 无条件装配）。
-    root: Option<PathBuf>,
     project: Entity<Project>,
     state: Rc<RefCell<GitPanelState>>,
     scroll_handle: UniformListScrollHandle,
@@ -272,11 +269,6 @@ pub(crate) struct VersionControlPanel {
 impl VersionControlPanel {
     pub(crate) fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
-        // 项目根从 Project 派生；GitStore 路径均 canonicalize，这里同样归一化保证前缀比较一致。
-        let root = project
-            .read(cx)
-            .root()
-            .map(|root| root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
         let git_store = project.read(cx).git_store();
         let commit_editor = cx.new(|cx| {
             let mut editor = Editor::auto_height(4, Some(6), cx);
@@ -323,7 +315,6 @@ impl VersionControlPanel {
         let scrollbar = Scrollbar::vertical(scroll_handle.clone());
         let mut panel = Self {
             focus,
-            root,
             project,
             state: Rc::new(RefCell::new(GitPanelState::new())),
             scroll_handle,
@@ -343,14 +334,22 @@ impl VersionControlPanel {
     }
 
     /// 从 GitStore 快照重建行模型（订阅事件 / 折叠展开后调用）。
+    ///
+    /// 项目根实时读取（不缓存）：RootChanged 后树键基准跟随项目，避免与事件流不同步。
+    /// GitStore 路径均 canonicalize，这里同样归一化保证前缀比较一致。
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = &self.root else {
+        let Some(root) = self
+            .project
+            .read(cx)
+            .root()
+            .map(|root| root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
+        else {
             return;
         };
         let git_store = self.project.read(cx).git_store();
         let trees = {
             let store = git_store.read(cx);
-            build_section_trees(root, store.repositories())
+            build_section_trees(&root, store.repositories())
         };
         let mut state = self.state.borrow_mut();
         let rows = flatten_rows(&trees, &state.expanded);

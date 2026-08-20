@@ -12,10 +12,10 @@ use gpui::{
     Render, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, rems,
 };
 use zcv_actions::{
-    CloseTab, FocusOrHidePanel, GitFetch, GitPull, GitPush, OpenSettings, QuitWindow, Save,
-    ToggleBottomDock, ToggleLeftDock, ToggleRightDock,
+    CloseTab, FocusOrHidePanel, OpenSettings, QuitWindow, Save, ToggleBottomDock, ToggleLeftDock,
+    ToggleRightDock,
 };
-use zcv_project::{GitOperationKind, GitOperationOutcome, Project};
+use zcv_project::Project;
 use zcv_theme::{color, typography};
 
 use crate::dock::{Dock, DockPosition, DockStructure, DraggedDock, render_body};
@@ -144,7 +144,8 @@ impl Workspace {
     }
 
     /// 展示一条全局提示（成功/错误）；`action` 提供可点击的操作按钮（如"重试"）。
-    pub(crate) fn show_toast(
+    /// 宿主（装配层）经它呈现 git 操作等产品级反馈。
+    pub fn show_toast(
         &self,
         kind: ToastKind,
         message: impl Into<SharedString>,
@@ -556,89 +557,6 @@ impl Workspace {
         };
         self.open_path(path, true, window, cx);
     }
-
-    /// 后台执行 git 操作（fetch/pull/push）：等待结果后直接弹提示（成功/失败+错误详情）。
-    fn run_git_operation(&mut self, operation: GitOperationKind, cx: &mut Context<Self>) {
-        let Some(git_store) = self.project.read(cx).try_git_store() else {
-            return;
-        };
-        let task = git_store.update(cx, |store, cx| store.run_operation(operation, cx));
-        let name = match operation {
-            GitOperationKind::Fetch => "拉取",
-            GitOperationKind::Pull => "合并拉取",
-            GitOperationKind::Push => "推送",
-        };
-        cx.spawn(move |this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
-            let mut cx = asynccx.clone();
-            async move {
-                let result = task.await;
-                let failure = match &result {
-                    Ok(GitOperationOutcome::Failed(error)) => Some(error.clone()),
-                    Err(error) => Some(format!("{error:#}")),
-                    _ => None,
-                };
-                let (kind, message, action) = if let Some(error) = failure {
-                    // 失败提示带重试按钮：点击重新执行同一操作（弱引用，不持有 Workspace）。
-                    let weak = this.clone();
-                    (
-                        ToastKind::Error,
-                        format!("{name}失败：{error}"),
-                        Some(ToastAction::new("重试", move |_window, cx| {
-                            if let Some(workspace) = weak.upgrade() {
-                                // App 上下文的 Entity::update 直接返回闭包结果（实体经 upgrade 已确认存在），无 Result 包装。
-                                workspace.update(cx, |workspace, cx| {
-                                    workspace.run_git_operation(operation, cx);
-                                });
-                            }
-                        })),
-                    )
-                } else {
-                    match result.expect("失败分支已在上方处理") {
-                        GitOperationOutcome::Completed => {
-                            (ToastKind::Success, format!("{name}完成"), None)
-                        }
-                        GitOperationOutcome::Cancelled => {
-                            (ToastKind::Info, format!("{name}已取消"), None)
-                        }
-                        GitOperationOutcome::CompletedBeforeCancellation => {
-                            (ToastKind::Success, format!("{name}已在取消前完成"), None)
-                        }
-                        GitOperationOutcome::CancellationUnconfirmed(detail) => (
-                            ToastKind::Error,
-                            format!("{name}已停止，但暂时无法确认远端状态：{detail}"),
-                            None,
-                        ),
-                        GitOperationOutcome::Failed(_) => unreachable!(),
-                    }
-                };
-                if let Some(this) = this.upgrade() {
-                    this.update(&mut cx, |workspace, cx| {
-                        workspace.show_toast(
-                            kind,
-                            message,
-                            action,
-                            Some(Duration::from_secs(5)),
-                            cx,
-                        );
-                    })
-                    .ok();
-                }
-            }
-        })
-        .detach();
-    }
-
-    fn handle_git_fetch(&mut self, _: &GitFetch, _: &mut Window, cx: &mut Context<Self>) {
-        self.run_git_operation(GitOperationKind::Fetch, cx);
-    }
-
-    fn handle_git_pull(&mut self, _: &GitPull, _: &mut Window, cx: &mut Context<Self>) {
-        self.run_git_operation(GitOperationKind::Pull, cx);
-    }
-
-    fn handle_git_push(&mut self, _: &GitPush, _: &mut Window, cx: &mut Context<Self>) {
-        self.run_git_operation(GitOperationKind::Push, cx);
-    }
 }
 
 // ═══ 渲染 ═════════════════════════════════════════════════════════
@@ -683,9 +601,6 @@ impl Render for Workspace {
         .on_action(handle_minimize)
         .on_action(handle_toggle_maximize)
         .on_action(cx.listener(Self::handle_close_tab))
-        .on_action(cx.listener(Self::handle_git_fetch))
-        .on_action(cx.listener(Self::handle_git_pull))
-        .on_action(cx.listener(Self::handle_git_push))
         .on_action(cx.listener(Self::handle_open_settings))
         .on_action(cx.listener(Self::handle_save))
         .on_action(cx.listener(|this, _: &ToggleLeftDock, window, cx| {

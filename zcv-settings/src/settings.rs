@@ -7,7 +7,7 @@
 use std::borrow::Cow;
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -184,30 +184,25 @@ pub fn init(cx: &mut App) {
             }
         }
     }
-    let (signal_tx, signal_rx) = async_channel::unbounded::<()>();
-    let pending_events = Arc::new(Mutex::new(Vec::new()));
-    let watcher: Arc<dyn Watcher> = Arc::new(FsWatcher::new(signal_tx, pending_events.clone()));
+    let watcher = Arc::new(FsWatcher::new());
+    let fs_events = watcher.events();
+    let watcher: Arc<dyn Watcher> = watcher;
     if let Err(error) = watcher.add(config_dir()) {
         log::warn!("无法监听设置目录 {}：{error}", config_dir().display());
     }
 
     let watch_task = cx.spawn(async move |cx| {
-        while signal_rx.recv().await.is_ok() {
+        while fs_events.next_batch().await.is_some() {
             // 编辑器保存文件时通常会产生一组连续事件。等待事件安静下来再读取，
             // 避免在 truncate/write 或临时文件替换的中间状态解析设置。
             loop {
                 cx.background_executor()
                     .timer(SETTINGS_RELOAD_DEBOUNCE)
                     .await;
-                let mut received_more_events = false;
-                while signal_rx.try_recv().is_ok() {
-                    received_more_events = true;
-                }
-                if !received_more_events {
+                if !fs_events.has_more() {
                     break;
                 }
             }
-            std::mem::take(&mut *pending_events.lock().unwrap());
 
             let settings_path = settings_file();
             let content = match fs::read_to_string(settings_path) {

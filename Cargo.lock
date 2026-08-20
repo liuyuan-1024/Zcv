@@ -20,7 +20,6 @@ dependencies = [
  "trash",
  "zcv-actions",
  "zcv-assets",
- "zcv-buffer-diff",
  "zcv-editor",
  "zcv-engine",
  "zcv-git",
@@ -7530,10 +7529,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zcv-buffer-diff"
-version = "0.7.7"
-
-[[package]]
 name = "zcv-editor"
 version = "0.7.7"
 dependencies = [
@@ -7545,8 +7540,8 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "zcv-actions",
- "zcv-buffer-diff",
  "zcv-engine",
+ "zcv-git",
  "zcv-language",
  "zcv-project",
  "zcv-theme",
@@ -7587,7 +7582,6 @@ dependencies = [
  "anyhow",
  "libc",
  "tempfile",
- "zcv-buffer-diff",
 ]
 
 [[package]]
@@ -7660,7 +7654,6 @@ dependencies = [
  "log",
  "tempfile",
  "trash",
- "zcv-buffer-diff",
  "zcv-engine",
  "zcv-fs-watch",
  "zcv-git",

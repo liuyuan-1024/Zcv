@@ -616,16 +616,21 @@ pub(crate) struct RenderedViewportRow {
     pub(crate) fold_segments: Option<Vec<FoldRowSegment>>,
 }
 
+/// 渲染一行的样式输入：语法高亮 / 搜索背景 / 标记范围，管线内组装为行样式。
+pub(crate) struct RowStyleInput<'a> {
+    pub(crate) visible_highlights: &'a [HighlightSpan],
+    pub(crate) highlight_styles: &'a [HighlightStyle],
+    pub(crate) search_backgrounds: &'a [(Range<usize>, gpui::Rgba)],
+    pub(crate) marked_ranges: &'a [TextRange],
+}
+
 /// 渲染一行视口行。
 ///
-/// 管线内完成行解构、inlay 快照穿透、stream 行换算、chunk 合成与 run 映射；样式输入（语法高亮/搜索背景/标记）与基础 run 由渲染端提供。
+/// 管线内完成行解构、inlay 快照穿透、stream 行换算、chunk 合成与 run 映射；样式输入与基础 run 由渲染端提供。
 pub(crate) fn render_viewport_row(
     row: &WrapViewportRowKind<'_>,
     display_snapshot: &DisplaySnapshot,
-    visible_highlights: &[HighlightSpan],
-    highlight_styles: &[HighlightStyle],
-    search_backgrounds: &[(Range<usize>, gpui::Rgba)],
-    marked_ranges: &[TextRange],
+    style_input: &RowStyleInput<'_>,
     base: gpui::TextRun,
     cx: &gpui::App,
 ) -> RenderedViewportRow {
@@ -660,10 +665,10 @@ pub(crate) fn render_viewport_row(
     // 合成行是外部文本：无语法高亮、不可编辑/不可选（spans/marked 是锚定行的 buffer 坐标，套用到合成行文本会产生非字符边界切片）。
     let line_styles = match source {
         StreamLineSource::Buffer(_) => LineStyles {
-            spans: visible_highlights,
-            styles: highlight_styles,
-            backgrounds: search_backgrounds,
-            marked: marked_ranges,
+            spans: style_input.visible_highlights,
+            styles: style_input.highlight_styles,
+            backgrounds: style_input.search_backgrounds,
+            marked: style_input.marked_ranges,
         },
         StreamLineSource::Inserted { .. } => LineStyles::default(),
     };

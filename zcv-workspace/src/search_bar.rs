@@ -94,9 +94,10 @@ impl SearchBar {
         if self.query_input.is_some() {
             return;
         }
-        let factory = zcv_ui::EDITOR_FACTORY
-            .get()
-            .expect("EDITOR_FACTORY 应由 zcv 装配层初始化");
+        // 工厂未初始化（无装配环境，如 Pane 单测）时输入框缺席，搜索条降级为只显示按钮。
+        let Some(factory) = zcv_ui::EDITOR_FACTORY.get() else {
+            return;
+        };
         let query_input = factory(cx);
         let replace_input = factory(cx);
         query_input.set_placeholder_text("搜索...", cx);

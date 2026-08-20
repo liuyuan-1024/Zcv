@@ -6,7 +6,7 @@
 use std::ops::Range;
 
 use gpui::{Bounds, Hitbox, HitboxBehavior, Pixels, Point, Window, point, px, size};
-use zcv_buffer_diff::DiffHunkKind;
+use zcv_git::DiffHunkKind;
 
 use super::scroll::ScrollbarThumbState;
 

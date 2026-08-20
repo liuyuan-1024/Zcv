@@ -508,10 +508,12 @@ fn global_watcher() -> &'static GlobalWatcher {
 /// 调用方实例的文件系统监听器。
 ///
 /// 包装 `GlobalWatcher` 单例，提供路径级 add/remove。
-/// 每个 FsWatcher 实例绑定到一个 `async_channel::Sender<()>`——当有新事件时发送信号，消费方可在异步上下文中等待该信号。
+/// 事件通道与缓冲由实例自管：事件入队时发送信号，消费方经 [`FsWatcher::events`] 取得订阅对象，只写"等待并处理批次"的处理逻辑，不再自建 channel 与缓冲。
 pub struct FsWatcher {
     /// 信号通道：事件入队时发送 `()`，消费方（gpui 前台 task）等待此信号。
     signal_tx: async_channel::Sender<()>,
+    /// 信号接收端（订阅对象经它等待批次）。
+    signal_rx: async_channel::Receiver<()>,
     /// 待处理事件的共享缓冲区。
     pending_path_events: Arc<Mutex<Vec<PathEvent>>>,
     /// 已向 GlobalWatcher 注册的路径。
@@ -526,19 +528,51 @@ struct FsWatcherRegistration {
     mode: WatcherMode,
 }
 
+/// 事件批次订阅：`next_batch` 等待信号并取走全部缓冲（信号合并），`has_more` 非阻塞检查是否仍有未处理的信号（防抖循环用）。
+pub struct FsEventStream {
+    rx: async_channel::Receiver<()>,
+    pending: Arc<Mutex<Vec<PathEvent>>>,
+}
+
+impl FsEventStream {
+    /// 等待下一批事件；监听器已释放（通道关闭）时返回 None。
+    pub async fn next_batch(&self) -> Option<Vec<PathEvent>> {
+        self.rx.recv().await.ok()?;
+        Some(std::mem::take(&mut *self.pending.lock().unwrap()))
+    }
+
+    /// 是否还有未消费的信号（事件在等待处理期间再次入队）。
+    pub fn has_more(&self) -> bool {
+        self.rx.try_recv().is_ok()
+    }
+}
+
+impl Default for FsWatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FsWatcher {
-    pub fn new(
-        signal_tx: async_channel::Sender<()>,
-        pending_path_events: Arc<Mutex<Vec<PathEvent>>>,
-    ) -> Self {
+    pub fn new() -> Self {
+        let (signal_tx, signal_rx) = async_channel::unbounded();
         let watcher = Self {
             signal_tx,
-            pending_path_events,
+            signal_rx,
+            pending_path_events: Arc::new(Mutex::new(Vec::new())),
             registrations: Arc::new(Mutex::new(HashMap::new())),
             pending_registrations: Arc::new(Mutex::new(HashMap::new())),
         };
         watcher.spawn_pending_poller();
         watcher
+    }
+
+    /// 取得事件批次订阅（可多次调用；各订阅共享同一事件流）。
+    pub fn events(&self) -> FsEventStream {
+        FsEventStream {
+            rx: self.signal_rx.clone(),
+            pending: self.pending_path_events.clone(),
+        }
     }
 
     /// 共享轮询线程：统一等待所有 pending 路径出现后注册。
@@ -1036,9 +1070,7 @@ mod tests {
 
     #[test]
     fn test_fs_watcher_basic_lifecycle() {
-        let (tx, _rx) = async_channel::unbounded();
-        let pending: Arc<Mutex<Vec<PathEvent>>> = Arc::new(Mutex::new(Vec::new()));
-        let watcher = FsWatcher::new(tx, pending);
+        let watcher = FsWatcher::new();
         let temp = tempfile::tempdir().unwrap();
 
         // add/remove 一个存在的目录
@@ -1048,9 +1080,7 @@ mod tests {
 
     #[test]
     fn test_fs_watcher_pending_path() {
-        let (tx, _rx) = async_channel::unbounded();
-        let pending: Arc<Mutex<Vec<PathEvent>>> = Arc::new(Mutex::new(Vec::new()));
-        let watcher = FsWatcher::new(tx, pending);
+        let watcher = FsWatcher::new();
         let temp = tempfile::tempdir().unwrap();
         let nonexistent = temp.path().join("nonexistent");
 

@@ -17,13 +17,13 @@ use zcv_actions::{
     SelectToBeginning, SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine, SelectToNextWord,
     SelectToPreviousWord, SelectUp, ToggleFold, Undo, UnfoldAll,
 };
-use zcv_buffer_diff::{DiffHunk, DiffHunkKind};
 use zcv_engine::{
     Buffer, BufferConfig, BufferVersion, ByteOffset, EngineError, EngineResult, Line, LineRange,
     MovementDirection, MovementUnit, PositionMap, Selection, SelectionSet, Snapshot, TextRange,
     TextSubscription, TransactionId, TransactionMergePolicy, TransactionMetadata,
     TransactionSource,
 };
+use zcv_git::{DiffHunk, DiffHunkKind};
 use zcv_language::{BracketPair, FoldRange, LanguageBuffer, SyntaxSnapshot};
 use zcv_theme::{color, typography};
 
@@ -35,8 +35,10 @@ use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
 use super::selection::{EditOutcome, EditorSelections, SelectionHistory, replace_selections};
 
+mod diff;
 mod search;
 
+pub(crate) use diff::{HunkRendering, diff_kind_for_row, hunk_rendering};
 pub(crate) use search::EditorSearch;
 
 /// Editor 自身的领域事件。

@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use zcv_buffer_diff::DiffHunk;
+use zcv_git::DiffHunk;
 use zcv_git::{Branch, DiffStat, GitCancellation, GitRepository};
 
 use super::{GitJob, GitOperationKind, GitOperationOutcome, RepositorySnapshot, StatusEntry};

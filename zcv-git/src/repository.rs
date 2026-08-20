@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::diff::DiffHunk;
 use anyhow::{Context as _, Result, bail};
-use zcv_buffer_diff::DiffHunk;
 
 use crate::diff::parse_diff_hunks_per_path;
 use crate::status::{DiffStat, GitStatus, parse_numstat};

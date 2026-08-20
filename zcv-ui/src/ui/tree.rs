@@ -1,5 +1,6 @@
 //! 树行渲染辅助函数 —— 缩进、图标、名称、选中框。
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use gpui::{App, Pixels, div, prelude::*, px};
@@ -89,6 +90,172 @@ fn label(content: impl IntoElement) -> gpui::Div {
     div().flex_1().overflow_hidden().truncate().child(content)
 }
 
+// ── 树导航状态原语 ──────────────────────────────────────────────────
+
+/// 树行契约：折叠/展开与祖先导航所需的行模型最小信息。
+pub trait TreeRow {
+    fn is_dir(&self) -> bool;
+    fn depth(&self) -> usize;
+    fn expanded(&self) -> bool;
+}
+
+/// 树导航状态原语：可见行缓存 + 展开集合 + 选中键。
+///
+/// `key_of` 决定行的身份键；返回 None 的行不可选中（如分组头）。
+/// 只依赖标准库，不触碰数据源与渲染。
+pub struct TreeState<K, Row> {
+    pub expanded: HashSet<K>,
+    pub selected: Option<K>,
+    pub rows: Vec<Row>,
+    key_of: fn(&Row) -> Option<K>,
+}
+
+impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
+    pub fn new(key_of: fn(&Row) -> Option<K>) -> Self {
+        Self {
+            expanded: HashSet::new(),
+            selected: None,
+            rows: Vec::new(),
+            key_of,
+        }
+    }
+
+    pub fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+
+    /// 替换可见行；选中行消失时清空选中。
+    pub fn replace_rows(&mut self, rows: Vec<Row>) {
+        self.rows = rows;
+        if self.selected.as_ref().is_some_and(|sel| {
+            !self
+                .rows
+                .iter()
+                .any(|r| (self.key_of)(r).as_ref() == Some(sel))
+        }) {
+            self.selected = None;
+        }
+    }
+
+    /// 无选中时选中第一个可选行。
+    pub fn ensure_selected(&mut self) {
+        if self.selected.is_some() {
+            return;
+        }
+        if let Some(key) = self.rows.iter().find_map(|r| (self.key_of)(r)) {
+            self.selected = Some(key);
+        }
+    }
+
+    /// 直接设置选中键（鼠标点击等交互入口）。
+    pub fn select(&mut self, key: K) {
+        self.selected = Some(key);
+    }
+
+    /// 当前选中行在可见行中的位置。
+    pub fn selected_idx(&self) -> Option<usize> {
+        let selected = self.selected.clone()?;
+        self.rows
+            .iter()
+            .position(|r| (self.key_of)(r).as_ref() == Some(&selected))
+    }
+
+    /// 上移选中；无选中时选中最后一个可选行。
+    pub fn select_up(&mut self) {
+        match self.selected_idx() {
+            None => {
+                if let Some(idx) = self.rows.iter().rposition(|r| (self.key_of)(r).is_some()) {
+                    self.selected = (self.key_of)(&self.rows[idx]);
+                }
+            }
+            Some(idx) => {
+                if let Some(prev) = self.rows[..idx]
+                    .iter()
+                    .rposition(|r| (self.key_of)(r).is_some())
+                {
+                    self.selected = (self.key_of)(&self.rows[prev]);
+                }
+            }
+        }
+    }
+
+    /// 下移选中；无选中时选中第一个可选行。
+    pub fn select_down(&mut self) {
+        match self.selected_idx() {
+            None => {
+                if let Some(idx) = self.rows.iter().position(|r| (self.key_of)(r).is_some()) {
+                    self.selected = (self.key_of)(&self.rows[idx]);
+                }
+            }
+            Some(idx) => {
+                if let Some(offset) = self.rows[idx + 1..]
+                    .iter()
+                    .position(|r| (self.key_of)(r).is_some())
+                {
+                    self.selected = (self.key_of)(&self.rows[idx + 1 + offset]);
+                }
+            }
+        }
+    }
+
+    /// 折叠选中行；返回 true 表示行模型需要重建（展开的目录被折叠）。
+    pub fn collapse_selection(&mut self) -> bool {
+        let Some(idx) = self.selected_idx() else {
+            return false;
+        };
+        let Some(row) = self.rows.get(idx) else {
+            return false;
+        };
+        if row.is_dir() && row.expanded() {
+            if let Some(key) = (self.key_of)(row) {
+                self.expanded.remove(&key);
+                return true;
+            }
+            return false;
+        }
+        if row.depth() > 0 {
+            // 已折叠/叶子：选中上移到上层祖先行。
+            let parent_depth = row.depth() - 1;
+            if let Some(parent_idx) = self.rows[..idx].iter().rposition(|r| {
+                r.is_dir() && r.depth() == parent_depth && (self.key_of)(r).is_some()
+            }) && let Some(key) = (self.key_of)(&self.rows[parent_idx])
+            {
+                self.selected = Some(key);
+            }
+            return false;
+        }
+        false
+    }
+
+    /// 展开选中行；返回 true 表示行模型需要重建（折叠的目录被展开）。
+    pub fn expand_selection(&mut self) -> bool {
+        let Some(idx) = self.selected_idx() else {
+            return false;
+        };
+        let Some(row) = self.rows.get(idx) else {
+            return false;
+        };
+        if row.is_dir() && !row.expanded() {
+            if let Some(key) = (self.key_of)(row) {
+                self.expanded.insert(key);
+                return true;
+            }
+            return false;
+        }
+        self.select_down();
+        false
+    }
+
+    /// 翻转展开标记（鼠标激活目录时用）。
+    pub fn toggle_expand(&mut self, key: &K) {
+        if self.expanded.contains(key) {
+            self.expanded.remove(key);
+        } else {
+            self.expanded.insert(key.clone());
+        }
+    }
+}
+
 // ── 内部类型 ─────────────────────────────────────────────────────────
 
 /// 树行布局度量。
@@ -115,5 +282,194 @@ impl TreeMetrics {
 
     fn guide_x(&self, depth: usize) -> gpui::Pixels {
         self.indent * (depth as f32) + self.icon_size / 2.0 + self.padding
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 测试行模型：key 唯一；selectable=false 模拟不可选行（如分组头）。
+    #[derive(Clone)]
+    struct TestRow {
+        key: usize,
+        selectable: bool,
+        is_dir: bool,
+        depth: usize,
+        expanded: bool,
+    }
+
+    impl TreeRow for TestRow {
+        fn is_dir(&self) -> bool {
+            self.is_dir
+        }
+        fn depth(&self) -> usize {
+            self.depth
+        }
+        fn expanded(&self) -> bool {
+            self.expanded
+        }
+    }
+
+    fn row(key: usize, selectable: bool) -> TestRow {
+        TestRow {
+            key,
+            selectable,
+            is_dir: false,
+            depth: 0,
+            expanded: false,
+        }
+    }
+
+    /// 构造 [Header0, Entry1, Header2, Entry3, Entry4] 形状的行集。
+    fn sample_rows() -> Vec<TestRow> {
+        vec![
+            row(0, false),
+            row(1, true),
+            row(2, false),
+            row(3, true),
+            row(4, true),
+        ]
+    }
+
+    fn test_state(rows: Vec<TestRow>) -> TreeState<usize, TestRow> {
+        let mut state = TreeState::new(|r: &TestRow| r.selectable.then_some(r.key));
+        state.replace_rows(rows);
+        state
+    }
+
+    #[test]
+    fn select_up_without_selection_moves_to_last_selectable_row() {
+        let mut state = test_state(sample_rows());
+        state.select_up();
+        assert_eq!(state.selected, Some(4));
+    }
+
+    #[test]
+    fn select_up_skips_unselectable_rows() {
+        let mut state = test_state(sample_rows());
+        state.select(3);
+        state.select_up();
+        assert_eq!(state.selected, Some(1));
+    }
+
+    #[test]
+    fn select_down_without_selection_moves_to_first_selectable_row() {
+        let mut state = test_state(sample_rows());
+        state.select_down();
+        assert_eq!(state.selected, Some(1));
+    }
+
+    #[test]
+    fn select_down_skips_unselectable_rows() {
+        let mut state = test_state(sample_rows());
+        state.select(1);
+        state.select_down();
+        assert_eq!(state.selected, Some(3));
+    }
+
+    #[test]
+    fn select_down_at_last_row_stays_put() {
+        let mut state = test_state(sample_rows());
+        state.select(4);
+        state.select_down();
+        assert_eq!(state.selected, Some(4));
+    }
+
+    #[test]
+    fn replace_rows_clears_selection_when_row_disappears() {
+        let mut state = test_state(sample_rows());
+        state.select(3);
+        state.replace_rows(vec![row(0, false), row(1, true)]);
+        assert_eq!(state.selected, None);
+        state.replace_rows(sample_rows());
+        assert_eq!(state.selected, None);
+    }
+
+    #[test]
+    fn replace_rows_keeps_selection_when_row_survives() {
+        let mut state = test_state(sample_rows());
+        state.select(3);
+        state.replace_rows(vec![row(2, false), row(3, true)]);
+        assert_eq!(state.selected, Some(3));
+    }
+
+    #[test]
+    fn ensure_selected_picks_first_selectable_row() {
+        let mut state = test_state(sample_rows());
+        state.ensure_selected();
+        assert_eq!(state.selected, Some(1));
+    }
+
+    #[test]
+    fn collapse_expanded_directory_returns_rebuild() {
+        let mut state = TreeState::new(|r: &TestRow| r.selectable.then_some(r.key));
+        state.replace_rows(vec![TestRow {
+            key: 0,
+            selectable: true,
+            is_dir: true,
+            depth: 0,
+            expanded: true,
+        }]);
+        state.select(0);
+        state.expanded.insert(0);
+        assert!(state.collapse_selection());
+        assert!(!state.expanded.contains(&0));
+    }
+
+    #[test]
+    fn collapse_leaf_moves_selection_to_ancestor_directory() {
+        let mut state = TreeState::new(|r: &TestRow| r.selectable.then_some(r.key));
+        state.replace_rows(vec![
+            TestRow {
+                key: 0,
+                selectable: true,
+                is_dir: true,
+                depth: 0,
+                expanded: true,
+            },
+            TestRow {
+                key: 1,
+                selectable: true,
+                is_dir: false,
+                depth: 1,
+                expanded: false,
+            },
+        ]);
+        state.select(1);
+        assert!(!state.collapse_selection());
+        assert_eq!(state.selected, Some(0));
+    }
+
+    #[test]
+    fn expand_folded_directory_returns_rebuild() {
+        let mut state = TreeState::new(|r: &TestRow| r.selectable.then_some(r.key));
+        state.replace_rows(vec![TestRow {
+            key: 0,
+            selectable: true,
+            is_dir: true,
+            depth: 0,
+            expanded: false,
+        }]);
+        state.select(0);
+        assert!(state.expand_selection());
+        assert!(state.expanded.contains(&0));
+    }
+
+    #[test]
+    fn expand_leaf_moves_selection_down() {
+        let mut state = test_state(sample_rows());
+        state.select(1);
+        assert!(!state.expand_selection());
+        assert_eq!(state.selected, Some(3));
+    }
+
+    #[test]
+    fn toggle_expand_flips_marker() {
+        let mut state = test_state(Vec::new());
+        state.toggle_expand(&1);
+        assert!(state.expanded.contains(&1));
+        state.toggle_expand(&1);
+        assert!(!state.expanded.contains(&1));
     }
 }

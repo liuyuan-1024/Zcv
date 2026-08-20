@@ -4,7 +4,7 @@
 //! 目录遍历、排除规则与 git 状态合并由 `Project`（worktree 快照层）产出，渲染与键盘导航只消费行模型缓存。
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -20,7 +20,8 @@ use zcv_editor::Editor;
 use zcv_git::FileStatus;
 use zcv_project::{Project, new_entry_destination, rename_destination, translate_path};
 use zcv_theme::color;
-use zcv_ui::{Scrollbar, tree};
+use zcv_ui::Scrollbar;
+use zcv_ui::tree::{self, TreeRow, TreeState};
 use zcv_workspace::Panel;
 
 use crate::git_status::git_status_color;
@@ -35,7 +36,9 @@ pub(crate) struct ProjectTreePanel {
     root: Option<PathBuf>,
     /// 行模型与 git 状态查询（worktree 快照层由 Project 持有）。
     project: Entity<Project>,
-    state: Rc<RefCell<ProjectTreeState>>,
+    state: Rc<RefCell<TreeState<PathBuf, ProjectTreeRow>>>,
+    /// 当前活动文件（编辑器焦点所在文件），与选中行相互独立。
+    active_path: Option<PathBuf>,
     scroll_handle: UniformListScrollHandle,
     scrollbar: Scrollbar<UniformListScrollHandle>,
     entry_name_editor: Entity<Editor>,
@@ -55,7 +58,7 @@ impl ProjectTreePanel {
         let exclusions = SettingsStore::file_scan_exclusions(cx);
         project.update(cx, |project, _| project.set_exclusions(&exclusions));
         // 项目根从 Project 派生：无 worktree 时为空态，面板同样注册（对齐 Zed 无条件装配）。
-        let mut state = ProjectTreeState::new();
+        let mut state = TreeState::new(|row: &ProjectTreeRow| Some(row.path.clone()));
         if let Some(root) = project.read(cx).root() {
             state.expanded.insert(root.to_path_buf());
         }
@@ -72,6 +75,7 @@ impl ProjectTreePanel {
             root: project.read(cx).root().map(PathBuf::from),
             project,
             state: Rc::new(RefCell::new(state)),
+            active_path: None,
             scroll_handle,
             scrollbar,
             entry_name_editor,
@@ -153,7 +157,9 @@ impl ProjectTreePanel {
             .map(|row| (row.path.clone(), row.is_dir))
             .collect();
         let statuses = self.project.read(cx).git_statuses_for_rows(&entries, cx);
-        self.state.borrow_mut().update_git_statuses(statuses);
+        for row in &mut self.state.borrow_mut().rows {
+            row.git_status = statuses.get(&row.path).cloned();
+        }
         cx.notify();
     }
 
@@ -173,7 +179,7 @@ impl ProjectTreePanel {
             .selected
             .take()
             .map(|path| translate_path(&path, from, to));
-        state.active_path = state
+        self.active_path = self
             .active_path
             .take()
             .map(|path| translate_path(&path, from, to));
@@ -211,7 +217,7 @@ impl ProjectTreePanel {
         state.expanded.clear();
         state.expanded.insert(root);
         state.selected = None;
-        state.active_path = None;
+        self.active_path = None;
         drop(state);
         // 行集合全变：重建时现查 git 状态，无需单独补齐。
         self.rebuild_rows(cx);
@@ -231,11 +237,11 @@ impl ProjectTreePanel {
     pub(crate) fn reveal_active_path(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
         let index = {
             let Some(root) = &self.root else {
-                self.state.borrow_mut().active_path = None;
+                self.active_path = None;
                 return;
             };
             let Some(path) = path.filter(|path| path.starts_with(root)) else {
-                self.state.borrow_mut().active_path = None;
+                self.active_path = None;
                 return;
             };
             let mut state = self.state.borrow_mut();
@@ -247,8 +253,8 @@ impl ProjectTreePanel {
                 }
                 ancestor = directory.parent();
             }
-            state.active_path = Some(path.to_path_buf());
-            state.selected = Some(path.to_path_buf());
+            self.active_path = Some(path.to_path_buf());
+            state.select(path.to_path_buf());
             drop(state);
             self.rebuild_rows(cx);
             self.state
@@ -265,12 +271,12 @@ impl ProjectTreePanel {
     }
 
     fn rows_and_len(&self) -> Vec<ProjectTreeRow> {
-        self.state.borrow().visible_rows().to_vec()
+        self.state.borrow().rows().to_vec()
     }
 
     /// 保持键盘选中项可见；仍在视口内时不改变当前滚动位置。
-    fn scroll_to_selection(&self, rows: &[ProjectTreeRow]) {
-        if let Some(index) = self.state.borrow().selected_idx(rows) {
+    fn scroll_to_selection(&self) {
+        if let Some(index) = self.state.borrow().selected_idx() {
             self.scroll_handle
                 .scroll_to_item(index, ScrollStrategy::Center);
         }
@@ -332,9 +338,8 @@ impl ProjectTreePanel {
         window: &mut Window,
         _: &mut Context<Self>,
     ) {
-        let rows = self.rows_and_len();
-        self.state.borrow_mut().select_up(&rows);
-        self.scroll_to_selection(&rows);
+        self.state.borrow_mut().select_up();
+        self.scroll_to_selection();
         window.refresh();
     }
     fn handle_tree_select_next(
@@ -343,9 +348,8 @@ impl ProjectTreePanel {
         window: &mut Window,
         _: &mut Context<Self>,
     ) {
-        let rows = self.rows_and_len();
-        self.state.borrow_mut().select_down(&rows);
-        self.scroll_to_selection(&rows);
+        self.state.borrow_mut().select_down();
+        self.scroll_to_selection();
         window.refresh();
     }
     fn handle_tree_collapse(
@@ -354,52 +358,19 @@ impl ProjectTreePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut state = self.state.borrow_mut();
-        let rows = state.visible_rows().to_vec();
-        let Some(idx) = state.selected_idx(&rows) else {
-            return;
-        };
-        let row = &rows[idx];
-        let rebuild = if row.is_dir && row.expanded {
-            state.expanded.remove(&row.path);
-            true
-        } else if row.depth > 0 {
-            let pd = row.depth - 1;
-            if let Some(pi) = rows[..idx].iter().rposition(|r| r.is_dir && r.depth == pd) {
-                state.selected = Some(rows[pi].path.clone());
-            }
-            false
-        } else {
-            false
-        };
-        drop(state);
+        let rebuild = self.state.borrow_mut().collapse_selection();
         if rebuild {
             self.rebuild_rows(cx);
         }
-        let rows = self.rows_and_len();
-        self.scroll_to_selection(&rows);
+        self.scroll_to_selection();
         window.refresh();
     }
     fn handle_tree_expand(&mut self, _: &TreeExpand, window: &mut Window, cx: &mut Context<Self>) {
-        let mut state = self.state.borrow_mut();
-        let rows = state.visible_rows().to_vec();
-        let Some(idx) = state.selected_idx(&rows) else {
-            return;
-        };
-        let row = &rows[idx];
-        let rebuild = if row.is_dir && !row.expanded {
-            state.expanded.insert(row.path.clone());
-            true
-        } else {
-            state.select_down(&rows);
-            false
-        };
-        drop(state);
+        let rebuild = self.state.borrow_mut().expand_selection();
         if rebuild {
             self.rebuild_rows(cx);
         }
-        let rows = self.rows_and_len();
-        self.scroll_to_selection(&rows);
+        self.scroll_to_selection();
         window.refresh();
     }
     /// 激活选中行或以临时标签打开的共享逻辑：目录→展开/折叠；文件→打开。
@@ -412,17 +383,16 @@ impl ProjectTreePanel {
         cx: &mut Context<Self>,
     ) {
         let (path, is_dir) = {
-            let state = self.state.borrow_mut();
-            let rows = state.visible_rows();
-            match state.selected_idx(rows) {
-                Some(idx) => (Some(rows[idx].path.clone()), rows[idx].is_dir),
+            let state = self.state.borrow();
+            match state.selected_idx() {
+                Some(idx) => (Some(state.rows[idx].path.clone()), state.rows[idx].is_dir),
                 None => (None, false),
             }
         };
         let Some(path) = path else {
             return;
         };
-        self.state.borrow_mut().select(&path);
+        self.state.borrow_mut().select(path.clone());
         if is_dir {
             self.state.borrow_mut().toggle_expand(&path);
             self.rebuild_rows(cx);
@@ -448,8 +418,7 @@ impl ProjectTreePanel {
         }
         let row = {
             let state = self.state.borrow();
-            let rows = state.visible_rows();
-            state.selected_idx(rows).map(|index| rows[index].clone())
+            state.selected_idx().map(|index| state.rows[index].clone())
         };
         let Some(row) = row else {
             return;
@@ -488,11 +457,10 @@ impl ProjectTreePanel {
     fn handle_tree_trash(&mut self, _: &TreeTrash, window: &mut Window, cx: &mut Context<Self>) {
         let (path, index) = {
             let state = self.state.borrow();
-            let rows = state.visible_rows();
-            let Some(index) = state.selected_idx(rows) else {
+            let Some(index) = state.selected_idx() else {
                 return;
             };
-            (rows[index].path.clone(), index)
+            (state.rows[index].path.clone(), index)
         };
         if self.root.as_ref() == Some(&path) {
             return;
@@ -508,9 +476,8 @@ impl ProjectTreePanel {
         self.rebuild_rows(cx);
         let mut state = self.state.borrow_mut();
         // 删除后选中原位置的下一个条目；删除的是最后一项时落在新的最后一项。
-        let rows = state.visible_rows();
-        if !rows.is_empty() {
-            state.selected = Some(rows[index.min(rows.len() - 1)].path.clone());
+        if !state.rows.is_empty() {
+            state.selected = Some(state.rows[index.min(state.rows.len() - 1)].path.clone());
         }
     }
 
@@ -520,8 +487,7 @@ impl ProjectTreePanel {
         }
         let row = {
             let state = self.state.borrow();
-            let rows = state.visible_rows();
-            state.selected_idx(rows).map(|index| rows[index].clone())
+            state.selected_idx().map(|index| state.rows[index].clone())
         };
         let Some(row) = row else {
             return;
@@ -667,6 +633,7 @@ impl gpui::Render for ProjectTreePanel {
                 weak: cx.weak_entity(),
                 edit_state: self.edit_state.clone(),
                 entry_name_editor: self.entry_name_editor.clone(),
+                active_path: self.active_path.clone(),
             };
             render_list(
                 &self.scroll_handle,
@@ -727,7 +694,7 @@ fn render_list(
             .filter_map(|i| rows.get(i))
             .map(|row| {
                 let sel = row.is_new || state.selected.as_ref() == Some(&row.path);
-                let marked = !row.is_new && state.active_path.as_ref() == Some(&row.path);
+                let marked = !row.is_new && render_context.active_path.as_ref() == Some(&row.path);
                 render_row(row, sel, marked, is_focused, render_context.clone(), cx)
                     .into_any_element()
             })
@@ -805,7 +772,7 @@ fn render_row(
                     window.focus(&focus);
                     if let Some(tree) = weak.upgrade() {
                         tree.update(cx, |tree, cx| {
-                            tree.state.borrow_mut().select(&path);
+                            tree.state.borrow_mut().select(path.clone());
                             match event.click_count {
                                 // 单击：目录展开/折叠、文件以临时标签打开（焦点留在项目树）；
                                 // 双击：文件打开并聚焦编辑器；目录不重复，避免"展开→折叠"抵消。
@@ -840,7 +807,7 @@ impl Panel for ProjectTreePanel {
 
 #[derive(Clone)]
 struct ProjectTreeRenderContext {
-    state: Rc<RefCell<ProjectTreeState>>,
+    state: Rc<RefCell<TreeState<PathBuf, ProjectTreeRow>>>,
     rows: Rc<[ProjectTreeRow]>,
     focus: gpui::FocusHandle,
     /// 条目点击直接调用 Entity 方法（对齐 Zed 的 `cx.listener` 路径），
@@ -848,6 +815,8 @@ struct ProjectTreeRenderContext {
     weak: WeakEntity<ProjectTreePanel>,
     edit_state: Option<EditState>,
     entry_name_editor: Entity<Editor>,
+    /// 活动文件标记（渲染时快照，与选中行独立）。
+    active_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -885,93 +854,15 @@ struct ProjectTreeRow {
     git_status: Option<FileStatus>,
 }
 
-/// 项目树的 UI 状态：展开/选中/活动路径 + 可见行缓存。
-///
-/// 可见行由 `ProjectTreePanel` 按展开状态递归构建后注入（`replace_rows`），
-/// 本结构不触碰文件系统。
-struct ProjectTreeState {
-    expanded: HashSet<PathBuf>,
-    selected: Option<PathBuf>,
-    active_path: Option<PathBuf>,
-    rows: Vec<ProjectTreeRow>,
-}
-
-impl ProjectTreeState {
-    fn new() -> Self {
-        Self {
-            expanded: HashSet::new(),
-            selected: None,
-            active_path: None,
-            rows: Vec::new(),
-        }
+impl TreeRow for ProjectTreeRow {
+    fn is_dir(&self) -> bool {
+        self.is_dir
     }
-
-    /// 替换可见行（由 ProjectTreePanel 重建后注入），选中行消失时清空选中。
-    fn replace_rows(&mut self, rows: Vec<ProjectTreeRow>) {
-        self.rows = rows;
-        if self
-            .selected
-            .as_ref()
-            .is_some_and(|selected| !self.rows.iter().any(|row| &row.path == selected))
-        {
-            self.selected = None;
-        }
+    fn depth(&self) -> usize {
+        self.depth
     }
-
-    /// 逐行更新 git 状态（git 事件驱动，不重扫目录）。
-    fn update_git_statuses(&mut self, statuses: HashMap<PathBuf, FileStatus>) {
-        for row in &mut self.rows {
-            row.git_status = statuses.get(&row.path).cloned();
-        }
-    }
-
-    fn visible_rows(&self) -> &[ProjectTreeRow] {
-        &self.rows
-    }
-
-    /// 确保有选中行：无选中时选中第一行。
-    fn ensure_selected(&mut self) {
-        if self.selected.is_some() {
-            return;
-        }
-        if let Some(first) = self.rows.first() {
-            self.selected = Some(first.path.clone());
-        }
-    }
-
-    /// 仅切换展开标记；行模型重建由 `ProjectTreePanel` 在调用后完成。
-    fn toggle_expand(&mut self, path: &Path) {
-        if self.expanded.contains(path) {
-            self.expanded.remove(path);
-        } else {
-            self.expanded.insert(path.to_path_buf());
-        }
-    }
-
-    fn select(&mut self, path: &Path) {
-        self.selected = Some(path.to_path_buf());
-    }
-
-    fn selected_idx(&self, rows: &[ProjectTreeRow]) -> Option<usize> {
-        self.selected
-            .as_ref()
-            .and_then(|sel| rows.iter().position(|r| r.path == *sel))
-    }
-
-    fn select_up(&mut self, rows: &[ProjectTreeRow]) {
-        let idx = self.selected_idx(rows).unwrap_or(0);
-        if idx > 0 {
-            self.selected = Some(rows[idx - 1].path.clone());
-        }
-    }
-
-    fn select_down(&mut self, rows: &[ProjectTreeRow]) {
-        let idx = self.selected_idx(rows).unwrap_or(0);
-        if idx + 1 < rows.len() {
-            self.selected = Some(rows[idx + 1].path.clone());
-        } else if self.selected.is_none() && !rows.is_empty() {
-            self.selected = Some(rows[0].path.clone());
-        }
+    fn expanded(&self) -> bool {
+        self.expanded
     }
 }
 
@@ -996,7 +887,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
         let file = directory.path().join("cached.txt");
         std::fs::write(&file, "content").expect("应创建测试文件");
-        let mut state = ProjectTreeState::new();
+        let mut state = TreeState::new(|row: &ProjectTreeRow| Some(row.path.clone()));
         let root = directory.path().to_path_buf();
         let rows = vec![
             ProjectTreeRow {
@@ -1025,7 +916,7 @@ mod tests {
 
         // 渲染读取的是注入的缓存：文件系统变化不影响行模型。
         std::fs::remove_file(&file).expect("应删除测试文件");
-        assert!(state.visible_rows().iter().any(|row| row.path == file));
+        assert!(state.rows().iter().any(|row| row.path == file));
 
         // 只有显式重建（由 ProjectTreePanel 调 worktree 遍历）才会反映文件系统。
         state.replace_rows(vec![ProjectTreeRow {
@@ -1037,7 +928,7 @@ mod tests {
             is_new: false,
             git_status: None,
         }]);
-        assert!(!state.visible_rows().iter().any(|row| row.path == file));
+        assert!(!state.rows().iter().any(|row| row.path == file));
     }
 
     #[gpui::test]
@@ -1056,10 +947,7 @@ mod tests {
             tree.reveal_active_path(Some(file.clone()), cx)
         });
         cx.read_entity(&tree, |tree, _| {
-            assert_eq!(
-                tree.state.borrow().active_path.as_deref(),
-                Some(file.as_path())
-            );
+            assert_eq!(tree.active_path.as_deref(), Some(file.as_path()));
             assert_eq!(
                 tree.state.borrow().selected.as_deref(),
                 Some(file.as_path())
@@ -1074,16 +962,12 @@ mod tests {
             assert!(tree.state.borrow().expanded.contains(&nested));
 
             // 键盘游标移动不应改变活动文件标记。
-            let rows = tree.state.borrow().visible_rows().to_vec();
-            tree.state.borrow_mut().select_up(&rows);
+            tree.state.borrow_mut().select_up();
             assert_ne!(
                 tree.state.borrow().selected.as_deref(),
                 Some(file.as_path())
             );
-            assert_eq!(
-                tree.state.borrow().active_path.as_deref(),
-                Some(file.as_path())
-            );
+            assert_eq!(tree.active_path.as_deref(), Some(file.as_path()));
         });
     }
 
@@ -1102,7 +986,7 @@ mod tests {
             tree.reveal_active_path(Some(PathBuf::from("/outside/project.txt")), cx);
         });
         cx.read_entity(&tree, |tree, _| {
-            assert!(tree.state.borrow().active_path.is_none());
+            assert!(tree.active_path.is_none());
         });
     }
 
@@ -1134,10 +1018,7 @@ mod tests {
                 tree.state.borrow().selected.as_deref(),
                 Some(new_file.as_path())
             );
-            assert_eq!(
-                tree.state.borrow().active_path.as_deref(),
-                Some(new_file.as_path())
-            );
+            assert_eq!(tree.active_path.as_deref(), Some(new_file.as_path()));
             assert!(
                 tree.state
                     .borrow()
@@ -1168,7 +1049,7 @@ mod tests {
             tree.set_on_open_file(Rc::new(move |_, _, _, _| {
                 callback_count.set(callback_count.get() + 1);
             }));
-            tree.state.borrow_mut().select(&selected_file);
+            tree.state.borrow_mut().select(selected_file.clone());
             tree
         });
         cx.update(|window, cx| window.focus(&tree.read(cx).focus));
@@ -1250,7 +1131,7 @@ mod tests {
                 std::fs::rename(from, to)?;
                 Ok(())
             }));
-            tree.state.borrow_mut().select(&old_path);
+            tree.state.borrow_mut().select(old_path.clone());
         });
 
         cx.add_window_view(|window, cx| {
@@ -1309,7 +1190,9 @@ mod tests {
                 );
                 tree.handle_tree_confirm_edit(&TreeConfirmEdit, window, cx);
 
-                tree.state.borrow_mut().select(directory.path());
+                tree.state
+                    .borrow_mut()
+                    .select(directory.path().to_path_buf());
                 tree.handle_tree_new_entry(&TreeNewEntry, window, cx);
                 tree.entry_name_editor
                     .update(cx, |editor, cx| editor.set_text("assets/icons/", cx));
@@ -1353,7 +1236,7 @@ mod tests {
                 *trashed_path.borrow_mut() = Some(path);
                 Ok(())
             }));
-            tree.state.borrow_mut().select(&trashed_file);
+            tree.state.borrow_mut().select(trashed_file.clone());
         });
 
         cx.add_window_view(|window, cx| {
@@ -1387,7 +1270,9 @@ mod tests {
                 callback_called.set(true);
                 Ok(())
             }));
-            tree.state.borrow_mut().select(directory.path());
+            tree.state
+                .borrow_mut()
+                .select(directory.path().to_path_buf());
         });
 
         cx.add_window_view(|window, cx| {
@@ -1413,7 +1298,7 @@ mod tests {
                 std::fs::remove_file(path)?;
                 Ok(())
             }));
-            tree.state.borrow_mut().select(&only_file);
+            tree.state.borrow_mut().select(only_file.clone());
         });
 
         cx.add_window_view(|window, cx| {
@@ -1561,7 +1446,7 @@ mod tests {
         // 模拟鼠标点击：选中行后激活（与键盘 enter 同一 handler）。
         cx.add_window_view(|window, cx| {
             tree.update(cx, |tree, _| {
-                tree.state.borrow_mut().select(&sub);
+                tree.state.borrow_mut().select(sub.clone());
             });
             tree.update(cx, |tree, cx| {
                 tree.handle_tree_activate(&TreeActivate, window, cx);

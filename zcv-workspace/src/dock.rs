@@ -6,12 +6,10 @@
 //!   每个 Dock 是独立 Entity，参考 Zed `crates/workspace/src/dock.rs`。
 //! - **中心编辑区**：单一 Pane。
 
-use std::cell::Cell;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    Context, Entity, FocusHandle, Focusable, MouseButton, Pixels, Point, Render, Subscription,
+    App, Context, Entity, FocusHandle, Focusable, MouseButton, Pixels, Point, Render, Subscription,
     WeakEntity, Window, div, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
@@ -61,11 +59,14 @@ impl DockPosition {
 /// dock 和编辑区的最小尺寸，防止 dock 拖拽完全挤占编辑区。
 const MIN_SIZE: Pixels = space::S16;
 
-/// 正在进行的拖拽状态（Dock 内部使用）。
-#[derive(Debug, Clone, Copy)]
-struct DragState {
-    start_cursor: gpui::Point<Pixels>,
-    start_size: Pixels,
+/// 拖拽调整尺寸的浮层实体；gpui 拖拽系统经它携带 dock 位置信息，
+/// Workspace 根节点在 `on_drag_move` 中按位置驱动对应 dock 的尺寸。
+pub(crate) struct DraggedDock(pub(crate) DockPosition);
+
+impl Render for DraggedDock {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
 }
 
 // ═══ Dock Entity ═════════════════════════════════════════════════
@@ -74,22 +75,18 @@ struct DragState {
 ///
 /// 参考 Zed `crates/workspace/src/dock.rs` 中的 Dock 设计。
 pub struct Dock {
-    pub position: DockPosition,
-    pub is_open: bool,
+    position: DockPosition,
+    is_open: bool,
     size: Pixels,
     active_panel_index: Option<usize>,
-    pub panels: Vec<Arc<dyn PanelHandle>>,
+    panels: Vec<Arc<dyn PanelHandle>>,
     /// 允许布局先于具体 panel 注册载入；每次 add_panel 后重试恢复。
     serialized_dock: Option<DockData>,
-    pub focus: FocusHandle,
+    focus: FocusHandle,
     /// 左右 dock 互为 sibling，拖拽时协调尺寸。
     sibling: Option<WeakEntity<Dock>>,
-    /// 拖拽进行中的状态。
-    drag_state: Option<DragState>,
-    /// 通知 Workspace 哪个 dock 正在被拖拽。
-    pub drag_notify: Rc<Cell<Option<DockPosition>>>,
     /// 生命周期相关订阅。
-    pub _subscriptions: Vec<Subscription>,
+    subscriptions: Vec<Subscription>,
 }
 
 impl Dock {
@@ -99,7 +96,6 @@ impl Dock {
         panels: Vec<Arc<dyn PanelHandle>>,
         initial_size: Pixels,
         serialized_dock: Option<DockData>,
-        drag_notify: Rc<Cell<Option<DockPosition>>>,
         cx: &mut Context<Self>,
     ) -> Self {
         let active_panel_index = if panels.is_empty() { None } else { Some(0) };
@@ -112,9 +108,7 @@ impl Dock {
             serialized_dock,
             focus: cx.focus_handle(),
             sibling: None,
-            drag_state: None,
-            drag_notify,
-            _subscriptions: Vec::new(),
+            subscriptions: Vec::new(),
         }
     }
 
@@ -138,9 +132,43 @@ impl Dock {
         cx.notify();
     }
 
+    /// 登记生命周期订阅（宿主装配层使用）。
+    pub fn add_subscription(&mut self, sub: Subscription) {
+        self.subscriptions.push(sub);
+    }
+
     // ── 状态查询 ─────────────────────────────────────────────────
 
     /// Dock 是否展开且含有激活面板。
+    /// Dock 所在位置。
+    pub fn position(&self) -> DockPosition {
+        self.position
+    }
+
+    /// 面板总数。
+    pub fn panel_count(&self) -> usize {
+        self.panels.len()
+    }
+
+    /// 按持久化名称查找面板 index。
+    pub fn panel_index_for_persistent_name(&self, name: &str) -> Option<usize> {
+        self.panels
+            .iter()
+            .position(|panel| panel.persistent_name() == name)
+    }
+
+    /// 指定 index 面板的焦点句柄。
+    pub fn panel_focus_handle(&self, panel_index: usize, cx: &App) -> Option<FocusHandle> {
+        self.panels
+            .get(panel_index)
+            .map(|panel| panel.focus_handle(cx))
+    }
+
+    /// 全部面板（只读）。
+    pub fn panels(&self) -> &[Arc<dyn PanelHandle>] {
+        &self.panels
+    }
+
     pub fn is_open(&self) -> bool {
         self.is_open && self.active_panel_index.is_some()
     }
@@ -277,33 +305,25 @@ impl Dock {
 
     // ── 拖拽调整大小 ─────────────────────────────────────────────
 
-    /// 开始拖拽调整大小。
-    pub fn start_resize(&mut self, cursor: Point<Pixels>) {
-        self.drag_state = Some(DragState {
-            start_cursor: cursor,
-            start_size: self.size,
-        });
-    }
-
     /// 拖拽到指定光标位置，更新 dock 尺寸。
+    ///
+    /// 采用绝对坐标模型（对齐 Zed `resize_left_dock`）：直接按光标相对参考区域
+    /// 边缘的距离计算新尺寸，不依赖拖拽起点——避免 delta 模型在跨坐标系事件
+    /// （handle 本地坐标 vs 窗口坐标）下的基准漂移。
     pub fn resize_to(
         &mut self,
         cursor: Point<Pixels>,
-        window_size: gpui::Size<Pixels>,
+        bounds: gpui::Bounds<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        let Some(state) = &self.drag_state else {
-            return;
+        let raw = match self.position {
+            DockPosition::Left => cursor.x - bounds.left(),
+            DockPosition::Right => bounds.right() - cursor.x,
+            DockPosition::Bottom => bounds.bottom() - cursor.y,
         };
-        let delta = match self.position {
-            DockPosition::Left => cursor.x - state.start_cursor.x,
-            DockPosition::Right => state.start_cursor.x - cursor.x,
-            DockPosition::Bottom => state.start_cursor.y - cursor.y,
-        };
-        let raw = state.start_size + delta;
         let max_size = match self.position {
-            DockPosition::Left | DockPosition::Right => window_size.width - MIN_SIZE - MIN_SIZE,
-            DockPosition::Bottom => window_size.height - MIN_SIZE,
+            DockPosition::Left | DockPosition::Right => bounds.size.width - MIN_SIZE - MIN_SIZE,
+            DockPosition::Bottom => bounds.size.height - MIN_SIZE,
         };
         let new_size = raw.clamp(MIN_SIZE, max_size);
         self.size = new_size;
@@ -313,7 +333,7 @@ impl Dock {
             && let Some(sibling) = self.sibling.as_ref().and_then(|s| s.upgrade())
         {
             sibling.update(cx, |sib, _| {
-                let other_max = window_size.width - new_size - MIN_SIZE;
+                let other_max = bounds.size.width - new_size - MIN_SIZE;
                 if sib.size > other_max {
                     sib.size = other_max.max(MIN_SIZE);
                 }
@@ -321,16 +341,6 @@ impl Dock {
         }
 
         cx.notify();
-    }
-
-    /// 结束拖拽。
-    pub fn end_resize(&mut self) {
-        self.drag_state = None;
-    }
-
-    /// 是否正在拖拽。
-    pub fn is_dragging(&self) -> bool {
-        self.drag_state.is_some()
     }
 
     /// 重置为默认尺寸。
@@ -383,27 +393,27 @@ impl Render for Dock {
 
         let frame = frame.child(div().size_full().child(panel_view));
 
-        // 拖拽调整大小的热区
+        // 拖拽调整大小的热区；手势由 gpui 拖拽系统承载，
+        // 位置信息随 DraggedDock 传递，Workspace 根节点经 on_drag_move 驱动尺寸。
         const HIT: Pixels = px(3.0);
         let dock_entity = cx.entity().clone();
-        let notify = self.drag_notify.clone();
         let area = self.position;
 
         let handle = div()
+            .id("resize-handle")
             .absolute()
-            .on_mouse_down(MouseButton::Left, {
+            .on_drag(DraggedDock(area), move |_, _, _, cx| {
+                cx.stop_propagation();
+                cx.new(|_| DraggedDock(area))
+            })
+            .on_mouse_up(MouseButton::Left, {
                 let dock_entity = dock_entity.clone();
                 move |event, window, cx| {
-                    dock_entity.update(cx, |d, _| d.start_resize(event.position));
-                    notify.set(Some(area));
-                    window.refresh();
-                }
-            })
-            .on_mouse_up(MouseButton::Left, move |event, window, cx| {
-                if event.click_count >= 2 {
-                    let win_size = window.bounds().size;
-                    dock_entity.update(cx, |d, cx| d.reset_size(win_size, cx));
-                    window.refresh();
+                    if event.click_count >= 2 {
+                        let win_size = window.bounds().size;
+                        dock_entity.update(cx, |d, cx| d.reset_size(win_size, cx));
+                        window.refresh();
+                    }
                 }
             });
 
@@ -481,8 +491,6 @@ pub fn render_body(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-    use std::rc::Rc;
     use std::sync::Arc;
 
     use gpui::{App, Context, FocusHandle, Render, TestAppContext, Window, div, prelude::*, px};
@@ -540,16 +548,8 @@ mod tests {
             active_panel: Some("second".into()),
             size: Some(333.0),
         };
-        let notify = Rc::new(Cell::new(None));
         let (dock, cx) = cx.add_window_view(move |window, cx| {
-            let mut dock = Dock::new(
-                DockPosition::Left,
-                Vec::new(),
-                px(240.0),
-                Some(state),
-                notify,
-                cx,
-            );
+            let mut dock = Dock::new(DockPosition::Left, Vec::new(), px(240.0), Some(state), cx);
             dock.add_panel(first_handle, window, cx);
             assert!(!dock.is_open());
             dock.add_panel(second_handle, window, cx);
@@ -570,16 +570,8 @@ mod tests {
             focus: cx.focus_handle(),
         });
         let handle: Arc<dyn PanelHandle> = Arc::new(panel);
-        let notify = Rc::new(Cell::new(None));
         let (dock, cx) = cx.add_window_view(move |window, cx| {
-            let mut dock = Dock::new(
-                DockPosition::Bottom,
-                Vec::new(),
-                px(200.0),
-                None,
-                notify,
-                cx,
-            );
+            let mut dock = Dock::new(DockPosition::Bottom, Vec::new(), px(200.0), None, cx);
             dock.add_panel(handle, window, cx);
             dock.set_open(true, window, cx);
             dock

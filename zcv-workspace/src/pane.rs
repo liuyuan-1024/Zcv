@@ -81,9 +81,9 @@ impl Render for DraggedTab {
 
 /// 单个编辑区 Pane。
 pub struct Pane {
-    pub focus: FocusHandle,
-    pub tabs: Vec<Box<dyn ItemHandle>>,
-    pub active: Option<EntityId>,
+    focus: FocusHandle,
+    tabs: Vec<Box<dyn ItemHandle>>,
+    active: Option<EntityId>,
     /// 当前唯一的临时标签；固定打开或发生编辑时提升为固定标签。
     transient_item_id: Option<EntityId>,
     toolbar: Entity<Toolbar>,
@@ -317,6 +317,16 @@ impl Pane {
     /// 当前打开的所有标签（供宿主按具体 Item 类型操作）。
     pub fn tabs(&self) -> &[Box<dyn ItemHandle>] {
         &self.tabs
+    }
+
+    /// 焦点句柄。
+    pub fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
+    }
+
+    /// 当前激活标签的 item id。
+    pub fn active_id(&self) -> Option<EntityId> {
+        self.active
     }
 
     /// 将已打开编辑器的文件路径随文件或目录重命名一起迁移。

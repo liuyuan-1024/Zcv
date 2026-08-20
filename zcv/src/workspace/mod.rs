@@ -10,8 +10,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, Context, Entity, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
-    point, prelude::*, px, size,
+    App, Bounds, Context, Entity, Focusable, TitlebarOptions, WeakEntity, Window, WindowBounds,
+    WindowOptions, point, prelude::*, px, size,
 };
 use zcv_actions::{SelectGitBranch, ToggleProjectPicker};
 use zcv_editor::{Editor, SoftWrap};
@@ -204,7 +204,7 @@ fn initialize_common_workspace(
         workspace.bottom_dock.clone(),
     ] {
         dock.update(cx, |dock: &mut Dock, cx: &mut Context<Dock>| {
-            let focus = dock.focus.clone();
+            let focus = dock.focus_handle(cx);
             let sub = cx.on_focus(
                 &focus,
                 window,
@@ -214,7 +214,7 @@ fn initialize_common_workspace(
                     }
                 },
             );
-            dock._subscriptions.push(sub);
+            dock.add_subscription(sub);
         });
     }
 }
@@ -441,13 +441,15 @@ fn initialize_workspace(
         window.refresh();
     });
 
-    workspace._subscriptions = vec![
+    for subscription in [
         git_subscription,
         pane_subscription,
         project_subscription,
         settings_subscription,
         appearance_subscription,
-    ];
+    ] {
+        workspace.add_subscription(subscription);
+    }
 }
 
 /// 把换行设置应用到所有打开的编辑器。
@@ -578,9 +580,9 @@ mod tests {
         });
 
         cx.read_entity(&workspace, |workspace, cx| {
-            assert_eq!(workspace.left_dock.read(cx).panels.len(), 3);
-            assert_eq!(workspace.bottom_dock.read(cx).panels.len(), 2);
-            assert_eq!(workspace.right_dock.read(cx).panels.len(), 1);
+            assert_eq!(workspace.left_dock.read(cx).panel_count(), 3);
+            assert_eq!(workspace.bottom_dock.read(cx).panel_count(), 2);
+            assert_eq!(workspace.right_dock.read(cx).panel_count(), 1);
         });
     }
 }

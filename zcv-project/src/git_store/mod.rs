@@ -10,12 +10,19 @@
 //! 同 key 的排队 job 直接丢弃（对齐 Zed `spawn_local_git_worker` 的 keyed job）。
 
 mod background;
+mod diff_coordinator;
+mod jobs;
+mod snapshots;
+
+use diff_coordinator::{DiffCoordinator, HunkState};
+use jobs::{GitJob, GitJobId, GitJobKey, GitJobRecord, ScheduledGitJob};
+pub use jobs::{GitJobPhase, GitJobStatus, GitOperationKind};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use background::{JobResult, execute_job, merge_refresh, repo_relative_path};
+use background::{JobResult, execute_job, repo_relative_path};
 use gpui::{AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
 use zcv_buffer_diff::DiffHunk;
 use zcv_git::{Branch, DiffStat, FileStatus, GitCancellation, GitRepository};
@@ -42,34 +49,6 @@ pub enum GitStoreEvent {
     JobsUpdated,
 }
 
-pub type GitJobId = u64;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GitJobPhase {
-    Queued,
-    Running,
-    Cancelling,
-    Reconciling,
-}
-
-#[derive(Clone)]
-pub struct GitJobStatus {
-    pub id: GitJobId,
-    pub name: Arc<str>,
-    pub operation: Option<GitOperationKind>,
-    pub phase: GitJobPhase,
-    pub cancellable: bool,
-    progress_source: Option<GitCancellation>,
-}
-
-impl GitJobStatus {
-    pub fn progress(&self) -> Option<String> {
-        self.progress_source
-            .as_ref()
-            .and_then(GitCancellation::progress)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitOperationOutcome {
     Completed,
@@ -87,56 +66,6 @@ pub struct StatusEntry {
     pub diff_stat: DiffStat,
     pub staged_diff_stat: DiffStat,
     pub unstaged_diff_stat: DiffStat,
-}
-
-/// 单个打开文件的行级差异生命周期。
-#[derive(Clone, Debug)]
-enum HunkState {
-    /// 当前文件不需要查询差异，例如干净文件、未跟踪文件或仓库外文件。
-    NotNeeded,
-    /// 当前版本需要查询，但尚未进入任务队列。
-    Unloaded,
-    /// 已加入等待批次。
-    Queued,
-    /// 已交给后台线程处理。
-    Loading,
-    /// 当前版本的查询结果已经可用，空集合表示没有行级差异。
-    Ready(Arc<[DiffHunk]>),
-    /// 当前版本查询失败；只在文件再次变化后重试，避免失败自激循环。
-    Failed(Arc<str>),
-}
-
-#[derive(Clone, Debug)]
-struct HunkRecord {
-    generation: u64,
-    state: HunkState,
-}
-
-/// 打开文件差异的需求、版本与任务生命周期；GitStore 只负责提供仓库事实和驱动后台执行。
-struct DiffCoordinator {
-    interests: BTreeSet<PathBuf>,
-    records: HashMap<PathBuf, HunkRecord>,
-    pending: BTreeMap<PathBuf, u64>,
-    in_flight: HashMap<PathBuf, u64>,
-    next_generation: u64,
-}
-
-impl DiffCoordinator {
-    fn new() -> Self {
-        Self {
-            interests: BTreeSet::new(),
-            records: HashMap::new(),
-            pending: BTreeMap::new(),
-            in_flight: HashMap::new(),
-            next_generation: 1,
-        }
-    }
-
-    fn next_generation(&mut self) -> u64 {
-        let generation = self.next_generation;
-        self.next_generation = self.next_generation.wrapping_add(1).max(1);
-        generation
-    }
 }
 
 /// 活动仓库的远程操作状态（remote 配置与 upstream 领先/落后计数）。
@@ -172,138 +101,9 @@ pub struct RepositorySnapshot {
     pub statuses_by_path: BTreeMap<PathBuf, StatusEntry>,
 }
 
-struct Repository {
+pub(super) struct Repository {
     repository: Arc<dyn GitRepository>,
     snapshot: RepositorySnapshot,
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub(super) enum GitJobKey {
-    ReloadGitState,
-    RefreshStatuses,
-    RefreshHunks,
-    GitOperation(GitOperationKind),
-    GitInit,
-    /// 暂存/取消暂存（路径集合参与 key：不同路径集互不合并，同路径重复点击在队列中自动去重，避免一次操作被意外丢弃）。
-    StageFiles {
-        stage: bool,
-        paths: Vec<PathBuf>,
-    },
-    /// 提交（消息参与 key：同消息双击去重，改消息重试不被去重跳过）。
-    Commit {
-        message: String,
-    },
-    /// 撤销最近一次提交（无参：同一时间只允许一个 uncommit 在途）。
-    Uncommit,
-    /// 切换分支（名字参与 key：同名双击去重，改目标不被去重跳过）。
-    CheckoutBranch {
-        name: String,
-    },
-    /// 创建并切换分支（同上）。
-    CreateBranch {
-        name: String,
-    },
-}
-
-/// 用户触发的 git 操作（fetch/pull/push，由 UI 发起，后台执行）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum GitOperationKind {
-    Fetch,
-    Pull,
-    Push,
-}
-
-#[derive(Clone, Debug)]
-pub(super) enum GitJob {
-    ReloadGitState,
-    RefreshStatuses,
-    RefreshHunks,
-    GitOperation {
-        operation: GitOperationKind,
-        /// 操作结果回传通道（发起方 await 后弹提示）；内部调度时为 None。
-        on_done: Option<async_channel::Sender<GitOperationOutcome>>,
-    },
-    GitInit,
-    StageFiles {
-        stage: bool,
-        paths: Vec<PathBuf>,
-    },
-    Commit {
-        message: String,
-    },
-    Uncommit,
-    CheckoutBranch {
-        name: String,
-    },
-    CreateBranch {
-        name: String,
-    },
-}
-
-#[derive(Clone)]
-struct ScheduledGitJob {
-    id: GitJobId,
-    job: GitJob,
-    cancellation: Option<GitCancellation>,
-}
-
-struct GitJobRecord {
-    id: GitJobId,
-    key: GitJobKey,
-    name: Arc<str>,
-    operation: Option<GitOperationKind>,
-    phase: GitJobPhase,
-    cancellation: Option<GitCancellation>,
-}
-
-impl GitJob {
-    fn key(&self) -> GitJobKey {
-        match self {
-            GitJob::ReloadGitState => GitJobKey::ReloadGitState,
-            GitJob::RefreshStatuses => GitJobKey::RefreshStatuses,
-            GitJob::RefreshHunks => GitJobKey::RefreshHunks,
-            GitJob::GitOperation { operation, .. } => GitJobKey::GitOperation(*operation),
-            GitJob::GitInit => GitJobKey::GitInit,
-            GitJob::StageFiles { stage, paths } => GitJobKey::StageFiles {
-                stage: *stage,
-                paths: paths.clone(),
-            },
-            GitJob::Commit { message } => GitJobKey::Commit {
-                message: message.clone(),
-            },
-            GitJob::Uncommit => GitJobKey::Uncommit,
-            GitJob::CheckoutBranch { name } => GitJobKey::CheckoutBranch { name: name.clone() },
-            GitJob::CreateBranch { name } => GitJobKey::CreateBranch { name: name.clone() },
-        }
-    }
-
-    /// 状态栏展示用的任务名。
-    fn task_name(&self) -> Arc<str> {
-        match self {
-            GitJob::ReloadGitState => "扫描仓库状态".into(),
-            GitJob::RefreshStatuses => "刷新仓库状态".into(),
-            GitJob::RefreshHunks => "查询文件差异".into(),
-            GitJob::GitOperation {
-                operation: GitOperationKind::Fetch,
-                ..
-            } => "拉取".into(),
-            GitJob::GitOperation {
-                operation: GitOperationKind::Pull,
-                ..
-            } => "合并拉取".into(),
-            GitJob::GitOperation {
-                operation: GitOperationKind::Push,
-                ..
-            } => "推送".into(),
-            GitJob::GitInit => "初始化仓库".into(),
-            GitJob::StageFiles { stage: true, .. } => "暂存".into(),
-            GitJob::StageFiles { stage: false, .. } => "取消暂存".into(),
-            GitJob::Commit { .. } => "提交".into(),
-            GitJob::Uncommit => "撤销提交".into(),
-            GitJob::CheckoutBranch { .. } => "切换分支".into(),
-            GitJob::CreateBranch { .. } => "创建分支".into(),
-        }
-    }
 }
 
 pub struct GitStore {
@@ -628,125 +428,6 @@ impl GitStore {
     }
 
     /// 用当前打开编辑器集合替换差异需求。任务调度由状态机单向驱动，不依赖任务状态事件反向触发。
-    pub fn set_hunk_interests(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
-        let interests: BTreeSet<PathBuf> = paths
-            .iter()
-            .map(|path| canonicalize_path(path))
-            .filter(|path| {
-                self.root
-                    .as_deref()
-                    .is_some_and(|root| path.starts_with(root))
-            })
-            .collect();
-        self.diff_coordinator.interests = interests;
-        let interests = &self.diff_coordinator.interests;
-        self.diff_coordinator
-            .records
-            .retain(|path, _| interests.contains(path));
-        self.diff_coordinator
-            .pending
-            .retain(|path, _| interests.contains(path));
-        self.ensure_interested_hunks(cx);
-    }
-
-    /// 增量增加差异需求，供无需维护完整打开文件集合的调用方使用。
-    pub fn request_hunks(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
-        let paths: Vec<PathBuf> = paths
-            .iter()
-            .map(|path| canonicalize_path(path))
-            .filter(|path| {
-                self.root
-                    .as_deref()
-                    .is_some_and(|root| path.starts_with(root))
-            })
-            .collect();
-        if paths.is_empty() {
-            return;
-        }
-        self.diff_coordinator.interests.extend(paths);
-        self.ensure_interested_hunks(cx);
-    }
-
-    fn path_needs_hunks(&self, path: &Path) -> bool {
-        self.status_for_path(path)
-            .is_some_and(|entry| matches!(entry.status, FileStatus::Tracked { .. }))
-    }
-
-    /// 把尚未建模的关注路径归类，并仅将 Unloaded 状态推进到 Queued。
-    fn ensure_interested_hunks(&mut self, cx: &mut Context<Self>) {
-        let interests: Vec<PathBuf> = self.diff_coordinator.interests.iter().cloned().collect();
-        for path in interests {
-            let needs_hunks = self.path_needs_hunks(&path);
-            if !self.diff_coordinator.records.contains_key(&path) {
-                let generation = self.diff_coordinator.next_generation();
-                self.diff_coordinator.records.insert(
-                    path.clone(),
-                    HunkRecord {
-                        generation,
-                        state: if needs_hunks {
-                            HunkState::Unloaded
-                        } else {
-                            HunkState::NotNeeded
-                        },
-                    },
-                );
-            }
-            let Some(record) = self.diff_coordinator.records.get_mut(&path) else {
-                continue;
-            };
-            if needs_hunks && matches!(record.state, HunkState::Unloaded) {
-                record.state = HunkState::Queued;
-                self.diff_coordinator
-                    .pending
-                    .insert(path, record.generation);
-            }
-        }
-        self.schedule_pending_hunks(cx);
-    }
-
-    fn schedule_pending_hunks(&mut self, cx: &mut Context<Self>) {
-        if !self.diff_coordinator.pending.is_empty() {
-            self.schedule_job(GitJob::RefreshHunks, cx);
-        }
-    }
-
-    /// 文件内容、状态或 HEAD 变化时为受影响的关注路径创建新版本；旧任务结果随后会因版本不匹配被丢弃。
-    fn invalidate_hunks_for_paths(&mut self, changed_paths: &[PathBuf], cx: &mut Context<Self>) {
-        let affected: Vec<PathBuf> = self
-            .diff_coordinator
-            .interests
-            .iter()
-            .filter(|path| {
-                changed_paths
-                    .iter()
-                    .any(|changed| path.starts_with(changed))
-            })
-            .cloned()
-            .collect();
-        if affected.is_empty() {
-            return;
-        }
-        for path in &affected {
-            let generation = self.diff_coordinator.next_generation();
-            let state = if self.path_needs_hunks(path) {
-                HunkState::Unloaded
-            } else {
-                HunkState::NotNeeded
-            };
-            self.diff_coordinator
-                .records
-                .insert(path.clone(), HunkRecord { generation, state });
-            self.diff_coordinator.pending.remove(path);
-        }
-        self.ensure_interested_hunks(cx);
-        cx.emit(GitStoreEvent::HunksChanged);
-    }
-
-    fn invalidate_all_hunks(&mut self, cx: &mut Context<Self>) {
-        let interests: Vec<PathBuf> = self.diff_coordinator.interests.iter().cloned().collect();
-        self.invalidate_hunks_for_paths(&interests, cx);
-    }
-
     /// 查询目录的聚合状态（对齐 Zed `git_traversal` 的目录摘要）。
     ///
     /// 目录自身被忽略时直接返回；
@@ -912,136 +593,6 @@ impl GitStore {
     pub fn cache_committed_text(&mut self, path: &Path, text: Arc<str>) {
         self.committed_text_cache
             .insert(canonicalize_path(path), text);
-    }
-
-    fn schedule_job(&mut self, job: GitJob, cx: &mut Context<Self>) -> Option<GitJobId> {
-        // 同 key 的 job 已在队列/执行中时，丢弃新 job（路径已累积在paths_needing_status_update，由正在执行的 job 统一消费）。
-        let key = job.key();
-        if self.pending_jobs.contains_key(&key) {
-            return None;
-        }
-        let id = self.next_job_id;
-        self.next_job_id = self.next_job_id.wrapping_add(1).max(1);
-        let operation = match &job {
-            GitJob::GitOperation { operation, .. } => Some(*operation),
-            _ => None,
-        };
-        let cancellation = operation.map(|_| GitCancellation::new());
-        let name = job.task_name();
-        self.pending_jobs.insert(key.clone(), id);
-        self.jobs.insert(
-            id,
-            GitJobRecord {
-                id,
-                key: key.clone(),
-                name,
-                operation,
-                phase: GitJobPhase::Queued,
-                cancellation: cancellation.clone(),
-            },
-        );
-        if self
-            .job_sender
-            .try_send(ScheduledGitJob {
-                id,
-                job,
-                cancellation,
-            })
-            .is_err()
-        {
-            self.finish_job(id, cx);
-            return None;
-        }
-        cx.emit(GitStoreEvent::JobsUpdated);
-        Some(id)
-    }
-
-    /// 当前可见任务。远程操作（含排队、取消、确认阶段）优先，确保用户点击后立即获得反馈。
-    pub fn current_job(&self) -> Option<GitJobStatus> {
-        let record = self
-            .jobs
-            .values()
-            .filter(|job| job.operation.is_some())
-            .min_by_key(|job| job.id)
-            .or_else(|| self.in_flight.and_then(|id| self.jobs.get(&id)))?;
-        Some(GitJobStatus {
-            id: record.id,
-            name: record.name.clone(),
-            operation: record.operation,
-            phase: record.phase,
-            cancellable: record.operation.is_some()
-                && matches!(record.phase, GitJobPhase::Queued | GitJobPhase::Running),
-            progress_source: record.cancellation.clone(),
-        })
-    }
-
-    /// 取消当前远程任务。状态保持为取消中，直到进程退出并完成远端确认。
-    pub fn cancel_current_job(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self
-            .jobs
-            .values()
-            .filter(|job| {
-                job.operation.is_some()
-                    && matches!(job.phase, GitJobPhase::Queued | GitJobPhase::Running)
-            })
-            .map(|job| job.id)
-            .min()
-        else {
-            return;
-        };
-        let Some(record) = self.jobs.get_mut(&id) else {
-            return;
-        };
-        record.phase = GitJobPhase::Cancelling;
-        if let Some(cancellation) = &record.cancellation {
-            cancellation.cancel();
-        }
-        cx.emit(GitStoreEvent::JobsUpdated);
-    }
-
-    /// worker 开始执行 job 前标记在途任务（状态栏显示入口）。
-    fn set_in_flight(&mut self, id: GitJobId, cx: &mut Context<Self>) {
-        self.in_flight = Some(id);
-        if let Some(record) = self.jobs.get_mut(&id) {
-            record.phase = if record
-                .cancellation
-                .as_ref()
-                .is_some_and(GitCancellation::is_cancelled)
-            {
-                GitJobPhase::Cancelling
-            } else {
-                GitJobPhase::Running
-            };
-        }
-        cx.emit(GitStoreEvent::JobsUpdated);
-    }
-
-    fn set_job_phase(&mut self, id: GitJobId, phase: GitJobPhase, cx: &mut Context<Self>) {
-        if let Some(record) = self.jobs.get_mut(&id) {
-            record.phase = phase;
-            cx.emit(GitStoreEvent::JobsUpdated);
-        }
-    }
-
-    /// 后台执行器结束任务后清空在途标记；旧任务编号不能清掉后来任务的状态。
-    fn clear_in_flight(&mut self, id: GitJobId, cx: &mut Context<Self>) {
-        if self.in_flight == Some(id) {
-            self.in_flight = None;
-        }
-        cx.emit(GitStoreEvent::JobsUpdated);
-    }
-
-    fn finish_job(&mut self, id: GitJobId, cx: &mut Context<Self>) {
-        let Some(record) = self.jobs.remove(&id) else {
-            return;
-        };
-        if self.pending_jobs.get(&record.key) == Some(&id) {
-            self.pending_jobs.remove(&record.key);
-        }
-        if self.in_flight == Some(id) {
-            self.in_flight = None;
-        }
-        cx.emit(GitStoreEvent::JobsUpdated);
     }
 
     /// UI 线程：取出 job 需要的共享数据（后台线程不能访问 Entity 状态）。
@@ -1211,204 +762,6 @@ impl GitStore {
     }
 
     /// UI 线程：提交 job 结果，比对旧快照后发出对应事件。
-    fn commit_job(&mut self, job: &GitJob, result: JobResult, cx: &mut Context<Self>) {
-        match (job, result) {
-            (GitJob::ReloadGitState, JobResult::Reload(scans)) => {
-                let old_work_dirs: BTreeSet<PathBuf> = self
-                    .repositories
-                    .iter()
-                    .map(|repository| repository.repository.working_directory().to_path_buf())
-                    .collect();
-                let new_work_dirs: BTreeSet<PathBuf> = scans
-                    .iter()
-                    .map(|scan| scan.working_directory.clone())
-                    .collect();
-
-                let mut head_changed = false;
-                let mut statuses_changed = false;
-                for scan in &scans {
-                    let prev = self.repositories.iter().find(|repository| {
-                        repository.repository.working_directory() == scan.working_directory
-                    });
-                    head_changed |= prev.is_none_or(|prev| {
-                        prev.snapshot.head != scan.snapshot.head
-                            || prev.snapshot.branch != scan.snapshot.branch
-                            || prev.snapshot.has_remote != scan.snapshot.has_remote
-                            || prev.snapshot.ahead != scan.snapshot.ahead
-                            || prev.snapshot.behind != scan.snapshot.behind
-                    });
-                    statuses_changed |= prev.is_none_or(|prev| {
-                        prev.snapshot.statuses_by_path != scan.snapshot.statuses_by_path
-                    });
-                }
-
-                if old_work_dirs != new_work_dirs {
-                    cx.emit(GitStoreEvent::Repositories);
-                }
-                if head_changed {
-                    // HEAD 变化 → 旧 HEAD 文本失效。
-                    self.committed_text_cache.clear();
-                    cx.emit(GitStoreEvent::Head);
-                }
-                if statuses_changed {
-                    cx.emit(GitStoreEvent::Statuses);
-                }
-                self.repositories = scans
-                    .into_iter()
-                    .map(|scan| Repository {
-                        repository: scan.repository,
-                        snapshot: scan.snapshot,
-                    })
-                    .collect();
-                // 活动仓库维护：仍在集合中则保持；否则回退新集合第一个（Vec 序 = 祖先在前，与默认候选一致）；
-                // 集合为空 → None。注意用 repositories 而非 new_work_dirs：BTreeSet 按字典序迭代，取不到发现顺序。
-                // emit 是 deferred（pending_effects），订阅方永远读到赋值后的完整状态，首次扫描 None → Some(第一个) 恰好触发一次。
-                let new_active = self
-                    .active_repo_workdir
-                    .as_ref()
-                    .filter(|workdir| new_work_dirs.contains(*workdir))
-                    .cloned()
-                    .or_else(|| {
-                        self.repositories.first().map(|repository| {
-                            repository.repository.working_directory().to_path_buf()
-                        })
-                    });
-                if self.active_repo_workdir != new_active {
-                    self.active_repo_workdir = new_active;
-                    cx.emit(GitStoreEvent::ActiveRepositoryChanged);
-                }
-                if head_changed || statuses_changed || old_work_dirs != new_work_dirs {
-                    self.invalidate_all_hunks(cx);
-                }
-                log::info!("git 状态已刷新：{} 个仓库", self.repositories.len());
-            }
-            (GitJob::RefreshStatuses, JobResult::Refresh(refreshed)) => {
-                let mut statuses_changed = false;
-                let mut head_changed = false;
-                let mut changed_paths = Vec::new();
-                for (index, data) in refreshed {
-                    let Some(repository) = self.repositories.get_mut(index) else {
-                        continue;
-                    };
-                    let workdir = repository.repository.working_directory().to_path_buf();
-                    changed_paths.extend(data.paths.iter().map(|path| workdir.join(path)));
-                    let (statuses, head) = merge_refresh(&mut repository.snapshot, data);
-                    statuses_changed |= statuses;
-                    head_changed |= head;
-                }
-                if head_changed {
-                    // HEAD 变化 → 旧 HEAD 文本失效。
-                    self.committed_text_cache.clear();
-                    cx.emit(GitStoreEvent::Head);
-                }
-                if statuses_changed {
-                    cx.emit(GitStoreEvent::Statuses);
-                }
-                if head_changed {
-                    self.invalidate_all_hunks(cx);
-                } else {
-                    // 即使状态枚举与行数统计没有变化，文件内容也可能已经改变，因此刷新路径总会产生新差异版本。
-                    self.invalidate_hunks_for_paths(&changed_paths, cx);
-                }
-            }
-            (GitJob::RefreshHunks, JobResult::RefreshHunks(refreshed)) => {
-                let mut completed = Vec::new();
-                for (index, results) in refreshed {
-                    let Some(workdir) = self
-                        .repositories
-                        .get(index)
-                        .map(|repository| repository.repository.working_directory().to_path_buf())
-                    else {
-                        continue;
-                    };
-                    completed.extend(
-                        results
-                            .into_iter()
-                            .map(|(path, result)| (workdir.join(path), result)),
-                    );
-                }
-                let mut hunks_changed = false;
-                for (path, result) in completed {
-                    let Some(dispatched_generation) = self.diff_coordinator.in_flight.remove(&path)
-                    else {
-                        continue;
-                    };
-                    let Some(record) = self.diff_coordinator.records.get_mut(&path) else {
-                        continue;
-                    };
-                    if record.generation != dispatched_generation
-                        || !matches!(record.state, HunkState::Loading)
-                    {
-                        continue;
-                    }
-                    record.state = match result {
-                        Ok(hunks) => HunkState::Ready(Arc::from(hunks)),
-                        Err(error) => HunkState::Failed(Arc::from(error)),
-                    };
-                    hunks_changed = true;
-                }
-                // 同一时刻只运行一个差异批次；仓库在任务期间消失时，无法映射的遗留项也必须进入失败终态。
-                for (path, generation) in self.diff_coordinator.in_flight.drain() {
-                    if let Some(record) = self.diff_coordinator.records.get_mut(&path)
-                        && record.generation == generation
-                        && matches!(record.state, HunkState::Loading)
-                    {
-                        record.state = HunkState::Failed("仓库在差异查询期间已不可用".into());
-                        hunks_changed = true;
-                    }
-                }
-                if hunks_changed {
-                    cx.emit(GitStoreEvent::HunksChanged);
-                }
-            }
-            (GitJob::GitOperation { operation, .. }, JobResult::GitOperation(result)) => {
-                match &result {
-                    Ok(()) => {
-                        log::info!("git {operation:?} 成功");
-                    }
-                    Err(error) => {
-                        log::warn!("git {operation:?} 失败：{error:#}");
-                    }
-                }
-                // 操作改变了引用/工作树：重新全量扫描，比对后发出 Repositories/Head/Statuses 事件。
-                if result.is_ok() {
-                    self.schedule_scan(cx);
-                }
-            }
-            (
-                job @ (GitJob::GitInit
-                | GitJob::StageFiles { .. }
-                | GitJob::Commit { .. }
-                | GitJob::CheckoutBranch { .. }
-                | GitJob::CreateBranch { .. }),
-                JobResult::GitOperation(result),
-            ) => {
-                match result {
-                    Ok(()) => {
-                        // 操作改变了引用/工作树：重新全量扫描，比对后发出 Repositories/Head/Statuses 事件。
-                        log::info!("git {job:?} 成功");
-                        self.schedule_scan(cx);
-                    }
-                    Err(error) => {
-                        log::warn!("git {job:?} 失败：{error:#}");
-                    }
-                }
-            }
-            (GitJob::Uncommit, JobResult::Uncommit(result)) => match result {
-                Ok(message) => {
-                    // 被撤销消息暂存，Head 事件后由面板读取填回提交信息编辑器。
-                    self.pending_uncommitted_message = message;
-                    log::info!("git uncommit 成功");
-                    self.schedule_scan(cx);
-                }
-                Err(error) => {
-                    log::warn!("git uncommit 失败：{error:#}");
-                }
-            },
-            _ => {}
-        }
-    }
-
     /// 最长前缀匹配仓库（调用方保证路径已 canonicalize）。
     fn repo_for_path(&self, path: &Path) -> Option<&Repository> {
         self.repositories
@@ -1442,7 +795,7 @@ impl GitStore {
 }
 
 /// 路径归一化（canonicalize 失败时保留原样，如路径已删除）。
-fn canonicalize_path(path: &Path) -> PathBuf {
+pub(super) fn canonicalize_path(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
@@ -1457,6 +810,7 @@ struct JobPreparation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git_store::diff_coordinator::HunkRecord;
     use crate::test_support::{run_git, test_git_repo};
     use std::fs;
 

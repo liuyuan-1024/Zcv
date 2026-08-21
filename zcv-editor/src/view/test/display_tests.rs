@@ -312,7 +312,7 @@ fn soft_wrap_renders_continuation_rows_and_click_hits_fragment(cx: &mut TestAppC
         move |_, cx| Editor::for_buffer(buffer, cx)
     });
     editor.update(cx, |editor, cx| {
-        editor.set_soft_wrap(SoftWrap::EditorWidth, 80, cx);
+        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
     });
     cx.run_until_parked();
 

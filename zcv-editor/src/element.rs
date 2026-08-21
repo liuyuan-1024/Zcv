@@ -486,12 +486,10 @@ impl Element for EditorElement {
             },
             gutter: gutter_bounds.zip(gutter_dimensions),
         };
-        let wrap_width = match (soft_wrap, &mode) {
-            (SoftWrap::None, _) | (_, EditorMode::SingleLine | EditorMode::AutoHeight { .. }) => {
-                None
-            }
-            (SoftWrap::EditorWidth, _) => Some(text_bounds.size.width),
-            (SoftWrap::Bounded, _) => {
+        let wrap_width = match soft_wrap {
+            SoftWrap::None => None,
+            SoftWrap::EditorWidth => Some(text_bounds.size.width),
+            SoftWrap::Bounded => {
                 // em 宽用 'm' 的字形 advance 近似，与 Zed 的 wrap_width_for 一致。
                 let run = TextRun {
                     len: 1,

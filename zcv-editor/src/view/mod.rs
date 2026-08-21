@@ -25,6 +25,7 @@ use zcv_engine::{
 };
 use zcv_git::{DiffHunk, DiffHunkKind};
 use zcv_language::{BracketPair, FoldRange, LanguageBuffer, SyntaxSnapshot};
+use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_theme::{color, typography};
 
 use super::blink_manager::BlinkManager;
@@ -108,6 +109,16 @@ pub enum SoftWrap {
     Bounded,
 }
 
+impl From<SoftWrapMode> for SoftWrap {
+    fn from(mode: SoftWrapMode) -> Self {
+        match mode {
+            SoftWrapMode::None => SoftWrap::None,
+            SoftWrapMode::EditorWidth => SoftWrap::EditorWidth,
+            SoftWrapMode::Bounded => SoftWrap::Bounded,
+        }
+    }
+}
+
 pub struct Editor {
     language_buffer: Entity<LanguageBuffer>,
     buffer: Entity<Buffer>,
@@ -130,7 +141,10 @@ pub struct Editor {
     focus: FocusHandle,
     blink_manager: Entity<BlinkManager>,
     blink_manager_initialized: bool,
+    /// 全局设置驱动的换行模式（SettingsStore 变化时自动跟随）。
     soft_wrap: SoftWrap,
+    /// 换行模式覆盖（`None` 恢复设置值）。
+    soft_wrap_override: Option<SoftWrap>,
     preferred_line_length: usize,
     /// 注入的行级 diff hunks 与注入时的 buffer 版本（渲染门控用）。
     diff_hunks: Vec<DiffHunk>,
@@ -218,24 +232,20 @@ impl Editor {
         self.buffer.clone()
     }
 
-    /// 设置软换行模式与 preferred_line_length；实际换行在下一帧 prepaint
-    /// 计算 wrap 宽度时生效。
-    pub fn set_soft_wrap(
-        &mut self,
-        soft_wrap: SoftWrap,
-        preferred_line_length: usize,
-        cx: &mut Context<Self>,
-    ) {
-        if self.soft_wrap == soft_wrap && self.preferred_line_length == preferred_line_length {
+    /// 覆盖换行模式（UI 场景强制使用，不随全局设置变化）；`None` 清除覆盖恢复设置值。
+    ///
+    /// 实际换行在下一帧 prepaint 计算 wrap 宽度时生效。
+    pub fn set_soft_wrap_mode(&mut self, soft_wrap: Option<SoftWrap>, cx: &mut Context<Self>) {
+        if self.soft_wrap_override == soft_wrap {
             return;
         }
-        self.soft_wrap = soft_wrap;
-        self.preferred_line_length = preferred_line_length;
+        self.soft_wrap_override = soft_wrap;
         cx.notify();
     }
 
+    /// 生效的换行模式：覆盖优先，否则跟随全局设置。
     pub(crate) fn soft_wrap(&self) -> SoftWrap {
-        self.soft_wrap
+        self.soft_wrap_override.unwrap_or(self.soft_wrap)
     }
 
     pub(crate) fn preferred_line_length(&self) -> usize {
@@ -963,6 +973,9 @@ impl Editor {
         let blink_manager = cx.new(|_| BlinkManager::new());
         cx.observe(&blink_manager, |_, _, cx| cx.notify()).detach();
 
+        // 对齐 Zed：换行模式默认来自全局设置，与编辑器模式无关；
+        // UI 场景可用 set_soft_wrap_mode 覆盖（覆盖存在时设置变化不生效）。
+        let settings = SettingsStore::try_get(cx);
         let mut this = Self {
             language_buffer,
             buffer,
@@ -994,11 +1007,26 @@ impl Editor {
             focus: cx.focus_handle(),
             blink_manager,
             blink_manager_initialized: false,
-            soft_wrap: SoftWrap::default(),
-            preferred_line_length: 80,
+            soft_wrap: settings
+                .as_ref()
+                .map_or(SoftWrap::default(), |settings| settings.soft_wrap.into()),
+            soft_wrap_override: None,
+            preferred_line_length: settings.map_or(80, |settings| settings.preferred_line_length),
             mouse_select_mode: MouseSelectMode::Character,
             pending_selection: None,
         };
+        // 设置变化时自动跟随（覆盖场景除外）；编辑器在测试环境无 SettingsStore 时保持默认。
+        cx.observe_global::<SettingsStore>(|editor, cx| {
+            if editor.soft_wrap_override.is_some() {
+                return;
+            }
+            if let Some(settings) = SettingsStore::try_get(cx) {
+                editor.soft_wrap = settings.soft_wrap.into();
+                editor.preferred_line_length = settings.preferred_line_length;
+                cx.notify();
+            }
+        })
+        .detach();
         this.push_highlights();
         this
     }

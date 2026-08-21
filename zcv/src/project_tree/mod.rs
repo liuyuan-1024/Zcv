@@ -121,7 +121,9 @@ impl ProjectTreePanel {
         self.state.borrow_mut().replace_rows(rows);
     }
 
-    /// 递归收集目录子项；被忽略（gitignored）的目录不展开内容，避免 node_modules 这类目录撑爆行模型。
+    /// 递归收集目录子项；被忽略（gitignored）的目录同样展开，子项按忽略状态淡显。
+    ///
+    /// 对齐 Zed 面板：gitignored 目录可展开，内部条目继承忽略状态淡显（git 状态查询层负责子树忽略传播）；重型目录由扫描排除名单治理，行模型懒加载不会主动撑爆。
     fn collect_children(
         &self,
         dir: &Path,
@@ -141,7 +143,7 @@ impl ProjectTreePanel {
                 is_new: false,
                 git_status: entry.git_status,
             });
-            if is_expanded && !matches!(entry.git_status, Some(FileStatus::Ignored)) {
+            if is_expanded {
                 self.collect_children(&entry.path, depth + 1, expanded, rows, cx);
             }
         }
@@ -1492,6 +1494,53 @@ mod tests {
         run(&["add", "tracked.txt"]);
         run(&["commit", "-q", "-m", "initial"]);
         (root, temp_dir)
+    }
+
+    /// gitignored 目录（如 .gitignore 命中 tmp/）可展开，子项进入行模型并继承忽略状态淡显。
+    ///
+    /// 回归：此前被忽略目录的展开被拦截（防 node_modules 撑爆行模型的旧方案）， 表现为"点了没反应"；对齐 Zed 后展开正常，重型目录由扫描排除名单治理。
+    #[gpui::test]
+    fn ignored_directory_expands_with_ignored_children(cx: &mut TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        std::fs::write(root.join(".gitignore"), "tmp/\n").expect("应写入 .gitignore");
+        let tmp = root.join("tmp");
+        let child = tmp.join("cordis-tutorial");
+        std::fs::create_dir_all(&child).expect("应创建 tmp/子目录");
+        std::fs::write(child.join("note.md"), "x\n").expect("应创建文件");
+
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
+        cx.run_until_parked();
+
+        // 模拟鼠标/键盘逐级展开 tmp 与子目录。
+        tree.update(cx, |tree, cx| {
+            tree.state.borrow_mut().expanded.insert(tmp.clone());
+            tree.state.borrow_mut().expanded.insert(child.clone());
+            tree.rebuild_rows(cx);
+        });
+        tree.update(cx, |tree, cx| tree.refresh_git_statuses(cx));
+        cx.run_until_parked();
+
+        let rows = cx.read_entity(&tree, |tree, _| {
+            tree.state
+                .borrow()
+                .rows
+                .iter()
+                .map(|row| (row.path.clone(), row.git_status))
+                .collect::<Vec<_>>()
+        });
+        // tmp、其子目录与文件都应进入行模型，且全部携带 Ignored 状态（淡显）。
+        for expected in [&tmp, &child, &child.join("note.md")] {
+            let found = rows
+                .iter()
+                .find(|(path, _)| path == expected)
+                .unwrap_or_else(|| panic!("{expected:?} 应在行模型中，实际：{rows:?}"));
+            assert!(
+                found.1.is_some_and(|status| status.is_ignored()),
+                "{expected:?} 应为 Ignored（淡显），实际：{:?}",
+                found.1
+            );
+        }
     }
 
     /// 无 worktree 的空项目：面板照常构造，root 为空、行模型为空（渲染空态提示）。

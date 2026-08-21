@@ -862,10 +862,6 @@ impl Element for EditorElement {
         }
 
         if let Some(gutter) = &prepaint.layout.gutter {
-            window.paint_quad(fill(
-                gutter.bounds,
-                color::current(cx).editor_gutter_background,
-            ));
             for bounds in gutter.active_row_bounds(prepaint.layout.text_clip_bounds.right()) {
                 window.paint_quad(fill(
                     bounds,

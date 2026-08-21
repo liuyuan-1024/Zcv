@@ -103,7 +103,6 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         toolbar_background: parse("toolbar.background")?,
         panel_background: parse("panel.background")?,
         editor_background: parse("editor.background")?,
-        editor_gutter_background: parse("editor.gutter.background")?,
         editor_active_line_background: parse("editor.active_line.background")?,
         editor_line_number: parse("editor.line_number")?,
         editor_active_line_number: parse("editor.active_line_number")?,
@@ -284,7 +283,6 @@ mod tests {
             "toolbar.background" = "#111111ff"
             "panel.background" = "#222222ff"
             "editor.background" = "#333333ff"
-            "editor.gutter.background" = "#111111ff"
             "editor.active_line.background" = "#33333380"
             "editor.line_number" = "#888888ff"
             "editor.active_line_number" = "#666666ff"

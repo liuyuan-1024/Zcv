@@ -403,11 +403,17 @@ impl GitStore {
     }
 
     /// 查询文件状态（最长前缀匹配仓库；不在任何仓库中时为 None）。
+    ///
+    /// 自身无条目时继承最近祖先目录的忽略状态：`--ignored=matching` 对整棵被忽略子树只报告目录级条目，子树内的路径没有条目；
+    /// 不传播的话被忽略目录展开后，其子项会显示为"无状态"，与 Zed 快照的子树忽略传播不一致。
     pub fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
         let path = canonicalize_path(path);
         let repository = self.repo_for_path(&path)?;
         let relative = repo_relative_path(repository.repository.working_directory(), &path)?;
-        repository.snapshot.statuses_by_path.get(&relative)
+        let statuses = &repository.snapshot.statuses_by_path;
+        statuses
+            .get(&relative)
+            .or_else(|| Self::ignored_ancestor_entry(statuses, &relative))
     }
 
     /// 文件的行级差异。`None` 只表示当前版本正在等待结果；无需查询与失败都返回空集合。
@@ -461,7 +467,27 @@ impl GitStore {
                 best = Some(entry.status);
             }
         }
-        best
+        // 子项无条目时继承祖先目录的忽略状态（与 `status_for_path` 同一传播语义）。
+        best.or_else(|| Self::ignored_ancestor_entry(statuses, &relative).map(|entry| entry.status))
+    }
+
+    /// 查找最近一个被忽略的祖先目录条目；自身无条目时用于继承忽略状态。
+    ///
+    /// 只认 Ignored 条目：祖先链上命中的首个目录条目若不是忽略（例如子树内被负向规则放行的路径，git 会为相关路径生成条目），不向下继承。
+    fn ignored_ancestor_entry<'a>(
+        statuses: &'a BTreeMap<PathBuf, StatusEntry>,
+        relative: &Path,
+    ) -> Option<&'a StatusEntry> {
+        let mut ancestor = relative.parent();
+        while let Some(dir) = ancestor {
+            if let Some(entry) = statuses.get(dir)
+                && entry.status.is_ignored()
+            {
+                return Some(entry);
+            }
+            ancestor = dir.parent();
+        }
+        None
     }
 
     /// 当前活动仓库的分支名（无仓库、active 未建立或活动仓库为空仓库时为 None）。
@@ -1059,6 +1085,58 @@ mod tests {
             store.status_for_directory(&root.join("assets"))
         });
         assert!(status.is_some_and(|status| status.is_modified()));
+    }
+
+    #[gpui::test]
+    fn ignored_directory_status_propagates_to_descendants(cx: &mut gpui::TestAppContext) {
+        // `--ignored=matching` 对整棵被忽略子树只报告目录级条目（如 `!! tmp/`），子树内的文件与目录无条目；
+        // 查询时应沿祖先链继承忽略状态（对齐 Zed 快照传播）。
+        let (root, _temp) = test_git_repo();
+        fs::write(root.join(".gitignore"), "tmp/\n").expect("应写入 .gitignore");
+        fs::create_dir_all(root.join("tmp")).expect("应创建 tmp 目录");
+        let file = root.join("tmp/x.txt");
+        fs::write(&file, "x\n").expect("应创建被忽略文件");
+        let empty_dir = root.join("tmp/empty");
+        fs::create_dir_all(&empty_dir).expect("应创建被忽略目录");
+
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        // 目录级忽略条目本身。
+        assert!(
+            cx.read_entity(&git_store, |store, _| {
+                store.status_for_directory(&root.join("tmp"))
+            })
+            .is_some_and(|status| status.is_ignored())
+        );
+        // 子树内文件与空目录继承忽略状态。
+        assert!(
+            cx.read_entity(&git_store, |store, _| {
+                store.status_for_path(&file).map(|entry| entry.status)
+            })
+            .is_some_and(|status| status.is_ignored())
+        );
+        assert!(
+            cx.read_entity(&git_store, |store, _| {
+                store.status_for_directory(&empty_dir)
+            })
+            .is_some_and(|status| status.is_ignored())
+        );
+        // 非忽略路径不受影响（普通未跟踪文件仍为 Untracked）。
+        fs::write(root.join("scratch.txt"), "x\n").expect("应创建文件");
+        cx.update_entity(&git_store, |store, cx| {
+            store.refresh_statuses_for_paths(&[root.join("scratch.txt")], cx)
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.read_entity(&git_store, |store, _| {
+                store
+                    .status_for_path(&root.join("scratch.txt"))
+                    .map(|entry| entry.status)
+            })
+            .is_some_and(|status| status.is_untracked())
+        );
     }
 
     #[gpui::test]

@@ -111,7 +111,6 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         search_active_match_background: parse("search.active_match_background")?,
         editor_cursor: parse("editor.cursor")?,
         editor_diff_added_background: parse("editor.diff_hunk.added_background")?,
-        editor_diff_modified_background: parse("editor.diff_hunk.modified_background")?,
         editor_diff_deleted_background: parse("editor.diff_hunk.deleted_background")?,
         scrollbar_track_background: parse("scrollbar.track.background")?,
         scrollbar_thumb_background: parse("scrollbar.thumb.background")?,
@@ -291,7 +290,6 @@ mod tests {
             "search.active_match_background" = "#ffff0066"
             "editor.cursor" = "#555555ff"
             "editor.diff_hunk.added_background" = "#00ff004d"
-            "editor.diff_hunk.modified_background" = "#ffff004d"
             "editor.diff_hunk.deleted_background" = "#ff00004d"
             "scrollbar.track.background" = "#00000000"
             "scrollbar.thumb.background" = "#88888873"

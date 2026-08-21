@@ -15,13 +15,16 @@ pub(crate) struct HunkRendering {
     pub(crate) diff_rows: Vec<(Range<usize>, DiffHunkKind)>,
     pub(crate) strips: Vec<(Range<usize>, DiffHunkKind)>,
     pub(crate) hit_regions: Vec<(Range<usize>, Range<usize>, DiffHunkKind)>,
+    /// 展开态显示行区间（内容区整行背景只画这些行；未展开的 hunk 只由 gutter 色块提示）。
+    pub(crate) expanded_rows: Vec<Range<usize>>,
 }
 
-/// hunks（逻辑行）→ 行级渲染数据，单遍遍历产出三份视图：
+/// hunks（逻辑行）→ 行级渲染数据，单遍遍历产出四份视图：
 ///
-/// - `diff_rows`：行标记（gutter 指示与内容背景，wrap 下行映射出的全部显示行都覆盖）
+/// - `diff_rows`：行标记（gutter 指示，wrap 下行映射出的全部显示行都覆盖）
 /// - `strips`：竖条范围与状态色（竖条颜色不随展开变化）
 /// - `hit_regions`：可点击色带区域（显示行范围 + 点击目标 old_range + 类型）
+/// - `expanded_rows`：展开态行区间（内容区整行背景数据源）
 ///
 /// 覆盖终点取 hunk 之后第一行的行首显示行（对齐 Zed：end 行首显示行 − 1 即 hunk 最后一个显示行，左闭右开区间 [start, end) 恰好盖住全部 wrap 片段）；
 /// hunk 到达文件末尾时以显示快照行数为终点。
@@ -37,6 +40,7 @@ pub(crate) fn hunk_rendering(
     let mut diff_rows = Vec::new();
     let mut strips = Vec::new();
     let mut hit_regions = Vec::new();
+    let mut expanded_rows = Vec::new();
     for hunk in hunks {
         match hunk.kind {
             DiffHunkKind::Added => {
@@ -60,9 +64,11 @@ pub(crate) fn hunk_rendering(
                     let new_rows = modified_hunk_rows(snapshot, hunk, false);
                     if let Some(old_rows) = &old_rows {
                         diff_rows.push((old_rows.clone(), DiffHunkKind::Deleted));
+                        expanded_rows.push(old_rows.clone());
                     }
                     if let Some(new_rows) = &new_rows {
                         diff_rows.push((new_rows.clone(), DiffHunkKind::Added));
+                        expanded_rows.push(new_rows.clone());
                     }
                     if let (Some(old_rows), Some(new_rows)) = (&old_rows, &new_rows) {
                         // 竖条与点击区域覆盖整个 hunk（旧行 + 修改行）。
@@ -83,6 +89,7 @@ pub(crate) fn hunk_rendering(
                 if expanded && let Some(rows) = &rows {
                     diff_rows.push((rows.clone(), DiffHunkKind::Deleted));
                     strips.push((rows.clone(), DiffHunkKind::Deleted));
+                    expanded_rows.push(rows.clone());
                 }
                 if let Some(rows) = rows {
                     hit_regions.push((rows, hunk.old_range.clone(), DiffHunkKind::Deleted));
@@ -94,6 +101,7 @@ pub(crate) fn hunk_rendering(
         diff_rows,
         strips,
         hit_regions,
+        expanded_rows,
     }
 }
 

@@ -1,4 +1,5 @@
 # syntax theme loader 消费 fg 与 modifiers；独立 underline / bg 规则保留给后续诊断样式。
+appearance = "dark"
 
 "tag" = { fg = "red" }
 "attribute" = { fg = "yellow" }
@@ -124,22 +125,48 @@ gray = "#3E4452"
 faint-gray = "#3B4048"
 light-gray = "#5C6370"
 linenr = "#4B5263"
-# ---- UI 调色板（palette.rs 数据源；代码内不再持有色值）----
-[ui]
-# alpha 阶梯：各色相强调色 s[6] 叠加的透明度序列
-alpha-steps = ["1a", "26", "3d", "40", "4d", "b3", "cc", "e6", "f5"]
+[colors]
+background = "#0d0f12ff"
+"surface.background" = "#13161bff"
+"elevated_surface.background" = "#1b1f26ff"
+"element.hover" = "#252a33ff"
+"element.selected" = "#252a33ff"
+"border.variant" = "#3a4050ff"
+"border.focused" = "#74ade8ff"
+text = "#a8b0c0ff"
+"text.muted" = "#6e7689ff"
+"text.disabled" = "#5e6678ff"
+"text.placeholder" = "#4d5468ff"
+icon = "#6e7689ff"
+"icon.muted" = "#5e6678ff"
+"icon.on_accent" = "#0d0f12ff"
+"icon.accent" = "#74ade8ff"
+success = "#3ddc84ff"
+error = "#ff6b6bff"
+created = "#3ddc84ff"
+modified = "#e8cf74ff"
+deleted = "#ff6b6bff"
+conflict = "#ff6b6bff"
+"title_bar.background" = "#1b1f26ff"
+"status_bar.background" = "#13161bff"
+"tab_bar.background" = "#1b1f26ff"
+"tab.active_background" = "#13161bff"
+"toolbar.background" = "#13161bff"
+"panel.background" = "#1b1f26ff"
+"editor.background" = "#252a33ff"
+"editor.gutter.background" = "#13161bff"
+"editor.active_line.background" = "#252a3380"
+"editor.line_number" = "#5e6678ff"
+"editor.active_line_number" = "#a8b0c0ff"
+"editor.selection.background" = "#74ade83d"
+"search.match_background" = "#74ade88c"
+"search.active_match_background" = "#e8cf7466"
+"editor.cursor" = "#74ade8ff"
+"editor.diff_hunk.added_background" = "#3ddc844d"
+"editor.diff_hunk.modified_background" = "#e8cf744d"
+"editor.diff_hunk.deleted_background" = "#ff6b6b4d"
+"scrollbar.track.background" = "#00000000"
+"scrollbar.thumb.background" = "#5e667873"
+"scrollbar.thumb.hover_background" = "#5e66788c"
+"scrollbar.thumb.active_background" = "#5e6678a6"
 
-[ui.gray]
-s = ["#0d0f12", "#13161b", "#1b1f26", "#252a33", "#3a4050", "#4d5468", "#5e6678", "#6e7689", "#a8b0c0"]
-
-[ui.blue]
-s = ["#0e1a2e", "#122544", "#173159", "#1c3d6e", "#284a85", "#5a8fd6", "#74ade8", "#94c1f0", "#c8def7"]
-
-[ui.green]
-s = ["#0a2b1b", "#103e28", "#155235", "#1a6541", "#20784e", "#2cab69", "#3ddc84", "#79e8a8", "#b5f0c8"]
-
-[ui.yellow]
-s = ["#2d2410", "#43361a", "#5c4824", "#715a2c", "#8a6d36", "#b0934d", "#e8cf74", "#f0dc99", "#f7ebbf"]
-
-[ui.red]
-s = ["#2e0e0e", "#441616", "#5b2020", "#732a2a", "#8b3434", "#bf4949", "#ff6b6b", "#ff9595", "#ffc2c2"]

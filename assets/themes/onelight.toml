@@ -1,4 +1,5 @@
 # One Light 主题 —— 浅色背景语法高亮配色。
+appearance = "light"
 #
 # 与 onedark.toml 保持同一 Helix 兼容格式；消费 fg 与 modifiers 字段。
 # palette 色值在浅色底色上保证 WCAG AA 级对比度（正文 ≥4.5:1）。
@@ -127,22 +128,48 @@ gray = "#D1D5DB"
 faint-gray = "#E8EBF0"
 light-gray = "#9CA3AF"
 linenr = "#C8CDD5"
-# ---- UI 调色板（palette.rs 数据源；代码内不再持有色值）----
-[ui]
-# alpha 阶梯：各色相强调色 s[6] 叠加的透明度序列
-alpha-steps = ["1a", "26", "3d", "40", "4d", "b3", "cc", "e6", "f5"]
+[colors]
+background = "#fafafaff"
+"surface.background" = "#ebebebff"
+"elevated_surface.background" = "#dfdfdfff"
+"element.hover" = "#d3d3d3ff"
+"element.selected" = "#d3d3d3ff"
+"border.variant" = "#bcbcbcff"
+"border.focused" = "#2563ebff"
+text = "#1e1e1eff"
+"text.muted" = "#838383ff"
+"text.disabled" = "#919191ff"
+"text.placeholder" = "#a6a6a6ff"
+icon = "#838383ff"
+"icon.muted" = "#919191ff"
+"icon.on_accent" = "#fafafaff"
+"icon.accent" = "#2563ebff"
+success = "#16a34aff"
+error = "#dc2626ff"
+created = "#16a34aff"
+modified = "#ca8a04ff"
+deleted = "#dc2626ff"
+conflict = "#dc2626ff"
+"title_bar.background" = "#dfdfdfff"
+"status_bar.background" = "#d3d3d3ff"
+"tab_bar.background" = "#dfdfdfff"
+"tab.active_background" = "#ebebebff"
+"toolbar.background" = "#ebebebff"
+"panel.background" = "#e5e5e5ff"
+"editor.background" = "#ebebebff"
+"editor.gutter.background" = "#ebebebff"
+"editor.active_line.background" = "#d3d3d380"
+"editor.line_number" = "#919191ff"
+"editor.active_line_number" = "#1e1e1eff"
+"editor.selection.background" = "#2563eb3d"
+"search.match_background" = "#2563eb8c"
+"search.active_match_background" = "#ca8a0466"
+"editor.cursor" = "#2563ebff"
+"editor.diff_hunk.added_background" = "#16a34a4d"
+"editor.diff_hunk.modified_background" = "#ca8a044d"
+"editor.diff_hunk.deleted_background" = "#dc26264d"
+"scrollbar.track.background" = "#00000000"
+"scrollbar.thumb.background" = "#91919173"
+"scrollbar.thumb.hover_background" = "#9191918c"
+"scrollbar.thumb.active_background" = "#919191a6"
 
-[ui.gray]
-s = ["#fafafa", "#ebebeb", "#dfdfdf", "#d3d3d3", "#bcbcbc", "#a6a6a6", "#919191", "#838383", "#1e1e1e"]
-
-[ui.blue]
-s = ["#eef3fe", "#dce7fd", "#c6d8fb", "#acc6f8", "#8baef3", "#6293ed", "#2563eb", "#1d4ab8", "#162e7a"]
-
-[ui.green]
-s = ["#ecf8ef", "#d8f0dd", "#c0e6c7", "#a3daae", "#7ec98f", "#4eb56a", "#16a34a", "#0f7a35", "#0a4d21"]
-
-[ui.yellow]
-s = ["#fffef4", "#fefada", "#fdf0a8", "#fce776", "#fad644", "#e8c01a", "#ca8a04", "#9e6c04", "#6b4808"]
-
-[ui.red]
-s = ["#fef4f4", "#fde4e4", "#fccccc", "#f9adad", "#f58686", "#ee5555", "#dc2626", "#b91c1c", "#7f1d1d"]

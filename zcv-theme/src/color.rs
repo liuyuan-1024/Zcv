@@ -75,8 +75,6 @@ pub struct ThemeColors {
     pub panel_background: Rgba,
     /// 编辑区背景。
     pub editor_background: Rgba,
-    /// 编辑器 gutter 背景。
-    pub editor_gutter_background: Rgba,
     /// 编辑器活动行背景。
     pub editor_active_line_background: Rgba,
     /// 编辑器普通行号颜色。

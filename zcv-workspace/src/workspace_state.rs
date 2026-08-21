@@ -26,6 +26,7 @@ use crate::panel::PanelHandle;
 use crate::preview::provider_for;
 use crate::status_bar::StatusBar;
 use crate::toast::{ToastAction, ToastKind, ToastLayer};
+use crate::window_bounds;
 use crate::window_controls::{handle_minimize, handle_toggle_maximize};
 
 const LAYOUT_SAVE_THROTTLE: Duration = Duration::from_millis(200);
@@ -215,7 +216,8 @@ impl Workspace {
         }));
     }
 
-    fn flush_layout(&mut self, cx: &App) {
+    /// 立即落盘布局状态；供宿主在替换工作区根之前冲刷节流中的保存（节流任务随旧根销毁而丢失）。
+    pub fn flush_layout(&mut self, cx: &App) {
         self._layout_save_task.take();
         if let Err(error) = layout_state::save(&self.layout_path, self.capture_dock_state(cx)) {
             log::warn!("保存工作区布局失败：{error:#}");
@@ -505,7 +507,8 @@ impl Workspace {
         window.refresh();
     }
 
-    fn handle_quit(&mut self, _: &QuitWindow, _: &mut Window, cx: &mut Context<Self>) {
+    fn handle_quit(&mut self, _: &QuitWindow, window: &mut Window, cx: &mut Context<Self>) {
+        window_bounds::save_window_bounds(window, cx);
         self.flush_layout(cx);
         cx.quit();
     }

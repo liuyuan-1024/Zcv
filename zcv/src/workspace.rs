@@ -13,7 +13,9 @@ use gpui::{
     App, AsyncApp, Context, Entity, FocusHandle, Focusable, Render, TitlebarOptions, WeakEntity,
     Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
 };
-use zcv_actions::{GitFetch, GitPull, GitPush, SelectGitBranch, ToggleProjectPicker};
+use zcv_actions::{
+    GitFetch, GitPull, GitPush, SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
+};
 use zcv_editor::{Editor, SoftWrap};
 use zcv_project::{
     ActiveProjectRoot, GitOperationKind, GitOperationOutcome, GitStoreEvent, Project,
@@ -30,6 +32,7 @@ use crate::active_buffer_language::ActiveBufferLanguage;
 use crate::breadcrumbs::Breadcrumbs;
 use crate::cursor_position::CursorPosition;
 use crate::diagnostics::DiagnosticsButton;
+use crate::harness::HarnessButton;
 use crate::language_tools::LspButton;
 use crate::project_search::ProjectSearchButton;
 use crate::project_tree::ProjectTreePanel;
@@ -179,23 +182,14 @@ fn initialize_common_workspace(
     let outline = cx.new(OutlinePanel::new);
     let terminal = cx.new(TerminalPanel::new);
     let debug = cx.new(DebugPanel::new);
-    let keyboard_shortcuts = cx.new(KeyboardShortcutsPanel::new);
 
     register_panel(workspace, outline, DockPosition::Left, window, cx);
     register_panel(workspace, terminal, DockPosition::Bottom, window, cx);
     register_panel(workspace, debug, DockPosition::Bottom, window, cx);
-    register_panel(
-        workspace,
-        keyboard_shortcuts,
-        DockPosition::Right,
-        window,
-        cx,
-    );
 
     let status_bar = workspace.status_bar().clone();
     let left_dock = workspace.left_dock.clone();
     let bottom_dock = workspace.bottom_dock.clone();
-    let right_dock = workspace.right_dock.clone();
     let workspace_entity = cx.weak_entity();
     status_bar.update(cx, |bar, cx| {
         bar.add_left_item(
@@ -211,10 +205,11 @@ fn initialize_common_workspace(
             cx.new(|cx| PanelButtons::new(bottom_dock.clone(), workspace_entity.clone(), cx)),
             cx,
         );
-        bar.add_right_item(
-            cx.new(|cx| PanelButtons::new(right_dock.clone(), workspace_entity.clone(), cx)),
-            cx,
-        );
+        let harness_button = cx.new(|_| HarnessButton::new());
+        bar.add_right_item(harness_button.clone(), cx);
+        workspace.register_action(move |_workspace, _: &ToggleHarnessMode, _window, cx| {
+            harness_button.update(cx, |button, cx| button.toggle(cx));
+        });
     });
 
     let pane = workspace.pane().clone();
@@ -721,13 +716,6 @@ make_placeholder_panel!(TerminalPanel, "terminal", "icons/terminal.svg", "终端
 
 make_placeholder_panel!(DebugPanel, "debug", "icons/debug.svg", "调试");
 
-make_placeholder_panel!(
-    KeyboardShortcutsPanel,
-    "keyboard-shortcuts",
-    "icons/keyboard.svg",
-    "快捷键"
-);
-
 #[cfg(test)]
 mod tests {
     use gpui::{AppContext, TestAppContext};
@@ -746,7 +734,8 @@ mod tests {
         cx.read_entity(&workspace, |workspace, cx| {
             assert_eq!(workspace.left_dock.read(cx).panel_count(), 3);
             assert_eq!(workspace.bottom_dock.read(cx).panel_count(), 2);
-            assert_eq!(workspace.right_dock.read(cx).panel_count(), 1);
+            // 右 dock 当前无面板：原快捷键面板已由 harness 状态标记按钮取代。
+            assert_eq!(workspace.right_dock.read(cx).panel_count(), 0);
         });
     }
 

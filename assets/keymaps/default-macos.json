@@ -121,6 +121,7 @@
       "cmd-q": "window_controls::QuitWindow",
       "cmd-m": "window_controls::MinimizeWindow",
       "ctrl-cmd-f": "window_controls::ToggleMaximizeWindow",
+      "cmd-shift-h": "harness::ToggleHarnessMode",
       "cmd-shift-p": "project_picker::ToggleProjectPicker",
       "cmd-shift-b": "branch_picker::SelectGitBranch",
       "cmd-,": "workspace::OpenSettings",

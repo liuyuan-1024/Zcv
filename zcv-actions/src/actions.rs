@@ -118,6 +118,8 @@ actions!(
     [QuitWindow, MinimizeWindow, ToggleMaximizeWindow]
 );
 
+actions!(harness, [ToggleHarnessMode]);
+
 actions!(branch_picker, [SelectGitBranch]);
 
 actions!(

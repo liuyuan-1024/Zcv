@@ -91,8 +91,6 @@ pub struct ThemeColors {
     pub editor_cursor: Rgba,
     /// 编辑器 diff 新增行背景（status_created 的低透明版本）。
     pub editor_diff_added_background: Rgba,
-    /// 编辑器 diff 修改行背景（status_modified 的低透明版本）。
-    pub editor_diff_modified_background: Rgba,
     /// 编辑器 diff 删除行背景（status_deleted 的低透明版本）。
     pub editor_diff_deleted_background: Rgba,
     /// 滚动轴轨道背景（默认透明，marker 与 thumb 绘制在其上方）。

@@ -274,6 +274,8 @@ pub(super) struct PrepaintState {
     placeholder_hitboxes: Arc<Vec<(gpui::Hitbox, Line)>>,
     /// hunk 竖条范围与状态色（竖条色不随展开变化；行背景按行状态另行绘制）。
     hunk_strips: Arc<Vec<(Range<usize>, DiffHunkKind)>>,
+    /// 展开态行区间（内容区与 gutter 行背景只画这些行）。
+    expanded_rows: Arc<Vec<Range<usize>>>,
     scrollbar: Option<ScrollbarLayout>,
 }
 
@@ -705,6 +707,8 @@ impl Element for EditorElement {
             window,
         );
 
+        // 展开态行区间（内容区与 gutter 行背景共用；未展开的 hunk 只由竖条/三角提示）。
+        let expanded_rows = Arc::new(hunk_render.expanded_rows.clone());
         PrepaintState {
             layout,
             selections,
@@ -716,6 +720,7 @@ impl Element for EditorElement {
             crease_toggles,
             placeholder_hitboxes,
             hunk_strips,
+            expanded_rows,
             scrollbar,
         }
     }
@@ -884,16 +889,24 @@ impl Element for EditorElement {
         }
         if let Some(gutter) = &prepaint.layout.gutter {
             let colors = color::current(cx);
-            // diff 行 gutter 背景：按布局行的行状态绘制（展开的修改块旧行红、修改行绿）。
+            // diff 行 gutter 背景：只画展开态行（展开的修改块旧行红、修改行绿），未展开的 hunk 不整行着色，只保留左侧竖条提示。
             let strip_width = gutter_strip_width(gutter.line_height);
             for line in &prepaint.layout.lines {
                 let Some(kind) = line.git_diff else {
                     continue;
                 };
+                if !prepaint
+                    .expanded_rows
+                    .iter()
+                    .any(|range| range.contains(&line.row.get()))
+                {
+                    continue;
+                }
+                // 展开态没有 Modified 类型行（展开后旧行标 Deleted、修改行标 Added）。
                 let background = match kind {
                     DiffHunkKind::Added => colors.editor_diff_added_background,
-                    DiffHunkKind::Modified => colors.editor_diff_modified_background,
                     DiffHunkKind::Deleted => colors.editor_diff_deleted_background,
+                    DiffHunkKind::Modified => continue,
                 };
                 window.paint_quad(fill(
                     Bounds::from_corners(
@@ -969,26 +982,35 @@ impl Element for EditorElement {
                 bounds: prepaint.layout.text_clip_bounds,
             }),
             |window| {
-                // git diff 整行淡背景（diff 行在 selection 之下、文本之上）。
+                // git diff 整行背景只画展开态行（未展开的 hunk 只由 gutter 竖条提示）。
                 let diff_colors = color::current(cx);
                 for line in &prepaint.layout.lines {
-                    if let Some(kind) = line.git_diff {
-                        let background = match kind {
-                            DiffHunkKind::Added => diff_colors.editor_diff_added_background,
-                            DiffHunkKind::Modified => diff_colors.editor_diff_modified_background,
-                            DiffHunkKind::Deleted => diff_colors.editor_diff_deleted_background,
-                        };
-                        window.paint_quad(fill(
-                            Bounds::from_corners(
-                                point(prepaint.layout.text_clip_bounds.left(), line.origin.y),
-                                point(
-                                    prepaint.layout.text_clip_bounds.right(),
-                                    line.origin.y + prepaint.layout.line_height,
-                                ),
-                            ),
-                            background,
-                        ));
+                    let Some(kind) = line.git_diff else {
+                        continue;
+                    };
+                    if !prepaint
+                        .expanded_rows
+                        .iter()
+                        .any(|range| range.contains(&line.row.get()))
+                    {
+                        continue;
                     }
+                    // 展开态没有 Modified 类型行（展开后旧行标 Deleted、修改行标 Added）。
+                    let background = match kind {
+                        DiffHunkKind::Added => diff_colors.editor_diff_added_background,
+                        DiffHunkKind::Deleted => diff_colors.editor_diff_deleted_background,
+                        DiffHunkKind::Modified => continue,
+                    };
+                    window.paint_quad(fill(
+                        Bounds::from_corners(
+                            point(prepaint.layout.text_clip_bounds.left(), line.origin.y),
+                            point(
+                                prepaint.layout.text_clip_bounds.right(),
+                                line.origin.y + prepaint.layout.line_height,
+                            ),
+                        ),
+                        background,
+                    ));
                 }
                 for selection in prepaint.selections.drain(..) {
                     window.paint_quad(selection);

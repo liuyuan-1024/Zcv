@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, AsyncApp, Bounds, Context, Entity, FocusHandle, Focusable, Render, TitlebarOptions,
-    WeakEntity, Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
+    App, AsyncApp, Context, Entity, FocusHandle, Focusable, Render, TitlebarOptions, WeakEntity,
+    Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
 };
 use zcv_actions::{GitFetch, GitPull, GitPush, SelectGitBranch, ToggleProjectPicker};
 use zcv_editor::{Editor, SoftWrap};
@@ -23,7 +23,7 @@ use zcv_theme::{ThemeChoice, color, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, FileToolbarControls, GitBranchAction, OnBranchSelected,
     OnProjectSelected, Pane, PaneEvent, Panel, PanelButtons, PanelHandle, ToastAction, ToastKind,
-    TopBar, Workspace, add_to_recent,
+    TopBar, Workspace, add_to_recent, load_window_bounds, save_window_bounds,
 };
 
 use crate::active_buffer_language::ActiveBufferLanguage;
@@ -75,25 +75,37 @@ fn register_panel<P: Panel>(
     workspace.register_panel(handle, position, window, cx);
 }
 
-/// 「切换项目」回调：新窗口打开目标项目，成功后关闭当前窗口。
+/// 「切换项目」回调：在同一窗口内替换工作区根，窗口本体（尺寸/位置）保持不变。
 fn switch_project_callback() -> OnProjectSelected {
     Rc::new(move |path, window, app| {
-        if let Err(error) = open_project_window(PathBuf::from(&path), app) {
-            eprintln!("打开项目失败（{path}）：{error}");
-            return;
+        let Ok(root) = canonical_project_root(PathBuf::from(&path)) else {
+            eprintln!("打开项目失败（{path}）：路径无效");
+            return; // 窗口保持原样。
+        };
+        add_to_recent(&root.to_string_lossy());
+        // 先保存当前窗口边界（全局默认 + 旧项目记录）；随后窗口不重建，尺寸自然保持。
+        save_window_bounds(window, app);
+        // 旧工作区根即将被替换销毁，节流中的布局保存会随实体释放而丢失，先冲刷落盘。
+        if let Some(Some(workspace)) = window.root::<Workspace>() {
+            workspace.update(app, |workspace, cx| workspace.flush_layout(cx));
         }
-        window.remove_window();
+        // 新项目根先于替换注册为全局显示基准（breadcrumbs 相对化查询按新根）。
+        app.set_global(ActiveProjectRoot(Some(root.clone())));
+        window.replace_root(app, |window, cx| build_workspace(&Some(root), window, cx));
     })
 }
 
-/// 打开一个项目窗口（主窗口与「切换项目」的新窗口入口共用）。
-pub(crate) fn open_project_window(root: PathBuf, cx: &mut App) -> anyhow::Result<()> {
-    // CLI 传入的路径可能是相对路径（如 `zcv .`）：canonicalize 归一化为绝对路径（失败即无效）。
-    let root = root
-        .canonicalize()
+/// 规范化项目路径：相对路径（如 `zcv .`）归一为绝对路径，无效路径返回错误。
+fn canonical_project_root(root: PathBuf) -> anyhow::Result<PathBuf> {
+    root.canonicalize()
         .ok()
         .filter(|path| path.is_dir() && path.file_name().is_some())
-        .ok_or_else(|| anyhow::anyhow!("项目路径不是有效目录：{}", root.display()))?;
+        .ok_or_else(|| anyhow::anyhow!("项目路径不是有效目录：{}", root.display()))
+}
+
+/// 打开一个项目窗口（CLI 启动入口）。
+pub(crate) fn open_project_window(root: PathBuf, cx: &mut App) -> anyhow::Result<()> {
+    let root = canonical_project_root(root)?;
     add_to_recent(&root.to_string_lossy());
     open_workspace_window(Some(root), cx)
 }
@@ -107,11 +119,19 @@ pub(crate) fn open_empty_workspace(cx: &mut App) -> anyhow::Result<()> {
 fn open_workspace_window(root: Option<PathBuf>, cx: &mut App) -> anyhow::Result<()> {
     // 项目根作为全局显示基准注册（breadcrumbs 相对化查询；RootChanged 时更新）。
     cx.set_global(ActiveProjectRoot(root.clone()));
-    let bounds = Bounds::centered(None, size(px(1200.0), px(900.0)), cx);
+    // 窗口边界恢复：项目记录 → 全局默认 → 初始居中（对齐 Zed new_local 的取值链）。
+    let (window_bounds, display_id) =
+        load_window_bounds(root.as_deref(), cx).unwrap_or_else(|| {
+            (
+                WindowBounds::centered(size(px(1200.0), px(900.0)), cx),
+                None,
+            )
+        });
 
     cx.open_window(
         WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_bounds: Some(window_bounds),
+            display_id,
             titlebar: Some(TitlebarOptions {
                 title: Some("".into()),
                 appears_transparent: true,
@@ -119,28 +139,33 @@ fn open_workspace_window(root: Option<PathBuf>, cx: &mut App) -> anyhow::Result<
             }),
             ..Default::default()
         },
-        |window, cx| {
-            apply_theme(&SettingsStore::get(cx).theme, cx, Some(window));
-            // 全局字号经 window rem 基准设置（对齐 Zed setup_ui_font）：
-            // 字体与行高仍在元素上显式设置（见 Workspace 根元素与 tooltip）。
-            window.set_rem_size(typography::ui());
-            let workspace = match &root {
-                Some(root) => cx.new(|cx| Workspace::new(root.clone(), window, cx)),
-                None => cx.new(|cx| Workspace::new_empty(window, cx)),
-            };
-            // 装配不区分空/项目工作区（对齐 Zed）：面板无条件注册，空态由各面板自行渲染。
-            workspace.update(cx, |workspace, cx| {
-                initialize_workspace(workspace, window, cx);
-            });
-            // 焦点延后到首帧渲染完成后：track_focus 元素未挂载前 focus 会静默丢失，导致启动后 keymap dispatch 无焦点链，快捷键不生效，直到用户点击界面（焦点链建立）才恢复。
-            let focus = workspace.read(cx).focus.clone();
-            window.defer(cx, move |window, _cx| {
-                window.focus(&focus);
-            });
-            workspace
-        },
+        |window, cx| cx.new(|cx| build_workspace(&root, window, cx)),
     )?;
     Ok(())
+}
+
+/// 在给定窗口内创建并装配工作区；窗口创建与「切换项目」的根替换共用（须在 cx.new 闭包内调用）。
+fn build_workspace(
+    root: &Option<PathBuf>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Workspace {
+    apply_theme(&SettingsStore::get(cx).theme, cx, Some(window));
+    // 全局字号经 window rem 基准设置（对齐 Zed setup_ui_font）：
+    // 字体与行高仍在元素上显式设置（见 Workspace 根元素与 tooltip）。
+    window.set_rem_size(typography::ui());
+    let mut workspace = match root {
+        Some(root) => Workspace::new(root.clone(), window, cx),
+        None => Workspace::new_empty(window, cx),
+    };
+    // 装配不区分空/项目工作区（对齐 Zed）：面板无条件注册，空态由各面板自行渲染。
+    initialize_workspace(&mut workspace, window, cx);
+    // 焦点延后到首帧渲染完成后：track_focus 元素未挂载前 focus 会静默丢失，导致启动后 keymap dispatch 无焦点链，快捷键不生效，直到用户点击界面（焦点链建立）才恢复。
+    let focus = workspace.focus.clone();
+    window.defer(cx, move |window, _cx| {
+        window.focus(&focus);
+    });
+    workspace
 }
 
 /// 所有工作区共享的面板、状态栏和编辑器工具栏。
@@ -707,7 +732,7 @@ make_placeholder_panel!(
 mod tests {
     use gpui::{AppContext, TestAppContext};
 
-    use super::{Workspace, initialize_workspace};
+    use super::{Workspace, build_workspace};
 
     /// 空工作区与项目工作区走同一条装配路径：全部面板无条件注册，空态由面板自行渲染（对齐 Zed）。
     #[gpui::test]
@@ -716,16 +741,34 @@ mod tests {
             zcv_settings::init(cx);
             zcv_editor::init(cx);
         });
-        let (workspace, cx) = cx.add_window_view(|window, cx| {
-            let mut workspace = Workspace::new_empty(window, cx);
-            initialize_workspace(&mut workspace, window, cx);
-            workspace
-        });
+        let (workspace, cx) = cx.add_window_view(|window, cx| build_workspace(&None, window, cx));
 
         cx.read_entity(&workspace, |workspace, cx| {
             assert_eq!(workspace.left_dock.read(cx).panel_count(), 3);
             assert_eq!(workspace.bottom_dock.read(cx).panel_count(), 2);
             assert_eq!(workspace.right_dock.read(cx).panel_count(), 1);
+        });
+    }
+
+    /// 切换项目在同一窗口内替换工作区根：窗口本体不变，根实体换新。
+    #[gpui::test]
+    fn switching_replaces_root_in_same_window(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            zcv_settings::init(cx);
+            zcv_editor::init(cx);
+        });
+        let (old_workspace, cx) =
+            cx.add_window_view(|window, cx| build_workspace(&None, window, cx));
+        let old_id = old_workspace.entity_id();
+
+        cx.update(|window, app| {
+            window.replace_root(app, |window, cx| build_workspace(&None, window, cx));
+        });
+
+        // 新根已就位，且不是旧工作区实体。
+        cx.update(|window, _| {
+            let new_root = window.root::<Workspace>().flatten().expect("新根应已就位");
+            assert_ne!(new_root.entity_id(), old_id);
         });
     }
 }

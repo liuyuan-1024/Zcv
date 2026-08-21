@@ -1,13 +1,16 @@
 //! 工作区布局状态的轻量持久化后端。
+//!
+//! 键控与写盘复用 persistence 共享原语，与窗口边界保持同一项目身份。
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use zcv_settings::config_dir;
 
 use crate::dock::DockStructure;
+use crate::persistence;
 
 const LAYOUT_VERSION: u32 = 1;
 
@@ -18,16 +21,9 @@ struct WorkspaceLayout {
 }
 
 pub(crate) fn path_for_workspace(root: Option<&Path>) -> PathBuf {
-    let identity = root
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "__empty__".to_owned());
-    // 固定 FNV-1a，避免依赖 DefaultHasher 的跨版本实现细节。
-    let hash = identity.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
-    });
     config_dir()
         .join("workspaces")
-        .join(format!("{hash:016x}.json"))
+        .join(format!("{}.json", persistence::workspace_identity(root)))
 }
 
 pub(crate) fn load(path: &Path) -> Option<DockStructure> {
@@ -37,22 +33,11 @@ pub(crate) fn load(path: &Path) -> Option<DockStructure> {
 }
 
 pub(crate) fn save(path: &Path, docks: DockStructure) -> Result<()> {
-    let parent = path.parent().context("布局状态路径没有父目录")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("无法创建布局状态目录 {}", parent.display()))?;
     let content = serde_json::to_vec_pretty(&WorkspaceLayout {
         version: LAYOUT_VERSION,
         docks,
     })?;
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, content)
-        .with_context(|| format!("无法写入临时布局状态 {}", temporary.display()))?;
-    #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(path).with_context(|| format!("无法替换旧布局状态 {}", path.display()))?;
-    }
-    fs::rename(&temporary, path).with_context(|| format!("无法提交布局状态 {}", path.display()))?;
-    Ok(())
+    persistence::atomic_write(path, &content)
 }
 
 #[cfg(test)]

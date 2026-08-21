@@ -7544,6 +7544,7 @@ dependencies = [
  "zcv-git",
  "zcv-language",
  "zcv-project",
+ "zcv-settings",
  "zcv-theme",
  "zcv-ui",
  "zcv-workspace",

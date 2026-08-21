@@ -145,6 +145,11 @@ impl SettingsStore {
         cx.global::<Self>().settings.clone()
     }
 
+    /// 设置未注册时返回 None，消费方回退默认值。
+    pub fn try_get(cx: &App) -> Option<UserSettings> {
+        cx.try_global::<Self>().map(|store| store.settings.clone())
+    }
+
     /// 读取扫描排除名单；SettingsStore 未初始化（如单元测试）时回退到默认名单。
     pub fn file_scan_exclusions(cx: &App) -> Vec<String> {
         cx.try_global::<Self>()

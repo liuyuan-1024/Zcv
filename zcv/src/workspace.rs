@@ -16,11 +16,11 @@ use gpui::{
 use zcv_actions::{
     GitFetch, GitPull, GitPush, SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
 };
-use zcv_editor::{Editor, SoftWrap};
+use zcv_editor::Editor;
 use zcv_project::{
     ActiveProjectRoot, GitOperationKind, GitOperationOutcome, GitStoreEvent, Project,
 };
-use zcv_settings::{SettingsStore, SoftWrapMode};
+use zcv_settings::SettingsStore;
 use zcv_theme::{ThemeChoice, color, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, FileToolbarControls, GitBranchAction, OnBranchSelected,
@@ -486,14 +486,6 @@ fn initialize_workspace(
         }
         // 打开/激活编辑器时推送 git diff hunks（打开即有快照里的现成数据）。
         push_diff_hunks(workspace.pane(), workspace.project(), cx);
-        // 新打开文件应用当前换行设置。
-        let settings = SettingsStore::get(cx);
-        apply_soft_wrap(
-            workspace.pane(),
-            soft_wrap(settings.soft_wrap),
-            settings.preferred_line_length,
-            cx,
-        );
     });
 
     // 项目事件订阅：根重命名与文件树变化驱动项目树刷新。
@@ -516,16 +508,9 @@ fn initialize_workspace(
 
     let project_tree_for_settings = project_tree.clone();
     let settings_subscription =
-        cx.observe_global_in::<SettingsStore>(window, move |workspace, window, cx| {
+        cx.observe_global_in::<SettingsStore>(window, move |_workspace, window, cx| {
             let settings = SettingsStore::get(cx);
             apply_theme(&settings.theme, cx, Some(window));
-            apply_soft_wrap(
-                workspace.pane(),
-                soft_wrap(settings.soft_wrap),
-                settings.preferred_line_length,
-                cx,
-            );
-            // 扫描排除名单变化时重建项目树行模型。
             project_tree_for_settings.update(cx, |tree, cx| tree.refresh(cx));
             cx.notify();
         });
@@ -558,44 +543,9 @@ fn initialize_workspace(
     }
 }
 
-/// 把换行设置应用到所有打开的编辑器。
-///
-/// 预览 Item 经 act_as 暴露同一个源 Editor；按 EntityId 去重后更新。
-fn apply_soft_wrap(
-    pane: &Entity<Pane>,
-    soft_wrap: SoftWrap,
-    preferred_line_length: usize,
-    cx: &mut App,
-) {
-    let mut updated = std::collections::HashSet::new();
-    let mut editors = Vec::new();
-    for item in pane.read(cx).tabs() {
-        let Some(editor) = item.act_as::<Editor>(cx) else {
-            continue;
-        };
-        if updated.insert(editor.entity_id()) {
-            editors.push(editor);
-        }
-    }
-    for editor in editors {
-        editor.update(cx, |editor, cx| {
-            editor.set_soft_wrap(soft_wrap, preferred_line_length, cx)
-        });
-    }
-}
-
 /// 将设置层的文本主题 id 解析并应用为主题运行时状态。
 fn apply_theme(theme: &str, cx: &mut App, window: Option<&Window>) {
     ThemeChoice::from_config(theme).apply(cx, window);
-}
-
-/// 设置基础设施不依赖编辑器；在编辑器装配层转换为运行时换行模式。
-fn soft_wrap(mode: SoftWrapMode) -> SoftWrap {
-    match mode {
-        SoftWrapMode::None => SoftWrap::None,
-        SoftWrapMode::EditorWidth => SoftWrap::EditorWidth,
-        SoftWrapMode::Bounded => SoftWrap::Bounded,
-    }
 }
 
 /// 把 GitStore 快照中的行级 diff hunks 推送给打开的 Editor。

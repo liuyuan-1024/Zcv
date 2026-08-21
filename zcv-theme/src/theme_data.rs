@@ -1,7 +1,6 @@
 //! 主题数据：单一解析器与主题注册表。
 //!
-//! 对齐 Zed 的 `ThemeRegistry`：每个内置主题统一解析为调色板与语法高亮表，
-//! palette / syntax / color 各模块只消费解析结果。
+//! 对齐 Zed 的 `ThemeRegistry`：每个内置主题统一解析为语义色与语法高亮表，color / syntax 各模块只消费解析结果。
 //!
 //! 新增内置主题只需提供主题描述符并登记到 `THEMES`，其余模块无需改动。
 
@@ -13,14 +12,14 @@ use gpui::{
     WindowAppearance, px, rgb, rgba,
 };
 
-use crate::palette::{HuePalette, Palette};
+use crate::color::ThemeColors;
 
-/// 单个已解析主题：元数据 + 调色板 + 语法高亮表。
+/// 单个已解析主题：元数据 + 语义色 + 语法高亮表。
 pub(crate) struct ThemeData {
     pub(crate) id: &'static str,
     /// 主题明暗（`System` 选择时按窗口外观匹配）。
     pub(crate) appearance: WindowAppearance,
-    pub(crate) palette: Palette,
+    pub(crate) colors: ThemeColors,
     pub(crate) syntax_table: Arc<BTreeMap<&'static str, HighlightStyle>>,
 }
 
@@ -32,8 +31,8 @@ pub(crate) fn themes() -> &'static [ThemeData] {
         let one_dark = zcv_assets::text("themes/onedark.toml").expect("内置深色主题应存在");
         let one_light = zcv_assets::text("themes/onelight.toml").expect("内置浅色主题应存在");
         vec![
-            build_theme("one-dark", WindowAppearance::Dark, &one_dark),
-            build_theme("one-light", WindowAppearance::Light, &one_light),
+            build_theme("one-dark", &one_dark),
+            build_theme("one-light", &one_light),
         ]
     })
 }
@@ -43,58 +42,82 @@ pub(crate) fn theme_by_id(id: &str) -> Option<&'static ThemeData> {
     themes().iter().find(|theme| theme.id == id)
 }
 
-fn build_theme(id: &'static str, appearance: WindowAppearance, source: &str) -> ThemeData {
+fn build_theme(id: &'static str, source: &str) -> ThemeData {
     // 内嵌数据错误属于构建期缺陷：直接 panic 暴露，而不是运行时降级掩盖。
-    parse_theme(id, appearance, source).expect("内嵌主题文件应可解析")
+    parse_theme(id, source).expect("内嵌主题文件应可解析")
 }
 
 /// 单一解析器：一次 TOML 解析产出主题的全部数据。
-fn parse_theme(id: &'static str, appearance: WindowAppearance, source: &str) -> Option<ThemeData> {
+fn parse_theme(id: &'static str, source: &str) -> Option<ThemeData> {
     let root: toml::Table = toml::from_str(source).ok()?;
     Some(ThemeData {
         id,
-        appearance,
-        palette: parse_palette(&root)?,
+        appearance: parse_appearance(&root)?,
+        colors: parse_colors(root.get("colors")?.as_table()?)?,
         syntax_table: Arc::new(parse_syntax_table(&root)?),
     })
 }
 
-/// 解析 `[ui]` 段：每个色相的 9 级 solid 色值 + 由强调色派生的 alpha 阶梯。
-fn parse_palette(root: &toml::Table) -> Option<Palette> {
-    let ui = root.get("ui")?.as_table()?;
-    let alpha_steps = ui.get("alpha-steps")?.as_array()?;
-    let alpha_steps: [u8; 9] = alpha_steps
-        .iter()
-        .map(|value| {
-            let hex = value.as_str()?;
-            let body = hex.strip_prefix("0x").unwrap_or(hex);
-            u8::from_str_radix(body, 16).ok()
-        })
-        .collect::<Option<Vec<_>>>()?
-        .try_into()
-        .ok()?;
+/// 解析主题明暗声明（对齐 Zed 主题文件的 appearance 字段）。
+fn parse_appearance(root: &toml::Table) -> Option<WindowAppearance> {
+    match root.get("appearance")?.as_str()? {
+        "dark" => Some(WindowAppearance::Dark),
+        "light" => Some(WindowAppearance::Light),
+        _ => None,
+    }
+}
 
-    let hue = |name: &str| -> Option<HuePalette> {
-        let table = ui.get(name)?.as_table()?;
-        let s = table.get("s")?.as_array()?;
-        // 先解析为 0xRRGGBB 整数：alpha 派生在整数域组合，避免 f32 回转换丢精度。
-        let s: [u32; 9] = s
-            .iter()
-            .map(|value| parse_hex_u32(value.as_str()?))
-            .collect::<Option<Vec<_>>>()?
-            .try_into()
-            .ok()?;
-        let a = alpha_steps.map(|step| rgba((s[6] << 8) | step as u32));
-        let s = s.map(gpui::rgb);
-        Some(HuePalette { s, a })
+/// 解析 `[colors]` 段：主题文件直接定义的语义色（对齐 Zed themes 的 style 段）。
+/// 全量必填：任一 key 缺失或色值非法即解析失败。
+fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
+    let parse = |key: &str| -> Option<gpui::Rgba> {
+        let hex = colors.get(key)?.as_str()?;
+        parse_hex(hex)
     };
-
-    Some(Palette {
-        gray: hue("gray")?,
-        blue: hue("blue")?,
-        green: hue("green")?,
-        yellow: hue("yellow")?,
-        red: hue("red")?,
+    Some(ThemeColors {
+        background: parse("background")?,
+        surface_background: parse("surface.background")?,
+        elevated_surface_background: parse("elevated_surface.background")?,
+        element_hover: parse("element.hover")?,
+        element_selected: parse("element.selected")?,
+        border_variant: parse("border.variant")?,
+        border_focused: parse("border.focused")?,
+        text: parse("text")?,
+        text_muted: parse("text.muted")?,
+        text_disabled: parse("text.disabled")?,
+        text_placeholder: parse("text.placeholder")?,
+        icon: parse("icon")?,
+        icon_muted: parse("icon.muted")?,
+        icon_on_accent: parse("icon.on_accent")?,
+        icon_accent: parse("icon.accent")?,
+        status_success: parse("success")?,
+        status_error: parse("error")?,
+        status_created: parse("created")?,
+        status_modified: parse("modified")?,
+        status_deleted: parse("deleted")?,
+        status_conflict: parse("conflict")?,
+        title_bar_background: parse("title_bar.background")?,
+        status_bar_background: parse("status_bar.background")?,
+        tab_bar_background: parse("tab_bar.background")?,
+        tab_active_background: parse("tab.active_background")?,
+        toolbar_background: parse("toolbar.background")?,
+        panel_background: parse("panel.background")?,
+        editor_background: parse("editor.background")?,
+        editor_gutter_background: parse("editor.gutter.background")?,
+        editor_active_line_background: parse("editor.active_line.background")?,
+        editor_line_number: parse("editor.line_number")?,
+        editor_active_line_number: parse("editor.active_line_number")?,
+        editor_selection_background: parse("editor.selection.background")?,
+        search_match_background: parse("search.match_background")?,
+        search_active_match_background: parse("search.active_match_background")?,
+        editor_cursor: parse("editor.cursor")?,
+        editor_diff_added_background: parse("editor.diff_hunk.added_background")?,
+        editor_diff_modified_background: parse("editor.diff_hunk.modified_background")?,
+        editor_diff_deleted_background: parse("editor.diff_hunk.deleted_background")?,
+        scrollbar_track_background: parse("scrollbar.track.background")?,
+        scrollbar_thumb_background: parse("scrollbar.thumb.background")?,
+        scrollbar_thumb_hover_background: parse("scrollbar.thumb.hover_background")?,
+        scrollbar_thumb_active_background: parse("scrollbar.thumb.active_background")?,
     })
 }
 
@@ -127,7 +150,8 @@ fn parse_syntax_table(root: &toml::Table) -> Option<BTreeMap<&'static str, Highl
 
     let mut out: BTreeMap<&'static str, HighlightStyle> = BTreeMap::new();
     for (key, value) in root {
-        if key == "palette" {
+        // 主题元数据段不参与语法规则解析（防未来 [palette] 出现同名颜色名时误入语法表）。
+        if matches!(key.as_str(), "palette" | "colors" | "appearance") {
             continue;
         }
         let (color_token, modifiers): (Option<&str>, &[toml::Value]) = match value {
@@ -169,13 +193,6 @@ fn parse_syntax_table(root: &toml::Table) -> Option<BTreeMap<&'static str, Highl
     Some(out)
 }
 
-/// 解析 `#RRGGBB`（或 `#RRGGBBAA`）为 0xRRGGBB（8 位时丢弃 alpha）的整数。
-fn parse_hex_u32(s: &str) -> Option<u32> {
-    let body = s.strip_prefix('#')?;
-    let value = u32::from_str_radix(body, 16).ok()?;
-    Some(value >> if body.len() == 8 { 8 } else { 0 })
-}
-
 fn parse_hex(s: &str) -> Option<Rgba> {
     let body = s.strip_prefix('#')?;
     let value = u32::from_str_radix(body, 16).ok()?;
@@ -190,47 +207,137 @@ fn parse_hex(s: &str) -> Option<Rgba> {
 mod tests {
     use super::*;
 
-    fn rgba(hex: u32) -> Rgba {
-        gpui::rgba(hex)
-    }
-
-    #[test]
-    fn dark_theme_matches_historical_palette_values() {
-        let theme = theme_by_id("one-dark").expect("内置 onedark 主题应存在");
-        let dark = theme.palette;
-        // solid 阶梯与历史硬编码逐字节一致（抽查每色相边界与强调色）。
-        assert_eq!(dark.gray.s[0], rgba(0x0d0f12ff));
-        assert_eq!(dark.gray.s[8], rgba(0xa8b0c0ff));
-        assert_eq!(dark.blue.s[0], rgba(0x0e1a2eff));
-        assert_eq!(dark.blue.s[6], rgba(0x74ade8ff));
-        assert_eq!(dark.green.s[6], rgba(0x3ddc84ff));
-        assert_eq!(dark.yellow.s[6], rgba(0xe8cf74ff));
-        assert_eq!(dark.red.s[6], rgba(0xff6b6bff));
-        // 被消费的 alpha 值（选区背景）与历史逐字节一致：blue.a[2] = s[6] + 0x3d。
-        assert_eq!(dark.blue.a[2], rgba(0x74ade83d));
-    }
-
-    #[test]
-    fn light_theme_matches_historical_palette_values() {
-        let theme = theme_by_id("one-light").expect("内置 onelight 主题应存在");
-        let light = theme.palette;
-        assert_eq!(light.gray.s[0], rgba(0xfafafaff));
-        assert_eq!(light.gray.s[8], rgba(0x1e1e1eff));
-        assert_eq!(light.blue.s[6], rgba(0x2563ebff));
-        assert_eq!(light.green.s[6], rgba(0x16a34aff));
-        assert_eq!(light.yellow.s[6], rgba(0xca8a04ff));
-        assert_eq!(light.red.s[6], rgba(0xdc2626ff));
-        // light 主题的选区背景同样与历史一致：blue.a[2] = s[6] + 0x3d。
-        assert_eq!(light.blue.a[2], rgba(0x2563eb3d));
-    }
-
     #[test]
     fn theme_registry_has_expected_entries() {
         let themes = themes();
         assert_eq!(themes.len(), 2);
         assert_eq!(themes[0].id, "one-dark");
         assert_eq!(themes[1].id, "one-light");
+        // 主题明暗声明来自文件而非硬编码。
+        assert_eq!(themes[0].appearance, WindowAppearance::Dark);
+        assert_eq!(themes[1].appearance, WindowAppearance::Light);
         assert!(theme_by_id("unknown").is_none());
+    }
+
+    /// 语义色由主题文件直接定义：抽样断言关键表面色与迁移前的推导值一致。
+    #[test]
+    fn dark_theme_colors_match_migrated_values() {
+        let theme = theme_by_id("one-dark").expect("内置 onedark 主题应存在");
+        let colors = theme.colors;
+        assert_eq!(colors.background, gpui::rgba(0x0d0f12ff));
+        assert_eq!(colors.status_bar_background, gpui::rgba(0x13161bff));
+        assert_eq!(colors.panel_background, gpui::rgba(0x1b1f26ff));
+        assert_eq!(colors.editor_background, gpui::rgba(0x252a33ff));
+        assert_eq!(colors.text, gpui::rgba(0xa8b0c0ff));
+        // 选区背景与编辑器显示层的历史值呼应（8 位 hex 直通）。
+        assert_eq!(colors.editor_selection_background, gpui::rgba(0x74ade83d));
+        assert_eq!(
+            colors.scrollbar_thumb_active_background,
+            gpui::rgba(0x5e6678a6)
+        );
+    }
+
+    #[test]
+    fn light_theme_colors_match_migrated_values() {
+        let theme = theme_by_id("one-light").expect("内置 onelight 主题应存在");
+        let colors = theme.colors;
+        assert_eq!(colors.background, gpui::rgba(0xfafafaff));
+        assert_eq!(colors.status_bar_background, gpui::rgba(0xd3d3d3ff));
+        assert_eq!(colors.editor_background, gpui::rgba(0xebebebff));
+        assert_eq!(colors.text, gpui::rgba(0x1e1e1eff));
+        assert_eq!(colors.editor_selection_background, gpui::rgba(0x2563eb3d));
+    }
+
+    /// 最小合法主题：元数据 + 语法规则 + 语义色，供解析失败族测试破坏单点。
+    fn minimal_theme() -> String {
+        r##"
+            appearance = "dark"
+            "keyword" = "red"
+            [palette]
+            red = "#ff0000"
+            [colors]
+            background = "#000000ff"
+            "surface.background" = "#111111ff"
+            "elevated_surface.background" = "#222222ff"
+            "element.hover" = "#333333ff"
+            "element.selected" = "#333333ff"
+            "border.variant" = "#444444ff"
+            "border.focused" = "#555555ff"
+            text = "#666666ff"
+            "text.muted" = "#777777ff"
+            "text.disabled" = "#888888ff"
+            "text.placeholder" = "#999999ff"
+            icon = "#777777ff"
+            "icon.muted" = "#888888ff"
+            "icon.on_accent" = "#000000ff"
+            "icon.accent" = "#555555ff"
+            success = "#00ff00ff"
+            error = "#ff0000ff"
+            created = "#00ff00ff"
+            modified = "#ffff00ff"
+            deleted = "#ff0000ff"
+            conflict = "#ff0000ff"
+            "title_bar.background" = "#222222ff"
+            "status_bar.background" = "#111111ff"
+            "tab_bar.background" = "#222222ff"
+            "tab.active_background" = "#111111ff"
+            "toolbar.background" = "#111111ff"
+            "panel.background" = "#222222ff"
+            "editor.background" = "#333333ff"
+            "editor.gutter.background" = "#111111ff"
+            "editor.active_line.background" = "#33333380"
+            "editor.line_number" = "#888888ff"
+            "editor.active_line_number" = "#666666ff"
+            "editor.selection.background" = "#5555553d"
+            "search.match_background" = "#5555558c"
+            "search.active_match_background" = "#ffff0066"
+            "editor.cursor" = "#555555ff"
+            "editor.diff_hunk.added_background" = "#00ff004d"
+            "editor.diff_hunk.modified_background" = "#ffff004d"
+            "editor.diff_hunk.deleted_background" = "#ff00004d"
+            "scrollbar.track.background" = "#00000000"
+            "scrollbar.thumb.background" = "#88888873"
+            "scrollbar.thumb.hover_background" = "#8888888c"
+            "scrollbar.thumb.active_background" = "#888888a6"
+        "##
+        .to_string()
+    }
+
+    #[test]
+    fn parse_theme_rejects_missing_color_key() {
+        let src = minimal_theme().replace("            \"editor.cursor\" = \"#555555ff\"\n", "");
+        assert!(parse_theme("test", &src).is_none());
+    }
+
+    #[test]
+    fn parse_theme_rejects_invalid_hex() {
+        let src = minimal_theme().replace("#000000ff", "#12zz34ff");
+        assert!(parse_theme("test", &src).is_none());
+    }
+
+    #[test]
+    fn parse_theme_rejects_unknown_appearance() {
+        let src = minimal_theme().replace("appearance = \"dark\"", "appearance = \"blue\"");
+        assert!(parse_theme("test", &src).is_none());
+    }
+
+    #[test]
+    fn parse_theme_rejects_unquoted_dotted_keys() {
+        // 未加引号的点分 key 会解析为嵌套表，语义色取值落空 → 解析失败。
+        let src = minimal_theme().replace(
+            "\"surface.background\" = \"#111111ff\"",
+            "surface.background = \"#111111ff\"",
+        );
+        assert!(parse_theme("test", &src).is_none());
+    }
+
+    #[test]
+    fn syntax_table_ignores_theme_meta_sections() {
+        let table = parse_syntax_table(&toml::from_str(&minimal_theme()).expect("应可解析"))
+            .expect("应可解析");
+        // 元数据段（appearance / colors）不进入语法规则表。
+        assert_eq!(table.len(), 1);
+        assert!(table.contains_key("keyword"));
     }
 
     #[test]

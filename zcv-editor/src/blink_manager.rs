@@ -19,6 +19,12 @@ pub struct BlinkManager {
     enabled: bool,
 }
 
+impl Default for BlinkManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BlinkManager {
     pub fn new() -> Self {
         Self {

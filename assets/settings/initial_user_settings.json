@@ -1,6 +1,10 @@
 {
   "theme": "system",
-  "soft_wrap": "none",
+  "font_size": 16,
+  "ui_font_size": 13,
+  "line_height": 1.618,
+  "soft_wrap": "editor-width",
+  "preferred_line_length": 80,
   "file_scan_exclusions": [
     "**/.git",
     "**/.svn",
@@ -13,5 +17,12 @@
     "**/Thumbs.db",
     "**/.classpath",
     "**/.settings"
-  ]
+  ],
+  "terminal_font_size": null,
+  "terminal_line_height": null,
+  "terminal_max_scroll_history_lines": 10000,
+  "terminal_cursor_shape": "block",
+  "terminal_alternate_scroll": true,
+  "terminal_option_as_meta": false,
+  "terminal_shell": null
 }

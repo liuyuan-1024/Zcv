@@ -28,12 +28,20 @@ static THEMES: OnceLock<Vec<ThemeData>> = OnceLock::new();
 
 pub(crate) fn themes() -> &'static [ThemeData] {
     THEMES.get_or_init(|| {
-        let one_dark = zcv_assets::text("themes/onedark.toml").expect("内置深色主题应存在");
-        let one_light = zcv_assets::text("themes/onelight.toml").expect("内置浅色主题应存在");
-        vec![
-            build_theme("one-dark", &one_dark),
-            build_theme("one-light", &one_light),
+        // 登记表：文件名 → 嵌入资源路径；主题 id 取自文件名（去掉扩展名），改名或新增主题只动这里与主题文件本身。
+        [
+            ("dark.toml", "themes/dark.toml"),
+            ("light.toml", "themes/light.toml"),
         ]
+        .into_iter()
+        .map(|(file, path)| {
+            let id = file
+                .strip_suffix(".toml")
+                .expect("主题文件名应以 .toml 结尾");
+            let source = zcv_assets::text(path).expect("内嵌主题文件应存在");
+            build_theme(id, &source)
+        })
+        .collect()
     })
 }
 
@@ -116,6 +124,33 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         scrollbar_thumb_background: parse("scrollbar.thumb.background")?,
         scrollbar_thumb_hover_background: parse("scrollbar.thumb.hover_background")?,
         scrollbar_thumb_active_background: parse("scrollbar.thumb.active_background")?,
+        // 主色 8 个。
+        terminal_ansi_black: parse("terminal.ansi.black")?,
+        terminal_ansi_red: parse("terminal.ansi.red")?,
+        terminal_ansi_green: parse("terminal.ansi.green")?,
+        terminal_ansi_yellow: parse("terminal.ansi.yellow")?,
+        terminal_ansi_blue: parse("terminal.ansi.blue")?,
+        terminal_ansi_magenta: parse("terminal.ansi.magenta")?,
+        terminal_ansi_cyan: parse("terminal.ansi.cyan")?,
+        terminal_ansi_white: parse("terminal.ansi.white")?,
+        // 亮色变体 8 个。
+        terminal_ansi_bright_black: parse("terminal.ansi.bright_black")?,
+        terminal_ansi_bright_red: parse("terminal.ansi.bright_red")?,
+        terminal_ansi_bright_green: parse("terminal.ansi.bright_green")?,
+        terminal_ansi_bright_yellow: parse("terminal.ansi.bright_yellow")?,
+        terminal_ansi_bright_blue: parse("terminal.ansi.bright_blue")?,
+        terminal_ansi_bright_magenta: parse("terminal.ansi.bright_magenta")?,
+        terminal_ansi_bright_cyan: parse("terminal.ansi.bright_cyan")?,
+        terminal_ansi_bright_white: parse("terminal.ansi.bright_white")?,
+        // 暗化变体 8 个。
+        terminal_ansi_dim_black: parse("terminal.ansi.dim_black")?,
+        terminal_ansi_dim_red: parse("terminal.ansi.dim_red")?,
+        terminal_ansi_dim_green: parse("terminal.ansi.dim_green")?,
+        terminal_ansi_dim_yellow: parse("terminal.ansi.dim_yellow")?,
+        terminal_ansi_dim_blue: parse("terminal.ansi.dim_blue")?,
+        terminal_ansi_dim_magenta: parse("terminal.ansi.dim_magenta")?,
+        terminal_ansi_dim_cyan: parse("terminal.ansi.dim_cyan")?,
+        terminal_ansi_dim_white: parse("terminal.ansi.dim_white")?,
     })
 }
 
@@ -209,41 +244,47 @@ mod tests {
     fn theme_registry_has_expected_entries() {
         let themes = themes();
         assert_eq!(themes.len(), 2);
-        assert_eq!(themes[0].id, "one-dark");
-        assert_eq!(themes[1].id, "one-light");
+        assert_eq!(themes[0].id, "dark");
+        assert_eq!(themes[1].id, "light");
         // 主题明暗声明来自文件而非硬编码。
         assert_eq!(themes[0].appearance, WindowAppearance::Dark);
         assert_eq!(themes[1].appearance, WindowAppearance::Light);
         assert!(theme_by_id("unknown").is_none());
     }
 
-    /// 语义色由主题文件直接定义：抽样断言关键表面色与迁移前的推导值一致。
+    /// 语义色由主题文件直接定义：抽样断言关键表面色与 Zed 官方 One Dark 一致。
     #[test]
     fn dark_theme_colors_match_migrated_values() {
-        let theme = theme_by_id("one-dark").expect("内置 onedark 主题应存在");
+        let theme = theme_by_id("dark").expect("内置深色主题应存在");
         let colors = theme.colors;
-        assert_eq!(colors.background, gpui::rgba(0x0d0f12ff));
-        assert_eq!(colors.status_bar_background, gpui::rgba(0x13161bff));
-        assert_eq!(colors.panel_background, gpui::rgba(0x1b1f26ff));
-        assert_eq!(colors.editor_background, gpui::rgba(0x252a33ff));
-        assert_eq!(colors.text, gpui::rgba(0xa8b0c0ff));
-        // 选区背景与编辑器显示层的历史值呼应（8 位 hex 直通）。
-        assert_eq!(colors.editor_selection_background, gpui::rgba(0x74ade83d));
+        assert_eq!(colors.background, gpui::rgba(0x3b414dff));
+        assert_eq!(colors.status_bar_background, gpui::rgba(0x3b414dff));
+        assert_eq!(colors.panel_background, gpui::rgba(0x2f343eff));
+        assert_eq!(colors.editor_background, gpui::rgba(0x282c33ff));
+        assert_eq!(colors.text, gpui::rgba(0xdce0e5ff));
+        assert_eq!(colors.editor_selection_background, gpui::rgba(0x74ade81a));
         assert_eq!(
             colors.scrollbar_thumb_active_background,
-            gpui::rgba(0x5e6678a6)
+            gpui::rgba(0x363c46ff)
         );
+        // 终端 ANSI 色与 Zed 官方一致。
+        assert_eq!(colors.terminal_ansi_red, gpui::rgba(0xe06c75ff));
+        assert_eq!(colors.terminal_ansi_yellow, gpui::rgba(0xe5c07bff));
+        assert_eq!(colors.terminal_ansi_dim_blue, gpui::rgba(0x457cadff));
     }
 
     #[test]
     fn light_theme_colors_match_migrated_values() {
-        let theme = theme_by_id("one-light").expect("内置 onelight 主题应存在");
+        let theme = theme_by_id("light").expect("内置浅色主题应存在");
         let colors = theme.colors;
-        assert_eq!(colors.background, gpui::rgba(0xfafafaff));
-        assert_eq!(colors.status_bar_background, gpui::rgba(0xd3d3d3ff));
-        assert_eq!(colors.editor_background, gpui::rgba(0xebebebff));
-        assert_eq!(colors.text, gpui::rgba(0x1e1e1eff));
-        assert_eq!(colors.editor_selection_background, gpui::rgba(0x2563eb3d));
+        assert_eq!(colors.background, gpui::rgba(0xdcdcddff));
+        assert_eq!(colors.status_bar_background, gpui::rgba(0xdcdcddff));
+        assert_eq!(colors.editor_background, gpui::rgba(0xfafafaff));
+        assert_eq!(colors.text, gpui::rgba(0x242529ff));
+        assert_eq!(colors.editor_selection_background, gpui::rgba(0x5c78e225));
+        // 终端 ANSI 色与 Zed 官方一致。
+        assert_eq!(colors.terminal_ansi_yellow, gpui::rgba(0xd2b67cff));
+        assert_eq!(colors.terminal_ansi_blue, gpui::rgba(0x2f5af3ff));
     }
 
     /// 最小合法主题：元数据 + 语法规则 + 语义色，供解析失败族测试破坏单点。
@@ -295,6 +336,30 @@ mod tests {
             "scrollbar.thumb.background" = "#88888873"
             "scrollbar.thumb.hover_background" = "#8888888c"
             "scrollbar.thumb.active_background" = "#888888a6"
+            "terminal.ansi.black" = "#000000ff"
+            "terminal.ansi.red" = "#ff0000ff"
+            "terminal.ansi.green" = "#00ff00ff"
+            "terminal.ansi.yellow" = "#ffff00ff"
+            "terminal.ansi.blue" = "#0000ffff"
+            "terminal.ansi.magenta" = "#ff00ffff"
+            "terminal.ansi.cyan" = "#00ffffff"
+            "terminal.ansi.white" = "#ffffffff"
+            "terminal.ansi.bright_black" = "#000000ff"
+            "terminal.ansi.bright_red" = "#ff0000ff"
+            "terminal.ansi.bright_green" = "#00ff00ff"
+            "terminal.ansi.bright_yellow" = "#ffff00ff"
+            "terminal.ansi.bright_blue" = "#0000ffff"
+            "terminal.ansi.bright_magenta" = "#ff00ffff"
+            "terminal.ansi.bright_cyan" = "#00ffffff"
+            "terminal.ansi.bright_white" = "#ffffffff"
+            "terminal.ansi.dim_black" = "#000000ff"
+            "terminal.ansi.dim_red" = "#ff0000ff"
+            "terminal.ansi.dim_green" = "#00ff00ff"
+            "terminal.ansi.dim_yellow" = "#ffff00ff"
+            "terminal.ansi.dim_blue" = "#0000ffff"
+            "terminal.ansi.dim_magenta" = "#ff00ffff"
+            "terminal.ansi.dim_cyan" = "#00ffffff"
+            "terminal.ansi.dim_white" = "#ffffffff"
         "##
         .to_string()
     }

@@ -27,6 +27,7 @@ zcv-picker.workspace = true
 zcv-preview-svg.workspace = true
 zcv-project.workspace = true
 zcv-settings.workspace = true
+zcv-terminal.workspace = true
 zcv-theme.workspace = true
 zcv-ui.workspace = true
 zcv-workspace.workspace = true

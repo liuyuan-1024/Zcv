@@ -14,7 +14,9 @@ use gpui::{
     Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
 };
 use zcv_actions::{
-    GitFetch, GitPull, GitPush, SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
+    DecreaseFontSize, DecreaseUiFontSize, GitFetch, GitPull, GitPush, IncreaseFontSize,
+    IncreaseUiFontSize, ResetFontSize, ResetUiFontSize, SelectGitBranch, ToggleHarnessMode,
+    ToggleProjectPicker,
 };
 use zcv_editor::Editor;
 use zcv_project::{
@@ -37,6 +39,7 @@ use crate::language_tools::LspButton;
 use crate::project_search::ProjectSearchButton;
 use crate::project_tree::ProjectTreePanel;
 use crate::version_control::VersionControlPanel;
+use zcv_terminal::TerminalPanel;
 
 /// 打开文件回调：面板请求 Workspace 打开路径（弱引用防循环持有）。
 pub(crate) type OnOpenFile = Rc<dyn Fn(PathBuf, bool, &mut Window, &mut gpui::App)>;
@@ -210,6 +213,46 @@ fn initialize_common_workspace(
         workspace.register_action(move |_workspace, _: &ToggleHarnessMode, _window, cx| {
             harness_button.update(cx, |button, cx| button.toggle(cx));
         });
+    });
+
+    // 编辑器字号缩放（会话内生效，不写配置文件；对齐 Zed）。
+    // 字号是 typography 的运行时状态：直接调整并强制重绘，不改 SettingsStore。
+    workspace.register_action(move |_workspace, _: &IncreaseFontSize, window, _cx| {
+        let editor = f32::from(typography::editor());
+        typography::set_typography(Some(editor + 1.), None, None);
+        window.refresh();
+    });
+    workspace.register_action(move |_workspace, _: &DecreaseFontSize, window, _cx| {
+        let editor = f32::from(typography::editor());
+        typography::set_typography(Some((editor - 1.).max(8.)), None, None);
+        window.refresh();
+    });
+    workspace.register_action(move |_workspace, _: &ResetFontSize, window, cx| {
+        let settings = SettingsStore::get(cx);
+        typography::set_typography(Some(settings.font_size), None, None);
+        window.refresh();
+    });
+
+    // UI 字号缩放（全局可用，会话内生效）。
+    // UI 字号缩放（cmd-shift-= 等，全局可用，会话内生效）：只调 UI 字号，编辑器不动。
+    // UI 字号是窗口 rem 基准（对齐 Zed setup_ui_font）：字号变化必须同步更新rem_size，否则基于 rem 的文本/布局沿用旧基准，与放大后的字形错位导致截断。
+    workspace.register_action(move |_workspace, _: &IncreaseUiFontSize, window, _cx| {
+        let ui = f32::from(typography::ui());
+        typography::set_typography(None, Some(ui + 1.), None);
+        window.set_rem_size(typography::ui());
+        window.refresh();
+    });
+    workspace.register_action(move |_workspace, _: &DecreaseUiFontSize, window, _cx| {
+        let ui = f32::from(typography::ui());
+        typography::set_typography(None, Some((ui - 1.).max(8.)), None);
+        window.set_rem_size(typography::ui());
+        window.refresh();
+    });
+    workspace.register_action(move |_workspace, _: &ResetUiFontSize, window, cx| {
+        let settings = SettingsStore::get(cx);
+        typography::set_typography(None, Some(settings.ui_font_size), None);
+        window.set_rem_size(typography::ui());
+        window.refresh();
     });
 
     let pane = workspace.pane().clone();
@@ -510,6 +553,11 @@ fn initialize_workspace(
     let settings_subscription =
         cx.observe_global_in::<SettingsStore>(window, move |_workspace, window, cx| {
             let settings = SettingsStore::get(cx);
+            zcv_theme::typography::set_typography(
+                Some(settings.font_size),
+                Some(settings.ui_font_size),
+                Some(settings.line_height),
+            );
             apply_theme(&settings.theme, cx, Some(window));
             project_tree_for_settings.update(cx, |tree, cx| tree.refresh(cx));
             cx.notify();
@@ -661,8 +709,6 @@ macro_rules! make_placeholder_panel {
 }
 
 make_placeholder_panel!(OutlinePanel, "outline", "icons/list_tree.svg", "大纲");
-
-make_placeholder_panel!(TerminalPanel, "terminal", "icons/terminal.svg", "终端");
 
 make_placeholder_panel!(DebugPanel, "debug", "icons/debug.svg", "调试");
 

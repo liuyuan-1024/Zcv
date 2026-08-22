@@ -57,11 +57,11 @@ pub enum SoftWrapMode {
     Bounded,
 }
 
-/// 字段级容错：该字段值非法时解析为「未配置」（`None`），
-/// 由 merge 层用内置默认补齐，不影响其他字段。
+/// 字段级容错：该字段值非法时解析为「未配置」（`None`），由 merge 层用内置默认补齐，不影响其他字段。
 /// JSON 语法错误仍整体失败。
 ///
-/// 先解析成 `Value` 再转换：serde_json_lenient 对 enum 字段的非法值走 `peek_error` 路径且不消费 token，直接 `T::deserialize(...).ok()`会让后续字段错位；`Value` 解析总是消费完整 token。
+/// 先解析成 `Value` 再转换：serde_json_lenient 对 enum 字段的非法值走 `peek_error` 路径且不消费 token，直接 `T::deserialize(...).ok()`会让后续字段错位；
+/// `Value` 解析总是消费完整 token。
 fn fallible<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -71,27 +71,68 @@ where
     Ok(serde_json_lenient::from_value(value).ok())
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default)]
 struct UserSettingsContent {
     #[serde(deserialize_with = "fallible")]
     theme: Option<String>,
+    #[serde(deserialize_with = "fallible")]
+    font_size: Option<f32>,
+    #[serde(deserialize_with = "fallible")]
+    ui_font_size: Option<f32>,
+    #[serde(deserialize_with = "fallible")]
+    line_height: Option<f32>,
     #[serde(deserialize_with = "fallible")]
     soft_wrap: Option<SoftWrapMode>,
     #[serde(deserialize_with = "fallible")]
     preferred_line_length: Option<usize>,
     #[serde(deserialize_with = "fallible")]
     file_scan_exclusions: Option<Vec<String>>,
+    #[serde(deserialize_with = "fallible")]
+    terminal_font_size: Option<f32>,
+    #[serde(deserialize_with = "fallible")]
+    terminal_line_height: Option<f32>,
+    #[serde(deserialize_with = "fallible")]
+    terminal_max_scroll_history_lines: Option<usize>,
+    #[serde(deserialize_with = "fallible")]
+    terminal_cursor_shape: Option<String>,
+    #[serde(deserialize_with = "fallible")]
+    terminal_alternate_scroll: Option<bool>,
+    #[serde(deserialize_with = "fallible")]
+    terminal_option_as_meta: Option<bool>,
+    #[serde(deserialize_with = "fallible")]
+    terminal_shell: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct UserSettings {
     /// 主题配置 id；由主题模块解析为运行时主题。
     pub theme: String,
+    /// 编辑器字号（像素）。
+    pub font_size: f32,
+    /// UI 字号（像素）。
+    pub ui_font_size: f32,
+    /// 编辑器行高（相对字号的倍数）。
+    pub line_height: f32,
     pub soft_wrap: SoftWrapMode,
+    /// 软换行的目标行宽（列数）；仅在 `soft_wrap = "bounded"` 时生效。
     pub preferred_line_length: usize,
     /// 项目树扫描时完全排除的 glob 名单。
     pub file_scan_exclusions: Vec<String>,
+    /// 终端字体大小（像素）；缺省时跟随编辑器字号。
+    pub terminal_font_size: Option<f32>,
+    /// 终端行高（相对字号的倍数）；缺省时跟随编辑器行高。
+    pub terminal_line_height: Option<f32>,
+    /// 终端滚动回看上限行数。
+    pub terminal_max_scroll_history_lines: usize,
+    /// 终端光标形状："block" | "underline" | "bar"。
+    pub terminal_cursor_shape: String,
+    /// 备用屏幕下滚轮是否转发为方向键。
+    pub terminal_alternate_scroll: bool,
+    /// Option 键是否作为 Meta 键使用。
+    pub terminal_option_as_meta: bool,
+    /// 终端 shell 程序；缺省时使用系统默认 shell。
+    pub terminal_shell: Option<String>,
 }
 
 /// 解析内置初始设置作为默认层，保证默认值只有一个数据源。
@@ -106,27 +147,57 @@ impl Default for UserSettings {
 }
 
 impl UserSettings {
-    /// 将用户配置合并到内置默认层：用户显式配置的字段覆盖默认，
-    /// 未配置的字段（`None`）回退到内置初始设置。
+    /// 将用户配置合并到内置默认层：用户显式配置的字段覆盖默认，未配置的字段（`None`）回退到内置初始设置。
     fn merge(content: UserSettingsContent) -> Self {
         let defaults = default_content();
+        // 默认值唯一数据源是内置 initial_user_settings.json。
         Self {
-            theme: content
-                .theme
-                .or(defaults.theme)
-                .unwrap_or_else(|| "system".to_string()),
+            theme: content.theme.or(defaults.theme).expect("内置默认应存在"),
+            font_size: content
+                .font_size
+                .or(defaults.font_size)
+                .expect("内置默认应存在"),
+            ui_font_size: content
+                .ui_font_size
+                .or(defaults.ui_font_size)
+                .expect("内置默认应存在"),
+            line_height: content
+                .line_height
+                .or(defaults.line_height)
+                .expect("内置默认应存在"),
             soft_wrap: content
                 .soft_wrap
                 .or(defaults.soft_wrap)
-                .unwrap_or(SoftWrapMode::None),
+                .expect("内置默认应存在"),
             preferred_line_length: content
                 .preferred_line_length
                 .or(defaults.preferred_line_length)
-                .unwrap_or(80),
+                .expect("内置默认应存在"),
             file_scan_exclusions: content
                 .file_scan_exclusions
                 .or(defaults.file_scan_exclusions)
-                .unwrap_or_default(),
+                .expect("内置默认应存在"),
+            terminal_font_size: content.terminal_font_size.or(defaults.terminal_font_size),
+            terminal_line_height: content
+                .terminal_line_height
+                .or(defaults.terminal_line_height),
+            terminal_max_scroll_history_lines: content
+                .terminal_max_scroll_history_lines
+                .or(defaults.terminal_max_scroll_history_lines)
+                .expect("内置默认应存在"),
+            terminal_cursor_shape: content
+                .terminal_cursor_shape
+                .or(defaults.terminal_cursor_shape)
+                .expect("内置默认应存在"),
+            terminal_alternate_scroll: content
+                .terminal_alternate_scroll
+                .or(defaults.terminal_alternate_scroll)
+                .expect("内置默认应存在"),
+            terminal_option_as_meta: content
+                .terminal_option_as_meta
+                .or(defaults.terminal_option_as_meta)
+                .expect("内置默认应存在"),
+            terminal_shell: content.terminal_shell.or(defaults.terminal_shell),
         }
     }
 }
@@ -300,7 +371,7 @@ mod tests {
         let content = parse_user_settings(r#"{"theme":"one-light"}"#).unwrap();
         let settings = UserSettings::merge(content);
         assert_eq!(settings.theme, "one-light");
-        assert_eq!(settings.soft_wrap, SoftWrapMode::None);
+        assert_eq!(settings.soft_wrap, SoftWrapMode::EditorWidth);
         assert_eq!(settings.preferred_line_length, 80);
         assert!(
             settings
@@ -353,7 +424,7 @@ mod tests {
     fn invalid_field_value_falls_back_to_default() {
         // 非法值字段回退为未配置，由 merge 层用内置默认补齐。
         let settings = UserSettings::merge(parse_user_settings(r#"{"soft_wrap": true}"#).unwrap());
-        assert_eq!(settings.soft_wrap, SoftWrapMode::None);
+        assert_eq!(settings.soft_wrap, SoftWrapMode::EditorWidth);
 
         let settings = UserSettings::merge(parse_user_settings(r#"{"theme":"unknown"}"#).unwrap());
         assert_eq!(settings.theme, "unknown");
@@ -379,7 +450,7 @@ mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(settings.soft_wrap, SoftWrapMode::None);
+        assert_eq!(settings.soft_wrap, SoftWrapMode::EditorWidth);
         assert_eq!(settings.theme, "one-dark");
         assert_eq!(settings.file_scan_exclusions, vec!["**/target".to_string()]);
     }

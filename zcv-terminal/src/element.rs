@@ -133,7 +133,7 @@ impl Element for TerminalElement {
         });
 
         let content = self.view.read(cx).terminal.read(cx).last_content().cloned();
-        let focused = self.view.read(cx).focused;
+        let focused = self.view.read(cx).is_focused(window);
         let (display_offset, screen_lines, columns) =
             content.as_ref().map_or((0, 1, 2), |content| {
                 (

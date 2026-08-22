@@ -888,7 +888,9 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use gpui::{Context, Render, TestAppContext, Window, div, prelude::*};
+    use gpui::{
+        AppContext, Context, Pixels, Point, Render, TestAppContext, Window, div, prelude::*,
+    };
     use zcv_engine::{Buffer, BufferConfig};
 
     use super::*;
@@ -1506,5 +1508,42 @@ mod tests {
             "remove_path 关闭 tab 应发射 Removed"
         );
         cx.read_entity(&pane, |pane, _| assert!(pane.tabs.is_empty()));
+    }
+
+    #[gpui::test]
+    fn clicking_empty_pane_area_moves_focus_to_pane(cx: &mut TestAppContext) {
+        // 决定性验证：点击空白 pane（无活动文件）后，焦点转移给 pane 自身
+        // （gpui 对 track_focus 元素的"聚焦点击"内建行为：mouse down Bubble 阶段自动 window.focus）。
+        // 这解释了"项目树/终端点击空白 pane 后失焦"——焦点去了 pane，行为正确；
+        // 终端光标消失依赖 on_blur（焦点事件在下一帧绘制时分发），测试环境窗口不激活、
+        // 焦点事件路径被清空，无法在单测中验证 on_blur 时序。
+        let (pane, cx) = cx.add_window_view(|_, cx| Pane::new(cx));
+        cx.run_until_parked();
+        cx.refresh().expect("测试窗口应可刷新");
+
+        // 用一个独立的焦点句柄模拟"外部组件（如终端）持有焦点"。
+        let external_focus = cx.update(|_, app| app.focus_handle());
+        cx.update(|window, _| window.focus(&external_focus));
+        cx.run_until_parked();
+        cx.update(|window, _| {
+            assert!(external_focus.is_focused(window), "前置：外部句柄应已聚焦");
+        });
+
+        // 点击 pane 内容区（窗口中心，渲染了"无打开文件"）。
+        let bounds = cx.update(|window, _| window.bounds());
+        let click: Point<Pixels> = Point::new(bounds.size.width / 2.0, bounds.size.height / 2.0);
+        cx.simulate_mouse_down(click, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            assert!(
+                !external_focus.is_focused(window),
+                "点击空白 pane 转移了焦点"
+            );
+            assert!(
+                pane.read(cx).focus.is_focused(window),
+                "焦点应转移到 pane 自身（track_focus 的聚焦点击）"
+            );
+        });
     }
 }

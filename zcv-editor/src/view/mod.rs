@@ -836,6 +836,11 @@ impl Editor {
         self.pending_selection = None;
     }
 
+    /// 编辑器自身是否正在拖拽选区手势（拖拽滚动的生效守卫：`dragging` 事件是窗口级的，其他面板（如终端）拖拽时编辑器不应滚动）。
+    pub(super) fn has_pending_selection(&self) -> bool {
+        self.pending_selection.is_some()
+    }
+
     pub(super) fn set_ime_caret_geometry(
         &mut self,
         element_bounds: Bounds<Pixels>,

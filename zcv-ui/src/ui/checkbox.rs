@@ -65,12 +65,19 @@ impl RenderOnce for Checkbox {
         let colors = color::current(cx);
         let tooltip = self.tooltip;
         let on_click = self.on_click;
+        let hover_border = {
+            let mut border = colors.border;
+            border.a = (border.a * 0.7).clamp(0.0, 1.0);
+            border
+        };
         div()
             .id(self.id)
             .size(typography::ui())
             .rounded_xs()
             .border_1()
-            .border_color(colors.border_variant)
+            .bg(colors.ghost_element_background)
+            .border_color(colors.border)
+            .hover(|style| style.border_color(hover_border))
             .flex()
             .items_center()
             .justify_center()

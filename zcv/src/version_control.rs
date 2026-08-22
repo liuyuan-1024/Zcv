@@ -274,7 +274,7 @@ impl VersionControlPanel {
         let focus = cx.focus_handle();
         let git_store = project.read(cx).git_store();
         let commit_editor = cx.new(|cx| {
-            let mut editor = Editor::auto_height(4, Some(6), cx);
+            let mut editor = Editor::auto_height(6, Some(6), cx);
             editor.set_placeholder_text("输入提交信息…", cx);
             editor
         });
@@ -752,20 +752,21 @@ fn render_commit_footer(
     let has_last_commit = last_commit_message.is_some();
     // child 接受 'static 内容，&str 借用先转为 owned。
     let last_commit_text = last_commit_message.unwrap_or("暂无提交").to_string();
-    // 根容器不做统一 padding：两条分隔线（顶部 / 上次提交行上方）都要全宽，
-    // 内边距由各区块自己管理，避免线被缩窄。
+    // 整个提交区是编辑器背景块（bg(editor_background)），顶部用普通边框与列表区分隔；内边距由各区块管理，分隔线保持全宽。
     div()
         .border_t_1()
-        .border_color(colors.border_variant)
+        .border_color(colors.border)
+        .bg(colors.editor_background)
         .flex()
         .flex_col()
-        // 提交信息编辑器（AutoHeight 2..6 行；observe 已让按键即时触发重绘）。
-        .child(div().p(space::S8).child(editor.clone()))
-        // 提交按钮（空消息时淡显，点击由 handler 兜底聚焦回编辑器）。
+        // 提交信息编辑器（observe 已让按键即时触发重绘）。
+        .child(div().pt(space::S8).px(space::S8).child(editor.clone()))
+        // 容器内底部 commit-footer：提交按钮（空消息时淡显，点击由 handler 兜底聚焦回编辑器）。
         .child(
             div()
+                .id("version-control-commit-footer")
                 .px(space::S8)
-                .pb(space::S8)
+                .py(space::S6)
                 .flex()
                 .justify_end()
                 .child(

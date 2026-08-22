@@ -25,10 +25,14 @@ pub struct ThemeColors {
     pub surface_background: Rgba,
     /// Tooltip、菜单等浮层背景。
     pub elevated_surface_background: Rgba,
+    /// 幽灵元素（checkbox 等）的背景。
+    pub ghost_element_background: Rgba,
     /// 普通元素的悬停背景。
     pub element_hover: Rgba,
     /// 普通元素的选中背景。
     pub element_selected: Rgba,
+    /// 普通边框。
+    pub border: Rgba,
     /// 弱分隔边框。
     pub border_variant: Rgba,
     /// 焦点或强调边框。

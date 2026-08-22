@@ -15,8 +15,8 @@ use gpui::{
 };
 use zcv_actions::{
     DecreaseFontSize, DecreaseUiFontSize, GitFetch, GitPull, GitPush, IncreaseFontSize,
-    IncreaseUiFontSize, ResetFontSize, ResetUiFontSize, SelectGitBranch, ToggleHarnessMode,
-    ToggleProjectPicker,
+    IncreaseUiFontSize, NewTerminal, ResetFontSize, ResetUiFontSize, SelectGitBranch,
+    ToggleHarnessMode, ToggleProjectPicker,
 };
 use zcv_editor::Editor;
 use zcv_project::{
@@ -186,9 +186,27 @@ fn initialize_common_workspace(
     let terminal = cx.new(TerminalPanel::new);
     let debug = cx.new(DebugPanel::new);
 
+    let terminal_for_new = terminal.clone();
     register_panel(workspace, outline, DockPosition::Left, window, cx);
     register_panel(workspace, terminal, DockPosition::Bottom, window, cx);
     register_panel(workspace, debug, DockPosition::Bottom, window, cx);
+
+    // 新建终端：先创建再确保面板可见，避免面板激活时的懒创建重复生成终端。
+    workspace.register_action(move |workspace, _: &NewTerminal, window, cx| {
+        terminal_for_new.update(cx, |panel, cx| {
+            panel.new_terminal(window, cx);
+        });
+        let bottom_dock = workspace.bottom_dock.clone();
+        bottom_dock.update(cx, |dock, cx| {
+            let Some(index) = dock.panel_index_for_persistent_name("terminal") else {
+                return;
+            };
+            if !dock.is_panel_active(index) {
+                dock.activate_panel(index, window, cx);
+                dock.set_open(true, window, cx);
+            }
+        });
+    });
 
     let status_bar = workspace.status_bar().clone();
     let left_dock = workspace.left_dock.clone();

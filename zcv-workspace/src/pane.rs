@@ -5,6 +5,7 @@
 //! Pane 通过 [`ItemHandle`] trait 统操作标签页，不依赖具体视图类型。
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Render, ScrollHandle,
@@ -16,7 +17,7 @@ use zcv_ui::{Glyph, SvgIcon, Tab};
 
 use crate::preview::{PreviewDocument, provider_for};
 use crate::search_bar::SearchBar;
-use crate::tab_bar::TabBar;
+use crate::tab_bar::{TabBar, TabBarTrailing};
 use crate::toolbar::Toolbar;
 use crate::{ItemEvent, ItemHandle};
 
@@ -89,6 +90,8 @@ pub struct Pane {
     toolbar: Entity<Toolbar>,
     search_bar: Entity<SearchBar>,
     scroll_handle: ScrollHandle,
+    /// 面板注入的标签栏右侧插槽构建器；渲染时原样转发给 TabBar（插槽本体在 TabBar 组件内）。
+    tab_bar_trailing: Option<TabBarTrailing>,
 }
 
 impl Pane {
@@ -107,7 +110,16 @@ impl Pane {
             search_bar,
             toolbar,
             scroll_handle: ScrollHandle::new(),
+            tab_bar_trailing: None,
         }
+    }
+
+    /// 设置标签栏右侧功能插槽构建器，渲染时转发给 TabBar 的尾部插槽（不随标签滚动）。
+    pub fn set_tab_bar_trailing<F>(&mut self, build: F)
+    where
+        F: Fn(&App) -> AnyElement + 'static,
+    {
+        self.tab_bar_trailing = Some(Rc::new(build));
     }
 
     /// 滚动到指定索引的标签到可视区域。
@@ -496,6 +508,20 @@ impl Pane {
 // ═══ Action handler ═════════════════════════════════════════════
 
 impl Pane {
+    /// 关闭活动标签并聚焦相邻标签；无标签时聚焦 Pane 自身。
+    fn handle_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item_id) = self.active else {
+            return;
+        };
+        self.close_tab(item_id, window, cx);
+        if let Some(item) = self.active_item() {
+            window.focus(&item.item_focus_handle(cx));
+        } else {
+            window.focus(&self.focus);
+        }
+        window.refresh();
+    }
+
     fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         self.next_tab();
         // 关闭最后一个 tab 后按快捷键会走到这里：next_tab 对空 tabs 早退，active 可能为 None。
@@ -550,6 +576,7 @@ impl Render for Pane {
         let transient_item_id = self.transient_item_id;
         let active_item = self.active_item();
         let pane_entity = cx.entity();
+        let trailing = self.tab_bar_trailing.clone();
 
         div()
             .track_focus(&self.focus)
@@ -561,6 +588,7 @@ impl Render for Pane {
             .overflow_hidden()
             .size_full()
             .bg(color::current(cx).editor_background)
+            .on_action(cx.listener(Self::handle_close_tab))
             .on_action(cx.listener(Self::handle_next_tab))
             .on_action(cx.listener(Self::handle_prev_tab))
             .on_action(cx.listener(Self::handle_toggle_preview))
@@ -571,6 +599,7 @@ impl Render for Pane {
                 transient_item_id,
                 pane_entity,
                 &self.scroll_handle,
+                trailing,
                 cx,
             ))
             .child(self.toolbar.clone())
@@ -582,13 +611,14 @@ impl Render for Pane {
 
 // ── Tab Bar ──────────────────────────────────────────────────────────
 
-/// 标签栏：一组标签的容器 + 末尾放置目标。
+/// 标签栏：一组标签的容器 + 末尾放置目标 + 右侧功能插槽。
 fn render_tab_bar(
     tabs: &[Box<dyn ItemHandle>],
     active_item_id: Option<EntityId>,
     transient_item_id: Option<EntityId>,
     pane_entity: gpui::Entity<Pane>,
     scroll_handle: &ScrollHandle,
+    trailing: Option<TabBarTrailing>,
     cx: &App,
 ) -> impl gpui::IntoElement {
     let children: Vec<AnyElement> = tabs
@@ -611,7 +641,12 @@ fn render_tab_bar(
         .collect();
 
     let handle = scroll_handle.clone();
-    let tab_bar = TabBar::new().track_scroll(scroll_handle).with_bar(
+    let mut tab_bar = TabBar::new().track_scroll(scroll_handle);
+    if let Some(trailing) = trailing {
+        tab_bar = tab_bar.with_trailing(trailing);
+    }
+
+    let tab_bar = tab_bar.with_bar(
         cx,
         |bar| {
             bar.flex()
@@ -741,6 +776,10 @@ fn render_tab_bar_drop_target(
 }
 
 fn item_icon(item: Option<&dyn ItemHandle>, cx: &App) -> impl gpui::IntoElement {
+    // Item 自定义图标优先（终端等无文件路径的 Item 提供自己的图标）。
+    if let Some(icon) = item.and_then(|item| item.tab_icon(cx)) {
+        return SvgIcon::new(icon);
+    }
     let path = item.and_then(|item| item.file_path(cx));
     let icon = match path {
         Some(path) if path.is_dir() => FileIcons::get_folder_icon(false, &path),

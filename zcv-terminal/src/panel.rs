@@ -1,25 +1,47 @@
-//! 底部终端面板：MVP 单终端，首次激活时懒创建。
+//! 底部终端面板：内嵌 Pane，终端以 Item 形式打开。
+//!
+//! 对齐 Zed：面板复用编辑区的 Pane，多终端标签栏、tab 切换、关闭与编辑区同构。
 
-use gpui::{App, Context, Entity, FocusHandle, Window, prelude::*};
-use zcv_workspace::Panel;
+use gpui::{App, ClickEvent, Context, Entity, FocusHandle, Window, prelude::*};
+use zcv_actions::NewTerminal;
+use zcv_ui::Glyph;
+use zcv_workspace::{Pane, Panel};
 
 use crate::{TerminalBuilder, TerminalView};
 
 pub struct TerminalPanel {
-    focus: FocusHandle,
-    terminal_view: Option<Entity<TerminalView>>,
+    pane: Entity<Pane>,
 }
 
 impl TerminalPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let pane = cx.new(Pane::new);
+        let weak = cx.weak_entity();
+        let pane_for_button = pane.clone();
+        pane.update(cx, |pane, _| {
+            pane.set_tab_bar_trailing(move |_cx: &App| {
+                let weak_for_click = weak.clone();
+                Glyph::icon(("terminal-new-terminal", 0usize), "icons/plus.svg")
+                    .label("新建终端")
+                    .shortcut(&NewTerminal, _cx)
+                    .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                        if let Some(panel) = weak_for_click.upgrade() {
+                            panel.update(cx, |panel, cx| {
+                                panel.new_terminal(window, cx);
+                            });
+                        }
+                    })
+                    .into_any_element()
+            });
+        });
         TerminalPanel {
-            focus: cx.focus_handle(),
-            terminal_view: None,
+            pane: pane_for_button,
         }
     }
 
     /// 创建终端：工作目录取当前项目根（ActiveProjectRoot），shell 取用户设置。
-    fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// 面板激活懒创建与外部新建终端命令共用。
+    pub fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let cwd = cx
             .try_global::<zcv_project::ActiveProjectRoot>()
             .and_then(|root| root.0.clone());
@@ -31,17 +53,11 @@ impl TerminalPanel {
                 .unwrap_or_else(|error| panic!("创建终端失败：{error}"))
         });
         let view = cx.new(|cx| TerminalView::new(terminal, cx));
-        // Dock 只聚焦面板句柄，这里补聚焦到终端视图，键盘才能直接输入。
-        let focus = view.read(cx).focus_handle();
+        // 终端作为 Item 打开进 Pane，焦点直接落在终端视图上。
+        let focus = self.pane.update(cx, |pane, cx| {
+            pane.open_item(Box::new(view), false, window, cx)
+        });
         window.focus(&focus);
-        self.terminal_view = Some(view);
-    }
-
-    fn focus_view(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(view) = &self.terminal_view {
-            let focus = view.read(cx).focus_handle();
-            window.focus(&focus);
-        }
     }
 }
 
@@ -59,39 +75,30 @@ impl Panel for TerminalPanel {
     }
 
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        // 无终端时返回面板自身句柄，保证 FocusOrHidePanel 的聚焦路径始终有效。
-        self.terminal_view
-            .as_ref()
-            .map(|view| view.read(cx).focus_handle())
-            .unwrap_or_else(|| self.focus.clone())
+        // 优先聚焦当前终端；无终端时回退到 Pane 自身句柄，保证 FocusOrHidePanel 的聚焦路径始终有效。
+        self.pane
+            .read(cx)
+            .active_item()
+            .map(|item| item.item_focus_handle(cx))
+            .unwrap_or_else(|| self.pane.read(cx).focus_handle())
     }
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         if active {
-            if self.terminal_view.is_none() {
-                self.new_terminal(window, cx);
+            if self.pane.read(cx).active_item().is_some() {
+                // Dock 只聚焦面板句柄，这里补聚焦到当前终端。
+                let focus = self.focus_handle(cx);
+                window.focus(&focus);
             } else {
-                self.focus_view(window, cx);
+                self.new_terminal(window, cx);
             }
         }
     }
 }
 
 impl Render for TerminalPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match &self.terminal_view {
-            Some(view) => div().size_full().child(view.clone()),
-            None => div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .track_focus(&self.focus)
-                .key_context("terminal")
-                .tab_index(0)
-                .text_color(zcv_theme::color::current(cx).text_placeholder)
-                .child("终端未启动"),
-        }
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(self.pane.clone())
     }
 }
 

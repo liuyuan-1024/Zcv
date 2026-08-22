@@ -12,7 +12,7 @@ use gpui::{
     Render, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, rems,
 };
 use zcv_actions::{
-    CloseTab, FocusOrHidePanel, OpenSettings, QuitWindow, Save, ToggleBottomDock, ToggleLeftDock,
+    FocusOrHidePanel, OpenSettings, QuitWindow, Save, ToggleBottomDock, ToggleLeftDock,
     ToggleRightDock,
 };
 use zcv_project::Project;
@@ -401,22 +401,6 @@ impl Workspace {
         }
     }
 
-    fn handle_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        let pane_entity = self.pane.clone();
-        let pane_focus = pane_entity.read(cx).focus_handle();
-        if let Some(item_id) = pane_entity.read(cx).active_id() {
-            pane_entity.update(cx, |pane, cx| {
-                pane.close_tab(item_id, window, cx);
-            });
-            if let Some(item) = pane_entity.read(cx).active_item() {
-                window.focus(&item.item_focus_handle(cx));
-            } else {
-                window.focus(&pane_focus);
-            }
-            window.refresh();
-        }
-    }
-
     /// Panel 键盘命令：已聚焦时关闭；可见未聚焦时聚焦；隐藏时显示并聚焦。
     fn handle_panel_keyboard_action(
         &mut self,
@@ -603,7 +587,6 @@ impl Render for Workspace {
         .on_action(cx.listener(Self::handle_quit))
         .on_action(handle_minimize)
         .on_action(handle_toggle_maximize)
-        .on_action(cx.listener(Self::handle_close_tab))
         .on_action(cx.listener(Self::handle_open_settings))
         .on_action(cx.listener(Self::handle_save))
         .on_action(cx.listener(|this, _: &ToggleLeftDock, window, cx| {

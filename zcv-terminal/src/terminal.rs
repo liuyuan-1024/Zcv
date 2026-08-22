@@ -473,16 +473,12 @@ impl Terminal {
         env.insert("TERM".into(), "xterm-256color".into());
         env.insert("COLORTERM".into(), "truecolor".into());
 
-        // 解析 shell 程序：用户配置优先，其次系统默认 shell。
+        // 解析 shell 程序：用户显式配置时原样启动。
+        // 无配置时不传 shell，alacritty 在 macOS 上会经 `/usr/bin/login` 启动登录 shell（打印 "Last login"、argv[0] 前缀 `-` 触发登录模式，读取 /etc/zprofile 的path_helper 重建 PATH），nvm/Homebrew 安装的命令才可用；
         let shell = settings
             .shell
             .as_deref()
-            .map(|program| (program.to_string(), Vec::new()))
-            .or_else(|| {
-                std::env::var("SHELL")
-                    .ok()
-                    .map(|program| (program, Vec::new()))
-            });
+            .map(|program| (program.to_string(), Vec::new()));
 
         let config =
             alacritty::pty_term_config(settings.max_scroll_history_lines, settings.cursor_shape);

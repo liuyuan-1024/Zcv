@@ -97,6 +97,11 @@ impl TerminalView {
     }
 
     /// 光标是否绘制：与焦点绑定（失焦隐藏；聚焦恒显示，终端光标不闪烁）。
+    /// 实时查询焦点状态。
+    pub(crate) fn is_focused(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
+    }
+
     pub(crate) fn should_show_cursor(&self, focused: bool, _cx: &App) -> bool {
         focused
     }

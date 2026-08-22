@@ -346,7 +346,10 @@ fn register_mouse_listeners(
     let move_hitbox = hitbox.clone();
     let move_view = view.clone();
     window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
-        if phase != gpui::DispatchPhase::Bubble || !move_hitbox.is_hovered(window) {
+        // 拖拽选择期间鼠标移出终端视口仍要处理：选区持续扩展并带动视口自动滚动。
+        if phase != gpui::DispatchPhase::Bubble
+            || (!move_hitbox.is_hovered(window) && !event.dragging())
+        {
             return;
         }
         let (point, side) = crate::mappings::mouse::grid_point_and_side(
@@ -358,8 +361,14 @@ fn register_mouse_listeners(
             screen_lines,
             columns,
         );
+        // 拖拽选择时鼠标在视口边缘外：按距离缩放的量滚动视口（正 = 回看历史）。
+        let autoscroll = if event.dragging() {
+            drag_autoscroll_delta(event.position, origin, line_height, screen_lines)
+        } else {
+            Pixels::ZERO
+        };
         move_view.update(cx, |view, cx| {
-            view.handle_mouse_move(event, point, side, cx);
+            view.handle_mouse_move(event, point, side, autoscroll, cx);
         });
     });
 
@@ -736,4 +745,54 @@ fn background_for(cell: &Cell, window: &mut Window, cx: &mut App) -> Rgba {
 /// 行内最后一列（背景块收束用）。
 fn last_column(cells: &[IndexedCell]) -> usize {
     cells.last().map(|cell| cell.point.column).unwrap_or(0)
+}
+
+/// 拖拽选择时的视口自动滚动量（像素，正 = 向上回看历史）：
+/// 鼠标在终端视口边缘外时按超出距离的 1.2 次方缩放，上限 3 像素/事件，保证平滑。
+fn drag_autoscroll_delta(
+    position: Point<Pixels>,
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    screen_lines: usize,
+) -> Pixels {
+    let top = origin.y;
+    let bottom = origin.y + line_height * screen_lines as f32;
+    let margin = line_height.min((bottom - top) / 3.0);
+    if position.y < top + margin {
+        scale_drag_autoscroll(top + margin - position.y)
+    } else if position.y > bottom - margin {
+        -scale_drag_autoscroll(position.y - (bottom - margin))
+    } else {
+        Pixels::ZERO
+    }
+}
+
+fn scale_drag_autoscroll(distance: Pixels) -> Pixels {
+    px((f32::from(distance).powf(1.2) / 100.0).min(3.0))
+}
+
+#[cfg(test)]
+mod autoscroll_tests {
+    use super::*;
+
+    #[test]
+    fn drag_autoscroll_only_scrolls_when_cursor_passes_viewport_edge() {
+        let origin = Point::new(px(0.), px(0.));
+        let line_height = px(20.);
+
+        // 视口内：不滚动。
+        assert_eq!(
+            drag_autoscroll_delta(Point::new(px(100.), px(100.)), origin, line_height, 10),
+            Pixels::ZERO
+        );
+        // 上边缘外：回看历史（正）。
+        assert!(
+            drag_autoscroll_delta(Point::new(px(100.), px(-100.)), origin, line_height, 10)
+                > Pixels::ZERO
+        );
+        // 下边缘外：查看新内容（负），滚动量有上限保证平滑。
+        let delta = drag_autoscroll_delta(Point::new(px(100.), px(300.)), origin, line_height, 10);
+        assert!(delta < Pixels::ZERO);
+        assert!(f32::from(delta).abs() <= 3.0);
+    }
 }

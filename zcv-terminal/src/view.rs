@@ -186,11 +186,15 @@ impl TerminalView {
     }
 
     /// 鼠标移动：拖拽中更新选择；报告模式转发移动字节。
+    ///
+    /// `autoscroll` 为拖拽选择期间鼠标在视口边缘外时的事件滚动量（像素，正 = 回看历史）；
+    /// 先滚动视口再用钳制后的网格坐标更新选区，选区随视口持续扩展。
     pub(crate) fn handle_mouse_move(
         &mut self,
         event: &gpui::MouseMoveEvent,
         point: crate::Point,
         side: crate::SelectionSide,
+        autoscroll: Pixels,
         cx: &mut Context<Self>,
     ) {
         let Some(content) = self.terminal.read(cx).last_content().cloned() else {
@@ -215,6 +219,12 @@ impl TerminalView {
             return;
         }
         if let Some((start, ty)) = self.dragging {
+            if autoscroll != Pixels::ZERO {
+                let line_height = self.line_height(cx);
+                self.terminal.update(cx, |terminal, cx| {
+                    terminal.scroll_px(autoscroll, line_height, cx);
+                });
+            }
             let _ = start;
             let _ = ty;
             self.terminal.update(cx, |terminal, cx| {

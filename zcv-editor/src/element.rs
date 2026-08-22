@@ -814,9 +814,12 @@ impl Element for EditorElement {
         });
 
         // 拖拽扩展选区：按住左键移动时按点击粒度更新选区；
+        // 鼠标拖出文本视口边缘时视口自动滚动、选区随之扩展；
         // 无按键移动时兜底结束拖拽（覆盖"窗口外释放后移回"等漏网场景，对齐滚动条复位策略）。
         let drag_editor = self.editor.clone();
         let drag_layout = Arc::clone(&prepaint.layout);
+        let drag_text_bounds = prepaint.layout.text_clip_bounds;
+        let drag_line_height = prepaint.layout.line_height;
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
             if phase != DispatchPhase::Bubble {
                 return;
@@ -825,13 +828,27 @@ impl Element for EditorElement {
                 drag_editor.update(cx, |editor, _| editor.end_selection());
                 return;
             }
-            let Some(point) = drag_layout.buffer_point_for_position(event.position) else {
+            let scroll_delta =
+                drag_autoscroll_delta(event.position, drag_text_bounds, drag_line_height);
+            let Some(buffer_point) = drag_layout.buffer_point_for_position(event.position) else {
                 return;
             };
             drag_editor.update(cx, |editor, cx| {
-                if let Ok(offset) = editor
-                    .render_snapshot()
-                    .position_to_byte(zcv_engine::Position::new(point.line(), point.column()))
+                // 拖拽事件是窗口级的（`dragging` 为任意面板的按下状态）：
+                // 只有编辑器自身正在拖拽选区时才滚动/扩展选区，避免终端等面板拖拽时编辑器联动滚动。
+                if !editor.has_pending_selection() {
+                    return;
+                }
+                if scroll_delta != point(Pixels::ZERO, Pixels::ZERO) {
+                    editor.scroll_by(scroll_delta, cx);
+                }
+                if let Ok(offset) =
+                    editor
+                        .render_snapshot()
+                        .position_to_byte(zcv_engine::Position::new(
+                            buffer_point.line(),
+                            buffer_point.column(),
+                        ))
                 {
                     editor.update_selection(offset, cx);
                 }
@@ -2289,5 +2306,75 @@ mod tests {
             hunk_strip_rows(&snapshot, &[hunk], &[], std::slice::from_ref(&(1..2))),
             vec![(1..3, DiffHunkKind::Modified)]
         );
+    }
+}
+
+/// 拖拽选择时的视口自动滚动量（对齐 Zed `mouse_dragged`）：
+/// 鼠标在文本视口边缘外时按超出距离的 1.2 次方缩放，垂直上限 3 像素/事件，保证平滑。
+fn drag_autoscroll_delta(
+    position: Point<Pixels>,
+    text_bounds: Bounds<Pixels>,
+    line_height: Pixels,
+) -> Point<Pixels> {
+    let mut delta = point(Pixels::ZERO, Pixels::ZERO);
+    let vertical_margin = line_height.min(text_bounds.size.height / 3.0);
+    let top = text_bounds.origin.y + vertical_margin;
+    let bottom = text_bounds.bottom_left().y - vertical_margin;
+    if position.y < top {
+        delta.y = scale_drag_autoscroll(top - position.y);
+    } else if position.y > bottom {
+        delta.y = -scale_drag_autoscroll(position.y - bottom);
+    }
+    // 水平边距近似 4 个 em（行高约 1.618em），与 Zed `horizontal_scroll_margin` 默认一致。
+    let horizontal_margin = 2.5 * line_height;
+    let left = text_bounds.origin.x + horizontal_margin;
+    let right = text_bounds.top_right().x - horizontal_margin;
+    if position.x < left {
+        delta.x = -scale_drag_autoscroll_horizontal(left - position.x);
+    } else if position.x > right {
+        delta.x = scale_drag_autoscroll_horizontal(position.x - right);
+    }
+    delta
+}
+
+fn scale_drag_autoscroll(distance: Pixels) -> Pixels {
+    px((f32::from(distance).powf(1.2) / 100.0).min(3.0))
+}
+
+fn scale_drag_autoscroll_horizontal(distance: Pixels) -> Pixels {
+    px(f32::from(distance).powf(1.2) / 300.0)
+}
+
+#[cfg(test)]
+mod autoscroll_tests {
+    use super::*;
+
+    fn text_bounds(origin_y: f32, height: f32) -> Bounds<Pixels> {
+        Bounds {
+            origin: point(px(0.), px(origin_y)),
+            size: size(px(800.), px(height)),
+        }
+    }
+
+    #[test]
+    fn drag_autoscroll_only_scrolls_when_cursor_passes_viewport_edge() {
+        let line_height = px(20.);
+        let bounds = text_bounds(0., 200.);
+
+        // 视口内：不滚动。
+        assert_eq!(
+            drag_autoscroll_delta(point(px(100.), px(100.)), bounds, line_height),
+            point(Pixels::ZERO, Pixels::ZERO)
+        );
+        // 上边缘外：向上回看（正 y）。
+        let delta = drag_autoscroll_delta(point(px(100.), px(-100.)), bounds, line_height);
+        assert!(delta.y > Pixels::ZERO);
+        // 下边缘外：向下查看新内容（负 y），滚动量有上限保证平滑。
+        let delta = drag_autoscroll_delta(point(px(100.), px(300.)), bounds, line_height);
+        assert!(delta.y < Pixels::ZERO);
+        assert!(f32::from(delta.y).abs() <= 3.0);
+        // 右边缘外：水平滚动（正 x）。
+        let delta = drag_autoscroll_delta(point(px(900.), px(100.)), bounds, line_height);
+        assert!(delta.x > Pixels::ZERO);
     }
 }

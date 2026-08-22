@@ -6,7 +6,7 @@
 use gpui::{Modifiers, MouseButton, MouseDownEvent, TestAppContext, point, px};
 use zcv_engine::{ByteOffset, Selection, SelectionSet, TextRange};
 
-use super::common::{buffer_text, test_buffer};
+use super::common::{buffer_text, scrolling_text, test_buffer};
 use super::*;
 
 /// 字节偏移构造辅助（测试文本均为 ASCII，字节数即字符数）。
@@ -371,5 +371,77 @@ fn mouse_dragging_expands_selection_across_rows(cx: &mut TestAppContext) {
     cx.read_entity(&editor, |editor, _| {
         let range = editor.selections().primary().range();
         assert!(range.start() < range.end());
+    });
+}
+
+#[gpui::test]
+fn mouse_dragging_below_viewport_autoscrolls_selection(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, &scrolling_text());
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::for_buffer(buffer, cx)
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+
+    // 单击第一行，再按住左键拖到视口下方远处：
+    // 视口自动滚动、选区持续扩展（对齐 Zed mouse_dragged 的 autoscroll）。
+    let click = point(px(120.), px(2.));
+    cx.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    let scroll_top_before = cx.read_entity(&editor, |editor, _| editor.scroll_top());
+    let viewport_height = cx.read_entity(&editor, |editor, _| {
+        editor.last_bounds.expect("渲染后应有视口尺寸").size.height
+    });
+    let drag_to = point(click.x, viewport_height + px(200.));
+    cx.simulate_mouse_move(drag_to, Some(MouseButton::Left), Modifiers::default());
+    cx.run_until_parked();
+    cx.read_entity(&editor, |editor, _| {
+        assert!(
+            editor.scroll_top() > scroll_top_before,
+            "拖出视口下边缘应触发自动滚动"
+        );
+        assert!(
+            editor.selections().primary().range().start()
+                < editor.selections().primary().range().end()
+        );
+    });
+}
+
+#[gpui::test]
+fn dragging_outside_editor_does_not_scroll_editor(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, &scrolling_text());
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::for_buffer(buffer, cx)
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+
+    // 在编辑器命中区之外按下并拖拽（模拟其他面板如终端的拖拽手势）：
+    // 编辑器不应滚动、不应产生选区。
+    let outside = point(px(400.), px(-50.));
+    cx.simulate_mouse_down(outside, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    let scroll_top_before = cx.read_entity(&editor, |editor, _| editor.scroll_top());
+    let viewport_height = cx.read_entity(&editor, |editor, _| {
+        editor.last_bounds.expect("渲染后应有视口尺寸").size.height
+    });
+    cx.simulate_mouse_move(
+        point(px(400.), viewport_height + px(200.)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.scroll_top(),
+            scroll_top_before,
+            "编辑器外拖拽不应滚动编辑器"
+        );
+        assert!(
+            editor.selections().primary().is_caret(),
+            "编辑器外拖拽不应产生选区"
+        );
     });
 }

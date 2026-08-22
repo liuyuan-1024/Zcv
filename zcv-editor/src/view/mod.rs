@@ -18,13 +18,13 @@ use zcv_actions::{
     SelectToPreviousWord, SelectUp, ToggleFold, Undo, UnfoldAll,
 };
 use zcv_engine::{
-    Buffer, BufferConfig, BufferVersion, ByteOffset, EngineError, EngineResult, Line, LineRange,
-    MovementDirection, MovementUnit, PositionMap, Selection, SelectionSet, Snapshot, TextRange,
-    TextSubscription, TransactionId, TransactionMergePolicy, TransactionMetadata,
+    Buffer, BufferConfig, BufferVersion, ByteOffset, DeltaEvent, EngineError, EngineResult, Line,
+    LineRange, MovementDirection, MovementUnit, PositionMap, Selection, SelectionSet, Snapshot,
+    TextRange, TextSubscription, TransactionId, TransactionMergePolicy, TransactionMetadata,
     TransactionSource,
 };
 use zcv_git::{DiffHunk, DiffHunkKind};
-use zcv_language::{BracketPair, FoldRange, LanguageBuffer, SyntaxSnapshot};
+use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer, SyntaxSnapshot};
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_theme::{color, typography};
 
@@ -40,6 +40,7 @@ mod diff;
 mod search;
 
 pub(crate) use diff::{HunkRendering, diff_kind_for_row, hunk_rendering};
+pub(crate) use input::AutocloseRegion;
 pub(crate) use search::EditorSearch;
 
 /// Editor 自身的领域事件。
@@ -173,6 +174,9 @@ pub struct Editor {
     mouse_select_mode: MouseSelectMode,
     /// 正在进行的鼠标选区手势；普通选区变更会终止它。
     pending_selection: Option<PendingSelection>,
+    /// 自动补全的闭合符标记（输入闭合符时跳过、退格删除整对的数据源）。
+    /// 随每次编辑经 PositionMap 推进；区域版本与当前快照失配（未跟踪的外部编辑）时整体失效。
+    autoclose_regions: Vec<AutocloseRegion>,
 }
 
 impl Editor {
@@ -1014,6 +1018,7 @@ impl Editor {
             preferred_line_length: settings.map_or(80, |settings| settings.preferred_line_length),
             mouse_select_mode: MouseSelectMode::Character,
             pending_selection: None,
+            autoclose_regions: Vec::new(),
         };
         // 设置变化时自动跟随（覆盖场景除外）；编辑器在测试环境无 SettingsStore 时保持默认。
         cx.observe_global::<SettingsStore>(|editor, cx| {
@@ -1128,6 +1133,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> EngineResult<EditOutcome> {
         if let Some(transaction) = outcome.transaction() {
+            self.update_autoclose_regions(transaction.event());
             // 用本次事务的坐标映射批量推进选区端点锚点，选区自动跟随文本变化。
             let snapshot = self.buffer.read(cx).snapshot();
             let new_version = snapshot.version();
@@ -1160,6 +1166,9 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> EngineResult<(EditOutcome, SelectionSet)> {
         let (outcome, after_selections) = outcome;
+        if let Some(transaction) = outcome.transaction() {
+            self.update_autoclose_regions(transaction.event());
+        }
         if let Some(transaction_id) = transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
         {
@@ -1183,6 +1192,39 @@ impl Editor {
             blink.pause_blinking(cx);
         });
         cx.notify();
+    }
+
+    /// 将自动闭合区域随一次文本变更推进到新版本。
+    ///
+    /// 区域版本与变更起点失配时整体清空（说明存在未走编辑入口的文本变更，陈旧区域坐标已不可信，继续保留会误触发跳过/删对）。
+    fn update_autoclose_regions(&mut self, event: &DeltaEvent) {
+        self.update_autoclose_regions_with(
+            event.position_map(),
+            event.old_version(),
+            event.new_version(),
+        );
+    }
+
+    fn update_autoclose_regions_with(
+        &mut self,
+        position_map: &PositionMap,
+        old_version: BufferVersion,
+        new_version: BufferVersion,
+    ) {
+        let mut kept = Vec::with_capacity(self.autoclose_regions.len());
+        for region in std::mem::take(&mut self.autoclose_regions) {
+            if region.range.version() != old_version {
+                continue;
+            }
+            // 映射结果一律保留（等价于 Zed 的 Anchor 语义：删除内容不使锚失效）：
+            // 区域锚在闭合符起点，闭合符是否存活由使用处的文本校验兜底。
+            let range = region
+                .range
+                .map_through_position_map(new_version, position_map)
+                .value();
+            kept.push(AutocloseRegion { range, ..region });
+        }
+        self.autoclose_regions = kept;
     }
 
     fn move_selections(
@@ -1859,6 +1901,10 @@ impl Render for Editor {
 #[cfg(test)]
 #[path = "test/selection_edit_tests.rs"]
 mod selection_edit_tests;
+
+#[cfg(test)]
+#[path = "test/auto_pair_tests.rs"]
+mod auto_pair_tests;
 
 #[cfg(test)]
 #[path = "test/search_tests.rs"]

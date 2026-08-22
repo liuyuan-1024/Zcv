@@ -5,6 +5,8 @@
   "line_height": 1.618,
   "soft_wrap": "editor-width",
   "preferred_line_length": 80,
+  "use_autoclose": true,
+  "use_auto_surround": true,
   "file_scan_exclusions": [
     "**/.git",
     "**/.svn",

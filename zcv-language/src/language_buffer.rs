@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use gpui::{AppContext, Context, Entity, Task};
 use zcv_engine::{Buffer, Snapshot, TextSubscription};
 
+use crate::Language;
 use crate::registry::language_name_for_file;
 use crate::syntax_map::{SyntaxMap, SyntaxSnapshot};
 
@@ -61,6 +62,11 @@ impl LanguageBuffer {
 
     pub fn file_path(&self) -> Option<&Path> {
         self.file_path.as_deref()
+    }
+
+    /// 当前语言引用（编辑器输入行为等消费方取语言配置用，不克隆语法快照）。
+    pub fn language(&self) -> Option<&Language> {
+        self.syntax_map.language()
     }
 
     pub fn language_name(&self) -> Option<&'static str> {

@@ -5,6 +5,7 @@ use std::sync::{Arc, OnceLock};
 
 use tree_sitter::Query;
 
+use crate::AutoClosePair;
 use crate::available_languages::{LanguageQuerySources, QuerySource, builtin_languages};
 
 /// 一门可由 tree-sitter 解析和高亮的语言。
@@ -16,6 +17,7 @@ pub struct Language {
     injections: Option<Arc<Query>>,
     queries: LanguageQueries,
     capture_names: Arc<[Arc<str>]>,
+    auto_close_pairs: &'static [AutoClosePair],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -54,6 +56,11 @@ impl Language {
         self.queries.folds.as_ref()
     }
 
+    /// 输入级自动闭合配对表（编辑器输入行为的数据源）。
+    pub fn auto_close_pairs(&self) -> &'static [AutoClosePair] {
+        self.auto_close_pairs
+    }
+
     /// capture 名字表（capture index -> 名字），供跨语言全局表构建与渲染查表使用。
     pub(crate) fn capture_names(&self) -> &[Arc<str>] {
         &self.capture_names
@@ -83,6 +90,8 @@ pub(crate) struct LanguageEntry {
     pub(crate) injection_alias: Option<&'static str>,
     /// 结构查询源（括号/缩进/折叠）；缺失时语言加载为空查询集。
     pub(crate) queries: Option<LanguageQuerySources>,
+    /// 输入级自动闭合配对表；缺失时语言不参与自动闭合行为。
+    pub(crate) auto_close_pairs: Option<&'static [AutoClosePair]>,
 }
 
 impl LanguageEntry {
@@ -110,6 +119,7 @@ impl LanguageEntry {
             injections: injections.map(Arc::new),
             queries,
             capture_names,
+            auto_close_pairs: self.auto_close_pairs.unwrap_or(&[]),
         })
     }
 
@@ -308,6 +318,22 @@ mod tests {
             assert!(
                 language.folds().is_some() || !path.ends_with(".rs"),
                 "{path} 应提供折叠查询"
+            );
+        }
+    }
+
+    #[test]
+    fn loaded_languages_declare_input_autoclose_pairs() {
+        for path in ["main.rs", "main.py", "data.json", "README.md", "style.css"] {
+            let language = language_for_file(Path::new(path), None)
+                .unwrap_or_else(|| panic!("{path} 应加载语言"));
+            let pairs = language.auto_close_pairs();
+            assert!(!pairs.is_empty(), "{path} 应声明输入自动闭合配对");
+            assert!(
+                pairs
+                    .iter()
+                    .any(|pair| pair.start == "(" && pair.end == ")"),
+                "{path} 应含括号对"
             );
         }
     }

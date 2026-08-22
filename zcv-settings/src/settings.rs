@@ -89,6 +89,10 @@ struct UserSettingsContent {
     #[serde(deserialize_with = "fallible")]
     file_scan_exclusions: Option<Vec<String>>,
     #[serde(deserialize_with = "fallible")]
+    use_autoclose: Option<bool>,
+    #[serde(deserialize_with = "fallible")]
+    use_auto_surround: Option<bool>,
+    #[serde(deserialize_with = "fallible")]
     terminal_font_size: Option<f32>,
     #[serde(deserialize_with = "fallible")]
     terminal_line_height: Option<f32>,
@@ -119,6 +123,10 @@ pub struct UserSettings {
     pub preferred_line_length: usize,
     /// 项目树扫描时完全排除的 glob 名单。
     pub file_scan_exclusions: Vec<String>,
+    /// 键入配对起始字符时是否自动补全闭合符。
+    pub use_autoclose: bool,
+    /// 选中文本时键入配对起始字符是否用该对包裹选区。
+    pub use_auto_surround: bool,
     /// 终端字体大小（像素）；缺省时跟随编辑器字号。
     pub terminal_font_size: Option<f32>,
     /// 终端行高（相对字号的倍数）；缺省时跟随编辑器行高。
@@ -176,6 +184,14 @@ impl UserSettings {
             file_scan_exclusions: content
                 .file_scan_exclusions
                 .or(defaults.file_scan_exclusions)
+                .expect("内置默认应存在"),
+            use_autoclose: content
+                .use_autoclose
+                .or(defaults.use_autoclose)
+                .expect("内置默认应存在"),
+            use_auto_surround: content
+                .use_auto_surround
+                .or(defaults.use_auto_surround)
                 .expect("内置默认应存在"),
             terminal_font_size: content.terminal_font_size.or(defaults.terminal_font_size),
             terminal_line_height: content

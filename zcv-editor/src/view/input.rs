@@ -10,17 +10,41 @@ use gpui::{
     App, Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, Window, px, size,
 };
 use zcv_engine::{
-    ByteOffset, Selection, SelectionSet, Snapshot, TextRange, TransactionId, Utf16Offset,
+    ByteOffset, Selection, SelectionSet, Snapshot, Stickiness, TextRange, TrackedRange,
+    TransactionId, Utf16Offset,
 };
 
 use super::*;
-use crate::selection::{EditorSelections, replace_selections};
+use crate::selection::{EditOutcome, EditorSelections, apply_edits, replace_selections};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EditorComposition {
     pub(super) ranges: Arc<[TextRange]>,
     pub(super) primary_index: usize,
     pub(super) history_transaction_id: Option<TransactionId>,
+}
+
+/// 自动补全的闭合符标记（对齐 Zed `AutocloseRegion`）。
+///
+/// 零宽 `TrackedRange` 锚在自动插入的闭合符起点（`Stickiness::Expand`）：
+/// 向配对内输入文本时末端锚跟随闭合符右移，输入闭合符且光标紧贴末端时跳过，退格时光标贴着起点时删除整对。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AutocloseRegion {
+    pub(crate) range: TrackedRange,
+    pub(crate) pair: AutoClosePair,
+}
+
+/// 输入行为编辑后落点的计算方式（以编辑前坐标为基准，编辑后在闭包内经 PositionMap 换算）。
+enum AfterAction {
+    /// 普通插入：光标落在插入文本末尾（替换非空选区时在替换文本末尾）。
+    Insert { was_caret: bool },
+    /// 自动补全：光标落在 open 之后、自动补全的 close 之前
+    /// （map_old_position 在同点插入处返回插入文本之后，需回退 close 长度）。
+    BetweenPair { close_len: usize },
+    /// 跳过闭合符：不产生编辑，光标越过闭合符（落点 = 区域末端 + 闭合符长度）。
+    SkipPast { end: ByteOffset, close_len: usize },
+    /// 包裹选区：编辑后选区覆盖包裹后的文本（端点映射后回退 close 长度，不吸收闭合符）。
+    Mapped { close_len: usize },
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +112,13 @@ impl Editor {
     ) {
         let before_selections = self.resolved_selections();
         let composition = self.composition.take();
+        // 自动闭合行为只作用于普通单字符输入（IME 组合会话与指定替换范围不进入）。
+        if range_utf16.is_none()
+            && composition.is_none()
+            && self.try_auto_pair_input(text, &before_selections, cx)
+        {
+            return;
+        }
         let Some((targets, text, metadata)) =
             self.commit_input_edit(composition.clone(), range_utf16, text, "输入文本", cx)
         else {
@@ -196,6 +227,295 @@ impl Editor {
             .and_then(|node| buffer.history_node(node))
             .is_some_and(|node| node.transaction_id == transaction_id)
     }
+
+    /// 自动闭合行为枢纽（对齐 Zed `handle_input` 的配对部分）。
+    ///
+    /// 逐选区决策：非空选区用配对包裹、光标贴着自动补全闭合符时跳过、键入 open 自动补 close；
+    /// 任一选区命中行为时统一提交编辑并返回 true，否则返回 false 走普通插入路径。
+    fn try_auto_pair_input(
+        &mut self,
+        text: &str,
+        before: &SelectionSet,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(typed) = text.chars().next() else {
+            return false;
+        };
+        // 自动闭合只处理单字符输入；多字符文本（粘贴等）不走此路径。
+        if text.len() != typed.len_utf8() {
+            return false;
+        }
+        let Some(pairs) = self.auto_close_pairs(cx) else {
+            return false;
+        };
+        if pairs.is_empty() {
+            return false;
+        }
+        let settings = SettingsStore::try_get(cx).unwrap_or_default();
+        let auto_close_enabled = settings.use_autoclose;
+        let auto_surround_enabled = settings.use_auto_surround;
+        if !auto_close_enabled && !auto_surround_enabled {
+            return false;
+        }
+
+        let before = before.normalized();
+        let snapshot = self.buffer.read(cx).snapshot();
+
+        // 逐选区决策，产出目标编辑、编辑后落点与新区域（以编辑前坐标为基准）。
+        let mut targets: Vec<(Selection, Arc<str>)> = Vec::new();
+        let mut after_actions: Vec<AfterAction> = Vec::new();
+        let mut new_regions: Vec<TextRange> = Vec::new();
+        let mut new_region_pairs: Vec<AutoClosePair> = Vec::new();
+        let mut consumed = false;
+        for selection in before.as_slice() {
+            if !selection.is_caret() {
+                if auto_surround_enabled
+                    && let Some(pair) = pairs
+                        .iter()
+                        .find(|pair| pair.surround && pair.start == typed.to_string())
+                {
+                    targets.push((Selection::caret(selection.start()), Arc::from(pair.start)));
+                    targets.push((Selection::caret(selection.end()), Arc::from(pair.end)));
+                    after_actions.push(AfterAction::Mapped {
+                        close_len: pair.end.len(),
+                    });
+                    consumed = true;
+                } else {
+                    targets.push((*selection, Arc::from(text)));
+                    after_actions.push(AfterAction::Insert { was_caret: false });
+                }
+                continue;
+            }
+            if auto_close_enabled
+                && let Some(region) = self.autoclose_region_at(selection.end(), typed, &snapshot)
+            {
+                after_actions.push(AfterAction::SkipPast {
+                    end: region.range.range().end(),
+                    close_len: region.pair.end.len(),
+                });
+                consumed = true;
+                continue;
+            }
+            if auto_close_enabled
+                && let Some(pair) = pairs
+                    .iter()
+                    .find(|pair| pair.close && pair.start == typed.to_string())
+                && following_text_allows_autoclose(&snapshot, selection.end())
+                && preceding_text_allows_autoclose(&snapshot, selection.end(), pair)
+            {
+                targets.push((*selection, Arc::from(format!("{text}{}", pair.end))));
+                after_actions.push(AfterAction::BetweenPair {
+                    close_len: pair.end.len(),
+                });
+                new_regions.push(
+                    TextRange::new(selection.end(), selection.end()).expect("零宽区间必然合法"),
+                );
+                new_region_pairs.push(*pair);
+                consumed = true;
+                continue;
+            }
+            targets.push((*selection, Arc::from(text)));
+            after_actions.push(AfterAction::Insert { was_caret: true });
+        }
+        if !consumed {
+            return false;
+        }
+
+        // 统一提交：跳过场景不产生编辑，其余按目标文本插入；
+        // 新区域在闭包内经 PositionMap 换算到编辑后坐标。
+        let mut new_regions_after: Vec<(TextRange, AutoClosePair)> = Vec::new();
+        let metadata = input_metadata("输入文本", false);
+        let result = self.change_with_after(before.clone(), cx, |buffer| {
+            let outcome = apply_edits(buffer, &targets, metadata.clone())?;
+            let position_map = outcome
+                .as_ref()
+                .map(|transaction| transaction.event().position_map().clone())
+                .unwrap_or_default();
+            for (index, range) in new_regions.iter().enumerate() {
+                // 区域锚在闭合符起点：光标经映射吸收到配对之后，回退 close 长度即闭合符起点。
+                // （不能用零宽区间经 Expand 映射——同点插入会把整个配对吸进区间。）
+                let mapped = position_map.map_old_position(range.start()).value();
+                let close_start = ByteOffset::new(mapped.get() - new_region_pairs[index].end.len());
+                new_regions_after.push((
+                    TextRange::new(close_start, close_start).expect("零宽区间必然合法"),
+                    new_region_pairs[index],
+                ));
+            }
+            let after = SelectionSet::new_with_primary(
+                before
+                    .as_slice()
+                    .iter()
+                    .zip(after_actions.iter())
+                    .map(|(selection, action)| match action {
+                        AfterAction::Insert { was_caret } => {
+                            let start = position_map.map_old_position(selection.start()).value();
+                            Selection::caret(if *was_caret {
+                                start
+                            } else {
+                                ByteOffset::new(start.get() + typed.len_utf8())
+                            })
+                        }
+                        AfterAction::BetweenPair { close_len } => {
+                            let start = position_map.map_old_position(selection.start()).value();
+                            Selection::caret(ByteOffset::new(start.get() - close_len))
+                        }
+                        AfterAction::SkipPast { end, close_len } => {
+                            let end = position_map.map_old_position(*end).value();
+                            Selection::caret(ByteOffset::new(end.get() + close_len))
+                        }
+                        AfterAction::Mapped { close_len } => {
+                            let start = position_map.map_old_position(selection.start()).value();
+                            let end = position_map.map_old_position(selection.end()).value();
+                            let end = ByteOffset::new(end.get() - close_len);
+                            if selection.is_reversed() {
+                                Selection::new(end, start)
+                            } else {
+                                Selection::new(start, end)
+                            }
+                        }
+                    })
+                    .collect(),
+                before.primary_index(),
+            );
+            Ok((EditOutcome::from_transaction(outcome), after))
+        });
+        if let Ok((_, _)) = result {
+            let version = self.buffer.read(cx).snapshot().version();
+            self.autoclose_regions
+                .extend(
+                    new_regions_after
+                        .into_iter()
+                        .map(|(range, pair)| AutocloseRegion {
+                            range: TrackedRange::from_range(version, range, Stickiness::Expand),
+                            pair,
+                        }),
+                );
+        }
+        true
+    }
+
+    /// 当前语言的自动闭合配对表。
+    pub(super) fn auto_close_pairs(&self, cx: &App) -> Option<&'static [AutoClosePair]> {
+        Some(self.language_buffer.read(cx).language()?.auto_close_pairs())
+    }
+
+    /// 光标处的待跳过自动闭合区域：区域末端锚与光标重合、该处文本确为配对闭合符。
+    /// 嵌套配对取最内层（区域起点最大者）；区域版本滞后于当前快照（未跟踪的外部编辑）视为失效。
+    fn autoclose_region_at(
+        &self,
+        end: ByteOffset,
+        typed: char,
+        snapshot: &Snapshot,
+    ) -> Option<AutocloseRegion> {
+        self.autoclose_regions
+            .iter()
+            .filter(|region| {
+                region.range.version() == snapshot.version()
+                    && region.range.range().end() == end
+                    && region.pair.end == typed.to_string()
+                    && text_at(snapshot, end, &region.pair.end)
+            })
+            .max_by_key(|region| region.range.range().start())
+            .copied()
+    }
+
+    /// 光标贴着自动补全闭合符起点时扩展选区覆盖整对（对齐 Zed `select_autoclose_pair`），使退格一次删除整对；非空选区或未命中区域时选区不变。
+    pub(super) fn select_autoclose_pair(&mut self, cx: &App) {
+        let snapshot = self.buffer.read(cx).snapshot();
+        let before = self.resolved_selections();
+        let mut changed = false;
+        let selections: Vec<Selection> = before
+            .as_slice()
+            .iter()
+            .map(|selection| {
+                if !selection.is_caret() {
+                    return *selection;
+                }
+                let Some(region) = self
+                    .autoclose_regions
+                    .iter()
+                    .filter(|region| {
+                        region.range.version() == snapshot.version()
+                            && region.range.range().start() == selection.end()
+                    })
+                    .max_by_key(|region| region.range.range().start())
+                    .copied()
+                else {
+                    return *selection;
+                };
+                let range = region.range.range();
+                let Some(start) = range.start().get().checked_sub(region.pair.start.len()) else {
+                    return *selection;
+                };
+                let start = ByteOffset::new(start);
+                let Some(end) = range.end().checked_add(region.pair.end.len()) else {
+                    return *selection;
+                };
+                // 校验开合文本确实位于区域两端，再扩展选区覆盖整对。
+                if text_at(&snapshot, start, region.pair.start)
+                    && text_at(&snapshot, range.end(), region.pair.end)
+                {
+                    changed = true;
+                    Selection::new(start, end)
+                } else {
+                    *selection
+                }
+            })
+            .collect();
+        if changed {
+            self.selections = EditorSelections::from_selection_set(
+                snapshot.version(),
+                &SelectionSet::new_with_primary(selections, before.primary_index()),
+            );
+        }
+    }
+}
+
+/// 自动闭合的后续检查（对齐 Zed `autoclose_before`）：光标后是空白、行尾或常见语句分隔符时才自动闭合，避免在标识符前键入 open 时被自动补上 close。
+const AUTOCLOSE_BEFORE: &str = ";:.,=}])>";
+
+fn following_text_allows_autoclose(snapshot: &Snapshot, offset: ByteOffset) -> bool {
+    let Ok((chunk, chunk_start)) = snapshot.chunk_at_byte(offset) else {
+        return true;
+    };
+    let Some(next) = chunk[offset.get() - chunk_start.get()..].chars().next() else {
+        return true;
+    };
+    next.is_whitespace() || AUTOCLOSE_BEFORE.contains(next)
+}
+
+/// 自动闭合的前置检查（对齐 Zed）：引号类配对（start == end）前是词字符时不自动闭合，避免在单词末尾输入引号时被当成新的开启引号。
+fn preceding_text_allows_autoclose(
+    snapshot: &Snapshot,
+    offset: ByteOffset,
+    pair: &AutoClosePair,
+) -> bool {
+    if pair.start != pair.end {
+        return true;
+    }
+    let Ok((line, column)) = snapshot.byte_to_point(offset) else {
+        return true;
+    };
+    if column == 0 {
+        return true;
+    }
+    let Ok(line_slice) = snapshot.line_content(line, None) else {
+        return true;
+    };
+    let prefix = &line_slice.as_str()[..column];
+    !prefix
+        .chars()
+        .next_back()
+        .is_some_and(|character| character.is_alphanumeric() || character == '_')
+}
+
+/// `offset` 处是否为指定文本（越界或文本不符返回 false）。
+fn text_at(snapshot: &Snapshot, offset: ByteOffset, text: &str) -> bool {
+    offset.checked_add(text.len()).is_some_and(|end| {
+        snapshot
+            .slice_byte_range(offset, end)
+            .is_ok_and(|slice| slice.as_str() == text)
+    })
 }
 
 impl EntityInputHandler for Editor {

@@ -91,7 +91,7 @@ pub struct PositionMap {
 
 impl PositionMap {
     /// 从编辑切片构造映射，不持有编辑本身（只投影 range 与长度）。
-    pub(crate) fn from_edits(edits: &[Edit]) -> Self {
+    pub fn from_edits(edits: &[Edit]) -> Self {
         Self {
             edits: edits
                 .iter()

@@ -18,10 +18,11 @@ use zcv_actions::{
 use zcv_project::Project;
 use zcv_theme::{color, typography};
 
-use crate::dock::{Dock, DockPosition, DockStructure, DraggedDock, render_body};
+use crate::ItemHandle;
+use crate::dock::{Dock, DockEvent, DockPosition, DockStructure, DraggedDock, render_body};
 use crate::item_provider::item_provider_for_path;
-use crate::layout_state;
-use crate::pane::Pane;
+use crate::layout_state::{self, PanelState, SerializedPane, WorkspaceLayout};
+use crate::pane::{Pane, PaneEvent};
 use crate::panel::PanelHandle;
 use crate::preview::provider_for;
 use crate::status_bar::StatusBar;
@@ -81,7 +82,7 @@ impl Workspace {
         Self::build(project, window, cx)
     }
 
-    fn build(project: Entity<Project>, _window: &Window, cx: &mut Context<Self>) -> Self {
+    fn build(project: Entity<Project>, window: &Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
 
         let keybindings = zcv_keymap::load(cx).expect("内置 keymap 应完整有效");
@@ -90,14 +91,40 @@ impl Workspace {
 
         let pane = cx.new(Pane::new);
         let layout_path = layout_state::path_for_workspace(project.read(cx).root());
-        let restored_docks = layout_state::load(&layout_path).unwrap_or_default();
+        let restored_layout = layout_state::load(&layout_path).unwrap_or_default();
+        let restored_pane = restored_layout.pane.clone();
+        let restored_panels = restored_layout.panels.clone();
+        // 标签变化时节流保存布局（订阅带 window：调度保存需要 window）。
+        let pane_for_layout = pane.clone();
+        let layout_subscription =
+            cx.subscribe_in(&pane_for_layout, window, |this, _, event, window, cx| {
+                if matches!(
+                    event,
+                    PaneEvent::AddItem { .. }
+                        | PaneEvent::ActivateItem { .. }
+                        | PaneEvent::RemovedItem { .. }
+                ) {
+                    this.schedule_layout_save(window, cx);
+                }
+            });
+        // 恢复标签与面板状态延后到首帧后：此时面板装配与 Item Provider 已就绪。
+        let restored_for_defer = (restored_pane.clone(), restored_panels.clone());
+        window.defer(cx, move |window, cx| {
+            let Some(Some(workspace)) = window.root::<Workspace>() else {
+                return;
+            };
+            workspace.update(cx, |workspace, cx| {
+                workspace.restore_pane(&restored_for_defer.0, window, cx);
+                workspace.restore_panels(&restored_for_defer.1, window, cx);
+            });
+        });
         // 三个空 Dock；面板由宿主经 register_panel 注册。
         let left_dock = cx.new(|cx| {
             Dock::new(
                 DockPosition::Left,
                 Vec::new(),
                 DockPosition::Left.default_size(),
-                Some(restored_docks.left.clone()),
+                Some(restored_layout.docks.left.clone()),
                 cx,
             )
         });
@@ -106,7 +133,7 @@ impl Workspace {
                 DockPosition::Right,
                 Vec::new(),
                 DockPosition::Right.default_size(),
-                Some(restored_docks.right.clone()),
+                Some(restored_layout.docks.right.clone()),
                 cx,
             )
         });
@@ -115,12 +142,22 @@ impl Workspace {
                 DockPosition::Bottom,
                 Vec::new(),
                 DockPosition::Bottom.default_size(),
-                Some(restored_docks.bottom.clone()),
+                Some(restored_layout.docks.bottom.clone()),
                 cx,
             )
         });
         left_dock.update(cx, |d, _| d.set_sibling(right_dock.downgrade()));
         right_dock.update(cx, |d, _| d.set_sibling(left_dock.downgrade()));
+
+        // dock 开合变化时节流保存布局（覆盖所有打开/折叠路径）。
+        let dock_layout_subscriptions: Vec<Subscription> = [&left_dock, &right_dock, &bottom_dock]
+            .iter()
+            .map(|dock| {
+                cx.subscribe_in(dock, window, |this, _, _: &DockEvent, window, cx| {
+                    this.schedule_layout_save(window, cx);
+                })
+            })
+            .collect();
 
         let status_bar = cx.new(|cx| StatusBar::new(pane.clone(), cx));
         let toast_layer = cx.new(|_| ToastLayer::new());
@@ -137,7 +174,9 @@ impl Workspace {
             file_click_generation: 0,
             titlebar: None,
             open_settings_path_provider: None,
-            _subscriptions: Vec::new(),
+            _subscriptions: std::iter::once(layout_subscription)
+                .chain(dock_layout_subscriptions)
+                .collect(),
             workspace_actions: Vec::new(),
             layout_path,
             _layout_save_task: None,
@@ -174,7 +213,7 @@ impl Workspace {
     }
 
     /// 捕获三个 Dock 的当前布局状态。
-    pub fn capture_dock_state(&self, cx: &App) -> DockStructure {
+    fn capture_dock_state(&self, cx: &App) -> DockStructure {
         DockStructure {
             left: self.left_dock.read(cx).capture_state(),
             right: self.right_dock.read(cx).capture_state(),
@@ -182,24 +221,8 @@ impl Workspace {
         }
     }
 
-    /// 注入布局快照。具体 panel 尚未注册时，Dock 会保留状态并在注册后继续恢复。
-    pub fn set_dock_structure(
-        &mut self,
-        docks: DockStructure,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        for (dock, state) in [
-            (&self.left_dock, docks.left),
-            (&self.right_dock, docks.right),
-            (&self.bottom_dock, docks.bottom),
-        ] {
-            dock.update(cx, |dock, cx| dock.set_serialized_state(state, window, cx));
-        }
-        cx.notify();
-    }
-
-    fn schedule_layout_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// 节流调度一次布局保存（宿主装配层响应面板事件时调用）。
+    pub fn schedule_layout_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self._layout_save_task.is_some() {
             return;
         }
@@ -207,8 +230,8 @@ impl Workspace {
             cx.background_executor().timer(LAYOUT_SAVE_THROTTLE).await;
             this.update_in(cx, |this, _window, cx| {
                 this._layout_save_task.take();
-                let state = this.capture_dock_state(cx);
-                if let Err(error) = layout_state::save(&this.layout_path, state) {
+                let layout = this.capture_layout(cx);
+                if let Err(error) = layout_state::save(&this.layout_path, &layout) {
                     log::warn!("保存工作区布局失败：{error:#}");
                 }
             })
@@ -219,8 +242,29 @@ impl Workspace {
     /// 立即落盘布局状态；供宿主在替换工作区根之前冲刷节流中的保存（节流任务随旧根销毁而丢失）。
     pub fn flush_layout(&mut self, cx: &App) {
         self._layout_save_task.take();
-        if let Err(error) = layout_state::save(&self.layout_path, self.capture_dock_state(cx)) {
+        let layout = self.capture_layout(cx);
+        if let Err(error) = layout_state::save(&self.layout_path, &layout) {
             log::warn!("保存工作区布局失败：{error:#}");
+        }
+    }
+
+    /// 捕获完整布局快照：dock 状态 + 中心 Pane 标签 + 各面板自持状态。
+    fn capture_layout(&self, cx: &App) -> WorkspaceLayout {
+        let panels = [&self.left_dock, &self.right_dock, &self.bottom_dock]
+            .iter()
+            .flat_map(|dock| dock.read(cx).panels())
+            .filter_map(|panel| {
+                panel.serialized_state(cx).map(|data| PanelState {
+                    name: panel.persistent_name().to_string(),
+                    data,
+                })
+            })
+            .collect();
+        WorkspaceLayout {
+            version: layout_state::LAYOUT_VERSION,
+            docks: self.capture_dock_state(cx),
+            pane: self.pane.read(cx).serialized(cx),
+            panels,
         }
     }
 
@@ -270,6 +314,76 @@ impl Workspace {
     }
 
     // ═══ 文件打开 ═════════════════════════════════════════════════
+
+    /// 恢复持久化的标签：按保存顺序固定打开，无路径/失效路径跳过，最后激活保存的位置。
+    /// 与 open_path 的单击语义无关：固定打开不走临时标签流程。
+    fn restore_pane(
+        &mut self,
+        state: &SerializedPane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let project = self.project.clone();
+        let pane = self.pane.clone();
+        let tasks: Vec<gpui::Task<anyhow::Result<Box<dyn ItemHandle>>>> = state
+            .items
+            .iter()
+            .filter_map(|path| {
+                let path = path.canonicalize().ok()?;
+                let provider = item_provider_for_path(&path, cx)?;
+                Some(provider.open_item(path, project.clone(), cx))
+            })
+            .collect();
+        let active_index = state.active_item;
+        cx.spawn_in(window, async move |_workspace, cx| {
+            for task in tasks {
+                if let Ok(item) = task.await {
+                    _workspace
+                        .update_in(cx, |_workspace, window, cx| {
+                            pane.update(cx, |pane, cx| pane.open_item(item, false, window, cx));
+                        })
+                        .ok();
+                }
+            }
+            // 恢复活动标签（打开顺序与保存顺序一致，索引可直接映射）。
+            if let Some(index) = active_index {
+                _workspace
+                    .update_in(cx, |_workspace, window, cx| {
+                        let Some(item) = pane.read(cx).tabs().get(index) else {
+                            return;
+                        };
+                        let item_id = item.item_id();
+                        pane.update(cx, |pane, cx| {
+                            pane.activate_tab(item_id, window, cx);
+                        });
+                    })
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// 按持久化标识向各面板分发自持状态（找不到对应面板时跳过）。
+    fn restore_panels(
+        &mut self,
+        states: &[PanelState],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let all_panels: Vec<Arc<dyn PanelHandle>> =
+            [&self.left_dock, &self.right_dock, &self.bottom_dock]
+                .iter()
+                .flat_map(|dock| dock.read(cx).panels().iter().cloned())
+                .collect();
+        for state in states {
+            if let Some(panel) = all_panels
+                .iter()
+                .find(|p| p.persistent_name() == state.name)
+            {
+                panel.restore_state(state.data.clone(), window, cx);
+            }
+        }
+    }
 
     /// 所有文件树入口共享的单击/双击协调逻辑。
     pub fn open_path(
@@ -429,7 +543,6 @@ impl Workspace {
             }
             window.focus(&focus);
         }
-        self.schedule_layout_save(window, cx);
         window.refresh();
     }
 
@@ -460,7 +573,6 @@ impl Workspace {
         } else if let Some(panel_focus) = panel_focus {
             window.focus(&panel_focus);
         }
-        self.schedule_layout_save(window, cx);
         window.refresh();
     }
 
@@ -487,7 +599,6 @@ impl Workspace {
         } else if !was_open && let Some(focus) = panel_focus {
             window.focus(&focus);
         }
-        self.schedule_layout_save(window, cx);
         window.refresh();
     }
 
@@ -662,12 +773,17 @@ mod tests {
         App, AppContext, Context, FocusHandle, Render, TestAppContext, Window, div, prelude::*,
     };
 
-    use super::{DockPosition, DockStructure, LAYOUT_SAVE_THROTTLE, Workspace};
+    use super::{DockPosition, LAYOUT_SAVE_THROTTLE, Workspace};
+    use crate::DockData;
+    use crate::panel::PanelEvent;
     use crate::{FocusOrHidePanel, Panel, PanelHandle};
+    use gpui::EventEmitter;
 
     struct TestPanel {
         focus: FocusHandle,
     }
+
+    impl EventEmitter<PanelEvent> for TestPanel {}
 
     impl Panel for TestPanel {
         fn icon() -> &'static str {
@@ -700,13 +816,76 @@ mod tests {
         assert!(!cx.read_entity(&project, |project, _| project.has_worktree()));
     }
 
+    /// 回归：序列化 visible=true 的 dock 随面板注册恢复打开（重启不展开问题）。
+    #[gpui::test]
+    fn workspace_restores_visible_dock(cx: &mut TestAppContext) {
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::new_empty(window, cx);
+            workspace.bottom_dock.update(cx, |dock, cx| {
+                dock.set_serialized_state(
+                    DockData {
+                        visible: true,
+                        active_panel: Some("test-panel".into()),
+                        size: Some(200.0),
+                    },
+                    window,
+                    cx,
+                );
+            });
+            let panel = cx.new(|cx| TestPanel {
+                focus: cx.focus_handle(),
+            });
+            let handle: Arc<dyn PanelHandle> = Arc::new(panel);
+            workspace.register_panel(handle, DockPosition::Bottom, window, cx);
+            workspace
+        });
+        cx.run_until_parked();
+
+        cx.read_entity(&workspace, |workspace, cx| {
+            assert!(
+                workspace.bottom_dock.read(cx).is_open(),
+                "序列化可见的 dock 应随面板注册恢复打开"
+            );
+        });
+    }
+
+    /// 回归：dock 开合（set_open 直接调用，非 toggle 路径）应经 DockEvent 触发布局保存。
+    #[gpui::test]
+    fn dock_open_change_saves_layout(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let layout_path = directory.path().join("layout.json");
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::new_empty(window, cx);
+            let panel = cx.new(|cx| TestPanel {
+                focus: cx.focus_handle(),
+            });
+            let handle: Arc<dyn PanelHandle> = Arc::new(panel);
+            workspace.register_panel(handle, DockPosition::Bottom, window, cx);
+            workspace
+        });
+        workspace.update(cx, |workspace, _| {
+            workspace.layout_path = layout_path.clone();
+        });
+
+        // 直接 set_open(true)：cmd-t 打开终端面板等非 toggle 路径。
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.bottom_dock.update(cx, |dock, cx| {
+                dock.set_open(true, window, cx);
+            });
+        });
+        cx.executor().advance_clock(LAYOUT_SAVE_THROTTLE);
+        cx.run_until_parked();
+
+        let saved = crate::layout_state::load(&layout_path).expect("应保存布局快照");
+        assert!(saved.docks.bottom.visible, "dock 开合应触发保存");
+    }
+
     #[gpui::test]
     fn closed_dock_stays_in_action_lifecycle_and_can_reopen(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let layout_path = directory.path().join("layout.json");
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::new_empty(window, cx);
-            workspace.set_dock_structure(DockStructure::default(), window, cx);
             let panel = cx.new(|cx| TestPanel {
                 focus: cx.focus_handle(),
             });
@@ -774,7 +953,7 @@ mod tests {
         cx.executor().advance_clock(LAYOUT_SAVE_THROTTLE);
         cx.run_until_parked();
         let saved = crate::layout_state::load(&layout_path).expect("应保存布局快照");
-        assert!(saved.left.visible);
-        assert_eq!(saved.left.active_panel.as_deref(), Some("test-panel"));
+        assert!(saved.docks.left.visible);
+        assert_eq!(saved.docks.left.active_panel.as_deref(), Some("test-panel"));
     }
 }

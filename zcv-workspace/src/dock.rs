@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, MouseButton, Pixels, Point, Render, Subscription,
-    WeakEntity, Window, deferred, div, prelude::*, px,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Point, Render,
+    Subscription, WeakEntity, Window, deferred, div, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
 pub use zcv_actions::{FocusOrHidePanel, ToggleBottomDock, ToggleLeftDock, ToggleRightDock};
@@ -18,6 +18,15 @@ use zcv_theme::{color, space};
 
 use crate::pane::Pane;
 use crate::panel::PanelHandle;
+
+/// Dock 对外发出的事件。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DockEvent {
+    /// 开合状态实际变化（折叠/展开）。
+    OpenChanged,
+}
+
+impl EventEmitter<DockEvent> for Dock {}
 
 // ═══ 类型定义 ═══════════════════════════════════════════════════
 
@@ -34,7 +43,6 @@ pub enum DockPosition {
 pub struct DockData {
     pub visible: bool,
     pub active_panel: Option<String>,
-    #[serde(default)]
     pub size: Option<f32>,
 }
 
@@ -197,7 +205,7 @@ impl Dock {
         self.is_open && Some(panel_index) == self.active_panel_index
     }
 
-    /// 设置开关状态，并统一触发 panel 生命周期回调。
+    /// 设置开关状态，并统一触发 panel 生命周期回调；状态实际变化时发出事件（宿主据此保存布局）。
     pub fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_open == open {
             return;
@@ -206,6 +214,7 @@ impl Dock {
         if let Some(panel) = self.active_panel().cloned() {
             panel.set_active(open, window, cx);
         }
+        cx.emit(DockEvent::OpenChanged);
         cx.notify();
     }
 
@@ -511,6 +520,8 @@ mod tests {
                 focus: FocusHandle,
             }
 
+            impl gpui::EventEmitter<crate::panel::PanelEvent> for $name {}
+
             impl Panel for $name {
                 fn icon() -> &'static str {
                     "icons/list_tree.svg"
@@ -568,6 +579,35 @@ mod tests {
             assert_eq!(dock.active_panel_index(), Some(1));
             assert_eq!(dock.capture_state().active_panel.as_deref(), Some("second"));
             assert_eq!(dock.capture_state().size, Some(333.0));
+        });
+    }
+
+    /// 序列化 visible=true 的 dock 应随面板注册恢复打开（回归：终端面板重启不展开）。
+    #[gpui::test]
+    fn serialized_visible_dock_opens_on_panel_registration(cx: &mut TestAppContext) {
+        let panel = cx.new(|cx| FirstPanel {
+            focus: cx.focus_handle(),
+        });
+        let handle: Arc<dyn PanelHandle> = Arc::new(panel);
+        let serialized = DockData {
+            visible: true,
+            active_panel: Some("first".into()),
+            size: Some(200.0),
+        };
+        let (dock, cx) = cx.add_window_view(move |window, cx| {
+            let mut dock = Dock::new(
+                DockPosition::Bottom,
+                Vec::new(),
+                px(200.0),
+                Some(serialized),
+                cx,
+            );
+            dock.add_panel(handle, window, cx);
+            dock
+        });
+
+        cx.read_entity(&dock, |dock, _| {
+            assert!(dock.is_open(), "可见的 dock 应随面板注册恢复打开");
         });
     }
 

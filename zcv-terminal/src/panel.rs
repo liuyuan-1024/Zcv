@@ -2,16 +2,34 @@
 //!
 //! 对齐 Zed：面板复用编辑区的 Pane，多终端标签栏、tab 切换、关闭与编辑区同构。
 
-use gpui::{App, ClickEvent, Context, Entity, FocusHandle, Window, prelude::*};
+use gpui::{
+    App, ClickEvent, Context, Entity, EntityId, EventEmitter, FocusHandle, Subscription, Window,
+    prelude::*,
+};
+use serde::{Deserialize, Serialize};
 use zcv_actions::NewTerminal;
 use zcv_ui::Glyph;
-use zcv_workspace::{Pane, Panel};
+use zcv_workspace::{Pane, PaneEvent, Panel, PanelEvent};
+
+/// 终端会话快照：重建 PTY 所需的最小信息。
+#[derive(Debug, Serialize, Deserialize)]
+struct SerializedTerminal {
+    /// 启动时的工作目录。
+    cwd: Option<std::path::PathBuf>,
+}
 
 use crate::{TerminalBuilder, TerminalView};
 
 pub struct TerminalPanel {
     pane: Entity<Pane>,
+    _subscriptions: Vec<Subscription>,
+    /// 首次渲染时注册带 window 的订阅（构造函数中没有 Window）。
+    initialized: bool,
+    /// 恢复会话进行中：抑制清空终端触发的 PaneEvent::Remove（防面板误折叠）。
+    restoring: bool,
 }
+
+impl EventEmitter<PanelEvent> for TerminalPanel {}
 
 impl TerminalPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -36,6 +54,9 @@ impl TerminalPanel {
         });
         TerminalPanel {
             pane: pane_for_button,
+            _subscriptions: Vec::new(),
+            initialized: false,
+            restoring: false,
         }
     }
 
@@ -45,6 +66,16 @@ impl TerminalPanel {
         let cwd = cx
             .try_global::<zcv_project::ActiveProjectRoot>()
             .and_then(|root| root.0.clone());
+        self.new_terminal_with_cwd(cwd, window, cx);
+    }
+
+    /// 以指定工作目录创建终端（恢复会话时沿用保存的 cwd）。
+    fn new_terminal_with_cwd(
+        &mut self,
+        cwd: Option<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // PTY 创建失败（fork/exec 异常）属于严重错误，直接终止应用并给出原因。
         let terminal = cx.new(|cx| {
             TerminalBuilder::new()
@@ -94,10 +125,86 @@ impl Panel for TerminalPanel {
             }
         }
     }
+
+    /// 序列化终端会话列表（工作目录）；始终保存（空列表也持久化，恢复时为空转）。
+    fn serialized_state(&self, cx: &App) -> Option<serde_json::Value> {
+        let items: Vec<SerializedTerminal> = self
+            .pane
+            .read(cx)
+            .tabs()
+            .iter()
+            .filter_map(|item| {
+                let view = item.act_as::<TerminalView>(cx)?;
+                let cwd = view
+                    .read(cx)
+                    .terminal
+                    .read(cx)
+                    .working_directory()
+                    .map(|path| path.to_path_buf());
+                Some(SerializedTerminal { cwd })
+            })
+            .collect();
+        serde_json::to_value(&items).ok()
+    }
+
+    /// 恢复终端会话：按保存顺序重建 PTY（shell 会话为新进程，沿用保存的工作目录）。
+    fn restore_state(
+        &mut self,
+        state: serde_json::Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(items) = serde_json::from_value::<Vec<SerializedTerminal>>(state) else {
+            return;
+        };
+        self.restoring = true;
+        // 记录恢复前已存在的终端（dock 恢复可见性时懒创建的），重建后清理。
+        // 先重建再清理：清理时 tabs 非空，不会触发 PaneEvent::Remove 误折叠面板（事件异步分发，同步的 restoring 标志无法抑制）。
+        let preexisting: Vec<EntityId> = self
+            .pane
+            .read(cx)
+            .tabs()
+            .iter()
+            .map(|item| item.item_id())
+            .collect();
+        for item in items {
+            self.new_terminal_with_cwd(item.cwd, window, cx);
+        }
+        for id in preexisting {
+            self.pane
+                .update(cx, |pane, cx| pane.close_tab(id, window, cx));
+        }
+        self.restoring = false;
+    }
 }
 
 impl Render for TerminalPanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 首次渲染注册带 window 的订阅（构造函数中没有 Window，对齐 TerminalView 的初始化模式）。
+        if !self.initialized {
+            self.initialized = true;
+            let subscription = cx.subscribe_in(
+                &self.pane,
+                window,
+                |this, _, event: &PaneEvent, _window, cx| {
+                    // 会话增删时通知宿主保存布局（恢复期间不触发，避免恢复过程反复落盘）。
+                    if !this.restoring
+                        && matches!(
+                            event,
+                            PaneEvent::AddItem { .. } | PaneEvent::RemovedItem { .. }
+                        )
+                    {
+                        cx.emit(PanelEvent::StateChanged);
+                    }
+                    // 最后一个终端关闭（Pane 请求移除自身）时请求关闭面板；
+                    // 宿主订阅 PanelEvent::Close 统一折叠（恢复期间不触发）。
+                    if matches!(event, PaneEvent::Remove) && !this.restoring {
+                        cx.emit(PanelEvent::Close);
+                    }
+                },
+            );
+            self._subscriptions.push(subscription);
+        }
         div().size_full().child(self.pane.clone())
     }
 }

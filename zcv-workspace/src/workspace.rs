@@ -31,13 +31,13 @@ mod workspace_state;
 pub use activity_indicator::ActivityIndicator;
 pub use branch_picker::{GitBranchAction, OnBranchSelected};
 pub use dock::{
-    Dock, DockData, DockPosition, DockStructure, FocusOrHidePanel, ToggleBottomDock,
+    Dock, DockData, DockEvent, DockPosition, DockStructure, FocusOrHidePanel, ToggleBottomDock,
     ToggleLeftDock, ToggleRightDock,
 };
 pub use item::{Item, ItemEvent, ItemEventHandler, ItemHandle};
 pub use item_provider::{ItemProvider, register_item_provider};
 pub use pane::{Pane, PaneEvent};
-pub use panel::{Panel, PanelHandle};
+pub use panel::{Panel, PanelEvent, PanelHandle};
 pub use panel_buttons::PanelButtons;
 pub use preview::{PreviewDocument, PreviewItem, PreviewItemHandle, PreviewProvider, register};
 pub use project_picker::OnProjectSelected;

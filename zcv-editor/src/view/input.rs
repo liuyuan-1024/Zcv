@@ -413,7 +413,7 @@ impl Editor {
                 region.range.version() == snapshot.version()
                     && region.range.range().end() == end
                     && region.pair.end == typed.to_string()
-                    && text_at(snapshot, end, &region.pair.end)
+                    && text_at(snapshot, end, region.pair.end)
             })
             .max_by_key(|region| region.range.range().start())
             .copied()

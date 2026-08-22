@@ -15,6 +15,7 @@ use zcv_actions::{CloseTab, DeploySearch, NextTab, PrevTab, TogglePreview};
 use zcv_theme::{FileIcons, color, typography};
 use zcv_ui::{Glyph, SvgIcon, Tab};
 
+use crate::layout_state::SerializedPane;
 use crate::preview::{PreviewDocument, provider_for};
 use crate::search_bar::SearchBar;
 use crate::tab_bar::{TabBar, TabBarTrailing};
@@ -27,11 +28,13 @@ use crate::{ItemEvent, ItemHandle};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneEvent {
     /// 新标签页添加。
-    Add { item_id: EntityId },
+    AddItem { item_id: EntityId },
     /// 活动标签页切换。
-    Activate { item_id: EntityId },
+    ActivateItem { item_id: EntityId },
     /// 标签页被关闭。
-    Removed { item_id: EntityId },
+    RemovedItem { item_id: EntityId },
+    /// 标签全部关闭后请求移除 Pane 自身；宿主据此关闭面板。
+    Remove,
 }
 
 impl EventEmitter<PaneEvent> for Pane {}
@@ -43,7 +46,7 @@ const TAB_HOVER_GROUP: &str = "pane.tab";
 /// 拖拽过程中传递的数据，同时也是拖拽时跟随鼠标的幽灵视图。
 ///
 /// 仅支持同 Pane 内拖拽（drop 目标绑定在当前 Pane 的标签容器上）。
-/// `pane` 引用只用于幽灵视图读取标签数据，不参与 drop 的跨 Pane 判断（跨 Pane 拖拽在 v1 不支持）。
+/// `pane` 引用只用于幽灵视图读取标签数据，不参与 drop 的跨 Pane 判断（跨 Pane 拖拽暂不支持）。
 #[derive(Clone)]
 pub struct DraggedTab {
     pub pane: Entity<Pane>,
@@ -122,6 +125,20 @@ impl Pane {
         self.tab_bar_trailing = Some(Rc::new(build));
     }
 
+    /// 序列化当前标签快照：文件型 item 记录路径与激活位置（终端等无路径 item 不持久化）。
+    pub fn serialized(&self, cx: &App) -> SerializedPane {
+        SerializedPane {
+            items: self
+                .tabs
+                .iter()
+                .filter_map(|item| item.file_path(cx))
+                .collect(),
+            active_item: self
+                .active
+                .and_then(|id| self.tabs.iter().position(|item| item.item_id() == id)),
+        }
+    }
+
     /// 滚动到指定索引的标签到可视区域。
     fn scroll_to_tab(&self, ix: usize) {
         self.scroll_handle.scroll_to_item(ix);
@@ -136,7 +153,7 @@ impl Pane {
     ) -> FocusHandle {
         let item_id = item.item_id();
         // 订阅 Item 事件：编辑提升临时标签、标题刷新。
-        // CloseItem（需 window 才能关闭 tab）暂不处理，后续对齐 Zed 的订阅签名时实现。
+        // CloseItem 请求关闭标签页，需 window 上下文（当前 Item 订阅回调无 window），待接入带 window 的订阅时实现。
         let pane = cx.entity().downgrade();
         item.subscribe_to_item_events(
             cx,
@@ -167,8 +184,8 @@ impl Pane {
         self.active = Some(item_id);
         self.scroll_to_tab(index);
         self.update_toolbar(window, cx);
-        cx.emit(PaneEvent::Add { item_id });
-        cx.emit(PaneEvent::Activate { item_id });
+        cx.emit(PaneEvent::AddItem { item_id });
+        cx.emit(PaneEvent::ActivateItem { item_id });
         cx.notify();
         focus
     }
@@ -228,7 +245,7 @@ impl Pane {
             }
             self.active = Some(item_id);
             self.update_toolbar(window, cx);
-            cx.emit(PaneEvent::Activate { item_id });
+            cx.emit(PaneEvent::ActivateItem { item_id });
             cx.notify();
             return focus;
         }
@@ -426,7 +443,11 @@ impl Pane {
                     .or_else(|| self.tabs.last().map(|item| item.item_id()));
                 self.update_toolbar(window, cx);
             }
-            cx.emit(PaneEvent::Removed { item_id });
+            cx.emit(PaneEvent::RemovedItem { item_id });
+            // 空 Pane 请求移除自身。
+            if self.tabs.is_empty() {
+                cx.emit(PaneEvent::Remove);
+            }
             cx.notify();
         }
     }
@@ -498,7 +519,7 @@ impl Pane {
         {
             self.active = Some(item.item_id());
         }
-        cx.emit(PaneEvent::Activate {
+        cx.emit(PaneEvent::ActivateItem {
             item_id: self.active.unwrap_or(dragged.item_id),
         });
         cx.notify();
@@ -530,7 +551,7 @@ impl Pane {
         };
         self.update_toolbar(window, cx);
         self.focus_active_item(window, cx);
-        cx.emit(PaneEvent::Activate { item_id });
+        cx.emit(PaneEvent::ActivateItem { item_id });
         cx.notify();
         window.refresh();
     }
@@ -542,7 +563,7 @@ impl Pane {
         };
         self.update_toolbar(window, cx);
         self.focus_active_item(window, cx);
-        cx.emit(PaneEvent::Activate { item_id });
+        cx.emit(PaneEvent::ActivateItem { item_id });
         cx.notify();
         window.refresh();
     }
@@ -715,7 +736,7 @@ fn render_tab(
                 if event.click_count >= 2 {
                     pane.promote_transient_tab(item_id, cx);
                 }
-                cx.emit(PaneEvent::Activate { item_id });
+                cx.emit(PaneEvent::ActivateItem { item_id });
                 cx.notify();
                 pane.active_item().map(|item| item.item_focus_handle(cx))
             });
@@ -1517,7 +1538,7 @@ mod tests {
         let observed = Rc::clone(&removed);
         let _subscription = cx.update(|cx| {
             cx.subscribe(&pane, move |_, event, _| {
-                if matches!(event, PaneEvent::Removed { .. }) {
+                if matches!(event, PaneEvent::RemovedItem { .. }) {
                     observed.borrow_mut().push(*event);
                 }
             })

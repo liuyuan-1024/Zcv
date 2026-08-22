@@ -720,12 +720,17 @@ fn render_row(
                     if let Some(panel) = weak.upgrade() {
                         panel.update(cx, |panel, cx| {
                             panel.state.borrow_mut().selected = Some((section, path.clone()));
-                            match event.click_count {
-                                // 单击：目录展开/折叠、文件以临时标签打开（焦点留在面板）；
-                                // 双击：文件打开并聚焦编辑器；目录不重复，避免"展开→折叠"抵消。
-                                1 => panel.activate_selected(false, window, cx),
-                                _ if is_dir => {}
-                                _ => panel.activate_selected(true, window, cx),
+                            // 行点击决策统一走 tree 组件（目录每击 toggle，文件单击预览/双击激活）。
+                            match tree::row_click_action(is_dir, event.click_count) {
+                                tree::RowClickAction::Toggle => {
+                                    panel.activate_selected(true, window, cx)
+                                }
+                                tree::RowClickAction::Preview => {
+                                    panel.activate_selected(false, window, cx)
+                                }
+                                tree::RowClickAction::Activate => {
+                                    panel.activate_selected(true, window, cx)
+                                }
                             }
                         });
                     }

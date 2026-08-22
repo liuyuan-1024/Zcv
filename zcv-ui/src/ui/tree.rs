@@ -37,6 +37,30 @@ pub fn selection_border(cx: &App) -> gpui::Div {
         .border_color(color::current(cx).border_focused)
 }
 
+/// 树行点击动作（对齐 Zed：目录每次点击都切换展开/折叠；文件单击预览、双击激活）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowClickAction {
+    /// 目录：每次点击都执行（toggle 展开/折叠）。
+    Toggle,
+    /// 文件单击：以临时标签预览。
+    Preview,
+    /// 文件双击（及更多次连点）：打开并聚焦。
+    Activate,
+}
+
+/// `click_count` → 行点击动作。
+///
+/// 连续点击时 `click_count` 递增（1,2,3…），目录必须每击响应，否则快速连点只有第一次生效（表现为"不跟手"）。项目树与变更树共用本决策。
+pub fn row_click_action(is_dir: bool, click_count: usize) -> RowClickAction {
+    if is_dir {
+        RowClickAction::Toggle
+    } else if click_count == 1 {
+        RowClickAction::Preview
+    } else {
+        RowClickAction::Activate
+    }
+}
+
 // ── 私有辅助函数 ─────────────────────────────────────────────────────
 
 /// 树行骨架：relative + flex-row + items_center + 缩进 + 字型。
@@ -471,5 +495,17 @@ mod tests {
         assert!(state.expanded.contains(&1));
         state.toggle_expand(&1);
         assert!(!state.expanded.contains(&1));
+    }
+
+    #[test]
+    fn row_click_action_toggles_directory_on_every_click() {
+        // 目录：每次点击都切换（click_count 连续递增，2+ 次点击不能吞）。
+        assert_eq!(row_click_action(true, 1), RowClickAction::Toggle);
+        assert_eq!(row_click_action(true, 2), RowClickAction::Toggle);
+        assert_eq!(row_click_action(true, 3), RowClickAction::Toggle);
+        // 文件：单击预览、双击（及更多次连点）激活。
+        assert_eq!(row_click_action(false, 1), RowClickAction::Preview);
+        assert_eq!(row_click_action(false, 2), RowClickAction::Activate);
+        assert_eq!(row_click_action(false, 3), RowClickAction::Activate);
     }
 }

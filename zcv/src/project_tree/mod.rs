@@ -775,12 +775,17 @@ fn render_row(
                     if let Some(tree) = weak.upgrade() {
                         tree.update(cx, |tree, cx| {
                             tree.state.borrow_mut().select(path.clone());
-                            match event.click_count {
-                                // 单击：目录展开/折叠、文件以临时标签打开（焦点留在项目树）；
-                                // 双击：文件打开并聚焦编辑器；目录不重复，避免"展开→折叠"抵消。
-                                1 => tree.activate_selected(false, window, cx),
-                                _ if is_dir => {}
-                                _ => tree.activate_selected(true, window, cx),
+                            // 行点击决策统一走 tree 组件（目录每击 toggle，文件单击预览/双击激活）。
+                            match tree::row_click_action(is_dir, event.click_count) {
+                                tree::RowClickAction::Toggle => {
+                                    tree.activate_selected(true, window, cx)
+                                }
+                                tree::RowClickAction::Preview => {
+                                    tree.activate_selected(false, window, cx)
+                                }
+                                tree::RowClickAction::Activate => {
+                                    tree.activate_selected(true, window, cx)
+                                }
                             }
                         });
                     }
@@ -872,7 +877,7 @@ impl TreeRow for ProjectTreeRow {
 mod tests {
     use std::cell::Cell;
 
-    use gpui::{AppContext, KeyBinding, Render, TestAppContext, point, px};
+    use gpui::{AppContext, KeyBinding, Render, TestAppContext, VisualTestContext, point, px};
 
     use super::*;
 
@@ -1552,6 +1557,48 @@ mod tests {
         cx.read_entity(&tree, |tree, _| {
             assert!(tree.root.is_none());
             assert!(tree.state.borrow().rows.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn rapid_clicks_toggle_directory_each_click(cx: &mut TestAppContext) {
+        // 快速连点：每次点击目录都切换展开/折叠（click_count 递增，不能吞掉 2+ 次点击）。
+        let (root, _temp) = test_git_repo();
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).expect("应创建目录");
+        std::fs::write(sub.join("file.txt"), "x\n").expect("应创建文件");
+
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let (tree, cx) = cx.add_window_view({
+            let project = project.clone();
+            move |_, cx| ProjectTreePanel::new(project, cx)
+        });
+        cx.run_until_parked();
+
+        let click = |tree: &gpui::Entity<ProjectTreePanel>, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                tree.update(cx, |tree, _| tree.state.borrow_mut().select(sub.clone()));
+                tree.update(cx, |tree, cx| {
+                    tree.handle_tree_activate(&TreeActivate, window, cx)
+                });
+            });
+        };
+
+        // 第 1 次：展开；第 2 次：折叠；第 3 次：展开。
+        click(&tree, cx);
+        click(&tree, cx);
+        cx.read_entity(&tree, |tree, _| {
+            assert!(
+                !tree.state.borrow().expanded.contains(&sub),
+                "连点两次后应回到折叠"
+            );
+        });
+        click(&tree, cx);
+        cx.read_entity(&tree, |tree, _| {
+            assert!(
+                tree.state.borrow().expanded.contains(&sub),
+                "连点三次后应保持展开"
+            );
         });
     }
 }

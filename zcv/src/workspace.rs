@@ -26,8 +26,8 @@ use zcv_settings::SettingsStore;
 use zcv_theme::{ThemeChoice, color, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, FileToolbarControls, GitBranchAction, OnBranchSelected,
-    OnProjectSelected, Pane, PaneEvent, Panel, PanelButtons, PanelHandle, ToastAction, ToastKind,
-    TopBar, Workspace, add_to_recent, load_window_bounds, save_window_bounds,
+    OnProjectSelected, Pane, PaneEvent, Panel, PanelButtons, PanelEvent, PanelHandle, ToastAction,
+    ToastKind, TopBar, Workspace, add_to_recent, load_window_bounds, save_window_bounds,
 };
 
 use crate::active_buffer_language::ActiveBufferLanguage;
@@ -69,7 +69,7 @@ fn on_open_file_callback(weak: &WeakEntity<Workspace>) -> OnOpenFile {
     )
 }
 
-/// 以类型擦除句柄注册面板。
+/// 以类型擦除句柄注册面板；同时让所属 dock 订阅面板事件（Dock 统一处理面板请求）。
 fn register_panel<P: Panel>(
     workspace: &mut Workspace,
     entity: Entity<P>,
@@ -77,6 +77,33 @@ fn register_panel<P: Panel>(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
+    let dock = match position {
+        DockPosition::Left => workspace.left_dock.clone(),
+        DockPosition::Right => workspace.right_dock.clone(),
+        DockPosition::Bottom => workspace.bottom_dock.clone(),
+    };
+    let workspace_for_events = cx.weak_entity();
+    dock.update(cx, |dock, cx| {
+        let subscription = cx.subscribe_in(
+            &entity,
+            window,
+            move |dock, _, event: &PanelEvent, window, cx| {
+                match event {
+                    // 面板请求关闭（如终端最后一个会话关闭）时折叠 dock。
+                    PanelEvent::Close => dock.set_open(false, window, cx),
+                    // 面板自持状态变化（如终端会话增删）时保存布局。
+                    PanelEvent::StateChanged => {
+                        if let Some(workspace) = workspace_for_events.upgrade() {
+                            workspace.update(cx, |workspace, cx| {
+                                workspace.schedule_layout_save(window, cx);
+                            });
+                        }
+                    }
+                }
+            },
+        );
+        dock.add_subscription(subscription);
+    });
     let handle: Arc<dyn PanelHandle> = Arc::new(entity);
     workspace.register_panel(handle, position, window, cx);
 }
@@ -176,7 +203,7 @@ fn build_workspace(
 
 /// 所有工作区共享的面板、状态栏和编辑器工具栏。
 ///
-/// 与 Zed 一致，这些 UI 不以 worktree 是否存在为条件；各状态项在没有活动编辑器时自行显示空态。
+/// 这些 UI 不以 worktree 是否存在为条件；各状态项在没有活动编辑器时自行显示空态。
 fn initialize_common_workspace(
     workspace: &mut Workspace,
     window: &mut Window,
@@ -529,7 +556,7 @@ fn initialize_workspace(
     let pane_subscription = cx.subscribe(&pane, move |workspace, pane, event, cx| {
         if matches!(
             event,
-            PaneEvent::Activate { .. } | PaneEvent::Removed { .. }
+            PaneEvent::ActivateItem { .. } | PaneEvent::RemovedItem { .. }
         ) {
             let active_path = pane.read(cx).active_path(cx);
             // 活动仓库跟随焦点文件（最长前缀匹配）：打开/切换子项目文件后，
@@ -693,6 +720,8 @@ macro_rules! make_placeholder_panel {
                 }
             }
         }
+
+        impl gpui::EventEmitter<zcv_workspace::PanelEvent> for $name {}
 
         impl Panel for $name {
             fn icon() -> &'static str {

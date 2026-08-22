@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
-    App, Context, Div, Entity, KeyContext, MouseButton, ScrollStrategy, UniformListScrollHandle,
-    WeakEntity, Window, div, prelude::*, uniform_list,
+    App, Context, Div, Entity, EventEmitter, KeyContext, MouseButton, ScrollStrategy,
+    UniformListScrollHandle, WeakEntity, Window, div, prelude::*, uniform_list,
 };
 use zcv_actions::{
     TreeActivate, TreeCancelEdit, TreeCollapse, TreeConfirmEdit, TreeExpand, TreeNewEntry,
@@ -22,7 +22,7 @@ use zcv_project::{Project, new_entry_destination, rename_destination, translate_
 use zcv_theme::color;
 use zcv_ui::Scrollbar;
 use zcv_ui::tree::{self, TreeRow, TreeState};
-use zcv_workspace::Panel;
+use zcv_workspace::{Panel, PanelEvent};
 
 use crate::git_status::git_status_color;
 use crate::workspace::{OnCreate, OnOpenFile, OnRename, OnTrash};
@@ -794,6 +794,8 @@ fn render_row(
             })
         })
 }
+
+impl EventEmitter<PanelEvent> for ProjectTreePanel {}
 
 impl Panel for ProjectTreePanel {
     fn icon() -> &'static str {

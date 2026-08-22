@@ -10,7 +10,13 @@ mod palette;
 mod panel;
 mod view;
 
-use std::{collections::HashMap, path::PathBuf, process::ExitStatus, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    process::ExitStatus,
+    sync::Arc,
+    time::Duration,
+};
 
 use alacritty_terminal::{grid::GridCell, term::cell::Flags, vte};
 use anyhow::{Context as _, Result};
@@ -461,6 +467,8 @@ pub struct Terminal {
     scroll_px: Pixels,
     pty_pid: Option<u32>,
     background_executor: BackgroundExecutor,
+    /// 启动时的工作目录（持久化恢复终端会话用）。
+    cwd: Option<PathBuf>,
 }
 
 impl Terminal {
@@ -505,6 +513,7 @@ impl Terminal {
             scroll_px: Pixels::ZERO,
             pty_pid: Some(pty_pid),
             background_executor,
+            cwd: builder.cwd.clone(),
         };
         terminal.spawn_event_loop(cx);
 
@@ -786,6 +795,11 @@ impl Terminal {
     /// 终端标题（来自 OSC 0/2 或默认）。
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    /// 启动时的工作目录（持久化恢复终端会话用）。
+    pub fn working_directory(&self) -> Option<&Path> {
+        self.cwd.as_deref()
     }
 
     pub fn last_content(&self) -> Option<&Content> {

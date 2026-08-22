@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
-    App, Context, Div, ElementId, Entity, FocusHandle, MouseButton, ScrollStrategy,
+    App, Context, Div, ElementId, Entity, EventEmitter, FocusHandle, MouseButton, ScrollStrategy,
     UniformListScrollHandle, WeakEntity, Window, div, prelude::*, uniform_list,
 };
 use zcv_actions::{
@@ -25,7 +25,7 @@ use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space, typography};
 use zcv_ui::tree::{self, TreeRow, TreeState};
 use zcv_ui::{Checkbox, Glyph, Scrollbar};
-use zcv_workspace::Panel;
+use zcv_workspace::{Panel, PanelEvent};
 
 use crate::git_status::git_status_color;
 use crate::workspace::OnOpenFile;
@@ -862,6 +862,8 @@ fn render_empty_state(focus: FocusHandle, cx: &App) -> Div {
                 }),
         )
 }
+
+impl EventEmitter<PanelEvent> for VersionControlPanel {}
 
 impl Panel for VersionControlPanel {
     fn icon() -> &'static str {

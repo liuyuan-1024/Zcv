@@ -2,6 +2,9 @@
   {
     "context": "Editor",
     "bindings": {
+      "cmd-=": "editor::IncreaseFontSize",
+      "cmd--": "editor::DecreaseFontSize",
+      "cmd-0": "editor::ResetFontSize",
       "enter": "editor::Newline",
       "tab": "editor::Indent",
       "shift-tab": "editor::Outdent",
@@ -117,7 +120,18 @@
     }
   },
   {
+    "context": "Terminal",
     "bindings": {
+      "cmd-c": "editor::Copy",
+      "cmd-v": "editor::Paste",
+      "cmd-k": "terminal::Clear"
+    }
+  },
+  {
+    "bindings": {
+      "cmd-+": "workspace::IncreaseUiFontSize",
+      "cmd-_": "workspace::DecreaseUiFontSize",
+      "cmd-)": "workspace::ResetUiFontSize",
       "cmd-q": "window_controls::QuitWindow",
       "cmd-m": "window_controls::MinimizeWindow",
       "ctrl-cmd-f": "window_controls::ToggleMaximizeWindow",

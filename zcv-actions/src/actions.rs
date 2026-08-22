@@ -72,6 +72,9 @@ actions!(
         Outdent,
         ToggleFold,
         UnfoldAll,
+        IncreaseFontSize,
+        DecreaseFontSize,
+        ResetFontSize,
     ]
 );
 
@@ -85,7 +88,21 @@ actions!(
     ]
 );
 
-actions!(workspace, [Save, OpenSettings, GitFetch, GitPull, GitPush]);
+actions!(
+    workspace,
+    [
+        Save,
+        OpenSettings,
+        GitFetch,
+        GitPull,
+        GitPush,
+        IncreaseUiFontSize,
+        DecreaseUiFontSize,
+        ResetUiFontSize
+    ]
+);
+
+actions!(terminal, [NewTerminal, Clear]);
 
 actions!(dock, [ToggleLeftDock, ToggleBottomDock, ToggleRightDock,]);
 

@@ -77,7 +77,7 @@ mod tests {
             "icon_themes/default.json",
             "keymaps/default-linux.json",
             "settings/initial_user_settings.json",
-            "themes/onedark.toml",
+            "themes/dark.toml",
         ] {
             assert!(Assets::get(path).is_some(), "缺少内置资源 {path}");
         }
@@ -85,6 +85,6 @@ mod tests {
 
     #[test]
     fn reads_text_resources() {
-        assert!(text("themes/onedark.toml").unwrap().contains("\"keyword\""));
+        assert!(text("themes/dark.toml").unwrap().contains("\"keyword\""));
     }
 }

@@ -101,6 +101,34 @@ pub struct ThemeColors {
     pub scrollbar_thumb_hover_background: Rgba,
     /// 滚动轴 thumb 拖动色。
     pub scrollbar_thumb_active_background: Rgba,
+    // ── 终端 ANSI 色（跟随主题，与 Zed terminal.ansi.* 同源）──
+    // 主色 8 个。
+    pub terminal_ansi_black: Rgba,
+    pub terminal_ansi_red: Rgba,
+    pub terminal_ansi_green: Rgba,
+    pub terminal_ansi_yellow: Rgba,
+    pub terminal_ansi_blue: Rgba,
+    pub terminal_ansi_magenta: Rgba,
+    pub terminal_ansi_cyan: Rgba,
+    pub terminal_ansi_white: Rgba,
+    // 亮色变体 8 个。
+    pub terminal_ansi_bright_black: Rgba,
+    pub terminal_ansi_bright_red: Rgba,
+    pub terminal_ansi_bright_green: Rgba,
+    pub terminal_ansi_bright_yellow: Rgba,
+    pub terminal_ansi_bright_blue: Rgba,
+    pub terminal_ansi_bright_magenta: Rgba,
+    pub terminal_ansi_bright_cyan: Rgba,
+    pub terminal_ansi_bright_white: Rgba,
+    // 暗化变体 8 个。
+    pub terminal_ansi_dim_black: Rgba,
+    pub terminal_ansi_dim_red: Rgba,
+    pub terminal_ansi_dim_green: Rgba,
+    pub terminal_ansi_dim_yellow: Rgba,
+    pub terminal_ansi_dim_blue: Rgba,
+    pub terminal_ansi_dim_magenta: Rgba,
+    pub terminal_ansi_dim_cyan: Rgba,
+    pub terminal_ansi_dim_white: Rgba,
 }
 
 /// 切换主题：把主题文件的语义色快照写入 gpui global（整体替换）。

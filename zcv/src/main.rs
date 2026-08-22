@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use gpui::{App, Application};
 use workspace::{open_empty_workspace, open_project_window};
 use zcv_assets::Assets;
+use zcv_settings::SettingsStore;
 use zcv_workspace::most_recent_valid_project;
 
 fn initial_project_root(
@@ -34,6 +35,15 @@ fn main() {
         Assets.load_fonts(cx).expect("内置字体应能注册");
 
         zcv_settings::init(cx);
+        // 字号设置落地：SettingsStore 已就绪，按配置覆盖主题默认字号。
+        {
+            let settings = SettingsStore::get(cx);
+            zcv_theme::typography::set_typography(
+                Some(settings.font_size),
+                Some(settings.ui_font_size),
+                Some(settings.line_height),
+            );
+        }
         preview::init(cx);
         zcv_editor::init(cx);
 

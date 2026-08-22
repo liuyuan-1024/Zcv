@@ -22,6 +22,7 @@ members = [
     "zcv-preview-svg",
     "zcv-project",
     "zcv-settings",
+    "zcv-terminal",
     "zcv-theme",
     "zcv-ui",
     "zcv-workspace",
@@ -40,6 +41,7 @@ default-members = [
     "zcv-preview-svg",
     "zcv-project",
     "zcv-settings",
+    "zcv-terminal",
     "zcv-theme",
     "zcv-ui",
     "zcv-workspace",
@@ -66,6 +68,7 @@ zcv-picker = { path = "zcv-picker" }
 zcv-preview-svg = { path = "zcv-preview-svg" }
 zcv-project = { path = "zcv-project" }
 zcv-settings = { path = "zcv-settings" }
+zcv-terminal = { path = "zcv-terminal" }
 zcv-theme = { path = "zcv-theme" }
 zcv-ui = { path = "zcv-ui" }
 zcv-workspace = { path = "zcv-workspace" }
@@ -110,6 +113,9 @@ toml = "0.8.23"
 # ---- 桌面 UI ----
 gpui = "0.2.2"
 rust-embed = { version = "8.11", features = ["include-exclude"] }
+
+# ---- 终端 ----
+alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "4c129667ce56611becdc82de6e28218c80e2e88f" }
 
 # ---- 文件监听 ----
 notify = "7"

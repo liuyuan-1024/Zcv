@@ -120,11 +120,12 @@
     }
   },
   {
-    "context": "Terminal",
+    "context": "terminal",
     "bindings": {
       "ctrl-shift-c": "editor::Copy",
       "ctrl-shift-v": "editor::Paste",
-      "ctrl-l": "terminal::Clear"
+      "ctrl-l": "terminal::Clear",
+      "ctrl-shift-t": "terminal::NewTerminal"
     }
   },
   {

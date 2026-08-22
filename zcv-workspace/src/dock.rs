@@ -371,7 +371,10 @@ impl Render for Dock {
             .overflow_hidden()
             .bg(color::current(cx).panel_background)
             .text_color(color::current(cx).text)
-            .track_focus(&self.focus);
+            .track_focus(&self.focus)
+            .when_some(self.active_panel(), |this, panel| {
+                this.key_context(panel.persistent_name())
+            });
 
         let frame = match self.position {
             DockPosition::Left => frame

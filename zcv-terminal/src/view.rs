@@ -3,8 +3,9 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, Context, Entity, EntityInputHandler, FocusHandle, IntoElement, KeyDownEvent,
-    Pixels, Render, ScrollWheelEvent, Subscription, UTF16Selection, Window, div, prelude::*, px,
+    App, Bounds, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
+    IntoElement, KeyDownEvent, Pixels, Render, ScrollWheelEvent, SharedString, Subscription,
+    UTF16Selection, Window, div, prelude::*, px,
 };
 
 use crate::{
@@ -13,9 +14,8 @@ use crate::{
     mappings::{keys, mouse},
 };
 
-// Copy/Paste 复用编辑器的动作类型（keymap 中同名绑定在 Terminal context 生效）；
-// Clear 是终端专属动作。
 use zcv_actions::{Clear, Copy, Paste};
+use zcv_workspace::{Item, ItemEvent};
 
 pub struct TerminalView {
     pub(crate) terminal: Entity<Terminal>,
@@ -82,7 +82,9 @@ impl TerminalView {
     fn subscribe_terminal_events(&mut self, cx: &mut Context<Self>) {
         let subscription =
             cx.subscribe(&self.terminal, |_view, _, event: &Event, cx| match event {
-                Event::Wakeup | Event::Bell | Event::TitleChanged(_) | Event::SelectionsChanged => {
+                // 标题变化时通知 Pane 刷新标签栏标题。
+                Event::TitleChanged(_) => cx.emit(ItemEvent::UpdateTab),
+                Event::Wakeup | Event::Bell | Event::SelectionsChanged => {
                     cx.notify();
                 }
             });
@@ -414,6 +416,36 @@ impl EntityInputHandler for TerminalView {
     }
 }
 
+impl Focusable for TerminalView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl EventEmitter<ItemEvent> for TerminalView {}
+
+// ═══ Item：终端作为标签页接入 Pane ═══════════════════════════════
+
+impl Item for TerminalView {
+    type Event = ItemEvent;
+
+    fn tab_content_text(&self, _detail: usize, cx: &App) -> SharedString {
+        // 终端标题来自 shell 的 OSC 0/2，未设置时显示默认文案。
+        SharedString::from(self.terminal.read(cx).title().unwrap_or("终端").to_string())
+    }
+
+    fn tab_icon(&self, _cx: &App) -> Option<SharedString> {
+        Some(SharedString::from("icons/terminal.svg"))
+    }
+
+    fn tab_tooltip_text(&self, cx: &App) -> Option<SharedString> {
+        self.terminal
+            .read(cx)
+            .title()
+            .map(|title| SharedString::from(title.to_string()))
+    }
+}
+
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 首次渲染时注册焦点事件（构造函数中没有 Window）。
@@ -437,7 +469,7 @@ impl Render for TerminalView {
 
         div()
             .track_focus(&self.focus)
-            .key_context("Terminal")
+            .key_context("terminal")
             .tab_index(0)
             .size_full()
             .overflow_hidden()

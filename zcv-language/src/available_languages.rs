@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use tree_sitter::Query;
 
+use crate::AutoClosePair;
 use crate::registry::{LanguageEntry, LanguageMatcher, LanguageQueries};
 
 /// tree-sitter 本身不提供查询继承；语言规格在加载时将基础查询与扩展查询合并编译。
@@ -29,8 +30,7 @@ impl QuerySource {
 
 /// 一门语言的结构查询源（不含高亮/注入，二者在语言规格声明中）。
 ///
-/// 与语言声明（[`LanguageEntry`]）同表维护：新增语言只改数据表一处；
-/// 查询源缺失的语言加载为空查询集。
+/// 与语言声明（[`LanguageEntry`]）同表维护：新增语言只改数据表一处；查询源缺失的语言加载为空查询集。
 #[derive(Clone, Copy)]
 pub(crate) struct LanguageQuerySources {
     brackets: Option<&'static str>,
@@ -78,6 +78,45 @@ fn first_line(pattern: &'static str) -> Option<regex::Regex> {
     Some(regex::Regex::new(pattern).expect("内置首行模式应有效"))
 }
 
+/// 通用自动闭合配对（`() [] {} "" ''`），各语言数据表复用。
+const COMMON_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+    },
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+    },
+    AutoClosePair {
+        start: "'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+    },
+];
+
 /// 内置语言数据：注册表初始化来源（新增语言在此加一条即可）。
 pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
     use LanguageMatcher as M;
@@ -97,6 +136,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 include_str!("../queries/rust/indents.scm"),
                 Some(include_str!("../queries/rust/fold.scm")),
             )),
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "Python",
@@ -115,6 +155,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 include_str!("../queries/python/indents.scm"),
                 None,
             )),
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "JavaScript",
@@ -135,6 +176,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 include_str!("../queries/javascript/indents.scm"),
                 None,
             )),
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "JSX",
@@ -156,6 +198,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 include_str!("../queries/tsx/indents.scm"),
                 None,
             )),
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "TypeScript",
@@ -177,6 +220,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 include_str!("../queries/typescript/indents.scm"),
                 None,
             )),
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "TSX",
@@ -199,6 +243,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 include_str!("../queries/tsx/indents.scm"),
                 None,
             )),
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "Go",
@@ -211,6 +256,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             injections: None,
             injection_alias: None,
             queries: None,
+            auto_close_pairs: None,
         },
         LanguageEntry {
             name: "Java",
@@ -223,6 +269,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             injections: None,
             injection_alias: None,
             queries: None,
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "Ruby",
@@ -237,6 +284,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             injections: None,
             injection_alias: None,
             queries: None,
+            auto_close_pairs: None,
         },
         LanguageEntry {
             name: "C",
@@ -249,6 +297,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             injections: None,
             injection_alias: None,
             queries: None,
+            auto_close_pairs: None,
         },
         LanguageEntry {
             name: "C++",
@@ -261,6 +310,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             injections: None,
             injection_alias: None,
             queries: None,
+            auto_close_pairs: None,
         },
         LanguageEntry {
             name: "Zig",
@@ -273,6 +323,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             injections: None,
             injection_alias: None,
             queries: None,
+            auto_close_pairs: None,
         },
         LanguageEntry {
             name: "Shell",
@@ -291,6 +342,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 include_str!("../queries/bash/indents.scm"),
                 None,
             )),
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "Lua",
@@ -305,6 +357,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             injections: None,
             injection_alias: None,
             queries: None,
+            auto_close_pairs: None,
         },
         LanguageEntry {
             name: "TOML",
@@ -317,6 +370,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             injections: None,
             injection_alias: None,
             queries: None,
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "JSON",
@@ -333,6 +387,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 include_str!("../queries/json/indents.scm"),
                 None,
             )),
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "YAML",
@@ -349,6 +404,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 indents: None,
                 fold: None,
             }),
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "Markdown",
@@ -365,6 +421,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 include_str!("../queries/markdown/indents.scm"),
                 None,
             )),
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         // markdown 行内注入：仅注入查询引用（`markdown_inline`），不参与文件识别。
         LanguageEntry {
@@ -378,6 +435,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             injections: Some(QuerySource::Single(tree_sitter_md::INJECTION_QUERY_INLINE)),
             injection_alias: Some("markdown_inline"),
             queries: None,
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "HTML",
@@ -394,6 +452,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 include_str!("../queries/html/indents.scm"),
                 None,
             )),
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "CSS",
@@ -410,6 +469,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 include_str!("../queries/css/indents.scm"),
                 None,
             )),
+            auto_close_pairs: Some(COMMON_PAIRS),
         },
         LanguageEntry {
             name: "SQL",
@@ -422,6 +482,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             injections: None,
             injection_alias: None,
             queries: None,
+            auto_close_pairs: None,
         },
         LanguageEntry {
             name: "LaTeX",
@@ -434,6 +495,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             injections: None,
             injection_alias: None,
             queries: None,
+            auto_close_pairs: None,
         },
         LanguageEntry {
             name: "XML",
@@ -446,6 +508,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             injections: None,
             injection_alias: None,
             queries: None,
+            auto_close_pairs: None,
         },
     ]
 }

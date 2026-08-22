@@ -895,7 +895,8 @@ fn newline_uses_tree_sitter_indent_query(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
-    assert_eq!(buffer_text(&language_buffer, cx), "fn main() {\n    }\n");
+    // 光标在 `{` 与自动补全的 `}` 之间：额外补一个基准缩进空行（newline 配对行为）。
+    assert_eq!(buffer_text(&language_buffer, cx), "fn main() {\n    \n}\n");
 }
 
 #[gpui::test]
@@ -956,6 +957,6 @@ fn newline_uses_the_nearest_code_line_as_its_indent_basis(cx: &mut TestAppContex
 
     assert_eq!(
         buffer_text(&language_buffer, cx),
-        "fn main() {\n    build(\n        \n        )\n}"
+        "fn main() {\n    build(\n        \n        \n    )\n}"
     );
 }

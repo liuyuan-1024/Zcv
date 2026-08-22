@@ -232,6 +232,9 @@ impl Editor {
         self.composition = None;
         let before = self.resolved_selections().normalized();
         let snapshot = self.buffer.read(cx).snapshot();
+        // 逐选区计算插入文本与光标落点：
+        // 光标处于声明了 newline 的括号对之间时，闭合符前额外补一个基准缩进空行对齐 Zed `insert_extra_newline_brackets`，与自动缩进共用同一回车路径）。
+        let mut trailing_lens = Vec::new();
         let targets = before
             .as_slice()
             .iter()
@@ -251,21 +254,62 @@ impl Editor {
                 } else {
                     String::new()
                 };
-                Ok((
-                    *selection,
-                    Arc::from(format!("\n{}{indent}", suggestion.base_indent)),
-                ))
+                let extra = self.extra_newline_in_pair(offset, &snapshot, cx);
+                let text = if extra {
+                    format!(
+                        "\n{}{indent}\n{}",
+                        suggestion.base_indent, suggestion.base_indent
+                    )
+                } else {
+                    format!("\n{}{indent}", suggestion.base_indent)
+                };
+                trailing_lens.push(extra.then_some(1 + suggestion.base_indent.len()));
+                Ok((*selection, Arc::from(text)))
             })
             .collect::<EngineResult<Vec<_>>>();
-        if let Ok(targets) = &targets {
-            let target_selections =
-                SelectionSet::new(targets.iter().map(|(selection, _)| *selection).collect());
-            self.set_selections(target_selections);
-        }
-        let _ = self.change(before, cx, |buffer| {
+        let _ = self.change_with_after(before.clone(), cx, |buffer| {
             let targets = targets?;
-            apply_targeted_edits(buffer, targets, edit_metadata("插入换行"))
+            let outcome = apply_targeted_edits(buffer, targets, edit_metadata("插入换行"))?;
+            let position_map = outcome
+                .transaction()
+                .map(|transaction| transaction.event().position_map().clone())
+                .unwrap_or_default();
+            // 括号对场景光标落在中间行行尾（回退末尾空行的长度），其余落在插入文本末尾。
+            let after = SelectionSet::new(
+                before
+                    .as_slice()
+                    .iter()
+                    .zip(trailing_lens.iter())
+                    .map(|(selection, trailing)| {
+                        let start = position_map.map_old_position(selection.start()).value();
+                        let offset = trailing
+                            .map_or(start, |trailing| ByteOffset::new(start.get() - trailing));
+                        Selection::caret(offset)
+                    })
+                    .collect(),
+            );
+            Ok((outcome, after))
         });
+    }
+
+    /// 光标处是否需要括号内额外空行（对齐 Zed `insert_extra_newline_brackets`）：
+    /// 光标前后跳过非换行空白后，分别紧邻声明了 `newline` 的配对起始与闭合字符。
+    fn extra_newline_in_pair(&self, offset: ByteOffset, snapshot: &Snapshot, cx: &App) -> bool {
+        let Some(pairs) = self.auto_close_pairs(cx) else {
+            return false;
+        };
+        let Ok((line, column)) = snapshot.byte_to_point(offset) else {
+            return false;
+        };
+        let Ok(line_slice) = snapshot.line_content(line, None) else {
+            return false;
+        };
+        let before = &line_slice.as_str()[..column];
+        pairs.iter().any(|pair| {
+            pair.newline
+                && before.trim_end().ends_with(pair.start)
+                && text_after_trim_is(snapshot, offset, pair.end)
+        })
     }
 
     fn selected_text(&self, cx: &App) -> Option<String> {
@@ -306,6 +350,13 @@ impl Editor {
         });
         match outcome {
             Ok(Some(outcome)) => {
+                // 自动闭合区域随回放推进（对齐普通编辑路径）。
+                let delta = outcome.delta();
+                self.update_autoclose_regions_with(
+                    &PositionMap::from_edits(delta.edits()),
+                    delta.old_version(),
+                    delta.new_version(),
+                );
                 // 回放后文本与记录选区时相同，偏移快照可直接重锚定。
                 if let Some(selections) = self
                     .selection_history
@@ -342,6 +393,8 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 光标贴着自动补全的闭合符时先扩展选区覆盖整对，一次退格删除整对（对齐 Zed）。
+        self.select_autoclose_pair(cx);
         self.delete(
             MovementDirection::Previous,
             MovementUnit::Grapheme,
@@ -698,4 +751,23 @@ fn leading_indent_range(snapshot: &Snapshot, line: Line) -> EngineResult<Option<
     Ok(end
         .filter(|end| *end > start)
         .map(|end| Selection::new(start, end)))
+}
+
+/// `offset` 之后跳过非换行空白，是否以 `text` 开头（括号内额外空行的闭合符检查）。
+fn text_after_trim_is(snapshot: &Snapshot, offset: ByteOffset, text: &str) -> bool {
+    let mut cursor = offset;
+    loop {
+        let Ok((chunk, chunk_start)) = snapshot.chunk_at_byte(cursor) else {
+            return false;
+        };
+        let rest = &chunk[cursor.get() - chunk_start.get()..];
+        let Some(first) = rest.chars().next() else {
+            return false;
+        };
+        if first.is_whitespace() && first != '\n' {
+            cursor = ByteOffset::new(cursor.get() + first.len_utf8());
+            continue;
+        }
+        return rest.starts_with(text);
+    }
 }

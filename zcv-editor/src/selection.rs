@@ -48,7 +48,7 @@ impl EditOutcome {
 /// 校验并应用一组目标编辑，返回事务结果。
 ///
 /// 目标区间为空且替换文本也为空时不产生编辑；全部无编辑时返回 `None`。
-fn apply_edits(
+pub(super) fn apply_edits(
     buffer: &mut Buffer,
     targets: &[(Selection, Arc<str>)],
     metadata: TransactionMetadata,

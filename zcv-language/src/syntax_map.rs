@@ -62,6 +62,10 @@ pub(crate) struct SyntaxLayer {
 }
 
 impl SyntaxMap {
+    pub(crate) fn language(&self) -> Option<&Language> {
+        self.language.as_ref()
+    }
+
     pub fn new(snapshot: &Snapshot) -> Self {
         Self {
             language: None,

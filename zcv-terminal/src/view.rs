@@ -111,7 +111,7 @@ impl TerminalView {
     fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let mode = self
@@ -125,7 +125,8 @@ impl TerminalView {
             self.terminal.update(cx, |terminal, cx| {
                 terminal.write_input(input.into_bytes(), cx)
             });
-            window.prevent_default();
+            // 已作为终端输入处理的键停止事件传播：否则平台会继续走文本输入通道（replace_text_in_range）导致同一按键写入两次（空格、alt+字符等）。
+            cx.stop_propagation();
         }
     }
 

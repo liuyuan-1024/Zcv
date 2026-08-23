@@ -58,7 +58,8 @@ fn special_key(key: &str, modifiers: &Modifiers, mode: &Modes) -> Option<String>
         "pageup" => Some("\x1b[5~".into()),
         "pagedown" => Some("\x1b[6~".into()),
         "escape" => Some("\x1b".into()),
-        "space" => Some(if modifiers.control { "\x00" } else { " " }.into()),
+        // 普通空格与字母一致走文本输入通道（IME 单写）；ctrl+space 是控制码，必须走特殊键通道。
+        "space" if modifiers.control => Some("\x00".into()),
         // Home/End 用 CSI H/F；带修饰符时携带修饰符码。
         "home" => Some(home_end_key('H', modifiers)),
         "end" => Some(home_end_key('F', modifiers)),
@@ -187,6 +188,27 @@ mod tests {
             key_char: Some("a".into()),
         };
         assert_eq!(to_esc_str(&ks, &Modes::NONE, false), None);
+        // 空格与字母同属可打印字符：同样走 IME 单写，否则与 on_key_down 双写。
+        assert_eq!(to_esc_str(&plain("space"), &Modes::NONE, false), None);
+    }
+
+    #[test]
+    fn ctrl_space_is_control_code() {
+        assert_eq!(
+            to_esc_str(
+                &keystroke(
+                    "space",
+                    Modifiers {
+                        control: true,
+                        ..Modifiers::none()
+                    }
+                ),
+                &Modes::NONE,
+                false
+            )
+            .as_deref(),
+            Some("\x00")
+        );
     }
 
     #[test]

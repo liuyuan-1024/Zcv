@@ -12,7 +12,7 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use zcv_actions::{CloseTab, DeploySearch, NextTab, PrevTab, TogglePreview};
-use zcv_theme::{FileIcons, color, typography};
+use zcv_theme::{FileIcons, color};
 use zcv_ui::{Glyph, SvgIcon, Tab};
 
 use crate::layout_state::SerializedPane;
@@ -857,6 +857,8 @@ fn tab_end_state(is_dirty: bool, is_preview: bool) -> TabEndState {
 }
 
 /// 标签尾部状态槽：未保存优先显示圆点，预览其次显示眼睛；悬停后都切换为关闭按钮。
+///
+/// 槽位宽度由内容撑开：三种状态内容同为 Glyph 组件，状态切换（圆点/眼睛 ↔ 关闭叉）不改变槽位尺寸，tab 宽度稳定。
 fn tab_end_glyph(
     pane_entity: &gpui::Entity<Pane>,
     item_id: EntityId,
@@ -869,7 +871,6 @@ fn tab_end_glyph(
         return close_glyph(pane_entity, item_id, cx).into_any_element();
     }
 
-    let slot_size = typography::ui();
     let (id, icon, icon_color) = match state {
         TabEndState::Dirty => (
             ("tab-dirty", item_id),
@@ -888,7 +889,6 @@ fn tab_end_glyph(
         .flex()
         .items_center()
         .justify_center()
-        .size(slot_size)
         .child(
             div()
                 .group_hover(TAB_HOVER_GROUP, |style| style.opacity(0.0))

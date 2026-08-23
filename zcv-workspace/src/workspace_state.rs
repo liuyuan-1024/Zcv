@@ -670,7 +670,6 @@ impl Render for Workspace {
         let left_dock_entity = self.left_dock.clone();
         let right_dock_entity = self.right_dock.clone();
         let bottom_dock_entity = self.bottom_dock.clone();
-        let workspace_after_resize = cx.entity().downgrade();
 
         let titlebar = self.titlebar.as_ref();
 
@@ -710,7 +709,6 @@ impl Render for Workspace {
             this.toggle_dock(DockPosition::Right, window, cx)
         }))
         .on_action(cx.listener(Self::handle_panel_keyboard_action))
-        // dock 尺寸拖拽：手势由 Dock 的 resize handle 发起（on_drag 承载 DraggedDock），这里在根节点接收拖动事件并按位置驱动对应 dock 尺寸；布局保存走既有节流。
         .on_drag_move(move |event: &DragMoveEvent<DraggedDock>, window, cx| {
             let area = event.drag(cx).0;
             let dock = match area {
@@ -721,11 +719,6 @@ impl Render for Workspace {
             dock.update(cx, |dock, cx| {
                 dock.resize_to(event.event.position, event.bounds, cx);
             });
-            workspace_after_resize
-                .update(cx, |workspace, cx| {
-                    workspace.schedule_layout_save(window, cx)
-                })
-                .ok();
             window.refresh();
         })
     }
@@ -770,7 +763,7 @@ mod tests {
     use std::sync::Arc;
 
     use gpui::{
-        App, AppContext, Context, FocusHandle, Render, TestAppContext, Window, div, prelude::*,
+        App, AppContext, Context, FocusHandle, Render, TestAppContext, Window, div, prelude::*, px,
     };
 
     use super::{DockPosition, LAYOUT_SAVE_THROTTLE, Workspace};
@@ -878,6 +871,53 @@ mod tests {
 
         let saved = crate::layout_state::load(&layout_path).expect("应保存布局快照");
         assert!(saved.docks.bottom.visible, "dock 开合应触发保存");
+    }
+
+    /// 回归：dock 尺寸变化（拖拽 resize_to / 双击重置 reset_size）应经 DockEvent 触发布局保存。
+    #[gpui::test]
+    fn dock_resize_and_reset_save_layout(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let layout_path = directory.path().join("layout.json");
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::new_empty(window, cx);
+            let panel = cx.new(|cx| TestPanel {
+                focus: cx.focus_handle(),
+            });
+            let handle: Arc<dyn PanelHandle> = Arc::new(panel);
+            workspace.register_panel(handle, DockPosition::Bottom, window, cx);
+            workspace
+        });
+        workspace.update(cx, |workspace, _| {
+            workspace.layout_path = layout_path.clone();
+        });
+
+        // 拖拽调整：尺寸应落盘。
+        workspace.update_in(cx, |workspace, window, cx| {
+            let bounds = window.bounds();
+            workspace.bottom_dock.update(cx, |dock, cx| {
+                dock.resize_to(gpui::point(bounds.size.width / 2.0, px(0.0)), bounds, cx);
+            });
+        });
+        cx.executor().advance_clock(LAYOUT_SAVE_THROTTLE);
+        cx.run_until_parked();
+        let saved = crate::layout_state::load(&layout_path).expect("应保存布局快照");
+        let dragged = saved.docks.bottom.size.expect("拖拽尺寸应保存");
+        assert_ne!(dragged, f32::from(DockPosition::Bottom.default_size()));
+
+        // 双击重置：恢复默认尺寸并同样落盘。
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.bottom_dock.update(cx, |dock, cx| {
+                dock.reset_size(window.bounds().size, cx);
+            });
+        });
+        cx.executor().advance_clock(LAYOUT_SAVE_THROTTLE);
+        cx.run_until_parked();
+        let saved = crate::layout_state::load(&layout_path).expect("应保存布局快照");
+        assert_eq!(
+            saved.docks.bottom.size,
+            Some(f32::from(DockPosition::Bottom.default_size())),
+            "双击重置的尺寸应触发保存"
+        );
     }
 
     #[gpui::test]

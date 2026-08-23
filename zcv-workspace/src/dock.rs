@@ -24,6 +24,8 @@ use crate::panel::PanelHandle;
 pub enum DockEvent {
     /// 开合状态实际变化（折叠/展开）。
     OpenChanged,
+    /// 尺寸被重置/调整（双击手柄重置、程序化调整）。
+    SizeChanged,
 }
 
 impl EventEmitter<DockEvent> for Dock {}
@@ -328,9 +330,7 @@ impl Dock {
 
     /// 拖拽到指定光标位置，更新 dock 尺寸。
     ///
-    /// 采用绝对坐标模型（对齐 Zed `resize_left_dock`）：直接按光标相对参考区域
-    /// 边缘的距离计算新尺寸，不依赖拖拽起点——避免 delta 模型在跨坐标系事件
-    /// （handle 本地坐标 vs 窗口坐标）下的基准漂移。
+    /// 采用绝对坐标模型：直接按光标相对参考区域边缘的距离计算新尺寸，不依赖拖拽起点——避免 delta 模型在跨坐标系事件（handle 本地坐标 vs 窗口坐标）下的基准漂移。
     pub fn resize_to(
         &mut self,
         cursor: Point<Pixels>,
@@ -361,6 +361,7 @@ impl Dock {
             });
         }
 
+        cx.emit(DockEvent::SizeChanged);
         cx.notify();
     }
 
@@ -372,6 +373,7 @@ impl Dock {
             DockPosition::Bottom => window_size.height - MIN_SIZE,
         };
         self.size = default.clamp(MIN_SIZE, max_size);
+        cx.emit(DockEvent::SizeChanged);
         cx.notify();
     }
 }

@@ -18,6 +18,7 @@ mod line_stream;
 mod tab_map;
 mod wrap_map;
 
+pub use chunk::{Chunk, RenderChunks, chunks_to_runs, render_plain_line};
 #[cfg(test)]
 pub(crate) use chunk::{LineStyles, ViewportChunkSource, render_viewport_chunks};
 pub(crate) use chunk::{RowStyleInput, WrapRowInfo, render_viewport_row};
@@ -32,6 +33,7 @@ pub(crate) use inlay_map::Inlay;
 use inlay_map::InlayMap;
 use line_stream::LineStream;
 pub(crate) use line_stream::{InsertedLines, StreamLineSource};
+pub use line_stream::{StyledLine, StyledSpan};
 use tab_map::TabMap;
 pub(crate) use tab_map::byte_for_display_column;
 use wrap_map::{WrapMap, WrapSnapshot};
@@ -1148,7 +1150,10 @@ mod tests {
     fn inserted_lines_extend_stream_and_interleave_with_buffer_rows() {
         let map = map_with_inserted(
             "a\nb\nc",
-            InsertedLines::from([(Line::ZERO, vec![std::sync::Arc::from("DEL")])]),
+            InsertedLines::from([(
+                Line::ZERO,
+                vec![StyledLine::plain(std::sync::Arc::from("DEL"))],
+            )]),
         );
         assert_eq!(map.line_count(), 4, "3 个 buffer 行 + 1 个合成行");
 
@@ -1177,7 +1182,10 @@ mod tests {
     fn inserted_line_maps_to_anchor_byte_offset() {
         let map = map_with_inserted(
             "a\nb",
-            InsertedLines::from([(Line::ZERO, vec![std::sync::Arc::from("DEL")])]),
+            InsertedLines::from([(
+                Line::ZERO,
+                vec![StyledLine::plain(std::sync::Arc::from("DEL"))],
+            )]),
         );
         let snapshot = map.snapshot();
         // 合成行无 buffer 坐标，映射到锚定行（行 0）行首。
@@ -1193,7 +1201,9 @@ mod tests {
             "short",
             InsertedLines::from([(
                 Line::ZERO,
-                vec![std::sync::Arc::from("aaaa bbbb cccc dddd eeee")],
+                vec![StyledLine::plain(std::sync::Arc::from(
+                    "aaaa bbbb cccc dddd eeee",
+                ))],
             )]),
         );
         map.set_wrap_width(Some(px(72.)), font("Helvetica"), px(16.), cx.text_system());
@@ -1211,7 +1221,10 @@ mod tests {
             "a\nb\nc\nd",
             InsertedLines::from([(
                 Line::new(2),
-                vec![std::sync::Arc::from("DEL1"), std::sync::Arc::from("DEL2")],
+                vec![
+                    StyledLine::plain(std::sync::Arc::from("DEL1")),
+                    StyledLine::plain(std::sync::Arc::from("DEL2")),
+                ],
             )]),
         );
         assert_eq!(map.line_count(), 6, "4 个 buffer 行 + 2 个合成行");

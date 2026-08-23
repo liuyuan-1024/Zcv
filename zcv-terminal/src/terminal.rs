@@ -121,7 +121,8 @@ pub struct Content {
     pub selection_text: Option<String>,
     pub selection: Option<SelectionRange>,
     pub cursor: Cursor,
-    pub cursor_char: char,
+    /// 光标格（含宽字符标志：光标块宽度按网格判定，不重复查 unicode 宽度表）。
+    pub cursor_cell: Cell,
     pub terminal_bounds: TerminalBounds,
     pub scrolled_to_top: bool,
     pub scrolled_to_bottom: bool,
@@ -682,18 +683,30 @@ impl Terminal {
         cx.notify();
     }
 
-    /// 像素滚动：跨多次滚轮事件累积像素，整除行高后滚动（保留余量）。
-    pub fn scroll_px(&mut self, delta: Pixels, line_height: Pixels, cx: &mut Context<Self>) {
-        self.scroll_px += delta;
-        let lines = (f32::from(self.scroll_px) / f32::from(line_height)) as i32;
-        if lines != 0 {
-            self.scroll_px = Pixels::from(
-                f32::from(self.scroll_px) % f32::from(line_height)
-                    * (self.scroll_px >= Pixels::ZERO) as i32 as f32
-                    + f32::from(self.scroll_px) % f32::from(line_height)
-                        * (self.scroll_px < Pixels::ZERO) as i32 as f32,
-            );
-            self.scroll_lines(lines, cx);
+    /// 像素滚动：触控板手势按 touch phase 处理——Started 重置累积、Moved 累积并滚动整行、Ended/Cancelled 忽略。
+    /// 慢滚时每次增量小，累积跨事件进行，保证手感连续。
+    pub fn scroll_px(
+        &mut self,
+        phase: gpui::TouchPhase,
+        delta: Pixels,
+        line_height: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        match phase {
+            gpui::TouchPhase::Started => {
+                self.scroll_px = Pixels::ZERO;
+            }
+            gpui::TouchPhase::Moved => {
+                self.scroll_px += delta;
+                let lines = (f32::from(self.scroll_px) / f32::from(line_height)) as i32;
+                if lines != 0 {
+                    // 保留余量：不足一行的像素跨事件继续累积。
+                    self.scroll_px =
+                        Pixels::from(f32::from(self.scroll_px) % f32::from(line_height));
+                    self.scroll_lines(lines, cx);
+                }
+            }
+            gpui::TouchPhase::Ended => {}
         }
     }
 
@@ -895,7 +908,7 @@ mod tests {
         let cursor = content.cursor;
         assert_eq!(cursor.point.line, 0);
         assert_eq!(cursor.point.column, 0);
-        assert_eq!(content.cursor_char, 'h');
+        assert_eq!(content.cursor_cell.character(), 'h');
     }
 
     /// 宽字符：WIDE_CHAR 与 WIDE_CHAR_SPACER 标记保留。

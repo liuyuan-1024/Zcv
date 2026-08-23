@@ -223,7 +223,7 @@ pub(super) fn clear(term: &mut AlacrittyTerm) {
 /// 生成渲染快照：一次性读取网格、光标、模式与选择状态。
 ///
 /// 坐标约定：网格单元格与选择均使用绝对坐标（滚动回看顶行为负行号）；
-/// 光标来自 `renderable_content` 是视口坐标，这里统一换算成绝对坐标。
+/// 光标同样是绝对坐标，这里统一换算成视口行（0 = 视口顶），渲染层直接定位。
 /// 泛型化以支持测试用 `Term<VoidListener>`（mock_term）。
 pub(super) fn make_content<T: EventListener>(
     term: &Term<T>,
@@ -247,14 +247,15 @@ pub(super) fn make_content<T: EventListener>(
 
     let selection_text = content.selection.and_then(|_| term.selection_to_string());
     let grid = term.grid();
+    // 光标点是网格绝对行（滚动时不变，跟随内容）；视口行 = 绝对行 + 回看偏移。
     let cursor = Cursor {
         shape: content.cursor.shape,
         point: Point {
-            line: content.cursor.point.line.0 - display_offset as i32,
+            line: content.cursor.point.line.0 + display_offset as i32,
             column: content.cursor.point.column.0,
         },
     };
-    let cursor_char = grid[content.cursor.point].c;
+    let cursor_cell = Cell::new(grid[content.cursor.point].clone());
     let bottom_row_occupied = grid
         .display_iter()
         .last()
@@ -281,7 +282,7 @@ pub(super) fn make_content<T: EventListener>(
             is_block: range.is_block,
         }),
         cursor,
-        cursor_char,
+        cursor_cell,
         terminal_bounds: last_content.map_or_else(TerminalBounds::default, |c| c.terminal_bounds),
         scrolled_to_top: display_offset == grid.history_size(),
         scrolled_to_bottom: display_offset == 0,

@@ -7740,7 +7740,6 @@ name = "zcv-settings"
 version = "0.7.7"
 dependencies = [
  "anyhow",
- "async-channel 1.9.0",
  "gpui",
  "serde",
  "serde_json_lenient",
@@ -7761,6 +7760,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "zcv-actions",
+ "zcv-assets",
+ "zcv-editor",
  "zcv-project",
  "zcv-settings",
  "zcv-theme",

@@ -18,7 +18,7 @@ use zcv_language::HighlightSpan;
 use super::DisplaySnapshot;
 use super::fold_map::{FoldRowSegment, FoldRowSegmentKind};
 use super::inlay_map::InlaySnapshot;
-use super::line_stream::StreamLineSource;
+use super::line_stream::{StreamLineSource, StyledSpan};
 use super::wrap_map::WrapViewportRowKind;
 use zcv_theme::color;
 
@@ -33,26 +33,26 @@ pub(crate) const CHUNK_SIZE: usize = 128;
 pub(crate) struct InlayInfo<'a> {
     pub(crate) anchor: usize,
     pub(crate) projected: usize,
-    pub(crate) text: &'a str,
+    pub text: &'a str,
 }
 
 /// 渲染 chunk：文本切片 + 字符/tab 位图 + 样式标记（对齐 Zed Chunk 的 is_tab/is_inlay/highlight_style）。
 #[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) struct Chunk<'a> {
-    pub(crate) text: &'a str,
-    pub(crate) chars: u128,
-    pub(crate) tabs: u128,
+pub struct Chunk<'a> {
+    pub text: &'a str,
+    pub chars: u128,
+    pub tabs: u128,
     /// 是否由 tab 展开而来（tab 展开的空格段）。
-    pub(crate) is_tab: bool,
+    pub is_tab: bool,
     /// 行内提示（inlay）文本（斜体 + 半透明渲染）。
-    pub(crate) is_inlay: bool,
+    pub is_inlay: bool,
     /// 折叠占位符文本（渲染端用占位色绘制）。
-    pub(crate) is_placeholder: bool,
-    pub(crate) style: Option<HighlightStyle>,
+    pub is_placeholder: bool,
+    pub style: Option<HighlightStyle>,
     /// 背景覆盖层命中色（搜索高亮等；优先于 style 的背景）。
-    pub(crate) background: Option<gpui::Rgba>,
+    pub background: Option<gpui::Rgba>,
     /// 选区标记（下划线渲染）。
-    pub(crate) marked: bool,
+    pub marked: bool,
 }
 
 impl<'a> Chunk<'a> {
@@ -246,10 +246,10 @@ where
 /// 行首的原始 buffer 字节（spans/marked 的坐标域）。
 /// 展开后的字符列 = 显示列（tab 展开成空格，shaping 宽度与测量一致）。
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct RenderChunks<'a> {
-    pub(crate) chunks: Vec<Chunk<'a>>,
+pub struct RenderChunks<'a> {
+    pub chunks: Vec<Chunk<'a>>,
     /// 片段起点前的投影字符数（光标/命中测试的 UTF-16 起点；不含 wrap 假空格）。
-    pub(crate) utf16_start: usize,
+    pub utf16_start: usize,
 }
 
 /// 行的样式输入（语法高亮 + 搜索背景层 + 选区标记）。
@@ -271,6 +271,8 @@ pub(crate) struct ViewportChunkSource<'a> {
     pub stream_line: Line,
     pub segments: Option<&'a [FoldRowSegment]>,
     pub inlay: &'a InlaySnapshot,
+    /// 合成行的行内样式（buffer 行为 None；终端等宿主注入逐格样式）。
+    pub inserted_styles: Option<&'a [StyledSpan]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -292,6 +294,7 @@ struct StyledChunks<'a, 'b> {
     original_len: usize,
     inlays: &'b [InlayInfo<'a>],
     styles: LineStyles<'b>,
+    inserted_styles: Option<&'b [StyledSpan]>,
     fragment_range: Range<usize>,
 }
 
@@ -301,6 +304,7 @@ impl<'a, 'b> StyledChunks<'a, 'b> {
         global_byte_start: usize,
         inlays: &'b [InlayInfo<'a>],
         styles: LineStyles<'b>,
+        inserted_styles: Option<&'b [StyledSpan]>,
         fragment_range: Range<usize>,
     ) -> Self {
         Self {
@@ -311,6 +315,7 @@ impl<'a, 'b> StyledChunks<'a, 'b> {
             original_len: text.len() - inlays.iter().map(|inlay| inlay.text.len()).sum::<usize>(),
             inlays,
             styles,
+            inserted_styles,
             fragment_range,
         }
     }
@@ -339,25 +344,31 @@ impl<'a, 'b> StyledChunks<'a, 'b> {
             .iter()
             .any(|inlay| inlay.projected <= start && end <= inlay.projected + inlay.text.len());
         let original_range = self.to_original(start)..self.to_original(end);
-        let style = (!is_inlay)
-            .then(|| {
-                self.styles.spans.iter().find_map(|span| {
-                    let span_start = span
-                        .range
-                        .start
-                        .saturating_sub(self.global_byte_start)
-                        .min(self.original_len);
-                    let span_end = span
-                        .range
-                        .end
-                        .saturating_sub(self.global_byte_start)
-                        .min(self.original_len);
-                    (span_start < original_range.end && span_end > original_range.start)
-                        .then(|| self.styles.styles.get(span.capture as usize).copied())
-                        .flatten()
-                })
+        // 合成行走宿主注入的行内样式（行内字节偏移直接匹配）；buffer 行走语法 span。
+        let style = if is_inlay {
+            None
+        } else if let Some(inserted) = self.inserted_styles {
+            inserted.iter().find_map(|span| {
+                (span.range.start < original_range.end && span.range.end > original_range.start)
+                    .then_some(span.style)
             })
-            .flatten();
+        } else {
+            self.styles.spans.iter().find_map(|span| {
+                let span_start = span
+                    .range
+                    .start
+                    .saturating_sub(self.global_byte_start)
+                    .min(self.original_len);
+                let span_end = span
+                    .range
+                    .end
+                    .saturating_sub(self.global_byte_start)
+                    .min(self.original_len);
+                (span_start < original_range.end && span_end > original_range.start)
+                    .then(|| self.styles.styles.get(span.capture as usize).copied())
+                    .flatten()
+            })
+        };
         let marked = !is_inlay
             && self.styles.marked.iter().any(|range| {
                 let range_start = range
@@ -453,12 +464,30 @@ fn chars_before(text: &str, byte: usize) -> usize {
 /// 从安全基础 chunk 构建一个显示片段的渲染 chunk。
 ///
 /// 样式、选区与 inlay 只作为事件标记参与流的分段，不能直接对文本切片。
-fn render_line_chunks<'a>(
+/// 渲染一条纯文本 + 行内样式行（终端等宿主用）：无 inlay、无语法 span，样式为行内字节区间（宿主已按显示列展开 tab）。
+pub fn render_plain_line<'a>(
+    text: &'a str,
+    tab_width: usize,
+    styles: &[StyledSpan],
+) -> RenderChunks<'a> {
+    render_line_chunks(
+        text,
+        tab_width,
+        0,
+        &[],
+        LineStyles::default(),
+        Some(styles),
+        0..text.len(),
+    )
+}
+
+pub(crate) fn render_line_chunks<'a>(
     text: &'a str,
     tab_width: usize,
     global_byte_start: usize,
     inlays: &[InlayInfo<'a>],
     styles: LineStyles<'_>,
+    inserted_styles: Option<&[StyledSpan]>,
     fragment_range: Range<usize>,
 ) -> RenderChunks<'a> {
     let fragment_start = fragment_range.start.min(text.len());
@@ -470,6 +499,7 @@ fn render_line_chunks<'a>(
         global_byte_start,
         inlays,
         styles,
+        inserted_styles,
         fragment_start..fragment_end,
     );
     let chunks =
@@ -515,12 +545,11 @@ fn render_folded_chunks<'a>(
         match &segment.kind {
             FoldRowSegmentKind::Placeholder => {
                 styled_chunks.extend(
-                    StyledChunks::new(segment_text, 0, &[], LineStyles::default(), local).map(
-                        |mut chunk| {
+                    StyledChunks::new(segment_text, 0, &[], LineStyles::default(), None, local)
+                        .map(|mut chunk| {
                             chunk.is_placeholder = true;
                             chunk
-                        },
-                    ),
+                        }),
                 );
             }
             FoldRowSegmentKind::Text {
@@ -548,6 +577,7 @@ fn render_folded_chunks<'a>(
                     *global_start,
                     &segment_inlays,
                     styles,
+                    None,
                     local,
                 ));
             }
@@ -591,6 +621,7 @@ pub(crate) fn render_viewport_chunks<'a>(
             source.global_byte_start,
             &inlays,
             styles,
+            source.inserted_styles,
             fragment_range,
         )
     }
@@ -609,7 +640,7 @@ pub(crate) struct WrapRowInfo {
 pub(crate) struct RenderedViewportRow {
     pub(crate) display_text: String,
     pub(crate) runs: Vec<gpui::TextRun>,
-    pub(crate) utf16_start: usize,
+    pub utf16_start: usize,
     pub(crate) logical_line: Option<Line>,
     pub(crate) gutter_line: Option<Line>,
     pub(crate) wrap_info: Option<WrapRowInfo>,
@@ -662,15 +693,21 @@ pub(crate) fn render_viewport_row(
             Line::new(start.get() + index)
         }
     };
-    // 合成行是外部文本：无语法高亮、不可编辑/不可选（spans/marked 是锚定行的 buffer 坐标，套用到合成行文本会产生非字符边界切片）。
-    let line_styles = match source {
-        StreamLineSource::Buffer(_) => LineStyles {
-            spans: style_input.visible_highlights,
-            styles: style_input.highlight_styles,
-            backgrounds: style_input.search_backgrounds,
-            marked: style_input.marked_ranges,
-        },
-        StreamLineSource::Inserted { .. } => LineStyles::default(),
+    // 合成行是外部文本：无语法高亮、不可编辑/不可选（spans/marked 是锚定行的 buffer 坐标，套用到合成行文本会产生非字符边界切片）；行内样式由宿主注入。
+    let (line_styles, inserted_styles) = match source {
+        StreamLineSource::Buffer(_) => (
+            LineStyles {
+                spans: style_input.visible_highlights,
+                styles: style_input.highlight_styles,
+                backgrounds: style_input.search_backgrounds,
+                marked: style_input.marked_ranges,
+            },
+            None,
+        ),
+        StreamLineSource::Inserted { .. } => (
+            LineStyles::default(),
+            inlay_snapshot.stream().line_styles(stream_line),
+        ),
     };
     let tab_width = display_snapshot.buffer_snapshot().config().tab.tab_width();
     let rendered = render_viewport_chunks(
@@ -680,6 +717,7 @@ pub(crate) fn render_viewport_row(
             stream_line,
             segments: segments.as_deref(),
             inlay: inlay_snapshot,
+            inserted_styles,
         },
         tab_width,
         line_styles,
@@ -743,7 +781,7 @@ pub(crate) fn render_viewport_row(
 }
 
 /// 渲染端把 chunk 流转成 TextRun（对齐 Zed from_chunks：每 chunk 一个 run，base 合并样式）。
-pub(crate) fn chunks_to_runs(chunks: &[Chunk<'_>], base: gpui::TextRun) -> Vec<gpui::TextRun> {
+pub fn chunks_to_runs(chunks: &[Chunk<'_>], base: gpui::TextRun) -> Vec<gpui::TextRun> {
     chunks
         .iter()
         .map(|chunk| {
@@ -882,6 +920,7 @@ mod tests {
                 styles: &[style],
                 marked: &[],
             },
+            None,
             0..text.len(),
         );
         assert_eq!(
@@ -952,6 +991,7 @@ mod tests {
                 styles: &[style],
                 marked: &[],
             },
+            None,
             0..5,
         );
         // span 端点（原始字节 3）处切分：样式段（含 tab 展开的两个 chunk）与无样式段。
@@ -978,6 +1018,7 @@ mod tests {
                 styles: &[],
                 marked: &[TextRange::new(ByteOffset::new(2), ByteOffset::new(4)).unwrap()],
             },
+            None,
             0..6,
         );
         let marked = line
@@ -1002,6 +1043,7 @@ mod tests {
                 styles: &[],
                 marked: &[TextRange::new(ByteOffset::new(1), ByteOffset::new(7)).unwrap()],
             },
+            None,
             0..text.len(),
         );
         let runs = chunks_to_runs(
@@ -1036,6 +1078,7 @@ mod tests {
                 text: ": hint",
             }],
             LineStyles::default(),
+            None,
             0..8,
         );
         // 段：0..1（"a"）+ 1..7（": hint"，inlay）+ 7..8（"b"）。
@@ -1063,6 +1106,7 @@ mod tests {
                 text: ": hint",
             }],
             LineStyles::default(),
+            None,
             1..5,
         );
         assert_eq!(line.chunks.len(), 1);
@@ -1096,6 +1140,7 @@ mod tests {
                 styles: &[style],
                 marked: &[],
             },
+            None,
             0..8,
         );
         let styled = line
@@ -1127,6 +1172,7 @@ mod tests {
                 styles: &[style],
                 marked: &[],
             },
+            None,
             0..3,
         );
         assert_eq!(line.chunks.len(), 1);
@@ -1155,6 +1201,7 @@ mod backgrounds_layer_tests {
                 backgrounds: &[(0..3, rgba(0x74ade83d)), (4..7, rgba(0x74ade8b3))],
                 marked: &[],
             },
+            None,
             0..text.len(),
         );
         let chunks = line.chunks;
@@ -1181,6 +1228,7 @@ mod backgrounds_layer_tests {
                 backgrounds: &[(1..4, rgba(0x74ade83d))],
                 marked: &[],
             },
+            None,
             0..text.len(),
         );
         let chunks = line.chunks;

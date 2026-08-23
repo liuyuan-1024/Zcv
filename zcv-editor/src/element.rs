@@ -1681,7 +1681,7 @@ fn column_to_byte(text: &str, column: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display_map::DisplayMap;
+    use crate::display_map::{DisplayMap, StyledLine};
     use gpui::{AppContext, Empty, TestAppContext};
     use std::path::PathBuf;
     use zcv_engine::{Buffer, BufferConfig, ByteOffset, Line};
@@ -1741,9 +1741,9 @@ mod tests {
                 // 展开删除块：锚定行 0 后插入含中文的 HEAD 行；锚定行短，span 端点在锚定行外。
                 map.set_inserted(crate::display_map::InsertedLines::from([(
                     Line::ZERO,
-                    vec![std::sync::Arc::from(
+                    vec![StyledLine::plain(std::sync::Arc::from(
                         "// 展开产生的新行在重建时现查 git 状态，无需单独补齐。",
-                    )],
+                    ))],
                 )]));
                 // 懒查询模式下渲染侧不再接收注入 spans：空语法快照使高亮查询为空，合成行（外部文本）仍走 LineStyles::default() 无高亮路径。
                 map.set_syntax_snapshot(SyntaxSnapshot::empty(snapshot.version()));
@@ -2197,7 +2197,10 @@ mod tests {
         // 删除块展开：锚定行 1 后插入 2 行被删除文本（HEAD 的 1..3 行）。
         map.set_inserted(crate::display_map::InsertedLines::from([(
             Line::new(1),
-            vec![std::sync::Arc::from("old 1"), std::sync::Arc::from("old 2")],
+            vec![
+                StyledLine::plain(std::sync::Arc::from("old 1")),
+                StyledLine::plain(std::sync::Arc::from("old 2")),
+            ],
         )]));
         let snapshot = map.snapshot();
         let hunk = DiffHunk {
@@ -2242,7 +2245,7 @@ mod tests {
         let mut map = DisplayMap::new(buffer.snapshot());
         map.set_inserted(crate::display_map::InsertedLines::from([(
             Line::ZERO, // 修改块锚定 range.start - 1（旧行在修改行上方）。
-            vec![std::sync::Arc::from("old 1")],
+            vec![StyledLine::plain(std::sync::Arc::from("old 1"))],
         )]));
         let snapshot = map.snapshot();
         let hunk = DiffHunk {
@@ -2288,7 +2291,7 @@ mod tests {
         let mut map = DisplayMap::new(buffer.snapshot());
         map.set_inserted(crate::display_map::InsertedLines::from([(
             Line::ZERO,
-            vec![std::sync::Arc::from("old 1")],
+            vec![StyledLine::plain(std::sync::Arc::from("old 1"))],
         )]));
         let snapshot = map.snapshot();
         let hunk = DiffHunk {

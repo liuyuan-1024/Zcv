@@ -11,13 +11,38 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::Arc;
 
+use gpui::HighlightStyle;
 use zcv_engine::{ByteOffset, Line, Snapshot};
+
+/// 合成行的行内样式段（字节区间 → 样式；终端等宿主注入逐格样式用）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct StyledSpan {
+    pub range: Range<usize>,
+    pub style: HighlightStyle,
+}
+
+/// 合成行：自持文本 + 行内样式（git diff 等纯文本行样式为空）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct StyledLine {
+    pub text: Arc<str>,
+    pub styles: Arc<[StyledSpan]>,
+}
+
+impl StyledLine {
+    /// 纯文本合成行（无行内样式）。
+    pub fn plain(text: Arc<str>) -> Self {
+        Self {
+            text,
+            styles: Arc::from([]),
+        }
+    }
+}
 
 /// 合成行表：锚定 buffer 逻辑行 → 插入在其**之后**的文本行（自持，无行尾换行）。
 ///
 /// 删除块展开的合成行显示在被删行的原位置（删除点 = 锚定行之后）；
 /// 锚定行 0 的块插在行 0 之后。
-pub(crate) type InsertedLines = BTreeMap<Line, Vec<Arc<str>>>;
+pub(crate) type InsertedLines = BTreeMap<Line, Vec<StyledLine>>;
 
 /// 统一行空间中一行的文本来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,8 +171,18 @@ impl LineStream {
                 Some(StreamLineText::Buffer(slice.into_text()))
             }
             StreamLineSource::Inserted { anchor, index } => Some(StreamLineText::Inserted(
-                self.inserted.get(&anchor)?.get(index)?,
+                &self.inserted.get(&anchor)?.get(index)?.text,
             )),
+        }
+    }
+
+    /// 合成行的行内样式（buffer 行为 None，语法高亮走 buffer 通道）。
+    pub(crate) fn line_styles(&self, line: Line) -> Option<&[StyledSpan]> {
+        match self.source(line)? {
+            StreamLineSource::Buffer(_) => None,
+            StreamLineSource::Inserted { anchor, index } => {
+                Some(&self.inserted.get(&anchor)?.get(index)?.styles)
+            }
         }
     }
 

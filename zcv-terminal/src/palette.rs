@@ -52,7 +52,7 @@ pub(crate) fn get_color_at_index(index: usize, _window: &Window, cx: &App) -> Rg
 }
 
 /// Named 枚举 → 16 色表索引。
-fn named_index(named: NamedColor) -> usize {
+pub(crate) fn named_index(named: NamedColor) -> usize {
     match named {
         NamedColor::Black => 0,
         NamedColor::Red => 1,

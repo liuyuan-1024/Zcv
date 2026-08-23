@@ -45,6 +45,8 @@ impl TerminalView {
             _subscriptions: Vec::new(),
         };
         view.subscribe_terminal_events(cx);
+        // 观察 Terminal 的 notify（滚动、选择、输入等触发），保证视图重绘。
+        cx.observe(&view.terminal, |_, _, cx| cx.notify()).detach();
         view
     }
 
@@ -230,7 +232,7 @@ impl TerminalView {
             if autoscroll != Pixels::ZERO {
                 let line_height = self.line_height(cx);
                 self.terminal.update(cx, |terminal, cx| {
-                    terminal.scroll_px(autoscroll, line_height, cx);
+                    terminal.scroll_px(gpui::TouchPhase::Moved, autoscroll, line_height, cx);
                 });
             }
             let _ = start;
@@ -315,13 +317,11 @@ impl TerminalView {
             return;
         }
 
-        // 普通滚动：像素累加，保证平滑。
-        if scroll_lines != 0 {
-            let delta = event.delta.pixel_delta(line_height);
-            self.terminal.update(cx, |terminal, cx| {
-                terminal.scroll_px(delta.y, line_height, cx)
-            });
-        }
+        // 普通滚动：像素累加，保证平滑（touch phase 驱动手势状态）。
+        let delta = event.delta.pixel_delta(line_height);
+        self.terminal.update(cx, |terminal, cx| {
+            terminal.scroll_px(event.touch_phase, delta.y, line_height, cx)
+        });
     }
 }
 

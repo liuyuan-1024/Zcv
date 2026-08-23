@@ -7612,6 +7612,7 @@ dependencies = [
  "anyhow",
  "gpui",
  "gpui_sum_tree",
+ "tempfile",
  "thiserror 2.0.19",
  "unicode-segmentation",
  "unicode-width",

@@ -67,7 +67,13 @@ impl Item for Editor {
         let Ok(suffix) = path.strip_prefix(from) else {
             return;
         };
-        let renamed_path = to.join(suffix);
+        // 条目自身重命名时后缀为空：直接取 to。
+        // `to.join(空路径)` 会追加尾随斜杠，保存这类路径会触发 Not a directory。
+        let renamed_path = if suffix.as_os_str().is_empty() {
+            to.to_path_buf()
+        } else {
+            to.join(suffix)
+        };
         self.set_file_path(renamed_path, cx);
     }
 
@@ -135,5 +141,58 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(events.borrow().contains(&EditorEvent::DirtyChanged));
+    }
+
+    /// 复现「重命名后保存失败」：重命名必须同步 Editor 的路径，否则保存会落到旧路径（旧路径已不存在 → IO 失败）。
+    #[gpui::test]
+    fn rename_then_save_writes_to_new_path(cx: &mut TestAppContext) {
+        use std::fs;
+        use zcv_project::Project;
+        use zcv_workspace::ItemHandle;
+
+        // 项目根与打开路径统一走 canonical 形式（与真实装配一致）。
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let root = directory.path().canonicalize().expect("临时目录应可规范化");
+        let old_path = root.join("foo.rs");
+        let new_path = root.join("bar.rs");
+        fs::write(&old_path, "旧内容").expect("应创建测试文件");
+
+        let project = cx.new(|cx| Project::new(root, cx));
+        // 对齐 ItemProvider 打开流程：open_buffer 内部 canonicalize，随后 set_file_path 写入 item 侧路径。
+        let editor = project.update(cx, |project, cx| {
+            let buffer = project.open_buffer(&old_path, cx).expect("应打开测试文件");
+            let editor = cx.new(|cx| Editor::for_buffer(buffer, cx));
+            editor.update(cx, |editor, cx| {
+                editor.set_file_path(old_path.clone(), cx);
+            });
+            editor
+        });
+
+        // 对齐 Workspace::rename_path：项目先迁移，再逐个 item 迁移路径（走真实 ItemHandle 实现）。
+        project
+            .update(cx, |project, cx| {
+                project.rename_path(&old_path, &new_path, cx)
+            })
+            .expect("应重命名文件");
+        let item: Box<dyn ItemHandle> = Box::new(editor.clone());
+        cx.update(|cx| item.rename_path(&old_path, &new_path, cx));
+        let (path, buffer) = cx.read_entity(&editor, |editor, cx| {
+            let path = editor.file_path(cx).expect("重命名后应有路径");
+            (path, editor.buffer())
+        });
+        assert_eq!(path, new_path, "编辑器路径应迁移到新路径");
+        // 保存路径不得带尾随斜杠：join 空后缀生成的 `new_path/` 会导致 Not a directory。
+        assert_eq!(path.file_name(), Some(std::ffi::OsStr::new("bar.rs")));
+
+        // 编辑后保存：应写入新路径。
+        cx.update_entity(&editor, |editor, cx| editor.set_text("新内容", cx));
+        project
+            .update(cx, |project, cx| project.save_buffer(&buffer, &path, cx))
+            .expect("保存应成功");
+        assert_eq!(
+            fs::read_to_string(&new_path).expect("新路径应有保存内容"),
+            "新内容"
+        );
+        assert!(!old_path.exists(), "旧路径不应再存在");
     }
 }

@@ -238,8 +238,13 @@ pub fn new_entry_destination(parent: &Path, input: &str) -> anyhow::Result<NewEn
 
 /// 把路径按 `from → to` 的重命名迁移（条目自身与祖先路径都换新前缀）。
 pub fn translate_path(path: &Path, from: &Path, to: &Path) -> PathBuf {
-    path.strip_prefix(from)
-        .map_or_else(|_| path.to_path_buf(), |suffix| to.join(suffix))
+    match path.strip_prefix(from) {
+        // 条目自身重命名时后缀为空：直接取 to。
+        // `to.join(空路径)` 会追加尾随斜杠，保存这类路径会触发 Not a directory。
+        Ok(suffix) if suffix.as_os_str().is_empty() => to.to_path_buf(),
+        Ok(suffix) => to.join(suffix),
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 #[cfg(test)]
@@ -318,6 +323,37 @@ mod tests {
         for invalid in ["", ".", "..", "nested/lib.rs", "nested\\lib.rs"] {
             assert!(rename_destination(source, invalid).is_err());
         }
+    }
+
+    #[test]
+    fn translate_path_migrates_entry_and_ancestors_without_trailing_slash() {
+        // 条目自身重命名：后缀为空，结果必须等于 to（不得带尾随斜杠）。
+        assert_eq!(
+            translate_path(
+                Path::new("/project/src/main.rs"),
+                Path::new("/project/src/main.rs"),
+                Path::new("/project/src/lib.rs")
+            ),
+            PathBuf::from("/project/src/lib.rs")
+        );
+        // 目录重命名：其下条目跟随迁移。
+        assert_eq!(
+            translate_path(
+                Path::new("/project/src/main.rs"),
+                Path::new("/project/src"),
+                Path::new("/project/lib")
+            ),
+            PathBuf::from("/project/lib/main.rs")
+        );
+        // 不匹配路径保持原样。
+        assert_eq!(
+            translate_path(
+                Path::new("/project/other.rs"),
+                Path::new("/project/src"),
+                Path::new("/project/lib")
+            ),
+            PathBuf::from("/project/other.rs")
+        );
     }
 
     #[test]

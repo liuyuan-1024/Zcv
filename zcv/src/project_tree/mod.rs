@@ -769,23 +769,26 @@ fn render_row(
                 let focus = render_context.focus.clone();
                 let weak = render_context.weak.clone();
                 move |event, window, cx| {
-                    // 单击/双击都把焦点收到项目树（交互规范：单击后焦点留在项目树；
-                    // 对齐 Zed 的 cx.listener 路径，直接调用 Entity 方法，不走 action 分派）。
+                    let was_focused = focus.contains_focused(window, cx);
                     window.focus(&focus);
                     if let Some(tree) = weak.upgrade() {
                         tree.update(cx, |tree, cx| {
                             tree.state.borrow_mut().select(path.clone());
-                            // 行点击决策统一走 tree 组件（目录每击 toggle，文件单击预览/双击激活）。
-                            match tree::row_click_action(is_dir, event.click_count) {
-                                tree::RowClickAction::Toggle => {
+                            match tree::row_mouse_down_action(
+                                is_dir,
+                                event.click_count,
+                                was_focused,
+                            ) {
+                                Some(tree::RowClickAction::Toggle) => {
                                     tree.activate_selected(true, window, cx)
                                 }
-                                tree::RowClickAction::Preview => {
+                                Some(tree::RowClickAction::Preview) => {
                                     tree.activate_selected(false, window, cx)
                                 }
-                                tree::RowClickAction::Activate => {
+                                Some(tree::RowClickAction::Activate) => {
                                     tree.activate_selected(true, window, cx)
                                 }
+                                None => {}
                             }
                         });
                     }
@@ -1081,7 +1084,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn mouse_click_opens_file_even_when_tree_not_focused(cx: &mut TestAppContext) {
+    fn first_click_focuses_unfocused_tree_and_second_click_opens(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
         let file = directory.path().join("a.txt");
         std::fs::write(&file, "hello").expect("应创建测试文件");
@@ -1094,7 +1097,7 @@ mod tests {
         let callback_focus = Rc::clone(&last_focus_opened);
 
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
-        let (_tree, cx) = cx.add_window_view(move |_, cx| {
+        let (tree, cx) = cx.add_window_view(move |_, cx| {
             let mut tree = ProjectTreePanel::new(project.clone(), cx);
             tree.set_on_open_file(Rc::new(move |_, focus_opened_item, _, _| {
                 callback_count.set(callback_count.get() + 1);
@@ -1110,17 +1113,29 @@ mod tests {
 
         // 单击第二行（a.txt，depth 1）：行高为 ui_line()。
         let row_height = zcv_theme::typography::ui_line();
-        cx.simulate_click(
-            point(px(10.), px(f32::from(row_height) + 1.)),
-            gpui::Modifiers::default(),
-        );
-        cx.run_until_parked();
+        let click = |cx: &mut VisualTestContext| {
+            cx.simulate_click(
+                point(px(10.), px(f32::from(row_height) + 1.)),
+                gpui::Modifiers::default(),
+            );
+            cx.run_until_parked();
+        };
 
+        // 首击：树未聚焦，只聚焦并选中，不打开文件。
+        click(cx);
+        assert_eq!(open_count.get(), 0, "未聚焦首击只聚焦，不应打开文件");
+        let tree_focused = cx.update(|window, cx| tree.read(cx).focus.contains_focused(window, cx));
+        assert!(tree_focused, "首击应聚焦项目树");
+        let selected = cx.read_entity(&tree, |tree, _| tree.state.borrow().selected.clone());
         assert_eq!(
-            open_count.get(),
-            1,
-            "焦点不在项目树时单击文件也应打开（action 沿焦点链分发，点击需先聚焦项目树）"
+            selected.as_deref(),
+            Some(file.as_path()),
+            "首击应选中被点行"
         );
+
+        // 二击：已聚焦，单击预览打开（焦点留在项目树）。
+        click(cx);
+        assert_eq!(open_count.get(), 1, "已聚焦后单击应打开文件");
         assert!(
             !last_focus_opened.get(),
             "单击文件应打开临时标签但焦点留在项目树（focus_opened_item=false）"

@@ -715,22 +715,26 @@ fn render_row(
                 let focus = render_context.focus.clone();
                 let weak = render_context.weak.clone();
                 move |event, window, cx| {
-                    // 单击/双击都把焦点收到面板（对齐项目树：交互直接调 Entity 方法）。
+                    let was_focused = focus.contains_focused(window, cx);
                     window.focus(&focus);
                     if let Some(panel) = weak.upgrade() {
                         panel.update(cx, |panel, cx| {
                             panel.state.borrow_mut().selected = Some((section, path.clone()));
-                            // 行点击决策统一走 tree 组件（目录每击 toggle，文件单击预览/双击激活）。
-                            match tree::row_click_action(is_dir, event.click_count) {
-                                tree::RowClickAction::Toggle => {
+                            match tree::row_mouse_down_action(
+                                is_dir,
+                                event.click_count,
+                                was_focused,
+                            ) {
+                                Some(tree::RowClickAction::Toggle) => {
                                     panel.activate_selected(true, window, cx)
                                 }
-                                tree::RowClickAction::Preview => {
+                                Some(tree::RowClickAction::Preview) => {
                                     panel.activate_selected(false, window, cx)
                                 }
-                                tree::RowClickAction::Activate => {
+                                Some(tree::RowClickAction::Activate) => {
                                     panel.activate_selected(true, window, cx)
                                 }
+                                None => {}
                             }
                         });
                     }
@@ -973,7 +977,7 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    use gpui::{KeyBinding, TestAppContext, point, px};
+    use gpui::{KeyBinding, TestAppContext, VisualTestContext, point, px};
     use tempfile::TempDir;
 
     use zcv_project::{Project, StatusEntry};
@@ -1276,7 +1280,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn clicking_entry_opens_file_as_transient_tab(cx: &mut TestAppContext) {
+    fn first_click_focuses_unfocused_panel_and_second_click_opens(cx: &mut TestAppContext) {
         let (root, _temp) = test_repo();
         let project_root = root.clone();
         let open_count = Rc::new(Cell::new(0));
@@ -1308,13 +1312,24 @@ mod tests {
         // 单击第 4 行（tracked.txt）行内容区（x=100 避开行首复选框）：
         // 行高为 ui_line()，以临时标签打开（focus_opened_item=false）。
         let row_height = typography::ui_line();
-        cx.simulate_click(
-            point(px(100.), px(f32::from(row_height) * 2.5)),
-            gpui::Modifiers::default(),
-        );
-        cx.run_until_parked();
+        let click = |cx: &mut VisualTestContext| {
+            cx.simulate_click(
+                point(px(100.), px(f32::from(row_height) * 2.5)),
+                gpui::Modifiers::default(),
+            );
+            cx.run_until_parked();
+        };
 
-        assert_eq!(open_count.get(), 1, "单击文件行应打开文件");
+        // 首击：面板未聚焦，只聚焦并选中，不打开文件。
+        click(cx);
+        assert_eq!(open_count.get(), 0, "未聚焦首击只聚焦，不应打开文件");
+        let panel_focused =
+            cx.update(|window, cx| panel.read(cx).focus.contains_focused(window, cx));
+        assert!(panel_focused, "首击应聚焦变更面板");
+
+        // 二击：已聚焦，单击预览打开（焦点留在面板）。
+        click(cx);
+        assert_eq!(open_count.get(), 1, "已聚焦后单击应打开文件");
         assert!(
             !last_focus_opened.get(),
             "单击应打开临时标签但焦点留在面板（focus_opened_item=false）"

@@ -61,6 +61,18 @@ pub fn row_click_action(is_dir: bool, click_count: usize) -> RowClickAction {
     }
 }
 
+/// 行点击决策：树未聚焦时首击只聚焦并选中，不执行行动作（再击才生效）。
+///
+/// 返回 `None` 表示本次点击被消费为"聚焦"，调用方不应执行展开/打开等动作。
+/// 项目树与变更树共用本决策，配合各自行上的焦点句柄使用。
+pub fn row_mouse_down_action(
+    is_dir: bool,
+    click_count: usize,
+    was_focused: bool,
+) -> Option<RowClickAction> {
+    was_focused.then(|| row_click_action(is_dir, click_count))
+}
+
 // ── 私有辅助函数 ─────────────────────────────────────────────────────
 
 /// 树行骨架：relative + flex-row + items_center + 缩进 + 字型。
@@ -507,5 +519,33 @@ mod tests {
         assert_eq!(row_click_action(false, 1), RowClickAction::Preview);
         assert_eq!(row_click_action(false, 2), RowClickAction::Activate);
         assert_eq!(row_click_action(false, 3), RowClickAction::Activate);
+    }
+
+    #[test]
+    fn row_mouse_down_action_consumes_first_click_when_not_focused() {
+        // 未聚焦：首击只聚焦，任何点击都不执行行动作。
+        assert_eq!(
+            row_mouse_down_action(false, 1, false),
+            None,
+            "未聚焦首击不应预览"
+        );
+        assert_eq!(
+            row_mouse_down_action(true, 1, false),
+            None,
+            "未聚焦首击不应展开"
+        );
+        // 已聚焦：动作与 click_count 决策一致。
+        assert_eq!(
+            row_mouse_down_action(false, 1, true),
+            Some(RowClickAction::Preview)
+        );
+        assert_eq!(
+            row_mouse_down_action(false, 2, true),
+            Some(RowClickAction::Activate)
+        );
+        assert_eq!(
+            row_mouse_down_action(true, 1, true),
+            Some(RowClickAction::Toggle)
+        );
     }
 }

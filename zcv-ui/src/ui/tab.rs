@@ -90,7 +90,7 @@ impl RenderOnce for Tab {
             gpui::rgba(0)
         };
 
-        let border_color = color::current(cx).border_variant;
+        let border_color = color::current(cx).border;
 
         let tab = self
             .div

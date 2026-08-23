@@ -38,10 +38,7 @@ impl Render for HarnessButton {
             color::current(cx).text
         };
         // 与右侧面板按钮组同款的前导分隔线，承担与底栏其他状态项的视觉分隔。
-        let divider = div()
-            .w(px(1.0))
-            .h_full()
-            .bg(color::current(cx).border_variant);
+        let divider = div().w(px(1.0)).h_full().bg(color::current(cx).border);
         div()
             .flex()
             .items_center()

@@ -121,17 +121,24 @@ impl RenderOnce for Glyph {
         } else {
             self.color.unwrap_or_else(|| color::current(cx).text)
         };
+        // 悬停背景：取主题的幽灵元素悬停色。
+        let hover_background = color::current(cx).ghost_element_hover;
         let icon_size = typography::ui();
         let tooltip = self.tooltip;
         let on_click = self.on_click;
 
         let base = |mut el: gpui::Stateful<gpui::Div>| {
+            // 悬停背景带圆角与内边距。
+            el = el.rounded_sm().p(space::S2);
             // 只有可点击的 glyph 才显示手型光标
             if on_click.is_some() && !disabled {
                 el = el.cursor_pointer();
             }
             if let Some(build) = tooltip.build() {
                 el = el.tooltip(build);
+            }
+            if !disabled {
+                el = el.hover(move |style| style.bg(hover_background));
             }
             if !disabled && let Some(ref handler) = on_click {
                 let h = Rc::clone(handler);

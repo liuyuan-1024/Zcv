@@ -98,7 +98,7 @@ impl Render for PanelButtons {
         let divider = div()
             .w(gpui::px(1.0))
             .h_full()
-            .bg(color::current(cx).border_variant);
+            .bg(color::current(cx).border);
         let content = div().flex().items_center().gap(space::S6).children(buttons);
         match area {
             DockPosition::Left => div()

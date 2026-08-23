@@ -87,6 +87,7 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         surface_background: parse("surface.background")?,
         elevated_surface_background: parse("elevated_surface.background")?,
         ghost_element_background: parse("ghost_element.background")?,
+        ghost_element_hover: parse("ghost_element.hover")?,
         element_hover: parse("element.hover")?,
         element_selected: parse("element.selected")?,
         border: parse("border")?,
@@ -284,6 +285,7 @@ mod tests {
         assert_eq!(colors.editor_background, gpui::rgba(0xfafafaff));
         assert_eq!(colors.text, gpui::rgba(0x242529ff));
         assert_eq!(colors.editor_selection_background, gpui::rgba(0x5c78e225));
+        assert_eq!(colors.ghost_element_hover, gpui::rgba(0xc9c9caff));
         // 终端 ANSI 色与 Zed 官方一致。
         assert_eq!(colors.terminal_ansi_yellow, gpui::rgba(0xd2b67cff));
         assert_eq!(colors.terminal_ansi_blue, gpui::rgba(0x2f5af3ff));

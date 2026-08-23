@@ -92,7 +92,7 @@ fn bar_frame(cx: &gpui::App) -> Div {
         .bg(color::current(cx).title_bar_background)
         .text_color(color::current(cx).text)
         .border_b_1()
-        .border_color(color::current(cx).border_variant)
+        .border_color(color::current(cx).border)
 }
 
 fn cluster(items: Vec<AnyElement>) -> Div {

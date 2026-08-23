@@ -4,33 +4,33 @@ appearance = "light"
 # 与 dark.toml 保持同一 Helix 兼容格式；消费 fg 与 modifiers 字段。
 # palette 色值在浅色底色上保证 WCAG AA 级对比度（正文 ≥4.5:1）。
 
-"tag" = { fg = "red" }
-"attribute" = { fg = "gold" }
-"comment" = { fg = "light-gray", modifiers = ["italic"] }
-"constant" = { fg = "cyan" }
+"tag" = { fg = "#5c78e2ff" }
+"attribute" = { fg = "#5c78e2ff" }
+"comment" = { fg = "#a2a3a7ff", modifiers = ["italic"] }
+"constant" = { fg = "#c18401ff" }
 "constant.numeric" = { fg = "gold" }
 "constant.builtin" = { fg = "gold" }
 "constant.character.escape" = { fg = "gold" }
 "constructor" = { fg = "blue" }
-"function" = { fg = "blue" }
+"function" = { fg = "#5b79e3ff" }
 "function.builtin" = { fg = "blue" }
 "function.macro" = { fg = "purple" }
-"keyword" = { fg = "red" }
+"keyword" = { fg = "#a449abff" }
 "keyword.control" = { fg = "purple" }
 "keyword.control.import" = { fg = "red" }
 "keyword.directive" = { fg = "purple" }
 "keyword.storage" = { fg = "purple" }
-"label" = { fg = "purple" }
-"namespace" = { fg = "blue" }
-"operator" = { fg = "purple" }
+"label" = { fg = "#5c78e2ff" }
+"namespace" = { fg = "#242529ff" }
+"operator" = { fg = "#3882b7ff" }
 "keyword.operator" = { fg = "purple" }
 "special" = { fg = "blue" }
-"punctuation.special" = { fg = "blue" }
-"punctuation.delimiter" = { fg = "blue" }
-"string" = { fg = "green" }
-"type" = { fg = "gold" }
+"punctuation.special" = { fg = "#b92b46ff" }
+"punctuation.delimiter" = { fg = "#4d4f52ff" }
+"string" = { fg = "#649f57ff" }
+"type" = { fg = "#3882b7ff" }
 "variable.builtin" = { fg = "blue" }
-"variable.parameter" = { fg = "red" }
+"variable.parameter" = { fg = "#d3604fff" }
 "variable.other.member" = { fg = "red" }
 
 "markup.heading" = { fg = "red" }
@@ -44,7 +44,7 @@ appearance = "light"
 "markup.link.url" = { fg = "cyan", modifiers = ["underlined"]}
 "markup.link.text" = { fg = "purple" }
 "text.title" = { fg = "red" }
-"text.literal" = { fg = "green" }
+"text.literal" = { fg = "#649f57ff" }
 "text.uri" = { fg = "cyan", modifiers = ["underlined"]}
 "text.reference" = { fg = "purple" }
 "text.emphasis" = { fg = "purple", modifiers = ["italic"] }
@@ -53,7 +53,7 @@ appearance = "light"
 
 "diff.plus" = "green"
 "diff.delta" = "gold"
-"diff.minus" = "red"
+"diff.minus" = "#e45649ff"
 
 "diagnostic.info".underline = { color = "blue", style = "curl" }
 "diagnostic.hint".underline = { color = "green", style = "curl" }
@@ -62,7 +62,7 @@ appearance = "light"
 "diagnostic.unnecessary" = { modifiers = ["dim"] }
 "diagnostic.deprecated" = { modifiers = ["crossed_out"] }
 "info" = { fg = "blue", modifiers = ["bold"] }
-"hint" = { fg = "green", modifiers = ["bold"] }
+"hint" = { fg = "#7274a7ff", modifiers = ["bold"] }
 "warning" = { fg = "gold", modifiers = ["bold"] }
 "error" = { fg = "red", modifiers = ["bold"] }
 
@@ -132,10 +132,11 @@ light-gray = "#9CA3AF"
 "background" = "#dcdcddff"
 "surface.background" = "#ebebecff"
 "elevated_surface.background" = "#ebebecff"
-"ghost_element.background" = "#fafafaff"
+"ghost_element.background" = "#00000000"
+"ghost_element.hover" = "#c9c9caff"
 "element.hover" = "#dfdfe0ff"
 "element.selected" = "#cacacaff"
-"border" = "#e3e3e3ff"
+"border" = "#c9c9caff"
 "border.variant" = "#dfdfe0ff"
 "border.focused" = "#7d82e8ff"
 "text" = "#242529ff"

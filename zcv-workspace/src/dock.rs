@@ -59,7 +59,7 @@ impl DockPosition {
     pub fn default_size(self) -> Pixels {
         match self {
             Self::Left | Self::Right => px(240.0),
-            Self::Bottom => px(225.0),
+            Self::Bottom => px(234.0),
         }
     }
 }
@@ -402,17 +402,17 @@ impl Render for Dock {
                 .w(if is_open { self.size } else { Pixels::ZERO })
                 .h_full()
                 .when(is_open, |this| this.border_r_1())
-                .border_color(color::current(cx).border_variant),
+                .border_color(color::current(cx).border),
             DockPosition::Right => frame
                 .w(if is_open { self.size } else { Pixels::ZERO })
                 .h_full()
                 .when(is_open, |this| this.border_l_1())
-                .border_color(color::current(cx).border_variant),
+                .border_color(color::current(cx).border),
             DockPosition::Bottom => frame
                 .h(if is_open { self.size } else { Pixels::ZERO })
                 .w_full()
                 .when(is_open, |this| this.border_t_1())
-                .border_color(color::current(cx).border_variant),
+                .border_color(color::current(cx).border),
         };
 
         let frame = frame.child(div().size_full().child(panel_view));

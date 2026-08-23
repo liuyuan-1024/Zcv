@@ -377,7 +377,6 @@ impl Render for SearchBar {
             .flex_col()
             .mt(space::S6)
             .gap(space::S6)
-            .bg(colors.surface_background)
             .on_action(cx.listener(Self::handle_find_next))
             .on_action(cx.listener(Self::handle_find_previous))
             .on_action(cx.listener(Self::handle_toggle_replace))
@@ -405,7 +404,7 @@ impl Render for SearchBar {
                             .px(space::S6)
                             .rounded(px(4.))
                             .border_1()
-                            .border_color(colors.border_variant)
+                            .border_color(colors.border)
                             .bg(colors.background)
                             .child(self.query_input.as_ref().unwrap().render())
                             .child(
@@ -511,7 +510,7 @@ impl Render for SearchBar {
                                 .px(space::S6)
                                 .rounded(px(4.))
                                 .border_1()
-                                .border_color(colors.border_variant)
+                                .border_color(colors.border)
                                 .bg(colors.background)
                                 .child(self.replace_input.as_ref().unwrap().render()),
                         )

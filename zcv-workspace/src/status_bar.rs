@@ -118,7 +118,7 @@ fn bar_frame(cx: &App) -> Div {
         .bg(color::current(cx).status_bar_background)
         .text_color(color::current(cx).text)
         .border_t_1()
-        .border_color(color::current(cx).border_variant)
+        .border_color(color::current(cx).border)
 }
 
 /// 渲染一侧的 item 序列；无内容时 item 自己渲染空元素，分隔线由 item 自己绘制。

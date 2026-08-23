@@ -1,10 +1,10 @@
 # syntax theme loader 消费 fg 与 modifiers；独立 underline / bg 规则保留给后续诊断样式。
 appearance = "dark"
 
-"tag" = { fg = "red" }
-"attribute" = { fg = "yellow" }
-"comment" = { fg = "light-gray", modifiers = ["italic"] }
-"constant" = { fg = "cyan" }
+"tag" = { fg = "#74ade8ff" }
+"attribute" = { fg = "#74ade8ff" }
+"comment" = { fg = "#5d636fff", modifiers = ["italic"] }
+"constant" = { fg = "#dfc184ff" }
 "constant.numeric" = { fg = "gold" }
 "constant.builtin" = { fg = "gold" }
 "constant.character.escape" = { fg = "gold" }
@@ -12,23 +12,23 @@ appearance = "dark"
 "function" = { fg = "blue" }
 "function.builtin" = { fg = "blue" }
 "function.macro" = { fg = "purple" }
-"keyword" = { fg = "red" }
+"keyword" = { fg = "#b477cfff" }
 "keyword.control" = { fg = "purple" }
 "keyword.control.import" = { fg = "red" }
 "keyword.directive" = { fg = "purple" }
 "keyword.storage" = { fg = "purple" }
-"label" = { fg = "purple" }
-"namespace" = { fg = "blue" }
-"operator" = { fg = "purple" }
+"label" = { fg = "#74ade8ff" }
+"namespace" = { fg = "#dce0e5ff" }
+"operator" = { fg = "#6eb4bfff" }
 "keyword.operator" = { fg = "purple" }
 "special" = { fg = "blue" }
-"punctuation.special" = { fg = "blue" }
-"punctuation.delimiter" = { fg = "blue" }
-"string" = { fg = "green" }
-"type" = { fg = "yellow" }
+"punctuation.special" = { fg = "#b1574bff" }
+"punctuation.delimiter" = { fg = "#b2b9c6ff" }
+"string" = { fg = "#a1c181ff" }
+"type" = { fg = "#6eb4bfff" }
 # "variable" = { fg = "blue" }
 "variable.builtin" = { fg = "blue" }
-"variable.parameter" = { fg = "red" }
+"variable.parameter" = { fg = "#d07277ff" }
 "variable.other.member" = { fg = "red" }
 
 "markup.heading" = { fg = "red" }
@@ -42,7 +42,7 @@ appearance = "dark"
 "markup.link.url" = { fg = "cyan", modifiers = ["underlined"]}
 "markup.link.text" = { fg = "purple" }
 "text.title" = { fg = "red" }
-"text.literal" = { fg = "green" }
+"text.literal" = { fg = "#a1c181ff" }
 "text.uri" = { fg = "cyan", modifiers = ["underlined"]}
 "text.reference" = { fg = "purple" }
 "text.emphasis" = { fg = "purple", modifiers = ["italic"] }
@@ -60,7 +60,7 @@ appearance = "dark"
 "diagnostic.unnecessary" = { modifiers = ["dim"] }
 "diagnostic.deprecated" = { modifiers = ["crossed_out"] }
 "info" = { fg = "blue", modifiers = ["bold"] }
-"hint" = { fg = "green", modifiers = ["bold"] }
+"hint" = { fg = "#788ca6ff", modifiers = ["bold"] }
 "warning" = { fg = "yellow", modifiers = ["bold"] }
 "error" = { fg = "red", modifiers = ["bold"] }
 
@@ -129,10 +129,11 @@ light-gray = "#5C6370"
 "background" = "#3b414dff"
 "surface.background" = "#2f343eff"
 "elevated_surface.background" = "#2f343eff"
-"ghost_element.background" = "#282c33ff"
+"ghost_element.background" = "#00000000"
+"ghost_element.hover" = "#363c46ff"
 "element.hover" = "#363c46ff"
 "element.selected" = "#454a56ff"
-"border" = "#3d414bff"
+"border" = "#464b57ff"
 "border.variant" = "#363c46ff"
 "border.focused" = "#47679eff"
 "text" = "#dce0e5ff"

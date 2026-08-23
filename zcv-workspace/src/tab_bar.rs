@@ -46,10 +46,9 @@ impl TabBar {
         f: impl FnOnce(Div) -> Div,
         children: impl IntoIterator<Item = AnyElement>,
     ) -> impl gpui::IntoElement {
-        let border_color = color::current(cx).border_variant;
+        let border_color = color::current(cx).border;
         let trailing = self.trailing;
-
-        let outer = f(div());
+        let outer = f(div()).border_b_1().border_color(border_color);
 
         let mut bar = outer.child(
             div()
@@ -57,15 +56,6 @@ impl TabBar {
                 .flex_1()
                 .h_full()
                 .overflow_x_hidden()
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .border_b_1()
-                        .border_color(border_color),
-                )
                 .child({
                     let mut scroll_area = div()
                         .id("tab-bar-scroll")

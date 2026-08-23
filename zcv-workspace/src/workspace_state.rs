@@ -232,7 +232,7 @@ impl Workspace {
                 this._layout_save_task.take();
                 let layout = this.capture_layout(cx);
                 if let Err(error) = layout_state::save(&this.layout_path, &layout) {
-                    log::warn!("保存工作区布局失败：{error:#}");
+                    eprintln!("保存工作区布局失败：{error:#}");
                 }
             })
             .ok();
@@ -244,7 +244,7 @@ impl Workspace {
         self._layout_save_task.take();
         let layout = self.capture_layout(cx);
         if let Err(error) = layout_state::save(&self.layout_path, &layout) {
-            log::warn!("保存工作区布局失败：{error:#}");
+            eprintln!("保存工作区布局失败：{error:#}");
         }
     }
 

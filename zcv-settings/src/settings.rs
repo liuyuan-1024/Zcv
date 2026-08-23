@@ -280,7 +280,7 @@ pub fn init(cx: &mut App) {
     let fs_events = watcher.events();
     let watcher: Arc<dyn Watcher> = watcher;
     if let Err(error) = watcher.add(config_dir()) {
-        log::warn!("无法监听设置目录 {}：{error}", config_dir().display());
+        eprintln!("无法监听设置目录 {}：{error}", config_dir().display());
     }
 
     let watch_task = cx.spawn(async move |cx| {
@@ -346,7 +346,7 @@ pub fn init(cx: &mut App) {
                     eprintln!("无法加载设置文件 {}：{error:#}", settings_file().display());
                 }
                 Err(error) => {
-                    log::error!("更新设置失败：{error}");
+                    eprintln!("更新设置失败：{error}");
                 }
             }
         }

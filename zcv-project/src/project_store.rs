@@ -54,7 +54,7 @@ impl Project {
         let fs_watcher: Arc<dyn Watcher> = fs_watcher;
 
         if let Err(error) = fs_watcher.add(&root) {
-            log::warn!("无法监听项目目录 {:?}：{error}", root);
+            eprintln!("无法监听项目目录 {:?}：{error}", root);
         }
 
         let fs_task = cx.spawn(|project: WeakEntity<Project>, asynccx: &mut AsyncApp| {
@@ -224,10 +224,10 @@ impl Project {
 
         if from == worktree.root {
             if let Err(error) = worktree.fs_watcher.add(to) {
-                log::warn!("无法监听重命名后的项目目录 {:?}：{error}", to);
+                eprintln!("无法监听重命名后的项目目录 {:?}：{error}", to);
             }
             if let Err(error) = worktree.fs_watcher.remove(from) {
-                log::warn!("无法停止监听旧项目目录 {:?}：{error}", from);
+                eprintln!("无法停止监听旧项目目录 {:?}：{error}", from);
             }
             worktree.root = to.to_path_buf();
             worktree.snapshot.set_root(to.to_path_buf());
@@ -392,7 +392,7 @@ mod tests {
 
     #[gpui::test]
     fn empty_project_has_no_worktree_or_project_services(cx: &mut TestAppContext) {
-        let project = cx.update(|cx| cx.new(|cx| Project::empty(cx)));
+        let project = cx.update(|cx| cx.new(Project::empty));
         cx.read_entity(&project, |project, _| {
             assert!(!project.has_worktree());
             assert!(project.root().is_none());

@@ -399,7 +399,7 @@ impl DisplayMap {
             .filter_map(|(line, width)| {
                 match self.fold_map.snapshot().logical_to_projected(line).ok()? {
                     LogicalProjection::Visible(row) => Some((row, width)),
-                    LogicalProjection::Hidden { .. } => None,
+                    LogicalProjection::Hidden => None,
                 }
             })
             .max_by_key(|(_, width)| *width)
@@ -418,11 +418,21 @@ impl DisplayMap {
         if !self.inserted.is_empty() {
             stream.set_inserted(self.inserted.clone());
         }
-        let (inlay_snapshot, _) = self.inlay_map.read(stream, self.inlays.clone());
+        let inlay_snapshot = self.inlay_map.read(stream, self.inlays.clone());
         let (fold_snapshot, fold_edits, outcome) = self.fold_map.read(inlay_snapshot, &batch);
         let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
         self.wrap_map.sync(tab_snapshot, &fold_edits);
         outcome
+    }
+
+    /// 用给定输入流推进 inlay → fold → tab → wrap 整条管线。
+    fn rebuild_from_stream(&mut self, stream: LineStream) {
+        let inlay_snapshot = self.inlay_map.read(stream, self.inlays.clone());
+        let (fold_snapshot, fold_edits, _) = self
+            .fold_map
+            .read(inlay_snapshot, &TextChangeBatch::default());
+        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
+        self.wrap_map.sync(tab_snapshot, &fold_edits);
     }
 
     /// 替换合成行配置（删除块展开的被删除行等）并推进整条管线。
@@ -431,16 +441,9 @@ impl DisplayMap {
             return;
         }
         self.inserted = inserted;
-        // 重建输入流（含新合成行）→ inlay → fold → tab → wrap 逐层推进。
-        let fold_snapshot = self.fold_map.snapshot().clone();
-        let mut stream = fold_snapshot.stream().clone();
+        let mut stream = self.fold_map.snapshot().stream().clone();
         stream.set_inserted(self.inserted.clone());
-        let (inlay_snapshot, _) = self.inlay_map.read(stream, self.inlays.clone());
-        let (fold_snapshot, fold_edits, _) = self
-            .fold_map
-            .read(inlay_snapshot, &TextChangeBatch::default());
-        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
-        self.wrap_map.sync(tab_snapshot, &fold_edits);
+        self.rebuild_from_stream(stream);
     }
 
     #[cfg(test)]
@@ -449,14 +452,8 @@ impl DisplayMap {
             return;
         }
         self.inlays = inlays;
-        let fold_snapshot = self.fold_map.snapshot().clone();
-        let stream = fold_snapshot.stream().clone();
-        let (inlay_snapshot, _) = self.inlay_map.read(stream, self.inlays.clone());
-        let (fold_snapshot, fold_edits, _) = self
-            .fold_map
-            .read(inlay_snapshot, &TextChangeBatch::default());
-        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
-        self.wrap_map.sync(tab_snapshot, &fold_edits);
+        let stream = self.fold_map.snapshot().stream().clone();
+        self.rebuild_from_stream(stream);
     }
 
     /// 折叠字节范围（入口行行尾换行符 → 闭合括号前；闭合括号保留可见）。
@@ -1141,15 +1138,9 @@ mod tests {
         let buffer = Buffer::scratch(text.to_owned(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
-        let fold_snapshot = map.fold_map.snapshot().clone();
-        let mut stream = fold_snapshot.stream().clone();
+        let mut stream = map.fold_map.snapshot().stream().clone();
         stream.set_inserted(inserted);
-        let (inlay_snapshot, _) = map.inlay_map.read(stream, map.inlays.clone());
-        let (fold_snapshot, fold_edits, _) = map
-            .fold_map
-            .read(inlay_snapshot, &TextChangeBatch::default());
-        let tab_snapshot = map.tab_map.sync(fold_snapshot, &fold_edits);
-        map.wrap_map.sync(tab_snapshot, &fold_edits);
+        map.rebuild_from_stream(stream);
         map
     }
 

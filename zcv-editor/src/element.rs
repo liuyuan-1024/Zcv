@@ -988,7 +988,7 @@ impl Element for EditorElement {
                         .paint(row.origin, gutter.line_height, window, cx)
                 {
                     // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃（对齐 Zed 的降级策略）。
-                    log::error!("Editor gutter 行号绘制失败：{error}");
+                    eprintln!("Editor gutter 行号绘制失败：{error}");
                     continue;
                 }
             }
@@ -1041,7 +1041,7 @@ impl Element for EditorElement {
                         window,
                         cx,
                     ) {
-                        log::error!("Editor 行背景绘制失败：{error}");
+                        eprintln!("Editor 行背景绘制失败：{error}");
                     }
                 }
                 for line in &prepaint.layout.lines {
@@ -1050,7 +1050,7 @@ impl Element for EditorElement {
                             .paint(line.origin, prepaint.layout.line_height, window, cx)
                     {
                         // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃（对齐 Zed 的降级策略）。
-                        log::error!("Editor 文本行绘制失败：{error}");
+                        eprintln!("Editor 文本行绘制失败：{error}");
                         continue;
                     }
                 }

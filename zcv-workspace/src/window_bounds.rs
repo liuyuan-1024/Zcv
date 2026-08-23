@@ -201,7 +201,7 @@ pub fn save_window_bounds(window: &mut Window, cx: &mut App) {
         .map(|uuid| uuid.to_string());
     let bounds = window.window_bounds();
     if let Err(error) = save_to(&window_bounds_path(), root.as_deref(), bounds, display_uuid) {
-        log::warn!("保存窗口边界失败：{error:#}");
+        eprintln!("保存窗口边界失败：{error:#}");
     }
 }
 

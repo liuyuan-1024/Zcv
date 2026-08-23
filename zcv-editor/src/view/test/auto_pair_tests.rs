@@ -80,7 +80,7 @@ fn primary_head(editor: &gpui::Entity<Editor>, cx: &VisualTestContext) -> ByteOf
 }
 
 fn type_text(editor: &gpui::Entity<Editor>, cx: &mut VisualTestContext, text: &str) {
-    cx.update_entity(&editor, |editor, cx| {
+    cx.update_entity(editor, |editor, cx| {
         editor.replace_text(None, text, cx);
     });
 }

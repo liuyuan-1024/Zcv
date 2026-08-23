@@ -706,7 +706,7 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
 
 // ── 内部类型 ────────────────────────────────────────────────────────
 
-/// 占位面板：大纲/终端/调试/快捷键（后续接入真实功能）。
+/// 占位面板：大纲/调试（后续接入真实功能）。
 macro_rules! make_placeholder_panel {
     ($name:ident, $persistent:expr, $icon:expr, $label:expr) => {
         pub(crate) struct $name {

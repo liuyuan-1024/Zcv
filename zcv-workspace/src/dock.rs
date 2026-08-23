@@ -59,7 +59,7 @@ impl DockPosition {
     pub fn default_size(self) -> Pixels {
         match self {
             Self::Left | Self::Right => px(240.0),
-            Self::Bottom => px(200.0),
+            Self::Bottom => px(225.0),
         }
     }
 }
@@ -214,8 +214,20 @@ impl Dock {
         if let Some(panel) = self.active_panel().cloned() {
             panel.set_active(open, window, cx);
         }
+        // 折叠时若焦点在 Dock 内（面板或面板内 item），回落到 Dock 自身句柄（根容器始终挂载，焦点链与 Dock 快捷键保持有效）。
+        if !open && self.has_focus(window, cx) {
+            window.focus(&self.focus);
+        }
         cx.emit(DockEvent::OpenChanged);
         cx.notify();
+    }
+
+    /// Dock 自身或其激活面板是否持有焦点（决定折叠时是否归还焦点）。
+    fn has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus.is_focused(window)
+            || self
+                .active_panel()
+                .is_some_and(|panel| panel.focus_handle(cx).contains_focused(window, cx))
     }
 
     /// 切换当前 panel，并统一停用旧 panel、激活新 panel。
@@ -567,7 +579,13 @@ mod tests {
             size: Some(333.0),
         };
         let (dock, cx) = cx.add_window_view(move |window, cx| {
-            let mut dock = Dock::new(DockPosition::Left, Vec::new(), px(240.0), Some(state), cx);
+            let mut dock = Dock::new(
+                DockPosition::Left,
+                Vec::new(),
+                DockPosition::Left.default_size(),
+                Some(state),
+                cx,
+            );
             dock.add_panel(first_handle, window, cx);
             assert!(!dock.is_open());
             dock.add_panel(second_handle, window, cx);

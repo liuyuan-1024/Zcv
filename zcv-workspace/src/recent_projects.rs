@@ -69,7 +69,7 @@ fn first_valid_project(projects: &[ProjectEntry]) -> Option<PathBuf> {
 }
 
 /// 项目根必须是带名称的绝对目录（canonicalize 失败即视为失效）。
-pub fn canonical_project_path(path: &Path) -> Option<PathBuf> {
+fn canonical_project_path(path: &Path) -> Option<PathBuf> {
     if !path.is_absolute() {
         return None;
     }

@@ -208,7 +208,7 @@ impl Element for TerminalElement {
                 if let Err(error) =
                     shaped.paint(run.origin + offset, layout.line_height, window, cx)
                 {
-                    log::error!("终端文本绘制失败：{error}");
+                    eprintln!("终端文本绘制失败：{error}");
                 }
             }
             if let Some(marked) = &ime_marked_text
@@ -238,7 +238,7 @@ impl Element for TerminalElement {
                     window,
                     cx,
                 ) {
-                    log::error!("终端组合文本绘制失败：{error}");
+                    eprintln!("终端组合文本绘制失败：{error}");
                 }
             }
             if let Some(cursor) = &layout.cursor {
@@ -261,7 +261,7 @@ impl Element for TerminalElement {
                     if let Err(error) =
                         shaped.paint(cursor.bounds.origin, layout.line_height, window, cx)
                     {
-                        log::error!("终端光标字符绘制失败：{error}");
+                        eprintln!("终端光标字符绘制失败：{error}");
                     }
                 }
             }

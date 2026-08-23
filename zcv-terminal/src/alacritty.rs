@@ -78,14 +78,14 @@ impl PtySender {
             .0
             .send(Msg::Resize(window_size_from_bounds(bounds)))
         {
-            log::error!("终端 PTY 调整尺寸失败：{error}");
+            eprintln!("终端 PTY 调整尺寸失败：{error}");
         }
     }
 
     /// 优雅关闭事件循环线程。
     pub(super) fn shutdown(&self) {
         if let Err(error) = self.notifier.0.send(Msg::Shutdown) {
-            log::debug!("终端 PTY 关闭失败：{error}");
+            eprintln!("终端 PTY 关闭失败：{error}");
         }
     }
 }

@@ -84,7 +84,7 @@ impl GitStore {
                 if head_changed || statuses_changed || old_work_dirs != new_work_dirs {
                     self.invalidate_all_hunks(cx);
                 }
-                log::info!("git 状态已刷新：{} 个仓库", self.repositories.len());
+                eprintln!("git 状态已刷新：{} 个仓库", self.repositories.len());
             }
             (GitJob::RefreshStatuses, JobResult::Refresh(refreshed)) => {
                 let mut statuses_changed = false;
@@ -138,10 +138,10 @@ impl GitStore {
             (GitJob::GitOperation { operation, .. }, JobResult::GitOperation(result)) => {
                 match &result {
                     Ok(()) => {
-                        log::info!("git {operation:?} 成功");
+                        eprintln!("git {operation:?} 成功");
                     }
                     Err(error) => {
-                        log::warn!("git {operation:?} 失败：{error:#}");
+                        eprintln!("git {operation:?} 失败：{error:#}");
                     }
                 }
                 // 操作改变了引用/工作树：重新全量扫描，比对后发出 Repositories/Head/Statuses 事件。
@@ -160,11 +160,11 @@ impl GitStore {
                 match result {
                     Ok(()) => {
                         // 操作改变了引用/工作树：重新全量扫描，比对后发出 Repositories/Head/Statuses 事件。
-                        log::info!("git {job:?} 成功");
+                        eprintln!("git {job:?} 成功");
                         self.schedule_scan(cx);
                     }
                     Err(error) => {
-                        log::warn!("git {job:?} 失败：{error:#}");
+                        eprintln!("git {job:?} 失败：{error:#}");
                     }
                 }
             }
@@ -172,11 +172,11 @@ impl GitStore {
                 Ok(message) => {
                     // 被撤销消息暂存，Head 事件后由面板读取填回提交信息编辑器。
                     self.pending_uncommitted_message = message;
-                    log::info!("git uncommit 成功");
+                    eprintln!("git uncommit 成功");
                     self.schedule_scan(cx);
                 }
                 Err(error) => {
-                    log::warn!("git uncommit 失败：{error:#}");
+                    eprintln!("git uncommit 失败：{error:#}");
                 }
             },
             _ => {}

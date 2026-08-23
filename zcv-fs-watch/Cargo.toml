@@ -11,7 +11,6 @@ path = "src/fs_watch.rs"
 anyhow.workspace = true
 async-channel.workspace = true
 crossbeam-channel.workspace = true
-log.workspace = true
 notify.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

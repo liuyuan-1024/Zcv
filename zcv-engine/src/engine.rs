@@ -24,7 +24,7 @@ mod versioned;
 pub use buffer::{Buffer, HistoryEditOutcome, HistoryNodeId, HistoryNodeView, HistoryStatus};
 pub use config::{
     BufferConfig, EncodingConfig, LargeFilePolicy, LargeTransactionPolicy, LineEndingConfig,
-    PositionEncodingConfig, TabConfig, WordBoundaryPolicy,
+    TabConfig, WordBoundaryPolicy,
 };
 pub use errors::{
     AnchorError, BufferLoadError, BufferSaveError, CoordinateError, EditError, EngineError,
@@ -32,16 +32,14 @@ pub use errors::{
 };
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
 pub use search::{RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchResult};
-pub use selection::{
-    Cursor, MovementDirection, MovementUnit, Selection, SelectionMergePolicy, SelectionSet,
-};
+pub use selection::{MovementDirection, MovementUnit, Selection, SelectionSet};
 pub use slicing::{LineContent, LineSlice, TextSlice};
 pub use snapshot::Snapshot;
 pub use text_changes::{PatchEdit, TextChangeBatch, TextPatch, TextSubscription};
 pub use text_loading::{BomPolicy, InvalidUtf8Policy, LoadedTextInfo, TextEncoding};
 pub use tracking::{
-    Anchor, AnchorDeletedPolicy, AnchorUpdate, Mark, TrackedRange, TrackedRangeCollapsePolicy,
-    TrackedRangeInvalidationPolicy, TrackedRangeUpdate, TrackedRangeUpdatePolicy,
+    Anchor, Mark, TrackedRange, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy,
+    TrackedRangeUpdate, TrackedRangeUpdatePolicy,
 };
 pub use transaction::{
     ChangeSet, Delta, DeltaEvent, Edit, TransactionMergePolicy, TransactionMetadata,

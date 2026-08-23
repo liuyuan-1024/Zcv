@@ -895,7 +895,7 @@ impl WrapMap {
             .iter()
             .filter_map(|line| match fold.logical_to_projected(*line).ok()? {
                 super::fold_map::LogicalProjection::Visible(row) => Some(row.get()),
-                super::fold_map::LogicalProjection::Hidden { .. } => None,
+                super::fold_map::LogicalProjection::Hidden => None,
             })
             .collect();
         rows.sort_unstable();

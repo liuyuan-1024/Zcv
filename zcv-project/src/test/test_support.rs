@@ -31,3 +31,17 @@ pub(crate) fn run_git(dir: &Path, args: &[&str]) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// 读取指定目录仓库的 `master` 分支 commit（测试断言用）。
+pub(crate) fn rev_parse(dir: &Path) -> String {
+    String::from_utf8_lossy(
+        &std::process::Command::new("git")
+            .args(["rev-parse", "master"])
+            .current_dir(dir)
+            .output()
+            .expect("应能读取 HEAD")
+            .stdout,
+    )
+    .trim()
+    .to_string()
+}

@@ -9,8 +9,7 @@ mod update;
 
 pub use anchor::{Anchor, Mark};
 pub use policy::{
-    AnchorDeletedPolicy, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy,
-    TrackedRangeUpdatePolicy,
+    TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdatePolicy,
 };
 pub use tracked_range::TrackedRange;
-pub use update::{AnchorUpdate, TrackedRangeUpdate};
+pub use update::TrackedRangeUpdate;

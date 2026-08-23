@@ -11,6 +11,6 @@ mod word;
 pub use buffer::{BufferConfig, TabConfig};
 pub use encoding::EncodingConfig;
 pub use large_file::{LargeFilePolicy, LargeTransactionPolicy};
-pub use line_endings::{LineEndingConfig, PositionEncodingConfig};
+pub use line_endings::LineEndingConfig;
 pub(crate) use word::WordBoundaryClassifier;
 pub use word::WordBoundaryPolicy;

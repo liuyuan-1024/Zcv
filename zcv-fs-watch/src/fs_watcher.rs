@@ -149,7 +149,7 @@ impl WatchPaths {
 
     /// 检查是否有祖先的递归注册已覆盖该路径。
     ///
-    /// 轮询（PollWatcher）总是递归的；
+    /// 轮询（PollWatcher）总是递归的；macOS 原生 watcher 同样按递归注册处理。
     fn covered_by_recursive_ancestor(&self, path: &Path, mode: WatcherMode) -> bool {
         if mode != WatcherMode::Poll && !cfg!(target_os = "macos") {
             return false;
@@ -342,7 +342,7 @@ impl GlobalWatcher {
         let event = match event {
             Ok(e) => e,
             Err(error) => {
-                log::warn!("文件监听错误（{mode:?}）：{error}");
+                eprintln!("文件监听错误（{mode:?}）：{error}");
                 return;
             }
         };
@@ -647,7 +647,7 @@ impl FsWatcher {
                                 // 全局 watcher 拒绝注册（如 watch limit），继续重试
                             }
                             Err(error) => {
-                                log::warn!(
+                                eprintln!(
                                     "为新建路径 {:?} 注册监听失败：{error}；重试中",
                                     poll_path
                                 );
@@ -671,7 +671,7 @@ impl FsWatcher {
 
 impl Watcher for FsWatcher {
     fn add(&self, path: &Path) -> anyhow::Result<()> {
-        log::trace!("FsWatcher::add: {:?}", path);
+        eprintln!("FsWatcher::add: {:?}", path);
 
         let path: Arc<Path> = path.into();
 
@@ -679,7 +679,7 @@ impl Watcher for FsWatcher {
         {
             let regs = self.registrations.lock().unwrap();
             if path_covered_by_recursive_registration(&regs, &path) {
-                log::trace!("路径 {:?} 已被现有注册覆盖", path);
+                eprintln!("路径 {:?} 已被现有注册覆盖", path);
                 return Ok(());
             }
         }
@@ -690,7 +690,7 @@ impl Watcher for FsWatcher {
         {
             let regs = self.registrations.lock().unwrap();
             if regs.contains_key(&key) {
-                log::trace!("路径 {:?} 已注册", path);
+                eprintln!("路径 {:?} 已注册", path);
                 return Ok(());
             }
         }
@@ -712,7 +712,7 @@ impl Watcher for FsWatcher {
             }
             None => {
                 // 注册被跳过（如 watch limit 冷却），后台重试
-                log::warn!("为 {:?} 注册监听被跳过，后台重试中", path);
+                eprintln!("为 {:?} 注册监听被跳过，后台重试中", path);
                 self.add_pending_path(path);
             }
         }
@@ -721,7 +721,7 @@ impl Watcher for FsWatcher {
     }
 
     fn remove(&self, path: &Path) -> anyhow::Result<()> {
-        log::trace!("FsWatcher::remove: {:?}", path);
+        eprintln!("FsWatcher::remove: {:?}", path);
         self.pending_registrations.lock().unwrap().remove(path);
 
         let case_insensitive = cfg!(target_os = "macos");
@@ -757,7 +757,7 @@ fn register_existing_path(
     pending_events: Arc<Mutex<Vec<PathEvent>>>,
 ) -> anyhow::Result<Option<FsWatcherRegistration>> {
     let mode = if requires_poll_watcher(&path) {
-        log::info!("为 {} 使用轮询监听", path.display());
+        eprintln!("为 {} 使用轮询监听", path.display());
         WatcherMode::Poll
     } else {
         WatcherMode::Native

@@ -523,7 +523,7 @@ zcv final
                     crate::display_map::LineStyles {
                         // 与 element 相同：语法高亮 spans + 搜索背景层共存。
                         spans: &display.highlighted_spans_for_viewport(&viewport),
-                        styles: &display.highlight_styles(),
+                        styles: display.highlight_styles(),
                         backgrounds: &search_backgrounds,
                         marked: &[],
                     },

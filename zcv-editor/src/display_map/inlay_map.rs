@@ -52,14 +52,14 @@ impl InlayMap {
 
     /// 推进输入流与注入配置；注入配置变化时版本递增（fold 层据此整体重建）。
     /// 流变化（buffer 编辑）不递增注入版本，由消费链按 buffer 版本处理。
-    pub(super) fn read(&mut self, stream: LineStream, inlays: Vec<Inlay>) -> (InlaySnapshot, bool) {
+    pub(super) fn read(&mut self, stream: LineStream, inlays: Vec<Inlay>) -> InlaySnapshot {
         let inlay_changed = self.snapshot.inlays != inlays;
         self.snapshot = InlaySnapshot {
             stream,
             version: self.snapshot.version + inlay_changed as u64,
             inlays,
         };
-        (self.snapshot.clone(), inlay_changed)
+        self.snapshot.clone()
     }
 }
 
@@ -203,7 +203,7 @@ mod tests {
         let buffer = zcv_engine::Buffer::scratch(text.to_owned(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let (mut map, _) = InlayMap::new(LineStream::new(buffer.snapshot()));
-        map.read(LineStream::new(buffer.snapshot()), inlays).0
+        map.read(LineStream::new(buffer.snapshot()), inlays)
     }
 
     fn inlay(position: usize, text: &str) -> Inlay {
@@ -271,16 +271,12 @@ mod tests {
             .expect("测试 Buffer 应能创建");
         let mut map = InlayMap::new(LineStream::new(buffer.snapshot())).0;
         let stream = LineStream::new(buffer.snapshot());
-        let (_, changed) = map.read(stream, vec![inlay(1, "x")]);
-        assert!(changed);
-        let snapshot = map.snapshot.clone();
+        let snapshot = map.read(stream, vec![inlay(1, "x")]);
         // 相同配置重复读：不变化。
-        let (snapshot2, changed) = map.read(snapshot.stream().clone(), snapshot.inlays.clone());
-        assert!(!changed);
+        let snapshot2 = map.read(snapshot.stream().clone(), snapshot.inlays.clone());
         assert_eq!(snapshot2.version(), snapshot.version());
         // 配置变化：版本递增。
-        let (snapshot3, changed) = map.read(snapshot2.stream().clone(), vec![inlay(1, "xx")]);
-        assert!(changed);
+        let snapshot3 = map.read(snapshot2.stream().clone(), vec![inlay(1, "xx")]);
         assert_eq!(snapshot3.version(), snapshot.version() + 1);
     }
 }

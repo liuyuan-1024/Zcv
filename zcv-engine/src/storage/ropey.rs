@@ -45,11 +45,6 @@ fn validate_byte_range_in_rope(rope: &Rope, range: TextRange) -> EngineResult<()
     Ok(())
 }
 
-#[inline]
-fn rope_len_utf16_cu(rope: &Rope) -> Utf16Offset {
-    Utf16Offset::new(rope.len_utf16_cu())
-}
-
 /// 默认高性能文本后端。
 ///
 /// 不把 `ropey::Rope` 暴露到 public API；外部仍然只看到 Buffer / Snapshot / ByteOffset。
@@ -113,10 +108,6 @@ impl TextRead for RopeyStorage {
 
     fn len_chars(&self) -> CharOffset {
         CharOffset::new(self.rope.len_chars())
-    }
-
-    fn len_utf16_cu(&self) -> Utf16Offset {
-        rope_len_utf16_cu(&self.rope)
     }
 
     fn line_count(&self) -> usize {
@@ -289,10 +280,6 @@ impl TextRead for RopeySnapshot {
 
     fn len_chars(&self) -> CharOffset {
         CharOffset::new(self.rope.len_chars())
-    }
-
-    fn len_utf16_cu(&self) -> Utf16Offset {
-        rope_len_utf16_cu(&self.rope)
     }
 
     fn line_count(&self) -> usize {

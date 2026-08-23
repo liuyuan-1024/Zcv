@@ -7,12 +7,6 @@ use crate::Language;
 use crate::registry::language_name_for_file;
 use crate::syntax_map::{SyntaxMap, SyntaxSnapshot};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ParseStatus {
-    Idle,
-    Parsing,
-}
-
 /// 将文本 Buffer 与语言派生状态绑定在一起。
 ///
 /// 和 Zed 的 language::Buffer 一样，语法树跟随文本而不是某个 Editor。
@@ -25,7 +19,6 @@ pub struct LanguageBuffer {
     file_path: Option<PathBuf>,
     parse_task: Option<Task<()>>,
     parse_again: bool,
-    parse_status: ParseStatus,
 }
 
 impl LanguageBuffer {
@@ -50,7 +43,6 @@ impl LanguageBuffer {
             file_path,
             parse_task: None,
             parse_again: false,
-            parse_status: ParseStatus::Idle,
         };
         this.start_reparse(cx);
         this
@@ -114,7 +106,6 @@ impl LanguageBuffer {
 
     fn start_reparse(&mut self, cx: &mut Context<Self>) {
         if !self.syntax_map.snapshot().has_language() {
-            self.parse_status = ParseStatus::Idle;
             return;
         }
         if self.parse_task.is_some() {
@@ -123,7 +114,6 @@ impl LanguageBuffer {
         }
 
         self.parse_again = false;
-        self.parse_status = ParseStatus::Parsing;
         let text = self.text_snapshot.clone();
         let syntax = self.syntax_map.snapshot();
         let parse_task = cx.background_spawn(async move { syntax.reparse(&text) });
@@ -137,7 +127,6 @@ impl LanguageBuffer {
                     || parsed_version != this.text_snapshot.version()
                     || !installed;
                 this.parse_again = false;
-                this.parse_status = ParseStatus::Idle;
                 if installed {
                     cx.notify();
                 }

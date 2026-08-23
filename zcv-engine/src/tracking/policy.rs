@@ -2,16 +2,6 @@
 //!
 //! 策略是纯数据；实际映射由 Anchor、TrackedRange 和 PositionMap 协作完成。
 
-/// Anchor 落在被删除旧内容中时的处理策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum AnchorDeletedPolicy {
-    /// 保留 Anchor，并把它折叠到删除后的最近合法位置。
-    #[default]
-    Collapse,
-    /// 不再保留 Anchor，只返回折叠后的轻量 Mark 供调用方决定后续处理。
-    Invalidate,
-}
-
 /// TrackedRange 遇到删除内容时是否失效。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TrackedRangeInvalidationPolicy {

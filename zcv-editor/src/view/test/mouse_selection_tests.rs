@@ -376,7 +376,7 @@ fn mouse_dragging_expands_selection_across_rows(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn mouse_dragging_below_viewport_autoscrolls_selection(cx: &mut TestAppContext) {
-    let buffer = test_buffer(cx, &scrolling_text());
+    let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
         move |_, cx| Editor::for_buffer(buffer, cx)
@@ -410,7 +410,7 @@ fn mouse_dragging_below_viewport_autoscrolls_selection(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn dragging_outside_editor_does_not_scroll_editor(cx: &mut TestAppContext) {
-    let buffer = test_buffer(cx, &scrolling_text());
+    let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
         move |_, cx| Editor::for_buffer(buffer, cx)

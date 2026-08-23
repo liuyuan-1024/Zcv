@@ -243,7 +243,7 @@ fn fetch_hunks_sync(
                 .collect()
         }
         Err(error) => {
-            log::warn!("读取 diff hunks 失败：{error}");
+            eprintln!("读取 diff hunks 失败：{error}");
             let error = format!("{error:#}");
             paths
                 .iter()
@@ -262,14 +262,14 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
     let (head, last_commit_message) = match repository.head_commit() {
         Ok(commit) => commit,
         Err(error) => {
-            log::warn!("读取 git head 失败：{error}");
+            eprintln!("读取 git head 失败：{error}");
             (None, None)
         }
     };
     let statuses = match repository.status(&[]) {
         Ok(statuses) => statuses,
         Err(error) => {
-            log::warn!("读取 git status 失败：{error}");
+            eprintln!("读取 git status 失败：{error}");
             // status 失败时分支名不可得（来自头行），置 None（瞬态，下次刷新自愈）。
             return RepositorySnapshot {
                 branch: None,
@@ -293,7 +293,7 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
     let branch_list = match repository.branches() {
         Ok(branches) => branches,
         Err(error) => {
-            log::warn!("读取 git 分支列表失败：{error}");
+            eprintln!("读取 git 分支列表失败：{error}");
             Vec::new()
         }
     };
@@ -342,7 +342,7 @@ fn refresh_repository_data_sync(
         match repository.head_commit() {
             Ok(commit) => commit,
             Err(error) => {
-                log::warn!("读取 git head 失败：{error}");
+                eprintln!("读取 git head 失败：{error}");
                 (None, None)
             }
         }
@@ -362,7 +362,7 @@ fn refresh_repository_data_sync(
         match repository.branches() {
             Ok(branches) => branches,
             Err(error) => {
-                log::warn!("读取 git 分支列表失败：{error}");
+                eprintln!("读取 git 分支列表失败：{error}");
                 Vec::new()
             }
         }

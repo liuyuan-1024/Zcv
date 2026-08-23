@@ -349,10 +349,7 @@ impl FoldSnapshot {
             TransformKind::Isomorphic => LogicalProjection::Visible(ProjectedLineIndex::new(
                 start.1.0 + line.get() - start.0.0,
             )),
-            TransformKind::Fold => LogicalProjection::Hidden {
-                anchor_logical_line: Line::new(start.0.0 - 1),
-                anchor_projected_line: ProjectedLineIndex::new(start.1.0 - 1),
-            },
+            TransformKind::Fold => LogicalProjection::Hidden,
         })
     }
 
@@ -388,7 +385,7 @@ impl FoldSnapshot {
         }
         match self.logical_to_projected(point.line())? {
             LogicalProjection::Visible(line) => Ok(ProjectedPoint::new(line, point.column())),
-            LogicalProjection::Hidden { .. } => unreachable!("fold_covering 已覆盖全部隐藏行"),
+            LogicalProjection::Hidden => unreachable!("fold_covering 已覆盖全部隐藏行"),
         }
     }
 
@@ -408,7 +405,7 @@ impl FoldSnapshot {
         let anchor = fold.line_span.0;
         let row = match self.logical_to_projected(anchor)? {
             LogicalProjection::Visible(row) => row,
-            LogicalProjection::Hidden { .. } => unreachable!("折叠 anchor 行必须可见"),
+            LogicalProjection::Hidden => unreachable!("折叠 anchor 行必须可见"),
         };
         let inlay = self.inlay_snapshot();
         let stream = self.stream();
@@ -1249,13 +1246,8 @@ impl TextLine {
 pub enum LogicalProjection {
     /// 逻辑行可见，对应投影行索引。
     Visible(ProjectedLineIndex),
-    /// 逻辑行被某段 fold 隐藏；返回该 fold 的 anchor 信息。
-    Hidden {
-        /// 隐藏该逻辑行的 fold anchor（该 fold 第一条仍可见的逻辑行）。
-        anchor_logical_line: Line,
-        /// anchor 在投影空间的索引；可作为「跳到 fold 起点」的目标。
-        anchor_projected_line: ProjectedLineIndex,
-    },
+    /// 逻辑行被某段 fold 隐藏。
+    Hidden,
 }
 
 /// 逻辑文档内的 (line, column) 点。

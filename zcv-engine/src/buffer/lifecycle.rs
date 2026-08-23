@@ -13,10 +13,6 @@ use crate::{
 };
 
 impl Buffer {
-    pub fn new(config: BufferConfig) -> EngineResult<Self> {
-        Self::from_text(String::new(), config)
-    }
-
     /// 从已有文本创建匿名来源 Buffer。
     pub fn from_text(text: String, config: BufferConfig) -> EngineResult<Self> {
         Self::with_origin(BufferOrigin::anonymous(), text, config)

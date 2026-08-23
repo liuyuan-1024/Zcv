@@ -25,15 +25,6 @@ pub enum Direction {
     Next,
 }
 
-impl Direction {
-    pub fn opposite(self) -> Self {
-        match self {
-            Direction::Prev => Direction::Next,
-            Direction::Next => Direction::Prev,
-        }
-    }
-}
-
 /// 宿主层搜索参数（对齐 Zed 的 `project::search::SearchQuery`；
 /// zcv 只保留文件内搜索所需字段，regex 选项直接映射到引擎的 `RegexSearchOptions`）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

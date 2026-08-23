@@ -5,7 +5,7 @@
 //!
 //! 刷新策略（对齐 Zed）：
 //! - 全量（`ReloadGitState`）：仓库发现 + 每个仓库 head/status/双 diff_stat 全扫；
-//! - 增量（`RefreshStatuses`）：只对变更路径重查，合并进旧快照，顺带重读 head/branch（外部 checkout 只触发 fs 事件走增量路径，不重读会滞后）。
+//! - 增量（`RefreshStatuses`）：只对变更路径重查，合并进旧快照；仅当批次含 `.git` 路径时才顺带重读head/branch（外部 checkout 只触发 fs 事件走增量路径，不重读会滞后；纯文件变化走快路径不重读）。
 //!
 //! 同 key 的排队 job 直接丢弃（对齐 Zed `spawn_local_git_worker` 的 keyed job）。
 
@@ -261,7 +261,7 @@ impl GitStore {
     }
 
     /// 全量扫描：重新发现仓库并重扫所有状态（初始扫描与结构性变化时调用）。
-    pub fn schedule_scan(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn schedule_scan(&mut self, cx: &mut Context<Self>) {
         self.paths_needing_status_update.clear();
         self.schedule_job(GitJob::ReloadGitState, cx);
     }
@@ -276,7 +276,7 @@ impl GitStore {
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<GitOperationOutcome>> {
         if self.repositories.is_empty() {
-            log::warn!(
+            eprintln!(
                 "git 仓库尚未就绪，跳过 {:?}（等待首次扫描完成后重试）",
                 operation
             );
@@ -329,7 +329,7 @@ impl GitStore {
     /// 成功后重扫，Head/Statuses 事件驱动面板清空编辑器并刷新上次提交信息。
     pub fn commit(&mut self, message: String, cx: &mut Context<Self>) {
         if self.repositories.is_empty() {
-            log::warn!("git 仓库尚未就绪，跳过 commit（等待首次扫描完成后重试）");
+            eprintln!("git 仓库尚未就绪，跳过 commit（等待首次扫描完成后重试）");
             self.schedule_scan(cx);
             return;
         }
@@ -339,7 +339,7 @@ impl GitStore {
     /// 撤销最近一次提交（`git reset --soft HEAD^`），被撤销消息填回提交信息编辑器。
     pub fn uncommit(&mut self, cx: &mut Context<Self>) {
         if self.repositories.is_empty() {
-            log::warn!("git 仓库尚未就绪，跳过 uncommit（等待首次扫描完成后重试）");
+            eprintln!("git 仓库尚未就绪，跳过 uncommit（等待首次扫描完成后重试）");
             self.schedule_scan(cx);
             return;
         }
@@ -349,7 +349,7 @@ impl GitStore {
     /// 切换活动仓库到指定本地分支（分支选择器确认触发），完成后自动重扫。
     pub fn checkout_branch(&mut self, name: String, cx: &mut Context<Self>) {
         if self.repositories.is_empty() {
-            log::warn!("git 仓库尚未就绪，跳过 checkout（等待首次扫描完成后重试）");
+            eprintln!("git 仓库尚未就绪，跳过 checkout（等待首次扫描完成后重试）");
             self.schedule_scan(cx);
             return;
         }
@@ -359,7 +359,7 @@ impl GitStore {
     /// 以当前 HEAD 为基创建并切换分支（选择器"创建分支"行触发），完成后自动重扫。
     pub fn create_branch(&mut self, name: String, cx: &mut Context<Self>) {
         if self.repositories.is_empty() {
-            log::warn!("git 仓库尚未就绪，跳过 create_branch（等待首次扫描完成后重试）");
+            eprintln!("git 仓库尚未就绪，跳过 create_branch（等待首次扫描完成后重试）");
             self.schedule_scan(cx);
             return;
         }
@@ -406,7 +406,7 @@ impl GitStore {
     ///
     /// 自身无条目时继承最近祖先目录的忽略状态：`--ignored=matching` 对整棵被忽略子树只报告目录级条目，子树内的路径没有条目；
     /// 不传播的话被忽略目录展开后，其子项会显示为"无状态"，与 Zed 快照的子树忽略传播不一致。
-    pub fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
+    pub(super) fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
         let path = canonicalize_path(path);
         let repository = self.repo_for_path(&path)?;
         let relative = repo_relative_path(repository.repository.working_directory(), &path)?;
@@ -437,13 +437,12 @@ impl GitStore {
         }
     }
 
-    /// 用当前打开编辑器集合替换差异需求。任务调度由状态机单向驱动，不依赖任务状态事件反向触发。
     /// 查询目录的聚合状态（对齐 Zed `git_traversal` 的目录摘要）。
     ///
     /// 目录自身被忽略时直接返回；
     /// 否则取子项中优先级最高的状态（conflict > deleted > modified > added/untracked）。
     /// 被忽略的子项不参与聚合——目录不应因内部忽略文件而淡显。
-    pub fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
+    pub(super) fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
         let path = canonicalize_path(path);
         let repository = self.repo_for_path(&path)?;
         let relative = repo_relative_path(repository.repository.working_directory(), &path)?;
@@ -850,7 +849,7 @@ struct JobPreparation {
 mod tests {
     use super::*;
     use crate::git_store::diff_coordinator::HunkRecord;
-    use crate::test_support::{run_git, test_git_repo};
+    use crate::test_support::{rev_parse, run_git, test_git_repo};
     use std::fs;
 
     use gpui::AppContext;
@@ -1184,18 +1183,7 @@ mod tests {
         assert!(job_done, "push job 应已完成");
 
         // 远程应指向本地 HEAD。
-        let rev = |dir: &Path| {
-            String::from_utf8_lossy(
-                &std::process::Command::new("git")
-                    .args(["rev-parse", "master"])
-                    .current_dir(dir)
-                    .output()
-                    .expect("应能读取 HEAD")
-                    .stdout,
-            )
-            .trim()
-            .to_string()
-        };
+        let rev = rev_parse;
         assert_eq!(rev(&remote), rev(&root), "push 后远程应指向本地 HEAD");
     }
 
@@ -1354,18 +1342,7 @@ mod tests {
             "进程退出并确认状态后应释放远程操作闸门"
         );
 
-        let rev = |dir: &Path| {
-            String::from_utf8_lossy(
-                &std::process::Command::new("git")
-                    .args(["rev-parse", "master"])
-                    .current_dir(dir)
-                    .output()
-                    .expect("应读取提交")
-                    .stdout,
-            )
-            .trim()
-            .to_string()
-        };
+        let rev = rev_parse;
         assert_ne!(rev(&remote), rev(&root), "取消后远端不应包含待推送提交");
 
         fs::remove_file(&hook_path).expect("应移除测试钩子");
@@ -1720,18 +1697,7 @@ mod tests {
         assert!(job_done, "push job 应已完成");
 
         // 远端应指向嵌套仓库 HEAD（而非根仓库）。
-        let rev = |dir: &Path| {
-            String::from_utf8_lossy(
-                &std::process::Command::new("git")
-                    .args(["rev-parse", "master"])
-                    .current_dir(dir)
-                    .output()
-                    .expect("应能读取 HEAD")
-                    .stdout,
-            )
-            .trim()
-            .to_string()
-        };
+        let rev = rev_parse;
         assert_eq!(rev(&remote), rev(&nested), "push 应作用于活动仓库（嵌套）");
     }
 

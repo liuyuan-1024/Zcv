@@ -2,47 +2,8 @@
 //!
 //! Update 类型保留最后合法位置，方便宿主在失效时做 UI 清理或诊断记录。
 
-use super::{Anchor, Mark, TrackedRange};
+use super::TrackedRange;
 use crate::types::{BufferVersion, TextRange};
-
-/// Anchor 通过一次文本变更后的更新结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AnchorUpdate {
-    /// Anchor 正常映射到新版本。
-    Mapped(Anchor),
-    /// Anchor 原位置落在被删除内容中，已按策略折叠到新版本合法位置。
-    Deleted(Anchor),
-    /// Anchor 原位置落在被删除内容中，并按策略失效。
-    Invalidated {
-        /// 删除后折叠出的轻量位置标记。
-        mark: Mark,
-        /// 失效事实对应的新 Buffer 版本。
-        version: BufferVersion,
-    },
-}
-
-impl AnchorUpdate {
-    pub fn anchor(self) -> Option<Anchor> {
-        match self {
-            Self::Mapped(anchor) | Self::Deleted(anchor) => Some(anchor),
-            Self::Invalidated { .. } => None,
-        }
-    }
-
-    pub fn mark(self) -> Mark {
-        match self {
-            Self::Mapped(anchor) | Self::Deleted(anchor) => anchor.to_mark(),
-            Self::Invalidated { mark, .. } => mark,
-        }
-    }
-
-    pub fn version(self) -> BufferVersion {
-        match self {
-            Self::Mapped(anchor) | Self::Deleted(anchor) => anchor.version(),
-            Self::Invalidated { version, .. } => version,
-        }
-    }
-}
 
 /// TrackedRange 映射后的高层结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

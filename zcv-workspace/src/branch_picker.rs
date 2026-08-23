@@ -6,22 +6,15 @@
 //!
 //! 搜索无匹配时列表尾部追加"创建分支"虚拟行：以当前 HEAD 为基创建并切换（对齐 Zed 的 Entry::NewBranch）。
 
-use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui::{
-    App, Context, Corner, Entity, FocusHandle, MouseButton, Pixels, Render, Window, anchored,
-    deferred, div, point, prelude::*, px,
-};
+use gpui::{App, Context, Entity, Render, Window, div, prelude::*};
+use zcv_actions::SelectGitBranch;
 use zcv_git::Branch;
-use zcv_picker::{Picker, PickerDelegate};
-use zcv_theme::{color, space};
+use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost};
+use zcv_theme::color;
 use zcv_ui::Glyph;
 use zcv_ui::ListItem;
-
-const PICKER_WIDTH: Pixels = px(360.0);
-
-use zcv_actions::SelectGitBranch;
 
 // ═══ 回调 ════════════════════════════════════════════════════════
 
@@ -168,9 +161,7 @@ impl PickerDelegate for BranchPickerDelegate {
 ///
 /// glyph 显示当前分支名，无分支（空仓库/detached）时显示占位 `--`。
 pub struct BranchPicker {
-    is_open: bool,
-    dismiss_flag: Rc<Cell<bool>>,
-    focus: FocusHandle,
+    host: PickerHost,
     picker: Entity<Picker<BranchPickerDelegate>>,
     /// 当前分支名（由 Workspace 订阅 GitStore 的 Head 事件刷新）。
     current_branch: Option<String>,
@@ -181,22 +172,15 @@ pub struct BranchPicker {
 impl BranchPicker {
     pub fn new(on_select: OnBranchSelected, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let delegate = BranchPickerDelegate::new(Vec::new(), on_select);
-        let dismiss_flag = Rc::new(Cell::new(false));
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
-        let on_dismiss = {
-            let df = dismiss_flag.clone();
-            Box::new(move |window: &mut Window, _app: &mut App| {
-                df.set(true);
-                window.refresh();
-            })
-        };
-        picker.update(cx, |picker, _| picker.set_on_dismiss(on_dismiss));
+        let host = PickerHost::new(cx.focus_handle());
+        picker.update(cx, |picker, _| {
+            picker.set_on_dismiss(host.on_dismiss_handler())
+        });
 
         Self {
-            is_open: false,
-            dismiss_flag,
-            focus: cx.focus_handle(),
+            host,
             picker,
             current_branch: None,
             branches: Vec::new(),
@@ -215,9 +199,7 @@ impl BranchPicker {
 
     /// 外部切换（快捷键/glyph 点击等）。
     pub fn toggle(&mut self, window: &mut Window, cx: &mut App) {
-        self.dismiss_flag.set(false);
-        self.is_open = !self.is_open;
-        if self.is_open {
+        if !self.host.is_open() {
             // 打开时用最新快照重建列表，清空搜索框。
             let branches = self.branches.clone();
             self.picker.update(cx, |picker, cx| {
@@ -227,14 +209,8 @@ impl BranchPicker {
                 }
                 cx.notify();
             });
-            if let Some(input) = self.picker.read(cx).search_input().cloned() {
-                let focus = input.focus_handle(cx);
-                window.focus(&focus);
-            }
-        } else {
-            window.focus(&self.focus);
         }
-        window.refresh();
+        self.host.toggle(&self.picker, window, cx);
     }
 
     fn handle_toggle(&mut self, _: &SelectGitBranch, window: &mut Window, cx: &mut Context<Self>) {
@@ -245,12 +221,11 @@ impl BranchPicker {
 impl Render for BranchPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 检查是否需要关闭（Escape / 点击外部）。
-        if self.dismiss_flag.replace(false) {
-            self.is_open = false;
-            window.focus(&self.focus);
+        if self.host.consume_dismiss() {
+            self.host.close_and_refocus(window);
         }
 
-        let color_value = if self.is_open {
+        let color_value = if self.host.is_open() {
             color::current(cx).icon_accent
         } else {
             color::current(cx).text
@@ -270,7 +245,7 @@ impl Render for BranchPicker {
         });
 
         let mut root = div()
-            .track_focus(&self.focus)
+            .track_focus(&self.host.focus_handle())
             // 复合 context 让 Picker 分组的快捷键与 Editor 同深度竞争。
             .key_context("BranchPicker")
             .on_action(cx.listener(Self::handle_toggle))
@@ -278,57 +253,8 @@ impl Render for BranchPicker {
             .child(glyph);
 
         // 浮层
-        if self.is_open {
-            let dismiss = self.dismiss_flag.clone();
-            let win_size = window.bounds().size;
-
-            // 全屏点击拦截（优先级 0，垫底）
-            root = root
-                .child(
-                    deferred(
-                        div()
-                            .absolute()
-                            .top(Pixels::ZERO)
-                            .left(Pixels::ZERO)
-                            .w(win_size.width)
-                            .h(win_size.height)
-                            .occlude()
-                            .on_mouse_down(MouseButton::Left, move |_, window, _cx| {
-                                dismiss.set(true);
-                                window.refresh();
-                            }),
-                    )
-                    .with_priority(0),
-                )
-                // Picker 浮层（优先级 1，Local 定位到 glyph 旁边）
-                .child(
-                    deferred(
-                        anchored()
-                            .anchor(Corner::TopLeft)
-                            .position(point(Pixels::ZERO, Pixels::ZERO))
-                            .position_mode(gpui::AnchoredPositionMode::Local)
-                            .snap_to_window_with_margin(space::S6)
-                            .child(
-                                div()
-                                    .occlude()
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                        cx.stop_propagation();
-                                    })
-                                    .child(
-                                        div()
-                                            .bg(color::current(cx).elevated_surface_background)
-                                            .border_l_3()
-                                            .border_color(color::current(cx).border_focused)
-                                            .border_1()
-                                            .border_color(color::current(cx).border_variant)
-                                            .rounded(px(8.0))
-                                            .overflow_hidden()
-                                            .child(self.picker.clone()),
-                                    ),
-                            ),
-                    )
-                    .with_priority(1),
-                );
+        if self.host.is_open() {
+            root = root.child(self.host.overlay(window, cx, &self.picker));
         }
 
         root

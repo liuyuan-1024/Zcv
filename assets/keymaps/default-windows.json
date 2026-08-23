@@ -136,7 +136,6 @@
       "alt-f4": "window_controls::QuitWindow",
       "ctrl-m": "window_controls::MinimizeWindow",
       "f11": "window_controls::ToggleMaximizeWindow",
-      "ctrl-shift-h": "harness::ToggleHarnessMode",
       "ctrl-shift-p": "project_picker::ToggleProjectPicker",
       "ctrl-shift-b": "branch_picker::SelectGitBranch",
       "ctrl-,": "workspace::OpenSettings",
@@ -148,7 +147,7 @@
       "ctrl-shift-f": ["dock::FocusOrHidePanel", { "panel": "project-search" }],
       "ctrl-`": ["dock::FocusOrHidePanel", { "panel": "terminal" }],
       "ctrl-shift-d": ["dock::FocusOrHidePanel", { "panel": "debug" }],
-      "ctrl-shift-k": ["dock::FocusOrHidePanel", { "panel": "keyboard-shortcuts" }],
+      "ctrl-shift-h": "harness::ToggleHarnessMode",
       "ctrl-s": "workspace::Save"
     }
   }

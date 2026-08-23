@@ -8,23 +8,16 @@ use std::any::TypeId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui::{App, BorrowAppContext, Entity, Global};
-use zcv_engine::Buffer;
+use gpui::{App, Entity};
 
 use crate::item::{Item, ItemHandle};
+use crate::provider_registry::ProviderRegistry;
 
 /// 交给 Preview Provider 的文档输入：预览视图的源码 Item 与展示路径。
 #[derive(Clone)]
 pub struct PreviewDocument {
     pub path: PathBuf,
     pub source_item: Box<dyn ItemHandle>,
-}
-
-impl PreviewDocument {
-    /// 源码 Item 的底层 Buffer（预览渲染数据源）。
-    pub fn buffer(&self, cx: &App) -> Option<Entity<Buffer>> {
-        self.source_item.buffer(cx)
-    }
 }
 
 /// 预览视图 Item 的 object-safe 句柄，经 `Item::as_preview_item` 获取。
@@ -53,46 +46,14 @@ pub trait PreviewProvider: Send + Sync + 'static {
     fn create(&self, document: PreviewDocument, cx: &mut App) -> Box<dyn ItemHandle>;
 }
 
-struct RegisteredPreviewProvider {
-    type_id: TypeId,
-    provider: Arc<dyn PreviewProvider>,
-}
-
-#[derive(Default)]
-struct PreviewRegistry {
-    providers: Vec<RegisteredPreviewProvider>,
-}
-
-impl Global for PreviewRegistry {}
-
 /// 注册格式预览 Provider。同一具体 Provider 类型只注册一次。
 pub fn register<P: PreviewProvider>(provider: P, cx: &mut App) {
-    if !cx.has_global::<PreviewRegistry>() {
-        cx.set_global(PreviewRegistry::default());
-    }
-    let type_id = TypeId::of::<P>();
-    cx.update_global::<PreviewRegistry, _>(|registry, _| {
-        if registry
-            .providers
-            .iter()
-            .all(|entry| entry.type_id != type_id)
-        {
-            registry.providers.push(RegisteredPreviewProvider {
-                type_id,
-                provider: Arc::new(provider),
-            });
-        }
-    });
+    ProviderRegistry::<dyn PreviewProvider>::register(Arc::new(provider), TypeId::of::<P>(), cx);
 }
 
 /// 返回最后注册且支持该路径的 Preview Provider。
 pub fn provider_for(path: &Path, cx: &App) -> Option<Arc<dyn PreviewProvider>> {
-    cx.try_global::<PreviewRegistry>()?
-        .providers
-        .iter()
-        .rev()
-        .find(|entry| entry.provider.supports(path, cx))
-        .map(|entry| Arc::clone(&entry.provider))
+    ProviderRegistry::<dyn PreviewProvider>::find(cx, |provider| provider.supports(path, cx))
 }
 
 #[cfg(test)]
@@ -139,7 +100,12 @@ mod tests {
                 .expect("新格式应由注册的 Provider 匹配");
             assert!(provider.supports(Path::new("architecture.diagram"), cx));
             assert!(provider_for(Path::new("architecture.txt"), cx).is_none());
-            assert_eq!(cx.global::<PreviewRegistry>().providers.len(), 1);
+            assert_eq!(
+                cx.global::<ProviderRegistry<dyn PreviewProvider>>()
+                    .providers
+                    .len(),
+                1
+            );
         });
     }
 
@@ -152,7 +118,7 @@ mod tests {
 
         cx.read(|cx| {
             let selected = provider_for(Path::new("architecture.diagram"), cx).unwrap();
-            let registry = cx.global::<PreviewRegistry>();
+            let registry = cx.global::<ProviderRegistry<dyn PreviewProvider>>();
             assert!(Arc::ptr_eq(
                 &selected,
                 &registry.providers.last().unwrap().provider

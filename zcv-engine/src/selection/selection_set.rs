@@ -9,16 +9,6 @@ use std::sync::Arc;
 use super::Selection;
 use crate::{ByteOffset, PositionMap, TextRange, position_map::Affinity};
 
-/// 选区归一化时对相邻区间的处理策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum SelectionMergePolicy {
-    /// 只合并重叠区间、重复 caret、以及落在选区边界上的 caret。
-    #[default]
-    MergeOverlapping,
-    /// 额外合并首尾相接的非空区间。
-    MergeOverlappingOrAdjacent,
-}
-
 /// 归一化后的多选区 / 多光标集合。
 ///
 /// 内部 `Arc<[Selection]>`：`Clone` 是 O(1)，宿主在编辑事务前后传递时零深拷贝。
@@ -35,11 +25,7 @@ impl SelectionSet {
     }
 
     pub fn new_with_primary(selections: Vec<Selection>, primary_index: usize) -> Self {
-        normalize_selections(
-            selections,
-            primary_index,
-            SelectionMergePolicy::MergeOverlapping,
-        )
+        normalize_selections(selections, primary_index)
     }
 
     pub fn caret(offset: ByteOffset) -> Self {
@@ -129,11 +115,7 @@ impl Default for SelectionSet {
     }
 }
 
-fn normalize_selections(
-    selections: Vec<Selection>,
-    primary_index: usize,
-    policy: SelectionMergePolicy,
-) -> SelectionSet {
+fn normalize_selections(selections: Vec<Selection>, primary_index: usize) -> SelectionSet {
     if selections.is_empty() {
         return SelectionSet::caret(ByteOffset::ZERO);
     }
@@ -159,7 +141,7 @@ fn normalize_selections(
             continue;
         };
 
-        if should_merge(*current, selection, policy) {
+        if should_merge(*current, selection) {
             let start = current.start().min(selection.start());
             let end = current.end().max(selection.end());
             *current = Selection::new(start, end);
@@ -184,19 +166,8 @@ fn normalize_selections(
     }
 }
 
-fn should_merge(current: Selection, next: Selection, policy: SelectionMergePolicy) -> bool {
-    if current.end() > next.start() {
-        return true;
-    }
-
-    if current.end() == next.start() {
-        return match policy {
-            SelectionMergePolicy::MergeOverlappingOrAdjacent => true,
-            SelectionMergePolicy::MergeOverlapping => current.is_caret() || next.is_caret(),
-        };
-    }
-
-    false
+fn should_merge(current: Selection, next: Selection) -> bool {
+    current.end() >= next.start()
 }
 
 fn contains_offset(selection: Selection, offset: ByteOffset) -> bool {

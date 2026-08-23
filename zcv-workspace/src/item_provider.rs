@@ -6,10 +6,11 @@ use std::any::TypeId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui::{App, BorrowAppContext, Entity, Global, Task};
+use gpui::{App, Entity, Task};
 use zcv_project::Project;
 
 use crate::item::ItemHandle;
+use crate::provider_registry::ProviderRegistry;
 
 /// 文件路径 → Workspace Item 的工厂接口。
 pub trait ItemProvider: Send + Sync + 'static {
@@ -24,46 +25,14 @@ pub trait ItemProvider: Send + Sync + 'static {
     ) -> Task<anyhow::Result<Box<dyn ItemHandle>>>;
 }
 
-struct RegisteredItemProvider {
-    type_id: TypeId,
-    provider: Arc<dyn ItemProvider>,
-}
-
-#[derive(Default)]
-struct ItemProviderRegistry {
-    providers: Vec<RegisteredItemProvider>,
-}
-
-impl Global for ItemProviderRegistry {}
-
 /// 注册文件 Item Provider。同一具体 Provider 类型只注册一次。
 pub fn register_item_provider<P: ItemProvider>(provider: P, cx: &mut App) {
-    if !cx.has_global::<ItemProviderRegistry>() {
-        cx.set_global(ItemProviderRegistry::default());
-    }
-    let type_id = TypeId::of::<P>();
-    cx.update_global::<ItemProviderRegistry, _>(|registry, _| {
-        if registry
-            .providers
-            .iter()
-            .all(|entry| entry.type_id != type_id)
-        {
-            registry.providers.push(RegisteredItemProvider {
-                type_id,
-                provider: Arc::new(provider),
-            });
-        }
-    });
+    ProviderRegistry::<dyn ItemProvider>::register(Arc::new(provider), TypeId::of::<P>(), cx);
 }
 
 /// 返回最后注册且支持该路径的 Item Provider。
 pub fn item_provider_for_path(path: &Path, cx: &App) -> Option<Arc<dyn ItemProvider>> {
-    cx.try_global::<ItemProviderRegistry>()?
-        .providers
-        .iter()
-        .rev()
-        .find(|entry| entry.provider.supports(path, cx))
-        .map(|entry| Arc::clone(&entry.provider))
+    ProviderRegistry::<dyn ItemProvider>::find(cx, |provider| provider.supports(path, cx))
 }
 
 #[cfg(test)]
@@ -120,7 +89,12 @@ mod tests {
                 .expect("txt 应由注册的 Provider 匹配");
             assert!(provider.supports(Path::new("demo.txt"), cx));
             assert!(item_provider_for_path(Path::new("demo.rs"), cx).is_none());
-            assert_eq!(cx.global::<ItemProviderRegistry>().providers.len(), 1);
+            assert_eq!(
+                cx.global::<ProviderRegistry<dyn ItemProvider>>()
+                    .providers
+                    .len(),
+                1
+            );
         });
     }
 
@@ -133,7 +107,7 @@ mod tests {
 
         cx.read(|cx| {
             let selected = item_provider_for_path(Path::new("demo.txt"), cx).unwrap();
-            let registry = cx.global::<ItemProviderRegistry>();
+            let registry = cx.global::<ProviderRegistry<dyn ItemProvider>>();
             assert!(Arc::ptr_eq(
                 &selected,
                 &registry.providers.last().unwrap().provider

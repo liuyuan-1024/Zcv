@@ -1553,7 +1553,7 @@ mod tests {
     /// 无 worktree 的空项目：面板照常构造，root 为空、行模型为空（渲染空态提示）。
     #[gpui::test]
     fn empty_project_has_no_root_and_empty_rows(cx: &mut TestAppContext) {
-        let project = cx.update(|cx| cx.new(|cx| Project::empty(cx)));
+        let project = cx.update(|cx| cx.new(Project::empty));
         let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
 
         cx.read_entity(&tree, |tree, _| {

@@ -437,13 +437,6 @@ impl Item for TerminalView {
     fn tab_icon(&self, _cx: &App) -> Option<SharedString> {
         Some(SharedString::from("icons/terminal.svg"))
     }
-
-    fn tab_tooltip_text(&self, cx: &App) -> Option<SharedString> {
-        self.terminal
-            .read(cx)
-            .title()
-            .map(|title| SharedString::from(title.to_string()))
-    }
 }
 
 impl Render for TerminalView {

@@ -37,13 +37,6 @@ pub(crate) struct WordBoundaryClassifier {
 }
 
 impl WordBoundaryPolicy {
-    pub const fn new(underscore_is_identifier: bool, dollar_is_identifier: bool) -> Self {
-        Self {
-            underscore_is_identifier,
-            dollar_is_identifier,
-        }
-    }
-
     pub(crate) fn is_identifier_continue(self, ch: char) -> bool {
         ch.is_alphanumeric()
             || is_zero_width(ch)

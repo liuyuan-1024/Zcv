@@ -120,9 +120,6 @@ pub(crate) trait TextRead {
     /// 总 Unicode scalar 数。仅用于公共 API / 外部协议。
     fn len_chars(&self) -> CharOffset;
 
-    /// 总 UTF-16 code unit 数。仅用于 LSP 等外部协议适配。
-    fn len_utf16_cu(&self) -> Utf16Offset;
-
     /// 边界投影：CharOffset -> ByteOffset。
     fn char_to_byte(&self, offset: CharOffset) -> EngineResult<ByteOffset>;
 
@@ -172,11 +169,6 @@ macro_rules! text_coordinate_gateway {
         /// 文本 UTF-8 字节末端位置；等价于全文末尾的 `ByteOffset`。
         pub fn len_bytes(&self) -> $crate::ByteOffset {
             self.storage.len_bytes()
-        }
-
-        /// 文本 UTF-16 code unit 末端位置；等价于全文末尾的 `Utf16Offset`。
-        pub fn len_utf16_cu(&self) -> $crate::Utf16Offset {
-            self.storage.len_utf16_cu()
         }
 
         /// 总行数。空文档也视为 1 行。

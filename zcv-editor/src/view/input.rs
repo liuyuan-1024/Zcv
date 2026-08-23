@@ -379,7 +379,7 @@ impl Editor {
             );
             Ok((EditOutcome::from_transaction(outcome), after))
         });
-        if let Ok((_, _)) = result {
+        if result.is_ok() {
             let version = self.buffer.read(cx).snapshot().version();
             self.autoclose_regions
                 .extend(

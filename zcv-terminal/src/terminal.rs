@@ -1,6 +1,6 @@
 //! zcv-terminal：嵌入式终端面板。
 //!
-//! 模拟器核心使用 Zed 维护的 alacritty_terminal fork（MIT/Apache-2.0），本 crate 提供薄封装（`alacritty` 模块）、终端状态机（`Terminal`）与视图/面板（后续模块）。
+//! 模拟器核心使用 Zed 维护的 alacritty_terminal fork（MIT/Apache-2.0），本 crate 提供薄封装（`alacritty` 模块）、终端状态机（`Terminal`）与视图/面板（`view` / `panel` 模块）。
 //! 事件流分层：alacritty IO 线程 → 事件通道 → 主线程批处理队列 → 每帧渲染快照。
 
 mod alacritty;
@@ -83,10 +83,6 @@ impl TerminalBounds {
 
     pub fn line_height(&self) -> Pixels {
         self.cell_height
-    }
-
-    pub fn size(&self) -> Size<Pixels> {
-        self.size
     }
 }
 
@@ -195,10 +191,6 @@ impl Cell {
         self.cell.flags.contains(Flags::STRIKEOUT)
     }
 
-    pub fn is_hidden(&self) -> bool {
-        self.cell.flags.contains(Flags::HIDDEN)
-    }
-
     pub fn zerowidth(&self) -> Option<&[char]> {
         self.cell.zerowidth()
     }
@@ -245,11 +237,6 @@ impl Modes {
 
     pub fn empty() -> Modes {
         Modes::NONE
-    }
-
-    /// 是否为显示光标模式（DEC Private Mode 25）。
-    pub fn is_cursor_visible(&self) -> bool {
-        self.contains(Modes::SHOW_CURSOR)
     }
 
     pub fn contains(&self, other: Modes) -> bool {
@@ -663,10 +650,10 @@ impl Terminal {
                 }
                 InternalEvent::Wakeup => cx.emit(Event::Wakeup),
                 InternalEvent::ChildExit(status) => {
-                    log::info!("终端子进程退出：{status}");
+                    eprintln!("终端子进程退出：{status}");
                 }
                 InternalEvent::Exit => {
-                    log::info!("终端退出");
+                    eprintln!("终端退出");
                 }
             }
         }
@@ -1036,7 +1023,7 @@ mod pty_tests {
     #[gpui::test]
     async fn pty_echo_roundtrip(cx: &mut TestAppContext) {
         let terminal = build_terminal(cx);
-        let (_, mut cx) = cx.add_window_view(|_window, _cx| EmptyView);
+        let (_, cx) = cx.add_window_view(|_window, _cx| EmptyView);
 
         cx.update(|_window, cx| {
             terminal.update(cx, |t, cx| {
@@ -1044,7 +1031,7 @@ mod pty_tests {
             });
         });
 
-        wait_for_content(&mut cx, &terminal, |content| {
+        wait_for_content(cx, &terminal, |content| {
             all_text(content).contains("zcv-terminal-ok")
         })
         .await;
@@ -1114,9 +1101,9 @@ mod pty_tests {
     #[gpui::test]
     async fn selection_set_and_clear(cx: &mut TestAppContext) {
         let terminal = build_terminal(cx);
-        let (_, mut cx) = cx.add_window_view(|_window, _cx| EmptyView);
+        let (_, cx) = cx.add_window_view(|_window, _cx| EmptyView);
 
-        wait_for_content(&mut cx, &terminal, |content| content.cells.len() > 0).await;
+        wait_for_content(cx, &terminal, |content| !content.cells.is_empty()).await;
 
         let has_selection = cx.update(|window, cx| {
             terminal.update(cx, |t, cx| {

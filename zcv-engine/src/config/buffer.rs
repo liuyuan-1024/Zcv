@@ -4,9 +4,7 @@
 
 use std::num::NonZeroUsize;
 
-use super::{
-    EncodingConfig, LargeFilePolicy, LineEndingConfig, PositionEncodingConfig, WordBoundaryPolicy,
-};
+use super::{EncodingConfig, LargeFilePolicy, LineEndingConfig, WordBoundaryPolicy};
 
 /// Buffer 级别的综合配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,8 +15,6 @@ pub struct BufferConfig {
     pub line_ending: LineEndingConfig,
     /// 外部 bytes 加载为 Buffer 文本时的编码恢复策略。
     pub encoding: EncodingConfig,
-    /// 与外部协议交换位置时采用的行内坐标编码。
-    pub position_encoding: PositionEncodingConfig,
     /// 大文件、长行和历史保留相关的降级阈值。
     pub large_file: LargeFilePolicy,
     /// Word / Identifier / Symbol movement 使用的字符分类策略。
@@ -31,7 +27,6 @@ impl Default for BufferConfig {
             tab: TabConfig::default(),
             line_ending: LineEndingConfig::Preserve,
             encoding: EncodingConfig::default(),
-            position_encoding: PositionEncodingConfig::Utf8,
             large_file: LargeFilePolicy::default(),
             word_boundary: WordBoundaryPolicy::default(),
         }
@@ -50,14 +45,6 @@ pub struct TabConfig {
 }
 
 impl TabConfig {
-    pub fn new(tab_width: NonZeroUsize, indent_width: NonZeroUsize, insert_spaces: bool) -> Self {
-        Self {
-            tab_width,
-            indent_width,
-            insert_spaces,
-        }
-    }
-
     pub fn tab_width(self) -> usize {
         self.tab_width.get()
     }
@@ -85,11 +72,11 @@ mod tests {
     #[test]
     fn config_strategy_values_should_expose_stable_defaults_and_boundaries() {
         let config = BufferConfig::default();
-        let tab = TabConfig::new(
-            NonZeroUsize::new(2).unwrap(),
-            NonZeroUsize::new(4).unwrap(),
-            true,
-        );
+        let tab = TabConfig {
+            tab_width: NonZeroUsize::new(2).unwrap(),
+            indent_width: NonZeroUsize::new(4).unwrap(),
+            insert_spaces: true,
+        };
         let large = LargeFilePolicy {
             large_file_threshold_bytes: 8,
             long_line_threshold_chars: 3,

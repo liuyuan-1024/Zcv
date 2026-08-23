@@ -2,7 +2,6 @@
 //!
 //! 本文件只维护单个 selection 的方向、范围和映射；排序、合并和 primary 归属在 SelectionSet。
 
-use super::Cursor;
 use crate::{ByteOffset, PositionMap, TextRange};
 
 /// 一个选区，使用 anchor/head 模型。
@@ -50,14 +49,6 @@ impl Selection {
 
     pub const fn head(self) -> ByteOffset {
         self.head
-    }
-
-    pub fn cursor(self) -> Option<Cursor> {
-        if self.is_caret() {
-            Some(Cursor::new(self.head))
-        } else {
-            None
-        }
     }
 
     pub fn is_caret(self) -> bool {
@@ -116,17 +107,10 @@ mod tests {
         Selection::new(b(anchor), b(head))
     }
 
-    fn caret(offset: usize) -> Selection {
-        Selection::caret(b(offset))
-    }
-
     #[test]
-    fn selection_and_cursor_contract_should_preserve_anchor_head_direction_and_range() {
-        let cursor = Cursor::new(b(3));
+    fn selection_contract_should_preserve_anchor_head_direction_and_range() {
         let reversed = selection(7, 2);
 
-        assert_eq!(cursor.offset(), b(3));
-        assert_eq!(cursor.to_selection(), caret(3));
         assert_eq!(reversed.anchor(), b(7));
         assert_eq!(reversed.head(), b(2));
         assert!(reversed.is_reversed());

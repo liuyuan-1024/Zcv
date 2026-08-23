@@ -14,7 +14,8 @@ use zcv_theme::color;
 
 const WIDTH: Pixels = px(6.);
 const PADDING: Pixels = px(3.);
-const MIN_THUMB_SIZE: Pixels = px(25.);
+/// thumb 最小高度。
+pub const MIN_THUMB_SIZE: Pixels = px(25.);
 
 /// 统一滚动条所需的滚动容器接口。
 ///

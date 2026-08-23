@@ -13,7 +13,6 @@ serde.workspace = true
 serde_json.workspace = true
 zcv-actions.workspace = true
 gpui.workspace = true
-log.workspace = true
 zcv-engine.workspace = true
 zcv-git.workspace = true
 zcv-keymap.workspace = true

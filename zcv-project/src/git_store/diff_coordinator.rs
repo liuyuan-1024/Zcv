@@ -102,6 +102,8 @@ impl DiffCoordinator {
 }
 
 impl GitStore {
+    /// 用当前打开编辑器集合替换差异需求。
+    /// 任务调度由状态机单向驱动，不依赖任务状态事件反向触发。
     pub fn set_hunk_interests(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         let interests: BTreeSet<PathBuf> = paths
             .iter()

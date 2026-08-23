@@ -214,14 +214,6 @@ impl SyntaxSnapshot {
         self.language.is_some()
     }
 
-    pub fn language_at(&self, offset: usize, text: &Snapshot) -> Option<&'static str> {
-        let range = offset..offset;
-        self.can_query(&range, text).then_some(())?;
-        self.layers_for_range(&range)
-            .max_by_key(|layer| (layer.depth, std::cmp::Reverse(layer.range.len())))
-            .map(|layer| layer.language.name())
-    }
-
     /// 返回严格包围当前范围的最小语法节点，对齐 Zed `syntax_ancestor` 的选择扩展语义。
     pub fn ancestor_range(&self, range: Range<usize>, text: &Snapshot) -> Option<Range<usize>> {
         self.can_query(&range, text).then_some(())?;
@@ -270,7 +262,6 @@ impl SyntaxSnapshot {
             (Some(language), Some(tree)) => Some(SyntaxLayerRef {
                 language,
                 tree,
-                range: tree.root_node().byte_range(),
                 depth: 0,
             }),
             _ => None,
@@ -282,7 +273,6 @@ impl SyntaxSnapshot {
                 .map(|layer| SyntaxLayerRef {
                     language: &layer.language,
                     tree: &layer.tree,
-                    range: layer.range.clone(),
                     depth: layer.depth,
                 }),
         )
@@ -362,7 +352,6 @@ impl SyntaxSnapshot {
 pub(crate) struct SyntaxLayerRef<'a> {
     pub(crate) language: &'a Language,
     pub(crate) tree: &'a tree_sitter::Tree,
-    pub(crate) range: Range<usize>,
     pub(crate) depth: u32,
 }
 
@@ -471,7 +460,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn syntax_ancestor_and_injected_language_use_the_smallest_layer() {
+    fn syntax_ancestor_uses_the_smallest_layer() {
         let source = "fn main() { let value = 1; }\n";
         let (buffer, syntax) = rust_buffer(source);
         let snapshot = buffer.snapshot();
@@ -485,15 +474,6 @@ mod tests {
             .ancestor_range(identifier, &snapshot)
             .expect("identifier 应继续扩展到父语法节点");
         assert!(parent.len() > "value".len());
-
-        let html = "<style>.item { color: red; }</style>";
-        let (buffer, syntax) = parsed_syntax("index.html", html);
-        let snapshot = buffer.snapshot();
-        let offset = html.find("color").unwrap();
-        assert_eq!(
-            syntax.snapshot().language_at(offset, &snapshot),
-            Some("CSS")
-        );
     }
 
     #[test]

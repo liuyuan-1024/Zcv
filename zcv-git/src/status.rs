@@ -310,12 +310,6 @@ pub struct DiffStat {
     pub deleted: u64,
 }
 
-impl DiffStat {
-    pub fn is_empty(self) -> bool {
-        self.added == 0 && self.deleted == 0
-    }
-}
-
 /// 解析 `git diff --numstat -z` 输出，每项形如 `added\tdeleted\tpath\0`。
 ///
 /// 二进制文件的行数计为 `-`，解析失败时跳过该行（与 Zed 行为一致）。

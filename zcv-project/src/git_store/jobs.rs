@@ -25,7 +25,6 @@ pub enum GitJobPhase {
 
 #[derive(Clone)]
 pub struct GitJobStatus {
-    pub id: GitJobId,
     pub name: Arc<str>,
     pub operation: Option<GitOperationKind>,
     pub phase: GitJobPhase,
@@ -222,7 +221,6 @@ impl GitStore {
             .min_by_key(|job| job.id)
             .or_else(|| self.in_flight.and_then(|id| self.jobs.get(&id)))?;
         Some(GitJobStatus {
-            id: record.id,
             name: record.name.clone(),
             operation: record.operation,
             phase: record.phase,

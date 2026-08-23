@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
+use crate::translate_path;
 use gpui::{App, AppContext, Entity, WeakEntity};
 use zcv_engine::{Buffer, BufferConfig, BufferLoadError, BufferOrigin};
 use zcv_language::LanguageBuffer;
@@ -74,12 +75,7 @@ impl BufferStore {
         self.opened_buffers = self
             .opened_buffers
             .drain()
-            .map(|(path, buffer)| {
-                let path = path
-                    .strip_prefix(from)
-                    .map_or(path.clone(), |suffix| to.join(suffix));
-                (path, buffer)
-            })
+            .map(|(path, buffer)| (translate_path(&path, from, to), buffer))
             .collect();
     }
 

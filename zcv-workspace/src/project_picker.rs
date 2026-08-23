@@ -5,23 +5,20 @@
 //!
 //! 最近项目从 `~/.zcv/recent_projects.json` 读取，"打开本地项目"调用系统文件选择器选择目录。
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, ClickEvent, Context, Corner, Entity, FocusHandle, MouseButton, PathPromptOptions,
-    Pixels, Render, Window, anchored, deferred, div, point, prelude::*, px,
+    Action, App, ClickEvent, Context, Entity, PathPromptOptions, Render, Window, div, prelude::*,
 };
 use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
 use zcv_keymap::KeyBindings;
-use zcv_picker::{Picker, PickerDelegate, picker_divider};
-use zcv_theme::{color, space, typography};
+use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost, picker_divider};
+use zcv_theme::{color, typography};
 use zcv_ui::Glyph;
 use zcv_ui::ListItem;
 
 use crate::recent_projects::{self, ProjectEntry};
-
-const PICKER_WIDTH: Pixels = px(360.0);
 
 // ═══ 回调 ════════════════════════════════════════════════════════
 
@@ -198,9 +195,7 @@ impl PickerDelegate for ProjectPickerDelegate {
 ///
 /// glyph 显示当前项目名称，无项目时显示「选择项目」。
 pub struct ProjectPicker {
-    is_open: bool,
-    dismiss_flag: Rc<Cell<bool>>,
-    focus: FocusHandle,
+    host: PickerHost,
     picker: Entity<Picker<ProjectPickerDelegate>>,
     /// 异步「打开本地项目」暂存的路径
     pending_path: Rc<RefCell<Option<String>>>,
@@ -220,23 +215,16 @@ impl ProjectPicker {
         // 列表第一位即最近打开的项目，作为顶栏显示名
         let current_label = projects.first().map(|p| p.label()).unwrap_or_default();
         let delegate = ProjectPickerDelegate::new(projects, on_selected.clone());
-        let dismiss_flag = Rc::new(Cell::new(false));
         let pending_path = Rc::new(RefCell::new(None));
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
-        let on_dismiss = {
-            let df = dismiss_flag.clone();
-            Box::new(move |window: &mut Window, _app: &mut App| {
-                df.set(true);
-                window.refresh();
-            })
-        };
-        picker.update(cx, |picker, _| picker.set_on_dismiss(on_dismiss));
+        let host = PickerHost::new(cx.focus_handle());
+        picker.update(cx, |picker, _| {
+            picker.set_on_dismiss(host.on_dismiss_handler())
+        });
 
         Self {
-            is_open: false,
-            dismiss_flag,
-            focus: cx.focus_handle(),
+            host,
             picker,
             pending_path,
             on_selected,
@@ -251,9 +239,7 @@ impl ProjectPicker {
 
     /// 外部切换（快捷键/按钮等）。
     pub fn toggle(&mut self, window: &mut Window, cx: &mut App) {
-        self.dismiss_flag.set(false);
-        self.is_open = !self.is_open;
-        if self.is_open {
+        if !self.host.is_open() {
             // 打开时从磁盘重新加载最近项目列表
             self.picker.update(cx, |picker, cx| {
                 picker.delegate_mut().reload_projects();
@@ -268,14 +254,8 @@ impl ProjectPicker {
             if let Some(entry) = delegate.projects.first() {
                 self.current_label = entry.label();
             }
-            if let Some(input) = self.picker.read(cx).search_input().cloned() {
-                let focus = input.focus_handle(cx);
-                window.focus(&focus);
-            }
-        } else {
-            window.focus(&self.focus);
         }
-        window.refresh();
+        self.host.toggle(&self.picker, window, cx);
     }
 
     fn handle_toggle(
@@ -345,15 +325,13 @@ impl ProjectPicker {
 impl Render for ProjectPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 检查是否需要关闭（Escape / 点击外部）
-        if self.dismiss_flag.replace(false) {
-            self.is_open = false;
-            window.focus(&self.focus);
+        if self.host.consume_dismiss() {
+            self.host.close_and_refocus(window);
         }
 
         // 处理异步「打开本地项目」返回的路径
         if let Some(path) = self.pending_path.borrow_mut().take() {
-            self.is_open = false;
-            window.focus(&self.focus);
+            self.host.close_and_refocus(window);
             // 从路径提取项目名
             if let Some(file_name) = std::path::Path::new(&path).file_name() {
                 self.current_label = file_name.to_string_lossy().to_string();
@@ -362,7 +340,7 @@ impl Render for ProjectPicker {
             window.defer(cx, move |window, cx| cb(path, window, cx));
         }
 
-        let color_value = if self.is_open {
+        let color_value = if self.host.is_open() {
             color::current(cx).icon_accent
         } else {
             color::current(cx).text
@@ -384,7 +362,7 @@ impl Render for ProjectPicker {
             });
 
         let mut root = div()
-            .track_focus(&self.focus)
+            .track_focus(&self.host.focus_handle())
             // 复合 context 让 Picker 分组的快捷键与 Editor 同深度竞争
             .key_context("ProjectPicker")
             .on_action(cx.listener(Self::handle_toggle))
@@ -394,57 +372,8 @@ impl Render for ProjectPicker {
             .child(glyph);
 
         // 浮层
-        if self.is_open {
-            let dismiss = self.dismiss_flag.clone();
-            let win_size = window.bounds().size;
-
-            // 全屏点击拦截（优先级 0，垫底）
-            root = root
-                .child(
-                    deferred(
-                        div()
-                            .absolute()
-                            .top(Pixels::ZERO)
-                            .left(Pixels::ZERO)
-                            .w(win_size.width)
-                            .h(win_size.height)
-                            .occlude()
-                            .on_mouse_down(MouseButton::Left, move |_, window, _cx| {
-                                dismiss.set(true);
-                                window.refresh();
-                            }),
-                    )
-                    .with_priority(0),
-                )
-                // Picker 浮层（优先级 1，Local 定位到 glyph 旁边）
-                .child(
-                    deferred(
-                        anchored()
-                            .anchor(Corner::TopLeft)
-                            .position(point(Pixels::ZERO, Pixels::ZERO))
-                            .position_mode(gpui::AnchoredPositionMode::Local)
-                            .snap_to_window_with_margin(space::S6)
-                            .child(
-                                div()
-                                    .occlude()
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                        cx.stop_propagation();
-                                    })
-                                    .child(
-                                        div()
-                                            .bg(color::current(cx).elevated_surface_background)
-                                            .border_l_3()
-                                            .border_color(color::current(cx).border_focused)
-                                            .border_1()
-                                            .border_color(color::current(cx).border_variant)
-                                            .rounded(px(8.0))
-                                            .overflow_hidden()
-                                            .child(self.picker.clone()),
-                                    ),
-                            ),
-                    )
-                    .with_priority(1),
-                );
+        if self.host.is_open() {
+            root = root.child(self.host.overlay(window, cx, &self.picker));
         }
 
         root

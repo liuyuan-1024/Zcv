@@ -246,13 +246,7 @@ mod tests {
     fn grid_point_basic() {
         let (origin, cw, lh, offset, lines, cols) = bounds();
         let p = grid_point(point(16., 32.), origin, cw, lh, offset, lines, cols);
-        assert_eq!(
-            p,
-            GridPoint {
-                line: 2 - 0,
-                column: 2
-            }
-        );
+        assert_eq!(p, GridPoint { line: 2, column: 2 });
     }
 
     #[test]

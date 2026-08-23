@@ -40,7 +40,6 @@ mod diff;
 mod search;
 
 pub(crate) use diff::{HunkRendering, diff_kind_for_row, hunk_rendering};
-pub(crate) use input::AutocloseRegion;
 pub(crate) use search::EditorSearch;
 
 /// Editor 自身的领域事件。
@@ -365,7 +364,7 @@ impl Editor {
             let line_range =
                 LineRange::new(line, Line::new(line.get() + 1)).expect("光标行 +1 应合法");
             if let Err(error) = self.display_map.unfold_lines(line_range) {
-                log::error!("展开折叠失败：{error}");
+                eprintln!("展开折叠失败：{error}");
             }
         } else {
             let snapshot = self.render_snapshot();
@@ -386,7 +385,7 @@ impl Editor {
                     )
                     .expect("折叠范围应合法"),
                 ) {
-                    log::error!("折叠失败：{error}");
+                    eprintln!("折叠失败：{error}");
                 }
             }
         }
@@ -1496,7 +1495,7 @@ impl Editor {
         if let Ok(line_range) = LineRange::new(Line::ZERO, Line::new(line_count))
             && let Err(error) = self.display_map.unfold_lines(line_range)
         {
-            log::error!("展开折叠失败：{error}");
+            eprintln!("展开折叠失败：{error}");
         }
         cx.notify();
     }
@@ -1919,6 +1918,7 @@ mod editing;
 mod input;
 
 use editing::touched_lines;
+use input::AutocloseRegion;
 /// 输入法组合会话与展示快照（element 渲染 marked ranges 用）。
 pub(super) use input::{EditorComposition, EditorPresentation};
 

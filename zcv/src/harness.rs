@@ -50,6 +50,7 @@ impl Render for HarnessButton {
             .child(
                 Glyph::icon(ElementId::Name("harness".into()), "icons/zed_assistant.svg")
                     .label("Harness 模式")
+                    .shortcut(&ToggleHarnessMode, cx)
                     .color(fg)
                     .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(ToggleHarnessMode), cx)

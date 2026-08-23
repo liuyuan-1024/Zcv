@@ -14,16 +14,3 @@ pub enum LineEndingConfig {
     /// 使用当前平台的原生换行风格，适合宿主想跟随运行环境而不是文件来源时。
     Native,
 }
-
-/// 与外部协议交换 position 时使用的行内坐标编码。
-///
-/// 引擎内部编辑坐标仍然是 ByteOffset；这个策略只影响对外转换边界。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PositionEncodingConfig {
-    /// 使用 UTF-8 byte offset 作为行内坐标，适配部分终端或低层文本协议。
-    Utf8,
-    /// 使用 UTF-16 code unit 作为行内坐标，适配 LSP 等编辑器协议。
-    Utf16,
-    /// 使用 Unicode scalar value 数量作为行内坐标，属于派生视图坐标。
-    Utf32,
-}

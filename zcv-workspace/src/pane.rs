@@ -153,7 +153,6 @@ impl Pane {
     ) -> FocusHandle {
         let item_id = item.item_id();
         // 订阅 Item 事件：编辑提升临时标签、标题刷新。
-        // CloseItem 请求关闭标签页，需 window 上下文（当前 Item 订阅回调无 window），待接入带 window 的订阅时实现。
         let pane = cx.entity().downgrade();
         item.subscribe_to_item_events(
             cx,
@@ -170,8 +169,7 @@ impl Pane {
                         // 固定标签同样需要立即重绘未保存标记。
                         cx.notify();
                     }
-                    ItemEvent::UpdateTab => cx.notify(),
-                    _ => {}
+                    ItemEvent::UpdateTab | ItemEvent::UpdateBreadcrumbs => cx.notify(),
                 });
             }),
         )
@@ -353,11 +351,6 @@ impl Pane {
         self.focus.clone()
     }
 
-    /// 当前激活标签的 item id。
-    pub fn active_id(&self) -> Option<EntityId> {
-        self.active
-    }
-
     /// 将已打开编辑器的文件路径随文件或目录重命名一起迁移。
     pub fn rename_path(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
         for item in &self.tabs {
@@ -431,6 +424,8 @@ impl Pane {
     /// 所有关闭路径（快捷键、关闭按钮、删除文件）都收敛到本方法，订阅方只需监听 Pane 事件。
     pub fn close_tab(&mut self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(pos) = self.tabs.iter().position(|item| item.item_id() == item_id) {
+            // 关闭前记录焦点归属：仅当 Pane 或其 item 持有焦点时归还，避免抢占别处焦点（恢复会话、后台清理等非用户路径关闭时不触发）。
+            let had_focus = self.has_focus(window, cx);
             if self.transient_item_id == Some(item_id) {
                 self.transient_item_id = None;
             }
@@ -443,6 +438,14 @@ impl Pane {
                     .or_else(|| self.tabs.last().map(|item| item.item_id()));
                 self.update_toolbar(window, cx);
             }
+            // 焦点归还：聚焦新激活 item；全部关闭后回落到 Pane 自身句柄（tab 栏容器 track_focus 挂载，焦点链与 Pane 快捷键保持有效）。
+            if had_focus {
+                let focus = self
+                    .active_item()
+                    .map(|item| item.item_focus_handle(cx))
+                    .unwrap_or_else(|| self.focus.clone());
+                window.focus(&focus);
+            }
             cx.emit(PaneEvent::RemovedItem { item_id });
             // 空 Pane 请求移除自身。
             if self.tabs.is_empty() {
@@ -450,6 +453,14 @@ impl Pane {
             }
             cx.notify();
         }
+    }
+
+    /// Pane 自身或其当前 item 是否持有焦点（决定关闭后是否归还焦点）。
+    fn has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus.is_focused(window)
+            || self
+                .active_item()
+                .is_some_and(|item| item.item_focus_handle(cx).is_focused(window))
     }
 
     /// 当前活动标签的 ItemHandle。
@@ -529,17 +540,12 @@ impl Pane {
 // ═══ Action handler ═════════════════════════════════════════════
 
 impl Pane {
-    /// 关闭活动标签并聚焦相邻标签；无标签时聚焦 Pane 自身。
+    /// 关闭活动标签；焦点归还在 `close_tab` 内统一处理（快捷键在 Pane 上下文触发，焦点必在 Pane 内）。
     fn handle_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         let Some(item_id) = self.active else {
             return;
         };
         self.close_tab(item_id, window, cx);
-        if let Some(item) = self.active_item() {
-            window.focus(&item.item_focus_handle(cx));
-        } else {
-            window.focus(&self.focus);
-        }
         window.refresh();
     }
 
@@ -826,12 +832,8 @@ fn close_glyph(
         .shortcut(&CloseTab, cx)
         .on_click(
             move |_: &gpui::ClickEvent, window: &mut gpui::Window, cx: &mut gpui::App| {
-                let pane_focus = entity.read(cx).focus.clone();
-                let focus = entity.update(cx, |pane, cx| {
-                    pane.close_tab(item_id, window, cx);
-                    pane.active_item().map(|item| item.item_focus_handle(cx))
-                });
-                window.focus(&focus.unwrap_or(pane_focus));
+                // 焦点归还在 close_tab 内统一处理（点击时焦点在 Pane 内）。
+                entity.update(cx, |pane, cx| pane.close_tab(item_id, window, cx));
                 window.refresh();
             },
         )

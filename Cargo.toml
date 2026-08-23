@@ -85,7 +85,6 @@ unicode-width = "0.2"
 # ---- 工作区层（zcv-workspace） ----
 anyhow = "1.0"
 globset = "0.4"
-log = "0.4"
 trash = "5"
 
 # ---- 语法高亮（tree-sitter 系） ----

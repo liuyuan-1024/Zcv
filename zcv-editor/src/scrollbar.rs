@@ -9,20 +9,18 @@ use gpui::{Bounds, Hitbox, HitboxBehavior, Pixels, Point, Window, point, px, siz
 use zcv_git::DiffHunkKind;
 
 use super::scroll::ScrollbarThumbState;
+use zcv_ui::MIN_THUMB_SIZE;
 
-/// 滚动轴宽度，与 Zed 的 `ui::EDITOR_SCROLLBAR_WIDTH` 一致。
+/// 滚动轴宽度。
 pub(super) const SCROLLBAR_WIDTH: Pixels = px(15.);
-
-/// thumb 最小高度，与 Zed 的 `ScrollbarLayout::MIN_THUMB_SIZE` 一致。
-pub(super) const MIN_THUMB_SIZE: Pixels = px(25.);
 
 /// 轨道宽 − 边框后等分的列数（对齐 Zed 的三列 marker 坐标系；第 0 列显示 git diff）。
 const MARKER_COLUMN_COUNT: f32 = 3.0;
 
-/// 轨道左右边框宽度（对齐 Zed `ScrollbarLayout::BORDER_WIDTH`）。
+/// 轨道左右边框宽度。
 const SCROLLBAR_BORDER: Pixels = px(1.);
 
-/// marker 最小高度（对齐 Zed `MIN_MARKER_HEIGHT`：单行 hunk 至少 5px 可见）。
+/// marker 最小高度。
 const MIN_MARKER_HEIGHT: Pixels = px(5.);
 
 /// 垂直滚动轴的逐帧布局：track hitbox、thumb 几何与三态。

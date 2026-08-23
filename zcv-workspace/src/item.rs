@@ -3,7 +3,7 @@
 //! 只定义 Item 的通用能力，不依赖 Editor、具体预览格式或 Pane 实现。
 //! 预览视图等可选能力通过 [`Item::as_preview_item`] 桥接获取（对齐 Zed 的 `as_searchable` 模式），不占用 Item 主接口。
 
-use std::any::{Any, TypeId};
+use std::any::TypeId;
 use std::path::{Path, PathBuf};
 
 use gpui::{
@@ -20,8 +20,6 @@ use crate::toolbar::ToolbarItemLocation;
 /// Item 向 Pane/Workspace 上报的通用事件，对齐 Zed `workspace::item::ItemEvent`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ItemEvent {
-    /// Item 请求关闭自身标签页。
-    CloseItem,
     /// 标签标题等内容需要刷新。
     UpdateTab,
     /// 面包屑路径需要刷新。
@@ -40,17 +38,7 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         None
     }
 
-    fn tab_tooltip_text(&self, _cx: &App) -> Option<SharedString> {
-        None
-    }
-
     fn to_item_events(_event: &Self::Event, _emit: &mut dyn FnMut(ItemEvent)) {}
-
-    /// 标签页从激活变为非激活。
-    fn deactivated(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
-
-    /// 标签页从 Pane 移除时调用（关闭前）。
-    fn on_removed(&self, _cx: &mut Context<Self>) {}
 
     fn is_dirty(&self, _cx: &App) -> bool {
         false
@@ -98,10 +86,6 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         false
     }
 
-    fn can_save_as(&self, _cx: &App) -> bool {
-        false
-    }
-
     fn save(
         &mut self,
         project: Entity<Project>,
@@ -113,16 +97,6 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         };
         let result = project.update(cx, |project, cx| project.save_buffer(&buffer, &path, cx));
         Task::ready(result.map_err(|error| anyhow::anyhow!("{error}")))
-    }
-
-    fn save_as(
-        &mut self,
-        _project: Entity<Project>,
-        _path: PathBuf,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Task<anyhow::Result<()>> {
-        Task::ready(Ok(()))
     }
 
     fn act_as_type(
@@ -144,7 +118,6 @@ pub trait ItemHandle: Send + 'static {
     fn boxed_clone(&self) -> Box<dyn ItemHandle>;
     fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString;
     fn tab_icon(&self, cx: &App) -> Option<SharedString>;
-    fn tab_tooltip_text(&self, cx: &App) -> Option<SharedString>;
     fn is_dirty(&self, cx: &App) -> bool;
     fn file_path(&self, cx: &App) -> Option<PathBuf>;
     fn rename_path(&self, from: &Path, to: &Path, cx: &mut App);
@@ -152,22 +125,12 @@ pub trait ItemHandle: Send + 'static {
     fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>>;
     fn as_searchable(&self, cx: &App) -> Option<Box<dyn SearchableItemHandle>>;
     fn can_save(&self, cx: &App) -> bool;
-    fn can_save_as(&self, cx: &App) -> bool;
     fn save(
         &self,
         project: Entity<Project>,
         window: &mut Window,
         cx: &mut App,
     ) -> Task<anyhow::Result<()>>;
-    fn save_as(
-        &self,
-        project: Entity<Project>,
-        path: PathBuf,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Task<anyhow::Result<()>>;
-    fn deactivated(&self, window: &mut Window, cx: &mut App);
-    fn on_removed(&self, cx: &mut App);
     fn act_as_type(&self, type_id: TypeId, cx: &App) -> Option<AnyEntity>;
     fn subscribe_to_item_events(&self, cx: &mut App, handler: ItemEventHandler) -> Subscription;
     fn breadcrumb_location(&self, cx: &App) -> ToolbarItemLocation;
@@ -181,10 +144,6 @@ impl dyn ItemHandle {
 
     pub fn act_as<T: 'static>(&self, cx: &App) -> Option<Entity<T>> {
         self.act_as_type(TypeId::of::<T>(), cx)?.downcast().ok()
-    }
-
-    pub fn is<T: Any>(&self, cx: &App) -> bool {
-        self.act_as_type(TypeId::of::<T>(), cx).is_some()
     }
 }
 
@@ -219,10 +178,6 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.read(cx).tab_icon(cx)
     }
 
-    fn tab_tooltip_text(&self, cx: &App) -> Option<SharedString> {
-        self.read(cx).tab_tooltip_text(cx)
-    }
-
     fn is_dirty(&self, cx: &App) -> bool {
         self.read(cx).is_dirty(cx)
     }
@@ -251,10 +206,6 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.read(cx).can_save(cx)
     }
 
-    fn can_save_as(&self, cx: &App) -> bool {
-        self.read(cx).can_save_as(cx)
-    }
-
     fn save(
         &self,
         project: Entity<Project>,
@@ -262,24 +213,6 @@ impl<T: Item> ItemHandle for Entity<T> {
         cx: &mut App,
     ) -> Task<anyhow::Result<()>> {
         self.update(cx, |item, cx| item.save(project, window, cx))
-    }
-
-    fn save_as(
-        &self,
-        project: Entity<Project>,
-        path: PathBuf,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Task<anyhow::Result<()>> {
-        self.update(cx, |item, cx| item.save_as(project, path, window, cx))
-    }
-
-    fn deactivated(&self, window: &mut Window, cx: &mut App) {
-        self.update(cx, |item, cx| item.deactivated(window, cx));
-    }
-
-    fn on_removed(&self, cx: &mut App) {
-        self.update(cx, |item, cx| item.on_removed(cx));
     }
 
     fn act_as_type(&self, type_id: TypeId, cx: &App) -> Option<AnyEntity> {

@@ -64,7 +64,6 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
             .collect::<Vec<_>>()
     });
     assert_eq!(fold_ranges.len(), 2);
-    eprintln!("fold_ranges: {:?}", fold_ranges);
 
     // 折叠 fn main（入口行 0）：隐藏块内 2 行，无占位行，总行数 6 → 4。
     editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));

@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use crate::{
     buffer::HistoryNodeId,
-    types::{BufferVersion, ByteOffset, CharOffset, Line, TextRange, TransactionId, Utf16Position},
+    types::{BufferVersion, ByteOffset, CharOffset, Line, TextRange, Utf16Position},
 };
 
 /// `BufferLoadError` 与 `BufferSaveError` 的共享 impl 模板。
@@ -115,10 +115,6 @@ pub enum EditError {
 /// 事务提交与管理相关的错误（事务提交不合法）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TransactionError {
-    /// 事务 ID 指向的历史节点不存在或已不再满足历史系统内部不变量。
-    #[error("事务 {0:?} 无效或已损坏")]
-    InvalidTransaction(TransactionId),
-
     /// Transaction 必须至少包含一个编辑；空编辑列表只允许停留在 EditList 层。
     #[error("事务为空")]
     EmptyTransaction,
@@ -158,10 +154,6 @@ pub enum VersionedResultError {
         expected: BufferVersion,
         actual: BufferVersion,
     },
-
-    /// remap 闭包判定 payload 无法在新版本上保持语义；reason 由调用方填写。
-    #[error("VersionedResult remap 失败：{reason}")]
-    RemapFailed { reason: String },
 }
 
 /// 当前 Buffer 内搜索相关错误。
@@ -204,10 +196,6 @@ pub enum StorageError {
         valid_up_to: usize,
         error_len: Option<usize>,
     },
-
-    /// 调用了该存储后端当前明确不承诺的能力，用于保护 trait 演进期的边界。
-    #[error("存储后端不支持该操作：{0}")]
-    UnsupportedOperation(&'static str),
 }
 
 /// 编辑引擎统一错误类型。

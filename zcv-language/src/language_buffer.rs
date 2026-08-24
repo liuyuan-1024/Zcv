@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{AppContext, Context, Entity, Task};
-use zcv_engine::{Buffer, Snapshot, TextSubscription};
+use zcv_text::{Buffer, Snapshot, TextSubscription};
 
 use crate::Language;
 use crate::registry::language_name_for_file;
@@ -65,7 +65,7 @@ impl LanguageBuffer {
         let path = self.file_path.as_deref()?;
         let first_line = self
             .text_snapshot
-            .slice_line(zcv_engine::Line::ZERO)
+            .slice_line(zcv_text::Line::ZERO)
             .ok()
             .map(|line| line.as_str().trim_end_matches(['\r', '\n']).to_owned());
         language_name_for_file(path, first_line.as_deref())
@@ -141,7 +141,7 @@ impl LanguageBuffer {
 #[cfg(test)]
 mod tests {
     use gpui::TestAppContext;
-    use zcv_engine::{BufferConfig, ByteOffset, Edit, TransactionMetadata};
+    use zcv_text::{BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
     use super::*;
 

@@ -20,6 +20,7 @@ mod workspace_item;
 pub use display_map::{
     Chunk, RenderChunks, StyledLine, StyledSpan, chunks_to_runs, render_plain_line,
 };
+pub use selection::{Selection, SelectionSet};
 pub use view::{Editor, SoftWrap};
 
 use view::EditorEvent;

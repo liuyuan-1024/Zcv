@@ -1,8 +1,9 @@
 use gpui::{EntityInputHandler, TestAppContext, px, size};
-use zcv_engine::{ByteOffset, SelectionSet};
+use zcv_text::ByteOffset;
 
 use super::common::{buffer_text, test_buffer};
 use super::*;
+use crate::SelectionSet;
 
 #[gpui::test]
 fn marked_text_updates_buffer_and_unmark_finishes_composition(cx: &mut TestAppContext) {
@@ -10,7 +11,7 @@ fn marked_text_updates_buffer_and_unmark_finishes_composition(cx: &mut TestAppCo
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
         move |_, cx| {
-            let mut editor = Editor::for_buffer(buffer, cx);
+            let mut editor = Editor::for_language_buffer(buffer, cx);
             editor.set_selections(SelectionSet::caret(ByteOffset::new(1)));
             editor
         }
@@ -56,7 +57,7 @@ fn ime_candidate_updates_merge_into_one_undo_step(cx: &mut TestAppContext) {
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
         move |_, cx| {
-            let mut editor = Editor::for_buffer(buffer, cx);
+            let mut editor = Editor::for_language_buffer(buffer, cx);
             editor.set_selections(SelectionSet::caret(ByteOffset::new(1)));
             editor
         }
@@ -98,7 +99,7 @@ fn ime_updates_every_cursor_and_tracks_the_primary_marked_range(cx: &mut TestApp
         let buffer = buffer.clone();
         let initial_selections = initial_selections.clone();
         move |_, cx| {
-            let mut editor = Editor::for_buffer(buffer, cx);
+            let mut editor = Editor::for_language_buffer(buffer, cx);
             editor.set_selections(initial_selections);
             editor
         }
@@ -135,7 +136,7 @@ fn ime_candidate_remains_in_the_syntax_highlight_pipeline(cx: &mut TestAppContex
     let (editor, cx) = cx.add_window_view({
         let language_buffer = language_buffer.clone();
         move |_, cx| {
-            let mut editor = Editor::for_buffer(language_buffer, cx);
+            let mut editor = Editor::for_language_buffer(language_buffer, cx);
             editor.set_selections(SelectionSet::caret(ByteOffset::new(insertion)));
             editor
         }
@@ -150,10 +151,10 @@ fn ime_candidate_remains_in_the_syntax_highlight_pipeline(cx: &mut TestAppContex
     cx.run_until_parked();
 
     cx.read_entity(&editor, |editor, cx| {
-        let snapshot = editor.buffer.read(cx).snapshot();
+        let snapshot = editor.singleton_buffer(cx).read(cx).snapshot();
         let composition = editor.composition.as_ref().unwrap();
         let marked = composition.ranges[composition.primary_index];
-        let syntax_snapshot = editor.syntax_snapshot.clone();
+        let syntax_snapshot = editor.display_map.syntax_snapshot();
         let names = syntax_snapshot.capture_names();
         let highlights = syntax_snapshot.highlights(0..snapshot.len_bytes().get(), &snapshot);
         assert!(highlights.iter().any(|highlight| {
@@ -168,7 +169,7 @@ fn ime_relative_utf16_range_replaces_the_marked_subrange(cx: &mut TestAppContext
     let buffer = test_buffer(cx, "");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.update(|window, app| {
@@ -193,7 +194,7 @@ fn marked_text_can_cancel_and_committed_range_uses_utf16_offsets(cx: &mut TestAp
     let buffer = test_buffer(cx, "a😀b");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.update(|window, app| {
@@ -220,7 +221,7 @@ fn ime_candidate_bounds_survive_composition_and_scroll_layout_invalidation(
     let buffer = test_buffer(cx, text);
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     let element_bounds = Bounds::new(point(px(100.), px(200.)), size(px(500.), px(300.)));
     let caret_bounds = Bounds::new(point(px(124.), px(260.)), size(px(2.), px(20.)));

@@ -1,10 +1,11 @@
 use gpui::{
     Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent, TestAppContext, point, px,
 };
-use zcv_engine::{ByteOffset, SelectionSet};
+use zcv_text::ByteOffset;
 
 use super::common::{scrollbar_geometry, scrolling_text, test_buffer};
 use super::*;
+use crate::SelectionSet;
 use crate::scroll::ScrollbarThumbState;
 
 #[gpui::test]
@@ -15,7 +16,7 @@ fn moving_caret_beyond_viewport_scrolls_it_back_into_view(cx: &mut TestAppContex
     let buffer = test_buffer(cx, text);
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
@@ -43,7 +44,7 @@ fn vertical_movement_preserves_goal_column_across_short_rows(cx: &mut TestAppCon
     let buffer = test_buffer(cx, text);
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
 
@@ -88,7 +89,7 @@ fn wheel_input_updates_editor_scroll_state(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, text);
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.run_until_parked();
@@ -111,7 +112,7 @@ fn horizontal_scroll_stops_at_content_edge_and_caret_autoscrolls(cx: &mut TestAp
     let buffer = test_buffer(cx, text.clone());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.run_until_parked();
@@ -155,7 +156,7 @@ fn clicking_scrollbar_track_pages_and_enters_dragging(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -208,7 +209,7 @@ fn dragging_scrollbar_thumb_moves_content_by_delta(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -261,7 +262,7 @@ fn dragging_thumb_to_marker_position_scrolls_to_that_row(cx: &mut TestAppContext
     let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -317,7 +318,7 @@ fn hovering_thumb_cycles_three_states(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 

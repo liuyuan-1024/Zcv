@@ -8,7 +8,7 @@
 use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, ops::Range};
 
 use gpui_sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
-use zcv_engine::{
+use zcv_text::{
     BufferVersion, ByteOffset, CoordinateError, Line, LineRange, LogicalColumn, Position,
     PositionMap, Snapshot, Stickiness, TextChangeBatch, TextRange, TrackedRange,
     TrackedRangeUpdatePolicy,
@@ -960,7 +960,7 @@ fn ranges_disjoint_or_nested(left: TextRange, right: TextRange) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use zcv_engine::{Buffer, BufferConfig, Edit, TransactionMetadata};
+    use zcv_text::{Buffer, BufferConfig, Edit, TransactionMetadata};
 
     use super::super::inlay_map::InlayMap;
     use super::*;

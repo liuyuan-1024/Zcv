@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use zcv_engine::{RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchResult};
+use zcv_text::{RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchResult};
 use zcv_workspace::{Direction, SearchEvent, SearchQuery, SearchableItem};
 
 use crate::selection::EditOutcome;
@@ -42,7 +42,7 @@ impl EditorSearch {
         range.start().get()..range.end().get()
     }
 
-    fn is_stale(&self, version: zcv_engine::BufferVersion) -> bool {
+    fn is_stale(&self, version: zcv_text::BufferVersion) -> bool {
         match &self.result {
             Some(SearchResultKind::Literal(result)) => result.is_stale(version),
             Some(SearchResultKind::Regex(result)) => result.is_stale(version),
@@ -187,7 +187,7 @@ impl Editor {
         if query.query.is_empty() {
             return None;
         }
-        let snapshot = self.buffer.read(cx).snapshot();
+        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
         let result = if query.regex {
             let options = RegexSearchOptions::new().with_case_sensitive(query.case_sensitive);
             snapshot
@@ -225,7 +225,7 @@ impl Editor {
         if search.query.query.is_empty() {
             return;
         }
-        let version = self.buffer.read(cx).snapshot().version();
+        let version = self.singleton_buffer(cx).read(cx).snapshot().version();
         if !search.is_stale(version) {
             return;
         }

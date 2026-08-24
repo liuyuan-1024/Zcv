@@ -62,7 +62,7 @@ impl Render for DraggedTab {
             .read(cx)
             .tabs
             .get(self.ix)
-            .map(|item| (item.tab_content_text(0, cx), Some(item.boxed_clone())))
+            .map(|item| (item.tab_content_text(cx), Some(item.boxed_clone())))
             .unwrap_or_default();
         let is_transient = self.pane.read(cx).transient_item_id == Some(self.item_id);
         Tab::new("")
@@ -131,7 +131,7 @@ impl Pane {
             items: self
                 .tabs
                 .iter()
-                .filter_map(|item| item.file_path(cx))
+                .filter_map(|item| item.item_path(cx))
                 .collect(),
             active_item: self
                 .active
@@ -217,11 +217,11 @@ impl Pane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> FocusHandle {
-        if let Some(path) = item.file_path(cx)
+        if let Some(path) = item.item_path(cx)
             && let Some(index) = self
                 .tabs
                 .iter()
-                .position(|tab| tab.file_path(cx).as_deref() == Some(path.as_path()))
+                .position(|tab| tab.item_path(cx).as_deref() == Some(path.as_path()))
         {
             let existing = self.tabs[index].as_ref();
             let item_id = existing.item_id();
@@ -256,12 +256,14 @@ impl Pane {
 
         // 单击打开支持预览的格式时，用预览视图替换源码 Item 的展示。
         if allow_transient
-            && let Some(path) = item.file_path(cx)
+            && let Some(path) = item.item_path(cx)
             && let Some(provider) = provider_for(&path, cx)
+            && let Some(multi_buffer) = item.multi_buffer(cx)
         {
             let document = PreviewDocument {
                 path,
                 source_item: item,
+                multi_buffer,
             };
             let preview = provider.create(document, cx);
             let item_id = preview.item_id();
@@ -299,12 +301,14 @@ impl Pane {
                 .and_then(|preview| preview.source_item(cx))
                 .unwrap_or_else(|| active_item.boxed_clone())
         } else {
-            let path = active_item.file_path(cx)?;
+            let path = active_item.item_path(cx)?;
             let provider = provider_for(&path, cx)?;
+            let multi_buffer = active_item.multi_buffer(cx)?;
             provider.create(
                 PreviewDocument {
                     path,
                     source_item: active_item.boxed_clone(),
+                    multi_buffer,
                 },
                 cx,
             )
@@ -365,7 +369,7 @@ impl Pane {
             .tabs
             .iter()
             .filter_map(|item| {
-                let open_path = item.file_path(cx)?;
+                let open_path = item.item_path(cx)?;
                 open_path.strip_prefix(path).is_ok().then(|| item.item_id())
             })
             .collect();
@@ -474,7 +478,7 @@ impl Pane {
 
     /// 活动编辑器的路径（如果有）。
     pub fn active_path(&self, cx: &App) -> Option<PathBuf> {
-        self.active_item()?.file_path(cx)
+        self.active_item()?.active_path(cx)
     }
 
     fn focus_active_item(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -734,7 +738,7 @@ fn render_tab(
             is_preview_item(item, cx),
             cx,
         ))
-        .child(item.tab_content_text(0, cx))
+        .child(item.tab_content_text(cx))
         .group(TAB_HOVER_GROUP)
         .on_mouse_down(gpui::MouseButton::Left, move |event, window, cx| {
             let focus = activate_entity.update(cx, |pane, cx| {
@@ -807,7 +811,7 @@ fn item_icon(item: Option<&dyn ItemHandle>, cx: &App) -> impl gpui::IntoElement 
     if let Some(icon) = item.and_then(|item| item.tab_icon(cx)) {
         return SvgIcon::new(icon);
     }
-    let path = item.and_then(|item| item.file_path(cx));
+    let path = item.and_then(|item| item.item_path(cx));
     let icon = match path {
         Some(path) if path.is_dir() => FileIcons::get_folder_icon(false, &path),
         Some(path) => FileIcons::get_icon(&path),
@@ -953,7 +957,9 @@ mod tests {
     use gpui::{
         AppContext, Context, Pixels, Point, Render, TestAppContext, Window, div, prelude::*,
     };
-    use zcv_engine::{Buffer, BufferConfig};
+    use zcv_language::LanguageBuffer;
+    use zcv_multi_buffer::MultiBuffer;
+    use zcv_text::{Buffer, BufferConfig};
 
     use super::*;
     use crate::{Item, PreviewItem, PreviewItemHandle, PreviewProvider};
@@ -979,12 +985,12 @@ mod tests {
         cx: &mut TestAppContext,
         pane: &Entity<Pane>,
         path: PathBuf,
-        buffer: Entity<Buffer>,
+        multi_buffer: Entity<MultiBuffer>,
         allow_transient: bool,
     ) {
         cx.add_window_view(|window, cx| {
             pane.update(cx, |p, cx| {
-                let item = cx.new(|cx| TestSourceItem::new(buffer.clone(), path.clone(), cx));
+                let item = cx.new(|cx| TestSourceItem::new(multi_buffer.clone(), path.clone(), cx));
                 p.open_item(Box::new(item), allow_transient, window, cx);
             });
             TestView
@@ -995,18 +1001,18 @@ mod tests {
         cx: &mut TestAppContext,
         pane: &Entity<Pane>,
         path: PathBuf,
-        buffer: Entity<Buffer>,
+        multi_buffer: Entity<MultiBuffer>,
     ) {
-        open_item_in_test(cx, pane, path, buffer, false);
+        open_item_in_test(cx, pane, path, multi_buffer, false);
     }
 
     fn open_transient_file_in_test(
         cx: &mut TestAppContext,
         pane: &Entity<Pane>,
         path: PathBuf,
-        buffer: Entity<Buffer>,
+        multi_buffer: Entity<MultiBuffer>,
     ) {
-        open_item_in_test(cx, pane, path, buffer, true);
+        open_item_in_test(cx, pane, path, multi_buffer, true);
     }
 
     fn toggle_preview_in_test(cx: &mut TestAppContext, pane: &Entity<Pane>) {
@@ -1018,15 +1024,17 @@ mod tests {
         });
     }
 
-    fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<Buffer> {
-        cx.new(|_| {
+    fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<MultiBuffer> {
+        let buffer = cx.new(|_| {
             Buffer::scratch(text.into(), BufferConfig::default()).expect("应创建测试 Buffer")
-        })
+        });
+        let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, cx));
+        cx.new(|cx| MultiBuffer::singleton(language_buffer, cx))
     }
 
     /// 测试专用的源码 Item：编辑时标记脏并发射 Edit 事件（Pane 依赖它提升临时标签）。
     struct TestSourceItem {
-        buffer: Entity<Buffer>,
+        multi_buffer: Entity<MultiBuffer>,
         path: PathBuf,
         dirty: bool,
         focus: gpui::FocusHandle,
@@ -1038,9 +1046,9 @@ mod tests {
     }
 
     impl TestSourceItem {
-        fn new(buffer: Entity<Buffer>, path: PathBuf, cx: &mut Context<Self>) -> Self {
+        fn new(multi_buffer: Entity<MultiBuffer>, path: PathBuf, cx: &mut Context<Self>) -> Self {
             Self {
-                buffer,
+                multi_buffer,
                 path,
                 dirty: false,
                 focus: cx.focus_handle(),
@@ -1072,7 +1080,7 @@ mod tests {
     impl Item for TestSourceItem {
         type Event = TestEvent;
 
-        fn tab_content_text(&self, _detail: usize, _cx: &App) -> gpui::SharedString {
+        fn tab_content_text(&self, _cx: &App) -> gpui::SharedString {
             self.path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
@@ -1090,12 +1098,12 @@ mod tests {
             self.dirty
         }
 
-        fn file_path(&self, _cx: &App) -> Option<PathBuf> {
+        fn item_path(&self, _cx: &App) -> Option<PathBuf> {
             Some(self.path.clone())
         }
 
-        fn buffer(&self, _cx: &App) -> Option<Entity<Buffer>> {
-            Some(self.buffer.clone())
+        fn multi_buffer(&self, _cx: &App) -> Option<Entity<MultiBuffer>> {
+            Some(self.multi_buffer.clone())
         }
     }
 
@@ -1122,16 +1130,16 @@ mod tests {
     impl Item for FakePreviewItem {
         type Event = ();
 
-        fn tab_content_text(&self, _detail: usize, cx: &App) -> gpui::SharedString {
-            self.source_item.tab_content_text(0, cx)
+        fn tab_content_text(&self, cx: &App) -> gpui::SharedString {
+            self.source_item.tab_content_text(cx)
         }
 
         fn is_dirty(&self, cx: &App) -> bool {
             self.source_item.is_dirty(cx)
         }
 
-        fn file_path(&self, cx: &App) -> Option<PathBuf> {
-            self.source_item.file_path(cx)
+        fn item_path(&self, cx: &App) -> Option<PathBuf> {
+            self.source_item.item_path(cx)
         }
 
         fn breadcrumbs(&self, cx: &App) -> Option<(Vec<gpui::SharedString>, Option<gpui::Font>)> {
@@ -1142,8 +1150,8 @@ mod tests {
             self.source_item.rename_path(from, to, cx);
         }
 
-        fn buffer(&self, cx: &App) -> Option<Entity<Buffer>> {
-            self.source_item.buffer(cx)
+        fn multi_buffer(&self, cx: &App) -> Option<Entity<MultiBuffer>> {
+            self.source_item.multi_buffer(cx)
         }
 
         fn as_preview_item(
@@ -1213,7 +1221,7 @@ mod tests {
             assert_eq!(pane.tabs.len(), 1);
             assert_eq!(
                 pane.tabs[0]
-                    .file_path(cx)
+                    .item_path(cx)
                     .as_deref()
                     .map(|p| p.to_string_lossy().to_string()),
                 Some("demo.txt".to_string())
@@ -1254,7 +1262,7 @@ mod tests {
         cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 2, "新临时标签应替换旧临时标签");
             assert_eq!(
-                pane.tabs[1].file_path(cx).as_deref(),
+                pane.tabs[1].item_path(cx).as_deref(),
                 Some(Path::new("second.txt"))
             );
             assert_eq!(pane.transient_item_id, Some(pane.tabs[1].item_id()));
@@ -1295,7 +1303,7 @@ mod tests {
             assert!(
                 pane.tabs
                     .iter()
-                    .any(|item| { item.file_path(cx).as_deref() == Some(Path::new("edited.txt")) })
+                    .any(|item| { item.item_path(cx).as_deref() == Some(Path::new("edited.txt")) })
             );
         });
     }
@@ -1315,10 +1323,7 @@ mod tests {
             assert_eq!(pane.tabs.len(), 1);
             assert_eq!(pane.transient_item_id, Some(item_id));
             assert_active_is_preview(pane, cx, true);
-            assert_eq!(
-                pane.active_item().unwrap().tab_content_text(0, cx),
-                "icon.svg"
-            );
+            assert_eq!(pane.active_item().unwrap().tab_content_text(cx), "icon.svg");
         });
 
         // 双击文件强制换成固定源码，而不是固定当前渲染内容。
@@ -1345,7 +1350,7 @@ mod tests {
         cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 1);
             assert_ne!(pane.tabs[0].item_id(), transient_preview_id);
-            assert_eq!(pane.tabs[0].tab_content_text(0, cx), "toggle.svg");
+            assert_eq!(pane.tabs[0].tab_content_text(cx), "toggle.svg");
             assert_eq!(pane.transient_item_id, Some(pane.tabs[0].item_id()));
             assert_eq!(pane.active, Some(pane.tabs[0].item_id()));
             assert_active_is_preview(pane, cx, false);
@@ -1376,13 +1381,13 @@ mod tests {
     }
 
     #[gpui::test]
-    fn preview_is_unique_and_shares_the_source_buffer(cx: &mut TestAppContext) {
+    fn preview_is_unique_and_shares_the_source_document(cx: &mut TestAppContext) {
         init_previews(cx);
         let pane = cx.new(Pane::new);
         let svg_buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
         open_file_in_test(cx, &pane, PathBuf::from("shared.svg"), svg_buffer);
-        let source_buffer = cx.read_entity(&pane, |pane, cx| {
-            pane.active_item().unwrap().buffer(cx).unwrap()
+        let source_document = cx.read_entity(&pane, |pane, cx| {
+            pane.active_item().unwrap().multi_buffer(cx).unwrap()
         });
         toggle_preview_in_test(cx, &pane);
         toggle_preview_in_test(cx, &pane);
@@ -1390,8 +1395,8 @@ mod tests {
 
         cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 1, "切换只替换当前标签的展示 Item");
-            let active_buffer = pane.tabs[0].buffer(cx).unwrap();
-            assert_eq!(source_buffer.entity_id(), active_buffer.entity_id());
+            let active_document = pane.tabs[0].multi_buffer(cx).unwrap();
+            assert_eq!(source_document.entity_id(), active_document.entity_id());
             assert_active_is_preview(pane, cx, true);
         });
     }
@@ -1473,37 +1478,37 @@ mod tests {
 
         cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 4);
-            assert_eq!(pane.tabs[0].tab_content_text(0, cx).as_ref(), "file0.txt");
-            assert_eq!(pane.tabs[1].tab_content_text(0, cx).as_ref(), "file1.txt");
-            assert_eq!(pane.tabs[2].tab_content_text(0, cx).as_ref(), "file2.txt");
-            assert_eq!(pane.tabs[3].tab_content_text(0, cx).as_ref(), "file3.txt");
+            assert_eq!(pane.tabs[0].tab_content_text(cx).as_ref(), "file0.txt");
+            assert_eq!(pane.tabs[1].tab_content_text(cx).as_ref(), "file1.txt");
+            assert_eq!(pane.tabs[2].tab_content_text(cx).as_ref(), "file2.txt");
+            assert_eq!(pane.tabs[3].tab_content_text(cx).as_ref(), "file3.txt");
         });
 
         // 移动：将索引 2 移到索引 0
         cx.update_entity(&pane, |pane, _| pane.move_tab(2, 0));
         cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 4);
-            assert_eq!(pane.tabs[0].tab_content_text(0, cx).as_ref(), "file2.txt");
-            assert_eq!(pane.tabs[1].tab_content_text(0, cx).as_ref(), "file0.txt");
-            assert_eq!(pane.tabs[2].tab_content_text(0, cx).as_ref(), "file1.txt");
-            assert_eq!(pane.tabs[3].tab_content_text(0, cx).as_ref(), "file3.txt");
+            assert_eq!(pane.tabs[0].tab_content_text(cx).as_ref(), "file2.txt");
+            assert_eq!(pane.tabs[1].tab_content_text(cx).as_ref(), "file0.txt");
+            assert_eq!(pane.tabs[2].tab_content_text(cx).as_ref(), "file1.txt");
+            assert_eq!(pane.tabs[3].tab_content_text(cx).as_ref(), "file3.txt");
         });
 
         // 移动：将索引 0 移到索引 3（拖到末尾）
         cx.update_entity(&pane, |pane, _| pane.move_tab(0, 3));
         cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 4);
-            assert_eq!(pane.tabs[0].tab_content_text(0, cx).as_ref(), "file0.txt");
-            assert_eq!(pane.tabs[1].tab_content_text(0, cx).as_ref(), "file1.txt");
-            assert_eq!(pane.tabs[2].tab_content_text(0, cx).as_ref(), "file3.txt");
-            assert_eq!(pane.tabs[3].tab_content_text(0, cx).as_ref(), "file2.txt");
+            assert_eq!(pane.tabs[0].tab_content_text(cx).as_ref(), "file0.txt");
+            assert_eq!(pane.tabs[1].tab_content_text(cx).as_ref(), "file1.txt");
+            assert_eq!(pane.tabs[2].tab_content_text(cx).as_ref(), "file3.txt");
+            assert_eq!(pane.tabs[3].tab_content_text(cx).as_ref(), "file2.txt");
         });
 
         // 移动：不动（自身）
         cx.update_entity(&pane, |pane, _| pane.move_tab(1, 1));
         cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 4);
-            assert_eq!(pane.tabs[0].tab_content_text(0, cx).as_ref(), "file0.txt");
+            assert_eq!(pane.tabs[0].tab_content_text(cx).as_ref(), "file0.txt");
         });
 
         // 移动：单标签拖到末尾 → 不应闪退
@@ -1517,13 +1522,13 @@ mod tests {
         cx.update_entity(&single_pane, |pane, _| pane.move_tab(0, 0));
         cx.read_entity(&single_pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 1);
-            assert_eq!(pane.tabs[0].tab_content_text(0, cx).as_ref(), "solo.txt");
+            assert_eq!(pane.tabs[0].tab_content_text(cx).as_ref(), "solo.txt");
         });
         // 拖到末尾（to_ix 超出范围）— clamp 后不应闪退
         cx.update_entity(&single_pane, |pane, _| pane.move_tab(0, 1));
         cx.read_entity(&single_pane, |pane, cx| {
             assert_eq!(pane.tabs.len(), 1);
-            assert_eq!(pane.tabs[0].tab_content_text(0, cx).as_ref(), "solo.txt");
+            assert_eq!(pane.tabs[0].tab_content_text(cx).as_ref(), "solo.txt");
         });
     }
 

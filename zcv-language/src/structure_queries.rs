@@ -5,7 +5,7 @@
 use std::ops::Range;
 
 use tree_sitter::StreamingIterator;
-use zcv_engine::{ByteOffset, EngineResult, Line, Snapshot};
+use zcv_text::{ByteOffset, Line, Snapshot, TextResult};
 
 use crate::syntax_map::SyntaxSnapshot;
 use crate::tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider};
@@ -114,7 +114,7 @@ impl SyntaxSnapshot {
         &self,
         offset: ByteOffset,
         text: &Snapshot,
-    ) -> EngineResult<NewlineIndent> {
+    ) -> TextResult<NewlineIndent> {
         let current_line = text.byte_to_line(offset)?;
         let line_start = text.line_start_byte(current_line)?;
         let prefix = text.slice_byte_range(line_start, offset)?;
@@ -238,7 +238,7 @@ fn newline_indent_basis(
     text: &Snapshot,
     current_line: Line,
     prefix: &str,
-) -> EngineResult<(Line, String)> {
+) -> TextResult<(Line, String)> {
     if prefix
         .chars()
         .any(|character| !matches!(character, ' ' | '\t'))
@@ -294,7 +294,7 @@ fn line_content_end(text: &Snapshot, line: Line) -> ByteOffset {
 mod tests {
     use super::NewlineIndent;
     use crate::syntax_map::rust_buffer;
-    use zcv_engine::ByteOffset;
+    use zcv_text::ByteOffset;
 
     #[test]
     fn rust_syntax_snapshot_exposes_zed_structure_queries() {
@@ -409,7 +409,7 @@ use std::ops::{
 };
 use std::sync::Arc;
 
-use zcv_engine::{
+use zcv_text::{
     Buffer,
     Snapshot,
 };

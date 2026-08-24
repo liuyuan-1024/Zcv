@@ -430,7 +430,7 @@ impl EventEmitter<ItemEvent> for TerminalView {}
 impl Item for TerminalView {
     type Event = ItemEvent;
 
-    fn tab_content_text(&self, _detail: usize, cx: &App) -> SharedString {
+    fn tab_content_text(&self, cx: &App) -> SharedString {
         // 终端标题来自 shell 的 OSC 0/2，未设置时显示默认文案。
         SharedString::from(self.terminal.read(cx).title().unwrap_or("终端").to_string())
     }

@@ -9,10 +9,10 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
-use zcv_engine::{Buffer, BufferLoadError, BufferSaveError};
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::FileStatus;
-use zcv_language::LanguageBuffer;
+use zcv_multi_buffer::MultiBuffer;
+use zcv_text::{Buffer, BufferLoadError, BufferSaveError};
 
 use super::buffer_store::BufferStore;
 use super::git_store::{GitStore, StatusEntry};
@@ -163,16 +163,20 @@ impl Project {
         &mut self,
         path: &Path,
         cx: &mut Context<Self>,
-    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
+    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
         self.buffer_store.open_buffer(path, cx)
     }
 
     pub fn save_buffer(
         &mut self,
-        buffer: &Entity<Buffer>,
+        multi_buffer: &Entity<MultiBuffer>,
         path: &Path,
         cx: &mut Context<Self>,
     ) -> Result<(), BufferSaveError> {
+        let buffer = multi_buffer
+            .read(cx)
+            .as_singleton(cx)
+            .expect("当前 Project 只保存 singleton MultiBuffer");
         let result = buffer.update(cx, |buffer, cx| {
             let result = write_buffer_to_path(buffer, path);
             if result.is_ok() {
@@ -385,7 +389,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use gpui::{AppContext, TestAppContext};
-    use zcv_engine::{BufferConfig, ByteOffset, Edit, TransactionMetadata};
+    use zcv_text::{BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
     use super::*;
     use crate::test_support::test_git_repo;
@@ -670,7 +674,11 @@ mod tests {
         let buffer = project
             .update(cx, |project, cx| project.open_buffer(&file, cx))
             .expect("应打开文件");
-        let engine_buffer = cx.read_entity(&buffer, |language_buffer, _| language_buffer.buffer());
+        let engine_buffer = cx.read_entity(&buffer, |multi_buffer, cx| {
+            multi_buffer
+                .as_singleton(cx)
+                .expect("测试文档应是 singleton")
+        });
         engine_buffer
             .update(cx, |buffer, _| {
                 buffer.edit(
@@ -688,9 +696,7 @@ mod tests {
 
         // 保存后 git 状态应变为已修改。
         project
-            .update(cx, |project, cx| {
-                project.save_buffer(&engine_buffer, &file, cx)
-            })
+            .update(cx, |project, cx| project.save_buffer(&buffer, &file, cx))
             .expect("保存应成功");
         cx.run_until_parked();
         let entry = project

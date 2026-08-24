@@ -1,0 +1,26 @@
+[package]
+name = "zcv-text"
+version.workspace = true
+edition.workspace = true
+description = "文本存储、快照、坐标、事务、搜索与历史内核"
+
+[lib]
+path = "src/text.rs"
+
+[dependencies]
+regex.workspace = true
+regex-automata.workspace = true
+ropey.workspace = true
+thiserror.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "buffer_edits"
+harness = false
+
+[lints]
+workspace = true

@@ -3,7 +3,7 @@
 //! Gutter 与正文共享垂直 DisplayRow 投影，但拥有独立的水平区域，不随正文横向滚动。
 
 use gpui::{Bounds, Pixels, Point, ShapedLine, point};
-use zcv_engine::Line;
+use zcv_text::Line;
 
 /// 与 Zed 默认设置一致：至少预留四位行号，避免小文件增行时 gutter 频繁抖动。
 pub(super) const MIN_LINE_NUMBER_DIGITS: usize = 4;

@@ -12,11 +12,13 @@ use gpui::{
     fill, point, px, relative, size,
 };
 use zcv_actions::ToggleFold;
-use zcv_engine::{ByteOffset, Line, LogicalColumn, SearchMatch, SelectionSet, TextRange};
 use zcv_git::DiffHunkKind;
 use zcv_language::BracketPair;
+use zcv_text::{ByteOffset, Line, LogicalColumn, SearchMatch, TextRange};
 use zcv_theme::color;
 use zcv_ui::Glyph;
+
+use crate::SelectionSet;
 
 use super::display_map::{
     BufferPoint, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot, FoldRowSegment,
@@ -205,13 +207,13 @@ impl EditorLayout {
         if let Some(info) = line.wrap_info {
             return Some(BufferPoint::new(
                 info.line,
-                zcv_engine::LogicalColumn::new(column),
+                zcv_text::LogicalColumn::new(column),
             ));
         }
         if let Some(logical_line) = line.logical_line {
             return Some(BufferPoint::new(
                 logical_line,
-                zcv_engine::LogicalColumn::new(column),
+                zcv_text::LogicalColumn::new(column),
             ));
         }
         let offset = self
@@ -804,7 +806,7 @@ impl Element for EditorElement {
             editor.update(cx, |editor, cx| {
                 if let Ok(offset) = editor
                     .render_snapshot()
-                    .position_to_byte(zcv_engine::Position::new(point.line(), point.column()))
+                    .position_to_byte(zcv_text::Position::new(point.line(), point.column()))
                 {
                     editor.begin_selection(offset, event.click_count, event.modifiers.shift, cx);
                 }
@@ -845,7 +847,7 @@ impl Element for EditorElement {
                 if let Ok(offset) =
                     editor
                         .render_snapshot()
-                        .position_to_byte(zcv_engine::Position::new(
+                        .position_to_byte(zcv_text::Position::new(
                             buffer_point.line(),
                             buffer_point.column(),
                         ))
@@ -993,7 +995,7 @@ impl Element for EditorElement {
                 }
             }
         }
-        let show_local_cursors = self.editor.read(cx).show_local_cursors(window, cx);
+        let show_cursor = self.editor.read(cx).show_cursor(window, cx);
         window.with_content_mask(
             Some(ContentMask {
                 bounds: prepaint.layout.text_clip_bounds,
@@ -1054,7 +1056,7 @@ impl Element for EditorElement {
                         continue;
                     }
                 }
-                if show_local_cursors {
+                if show_cursor {
                     for caret in prepaint.carets.drain(..) {
                         window.paint_quad(caret);
                     }
@@ -1549,9 +1551,7 @@ fn layout_projected_range(
         if row < start.line() || row > end.line() {
             continue;
         }
-        if row == end.line()
-            && row != start.line()
-            && end.column() == zcv_engine::LogicalColumn::ZERO
+        if row == end.line() && row != start.line() && end.column() == zcv_text::LogicalColumn::ZERO
         {
             continue;
         }
@@ -1668,7 +1668,7 @@ fn local_byte_for_display_point(
                 .display_to_logical_column(logical_line, point.column())
                 .ok()
         })
-        .map_or(0, zcv_engine::LogicalColumn::get);
+        .map_or(0, zcv_text::LogicalColumn::get);
     column_to_byte(&line.shaped.text, logical_column)
 }
 
@@ -1684,9 +1684,9 @@ mod tests {
     use crate::display_map::{DisplayMap, StyledLine};
     use gpui::{AppContext, Empty, TestAppContext};
     use std::path::PathBuf;
-    use zcv_engine::{Buffer, BufferConfig, ByteOffset, Line};
     use zcv_git::DiffHunk;
     use zcv_language::{LanguageBuffer, SyntaxSnapshot};
+    use zcv_text::{Buffer, BufferConfig, ByteOffset, Line};
 
     /// 行级标记的显示行区间（`hunk_rendering` 的薄包装，测试专用）。
     fn diff_hunk_rows(

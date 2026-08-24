@@ -38,10 +38,11 @@ use tab_map::TabMap;
 pub(crate) use tab_map::byte_for_display_column;
 use wrap_map::{WrapMap, WrapSnapshot};
 pub(crate) use wrap_map::{WrapViewportRowKind, WrapViewportSlice};
-use zcv_engine::{
+use zcv_language::{HighlightSpan, SyntaxSnapshot};
+use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_text::{
     ByteOffset, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch, TextRange,
 };
-use zcv_language::{HighlightSpan, SyntaxSnapshot};
 use zcv_theme::syntax;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -304,24 +305,26 @@ pub(crate) struct DisplayMap {
 }
 
 impl DisplayMap {
-    pub(crate) fn new(snapshot: Snapshot) -> Self {
-        let stream = LineStream::new(snapshot);
+    pub(crate) fn new(snapshot: impl Into<MultiBufferSnapshot>) -> Self {
+        let snapshot = snapshot.into();
+        let stream = LineStream::new(snapshot.text().clone());
         let (inlay_map, inlay_snapshot) = InlayMap::new(stream);
         let (fold_map, fold_snapshot) = FoldMap::new(inlay_snapshot);
         let (tab_map, tab_snapshot) = TabMap::new(fold_snapshot);
         let (wrap_map, _) = WrapMap::new(tab_snapshot);
-        let version = fold_map.snapshot().buffer_snapshot().version();
-        Self {
+        let mut this = Self {
             inlay_map,
             fold_map,
             tab_map,
             wrap_map,
             inserted: InsertedLines::new(),
             inlays: Vec::new(),
-            syntax_snapshot: SyntaxSnapshot::empty(version),
+            syntax_snapshot: SyntaxSnapshot::empty(snapshot.text().version()),
             capture_names: std::sync::Arc::from([]),
             highlight_styles: std::sync::Arc::from([]),
-        }
+        };
+        this.set_syntax_snapshot(snapshot.syntax().clone());
+        this
     }
 
     /// 注入语法快照与 capture 样式表（语法更新时由 Editor 调用）。
@@ -340,6 +343,10 @@ impl DisplayMap {
         self.fold_map.snapshot().buffer_snapshot()
     }
 
+    pub(crate) fn syntax_snapshot(&self) -> &SyntaxSnapshot {
+        &self.syntax_snapshot
+    }
+
     pub(super) fn snapshot(&self) -> DisplaySnapshot {
         DisplaySnapshot {
             wrap_snapshot: self.wrap_map.snapshot().clone(),
@@ -350,7 +357,7 @@ impl DisplayMap {
     }
 
     #[cfg(test)]
-    pub(crate) fn version(&self) -> zcv_engine::BufferVersion {
+    pub(crate) fn version(&self) -> zcv_text::BufferVersion {
         self.fold_map.snapshot().buffer_snapshot().version()
     }
 
@@ -412,10 +419,12 @@ impl DisplayMap {
     /// 用订阅者独立积累的组合 Patch，把整条显示管线直接推进到当前 Snapshot。
     pub(crate) fn sync(
         &mut self,
-        current_snapshot: Snapshot,
+        current_snapshot: impl Into<MultiBufferSnapshot>,
         batch: TextChangeBatch,
     ) -> ApplyOutcome {
-        let mut stream = LineStream::new(current_snapshot);
+        let current_snapshot = current_snapshot.into();
+        self.set_syntax_snapshot(current_snapshot.syntax().clone());
+        let mut stream = LineStream::new(current_snapshot.text().clone());
         // 空配置不注入：避免每次 sync 都推进合成行版本导致增量路径失效。
         if !self.inserted.is_empty() {
             stream.set_inserted(self.inserted.clone());
@@ -523,7 +532,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use gpui::{TestAppContext, font, px};
-    use zcv_engine::{Buffer, BufferConfig, Edit, Line, TextRange, TransactionMetadata};
+    use zcv_text::{Buffer, BufferConfig, Edit, Line, TextRange, TransactionMetadata};
 
     use super::fold_map::ProjectedPoint;
     use super::line_stream::InsertedLines;
@@ -857,7 +866,7 @@ mod tests {
             offset += snapshot
                 .buffer_snapshot()
                 .slice_text(
-                    zcv_engine::TextRange::new(ByteOffset::new(offset), ByteOffset::new(len))
+                    zcv_text::TextRange::new(ByteOffset::new(offset), ByteOffset::new(len))
                         .expect("测试范围应合法"),
                 )
                 .expect("文本应可读取")

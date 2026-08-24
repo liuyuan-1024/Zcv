@@ -12,7 +12,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::HighlightStyle;
-use zcv_engine::{ByteOffset, Line, Snapshot};
+use zcv_text::{ByteOffset, Line, Snapshot};
 
 /// 合成行的行内样式段（字节区间 → 样式；终端等宿主注入逐格样式用）。
 #[derive(Debug, Clone, PartialEq)]

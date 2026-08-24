@@ -12,10 +12,11 @@ async-channel.workspace = true
 globset.workspace = true
 gpui.workspace = true
 trash.workspace = true
-zcv-engine.workspace = true
+zcv-text.workspace = true
 zcv-fs-watch.workspace = true
 zcv-git.workspace = true
 zcv-language.workspace = true
+zcv-multi-buffer.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

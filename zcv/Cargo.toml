@@ -6,23 +6,14 @@ description = "Zcv —— 新一代 GPUI 桌面编辑器（Zed的忠实粉丝）
 
 [dependencies]
 anyhow.workspace = true
-async-channel.workspace = true
-globset.workspace = true
 gpui.workspace = true
-regex.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-serde_json_lenient.workspace = true
-toml.workspace = true
 trash.workspace = true
 zcv-actions.workspace = true
 zcv-assets.workspace = true
 zcv-editor.workspace = true
-zcv-engine.workspace = true
 zcv-git.workspace = true
 zcv-keymap.workspace = true
-zcv-language.workspace = true
-zcv-picker.workspace = true
 zcv-preview-svg.workspace = true
 zcv-project.workspace = true
 zcv-settings.workspace = true

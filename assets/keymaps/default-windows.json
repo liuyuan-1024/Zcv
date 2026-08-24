@@ -142,11 +142,8 @@
       "ctrl-shift-e": ["dock::FocusOrHidePanel", { "panel": "project-tree" }],
       "ctrl-shift-g": ["dock::FocusOrHidePanel", { "panel": "version-control" }],
       "ctrl-shift-o": ["dock::FocusOrHidePanel", { "panel": "outline" }],
-      "ctrl-shift-l": ["dock::FocusOrHidePanel", { "panel": "language-server" }],
-      "ctrl-shift-m": ["dock::FocusOrHidePanel", { "panel": "diagnostics" }],
       "ctrl-shift-f": ["dock::FocusOrHidePanel", { "panel": "project-search" }],
       "ctrl-`": ["dock::FocusOrHidePanel", { "panel": "terminal" }],
-      "ctrl-shift-d": ["dock::FocusOrHidePanel", { "panel": "debug" }],
       "ctrl-shift-h": "harness::ToggleHarnessMode",
       "ctrl-s": "workspace::Save"
     }

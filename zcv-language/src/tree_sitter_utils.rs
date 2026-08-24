@@ -6,7 +6,7 @@ use std::sync::{Mutex, OnceLock, mpsc};
 use std::thread;
 
 use tree_sitter::{InputEdit, Parser, Point, QueryCursor};
-use zcv_engine::{ByteOffset, Snapshot};
+use zcv_text::{ByteOffset, Snapshot};
 
 use crate::Language;
 
@@ -194,7 +194,7 @@ pub(crate) fn chunk_from(snapshot: &Snapshot, offset: usize) -> &[u8] {
 }
 
 /// 把字节偏移转换为 tree-sitter 的行列坐标。
-pub(crate) fn point_at(snapshot: &Snapshot, offset: ByteOffset) -> zcv_engine::EngineResult<Point> {
+pub(crate) fn point_at(snapshot: &Snapshot, offset: ByteOffset) -> zcv_text::TextResult<Point> {
     let (line, column) = snapshot.byte_to_point(offset)?;
     Ok(Point::new(line.get(), column))
 }
@@ -223,7 +223,7 @@ pub(crate) fn edit_tree(
     tree: &mut tree_sitter::Tree,
     old_snapshot: &Snapshot,
     new_snapshot: &Snapshot,
-    changes: &zcv_engine::TextChangeBatch,
+    changes: &zcv_text::TextChangeBatch,
 ) -> bool {
     for edit in changes.patch().edits().iter().rev() {
         let old = edit.old_range();
@@ -250,12 +250,12 @@ pub(crate) fn edit_tree(
 /// 把范围两端映射过编辑，得到编辑后的新范围。
 pub(crate) fn map_range_through_changes(
     range: std::ops::Range<usize>,
-    changes: &zcv_engine::TextChangeBatch,
+    changes: &zcv_text::TextChangeBatch,
 ) -> std::ops::Range<usize> {
     map_offset(range.start, true, changes)..map_offset(range.end, false, changes)
 }
 
-fn map_offset(offset: usize, before: bool, changes: &zcv_engine::TextChangeBatch) -> usize {
+fn map_offset(offset: usize, before: bool, changes: &zcv_text::TextChangeBatch) -> usize {
     let mut delta = 0isize;
     for edit in changes.patch().edits() {
         let old = edit.old_range();

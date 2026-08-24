@@ -1,7 +1,7 @@
 //! Editor View 的跨帧状态与交互。
 
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
@@ -17,15 +17,15 @@ use zcv_actions::{
     SelectToBeginning, SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine, SelectToNextWord,
     SelectToPreviousWord, SelectUp, ToggleFold, Undo, UnfoldAll,
 };
-use zcv_engine::{
-    Buffer, BufferConfig, BufferVersion, ByteOffset, DeltaEvent, EngineError, EngineResult, Line,
-    LineRange, MovementDirection, MovementUnit, PositionMap, Selection, SelectionSet, Snapshot,
-    TextRange, TextSubscription, TransactionId, TransactionMergePolicy, TransactionMetadata,
-    TransactionSource,
-};
 use zcv_git::{DiffHunk, DiffHunkKind};
-use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer, SyntaxSnapshot};
+use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
+use zcv_multi_buffer::{MultiBuffer, MultiBufferSubscription};
 use zcv_settings::{SettingsStore, SoftWrapMode};
+use zcv_text::{
+    Buffer, BufferConfig, BufferVersion, ByteOffset, DeltaEvent, Line, LineRange,
+    MovementDirection, MovementUnit, PositionMap, Snapshot, TextError, TextRange, TextResult,
+    TransactionId, TransactionMergePolicy, TransactionMetadata, TransactionSource,
+};
 use zcv_theme::{color, typography};
 
 use super::blink_manager::BlinkManager;
@@ -34,7 +34,9 @@ use super::display_map::{
 };
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
-use super::selection::{EditOutcome, EditorSelections, SelectionHistory, replace_selections};
+use super::selection::{
+    EditOutcome, EditorSelections, Selection, SelectionHistory, SelectionSet, replace_selections,
+};
 
 mod diff;
 mod search;
@@ -120,12 +122,10 @@ impl From<SoftWrapMode> for SoftWrap {
 }
 
 pub struct Editor {
-    language_buffer: Entity<LanguageBuffer>,
-    buffer: Entity<Buffer>,
-    buffer_subscription: TextSubscription,
+    multi_buffer: Entity<MultiBuffer>,
+    multi_buffer_subscription: MultiBufferSubscription,
     last_dirty: bool,
     display_map: DisplayMap,
-    syntax_snapshot: SyntaxSnapshot,
     mode: EditorMode,
     /// 空 buffer 时显示的提示文本（如提交信息编辑器的"输入提交信息…"）。
     /// 独立 DisplayMap 承载（对齐 Zed：placeholder 走真实渲染管线，折行/行高一致）。
@@ -184,7 +184,7 @@ impl Editor {
             .expect("新建空白 Buffer 不应失败");
         let buffer = cx.new(|_| buffer);
         let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, cx));
-        Self::new(language_buffer, EditorMode::SingleLine, cx)
+        Self::from_language_buffer(language_buffer, EditorMode::SingleLine, cx)
     }
 
     pub fn auto_height(min_lines: usize, max_lines: Option<usize>, cx: &mut Context<Self>) -> Self {
@@ -192,7 +192,7 @@ impl Editor {
             .expect("新建空白 Buffer 不应失败");
         let buffer = cx.new(|_| buffer);
         let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, cx));
-        Self::new(
+        Self::from_language_buffer(
             language_buffer,
             EditorMode::AutoHeight {
                 min_lines,
@@ -202,8 +202,16 @@ impl Editor {
         )
     }
 
-    pub fn for_buffer(language_buffer: Entity<LanguageBuffer>, cx: &mut Context<Self>) -> Self {
-        Self::new(language_buffer, EditorMode::Full, cx)
+    #[cfg(test)]
+    fn for_language_buffer(
+        language_buffer: Entity<LanguageBuffer>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::from_language_buffer(language_buffer, EditorMode::Full, cx)
+    }
+
+    pub fn for_multi_buffer(multi_buffer: Entity<MultiBuffer>, cx: &mut Context<Self>) -> Self {
+        Self::new(multi_buffer, EditorMode::Full, cx)
     }
 
     pub fn focus_handle(&self) -> FocusHandle {
@@ -213,7 +221,7 @@ impl Editor {
     /// 光标是否应当绘制。
     ///
     /// 窗口未激活或编辑器未聚焦时不显示；两者都满足时由 BlinkManager 控制闪烁。
-    pub(crate) fn show_local_cursors(&self, window: &Window, cx: &App) -> bool {
+    pub(crate) fn show_cursor(&self, window: &Window, cx: &App) -> bool {
         window.is_window_active()
             && self.focus.is_focused(window)
             && self.blink_manager.read(cx).visible()
@@ -231,8 +239,15 @@ impl Editor {
         });
     }
 
-    pub fn buffer(&self) -> Entity<Buffer> {
-        self.buffer.clone()
+    pub fn multi_buffer(&self) -> Entity<MultiBuffer> {
+        self.multi_buffer.clone()
+    }
+
+    pub(crate) fn singleton_buffer(&self, cx: &App) -> Entity<Buffer> {
+        self.multi_buffer
+            .read(cx)
+            .as_singleton(cx)
+            .expect("当前 Editor 只支持 singleton MultiBuffer")
     }
 
     /// 覆盖换行模式（UI 场景强制使用，不随全局设置变化）；`None` 清除覆盖恢复设置值。
@@ -273,20 +288,16 @@ impl Editor {
     }
 
     pub fn file_path(&self, cx: &App) -> Option<PathBuf> {
-        self.language_buffer
-            .read(cx)
-            .file_path()
-            .map(Path::to_path_buf)
+        self.multi_buffer.read(cx).file_path(cx)
     }
 
     pub fn language_name(&self, cx: &App) -> Option<&'static str> {
-        self.language_buffer.read(cx).language_name()
+        self.multi_buffer.read(cx).language_name(cx)
     }
 
     pub fn set_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.language_buffer.update(cx, |language_buffer, cx| {
-            language_buffer.set_file_path(path, cx)
-        });
+        self.multi_buffer
+            .update(cx, |buffer, cx| buffer.set_file_path(path, cx));
         cx.emit(EditorEvent::PathChanged);
     }
 
@@ -294,7 +305,7 @@ impl Editor {
     ///
     /// 记录注入时的 buffer 版本：注入后发生的编辑会让行号失配，渲染侧（`diff_hunks`）按版本比对拒绝使用，等待下次刷新重新注入。
     pub fn set_diff_hunks(&mut self, hunks: Vec<DiffHunk>, cx: &mut Context<Self>) {
-        let version = self.buffer.read(cx).snapshot().version();
+        let version = self.singleton_buffer(cx).read(cx).snapshot().version();
         if self.diff_hunks == hunks && self.diff_hunks_version == Some(version) {
             return;
         }
@@ -427,7 +438,7 @@ impl Editor {
     /// 与当前 buffer 版本匹配的 diff hunks；未注入或注入后发生编辑时返回空。
     pub(crate) fn diff_hunks(&self, cx: &App) -> &[DiffHunk] {
         if let Some(version) = self.diff_hunks_version
-            && version == self.buffer.read(cx).snapshot().version()
+            && version == self.singleton_buffer(cx).read(cx).snapshot().version()
         {
             &self.diff_hunks
         } else {
@@ -436,7 +447,7 @@ impl Editor {
     }
 
     pub fn text(&self, cx: &App) -> String {
-        let snapshot = self.buffer.read(cx).snapshot();
+        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
         snapshot
             .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
             .expect("完整 Editor Snapshot 范围必须可读取")
@@ -445,7 +456,7 @@ impl Editor {
     }
 
     pub fn is_dirty(&self, cx: &App) -> bool {
-        self.buffer.read(cx).is_dirty()
+        self.multi_buffer.read(cx).is_dirty(cx)
     }
 
     /// 设置空 buffer 时显示的提示文本（对齐 Zed `set_placeholder_text`）。
@@ -478,7 +489,7 @@ impl Editor {
         let before_selections = self.resolved_selections();
         let targets = SelectionSet::new(vec![Selection::new(
             ByteOffset::ZERO,
-            self.buffer.read(cx).len_bytes(),
+            self.singleton_buffer(cx).read(cx).len_bytes(),
         )]);
         let text = if self.mode == EditorMode::SingleLine {
             text.replace(['\r', '\n'], "")
@@ -492,7 +503,7 @@ impl Editor {
 
     /// 将单个选择区设置为给定的 UTF-8 字节范围。
     pub fn select_byte_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
-        let end = self.buffer.read(cx).len_bytes();
+        let end = self.singleton_buffer(cx).read(cx).len_bytes();
         assert!(range.start <= range.end && ByteOffset::new(range.end) <= end);
         self.change_selections(
             SelectionSet::new(vec![Selection::new(
@@ -529,7 +540,8 @@ impl Editor {
         let snapshot = self.display_map.buffer_snapshot();
         let caret = self.resolved_selections().primary().head();
         let buffer_version = snapshot.version();
-        let syntax_version = self.syntax_snapshot.version();
+        let syntax_snapshot = self.display_map.syntax_snapshot();
+        let syntax_version = syntax_snapshot.version();
         if let Some((cached_caret, cached_buffer, cached_syntax, cached)) = &self.bracket_pair_cache
             && *cached_caret == caret
             && *cached_buffer == buffer_version
@@ -542,8 +554,7 @@ impl Editor {
         let end = caret_offset
             .saturating_add(1)
             .min(snapshot.len_bytes().get());
-        let result = self
-            .syntax_snapshot
+        let result = syntax_snapshot
             .bracket_pairs(start..end, snapshot)
             .into_iter()
             .find(|pair| {
@@ -671,7 +682,8 @@ impl Editor {
         extend: bool,
         cx: &mut Context<Self>,
     ) {
-        let buffer = self.buffer.read(cx);
+        let buffer_entity = self.singleton_buffer(cx);
+        let buffer = buffer_entity.read(cx);
         let Ok(char_offset) = buffer.byte_to_char(offset) else {
             return;
         };
@@ -765,7 +777,8 @@ impl Editor {
         let Some(pending) = self.pending_selection.clone() else {
             return;
         };
-        let buffer = self.buffer.read(cx);
+        let buffer_entity = self.singleton_buffer(cx);
+        let buffer = buffer_entity.read(cx);
         let Ok(char_offset) = buffer.byte_to_char(offset) else {
             return;
         };
@@ -943,36 +956,30 @@ impl Editor {
         }
     }
 
-    fn new(
+    fn from_language_buffer(
         language_buffer: Entity<LanguageBuffer>,
         mode: EditorMode,
         cx: &mut Context<Self>,
     ) -> Self {
-        let buffer = language_buffer.read(cx).buffer();
-        // 在一次 Entity 更新中建立订阅并取得同版本 Snapshot，关闭初始化期间的漏读窗口。
-        let (buffer_subscription, snapshot) =
-            buffer.update(cx, |buffer, _| (buffer.subscribe(), buffer.snapshot()));
-        let last_dirty = buffer.read(cx).is_dirty();
-        let syntax_snapshot = language_buffer.read(cx).syntax_snapshot();
-        let initial_version = snapshot.version();
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
+        Self::new(multi_buffer, mode, cx)
+    }
+
+    fn new(multi_buffer: Entity<MultiBuffer>, mode: EditorMode, cx: &mut Context<Self>) -> Self {
+        // 在一次底层 Buffer 更新中建立订阅并取得同版本组合快照，关闭初始化期间的漏读窗口。
+        let (multi_buffer_subscription, snapshot) =
+            multi_buffer.update(cx, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+        let last_dirty = multi_buffer.read(cx).is_dirty(cx);
+        let initial_version = snapshot.text().version();
         let display_map = DisplayMap::new(snapshot);
-        cx.observe(&language_buffer, |editor, language_buffer, cx| {
-            editor.syntax_snapshot = language_buffer.read(cx).syntax_snapshot();
-            editor.push_highlights();
-            editor.sync_display_map(cx);
-            editor.refresh_fold_ranges(cx);
-            editor.input_layout = None;
-            cx.notify();
-        })
-        .detach();
-        // 订阅共享 Buffer 的文本变化：其他 Editor 编辑或外部加载后，在下一帧前把选区端点锚点批量映射到新版本。
-        cx.observe(&buffer, |editor, buffer, cx| {
-            let dirty = buffer.read(cx).is_dirty();
+        cx.observe(&multi_buffer, |editor, multi_buffer, cx| {
+            let dirty = multi_buffer.read(cx).is_dirty(cx);
             if editor.last_dirty != dirty {
                 editor.last_dirty = dirty;
                 cx.emit(EditorEvent::DirtyChanged);
             }
             editor.sync_display_map(cx);
+            editor.refresh_fold_ranges(cx);
             editor.input_layout = None;
             cx.notify();
         })
@@ -984,13 +991,11 @@ impl Editor {
         // 对齐 Zed：换行模式默认来自全局设置，与编辑器模式无关；
         // UI 场景可用 set_soft_wrap_mode 覆盖（覆盖存在时设置变化不生效）。
         let settings = SettingsStore::try_get(cx);
-        let mut this = Self {
-            language_buffer,
-            buffer,
-            buffer_subscription,
+        let this = Self {
+            multi_buffer,
+            multi_buffer_subscription,
             last_dirty,
             display_map,
-            syntax_snapshot,
             mode,
             placeholder_display_map: None,
             selections: EditorSelections::from_selection_set(
@@ -1036,7 +1041,6 @@ impl Editor {
             }
         })
         .detach();
-        this.push_highlights();
         this
     }
 
@@ -1048,8 +1052,8 @@ impl Editor {
         &mut self,
         before_selections: SelectionSet,
         cx: &mut Context<Self>,
-        f: impl FnOnce(&mut Buffer) -> EngineResult<EditOutcome>,
-    ) -> EngineResult<EditOutcome> {
+        f: impl FnOnce(&mut Buffer) -> TextResult<EditOutcome>,
+    ) -> TextResult<EditOutcome> {
         let (node_id, outcome) = self.commit_session(before_selections, cx, f)?;
         self.apply_edit_outcome(node_id, outcome, cx)
     }
@@ -1059,8 +1063,8 @@ impl Editor {
         &mut self,
         before_selections: SelectionSet,
         cx: &mut Context<Self>,
-        f: impl FnOnce(&mut Buffer) -> EngineResult<(EditOutcome, SelectionSet)>,
-    ) -> EngineResult<(EditOutcome, SelectionSet)> {
+        f: impl FnOnce(&mut Buffer) -> TextResult<(EditOutcome, SelectionSet)>,
+    ) -> TextResult<(EditOutcome, SelectionSet)> {
         let (node_id, outcome) = self.commit_session(before_selections, cx, f)?;
         self.apply_edit_outcome_with_after(node_id, outcome, cx)
     }
@@ -1072,10 +1076,11 @@ impl Editor {
         &mut self,
         before_selections: SelectionSet,
         cx: &mut Context<Self>,
-        f: impl FnOnce(&mut Buffer) -> EngineResult<T>,
-    ) -> EngineResult<(Option<TransactionId>, T)> {
+        f: impl FnOnce(&mut Buffer) -> TextResult<T>,
+    ) -> TextResult<(Option<TransactionId>, T)> {
         let session_id = self.start_transaction(before_selections.clone(), cx)?;
-        let outcome = self.buffer.update(cx, |buffer, cx| {
+        let buffer = self.singleton_buffer(cx);
+        let outcome = buffer.update(cx, |buffer, cx| {
             let outcome = f(buffer)?;
             cx.notify();
             Ok(outcome)
@@ -1085,7 +1090,7 @@ impl Editor {
             Err(error) => {
                 self.end_transaction(cx);
                 eprintln!("Editor 编辑事务失败：{error}");
-                let version = self.buffer.read(cx).snapshot().version();
+                let version = self.singleton_buffer(cx).read(cx).snapshot().version();
                 self.selections = EditorSelections::from_selection_set(version, &before_selections);
                 return Err(error);
             }
@@ -1105,11 +1110,11 @@ impl Editor {
         &mut self,
         undo_selections: SelectionSet,
         cx: &mut Context<Self>,
-    ) -> EngineResult<TransactionId> {
+    ) -> TextResult<TransactionId> {
         let transaction_id = self
-            .buffer
+            .singleton_buffer(cx)
             .update(cx, |buffer, _| buffer.start_transaction())?
-            .ok_or_else(|| EngineError::EngineBug {
+            .ok_or_else(|| TextError::InvariantViolation {
                 location: "Editor::start_transaction",
                 detail: "编辑会话已开启，Editor 不允许嵌套会话".to_string(),
             })?;
@@ -1120,7 +1125,7 @@ impl Editor {
 
     /// 提交编辑会话；会话内无编辑时返回 `None`（编辑失败路径）。
     fn end_transaction(&mut self, cx: &mut Context<Self>) -> Option<TransactionId> {
-        self.buffer
+        self.singleton_buffer(cx)
             .update(cx, |buffer, _| buffer.end_transaction())
             .ok()
             .flatten()
@@ -1135,11 +1140,11 @@ impl Editor {
         transaction_id: Option<TransactionId>,
         outcome: EditOutcome,
         cx: &mut Context<Self>,
-    ) -> EngineResult<EditOutcome> {
+    ) -> TextResult<EditOutcome> {
         if let Some(transaction) = outcome.transaction() {
             self.update_autoclose_regions(transaction.event());
             // 用本次事务的坐标映射批量推进选区端点锚点，选区自动跟随文本变化。
-            let snapshot = self.buffer.read(cx).snapshot();
+            let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
             let new_version = snapshot.version();
             let position_map = transaction.event().position_map();
             self.selections.map_through_position_map(
@@ -1168,7 +1173,7 @@ impl Editor {
         transaction_id: Option<TransactionId>,
         outcome: (EditOutcome, SelectionSet),
         cx: &mut Context<Self>,
-    ) -> EngineResult<(EditOutcome, SelectionSet)> {
+    ) -> TextResult<(EditOutcome, SelectionSet)> {
         let (outcome, after_selections) = outcome;
         if let Some(transaction) = outcome.transaction() {
             self.update_autoclose_regions(transaction.event());
@@ -1179,7 +1184,7 @@ impl Editor {
             transaction.set_redo(after_selections.clone());
         }
         // 编辑后 display_map 尚未同步，重锚定用 Buffer 快照的当前版本。
-        let version = self.buffer.read(cx).snapshot().version();
+        let version = self.singleton_buffer(cx).read(cx).snapshot().version();
         self.selections = EditorSelections::from_selection_set(version, &after_selections);
         self.finish_edit(cx);
         self.research_after_edit(cx);
@@ -1279,14 +1284,14 @@ impl Editor {
                                 MovementDirection::Previous => self
                                     .display_map
                                     .beginning_of_row(head)
-                                    .map_err(|error| zcv_engine::EngineError::EngineBug {
+                                    .map_err(|error| zcv_text::TextError::InvariantViolation {
                                         location: "Editor::move_selections",
                                         detail: error.to_string(),
                                     }),
                                 MovementDirection::Next => self
                                     .display_map
                                     .end_of_row(head)
-                                    .map_err(|error| zcv_engine::EngineError::EngineBug {
+                                    .map_err(|error| zcv_text::TextError::InvariantViolation {
                                         location: "Editor::move_selections",
                                         detail: error.to_string(),
                                     }),
@@ -1301,7 +1306,8 @@ impl Editor {
                                 .with_goal(None)
                             });
                         }
-                        let buffer = self.buffer.read(cx);
+                        let buffer_entity = self.singleton_buffer(cx);
+                        let buffer = buffer_entity.read(cx);
                         let head = buffer.byte_to_char(base)?;
                         let target = buffer.movement_boundary(head, direction, unit)?;
                         let mut target = buffer.char_to_byte(target)?;
@@ -1327,7 +1333,7 @@ impl Editor {
                         let point =
                             self.display_map
                                 .offset_to_display_point(base)
-                                .map_err(|error| zcv_engine::EngineError::EngineBug {
+                                .map_err(|error| zcv_text::TextError::InvariantViolation {
                                     location: "Editor::move_selections",
                                     detail: error.to_string(),
                                 })?;
@@ -1370,14 +1376,14 @@ impl Editor {
                                 DisplayRow::new(target_row),
                                 goal,
                             ))
-                            .map_err(|error| zcv_engine::EngineError::EngineBug {
+                            .map_err(|error| zcv_text::TextError::InvariantViolation {
                                 location: "Editor::move_selections",
                                 detail: error.to_string(),
                             })?
                     }
                     Motion::DocumentEdge => match direction {
                         MovementDirection::Previous => ByteOffset::ZERO,
-                        MovementDirection::Next => self.buffer.read(cx).len_bytes(),
+                        MovementDirection::Next => self.singleton_buffer(cx).read(cx).len_bytes(),
                     },
                 };
                 // 垂直移动持久保留本次使用的目标列（即使被行尾钳制）；其余移动清除 goal。
@@ -1388,7 +1394,7 @@ impl Editor {
                 })
                 .with_goal(vertical_goal.map(DisplayColumn::get)))
             })
-            .collect::<EngineResult<Vec<_>>>()
+            .collect::<TextResult<Vec<_>>>()
             .map(|selections| SelectionSet::new_with_primary(selections, primary_index));
         match outcome {
             Ok(selections) => {
@@ -1418,8 +1424,9 @@ impl Editor {
     }
 
     fn sync_display_map(&mut self, cx: &App) {
-        let snapshot = self.buffer.read(cx).snapshot();
-        let changes = self.buffer_subscription.consume();
+        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let text_version = snapshot.text().version();
+        let changes = self.multi_buffer_subscription.consume();
         if changes.is_empty() {
             self.display_map.sync(snapshot, changes);
             return;
@@ -1427,44 +1434,32 @@ impl Editor {
         if changes.requires_reset() {
             // 整体替换（外部加载）：锚点无法映射，选区回落到文档开头，由宿主随后重设。
             self.selections =
-                EditorSelections::from_selection_set(snapshot.version(), &SelectionSet::default());
+                EditorSelections::from_selection_set(text_version, &SelectionSet::default());
         } else if let Some(old_version) = changes.old_version() {
             // 共享 Buffer 的其他 Editor 或引擎直接编辑：批量映射端点锚点。
             // 本 Editor 自己发起的编辑已在 apply_edit_outcome 映射过，版本已推进，跳过。
             if old_version == self.selections.version() {
                 let position_map = PositionMap::from_text_patch(changes.patch());
-                self.selections.map_through_position_map(
-                    old_version,
-                    snapshot.version(),
-                    &position_map,
-                );
+                self.selections
+                    .map_through_position_map(old_version, text_version, &position_map);
             }
         }
         self.display_map.sync(snapshot, changes);
         // 编辑后 diff hunks 门控失效（返回空）：删除块随行号失配清空，等待重新注入。
         self.rebuild_inserted(cx);
-        // 折叠范围只在语法快照更新后刷新（observe language_buffer 路径）：
+        // 折叠范围只在组合快照的语法版本更新后刷新：
         // 编辑时立即全量查询既在主线程跑 O(N) fold 查询，又会因版本不匹配把折叠清空。
     }
 
     /// 重算语言层折叠范围；语法快照与 buffer 版本不一致时置空（等待语法更新后由 observe 刷新）。
     fn refresh_fold_ranges(&mut self, cx: &App) {
-        let snapshot = self.buffer.read(cx).snapshot();
-        if self.syntax_snapshot.version() != snapshot.version() {
+        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+        let syntax_snapshot = self.display_map.syntax_snapshot();
+        if syntax_snapshot.version() != snapshot.version() {
             self.fold_ranges = Vec::new();
             return;
         }
-        self.fold_ranges = self
-            .syntax_snapshot
-            .fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
-    }
-
-    /// 把语法快照注入显示管线（对齐 Zed 的 push_highlights）。
-    ///
-    /// 在语法快照更新（编辑插值或解析安装）时调用；渲染侧按可见范围懒查询高亮。
-    fn push_highlights(&mut self) {
-        self.display_map
-            .set_syntax_snapshot(self.syntax_snapshot.clone());
+        self.fold_ranges = syntax_snapshot.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
     }
 
     pub(super) fn handle_toggle_fold(
@@ -1787,7 +1782,7 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let end = self.buffer.read(cx).len_bytes();
+        let end = self.singleton_buffer(cx).read(cx).len_bytes();
         self.change_selections(
             SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, end)]),
             cx,
@@ -1800,14 +1795,15 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let snapshot = self.buffer.read(cx).snapshot();
+        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
         let expanded = self
             .resolved_selections()
             .as_slice()
             .iter()
             .map(|selection| {
                 let range = selection.start().get()..selection.end().get();
-                self.syntax_snapshot
+                self.display_map
+                    .syntax_snapshot()
                     .ancestor_range(range, &snapshot)
                     .map(|range| {
                         Selection::new(ByteOffset::new(range.start), ByteOffset::new(range.end))

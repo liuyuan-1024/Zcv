@@ -13,16 +13,17 @@ members = [
     "zcv-actions",
     "zcv-assets",
     "zcv-editor",
-    "zcv-engine",
     "zcv-fs-watch",
     "zcv-git",
     "zcv-keymap",
     "zcv-language",
+    "zcv-multi-buffer",
     "zcv-picker",
     "zcv-preview-svg",
     "zcv-project",
     "zcv-settings",
     "zcv-terminal",
+    "zcv-text",
     "zcv-theme",
     "zcv-ui",
     "zcv-workspace",
@@ -32,16 +33,17 @@ default-members = [
     "zcv-actions",
     "zcv-assets",
     "zcv-editor",
-    "zcv-engine",
     "zcv-fs-watch",
     "zcv-git",
     "zcv-keymap",
     "zcv-language",
+    "zcv-multi-buffer",
     "zcv-picker",
     "zcv-preview-svg",
     "zcv-project",
     "zcv-settings",
     "zcv-terminal",
+    "zcv-text",
     "zcv-theme",
     "zcv-ui",
     "zcv-workspace",
@@ -59,21 +61,22 @@ doc_lazy_continuation = "allow"
 zcv-actions = { path = "zcv-actions" }
 zcv-assets = { path = "zcv-assets" }
 zcv-editor = { path = "zcv-editor" }
-zcv-engine = { path = "zcv-engine" }
 zcv-fs-watch = { path = "zcv-fs-watch" }
 zcv-git = { path = "zcv-git" }
 zcv-keymap = { path = "zcv-keymap" }
 zcv-language = { path = "zcv-language" }
+zcv-multi-buffer = { path = "zcv-multi-buffer" }
 zcv-picker = { path = "zcv-picker" }
 zcv-preview-svg = { path = "zcv-preview-svg" }
 zcv-project = { path = "zcv-project" }
 zcv-settings = { path = "zcv-settings" }
 zcv-terminal = { path = "zcv-terminal" }
+zcv-text = { path = "zcv-text" }
 zcv-theme = { path = "zcv-theme" }
 zcv-ui = { path = "zcv-ui" }
 zcv-workspace = { path = "zcv-workspace" }
 
-# ---- 引擎底层（zcv-engine） ----
+# ---- 文本内核（zcv-text） ----
 gpui-sum-tree = { package = "gpui_sum_tree", version = "0.2.2" }
 regex = "1.12.3"
 regex-automata = "0.4.14"
@@ -145,7 +148,7 @@ opt-level = 1
 debug = "limited"
 
 [profile.dev.package]
-zcv-engine = { opt-level = 3 }
+zcv-text = { opt-level = 3 }
 zcv-editor = { opt-level = 3 }
 zcv-language = { opt-level = 3 }
 zcv-theme = { opt-level = 3 }

@@ -4,10 +4,11 @@
 //! 另有两个事件级冒烟测试验证 element.rs 的事件接线。
 
 use gpui::{Modifiers, MouseButton, MouseDownEvent, TestAppContext, point, px};
-use zcv_engine::{ByteOffset, Selection, SelectionSet, TextRange};
+use zcv_text::{ByteOffset, TextRange};
 
 use super::common::{buffer_text, scrolling_text, test_buffer};
 use super::*;
+use crate::{Selection, SelectionSet};
 
 /// 字节偏移构造辅助（测试文本均为 ASCII，字节数即字符数）。
 fn b(value: usize) -> ByteOffset {
@@ -23,7 +24,7 @@ fn single_click_places_a_caret(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "hello world");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -38,7 +39,7 @@ fn double_click_selects_the_whole_word(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "foo_bar baz\n");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -61,7 +62,7 @@ fn triple_click_selects_the_whole_line(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "first line\nsecond line\n");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -86,7 +87,7 @@ fn quadruple_click_selects_all(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "one two three");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -101,7 +102,7 @@ fn dragging_with_character_granularity_selects_a_range(cx: &mut TestAppContext) 
     let buffer = test_buffer(cx, "hello world");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -128,7 +129,7 @@ fn editing_cancels_a_pending_mouse_selection(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "abcdef");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -154,7 +155,7 @@ fn double_click_drag_selects_whole_words(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "one two three");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -182,7 +183,7 @@ fn triple_click_drag_selects_whole_lines(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "aaa\nbbb\nccc\n");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -205,7 +206,7 @@ fn dragging_leftwards_anchors_against_the_original_word_end(cx: &mut TestAppCont
     let buffer = test_buffer(cx, "one two three");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -227,7 +228,7 @@ fn shift_click_extends_selection_from_the_anchor(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "one two three");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -250,7 +251,7 @@ fn shift_double_click_extends_by_word_granularity(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "one two three");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
 
@@ -273,7 +274,7 @@ fn mouse_events_drive_double_click_through_the_element(cx: &mut TestAppContext) 
     let buffer = test_buffer(cx, "aaaaaa bbbbbb\ncccccc dddddd\n");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
     cx.refresh().expect("测试窗口应可刷新");
@@ -330,7 +331,7 @@ fn mouse_dragging_expands_selection_across_rows(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "aaaaaa bbbbbb\ncccccc dddddd\n");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
     cx.refresh().expect("测试窗口应可刷新");
@@ -379,7 +380,7 @@ fn mouse_dragging_below_viewport_autoscrolls_selection(cx: &mut TestAppContext) 
     let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
     cx.refresh().expect("测试窗口应可刷新");
@@ -413,7 +414,7 @@ fn dragging_outside_editor_does_not_scroll_editor(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, scrolling_text());
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.run_until_parked();
     cx.refresh().expect("测试窗口应可刷新");

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{App, Entity};
+use zcv_multi_buffer::MultiBuffer;
 
 use crate::item::{Item, ItemHandle};
 use crate::provider_registry::ProviderRegistry;
@@ -18,6 +19,7 @@ use crate::provider_registry::ProviderRegistry;
 pub struct PreviewDocument {
     pub path: PathBuf,
     pub source_item: Box<dyn ItemHandle>,
+    pub multi_buffer: Entity<MultiBuffer>,
 }
 
 /// 预览视图 Item 的 object-safe 句柄，经 `Item::as_preview_item` 获取。

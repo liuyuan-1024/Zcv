@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use tree_sitter::StreamingIterator;
-use zcv_engine::Snapshot;
+use zcv_text::Snapshot;
 
 use crate::Language;
 use crate::syntax_map::SyntaxSnapshot;

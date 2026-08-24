@@ -12,8 +12,8 @@
 use std::ops::Range;
 
 use gpui::{HighlightStyle, UnderlineStyle, px};
-use zcv_engine::{Line, TextRange};
 use zcv_language::HighlightSpan;
+use zcv_text::{Line, TextRange};
 
 use super::DisplaySnapshot;
 use super::fold_map::{FoldRowSegment, FoldRowSegmentKind};
@@ -827,7 +827,7 @@ pub fn chunks_to_runs(chunks: &[Chunk<'_>], base: gpui::TextRun) -> Vec<gpui::Te
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zcv_engine::ByteOffset;
+    use zcv_text::ByteOffset;
 
     fn expand_tabs(text: &str, tab_width: usize, start_column: usize) -> Vec<Chunk<'_>> {
         TabExpandedChunks::from_chunks(TextChunks::new(text), tab_width, start_column).collect()

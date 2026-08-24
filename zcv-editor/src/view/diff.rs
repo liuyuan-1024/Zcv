@@ -5,8 +5,8 @@
 
 use std::ops::Range;
 
-use zcv_engine::Line;
 use zcv_git::{DiffHunk, DiffHunkKind};
+use zcv_text::Line;
 
 use crate::display_map::{DisplayRow, DisplaySnapshot, StreamLineSource, WrapViewportRowKind};
 

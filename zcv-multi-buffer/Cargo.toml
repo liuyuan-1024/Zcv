@@ -1,0 +1,19 @@
+[package]
+name = "zcv-multi-buffer"
+version.workspace = true
+edition.workspace = true
+description = "编辑器组合文档模型"
+
+[lib]
+path = "src/multi_buffer.rs"
+
+[dependencies]
+gpui.workspace = true
+zcv-text.workspace = true
+zcv-language.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

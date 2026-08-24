@@ -6,14 +6,12 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gpui::{App, ClipboardItem, Context, Window};
-use zcv_engine::{
-    ByteOffset, EngineResult, Line, MovementDirection, MovementUnit, Selection, SelectionSet,
-    Snapshot,
-};
+use zcv_text::{ByteOffset, Line, MovementDirection, MovementUnit, Snapshot, TextResult};
 
 use super::*;
 use crate::selection::{
-    EditorSelections, apply_edits_with_after_mapping, apply_targeted_edits, replace_selections,
+    EditorSelections, Selection, SelectionSet, apply_edits_with_after_mapping,
+    apply_targeted_edits, replace_selections,
 };
 
 impl Editor {
@@ -39,7 +37,8 @@ impl Editor {
         self.composition = None;
         let before_selections = self.resolved_selections();
         let targets = {
-            let buffer = self.buffer.read(cx);
+            let buffer_entity = self.singleton_buffer(cx);
+            let buffer = buffer_entity.read(cx);
             before_selections
                 .as_slice()
                 .iter()
@@ -67,7 +66,7 @@ impl Editor {
                         MovementDirection::Next => Selection::new(range.start(), boundary),
                     })
                 })
-                .collect::<EngineResult<Vec<_>>>()
+                .collect::<TextResult<Vec<_>>>()
                 .map(SelectionSet::new)
         };
         self.apply_deletion(targets, description, cx);
@@ -76,7 +75,7 @@ impl Editor {
     /// 删除命令尾部：替换层显式返回删除起点的 caret，不依赖旧选区端点映射。
     fn apply_deletion(
         &mut self,
-        targets: EngineResult<SelectionSet>,
+        targets: TextResult<SelectionSet>,
         description: &'static str,
         cx: &mut Context<Self>,
     ) {
@@ -102,8 +101,9 @@ impl Editor {
         selections: &SelectionSet,
         caret_motion: Option<(MovementDirection, MovementUnit)>,
         cx: &App,
-    ) -> EngineResult<SelectionSet> {
-        let buffer = self.buffer.read(cx);
+    ) -> TextResult<SelectionSet> {
+        let buffer_entity = self.singleton_buffer(cx);
+        let buffer = buffer_entity.read(cx);
         let mut targets = Vec::new();
         for selection in selections.as_slice() {
             if !selection.is_caret() {
@@ -135,7 +135,7 @@ impl Editor {
             return;
         }
         let before = self.resolved_selections().normalized();
-        let snapshot = self.buffer.read(cx).snapshot();
+        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
         let tab = snapshot.config().tab;
         let all_carets = before
             .as_slice()
@@ -150,7 +150,7 @@ impl Editor {
                         let column = self
                             .display_map
                             .offset_to_display_point(selection.head())
-                            .map_err(|error| zcv_engine::EngineError::EngineBug {
+                            .map_err(|error| zcv_text::TextError::InvariantViolation {
                                 location: "Editor::indent",
                                 detail: error.to_string(),
                             })?
@@ -163,7 +163,7 @@ impl Editor {
                     };
                     Ok((*selection, text))
                 })
-                .collect::<EngineResult<Vec<_>>>()
+                .collect::<TextResult<Vec<_>>>()
         } else {
             touched_lines(&snapshot, &before).map(|lines| {
                 let text: Arc<str> = if tab.insert_spaces {
@@ -203,7 +203,7 @@ impl Editor {
             return;
         }
         let before = self.resolved_selections();
-        let snapshot = self.buffer.read(cx).snapshot();
+        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
         let targets = touched_lines(&snapshot, &before).and_then(|lines| {
             lines
                 .into_iter()
@@ -212,7 +212,7 @@ impl Editor {
                     Ok(None) => None,
                     Err(error) => Some(Err(error)),
                 })
-                .collect::<EngineResult<Vec<_>>>()
+                .collect::<TextResult<Vec<_>>>()
         });
         if let Ok(targets) = &targets {
             let target_selections =
@@ -231,7 +231,7 @@ impl Editor {
         }
         self.composition = None;
         let before = self.resolved_selections().normalized();
-        let snapshot = self.buffer.read(cx).snapshot();
+        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
         // 逐选区计算插入文本与光标落点：
         // 光标处于声明了 newline 的括号对之间时，闭合符前额外补一个基准缩进空行对齐 Zed `insert_extra_newline_brackets`，与自动缩进共用同一回车路径）。
         let mut trailing_lens = Vec::new();
@@ -241,7 +241,8 @@ impl Editor {
             .map(|selection| {
                 let offset = selection.start();
                 let suggestion = self
-                    .syntax_snapshot
+                    .display_map
+                    .syntax_snapshot()
                     .suggested_newline_indent(offset, &snapshot)?;
                 let indent = if suggestion.additional_levels > 0 {
                     if snapshot.config().tab.insert_spaces {
@@ -266,7 +267,7 @@ impl Editor {
                 trailing_lens.push(extra.then_some(1 + suggestion.base_indent.len()));
                 Ok((*selection, Arc::from(text)))
             })
-            .collect::<EngineResult<Vec<_>>>();
+            .collect::<TextResult<Vec<_>>>();
         let _ = self.change_with_after(before.clone(), cx, |buffer| {
             let targets = targets?;
             let outcome = apply_targeted_edits(buffer, targets, edit_metadata("插入换行"))?;
@@ -313,7 +314,7 @@ impl Editor {
     }
 
     fn selected_text(&self, cx: &App) -> Option<String> {
-        let snapshot = self.buffer.read(cx).snapshot();
+        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
         let mut parts = Vec::new();
         for selection in self.resolved_selections().as_slice() {
             if selection.is_caret() {
@@ -343,7 +344,8 @@ impl Editor {
     /// 对齐 Zed：历史回放不经过编辑事务会话（`change` 会开启新会话并记录选区），这里直接回放 Buffer 历史并以被回放事务的身份只读恢复 SelectionHistory。
     fn replay_history(&mut self, redo: bool, cx: &mut Context<Self>) {
         let action = if redo { "Redo" } else { "Undo" };
-        let outcome = self.buffer.update(cx, |buffer, cx| {
+        let buffer = self.singleton_buffer(cx);
+        let outcome = buffer.update(cx, |buffer, cx| {
             let outcome = if redo { buffer.redo() } else { buffer.undo() };
             cx.notify();
             outcome
@@ -369,7 +371,7 @@ impl Editor {
                         }
                     })
                 {
-                    let version = self.buffer.read(cx).snapshot().version();
+                    let version = self.singleton_buffer(cx).read(cx).snapshot().version();
                     self.selections = EditorSelections::from_selection_set(version, &selections);
                 }
                 self.synchronize_after_history_edit(cx);
@@ -541,7 +543,7 @@ impl Editor {
             MovementDirection::Previous => "移动行到上方",
             MovementDirection::Next => "移动行到下方",
         };
-        let snapshot = self.buffer.read(cx).snapshot();
+        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
         let _ = self.change_with_after(before.clone(), cx, |buffer| {
             let (targets, plans) = line_blocks(&snapshot, &before).and_then(|blocks| {
                 let targets = move_line_targets(&snapshot, &blocks, direction)?;
@@ -559,10 +561,7 @@ impl Editor {
 }
 
 /// 选区涉及的行合并为不相邻的行块（相邻行并成一块），返回 (起始行, 末行)。
-fn line_blocks(
-    snapshot: &Snapshot,
-    selections: &SelectionSet,
-) -> EngineResult<Vec<(usize, usize)>> {
+fn line_blocks(snapshot: &Snapshot, selections: &SelectionSet) -> TextResult<Vec<(usize, usize)>> {
     let mut blocks: Vec<(usize, usize)> = Vec::new();
     for line in touched_lines(snapshot, selections)? {
         let row = line.get();
@@ -578,7 +577,7 @@ fn line_blocks(
 }
 
 /// 行块末行行尾的字节偏移（含换行符；最后一行无换行则到文档末尾）。
-fn line_block_end(snapshot: &Snapshot, end: usize) -> EngineResult<ByteOffset> {
+fn line_block_end(snapshot: &Snapshot, end: usize) -> TextResult<ByteOffset> {
     let line_count = snapshot.line_count();
     if end + 1 < line_count {
         snapshot.line_start_byte(Line::new(end + 1))
@@ -588,7 +587,7 @@ fn line_block_end(snapshot: &Snapshot, end: usize) -> EngineResult<ByteOffset> {
 }
 
 /// 行内容末尾的字节偏移（不含换行符）。
-fn line_content_end(snapshot: &Snapshot, line: usize) -> EngineResult<ByteOffset> {
+fn line_content_end(snapshot: &Snapshot, line: usize) -> TextResult<ByteOffset> {
     let end = line_block_end(snapshot, line)?;
     if line + 1 < snapshot.line_count() {
         Ok(ByteOffset::new(end.get().saturating_sub(1)))
@@ -604,7 +603,7 @@ fn move_line_targets(
     snapshot: &Snapshot,
     blocks: &[(usize, usize)],
     direction: MovementDirection,
-) -> EngineResult<Vec<(Selection, Arc<str>)>> {
+) -> TextResult<Vec<(Selection, Arc<str>)>> {
     let line_count = snapshot.line_count();
     // 只处理实际会移动的行块：首行不能上移、末行不能下移。
     // 选区平移也必须基于这份子集，否则 no-op 行块的端点会越界。
@@ -659,7 +658,7 @@ fn pending_selection_shift(
     selections: &SelectionSet,
     blocks: &[(usize, usize)],
     direction: MovementDirection,
-) -> EngineResult<Vec<(usize, usize)>> {
+) -> TextResult<Vec<(usize, usize)>> {
     let delta = match direction {
         MovementDirection::Previous => -1i64,
         MovementDirection::Next => 1i64,
@@ -689,7 +688,7 @@ fn resolve_selection_shift(
     snapshot: &Snapshot,
     selections: &SelectionSet,
     plans: &[(usize, usize)],
-) -> EngineResult<SelectionSet> {
+) -> TextResult<SelectionSet> {
     let shifted = selections
         .as_slice()
         .iter()
@@ -699,7 +698,7 @@ fn resolve_selection_shift(
             let head = resolve_point(snapshot, plan[1])?;
             Ok(Selection::new(anchor, head).with_goal(selection.goal()))
         })
-        .collect::<EngineResult<Vec<_>>>()?;
+        .collect::<TextResult<Vec<_>>>()?;
     Ok(SelectionSet::new_with_primary(
         shifted,
         selections.primary_index(),
@@ -709,7 +708,7 @@ fn resolve_selection_shift(
 fn resolve_point(
     snapshot: &Snapshot,
     (offset_in_line, target_line): (usize, usize),
-) -> EngineResult<ByteOffset> {
+) -> TextResult<ByteOffset> {
     let line_start = snapshot.line_start_byte(Line::new(target_line))?.get();
     let content_len = line_content_end(snapshot, target_line)?.get() - line_start;
     Ok(ByteOffset::new(
@@ -720,7 +719,7 @@ fn resolve_point(
 pub(super) fn touched_lines(
     snapshot: &Snapshot,
     selections: &SelectionSet,
-) -> EngineResult<Vec<Line>> {
+) -> TextResult<Vec<Line>> {
     let mut lines = BTreeSet::new();
     for selection in selections.as_slice() {
         let range = selection.range();
@@ -734,7 +733,7 @@ pub(super) fn touched_lines(
     Ok(lines.into_iter().collect())
 }
 
-fn leading_indent_range(snapshot: &Snapshot, line: Line) -> EngineResult<Option<Selection>> {
+fn leading_indent_range(snapshot: &Snapshot, line: Line) -> TextResult<Option<Selection>> {
     let start = snapshot.line_start_byte(line)?;
     let text = snapshot.slice_line(line)?;
     let content = text.as_str();

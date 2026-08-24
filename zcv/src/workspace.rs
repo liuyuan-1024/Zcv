@@ -1,7 +1,7 @@
 //! 装配层 —— 创建 Workspace，注入顶栏/面板/状态项，接线项目与设置订阅。
 //!
 //! Workspace 框架（Pane/Dock/命令分发）在 zcv-workspace；
-//! 本模块只做 binary 侧的具体装配：面板（项目树/版本控制/占位面板）、状态栏按钮、git/settings 订阅与 diff hunks 推送。
+//! 本模块只做 binary 侧的具体装配：面板（项目树/版本控制）、状态栏按钮、git/settings 订阅与 diff hunks 推送。
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -33,9 +33,7 @@ use zcv_workspace::{
 use crate::active_buffer_language::ActiveBufferLanguage;
 use crate::breadcrumbs::Breadcrumbs;
 use crate::cursor_position::CursorPosition;
-use crate::diagnostics::DiagnosticsButton;
 use crate::harness::HarnessButton;
-use crate::language_tools::LspButton;
 use crate::project_search::ProjectSearchButton;
 use crate::project_tree::ProjectTreePanel;
 use crate::version_control::VersionControlPanel;
@@ -211,12 +209,10 @@ fn initialize_common_workspace(
 ) {
     let outline = cx.new(OutlinePanel::new);
     let terminal = cx.new(TerminalPanel::new);
-    let debug = cx.new(DebugPanel::new);
 
     let terminal_for_new = terminal.clone();
     register_panel(workspace, outline, DockPosition::Left, window, cx);
     register_panel(workspace, terminal, DockPosition::Bottom, window, cx);
-    register_panel(workspace, debug, DockPosition::Bottom, window, cx);
 
     // 新建终端：先创建再确保面板可见，避免面板激活时的懒创建重复生成终端。
     workspace.register_action(move |workspace, _: &NewTerminal, window, cx| {
@@ -245,8 +241,6 @@ fn initialize_common_workspace(
             cx,
         );
         bar.add_left_item(cx.new(|_| ProjectSearchButton::new()), cx);
-        bar.add_left_item(cx.new(|_| LspButton::new()), cx);
-        bar.add_left_item(cx.new(|_| DiagnosticsButton::new()), cx);
         bar.add_right_item(cx.new(|_| CursorPosition::new()), cx);
         bar.add_right_item(cx.new(|_| ActiveBufferLanguage::new()), cx);
         bar.add_right_item(
@@ -655,7 +649,7 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
         .iter()
         .filter_map(|item| {
             let editor = item.act_as::<Editor>(cx)?;
-            let path = item.file_path(cx)?;
+            let path = item.item_path(cx)?;
             Some((editor, path))
         })
         .collect();
@@ -757,8 +751,6 @@ macro_rules! make_placeholder_panel {
 
 make_placeholder_panel!(OutlinePanel, "outline", "icons/list_tree.svg", "大纲");
 
-make_placeholder_panel!(DebugPanel, "debug", "icons/debug.svg", "调试");
-
 #[cfg(test)]
 mod tests {
     use gpui::{AppContext, TestAppContext};
@@ -776,7 +768,7 @@ mod tests {
 
         cx.read_entity(&workspace, |workspace, cx| {
             assert_eq!(workspace.left_dock.read(cx).panel_count(), 3);
-            assert_eq!(workspace.bottom_dock.read(cx).panel_count(), 2);
+            assert_eq!(workspace.bottom_dock.read(cx).panel_count(), 1);
             // 右 dock 当前无面板：原快捷键面板已由 harness 状态标记按钮取代。
             assert_eq!(workspace.right_dock.read(cx).panel_count(), 0);
         });

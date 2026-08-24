@@ -24,14 +24,11 @@ impl ItemProvider for TextFileProvider {
         project: Entity<Project>,
         cx: &mut App,
     ) -> Task<anyhow::Result<Box<dyn ItemHandle>>> {
-        let buffer = match project.update(cx, |project, cx| project.open_buffer(&path, cx)) {
-            Ok(buffer) => buffer,
+        let multi_buffer = match project.update(cx, |project, cx| project.open_buffer(&path, cx)) {
+            Ok(multi_buffer) => multi_buffer,
             Err(error) => return Task::ready(Err(anyhow::anyhow!("{error}"))),
         };
-        let editor = cx.new(|cx| Editor::for_buffer(buffer, cx));
-        editor.update(cx, |editor, cx| {
-            editor.set_file_path(path, cx);
-        });
+        let editor = cx.new(|cx| Editor::for_multi_buffer(multi_buffer, cx));
         Task::ready(Ok(Box::new(editor) as Box<dyn ItemHandle>))
     }
 }

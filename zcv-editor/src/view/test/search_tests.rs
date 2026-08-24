@@ -1,7 +1,7 @@
 //! 文件内搜索：SearchableItem 实现（搜索/跳转/替换/编辑后自动重搜）。
 
 use gpui::{TestAppContext, VisualTestContext};
-use zcv_engine::ByteOffset;
+use zcv_text::ByteOffset;
 use zcv_workspace::{Direction, SearchQuery, SearchableItem};
 
 use super::common::test_buffer;
@@ -12,12 +12,13 @@ fn editor_with_text<'a>(
     text: &str,
 ) -> (Entity<Editor>, &'a mut VisualTestContext) {
     let buffer = test_buffer(cx, text);
-    cx.add_window_view(move |_, cx| Editor::for_buffer(buffer, cx))
+    cx.add_window_view(move |_, cx| Editor::for_language_buffer(buffer, cx))
 }
 
 fn editor_text(editor: &Entity<Editor>, cx: &VisualTestContext) -> String {
     cx.read_entity(editor, |this, cx| {
-        let buffer = this.buffer.read(cx);
+        let buffer = this.multi_buffer.read(cx).snapshot(cx);
+        let buffer = buffer.text();
         buffer
             .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
             .expect("完整测试 Buffer 应可读取")
@@ -45,7 +46,7 @@ fn search_finds_all_matches_and_reports_count(cx: &mut TestAppContext) {
             let matches = editor.search_highlights().unwrap().0;
             assert_eq!(
                 matches[0].range(),
-                zcv_engine::TextRange::new(ByteOffset::new(0), ByteOffset::new(3),).unwrap()
+                zcv_text::TextRange::new(ByteOffset::new(0), ByteOffset::new(3),).unwrap()
             );
             assert!(editor.search_highlights().is_some());
         });
@@ -86,7 +87,7 @@ fn search_regex_matches_pattern(cx: &mut TestAppContext) {
             let matches = editor.search_highlights().unwrap().0;
             assert_eq!(
                 matches[2].range(),
-                zcv_engine::TextRange::new(ByteOffset::new(8), ByteOffset::new(11),).unwrap()
+                zcv_text::TextRange::new(ByteOffset::new(8), ByteOffset::new(11),).unwrap()
             );
         });
     });
@@ -227,8 +228,8 @@ fn replace_current_researches_and_keeps_remaining_matches(cx: &mut TestAppContex
 fn replace_keeps_syntax_snapshot_in_sync(cx: &mut TestAppContext) {
     use std::path::PathBuf;
 
-    use zcv_engine::{Buffer, BufferConfig};
     use zcv_language::LanguageBuffer;
+    use zcv_text::{Buffer, BufferConfig};
 
     // 带语言的 Buffer：替换必须通知 LanguageBuffer 同步语法树并重新解析，
     // 否则语法快照停留在旧版本，渲染层按版本闸门清空全部高亮。
@@ -239,7 +240,8 @@ fn replace_keeps_syntax_snapshot_in_sync(cx: &mut TestAppContext) {
     let language_buffer =
         cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("main.rs")), cx));
     cx.run_until_parked();
-    let (editor, cx) = cx.add_window_view(|_, cx| Editor::for_buffer(language_buffer.clone(), cx));
+    let (editor, cx) =
+        cx.add_window_view(|_, cx| Editor::for_language_buffer(language_buffer.clone(), cx));
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
             editor.search(&query("fn main"), window, cx);
@@ -308,7 +310,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
                 let stream_line = match source {
                     crate::display_map::StreamLineSource::Buffer(line) => inlay_snapshot
                         .stream()
-                        .buffer_to_stream(zcv_engine::Line::new(*line)),
+                        .buffer_to_stream(zcv_text::Line::new(*line)),
                     _ => continue,
                 };
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();
@@ -392,7 +394,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                 let stream_line = match source {
                     crate::display_map::StreamLineSource::Buffer(line) => inlay_snapshot
                         .stream()
-                        .buffer_to_stream(zcv_engine::Line::new(*line)),
+                        .buffer_to_stream(zcv_text::Line::new(*line)),
                     _ => continue,
                 };
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();
@@ -445,7 +447,7 @@ zcv final
 ```
 "#;
     let expected = text.matches("zcv").count();
-    let buffer = zcv_engine::Buffer::scratch(text.to_owned(), Default::default()).unwrap();
+    let buffer = zcv_text::Buffer::scratch(text.to_owned(), Default::default()).unwrap();
     let buffer = cx.new(|_| buffer);
     let language_buffer = cx.new(|cx| {
         zcv_language::LanguageBuffer::new(
@@ -454,7 +456,8 @@ zcv final
             cx,
         )
     });
-    let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_buffer(language_buffer, cx));
+    let (editor, cx) =
+        cx.add_window_view(move |_, cx| Editor::for_language_buffer(language_buffer, cx));
 
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
@@ -509,7 +512,7 @@ zcv final
                 let stream_line = match source {
                     crate::display_map::StreamLineSource::Buffer(line) => inlay_snapshot
                         .stream()
-                        .buffer_to_stream(zcv_engine::Line::new(*line)),
+                        .buffer_to_stream(zcv_text::Line::new(*line)),
                     _ => continue,
                 };
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();

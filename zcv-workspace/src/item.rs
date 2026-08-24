@@ -10,7 +10,7 @@ use gpui::{
     AnyEntity, AnyView, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
     Render, SharedString, Subscription, Task, Window,
 };
-use zcv_engine::Buffer;
+use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
 
 use crate::preview::PreviewItemHandle;
@@ -31,7 +31,7 @@ pub enum ItemEvent {
 pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static {
     type Event;
 
-    fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString;
+    fn tab_content_text(&self, cx: &App) -> SharedString;
 
     /// 自定义标签图标（SVG 资源路径）；None 时由 Pane 按文件路径推断。
     fn tab_icon(&self, _cx: &App) -> Option<SharedString> {
@@ -44,8 +44,14 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         false
     }
 
-    fn file_path(&self, _cx: &App) -> Option<PathBuf> {
+    /// 标签去重、持久化与文件操作使用的稳定身份路径。
+    fn item_path(&self, _cx: &App) -> Option<PathBuf> {
         None
+    }
+
+    /// 当前光标/视图对应的活动路径。组合文档可与标签身份路径不同。
+    fn active_path(&self, cx: &App) -> Option<PathBuf> {
+        self.item_path(cx)
     }
 
     fn breadcrumb_location(&self, _cx: &App) -> ToolbarItemLocation {
@@ -58,7 +64,8 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
 
     fn rename_path(&mut self, _from: &Path, _to: &Path, _cx: &mut Context<Self>) {}
 
-    fn buffer(&self, _cx: &App) -> Option<Entity<Buffer>> {
+    /// Item 对应的编辑器文档模型；非文本 Item 返回 None。
+    fn multi_buffer(&self, _cx: &App) -> Option<Entity<MultiBuffer>> {
         None
     }
 
@@ -88,15 +95,11 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
 
     fn save(
         &mut self,
-        project: Entity<Project>,
+        _project: Entity<Project>,
         _window: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
-        let (Some(buffer), Some(path)) = (self.buffer(cx), self.file_path(cx)) else {
-            return Task::ready(Ok(()));
-        };
-        let result = project.update(cx, |project, cx| project.save_buffer(&buffer, &path, cx));
-        Task::ready(result.map_err(|error| anyhow::anyhow!("{error}")))
+        Task::ready(Ok(()))
     }
 
     fn act_as_type(
@@ -116,12 +119,13 @@ pub trait ItemHandle: Send + 'static {
     fn item_focus_handle(&self, cx: &App) -> FocusHandle;
     fn to_any_view(&self) -> AnyView;
     fn boxed_clone(&self) -> Box<dyn ItemHandle>;
-    fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString;
+    fn tab_content_text(&self, cx: &App) -> SharedString;
     fn tab_icon(&self, cx: &App) -> Option<SharedString>;
     fn is_dirty(&self, cx: &App) -> bool;
-    fn file_path(&self, cx: &App) -> Option<PathBuf>;
+    fn item_path(&self, cx: &App) -> Option<PathBuf>;
+    fn active_path(&self, cx: &App) -> Option<PathBuf>;
     fn rename_path(&self, from: &Path, to: &Path, cx: &mut App);
-    fn buffer(&self, cx: &App) -> Option<Entity<Buffer>>;
+    fn multi_buffer(&self, cx: &App) -> Option<Entity<MultiBuffer>>;
     fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>>;
     fn as_searchable(&self, cx: &App) -> Option<Box<dyn SearchableItemHandle>>;
     fn can_save(&self, cx: &App) -> bool;
@@ -138,10 +142,6 @@ pub trait ItemHandle: Send + 'static {
 }
 
 impl dyn ItemHandle {
-    pub fn downcast<T: Render + 'static>(&self) -> Option<Entity<T>> {
-        self.to_any_view().downcast().ok()
-    }
-
     pub fn act_as<T: 'static>(&self, cx: &App) -> Option<Entity<T>> {
         self.act_as_type(TypeId::of::<T>(), cx)?.downcast().ok()
     }
@@ -170,8 +170,8 @@ impl<T: Item> ItemHandle for Entity<T> {
         Box::new(self.clone())
     }
 
-    fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString {
-        self.read(cx).tab_content_text(detail, cx)
+    fn tab_content_text(&self, cx: &App) -> SharedString {
+        self.read(cx).tab_content_text(cx)
     }
 
     fn tab_icon(&self, cx: &App) -> Option<SharedString> {
@@ -182,16 +182,20 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.read(cx).is_dirty(cx)
     }
 
-    fn file_path(&self, cx: &App) -> Option<PathBuf> {
-        self.read(cx).file_path(cx)
+    fn item_path(&self, cx: &App) -> Option<PathBuf> {
+        self.read(cx).item_path(cx)
+    }
+
+    fn active_path(&self, cx: &App) -> Option<PathBuf> {
+        self.read(cx).active_path(cx)
     }
 
     fn rename_path(&self, from: &Path, to: &Path, cx: &mut App) {
         self.update(cx, |item, cx| item.rename_path(from, to, cx));
     }
 
-    fn buffer(&self, cx: &App) -> Option<Entity<Buffer>> {
-        self.read(cx).buffer(cx)
+    fn multi_buffer(&self, cx: &App) -> Option<Entity<MultiBuffer>> {
+        self.read(cx).multi_buffer(cx)
     }
 
     fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>> {

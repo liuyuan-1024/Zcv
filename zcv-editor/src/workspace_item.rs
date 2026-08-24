@@ -2,8 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui::{App, Context, Entity, SharedString};
-use zcv_engine::Buffer;
+use gpui::{App, Context, Entity, SharedString, Task, Window};
+use zcv_multi_buffer::MultiBuffer;
+use zcv_project::Project;
 use zcv_workspace::{Item, ItemEvent, ToolbarItemLocation};
 
 use crate::{Editor, EditorEvent};
@@ -11,7 +12,7 @@ use crate::{Editor, EditorEvent};
 impl Item for Editor {
     type Event = EditorEvent;
 
-    fn tab_content_text(&self, _detail: usize, cx: &App) -> SharedString {
+    fn tab_content_text(&self, cx: &App) -> SharedString {
         self.file_path(cx)
             .and_then(|path| {
                 path.file_name()
@@ -41,7 +42,7 @@ impl Item for Editor {
         self.is_dirty(cx)
     }
 
-    fn file_path(&self, cx: &App) -> Option<PathBuf> {
+    fn item_path(&self, cx: &App) -> Option<PathBuf> {
         self.file_path(cx)
     }
 
@@ -77,8 +78,24 @@ impl Item for Editor {
         self.set_file_path(renamed_path, cx);
     }
 
-    fn buffer(&self, _cx: &App) -> Option<Entity<Buffer>> {
-        Some(self.buffer())
+    fn multi_buffer(&self, _cx: &App) -> Option<Entity<MultiBuffer>> {
+        Some(self.multi_buffer())
+    }
+
+    fn save(
+        &mut self,
+        project: Entity<Project>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        let Some(path) = self.file_path(cx) else {
+            return Task::ready(Ok(()));
+        };
+        let multi_buffer = self.multi_buffer();
+        let result = project.update(cx, |project, cx| {
+            project.save_buffer(&multi_buffer, &path, cx)
+        });
+        Task::ready(result.map_err(|error| anyhow::anyhow!("{error}")))
     }
 
     fn as_searchable(
@@ -134,7 +151,7 @@ mod tests {
         assert!(events.borrow().contains(&EditorEvent::DirtyChanged));
 
         events.borrow_mut().clear();
-        let buffer = cx.read_entity(&editor, |editor, _| editor.buffer());
+        let buffer = cx.read_entity(&editor, |editor, cx| editor.singleton_buffer(cx));
         cx.update_entity(&buffer, |buffer, cx| {
             buffer.mark_saved();
             cx.notify();
@@ -158,14 +175,10 @@ mod tests {
         fs::write(&old_path, "旧内容").expect("应创建测试文件");
 
         let project = cx.new(|cx| Project::new(root, cx));
-        // 对齐 ItemProvider 打开流程：open_buffer 内部 canonicalize，随后 set_file_path 写入 item 侧路径。
+        // 对齐 ItemProvider 打开流程：open_buffer 返回已承载规范路径的 MultiBuffer。
         let editor = project.update(cx, |project, cx| {
-            let buffer = project.open_buffer(&old_path, cx).expect("应打开测试文件");
-            let editor = cx.new(|cx| Editor::for_buffer(buffer, cx));
-            editor.update(cx, |editor, cx| {
-                editor.set_file_path(old_path.clone(), cx);
-            });
-            editor
+            let multi_buffer = project.open_buffer(&old_path, cx).expect("应打开测试文件");
+            cx.new(|cx| Editor::for_multi_buffer(multi_buffer, cx))
         });
 
         // 对齐 Workspace::rename_path：项目先迁移，再逐个 item 迁移路径（走真实 ItemHandle 实现）。
@@ -176,9 +189,8 @@ mod tests {
             .expect("应重命名文件");
         let item: Box<dyn ItemHandle> = Box::new(editor.clone());
         cx.update(|cx| item.rename_path(&old_path, &new_path, cx));
-        let (path, buffer) = cx.read_entity(&editor, |editor, cx| {
-            let path = editor.file_path(cx).expect("重命名后应有路径");
-            (path, editor.buffer())
+        let path = cx.read_entity(&editor, |editor, cx| {
+            editor.file_path(cx).expect("重命名后应有路径")
         });
         assert_eq!(path, new_path, "编辑器路径应迁移到新路径");
         // 保存路径不得带尾随斜杠：join 空后缀生成的 `new_path/` 会导致 Not a directory。
@@ -186,8 +198,11 @@ mod tests {
 
         // 编辑后保存：应写入新路径。
         cx.update_entity(&editor, |editor, cx| editor.set_text("新内容", cx));
+        let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
         project
-            .update(cx, |project, cx| project.save_buffer(&buffer, &path, cx))
+            .update(cx, |project, cx| {
+                project.save_buffer(&multi_buffer, &path, cx)
+            })
             .expect("保存应成功");
         assert_eq!(
             fs::read_to_string(&new_path).expect("新路径应有保存内容"),

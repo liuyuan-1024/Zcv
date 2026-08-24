@@ -1,7 +1,6 @@
-//! 文件路径到共享 Buffer Entity 的索引。
+//! 文件路径到共享 MultiBuffer 文档实体的索引。
 //!
-//! Store 只保留弱引用；
-//! 只要还有 Editor 或 View 持有 Buffer，它就能按路径复用，最后一个使用者释放后，Buffer 的生命周期也随之结束。
+//! Store 只保留弱引用；只要还有 Editor 或 View 持有文档，它就能按路径复用，最后一个使用者释放后，整条文档实体链也随之结束。
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -9,11 +8,12 @@ use std::path::{Path, PathBuf};
 
 use crate::translate_path;
 use gpui::{App, AppContext, Entity, WeakEntity};
-use zcv_engine::{Buffer, BufferConfig, BufferLoadError, BufferOrigin};
 use zcv_language::LanguageBuffer;
+use zcv_multi_buffer::MultiBuffer;
+use zcv_text::{Buffer, BufferConfig, BufferLoadError};
 
 pub struct BufferStore {
-    opened_buffers: HashMap<PathBuf, WeakEntity<LanguageBuffer>>,
+    opened_buffers: HashMap<PathBuf, WeakEntity<MultiBuffer>>,
 }
 
 impl BufferStore {
@@ -23,28 +23,24 @@ impl BufferStore {
         }
     }
 
-    /// 打开文件；同一个规范化路径始终复用仍然存活的 Buffer。
+    /// 打开文件；同一个规范化路径始终复用仍然存活的 MultiBuffer。
     pub fn open_buffer(
         &mut self,
         path: &Path,
         cx: &mut App,
-    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
+    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
         let path = path.canonicalize().map_err(BufferLoadError::Io)?;
         if let Some(buffer) = self.opened_buffers.get(&path).and_then(WeakEntity::upgrade) {
             return Ok(buffer);
         }
 
         let file = File::open(&path).map_err(BufferLoadError::Io)?;
-        let buffer = Buffer::from_reader(
-            BufferOrigin::external(path.to_string_lossy()),
-            file,
-            BufferConfig::default(),
-        )?;
+        let buffer = Buffer::from_reader(file, BufferConfig::default())?;
         let buffer = cx.new(|_| buffer);
         let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(path.clone()), cx));
-        self.opened_buffers
-            .insert(path, language_buffer.downgrade());
-        Ok(language_buffer)
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
+        self.opened_buffers.insert(path, multi_buffer.downgrade());
+        Ok(multi_buffer)
     }
 
     /// 如果路径对应某个已打开的 Buffer，从磁盘重新加载其内容。
@@ -52,7 +48,7 @@ impl BufferStore {
         let Ok(canonical) = path.canonicalize() else {
             return;
         };
-        let Some(language_buffer) = self
+        let Some(multi_buffer) = self
             .opened_buffers
             .get(&canonical)
             .and_then(WeakEntity::upgrade)
@@ -62,7 +58,10 @@ impl BufferStore {
         let Ok(text) = std::fs::read_to_string(&canonical) else {
             return;
         };
-        let buffer = language_buffer.read(cx).buffer();
+        let buffer = multi_buffer
+            .read(cx)
+            .as_singleton(cx)
+            .expect("当前 BufferStore 只创建 singleton MultiBuffer");
         buffer.update(cx, |buffer, cx| {
             if buffer.reload_from_text(text).is_ok() {
                 cx.notify();
@@ -194,11 +193,15 @@ mod tests {
         let second = cx.update(|cx| store.open_buffer(&path, cx).expect("重新打开应成功"));
 
         assert_ne!(first_id, second.entity_id());
-        let buffer = cx.read_entity(&second, |language_buffer, _| language_buffer.buffer());
+        let buffer = cx.read_entity(&second, |multi_buffer, cx| {
+            multi_buffer
+                .as_singleton(cx)
+                .expect("测试文档应是 singleton")
+        });
         cx.read_entity(&buffer, |buffer, _| {
             assert_eq!(
                 buffer
-                    .slice_byte_range(zcv_engine::ByteOffset::ZERO, buffer.len_bytes())
+                    .slice_byte_range(zcv_text::ByteOffset::ZERO, buffer.len_bytes())
                     .expect("完整 Buffer 应可读取")
                     .as_str(),
                 "第二次"

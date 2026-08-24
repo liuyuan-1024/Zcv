@@ -1,10 +1,11 @@
 //! Editor 选区编辑行为测试。
 
 use gpui::{AppContext, TestAppContext};
-use zcv_engine::{Buffer, BufferConfig, ByteOffset, Selection, SelectionSet};
 use zcv_language::LanguageBuffer;
+use zcv_text::{Buffer, BufferConfig, ByteOffset};
 
 use super::Editor;
+use crate::{Selection, SelectionSet};
 
 fn editor_with_text(
     cx: &mut TestAppContext,
@@ -21,7 +22,7 @@ fn editor_with_text(
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
         move |cx| {
-            let mut editor = Editor::for_buffer(language_buffer, cx);
+            let mut editor = Editor::for_language_buffer(language_buffer, cx);
             editor.set_selections(selections);
             editor
         }

@@ -406,10 +406,9 @@ impl TerminalSettings {
 
 // ─── 终端构造参数 ────────────────────────────────────────────────
 
-/// 终端构造参数：MVP 只承载工作目录与附加环境变量，其余设置读取用户配置。
+/// 终端构造参数：只承载工作目录，其余设置读取用户配置。
 pub struct TerminalBuilder {
     cwd: Option<PathBuf>,
-    env: Vec<(String, String)>,
 }
 
 impl Default for TerminalBuilder {
@@ -420,19 +419,11 @@ impl Default for TerminalBuilder {
 
 impl TerminalBuilder {
     pub fn new() -> Self {
-        TerminalBuilder {
-            cwd: None,
-            env: Vec::new(),
-        }
+        TerminalBuilder { cwd: None }
     }
 
     pub fn set_cwd(mut self, cwd: Option<PathBuf>) -> Self {
         self.cwd = cwd;
-        self
-    }
-
-    pub fn set_env(mut self, env: Vec<(String, String)>) -> Self {
-        self.env = env;
         self
     }
 
@@ -465,9 +456,10 @@ impl Terminal {
         let bounds = TerminalBounds::default();
 
         // 注入终端环境变量，保证 shell 以终端语义启动。
-        let mut env: HashMap<String, String> = builder.env.iter().cloned().collect();
-        env.insert("TERM".into(), "xterm-256color".into());
-        env.insert("COLORTERM".into(), "truecolor".into());
+        let env = HashMap::from([
+            ("TERM".into(), "xterm-256color".into()),
+            ("COLORTERM".into(), "truecolor".into()),
+        ]);
 
         // 解析 shell 程序：用户显式配置时原样启动。
         // 无配置时不传 shell，alacritty 在 macOS 上会经 `/usr/bin/login` 启动登录 shell（打印 "Last login"、argv[0] 前缀 `-` 触发登录模式，读取 /etc/zprofile 的path_helper 重建 PATH），nvm/Homebrew 安装的命令才可用；
@@ -710,11 +702,6 @@ impl Terminal {
         }
     }
 
-    pub fn scroll_to_bottom(&mut self, cx: &mut Context<Self>) {
-        self.events.push_back(InternalEvent::Scroll(Scroll::Bottom));
-        cx.notify();
-    }
-
     // ── 选择 ──
 
     pub fn select_range(
@@ -741,11 +728,6 @@ impl Terminal {
             cx.notify();
         }
         updated
-    }
-
-    pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
-        self.events.push_back(InternalEvent::SetSelection(None));
-        cx.notify();
     }
 
     pub fn has_selection(&self) -> bool {
@@ -1145,7 +1127,7 @@ mod pty_tests {
 
         let cleared = cx.update(|window, cx| {
             terminal.update(cx, |t, cx| {
-                t.clear_selection(cx);
+                t.write_input(Vec::new(), cx);
                 t.sync(window, cx);
             });
             !terminal.read(cx).has_selection()

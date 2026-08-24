@@ -1,15 +1,16 @@
 use gpui::{TestAppContext, point, px, size};
-use zcv_engine::{ByteOffset, Edit, Selection, SelectionSet, TransactionId, TransactionMetadata};
+use zcv_text::{ByteOffset, Edit, TransactionId, TransactionMetadata};
 
 use super::common::{buffer_text, engine_buffer, test_buffer};
 use super::*;
 use crate::display_map::{DisplayPoint, DisplayRow};
+use crate::{Selection, SelectionSet};
 
 #[gpui::test]
 fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "abc");
-    let first = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
-    let second = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
+    let first = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
+    let second = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
 
     cx.update_entity(&first, |editor, cx| {
         editor.set_selections(SelectionSet::caret(ByteOffset::new(1)));
@@ -26,7 +27,7 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
             .transaction_mut(TransactionId::new(1))
             .expect("插入后应存在")
             .set_redo(selections);
-        editor.buffer.update(cx, |buffer, cx| {
+        editor.singleton_buffer(cx).update(cx, |buffer, cx| {
             buffer
                 .edit(
                     [Edit::insert(ByteOffset::new(3), "d").unwrap()],
@@ -39,8 +40,11 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
 
     cx.read_entity(&second, |editor, cx| {
         assert_eq!(editor.mode, EditorMode::Full);
-        assert_eq!(editor.language_buffer, buffer);
-        assert_eq!(editor.buffer.read(cx).len_bytes(), ByteOffset::new(4));
+        assert_eq!(editor.singleton_buffer(cx), buffer.read(cx).buffer());
+        assert_eq!(
+            editor.singleton_buffer(cx).read(cx).len_bytes(),
+            ByteOffset::new(4)
+        );
         assert_eq!(editor.render_snapshot().len_bytes(), ByteOffset::new(4));
         assert_eq!(editor.selections(), SelectionSet::caret(ByteOffset::ZERO));
         assert_eq!(editor.scroll_manager.anchor(), DisplayPoint::ZERO);
@@ -69,8 +73,8 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
 #[gpui::test]
 fn other_editor_editing_shared_buffer_moves_this_editors_selection(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "abc");
-    let first = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
-    let second = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
+    let first = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
+    let second = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
 
     // 两个 Editor 的光标都在偏移 3（"abc" 末尾）。
     cx.update_entity(&first, |editor, _| {
@@ -98,7 +102,7 @@ fn other_editor_editing_shared_buffer_moves_this_editors_selection(cx: &mut Test
 #[gpui::test]
 fn external_reload_moves_selection_through_diff(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie");
-    let editor = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
+    let editor = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
     // 光标在 "bravo" 行内 "br" 之后（行内第 2 字节）。
     cx.update_entity(&editor, |editor, _| {
         editor.set_selections(SelectionSet::caret(ByteOffset::new(8)));
@@ -121,7 +125,7 @@ fn external_reload_moves_selection_through_diff(cx: &mut TestAppContext) {
 #[gpui::test]
 fn external_reload_collapses_selection_when_text_is_rewritten(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "abc");
-    let editor = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
+    let editor = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
     cx.update_entity(&editor, |editor, _| {
         editor.set_selections(SelectionSet::caret(ByteOffset::new(2)));
     });
@@ -150,12 +154,12 @@ fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut T
         assert_eq!(editor.selections(), SelectionSet::default());
         assert_eq!(
             editor.display_map.version(),
-            editor.buffer.read(cx).version()
+            editor.singleton_buffer(cx).read(cx).version()
         );
         let _focus = editor.focus_handle();
-        editor.buffer.clone()
+        editor.singleton_buffer(cx)
     });
-    let auto_height_buffer = cx.read_entity(&auto_height, |editor, _| {
+    let auto_height_buffer = cx.read_entity(&auto_height, |editor, cx| {
         assert_eq!(
             editor.mode,
             EditorMode::AutoHeight {
@@ -163,7 +167,7 @@ fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut T
                 max_lines: Some(6),
             }
         );
-        editor.buffer.clone()
+        editor.singleton_buffer(cx)
     });
 
     assert_ne!(single_buffer, auto_height_buffer);
@@ -173,7 +177,7 @@ fn editor_element_renders_multiline_unicode_text(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "a你\n😀b");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.run_until_parked();
@@ -188,7 +192,7 @@ fn clicking_the_gutter_selects_a_logical_line(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "first\nsecond\nthird");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.run_until_parked();
@@ -226,7 +230,7 @@ fn committed_input_uses_element_input_handler_and_preserves_unicode(cx: &mut Tes
     let buffer = test_buffer(cx, "");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.simulate_click(point(px(4.), px(12.)), gpui::Modifiers::default());
@@ -246,7 +250,7 @@ fn editor_actions_move_extend_delete_and_restore_unicode_selection(cx: &mut Test
     let buffer = test_buffer(cx, "a😀b");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
@@ -286,7 +290,7 @@ fn deleting_a_reversed_selection_always_leaves_a_caret_at_its_start(cx: &mut Tes
     let buffer = test_buffer(cx, "abcdef");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.update_entity(&editor, |editor, _| {
@@ -307,7 +311,7 @@ fn deleting_a_reversed_selection_always_leaves_a_caret_at_its_start(cx: &mut Tes
 #[gpui::test]
 fn replacing_a_reversed_selection_places_the_caret_after_inserted_text(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "abcdef");
-    let editor = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
+    let editor = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
 
     cx.update_entity(&editor, |editor, cx| {
         editor.set_selections(SelectionSet::new(vec![Selection::new(
@@ -336,7 +340,7 @@ fn expand_selection_uses_tree_sitter_ancestors(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let (editor, cx) = cx.add_window_view({
         let language_buffer = language_buffer.clone();
-        move |_, cx| Editor::for_buffer(language_buffer, cx)
+        move |_, cx| Editor::for_language_buffer(language_buffer, cx)
     });
     cx.run_until_parked();
     let value = source.find("value").unwrap();
@@ -371,7 +375,7 @@ fn matching_brackets_come_from_tree_sitter_query(cx: &mut TestAppContext) {
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
-        move |cx| Editor::for_buffer(language_buffer, cx)
+        move |cx| Editor::for_language_buffer(language_buffer, cx)
     });
     cx.run_until_parked();
     let open = source.find("()").unwrap();
@@ -392,7 +396,7 @@ fn word_and_line_delete_actions_follow_editor_boundaries(cx: &mut TestAppContext
     let buffer = test_buffer(cx, "alpha beta gamma");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
 
@@ -442,7 +446,7 @@ fn document_boundary_actions_move_and_extend_selection(cx: &mut TestAppContext) 
     let buffer = test_buffer(cx, text);
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     let end = ByteOffset::new(text.len());
 
@@ -486,7 +490,7 @@ fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, text);
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.simulate_resize(size(px(100.), px(100.)));
@@ -572,7 +576,7 @@ fn clipboard_actions_edit_selected_text_through_transactions(cx: &mut TestAppCon
     let buffer = test_buffer(cx, "hello");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
@@ -608,7 +612,7 @@ fn move_line_up_and_down_reorders_lines_and_follows_selection(cx: &mut TestAppCo
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
@@ -645,7 +649,7 @@ fn move_line_skips_document_edges_and_moves_multi_line_selection(cx: &mut TestAp
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
     cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
@@ -679,7 +683,7 @@ fn move_line_keeps_newline_separation_at_document_edge(cx: &mut TestAppContext) 
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
 
@@ -717,7 +721,7 @@ fn move_line_moves_rows_of_partial_selection_and_keeps_shape(cx: &mut TestAppCon
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
 
@@ -756,7 +760,7 @@ fn directional_moves_collapse_selection_to_its_edges(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie\ndelta");
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
 
@@ -823,7 +827,7 @@ fn word_line_and_vertical_movement_use_engine_boundaries(cx: &mut TestAppContext
     let editor = cx.new({
         let buffer = buffer.clone();
         move |cx| {
-            let mut editor = Editor::for_buffer(buffer, cx);
+            let mut editor = Editor::for_language_buffer(buffer, cx);
             editor.set_selections(SelectionSet::caret(ByteOffset::new("alpha 你好".len())));
             editor
         }
@@ -852,7 +856,7 @@ fn newline_is_a_transaction_and_undo_restores_selection(cx: &mut TestAppContext)
     let editor = cx.new({
         let buffer = buffer.clone();
         move |cx| {
-            let mut editor = Editor::for_buffer(buffer, cx);
+            let mut editor = Editor::for_language_buffer(buffer, cx);
             editor.set_selections(SelectionSet::caret(ByteOffset::new(1)));
             editor
         }
@@ -887,7 +891,7 @@ fn newline_uses_tree_sitter_indent_query(cx: &mut TestAppContext) {
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
         move |cx| {
-            let mut editor = Editor::for_buffer(language_buffer, cx);
+            let mut editor = Editor::for_language_buffer(language_buffer, cx);
             editor.set_selections(SelectionSet::caret(ByteOffset::new(caret)));
             editor
         }
@@ -914,7 +918,7 @@ fn newline_does_not_compound_indent_inside_an_outer_rust_block(cx: &mut TestAppC
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
         move |cx| {
-            let mut editor = Editor::for_buffer(language_buffer, cx);
+            let mut editor = Editor::for_language_buffer(language_buffer, cx);
             editor.set_selections(SelectionSet::caret(ByteOffset::new(caret)));
             editor
         }
@@ -945,7 +949,7 @@ fn newline_uses_the_nearest_code_line_as_its_indent_basis(cx: &mut TestAppContex
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
         move |cx| {
-            let mut editor = Editor::for_buffer(language_buffer, cx);
+            let mut editor = Editor::for_language_buffer(language_buffer, cx);
             editor.set_selections(SelectionSet::caret(ByteOffset::new(caret)));
             editor
         }

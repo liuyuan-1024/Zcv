@@ -6,7 +6,7 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use zcv_engine::{ByteOffset, Line, Snapshot};
+use zcv_text::{ByteOffset, Line, Snapshot};
 
 use super::chunk::InlayInfo;
 use super::line_stream::{LineStream, StreamLineSource, StreamLineText};
@@ -197,10 +197,10 @@ fn stream_text(text: StreamLineText<'_>) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zcv_engine::BufferConfig;
+    use zcv_text::BufferConfig;
 
     fn snapshot_with(text: &str, inlays: Vec<Inlay>) -> InlaySnapshot {
-        let buffer = zcv_engine::Buffer::scratch(text.to_owned(), BufferConfig::default())
+        let buffer = zcv_text::Buffer::scratch(text.to_owned(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let (mut map, _) = InlayMap::new(LineStream::new(buffer.snapshot()));
         map.read(LineStream::new(buffer.snapshot()), inlays)
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn version_changes_only_on_inlay_config_change() {
-        let buffer = zcv_engine::Buffer::scratch("ab\n".to_owned(), BufferConfig::default())
+        let buffer = zcv_text::Buffer::scratch("ab\n".to_owned(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let mut map = InlayMap::new(LineStream::new(buffer.snapshot())).0;
         let stream = LineStream::new(buffer.snapshot());

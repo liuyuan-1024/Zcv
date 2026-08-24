@@ -257,7 +257,7 @@ impl ToolbarItemView for FileToolbarControls {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
-        let path = active_item.and_then(|item| item.file_path(cx));
+        let path = active_item.and_then(|item| item.active_path(cx));
         self.visible = path.is_some();
         // 预览视图显示"回到源码"，源码且文件支持预览时显示"进入预览"。
         self.preview_control = if active_item.is_some_and(|item| item.as_preview_item(cx).is_some())

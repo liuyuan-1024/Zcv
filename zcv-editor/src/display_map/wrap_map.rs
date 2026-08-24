@@ -13,7 +13,7 @@ use std::sync::Arc;
 use gpui::{Font, LineFragment, LineWrapper, Pixels, TextSystem};
 use gpui_sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
-use zcv_engine::{ByteOffset, CoordinateError, Line, LogicalColumn, Position, Snapshot, TextRange};
+use zcv_text::{ByteOffset, CoordinateError, Line, LogicalColumn, Position, Snapshot, TextRange};
 
 use super::display_width::DisplayColumn;
 use super::error::DisplayMapResult;

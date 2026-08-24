@@ -1,12 +1,12 @@
 use thiserror::Error;
-use zcv_engine::{CoordinateError, EngineError, TextRange};
+use zcv_text::{CoordinateError, TextError, TextRange};
 
 pub(crate) type DisplayMapResult<T> = Result<T, DisplayMapError>;
 
 #[derive(Debug, Error)]
 pub(crate) enum DisplayMapError {
     #[error(transparent)]
-    Engine(#[from] EngineError),
+    Text(#[from] TextError),
     #[error(transparent)]
     Coordinate(#[from] CoordinateError),
     #[error(transparent)]

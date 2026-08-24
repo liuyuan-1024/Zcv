@@ -7,24 +7,15 @@ name = "Zcv"
 version = "0.7.7"
 dependencies = [
  "anyhow",
- "async-channel 1.9.0",
- "globset",
  "gpui",
- "regex",
- "serde",
  "serde_json",
- "serde_json_lenient",
  "tempfile",
- "toml 0.8.23",
  "trash",
  "zcv-actions",
  "zcv-assets",
  "zcv-editor",
- "zcv-engine",
  "zcv-git",
  "zcv-keymap",
- "zcv-language",
- "zcv-picker",
  "zcv-preview-svg",
  "zcv-project",
  "zcv-settings",
@@ -7617,27 +7608,15 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "zcv-actions",
- "zcv-engine",
  "zcv-git",
  "zcv-language",
+ "zcv-multi-buffer",
  "zcv-project",
  "zcv-settings",
+ "zcv-text",
  "zcv-theme",
  "zcv-ui",
  "zcv-workspace",
-]
-
-[[package]]
-name = "zcv-engine"
-version = "0.7.7"
-dependencies = [
- "criterion",
- "regex",
- "regex-automata",
- "ropey",
- "thiserror 2.0.19",
- "unicode-segmentation",
- "unicode-width",
 ]
 
 [[package]]
@@ -7692,7 +7671,16 @@ dependencies = [
  "tree-sitter-toml-ng",
  "tree-sitter-typescript",
  "tree-sitter-yaml",
- "zcv-engine",
+ "zcv-text",
+]
+
+[[package]]
+name = "zcv-multi-buffer"
+version = "0.7.7"
+dependencies = [
+ "gpui",
+ "zcv-language",
+ "zcv-text",
 ]
 
 [[package]]
@@ -7714,7 +7702,7 @@ dependencies = [
  "gpui",
  "resvg",
  "zcv-editor",
- "zcv-engine",
+ "zcv-multi-buffer",
  "zcv-project",
  "zcv-theme",
  "zcv-workspace",
@@ -7730,10 +7718,11 @@ dependencies = [
  "gpui",
  "tempfile",
  "trash",
- "zcv-engine",
  "zcv-fs-watch",
  "zcv-git",
  "zcv-language",
+ "zcv-multi-buffer",
+ "zcv-text",
 ]
 
 [[package]]
@@ -7759,7 +7748,6 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
- "tempfile",
  "zcv-actions",
  "zcv-assets",
  "zcv-editor",
@@ -7768,6 +7756,19 @@ dependencies = [
  "zcv-theme",
  "zcv-ui",
  "zcv-workspace",
+]
+
+[[package]]
+name = "zcv-text"
+version = "0.7.7"
+dependencies = [
+ "criterion",
+ "regex",
+ "regex-automata",
+ "ropey",
+ "thiserror 2.0.19",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]
@@ -7800,12 +7801,14 @@ dependencies = [
  "serde_json",
  "tempfile",
  "zcv-actions",
- "zcv-engine",
  "zcv-git",
  "zcv-keymap",
+ "zcv-language",
+ "zcv-multi-buffer",
  "zcv-picker",
  "zcv-project",
  "zcv-settings",
+ "zcv-text",
  "zcv-theme",
  "zcv-ui",
 ]

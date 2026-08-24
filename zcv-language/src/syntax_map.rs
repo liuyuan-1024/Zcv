@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tree_sitter::StreamingIterator;
-use zcv_engine::{BufferVersion, Snapshot, TextChangeBatch};
+use zcv_text::{BufferVersion, Snapshot, TextChangeBatch};
 
 use crate::Language;
 use crate::registry::{language_for_file, language_for_injection};
@@ -80,7 +80,7 @@ impl SyntaxMap {
 
     pub fn set_language_for_file(&mut self, path: &Path, snapshot: &Snapshot) -> bool {
         let first_line = snapshot
-            .slice_line(zcv_engine::Line::ZERO)
+            .slice_line(zcv_text::Line::ZERO)
             .ok()
             .map(|line| line.as_str().trim_end_matches(['\r', '\n']).to_owned());
         self.set_language(language_for_file(path, first_line.as_deref()), snapshot)
@@ -435,16 +435,15 @@ fn collect_injections(
 
 /// 测试共用：按 Rust 文件解析文本，返回 buffer 与已安装解析结果的语法映射。
 #[cfg(test)]
-pub(crate) fn rust_buffer(text: &str) -> (zcv_engine::Buffer, SyntaxMap) {
+pub(crate) fn rust_buffer(text: &str) -> (zcv_text::Buffer, SyntaxMap) {
     parsed_syntax("main.rs", text)
 }
 
 /// 测试共用：按给定路径解析文本，返回 buffer 与已安装解析结果的语法映射。
 #[cfg(test)]
-pub(crate) fn parsed_syntax(path: &str, text: &str) -> (zcv_engine::Buffer, SyntaxMap) {
+pub(crate) fn parsed_syntax(path: &str, text: &str) -> (zcv_text::Buffer, SyntaxMap) {
     let buffer =
-        zcv_engine::Buffer::from_text(text.to_owned(), zcv_engine::BufferConfig::default())
-            .unwrap();
+        zcv_text::Buffer::from_text(text.to_owned(), zcv_text::BufferConfig::default()).unwrap();
     let snapshot = buffer.snapshot();
     let mut syntax = SyntaxMap::new(&snapshot);
     syntax.set_language_for_file(Path::new(path), &snapshot);
@@ -455,7 +454,7 @@ pub(crate) fn parsed_syntax(path: &str, text: &str) -> (zcv_engine::Buffer, Synt
 
 #[cfg(test)]
 mod tests {
-    use zcv_engine::{ByteOffset, Edit, TextRange, TransactionMetadata};
+    use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
 
     use super::*;
 

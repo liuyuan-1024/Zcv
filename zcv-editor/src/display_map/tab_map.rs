@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
-use zcv_engine::{ByteOffset, CoordinateError, Line, LogicalColumn, Snapshot};
+use zcv_text::{ByteOffset, CoordinateError, Line, LogicalColumn, Snapshot};
 
 use super::display_width::{DisplayColumn, char_width};
 use super::{

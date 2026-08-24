@@ -15,9 +15,10 @@ thiserror.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
 zcv-actions.workspace = true
-zcv-engine.workspace = true
+zcv-text.workspace = true
 zcv-git.workspace = true
 zcv-language.workspace = true
+zcv-multi-buffer.workspace = true
 zcv-project.workspace = true
 zcv-settings.workspace = true
 zcv-theme.workspace = true
@@ -26,7 +27,7 @@ zcv-workspace.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-tempfile = "3"
+tempfile.workspace = true
 
 [lints]
 workspace = true

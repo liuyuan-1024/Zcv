@@ -1,5 +1,5 @@
 use gpui::{TestAppContext, point, px};
-use zcv_engine::{ByteOffset, Edit, TransactionMetadata};
+use zcv_text::{ByteOffset, Edit, TransactionMetadata};
 
 use super::common::test_buffer;
 use super::*;
@@ -7,7 +7,7 @@ use super::*;
 #[gpui::test]
 fn deleted_hunk_expands_and_collapses_inserted_lines(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "a\nb\nc");
-    let editor = cx.new(|cx| Editor::new(buffer, EditorMode::Full, cx));
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
     cx.run_until_parked();
     let base_rows = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());
     assert_eq!(base_rows, 3);
@@ -53,7 +53,7 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
         Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
-    let editor = cx.new(|cx| Editor::new(buffer, EditorMode::Full, cx));
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
     cx.run_until_parked();
     // 语法解析完成后语言层提供两个折叠范围（fn main 与 fn other 的块体）。
     let fold_ranges = cx.read_entity(&editor, |editor, _| {
@@ -103,7 +103,7 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
     });
     let language_buffer =
         cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("main.rs")), cx));
-    let editor = cx.new(|cx| Editor::new(language_buffer, EditorMode::Full, cx));
+    let editor = cx.new(|cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx));
     cx.run_until_parked();
 
     // 编辑 buffer：在首行后插入一行注释。
@@ -148,7 +148,7 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
         Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
-    let editor = cx.new(|cx| Editor::new(buffer, EditorMode::Full, cx));
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
     cx.run_until_parked();
     editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
 
@@ -170,7 +170,7 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
     // 真实 `}` 范围投影到合并行占位符之后的列（anchor 11 字符 + 占位符 1 列 = 12）。
     let projected = snapshot
         .project_text_range(
-            zcv_engine::TextRange::new(
+            zcv_text::TextRange::new(
                 ByteOffset::new(close_range.start),
                 ByteOffset::new(close_range.end),
             )
@@ -182,14 +182,14 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
         projected[0].start(),
         super::super::display_map::ProjectedPoint::new(
             super::super::display_map::ProjectedLineIndex::new(0),
-            zcv_engine::LogicalColumn::new(12)
+            zcv_text::LogicalColumn::new(12)
         )
     );
     assert_eq!(
         projected[0].end(),
         super::super::display_map::ProjectedPoint::new(
             super::super::display_map::ProjectedLineIndex::new(0),
-            zcv_engine::LogicalColumn::new(13)
+            zcv_text::LogicalColumn::new(13)
         )
     );
 }
@@ -205,7 +205,7 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
         cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
     let (editor, cx) = cx.add_window_view({
         let language_buffer = language_buffer.clone();
-        move |_, cx| Editor::new(language_buffer, EditorMode::Full, cx)
+        move |_, cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx)
     });
     cx.run_until_parked();
     editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
@@ -240,7 +240,7 @@ fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
         Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
-    let editor = cx.new(|cx| Editor::new(buffer, EditorMode::Full, cx));
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
     cx.run_until_parked();
 
     // 手动折叠两个块体（各自隐藏 2 行，无占位行）：总行数 6 → 2。
@@ -270,7 +270,7 @@ fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
 #[gpui::test]
 fn diff_hunks_are_gated_by_buffer_version(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "line 0\nline 1\nline 2\n");
-    let editor = cx.new(|cx| Editor::for_buffer(buffer.clone(), cx));
+    let editor = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
 
     editor.update(cx, |editor, cx| {
         editor.set_diff_hunks(
@@ -308,7 +308,7 @@ fn soft_wrap_renders_continuation_rows_and_click_hits_fragment(cx: &mut TestAppC
     let buffer = test_buffer(cx, "    aaaa bbbb cccc dddd eeee ".repeat(10));
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |_, cx| Editor::for_buffer(buffer, cx)
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     editor.update(cx, |editor, cx| {
         editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);

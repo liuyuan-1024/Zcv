@@ -4,10 +4,11 @@ use std::path::PathBuf;
 
 use gpui::{AppContext, TestAppContext, VisualTestContext};
 use zcv_actions::Backspace;
-use zcv_engine::{Buffer, BufferConfig, ByteOffset, Selection, SelectionSet};
 use zcv_language::LanguageBuffer;
+use zcv_text::{Buffer, BufferConfig, ByteOffset};
 
 use super::Editor;
+use crate::{Selection, SelectionSet};
 
 /// 带 Rust 语言的窗口化编辑器：语言在构造时同步识别（见 `LanguageBuffer::new`），自动闭合行为依赖语言提供的配对表。
 fn editor_with_rust<'a>(
@@ -29,7 +30,7 @@ fn editor_with_rust<'a>(
     let editor = cx.add_window_view({
         let language_buffer = language_buffer.clone();
         move |_, cx| {
-            let mut editor = Editor::for_buffer(language_buffer, cx);
+            let mut editor = Editor::for_language_buffer(language_buffer, cx);
             editor.set_selections(selections);
             editor
         }
@@ -57,7 +58,7 @@ fn editor_without_language<'a>(
     let editor = cx.add_window_view({
         let language_buffer = language_buffer.clone();
         move |_, cx| {
-            let mut editor = Editor::for_buffer(language_buffer, cx);
+            let mut editor = Editor::for_language_buffer(language_buffer, cx);
             editor.set_selections(selections);
             editor
         }
